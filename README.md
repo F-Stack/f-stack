@@ -1,2 +1,2 @@
 # F-Stack
-Because of the reference libraries is too mush, we need to re organize and then open it.
+Because of too many references of third libraries, we need to re organize and then open it on 2017-04-23.
