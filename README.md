@@ -1,2 +1,2 @@
 # F-Stack
-Because of too many references of third libraries, we need to review and then open it on 2017-04-23.
+Since the F-Stack project involves a large number of third party code, there are many open source licenses, copyrights need to be reviewed. So, the project is closed temporarily, and when this work is completed, we will reopen the project in about April 24th.
