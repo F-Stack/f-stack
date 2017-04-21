@@ -60,7 +60,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     cd ../../lib/
     make
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc/lib
+    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
 
 #### Nginx
 
