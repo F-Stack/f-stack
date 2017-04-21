@@ -1,0 +1,7 @@
+DPDK = ${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+
+Name: F-Stack
+Description: F-Stack pkg-config pc
+Version: 1.0
+Libs: -L${TOPDIR}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive -Wl,--no-as-needed -fvisibility=default -pthread -lm -lrt -L${DPDK}/lib -Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring -Wl,--whole-archive -lrte_hash -lrte_kvargs -Wl,-lrte_mbuf -lethdev -lrte_eal -Wl,-lrte_mempool -lrte_ring -lrte_cmdline -lrte_cfgfile -lrte_kni -lrte_timer -Wl,-lrte_pmd_virtio -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto
+Cflags: -Wall -Werror -include ${DPDK}/include/rte_config.h -I${DPDK}/include -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3 -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2 -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2

@@ -1,0 +1,692 @@
+DPDK Maintainers
+================
+
+The intention of this file is to provide a set of names that we can rely on
+for helping in patch reviews and questions.
+These names are additional recipients for emails sent to dev@dpdk.org.
+Please avoid private emails.
+
+Descriptions of section entries:
+
+	M: Maintainer's Full Name <address@domain>
+	T: Git tree location.
+	F: Files and directories with wildcard patterns.
+	   A trailing slash includes all files and subdirectory files.
+	   A wildcard includes all files but not subdirectories.
+	   One pattern per line. Multiple F: lines acceptable.
+	X: Files and directories exclusion, same rules as F:
+	K: Keyword regex pattern to match content.
+	   One regex pattern per line. Multiple K: lines acceptable.
+
+
+General Project Administration
+------------------------------
+M: Thomas Monjalon <thomas.monjalon@6wind.com>
+T: git://dpdk.org/dpdk
+F: MAINTAINERS
+F: scripts/check-maintainers.sh
+F: scripts/check-git-log.sh
+F: scripts/checkpatches.sh
+F: scripts/load-devel-config.sh
+F: scripts/test-build.sh
+
+Stable Branches
+---------------
+T: git://dpdk.org/dpdk-stable
+
+Security Issues
+---------------
+M: maintainers@dpdk.org
+
+
+Documentation (with overlaps)
+-------------
+M: Siobhan Butler <siobhan.a.butler@intel.com>
+M: John McNamara <john.mcnamara@intel.com>
+F: README
+F: doc/
+
+
+Build System
+------------
+M: Thomas Monjalon <thomas.monjalon@6wind.com>
+F: GNUmakefile
+F: Makefile
+F: config/
+F: mk/
+F: pkg/
+F: scripts/auto-config-h.sh
+F: scripts/depdirs-rule.sh
+F: scripts/gen-build-mk.sh
+F: scripts/gen-config-h.sh
+F: scripts/relpath.sh
+F: doc/build-sdk-quick.txt
+F: doc/guides/prog_guide/build_app.rst
+F: doc/guides/prog_guide/dev_kit_*
+F: doc/guides/prog_guide/ext_app_lib_make_help.rst
+
+ABI versioning
+M: Neil Horman <nhorman@tuxdriver.com>
+F: lib/librte_compat/
+F: doc/guides/rel_notes/deprecation.rst
+F: scripts/validate-abi.sh
+
+Driver information
+F: buildtools/pmdinfogen/
+F: tools/dpdk-pmdinfo.py
+
+
+Environment Abstraction Layer
+-----------------------------
+
+EAL API and common code
+M: David Marchand <david.marchand@6wind.com>
+F: lib/librte_eal/common/*
+F: lib/librte_eal/common/include/*
+F: lib/librte_eal/common/include/generic/
+F: doc/guides/prog_guide/env_abstraction_layer.rst
+F: app/test/test_alarm.c
+F: app/test/test_atomic.c
+F: app/test/test_byteorder.c
+F: app/test/test_common.c
+F: app/test/test_cpuflags.c
+F: app/test/test_cycles.c
+F: app/test/test_debug.c
+F: app/test/test_devargs.c
+F: app/test/test_eal*
+F: app/test/test_errno.c
+F: app/test/test_interrupts.c
+F: app/test/test_logs.c
+F: app/test/test_memcpy*
+F: app/test/test_pci.c
+F: app/test/test_pci_sysfs/
+F: app/test/test_per_lcore.c
+F: app/test/test_prefetch.c
+F: app/test/test_rwlock.c
+F: app/test/test_spinlock.c
+F: app/test/test_string_fns.c
+F: app/test/test_tailq.c
+F: app/test/test_version.c
+
+Memory Allocation
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+F: lib/librte_eal/common/include/rte_mem*
+F: lib/librte_eal/common/include/rte_malloc.h
+F: lib/librte_eal/common/*malloc*
+F: lib/librte_eal/common/eal_common_mem*
+F: lib/librte_eal/common/eal_hugepages.h
+F: doc/guides/prog_guide/env_abstraction_layer.rst
+F: app/test/test_func_reentrancy.c
+F: app/test/test_malloc.c
+F: app/test/test_memory.c
+F: app/test/test_memzone.c
+
+Keep alive
+M: Remy Horton <remy.horton@intel.com>
+F: lib/librte_eal/common/include/rte_keepalive.h
+F: lib/librte_eal/common/rte_keepalive.c
+F: examples/l2fwd-keepalive/
+F: doc/guides/sample_app_ug/keep_alive.rst
+
+Secondary process
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+K: RTE_PROC_
+F: doc/guides/prog_guide/multi_proc_support.rst
+F: app/test/test_mp_secondary.c
+F: examples/multi_process/
+F: doc/guides/sample_app_ug/multi_process.rst
+
+ARM v7
+M: Jan Viktorin <viktorin@rehivetech.com>
+M: Jianbo Liu <jianbo.liu@linaro.org>
+F: lib/librte_eal/common/arch/arm/
+F: lib/librte_eal/common/include/arch/arm/
+
+ARM v8
+M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
+M: Jianbo Liu <jianbo.liu@linaro.org>
+F: lib/librte_eal/common/include/arch/arm/*_64.h
+F: lib/librte_acl/acl_run_neon.*
+F: lib/librte_lpm/rte_lpm_neon.h
+F: lib/librte_hash/rte*_arm64.h
+F: drivers/net/ixgbe/ixgbe_rxtx_vec_neon.c
+
+EZchip TILE-Gx
+M: Zhigang Lu <zlu@ezchip.com>
+M: Liming Sun <lsun@ezchip.com>
+F: lib/librte_eal/common/arch/tile/
+F: lib/librte_eal/common/include/arch/tile/
+F: drivers/net/mpipe/
+
+IBM POWER
+M: Chao Zhu <chaozhu@linux.vnet.ibm.com>
+F: lib/librte_eal/common/arch/ppc_64/
+F: lib/librte_eal/common/include/arch/ppc_64/
+
+Intel x86
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Konstantin Ananyev <konstantin.ananyev@intel.com>
+F: lib/librte_eal/common/arch/x86/
+F: lib/librte_eal/common/include/arch/x86/
+
+Linux EAL (with overlaps)
+M: David Marchand <david.marchand@6wind.com>
+F: lib/librte_eal/linuxapp/Makefile
+F: lib/librte_eal/linuxapp/eal/
+F: doc/guides/linux_gsg/
+
+Linux UIO
+M: Ferruh Yigit <ferruh.yigit@intel.com>
+F: lib/librte_eal/linuxapp/igb_uio/
+F: lib/librte_eal/linuxapp/eal/*uio*
+
+Linux VFIO
+M: Anatoly Burakov <anatoly.burakov@intel.com>
+F: lib/librte_eal/linuxapp/eal/*vfio*
+
+Linux Xen
+F: lib/librte_eal/linuxapp/xen_dom0/
+F: lib/librte_eal/linuxapp/eal/*xen*
+F: lib/librte_eal/linuxapp/eal/include/exec-env/rte_dom0_common.h
+F: drivers/net/xenvirt/
+F: doc/guides/xen/
+F: examples/vhost_xen/
+
+FreeBSD EAL (with overlaps)
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+F: lib/librte_eal/bsdapp/Makefile
+F: lib/librte_eal/bsdapp/eal/
+F: doc/guides/freebsd_gsg/
+
+FreeBSD contigmem
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+F: lib/librte_eal/bsdapp/contigmem/
+
+FreeBSD UIO
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+F: lib/librte_eal/bsdapp/nic_uio/
+
+
+Core Libraries
+--------------
+
+Memory pool
+M: Olivier Matz <olivier.matz@6wind.com>
+F: lib/librte_mempool/
+F: doc/guides/prog_guide/mempool_lib.rst
+F: app/test/test_mempool*
+F: app/test/test_func_reentrancy.c
+
+Ring queue
+M: Olivier Matz <olivier.matz@6wind.com>
+F: lib/librte_ring/
+F: doc/guides/prog_guide/ring_lib.rst
+F: app/test/test_ring*
+F: app/test/test_func_reentrancy.c
+
+Packet buffer
+M: Olivier Matz <olivier.matz@6wind.com>
+F: lib/librte_mbuf/
+F: doc/guides/prog_guide/mbuf_lib.rst
+F: app/test/test_mbuf.c
+
+Ethernet API
+M: Thomas Monjalon <thomas.monjalon@6wind.com>
+F: lib/librte_ether/
+F: scripts/test-null.sh
+
+Crypto API
+M: Declan Doherty <declan.doherty@intel.com>
+F: lib/librte_cryptodev/
+F: app/test/test_cryptodev*
+F: examples/l2fwd-crypto/
+
+
+Networking Drivers
+------------------
+
+Link bonding
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/net/bonding/
+F: doc/guides/prog_guide/link_bonding_poll_mode_drv_lib.rst
+F: app/test/test_link_bonding*
+F: examples/bond/
+
+Linux KNI
+M: Ferruh Yigit <ferruh.yigit@intel.com>
+F: lib/librte_eal/linuxapp/kni/
+F: lib/librte_kni/
+F: doc/guides/prog_guide/kernel_nic_interface.rst
+F: app/test/test_kni.c
+F: examples/kni/
+F: doc/guides/sample_app_ug/kernel_nic_interface.rst
+
+Linux AF_PACKET
+M: John W. Linville <linville@tuxdriver.com>
+F: drivers/net/af_packet/
+
+Amazon ENA
+M: Jan Medala <jan@semihalf.com>
+M: Jakub Palider <jpa@semihalf.com>
+M: Netanel Belgazal <netanel@amazon.com>
+M: Evgeny Schemeilin <evgenys@amazon.com>
+F: drivers/net/ena/
+F: doc/guides/nics/ena.rst
+
+Broadcom bnxt
+M: Stephen Hurd <stephen.hurd@broadcom.com>
+F: drivers/net/bnxt/
+F: doc/guides/nics/bnxt.rst
+
+Cavium ThunderX nicvf
+M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
+M: Maciej Czekaj <maciej.czekaj@caviumnetworks.com>
+F: drivers/net/thunderx/
+F: doc/guides/nics/thunderx.rst
+
+Chelsio cxgbe
+M: Rahul Lakkireddy <rahul.lakkireddy@chelsio.com>
+F: drivers/net/cxgbe/
+F: doc/guides/nics/cxgbe.rst
+
+Cisco enic
+M: John Daley <johndale@cisco.com>
+M: Nelson Escobar <neescoba@cisco.com>
+F: drivers/net/enic/
+F: doc/guides/nics/enic.rst
+
+Combo szedata2
+M: Matej Vido <matejvido@gmail.com>
+F: drivers/net/szedata2/
+F: doc/guides/nics/szedata2.rst
+
+Intel e1000
+M: Wenzhuo Lu <wenzhuo.lu@intel.com>
+F: drivers/net/e1000/
+F: doc/guides/nics/e1000em.rst
+F: doc/guides/nics/intel_vf.rst
+
+Intel ixgbe
+M: Helin Zhang <helin.zhang@intel.com>
+M: Konstantin Ananyev <konstantin.ananyev@intel.com>
+F: drivers/net/ixgbe/
+F: doc/guides/nics/ixgbe.rst
+F: doc/guides/nics/intel_vf.rst
+
+Intel i40e
+M: Helin Zhang <helin.zhang@intel.com>
+M: Jingjing Wu <jingjing.wu@intel.com>
+F: drivers/net/i40e/
+F: doc/guides/nics/i40e.rst
+F: doc/guides/nics/intel_vf.rst
+
+Intel fm10k
+M: Jing Chen <jing.d.chen@intel.com>
+F: drivers/net/fm10k/
+
+Mellanox mlx4
+M: Adrien Mazarguil <adrien.mazarguil@6wind.com>
+F: drivers/net/mlx4/
+F: doc/guides/nics/mlx4.rst
+
+Mellanox mlx5
+M: Adrien Mazarguil <adrien.mazarguil@6wind.com>
+F: drivers/net/mlx5/
+F: doc/guides/nics/mlx5.rst
+
+Netronome nfp
+M: Alejandro Lucero <alejandro.lucero@netronome.com>
+F: drivers/net/nfp/
+F: doc/guides/nics/nfp.rst
+
+QLogic bnx2x
+M: Sony Chacko <sony.chacko@qlogic.com>
+M: Harish Patil <harish.patil@qlogic.com>
+M: Rasesh Mody <rasesh.mody@qlogic.com>
+F: drivers/net/bnx2x/
+F: doc/guides/nics/bnx2x.rst
+
+QLogic qede PMD
+M: Harish Patil <harish.patil@qlogic.com>
+M: Rasesh Mody <rasesh.mody@qlogic.com>
+M: Sony Chacko <sony.chacko@qlogic.com>
+F: drivers/net/qede/
+F: doc/guides/nics/qede.rst
+
+RedHat virtio
+M: Huawei Xie <huawei.xie@intel.com>
+M: Yuanhan Liu <yuanhan.liu@linux.intel.com>
+T: git://dpdk.org/next/dpdk-next-virtio
+F: drivers/net/virtio/
+F: doc/guides/nics/virtio.rst
+F: lib/librte_vhost/
+F: doc/guides/prog_guide/vhost_lib.rst
+F: examples/vhost/
+F: doc/guides/sample_app_ug/vhost.rst
+
+VMware vmxnet3
+M: Yong Wang <yongwang@vmware.com>
+F: drivers/net/vmxnet3/
+F: doc/guides/nics/vmxnet3.rst
+
+Vhost PMD
+M: Tetsuya Mukawa <mtetsuyah@gmail.com>
+M: Yuanhan Liu <yuanhan.liu@linux.intel.com>
+T: git://dpdk.org/next/dpdk-next-virtio
+F: drivers/net/vhost/
+
+PCAP PMD
+M: Nicolás Pernas Maradei <nicolas.pernas.maradei@emutex.com>
+M: Ferruh Yigit <ferruh.yigit@intel.com>
+F: drivers/net/pcap/
+F: doc/guides/nics/pcap_ring.rst
+
+Ring PMD
+M: Bruce Richardson <bruce.richardson@intel.com>
+F: drivers/net/ring/
+F: doc/guides/nics/pcap_ring.rst
+F: app/test/test_pmd_ring.c
+F: app/test/test_pmd_ring_perf.c
+
+Null Networking PMD
+M: Tetsuya Mukawa <mtetsuyah@gmail.com>
+F: drivers/net/null/
+
+
+Crypto Drivers
+--------------
+
+Intel AES-NI GCM PMD
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/crypto/aesni_gcm/
+F: doc/guides/cryptodevs/aesni_gcm.rst
+
+Intel AES-NI Multi-Buffer
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/crypto/aesni_mb/
+F: doc/guides/cryptodevs/aesni_mb.rst
+
+Intel QuickAssist
+M: John Griffin <john.griffin@intel.com>
+M: Fiona Trahe <fiona.trahe@intel.com>
+M: Deepak Kumar Jain <deepak.k.jain@intel.com>
+F: drivers/crypto/qat/
+F: doc/guides/cryptodevs/qat.rst
+
+SNOW 3G PMD
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/snow3g/
+F: doc/guides/cryptodevs/snow3g.rst
+
+KASUMI PMD
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/kasumi/
+F: doc/guides/cryptodevs/kasumi.rst
+
+Null Crypto PMD
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/crypto/null/
+F: doc/guides/cryptodevs/null.rst
+
+
+Packet processing
+-----------------
+
+Network headers
+F: lib/librte_net/
+
+IP fragmentation & reassembly
+M: Konstantin Ananyev <konstantin.ananyev@intel.com>
+F: lib/librte_ip_frag/
+F: doc/guides/prog_guide/ip_fragment_reassembly_lib.rst
+F: examples/ip_fragmentation/
+F: doc/guides/sample_app_ug/ip_frag.rst
+F: examples/ip_reassembly/
+F: doc/guides/sample_app_ug/ip_reassembly.rst
+
+Distributor
+M: Bruce Richardson <bruce.richardson@intel.com>
+F: lib/librte_distributor/
+F: doc/guides/prog_guide/packet_distrib_lib.rst
+F: app/test/test_distributor*
+F: examples/distributor/
+F: doc/guides/sample_app_ug/dist_app.rst
+
+Reorder
+M: Reshma Pattan <reshma.pattan@intel.com>
+F: lib/librte_reorder/
+F: doc/guides/prog_guide/reorder_lib.rst
+F: app/test/test_reorder*
+F: examples/packet_ordering/
+F: doc/guides/sample_app_ug/packet_ordering.rst
+
+Hierarchical scheduler
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: lib/librte_sched/
+F: doc/guides/prog_guide/qos_framework.rst
+F: app/test/test_red.c
+F: app/test/test_sched.c
+F: examples/qos_sched/
+F: doc/guides/sample_app_ug/qos_scheduler.rst
+
+Packet capture
+M: Reshma Pattan <reshma.pattan@intel.com>
+F: lib/librte_pdump/
+F: doc/guides/prog_guide/pdump_lib.rst
+F: app/pdump/
+F: doc/guides/sample_app_ug/pdump.rst
+
+
+Packet Framework
+----------------
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: lib/librte_pipeline/
+F: lib/librte_port/
+F: lib/librte_table/
+F: doc/guides/prog_guide/packet_framework.rst
+F: app/test/test_table*
+F: app/test-pipeline/
+F: doc/guides/sample_app_ug/test_pipeline.rst
+F: examples/ip_pipeline/
+F: doc/guides/sample_app_ug/ip_pipeline.rst
+
+
+Algorithms
+----------
+
+ACL
+M: Konstantin Ananyev <konstantin.ananyev@intel.com>
+F: lib/librte_acl/
+F: doc/guides/prog_guide/packet_classif_access_ctrl.rst
+F: app/test-acl/
+F: app/test/test_acl.*
+F: examples/l3fwd-acl/
+F: doc/guides/sample_app_ug/l3_forward_access_ctrl.rst
+
+Hashes
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: lib/librte_hash/
+F: doc/guides/prog_guide/hash_lib.rst
+F: app/test/test_*hash*
+F: app/test/test_func_reentrancy.c
+
+LPM
+M: Bruce Richardson <bruce.richardson@intel.com>
+F: lib/librte_lpm/
+F: doc/guides/prog_guide/lpm*
+F: app/test/test_lpm*
+F: app/test/test_func_reentrancy.c
+F: app/test/test_xmmt_ops.h
+
+Traffic metering
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: lib/librte_meter/
+F: doc/guides/sample_app_ug/qos_scheduler.rst
+F: app/test/test_meter.c
+F: examples/qos_meter/
+F: doc/guides/sample_app_ug/qos_metering.rst
+
+
+Other libraries
+---------------
+
+Configuration file
+M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+F: lib/librte_cfgfile/
+
+Interactive command line
+M: Olivier Matz <olivier.matz@6wind.com>
+F: lib/librte_cmdline/
+F: app/cmdline_test/
+F: app/test/test_cmdline*
+F: examples/cmdline/
+F: doc/guides/sample_app_ug/cmd_line.rst
+
+Qemu IVSHMEM
+M: Anatoly Burakov <anatoly.burakov@intel.com>
+F: lib/librte_ivshmem/
+F: lib/librte_eal/linuxapp/eal/eal_ivshmem.c
+F: doc/guides/prog_guide/ivshmem_lib.rst
+F: app/test/test_ivshmem.c
+F: examples/l2fwd-ivshmem/
+
+Key/Value parsing
+M: Olivier Matz <olivier.matz@6wind.com>
+F: lib/librte_kvargs/
+F: app/test/test_kvargs.c
+
+Power management
+F: lib/librte_power/
+F: doc/guides/prog_guide/power_man.rst
+F: app/test/test_power*
+F: examples/l3fwd-power/
+F: doc/guides/sample_app_ug/l3_forward_power_man.rst
+F: examples/vm_power_manager/
+F: doc/guides/sample_app_ug/vm_power_management.rst
+
+Timers
+M: Robert Sanford <rsanford@akamai.com>
+F: lib/librte_timer/
+F: doc/guides/prog_guide/timer_lib.rst
+F: app/test/test_timer*
+F: examples/timer/
+F: doc/guides/sample_app_ug/timer.rst
+
+Job statistics
+M: Pawel Wodkowski <pawelx.wodkowski@intel.com>
+F: lib/librte_jobstats/
+F: examples/l2fwd-jobstats/
+F: doc/guides/sample_app_ug/l2_forward_job_stats.rst
+
+
+Test Applications
+-----------------
+
+Unit tests framework
+F: app/test/autotest*
+F: app/test/commands.c
+F: app/test/packet_burst_generator.c
+F: app/test/packet_burst_generator.h
+F: app/test/process.h
+F: app/test/resource.*
+F: app/test/test.c
+F: app/test/test.h
+F: app/test/test_pmd_perf.c
+F: app/test/test_resource.c
+F: app/test/virtual_pmd.c
+F: app/test/virtual_pmd.h
+
+Driver testing tool
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: app/test-pmd/
+F: doc/guides/testpmd_app_ug/
+
+Dump tool
+M: Maryam Tahhan <maryam.tahhan@intel.com>
+M: John McNamara <john.mcnamara@intel.com>
+F: app/proc_info/
+
+
+Other Example Applications
+--------------------------
+
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: examples/dpdk_qat/
+F: doc/guides/sample_app_ug/intel_quickassist.rst
+
+M: Remy Horton <remy.horton@intel.com>
+F: examples/ethtool/
+F: doc/guides/sample_app_ug/ethtool.rst
+
+F: examples/exception_path/
+F: doc/guides/sample_app_ug/exception_path.rst
+
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: examples/helloworld/
+F: doc/guides/sample_app_ug/hello_world.rst
+
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+F: examples/ipsec-secgw/
+F: doc/guides/sample_app_ug/ipsec_secgw.rst
+
+F: examples/ipv4_multicast/
+F: doc/guides/sample_app_ug/ipv4_multicast.rst
+
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: examples/l2fwd/
+F: doc/guides/sample_app_ug/l2_forward_real_virtual.rst
+
+M: Tomasz Kantecki <tomasz.kantecki@intel.com>
+F: doc/guides/sample_app_ug/l2_forward_cat.rst
+F: examples/l2fwd-cat/
+
+F: examples/l3fwd/
+F: doc/guides/sample_app_ug/l3_forward.rst
+
+F: examples/l3fwd-vf/
+F: doc/guides/sample_app_ug/l3_forward_virtual.rst
+
+F: examples/link_status_interrupt/
+F: doc/guides/sample_app_ug/link_status_intr.rst
+
+F: examples/load_balancer/
+F: doc/guides/sample_app_ug/load_balancer.rst
+
+F: examples/netmap_compat/
+F: doc/guides/sample_app_ug/netmap_compatibility.rst
+
+L-threads - EXPERIMENTAL
+M: Ian Betts <ian.betts@intel.com>
+F: examples/performance-thread/
+F: doc/guides/sample_app_ug/performance_thread.rst
+
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+M: Daniel Mrzyglod <danielx.t.mrzyglod@intel.com>
+F: examples/ptpclient/
+
+F: examples/quota_watermark/
+F: doc/guides/sample_app_ug/quota_watermark.rst
+
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: John McNamara <john.mcnamara@intel.com>
+F: examples/rxtx_callbacks/
+F: doc/guides/sample_app_ug/rxtx_callbacks.rst
+
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: John McNamara <john.mcnamara@intel.com>
+F: examples/skeleton/
+F: doc/guides/sample_app_ug/skeleton.rst
+
+M: Jijiang Liu <jijiang.liu@intel.com>
+F: examples/tep_termination/
+
+F: examples/vmdq/
+F: examples/vmdq_dcb/
+F: doc/guides/sample_app_ug/vmdq_dcb_forwarding.rst

@@ -1,0 +1,45 @@
+DPDK_2.0 {
+	global:
+
+	rte_eth_bond_8023ad_conf_get;
+	rte_eth_bond_8023ad_setup;
+	rte_eth_bond_active_slaves_get;
+	rte_eth_bond_create;
+	rte_eth_bond_link_monitoring_set;
+	rte_eth_bond_mac_address_reset;
+	rte_eth_bond_mac_address_set;
+	rte_eth_bond_mode_get;
+	rte_eth_bond_mode_set;
+	rte_eth_bond_primary_get;
+	rte_eth_bond_primary_set;
+	rte_eth_bond_slave_add;
+	rte_eth_bond_slave_remove;
+	rte_eth_bond_slaves_get;
+	rte_eth_bond_xmit_policy_get;
+	rte_eth_bond_xmit_policy_set;
+
+	local: *;
+};
+
+DPDK_2.1 {
+	global:
+
+	rte_eth_bond_free;
+
+} DPDK_2.0;
+
+DPDK_16.04 {
+};
+
+DPDK_16.07 {
+	global:
+
+	rte_eth_bond_8023ad_ext_collect;
+	rte_eth_bond_8023ad_ext_collect_get;
+	rte_eth_bond_8023ad_ext_distrib;
+	rte_eth_bond_8023ad_ext_distrib_get;
+	rte_eth_bond_8023ad_ext_slowtx;
+	rte_eth_bond_8023ad_conf_get;
+	rte_eth_bond_8023ad_setup;
+
+} DPDK_16.04;

@@ -1,0 +1,1 @@
+#define MAXUSERS 1

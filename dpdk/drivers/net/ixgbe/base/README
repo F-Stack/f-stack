@@ -1,0 +1,61 @@
+..
+     BSD LICENSE
+   
+     Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+     All rights reserved.
+   
+     Redistribution and use in source and binary forms, with or without
+     modification, are permitted provided that the following conditions
+     are met:
+   
+       * Redistributions of source code must retain the above copyright
+         notice, this list of conditions and the following disclaimer.
+       * Redistributions in binary form must reproduce the above copyright
+         notice, this list of conditions and the following disclaimer in
+         the documentation and/or other materials provided with the
+         distribution.
+       * Neither the name of Intel Corporation nor the names of its
+         contributors may be used to endorse or promote products derived
+         from this software without specific prior written permission.
+   
+     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+     "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+     LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+     A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+     OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+     SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+     LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+     DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+     THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Intel® IXGBE driver
+===================
+
+This directory contains source code of FreeBSD ixgbe driver of version
+cid-10g-shared-code.2016.04.12 released by ND. The sub-directory of base/
+contains the original source package.
+This driver is valid for the product(s) listed below
+
+* Intel® 10 Gigabit AF DA Dual Port Server Adapter
+* Intel® 10 Gigabit AT Server Adapter
+* Intel® 10 Gigabit AT2 Server Adapter
+* Intel® 10 Gigabit CX4 Dual Port Server Adapter
+* Intel® 10 Gigabit XF LR Server Adapter
+* Intel® 10 Gigabit XF SR Dual Port Server Adapter
+* Intel® 10 Gigabit XF SR Server Adapter
+* Intel® 82598 10 Gigabit Ethernet Controller
+* Intel® 82599 10 Gigabit Ethernet Controller
+* Intel® Ethernet Controller X540-AT2
+* Intel® Ethernet Server Adapter X520 Series
+* Intel® Ethernet Server Adapter X520-T2
+* Intel® Ethernet Controller X550 Series
+
+Updating the driver
+===================
+
+NOTE: The source code in this directory should not be modified apart from
+the following file(s):
+
+    ixgbe_osdep.h
