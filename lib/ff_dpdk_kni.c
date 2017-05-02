@@ -61,8 +61,6 @@ static const int magic_bits[8] = {
 static unsigned char *udp_port_bitmap = NULL;
 static unsigned char *tcp_port_bitmap = NULL;
 
-static int kni_accept = 0;
-
 /* Structure type for recording kni interface specific stats */
 struct kni_interface_stats {
     struct rte_kni *kni;
@@ -134,7 +132,7 @@ kni_change_mtu(uint8_t port_id, unsigned new_mtu)
 
 static int
 kni_config_network_interface(uint8_t port_id, uint8_t if_up)
-{       
+{
     int ret = 0;
 
     if (port_id >= rte_eth_dev_count() || port_id >= RTE_MAX_ETHPORTS) {
@@ -149,9 +147,21 @@ kni_config_network_interface(uint8_t port_id, uint8_t if_up)
         rte_eth_dev_set_link_up(port_id) :
         rte_eth_dev_set_link_down(port_id);
 
+    if(-ENOTSUP == ret) {
+        if (if_up != 0) {
+            /* Configure network interface up */
+            rte_eth_dev_stop(port_id);
+            ret = rte_eth_dev_start(port_id);
+        } else {
+            /* Configure network interface down */
+            rte_eth_dev_stop(port_id);
+            ret = 0;
+        }
+    }
+
     if (ret < 0)
         printf("Failed to Configure network interface of %d %s\n", 
-                port_id, if_up ? "up" : "down");
+            port_id, if_up ? "up" : "down");
 
     return ret;
 }
@@ -210,13 +220,7 @@ static enum FilterReturn
 protocol_filter_l4(uint16_t port, unsigned char *bitmap)
 {
     if(get_bitmap(port, bitmap)) {
-        if (kni_accept) {
-            return FILTER_KNI;
-        }
-    } else {
-        if (!kni_accept) {
-            return FILTER_KNI;
-        }
+        return FILTER_KNI;
     }
 
     return FILTER_UNKNOWN;
@@ -277,8 +281,7 @@ ff_kni_proto_filter(const void *data, uint16_t len)
 }
 
 void
-ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
-    const char *udp_ports, int accept)
+ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         kni_stat = rte_zmalloc("kni:stat",

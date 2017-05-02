@@ -82,7 +82,8 @@
 
 #define BITS_PER_HEX 4
 
-static int enable_kni = 0;
+static int enable_kni;
+static int kni_accept;
 
 static struct rte_timer freebsd_clock;
 
@@ -493,14 +494,12 @@ static int
 init_kni(void)
 {
     int nb_ports = rte_eth_dev_count();
-    int accept = 0;
+    kni_accept = 0;
     if(strcasecmp(ff_global_cfg.kni.method, "accept") == 0)
-        accept = 1;
+        kni_accept = 1;
 
-    ff_kni_init(nb_ports,
-        ff_global_cfg.kni.tcp_port,
-        ff_global_cfg.kni.udp_port,
-        accept);
+    ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
+        ff_global_cfg.kni.udp_port);
 
     unsigned socket_id = lcore_conf.socket_id;
     struct rte_mempool *mbuf_pool = pktmbuf_pool[socket_id];
@@ -738,11 +737,7 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
         enum FilterReturn filter = protocol_filter(data, len);
-        if (filter == FILTER_UNKNOWN) {
-            ff_veth_input(ifp, rtem);
-        } else if (filter == FILTER_KNI) {
-            ff_kni_enqueue(port_id, rtem);
-        } else {
+        if (filter == FILTER_ARP) {
             struct rte_mempool *mbuf_pool;
             struct rte_mbuf *mbuf_clone;
             if (pkts_from_ring == 0) {
@@ -769,6 +764,11 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 }
             }
 
+            ff_veth_input(ifp, rtem);
+        } else if (enable_kni && ((filter == FILTER_KNI && kni_accept) ||
+            (filter == FILTER_UNKNOWN && !kni_accept)) ) {
+            ff_kni_enqueue(port_id, rtem);
+        } else {
             ff_veth_input(ifp, rtem);
         }
     }

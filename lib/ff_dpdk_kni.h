@@ -38,7 +38,7 @@ enum FilterReturn {
 };
 
 void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
-    const char *udp_ports, int accept);
+    const char *udp_ports);
 
 void ff_kni_alloc(uint8_t port_id, unsigned socket_id,
     struct rte_mempool *mbuf_pool);
