@@ -16,7 +16,7 @@ OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
 
 HOST_OS:=$(shell uname -s)
-DEBUG=-O0 -gdwarf-2 -g3
+#DEBUG=-O0 -gdwarf-2 -g3
 
 ifeq ($(FF_DPDK),)
     FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
