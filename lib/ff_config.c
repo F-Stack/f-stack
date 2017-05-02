@@ -154,6 +154,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->gateway = strdup(value);
     } else if (strcmp(name, "pcap") == 0) {
         cur->pcap = strdup(value);
+    } else if (strcmp(name, "vlanstrip") == 0) {
+        cur->vlanstrip = atoi(value);
     }
 
     return 1;

@@ -103,6 +103,8 @@ static struct rte_eth_conf default_port_conf = {
         .header_split   = 0, /**< Header Split disabled */
         .hw_ip_checksum = 0, /**< IP checksum offload disabled */
         .hw_vlan_filter = 0, /**< VLAN filtering disabled */
+        .hw_vlan_strip  = 0, /**< VLAN strip disabled. */
+        .hw_vlan_extend = 0, /**< Extended VLAN disabled. */
         .jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
         .hw_strip_crc   = 0, /**< CRC stripped by hardware */
         .enable_lro     = 0, /**< LRO disabled */
@@ -561,6 +563,7 @@ init_port_start(void)
          * Set port conf according to dev's capability.
          */
         struct rte_eth_conf port_conf = default_port_conf;
+        port_conf.rxmode.hw_vlan_strip = ff_global_cfg.dpdk.port_cfgs[port_id].vlanstrip;
 
         /* Currently, proc id 1:1 map to queue id per port. */
         int ret = rte_eth_dev_configure(port_id, nb_procs, nb_procs, &port_conf);

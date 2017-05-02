@@ -38,6 +38,7 @@ struct ff_port_cfg {
     char *name;
     uint8_t port_id;
     uint8_t mac[6];
+    uint8_t vlanstrip;
     char *addr;
     char *netmask;
     char *broadcast;

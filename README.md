@@ -43,11 +43,14 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # or NUMA
     echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
     echo 1024 > /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
-	
+
     # Using Hugepage with the DPDK
     mkdir /mnt/huge
     mount -t hugetlbfs nodev /mnt/huge
-	
+
+    # close ASLR; it is necessary in multiple porcess
+    echo 0 > /proc/sys/kernel/randomize_va_space
+
     # offload NIC
     modprobe uio
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/build/kmod/igb_uio.ko
@@ -55,7 +58,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
-	
+
     # Compile F-Stack
     cd ../../lib/
     make
