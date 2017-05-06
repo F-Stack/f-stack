@@ -154,8 +154,6 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->gateway = strdup(value);
     } else if (strcmp(name, "pcap") == 0) {
         cur->pcap = strdup(value);
-    } else if (strcmp(name, "vlanstrip") == 0) {
-        cur->vlanstrip = atoi(value);
     }
 
     return 1;
@@ -186,6 +184,8 @@ handler(void* user, const char* section, const char* name,
         pconfig->dpdk.promiscuous = atoi(value);
     } else if (MATCH("dpdk", "numa_on")) {
         pconfig->dpdk.numa_on = atoi(value);
+    } else if (MATCH("dpdk", "tso")) {
+        pconfig->dpdk.tso = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "method")) {

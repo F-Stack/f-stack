@@ -45,6 +45,9 @@
 #include <rte_cycles.h>
 #include <rte_timer.h>
 #include <rte_thash.h>
+#include <rte_ip.h>
+#include <rte_tcp.h>
+#include <rte_udp.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
@@ -154,7 +157,8 @@ struct ff_dpdk_if_context {
     void *sc;
     void *ifp;
     uint16_t port_id;
-};
+    struct ff_hw_features hw_features;
+} __rte_cache_aligned;
 
 static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
 
@@ -178,6 +182,7 @@ ff_dpdk_register_if(void *sc, void *ifp, struct ff_port_cfg *cfg)
     ctx->sc = sc;
     ctx->ifp = ifp;
     ctx->port_id = cfg->port_id;
+    ctx->hw_features = cfg->hw_features;
 
     return ctx;
 }
@@ -478,10 +483,10 @@ init_arp_ring(void)
 
             if (arp_ring[i][port_id] == NULL)
                 rte_panic("create kni ring::%s failed!\n", name_buf);
-        
+
             if (rte_ring_lookup(name_buf) != arp_ring[i][port_id])
                 rte_panic("lookup kni ring:%s failed!\n", name_buf);
-        
+
             printf("create arp ring:%s success, %u ring entries are now free!\n",
                 name_buf, rte_ring_free_count(arp_ring[i][port_id]));
         }
@@ -550,19 +555,96 @@ init_port_start(void)
                 addr.addr_bytes[2], addr.addr_bytes[3],
                 addr.addr_bytes[4], addr.addr_bytes[5]);
 
-        rte_memcpy(ff_global_cfg.dpdk.port_cfgs[port_id].mac,
+        rte_memcpy(ff_global_cfg.dpdk.port_cfgs[i].mac,
             addr.addr_bytes, ETHER_ADDR_LEN);
+
+        /* Clear txq_flags - we do not need multi-mempool and refcnt */
+        dev_info.default_txconf.txq_flags = ETH_TXQ_FLAGS_NOMULTMEMP |
+            ETH_TXQ_FLAGS_NOREFCOUNT;
+
+        /* Disable features that are not supported by port's HW */
+        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM)) {
+            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMUDP;
+        }
+
+        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
+            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMTCP;
+        }
+
+        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_SCTP_CKSUM)) {
+            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMSCTP;
+        }
+
+        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VLAN_INSERT)) {
+            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOVLANOFFL;
+        }
+
+        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VLAN_INSERT)) {
+            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOVLANOFFL;
+        }
+
+        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) &&
+            !(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO)) {
+            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
+        }
+
+        struct rte_eth_conf port_conf = {0};
+
+        /* Set RSS mode */
+        port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+        port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_PROTO_MASK;
+        port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
+        port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+
+        /* Set Rx VLAN stripping */
+        if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
+            port_conf.rxmode.hw_vlan_strip = 1;
+        }
+
+        /* Enable HW CRC stripping */
+        port_conf.rxmode.hw_strip_crc = 1;
+
+        /* FIXME: Enable TCP LRO ?*/
+        #if 0
+        if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
+            printf("LRO is supported\n");
+            port_conf.rxmode.enable_lro = 1;
+            ff_global_cfg.dpdk.port_cfgs[i].hw_features.rx_lro = 1;
+        }
+        #endif
+
+        /* Set Rx checksum checking */
+        if ((dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) &&
+            (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
+            (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
+            printf("RX checksum offload supported\n");
+            port_conf.rxmode.hw_ip_checksum = 1;
+            ff_global_cfg.dpdk.port_cfgs[i].hw_features.rx_csum = 1;
+        }
+
+        if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
+            printf("TX ip checksum offload supported\n");
+            ff_global_cfg.dpdk.port_cfgs[i].hw_features.tx_csum_ip = 1;
+        }
+
+        if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
+            (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
+            printf("TX TCP&UDP checksum offload supported\n");
+            ff_global_cfg.dpdk.port_cfgs[i].hw_features.tx_csum_l4 = 1;
+        }
+
+        if (ff_global_cfg.dpdk.tso) {
+            if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
+                printf("TSO is supported\n");
+                ff_global_cfg.dpdk.port_cfgs[i].hw_features.tx_tso = 1;
+            }
+        } else {
+            printf("TSO is disabled\n");
+        }
 
         if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
             return 0;
         }
-
-        /*
-         * TODO:
-         * Set port conf according to dev's capability.
-         */
-        struct rte_eth_conf port_conf = default_port_conf;
-        port_conf.rxmode.hw_vlan_strip = ff_global_cfg.dpdk.port_cfgs[port_id].vlanstrip;
 
         /* Currently, proc id 1:1 map to queue id per port. */
         int ret = rte_eth_dev_configure(port_id, nb_procs, nb_procs, &port_conf);
@@ -573,13 +655,13 @@ init_port_start(void)
         uint16_t q;
         for (q = 0; q < nb_procs; q++) {
             ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
-                    socketid, &dev_info.default_txconf);
+                socketid, &dev_info.default_txconf);
             if (ret < 0) {
                 return ret;
             }
 
             ret = rte_eth_rx_queue_setup(port_id, q, RX_QUEUE_SIZE,
-                    socketid, &dev_info.default_rxconf, mbuf_pool);
+                socketid, &dev_info.default_rxconf, mbuf_pool);
             if (ret < 0) {
                 return ret;
             }
@@ -602,8 +684,8 @@ init_port_start(void)
         }
 
         /* Enable pcap dump */
-        if (ff_global_cfg.dpdk.port_cfgs[port_id].pcap) {
-            ff_enable_pcap(ff_global_cfg.dpdk.port_cfgs[port_id].pcap);
+        if (ff_global_cfg.dpdk.port_cfgs[i].pcap) {
+            ff_enable_pcap(ff_global_cfg.dpdk.port_cfgs[i].pcap);
         }
     }
 
@@ -667,12 +749,24 @@ ff_dpdk_init(int argc, char **argv)
 }
 
 static void
-ff_veth_input(void *ifp, struct rte_mbuf *pkt)
+ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 {
+    uint8_t rx_csum = ctx->hw_features.rx_csum;
+    if (rx_csum) {
+        if (pkt->ol_flags & (PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD)) {
+            return;
+        }
+    }
+
+    /* 
+     * FIXME: should we save pkt->vlan_tci
+     * if (pkt->ol_flags & PKT_RX_VLAN_PKT)
+     */
+
     void *data = rte_pktmbuf_mtod(pkt, void*);
     uint16_t len = rte_pktmbuf_data_len(pkt);
 
-    void *hdr = ff_mbuf_gethdr(pkt, pkt->pkt_len, data, len);
+    void *hdr = ff_mbuf_gethdr(pkt, pkt->pkt_len, data, len, rx_csum);
     if (hdr == NULL) {
         rte_pktmbuf_free(pkt);
         return;
@@ -693,7 +787,7 @@ ff_veth_input(void *ifp, struct rte_mbuf *pkt)
         prev = mb;
     }
 
-    ff_veth_process_packet(ifp, hdr);
+    ff_veth_process_packet(ctx->ifp, hdr);
 }
 
 static enum FilterReturn
@@ -721,7 +815,7 @@ protocol_filter(const void *data, uint16_t len)
 
 static inline void
 process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
-    uint16_t count, void *ifp, int pkts_from_ring)
+    uint16_t count, const struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
     struct lcore_conf *qconf = &lcore_conf;
 
@@ -764,19 +858,19 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 }
             }
 
-            ff_veth_input(ifp, rtem);
+            ff_veth_input(ctx, rtem);
         } else if (enable_kni && ((filter == FILTER_KNI && kni_accept) ||
             (filter == FILTER_UNKNOWN && !kni_accept)) ) {
             ff_kni_enqueue(port_id, rtem);
         } else {
-            ff_veth_input(ifp, rtem);
+            ff_veth_input(ctx, rtem);
         }
     }
 }
 
 static inline int
 process_arp_ring(uint8_t port_id, uint16_t queue_id,
-    struct rte_mbuf **pkts_burst, void *ifp)
+    struct rte_mbuf **pkts_burst, const struct ff_dpdk_if_context *ctx)
 {
     /* read packet from ring buf and to process */
     uint16_t nb_tx;
@@ -784,7 +878,7 @@ process_arp_ring(uint8_t port_id, uint16_t queue_id,
         (void **)pkts_burst, MAX_PKT_BURST);
 
     if(nb_tx > 0) {
-        process_packets(port_id, queue_id, pkts_burst, nb_tx, ifp, 1);
+        process_packets(port_id, queue_id, pkts_burst, nb_tx, ctx, 1);
     }
 
     return 0;
@@ -852,12 +946,13 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     }
 
     head->pkt_len = total;
+    head->nb_segs = 0;
 
     int off = 0;
     struct rte_mbuf *cur = head, *prev = NULL;
     while(total > 0) {
         if (cur == NULL) {
-            struct rte_mbuf *cur = rte_pktmbuf_alloc(mbuf_pool);
+            cur = rte_pktmbuf_alloc(mbuf_pool);
             if (cur == NULL) {
                 rte_pktmbuf_free(head);
                 ff_mbuf_free(m);
@@ -874,23 +969,46 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
             return -1;
         }
 
-        if (prev == NULL) {
-            prev = cur;
-        } else {
+        if (prev != NULL) {
             prev->next = cur;
         }
+        prev = cur;
 
         cur->data_len = len;
         off += len;
         total -= len;
         head->nb_segs++;
+        cur = NULL;
     }
 
-    /*
-     * FIXME: set offload flags according to mbuf.pkthdr;
-     */
-    head->ol_flags = 0;
-    head->vlan_tci = 0;
+    struct ff_tx_offload offload = {0};
+    ff_mbuf_tx_offload(m, &offload);
+
+    if (offload.ip_csum) {
+        head->ol_flags |= PKT_TX_IP_CKSUM;
+        head->l2_len = sizeof(struct ether_hdr);
+        head->l3_len = sizeof(struct ipv4_hdr);
+    }
+
+    if (ctx->hw_features.tx_csum_l4) {
+        if (offload.tcp_csum) {
+            head->ol_flags |= PKT_TX_TCP_CKSUM;
+            head->l2_len = sizeof(struct ether_hdr);
+            head->l3_len = sizeof(struct ipv4_hdr);
+        }
+
+        if (offload.tso_seg_size) {
+            head->ol_flags |= PKT_TX_TCP_SEG;
+            head->l4_len = sizeof(struct tcp_hdr);
+            head->tso_segsz = offload.tso_seg_size;
+        }
+
+        if (offload.udp_csum) {
+            head->ol_flags |= PKT_TX_UDP_CKSUM;
+            head->l2_len = sizeof(struct ether_hdr);
+            head->l3_len = sizeof(struct ipv4_hdr);
+        }
+    }
 
     ff_mbuf_free(m);
 
@@ -910,7 +1028,7 @@ main_loop(void *arg)
     struct lcore_conf *qconf;
     const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
         US_PER_S * BURST_TX_DRAIN_US;
-    void *ifp;
+    struct ff_dpdk_if_context *ctx;
 
     prev_tsc = 0;
 
@@ -955,13 +1073,13 @@ main_loop(void *arg)
         for (i = 0; i < qconf->nb_rx_queue; ++i) {
             port_id = qconf->rx_queue_list[i].port_id;
             queue_id = qconf->rx_queue_list[i].queue_id;
-            ifp = veth_ctx[port_id]->ifp;
+            ctx = veth_ctx[port_id];
 
             if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
             }
 
-            process_arp_ring(port_id, queue_id, pkts_burst, ifp);
+            process_arp_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
@@ -978,12 +1096,12 @@ main_loop(void *arg)
             for (j = 0; j < (nb_rx - PREFETCH_OFFSET); j++) {
                 rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[
                         j + PREFETCH_OFFSET], void *));
-                process_packets(port_id, queue_id, &pkts_burst[j], 1, ifp, 0);
+                process_packets(port_id, queue_id, &pkts_burst[j], 1, ctx, 0);
             }
 
             /* Handle remaining prefetched packets */
             for (; j < nb_rx; j++) {
-                process_packets(port_id, queue_id, &pkts_burst[j], 1, ifp, 0);
+                process_packets(port_id, queue_id, &pkts_burst[j], 1, ctx, 0);
             }
         }
 

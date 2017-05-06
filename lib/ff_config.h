@@ -34,11 +34,19 @@
 extern int dpdk_argc;
 extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
+struct ff_hw_features {
+    uint8_t rx_csum;
+    uint8_t rx_lro;
+    uint8_t tx_csum_ip;
+    uint8_t tx_csum_l4;
+    uint8_t tx_tso;
+};
+
 struct ff_port_cfg {
     char *name;
     uint8_t port_id;
     uint8_t mac[6];
-    uint8_t vlanstrip;
+    struct ff_hw_features hw_features;
     char *addr;
     char *netmask;
     char *broadcast;
@@ -72,6 +80,7 @@ struct ff_config {
         int nb_ports;
         int promiscuous;
         int numa_on;
+        int tso;
         struct ff_port_cfg *port_cfgs;
     } dpdk;
 

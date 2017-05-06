@@ -43,6 +43,14 @@ void ff_dpdk_run(loop_func_t loop, void *arg);
 struct ff_dpdk_if_context;
 struct ff_port_cfg;
 
+struct ff_tx_offload {
+    uint8_t ip_csum;
+    uint8_t tcp_csum;
+    uint8_t udp_csum;
+    uint8_t sctp_csum;
+    uint16_t tso_seg_size;
+};
+
 struct ff_dpdk_if_context *ff_dpdk_register_if(void *sc, void *ifp,
     struct ff_port_cfg *cfg);
 void ff_dpdk_deregister_if(struct ff_dpdk_if_context *ctx);

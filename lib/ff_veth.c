@@ -144,6 +144,31 @@ ff_mbuf_copydata(void *m, void *data, int off, int len)
 }
 
 void
+ff_mbuf_tx_offload(void *m, struct ff_tx_offload *offload)
+{
+    struct mbuf *mb = (struct mbuf *)m;
+    if (mb->m_pkthdr.csum_flags & CSUM_IP) {
+        offload->ip_csum = 1;
+    }
+
+    if (mb->m_pkthdr.csum_flags & CSUM_TCP) {
+        offload->tcp_csum = 1;
+    }
+
+    if (mb->m_pkthdr.csum_flags & CSUM_UDP) {
+        offload->udp_csum = 1;
+    }
+
+    if (mb->m_pkthdr.csum_flags & CSUM_SCTP) {
+        offload->sctp_csum = 1;
+    }
+
+    if (mb->m_pkthdr.csum_flags & CSUM_TSO) {
+        offload->tso_seg_size = mb->m_pkthdr.tso_segsz;
+    }
+}
+
+void
 ff_mbuf_free(void *m)
 {
     m_freem((struct mbuf *)m);
@@ -156,7 +181,8 @@ ff_mbuf_ext_free(struct mbuf *m, void *arg1, void *arg2)
 }
 
 void *
-ff_mbuf_gethdr(void *pkt, uint16_t total, void *data, uint16_t len)
+ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
+    uint16_t len, uint8_t rx_csum)
 {
     struct mbuf *m = m_gethdr(M_NOWAIT, MT_DATA);
     if (m == NULL) {
@@ -173,6 +199,12 @@ ff_mbuf_gethdr(void *pkt, uint16_t total, void *data, uint16_t len)
     m->m_len = len;
     m->m_next = NULL;
     m->m_nextpkt = NULL;
+
+    if (rx_csum) {
+        m->m_pkthdr.csum_flags = CSUM_IP_CHECKED | CSUM_IP_VALID |
+            CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
+        m->m_pkthdr.csum_data = 0xffff;
+    }
 
     return (void *)m;
 }
@@ -295,7 +327,23 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     ifp->if_transmit = ff_veth_transmit;
     ifp->if_qflush = ff_veth_qflush;
     ether_ifattach(ifp, sc->mac);
-    ifp->if_capabilities = ifp->if_capenable = 0;
+
+    if (cfg->hw_features.rx_csum) {
+        ifp->if_capabilities |= IFCAP_RXCSUM;
+    }
+    if (cfg->hw_features.tx_csum_ip) {
+        ifp->if_capabilities |= IFCAP_TXCSUM;
+        ifp->if_hwassist |= CSUM_IP;
+    }
+    if (cfg->hw_features.tx_csum_l4) {
+        ifp->if_hwassist |= CSUM_DELAY_DATA;
+    }
+    if (cfg->hw_features.tx_tso) {
+        ifp->if_capabilities |= IFCAP_TSO;
+        ifp->if_hwassist |= CSUM_TSO;
+    }
+
+    ifp->if_capenable = ifp->if_capabilities;
 
     sc->host_ctx = ff_dpdk_register_if((void *)sc, (void *)sc->ifp, cfg);
     if (sc->host_ctx == NULL) {

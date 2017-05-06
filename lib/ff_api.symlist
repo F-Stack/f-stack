@@ -40,3 +40,4 @@ ff_mbuf_gethdr
 ff_mbuf_get
 ff_mbuf_free
 ff_mbuf_copydata
+ff_mbuf_tx_offload
