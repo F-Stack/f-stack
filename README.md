@@ -59,6 +59,9 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
+    # On Ubuntu, use gawk instead of the default mawk.
+    #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
+
     # Compile F-Stack
     cd ../../lib/
     make
@@ -68,7 +71,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 #### Nginx
 
     cd app/nginx-1.11.10
-    ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
+    bash ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
     make
     make install
     cd ../..
