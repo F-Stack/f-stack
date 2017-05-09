@@ -2,11 +2,11 @@
 ![](F-Stack.png)
 
 ## Introduction
-With the rapid development of NIC, the poor performance of data packets processing with Linux kernel has become the bottleneck. However, the rapid development of the Internet needs high performance of network processing, kernel bypass has caught more and more attention. There are various similar technologies appear, such as DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow, all data streams are processed in user space. Therefore, kernel bypass can avoid performance bottlenecks caused by kernel packet copy, thread scheduling, system calls and interrupt. Furthermore, kernel bypass can achieve higher performance with multi optimizing methods.  Within various techniques, DPDK has been widely used because of its more thorough isolation from kernel scheduling and active community support.
+With the rapid development of NIC, the poor performance of data packets processing with Linux kernel has become the bottleneck. However, the rapid development of the Internet needs high performance of network processing, kernel bypass has caught more and more attentions. There are various similar technologies appear, such as DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow, all data streams are processed in user space. Therefore, kernel bypass can avoid performance bottlenecks caused by kernel packet copying, thread scheduling, system calls and interrupts. Furthermore, kernel bypass can achieve higher performance with multi optimizing methods.  Within various techniques, DPDK has been widely used because of its more thorough isolation from kernel scheduling and active community support.
 
-[F-Stack](http://www.f-stack.org/?from=github) is an open source network framework with high performance based on DPDK. With follow characteristics
+[F-Stack](http://www.f-stack.org/?from=github) is an open source network framework with high performance based on DPDK. With following characteristics
 
-1. Ultra high network performance which can achieve network card under full load, 10 million concurrent connection, 5 million RPS, 1 million CPS.
+1. Ultra high network performance which can achieve network card under full load, 10 million concurrent connections, 5 million RPS, 1 million CPS.
 2. Transplant FreeBSD 11.01 user space stack, provides a complete stack function, cut a great amount of irrelevant features. Therefore greatly enhance the performance.
 3. Support Nginx, Redis and other mature applications, service can easily use F-Stack
 4. With Multi-process architecture, easy to extend
