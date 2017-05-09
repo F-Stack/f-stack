@@ -209,7 +209,7 @@ However, it is currently only supported before F-Stack is started.
   Tcp send and recv interface, you can choose if the connection is keep-alive or close.The parameter of buf can't use `static`.
 
 
-    int mt\_tcpsendrcv\_ex(struct sockaddr_in* dst, void* pkg, int len, void*& rcv_buf, int& recv_pkg_size, int timeout, MtFuncTcpMsgChecker check_func, void* msg_ctx=NULL, MT_TCP_CONN_TYPE type = MT_TCP_LONG, bool keep_rcv_buf=false);
+    int mt_tcpsendrcv_ex(struct sockaddr_in* dst, void* pkg, int len, void*& rcv_buf, int& recv_pkg_size, int timeout, MtFuncTcpMsgChecker check_func, void* msg_ctx=NULL, MT_TCP_CONN_TYPE type = MT_TCP_LONG, bool keep_rcv_buf=false);
 
   Tcp send and recv interface, you can choose if the connection is keep-alive or close.The parameter of buf can't use `static`.
 ​    
