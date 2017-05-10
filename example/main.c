@@ -69,7 +69,7 @@ int loop(void *arg)
             /* Simply close socket */
             ff_close(clientfd);
 
-            fprintf(stderr, "A client has left the server...,fd:%d\n", clientfd);
+            //printf("A client has left the server...,fd:%d\n", clientfd);
         } else if (clientfd == sockfd) {
             int nclientfd = ff_accept(sockfd, NULL, NULL);
 
@@ -85,18 +85,18 @@ int loop(void *arg)
 
             assert(ff_kevent(kq, &kevSet, 1, NULL, 0, NULL) == 0);
 
-            fprintf(stderr, "A new client connected to the server..., fd:%d\n", nclientfd);
+            //printf("A new client connected to the server..., fd:%d\n", nclientfd);
 
         } else if (event.filter == EVFILT_READ) {
             char buf[256];
             size_t readlen = ff_read(clientfd, buf, sizeof(buf));
 
-            fprintf(stderr, "bytes %zu are available to read...,fd:%d\n", (size_t)event.data, clientfd);
+            //printf("bytes %zu are available to read...,fd:%d\n", (size_t)event.data, clientfd);
 
             ff_write(clientfd, html, sizeof(html));
 
         } else {
-            fprintf(stderr, "unknown event: %8.8X\n", event.flags);
+            printf("unknown event: %8.8X\n", event.flags);
         }
     }
 }
