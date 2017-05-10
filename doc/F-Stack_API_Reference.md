@@ -195,21 +195,21 @@ However, it is currently only supported before F-Stack is started.
   Use connection pool to send and recv tcp packet, keep-alive default are 10 mintues. The parameter of buf can't use `static`.
 ​    
 
-    enum MT\_TCP\_CONN\_TYPE
+    enum MT_TCP_CONN_TYPE
     {
-        MT\_TCP\_SHORT         = 1,
-        MT\_TCP\_LONG          = 2,
-        MT\_TCP\_SHORT\_SNDONLY = 3,
-        MT\_TCP\_LONG\_SNDONLY  = 4,
-        MT\_TCP\_BUTT
+        MT_TCP_SHORT         = 1,
+        MT_TCP_LONG          = 2,
+        MT_TCP_SHORT_SNDONLY = 3,
+        MT_TCP_LONG_SNDONLY  = 4,
+        MT_TCP_BUTT
     };
     
-    int mt\_tcpsendrcv\_ex(struct sockaddr_in* dst, void* pkg, int len, void* rcv_buf, int* buf_size, int timeout, MtFuncTcpMsgLen func, MT_TCP_CONN_TYPE type = MT_TCP_LONG);
+    int mt_tcpsendrcv_ex(struct sockaddr_in* dst, void* pkg, int len, void* rcv_buf, int* buf_size, int timeout, MtFuncTcpMsgLen func, MT_TCP_CONN_TYPE type = MT_TCP_LONG);
     
   Tcp send and recv interface, you can choose if the connection is keep-alive or close.The parameter of buf can't use `static`.
 
 
-    int mt\_tcpsendrcv\_ex(struct sockaddr_in* dst, void* pkg, int len, void*& rcv_buf, int& recv_pkg_size, int timeout, MtFuncTcpMsgChecker check_func, void* msg_ctx=NULL, MT_TCP_CONN_TYPE type = MT_TCP_LONG, bool keep_rcv_buf=false);
+    int mt_tcpsendrcv_ex(struct sockaddr_in* dst, void* pkg, int len, void*& rcv_buf, int& recv_pkg_size, int timeout, MtFuncTcpMsgChecker check_func, void* msg_ctx=NULL, MT_TCP_CONN_TYPE type = MT_TCP_LONG, bool keep_rcv_buf=false);
 
   Tcp send and recv interface, you can choose if the connection is keep-alive or close.The parameter of buf can't use `static`.
 ​    
