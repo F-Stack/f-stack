@@ -713,7 +713,7 @@ ff_dpdk_init(int argc, char **argv)
     if (ff_global_cfg.dpdk.nb_procs < 1 ||
         ff_global_cfg.dpdk.nb_procs > RTE_MAX_LCORE ||
         ff_global_cfg.dpdk.proc_id >= ff_global_cfg.dpdk.nb_procs ||
-        ff_global_cfg.dpdk.nb_procs < 0) {
+        ff_global_cfg.dpdk.proc_id < 0) {
         printf("param num_procs[%d] or proc_id[%d] error!\n",
             ff_global_cfg.dpdk.nb_procs,
             ff_global_cfg.dpdk.proc_id);
