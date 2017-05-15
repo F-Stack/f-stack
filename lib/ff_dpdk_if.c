@@ -477,15 +477,14 @@ init_arp_ring(void)
                 arp_ring[i][port_id] = rte_ring_create(name_buf,
                     ARP_RING_SIZE, socketid,
                     RING_F_SC_DEQ);
+                if (rte_ring_lookup(name_buf) != arp_ring[i][port_id])
+                    rte_panic("lookup kni ring:%s failed!\n", name_buf);
             } else {
                 arp_ring[i][port_id] = rte_ring_lookup(name_buf);
             }
 
             if (arp_ring[i][port_id] == NULL)
                 rte_panic("create kni ring::%s failed!\n", name_buf);
-
-            if (rte_ring_lookup(name_buf) != arp_ring[i][port_id])
-                rte_panic("lookup kni ring:%s failed!\n", name_buf);
 
             printf("create arp ring:%s success, %u ring entries are now free!\n",
                 name_buf, rte_ring_free_count(arp_ring[i][port_id]));
