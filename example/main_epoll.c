@@ -1,5 +1,5 @@
 #include <stdio.h>
- #include <sys/ioctl.h>
+#include <sys/ioctl.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -70,28 +70,26 @@ int loop(void *arg)
             int nclientfd = ff_accept(sockfd, NULL, NULL);
             assert(nclientfd > 0);
             /* Add to event list */
-			ev.data.fd = nclientfd;
-			ev.events = EPOLLIN;
-			assert(ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) == 0);
-            fprintf(stderr, "A new client connected to the server..., fd:%d\n", nclientfd);
+	    ev.data.fd = nclientfd;
+	    ev.events  = EPOLLIN;
+	    assert(ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) == 0);
+            //fprintf(stderr, "A new client connected to the server..., fd:%d\n", nclientfd);
         } else { 
             if (events[i].events & EPOLLERR ) {
                 /* Simply close socket */
-				ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+		ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
                 ff_close(events[i].data.fd);
-                fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);
+                //fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);
             } else if (events[i].events & EPOLLIN) {
                 char buf[256];
                 size_t readlen = ff_read( events[i].data.fd, buf, sizeof(buf));
-                fprintf(stderr, "bytes are available to read..., readlen:%d, fd:%d\n", readlen,  events[i].data.fd);
-    			if(readlen > 0){
-                	ff_write( events[i].data.fd, html, sizeof(html));
-				}
-    			else{
-				    ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-    				ff_close( events[i].data.fd);
-                    fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);
-				}
+                //fprintf(stderr, "bytes are available to read..., readlen:%d, fd:%d\n", readlen,  events[i].data.fd);
+    		if(readlen > 0){
+                    ff_write( events[i].data.fd, html, sizeof(html));
+		} else {
+		    ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+    		    ff_close( events[i].data.fd);
+                    //fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);		}
             } else {
                 fprintf(stderr, "unknown event: %8.8X\n", events[i].events);
             }
@@ -135,9 +133,9 @@ int main(int argc, char * argv[])
     }
 	
     assert((epfd = ff_epoll_create(0)) > 0);
-	ev.data.fd = sockfd;
-	ev.events = EPOLLIN;
-	ff_epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+    ev.data.fd = sockfd;
+    ev.events = EPOLLIN;
+    ff_epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
     ff_run(loop, NULL);
     return 0;
 }
