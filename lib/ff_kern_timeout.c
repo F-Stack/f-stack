@@ -1662,7 +1662,7 @@ ff_tc_get_timecount(struct timecounter *tc)
 }
 
 static struct timecounter ff_timecounter = {
-    ff_tc_get_timecount, 0, ~0u, 100, "fst clock", 1
+    ff_tc_get_timecount, 0, ~0u, 100, "ff_clock", 1
 };
 
 static void
