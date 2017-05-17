@@ -444,7 +444,7 @@ init_mem_pool(void)
 static int
 init_arp_ring(void)
 {
-    int i, ret;
+    int i, j, ret;
     char name_buf[RTE_RING_NAMESIZE];
     int nb_procs = ff_global_cfg.dpdk.nb_procs;
     int proc_id = ff_global_cfg.dpdk.proc_id;
@@ -468,8 +468,8 @@ init_arp_ring(void)
 
     /* Create ring according to ports actually being used. */
     nb_ports = ff_global_cfg.dpdk.nb_ports;
-    for (i = 0; i < nb_ports; i++) {
-        uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[i].port_id;
+    for (j = 0; j < nb_ports; j++) {
+        uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[j].port_id;
 
         for(i = 0; i < nb_procs; ++i) {
             snprintf(name_buf, RTE_RING_NAMESIZE, "ring_%d_%d", i, port_id);
