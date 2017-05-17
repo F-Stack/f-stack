@@ -192,7 +192,7 @@ handler(void* user, const char* section, const char* name,
         pconfig->kni.method= strdup(value);
     } else if (MATCH("kni", "tcp_port")) {
         pconfig->kni.tcp_port = strdup(value);
-    } else if (MATCH("kni", "upd_port")) {
+    } else if (MATCH("kni", "udp_port")) {
         pconfig->kni.udp_port= strdup(value);
     } else if (strcmp(section, "freebsd.boot") == 0) {
         if (strcmp(name, "hz") == 0) {
