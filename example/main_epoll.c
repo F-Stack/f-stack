@@ -89,7 +89,8 @@ int loop(void *arg)
 		} else {
 		    ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
     		    ff_close( events[i].data.fd);
-                    //fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);		}
+                    //fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);		
+		}
             } else {
                 fprintf(stderr, "unknown event: %8.8X\n", events[i].events);
             }
