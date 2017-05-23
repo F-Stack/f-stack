@@ -83,6 +83,15 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     make
     make install
 
+  If KNI is enabled in the configuration file, you should create a virtual NIC after F-Stack started, and set the ipaddr, netmask, mac addr, route table, etc. These addrs must be same with F-Stack.
+  
+  If you don't have another management port, you should execute a script like this.
+
+    ./start.sh -b /usr/local/nginx_fstack/sbin/nginx -c config.ini
+    sleep 10
+    ifconfig veth0 <ipaddr>  netmask <netmask>  broadcast <broadcast> hw ether <mac addr>
+    route add -net 0.0.0.0 gw <gateway> dev veth0
+    # route add -net ...  # other route rules
 
 ## Nginx Testing Result 
 
