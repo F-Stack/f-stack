@@ -33,7 +33,7 @@ CORE_LIBS+=" -g -Wl,--no-as-needed -fvisibility=default -pthread -lm -lrt"
 CORE_LIBS+=" -Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring"
 CORE_LIBS+=" -Wl,--whole-archive -lrte_hash -lrte_kvargs -Wl,-lrte_mbuf -lethdev -lrte_eal -Wl,-lrte_mempool"
 CORE_LIBS+=" -lrte_ring -lrte_cmdline -lrte_cfgfile -lrte_kni -lrte_timer -Wl,-lrte_pmd_virtio"
-CORE_LIBS+=" -Wl,--no-whole-archive -lrt -lm -ldl -lm -lcrypto"
+CORE_LIBS+=" -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto"
 
 cat << END                                                     > $NGX_MAKEFILE
 

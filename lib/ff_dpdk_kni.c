@@ -383,15 +383,15 @@ ff_kni_alloc(uint8_t port_id, unsigned socket_id,
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         kni_rp[port_id] = rte_ring_create(ring_name, KNI_QUEUE_SIZE, 
             socket_id, RING_F_SC_DEQ);
+
+        if (rte_ring_lookup(ring_name) != kni_rp[port_id])
+            rte_panic("lookup kni ring failed!\n");
     } else {
         kni_rp[port_id] = rte_ring_lookup(ring_name);
     }
 
     if (kni_rp[port_id] == NULL)
         rte_panic("create kni ring failed!\n");
-
-    if (rte_ring_lookup(ring_name) != kni_rp[port_id])
-        rte_panic("lookup kni ring failed!\n");
 
     printf("create kni ring success, %u ring entries are now free!\n",
         rte_ring_free_count(kni_rp[port_id]));

@@ -55,10 +55,14 @@
 #include "ff_config.h"
 #include "ff_veth.h"
 #include "ff_host_interface.h"
+#include "ff_msg.h"
+#include "ff_api.h"
 
 #define MEMPOOL_CACHE_SIZE 256
 
 #define ARP_RING_SIZE 2048
+
+#define MSG_RING_SIZE 32
 
 /*
  * Configurable number of RX/TX ring descriptors
@@ -152,6 +156,16 @@ static struct lcore_conf lcore_conf;
 static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
 static struct rte_ring **arp_ring[RTE_MAX_LCORE];
+
+struct ff_msg_ring {
+    char ring_name[2][RTE_RING_NAMESIZE];
+    /* ring[0] for lcore recv msg, other send */
+    /* ring[1] for lcore send msg, other read */
+    struct rte_ring *ring[2];
+} __rte_cache_aligned;
+
+static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
+static struct rte_mempool *message_pool;
 
 struct ff_dpdk_if_context {
     void *sc;
@@ -441,6 +455,25 @@ init_mem_pool(void)
     return 0;
 }
 
+static struct rte_ring *
+create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
+{
+    struct rte_ring *ring;
+
+    if (name == NULL)
+        return NULL;
+
+    /* If already create, just attached it */
+    if (likely((ring = rte_ring_lookup(name)) != NULL))
+        return ring;
+
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        return rte_ring_create(name, count, socket_id, flags);
+    } else {
+        return rte_ring_lookup(name);
+    }
+}
+
 static int
 init_arp_ring(void)
 {
@@ -472,23 +505,68 @@ init_arp_ring(void)
         uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[j].port_id;
 
         for(i = 0; i < nb_procs; ++i) {
-            snprintf(name_buf, RTE_RING_NAMESIZE, "ring_%d_%d", i, port_id);
-            if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-                arp_ring[i][port_id] = rte_ring_create(name_buf,
-                    ARP_RING_SIZE, socketid,
-                    RING_F_SC_DEQ);
-                if (rte_ring_lookup(name_buf) != arp_ring[i][port_id])
-                    rte_panic("lookup arp ring:%s failed!\n", name_buf);
-            } else {
-                arp_ring[i][port_id] = rte_ring_lookup(name_buf);
-            }
+            snprintf(name_buf, RTE_RING_NAMESIZE, "arp_ring_%d_%d", i, port_id);
+            arp_ring[i][port_id] = create_ring(name_buf, ARP_RING_SIZE,
+                socketid, RING_F_SC_DEQ);
 
             if (arp_ring[i][port_id] == NULL)
-                rte_panic("create arp ring::%s failed!\n", name_buf);
+                rte_panic("create ring:%s failed!\n", name_buf);
 
-            printf("create arp ring:%s success, %u ring entries are now free!\n",
+            printf("create ring:%s success, %u ring entries are now free!\n",
                 name_buf, rte_ring_free_count(arp_ring[i][port_id]));
         }
+    }
+
+    return 0;
+}
+
+static void
+ff_msg_init(struct rte_mempool *mp,
+    __attribute__((unused)) void *opaque_arg,
+    void *obj, __attribute__((unused)) unsigned i)
+{
+    struct ff_msg *msg = (struct ff_msg *)obj;
+    msg->buf_addr = (char *)msg + sizeof(struct ff_msg);
+    msg->buf_len = mp->elt_size - sizeof(struct ff_msg);
+}
+
+static int
+init_msg_ring(void)
+{
+    uint16_t i;
+    uint16_t nb_procs = ff_global_cfg.dpdk.nb_procs;
+    unsigned socketid = lcore_conf.socket_id;
+
+    /* Create message buffer pool */
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        message_pool = rte_mempool_create(FF_MSG_POOL,
+           MSG_RING_SIZE * 2 * nb_procs,
+           MAX_MSG_BUF_SIZE, MSG_RING_SIZE / 2, 0,
+           NULL, NULL, ff_msg_init, NULL,
+           socketid, 0);
+    } else {
+        message_pool = rte_mempool_lookup(FF_MSG_POOL);
+    }
+
+    if (message_pool == NULL) {
+        rte_panic("Create msg mempool failed\n");
+    }
+
+    for(i = 0; i < nb_procs; ++i) {
+        snprintf(msg_ring[i].ring_name[0], RTE_RING_NAMESIZE,
+            "%s%u", FF_MSG_RING_IN, i);
+        snprintf(msg_ring[i].ring_name[1], RTE_RING_NAMESIZE,
+            "%s%u", FF_MSG_RING_OUT, i);
+
+        msg_ring[i].ring[0] = create_ring(msg_ring[i].ring_name[0],
+            MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+        if (msg_ring[i].ring[0] == NULL)
+            rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[0]);
+
+        msg_ring[i].ring[1] = create_ring(msg_ring[i].ring_name[1],
+            MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+        if (msg_ring[i].ring[1] == NULL)
+            rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[0]);
     }
 
     return 0;
@@ -730,6 +808,8 @@ ff_dpdk_init(int argc, char **argv)
 
     init_arp_ring();
 
+    init_msg_ring();
+
     enable_kni = ff_global_cfg.kni.enable;
     if (enable_kni) {
         init_kni();
@@ -872,12 +952,61 @@ process_arp_ring(uint8_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, const struct ff_dpdk_if_context *ctx)
 {
     /* read packet from ring buf and to process */
-    uint16_t nb_tx;
-    nb_tx = rte_ring_dequeue_burst(arp_ring[queue_id][port_id],
+    uint16_t nb_rb;
+    nb_rb = rte_ring_dequeue_burst(arp_ring[queue_id][port_id],
         (void **)pkts_burst, MAX_PKT_BURST);
 
-    if(nb_tx > 0) {
-        process_packets(port_id, queue_id, pkts_burst, nb_tx, ctx, 1);
+    if(nb_rb > 0) {
+        process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
+    }
+
+    return 0;
+}
+
+static inline void
+handle_sysctl_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    int ret = ff_sysctl(msg->sysctl.name, msg->sysctl.namelen,
+        msg->sysctl.old, msg->sysctl.oldlenp, msg->sysctl.new,
+        msg->sysctl.newlen);
+
+    if (ret < 0) {
+        msg->result = errno;
+    } else {
+        msg->result = 0;
+    }
+
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+
+static inline void
+handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    msg->result = EINVAL;
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+
+static inline void
+handle_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    switch (msg->msg_type) {
+        case FF_SYSCTL:
+            handle_sysctl_msg(msg, proc_id);
+            break;
+        default:
+            handle_default_msg(msg, proc_id);
+            break;
+    }
+}
+
+static inline int
+process_msg_ring(uint16_t proc_id)
+{
+    void *msg;
+    int ret = rte_ring_dequeue(msg_ring[proc_id].ring[0], &msg);
+
+    if (unlikely(ret == 0)) {
+        handle_msg((struct ff_msg *)msg, proc_id);
     }
 
     return 0;
@@ -1103,6 +1232,8 @@ main_loop(void *arg)
                 process_packets(port_id, queue_id, &pkts_burst[j], 1, ctx, 0);
             }
         }
+
+        process_msg_ring(qconf->proc_id);
 
         if (likely(lr->loop != NULL)) {
             lr->loop(lr->arg);
