@@ -7,19 +7,25 @@ All other directories are useful tools ported from FreeBSD.
 # ipc
 
 This is a simple implemention using dpdk `rte_ring`.
-`ff_ipc_msg_alloc` get msg structure from rte_mempool.
-`ff_ipc_msg_free` put msg to rte_mempool.
-`ff_ipc_send` enqueue msg to rte_ring.
-`ff_ipc_recv` dequeue msg from rte_ring.
+```
+ff_ipc_msg_alloc: get msg structure from rte_mempool.
+ff_ipc_msg_free: put msg to rte_mempool.
+ff_ipc_send: enqueue msg to rte_ring.
+ff_ipc_recv: dequeue msg from rte_ring.
+```
 
 Since F-Stack is multi-process architecture and every process has an independent stack, so we must communicate with every F-Stack process.
 
 # sysctl
 Usage:
-`sysctl -p <f-stack proc_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...`
-`sysctl -p <f-stack proc_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a`
+```
+sysctl -p <f-stack proc_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...
+sysctl -p <f-stack proc_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a
+```
 
-    -p   Which F-Stack process to communicate with, default 0. 
+```
+-p   Which F-Stack process to communicate with, default 0. 
+```
 
 Except this option, it is same with the original FreeBSD sysctl, see [Manual page](https://www.freebsd.org/cgi/man.cgi?sysctl).
 
