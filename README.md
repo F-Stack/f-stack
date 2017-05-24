@@ -63,10 +63,10 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
 
     # Compile F-Stack
-    cd ../../lib/
-    make
     export FF_PATH=/data/f-stack
     export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
+    cd ../../lib/
+    make
 
 #### Nginx
 

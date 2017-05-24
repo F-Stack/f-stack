@@ -46,17 +46,17 @@ The mount point can be made permanent across reboots, by adding the following li
     modprobe uio
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/build/kmod/igb_uio.ko
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/build/kmod/rte_kni.ko
-	python dpdk-devbind.py --status
+    python dpdk-devbind.py --status
     ifconfig eth0 down
-	python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
+    python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
 ## Compile  lib
 
-	cd ../../
+    export FF_PATH=/data/f-stack
+    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
+    cd ../../
     cd lib
-	make
-	export FF_PATH=/data/f-stack
-	export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
+    make
 
 ### Compile Nginx
 
