@@ -60,7 +60,7 @@ do
             sleep 5
         else
             echo "${bin} ${conf} -c $cmask --proc-type=secondary --num-procs=${num_procs} --proc-id=${proc_id}"
-			${bin} ${conf} -c $cmask --proc-type=secondary --num-procs=${num_procs} --proc-id=${proc_id} &
+            ${bin} ${conf} -c $cmask --proc-type=secondary --num-procs=${num_procs} --proc-id=${proc_id} &
         fi
         ((proc_id++))
     fi 

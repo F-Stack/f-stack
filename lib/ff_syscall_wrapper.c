@@ -435,7 +435,7 @@ ff_ioctl(int fd, unsigned long request, ...)
     va_start(ap, request);
 
     argp = va_arg(ap, caddr_t);
-    va_end(ap);    
+    va_end(ap);
     if ((rc = kern_ioctl(curthread, fd, req, argp)))
         goto kern_fail;
 

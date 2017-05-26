@@ -35,4 +35,7 @@ int ff_ipc_msg_free(struct ff_msg *msg);
 int ff_ipc_send(const struct ff_msg *msg, uint16_t proc_id);
 int ff_ipc_recv(struct ff_msg **msg, uint16_t proc_id);
 
+int sysctl_ipc(uint16_t proc_id, int *name, unsigned namelen, void *old,
+    size_t *oldlenp, const void *new, size_t newlen);
+
 #endif

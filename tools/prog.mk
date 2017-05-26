@@ -41,7 +41,8 @@ ifeq ($(FF_DPDK),)
 	FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
 endif
 
-FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK
+FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99
+FF_PROG_CFLAGS+= -I${TOPDIR}/tools/compat
 FF_PROG_CFLAGS+= -I${TOPDIR}/lib -I${TOPDIR}/tools/ipc
 FF_PROG_CFLAGS+= -include ${FF_DPDK}/include/rte_config.h
 FF_PROG_CFLAGS+= -I${FF_DPDK}/include
