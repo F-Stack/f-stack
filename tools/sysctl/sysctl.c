@@ -78,6 +78,8 @@ static const char rcsid[] =
 #include <unistd.h>
 
 #ifdef FSTACK
+#include <time.h>
+
 #include "sysctl.h"
 #include "ff_ipc.h"
 
@@ -147,9 +149,15 @@ static void
 usage(void)
 {
 
+#ifndef FSTACK
 	(void)fprintf(stderr, "%s\n%s\n",
 	    "usage: sysctl [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
 	    "       sysctl [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
+#else
+	(void)fprintf(stderr, "%s\n%s\n",
+		"usage: sysctl -p <f-stack proc_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
+		"       sysctl -p <f-stack proc_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
+#endif
 	exit(1);
 }
 
@@ -163,7 +171,11 @@ main(int argc, char **argv)
 	setbuf(stdout,0);
 	setbuf(stderr,0);
 
+#ifndef FSTACK
 	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxX")) != -1) {
+#else
+	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxXp:")) != -1) {
+#endif
 		switch (ch) {
 		case 'A':
 			/* compatibility */
@@ -225,6 +237,11 @@ main(int argc, char **argv)
 		case 'x':
 			xflag = 1;
 			break;
+#ifdef FSTACK
+		case 'p':
+			proc_id = atoi(optarg);
+			break;
+#endif
 		default:
 			usage();
 		}
