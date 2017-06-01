@@ -85,7 +85,7 @@ if [ $ngx_found = yes ]; then
                       ee.events = EPOLLIN|EPOLLEXCLUSIVE;
                       ee.data.ptr = NULL;
                       epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ee)"
-    . auto/feature
+#    . auto/feature
 fi
 
 
