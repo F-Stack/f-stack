@@ -1,4 +1,4 @@
-SUBDIRS=ipc sysctl
+SUBDIRS=compat sysctl ifconfig
 
 all:
 	for d in $(SUBDIRS); do ( cd $$d; $(MAKE) all ) ; done

@@ -24,18 +24,21 @@
  *
  */
 
-#ifndef _FF_IPC_H_
-#define _FF_IPC_H_
+#ifndef _FF_COMPAT_H
+#define _FF_COMPAT_H
 
-#include "ff_msg.h"
+#include <stddef.h>
 
-struct ff_msg *ff_ipc_msg_alloc(void);
-int ff_ipc_msg_free(struct ff_msg *msg);
+void *reallocf(void *ptr, size_t size);
 
-int ff_ipc_send(const struct ff_msg *msg, uint16_t proc_id);
-int ff_ipc_recv(struct ff_msg **msg, uint16_t proc_id);
+int feature_present(const char *feature);
 
-int sysctl_ipc(uint16_t proc_id, int *name, unsigned namelen, void *old,
-    size_t *oldlenp, const void *new, size_t newlen);
+size_t strlcat(char *dst, const char *src, size_t siz);
+
+size_t strlcpy(char * __restrict dst, const char * __restrict src,
+	size_t siz);
+
+long long strtonum(const char *numstr, long long minval,
+	long long maxval, const char **errstrp);
 
 #endif

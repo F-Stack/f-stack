@@ -217,7 +217,7 @@ linux2freebsd_ioctl(unsigned long request)
         case LINUX_TIOCPKT_IOCTL:
             return TIOCPKT_IOCTL;
         default:
-            return (-1);
+            return request;
     }
 }
 

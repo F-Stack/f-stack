@@ -24,52 +24,18 @@
  *
  */
 
-#ifndef _FF_MSG_H_
-#define _FF_MSG_H_
+#ifndef _FF_IPC_H_
+#define _FF_IPC_H_
 
-#include <rte_memory.h>
+#include "ff_msg.h"
 
-#define FF_MSG_RING_IN  "ff_msg_ring_in_"
-#define FF_MSG_RING_OUT "ff_msg_ring_out_"
-#define FF_MSG_POOL     "ff_msg_pool"
+/* Set F-Stack proccess id to communicate with */
+void ff_set_proc_id(int pid);
 
-/* MSG TYPE: sysctl, ioctl, etc.. */
-enum FF_MSG_TYPE {
-    FF_UNKNOWN = 0,
-    FF_SYSCTL,
-    FF_IOCTL,
-};
+struct ff_msg *ff_ipc_msg_alloc(void);
+int ff_ipc_msg_free(struct ff_msg *msg);
 
-struct ff_sysctl_args {
-    int *name;
-    unsigned namelen;
-    void *old;
-    size_t *oldlenp;
-    void *new;
-    size_t newlen;
-};
-
-struct ff_ioctl_args {
-    unsigned long cmd;
-    void *data;
-};
-
-#define MAX_MSG_BUF_SIZE 10240
-
-/* structure of ipc msg */
-struct ff_msg {
-    enum FF_MSG_TYPE msg_type;
-    /* Result of msg processing */
-    int result;
-    /* Length of segment buffer. */
-    uint16_t buf_len;
-    /* Address of segment buffer. */
-    char *buf_addr;
-
-    union {
-        struct ff_sysctl_args sysctl;
-        struct ff_ioctl_args ioctl;
-    };
-} __attribute__((packed)) __rte_cache_aligned;
+int ff_ipc_send(const struct ff_msg *msg);
+int ff_ipc_recv(struct ff_msg **msg);
 
 #endif
