@@ -19,6 +19,12 @@ TARGET="helloworld"
 all:
 	cc -O -gdwarf-2  -I../lib -o ${TARGET} main.c ${LIBS}
 
+epoll:
+	cc -O -gdwarf-2  -I../lib -o ${TARGET} main_epoll.c ${LIBS}
+
+normal:
+	cc -O -gdwarf-2 -o ${TARGET} main_epoll.c -D__WITHOUT_DPDK
+
 .PHONY: clean
 clean:
 	rm -f *.o ${TARGET}

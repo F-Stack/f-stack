@@ -80,14 +80,13 @@ ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 		errno = EINVAL;
 		return -1;		
 	}
+	memset(evlist, 0, sizeof(struct kevent) * maxevents);
 
 	ret = ff_kevent(epfd, NULL, 0, evlist, maxevents, NULL);
 	if (ret == -1) {
 		free(evlist);
 		return ret;
 	}
-
-	memset(evlist, 0, sizeof(struct kevent) * ret);
 
 	for (i = 0; i < ret; ++i) {
 		event_one = 0;

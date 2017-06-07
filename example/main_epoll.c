@@ -11,8 +11,10 @@
 #include <errno.h>
 #include <assert.h>
 
+#ifndef __WITHOUT_DPDK
 #include "ff_config.h"
 #include "ff_api.h"
+#endif
 
 
 #define MAX_EVENTS 512
@@ -104,6 +106,7 @@ int loop(void *arg)
 
 int main(int argc, char * argv[])
 {
+#ifndef __WITHOUT_DPDK 
     char *conf;
     if (argc < 2) {
         conf = "./config.ini";
@@ -112,6 +115,7 @@ int main(int argc, char * argv[])
     }
 
     ff_init(conf, argc, argv);
+#endif
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -137,11 +141,23 @@ int main(int argc, char * argv[])
         printf("listen failed\n");
     }
     
+#ifndef __WITHOUT_DPDK
     assert((epfd = fepoll_create(0)) > 0);
+#else
+    assert((epfd = epoll_create(10)) > 0);
+#endif
+
     ev.data.fd = sockfd;
     ev.events = EPOLLIN;
     epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+
+#ifndef __WITHOUT_DPDK
     ff_run(loop, NULL);
+#else
+    while(1) {
+        loop(NULL);
+    }
+#endif
     return 0;
 }
 
