@@ -37,6 +37,10 @@ extern "C" {
 #include "ff_event.h"
 #include "ff_errno.h"
 
+#define FF_FD_BITS              30
+#define FF_FD_CHK(fd)          (fd & (1 << FF_FD_BITS))
+#define FF_FD_CLR(fd)          (fd & ~(1 << FF_FD_BITS))
+
 struct linux_sockaddr {
     short sa_family;
     char sa_data[14];
@@ -101,6 +105,11 @@ int ff_poll(struct pollfd fds[], nfds_t nfds, int timeout);
 int ff_kqueue(void);
 int ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
     struct kevent *eventlist, int nevents, const struct timespec *timeout);
+
+/* libc syscall */
+int socket_raw(int family, int type, int protocol);
+int kqueue_raw(void);
+int fepoll_create(int size);
 
 #ifdef __cplusplus
 }

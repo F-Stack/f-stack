@@ -933,12 +933,17 @@ struct sys_kevent_args {
 static int
 kevent_copyout(void *arg, struct kevent *kevp, int count)
 {
+    int i;
+    struct kevent *ke;
     struct sys_kevent_args *uap;
 
     uap = (struct sys_kevent_args *)arg;
-    bcopy(kevp, uap->eventlist, count * sizeof *kevp);
 
-    uap->eventlist += count;
+    for (ke = kevp, i = 0; i < count; i++, ke++) {
+        ke->ident |= 1 << FF_FD_BITS;
+        *uap->eventlist = *ke;
+        uap->eventlist++;
+    }
 
     return (0);
 }
@@ -949,12 +954,17 @@ kevent_copyout(void *arg, struct kevent *kevp, int count)
 static int
 kevent_copyin(void *arg, struct kevent *kevp, int count)
 {
+    int i;
+    struct kevent *ke;
     struct sys_kevent_args *uap;
 
     uap = (struct sys_kevent_args *)arg;
-    bcopy(uap->changelist, kevp, count * sizeof *kevp);
 
-    uap->changelist += count;
+    for (ke = kevp, i = 0; i < count; i++, ke++) {
+        *ke = *uap->changelist;
+        ke->ident = FF_FD_CLR(ke->ident);
+        uap->changelist++;
+    }
 
     return (0);
 }

@@ -56,7 +56,7 @@ char html[] =
 int loop(void *arg)
 {
     /* Wait for events to happen */
-    unsigned nevents = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
+    unsigned nevents = kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
     unsigned i;
 
     for (i = 0; i < nevents; ++i) {
@@ -67,11 +67,11 @@ int loop(void *arg)
         if (event.flags & EV_EOF) {
 
             /* Simply close socket */
-            ff_close(clientfd);
+            close(clientfd);
 
             //printf("A client has left the server...,fd:%d\n", clientfd);
         } else if (clientfd == sockfd) {
-            int nclientfd = ff_accept(sockfd, NULL, NULL);
+            int nclientfd = accept(sockfd, NULL, NULL);
 
             assert(nclientfd > 0);
 
@@ -83,17 +83,17 @@ int loop(void *arg)
             kevSet.ident    = nclientfd;
             kevSet.udata    = NULL;
 
-            assert(ff_kevent(kq, &kevSet, 1, NULL, 0, NULL) == 0);
+            assert(kevent(kq, &kevSet, 1, NULL, 0, NULL) == 0);
 
             //printf("A new client connected to the server..., fd:%d\n", nclientfd);
 
         } else if (event.filter == EVFILT_READ) {
             char buf[256];
-            size_t readlen = ff_read(clientfd, buf, sizeof(buf));
+            size_t readlen = read(clientfd, buf, sizeof(buf));
 
             //printf("bytes %zu are available to read...,fd:%d\n", (size_t)event.data, clientfd);
 
-            ff_write(clientfd, html, sizeof(html));
+            write(clientfd, html, sizeof(html));
 
         } else {
             printf("unknown event: %8.8X\n", event.flags);
@@ -112,10 +112,9 @@ int main(int argc, char * argv[])
 
     ff_init(conf, argc, argv);
 
-    int sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
-    printf("sockfd:%d\n", sockfd);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0)
-        printf("ff_socket failed\n");
+        printf("socket failed\n");
 
     struct sockaddr_in my_addr;
     bzero(&my_addr, sizeof(my_addr));
@@ -123,14 +122,14 @@ int main(int argc, char * argv[])
     my_addr.sin_port = htons(80);
     my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
+    int ret = bind(sockfd, (struct sockaddr *)&my_addr, sizeof(my_addr));
     if (ret < 0) {
-        printf("ff_bind failed\n");
+        printf("bind failed\n");
     }
 
-    ret = ff_listen(sockfd, MAX_EVENTS);
+    ret = listen(sockfd, MAX_EVENTS);
     if (ret < 0) {
-        printf("ff_listen failed\n");
+        printf("listen failed\n");
     }
 
     kevSet.data     = MAX_EVENTS;
@@ -140,10 +139,10 @@ int main(int argc, char * argv[])
     kevSet.ident    = sockfd;
     kevSet.udata    = NULL;
 
-    assert((kq = ff_kqueue()) > 0);
+    assert((kq = kqueue()) > 0);
 
     /* Update kqueue */
-    ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
+    kevent(kq, &kevSet, 1, NULL, 0, NULL);
 
     ff_run(loop, NULL);
     return 0;
