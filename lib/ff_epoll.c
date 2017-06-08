@@ -63,52 +63,46 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
 	return ff_kevent(epfd, kev, 3, NULL, 0, NULL);
 }
 
+static void 
+ff_epoll_event(void **ev, struct kevent *kev)
+{
+    unsigned int event_one = 0;
+    struct epoll_event **ppev = (struct epoll_event **)ev;
+
+    if (kev->filter & EVFILT_READ) {
+        event_one |= EPOLLIN;
+    } 
+    if (kev->filter & EVFILT_WRITE) {
+        event_one |= EPOLLOUT;
+    }
+
+    if (kev->flags & EV_ERROR) {
+        event_one |= EPOLLERR;
+    }
+
+    if (kev->flags & EV_EOF) {
+        event_one |= EPOLLIN;		
+    }
+
+    (*ppev)->events   = event_one;
+    (*ppev)->data.fd  = kev->ident;
+    (*ppev)++;
+}
+
 int 
 ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 {
     int i, ret;
-    struct kevent *evlist; 
-	unsigned int event_one = 0;
-
 	if (!events || maxevents < 1) {
 		errno = EINVAL;
 		return -1;
 	}
 	
-	evlist = malloc(sizeof(struct kevent) * maxevents);
-	if(NULL == evlist){
-		errno = EINVAL;
-		return -1;		
-	}
-	memset(evlist, 0, sizeof(struct kevent) * maxevents);
-
-	ret = ff_kevent(epfd, NULL, 0, evlist, maxevents, NULL);
+	ret = ff_kevent_diy(epfd, NULL, 0, events, maxevents, NULL, ff_epoll_event);
 	if (ret == -1) {
-		free(evlist);
 		return ret;
 	}
 
-	for (i = 0; i < ret; ++i) {
-		event_one = 0;
-		if (evlist[i].filter & EVFILT_READ) {
-			event_one |= EPOLLIN;
-		} 
-		if (evlist[i].filter & EVFILT_WRITE) {
-			event_one |= EPOLLOUT;
-		}
-
-		if (evlist[i].flags & EV_ERROR) {
-			event_one |= EPOLLERR;
-		}
-
-		if (evlist[i].flags & EV_EOF) {
-			event_one |= EPOLLIN;		
-		}
-		events[i].events   = event_one;
-		events[i].data.fd  = evlist[i].ident;
-	}
-	
-	free(evlist);
 	return ret;
 }
 
