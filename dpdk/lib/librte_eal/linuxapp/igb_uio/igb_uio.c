@@ -36,7 +36,6 @@
 #ifdef CONFIG_XEN_DOM0
 #include <xen/xen.h>
 #endif
-#include <asm/hypervisor.h>
 #include <rte_pci_dev_features.h>
 
 #include "compat.h"
@@ -389,7 +388,7 @@ igbuio_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		}
 		/* fall back to INTX */
 	case RTE_INTR_MODE_LEGACY:
-		if (pci_intx_mask_supported(dev) || x86_hyper == &x86_hyper_vmware) {
+		if (pci_intx_mask_supported(dev)) {
 			dev_dbg(&dev->dev, "using INTX");
 			udev->info.irq_flags = IRQF_SHARED;
 			udev->info.irq = dev->irq;
