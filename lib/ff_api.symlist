@@ -30,10 +30,6 @@ ff_sysctl
 ff_kqueue
 ff_kevent
 ff_kevent_diy
-ff_epoll_create
-ff_epoll_ctl
-ff_epoll_wait
-ff_epoll_close
 ff_veth_attach
 ff_veth_detach
 ff_veth_process_packet
