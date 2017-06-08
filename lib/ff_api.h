@@ -107,7 +107,6 @@ int ff_kevent_diy(int kq, const struct kevent *changelist, int nchanges,
 
 /* libc syscall */
 int socket_raw(int family, int type, int protocol);
-int kqueue_raw(void);
 int fepoll_create(int size);
 
 #ifdef __cplusplus
