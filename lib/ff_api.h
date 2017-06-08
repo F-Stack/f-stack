@@ -37,10 +37,6 @@ extern "C" {
 #include "ff_event.h"
 #include "ff_errno.h"
 
-#define FF_FD_BITS              30
-#define FF_FD_CHK(fd)          (fd & (1 << FF_FD_BITS))
-#define FF_FD_CLR(fd)          (fd & ~(1 << FF_FD_BITS))
-
 struct linux_sockaddr {
     short sa_family;
     char sa_data[14];

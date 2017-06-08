@@ -106,7 +106,6 @@ int loop(void *arg)
 
 int main(int argc, char * argv[])
 {
-#ifndef __WITHOUT_DPDK 
     char *conf;
     if (argc < 2) {
         conf = "./config.ini";
@@ -115,9 +114,15 @@ int main(int argc, char * argv[])
     }
 
     ff_init(conf, argc, argv);
+
+#ifndef __WITHOUT_DPDK
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    printf("dpdk sockfd %d\n", sockfd);
+#else
+    sockfd = socket_raw(AF_INET, SOCK_STREAM, 0);
+    printf("normal sockfd %d\n", sockfd);
 #endif
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         printf("socket failed\n");
     }

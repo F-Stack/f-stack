@@ -941,7 +941,6 @@ kevent_copyout(void *arg, struct kevent *kevp, int count)
     uap = (struct sys_kevent_args *)arg;
 
     for (ke = kevp, i = 0; i < count; i++, ke++) {
-        ke->ident |= 1 << FF_FD_BITS;
         if (uap->diy) {
             uap->diy(&(uap->eventlist), ke);
 
@@ -969,7 +968,6 @@ kevent_copyin(void *arg, struct kevent *kevp, int count)
 
     for (ke = kevp, i = 0; i < count; i++, ke++) {
         *ke = *uap->changelist;
-        ke->ident = FF_FD_CLR(ke->ident);
         uap->changelist++;
     }
 

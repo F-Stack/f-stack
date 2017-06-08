@@ -47,6 +47,9 @@
 #include "ff_config.h"
 #include "ff_dpdk_if.h"
 
+static int __fd_start = 512;
+#define IS_FSTACK_FD(fd) (fd >= __fd_start)
+
 extern int ff_epoll_create(int size);
 extern int ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
 extern int ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout); 
@@ -89,191 +92,162 @@ socket(int domain, int type, int protocol)
     }
 
     rc = ff_socket(domain, type, protocol);
-    if(rc >= 0) {
-        rc |= 1 << FF_FD_BITS;
-    }
 
     return rc;
 }
 
 int
-bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_bind(sockfd, (struct linux_sockaddr *)addr, addrlen);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_bind(fd, (struct linux_sockaddr *)addr, addrlen);
 
     } else {
-        return real_bind(sockfd, addr, addrlen);
+        return real_bind(fd, addr, addrlen);
     }
 }
 
 int
-connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_connect(sockfd, (struct linux_sockaddr *)addr, addrlen);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_connect(fd, (struct linux_sockaddr *)addr, addrlen);
 
     } else {
-        return real_connect(sockfd, addr, addrlen);
+        return real_connect(fd, addr, addrlen);
     }
 }
 
 ssize_t
-send(int sockfd, const void *buf, size_t len, int flags)
+send(int fd, const void *buf, size_t len, int flags)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_send(sockfd, buf, len, flags);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_send(fd, buf, len, flags);
 
     } else {
-        return real_send(sockfd, buf, len, flags);
+        return real_send(fd, buf, len, flags);
     }
 }
 
 ssize_t
-write(int sockfd, const void *buf, size_t count)
+write(int fd, const void *buf, size_t count)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_write(sockfd, buf, count);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_write(fd, buf, count);
 
     } else {
-        return real_write(sockfd, buf, count);
+        return real_write(fd, buf, count);
     }
 }
 
 ssize_t
-recv(int sockfd, void *buf, size_t len, int flags)
+recv(int fd, void *buf, size_t len, int flags)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_recv(sockfd, buf, len, flags);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_recv(fd, buf, len, flags);
 
     } else {
-        return real_recv(sockfd, buf, len, flags);
+        return real_recv(fd, buf, len, flags);
     }
 }
 
 ssize_t
-read(int sockfd, void *buf, size_t count)
+read(int fd, void *buf, size_t count)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_read(sockfd, buf, count);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_read(fd, buf, count);
 
     } else {
-        return real_read(sockfd, buf, count);
+        return real_read(fd, buf, count);
     }
 }
 
 int
-listen(int sockfd, int backlog)
+listen(int fd, int backlog)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_listen(sockfd, backlog);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_listen(fd, backlog);
 
     } else {
-        return real_listen(sockfd, backlog);
+        return real_listen(fd, backlog);
     }
 }
 
 int
-setsockopt (int sockfd, int level, int optname,
+setsockopt (int fd, int level, int optname,
     const void *optval, socklen_t optlen)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_setsockopt(sockfd, level, optname, optval, optlen);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_setsockopt(fd, level, optname, optval, optlen);
 
     } else {
-        return real_setsockopt(sockfd, level, optname, optval, optlen);
+        return real_setsockopt(fd, level, optname, optval, optlen);
     }
 }
 
 int
-accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        int fd = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
-        if (fd < 0) {
-            return fd;
-        }
-
-        fd |= 1 << FF_FD_BITS;
-        return fd;
+    if (IS_FSTACK_FD(fd)) {
+        return ff_accept(fd, (struct linux_sockaddr *)addr, addrlen);
 
     } else {
-        return real_accept(sockfd, addr, addrlen);
+        return real_accept(fd, addr, addrlen);
     }
 }
 
 int
-accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
+accept4(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        int fd = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
-        if (fd < 0) {
-            return fd;
-        }
-
-        fd |= 1 << FF_FD_BITS;
-        return fd;
+    if (IS_FSTACK_FD(fd)) {
+        return ff_accept(fd, (struct linux_sockaddr *)addr, addrlen);
 
     } else {
-        return real_accept4(sockfd, addr, addrlen, flags);
+        return real_accept4(fd, addr, addrlen, flags);
     }
 }
 
 int
-close(int sockfd)
+close(int fd)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_close(sockfd);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_close(fd);
 
     } else {
-        return real_close(sockfd);
+        return real_close(fd);
     }
 }
 
 ssize_t
-writev(int sockfd, const struct iovec *iov, int iovcnt)
+writev(int fd, const struct iovec *iov, int iovcnt)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_writev(sockfd, iov, iovcnt);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_writev(fd, iov, iovcnt);
 
     } else {
-        return real_writev(sockfd, iov, iovcnt);
+        return real_writev(fd, iov, iovcnt);
     }
 }
 
 ssize_t
-readv(int sockfd, const struct iovec *iov, int iovcnt)
+readv(int fd, const struct iovec *iov, int iovcnt)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_readv(sockfd, iov, iovcnt);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_readv(fd, iov, iovcnt);
 
     } else {
-        return real_readv(sockfd, iov, iovcnt);
+        return real_readv(fd, iov, iovcnt);
     }
 }
 
 int
-ioctl(int sockfd, int request, void *p)
+ioctl(int fd, int request, void *p)
 {
-    if (FF_FD_CHK(sockfd)) {
-        sockfd = FF_FD_CLR(sockfd);
-        return ff_ioctl(sockfd, request, p);
+    if (IS_FSTACK_FD(fd)) {
+        return ff_ioctl(fd, request, p);
 
     } else {
-        return real_ioctl(sockfd, request, p);
+        return real_ioctl(fd, request, p);
     }
 }
 
@@ -281,8 +255,7 @@ int
 select(int nfds, fd_set *readfds, fd_set *writefds,
     fd_set *exceptfds, struct timeval *timeout)
 {
-    if (FF_FD_CHK(nfds)) {
-        nfds = FF_FD_CLR(nfds);
+    if (nfds && IS_FSTACK_FD(nfds - 1)) {
         struct timeval tv;
         tv.tv_sec = 0;
         tv.tv_usec = 0;
@@ -305,9 +278,6 @@ kqueue(void)
     int rc;
 
     rc = ff_kqueue();
-    if(rc >= 0) {
-        rc |= 1 << FF_FD_BITS;
-    }
 
     return rc;
 }
@@ -316,8 +286,7 @@ int
 kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents, const struct timespec *timeout)
 {
-    if (FF_FD_CHK(kq)) {
-        kq = FF_FD_CLR(kq);
+    if (IS_FSTACK_FD(kq)) {
         return ff_kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
 
     } else {
@@ -337,9 +306,6 @@ fepoll_create(int size)
     int rc;
 
     rc = ff_epoll_create(size);
-    if(rc >= 0) {
-        rc |= 1 << FF_FD_BITS;
-    }
 
     return rc;
 }
@@ -347,8 +313,7 @@ fepoll_create(int size)
 int
 epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
 {
-    if (FF_FD_CHK(epfd)) {
-        epfd = FF_FD_CLR(epfd);
+    if (IS_FSTACK_FD(epfd)) {
         return ff_epoll_ctl(epfd, op, fd, event);
 
     } else {
@@ -359,8 +324,7 @@ epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
 int
 epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 {
-    if (FF_FD_CHK(epfd)) {
-        epfd = FF_FD_CLR(epfd);
+    if (IS_FSTACK_FD(epfd)) {
         return ff_epoll_wait(epfd, events, maxevents, timeout);
 
     } else {
@@ -409,10 +373,13 @@ ff_realcall_init(void) {
 int
 ff_init(const char *conf, int argc, char * const argv[])
 {
-    int ret;
 
-    ff_realcall_init();
+    int ret, i, lastfd = 0;
+
     printf("ff init !!\n");
+
+    /* hook system call */
+    ff_realcall_init();
 
     ret = ff_load_config(conf, argc, argv);
     if (ret < 0)
@@ -429,6 +396,16 @@ ff_init(const char *conf, int argc, char * const argv[])
     ret = ff_dpdk_if_up();
     if (ret < 0)
         exit(1);
+
+    /*FIXME load by config, reserve fd for system */
+    for (i = 0; i < __fd_start; i++) {
+        //ret = socket(AF_INET, SOCK_STREAM, 0);
+        ret = kqueue();
+        if (ret >= 0 ) {
+            lastfd = ret;
+        }
+    }
+    printf("Reserved %d fds for system !\n", lastfd + 1); 
 
     return 0;
 }

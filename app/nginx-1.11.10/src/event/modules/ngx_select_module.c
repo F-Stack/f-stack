@@ -148,20 +148,10 @@ ngx_select_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
     }
 
     if (event == NGX_READ_EVENT) {
-#if (NGX_HAVE_FSTACK)
-        if (FF_FD_CHK(c->fd))
-            FD_SET(FF_FD_CLR(c->fd), &master_read_fd_set);
-#else
         FD_SET(c->fd, &master_read_fd_set);
-#endif
 
     } else if (event == NGX_WRITE_EVENT) {
-#if (NGX_HAVE_FSTACK)
-        if (FF_FD_CHK(c->fd))
-            FD_SET(FF_FD_CLR(c->fd), &master_write_fd_set);
-#else
         FD_SET(c->fd, &master_write_fd_set);
-#endif
     }
 
     if (max_fd != -1 && max_fd < c->fd) {
@@ -196,20 +186,10 @@ ngx_select_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
                    "select del event fd:%d ev:%i", c->fd, event);
 
     if (event == NGX_READ_EVENT) {
-#if (NGX_HAVE_FSTACK)
-       if (FF_FD_CHK(c->fd))
-            FD_CLR(FF_FD_CLR(c->fd), &master_read_fd_set);
-#else
         FD_CLR(c->fd, &master_read_fd_set);
-#endif
 
     } else if (event == NGX_WRITE_EVENT) {
-#if (NGX_HAVE_FSTACK)
-        if (FF_FD_CHK(c->fd))
-            FD_CLR(FF_FD_CLR(c->fd), &master_write_fd_set);
-#else
         FD_CLR(c->fd, &master_write_fd_set);
-#endif
     }
 
     if (max_fd == c->fd) {
@@ -338,22 +318,14 @@ ngx_select_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         found = 0;
 
         if (ev->write) {
-#if (NGX_HAVE_FSTACK)
-            if (FD_ISSET(FF_FD_CLR(c->fd), &work_write_fd_set)) {
-#else
             if (FD_ISSET(c->fd, &work_write_fd_set)) {
-#endif
                 found = 1;
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "select write %d", c->fd);
             }
 
         } else {
-#if (NGX_HAVE_FSTACK)
-            if (FD_ISSET(FF_FD_CLR(c->fd), &work_read_fd_set)) {
-#else
             if (FD_ISSET(c->fd, &work_read_fd_set)) {
-#endif
                 found = 1;
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "select read %d", c->fd);

@@ -1,9 +1,8 @@
 adlist.o: adlist.c adlist.h zmalloc.h
-ae.o: ae.c ae.h zmalloc.h config.h ae_kqueue.c ae_epoll.c ae_select.c ae_evport.c ae_ff_kqueue.c
+ae.o: ae.c ae.h zmalloc.h config.h ae_kqueue.c ae_epoll.c ae_select.c ae_evport.c
 ae_epoll.o: ae_epoll.c
 ae_evport.o: ae_evport.c
 ae_kqueue.o: ae_kqueue.c
-ae_ff_kqueue.o: ae_ff_kqueue.c
 ae_select.o: ae_select.c
 anet.o: anet.c fmacros.h anet.h
 aof.o: aof.c server.h fmacros.h config.h solarisfixes.h \

@@ -47,7 +47,7 @@
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
 #ifdef HAVE_FF_KQUEUE
-#include "ae_ff_kqueue.c"
+#include "ae_kqueue.c"
 #else
     #ifdef HAVE_EVPORT
     #include "ae_evport.c"

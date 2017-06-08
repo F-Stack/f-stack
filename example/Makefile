@@ -23,7 +23,7 @@ epoll:
 	cc -O -gdwarf-2  -I../lib -o ${TARGET} main_epoll.c ${LIBS}
 
 normal:
-	cc -O -gdwarf-2 -o ${TARGET} main_epoll.c -D__WITHOUT_DPDK
+	cc -O -gdwarf-2 -D __WITHOUT_DPDK -I../lib -o ${TARGET} main_epoll.c ${LIBS}
 
 .PHONY: clean
 clean:
