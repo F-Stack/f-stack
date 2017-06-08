@@ -47,8 +47,7 @@
 #include "ff_config.h"
 #include "ff_dpdk_if.h"
 
-static int __fd_start = 512;
-#define IS_FSTACK_FD(fd) (fd >= __fd_start)
+#define IS_FSTACK_FD(fd) (fd >= ff_global_cfg.freebsd.fdstart)
 
 extern int ff_epoll_create(int size);
 extern int ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
@@ -398,7 +397,7 @@ ff_init(const char *conf, int argc, char * const argv[])
         exit(1);
 
     /*FIXME load by config, reserve fd for system */
-    for (i = 0; i < __fd_start; i++) {
+    for (i = 0; i < ff_global_cfg.freebsd.fdstart; i++) {
         //ret = socket(AF_INET, SOCK_STREAM, 0);
         ret = kqueue();
         if (ret >= 0 ) {
