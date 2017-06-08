@@ -71,28 +71,33 @@ static int (*real_ioctl)(int, int, void *);
 static int (*real_select)(int, fd_set *, fd_set *, fd_set *, struct timeval *);
 static int (*real_kqueue)(void);
 static int (*real_kevent)(int, const struct kevent *, int, struct kevent *, int, const struct timespec *);
+static int (*real_epoll_create)(int size);
 static int (*real_epoll_ctl)(int, int, int, struct epoll_event *);
 static int (*real_epoll_wait)(int, struct epoll_event *, int, int); 
 
 int
 socket_raw(int family, int type, int protocol)
 {
-    return real_socket(family, type, protocol);
+    int fd;
+
+    fd = real_socket(family, type, protocol);
+    if (IS_FSTACK_FD(fd)) {
+        real_close(fd);
+        fd = -1;
+        errno = EMFILE;
+    }
+
+    return fd;
 }
 
 int
 socket(int domain, int type, int protocol)
 {
-    int rc;
-
     if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
-        rc = real_socket(domain, type, protocol);
-        return rc;
+        return socket_raw(domain, type, protocol);
     }
 
-    rc = ff_socket(domain, type, protocol);
-
-    return rc;
+    return ff_socket(domain, type, protocol);
 }
 
 int
@@ -187,23 +192,27 @@ setsockopt (int fd, int level, int optname,
 int
 accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
 {
+    int nfd;
+
     if (IS_FSTACK_FD(fd)) {
         return ff_accept(fd, (struct linux_sockaddr *)addr, addrlen);
 
     } else {
-        return real_accept(fd, addr, addrlen);
+        nfd = real_accept(fd, addr, addrlen);
+        if (IS_FSTACK_FD(nfd)) {
+            real_close(nfd);
+            nfd = -1;
+            errno = EMFILE;
+        }
+
+        return nfd;
     }
 }
 
 int
 accept4(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 {
-    if (IS_FSTACK_FD(fd)) {
-        return ff_accept(fd, (struct linux_sockaddr *)addr, addrlen);
-
-    } else {
-        return real_accept4(fd, addr, addrlen, flags);
-    }
+    return accept(fd, addr, addrlen);
 }
 
 int
@@ -266,19 +275,9 @@ select(int nfds, fd_set *readfds, fd_set *writefds,
 }
 
 int
-kqueue_raw(void)
-{
-    return real_kqueue();
-}
-
-int
 kqueue(void)
 {
-    int rc;
-
-    rc = ff_kqueue();
-
-    return rc;
+    return ff_kqueue();
 }
 
 int
@@ -300,13 +299,25 @@ ff_run(loop_func_t loop, void *arg)
 }
 
 int
-fepoll_create(int size)
+epoll_create(int size)
 {
     int rc;
 
-    rc = ff_epoll_create(size);
+    rc = real_epoll_create(size);
+    if (IS_FSTACK_FD(rc)) {
+        real_close(rc);
+        rc = -1;
+        errno = EMFILE;
+    }
 
     return rc;
+}
+
+/*FIXME epoll_create !!*/
+int
+fepoll_create(int size)
+{
+    return ff_epoll_create(size);
 }
 
 int
@@ -363,6 +374,7 @@ ff_realcall_init(void) {
     INIT_FUNCTION(kqueue);
     INIT_FUNCTION(kevent);
 
+    INIT_FUNCTION(epoll_create);
     INIT_FUNCTION(epoll_ctl);
     INIT_FUNCTION(epoll_wait);
 
