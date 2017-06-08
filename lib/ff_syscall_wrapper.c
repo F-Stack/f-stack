@@ -962,7 +962,6 @@ static int
 kevent_copyin(void *arg, struct kevent *kevp, int count)
 {
     int i;
-    uintptr_t chkident = (uintptr_t)(-1);
     struct kevent *ke;
     struct sys_kevent_args *uap;
 
@@ -970,13 +969,8 @@ kevent_copyin(void *arg, struct kevent *kevp, int count)
 
     for (ke = kevp, i = 0; i < count; i++, ke++) {
         *ke = *uap->changelist;
-        chkident &= ke->ident;
         ke->ident = FF_FD_CLR(ke->ident);
         uap->changelist++;
-    }
-
-    if (!FF_FD_CHK(chkident)) {
-        return ff_EBADF;
     }
 
     return (0);
