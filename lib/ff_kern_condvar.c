@@ -62,6 +62,12 @@ _cv_wait(struct cv *cvp, struct lock_object *lock)
 
 }
 
+void
+_cv_wait_unlock(struct cv *cvp, struct lock_object *lock)
+{
+
+}
+
 int
 _cv_wait_sig(struct cv *cvp, struct lock_object *lock)
 {

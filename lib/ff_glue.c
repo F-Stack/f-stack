@@ -1095,3 +1095,8 @@ sched_unbind(struct thread* td)
 
 }
 
+void
+getcredhostid(struct ucred *cred, unsigned long *hostid)
+{
+    *hostid = 0;
+}

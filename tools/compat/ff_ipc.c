@@ -39,6 +39,18 @@ static int inited;
 
 static struct rte_mempool *message_pool;
 
+uint16_t ff_proc_id = 0;
+
+void
+ff_set_proc_id(int pid)
+{
+    if (pid < 0 || pid > 65535) {
+        printf("Invalid F-Stack proccess id\n");
+        exit(1);
+    }
+    ff_proc_id = pid;
+}
+
 static int
 ff_ipc_init(void)
 {
@@ -47,9 +59,10 @@ ff_ipc_init(void)
     }
 
     char *dpdk_argv[] = {
-        "-c1", "-n4",
+        "ff-ipc", "-c1", "-n4",
         "--proc-type=secondary",
-        "--log-level=3",
+        /* RTE_LOG_ERR */
+        "--log-level=5",
     };
 
     int ret = rte_eal_init(sizeof(dpdk_argv)/sizeof(dpdk_argv[0]), dpdk_argv);
@@ -100,7 +113,7 @@ ff_ipc_msg_free(struct ff_msg *msg)
 }
 
 int
-ff_ipc_send(const struct ff_msg *msg, uint16_t proc_id)
+ff_ipc_send(const struct ff_msg *msg)
 {
     int ret;
 
@@ -111,7 +124,7 @@ ff_ipc_send(const struct ff_msg *msg, uint16_t proc_id)
 
     char name[RTE_RING_NAMESIZE];
     snprintf(name, RTE_RING_NAMESIZE, "%s%u",
-        FF_MSG_RING_IN, proc_id);
+        FF_MSG_RING_IN, ff_proc_id);
     struct rte_ring *ring = rte_ring_lookup(name);
     if (ring == NULL) {
         printf("lookup message ring:%s failed!\n", name);
@@ -128,7 +141,7 @@ ff_ipc_send(const struct ff_msg *msg, uint16_t proc_id)
 }
 
 int
-ff_ipc_recv(struct ff_msg **msg, uint16_t proc_id)
+ff_ipc_recv(struct ff_msg **msg)
 {
     int ret, i;
     if (inited == 0) {
@@ -138,7 +151,7 @@ ff_ipc_recv(struct ff_msg **msg, uint16_t proc_id)
 
     char name[RTE_RING_NAMESIZE];
     snprintf(name, RTE_RING_NAMESIZE, "%s%u",
-        FF_MSG_RING_OUT, proc_id);
+        FF_MSG_RING_OUT, ff_proc_id);
     struct rte_ring *ring = rte_ring_lookup(name);
     if (ring == NULL) {
         printf("lookup message ring:%s failed!\n", name);
@@ -156,109 +169,6 @@ ff_ipc_recv(struct ff_msg **msg, uint16_t proc_id)
 
         usleep(1000);
     }
-
-    return ret;
-}
-
-int
-sysctl_ipc(uint16_t proc_id, int *name, unsigned namelen, void *old,
-    size_t *oldlenp, const void *new, size_t newlen)
-{
-    struct ff_msg *msg, *retmsg = NULL;
-
-    if (old != NULL && oldlenp == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    msg = ff_ipc_msg_alloc();
-    if (msg == NULL) {
-        errno = ENOMEM;
-        return -1;
-    }
-
-    size_t oldlen = 0;
-    if (oldlenp) {
-        oldlen = *oldlenp;
-    }
-
-    if (namelen + oldlen + newlen > msg->buf_len) {
-        errno = EINVAL;
-        ff_ipc_msg_free(msg);
-        return -1;
-    }
-
-    char *buf_addr = msg->buf_addr;
-
-    msg->msg_type = FF_SYSCTL;
-    msg->sysctl.name = (int *)buf_addr;
-    msg->sysctl.namelen = namelen;
-    memcpy(msg->sysctl.name, name, namelen*sizeof(int));
-
-    buf_addr += namelen*sizeof(int);
-
-    if (new != NULL && newlen != 0) {
-        msg->sysctl.new = buf_addr;
-        msg->sysctl.newlen = newlen;
-        memcpy(msg->sysctl.new, new, newlen);
-
-        buf_addr += newlen;
-    } else {
-        msg->sysctl.new = NULL;
-        msg->sysctl.newlen = 0;
-    }
-
-    if (oldlenp != NULL) {
-        msg->sysctl.oldlenp = (size_t *)buf_addr;
-        memcpy(msg->sysctl.oldlenp, oldlenp, sizeof(size_t));
-        buf_addr += sizeof(size_t);
-
-        if (old != NULL) {
-            msg->sysctl.old = (void *)buf_addr;
-            memcpy(msg->sysctl.old, old, *oldlenp);
-            buf_addr += *oldlenp;
-        } else {
-            msg->sysctl.old = NULL;
-        }
-    } else {
-        msg->sysctl.oldlenp = NULL;
-        msg->sysctl.old = NULL;
-    }
-
-    int ret = ff_ipc_send(msg, proc_id);
-    if (ret < 0) {
-        errno = EPIPE;
-        ff_ipc_msg_free(msg);
-        return -1;
-    }
-
-    do {
-        if (retmsg != NULL) {
-            ff_ipc_msg_free(retmsg);
-        }
-        ret = ff_ipc_recv(&retmsg, proc_id);
-        if (ret < 0) {
-            errno = EPIPE;
-            ff_ipc_msg_free(msg);
-            return -1;
-        }
-    } while (msg != retmsg);
-
-    if (retmsg->result == 0) {
-        ret = 0;
-        if (oldlenp && retmsg->sysctl.oldlenp) {
-            *oldlenp = *retmsg->sysctl.oldlenp;
-        }
-
-        if (old && retmsg->sysctl.old && oldlenp) {
-            memcpy(old, retmsg->sysctl.old, *oldlenp);
-        }
-    } else {
-        ret = -1;
-        errno = retmsg->result;
-    }
-
-    ff_ipc_msg_free(msg);
 
     return ret;
 }

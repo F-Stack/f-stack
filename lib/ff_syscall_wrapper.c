@@ -217,7 +217,7 @@ linux2freebsd_ioctl(unsigned long request)
         case LINUX_TIOCPKT_IOCTL:
             return TIOCPKT_IOCTL;
         default:
-            return (-1);
+            return request;
     }
 }
 
@@ -721,8 +721,7 @@ ff_accept(int s, struct linux_sockaddr * addr,
 {
     int rc;
     struct file *fp;
-    struct sockaddr bsdaddr;
-    struct sockaddr *pf = &bsdaddr;
+    struct sockaddr *pf = NULL;
     socklen_t socklen = sizeof(struct sockaddr);
 
     if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
@@ -731,14 +730,19 @@ ff_accept(int s, struct linux_sockaddr * addr,
     rc = curthread->td_retval[0];
     fdrop(fp, curthread);
 
-    if (addr)
+    if (addr && pf)
         freebsd2linux_sockaddr(addr, pf);
 
     if (addrlen)
         *addrlen = socklen;
-
+    
+    if(pf != NULL)
+        free(pf, M_SONAME);
     return (rc);
+    
 kern_fail:
+    if(pf != NULL)
+        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }
@@ -797,17 +801,21 @@ ff_getpeername(int s, struct linux_sockaddr * name,
     socklen_t *namelen)
 {
     int rc;
-    struct sockaddr bsdaddr;
-    struct sockaddr *pf = &bsdaddr;
+    struct sockaddr *pf = NULL;
 
     if ((rc = kern_getpeername(curthread, s, &pf, namelen)))
         goto kern_fail;
 
-    if (name)
+    if (name && pf)
         freebsd2linux_sockaddr(name, pf);
 
+    if(pf != NULL)
+        free(pf, M_SONAME);    
     return (rc);
+    
 kern_fail:
+    if(pf != NULL)
+        free(pf, M_SONAME);    
     ff_os_errno(rc);
     return (-1);
 }
@@ -817,18 +825,21 @@ ff_getsockname(int s, struct linux_sockaddr *name,
     socklen_t *namelen)
 {
     int rc;
-    struct sockaddr bsdaddr;
-    struct sockaddr *pf = &bsdaddr;
+    struct sockaddr *pf = NULL;
 
     if ((rc = kern_getsockname(curthread, s, &pf, namelen)))
         goto kern_fail;
 
-    if (name)
+    if (name && pf)
         freebsd2linux_sockaddr(name, pf);
 
+    if(pf != NULL)
+        free(pf, M_SONAME);
     return (rc);
 
 kern_fail:
+    if(pf != NULL)
+        free(pf, M_SONAME);    
     ff_os_errno(rc);
     return (-1);
 }

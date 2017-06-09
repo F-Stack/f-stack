@@ -526,6 +526,7 @@ ff_msg_init(struct rte_mempool *mp,
     void *obj, __attribute__((unused)) unsigned i)
 {
     struct ff_msg *msg = (struct ff_msg *)obj;
+    msg->msg_type = FF_UNKNOWN;
     msg->buf_addr = (char *)msg + sizeof(struct ff_msg);
     msg->buf_len = mp->elt_size - sizeof(struct ff_msg);
 }
@@ -980,6 +981,30 @@ handle_sysctl_msg(struct ff_msg *msg, uint16_t proc_id)
 }
 
 static inline void
+handle_ioctl_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    int fd, ret;
+    fd = ff_socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        ret = -1;
+        goto done;
+    }
+
+    ret = ff_ioctl(fd, msg->ioctl.cmd, msg->ioctl.data);
+
+    ff_close(fd);
+
+done:
+    if (ret < 0) {
+        msg->result = errno;
+    } else {
+        msg->result = 0;
+    }
+
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+
+static inline void
 handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
 {
     msg->result = EINVAL;
@@ -992,6 +1017,9 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
     switch (msg->msg_type) {
         case FF_SYSCTL:
             handle_sysctl_msg(msg, proc_id);
+            break;
+        case FF_IOCTL:
+            handle_ioctl_msg(msg, proc_id);
             break;
         default:
             handle_default_msg(msg, proc_id);
