@@ -89,6 +89,9 @@
 
 #define BITS_PER_HEX 4
 
+#define KNI_MBUF_MAX 2048
+#define KNI_QUEUE_SIZE 2048
+
 static int enable_kni;
 static int kni_accept;
 
@@ -411,7 +414,10 @@ init_mem_pool(void)
         (nb_rx_queue*RX_QUEUE_SIZE          +
         nb_ports*nb_lcores*MAX_PKT_BURST    +
         nb_ports*nb_tx_queue*TX_QUEUE_SIZE  +
-        nb_lcores*MEMPOOL_CACHE_SIZE),
+        nb_lcores*MEMPOOL_CACHE_SIZE +
+        nb_ports*KNI_MBUF_MAX +
+        nb_ports*KNI_QUEUE_SIZE +
+        nb_lcores*nb_ports*ARP_RING_SIZE),
         (unsigned)8192);
 
     unsigned socketid = 0;
@@ -591,7 +597,7 @@ init_kni(void)
     int i, ret;
     for (i = 0; i < nb_ports; i++) {
         uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[i].port_id;
-        ff_kni_alloc(port_id, socket_id, mbuf_pool);
+        ff_kni_alloc(port_id, socket_id, mbuf_pool, KNI_QUEUE_SIZE);
     }
 
     return 0;
