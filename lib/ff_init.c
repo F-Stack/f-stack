@@ -24,18 +24,46 @@
  *
  */
 
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 #include <stdlib.h>
+#include <stdarg.h>
+#include <sched.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <assert.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/select.h>
+#include <sys/syscall.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h>
 
 #include "ff_api.h"
 #include "ff_config.h"
 #include "ff_dpdk_if.h"
 
+void
+ff_run(loop_func_t loop, void *arg)
+{
+    ff_dpdk_run(loop, arg);
+}
+
 extern int ff_freebsd_init();
+extern void ff_hook_init(void);
 
 int
 ff_init(const char *conf, int argc, char * const argv[])
 {
+
     int ret;
+
+    printf("ff init !!\n");
+
     ret = ff_load_config(conf, argc, argv);
     if (ret < 0)
         exit(1);
@@ -52,12 +80,9 @@ ff_init(const char *conf, int argc, char * const argv[])
     if (ret < 0)
         exit(1);
 
-    return 0;
-}
+    /* hook system call */
+    ff_hook_init();
 
-void
-ff_run(loop_func_t loop, void *arg)
-{
-    ff_dpdk_run(loop, arg);
+    return 0;
 }
 

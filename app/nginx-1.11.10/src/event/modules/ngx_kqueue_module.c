@@ -51,10 +51,6 @@ static struct kevent   notify_kev;
 #endif
 
 #if (NGX_HAVE_FSTACK)
-#define FF_FD_BITS 16
-#define CHK_FD_BIT(fd)          (fd & (1 << FF_FD_BITS))
-#define CLR_FD_BIT(fd)          (fd & ~(1 << FF_FD_BITS))
-
 extern int kqueue(void);
 extern int kevent(int kq, const struct kevent *changelist, int nchanges, 
     struct kevent *eventlist, int nevents, const struct timespec *timeout);
@@ -430,15 +426,7 @@ ngx_kqueue_set_event(ngx_event_t *ev, ngx_int_t filter, ngx_uint_t flags)
 
     kev = &change_list[nchanges];
 
-#if (NGX_HAVE_FSTACK)
-    ngx_socket_t fd = c->fd;
-    if (CHK_FD_BIT(fd))
-        fd = CLR_FD_BIT(fd);
-
-    kev->ident = fd;
-#else
     kev->ident = c->fd;
-#endif
     kev->filter = (short) filter;
     kev->flags = (u_short) flags;
     kev->udata = NGX_KQUEUE_UDATA_T ((uintptr_t) ev | ev->instance);
@@ -593,9 +581,6 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
     }
 
     for (i = 0; i < events; i++) {
-#if (NGX_HAVE_FSTACK)
-        event_list[i].ident |= 1 << FF_FD_BITS;
-#endif
         ngx_kqueue_dump_event(cycle->log, &event_list[i]);
 
         if (event_list[i].flags & EV_ERROR) {

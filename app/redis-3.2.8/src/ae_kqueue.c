@@ -30,8 +30,18 @@
 
 
 #include <sys/types.h>
-#include <sys/event.h>
 #include <sys/time.h>
+
+#ifndef HAVE_FF_KQUEUE
+#include <sys/event.h>
+#else
+typedef unsigned short u_short;
+typedef unsigned int u_int;
+#include "ff_api.h"
+extern int kqueue(void);
+extern int kevent(int kq, const struct kevent *changelist, int nchanges, 
+            struct kevent *eventlist, int nevents, const struct timespec *timeout);
+#endif
 
 typedef struct aeApiState {
     int kqfd;

@@ -30,10 +30,6 @@ static char *ngx_load_module(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void ngx_unload_module(void *data);
 #endif
 
-#if (NGX_HAVE_FSTACK)
-void ff_mod_init(int argc, char * const *argv);
-#endif
-
 static ngx_conf_enum_t  ngx_debug_points[] = {
     { ngx_string("stop"), NGX_DEBUG_POINTS_STOP },
     { ngx_string("abort"), NGX_DEBUG_POINTS_ABORT },
@@ -200,7 +196,8 @@ main(int argc, char *const *argv)
 #if (NGX_HAVE_FSTACK)
     int ac = 1;
     char *p = "nginx";
-    ff_mod_init(argc, argv);
+
+    ff_init(argv[1], argc, argv);
 #endif
     ngx_debug_init();
 
