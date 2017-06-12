@@ -936,20 +936,31 @@ struct sys_kevent_args {
     int fd;
     const struct kevent *changelist;
     int nchanges;
-    struct kevent *eventlist;
+    void *eventlist;
     int nevents;
     const struct timespec *timeout;
+    void (*diy)(void **, struct kevent *);
 };
 
 static int
 kevent_copyout(void *arg, struct kevent *kevp, int count)
 {
+    int i;
+    struct kevent *ke, **el;
     struct sys_kevent_args *uap;
 
     uap = (struct sys_kevent_args *)arg;
-    bcopy(kevp, uap->eventlist, count * sizeof *kevp);
 
-    uap->eventlist += count;
+    for (ke = kevp, i = 0; i < count; i++, ke++) {
+        if (uap->diy) {
+            uap->diy(&(uap->eventlist), ke);
+
+        } else {
+            el = (struct kevent **)(&uap->eventlist);
+            **el = *ke;
+            (*el)++;
+        }
+    }
 
     return (0);
 }
@@ -960,32 +971,40 @@ kevent_copyout(void *arg, struct kevent *kevp, int count)
 static int
 kevent_copyin(void *arg, struct kevent *kevp, int count)
 {
+    int i;
+    struct kevent *ke;
     struct sys_kevent_args *uap;
 
     uap = (struct sys_kevent_args *)arg;
-    bcopy(uap->changelist, kevp, count * sizeof *kevp);
 
-    uap->changelist += count;
+    for (ke = kevp, i = 0; i < count; i++, ke++) {
+        *ke = *uap->changelist;
+        uap->changelist++;
+    }
 
     return (0);
 }
 
 int
-ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
-    struct kevent *eventlist, int nevents, const struct timespec *timeout)
+ff_kevent_diy(int kq, const struct kevent *changelist, int nchanges, 
+    void *eventlist, int nevents, const struct timespec *timeout, 
+    void (*diy)(void **, struct kevent *))
 {
     int rc;
     struct timespec ts;
     ts.tv_sec = 0;
     ts.tv_nsec = 0;
+
     struct sys_kevent_args ska = {
         kq,
         changelist,
         nchanges,
         eventlist,
         nevents,
-        &ts
+        &ts,
+        diy
     };
+
     struct kevent_copyops k_ops = {
         &ska,
         kevent_copyout,
@@ -1002,3 +1021,11 @@ kern_fail:
     ff_os_errno(rc);
     return (-1);
 }
+
+int
+ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
+    struct kevent *eventlist, int nevents, const struct timespec *timeout)
+{
+    return ff_kevent_diy(kq, changelist, nchanges, eventlist, nevents, timeout, NULL);
+}
+
