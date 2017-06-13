@@ -946,19 +946,18 @@ static int
 kevent_copyout(void *arg, struct kevent *kevp, int count)
 {
     int i;
-    struct kevent *ke, **el;
+    struct kevent *ke;
     struct sys_kevent_args *uap;
 
     uap = (struct sys_kevent_args *)arg;
 
-    for (ke = kevp, i = 0; i < count; i++, ke++) {
-        if (uap->do_each) {
-            uap->do_each(&(uap->eventlist), ke);
+    if (!uap->do_each) {
+        bcopy(kevp, uap->eventlist, count * sizeof *kevp);
+        uap->eventlist = (void *)((struct kevent *)(uap->eventlist) + count);
 
-        } else {
-            el = (struct kevent **)(&uap->eventlist);
-            **el = *ke;
-            (*el)++;
+    } else {
+        for (ke = kevp, i = 0; i < count; i++, ke++) {
+            uap->do_each(&(uap->eventlist), ke);
         }
     }
 
