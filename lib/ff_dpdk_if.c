@@ -727,7 +727,7 @@ init_port_start(void)
         }
 
         if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
-            return 0;
+            continue;
         }
 
         /* Currently, proc id 1:1 map to queue id per port. */
