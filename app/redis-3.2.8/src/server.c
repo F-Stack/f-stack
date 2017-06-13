@@ -35,7 +35,6 @@
 
 #ifdef HAVE_FF_KQUEUE
 #include "ff_api.h"
-#include "anet_ff.h"
 #endif
 
 #include <time.h>
@@ -3954,7 +3953,6 @@ int main(int argc, char **argv) {
     int j;
 
 #ifdef HAVE_FF_KQUEUE
-    ff_mod_init();
     int rc = ff_init(argv[1], argc, argv);
     assert(0 == rc);
 	// TODO

@@ -101,6 +101,7 @@ struct ff_config {
         struct ff_freebsd_cfg *sysctl;
         long physmem;
         int hz;
+        int fdstart;
     } freebsd;
 };
 

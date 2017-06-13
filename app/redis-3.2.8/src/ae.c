@@ -47,7 +47,7 @@
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
 #ifdef HAVE_FF_KQUEUE
-#include "ae_ff_kqueue.c"
+#include "ae_kqueue.c"
 #else
     #ifdef HAVE_EVPORT
     #include "ae_evport.c"
@@ -139,11 +139,6 @@ void aeStop(aeEventLoop *eventLoop) {
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData)
 {
-#ifdef HAVE_FF_KQUEUE
-    if (CHK_FD_BIT(fd)) {
-        fd = CLR_FD_BIT(fd);
-    }
-#endif
     if (fd >= eventLoop->setsize) {
         errno = ERANGE;
         return AE_ERR;
@@ -163,11 +158,6 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
 
 void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
 {
-#ifdef HAVE_FF_KQUEUE
-    if (CHK_FD_BIT(fd)) {
-        fd = CLR_FD_BIT(fd);
-    }
-#endif
     if (fd >= eventLoop->setsize) return;
     aeFileEvent *fe = &eventLoop->events[fd];
     if (fe->mask == AE_NONE) return;
@@ -415,11 +405,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         for (j = 0; j < numevents; j++) {
             aeFileEvent *fe = &eventLoop->events[eventLoop->fired[j].fd];
             int mask = eventLoop->fired[j].mask;
-#ifdef HAVE_FF_KQUEUE
-            int fd = eventLoop->fired[j].fd | (1 << FF_FD_BITS);
-#else
             int fd = eventLoop->fired[j].fd;
-#endif
             int rfired = 0;
 
 	    /* note the fe->mask & mask & ... code: maybe an already processed

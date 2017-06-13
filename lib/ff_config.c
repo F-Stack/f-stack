@@ -199,6 +199,8 @@ handler(void* user, const char* section, const char* name,
             pconfig->freebsd.hz = atoi(value);
         } else if (strcmp(name, "physmem") == 0) {
             pconfig->freebsd.physmem = atol(value);
+        } else if (strcmp(name, "fdstart") == 0) {
+            pconfig->freebsd.fdstart = atol(value);
         } else {
             return freebsd_conf_handler(pconfig, "boot", name, value);
         }
@@ -319,6 +321,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
 
     cfg->freebsd.hz = 100;
+    cfg->freebsd.fdstart = 128;
     cfg->freebsd.physmem = 1048576*256;
 }
 
