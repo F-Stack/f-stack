@@ -40,8 +40,6 @@
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
 
-#define KNI_QUEUE_SIZE 8192
-
 /* Callback for request of changing MTU */
 /* Total octets in ethernet header */
 #define KNI_ENET_HEADER_SIZE    14
@@ -330,7 +328,7 @@ ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 
 void
 ff_kni_alloc(uint8_t port_id, unsigned socket_id,
-    struct rte_mempool *mbuf_pool)
+    struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         struct rte_kni_conf conf;
@@ -381,7 +379,7 @@ ff_kni_alloc(uint8_t port_id, unsigned socket_id,
     snprintf((char*)ring_name, RTE_KNI_NAMESIZE, "kni_ring_%u", port_id);
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        kni_rp[port_id] = rte_ring_create(ring_name, KNI_QUEUE_SIZE, 
+        kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size, 
             socket_id, RING_F_SC_DEQ);
 
         if (rte_ring_lookup(ring_name) != kni_rp[port_id])

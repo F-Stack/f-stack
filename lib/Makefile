@@ -129,7 +129,6 @@ FF_SRCS+=			\
 	ff_subr_prf.c    \
 	ff_vfs_ops.c  \
 	ff_veth.c  \
-	ff_epoll.c \
 	ff_route.c
 
 FF_HOST_SRCS+= \
@@ -139,6 +138,7 @@ FF_HOST_SRCS+= \
 	ff_dpdk_if.c \
 	ff_dpdk_kni.c \
 	ff_dpdk_pcap.c \
+	ff_epoll.c \
 	ff_init.c
 
 ifdef FF_IPSEC

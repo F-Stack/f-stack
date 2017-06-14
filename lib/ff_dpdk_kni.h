@@ -41,7 +41,7 @@ void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
     const char *udp_ports);
 
 void ff_kni_alloc(uint8_t port_id, unsigned socket_id,
-    struct rte_mempool *mbuf_pool);
+    struct rte_mempool *mbuf_pool, unsigned ring_queue_size);
 
 void ff_kni_process(uint8_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count);

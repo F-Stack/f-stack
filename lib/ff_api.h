@@ -102,6 +102,9 @@ int ff_poll(struct pollfd fds[], nfds_t nfds, int timeout);
 int ff_kqueue(void);
 int ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
     struct kevent *eventlist, int nevents, const struct timespec *timeout);
+int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges, 
+    void *eventlist, int nevents, const struct timespec *timeout, 
+    void (*do_each)(void **, struct kevent *));
 
 /* route api begin */
 enum FF_ROUTE_CTL {
