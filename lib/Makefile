@@ -129,7 +129,8 @@ FF_SRCS+=			\
 	ff_subr_prf.c    \
 	ff_vfs_ops.c  \
 	ff_veth.c  \
-	ff_epoll.c
+	ff_epoll.c \
+	ff_route.c
 
 FF_HOST_SRCS+= \
 	ff_host_interface.c \

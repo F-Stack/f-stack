@@ -33,6 +33,7 @@ extern "C" {
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/poll.h>
+#include <netinet/in.h>
 
 #include "ff_event.h"
 #include "ff_errno.h"
@@ -101,6 +102,34 @@ int ff_poll(struct pollfd fds[], nfds_t nfds, int timeout);
 int ff_kqueue(void);
 int ff_kevent(int kq, const struct kevent *changelist, int nchanges, 
     struct kevent *eventlist, int nevents, const struct timespec *timeout);
+
+/* route api begin */
+enum FF_ROUTE_CTL {
+    FF_ROUTE_ADD,
+    FF_ROUTE_DEL,
+    FF_ROUTE_CHANGE,
+};
+
+enum FF_ROUTE_FLAG {
+    FF_RTF_HOST,
+    FF_RTF_GATEWAY,
+};
+
+/*
+ * On success, 0 is returned.
+ * On error, -1 is returned, and errno is set appropriately.
+ */
+int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
+    struct linux_sockaddr *dst, struct linux_sockaddr *gw,
+    struct linux_sockaddr *netmask);
+
+/*
+ * This is used in handling ff_msg.
+ * The data is a pointer to struct rt_msghdr.
+ */
+int ff_rtioctl(int fib, void *data, unsigned *plen, unsigned maxlen);
+
+/* route api end */
 
 #ifdef __cplusplus
 }

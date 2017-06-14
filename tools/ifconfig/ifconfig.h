@@ -49,10 +49,6 @@ int fake_close(int fd);
 #define socket(a, b, c) fake_socket((a), (b), (c))
 #define close(a) fake_close((a))
 
-#ifndef nitems
-#define	nitems(x)	(sizeof((x)) / sizeof((x)[0]))
-#endif
-
 #endif
 
 struct afswtch;

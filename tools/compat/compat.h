@@ -29,6 +29,22 @@
 
 #include <stddef.h>
 
+#ifndef __dead2
+#define __dead2 __attribute__((__noreturn__))
+#endif
+
+#ifndef __dead
+#define __dead __dead2
+#endif
+
+#ifndef nitems
+#define nitems(x) (sizeof((x)) / sizeof((x)[0]))
+#endif
+
+#ifndef __FBSDID
+#define __FBSDID(s) /* nothing */
+#endif
+
 void *reallocf(void *ptr, size_t size);
 
 int feature_present(const char *feature);

@@ -50,6 +50,7 @@
 #include <sys/filio.h>
 #include <sys/sysproto.h>
 #include <sys/fcntl.h>
+#include <net/route.h>
 
 #include <machine/stdarg.h>
 
@@ -258,7 +259,7 @@ so_opt_convert(int optname)
         case LINUX_SO_PROTOCOL:
             return SO_PROTOCOL;
         default:
-            return (-1);
+            return optname;
     }
 }
 
@@ -285,7 +286,7 @@ ip_opt_convert(int optname)
         case LINUX_IP_DROP_MEMBERSHIP:
             return IP_DROP_MEMBERSHIP;
         default:
-            return (-1);
+            return optname;
     }
 }
 
@@ -306,7 +307,7 @@ tcp_opt_convert(int optname)
         case LINUX_TCP_MD5SIG:
             return TCP_MD5SIG;
         default:
-            return (-1);
+            return optname;
     }
 }
 
@@ -321,7 +322,7 @@ linux2freebsd_opt(int level, int optname)
         case IPPROTO_TCP:
             return tcp_opt_convert(optname);
         default:
-            return (-1);
+            return optname;
     }
 }
 
@@ -1002,3 +1003,76 @@ kern_fail:
     ff_os_errno(rc);
     return (-1);
 }
+
+int
+ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
+    struct linux_sockaddr *dst, struct linux_sockaddr *gw,
+    struct linux_sockaddr *netmask)
+
+{
+    struct sockaddr sa_gw, sa_dst, sa_nm;
+    struct sockaddr *psa_gw, *psa_dst, *psa_nm;
+    int rtreq, rtflag;
+    int rc;
+
+    switch (req) {
+        case FF_ROUTE_ADD:
+            rtreq = RTM_ADD;
+            break;
+        case FF_ROUTE_DEL:
+            rtreq = RTM_DELETE;
+            break;
+        case FF_ROUTE_CHANGE:
+            rtreq = RTM_CHANGE;
+            break;
+        default:
+            rc = EINVAL;
+            goto kern_fail;
+    }
+
+    switch (flag) {
+        case FF_RTF_HOST:
+            rtflag = RTF_HOST;
+            break;
+        case FF_RTF_GATEWAY:
+            rtflag = RTF_GATEWAY;
+            break;
+        default:
+            rc = EINVAL;
+            goto kern_fail;
+    };
+
+    if (gw != NULL) {
+        psa_gw = &sa_gw;
+        linux2freebsd_sockaddr(gw, sizeof(*gw), psa_gw);
+    } else {
+        psa_gw = NULL;
+    }
+
+    if (dst != NULL) {
+        psa_dst = &sa_dst;
+        linux2freebsd_sockaddr(dst, sizeof(*dst), psa_dst);
+    } else {
+        psa_dst = NULL;
+    }
+
+    if (netmask != NULL) {
+        psa_nm = &sa_nm;
+        linux2freebsd_sockaddr(netmask, sizeof(*netmask), psa_nm);
+    } else {
+        psa_nm = NULL;
+    }
+
+    rc = rtrequest_fib(rtreq, psa_dst, psa_gw, psa_nm, rtflag,
+        NULL, RT_DEFAULT_FIB);
+
+    if (rc != 0)
+        goto kern_fail;
+
+    return (rc);
+
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+

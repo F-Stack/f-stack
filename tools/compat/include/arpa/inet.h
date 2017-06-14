@@ -125,6 +125,12 @@ int      inet_pton(int, const char * __restrict, void * __restrict);
 
 int      inet_aton(const char *, struct in_addr *);
 
+in_addr_t    inet_lnaof(struct in_addr);
+struct in_addr   inet_makeaddr(in_addr_t, in_addr_t);
+char *       inet_neta(in_addr_t, char *, size_t);
+in_addr_t    inet_netof(struct in_addr);
+in_addr_t    inet_network(const char *);
+
 #endif /* !_ARPA_INET_H_ */
 
 /*! \file */

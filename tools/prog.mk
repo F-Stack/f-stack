@@ -35,7 +35,9 @@ SRCS=   ${PROG}.c
 endif
 endif
 
-OBJS+= $(patsubst %.cc,%.o,$(patsubst %.c,%.o,${SRCS}))
+HEADERS+= $(filter %.h,${SRCS})
+OBJS+= $(patsubst %.c,%.o, $(filter %.c,${SRCS}))
+OBJS+= $(patsubst %.cc,%.o, $(filter %.cc,${SRCS}))
 
 ifeq ($(FF_DPDK),)
 	FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
@@ -57,7 +59,9 @@ CXXFLAGS+= ${FF_PROG_CFLAGS}
 
 LIBS+= ${FF_PROG_LIBS}
 
-${PROG}: ${OBJS}
+CLEANFILES+= ${PROG} ${OBJS}
+
+${PROG}: ${HEADERS} ${OBJS}
 ifdef PROG_CXX
 	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ ${OBJS} ${LIBS} 
 else
@@ -65,6 +69,6 @@ else
 endif
 
 clean:
-	@rm -f ${PROG} ${OBJS}
+	@rm -f ${CLEANFILES}
 
 all: ${PROG}

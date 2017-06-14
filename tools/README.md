@@ -39,6 +39,52 @@ jail
 ```
 For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?ifconfig).
 
+# route
+Usage:
+```
+route -p <f-stack proc_id> [-46dnqtv] command [[modifiers] args]
+```
+Examples:
+```
+     Add a default route:
+
+       ./route -p 0 add -net 0.0.0.0/0 192.168.1.1
+
+     A shorter version of adding a default route can also be written as:
+
+       ./route -p 0 add default 192.168.1.1
+
+     Add a static route to the 172.16.10.0/24 network via the 172.16.1.1 gate-
+     way:
+
+       ./route -p 0 add -net 172.16.10.0/24 172.16.1.1
+
+     Change the gateway of an already established static route in the routing
+     table:
+
+       ./route -p 0 change -net 172.16.10.0/24 172.16.1.2
+
+     Display the route for a destination network:
+
+       ./route -p 0 show 172.16.10.0
+
+     Delete a static route from the routing table:
+
+       ./route -p 0 delete -net 172.16.10.0/24 172.16.1.2
+
+     Remove all routes from the routing table:
+
+       ./route -p 0 flush
+
+    FreeBSD uses `netstat -rn ` to list the route table which we havn't ported,
+    you can execute the following command instead, `-d` means debug mode, `-v`
+    means verbose.
+        ./route -p 0 -d -v flush
+```
+Note that, if you want to modify the route table, you must use `-p` to execute the same command for each f-stack process.
+
+For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?route).
+
 # how to implement a custom tool for communicating with F-Stack process
 
 Add a new FF_MSG_TYPE in ff_msg.h:

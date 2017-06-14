@@ -721,7 +721,7 @@ init_port_start(void)
         }
 
         if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
-            return 0;
+            continue;
         }
 
         /* Currently, proc id 1:1 map to queue id per port. */
@@ -852,18 +852,19 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         return;
     }
 
-    pkt = pkt->next;
+    struct rte_mbuf *pn = pkt->next;
     void *prev = hdr;
-    while(pkt != NULL) {
+    while(pn != NULL) {
         data = rte_pktmbuf_mtod(pkt, void*);
         len = rte_pktmbuf_data_len(pkt);
 
         void *mb = ff_mbuf_get(prev, data, len);
         if (mb == NULL) {
             ff_mbuf_free(hdr);
+            rte_pktmbuf_free(pkt);
             return;
         }
-        pkt = pkt->next;
+        pn = pn->next;
         prev = mb;
     }
 
@@ -1005,6 +1006,15 @@ done:
 }
 
 static inline void
+handle_route_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    msg->result = ff_rtioctl(msg->route.fib, msg->route.data,
+        &msg->route.len, msg->route.maxlen);
+
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+
+static inline void
 handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
 {
     msg->result = EINVAL;
@@ -1020,6 +1030,9 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             break;
         case FF_IOCTL:
             handle_ioctl_msg(msg, proc_id);
+            break;
+        case FF_ROUTE:
+            handle_route_msg(msg, proc_id);
             break;
         default:
             handle_default_msg(msg, proc_id);

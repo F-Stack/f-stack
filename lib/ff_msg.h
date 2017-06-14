@@ -38,6 +38,7 @@ enum FF_MSG_TYPE {
     FF_UNKNOWN = 0,
     FF_SYSCTL,
     FF_IOCTL,
+    FF_ROUTE,
 };
 
 struct ff_sysctl_args {
@@ -51,6 +52,13 @@ struct ff_sysctl_args {
 
 struct ff_ioctl_args {
     unsigned long cmd;
+    void *data;
+};
+
+struct ff_route_args {
+    int fib;
+    unsigned len;
+    unsigned maxlen;
     void *data;
 };
 
@@ -69,6 +77,7 @@ struct ff_msg {
     union {
         struct ff_sysctl_args sysctl;
         struct ff_ioctl_args ioctl;
+        struct ff_route_args route;
     };
 } __attribute__((packed)) __rte_cache_aligned;
 

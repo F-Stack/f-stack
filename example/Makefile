@@ -16,7 +16,7 @@ LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
 
 TARGET="helloworld"
 all:
-	cc -O -gdwarf-2  -I../lib -o ${TARGET} main.c ${LIBS}
+	cc -O -gdwarf-2 -g -I../lib -o ${TARGET} main.c ${LIBS}
 
 .PHONY: clean
 clean:
