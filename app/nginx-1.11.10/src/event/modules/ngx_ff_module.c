@@ -45,11 +45,7 @@ static int (*real_accept)(int, struct sockaddr *, socklen_t *);
 static int (*real_accept4)(int, struct sockaddr *, socklen_t *, int);
 static ssize_t (*real_recv)(int, void *, size_t, int);
 static ssize_t (*real_send)(int, const void *, size_t, int);
-
 static ssize_t (*real_writev)(int, const struct iovec *, int);
-static ssize_t (*real_write)(int, const void *, size_t );
-static ssize_t (*real_read)(int, void *, size_t );
-static ssize_t (*real_readv)(int, const struct iovec *, int);
 
 static int (*real_ioctl)(int, int, void *);
 
@@ -74,9 +70,6 @@ ff_mod_init(int argc, char * const *argv) {
     INIT_FUNCTION(recv);
     INIT_FUNCTION(send);
     INIT_FUNCTION(writev);
-    INIT_FUNCTION(write);
-    INIT_FUNCTION(read);
-    INIT_FUNCTION(readv);
 
     INIT_FUNCTION(ioctl);
     INIT_FUNCTION(select);
@@ -140,17 +133,6 @@ send(int sockfd, const void *buf, size_t len, int flags)
 }
 
 ssize_t
-write(int sockfd, const void *buf, size_t count)
-{
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
-        return ff_write(sockfd, buf, count);
-    } else {
-        return real_write(sockfd, buf, count);
-    }
-}
-
-ssize_t
 recv(int sockfd, void *buf, size_t len, int flags)
 {
     if (CHK_FD_BIT(sockfd)) {
@@ -158,17 +140,6 @@ recv(int sockfd, void *buf, size_t len, int flags)
         return ff_recv(sockfd, buf, len, flags);
     } else {
         return real_recv(sockfd, buf, len, flags);
-    }
-}
-
-ssize_t
-read(int sockfd, void *buf, size_t count)
-{
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
-        return ff_read(sockfd, buf, count);
-    } else {
-        return real_read(sockfd, buf, count);
     }
 }
 
@@ -229,6 +200,9 @@ close(int sockfd)
         sockfd = CLR_FD_BIT(sockfd);
         return ff_close(sockfd);
     } else {
+        if (__builtin_expect(!!(real_close == NULL), 0)) {
+            real_close = dlsym(RTLD_NEXT, "close");
+        }
         return real_close(sockfd);
     }
 }
@@ -241,17 +215,6 @@ writev(int sockfd, const struct iovec *iov, int iovcnt)
         return ff_writev(sockfd, iov, iovcnt);
     } else {
         return real_writev(sockfd, iov, iovcnt);
-    }
-}
-
-ssize_t
-readv(int sockfd, const struct iovec *iov, int iovcnt)
-{
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
-        return ff_readv(sockfd, iov, iovcnt);
-    } else {
-        return real_readv(sockfd, iov, iovcnt);
     }
 }
 
