@@ -941,7 +941,7 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
                 mbuf_clone = rte_pktmbuf_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
-                    ff_kni_enqueue(port_id, rtem);
+                    ff_kni_enqueue(port_id, mbuf_clone);
                 }
             }
 
