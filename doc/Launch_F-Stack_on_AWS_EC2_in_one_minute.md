@@ -63,7 +63,7 @@
     make
     make install
 
-    # offload NIC
+    # offload NIC（if there is only one NIC，the follow commands must run in a script）
     ifconfig eth0 down
     python /data/f-stack/dpdk/tools/dpdk-devbind.py --bind=igb_uio eth0
 
