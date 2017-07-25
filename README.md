@@ -98,7 +98,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 Test environment
 
     NIC:Intel Corporation Ethernet Controller XL710 for 40GbE QSFP+
-    CPU:Intel(R) Xeon(R) CPU E5-2670 v3 @ 2.30GHz
+    CPU:Intel(R) Xeon(R) CPU E5-2670 v3 @ 2.30GHz(NUMA)
     Memory：128G
     OS:CentOS Linux release 7.2 (Final)
     Kernel：3.10.104-1-tlinux2-0041.tl2
@@ -107,6 +107,7 @@ Nginx uses linux kernel's default config, all soft interrupts are working in the
 
 Nginx si means modify the smp_affinity of every IRQ, so that the decision to service an interrupt with a particular CPU is made at the hardware level, with no intervention from the kernel. 
 
+All of these test cases use CPUs' physical cores.
 
 CPS (Connection:close, Small data packet)  test result
 ![](http://i.imgur.com/PvCRmXR.png)
