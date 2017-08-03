@@ -17,6 +17,9 @@
     echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
     mkdir /mnt/huge
     mount -t hugetlbfs nodev /mnt/huge
+    
+    # close ASLR; it is necessary in multiple porcess
+    echo 0 > /proc/sys/kernel/randomize_va_space
 
     # insmod ko
     modprobe uio
