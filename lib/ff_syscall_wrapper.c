@@ -1026,6 +1026,15 @@ ff_kevent(int kq, const struct kevent *changelist, int nchanges,
 }
 
 int
+ff_gettimeofday(struct timeval *tv, struct timezone *tz)
+{
+    long nsec;
+    ff_get_current_time(&(tv->tv_sec), &nsec);
+    tv->tv_usec = nsec/1000;
+    return 0;
+}
+
+int
 ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     struct linux_sockaddr *dst, struct linux_sockaddr *gw,
     struct linux_sockaddr *netmask)

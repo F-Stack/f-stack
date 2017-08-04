@@ -40,4 +40,4 @@ ff_mbuf_copydata
 ff_mbuf_tx_offload
 ff_route_ctl
 ff_rtioctl
-
+ff_gettimeofday

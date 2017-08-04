@@ -182,9 +182,10 @@ static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
 extern void ff_hardclock(void);
 
 static void
-freebsd_hardclock_job(__rte_unused struct rte_timer *timer,
+ff_hardclock_job(__rte_unused struct rte_timer *timer,
     __rte_unused void *arg) {
     ff_hardclock();
+    ff_update_current_ts();
 }
 
 struct ff_dpdk_if_context *
@@ -773,11 +774,15 @@ init_port_start(void)
         }
     }
 
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        check_all_ports_link_status();
+    }
+
     return 0;
 }
 
 static int
-init_freebsd_clock(void)
+init_clock(void)
 {
     rte_timer_subsystem_init();
     uint64_t hz = rte_get_timer_hz();
@@ -786,7 +791,9 @@ init_freebsd_clock(void)
 
     rte_timer_init(&freebsd_clock);
     rte_timer_reset(&freebsd_clock, tsc, PERIODICAL,
-        rte_lcore_id(), &freebsd_hardclock_job, NULL);
+        rte_lcore_id(), &ff_hardclock_job, NULL);
+
+    ff_update_current_ts();
 
     return 0;
 }
@@ -827,9 +834,7 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "init_port_start failed\n");
     }
 
-    check_all_ports_link_status();
-
-    init_freebsd_clock();
+    init_clock();
 
     return 0;
 }

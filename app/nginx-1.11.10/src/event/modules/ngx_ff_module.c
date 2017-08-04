@@ -332,3 +332,10 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
 {
     return ff_kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
 }
+
+int
+gettimeofday(struct timeval *tv, struct timezone *tz)
+{
+    return ff_gettimeofday(tv, tz);
+}
+

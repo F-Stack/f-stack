@@ -45,6 +45,8 @@
 #include "ff_host_interface.h"
 #include "ff_errno.h"
 
+static struct timespec current_ts;
+
 void *
 ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)
 {
@@ -171,28 +173,18 @@ ff_clock_gettime_ns(int id)
     return ((uint64_t)sec * ff_NSEC_PER_SEC + nsec);
 }
 
-/*
- *  Sleeps for at least the given number of nanoseconds and returns 0,
- *  unless there is a non-EINTR failure, in which case a non-zero value is
- *  returned.
- */
-int
-ff_nanosleep(uint64_t nsecs)
+void
+ff_get_current_time(time_t *sec, long *nsec)
 {
-    struct timespec ts;
-    struct timespec rts;
-    int rv;
+    *sec = current_ts.tv_sec;
+    *nsec = current_ts.tv_nsec;
+}
 
-    ts.tv_sec = nsecs / ff_NSEC_PER_SEC;
-    ts.tv_nsec = nsecs % ff_NSEC_PER_SEC;
-    while ((-1 == (rv = nanosleep(&ts, &rts))) && (EINTR == errno)) {
-        ts = rts;
-    }
-    if (-1 == rv) {
-        rv = errno;
-    }
-
-    return (rv);
+void
+ff_update_current_ts()
+{
+    int rv = clock_gettime(CLOCK_MONOTONIC, &current_ts);
+    assert(rv == 0);
 }
 
 void
