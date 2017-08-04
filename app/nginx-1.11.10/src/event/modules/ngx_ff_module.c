@@ -79,7 +79,11 @@ static int (*real_accept)(int, struct sockaddr *, socklen_t *);
 static int (*real_accept4)(int, struct sockaddr *, socklen_t *, int);
 static ssize_t (*real_recv)(int, void *, size_t, int);
 static ssize_t (*real_send)(int, const void *, size_t, int);
+static ssize_t (*real_sendto)(int, const void *, size_t, int,
+    const struct sockaddr*, socklen_t);
+static ssize_t (*real_sendmsg)(int, const struct msghdr*, int);
 static ssize_t (*real_writev)(int, const struct iovec *, int);
+static ssize_t (*real_readv)(int, const struct iovec *, int);
 
 static int (*real_ioctl)(int, int, void *);
 
@@ -103,7 +107,10 @@ ff_mod_init(int argc, char * const *argv) {
     INIT_FUNCTION(accept4);
     INIT_FUNCTION(recv);
     INIT_FUNCTION(send);
+    INIT_FUNCTION(sendto);
+    INIT_FUNCTION(sendmsg);
     INIT_FUNCTION(writev);
+    INIT_FUNCTION(readv);
 
     INIT_FUNCTION(ioctl);
     INIT_FUNCTION(select);
@@ -163,6 +170,30 @@ send(int sockfd, const void *buf, size_t len, int flags)
         return ff_send(sockfd, buf, len, flags);
     } else {
         return real_send(sockfd, buf, len, flags);
+    }
+}
+
+ssize_t
+sendto(int sockfd, const void *buf, size_t len, int flags,
+    const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+    if (CHK_FD_BIT(sockfd)) {
+        sockfd = CLR_FD_BIT(sockfd);
+        return ff_sendto(sockfd, buf, len, flags,
+	    (struct linux_sockaddr *)dest_addr, addrlen);
+    } else {
+        return real_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+    }
+}
+
+ssize_t
+sendmsg(int sockfd, const struct msghdr *msg, int flags)
+{
+    if (CHK_FD_BIT(sockfd)) {
+        sockfd = CLR_FD_BIT(sockfd);
+        return ff_sendmsg(sockfd, msg, flags);
+    } else {
+        return real_sendmsg(sockfd, msg, flags);
     }
 }
 
@@ -249,6 +280,17 @@ writev(int sockfd, const struct iovec *iov, int iovcnt)
         return ff_writev(sockfd, iov, iovcnt);
     } else {
         return real_writev(sockfd, iov, iovcnt);
+    }
+}
+
+ssize_t
+readv(int sockfd, const struct iovec *iov, int iovcnt)
+{
+    if (CHK_FD_BIT(sockfd)) {
+        sockfd = CLR_FD_BIT(sockfd);
+        return ff_readv(sockfd, iov, iovcnt);
+    } else {
+        return real_readv(sockfd, iov, iovcnt);
     }
 }
 
