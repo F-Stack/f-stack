@@ -48,7 +48,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     mkdir /mnt/huge
     mount -t hugetlbfs nodev /mnt/huge
 
-    # close ASLR; it is necessary in multiple porcess
+    # close ASLR; it is necessary in multiple process
     echo 0 > /proc/sys/kernel/randomize_va_space
 
     # offload NIC
