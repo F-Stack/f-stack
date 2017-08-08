@@ -3954,18 +3954,22 @@ int main(int argc, char **argv) {
     int j;
 
 #ifdef HAVE_FF_KQUEUE
-    ff_mod_init();
-    int rc = ff_init(argv[1], argc, argv);
+    int rc = ff_init(argc, argv);
     assert(0 == rc);
-	// TODO
-	char **tmp_argv = zmalloc(sizeof(char *) * (argc - 6));
+    ff_mod_init();
+	//split fstack arguments.
+	int new_argc = argc - 3;
+    if (new_argc <= 0) {
+        new_argc = 1;
+    }
+	char **new_argv = zmalloc(sizeof(char *) * new_argc);
+    new_argv[0] = argv[0];
 	int i;
-	for (i = 0; i < argc; i++) {
-		tmp_argv[i] = argv[i + 6];
+	for (i = 1; i < new_argc; i++) {
+		new_argv[i] = argv[i + 3];
 	}
-	tmp_argv[0] = argv[0];
-	argv = tmp_argv;
-	argc -= 6;
+	argv = new_argv;
+	argc = new_argc;
 #endif
 
 #ifdef REDIS_TEST
@@ -4139,7 +4143,7 @@ int main(int argc, char **argv) {
 	ff_run(loop, server.el);
     aeDeleteEventLoop(server.el);
 #ifdef HAVE_FF_KQUEUE
-	zfree(tmp_argv);
+	zfree(new_argv);
 #endif
     return 0;
 }

@@ -46,7 +46,7 @@ struct linux_sockaddr {
 
 typedef int (*loop_func_t)(void *arg);
 
-int ff_init(const char *conf, int argc, char * const argv[]);
+int ff_init(int argc, char * const argv[]);
 
 void ff_run(loop_func_t loop, void *arg);
 
@@ -108,6 +108,9 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
     void (*do_each)(void **, struct kevent *));
 
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
+
+extern int ff_fdisused(int fd);
+
 
 /* route api begin */
 enum FF_ROUTE_CTL {

@@ -4105,4 +4105,30 @@ fildesc_drvinit(void *unused)
 
 SYSINIT(fildescdev, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, fildesc_drvinit, NULL);
 
+#else
+
+int
+ff_fdisused(int fd)
+{
+   struct thread *td = curthread;
+
+   return (fd < td->td_proc->p_fd->fd_nfiles &&
+       fdisused(td->td_proc->p_fd, fd) &&
+       td->td_proc->p_fd->fd_ofiles[fd].fde_file != NULL);
+}
+
+/*
+ * block out a range of descriptors to avoid overlap with
+ * the kernel's descriptor space
+ */
+void
+ff_fdused_range(struct filedesc *fdp, int max)
+{
+   int i;
+
+   for (i = 0; i < max; i++)
+       fdused(fdp, i);
+}
+
 #endif
+

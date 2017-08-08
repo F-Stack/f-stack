@@ -18,9 +18,7 @@
 #define MAX_EVENTS 512
 
 struct epoll_event ev;
-
 struct epoll_event events[MAX_EVENTS];
-struct kevent kqevents[MAX_EVENTS];
 
 int epfd;
 int sockfd;
@@ -100,14 +98,7 @@ int loop(void *arg)
 
 int main(int argc, char * argv[])
 {
-    char *conf;
-    if (argc < 2) {
-        conf = "./config.ini";
-    } else {
-        conf = argv[1];
-    }
-
-    ff_init(conf, argc, argv);
+    ff_init(argc, argv);
 
     sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     printf("sockfd:%d\n", sockfd);

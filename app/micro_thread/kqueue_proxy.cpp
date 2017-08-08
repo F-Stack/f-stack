@@ -187,9 +187,6 @@ bool KqueueProxy::KqueueCtrlAdd(int fd, int events)
 	
 	KqEvent ke;
 	int ret;
-	if (CHK_FD_BIT(fd)) {
-		fd = CLR_FD_BIT(fd);
-    }
 	if (old_events & KQ_EVENT_WRITE) {
 		EV_SET(&ke, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
 		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
@@ -274,9 +271,6 @@ bool KqueueProxy::KqueueCtrlDelRef(int fd, int events, bool use_ref)
 	}
 	KqEvent ke;
 	int ret;
-	if (CHK_FD_BIT(fd)) {
-		fd = CLR_FD_BIT(fd);
-    }
 	if (old_events & KQ_EVENT_WRITE) {
 		EV_SET(&ke, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
 		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
@@ -380,7 +374,7 @@ void KqueueProxy::KqueueRcvEventList(int evtfdnum)
 
 	for (int i = 0; i < evtfdnum; i++)
 	{
-		osfd = _evtlist[i].ident |= 1 << FF_FD_BITS;
+		osfd = _evtlist[i].ident;
 
 		item = KqFdRefGet(osfd);
 		if (item == NULL)

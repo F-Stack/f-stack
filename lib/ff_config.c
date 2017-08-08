@@ -29,23 +29,108 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <getopt.h>
+#include <ctype.h>
+#include <rte_config.h>
+
 #include "ff_config.h"
 #include "ff_ini_parser.h"
+
+#define DEFAULT_CONFIG_FILE   "config.ini"
+
+#define BITS_PER_HEX 4
 
 struct ff_config ff_global_cfg;
 int dpdk_argc;
 char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
-int dpdk_argc_arg;
-char *dpdk_argv_arg[DPDK_CONFIG_NUM + 1];
-
-char* const short_options = "c:";  
-struct option long_options[] = {  
-    { "proc-type", 1, NULL, 0 },  
-    { "num-procs", 1, NULL, 0 },  
-    { "proc-id", 1, NULL, 0 },  
-    { 0, 0, 0, 0},  
+char* const short_options = "c:t:p:";
+struct option long_options[] = {
+    { "conf", 1, NULL, 'c'},
+    { "proc-type", 1, NULL, 't'},
+    { "proc-id", 1, NULL, 'p'},
+    { 0, 0, 0, 0},
 };
+
+static int
+xdigit2val(unsigned char c)
+{
+    int val;
+
+    if (isdigit(c))
+        val = c - '0';
+    else if (isupper(c))
+        val = c - 'A' + 10;
+    else
+        val = c - 'a' + 10;
+    return val;
+}
+
+static int
+parse_lcore_mask(struct ff_config *cfg, const char *coremask)
+{
+    int i, j, idx = 0;
+    unsigned count = 0;
+    char c;
+    int val;
+    uint16_t *proc_lcore;
+    char buf[RTE_MAX_LCORE] = {0};
+
+    if (coremask == NULL)
+        return 0;
+
+    cfg->dpdk.proc_lcore = (uint16_t *)calloc(RTE_MAX_LCORE, sizeof(uint16_t));
+    if (cfg->dpdk.proc_lcore == NULL) {
+        fprintf(stderr, "parse_lcore_mask malloc failed\n");
+        return 0;
+    }
+    proc_lcore = cfg->dpdk.proc_lcore;
+
+    /* 
+     * Remove all blank characters ahead and after.
+     * Remove 0x/0X if exists.
+     */
+    while (isblank(*coremask))
+        coremask++;
+    if (coremask[0] == '0' && ((coremask[1] == 'x')
+        || (coremask[1] == 'X')))
+        coremask += 2;
+
+    i = strlen(coremask);
+    while ((i > 0) && isblank(coremask[i - 1]))
+        i--;
+
+    if (i == 0)
+        return 0;
+
+    for (i = i - 1; i >= 0 && idx < RTE_MAX_LCORE; i--) {
+        c = coremask[i];
+        if (isxdigit(c) == 0) {
+            return 0;
+        }
+        val = xdigit2val(c);
+        for (j = 0; j < BITS_PER_HEX && idx < RTE_MAX_LCORE; j++, idx++) {
+            if ((1 << j) & val) {
+                proc_lcore[count] = idx;
+                if (cfg->dpdk.proc_id == count) {
+                    sprintf(buf, "%x", 1<<idx);
+                    cfg->dpdk.proc_mask = strdup(buf);
+                }
+                count++;
+            }
+        }
+    }
+
+    for (; i >= 0; i--)
+        if (coremask[i] != '0')
+            return 0;
+
+    if (cfg->dpdk.proc_id >= count)
+        return 0;
+
+    cfg->dpdk.nb_procs = count;
+
+    return 1;
+}
 
 static int
 is_integer(const char *s)
@@ -160,10 +245,10 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
 }
 
 static int
-handler(void* user, const char* section, const char* name,
+ini_parse_handler(void* user, const char* section, const char* name,
     const char* value)
 {
-    struct ff_config* pconfig = (struct ff_config*)user;
+    struct ff_config *pconfig = (struct ff_config*)user;
 
     printf("[%s]: %s=%s\n", section, name, value);
 
@@ -176,6 +261,7 @@ handler(void* user, const char* section, const char* name,
         pconfig->dpdk.no_huge = atoi(value);
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
+        return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
     } else if (MATCH("dpdk", "port_mask")) {
         pconfig->dpdk.port_mask = atoi(value);
     } else if (MATCH("dpdk", "nb_ports")) {
@@ -212,7 +298,7 @@ handler(void* user, const char* section, const char* name,
 }
 
 static int
-dpdk_argc_argv_setup(struct ff_config *cfg)
+dpdk_args_setup(struct ff_config *cfg)
 {
     int n = 0, i;
     dpdk_argv[n++] = strdup("f-stack");
@@ -233,9 +319,9 @@ dpdk_argc_argv_setup(struct ff_config *cfg)
         sprintf(temp, "-m%d", cfg->dpdk.memory);
         dpdk_argv[n++] = strdup(temp);
     }
-
-    for(i = 0; i < dpdk_argc_arg; ++i) {
-        dpdk_argv[n++] = dpdk_argv_arg[i];
+    if (cfg->dpdk.proc_type) {
+        sprintf(temp, "--proc-type=%s", cfg->dpdk.proc_type);
+        dpdk_argv[n++] = strdup(temp);
     }
 
     dpdk_argc = n;
@@ -243,33 +329,40 @@ dpdk_argc_argv_setup(struct ff_config *cfg)
     return n;
 }
 
-static void
-ff_load_arg(struct ff_config *cfg, int argc, char *const argv[])
+static int
+ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
 {
-    dpdk_argc_arg = 0;
     int c;
     int index = 0;
     while((c = getopt_long(argc, argv, short_options, long_options, &index)) != -1) {
         switch (c) {
             case 'c':
-                cfg->dpdk.proc_mask = strdup(optarg);
+                cfg->filename = strdup(optarg);
                 break;
-            case 0:
-                if (0 == strcmp(long_options[index].name, "num-procs")) {
-                    cfg->dpdk.nb_procs = atoi(optarg);
-                } else if(0 == strcmp(long_options[index].name, "proc-id")) {
-                    cfg->dpdk.proc_id = atoi(optarg);
-                } else if(0 == strcmp(long_options[index].name, "proc-type")) {
-                    char temp[DPDK_CONFIG_MAXLEN] = {0};
-                    sprintf(temp, "--proc-type=%s",optarg);
-                    dpdk_argv_arg[dpdk_argc_arg++] = strdup(temp);
-                }
+            case 'p':
+                cfg->dpdk.proc_id = atoi(optarg);
+                break;
+            case 't':
+                cfg->dpdk.proc_type = strdup(optarg);
                 break;
             default:
-                break;
+                return -1;
         }
     }
-    return;
+
+    if (cfg->dpdk.proc_type == NULL ||
+        (strcmp(cfg->dpdk.proc_type, "primary") &&
+        strcmp(cfg->dpdk.proc_type, "secondary"))) {
+        printf("invalid proc-type\n");
+        return -1;
+    }
+
+    if ((uint16_t)cfg->dpdk.proc_id > RTE_MAX_LCORE) {
+        printf("proc_id:%d is too large\n", cfg->dpdk.proc_id);
+        return -1;
+    }
+
+    return 0;
 }
 
 static int
@@ -315,21 +408,31 @@ ff_default_config(struct ff_config *cfg)
 {
     memset(cfg, 0, sizeof(struct ff_config));
 
+    cfg->filename = DEFAULT_CONFIG_FILE;
+
+    cfg->dpdk.proc_id = -1;
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
 
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;
+    cfg->freebsd.fd_reserve = 0;
 }
 
 int
-ff_load_config(const char *conf, int argc, char * const argv[])
+ff_load_config(int argc, char *const argv[])
 {
     ff_default_config(&ff_global_cfg);
-    
-    int ret = ini_parse(conf, handler, &ff_global_cfg);
+
+    int ret = ff_parse_args(&ff_global_cfg, argc, argv);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = ini_parse(ff_global_cfg.filename, ini_parse_handler,
+        &ff_global_cfg);
     if (ret != 0) {
-        printf("parse %s failed on line %d\n", conf, ret);
+        printf("parse %s failed on line %d\n", ff_global_cfg.filename, ret);
         return -1;
     }
 
@@ -337,8 +440,7 @@ ff_load_config(const char *conf, int argc, char * const argv[])
         return -1;
     }
 
-    ff_load_arg(&ff_global_cfg, argc, argv);
-    if (dpdk_argc_argv_setup(&ff_global_cfg) <= 0) {
+    if (dpdk_args_setup(&ff_global_cfg) <= 0) {
         return -1;
     }
 

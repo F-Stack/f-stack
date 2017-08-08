@@ -22,14 +22,6 @@
 
 #include <stdint.h>
 
-#define FF_FD_BITS 16
-#define CHK_FD_BIT(fd)          (fd & (1 << FF_FD_BITS))
-#define CLR_FD_BIT(fd)          (fd & ~(1 << FF_FD_BITS))
-
-void ff_hook_new_fd(int fd);
-bool ff_hook_find_fd(int fd);
-
-void ff_hook_free_fd(int fd);
 int ff_hook_socket(int domain, int type, int protocol);
 int ff_hook_close(int fd);
 

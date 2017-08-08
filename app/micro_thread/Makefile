@@ -26,7 +26,11 @@ endif
 DEBUG= -g
 BINARY = libmt.a
 FF_LIB=$(FF_PATH)/libfstack.a
-DPDK_LIBS = $(shell pkg-config --define-variable=TOPDIR=${FF_PATH} --libs f-stack.pc)
+DPDK_LIBS+= -L${FF_PATH}/lib -L${FF_DPDK}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
+DPDK_LIBS+= -Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring
+DPDK_LIBS+= -Wl,--whole-archive -lrte_hash -lrte_kvargs -Wl,-lrte_mbuf -lethdev -lrte_eal -Wl,-lrte_mempool
+DPDK_LIBS+= -lrte_ring -lrte_cmdline -lrte_cfgfile -lrte_kni -lrte_timer -Wl,-lrte_pmd_virtio
+DPDK_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
 
 # Comment the following line if you are not using the gnu c compiler
 #C_ARGS = -Wall -g -fPIC -D_DEBUG

@@ -72,12 +72,6 @@ ngx_module_t  ngx_select_module = {
     NGX_MODULE_V1_PADDING
 };
 
-#if (NGX_HAVE_FSTACK)
-#define FF_FD_BITS 16
-#define CHK_FD_BIT(fd)          (fd & (1 << FF_FD_BITS))
-#define CLR_FD_BIT(fd)          (fd & ~(1 << FF_FD_BITS))
-#endif
-
 static ngx_int_t
 ngx_select_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
@@ -154,20 +148,10 @@ ngx_select_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
     }
 
     if (event == NGX_READ_EVENT) {
-#if (NGX_HAVE_FSTACK)
-        if (CHK_FD_BIT(c->fd))
-            FD_SET(CLR_FD_BIT(c->fd), &master_read_fd_set);
-#else
         FD_SET(c->fd, &master_read_fd_set);
-#endif
 
     } else if (event == NGX_WRITE_EVENT) {
-#if (NGX_HAVE_FSTACK)
-        if (CHK_FD_BIT(c->fd))
-            FD_SET(CLR_FD_BIT(c->fd), &master_write_fd_set);
-#else
         FD_SET(c->fd, &master_write_fd_set);
-#endif
     }
 
     if (max_fd != -1 && max_fd < c->fd) {
@@ -202,20 +186,10 @@ ngx_select_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags)
                    "select del event fd:%d ev:%i", c->fd, event);
 
     if (event == NGX_READ_EVENT) {
-#if (NGX_HAVE_FSTACK)
-       if (CHK_FD_BIT(c->fd))
-            FD_CLR(CLR_FD_BIT(c->fd), &master_read_fd_set);
-#else
         FD_CLR(c->fd, &master_read_fd_set);
-#endif
 
     } else if (event == NGX_WRITE_EVENT) {
-#if (NGX_HAVE_FSTACK)
-        if (CHK_FD_BIT(c->fd))
-            FD_CLR(CLR_FD_BIT(c->fd), &master_write_fd_set);
-#else
         FD_CLR(c->fd, &master_write_fd_set);
-#endif
     }
 
     if (max_fd == c->fd) {

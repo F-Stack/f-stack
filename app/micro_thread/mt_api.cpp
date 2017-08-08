@@ -716,10 +716,10 @@ void* mt_get_msg_private()
  * @info   业务不使用spp，裸用微线程，需要调用该初始化函数
  * @return false:初始化失败  true:初始化成功
  */
-bool mt_init_frame(const char *conf, int argc, char * const argv[])
+bool mt_init_frame(int argc, char * const argv[])
 {
-	if (conf && argc) {
-		ff_init(conf, argc, argv);
+	if (argc) {
+		ff_init(argc, argv);
 		ff_set_hook_flag();
 	}
 	memset(&g_mt_syscall_tab, 0, sizeof(g_mt_syscall_tab));

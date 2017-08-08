@@ -33,10 +33,10 @@
 extern int ff_freebsd_init();
 
 int
-ff_init(const char *conf, int argc, char * const argv[])
+ff_init(int argc, char * const argv[])
 {
     int ret;
-    ret = ff_load_config(conf, argc, argv);
+    ret = ff_load_config(argc, argv);
     if (ret < 0)
         exit(1);
 

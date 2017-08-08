@@ -1,39 +1,62 @@
 /*
- * Inspired by nginx_ofp's ngx_ofp_module.c.
- * https://github.com/OpenFastPath/nginx_ofp.
- * Related #42.
+ * Inspired by opendp/dpdk-nginx's ans_module.c.
+ * License of opendp:
+ *
+ BSD LICENSE
+ Copyright(c) 2015-2017 Ansyun anssupport@163.com. All rights reserved.
+ All rights reserved.
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+
+ Redistributions of source code must retain the above copyright
+ notice, this list of conditions and the following disclaimer.
+ Redistributions in binary form must reproduce the above copyright
+ notice, this list of conditions and the following disclaimer in
+ the documentation and/or other materials provided with the
+ distribution.
+ Neither the name of Ansyun anssupport@163.com nor the names of its
+ contributors may be used to endorse or promote products derived
+ from this software without specific prior written permission.
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ Author: JiaKai (jiakai1000@gmail.com) and Bluestar (anssupport@163.com)
  */
 
-/*-
-BSD LICENSE
-Copyright(c) 2015-2017 Ansyun anssupport@163.com. All rights reserved.
-All rights reserved.
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-
-Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-Redistributions in binary form must reproduce the above copyright
-notice, this list of conditions and the following disclaimer in
-the documentation and/or other materials provided with the
-distribution.
-Neither the name of Ansyun anssupport@163.com nor the names of its
-contributors may be used to endorse or promote products derived
-from this software without specific prior written permission.
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-Author: JiaKai (jiakai1000@gmail.com) and Bluestar (anssupport@163.com)
-*/
+/*
+ * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *   list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *   this list of conditions and the following disclaimer in the documentation
+ *   and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
 
 #include <stdio.h>
 #include <stdint.h>
@@ -64,9 +87,20 @@ typedef unsigned int u_int;
 #include <sys/syscall.h>
 #include <dlfcn.h>
 
-#define FF_FD_BITS 16
-#define CHK_FD_BIT(fd)          (fd & (1 << FF_FD_BITS))
-#define CLR_FD_BIT(fd)          (fd & ~(1 << FF_FD_BITS))
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+
+#ifndef likely
+#define likely(x)  __builtin_expect((x),1)
+#endif
+
+#ifndef unlikely
+#define unlikely(x)  __builtin_expect((x),0)
+#endif
+
+#define INIT_FUNCTION(func) \
+    real_##func = dlsym(RTLD_NEXT, #func); \
+    assert(real_##func)
 
 static int inited = 0;
 
@@ -94,14 +128,6 @@ static int (*real_select) (int, fd_set *, fd_set *, fd_set *, struct timeval *);
 
 
 void ff_mod_init() {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
-    //int rc;
-
-    #define INIT_FUNCTION(func) \
-        real_##func = dlsym(RTLD_NEXT, #func); \
-        assert(real_##func)
-
     INIT_FUNCTION(socket);
     INIT_FUNCTION(bind);
     INIT_FUNCTION(connect);
@@ -121,169 +147,232 @@ void ff_mod_init() {
     INIT_FUNCTION(fcntl);
     INIT_FUNCTION(select);
 
-#undef INIT_FUNCTION
-
     inited = 1;
-#pragma GCC diagnostic pop
 }
 
-int socket(int domain, int type, int protocol)
+int
+socket(int domain, int type, int protocol)
 {
     int rc;
 
-    if ((inited == 0) ||  (AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type))
-    {
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(socket);
+        return real_socket(domain, type, protocol);
+    }
+
+    if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
         rc = real_socket(domain, type, protocol);
         return rc;
     }
 
     rc = ff_socket(domain, type, protocol);
-    if(rc >= 0)
-        rc |= 1 << FF_FD_BITS;
 
     return rc;
 }
 
-int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+int
+bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(bind);
+        return real_bind(sockfd, addr, addrlen);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_bind(sockfd, (struct linux_sockaddr *)addr, addrlen);
     } else {
         return real_bind(sockfd, addr, addrlen);
     }
 }
 
-int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+int
+connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(connect);
+        return real_connect(sockfd, addr, addrlen);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_connect(sockfd, (struct linux_sockaddr *)addr, addrlen);
     } else {
         return real_connect(sockfd, addr, addrlen);
     }
 }
 
-ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+ssize_t
+send(int sockfd, const void *buf, size_t len, int flags)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(send);
+        return real_send(sockfd, buf, len, flags);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_send(sockfd, buf, len, flags);
     } else {
         return real_send(sockfd, buf, len, flags);
     }
 }
 
-ssize_t write(int sockfd, const void *buf, size_t count)
+ssize_t
+recv(int sockfd, void *buf, size_t len, int flags)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
-        return ff_write(sockfd, buf, count);
-    } else {
-        return real_write(sockfd, buf, count);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(recv);
+        return real_recv(sockfd, buf, len, flags);
     }
-}
 
-ssize_t recv(int sockfd, void *buf, size_t len, int flags)
-{
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (ff_fdisused(sockfd)) {
         return ff_recv(sockfd, buf, len, flags);
     } else {
         return real_recv(sockfd, buf, len, flags);
     }
 }
 
-ssize_t read(int sockfd, void *buf, size_t count)
+int
+listen(int sockfd, int backlog)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
-        return ff_read(sockfd, buf, count);
-    } else {
-        return real_read(sockfd, buf, count);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(listen);
+        return real_listen(sockfd, backlog);
     }
-}
 
-int listen(int sockfd, int backlog)
-{
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (ff_fdisused(sockfd)) {
         return ff_listen(sockfd, backlog);
     } else {
         return real_listen(sockfd, backlog);
     }
 }
 
-int setsockopt (int sockfd, int level, int optname,
+int
+setsockopt (int sockfd, int level, int optname,
     const void *optval, socklen_t optlen)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(setsockopt);
+        return real_setsockopt(sockfd, level, optname, optval, optlen);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_setsockopt(sockfd, level, optname, optval, optlen);
     } else {
         return real_setsockopt(sockfd, level, optname, optval, optlen);
     }
 }
 
-int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+int
+accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
-        int fd = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
-        if (fd < 0) {
-            return fd;
-        }
-        fd |= 1 << FF_FD_BITS;
-        return fd;
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(accept);
+        return real_accept(sockfd, addr, addrlen);
+    }
+
+    if (ff_fdisused(sockfd)) {
+        return ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
     } else {
         return real_accept(sockfd, addr, addrlen);
     }
 }
 
-int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
+int
+accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(accept4);
+        return real_accept4(sockfd, addr, addrlen, flags);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
     } else {
         return real_accept4(sockfd, addr, addrlen, flags);
     }
 }
 
-int close(int sockfd)
+int
+close(int sockfd)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(close);
+        return real_close(sockfd);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_close(sockfd);
     } else {
         return real_close(sockfd);
     }
 }
 
-ssize_t writev(int sockfd, const struct iovec *iov, int iovcnt)
+ssize_t write(int sockfd, const void *buf, size_t count)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(write);
+        return real_write(sockfd, buf, count);
+    }
+
+    if (ff_fdisused(sockfd)) {
+        return ff_write(sockfd, buf, count);
+    } else {
+        return real_write(sockfd, buf, count);
+    }
+}
+
+ssize_t
+writev(int sockfd, const struct iovec *iov, int iovcnt)
+{
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(writev);
+        return real_writev(sockfd, iov, iovcnt);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_writev(sockfd, iov, iovcnt);
     } else {
         return real_writev(sockfd, iov, iovcnt);
     }
 }
 
-ssize_t readv(int sockfd, const struct iovec *iov, int iovcnt)
+ssize_t read(int sockfd, void *buf, size_t count)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(read);
+        return real_read(sockfd, buf, count);
+    }
+
+    if (ff_fdisused(sockfd)) {
+        return ff_read(sockfd, buf, count);
+    } else {
+        return real_read(sockfd, buf, count);
+    }
+}
+
+ssize_t
+readv(int sockfd, const struct iovec *iov, int iovcnt)
+{
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(readv);
+        return real_readv(sockfd, iov, iovcnt);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_readv(sockfd, iov, iovcnt);
     } else {
         return real_readv(sockfd, iov, iovcnt);
     }
 }
 
-int ioctl(int sockfd, int request, void *p)
+int
+ioctl(int sockfd, int request, void *p)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(ioctl);
+        return real_ioctl(sockfd, request, p);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_ioctl(sockfd, request, p);
     } else {
         return real_ioctl(sockfd, request, p);
@@ -292,19 +381,28 @@ int ioctl(int sockfd, int request, void *p)
 
 int fcntl(int sockfd, int cmd, void *p)
 {
-    if (CHK_FD_BIT(sockfd)) {
-        sockfd = CLR_FD_BIT(sockfd);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(fcntl);
+        return real_fcntl(sockfd, cmd, p);
+    }
+
+    if (ff_fdisused(sockfd)) {
         return ff_fcntl(sockfd, cmd, p);
     } else {
         return real_fcntl(sockfd, cmd, p);
     }
 }
 
-int select(int nfds, fd_set *readfds, fd_set *writefds,
+int
+select(int nfds, fd_set *readfds, fd_set *writefds,
     fd_set *exceptfds, struct timeval *timeout)
 {
-    if (CHK_FD_BIT(nfds)) {
-        nfds = CLR_FD_BIT(nfds);
+    if (unlikely(inited == 0)) {
+        INIT_FUNCTION(select);
+        return real_select(nfds, readfds, writefds, exceptfds, timeout);
+    }
+
+    if (ff_fdisused(nfds)) {
         struct timeval tv;
         tv.tv_sec = 0;
         tv.tv_usec = 0;
@@ -313,4 +411,6 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
         return real_select(nfds, readfds, writefds, exceptfds, timeout);
     }
 }
+
+#pragma GCC diagnostic pop
 

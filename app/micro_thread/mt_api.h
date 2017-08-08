@@ -296,7 +296,7 @@ void* mt_get_msg_private();
  *         使用spp，直接调用SyncFrame的框架初始化函数即可
  * @return false:初始化失败  true:初始化成功
  */
-bool mt_init_frame(const char *conf=NULL, int argc=0, char * const argv[]=NULL);
+bool mt_init_frame(int argc=0, char * const argv[]=NULL);
 
 /**
  * @brief 设置微线程独立栈空间大小

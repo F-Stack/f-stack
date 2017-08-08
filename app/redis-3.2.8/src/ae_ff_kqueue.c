@@ -35,10 +35,6 @@ typedef unsigned short u_short;
 typedef unsigned int u_int;
 #include "ff_api.h"
 
-#define FF_FD_BITS 16
-#define CHK_FD_BIT(fd)          (fd & (1 << FF_FD_BITS))
-#define CLR_FD_BIT(fd)          (fd & ~(1 << FF_FD_BITS))
-
 typedef struct aeApiState {
     int kqfd;
     struct kevent *events;

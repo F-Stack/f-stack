@@ -63,7 +63,9 @@ struct ff_freebsd_cfg {
 };
 
 struct ff_config {
-    struct {
+    char *filename;
+    struct {        
+        char *proc_type;
         /* mask of enabled lcores */
         char *lcore_mask;
         /* mask of current proc on all lcores */
@@ -81,6 +83,8 @@ struct ff_config {
         int promiscuous;
         int numa_on;
         int tso;
+        /* list of proc-lcore */
+        uint16_t *proc_lcore;
         struct ff_port_cfg *port_cfgs;
     } dpdk;
 
@@ -101,11 +105,12 @@ struct ff_config {
         struct ff_freebsd_cfg *sysctl;
         long physmem;
         int hz;
+        int fd_reserve;
     } freebsd;
 };
 
 extern struct ff_config ff_global_cfg;
 
-int ff_load_config(const char *conf, int argc, char * const argv[]);
+int ff_load_config(int argc, char * const argv[]);
 
 #endif /* ifndef __FSTACK_CONFIG_H */

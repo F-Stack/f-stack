@@ -122,7 +122,7 @@ int ioctl(int fd, unsigned long cmd, ...)
 
     mt_hook_syscall(ioctl);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
         return ff_hook_ioctl(fd, cmd, arg);
     }
@@ -145,9 +145,9 @@ int socket(int domain, int type, int protocol)
 {
     mt_hook_syscall(socket);
 	
-    if (!mt_hook_active())	
+    if (!ff_hook_active())	
     {
-       return ff_hook_socket(domain, type, protocol);
+        return mt_real_func(socket)(domain, type, protocol);
     }
 
     int fd = ff_hook_socket(domain, type, protocol);
@@ -157,7 +157,6 @@ int socket(int domain, int type, int protocol)
     }
 
     mt_hook_new_fd(fd);
-
 
     mt_hook_syscall(ioctl);
 	int nb = 1;
@@ -172,9 +171,9 @@ int socket(int domain, int type, int protocol)
 int close(int fd)
 {
     mt_hook_syscall(close);
-    if (!mt_hook_active())	
+    if (!ff_hook_active())	
     {
-        return ff_hook_close(fd);
+        return mt_real_func(close)(fd);
     }
 
     mt_hook_free_fd(fd);
@@ -189,9 +188,9 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
 {
     mt_hook_syscall(connect);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)	
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())	
     {
-        return ff_hook_connect(fd, address, address_len);
+        return mt_real_func(connect)(fd, address, address_len);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -209,9 +208,9 @@ ssize_t read(int fd, void *buf, size_t nbyte)
 {
     mt_hook_syscall(read);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_read(fd, buf, nbyte);
+        return mt_real_func(read)(fd, buf, nbyte);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -229,9 +228,9 @@ ssize_t write(int fd, const void *buf, size_t nbyte)
 {
     mt_hook_syscall(write);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_write(fd, buf, nbyte);
+        return mt_real_func(write)(fd, buf, nbyte);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -250,9 +249,9 @@ ssize_t sendto(int fd, const void *message, size_t length, int flags,
 {
     mt_hook_syscall(sendto);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_sendto(fd, message, length, flags, dest_addr, dest_len);
+        return mt_real_func(sendto)(fd, message, length, flags, dest_addr, dest_len);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -272,9 +271,9 @@ ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
 {
     mt_hook_syscall(recvfrom);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_recvfrom(fd, buffer, length, flags, address, address_len);
+        return mt_real_func(recvfrom)(fd, buffer, length, flags, address, address_len);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -293,9 +292,9 @@ ssize_t recv(int fd, void *buffer, size_t length, int flags)
 {
     mt_hook_syscall(recv);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_recv(fd, buffer, length, flags);
+        return mt_real_func(recv)(fd, buffer, length, flags);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -313,9 +312,9 @@ ssize_t send(int fd, const void *buf, size_t nbyte, int flags)
 {
     mt_hook_syscall(send);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_send(fd, buf, nbyte, flags);
+        return mt_real_func(send)(fd, buf, nbyte, flags);
     }
 
     if (hook_fd->sock_flag & MT_FD_FLG_UNBLOCK) 
@@ -334,9 +333,9 @@ int setsockopt(int fd, int level, int option_name, const void *option_value, soc
 {
     mt_hook_syscall(setsockopt);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_setsockopt(fd, level, option_name, option_value, option_len);
+        return mt_real_func(setsockopt)(fd, level, option_name, option_value, option_len);
     }
 
     if (SOL_SOCKET == level)
@@ -369,9 +368,9 @@ int fcntl(int fd, int cmd, ...)
 
     mt_hook_syscall(fcntl);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd)
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())
     {
-        return ff_hook_fcntl(fd, cmd, arg);
+        return mt_real_func(fcntl)(fd, cmd, arg);
     }
 
     if (cmd == F_SETFL)
@@ -393,18 +392,33 @@ int fcntl(int fd, int cmd, ...)
 int listen(int sockfd, int backlog)
 {
     mt_hook_syscall(listen);
+    if (!ff_hook_active())
+    {
+        return mt_real_func(listen)(sockfd, backlog);
+    }
+
 	return ff_hook_listen(sockfd, backlog);
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
     mt_hook_syscall(bind);
+    if (!ff_hook_active())
+    {
+        return mt_real_func(bind)(sockfd, addr, addrlen);
+    }
+
 	return ff_hook_bind(sockfd, addr, addrlen);
 }
 
 int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
 {
     mt_hook_syscall(accept);
+    if (!ff_hook_active())
+    {
+        return mt_real_func(accept)(fd, addr, addrlen);
+    }
+
 	return ff_hook_accept(fd, addr, addrlen);
 }
 

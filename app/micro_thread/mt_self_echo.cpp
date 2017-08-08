@@ -239,7 +239,7 @@ int main(int argc, char* argv[])
     addr.sin_addr.s_addr = inet_addr("112.90.143.29");
     addr.sin_port = htons(19999);
 
-    mt_init_frame("./config.ini", argc, argv);
+    mt_init_frame(argc, argv);
 
     mt_start_thread((void*)server,NULL);
 

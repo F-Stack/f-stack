@@ -97,6 +97,6 @@ int echo_server()
 
 int main(int argc, char *argv[])
 {
-	mt_init_frame("./config.ini", argc, argv);
+	mt_init_frame(argc, argv);
 	echo_server();
 }
