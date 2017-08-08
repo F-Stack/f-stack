@@ -112,7 +112,7 @@ ff_freebsd_init(void)
     mutex_init();
     mi_startup();
     sx_init(&proctree_lock, "proctree");
-    ff_fdused_range(curthread->td_proc->p_fd, ff_global_cfg.freebsd.fd_reserve);
+    ff_fdused_range(ff_global_cfg.freebsd.fd_reserve);
 
     cur = ff_global_cfg.freebsd.sysctl;
     while (cur) {

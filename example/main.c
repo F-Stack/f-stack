@@ -105,7 +105,7 @@ int main(int argc, char * argv[])
 {
     ff_init(argc, argv);
 
-    int sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
+    sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     printf("sockfd:%d\n", sockfd);
     if (sockfd < 0)
         printf("ff_socket failed\n");

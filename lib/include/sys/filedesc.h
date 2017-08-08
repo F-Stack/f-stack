@@ -30,7 +30,7 @@
 
 #include_next <sys/filedesc.h>
 
-void ff_fdused_range(struct filedesc *fdp, int max);
+void ff_fdused_range(int max);
 int ff_fdisused(int fd);
 
 #endif    /* _FSTACK_SYS_FILEDESC_H_ */

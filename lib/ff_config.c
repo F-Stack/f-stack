@@ -285,6 +285,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             pconfig->freebsd.hz = atoi(value);
         } else if (strcmp(name, "physmem") == 0) {
             pconfig->freebsd.physmem = atol(value);
+        } else if (strcmp(name, "fd_reserve") == 0) {
+            pconfig->freebsd.fd_reserve = atoi(value);
         } else {
             return freebsd_conf_handler(pconfig, "boot", name, value);
         }

@@ -4122,12 +4122,12 @@ ff_fdisused(int fd)
  * the kernel's descriptor space
  */
 void
-ff_fdused_range(struct filedesc *fdp, int max)
+ff_fdused_range(int max)
 {
-   int i;
-
+   int i, result;
+   struct thread *td = curthread;
    for (i = 0; i < max; i++)
-       fdused(fdp, i);
+       fdalloc(td, 0, &result);
 }
 
 #endif
