@@ -4112,7 +4112,7 @@ ff_fdisused(int fd)
 {
    struct thread *td = curthread;
 
-   return (fd < td->td_proc->p_fd->fd_nfiles &&
+   return (td && fd < td->td_proc->p_fd->fd_nfiles &&
        fdisused(td->td_proc->p_fd, fd) &&
        td->td_proc->p_fd->fd_ofiles[fd].fde_file != NULL);
 }

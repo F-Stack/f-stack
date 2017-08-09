@@ -156,6 +156,7 @@ int ff_hook_bind(int fd, const struct sockaddr *addr, socklen_t addrlen)
 		return mt_real_func(bind)(fd, addr, addrlen);
 	}
 }
+
 int ff_hook_accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
 {
 	if (ff_fdisused(fd)) {
