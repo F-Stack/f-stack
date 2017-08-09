@@ -83,6 +83,7 @@ struct ff_config {
         int promiscuous;
         int numa_on;
         int tso;
+        int vlan_strip;
         /* list of proc-lcore */
         uint16_t *proc_lcore;
         struct ff_port_cfg *port_cfgs;

@@ -119,7 +119,7 @@ static int inited;
 
 #define SYSCALL(func)                                       \
     ({                                                      \
-        if (!real_##func) {                                 \
+        if (unlikely(!real_##func)) {                       \
             real_##func = dlsym(RTLD_NEXT, #func);          \
         }                                                   \
         real_##func;                                        \

@@ -612,8 +612,10 @@ init_port_start(void)
         port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
 
         /* Set Rx VLAN stripping */
-        if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-            port_conf.rxmode.hw_vlan_strip = 1;
+        if (ff_global_cfg.dpdk.vlan_strip) {
+            if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
+                port_conf.rxmode.hw_vlan_strip = 1;
+            }
         }
 
         /* Enable HW CRC stripping */

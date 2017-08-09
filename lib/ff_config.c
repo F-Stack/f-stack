@@ -272,6 +272,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.numa_on = atoi(value);
     } else if (MATCH("dpdk", "tso")) {
         pconfig->dpdk.tso = atoi(value);
+    } else if (MATCH("dpdk", "vlan_strip")) {
+        pconfig->dpdk.vlan_strip = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "method")) {

@@ -120,7 +120,8 @@ ff_freebsd_init(void)
             cur->value, cur->vlen, NULL, 0);
 
         if (error != 0) {
-            printf("kernel_sysctlbyname failed: %s=%s\n", cur->name, cur->str);
+            printf("kernel_sysctlbyname failed: %s=%s, error:%d\n",
+                cur->name, cur->str, error);
         }
 
         cur = cur->next;
