@@ -107,7 +107,10 @@ Nginx uses linux kernel's default config, all soft interrupts are working in the
 
 Nginx si means modify the smp_affinity of every IRQ, so that the decision to service an interrupt with a particular CPU is made at the hardware level, with no intervention from the kernel. 
 
+Nginx_FStack's 600 cache bytes' body was returned directly in nginx.conf.
+
 All of these test cases use CPUs' physical cores.
+
 
 CPS (Connection:close, Small data packet)  test result
 ![](http://i.imgur.com/PvCRmXR.png)
