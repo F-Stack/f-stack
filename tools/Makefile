@@ -1,4 +1,4 @@
-SUBDIRS=compat sysctl ifconfig route
+SUBDIRS=compat sysctl ifconfig route top
 
 all:
 	for d in $(SUBDIRS); do ( cd $$d; $(MAKE) all ) ; done
