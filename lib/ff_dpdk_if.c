@@ -68,7 +68,7 @@
  * Configurable number of RX/TX ring descriptors
  */
 #define RX_QUEUE_SIZE 512
-#define TX_QUEUE_SIZE 256
+#define TX_QUEUE_SIZE 512
 
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
