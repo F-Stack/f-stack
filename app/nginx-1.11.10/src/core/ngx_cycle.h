@@ -113,6 +113,10 @@ typedef struct {
 
     ngx_array_t               env;
     char                    **environment;
+
+#if (NGX_HAVE_FSTACK)
+    ngx_str_t                 fstack_conf;
+#endif
 } ngx_core_conf_t;
 
 

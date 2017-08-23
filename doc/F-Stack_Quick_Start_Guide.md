@@ -66,7 +66,7 @@ The mount point can be made permanent across reboots, by adding the following li
 	make
 	make install
 	cd ../../
-	./start.sh -b /usr/local/nginx_fstack/sbin/nginx -c config.ini
+	/usr/local/nginx_fstack/sbin/nginx
 
 ### Compile Redis
 

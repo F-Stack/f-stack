@@ -31,7 +31,8 @@ static void ngx_unload_module(void *data);
 #endif
 
 #if (NGX_HAVE_FSTACK)
-void ff_mod_init(int argc, char * const *argv);
+static char *ngx_set_fstack_conf(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 #endif
 
 static ngx_conf_enum_t  ngx_debug_points[] = {
@@ -148,6 +149,15 @@ static ngx_command_t  ngx_core_commands[] = {
       0,
       NULL },
 
+#if (NGX_HAVE_FSTACK)
+    { ngx_string("fstack_conf"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
+      ngx_set_fstack_conf,
+      0,
+      offsetof(ngx_core_conf_t, fstack_conf),
+      NULL },
+#endif
+
       ngx_null_command
 };
 
@@ -197,22 +207,13 @@ main(int argc, char *const *argv)
     ngx_conf_dump_t  *cd;
     ngx_core_conf_t  *ccf;
 
-#if (NGX_HAVE_FSTACK)
-    int ac = 1;
-    char *p = "nginx";
-    ff_mod_init(argc, argv);
-#endif
     ngx_debug_init();
 
     if (ngx_strerror_init() != NGX_OK) {
         return 1;
     }
 
-#if (NGX_HAVE_FSTACK)
-    if (ngx_get_options(ac, &p) != NGX_OK) {
-#else
     if (ngx_get_options(argc, argv) != NGX_OK) {
-#endif
         return 1;
     }
 
@@ -373,16 +374,12 @@ main(int argc, char *const *argv)
 
     ngx_use_stderr = 0;
 
-#if (NGX_HAVE_FSTACK)
-    ngx_single_process_cycle(cycle);
-#else
     if (ngx_process == NGX_PROCESS_SINGLE) {
         ngx_single_process_cycle(cycle);
 
     } else {
         ngx_master_process_cycle(cycle);
     }
-#endif
 
     return 0;
 }
@@ -1588,3 +1585,33 @@ ngx_unload_module(void *data)
 }
 
 #endif
+
+#if (NGX_HAVE_FSTACK)
+static
+char *ngx_set_fstack_conf(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    char *p = conf;
+
+    ngx_str_t *field, *value;
+    ngx_str_t full;
+
+    field = (ngx_str_t *)(p + cmd->offset);
+
+    if (field->data) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    full = value[1];
+
+    if (ngx_conf_full_name(cf->cycle, &full, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    *field = full;
+
+    return NGX_CONF_OK;
+}
+#endif
+

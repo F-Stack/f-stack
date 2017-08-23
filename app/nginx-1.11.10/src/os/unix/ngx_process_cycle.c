@@ -22,11 +22,22 @@ static void ngx_master_process_exit(ngx_cycle_t *cycle);
 static void ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data);
 static void ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker);
 static void ngx_worker_process_exit(ngx_cycle_t *cycle);
+#if (NGX_HAVE_FSTACK)
+extern ngx_int_t ngx_ff_start_worker_channel(ngx_cycle_t *cycle,
+    ngx_fd_t fd, ngx_int_t event);
+extern ngx_int_t ngx_ff_start_primary_channel(ngx_cycle_t *cycle,
+    ngx_fd_t fd, ngx_int_t event);
+extern ngx_int_t ngx_ff_process_channel_events(ngx_cycle_t *cycle);
+#else
 static void ngx_channel_handler(ngx_event_t *ev);
+#endif
 static void ngx_cache_manager_process_cycle(ngx_cycle_t *cycle, void *data);
 static void ngx_cache_manager_process_handler(ngx_event_t *ev);
 static void ngx_cache_loader_process_handler(ngx_event_t *ev);
 
+#if (NGX_HAVE_FSTACK)
+extern int ff_mod_init(const char *conf, int proc_id, int proc_type);
+#endif
 
 ngx_uint_t    ngx_process;
 ngx_uint_t    ngx_worker;
@@ -68,6 +79,143 @@ static ngx_cycle_t      ngx_exit_cycle;
 static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
+#if (NGX_HAVE_FSTACK)
+
+static void
+ngx_ff_primary_process_exit(ngx_cycle_t *cycle)
+{
+    ngx_uint_t         i;
+
+    for (i = 0; cycle->modules[i]; i++) {
+        if (cycle->modules[i]->exit_process) {
+            cycle->modules[i]->exit_process(cycle);
+        }
+    }
+
+    /*
+     * Copy ngx_cycle->log related data to the special static exit cycle,
+     * log, and log file structures enough to allow a signal handler to log.
+     * The handler may be called when standard ngx_cycle->log allocated from
+     * ngx_cycle->pool is already destroyed.
+     */
+
+    ngx_exit_log = *ngx_log_get_file_log(ngx_cycle->log);
+
+    ngx_exit_log_file.fd = ngx_exit_log.file->fd;
+    ngx_exit_log.file = &ngx_exit_log_file;
+    ngx_exit_log.next = NULL;
+    ngx_exit_log.writer = NULL;
+
+    ngx_exit_cycle.log = &ngx_exit_log;
+    ngx_exit_cycle.files = ngx_cycle->files;
+    ngx_exit_cycle.files_n = ngx_cycle->files_n;
+    ngx_cycle = &ngx_exit_cycle;
+
+    ngx_destroy_pool(cycle->pool);
+
+    // wait worker process exited.
+    ngx_msleep(500);
+
+    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0, "exit");
+
+    exit(0);
+}
+
+static void
+ngx_ff_primary_process_cycle(ngx_cycle_t *cycle, void *data)
+{
+    ngx_core_conf_t   *ccf;
+    ngx_uint_t        i;
+    ngx_int_t         n;
+
+    ngx_process = NGX_PROCESS_WORKER;
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
+        ngx_core_module);
+
+    ngx_setproctitle("ff primary process");
+
+    if (ff_mod_init((const char *)ccf->fstack_conf.data, 0, 1)) {
+        exit(2);
+    }
+
+    for (i = 0; cycle->modules[i]; i++) {
+        if (cycle->modules[i]->init_process) {
+            if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
+                /* fatal */
+                exit(2);
+            }
+        }
+    }
+
+    for (n = 0; n < ngx_last_process; n++) {
+
+        if (ngx_processes[n].pid == -1) {
+            continue;
+        }
+
+        if (n == ngx_process_slot) {
+            continue;
+        }
+
+        if (ngx_processes[n].channel[1] == -1) {
+            continue;
+        }
+
+        if (close(ngx_processes[n].channel[1]) == -1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+                          "close() channel failed");
+        }
+    }
+
+    if (close(ngx_processes[ngx_process_slot].channel[0]) == -1) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+                      "close() channel failed");
+    }
+
+    if (ngx_ff_start_primary_channel(cycle, ngx_channel, NGX_READ_EVENT)) {
+        exit(2);
+    }
+
+    for ( ;; ) {
+
+        if (ngx_terminate) {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
+            ngx_ff_primary_process_exit(cycle);
+        }
+
+        if (ngx_reopen) {
+            ngx_reopen = 0;
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
+            ngx_reopen_files(cycle, -1);
+        }
+
+        (void) ngx_ff_process_channel_events(cycle);
+    }
+}
+
+static void
+ngx_start_ff_primary_process(ngx_cycle_t *cycle)
+{
+    ngx_channel_t  ch;
+    ngx_memzero(&ch, sizeof(ngx_channel_t));
+
+    ch.command = NGX_CMD_OPEN_CHANNEL;
+
+    ngx_spawn_process(cycle, ngx_ff_primary_process_cycle,
+                      NULL, "ff primary process",
+                      NGX_PROCESS_RESPAWN);
+
+    ch.pid = ngx_processes[ngx_process_slot].pid;
+    ch.slot = ngx_process_slot;
+    ch.fd = ngx_processes[ngx_process_slot].channel[0];
+
+    ngx_pass_open_channel(cycle, &ch);
+
+    // wait for primary process startup.
+    ngx_sleep(1);
+}
+#endif
 
 void
 ngx_master_process_cycle(ngx_cycle_t *cycle)
@@ -76,12 +224,18 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     u_char            *p;
     size_t             size;
     ngx_int_t          i;
+#if (NGX_HAVE_FSTACK)
+    ngx_uint_t         sigio;
+#else
     ngx_uint_t         n, sigio;
+#endif
     sigset_t           set;
     struct itimerval   itv;
     ngx_uint_t         live;
     ngx_msec_t         delay;
+#if (!NGX_HAVE_FSTACK)
     ngx_listening_t   *ls;
+#endif
     ngx_core_conf_t   *ccf;
 
     sigemptyset(&set);
@@ -126,6 +280,16 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+#if (NGX_HAVE_FSTACK)
+    if (ccf->fstack_conf.len == 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                      "fstack_conf null");
+        exit(2);
+    }
+
+    ngx_start_ff_primary_process(cycle);
+#endif
 
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
@@ -204,6 +368,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
 
+#if (!NGX_HAVE_FSTACK)
             ls = cycle->listening.elts;
             for (n = 0; n < cycle->listening.nelts; n++) {
                 if (ngx_close_socket(ls[n].fd) == -1) {
@@ -213,7 +378,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                 }
             }
             cycle->listening.nelts = 0;
-
+#endif
             continue;
         }
 
@@ -283,50 +448,6 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     }
 }
 
-#if (NGX_HAVE_FSTACK)
-#include "ff_api.h"
-static int
-ngx_single_process_cycle_loop(void *arg)
-{
-    ngx_cycle_t *cycle = (ngx_cycle_t *)arg;
-
-    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
-    
-    ngx_process_events_and_timers(cycle);
-    
-    if (ngx_terminate || ngx_quit) {
-        ngx_uint_t i;
-        for (i = 0; cycle->modules[i]; i++) {
-            if (cycle->modules[i]->exit_process) {
-                cycle->modules[i]->exit_process(cycle);
-            }
-        }
-    
-        ngx_master_process_exit(cycle);
-    }
-
-    if (ngx_reconfigure) {
-        ngx_reconfigure = 0;
-        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reconfiguring");
-    
-        cycle = ngx_init_cycle(cycle);
-        if (cycle == NULL) {
-            cycle = (ngx_cycle_t *) ngx_cycle;
-            return 0;
-        }
-    
-        ngx_cycle = cycle;
-    }
-
-    if (ngx_reopen) {
-        ngx_reopen = 0;
-        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
-        ngx_reopen_files(cycle, (ngx_uid_t) -1);
-    }
-
-    return 0;
-}
-#endif
 void
 ngx_single_process_cycle(ngx_cycle_t *cycle)
 {
@@ -346,9 +467,6 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
         }
     }
 
-#if (NGX_HAVE_FSTACK)
-    ff_run(ngx_single_process_cycle_loop, (void *)cycle);
-#else
     for ( ;; ) {
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
 
@@ -359,11 +477,11 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
             for (i = 0; cycle->modules[i]; i++) {
                 if (cycle->modules[i]->exit_process) {
                     cycle->modules[i]->exit_process(cycle);
-                }       
-            }       
+                }
+            }
 
             ngx_master_process_exit(cycle);
-        }       
+        }
 
         if (ngx_reconfigure) {
             ngx_reconfigure = 0;
@@ -384,7 +502,6 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
             ngx_reopen_files(cycle, (ngx_uid_t) -1);
         }
     }
-#endif
 }
 
 
@@ -742,7 +859,9 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
         }
     }
 
+#if (!NGX_HAVE_FSTACK)
     ngx_close_listening_sockets(cycle);
+#endif
 
     /*
      * Copy ngx_cycle->log related data to the special static exit cycle,
@@ -769,6 +888,55 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
     exit(0);
 }
 
+#if (NGX_HAVE_FSTACK)
+static int
+ngx_worker_process_cycle_loop(void *arg)
+{
+    ngx_cycle_t *cycle = (ngx_cycle_t *)arg;
+
+    if (ngx_exiting) {
+        ngx_event_cancel_timers();
+
+        if (ngx_event_timer_rbtree.root == ngx_event_timer_rbtree.sentinel)
+        {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
+
+            ngx_worker_process_exit(cycle);
+        }
+    }
+
+    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
+
+    ngx_process_events_and_timers(cycle);
+
+    if (ngx_terminate) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
+
+        ngx_worker_process_exit(cycle);
+    }
+
+    if (ngx_quit) {
+        ngx_quit = 0;
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "gracefully shutting down");
+        ngx_setproctitle("worker process is shutting down");
+
+        if (!ngx_exiting) {
+            ngx_exiting = 1;
+            ngx_close_listening_sockets(cycle);
+            ngx_close_idle_connections(cycle);
+        }
+    }
+
+    if (ngx_reopen) {
+        ngx_reopen = 0;
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
+        ngx_reopen_files(cycle, -1);
+    }
+
+    return 0;
+}
+#endif
 
 static void
 ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
@@ -782,6 +950,9 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
 
     ngx_setproctitle("worker process");
 
+#if (NGX_HAVE_FSTACK)
+    ff_run(ngx_worker_process_cycle_loop, (void *)cycle);
+#else
     for ( ;; ) {
 
         if (ngx_exiting) {
@@ -824,6 +995,7 @@ ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data)
             ngx_reopen_files(cycle, -1);
         }
     }
+#endif
 }
 
 
@@ -935,6 +1107,28 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     tp = ngx_timeofday();
     srandom(((unsigned) ngx_pid << 16) ^ tp->sec ^ tp->msec);
 
+#if (NGX_HAVE_FSTACK)
+    if (worker >= 0) {
+        if (ccf->fstack_conf.len == 0) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                          "fstack_conf null");
+            exit(2);
+        }
+
+        if (ff_mod_init((const char *)ccf->fstack_conf.data, worker, 0)) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                          "ff_mod_init failed");
+            exit(2);
+        }
+
+        if (ngx_open_listening_sockets(cycle) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+                          "ngx_open_listening_sockets failed");
+            exit(2);
+        }
+    }
+#endif
+
     /*
      * disable deleting previous events for the listening sockets because
      * in the worker processes there are no events at all at this point
@@ -982,8 +1176,12 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     ngx_last_process = 0;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_ff_start_worker_channel(cycle, ngx_channel, NGX_READ_EVENT)
+#else
     if (ngx_add_channel_event(cycle, ngx_channel, NGX_READ_EVENT,
                               ngx_channel_handler)
+#endif
         == NGX_ERROR)
     {
         /* fatal */
@@ -1052,7 +1250,7 @@ ngx_worker_process_exit(ngx_cycle_t *cycle)
     exit(0);
 }
 
-
+#if (!NGX_HAVE_FSTACK)
 static void
 ngx_channel_handler(ngx_event_t *ev)
 {
@@ -1139,7 +1337,7 @@ ngx_channel_handler(ngx_event_t *ev)
         }
     }
 }
-
+#endif
 
 static void
 ngx_cache_manager_process_cycle(ngx_cycle_t *cycle, void *data)

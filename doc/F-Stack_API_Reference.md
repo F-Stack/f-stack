@@ -6,8 +6,6 @@ FF API provides standard Kqueue/Epoll interface, and a micro threading framework
 
 In order to facilitate a variety of services can use F-Stack simpler and faster, F-Stack has integrated Nginx and Redis。
 
-See 《F-Stack\_Nginx\_APP\_Guide》, 《F-Stack\_Reis\_APP\_Guide》, 《F-Stack\_Microthread\_APP\_Guide》
-
 ## FF API
 
  The header file ff_api.h defines the following API, which should be used to replace the system called when using the F-Sstack.

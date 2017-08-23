@@ -338,6 +338,7 @@ ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
 {
     int c;
     int index = 0;
+    optind = 1;
     while((c = getopt_long(argc, argv, short_options, long_options, &index)) != -1) {
         switch (c) {
             case 'c':

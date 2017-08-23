@@ -75,7 +75,9 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     make
     make install
     cd ../..
-    ./start.sh -b /usr/local/nginx_fstack/sbin/nginx -c config.ini
+    /usr/local/nginx_fstack/sbin/nginx
+
+for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/master/doc/F-Stack_Nginx_APP_Guide.md).
 
 #### Redis
 

@@ -1242,12 +1242,13 @@ ff_dpdk_if_up(void) {
 
 void
 ff_dpdk_run(loop_func_t loop, void *arg) {
-    struct loop_routine *lr = malloc(sizeof(struct loop_routine));
+    struct loop_routine *lr = rte_malloc(NULL,
+        sizeof(struct loop_routine), 0);
     lr->loop = loop;
     lr->arg = arg;
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
     rte_eal_mp_wait_lcore();
-    free(lr);
+    rte_free(lr);
 }
 
 void

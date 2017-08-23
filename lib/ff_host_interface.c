@@ -183,7 +183,7 @@ ff_get_current_time(time_t *sec, long *nsec)
 void
 ff_update_current_ts()
 {
-    int rv = clock_gettime(CLOCK_MONOTONIC, &current_ts);
+    int rv = clock_gettime(CLOCK_REALTIME, &current_ts);
     assert(rv == 0);
 }
 
