@@ -27,7 +27,7 @@ F-Stack is an open source network framework based on DPDK. F-Stack supports stan
                | ff primary process |     |  worker process   |    |  worker process  |
                |                    |     |                   |    |                  |
                +--------------------+     +-------------------+    +------------------+
-                ff_init                   +--------+  +-------+
+                ff_init(primary)          +--------+  +-------+
                 loop:                     |        |  |       |
                  handle channel event     | fstack |  |channel|
                                           |  main  |  | event |
@@ -42,15 +42,16 @@ F-Stack is an open source network framework based on DPDK. F-Stack supports stan
 
 ```
 
-- spawn a new process: ff primary, ff_init(--proc-type=primary);loop(wait channel event).
-- worker process, main thread: ff_init(--proc-type=secondary);ff_run(worker_process_cycle), channel thread: wait channel event.
+- spawn an extra process ff primary: ff_init(primary);loop(handle channel event).This process doesn't handle SIGQUIT.
+
+- worker process has 2 threads. main thread: ff_init(secondary);ff_run(worker_process_cycle), channel thread: loop(handle channel event).
 
 Note that:
 - supported nginx signals: reload(HUP)/reopen(USR1)/stop(TERM).
 
 - unsupported nginx signals: NGX_CHANGEBIN_SIGNAL(USR2).
 
-- when use `nginx -s reload`, you should make sure that `woker_processes` in nginx.conf and f-stack.conf couldn't be modified.
+- when use `nginx -s reload`, you should make sure that `woker_processes` in nginx.conf and f-stack.conf haven't be modified.
 
 - necessary modifies in nginx.conf:
 
