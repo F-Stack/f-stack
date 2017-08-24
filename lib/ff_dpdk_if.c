@@ -1147,7 +1147,7 @@ main_loop(void *arg)
 
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     unsigned lcore_id;
-    uint64_t prev_tsc, diff_tsc, cur_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
+    uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
     int i, j, nb_rx, idle;
     uint8_t port_id, queue_id;
     struct lcore_conf *qconf;
@@ -1156,6 +1156,7 @@ main_loop(void *arg)
     struct ff_dpdk_if_context *ctx;
 
     prev_tsc = 0;
+    usch_tsc = 0;
 
     lcore_id = rte_lcore_id();
     qconf = &lcore_conf;
@@ -1242,12 +1243,16 @@ main_loop(void *arg)
 
         div_tsc = rte_rdtsc();
 
-        if (likely(lr->loop != NULL)) {
+        if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc > drain_tsc))) {
+            usch_tsc = cur_tsc;
             lr->loop(lr->arg);
         }
 
         end_tsc = rte_rdtsc();
-        usr_tsc = end_tsc - div_tsc;
+
+        if (usch_tsc == cur_tsc) {
+            usr_tsc = end_tsc - div_tsc;
+        }
 
         if (!idle) {
             sys_tsc = div_tsc - cur_tsc;
