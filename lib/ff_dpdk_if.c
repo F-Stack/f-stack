@@ -957,6 +957,16 @@ handle_route_msg(struct ff_msg *msg, uint16_t proc_id)
     rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
+static struct ff_top_args ff_status;
+static inline void
+handle_top_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    msg->top = ff_status;
+    msg->result = 0;
+
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+
 static inline void
 handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
 {
@@ -976,6 +986,9 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             break;
         case FF_ROUTE:
             handle_route_msg(msg, proc_id);
+            break;
+        case FF_TOP:
+            handle_top_msg(msg, proc_id);
             break;
         default:
             handle_default_msg(msg, proc_id);
@@ -1134,8 +1147,8 @@ main_loop(void *arg)
 
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     unsigned lcore_id;
-    uint64_t prev_tsc, diff_tsc, cur_tsc;
-    int i, j, nb_rx;
+    uint64_t prev_tsc, diff_tsc, cur_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
+    int i, j, nb_rx, idle;
     uint8_t port_id, queue_id;
     struct lcore_conf *qconf;
     const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
@@ -1158,6 +1171,10 @@ main_loop(void *arg)
             rte_timer_manage();
         }
 
+        idle = 1;
+        sys_tsc = 0;
+        usr_tsc = 0;
+
         /*
          * TX burst queue drain
          */
@@ -1170,6 +1187,8 @@ main_loop(void *arg)
             for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
                 if (qconf->tx_mbufs[port_id].len == 0)
                     continue;
+
+                idle = 0;
                 send_burst(qconf,
                     qconf->tx_mbufs[port_id].len,
                     port_id);
@@ -1198,6 +1217,8 @@ main_loop(void *arg)
             if (nb_rx == 0)
                 continue;
 
+            idle = 0;
+
             /* Prefetch first packets */
             for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
                 rte_prefetch0(rte_pktmbuf_mtod(
@@ -1219,9 +1240,25 @@ main_loop(void *arg)
 
         process_msg_ring(qconf->proc_id);
 
+        div_tsc = rte_rdtsc();
+
         if (likely(lr->loop != NULL)) {
             lr->loop(lr->arg);
         }
+
+        end_tsc = rte_rdtsc();
+        usr_tsc = end_tsc - div_tsc;
+
+        if (!idle) {
+            sys_tsc = div_tsc - cur_tsc;
+            ff_status.sys_tsc += sys_tsc;
+        }
+
+        ff_status.usr_tsc += usr_tsc;
+        ff_status.work_tsc += end_tsc - cur_tsc;
+        ff_status.idle_tsc += end_tsc - cur_tsc - usr_tsc - sys_tsc;
+
+        ff_status.loops++;
     }
 }
 

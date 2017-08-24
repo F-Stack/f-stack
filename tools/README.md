@@ -85,6 +85,32 @@ Note that, if you want to modify the route table, you must use `-p` to execute t
 
 For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?route).
 
+# top
+Usage:
+```
+top [-p <f-stack proc_id>] [-d <secs>] [-n num]
+```
+Examples:
+```
+./tools/top/top 
+
+|---------|---------|---------|---------------|
+|     idle|      sys|      usr|           loop|
+|---------|---------|---------|---------------|
+|   99.69%|    0.00%|    0.31%|        8214640|
+|   99.77%|    0.00%|    0.23%|        8205713|
+|    5.02%|   45.19%|   49.79%|         769435|
+|    0.00%|   19.88%|   80.12%|            393|
+|    0.00%|   20.28%|   79.72%|            395|
+|    0.00%|   15.50%|   84.50%|            403|
+|    0.00%|   31.31%|   68.69%|            427|
+|   32.07%|    8.78%|   59.15%|        2342862|
+|   99.79%|    0.00%|    0.21%|        9974439|
+|   99.81%|    0.00%|    0.19%|        7336153|
+|   99.79%|    0.00%|    0.21%|        8147676|
+```
+
+
 # how to implement a custom tool for communicating with F-Stack process
 
 Add a new FF_MSG_TYPE in ff_msg.h:
