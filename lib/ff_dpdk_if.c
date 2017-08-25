@@ -1350,7 +1350,7 @@ ff_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport, uint16_t dport)
 
     uint32_t hash = toeplitz_hash(sizeof(default_rsskey_40bytes), default_rsskey_40bytes, datalen, data);
 
-    return (hash&0x7F % qconf->nb_procs) == qconf->proc_id;
+    return (hash % qconf->nb_procs) == qconf->proc_id;
 }
 
 
