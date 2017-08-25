@@ -47,8 +47,6 @@
 #include "ff_api.h"
 #include "ff_config.h"
 
-unsigned int sleep(unsigned int seconds);
-
 int ff_freebsd_init(void);
 
 extern void mutex_init(void);

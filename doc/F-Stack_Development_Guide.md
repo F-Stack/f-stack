@@ -92,150 +92,17 @@ Applications with stateful(high latency) use F-Stack , state need to be stored f
 
 ## F-Stack configure file reference
 
-  DPDK related parameters, including coremask adn NIC ports num
+  DPDK related parameters, including coremask adn NIC ports num.
+  FreeBSD related parameters, similar with original FreeBSD's /boot.config and /etc/sysctl.conf.
 
-	[dpdk]
-    lcore_mask=3
-    ## Port mask, enable and disable ports.
-    ## Default: all ports are enabled.
-    #port_mask=1
-    channel=4
-    nb_ports=1
-    promiscuous=1
-    numa_on=1
-    
-    [port0]
-    addr=192.168.1.2
-    netmask=255.255.255.0
-    broadcast=192.168.1.255
-    gateway=192.168.1.1
+## Start a F-Stack application
 
-    ## Packet capture path, this will hurt performance
-    #pcap=./a.pcap
-    
-    ## Kni config: if enabled and method=reject,
-    ## all packets that do not belong to the following tcp_port and udp_port
-    ## will transmit to kernel; if method=accept, all packets that belong to
-    ## the following tcp_port and udp_port will transmit to kernel.
-    #[kni]
-    #enable=1
-    #method=reject
-    #tcp_port=80
-    #udp_port=53
-    
-    # log is invalid
-    [log]
-    level=1
-    dir=/var/log
-    
-    ## FreeBSD network performance tuning configurations.
-    ## Most native FreeBSD configurations are supported.
-    [freebsd.boot]
-    hz=100
-    
-    kern.ipc.maxsockets=262144
-    
-    net.inet.tcp.syncache.hashsize=4096
-    net.inet.tcp.syncache.bucketlimit=100
-    
-    net.inet.tcp.tcbhashsize=65536
-    
-    [freebsd.sysctl]
-    kern.ipc.somaxconn=32768
-    kern.ipc.maxsockbuf=16777216
-    
-    net.inet.tcp.fast_finwait2_recycle=1
-    net.inet.tcp.sendspace=16384
-    net.inet.tcp.recvspace=8192
-    net.inet.tcp.nolocaltimewait=1
-    net.inet.tcp.cc.algorithm=htcp
-    net.inet.tcp.sendbuf_max=16777216
-    net.inet.tcp.recvbuf_max=16777216
-    net.inet.tcp.sendbuf_auto=1
-    net.inet.tcp.recvbuf_auto=1
-    net.inet.tcp.sendbuf_inc=16384
-    net.inet.tcp.recvbuf_inc=524288
-    net.inet.tcp.inflight.enable=0
-    net.inet.tcp.sack=1
-    net.inet.tcp.blackhole=1
-    net.inet.tcp.msl=2000
-    net.inet.tcp.delayed_ack=0
-    
-    net.inet.udp.blackhole=1
-    net.inet.ip.redirect=0
+Since F-Stack is multi-process architecture, every F-Stack application process should call `ff_init(argc, argv)` to initialize the environments.
+For example, if `lcore_mask=f` in config.ini, you can start your app like this:
 
-## F-Stack Application Start
+    ${bin} --conf config.ini --proc-type=primary --proc-id=0
+    ${bin} --conf config.ini --proc-type=secondary --proc-id=1
+    ${bin} --conf config.ini --proc-type=secondary --proc-id=2
+    ${bin} --conf config.ini --proc-type=secondary --proc-id=3
 
-F-Stack use a multi process architecture to remove resource sharing. There are some attentions for start of application dock with F-Stack. We take the example of start.sh under F-Stack root directory.
-
-    #!/bin/bash
-
-    function usage() {
-        echo "F-Stack app start tool"
-        echo "Options:"
-        echo " -c [conf]                Path of config file"
-        echo " -b [N]                   Path of binary"
-        echo " -h                       show this help"
-        exit
-    }
-
-    conf=config.ini
-    bin=./helloword
-    
-    while getopts "c:b:h" args
-    do
-        case $args in
-             c)
-                conf=$OPTARG
-                ;;
-             b)
-                bin=$OPTARG
-                ;;
-             h)
-                usage
-                exit 0
-                ;;
-        esac
-    done
-
-    allcmask0x=`cat ${conf}|grep lcore_mask|awk -F '=' '{print $2}'`
-    ((allcmask=16#$allcmask0x))
-    
-    # match coremask actual number of CPU core, and calculate the specified startup parameters of all processes, including
-    #	-c coremask，The coremask parameters and the actual number of CPU core match, and calculate the specific startup parameters of all processes, including
-    #	--proc-type=primary/secondary
-    #	--num-procs = number of process
-    #	--proc-id = current process ID, increase from 0
-    num_procs=0
-    PROCESSOR=$(grep 'processor' /proc/cpuinfo |sort |uniq |wc -l)
-    for((i=0;i<${PROCESSOR};++i))
-    do
-        mask=`echo "2^$i"|bc`
-        ((result=${allcmask} & ${mask}))
-        if [ ${result} != 0 ]
-        then 
-            ((num_procs++));
-            cpuinfo[$i]=1
-        else
-            cpuinfo[$i]=0
-        fi 
-    done
-    proc_id=0
-    for((i=0;i<${PROCESSOR};++i))
-    do
-        if ((cpuinfo[$i] == 1))
-        then
-            cmask=`echo "2^$i"|bc`
-            cmask=`echo "obase=16;${cmask}"|bc`
-            if ((proc_id == 0))
-            then
-                #echo "${bin} config.ini -c $cmask  --proc-type=primary --num-procs=${num_procs} --proc-id=${proc_id}"
-                ${bin} config.ini -c ${cmask}  --proc-type=primary --num-procs=${num_procs} --proc-id=${proc_id} &
-                sleep 5
-            else
-                #echo "${bin} config.ini -c $cmask --proc-type=secondary --num-procs=${num_procs} --proc-id=${proc_id}"
-                ${bin} config.ini -c $cmask --proc-type=secondary --num-procs=${num_procs} --proc-id=${proc_id} &
-            fi
-            ((proc_id++))
-        fi 
-    done
+Or you can just use `start.sh` under F-Stack root directory.

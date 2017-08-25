@@ -5,6 +5,7 @@ function usage() {
     echo "Options:"
     echo " -c [conf]                Path of config file"
     echo " -b [N]                   Path of binary"
+    echo " -o [N]                   Other ARGs for app"
     echo " -h                       show this help"
     exit
 }
@@ -12,7 +13,7 @@ function usage() {
 conf=config.ini
 bin=./example/helloworld
 
-while getopts "c:b:h" args
+while getopts "c:b:o:h" args
 do
     case $args in
          c)
@@ -20,6 +21,9 @@ do
             ;;
          b)
             bin=$OPTARG
+            ;;
+         o)
+            others=$OPTARG
             ;;
          h)
             usage
@@ -47,11 +51,11 @@ for((proc_id=0; proc_id<${num_procs}; ++proc_id))
 do
     if ((proc_id == 0))
     then
-        echo "${bin} --conf ${conf} --proc-type=primary --proc-id=${proc_id}"
-        ${bin} --conf ${conf} --proc-type=primary --proc-id=${proc_id} &
+        echo "${bin} --conf ${conf} --proc-type=primary --proc-id=${proc_id} ${others}"
+        ${bin} --conf ${conf} --proc-type=primary --proc-id=${proc_id} ${others} &
         sleep 5
     else
-        echo "${bin} --conf ${conf} --proc-type=secondary --proc-id=${proc_id}"
-        ${bin} --conf ${conf} --proc-type=secondary --proc-id=${proc_id} &
+        echo "${bin} --conf ${conf} --proc-type=secondary --proc-id=${proc_id} ${others}"
+        ${bin} --conf ${conf} --proc-type=secondary --proc-id=${proc_id} ${others} &
     fi
 done

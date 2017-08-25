@@ -68,7 +68,7 @@
  * Configurable number of RX/TX ring descriptors
  */
 #define RX_QUEUE_SIZE 512
-#define TX_QUEUE_SIZE 256
+#define TX_QUEUE_SIZE 512
 
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
@@ -957,6 +957,16 @@ handle_route_msg(struct ff_msg *msg, uint16_t proc_id)
     rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
+static struct ff_top_args ff_status;
+static inline void
+handle_top_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    msg->top = ff_status;
+    msg->result = 0;
+
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+
 static inline void
 handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
 {
@@ -976,6 +986,9 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             break;
         case FF_ROUTE:
             handle_route_msg(msg, proc_id);
+            break;
+        case FF_TOP:
+            handle_top_msg(msg, proc_id);
             break;
         default:
             handle_default_msg(msg, proc_id);
@@ -1134,8 +1147,8 @@ main_loop(void *arg)
 
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     unsigned lcore_id;
-    uint64_t prev_tsc, diff_tsc, cur_tsc;
-    int i, j, nb_rx;
+    uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
+    int i, j, nb_rx, idle;
     uint8_t port_id, queue_id;
     struct lcore_conf *qconf;
     const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
@@ -1143,6 +1156,7 @@ main_loop(void *arg)
     struct ff_dpdk_if_context *ctx;
 
     prev_tsc = 0;
+    usch_tsc = 0;
 
     lcore_id = rte_lcore_id();
     qconf = &lcore_conf;
@@ -1158,6 +1172,10 @@ main_loop(void *arg)
             rte_timer_manage();
         }
 
+        idle = 1;
+        sys_tsc = 0;
+        usr_tsc = 0;
+
         /*
          * TX burst queue drain
          */
@@ -1170,6 +1188,8 @@ main_loop(void *arg)
             for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
                 if (qconf->tx_mbufs[port_id].len == 0)
                     continue;
+
+                idle = 0;
                 send_burst(qconf,
                     qconf->tx_mbufs[port_id].len,
                     port_id);
@@ -1198,6 +1218,8 @@ main_loop(void *arg)
             if (nb_rx == 0)
                 continue;
 
+            idle = 0;
+
             /* Prefetch first packets */
             for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
                 rte_prefetch0(rte_pktmbuf_mtod(
@@ -1219,9 +1241,29 @@ main_loop(void *arg)
 
         process_msg_ring(qconf->proc_id);
 
-        if (likely(lr->loop != NULL)) {
+        div_tsc = rte_rdtsc();
+
+        if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc > drain_tsc))) {
+            usch_tsc = cur_tsc;
             lr->loop(lr->arg);
         }
+
+        end_tsc = rte_rdtsc();
+
+        if (usch_tsc == cur_tsc) {
+            usr_tsc = end_tsc - div_tsc;
+        }
+
+        if (!idle) {
+            sys_tsc = div_tsc - cur_tsc;
+            ff_status.sys_tsc += sys_tsc;
+        }
+
+        ff_status.usr_tsc += usr_tsc;
+        ff_status.work_tsc += end_tsc - cur_tsc;
+        ff_status.idle_tsc += end_tsc - cur_tsc - usr_tsc - sys_tsc;
+
+        ff_status.loops++;
     }
 }
 
@@ -1242,12 +1284,13 @@ ff_dpdk_if_up(void) {
 
 void
 ff_dpdk_run(loop_func_t loop, void *arg) {
-    struct loop_routine *lr = malloc(sizeof(struct loop_routine));
+    struct loop_routine *lr = rte_malloc(NULL,
+        sizeof(struct loop_routine), 0);
     lr->loop = loop;
     lr->arg = arg;
     rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
     rte_eal_mp_wait_lcore();
-    free(lr);
+    rte_free(lr);
 }
 
 void

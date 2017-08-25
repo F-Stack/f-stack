@@ -348,15 +348,11 @@ pci_scan_one(const char *dirname, uint16_t domain, uint8_t bus,
 	/* get numa node */
 	snprintf(filename, sizeof(filename), "%s/numa_node",
 		 dirname);
-	if (access(filename, R_OK) != 0) {
-		/* if no NUMA support, set default to 0 */
-		dev->numa_node = 0;
-	} else {
-		if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-			free(dev);
-			return -1;
-		}
+	if (eal_parse_sysfs_value(filename, &tmp) == 0 &&
+	    tmp < RTE_MAX_NUMA_NODES) {
 		dev->numa_node = tmp;
+	} else {
+		dev->numa_node = 0;
 	}
 
 	/* parse resources */

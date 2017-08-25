@@ -71,10 +71,8 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
-#include <sys/select.h>
 
 #include "ff_api.h"
-#include "ff_config.h"
 
 #define _GNU_SOURCE
 #define __USE_GNU
@@ -85,6 +83,7 @@
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <dlfcn.h>
+#include <limits.h>
 
 #ifndef likely
 #define likely(x)  __builtin_expect((x),1)
@@ -99,6 +98,8 @@ static int (*real_socket)(int, int, int);
 static int (*real_bind)(int, const struct sockaddr*, socklen_t);
 static int (*real_connect)(int, const struct sockaddr*, socklen_t);
 static int (*real_listen)(int, int);
+
+static int (*real_getsockopt)(int, int, int, void *, socklen_t*);
 static int (*real_setsockopt)(int, int, int, const void *, socklen_t);
 
 static int (*real_accept)(int, struct sockaddr *, socklen_t *);
@@ -126,14 +127,37 @@ static int inited;
     })
 
 
-void
-ff_mod_init(int argc, char * const *argv) {
-    int rc;
+// proc_type, 1: primary, 0: secondary.
+int
+ff_mod_init(const char *conf, int proc_id, int proc_type) {
+    int rc, i;
+    int ff_argc = 4;
 
-    rc = ff_init(argc, argv);
-    assert(0 == rc);
+    char **ff_argv = malloc(sizeof(char *)*ff_argc);
+    for (i = 0; i < ff_argc; i++) {
+        ff_argv[i] = malloc(sizeof(char)*PATH_MAX);
+    }
 
-    inited = 1;
+    sprintf(ff_argv[0], "nginx");
+    sprintf(ff_argv[1], "--conf=%s", conf);
+    sprintf(ff_argv[2], "--proc-id=%d", proc_id);
+    if (proc_type == 1) {
+        sprintf(ff_argv[3], "--proc-type=primary");
+    } else {
+        sprintf(ff_argv[3], "--proc-type=secondary");
+    }
+
+    rc = ff_init(ff_argc, ff_argv);
+    if (rc == 0)
+        inited = 1;
+
+    for (i = 0; i < ff_argc; i++) {
+        free(ff_argv[i]);
+    }
+
+    free(ff_argv);
+
+    return rc;
 }
 
 int
@@ -247,6 +271,21 @@ listen(int sockfd, int backlog)
         return ff_listen(sockfd, backlog);
     } else {
         return SYSCALL(listen)(sockfd, backlog);
+    }
+}
+
+int
+getsockopt(int sockfd, int level, int optname,
+    void *optval, socklen_t *optlen)
+{
+    if (unlikely(inited == 0)) {
+        return SYSCALL(getsockopt)(sockfd, level, optname, optval, optlen);
+    }
+
+    if (ff_fdisused(sockfd)) {
+        return ff_getsockopt(sockfd, level, optname, optval, optlen);
+    } else {
+        return SYSCALL(getsockopt)(sockfd, level, optname, optval, optlen);
     }
 }
 

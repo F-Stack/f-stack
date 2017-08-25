@@ -71,8 +71,7 @@
     python /data/f-stack/dpdk/tools/dpdk-devbind.py --bind=igb_uio eth0
 
     # start Nginx
-    cd ../..
-    ./start.sh -b /usr/local/nginx_fstack/sbin/nginx -c config.ini
+    /usr/local/nginx_fstack/sbin/nginx
 
     # start kni
     sleep 30
