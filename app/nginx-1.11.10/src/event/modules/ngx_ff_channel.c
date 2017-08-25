@@ -368,7 +368,7 @@ ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
 
     /* NGX_TIMER_INFINITE == INFTIM */
 
-    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, log, 0,
+    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "epoll timer: %M", timer);
 
     events = epoll_wait(ep, event_list, (int) nevents, timer);
@@ -455,7 +455,7 @@ ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
                  * that was just closed in this iteration
                  */
 
-                ngx_log_debug1(NGX_LOG_DEBUG_EVENT, log, 0,
+                ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "epoll: stale event %p", c);
                 continue;
             }
