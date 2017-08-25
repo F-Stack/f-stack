@@ -3957,17 +3957,17 @@ int main(int argc, char **argv) {
     int rc = ff_init(argc, argv);
     assert(0 == rc);
     ff_mod_init();
-	//split fstack arguments.
-	int new_argc = argc - 3;
+    int new_argc = argc - 4;
     if (new_argc <= 0) {
         new_argc = 1;
     }
-	char **new_argv = zmalloc(sizeof(char *) * new_argc);
+
+    char **new_argv = zmalloc(sizeof(char *) * new_argc);
     new_argv[0] = argv[0];
-	int i;
-	for (i = 1; i < new_argc; i++) {
-		new_argv[i] = argv[i + 3];
-	}
+    int i;
+    for (i = 1; i < new_argc; i++) {
+        new_argv[i] = argv[i + 4];
+    }
 	argv = new_argv;
 	argc = new_argc;
 #endif
