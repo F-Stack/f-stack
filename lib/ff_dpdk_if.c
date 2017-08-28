@@ -23,6 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+#include <assert.h>
 
 #include <rte_common.h>
 #include <rte_byteorder.h>
@@ -157,6 +158,8 @@ static struct lcore_conf lcore_conf;
 static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
 static struct rte_ring **arp_ring[RTE_MAX_LCORE];
+
+static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
 struct ff_msg_ring {
     char ring_name[2][RTE_RING_NAMESIZE];
@@ -534,6 +537,31 @@ init_kni(void)
     return 0;
 }
 
+static void
+set_rss_table(uint8_t port_id, uint16_t reta_size, uint16_t nb_queues)
+{
+    if (reta_size == 0) {
+        return;
+    }
+
+    int reta_conf_size = RTE_MAX(1, reta_size / RTE_RETA_GROUP_SIZE);
+    struct rte_eth_rss_reta_entry64 reta_conf[reta_conf_size];
+
+    /* config HW indirection table */
+    unsigned i, j, hash=0;
+    for (i = 0; i < reta_conf_size; i++) {
+        reta_conf[i].mask = ~0ULL;
+        for (j = 0; j < RTE_RETA_GROUP_SIZE; j++) {
+            reta_conf[i].reta[j] = hash++ % nb_queues;
+        }
+    }
+
+    if (rte_eth_dev_rss_reta_update(port_id, reta_conf, reta_size)) {
+        rte_exit(EXIT_FAILURE, "port[%d], failed to update rss table\n",
+            port_id);
+    }
+}
+
 static int
 init_port_start(void)
 {
@@ -659,6 +687,15 @@ init_port_start(void)
             printf("TSO is disabled\n");
         }
 
+        if (dev_info.reta_size) {
+            /* reta size must be power of 2 */
+            assert((dev_info.reta_size & (dev_info.reta_size - 1)) == 0);
+
+            rss_reta_size[port_id] = dev_info.reta_size;
+            printf("port[%d]: rss table size: %d\n", port_id,
+                dev_info.reta_size);
+        }
+
         if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
             continue;
         }
@@ -687,6 +724,23 @@ init_port_start(void)
         ret = rte_eth_dev_start(port_id);
         if (ret < 0) {
             return ret;
+        }
+
+        if (nb_procs > 1) {
+            /* set HW rss hash function to Toeplitz. */
+            if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
+                struct rte_eth_hash_filter_info info = {0};
+                info.info_type = RTE_ETH_HASH_FILTER_GLOBAL_CONFIG;
+                info.info.global_conf.hash_func = RTE_ETH_HASH_FUNCTION_TOEPLITZ;
+
+                if (rte_eth_dev_filter_ctrl(port_id, RTE_ETH_FILTER_HASH,
+                    RTE_ETH_FILTER_SET, &info) < 0) {
+                    rte_exit(EXIT_FAILURE, "port[%d] set hash func failed\n",
+                        port_id);
+                }
+            }
+
+            set_rss_table(port_id, dev_info.reta_size, nb_procs);
         }
 
         /* Enable RX in promiscuous mode for the Ethernet device. */
@@ -1323,13 +1377,17 @@ toeplitz_hash(unsigned keylen, const uint8_t *key,
 }
 
 int
-ff_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport, uint16_t dport)
+ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
+    uint16_t sport, uint16_t dport)
 {
     struct lcore_conf *qconf = &lcore_conf;
 
     if (qconf->nb_procs == 1) {
         return 1;
     }
+
+    struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
+    uint16_t reta_size = rss_reta_size[ctx->port_id];
 
     uint8_t data[sizeof(saddr) + sizeof(daddr) + sizeof(sport) +
         sizeof(dport)];
@@ -1348,9 +1406,10 @@ ff_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport, uint16_t dport)
     bcopy(&dport, &data[datalen], sizeof(dport));
     datalen += sizeof(dport);
 
-    uint32_t hash = toeplitz_hash(sizeof(default_rsskey_40bytes), default_rsskey_40bytes, datalen, data);
+    uint32_t hash = toeplitz_hash(sizeof(default_rsskey_40bytes),
+        default_rsskey_40bytes, datalen, data);
 
-    return (hash % qconf->nb_procs) == qconf->proc_id;
+    return (hash & (reta_size - 1) % qconf->nb_procs) == qconf->proc_id;
 }
 
 

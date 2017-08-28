@@ -72,7 +72,8 @@ char *ff_getenv(const char *name);
 
 void ff_os_errno(int error);
 
-int ff_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport, uint16_t dport);
+int ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
+    uint16_t sport, uint16_t dport);
 
 #endif
 

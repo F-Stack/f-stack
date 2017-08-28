@@ -43,5 +43,7 @@ void ff_mbuf_tx_offload(void *m, struct ff_tx_offload *offload);
 
 void ff_veth_process_packet(void *arg, void *m);
 
+void *ff_veth_softc_to_hostc(void *softc);
+
 
 #endif /* ifndef _FSTACK_VETH_H */
