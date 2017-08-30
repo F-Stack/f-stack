@@ -1409,7 +1409,7 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint32_t hash = toeplitz_hash(sizeof(default_rsskey_40bytes),
         default_rsskey_40bytes, datalen, data);
 
-    return (hash & (reta_size - 1) % qconf->nb_procs) == qconf->proc_id;
+    return ((hash & (reta_size - 1)) % qconf->nb_procs) == qconf->proc_id;
 }
 
 
