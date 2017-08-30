@@ -413,4 +413,10 @@ ff_veth_detach(void *arg)
     return (0);
 }
 
+void *
+ff_veth_softc_to_hostc(void *softc)
+{
+    struct ff_veth_softc *sc = (struct ff_veth_softc *)softc;
+    return (void *)sc->host_ctx;
+}
 

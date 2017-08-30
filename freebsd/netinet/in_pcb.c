@@ -1114,13 +1114,26 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			return (error);
 	}
 #else
+    struct ifaddr *ifa;
+    struct ifnet *ifp;
+    struct sockaddr_in ifp_sin;
+    bzero(&ifp_sin, sizeof(ifp_sin));
+    ifp_sin.sin_addr.s_addr = laddr.s_addr;
+    ifp_sin.sin_family = AF_INET;
+    ifp_sin.sin_len = sizeof(ifp_sin);
+    ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
+    if (ifa == NULL) {
+        return (EADDRNOTAVAIL);
+    }
+    ifp = ifa->ifa_ifp;
     while (lport == 0) {
         int rss;
         error = in_pcbbind_setup(inp, NULL, &laddr.s_addr, &lport,
             cred);
         if (error)
             return (error);
-        rss = ff_rss_check(faddr.s_addr, laddr.s_addr, fport, lport);
+        rss = ff_rss_check(ifp->if_softc, faddr.s_addr, laddr.s_addr,
+            fport, lport);
         if (rss) {
             break;
         }
