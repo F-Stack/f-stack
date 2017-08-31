@@ -185,7 +185,12 @@ static void aeGetTime(long *seconds, long *milliseconds)
 {
     struct timeval tv;
 
+#ifdef HAVE_FF_KQUEUE
+    ff_gettimeofday(&tv, NULL);
+#else
     gettimeofday(&tv, NULL);
+#endif
+
     *seconds = tv.tv_sec;
     *milliseconds = tv.tv_usec/1000;
 }
