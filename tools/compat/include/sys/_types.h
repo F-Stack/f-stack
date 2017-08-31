@@ -80,7 +80,41 @@ typedef	int		__ct_rune_t;	/* arg type for ctype funcs */
 typedef	__ct_rune_t	__rune_t;	/* rune_t (see above) */
 typedef	__ct_rune_t	__wint_t;	/* wint_t (see above) */
 
+typedef	__uint32_t	__fixpt_t;	/* fixed point number */
+
+typedef	__int64_t	sbintime_t;
+
+typedef	__uint64_t	__vm_offset_t;
+typedef	__int64_t	__vm_ooffset_t;
+typedef	__uint64_t	__vm_paddr_t;
+typedef	__uint64_t	__vm_pindex_t;
+typedef	__uint64_t	__vm_size_t;
+
+typedef	__vm_offset_t	vm_offset_t;
+typedef	__vm_ooffset_t	vm_ooffset_t;
+typedef	__vm_paddr_t	vm_paddr_t;
+typedef	__vm_pindex_t	vm_pindex_t;
+typedef	__vm_size_t	vm_size_t;
+
+typedef	__cpuwhich_t	cpuwhich_t;
+typedef	__cpulevel_t	cpulevel_t;
+typedef	__cpusetid_t	cpusetid_t;
+
+#ifndef _UID_T_DECLARED
+typedef	__uid_t		uid_t;		/* user id */
+#define	_UID_T_DECLARED
+#endif
+
+typedef	__int64_t	__segsz_t;		/* segment size (in pages) */
+typedef	__segsz_t	segsz_t;	/* segment size (in pages) */
 
 typedef	__uint32_t	__fixpt_t;	/* fixed point number */
+typedef	__fixpt_t	fixpt_t;	/* fixed point number */
+
+typedef	__int32_t	__lwpid_t;	/* Thread ID (a.k.a. LWP) */
+#ifndef _LWPID_T_DECLARED
+typedef	__lwpid_t	lwpid_t;	/* Thread ID (a.k.a. LWP) */
+#define	_LWPID_T_DECLARED
+#endif
 
 #endif /* !_COMPAT_SYS__TYPES_H_ */

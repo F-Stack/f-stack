@@ -29,6 +29,7 @@
 #ifndef _COMPAT_SYS_SYSCTL_H
 #define _COMPAT_SYS_SYSCTL_H
 
+#include <sys/queue.h>
 #include <sys/types.h>
 #include <inttypes.h>
 

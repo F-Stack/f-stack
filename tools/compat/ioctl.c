@@ -86,7 +86,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
     }
 
     if (size > msg->buf_len) {
-        errno = EINVAL;
+        errno = ENOMEM;
         ff_ipc_msg_free(msg);
         return -1;
     }
@@ -99,7 +99,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
 
     if (argc == 3) {
         if (size + clen > msg->buf_len) {
-            errno = EINVAL;
+            errno = ENOMEM;
             ff_ipc_msg_free(msg);
             return -1;
         }

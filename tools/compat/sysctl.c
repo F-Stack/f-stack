@@ -25,6 +25,7 @@
  */
 
 #include <string.h>
+#include <rte_malloc.h>
 
 #include "ff_ipc.h"
 
@@ -33,6 +34,8 @@ sysctl(int *name, unsigned namelen, void *old,
     size_t *oldlenp, const void *new, size_t newlen)
 {
     struct ff_msg *msg, *retmsg = NULL;
+    char *extra_buf = NULL;
+    size_t total_len;
 
     if (old != NULL && oldlenp == NULL) {
         errno = EINVAL;
@@ -50,10 +53,16 @@ sysctl(int *name, unsigned namelen, void *old,
         oldlen = *oldlenp;
     }
 
-    if (namelen + oldlen + newlen > msg->buf_len) {
-        errno = EINVAL;
-        ff_ipc_msg_free(msg);
-        return -1;
+    total_len = namelen + oldlen + newlen;
+    if (total_len > msg->buf_len) {
+        extra_buf = rte_malloc(NULL, total_len, 0);
+        if (extra_buf == NULL) {
+            errno = ENOMEM;
+            ff_ipc_msg_free(msg);
+            return -1;
+        }
+        msg->buf_addr = extra_buf;
+        msg->buf_len = total_len; 
     }
 
     char *buf_addr = msg->buf_addr;
@@ -97,6 +106,9 @@ sysctl(int *name, unsigned namelen, void *old,
     if (ret < 0) {
         errno = EPIPE;
         ff_ipc_msg_free(msg);
+        if (extra_buf) {
+            rte_free(extra_buf);
+        }
         return -1;
     }
 
@@ -108,6 +120,9 @@ sysctl(int *name, unsigned namelen, void *old,
         if (ret < 0) {
             errno = EPIPE;
             ff_ipc_msg_free(msg);
+            if (extra_buf) {
+                rte_free(extra_buf);
+            }
             return -1;
         }
     } while (msg != retmsg);
@@ -127,6 +142,9 @@ sysctl(int *name, unsigned namelen, void *old,
     }
 
     ff_ipc_msg_free(msg);
+    if (extra_buf) {
+        rte_free(extra_buf);
+    }
 
     return ret;
 }

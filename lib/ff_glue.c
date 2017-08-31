@@ -104,6 +104,8 @@ SYSINIT(configure3, SI_SUB_CONFIGURE, SI_ORDER_ANY, configure_final, NULL);
 volatile int ticks;
 int cpu_disable_deep_sleep;
 
+static int sysctl_kern_smp_active(SYSCTL_HANDLER_ARGS);
+
 /* This is used in modules that need to work in both SMP and UP. */
 cpuset_t all_cpus;
 
@@ -113,6 +115,31 @@ int mp_maxcpus = MAXCPU;
 
 volatile int smp_started;
 u_int mp_maxid;
+
+static SYSCTL_NODE(_kern, OID_AUTO, smp, CTLFLAG_RD|CTLFLAG_CAPRD, NULL,
+    "Kernel SMP");
+
+SYSCTL_INT(_kern_smp, OID_AUTO, maxid, CTLFLAG_RD|CTLFLAG_CAPRD, &mp_maxid, 0,
+    "Max CPU ID.");
+
+SYSCTL_INT(_kern_smp, OID_AUTO, maxcpus, CTLFLAG_RD|CTLFLAG_CAPRD, &mp_maxcpus,
+    0, "Max number of CPUs that the system was compiled for.");
+
+SYSCTL_PROC(_kern_smp, OID_AUTO, active, CTLFLAG_RD | CTLTYPE_INT, NULL, 0,
+    sysctl_kern_smp_active, "I", "Indicates system is running in SMP mode");
+
+int smp_disabled = 0;	/* has smp been disabled? */
+SYSCTL_INT(_kern_smp, OID_AUTO, disabled, CTLFLAG_RDTUN|CTLFLAG_CAPRD,
+    &smp_disabled, 0, "SMP has been disabled from the loader");
+
+int smp_cpus = 1;	/* how many cpu's running */
+SYSCTL_INT(_kern_smp, OID_AUTO, cpus, CTLFLAG_RD|CTLFLAG_CAPRD, &smp_cpus, 0,
+    "Number of CPUs online");
+
+int smp_topology = 0;	/* Which topology we're using. */
+SYSCTL_INT(_kern_smp, OID_AUTO, topology, CTLFLAG_RDTUN, &smp_topology, 0,
+    "Topology override setting; 0 is default provided by hardware.");
+
 
 long first_page = 0;
 
@@ -138,6 +165,17 @@ int cpu_disable_c2_sleep = 0; /* Timer dies in C2. */
 int cpu_disable_c3_sleep = 0; /* Timer dies in C3. */
 
 static void timevalfix(struct timeval *);
+
+/* Extra care is taken with this sysctl because the data type is volatile */
+static int
+sysctl_kern_smp_active(SYSCTL_HANDLER_ARGS)
+{
+	int error, active;
+
+	active = smp_started;
+	error = SYSCTL_OUT(req, &active, sizeof(active));
+	return (error);
+}
 
 void
 procinit()

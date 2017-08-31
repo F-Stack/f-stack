@@ -271,6 +271,7 @@ NETINET_SRCS+=		\
 	ip_icmp.c	\
 	ip_id.c		\
 	ip_input.c	\
+	ip_mroute.c     \
 	ip_options.c	\
 	ip_output.c	\
 	raw_ip.c	\

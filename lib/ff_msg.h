@@ -79,7 +79,7 @@ struct ff_msg {
     /* Result of msg processing */
     int result;
     /* Length of segment buffer. */
-    uint16_t buf_len;
+    size_t buf_len;
     /* Address of segment buffer. */
     char *buf_addr;
 

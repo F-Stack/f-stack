@@ -45,6 +45,7 @@ endif
 
 FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99
 FF_PROG_CFLAGS+= -I${TOPDIR}/lib -I${TOPDIR}/tools/compat
+FF_PROG_CFLAGS+= -include${TOPDIR}/tools/compat/compat.h
 FF_PROG_CFLAGS+= -I${TOPDIR}/tools/compat/include -D__BSD_VISIBLE
 FF_PROG_CFLAGS+= -include ${FF_DPDK}/include/rte_config.h
 FF_PROG_CFLAGS+= -I${FF_DPDK}/include

@@ -46,6 +46,8 @@ __FBSDID("$FreeBSD$");
 #include "un-namespace.h"
 
 #include "libc_private.h"
+#else
+#include "compat.h"
 #endif
 
 int	opterr = 1,		/* if error message should be printed */
@@ -103,7 +105,7 @@ getopt(int nargc, char * const nargv[], const char *ostr)
 #ifndef FSTACK
 			    "%s: illegal option -- %c\n", _getprogname(),
 #else
-			    "illegal option -- %c\n",
+			    "%s: illegal option -- %c\n", getprogname(),
 #endif
 			    optopt);
 		return (BADCH);
@@ -139,7 +141,8 @@ getopt(int nargc, char * const nargv[], const char *ostr)
 				    "%s: option requires an argument -- %c\n",
 				    _getprogname(), optopt);
 #else
-					"option requires an argument -- %c\n", optopt);
+				    "%s: option requires an argument -- %c\n",
+				    getprogname(), optopt);
 #endif
 			return (BADCH);
 		}

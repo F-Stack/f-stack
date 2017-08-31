@@ -227,4 +227,17 @@ int getaddrinfo(const char *, const char *,
 void freeaddrinfo(struct addrinfo *);
 const char *gai_strerror(int ecode);
 
+struct servent *getservbyport(int port, const char *proto);
+
+struct protoent *getprotoent(void);
+struct protoent *getprotobyname(const char *name);
+struct protoent *getprotobynumber(int proto);
+void setprotoent(int stayopen);
+void endprotoent(void);
+
+int getnameinfo(const struct sockaddr *sa, socklen_t salen,
+    char *host, size_t hostlen, char *serv, size_t servlen, int flags);
+
+struct netent *getnetbyaddr(uint32_t net, int type);
+
 #endif /* !_NETDB_H_ */

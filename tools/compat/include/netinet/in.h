@@ -107,11 +107,9 @@ extern uint32_t     ntohl(uint32_t);
 extern uint16_t     ntohs(uint16_t);
 #endif
 
-#if __POSIX_VISIBLE >= 200112
 #define	IPPROTO_IPV6		41		/* IP6 header */
 #define	IPPROTO_RAW		255		/* raw IP packet */
 #define	INET_ADDRSTRLEN		16
-#endif
 
 #if __BSD_VISIBLE
 /*

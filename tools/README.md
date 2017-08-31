@@ -110,6 +110,34 @@ Examples:
 |   99.79%|    0.00%|    0.21%|        8147676|
 ```
 
+# netstat
+Usage:
+```
+   netstat -P <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]
+   netstat -P <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]
+   netstat -P <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]
+   netstat -P <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]
+   netstat -P <f-stack proc_id> -i | -I interface -s [-46s]
+           [-f protocol_family | -p protocol]
+   netstat -P <f-stack proc_id> -B [-z] [-I interface]
+   netstat -P <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]
+   netstat -P <f-stack proc_id> -rs [-s]
+   netstat -P <f-stack proc_id> -g [-46W] [-f address_family]
+   netstat -P <f-stack proc_id> -gs [-46s] [-f address_family]
+   netstat -P <f-stack proc_id> -Q
+```
+
+Unsupported commands or features:
+```
+-M
+-N
+-m
+ipv6
+netgraph
+ipsec
+```
+
+For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?netstat).
 
 # how to implement a custom tool for communicating with F-Stack process
 

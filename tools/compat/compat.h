@@ -37,12 +37,20 @@
 #define __dead __dead2
 #endif
 
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+
 #ifndef nitems
 #define nitems(x) (sizeof((x)) / sizeof((x)[0]))
 #endif
 
 #ifndef __FBSDID
 #define __FBSDID(s) /* nothing */
+#endif
+
+#ifndef _PATH_ETC
+#define _PATH_ETC "/etc"
 #endif
 
 void *reallocf(void *ptr, size_t size);
@@ -56,5 +64,7 @@ size_t strlcpy(char * __restrict dst, const char * __restrict src,
 
 long long strtonum(const char *numstr, long long minval,
 	long long maxval, const char **errstrp);
+
+const char *getprogname(void);
 
 #endif

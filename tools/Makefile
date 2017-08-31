@@ -1,4 +1,4 @@
-SUBDIRS=compat sysctl ifconfig route top
+SUBDIRS=compat libutil libmemstat libxo sysctl ifconfig route top netstat
 
 all:
 	for d in $(SUBDIRS); do ( cd $$d; $(MAKE) all ) ; done

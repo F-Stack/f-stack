@@ -115,6 +115,17 @@ SYSCTL_UINT(_net, OID_AUTO, add_addr_allfibs, CTLFLAG_RWTUN | CTLFLAG_VNET,
 VNET_DEFINE(struct rtstat, rtstat);
 #define	V_rtstat	VNET(rtstat)
 
+#ifdef FSTACK
+static int
+sysctl_rtstat(SYSCTL_HANDLER_ARGS)
+{
+    return (SYSCTL_OUT(req, &V_rtstat, sizeof(struct rtstat)));
+}
+
+SYSCTL_PROC(_net, OID_AUTO, rtstat, CTLFLAG_VNET | CTLTYPE_STRUCT | CTLFLAG_RD,
+    0, 0, sysctl_rtstat, "S,rtstat", "Routing statistics.");
+#endif
+
 VNET_DEFINE(struct rib_head *, rt_tables);
 #define	V_rt_tables	VNET(rt_tables)
 
