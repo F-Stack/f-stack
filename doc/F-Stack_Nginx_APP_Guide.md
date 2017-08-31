@@ -47,6 +47,8 @@ F-Stack is an open source network framework based on DPDK. F-Stack supports stan
 - worker process has 2 threads. main thread: ff_init(secondary);ff_run(worker_process_cycle), channel thread: loop(handle channel event).
 
 Note that:
+- kni couldn't be enabled in this version, because kni is only processed by primary and worker `ff_primary` won't execute `ff_run()`.
+
 - supported nginx signals: reload(HUP)/reopen(USR1)/stop(TERM).
 
 - unsupported nginx signals: NGX_CHANGEBIN_SIGNAL(USR2).
