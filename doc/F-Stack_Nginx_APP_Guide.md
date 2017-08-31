@@ -60,14 +60,14 @@ Note that:
 ```
     user  root; # root account is necessary.
     fstack_conf f-stack.conf;  # path of f-stack configuration file, default: $NGX_PREFIX/conf/f-stack.conf.
-	worker_processes  1; # should be equal to the lcore count of `dpdk.lcore_mask` in f-stack.conf.
+    worker_processes  1; # should be equal to the lcore count of `dpdk.lcore_mask` in f-stack.conf.
 
-	events {
-		worker_connections  102400; # increase
-		use kqueue; # use kqueue
-	}
+    events {
+        worker_connections  102400; # increase
+        use kqueue; # use kqueue
+    }
 
-	sendfile off; # sendfile off
+    sendfile off; # sendfile off
 ```
 
 ## Nginx compiling
