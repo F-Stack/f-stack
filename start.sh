@@ -32,6 +32,11 @@ do
     esac
 done
 
+if ! type "bc" > /dev/null 2>&1; then
+    echo "please install bc"
+    exit
+fi
+
 allcmask0x=`cat ${conf}|grep lcore_mask|awk -F '=' '{print $2}'`
 ((allcmask=16#$allcmask0x))
 
