@@ -70,6 +70,9 @@
     ifconfig eth0 down
     python /data/f-stack/dpdk/tools/dpdk-devbind.py --bind=igb_uio eth0
 
+    # copy config.ini to $NGX_PREFIX/conf/f-stack.conf
+    cp /data/f-stack/config.ini /usr/local/nginx_fstack/conf/f-stack.conf
+
     # start Nginx
     /usr/local/nginx_fstack/sbin/nginx
 
