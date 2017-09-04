@@ -94,6 +94,8 @@
 static int enable_kni;
 static int kni_accept;
 
+static int numa_on;
+
 static struct rte_timer freebsd_clock;
 
 // Mellanox Linux's driver key
@@ -298,7 +300,7 @@ init_lcore_conf(void)
     }
 
     uint16_t socket_id = 0;
-    if (ff_global_cfg.dpdk.numa_on) {
+    if (numa_on) {
         socket_id = rte_lcore_to_socket_id(rte_lcore_id());
     }
 
@@ -357,7 +359,6 @@ init_mem_pool(void)
     unsigned socketid = 0;
     uint16_t i, lcore_id;
     char s[64];
-    int numa_on = ff_global_cfg.dpdk.numa_on;
 
     for (i = 0; i < lcore_conf.nb_procs; i++) {
         lcore_id = lcore_conf.proc_lcore[i];
@@ -802,6 +803,8 @@ ff_dpdk_init(int argc, char **argv)
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
     }
 
+    numa_on = ff_global_cfg.dpdk.numa_on;
+
     init_lcore_conf();
 
     init_mem_pool();
@@ -918,7 +921,11 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                     if(i == queue_id)
                         continue;
 
-                    mbuf_pool = pktmbuf_pool[rte_lcore_to_socket_id(qconf->proc_lcore[i])];
+                    unsigned socket_id = 0;
+                    if (numa_on) {
+                        socket_id = rte_lcore_to_socket_id(qconf->proc_lcore[i]);
+                    }
+                    mbuf_pool = pktmbuf_pool[socket_id];
                     mbuf_clone = rte_pktmbuf_clone(rtem, mbuf_pool);
                     if(mbuf_clone) {
                         int ret = rte_ring_enqueue(arp_ring[i][port_id], mbuf_clone);
