@@ -94,6 +94,9 @@ endif
 
 CFLAGS+= -DFSTACK
 
+# add for LVS tcp option toa, disabled by default
+# CFLAGS+= -DLVS_TCPOPT_TOA
+
 VPATH+= $S/${MACHINE_CPUARCH}/${MACHINE_CPUARCH}
 VPATH+= $S/kern
 VPATH+= $S/crypto
