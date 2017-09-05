@@ -629,6 +629,73 @@ done:
 	SCH_UNLOCK(sch);
 }
 
+#ifdef LVS_TCPOPT_TOA
+
+#ifndef TCPOPT_TOA
+#define TCPOPT_TOA 254
+#define TCPOLEN_TOA  8
+#endif
+
+static void
+syncache_get_toa(struct mbuf *m, struct socket *so)
+{
+    int length;
+    u_char *ptr = NULL;
+    struct tcphdr *th = NULL;
+
+    struct ipovly *ipov = mtod(m, struct ipovly *);
+    struct ip *ip = (struct ip *)ipov;
+
+#ifdef INET6
+    struct ip6_hdr *ip6 = (struct ip6_hdr *)ipov;
+
+    if (ip->ip_v == 6) {
+        /*
+         * FIXME: ipv6 not support now
+         * th = ???
+         */
+
+        return;
+
+    } else
+#endif
+    {
+        th = (struct tcphdr *)((caddr_t)ip + (ntohs(ip->ip_len) - ntohs(ipov->ih_len)));
+    }
+
+    length = (th->th_off << 2) - sizeof (struct tcphdr);
+    ptr = (u_char *)(th + 1);
+
+    while (length > 0) {
+        int opcode = *ptr++;
+        int opsize;
+
+        switch (opcode) {
+        case TCPOPT_EOL:
+            return;
+
+        case TCPOPT_NOP:
+            length--;
+            continue;
+
+        default:
+            opsize = *ptr++;
+            if (opsize < 2 || opsize > length) {
+                return;
+            }
+
+            if (TCPOPT_TOA == opcode && TCPOLEN_TOA == opsize) {
+                bcopy(ptr - 2, so->so_toa, TCPOLEN_TOA);
+                return;
+            }
+
+            ptr += opsize - 2;
+            length -= opsize;
+        }
+    }
+}
+#endif
+
 /*
  * Build a new TCP socket structure from a syncache entry.
  *
@@ -668,6 +735,11 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 		}
 		goto abort2;
 	}
+
+#ifdef LVS_TCPOPT_TOA
+	syncache_get_toa(m, so);
+#endif
+
 #ifdef MAC
 	mac_socketpeer_set_from_mbuf(m, so);
 #endif

@@ -267,6 +267,44 @@ tcp_usr_detach(struct socket *so)
 		INP_INFO_RUNLOCK(&V_tcbinfo);
 }
 
+#ifdef LVS_TCPOPT_TOA
+
+#ifndef TCPOPT_TOA
+#define TCPOPT_TOA 254
+#define TCPOLEN_TOA  8
+#endif
+
+struct toa_data { 
+    uint8_t opcode;
+    uint8_t opsize;
+    uint16_t port;
+    uint32_t ip;
+};
+
+static int
+toa_getpeeraddr(struct socket *so, struct sockaddr **nam)
+{
+    int ret;
+    struct toa_data *toa;
+    struct sockaddr_in *sin;
+
+    ret = in_getpeeraddr(so, nam);
+    if (ret) {
+        return ret;
+    }
+
+    toa = (struct toa_data *)so->so_toa;
+    if (toa->opcode == TCPOPT_TOA && toa->opsize == TCPOLEN_TOA) {
+        sin = (struct sockaddr_in *)(*nam);
+
+        sin->sin_addr.s_addr = toa->ip;
+        sin->sin_port = toa->port;
+    }
+
+    return 0;
+}
+#endif
+
 #ifdef INET
 /*
  * Give the socket an address.
@@ -696,6 +734,16 @@ tcp_usr_accept(struct socket *so, struct sockaddr **nam)
 	 */
 	port = inp->inp_fport;
 	addr = inp->inp_faddr;
+
+#ifdef LVS_TCPOPT_TOA
+{
+	struct toa_data *toa = (struct toa_data *)so->so_toa;
+	if (toa->opcode == TCPOPT_TOA && toa->opsize == TCPOLEN_TOA) {
+		addr.s_addr = toa->ip;
+		port = toa->port;
+	}
+}
+#endif
 
 out:
 	TCPDEBUG2(PRU_ACCEPT);
@@ -1160,7 +1208,11 @@ struct pr_usrreqs tcp_usrreqs = {
 	.pru_detach =		tcp_usr_detach,
 	.pru_disconnect =	tcp_usr_disconnect,
 	.pru_listen =		tcp_usr_listen,
+#ifdef LVS_TCPOPT_TOA
+	.pru_peeraddr =		toa_getpeeraddr,
+#else
 	.pru_peeraddr =		in_getpeeraddr,
+#endif
 	.pru_rcvd =		tcp_usr_rcvd,
 	.pru_rcvoob =		tcp_usr_rcvoob,
 	.pru_send =		tcp_usr_send,

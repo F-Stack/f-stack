@@ -129,6 +129,9 @@ struct socket {
 
 	void *so_pspare[2];	/* packet pacing / general use */
 	int so_ispare[2];	/* packet pacing / general use */
+#ifdef LVS_TCPOPT_TOA
+	uint8_t so_toa[8];	/* lvs toa option */
+#endif
 };
 
 /*
