@@ -37,10 +37,6 @@
 #define __dead __dead2
 #endif
 
-#ifndef __unused
-#define __unused __attribute__((__unused__))
-#endif
-
 #ifndef nitems
 #define nitems(x) (sizeof((x)) / sizeof((x)[0]))
 #endif

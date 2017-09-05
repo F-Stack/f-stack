@@ -13,7 +13,7 @@ CLEANFILES+=	nl_symbols.c nl_defs.h
 
 CFLAGS+= -I${TOPDIR}/tools/libutil
 CFLAGS+= -I${TOPDIR}/tools/libmemstat
-CFLAGS+= -I${TOPDIR}/tools/libxo/libxo
+CFLAGS+= -I${TOPDIR}/tools/libxo
 
 LIBS+= -L${TOPDIR}/tools/libutil -lutil
 LIBS+= -L${TOPDIR}/tools/libmemstat -lmemstat
