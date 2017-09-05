@@ -25,9 +25,6 @@ static void ngx_worker_process_exit(ngx_cycle_t *cycle);
 #if (NGX_HAVE_FSTACK)
 extern ngx_int_t ngx_ff_start_worker_channel(ngx_cycle_t *cycle,
     ngx_fd_t fd, ngx_int_t event);
-extern ngx_int_t ngx_ff_start_primary_channel(ngx_cycle_t *cycle,
-    ngx_fd_t fd, ngx_int_t event);
-extern ngx_int_t ngx_ff_process_channel_events(ngx_cycle_t *cycle);
 #else
 static void ngx_channel_handler(ngx_event_t *ev);
 #endif
@@ -80,141 +77,7 @@ static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
 #if (NGX_HAVE_FSTACK)
-
-static void
-ngx_ff_primary_process_exit(ngx_cycle_t *cycle)
-{
-    ngx_uint_t         i;
-
-    for (i = 0; cycle->modules[i]; i++) {
-        if (cycle->modules[i]->exit_process) {
-            cycle->modules[i]->exit_process(cycle);
-        }
-    }
-
-    /*
-     * Copy ngx_cycle->log related data to the special static exit cycle,
-     * log, and log file structures enough to allow a signal handler to log.
-     * The handler may be called when standard ngx_cycle->log allocated from
-     * ngx_cycle->pool is already destroyed.
-     */
-
-    ngx_exit_log = *ngx_log_get_file_log(ngx_cycle->log);
-
-    ngx_exit_log_file.fd = ngx_exit_log.file->fd;
-    ngx_exit_log.file = &ngx_exit_log_file;
-    ngx_exit_log.next = NULL;
-    ngx_exit_log.writer = NULL;
-
-    ngx_exit_cycle.log = &ngx_exit_log;
-    ngx_exit_cycle.files = ngx_cycle->files;
-    ngx_exit_cycle.files_n = ngx_cycle->files_n;
-    ngx_cycle = &ngx_exit_cycle;
-
-    ngx_destroy_pool(cycle->pool);
-
-    // wait worker process exited.
-    ngx_msleep(500);
-
-    ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0, "exit");
-
-    exit(0);
-}
-
-static void
-ngx_ff_primary_process_cycle(ngx_cycle_t *cycle, void *data)
-{
-    ngx_core_conf_t   *ccf;
-    ngx_uint_t        i;
-    ngx_int_t         n;
-
-    ngx_process = NGX_PROCESS_WORKER;
-
-    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
-        ngx_core_module);
-
-    ngx_setproctitle("ff primary process");
-
-    if (ff_mod_init((const char *)ccf->fstack_conf.data, 0, 1)) {
-        exit(2);
-    }
-
-    for (i = 0; cycle->modules[i]; i++) {
-        if (cycle->modules[i]->init_process) {
-            if (cycle->modules[i]->init_process(cycle) == NGX_ERROR) {
-                /* fatal */
-                exit(2);
-            }
-        }
-    }
-
-    for (n = 0; n < ngx_last_process; n++) {
-
-        if (ngx_processes[n].pid == -1) {
-            continue;
-        }
-
-        if (n == ngx_process_slot) {
-            continue;
-        }
-
-        if (ngx_processes[n].channel[1] == -1) {
-            continue;
-        }
-
-        if (close(ngx_processes[n].channel[1]) == -1) {
-            ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                          "close() channel failed");
-        }
-    }
-
-    if (close(ngx_processes[ngx_process_slot].channel[0]) == -1) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "close() channel failed");
-    }
-
-    if (ngx_ff_start_primary_channel(cycle, ngx_channel, NGX_READ_EVENT)) {
-        exit(2);
-    }
-
-    for ( ;; ) {
-
-        if (ngx_terminate) {
-            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
-            ngx_ff_primary_process_exit(cycle);
-        }
-
-        if (ngx_reopen) {
-            ngx_reopen = 0;
-            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "reopening logs");
-            ngx_reopen_files(cycle, -1);
-        }
-
-        (void) ngx_ff_process_channel_events(cycle);
-    }
-}
-
-static void
-ngx_start_ff_primary_process(ngx_cycle_t *cycle)
-{
-    ngx_channel_t  ch;
-    ngx_memzero(&ch, sizeof(ngx_channel_t));
-
-    ch.command = NGX_CMD_OPEN_CHANNEL;
-
-    ngx_spawn_process(cycle, ngx_ff_primary_process_cycle,
-                      NULL, "ff primary process",
-                      NGX_PROCESS_RESPAWN);
-
-    ch.pid = ngx_processes[ngx_process_slot].pid;
-    ch.slot = ngx_process_slot;
-    ch.fd = ngx_processes[ngx_process_slot].channel[0];
-
-    ngx_pass_open_channel(cycle, &ch);
-
-    // wait for primary process startup.
-    ngx_sleep(1);
-}
+static ngx_int_t ngx_ff_primary;
 #endif
 
 void
@@ -226,6 +89,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     ngx_int_t          i;
 #if (NGX_HAVE_FSTACK)
     ngx_uint_t         sigio;
+    ngx_uint_t         sig_worker_quit = 0;
 #else
     ngx_uint_t         n, sigio;
 #endif
@@ -280,16 +144,6 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-
-#if (NGX_HAVE_FSTACK)
-    if (ccf->fstack_conf.len == 0) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
-                      "fstack_conf null");
-        exit(2);
-    }
-
-    ngx_start_ff_primary_process(cycle);
-#endif
 
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
@@ -383,6 +237,20 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_reconfigure) {
+#if (NGX_HAVE_FSTACK)
+            if (!sig_worker_quit) {
+                sig_worker_quit = 1;
+                ngx_signal_worker_processes(cycle,
+                    ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+                continue;
+            }
+
+            if (live) {
+                continue;
+            }
+
+            sig_worker_quit = 0;
+#endif
             ngx_reconfigure = 0;
 
             if (ngx_new_binary) {
@@ -527,6 +395,12 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
         ch.fd = ngx_processes[ngx_process_slot].channel[0];
 
         ngx_pass_open_channel(cycle, &ch);
+#if (NGX_HAVE_FSTACK)
+        if (i == 0) {
+            // wait for ff_primary worker process startup.
+            ngx_sleep(1);
+        }
+#endif
     }
 }
 
@@ -780,7 +654,11 @@ ngx_reap_children(ngx_cycle_t *cycle)
             if (ngx_processes[i].respawn
                 && !ngx_processes[i].exiting
                 && !ngx_terminate
-                && !ngx_quit)
+                && !ngx_quit
+#if (NGX_HAVE_FSTACK)
+                && !ngx_reconfigure
+#endif
+            )
             {
                 if (ngx_spawn_process(cycle, ngx_processes[i].proc,
                                       ngx_processes[i].data,
@@ -1115,7 +993,12 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             exit(2);
         }
 
-        if (ff_mod_init((const char *)ccf->fstack_conf.data, worker, 0)) {
+        if (worker == 0) {
+            ngx_ff_primary = 1;
+        }
+
+        if (ff_mod_init((const char *)ccf->fstack_conf.data, worker,
+            ngx_ff_primary)) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                           "ff_mod_init failed");
             exit(2);
@@ -1247,6 +1130,12 @@ ngx_worker_process_exit(ngx_cycle_t *cycle)
 
     ngx_log_error(NGX_LOG_NOTICE, ngx_cycle->log, 0, "exit");
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_ff_primary) {
+        // wait for secondary worker processes to exit.
+        ngx_msleep(500);
+    }
+#endif
     exit(0);
 }
 

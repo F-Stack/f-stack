@@ -8,52 +8,47 @@ F-Stack is an open source network framework based on DPDK. F-Stack supports stan
 
 ```
 
-                                                    +--------+
-                                                    |
-+------------------------+                          |
-   channel: socketpair                              |  signal(reload, quit..)
-+------------------------+                          |
-                                                    |
-                                          +---------v--------+
-                                          |                  |
-                         +----------------+  master process  +---------------+
-                         |                |                  |               |
-                         |  channel       +----------+-------+               |
-                         |                           |              channel  |
-                         |                  channel  |                       |
-                         |                           |                       |
-               +---------+----------+     +----------+--------+    +---------+--------+
-               |                    |     |                   |    |                  |
-               | ff primary process |     |  worker process   |    |  worker process  |
-               |                    |     |                   |    |                  |
-               +--------------------+     +-------------------+    +------------------+
-                ff_init(primary)          +--------+  +-------+
-                loop:                     |        |  |       |
-                 handle channel event     | fstack |  |channel|
-                                          |  main  |  | event |
-                                          |  loop  |  |thread |
-                                          | thread |  |       |
-                                          |        |  |       |
-                                          +--------+  +-------+
-                                           woker       loop:
-                                          process      handle
-                                           cycle      channel
-                                                       event
+                                                        +--------+
+                         +------------------------+     |
+                            channel: socketpair         |
+                         +------------------------+     |  signal(reload, quit..)
+                                                        |
+                                                        |
+                                              +---------v--------+
+                                              |                  |
+                             +----------------+  master process  +---------------+
+                             |                |                  |               |
+                             |  channel       +----------+-------+               |
+                             |                           |              channel  |
+                             |                  channel  |                       |
+                             |                           |                       |
+                   +---------+----------+     +----------+--------+    +---------+--------+
+first one to start |                    |     |                   |    |                  |
+ last one to exit<-+   primary worker   |     |  secondary worker |    | secondary worker |
+                   |                    |     |                   |    |                  |
+                   +--------------------+     +-------------------+    +------------------+
+                   +--------+  +-------+      +--------+  +-------+
+                   |        |  |       |      |        |  |       |
+                   | fstack |  |channel|      | fstack |  |channel|
+                   |  main  |  | event |      |  main  |  | event |
+                   |  loop  |  |thread |      |  loop  |  |thread |
+                   | thread |  |       |      | thread |  |       |
+                   |        |  |       |      |        |  |       |
+                   +--------+  +-------+      +--------+  +-------+
+                    woker       loop:          worker      loop:
+                   process      handle        process      handle
+                    cycle      channel         cycle      channel
+                                event                      event
 
 ```
 
-- spawn an extra process ff primary: ff_init(primary);loop(handle channel event).This process doesn't handle SIGQUIT.
+- spawn primary worker firstly, and then wait for primary startup, continue to spawn secondary workers.
 
-- worker process has 2 threads. main thread: ff_init(secondary);ff_run(worker_process_cycle), channel thread: loop(handle channel event).
+- worker process has 2 threads. main thread: ff_init();ff_run(worker_process_cycle), channel thread: loop(handle channel event).
 
 Note that:
-- kni couldn't be enabled in this version, because kni is only processed by primary and worker `ff_primary` won't execute `ff_run()`.
 
-- supported nginx signals: reload(HUP)/reopen(USR1)/stop(TERM).
-
-- unsupported nginx signals: NGX_CHANGEBIN_SIGNAL(USR2).
-
-- when use `nginx -s reload`, you should make sure that `woker_processes` in nginx.conf and f-stack.conf haven't be modified.
+- the `reload` is not graceful, service will still be unavailable during the process of reloading.
 
 - necessary modifies in nginx.conf:
 
