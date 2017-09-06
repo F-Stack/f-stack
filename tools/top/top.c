@@ -53,6 +53,8 @@ int main(int argc, char **argv)
     unsigned int i;
     struct ff_top_args top, otop;
 
+    ff_ipc_init();
+
 #define TOP_DIFF(member) (top.member - otop.member)
 
     while ((ch = getopt(argc, argv, "hp:d:n:")) != -1) {

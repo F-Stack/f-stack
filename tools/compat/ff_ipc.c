@@ -51,7 +51,7 @@ ff_set_proc_id(int pid)
     ff_proc_id = pid;
 }
 
-static int
+int
 ff_ipc_init(void)
 {
     if (inited) {
