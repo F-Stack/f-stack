@@ -241,6 +241,8 @@ main(int argc, char **argv)
 	int ch;
 	int warncount = 0;
 
+	ff_ipc_init();
+
 	setlocale(LC_NUMERIC, "");
 	setbuf(stdout,0);
 	setbuf(stderr,0);

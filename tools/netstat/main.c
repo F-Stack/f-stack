@@ -247,6 +247,8 @@ main(int argc, char *argv[])
 	char *endptr;
 	bool first = true;
 
+	ff_ipc_init();
+
 	af = AF_UNSPEC;
 
 	argc = xo_parse_args(argc, argv);

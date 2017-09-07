@@ -281,6 +281,8 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(NULL);
 
+	ff_ipc_init();
+
 #ifndef FSTACK
 	while ((ch = getopt(argc, argv, "46nqdtv")) != -1)
 #else
