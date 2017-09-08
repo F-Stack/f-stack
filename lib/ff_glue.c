@@ -1054,17 +1054,21 @@ reallocf(void *addr, unsigned long size, struct malloc_type *type,
 void
 DELAY(int delay)
 {
+    /*
+     * FIXME: We shouldn't sleep in dpdk apps.
+     */
+
+    /*
     struct timespec rqt;
 
     if (delay < 1000)
         return;
-    
+
     rqt.tv_nsec = 1000*((unsigned long)delay);
     rqt.tv_sec = 0;
-    /*
-     * FIXME: We shouldn't sleep in dpdk apps.
-     */
-    //nanosleep(&rqt, NULL);
+
+    nanosleep(&rqt, NULL);
+    */
 }
 
 void 
