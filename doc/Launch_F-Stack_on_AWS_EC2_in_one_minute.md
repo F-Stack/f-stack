@@ -77,6 +77,7 @@
     /usr/local/nginx_fstack/sbin/nginx
 
     # start kni
-    sleep 30
-    ifconfig veth0 ${myaddr}  netmask ${mymask}  broadcast ${mybc} hw ether ${myhw}
+    # If KNI is enabled in the configuration file, F-Stack will create a virtual NIC after started, and set the ipaddr, netmask, mac addr, route table, etc. These addrs must be same with F-Stack.
+    # But now you have to set route by your self, it will be fixxed soon !!
+
     route add -net 0.0.0.0 gw ${mygw} dev veth0
