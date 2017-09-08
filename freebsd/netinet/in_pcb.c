@@ -1114,9 +1114,11 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			return (error);
 	}
 #else
+{
     struct ifaddr *ifa;
     struct ifnet *ifp;
     struct sockaddr_in ifp_sin;
+    unsigned loop_count = 0;
     bzero(&ifp_sin, sizeof(ifp_sin));
     ifp_sin.sin_addr.s_addr = laddr.s_addr;
     ifp_sin.sin_family = AF_INET;
@@ -1138,7 +1140,16 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
             break;
         }
         lport = 0;
+        /* Note:
+         * if all ports are completely used, just return.
+         * this ugly code is not a correct way, it just lets loop quit.
+         * we will fix it as soon as possible.
+         */
+        if (++loop_count >= 65535) {
+            return (EADDRNOTAVAIL);
+        }
     }
+}
 #endif
 	*laddrp = laddr.s_addr;
 	*lportp = lport;
