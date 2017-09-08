@@ -26,6 +26,10 @@
 
 #include <stdlib.h>
 #include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <unistd.h>
+
 
 #include <rte_config.h>
 #include <rte_ether.h>
@@ -128,6 +132,80 @@ kni_change_mtu(uint8_t port_id, unsigned new_mtu)
     return 0;
 }
 
+
+#define _GNU_SOURCE
+#define __USE_GNU
+#include <dlfcn.h>
+
+static int
+kni_config_network_iproute(uint8_t port_id, uint8_t if_up)
+{
+    int i, fd;
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    int (*iosocket)(int, int, int) = dlsym(RTLD_NEXT, "socket") ?: socket;
+
+    if (!if_up) {
+        return 0;
+    }
+
+    for (i = 0; i < ff_global_cfg.dpdk.nb_ports; i++) {
+        if (port_id != ff_global_cfg.dpdk.port_cfgs[i].port_id) {
+            continue;
+        }
+
+        fd = iosocket(AF_INET, SOCK_DGRAM, 0);
+        if (fd == -1) {
+            return -1;
+        }
+
+        bzero(&ifr, sizeof(struct ifreq));
+        snprintf(ifr.ifr_name, IFNAMSIZ, "veth%d", port_id);
+
+        sin = (struct sockaddr_in *)&ifr.ifr_addr;
+
+        /* set if up */
+        if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0) {
+            close(fd);
+            return -1;
+        }
+
+        ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+
+        if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0) {
+            close(fd);
+            return -1;
+        }
+
+        /* set ipaddr */
+        memset(sin, 0, sizeof(struct sockaddr_in));
+        sin->sin_family = AF_INET;
+        sin->sin_addr.s_addr = inet_addr(ff_global_cfg.dpdk.port_cfgs[i].addr);
+
+        if (ioctl(fd, SIOCSIFADDR, &ifr) < 0) {
+            close(fd);
+            return -1;
+        }
+
+        /* set netmask */
+        memset(sin, 0, sizeof(struct sockaddr_in));
+        sin->sin_family = AF_INET;
+        sin->sin_addr.s_addr = inet_addr(ff_global_cfg.dpdk.port_cfgs[i].netmask);
+
+        if (ioctl(fd, SIOCSIFNETMASK, &ifr) < 0) {
+            close(fd);
+            return -1;
+        }
+
+        /* set route ... */
+
+        close(fd);
+        return 0;
+    }
+
+    return -1;
+}
+
 static int
 kni_config_network_interface(uint8_t port_id, uint8_t if_up)
 {
@@ -156,6 +234,8 @@ kni_config_network_interface(uint8_t port_id, uint8_t if_up)
             ret = 0;
         }
     }
+
+    kni_config_network_iproute(port_id, if_up);
 
     if (ret < 0)
         printf("Failed to Configure network interface of %d %s\n", 
@@ -368,6 +448,9 @@ ff_kni_alloc(uint8_t port_id, unsigned socket_id,
             rte_panic("create kni on port %u failed!\n", port_id);
         else
             printf("create kni on port %u success!\n", port_id);
+
+        /* set kni if up and config ip route */
+        kni_config_network_iproute(port_id, 1);
 
         kni_stat[port_id]->rx_packets = 0;
         kni_stat[port_id]->rx_dropped = 0;
