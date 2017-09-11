@@ -17,3 +17,4 @@ install:
 script:
   - make -C dpdk install T=x86_64-native-linuxapp-gcc
   - make -C lib CONF_CFLAGS="-Wno-unused-but-set-variable"
+  - make -C tools
