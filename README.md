@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/F-Stack/f-stack.svg?branch=master)](https://travis-ci.org/F-Stack/f-stack)
+
 # F-Stack
 ![](F-Stack.png)
 
@@ -89,7 +91,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
   
   If you don't have another management port, you should execute a script like this.
 
-    ./start.sh -b /usr/local/nginx_fstack/sbin/nginx -c config.ini
+    /usr/local/nginx_fstack/sbin/nginx
     sleep 10
     ifconfig veth0 <ipaddr>  netmask <netmask>  broadcast <broadcast> hw ether <mac addr>
     route add -net 0.0.0.0 gw <gateway> dev veth0

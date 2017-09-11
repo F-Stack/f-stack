@@ -77,6 +77,6 @@
     /usr/local/nginx_fstack/sbin/nginx
 
     # start kni
-    sleep 30
+    sleep 10
     ifconfig veth0 ${myaddr}  netmask ${mymask}  broadcast ${mybc} hw ether ${myhw}
     route add -net 0.0.0.0 gw ${mygw} dev veth0
