@@ -1,0 +1,19 @@
+language: c
+cache:
+  directories:
+    dpdk
+
+compiler:
+  - gcc
+
+# before_install:
+#   - sudo apt-get install -y coreutils build-essential git
+#   - sudo apt-get install -y linux-headers-`uname -r`
+
+install:
+  - sudo apt-get install -y coreutils build-essential git
+  - sudo apt-get install -y linux-headers-`uname -r`
+
+script:
+  - make -C dpdk install T=x86_64-native-linuxapp-gcc
+  - make -C lib CONF_CFLAGS="-Wno-unused-but-set-variable"
