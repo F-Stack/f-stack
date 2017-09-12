@@ -31,6 +31,7 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <rte_config.h>
+#include <rte_string_fns.h>
 
 #include "ff_config.h"
 #include "ff_ini_parser.h"
@@ -85,7 +86,7 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
     }
     proc_lcore = cfg->dpdk.proc_lcore;
 
-    /* 
+    /*
      * Remove all blank characters ahead and after.
      * Remove 0x/0X if exists.
      */
@@ -191,6 +192,89 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
     return 1;
 }
 
+int uint16_cmp (const void * a, const void * b)
+{
+    return ( *(uint16_t*)a - *(uint16_t*)b );
+}
+
+static inline void
+sort_uint16_array(uint16_t arr[], int n)
+{
+    qsort(arr, n, sizeof(uint16_t), uint16_cmp);
+}
+
+static inline char *
+__strstrip(char *s)
+{
+    char *end = s + strlen(s) - 1;
+    while(*s == ' ') s++;
+    for (; end >= s; --end) {
+        if (*end != ' ') break;
+    }
+    *(++end) = '\0';
+    return s;
+}
+
+static int
+parse_port_lcore_list(struct ff_port_cfg *cfg, const char *lcore_list)
+{
+    char input[4096];
+    char *tokens[128];
+    int nTokens = 0;
+    char *endptr;
+    uint16_t *cores = cfg->lcore_list;
+    int nr_cores = 0;
+    int max_cores = DPDK_MAX_LCORE;
+
+    strncpy(input, lcore_list, 4096);
+    nTokens = rte_strsplit(input, sizeof(input), tokens, 128, ',');
+    for (int i = 0; i < nTokens; i++) {
+        char *tok = tokens[i];
+        char *middle = strchr(tok, '-');
+        if (middle == NULL) {
+            tok = __strstrip(tok);
+            long v = strtol(tok, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "%s is not a integer.", tok);
+                return 0;
+            }
+            if (nr_cores > max_cores) {
+                fprintf(stderr, "too many cores\n");
+                return 0;
+            }
+            cores[nr_cores++] = (uint16_t)v;
+        } else {
+            *middle = '\0';
+            char *lbound = __strstrip(tok);
+            char *rbound = __strstrip(middle+1);
+            long lv = strtol(lbound, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "%s is not a integer.", lbound);
+                return 0;
+            }
+            long rv = strtol(rbound, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "%s is not a integer.", rbound);
+                return 0;
+            }
+            for (int j = lv; j <= rv; ++j) {
+                if (nr_cores > max_cores) {
+                    fprintf(stderr, "too many cores\n");
+                    return 0;
+                }
+                cores[nr_cores++] = (uint16_t)j;
+            }
+        }
+    }
+    if (nr_cores <= 0) {
+        fprintf(stderr, "lcore list is empty\n");
+        return 0;
+    }
+    cfg->nb_lcores = nr_cores;
+    sort_uint16_array(cores, nr_cores);
+    return 1;
+}
+
 static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
@@ -206,7 +290,13 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             fprintf(stderr, "port_cfg_handler malloc failed\n");
             return 0;
         }
-
+        // initialize lcore list and nb_lcores
+        for (int i = 0; i < cfg->dpdk.nb_ports; ++i) {
+            struct ff_port_cfg *pconf = &pc[i];
+            pconf->nb_lcores = ff_global_cfg.dpdk.nb_procs;
+            memcpy(pconf->lcore_list, ff_global_cfg.dpdk.proc_lcore,
+                   pconf->nb_lcores*sizeof(uint16_t));
+        }
         cfg->dpdk.port_cfgs = pc;
     }
 
@@ -239,6 +329,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->gateway = strdup(value);
     } else if (strcmp(name, "pcap") == 0) {
         cur->pcap = strdup(value);
+    } else if (strcmp(name, "lcore_list") == 0) {
+        return parse_port_lcore_list(cur, value);
     }
 
     return 1;
@@ -451,4 +543,3 @@ ff_load_config(int argc, char *const argv[])
 
     return 0;
 }
-
