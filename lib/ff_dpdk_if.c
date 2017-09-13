@@ -720,7 +720,6 @@ init_port_start(void)
         if (ret != 0) {
             return ret;
         }
-        fprintf(stderr, "port %d rx %d, tx %d\n", port_id, nb_procs, nb_procs);
         uint16_t q;
         for (q = 0; q < nb_procs; q++) {
             ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
