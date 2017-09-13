@@ -192,7 +192,8 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
     return 1;
 }
 
-int uint16_cmp (const void * a, const void * b)
+static int
+uint16_cmp (const void * a, const void * b)
 {
     return ( *(uint16_t*)a - *(uint16_t*)b );
 }
