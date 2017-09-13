@@ -268,8 +268,8 @@ parse_port_lcore_list(struct ff_port_cfg *cfg, const char *lcore_list)
         }
     }
     if (nr_cores <= 0) {
-        fprintf(stderr, "lcore list is empty\n");
-        return 0;
+        printf("lcore list is empty\n");
+        return 1;
     }
     cfg->nb_lcores = nr_cores;
     sort_uint16_array(cores, nr_cores);

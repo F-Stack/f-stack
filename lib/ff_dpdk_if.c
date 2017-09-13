@@ -331,7 +331,7 @@ init_lcore_conf(void)
         if (queueid < 0) {
             continue;
         }
-        fprintf(stderr, "lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
+        printf("lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
         uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
         lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
         lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
