@@ -218,6 +218,7 @@ __strstrip(char *s)
 static int
 parse_port_lcore_list(struct ff_port_cfg *cfg, const char *lcore_list)
 {
+    int i, j;
     char input[4096];
     char *tokens[128];
     int nTokens = 0;
@@ -228,7 +229,7 @@ parse_port_lcore_list(struct ff_port_cfg *cfg, const char *lcore_list)
 
     strncpy(input, lcore_list, 4096);
     nTokens = rte_strsplit(input, sizeof(input), tokens, 128, ',');
-    for (int i = 0; i < nTokens; i++) {
+    for (i = 0; i < nTokens; i++) {
         char *tok = tokens[i];
         char *middle = strchr(tok, '-');
         if (middle == NULL) {
@@ -257,7 +258,7 @@ parse_port_lcore_list(struct ff_port_cfg *cfg, const char *lcore_list)
                 fprintf(stderr, "%s is not a integer.", rbound);
                 return 0;
             }
-            for (int j = lv; j <= rv; ++j) {
+            for (j = lv; j <= rv; ++j) {
                 if (nr_cores > max_cores) {
                     fprintf(stderr, "too many cores\n");
                     return 0;
@@ -291,7 +292,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             return 0;
         }
         // initialize lcore list and nb_lcores
-        for (int i = 0; i < cfg->dpdk.nb_ports; ++i) {
+        int i;
+        for (i = 0; i < cfg->dpdk.nb_ports; ++i) {
             struct ff_port_cfg *pconf = &pc[i];
             pconf->nb_lcores = ff_global_cfg.dpdk.nb_procs;
             memcpy(pconf->lcore_list, ff_global_cfg.dpdk.proc_lcore,
