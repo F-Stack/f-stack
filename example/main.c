@@ -107,8 +107,10 @@ int main(int argc, char * argv[])
 
     sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
     printf("sockfd:%d\n", sockfd);
-    if (sockfd < 0)
+    if (sockfd < 0) {
         printf("ff_socket failed\n");
+        exit(1);
+    }
 
     struct sockaddr_in my_addr;
     bzero(&my_addr, sizeof(my_addr));
@@ -119,11 +121,13 @@ int main(int argc, char * argv[])
     int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
     if (ret < 0) {
         printf("ff_bind failed\n");
+        exit(1);
     }
 
     ret = ff_listen(sockfd, MAX_EVENTS);
     if (ret < 0) {
         printf("ff_listen failed\n");
+        exit(1);
     }
 
     kevSet.data     = MAX_EVENTS;

@@ -4,6 +4,7 @@
 ![](F-Stack.png)
 
 ## Introduction
+
 With the rapid development of NIC, the poor performance of data packets processing with Linux kernel has become the bottleneck. However, the rapid development of the Internet needs high performance of network processing, kernel bypass has caught more and more attentions. There are various similar technologies appear, such as DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow, all data streams are processed in user space. Therefore, kernel bypass can avoid performance bottlenecks caused by kernel packet copying, thread scheduling, system calls and interrupts. Furthermore, kernel bypass can achieve higher performance with multi optimizing methods.  Within various techniques, DPDK has been widely used because of its more thorough isolation from kernel scheduling and active community support.
 
 [F-Stack](http://www.f-stack.org/?from=github) is an open source network framework with high performance based on DPDK. With following characteristics
@@ -32,12 +33,12 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     #clone F-Stack
     mkdir /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
-    
+ 
     cd f-stack
     # compile DPDK
     cd dpdk/tools
     ./dpdk-setup.sh # compile with x86_64-native-linuxapp-gcc
-    
+ 
     # Set hugepage
     # single-node system
     echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
@@ -88,7 +89,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     make install
 
   If KNI is enabled in the configuration file, you should create a virtual NIC after F-Stack started, and set the ipaddr, netmask, mac addr, route table, etc. These addrs must be same with F-Stack.
-  
+
   If you don't have another management port, you should execute a script like this.
 
     /usr/local/nginx_fstack/sbin/nginx
@@ -97,7 +98,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     route add -net 0.0.0.0 gw <gateway> dev veth0
     # route add -net ...  # other route rules
 
-## Nginx Testing Result 
+## Nginx Testing Result
 
 Test environment
 
@@ -109,7 +110,7 @@ Test environment
 
 Nginx uses linux kernel's default config, all soft interrupts are working in the first CPU core.
 
-Nginx si means modify the smp_affinity of every IRQ, so that the decision to service an interrupt with a particular CPU is made at the hardware level, with no intervention from the kernel. 
+Nginx si means modify the smp_affinity of every IRQ, so that the decision to service an interrupt with a particular CPU is made at the hardware level, with no intervention from the kernel.
 
 Nginx_FStack's 600 cache bytes' body was returned directly in nginx.conf.
 
