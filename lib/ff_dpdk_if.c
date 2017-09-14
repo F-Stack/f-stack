@@ -234,7 +234,7 @@ check_all_ports_link_status(void)
             uint8_t portid = ff_global_cfg.dpdk.port_cfgs[i].port_id;
             memset(&link, 0, sizeof(link));
             rte_eth_link_get_nowait(portid, &link);
- 
+
             /* print link status if flag set */
             if (print_flag == 1) {
                 if (link.link_status) {
@@ -308,6 +308,7 @@ init_lcore_conf(void)
 
     /* Currently, proc id 1:1 map to rx/tx queue id per port. */
     uint8_t port_id, enabled_ports = 0;
+    uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[lcore_conf.proc_id];
     for (port_id = 0; port_id < nb_ports; port_id++) {
         if (ff_global_cfg.dpdk.port_mask &&
             (ff_global_cfg.dpdk.port_mask & (1 << port_id)) == 0) {
@@ -319,13 +320,24 @@ init_lcore_conf(void)
             printf("\nSkipping non-configured port %d\n", port_id);
             break;
         }
-
+        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+        int queueid = -1;
+        int i;
+        for (i = 0; i < pconf->nb_lcores; i++) {
+            if (pconf->lcore_list[i] == lcore_id) {
+                queueid = i;
+            }
+        }
+        if (queueid < 0) {
+            continue;
+        }
+        printf("lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
         uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
         lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
-        lcore_conf.rx_queue_list[nb_rx_queue].queue_id = lcore_conf.proc_id;
+        lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
         lcore_conf.nb_rx_queue++;
 
-        lcore_conf.tx_queue_id[port_id] = lcore_conf.proc_id;
+        lcore_conf.tx_queue_id[port_id] = queueid;
         lcore_conf.pcap[port_id] = ff_global_cfg.dpdk.port_cfgs[enabled_ports].pcap;
 
         ff_global_cfg.dpdk.port_cfgs[enabled_ports].port_id = port_id;
@@ -574,6 +586,8 @@ init_port_start(void)
 
     for (i = 0; i < nb_ports; i++) {
         uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[i].port_id;
+        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[i];
+        nb_procs = pconf->nb_lcores;
 
         struct rte_eth_dev_info dev_info;
         rte_eth_dev_info_get(port_id, &dev_info);
@@ -706,7 +720,6 @@ init_port_start(void)
         if (ret != 0) {
             return ret;
         }
-
         uint16_t q;
         for (q = 0; q < nb_procs; q++) {
             ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
@@ -838,7 +851,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         }
     }
 
-    /* 
+    /*
      * FIXME: should we save pkt->vlan_tci
      * if (pkt->ol_flags & PKT_RX_VLAN_PKT)
      */
@@ -1418,5 +1431,3 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
 
     return ((hash & (reta_size - 1)) % qconf->nb_procs) == qconf->proc_id;
 }
-
-
