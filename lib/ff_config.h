@@ -30,6 +30,7 @@
 // dpdk argc, argv, max argc: 4, member of dpdk_config
 #define DPDK_CONFIG_NUM 4
 #define DPDK_CONFIG_MAXLEN 64
+#define DPDK_MAX_LCORE 128
 
 extern int dpdk_argc;
 extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
@@ -52,6 +53,9 @@ struct ff_port_cfg {
     char *broadcast;
     char *gateway;
     char *pcap;
+
+    int nb_lcores;
+    uint16_t lcore_list[DPDK_MAX_LCORE];
 };
 
 struct ff_freebsd_cfg {
@@ -64,28 +68,29 @@ struct ff_freebsd_cfg {
 
 struct ff_config {
     char *filename;
-    struct {        
+    struct {
         char *proc_type;
         /* mask of enabled lcores */
         char *lcore_mask;
         /* mask of current proc on all lcores */
         char *proc_mask;
-        /* mask of enabled ports
-         * use uint32_t because num of max ports is 32
-         */
-        uint32_t port_mask;
+
         int nb_channel;
         int memory;
         int no_huge;
         int nb_procs;
         int proc_id;
-        int nb_ports;
         int promiscuous;
         int numa_on;
         int tso;
         int vlan_strip;
         /* list of proc-lcore */
         uint16_t *proc_lcore;
+
+        int nb_ports;
+        uint16_t *portid_list;
+        uint16_t max_portid;
+        // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
     } dpdk;
 
