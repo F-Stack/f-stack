@@ -31,6 +31,7 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <rte_config.h>
+#include <rte_string_fns.h>
 
 #include "ff_config.h"
 #include "ff_ini_parser.h"
@@ -85,7 +86,7 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
     }
     proc_lcore = cfg->dpdk.proc_lcore;
 
-    /* 
+    /*
      * Remove all blank characters ahead and after.
      * Remove 0x/0X if exists.
      */
@@ -190,23 +191,170 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
 
     return 1;
 }
+// A recursive binary search function. It returns location of x in
+// given array arr[l..r] is present, otherwise -1
+static int
+uint16_binary_search(uint16_t arr[], int l, int r, uint16_t x)
+{
+    if (r >= l) {
+        int mid = l + (r - l)/2;
+
+        // If the element is present at the middle itself
+        if (arr[mid] == x)  return mid;
+
+        // If element is smaller than mid, then it can only be present
+        // in left subarray
+        if (arr[mid] > x) return uint16_binary_search(arr, l, mid-1, x);
+
+        // Else the element can only be present in right subarray
+        return uint16_binary_search(arr, mid+1, r, x);
+    }
+
+    // We reach here when element is not present in array
+    return -1;
+}
+
+static int
+uint16_cmp (const void * a, const void * b)
+{
+    return ( *(uint16_t*)a - *(uint16_t*)b );
+}
+
+static inline void
+sort_uint16_array(uint16_t arr[], int n)
+{
+    qsort(arr, n, sizeof(uint16_t), uint16_cmp);
+}
+
+static inline char *
+__strstrip(char *s)
+{
+    char *end = s + strlen(s) - 1;
+    while(*s == ' ') s++;
+    for (; end >= s; --end) {
+        if (*end != ' ') break;
+    }
+    *(++end) = '\0';
+    return s;
+}
+
+static int
+__parse_config_list(uint16_t *arr, int *sz, const char *value) {
+    int i, j;
+    char input[4096];
+    char *tokens[128];
+    int nTokens = 0;
+    char *endptr;
+    int nr_ele = 0;
+    int max_ele = *sz;
+
+    strncpy(input, value, 4096);
+    nTokens = rte_strsplit(input, sizeof(input), tokens, 128, ',');
+    for (i = 0; i < nTokens; i++) {
+        char *tok = tokens[i];
+        char *middle = strchr(tok, '-');
+        if (middle == NULL) {
+            tok = __strstrip(tok);
+            long v = strtol(tok, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "%s is not a integer.", tok);
+                return 0;
+            }
+            if (nr_ele > max_ele) {
+                fprintf(stderr, "too many elements in list %s\n", value);
+                return 0;
+            }
+            arr[nr_ele++] = (uint16_t)v;
+        } else {
+            *middle = '\0';
+            char *lbound = __strstrip(tok);
+            char *rbound = __strstrip(middle+1);
+            long lv = strtol(lbound, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "%s is not a integer.", lbound);
+                return 0;
+            }
+            long rv = strtol(rbound, &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "%s is not a integer.", rbound);
+                return 0;
+            }
+            for (j = lv; j <= rv; ++j) {
+                if (nr_ele > max_ele) {
+                    fprintf(stderr, "too many elements in list %s.\n", value);
+                    return 0;
+                }
+                arr[nr_ele++] = (uint16_t)j;
+            }
+        }
+    }
+    if (nr_ele <= 0) {
+        printf("list %s is empty\n", value);
+        return 1;
+    }
+    sort_uint16_array(arr, nr_ele);
+    *sz = nr_ele;
+    return 1;
+}
+
+static int
+parse_port_lcore_list(struct ff_port_cfg *cfg, const char *v_str)
+{
+    cfg->nb_lcores = DPDK_MAX_LCORE;
+    uint16_t *cores = cfg->lcore_list;
+    return __parse_config_list(cores, &cfg->nb_lcores, v_str);
+}
+
+static int
+parse_port_list(struct ff_config *cfg, const char *v_str)
+{
+    int res;
+    uint16_t ports[RTE_MAX_ETHPORTS];
+    int sz = RTE_MAX_ETHPORTS;
+
+    res = __parse_config_list(ports, &sz, v_str);
+    if (! res) return res;
+
+    uint16_t *portid_list = malloc(sizeof(uint16_t)*sz);
+
+    if (portid_list == NULL) {
+        fprintf(stderr, "parse_port_list malloc failed\n");
+        return 0;
+    }
+    memcpy(portid_list, ports, sz*sizeof(uint16_t));
+
+    cfg->dpdk.portid_list = portid_list;
+    cfg->dpdk.nb_ports = sz;
+    cfg->dpdk.max_portid = portid_list[sz-1];
+    return res;
+}
 
 static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
 
     if (cfg->dpdk.nb_ports == 0) {
-        fprintf(stderr, "port_cfg_handler: must config dpdk.nb_ports first\n");
+        fprintf(stderr, "port_cfg_handler: must config dpdk.port_list first\n");
         return 0;
     }
 
     if (cfg->dpdk.port_cfgs == NULL) {
-        struct ff_port_cfg *pc = calloc(cfg->dpdk.nb_ports, sizeof(struct ff_port_cfg));
+        struct ff_port_cfg *pc = calloc(RTE_MAX_ETHPORTS, sizeof(struct ff_port_cfg));
         if (pc == NULL) {
             fprintf(stderr, "port_cfg_handler malloc failed\n");
             return 0;
         }
+        // initialize lcore list and nb_lcores
+        int i;
+        for (i = 0; i < cfg->dpdk.nb_ports; ++i) {
+            uint16_t portid = cfg->dpdk.portid_list[i];
 
+            struct ff_port_cfg *pconf = &pc[portid];
+            pconf->port_id = portid;
+            pconf->nb_lcores = ff_global_cfg.dpdk.nb_procs;
+            memcpy(pconf->lcore_list, ff_global_cfg.dpdk.proc_lcore,
+                   pconf->nb_lcores*sizeof(uint16_t));
+        }
         cfg->dpdk.port_cfgs = pc;
     }
 
@@ -218,8 +366,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
     }
 
     /* just return true if portid >= nb_ports because it has no effect */
-    if (portid >= cfg->dpdk.nb_ports) {
-        fprintf(stderr, "port_cfg_handler section[%s] max than nb_ports\n", section);
+    if (portid > cfg->dpdk.max_portid) {
+        fprintf(stderr, "port_cfg_handler section[%s] bigger than max port id\n", section);
         return 1;
     }
 
@@ -239,6 +387,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->gateway = strdup(value);
     } else if (strcmp(name, "pcap") == 0) {
         cur->pcap = strdup(value);
+    } else if (strcmp(name, "lcore_list") == 0) {
+        return parse_port_lcore_list(cur, value);
     }
 
     return 1;
@@ -262,10 +412,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
-    } else if (MATCH("dpdk", "port_mask")) {
-        pconfig->dpdk.port_mask = atoi(value);
-    } else if (MATCH("dpdk", "nb_ports")) {
-        pconfig->dpdk.nb_ports = atoi(value);
+    } else if (MATCH("dpdk", "port_list")) {
+        return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "promiscuous")) {
         pconfig->dpdk.promiscuous = atoi(value);
     } else if (MATCH("dpdk", "numa_on")) {
@@ -398,11 +546,43 @@ ff_check_config(struct ff_config *cfg)
 
     int i;
     for (i = 0; i < cfg->dpdk.nb_ports; i++) {
-        struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[i];
+        uint16_t portid = cfg->dpdk.portid_list[i];
+        struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
         CHECK_VALID(addr);
         CHECK_VALID(netmask);
         CHECK_VALID(broadcast);
         CHECK_VALID(gateway);
+        // check if the lcores in lcore_list are enabled.
+        int k;
+        for (k = 0; k < pc->nb_lcores; k++) {
+            uint16_t lcore_id = pc->lcore_list[k];
+            if (uint16_binary_search(cfg->dpdk.proc_lcore, 0,
+                                     cfg->dpdk.nb_procs-1, lcore_id) < 0) {
+                fprintf(stderr, "lcore %d is not enabled.\n", lcore_id);
+                return -1;
+            }
+        }
+        /*
+         * only primary process process KNI, so if KNI enabled,
+         * primary lcore must stay in every enabled ports' lcore_list
+         */
+        if (cfg->kni.enable &&
+            strcmp(cfg->dpdk.proc_type, "primary") == 0) {
+            int found = 0;
+            int j;
+            uint16_t lcore_id = cfg->dpdk.proc_lcore[cfg->dpdk.proc_id];
+            for (j = 0; j < pc->nb_lcores; j++) {
+                if (pc->lcore_list[j] == lcore_id) {
+                    found = 1;
+                }
+            }
+            if (! found) {
+                fprintf(stderr,
+                         "primary lcore %d should stay in port %d's lcore_list.\n",
+                         lcore_id, pc->port_id);
+                return -1;
+            }
+        }
     }
 
     return 0;
@@ -451,4 +631,3 @@ ff_load_config(int argc, char *const argv[])
 
     return 0;
 }
-

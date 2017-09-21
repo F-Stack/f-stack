@@ -145,12 +145,13 @@ struct lcore_rx_queue {
 
 struct lcore_conf {
     uint16_t proc_id;
-    uint16_t nb_procs;
     uint16_t socket_id;
+    int16_t nb_queue_list[RTE_MAX_ETHPORTS];
+    struct ff_port_cfg *port_cfgs;
+
     uint16_t nb_rx_queue;
-    uint16_t *proc_lcore;
     struct lcore_rx_queue rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
-    uint16_t tx_queue_id[RTE_MAX_ETHPORTS];
+    int16_t tx_queue_id[RTE_MAX_ETHPORTS];
     struct mbuf_table tx_mbufs[RTE_MAX_ETHPORTS];
     char *pcap[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
@@ -231,10 +232,10 @@ check_all_ports_link_status(void)
     for (count = 0; count <= MAX_CHECK_TIME; count++) {
         all_ports_up = 1;
         for (i = 0; i < nb_ports; i++) {
-            uint8_t portid = ff_global_cfg.dpdk.port_cfgs[i].port_id;
+            uint8_t portid = ff_global_cfg.dpdk.portid_list[i];
             memset(&link, 0, sizeof(link));
             rte_eth_link_get_nowait(portid, &link);
- 
+
             /* print link status if flag set */
             if (print_flag == 1) {
                 if (link.link_status) {
@@ -276,24 +277,31 @@ check_all_ports_link_status(void)
 static int
 init_lcore_conf(void)
 {
-    uint8_t nb_ports = rte_eth_dev_count();
-    if (nb_ports == 0) {
+    /*
+     * set all elements in tx_queue_id to -1, so we can use this array to check
+     * if port is processed by this core.
+     */
+    int k;
+    for (k = 0; k < RTE_MAX_ETHPORTS; ++k) {
+        lcore_conf.tx_queue_id[k] = -1;
+        lcore_conf.nb_queue_list[k] = -1;
+    }
+    lcore_conf.port_cfgs = ff_global_cfg.dpdk.port_cfgs;
+
+    uint8_t nb_dev_ports = rte_eth_dev_count();
+    if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
+    }
+    if (ff_global_cfg.dpdk.max_portid >= nb_dev_ports) {
+        rte_exit(EXIT_FAILURE, "this machine doesn't have port %d.\n",
+                 ff_global_cfg.dpdk.max_portid);
     }
 
     lcore_conf.proc_id = ff_global_cfg.dpdk.proc_id;
-    lcore_conf.nb_procs = ff_global_cfg.dpdk.nb_procs;
 
-    lcore_conf.proc_lcore = rte_zmalloc(NULL,
-        sizeof(uint16_t) * lcore_conf.nb_procs, 0);
-    if (lcore_conf.proc_lcore == NULL) {
-        rte_exit(EXIT_FAILURE, "rte_zmalloc proc_lcore failed\n");
-    }
-    rte_memcpy(lcore_conf.proc_lcore, ff_global_cfg.dpdk.proc_lcore,
-        sizeof(uint16_t) * lcore_conf.nb_procs);
     uint16_t proc_id;
-    for (proc_id = 0; proc_id < lcore_conf.nb_procs; proc_id++) {
-        uint16_t lcore_id = lcore_conf.proc_lcore[proc_id];
+    for (proc_id = 0; proc_id < ff_global_cfg.dpdk.nb_procs; proc_id++) {
+        uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[proc_id];
         if (!lcore_config[lcore_id].detected) {
             rte_exit(EXIT_FAILURE, "lcore %u unavailable\n", lcore_id);
         }
@@ -306,34 +314,33 @@ init_lcore_conf(void)
 
     lcore_conf.socket_id = socket_id;
 
-    /* Currently, proc id 1:1 map to rx/tx queue id per port. */
-    uint8_t port_id, enabled_ports = 0;
-    for (port_id = 0; port_id < nb_ports; port_id++) {
-        if (ff_global_cfg.dpdk.port_mask &&
-            (ff_global_cfg.dpdk.port_mask & (1 << port_id)) == 0) {
-            printf("\nSkipping disabled port %d\n", port_id);
+    uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[lcore_conf.proc_id];
+    int j;
+    for (j = 0; j < ff_global_cfg.dpdk.nb_ports; ++j) {
+        uint16_t port_id = ff_global_cfg.dpdk.portid_list[j];
+        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+
+        int queueid = -1;
+        int i;
+        for (i = 0; i < pconf->nb_lcores; i++) {
+            if (pconf->lcore_list[i] == lcore_id) {
+                queueid = i;
+            }
+        }
+        if (queueid < 0) {
             continue;
         }
-
-        if (port_id >= ff_global_cfg.dpdk.nb_ports) {
-            printf("\nSkipping non-configured port %d\n", port_id);
-            break;
-        }
-
+        printf("lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
         uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
         lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
-        lcore_conf.rx_queue_list[nb_rx_queue].queue_id = lcore_conf.proc_id;
+        lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
         lcore_conf.nb_rx_queue++;
 
-        lcore_conf.tx_queue_id[port_id] = lcore_conf.proc_id;
-        lcore_conf.pcap[port_id] = ff_global_cfg.dpdk.port_cfgs[enabled_ports].pcap;
+        lcore_conf.tx_queue_id[port_id] = queueid;
 
-        ff_global_cfg.dpdk.port_cfgs[enabled_ports].port_id = port_id;
-
-        enabled_ports++;
+        lcore_conf.pcap[port_id] = pconf->pcap;
+        lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
     }
-
-    ff_global_cfg.dpdk.nb_ports = enabled_ports;
 
     return 0;
 }
@@ -360,8 +367,8 @@ init_mem_pool(void)
     uint16_t i, lcore_id;
     char s[64];
 
-    for (i = 0; i < lcore_conf.nb_procs; i++) {
-        lcore_id = lcore_conf.proc_lcore[i];
+    for (i = 0; i < ff_global_cfg.dpdk.nb_procs; i++) {
+        lcore_id = ff_global_cfg.dpdk.proc_lcore[i];
         if (numa_on) {
             socketid = rte_lcore_to_socket_id(lcore_id);
         }
@@ -424,13 +431,13 @@ init_arp_ring(void)
     int proc_id = ff_global_cfg.dpdk.proc_id;
 
     /* Allocate arp ring ptr according to eth dev count. */
-    int nb_ports = rte_eth_dev_count();
+    int nb_dev_ports = rte_eth_dev_count();
     for(i = 0; i < nb_procs; ++i) {
         snprintf(name_buf, RTE_RING_NAMESIZE, "ring_ptr_%d_%d",
             proc_id, i);
 
         arp_ring[i] = rte_zmalloc(name_buf,
-            sizeof(struct rte_ring *) * nb_ports,
+            sizeof(struct rte_ring *) * nb_dev_ports,
              RTE_CACHE_LINE_SIZE);
         if (arp_ring[i] == NULL) {
             rte_exit(EXIT_FAILURE, "rte_zmalloc(%s (struct rte_ring*)) "
@@ -441,9 +448,9 @@ init_arp_ring(void)
     unsigned socketid = lcore_conf.socket_id;
 
     /* Create ring according to ports actually being used. */
-    nb_ports = ff_global_cfg.dpdk.nb_ports;
+    int nb_ports = ff_global_cfg.dpdk.nb_ports;
     for (j = 0; j < nb_ports; j++) {
-        uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[j].port_id;
+        uint16_t port_id = ff_global_cfg.dpdk.portid_list[j];
 
         for(i = 0; i < nb_procs; ++i) {
             snprintf(name_buf, RTE_RING_NAMESIZE, "arp_ring_%d_%d", i, port_id);
@@ -531,7 +538,7 @@ init_kni(void)
     nb_ports = ff_global_cfg.dpdk.nb_ports;
     int i, ret;
     for (i = 0; i < nb_ports; i++) {
-        uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[i].port_id;
+        uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
         ff_kni_alloc(port_id, socket_id, mbuf_pool, KNI_QUEUE_SIZE);
     }
 
@@ -567,26 +574,27 @@ static int
 init_port_start(void)
 {
     int nb_ports = ff_global_cfg.dpdk.nb_ports;
-    uint16_t nb_procs = ff_global_cfg.dpdk.nb_procs;
     unsigned socketid = rte_lcore_to_socket_id(rte_lcore_id());
     struct rte_mempool *mbuf_pool = pktmbuf_pool[socketid];
     uint16_t i;
 
     for (i = 0; i < nb_ports; i++) {
-        uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[i].port_id;
+        uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
+        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+        uint16_t nb_queues = pconf->nb_lcores;
 
         struct rte_eth_dev_info dev_info;
         rte_eth_dev_info_get(port_id, &dev_info);
 
-        if (nb_procs > dev_info.max_rx_queues) {
+        if (nb_queues > dev_info.max_rx_queues) {
             rte_exit(EXIT_FAILURE, "num_procs[%d] bigger than max_rx_queues[%d]\n",
-                nb_procs,
+                nb_queues,
                 dev_info.max_rx_queues);
         }
 
-        if (nb_procs > dev_info.max_tx_queues) {
+        if (nb_queues > dev_info.max_tx_queues) {
             rte_exit(EXIT_FAILURE, "num_procs[%d] bigger than max_tx_queues[%d]\n",
-                nb_procs,
+                nb_queues,
                 dev_info.max_tx_queues);
         }
 
@@ -599,7 +607,7 @@ init_port_start(void)
                 addr.addr_bytes[2], addr.addr_bytes[3],
                 addr.addr_bytes[4], addr.addr_bytes[5]);
 
-        rte_memcpy(ff_global_cfg.dpdk.port_cfgs[i].mac,
+        rte_memcpy(pconf->mac,
             addr.addr_bytes, ETHER_ADDR_LEN);
 
         /* Clear txq_flags - we do not need multi-mempool and refcnt */
@@ -655,7 +663,7 @@ init_port_start(void)
         if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
             printf("LRO is supported\n");
             port_conf.rxmode.enable_lro = 1;
-            ff_global_cfg.dpdk.port_cfgs[i].hw_features.rx_lro = 1;
+            pconf->hw_features.rx_lro = 1;
         }
         #endif
 
@@ -665,24 +673,24 @@ init_port_start(void)
             (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
             printf("RX checksum offload supported\n");
             port_conf.rxmode.hw_ip_checksum = 1;
-            ff_global_cfg.dpdk.port_cfgs[i].hw_features.rx_csum = 1;
+            pconf->hw_features.rx_csum = 1;
         }
 
         if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
             printf("TX ip checksum offload supported\n");
-            ff_global_cfg.dpdk.port_cfgs[i].hw_features.tx_csum_ip = 1;
+            pconf->hw_features.tx_csum_ip = 1;
         }
 
         if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
             (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
             printf("TX TCP&UDP checksum offload supported\n");
-            ff_global_cfg.dpdk.port_cfgs[i].hw_features.tx_csum_l4 = 1;
+            pconf->hw_features.tx_csum_l4 = 1;
         }
 
         if (ff_global_cfg.dpdk.tso) {
             if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
                 printf("TSO is supported\n");
-                ff_global_cfg.dpdk.port_cfgs[i].hw_features.tx_tso = 1;
+                pconf->hw_features.tx_tso = 1;
             }
         } else {
             printf("TSO is disabled\n");
@@ -701,14 +709,12 @@ init_port_start(void)
             continue;
         }
 
-        /* Currently, proc id 1:1 map to queue id per port. */
-        int ret = rte_eth_dev_configure(port_id, nb_procs, nb_procs, &port_conf);
+        int ret = rte_eth_dev_configure(port_id, nb_queues, nb_queues, &port_conf);
         if (ret != 0) {
             return ret;
         }
-
         uint16_t q;
-        for (q = 0; q < nb_procs; q++) {
+        for (q = 0; q < nb_queues; q++) {
             ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
                 socketid, &dev_info.default_txconf);
             if (ret < 0) {
@@ -727,7 +733,7 @@ init_port_start(void)
             return ret;
         }
 
-        if (nb_procs > 1) {
+        if (nb_queues > 1) {
             /* set HW rss hash function to Toeplitz. */
             if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
                 struct rte_eth_hash_filter_info info = {0};
@@ -741,7 +747,7 @@ init_port_start(void)
                 }
             }
 
-            set_rss_table(port_id, dev_info.reta_size, nb_procs);
+            set_rss_table(port_id, dev_info.reta_size, nb_queues);
         }
 
         /* Enable RX in promiscuous mode for the Ethernet device. */
@@ -756,8 +762,8 @@ init_port_start(void)
         }
 
         /* Enable pcap dump */
-        if (ff_global_cfg.dpdk.port_cfgs[i].pcap) {
-            ff_enable_pcap(ff_global_cfg.dpdk.port_cfgs[i].pcap);
+        if (pconf->pcap) {
+            ff_enable_pcap(pconf->pcap);
         }
     }
 
@@ -838,7 +844,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         }
     }
 
-    /* 
+    /*
      * FIXME: should we save pkt->vlan_tci
      * if (pkt->ol_flags & PKT_RX_VLAN_PKT)
      */
@@ -917,13 +923,17 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             struct rte_mbuf *mbuf_clone;
             if (pkts_from_ring == 0) {
                 uint16_t i;
-                for(i = 0; i < qconf->nb_procs; ++i) {
+                int16_t nb_queues = qconf->nb_queue_list[port_id];
+                assert(nb_queues != -1);
+
+                for(i = 0; i < nb_queues; ++i) {
                     if(i == queue_id)
                         continue;
 
                     unsigned socket_id = 0;
                     if (numa_on) {
-                        socket_id = rte_lcore_to_socket_id(qconf->proc_lcore[i]);
+                        uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[i];
+                        socket_id = rte_lcore_to_socket_id(lcore_id);
                     }
                     mbuf_pool = pktmbuf_pool[socket_id];
                     mbuf_clone = rte_pktmbuf_clone(rtem, mbuf_pool);
@@ -1333,8 +1343,13 @@ ff_dpdk_if_up(void) {
     int nb_ports = ff_global_cfg.dpdk.nb_ports;
     int i;
     for (i = 0; i < nb_ports; i++) {
-        uint8_t port_id = ff_global_cfg.dpdk.port_cfgs[i].port_id;
-        veth_ctx[port_id] = ff_veth_attach(ff_global_cfg.dpdk.port_cfgs + i);
+        uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
+        // if port's lcore list does't contain current core, just skip this port
+        if (lcore_conf.tx_queue_id[port_id] < 0) {
+            continue;
+        }
+        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+        veth_ctx[port_id] = ff_veth_attach(pconf);
         if (veth_ctx[port_id] == NULL) {
             rte_exit(EXIT_FAILURE, "ff_veth_attach failed");
         }
@@ -1388,13 +1403,15 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport)
 {
     struct lcore_conf *qconf = &lcore_conf;
+    struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
+    uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
-    if (qconf->nb_procs == 1) {
+    if (nb_queues == 1) {
         return 1;
     }
 
-    struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t reta_size = rss_reta_size[ctx->port_id];
+    uint16_t queueid = qconf->tx_queue_id[ctx->port_id];
 
     uint8_t data[sizeof(saddr) + sizeof(daddr) + sizeof(sport) +
         sizeof(dport)];
@@ -1416,7 +1433,5 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint32_t hash = toeplitz_hash(sizeof(default_rsskey_40bytes),
         default_rsskey_40bytes, datalen, data);
 
-    return ((hash & (reta_size - 1)) % qconf->nb_procs) == qconf->proc_id;
+    return ((hash & (reta_size - 1)) % nb_queues) == queueid;
 }
-
-
