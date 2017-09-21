@@ -169,10 +169,17 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
         cur = &cfg->freebsd.sysctl;
 
         if (is_integer(value)) {
-            int *p = (int *)malloc(sizeof(int));
-            *p = atoi(value);
-            newconf->value = (void *)p;
-            newconf->vlen = sizeof(*p);
+            if (strcmp(name, "kern.ipc.maxsockbuf") == 0) {
+                long *p = (long *)malloc(sizeof(long));
+                *p = atol(value);
+                newconf->value = (void *)p;
+                newconf->vlen = sizeof(*p);
+            } else {
+                 int *p = (int *)malloc(sizeof(int));
+                 *p = atoi(value);
+                 newconf->value = (void *)p;
+                 newconf->vlen = sizeof(*p);
+            }
         } else {
             newconf->value = (void *)newconf->str;
             newconf->vlen = strlen(value);
@@ -183,10 +190,11 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
     }
 
     if (*cur == NULL) {
+        newconf->next = NULL;
         *cur = newconf;
     } else {
+        newconf->next = (*cur)->next;
         (*cur)->next = newconf;
-        newconf->next = NULL;
     }
 
     return 1;
