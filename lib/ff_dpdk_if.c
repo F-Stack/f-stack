@@ -146,12 +146,14 @@ struct lcore_rx_queue {
 struct lcore_conf {
     uint16_t proc_id;
     uint16_t socket_id;
-    int16_t nb_queue_list[RTE_MAX_ETHPORTS];
+    uint16_t nb_queue_list[RTE_MAX_ETHPORTS];
     struct ff_port_cfg *port_cfgs;
 
     uint16_t nb_rx_queue;
     struct lcore_rx_queue rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
-    int16_t tx_queue_id[RTE_MAX_ETHPORTS];
+    uint16_t nb_tx_port;
+    uint16_t tx_port_id[RTE_MAX_ETHPORTS];
+    uint16_t tx_queue_id[RTE_MAX_ETHPORTS];
     struct mbuf_table tx_mbufs[RTE_MAX_ETHPORTS];
     char *pcap[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
@@ -277,26 +279,17 @@ check_all_ports_link_status(void)
 static int
 init_lcore_conf(void)
 {
-    /*
-     * set all elements in tx_queue_id to -1, so we can use this array to check
-     * if port is processed by this core.
-     */
-    int k;
-    for (k = 0; k < RTE_MAX_ETHPORTS; ++k) {
-        lcore_conf.tx_queue_id[k] = -1;
-        lcore_conf.nb_queue_list[k] = -1;
-    }
-    lcore_conf.port_cfgs = ff_global_cfg.dpdk.port_cfgs;
-
     uint8_t nb_dev_ports = rte_eth_dev_count();
     if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
     }
+
     if (ff_global_cfg.dpdk.max_portid >= nb_dev_ports) {
         rte_exit(EXIT_FAILURE, "this machine doesn't have port %d.\n",
                  ff_global_cfg.dpdk.max_portid);
     }
 
+    lcore_conf.port_cfgs = ff_global_cfg.dpdk.port_cfgs;
     lcore_conf.proc_id = ff_global_cfg.dpdk.proc_id;
 
     uint16_t proc_id;
@@ -337,6 +330,8 @@ init_lcore_conf(void)
         lcore_conf.nb_rx_queue++;
 
         lcore_conf.tx_queue_id[port_id] = queueid;
+        lcore_conf.tx_port_id[lcore_conf.nb_tx_port] = port_id;
+        lcore_conf.nb_tx_port++;
 
         lcore_conf.pcap[port_id] = pconf->pcap;
         lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
@@ -923,9 +918,7 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             struct rte_mbuf *mbuf_clone;
             if (pkts_from_ring == 0) {
                 uint16_t i;
-                int16_t nb_queues = qconf->nb_queue_list[port_id];
-                assert(nb_queues != -1);
-
+                uint16_t nb_queues = qconf->nb_queue_list[port_id];
                 for(i = 0; i < nb_queues; ++i) {
                     if(i == queue_id)
                         continue;
@@ -1252,15 +1245,13 @@ main_loop(void *arg)
          */
         diff_tsc = cur_tsc - prev_tsc;
         if (unlikely(diff_tsc > drain_tsc)) {
-            /*
-             * This could be optimized (use queueid instead of
-             * portid), but it is not called so often
-             */
-            for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
+            for (i = 0; i < qconf->nb_tx_port; i++) {
+                port_id = qconf->tx_port_id[i];
                 if (qconf->tx_mbufs[port_id].len == 0)
                     continue;
 
                 idle = 0;
+
                 send_burst(qconf,
                     qconf->tx_mbufs[port_id].len,
                     port_id);
@@ -1340,15 +1331,12 @@ main_loop(void *arg)
 
 int
 ff_dpdk_if_up(void) {
-    int nb_ports = ff_global_cfg.dpdk.nb_ports;
     int i;
-    for (i = 0; i < nb_ports; i++) {
-        uint16_t port_id = ff_global_cfg.dpdk.portid_list[i];
-        // if port's lcore list does't contain current core, just skip this port
-        if (lcore_conf.tx_queue_id[port_id] < 0) {
-            continue;
-        }
-        struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+    struct lcore_conf *qconf = &lcore_conf;
+    for (i = 0; i < qconf->nb_tx_port; i++) {
+        uint16_t port_id = qconf->tx_port_id[i];
+
+        struct ff_port_cfg *pconf = &qconf->port_cfgs[port_id];
         veth_ctx[port_id] = ff_veth_attach(pconf);
         if (veth_ctx[port_id] == NULL) {
             rte_exit(EXIT_FAILURE, "ff_veth_attach failed");
@@ -1406,7 +1394,7 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
-    if (nb_queues == 1) {
+    if (nb_queues <= 1) {
         return 1;
     }
 
