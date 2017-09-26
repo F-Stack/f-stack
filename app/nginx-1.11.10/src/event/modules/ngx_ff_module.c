@@ -112,6 +112,9 @@ static ssize_t (*real_sendmsg)(int, const struct msghdr*, int);
 static ssize_t (*real_writev)(int, const struct iovec *, int);
 static ssize_t (*real_readv)(int, const struct iovec *, int);
 
+static ssize_t (*real_read)(int, void *, size_t);
+static ssize_t (*real_write)(int, const void *, size_t);
+
 static int (*real_ioctl)(int, int, void *);
 
 static int (*real_gettimeofday)(struct timeval *tv, struct timezone *tz);
@@ -371,6 +374,34 @@ readv(int sockfd, const struct iovec *iov, int iovcnt)
         return ff_readv(sockfd, iov, iovcnt);
     } else {
         return SYSCALL(readv)(sockfd, iov, iovcnt);
+    }
+}
+
+ssize_t
+read(int sockfd, void *buf, size_t count)
+{
+    if (unlikely(inited == 0)) {
+        return SYSCALL(read)(sockfd, buf, count);
+    }
+
+    if (ff_fdisused(sockfd)) {
+        return ff_read(sockfd, buf, count);
+    } else {
+        return SYSCALL(read)(sockfd, buf, count);
+    }
+}
+
+ssize_t
+write(int sockfd, const void *buf, size_t count)
+{
+    if (unlikely(inited == 0)) {
+        return SYSCALL(write)(sockfd, buf, count);
+    }
+
+    if (ff_fdisused(sockfd)) {
+        return ff_write(sockfd, buf, count);
+    } else {
+        return SYSCALL(write)(sockfd, buf, count);
     }
 }
 
