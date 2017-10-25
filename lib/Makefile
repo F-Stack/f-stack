@@ -109,7 +109,9 @@ VPATH+= $S/crypto/rijndael
 VPATH+= $S/crypto/sha2
 VPATH+= $S/crypto/siphash
 VPATH+= $S/net
+VPATH+= $S/netgraph
 VPATH+= $S/netinet
+VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
 VPATH+= $S/netipsec
 VPATH+= $S/opencrypto
@@ -117,100 +119,100 @@ VPATH+= $S/vm
 VPATH+= $S/libkern
 
 
-FF_SRCS+=			\
-	ff_compat.c    \
-	ff_glue.c      \
-	ff_freebsd_init.c      \
-	ff_init_main.c \
-	ff_kern_condvar.c \
-	ff_kern_environment.c  \
-	ff_kern_intr.c  \
-	ff_kern_subr.c \
-	ff_kern_synch.c \
-	ff_kern_timeout.c \
-	ff_lock.c      \
-	ff_syscall_wrapper.c \
-	ff_subr_prf.c    \
-	ff_vfs_ops.c  \
-	ff_veth.c  \
+FF_SRCS+=                     \
+	ff_compat.c           \
+	ff_glue.c             \
+	ff_freebsd_init.c     \
+	ff_init_main.c        \
+	ff_kern_condvar.c     \
+	ff_kern_environment.c \
+	ff_kern_intr.c        \
+	ff_kern_subr.c        \
+	ff_kern_synch.c       \
+	ff_kern_timeout.c     \
+	ff_lock.c             \
+	ff_syscall_wrapper.c  \
+	ff_subr_prf.c         \
+	ff_vfs_ops.c          \
+	ff_veth.c             \
 	ff_route.c
 
-FF_HOST_SRCS+= \
+FF_HOST_SRCS+=              \
 	ff_host_interface.c \
-	ff_config.c    \
-	ff_ini_parser.c  \
-	ff_dpdk_if.c \
-	ff_dpdk_kni.c \
-	ff_dpdk_pcap.c \
-	ff_epoll.c \
+	ff_config.c         \
+	ff_ini_parser.c     \
+	ff_dpdk_if.c        \
+	ff_dpdk_kni.c       \
+	ff_dpdk_pcap.c      \
+	ff_epoll.c          \
 	ff_init.c
 
 ifdef FF_IPSEC
-CRYPTO_ASM_SRCS+=			\
-	aesencdec_${MACHINE_CPUARCH}.S	\
+CRYPTO_ASM_SRCS+=                       \
+	aesencdec_${MACHINE_CPUARCH}.S  \
 	aeskeys_${MACHINE_CPUARCH}.S
 
-CRYPTO_SRCS+=			\
-	aesni.c			\
-	aesni_wrap.c		\
-	bf_ecb.c		\
-	bf_enc.c		\
-	bf_skey.c		\
-	camellia.c		\
-	camellia-api.c		\
-	des_ecb.c		\
-	des_enc.c		\
-	des_setkey.c		\
-	rijndael-alg-fst.c	\
-	rijndael-api.c		\
-	sha1.c			    \
+CRYPTO_SRCS+=               \
+	aesni.c	            \
+	aesni_wrap.c        \
+	bf_ecb.c            \
+	bf_enc.c            \
+	bf_skey.c           \
+	camellia.c          \
+	camellia-api.c      \
+	des_ecb.c           \
+	des_enc.c           \
+	des_setkey.c        \
+	rijndael-alg-fst.c  \
+	rijndael-api.c      \
+	sha1.c              \
 	sha256c.c           \
 	sha512c.c           \
 	siphash.c
 else
-CRYPTO_SRCS+=			\
+CRYPTO_SRCS+=               \
 	sha1.c              \
 	siphash.c
 endif
 
-KERN_SRCS+=			\
-	kern_descrip.c		\
-	kern_event.c		\
-	kern_fail.c		\
-	kern_khelp.c		\
-	kern_hhook.c		\
-	kern_linker.c		\
-	kern_mbuf.c		\
-	kern_module.c		\
-	kern_mtxpool.c		\
-	kern_ntptime.c		\
-	kern_osd.c		\
-	kern_sysctl.c		\
-	kern_tc.c		\
-	kern_uuid.c		\
-	link_elf.c		\
-	md5c.c			\
+KERN_SRCS+=                 \
+	kern_descrip.c      \
+	kern_event.c        \
+	kern_fail.c         \
+	kern_khelp.c        \
+	kern_hhook.c        \
+	kern_linker.c       \
+	kern_mbuf.c         \
+	kern_module.c       \
+	kern_mtxpool.c      \
+	kern_ntptime.c      \
+	kern_osd.c          \
+	kern_sysctl.c       \
+	kern_tc.c           \
+	kern_uuid.c         \
+	link_elf.c          \
+	md5c.c              \
 	subr_capability.c   \
 	subr_counter.c      \
-	subr_eventhandler.c	\
-	subr_kobj.c		\
-	subr_lock.c		\
-	subr_module.c		\
-	subr_param.c		\
-	subr_pcpu.c		\
-	subr_sbuf.c		\
-	subr_taskqueue.c	\
-	subr_unit.c		\
-	sys_capability.c	\
-	sys_generic.c		\
-	sys_socket.c		\
-	uipc_accf.c		\
-	uipc_mbuf.c		\
-	uipc_mbuf2.c		\
-	uipc_domain.c		\
-	uipc_sockbuf.c		\
+	subr_eventhandler.c \
+	subr_kobj.c         \
+	subr_lock.c         \
+	subr_module.c       \
+	subr_param.c        \
+	subr_pcpu.c         \
+	subr_sbuf.c         \
+	subr_taskqueue.c    \
+	subr_unit.c         \
+	sys_capability.c    \
+	sys_generic.c       \
+	sys_socket.c        \
+	uipc_accf.c         \
+	uipc_mbuf.c         \
+	uipc_mbuf2.c        \
+	uipc_domain.c       \
+	uipc_sockbuf.c      \
 	uipc_socket.c       \
-    uipc_syscalls.c
+	uipc_syscalls.c
 
 
 KERN_MHEADERS+=		\
@@ -223,53 +225,104 @@ KERN_MSRCS+=		\
 	linker_if.m
 
 
-LIBKERN_SRCS+=		\
-	bcd.c		\
-	inet_ntoa.c	\
-	jenkins_hash.c  \
-	strlcpy.c	\
-	strnlen.c
+LIBKERN_SRCS+=		 \
+	bcd.c		 \
+	crc32.c          \
+	inet_ntoa.c	 \
+	jenkins_hash.c   \
+	strlcpy.c	 \
+	strnlen.c        \
+	zlib.c
 
 
-MACHINE_SRCS+=		\
+MACHINE_SRCS+=		 \
 	in_cksum.c
 
 
-NET_SRCS+=		\
-	bpf.c		\
-	bridgestp.c \
-	if.c		\
-	if_bridge.c \
-	if_clone.c	\
-	if_dead.c	\
-	if_ethersubr.c	\
-	if_loop.c	\
-	if_llatbl.c	\
-	in_fib.c	\
-	in_gif.c    \
- 	ip_reass.c	\
-	if_vlan.c   \
-	if_vxlan.c  \
-	netisr.c	\
-	pfil.c		\
-	radix.c		\
-	raw_cb.c	\
-	raw_usrreq.c	\
-	route.c		\
-	rtsock.c
+NET_SRCS+=		 \
+	bpf.c		 \
+	bridgestp.c      \
+	if.c		 \
+	if_bridge.c      \
+	if_clone.c	 \
+	if_dead.c	 \
+	if_ethersubr.c	 \
+	if_loop.c	 \
+	if_llatbl.c	 \
+	if_media.c       \
+	if_spppfr.c      \
+	if_spppsubr.c    \
+	if_vlan.c        \
+	if_vxlan.c       \
+	in_fib.c	 \
+	in_gif.c         \
+	ip_reass.c	 \
+	netisr.c	 \
+	pfil.c		 \
+	radix.c		 \
+	raw_cb.c	 \
+	raw_usrreq.c	 \
+	route.c		 \
+	rtsock.c         \
+	slcompress.c
 
+NETGRAPH_SRCS +=         \
+	ng_async.c       \
+	ng_atmllc.c      \
+	ng_base.c        \
+	ng_bridge.c      \
+	ng_car.c         \
+	ng_cisco.c       \
+	ng_deflate.c     \
+	ng_echo.c        \
+	ng_eiface.c      \
+	ng_etf.c         \
+	ng_ether.c       \
+	ng_ether_echo.c  \
+	ng_frame_relay.c \
+	ng_gif.c         \
+	ng_gif_demux.c   \
+	ng_hole.c        \
+	ng_hub.c         \
+	ng_iface.c       \
+	ng_ip_input.c    \
+	ng_ipfw.c        \
+	ng_ksocket.c     \
+	ng_l2tp.c        \
+	ng_lmi.c         \
+	ng_nat.c         \
+	ng_one2many.c    \
+	ng_parse.c       \
+	ng_patch.c       \
+	ng_pipe.c        \
+	ng_ppp.c         \
+	ng_pppoe.c       \
+	ng_pptpgre.c     \
+	ng_pred1.c       \
+	ng_rfc1490.c     \
+	ng_sample.c      \
+	ng_socket.c      \
+	ng_source.c      \
+	ng_split.c       \
+	ng_sppp.c        \
+	ng_tag.c         \
+	ng_tcpmss.c      \
+	ng_tee.c         \
+	ng_UI.c          \
+	ng_vjc.c         \
+	ng_vlan.c
 
 NETINET_SRCS+=		\
-	ip_carp.c	\
 	if_ether.c	\
-	if_gif.c    \
+	if_gif.c        \
 	igmp.c		\
 	in.c		\
 	in_mcast.c	\
 	in_pcb.c	\
 	in_proto.c	\
 	in_rmx.c	\
-	ip_ecn.c    \
+	ip_carp.c	\
+	ip_ecn.c        \
 	ip_encap.c	\
 	ip_fastfwd.c	\
 	ip_icmp.c	\
@@ -294,10 +347,16 @@ NETINET_SRCS+=		\
 	tcp_timewait.c	\
 	tcp_usrreq.c	\
 	udp_usrreq.c	\
-	cc.c		    \
+	cc.c		\
 	cc_newreno.c    \
 	cc_htcp.c       \
-	cc_cubic.c
+	cc_cubic.c      \
+	alias.c         \
+	alias_db.c      \
+	alias_mod.c     \
+	alias_proxy.c   \
+	alias_sctp.c    \
+	alias_util.c
 
 ifdef FF_IPSEC
 NETINET_SRCS+=		\
@@ -356,7 +415,8 @@ MSRCS+= $(patsubst %.m,%.c,${OPENCRYPTO_MSRCS})
 ASM_SRCS = ${CRYPTO_ASM_SRCS}
 
 SRCS=  ${FF_SRCS} ${CRYPTO_SRCS} ${KERN_SRCS} ${LIBKERN_SRCS} ${MACHINE_SRCS}
-SRCS+= ${MSRCS} ${NET_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS} ${NETIPSEC_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
+SRCS+= ${MSRCS} ${NET_SRCS} ${NETGRAPH_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS}
+SRCS+= ${NETIPSEC_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
 
 # If witness is enabled.
 # SRCS+= ${KERN_WITNESS_SRCS}

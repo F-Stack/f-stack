@@ -5370,8 +5370,10 @@ sppp_proto_name(u_short proto)
 static void
 sppp_print_bytes(const u_char *p, u_short len)
 {
+#ifndef FSTACK
 	if (len)
 		log(-1, " %*D", len, p, "-");
+#endif
 }
 
 static void
