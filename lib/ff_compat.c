@@ -317,6 +317,13 @@ fubyte(volatile const void *base)
     return (*(volatile const uint8_t *)base);
 }
 
+int
+fueword(volatile const void *base, long *val)
+{
+    *val = (*(volatile const long *)base);
+    return 0;
+}
+
 void
 timekeep_push_vdso(void)
 {
