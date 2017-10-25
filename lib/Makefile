@@ -421,6 +421,9 @@ SRCS+= ${NETIPSEC_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
 # If witness is enabled.
 # SRCS+= ${KERN_WITNESS_SRCS}
 
+# Extra FreeBSD kernel module srcs.
+SRCS+= ${KMOD_SRCS}
+
 HOST_SRCS = ${FF_HOST_SRCS}
 
 ASM_OBJS+= $(patsubst %.S,%.o,${ASM_SRCS})
