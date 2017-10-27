@@ -109,7 +109,9 @@ VPATH+= $S/crypto/rijndael
 VPATH+= $S/crypto/sha2
 VPATH+= $S/crypto/siphash
 VPATH+= $S/net
+ifdef FF_NETGRAPH
 VPATH+= $S/netgraph
+endif
 VPATH+= $S/netinet
 VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
@@ -266,6 +268,7 @@ NET_SRCS+=		 \
 	rtsock.c         \
 	slcompress.c
 
+ifdef FF_NETGRAPH
 NETGRAPH_SRCS +=         \
 	ng_async.c       \
 	ng_atmllc.c      \
@@ -311,6 +314,7 @@ NETGRAPH_SRCS +=         \
 	ng_UI.c          \
 	ng_vjc.c         \
 	ng_vlan.c
+endif
 
 NETINET_SRCS+=		\
 	if_ether.c	\

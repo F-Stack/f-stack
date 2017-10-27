@@ -88,7 +88,7 @@ _sleep(void *ident, struct lock_object *lock, int priority,
     const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags)
 {
     //FIXME:we couldn't really sleep.
-    return (0);
+    return (EPERM);
 }
 
 

@@ -1096,6 +1096,7 @@ foffset_lock(struct file *fp, int flags)
      */
     mtxp = mtx_pool_find(mtxpool_sleep, fp);
     mtx_lock(mtxp);
+    /*
     if ((flags & FOF_NOLOCK) == 0) {
         while (fp->f_vnread_flags & FOFFSET_LOCKED) {
             fp->f_vnread_flags |= FOFFSET_LOCK_WAITING;
@@ -1104,6 +1105,7 @@ foffset_lock(struct file *fp, int flags)
         }
         fp->f_vnread_flags |= FOFFSET_LOCKED;
     }
+    */
     res = fp->f_offset;
     mtx_unlock(mtxp);
     return (res);
