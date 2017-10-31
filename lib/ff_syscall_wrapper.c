@@ -790,7 +790,7 @@ ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen)
 
     if ((rc = kern_connectat(curthread, AT_FDCWD, s, &bsdaddr)))
         goto kern_fail;
-    rc = curthread->td_retval[0];
+
     return (rc);
 kern_fail:
     ff_os_errno(rc);
