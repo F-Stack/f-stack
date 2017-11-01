@@ -729,5 +729,10 @@ flush:
         free(rtm, M_TEMP);
     }
 
+    if (error != 0) {
+        ff_os_errno(error);
+        return (-1);
+    }
+
     return (error);
 }

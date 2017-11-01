@@ -11,13 +11,7 @@ include ${TOPDIR}/tools/opts.mk
 
 CLEANFILES+=	nl_symbols.c nl_defs.h
 
-CFLAGS+= -I${TOPDIR}/tools/libutil
-CFLAGS+= -I${TOPDIR}/tools/libmemstat
-CFLAGS+= -I${TOPDIR}/tools/libxo
-
-LIBS+= -L${TOPDIR}/tools/libutil -lutil
-LIBS+= -L${TOPDIR}/tools/libmemstat -lmemstat
-LIBS+= -L${TOPDIR}/tools/libxo -lxo
+LIBADD=util memstat xo
 
 WARNS?=	3
 CFLAGS+=-fno-strict-aliasing
@@ -46,7 +40,6 @@ endif
 
 BINGRP=	kmem
 BINMODE=2555
-LIBADD=	kvm memstat xo util
 
 ifneq (${MK_NETGRAPH_SUPPORT},"no")
 SRCS+=	netgraph.c

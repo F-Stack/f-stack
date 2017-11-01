@@ -111,7 +111,6 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 
 extern int ff_fdisused(int fd);
 
-
 /* route api begin */
 enum FF_ROUTE_CTL {
     FF_ROUTE_ADD,
@@ -132,13 +131,31 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     struct linux_sockaddr *dst, struct linux_sockaddr *gw,
     struct linux_sockaddr *netmask);
 
+/* route api end */
+
+/* internal api begin */
+
 /*
- * This is used in handling ff_msg.
+ * Handle rtctl.
  * The data is a pointer to struct rt_msghdr.
  */
 int ff_rtioctl(int fib, void *data, unsigned *plen, unsigned maxlen);
 
-/* route api end */
+/*
+ * Handle ngctl.
+ */
+enum FF_NGCTL_CMD {
+    NGCTL_SOCKET,
+    NGCTL_BIND,
+    NGCTL_CONNECT,
+    NGCTL_SEND,
+    NGCTL_RECV,
+    NGCTL_CLOSE,
+};
+
+int ff_ngctl(int cmd, void *data);
+
+/* internal api end */
 
 #ifdef __cplusplus
 }

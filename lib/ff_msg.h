@@ -40,6 +40,7 @@ enum FF_MSG_TYPE {
     FF_IOCTL,
     FF_ROUTE,
     FF_TOP,
+    FF_NGCTL,
 };
 
 struct ff_sysctl_args {
@@ -71,6 +72,12 @@ struct ff_top_args {
     unsigned long usr_tsc;
 };
 
+struct ff_ngctl_args {
+    int cmd;
+    int ret;
+    void *data;
+};
+
 #define MAX_MSG_BUF_SIZE 10240
 
 /* structure of ipc msg */
@@ -88,6 +95,7 @@ struct ff_msg {
         struct ff_ioctl_args ioctl;
         struct ff_route_args route;
         struct ff_top_args top;
+        struct ff_ngctl_args ngctl;
     };
 } __attribute__((packed)) __rte_cache_aligned;
 

@@ -1012,8 +1012,13 @@ done:
 static inline void
 handle_route_msg(struct ff_msg *msg, uint16_t proc_id)
 {
-    msg->result = ff_rtioctl(msg->route.fib, msg->route.data,
+    int ret = ff_rtioctl(msg->route.fib, msg->route.data,
         &msg->route.len, msg->route.maxlen);
+    if (ret < 0) {
+        msg->result = errno;
+    } else {
+        msg->result = 0;
+    }
 
     rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
@@ -1028,10 +1033,26 @@ handle_top_msg(struct ff_msg *msg, uint16_t proc_id)
     rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
+#ifdef FF_NETGRAPH
+static inline void
+handle_ngctl_msg(struct ff_msg *msg, uint16_t proc_id)
+{
+    int ret = ff_ngctl(msg->ngctl.cmd, msg->ngctl.data);
+    if (ret < 0) {
+        msg->result = errno;
+    } else {
+        msg->result = 0;
+        msg->ngctl.ret = ret;
+    }
+
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+}
+#endif
+
 static inline void
 handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
 {
-    msg->result = EINVAL;
+    msg->result = ENOTSUP;
     rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
@@ -1051,6 +1072,11 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
         case FF_TOP:
             handle_top_msg(msg, proc_id);
             break;
+#ifdef FF_NETGRAPH
+        case FF_NGCTL:
+            handle_ngctl_msg(msg, proc_id);
+            break;
+#endif
         default:
             handle_default_msg(msg, proc_id);
             break;

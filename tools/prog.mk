@@ -60,6 +60,9 @@ CXXFLAGS+= ${FF_PROG_CFLAGS}
 
 LIBS+= ${FF_PROG_LIBS}
 
+CFLAGS+= $(foreach n,${LIBADD},-I${TOPDIR}/tools/lib${n})
+LIBS+= $(foreach n,${LIBADD},-L${TOPDIR}/tools/lib${n} -l${n})
+
 CLEANFILES+= ${PROG} ${OBJS}
 
 ${PROG}: ${HEADERS} ${OBJS}

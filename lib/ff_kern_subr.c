@@ -97,8 +97,8 @@ hashdestroy(void *vhashtbl, struct malloc_type *type, u_long hashmask)
 
     hashtbl = vhashtbl;
     for (hp = hashtbl; hp <= &hashtbl[hashmask]; hp++)
-        if (!LIST_EMPTY(hp))
-            panic("hashdestroy: hash not empty");
+        KASSERT(LIST_EMPTY(hp), ("%s: hashtbl %p not empty "
+            "(malloc type %s)", __func__, hashtbl, type->ks_shortdesc));
     free(hashtbl, type);
 }
 

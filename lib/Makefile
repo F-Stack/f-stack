@@ -42,8 +42,14 @@ HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb
 else
 HOST_CFLAGS = ${DEBUG} 
 endif
+
 HOST_CFLAGS+= ${DPDK_CFLAGS}
 HOST_CFLAGS+= ${CONF_CFLAGS}
+
+ifdef FF_NETGRAPH
+HOST_CFLAGS+= -DFF_NETGRAPH
+endif
+
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
 
 
@@ -138,6 +144,12 @@ FF_SRCS+=                     \
 	ff_vfs_ops.c          \
 	ff_veth.c             \
 	ff_route.c
+
+ifdef FF_NETGRAPH
+FF_SRCS+=                   \
+        ff_ng_base.c        \
+        ff_ngctl.c
+endif
 
 FF_HOST_SRCS+=              \
 	ff_host_interface.c \
@@ -272,7 +284,6 @@ ifdef FF_NETGRAPH
 NETGRAPH_SRCS +=         \
 	ng_async.c       \
 	ng_atmllc.c      \
-	ng_base.c        \
 	ng_bridge.c      \
 	ng_car.c         \
 	ng_cisco.c       \

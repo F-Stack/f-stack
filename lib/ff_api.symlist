@@ -43,3 +43,4 @@ ff_route_ctl
 ff_rtioctl
 ff_gettimeofday
 ff_fdisused
+ff_ngctl
