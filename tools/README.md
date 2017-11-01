@@ -139,6 +139,19 @@ ipsec
 
 For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?netstat).
 
+# ngctl
+Usage:
+```
+ngctl -p <f-stack proc_id>  [-d] [-f file] [-n name] [command ...]
+```
+
+About interactive mode:
+- if you have `libedit` in your system, you can turn on `MK_HAVE_LIBEDIT` in `opts.mk`,
+  the interactive mode will support generic line editing, history functions.
+
+
+For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?ngctl).
+
 # how to implement a custom tool for communicating with F-Stack process
 
 Add a new FF_MSG_TYPE in ff_msg.h:
