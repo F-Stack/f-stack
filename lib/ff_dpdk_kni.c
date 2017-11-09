@@ -257,8 +257,9 @@ protocol_filter_ip(const void *data, uint16_t len)
     const struct ipv4_hdr *hdr;
     hdr = (const struct ipv4_hdr *)data;
 
-    void *next = (void *)data + sizeof(struct ipv4_hdr);
-    uint16_t next_len = len - sizeof(struct ipv4_hdr);
+    int hdr_len = (hdr->version_ihl & 0x0f) << 2;
+    void *next = (void *)data + hdr_len;
+    uint16_t next_len = len - hdr_len;
 
     switch (hdr->next_proto_id) {
         case IPPROTO_TCP:

@@ -61,7 +61,7 @@
 
 #define MEMPOOL_CACHE_SIZE 256
 
-#define ARP_RING_SIZE 2048
+#define DISPATCH_RING_SIZE 2048
 
 #define MSG_RING_SIZE 32
 
@@ -162,7 +162,8 @@ static struct lcore_conf lcore_conf;
 
 static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
-static struct rte_ring **arp_ring[RTE_MAX_ETHPORTS];
+static struct rte_ring **dispatch_ring[RTE_MAX_ETHPORTS];
+static dispatch_func_t packet_dispatcher;
 
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
@@ -337,6 +338,10 @@ init_lcore_conf(void)
         lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
     }
 
+    if (lcore_conf.nb_rx_queue == 0) {
+        rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
+    }
+
     return 0;
 }
 
@@ -355,7 +360,7 @@ init_mem_pool(void)
         nb_lcores*MEMPOOL_CACHE_SIZE +
         nb_ports*KNI_MBUF_MAX +
         nb_ports*KNI_QUEUE_SIZE +
-        nb_lcores*nb_ports*ARP_RING_SIZE),
+        nb_lcores*nb_ports*DISPATCH_RING_SIZE),
         (unsigned)8192);
 
     unsigned socketid = 0;
@@ -418,7 +423,7 @@ create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
 }
 
 static int
-init_arp_ring(void)
+init_dispatch_ring(void)
 {
     int j;
     char name_buf[RTE_RING_NAMESIZE];
@@ -432,28 +437,29 @@ init_arp_ring(void)
         uint16_t portid = ff_global_cfg.dpdk.portid_list[j];
         struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[portid];
         int nb_queues = pconf->nb_lcores;
-        if (arp_ring[portid] == NULL) {
+        if (dispatch_ring[portid] == NULL) {
             snprintf(name_buf, RTE_RING_NAMESIZE, "ring_ptr_p%d", portid);
 
-            arp_ring[portid] = rte_zmalloc(name_buf,
-                                      sizeof(struct rte_ring *) * nb_queues,
-                                      RTE_CACHE_LINE_SIZE);
-            if (arp_ring[portid] == NULL) {
+            dispatch_ring[portid] = rte_zmalloc(name_buf,
+                sizeof(struct rte_ring *) * nb_queues,
+                RTE_CACHE_LINE_SIZE);
+            if (dispatch_ring[portid] == NULL) {
                 rte_exit(EXIT_FAILURE, "rte_zmalloc(%s (struct rte_ring*)) "
-                         "failed\n", name_buf);
+                    "failed\n", name_buf);
             }
         }
 
         for(queueid = 0; queueid < nb_queues; ++queueid) {
-            snprintf(name_buf, RTE_RING_NAMESIZE, "arp_ring_p%d_q%d", portid, queueid);
-            arp_ring[portid][queueid] = create_ring(name_buf, ARP_RING_SIZE,
-                socketid, RING_F_SC_DEQ);
+            snprintf(name_buf, RTE_RING_NAMESIZE, "dispatch_ring_p%d_q%d",
+                portid, queueid);
+            dispatch_ring[portid][queueid] = create_ring(name_buf,
+                DISPATCH_RING_SIZE, socketid, RING_F_SC_DEQ);
 
-            if (arp_ring[portid][queueid] == NULL)
+            if (dispatch_ring[portid][queueid] == NULL)
                 rte_panic("create ring:%s failed!\n", name_buf);
 
             printf("create ring:%s success, %u ring entries are now free!\n",
-                name_buf, rte_ring_free_count(arp_ring[portid][queueid]));
+                name_buf, rte_ring_free_count(dispatch_ring[portid][queueid]));
         }
     }
 
@@ -807,7 +813,7 @@ ff_dpdk_init(int argc, char **argv)
 
     init_mem_pool();
 
-    init_arp_ring();
+    init_dispatch_ring();
 
     init_msg_ring();
 
@@ -897,38 +903,56 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, const struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
     struct lcore_conf *qconf = &lcore_conf;
+    uint16_t nb_queues = qconf->nb_queue_list[port_id];
 
     uint16_t i;
     for (i = 0; i < count; i++) {
         struct rte_mbuf *rtem = bufs[i];
 
         if (unlikely(qconf->pcap[port_id] != NULL)) {
-            ff_dump_packets(qconf->pcap[port_id], rtem);
+            if (!pkts_from_ring) {
+                ff_dump_packets(qconf->pcap[port_id], rtem);
+            }
         }
 
         void *data = rte_pktmbuf_mtod(rtem, void*);
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
+        if (!pkts_from_ring && packet_dispatcher) {
+            int ret = (*packet_dispatcher)(data, len, nb_queues);
+            if (ret < 0 || ret >= nb_queues) {
+                rte_pktmbuf_free(rtem);
+                continue;
+            }
+
+            if (ret != queue_id) {
+                ret = rte_ring_enqueue(dispatch_ring[port_id][ret], rtem);
+                if (ret < 0)
+                    rte_pktmbuf_free(rtem);
+
+                continue;
+            }
+        }
+
         enum FilterReturn filter = protocol_filter(data, len);
         if (filter == FILTER_ARP) {
             struct rte_mempool *mbuf_pool;
             struct rte_mbuf *mbuf_clone;
-            if (pkts_from_ring == 0) {
-                uint16_t i;
-                uint16_t nb_queues = qconf->nb_queue_list[port_id];
-                for(i = 0; i < nb_queues; ++i) {
-                    if(i == queue_id)
+            if (!pkts_from_ring) {
+                uint16_t j;
+                for(j = 0; j < nb_queues; ++j) {
+                    if(j == queue_id)
                         continue;
 
                     unsigned socket_id = 0;
                     if (numa_on) {
-                        uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[i];
+                        uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[j];
                         socket_id = rte_lcore_to_socket_id(lcore_id);
                     }
                     mbuf_pool = pktmbuf_pool[socket_id];
                     mbuf_clone = rte_pktmbuf_clone(rtem, mbuf_pool);
                     if(mbuf_clone) {
-                        int ret = rte_ring_enqueue(arp_ring[port_id][i], mbuf_clone);
+                        int ret = rte_ring_enqueue(dispatch_ring[port_id][j], mbuf_clone);
                         if (ret < 0)
                             rte_pktmbuf_free(mbuf_clone);
                     }
@@ -954,12 +978,12 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 }
 
 static inline int
-process_arp_ring(uint8_t port_id, uint16_t queue_id,
+process_dispatch_ring(uint8_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, const struct ff_dpdk_if_context *ctx)
 {
     /* read packet from ring buf and to process */
     uint16_t nb_rb;
-    nb_rb = rte_ring_dequeue_burst(arp_ring[port_id][queue_id],
+    nb_rb = rte_ring_dequeue_burst(dispatch_ring[port_id][queue_id],
         (void **)pkts_burst, MAX_PKT_BURST);
 
     if(nb_rb > 0) {
@@ -1233,7 +1257,6 @@ main_loop(void *arg)
     struct loop_routine *lr = (struct loop_routine *)arg;
 
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-    unsigned lcore_id;
     uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
     int i, j, nb_rx, idle;
     uint8_t port_id, queue_id;
@@ -1245,13 +1268,7 @@ main_loop(void *arg)
     prev_tsc = 0;
     usch_tsc = 0;
 
-    lcore_id = rte_lcore_id();
     qconf = &lcore_conf;
-
-    if (qconf->nb_rx_queue == 0) {
-        printf("lcore %u has nothing to do\n", lcore_id);
-        return 0;
-    }
 
     while (1) {
         cur_tsc = rte_rdtsc();
@@ -1296,7 +1313,7 @@ main_loop(void *arg)
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
             }
 
-            process_arp_ring(port_id, queue_id, pkts_burst, ctx);
+            process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
@@ -1350,6 +1367,8 @@ main_loop(void *arg)
 
         ff_status.loops++;
     }
+
+    return 0;
 }
 
 int
@@ -1445,4 +1464,10 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
         default_rsskey_40bytes, datalen, data);
 
     return ((hash & (reta_size - 1)) % nb_queues) == queueid;
+}
+
+void
+ff_regist_packet_dispatcher(dispatch_func_t func)
+{
+    packet_dispatcher = func;
 }

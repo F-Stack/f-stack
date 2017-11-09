@@ -50,6 +50,8 @@ int ff_init(int argc, char * const argv[]);
 
 void ff_run(loop_func_t loop, void *arg);
 
+/* POSIX-LIKE api begin */
+
 int ff_fcntl(int fd, int cmd, ...);
 
 int ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
@@ -109,7 +111,12 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
 
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 
+/* POSIX-LIKE api end */
+
+
+/* Tests if fd is used by F-Stack */
 extern int ff_fdisused(int fd);
+
 
 /* route api begin */
 enum FF_ROUTE_CTL {
@@ -132,6 +139,34 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     struct linux_sockaddr *netmask);
 
 /* route api end */
+
+
+/* dispatch api begin */
+
+/*
+ * Packet dispatch callback function.
+ * Implemented by user.
+ *
+ * @param data
+ *   The data pointer of the packet.
+ * @param len
+ *   The length of the packet.
+ * @param nb_queues
+ *   Number of queues to be dispatched.
+ *
+ * @return 0 to (nb_queues - 1)
+ *   The queue id that the packet will be dispatched to.
+ * @return -1
+ *   Error occurs or packet is handled by user, packet will be freed.
+ *
+ */
+typedef int (*dispatch_func_t)(void *data, uint16_t len, uint16_t nb_queues);
+
+/* regist a packet dispath function */
+void ff_regist_packet_dispatcher(dispatch_func_t func);
+
+/* dispatch api end */
+
 
 /* internal api begin */
 
