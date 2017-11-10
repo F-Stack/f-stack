@@ -112,6 +112,7 @@ _timeout_task_init(struct taskqueue *queue, struct timeout_task *timeout_task,
 	timeout_task->f = 0;
 }
 
+#ifndef FSTACK
 static __inline int
 TQ_SLEEP(struct taskqueue *tq, void *p, struct mtx *m, int pri, const char *wm,
     int t)
@@ -120,6 +121,9 @@ TQ_SLEEP(struct taskqueue *tq, void *p, struct mtx *m, int pri, const char *wm,
 		return (msleep_spin(p, m, wm, t));
 	return (msleep(p, m, pri, wm, t));
 }
+#else
+#define TQ_SLEEP(a, b, c, d, e, f) break;
+#endif
 
 static struct taskqueue *
 _taskqueue_create(const char *name, int mflags,
