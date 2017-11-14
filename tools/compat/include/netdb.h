@@ -235,9 +235,20 @@ struct protoent *getprotobynumber(int proto);
 void setprotoent(int stayopen);
 void endprotoent(void);
 
+struct servent *getservent(void);
+struct servent *getservbyname(const char *name, const char *proto);
+struct servent *getservbyport(int port, const char *proto);
+void setservent(int stayopen);
+void endservent(void);
+
 int getnameinfo(const struct sockaddr *sa, socklen_t salen,
     char *host, size_t hostlen, char *serv, size_t servlen, int flags);
 
 struct netent *getnetbyaddr(uint32_t net, int type);
+
+struct hostent *gethostbyaddr(const void *addr,
+    socklen_t len, int type);
+
+struct hostent *gethostbyname2(const char *name, int af);
 
 #endif /* !_NETDB_H_ */

@@ -55,6 +55,7 @@ FF_PROG_LIBS+= -Wl,--no-whole-archive -L${FF_DPDK}/lib
 FF_PROG_LIBS+= -Wl,--whole-archive -lrte_eal -lrte_mempool -lrte_ring
 FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
 
+CFLAGS+= -Wno-unused-but-set-variable -Wno-unused-variable
 CFLAGS+= ${FF_PROG_CFLAGS}
 CXXFLAGS+= ${FF_PROG_CFLAGS}
 

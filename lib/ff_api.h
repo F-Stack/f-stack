@@ -148,9 +148,11 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  * Implemented by user.
  *
  * @param data
- *   The data pointer of the packet.
+ *   The data pointer of this packet.
  * @param len
- *   The length of the packet.
+ *   The length of this packet.
+ * @param queue_id
+ *   Current queue of this packet.
  * @param nb_queues
  *   Number of queues to be dispatched.
  *
@@ -160,7 +162,8 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  *   Error occurs or packet is handled by user, packet will be freed.
  *
  */
-typedef int (*dispatch_func_t)(void *data, uint16_t len, uint16_t nb_queues);
+typedef int (*dispatch_func_t)(void *data, uint16_t len,
+    uint16_t queue_id, uint16_t nb_queues);
 
 /* regist a packet dispath function */
 void ff_regist_packet_dispatcher(dispatch_func_t func);

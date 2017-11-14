@@ -17,6 +17,8 @@ X86_INCLUDES=0
 
 HOST_OS:=$(shell uname -s)
 #DEBUG=-O0 -gdwarf-2 -g3
+#FF_NETGRAPH=1
+#FF_IPFW=1
 
 ifeq ($(FF_DPDK),)
     FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
@@ -48,6 +50,10 @@ HOST_CFLAGS+= ${CONF_CFLAGS}
 
 ifdef FF_NETGRAPH
 HOST_CFLAGS+= -DFF_NETGRAPH
+endif
+
+ifdef FF_IPFW
+HOST_CFLAGS+= -DFF_IPFW
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -122,6 +128,9 @@ VPATH+= $S/netinet
 VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
 VPATH+= $S/netipsec
+ifdef FF_IPFW
+VPATH+= $S/netpfil/ipfw
+endif
 VPATH+= $S/opencrypto
 VPATH+= $S/vm
 VPATH+= $S/libkern
@@ -373,6 +382,21 @@ NETINET_SRCS+=		\
 	alias_sctp.c    \
 	alias_util.c
 
+ifdef FF_IPFW
+NETIPFW_SRCS+=             \
+	ip_fw_dynamic.c \
+	ip_fw_eaction.c \
+	ip_fw_iface.c   \
+	ip_fw_log.c     \
+	ip_fw_nat.c     \
+	ip_fw_pfil.c    \
+	ip_fw_sockopt.c \
+	ip_fw_table.c   \
+	ip_fw_table_algo.c  \
+	ip_fw_table_value.c \
+	ip_fw2.c
+endif
+
 ifdef FF_IPSEC
 NETINET_SRCS+=		\
 	ip_ipsec.c
@@ -431,7 +455,7 @@ ASM_SRCS = ${CRYPTO_ASM_SRCS}
 
 SRCS=  ${FF_SRCS} ${CRYPTO_SRCS} ${KERN_SRCS} ${LIBKERN_SRCS} ${MACHINE_SRCS}
 SRCS+= ${MSRCS} ${NET_SRCS} ${NETGRAPH_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS}
-SRCS+= ${NETIPSEC_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
+SRCS+= ${NETIPSEC_SRCS} ${NETIPFW_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
 
 # If witness is enabled.
 # SRCS+= ${KERN_WITNESS_SRCS}
