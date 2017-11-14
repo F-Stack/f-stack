@@ -919,7 +919,7 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
         if (!pkts_from_ring && packet_dispatcher) {
-            int ret = (*packet_dispatcher)(data, len, nb_queues);
+            int ret = (*packet_dispatcher)(data, len, queue_id, nb_queues);
             if (ret < 0 || ret >= nb_queues) {
                 rte_pktmbuf_free(rtem);
                 continue;
@@ -994,7 +994,7 @@ process_dispatch_ring(uint8_t port_id, uint16_t queue_id,
 }
 
 static inline void
-handle_sysctl_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_sysctl_msg(struct ff_msg *msg)
 {
     int ret = ff_sysctl(msg->sysctl.name, msg->sysctl.namelen,
         msg->sysctl.old, msg->sysctl.oldlenp, msg->sysctl.new,
@@ -1005,12 +1005,10 @@ handle_sysctl_msg(struct ff_msg *msg, uint16_t proc_id)
     } else {
         msg->result = 0;
     }
-
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
 static inline void
-handle_ioctl_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_ioctl_msg(struct ff_msg *msg)
 {
     int fd, ret;
     fd = ff_socket(AF_INET, SOCK_DGRAM, 0);
@@ -1029,12 +1027,10 @@ done:
     } else {
         msg->result = 0;
     }
-
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
 static inline void
-handle_route_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_route_msg(struct ff_msg *msg)
 {
     int ret = ff_rtioctl(msg->route.fib, msg->route.data,
         &msg->route.len, msg->route.maxlen);
@@ -1043,23 +1039,19 @@ handle_route_msg(struct ff_msg *msg, uint16_t proc_id)
     } else {
         msg->result = 0;
     }
-
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
 static struct ff_top_args ff_status;
 static inline void
-handle_top_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_top_msg(struct ff_msg *msg)
 {
     msg->top = ff_status;
     msg->result = 0;
-
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
 #ifdef FF_NETGRAPH
 static inline void
-handle_ngctl_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_ngctl_msg(struct ff_msg *msg)
 {
     int ret = ff_ngctl(msg->ngctl.cmd, msg->ngctl.data);
     if (ret < 0) {
@@ -1068,16 +1060,52 @@ handle_ngctl_msg(struct ff_msg *msg, uint16_t proc_id)
         msg->result = 0;
         msg->ngctl.ret = ret;
     }
+}
+#endif
 
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+#ifdef FF_IPFW
+static inline void
+handle_ipfw_msg(struct ff_msg *msg)
+{
+    int fd, ret;
+    fd = ff_socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    if (fd < 0) {
+        ret = -1;
+        goto done;
+    }
+
+    switch (msg->ipfw.cmd) {
+        case FF_IPFW_GET:
+            ret = ff_getsockopt(fd, msg->ipfw.level,
+                msg->ipfw.optname, msg->ipfw.optval,
+                msg->ipfw.optlen);
+            break;
+        case FF_IPFW_SET:
+            ret = ff_setsockopt(fd, msg->ipfw.level,
+                msg->ipfw.optname, msg->ipfw.optval,
+                *(msg->ipfw.optlen)); 
+            break;
+        default:
+            ret = -1;
+            errno = ENOTSUP;
+            break;
+    }
+
+    ff_close(fd);
+
+done:
+    if (ret < 0) {
+        msg->result = errno;
+    } else {
+        msg->result = 0;
+    }
 }
 #endif
 
 static inline void
-handle_default_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_default_msg(struct ff_msg *msg)
 {
     msg->result = ENOTSUP;
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
 static inline void
@@ -1085,26 +1113,32 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
 {
     switch (msg->msg_type) {
         case FF_SYSCTL:
-            handle_sysctl_msg(msg, proc_id);
+            handle_sysctl_msg(msg);
             break;
         case FF_IOCTL:
-            handle_ioctl_msg(msg, proc_id);
+            handle_ioctl_msg(msg);
             break;
         case FF_ROUTE:
-            handle_route_msg(msg, proc_id);
+            handle_route_msg(msg);
             break;
         case FF_TOP:
-            handle_top_msg(msg, proc_id);
+            handle_top_msg(msg);
             break;
 #ifdef FF_NETGRAPH
         case FF_NGCTL:
-            handle_ngctl_msg(msg, proc_id);
+            handle_ngctl_msg(msg);
+            break;
+#endif
+#ifdef FF_IPFW
+        case FF_IPFW_CTL:
+            handle_ipfw_msg(msg);
             break;
 #endif
         default:
-            handle_default_msg(msg, proc_id);
+            handle_default_msg(msg);
             break;
     }
+    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
 }
 
 static inline int

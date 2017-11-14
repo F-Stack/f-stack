@@ -896,6 +896,11 @@ securelevel_gt(struct ucred *cr, int level)
     return (0);
 }
 
+int
+securelevel_ge(struct ucred *cr, int level)
+{
+        return (0);
+}
 
 /**
  * @brief Send a 'notification' to userland, using standard ways
@@ -1140,3 +1145,37 @@ getcredhostid(struct ucred *cred, unsigned long *hostid)
 {
     *hostid = 0;
 }
+
+/*
+ * Check if gid is a member of the group set.
+ */
+int
+groupmember(gid_t gid, struct ucred *cred)
+{
+	int l;
+	int h;
+	int m;
+
+	if (cred->cr_groups[0] == gid)
+		return(1);
+
+	/*
+	 * If gid was not our primary group, perform a binary search
+	 * of the supplemental groups.  This is possible because we
+	 * sort the groups in crsetgroups().
+	 */
+	l = 1;
+	h = cred->cr_ngroups;
+	while (l < h) {
+		m = l + ((h - l) / 2);
+		if (cred->cr_groups[m] < gid)
+			l = m + 1; 
+		else
+			h = m; 
+	}
+	if ((l < cred->cr_ngroups) && (cred->cr_groups[l] == gid))
+		return (1);
+
+	return (0);
+}
+

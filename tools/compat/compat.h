@@ -41,12 +41,44 @@
 #define nitems(x) (sizeof((x)) / sizeof((x)[0]))
 #endif
 
+#ifndef rounddown
+#define	rounddown(x, y)	(((x)/(y))*(y))
+#endif
+
+#ifndef rounddown2
+#define	rounddown2(x, y) ((x)&(~((y)-1)))          /* if y is power of two */
+#endif
+
+#ifndef roundup
+#define	roundup(x, y)	((((x)+((y)-1))/(y))*(y))  /* to any y */
+#endif
+
+#ifndef roundup2
+#define	roundup2(x, y)	(((x)+((y)-1))&(~((y)-1))) /* if y is powers of two */
+#endif
+
+#ifndef powerof2
+#define powerof2(x)	((((x)-1)&(x))==0)
+#endif
+
 #ifndef __FBSDID
 #define __FBSDID(s) /* nothing */
 #endif
 
 #ifndef _PATH_ETC
 #define _PATH_ETC "/etc"
+#endif
+
+#ifndef __PAST_END
+/*
+ * Access a variable length array that has been declared as a fixed
+ * length array.
+ */
+#define __PAST_END(array, offset) (((__typeof__(*(array)) *)(array))[offset])
+#endif
+
+#ifndef ishexnumber
+#define ishexnumber(x) isxdigit(x)
 #endif
 
 void *reallocf(void *ptr, size_t size);
@@ -62,5 +94,7 @@ long long strtonum(const char *numstr, long long minval,
 	long long maxval, const char **errstrp);
 
 const char *getprogname(void);
+
+extern int optreset;
 
 #endif

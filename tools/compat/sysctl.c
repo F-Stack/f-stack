@@ -25,6 +25,7 @@
  */
 
 #include <string.h>
+#include <sys/socket.h>
 #include <rte_malloc.h>
 
 #include "ff_ipc.h"
