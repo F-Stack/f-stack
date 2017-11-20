@@ -894,8 +894,8 @@ protocol_filter(const void *data, uint16_t len)
     if(ntohs(hdr->ether_type) != ETHER_TYPE_IPv4)
         return FILTER_UNKNOWN;
 
-    return ff_kni_proto_filter(data + sizeof(struct ether_hdr),
-        len - sizeof(struct ether_hdr));
+    return ff_kni_proto_filter(data + ETHER_HDR_LEN,
+        len - ETHER_HDR_LEN);
 }
 
 static inline void
@@ -1254,29 +1254,63 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     struct ff_tx_offload offload = {0};
     ff_mbuf_tx_offload(m, &offload);
 
+    void *data = rte_pktmbuf_mtod(head, void*);
+
     if (offload.ip_csum) {
-        head->ol_flags |= PKT_TX_IP_CKSUM;
-        head->l2_len = sizeof(struct ether_hdr);
-        head->l3_len = sizeof(struct ipv4_hdr);
+        /* ipv6 not supported yet */
+        struct ipv4_hdr *iph;
+        int iph_len;
+        iph = (struct ipv4_hdr *)(data + ETHER_HDR_LEN);
+        iph_len = (iph->version_ihl & 0x0f) << 2;
+
+        head->ol_flags |= PKT_TX_IP_CKSUM | PKT_TX_IPV4;
+        head->l2_len = ETHER_HDR_LEN;
+        head->l3_len = iph_len;
     }
 
     if (ctx->hw_features.tx_csum_l4) {
+        struct ipv4_hdr *iph;
+        int iph_len;
+        iph = (struct ipv4_hdr *)(data + ETHER_HDR_LEN);
+        iph_len = (iph->version_ihl & 0x0f) << 2;
+
         if (offload.tcp_csum) {
             head->ol_flags |= PKT_TX_TCP_CKSUM;
-            head->l2_len = sizeof(struct ether_hdr);
-            head->l3_len = sizeof(struct ipv4_hdr);
+            head->l2_len = ETHER_HDR_LEN;
+            head->l3_len = iph_len;
         }
 
+        /*
+         *  TCP segmentation offload.
+         *
+         *  - set the PKT_TX_TCP_SEG flag in mbuf->ol_flags (this flag
+         *    implies PKT_TX_TCP_CKSUM)
+         *  - set the flag PKT_TX_IPV4 or PKT_TX_IPV6
+         *  - if it's IPv4, set the PKT_TX_IP_CKSUM flag and
+         *    write the IP checksum to 0 in the packet
+         *  - fill the mbuf offload information: l2_len,
+         *    l3_len, l4_len, tso_segsz
+         *  - calculate the pseudo header checksum without taking ip_len
+         *    in account, and set it in the TCP header. Refer to
+         *    rte_ipv4_phdr_cksum() and rte_ipv6_phdr_cksum() that can be
+         *    used as helpers.
+         */
         if (offload.tso_seg_size) {
+            struct tcp_hdr *tcph;
+            int tcph_len;
+            tcph = (struct tcp_hdr *)((char *)iph + iph_len);
+            tcph_len = (tcph->data_off & 0xf0) >> 2;
+            tcph->cksum = rte_ipv4_phdr_cksum(iph, PKT_TX_TCP_SEG);
+
             head->ol_flags |= PKT_TX_TCP_SEG;
-            head->l4_len = sizeof(struct tcp_hdr);
+            head->l4_len = tcph_len;
             head->tso_segsz = offload.tso_seg_size;
         }
 
         if (offload.udp_csum) {
             head->ol_flags |= PKT_TX_UDP_CKSUM;
-            head->l2_len = sizeof(struct ether_hdr);
-            head->l3_len = sizeof(struct ipv4_hdr);
+            head->l2_len = ETHER_HDR_LEN;
+            head->l3_len = iph_len;
         }
     }
 
