@@ -37,7 +37,6 @@ static void * ngx_ff_channel_create_conf(ngx_cycle_t *cycle);
 static char * ngx_ff_channel_init_conf(ngx_cycle_t *cycle,
     void *conf);
 static ngx_int_t ngx_ff_epoll_init(ngx_cycle_t *cycle);
-static void ngx_ff_epoll_done(ngx_cycle_t *cycle);
 static ngx_int_t ngx_ff_epoll_add_event(ngx_event_t *ev,
     ngx_int_t event, ngx_uint_t flags);
 static ngx_int_t ngx_ff_epoll_del_event(ngx_event_t *ev,
@@ -95,7 +94,7 @@ ngx_module_t  ngx_ff_channel_module = {
     ngx_ff_epoll_init,                   /* init process */
     NULL,                                /* init thread */
     NULL,                                /* exit thread */
-    ngx_ff_epoll_done,                   /* exit process */
+    NULL,                                /* exit process */
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -146,29 +145,6 @@ ngx_ff_epoll_init(ngx_cycle_t *cycle)
     channel_connection = NULL;
 
     return NGX_OK;
-}
-
-static void
-ngx_ff_epoll_done(ngx_cycle_t *cycle)
-{
-    if (ep != -1) {
-        if (close(ep) == -1) {
-            ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                          "epoll close() failed");
-        }
-        ep = -1;
-    }
-
-    if (event_list) {
-        ngx_free(event_list);
-        event_list = NULL;
-    }
-
-    nevents = 0;
-
-    if (channel_connection) {
-        ngx_ff_delete_connection();
-    }
 }
 
 static ngx_int_t
