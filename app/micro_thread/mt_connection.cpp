@@ -19,7 +19,6 @@
 
 /**
  *  @file mt_connection.cpp
- *  @info 微线程消息交互连接管理实现
  *  @time 20130924
  **/
 #include <fcntl.h>
@@ -38,10 +37,6 @@
 using namespace std;
 using namespace NS_MICRO_THREAD;
 
-
-/**
- * @brief  微线程连接基类构造与析构
- */
 IMtConnection::IMtConnection() 
 {
     _type       = OBJ_CONN_UNDEF;
@@ -62,10 +57,6 @@ IMtConnection::~IMtConnection()
     }
 }
 
-
-/**
- * @brief 连接回收复用清理操作
- */
 void IMtConnection::Reset()
 {
     if (_ntfy_obj) {
@@ -83,22 +74,15 @@ void IMtConnection::Reset()
     _msg_buff   = NULL;
 }
 
-
-/**
- * @brief  连接的socket建立, 依赖连接的协议类型等
- * @return >0 -成功, 返回系统fd, < 0 失败 
- */
 int UdpShortConn::CreateSocket()
 {
-    // 1. UDP短连接, 每次新创SOCKET
     _osfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (_osfd < 0)
     {
         MTLOG_ERROR("socket create failed, errno %d(%s)", errno, strerror(errno));
         return -1;
     }
-    
-    // 2. 非阻塞设置
+
     int flags = 1;
     if (ioctl(_osfd, FIONBIO, &flags) < 0)
     {
@@ -108,7 +92,6 @@ int UdpShortConn::CreateSocket()
         return -2;
     }
 
-    // 3. 更新管理信息
     if (_ntfy_obj) {
         _ntfy_obj->SetOsfd(_osfd);
     }
@@ -116,9 +99,6 @@ int UdpShortConn::CreateSocket()
     return _osfd;
 }
 
-/**
- * @brief 关闭系统socket, 重置一些状态
- */
 int UdpShortConn::CloseSocket()
 {
     if (_osfd < 0) 
@@ -132,11 +112,6 @@ int UdpShortConn::CloseSocket()
     return 0;
 }
 
-
-/**
- * @brief 尝试发送数据, 仅发送一次
- * @return 0 发送被中断, 需重试. <0 系统失败. >0 本次发送成功
- */
 int UdpShortConn::SendData()
 {
     if (!_action || !_msg_buff) {
@@ -167,11 +142,6 @@ int UdpShortConn::SendData()
     }
 }
 
-/**
- * @brief 尝试接收数据, 仅接收一次
- * @param buff 接收缓冲区指针
- * @return -1 对端关闭. -2 系统失败. >0 本次接收成功
- */
 int UdpShortConn::RecvData()
 {
     if (!_action || !_msg_buff) {
@@ -194,19 +164,18 @@ int UdpShortConn::RecvData()
         {
             MTLOG_ERROR("socket recv failed, fd %d, errno %d(%s)", _osfd, 
                       errno, strerror(errno));
-            return -2;  // 系统错误
+            return -2;
         }
     }
     else if (ret == 0)
     {
-        return -1;  // 对端关闭
+        return -1;
     }
     else
     {
         _msg_buff->SetHaveRcvLen(ret);
     }
     
-    // 上下文检查, >0 收包完整; =0 继续等待; <0(-65535串包)其它异常  
     ret = _action->DoInput();
     if (ret > 0)
     {
@@ -228,20 +197,12 @@ int UdpShortConn::RecvData()
     }
 }
 
-/**
- * @brief 连接回收复用清理操作
- */
 void UdpShortConn::Reset()
 {
     CloseSocket();
     this->IMtConnection::Reset();
 }
 
-
-/**
- * @brief  连接打开与远端会话通道, 如TCP的connect等
- * @return 0 -成功, < 0 失败 
- */
 int TcpKeepConn::OpenCnnect()
 {
     if (!_action || !_msg_buff) {
@@ -279,12 +240,9 @@ int TcpKeepConn::OpenCnnect()
     }
 }
 
-/**
- * @brief 基于sock的TCP复用连接
- */
 int TcpKeepConn::CreateSocket()
 {
-    if (_osfd > 0)        // 复用连接时, 可跳过创建处理; 不能跳过设置ntfyfd
+    if (_osfd > 0)
     {
         if (_ntfy_obj) {
             _ntfy_obj->SetOsfd(_osfd);
@@ -293,15 +251,13 @@ int TcpKeepConn::CreateSocket()
         return _osfd;
     }
 
-    // 第一次进入时, 创建socket
     _osfd = socket(AF_INET, SOCK_STREAM, 0);
     if (_osfd < 0)
     {
         MTLOG_ERROR("create tcp socket failed, error: %d", errno);
         return -1;
     }
-    
-    // 非阻塞设置
+
     int flags = 1;
     if (ioctl(_osfd, FIONBIO, &flags) < 0)
     {
@@ -311,7 +267,6 @@ int TcpKeepConn::CreateSocket()
         return -2;
     }
 
-    // 更新管理信息
     _keep_ntfy.SetOsfd(_osfd);
     _keep_ntfy.DisableOutput();
     _keep_ntfy.EnableInput(); 
@@ -323,13 +278,6 @@ int TcpKeepConn::CreateSocket()
     return _osfd;
 }
 
-/**
- * @brief 尝试发送数据, 仅发送一次
- * @param dst  发送目的地址
- * @param buff 发送缓冲区指针
- * @param size 待发送的最大长度
- * @return 0 发送被中断, 需重试. <0 系统失败. >0 本次发送成功
- */
 int TcpKeepConn::SendData()
 {
     if (!_action || !_msg_buff) {
@@ -360,7 +308,6 @@ int TcpKeepConn::SendData()
         _msg_buff->SetHaveSndLen(have_send_len);
     }
 
-    // 全部发送完毕, 返回成功, 否则继续等待
     if (have_send_len >= msg_len)
     {
         return msg_len;
@@ -371,11 +318,6 @@ int TcpKeepConn::SendData()
     }
 }
 
-/**
- * @brief 尝试接收数据, 仅接收一次
- * @param buff 接收缓冲区指针
- * @return -1 对端关闭. -2 系统失败. >0 本次接收成功
- */
 int TcpKeepConn::RecvData()
 {
     if (!_action || !_msg_buff) {
@@ -397,14 +339,14 @@ int TcpKeepConn::RecvData()
         else
         {
             MTLOG_ERROR("recv tcp socket failed, error: %d", errno);
-            return -2;  // 系统错误
+            return -2;
         }
     }
     else if (ret == 0)
     {
         MTLOG_ERROR("tcp remote close, address: %s[%d]", 
                 inet_ntoa(_dst_addr.sin_addr), ntohs(_dst_addr.sin_port));
-        return -1;  // 对端关闭
+        return -1;
     }
     else
     {
@@ -412,7 +354,6 @@ int TcpKeepConn::RecvData()
         _msg_buff->SetHaveRcvLen(have_rcv_len);
     }
 
-    // 上下文检查, >0 收包完整; =0 继续等待; <0(-65535串包)其它异常  
     ret = _action->DoInput();
     if (ret > 0)
     {
@@ -429,9 +370,6 @@ int TcpKeepConn::RecvData()
     }
 }
 
-/**
- * @brief 关闭系统socket, 重置一些状态
- */
 int TcpKeepConn::CloseSocket()
 {
     if (_osfd < 0) 
@@ -446,9 +384,6 @@ int TcpKeepConn::CloseSocket()
     return 0;
 }
 
-/**
- * @brief 连接回收复用清理操作
- */
 void TcpKeepConn::Reset()
 {
     memset(&_dst_addr, 0 ,sizeof(_dst_addr));
@@ -456,17 +391,11 @@ void TcpKeepConn::Reset()
     this->IMtConnection::Reset();
 }
 
-/**
- * @brief 连接回收复用清理操作
- */
 void TcpKeepConn::ConnReuseClean()
 {
     this->IMtConnection::Reset();
 }
 
-/**
- * @brief Idle缓存处理, epoll 侦听远端关闭等
- */
 bool TcpKeepConn::IdleAttach()
 {
     if (_osfd < 0) {
@@ -482,7 +411,6 @@ bool TcpKeepConn::IdleAttach()
     _keep_ntfy.DisableOutput();
     _keep_ntfy.EnableInput();
 
-    // 保活定时器添加
     CTimerMng* timer = MtFrame::Instance()->GetTimerMng();
     if ((NULL == timer) || !timer->start_timer(this, _keep_time))
     {
@@ -502,9 +430,6 @@ bool TcpKeepConn::IdleAttach()
     }    
 }
 
-/**
- * @brief Idle取消缓存处理, 不再由空闲线程侦听远端关闭
- */
 bool TcpKeepConn::IdleDetach()
 {
     if (_osfd < 0) {
@@ -520,7 +445,6 @@ bool TcpKeepConn::IdleDetach()
     _keep_ntfy.DisableOutput();
     _keep_ntfy.EnableInput();
 
-    // 保活定时器删除
     CTimerMng* timer = MtFrame::Instance()->GetTimerMng();
     if (NULL != timer) 
     {
@@ -539,19 +463,12 @@ bool TcpKeepConn::IdleDetach()
     }    
 }
 
-
-/**
- * @brief 超时通知函数, 子类实现逻辑
- */
 void TcpKeepConn::timer_notify()
 {
     MTLOG_DEBUG("keep timeout[%u], fd %d, close connection", _keep_time, _osfd);
     ConnectionMgr::Instance()->CloseIdleTcpKeep(this);
 }
 
-/**
- * @brief 构造与析构函数
- */
 TcpKeepMgr::TcpKeepMgr() 
 {
     _keep_hash = new HashList(10000);
@@ -574,10 +491,6 @@ TcpKeepMgr::~TcpKeepMgr()
     _keep_hash = NULL;
 }
 
-
-/**
- * @brief 按IP地址获取TCP的保持连接
- */
 TcpKeepConn* TcpKeepMgr::GetTcpKeepConn(struct sockaddr_in* dst)
 {
     TcpKeepConn* conn = NULL;
@@ -606,9 +519,6 @@ TcpKeepConn* TcpKeepMgr::GetTcpKeepConn(struct sockaddr_in* dst)
     return conn;
 }
 
-/**
- * @brief 按IP地址缓存TCP的保持连接
- */
 bool TcpKeepMgr::RemoveTcpKeepConn(TcpKeepConn* conn) 
 {
     struct sockaddr_in* dst = conn->GetDestAddr();
@@ -633,10 +543,6 @@ bool TcpKeepMgr::RemoveTcpKeepConn(TcpKeepConn* conn)
     
 }
 
-    
-/**
- * @brief 按IP地址缓存TCP的保持连接
- */
 bool TcpKeepMgr::CacheTcpKeepConn(TcpKeepConn* conn) 
 {
     struct sockaddr_in* dst = conn->GetDestAddr();
@@ -672,9 +578,6 @@ bool TcpKeepMgr::CacheTcpKeepConn(TcpKeepConn* conn)
     
 }
 
-/**
- * @brief 关闭或缓存tcp长连接
- */
 void TcpKeepMgr::FreeTcpKeepConn(TcpKeepConn* conn, bool force_free)
 {
     if (force_free) 
@@ -693,16 +596,9 @@ void TcpKeepMgr::FreeTcpKeepConn(TcpKeepConn* conn, bool force_free)
         }
     }
 }
-    
 
-
-/**
- * @brief  连接的socket建立, 依赖连接的协议类型等
- * @return >0 -成功, 返回系统fd, < 0 失败 
- */
 int UdpSessionConn::CreateSocket()
 {
-    // 1. session连接类, 由通知对象创建管理fd
     if (!_action || !_ntfy_obj) {
         MTLOG_ERROR("conn not set action %p, or _ntfy_obj %p, error", _action, _ntfy_obj);
         return -100;
@@ -718,7 +614,6 @@ int UdpSessionConn::CreateSocket()
         return -300;
     }
 
-    // 2. 委派创建, 更新句柄信息
     int osfd = real_ntfy->GetOsfd();
     if (osfd <= 0)
     {
@@ -733,19 +628,11 @@ int UdpSessionConn::CreateSocket()
     return osfd;
 }
 
-/**
- * @brief 关闭系统socket, 重置一些状态
- */
 int UdpSessionConn::CloseSocket()
 {
     return 0;
 }
 
-
-/**
- * @brief 尝试发送数据, 仅发送一次
- * @return 0 发送被中断, 需重试. <0 系统失败. >0 本次发送成功
- */
 int UdpSessionConn::SendData()
 {
     if (!_action || !_msg_buff || !_ntfy_obj) {
@@ -776,11 +663,6 @@ int UdpSessionConn::SendData()
     }
 }
 
-/**
- * @brief 尝试接收数据, 仅接收一次
- * @param buff 接收缓冲区指针
- * @return 0 -继续等待接收; >0 接收成功; < 0 失败
- */
 int UdpSessionConn::RecvData()
 {
     if (!_ntfy_obj || !_msg_buff) {
@@ -793,7 +675,6 @@ int UdpSessionConn::RecvData()
         return 0;
     }
 
-    //  UDP Session 通知会替换msg buff, 通过type判定
     int msg_len = _msg_buff->GetMsgLen();
     if (BUFF_RECV == _msg_buff->GetBuffType())
     {
@@ -806,11 +687,6 @@ int UdpSessionConn::RecvData()
     }
 }
 
-
-/**
- * @brief session全局管理句柄
- * @return 全局句柄指针
- */
 ConnectionMgr* ConnectionMgr::_instance = NULL;
 ConnectionMgr* ConnectionMgr::Instance (void)
 {
@@ -822,9 +698,6 @@ ConnectionMgr* ConnectionMgr::Instance (void)
     return _instance;
 }
 
-/**
- * @brief session管理全局的销毁接口
- */
 void ConnectionMgr::Destroy()
 {
     if( _instance != NULL )
@@ -834,23 +707,14 @@ void ConnectionMgr::Destroy()
     }
 }
 
-/**
- * @brief 消息buff的构造函数
- */
 ConnectionMgr::ConnectionMgr()
 {
 }
 
-/**
- * @brief 析构函数, 不持有资源, 并不负责清理
- */
 ConnectionMgr::~ConnectionMgr()
 {
 }
 
-/**
- * @brief 获取接口
- */
 IMtConnection* ConnectionMgr::GetConnection(CONN_OBJ_TYPE type, struct sockaddr_in* dst)
 {
     switch (type)
@@ -874,9 +738,6 @@ IMtConnection* ConnectionMgr::GetConnection(CONN_OBJ_TYPE type, struct sockaddr_
 
 }
 
-/**
- * @brief 回收接口
- */
 void ConnectionMgr::FreeConnection(IMtConnection* conn, bool force_free)
 {
     if (!conn) {
@@ -908,14 +769,8 @@ void ConnectionMgr::FreeConnection(IMtConnection* conn, bool force_free)
     return;
 }
 
-
-/**
- * @brief 关闭idle的tcp长连接
- */
 void ConnectionMgr::CloseIdleTcpKeep(TcpKeepConn* conn)
 {
     _tcp_keep_mgr.RemoveTcpKeepConn(conn);
     _tcp_keep_mgr.FreeTcpKeepConn(conn, true);
 }
-
-

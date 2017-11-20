@@ -19,7 +19,6 @@
 
 /**
  *  @file mt_mbuf_pool.cpp
- *  @info 微线程消息buf池管理实现
  *  @time 20130924
  **/
 
@@ -29,11 +28,6 @@
 using namespace std;
 using namespace NS_MICRO_THREAD;
 
-
-/**
- * @brief 连接管理全局访问接口
- * @return 全局句柄指针
- */
 MsgBuffPool* MsgBuffPool::_instance = NULL;
 MsgBuffPool* MsgBuffPool::Instance (void)
 {
@@ -45,9 +39,6 @@ MsgBuffPool* MsgBuffPool::Instance (void)
     return _instance;
 }
 
-/**
- * @brief 连接管理全局的销毁接口
- */
 void MsgBuffPool::Destroy()
 {
     if( _instance != NULL )
@@ -57,19 +48,12 @@ void MsgBuffPool::Destroy()
     }
 }
 
-
-/**
- * @brief 消息buff的构造函数
- */
 MsgBuffPool::MsgBuffPool(int max_free)
 {
     _max_free = max_free;
     _hash_map = new HashList(10000);
 }
 
-/**
- * @brief 消息buff的析构函数
- */
 MsgBuffPool::~MsgBuffPool()
 {
     if (!_hash_map) {
@@ -91,10 +75,6 @@ MsgBuffPool::~MsgBuffPool()
     _hash_map = NULL;
 }
 
-/**
- *  @brief 获取消息buff元素
- *  @return msgbuf指针, 失败为NULL
- */
 MtMsgBuf* MsgBuffPool::GetMsgBuf(int max_size)
 {
     if (!_hash_map) {
@@ -127,10 +107,6 @@ MtMsgBuf* MsgBuffPool::GetMsgBuf(int max_size)
     }
 }
 
-/**
- *  @brief 获取消息buff元素
- *  @return msgbuf指针, 失败为NULL
- */
 void MsgBuffPool::FreeMsgBuf(MtMsgBuf* msg_buf)
 {
     if (!_hash_map || !msg_buf) {

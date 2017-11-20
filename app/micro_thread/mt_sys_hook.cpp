@@ -19,8 +19,6 @@
 
 /**
  *  @filename mt_sys_hook.cpp
- *  @info  微线程hook系统api, 以不用额外编译的优势, 转同步为异步库
- *         只hook socket相关的API, HOOK 部分, 参考pth与libco实现
  */
 
 #include <stdio.h>
@@ -44,25 +42,18 @@ using namespace NS_MICRO_THREAD;
 #define MT_FD_FLG_INUSE     0x1
 #define MT_FD_FLG_UNBLOCK   0x2
 
-
-/**
- * @brief 每sockt分配一个管理结构, 标记是否需要HOOK, 超时时间等
- */
 typedef struct socket_hook_info
 {
-    int     sock_flag;      // 是否使用HOOK, 是否用户设置UNBLOCK
-    int     read_timeout;   // socket读取超时时间, ms单位
-    int     write_timeout;  // socket写入超时时间, ms单位
+    int     sock_flag;
+    int     read_timeout;
+    int     write_timeout;
 }MtHookFd;
 
-MtSyscallFuncTab       g_mt_syscall_tab;            // 全局符号表
-int                    g_mt_hook_flag;              // 全局控制标记
-int                    g_ff_hook_flag;              // 全局控制标记
-static MtHookFd        g_mt_hook_fd_tab[MT_HOOK_MAX_FD];   // 全局fd管理
+MtSyscallFuncTab       g_mt_syscall_tab;
+int                    g_mt_hook_flag;
+int                    g_ff_hook_flag;
+static MtHookFd        g_mt_hook_fd_tab[MT_HOOK_MAX_FD];
 
-/**
- * @brief 内部接口, 获取hook fd相关的信息, socket 默认hook, open 默认no hook
- */
 MtHookFd* mt_hook_find_fd(int fd) 
 {
     if ((fd < 0) || (fd >= MT_HOOK_MAX_FD)) {
@@ -77,9 +68,6 @@ MtHookFd* mt_hook_find_fd(int fd)
     }
 }
 
-/**
- * @brief 内部接口, 创建socket设置hook, 只处理socket, 不处理文件IO
- */
 void mt_hook_new_fd(int fd)
 {
     if ((fd < 0) || (fd >= MT_HOOK_MAX_FD)) {
@@ -92,9 +80,6 @@ void mt_hook_new_fd(int fd)
     fd_info->write_timeout  = 500;
 }
 
-/**
- * @brief 内部接口, 关闭hook socket
- */
 void mt_hook_free_fd(int fd)
 {
     if ((fd < 0) || (fd >= MT_HOOK_MAX_FD)) {
@@ -107,9 +92,6 @@ void mt_hook_free_fd(int fd)
     fd_info->write_timeout  = 0;
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 截获用户设置的非阻塞标记
- */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -135,17 +117,14 @@ int ioctl(int fd, unsigned long cmd, ...)
         }
     }
 
-	return ff_hook_ioctl(fd, cmd, arg);
+    return ff_hook_ioctl(fd, cmd, arg);
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 默认设置unblock
- */
 int socket(int domain, int type, int protocol)
 {
     mt_hook_syscall(socket);
-	
-    if (!ff_hook_active())	
+    
+    if (!ff_hook_active())    
     {
         return mt_real_func(socket)(domain, type, protocol);
     }
@@ -159,36 +138,29 @@ int socket(int domain, int type, int protocol)
     mt_hook_new_fd(fd);
 
     mt_hook_syscall(ioctl);
-	int nb = 1;
-	ff_hook_ioctl(fd, FIONBIO, &nb);
+    int nb = 1;
+    ff_hook_ioctl(fd, FIONBIO, &nb);
 
     return fd;
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api
- */
 int close(int fd)
 {
     mt_hook_syscall(close);
-    if (!ff_hook_active())	
+    if (!ff_hook_active())    
     {
         return mt_real_func(close)(fd);
     }
 
     mt_hook_free_fd(fd);
-	return ff_hook_close(fd);
+    return ff_hook_close(fd);
 }
 
-
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api
- */
 int connect(int fd, const struct sockaddr *address, socklen_t address_len)
 {
     mt_hook_syscall(connect);
     MtHookFd* hook_fd = mt_hook_find_fd(fd); 
-    if (!mt_hook_active() || !hook_fd || !ff_hook_active())	
+    if (!mt_hook_active() || !hook_fd || !ff_hook_active())    
     {
         return mt_real_func(connect)(fd, address, address_len);
     }
@@ -201,9 +173,6 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
     return MtFrame::connect(fd, address, (int)address_len, hook_fd->write_timeout);
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 用户已经设置unblock, 跳过
- */
 ssize_t read(int fd, void *buf, size_t nbyte)
 {
     mt_hook_syscall(read);
@@ -221,9 +190,6 @@ ssize_t read(int fd, void *buf, size_t nbyte)
     return MtFrame::read(fd, buf, nbyte, hook_fd->read_timeout);
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 用户已经设置unblock, 跳过
- */
 ssize_t write(int fd, const void *buf, size_t nbyte)
 {
     mt_hook_syscall(write);
@@ -241,9 +207,6 @@ ssize_t write(int fd, const void *buf, size_t nbyte)
     return MtFrame::write(fd, buf, nbyte, hook_fd->write_timeout);
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 用户已经设置unblock, 跳过
- */
 ssize_t sendto(int fd, const void *message, size_t length, int flags, 
                const struct sockaddr *dest_addr, socklen_t dest_len)
 {
@@ -263,9 +226,6 @@ ssize_t sendto(int fd, const void *message, size_t length, int flags,
                            dest_addr, dest_len, hook_fd->write_timeout);
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 用户已经设置unblock, 跳过
- */
 ssize_t recvfrom(int fd, void *buffer, size_t length, int flags, 
                   struct sockaddr *address, socklen_t *address_len)
 {
@@ -285,9 +245,6 @@ ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
 
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 用户已经设置unblock, 跳过
- */
 ssize_t recv(int fd, void *buffer, size_t length, int flags)
 {
     mt_hook_syscall(recv);
@@ -305,9 +262,6 @@ ssize_t recv(int fd, void *buffer, size_t length, int flags)
     return MtFrame::recv(fd, buffer, length, flags, hook_fd->read_timeout);
 }
 
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 用户已经设置unblock, 跳过
- */
 ssize_t send(int fd, const void *buf, size_t nbyte, int flags)
 {
     mt_hook_syscall(send);
@@ -325,10 +279,6 @@ ssize_t send(int fd, const void *buf, size_t nbyte, int flags)
     return MtFrame::send(fd, buf, nbyte, flags, hook_fd->write_timeout);
 }
 
-
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 截获用户设置的超时时间信息
- */
 int setsockopt(int fd, int level, int option_name, const void *option_value, socklen_t option_len)
 {
     mt_hook_syscall(setsockopt);
@@ -351,14 +301,9 @@ int setsockopt(int fd, int level, int option_name, const void *option_value, soc
         }
     }
 
-	return ff_hook_setsockopt(fd, level, option_name, option_value, option_len);
+    return ff_hook_setsockopt(fd, level, option_name, option_value, option_len);
 }
 
-
-
-/**
- * @brief HOOK接口, 初始化mt库后, 接管系统api, 截获用户设置的非阻塞标记
- */
 int fcntl(int fd, int cmd, ...)
 {
     va_list ap;
@@ -388,7 +333,6 @@ int fcntl(int fd, int cmd, ...)
     return ff_hook_fcntl(fd, cmd, arg);
 }
 
-
 int listen(int sockfd, int backlog)
 {
     mt_hook_syscall(listen);
@@ -397,7 +341,7 @@ int listen(int sockfd, int backlog)
         return mt_real_func(listen)(sockfd, backlog);
     }
 
-	return ff_hook_listen(sockfd, backlog);
+    return ff_hook_listen(sockfd, backlog);
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
@@ -408,7 +352,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         return mt_real_func(bind)(sockfd, addr, addrlen);
     }
 
-	return ff_hook_bind(sockfd, addr, addrlen);
+    return ff_hook_bind(sockfd, addr, addrlen);
 }
 
 int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
@@ -419,7 +363,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
         return mt_real_func(accept)(fd, addr, addrlen);
     }
 
-	return ff_hook_accept(fd, addr, addrlen);
+    return ff_hook_accept(fd, addr, addrlen);
 }
 
 #ifdef __cplusplus

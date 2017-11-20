@@ -19,8 +19,6 @@
 
 /**
  *  @filename mt_sys_hook.h
- *  @info  微线程hook系统api, 以不用额外编译的优势, 转同步为异步库
- *         HOOK 部分, 参考pth与libco实现
  */
 
 #ifndef _MT_SYS_HOOK___
@@ -34,10 +32,6 @@
 #ifdef  __cplusplus
 extern "C" {
 #endif
-
-/******************************************************************************/
-/*         1. HOOK 的函数定义部分                                             */
-/******************************************************************************/
 
 typedef int (*func_socket)(int domain, int type, int protocol);
 typedef int (*func_bind)(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
@@ -63,14 +57,6 @@ typedef int (*func_fcntl)(int fd, int cmd, ...);
 
 typedef unsigned int (*func_sleep)(unsigned int seconds);			            
 
-
-/******************************************************************************/
-/*         2.  全局的hook函数结构                                             */
-/******************************************************************************/
-
-/**
- * @brief Hook的原始函数集中管理定义, 支持动态新增处理
- */ 
 typedef struct mt_syscall_func_tab
 {
     func_socket             real_socket;
@@ -88,25 +74,21 @@ typedef struct mt_syscall_func_tab
     func_fcntl              real_fcntl;
     func_ioctl              real_ioctl;
     
-    func_sleep              real_sleep;             // 暂不支持，因为没有与fd关联, 防止滥用
-    func_select             real_select;            // 暂不支持, 1024限制问题
-    func_poll               real_poll;              // 暂不支持, 确认需求后实施
+    func_sleep              real_sleep;
+    func_select             real_select;
+    func_poll               real_poll;
 
     func_accept             real_accept;
-}MtSyscallFuncTab;
+} MtSyscallFuncTab;
 
-
-/******************************************************************************/
-/*         3.  直接调用原始系统api的接口                                      */
-/******************************************************************************/
-extern MtSyscallFuncTab  g_mt_syscall_tab;            // 全局符号表
-extern int               g_mt_hook_flag;              // 全局控制标记
-extern int               g_ff_hook_flag;              // 全局控制标记
+extern MtSyscallFuncTab  g_mt_syscall_tab;
+extern int               g_mt_hook_flag;
+extern int               g_ff_hook_flag;
 
 #define mt_hook_syscall(name)                                                   \
 do  {                                                                           \
         if (!g_mt_syscall_tab.real_##name) {                                    \
-			g_mt_syscall_tab.real_##name = (func_##name)dlsym(RTLD_NEXT, #name);\
+            g_mt_syscall_tab.real_##name = (func_##name)dlsym(RTLD_NEXT, #name);\
         }                                                                       \
     } while (0)
 
