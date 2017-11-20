@@ -17,12 +17,6 @@
  */
 
 
-/**
- *  @file mt_action.cpp
- *  @info 微线程ACTION基类实现
- *  @time 20130924
- **/
-
 #include "micro_thread.h"
 #include "mt_notify.h"
 #include "mt_connection.h"
@@ -32,10 +26,6 @@
 using namespace std;
 using namespace NS_MICRO_THREAD;
 
-
-/**
- * @brief 初始item状态
- */
 void IMtAction::Init()
 {
     _flag       = MULTI_FLAG_UNDEF;
@@ -50,12 +40,8 @@ void IMtAction::Init()
     memset(&_addr, 0, sizeof(_addr));
 }
 
-/**
- * @brief 允许复用, 清理item状态
- */
 void IMtAction::Reset()
 {
-    // 长连接, 处理成功才复用, 否则强制关闭
     bool force_free = false;
     if (_errno != ERR_NONE) {
         force_free = true;
@@ -67,9 +53,6 @@ void IMtAction::Reset()
     }
 }
 
-/**
- * @brief 获取连接对象, 通知对象, 消息对象
- */
 KqueuerObj* IMtAction::GetNtfyObj() {
     IMtConnection* conn = GetIConnection();
     if (conn) {
@@ -79,10 +62,6 @@ KqueuerObj* IMtAction::GetNtfyObj() {
     }
 };
 
-
-/**
- * @brief 后端连接环境初始化
- */
 int IMtAction::InitConnEnv()
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -96,23 +75,22 @@ int IMtAction::InitConnEnv()
         return -100;
     }
 
-    // 1. 分类获取conn句柄
     CONN_OBJ_TYPE conn_obj_type = OBJ_CONN_UNDEF;
     NTFY_OBJ_TYPE ntfy_obj_type = NTFY_OBJ_UNDEF;
     
     MULTI_PROTO proto = this->GetProtoType();
     MULTI_CONNECT type = this->GetConnType();
-    if ((MT_UDP == proto) && (CONN_TYPE_SESSION == type))   // UDP session模式
+    if ((MT_UDP == proto) && (CONN_TYPE_SESSION == type))   // UDP session
     {
         conn_obj_type = OBJ_UDP_SESSION;
         ntfy_obj_type = NTFY_OBJ_SESSION;
     }
-    else if (MT_UDP == proto)  // UDP 其它模式
+    else if (MT_UDP == proto)  // UDP
     {   
         conn_obj_type = OBJ_SHORT_CONN;
         ntfy_obj_type = NTFY_OBJ_THREAD;
     }
-    else    // TCP 模式
+    else    // TCP
     {
         conn_obj_type = OBJ_TCP_KEEP;
         ntfy_obj_type = NTFY_OBJ_THREAD;
@@ -125,7 +103,6 @@ int IMtAction::InitConnEnv()
     }
     _conn->SetIMtActon(this);
 
-    // 2. 获取msg buff句柄
     int max_len = this->GetMsgBuffSize();
     MtMsgBuf* msg_buff = msgmgr->GetMsgBuf(max_len);
     if (!msg_buff) {
@@ -135,7 +112,6 @@ int IMtAction::InitConnEnv()
     msg_buff->SetBuffType(BUFF_SEND);
     _conn->SetMtMsgBuff(msg_buff);
 
-    // 3. 获取 ntfy 对象句柄
     KqueuerObj* ntfy_obj = ntfymgr->GetNtfyObj(ntfy_obj_type, _ntfy_name);
     if (!ntfy_obj) {
         MTLOG_ERROR("Maybe no memory, ntfy type: %d, get failed", ntfy_obj_type);
@@ -143,7 +119,6 @@ int IMtAction::InitConnEnv()
     }
     _conn->SetNtfyObj(ntfy_obj);
 
-    // 4. SESSION模型, 建立session
     MicroThread* thread = mtframe->GetActiveThread();
     ntfy_obj->SetOwnerThread(thread);
     this->SetIMsgPtr((IMtMsg*)thread->GetThreadArgs());
@@ -158,10 +133,6 @@ int IMtAction::InitConnEnv()
     return 0;
 }
 
-
-/**
- * @brief 代理虚函数, 简化接口与实现部分
- */
 int IMtAction::DoEncode()
 {
     MtMsgBuf* msg_buff = NULL;
@@ -185,9 +156,6 @@ int IMtAction::DoEncode()
     return 0;
 }
 
-/**
- * @brief 代理虚函数, 简化接口与实现部分
- */
 int IMtAction::DoInput()
 {
     MtMsgBuf* msg_buff = NULL;
@@ -209,7 +177,6 @@ int IMtAction::DoInput()
 
     return ret;
 }
-
 
 int IMtAction::DoProcess()
 {
@@ -238,15 +205,11 @@ int IMtAction::DoError()
     return this->HandleError((int)_errno, _msg);
 }
 
-
-
-/**
- * @brief 构造与析构处理
- */
 IMtAction::IMtAction()
 {
     Init();    
 }
+
 IMtAction::~IMtAction()
 {
     Reset();

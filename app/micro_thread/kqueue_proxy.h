@@ -45,10 +45,6 @@ namespace NS_MICRO_THREAD {
 #define KQ_EVENT_READ 1
 #define KQ_EVENT_WRITE 2
 
-/******************************************************************************/
-/*  操作系统头文件适配定义                                                    */
-/******************************************************************************/
-
 /**
  * @brief add more detail for linux <sys/queue.h>, freebsd and University of California 
  * @info  queue.h version 8.3 (suse)  diff version 8.5 (tlinux)
@@ -90,119 +86,84 @@ do {                                                                        \
 
 
 /******************************************************************************/
-/*  Kqueue proxy 定义与实现部分                                                */
+/*  Kqueue proxy definition and implementation                                */
 /******************************************************************************/
 
 class KqueueProxy;
 class MicroThread;
 
-/**
- *  @brief kqueue通知对象基类定义
- */
 class KqueuerObj
 {
-	protected:
-		int _fd;
-		int _events;
-		int _revents;
-		int _type;
-		MicroThread* _thread;
+    protected:
+        int _fd;
+        int _events;
+        int _revents;
+        int _type;
+        MicroThread* _thread;
 
-	public:
+    public:
 
-		TAILQ_ENTRY(KqueuerObj) _entry;
+        TAILQ_ENTRY(KqueuerObj) _entry;
 
-		explicit KqueuerObj(int fd = -1) {
-			_fd       = fd;
-			_events   = 0;
-			_revents  = 0;
-			_type     = 0;
-			_thread   = NULL;
-		};
-		virtual ~KqueuerObj(){};
+        explicit KqueuerObj(int fd = -1) {
+            _fd       = fd;
+            _events   = 0;
+            _revents  = 0;
+            _type     = 0;
+            _thread   = NULL;
+        };
+        virtual ~KqueuerObj(){};
 
-		virtual int InputNotify();
-		virtual int OutputNotify();
-		virtual int HangupNotify();
-		virtual int KqueueCtlAdd(void* args);
-		virtual int KqueueCtlDel(void* args);
+        virtual int InputNotify();
+        virtual int OutputNotify();
+        virtual int HangupNotify();
+        virtual int KqueueCtlAdd(void* args);
+        virtual int KqueueCtlDel(void* args);
 
-		/**
-		 *  @brief fd打开可读事件侦听
-		 */
-		void EnableInput() {    _events |= KQ_EVENT_READ; };
+        void EnableInput() {    _events |= KQ_EVENT_READ; };
 
-		/**
-		 *  @brief fd打开可写事件侦听
-		 */
-		void EnableOutput() {     _events |= KQ_EVENT_WRITE; };
+        void EnableOutput() {     _events |= KQ_EVENT_WRITE; };
 
-		/**
-		 *  @brief fd关闭可读事件侦听
-		 */
-		void DisableInput() {   _events &= ~KQ_EVENT_READ; };
+        void DisableInput() {   _events &= ~KQ_EVENT_READ; };
 
-		/**
-		 *  @brief fd关闭可写事件侦听
-		 */
-		void DisableOutput() {    _events &= ~KQ_EVENT_WRITE; };
+        void DisableOutput() {    _events &= ~KQ_EVENT_WRITE; };
 
-		/**
-		 *  @brief 系统socket设置读取封装
-		 */
-		int GetOsfd() { return _fd; };
-		void SetOsfd(int fd) {   _fd = fd; };
+        int GetOsfd() { return _fd; };
+        void SetOsfd(int fd) {   _fd = fd; };
 
-		/**
-		 *  @brief 监听事件与收到事件的访问方法
-		 */
-		int GetEvents() { return _events; };
-		void SetRcvEvents(int revents) { _revents = revents; };
-		int GetRcvEvents() { return _revents; };
+        int GetEvents() { return _events; };
+        void SetRcvEvents(int revents) { _revents = revents; };
+        int GetRcvEvents() { return _revents; };
 
-		/**
-		 *  @brief 工厂管理方法, 获取真实类型
-		 */
-		int GetNtfyType() {    return _type; };
-		virtual void Reset() {
-			_fd      = -1;
-			_events  = 0;
-			_revents = 0;
-			_type    = 0;
-			_thread  = NULL;
-		};
-			
-		/**
-		 *  @brief 设置与获取所属的微线程句柄接口
-		 *  @param thread 关联的线程指针
-		 */
-		void SetOwnerThread(MicroThread* thread) {      _thread = thread; };
-		MicroThread* GetOwnerThread() {        return _thread; };
+        int GetNtfyType() {    return _type; };
+        virtual void Reset() {
+            _fd      = -1;
+            _events  = 0;
+            _revents = 0;
+            _type    = 0;
+            _thread  = NULL;
+        };
+            
+        void SetOwnerThread(MicroThread* thread) {      _thread = thread; };
+        MicroThread* GetOwnerThread() {        return _thread; };
     
 };
 
-typedef TAILQ_HEAD(__KqFdList, KqueuerObj) KqObjList;  ///< 高效的双链管理 
-typedef struct kevent KqEvent;                 ///< 重定义一下kqueue event
+typedef TAILQ_HEAD(__KqFdList, KqueuerObj) KqObjList;
+typedef struct kevent KqEvent;
 
 
-/**
- *  @brief EPOLL支持同一FD多个线程侦听, 建立一个引用计数数组, 元素定义
- *  @info  引用计数弊大于利, 没有实际意义, 字段保留, 功能移除掉 20150623
- */
 class KqFdRef
 {
 private:
-    int _wr_ref;             ///< 监听写的引用计数
-    int _rd_ref;             ///< 监听读的引用计数
-    int _events;             ///< 当前正在侦听的事件列表
-    int _revents;            ///< 当前该fd收到的事件信息, 仅在epoll_wait后处理中有效
-    KqueuerObj* _kqobj;      ///< 单独注册调度器对象，一个fd关联一个对象
+    int _wr_ref;
+    int _rd_ref;
+    int _events;
+    int _revents;
+    KqueuerObj* _kqobj;
 
 public:
 
-    /**
-     *  @brief 构造与析构函数
-     */
     KqFdRef() {
         _wr_ref  = 0;
         _rd_ref  = 0;
@@ -212,9 +173,6 @@ public:
     };
     ~KqFdRef(){};
 
-    /**
-     *  @brief 监听事件获取与设置接口
-     */
     void SetListenEvents(int events) {
         _events = events;
     };
@@ -222,9 +180,6 @@ public:
         return _events;
     };
 
-    /**
-     *  @brief 监听对象获取与设置接口
-     */
     void SetNotifyObj(KqueuerObj* ntfy) {
         _kqobj = ntfy;
     };
@@ -232,9 +187,6 @@ public:
         return _kqobj;
     };
 
-    /**
-     *  @brief 监听引用计数的更新
-     */
     void AttachEvents(int event) {
         if (event & KQ_EVENT_READ) {
             _rd_ref++;
@@ -260,9 +212,7 @@ public:
         }
     };
 
-    /**
-     * @brief 获取引用计数
-     */
+
     int ReadRefCnt() { return _rd_ref; };
     int WriteRefCnt() { return _wr_ref; };
     
@@ -271,47 +221,47 @@ public:
 
 class KqueueProxy
 {
-	public:
-		static const int DEFAULT_MAX_FD_NUM = 100000;
+    public:
+        static const int DEFAULT_MAX_FD_NUM = 100000;
 
-	private:
-		int                       _kqfd;
-		int                       _maxfd;
-		KqEvent*                  _evtlist;
-		KqFdRef*                  _kqrefs;
+    private:
+        int                       _kqfd;
+        int                       _maxfd;
+        KqEvent*                  _evtlist;
+        KqFdRef*                  _kqrefs;
 
-	public:
-		KqueueProxy();
-		virtual ~KqueueProxy(){};
+    public:
+        KqueueProxy();
+        virtual ~KqueueProxy(){};
 
-		int InitKqueue(int max_num);
-		void TermKqueue(void);
+        int InitKqueue(int max_num);
+        void TermKqueue(void);
 
-		virtual int KqueueGetTimeout(void) { return 0; };
-		virtual bool KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout) { return false; };
-		
-		bool KqueueAdd(KqObjList& fdset);
-		bool KqueueDel(KqObjList& fdset);
-		void KqueueDispatch(void);
-		bool KqueueAddObj(KqueuerObj* obj);
-		bool KqueueDelObj(KqueuerObj* obj);
-		bool KqueueCtrlAdd(int fd, int new_events);
-		bool KqueueCtrlDel(int fd, int new_events);
-		bool KqueueCtrlDelRef(int fd, int new_events, bool use_ref);
+        virtual int KqueueGetTimeout(void) { return 0; };
+        virtual bool KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout) { return false; };
+        
+        bool KqueueAdd(KqObjList& fdset);
+        bool KqueueDel(KqObjList& fdset);
+        void KqueueDispatch(void);
+        bool KqueueAddObj(KqueuerObj* obj);
+        bool KqueueDelObj(KqueuerObj* obj);
+        bool KqueueCtrlAdd(int fd, int new_events);
+        bool KqueueCtrlDel(int fd, int new_events);
+        bool KqueueCtrlDelRef(int fd, int new_events, bool use_ref);
 
-		KqFdRef* KqFdRefGet(int fd) {
-			return ((fd >= _maxfd) || (fd < 0)) ? (KqFdRef*)NULL : &_kqrefs[fd];
-		}
+        KqFdRef* KqFdRefGet(int fd) {
+            return ((fd >= _maxfd) || (fd < 0)) ? (KqFdRef*)NULL : &_kqrefs[fd];
+        }
 
-		void KqueueNtfyReg(int fd, KqueuerObj* obj) {
-			KqFdRef* ref = KqFdRefGet(fd);
-			if (ref) {
-				ref->SetNotifyObj(obj);
-			}
-		};
+        void KqueueNtfyReg(int fd, KqueuerObj* obj) {
+            KqFdRef* ref = KqFdRefGet(fd);
+            if (ref) {
+                ref->SetNotifyObj(obj);
+            }
+        };
 
-	protected:
-		void KqueueRcvEventList(int evtfdnum);
+    protected:
+        void KqueueRcvEventList(int evtfdnum);
 };
 
 }

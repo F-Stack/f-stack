@@ -19,7 +19,6 @@
 
 /**
  *  @file mt_session.cpp
- *  @info 微线程后端连接会话管理实现部分
  *  @time 20130924
  **/
 
@@ -29,23 +28,15 @@
 using namespace std;
 using namespace NS_MICRO_THREAD;
 
-/**
- * @brief session接口资源自回收处理
- */
 ISession::~ISession()
 {
     if (_session_flg) {
         SessionMgr* sessionmgr = SessionMgr::Instance();
         sessionmgr->RemoveSession(_session_id);
-        _session_flg = (int)SESSION_IDLE;   // 额外处理, 在remove函数内处理会加大开销
+        _session_flg = (int)SESSION_IDLE;
     }
 }
 
-
-/**
- * @brief session全局管理句柄
- * @return 全局句柄指针
- */
 SessionMgr* SessionMgr::_instance = NULL;
 SessionMgr* SessionMgr::Instance (void)
 {
@@ -57,9 +48,6 @@ SessionMgr* SessionMgr::Instance (void)
     return _instance;
 }
 
-/**
- * @brief session管理全局的销毁接口
- */
 void SessionMgr::Destroy()
 {
     if( _instance != NULL )
@@ -69,18 +57,12 @@ void SessionMgr::Destroy()
     }
 }
 
-/**
- * @brief 消息buff的构造函数
- */
 SessionMgr::SessionMgr()
 {
     _curr_session = 0;
     _hash_map = new HashList(100000);
 }
 
-/**
- * @brief 析构函数, 不持有资源, 并不负责清理
- */
 SessionMgr::~SessionMgr()
 {
     if (_hash_map) {
@@ -89,9 +71,6 @@ SessionMgr::~SessionMgr()
     }
 }
 
-/**
- * @brief Session数据存储
- */
 int SessionMgr::InsertSession(ISession* session)
 {
     if (!_hash_map || !session) {
@@ -109,9 +88,6 @@ int SessionMgr::InsertSession(ISession* session)
     return _hash_map->HashInsert(session);
 }
 
-/**
- * @brief 查询session数据
- */
 ISession* SessionMgr::FindSession(int session_id)
 {
     if (!_hash_map) {
@@ -124,9 +100,6 @@ ISession* SessionMgr::FindSession(int session_id)
     return dynamic_cast<ISession*>(_hash_map->HashFind(&key));
 }
 
-/**
- * @brief 删除session数据
- */
 void SessionMgr::RemoveSession(int session_id)
 {
     if (!_hash_map) {
@@ -138,5 +111,3 @@ void SessionMgr::RemoveSession(int session_id)
     key.SetSessionId(session_id);    
     return _hash_map->HashRemove(&key);
 }
-
-

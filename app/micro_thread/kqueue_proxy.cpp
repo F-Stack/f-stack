@@ -39,34 +39,34 @@ KqueueProxy::KqueueProxy()
 
 int KqueueProxy::InitKqueue(int max_num)
 {
-	int rc = 0;
-	if (max_num > _maxfd)
-	{
-		_maxfd = max_num;
-	}
+    int rc = 0;
+    if (max_num > _maxfd)
+    {
+        _maxfd = max_num;
+    }
 
-	_kqfd = ff_kqueue();
-	if (_kqfd < 0)
-	{
-		rc = -1;
-		goto EXIT_LABEL;
-	}
+    _kqfd = ff_kqueue();
+    if (_kqfd < 0)
+    {
+        rc = -1;
+        goto EXIT_LABEL;
+    }
 
-	ff_fcntl(_kqfd, F_SETFD, FD_CLOEXEC);
+    ff_fcntl(_kqfd, F_SETFD, FD_CLOEXEC);
 
-	_kqrefs = new KqFdRef[_maxfd];
-	if (_kqrefs == NULL)
-	{
-		rc = -2;
-		goto EXIT_LABEL;
-	}
+    _kqrefs = new KqFdRef[_maxfd];
+    if (_kqrefs == NULL)
+    {
+        rc = -2;
+        goto EXIT_LABEL;
+    }
 
-	_evtlist = (KqEvent*)calloc(_maxfd, sizeof(KqEvent));
-	if (_evtlist == NULL)
-	{
-		rc = -3;
-		goto EXIT_LABEL;
-	}
+    _evtlist = (KqEvent*)calloc(_maxfd, sizeof(KqEvent));
+    if (_evtlist == NULL)
+    {
+        rc = -3;
+        goto EXIT_LABEL;
+    }
 
     struct rlimit rlim;
     memset(&rlim, 0, sizeof(rlim));
@@ -115,20 +115,20 @@ void KqueueProxy::TermKqueue()
 
 bool KqueueProxy::KqueueAdd(KqObjList& obj_list)
 {
-	bool ret = true;
-	KqueuerObj *kqobj = NULL;
-	KqueuerObj *kqobj_error = NULL;
-	TAILQ_FOREACH(kqobj, &obj_list, _entry)
-	{
-		if (!KqueueAddObj(kqobj))
-		{
+    bool ret = true;
+    KqueuerObj *kqobj = NULL;
+    KqueuerObj *kqobj_error = NULL;
+    TAILQ_FOREACH(kqobj, &obj_list, _entry)
+    {
+        if (!KqueueAddObj(kqobj))
+        {
             MTLOG_ERROR("kqobj add failed, fd: %d", kqobj->GetOsfd());
             kqueue_assert(0);
             kqobj_error = kqobj;
             ret = false;
             goto EXIT_LABEL;
-		}
-	}
+        }
+    }
 
 EXIT_LABEL:
 
@@ -167,303 +167,303 @@ bool KqueueProxy::KqueueDel(KqObjList& obj_list)
 
 bool KqueueProxy::KqueueCtrlAdd(int fd, int events)
 {
-	KqFdRef* item = KqFdRefGet(fd);
-	if (item == NULL)
-	{
+    KqFdRef* item = KqFdRefGet(fd);
+    if (item == NULL)
+    {
         MT_ATTR_API(320851, 1); // fd error, wtf?
         MTLOG_ERROR("kqfd ref not find, failed, fd: %d", fd);
         kqueue_assert(0);
         return false;
-	}
+    }
 
-	item->AttachEvents(events);
+    item->AttachEvents(events);
 
-	int old_events = item->GetListenEvents();
-	int new_events = old_events | events;
-	if (old_events == new_events)
-	{
-		return true;
-	}
-	
-	KqEvent ke;
-	int ret;
-	if (old_events & KQ_EVENT_WRITE) {
-		EV_SET(&ke, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			// TODO, error check
-			item->DetachEvents(events);
-			kqueue_assert(0);
-			return false;
-		}
-	}
-	if (old_events & KQ_EVENT_READ) {
-		EV_SET(&ke, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			// TODO, error check
-			item->DetachEvents(events);
-			kqueue_assert(0);
-			return false;
-		}
-	}
-	if (events & KQ_EVENT_WRITE) {
-		EV_SET(&ke, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			// TODO, error check
-			item->DetachEvents(events);
-			kqueue_assert(0);
-			return false;
-		}
-	}
-	if (events & KQ_EVENT_READ) {
-		EV_SET(&ke, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			// TODO, error check
-			item->DetachEvents(events);
-			kqueue_assert(0);
-			return false;
-		}
-	}
+    int old_events = item->GetListenEvents();
+    int new_events = old_events | events;
+    if (old_events == new_events)
+    {
+        return true;
+    }
+    
+    KqEvent ke;
+    int ret;
+    if (old_events & KQ_EVENT_WRITE) {
+        EV_SET(&ke, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            // TODO, error check
+            item->DetachEvents(events);
+            kqueue_assert(0);
+            return false;
+        }
+    }
+    if (old_events & KQ_EVENT_READ) {
+        EV_SET(&ke, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            // TODO, error check
+            item->DetachEvents(events);
+            kqueue_assert(0);
+            return false;
+        }
+    }
+    if (events & KQ_EVENT_WRITE) {
+        EV_SET(&ke, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            // TODO, error check
+            item->DetachEvents(events);
+            kqueue_assert(0);
+            return false;
+        }
+    }
+    if (events & KQ_EVENT_READ) {
+        EV_SET(&ke, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            // TODO, error check
+            item->DetachEvents(events);
+            kqueue_assert(0);
+            return false;
+        }
+    }
 
-	item->SetListenEvents(new_events);
+    item->SetListenEvents(new_events);
 
-	return true;
+    return true;
 }
 
 
 bool KqueueProxy::KqueueCtrlDel(int fd, int events)
 {
-	return KqueueCtrlDelRef(fd, events, false);
+    return KqueueCtrlDelRef(fd, events, false);
 }
 
 bool KqueueProxy::KqueueCtrlDelRef(int fd, int events, bool use_ref)
 {
-	KqFdRef* item = KqFdRefGet(fd);
-	if (item == NULL)
-	{
+    KqFdRef* item = KqFdRefGet(fd);
+    if (item == NULL)
+    {
         MT_ATTR_API(320851, 1); // fd error
         MTLOG_ERROR("kqfd ref not find, failed, fd: %d", fd);
         kqueue_assert(0);
         return false;
 
-	}
+    }
 
-	item->DetachEvents(events);
-	int old_events = item->GetListenEvents();
-	int new_events = old_events &~ events;
+    item->DetachEvents(events);
+    int old_events = item->GetListenEvents();
+    int new_events = old_events &~ events;
 
-	if (use_ref) {
-		new_events = old_events;
-		if (item->ReadRefCnt() == 0) {
-			new_events = new_events & ~KQ_EVENT_READ;
-		}
-		if (item->WriteRefCnt() == 0) {
-			new_events = new_events & ~KQ_EVENT_WRITE;
-		}
-	}
+    if (use_ref) {
+        new_events = old_events;
+        if (item->ReadRefCnt() == 0) {
+            new_events = new_events & ~KQ_EVENT_READ;
+        }
+        if (item->WriteRefCnt() == 0) {
+            new_events = new_events & ~KQ_EVENT_WRITE;
+        }
+    }
 
-	if (old_events == new_events)
-	{
-		return true;
-	}
-	KqEvent ke;
-	int ret;
-	if (old_events & KQ_EVENT_WRITE) {
-		EV_SET(&ke, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			kqueue_assert(0);
-			return false;
-		}
-	}
-	if (old_events & KQ_EVENT_READ) {
-		EV_SET(&ke, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			kqueue_assert(0);
-			return false;
-		}
-	}
+    if (old_events == new_events)
+    {
+        return true;
+    }
+    KqEvent ke;
+    int ret;
+    if (old_events & KQ_EVENT_WRITE) {
+        EV_SET(&ke, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            kqueue_assert(0);
+            return false;
+        }
+    }
+    if (old_events & KQ_EVENT_READ) {
+        EV_SET(&ke, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            kqueue_assert(0);
+            return false;
+        }
+    }
 
-	if (new_events & KQ_EVENT_WRITE) {
-		EV_SET(&ke, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			kqueue_assert(0);
-			return false;
-		}
-	}
-	if (new_events & KQ_EVENT_READ) {
-		EV_SET(&ke, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
-		ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
-		if (ret == -1) {
-			kqueue_assert(0);
-			return false;
-		}
-	}
+    if (new_events & KQ_EVENT_WRITE) {
+        EV_SET(&ke, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            kqueue_assert(0);
+            return false;
+        }
+    }
+    if (new_events & KQ_EVENT_READ) {
+        EV_SET(&ke, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+        ret = ff_kevent(_kqfd, &ke, 1, NULL, 0, NULL);
+        if (ret == -1) {
+            kqueue_assert(0);
+            return false;
+        }
+    }
 
-	item->SetListenEvents(new_events);
+    item->SetListenEvents(new_events);
 
-	return true;
+    return true;
 }
 
 bool KqueueProxy::KqueueAddObj(KqueuerObj* obj)
 {
-	if (obj == NULL)
-	{
+    if (obj == NULL)
+    {
         MTLOG_ERROR("kqobj input invalid, %p", obj);
         return false;
-	}
+    }
 
-	KqFdRef* item = KqFdRefGet(obj->GetOsfd());
-	if (item == NULL)
-	{
+    KqFdRef* item = KqFdRefGet(obj->GetOsfd());
+    if (item == NULL)
+    {
         MT_ATTR_API(320851, 1); // fd error
         MTLOG_ERROR("kqfd ref not find, failed, fd: %d", obj->GetOsfd());
         kqueue_assert(0);
         return false;
-	}
+    }
 
-	int ret = obj->KqueueCtlAdd(item);
-	if (ret < 0) {
+    int ret = obj->KqueueCtlAdd(item);
+    if (ret < 0) {
         MTLOG_ERROR("kqueue ctrl callback failed, fd: %d, obj: %p", obj->GetOsfd(), obj);
         kqueue_assert(0);
         return false;
-	}
+    }
 
-	return true;
+    return true;
 }
 
 bool KqueueProxy::KqueueDelObj(KqueuerObj* obj)
 {
-	if (obj == NULL)
-	{
+    if (obj == NULL)
+    {
         MTLOG_ERROR("kqobj input invalid, %p", obj);
         return false;
-	}
-	KqFdRef* item = KqFdRefGet(obj->GetOsfd());
-	if (item == NULL)
-	{
+    }
+    KqFdRef* item = KqFdRefGet(obj->GetOsfd());
+    if (item == NULL)
+    {
         MT_ATTR_API(320851, 1); // fd error
         MTLOG_ERROR("kqfd ref not find, failed, fd: %d", obj->GetOsfd());
         kqueue_assert(0);
         return false;
-	}
+    }
 
-	int ret = obj->KqueueCtlDel(item);
-	if (ret < 0) {
+    int ret = obj->KqueueCtlDel(item);
+    if (ret < 0) {
         MTLOG_ERROR("kqueue ctrl callback failed, fd: %d, obj: %p", obj->GetOsfd(), obj);
         kqueue_assert(0);
         return false;
-	}
+    }
 
-	return true;
+    return true;
 }
 
 void KqueueProxy::KqueueRcvEventList(int evtfdnum)
 {
-	int ret = 0;
-	int osfd = 0;
-	int revents = 0;
-	int tmp_evts = 0;
-	KqFdRef* item = NULL;
-	KqueuerObj* obj = NULL;
+    int ret = 0;
+    int osfd = 0;
+    int revents = 0;
+    int tmp_evts = 0;
+    KqFdRef* item = NULL;
+    KqueuerObj* obj = NULL;
 
-	for (int i = 0; i < evtfdnum; i++)
-	{
-		osfd = _evtlist[i].ident;
+    for (int i = 0; i < evtfdnum; i++)
+    {
+        osfd = _evtlist[i].ident;
 
-		item = KqFdRefGet(osfd);
-		if (item == NULL)
-		{
+        item = KqFdRefGet(osfd);
+        if (item == NULL)
+        {
             MT_ATTR_API(320851, 1); // fd error
             MTLOG_ERROR("kqfd ref not find, failed, fd: %d", osfd);
             kqueue_assert(0);
             continue;
-		}
-		tmp_evts = _evtlist[i].filter;
-		if (tmp_evts == EVFILT_READ) {
-			revents |= KQ_EVENT_READ;
-		}
-		if (tmp_evts == EVFILT_WRITE) {
-			revents |= KQ_EVENT_WRITE;
-		}
-		obj = item->GetNotifyObj();
-		if (obj == NULL)
-		{
+        }
+        tmp_evts = _evtlist[i].filter;
+        if (tmp_evts == EVFILT_READ) {
+            revents |= KQ_EVENT_READ;
+        }
+        if (tmp_evts == EVFILT_WRITE) {
+            revents |= KQ_EVENT_WRITE;
+        }
+        obj = item->GetNotifyObj();
+        if (obj == NULL)
+        {
             MTLOG_ERROR("fd notify obj null, failed, fd: %d", osfd);
             KqueueCtrlDel(osfd, (revents & (KQ_EVENT_READ | KQ_EVENT_WRITE)));
             continue;
-		}
-		obj->SetRcvEvents(revents);
+        }
+        obj->SetRcvEvents(revents);
 
-		if (tmp_evts == EV_ERROR)
-		{
-			obj->HangupNotify();
-			continue;
-		}
+        if (tmp_evts == EV_ERROR)
+        {
+            obj->HangupNotify();
+            continue;
+        }
 
-		if (revents & KQ_EVENT_READ)
-		{
-			ret = obj->InputNotify();
-			if (ret != 0)
-			{
-				continue;
-			}
-		}
+        if (revents & KQ_EVENT_READ)
+        {
+            ret = obj->InputNotify();
+            if (ret != 0)
+            {
+                continue;
+            }
+        }
 
-		if (revents & KQ_EVENT_WRITE)
-		{
-			ret = obj->OutputNotify();
-			if (ret != 0)
-			{
-				continue;
-			}
-		}
-	}
+        if (revents & KQ_EVENT_WRITE)
+        {
+            ret = obj->OutputNotify();
+            if (ret != 0)
+            {
+                continue;
+            }
+        }
+    }
 }
 
 void KqueueProxy::KqueueDispatch()
 {
-	int nfd;
-	int wait_time = KqueueGetTimeout();
-	if (wait_time) {
-		struct timespec ts;
-		ts.tv_sec = wait_time / 1000;
-		ts.tv_nsec = 0;
-		nfd = ff_kevent(_kqfd, NULL, 0, _evtlist, _maxfd, &ts);
-	} else {
-		nfd = ff_kevent(_kqfd, NULL, 0, _evtlist, _maxfd, NULL);
-	}
-	if (nfd <= 0)
-	{
-		return;
-	}
+    int nfd;
+    int wait_time = KqueueGetTimeout();
+    if (wait_time) {
+        struct timespec ts;
+        ts.tv_sec = wait_time / 1000;
+        ts.tv_nsec = 0;
+        nfd = ff_kevent(_kqfd, NULL, 0, _evtlist, _maxfd, &ts);
+    } else {
+        nfd = ff_kevent(_kqfd, NULL, 0, _evtlist, _maxfd, NULL);
+    }
+    if (nfd <= 0)
+    {
+        return;
+    }
 
-	KqueueRcvEventList(nfd);
+    KqueueRcvEventList(nfd);
 }
 
 int KqueuerObj::InputNotify()
 {
-	MicroThread* thread = this->GetOwnerThread();
-	if (thread == NULL)
-	{
-		kqueue_assert(0);
+    MicroThread* thread = this->GetOwnerThread();
+    if (thread == NULL)
+    {
+        kqueue_assert(0);
         MTLOG_ERROR("kqueue fd obj, no thread ptr, wrong");
         return -1;
-	}
+    }
 
-	if (thread->HasFlag(MicroThread::IO_LIST))
-	{
+    if (thread->HasFlag(MicroThread::IO_LIST))
+    {
         MtFrame* frame = MtFrame::Instance();
         frame->RemoveIoWait(thread);
         frame->InsertRunable(thread);
-	}
+    }
 
-	return 0;
+    return 0;
 }
 
 int KqueuerObj::OutputNotify()
@@ -476,7 +476,7 @@ int KqueuerObj::OutputNotify()
         return -1;
     }
 
-    // 多个事件同时到达, 防重复操作
+    // Multiple events arrive at the same time
     if (thread->HasFlag(MicroThread::IO_LIST))
     {
         MtFrame* frame = MtFrame::Instance();
@@ -503,7 +503,7 @@ int KqueuerObj::KqueueCtlAdd(void* args)
     int osfd = this->GetOsfd();
     int new_events = this->GetEvents();
 
-    // 通知对象需要更新, FD通知对象理论上不会复用, 这里做冲突检查, 异常log记录
+    // Notify object needs updating
     KqueuerObj* old_obj = fd_ref->GetNotifyObj();
     if ((old_obj != NULL) && (old_obj != this))
     {
@@ -512,7 +512,6 @@ int KqueuerObj::KqueueCtlAdd(void* args)
     }
     fd_ref->SetNotifyObj(this);
 
-    // 调用框架的epoll ctl接口, 屏蔽epoll ctrl细节
     if (!frame->KqueueCtrlAdd(osfd, new_events))
     {
         MTLOG_ERROR("kqfd ref add failed, log");
@@ -532,7 +531,6 @@ int KqueuerObj::KqueueCtlDel(void* args)
     int osfd = this->GetOsfd();
     int events = this->GetEvents();
     
-    // 通知对象需要更新, FD通知对象理论上不会复用, 这里做冲突检查, 异常log记录
     KqueuerObj* old_obj = fd_ref->GetNotifyObj();
     if (old_obj != this)
     {
@@ -541,8 +539,7 @@ int KqueuerObj::KqueueCtlDel(void* args)
     }
     fd_ref->SetNotifyObj(NULL);
 
-    // 调用框架的epoll ctl接口, 屏蔽epoll ctrl细节
-    if (!frame->KqueueCtrlDelRef(osfd, events, false)) // 引用有风险, 弊大于利, 关闭掉
+    if (!frame->KqueueCtrlDelRef(osfd, events, false))
     {
         MTLOG_ERROR("kqfd ref del failed, log");
         fd_ref->SetNotifyObj(old_obj);

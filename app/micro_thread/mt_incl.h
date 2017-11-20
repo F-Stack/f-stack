@@ -19,7 +19,6 @@
 
 /**
  *  @file mt_incl.h
- *  @info 微线程提供给spp_plugin的头文件
  *  @time 20130924
  */
 

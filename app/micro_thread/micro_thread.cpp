@@ -35,29 +35,12 @@ using namespace NS_MICRO_THREAD;
 #define  ASSERT(statement)
 //#define  ASSERT(statement)   assert(statement)
 
-/**
- *  @brief 汇编实现保存上下文函数
- *  @param jbf jmpbuff数组指针
- */
 extern "C"  int save_context(jmp_buf jbf);
 
-/**
- *  @brief 汇编实现恢复上下文函数
- *  @param jbf jmpbuff数组指针
- *  @param ret 切回的返回值, 默认1
- */
 extern "C"  void restore_context(jmp_buf jbf, int ret);
 
-/**
- *  @brief 汇编实现替换调用栈函数
- *  @param jbf jmpbuff数组指针
- *  @param esp 堆栈指针
- */
 extern "C"  void replace_esp(jmp_buf jbf, void* esp);
 
-/**
- * @brief 构造函数, 默认参数栈大小
- */
 Thread::Thread(int stack_size)
 {
     _stack_size  = stack_size ? stack_size : ThreadPool::default_stack_size;
@@ -68,7 +51,7 @@ Thread::Thread(int stack_size)
 
 
 /**
- *  @brief LINUX x86/x86_64下的栈申请, 其它架构下需要注意差异
+ *  @brief LINUX x86/x86_64's allocated stacks.
  */
 bool Thread::InitStack()
 {
@@ -76,7 +59,7 @@ bool Thread::InitStack()
         return true;
     }
 
-    ///< 栈索引与栈内存分离, 防越界    
+    ///< stack index and memory are separated to prevent out of bounds.
     _stack = (MtStack*)calloc(1, sizeof(MtStack));
     if (NULL == _stack)
     {
@@ -102,8 +85,8 @@ bool Thread::InitStack()
     _stack->_stk_size = _stack_size;
     _stack->_stk_bottom = _stack->_vaddr + MEM_PAGE_SIZE;
     _stack->_stk_top = _stack->_stk_bottom + _stack->_stk_size;
-	// valgrind support: register stack frame
-	_stack->valgrind_id = VALGRIND_STACK_REGISTER(_stack->_stk_bottom, _stack->_stk_top);
+    // valgrind support: register stack frame
+    _stack->valgrind_id = VALGRIND_STACK_REGISTER(_stack->_stk_bottom, _stack->_stk_top);
    
     _stack->_esp = _stack->_stk_top - STACK_PAD_SIZE;
     
@@ -114,29 +97,23 @@ bool Thread::InitStack()
 }
 
 
-/**
- * @brief 释放堆栈信息
- */
 void Thread::FreeStack()
 {
     if (!_stack) {
         return;
     }
     munmap(_stack->_vaddr, _stack->_vaddr_size);
-	// valgrind support: deregister stack frame
-	VALGRIND_STACK_DEREGISTER(_stack->valgrind_id);
+    // valgrind support: deregister stack frame
+    VALGRIND_STACK_DEREGISTER(_stack->valgrind_id);
     free(_stack);
     _stack = NULL;
 }
 
-/**
- * @brief 初始化上下文,设置寄存器,堆栈
- */
 void Thread::InitContext()
 {
     if (save_context(_jmpbuf) != 0)
     {
-        ScheduleObj::Instance()->ScheduleStartRun(); // 直接调用 this->run?
+        ScheduleObj::Instance()->ScheduleStartRun();
     }
     
     if (_stack != NULL)
@@ -145,9 +122,6 @@ void Thread::InitContext()
     }
 }
 
-/**
- * @brief 主动切换, 保存状态, 触发调度
- */
 void Thread::SwitchContext()
 {
     if (save_context(_jmpbuf) == 0)
@@ -156,17 +130,12 @@ void Thread::SwitchContext()
     }
 }
 
-/**
- * @brief 恢复上下文, 切换回断点,继续运行
- */
 void Thread::RestoreContext()
 {
     restore_context(_jmpbuf, 1);    
 }
 
-/**
- * @brief 初始化线程,如堆栈与上下文初始化
- */
+
 bool Thread::Initial()
 {
     if (!InitStack())
@@ -180,18 +149,12 @@ bool Thread::Initial()
     return true;
 }
 
-/**
- * @brief 终止线程,如堆栈与上下文释放
- */
 void Thread::Destroy()
 {
     FreeStack();
     memset(&_jmpbuf, 0, sizeof(_jmpbuf));
 }
 
-/**
- * @brief 线程状态重置, 可复用状态
- */
 void Thread::Reset()
 {
     _wakeup_time = 0;
@@ -201,10 +164,6 @@ void Thread::Reset()
     CleanState();
 }
 
-/**
- * @brief 线程主动进入睡眠, 单位毫秒
- * @param ms 睡眠毫秒数
- */
 void Thread::sleep(int ms)
 {
     utime64_t now = ScheduleObj::Instance()->ScheduleGetTime();    
@@ -216,9 +175,6 @@ void Thread::sleep(int ms)
     }    
 }
 
-/**
- * @brief 进入阻塞状态, 等待所有子线程结束
- */
 void Thread::Wait()
 {
     if (save_context(_jmpbuf) == 0)
@@ -227,24 +183,17 @@ void Thread::Wait()
     }
 }
 
-/**
- * @brief 初始化上下文,设置寄存器,堆栈
- */
 bool Thread::CheckStackHealth(char *esp)
 {
-	if (!_stack)
-		return false;
+    if (!_stack)
+        return false;
 
-	if (esp > _stack->_stk_bottom && esp < _stack->_stk_top)
-		return true;
-	else
-		return false;
+    if (esp > _stack->_stk_bottom && esp < _stack->_stk_top)
+        return true;
+    else
+        return false;
 }
 
-/**
- * @brief 微线程构造, 默认是普通线程
- * @param type 类型, 默认普通
- */
 MicroThread::MicroThread(ThreadType type)
 {
     memset(&_entry, 0, sizeof(_entry));
@@ -258,9 +207,6 @@ MicroThread::MicroThread(ThreadType type)
     _parent = NULL;
 }
 
-/**
- * @breif 微线程复用状态清理
- */    
 void MicroThread::CleanState()
 {
     TAILQ_INIT(&_fdset);
@@ -273,16 +219,12 @@ void MicroThread::CleanState()
     _parent = NULL;
 }
 
-/**
- * @brief 线程的实际工作函数
- */
 void MicroThread::Run()
 {
     if (_start) {
         _start(_args);
     }
 
-    // 二级线程, 触发父线程进入可运行态
     if (this->IsSubThread()) {
         this->WakeupParent();
     }
@@ -291,9 +233,6 @@ void MicroThread::Run()
     ScheduleObj::Instance()->ScheduleThread();
 }
 
-/**
- * @brief 二级子线程唤醒父线程处理
- */
 void MicroThread::WakeupParent()
 {
     MicroThread* parent = this->GetParent();
@@ -311,17 +250,11 @@ void MicroThread::WakeupParent()
     }
 }
 
-/**
- * @brief 是否还有其它的二级子线程
- */
 bool MicroThread::HasNoSubThread()
 {
     return TAILQ_EMPTY(&_sub_list);
 }
 
-/**
- * @brief 将指定子线程加入二级线程列表
- */
 void MicroThread::AddSubThread(MicroThread* sub)
 {
     ASSERT(!sub->HasFlag(MicroThread::SUB_LIST));
@@ -334,9 +267,6 @@ void MicroThread::AddSubThread(MicroThread* sub)
     sub->SetFlag(MicroThread::SUB_LIST);
 }
 
-/**
- * @brief 将指定线程移出二级线程列表
- */
 void MicroThread::RemoveSubThread(MicroThread* sub)
 {
     ASSERT(sub->HasFlag(MicroThread::SUB_LIST));
@@ -349,11 +279,7 @@ void MicroThread::RemoveSubThread(MicroThread* sub)
     sub->UnsetFlag(MicroThread::SUB_LIST);
 }
 
-
-/**
- * @brief 单例类访问句柄入口
- */
-ScheduleObj *ScheduleObj::_instance = NULL;     ///< 静态句柄初始化
+ScheduleObj *ScheduleObj::_instance = NULL;
 inline ScheduleObj* ScheduleObj::Instance()
 {
     if (NULL == _instance)
@@ -364,18 +290,12 @@ inline ScheduleObj* ScheduleObj::Instance()
     return _instance;
 }
 
-/**
- * @brief 调度其它微线程来运行, 包裹接口
- */
 void ScheduleObj::ScheduleThread()
 {
     MtFrame* frame = MtFrame::Instance();
     frame->ThreadSchdule();
 }
 
-/**
- * @brief 获取全局的时间戳, 毫秒单位
- */
 utime64_t ScheduleObj::ScheduleGetTime()
 {
     MtFrame* frame = MtFrame::Instance();
@@ -390,9 +310,6 @@ utime64_t ScheduleObj::ScheduleGetTime()
     }
 }
 
-/**
- * @brief 线程调度主动进入sleep状态
- */
 void ScheduleObj::ScheduleSleep()
 {
     MtFrame* frame = MtFrame::Instance();
@@ -406,9 +323,6 @@ void ScheduleObj::ScheduleSleep()
     frame->ThreadSchdule();
 }
 
-/**
- * @brief 线程调度主动进入pend状态
- */
 void ScheduleObj::SchedulePend()
 {
     MtFrame* frame = MtFrame::Instance();
@@ -422,9 +336,6 @@ void ScheduleObj::SchedulePend()
     frame->ThreadSchdule();
 }
 
-/**
- * @brief 线程调度取消pend状态, 外部调度取消
- */
 void ScheduleObj::ScheduleUnpend(void* pthread)
 {
     MtFrame* frame = MtFrame::Instance();
@@ -438,11 +349,6 @@ void ScheduleObj::ScheduleUnpend(void* pthread)
     frame->InsertRunable(thread);
 }
 
-
-
-/**
- * @brief 线程执行完毕后, 回收处理
- */
 void ScheduleObj::ScheduleReclaim()
 {
     MtFrame* frame = MtFrame::Instance();
@@ -455,9 +361,6 @@ void ScheduleObj::ScheduleReclaim()
     frame->FreeThread(thread);
 }
 
-/**
- * @brief 调度器调度初始执行
- */
 void ScheduleObj::ScheduleStartRun()
 {
     MtFrame* frame = MtFrame::Instance();
@@ -471,15 +374,9 @@ void ScheduleObj::ScheduleStartRun()
 }
 
 
-/**
- * @brief 微线程池全局参数初始化
- */
-unsigned int ThreadPool::default_thread_num = DEFAULT_THREAD_NUM;   ///< 默认2000微线程待命
-unsigned int ThreadPool::default_stack_size = DEFAULT_STACK_SIZE;   ///< 默认128K栈大小 
+unsigned int ThreadPool::default_thread_num = DEFAULT_THREAD_NUM;   ///< 2000 micro threads.
+unsigned int ThreadPool::default_stack_size = DEFAULT_STACK_SIZE;   ///< 128k stack. 
 
-/**
- * @brief 微线程池初始化
- */
 bool ThreadPool::InitialPool(int max_num)
 {
     MicroThread *thread = NULL;
@@ -509,9 +406,6 @@ bool ThreadPool::InitialPool(int max_num)
     }    
 }
 
-/**
- * @brief 微线程池反初始化
- */
 void ThreadPool::DestroyPool()
 {
     MicroThread* thread = NULL;
@@ -527,13 +421,9 @@ void ThreadPool::DestroyPool()
     _use_num = 0;
 }
 
-/**
- * @brief 微线程分配接口
- * @return 微线程对象
- */
 MicroThread* ThreadPool::AllocThread()
 {
-    MT_ATTR_API_SET(492069, _total_num); // 微线程池大小
+    MT_ATTR_API_SET(492069, _total_num);
 
     MicroThread* thread = NULL;
     if (!_freelist.empty())
@@ -569,10 +459,6 @@ MicroThread* ThreadPool::AllocThread()
     return thread;    
 }
 
-/**
- * @brief 微线程释放接口
- * @param thread 微线程对象
- */
 void ThreadPool::FreeThread(MicroThread* thread)
 {
     ASSERT(!thread->HasFlag(MicroThread::FREE_LIST));
@@ -581,7 +467,6 @@ void ThreadPool::FreeThread(MicroThread* thread)
     _freelist.push(thread);
     thread->SetFlag(MicroThread::FREE_LIST);
 
-    ///< 空闲队列 > default_thread_num, 则释放最老的, 不可以释放当前
     unsigned int free_num = _freelist.size();
     if ((free_num > default_thread_num) && (free_num > 1))
     {
@@ -595,12 +480,9 @@ void ThreadPool::FreeThread(MicroThread* thread)
 
 int ThreadPool::GetUsedNum(void)
 {
-	return _use_num;
+    return _use_num;
 }
 
-/**
- * @brief 微线程框架类, 全局实例获取
- */
 MtFrame *MtFrame::_instance = NULL;
 inline MtFrame* MtFrame::Instance ()
 {
@@ -612,30 +494,20 @@ inline MtFrame* MtFrame::Instance ()
     return _instance;
 }
 
-/**
- * @brief HOOK系统api的设置
- */
 void MtFrame::SetHookFlag() {
     mt_set_hook_flag();
 };
 
-
-/**
- * @brief 框架初始化, 默认不带日志运行
- */
 bool MtFrame::InitFrame(LogAdapter* logadpt, int max_thread_num)
 {
     _log_adpt = logadpt;
 
-    // 设置最大允许的线程数目, 尝试调节epoll监控的fd数目
     if ((this->InitKqueue(max_thread_num) < 0) || !this->InitialPool(max_thread_num))
     {
         MTLOG_ERROR("Init epoll or thread pool failed");
         this->Destroy();
         return false;
     }
-
-    // 按需重置堆大小, 放大堆个数为2倍
     if (_sleeplist.HeapResize(max_thread_num * 2) < 0)
     {
         MTLOG_ERROR("Init heap list failed");
@@ -643,7 +515,6 @@ bool MtFrame::InitFrame(LogAdapter* logadpt, int max_thread_num)
         return false;
     }
     
-    // 定时器管理初始化, 放大堆个数为2倍
     _timer = new CTimerMng(max_thread_num * 2);
     if (NULL == _timer)
     {
@@ -652,7 +523,6 @@ bool MtFrame::InitFrame(LogAdapter* logadpt, int max_thread_num)
         return false;
     }
 
-    // 守护线程单独初始化
     _daemon = AllocThread();
     if (NULL == _daemon)
     {
@@ -664,7 +534,6 @@ bool MtFrame::InitFrame(LogAdapter* logadpt, int max_thread_num)
     _daemon->SetState(MicroThread::RUNABLE);
     _daemon->SetSartFunc(MtFrame::DaemonRun, this);
 
-    // 特殊线程, 无需INIT, 不初始化栈, 也无回调注册, 但需要统一调度
     _primo = new MicroThread(MicroThread::PRIMORDIAL);
     if (NULL == _primo)
     {
@@ -675,20 +544,16 @@ bool MtFrame::InitFrame(LogAdapter* logadpt, int max_thread_num)
     _primo->SetState(MicroThread::RUNNING);
     SetActiveThread(_primo);
 
-    // 更新最新时间戳
     _last_clock = GetSystemMS();
     TAILQ_INIT(&_iolist);
     TAILQ_INIT(&_pend_list);
 
-	//SetHookFlag();
+    //SetHookFlag();
 
     return true;
     
 }
 
-/**
- * @brief 框架反初始化
- */
 void MtFrame::Destroy(void)
 {
     if (NULL == _instance )
@@ -741,20 +606,11 @@ void MtFrame::Destroy(void)
     _instance = NULL;
 }
 
-/**
- * @brief 微线程框架版本获取
- */
 char* MtFrame::Version()
 {
     return IMT_VERSION;
 }
 
-/**
- * @brief 微线程创建接口
- * @param entry 线程入口函数
- * @param args  线程入口参数
- * @return 微线程指针, NULL表示失败
- */
 MicroThread* MtFrame::CreateThread(ThreadStart entry, void *args, bool runable)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -778,39 +634,32 @@ int MtFrame::Loop(void* args)
     MtFrame* mtframe = MtFrame::Instance();
     MicroThread* daemon = mtframe->DaemonThread(); 
 
-	mtframe->KqueueDispatch();        
-	mtframe->SetLastClock(mtframe->GetSystemMS());
-	mtframe->WakeupTimeout(); 
-	mtframe->CheckExpired();
-	daemon->SwitchContext();
+    mtframe->KqueueDispatch();        
+    mtframe->SetLastClock(mtframe->GetSystemMS());
+    mtframe->WakeupTimeout(); 
+    mtframe->CheckExpired();
+    daemon->SwitchContext();
 
-	return 0;
+    return 0;
 }
 
-/**
- * @brief 守护线程入口函数, 函数指针要求static类型
- * @param args  线程入口参数
- */
 void MtFrame::DaemonRun(void* args)
 {
-	/*
+    /*
     MtFrame* mtframe = MtFrame::Instance();
     MicroThread* daemon = mtframe->DaemonThread(); 
 
-	while (true) {
-		mtframe->KqueueDispatch();        
-		mtframe->SetLastClock(mtframe->GetSystemMS());
-		mtframe->WakeupTimeout(); 
-		mtframe->CheckExpired();
-		daemon->SwitchContext();
-	}
-	*/
-	ff_run(MtFrame::Loop, NULL);
+    while (true) {
+        mtframe->KqueueDispatch();        
+        mtframe->SetLastClock(mtframe->GetSystemMS());
+        mtframe->WakeupTimeout(); 
+        mtframe->CheckExpired();
+        daemon->SwitchContext();
+    }
+    */
+    ff_run(MtFrame::Loop, NULL);
 }
 
-/**
- * @brief 获取当前线程的根线程
- */
 MicroThread *MtFrame::GetRootThread()
 {
     if (NULL == _curr_thread)
@@ -837,9 +686,6 @@ MicroThread *MtFrame::GetRootThread()
     return parent;
 }
 
-/**
- * @brief 框架调度线程运行
- */
 void MtFrame::ThreadSchdule()
 {
     MicroThread* thread = NULL;    
@@ -860,9 +706,6 @@ void MtFrame::ThreadSchdule()
     thread->RestoreContext();
 }
 
-/**
- * @brief 框架处理定时回调函数
- */
 void MtFrame::CheckExpired()
 {
     static utime64_t check_time = 0;
@@ -881,9 +724,6 @@ void MtFrame::CheckExpired()
     }
 }
 
-/**
- * @brief 框架检测到超时, 唤醒所有的超时线程
- */
 void MtFrame::WakeupTimeout()
 {
     utime64_t now = GetLastClock();
@@ -891,7 +731,7 @@ void MtFrame::WakeupTimeout()
     while (thread && (thread->GetWakeupTime() <= now))
     {
         if (thread->HasFlag(MicroThread::IO_LIST))
-	    {
+        {
             RemoveIoWait(thread);
         }
         else
@@ -905,16 +745,13 @@ void MtFrame::WakeupTimeout()
     }    
 }
 
-/**
- * @brief 框架调用epoll wait前, 判定等待时间信息
- */
 int MtFrame::KqueueGetTimeout()
 {
     utime64_t now = GetLastClock();
     MicroThread* thread = dynamic_cast<MicroThread*>(_sleeplist.HeapTop());
     if (!thread)
     {
-        return 10; //默认10ms epollwait
+        return 10; //default 10ms epollwait
     }
     else if (thread->GetWakeupTime() < now)
     {
@@ -926,10 +763,6 @@ int MtFrame::KqueueGetTimeout()
     }
 }
 
-/**
- * @brief 框架管理线程单元, 插入排序堆
- * @param thread 微线程对象
- */
 inline void MtFrame::InsertSleep(MicroThread* thread)
 {
     ASSERT(!thread->HasFlag(MicroThread::SLEEP_LIST));
@@ -944,10 +777,6 @@ inline void MtFrame::InsertSleep(MicroThread* thread)
     }
 }
 
-/**
- * @brief 框架管理线程单元, 移除排序堆
- * @param thread 微线程对象
- */
 inline void MtFrame::RemoveSleep(MicroThread* thread)
 {
     ASSERT(thread->HasFlag(MicroThread::SLEEP_LIST));
@@ -961,10 +790,6 @@ inline void MtFrame::RemoveSleep(MicroThread* thread)
     }
 }
 
-/**
- * @brief 框架管理线程单元, 执行IO等待状态
- * @param thread 微线程对象
- */
 inline void MtFrame::InsertIoWait(MicroThread* thread)
 {
     ASSERT(!thread->HasFlag(MicroThread::IO_LIST));
@@ -973,10 +798,6 @@ inline void MtFrame::InsertIoWait(MicroThread* thread)
     InsertSleep(thread);
 }
 
-/**
- * @brief 框架管理线程单元, 移除IO等待状态
- * @param thread 微线程对象
- */
 void MtFrame::RemoveIoWait(MicroThread* thread)
 {
     ASSERT(thread->HasFlag(MicroThread::IO_LIST));
@@ -986,10 +807,6 @@ void MtFrame::RemoveIoWait(MicroThread* thread)
     RemoveSleep(thread);
 }
 
-/**
- * @brief 框架管理线程单元, 插入可运行队列
- * @param thread 微线程对象
- */
 void MtFrame::InsertRunable(MicroThread* thread)
 {
     ASSERT(!thread->HasFlag(MicroThread::RUN_LIST));
@@ -1000,10 +817,6 @@ void MtFrame::InsertRunable(MicroThread* thread)
     _waitnum++;
 }
 
-/**
- * @brief 框架管理线程单元, 移出可运行队列
- * @param thread 微线程对象
- */
 inline void MtFrame::RemoveRunable(MicroThread* thread)
 {
     ASSERT(thread->HasFlag(MicroThread::RUN_LIST));
@@ -1014,11 +827,6 @@ inline void MtFrame::RemoveRunable(MicroThread* thread)
     _waitnum--;
 }
 
-
-/**
- * @brief 框架管理线程单元, 执行pend等待状态
- * @param thread 微线程对象
- */
 void MtFrame::InsertPend(MicroThread* thread)
 {
     ASSERT(!thread->HasFlag(MicroThread::PEND_LIST));
@@ -1027,10 +835,6 @@ void MtFrame::InsertPend(MicroThread* thread)
     thread->SetState(MicroThread::PENDING);    
 }
 
-/**
- * @brief 框架管理线程单元, 移除PEND等待状态
- * @param thread 微线程对象
- */
 void MtFrame::RemovePend(MicroThread* thread)
 {
     ASSERT(thread->HasFlag(MicroThread::PEND_LIST));
@@ -1038,10 +842,6 @@ void MtFrame::RemovePend(MicroThread* thread)
     TAILQ_REMOVE(&_pend_list, thread, _entry);
 }
 
-/**
- * @brief 微线程主动切换, 等待其它线程的唤醒
- * @param timeout 最长等待时间, 毫秒
- */
 void MtFrame::WaitNotify(utime64_t timeout)
 {
     MicroThread* thread = GetActiveThread();
@@ -1051,13 +851,6 @@ void MtFrame::WaitNotify(utime64_t timeout)
     thread->SwitchContext();
 }
 
-/**
- * @brief 微线程触发切换函数,调用成功 则让出cpu
- * @param fdlist 多路并发的socket列表
- * @param fd 单个请求的fd信息
- * @param timeout 最长等待时间, 毫秒
- * @return true 成功, false 失败
- */
 bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)
 {
     MicroThread* thread = GetActiveThread();
@@ -1067,7 +860,6 @@ bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)
         return false;
     }
 
-    // 1. 整合该线程需要关心的epoll调度对象
     thread->ClearAllFd();
     if (fdlist) 
     {
@@ -1078,7 +870,6 @@ bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)
         thread->AddFd(fd);
     }
 
-    // 2. 设置epoll监听事件, 调整超时时间, 切换IO等待状态, 触发切换
     thread->SetWakeupTime(timeout + this->GetLastClock());
     if (!this->KqueueAdd(thread->GetFdSet()))
     {
@@ -1088,7 +879,6 @@ bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)
     this->InsertIoWait(thread); 
     thread->SwitchContext();
 
-    // 3. 调度OK, 判定超时, epoll ctrl 还原状态
     int rcvnum = 0;
     KqObjList& rcvfds = thread->GetFdSet();
     KqueuerObj* fdata = NULL;
@@ -1099,9 +889,9 @@ bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)
             rcvnum++;
         }        
     }
-    this->KqueueDel(rcvfds);     // 在一个函数中ADD, DEL 闭环控制
+    this->KqueueDel(rcvfds);
 
-    if (rcvnum == 0)    // 超时处理, 返回错误
+    if (rcvnum == 0)
     {
         errno = ETIME;
         return false;
@@ -1110,16 +900,6 @@ bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)
     return true;   
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 recvfrom
- * @param fd 系统socket信息
- * @param buf 接收消息缓冲区指针
- * @param len 接收消息缓冲区长度
- * @param from 来源地址的指针
- * @param fromlen 来源地址的结构长度
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功接收长度, <0 失败
- */
 int MtFrame::recvfrom(int fd, void *buf, int len, int flags, struct sockaddr *from, socklen_t *fromlen, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1129,9 +909,9 @@ int MtFrame::recvfrom(int fd, void *buf, int len, int flags, struct sockaddr *fr
 
     if(fd<0 || !buf || len<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("recvfrom failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("recvfrom failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     if (timeout <= -1)
@@ -1180,16 +960,6 @@ int MtFrame::recvfrom(int fd, void *buf, int len, int flags, struct sockaddr *fr
 
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 sendto
- * @param fd 系统socket信息
- * @param msg 待发送的消息指针
- * @param len 待发送的消息长度
- * @param to 目的地址的指针
- * @param tolen 目的地址的结构长度
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功发送长度, <0 失败
- */
 int MtFrame::sendto(int fd, const void *msg, int len, int flags, const struct sockaddr *to, int tolen, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1199,9 +969,9 @@ int MtFrame::sendto(int fd, const void *msg, int len, int flags, const struct so
 
     if(fd<0 || !msg || len<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("sendto failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("sendto failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     int n = 0; 
@@ -1236,14 +1006,6 @@ int MtFrame::sendto(int fd, const void *msg, int len, int flags, const struct so
     return n;
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 connect
- * @param fd 系统socket信息
- * @param addr 指定server的目的地址
- * @param addrlen 地址的长度
- * @param timeout 最长等待时间, 毫秒
- * @return =0 连接成功, <0 失败
- */
 int MtFrame::connect(int fd, const struct sockaddr *addr, int addrlen, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1253,9 +1015,9 @@ int MtFrame::connect(int fd, const struct sockaddr *addr, int addrlen, int timeo
 
     if(fd<0 || !addr || addrlen<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("connect failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("connect failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     int n = 0; 
@@ -1269,7 +1031,7 @@ int MtFrame::connect(int fd, const struct sockaddr *addr, int addrlen, int timeo
             return -1;
         }
 
-        if (errno == EISCONN)   // 已连接, 返回成功
+        if (errno == EISCONN)
         {
             return 0;
         }
@@ -1295,14 +1057,6 @@ int MtFrame::connect(int fd, const struct sockaddr *addr, int addrlen, int timeo
     return n;
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 accept
- * @param fd 监听套接字
- * @param addr 客户端地址
- * @param addrlen 地址的长度
- * @param timeout 最长等待时间, 毫秒
- * @return >=0 accept的socket描述符, <0 失败
- */
 int MtFrame::accept(int fd, struct sockaddr *addr, socklen_t *addrlen, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1312,9 +1066,9 @@ int MtFrame::accept(int fd, struct sockaddr *addr, socklen_t *addrlen, int timeo
 
     if(fd<0)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("accept failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("accept failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     int acceptfd = 0; 
@@ -1349,15 +1103,6 @@ int MtFrame::accept(int fd, struct sockaddr *addr, socklen_t *addrlen, int timeo
     return acceptfd;
 }
 
-
-/**
- * @brief 微线程包裹的系统IO函数 read
- * @param fd 系统socket信息
- * @param buf 接收消息缓冲区指针
- * @param nbyte 接收消息缓冲区长度
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功接收长度, <0 失败
- */
 ssize_t MtFrame::read(int fd, void *buf, size_t nbyte, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1367,9 +1112,9 @@ ssize_t MtFrame::read(int fd, void *buf, size_t nbyte, int timeout)
 
     if(fd<0 || !buf || nbyte<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("read failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("read failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     ssize_t n = 0;
@@ -1404,14 +1149,6 @@ ssize_t MtFrame::read(int fd, void *buf, size_t nbyte, int timeout)
     return n;
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 write
- * @param fd 系统socket信息
- * @param buf 待发送的消息指针
- * @param nbyte 待发送的消息长度
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功发送长度, <0 失败
- */
 ssize_t MtFrame::write(int fd, const void *buf, size_t nbyte, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1421,9 +1158,9 @@ ssize_t MtFrame::write(int fd, const void *buf, size_t nbyte, int timeout)
 
     if(fd<0 || !buf || nbyte<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("write failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("write failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     ssize_t n = 0;
@@ -1470,15 +1207,6 @@ ssize_t MtFrame::write(int fd, const void *buf, size_t nbyte, int timeout)
     return nbyte;
 }
 
-
-/**
- * @brief 微线程包裹的系统IO函数 recv
- * @param fd 系统socket信息
- * @param buf 接收消息缓冲区指针
- * @param len 接收消息缓冲区长度
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功接收长度, <0 失败
- */
 int MtFrame::recv(int fd, void *buf, int len, int flags, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1488,9 +1216,9 @@ int MtFrame::recv(int fd, void *buf, int len, int flags, int timeout)
 
     if(fd<0 || !buf || len<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("recv failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("recv failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     if (timeout <= -1)
@@ -1539,14 +1267,6 @@ int MtFrame::recv(int fd, void *buf, int len, int flags, int timeout)
 
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 send
- * @param fd 系统socket信息
- * @param buf 待发送的消息指针
- * @param nbyte 待发送的消息长度
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功发送长度, <0 失败
- */
 ssize_t MtFrame::send(int fd, const void *buf, size_t nbyte, int flags, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1556,9 +1276,9 @@ ssize_t MtFrame::send(int fd, const void *buf, size_t nbyte, int flags, int time
 
     if(fd<0 || !buf || nbyte<1)
     {
-    	errno = EINVAL;
-    	MTLOG_ERROR("send failed, errno: %d (%m)", errno);
-    	return -10;
+        errno = EINVAL;
+        MTLOG_ERROR("send failed, errno: %d (%m)", errno);
+        return -10;
     }
     
     ssize_t n = 0;
@@ -1605,11 +1325,6 @@ ssize_t MtFrame::send(int fd, const void *buf, size_t nbyte, int flags, int time
     return nbyte;
 }
 
-
-
-/**
- * @brief 微线程主动sleep接口, 单位ms
- */
 void MtFrame::sleep(int ms)
 {
     MtFrame* frame = MtFrame::Instance();
@@ -1620,13 +1335,6 @@ void MtFrame::sleep(int ms)
     }
 }
 
-/**
- * @brief 微线程包裹的系统IO函数 recv
- * @param fd 系统socket信息
- * @param events 事件类型  EPOLLIN or EPOLLOUT
- * @param timeout 最长等待时间, 毫秒
- * @return >0 成功接收长度, <0 失败
- */
 int MtFrame::WaitEvents(int fd, int events, int timeout)
 {
     MtFrame* mtframe = MtFrame::Instance();
@@ -1669,5 +1377,3 @@ int MtFrame::WaitEvents(int fd, int events, int timeout)
         return epfd.GetRcvEvents();
     }
 }
-
-

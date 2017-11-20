@@ -19,7 +19,6 @@
 
 /**
  *  @file mt_concurrent.c
- *  @info 多路并处理模型扩展
  *  @time 20130924
  **/
 
@@ -32,14 +31,6 @@
 using namespace std;
 using namespace NS_MICRO_THREAD;
 
-
-/**
- * @brief 多路IO的处理优化, 异步调度等待处理
- * @param req_list - 连接列表
- * @param how - EPOLLIN  EPOLLOUT
- * @param timeout - 超时时长 毫秒单位
- * @return 0 成功, <0失败 -3 处理超时
- */
 int NS_MICRO_THREAD::mt_multi_netfd_poll(IMtActList& req_list, int how, int timeout)
 {
     KqObjList fdlist;
@@ -99,11 +90,6 @@ int NS_MICRO_THREAD::mt_multi_netfd_poll(IMtActList& req_list, int how, int time
     return 0;
 }
 
-/**
- * @brief 为每个ITEM建立上下文的socket
- * @param req_list - 连接列表
- * @return 0 成功, <0失败
- */
 int NS_MICRO_THREAD::mt_multi_newsock(IMtActList& req_list)
 {
     int sock = -1, has_ok = 0;
@@ -161,13 +147,6 @@ int NS_MICRO_THREAD::mt_multi_newsock(IMtActList& req_list)
     }
 }
 
-
-/**
- * @brief 多路IO的处理, 打开连接
- * @param req_list - 连接列表
- * @param timeout - 超时时长 毫秒单位
- * @return 0 成功, <0失败
- */
 int NS_MICRO_THREAD::mt_multi_open(IMtActList& req_list, int timeout)
 {
     utime64_t start_ms = MtFrame::Instance()->GetLastClock();
@@ -244,13 +223,6 @@ int NS_MICRO_THREAD::mt_multi_open(IMtActList& req_list, int timeout)
         
 }
 
-
-/**
- * @brief 多路IO的处理, 发送数据
- * @param req_list - 连接列表
- * @param timeout - 超时时长 毫秒单位
- * @return 0 成功, <0失败
- */
 int NS_MICRO_THREAD::mt_multi_sendto(IMtActList& req_list, int timeout)
 {
     utime64_t start_ms = MtFrame::Instance()->GetLastClock();
@@ -284,7 +256,6 @@ int NS_MICRO_THREAD::mt_multi_sendto(IMtActList& req_list, int timeout)
                 return -2;
             }
 
-            // 0 -还要继续发送; -1 停止发送; > 0 发送OK
             ret = net_handler->SendData();
             if (ret == -1)
             {
@@ -335,11 +306,6 @@ int NS_MICRO_THREAD::mt_multi_sendto(IMtActList& req_list, int timeout)
     return 0;
 }
 
-
-
-/**
- * @brief 多路IO并发接收处理
- */
 int NS_MICRO_THREAD::mt_multi_recvfrom(IMtActList& req_list, int timeout)
 {
     utime64_t start_ms = MtFrame::Instance()->GetLastClock();
@@ -360,7 +326,7 @@ int NS_MICRO_THREAD::mt_multi_recvfrom(IMtActList& req_list, int timeout)
                 continue;
             }  
             
-            if (MULTI_FLAG_FIN == action->GetMsgFlag()) ///< 已处理完毕
+            if (MULTI_FLAG_FIN == action->GetMsgFlag())
             {
                 continue;
             }
@@ -373,7 +339,6 @@ int NS_MICRO_THREAD::mt_multi_recvfrom(IMtActList& req_list, int timeout)
                 return -2;
             }
 
-            // <0 失败, 0 继续收, >0 成功
             ret = net_handler->RecvData();
             if (ret < 0)
             {
@@ -415,18 +380,15 @@ int NS_MICRO_THREAD::mt_multi_recvfrom(IMtActList& req_list, int timeout)
     }
 }
 
-/**
- * @brief 多路IO并发接收处理
- */
 int NS_MICRO_THREAD::mt_multi_sendrcv_ex(IMtActList& req_list, int timeout)
 {
     utime64_t start_ms = MtFrame::Instance()->GetLastClock();
     utime64_t curr_ms = 0;
     
-    int rc = mt_multi_newsock(req_list); // TODO, 可提取connect超时时间等
+    int rc = mt_multi_newsock(req_list);
     if (rc < 0)
     {
-        MT_ATTR_API(320842, 1); // socket失败
+        MT_ATTR_API(320842, 1);
         MTLOG_ERROR("mt_multi_sendrcv new sock failed, ret: %d", rc);
         return -1;
     }
@@ -434,7 +396,7 @@ int NS_MICRO_THREAD::mt_multi_sendrcv_ex(IMtActList& req_list, int timeout)
     rc = mt_multi_open(req_list, timeout);
     if (rc < 0)
     {
-        MT_ATTR_API(320843, 1); // connect失败
+        MT_ATTR_API(320843, 1);
         MTLOG_ERROR("mt_multi_sendrcv open failed, ret: %d", rc);
         return -2;
     }
@@ -443,7 +405,7 @@ int NS_MICRO_THREAD::mt_multi_sendrcv_ex(IMtActList& req_list, int timeout)
     rc = mt_multi_sendto(req_list, timeout - (curr_ms - start_ms));
     if (rc < 0)
     {
-        MT_ATTR_API(320844, 1); // 发送失败
+        MT_ATTR_API(320844, 1); 
         MTLOG_ERROR("mt_multi_sendrcv send failed, ret: %d", rc);
         return -3;
     }
@@ -452,7 +414,7 @@ int NS_MICRO_THREAD::mt_multi_sendrcv_ex(IMtActList& req_list, int timeout)
     rc = mt_multi_recvfrom(req_list, timeout - (curr_ms - start_ms));
     if (rc < 0)
     {
-        MT_ATTR_API(320845, 1); // 接收未完全成功
+        MT_ATTR_API(320845, 1);
         MTLOG_ERROR("mt_multi_sendrcv recv failed, ret: %d", rc);
         return -4;
     }
@@ -460,18 +422,10 @@ int NS_MICRO_THREAD::mt_multi_sendrcv_ex(IMtActList& req_list, int timeout)
     return 0; 
 }
 
-
-/**
- * @brief 多路IO并发接收处理接口, 封装ACTON接口模型, 内部关联msg
- * @param req_list -action list 实现封装函数接口
- * @param timeout -超时时间, 单位ms
- * @return  0 成功, -1 初始化环境失败, 其它成功或部分成功
- */
 int NS_MICRO_THREAD::mt_msg_sendrcv(IMtActList& req_list, int timeout)
 {
     int iRet = 0;
-    
-    // 第一步, 初始化action环境, 封装请求报文
+
     for (IMtActList::iterator it = req_list.begin(); it != req_list.end(); ++it)
     {
         IMtAction* pAction = *it;
@@ -491,10 +445,8 @@ int NS_MICRO_THREAD::mt_msg_sendrcv(IMtActList& req_list, int timeout)
         
     }
 
-    // 第二步, 同步收发消息, 失败也需要通知处理
     mt_multi_sendrcv_ex(req_list, timeout);
 
-    // 第三步, 同步通知解包处理
     for (IMtActList::iterator it = req_list.begin(); it != req_list.end(); ++it)
     {
         IMtAction* pAction = *it;
@@ -514,7 +466,6 @@ int NS_MICRO_THREAD::mt_msg_sendrcv(IMtActList& req_list, int timeout)
         } 
     }
 
-    // 第四步, 清理框架内部资源, 兼容各类用法
     for (IMtActList::iterator it = req_list.begin(); it != req_list.end(); ++it)
     {
         IMtAction* pAction = *it;
@@ -523,6 +474,3 @@ int NS_MICRO_THREAD::mt_msg_sendrcv(IMtActList& req_list, int timeout)
 
     return 0;
 }
-
-
-

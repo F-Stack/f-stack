@@ -20,17 +20,20 @@
 ########MAKEFILE##########
 
 ifeq ($(FF_PATH),)
-    $(error variable FF_PATH is not set)
+	$(error variable FF_PATH is not set)
+endif
+
+ifeq ($(FF_DPDK),)
+	FF_DPDK= $(FF_PATH)/dpdk/x86_64-native-linuxapp-gcc
 endif
 
 DEBUG= -g
 BINARY = libmt.a
-FF_LIB=$(FF_PATH)/libfstack.a
-DPDK_LIBS+= -L${FF_PATH}/lib -L${FF_DPDK}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
-DPDK_LIBS+= -Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring
-DPDK_LIBS+= -Wl,--whole-archive -lrte_hash -lrte_kvargs -Wl,-lrte_mbuf -lethdev -lrte_eal -Wl,-lrte_mempool
-DPDK_LIBS+= -lrte_ring -lrte_cmdline -lrte_cfgfile -lrte_kni -lrte_timer -Wl,-lrte_pmd_virtio
-DPDK_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
+FF_LIBS+= -L${FF_PATH}/lib -L${FF_DPDK}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
+FF_LIBS+= -Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring
+FF_LIBS+= -Wl,--whole-archive -lrte_hash -lrte_kvargs -Wl,-lrte_mbuf -lethdev -lrte_eal -Wl,-lrte_mempool
+FF_LIBS+= -lrte_ring -lrte_cmdline -lrte_cfgfile -lrte_kni -lrte_timer -Wl,-lrte_pmd_virtio
+FF_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
 
 # Comment the following line if you are not using the gnu c compiler
 #C_ARGS = -Wall -g -fPIC -D_DEBUG
@@ -91,9 +94,9 @@ LIB_OBJ = micro_thread.o kqueue_proxy.o arch_ctx.o mt_session.o mt_notify.o mt_a
 libmt.a: $(LIB_OBJ)
 	@echo -e  Linking $(CYAN)$@$(RESET) ...$(RED)
 	@-rm -f $@ 
-	@ar crs  $@  $^ $(FST_LIB) $(CRESET)
+	@ar crs  $@  $^ $(CRESET)
 	@chmod +x $@ 
 
 echo: echo.o libmt.a
 	@echo -e Compile $(CYAN)$@$(RESET) ...$(RED)
-	@$(CC) -O -gdwarf-2 -o $@ $^ -lstdc++ -ldl -lm $(DPDK_LIBS) $(CRESET)
+	@$(CC) -O -gdwarf-2 -o $@ $^ -lstdc++ -ldl -lm $(FF_LIBS) $(CRESET)
