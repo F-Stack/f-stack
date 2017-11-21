@@ -258,6 +258,9 @@ protocol_filter_ip(const void *data, uint16_t len)
     hdr = (const struct ipv4_hdr *)data;
 
     int hdr_len = (hdr->version_ihl & 0x0f) << 2;
+    if (len < hdr_len)
+        return FILTER_UNKNOWN;
+
     void *next = (void *)data + hdr_len;
     uint16_t next_len = len - hdr_len;
 

@@ -878,7 +878,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 static enum FilterReturn
 protocol_filter(const void *data, uint16_t len)
 {
-    if(len < sizeof(struct ether_hdr))
+    if(len < ETHER_HDR_LEN)
         return FILTER_UNKNOWN;
 
     const struct ether_hdr *hdr;
