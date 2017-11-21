@@ -62,35 +62,39 @@ int loop(void *arg)
     int nevents = ff_epoll_wait(epfd,  events, MAX_EVENTS, 0);
     int i;
 
-    for (i = 0; i < nevents; ++i) {	
+    for (i = 0; i < nevents; ++i) {
         /* Handle new connect */
         if (events[i].data.fd == sockfd) {
             int nclientfd = ff_accept(sockfd, NULL, NULL);
-            assert(nclientfd > 0);
+            if (nclientfd < 0) {
+                printf("ff_accept failed:%d, %s\n", errno, strerror(errno));
+                continue;
+            }
+
             /* Add to event list */
-	    ev.data.fd = nclientfd;
-	    ev.events  = EPOLLIN;
-	    assert(ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) == 0);
-            //fprintf(stderr, "A new client connected to the server..., fd:%d\n", nclientfd);
+            ev.data.fd = nclientfd;
+            ev.events  = EPOLLIN;
+            assert(ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) == 0);
+            //printf("A new client connected to the server..., fd:%d\n", nclientfd);
         } else { 
             if (events[i].events & EPOLLERR ) {
                 /* Simply close socket */
-		ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+                ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
                 ff_close(events[i].data.fd);
-                //fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);
+                //printf("A client has left the server...,fd:%d\n", events[i].data.fd);
             } else if (events[i].events & EPOLLIN) {
                 char buf[256];
                 size_t readlen = ff_read( events[i].data.fd, buf, sizeof(buf));
-                //fprintf(stderr, "bytes are available to read..., readlen:%d, fd:%d\n", readlen,  events[i].data.fd);
-    		if(readlen > 0){
+                //printf("bytes are available to read..., readlen:%d, fd:%d\n", readlen,  events[i].data.fd);
+                if(readlen > 0) {
                     ff_write( events[i].data.fd, html, sizeof(html));
-		} else {
-		    ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
-    		    ff_close( events[i].data.fd);
-                    //fprintf(stderr, "A client has left the server...,fd:%d\n", events[i].data.fd);		
-		}
+                } else {
+                    ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
+                    ff_close( events[i].data.fd);
+                    //printf("A client has left the server...,fd:%d\n", events[i].data.fd);
+                }
             } else {
-                fprintf(stderr, "unknown event: %8.8X\n", events[i].events);
+                printf("unknown event: %8.8X\n", events[i].events);
             }
         }
     }
@@ -127,7 +131,7 @@ int main(int argc, char * argv[])
         printf("ff_listen failed\n");
         exit(1);
     }
-	
+
     assert((epfd = ff_epoll_create(0)) > 0);
     ev.data.fd = sockfd;
     ev.events = EPOLLIN;
@@ -135,5 +139,3 @@ int main(int argc, char * argv[])
     ff_run(loop, NULL);
     return 0;
 }
-
-

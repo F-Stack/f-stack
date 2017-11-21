@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <strings.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -72,8 +73,10 @@ int loop(void *arg)
             //printf("A client has left the server...,fd:%d\n", clientfd);
         } else if (clientfd == sockfd) {
             int nclientfd = ff_accept(sockfd, NULL, NULL);
-
-            assert(nclientfd > 0);
+            if (nclientfd < 0) {
+                printf("ff_accept failed:%d, %s\n", errno, strerror(errno));
+                continue;
+            }
 
             /* Add to event list */
             kevSet.data     = 0;
@@ -145,5 +148,3 @@ int main(int argc, char * argv[])
     ff_run(loop, NULL);
     return 0;
 }
-
-
