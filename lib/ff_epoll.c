@@ -69,10 +69,11 @@ ff_event_to_epoll(void **ev, struct kevent *kev)
     unsigned int event_one = 0;
     struct epoll_event **ppev = (struct epoll_event **)ev;
 
-    if (kev->filter & EVFILT_READ) {
-        event_one |= EPOLLIN;
-    } 
-    if (kev->filter & EVFILT_WRITE) {
+    if (kev->filter == EVFILT_READ) {
+        if (kev->data || !(kev->flags & EV_EOF)) {
+            event_one |= EPOLLIN;
+        }
+    } else if (kev->filter == EVFILT_WRITE) {
         event_one |= EPOLLOUT;
     }
 
@@ -81,7 +82,17 @@ ff_event_to_epoll(void **ev, struct kevent *kev)
     }
 
     if (kev->flags & EV_EOF) {
-        event_one |= EPOLLIN;        
+        event_one |= EPOLLHUP;
+
+        if (kev->fflags) {
+            event_one |= EPOLLERR;
+        }
+
+        if (kev->filter == EVFILT_READ) {
+            event_one |= EPOLLIN;
+        } else if (kev->filter == EVFILT_WRITE) {
+            event_one |= EPOLLERR;
+        }
     }
 
     (*ppev)->events   = event_one;
