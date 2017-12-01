@@ -899,6 +899,66 @@ protocol_filter(const void *data, uint16_t len)
 }
 
 static inline void
+pktmbuf_deep_attach(struct rte_mbuf *mi, const struct rte_mbuf *m)
+{
+    struct rte_mbuf *md;
+    void *src, *dst;
+
+    dst = rte_pktmbuf_mtod(mi, void *);
+    src = rte_pktmbuf_mtod(m, void *);
+
+    mi->data_len = m->data_len;
+    rte_memcpy(dst, src, m->data_len);
+
+    mi->port = m->port;
+    mi->vlan_tci = m->vlan_tci;
+    mi->vlan_tci_outer = m->vlan_tci_outer;
+    mi->tx_offload = m->tx_offload;
+    mi->hash = m->hash;
+    mi->ol_flags = m->ol_flags;
+    mi->packet_type = m->packet_type;
+}
+
+/* copied from rte_pktmbuf_clone */
+static inline struct rte_mbuf *
+pktmbuf_deep_clone(const struct rte_mbuf *md,
+    struct rte_mempool *mp)
+{
+    struct rte_mbuf *mc, *mi, **prev;
+    uint32_t pktlen;
+    uint8_t nseg;
+
+    if (unlikely ((mc = rte_pktmbuf_alloc(mp)) == NULL))
+        return NULL;
+
+    mi = mc;
+    prev = &mi->next;
+    pktlen = md->pkt_len;
+    nseg = 0;
+
+    do {
+        nseg++;
+        pktmbuf_deep_attach(mi, md);
+        *prev = mi;
+        prev = &mi->next;
+    } while ((md = md->next) != NULL &&
+        (mi = rte_pktmbuf_alloc(mp)) != NULL);
+
+    *prev = NULL;
+    mc->nb_segs = nseg;
+    mc->pkt_len = pktlen;
+
+    /* Allocation of new indirect segment failed */
+    if (unlikely (mi == NULL)) {
+        rte_pktmbuf_free(mc);
+        return NULL;
+    }
+
+    __rte_mbuf_sanity_check(mc, 1);
+    return mc;
+}
+
+static inline void
 process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, const struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
@@ -950,9 +1010,10 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                         socket_id = rte_lcore_to_socket_id(lcore_id);
                     }
                     mbuf_pool = pktmbuf_pool[socket_id];
-                    mbuf_clone = rte_pktmbuf_clone(rtem, mbuf_pool);
+                    mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                     if(mbuf_clone) {
-                        int ret = rte_ring_enqueue(dispatch_ring[port_id][j], mbuf_clone);
+                        int ret = rte_ring_enqueue(dispatch_ring[port_id][j],
+                            mbuf_clone);
                         if (ret < 0)
                             rte_pktmbuf_free(mbuf_clone);
                     }
@@ -961,14 +1022,15 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 
             if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
-                mbuf_clone = rte_pktmbuf_clone(rtem, mbuf_pool);
+                mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
                     ff_kni_enqueue(port_id, mbuf_clone);
                 }
             }
 
             ff_veth_input(ctx, rtem);
-        } else if (enable_kni && ((filter == FILTER_KNI && kni_accept) ||
+        } else if (enable_kni &&
+            ((filter == FILTER_KNI && kni_accept) ||
             (filter == FILTER_UNKNOWN && !kni_accept)) ) {
             ff_kni_enqueue(port_id, rtem);
         } else {
