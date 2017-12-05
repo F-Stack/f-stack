@@ -27,7 +27,7 @@ ff_epoll_create(int size __attribute__((__unused__)))
     return ff_kqueue();
 }
 
-int 
+int
 ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
 {
     struct kevent kev[3];
@@ -38,23 +38,33 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
     }
 
     if (op == EPOLL_CTL_ADD){
+        int flags = EV_ADD;
+        if (event->events & EPOLLET) {
+            flags |= EV_CLEAR;
+        }
+
         EV_SET(&kev[0], fd, EVFILT_READ,
-            EV_ADD | (event->events & EPOLLIN ? 0 : EV_DISABLE), 0, 0, NULL);
+            flags | (event->events & EPOLLIN ? 0 : EV_DISABLE), 0, 0, NULL);
         EV_SET(&kev[1], fd, EVFILT_WRITE,
-            EV_ADD | (event->events & EPOLLOUT ? 0 : EV_DISABLE), 0, 0, NULL);
+            flags | (event->events & EPOLLOUT ? 0 : EV_DISABLE), 0, 0, NULL);
         EV_SET(&kev[2], fd, EVFILT_USER, EV_ADD,
-                event->events & EPOLLRDHUP ? 1 : 0, 0, NULL);        
+            event->events & EPOLLRDHUP ? 1 : 0, 0, NULL);
     } else if (op == EPOLL_CTL_DEL) {
         EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
         EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
         EV_SET(&kev[2], fd, EVFILT_USER, EV_DELETE, 0, 0, NULL);
     } else if (op == EPOLL_CTL_MOD) {
+        int flags = 0;
+        if (event->events & EPOLLET) {
+            flags |= EV_CLEAR;
+        }
+
         EV_SET(&kev[0], fd, EVFILT_READ,
-            event->events & EPOLLIN ? EV_ENABLE : EV_DISABLE, 0, 0, NULL);
+            flags | (event->events & EPOLLIN ? EV_ENABLE : EV_DISABLE), 0, 0, NULL);
         EV_SET(&kev[1], fd, EVFILT_WRITE,
-            event->events & EPOLLOUT ? EV_ENABLE : EV_DISABLE, 0, 0, NULL);
+            flags | (event->events & EPOLLOUT ? EV_ENABLE : EV_DISABLE), 0, 0, NULL);
         EV_SET(&kev[2], fd, EVFILT_USER, 0,
-            NOTE_FFCOPY | (event->events & EPOLLRDHUP ? 1 : 0), 0, NULL);        
+            NOTE_FFCOPY | (event->events & EPOLLRDHUP ? 1 : 0), 0, NULL);
     } else {
         errno = EINVAL;
         return -1;
