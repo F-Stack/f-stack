@@ -30,47 +30,76 @@ ff_epoll_create(int size __attribute__((__unused__)))
 int
 ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
 {
-    struct kevent kev[3];
+    /*
+     * Since kqueue uses EVFILT_READ and EVFILT_WRITE filters to
+     * handle read/write events, so we need two kevents.
+     */
+    const int changes = 2;
+    struct kevent kev[changes];
+    int flags = 0;
+    int read_flags, write_flags;
 
-    if (!event && op != EPOLL_CTL_DEL) {
+    if ((!event && op != EPOLL_CTL_DEL) ||
+        (op != EPOLL_CTL_ADD &&
+         op != EPOLL_CTL_MOD &&
+         op != EPOLL_CTL_DEL)) {
         errno = EINVAL;
         return -1;
     }
 
-    if (op == EPOLL_CTL_ADD){
-        int flags = EV_ADD;
-        if (event->events & EPOLLET) {
-            flags |= EV_CLEAR;
-        }
-
-        EV_SET(&kev[0], fd, EVFILT_READ,
-            flags | (event->events & EPOLLIN ? 0 : EV_DISABLE), 0, 0, NULL);
-        EV_SET(&kev[1], fd, EVFILT_WRITE,
-            flags | (event->events & EPOLLOUT ? 0 : EV_DISABLE), 0, 0, NULL);
-        EV_SET(&kev[2], fd, EVFILT_USER, EV_ADD,
-            event->events & EPOLLRDHUP ? 1 : 0, 0, NULL);
-    } else if (op == EPOLL_CTL_DEL) {
+    /*
+     * EPOLL_CTL_DEL doesn't need to care for event->events.
+     */
+    if (op == EPOLL_CTL_DEL) {
         EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
         EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-        EV_SET(&kev[2], fd, EVFILT_USER, EV_DELETE, 0, 0, NULL);
-    } else if (op == EPOLL_CTL_MOD) {
-        int flags = 0;
-        if (event->events & EPOLLET) {
-            flags |= EV_CLEAR;
-        }
 
-        EV_SET(&kev[0], fd, EVFILT_READ,
-            flags | (event->events & EPOLLIN ? EV_ENABLE : EV_DISABLE), 0, 0, NULL);
-        EV_SET(&kev[1], fd, EVFILT_WRITE,
-            flags | (event->events & EPOLLOUT ? EV_ENABLE : EV_DISABLE), 0, 0, NULL);
-        EV_SET(&kev[2], fd, EVFILT_USER, 0,
-            NOTE_FFCOPY | (event->events & EPOLLRDHUP ? 1 : 0), 0, NULL);
-    } else {
-        errno = EINVAL;
-        return -1;
+        return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
     }
 
-    return ff_kevent(epfd, kev, 3, NULL, 0, NULL);
+    /*
+     * FIXME:
+     *
+     * Kqueue doesn't have edge-triggered mode that exactly
+     * same with epoll, the most similar way is setting EV_CLEAR
+     * or EV_DISPATCH flag, but there are still some differences.
+     *
+     * EV_CLEAR:after the event is retrieved by the user,
+     *    its state is reset.
+     * EV_DISPATCH: disable the event source immediately
+     *    after delivery of an event.
+     *
+     * Here we use EV_CLEAR temporarily.
+     *
+     */
+    if (event->events & EPOLLET) {
+        flags |= EV_CLEAR;
+    }
+
+    if (event->events & EPOLLONESHOT) {
+        flags |= EV_ONESHOT;
+    }
+
+    if (op == EPOLL_CTL_ADD) {
+        flags |= EV_ADD;
+    }
+
+    read_flags = write_flags = flags | EV_DISABLE;
+
+    if (event->events & EPOLLIN) {
+        read_flags &= ~EV_DISABLE;
+        read_flags |= EV_ENABLE;
+    }
+
+    if (event->events & EPOLLOUT) {
+        write_flags &= ~EV_DISABLE;
+        write_flags |= EV_ENABLE;
+    }
+
+    EV_SET(&kev[0], fd, EVFILT_READ, read_flags, 0, 0, NULL);
+    EV_SET(&kev[1], fd, EVFILT_WRITE, write_flags, 0, 0, NULL);
+
+    return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
 }
 
 static void 
