@@ -36,7 +36,9 @@
 static void * ngx_ff_channel_create_conf(ngx_cycle_t *cycle);
 static char * ngx_ff_channel_init_conf(ngx_cycle_t *cycle,
     void *conf);
-static ngx_int_t ngx_ff_epoll_init(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_channel_init_process(ngx_cycle_t *cycle);
+static void ngx_ff_channel_exit_process(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer);
 static ngx_int_t ngx_ff_epoll_add_event(ngx_event_t *ev,
     ngx_int_t event, ngx_uint_t flags);
 static ngx_int_t ngx_ff_epoll_del_event(ngx_event_t *ev,
@@ -49,10 +51,15 @@ static void ngx_ff_worker_channel_handler(ngx_event_t *ev);
 static void *ngx_ff_channel_thread_main(void *args);
 static ngx_int_t ngx_ff_add_channel_event(ngx_cycle_t *cycle,
     ngx_fd_t fd, ngx_int_t event, ngx_event_handler_pt handler);
-static ngx_int_t ngx_ff_process_channel_events(ngx_cycle_t *cycle);
+static void ngx_ff_process_events_and_timers(ngx_cycle_t *cycle);
 
 ngx_int_t ngx_ff_start_worker_channel(ngx_cycle_t *cycle,
     ngx_fd_t fd, ngx_int_t event);
+    
+void ngx_aeds_cancel_timers(void);
+void ngx_aeds_expire_timers(void);
+ngx_msec_t ngx_aeds_find_timer(void);
+void ngx_aeds_cancel_timers(void);
 
 struct channel_thread_args {
     ngx_cycle_t *cycle;
@@ -68,6 +75,9 @@ static int ep = -1;
 static struct epoll_event *event_list;
 static ngx_uint_t nevents;
 static ngx_connection_t *channel_connection;
+
+#include <semaphore.h>
+static sem_t sem;
 
 typedef struct {
     ngx_uint_t  events;
@@ -91,10 +101,10 @@ ngx_module_t  ngx_ff_channel_module = {
     NGX_CORE_MODULE,                     /* module type */
     NULL,                                /* init master */
     NULL,                                /* init module */
-    ngx_ff_epoll_init,                   /* init process */
+    ngx_ff_channel_init_process,         /* init process */
     NULL,                                /* init thread */
     NULL,                                /* exit thread */
-    NULL,                                /* exit process */
+    ngx_ff_channel_exit_process,         /* exit process */
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -119,8 +129,33 @@ ngx_ff_channel_init_conf(ngx_cycle_t *cycle, void *conf)
     return NGX_CONF_OK;
 }
 
+
+static ngx_int_t ngx_ff_channel_init_process(ngx_cycle_t *cycle)
+{
+    if (sem_init(&sem, 0, 0) != 0)  
+    {  
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+static void ngx_ff_channel_exit_process(ngx_cycle_t *cycle)
+{
+    struct timespec ts;
+
+    if (clock_gettime( CLOCK_REALTIME,&ts ) < 0)
+        return;
+
+    //5s
+    ts.tv_sec  += 4;
+
+    (void) sem_timedwait(&sem, &ts);
+}
+
+
 static ngx_int_t
-ngx_ff_epoll_init(ngx_cycle_t *cycle)
+ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
     if (ep == -1) {
         ep = epoll_create(1);
@@ -413,6 +448,7 @@ ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
 
         if ((revents & EPOLLIN) && rev->active) {
             rev->ready = 1;
+            rev->available = 1;
             rev->handler(rev);
         }
 
@@ -531,6 +567,8 @@ ngx_ff_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd,
     rev->channel = 1;
     wev->channel = 1;
 
+    rev->belong_to_aeds = wev->belong_to_aeds = 1;
+
     ev = (event == NGX_READ_EVENT) ? rev : wev;
     ev->handler = handler;
 
@@ -634,21 +672,48 @@ ngx_ff_channel_thread_main(void *args)
     }
 
     for (;;) {
-        ngx_ff_process_channel_events(cycle);
+        ngx_ff_process_events_and_timers(cycle);
         if (thread_quit) {
             break;
         }
     }
+
+    ngx_aeds_cancel_timers();
 
     ngx_free(cta);
 
     return NULL;
 }
 
-static ngx_int_t
-ngx_ff_process_channel_events(ngx_cycle_t *cycle)
+static void
+ngx_ff_process_events_and_timers(ngx_cycle_t *cycle)
 {
-    return ngx_ff_epoll_process_events(cycle, 500, NGX_UPDATE_TIME);
+    ngx_uint_t  flags;
+    ngx_msec_t  timer, delta;
+
+    timer = ngx_aeds_find_timer();
+    flags = NGX_UPDATE_TIME;
+
+    /* handle signals from master in case of network inactivity */
+
+    if (timer == NGX_TIMER_INFINITE || timer > 500) {
+        timer = 500;
+    }
+
+    delta = ngx_current_msec;
+
+    (void) ngx_ff_epoll_process_events(cycle, timer, flags);
+
+    delta = ngx_current_msec - delta;
+
+    ngx_event_process_posted(cycle, &ngx_posted_accept_events_of_aeds);
+
+    if (delta) {
+        ngx_aeds_expire_timers();
+    }
+
+    ngx_event_process_posted(cycle, &ngx_posted_events_of_aeds);
+
 }
 
 ngx_int_t
@@ -680,5 +745,18 @@ ngx_ff_start_worker_channel(ngx_cycle_t *cycle, ngx_fd_t fd,
 
     return NGX_OK;
 }
+
+ngx_event_actions_t   ngx_event_actions_dy = {
+    ngx_ff_epoll_add_event,             /* add an event */
+    ngx_ff_epoll_del_event,             /* delete an event */
+    ngx_ff_epoll_add_event,             /* enable an event */
+    ngx_ff_epoll_add_event,             /* disable an event */
+    NULL,                               /* add an connection */
+    NULL,                               /* delete an connection */
+    NULL,                               /* trigger a notify */
+    ngx_ff_epoll_process_events,        /* process the events */
+    ngx_ff_epoll_init,                  /* init the events */
+    NULL,                               /* done the events */
+};
 
 #endif

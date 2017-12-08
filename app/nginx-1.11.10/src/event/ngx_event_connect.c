@@ -181,7 +181,11 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     c->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (ngx_add_conn(c) == NGX_ERROR) {
             goto failed;
         }
@@ -233,7 +237,11 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         }
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (rc == -1) {
 
             /* NGX_EINPROGRESS */

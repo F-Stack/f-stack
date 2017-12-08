@@ -4512,7 +4512,11 @@ ngx_tcp_connect(ngx_resolver_connection_t *rec)
 
     c->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (ngx_add_conn(c) == NGX_ERROR) {
             goto failed;
         }
@@ -4564,7 +4568,11 @@ ngx_tcp_connect(ngx_resolver_connection_t *rec)
         }
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions.add_conn) {
+#else
     if (ngx_add_conn) {
+#endif
         if (rc == -1) {
 
             /* NGX_EINPROGRESS */
