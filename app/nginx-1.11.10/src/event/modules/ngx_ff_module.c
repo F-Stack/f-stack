@@ -129,6 +129,31 @@ static int inited;
         real_##func;                                        \
     })
 
+extern intptr_t    ngx_max_sockets;
+
+/*-
+ * Make sockfd assigned by the fstack plus the value of maximum kernel socket. 
+ *  so we can tell them apart according to different scopes.
+ * Solve the condominium ownership at Application Layer and obtain more freedom.
+ * fstack tried to do this by 'fd_reserve', unfortunately, it doesn't work well.
+ */
+static inline int convert_ffd(int sockfd) {
+    return sockfd + ngx_max_sockets;
+}
+
+/* Restore socket fd. */
+static inline int restore_ffd(int sockfd) {
+    if(sockfd <= ngx_max_sockets) {
+        return sockfd;
+    }
+
+    return sockfd - ngx_max_sockets;
+}
+
+/* Tell whether a 'sockfd' belongs to fstack. */
+static inline int is_ffd(int sockfd) {
+    return sockfd >= ngx_max_sockets;
+}
 
 // proc_type, 1: primary, 0: secondary.
 int
@@ -151,8 +176,15 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
     }
 
     rc = ff_init(ff_argc, ff_argv);
-    if (rc == 0)
+    if (rc == 0) {
+        /* Ensure that the socket we converted does not exceed the maximum value of 'int' */
+        if(ngx_max_sockets + (unsigned)ff_getmaxfd() > INT_MAX)
+        {
+            rc = -1;
+        }
+
         inited = 1;
+    }
 
     for (i = 0; i < ff_argc; i++) {
         free(ff_argv[i]);
@@ -163,9 +195,23 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
     return rc;
 }
 
+/*-
+ * Verify whether the socket is supported by fstack or not.
+ */
+int
+fstack_territory(int domain, int type, int protocol)
+{
+     if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
+        return 0;
+     }
+
+     return 1;
+}
+
 int
 socket(int domain, int type, int protocol)
 {
+    int sock;
     if (unlikely(inited == 0)) {
         return SYSCALL(socket)(domain, type, protocol);
     }
@@ -174,249 +220,233 @@ socket(int domain, int type, int protocol)
         return SYSCALL(socket)(domain, type, protocol);
     }
 
-    return ff_socket(domain, type, protocol);
+    sock = ff_socket(domain, type, protocol);
+
+    if (sock != -1) {
+        sock = convert_ffd(sock);
+    }
+
+    return sock;
 }
 
 int
 bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(bind)(sockfd, addr, addrlen);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_bind(sockfd, (struct linux_sockaddr *)addr, addrlen);
-    } else {
-        return SYSCALL(bind)(sockfd, addr, addrlen);
     }
+    
+    return SYSCALL(bind)(sockfd, addr, addrlen);
 }
 
 int
 connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(connect)(sockfd, addr, addrlen);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_connect(sockfd, (struct linux_sockaddr *)addr, addrlen);
-    } else {
-        return SYSCALL(connect)(sockfd, addr, addrlen);
     }
+    
+    return SYSCALL(connect)(sockfd, addr, addrlen);
 }
 
 ssize_t
 send(int sockfd, const void *buf, size_t len, int flags)
 {
-    if (unlikely(inited == 0)) {
-         return SYSCALL(send)(sockfd, buf, len, flags);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_send(sockfd, buf, len, flags);
-    } else {
-        return SYSCALL(send)(sockfd, buf, len, flags);
     }
+    
+    return SYSCALL(send)(sockfd, buf, len, flags);
 }
 
 ssize_t
 sendto(int sockfd, const void *buf, size_t len, int flags,
     const struct sockaddr *dest_addr, socklen_t addrlen)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(sendto)(sockfd, buf, len, flags, dest_addr, addrlen);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_sendto(sockfd, buf, len, flags,
 	        (struct linux_sockaddr *)dest_addr, addrlen);
-    } else {
-        return SYSCALL(sendto)(sockfd, buf, len, flags, dest_addr, addrlen);
     }
+
+    return SYSCALL(sendto)(sockfd, buf, len, flags, dest_addr, addrlen);
 }
 
 ssize_t
 sendmsg(int sockfd, const struct msghdr *msg, int flags)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(sendmsg)(sockfd, msg, flags);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_sendmsg(sockfd, msg, flags);
-    } else {
-        return SYSCALL(sendmsg)(sockfd, msg, flags);
     }
+    
+    return SYSCALL(sendmsg)(sockfd, msg, flags);
 }
 
 ssize_t
 recv(int sockfd, void *buf, size_t len, int flags)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(recv)(sockfd, buf, len, flags);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_recv(sockfd, buf, len, flags);
-    } else {
-        return SYSCALL(recv)(sockfd, buf, len, flags);
     }
+    
+    return SYSCALL(recv)(sockfd, buf, len, flags);
 }
 
 int
 listen(int sockfd, int backlog)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(listen)(sockfd, backlog);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_listen(sockfd, backlog);
-    } else {
-        return SYSCALL(listen)(sockfd, backlog);
     }
+    
+    return SYSCALL(listen)(sockfd, backlog);
 }
 
 int
 getsockopt(int sockfd, int level, int optname,
     void *optval, socklen_t *optlen)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(getsockopt)(sockfd, level, optname, optval, optlen);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_getsockopt(sockfd, level, optname, optval, optlen);
-    } else {
-        return SYSCALL(getsockopt)(sockfd, level, optname, optval, optlen);
     }
+    
+    return SYSCALL(getsockopt)(sockfd, level, optname, optval, optlen);
 }
 
 int
 setsockopt (int sockfd, int level, int optname,
     const void *optval, socklen_t optlen)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(setsockopt)(sockfd, level, optname, optval, optlen);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_setsockopt(sockfd, level, optname, optval, optlen);
-    } else {
-        return SYSCALL(setsockopt)(sockfd, level, optname, optval, optlen);
     }
+    
+    return SYSCALL(setsockopt)(sockfd, level, optname, optval, optlen);
 }
 
 int
 accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(accept)(sockfd, addr, addrlen);
-    }
+    int rc;
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
+        rc = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
+        if (rc != -1) {
+            rc = convert_ffd(rc);
+        }
 
-    if (ff_fdisused(sockfd)) {
-        return ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
-    } else {
-        return SYSCALL(accept)(sockfd, addr, addrlen);
+        return rc;
     }
+    
+    return SYSCALL(accept)(sockfd, addr, addrlen);
 }
 
 int
 accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(accept4)(sockfd, addr, addrlen, flags);
-    }
+    int rc;
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
+        rc = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
+        if (rc != -1) {
+            rc = convert_ffd(rc);
+        }
 
-    if (ff_fdisused(sockfd)) {
-        return ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
-    } else {
-        return SYSCALL(accept4)(sockfd, addr, addrlen, flags);
+        return rc;
     }
+    
+    return SYSCALL(accept4)(sockfd, addr, addrlen, flags);
 }
 
 int
 close(int sockfd)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(close)(sockfd);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_close(sockfd);
-    } else {
-        return SYSCALL(close)(sockfd);
     }
+    
+    return SYSCALL(close)(sockfd);
 }
 
 ssize_t
 writev(int sockfd, const struct iovec *iov, int iovcnt)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(writev)(sockfd, iov, iovcnt);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_writev(sockfd, iov, iovcnt);
-    } else {
-        return SYSCALL(writev)(sockfd, iov, iovcnt);
     }
+    
+    return SYSCALL(writev)(sockfd, iov, iovcnt);
 }
 
 ssize_t
 readv(int sockfd, const struct iovec *iov, int iovcnt)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(readv)(sockfd, iov, iovcnt);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_readv(sockfd, iov, iovcnt);
-    } else {
-        return SYSCALL(readv)(sockfd, iov, iovcnt);
     }
+    
+    return SYSCALL(readv)(sockfd, iov, iovcnt);
 }
 
 ssize_t
 read(int sockfd, void *buf, size_t count)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(read)(sockfd, buf, count);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_read(sockfd, buf, count);
-    } else {
-        return SYSCALL(read)(sockfd, buf, count);
     }
+    
+    return SYSCALL(read)(sockfd, buf, count);
 }
 
 ssize_t
 write(int sockfd, const void *buf, size_t count)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(write)(sockfd, buf, count);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_write(sockfd, buf, count);
-    } else {
-        return SYSCALL(write)(sockfd, buf, count);
     }
+    
+    return SYSCALL(write)(sockfd, buf, count);
 }
 
 int
 ioctl(int sockfd, int request, void *p)
 {
-    if (unlikely(inited == 0)) {
-        return SYSCALL(ioctl)(sockfd, request, p);
-    }
-
-    if (ff_fdisused(sockfd)) {
+    if(is_ffd(sockfd)){
+        sockfd = restore_ffd(sockfd);
+        assert(ff_fdisused(sockfd));
         return ff_ioctl(sockfd, request, p);
-    } else {
-        return SYSCALL(ioctl)(sockfd, request, p);
     }
+    
+    return SYSCALL(ioctl)(sockfd, request, p);
 }
 
 int
@@ -429,6 +459,28 @@ int
 kevent(int kq, const struct kevent *changelist, int nchanges, 
     struct kevent *eventlist, int nevents, const struct timespec *timeout)
 {
+    struct kevent     *kev;
+    int                i = 0;
+    for(i = 0; i < nchanges; i++) {
+        kev = (struct kevent *)&changelist[i];
+        switch (kev->filter) {
+
+        case EVFILT_READ:
+        case EVFILT_WRITE:
+        case EVFILT_VNODE:
+            assert(is_ffd(kev->ident));
+            //assert(ff_fdisused(kev->ident));
+            kev->ident = restore_ffd(kev->ident);
+            break;
+        case EVFILT_AIO:
+        case EVFILT_PROC:
+        case EVFILT_SIGNAL:
+        case EVFILT_TIMER:
+        case EVFILT_USER:
+        default:
+            break;
+        }
+    }
     return ff_kevent(kq, changelist, nchanges, eventlist, nevents, timeout);
 }
 
@@ -441,4 +493,3 @@ gettimeofday(struct timeval *tv, struct timezone *tz)
 
     return ff_gettimeofday(tv, tz);
 }
-

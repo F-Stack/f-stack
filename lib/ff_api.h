@@ -117,6 +117,7 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 /* Tests if fd is used by F-Stack */
 extern int ff_fdisused(int fd);
 
+extern int ff_getmaxfd(void);
 
 /* route api begin */
 enum FF_ROUTE_CTL {

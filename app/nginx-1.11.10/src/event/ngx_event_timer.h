@@ -27,6 +27,9 @@ void ngx_event_cancel_timers(void);
 
 extern ngx_rbtree_t  ngx_event_timer_rbtree;
 
+#if (NGX_HAVE_FSTACK)
+extern ngx_rbtree_t  ngx_aeds_timer_rbtree;
+#endif
 
 static ngx_inline void
 ngx_event_del_timer(ngx_event_t *ev)
@@ -35,7 +38,19 @@ ngx_event_del_timer(ngx_event_t *ev)
                    "event timer del: %d: %M",
                     ngx_event_ident(ev->data), ev->timer.key);
 
+#if (NGX_HAVE_FSTACK)
+
+    if(ev->belong_to_aeds){
+        ngx_rbtree_delete(&ngx_aeds_timer_rbtree, &ev->timer);
+    } else {
+        ngx_rbtree_delete(&ngx_event_timer_rbtree, &ev->timer);
+    }
+
+#else
+
     ngx_rbtree_delete(&ngx_event_timer_rbtree, &ev->timer);
+
+#endif
 
 #if (NGX_DEBUG)
     ev->timer.left = NULL;
@@ -81,7 +96,19 @@ ngx_event_add_timer(ngx_event_t *ev, ngx_msec_t timer)
                    "event timer add: %d: %M:%M",
                     ngx_event_ident(ev->data), timer, ev->timer.key);
 
+#if (NGX_HAVE_FSTACK)
+
+    if(ev->belong_to_aeds){
+        ngx_rbtree_insert(&ngx_aeds_timer_rbtree, &ev->timer);
+    } else {
+        ngx_rbtree_insert(&ngx_event_timer_rbtree, &ev->timer);
+    }
+
+#else
+
     ngx_rbtree_insert(&ngx_event_timer_rbtree, &ev->timer);
+
+#endif
 
     ev->timer_set = 1;
 }

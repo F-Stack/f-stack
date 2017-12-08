@@ -293,6 +293,17 @@ static ngx_command_t  ngx_http_core_commands[] = {
       0,
       NULL },
 
+#if (NGX_HAVE_FSTACK)
+
+    { ngx_string("kernel_network_stack"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_core_srv_conf_t, kernel_network_stack),
+      NULL },
+
+#endif
+
     { ngx_string("types_hash_max_size"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
@@ -3444,6 +3455,7 @@ ngx_http_core_create_srv_conf(ngx_conf_t *cf)
     cscf->ignore_invalid_headers = NGX_CONF_UNSET;
     cscf->merge_slashes = NGX_CONF_UNSET;
     cscf->underscores_in_headers = NGX_CONF_UNSET;
+    cscf->kernel_network_stack = NGX_CONF_UNSET;
 
     return cscf;
 }
@@ -3486,6 +3498,12 @@ ngx_http_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_value(conf->underscores_in_headers,
                               prev->underscores_in_headers, 0);
+
+#if (NGX_HAVE_FSTACK)
+    /* By default, we set up a server on fstack */
+    ngx_conf_merge_value(conf->kernel_network_stack,
+                              prev->kernel_network_stack, 0);
+#endif
 
     if (conf->server_names.nelts == 0) {
         /* the array has 4 empty preallocated elements, so push cannot fail */

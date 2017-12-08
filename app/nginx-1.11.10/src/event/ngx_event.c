@@ -564,6 +564,11 @@ ngx_timer_signal_handler(int signo)
 
 #endif
 
+#if (NGX_HAVE_FSTACK)
+
+extern ngx_event_actions_t   ngx_event_actions_dy;
+
+#endif
 
 static ngx_int_t
 ngx_event_process_init(ngx_cycle_t *cycle)
@@ -602,6 +607,11 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     ngx_queue_init(&ngx_posted_accept_events);
     ngx_queue_init(&ngx_posted_events);
 
+#if (NGX_HAVE_FSTACK)
+    ngx_queue_init(&ngx_posted_accept_events_of_aeds);
+    ngx_queue_init(&ngx_posted_events_of_aeds);
+#endif
+
     if (ngx_event_timer_init(cycle->log) == NGX_ERROR) {
         return NGX_ERROR;
     }
@@ -624,6 +634,13 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
         break;
     }
+
+#if (NGX_HAVE_FSTACK)
+    if (ngx_event_actions_dy.init(cycle, ngx_timer_resolution) != NGX_OK) {
+        /* fatal */
+        exit(2);
+    }
+#endif
 
 #if !(NGX_WIN32)
 
@@ -663,8 +680,14 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
         cycle->files_n = (ngx_uint_t) rlmt.rlim_cur;
 
+#if (NGX_HAVE_FSTACK)
+        cycle->files = ngx_calloc(sizeof(ngx_connection_t *) * cycle->files_n * 2,
+                                  cycle->log);
+#else
         cycle->files = ngx_calloc(sizeof(ngx_connection_t *) * cycle->files_n,
                                   cycle->log);
+#endif
+
         if (cycle->files == NULL) {
             return NGX_ERROR;
         }
@@ -756,6 +779,12 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
         rev->log = c->log;
         rev->accept = 1;
+
+#if (NGX_HAVE_FSTACK)
+        /* Note when nginx running on fstack, 
+            make sure that add the right fd to kqueue !! */
+		c->read->belong_to_aeds = c->write->belong_to_aeds = ls[i].belong_to_aeds;
+#endif
 
 #if (NGX_HAVE_DEFERRED_ACCEPT)
         rev->deferred_accept = ls[i].deferred_accept;

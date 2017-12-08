@@ -4134,5 +4134,13 @@ ff_fdused_range(int max)
         fdalloc(td, 0, &result);
 }
 
+int
+ff_getmaxfd(void)
+{
+	struct thread *td = curthread;
+	return 	getmaxfd(td);
+	
+}
+
 #endif
 

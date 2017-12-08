@@ -13,6 +13,11 @@
 ngx_queue_t  ngx_posted_accept_events;
 ngx_queue_t  ngx_posted_events;
 
+#if (NGX_HAVE_FSTACK)
+ngx_queue_t  ngx_posted_accept_events_of_aeds;
+ngx_queue_t  ngx_posted_events_of_aeds;
+#endif
+
 
 void
 ngx_event_process_posted(ngx_cycle_t *cycle, ngx_queue_t *posted)
