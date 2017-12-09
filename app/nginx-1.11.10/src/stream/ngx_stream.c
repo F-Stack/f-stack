@@ -513,7 +513,7 @@ ngx_stream_optimize_servers(ngx_conf_t *cf, ngx_array_t *ports)
 #endif
 
 #if (NGX_HAVE_FSTACK)
-            ls->belong_to_aeds = cscf->kernel_network_stack;
+            ls->belong_to_host = cscf->kernel_network_stack;
 #endif
 
             stport = ngx_palloc(cf->pool, sizeof(ngx_stream_port_t));

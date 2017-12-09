@@ -88,7 +88,7 @@ struct ngx_listening_s {
 #endif
 
 #if (NGX_HAVE_FSTACK)
-    unsigned            belong_to_aeds:1;
+    unsigned            belong_to_host:1;
 #endif
 };
 
