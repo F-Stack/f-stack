@@ -14,8 +14,8 @@ ngx_rbtree_t              ngx_event_timer_rbtree;
 static ngx_rbtree_node_t  ngx_event_timer_sentinel;
 
 #if (NGX_HAVE_FSTACK)
-ngx_rbtree_t              ngx_aeds_timer_rbtree;
-static ngx_rbtree_node_t  ngx_aeds_timer_sentinel;
+ngx_rbtree_t              ngx_event_timer_rbtree_of_host;
+static ngx_rbtree_node_t  ngx_event_timer_sentinel_of_host;
 #endif
 
 /*
@@ -32,7 +32,7 @@ ngx_event_timer_init(ngx_log_t *log)
 
 #if (NGX_HAVE_FSTACK)
 
-    ngx_rbtree_init(&ngx_aeds_timer_rbtree, &ngx_aeds_timer_sentinel,
+    ngx_rbtree_init(&ngx_event_timer_rbtree_of_host, &ngx_event_timer_sentinel_of_host,
                     ngx_rbtree_insert_timer_value);
 
 #endif
@@ -53,9 +53,9 @@ ngx_event_find_timer(void)
 }
 
 ngx_msec_t
-ngx_aeds_find_timer(void)
+ngx_event_find_timer_of_host(void)
 {
-    return ngx_event_find_timer_internal(&ngx_aeds_timer_rbtree, &ngx_aeds_timer_sentinel);
+    return ngx_event_find_timer_internal(&ngx_event_timer_rbtree_of_host, &ngx_event_timer_sentinel_of_host);
 }
 
 ngx_msec_t
@@ -99,9 +99,9 @@ ngx_event_expire_timers(void)
 }
 
 void
-ngx_aeds_expire_timers(void)
+ngx_event_expire_timers_of_host(void)
 {
-    ngx_event_expire_timers_internal(&ngx_aeds_timer_rbtree);
+    ngx_event_expire_timers_internal(&ngx_event_timer_rbtree_of_host);
 }
 
 void
@@ -168,9 +168,9 @@ ngx_event_cancel_timers(void)
 }
 
 void
-ngx_aeds_cancel_timers(void)
+ngx_event_cancel_timers_of_host(void)
 {
-    ngx_event_cancel_timers_internal(&ngx_aeds_timer_rbtree);
+    ngx_event_cancel_timers_internal(&ngx_event_timer_rbtree_of_host);
 }
 
 void

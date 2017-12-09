@@ -28,7 +28,7 @@ void ngx_event_cancel_timers(void);
 extern ngx_rbtree_t  ngx_event_timer_rbtree;
 
 #if (NGX_HAVE_FSTACK)
-extern ngx_rbtree_t  ngx_aeds_timer_rbtree;
+extern ngx_rbtree_t  ngx_event_timer_rbtree_of_host;
 #endif
 
 static ngx_inline void
@@ -41,7 +41,7 @@ ngx_event_del_timer(ngx_event_t *ev)
 #if (NGX_HAVE_FSTACK)
 
     if(ev->belong_to_host){
-        ngx_rbtree_delete(&ngx_aeds_timer_rbtree, &ev->timer);
+        ngx_rbtree_delete(&ngx_event_timer_rbtree_of_host, &ev->timer);
     } else {
         ngx_rbtree_delete(&ngx_event_timer_rbtree, &ev->timer);
     }
@@ -99,7 +99,7 @@ ngx_event_add_timer(ngx_event_t *ev, ngx_msec_t timer)
 #if (NGX_HAVE_FSTACK)
 
     if(ev->belong_to_host){
-        ngx_rbtree_insert(&ngx_aeds_timer_rbtree, &ev->timer);
+        ngx_rbtree_insert(&ngx_event_timer_rbtree_of_host, &ev->timer);
     } else {
         ngx_rbtree_insert(&ngx_event_timer_rbtree, &ev->timer);
     }

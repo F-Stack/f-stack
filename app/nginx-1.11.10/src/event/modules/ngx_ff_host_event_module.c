@@ -56,10 +56,10 @@ static void ngx_ff_process_events_and_timers(ngx_cycle_t *cycle);
 ngx_int_t ngx_ff_start_worker_channel(ngx_cycle_t *cycle,
     ngx_fd_t fd, ngx_int_t event);
     
-void ngx_aeds_cancel_timers(void);
-void ngx_aeds_expire_timers(void);
-ngx_msec_t ngx_aeds_find_timer(void);
-void ngx_aeds_cancel_timers(void);
+void ngx_event_cancel_timers_of_host(void);
+void ngx_event_expire_timers_of_host(void);
+ngx_msec_t ngx_event_find_timer_of_host(void);
+void ngx_event_cancel_timers_of_host(void);
 
 struct channel_thread_args {
     ngx_cycle_t *cycle;
@@ -678,7 +678,7 @@ ngx_ff_host_event_thread_main(void *args)
         }
     }
 
-    ngx_aeds_cancel_timers();
+    ngx_event_cancel_timers_of_host();
 
     ngx_free(cta);
 
@@ -691,7 +691,7 @@ ngx_ff_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_uint_t  flags;
     ngx_msec_t  timer, delta;
 
-    timer = ngx_aeds_find_timer();
+    timer = ngx_event_find_timer_of_host();
     flags = NGX_UPDATE_TIME;
 
     /* handle signals from master in case of network inactivity */
@@ -706,13 +706,13 @@ ngx_ff_process_events_and_timers(ngx_cycle_t *cycle)
 
     delta = ngx_current_msec - delta;
 
-    ngx_event_process_posted(cycle, &ngx_posted_accept_events_of_aeds);
+    ngx_event_process_posted(cycle, &ngx_posted_accept_events_of_host);
 
     if (delta) {
-        ngx_aeds_expire_timers();
+        ngx_event_expire_timers_of_host();
     }
 
-    ngx_event_process_posted(cycle, &ngx_posted_events_of_aeds);
+    ngx_event_process_posted(cycle, &ngx_posted_events_of_host);
 
 }
 

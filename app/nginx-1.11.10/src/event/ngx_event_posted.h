@@ -22,10 +22,10 @@
         if (1 == (ev)->belong_to_host) {                                      \
             if (q == &ngx_posted_events) {                                    \
                 ngx_queue_insert_tail(                                        \
-                    &ngx_posted_events_of_aeds, &(ev)->queue);                \
+                    &ngx_posted_events_of_host, &(ev)->queue);                \
             } else if (q == &ngx_posted_accept_events) {                      \
                 ngx_queue_insert_tail(                                        \
-                    &ngx_posted_accept_events_of_aeds, &(ev)->queue);         \
+                    &ngx_posted_accept_events_of_host, &(ev)->queue);         \
             } else {                                                          \
                 ngx_log_error(NGX_LOG_EMERG, (ev)->log, 0,                    \
                           "ngx_post_event: unkowned posted queue");           \
@@ -74,8 +74,8 @@ extern ngx_queue_t  ngx_posted_accept_events;
 extern ngx_queue_t  ngx_posted_events;
 
 #if (NGX_HAVE_FSTACK)
-extern ngx_queue_t  ngx_posted_accept_events_of_aeds;
-extern ngx_queue_t  ngx_posted_events_of_aeds;
+extern ngx_queue_t  ngx_posted_accept_events_of_host;
+extern ngx_queue_t  ngx_posted_events_of_host;
 #endif
 
 #endif /* _NGX_EVENT_POSTED_H_INCLUDED_ */
