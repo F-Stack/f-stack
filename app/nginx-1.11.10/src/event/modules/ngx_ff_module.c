@@ -137,12 +137,12 @@ extern intptr_t    ngx_max_sockets;
  * Solve the condominium ownership at Application Layer and obtain more freedom.
  * fstack tried to do this by 'fd_reserve', unfortunately, it doesn't work well.
  */
-static inline int convert_ffd(int sockfd) {
+static inline int convert_fstack_fd(int sockfd) {
     return sockfd + ngx_max_sockets;
 }
 
 /* Restore socket fd. */
-static inline int restore_ffd(int sockfd) {
+static inline int restore_fstack_fd(int sockfd) {
     if(sockfd <= ngx_max_sockets) {
         return sockfd;
     }
@@ -151,7 +151,7 @@ static inline int restore_ffd(int sockfd) {
 }
 
 /* Tell whether a 'sockfd' belongs to fstack. */
-static inline int is_ffd(int sockfd) {
+static inline int is_fstack_fd(int sockfd) {
     return sockfd >= ngx_max_sockets;
 }
 
@@ -177,7 +177,9 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 
     rc = ff_init(ff_argc, ff_argv);
     if (rc == 0) {
-        /* Ensure that the socket we converted does not exceed the maximum value of 'int' */
+        /* Ensure that the socket we converted
+                does not exceed the maximum value of 'int' */
+                
         if(ngx_max_sockets + (unsigned)ff_getmaxfd() > INT_MAX)
         {
             rc = -1;
@@ -223,7 +225,7 @@ socket(int domain, int type, int protocol)
     sock = ff_socket(domain, type, protocol);
 
     if (sock != -1) {
-        sock = convert_ffd(sock);
+        sock = convert_fstack_fd(sock);
     }
 
     return sock;
@@ -232,9 +234,8 @@ socket(int domain, int type, int protocol)
 int
 bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_bind(sockfd, (struct linux_sockaddr *)addr, addrlen);
     }
     
@@ -244,9 +245,8 @@ bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 int
 connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_connect(sockfd, (struct linux_sockaddr *)addr, addrlen);
     }
     
@@ -256,9 +256,8 @@ connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 ssize_t
 send(int sockfd, const void *buf, size_t len, int flags)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_send(sockfd, buf, len, flags);
     }
     
@@ -269,9 +268,8 @@ ssize_t
 sendto(int sockfd, const void *buf, size_t len, int flags,
     const struct sockaddr *dest_addr, socklen_t addrlen)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_sendto(sockfd, buf, len, flags,
 	        (struct linux_sockaddr *)dest_addr, addrlen);
     }
@@ -282,9 +280,8 @@ sendto(int sockfd, const void *buf, size_t len, int flags,
 ssize_t
 sendmsg(int sockfd, const struct msghdr *msg, int flags)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_sendmsg(sockfd, msg, flags);
     }
     
@@ -294,9 +291,8 @@ sendmsg(int sockfd, const struct msghdr *msg, int flags)
 ssize_t
 recv(int sockfd, void *buf, size_t len, int flags)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_recv(sockfd, buf, len, flags);
     }
     
@@ -306,9 +302,8 @@ recv(int sockfd, void *buf, size_t len, int flags)
 int
 listen(int sockfd, int backlog)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_listen(sockfd, backlog);
     }
     
@@ -319,9 +314,8 @@ int
 getsockopt(int sockfd, int level, int optname,
     void *optval, socklen_t *optlen)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_getsockopt(sockfd, level, optname, optval, optlen);
     }
     
@@ -332,9 +326,8 @@ int
 setsockopt (int sockfd, int level, int optname,
     const void *optval, socklen_t optlen)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_setsockopt(sockfd, level, optname, optval, optlen);
     }
     
@@ -345,12 +338,11 @@ int
 accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 {
     int rc;
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         rc = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
         if (rc != -1) {
-            rc = convert_ffd(rc);
+            rc = convert_fstack_fd(rc);
         }
 
         return rc;
@@ -363,12 +355,11 @@ int
 accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 {
     int rc;
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         rc = ff_accept(sockfd, (struct linux_sockaddr *)addr, addrlen);
         if (rc != -1) {
-            rc = convert_ffd(rc);
+            rc = convert_fstack_fd(rc);
         }
 
         return rc;
@@ -380,9 +371,8 @@ accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 int
 close(int sockfd)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_close(sockfd);
     }
     
@@ -392,9 +382,8 @@ close(int sockfd)
 ssize_t
 writev(int sockfd, const struct iovec *iov, int iovcnt)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_writev(sockfd, iov, iovcnt);
     }
     
@@ -404,9 +393,8 @@ writev(int sockfd, const struct iovec *iov, int iovcnt)
 ssize_t
 readv(int sockfd, const struct iovec *iov, int iovcnt)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_readv(sockfd, iov, iovcnt);
     }
     
@@ -416,9 +404,8 @@ readv(int sockfd, const struct iovec *iov, int iovcnt)
 ssize_t
 read(int sockfd, void *buf, size_t count)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_read(sockfd, buf, count);
     }
     
@@ -428,9 +415,8 @@ read(int sockfd, void *buf, size_t count)
 ssize_t
 write(int sockfd, const void *buf, size_t count)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_write(sockfd, buf, count);
     }
     
@@ -440,9 +426,8 @@ write(int sockfd, const void *buf, size_t count)
 int
 ioctl(int sockfd, int request, void *p)
 {
-    if(is_ffd(sockfd)){
-        sockfd = restore_ffd(sockfd);
-        assert(ff_fdisused(sockfd));
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
         return ff_ioctl(sockfd, request, p);
     }
     
@@ -468,9 +453,7 @@ kevent(int kq, const struct kevent *changelist, int nchanges,
         case EVFILT_READ:
         case EVFILT_WRITE:
         case EVFILT_VNODE:
-            assert(is_ffd(kev->ident));
-            //assert(ff_fdisused(kev->ident));
-            kev->ident = restore_ffd(kev->ident);
+            kev->ident = restore_fstack_fd(kev->ident);
             break;
         case EVFILT_AIO:
         case EVFILT_PROC:
