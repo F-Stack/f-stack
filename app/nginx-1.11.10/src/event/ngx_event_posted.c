@@ -14,8 +14,8 @@ ngx_queue_t  ngx_posted_accept_events;
 ngx_queue_t  ngx_posted_events;
 
 #if (NGX_HAVE_FSTACK)
-ngx_queue_t  ngx_posted_accept_events_of_aeds;
-ngx_queue_t  ngx_posted_events_of_aeds;
+ngx_queue_t  ngx_posted_accept_events_of_host;
+ngx_queue_t  ngx_posted_events_of_host;
 #endif
 
 

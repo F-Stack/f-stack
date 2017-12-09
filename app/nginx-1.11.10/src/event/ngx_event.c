@@ -608,8 +608,8 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     ngx_queue_init(&ngx_posted_events);
 
 #if (NGX_HAVE_FSTACK)
-    ngx_queue_init(&ngx_posted_accept_events_of_aeds);
-    ngx_queue_init(&ngx_posted_events_of_aeds);
+    ngx_queue_init(&ngx_posted_accept_events_of_host);
+    ngx_queue_init(&ngx_posted_events_of_host);
 #endif
 
     if (ngx_event_timer_init(cycle->log) == NGX_ERROR) {
