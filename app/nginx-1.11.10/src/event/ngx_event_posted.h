@@ -19,7 +19,7 @@
                                                                               \
     if (!(ev)->posted) {                                                      \
         (ev)->posted = 1;                                                     \
-        if (1 == (ev)->belong_to_aeds) {                                      \
+        if (1 == (ev)->belong_to_host) {                                      \
             if (q == &ngx_posted_events) {                                    \
                 ngx_queue_insert_tail(                                        \
                     &ngx_posted_events_of_aeds, &(ev)->queue);                \

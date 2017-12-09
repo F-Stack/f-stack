@@ -783,7 +783,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 #if (NGX_HAVE_FSTACK)
         /* Note when nginx running on fstack, 
             make sure that add the right fd to kqueue !! */
-		c->read->belong_to_aeds = c->write->belong_to_aeds = ls[i].belong_to_aeds;
+		c->read->belong_to_host = c->write->belong_to_host = ls[i].belong_to_host;
 #endif
 
 #if (NGX_HAVE_DEFERRED_ACCEPT)

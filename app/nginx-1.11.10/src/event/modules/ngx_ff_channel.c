@@ -567,7 +567,7 @@ ngx_ff_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd,
     rev->channel = 1;
     wev->channel = 1;
 
-    rev->belong_to_aeds = wev->belong_to_aeds = 1;
+    rev->belong_to_host = wev->belong_to_host = 1;
 
     ev = (event == NGX_READ_EVENT) ? rev : wev;
     ev->handler = handler;

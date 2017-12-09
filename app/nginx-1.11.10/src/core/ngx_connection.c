@@ -413,7 +413,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
             if (ngx_process <= NGX_PROCESS_MASTER) {
 
                 /* process master,  kernel network stack*/
-                if (!ls[i].belong_to_aeds) {
+                if (!ls[i].belong_to_host) {
                     /* We should continue to process the listening socket, 
                         if it is not supported by fstack.*/
                     if (fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) {
@@ -422,7 +422,7 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 }
             } else if (NGX_PROCESS_WORKER == ngx_process) {
                 /* process worker, fstack */
-                if (ls[i].belong_to_aeds) {
+                if (ls[i].belong_to_host) {
                     continue;
                 }
 

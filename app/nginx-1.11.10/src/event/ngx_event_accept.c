@@ -231,7 +231,7 @@ ngx_event_accept(ngx_event_t *ev)
         wev = c->write;
 
 #if (NGX_HAVE_FSTACK)
-        rev->belong_to_aeds = wev->belong_to_aeds = ev->belong_to_aeds;
+        rev->belong_to_host = wev->belong_to_host = ev->belong_to_host;
 #endif
 
         wev->ready = 1;
