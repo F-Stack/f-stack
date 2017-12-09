@@ -203,7 +203,7 @@ extern ngx_event_actions_t   ngx_event_actions;
 extern ngx_uint_t            ngx_use_epoll_rdhup;
 #endif
 #if (NGX_HAVE_FSTACK)
-extern ngx_event_actions_t   ngx_event_actions_dy;
+extern ngx_event_actions_t   ngx_ff_host_event_actions;
 #endif
 
 /*
@@ -418,7 +418,7 @@ extern ngx_event_actions_t   ngx_event_actions_dy;
     static inline ngx_int_t
     ngx_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags) {
         if (1 == ev->belong_to_host) {
-            return ngx_event_actions_dy.add(ev, event, flags);
+            return ngx_ff_host_event_actions.add(ev, event, flags);
         } else {
             return ngx_event_actions.add(ev, event, flags);
         }
@@ -427,7 +427,7 @@ extern ngx_event_actions_t   ngx_event_actions_dy;
     static inline ngx_int_t
     ngx_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags) {
         if (1 == ev->belong_to_host) {
-            return ngx_event_actions_dy.del(ev, event, flags);
+            return ngx_ff_host_event_actions.del(ev, event, flags);
         } else {
             return ngx_event_actions.del(ev, event, flags);
         }

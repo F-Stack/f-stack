@@ -746,7 +746,7 @@ ngx_ff_start_worker_channel(ngx_cycle_t *cycle, ngx_fd_t fd,
     return NGX_OK;
 }
 
-ngx_event_actions_t   ngx_event_actions_dy = {
+ngx_event_actions_t   ngx_ff_host_event_actions = {
     ngx_ff_epoll_add_event,             /* add an event */
     ngx_ff_epoll_del_event,             /* delete an event */
     ngx_ff_epoll_add_event,             /* enable an event */

@@ -566,7 +566,7 @@ ngx_timer_signal_handler(int signo)
 
 #if (NGX_HAVE_FSTACK)
 
-extern ngx_event_actions_t   ngx_event_actions_dy;
+extern ngx_event_actions_t   ngx_ff_host_event_actions;
 
 #endif
 
@@ -636,7 +636,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     }
 
 #if (NGX_HAVE_FSTACK)
-    if (ngx_event_actions_dy.init(cycle, ngx_timer_resolution) != NGX_OK) {
+    if (ngx_ff_host_event_actions.init(cycle, ngx_timer_resolution) != NGX_OK) {
         /* fatal */
         exit(2);
     }
