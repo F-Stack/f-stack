@@ -33,11 +33,11 @@
 #include <pthread.h>
 
 #if (NGX_HAVE_FSTACK)
-static void * ngx_ff_channel_create_conf(ngx_cycle_t *cycle);
-static char * ngx_ff_channel_init_conf(ngx_cycle_t *cycle,
+static void * ngx_ff_host_event_create_conf(ngx_cycle_t *cycle);
+static char * ngx_ff_host_event_init_conf(ngx_cycle_t *cycle,
     void *conf);
-static ngx_int_t ngx_ff_channel_init_process(ngx_cycle_t *cycle);
-static void ngx_ff_channel_exit_process(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_host_event_init_process(ngx_cycle_t *cycle);
+static void ngx_ff_host_event_exit_process(ngx_cycle_t *cycle);
 static ngx_int_t ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer);
 static ngx_int_t ngx_ff_epoll_add_event(ngx_event_t *ev,
     ngx_int_t event, ngx_uint_t flags);
@@ -48,7 +48,7 @@ static ngx_int_t ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
 static ngx_int_t ngx_ff_create_connection(ngx_cycle_t *cycle);
 static void ngx_ff_delete_connection();
 static void ngx_ff_worker_channel_handler(ngx_event_t *ev);
-static void *ngx_ff_channel_thread_main(void *args);
+static void *ngx_ff_host_event_thread_main(void *args);
 static ngx_int_t ngx_ff_add_channel_event(ngx_cycle_t *cycle,
     ngx_fd_t fd, ngx_int_t event, ngx_event_handler_pt handler);
 static void ngx_ff_process_events_and_timers(ngx_cycle_t *cycle);
@@ -81,39 +81,39 @@ static sem_t sem;
 
 typedef struct {
     ngx_uint_t  events;
-} ngx_ff_channel_conf_t;
+} ngx_ff_host_event_conf_t;
 
 
-static ngx_command_t  ngx_ff_channel_commands[] = {
+static ngx_command_t  ngx_ff_host_event_commands[] = {
     ngx_null_command
 };
 
-ngx_core_module_t  ngx_ff_channel_module_ctx = {
-    ngx_string("ff_channel"),
-    ngx_ff_channel_create_conf,          /* create configuration */
-    ngx_ff_channel_init_conf,            /* init configuration */
+ngx_core_module_t  ngx_ff_host_event_module_ctx = {
+    ngx_string("ff_host_event"),
+    ngx_ff_host_event_create_conf,          /* create configuration */
+    ngx_ff_host_event_init_conf,            /* init configuration */
 };
 
-ngx_module_t  ngx_ff_channel_module = {
+ngx_module_t  ngx_ff_host_event_module = {
     NGX_MODULE_V1,
-    &ngx_ff_channel_module_ctx,          /* module context */
-    ngx_ff_channel_commands,             /* module directives */
+    &ngx_ff_host_event_module_ctx,          /* module context */
+    ngx_ff_host_event_commands,             /* module directives */
     NGX_CORE_MODULE,                     /* module type */
     NULL,                                /* init master */
     NULL,                                /* init module */
-    ngx_ff_channel_init_process,         /* init process */
+    ngx_ff_host_event_init_process,         /* init process */
     NULL,                                /* init thread */
     NULL,                                /* exit thread */
-    ngx_ff_channel_exit_process,         /* exit process */
+    ngx_ff_host_event_exit_process,         /* exit process */
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
 
 static void *
-ngx_ff_channel_create_conf(ngx_cycle_t *cycle)
+ngx_ff_host_event_create_conf(ngx_cycle_t *cycle)
 {
-    ngx_ff_channel_conf_t  *cf;
-    cf = ngx_palloc(cycle->pool, sizeof(ngx_ff_channel_conf_t));
+    ngx_ff_host_event_conf_t  *cf;
+    cf = ngx_palloc(cycle->pool, sizeof(ngx_ff_host_event_conf_t));
     if (cf == NULL) {
         return NULL;    
     }
@@ -122,15 +122,15 @@ ngx_ff_channel_create_conf(ngx_cycle_t *cycle)
 }
 
 static char *
-ngx_ff_channel_init_conf(ngx_cycle_t *cycle, void *conf)
+ngx_ff_host_event_init_conf(ngx_cycle_t *cycle, void *conf)
 {   
-    ngx_ff_channel_conf_t *cf = conf;
+    ngx_ff_host_event_conf_t *cf = conf;
     cf->events = 1;
     return NGX_CONF_OK;
 }
 
 
-static ngx_int_t ngx_ff_channel_init_process(ngx_cycle_t *cycle)
+static ngx_int_t ngx_ff_host_event_init_process(ngx_cycle_t *cycle)
 {
     if (sem_init(&sem, 0, 0) != 0)  
     {  
@@ -140,7 +140,7 @@ static ngx_int_t ngx_ff_channel_init_process(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
-static void ngx_ff_channel_exit_process(ngx_cycle_t *cycle)
+static void ngx_ff_host_event_exit_process(ngx_cycle_t *cycle)
 {
     struct timespec ts;
 
@@ -661,7 +661,7 @@ ngx_ff_worker_channel_handler(ngx_event_t *ev)
 }
 
 static void *
-ngx_ff_channel_thread_main(void *args)
+ngx_ff_host_event_thread_main(void *args)
 {
     struct channel_thread_args *cta = args;
     ngx_cycle_t *cycle = cta->cycle;
@@ -734,7 +734,7 @@ ngx_ff_start_worker_channel(ngx_cycle_t *cycle, ngx_fd_t fd,
     cta->handler = ngx_ff_worker_channel_handler;
 
     ret = pthread_create(&channel_thread, NULL,
-			ngx_ff_channel_thread_main, (void *)cta);
+			ngx_ff_host_event_thread_main, (void *)cta);
     if (ret != 0) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                       "pthread_create() failed");
