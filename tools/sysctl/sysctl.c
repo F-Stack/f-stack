@@ -241,7 +241,9 @@ main(int argc, char **argv)
 	int ch;
 	int warncount = 0;
 
+#ifdef FSTACK
 	ff_ipc_init();
+#endif
 
 	setlocale(LC_NUMERIC, "");
 	setbuf(stdout,0);

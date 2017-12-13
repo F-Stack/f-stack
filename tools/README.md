@@ -198,6 +198,20 @@ Note [dummynet](https://www.freebsd.org/cgi/man.cgi?query=dummynet) is not suppo
 
 For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?ipfw) or [handbook](https://www.freebsd.org/doc/handbook/firewalls-ipfw.html).
 
+# arp
+Usage
+```
+usage: arp -p <f-stack proc_id> [-n] [-i interface] hostname
+       arp -p <f-stack proc_id> [-n] [-i interface] -a
+       arp -p <f-stack proc_id> -d hostname [pub]
+       arp -p <f-stack proc_id> -d [-i interface] -a
+       arp -p <f-stack proc_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]
+       arp -p <f-stack proc_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]
+       arp -p <f-stack proc_id> -f filename
+```
+
+For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?arp).
+
 # how to implement a custom tool for communicating with F-Stack process
 
 Add a new FF_MSG_TYPE in ff_msg.h:

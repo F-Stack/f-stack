@@ -74,104 +74,13 @@ __FBSDID("$FreeBSD$");
 #include <ifaddrs.h>
 
 #ifdef FSTACK
+#include "rtioctl.h"
 #include "compat.h"
 #include "ff_ipc.h"
 
-static int shutdown_rd;
-static int sofib;
-
-static int
-fake_socket(int domain, int type, int protocol)
-{
-	return 0;
-}
-
-static int
-fake_shutdown(int fd, int how)
-{
-	if (how == SHUT_RD) {
-		shutdown_rd = 1;
-	}
-	return 0;
-}
-
-static int
-fake_setsockopt(int sockfd, int level, int optname,
-	const void *optval, socklen_t optlen)
-{
-	return 0;
-}
-
-static int
-rtioctl(char *data, unsigned len, unsigned read_len)
-{
-	struct ff_msg *msg, *retmsg = NULL;
-	unsigned maxlen;
-
-	msg = ff_ipc_msg_alloc();
-	if (msg == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-
-	if (len > msg->buf_len) {
-		errno = EINVAL;
-		ff_ipc_msg_free(msg);
-		return -1;
-	}
-
-	if (read_len > msg->buf_len) {
-		read_len = msg->buf_len;
-	}
-
-	maxlen = read_len ? read_len : len;
-
-	msg->msg_type = FF_ROUTE;
-	msg->route.fib = sofib;
-	msg->route.len = len;
-	msg->route.maxlen = maxlen;
-	msg->route.data = msg->buf_addr;
-	memcpy(msg->route.data, data, len);
-	msg->buf_addr += len;
-
-	int ret = ff_ipc_send(msg);
-	if (ret < 0) {
-		errno = EPIPE;
-		ff_ipc_msg_free(msg);
-		return -1;
-	}
-
-	do {
-		if (retmsg != NULL) {
-			ff_ipc_msg_free(retmsg);
-		}
-		ret = ff_ipc_recv(&retmsg);
-		if (ret < 0) {
-			errno = EPIPE;
-			ff_ipc_msg_free(msg);
-			return -1;
-		}
-	} while (msg != retmsg);
-
-	if (retmsg->result == 0) {
-		ret = retmsg->route.len;
-
-		if (!shutdown_rd && read_len > 0) {
-			memcpy(data, retmsg->route.data, retmsg->route.len);
-		}
-	} else {
-		ret = -1;
-		errno = retmsg->result;
-	}
-
-	ff_ipc_msg_free(msg);
-
-	return ret;
-}
-
-#define socket(a, b, c) fake_socket((a), (b), (c))
-#define shutdown(a, b) fake_shutdown((a), (b))
-#define setsockopt(a, b, c, d, e) fake_setsockopt((a), (b), (c), (d), (e))
+#define socket(a, b, c) rt_socket((a), (b), (c))
+#define shutdown(a, b) rt_shutdown((a), (b))
+#define setsockopt(a, b, c, d, e) rt_setsockopt((a), (b), (c), (d), (e))
 
 #define write(a, b, c) rtioctl((b), (c), (0))
 
@@ -281,11 +190,10 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(NULL);
 
-	ff_ipc_init();
-
 #ifndef FSTACK
 	while ((ch = getopt(argc, argv, "46nqdtv")) != -1)
 #else
+	ff_ipc_init();
 	while ((ch = getopt(argc, argv, "46nqdtvp:")) != -1)
 #endif
 		switch(ch) {
@@ -389,7 +297,8 @@ set_sofib(int fib)
 	if (fib < 0)
 		return (0);
 #ifdef FSTACK
-	sofib = fib;
+	return (rt_setsockopt(s, SOL_SOCKET, SO_SETFIB, (void *)&fib,
+		sizeof(fib)));
 #endif
 	return (setsockopt(s, SOL_SOCKET, SO_SETFIB, (void *)&fib,
 		sizeof(fib)));

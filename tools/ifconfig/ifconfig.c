@@ -426,7 +426,9 @@ main(int argc, char *argv[])
 	struct option *p;
 	size_t iflen;
 
+#ifdef FSTACK
 	ff_ipc_init();
+#endif
 
 	all = downonly = uponly = namesonly = noload = verbose = 0;
 	f_inet = f_inet6 = f_ether = f_addr = NULL;

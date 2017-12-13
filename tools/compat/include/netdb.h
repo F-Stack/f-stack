@@ -93,7 +93,16 @@ typedef	__uint32_t	uint32_t;
 #define	_PATH_SERVICES	"/etc/services"
 #define	_PATH_SERVICES_DB "/var/db/services.db"
 
+#ifndef FSTACK
 #define	h_errno (*__h_errno())
+#else
+/* Error status for non-reentrant lookup functions.
+   We use a macro to access always the thread-specific `h_errno' variable.  */
+# define h_errno (*__h_errno_location ())
+
+/* Function to get address of global `h_errno' variable.  */
+extern int *__h_errno_location (void) __THROW __attribute__ ((__const__));
+#endif
 
 /*
  * Structures returned by network data base library.  All addresses are
@@ -250,5 +259,8 @@ struct hostent *gethostbyaddr(const void *addr,
     socklen_t len, int type);
 
 struct hostent *gethostbyname2(const char *name, int af);
+struct hostent *gethostbyname(const char *name);
+
+const char *hstrerror(int err);
 
 #endif /* !_NETDB_H_ */

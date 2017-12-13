@@ -646,7 +646,9 @@ main(int ac, char *av[])
 	 * If the last argument is an absolute pathname, interpret it
 	 * as a file to be preprocessed.
 	 */
+#ifdef FSTACK
 	ff_ipc_init();
+#endif
 	if (ac > 1 && av[ac - 1][0] == '/') {
 		if (access(av[ac - 1], R_OK) == 0)
 			ipfw_readfile(ac, av);
