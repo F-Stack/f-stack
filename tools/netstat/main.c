@@ -247,7 +247,9 @@ main(int argc, char *argv[])
 	char *endptr;
 	bool first = true;
 
+#ifdef FSTACK
 	ff_ipc_init();
+#endif
 
 	af = AF_UNSPEC;
 
