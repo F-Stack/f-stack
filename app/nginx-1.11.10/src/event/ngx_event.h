@@ -415,55 +415,55 @@ extern ngx_event_actions_t   ngx_ff_host_event_actions;
 
 #if (NGX_HAVE_FSTACK)
 
-    static inline ngx_int_t
-    ngx_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags) {
-        if (1 == ev->belong_to_host) {
-            return ngx_ff_host_event_actions.add(ev, event, flags);
-        } else {
-            return ngx_event_actions.add(ev, event, flags);
-        }
+static inline ngx_int_t
+ngx_add_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags) {
+    if (1 == ev->belong_to_host) {
+        return ngx_ff_host_event_actions.add(ev, event, flags);
+    } else {
+        return ngx_event_actions.add(ev, event, flags);
     }
+}
 
-    static inline ngx_int_t
-    ngx_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags) {
-        if (1 == ev->belong_to_host) {
-            return ngx_ff_host_event_actions.del(ev, event, flags);
-        } else {
-            return ngx_event_actions.del(ev, event, flags);
-        }
+static inline ngx_int_t
+ngx_del_event(ngx_event_t *ev, ngx_int_t event, ngx_uint_t flags) {
+    if (1 == ev->belong_to_host) {
+        return ngx_ff_host_event_actions.del(ev, event, flags);
+    } else {
+        return ngx_event_actions.del(ev, event, flags);
     }
+}
 
-    static inline ngx_int_t ngx_add_conn(ngx_connection_t *c)
-    {
-        return ngx_event_actions.add_conn(c);
-    }
+static inline ngx_int_t ngx_add_conn(ngx_connection_t *c)
+{
+    return ngx_event_actions.add_conn(c);
+}
 
-    static inline ngx_int_t ngx_del_conn(
-        ngx_connection_t *c, ngx_uint_t flags) {
-        return ngx_event_actions.del_conn(c, flags);
-    }
+static inline ngx_int_t ngx_del_conn(
+    ngx_connection_t *c, ngx_uint_t flags) {
+    return ngx_event_actions.del_conn(c, flags);
+}
 
-    static inline ngx_int_t ngx_notify(ngx_event_handler_pt handler) {
-        return ngx_event_actions.notify(handler);
-    }
+static inline ngx_int_t ngx_notify(ngx_event_handler_pt handler) {
+    return ngx_event_actions.notify(handler);
+}
 
-    static inline ngx_int_t ngx_process_events(
-        ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
-    {
-        return ngx_event_actions.process_events(cycle, timer, flags);
-    }
+static inline ngx_int_t ngx_process_events(
+    ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
+{
+    return ngx_event_actions.process_events(cycle, timer, flags);
+}
 
 #else
 
-    #define ngx_process_events   ngx_event_actions.process_events
-    #define ngx_done_events      ngx_event_actions.done
+#define ngx_process_events   ngx_event_actions.process_events
+#define ngx_done_events      ngx_event_actions.done
 
-    #define ngx_add_event        ngx_event_actions.add
-    #define ngx_del_event        ngx_event_actions.del
-    #define ngx_add_conn         ngx_event_actions.add_conn
-    #define ngx_del_conn         ngx_event_actions.del_conn
+#define ngx_add_event        ngx_event_actions.add
+#define ngx_del_event        ngx_event_actions.del
+#define ngx_add_conn         ngx_event_actions.add_conn
+#define ngx_del_conn         ngx_event_actions.del_conn
 
-    #define ngx_notify           ngx_event_actions.notify
+#define ngx_notify           ngx_event_actions.notify
 
 #endif
 
