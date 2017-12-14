@@ -152,6 +152,10 @@ static inline int restore_fstack_fd(int sockfd) {
 
 /* Tell whether a 'sockfd' belongs to fstack. */
 static inline int is_fstack_fd(int sockfd) {
+    if (unlikely(inited == 0)) {
+        return 0;
+    }
+
     return sockfd >= ngx_max_sockets;
 }
 
