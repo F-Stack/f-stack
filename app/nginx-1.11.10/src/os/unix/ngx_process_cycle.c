@@ -737,9 +737,7 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
         }
     }
 
-#if (!NGX_HAVE_FSTACK)
     ngx_close_listening_sockets(cycle);
-#endif
 
     /*
      * Copy ngx_cycle->log related data to the special static exit cycle,

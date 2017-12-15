@@ -32,5 +32,6 @@
 
 void ff_fdused_range(int max);
 int ff_fdisused(int fd);
+int ff_getmaxfd(void);
 
 #endif    /* _FSTACK_SYS_FILEDESC_H_ */
