@@ -230,6 +230,10 @@ ngx_event_accept(ngx_event_t *ev)
         rev = c->read;
         wev = c->write;
 
+#if (NGX_HAVE_FSTACK)
+        rev->belong_to_host = wev->belong_to_host = ev->belong_to_host;
+#endif
+
         wev->ready = 1;
 
         if (ngx_event_flags & NGX_USE_IOCP_EVENT) {
@@ -296,7 +300,11 @@ ngx_event_accept(ngx_event_t *ev)
         }
 #endif
 
+#if (NGX_HAVE_FSTACK)
+        if (ngx_event_actions.add_conn && (ngx_event_flags & NGX_USE_EPOLL_EVENT) == 0) {
+#else
         if (ngx_add_conn && (ngx_event_flags & NGX_USE_EPOLL_EVENT) == 0) {
+#endif
             if (ngx_add_conn(c) == NGX_ERROR) {
                 ngx_close_accepted_connection(c);
                 return;
@@ -432,6 +440,7 @@ ngx_event_recvmsg(ngx_event_t *ev)
                               - ngx_cycle->free_connection_n;
 
         c = ngx_get_connection(lc->fd, ev->log);
+
         if (c == NULL) {
             return;
         }

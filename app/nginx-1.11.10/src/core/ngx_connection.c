@@ -376,6 +376,10 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
     return NGX_OK;
 }
 
+#if (NGX_HAVE_FSTACK)
+extern int
+    fstack_territory(int domain, int type, int protocol);
+#endif
 
 ngx_int_t
 ngx_open_listening_sockets(ngx_cycle_t *cycle)
@@ -403,6 +407,36 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
 
         ls = cycle->listening.elts;
         for (i = 0; i < cycle->listening.nelts; i++) {
+
+#if (NGX_HAVE_FSTACK)
+
+            if (ngx_process <= NGX_PROCESS_MASTER) {
+
+                /* process master,  kernel network stack*/
+                if (!ls[i].belong_to_host) {
+                    /* We should continue to process the listening socket, 
+                        if it is not supported by fstack.*/
+                    if (fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) {
+                        continue;
+                    }
+                }
+            } else if (NGX_PROCESS_WORKER == ngx_process) {
+                /* process worker, fstack */
+                if (ls[i].belong_to_host) {
+                    continue;
+                }
+
+                if (!fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) {
+                    continue;
+                }
+            } else {
+                ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                                  "unexpected process type: %d, ignored",
+                                  ngx_process);
+                exit(1);
+            }
+
+#endif
 
             if (ls[i].ignore) {
                 continue;
@@ -971,6 +1005,15 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
+#if (NGX_HAVE_FSTACK)
+
+        // No need to deal with, just skip
+        if (fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) {
+            continue;
+        }
+
+#endif //(NGX_HAVE_FSTACK)
+
         c = ls[i].connection;
 
         if (c) {
@@ -1032,6 +1075,9 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
     ngx_uint_t         instance;
     ngx_event_t       *rev, *wev;
     ngx_connection_t  *c;
+#if (NGX_HAVE_FSTACK)
+    ngx_atomic_uint_t  success;
+#endif
 
     /* disable warning: Win32 SOCKET is u_int while UNIX socket is int */
 
@@ -1042,7 +1088,35 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
                       s, ngx_cycle->files_n);
         return NULL;
     }
+#if (NGX_HAVE_FSTACK)
+#ifndef unlikely
+#define unlikely(x)  __builtin_expect((x),0)
+#endif
+    /* move ngx_cycle->free_connections atomically */
+	do {
+		/* Restore n as it may change every loop */
+		c = ngx_cycle->free_connections;
 
+        if (c == NULL) {
+            ngx_drain_connections((ngx_cycle_t *) ngx_cycle);
+            c = ngx_cycle->free_connections;
+        }
+
+        if (c == NULL) {
+            ngx_log_error(NGX_LOG_ALERT, log, 0,
+                        "%ui worker_connections are not enough",
+                        ngx_cycle->connection_n);
+
+            return NULL;
+        }
+
+		success = ngx_atomic_cmp_set(&ngx_cycle->free_connections, c,
+					      c->data);
+
+	} while (unlikely(success == 0));
+
+	ngx_memory_barrier();
+#else
     c = ngx_cycle->free_connections;
 
     if (c == NULL) {
@@ -1059,6 +1133,7 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
     }
 
     ngx_cycle->free_connections = c->data;
+#endif
     ngx_cycle->free_connection_n--;
 
     if (ngx_cycle->files && ngx_cycle->files[s] == NULL) {
@@ -1098,8 +1173,25 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
 void
 ngx_free_connection(ngx_connection_t *c)
 {
-    c->data = ngx_cycle->free_connections;
+#if (NGX_HAVE_FSTACK)
+    ngx_atomic_uint_t  success;
+
+    /* move ngx_cycle->free_connections atomically */
+	do {
+		/* Restore n as it may change every loop */
+		c->data = ngx_cycle->free_connections;
+
+		success = ngx_atomic_cmp_set(&ngx_cycle->free_connections, c->data,
+					      c);
+
+	} while (unlikely(success == 0));
+
+	ngx_memory_barrier();
+
+#else
     ngx_cycle->free_connections = c;
+
+#endif
     ngx_cycle->free_connection_n++;
 
     if (ngx_cycle->files && ngx_cycle->files[c->fd] == c) {
@@ -1129,7 +1221,11 @@ ngx_close_connection(ngx_connection_t *c)
     }
 
     if (!c->shared) {
+#if (NGX_HAVE_FSTACK)
+        if (ngx_event_actions.del_conn) {
+#else
         if (ngx_del_conn) {
+#endif
             ngx_del_conn(c, NGX_CLOSE_EVENT);
 
         } else {

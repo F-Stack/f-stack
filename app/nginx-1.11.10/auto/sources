@@ -106,8 +106,8 @@ WIN32_SELECT_SRCS=src/event/modules/ngx_win32_select_module.c
 POLL_MODULE=ngx_poll_module
 POLL_SRCS=src/event/modules/ngx_poll_module.c
 
-KQUEUE_MODULE="ngx_kqueue_module ngx_ff_channel_module"
-KQUEUE_SRCS="src/event/modules/ngx_kqueue_module.c src/event/modules/ngx_ff_module.c src/event/modules/ngx_ff_channel.c"
+KQUEUE_MODULE="ngx_kqueue_module ngx_ff_host_event_module"
+KQUEUE_SRCS="src/event/modules/ngx_kqueue_module.c src/event/modules/ngx_ff_module.c src/event/modules/ngx_ff_host_event_module.c"
 
 DEVPOLL_MODULE=ngx_devpoll_module
 DEVPOLL_SRCS=src/event/modules/ngx_devpoll_module.c

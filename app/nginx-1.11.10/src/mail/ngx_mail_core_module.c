@@ -64,6 +64,17 @@ static ngx_command_t  ngx_mail_core_commands[] = {
       offsetof(ngx_mail_core_srv_conf_t, server_name),
       NULL },
 
+#if (NGX_HAVE_FSTACK)
+
+    { ngx_string("kernel_network_stack"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_core_srv_conf_t, kernel_network_stack),
+      NULL },
+
+#endif
+
     { ngx_string("error_log"),
       NGX_MAIL_MAIN_CONF|NGX_MAIL_SRV_CONF|NGX_CONF_1MORE,
       ngx_mail_core_error_log,
@@ -167,6 +178,9 @@ ngx_mail_core_create_srv_conf(ngx_conf_t *cf)
 
     cscf->file_name = cf->conf_file->file.name.data;
     cscf->line = cf->conf_file->line;
+#if (NGX_HAVE_FSTACK)
+    cscf->kernel_network_stack = NGX_CONF_UNSET;
+#endif
 
     return cscf;
 }
@@ -205,6 +219,12 @@ ngx_mail_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     ngx_conf_merge_ptr_value(conf->resolver, prev->resolver, NULL);
+
+#if (NGX_HAVE_FSTACK)
+    /* By default, we set up a server on fstack */
+    ngx_conf_merge_value(conf->kernel_network_stack,
+                              prev->kernel_network_stack, 0);
+#endif
 
     return NGX_CONF_OK;
 }
