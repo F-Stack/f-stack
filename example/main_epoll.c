@@ -65,33 +65,34 @@ int loop(void *arg)
     for (i = 0; i < nevents; ++i) {
         /* Handle new connect */
         if (events[i].data.fd == sockfd) {
-            int nclientfd = ff_accept(sockfd, NULL, NULL);
-            if (nclientfd < 0) {
-                printf("ff_accept failed:%d, %s\n", errno, strerror(errno));
-                continue;
-            }
+            while (1) {
+                int nclientfd = ff_accept(sockfd, NULL, NULL);
+                if (nclientfd < 0) {
+                    break;
+                }
 
-            /* Add to event list */
-            ev.data.fd = nclientfd;
-            ev.events  = EPOLLIN;
-            assert(ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) == 0);
-            //printf("A new client connected to the server..., fd:%d\n", nclientfd);
+                /* Add to event list */
+                ev.data.fd = nclientfd;
+                ev.events  = EPOLLIN;
+                if (ff_epoll_ctl(epfd, EPOLL_CTL_ADD, nclientfd, &ev) != 0) {
+                    printf("ff_epoll_ctl failed:%d, %s\n", errno,
+                        strerror(errno));
+                    break;
+                }
+            }
         } else { 
             if (events[i].events & EPOLLERR ) {
                 /* Simply close socket */
                 ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
                 ff_close(events[i].data.fd);
-                //printf("A client has left the server...,fd:%d\n", events[i].data.fd);
             } else if (events[i].events & EPOLLIN) {
                 char buf[256];
                 size_t readlen = ff_read( events[i].data.fd, buf, sizeof(buf));
-                //printf("bytes are available to read..., readlen:%d, fd:%d\n", readlen,  events[i].data.fd);
                 if(readlen > 0) {
                     ff_write( events[i].data.fd, html, sizeof(html));
                 } else {
                     ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
                     ff_close( events[i].data.fd);
-                    //printf("A client has left the server...,fd:%d\n", events[i].data.fd);
                 }
             } else {
                 printf("unknown event: %8.8X\n", events[i].events);
