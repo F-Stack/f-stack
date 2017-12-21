@@ -66,38 +66,34 @@ int loop(void *arg)
 
         /* Handle disconnect */
         if (event.flags & EV_EOF) {
-
             /* Simply close socket */
             ff_close(clientfd);
-
-            //printf("A client has left the server...,fd:%d\n", clientfd);
         } else if (clientfd == sockfd) {
-            int nclientfd = ff_accept(sockfd, NULL, NULL);
-            if (nclientfd < 0) {
-                printf("ff_accept failed:%d, %s\n", errno, strerror(errno));
-                continue;
-            }
+            int available = (int)event.data;
+            do {
+                int nclientfd = ff_accept(sockfd, NULL, NULL);
+                if (nclientfd < 0) {
+                    printf("ff_accept failed:%d, %s\n", errno,
+                        strerror(errno));
+                    break;
+                }
 
-            /* Add to event list */
-            kevSet.data     = 0;
-            kevSet.fflags   = 0;
-            kevSet.filter   = EVFILT_READ;
-            kevSet.flags    = EV_ADD;
-            kevSet.ident    = nclientfd;
-            kevSet.udata    = NULL;
+                /* Add to event list */
+                EV_SET(&kevSet, nclientfd, EVFILT_READ, EV_ADD, 0, 0, NULL);
 
-            assert(ff_kevent(kq, &kevSet, 1, NULL, 0, NULL) == 0);
+                if(ff_kevent(kq, &kevSet, 1, NULL, 0, NULL) < 0) {
+                    printf("ff_kevent error:%d, %s\n", errno,
+                        strerror(errno));
+                    return -1;
+                }
 
-            //printf("A new client connected to the server..., fd:%d\n", nclientfd);
-
+                available--;
+            } while (available);
         } else if (event.filter == EVFILT_READ) {
             char buf[256];
             size_t readlen = ff_read(clientfd, buf, sizeof(buf));
 
-            //printf("bytes %zu are available to read...,fd:%d\n", (size_t)event.data, clientfd);
-
             ff_write(clientfd, html, sizeof(html));
-
         } else {
             printf("unknown event: %8.8X\n", event.flags);
         }
@@ -133,12 +129,7 @@ int main(int argc, char * argv[])
         exit(1);
     }
 
-    kevSet.data     = MAX_EVENTS;
-    kevSet.fflags   = 0;
-    kevSet.filter   = EVFILT_READ;
-    kevSet.flags    = EV_ADD;
-    kevSet.ident    = sockfd;
-    kevSet.udata    = NULL;
+    EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
 
     assert((kq = ff_kqueue()) > 0);
 
