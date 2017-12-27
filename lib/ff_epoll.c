@@ -96,8 +96,9 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
         write_flags |= EV_ENABLE;
     }
 
-    EV_SET(&kev[0], fd, EVFILT_READ, read_flags, 0, 0, NULL);
-    EV_SET(&kev[1], fd, EVFILT_WRITE, write_flags, 0, 0, NULL);
+    // Fix #124: set user data
+    EV_SET(&kev[0], fd, EVFILT_READ, read_flags, 0, 0, event->data.ptr);
+    EV_SET(&kev[1], fd, EVFILT_WRITE, write_flags, 0, 0, event->data.ptr);
 
     return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
 }
@@ -135,7 +136,11 @@ ff_event_to_epoll(void **ev, struct kevent *kev)
     }
 
     (*ppev)->events   = event_one;
-    (*ppev)->data.fd  = kev->ident;
+    // Fix #124: get user data
+    if (kev->udata != NULL)
+        (*ppev)->data.ptr  = kev->udata;
+    else
+        (*ppev)->data.fd = kev->ident;
     (*ppev)++;
 }
 
