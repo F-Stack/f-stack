@@ -67,8 +67,6 @@ int ff_setsockopt(int s, int level, int optname, const void *optval,
 int ff_getsockopt(int s, int level, int optname, void *optval,
     socklen_t *optlen);
 
-int ff_socketpair(int domain, int type, int protocol, int *sv);
-
 int ff_listen(int s, int backlog);
 int ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen);
 int ff_accept(int s, struct linux_sockaddr *addr, socklen_t *addrlen);

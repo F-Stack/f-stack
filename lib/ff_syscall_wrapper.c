@@ -704,19 +704,6 @@ kern_fail:
 }
 
 int
-ff_socketpair(int domain, int type, int protocol, int *sv)
-{
-    int rc;
-    if ((rc = kern_socketpair(curthread, domain, type, protocol, sv)))
-        goto kern_fail;
-
-    return (rc);
-kern_fail:
-    ff_os_errno(rc);
-    return (-1);
-}
-
-int
 ff_accept(int s, struct linux_sockaddr * addr,
     socklen_t * addrlen)
 {
