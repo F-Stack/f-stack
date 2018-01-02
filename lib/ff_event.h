@@ -27,6 +27,10 @@
 #ifndef _FSTACK_EVENT_H
 #define _FSTACK_EVENT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef _KERNEL
 
 #include <stdint.h>
@@ -146,6 +150,10 @@ struct knlist {
     void *kl_lockarg;           /* argument passed to kl_lockf() */
 };
 
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 #endif
 

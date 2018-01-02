@@ -27,6 +27,10 @@
 #ifndef __FSTACK_CONFIG_H
 #define __FSTACK_CONFIG_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // dpdk argc, argv, max argc: 4, member of dpdk_config
 #define DPDK_CONFIG_NUM 4
 #define DPDK_CONFIG_MAXLEN 64
@@ -118,5 +122,9 @@ struct ff_config {
 extern struct ff_config ff_global_cfg;
 
 int ff_load_config(int argc, char * const argv[]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* ifndef __FSTACK_CONFIG_H */

@@ -629,10 +629,6 @@ init_port_start(void)
             dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOVLANOFFL;
         }
 
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VLAN_INSERT)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOVLANOFFL;
-        }
-
         if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) &&
             !(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO)) {
             dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
