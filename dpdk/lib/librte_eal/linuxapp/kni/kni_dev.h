@@ -25,9 +25,15 @@
 #ifndef _KNI_DEV_H_
 #define _KNI_DEV_H_
 
+#include "compat.h"
+
 #include <linux/if.h>
 #include <linux/wait.h>
+#ifdef HAVE_SIGNAL_FUNCTIONS_OWN_HEADER
+#include <linux/sched/signal.h>
+#else
 #include <linux/sched.h>
+#endif
 #include <linux/netdevice.h>
 #include <linux/spinlock.h>
 #include <linux/list.h>
