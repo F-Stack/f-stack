@@ -346,6 +346,7 @@ NETINET_SRCS+=		\
 	in_proto.c	\
 	in_rmx.c	\
 	ip_carp.c	\
+	ip_divert.c     \
 	ip_ecn.c        \
 	ip_encap.c	\
 	ip_fastfwd.c	\
