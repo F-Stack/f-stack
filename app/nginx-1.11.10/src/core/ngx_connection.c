@@ -10,6 +10,12 @@
 #include <ngx_event.h>
 
 
+#if (NGX_HAVE_FSTACK)
+extern int fstack_territory(int domain, int type, int protocol);
+extern int is_fstack_fd(int sockfd);
+#endif
+
+
 ngx_os_io_t  ngx_io;
 
 
@@ -375,11 +381,6 @@ ngx_set_inherited_sockets(ngx_cycle_t *cycle)
 
     return NGX_OK;
 }
-
-#if (NGX_HAVE_FSTACK)
-extern int
-    fstack_territory(int domain, int type, int protocol);
-#endif
 
 ngx_int_t
 ngx_open_listening_sockets(ngx_cycle_t *cycle)
@@ -1165,6 +1166,10 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
     wev->data = c;
 
     wev->write = 1;
+
+#if (NGX_HAVE_FSTACK)
+    rev->belong_to_host = wev->belong_to_host = is_fstack_fd(s) ? 0 : 1;
+#endif
 
     return c;
 }

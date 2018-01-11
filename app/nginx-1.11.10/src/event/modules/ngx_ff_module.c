@@ -119,7 +119,7 @@ static int (*real_ioctl)(int, int, void *);
 
 static int (*real_gettimeofday)(struct timeval *tv, struct timezone *tz);
 
-static int inited;
+static __thread int inited;
 
 #define SYSCALL(func)                                       \
     ({                                                      \
@@ -151,7 +151,7 @@ static inline int restore_fstack_fd(int sockfd) {
 }
 
 /* Tell whether a 'sockfd' belongs to fstack. */
-static inline int is_fstack_fd(int sockfd) {
+int is_fstack_fd(int sockfd) {
     if (unlikely(inited == 0)) {
         return 0;
     }
@@ -242,7 +242,7 @@ bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         sockfd = restore_fstack_fd(sockfd);
         return ff_bind(sockfd, (struct linux_sockaddr *)addr, addrlen);
     }
-    
+
     return SYSCALL(bind)(sockfd, addr, addrlen);
 }
 
@@ -253,7 +253,7 @@ connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
         sockfd = restore_fstack_fd(sockfd);
         return ff_connect(sockfd, (struct linux_sockaddr *)addr, addrlen);
     }
-    
+
     return SYSCALL(connect)(sockfd, addr, addrlen);
 }
 
@@ -264,7 +264,7 @@ send(int sockfd, const void *buf, size_t len, int flags)
         sockfd = restore_fstack_fd(sockfd);
         return ff_send(sockfd, buf, len, flags);
     }
-    
+
     return SYSCALL(send)(sockfd, buf, len, flags);
 }
 
@@ -288,7 +288,7 @@ sendmsg(int sockfd, const struct msghdr *msg, int flags)
         sockfd = restore_fstack_fd(sockfd);
         return ff_sendmsg(sockfd, msg, flags);
     }
-    
+
     return SYSCALL(sendmsg)(sockfd, msg, flags);
 }
 
@@ -299,7 +299,7 @@ recv(int sockfd, void *buf, size_t len, int flags)
         sockfd = restore_fstack_fd(sockfd);
         return ff_recv(sockfd, buf, len, flags);
     }
-    
+
     return SYSCALL(recv)(sockfd, buf, len, flags);
 }
 
@@ -310,7 +310,7 @@ listen(int sockfd, int backlog)
         sockfd = restore_fstack_fd(sockfd);
         return ff_listen(sockfd, backlog);
     }
-    
+
     return SYSCALL(listen)(sockfd, backlog);
 }
 
@@ -322,7 +322,7 @@ getsockopt(int sockfd, int level, int optname,
         sockfd = restore_fstack_fd(sockfd);
         return ff_getsockopt(sockfd, level, optname, optval, optlen);
     }
-    
+
     return SYSCALL(getsockopt)(sockfd, level, optname, optval, optlen);
 }
 
@@ -334,7 +334,7 @@ setsockopt (int sockfd, int level, int optname,
         sockfd = restore_fstack_fd(sockfd);
         return ff_setsockopt(sockfd, level, optname, optval, optlen);
     }
-    
+
     return SYSCALL(setsockopt)(sockfd, level, optname, optval, optlen);
 }
 
@@ -351,7 +351,7 @@ accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
 
         return rc;
     }
-    
+
     return SYSCALL(accept)(sockfd, addr, addrlen);
 }
 
@@ -368,7 +368,7 @@ accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 
         return rc;
     }
-    
+
     return SYSCALL(accept4)(sockfd, addr, addrlen, flags);
 }
 
@@ -379,7 +379,7 @@ close(int sockfd)
         sockfd = restore_fstack_fd(sockfd);
         return ff_close(sockfd);
     }
-    
+
     return SYSCALL(close)(sockfd);
 }
 
@@ -390,7 +390,7 @@ writev(int sockfd, const struct iovec *iov, int iovcnt)
         sockfd = restore_fstack_fd(sockfd);
         return ff_writev(sockfd, iov, iovcnt);
     }
-    
+
     return SYSCALL(writev)(sockfd, iov, iovcnt);
 }
 
@@ -401,7 +401,7 @@ readv(int sockfd, const struct iovec *iov, int iovcnt)
         sockfd = restore_fstack_fd(sockfd);
         return ff_readv(sockfd, iov, iovcnt);
     }
-    
+
     return SYSCALL(readv)(sockfd, iov, iovcnt);
 }
 
@@ -412,7 +412,7 @@ read(int sockfd, void *buf, size_t count)
         sockfd = restore_fstack_fd(sockfd);
         return ff_read(sockfd, buf, count);
     }
-    
+
     return SYSCALL(read)(sockfd, buf, count);
 }
 
@@ -423,7 +423,7 @@ write(int sockfd, const void *buf, size_t count)
         sockfd = restore_fstack_fd(sockfd);
         return ff_write(sockfd, buf, count);
     }
-    
+
     return SYSCALL(write)(sockfd, buf, count);
 }
 
@@ -434,7 +434,7 @@ ioctl(int sockfd, int request, void *p)
         sockfd = restore_fstack_fd(sockfd);
         return ff_ioctl(sockfd, request, p);
     }
-    
+
     return SYSCALL(ioctl)(sockfd, request, p);
 }
 
