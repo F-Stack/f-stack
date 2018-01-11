@@ -142,6 +142,10 @@
 
 /* ioctl define end */
 
+#define	CURTHREAD_CHECK(curthread, rc, fail) do {	\
+	if (!curthread) {                               \
+        rc = ff_ENOCURTHREAD; goto fail; }          \
+} while (0)
 
 extern int sendit(struct thread *td, int s, struct msghdr *mp, int flags);
 
@@ -357,6 +361,9 @@ ff_socket(int domain, int type, int protocol)
 {
     int rc;
     struct socket_args sa;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     sa.domain = domain;
     sa.type = type;
     sa.protocol = protocol;
@@ -374,6 +381,9 @@ ff_getsockopt(int s, int level, int optname, void *optval,
     socklen_t *optlen)
 {
     int rc;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
 
@@ -399,6 +409,8 @@ ff_setsockopt(int s, int level, int optname, const void *optval,
     socklen_t optlen)
 {
     int rc;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
@@ -427,6 +439,8 @@ ff_ioctl(int fd, unsigned long request, ...)
     va_list ap;
     caddr_t argp;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     long req = linux2freebsd_ioctl(request);
     if (req < 0) {
         rc = EINVAL;
@@ -452,6 +466,8 @@ ff_close(int fd)
 {
     int rc;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if ((rc = kern_close(curthread, fd))) 
         goto kern_fail;
 
@@ -467,6 +483,8 @@ ff_read(int fd, void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
     
     if (nbytes > INT_MAX) {
         rc = EINVAL;
@@ -495,6 +513,8 @@ ff_readv(int fd, const struct iovec *iov, int iovcnt)
     struct uio auio;
     int rc, len, i;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     len = 0;
     for (i = 0; i < iovcnt; i++)
         len += iov[i].iov_len;
@@ -519,6 +539,8 @@ ff_write(int fd, const void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     if (nbytes > INT_MAX) {
         rc = EINVAL;
@@ -546,6 +568,8 @@ ff_writev(int fd, const struct iovec *iov, int iovcnt)
 {
     struct uio auio;
     int i, rc, len;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     len = 0;
     for (i = 0; i < iovcnt; i++)
@@ -581,6 +605,8 @@ ff_sendto(int s, const void *buf, size_t len, int flags,
     struct sockaddr bsdaddr;
     struct sockaddr *pf = &bsdaddr;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if (to) {
         linux2freebsd_sockaddr(to, tolen, pf);
     } else {
@@ -610,6 +636,8 @@ ff_sendmsg(int s, const struct msghdr *msg, int flags)
 {
     int rc;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if ((rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags)))
         goto kern_fail;
 
@@ -634,6 +662,8 @@ ff_recvfrom(int s, void *buf, size_t len, int flags,
     struct iovec aiov;
     int rc;
     struct sockaddr bsdaddr;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     if (fromlen != NULL)
         msg.msg_namelen = *fromlen;
@@ -667,6 +697,8 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
 {
     int rc, oldflags;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     oldflags = msg->msg_flags;
     msg->msg_flags = flags;
 
@@ -688,6 +720,8 @@ ff_fcntl(int fd, int cmd, ...)
     int rc;
     va_list ap;
     uintptr_t argp;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     va_start(ap, cmd);
 
@@ -711,6 +745,8 @@ ff_accept(int s, struct linux_sockaddr * addr,
     struct file *fp;
     struct sockaddr *pf = NULL;
     socklen_t socklen = sizeof(struct sockaddr);
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
         goto kern_fail;
@@ -743,6 +779,9 @@ ff_listen(int s, int backlog)
         .s = s,
         .backlog = backlog,
     };
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if ((rc = sys_listen(curthread, &la)))
         goto kern_fail;
 
@@ -757,6 +796,9 @@ ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen)
 {
     int rc;    
     struct sockaddr bsdaddr;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     linux2freebsd_sockaddr(addr, addrlen, &bsdaddr);
 
     if ((rc = kern_bindat(curthread, AT_FDCWD, s, &bsdaddr)))
@@ -773,6 +815,9 @@ ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen)
 {
     int rc;
     struct sockaddr bsdaddr;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     linux2freebsd_sockaddr(name, namelen, &bsdaddr);
 
     if ((rc = kern_connectat(curthread, AT_FDCWD, s, &bsdaddr)))
@@ -790,6 +835,8 @@ ff_getpeername(int s, struct linux_sockaddr * name,
 {
     int rc;
     struct sockaddr *pf = NULL;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     if ((rc = kern_getpeername(curthread, s, &pf, namelen)))
         goto kern_fail;
@@ -814,6 +861,8 @@ ff_getsockname(int s, struct linux_sockaddr *name,
 {
     int rc;
     struct sockaddr *pf = NULL;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     if ((rc = kern_getsockname(curthread, s, &pf, namelen)))
         goto kern_fail;
@@ -841,6 +890,9 @@ ff_shutdown(int s, int how)
         .s = s,
         .how = how,
     };
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if ((rc = sys_shutdown(curthread, &sa)))
         goto kern_fail;
 
@@ -856,6 +908,8 @@ ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
 {
     int rc;
     size_t retval;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     rc = userland_sysctl(curthread, __DECONST(int *, name), namelen, oldp, oldlenp, 
         1, __DECONST(void *, newp), newlen, &retval, 0);
@@ -876,6 +930,8 @@ ff_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 {
     int rc;
 
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     rc = kern_select(curthread, nfds, readfds, writefds, exceptfds, timeout, 64);
     if (rc)
         goto kern_fail;
@@ -893,6 +949,9 @@ ff_poll(struct pollfd fds[], nfds_t nfds, int timeout)
 {
     int rc;
     struct timespec ts;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     ts.tv_sec = 0;
     ts.tv_nsec = 0;
     if ((rc = kern_poll(curthread, fds, nfds, &ts, NULL)))
@@ -909,6 +968,9 @@ int
 ff_kqueue(void)
 {
     int rc;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     if ((rc = kern_kqueue(curthread, 0, NULL)))
         goto kern_fail;
 
@@ -975,6 +1037,9 @@ ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
 {
     int rc;
     struct timespec ts;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
+
     ts.tv_sec = 0;
     ts.tv_nsec = 0;
 
@@ -1031,6 +1096,8 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     struct sockaddr *psa_gw, *psa_dst, *psa_nm;
     int rtreq, rtflag;
     int rc;
+
+    CURTHREAD_CHECK(curthread, rc, kern_fail);
 
     switch (req) {
         case FF_ROUTE_ADD:

@@ -45,3 +45,4 @@ ff_gettimeofday
 ff_fdisused
 ff_getmaxfd
 ff_ngctl
+ff_strerror
