@@ -145,5 +145,6 @@
 #define ff_ENOTRECOVERABLE 95        /* State not recoverable */
 #define ff_EOWNERDEAD      96        /* Previous owner died */
 
+#define ff_ENOCURTHREAD   144        /* Curthread is null */
 #endif
 

@@ -192,6 +192,14 @@ enum FF_NGCTL_CMD {
 
 int ff_ngctl(int cmd, void *data);
 
+/*
+ * Extend standard error code.
+ *  errno  desc
+ *  144    Curthread is null, 
+ *      fstack may not initialized at the current thread.
+ */
+char *ff_strerror (int __errnum);
+
 /* internal api end */
 
 #ifdef __cplusplus

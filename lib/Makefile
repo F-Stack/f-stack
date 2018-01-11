@@ -168,7 +168,8 @@ FF_HOST_SRCS+=              \
 	ff_dpdk_kni.c       \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
-	ff_init.c
+	ff_init.c			\
+	ff_errno.c
 
 ifdef FF_IPSEC
 CRYPTO_ASM_SRCS+=                       \
