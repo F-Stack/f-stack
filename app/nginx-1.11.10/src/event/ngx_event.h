@@ -453,6 +453,8 @@ static inline ngx_int_t ngx_process_events(
     return ngx_event_actions.process_events(cycle, timer, flags);
 }
 
+#define ngx_ff_process_host_events   ngx_ff_host_event_actions.process_events
+
 #else
 
 #define ngx_process_events   ngx_event_actions.process_events

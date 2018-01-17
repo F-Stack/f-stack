@@ -156,6 +156,13 @@ static ngx_command_t  ngx_core_commands[] = {
       0,
       offsetof(ngx_core_conf_t, fstack_conf),
       NULL },
+
+    { ngx_string("schedule_timeout"),
+      NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_msec_slot,
+      0,
+      offsetof(ngx_core_conf_t, schedule_timeout),
+      NULL },
 #endif
 
       ngx_null_command
@@ -1037,6 +1044,10 @@ ngx_core_module_create_conf(ngx_cycle_t *cycle)
     ccf->user = (ngx_uid_t) NGX_CONF_UNSET_UINT;
     ccf->group = (ngx_gid_t) NGX_CONF_UNSET_UINT;
 
+#if (NGX_HAVE_FSTACK)
+    ccf->schedule_timeout = NGX_CONF_UNSET_MSEC;
+#endif
+
     if (ngx_array_init(&ccf->env, cycle->pool, 1, sizeof(ngx_str_t))
         != NGX_OK)
     {
@@ -1058,6 +1069,10 @@ ngx_core_module_init_conf(ngx_cycle_t *cycle, void *conf)
 
     ngx_conf_init_value(ccf->worker_processes, 1);
     ngx_conf_init_value(ccf->debug_points, 0);
+
+#if (NGX_HAVE_FSTACK)
+    ngx_conf_init_msec_value(ccf->schedule_timeout, 30);
+#endif
 
 #if (NGX_HAVE_CPU_AFFINITY)
 
