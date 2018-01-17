@@ -213,6 +213,10 @@ ngx_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd, ngx_int_t event,
     rev = c->read;
     wev = c->write;
 
+#if (NGX_HAVE_FSTACK)
+    rev->belong_to_host = wev->belong_to_host = 1;
+#endif
+
     rev->log = cycle->log;
     wev->log = cycle->log;
 
