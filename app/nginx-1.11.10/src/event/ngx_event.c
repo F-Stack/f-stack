@@ -251,7 +251,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
     delta = ngx_current_msec;
 
-    //(void) ngx_process_events(cycle, timer, flags);
+    (void) ngx_process_events(cycle, timer, flags);
 
 #if (NGX_HAVE_FSTACK)
     /* handle message from kernel (PS: signals from master) in case of network inactivity */
