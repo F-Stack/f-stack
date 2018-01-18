@@ -109,7 +109,7 @@ static int sysctl_kern_smp_active(SYSCTL_HANDLER_ARGS);
 /* This is used in modules that need to work in both SMP and UP. */
 cpuset_t all_cpus;
 
-int mp_ncpus;
+int mp_ncpus = 1;
 /* export this for libkvm consumers. */
 int mp_maxcpus = MAXCPU;
 
