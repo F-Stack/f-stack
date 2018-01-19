@@ -1657,8 +1657,9 @@ ff_hardclock(void)
 static unsigned int
 ff_tc_get_timecount(struct timecounter *tc)
 {
-    static u_int now;
-    return (++now);
+    uint64_t ns;
+    ns = ff_get_tsc_ns();
+    return ((ns * tc->tc_frequency) / ff_NSEC_PER_SEC);
 }
 
 static struct timecounter ff_timecounter = {

@@ -462,9 +462,6 @@ zone_foreach_keg(uma_zone_t zone, void (*kegfn)(uma_keg_t))
 static void
 uma_timeout(void *unused)
 {
-#ifdef FSTACK
-    return;
-#endif
 	bucket_enable();
 	zone_foreach(zone_timeout);
 
