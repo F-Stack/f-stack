@@ -167,7 +167,7 @@ ff_clock_gettime_ns(int id)
 {
     int64_t sec;
     long nsec;
-     
+
     ff_clock_gettime(id, &sec, &nsec);
 
     return ((uint64_t)sec * ff_NSEC_PER_SEC + nsec);
@@ -176,8 +176,13 @@ ff_clock_gettime_ns(int id)
 void
 ff_get_current_time(time_t *sec, long *nsec)
 {
-    *sec = current_ts.tv_sec;
-    *nsec = current_ts.tv_nsec;
+    if (sec) {
+        *sec = current_ts.tv_sec;
+    }
+
+    if (nsec) {
+        *nsec = current_ts.tv_nsec;
+    }
 }
 
 void

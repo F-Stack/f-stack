@@ -1597,3 +1597,12 @@ ff_regist_packet_dispatcher(dispatch_func_t func)
 {
     packet_dispatcher = func;
 }
+
+uint64_t
+ff_get_tsc_ns()
+{
+    uint64_t cur_tsc = rte_rdtsc();
+    uint64_t hz = rte_get_tsc_hz();
+    return ((double)cur_tsc/(double)hz) * NS_PER_S;
+}
+
