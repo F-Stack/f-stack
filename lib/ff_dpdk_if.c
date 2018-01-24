@@ -450,8 +450,8 @@ init_dispatch_ring(void)
         }
 
         for(queueid = 0; queueid < nb_queues; ++queueid) {
-            snprintf(name_buf, RTE_RING_NAMESIZE, "dispatch_ring_p%d_q%d",
-                portid, queueid);
+            snprintf(name_buf, RTE_RING_NAMESIZE, "dispatch_ring_p%hd_q%hd",
+                (uint16_t)portid, (uint16_t)queueid);
             dispatch_ring[portid][queueid] = create_ring(name_buf,
                 DISPATCH_RING_SIZE, socketid, RING_F_SC_DEQ);
 
@@ -1042,7 +1042,7 @@ process_dispatch_ring(uint8_t port_id, uint16_t queue_id,
     /* read packet from ring buf and to process */
     uint16_t nb_rb;
     nb_rb = rte_ring_dequeue_burst(dispatch_ring[port_id][queue_id],
-        (void **)pkts_burst, MAX_PKT_BURST);
+        (void **)pkts_burst, MAX_PKT_BURST, NULL);
 
     if(nb_rb > 0) {
         process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);

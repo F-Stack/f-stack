@@ -170,7 +170,7 @@ kni_process_tx(uint8_t port_id, uint16_t queue_id,
 {
     /* read packet from kni ring(phy port) and transmit to kni */
     uint16_t nb_tx, nb_kni_tx;
-    nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count);
+    nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count, NULL);
 
     /* NB.
      * if nb_tx is 0,it must call rte_kni_tx_burst
