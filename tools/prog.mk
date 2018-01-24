@@ -53,7 +53,7 @@ FF_PROG_CFLAGS+= -I${FF_DPDK}/include
 FF_PROG_LIBS:= -L${TOPDIR}/tools/compat -Wl,--whole-archive -lffcompat
 FF_PROG_LIBS+= -Wl,--no-whole-archive -L${FF_DPDK}/lib
 FF_PROG_LIBS+= -Wl,--whole-archive -lrte_eal -lrte_mempool -lrte_ring
-FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
+FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread -lnuma
 
 CFLAGS+= -Wno-unused-but-set-variable -Wno-unused-variable
 CFLAGS+= ${FF_PROG_CFLAGS}
