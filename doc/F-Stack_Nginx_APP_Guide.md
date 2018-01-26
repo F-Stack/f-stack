@@ -27,24 +27,20 @@ first one to start |                    |     |                   |    |        
  last one to exit<-+   primary worker   |     |  secondary worker |    | secondary worker |
                    |                    |     |                   |    |                  |
                    +--------------------+     +-------------------+    +------------------+
-                   +--------+  +-------+      +--------+  +-------+
-                   |        |  |       |      |        |  |       |
-                   | fstack |  |channel|      | fstack |  |channel|
-                   |  main  |  | event |      |  main  |  | event |
-                   |  loop  |  |thread |      |  loop  |  |thread |
-                   | thread |  |       |      | thread |  |       |
-                   |        |  |       |      |        |  |       |
-                   +--------+  +-------+      +--------+  +-------+
-                    woker       loop:          worker      loop:
-                   process      handle        process      handle
-                    cycle      channel         cycle      channel
-                                event                      event
+                   +--------------------+     +-------------------+  
+                   |                    |     |                   |
+                   |   fstack,kernel    |     |   fstack,kernel   |
+                   |     and channel    |     |     and channel   |
+                   |     loop thread    |     |     loop thread   |
+                   |                    |     |			  |
+                   +--------------------+     +-------------------+
+                    woker process cycle        woker process cycle
 
 ```
 
 - spawn primary worker firstly, and then wait for primary startup, continue to spawn secondary workers.
 
-- worker process has 2 threads. main thread: ff_init();ff_run(worker_process_cycle), channel thread: loop(handle channel event).
+- a major addition to the worker process is fstack-handling：ff_init();ff_run(worker_process_cycle); worker_process_cycle(handle channel/host/fstack event).
 
 Note that:
 
