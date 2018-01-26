@@ -204,7 +204,6 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_uint_t  flags;
     ngx_msec_t  timer, delta;
 #if (NGX_HAVE_FSTACK)
-    static ngx_uint_t tick;
     static ngx_msec_t initial; //msec
 #endif
 
@@ -255,14 +254,12 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
 #if (NGX_HAVE_FSTACK)
     /* handle message from kernel (PS: signals from master) in case of network inactivity */
-    if (ngx_current_msec - initial >= ngx_schedule_timeout || tick >= ngx_schedule_timeout) {
+    if (ngx_current_msec - initial >= ngx_schedule_timeout) {
         (void) ngx_ff_process_host_events(cycle, 0, flags);
 
         /* Update timer*/
         initial = ngx_current_msec;
-        tick = 0;
     }
-    tick++;
 #endif
 
     delta = ngx_current_msec - delta;
