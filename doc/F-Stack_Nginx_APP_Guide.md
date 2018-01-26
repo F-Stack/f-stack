@@ -42,6 +42,15 @@ first one to start |                    |     |                   |    |        
 
 - a major addition to the worker process is fstack-handling：ff_init();ff_run(worker_process_cycle); worker_process_cycle(handle channel/host/fstack event).
 
+- a new directive `kernel_network_stack` :
+```
+    Syntax: kernel_network_stack on | off;
+    Default: kernel_network_stack off;
+    Context: http, server
+    This directive is available only when ```NGX_HAVE_FSTACK``` is defined.
+    Determines whether server should run on kernel network stack or fstack.
+```
+
 Note that:
 
 - the `reload` is not graceful, service will still be unavailable during the process of reloading.
