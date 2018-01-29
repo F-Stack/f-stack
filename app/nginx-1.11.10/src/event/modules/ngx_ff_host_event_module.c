@@ -36,8 +36,6 @@
 static void * ngx_ff_host_event_create_conf(ngx_cycle_t *cycle);
 static char * ngx_ff_host_event_init_conf(ngx_cycle_t *cycle,
     void *conf);
-static ngx_int_t ngx_ff_host_event_init_process(ngx_cycle_t *cycle);
-static void ngx_ff_host_event_exit_process(ngx_cycle_t *cycle);
 static ngx_int_t ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer);
 static ngx_int_t ngx_ff_epoll_add_event(ngx_event_t *ev,
     ngx_int_t event, ngx_uint_t flags);
@@ -45,39 +43,10 @@ static ngx_int_t ngx_ff_epoll_del_event(ngx_event_t *ev,
     ngx_int_t event, ngx_uint_t flags);
 static ngx_int_t ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
     ngx_msec_t timer, ngx_uint_t flags);
-static ngx_int_t ngx_ff_create_connection(ngx_cycle_t *cycle);
-static void ngx_ff_delete_connection();
-static void ngx_ff_worker_channel_handler(ngx_event_t *ev);
-static void *ngx_ff_host_event_thread_main(void *args);
-static ngx_int_t ngx_ff_add_channel_event(ngx_cycle_t *cycle,
-    ngx_fd_t fd, ngx_int_t event, ngx_event_handler_pt handler);
-static void ngx_ff_process_events_and_timers(ngx_cycle_t *cycle);
-
-ngx_int_t ngx_ff_start_worker_channel(ngx_cycle_t *cycle,
-    ngx_fd_t fd, ngx_int_t event);
-    
-void ngx_event_cancel_timers_of_host(void);
-void ngx_event_expire_timers_of_host(void);
-ngx_msec_t ngx_event_find_timer_of_host(void);
-void ngx_event_cancel_timers_of_host(void);
-
-struct channel_thread_args {
-    ngx_cycle_t *cycle;
-    ngx_fd_t fd;
-    ngx_int_t event;
-    ngx_event_handler_pt handler;
-};
-
-static pthread_t channel_thread;
-static int thread_quit;
 
 static int ep = -1;
 static struct epoll_event *event_list;
 static ngx_uint_t nevents;
-static ngx_connection_t *channel_connection;
-
-#include <semaphore.h>
-static sem_t sem;
 
 typedef struct {
     ngx_uint_t  events;
@@ -101,10 +70,10 @@ ngx_module_t  ngx_ff_host_event_module = {
     NGX_CORE_MODULE,                     /* module type */
     NULL,                                /* init master */
     NULL,                                /* init module */
-    ngx_ff_host_event_init_process,         /* init process */
+    NULL,                                /* init process */
     NULL,                                /* init thread */
     NULL,                                /* exit thread */
-    ngx_ff_host_event_exit_process,         /* exit process */
+    NULL,                                /* exit process */
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -125,32 +94,8 @@ static char *
 ngx_ff_host_event_init_conf(ngx_cycle_t *cycle, void *conf)
 {   
     ngx_ff_host_event_conf_t *cf = conf;
-    cf->events = 1;
+    cf->events = 8;
     return NGX_CONF_OK;
-}
-
-
-static ngx_int_t ngx_ff_host_event_init_process(ngx_cycle_t *cycle)
-{
-    if (sem_init(&sem, 0, 0) != 0)  
-    {  
-        return NGX_ERROR;
-    }
-
-    return NGX_OK;
-}
-
-static void ngx_ff_host_event_exit_process(ngx_cycle_t *cycle)
-{
-    struct timespec ts;
-
-    if (clock_gettime( CLOCK_REALTIME,&ts ) < 0)
-        return;
-
-    //5s
-    ts.tv_sec  += 4;
-
-    (void) sem_timedwait(&sem, &ts);
 }
 
 
@@ -158,7 +103,8 @@ static ngx_int_t
 ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 {
     if (ep == -1) {
-        ep = epoll_create(1);
+        /* The size is just a hint */
+        ep = epoll_create(100);
 
         if (ep == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
@@ -176,10 +122,24 @@ ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
         return NGX_ERROR;
     }
 
-    nevents = 1;
-    channel_connection = NULL;
-
+    nevents = 8;
     return NGX_OK;
+}
+
+static void
+ngx_ff_epoll_done(ngx_cycle_t *cycle)
+{
+    if (close(ep) == -1) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+                      "epoll close() failed");
+    }
+
+    ep = -1;
+
+    ngx_free(event_list);
+
+    event_list = NULL;
+    nevents = 0;
 }
 
 static ngx_int_t
@@ -298,7 +258,6 @@ ngx_ff_epoll_del_event(ngx_event_t *ev, ngx_int_t event,
     return NGX_OK;
 }
 
-#if 0
 static ngx_int_t
 ngx_ff_epoll_add_connection(ngx_connection_t *c)
 {
@@ -359,7 +318,6 @@ ngx_ff_epoll_del_connection(ngx_connection_t *c, ngx_uint_t flags)
 
     return NGX_OK;
 }
-#endif
 
 static ngx_int_t
 ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
@@ -479,284 +437,17 @@ ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
     return NGX_OK;
 }
 
-static ngx_int_t
-ngx_ff_create_connection(ngx_cycle_t *cycle)
-{
-    ngx_event_t *rev, *wev;
-    ngx_connection_t *c;
-    c = ngx_calloc(sizeof(ngx_connection_t), cycle->log);
-    if (c == NULL) {
-        return NGX_ERROR;
-    }
-
-    rev = ngx_calloc(sizeof(ngx_event_t), cycle->log);
-    if (rev == NULL) {
-        ngx_free(c);
-        return NGX_ERROR;
-    }
-    rev->index = NGX_INVALID_INDEX;
-    rev->data = c;
-    rev->log = cycle->log;
-
-    wev = ngx_calloc(sizeof(ngx_event_t), cycle->log);
-    if (wev == NULL) {
-        ngx_free(c);
-        ngx_free(rev);
-        return NGX_ERROR;
-    }
-    wev->index = NGX_INVALID_INDEX;
-    wev->write = 1;
-    wev->data = c;
-    wev->log = cycle->log;
-
-    c->pool = cycle->pool;
-    c->data = NULL;
-    c->read = rev;
-    c->write = wev;
-    c->fd = (ngx_socket_t) -1;
-    c->log = cycle->log;
-
-    channel_connection = c;
-
-    return NGX_OK;
-}
-
-static void
-ngx_ff_delete_connection()
-{
-    ngx_connection_t *c = channel_connection;
-    if (c == NULL) {
-        return;
-    }
-
-    if (c->read) {
-        ngx_free(c->read);
-    }
-
-    if (c->write) {
-        ngx_free(c->write);
-    }
-
-    ngx_free(c);
-    channel_connection = NULL;
-}
-
-static ngx_int_t
-ngx_ff_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd,
-    ngx_int_t event, ngx_event_handler_pt handler)
-{
-    ngx_connection_t *c;
-    ngx_event_t *ev, *rev, *wev;
-
-    if (channel_connection != NULL) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                              "add channel event failed: already added");
-        return NGX_ERROR;
-    }
-
-    if (ngx_ff_create_connection(cycle) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    c = channel_connection;
-
-    c->fd = fd;
-    rev = c->read;
-    wev = c->write;
-
-    rev->channel = 1;
-    wev->channel = 1;
-
-    rev->belong_to_host = wev->belong_to_host = 1;
-
-    ev = (event == NGX_READ_EVENT) ? rev : wev;
-    ev->handler = handler;
-
-    if (ngx_ff_epoll_add_event(ev, event, 0) == NGX_ERROR) {
-        return NGX_ERROR;
-    }
-
-    return NGX_OK;
-}
-
-static void
-ngx_ff_worker_channel_handler(ngx_event_t *ev)
-{
-    ngx_int_t          n;
-    ngx_channel_t      ch;
-    ngx_connection_t  *c;
-
-    if (ev->timedout) {
-        ev->timedout = 0;
-        return;
-    }
-
-    c = ev->data;
-
-    ngx_log_debug0(NGX_LOG_DEBUG_CORE, ev->log, 0, "worker channel handler");
-
-    for ( ;; ) {
-
-        n = ngx_read_channel(c->fd, &ch, sizeof(ngx_channel_t), ev->log);
-
-        ngx_log_debug1(NGX_LOG_DEBUG_CORE, ev->log, 0, "channel: %i", n);
-
-        if (n == NGX_ERROR) {
-            ngx_ff_epoll_del_event(c->read, NGX_READ_EVENT, NGX_CLOSE_EVENT);
-            close(c->fd);
-            ngx_ff_delete_connection();
-            thread_quit = 1;
-            return;
-        }
-
-        if (n == NGX_AGAIN) {
-            return;
-        }
-
-        ngx_log_debug1(NGX_LOG_DEBUG_CORE, ev->log, 0,
-                       "channel command: %ui", ch.command);
-
-        switch (ch.command) {
-
-        case NGX_CMD_QUIT:
-            ngx_quit = 1;
-            thread_quit = 1;
-            break;
-
-        case NGX_CMD_TERMINATE:
-            ngx_terminate = 1;
-            thread_quit = 1;
-            break;
-
-        case NGX_CMD_REOPEN:
-            ngx_reopen = 1;
-            break;
-
-        case NGX_CMD_OPEN_CHANNEL:
-
-            ngx_log_debug3(NGX_LOG_DEBUG_CORE, ev->log, 0,
-                           "get channel s:%i pid:%P fd:%d",
-                           ch.slot, ch.pid, ch.fd);
-
-            ngx_processes[ch.slot].pid = ch.pid;
-            ngx_processes[ch.slot].channel[0] = ch.fd;
-            break;
-
-        case NGX_CMD_CLOSE_CHANNEL:
-
-            ngx_log_debug4(NGX_LOG_DEBUG_CORE, ev->log, 0,
-                           "close channel s:%i pid:%P our:%P fd:%d",
-                           ch.slot, ch.pid, ngx_processes[ch.slot].pid,
-                           ngx_processes[ch.slot].channel[0]);
-
-            if (close(ngx_processes[ch.slot].channel[0]) == -1) {
-                ngx_log_error(NGX_LOG_ALERT, ev->log, ngx_errno,
-                              "close() channel failed");
-            }
-
-            ngx_processes[ch.slot].channel[0] = -1;
-            break;
-        }
-    }
-}
-
-static void *
-ngx_ff_host_event_thread_main(void *args)
-{
-    struct channel_thread_args *cta = args;
-    ngx_cycle_t *cycle = cta->cycle;
-
-    if (ngx_ff_add_channel_event(cycle, cta->fd, cta->event,
-            cta->handler) != NGX_OK) {
-        return NULL;
-    }
-
-    for (;;) {
-        ngx_ff_process_events_and_timers(cycle);
-        if (thread_quit) {
-            break;
-        }
-    }
-
-    ngx_event_cancel_timers_of_host();
-
-    ngx_free(cta);
-
-    return NULL;
-}
-
-static void
-ngx_ff_process_events_and_timers(ngx_cycle_t *cycle)
-{
-    ngx_uint_t  flags;
-    ngx_msec_t  timer, delta;
-
-    timer = ngx_event_find_timer_of_host();
-    flags = NGX_UPDATE_TIME;
-
-    /* handle signals from master in case of network inactivity */
-
-    if (timer == NGX_TIMER_INFINITE || timer > 500) {
-        timer = 500;
-    }
-
-    delta = ngx_current_msec;
-
-    (void) ngx_ff_epoll_process_events(cycle, timer, flags);
-
-    delta = ngx_current_msec - delta;
-
-    ngx_event_process_posted(cycle, &ngx_posted_accept_events_of_host);
-
-    if (delta) {
-        ngx_event_expire_timers_of_host();
-    }
-
-    ngx_event_process_posted(cycle, &ngx_posted_events_of_host);
-
-}
-
-ngx_int_t
-ngx_ff_start_worker_channel(ngx_cycle_t *cycle, ngx_fd_t fd,
-    ngx_int_t event)
-{
-    int ret;
-    struct channel_thread_args *cta;
-
-    cta = ngx_alloc(sizeof(struct channel_thread_args), cycle->log);
-    if (cta == NULL) {
-        return NGX_ERROR;
-    }
-
-    cta->cycle = cycle;
-    cta->fd = fd;
-    cta->event = event;
-    cta->handler = ngx_ff_worker_channel_handler;
-
-    ret = pthread_create(&channel_thread, NULL,
-			ngx_ff_host_event_thread_main, (void *)cta);
-    if (ret != 0) {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
-                      "pthread_create() failed");
-        return NGX_ERROR;
-    }
-
-    pthread_detach(channel_thread);
-
-    return NGX_OK;
-}
-
 ngx_event_actions_t   ngx_ff_host_event_actions = {
     ngx_ff_epoll_add_event,             /* add an event */
     ngx_ff_epoll_del_event,             /* delete an event */
     ngx_ff_epoll_add_event,             /* enable an event */
     ngx_ff_epoll_add_event,             /* disable an event */
-    NULL,                               /* add an connection */
-    NULL,                               /* delete an connection */
+    ngx_ff_epoll_add_connection,        /* add an connection */
+    ngx_ff_epoll_del_connection,        /* delete an connection */
     NULL,                               /* trigger a notify */
     ngx_ff_epoll_process_events,        /* process the events */
     ngx_ff_epoll_init,                  /* init the events */
-    NULL,                               /* done the events */
+    ngx_ff_epoll_done,                  /* done the events */
 };
 
 #endif

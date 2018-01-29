@@ -22,12 +22,7 @@ static void ngx_master_process_exit(ngx_cycle_t *cycle);
 static void ngx_worker_process_cycle(ngx_cycle_t *cycle, void *data);
 static void ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker);
 static void ngx_worker_process_exit(ngx_cycle_t *cycle);
-#if (NGX_HAVE_FSTACK)
-extern ngx_int_t ngx_ff_start_worker_channel(ngx_cycle_t *cycle,
-    ngx_fd_t fd, ngx_int_t event);
-#else
 static void ngx_channel_handler(ngx_event_t *ev);
-#endif
 static void ngx_cache_manager_process_cycle(ngx_cycle_t *cycle, void *data);
 static void ngx_cache_manager_process_handler(ngx_event_t *ev);
 static void ngx_cache_loader_process_handler(ngx_event_t *ev);
@@ -1057,12 +1052,8 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
     ngx_last_process = 0;
 #endif
 
-#if (NGX_HAVE_FSTACK)
-    if (ngx_ff_start_worker_channel(cycle, ngx_channel, NGX_READ_EVENT)
-#else
     if (ngx_add_channel_event(cycle, ngx_channel, NGX_READ_EVENT,
                               ngx_channel_handler)
-#endif
         == NGX_ERROR)
     {
         /* fatal */
@@ -1137,7 +1128,6 @@ ngx_worker_process_exit(ngx_cycle_t *cycle)
     exit(0);
 }
 
-#if (!NGX_HAVE_FSTACK)
 static void
 ngx_channel_handler(ngx_event_t *ev)
 {
@@ -1224,7 +1214,6 @@ ngx_channel_handler(ngx_event_t *ev)
         }
     }
 }
-#endif
 
 static void
 ngx_cache_manager_process_cycle(ngx_cycle_t *cycle, void *data)
