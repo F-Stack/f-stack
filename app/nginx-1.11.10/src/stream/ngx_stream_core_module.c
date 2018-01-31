@@ -59,10 +59,10 @@ static ngx_command_t  ngx_stream_core_commands[] = {
 #if (NGX_HAVE_FSTACK)
 
     { ngx_string("kernel_network_stack"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
-      NGX_HTTP_SRV_CONF_OFFSET,
-      offsetof(ngx_http_core_srv_conf_t, kernel_network_stack),
+      NGX_STREAM_SRV_CONF_OFFSET,
+      offsetof(ngx_stream_core_srv_conf_t, kernel_network_stack),
       NULL },
 
 #endif
