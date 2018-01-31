@@ -1002,6 +1002,10 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
                           "ngx_open_listening_sockets failed");
             exit(2);
         }
+
+        if (!ngx_test_config) {
+            ngx_configure_listening_sockets(cycle);
+        }
     }
 #endif
 
