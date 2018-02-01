@@ -14,32 +14,37 @@
 extern int fstack_territory(int domain, int type, int protocol);
 extern int is_fstack_fd(int sockfd);
 
-#define ngx_ff_skip_listening_socket(ls)                                      \
-    if (ngx_process <= NGX_PROCESS_MASTER) {                                  \
-                                                                              \
-        /* process master,  kernel network stack*/                            \
-        if (!ls[i].belong_to_host) {                                          \
-            /* We should continue to process the listening socket, */         \
-            /*    if it is not supported by fstack. */                        \
-            if (fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) { \
-                continue;                                                     \
-            }                                                                 \
-        }                                                                     \
-    } else if (NGX_PROCESS_WORKER == ngx_process) {                           \
-        /* process worker, fstack */                                          \
-        if (ls[i].belong_to_host) {                                           \
-            continue;                                                         \
-        }                                                                     \
-                                                                              \
-        if (!fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) {    \
-            continue;                                                         \
-        }                                                                     \
-    } else {                                                                  \
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,                           \
-                            "unexpected process type: %d, ignored",           \
-                            ngx_process);                                     \
-        exit(1);                                                              \
-    }                                                                   
+static ngx_inline int
+ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t  *ls)
+{
+    if (ngx_process <= NGX_PROCESS_MASTER) {
+
+        /* process master,  kernel network stack*/
+        if (!ls->belong_to_host) {
+            /* We should continue to process the listening socket,
+                  if it is not supported by fstack. */
+            if (fstack_territory(ls->sockaddr->sa_family, ls->type, 0)) {
+                return 1;
+            }
+        }
+    } else if (NGX_PROCESS_WORKER == ngx_process) {
+        /* process worker, fstack */
+        if (ls->belong_to_host) {
+            return 1;
+        }
+
+        if (!fstack_territory(ls->sockaddr->sa_family, ls->type, 0)) {
+            return 1;
+        }
+    } else {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                            "unexpected process type: %d, ignored",
+                            ngx_process);
+        exit(1);
+    }
+
+    return 0;
+}
 #endif
 
 
@@ -438,7 +443,9 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
 
 #if (NGX_HAVE_FSTACK)
 
-            ngx_ff_skip_listening_socket(ls);
+            if(ngx_ff_skip_listening_socket(cycle, &ls[i])){
+                continue;
+            }
 
 #endif
 
@@ -700,7 +707,9 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
 
 #if (NGX_HAVE_FSTACK)
 
-        ngx_ff_skip_listening_socket(ls);
+        if(ngx_ff_skip_listening_socket(cycle, &ls[i])){
+            continue;
+        }
 
 #endif
 
