@@ -609,13 +609,20 @@ ssize_t
 ff_sendmsg(int s, const struct msghdr *msg, int flags)
 {
     int rc;
+    struct sockaddr freebsd_sa;
+    void *linux_sa = msg->msg_name;
 
-    if (msg->msg_name != NULL) {
-        linux2freebsd_sockaddr(msg->msg_name,
-            sizeof(struct linux_sockaddr), msg->msg_name);
+    if (linux_sa != NULL) {
+        linux2freebsd_sockaddr(linux_sa,
+            sizeof(struct linux_sockaddr), &freebsd_sa);
+        __DECONST(struct msghdr *, msg)->msg_name = &freebsd_sa;
     }
 
-    if ((rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags)))
+    rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags);
+
+    __DECONST(struct msghdr *, msg)->msg_name = linux_sa;
+
+    if (rc)
         goto kern_fail;
 
     return (rc);
