@@ -3455,7 +3455,9 @@ ngx_http_core_create_srv_conf(ngx_conf_t *cf)
     cscf->ignore_invalid_headers = NGX_CONF_UNSET;
     cscf->merge_slashes = NGX_CONF_UNSET;
     cscf->underscores_in_headers = NGX_CONF_UNSET;
+#if (NGX_HAVE_FSTACK)
     cscf->kernel_network_stack = NGX_CONF_UNSET;
+#endif
 
     return cscf;
 }
