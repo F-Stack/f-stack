@@ -18,6 +18,10 @@ typedef struct {
     ngx_flag_t  xclient;
     size_t      buffer_size;
     ngx_msec_t  timeout;
+
+#if (NGX_HAVE_FSTACK)
+    ngx_flag_t  kernel_network_stack;
+#endif
 } ngx_mail_proxy_conf_t;
 
 
@@ -73,6 +77,15 @@ static ngx_command_t  ngx_mail_proxy_commands[] = {
       NGX_MAIL_SRV_CONF_OFFSET,
       offsetof(ngx_mail_proxy_conf_t, xclient),
       NULL },
+
+#if (NGX_HAVE_FSTACK)
+    { ngx_string("proxy_kernel_network_stack"),
+      NGX_MAIL_MAIN_CONF|NGX_MAIL_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_MAIL_SRV_CONF_OFFSET,
+      offsetof(ngx_mail_proxy_conf_t, kernel_network_stack),
+      NULL },
+#endif
 
       ngx_null_command
 };
@@ -134,6 +147,10 @@ ngx_mail_proxy_init(ngx_mail_session_t *s, ngx_addr_t *peer)
     p->upstream.get = ngx_event_get_peer;
     p->upstream.log = s->connection->log;
     p->upstream.log_error = NGX_ERROR_ERR;
+
+#if (NGX_HAVE_FSTACK)
+    p->upstream.belong_to_host = pcf->kernel_network_stack;
+#endif
 
     rc = ngx_event_connect_peer(&p->upstream);
 
@@ -1102,6 +1119,10 @@ ngx_mail_proxy_create_conf(ngx_conf_t *cf)
     pcf->buffer_size = NGX_CONF_UNSET_SIZE;
     pcf->timeout = NGX_CONF_UNSET_MSEC;
 
+#if (NGX_HAVE_FSTACK)
+    pcf->kernel_network_stack = NGX_CONF_UNSET;
+#endif
+
     return pcf;
 }
 
@@ -1118,6 +1139,11 @@ ngx_mail_proxy_merge_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->buffer_size, prev->buffer_size,
                               (size_t) ngx_pagesize);
     ngx_conf_merge_msec_value(conf->timeout, prev->timeout, 24 * 60 * 60000);
+
+#if (NGX_HAVE_FSTACK)
+    ngx_conf_merge_value(conf->kernel_network_stack,
+                          prev->kernel_network_stack, 0);
+#endif
 
     return NGX_CONF_OK;
 }
