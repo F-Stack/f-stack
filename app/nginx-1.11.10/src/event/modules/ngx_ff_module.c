@@ -109,6 +109,7 @@ static ssize_t (*real_send)(int, const void *, size_t, int);
 static ssize_t (*real_sendto)(int, const void *, size_t, int,
     const struct sockaddr*, socklen_t);
 static ssize_t (*real_sendmsg)(int, const struct msghdr*, int);
+static ssize_t (*real_recvmsg)(int, struct msghdr *, int);
 static ssize_t (*real_writev)(int, const struct iovec *, int);
 static ssize_t (*real_readv)(int, const struct iovec *, int);
 
@@ -290,6 +291,16 @@ sendmsg(int sockfd, const struct msghdr *msg, int flags)
     }
 
     return SYSCALL(sendmsg)(sockfd, msg, flags);
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
+{
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
+        return ff_recvmsg(sockfd, msg, flags);
+    }
+
+    return SYSCALL(recvmsg)(sockfd, msg, flags);
 }
 
 ssize_t
