@@ -334,9 +334,9 @@ linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
         return;
     }
 
-    bzero(freebsd, sizeof(struct sockaddr));
-    freebsd->sa_len = addrlen;
+    /* #linux and #freebsd may point to the same address */
     freebsd->sa_family = linux->sa_family;
+    freebsd->sa_len = addrlen;
     bcopy(linux->sa_data, freebsd->sa_data, sizeof(linux->sa_data));
 }
 
@@ -609,8 +609,20 @@ ssize_t
 ff_sendmsg(int s, const struct msghdr *msg, int flags)
 {
     int rc;
+    struct sockaddr freebsd_sa;
+    void *linux_sa = msg->msg_name;
 
-    if ((rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags)))
+    if (linux_sa != NULL) {
+        linux2freebsd_sockaddr(linux_sa,
+            sizeof(struct linux_sockaddr), &freebsd_sa);
+        __DECONST(struct msghdr *, msg)->msg_name = &freebsd_sa;
+    }
+
+    rc = sendit(curthread, s, __DECONST(struct msghdr *, msg), flags);
+
+    __DECONST(struct msghdr *, msg)->msg_name = linux_sa;
+
+    if (rc)
         goto kern_fail;
 
     return (rc);
@@ -675,6 +687,8 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
         goto kern_fail;
     }
     rc = curthread->td_retval[0];
+
+    freebsd2linux_sockaddr(msg->msg_name, msg->msg_name);
 
     return (rc);
 kern_fail:
