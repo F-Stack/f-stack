@@ -1,7 +1,4 @@
 language: c
-cache:
-  directories:
-    dpdk
 
 compiler:
   - gcc
@@ -11,7 +8,7 @@ compiler:
 #   - sudo apt-get install -y linux-headers-`uname -r`
 
 install:
-  - sudo apt-get install -y coreutils build-essential git
+  - sudo apt-get install -y coreutils build-essential git libnuma-dev
   - sudo apt-get install -y linux-headers-`uname -r`
 
 script:
