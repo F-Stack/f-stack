@@ -63,7 +63,7 @@ All the directives below are available only when ```NGX_HAVE_FSTACK``` is define
 
 ```
     Syntax: schedule_timeout time;
-    Default: schedule_timeout 30m;
+    Default: schedule_timeout 30ms;
     Context: http, server
 
     Sets a time interval for polling kernel_network_stack. The default value is 30 msec.
