@@ -450,7 +450,7 @@ init_dispatch_ring(void)
         }
 
         for(queueid = 0; queueid < nb_queues; ++queueid) {
-            snprintf(name_buf, RTE_RING_NAMESIZE, "dispatch_ring_p%d_q%d",
+            snprintf(name_buf, RTE_RING_NAMESIZE, "disp_ring_p%d_q%d",
                 portid, queueid);
             dispatch_ring[portid][queueid] = create_ring(name_buf,
                 DISPATCH_RING_SIZE, socketid, RING_F_SC_DEQ);
