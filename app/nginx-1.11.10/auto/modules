@@ -58,6 +58,7 @@ fi
 if [ $USE_FSTACK = YES ]; then
     have=NGX_HAVE_FSTACK . auto/have
     have=NGX_HAVE_FSTACK . auto/have_headers
+    have=SOCK_FSTACK value=0x1000 . auto/define
     CORE_SRCS="$CORE_SRCS $KQUEUE_SRCS"
     EVENT_MODULES="$EVENT_MODULES $KQUEUE_MODULE"
 fi

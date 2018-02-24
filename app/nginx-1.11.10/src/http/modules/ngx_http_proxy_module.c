@@ -101,6 +101,10 @@ typedef struct {
     ngx_str_t                      ssl_certificate_key;
     ngx_array_t                   *ssl_passwords;
 #endif
+
+#if (NGX_HAVE_FSTACK)
+    ngx_flag_t                     kernel_network_stack;
+#endif
 } ngx_http_proxy_loc_conf_t;
 
 
@@ -715,6 +719,17 @@ static ngx_command_t  ngx_http_proxy_commands[] = {
 
 #endif
 
+#if (NGX_HAVE_FSTACK)
+
+    { ngx_string("proxy_kernel_network_stack"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_proxy_loc_conf_t, kernel_network_stack),
+      NULL },
+
+#endif
+
       ngx_null_command
 };
 
@@ -916,6 +931,10 @@ ngx_http_proxy_handler(ngx_http_request_t *r)
     u->input_filter_ctx = r;
 
     u->accel = 1;
+
+#if (NGX_HAVE_FSTACK)
+    u->peer.belong_to_host = plcf->kernel_network_stack;
+#endif
 
     if (!plcf->upstream.request_buffering
         && plcf->body_values == NULL && plcf->upstream.pass_request_body
@@ -2902,6 +2921,10 @@ ngx_http_proxy_create_loc_conf(ngx_conf_t *cf)
 
     ngx_str_set(&conf->upstream.module, "proxy");
 
+#if (NGX_HAVE_FSTACK)
+    conf->kernel_network_stack = NGX_CONF_UNSET;
+#endif
+
     return conf;
 }
 
@@ -3395,6 +3418,12 @@ ngx_http_proxy_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         prev->headers_cache = conf->headers_cache;
 #endif
     }
+
+#if (NGX_HAVE_FSTACK)
+    /* By default, we set up a proxy on fstack */
+    ngx_conf_merge_value(conf->kernel_network_stack,
+                              prev->kernel_network_stack, 0);
+#endif
 
     return NGX_CONF_OK;
 }
