@@ -39,22 +39,17 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     type = (pc->type ? pc->type : SOCK_STREAM);
 
 #if (NGX_HAVE_FSTACK)
-    /* 
-     We need to explicitly call the needed socket() function
-         to create socket!
+    /*
+     We use a creation flags created by fstack's adaptable layer to 
+      to explicitly call the needed socket() function.
     */
-    static int (*real_socket)(int, int, int);
-    if (pc->belong_to_host) {
-        if (!real_socket) {
-            real_socket = dlsym(RTLD_NEXT, "socket");
-        }
-        s = real_socket(pc->sockaddr->sa_family, type, 0);
-    } else {
-        s = ngx_socket(pc->sockaddr->sa_family, type, 0);
+    if (!pc->belong_to_host) {
+        type |= SOCK_FSTACK;
     }
-#else
-    s = ngx_socket(pc->sockaddr->sa_family, type, 0);
 #endif
+
+    s = ngx_socket(pc->sockaddr->sa_family, type, 0);
+
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, pc->log, 0, "%s socket %d",
                    (type == SOCK_STREAM) ? "stream" : "dgram", s);

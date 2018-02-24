@@ -15,7 +15,7 @@ extern int fstack_territory(int domain, int type, int protocol);
 extern int is_fstack_fd(int sockfd);
 
 static ngx_inline int
-ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t  *ls)
+ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, ngx_listening_t *ls)
 {
     if (ngx_process <= NGX_PROCESS_MASTER) {
 
@@ -36,6 +36,8 @@ ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t  *ls)
         if (!fstack_territory(ls->sockaddr->sa_family, ls->type, 0)) {
             return 1;
         }
+
+        ls->type |= SOCK_FSTACK;
     } else {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                             "unexpected process type: %d, ignored",
