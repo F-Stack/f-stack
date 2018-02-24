@@ -210,8 +210,8 @@ int
 fstack_territory(int domain, int type, int protocol)
 {
     /* Remove creation flags */
-	type &= ~SOCK_CLOEXEC;
-	type &= ~SOCK_NONBLOCK;
+    type &= ~SOCK_CLOEXEC;
+    type &= ~SOCK_NONBLOCK;
     type &= ~SOCK_FSTACK;
 
     if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
@@ -233,9 +233,9 @@ socket(int domain, int type, int protocol)
         return SYSCALL(socket)(domain, type, protocol);
     }
 
-	if (unlikely((type & SOCK_FSTACK) == 0)) {
-		return SYSCALL(socket)(domain, type, protocol);
-	}
+    if (unlikely((type & SOCK_FSTACK) == 0)) {
+        return SYSCALL(socket)(domain, type, protocol);
+    }
 
     type &= ~SOCK_FSTACK;
     sock = ff_socket(domain, type, protocol);
@@ -287,7 +287,7 @@ sendto(int sockfd, const void *buf, size_t len, int flags,
     if(is_fstack_fd(sockfd)){
         sockfd = restore_fstack_fd(sockfd);
         return ff_sendto(sockfd, buf, len, flags,
-	        (struct linux_sockaddr *)dest_addr, addrlen);
+            (struct linux_sockaddr *)dest_addr, addrlen);
     }
 
     return SYSCALL(sendto)(sockfd, buf, len, flags, dest_addr, addrlen);
