@@ -72,6 +72,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 
+#include <ngx_auto_config.h>
 #include "ff_api.h"
 
 #define _GNU_SOURCE
@@ -208,11 +209,16 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 int
 fstack_territory(int domain, int type, int protocol)
 {
-     if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
-        return 0;
-     }
+    /* Remove creation flags */
+    type &= ~SOCK_CLOEXEC;
+    type &= ~SOCK_NONBLOCK;
+    type &= ~SOCK_FSTACK;
 
-     return 1;
+    if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
+        return 0;
+    }
+
+    return 1;
 }
 
 int
@@ -223,10 +229,15 @@ socket(int domain, int type, int protocol)
         return SYSCALL(socket)(domain, type, protocol);
     }
 
-    if ((AF_INET != domain) || (SOCK_STREAM != type && SOCK_DGRAM != type)) {
+    if (unlikely(fstack_territory(domain, type, protocol) == 0)) {
         return SYSCALL(socket)(domain, type, protocol);
     }
 
+    if (unlikely((type & SOCK_FSTACK) == 0)) {
+        return SYSCALL(socket)(domain, type, protocol);
+    }
+
+    type &= ~SOCK_FSTACK;
     sock = ff_socket(domain, type, protocol);
 
     if (sock != -1) {
@@ -276,7 +287,7 @@ sendto(int sockfd, const void *buf, size_t len, int flags,
     if(is_fstack_fd(sockfd)){
         sockfd = restore_fstack_fd(sockfd);
         return ff_sendto(sockfd, buf, len, flags,
-	        (struct linux_sockaddr *)dest_addr, addrlen);
+            (struct linux_sockaddr *)dest_addr, addrlen);
     }
 
     return SYSCALL(sendto)(sockfd, buf, len, flags, dest_addr, addrlen);

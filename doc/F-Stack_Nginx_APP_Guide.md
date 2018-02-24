@@ -42,21 +42,37 @@ first one to start |                    |     |                   |    |        
 
 - a major addition to the worker process is fstack-handling：ff_init();ff_run(worker_process_cycle); worker_process_cycle(handle channel/host/fstack event).
 
-- a new directive `kernel_network_stack` :
+## What's Different?
+### New directives:
+All the directives below are available only when ```NGX_HAVE_FSTACK``` is defined.
 ```
     Syntax: kernel_network_stack on | off;
     Default: kernel_network_stack off;
     Context: http, server
-    This directive is available only when ```NGX_HAVE_FSTACK``` is defined.
+
     Determines whether server should run on kernel network stack or fstack.
 ```
 
-Note that:
+```
+    Syntax: proxy_kernel_network_stack on | off;
+    Default: kernel_network_stack off;
+    Context: http, stream, mail, server
 
-- the `reload` is not graceful, service will still be unavailable during the process of reloading.
+    Determines whether proxy should go through kernel network stack or fstack.
+```
 
-- necessary modifies in nginx.conf:
+```
+    Syntax: schedule_timeout time;
+    Default: schedule_timeout 30ms;
+    Context: http, server
 
+    Sets a time interval for polling kernel_network_stack. The default value is 30 msec.
+```
+
+### Command-line `reload`
+the `reload` is not graceful, service will still be unavailable during the process of reloading.
+
+### Necessary modifies in nginx.conf:
 ```
     user  root; # root account is necessary.
     fstack_conf f-stack.conf;  # path of f-stack configuration file, default: $NGX_PREFIX/conf/f-stack.conf.

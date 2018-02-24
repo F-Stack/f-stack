@@ -38,7 +38,18 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     type = (pc->type ? pc->type : SOCK_STREAM);
 
+#if (NGX_HAVE_FSTACK)
+    /*
+     We use a creation flags created by fstack's adaptable layer to 
+      to explicitly call the needed socket() function.
+    */
+    if (!pc->belong_to_host) {
+        type |= SOCK_FSTACK;
+    }
+#endif
+
     s = ngx_socket(pc->sockaddr->sa_family, type, 0);
+
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, pc->log, 0, "%s socket %d",
                    (type == SOCK_STREAM) ? "stream" : "dgram", s);
