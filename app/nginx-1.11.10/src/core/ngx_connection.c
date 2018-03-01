@@ -14,8 +14,13 @@
 extern int fstack_territory(int domain, int type, int protocol);
 extern int is_fstack_fd(int sockfd);
 
+/*
+ * ngx_ff_skip_listening_socket() decides whether to skip `ls`.
+ * If the current process is NGX_PROCESS_WORKER and `ls` is belong to fstack,
+ * then `*type` will be ls->type|SOCK_FSTACK when `type` is not null.
+ */
 static ngx_inline int
-ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, ngx_listening_t *ls)
+ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t *ls, int *type)
 {
     if (ngx_process <= NGX_PROCESS_MASTER) {
 
@@ -37,7 +42,9 @@ ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, ngx_listening_t *ls)
             return 1;
         }
 
-        ls->type |= SOCK_FSTACK;
+        if(type) {
+            *type |= SOCK_FSTACK;
+        }
     } else {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                             "unexpected process type: %d, ignored",
@@ -426,6 +433,10 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
     ngx_socket_t      s;
     ngx_listening_t  *ls;
 
+#if (NGX_HAVE_FSTACK)
+    int               type;
+#endif
+
     reuseaddr = 1;
 #if (NGX_SUPPRESS_WARN)
     failed = 0;
@@ -445,7 +456,8 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
 
 #if (NGX_HAVE_FSTACK)
 
-            if(ngx_ff_skip_listening_socket(cycle, &ls[i])){
+            type = ls[i].type;
+            if(ngx_ff_skip_listening_socket(cycle, &ls[i], &type)){
                 continue;
             }
 
@@ -493,7 +505,11 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
                 continue;
             }
 
+#if (NGX_HAVE_FSTACK)
+            s = ngx_socket(ls[i].sockaddr->sa_family, type, 0);
+#else
             s = ngx_socket(ls[i].sockaddr->sa_family, ls[i].type, 0);
+#endif
 
             if (s == (ngx_socket_t) -1) {
                 ngx_log_error(NGX_LOG_EMERG, log, ngx_socket_errno,
@@ -709,7 +725,7 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
 
 #if (NGX_HAVE_FSTACK)
 
-        if(ngx_ff_skip_listening_socket(cycle, &ls[i])){
+        if(ngx_ff_skip_listening_socket(cycle, &ls[i], NULL)){
             continue;
         }
 
