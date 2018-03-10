@@ -39,7 +39,12 @@
 
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
+#define SEND_STATS	 _IOWR(0, 4, struct net_dev_stats)
 /* Callback for request of changing MTU */
 /* Total octets in ethernet header */
 #define KNI_ENET_HEADER_SIZE    14
@@ -78,6 +83,7 @@ struct kni_interface_stats {
 
 struct rte_ring **kni_rp;
 struct kni_interface_stats **kni_stat;
+int kni_fd;
 
 static void
 set_bitmap(uint16_t port, unsigned char *bitmap)
@@ -164,6 +170,26 @@ kni_config_network_interface(uint8_t port_id, uint8_t if_up)
     return ret;
 }
 
+//synchronize real network traffic satas to kni interface
+void kni_update_rte_stats(uint8_t port_id)
+{
+	int ret;
+	struct rte_eth_stats stats;
+
+	struct net_dev_stats ss;
+	memset(&stats, 0, sizeof(struct rte_eth_stats));
+	ret = rte_eth_stats_get(port_id, &stats);
+	if(ret == 0){
+		ss.rx_packets = stats.ipackets;
+		ss.tx_packets = stats.opackets;
+		ss.rx_bytes = stats.ibytes;
+		ss.tx_bytes = stats.obytes;
+		ss.rx_errors = stats.ierrors;
+		ss.tx_errors = stats.oerrors;
+		snprintf(ss.name, RTE_KNI_NAMESIZE, "%s%u", KNI_NAME,port_id);
+	}
+	ioctl(kni_fd,SEND_STATS,&ss);
+}
 static int
 kni_process_tx(uint8_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
@@ -349,7 +375,7 @@ ff_kni_alloc(uint8_t port_id, unsigned socket_id,
 
         /* only support one kni */
         memset(&conf, 0, sizeof(conf));
-        snprintf(conf.name, RTE_KNI_NAMESIZE, "veth%u", port_id);
+        snprintf(conf.name, RTE_KNI_NAMESIZE, "%s%u",KNI_NAME,port_id);
         conf.core_id = rte_lcore_id();
         conf.force_bind = 1;
         conf.group_id = port_id;
@@ -377,7 +403,8 @@ ff_kni_alloc(uint8_t port_id, unsigned socket_id,
         kni_stat[port_id]->rx_dropped = 0;
         kni_stat[port_id]->tx_packets = 0;
         kni_stat[port_id]->tx_dropped = 0;
-    }
+		kni_fd = rte_kni_fd();
+	}
 
     char ring_name[RTE_KNI_NAMESIZE];
     snprintf((char*)ring_name, RTE_KNI_NAMESIZE, "kni_ring_%u", port_id);

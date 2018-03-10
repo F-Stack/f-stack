@@ -37,6 +37,8 @@ enum FilterReturn {
     FILTER_KNI = 2,
 };
 
+#define KNI_NAME   "veth"
+
 void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
     const char *udp_ports);
 
@@ -49,6 +51,6 @@ void ff_kni_process(uint8_t port_id, uint16_t queue_id,
 enum FilterReturn ff_kni_proto_filter(const void *data, uint16_t len);
 
 int ff_kni_enqueue(uint8_t port_id, struct rte_mbuf *pkt);
-
+void kni_update_rte_stats(uint8_t port_id);
 
 #endif /* ifndef _FSTACK_DPDK_KNI_H */

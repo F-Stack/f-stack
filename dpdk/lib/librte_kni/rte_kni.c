@@ -83,6 +83,7 @@ struct rte_kni {
 
 	struct rte_kni_ops ops;             /**< operations for request */
 	uint8_t in_use : 1;                 /**< kni in use */
+	int fd;
 };
 
 enum kni_ops_status {
@@ -311,6 +312,10 @@ kni_fail:
 			 max_kni_ifaces);
 }
 
+int rte_kni_fd(void)
+{
+	return  kni_fd;
+}
 
 struct rte_kni *
 rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
@@ -368,7 +373,6 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 
 	snprintf(ctx->name, RTE_KNI_NAMESIZE, "%s", intf_name);
 	snprintf(dev_info.name, RTE_KNI_NAMESIZE, "%s", intf_name);
-
 	RTE_LOG(INFO, KNI, "pci: %02x:%02x:%02x \t %02x:%02x\n",
 		dev_info.bus, dev_info.devid, dev_info.function,
 			dev_info.vendor_id, dev_info.device_id);
@@ -435,8 +439,8 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 	ret = ioctl(kni_fd, RTE_KNI_IOCTL_CREATE, &dev_info);
 	KNI_MEM_CHECK(ret < 0);
 
-	ctx->in_use = 1;
 
+	ctx->in_use = 1;
 	/* Allocate mbufs and then put them into alloc_q */
 	kni_allocate_mbufs(ctx);
 

@@ -164,11 +164,20 @@ struct rte_kni_device_info {
 	/* mbuf size */
 	unsigned mbuf_size;
 };
+struct net_dev_stats {
+	uint64_t	rx_packets;
+	uint64_t	tx_packets;
+	uint64_t	rx_bytes;
+	uint64_t	tx_bytes;
+	uint64_t	rx_errors;
+	uint64_t	tx_errors;
+	char name[RTE_KNI_NAMESIZE]; /* Network device name */
+};
 
 #define KNI_DEVICE "kni"
 
 #define RTE_KNI_IOCTL_TEST    _IOWR(0, 1, int)
 #define RTE_KNI_IOCTL_CREATE  _IOWR(0, 2, struct rte_kni_device_info)
 #define RTE_KNI_IOCTL_RELEASE _IOWR(0, 3, struct rte_kni_device_info)
-
+#define SEND_STATS			  _IOWR(0, 4, struct net_dev_stats)
 #endif /* _RTE_KNI_COMMON_H_ */

@@ -252,6 +252,8 @@ int rte_kni_unregister_handlers(struct rte_kni *kni);
  */
 void rte_kni_close(void);
 
+int rte_kni_fd(void);
+
 #ifdef __cplusplus
 }
 #endif

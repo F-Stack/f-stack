@@ -388,6 +388,41 @@ kni_check_param(struct kni_dev *kni, struct rte_kni_device_info *dev)
 
 	return 0;
 }
+static int
+kni_ioctl_stats(struct net *net,
+		unsigned int ioctl_num, unsigned long ioctl_param)
+{
+	struct kni_net *knet = net_generic(net, kni_net_id);
+	int ret = -EINVAL;
+	struct kni_dev *kni, *n;
+	struct net_dev_stats ss;
+
+	/* Check the buffer size, to avoid warning */
+	if (_IOC_SIZE(ioctl_num) > sizeof(ss))
+		return -EINVAL;
+
+	/* Copy kni info from user space */
+	ret = copy_from_user(&ss, (void *)ioctl_param, sizeof(ss));
+	if (ret) {
+		KNI_ERR("copy_from_user in kni_ioctl_stats");
+		return -EIO;
+	}
+	list_for_each_entry_safe(kni, n, &knet->kni_list_head, list) {
+		if (strncmp(kni->name, ss.name, RTE_KNI_NAMESIZE) == 0)
+			break;
+	}
+	//update kni stats
+	if(kni!=NULL){
+		kni->stats.rx_packets = ss.rx_packets;
+		kni->stats.rx_bytes   = ss.rx_bytes;
+		kni->stats.tx_packets = ss.tx_packets;
+		kni->stats.tx_bytes   = ss.tx_bytes;
+		kni->stats.rx_errors  = ss.rx_errors;
+		kni->stats.tx_errors  = ss.tx_errors;
+		return 0;
+	}else
+		return -EINVAL;
+}
 
 static int
 kni_ioctl_create(struct net *net,
@@ -659,6 +694,9 @@ kni_ioctl(struct inode *inode,
 		break;
 	case _IOC_NR(RTE_KNI_IOCTL_RELEASE):
 		ret = kni_ioctl_release(net, ioctl_num, ioctl_param);
+		break;
+	case _IOC_NR(SEND_STATS):
+		ret = kni_ioctl_stats(net, ioctl_num, ioctl_param);
 		break;
 	default:
 		KNI_DBG("IOCTL default\n");
