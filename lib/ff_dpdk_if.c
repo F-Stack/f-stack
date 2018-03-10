@@ -1437,7 +1437,8 @@ main_loop(void *arg)
 
             if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
-            }
+				kni_update_rte_stats(port_id);
+			}
 
             process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
