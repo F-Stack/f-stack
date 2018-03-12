@@ -72,7 +72,8 @@ static ngx_log_t        ngx_exit_log;
 static ngx_open_file_t  ngx_exit_log_file;
 
 #if (NGX_HAVE_FSTACK)
-static ngx_int_t ngx_ff_primary;
+static ngx_int_t        ngx_ff_primary;
+static sem_t           *ngx_ff_worker_sem;
 #endif
 
 void
@@ -374,6 +375,37 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
     ngx_int_t      i;
     ngx_channel_t  ch;
 
+#if (NGX_HAVE_FSTACK)
+    const char    *shm_name = "ff_shm";
+    int            shm_fd, r;
+
+    shm_fd = shm_open(shm_name, O_CREAT|O_TRUNC|O_RDWR, 0666);
+    if (shm_fd == -1) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                      "start worker processes shm_open");
+        exit(2);
+    }
+    (void) ftruncate(shm_fd, sizeof(sem_t));
+    ngx_ff_worker_sem = (sem_t *) mmap(NULL, sizeof(sem_t),
+                      PROT_READ|PROT_WRITE,MAP_SHARED, shm_fd, 0);
+    if (ngx_ff_worker_sem == MAP_FAILED) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                      "start worker processes mmap");
+        shm_unlink(shm_name);
+        exit(2);
+    }
+    if (sem_init(ngx_ff_worker_sem, 1, 0) != 0)
+    {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                      "start worker processes sem_init");
+        
+        munmap(ngx_ff_worker_sem, sizeof(sem_t));
+        shm_unlink(shm_name);
+        exit(2);
+    }
+
+#endif
+
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "start worker processes");
 
     ngx_memzero(&ch, sizeof(ngx_channel_t));
@@ -390,10 +422,31 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
         ch.fd = ngx_processes[ngx_process_slot].channel[0];
 
         ngx_pass_open_channel(cycle, &ch);
+
 #if (NGX_HAVE_FSTACK)
+
+        // wait for ff_primary worker process startup.
+
         if (i == 0) {
-            // wait for ff_primary worker process startup.
-            ngx_sleep(1);
+            struct timespec ts;
+            (void) clock_gettime(CLOCK_REALTIME,&ts);
+            
+            ts.tv_sec  += 15; //15s
+            while ((r = sem_timedwait(ngx_ff_worker_sem, &ts)) == -1
+                    && errno == EINTR)
+            {
+                continue;           /* Restart if interrupted by signal handler */
+            }
+
+            if (r == -1) {
+                ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                        "start worker processes sem_timedwait");
+                exit(2);
+            }
+
+            sem_destroy(ngx_ff_worker_sem);
+            munmap(ngx_ff_worker_sem, sizeof(sem_t));
+            shm_unlink(shm_name);
         }
 #endif
     }
@@ -995,6 +1048,10 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                           "ff_mod_init failed");
             exit(2);
+        }
+
+        if (worker == 0) {
+            (void) sem_post(ngx_ff_worker_sem);
         }
 
         if (ngx_open_listening_sockets(cycle) != NGX_OK) {
