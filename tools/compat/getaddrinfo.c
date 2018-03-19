@@ -56,7 +56,7 @@ getaddrinfo(const char *hostname, const char *servername,
 
     ai->ai_next = NULL;
     ai->ai_canonname = NULL;
-    ai->ai_addr = (struct sockaddr *)ai+1;
+    ai->ai_addr = (struct sockaddr *)(ai+1);
 
     struct sockaddr_in *si = (struct sockaddr_in *)ai->ai_addr;
     si->sin_len = ai->ai_addrlen = sizeof(struct sockaddr);
