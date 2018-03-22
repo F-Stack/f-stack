@@ -440,7 +440,7 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
 
             if (r == -1) {
                 ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-                        "start worker processes sem_timedwait");
+                        "primary worker process failed to initialize");
                 exit(2);
             }
 
