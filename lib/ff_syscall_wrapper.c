@@ -625,6 +625,8 @@ ff_sendmsg(int s, const struct msghdr *msg, int flags)
     if (rc)
         goto kern_fail;
 
+    rc = curthread->td_retval[0];
+
     return (rc);
 kern_fail:
     ff_os_errno(rc);
