@@ -534,8 +534,15 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         tp = &ts;
     }
 
+#if (NGX_HAVE_FSTACK)
+    if (n > 0) {
+        ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
+                   "kevent timer: %M, changes: %d", timer, n);
+    }
+#else
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "kevent timer: %M, changes: %d", timer, n);
+#endif
 
     events = kevent(ngx_kqueue, change_list, n, event_list, (int) nevents, tp);
 
@@ -545,8 +552,10 @@ ngx_kqueue_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         ngx_time_update();
     }
 
+#if !(NGX_HAVE_FSTACK)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "kevent events: %d", events);
+#endif
 
     if (err) {
         if (err == NGX_EINTR) {
