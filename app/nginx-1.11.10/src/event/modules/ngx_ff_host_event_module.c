@@ -332,10 +332,10 @@ ngx_ff_epoll_process_events(ngx_cycle_t *cycle,
     ngx_connection_t  *c;
 
     /* NGX_TIMER_INFINITE == INFTIM */
-
+/*
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "epoll timer: %M", timer);
-
+*/
     events = epoll_wait(ep, event_list, (int) nevents, timer);
 
     err = (events == -1) ? ngx_errno : 0;

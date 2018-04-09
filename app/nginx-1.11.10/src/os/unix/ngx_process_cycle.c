@@ -829,7 +829,7 @@ ngx_worker_process_cycle_loop(void *arg)
         }
     }
 
-    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
+    //ngx_log_debug0(NGX_LOG_DEBUG_EVENT, cycle->log, 0, "worker cycle");
 
     ngx_process_events_and_timers(cycle);
 
