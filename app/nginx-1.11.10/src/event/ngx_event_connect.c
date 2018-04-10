@@ -44,12 +44,13 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
       to explicitly call the needed socket() function.
     */
     if (!pc->belong_to_host) {
-        type |= SOCK_FSTACK;
+        s = ngx_socket(pc->sockaddr->sa_family, type | SOCK_FSTACK, 0);
+    } else {
+        s = ngx_socket(pc->sockaddr->sa_family, type, 0);
     }
-#endif
-
+#else
     s = ngx_socket(pc->sockaddr->sa_family, type, 0);
-
+#endif
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, pc->log, 0, "%s socket %d",
                    (type == SOCK_STREAM) ? "stream" : "dgram", s);
