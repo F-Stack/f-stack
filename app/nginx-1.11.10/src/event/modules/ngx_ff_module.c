@@ -325,6 +325,16 @@ recv(int sockfd, void *buf, size_t len, int flags)
     return SYSCALL(recv)(sockfd, buf, len, flags);
 }
 
+ssize_t
+__recv_chk (int fd, void *buf, size_t n, size_t buflen, int flags)
+{
+/*
+  if (n > buflen)
+    __chk_fail ();
+*/
+  return recv (fd, buf, n, flags);
+}
+
 int
 listen(int sockfd, int backlog)
 {
