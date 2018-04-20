@@ -5,20 +5,20 @@
 
 ## Introduction
 
-With the rapid development of NIC, the poor performance of data packets processing with Linux kernel has become the bottleneck. However, the rapid development of the Internet needs high performance of network processing, kernel bypass has caught more and more attentions. There are various similar technologies appear, such as DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow, all data streams are processed in user space. Therefore, kernel bypass can avoid performance bottlenecks caused by kernel packet copying, thread scheduling, system calls and interrupts. Furthermore, kernel bypass can achieve higher performance with multi optimizing methods.  Within various techniques, DPDK has been widely used because of its more thorough isolation from kernel scheduling and active community support.
+With the rapid development of Network Interface Cards the poor performance of data packet processing with the Linux kernel has become the bottleneck in modern network systems. Yet, the increasing demands of the Internet's growth demand a higher performant network processing solution. Kernel bypass has emerged to catch more and more attention. There are various similar technologies such as: DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow; all data streams are processed in user space. Therefore, kernel bypass can avoid performance bottlenecks caused by kernel packet copying, thread scheduling, system calls, and interrupts. Furthermore, kernel bypass can achieve higher performance with multi-optimizing methods. Within various techniques, DPDK has been widely used because of it's more thorough isolation from kernel scheduling and active community support.
 
-[F-Stack](http://www.f-stack.org/?from=github) is an open source network framework with high performance based on DPDK. With following characteristics
+[F-Stack](http://www.f-stack.org/?from=github) is an open source high performant network framework based on DPDK with the following characteristics:
 
-1. Ultra high network performance which can achieve network card under full load, 10 million concurrent connections, 5 million RPS, 1 million CPS.
-2. Transplant FreeBSD 11.01 user space stack, provides a complete stack function, cut a great amount of irrelevant features. Therefore greatly enhance the performance.
-3. Support Nginx, Redis and other mature applications, service can easily use F-Stack
-4. With Multi-process architecture, easy to extend
-5. Provide micro thread interface. Various applications with stateful app can easily use F-Stack to get high performance without processing complex asynchronous logic.
-6. Provide Epoll/Kqueue interface that allow many kinds of applications easily use F-Stack
+1. Ultra high network performance which the network card can achieve under full load: 10 million concurrent connections, 5 million RPS, 1 million CPS.
+2. Transplant FreeBSD 11.01 user space stack, which provides a complete stack function, and cut a great amount of irrelevant features. This greatly enhances network performance.
+3. Support Nginx, Redis, and other mature applications. Services can easily use F-Stack.
+4. Easy to extend with multi-process architecture.
+5. Provides micro thread interface. Various applications with stateful applications can easily use F-Stack to get high performance without processing complex asynchronous logic.
+6. Provide an Epoll/Kqueue interface that allow many kinds of applications to easily use F-Stack.
 
 ## History
 
-In order to deal with the increasingly severe DDoS attacks, authorized DNS server of Tencent Cloud DNSPod switched from Gigabit Ethernet to 10-Gigabit at the end of 2012. We faced several options, one is to continue to use the original model another is to use kernel bypass technology. After several rounds of investigation, we finally chose to develop our next generation of DNS server based on DPDK. The reason is DPDK provides ultra-high performance and can be seamlessly extended to 40G, or even 100G NIC in the future.
+To deal with the increasingly severe DDoS attacks the authorized DNS server of Tencent Cloud DNSPod switched from Gigabit Ethernet to 10-Gigabit at the end of 2012. We faced several options: one is to continue to use the original network stack in the Linux kernel, another is to use kernel bypass techniques. After several rounds of investigation; we finally chose to develop our next generation of DNS server based on DPDK. The reason is DPDK provides ultra-high performance and can be seamlessly extended to 40G, or even 100G NIC, in the future.
 
 After several months of development and testing, DKDNS, high-performance DNS server based on DPDK officially released in October 2013. It's capable of achieving up to 11 million QPS with a single 10GE port and 18.2 million QPS with two 10GE ports. And then we developed a user-space TCP/IP stack called F-Stack that can process 0.6 million RPS with a single 10GE port.
 
