@@ -22,15 +22,15 @@ To deal with the increasingly severe DDoS attacks the authorized DNS server of T
 
 After several months of development and testing, DKDNS, high-performance DNS server based on DPDK officially released in October 2013. It's capable of achieving up to 11 million QPS with a single 10GE port and 18.2 million QPS with two 10GE ports. And then we developed a user-space TCP/IP stack called F-Stack that can process 0.6 million RPS with a single 10GE port.
 
-With the fast growth of Tencent Cloud, more and more services need higher network access performance. Meanwhile, F-Stack was continuous improving driven by the business growth, and ultimately developed into a general network access framework. But this TCP/IP stack couldn't meet the needs of these services while continue to develop and maintain a complete network stack will cost high, we've tried several plans and finally determined to port FreeBSD(11.0 stable) TCP/IP stack into F-Stack. Thus, we can reduce the cost of maintenance and follow up the improvement from community quickly.Thanks to [libplebnet](https://gitorious.org/freebsd/kmm-sandbox/commit/fa8a11970bc0ed092692736f175925766bebf6af?p=freebsd:kmm-sandbox.git;a=tree;f=lib/libplebnet;h=ae446dba0b4f8593b69b339ea667e12d5b709cfb;hb=refs/heads/work/svn_trunk_libplebnet) and [libuinet](https://github.com/pkelsey/libuinet), this work becomes a lot easier.
+With the fast growth of Tencent Cloud more and more of our services needed higher network access performance. Meanwhile, F-Stack was continuing to improve, being driven by our business growth, and, ultimately developed into a general network access framework. But our initial TCP/IP stack couldn't meet the needs of these services. Continuing to develop and maintain a complete high performance network stack would have been too expensive. After evaluating several plans; we finally determined to port FreeBSD's (11.0 stable) TCP/IP stack into F-Stack. Not only does this allow us to stop reinventing the wheel, we can take advantage of the the improvments the FreeBSD community will bring in the future. Thanks to [libplebnet](https://gitorious.org/freebsd/kmm-sandbox/commit/fa8a11970bc0ed092692736f175925766bebf6af?p=freebsd:kmm-sandbox.git;a=tree;f=lib/libplebnet;h=ae446dba0b4f8593b69b339ea667e12d5b709cfb;hb=refs/heads/work/svn_trunk_libplebnet) and [libuinet](https://github.com/pkelsey/libuinet) this work became a lot easier.
 
-With the rapid development of all kinds of application, in order to help different APPs quick and easily use F-Stack, F-Stack has integrated Nginx, Redis and other commonly used APPs, and a micro thread framework, and provides a standard Epoll/Kqueue interface.
+With the rapid development of all kinds of applications, in order to help different APPs quick and easily use F-Stack, F-Stack has integrated Nginx, Redis and other commonly used APPs, and a micro thread framework, and provides a standard Epoll/Kqueue interface.
 
 Currently, besides authorized DNS server of DNSPod, there are various products in Tencent Cloud has used the F-Stack, such as HttpDNS (D+), COS access module, CDN access module, etc..
 
 ## Quick Start
 
-    #clone F-Stack
+    # clone F-Stack
     mkdir /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
  
