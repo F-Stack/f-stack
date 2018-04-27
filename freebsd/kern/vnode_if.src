@@ -451,7 +451,7 @@ vop_advlockasync {
 	IN int op;
 	IN struct flock *fl;
 	IN int flags;
-	IN struct task *task;	
+	IN struct task *task;
 	INOUT void **cookiep;
 };
 
