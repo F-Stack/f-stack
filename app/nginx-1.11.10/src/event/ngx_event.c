@@ -250,19 +250,34 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
     delta = ngx_current_msec;
 
+#if (NGX_HAVE_FSTACK)
+    /* 
+     * NGX_PROCESS_WORKERs run on both fstack and kernel,
+     * others ( e.g. cache manager/loader ) only run on kernel.
+     */
+    if(ngx_process == NGX_PROCESS_WORKER) {
+        (void) ngx_process_events(cycle, timer, flags);
+
+        /*
+         * handle message from kernel ( e.g. signals)
+         * in case of network inactivity
+         */
+        if (ngx_current_msec - initial >= ngx_schedule_timeout) {
+            (void) ngx_ff_process_host_events(cycle, 0, flags);
+
+            /* Update timer*/
+            initial = ngx_current_msec;
+        }
+    } else {
+        (void) ngx_ff_process_host_events(cycle, timer, flags);
+    }
+
+    delta = ngx_current_msec - delta;
+#else
     (void) ngx_process_events(cycle, timer, flags);
 
     delta = ngx_current_msec - delta;
 
-#if (NGX_HAVE_FSTACK)
-    /* handle message from kernel (PS: signals from master) in case of network inactivity */
-    if (ngx_current_msec - initial >= ngx_schedule_timeout) {
-        (void) ngx_ff_process_host_events(cycle, 0, flags);
-
-        /* Update timer*/
-        initial = ngx_current_msec;
-    }
-#else
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "timer delta: %M", delta);
 #endif
