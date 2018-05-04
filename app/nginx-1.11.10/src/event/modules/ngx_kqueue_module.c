@@ -127,6 +127,12 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
     struct kevent       kev;
 #endif
 
+#if (NGX_HAVE_FSTACK)
+    if(ngx_process != NGX_PROCESS_WORKER) {
+        return NGX_OK;
+    }
+#endif
+
     kcf = ngx_event_get_conf(cycle->conf_ctx, ngx_kqueue_module);
 
     if (ngx_kqueue == -1) {
