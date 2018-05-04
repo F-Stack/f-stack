@@ -1043,15 +1043,6 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
-#if (NGX_HAVE_FSTACK)
-
-        // No need to deal with, just skip
-        if (fstack_territory(ls[i].sockaddr->sa_family, ls[i].type, 0)) {
-            continue;
-        }
-
-#endif //(NGX_HAVE_FSTACK)
-
         c = ls[i].connection;
 
         if (c) {
@@ -1079,10 +1070,21 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
         ngx_log_debug2(NGX_LOG_DEBUG_CORE, cycle->log, 0,
                        "close listening %V #%d ", &ls[i].addr_text, ls[i].fd);
 
+#if (NGX_HAVE_FSTACK)
+        if(ls[i].fd != (ngx_socket_t) -1) {
+            if (ngx_close_socket(ls[i].fd) == -1) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_socket_errno,
+                            ngx_close_socket_n " %V failed", &ls[i].addr_text);
+            }
+        }
+#else
+
         if (ngx_close_socket(ls[i].fd) == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_socket_errno,
                           ngx_close_socket_n " %V failed", &ls[i].addr_text);
         }
+
+#endif //(NGX_HAVE_FSTACK)
 
 #if (NGX_HAVE_UNIX_DOMAIN)
 
