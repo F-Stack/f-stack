@@ -99,15 +99,17 @@ void	_callout_init_lock(struct callout *, struct lock_object *, int);
 	_callout_init_lock((c), ((rw) != NULL) ? &(rw)->lock_object :	\
 	   NULL, (flags))
 #define	callout_pending(c)	((c)->c_iflags & CALLOUT_PENDING)
-int	callout_reset_sbt_on(struct callout *, sbintime_t, sbintime_t,
-	    void (*)(void *), void *, int, int);
+int callout_reset_tick_on(struct callout *, int, void (*)(void *),
+	void *, int, int);
+#define callout_reset_sbt_on(c, sbt, pr, fn, args, cpu, flags) \
+    callout_reset_tick_on((c), (sbt)/tick_sbt, (fn), (args), (cpu), (flags))
 #define	callout_reset_sbt(c, sbt, pr, fn, arg, flags)			\
     callout_reset_sbt_on((c), (sbt), (pr), (fn), (arg), -1, (flags))
 #define	callout_reset_sbt_curcpu(c, sbt, pr, fn, arg, flags)		\
     callout_reset_sbt_on((c), (sbt), (pr), (fn), (arg), PCPU_GET(cpuid),\
         (flags))
 #define	callout_reset_on(c, to_ticks, fn, arg, cpu)			\
-    callout_reset_sbt_on((c), tick_sbt * (to_ticks), 0, (fn), (arg),	\
+    callout_reset_tick_on((c), (to_ticks), (fn), (arg),	\
         (cpu), C_HARDCLOCK)
 #define	callout_reset(c, on_tick, fn, arg)				\
     callout_reset_on((c), (on_tick), (fn), (arg), -1)
@@ -126,7 +128,7 @@ int	callout_schedule_on(struct callout *, int, int);
     callout_schedule_on((c), (on_tick), PCPU_GET(cpuid))
 #define	callout_stop(c)		_callout_stop_safe(c, 0, NULL)
 int	_callout_stop_safe(struct callout *, int, void (*)(void *));
-void	callout_process(sbintime_t now);
+void callout_tick(void);
 #define callout_async_drain(c, d)					\
     _callout_stop_safe(c, 0, d)
 #endif
