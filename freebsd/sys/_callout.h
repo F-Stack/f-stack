@@ -52,8 +52,7 @@ struct callout {
 		SLIST_ENTRY(callout) sle;
 		TAILQ_ENTRY(callout) tqe;
 	} c_links;
-	sbintime_t c_time;			/* ticks to the event */
-	sbintime_t c_precision;			/* delta allowed wrt opt */
+	int c_time;                 /* ticks to the event */
 	void	*c_arg;				/* function argument */
 	void	(*c_func)(void *);		/* function to call */
 	struct lock_object *c_lock;		/* lock to handle */
