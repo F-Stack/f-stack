@@ -44,6 +44,7 @@
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_cycles.h>
+#include <rte_io.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
@@ -190,7 +191,7 @@ typedef uint64_t dma_addr_t;
 		mz = rte_memzone_reserve(z_name, size, SOCKET_ID_ANY, 0); \
 		memset(mz->addr, 0, size);				\
 		virt = mz->addr;					\
-		phys = mz->phys_addr;					\
+		phys = mz->iova;					\
 		handle = mz;						\
 	} while (0)
 #define ENA_MEM_FREE_COHERENT(dmadev, size, virt, phys, handle) 	\
@@ -206,8 +207,9 @@ typedef uint64_t dma_addr_t;
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
 		mz = rte_memzone_reserve(z_name, size, node, 0); \
+		memset(mz->addr, 0, size);				\
 		virt = mz->addr;					\
-		phys = mz->phys_addr;					\
+		phys = mz->iova;					\
 	} while (0)
 
 #define ENA_MEM_ALLOC_NODE(dmadev, size, virt, node, dev_node) \
@@ -218,24 +220,15 @@ typedef uint64_t dma_addr_t;
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
 		mz = rte_memzone_reserve(z_name, size, node, 0); \
+		memset(mz->addr, 0, size);				\
 		virt = mz->addr;					\
 	} while (0)
 
 #define ENA_MEM_ALLOC(dmadev, size) rte_zmalloc(NULL, size, 1)
 #define ENA_MEM_FREE(dmadev, ptr) ({ENA_TOUCH(dmadev); rte_free(ptr); })
 
-static inline void writel(u32 value, volatile void  *addr)
-{
-	*(volatile u32 *)addr = value;
-}
-
-static inline u32 readl(const volatile void *addr)
-{
-	return *(const volatile u32 *)addr;
-}
-
-#define ENA_REG_WRITE32(value, reg) writel((value), (reg))
-#define ENA_REG_READ32(reg) readl((reg))
+#define ENA_REG_WRITE32(value, reg) rte_write32_relaxed((value), (reg))
+#define ENA_REG_READ32(reg) rte_read32_relaxed((reg))
 
 #define ATOMIC32_INC(i32_ptr) rte_atomic32_inc(i32_ptr)
 #define ATOMIC32_DEC(i32_ptr) rte_atomic32_dec(i32_ptr)

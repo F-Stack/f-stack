@@ -46,6 +46,7 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
 #include "generic/rte_atomic.h"
 
 /**
@@ -63,9 +64,9 @@ extern "C" {
  * occur before the STORE operations generated after.
  */
 #ifdef RTE_ARCH_64
-#define	rte_wmb() {asm volatile("lwsync" : : : "memory"); }
+#define	rte_wmb() asm volatile("lwsync" : : : "memory")
 #else
-#define	rte_wmb() {asm volatile("sync" : : : "memory"); }
+#define	rte_wmb() asm volatile("sync" : : : "memory")
 #endif
 
 /**
@@ -75,9 +76,9 @@ extern "C" {
  * occur before the LOAD operations generated after.
  */
 #ifdef RTE_ARCH_64
-#define	rte_rmb() {asm volatile("lwsync" : : : "memory"); }
+#define	rte_rmb() asm volatile("lwsync" : : : "memory")
 #else
-#define	rte_rmb() {asm volatile("sync" : : : "memory"); }
+#define	rte_rmb() asm volatile("sync" : : : "memory")
 #endif
 
 #define rte_smp_mb() rte_mb()
@@ -85,6 +86,12 @@ extern "C" {
 #define rte_smp_wmb() rte_wmb()
 
 #define rte_smp_rmb() rte_rmb()
+
+#define rte_io_mb() rte_mb()
+
+#define rte_io_wmb() rte_wmb()
+
+#define rte_io_rmb() rte_rmb()
 
 /*------------------------- 16 bit atomic operations -------------------------*/
 /* To be compatible with Power7, use GCC built-in functions for 16 bit

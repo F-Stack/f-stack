@@ -17,7 +17,7 @@
   51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
 
   The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
+  the file called "LICENSE.GPL".
 
   Contact Information:
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -1126,7 +1126,7 @@ static int igb_eeprom_test(struct igb_adapter *adapter, u64 *data)
 
 static irqreturn_t igb_test_intr(int irq, void *data)
 {
-	struct igb_adapter *adapter = (struct igb_adapter *) data;
+	struct igb_adapter *adapter = data;
 	struct e1000_hw *hw = &adapter->hw;
 
 	adapter->test_icr |= E1000_READ_REG(hw, E1000_ICR);

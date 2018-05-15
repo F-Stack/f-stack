@@ -2242,7 +2242,6 @@ int ena_com_set_hash_ctrl(struct ena_com_dev *ena_dev)
 {
 	struct ena_com_admin_queue *admin_queue = &ena_dev->admin_queue;
 	struct ena_rss *rss = &ena_dev->rss;
-	struct ena_admin_feature_rss_hash_control *hash_ctrl = rss->hash_ctrl;
 	struct ena_admin_set_feat_cmd cmd;
 	struct ena_admin_set_feat_resp resp;
 	int ret;
@@ -2269,7 +2268,8 @@ int ena_com_set_hash_ctrl(struct ena_com_dev *ena_dev)
 		ena_trc_err("memory address set failed\n");
 		return ret;
 	}
-	cmd.control_buffer.length = sizeof(*hash_ctrl);
+	cmd.control_buffer.length =
+		sizeof(struct ena_admin_feature_rss_hash_control);
 
 	ret = ena_com_execute_admin_command(admin_queue,
 					    (struct ena_admin_aq_entry *)&cmd,
@@ -2278,7 +2278,7 @@ int ena_com_set_hash_ctrl(struct ena_com_dev *ena_dev)
 					    sizeof(resp));
 	if (unlikely(ret)) {
 		ena_trc_err("Failed to set hash input. error: %d\n", ret);
-		ret = ENA_COM_INVAL;
+		return ENA_COM_INVAL;
 	}
 
 	return 0;
@@ -2590,19 +2590,11 @@ int ena_com_set_host_attributes(struct ena_com_dev *ena_dev)
 	struct ena_com_admin_queue *admin_queue;
 	struct ena_admin_set_feat_cmd cmd;
 	struct ena_admin_set_feat_resp resp;
+	int ret;
 
-	int ret = 0;
-
-	if (unlikely(!ena_dev)) {
-		ena_trc_err("%s : ena_dev is NULL\n", __func__);
-		return ENA_COM_NO_DEVICE;
-	}
-
-	if (!ena_com_check_supported_feature_id(ena_dev,
-						ENA_ADMIN_HOST_ATTR_CONFIG)) {
-		ena_trc_warn("Set host attribute isn't supported\n");
-		return ENA_COM_PERMISSION;
-	}
+	/* Host attribute config is called before ena_com_get_dev_attr_feat
+	 * so ena_com can't check if the feature is supported.
+	 */
 
 	memset(&cmd, 0x0, sizeof(cmd));
 	admin_queue = &ena_dev->admin_queue;

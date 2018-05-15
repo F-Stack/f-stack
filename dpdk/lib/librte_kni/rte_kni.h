@@ -42,7 +42,7 @@
  * interfaces that may be used by the RTE application to receive/transmit
  * packets from/to Linux kernel net interfaces.
  *
- * This library provide two APIs to burst receive packets from KNI interfaces,
+ * This library provides two APIs to burst receive packets from KNI interfaces,
  * and burst transmit packets to KNI interfaces.
  */
 
@@ -63,13 +63,13 @@ struct rte_mbuf;
  * Structure which has the function pointers for KNI interface.
  */
 struct rte_kni_ops {
-	uint8_t port_id; /* Port ID */
+	uint16_t port_id; /* Port ID */
 
 	/* Pointer to function of changing MTU */
-	int (*change_mtu)(uint8_t port_id, unsigned new_mtu);
+	int (*change_mtu)(uint16_t port_id, unsigned int new_mtu);
 
 	/* Pointer to function of configuring network interface */
-	int (*config_network_if)(uint8_t port_id, uint8_t if_up);
+	int (*config_network_if)(uint16_t port_id, uint8_t if_up);
 };
 
 /**
@@ -88,6 +88,7 @@ struct rte_kni_conf {
 	struct rte_pci_addr addr;
 	struct rte_pci_id id;
 
+	__extension__
 	uint8_t force_bind : 1; /* Flag to bind kernel thread */
 };
 
@@ -117,7 +118,7 @@ void rte_kni_init(unsigned int max_kni_ifaces);
  * elements for each KNI interface allocated.
  *
  * @param pktmbuf_pool
- *  The mempool for allocting mbufs for packets.
+ *  The mempool for allocating mbufs for packets.
  * @param conf
  *  The pointer to the configurations of the KNI device.
  * @param ops
@@ -227,7 +228,7 @@ const char *rte_kni_get_name(const struct rte_kni *kni);
  * @param kni
  *  pointer to struct rte_kni.
  * @param ops
- *  ponter to struct rte_kni_ops.
+ *  pointer to struct rte_kni_ops.
  *
  * @return
  *  On success: 0

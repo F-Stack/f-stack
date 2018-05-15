@@ -54,7 +54,7 @@ the following variables must be exported:
 
 The following is an example of creating the ``helloworld`` application, which runs
 in the DPDK FreeBSD environment. While the example demonstrates compiling
-using gcc version 4.8, compiling with clang will be similar, except that the ``CC=``
+using gcc version 4.9, compiling with clang will be similar, except that the ``CC=``
 parameter can probably be omitted. The ``helloworld`` example may be found in the
 ``${RTE_SDK}/examples`` directory.
 
@@ -72,7 +72,7 @@ in the build directory.
     setenv RTE_SDK $HOME/DPDK
     setenv RTE_TARGET x86_64-native-bsdapp-gcc
 
-    gmake CC=gcc48
+    gmake CC=gcc49
       CC main.o
       LD helloworld
       INSTALL-APP helloworld
@@ -96,7 +96,7 @@ in the build directory.
     cd my_rte_app/
     setenv RTE_TARGET x86_64-native-bsdapp-gcc
 
-    gmake CC=gcc48
+    gmake CC=gcc49
       CC main.o
       LD helloworld
       INSTALL-APP helloworld
@@ -119,7 +119,7 @@ The following is the list of options that can be given to the EAL:
 
 .. code-block:: console
 
-    ./rte-app -c COREMASK [-n NUM] [-b <domain:bus:devid.func>] \
+    ./rte-app -l CORELIST [-n NUM] [-b <domain:bus:devid.func>] \
               [-r NUM] [-v] [--proc-type <primary|secondary|auto>]
 
 .. note::
@@ -130,9 +130,10 @@ The following is the list of options that can be given to the EAL:
 
 The EAL options for FreeBSD are as follows:
 
-*   ``-c COREMASK``:
+*   ``-c COREMASK`` or ``-l CORELIST``:
     A hexadecimal bit mask of the cores to run on.  Note that core numbering
-    can change between platforms and should be determined beforehand.
+    can change between platforms and should be determined beforehand. The corelist
+    is a list of cores to use instead of a core mask.
 
 *   ``-n NUM``:
     Number of memory channels per processor socket.
@@ -162,6 +163,9 @@ Other options, specific to Linux and are not supported under FreeBSD are as foll
 *   ``--huge-dir``:
     The directory where hugetlbfs is mounted.
 
+*   ``mbuf-pool-ops-name``:
+    Pool ops name for mbuf to use.
+
 *   ``--file-prefix``:
     The prefix text used for hugepage filenames.
 
@@ -169,13 +173,13 @@ Other options, specific to Linux and are not supported under FreeBSD are as foll
     Memory to allocate from hugepages, regardless of processor socket.
     It is recommended that ``--socket-mem`` be used instead of this option.
 
-The ``-c`` option is mandatory; the others are optional.
+The ``-c`` or ``-l`` option is mandatory; the others are optional.
 
 Copy the DPDK application binary to your target, then run the application
 as follows (assuming the platform has four memory channels, and that cores 0-3
 are present and are to be used for running the application)::
 
-    ./helloworld -c f -n 4
+    ./helloworld -l 0-3 -n 4
 
 .. note::
 

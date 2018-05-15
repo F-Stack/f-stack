@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -35,6 +35,9 @@
 
 #include <sso_snow3g.h>
 
+#define CRYPTODEV_NAME_SNOW3G_PMD	crypto_snow3g
+/**< SNOW 3G PMD device name */
+
 #define SNOW3G_LOG_ERR(fmt, args...) \
 	RTE_LOG(ERR, CRYPTODEV, "[%s] %s() line %u: " fmt "\n",  \
 			RTE_STR(CRYPTODEV_NAME_SNOW3G_PMD), \
@@ -54,6 +57,8 @@
 #define SNOW3G_LOG_INFO(fmt, args...)
 #define SNOW3G_LOG_DBG(fmt, args...)
 #endif
+
+#define SNOW3G_DIGEST_LENGTH 4
 
 /** private data structure for each virtual SNOW 3G device */
 struct snow3g_private {
@@ -75,6 +80,11 @@ struct snow3g_qp {
 	/**< Session Mempool */
 	struct rte_cryptodev_stats qp_stats;
 	/**< Queue pair statistics */
+	uint8_t temp_digest[SNOW3G_DIGEST_LENGTH];
+	/**< Buffer used to store the digest generated
+	 * by the driver when verifying a digest provided
+	 * by the user (using authentication verify operation)
+	 */
 } __rte_cache_aligned;
 
 enum snow3g_operation {
@@ -91,6 +101,8 @@ struct snow3g_session {
 	enum rte_crypto_auth_operation auth_op;
 	sso_snow3g_key_schedule_t pKeySched_cipher;
 	sso_snow3g_key_schedule_t pKeySched_hash;
+	uint16_t cipher_iv_offset;
+	uint16_t auth_iv_offset;
 } __rte_cache_aligned;
 
 

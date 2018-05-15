@@ -50,16 +50,13 @@
 #include <rte_branch_prediction.h>
 #include <rte_log.h>
 #include <rte_per_lcore.h>
-#include <rte_launch.h>
 #include <rte_lcore.h>
 #include <rte_ring.h>
 #include <rte_launch.h>
-#include <rte_lcore.h>
 #include <rte_debug.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
@@ -76,7 +73,7 @@ static uint8_t client_id = 0;
 #define MBQ_CAPACITY 32
 
 /* maps input ports to output ports for packets */
-static uint8_t output_ports[RTE_MAX_ETHPORTS];
+static uint16_t output_ports[RTE_MAX_ETHPORTS];
 
 /* buffers up a set of packet that are ready to send */
 struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
@@ -152,7 +149,7 @@ static void
 flush_tx_error_callback(struct rte_mbuf **unsent, uint16_t count,
 		void *userdata) {
 	int i;
-	uint8_t port_id = (uintptr_t)userdata;
+	uint16_t port_id = (uintptr_t)userdata;
 
 	tx_stats->tx_drop[port_id] += count;
 
@@ -163,7 +160,7 @@ flush_tx_error_callback(struct rte_mbuf **unsent, uint16_t count,
 }
 
 static void
-configure_tx_buffer(uint8_t port_id, uint16_t size)
+configure_tx_buffer(uint16_t port_id, uint16_t size)
 {
 	int ret;
 
@@ -173,15 +170,16 @@ configure_tx_buffer(uint8_t port_id, uint16_t size)
 			rte_eth_dev_socket_id(port_id));
 	if (tx_buffer[port_id] == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
-				(unsigned) port_id);
+			 port_id);
 
 	rte_eth_tx_buffer_init(tx_buffer[port_id], size);
 
 	ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[port_id],
 			flush_tx_error_callback, (void *)(intptr_t)port_id);
 	if (ret < 0)
-			rte_exit(EXIT_FAILURE, "Cannot set error callback for "
-					"tx buffer on port %u\n", (unsigned) port_id);
+		rte_exit(EXIT_FAILURE,
+		"Cannot set error callback for tx buffer on port %u\n",
+			 port_id);
 }
 
 /*
@@ -197,8 +195,8 @@ configure_output_ports(const struct port_info *ports)
 		rte_exit(EXIT_FAILURE, "Too many ethernet ports. RTE_MAX_ETHPORTS = %u\n",
 				(unsigned)RTE_MAX_ETHPORTS);
 	for (i = 0; i < ports->num_ports - 1; i+=2){
-		uint8_t p1 = ports->id[i];
-		uint8_t p2 = ports->id[i+1];
+		uint16_t p1 = ports->id[i];
+		uint16_t p2 = ports->id[i+1];
 		output_ports[p1] = p2;
 		output_ports[p2] = p1;
 
@@ -217,8 +215,8 @@ static void
 handle_packet(struct rte_mbuf *buf)
 {
 	int sent;
-	const uint8_t in_port = buf->port;
-	const uint8_t out_port = output_ports[in_port];
+	const uint16_t in_port = buf->port;
+	const uint16_t out_port = output_ports[in_port];
 	struct rte_eth_dev_tx_buffer *buffer = tx_buffer[out_port];
 
 	sent = rte_eth_tx_buffer(out_port, client_id, buffer, buf);
@@ -276,14 +274,11 @@ main(int argc, char *argv[])
 	printf("[Press Ctrl-C to quit ...]\n");
 
 	for (;;) {
-		uint16_t i, rx_pkts = PKT_READ_SIZE;
-		uint8_t port;
+		uint16_t i, rx_pkts;
+		uint16_t port;
 
-		/* try dequeuing max possible packets first, if that fails, get the
-		 * most we can. Loop body should only execute once, maximum */
-		while (rx_pkts > 0 &&
-				unlikely(rte_ring_dequeue_bulk(rx_ring, pkts, rx_pkts) != 0))
-			rx_pkts = (uint16_t)RTE_MIN(rte_ring_count(rx_ring), PKT_READ_SIZE);
+		rx_pkts = rte_ring_dequeue_burst(rx_ring, pkts,
+				PKT_READ_SIZE, NULL);
 
 		if (unlikely(rx_pkts == 0)){
 			if (need_flush)

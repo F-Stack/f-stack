@@ -32,7 +32,6 @@ include $(RTE_SDK)/mk/internal/rte.compile-pre.mk
 include $(RTE_SDK)/mk/internal/rte.install-pre.mk
 include $(RTE_SDK)/mk/internal/rte.clean-pre.mk
 include $(RTE_SDK)/mk/internal/rte.build-pre.mk
-include $(RTE_SDK)/mk/internal/rte.depdirs-pre.mk
 
 # VPATH contains at least SRCDIR
 VPATH += $(SRCDIR)
@@ -86,8 +85,8 @@ LDLIBS_NAMES += $(patsubst -Wl$(comma)-l%,lib%.a,$(filter -Wl$(comma)-l%,$(LDLIB
 
 # list of found libraries files (useful for deps). If not found, the
 # library is silently ignored and dep won't be checked
-LDLIBS_FILES := $(wildcard $(foreach dir,$(LDLIBS_PATH),\
-	$(addprefix $(dir)/,$(LDLIBS_NAMES))))
+LDLIBS_FILES := $(sort $(wildcard $(foreach dir,$(LDLIBS_PATH),\
+	$(addprefix $(dir)/,$(LDLIBS_NAMES)))))
 
 #
 # Archive objects in .so file if needed
@@ -131,7 +130,6 @@ include $(RTE_SDK)/mk/internal/rte.compile-post.mk
 include $(RTE_SDK)/mk/internal/rte.install-post.mk
 include $(RTE_SDK)/mk/internal/rte.clean-post.mk
 include $(RTE_SDK)/mk/internal/rte.build-post.mk
-include $(RTE_SDK)/mk/internal/rte.depdirs-post.mk
 
 .PHONY: FORCE
 FORCE:

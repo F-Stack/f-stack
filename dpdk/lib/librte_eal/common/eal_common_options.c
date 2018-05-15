@@ -47,6 +47,7 @@
 #include <rte_eal.h>
 #include <rte_log.h>
 #include <rte_lcore.h>
+#include <rte_tailq.h>
 #include <rte_version.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
@@ -61,9 +62,11 @@ const char
 eal_short_options[] =
 	"b:" /* pci-blacklist */
 	"c:" /* coremask */
+	"s:" /* service coremask */
 	"d:" /* driver */
 	"h"  /* help */
 	"l:" /* corelist */
+	"S:" /* service corelist */
 	"m:" /* memory size */
 	"n:" /* memory channels */
 	"r:" /* memory ranks */
@@ -82,6 +85,7 @@ eal_long_options[] = {
 	{OPT_LCORES,            1, NULL, OPT_LCORES_NUM           },
 	{OPT_LOG_LEVEL,         1, NULL, OPT_LOG_LEVEL_NUM        },
 	{OPT_MASTER_LCORE,      1, NULL, OPT_MASTER_LCORE_NUM     },
+	{OPT_MBUF_POOL_OPS_NAME, 1, NULL, OPT_MBUF_POOL_OPS_NAME_NUM},
 	{OPT_NO_HPET,           0, NULL, OPT_NO_HPET_NUM          },
 	{OPT_NO_HUGE,           0, NULL, OPT_NO_HUGE_NUM          },
 	{OPT_NO_PCI,            0, NULL, OPT_NO_PCI_NUM           },
@@ -94,7 +98,6 @@ eal_long_options[] = {
 	{OPT_VDEV,              1, NULL, OPT_VDEV_NUM             },
 	{OPT_VFIO_INTR,         1, NULL, OPT_VFIO_INTR_NUM        },
 	{OPT_VMWARE_TSC_MAP,    0, NULL, OPT_VMWARE_TSC_MAP_NUM   },
-	{OPT_XEN_DOM0,          0, NULL, OPT_XEN_DOM0_NUM         },
 	{0,                     0, NULL, 0                        }
 };
 
@@ -118,14 +121,71 @@ static const char *default_solib_dir = RTE_EAL_PMD_PATH;
 /*
  * Stringified version of solib path used by dpdk-pmdinfo.py
  * Note: PLEASE DO NOT ALTER THIS without making a corresponding
- * change to tools/dpdk-pmdinfo.py
+ * change to usertools/dpdk-pmdinfo.py
  */
 static const char dpdk_solib_path[] __attribute__((used)) =
 "DPDK_PLUGIN_PATH=" RTE_EAL_PMD_PATH;
 
+TAILQ_HEAD(device_option_list, device_option);
+
+struct device_option {
+	TAILQ_ENTRY(device_option) next;
+
+	enum rte_devtype type;
+	char arg[];
+};
+
+static struct device_option_list devopt_list =
+TAILQ_HEAD_INITIALIZER(devopt_list);
 
 static int master_lcore_parsed;
 static int mem_parsed;
+static int core_parsed;
+
+static int
+eal_option_device_add(enum rte_devtype type, const char *optarg)
+{
+	struct device_option *devopt;
+	size_t optlen;
+	int ret;
+
+	optlen = strlen(optarg) + 1;
+	devopt = calloc(1, sizeof(*devopt) + optlen);
+	if (devopt == NULL) {
+		RTE_LOG(ERR, EAL, "Unable to allocate device option\n");
+		return -ENOMEM;
+	}
+
+	devopt->type = type;
+	ret = snprintf(devopt->arg, optlen, "%s", optarg);
+	if (ret < 0) {
+		RTE_LOG(ERR, EAL, "Unable to copy device option\n");
+		free(devopt);
+		return -EINVAL;
+	}
+	TAILQ_INSERT_TAIL(&devopt_list, devopt, next);
+	return 0;
+}
+
+int
+eal_option_device_parse(void)
+{
+	struct device_option *devopt;
+	void *tmp;
+	int ret = 0;
+
+	TAILQ_FOREACH_SAFE(devopt, &devopt_list, next, tmp) {
+		if (ret == 0) {
+			ret = rte_eal_devargs_add(devopt->type, devopt->arg);
+			if (ret)
+				RTE_LOG(ERR, EAL, "Unable to parse device '%s'\n",
+					devopt->arg);
+		}
+		TAILQ_REMOVE(&devopt_list, devopt, next);
+		free(devopt);
+	}
+	return ret;
+}
 
 void
 eal_reset_internal_config(struct internal_config *internal_cfg)
@@ -147,14 +207,6 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 	internal_cfg->base_virtaddr = 0;
 
 	internal_cfg->syslog_facility = LOG_DAEMON;
-	/* default value from build option */
-#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
-	internal_cfg->log_level = RTE_LOG_INFO;
-#else
-	internal_cfg->log_level = RTE_LOG_LEVEL;
-#endif
-
-	internal_cfg->xen_dom0_support = 0;
 
 	/* if set to NONE, interrupt mode is determined automatically */
 	internal_cfg->vfio_intr_mode = RTE_INTR_MODE_NONE;
@@ -166,6 +218,7 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 #endif
 	internal_cfg->vmware_tsc_map = 0;
 	internal_cfg->create_uio_dev = 0;
+	internal_cfg->mbuf_pool_ops_name = RTE_MBUF_DEFAULT_MEMPOOL_OPS;
 }
 
 static int
@@ -225,12 +278,13 @@ int
 eal_plugins_init(void)
 {
 	struct shared_driver *solib = NULL;
+	struct stat sb;
 
-	if (*default_solib_dir != '\0')
+	if (*default_solib_dir != '\0' && stat(default_solib_dir, &sb) == 0 &&
+				S_ISDIR(sb.st_mode))
 		eal_plugin_add(default_solib_dir);
 
 	TAILQ_FOREACH(solib, &solib_list, next) {
-		struct stat sb;
 
 		if (stat(solib->name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
 			if (eal_plugindir_init(solib->name) == -1) {
@@ -269,6 +323,77 @@ static int xdigit2val(unsigned char c)
 	else
 		val = c - 'a' + 10;
 	return val;
+}
+
+static int
+eal_parse_service_coremask(const char *coremask)
+{
+	struct rte_config *cfg = rte_eal_get_configuration();
+	int i, j, idx = 0;
+	unsigned int count = 0;
+	char c;
+	int val;
+
+	if (coremask == NULL)
+		return -1;
+	/* Remove all blank characters ahead and after .
+	 * Remove 0x/0X if exists.
+	 */
+	while (isblank(*coremask))
+		coremask++;
+	if (coremask[0] == '0' && ((coremask[1] == 'x')
+		|| (coremask[1] == 'X')))
+		coremask += 2;
+	i = strlen(coremask);
+	while ((i > 0) && isblank(coremask[i - 1]))
+		i--;
+
+	if (i == 0)
+		return -1;
+
+	for (i = i - 1; i >= 0 && idx < RTE_MAX_LCORE; i--) {
+		c = coremask[i];
+		if (isxdigit(c) == 0) {
+			/* invalid characters */
+			return -1;
+		}
+		val = xdigit2val(c);
+		for (j = 0; j < BITS_PER_HEX && idx < RTE_MAX_LCORE;
+				j++, idx++) {
+			if ((1 << j) & val) {
+				/* handle master lcore already parsed */
+				uint32_t lcore = idx;
+				if (master_lcore_parsed &&
+						cfg->master_lcore == lcore) {
+					RTE_LOG(ERR, EAL,
+						"Error: lcore %u is master lcore, cannot use as service core\n",
+						idx);
+					return -1;
+				}
+
+				if (!lcore_config[idx].detected) {
+					RTE_LOG(ERR, EAL,
+						"lcore %u unavailable\n", idx);
+					return -1;
+				}
+				lcore_config[idx].core_role = ROLE_SERVICE;
+				count++;
+			}
+		}
+	}
+
+	for (; i >= 0; i--)
+		if (coremask[i] != '0')
+			return -1;
+
+	for (; idx < RTE_MAX_LCORE; idx++)
+		lcore_config[idx].core_index = -1;
+
+	if (count == 0)
+		return -1;
+
+	cfg->service_lcore_count = count;
+	return 0;
 }
 
 static int
@@ -331,6 +456,72 @@ eal_parse_coremask(const char *coremask)
 		return -1;
 	/* Update the count of enabled logical cores of the EAL configuration */
 	cfg->lcore_count = count;
+	return 0;
+}
+
+static int
+eal_parse_service_corelist(const char *corelist)
+{
+	struct rte_config *cfg = rte_eal_get_configuration();
+	int i, idx = 0;
+	unsigned count = 0;
+	char *end = NULL;
+	int min, max;
+
+	if (corelist == NULL)
+		return -1;
+
+	/* Remove all blank characters ahead and after */
+	while (isblank(*corelist))
+		corelist++;
+	i = strlen(corelist);
+	while ((i > 0) && isblank(corelist[i - 1]))
+		i--;
+
+	/* Get list of cores */
+	min = RTE_MAX_LCORE;
+	do {
+		while (isblank(*corelist))
+			corelist++;
+		if (*corelist == '\0')
+			return -1;
+		errno = 0;
+		idx = strtoul(corelist, &end, 10);
+		if (errno || end == NULL)
+			return -1;
+		while (isblank(*end))
+			end++;
+		if (*end == '-') {
+			min = idx;
+		} else if ((*end == ',') || (*end == '\0')) {
+			max = idx;
+			if (min == RTE_MAX_LCORE)
+				min = idx;
+			for (idx = min; idx <= max; idx++) {
+				if (cfg->lcore_role[idx] != ROLE_SERVICE) {
+					/* handle master lcore already parsed */
+					uint32_t lcore = idx;
+					if (cfg->master_lcore == lcore &&
+							master_lcore_parsed) {
+						RTE_LOG(ERR, EAL,
+							"Error: lcore %u is master lcore, cannot use as service core\n",
+							idx);
+						return -1;
+					}
+					lcore_config[idx].core_role =
+							ROLE_SERVICE;
+					count++;
+				}
+			}
+			min = RTE_MAX_LCORE;
+		} else
+			return -1;
+		corelist = end + 1;
+	} while (*end != '\0');
+
+	if (count == 0)
+		return -1;
+
 	return 0;
 }
 
@@ -414,6 +605,13 @@ eal_parse_master_lcore(const char *arg)
 	if (cfg->master_lcore >= RTE_MAX_LCORE)
 		return -1;
 	master_lcore_parsed = 1;
+
+	/* ensure master core is not used as service core */
+	if (lcore_config[cfg->master_lcore].core_role == ROLE_SERVICE) {
+		RTE_LOG(ERR, EAL, "Error: Master lcore is used as a service core.\n");
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -738,25 +936,49 @@ eal_parse_syslog(const char *facility, struct internal_config *conf)
 }
 
 static int
-eal_parse_log_level(const char *level, uint32_t *log_level)
+eal_parse_log_level(const char *arg)
 {
-	char *end;
+	char *end, *str, *type, *level;
 	unsigned long tmp;
+
+	str = strdup(arg);
+	if (str == NULL)
+		return -1;
+
+	if (strchr(str, ',') == NULL) {
+		type = NULL;
+		level = str;
+	} else {
+		type = strsep(&str, ",");
+		level = strsep(&str, ",");
+	}
 
 	errno = 0;
 	tmp = strtoul(level, &end, 0);
 
 	/* check for errors */
 	if ((errno != 0) || (level[0] == '\0') ||
-	    end == NULL || (*end != '\0'))
-		return -1;
+		    end == NULL || (*end != '\0'))
+		goto fail;
 
 	/* log_level is a uint32_t */
 	if (tmp >= UINT32_MAX)
-		return -1;
+		goto fail;
 
-	*log_level = tmp;
+	if (type == NULL) {
+		rte_log_set_global_level(tmp);
+	} else if (rte_log_set_level_regexp(type, tmp) < 0) {
+		printf("cannot set log level %s,%lu\n",
+			type, tmp);
+		goto fail;
+	}
+
+	free(str);
 	return 0;
+
+fail:
+	free(str);
+	return -1;
 }
 
 static enum rte_proc_type_t
@@ -776,20 +998,29 @@ int
 eal_parse_common_option(int opt, const char *optarg,
 			struct internal_config *conf)
 {
+	static int b_used;
+	static int w_used;
+
 	switch (opt) {
 	/* blacklist */
 	case 'b':
-		if (rte_eal_devargs_add(RTE_DEVTYPE_BLACKLISTED_PCI,
+		if (w_used)
+			goto bw_used;
+		if (eal_option_device_add(RTE_DEVTYPE_BLACKLISTED_PCI,
 				optarg) < 0) {
 			return -1;
 		}
+		b_used = 1;
 		break;
 	/* whitelist */
 	case 'w':
-		if (rte_eal_devargs_add(RTE_DEVTYPE_WHITELISTED_PCI,
+		if (b_used)
+			goto bw_used;
+		if (eal_option_device_add(RTE_DEVTYPE_WHITELISTED_PCI,
 				optarg) < 0) {
 			return -1;
 		}
+		w_used = 1;
 		break;
 	/* coremask */
 	case 'c':
@@ -797,11 +1028,27 @@ eal_parse_common_option(int opt, const char *optarg,
 			RTE_LOG(ERR, EAL, "invalid coremask\n");
 			return -1;
 		}
+		core_parsed = 1;
 		break;
 	/* corelist */
 	case 'l':
 		if (eal_parse_corelist(optarg) < 0) {
 			RTE_LOG(ERR, EAL, "invalid core list\n");
+			return -1;
+		}
+		core_parsed = 1;
+		break;
+	/* service coremask */
+	case 's':
+		if (eal_parse_service_coremask(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid service coremask\n");
+			return -1;
+		}
+		break;
+	/* service corelist */
+	case 'S':
+		if (eal_parse_service_corelist(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid service core list\n");
 			return -1;
 		}
 		break;
@@ -880,7 +1127,7 @@ eal_parse_common_option(int opt, const char *optarg,
 		break;
 
 	case OPT_VDEV_NUM:
-		if (rte_eal_devargs_add(RTE_DEVTYPE_VIRTUAL,
+		if (eal_option_device_add(RTE_DEVTYPE_VIRTUAL,
 				optarg) < 0) {
 			return -1;
 		}
@@ -895,15 +1142,12 @@ eal_parse_common_option(int opt, const char *optarg,
 		break;
 
 	case OPT_LOG_LEVEL_NUM: {
-		uint32_t log;
-
-		if (eal_parse_log_level(optarg, &log) < 0) {
+		if (eal_parse_log_level(optarg) < 0) {
 			RTE_LOG(ERR, EAL,
 				"invalid parameters for --"
 				OPT_LOG_LEVEL "\n");
 			return -1;
 		}
-		conf->log_level = log;
 		break;
 	}
 	case OPT_LCORES_NUM:
@@ -912,6 +1156,7 @@ eal_parse_common_option(int opt, const char *optarg,
 				OPT_LCORES "\n");
 			return -1;
 		}
+		core_parsed = 1;
 		break;
 
 	/* don't know what to do, leave this to caller */
@@ -921,6 +1166,33 @@ eal_parse_common_option(int opt, const char *optarg,
 	}
 
 	return 0;
+bw_used:
+	RTE_LOG(ERR, EAL, "Options blacklist (-b) and whitelist (-w) "
+		"cannot be used at the same time\n");
+	return -1;
+}
+
+static void
+eal_auto_detect_cores(struct rte_config *cfg)
+{
+	unsigned int lcore_id;
+	unsigned int removed = 0;
+	rte_cpuset_t affinity_set;
+	pthread_t tid = pthread_self();
+
+	if (pthread_getaffinity_np(tid, sizeof(rte_cpuset_t),
+				&affinity_set) < 0)
+		CPU_ZERO(&affinity_set);
+
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		if (cfg->lcore_role[lcore_id] == ROLE_RTE &&
+		    !CPU_ISSET(lcore_id, &affinity_set)) {
+			cfg->lcore_role[lcore_id] = ROLE_OFF;
+			removed++;
+		}
+	}
+
+	cfg->lcore_count -= removed;
 }
 
 int
@@ -929,12 +1201,17 @@ eal_adjust_config(struct internal_config *internal_cfg)
 	int i;
 	struct rte_config *cfg = rte_eal_get_configuration();
 
+	if (!core_parsed)
+		eal_auto_detect_cores(cfg);
+
 	if (internal_config.process_type == RTE_PROC_AUTO)
 		internal_config.process_type = eal_proc_type_detect();
 
 	/* default master lcore is the first one */
-	if (!master_lcore_parsed)
+	if (!master_lcore_parsed) {
 		cfg->master_lcore = rte_get_next_lcore(-1, 0, 0);
+		lcore_config[cfg->master_lcore].core_role = ROLE_RTE;
+	}
 
 	/* if no memory amounts were requested, this will result in 0 and
 	 * will be overridden later, right after eal_hugepage_info_init() */
@@ -980,13 +1257,6 @@ eal_check_common_options(struct internal_config *internal_cfg)
 		return -1;
 	}
 
-	if (rte_eal_devargs_type_count(RTE_DEVTYPE_WHITELISTED_PCI) != 0 &&
-		rte_eal_devargs_type_count(RTE_DEVTYPE_BLACKLISTED_PCI) != 0) {
-		RTE_LOG(ERR, EAL, "Options blacklist (-b) and whitelist (-w) "
-			"cannot be used at the same time\n");
-		return -1;
-	}
-
 	return 0;
 }
 
@@ -1007,7 +1277,9 @@ eal_common_usage(void)
 	       "                      ',' is used for single number separator.\n"
 	       "                      '( )' can be omitted for single element group,\n"
 	       "                      '@' can be omitted if cpus and lcores have the same value\n"
+	       "  -s SERVICE COREMASK Hexadecimal bitmask of cores to be used as service cores\n"
 	       "  --"OPT_MASTER_LCORE" ID   Core ID that is used as master\n"
+	       "  --"OPT_MBUF_POOL_OPS_NAME" Pool ops name for mbuf to use\n"
 	       "  -n CHANNELS         Number of memory channels\n"
 	       "  -m MB               Memory to allocate (see also --"OPT_SOCKET_MEM")\n"
 	       "  -r RANKS            Force number of memory ranks (don't detect)\n"
@@ -1021,13 +1293,15 @@ eal_common_usage(void)
 	       "                      [NOTE: PCI whitelist cannot be used with -b option]\n"
 	       "  --"OPT_VDEV"              Add a virtual device.\n"
 	       "                      The argument format is <driver><id>[,key=val,...]\n"
-	       "                      (ex: --vdev=eth_pcap0,iface=eth2).\n"
+	       "                      (ex: --vdev=net_pcap0,iface=eth2).\n"
 	       "  -d LIB.so|DIR       Add a driver or driver directory\n"
 	       "                      (can be used multiple times)\n"
 	       "  --"OPT_VMWARE_TSC_MAP"    Use VMware TSC map instead of native RDTSC\n"
 	       "  --"OPT_PROC_TYPE"         Type of this process (primary|secondary|auto)\n"
 	       "  --"OPT_SYSLOG"            Set syslog facility\n"
-	       "  --"OPT_LOG_LEVEL"         Set default log level\n"
+	       "  --"OPT_LOG_LEVEL"=<int>   Set global log level\n"
+	       "  --"OPT_LOG_LEVEL"=<type-regexp>,<int>\n"
+	       "                      Set specific log level\n"
 	       "  -v                  Display version information on startup\n"
 	       "  -h, --help          This help\n"
 	       "\nEAL options for DEBUG use only:\n"

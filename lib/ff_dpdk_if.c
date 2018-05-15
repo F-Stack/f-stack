@@ -139,8 +139,8 @@ struct mbuf_table {
 };
 
 struct lcore_rx_queue {
-    uint8_t port_id;
-    uint8_t queue_id;
+    uint16_t port_id;
+    uint16_t queue_id;
 } __rte_cache_aligned;
 
 struct lcore_conf {
@@ -224,7 +224,8 @@ check_all_ports_link_status(void)
     #define CHECK_INTERVAL 100 /* 100ms */
     #define MAX_CHECK_TIME 90  /* 9s (90 * 100ms) in total */
 
-    uint8_t portid, count, all_ports_up, print_flag = 0;
+    uint16_t portid;
+    uint8_t count, all_ports_up, print_flag = 0;
     struct rte_eth_link link;
 
     printf("\nChecking link status");
@@ -235,7 +236,7 @@ check_all_ports_link_status(void)
     for (count = 0; count <= MAX_CHECK_TIME; count++) {
         all_ports_up = 1;
         for (i = 0; i < nb_ports; i++) {
-            uint8_t portid = ff_global_cfg.dpdk.portid_list[i];
+            uint16_t portid = ff_global_cfg.dpdk.portid_list[i];
             memset(&link, 0, sizeof(link));
             rte_eth_link_get_nowait(portid, &link);
 
@@ -544,7 +545,7 @@ init_kni(void)
 }
 
 static void
-set_rss_table(uint8_t port_id, uint16_t reta_size, uint16_t nb_queues)
+set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 {
     if (reta_size == 0) {
         return;
@@ -955,7 +956,7 @@ pktmbuf_deep_clone(const struct rte_mbuf *md,
 }
 
 static inline void
-process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
+process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, const struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
     struct lcore_conf *qconf = &lcore_conf;
@@ -1036,13 +1037,13 @@ process_packets(uint8_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 }
 
 static inline int
-process_dispatch_ring(uint8_t port_id, uint16_t queue_id,
+process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, const struct ff_dpdk_if_context *ctx)
 {
     /* read packet from ring buf and to process */
     uint16_t nb_rb;
     nb_rb = rte_ring_dequeue_burst(dispatch_ring[port_id][queue_id],
-        (void **)pkts_burst, MAX_PKT_BURST);
+        (void **)pkts_burst, MAX_PKT_BURST, NULL);
 
     if(nb_rb > 0) {
         process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
@@ -1385,7 +1386,7 @@ main_loop(void *arg)
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
     int i, j, nb_rx, idle;
-    uint8_t port_id, queue_id;
+    uint16_t port_id, queue_id;
     struct lcore_conf *qconf;
     const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
         US_PER_S * BURST_TX_DRAIN_US;

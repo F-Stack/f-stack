@@ -246,13 +246,22 @@ rte_malloc_set_limit(__rte_unused const char *type,
 }
 
 /*
- * Return the physical address of a virtual address obtained through rte_malloc
+ * Return the IO address of a virtual address obtained through rte_malloc
  */
-phys_addr_t
-rte_malloc_virt2phy(const void *addr)
+rte_iova_t
+rte_malloc_virt2iova(const void *addr)
 {
+	rte_iova_t iova;
 	const struct malloc_elem *elem = malloc_elem_from_data(addr);
 	if (elem == NULL)
-		return 0;
-	return elem->ms->phys_addr + ((uintptr_t)addr - (uintptr_t)elem->ms->addr);
+		return RTE_BAD_IOVA;
+	if (elem->ms->iova == RTE_BAD_IOVA)
+		return RTE_BAD_IOVA;
+
+	if (rte_eal_iova_mode() == RTE_IOVA_VA)
+		iova = (uintptr_t)addr;
+	else
+		iova = elem->ms->iova +
+			RTE_PTR_DIFF(addr, elem->ms->addr);
+	return iova;
 }

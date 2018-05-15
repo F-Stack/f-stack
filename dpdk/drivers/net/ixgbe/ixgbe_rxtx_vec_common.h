@@ -101,7 +101,7 @@ reassemble_packets(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 	return pkt_idx;
 }
 
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 ixgbe_tx_free_bufs(struct ixgbe_tx_queue *txq)
 {
 	struct ixgbe_tx_entry_v *txep;
@@ -123,12 +123,12 @@ ixgbe_tx_free_bufs(struct ixgbe_tx_queue *txq)
 	 * tx_next_dd - (tx_rs_thresh-1)
 	 */
 	txep = &txq->sw_ring_v[txq->tx_next_dd - (n - 1)];
-	m = __rte_pktmbuf_prefree_seg(txep[0].mbuf);
+	m = rte_pktmbuf_prefree_seg(txep[0].mbuf);
 	if (likely(m != NULL)) {
 		free[0] = m;
 		nb_free = 1;
 		for (i = 1; i < n; i++) {
-			m = __rte_pktmbuf_prefree_seg(txep[i].mbuf);
+			m = rte_pktmbuf_prefree_seg(txep[i].mbuf);
 			if (likely(m != NULL)) {
 				if (likely(m->pool == free[0]->pool))
 					free[nb_free++] = m;
@@ -143,7 +143,7 @@ ixgbe_tx_free_bufs(struct ixgbe_tx_queue *txq)
 		rte_mempool_put_bulk(free[0]->pool, (void **)free, nb_free);
 	} else {
 		for (i = 1; i < n; i++) {
-			m = __rte_pktmbuf_prefree_seg(txep[i].mbuf);
+			m = rte_pktmbuf_prefree_seg(txep[i].mbuf);
 			if (m != NULL)
 				rte_mempool_put(m->pool, m);
 		}
@@ -158,7 +158,7 @@ ixgbe_tx_free_bufs(struct ixgbe_tx_queue *txq)
 	return txq->tx_rs_thresh;
 }
 
-static inline void __attribute__((always_inline))
+static __rte_always_inline void
 tx_backlog_entry(struct ixgbe_tx_entry_v *txep,
 		 struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
@@ -310,23 +310,12 @@ ixgbe_rx_vec_dev_conf_condition_check_default(struct rte_eth_dev *dev)
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct rte_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
 
-#ifndef RTE_IXGBE_RX_OLFLAGS_ENABLE
-	/* whithout rx ol_flags, no VP flag report */
-	if (rxmode->hw_vlan_strip != 0 ||
-	    rxmode->hw_vlan_extend != 0)
-		return -1;
-#endif
-
 	/* no fdir support */
 	if (fconf->mode != RTE_FDIR_MODE_NONE)
 		return -1;
 
-	/*
-	 * - no csum error report support
-	 * - no header split support
-	 */
-	if (rxmode->hw_ip_checksum == 1 ||
-	    rxmode->header_split == 1)
+	/* no header split support */
+	if (rxmode->header_split == 1)
 		return -1;
 
 	return 0;

@@ -36,6 +36,7 @@ LIB = librte_reorder.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR)
+LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf
 
 EXPORT_MAP := rte_reorder_version.map
 
@@ -46,10 +47,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_REORDER) := rte_reorder.c
 
 # install this header file
 SYMLINK-$(CONFIG_RTE_LIBRTE_REORDER)-include := rte_reorder.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_REORDER) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_REORDER) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_REORDER) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

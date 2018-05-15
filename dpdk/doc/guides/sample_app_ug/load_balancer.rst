@@ -86,24 +86,9 @@ The routing logic is LPM based, with all the worker threads sharing the same LPM
 Compiling the Application
 -------------------------
 
-The sequence of steps used to build the application is:
+To compile the sample application see :doc:`compiling`.
 
-#.  Export the required environment variables:
-
-    .. code-block:: console
-
-        export RTE_SDK=<Path to the DPDK installation folder>
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-#.  Build the application executable file:
-
-    .. code-block:: console
-
-        cd ${RTE_SDK}/examples/load_balancer
-        make
-
-    For more details on how to build the DPDK libraries and sample applications,
-    please refer to the *DPDK Getting Started Guide.*
+The application is located in the ``load_balancer`` sub-directory.
 
 Running the Application
 -----------------------
@@ -178,7 +163,7 @@ Example:
 
 .. code-block:: console
 
-    ./load_balancer -c 0xf8 -n 4 -- --rx "(0,0,3),(1,0,3)" --tx "(0,3),(1,3)" --w "4,5,6,7" --lpm "1.0.0.0/24=>0; 1.0.1.0/24=>1;" --pos-lb 29
+    ./load_balancer -l 3-7 -n 4 -- --rx "(0,0,3),(1,0,3)" --tx "(0,3),(1,3)" --w "4,5,6,7" --lpm "1.0.0.0/24=>0; 1.0.1.0/24=>1;" --pos-lb 29
 
 There is a single I/O lcore (lcore 3) that handles RX and TX for two NIC ports (ports 0 and 1) that
 handles packets to/from four worker lcores (lcores 4, 5, 6 and 7) that

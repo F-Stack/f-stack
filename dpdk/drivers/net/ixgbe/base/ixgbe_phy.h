@@ -92,8 +92,9 @@ POSSIBILITY OF SUCH DAMAGE.
 #define IXGBE_CS4227_GLOBAL_ID_MSB	1
 #define IXGBE_CS4227_SCRATCH		2
 #define IXGBE_CS4227_GLOBAL_ID_VALUE	0x03E5
-#define IXGBE_CS4223_PHY_ID		0x7003/* Quad port */
-#define IXGBE_CS4227_PHY_ID		0x3003/* Dual port */
+#define IXGBE_CS4227_EFUSE_PDF_SKU	0x19F
+#define IXGBE_CS4223_SKU_ID		0x0010	/* Quad port */
+#define IXGBE_CS4227_SKU_ID		0x0014	/* Dual port */
 #define IXGBE_CS4227_RESET_PENDING	0x1357
 #define IXGBE_CS4227_RESET_COMPLETE	0x5AA5
 #define IXGBE_CS4227_RETRIES		15
@@ -191,7 +192,7 @@ s32 ixgbe_reset_phy_nl(struct ixgbe_hw *hw);
 s32 ixgbe_set_copper_phy_power(struct ixgbe_hw *hw, bool on);
 s32 ixgbe_identify_module_generic(struct ixgbe_hw *hw);
 s32 ixgbe_identify_sfp_module_generic(struct ixgbe_hw *hw);
-s32 ixgbe_get_supported_phy_sfp_layer_generic(struct ixgbe_hw *hw);
+u64 ixgbe_get_supported_phy_sfp_layer_generic(struct ixgbe_hw *hw);
 s32 ixgbe_identify_qsfp_module_generic(struct ixgbe_hw *hw);
 s32 ixgbe_get_sfp_init_sequence_offsets(struct ixgbe_hw *hw,
 					u16 *list_offset,

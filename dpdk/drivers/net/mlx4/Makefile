@@ -1,7 +1,7 @@
 #   BSD LICENSE
 #
-#   Copyright 2012-2015 6WIND S.A.
-#   Copyright 2012 Mellanox.
+#   Copyright 2012 6WIND S.A.
+#   Copyright 2012 Mellanox
 #
 #   Redistribution and use in source and binary forms, with or without
 #   modification, are permitted provided that the following conditions
@@ -36,23 +36,28 @@ LIB = librte_pmd_mlx4.a
 
 # Sources.
 SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4.c
-
-# Dependencies.
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += lib/librte_mempool
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_ethdev.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_flow.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_intr.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_mr.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_rxq.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_rxtx.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_txq.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += mlx4_utils.c
 
 # Basic CFLAGS.
 CFLAGS += -O3
-CFLAGS += -std=gnu99 -Wall -Wextra
+CFLAGS += -std=c11 -Wall -Wextra
 CFLAGS += -g
 CFLAGS += -I.
 CFLAGS += -D_BSD_SOURCE
 CFLAGS += -D_DEFAULT_SOURCE
 CFLAGS += -D_XOPEN_SOURCE=600
 CFLAGS += $(WERROR_FLAGS)
-LDLIBS += -libverbs
+LDLIBS += -libverbs -lmlx4
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_bus_pci
 
 # A few warnings cannot be avoided in external headers.
 CFLAGS += -Wno-error=cast-qual
@@ -73,20 +78,8 @@ else
 CFLAGS += -DNDEBUG -UPEDANTIC
 endif
 
-ifdef CONFIG_RTE_LIBRTE_MLX4_SGE_WR_N
-CFLAGS += -DMLX4_PMD_SGE_WR_N=$(CONFIG_RTE_LIBRTE_MLX4_SGE_WR_N)
-endif
-
-ifdef CONFIG_RTE_LIBRTE_MLX4_MAX_INLINE
-CFLAGS += -DMLX4_PMD_MAX_INLINE=$(CONFIG_RTE_LIBRTE_MLX4_MAX_INLINE)
-endif
-
 ifdef CONFIG_RTE_LIBRTE_MLX4_TX_MP_CACHE
 CFLAGS += -DMLX4_PMD_TX_MP_CACHE=$(CONFIG_RTE_LIBRTE_MLX4_TX_MP_CACHE)
-endif
-
-ifdef CONFIG_RTE_LIBRTE_MLX4_SOFT_COUNTERS
-CFLAGS += -DMLX4_PMD_SOFT_COUNTERS=$(CONFIG_RTE_LIBRTE_MLX4_SOFT_COUNTERS)
 endif
 
 include $(RTE_SDK)/mk/rte.lib.mk
@@ -102,25 +95,9 @@ endif
 
 mlx4_autoconf.h.new: FORCE
 
-mlx4_autoconf.h.new: $(RTE_SDK)/scripts/auto-config-h.sh
+mlx4_autoconf.h.new: $(RTE_SDK)/buildtools/auto-config-h.sh
 	$Q $(RM) -f -- '$@'
-	$Q sh -- '$<' '$@' \
-		RSS_SUPPORT \
-		infiniband/verbs.h \
-		enum IBV_EXP_DEVICE_UD_RSS $(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		INLINE_RECV \
-		infiniband/verbs.h \
-		enum IBV_EXP_DEVICE_ATTR_INLINE_RECV_SZ $(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_EXP_QUERY_DEVICE \
-		infiniband/verbs.h \
-		type 'struct ibv_exp_device_attr' $(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_EXP_QP_BURST_CREATE_DISABLE_ETH_LOOPBACK \
-		infiniband/verbs.h \
-		enum IBV_EXP_QP_BURST_CREATE_DISABLE_ETH_LOOPBACK \
-		$(AUTOCONF_OUTPUT)
+	$Q : > '$@'
 
 # Create mlx4_autoconf.h or update it in case it differs from the new one.
 
@@ -129,7 +106,7 @@ mlx4_autoconf.h: mlx4_autoconf.h.new
 		cmp '$<' '$@' $(AUTOCONF_OUTPUT) || \
 		mv '$<' '$@'
 
-mlx4.o: mlx4_autoconf.h
+$(SRCS-$(CONFIG_RTE_LIBRTE_MLX4_PMD):.c=.o): mlx4_autoconf.h
 
 clean_mlx4: FORCE
 	$Q rm -f -- mlx4_autoconf.h mlx4_autoconf.h.new

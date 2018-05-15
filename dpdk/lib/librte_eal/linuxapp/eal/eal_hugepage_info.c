@@ -46,7 +46,6 @@
 #include <sys/queue.h>
 
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
 #include <rte_per_lcore.h>
@@ -283,9 +282,12 @@ eal_hugepage_info_init(void)
 	struct dirent *dirent;
 
 	dir = opendir(sys_dir_path);
-	if (dir == NULL)
-		rte_panic("Cannot open directory %s to read system hugepage "
-			  "info\n", sys_dir_path);
+	if (dir == NULL) {
+		RTE_LOG(ERR, EAL,
+			"Cannot open directory %s to read system hugepage info\n",
+			sys_dir_path);
+		return -1;
+	}
 
 	for (dirent = readdir(dir); dirent != NULL; dirent = readdir(dir)) {
 		struct hugepage_info *hpi;

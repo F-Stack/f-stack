@@ -39,11 +39,13 @@
  * Architecture specific API to determine available CPU features at runtime.
  */
 
+#include "rte_common.h"
 #include <errno.h>
 
 /**
  * Enumeration of all CPU features supported
  */
+__extension__
 enum rte_cpu_flag_t;
 
 /**
@@ -55,6 +57,7 @@ enum rte_cpu_flag_t;
  *     flag name
  *     NULL if flag ID is invalid
  */
+__extension__
 const char *
 rte_cpu_get_flag_name(enum rte_cpu_flag_t feature);
 
@@ -68,6 +71,7 @@ rte_cpu_get_flag_name(enum rte_cpu_flag_t feature);
  *     0 if flag is not available
  *     -ENOENT if flag is invalid
  */
+__extension__
 int
 rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature);
 
@@ -76,7 +80,17 @@ rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature);
  * that were specified at compile time. It is called automatically within the
  * EAL, so does not need to be used by applications.
  */
+__rte_deprecated
 void
 rte_cpu_check_supported(void);
+
+/**
+ * This function checks that the currently used CPU supports the CPU features
+ * that were specified at compile time. It is called automatically within the
+ * EAL, so does not need to be used by applications.  This version returns a
+ * result so that decisions may be made (for instance, graceful shutdowns).
+ */
+int
+rte_cpu_is_supported(void);
 
 #endif /* _RTE_CPUFLAGS_H_ */

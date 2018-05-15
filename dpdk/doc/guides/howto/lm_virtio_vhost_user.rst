@@ -90,15 +90,15 @@ For Fortville NIC.
 
 .. code-block:: console
 
-   cd /root/dpdk/tools
-   ./dpdk_nic_bind.py -b igb_uio 0000:02:00.0
+   cd /root/dpdk/usertools
+   ./dpdk-devbind.py -b igb_uio 0000:02:00.0
 
 For Niantic NIC.
 
 .. code-block:: console
 
-   cd /root/dpdk/tools
-   ./dpdk_nic_bind.py -b igb_uio 0000:09:00.0
+   cd /root/dpdk/usertools
+   ./dpdk-devbind.py -b igb_uio 0000:09:00.0
 
 On host_server_1: Terminal 3
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -171,15 +171,15 @@ For Fortville NIC.
 
 .. code-block:: console
 
-   cd /root/dpdk/tools
-   ./dpdk_nic_bind.py -b igb_uio 0000:03:00.0
+   cd /root/dpdk/usertools
+   ./dpdk-devbind.py -b igb_uio 0000:03:00.0
 
 For Niantic NIC.
 
 .. code-block:: console
 
-   cd /root/dpdk/tools
-   ./dpdk_nic_bind.py -b igb_uio 0000:06:00.0
+   cd /root/dpdk/usertools
+   ./dpdk-devbind.py -b igb_uio 0000:06:00.0
 
 On host_server_2: Terminal 3
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -444,17 +444,17 @@ setup_dpdk_virtio_in_vm.sh
    cat  /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
 
    ifconfig -a
-   /root/dpdk/tools/dpdk_nic_bind.py --status
+   /root/dpdk/usertools/dpdk-devbind.py --status
 
    rmmod virtio-pci
 
    modprobe uio
    insmod /root/dpdk/x86_64-default-linuxapp-gcc/kmod/igb_uio.ko
 
-   /root/dpdk/tools/dpdk_nic_bind.py -b igb_uio 0000:00:03.0
-   /root/dpdk/tools/dpdk_nic_bind.py -b igb_uio 0000:00:04.0
+   /root/dpdk/usertools/dpdk-devbind.py -b igb_uio 0000:00:03.0
+   /root/dpdk/usertools/dpdk-devbind.py -b igb_uio 0000:00:04.0
 
-   /root/dpdk/tools/dpdk_nic_bind.py --status
+   /root/dpdk/usertools/dpdk-devbind.py --status
 
 run_testpmd_in_vm.sh
 ~~~~~~~~~~~~~~~~~~~~
@@ -466,4 +466,4 @@ run_testpmd_in_vm.sh
    # test system has 8 cpus (0-7), use cpus 2-7 for VM
 
    /root/dpdk/x86_64-default-linuxapp-gcc/app/testpmd \
-   -c 3f -n 4 --socket-mem 350 -- --burst=64 --i --disable-hw-vlan-filter
+   -l 0-5 -n 4 --socket-mem 350 -- --burst=64 --i --disable-hw-vlan-filter

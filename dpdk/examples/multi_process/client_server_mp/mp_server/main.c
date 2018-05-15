@@ -38,16 +38,13 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <inttypes.h>
-#include <inttypes.h>
 #include <sys/queue.h>
 #include <errno.h>
 #include <netinet/ip.h>
 
 #include <rte_common.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_byteorder.h>
 #include <rte_launch.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
@@ -61,7 +58,6 @@
 #include <rte_mbuf.h>
 #include <rte_ether.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ethdev.h>
 #include <rte_byteorder.h>
 #include <rte_malloc.h>
@@ -90,7 +86,7 @@ struct client_rx_buf {
 static struct client_rx_buf *cl_rx_buf;
 
 static const char *
-get_printable_mac_addr(uint8_t port)
+get_printable_mac_addr(uint16_t port)
 {
 	static const char err_address[] = "00:00:00:00:00:00";
 	static char addresses[RTE_MAX_ETHPORTS][sizeof(err_address)];
@@ -227,7 +223,7 @@ flush_rx_queue(uint16_t client)
 
 	cl = &clients[client];
 	if (rte_ring_enqueue_bulk(cl->rx_q, (void **)cl_rx_buf[client].buffer,
-			cl_rx_buf[client].count) != 0){
+			cl_rx_buf[client].count, NULL) == 0){
 		for (j = 0; j < cl_rx_buf[client].count; j++)
 			rte_pktmbuf_free(cl_rx_buf[client].buffer[j]);
 		cl->stats.rx_drop += cl_rx_buf[client].count;

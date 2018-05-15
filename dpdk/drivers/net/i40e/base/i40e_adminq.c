@@ -682,6 +682,18 @@ enum i40e_status_code i40e_init_adminq(struct i40e_hw *hw)
 			   &oem_lo);
 	hw->nvm.oem_ver = ((u32)oem_hi << 16) | oem_lo;
 
+	/* The ability to RX (not drop) 802.1ad frames was added in API 1.7 */
+	if ((hw->aq.api_maj_ver > 1) ||
+	    ((hw->aq.api_maj_ver == 1) &&
+	     (hw->aq.api_min_ver >= 7)))
+		hw->flags |= I40E_HW_FLAG_802_1AD_CAPABLE;
+
+	if (hw->mac.type ==  I40E_MAC_XL710 &&
+	    hw->aq.api_maj_ver == I40E_FW_API_VERSION_MAJOR &&
+	    hw->aq.api_min_ver >= I40E_MINOR_VER_GET_LINK_INFO_XL710) {
+		hw->flags |= I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE;
+	}
+
 	if (hw->aq.api_maj_ver > I40E_FW_API_VERSION_MAJOR) {
 		ret_code = I40E_ERR_FIRMWARE_API_VERSION;
 		goto init_adminq_free_arq;
@@ -944,8 +956,8 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 			 */
 			if (i40e_asq_done(hw))
 				break;
-			i40e_msec_delay(1);
-			total_delay++;
+			i40e_usec_delay(50);
+			total_delay += 50;
 		} while (total_delay < hw->aq.asq_cmd_timeout);
 	}
 
@@ -1077,11 +1089,11 @@ enum i40e_status_code i40e_clean_arq_element(struct i40e_hw *hw,
 	desc = I40E_ADMINQ_DESC(hw->aq.arq, ntc);
 	desc_idx = ntc;
 
+	hw->aq.arq_last_status =
+		(enum i40e_admin_queue_err)LE16_TO_CPU(desc->retval);
 	flags = LE16_TO_CPU(desc->flags);
 	if (flags & I40E_AQ_FLAG_ERR) {
 		ret_code = I40E_ERR_ADMIN_QUEUE_ERROR;
-		hw->aq.arq_last_status =
-			(enum i40e_admin_queue_err)LE16_TO_CPU(desc->retval);
 		i40e_debug(hw,
 			   I40E_DEBUG_AQ_MESSAGE,
 			   "AQRX: Event received with error 0x%X.\n",

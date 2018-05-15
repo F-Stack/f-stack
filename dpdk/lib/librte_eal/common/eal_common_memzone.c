@@ -189,7 +189,8 @@ memzone_reserve_aligned_thread_unsafe(const char *name, size_t len,
 		return NULL;
 	}
 
-	if ((socket_id != SOCKET_ID_ANY) && (socket_id >= RTE_MAX_NUMA_NODES)) {
+	if ((socket_id != SOCKET_ID_ANY) &&
+	    (socket_id >= RTE_MAX_NUMA_NODES || socket_id < 0)) {
 		rte_errno = EINVAL;
 		return NULL;
 	}
@@ -236,7 +237,7 @@ memzone_reserve_aligned_thread_unsafe(const char *name, size_t len,
 		return NULL;
 	}
 
-	const struct malloc_elem *elem = malloc_elem_from_data(mz_addr);
+	struct malloc_elem *elem = malloc_elem_from_data(mz_addr);
 
 	/* fill the zone in config */
 	mz = get_next_free_memzone();
@@ -244,13 +245,14 @@ memzone_reserve_aligned_thread_unsafe(const char *name, size_t len,
 	if (mz == NULL) {
 		RTE_LOG(ERR, EAL, "%s(): Cannot find free memzone but there is room "
 				"in config!\n", __func__);
+		malloc_elem_free(elem);
 		rte_errno = ENOSPC;
 		return NULL;
 	}
 
 	mcfg->memzone_cnt++;
 	snprintf(mz->name, sizeof(mz->name), "%s", name);
-	mz->phys_addr = rte_malloc_virt2phy(mz_addr);
+	mz->iova = rte_malloc_virt2iova(mz_addr);
 	mz->addr = mz_addr;
 	mz->len = (requested_len == 0 ? elem->size : requested_len);
 	mz->hugepage_sz = elem->ms->hugepage_sz;
@@ -337,19 +339,7 @@ rte_memzone_free(const struct rte_memzone *mz)
 	idx = ((uintptr_t)mz - (uintptr_t)mcfg->memzone);
 	idx = idx / sizeof(struct rte_memzone);
 
-#ifdef RTE_LIBRTE_IVSHMEM
-	/*
-	 * If ioremap_addr is set, it's an IVSHMEM memzone and we cannot
-	 * free it.
-	 */
-	if (mcfg->memzone[idx].ioremap_addr != 0) {
-		rte_rwlock_write_unlock(&mcfg->mlock);
-		return -EINVAL;
-	}
-#endif
-
 	addr = mcfg->memzone[idx].addr;
-
 	if (addr == NULL)
 		ret = -EINVAL;
 	else if (mcfg->memzone_cnt == 0) {
@@ -402,10 +392,10 @@ rte_memzone_dump(FILE *f)
 	for (i=0; i<RTE_MAX_MEMZONE; i++) {
 		if (mcfg->memzone[i].addr == NULL)
 			break;
-		fprintf(f, "Zone %u: name:<%s>, phys:0x%"PRIx64", len:0x%zx"
+		fprintf(f, "Zone %u: name:<%s>, IO:0x%"PRIx64", len:0x%zx"
 		       ", virt:%p, socket_id:%"PRId32", flags:%"PRIx32"\n", i,
 		       mcfg->memzone[i].name,
-		       mcfg->memzone[i].phys_addr,
+		       mcfg->memzone[i].iova,
 		       mcfg->memzone[i].len,
 		       mcfg->memzone[i].addr,
 		       mcfg->memzone[i].socket_id,

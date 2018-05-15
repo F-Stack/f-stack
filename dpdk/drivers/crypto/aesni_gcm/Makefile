@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2016 Intel Corporation. All rights reserved.
+#   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
 #   modification, are permitted provided that the following conditions
@@ -53,7 +53,9 @@ EXPORT_MAP := rte_pmd_aesni_gcm_version.map
 CFLAGS += -I$(AESNI_MULTI_BUFFER_LIB_PATH)
 CFLAGS += -I$(AESNI_MULTI_BUFFER_LIB_PATH)/include
 LDLIBS += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
-LDLIBS += -lcrypto
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_cryptodev
+LDLIBS += -lrte_bus_vdev
 
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += aesni_gcm_pmd.c
@@ -61,12 +63,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += aesni_gcm_pmd_ops.c
 
 # export include files
 SYMLINK-y-include +=
-
-# library dependencies
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += lib/librte_ring
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += lib/librte_cryptodev
 
 include $(RTE_SDK)/mk/rte.lib.mk

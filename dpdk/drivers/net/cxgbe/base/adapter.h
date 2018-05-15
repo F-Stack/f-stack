@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2016 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -36,7 +36,9 @@
 #ifndef __T4_ADAPTER_H__
 #define __T4_ADAPTER_H__
 
+#include <rte_bus_pci.h>
 #include <rte_mbuf.h>
+#include <rte_io.h>
 
 #include "cxgbe_compat.h"
 #include "t4_regs_values.h"
@@ -147,6 +149,7 @@ struct sge_rspq {                   /* state for an SGE response queue */
 
 	void __iomem *bar2_addr;    /* address of BAR2 Queue registers */
 	unsigned int bar2_qid;      /* Queue ID for BAR2 Queue registers */
+	struct sge_qstat *stat;
 
 	unsigned int cidx;          /* consumer index */
 	unsigned int gts_idx;	    /* last gts write sent */
@@ -324,7 +327,7 @@ struct adapter {
 	int use_unpacked_mode; /* unpacked rx mode state */
 };
 
-#define CXGBE_PCI_REG(reg) (*((volatile uint32_t *)(reg)))
+#define CXGBE_PCI_REG(reg) rte_read32(reg)
 
 static inline uint64_t cxgbe_read_addr64(volatile void *addr)
 {
@@ -350,16 +353,21 @@ static inline uint32_t cxgbe_read_addr(volatile void *addr)
 #define CXGBE_READ_REG64(adap, reg) \
 	cxgbe_read_addr64(CXGBE_PCI_REG_ADDR((adap), (reg)))
 
-#define CXGBE_PCI_REG_WRITE(reg, value) ({ \
-	CXGBE_PCI_REG((reg)) = (value); })
+#define CXGBE_PCI_REG_WRITE(reg, value) rte_write32((value), (reg))
+
+#define CXGBE_PCI_REG_WRITE_RELAXED(reg, value) \
+	rte_write32_relaxed((value), (reg))
 
 #define CXGBE_WRITE_REG(adap, reg, value) \
 	CXGBE_PCI_REG_WRITE(CXGBE_PCI_REG_ADDR((adap), (reg)), (value))
 
+#define CXGBE_WRITE_REG_RELAXED(adap, reg, value) \
+	CXGBE_PCI_REG_WRITE_RELAXED(CXGBE_PCI_REG_ADDR((adap), (reg)), (value))
+
 static inline uint64_t cxgbe_write_addr64(volatile void *addr, uint64_t val)
 {
-	CXGBE_PCI_REG(addr) = val;
-	CXGBE_PCI_REG(((volatile uint8_t *)(addr) + 4)) = (val >> 32);
+	CXGBE_PCI_REG_WRITE(addr, val);
+	CXGBE_PCI_REG_WRITE(((volatile uint8_t *)(addr) + 4), (val >> 32));
 	return val;
 }
 
@@ -383,7 +391,7 @@ static inline u32 t4_read_reg(struct adapter *adapter, u32 reg_addr)
 }
 
 /**
- * t4_write_reg - write a HW register
+ * t4_write_reg - write a HW register with barrier
  * @adapter: the adapter
  * @reg_addr: the register address
  * @val: the value to write
@@ -395,6 +403,22 @@ static inline void t4_write_reg(struct adapter *adapter, u32 reg_addr, u32 val)
 	CXGBE_DEBUG_REG(adapter, "setting register 0x%x to 0x%x\n", reg_addr,
 			val);
 	CXGBE_WRITE_REG(adapter, reg_addr, val);
+}
+
+/**
+ * t4_write_reg_relaxed - write a HW register with no barrier
+ * @adapter: the adapter
+ * @reg_addr: the register address
+ * @val: the value to write
+ *
+ * Write a 32-bit value into the given HW register.
+ */
+static inline void t4_write_reg_relaxed(struct adapter *adapter, u32 reg_addr,
+					u32 val)
+{
+	CXGBE_DEBUG_REG(adapter, "setting register 0x%x to 0x%x\n", reg_addr,
+			val);
+	CXGBE_WRITE_REG_RELAXED(adapter, reg_addr, val);
 }
 
 /**
@@ -437,7 +461,10 @@ static inline void t4_write_reg64(struct adapter *adapter, u32 reg_addr,
 #define PCI_CAP_ID_EXP          0x10    /* PCI Express */
 #define PCI_CAP_LIST_ID         0       /* Capability ID */
 #define PCI_CAP_LIST_NEXT       1       /* Next capability in the list */
+#define PCI_EXP_DEVCTL          0x0008  /* Device control */
 #define PCI_EXP_DEVCTL2         40      /* Device Control 2 */
+#define PCI_EXP_DEVCTL_EXT_TAG  0x0100  /* Extended Tag Field Enable */
+#define PCI_EXP_DEVCTL_PAYLOAD  0x00E0  /* Max payload */
 #define PCI_CAP_ID_VPD          0x03    /* Vital Product Data */
 #define PCI_VPD_ADDR            2       /* Address to access (15 bits!) */
 #define PCI_VPD_ADDR_F          0x8000  /* Write 0, 1 indicates completion */
@@ -456,7 +483,7 @@ static inline void t4_os_pci_write_cfg4(struct adapter *adapter, size_t addr,
 {
 	u32 val32 = val;
 
-	if (rte_eal_pci_write_config(adapter->pdev, &val32, sizeof(val32),
+	if (rte_pci_write_config(adapter->pdev, &val32, sizeof(val32),
 				     addr) < 0)
 		dev_err(adapter, "Can't write to PCI config space\n");
 }
@@ -472,7 +499,7 @@ static inline void t4_os_pci_write_cfg4(struct adapter *adapter, size_t addr,
 static inline void t4_os_pci_read_cfg4(struct adapter *adapter, size_t addr,
 				       u32 *val)
 {
-	if (rte_eal_pci_read_config(adapter->pdev, val, sizeof(*val),
+	if (rte_pci_read_config(adapter->pdev, val, sizeof(*val),
 				    addr) < 0)
 		dev_err(adapter, "Can't read from PCI config space\n");
 }
@@ -490,7 +517,7 @@ static inline void t4_os_pci_write_cfg2(struct adapter *adapter, size_t addr,
 {
 	u16 val16 = val;
 
-	if (rte_eal_pci_write_config(adapter->pdev, &val16, sizeof(val16),
+	if (rte_pci_write_config(adapter->pdev, &val16, sizeof(val16),
 				     addr) < 0)
 		dev_err(adapter, "Can't write to PCI config space\n");
 }
@@ -506,7 +533,7 @@ static inline void t4_os_pci_write_cfg2(struct adapter *adapter, size_t addr,
 static inline void t4_os_pci_read_cfg2(struct adapter *adapter, size_t addr,
 				       u16 *val)
 {
-	if (rte_eal_pci_read_config(adapter->pdev, val, sizeof(*val),
+	if (rte_pci_read_config(adapter->pdev, val, sizeof(*val),
 				    addr) < 0)
 		dev_err(adapter, "Can't read from PCI config space\n");
 }
@@ -522,7 +549,7 @@ static inline void t4_os_pci_read_cfg2(struct adapter *adapter, size_t addr,
 static inline void t4_os_pci_read_cfg(struct adapter *adapter, size_t addr,
 				      u8 *val)
 {
-	if (rte_eal_pci_read_config(adapter->pdev, val, sizeof(*val),
+	if (rte_pci_read_config(adapter->pdev, val, sizeof(*val),
 				    addr) < 0)
 		dev_err(adapter, "Can't read from PCI config space\n");
 }
@@ -684,7 +711,8 @@ void reclaim_completed_tx(struct sge_txq *q);
 void t4_free_sge_resources(struct adapter *adap);
 void t4_sge_tx_monitor_start(struct adapter *adap);
 void t4_sge_tx_monitor_stop(struct adapter *adap);
-int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf);
+int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
+		uint16_t nb_pkts);
 int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 		     const struct pkt_gl *gl);
 int t4_sge_init(struct adapter *adap);

@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -56,7 +56,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -67,6 +66,7 @@
 #include <rte_udp.h>
 #include <rte_tcp.h>
 #include <rte_sctp.h>
+#include <rte_net.h>
 #include <rte_string_fns.h>
 
 #include "e1000_logs.h"
@@ -77,6 +77,14 @@
 #define	E1000_TXD_VLAN_SHIFT	16
 
 #define E1000_RXDCTL_GRAN	0x01000000 /* RXDCTL Granularity */
+
+#define E1000_TX_OFFLOAD_MASK ( \
+		PKT_TX_IP_CKSUM |       \
+		PKT_TX_L4_MASK |        \
+		PKT_TX_VLAN_PKT)
+
+#define E1000_TX_OFFLOAD_NOTSUP_MASK \
+		(PKT_TX_OFFLOAD_MASK ^ E1000_TX_OFFLOAD_MASK)
 
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
@@ -111,7 +119,7 @@ struct em_rx_queue {
 	uint16_t            nb_rx_hold; /**< number of held free RX desc. */
 	uint16_t            rx_free_thresh; /**< max free RX desc to hold. */
 	uint16_t            queue_id;   /**< RX queue index. */
-	uint8_t             port_id;    /**< Device port identifier. */
+	uint16_t            port_id;    /**< Device port identifier. */
 	uint8_t             pthresh;    /**< Prefetch threshold register. */
 	uint8_t             hthresh;    /**< Host threshold register. */
 	uint8_t             wthresh;    /**< Write-back threshold register. */
@@ -178,7 +186,7 @@ struct em_tx_queue {
 	/** Total number of TX descriptors ready to be allocated. */
 	uint16_t               nb_tx_free;
 	uint16_t               queue_id; /**< TX queue index. */
-	uint8_t                port_id;  /**< Device port identifier. */
+	uint16_t               port_id;  /**< Device port identifier. */
 	uint8_t                pthresh;  /**< Prefetch threshold register. */
 	uint8_t                hthresh;  /**< Host threshold register. */
 	uint8_t                wthresh;  /**< Write-back threshold register. */
@@ -569,7 +577,7 @@ eth_em_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * Set up Transmit Data Descriptor.
 			 */
 			slen = m_seg->data_len;
-			buf_dma_addr = rte_mbuf_data_dma_addr(m_seg);
+			buf_dma_addr = rte_mbuf_data_iova(m_seg);
 
 			txd->buffer_addr = rte_cpu_to_le_64(buf_dma_addr);
 			txd->lower.data = rte_cpu_to_le_32(cmd_type_len | slen);
@@ -611,10 +619,47 @@ end_of_tx:
 	PMD_TX_LOG(DEBUG, "port_id=%u queue_id=%u tx_tail=%u nb_tx=%u",
 		(unsigned) txq->port_id, (unsigned) txq->queue_id,
 		(unsigned) tx_id, (unsigned) nb_tx);
-	E1000_PCI_REG_WRITE(txq->tdt_reg_addr, tx_id);
+	E1000_PCI_REG_WRITE_RELAXED(txq->tdt_reg_addr, tx_id);
 	txq->tx_tail = tx_id;
 
 	return nb_tx;
+}
+
+/*********************************************************************
+ *
+ *  TX prep functions
+ *
+ **********************************************************************/
+uint16_t
+eth_em_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int i, ret;
+	struct rte_mbuf *m;
+
+	for (i = 0; i < nb_pkts; i++) {
+		m = tx_pkts[i];
+
+		if (m->ol_flags & E1000_TX_OFFLOAD_NOTSUP_MASK) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+		ret = rte_net_intel_cksum_prepare(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+
+	return i;
 }
 
 /*********************************************************************
@@ -630,7 +675,7 @@ rx_desc_status_to_pkt_flags(uint32_t rx_status)
 
 	/* Check if VLAN present */
 	pkt_flags = ((rx_status & E1000_RXD_STAT_VP) ?
-		PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED : 0);
+		PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED : 0);
 
 	return pkt_flags;
 }
@@ -754,7 +799,7 @@ eth_em_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 		rxdp->buffer_addr = dma_addr;
 		rxdp->status = 0;
 
@@ -785,7 +830,7 @@ eth_em_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rxm->ol_flags = rxm->ol_flags |
 				rx_desc_error_to_pkt_flags(rxd.errors);
 
-		/* Only valid if PKT_RX_VLAN_PKT set in pkt_flags */
+		/* Only valid if PKT_RX_VLAN set in pkt_flags */
 		rxm->vlan_tci = rte_le_to_cpu_16(rxd.special);
 
 		/*
@@ -934,7 +979,7 @@ eth_em_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 */
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
-		dma = rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
+		dma = rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 		rxdp->buffer_addr = dma;
 		rxdp->status = 0;
 
@@ -1011,7 +1056,7 @@ eth_em_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		first_seg->ol_flags = first_seg->ol_flags |
 					rx_desc_error_to_pkt_flags(rxd.errors);
 
-		/* Only valid if PKT_RX_VLAN_PKT set in pkt_flags */
+		/* Only valid if PKT_RX_VLAN set in pkt_flags */
 		rxm->vlan_tci = rte_le_to_cpu_16(rxd.special);
 
 		/* Prefetch data of first segment, if configured to do so. */
@@ -1244,7 +1289,7 @@ eth_em_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->port_id = dev->data->port_id;
 
 	txq->tdt_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_TDT(queue_idx));
-	txq->tx_ring_phys_addr = rte_mem_phy2mch(tz->memseg_id, tz->phys_addr);
+	txq->tx_ring_phys_addr = tz->iova;
 	txq->tx_ring = (struct e1000_data_desc *) tz->addr;
 
 	PMD_INIT_LOG(DEBUG, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
@@ -1371,7 +1416,7 @@ eth_em_rx_queue_setup(struct rte_eth_dev *dev,
 
 	rxq->rdt_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_RDT(queue_idx));
 	rxq->rdh_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_RDH(queue_idx));
-	rxq->rx_ring_phys_addr = rte_mem_phy2mch(rz->memseg_id, rz->phys_addr);
+	rxq->rx_ring_phys_addr = rz->iova;
 	rxq->rx_ring = (struct e1000_rx_desc *) rz->addr;
 
 	PMD_INIT_LOG(DEBUG, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
@@ -1390,11 +1435,6 @@ eth_em_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	volatile struct e1000_rx_desc *rxdp;
 	struct em_rx_queue *rxq;
 	uint32_t desc = 0;
-
-	if (rx_queue_id >= dev->data->nb_rx_queues) {
-		PMD_RX_LOG(DEBUG, "Invalid RX queue_id=%d", rx_queue_id);
-		return 0;
-	}
 
 	rxq = dev->data->rx_queues[rx_queue_id];
 	rxdp = &(rxq->rx_ring[rxq->rx_tail]);
@@ -1426,6 +1466,57 @@ eth_em_rx_descriptor_done(void *rx_queue, uint16_t offset)
 
 	rxdp = &rxq->rx_ring[desc];
 	return !!(rxdp->status & E1000_RXD_STAT_DD);
+}
+
+int
+eth_em_rx_descriptor_status(void *rx_queue, uint16_t offset)
+{
+	struct em_rx_queue *rxq = rx_queue;
+	volatile uint8_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= rxq->nb_rx_desc))
+		return -EINVAL;
+
+	if (offset >= rxq->nb_rx_desc - rxq->nb_rx_hold)
+		return RTE_ETH_RX_DESC_UNAVAIL;
+
+	desc = rxq->rx_tail + offset;
+	if (desc >= rxq->nb_rx_desc)
+		desc -= rxq->nb_rx_desc;
+
+	status = &rxq->rx_ring[desc].status;
+	if (*status & E1000_RXD_STAT_DD)
+		return RTE_ETH_RX_DESC_DONE;
+
+	return RTE_ETH_RX_DESC_AVAIL;
+}
+
+int
+eth_em_tx_descriptor_status(void *tx_queue, uint16_t offset)
+{
+	struct em_tx_queue *txq = tx_queue;
+	volatile uint8_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= txq->nb_tx_desc))
+		return -EINVAL;
+
+	desc = txq->tx_tail + offset;
+	/* go to next desc that has the RS bit */
+	desc = ((desc + txq->tx_rs_thresh - 1) / txq->tx_rs_thresh) *
+		txq->tx_rs_thresh;
+	if (desc >= txq->nb_tx_desc) {
+		desc -= txq->nb_tx_desc;
+		if (desc >= txq->nb_tx_desc)
+			desc -= txq->nb_tx_desc;
+	}
+
+	status = &txq->tx_ring[desc].upper.fields.status;
+	if (*status & E1000_TXD_STAT_DD)
+		return RTE_ETH_TX_DESC_DONE;
+
+	return RTE_ETH_TX_DESC_FULL;
 }
 
 void
@@ -1561,7 +1652,7 @@ em_alloc_rx_queue_mbufs(struct em_rx_queue *rxq)
 		}
 
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(mbuf));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
 		/* Clear HW ring memory */
 		rxq->rx_ring[i] = rxd_init;

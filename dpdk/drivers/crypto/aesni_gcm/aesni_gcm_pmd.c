@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -30,84 +30,18 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <openssl/aes.h>
-
 #include <rte_common.h>
-#include <rte_config.h>
 #include <rte_hexdump.h>
 #include <rte_cryptodev.h>
 #include <rte_cryptodev_pmd.h>
-#include <rte_dev.h>
+#include <rte_bus_vdev.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
+#include <rte_byteorder.h>
 
 #include "aesni_gcm_pmd_private.h"
 
-/**
- * Global static parameter used to create a unique name for each AES-NI multi
- * buffer crypto device.
- */
-static unsigned unique_name_id;
-
-static inline int
-create_unique_device_name(char *name, size_t size)
-{
-	int ret;
-
-	if (name == NULL)
-		return -EINVAL;
-
-	ret = snprintf(name, size, "%s_%u", RTE_STR(CRYPTODEV_NAME_AESNI_GCM_PMD),
-			unique_name_id++);
-	if (ret < 0)
-		return ret;
-	return 0;
-}
-
-static int
-aesni_gcm_calculate_hash_sub_key(uint8_t *hsubkey, unsigned hsubkey_length,
-		uint8_t *aeskey, unsigned aeskey_length)
-{
-	uint8_t key[aeskey_length] __rte_aligned(16);
-	AES_KEY enc_key;
-
-	if (hsubkey_length % 16 != 0 && aeskey_length % 16 != 0)
-		return -EFAULT;
-
-	memcpy(key, aeskey, aeskey_length);
-
-	if (AES_set_encrypt_key(key, aeskey_length << 3, &enc_key) != 0)
-		return -EFAULT;
-
-	AES_encrypt(hsubkey, hsubkey, &enc_key);
-
-	return 0;
-}
-
-/** Get xform chain order */
-static int
-aesni_gcm_get_mode(const struct rte_crypto_sym_xform *xform)
-{
-	/*
-	 * GCM only supports authenticated encryption or authenticated
-	 * decryption, all other options are invalid, so we must have exactly
-	 * 2 xform structs chained together
-	 */
-	if (xform->next == NULL || xform->next->next != NULL)
-		return -1;
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
-			xform->next->type == RTE_CRYPTO_SYM_XFORM_AUTH) {
-		return AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION;
-	}
-
-	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH &&
-			xform->next->type == RTE_CRYPTO_SYM_XFORM_CIPHER) {
-		return AESNI_GCM_OP_AUTHENTICATED_DECRYPTION;
-	}
-
-	return -1;
-}
+static uint8_t cryptodev_driver_id;
 
 /** Parse crypto xform chain and set private session parameters */
 int
@@ -115,98 +49,147 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *gcm_ops,
 		struct aesni_gcm_session *sess,
 		const struct rte_crypto_sym_xform *xform)
 {
-	const struct rte_crypto_sym_xform *auth_xform = NULL;
-	const struct rte_crypto_sym_xform *cipher_xform = NULL;
+	const struct rte_crypto_sym_xform *auth_xform;
+	const struct rte_crypto_sym_xform *aead_xform;
+	uint16_t digest_length;
+	uint8_t key_length;
+	uint8_t *key;
 
-	uint8_t hsubkey[16] __rte_aligned(16) = { 0 };
-
-	/* Select Crypto operation - hash then cipher / cipher then hash */
-	switch (aesni_gcm_get_mode(xform)) {
-	case AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION:
-		sess->op = AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION;
-
-		cipher_xform = xform;
-		auth_xform = xform->next;
-		break;
-	case AESNI_GCM_OP_AUTHENTICATED_DECRYPTION:
-		sess->op = AESNI_GCM_OP_AUTHENTICATED_DECRYPTION;
-
+	/* AES-GMAC */
+	if (xform->type == RTE_CRYPTO_SYM_XFORM_AUTH) {
 		auth_xform = xform;
-		cipher_xform = xform->next;
+		if (auth_xform->auth.algo != RTE_CRYPTO_AUTH_AES_GMAC) {
+			GCM_LOG_ERR("Only AES GMAC is supported as an "
+					"authentication only algorithm");
+			return -ENOTSUP;
+		}
+		/* Set IV parameters */
+		sess->iv.offset = auth_xform->auth.iv.offset;
+		sess->iv.length = auth_xform->auth.iv.length;
+
+		/* Select Crypto operation */
+		if (auth_xform->auth.op == RTE_CRYPTO_AUTH_OP_GENERATE)
+			sess->op = AESNI_GMAC_OP_GENERATE;
+		else
+			sess->op = AESNI_GMAC_OP_VERIFY;
+
+		key_length = auth_xform->auth.key.length;
+		key = auth_xform->auth.key.data;
+		digest_length = auth_xform->auth.digest_length;
+
+	/* AES-GCM */
+	} else if (xform->type == RTE_CRYPTO_SYM_XFORM_AEAD) {
+		aead_xform = xform;
+
+		if (aead_xform->aead.algo != RTE_CRYPTO_AEAD_AES_GCM) {
+			GCM_LOG_ERR("The only combined operation "
+						"supported is AES GCM");
+			return -ENOTSUP;
+		}
+
+		/* Set IV parameters */
+		sess->iv.offset = aead_xform->aead.iv.offset;
+		sess->iv.length = aead_xform->aead.iv.length;
+
+		/* Select Crypto operation */
+		if (aead_xform->aead.op == RTE_CRYPTO_AEAD_OP_ENCRYPT)
+			sess->op = AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION;
+		else
+			sess->op = AESNI_GCM_OP_AUTHENTICATED_DECRYPTION;
+
+		key_length = aead_xform->aead.key.length;
+		key = aead_xform->aead.key.data;
+
+		sess->aad_length = aead_xform->aead.aad_length;
+		digest_length = aead_xform->aead.digest_length;
+	} else {
+		GCM_LOG_ERR("Wrong xform type, has to be AEAD or authentication");
+		return -ENOTSUP;
+	}
+
+
+	/* IV check */
+	if (sess->iv.length != 16 && sess->iv.length != 12 &&
+			sess->iv.length != 0) {
+		GCM_LOG_ERR("Wrong IV length");
+		return -EINVAL;
+	}
+
+	/* Check key length and calculate GCM pre-compute. */
+	switch (key_length) {
+	case 16:
+		sess->key = AESNI_GCM_KEY_128;
+		break;
+	case 24:
+		sess->key = AESNI_GCM_KEY_192;
+		break;
+	case 32:
+		sess->key = AESNI_GCM_KEY_256;
 		break;
 	default:
-		GCM_LOG_ERR("Unsupported operation chain order parameter");
+		GCM_LOG_ERR("Invalid key length");
 		return -EINVAL;
 	}
 
-	/* We only support AES GCM */
-	if (cipher_xform->cipher.algo != RTE_CRYPTO_CIPHER_AES_GCM &&
-			auth_xform->auth.algo != RTE_CRYPTO_AUTH_AES_GCM)
-		return -EINVAL;
+	gcm_ops[sess->key].precomp(key, &sess->gdata_key);
 
-	/* Select cipher direction */
-	if (sess->op == AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION &&
-			cipher_xform->cipher.op !=
-					RTE_CRYPTO_CIPHER_OP_ENCRYPT) {
-		GCM_LOG_ERR("xform chain (CIPHER/AUTH) and cipher operation "
-				"(DECRYPT) specified are an invalid selection");
-		return -EINVAL;
-	} else if (sess->op == AESNI_GCM_OP_AUTHENTICATED_DECRYPTION &&
-			cipher_xform->cipher.op !=
-					RTE_CRYPTO_CIPHER_OP_DECRYPT) {
-		GCM_LOG_ERR("xform chain (AUTH/CIPHER) and cipher operation "
-				"(ENCRYPT) specified are an invalid selection");
+	/* Digest check */
+	if (digest_length != 16 &&
+			digest_length != 12 &&
+			digest_length != 8) {
+		GCM_LOG_ERR("digest");
 		return -EINVAL;
 	}
-
-	/* Expand GCM AES128 key */
-	(*gcm_ops->aux.keyexp.aes128_enc)(cipher_xform->cipher.key.data,
-			sess->gdata.expanded_keys);
-
-	/* Calculate hash sub key here */
-	aesni_gcm_calculate_hash_sub_key(hsubkey, sizeof(hsubkey),
-			cipher_xform->cipher.key.data,
-			cipher_xform->cipher.key.length);
-
-	/* Calculate GCM pre-compute */
-	(*gcm_ops->gcm.precomp)(&sess->gdata, hsubkey);
+	sess->digest_length = digest_length;
 
 	return 0;
 }
 
 /** Get gcm session */
 static struct aesni_gcm_session *
-aesni_gcm_get_session(struct aesni_gcm_qp *qp, struct rte_crypto_sym_op *op)
+aesni_gcm_get_session(struct aesni_gcm_qp *qp, struct rte_crypto_op *op)
 {
 	struct aesni_gcm_session *sess = NULL;
+	struct rte_crypto_sym_op *sym_op = op->sym;
 
-	if (op->sess_type == RTE_CRYPTO_SYM_OP_WITH_SESSION) {
-		if (unlikely(op->session->dev_type
-					!= RTE_CRYPTODEV_AESNI_GCM_PMD))
-			return sess;
-
-		sess = (struct aesni_gcm_session *)op->session->_private;
+	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+		if (likely(sym_op->session != NULL))
+			sess = (struct aesni_gcm_session *)
+					get_session_private_data(
+					sym_op->session,
+					cryptodev_driver_id);
 	} else  {
 		void *_sess;
+		void *_sess_private_data = NULL;
 
-		if (rte_mempool_get(qp->sess_mp, &_sess))
-			return sess;
+		if (rte_mempool_get(qp->sess_mp, (void **)&_sess))
+			return NULL;
 
-		sess = (struct aesni_gcm_session *)
-			((struct rte_cryptodev_session *)_sess)->_private;
+		if (rte_mempool_get(qp->sess_mp, (void **)&_sess_private_data))
+			return NULL;
+
+		sess = (struct aesni_gcm_session *)_sess_private_data;
 
 		if (unlikely(aesni_gcm_set_session_parameters(qp->ops,
-				sess, op->xform) != 0)) {
+				sess, sym_op->xform) != 0)) {
 			rte_mempool_put(qp->sess_mp, _sess);
+			rte_mempool_put(qp->sess_mp, _sess_private_data);
 			sess = NULL;
 		}
+		sym_op->session = (struct rte_cryptodev_sym_session *)_sess;
+		set_session_private_data(sym_op->session, cryptodev_driver_id,
+			_sess_private_data);
 	}
+
+	if (unlikely(sess == NULL))
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+
 	return sess;
 }
 
 /**
- * Process a crypto operation and complete a JOB_AES_HMAC job structure for
- * submission to the multi buffer library for processing.
+ * Process a crypto operation, calling
+ * the GCM API from the multi buffer library.
  *
  * @param	qp		queue pair
  * @param	op		symmetric crypto operation
@@ -216,67 +199,160 @@ aesni_gcm_get_session(struct aesni_gcm_qp *qp, struct rte_crypto_sym_op *op)
  *
  */
 static int
-process_gcm_crypto_op(struct aesni_gcm_qp *qp, struct rte_crypto_sym_op *op,
+process_gcm_crypto_op(struct aesni_gcm_qp *qp, struct rte_crypto_op *op,
 		struct aesni_gcm_session *session)
 {
 	uint8_t *src, *dst;
-	struct rte_mbuf *m = op->m_src;
+	uint8_t *iv_ptr;
+	struct rte_crypto_sym_op *sym_op = op->sym;
+	struct rte_mbuf *m_src = sym_op->m_src;
+	uint32_t offset, data_offset, data_length;
+	uint32_t part_len, total_len, data_len;
 
-	src = rte_pktmbuf_mtod(m, uint8_t *) + op->cipher.data.offset;
-	dst = op->m_dst ?
-			rte_pktmbuf_mtod_offset(op->m_dst, uint8_t *,
-					op->cipher.data.offset) :
-			rte_pktmbuf_mtod_offset(m, uint8_t *,
-					op->cipher.data.offset);
-
-	/* sanity checks */
-	if (op->cipher.iv.length != 16 && op->cipher.iv.length != 0) {
-		GCM_LOG_ERR("iv");
-		return -1;
+	if (session->op == AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION ||
+			session->op == AESNI_GCM_OP_AUTHENTICATED_DECRYPTION) {
+		offset = sym_op->aead.data.offset;
+		data_offset = offset;
+		data_length = sym_op->aead.data.length;
+	} else {
+		offset = sym_op->auth.data.offset;
+		data_offset = offset;
+		data_length = sym_op->auth.data.length;
 	}
 
-	if (op->auth.aad.length != 12 && op->auth.aad.length != 8 &&
-			op->auth.aad.length != 0) {
-		GCM_LOG_ERR("iv");
-		return -1;
+	RTE_ASSERT(m_src != NULL);
+
+	while (offset >= m_src->data_len && data_length != 0) {
+		offset -= m_src->data_len;
+		m_src = m_src->next;
+
+		RTE_ASSERT(m_src != NULL);
 	}
 
-	if (op->auth.digest.length != 16 &&
-			op->auth.digest.length != 12 &&
-			op->auth.digest.length != 8 &&
-			op->auth.digest.length != 0) {
-		GCM_LOG_ERR("iv");
-		return -1;
+	data_len = m_src->data_len - offset;
+	part_len = (data_len < data_length) ? data_len :
+			data_length;
+
+	/* Destination buffer is required when segmented source buffer */
+	RTE_ASSERT((part_len == data_length) ||
+			((part_len != data_length) &&
+					(sym_op->m_dst != NULL)));
+	/* Segmented destination buffer is not supported */
+	RTE_ASSERT((sym_op->m_dst == NULL) ||
+			((sym_op->m_dst != NULL) &&
+					rte_pktmbuf_is_contiguous(sym_op->m_dst)));
+
+
+	dst = sym_op->m_dst ?
+			rte_pktmbuf_mtod_offset(sym_op->m_dst, uint8_t *,
+					data_offset) :
+			rte_pktmbuf_mtod_offset(sym_op->m_src, uint8_t *,
+					data_offset);
+
+	src = rte_pktmbuf_mtod_offset(m_src, uint8_t *, offset);
+
+	iv_ptr = rte_crypto_op_ctod_offset(op, uint8_t *,
+				session->iv.offset);
+	/*
+	 * GCM working in 12B IV mode => 16B pre-counter block we need
+	 * to set BE LSB to 1, driver expects that 16B is allocated
+	 */
+	if (session->iv.length == 12) {
+		uint32_t *iv_padd = (uint32_t *)&(iv_ptr[12]);
+		*iv_padd = rte_bswap32(1);
 	}
 
 	if (session->op == AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION) {
 
-		(*qp->ops->gcm.enc)(&session->gdata, dst, src,
-				(uint64_t)op->cipher.data.length,
-				op->cipher.iv.data,
-				op->auth.aad.data,
-				(uint64_t)op->auth.aad.length,
-				op->auth.digest.data,
-				(uint64_t)op->auth.digest.length);
-	} else if (session->op == AESNI_GCM_OP_AUTHENTICATED_DECRYPTION) {
-		uint8_t *auth_tag = (uint8_t *)rte_pktmbuf_append(m,
-				op->auth.digest.length);
+		qp->ops[session->key].init(&session->gdata_key,
+				&qp->gdata_ctx,
+				iv_ptr,
+				sym_op->aead.aad.data,
+				(uint64_t)session->aad_length);
 
-		if (!auth_tag) {
-			GCM_LOG_ERR("iv");
-			return -1;
+		qp->ops[session->key].update_enc(&session->gdata_key,
+				&qp->gdata_ctx, dst, src,
+				(uint64_t)part_len);
+		total_len = data_length - part_len;
+
+		while (total_len) {
+			dst += part_len;
+			m_src = m_src->next;
+
+			RTE_ASSERT(m_src != NULL);
+
+			src = rte_pktmbuf_mtod(m_src, uint8_t *);
+			part_len = (m_src->data_len < total_len) ?
+					m_src->data_len : total_len;
+
+			qp->ops[session->key].update_enc(&session->gdata_key,
+					&qp->gdata_ctx, dst, src,
+					(uint64_t)part_len);
+			total_len -= part_len;
 		}
 
-		(*qp->ops->gcm.dec)(&session->gdata, dst, src,
-				(uint64_t)op->cipher.data.length,
-				op->cipher.iv.data,
-				op->auth.aad.data,
-				(uint64_t)op->auth.aad.length,
+		qp->ops[session->key].finalize(&session->gdata_key,
+				&qp->gdata_ctx,
+				sym_op->aead.digest.data,
+				(uint64_t)session->digest_length);
+	} else if (session->op == AESNI_GCM_OP_AUTHENTICATED_DECRYPTION) {
+		uint8_t *auth_tag = qp->temp_digest;
+
+		qp->ops[session->key].init(&session->gdata_key,
+				&qp->gdata_ctx,
+				iv_ptr,
+				sym_op->aead.aad.data,
+				(uint64_t)session->aad_length);
+
+		qp->ops[session->key].update_dec(&session->gdata_key,
+				&qp->gdata_ctx, dst, src,
+				(uint64_t)part_len);
+		total_len = data_length - part_len;
+
+		while (total_len) {
+			dst += part_len;
+			m_src = m_src->next;
+
+			RTE_ASSERT(m_src != NULL);
+
+			src = rte_pktmbuf_mtod(m_src, uint8_t *);
+			part_len = (m_src->data_len < total_len) ?
+					m_src->data_len : total_len;
+
+			qp->ops[session->key].update_dec(&session->gdata_key,
+					&qp->gdata_ctx,
+					dst, src,
+					(uint64_t)part_len);
+			total_len -= part_len;
+		}
+
+		qp->ops[session->key].finalize(&session->gdata_key,
+				&qp->gdata_ctx,
 				auth_tag,
-				(uint64_t)op->auth.digest.length);
-	} else {
-		GCM_LOG_ERR("iv");
-		return -1;
+				(uint64_t)session->digest_length);
+	} else if (session->op == AESNI_GMAC_OP_GENERATE) {
+		qp->ops[session->key].init(&session->gdata_key,
+				&qp->gdata_ctx,
+				iv_ptr,
+				src,
+				(uint64_t)data_length);
+		qp->ops[session->key].finalize(&session->gdata_key,
+				&qp->gdata_ctx,
+				sym_op->auth.digest.data,
+				(uint64_t)session->digest_length);
+	} else { /* AESNI_GMAC_OP_VERIFY */
+		uint8_t *auth_tag = qp->temp_digest;
+
+		qp->ops[session->key].init(&session->gdata_key,
+				&qp->gdata_ctx,
+				iv_ptr,
+				src,
+				(uint64_t)data_length);
+
+		qp->ops[session->key].finalize(&session->gdata_key,
+				&qp->gdata_ctx,
+				auth_tag,
+				(uint64_t)session->digest_length);
 	}
 
 	return 0;
@@ -293,34 +369,33 @@ process_gcm_crypto_op(struct aesni_gcm_qp *qp, struct rte_crypto_sym_op *op,
  * - Returns NULL on invalid job
  */
 static void
-post_process_gcm_crypto_op(struct rte_crypto_op *op)
+post_process_gcm_crypto_op(struct aesni_gcm_qp *qp,
+		struct rte_crypto_op *op,
+		struct aesni_gcm_session *session)
 {
-	struct rte_mbuf *m = op->sym->m_dst ? op->sym->m_dst : op->sym->m_src;
-
-	struct aesni_gcm_session *session =
-		(struct aesni_gcm_session *)op->sym->session->_private;
-
 	op->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 
 	/* Verify digest if required */
-	if (session->op == AESNI_GCM_OP_AUTHENTICATED_DECRYPTION) {
+	if (session->op == AESNI_GCM_OP_AUTHENTICATED_DECRYPTION ||
+			session->op == AESNI_GMAC_OP_VERIFY) {
+		uint8_t *digest;
 
-		uint8_t *tag = rte_pktmbuf_mtod_offset(m, uint8_t *,
-				m->data_len - op->sym->auth.digest.length);
+		uint8_t *tag = (uint8_t *)&qp->temp_digest;
+
+		if (session->op == AESNI_GMAC_OP_VERIFY)
+			digest = op->sym->auth.digest.data;
+		else
+			digest = op->sym->aead.digest.data;
 
 #ifdef RTE_LIBRTE_PMD_AESNI_GCM_DEBUG
 		rte_hexdump(stdout, "auth tag (orig):",
-				op->sym->auth.digest.data, op->sym->auth.digest.length);
+				digest, session->digest_length);
 		rte_hexdump(stdout, "auth tag (calc):",
-				tag, op->sym->auth.digest.length);
+				tag, session->digest_length);
 #endif
 
-		if (memcmp(tag, op->sym->auth.digest.data,
-				op->sym->auth.digest.length) != 0)
+		if (memcmp(tag, digest,	session->digest_length) != 0)
 			op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
-
-		/* trim area used for digest from mbuf */
-		rte_pktmbuf_trim(m, op->sym->auth.digest.length);
 	}
 }
 
@@ -328,6 +403,7 @@ post_process_gcm_crypto_op(struct rte_crypto_op *op)
  * Process a completed GCM request
  *
  * @param qp		Queue Pair to process
+ * @param op		Crypto operation
  * @param job		JOB_AES_HMAC job
  *
  * @return
@@ -335,74 +411,82 @@ post_process_gcm_crypto_op(struct rte_crypto_op *op)
  */
 static void
 handle_completed_gcm_crypto_op(struct aesni_gcm_qp *qp,
-		struct rte_crypto_op *op)
+		struct rte_crypto_op *op,
+		struct aesni_gcm_session *sess)
 {
-	post_process_gcm_crypto_op(op);
+	post_process_gcm_crypto_op(qp, op, sess);
 
 	/* Free session if a session-less crypto op */
-	if (op->sym->sess_type == RTE_CRYPTO_SYM_OP_SESSIONLESS) {
+	if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
+		memset(sess, 0, sizeof(struct aesni_gcm_session));
+		memset(op->sym->session, 0,
+				rte_cryptodev_get_header_session_size());
+		rte_mempool_put(qp->sess_mp, sess);
 		rte_mempool_put(qp->sess_mp, op->sym->session);
 		op->sym->session = NULL;
 	}
-
-	rte_ring_enqueue(qp->processed_pkts, (void *)op);
-}
-
-static uint16_t
-aesni_gcm_pmd_enqueue_burst(void *queue_pair,
-		struct rte_crypto_op **ops, uint16_t nb_ops)
-{
-	struct aesni_gcm_session *sess;
-	struct aesni_gcm_qp *qp = queue_pair;
-
-	int i, retval = 0;
-
-	for (i = 0; i < nb_ops; i++) {
-
-		sess = aesni_gcm_get_session(qp, ops[i]->sym);
-		if (unlikely(sess == NULL)) {
-			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
-			qp->qp_stats.enqueue_err_count++;
-			break;
-		}
-
-		retval = process_gcm_crypto_op(qp, ops[i]->sym, sess);
-		if (retval < 0) {
-			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
-			qp->qp_stats.enqueue_err_count++;
-			break;
-		}
-
-		handle_completed_gcm_crypto_op(qp, ops[i]);
-
-		qp->qp_stats.enqueued_count++;
-	}
-	return i;
 }
 
 static uint16_t
 aesni_gcm_pmd_dequeue_burst(void *queue_pair,
 		struct rte_crypto_op **ops, uint16_t nb_ops)
 {
+	struct aesni_gcm_session *sess;
 	struct aesni_gcm_qp *qp = queue_pair;
 
-	unsigned nb_dequeued;
+	int retval = 0;
+	unsigned int i, nb_dequeued;
 
 	nb_dequeued = rte_ring_dequeue_burst(qp->processed_pkts,
-			(void **)ops, nb_ops);
-	qp->qp_stats.dequeued_count += nb_dequeued;
+			(void **)ops, nb_ops, NULL);
 
-	return nb_dequeued;
+	for (i = 0; i < nb_dequeued; i++) {
+
+		sess = aesni_gcm_get_session(qp, ops[i]);
+		if (unlikely(sess == NULL)) {
+			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+			qp->qp_stats.dequeue_err_count++;
+			break;
+		}
+
+		retval = process_gcm_crypto_op(qp, ops[i], sess);
+		if (retval < 0) {
+			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+			qp->qp_stats.dequeue_err_count++;
+			break;
+		}
+
+		handle_completed_gcm_crypto_op(qp, ops[i], sess);
+	}
+
+	qp->qp_stats.dequeued_count += i;
+
+	return i;
 }
 
-static int aesni_gcm_uninit(const char *name);
+static uint16_t
+aesni_gcm_pmd_enqueue_burst(void *queue_pair,
+		struct rte_crypto_op **ops, uint16_t nb_ops)
+{
+	struct aesni_gcm_qp *qp = queue_pair;
+
+	unsigned int nb_enqueued;
+
+	nb_enqueued = rte_ring_enqueue_burst(qp->processed_pkts,
+			(void **)ops, nb_ops, NULL);
+	qp->qp_stats.enqueued_count += nb_enqueued;
+
+	return nb_enqueued;
+}
+
+static int aesni_gcm_remove(struct rte_vdev_device *vdev);
 
 static int
 aesni_gcm_create(const char *name,
-		struct rte_crypto_vdev_init_params *init_params)
+		struct rte_vdev_device *vdev,
+		struct rte_cryptodev_pmd_init_params *init_params)
 {
 	struct rte_cryptodev *dev;
-	char crypto_dev_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	struct aesni_gcm_private *internals;
 	enum aesni_gcm_vector_mode vector_mode;
 
@@ -412,34 +496,21 @@ aesni_gcm_create(const char *name,
 		return -EFAULT;
 	}
 
+	dev = rte_cryptodev_pmd_create(name, &vdev->device, init_params);
+	if (dev == NULL) {
+		GCM_LOG_ERR("driver %s: create failed", init_params->name);
+		return -ENODEV;
+	}
+
 	/* Check CPU for supported vector instruction set */
 	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2))
 		vector_mode = RTE_AESNI_GCM_AVX2;
 	else if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX))
 		vector_mode = RTE_AESNI_GCM_AVX;
-	else if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_1))
+	else
 		vector_mode = RTE_AESNI_GCM_SSE;
-	else {
-		GCM_LOG_ERR("Vector instructions are not supported by CPU");
-		return -EFAULT;
-	}
 
-	/* create a unique device name */
-	if (create_unique_device_name(crypto_dev_name,
-			RTE_CRYPTODEV_NAME_MAX_LEN) != 0) {
-		GCM_LOG_ERR("failed to create unique cryptodev name");
-		return -EINVAL;
-	}
-
-
-	dev = rte_cryptodev_pmd_virtual_dev_init(crypto_dev_name,
-			sizeof(struct aesni_gcm_private), init_params->socket_id);
-	if (dev == NULL) {
-		GCM_LOG_ERR("failed to create cryptodev vdev");
-		goto init_error;
-	}
-
-	dev->dev_type = RTE_CRYPTODEV_AESNI_GCM_PMD;
+	dev->driver_id = cryptodev_driver_id;
 	dev->dev_ops = rte_aesni_gcm_pmd_ops;
 
 	/* register rx/tx burst functions for data path */
@@ -448,7 +519,8 @@ aesni_gcm_create(const char *name,
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
-			RTE_CRYPTODEV_FF_CPU_AESNI;
+			RTE_CRYPTODEV_FF_CPU_AESNI |
+			RTE_CRYPTODEV_FF_MBUF_SCATTER_GATHER;
 
 	switch (vector_mode) {
 	case RTE_AESNI_GCM_SSE:
@@ -464,7 +536,6 @@ aesni_gcm_create(const char *name,
 		break;
 	}
 
-	/* Set vector instructions mode supported */
 	internals = dev->data->dev_private;
 
 	internals->vector_mode = vector_mode;
@@ -473,55 +544,59 @@ aesni_gcm_create(const char *name,
 	internals->max_nb_sessions = init_params->max_nb_sessions;
 
 	return 0;
-
-init_error:
-	GCM_LOG_ERR("driver %s: create failed", name);
-
-	aesni_gcm_uninit(crypto_dev_name);
-	return -EFAULT;
 }
 
 static int
-aesni_gcm_init(const char *name, const char *input_args)
+aesni_gcm_probe(struct rte_vdev_device *vdev)
 {
-	struct rte_crypto_vdev_init_params init_params = {
-		RTE_CRYPTODEV_VDEV_DEFAULT_MAX_NB_QUEUE_PAIRS,
-		RTE_CRYPTODEV_VDEV_DEFAULT_MAX_NB_SESSIONS,
-		rte_socket_id()
+	struct rte_cryptodev_pmd_init_params init_params = {
+		"",
+		sizeof(struct aesni_gcm_private),
+		rte_socket_id(),
+		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS,
+		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS
 	};
+	const char *name;
+	const char *input_args;
 
-	rte_cryptodev_parse_vdev_init_params(&init_params, input_args);
+	name = rte_vdev_device_name(vdev);
+	if (name == NULL)
+		return -EINVAL;
+	input_args = rte_vdev_device_args(vdev);
+	rte_cryptodev_pmd_parse_input_args(&init_params, input_args);
 
-	RTE_LOG(INFO, PMD, "Initialising %s on NUMA node %d\n", name,
-			init_params.socket_id);
-	RTE_LOG(INFO, PMD, "  Max number of queue pairs = %d\n",
-			init_params.max_nb_queue_pairs);
-	RTE_LOG(INFO, PMD, "  Max number of sessions = %d\n",
-			init_params.max_nb_sessions);
-
-	return aesni_gcm_create(name, &init_params);
+	return aesni_gcm_create(name, vdev, &init_params);
 }
 
 static int
-aesni_gcm_uninit(const char *name)
+aesni_gcm_remove(struct rte_vdev_device *vdev)
 {
+	struct rte_cryptodev *cryptodev;
+	const char *name;
+
+	name = rte_vdev_device_name(vdev);
 	if (name == NULL)
 		return -EINVAL;
 
-	GCM_LOG_INFO("Closing AESNI crypto device %s on numa socket %u\n",
-			name, rte_socket_id());
+	cryptodev = rte_cryptodev_pmd_get_named_dev(name);
+	if (cryptodev == NULL)
+		return -ENODEV;
 
-	return 0;
+	return rte_cryptodev_pmd_destroy(cryptodev);
 }
 
-static struct rte_driver aesni_gcm_pmd_drv = {
-	.type = PMD_VDEV,
-	.init = aesni_gcm_init,
-	.uninit = aesni_gcm_uninit
+static struct rte_vdev_driver aesni_gcm_pmd_drv = {
+	.probe = aesni_gcm_probe,
+	.remove = aesni_gcm_remove
 };
 
-PMD_REGISTER_DRIVER(aesni_gcm_pmd_drv, CRYPTODEV_NAME_AESNI_GCM_PMD);
-DRIVER_REGISTER_PARAM_STRING(CRYPTODEV_NAME_AESNI_GCM_PMD,
+static struct cryptodev_driver aesni_gcm_crypto_drv;
+
+RTE_PMD_REGISTER_VDEV(CRYPTODEV_NAME_AESNI_GCM_PMD, aesni_gcm_pmd_drv);
+RTE_PMD_REGISTER_ALIAS(CRYPTODEV_NAME_AESNI_GCM_PMD, cryptodev_aesni_gcm_pmd);
+RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_AESNI_GCM_PMD,
 	"max_nb_queue_pairs=<int> "
 	"max_nb_sessions=<int> "
 	"socket_id=<int>");
+RTE_PMD_REGISTER_CRYPTO_DRIVER(aesni_gcm_crypto_drv, aesni_gcm_pmd_drv,
+		cryptodev_driver_id);

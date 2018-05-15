@@ -35,6 +35,7 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_ring.a
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3
+LDLIBS += -lrte_eal
 
 EXPORT_MAP := rte_ring_version.map
 
@@ -45,7 +46,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_RING) := rte_ring.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_RING)-include := rte_ring.h
-
-DEPDIRS-$(CONFIG_RTE_LIBRTE_RING) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

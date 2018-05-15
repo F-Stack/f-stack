@@ -31,6 +31,12 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _RTE_TIME_H_
+#define _RTE_TIME_H_
+
+#include <stdint.h>
+#include <time.h>
+
 #define NSEC_PER_SEC             1000000000L
 
 /**
@@ -46,7 +52,7 @@ struct rte_timecounter {
 	uint64_t nsec_mask;
 	/** Sub-nanoseconds count. */
 	uint64_t nsec_frac;
-	/** Bitmask for two's complement substraction of non-64 bit counters. */
+	/** Bitmask for two's complement subtraction of non-64 bit counters. */
 	uint64_t cc_mask;
 	/** Cycle to nanosecond divisor (power of two). */
 	uint32_t cc_shift;
@@ -120,3 +126,5 @@ rte_ns_to_timespec(uint64_t nsec)
 
 	return ts;
 }
+
+#endif /* _RTE_TIME_H_ */

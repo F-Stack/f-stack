@@ -47,22 +47,18 @@ CFLAGS += $(WERROR_FLAGS)
 LIBABIVER := 1
 
 # versioning export map
-EXPORT_MAP := rte_pmd_aesni_version.map
+EXPORT_MAP := rte_pmd_aesni_mb_version.map
 
 # external library dependencies
 CFLAGS += -I$(AESNI_MULTI_BUFFER_LIB_PATH)
 CFLAGS += -I$(AESNI_MULTI_BUFFER_LIB_PATH)/include
 LDLIBS += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_cryptodev
+LDLIBS += -lrte_bus_vdev
 
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += rte_aesni_mb_pmd.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += rte_aesni_mb_pmd_ops.c
-
-# library dependencies
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += lib/librte_ring
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += lib/librte_cryptodev
 
 include $(RTE_SDK)/mk/rte.lib.mk

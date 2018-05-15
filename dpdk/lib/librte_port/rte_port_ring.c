@@ -67,14 +67,14 @@ rte_port_ring_reader_create_internal(void *params, int socket_id,
 	uint32_t is_multi)
 {
 	struct rte_port_ring_reader_params *conf =
-			(struct rte_port_ring_reader_params *) params;
+			params;
 	struct rte_port_ring_reader *port;
 
 	/* Check input parameters */
 	if ((conf == NULL) ||
 		(conf->ring == NULL) ||
-		(conf->ring->cons.sc_dequeue && is_multi) ||
-		(!(conf->ring->cons.sc_dequeue) && !is_multi)) {
+		(conf->ring->cons.single && is_multi) ||
+		(!(conf->ring->cons.single) && !is_multi)) {
 		RTE_LOG(ERR, PORT, "%s: Invalid Parameters\n", __func__);
 		return NULL;
 	}
@@ -108,10 +108,11 @@ rte_port_ring_multi_reader_create(void *params, int socket_id)
 static int
 rte_port_ring_reader_rx(void *port, struct rte_mbuf **pkts, uint32_t n_pkts)
 {
-	struct rte_port_ring_reader *p = (struct rte_port_ring_reader *) port;
+	struct rte_port_ring_reader *p = port;
 	uint32_t nb_rx;
 
-	nb_rx = rte_ring_sc_dequeue_burst(p->ring, (void **) pkts, n_pkts);
+	nb_rx = rte_ring_sc_dequeue_burst(p->ring, (void **) pkts,
+			n_pkts, NULL);
 	RTE_PORT_RING_READER_STATS_PKTS_IN_ADD(p, nb_rx);
 
 	return nb_rx;
@@ -121,10 +122,11 @@ static int
 rte_port_ring_multi_reader_rx(void *port, struct rte_mbuf **pkts,
 	uint32_t n_pkts)
 {
-	struct rte_port_ring_reader *p = (struct rte_port_ring_reader *) port;
+	struct rte_port_ring_reader *p = port;
 	uint32_t nb_rx;
 
-	nb_rx = rte_ring_mc_dequeue_burst(p->ring, (void **) pkts, n_pkts);
+	nb_rx = rte_ring_mc_dequeue_burst(p->ring, (void **) pkts,
+			n_pkts, NULL);
 	RTE_PORT_RING_READER_STATS_PKTS_IN_ADD(p, nb_rx);
 
 	return nb_rx;
@@ -148,7 +150,7 @@ rte_port_ring_reader_stats_read(void *port,
 		struct rte_port_in_stats *stats, int clear)
 {
 	struct rte_port_ring_reader *p =
-		(struct rte_port_ring_reader *) port;
+		port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));
@@ -192,14 +194,14 @@ rte_port_ring_writer_create_internal(void *params, int socket_id,
 	uint32_t is_multi)
 {
 	struct rte_port_ring_writer_params *conf =
-			(struct rte_port_ring_writer_params *) params;
+			params;
 	struct rte_port_ring_writer *port;
 
 	/* Check input parameters */
 	if ((conf == NULL) ||
 		(conf->ring == NULL) ||
-		(conf->ring->prod.sp_enqueue && is_multi) ||
-		(!(conf->ring->prod.sp_enqueue) && !is_multi) ||
+		(conf->ring->prod.single && is_multi) ||
+		(!(conf->ring->prod.single) && !is_multi) ||
 		(conf->tx_burst_sz > RTE_PORT_IN_BURST_SIZE_MAX)) {
 		RTE_LOG(ERR, PORT, "%s: Invalid Parameters\n", __func__);
 		return NULL;
@@ -241,7 +243,7 @@ send_burst(struct rte_port_ring_writer *p)
 	uint32_t nb_tx;
 
 	nb_tx = rte_ring_sp_enqueue_burst(p->ring, (void **)p->tx_buf,
-			p->tx_buf_count);
+			p->tx_buf_count, NULL);
 
 	RTE_PORT_RING_WRITER_STATS_PKTS_DROP_ADD(p, p->tx_buf_count - nb_tx);
 	for ( ; nb_tx < p->tx_buf_count; nb_tx++)
@@ -256,7 +258,7 @@ send_burst_mp(struct rte_port_ring_writer *p)
 	uint32_t nb_tx;
 
 	nb_tx = rte_ring_mp_enqueue_burst(p->ring, (void **)p->tx_buf,
-			p->tx_buf_count);
+			p->tx_buf_count, NULL);
 
 	RTE_PORT_RING_WRITER_STATS_PKTS_DROP_ADD(p, p->tx_buf_count - nb_tx);
 	for ( ; nb_tx < p->tx_buf_count; nb_tx++)
@@ -268,7 +270,7 @@ send_burst_mp(struct rte_port_ring_writer *p)
 static int
 rte_port_ring_writer_tx(void *port, struct rte_mbuf *pkt)
 {
-	struct rte_port_ring_writer *p = (struct rte_port_ring_writer *) port;
+	struct rte_port_ring_writer *p = port;
 
 	p->tx_buf[p->tx_buf_count++] = pkt;
 	RTE_PORT_RING_WRITER_STATS_PKTS_IN_ADD(p, 1);
@@ -281,7 +283,7 @@ rte_port_ring_writer_tx(void *port, struct rte_mbuf *pkt)
 static int
 rte_port_ring_multi_writer_tx(void *port, struct rte_mbuf *pkt)
 {
-	struct rte_port_ring_writer *p = (struct rte_port_ring_writer *) port;
+	struct rte_port_ring_writer *p = port;
 
 	p->tx_buf[p->tx_buf_count++] = pkt;
 	RTE_PORT_RING_WRITER_STATS_PKTS_IN_ADD(p, 1);
@@ -291,14 +293,14 @@ rte_port_ring_multi_writer_tx(void *port, struct rte_mbuf *pkt)
 	return 0;
 }
 
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_port_ring_writer_tx_bulk_internal(void *port,
 		struct rte_mbuf **pkts,
 		uint64_t pkts_mask,
 		uint32_t is_multi)
 {
 	struct rte_port_ring_writer *p =
-		(struct rte_port_ring_writer *) port;
+		port;
 
 	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
@@ -318,11 +320,11 @@ rte_port_ring_writer_tx_bulk_internal(void *port,
 
 		RTE_PORT_RING_WRITER_STATS_PKTS_IN_ADD(p, n_pkts);
 		if (is_multi)
-			n_pkts_ok = rte_ring_mp_enqueue_burst(p->ring, (void **)pkts,
-				n_pkts);
+			n_pkts_ok = rte_ring_mp_enqueue_burst(p->ring,
+					(void **)pkts, n_pkts, NULL);
 		else
-			n_pkts_ok = rte_ring_sp_enqueue_burst(p->ring, (void **)pkts,
-				n_pkts);
+			n_pkts_ok = rte_ring_sp_enqueue_burst(p->ring,
+					(void **)pkts, n_pkts, NULL);
 
 		RTE_PORT_RING_WRITER_STATS_PKTS_DROP_ADD(p, n_pkts - n_pkts_ok);
 		for ( ; n_pkts_ok < n_pkts; n_pkts_ok++) {
@@ -372,7 +374,7 @@ rte_port_ring_multi_writer_tx_bulk(void *port,
 static int
 rte_port_ring_writer_flush(void *port)
 {
-	struct rte_port_ring_writer *p = (struct rte_port_ring_writer *) port;
+	struct rte_port_ring_writer *p = port;
 
 	if (p->tx_buf_count > 0)
 		send_burst(p);
@@ -383,7 +385,7 @@ rte_port_ring_writer_flush(void *port)
 static int
 rte_port_ring_multi_writer_flush(void *port)
 {
-	struct rte_port_ring_writer *p = (struct rte_port_ring_writer *) port;
+	struct rte_port_ring_writer *p = port;
 
 	if (p->tx_buf_count > 0)
 		send_burst_mp(p);
@@ -394,7 +396,7 @@ rte_port_ring_multi_writer_flush(void *port)
 static int
 rte_port_ring_writer_free(void *port)
 {
-	struct rte_port_ring_writer *p = (struct rte_port_ring_writer *) port;
+	struct rte_port_ring_writer *p = port;
 
 	if (port == NULL) {
 		RTE_LOG(ERR, PORT, "%s: Port is NULL\n", __func__);
@@ -416,7 +418,7 @@ rte_port_ring_writer_stats_read(void *port,
 		struct rte_port_out_stats *stats, int clear)
 {
 	struct rte_port_ring_writer *p =
-		(struct rte_port_ring_writer *) port;
+		port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));
@@ -461,14 +463,14 @@ rte_port_ring_writer_nodrop_create_internal(void *params, int socket_id,
 	uint32_t is_multi)
 {
 	struct rte_port_ring_writer_nodrop_params *conf =
-			(struct rte_port_ring_writer_nodrop_params *) params;
+			params;
 	struct rte_port_ring_writer_nodrop *port;
 
 	/* Check input parameters */
 	if ((conf == NULL) ||
 		(conf->ring == NULL) ||
-		(conf->ring->prod.sp_enqueue && is_multi) ||
-		(!(conf->ring->prod.sp_enqueue) && !is_multi) ||
+		(conf->ring->prod.single && is_multi) ||
+		(!(conf->ring->prod.single) && !is_multi) ||
 		(conf->tx_burst_sz > RTE_PORT_IN_BURST_SIZE_MAX)) {
 		RTE_LOG(ERR, PORT, "%s: Invalid Parameters\n", __func__);
 		return NULL;
@@ -517,7 +519,7 @@ send_burst_nodrop(struct rte_port_ring_writer_nodrop *p)
 	uint32_t nb_tx = 0, i;
 
 	nb_tx = rte_ring_sp_enqueue_burst(p->ring, (void **)p->tx_buf,
-				p->tx_buf_count);
+				p->tx_buf_count, NULL);
 
 	/* We sent all the packets in a first try */
 	if (nb_tx >= p->tx_buf_count) {
@@ -527,7 +529,8 @@ send_burst_nodrop(struct rte_port_ring_writer_nodrop *p)
 
 	for (i = 0; i < p->n_retries; i++) {
 		nb_tx += rte_ring_sp_enqueue_burst(p->ring,
-				(void **) (p->tx_buf + nb_tx), p->tx_buf_count - nb_tx);
+				(void **) (p->tx_buf + nb_tx),
+				p->tx_buf_count - nb_tx, NULL);
 
 		/* We sent all the packets in more than one try */
 		if (nb_tx >= p->tx_buf_count) {
@@ -550,7 +553,7 @@ send_burst_mp_nodrop(struct rte_port_ring_writer_nodrop *p)
 	uint32_t nb_tx = 0, i;
 
 	nb_tx = rte_ring_mp_enqueue_burst(p->ring, (void **)p->tx_buf,
-				p->tx_buf_count);
+				p->tx_buf_count, NULL);
 
 	/* We sent all the packets in a first try */
 	if (nb_tx >= p->tx_buf_count) {
@@ -560,7 +563,8 @@ send_burst_mp_nodrop(struct rte_port_ring_writer_nodrop *p)
 
 	for (i = 0; i < p->n_retries; i++) {
 		nb_tx += rte_ring_mp_enqueue_burst(p->ring,
-				(void **) (p->tx_buf + nb_tx), p->tx_buf_count - nb_tx);
+				(void **) (p->tx_buf + nb_tx),
+				p->tx_buf_count - nb_tx, NULL);
 
 		/* We sent all the packets in more than one try */
 		if (nb_tx >= p->tx_buf_count) {
@@ -581,7 +585,7 @@ static int
 rte_port_ring_writer_nodrop_tx(void *port, struct rte_mbuf *pkt)
 {
 	struct rte_port_ring_writer_nodrop *p =
-			(struct rte_port_ring_writer_nodrop *) port;
+			port;
 
 	p->tx_buf[p->tx_buf_count++] = pkt;
 	RTE_PORT_RING_WRITER_NODROP_STATS_PKTS_IN_ADD(p, 1);
@@ -595,7 +599,7 @@ static int
 rte_port_ring_multi_writer_nodrop_tx(void *port, struct rte_mbuf *pkt)
 {
 	struct rte_port_ring_writer_nodrop *p =
-			(struct rte_port_ring_writer_nodrop *) port;
+			port;
 
 	p->tx_buf[p->tx_buf_count++] = pkt;
 	RTE_PORT_RING_WRITER_NODROP_STATS_PKTS_IN_ADD(p, 1);
@@ -605,14 +609,14 @@ rte_port_ring_multi_writer_nodrop_tx(void *port, struct rte_mbuf *pkt)
 	return 0;
 }
 
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 rte_port_ring_writer_nodrop_tx_bulk_internal(void *port,
 		struct rte_mbuf **pkts,
 		uint64_t pkts_mask,
 		uint32_t is_multi)
 {
 	struct rte_port_ring_writer_nodrop *p =
-		(struct rte_port_ring_writer_nodrop *) port;
+		port;
 
 	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
@@ -633,10 +637,12 @@ rte_port_ring_writer_nodrop_tx_bulk_internal(void *port,
 		RTE_PORT_RING_WRITER_NODROP_STATS_PKTS_IN_ADD(p, n_pkts);
 		if (is_multi)
 			n_pkts_ok =
-				rte_ring_mp_enqueue_burst(p->ring, (void **)pkts, n_pkts);
+				rte_ring_mp_enqueue_burst(p->ring,
+						(void **)pkts, n_pkts, NULL);
 		else
 			n_pkts_ok =
-				rte_ring_sp_enqueue_burst(p->ring, (void **)pkts, n_pkts);
+				rte_ring_sp_enqueue_burst(p->ring,
+						(void **)pkts, n_pkts, NULL);
 
 		if (n_pkts_ok >= n_pkts)
 			return 0;
@@ -699,7 +705,7 @@ static int
 rte_port_ring_writer_nodrop_flush(void *port)
 {
 	struct rte_port_ring_writer_nodrop *p =
-			(struct rte_port_ring_writer_nodrop *) port;
+			port;
 
 	if (p->tx_buf_count > 0)
 		send_burst_nodrop(p);
@@ -711,7 +717,7 @@ static int
 rte_port_ring_multi_writer_nodrop_flush(void *port)
 {
 	struct rte_port_ring_writer_nodrop *p =
-			(struct rte_port_ring_writer_nodrop *) port;
+			port;
 
 	if (p->tx_buf_count > 0)
 		send_burst_mp_nodrop(p);
@@ -723,7 +729,7 @@ static int
 rte_port_ring_writer_nodrop_free(void *port)
 {
 	struct rte_port_ring_writer_nodrop *p =
-			(struct rte_port_ring_writer_nodrop *) port;
+			port;
 
 	if (port == NULL) {
 		RTE_LOG(ERR, PORT, "%s: Port is NULL\n", __func__);
@@ -745,7 +751,7 @@ rte_port_ring_writer_nodrop_stats_read(void *port,
 		struct rte_port_out_stats *stats, int clear)
 {
 	struct rte_port_ring_writer_nodrop *p =
-		(struct rte_port_ring_writer_nodrop *) port;
+		port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));

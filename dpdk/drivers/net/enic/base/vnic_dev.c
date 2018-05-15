@@ -272,7 +272,7 @@ int vnic_dev_alloc_desc_ring(struct vnic_dev *vdev,
 	__attribute__((unused)) unsigned int socket_id,
 	char *z_name)
 {
-	void *alloc_addr = NULL;
+	void *alloc_addr;
 	dma_addr_t alloc_pa = 0;
 
 	vnic_dev_desc_ring_size(ring, desc_count, desc_size);
@@ -387,17 +387,24 @@ static int _vnic_dev_cmd(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd,
 
 static int vnic_dev_cmd_proxy(struct vnic_dev *vdev,
 	enum vnic_devcmd_cmd proxy_cmd, enum vnic_devcmd_cmd cmd,
-	u64 *a0, u64 *a1, int wait)
+	u64 *args, int nargs, int wait)
 {
 	u32 status;
 	int err;
 
+	/*
+	 * Proxy command consumes 2 arguments. One for proxy index,
+	 * the other is for command to be proxied
+	 */
+	if (nargs > VNIC_DEVCMD_NARGS - 2) {
+		pr_err("number of args %d exceeds the maximum\n", nargs);
+		return -EINVAL;
+	}
 	memset(vdev->args, 0, sizeof(vdev->args));
 
 	vdev->args[0] = vdev->proxy_index;
 	vdev->args[1] = cmd;
-	vdev->args[2] = *a0;
-	vdev->args[3] = *a1;
+	memcpy(&vdev->args[2], args, nargs * sizeof(args[0]));
 
 	err = _vnic_dev_cmd(vdev, proxy_cmd, wait);
 	if (err)
@@ -412,65 +419,159 @@ static int vnic_dev_cmd_proxy(struct vnic_dev *vdev,
 		return err;
 	}
 
-	*a0 = vdev->args[1];
-	*a1 = vdev->args[2];
+	memcpy(args, &vdev->args[1], nargs * sizeof(args[0]));
 
 	return 0;
 }
 
 static int vnic_dev_cmd_no_proxy(struct vnic_dev *vdev,
-	enum vnic_devcmd_cmd cmd, u64 *a0, u64 *a1, int wait)
+	enum vnic_devcmd_cmd cmd, u64 *args, int nargs, int wait)
 {
 	int err;
 
-	vdev->args[0] = *a0;
-	vdev->args[1] = *a1;
+	if (nargs > VNIC_DEVCMD_NARGS) {
+		pr_err("number of args %d exceeds the maximum\n", nargs);
+		return -EINVAL;
+	}
+	memset(vdev->args, 0, sizeof(vdev->args));
+	memcpy(vdev->args, args, nargs * sizeof(args[0]));
 
 	err = _vnic_dev_cmd(vdev, cmd, wait);
 
-	*a0 = vdev->args[0];
-	*a1 = vdev->args[1];
+	memcpy(args, vdev->args, nargs * sizeof(args[0]));
 
 	return err;
-}
-
-void vnic_dev_cmd_proxy_by_index_start(struct vnic_dev *vdev, u16 index)
-{
-	vdev->proxy = PROXY_BY_INDEX;
-	vdev->proxy_index = index;
-}
-
-void vnic_dev_cmd_proxy_by_bdf_start(struct vnic_dev *vdev, u16 bdf)
-{
-	vdev->proxy = PROXY_BY_BDF;
-	vdev->proxy_index = bdf;
-}
-
-void vnic_dev_cmd_proxy_end(struct vnic_dev *vdev)
-{
-	vdev->proxy = PROXY_NONE;
-	vdev->proxy_index = 0;
 }
 
 int vnic_dev_cmd(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd,
 	u64 *a0, u64 *a1, int wait)
 {
+	u64 args[2];
+	int err;
+
+	args[0] = *a0;
+	args[1] = *a1;
 	memset(vdev->args, 0, sizeof(vdev->args));
 
 	switch (vdev->proxy) {
 	case PROXY_BY_INDEX:
-		return vnic_dev_cmd_proxy(vdev, CMD_PROXY_BY_INDEX, cmd,
-				a0, a1, wait);
+		err =  vnic_dev_cmd_proxy(vdev, CMD_PROXY_BY_INDEX, cmd,
+				args, ARRAY_SIZE(args), wait);
+		break;
 	case PROXY_BY_BDF:
-		return vnic_dev_cmd_proxy(vdev, CMD_PROXY_BY_BDF, cmd,
-				a0, a1, wait);
+		err =  vnic_dev_cmd_proxy(vdev, CMD_PROXY_BY_BDF, cmd,
+				args, ARRAY_SIZE(args), wait);
+		break;
 	case PROXY_NONE:
 	default:
-		return vnic_dev_cmd_no_proxy(vdev, cmd, a0, a1, wait);
+		err = vnic_dev_cmd_no_proxy(vdev, cmd, args, 2, wait);
+		break;
+	}
+
+	if (err == 0) {
+		*a0 = args[0];
+		*a1 = args[1];
+	}
+
+	return err;
+}
+
+int vnic_dev_cmd_args(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd,
+		      u64 *args, int nargs, int wait)
+{
+	switch (vdev->proxy) {
+	case PROXY_BY_INDEX:
+		return vnic_dev_cmd_proxy(vdev, CMD_PROXY_BY_INDEX, cmd,
+				args, nargs, wait);
+	case PROXY_BY_BDF:
+		return vnic_dev_cmd_proxy(vdev, CMD_PROXY_BY_BDF, cmd,
+				args, nargs, wait);
+	case PROXY_NONE:
+	default:
+		return vnic_dev_cmd_no_proxy(vdev, cmd, args, nargs, wait);
 	}
 }
 
-static int vnic_dev_capable(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd)
+static int vnic_dev_advanced_filters_cap(struct vnic_dev *vdev, u64 *args,
+		int nargs)
+{
+	memset(args, 0, nargs * sizeof(*args));
+	args[0] = CMD_ADD_ADV_FILTER;
+	args[1] = FILTER_CAP_MODE_V1_FLAG;
+	return vnic_dev_cmd_args(vdev, CMD_CAPABILITY, args, nargs, 1000);
+}
+
+int vnic_dev_capable_adv_filters(struct vnic_dev *vdev)
+{
+	u64 a0 = CMD_ADD_ADV_FILTER, a1 = 0;
+	int wait = 1000;
+	int err;
+
+	err = vnic_dev_cmd(vdev, CMD_CAPABILITY, &a0, &a1, wait);
+	if (err)
+		return 0;
+	return (a1 >= (u32)FILTER_DPDK_1);
+}
+
+/*  Determine the "best" filtering mode VIC is capaible of. Returns one of 3
+ *  value or 0 on error:
+ *	FILTER_DPDK_1- advanced filters availabile
+ *	FILTER_USNIC_IP_FLAG - advanced filters but with the restriction that
+ *		the IP layer must explicitly specified. I.e. cannot have a UDP
+ *		filter that matches both IPv4 and IPv6.
+ *	FILTER_IPV4_5TUPLE - fallback if either of the 2 above aren't available.
+ *		all other filter types are not available.
+ *   Retrun true in filter_tags if supported
+ */
+int vnic_dev_capable_filter_mode(struct vnic_dev *vdev, u32 *mode,
+				 u8 *filter_tags)
+{
+	u64 args[4];
+	int err;
+	u32 max_level = 0;
+
+	err = vnic_dev_advanced_filters_cap(vdev, args, 4);
+
+	/* determine if filter tags are available */
+	if (err)
+		*filter_tags = 0;
+	if ((args[2] == FILTER_CAP_MODE_V1) &&
+	    (args[3] & FILTER_ACTION_FILTER_ID_FLAG))
+		*filter_tags = 1;
+	else
+		*filter_tags = 0;
+
+	if (err || ((args[0] == 1) && (args[1] == 0))) {
+		/* Adv filter Command not supported or adv filters available but
+		 * not enabled. Try the normal filter capability command.
+		 */
+		args[0] = CMD_ADD_FILTER;
+		args[1] = 0;
+		err = vnic_dev_cmd_args(vdev, CMD_CAPABILITY, args, 2, 1000);
+		if (err)
+			return err;
+		max_level = args[1];
+		goto parse_max_level;
+	} else if (args[2] == FILTER_CAP_MODE_V1) {
+		/* parse filter capability mask in args[1] */
+		if (args[1] & FILTER_DPDK_1_FLAG)
+			*mode = FILTER_DPDK_1;
+		else if (args[1] & FILTER_USNIC_IP_FLAG)
+			*mode = FILTER_USNIC_IP;
+		else if (args[1] & FILTER_IPV4_5TUPLE_FLAG)
+			*mode = FILTER_IPV4_5TUPLE;
+		return 0;
+	}
+	max_level = args[1];
+parse_max_level:
+	if (max_level >= (u32)FILTER_USNIC_IP)
+		*mode = FILTER_USNIC_IP;
+	else
+		*mode = FILTER_IPV4_5TUPLE;
+	return 0;
+}
+
+int vnic_dev_capable(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd)
 {
 	u64 a0 = (u32)cmd, a1 = 0;
 	int wait = 1000;
@@ -531,7 +632,7 @@ int vnic_dev_stats_dump(struct vnic_dev *vdev, struct vnic_stats **stats)
 
 	if (!vdev->stats) {
 		snprintf((char *)name, sizeof(name),
-			"vnic_stats-%d", instance++);
+			"vnic_stats-%u", instance++);
 		vdev->stats = vdev->alloc_consistent(vdev->priv,
 			sizeof(struct vnic_stats), &vdev->stats_pa, (u8 *)name);
 		if (!vdev->stats)
@@ -551,15 +652,6 @@ int vnic_dev_close(struct vnic_dev *vdev)
 	int wait = 1000;
 
 	return vnic_dev_cmd(vdev, CMD_CLOSE, &a0, &a1, wait);
-}
-
-/** Deprecated.  @see vnic_dev_enable_wait */
-int vnic_dev_enable(struct vnic_dev *vdev)
-{
-	u64 a0 = 0, a1 = 0;
-	int wait = 1000;
-
-	return vnic_dev_cmd(vdev, CMD_ENABLE, &a0, &a1, wait);
 }
 
 int vnic_dev_enable_wait(struct vnic_dev *vdev)
@@ -606,34 +698,9 @@ int vnic_dev_open_done(struct vnic_dev *vdev, int *done)
 	return 0;
 }
 
-int vnic_dev_soft_reset(struct vnic_dev *vdev, int arg)
-{
-	u64 a0 = (u32)arg, a1 = 0;
-	int wait = 1000;
-
-	return vnic_dev_cmd(vdev, CMD_SOFT_RESET, &a0, &a1, wait);
-}
-
-int vnic_dev_soft_reset_done(struct vnic_dev *vdev, int *done)
-{
-	u64 a0 = 0, a1 = 0;
-	int wait = 1000;
-	int err;
-
-	*done = 0;
-
-	err = vnic_dev_cmd(vdev, CMD_SOFT_RESET_STATUS, &a0, &a1, wait);
-	if (err)
-		return err;
-
-	*done = (a0 == 0);
-
-	return 0;
-}
-
 int vnic_dev_get_mac_addr(struct vnic_dev *vdev, u8 *mac_addr)
 {
-	u64 a0, a1 = 0;
+	u64 a0 = 0, a1 = 0;
 	int wait = 1000;
 	int err, i;
 
@@ -721,19 +788,6 @@ int vnic_dev_set_ig_vlan_rewrite_mode(struct vnic_dev *vdev,
 		return 0;
 }
 
-int vnic_dev_raise_intr(struct vnic_dev *vdev, u16 intr)
-{
-	u64 a0 = intr, a1 = 0;
-	int wait = 1000;
-	int err;
-
-	err = vnic_dev_cmd(vdev, CMD_IAR, &a0, &a1, wait);
-	if (err)
-		pr_err("Failed to raise INTR[%d], err %d\n", intr, err);
-
-	return err;
-}
-
 void vnic_dev_set_reset_flag(struct vnic_dev *vdev, int state)
 {
 	vdev->in_reset = state;
@@ -781,7 +835,7 @@ int vnic_dev_notify_set(struct vnic_dev *vdev, u16 intr)
 	}
 	if (!vnic_dev_in_reset(vdev)) {
 		snprintf((char *)name, sizeof(name),
-			"vnic_notify-%d", instance++);
+			"vnic_notify-%u", instance++);
 		notify_addr = vdev->alloc_consistent(vdev->priv,
 			sizeof(struct vnic_devcmd_notify),
 			&notify_pa, (u8 *)name);
@@ -866,14 +920,6 @@ int vnic_dev_init(struct vnic_dev *vdev, int arg)
 	return r;
 }
 
-int vnic_dev_deinit(struct vnic_dev *vdev)
-{
-	u64 a0 = 0, a1 = 0;
-	int wait = 1000;
-
-	return vnic_dev_cmd(vdev, CMD_DEINIT, &a0, &a1, wait);
-}
-
 void vnic_dev_intr_coal_timer_info_default(struct vnic_dev *vdev)
 {
 	/* Default: hardware intr coal timer is in units of 1.5 usecs */
@@ -897,18 +943,6 @@ u32 vnic_dev_port_speed(struct vnic_dev *vdev)
 		return 0;
 
 	return vdev->notify_copy.port_speed;
-}
-
-void vnic_dev_set_intr_mode(struct vnic_dev *vdev,
-	enum vnic_dev_intr_mode intr_mode)
-{
-	vdev->intr_mode = intr_mode;
-}
-
-enum vnic_dev_intr_mode vnic_dev_get_intr_mode(
-	struct vnic_dev *vdev)
-{
-	return vdev->intr_mode;
 }
 
 u32 vnic_dev_intr_coal_timer_usec_to_hw(struct vnic_dev *vdev, u32 usec)
@@ -944,7 +978,7 @@ void vnic_dev_unregister(struct vnic_dev *vdev)
 			vdev->free_consistent(vdev->priv,
 				sizeof(struct vnic_devcmd_fw_info),
 				vdev->fw_info, vdev->fw_info_pa);
-		kfree(vdev);
+		rte_free(vdev);
 	}
 }
 
@@ -953,7 +987,13 @@ struct vnic_dev *vnic_dev_register(struct vnic_dev *vdev,
 	unsigned int num_bars)
 {
 	if (!vdev) {
-		vdev = kzalloc(sizeof(struct vnic_dev), GFP_ATOMIC);
+		char name[NAME_MAX];
+		snprintf((char *)name, sizeof(name), "%s-vnic",
+			  pdev->device.name);
+		vdev = (struct vnic_dev *)rte_zmalloc_socket(name,
+					sizeof(struct vnic_dev),
+					RTE_CACHE_LINE_SIZE,
+					pdev->device.numa_node);
 		if (!vdev)
 			return NULL;
 	}
@@ -975,23 +1015,6 @@ err_out:
 	return NULL;
 }
 
-struct rte_pci_device *vnic_dev_get_pdev(struct vnic_dev *vdev)
-{
-	return vdev->pdev;
-}
-
-int vnic_dev_set_mac_addr(struct vnic_dev *vdev, u8 *mac_addr)
-{
-	u64 a0, a1 = 0;
-	int wait = 1000;
-	int i;
-
-	for (i = 0; i < ETH_ALEN; i++)
-		((u8 *)&a0)[i] = mac_addr[i];
-
-	return vnic_dev_cmd(vdev, CMD_SET_MAC_ADDR, &a0, &a1, wait);
-}
-
 /*
  *  vnic_dev_classifier: Add/Delete classifier entries
  *  @vdev: vdev of the device
@@ -1005,26 +1028,33 @@ int vnic_dev_set_mac_addr(struct vnic_dev *vdev, u8 *mac_addr)
  *          In case of DEL filter, the caller passes the RQ number. Return
  *          value is irrelevant.
  * @data: filter data
+ * @action: action data
  */
 int vnic_dev_classifier(struct vnic_dev *vdev, u8 cmd, u16 *entry,
-	struct filter *data)
+	struct filter_v2 *data, struct filter_action_v2 *action_v2)
 {
-	u64 a0, a1;
+	u64 a0 = 0, a1 = 0;
 	int wait = 1000;
 	dma_addr_t tlv_pa;
 	int ret = -EINVAL;
 	struct filter_tlv *tlv, *tlv_va;
-	struct filter_action *action;
 	u64 tlv_size;
+	u32 filter_size, action_size;
 	static unsigned int unique_id;
 	char z_name[RTE_MEMZONE_NAMESIZE];
+	enum vnic_devcmd_cmd dev_cmd;
 
 	if (cmd == CLSF_ADD) {
-		tlv_size = sizeof(struct filter) +
-		    sizeof(struct filter_action) +
+		dev_cmd = (data->type >= FILTER_DPDK_1) ?
+			  CMD_ADD_ADV_FILTER : CMD_ADD_FILTER;
+
+		filter_size = vnic_filter_size(data);
+		action_size = vnic_action_size(action_v2);
+
+		tlv_size = filter_size + action_size +
 		    2*sizeof(struct filter_tlv);
 		snprintf((char *)z_name, sizeof(z_name),
-			"vnic_clsf_%d", unique_id++);
+			"vnic_clsf_%u", unique_id++);
 		tlv_va = vdev->alloc_consistent(vdev->priv,
 			tlv_size, &tlv_pa, (u8 *)z_name);
 		if (!tlv_va)
@@ -1034,20 +1064,17 @@ int vnic_dev_classifier(struct vnic_dev *vdev, u8 cmd, u16 *entry,
 		a1 = tlv_size;
 		memset(tlv, 0, tlv_size);
 		tlv->type = CLSF_TLV_FILTER;
-		tlv->length = sizeof(struct filter);
-		*(struct filter *)&tlv->val = *data;
+		tlv->length = filter_size;
+		memcpy(&tlv->val, (void *)data, filter_size);
 
 		tlv = (struct filter_tlv *)((char *)tlv +
 					 sizeof(struct filter_tlv) +
-					 sizeof(struct filter));
+					 filter_size);
 
 		tlv->type = CLSF_TLV_ACTION;
-		tlv->length = sizeof(struct filter_action);
-		action = (struct filter_action *)&tlv->val;
-		action->type = FILTER_ACTION_RQ_STEERING;
-		action->u.rq_idx = *entry;
-
-		ret = vnic_dev_cmd(vdev, CMD_ADD_FILTER, &a0, &a1, wait);
+		tlv->length = action_size;
+		memcpy(&tlv->val, (void *)action_v2, action_size);
+		ret = vnic_dev_cmd(vdev, dev_cmd, &a0, &a1, wait);
 		*entry = (u16)a0;
 		vdev->free_consistent(vdev->priv, tlv_size, tlv_va, tlv_pa);
 	} else if (cmd == CLSF_DEL) {

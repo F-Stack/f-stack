@@ -31,12 +31,16 @@
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
-DIRS-$(CONFIG_RTE_APP_TEST) += test
-DIRS-$(CONFIG_RTE_LIBRTE_ACL) += test-acl
-DIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += test-pipeline
 DIRS-$(CONFIG_RTE_TEST_PMD) += test-pmd
-DIRS-$(CONFIG_RTE_LIBRTE_CMDLINE) += cmdline_test
-DIRS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += proc_info
+DIRS-$(CONFIG_RTE_PROC_INFO) += proc_info
 DIRS-$(CONFIG_RTE_LIBRTE_PDUMP) += pdump
+
+ifeq ($(CONFIG_RTE_LIBRTE_CRYPTODEV),y)
+DIRS-$(CONFIG_RTE_APP_CRYPTO_PERF) += test-crypto-perf
+endif
+
+ifeq ($(CONFIG_RTE_LIBRTE_EVENTDEV),y)
+DIRS-$(CONFIG_RTE_APP_EVENTDEV) += test-eventdev
+endif
 
 include $(RTE_SDK)/mk/rte.subdir.mk

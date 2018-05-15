@@ -38,6 +38,8 @@ LIB = librte_pipeline.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_table
+LDLIBS += -lrte_port
 
 EXPORT_MAP := rte_pipeline_version.map
 
@@ -50,12 +52,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) := rte_pipeline.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_PIPELINE)-include += rte_pipeline.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += lib/librte_table
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += lib/librte_port
 
 include $(RTE_SDK)/mk/rte.lib.mk

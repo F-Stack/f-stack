@@ -29,6 +29,7 @@
 
 #include <rte_config.h>
 #include <rte_ether.h>
+#include <rte_bus_pci.h>
 #include <rte_ethdev.h>
 #include <rte_kni.h>
 #include <rte_malloc.h>
@@ -123,13 +124,13 @@ kni_set_bitmap(const char *p, unsigned char *port_bitmap)
 
 /* Currently we don't support change mtu. */
 static int
-kni_change_mtu(uint8_t port_id, unsigned new_mtu)
+kni_change_mtu(uint16_t port_id, unsigned new_mtu)
 {
     return 0;
 }
 
 static int
-kni_config_network_interface(uint8_t port_id, uint8_t if_up)
+kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 {
     int ret = 0;
 
@@ -165,12 +166,12 @@ kni_config_network_interface(uint8_t port_id, uint8_t if_up)
 }
 
 static int
-kni_process_tx(uint8_t port_id, uint16_t queue_id,
+kni_process_tx(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     /* read packet from kni ring(phy port) and transmit to kni */
     uint16_t nb_tx, nb_kni_tx;
-    nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count);
+    nb_tx = rte_ring_dequeue_burst(kni_rp[port_id], (void **)pkts_burst, count, NULL);
 
     /* NB.
      * if nb_tx is 0,it must call rte_kni_tx_burst
@@ -192,7 +193,7 @@ kni_process_tx(uint8_t port_id, uint16_t queue_id,
 }
 
 static int
-kni_process_rx(uint8_t port_id, uint16_t queue_id,
+kni_process_rx(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     uint16_t nb_kni_rx, nb_rx;
@@ -331,7 +332,7 @@ ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 }
 
 void
-ff_kni_alloc(uint8_t port_id, unsigned socket_id,
+ff_kni_alloc(uint16_t port_id, unsigned socket_id,
     struct rte_mempool *mbuf_pool, unsigned ring_queue_size)
 {
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
@@ -401,7 +402,7 @@ ff_kni_alloc(uint8_t port_id, unsigned socket_id,
 
 
 void
-ff_kni_process(uint8_t port_id, uint16_t queue_id,
+ff_kni_process(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
     kni_process_tx(port_id, queue_id, pkts_burst, count);
@@ -410,7 +411,7 @@ ff_kni_process(uint8_t port_id, uint16_t queue_id,
 
 /* enqueue the packet, and own it */
 int
-ff_kni_enqueue(uint8_t port_id, struct rte_mbuf *pkt)
+ff_kni_enqueue(uint16_t port_id, struct rte_mbuf *pkt)
 {
     int ret = rte_ring_enqueue(kni_rp[port_id], pkt);
     if (ret < 0)

@@ -39,13 +39,12 @@
  * Netronome vNIC DPDK Poll-Mode Driver: Main entry point
  */
 
-#include <math.h>
-
 #include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_ethdev.h>
+#include <rte_ethdev_pci.h>
 #include <rte_dev.h>
 #include <rte_ether.h>
 #include <rte_malloc.h>
@@ -56,6 +55,7 @@
 #include <rte_alarm.h>
 #include <rte_spinlock.h>
 
+#include "nfp_nfpu.h"
 #include "nfp_net_pmd.h"
 #include "nfp_net_logs.h"
 #include "nfp_net_ctrl.h"
@@ -63,8 +63,7 @@
 /* Prototypes */
 static void nfp_net_close(struct rte_eth_dev *dev);
 static int nfp_net_configure(struct rte_eth_dev *dev);
-static void nfp_net_dev_interrupt_handler(struct rte_intr_handle *handle,
-					  void *param);
+static void nfp_net_dev_interrupt_handler(void *param);
 static void nfp_net_dev_interrupt_delayed_handler(void *param);
 static int nfp_net_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 static void nfp_net_infos_get(struct rte_eth_dev *dev,
@@ -89,7 +88,7 @@ static int nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 				  uint16_t nb_desc, unsigned int socket_id,
 				  const struct rte_eth_txconf *tx_conf);
 static int nfp_net_start(struct rte_eth_dev *dev);
-static void nfp_net_stats_get(struct rte_eth_dev *dev,
+static int nfp_net_stats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_stats *stats);
 static void nfp_net_stats_reset(struct rte_eth_dev *dev);
 static void nfp_net_stop(struct rte_eth_dev *dev);
@@ -101,13 +100,13 @@ static uint16_t nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
  * happen to be at the same offset on the NFP6000 and the NFP3200 so
  * we use a single macro here.
  */
-#define NFP_PCIE_QUEUE(_q)	(0x80000 + (0x800 * ((_q) & 0xff)))
+#define NFP_PCIE_QUEUE(_q)	(0x800 * ((_q) & 0xff))
 
 /* Maximum value which can be added to a queue with one transaction */
 #define NFP_QCP_MAX_ADD	0x7f
 
 #define RTE_MBUF_DMA_ADDR_DEFAULT(mb) \
-	(uint64_t)((mb)->buf_physaddr + RTE_PKTMBUF_HEADROOM)
+	(uint64_t)((mb)->buf_iova + RTE_PKTMBUF_HEADROOM)
 
 /* nfp_qcp_ptr - Read or Write Pointer of a queue */
 enum nfp_qcp_ptr {
@@ -205,26 +204,6 @@ nn_cfg_writeq(struct nfp_net_hw *hw, int off, uint64_t val)
 	nn_writeq(rte_cpu_to_le_64(val), hw->ctrl_bar + off);
 }
 
-/* Creating memzone for hardware rings. */
-static const struct rte_memzone *
-ring_dma_zone_reserve(struct rte_eth_dev *dev, const char *ring_name,
-		      uint16_t queue_id, uint32_t ring_size, int socket_id)
-{
-	char z_name[RTE_MEMZONE_NAMESIZE];
-	const struct rte_memzone *mz;
-
-	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-		 dev->driver->pci_drv.name,
-		 ring_name, dev->data->port_id, queue_id);
-
-	mz = rte_memzone_lookup(z_name);
-	if (mz)
-		return mz;
-
-	return rte_memzone_reserve_aligned(z_name, ring_size, socket_id, 0,
-					   NFP_MEMZONE_ALIGN);
-}
-
 /*
  * Atomically reads link status information from global structure rte_eth_dev.
  *
@@ -308,7 +287,6 @@ static void
 nfp_net_reset_rx_queue(struct nfp_net_rxq *rxq)
 {
 	nfp_net_rx_queue_release_mbufs(rxq);
-	rxq->wr_p = 0;
 	rxq->rd_p = 0;
 	rxq->nb_rx_hold = 0;
 }
@@ -347,8 +325,6 @@ nfp_net_reset_tx_queue(struct nfp_net_txq *txq)
 	nfp_net_tx_queue_release_mbufs(txq);
 	txq->wr_p = 0;
 	txq->rd_p = 0;
-	txq->tail = 0;
-	txq->qcp_rd_p = 0;
 }
 
 static int
@@ -377,12 +353,12 @@ __nfp_net_reconfig(struct nfp_net_hw *hw, uint32_t update)
 		if (new == 0)
 			break;
 		if (new & NFP_NET_CFG_UPDATE_ERR) {
-			PMD_INIT_LOG(ERR, "Reconfig error: 0x%08x\n", new);
+			PMD_INIT_LOG(ERR, "Reconfig error: 0x%08x", new);
 			return -1;
 		}
 		if (cnt >= NFP_NET_POLL_TIMEOUT) {
 			PMD_INIT_LOG(ERR, "Reconfig timeout for 0x%08x after"
-					  " %dms\n", update, cnt);
+					  " %dms", update, cnt);
 			rte_panic("Exiting\n");
 		}
 		nanosleep(&wait, 0); /* waiting for a 1ms */
@@ -426,7 +402,7 @@ nfp_net_reconfig(struct nfp_net_hw *hw, uint32_t ctrl, uint32_t update)
 	 * Reconfig errors imply situations where they can be handled.
 	 * Otherwise, rte_panic is called inside __nfp_net_reconfig
 	 */
-	PMD_INIT_LOG(ERR, "Error nfp_net reconfig for ctrl: %x update: %x\n",
+	PMD_INIT_LOG(ERR, "Error nfp_net reconfig for ctrl: %x update: %x",
 		     ctrl, update);
 	return -EIO;
 }
@@ -456,7 +432,7 @@ nfp_net_configure(struct rte_eth_dev *dev)
 	 * called after that internal process
 	 */
 
-	PMD_INIT_LOG(DEBUG, "Configure\n");
+	PMD_INIT_LOG(DEBUG, "Configure");
 
 	dev_conf = &dev->data->dev_conf;
 	rxmode = &dev_conf->rxmode;
@@ -464,7 +440,7 @@ nfp_net_configure(struct rte_eth_dev *dev)
 
 	/* Checking TX mode */
 	if (txmode->mq_mode) {
-		PMD_INIT_LOG(INFO, "TX mq_mode DCB and VMDq not supported\n");
+		PMD_INIT_LOG(INFO, "TX mq_mode DCB and VMDq not supported");
 		return -EINVAL;
 	}
 
@@ -474,13 +450,13 @@ nfp_net_configure(struct rte_eth_dev *dev)
 			update = NFP_NET_CFG_UPDATE_RSS;
 			new_ctrl = NFP_NET_CFG_CTRL_RSS;
 		} else {
-			PMD_INIT_LOG(INFO, "RSS not supported\n");
+			PMD_INIT_LOG(INFO, "RSS not supported");
 			return -EINVAL;
 		}
 	}
 
 	if (rxmode->split_hdr_size) {
-		PMD_INIT_LOG(INFO, "rxmode does not support split header\n");
+		PMD_INIT_LOG(INFO, "rxmode does not support split header");
 		return -EINVAL;
 	}
 
@@ -488,13 +464,13 @@ nfp_net_configure(struct rte_eth_dev *dev)
 		if (hw->cap & NFP_NET_CFG_CTRL_RXCSUM) {
 			new_ctrl |= NFP_NET_CFG_CTRL_RXCSUM;
 		} else {
-			PMD_INIT_LOG(INFO, "RXCSUM not supported\n");
+			PMD_INIT_LOG(INFO, "RXCSUM not supported");
 			return -EINVAL;
 		}
 	}
 
 	if (rxmode->hw_vlan_filter) {
-		PMD_INIT_LOG(INFO, "VLAN filter not supported\n");
+		PMD_INIT_LOG(INFO, "VLAN filter not supported");
 		return -EINVAL;
 	}
 
@@ -502,32 +478,52 @@ nfp_net_configure(struct rte_eth_dev *dev)
 		if (hw->cap & NFP_NET_CFG_CTRL_RXVLAN) {
 			new_ctrl |= NFP_NET_CFG_CTRL_RXVLAN;
 		} else {
-			PMD_INIT_LOG(INFO, "hw vlan strip not supported\n");
+			PMD_INIT_LOG(INFO, "hw vlan strip not supported");
 			return -EINVAL;
 		}
 	}
 
 	if (rxmode->hw_vlan_extend) {
-		PMD_INIT_LOG(INFO, "VLAN extended not supported\n");
+		PMD_INIT_LOG(INFO, "VLAN extended not supported");
 		return -EINVAL;
 	}
 
-	/* Supporting VLAN insertion by default */
+	if (rxmode->jumbo_frame)
+		hw->mtu = rxmode->max_rx_pkt_len;
+
+	if (!rxmode->hw_strip_crc)
+		PMD_INIT_LOG(INFO, "HW does strip CRC and it is not configurable");
+
+	if (rxmode->enable_scatter) {
+		PMD_INIT_LOG(INFO, "Scatter not supported");
+		return -EINVAL;
+	}
+
+	/* If next capabilities are supported, configure them by default */
+
+	/* VLAN insertion */
 	if (hw->cap & NFP_NET_CFG_CTRL_TXVLAN)
 		new_ctrl |= NFP_NET_CFG_CTRL_TXVLAN;
 
-	if (rxmode->jumbo_frame)
-		/* this is handled in rte_eth_dev_configure */
+	/* L2 broadcast */
+	if (hw->cap & NFP_NET_CFG_CTRL_L2BC)
+		new_ctrl |= NFP_NET_CFG_CTRL_L2BC;
 
-	if (rxmode->hw_strip_crc) {
-		PMD_INIT_LOG(INFO, "strip CRC not supported\n");
-		return -EINVAL;
-	}
+	/* L2 multicast */
+	if (hw->cap & NFP_NET_CFG_CTRL_L2MC)
+		new_ctrl |= NFP_NET_CFG_CTRL_L2MC;
 
-	if (rxmode->enable_scatter) {
-		PMD_INIT_LOG(INFO, "Scatter not supported\n");
-		return -EINVAL;
-	}
+	/* TX checksum offload */
+	if (hw->cap & NFP_NET_CFG_CTRL_TXCSUM)
+		new_ctrl |= NFP_NET_CFG_CTRL_TXCSUM;
+
+	/* LSO offload */
+	if (hw->cap & NFP_NET_CFG_CTRL_LSO)
+		new_ctrl |= NFP_NET_CFG_CTRL_LSO;
+
+	/* RX gather */
+	if (hw->cap & NFP_NET_CFG_CTRL_GATHER)
+		new_ctrl |= NFP_NET_CFG_CTRL_GATHER;
 
 	if (!new_ctrl)
 		return 0;
@@ -607,18 +603,8 @@ nfp_net_rx_freelist_setup(struct rte_eth_dev *dev)
 static void
 nfp_net_params_setup(struct nfp_net_hw *hw)
 {
-	uint32_t *mac_address;
-
 	nn_cfg_writel(hw, NFP_NET_CFG_MTU, hw->mtu);
 	nn_cfg_writel(hw, NFP_NET_CFG_FLBUFSZ, hw->flbufsz);
-
-	/* A MAC address is 8 bytes long */
-	mac_address = (uint32_t *)(hw->mac_addr);
-
-	nn_cfg_writel(hw, NFP_NET_CFG_MACADDR,
-		      rte_cpu_to_be_32(*mac_address));
-	nn_cfg_writel(hw, NFP_NET_CFG_MACADDR + 4,
-		      rte_cpu_to_be_32(*(mac_address + 4)));
 }
 
 static void
@@ -627,16 +613,136 @@ nfp_net_cfg_queue_setup(struct nfp_net_hw *hw)
 	hw->qcp_cfg = hw->tx_bar + NFP_QCP_QUEUE_ADDR_SZ;
 }
 
+#define ETH_ADDR_LEN	6
+
+static void
+nfp_eth_copy_mac_reverse(uint8_t *dst, const uint8_t *src)
+{
+	int i;
+
+	for (i = 0; i < ETH_ADDR_LEN; i++)
+		dst[ETH_ADDR_LEN - i - 1] = src[i];
+}
+
+static int
+nfp_net_pf_read_mac(struct nfp_net_hw *hw, int port)
+{
+	union eth_table_entry *entry;
+	int idx, i;
+
+	idx = port;
+	entry = hw->eth_table;
+
+	/* Reading NFP ethernet table obtained before */
+	for (i = 0; i < NSP_ETH_MAX_COUNT; i++) {
+		if (!(entry->port & NSP_ETH_PORT_LANES_MASK)) {
+			/* port not in use */
+			entry++;
+			continue;
+		}
+		if (idx == 0)
+			break;
+		idx--;
+		entry++;
+	}
+
+	if (i == NSP_ETH_MAX_COUNT)
+		return -EINVAL;
+
+	/*
+	 * hw points to port0 private data. We need hw now pointing to
+	 * right port.
+	 */
+	hw += port;
+	nfp_eth_copy_mac_reverse((uint8_t *)&hw->mac_addr,
+				 (uint8_t *)&entry->mac_addr);
+
+	return 0;
+}
+
+static void
+nfp_net_vf_read_mac(struct nfp_net_hw *hw)
+{
+	uint32_t tmp;
+
+	tmp = rte_be_to_cpu_32(nn_cfg_readl(hw, NFP_NET_CFG_MACADDR));
+	memcpy(&hw->mac_addr[0], &tmp, sizeof(struct ether_addr));
+
+	tmp = rte_be_to_cpu_32(nn_cfg_readl(hw, NFP_NET_CFG_MACADDR + 4));
+	memcpy(&hw->mac_addr[4], &tmp, 2);
+}
+
+static void
+nfp_net_write_mac(struct nfp_net_hw *hw, uint8_t *mac)
+{
+	uint32_t mac0 = *(uint32_t *)mac;
+	uint16_t mac1;
+
+	nn_writel(rte_cpu_to_be_32(mac0), hw->ctrl_bar + NFP_NET_CFG_MACADDR);
+
+	mac += 4;
+	mac1 = *(uint16_t *)mac;
+	nn_writew(rte_cpu_to_be_16(mac1),
+		  hw->ctrl_bar + NFP_NET_CFG_MACADDR + 6);
+}
+
+static int
+nfp_configure_rx_interrupt(struct rte_eth_dev *dev,
+			   struct rte_intr_handle *intr_handle)
+{
+	struct nfp_net_hw *hw;
+	int i;
+
+	if (!intr_handle->intr_vec) {
+		intr_handle->intr_vec =
+			rte_zmalloc("intr_vec",
+				    dev->data->nb_rx_queues * sizeof(int), 0);
+		if (!intr_handle->intr_vec) {
+			PMD_INIT_LOG(ERR, "Failed to allocate %d rx_queues"
+				     " intr_vec", dev->data->nb_rx_queues);
+			return -ENOMEM;
+		}
+	}
+
+	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	if (intr_handle->type == RTE_INTR_HANDLE_UIO) {
+		PMD_INIT_LOG(INFO, "VF: enabling RX interrupt with UIO");
+		/* UIO just supports one queue and no LSC*/
+		nn_cfg_writeb(hw, NFP_NET_CFG_RXR_VEC(0), 0);
+		intr_handle->intr_vec[0] = 0;
+	} else {
+		PMD_INIT_LOG(INFO, "VF: enabling RX interrupt with VFIO");
+		for (i = 0; i < dev->data->nb_rx_queues; i++) {
+			/*
+			 * The first msix vector is reserved for non
+			 * efd interrupts
+			*/
+			nn_cfg_writeb(hw, NFP_NET_CFG_RXR_VEC(i), i + 1);
+			intr_handle->intr_vec[i] = i + 1;
+			PMD_INIT_LOG(DEBUG, "intr_vec[%d]= %d\n", i,
+					    intr_handle->intr_vec[i]);
+		}
+	}
+
+	/* Avoiding TX interrupts */
+	hw->ctrl |= NFP_NET_CFG_CTRL_MSIX_TX_OFF;
+	return 0;
+}
+
 static int
 nfp_net_start(struct rte_eth_dev *dev)
 {
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	uint32_t new_ctrl, update = 0;
 	struct nfp_net_hw *hw;
+	uint32_t intr_vector;
 	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
-	PMD_INIT_LOG(DEBUG, "Start\n");
+	PMD_INIT_LOG(DEBUG, "Start");
 
 	/* Disabling queues just in case... */
 	nfp_net_disable_queues(dev);
@@ -647,9 +753,41 @@ nfp_net_start(struct rte_eth_dev *dev)
 	/* Enabling the required queues in the device */
 	nfp_net_enable_queues(dev);
 
+	/* check and configure queue intr-vector mapping */
+	if (dev->data->dev_conf.intr_conf.rxq != 0) {
+		if (hw->pf_multiport_enabled) {
+			PMD_INIT_LOG(ERR, "PMD rx interrupt is not supported "
+					  "with NFP multiport PF");
+				return -EINVAL;
+		}
+		if (intr_handle->type == RTE_INTR_HANDLE_UIO) {
+			/*
+			 * Better not to share LSC with RX interrupts.
+			 * Unregistering LSC interrupt handler
+			 */
+			rte_intr_callback_unregister(&pci_dev->intr_handle,
+				nfp_net_dev_interrupt_handler, (void *)dev);
+
+			if (dev->data->nb_rx_queues > 1) {
+				PMD_INIT_LOG(ERR, "PMD rx interrupt only "
+					     "supports 1 queue with UIO");
+				return -EIO;
+			}
+		}
+		intr_vector = dev->data->nb_rx_queues;
+		if (rte_intr_efd_enable(intr_handle, intr_vector))
+			return -1;
+
+		nfp_configure_rx_interrupt(dev, intr_handle);
+		update = NFP_NET_CFG_UPDATE_MSIX;
+	}
+
+	rte_intr_enable(intr_handle);
+
 	/* Enable device */
-	new_ctrl = hw->ctrl | NFP_NET_CFG_CTRL_ENABLE | NFP_NET_CFG_UPDATE_MSIX;
-	update = NFP_NET_CFG_UPDATE_GEN | NFP_NET_CFG_UPDATE_RING;
+	new_ctrl = hw->ctrl | NFP_NET_CFG_CTRL_ENABLE;
+
+	update |= NFP_NET_CFG_UPDATE_GEN | NFP_NET_CFG_UPDATE_RING;
 
 	if (hw->cap & NFP_NET_CFG_CTRL_RINGCFG)
 		new_ctrl |= NFP_NET_CFG_CTRL_RINGCFG;
@@ -666,6 +804,10 @@ nfp_net_start(struct rte_eth_dev *dev)
 		ret = -ENOMEM;
 		goto error;
 	}
+
+	if (hw->is_pf)
+		/* Configure the physical port up */
+		nfp_nsp_eth_config(hw->nspu_desc, hw->pf_port_idx, 1);
 
 	hw->ctrl = new_ctrl;
 
@@ -695,8 +837,11 @@ static void
 nfp_net_stop(struct rte_eth_dev *dev)
 {
 	int i;
+	struct nfp_net_hw *hw;
 
-	PMD_INIT_LOG(DEBUG, "Stop\n");
+	PMD_INIT_LOG(DEBUG, "Stop");
+
+	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	nfp_net_disable_queues(dev);
 
@@ -710,6 +855,10 @@ nfp_net_stop(struct rte_eth_dev *dev)
 		nfp_net_reset_rx_queue(
 			(struct nfp_net_rxq *)dev->data->rx_queues[i]);
 	}
+
+	if (hw->is_pf)
+		/* Configure the physical port down */
+		nfp_nsp_eth_config(hw->nspu_desc, hw->pf_port_idx, 0);
 }
 
 /* Reset and stop device. The device can not be restarted. */
@@ -717,20 +866,39 @@ static void
 nfp_net_close(struct rte_eth_dev *dev)
 {
 	struct nfp_net_hw *hw;
+	struct rte_pci_device *pci_dev;
+	int i;
 
-	PMD_INIT_LOG(DEBUG, "Close\n");
+	PMD_INIT_LOG(DEBUG, "Close");
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 
 	/*
 	 * We assume that the DPDK application is stopping all the
 	 * threads/queues before calling the device close function.
 	 */
 
-	nfp_net_stop(dev);
+	nfp_net_disable_queues(dev);
 
-	rte_intr_disable(&dev->pci_dev->intr_handle);
+	/* Clear queues */
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		nfp_net_reset_tx_queue(
+			(struct nfp_net_txq *)dev->data->tx_queues[i]);
+	}
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		nfp_net_reset_rx_queue(
+			(struct nfp_net_rxq *)dev->data->rx_queues[i]);
+	}
+
+	rte_intr_disable(&pci_dev->intr_handle);
 	nn_cfg_writeb(hw, NFP_NET_CFG_LSC, 0xff);
+
+	/* unregister callback func from eal lib */
+	rte_intr_callback_unregister(&pci_dev->intr_handle,
+				     nfp_net_dev_interrupt_handler,
+				     (void *)dev);
 
 	/*
 	 * The ixgbe PMD driver disables the pcie master on the
@@ -749,7 +917,7 @@ nfp_net_promisc_enable(struct rte_eth_dev *dev)
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	if (!(hw->cap & NFP_NET_CFG_CTRL_PROMISC)) {
-		PMD_INIT_LOG(INFO, "Promiscuous mode not supported\n");
+		PMD_INIT_LOG(INFO, "Promiscuous mode not supported");
 		return;
 	}
 
@@ -810,6 +978,17 @@ nfp_net_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_complete)
 	struct rte_eth_link link, old;
 	uint32_t nn_link_status;
 
+	static const uint32_t ls_to_ethtool[] = {
+		[NFP_NET_CFG_STS_LINK_RATE_UNSUPPORTED] = ETH_SPEED_NUM_NONE,
+		[NFP_NET_CFG_STS_LINK_RATE_UNKNOWN]     = ETH_SPEED_NUM_NONE,
+		[NFP_NET_CFG_STS_LINK_RATE_1G]          = ETH_SPEED_NUM_1G,
+		[NFP_NET_CFG_STS_LINK_RATE_10G]         = ETH_SPEED_NUM_10G,
+		[NFP_NET_CFG_STS_LINK_RATE_25G]         = ETH_SPEED_NUM_25G,
+		[NFP_NET_CFG_STS_LINK_RATE_40G]         = ETH_SPEED_NUM_40G,
+		[NFP_NET_CFG_STS_LINK_RATE_50G]         = ETH_SPEED_NUM_50G,
+		[NFP_NET_CFG_STS_LINK_RATE_100G]        = ETH_SPEED_NUM_100G,
+	};
+
 	PMD_DRV_LOG(DEBUG, "Link update\n");
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -825,8 +1004,14 @@ nfp_net_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_complete)
 		link.link_status = ETH_LINK_UP;
 
 	link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	/* Other cards can limit the tx and rx rate per VF */
-	link.link_speed = ETH_SPEED_NUM_40G;
+
+	nn_link_status = (nn_link_status >> NFP_NET_CFG_STS_LINK_RATE_SHIFT) &
+			 NFP_NET_CFG_STS_LINK_RATE_MASK;
+
+	if (nn_link_status >= RTE_DIM(ls_to_ethtool))
+		link.link_speed = ETH_SPEED_NUM_NONE;
+	else
+		link.link_speed = ls_to_ethtool[nn_link_status];
 
 	if (old.link_status != link.link_status) {
 		nfp_net_dev_atomic_write_link_status(dev, &link);
@@ -840,7 +1025,7 @@ nfp_net_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_complete)
 	return -1;
 }
 
-static void
+static int
 nfp_net_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	int i;
@@ -850,6 +1035,8 @@ nfp_net_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	/* RTE_ETHDEV_QUEUE_STAT_CNTRS default value is 16 */
+
+	memset(&nfp_dev_stats, 0, sizeof(nfp_dev_stats));
 
 	/* reading per RX ring stats */
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -926,8 +1113,11 @@ nfp_net_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 	nfp_dev_stats.imissed -= hw->eth_stats_base.imissed;
 
-	if (stats)
+	if (stats) {
 		memcpy(stats, &nfp_dev_stats, sizeof(*stats));
+		return 0;
+	}
+	return -EINVAL;
 }
 
 static void
@@ -1000,11 +1190,11 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
-	dev_info->driver_name = dev->driver->pci_drv.name;
+	dev_info->pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	dev_info->max_rx_queues = (uint16_t)hw->max_rx_queues;
 	dev_info->max_tx_queues = (uint16_t)hw->max_tx_queues;
 	dev_info->min_rx_bufsize = ETHER_MIN_MTU;
-	dev_info->max_rx_pktlen = hw->mtu;
+	dev_info->max_rx_pktlen = hw->max_mtu;
 	/* Next should change when PF support is implemented */
 	dev_info->max_mac_addrs = 1;
 
@@ -1021,8 +1211,8 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	if (hw->cap & NFP_NET_CFG_CTRL_TXCSUM)
 		dev_info->tx_offload_capa |= DEV_TX_OFFLOAD_IPV4_CKSUM |
-					     DEV_RX_OFFLOAD_UDP_CKSUM |
-					     DEV_RX_OFFLOAD_TCP_CKSUM;
+					     DEV_TX_OFFLOAD_UDP_CKSUM |
+					     DEV_TX_OFFLOAD_TCP_CKSUM;
 
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
 		.rx_thresh = {
@@ -1046,10 +1236,20 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 			     ETH_TXQ_FLAGS_NOOFFLOADS,
 	};
 
+	dev_info->flow_type_rss_offloads = ETH_RSS_NONFRAG_IPV4_TCP |
+					   ETH_RSS_NONFRAG_IPV4_UDP |
+					   ETH_RSS_NONFRAG_IPV6_TCP |
+					   ETH_RSS_NONFRAG_IPV6_UDP;
+
 	dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
 	dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
 
-	dev_info->speed_capa = ETH_LINK_SPEED_40G | ETH_LINK_SPEED_100G;
+	dev_info->speed_capa = ETH_SPEED_NUM_1G | ETH_LINK_SPEED_10G |
+			       ETH_SPEED_NUM_25G | ETH_SPEED_NUM_40G |
+			       ETH_SPEED_NUM_50G | ETH_LINK_SPEED_100G;
+
+	if (hw->cap & NFP_NET_CFG_CTRL_LSO)
+		dev_info->tx_offload_capa |= DEV_TX_OFFLOAD_TCP_TSO;
 }
 
 static const uint32_t *
@@ -1079,13 +1279,7 @@ nfp_net_rx_queue_count(struct rte_eth_dev *dev, uint16_t queue_idx)
 
 	rxq = (struct nfp_net_rxq *)dev->data->rx_queues[queue_idx];
 
-	if (rxq == NULL) {
-		PMD_INIT_LOG(ERR, "Bad queue: %u\n", queue_idx);
-		return 0;
-	}
-
-	idx = rxq->rd_p % rxq->rx_count;
-	rxds = &rxq->rxds[idx];
+	idx = rxq->rd_p;
 
 	count = 0;
 
@@ -1093,7 +1287,7 @@ nfp_net_rx_queue_count(struct rte_eth_dev *dev, uint16_t queue_idx)
 	 * Other PMDs are just checking the DD bit in intervals of 4
 	 * descriptors and counting all four if the first has the DD
 	 * bit on. Of course, this is not accurate but can be good for
-	 * perfomance. But ideally that should be done in descriptors
+	 * performance. But ideally that should be done in descriptors
 	 * chunks belonging to the same cache line
 	 */
 
@@ -1113,25 +1307,65 @@ nfp_net_rx_queue_count(struct rte_eth_dev *dev, uint16_t queue_idx)
 	return count;
 }
 
+static int
+nfp_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct rte_pci_device *pci_dev;
+	struct nfp_net_hw *hw;
+	int base = 0;
+
+	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+
+	if (pci_dev->intr_handle.type != RTE_INTR_HANDLE_UIO)
+		base = 1;
+
+	/* Make sure all updates are written before un-masking */
+	rte_wmb();
+	nn_cfg_writeb(hw, NFP_NET_CFG_ICR(base + queue_id),
+		      NFP_NET_CFG_ICR_UNMASKED);
+	return 0;
+}
+
+static int
+nfp_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct rte_pci_device *pci_dev;
+	struct nfp_net_hw *hw;
+	int base = 0;
+
+	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+
+	if (pci_dev->intr_handle.type != RTE_INTR_HANDLE_UIO)
+		base = 1;
+
+	/* Make sure all updates are written before un-masking */
+	rte_wmb();
+	nn_cfg_writeb(hw, NFP_NET_CFG_ICR(base + queue_id), 0x1);
+	return 0;
+}
+
 static void
 nfp_net_dev_link_status_print(struct rte_eth_dev *dev)
 {
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_eth_link link;
 
 	memset(&link, 0, sizeof(link));
 	nfp_net_dev_atomic_read_link_status(dev, &link);
 	if (link.link_status)
 		RTE_LOG(INFO, PMD, "Port %d: Link Up - speed %u Mbps - %s\n",
-			(int)(dev->data->port_id), (unsigned)link.link_speed,
+			dev->data->port_id, link.link_speed,
 			link.link_duplex == ETH_LINK_FULL_DUPLEX
 			? "full-duplex" : "half-duplex");
 	else
 		RTE_LOG(INFO, PMD, " Port %d: Link Down\n",
-			(int)(dev->data->port_id));
+			dev->data->port_id);
 
 	RTE_LOG(INFO, PMD, "PCI Address: %04d:%02d:%02d:%d\n",
-		dev->pci_dev->addr.domain, dev->pci_dev->addr.bus,
-		dev->pci_dev->addr.devid, dev->pci_dev->addr.function);
+		pci_dev->addr.domain, pci_dev->addr.bus,
+		pci_dev->addr.devid, pci_dev->addr.function);
 }
 
 /* Interrupt configuration and handling */
@@ -1146,13 +1380,15 @@ static void
 nfp_net_irq_unmask(struct rte_eth_dev *dev)
 {
 	struct nfp_net_hw *hw;
+	struct rte_pci_device *pci_dev;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 
 	if (hw->ctrl & NFP_NET_CFG_CTRL_MSIXAUTO) {
 		/* If MSI-X auto-masking is used, clear the entry */
 		rte_wmb();
-		rte_intr_enable(&dev->pci_dev->intr_handle);
+		rte_intr_enable(&pci_dev->intr_handle);
 	} else {
 		/* Make sure all updates are written before un-masking */
 		rte_wmb();
@@ -1162,8 +1398,7 @@ nfp_net_irq_unmask(struct rte_eth_dev *dev)
 }
 
 static void
-nfp_net_dev_interrupt_handler(__rte_unused struct rte_intr_handle *handle,
-			      void *param)
+nfp_net_dev_interrupt_handler(void *param)
 {
 	int64_t timeout;
 	struct rte_eth_link link;
@@ -1213,7 +1448,7 @@ nfp_net_dev_interrupt_delayed_handler(void *param)
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
 
 	nfp_net_link_update(dev, 0);
-	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC);
+	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL, NULL);
 
 	nfp_net_dev_link_status_print(dev);
 
@@ -1231,6 +1466,13 @@ nfp_net_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	/* check that mtu is within the allowed range */
 	if ((mtu < ETHER_MIN_MTU) || ((uint32_t)mtu > hw->max_mtu))
 		return -EINVAL;
+
+	/* mtu setting is forbidden if port is started */
+	if (dev->data->dev_started) {
+		PMD_DRV_LOG(ERR, "port %d must be stopped before configuration",
+			    dev->data->port_id);
+		return -EBUSY;
+	}
 
 	/* switch to jumbo mode if needed */
 	if ((uint32_t)mtu > ETHER_MAX_LEN)
@@ -1315,9 +1557,10 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	 * handle the maximum ring size is allocated in order to allow for
 	 * resizing in later calls to the queue setup function.
 	 */
-	tz = ring_dma_zone_reserve(dev, "rx_ring", queue_idx,
+	tz = rte_eth_dma_zone_reserve(dev, "rx_ring", queue_idx,
 				   sizeof(struct nfp_net_rx_desc) *
-				   NFP_NET_MAX_RX_DESC, socket_id);
+				   NFP_NET_MAX_RX_DESC, NFP_MEMZONE_ALIGN,
+				   socket_id);
 
 	if (tz == NULL) {
 		RTE_LOG(ERR, PMD, "Error allocatig rx dma\n");
@@ -1326,7 +1569,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	/* Saving physical and virtual addresses for the RX ring */
-	rxq->dma = (uint64_t)tz->phys_addr;
+	rxq->dma = (uint64_t)tz->iova;
 	rxq->rxds = (struct nfp_net_rx_desc *)tz->addr;
 
 	/* mbuf pointers array for referencing mbufs linked to RX descriptors */
@@ -1351,7 +1594,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	 * of descriptors in log2 format
 	 */
 	nn_cfg_writeq(hw, NFP_NET_CFG_RXR_ADDR(queue_idx), rxq->dma);
-	nn_cfg_writeb(hw, NFP_NET_CFG_RXR_SZ(queue_idx), log2(nb_desc));
+	nn_cfg_writeb(hw, NFP_NET_CFG_RXR_SZ(queue_idx), rte_log2_u32(nb_desc));
 
 	return 0;
 }
@@ -1384,8 +1627,6 @@ nfp_net_rx_fill_freelist(struct nfp_net_rxq *rxq)
 		rxd->fld.dma_addr_lo = dma_addr & 0xffffffff;
 		rxe[i].mbuf = mbuf;
 		PMD_RX_LOG(DEBUG, "[%d]: %" PRIx64 "\n", i, dma_addr);
-
-		rxq->wr_p++;
 	}
 
 	/* Make sure all writes are flushed before telling the hardware */
@@ -1431,7 +1672,7 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 			"tx_free_thresh must be less than the number of TX "
 			"descriptors. (tx_free_thresh=%u port=%d "
 			"queue=%d)\n", (unsigned int)tx_free_thresh,
-			(int)dev->data->port_id, (int)queue_idx);
+			dev->data->port_id, (int)queue_idx);
 		return -(EINVAL);
 	}
 
@@ -1459,9 +1700,10 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	 * handle the maximum ring size is allocated in order to allow for
 	 * resizing in later calls to the queue setup function.
 	 */
-	tz = ring_dma_zone_reserve(dev, "tx_ring", queue_idx,
+	tz = rte_eth_dma_zone_reserve(dev, "tx_ring", queue_idx,
 				   sizeof(struct nfp_net_tx_desc) *
-				   NFP_NET_MAX_TX_DESC, socket_id);
+				   NFP_NET_MAX_TX_DESC, NFP_MEMZONE_ALIGN,
+				   socket_id);
 	if (tz == NULL) {
 		RTE_LOG(ERR, PMD, "Error allocating tx dma\n");
 		nfp_net_tx_queue_release(txq);
@@ -1469,7 +1711,6 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	}
 
 	txq->tx_count = nb_desc;
-	txq->tail = 0;
 	txq->tx_free_thresh = tx_free_thresh;
 	txq->tx_pthresh = tx_conf->tx_thresh.pthresh;
 	txq->tx_hthresh = tx_conf->tx_thresh.hthresh;
@@ -1484,7 +1725,7 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	txq->txq_flags = tx_conf->txq_flags;
 
 	/* Saving physical and virtual addresses for the TX ring */
-	txq->dma = (uint64_t)tz->phys_addr;
+	txq->dma = (uint64_t)tz->iova;
 	txq->txds = (struct nfp_net_tx_desc *)tz->addr;
 
 	/* mbuf pointers array for referencing mbufs linked to TX descriptors */
@@ -1508,9 +1749,36 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	 * of descriptors in log2 format
 	 */
 	nn_cfg_writeq(hw, NFP_NET_CFG_TXR_ADDR(queue_idx), txq->dma);
-	nn_cfg_writeb(hw, NFP_NET_CFG_TXR_SZ(queue_idx), log2(nb_desc));
+	nn_cfg_writeb(hw, NFP_NET_CFG_TXR_SZ(queue_idx), rte_log2_u32(nb_desc));
 
 	return 0;
+}
+
+/* nfp_net_tx_tso - Set TX descriptor for TSO */
+static inline void
+nfp_net_tx_tso(struct nfp_net_txq *txq, struct nfp_net_tx_desc *txd,
+	       struct rte_mbuf *mb)
+{
+	uint64_t ol_flags;
+	struct nfp_net_hw *hw = txq->hw;
+
+	if (!(hw->cap & NFP_NET_CFG_CTRL_LSO))
+		goto clean_txd;
+
+	ol_flags = mb->ol_flags;
+
+	if (!(ol_flags & PKT_TX_TCP_SEG))
+		goto clean_txd;
+
+	txd->l4_offset = mb->l2_len + mb->l3_len + mb->l4_len;
+	txd->lso = rte_cpu_to_le_16(mb->tso_segsz);
+	txd->flags = PCIE_DESC_TX_LSO;
+	return;
+
+clean_txd:
+	txd->flags = 0;
+	txd->l4_offset = 0;
+	txd->lso = 0;
 }
 
 /* nfp_net_tx_cksum - Set TX CSUM offload flags in TX descriptor */
@@ -1575,6 +1843,8 @@ nfp_net_rx_cksum(struct nfp_net_rxq *rxq, struct nfp_net_rx_desc *rxd,
 #define NFP_HASH_OFFSET      ((uint8_t *)mbuf->buf_addr + mbuf->data_off - 4)
 #define NFP_HASH_TYPE_OFFSET ((uint8_t *)mbuf->buf_addr + mbuf->data_off - 8)
 
+#define NFP_DESC_META_LEN(d) (d->rxd.meta_len_dd & PCIE_DESC_RX_META_LEN_MASK)
+
 /*
  * nfp_net_set_hash - Set mbuf hash data
  *
@@ -1585,25 +1855,58 @@ static inline void
 nfp_net_set_hash(struct nfp_net_rxq *rxq, struct nfp_net_rx_desc *rxd,
 		 struct rte_mbuf *mbuf)
 {
-	uint32_t hash;
-	uint32_t hash_type;
 	struct nfp_net_hw *hw = rxq->hw;
+	uint8_t *meta_offset;
+	uint32_t meta_info;
+	uint32_t hash = 0;
+	uint32_t hash_type = 0;
 
 	if (!(hw->ctrl & NFP_NET_CFG_CTRL_RSS))
 		return;
 
-	if (!(rxd->rxd.flags & PCIE_DESC_RX_RSS))
+	if (NFD_CFG_MAJOR_VERSION_of(hw->ver) <= 3) {
+		if (!(rxd->rxd.flags & PCIE_DESC_RX_RSS))
+			return;
+
+		hash = rte_be_to_cpu_32(*(uint32_t *)NFP_HASH_OFFSET);
+		hash_type = rte_be_to_cpu_32(*(uint32_t *)NFP_HASH_TYPE_OFFSET);
+
+	} else if (NFP_DESC_META_LEN(rxd)) {
+		/*
+		 * new metadata api:
+		 * <----  32 bit  ----->
+		 * m    field type word
+		 * e     data field #2
+		 * t     data field #1
+		 * a     data field #0
+		 * ====================
+		 *    packet data
+		 *
+		 * Field type word contains up to 8 4bit field types
+		 * A 4bit field type refers to a data field word
+		 * A data field word can have several 4bit field types
+		 */
+		meta_offset = rte_pktmbuf_mtod(mbuf, uint8_t *);
+		meta_offset -= NFP_DESC_META_LEN(rxd);
+		meta_info = rte_be_to_cpu_32(*(uint32_t *)meta_offset);
+		meta_offset += 4;
+		/* NFP PMD just supports metadata for hashing */
+		switch (meta_info & NFP_NET_META_FIELD_MASK) {
+		case NFP_NET_META_HASH:
+			/* next field type is about the hash type */
+			meta_info >>= NFP_NET_META_FIELD_SIZE;
+			/* hash value is in the data field */
+			hash = rte_be_to_cpu_32(*(uint32_t *)meta_offset);
+			hash_type = meta_info & NFP_NET_META_FIELD_MASK;
+			break;
+		default:
+			/* Unsupported metadata can be a performance issue */
+			return;
+		}
+	} else {
 		return;
+	}
 
-	hash = rte_be_to_cpu_32(*(uint32_t *)NFP_HASH_OFFSET);
-	hash_type = rte_be_to_cpu_32(*(uint32_t *)NFP_HASH_TYPE_OFFSET);
-
-	/*
-	 * hash type is sharing the same word with input port info
-	 * 31-8: input port
-	 * 7:0: hash type
-	 */
-	hash_type &= 0xff;
 	mbuf->hash.rss = hash;
 	mbuf->ol_flags |= PKT_RX_RSS_HASH;
 
@@ -1620,29 +1923,6 @@ nfp_net_set_hash(struct nfp_net_rxq *rxq, struct nfp_net_rx_desc *rxd,
 	default:
 		mbuf->packet_type |= RTE_PTYPE_INNER_L4_MASK;
 	}
-}
-
-/* nfp_net_check_port - Set mbuf in_port field */
-static void
-nfp_net_check_port(struct nfp_net_rx_desc *rxd, struct rte_mbuf *mbuf)
-{
-	uint32_t port;
-
-	if (!(rxd->rxd.flags & PCIE_DESC_RX_INGRESS_PORT)) {
-		mbuf->port = 0;
-		return;
-	}
-
-	port = rte_be_to_cpu_32(*(uint32_t *)((uint8_t *)mbuf->buf_addr +
-					      mbuf->data_off - 8));
-
-	/*
-	 * hash type is sharing the same word with input port info
-	 * 31-8: input port
-	 * 7:0: hash type
-	 */
-	port = (uint8_t)(port >> 8);
-	mbuf->port = port;
 }
 
 static inline void
@@ -1690,7 +1970,6 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	struct nfp_net_hw *hw;
 	struct rte_mbuf *mb;
 	struct rte_mbuf *new_mb;
-	int idx;
 	uint16_t nb_hold;
 	uint64_t dma_addr;
 	int avail;
@@ -1701,7 +1980,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 * DPDK just checks the queue is lower than max queues
 		 * enabled. But the queue needs to be configured
 		 */
-		RTE_LOG(ERR, PMD, "RX Bad queue\n");
+		RTE_LOG_DP(ERR, PMD, "RX Bad queue\n");
 		return -EINVAL;
 	}
 
@@ -1710,11 +1989,9 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	nb_hold = 0;
 
 	while (avail < nb_pkts) {
-		idx = rxq->rd_p % rxq->rx_count;
-
-		rxb = &rxq->rxbufs[idx];
+		rxb = &rxq->rxbufs[rxq->rd_p];
 		if (unlikely(rxb == NULL)) {
-			RTE_LOG(ERR, PMD, "rxb does not exist!\n");
+			RTE_LOG_DP(ERR, PMD, "rxb does not exist!\n");
 			break;
 		}
 
@@ -1724,7 +2001,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 */
 		rte_rmb();
 
-		rxds = &rxq->rxds[idx];
+		rxds = &rxq->rxds[rxq->rd_p];
 		if ((rxds->rxd.meta_len_dd & PCIE_DESC_RX_DD) == 0)
 			break;
 
@@ -1734,9 +2011,9 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 */
 		new_mb = rte_pktmbuf_alloc(rxq->mem_pool);
 		if (unlikely(new_mb == NULL)) {
-			RTE_LOG(DEBUG, PMD, "RX mbuf alloc failed port_id=%u "
-				"queue_id=%u\n", (unsigned)rxq->port_id,
-				(unsigned)rxq->qidx);
+			RTE_LOG_DP(DEBUG, PMD,
+			"RX mbuf alloc failed port_id=%u queue_id=%u\n",
+				rxq->port_id, (unsigned int)rxq->qidx);
 			nfp_net_mbuf_alloc_failed(rxq);
 			break;
 		}
@@ -1765,7 +2042,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			 * responsibility of avoiding it. But we have
 			 * to give some info about the error
 			 */
-			RTE_LOG(ERR, PMD,
+			RTE_LOG_DP(ERR, PMD,
 				"mbuf overflow likely due to the RX offset.\n"
 				"\t\tYour mbuf size should have extra space for"
 				" RX offset=%u bytes.\n"
@@ -1794,13 +2071,10 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		/* Checking the checksum flag */
 		nfp_net_rx_cksum(rxq, rxds, mb);
 
-		/* Checking the port flag */
-		nfp_net_check_port(rxds, mb);
-
 		if ((rxds->rxd.flags & PCIE_DESC_RX_VLAN) &&
 		    (hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN)) {
 			mb->vlan_tci = rte_cpu_to_le_32(rxds->rxd.vlan);
-			mb->ol_flags |= PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED;
+			mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		}
 
 		/* Adding the mbuff to the mbuff array passed by the app */
@@ -1815,13 +2089,15 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxds->fld.dma_addr_lo = dma_addr & 0xffffffff;
 
 		rxq->rd_p++;
+		if (unlikely(rxq->rd_p == rxq->rx_count)) /* wrapping?*/
+			rxq->rd_p = 0;
 	}
 
 	if (nb_hold == 0)
 		return nb_hold;
 
 	PMD_RX_LOG(DEBUG, "RX  port_id=%u queue_id=%u, %d packets received\n",
-		   (unsigned)rxq->port_id, (unsigned)rxq->qidx, nb_hold);
+		   rxq->port_id, (unsigned int)rxq->qidx, nb_hold);
 
 	nb_hold += rxq->nb_rx_hold;
 
@@ -1832,7 +2108,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	rte_wmb();
 	if (nb_hold > rxq->rx_free_thresh) {
 		PMD_RX_LOG(DEBUG, "port=%u queue=%u nb_hold=%u avail=%u\n",
-			   (unsigned)rxq->port_id, (unsigned)rxq->qidx,
+			   rxq->port_id, (unsigned int)rxq->qidx,
 			   (unsigned)nb_hold, (unsigned)avail);
 		nfp_qcp_ptr_add(rxq->qcp_fl, NFP_QCP_WRITE_PTR, nb_hold);
 		nb_hold = 0;
@@ -1860,33 +2136,40 @@ nfp_net_tx_free_bufs(struct nfp_net_txq *txq)
 	/* Work out how many packets have been sent */
 	qcp_rd_p = nfp_qcp_read(txq->qcp_q, NFP_QCP_READ_PTR);
 
-	if (qcp_rd_p == txq->qcp_rd_p) {
+	if (qcp_rd_p == txq->rd_p) {
 		PMD_TX_LOG(DEBUG, "queue %u: It seems harrier is not sending "
 			   "packets (%u, %u)\n", txq->qidx,
-			   qcp_rd_p, txq->qcp_rd_p);
+			   qcp_rd_p, txq->rd_p);
 		return 0;
 	}
 
-	if (qcp_rd_p > txq->qcp_rd_p)
-		todo = qcp_rd_p - txq->qcp_rd_p;
+	if (qcp_rd_p > txq->rd_p)
+		todo = qcp_rd_p - txq->rd_p;
 	else
-		todo = qcp_rd_p + txq->tx_count - txq->qcp_rd_p;
+		todo = qcp_rd_p + txq->tx_count - txq->rd_p;
 
-	PMD_TX_LOG(DEBUG, "qcp_rd_p %u, txq->qcp_rd_p: %u, qcp->rd_p: %u\n",
-		   qcp_rd_p, txq->qcp_rd_p, txq->rd_p);
+	PMD_TX_LOG(DEBUG, "qcp_rd_p %u, txq->rd_p: %u, qcp->rd_p: %u\n",
+		   qcp_rd_p, txq->rd_p, txq->rd_p);
 
 	if (todo == 0)
 		return todo;
 
-	txq->qcp_rd_p += todo;
-	txq->qcp_rd_p %= txq->tx_count;
 	txq->rd_p += todo;
+	if (unlikely(txq->rd_p >= txq->tx_count))
+		txq->rd_p -= txq->tx_count;
 
 	return todo;
 }
 
 /* Leaving always free descriptors for avoiding wrapping confusion */
-#define NFP_FREE_TX_DESC(t) (t->tx_count - (t->wr_p - t->rd_p) - 8)
+static inline
+uint32_t nfp_free_tx_desc(struct nfp_net_txq *txq)
+{
+	if (txq->wr_p >= txq->rd_p)
+		return txq->tx_count - (txq->wr_p - txq->rd_p) - 8;
+	else
+		return txq->rd_p - txq->wr_p - 8;
+}
 
 /*
  * nfp_net_txq_full - Check if the TX queue free descriptors
@@ -1897,9 +2180,9 @@ nfp_net_tx_free_bufs(struct nfp_net_txq *txq)
  * This function uses the host copy* of read/write pointers
  */
 static inline
-int nfp_net_txq_full(struct nfp_net_txq *txq)
+uint32_t nfp_net_txq_full(struct nfp_net_txq *txq)
 {
-	return NFP_FREE_TX_DESC(txq) < txq->tx_free_thresh;
+	return (nfp_free_tx_desc(txq) < txq->tx_free_thresh);
 }
 
 static uint16_t
@@ -1907,7 +2190,7 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
 	struct nfp_net_txq *txq;
 	struct nfp_net_hw *hw;
-	struct nfp_net_tx_desc *txds;
+	struct nfp_net_tx_desc *txds, txd;
 	struct rte_mbuf *pkt;
 	uint64_t dma_addr;
 	int pkt_size, dma_size;
@@ -1917,15 +2200,15 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 	txq = tx_queue;
 	hw = txq->hw;
-	txds = &txq->txds[txq->tail];
+	txds = &txq->txds[txq->wr_p];
 
 	PMD_TX_LOG(DEBUG, "working for queue %u at pos %d and %u packets\n",
-		   txq->qidx, txq->tail, nb_pkts);
+		   txq->qidx, txq->wr_p, nb_pkts);
 
-	if ((NFP_FREE_TX_DESC(txq) < nb_pkts) || (nfp_net_txq_full(txq)))
+	if ((nfp_free_tx_desc(txq) < nb_pkts) || (nfp_net_txq_full(txq)))
 		nfp_net_tx_free_bufs(txq);
 
-	free_descs = (uint16_t)NFP_FREE_TX_DESC(txq);
+	free_descs = (uint16_t)nfp_free_tx_desc(txq);
 	if (unlikely(free_descs == 0))
 		return 0;
 
@@ -1938,7 +2221,7 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	/* Sending packets */
 	while ((i < nb_pkts) && free_descs) {
 		/* Grabbing the mbuf linked to the current descriptor */
-		lmbuf = &txq->txbufs[txq->tail].mbuf;
+		lmbuf = &txq->txbufs[txq->wr_p].mbuf;
 		/* Warming the cache for releasing the mbuf later on */
 		RTE_MBUF_PREFETCH_TO_FREE(*lmbuf);
 
@@ -1946,7 +2229,7 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		if (unlikely((pkt->nb_segs > 1) &&
 			     !(hw->cap & NFP_NET_CFG_CTRL_GATHER))) {
-			PMD_INIT_LOG(INFO, "NFP_NET_CFG_CTRL_GATHER not set\n");
+			PMD_INIT_LOG(INFO, "NFP_NET_CFG_CTRL_GATHER not set");
 			rte_panic("Multisegment packet unsupported\n");
 		}
 
@@ -1956,18 +2239,17 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		/*
 		 * Checksum and VLAN flags just in the first descriptor for a
-		 * multisegment packet
+		 * multisegment packet, but TSO info needs to be in all of them.
 		 */
-		nfp_net_tx_cksum(txq, txds, pkt);
+		txd.data_len = pkt->pkt_len;
+		nfp_net_tx_tso(txq, &txd, pkt);
+		nfp_net_tx_cksum(txq, &txd, pkt);
 
 		if ((pkt->ol_flags & PKT_TX_VLAN_PKT) &&
 		    (hw->cap & NFP_NET_CFG_CTRL_TXVLAN)) {
-			txds->flags |= PCIE_DESC_TX_VLAN;
-			txds->vlan = pkt->vlan_tci;
+			txd.flags |= PCIE_DESC_TX_VLAN;
+			txd.vlan = pkt->vlan_tci;
 		}
-
-		if (pkt->ol_flags & PKT_TX_TCP_SEG)
-			rte_panic("TSO is not supported\n");
 
 		/*
 		 * mbuf data_len is the data in one segment and pkt_len data
@@ -1976,44 +2258,48 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 */
 		pkt_size = pkt->pkt_len;
 
-		/* Releasing mbuf which was prefetched above */
-		if (*lmbuf)
-			rte_pktmbuf_free(*lmbuf);
-		/*
-		 * Linking mbuf with descriptor for being released
-		 * next time descriptor is used
-		 */
-		*lmbuf = pkt;
+		while (pkt) {
+			/* Copying TSO, VLAN and cksum info */
+			*txds = txd;
 
-		while (pkt_size) {
+			/* Releasing mbuf used by this descriptor previously*/
+			if (*lmbuf)
+				rte_pktmbuf_free_seg(*lmbuf);
+
+			/*
+			 * Linking mbuf with descriptor for being released
+			 * next time descriptor is used
+			 */
+			*lmbuf = pkt;
+
 			dma_size = pkt->data_len;
-			dma_addr = rte_mbuf_data_dma_addr(pkt);
+			dma_addr = rte_mbuf_data_iova(pkt);
 			PMD_TX_LOG(DEBUG, "Working with mbuf at dma address:"
 				   "%" PRIx64 "\n", dma_addr);
 
 			/* Filling descriptors fields */
 			txds->dma_len = dma_size;
-			txds->data_len = pkt->pkt_len;
+			txds->data_len = txd.data_len;
 			txds->dma_addr_hi = (dma_addr >> 32) & 0xff;
 			txds->dma_addr_lo = (dma_addr & 0xffffffff);
 			ASSERT(free_descs > 0);
 			free_descs--;
 
 			txq->wr_p++;
-			txq->tail++;
-			if (unlikely(txq->tail == txq->tx_count)) /* wrapping?*/
-				txq->tail = 0;
+			if (unlikely(txq->wr_p == txq->tx_count)) /* wrapping?*/
+				txq->wr_p = 0;
 
 			pkt_size -= dma_size;
-			if (!pkt_size) {
+			if (!pkt_size)
 				/* End of packet */
 				txds->offset_eop |= PCIE_DESC_TX_EOP;
-			} else {
+			else
 				txds->offset_eop &= PCIE_DESC_TX_OFFSET_MASK;
-				pkt = pkt->next;
-			}
+
+			pkt = pkt->next;
 			/* Referencing next free TX descriptor */
-			txds = &txq->txds[txq->tail];
+			txds = &txq->txds[txq->wr_p];
+			lmbuf = &txq->txbufs[txq->wr_p].mbuf;
 			issued_descs++;
 		}
 		i++;
@@ -2027,19 +2313,20 @@ xmit_end:
 	return i;
 }
 
-static void
+static int
 nfp_net_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	uint32_t new_ctrl, update;
 	struct nfp_net_hw *hw;
+	int ret;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	new_ctrl = 0;
 
 	if ((mask & ETH_VLAN_FILTER_OFFLOAD) ||
-	    (mask & ETH_VLAN_FILTER_OFFLOAD))
-		RTE_LOG(INFO, PMD, "Not support for ETH_VLAN_FILTER_OFFLOAD or"
-			" ETH_VLAN_FILTER_EXTEND");
+	    (mask & ETH_VLAN_EXTEND_OFFLOAD))
+		RTE_LOG(INFO, PMD, "No support for ETH_VLAN_FILTER_OFFLOAD or"
+			" ETH_VLAN_EXTEND_OFFLOAD");
 
 	/* Enable vlan strip if it is not configured yet */
 	if ((mask & ETH_VLAN_STRIP_OFFLOAD) &&
@@ -2052,14 +2339,15 @@ nfp_net_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 		new_ctrl = hw->ctrl & ~NFP_NET_CFG_CTRL_RXVLAN;
 
 	if (new_ctrl == 0)
-		return;
+		return 0;
 
 	update = NFP_NET_CFG_UPDATE_GEN;
 
-	if (nfp_net_reconfig(hw, new_ctrl, update) < 0)
-		return;
+	ret = nfp_net_reconfig(hw, new_ctrl, update);
+	if (!ret)
+		hw->ctrl = new_ctrl;
 
-	hw->ctrl = new_ctrl;
+	return ret;
 }
 
 /* Update Redirection Table(RETA) of Receive Side Scaling of Ethernet device */
@@ -2111,7 +2399,8 @@ nfp_net_reta_update(struct rte_eth_dev *dev,
 				reta &= ~(0xFF << (8 * j));
 			reta |= reta_conf[idx].reta[shift + j] << (8 * j);
 		}
-		nn_cfg_writel(hw, NFP_NET_CFG_RSS_ITBL + shift, reta);
+		nn_cfg_writel(hw, NFP_NET_CFG_RSS_ITBL + (idx * 64) + shift,
+			      reta);
 	}
 
 	update = NFP_NET_CFG_UPDATE_RSS;
@@ -2158,7 +2447,8 @@ nfp_net_reta_query(struct rte_eth_dev *dev,
 		if (!mask)
 			continue;
 
-		reta = nn_cfg_readl(hw, NFP_NET_CFG_RSS_ITBL + shift);
+		reta = nn_cfg_readl(hw, NFP_NET_CFG_RSS_ITBL + (idx * 64) +
+				    shift);
 		for (j = 0; j < 4; j++) {
 			if (!(mask & (0x1 << j)))
 				continue;
@@ -2207,6 +2497,9 @@ nfp_net_rss_hash_update(struct rte_eth_dev *dev,
 		cfg_rss_ctrl |= NFP_NET_CFG_RSS_IPV6 |
 				NFP_NET_CFG_RSS_IPV6_TCP |
 				NFP_NET_CFG_RSS_IPV6_UDP;
+
+	cfg_rss_ctrl |= NFP_NET_CFG_RSS_MASK;
+	cfg_rss_ctrl |= NFP_NET_CFG_RSS_TOEPLITZ;
 
 	/* configuring where to apply the RSS hash */
 	nn_cfg_writel(hw, NFP_NET_CFG_RSS_CTRL, cfg_rss_ctrl);
@@ -2300,21 +2593,80 @@ static const struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.rx_queue_count		= nfp_net_rx_queue_count,
 	.tx_queue_setup		= nfp_net_tx_queue_setup,
 	.tx_queue_release	= nfp_net_tx_queue_release,
+	.rx_queue_intr_enable   = nfp_rx_queue_intr_enable,
+	.rx_queue_intr_disable  = nfp_rx_queue_intr_disable,
 };
+
+/*
+ * All eth_dev created got its private data, but before nfp_net_init, that
+ * private data is referencing private data for all the PF ports. This is due
+ * to how the vNIC bars are mapped based on first port, so all ports need info
+ * about port 0 private data. Inside nfp_net_init the private data pointer is
+ * changed to the right address for each port once the bars have been mapped.
+ *
+ * This functions helps to find out which port and therefore which offset
+ * inside the private data array to use.
+ */
+static int
+get_pf_port_number(char *name)
+{
+	char *pf_str = name;
+	int size = 0;
+
+	while ((*pf_str != '_') && (*pf_str != '\0') && (size++ < 30))
+		pf_str++;
+
+	if (size == 30)
+		/*
+		 * This should not happen at all and it would mean major
+		 * implementation fault.
+		 */
+		rte_panic("nfp_net: problem with pf device name\n");
+
+	/* Expecting _portX with X within [0,7] */
+	pf_str += 5;
+
+	return (int)strtol(pf_str, NULL, 10);
+}
 
 static int
 nfp_net_init(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev;
-	struct nfp_net_hw *hw;
+	struct nfp_net_hw *hw, *hwport0;
 
-	uint32_t tx_bar_off, rx_bar_off;
+	uint64_t tx_bar_off = 0, rx_bar_off = 0;
 	uint32_t start_q;
 	int stride = 4;
 
+	nspu_desc_t *nspu_desc = NULL;
+	uint64_t bar_offset;
+	int port = 0;
+
 	PMD_INIT_FUNC_TRACE();
 
-	hw = NFP_NET_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+
+	if ((pci_dev->id.device_id == PCI_DEVICE_ID_NFP4000_PF_NIC) ||
+	    (pci_dev->id.device_id == PCI_DEVICE_ID_NFP6000_PF_NIC)) {
+		port = get_pf_port_number(eth_dev->data->name);
+		if (port < 0 || port > 7) {
+			RTE_LOG(ERR, PMD, "Port value is wrong\n");
+			return -ENODEV;
+		}
+
+		PMD_INIT_LOG(DEBUG, "Working with PF port value %d\n", port);
+
+		/* This points to port 0 private data */
+		hwport0 = NFP_NET_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+
+		/* This points to the specific port private data */
+		hw = &hwport0[port];
+		hw->pf_port_idx = port;
+	} else {
+		hw = NFP_NET_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+		hwport0 = 0;
+	}
 
 	eth_dev->dev_ops = &nfp_net_eth_dev_ops;
 	eth_dev->rx_pkt_burst = &nfp_net_recv_pkts;
@@ -2324,7 +2676,6 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	pci_dev = eth_dev->pci_dev;
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	hw->device_id = pci_dev->id.device_id;
@@ -2332,7 +2683,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
 	hw->subsystem_vendor_id = pci_dev->id.subsystem_vendor_id;
 
-	PMD_INIT_LOG(DEBUG, "nfp_net: device (%u:%u) %u:%u:%u:%u\n",
+	PMD_INIT_LOG(DEBUG, "nfp_net: device (%u:%u) %u:%u:%u:%u",
 		     pci_dev->id.vendor_id, pci_dev->id.device_id,
 		     pci_dev->addr.domain, pci_dev->addr.bus,
 		     pci_dev->addr.devid, pci_dev->addr.function);
@@ -2343,11 +2694,42 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 			"hw->ctrl_bar is NULL. BAR0 not configured\n");
 		return -ENODEV;
 	}
+
+	if (hw->is_pf && port == 0) {
+		nspu_desc = hw->nspu_desc;
+
+		if (nfp_nsp_map_ctrl_bar(nspu_desc, &bar_offset) != 0) {
+			/*
+			 * A firmware should be there after PF probe so this
+			 * should not happen.
+			 */
+			RTE_LOG(ERR, PMD, "PF BAR symbol resolution failed\n");
+			return -ENODEV;
+		}
+
+		/* vNIC PF control BAR is a subset of PF PCI device BAR */
+		hw->ctrl_bar += bar_offset;
+		PMD_INIT_LOG(DEBUG, "ctrl bar: %p\n", hw->ctrl_bar);
+	}
+
+	if (port > 0) {
+		if (!hwport0->ctrl_bar)
+			return -ENODEV;
+
+		/* address based on port0 offset */
+		hw->ctrl_bar = hwport0->ctrl_bar +
+			       (port * NFP_PF_CSR_SLICE_SIZE);
+	}
+
+	PMD_INIT_LOG(DEBUG, "ctrl bar: %p\n", hw->ctrl_bar);
+
 	hw->max_rx_queues = nn_cfg_readl(hw, NFP_NET_CFG_MAX_RXRINGS);
 	hw->max_tx_queues = nn_cfg_readl(hw, NFP_NET_CFG_MAX_TXRINGS);
 
 	/* Work out where in the BAR the queues start. */
 	switch (pci_dev->id.device_id) {
+	case PCI_DEVICE_ID_NFP4000_PF_NIC:
+	case PCI_DEVICE_ID_NFP6000_PF_NIC:
 	case PCI_DEVICE_ID_NFP6000_VF_NIC:
 		start_q = nn_cfg_readl(hw, NFP_NET_CFG_START_TXQ);
 		tx_bar_off = NFP_PCIE_QUEUE(start_q);
@@ -2359,13 +2741,36 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 		return -ENODEV;
 	}
 
-	PMD_INIT_LOG(DEBUG, "tx_bar_off: 0x%08x\n", tx_bar_off);
-	PMD_INIT_LOG(DEBUG, "rx_bar_off: 0x%08x\n", rx_bar_off);
+	PMD_INIT_LOG(DEBUG, "tx_bar_off: 0x%" PRIx64 "\n", tx_bar_off);
+	PMD_INIT_LOG(DEBUG, "rx_bar_off: 0x%" PRIx64 "\n", rx_bar_off);
 
-	hw->tx_bar = (uint8_t *)pci_dev->mem_resource[2].addr + tx_bar_off;
-	hw->rx_bar = (uint8_t *)pci_dev->mem_resource[2].addr + rx_bar_off;
+	if (hw->is_pf && port == 0) {
+		/* configure access to tx/rx vNIC BARs */
+		nfp_nsp_map_queues_bar(nspu_desc, &bar_offset);
+		PMD_INIT_LOG(DEBUG, "tx/rx bar_offset: %" PRIx64 "\n",
+				    bar_offset);
+		hwport0->hw_queues = (uint8_t *)pci_dev->mem_resource[0].addr;
 
-	PMD_INIT_LOG(DEBUG, "ctrl_bar: %p, tx_bar: %p, rx_bar: %p\n",
+		/* vNIC PF tx/rx BARs are a subset of PF PCI device */
+		hwport0->hw_queues += bar_offset;
+
+		/* Lets seize the chance to read eth table from hw */
+		if (nfp_nsp_eth_read_table(nspu_desc, &hw->eth_table))
+			return -ENODEV;
+	}
+
+	if (hw->is_pf) {
+		hw->tx_bar = hwport0->hw_queues + tx_bar_off;
+		hw->rx_bar = hwport0->hw_queues + rx_bar_off;
+		eth_dev->data->dev_private = hw;
+	} else {
+		hw->tx_bar = (uint8_t *)pci_dev->mem_resource[2].addr +
+			     tx_bar_off;
+		hw->rx_bar = (uint8_t *)pci_dev->mem_resource[2].addr +
+			     rx_bar_off;
+	}
+
+	PMD_INIT_LOG(DEBUG, "ctrl_bar: %p, tx_bar: %p, rx_bar: %p",
 		     hw->ctrl_bar, hw->tx_bar, hw->rx_bar);
 
 	nfp_net_cfg_queue_setup(hw);
@@ -2374,17 +2779,19 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	hw->ver = nn_cfg_readl(hw, NFP_NET_CFG_VERSION);
 	hw->cap = nn_cfg_readl(hw, NFP_NET_CFG_CAP);
 	hw->max_mtu = nn_cfg_readl(hw, NFP_NET_CFG_MAX_MTU);
-	hw->mtu = hw->max_mtu;
+	hw->mtu = ETHER_MTU;
 
 	if (NFD_CFG_MAJOR_VERSION_of(hw->ver) < 2)
 		hw->rx_offset = NFP_NET_RX_OFFSET;
 	else
 		hw->rx_offset = nn_cfg_readl(hw, NFP_NET_CFG_RX_OFFSET_ADDR);
 
-	PMD_INIT_LOG(INFO, "VER: %#x, Maximum supported MTU: %d\n",
+	PMD_INIT_LOG(INFO, "VER: %#x, Maximum supported MTU: %d",
 		     hw->ver, hw->max_mtu);
-	PMD_INIT_LOG(INFO, "CAP: %#x, %s%s%s%s%s%s%s%s%s\n", hw->cap,
+	PMD_INIT_LOG(INFO, "CAP: %#x, %s%s%s%s%s%s%s%s%s%s%s", hw->cap,
 		     hw->cap & NFP_NET_CFG_CTRL_PROMISC ? "PROMISC " : "",
+		     hw->cap & NFP_NET_CFG_CTRL_L2BC    ? "L2BCFILT " : "",
+		     hw->cap & NFP_NET_CFG_CTRL_L2MC    ? "L2MCFILT " : "",
 		     hw->cap & NFP_NET_CFG_CTRL_RXCSUM  ? "RXCSUM "  : "",
 		     hw->cap & NFP_NET_CFG_CTRL_TXCSUM  ? "TXCSUM "  : "",
 		     hw->cap & NFP_NET_CFG_CTRL_RXVLAN  ? "RXVLAN "  : "",
@@ -2394,13 +2801,12 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 		     hw->cap & NFP_NET_CFG_CTRL_LSO     ? "TSO "     : "",
 		     hw->cap & NFP_NET_CFG_CTRL_RSS     ? "RSS "     : "");
 
-	pci_dev = eth_dev->pci_dev;
 	hw->ctrl = 0;
 
 	hw->stride_rx = stride;
 	hw->stride_tx = stride;
 
-	PMD_INIT_LOG(INFO, "max_rx_queues: %u, max_tx_queues: %u\n",
+	PMD_INIT_LOG(INFO, "max_rx_queues: %u, max_tx_queues: %u",
 		     hw->max_rx_queues, hw->max_tx_queues);
 
 	/* Initializing spinlock for reconfigs */
@@ -2413,8 +2819,18 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 		return -ENOMEM;
 	}
 
-	/* Using random mac addresses for VFs */
-	eth_random_addr(&hw->mac_addr[0]);
+	if (hw->is_pf) {
+		nfp_net_pf_read_mac(hwport0, port);
+		nfp_net_write_mac(hw, (uint8_t *)&hw->mac_addr);
+	} else {
+		nfp_net_vf_read_mac(hw);
+	}
+
+	if (!is_valid_assigned_ether_addr((struct ether_addr *)&hw->mac_addr)) {
+		/* Using random mac addresses for VFs */
+		eth_random_addr(&hw->mac_addr[0]);
+		nfp_net_write_mac(hw, (uint8_t *)&hw->mac_addr);
+	}
 
 	/* Copying mac address to DPDK eth_dev struct */
 	ether_addr_copy((struct ether_addr *)hw->mac_addr,
@@ -2432,9 +2848,6 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 				   nfp_net_dev_interrupt_handler,
 				   (void *)eth_dev);
 
-	/* enable uio intr after callback register */
-	rte_intr_enable(&pci_dev->intr_handle);
-
 	/* Telling the firmware about the LSC interrupt entry */
 	nn_cfg_writeb(hw, NFP_NET_CFG_LSC, NFP_NET_IRQ_LSC_IDX);
 
@@ -2444,11 +2857,153 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
-static struct rte_pci_id pci_id_nfp_net_map[] = {
+static int
+nfp_pf_create_dev(struct rte_pci_device *dev, int port, int ports,
+		  nfpu_desc_t *nfpu_desc, void **priv)
+{
+	struct rte_eth_dev *eth_dev;
+	struct nfp_net_hw *hw;
+	char *port_name;
+	int ret;
+
+	port_name = rte_zmalloc("nfp_pf_port_name", 100, 0);
+	if (!port_name)
+		return -ENOMEM;
+
+	if (ports > 1)
+		sprintf(port_name, "%s_port%d", dev->device.name, port);
+	else
+		sprintf(port_name, "%s", dev->device.name);
+
+	eth_dev = rte_eth_dev_allocate(port_name);
+	if (!eth_dev)
+		return -ENOMEM;
+
+	if (port == 0) {
+		*priv = rte_zmalloc(port_name,
+				    sizeof(struct nfp_net_adapter) * ports,
+				    RTE_CACHE_LINE_SIZE);
+		if (!*priv) {
+			rte_eth_dev_release_port(eth_dev);
+			return -ENOMEM;
+		}
+	}
+
+	eth_dev->data->dev_private = *priv;
+
+	/*
+	 * dev_private pointing to port0 dev_private because we need
+	 * to configure vNIC bars based on port0 at nfp_net_init.
+	 * Then dev_private is adjusted per port.
+	 */
+	hw = (struct nfp_net_hw *)(eth_dev->data->dev_private) + port;
+	hw->nspu_desc = nfpu_desc->nspu;
+	hw->nfpu_desc = nfpu_desc;
+	hw->is_pf = 1;
+	if (ports > 1)
+		hw->pf_multiport_enabled = 1;
+
+	eth_dev->device = &dev->device;
+	rte_eth_copy_pci_info(eth_dev, dev);
+
+	ret = nfp_net_init(eth_dev);
+
+	if (ret)
+		rte_eth_dev_release_port(eth_dev);
+
+	rte_free(port_name);
+
+	return ret;
+}
+
+static int nfp_pf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
+			    struct rte_pci_device *dev)
+{
+	nfpu_desc_t *nfpu_desc;
+	nspu_desc_t *nspu_desc;
+	uint64_t offset_symbol;
+	uint8_t *bar_offset;
+	int major, minor;
+	int total_ports;
+	void *priv = 0;
+	int ret = -ENODEV;
+	int i;
+
+	if (!dev)
+		return ret;
+
+	nfpu_desc = rte_malloc("nfp nfpu", sizeof(nfpu_desc_t), 0);
+	if (!nfpu_desc)
+		return -ENOMEM;
+
+	if (nfpu_open(dev, nfpu_desc, 0) < 0) {
+		RTE_LOG(ERR, PMD,
+			"nfpu_open failed\n");
+		goto nfpu_error;
+	}
+
+	nspu_desc = nfpu_desc->nspu;
+
+
+	/* Check NSP ABI version */
+	if (nfp_nsp_get_abi_version(nspu_desc, &major, &minor) < 0) {
+		RTE_LOG(INFO, PMD, "NFP NSP not present\n");
+		goto error;
+	}
+	PMD_INIT_LOG(INFO, "nspu ABI version: %d.%d\n", major, minor);
+
+	if ((major == 0) && (minor < 20)) {
+		RTE_LOG(INFO, PMD, "NFP NSP ABI version too old. Required 0.20 or higher\n");
+		goto error;
+	}
+
+	ret = nfp_nsp_fw_setup(nspu_desc, "nfd_cfg_pf0_num_ports",
+			       &offset_symbol);
+	if (ret)
+		goto error;
+
+	bar_offset = (uint8_t *)dev->mem_resource[0].addr;
+	bar_offset += offset_symbol;
+	total_ports = (uint32_t)*bar_offset;
+	PMD_INIT_LOG(INFO, "Total pf ports: %d\n", total_ports);
+
+	if (total_ports <= 0 || total_ports > 8) {
+		RTE_LOG(ERR, PMD, "nfd_cfg_pf0_num_ports symbol with wrong value");
+		ret = -ENODEV;
+		goto error;
+	}
+
+	for (i = 0; i < total_ports; i++) {
+		ret = nfp_pf_create_dev(dev, i, total_ports, nfpu_desc, &priv);
+		if (ret)
+			goto error;
+	}
+
+	return 0;
+
+error:
+	nfpu_close(nfpu_desc);
+nfpu_error:
+	rte_free(nfpu_desc);
+
+	return ret;
+}
+
+static const struct rte_pci_id pci_id_nfp_pf_net_map[] = {
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
+			       PCI_DEVICE_ID_NFP4000_PF_NIC)
+	},
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
 			       PCI_DEVICE_ID_NFP6000_PF_NIC)
 	},
+	{
+		.vendor_id = 0,
+	},
+};
+
+static const struct rte_pci_id pci_id_nfp_vf_net_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
 			       PCI_DEVICE_ID_NFP6000_VF_NIC)
@@ -2458,36 +3013,54 @@ static struct rte_pci_id pci_id_nfp_net_map[] = {
 	},
 };
 
-static struct eth_driver rte_nfp_net_pmd = {
-	{
-		.name = "rte_nfp_net_pmd",
-		.id_table = pci_id_nfp_net_map,
-		.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
-			     RTE_PCI_DRV_DETACHABLE,
-	},
-	.eth_dev_init = nfp_net_init,
-	.dev_private_size = sizeof(struct nfp_net_adapter),
-};
-
-static int
-nfp_net_pmd_init(const char *name __rte_unused,
-		 const char *params __rte_unused)
+static int eth_nfp_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
+	struct rte_pci_device *pci_dev)
 {
-	PMD_INIT_FUNC_TRACE();
-	PMD_INIT_LOG(INFO, "librte_pmd_nfp_net version %s\n",
-		     NFP_NET_PMD_VERSION);
-
-	rte_eth_driver_register(&rte_nfp_net_pmd);
-	return 0;
+	return rte_eth_dev_pci_generic_probe(pci_dev,
+		sizeof(struct nfp_net_adapter), nfp_net_init);
 }
 
-static struct rte_driver rte_nfp_net_driver = {
-	.type = PMD_PDEV,
-	.init = nfp_net_pmd_init,
+static int eth_nfp_pci_remove(struct rte_pci_device *pci_dev)
+{
+	struct rte_eth_dev *eth_dev;
+	struct nfp_net_hw *hw, *hwport0;
+	int port = 0;
+
+	eth_dev = rte_eth_dev_allocated(pci_dev->device.name);
+	if ((pci_dev->id.device_id == PCI_DEVICE_ID_NFP4000_PF_NIC) ||
+	    (pci_dev->id.device_id == PCI_DEVICE_ID_NFP6000_PF_NIC)) {
+		port = get_pf_port_number(eth_dev->data->name);
+		hwport0 = NFP_NET_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+		hw = &hwport0[port];
+	} else {
+		hw = NFP_NET_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+	}
+	/* hotplug is not possible with multiport PF */
+	if (hw->pf_multiport_enabled)
+		return -ENOTSUP;
+	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+}
+
+static struct rte_pci_driver rte_nfp_net_pf_pmd = {
+	.id_table = pci_id_nfp_pf_net_map,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.probe = nfp_pf_pci_probe,
+	.remove = eth_nfp_pci_remove,
 };
 
-PMD_REGISTER_DRIVER(rte_nfp_net_driver, nfp);
-DRIVER_REGISTER_PCI_TABLE(nfp, pci_id_nfp_net_map);
+static struct rte_pci_driver rte_nfp_net_vf_pmd = {
+	.id_table = pci_id_nfp_vf_net_map,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.probe = eth_nfp_pci_probe,
+	.remove = eth_nfp_pci_remove,
+};
+
+RTE_PMD_REGISTER_PCI(net_nfp_pf, rte_nfp_net_pf_pmd);
+RTE_PMD_REGISTER_PCI(net_nfp_vf, rte_nfp_net_vf_pmd);
+RTE_PMD_REGISTER_PCI_TABLE(net_nfp_pf, pci_id_nfp_pf_net_map);
+RTE_PMD_REGISTER_PCI_TABLE(net_nfp_vf, pci_id_nfp_vf_net_map);
+RTE_PMD_REGISTER_KMOD_DEP(net_nfp_pf, "* igb_uio | uio_pci_generic | vfio");
+RTE_PMD_REGISTER_KMOD_DEP(net_nfp_vf, "* igb_uio | uio_pci_generic | vfio");
 
 /*
  * Local variables:

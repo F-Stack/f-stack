@@ -35,8 +35,10 @@
 #ifndef _VNIC_DEV_H_
 #define _VNIC_DEV_H_
 
+#include <rte_pci.h>
+#include <rte_bus_pci.h>
+
 #include "enic_compat.h"
-#include "rte_pci.h"
 #include "vnic_resource.h"
 #include "vnic_devcmd.h"
 
@@ -134,6 +136,10 @@ void vnic_dev_cmd_proxy_by_bdf_start(struct vnic_dev *vdev, u16 bdf);
 void vnic_dev_cmd_proxy_end(struct vnic_dev *vdev);
 int vnic_dev_fw_info(struct vnic_dev *vdev,
 	struct vnic_devcmd_fw_info **fw_info);
+int vnic_dev_capable_adv_filters(struct vnic_dev *vdev);
+int vnic_dev_capable(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd);
+int vnic_dev_capable_filter_mode(struct vnic_dev *vdev, u32 *mode,
+				 u8 *filter_tags);
 int vnic_dev_asic_info(struct vnic_dev *vdev, u16 *asic_type, u16 *asic_rev);
 int vnic_dev_spec(struct vnic_dev *vdev, unsigned int offset, size_t size,
 	void *value);
@@ -201,7 +207,7 @@ int vnic_dev_enable2_done(struct vnic_dev *vdev, int *status);
 int vnic_dev_deinit_done(struct vnic_dev *vdev, int *status);
 int vnic_dev_set_mac_addr(struct vnic_dev *vdev, u8 *mac_addr);
 int vnic_dev_classifier(struct vnic_dev *vdev, u8 cmd, u16 *entry,
-	struct filter *data);
+	struct filter_v2 *data, struct filter_action_v2 *action_v2);
 #ifdef ENIC_VXLAN
 int vnic_dev_overlay_offload_enable_disable(struct vnic_dev *vdev,
 	u8 overlay, u8 config);

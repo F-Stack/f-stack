@@ -46,7 +46,6 @@
 #include <rte_lcore.h>
 #include <rte_log.h>
 #include <rte_errno.h>
-#include <rte_pci.h>
 
 #include "rte_pdump.h"
 
@@ -140,7 +139,7 @@ pdump_pktmbuf_copy(struct rte_mbuf *m, struct rte_mempool *mp)
 {
 	struct rte_mbuf *m_dup, *seg, **prev;
 	uint32_t pktlen;
-	uint8_t nseg;
+	uint16_t nseg;
 
 	m_dup = rte_pktmbuf_alloc(mp);
 	if (unlikely(m_dup == NULL))
@@ -154,6 +153,8 @@ pdump_pktmbuf_copy(struct rte_mbuf *m, struct rte_mempool *mp)
 	do {
 		nseg++;
 		if (pdump_pktmbuf_copy_data(seg, m) < 0) {
+			if (seg != m_dup)
+				rte_pktmbuf_free_seg(seg);
 			rte_pktmbuf_free(m_dup);
 			return NULL;
 		}
@@ -197,7 +198,7 @@ pdump_copy(struct rte_mbuf **pkts, uint16_t nb_pkts, void *user_params)
 			dup_bufs[d_pkts++] = p;
 	}
 
-	ring_enq = rte_ring_enqueue_burst(ring, (void *)dup_bufs, d_pkts);
+	ring_enq = rte_ring_enqueue_burst(ring, (void *)dup_bufs, d_pkts, NULL);
 	if (unlikely(ring_enq < d_pkts)) {
 		RTE_LOG(DEBUG, PDUMP,
 			"only %d of packets enqueued to ring\n", ring_enq);
@@ -208,7 +209,7 @@ pdump_copy(struct rte_mbuf **pkts, uint16_t nb_pkts, void *user_params)
 }
 
 static uint16_t
-pdump_rx(uint8_t port __rte_unused, uint16_t qidx __rte_unused,
+pdump_rx(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
 	struct rte_mbuf **pkts, uint16_t nb_pkts,
 	uint16_t max_pkts __rte_unused,
 	void *user_params)
@@ -218,7 +219,7 @@ pdump_rx(uint8_t port __rte_unused, uint16_t qidx __rte_unused,
 }
 
 static uint16_t
-pdump_tx(uint8_t port __rte_unused, uint16_t qidx __rte_unused,
+pdump_tx(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
 		struct rte_mbuf **pkts, uint16_t nb_pkts, void *user_params)
 {
 	pdump_copy(pkts, nb_pkts, user_params);
@@ -226,30 +227,7 @@ pdump_tx(uint8_t port __rte_unused, uint16_t qidx __rte_unused,
 }
 
 static int
-pdump_get_dombdf(char *device_id, char *domBDF, size_t len)
-{
-	int ret;
-	struct rte_pci_addr dev_addr = {0};
-
-	/* identify if device_id is pci address or name */
-	ret = eal_parse_pci_DomBDF(device_id, &dev_addr);
-	if (ret < 0)
-		return -1;
-
-	if (dev_addr.domain)
-		ret = snprintf(domBDF, len, "%u:%u:%u.%u", dev_addr.domain,
-				dev_addr.bus, dev_addr.devid,
-				dev_addr.function);
-	else
-		ret = snprintf(domBDF, len, "%u:%u.%u", dev_addr.bus,
-				dev_addr.devid,
-				dev_addr.function);
-
-	return ret;
-}
-
-static int
-pdump_regitser_rx_callbacks(uint16_t end_q, uint8_t port, uint16_t queue,
+pdump_register_rx_callbacks(uint16_t end_q, uint16_t port, uint16_t queue,
 				struct rte_ring *ring, struct rte_mempool *mp,
 				uint16_t operation)
 {
@@ -292,7 +270,7 @@ pdump_regitser_rx_callbacks(uint16_t end_q, uint8_t port, uint16_t queue,
 			if (ret < 0) {
 				RTE_LOG(ERR, PDUMP,
 					"failed to remove rx callback, errno=%d\n",
-					rte_errno);
+					-ret);
 				return ret;
 			}
 			cbs->cb = NULL;
@@ -303,7 +281,7 @@ pdump_regitser_rx_callbacks(uint16_t end_q, uint8_t port, uint16_t queue,
 }
 
 static int
-pdump_regitser_tx_callbacks(uint16_t end_q, uint8_t port, uint16_t queue,
+pdump_register_tx_callbacks(uint16_t end_q, uint16_t port, uint16_t queue,
 				struct rte_ring *ring, struct rte_mempool *mp,
 				uint16_t operation)
 {
@@ -347,7 +325,7 @@ pdump_regitser_tx_callbacks(uint16_t end_q, uint8_t port, uint16_t queue,
 			if (ret < 0) {
 				RTE_LOG(ERR, PDUMP,
 					"failed to remove tx callback, errno=%d\n",
-					rte_errno);
+					-ret);
 				return ret;
 			}
 			cbs->cb = NULL;
@@ -360,8 +338,8 @@ pdump_regitser_tx_callbacks(uint16_t end_q, uint8_t port, uint16_t queue,
 static int
 set_pdump_rxtx_cbs(struct pdump_request *p)
 {
-	uint16_t nb_rx_q, nb_tx_q = 0, end_q, queue;
-	uint8_t port;
+	uint16_t nb_rx_q = 0, nb_tx_q = 0, end_q, queue;
+	uint16_t port;
 	int ret = 0;
 	uint32_t flags;
 	uint16_t operation;
@@ -375,7 +353,7 @@ set_pdump_rxtx_cbs(struct pdump_request *p)
 				&port);
 		if (ret < 0) {
 			RTE_LOG(ERR, PDUMP,
-				"failed to get potid for device id=%s\n",
+				"failed to get port id for device id=%s\n",
 				p->data.en_v1.device);
 			return -EINVAL;
 		}
@@ -387,7 +365,7 @@ set_pdump_rxtx_cbs(struct pdump_request *p)
 				&port);
 		if (ret < 0) {
 			RTE_LOG(ERR, PDUMP,
-				"failed to get potid for device id=%s\n",
+				"failed to get port id for device id=%s\n",
 				p->data.dis_v1.device);
 			return -EINVAL;
 		}
@@ -424,7 +402,7 @@ set_pdump_rxtx_cbs(struct pdump_request *p)
 	/* register RX callback */
 	if (flags & RTE_PDUMP_FLAG_RX) {
 		end_q = (queue == RTE_PDUMP_ALL_QUEUES) ? nb_rx_q : queue + 1;
-		ret = pdump_regitser_rx_callbacks(end_q, port, queue, ring, mp,
+		ret = pdump_register_rx_callbacks(end_q, port, queue, ring, mp,
 							operation);
 		if (ret < 0)
 			return ret;
@@ -433,7 +411,7 @@ set_pdump_rxtx_cbs(struct pdump_request *p)
 	/* register TX callback */
 	if (flags & RTE_PDUMP_FLAG_TX) {
 		end_q = (queue == RTE_PDUMP_ALL_QUEUES) ? nb_tx_q : queue + 1;
-		ret = pdump_regitser_tx_callbacks(end_q, port, queue, ring, mp,
+		ret = pdump_register_tx_callbacks(end_q, port, queue, ring, mp,
 							operation);
 		if (ret < 0)
 			return ret;
@@ -603,7 +581,7 @@ rte_pdump_init(const char *path)
 	if (ret != 0) {
 		RTE_LOG(ERR, PDUMP,
 			"Failed to create the pdump thread:%s, %s:%d\n",
-			strerror(errno), __func__, __LINE__);
+			strerror(ret), __func__, __LINE__);
 		return -1;
 	}
 	/* Set thread_name for aid in debugging. */
@@ -626,7 +604,7 @@ rte_pdump_uninit(void)
 	if (ret != 0) {
 		RTE_LOG(ERR, PDUMP,
 			"Failed to cancel the pdump thread:%s, %s:%d\n",
-			strerror(errno), __func__, __LINE__);
+			strerror(ret), __func__, __LINE__);
 		return -1;
 	}
 
@@ -763,7 +741,7 @@ pdump_validate_ring_mp(struct rte_ring *ring, struct rte_mempool *mp)
 		rte_errno = EINVAL;
 		return -1;
 	}
-	if (ring->prod.sp_enqueue || ring->cons.sc_dequeue) {
+	if (ring->prod.single || ring->cons.single) {
 		RTE_LOG(ERR, PDUMP, "ring with either SP or SC settings"
 		" is not valid for pdump, should have MP and MC settings\n");
 		rte_errno = EINVAL;
@@ -788,7 +766,7 @@ pdump_validate_flags(uint32_t flags)
 }
 
 static int
-pdump_validate_port(uint8_t port, char *name)
+pdump_validate_port(uint16_t port, char *name)
 {
 	int ret = 0;
 
@@ -852,7 +830,7 @@ pdump_prepare_client_request(char *device, uint16_t queue,
 }
 
 int
-rte_pdump_enable(uint8_t port, uint16_t queue, uint32_t flags,
+rte_pdump_enable(uint16_t port, uint16_t queue, uint32_t flags,
 			struct rte_ring *ring,
 			struct rte_mempool *mp,
 			void *filter)
@@ -885,7 +863,6 @@ rte_pdump_enable_by_deviceid(char *device_id, uint16_t queue,
 				void *filter)
 {
 	int ret = 0;
-	char domBDF[DEVICE_ID_SIZE];
 
 	ret = pdump_validate_ring_mp(ring, mp);
 	if (ret < 0)
@@ -894,18 +871,14 @@ rte_pdump_enable_by_deviceid(char *device_id, uint16_t queue,
 	if (ret < 0)
 		return ret;
 
-	if (pdump_get_dombdf(device_id, domBDF, sizeof(domBDF)) > 0)
-		ret = pdump_prepare_client_request(domBDF, queue, flags,
-						ENABLE, ring, mp, filter);
-	else
-		ret = pdump_prepare_client_request(device_id, queue, flags,
+	ret = pdump_prepare_client_request(device_id, queue, flags,
 						ENABLE, ring, mp, filter);
 
 	return ret;
 }
 
 int
-rte_pdump_disable(uint8_t port, uint16_t queue, uint32_t flags)
+rte_pdump_disable(uint16_t port, uint16_t queue, uint32_t flags)
 {
 	int ret = 0;
 	char name[DEVICE_ID_SIZE];
@@ -928,17 +901,12 @@ rte_pdump_disable_by_deviceid(char *device_id, uint16_t queue,
 				uint32_t flags)
 {
 	int ret = 0;
-	char domBDF[DEVICE_ID_SIZE];
 
 	ret = pdump_validate_flags(flags);
 	if (ret < 0)
 		return ret;
 
-	if (pdump_get_dombdf(device_id, domBDF, sizeof(domBDF)) > 0)
-		ret = pdump_prepare_client_request(domBDF, queue, flags,
-						DISABLE, NULL, NULL, NULL);
-	else
-		ret = pdump_prepare_client_request(device_id, queue, flags,
+	ret = pdump_prepare_client_request(device_id, queue, flags,
 						DISABLE, NULL, NULL, NULL);
 
 	return ret;

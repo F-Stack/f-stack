@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright (C) Cavium networks 2015. All rights reserved.
+#   Copyright (C) Cavium, Inc 2015. All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
 #   modification, are permitted provided that the following conditions
@@ -12,7 +12,7 @@
 #       notice, this list of conditions and the following disclaimer in
 #       the documentation and/or other materials provided with the
 #       distribution.
-#     * Neither the name of Cavium networks nor the names of its
+#     * Neither the name of Cavium, Inc nor the names of its
 #       contributors may be used to endorse or promote products derived
 #       from this software without specific prior written permission.
 #
@@ -38,11 +38,7 @@ CONFIG_RTE_MAX_NUMA_NODES=2
 CONFIG_RTE_MAX_LCORE=96
 
 #
-# Compile Cavium Thunderx NICVF PMD driver
+# Compile PMD for octeontx sso event device
 #
-CONFIG_RTE_LIBRTE_THUNDERX_NICVF_PMD=y
-CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_INIT=n
-CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_RX=n
-CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_TX=n
-CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_DRIVER=n
-CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_MBOX=n
+CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF=y
+CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF_DEBUG=n

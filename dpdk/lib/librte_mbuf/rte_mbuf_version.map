@@ -18,3 +18,20 @@ DPDK_2.1 {
 	rte_pktmbuf_pool_create;
 
 } DPDK_2.0;
+
+DPDK_16.11 {
+	global:
+
+	__rte_pktmbuf_read;
+	rte_get_ptype_inner_l2_name;
+	rte_get_ptype_inner_l3_name;
+	rte_get_ptype_inner_l4_name;
+	rte_get_ptype_l2_name;
+	rte_get_ptype_l3_name;
+	rte_get_ptype_l4_name;
+	rte_get_ptype_name;
+	rte_get_ptype_tunnel_name;
+	rte_get_rx_ol_flag_list;
+	rte_get_tx_ol_flag_list;
+
+} DPDK_2.1;

@@ -71,19 +71,26 @@ CFLAGS_BASE_DRIVER += -Wno-missing-field-initializers
 ifeq ($(shell test $(GCC_VERSION) -ge 44 && echo 1), 1)
 CFLAGS     += -Wno-deprecated
 CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
+ifeq ($(shell test $(GCC_VERSION) -ge 70 && echo 1), 1)
+CFLAGS_BASE_DRIVER += -Wno-implicit-fallthrough
 endif
 endif
+endif
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs -lrte_hash
+LDLIBS += -lrte_bus_pci
 
 #
 # Add extra flags for base driver source files to disable warnings in them
 #
-BASE_DRIVER_OBJS=$(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c)))
+BASE_DRIVER_OBJS=$(sort $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c))))
 $(foreach obj, $(BASE_DRIVER_OBJS), $(eval CFLAGS_$(obj)+=$(CFLAGS_BASE_DRIVER)))
 
 VPATH += $(SRCDIR)/base
 
 #
 # all source are stored in SRCS-y
+# base driver is based on the package of cid-fm10k.2017.01.24.tar.gz
 #
 SRCS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += fm10k_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += fm10k_rxtx.c
@@ -95,11 +102,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += fm10k_mbx.c
 SRCS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += fm10k_vf.c
 SRCS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += fm10k_api.c
 SRCS-$(CONFIG_RTE_LIBRTE_FM10K_INC_VECTOR) += fm10k_rxtx_vec.c
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_eal lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_mempool lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_net
-DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_kvargs
 
 include $(RTE_SDK)/mk/rte.lib.mk

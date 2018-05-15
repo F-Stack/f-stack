@@ -37,6 +37,8 @@ include $(RTE_SDK)/mk/internal/rte.install-pre.mk
 include $(RTE_SDK)/mk/internal/rte.clean-pre.mk
 include $(RTE_SDK)/mk/internal/rte.build-pre.mk
 
+ALL_DEPDIRS := $(patsubst DEPDIRS-%,%,$(filter DEPDIRS-%,$(.VARIABLES)))
+
 CLEANDIRS = $(addsuffix _clean,$(DIRS-y) $(DIRS-n) $(DIRS-))
 
 VPATH += $(SRCDIR)
@@ -72,37 +74,16 @@ clean: _postclean
 	fi
 	@rm -f $(_BUILD_TARGETS) $(_INSTALL_TARGETS) $(_CLEAN_TARGETS)
 
-#
-# include .depdirs and define rules to order priorities between build
-# of directories.
-#
-include $(RTE_OUTPUT)/.depdirs
-
 define depdirs_rule
-$(1): $(sort $(patsubst $(S)/%,%,$(LOCAL_DEPDIRS-$(S)/$(1))))
+$(DEPDIRS-$(1)):
+
+$(1): | $(DEPDIRS-$(1))
+
+$(if $(D),$(info $(1) depends on $(DEPDIRS-$(1))))
 endef
 
-$(foreach d,$(DIRS-y),$(eval $(call depdirs_rule,$(d))))
-
-
-# use a "for" in a shell to process dependencies: we don't want this
-# task to be run in parallel.
-.PHONY: depdirs
-depdirs:
-	@for d in $(DIRS-y); do \
-		if [ -f $(SRCDIR)/$$d/Makefile ]; then \
-			$(MAKE) S=$S/$$d -f $(SRCDIR)/$$d/Makefile depdirs ; \
-		fi ; \
-	done
-
-.PHONY: depgraph
-depgraph:
-	@for d in $(DIRS-y); do \
-		echo "    \"$(S)\" -> \"$(S)/$$d\"" ; \
-		if [ -f $(SRCDIR)/$$d/Makefile ]; then \
-			$(MAKE) S=$S/$$d -f $(SRCDIR)/$$d/Makefile depgraph ; \
-		fi ; \
-	done
+$(foreach dir,$(ALL_DEPDIRS),\
+	$(eval $(call depdirs_rule,$(dir))))
 
 include $(RTE_SDK)/mk/internal/rte.install-post.mk
 include $(RTE_SDK)/mk/internal/rte.clean-post.mk

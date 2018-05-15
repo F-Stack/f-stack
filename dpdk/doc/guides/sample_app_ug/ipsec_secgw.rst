@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
+    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -52,13 +52,28 @@ The application classifies the ports as *Protected* and *Unprotected*.
 Thus, traffic received on an Unprotected or Protected port is consider
 Inbound or Outbound respectively.
 
+The application also supports complete IPSec protocol offload to hardware
+(Look aside crypto accelarator or using ethernet device). It also support
+inline ipsec processing by the supported ethernet device during transmission.
+These modes can be selected during the SA creation configuration.
+
+In case of complete protocol offload, the processing of headers(ESP and outer
+IP header) is done by the hardware and the application does not need to
+add/remove them during outbound/inbound processing.
+
+For inline offloaded outbound traffic, the application will not do the LPM
+lookup for routing, as the port on which the packet has to be forwarded will be
+part of the SA. Security parameters will be configured on that port only, and
+sending the packet on other ports could result in unencrypted packets being
+sent out.
+
 The Path for IPsec Inbound traffic is:
 
 *  Read packets from the port.
 *  Classify packets between IPv4 and ESP.
 *  Perform Inbound SA lookup for ESP packets based on their SPI.
-*  Perform Verification/Decryption.
-*  Remove ESP and outer IP header
+*  Perform Verification/Decryption (Not needed in case of inline ipsec).
+*  Remove ESP and outer IP header (Not needed in case of protocol offload).
 *  Inbound SP check using ACL of decrypted packets and any other IPv4 packets.
 *  Routing.
 *  Write packet to port.
@@ -68,8 +83,8 @@ The Path for the IPsec Outbound traffic is:
 *  Read packets from the port.
 *  Perform Outbound SP check using ACL of all IPv4 traffic.
 *  Perform Outbound SA lookup for packets that need IPsec protection.
-*  Add ESP and outer IP header.
-*  Perform Encryption/Digest.
+*  Add ESP and outer IP header (Not needed in case protocol offload).
+*  Perform Encryption/Digest (Not needed in case of inline ipsec).
 *  Routing.
 *  Write packet to port.
 
@@ -79,31 +94,16 @@ Constraints
 
 *  No IPv6 options headers.
 *  No AH mode.
-*  Currently only EAS-CBC, HMAC-SHA1 and NULL.
+*  Supported algorithms: AES-CBC, AES-CTR, AES-GCM, HMAC-SHA1 and NULL.
 *  Each SA must be handle by a unique lcore (*1 RX queue per port*).
 *  No chained mbufs.
-
 
 Compiling the Application
 -------------------------
 
-To compile the application:
+To compile the sample application see :doc:`compiling`.
 
-#. Go to the sample application directory::
-
-      export RTE_SDK=/path/to/rte_sdk
-      cd ${RTE_SDK}/examples/ipsec-secgw
-
-#. Set the target (a default target is used if not specified). For example::
-
-
-      export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-   See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#. Build the application::
-
-       make
+The application is located in the ``rpsec-secgw`` sub-directory.
 
 #. [Optional] Build the application for debugging:
    This option adds some extra flags, disables compiler optimizations and
@@ -119,10 +119,10 @@ The application has a number of command line options::
 
 
    ./build/ipsec-secgw [EAL options] --
-                        -p PORTMASK -P -u PORTMASK
+                        -p PORTMASK -P -u PORTMASK -j FRAMESIZE
                         --config (port,queue,lcore)[,(port,queue,lcore]
                         --single-sa SAIDX
-			--ep0|--ep1
+                        -f CONFIG_FILE_PATH
 
 Where:
 
@@ -135,6 +135,10 @@ Where:
 
 *   ``-u PORTMASK``: hexadecimal bitmask of unprotected ports
 
+*   ``-j FRAMESIZE``: *optional*. Enables jumbo frames with the maximum size
+    specified as FRAMESIZE. If an invalid value is provided as FRAMESIZE
+    then the default value 9000 is used.
+
 *   ``--config (port,queue,lcore)[,(port,queue,lcore)]``: determines which queues
     from which ports are mapped to which cores.
 
@@ -142,22 +146,20 @@ Where:
     on both Inbound and Outbound. This option is meant for debugging/performance
     purposes.
 
-*   ``--ep0``: configure the app as Endpoint 0.
+*   ``-f CONFIG_FILE_PATH``: the full path of text-based file containing all
+    configuration items for running the application (See Configuration file
+    syntax section below). ``-f CONFIG_FILE_PATH`` **must** be specified.
+    **ONLY** the UNIX format configuration file is accepted.
 
-*   ``--ep1``: configure the app as Endpoint 1.
-
-Either one of ``--ep0`` or ``--ep1`` **must** be specified.
-The main purpose of these options is to easily configure two systems
-back-to-back that would forward traffic through an IPsec tunnel (see
-:ref:`figure_ipsec_endpoints`).
 
 The mapping of lcores to port/queues is similar to other l3fwd applications.
 
 For example, given the following command line::
 
     ./build/ipsec-secgw -l 20,21 -n 4 --socket-mem 0,2048       \
-           --vdev "cryptodev_null_pmd" -- -p 0xf -P -u 0x3      \
-           --config="(0,0,20),(1,0,20),(2,0,21),(3,0,21)" --ep0 \
+           --vdev "crypto_null" -- -p 0xf -P -u 0x3      \
+           --config="(0,0,20),(1,0,20),(2,0,21),(3,0,21)"       \
+           -f /path/to/config_file                              \
 
 where each options means:
 
@@ -167,7 +169,7 @@ where each options means:
 
 *   The ``--socket-mem`` to use 2GB on socket 1.
 
-*   The ``--vdev "cryptodev_null_pmd"`` option creates virtual NULL cryptodev PMD.
+*   The ``--vdev "crypto_null"`` option creates virtual NULL cryptodev PMD.
 
 *   The ``-p`` option enables ports (detected) 0, 1, 2 and 3.
 
@@ -194,8 +196,12 @@ where each options means:
     |          |           |           |                                       |
     +----------+-----------+-----------+---------------------------------------+
 
-*   The ``--ep0`` options configures the app with a given set of SP, SA and Routing
-    entries as explained below in more detail.
+*   The ``-f /path/to/config_file`` option enables the application read and
+    parse the configuration file specified, and configures the application
+    with a given set of SP, SA and Routing entries accordingly. The syntax of
+    the configuration file will be explained below in more detail. Please
+    **note** the parser only accepts UNIX format text file. Other formats
+    such as DOS/MAC format will cause a parse error.
 
 Refer to the *DPDK Getting Started Guide* for general information on running
 applications and the Environment Abstraction Layer (EAL) options.
@@ -216,499 +222,425 @@ For example, something like the following command line:
 
     ./build/ipsec-secgw -l 20,21 -n 4 --socket-mem 0,2048 \
             -w 81:00.0 -w 81:00.1 -w 81:00.2 -w 81:00.3 \
-            --vdev "cryptodev_aesni_mb_pmd" --vdev "cryptodev_null_pmd" \
+            --vdev "crypto_aesni_mb" --vdev "crypto_null" \
 	    -- \
             -p 0xf -P -u 0x3 --config="(0,0,20),(1,0,20),(2,0,21),(3,0,21)" \
-            --ep0
+            -f sample.cfg
 
 
 Configurations
 --------------
 
-The following sections provide some details on the default values used to
-initialize the SP, SA and Routing tables.
-Currently all configuration information is hard coded into the application.
-
-The following image illustrate a few of the concepts regarding IPSec, such
-as protected/unprotected and inbound/outbound traffic, from the point of
-view of two back-to-back endpoints:
-
-.. _figure_ipsec_endpoints:
-
-.. figure:: img/ipsec_endpoints.*
-
-   IPSec Inbound/Outbound traffic
-
-Note that the above image only displays unidirectional traffic per port
-for illustration purposes.
-The application supports bidirectional traffic on all ports,
+The following sections provide the syntax of configurations to initialize
+your SP, SA and Routing tables.
+Configurations shall be specified in the configuration file to be passed to
+the application. The file is then parsed by the application. The successful
+parsing will result in the appropriate rules being applied to the tables
+accordingly.
 
 
-Security Policy Initialization
+Configuration File Syntax
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 As mention in the overview, the Security Policies are ACL rules.
-The application defines two ACLs, one each of Inbound and Outbound, and
-it replicates them per socket in use.
+The application parsers the rules specified in the configuration file and
+passes them to the ACL table, and replicates them per socket in use.
 
-Following are the default rules which show only the relevant information,
-assuming ANY value is valid for the fields not mentioned (src ip, proto,
-src/dst ports).
+Following are the configuration file syntax.
 
-.. _table_ipsec_endpoint_outbound_sp:
+General rule syntax
+^^^^^^^^^^^^^^^^^^^
 
-.. table:: Endpoint 0 Outbound Security Policies
+The parse treats one line in the configuration file as one configuration
+item (unless the line concatenation symbol exists). Every configuration
+item shall follow the syntax of either SP, SA, or Routing rules specified
+below.
 
-   +-----------------------------------+------------+
-   | **Dst**                           | **SA idx** |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.105.0/24                  | 5          |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.106.0/24                  | 6          |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.175.0/24                  | 10         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.176.0/24                  | 11         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.200.0/24                  | 15         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.201.0/24                  | 16         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.55.0/24                   | 25         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.56.0/24                   | 26         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.240.0/24                  | BYPASS     |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.241.0/24                  | BYPASS     |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 0:0:0:0:5555:5555:0:0/96          | 5          |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 0:0:0:0:6666:6666:0:0/96          | 6          |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 0:0:1111:1111:0:0:0:0/96          | 10         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 0:0:1111:1111:1111:1111:0:0/96    | 11         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 0:0:0:0:aaaa:aaaa:0:0/96          | 25         |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 0:0:0:0:bbbb:bbbb:0:0/96          | 26         |
-   |                                   |            |
-   +-----------------------------------+------------+
+The configuration parser supports the following special symbols:
 
-.. _table_ipsec_endpoint_inbound_sp:
+ * Comment symbol **#**. Any character from this symbol to the end of
+   line is treated as comment and will not be parsed.
 
-.. table:: Endpoint 0 Inbound Security Policies
-
-   +-----------------------------------+------------+
-   | **Dst**                           | **SA idx** |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.115.0/24                  | 105        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.116.0/24                  | 106        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.185.0/24                  | 110        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.186.0/24                  | 111        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.210.0/24                  | 115        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.211.0/24                  | 116        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.65.0/24                   | 125        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.66.0/24                   | 126        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.245.0/24                  | BYPASS     |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | 192.168.246.0/24                  | BYPASS     |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | ffff:0:0:0:5555:5555:0:0/96       | 105        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | ffff:0:0:0:6666:6666:0:0/96       | 106        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | ffff:0:1111:1111:0:0:0:0/96       | 110        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | ffff:0:1111:1111:1111:1111:0:0/96 | 111        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | ffff:0:0:0:aaaa:aaaa:0:0/96       | 125        |
-   |                                   |            |
-   +-----------------------------------+------------+
-   | ffff:0:0:0:bbbb:bbbb:0:0/96       | 126        |
-   |                                   |            |
-   +-----------------------------------+------------+
-
-For Endpoint 1, we use the same policies in reverse, meaning the Inbound SP
-entries are set as Outbound and vice versa.
+ * Line concatenation symbol **\\**. This symbol shall be placed in the end
+   of the line to be concatenated to the line below. Multiple lines'
+   concatenation is supported.
 
 
-Security Association Initialization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+SP rule syntax
+^^^^^^^^^^^^^^
 
-The SAs are kept in a array table.
+The SP rule syntax is shown as follows:
 
-For Inbound, the SPI is used as index modulo the table size.
-This means that on a table for 100 SA, SPI 5 and 105 would use the same index
-and that is not currently supported.
+.. code-block:: console
 
-Notice that it is not an issue for Outbound traffic as we store the index and
-not the SPI in the Security Policy.
-
-All SAs configured with AES-CBC and HMAC-SHA1 share the same values for cipher
-block size and key, and authentication digest size and key.
-
-The following are the default values:
-
-.. _table_ipsec_endpoint_outbound_sa:
-
-.. table:: Endpoint 0 Outbound Security Associations
-
-   +---------+----------+------------+-----------+----------------+----------------+
-   | **SPI** | **Mode** | **Cipher** | **Auth**  | **Tunnel src** | **Tunnel dst** |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 5       | Tunnel   | AES-CBC    | HMAC-SHA1 | 172.16.1.5     | 172.16.2.5     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 6       | Tunnel   | AES-CBC    | HMAC-SHA1 | 172.16.1.6     | 172.16.2.6     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 10      | Trans    | AES-CBC    | HMAC-SHA1 | N/A            | N/A            |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 11      | Trans    | AES-CBC    | HMAC-SHA1 | N/A            | N/A            |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 15      | Tunnel   | NULL       | NULL      | 172.16.1.5     | 172.16.2.5     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 16      | Tunnel   | NULL       | NULL      | 172.16.1.6     | 172.16.2.6     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 25      | Tunnel   | AES-CBC    | HMAC-SHA1 | 1111:1111:     | 2222:2222:     |
-   |         |          |            |           | 1111:1111:     | 2222:2222:     |
-   |         |          |            |           | 1111:1111:     | 2222:2222:     |
-   |         |          |            |           | 1111:5555      | 2222:5555      |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 26      | Tunnel   | AES-CBC    | HMAC-SHA1 | 1111:1111:     | 2222:2222:     |
-   |         |          |            |           | 1111:1111:     | 2222:2222:     |
-   |         |          |            |           | 1111:1111:     | 2222:2222:     |
-   |         |          |            |           | 1111:6666      | 2222:6666      |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-
-.. _table_ipsec_endpoint_inbound_sa:
-
-.. table:: Endpoint 0 Inbound Security Associations
-
-   +---------+----------+------------+-----------+----------------+----------------+
-   | **SPI** | **Mode** | **Cipher** | **Auth**  | **Tunnel src** | **Tunnel dst** |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 105     | Tunnel   | AES-CBC    | HMAC-SHA1 | 172.16.2.5     | 172.16.1.5     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 106     | Tunnel   | AES-CBC    | HMAC-SHA1 | 172.16.2.6     | 172.16.1.6     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 110     | Trans    | AES-CBC    | HMAC-SHA1 | N/A            | N/A            |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 111     | Trans    | AES-CBC    | HMAC-SHA1 | N/A            | N/A            |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 115     | Tunnel   | NULL       | NULL      | 172.16.2.5     | 172.16.1.5     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 116     | Tunnel   | NULL       | NULL      | 172.16.2.6     | 172.16.1.6     |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 125     | Tunnel   | AES-CBC    | HMAC-SHA1 | 2222:2222:     | 1111:1111:     |
-   |         |          |            |           | 2222:2222:     | 1111:1111:     |
-   |         |          |            |           | 2222:2222:     | 1111:1111:     |
-   |         |          |            |           | 2222:5555      | 1111:5555      |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-   | 126     | Tunnel   | AES-CBC    | HMAC-SHA1 | 2222:2222:     | 1111:1111:     |
-   |         |          |            |           | 2222:2222:     | 1111:1111:     |
-   |         |          |            |           | 2222:2222:     | 1111:1111:     |
-   |         |          |            |           | 2222:6666      | 1111:6666      |
-   |         |          |            |           |                |                |
-   +---------+----------+------------+-----------+----------------+----------------+
-
-For Endpoint 1, we use the same policies in reverse, meaning the Inbound SP
-entries are set as Outbound and vice versa.
+    sp <ip_ver> <dir> esp <action> <priority> <src_ip> <dst_ip>
+    <proto> <sport> <dport>
 
 
-Routing Initialization
-~~~~~~~~~~~~~~~~~~~~~~
+where each options means:
 
-The Routing is implemented using an LPM table.
+``<ip_ver>``
 
-Following default values:
+ * IP protocol version
 
-.. _table_ipsec_endpoint_outbound_routing:
+ * Optional: No
 
-.. table:: Endpoint 0 Routing Table
+ * Available options:
 
-   +------------------+----------+
-   | **Dst addr**     | **Port** |
-   |                  |          |
-   +------------------+----------+
-   | 172.16.2.5/32    | 0        |
-   |                  |          |
-   +------------------+----------+
-   | 172.16.2.6/32    | 1        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.175.0/24 | 0        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.176.0/24 | 1        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.240.0/24 | 0        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.241.0/24 | 1        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.115.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.116.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.65.0/24  | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.66.0/24  | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.185.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.186.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.210.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.211.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.245.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.246.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 2222:2222:       | 0        |
-   | 2222:2222:       |          |
-   | 2222:2222:       |          |
-   | 2222:5555/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | 2222:2222:       | 1        |
-   | 2222:2222:       |          |
-   | 2222:2222:       |          |
-   | 2222:6666/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 0        |
-   | 1111:1111:       |          |
-   | 0000:0000:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 1        |
-   | 1111:1111:       |          |
-   | 1111:1111:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 2        |
-   | 0000:0000:       |          |
-   | aaaa:aaaa:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 3        |
-   | 0000:0000:       |          |
-   | bbbb:bbbb:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 2        |
-   | 0000:0000:       |          |
-   | 5555:5555:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 3        |
-   | 0000:0000:       |          |
-   | 6666:6666:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 2        |
-   | 1111:1111:       |          |
-   | 0000:0000:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 3        |
-   | 1111:1111:       |          |
-   | 1111:1111:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
+   * *ipv4*: IP protocol version 4
+   * *ipv6*: IP protocol version 6
 
-.. _table_ipsec_endpoint_inbound_routing:
+``<dir>``
 
-.. table:: Endpoint 1 Routing Table
+ * The traffic direction
 
-   +------------------+----------+
-   | **Dst addr**     | **Port** |
-   |                  |          |
-   +------------------+----------+
-   | 172.16.1.5/32    | 0        |
-   |                  |          |
-   +------------------+----------+
-   | 172.16.1.6/32    | 1        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.185.0/24 | 0        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.186.0/24 | 1        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.245.0/24 | 0        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.246.0/24 | 1        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.105.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.106.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.55.0/24  | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.56.0/24  | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.175.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.176.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.200.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.201.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.240.0/24 | 2        |
-   |                  |          |
-   +------------------+----------+
-   | 192.168.241.0/24 | 3        |
-   |                  |          |
-   +------------------+----------+
-   | 1111:1111:       | 0        |
-   | 1111:1111:       |          |
-   | 1111:1111:       |          |
-   | 1111:5555/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | 1111:1111:       | 1        |
-   | 1111:1111:       |          |
-   | 1111:1111:       |          |
-   | 1111:6666/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 0        |
-   | 1111:1111:       |          |
-   | 0000:0000:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | ffff:0000:       | 1        |
-   | 1111:1111:       |          |
-   | 1111:1111:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 2        |
-   | 0000:0000:       |          |
-   | aaaa:aaaa:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 3        |
-   | 0000:0000:       |          |
-   | bbbb:bbbb:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 2        |
-   | 0000:0000:       |          |
-   | 5555:5555:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 3        |
-   | 0000:0000:       |          |
-   | 6666:6666:       |          |
-   | 0000:0/116       |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 2        |
-   | 1111:1111:       |          |
-   | 0000:0000:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
-   | 0000:0000:       | 3        |
-   | 1111:1111:       |          |
-   | 1111:1111:       |          |
-   | 0000:0000/116    |          |
-   |                  |          |
-   +------------------+----------+
+ * Optional: No
+
+ * Available options:
+
+   * *in*: inbound traffic
+   * *out*: outbound traffic
+
+``<action>``
+
+ * IPsec action
+
+ * Optional: No
+
+ * Available options:
+
+   * *protect <SA_idx>*: the specified traffic is protected by SA rule
+     with id SA_idx
+   * *bypass*: the specified traffic traffic is bypassed
+   * *discard*: the specified traffic is discarded
+
+``<priority>``
+
+ * Rule priority
+
+ * Optional: Yes, default priority 0 will be used
+
+ * Syntax: *pri <id>*
+
+``<src_ip>``
+
+ * The source IP address and mask
+
+ * Optional: Yes, default address 0.0.0.0 and mask of 0 will be used
+
+ * Syntax:
+
+   * *src X.X.X.X/Y* for IPv4
+   * *src XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/Y* for IPv6
+
+``<dst_ip>``
+
+ * The destination IP address and mask
+
+ * Optional: Yes, default address 0.0.0.0 and mask of 0 will be used
+
+ * Syntax:
+
+   * *dst X.X.X.X/Y* for IPv4
+   * *dst XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/Y* for IPv6
+
+``<proto>``
+
+ * The protocol start and end range
+
+ * Optional: yes, default range of 0 to 0 will be used
+
+ * Syntax: *proto X:Y*
+
+``<sport>``
+
+ * The source port start and end range
+
+ * Optional: yes, default range of 0 to 0 will be used
+
+ * Syntax: *sport X:Y*
+
+``<dport>``
+
+ * The destination port start and end range
+
+ * Optional: yes, default range of 0 to 0 will be used
+
+ * Syntax: *dport X:Y*
+
+Example SP rules:
+
+.. code-block:: console
+
+    sp ipv4 out esp protect 105 pri 1 dst 192.168.115.0/24 sport 0:65535 \
+    dport 0:65535
+
+    sp ipv6 in esp bypass pri 1 dst 0000:0000:0000:0000:5555:5555:\
+    0000:0000/96 sport 0:65535 dport 0:65535
+
+
+SA rule syntax
+^^^^^^^^^^^^^^
+
+The successfully parsed SA rules will be stored in an array table.
+
+The SA rule syntax is shown as follows:
+
+.. code-block:: console
+
+    sa <dir> <spi> <cipher_algo> <cipher_key> <auth_algo> <auth_key>
+    <mode> <src_ip> <dst_ip> <action_type> <port_id>
+
+where each options means:
+
+``<dir>``
+
+ * The traffic direction
+
+ * Optional: No
+
+ * Available options:
+
+   * *in*: inbound traffic
+   * *out*: outbound traffic
+
+``<spi>``
+
+ * The SPI number
+
+ * Optional: No
+
+ * Syntax: unsigned integer number
+
+``<cipher_algo>``
+
+ * Cipher algorithm
+
+ * Optional: Yes, unless <aead_algo> is not used
+
+ * Available options:
+
+   * *null*: NULL algorithm
+   * *aes-128-cbc*: AES-CBC 128-bit algorithm
+   * *aes-128-ctr*: AES-CTR 128-bit algorithm
+
+ * Syntax: *cipher_algo <your algorithm>*
+
+``<cipher_key>``
+
+ * Cipher key, NOT available when 'null' algorithm is used
+
+ * Optional: Yes, unless <aead_algo> is not used.
+   Must be followed by <cipher_algo> option
+
+ * Syntax: Hexadecimal bytes (0x0-0xFF) concatenate by colon symbol ':'.
+   The number of bytes should be as same as the specified cipher algorithm
+   key size.
+
+   For example: *cipher_key A1:B2:C3:D4:A1:B2:C3:D4:A1:B2:C3:D4:
+   A1:B2:C3:D4*
+
+``<auth_algo>``
+
+ * Authentication algorithm
+
+ * Optional: Yes, unless <aead_algo> is not used
+
+ * Available options:
+
+    * *null*: NULL algorithm
+    * *sha1-hmac*: HMAC SHA1 algorithm
+
+``<auth_key>``
+
+ * Authentication key, NOT available when 'null' or 'aes-128-gcm' algorithm
+   is used.
+
+ * Optional: Yes, unless <aead_algo> is not used.
+   Must be followed by <auth_algo> option
+
+ * Syntax: Hexadecimal bytes (0x0-0xFF) concatenate by colon symbol ':'.
+   The number of bytes should be as same as the specified authentication
+   algorithm key size.
+
+   For example: *auth_key A1:B2:C3:D4:A1:B2:C3:D4:A1:B2:C3:D4:A1:B2:C3:D4:
+   A1:B2:C3:D4*
+
+``<aead_algo>``
+
+ * AEAD algorithm
+
+ * Optional: Yes, unless <cipher_algo> and <auth_algo> are not used
+
+ * Available options:
+
+   * *aes-128-gcm*: AES-GCM 128-bit algorithm
+
+ * Syntax: *cipher_algo <your algorithm>*
+
+``<aead_key>``
+
+ * Cipher key, NOT available when 'null' algorithm is used
+
+ * Optional: Yes, unless <cipher_algo> and <auth_algo> are not used.
+   Must be followed by <aead_algo> option
+
+ * Syntax: Hexadecimal bytes (0x0-0xFF) concatenate by colon symbol ':'.
+   The number of bytes should be as same as the specified AEAD algorithm
+   key size.
+
+   For example: *aead_key A1:B2:C3:D4:A1:B2:C3:D4:A1:B2:C3:D4:
+   A1:B2:C3:D4*
+
+``<mode>``
+
+ * The operation mode
+
+ * Optional: No
+
+ * Available options:
+
+   * *ipv4-tunnel*: Tunnel mode for IPv4 packets
+   * *ipv6-tunnel*: Tunnel mode for IPv6 packets
+   * *transport*: transport mode
+
+ * Syntax: mode XXX
+
+``<src_ip>``
+
+ * The source IP address. This option is not available when
+   transport mode is used
+
+ * Optional: Yes, default address 0.0.0.0 will be used
+
+ * Syntax:
+
+   * *src X.X.X.X* for IPv4
+   * *src XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX* for IPv6
+
+``<dst_ip>``
+
+ * The destination IP address. This option is not available when
+   transport mode is used
+
+ * Optional: Yes, default address 0.0.0.0 will be used
+
+ * Syntax:
+
+   * *dst X.X.X.X* for IPv4
+   * *dst XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX* for IPv6
+
+``<type>``
+
+ * Action type to specify the security action. This option specify
+   the SA to be performed with look aside protocol offload to HW
+   accelerator or protocol offload on ethernet device or inline
+   crypto processing on the ethernet device during transmission.
+
+ * Optional: Yes, default type *no-offload*
+
+ * Available options:
+
+   * *lookaside-protocol-offload*: look aside protocol offload to HW accelerator
+   * *inline-protocol-offload*: inline protocol offload on ethernet device
+   * *inline-crypto-offload*: inline crypto processing on ethernet device
+   * *no-offload*: no offloading to hardware
+
+ ``<port_id>``
+
+ * Port/device ID of the ethernet/crypto accelerator for which the SA is
+   configured. For *inline-crypto-offload* and *inline-protocol-offload*, this
+   port will be used for routing. The routing table will not be referred in
+   this case.
+
+ * Optional: No, if *type* is not *no-offload*
+
+ * Syntax:
+
+   * *port_id X* X is a valid device number in decimal
+
+
+Example SA rules:
+
+.. code-block:: console
+
+    sa out 5 cipher_algo null auth_algo null mode ipv4-tunnel \
+    src 172.16.1.5 dst 172.16.2.5
+
+    sa out 25 cipher_algo aes-128-cbc \
+    cipher_key c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3 \
+    auth_algo sha1-hmac \
+    auth_key c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3:c3 \
+    mode ipv6-tunnel \
+    src 1111:1111:1111:1111:1111:1111:1111:5555 \
+    dst 2222:2222:2222:2222:2222:2222:2222:5555
+
+    sa in 105 aead_algo aes-128-gcm \
+    aead_key de:ad:be:ef:de:ad:be:ef:de:ad:be:ef:de:ad:be:ef:de:ad:be:ef \
+    mode ipv4-tunnel src 172.16.2.5 dst 172.16.1.5
+
+    sa out 5 cipher_algo aes-128-cbc cipher_key 0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0 \
+    auth_algo sha1-hmac auth_key 0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0:0 \
+    mode ipv4-tunnel src 172.16.1.5 dst 172.16.2.5 \
+    type lookaside-protocol-offload port_id 4
+
+Routing rule syntax
+^^^^^^^^^^^^^^^^^^^
+
+The Routing rule syntax is shown as follows:
+
+.. code-block:: console
+
+    rt <ip_ver> <src_ip> <dst_ip> <port>
+
+
+where each options means:
+
+``<ip_ver>``
+
+ * IP protocol version
+
+ * Optional: No
+
+ * Available options:
+
+   * *ipv4*: IP protocol version 4
+   * *ipv6*: IP protocol version 6
+
+``<src_ip>``
+
+ * The source IP address and mask
+
+ * Optional: Yes, default address 0.0.0.0 and mask of 0 will be used
+
+ * Syntax:
+
+   * *src X.X.X.X/Y* for IPv4
+   * *src XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/Y* for IPv6
+
+``<dst_ip>``
+
+ * The destination IP address and mask
+
+ * Optional: Yes, default address 0.0.0.0 and mask of 0 will be used
+
+ * Syntax:
+
+   * *dst X.X.X.X/Y* for IPv4
+   * *dst XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/Y* for IPv6
+
+``<port>``
+
+ * The traffic output port id
+
+ * Optional: yes, default output port 0 will be used
+
+ * Syntax: *port X*
+
+Example SP rules:
+
+.. code-block:: console
+
+    rt ipv4 dst 172.16.1.5/32 port 0
+
+    rt ipv6 dst 1111:1111:1111:1111:1111:1111:1111:5555/116 port 0

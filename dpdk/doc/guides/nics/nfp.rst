@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2015 Netronome Systems, Inc. All rights reserved.
+    Copyright(c) 2015-2017 Netronome Systems, Inc. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -38,40 +38,43 @@ up to 400 Gbps.
 
 This document explains how to use DPDK with the Netronome Poll Mode
 Driver (PMD) supporting Netronome's Network Flow Processor 6xxx
-(NFP-6xxx).
+(NFP-6xxx) and Netronome's Flow Processor 4xxx (NFP-4xxx).
 
-Currently the driver supports virtual functions (VFs) only.
+NFP is a SRIOV capable device and the PMD driver supports the physical
+function (PF) and virtual functions (VFs).
 
 Dependencies
 ------------
 
-Before using the Netronome's DPDK PMD some NFP-6xxx configuration,
+Before using the Netronome's DPDK PMD some NFP configuration,
 which is not related to DPDK, is required. The system requires
-installation of **Netronome's BSP (Board Support Package)** which includes
-Linux drivers, programs and libraries.
+installation of **Netronome's BSP (Board Support Package)** along
+with some specific NFP firmware application. Netronome's NSP ABI
+version should be 0.20 or higher.
 
-If you have a NFP-6xxx device you should already have the code and
-documentation for doing this configuration. Contact
+If you have a NFP device you should already have the code and
+documentation for doing all this configuration. Contact
 **support@netronome.com** to obtain the latest available firmware.
 
-The NFP Linux kernel drivers (including the required PF driver for the
-NFP) are available on Github at
+The NFP Linux netdev kernel driver for VFs is part of vanilla kernel
+since kernel version 4.5, and support for the PF since kernel version
+4.11. Support for older kernels can be obtained on Github at
 **https://github.com/Netronome/nfp-drv-kmods** along with build
 instructions.
 
-DPDK runs in userspace and PMDs uses the Linux kernel UIO interface to
-allow access to physical devices from userspace. The NFP PMD requires
-the **igb_uio** UIO driver, available with DPDK, to perform correct
-initialization.
+NFP PMD needs to be used along with UIO ``igb_uio`` or VFIO (``vfio-pci``)
+Linux kernel driver.
 
 Building the software
 ---------------------
 
 Netronome's PMD code is provided in the **drivers/net/nfp** directory.
-Because Netronome´s BSP dependencies the driver is disabled by default
-in DPDK build using **common_linuxapp configuration** file. Enabling the
-driver or if you use another configuration file and want to have NFP
-support, this variable is needed:
+Although NFP PMD has Netronome´s BSP dependencies, it is possible to
+compile it along with other DPDK PMDs even if no BSP was installed before.
+Of course, a DPDK app will require such a BSP installed for using the
+NFP PMD, along with a specific NFP firmware application.
+
+Default PMD configuration is at **common_linuxapp configuration** file:
 
 - **CONFIG_RTE_LIBRTE_NFP_PMD=y**
 
@@ -79,90 +82,59 @@ Once DPDK is built all the DPDK apps and examples include support for
 the NFP PMD.
 
 
+Driver compilation and testing
+------------------------------
+
+Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
+for details.
+
+Using the PF
+------------
+
+NFP PMD has support for using the NFP PF as another DPDK port, but it does not
+have any functionality for controlling VFs. In fact, it is not possible to use
+the PMD with the VFs if the PF is being used by DPDK, that is, with the NFP PF
+bound to ``igb_uio`` or ``vfio-pci`` kernel drivers. Future DPDK version will
+have a PMD able to work with the PF and VFs at the same time and with the PF
+implementing VF management along with other PF-only functionalities/offloads.
+
+The PMD PF has extra work to do which will delay the DPDK app initialization
+like checking if a firmware is already available in the device, uploading the
+firmware if necessary, and configure the Link state properly when starting or
+stopping a PF port. Note that firmware upload is not always necessary which is
+the main delay for NFP PF PMD initialization.
+
+Depending on the Netronome product installed in the system, firmware files
+should be available under ``/lib/firmware/netronome``. DPDK PMD supporting the
+PF requires a specific link, ``/lib/firmware/netronome/nic_dpdk_default.nffw``,
+which should be created automatically with Netronome's Agilio products
+installation.
+
+PF multiport support
+--------------------
+
+Some NFP cards support several physical ports with just one single PCI device.
+DPDK core is designed with the 1:1 relationship between PCI devices and DPDK
+ports, so NFP PMD PF support requires handling the multiport case specifically.
+During NFP PF initialization, the PMD will extract the information about the
+number of PF ports from the firmware and will create as many DPDK ports as
+needed.
+
+Because the unusual relationship between a single PCI device and several DPDK
+ports, there are some limitations when using more than one PF DPDK ports: there
+is no support for RX interrupts and it is not possible either to use those PF
+ports with the device hotplug functionality.
+
+
 System configuration
 --------------------
 
-Using the NFP PMD is not different to using other PMDs. Usual steps are:
-
-#. **Configure hugepages:** All major Linux distributions have the hugepages
-   functionality enabled by default. By default this allows the system uses for
-   working with transparent hugepages. But in this case some hugepages need to
-   be created/reserved for use with the DPDK through the hugetlbfs file system.
-   First the virtual file system need to be mounted:
-
-   .. code-block:: console
-
-      mount -t hugetlbfs none /mnt/hugetlbfs
-
-   The command uses the common mount point for this file system and it needs to
-   be created if necessary.
-
-   Configuring hugepages is performed via sysfs:
-
-   .. code-block:: console
-
-      /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-
-   This sysfs file is used to specify the number of hugepages to reserve.
-   For example:
-
-   .. code-block:: console
-
-      echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-
-   This will reserve 2GB of memory using 1024 2MB hugepages. The file may be
-   read to see if the operation was performed correctly:
-
-   .. code-block:: console
-
-      cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-
-   The number of unused hugepages may also be inspected.
-
-   Before executing the DPDK app it should match the value of nr_hugepages.
-
-   .. code-block:: console
-
-      cat /sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages
-
-   The hugepages reservation should be performed at system initialization and
-   it is usual to use a kernel parameter for configuration. If the reservation
-   is attempted on a busy system it will likely fail. Reserving memory for
-   hugepages may be done adding the following to the grub kernel command line:
-
-   .. code-block:: console
-
-      default_hugepagesz=1M hugepagesz=2M hugepages=1024
-
-   This will reserve 2GBytes of memory using 2Mbytes huge pages.
-
-   Finally, for a NUMA system the allocation needs to be made on the correct
-   NUMA node. In a DPDK app there is a master core which will (usually) perform
-   memory allocation. It is important that some of the hugepages are reserved
-   on the NUMA memory node where the network device is attached. This is because
-   of a restriction in DPDK by which TX and RX descriptors rings must be created
-   on the master code.
-
-   Per-node allocation of hugepages may be inspected and controlled using sysfs.
-   For example:
-
-   .. code-block:: console
-
-      cat /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
-
-   For a NUMA system there will be a specific hugepage directory per node
-   allowing control of hugepage reservation. A common problem may occur when
-   hugepages reservation is performed after the system has been working for
-   some time. Configuration using the global sysfs hugepage interface will
-   succeed but the per-node allocations may be unsatisfactory.
-
-   The number of hugepages that need to be reserved depends on how the app uses
-   TX and RX descriptors, and packets mbufs.
-
-#. **Enable SR-IOV on the NFP-6xxx device:** The current NFP PMD works with
-   Virtual Functions (VFs) on a NFP device. Make sure that one of the Physical
-   Function (PF) drivers from the above Github repository is installed and
-   loaded.
+#. **Enable SR-IOV on the NFP device:** The current NFP PMD supports the PF and
+   the VFs on a NFP device. However, it is not possible to work with both at the
+   same time because the VFs require the PF being bound to the NFP PF Linux
+   netdev driver.  Make sure you are working with a kernel with NFP PF support or
+   get the drivers from the above Github repository and follow the instructions
+   for building and installing it.
 
    Virtual Functions need to be enabled before they can be used with the PMD.
    Before enabling the VFs it is useful to obtain information about the
@@ -189,62 +161,3 @@ Using the NFP PMD is not different to using other PMDs. Usual steps are:
    -k option shows the device driver, if any, that devices are bound to.
    Depending on the modules loaded at this point the new PCI devices may be
    bound to nfp_netvf driver.
-
-#. **To install the uio kernel module (manually):** All major Linux
-   distributions have support for this kernel module so it is straightforward
-   to install it:
-
-   .. code-block:: console
-
-      modprobe uio
-
-   The module should now be listed by the lsmod command.
-
-#. **To install the igb_uio kernel module (manually):** This module is part
-   of DPDK sources and configured by default (CONFIG_RTE_EAL_IGB_UIO=y).
-
-   .. code-block:: console
-
-      modprobe igb_uio.ko
-
-   The module should now be listed by the lsmod command.
-
-   Depending on which NFP modules are loaded, it could be necessary to
-   detach NFP devices from the nfp_netvf module. If this is the case the
-   device needs to be unbound, for example:
-
-   .. code-block:: console
-
-      echo 0000:03:08.0 > /sys/bus/pci/devices/0000:03:08.0/driver/unbind
-
-      lspci -d19ee: -k
-
-   The output of lspci should now show that 0000:03:08.0 is not bound to
-   any driver.
-
-   The next step is to add the NFP PCI ID to the IGB UIO driver:
-
-   .. code-block:: console
-
-      echo 19ee 6003 > /sys/bus/pci/drivers/igb_uio/new_id
-
-   And then to bind the device to the igb_uio driver:
-
-   .. code-block:: console
-
-      echo 0000:03:08.0 > /sys/bus/pci/drivers/igb_uio/bind
-
-      lspci -d19ee: -k
-
-   lspci should show that device bound to igb_uio driver.
-
-#. **Using scripts to install and bind modules:** DPDK provides scripts which are
-   useful for installing the UIO modules and for binding the right device to those
-   modules avoiding doing so manually:
-
-   * **dpdk-setup.sh**
-   * **dpdk-devbind.py**
-
-   Configuration may be performed by running dpdk-setup.sh which invokes
-   dpdk-devbind.py as needed. Executing dpdk-setup.sh will display a menu of
-   configuration options.

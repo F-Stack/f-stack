@@ -57,7 +57,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -72,6 +71,7 @@
 #include <rte_cryptodev.h>
 
 #include "ipsec.h"
+#include "parser.h"
 
 #define RTE_LOGTYPE_IPSEC RTE_LOGTYPE_USER1
 
@@ -81,6 +81,7 @@
 
 #define NB_MBUF	(32000)
 
+#define CDEV_QUEUE_DESC 2048
 #define CDEV_MAP_ENTRIES 1024
 #define CDEV_MP_NB_OBJS 2048
 #define CDEV_MP_CACHE_SZ 64
@@ -88,8 +89,6 @@
 
 #define OPTION_CONFIG		"config"
 #define OPTION_SINGLE_SA	"single-sa"
-#define OPTION_EP0		"ep0"
-#define OPTION_EP1		"ep1"
 
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
@@ -158,18 +157,18 @@ static uint32_t enabled_port_mask;
 static uint32_t unprotected_port_mask;
 static int32_t promiscuous_on = 1;
 static int32_t numa_on = 1; /**< NUMA is enabled by default. */
-static int32_t ep = -1; /**< Endpoint configuration (0 or 1) */
 static uint32_t nb_lcores;
 static uint32_t single_sa;
 static uint32_t single_sa_idx;
+static uint32_t frame_size;
 
 struct lcore_rx_queue {
-	uint8_t port_id;
+	uint16_t port_id;
 	uint8_t queue_id;
 } __rte_cache_aligned;
 
 struct lcore_params {
-	uint8_t port_id;
+	uint16_t port_id;
 	uint8_t queue_id;
 	uint8_t lcore_id;
 } __rte_cache_aligned;
@@ -205,11 +204,9 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode	= ETH_MQ_RX_RSS,
 		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.offloads = DEV_RX_OFFLOAD_CHECKSUM |
+			    DEV_RX_OFFLOAD_CRC_STRIP,
+		.ignore_offload_bitfield = 1,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -291,7 +288,7 @@ prepare_traffic(struct rte_mbuf **pkts, struct ipsec_traffic *t,
 }
 
 static inline void
-prepare_tx_pkt(struct rte_mbuf *pkt, uint8_t port)
+prepare_tx_pkt(struct rte_mbuf *pkt, uint16_t port)
 {
 	struct ip *ip;
 	struct ether_hdr *ethhdr;
@@ -321,7 +318,7 @@ prepare_tx_pkt(struct rte_mbuf *pkt, uint8_t port)
 }
 
 static inline void
-prepare_tx_burst(struct rte_mbuf *pkts[], uint16_t nb_pkts, uint8_t port)
+prepare_tx_burst(struct rte_mbuf *pkts[], uint16_t nb_pkts, uint16_t port)
 {
 	int32_t i;
 	const int32_t prefetch_offset = 2;
@@ -337,7 +334,7 @@ prepare_tx_burst(struct rte_mbuf *pkts[], uint16_t nb_pkts, uint8_t port)
 
 /* Send burst of packets on an output interface */
 static inline int32_t
-send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
+send_burst(struct lcore_conf *qconf, uint16_t n, uint16_t port)
 {
 	struct rte_mbuf **m_table;
 	int32_t ret;
@@ -360,7 +357,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
 
 /* Enqueue a single packet, and send burst if queue is filled */
 static inline int32_t
-send_single_packet(struct rte_mbuf *m, uint8_t port)
+send_single_packet(struct rte_mbuf *m, uint16_t port)
 {
 	uint32_t lcore_id;
 	uint16_t len;
@@ -410,7 +407,8 @@ inbound_sp_sa(struct sp_ctx *sp, struct sa_ctx *sa, struct traffic_type *ip,
 		}
 		/* Only check SPI match for processed IPSec packets */
 		sa_idx = ip->res[i] & PROTECT_MASK;
-		if (sa_idx == 0 || !inbound_sa_check(sa, m, sa_idx)) {
+		if (sa_idx >= IPSEC_SA_MAX_ENTRIES ||
+				!inbound_sa_check(sa, m, sa_idx)) {
 			rte_pktmbuf_free(m);
 			continue;
 		}
@@ -475,9 +473,9 @@ outbound_sp(struct sp_ctx *sp, struct traffic_type *ip,
 	for (i = 0; i < ip->num; i++) {
 		m = ip->pkts[i];
 		sa_idx = ip->res[i] & PROTECT_MASK;
-		if ((ip->res[i] == 0) || (ip->res[i] & DISCARD))
+		if (ip->res[i] & DISCARD)
 			rte_pktmbuf_free(m);
-		else if (sa_idx != 0) {
+		else if (sa_idx < IPSEC_SA_MAX_ENTRIES) {
 			ipsec->res[ipsec->num] = sa_idx;
 			ipsec->pkts[ipsec->num++] = m;
 		} else /* BYPASS */
@@ -588,66 +586,139 @@ process_pkts_outbound_nosp(struct ipsec_ctx *ipsec_ctx,
 		traffic->ip6.num = nb_pkts_out;
 }
 
+static inline int32_t
+get_hop_for_offload_pkt(struct rte_mbuf *pkt, int is_ipv6)
+{
+	struct ipsec_mbuf_metadata *priv;
+	struct ipsec_sa *sa;
+
+	priv = get_priv(pkt);
+
+	sa = priv->sa;
+	if (unlikely(sa == NULL)) {
+		RTE_LOG(ERR, IPSEC, "SA not saved in private data\n");
+		goto fail;
+	}
+
+	if (is_ipv6)
+		return sa->portid;
+
+	/* else */
+	return (sa->portid | RTE_LPM_LOOKUP_SUCCESS);
+
+fail:
+	if (is_ipv6)
+		return -1;
+
+	/* else */
+	return 0;
+}
+
 static inline void
 route4_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 {
 	uint32_t hop[MAX_PKT_BURST * 2];
 	uint32_t dst_ip[MAX_PKT_BURST * 2];
+	int32_t pkt_hop = 0;
 	uint16_t i, offset;
+	uint16_t lpm_pkts = 0;
 
 	if (nb_pkts == 0)
 		return;
 
+	/* Need to do an LPM lookup for non-inline packets. Inline packets will
+	 * have port ID in the SA
+	 */
+
 	for (i = 0; i < nb_pkts; i++) {
-		offset = offsetof(struct ip, ip_dst);
-		dst_ip[i] = *rte_pktmbuf_mtod_offset(pkts[i],
-				uint32_t *, offset);
-		dst_ip[i] = rte_be_to_cpu_32(dst_ip[i]);
+		if (!(pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD)) {
+			/* Security offload not enabled. So an LPM lookup is
+			 * required to get the hop
+			 */
+			offset = offsetof(struct ip, ip_dst);
+			dst_ip[lpm_pkts] = *rte_pktmbuf_mtod_offset(pkts[i],
+					uint32_t *, offset);
+			dst_ip[lpm_pkts] = rte_be_to_cpu_32(dst_ip[lpm_pkts]);
+			lpm_pkts++;
+		}
 	}
 
-	rte_lpm_lookup_bulk((struct rte_lpm *)rt_ctx, dst_ip, hop, nb_pkts);
+	rte_lpm_lookup_bulk((struct rte_lpm *)rt_ctx, dst_ip, hop, lpm_pkts);
+
+	lpm_pkts = 0;
 
 	for (i = 0; i < nb_pkts; i++) {
-		if ((hop[i] & RTE_LPM_LOOKUP_SUCCESS) == 0) {
+		if (pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD) {
+			/* Read hop from the SA */
+			pkt_hop = get_hop_for_offload_pkt(pkts[i], 0);
+		} else {
+			/* Need to use hop returned by lookup */
+			pkt_hop = hop[lpm_pkts++];
+		}
+
+		if ((pkt_hop & RTE_LPM_LOOKUP_SUCCESS) == 0) {
 			rte_pktmbuf_free(pkts[i]);
 			continue;
 		}
-		send_single_packet(pkts[i], hop[i] & 0xff);
+		send_single_packet(pkts[i], pkt_hop & 0xff);
 	}
 }
 
 static inline void
 route6_pkts(struct rt_ctx *rt_ctx, struct rte_mbuf *pkts[], uint8_t nb_pkts)
 {
-	int16_t hop[MAX_PKT_BURST * 2];
+	int32_t hop[MAX_PKT_BURST * 2];
 	uint8_t dst_ip[MAX_PKT_BURST * 2][16];
 	uint8_t *ip6_dst;
+	int32_t pkt_hop = 0;
 	uint16_t i, offset;
+	uint16_t lpm_pkts = 0;
 
 	if (nb_pkts == 0)
 		return;
 
+	/* Need to do an LPM lookup for non-inline packets. Inline packets will
+	 * have port ID in the SA
+	 */
+
 	for (i = 0; i < nb_pkts; i++) {
-		offset = offsetof(struct ip6_hdr, ip6_dst);
-		ip6_dst = rte_pktmbuf_mtod_offset(pkts[i], uint8_t *, offset);
-		memcpy(&dst_ip[i][0], ip6_dst, 16);
+		if (!(pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD)) {
+			/* Security offload not enabled. So an LPM lookup is
+			 * required to get the hop
+			 */
+			offset = offsetof(struct ip6_hdr, ip6_dst);
+			ip6_dst = rte_pktmbuf_mtod_offset(pkts[i], uint8_t *,
+					offset);
+			memcpy(&dst_ip[lpm_pkts][0], ip6_dst, 16);
+			lpm_pkts++;
+		}
 	}
 
-	rte_lpm6_lookup_bulk_func((struct rte_lpm6 *)rt_ctx, dst_ip,
-			hop, nb_pkts);
+	rte_lpm6_lookup_bulk_func((struct rte_lpm6 *)rt_ctx, dst_ip, hop,
+			lpm_pkts);
+
+	lpm_pkts = 0;
 
 	for (i = 0; i < nb_pkts; i++) {
-		if (hop[i] == -1) {
+		if (pkts[i]->ol_flags & PKT_TX_SEC_OFFLOAD) {
+			/* Read hop from the SA */
+			pkt_hop = get_hop_for_offload_pkt(pkts[i], 1);
+		} else {
+			/* Need to use hop returned by lookup */
+			pkt_hop = hop[lpm_pkts++];
+		}
+
+		if (pkt_hop == -1) {
 			rte_pktmbuf_free(pkts[i]);
 			continue;
 		}
-		send_single_packet(pkts[i], hop[i] & 0xff);
+		send_single_packet(pkts[i], pkt_hop & 0xff);
 	}
 }
 
 static inline void
 process_pkts(struct lcore_conf *qconf, struct rte_mbuf **pkts,
-		uint8_t nb_pkts, uint8_t portid)
+		uint8_t nb_pkts, uint16_t portid)
 {
 	struct ipsec_traffic traffic;
 
@@ -692,7 +763,8 @@ main_loop(__attribute__((unused)) void *dummy)
 	uint32_t lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int32_t i, nb_rx;
-	uint8_t portid, queueid;
+	uint16_t portid;
+	uint8_t queueid;
 	struct lcore_conf *qconf;
 	int32_t socket_id;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1)
@@ -711,10 +783,12 @@ main_loop(__attribute__((unused)) void *dummy)
 	qconf->inbound.sp6_ctx = socket_ctx[socket_id].sp_ip6_in;
 	qconf->inbound.sa_ctx = socket_ctx[socket_id].sa_in;
 	qconf->inbound.cdev_map = cdev_map_in;
+	qconf->inbound.session_pool = socket_ctx[socket_id].session_pool;
 	qconf->outbound.sp4_ctx = socket_ctx[socket_id].sp_ip4_out;
 	qconf->outbound.sp6_ctx = socket_ctx[socket_id].sp_ip6_out;
 	qconf->outbound.sa_ctx = socket_ctx[socket_id].sa_out;
 	qconf->outbound.cdev_map = cdev_map_out;
+	qconf->outbound.session_pool = socket_ctx[socket_id].session_pool;
 
 	if (qconf->nb_rx_queue == 0) {
 		RTE_LOG(INFO, IPSEC, "lcore %u has nothing to do\n", lcore_id);
@@ -727,7 +801,7 @@ main_loop(__attribute__((unused)) void *dummy)
 		portid = rxql[i].port_id;
 		queueid = rxql[i].queue_id;
 		RTE_LOG(INFO, IPSEC,
-			" -- lcoreid=%u portid=%hhu rxqueueid=%hhu\n",
+			" -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
 			lcore_id, portid, queueid);
 	}
 
@@ -758,7 +832,8 @@ main_loop(__attribute__((unused)) void *dummy)
 static int32_t
 check_params(void)
 {
-	uint8_t lcore, portid, nb_ports;
+	uint8_t lcore;
+	uint16_t portid, nb_ports;
 	uint16_t i;
 	int32_t socket_id;
 
@@ -796,7 +871,7 @@ check_params(void)
 }
 
 static uint8_t
-get_port_nb_rx_queues(const uint8_t port)
+get_port_nb_rx_queues(const uint16_t port)
 {
 	int32_t queue = -1;
 	uint16_t i;
@@ -838,16 +913,17 @@ print_usage(const char *prgname)
 {
 	printf("%s [EAL options] -- -p PORTMASK -P -u PORTMASK"
 		"  --"OPTION_CONFIG" (port,queue,lcore)[,(port,queue,lcore]"
-		" --single-sa SAIDX --ep0|--ep1\n"
+		" --single-sa SAIDX -f CONFIG_FILE\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
 		"  -P : enable promiscuous mode\n"
 		"  -u PORTMASK: hexadecimal bitmask of unprotected ports\n"
+		"  -j FRAMESIZE: jumbo frame maximum size\n"
 		"  --"OPTION_CONFIG": (port,queue,lcore): "
 		"rx queues configuration\n"
 		"  --single-sa SAIDX: use single SA index for outbound, "
 		"bypassing the SP\n"
-		"  --ep0: Configure as Endpoint 0\n"
-		"  --ep1: Configure as Endpoint 1\n", prgname);
+		"  -f CONFIG_FILE: Configuration file path\n",
+		prgname);
 }
 
 static int32_t
@@ -960,18 +1036,6 @@ parse_args_long_options(struct option *lgopts, int32_t option_index)
 		}
 	}
 
-	if (__STRNCMP(optname, OPTION_EP0)) {
-		printf("endpoint 0\n");
-		ep = 0;
-		ret = 0;
-	}
-
-	if (__STRNCMP(optname, OPTION_EP1)) {
-		printf("endpoint 1\n");
-		ep = 1;
-		ret = 0;
-	}
-
 	return ret;
 }
 #undef __STRNCMP
@@ -986,14 +1050,13 @@ parse_args(int32_t argc, char **argv)
 	static struct option lgopts[] = {
 		{OPTION_CONFIG, 1, 0, 0},
 		{OPTION_SINGLE_SA, 1, 0, 0},
-		{OPTION_EP0, 0, 0, 0},
-		{OPTION_EP1, 0, 0, 0},
 		{NULL, 0, 0, 0}
 	};
+	int32_t f_present = 0;
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "p:Pu:",
+	while ((opt = getopt_long(argc, argvopt, "p:Pu:f:j:",
 				lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -1017,6 +1080,38 @@ parse_args(int32_t argc, char **argv)
 				return -1;
 			}
 			break;
+		case 'f':
+			if (f_present == 1) {
+				printf("\"-f\" option present more than "
+					"once!\n");
+				print_usage(prgname);
+				return -1;
+			}
+			if (parse_cfg_file(optarg) < 0) {
+				printf("parsing file \"%s\" failed\n",
+					optarg);
+				print_usage(prgname);
+				return -1;
+			}
+			f_present = 1;
+			break;
+		case 'j':
+			{
+				int32_t size = parse_decimal(optarg);
+				if (size <= 1518) {
+					printf("Invalid jumbo frame size\n");
+					if (size < 0) {
+						print_usage(prgname);
+						return -1;
+					}
+					printf("Using default value 9000\n");
+					frame_size = 9000;
+				} else {
+					frame_size = size;
+				}
+			}
+			printf("Enabled jumbo frames size %u\n", frame_size);
+			break;
 		case 0:
 			if (parse_args_long_options(lgopts, option_index)) {
 				print_usage(prgname);
@@ -1029,11 +1124,16 @@ parse_args(int32_t argc, char **argv)
 		}
 	}
 
+	if (f_present == 0) {
+		printf("Mandatory option \"-f\" not present\n");
+		return -1;
+	}
+
 	if (optind >= 0)
 		argv[optind-1] = prgname;
 
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
@@ -1047,11 +1147,12 @@ print_ethaddr(const char *name, const struct ether_addr *eth_addr)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
@@ -1066,14 +1167,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(uint32_t)link.link_speed,
+					printf(
+					"Port%d Link Up - speed %u Mbps -%s\n",
+						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-						(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -1105,7 +1205,8 @@ add_mapping(struct rte_hash *map, const char *str, uint16_t cdev_id,
 		uint16_t qp, struct lcore_params *params,
 		struct ipsec_ctx *ipsec_ctx,
 		const struct rte_cryptodev_capabilities *cipher,
-		const struct rte_cryptodev_capabilities *auth)
+		const struct rte_cryptodev_capabilities *auth,
+		const struct rte_cryptodev_capabilities *aead)
 {
 	int32_t ret = 0;
 	unsigned long i;
@@ -1116,6 +1217,8 @@ add_mapping(struct rte_hash *map, const char *str, uint16_t cdev_id,
 		key.cipher_algo = cipher->sym.cipher.algo;
 	if (auth)
 		key.auth_algo = auth->sym.auth.algo;
+	if (aead)
+		key.aead_algo = aead->sym.aead.algo;
 
 	ret = rte_hash_lookup(map, &key);
 	if (ret != -ENOENT)
@@ -1184,6 +1287,12 @@ add_cdev_mapping(struct rte_cryptodev_info *dev_info, uint16_t cdev_id,
 		if (i->op != RTE_CRYPTO_OP_TYPE_SYMMETRIC)
 			continue;
 
+		if (i->sym.xform_type == RTE_CRYPTO_SYM_XFORM_AEAD) {
+			ret |= add_mapping(map, str, cdev_id, qp, params,
+					ipsec_ctx, NULL, NULL, i);
+			continue;
+		}
+
 		if (i->sym.xform_type != RTE_CRYPTO_SYM_XFORM_CIPHER)
 			continue;
 
@@ -1196,7 +1305,7 @@ add_cdev_mapping(struct rte_cryptodev_info *dev_info, uint16_t cdev_id,
 				continue;
 
 			ret |= add_mapping(map, str, cdev_id, qp, params,
-					ipsec_ctx, i, j);
+						ipsec_ctx, i, j, NULL);
 		}
 	}
 
@@ -1232,6 +1341,13 @@ cryptodevs_init(void)
 
 	printf("lcore/cryptodev/qp mappings:\n");
 
+	uint32_t max_sess_sz = 0, sess_sz;
+	for (cdev_id = 0; cdev_id < rte_cryptodev_count(); cdev_id++) {
+		sess_sz = rte_cryptodev_get_private_session_size(cdev_id);
+		if (sess_sz > max_sess_sz)
+			max_sess_sz = sess_sz;
+	}
+
 	idx = 0;
 	/* Start from last cdev id to give HW priority */
 	for (cdev_id = rte_cryptodev_count() - 1; cdev_id >= 0; cdev_id--) {
@@ -1260,17 +1376,39 @@ cryptodevs_init(void)
 
 		dev_conf.socket_id = rte_cryptodev_socket_id(cdev_id);
 		dev_conf.nb_queue_pairs = qp;
-		dev_conf.session_mp.nb_objs = CDEV_MP_NB_OBJS;
-		dev_conf.session_mp.cache_size = CDEV_MP_CACHE_SZ;
+
+		if (!socket_ctx[dev_conf.socket_id].session_pool) {
+			char mp_name[RTE_MEMPOOL_NAMESIZE];
+			struct rte_mempool *sess_mp;
+
+			snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
+					"sess_mp_%u", dev_conf.socket_id);
+			sess_mp = rte_mempool_create(mp_name,
+					CDEV_MP_NB_OBJS,
+					max_sess_sz,
+					CDEV_MP_CACHE_SZ,
+					0, NULL, NULL, NULL,
+					NULL, dev_conf.socket_id,
+					0);
+			if (sess_mp == NULL)
+				rte_exit(EXIT_FAILURE,
+					"Cannot create session pool on socket %d\n",
+					dev_conf.socket_id);
+			else
+				printf("Allocated session pool on socket %d\n",
+					dev_conf.socket_id);
+			socket_ctx[dev_conf.socket_id].session_pool = sess_mp;
+		}
 
 		if (rte_cryptodev_configure(cdev_id, &dev_conf))
-			rte_panic("Failed to initialize crypodev %u\n",
+			rte_panic("Failed to initialize cryptodev %u\n",
 					cdev_id);
 
-		qp_conf.nb_descriptors = CDEV_MP_NB_OBJS;
+		qp_conf.nb_descriptors = CDEV_QUEUE_DESC;
 		for (qp = 0; qp < dev_conf.nb_queue_pairs; qp++)
 			if (rte_cryptodev_queue_pair_setup(cdev_id, qp,
-						&qp_conf, dev_conf.socket_id))
+					&qp_conf, dev_conf.socket_id,
+					socket_ctx[dev_conf.socket_id].session_pool))
 				rte_panic("Failed to setup queue %u for "
 						"cdev_id %u\n",	0, cdev_id);
 
@@ -1285,7 +1423,7 @@ cryptodevs_init(void)
 }
 
 static void
-port_init(uint8_t portid)
+port_init(uint16_t portid)
 {
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_txconf *txconf;
@@ -1320,10 +1458,25 @@ port_init(uint8_t portid)
 	printf("Creating queues: nb_rx_queue=%d nb_tx_queue=%u...\n",
 			nb_rx_queue, nb_tx_queue);
 
+	if (frame_size) {
+		port_conf.rxmode.max_rx_pkt_len = frame_size;
+		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+	}
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_SECURITY)
+		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SECURITY;
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_SECURITY)
+		port_conf.txmode.offloads |= DEV_TX_OFFLOAD_SECURITY;
+
 	ret = rte_eth_dev_configure(portid, nb_rx_queue, nb_tx_queue,
 			&port_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Cannot configure device: "
+				"err=%d, port=%d\n", ret, portid);
+
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd, &nb_txd);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "Cannot adjust number of descriptors: "
 				"err=%d, port=%d\n", ret, portid);
 
 	/* init one TX queue per lcore */
@@ -1379,11 +1532,14 @@ static void
 pool_init(struct socket_ctx *ctx, int32_t socket_id, uint32_t nb_mbuf)
 {
 	char s[64];
+	uint32_t buff_size = frame_size ? (frame_size + RTE_PKTMBUF_HEADROOM) :
+			RTE_MBUF_DEFAULT_BUF_SIZE;
+
 
 	snprintf(s, sizeof(s), "mbuf_pool_%d", socket_id);
 	ctx->mbuf_pool = rte_pktmbuf_pool_create(s, nb_mbuf,
 			MEMPOOL_CACHE_SIZE, ipsec_metadata_size(),
-			RTE_MBUF_DEFAULT_BUF_SIZE,
+			buff_size,
 			socket_id);
 	if (ctx->mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool on socket %d\n",
@@ -1396,8 +1552,9 @@ int32_t
 main(int32_t argc, char **argv)
 {
 	int32_t ret;
-	uint32_t lcore_id, nb_ports;
-	uint8_t portid, socket_id;
+	uint32_t lcore_id;
+	uint8_t socket_id;
+	uint16_t portid, nb_ports;
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -1410,9 +1567,6 @@ main(int32_t argc, char **argv)
 	ret = parse_args(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid parameters\n");
-
-	if (ep < 0)
-		rte_exit(EXIT_FAILURE, "need to choose either EP0 or EP1\n");
 
 	if ((unprotected_port_mask & enabled_port_mask) !=
 			unprotected_port_mask)
@@ -1430,7 +1584,7 @@ main(int32_t argc, char **argv)
 
 	nb_lcores = rte_lcore_count();
 
-	/* Replicate each contex per socket */
+	/* Replicate each context per socket */
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 		if (rte_lcore_is_enabled(lcore_id) == 0)
 			continue;
@@ -1443,13 +1597,13 @@ main(int32_t argc, char **argv)
 		if (socket_ctx[socket_id].mbuf_pool)
 			continue;
 
-		sa_init(&socket_ctx[socket_id], socket_id, ep);
+		sa_init(&socket_ctx[socket_id], socket_id);
 
-		sp4_init(&socket_ctx[socket_id], socket_id, ep);
+		sp4_init(&socket_ctx[socket_id], socket_id);
 
-		sp6_init(&socket_ctx[socket_id], socket_id, ep);
+		sp6_init(&socket_ctx[socket_id], socket_id);
 
-		rt_init(&socket_ctx[socket_id], socket_id, ep);
+		rt_init(&socket_ctx[socket_id], socket_id);
 
 		pool_init(&socket_ctx[socket_id], socket_id, NB_MBUF);
 	}
@@ -1483,7 +1637,7 @@ main(int32_t argc, char **argv)
 			rte_eth_promiscuous_enable(portid);
 	}
 
-	check_all_ports_link_status((uint8_t)nb_ports, enabled_port_mask);
+	check_all_ports_link_status(nb_ports, enabled_port_mask);
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);

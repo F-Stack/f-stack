@@ -80,7 +80,8 @@ bond_mode_alb_enable(struct rte_eth_dev *bond_dev)
 		 * The value is chosen to be cache aligned.
 		 */
 		data_size = 256 + RTE_PKTMBUF_HEADROOM;
-		snprintf(mem_name, sizeof(mem_name), "%s_MODE6", bond_dev->data->name);
+		snprintf(mem_name, sizeof(mem_name), "%s_ALB",
+				bond_dev->device->name);
 		internals->mode6.mempool = rte_pktmbuf_pool_create(mem_name,
 			512 * RTE_MAX_ETHPORTS,
 			RTE_MEMPOOL_CACHE_MAX_SIZE >= 32 ?
@@ -89,7 +90,7 @@ bond_mode_alb_enable(struct rte_eth_dev *bond_dev)
 
 		if (internals->mode6.mempool == NULL) {
 			RTE_LOG(ERR, PMD, "%s: Failed to initialize ALB mempool.\n",
-					bond_dev->data->name);
+					bond_dev->device->name);
 			goto mempool_alloc_error;
 		}
 	}
@@ -147,7 +148,7 @@ void bond_mode_alb_arp_recv(struct ether_hdr *eth_h, uint16_t offset,
 	rte_spinlock_unlock(&internals->mode6.lock);
 }
 
-uint8_t
+uint16_t
 bond_mode_alb_arp_xmit(struct ether_hdr *eth_h, uint16_t offset,
 		struct bond_dev_private *internals)
 {
@@ -219,13 +220,13 @@ bond_mode_alb_arp_xmit(struct ether_hdr *eth_h, uint16_t offset,
 	return internals->current_primary_port;
 }
 
-uint8_t
+uint16_t
 bond_mode_alb_arp_upd(struct client_data *client_info,
 		struct rte_mbuf *pkt, struct bond_dev_private *internals)
 {
 	struct ether_hdr *eth_h;
 	struct arp_hdr *arp_h;
-	uint8_t slave_idx;
+	uint16_t slave_idx;
 
 	rte_spinlock_lock(&internals->mode6.lock);
 	eth_h = rte_pktmbuf_mtod(pkt, struct ether_hdr *);

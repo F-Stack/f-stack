@@ -35,7 +35,6 @@ include $(RTE_SDK)/mk/internal/rte.compile-pre.mk
 include $(RTE_SDK)/mk/internal/rte.install-pre.mk
 include $(RTE_SDK)/mk/internal/rte.clean-pre.mk
 include $(RTE_SDK)/mk/internal/rte.build-pre.mk
-include $(RTE_SDK)/mk/internal/rte.depdirs-pre.mk
 
 # VPATH contains at least SRCDIR
 VPATH += $(SRCDIR)
@@ -70,9 +69,9 @@ O_TO_EXE_DO = @set -e; \
 -include .$(HOSTAPP).cmd
 
 # list of .a files that are linked to this application
-LDLIBS_FILES := $(wildcard \
+LDLIBS_FILES := $(sort $(wildcard \
 	$(addprefix $(RTE_OUTPUT)/lib/, \
-	$(patsubst -l%,lib%.a,$(filter -l%,$(LDLIBS)))))
+	$(patsubst -l%,lib%.a,$(filter -l%,$(LDLIBS))))))
 
 #
 # Compile executable file if needed
@@ -117,7 +116,6 @@ include $(RTE_SDK)/mk/internal/rte.compile-post.mk
 include $(RTE_SDK)/mk/internal/rte.install-post.mk
 include $(RTE_SDK)/mk/internal/rte.clean-post.mk
 include $(RTE_SDK)/mk/internal/rte.build-post.mk
-include $(RTE_SDK)/mk/internal/rte.depdirs-post.mk
 
 .PHONY: FORCE
 FORCE:

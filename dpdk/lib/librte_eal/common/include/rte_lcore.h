@@ -40,6 +40,7 @@
  * API for lcore and socket manipulation
  *
  */
+#include <rte_config.h>
 #include <rte_per_lcore.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
@@ -73,6 +74,7 @@ struct lcore_config {
 	unsigned core_id;          /**< core number on socket for this lcore */
 	int core_index;            /**< relative index, starting from 0 */
 	rte_cpuset_t cpuset;       /**< cpu set which the lcore affinity to */
+	uint8_t core_role;         /**< role of core eg: OFF, RTE, SERVICE */
 };
 
 /**
@@ -175,7 +177,7 @@ rte_lcore_is_enabled(unsigned lcore_id)
 	struct rte_config *cfg = rte_eal_get_configuration();
 	if (lcore_id >= RTE_MAX_LCORE)
 		return 0;
-	return cfg->lcore_role[lcore_id] != ROLE_OFF;
+	return cfg->lcore_role[lcore_id] == ROLE_RTE;
 }
 
 /**
@@ -260,6 +262,20 @@ void rte_thread_get_affinity(rte_cpuset_t *cpusetp);
  *   On success, return 0; otherwise return a negative value.
  */
 int rte_thread_setname(pthread_t id, const char *name);
+
+/**
+ * Test if the core supplied has a specific role
+ *
+ * @param lcore_id
+ *   The identifier of the lcore, which MUST be between 0 and
+ *   RTE_MAX_LCORE-1.
+ * @param role
+ *   The role to be checked against.
+ * @return
+ *   On success, return 0; otherwise return a negative value.
+ */
+int
+rte_lcore_has_role(unsigned int lcore_id, enum rte_lcore_role_t role);
 
 #ifdef __cplusplus
 }

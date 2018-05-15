@@ -51,9 +51,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_spinlock.h>
@@ -63,7 +61,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -77,8 +74,7 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 #define MBUF_NAME	"mbuf_pool_%d"
-#define MBUF_SIZE	\
-(RTE_MBUF_DEFAULT_DATAROOM + sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM)
+#define MBUF_DATA_SIZE	RTE_MBUF_DEFAULT_BUF_SIZE
 #define NB_MBUF   8192
 #define RING_MASTER_NAME	"l2fwd_ring_m2s_"
 #define RING_SLAVE_NAME		"l2fwd_ring_s2m_"
@@ -142,7 +138,8 @@ struct lcore_resource_struct {
 	/* ring[1] for slave send ack, master read */
 	struct rte_ring *ring[2];
 	int port_num;					/* Total port numbers */
-	uint8_t port[RTE_MAX_ETHPORTS]; /* Port id for that lcore to receive packets */
+	/* Port id for that lcore to receive packets */
+	uint16_t port[RTE_MAX_ETHPORTS];
 }__attribute__((packed)) __rte_cache_aligned;
 
 static struct lcore_resource_struct lcore_resource[RTE_MAX_LCORE];
@@ -163,7 +160,7 @@ static const struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
@@ -672,6 +669,8 @@ l2fwd_main_loop(void)
 					port_statistics[portid].tx += sent;
 
 			}
+
+			prev_tsc = cur_tsc;
 		}
 
 		/*
@@ -865,17 +864,18 @@ l2fwd_parse_args(int argc, char **argv)
 		return -1;
 	}
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
@@ -890,14 +890,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(unsigned)link.link_speed,
+					printf(
+					"Port%d Link Up- speed %u Mbps- %s\n",
+					portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-						(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -930,13 +929,12 @@ main(int argc, char **argv)
 	struct lcore_queue_conf *qconf;
 	struct rte_eth_dev_info dev_info;
 	int ret;
-	uint8_t nb_ports;
-	uint8_t nb_ports_available;
-	uint8_t portid, last_port;
+	uint16_t nb_ports;
+	uint16_t nb_ports_available;
+	uint16_t portid, last_port;
 	unsigned rx_lcore_id;
 	unsigned nb_ports_in_mask = 0;
 	unsigned i;
-	int flags = 0;
 	uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
 
 	/* Save cpu_affinity first, restore it in case it's floating process option */
@@ -986,17 +984,12 @@ main(int argc, char **argv)
 		if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
 			continue;
 		char buf_name[RTE_MEMPOOL_NAMESIZE];
-		flags = MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET;
 		snprintf(buf_name, RTE_MEMPOOL_NAMESIZE, MBUF_NAME, portid);
 		l2fwd_pktmbuf_pool[portid] =
-			rte_mempool_create(buf_name, NB_MBUF,
-					   MBUF_SIZE, 32,
-					   sizeof(struct rte_pktmbuf_pool_private),
-					   rte_pktmbuf_pool_init, NULL,
-					   rte_pktmbuf_init, NULL,
-					   rte_socket_id(), flags);
+			rte_pktmbuf_pool_create(buf_name, NB_MBUF, 32,
+				0, MBUF_DATA_SIZE, rte_socket_id());
 		if (l2fwd_pktmbuf_pool[portid] == NULL)
-			rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
+			rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 		printf("Create mbuf %s\n", buf_name);
 	}
@@ -1084,6 +1077,13 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
 				  ret, (unsigned) portid);
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+						       &nb_txd);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "rte_eth_dev_adjust_nb_rx_tx_desc: err=%d, port=%u\n",
+				 ret, (unsigned) portid);
 
 		rte_eth_macaddr_get(portid,&l2fwd_ports_eth_addr[portid]);
 
@@ -1203,10 +1203,7 @@ main(int argc, char **argv)
 	message_pool = rte_mempool_create("ms_msg_pool",
 			   NB_CORE_MSGBUF * RTE_MAX_LCORE,
 			   sizeof(enum l2fwd_cmd), NB_CORE_MSGBUF / 2,
-			   0,
-			   rte_pktmbuf_pool_init, NULL,
-			   rte_pktmbuf_init, NULL,
-			   rte_socket_id(), 0);
+			   0, NULL, NULL, NULL, NULL, rte_socket_id(), 0);
 
 	if (message_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Create msg mempool failed\n");

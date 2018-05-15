@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright (C) Cavium networks Ltd. 2016.
+ *   Copyright (C) Cavium, Inc. 2016.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -13,7 +13,7 @@
  *       notice, this list of conditions and the following disclaimer in
  *       the documentation and/or other materials provided with the
  *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
+ *     * Neither the name of Cavium, Inc nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -183,6 +183,26 @@ nicvf_handle_mbx_intr(struct nicvf *nic)
 		nic->speed = mbx.link_status.speed;
 		nic->pf_acked = true;
 		break;
+	case NIC_MBOX_MSG_ALLOC_SQS:
+		assert_primary(nic);
+		if (mbx.sqs_alloc.qs_count != nic->sqs_count) {
+			nicvf_log_error("Received %" PRIu8 "/%" PRIu8
+			                " secondary qsets",
+			                mbx.sqs_alloc.qs_count,
+			                nic->sqs_count);
+			abort();
+		}
+		for (i = 0; i < mbx.sqs_alloc.qs_count; i++) {
+			if (mbx.sqs_alloc.svf[i] != nic->snicvf[i]->vf_id) {
+				nicvf_log_error("Received secondary qset[%zu] "
+				                "ID %" PRIu8 " expected %"
+				                PRIu8, i, mbx.sqs_alloc.svf[i],
+				                nic->snicvf[i]->vf_id);
+				abort();
+			}
+		}
+		nic->pf_acked = true;
+		break;
 	default:
 		nicvf_log_error("Invalid message from PF, msg_id=0x%hhx %s",
 				mbx.msg.msg, nicvf_mbox_msg_str(mbx.msg.msg));
@@ -308,13 +328,35 @@ nicvf_mbox_qset_config(struct nicvf *nic, struct pf_qs_cfg *qs_cfg)
 {
 	struct nic_mbx mbx = { .msg = { 0 } };
 
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#if NICVF_BYTE_ORDER == NICVF_BIG_ENDIAN
 	qs_cfg->be = 1;
 #endif
 	/* Send a mailbox msg to PF to config Qset */
 	mbx.msg.msg = NIC_MBOX_MSG_QS_CFG;
 	mbx.qs.num = nic->vf_id;
+	mbx.qs.sqs_count = nic->sqs_count;
 	mbx.qs.cfg = qs_cfg->value;
+	return nicvf_mbox_send_msg_to_pf(nic, &mbx);
+}
+
+int
+nicvf_mbox_request_sqs(struct nicvf *nic)
+{
+	struct nic_mbx mbx = { .msg = { 0 } };
+	size_t i;
+
+	assert_primary(nic);
+	assert(nic->sqs_count > 0);
+	assert(nic->sqs_count <= MAX_SQS_PER_VF);
+
+	mbx.sqs_alloc.msg = NIC_MBOX_MSG_ALLOC_SQS;
+	mbx.sqs_alloc.spec = 1;
+	mbx.sqs_alloc.qs_count = nic->sqs_count;
+
+	/* Set no of Rx/Tx queues in each of the SQsets */
+	for (i = 0; i < nic->sqs_count; i++)
+		mbx.sqs_alloc.svf[i] = nic->snicvf[i]->vf_id;
+
 	return nicvf_mbox_send_msg_to_pf(nic, &mbx);
 }
 

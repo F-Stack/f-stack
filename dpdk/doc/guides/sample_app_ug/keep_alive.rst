@@ -66,27 +66,9 @@ of the L2 forwarding application.
 Compiling the Application
 -------------------------
 
-To compile the application:
+To compile the sample application see :doc:`compiling`.
 
-#.  Go to the sample application directory:
-
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk cd ${RTE_SDK}/examples/keep_alive
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``l2fwd_keep_alive`` sub-directory.
 
 Running the Application
 -----------------------
@@ -114,7 +96,7 @@ To run the application in linuxapp environment with 4 lcores, 16 ports
 
 .. code-block:: console
 
-    ./build/l2fwd-keepalive -c f -n 4 -- -q 8 -p ffff -K 10
+    ./build/l2fwd-keepalive -l 0-3 -n 4 -- -q 8 -p ffff -K 10
 
 Refer to the *DPDK Getting Started Guide* for general information on
 running applications and the Environment Abstraction Layer (EAL)
@@ -186,5 +168,5 @@ The rte_keepalive_mark_alive function simply sets the core state to alive.
     static inline void
     rte_keepalive_mark_alive(struct rte_keepalive *keepcfg)
     {
-        keepcfg->state_flags[rte_lcore_id()] = ALIVE;
+        keepcfg->live_data[rte_lcore_id()].core_state = RTE_KA_STATE_ALIVE;
     }

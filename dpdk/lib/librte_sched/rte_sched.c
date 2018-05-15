@@ -42,9 +42,9 @@
 #include <rte_prefetch.h>
 #include <rte_branch_prediction.h>
 #include <rte_mbuf.h>
+#include <rte_bitmap.h>
 
 #include "rte_sched.h"
-#include "rte_bitmap.h"
 #include "rte_sched_common.h"
 #include "rte_approx.h"
 #include "rte_reciprocal.h"
@@ -56,8 +56,10 @@
 #ifdef RTE_SCHED_VECTOR
 #include <rte_vect.h>
 
-#if defined(__SSE4__)
+#ifdef RTE_ARCH_X86
 #define SCHED_VECTOR_SSE4
+#elif defined(RTE_MACHINE_CPUFLAG_NEON)
+#define SCHED_VECTOR_NEON
 #endif
 
 #endif
@@ -735,11 +737,13 @@ void
 rte_sched_port_free(struct rte_sched_port *port)
 {
 	uint32_t qindex;
-	uint32_t n_queues_per_port = rte_sched_port_queues_per_port(port);
+	uint32_t n_queues_per_port;
 
 	/* Check user parameters */
 	if (port == NULL)
 		return;
+
+	n_queues_per_port = rte_sched_port_queues_per_port(port);
 
 	/* Free enqueued mbufs */
 	for (qindex = 0; qindex < n_queues_per_port; qindex++) {
@@ -1016,7 +1020,7 @@ rte_sched_subport_read_stats(struct rte_sched_port *port,
 	memcpy(stats, &s->stats, sizeof(struct rte_sched_subport_stats));
 	memset(&s->stats, 0, sizeof(struct rte_sched_subport_stats));
 
-	/* Subport TC ovesubscription status */
+	/* Subport TC oversubscription status */
 	*tc_ov = s->tc_ov;
 
 	return 0;
@@ -1728,6 +1732,26 @@ grinder_pipe_exists(struct rte_sched_port *port, uint32_t base_pipe)
 		return 0;
 
 	return 1;
+}
+
+#elif defined(SCHED_VECTOR_NEON)
+
+static inline int
+grinder_pipe_exists(struct rte_sched_port *port, uint32_t base_pipe)
+{
+	uint32x4_t index, pipes;
+	uint32_t *pos = (uint32_t *)port->grinder_base_bmp_pos;
+
+	index = vmovq_n_u32(base_pipe);
+	pipes = vld1q_u32(pos);
+	if (!vminvq_u32(veorq_u32(pipes, index)))
+		return 1;
+
+	pipes = vld1q_u32(pos + 4);
+	if (!vminvq_u32(veorq_u32(pipes, index)))
+		return 1;
+
+	return 0;
 }
 
 #else

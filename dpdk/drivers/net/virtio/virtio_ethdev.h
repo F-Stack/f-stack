@@ -47,14 +47,14 @@
 #define PAGE_SIZE 4096
 #endif
 
-#define VIRTIO_MAX_RX_QUEUES 128
-#define VIRTIO_MAX_TX_QUEUES 128
+#define VIRTIO_MAX_RX_QUEUES 128U
+#define VIRTIO_MAX_TX_QUEUES 128U
 #define VIRTIO_MAX_MAC_ADDRS 64
 #define VIRTIO_MIN_RX_BUFSIZE 64
-#define VIRTIO_MAX_RX_PKTLEN  9728
+#define VIRTIO_MAX_RX_PKTLEN  9728U
 
 /* Features desired/implemented by this driver. */
-#define VIRTIO_PMD_GUEST_FEATURES		\
+#define VIRTIO_PMD_DEFAULT_GUEST_FEATURES	\
 	(1u << VIRTIO_NET_F_MAC		  |	\
 	 1u << VIRTIO_NET_F_STATUS	  |	\
 	 1u << VIRTIO_NET_F_MQ		  |	\
@@ -62,9 +62,20 @@
 	 1u << VIRTIO_NET_F_CTRL_VQ	  |	\
 	 1u << VIRTIO_NET_F_CTRL_RX	  |	\
 	 1u << VIRTIO_NET_F_CTRL_VLAN	  |	\
+	 1u << VIRTIO_NET_F_CSUM	  |	\
+	 1u << VIRTIO_NET_F_HOST_TSO4	  |	\
+	 1u << VIRTIO_NET_F_HOST_TSO6	  |	\
 	 1u << VIRTIO_NET_F_MRG_RXBUF	  |	\
-	 1ULL << VIRTIO_F_VERSION_1)
+	 1u << VIRTIO_NET_F_MTU	| \
+	 1u << VIRTIO_RING_F_INDIRECT_DESC |    \
+	 1ULL << VIRTIO_F_VERSION_1       |	\
+	 1ULL << VIRTIO_F_IOMMU_PLATFORM)
 
+#define VIRTIO_PMD_SUPPORTED_GUEST_FEATURES	\
+	(VIRTIO_PMD_DEFAULT_GUEST_FEATURES |	\
+	 1u << VIRTIO_NET_F_GUEST_CSUM	   |	\
+	 1u << VIRTIO_NET_F_GUEST_TSO4     |	\
+	 1u << VIRTIO_NET_F_GUEST_TSO6)
 /*
  * CQ function prototype
  */
@@ -73,30 +84,23 @@ void virtio_dev_cq_start(struct rte_eth_dev *dev);
 /*
  * RX/TX function prototypes
  */
-void virtio_dev_rxtx_start(struct rte_eth_dev *dev);
 
-int virtio_dev_queue_setup(struct rte_eth_dev *dev,
-			int queue_type,
-			uint16_t queue_idx,
-			uint16_t vtpci_queue_idx,
-			uint16_t nb_desc,
-			unsigned int socket_id,
-			void **pvq);
-
-void virtio_dev_queue_release(struct virtqueue *vq);
+int virtio_dev_rx_queue_done(void *rxq, uint16_t offset);
 
 int  virtio_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
 		const struct rte_eth_rxconf *rx_conf,
 		struct rte_mempool *mb_pool);
 
-void virtio_dev_rx_queue_release(void *rxq);
+int virtio_dev_rx_queue_setup_finish(struct rte_eth_dev *dev,
+				uint16_t rx_queue_id);
 
 int  virtio_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 
-void virtio_dev_tx_queue_release(void *txq);
+int virtio_dev_tx_queue_setup_finish(struct rte_eth_dev *dev,
+				uint16_t tx_queue_id);
 
 uint16_t virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
@@ -115,13 +119,6 @@ uint16_t virtio_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 int eth_virtio_dev_init(struct rte_eth_dev *eth_dev);
 
-/*
- * The VIRTIO_NET_F_GUEST_TSO[46] features permit the host to send us
- * frames larger than 1514 bytes. We do not yet support software LRO
- * via tcp_lro_rx().
- */
-#define VTNET_LRO_FEATURES (VIRTIO_NET_F_GUEST_TSO4 | \
-			    VIRTIO_NET_F_GUEST_TSO6 | VIRTIO_NET_F_GUEST_ECN)
-
+void virtio_interrupt_handler(void *param);
 
 #endif /* _VIRTIO_ETHDEV_H_ */

@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
+    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions
@@ -35,20 +35,55 @@ The AES-NI GCM PMD (**librte_pmd_aesni_gcm**) provides poll mode crypto driver
 support for utilizing Intel multi buffer library (see AES-NI Multi-buffer PMD documentation
 to learn more about it, including installation).
 
-The AES-NI GCM PMD has current only been tested on Fedora 21 64-bit with gcc.
-
 Features
 --------
 
 AESNI GCM PMD has support for:
 
-Cipher algorithms:
-
-* RTE_CRYPTO_CIPHER_AES_GCM
-
 Authentication algorithms:
 
-* RTE_CRYPTO_AUTH_AES_GCM
+* RTE_CRYPTO_AUTH_AES_GMAC
+
+AEAD algorithms:
+
+* RTE_CRYPTO_AEAD_AES_GCM
+
+
+Limitations
+-----------
+
+* Chained mbufs are supported but only out-of-place (destination mbuf must be contiguous).
+* Cipher only is not supported.
+
+
+Installation
+------------
+
+To build DPDK with the AESNI_GCM_PMD the user is required to download the multi-buffer
+library from `here <https://github.com/01org/intel-ipsec-mb>`_
+and compile it on their user system before building DPDK.
+The latest version of the library supported by this PMD is v0.47, which
+can be downloaded in `<https://github.com/01org/intel-ipsec-mb/archive/v0.47.zip>`_.
+
+.. code-block:: console
+
+	make
+
+As a reference, the following table shows a mapping between the past DPDK versions
+and the external crypto libraries supported by them:
+
+.. _table_aesni_gcm_versions:
+
+.. table:: DPDK and external crypto library version compatibility
+
+   =============  ================================
+   DPDK version   Crypto library version
+   =============  ================================
+   16.04 - 16.11  Multi-buffer library 0.43 - 0.44
+   17.02 - 17.05  ISA-L Crypto v2.18
+   17.08+         Multi-buffer library 0.46+
+   =============  ================================
+
 
 Initialization
 --------------
@@ -58,15 +93,15 @@ In order to enable this virtual crypto PMD, user must:
 * Export the environmental variable AESNI_MULTI_BUFFER_LIB_PATH with the path where
   the library was extracted.
 
-* Build the multi buffer library (go to Installation section in AES-NI MB PMD documentation).
+* Build the multi buffer library (explained in Installation section).
 
 * Set CONFIG_RTE_LIBRTE_PMD_AESNI_GCM=y in config/common_base.
 
 To use the PMD in an application, user must:
 
-* Call rte_eal_vdev_init("cryptodev_aesni_gcm_pmd") within the application.
+* Call rte_vdev_init("crypto_aesni_gcm") within the application.
 
-* Use --vdev="cryptodev_aesni_gcm_pmd" in the EAL options, which will call rte_eal_vdev_init() internally.
+* Use --vdev="crypto_aesni_gcm" in the EAL options, which will call rte_vdev_init() internally.
 
 The following parameters (all optional) can be provided in the previous two calls:
 
@@ -81,14 +116,5 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -c 40 -n 4 --vdev="cryptodev_aesni_gcm_pmd,socket_id=1,max_nb_sessions=128"
-
-Limitations
------------
-
-* Chained mbufs are not supported.
-* Hash only is not supported.
-* Cipher only is not supported.
-* Only in-place is currently supported (destination address is the same as source address).
-* Only supports session-oriented API implementation (session-less APIs are not supported).
-*  Not performance tuned.
+    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_aesni_gcm,socket_id=0,max_nb_sessions=128" \
+    -- -p 1 --cdev SW --chain AEAD --aead_algo "aes-gcm"

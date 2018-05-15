@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
+    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -46,7 +46,7 @@ for each packet that is received on a RX_PORT and performs L2 forwarding.
 The destination port is the adjacent port from the enabled portmask, that is,
 if the first four ports are enabled (portmask 0xf),
 ports 0 and 1 forward into each other, and ports 2 and 3 forward into each other.
-Also, the MAC addresses are affected as follows:
+Also, if MAC addresses updating is enabled, the MAC addresses are affected as follows:
 
 *   The source MAC address is replaced by the TX_PORT MAC address
 
@@ -55,26 +55,9 @@ Also, the MAC addresses are affected as follows:
 Compiling the Application
 -------------------------
 
-#.  Go to the example directory:
+To compile the sample application see :doc:`compiling`.
 
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/l2fwd-crypto
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    *See the DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``l2fwd-crypt`` sub-directory.
 
 Running the Application
 -----------------------
@@ -84,12 +67,16 @@ The application requires a number of command line options:
 .. code-block:: console
 
     ./build/l2fwd-crypto [EAL options] -- [-p PORTMASK] [-q NQ] [-s] [-T PERIOD] /
-    [--cdev_type HW/SW/ANY] [--chain HASH_CIPHER/CIPHER_HASH/CIPHER_ONLY/HASH_ONLY] /
+    [--cdev_type HW/SW/ANY] [--chain HASH_CIPHER/CIPHER_HASH/CIPHER_ONLY/HASH_ONLY/AEAD] /
     [--cipher_algo ALGO] [--cipher_op ENCRYPT/DECRYPT] [--cipher_key KEY] /
-    [--cipher_key_random_size SIZE] [--iv IV] [--iv_random_size SIZE] /
+    [--cipher_key_random_size SIZE] [--cipher_iv IV] [--cipher_iv_random_size SIZE] /
     [--auth_algo ALGO] [--auth_op GENERATE/VERIFY] [--auth_key KEY] /
-    [--auth_key_random_size SIZE] [--aad AAD] [--aad_random_size SIZE] /
-    [--digest size SIZE] [--sessionless]
+    [--auth_key_random_size SIZE] [--auth_iv IV] [--auth_iv_random_size SIZE] /
+    [--aead_algo ALGO] [--aead_op ENCRYPT/DECRYPT] [--aead_key KEY] /
+    [--aead_key_random_size SIZE] [--aead_iv] [--aead_iv_random_size SIZE] /
+    [--aad AAD] [--aad_random_size SIZE] /
+    [--digest size SIZE] [--sessionless] [--cryptodev_mask MASK] /
+    [--mac-updating] [--no-mac-updating]
 
 where,
 
@@ -109,11 +96,13 @@ where,
 
 *   chain: select the operation chaining to perform: Cipher->Hash (CIPHER_HASH),
 
-    Hash->Cipher (HASH_CIPHER), Cipher (CIPHER_ONLY), Hash(HASH_ONLY)
+    Hash->Cipher (HASH_CIPHER), Cipher (CIPHER_ONLY), Hash (HASH_ONLY)
+
+    or AEAD (AEAD)
 
     (default is Cipher->Hash)
 
-*   cipher_algo: select the ciphering algorithm (default is AES CBC)
+*   cipher_algo: select the ciphering algorithm (default is aes-cbc)
 
 *   cipher_op: select the ciphering operation to perform: ENCRYPT or DECRYPT
 
@@ -127,15 +116,15 @@ where,
 
     Note that if --cipher_key is used, this will be ignored.
 
-*   iv: set the IV to be used. Bytes has to be separated with ":"
+*   cipher_iv: set the cipher IV to be used. Bytes has to be separated with ":"
 
-*   iv_random_size: set the size of the IV, which will be generated randomly.
+*   cipher_iv_random_size: set the size of the cipher IV, which will be generated randomly.
 
-    Note that if --iv is used, this will be ignored.
+    Note that if --cipher_iv is used, this will be ignored.
 
-*   auth_algo: select the authentication algorithm (default is SHA1-HMAC)
+*   auth_algo: select the authentication algorithm (default is sha1-hmac)
 
-*   cipher_op: select the authentication operation to perform: GENERATE or VERIFY
+*   auth_op: select the authentication operation to perform: GENERATE or VERIFY
 
     (default is GENERATE)
 
@@ -147,6 +136,32 @@ where,
 
     Note that if --auth_key is used, this will be ignored.
 
+*   auth_iv: set the auth IV to be used. Bytes has to be separated with ":"
+
+*   auth_iv_random_size: set the size of the auth IV, which will be generated randomly.
+
+    Note that if --auth_iv is used, this will be ignored.
+
+*   aead_algo: select the AEAD algorithm (default is aes-gcm)
+
+*   aead_op: select the AEAD operation to perform: ENCRYPT or DECRYPT
+
+    (default is ENCRYPT)
+
+*   aead_key: set the AEAD key to be used. Bytes has to be separated with ":"
+
+*   aead_key_random_size: set the size of the AEAD key,
+
+    which will be generated randomly.
+
+    Note that if --aead_key is used, this will be ignored.
+
+*   aead_iv: set the AEAD IV to be used. Bytes has to be separated with ":"
+
+*   aead_iv_random_size: set the size of the AEAD IV, which will be generated randomly.
+
+    Note that if --aead_iv is used, this will be ignored.
+
 *   aad: set the AAD to be used. Bytes has to be separated with ":"
 
 *   aad_random_size: set the size of the AAD, which will be generated randomly.
@@ -156,6 +171,13 @@ where,
 *   digest_size: set the size of the digest to be generated/verified.
 
 *   sessionless: no crypto session will be created.
+
+*   cryptodev_mask: A hexadecimal bitmask of the cryptodevs to be used by the
+    application.
+
+    (default is all cryptodevs).
+
+*   [no-]mac-updating: Enable or disable MAC addresses updating (enabled by default).
 
 
 The application requires that crypto devices capable of performing
@@ -167,11 +189,11 @@ To run the application in linuxapp environment with 2 lcores, 2 ports and 2 cryp
 
 .. code-block:: console
 
-    $ ./build/l2fwd-crypto -c 0x3 -n 4 --vdev "cryptodev_aesni_mb_pmd" \
-    --vdev "cryptodev_aesni_mb_pmd" -- -p 0x3 --chain CIPHER_HASH \
-    --cipher_op ENCRYPT --cipher_algo AES_CBC \
+    $ ./build/l2fwd-crypto -l 0-1 -n 4 --vdev "crypto_aesni_mb0" \
+    --vdev "crypto_aesni_mb1" -- -p 0x3 --chain CIPHER_HASH \
+    --cipher_op ENCRYPT --cipher_algo aes-cbc \
     --cipher_key 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f \
-    --auth_op GENERATE --auth_algo AES_XCBC_MAC \
+    --auth_op GENERATE --auth_algo aes-xcbc-mac \
     --auth_key 10:11:12:13:14:15:16:17:18:19:1a:1b:1c:1d:1e:1f
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications
@@ -326,8 +348,14 @@ This session is created and is later attached to the crypto operation:
                    uint8_t cdev_id)
    {
            struct rte_crypto_sym_xform *first_xform;
+           struct rte_cryptodev_sym_session *session;
+           uint8_t socket_id = rte_cryptodev_socket_id(cdev_id);
+           struct rte_mempool *sess_mp = session_pool_socket[socket_id];
 
-           if (options->xform_chain == L2FWD_CRYPTO_CIPHER_HASH) {
+
+           if (options->xform_chain == L2FWD_CRYPTO_AEAD) {
+                   first_xform = &options->aead_xform;
+           } else if (options->xform_chain == L2FWD_CRYPTO_CIPHER_HASH) {
                    first_xform = &options->cipher_xform;
                    first_xform->next = &options->auth_xform;
            } else if (options->xform_chain == L2FWD_CRYPTO_HASH_CIPHER) {
@@ -339,8 +367,16 @@ This session is created and is later attached to the crypto operation:
                    first_xform = &options->auth_xform;
            }
 
-           /* Setup Cipher Parameters */
-           return rte_cryptodev_sym_session_create(cdev_id, first_xform);
+           session = rte_cryptodev_sym_session_create(sess_mp);
+
+           if (session == NULL)
+                   return NULL;
+
+          if (rte_cryptodev_sym_session_init(cdev_id, session,
+                                first_xform, sess_mp) < 0)
+                   return NULL;
+
+          return session;
    }
 
    ...

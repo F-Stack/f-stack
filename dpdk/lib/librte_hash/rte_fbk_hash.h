@@ -54,8 +54,9 @@ extern "C" {
 
 #include <string.h>
 
+#include <rte_config.h>
 #ifndef RTE_FBK_HASH_FUNC_DEFAULT
-#if defined(RTE_MACHINE_CPUFLAG_SSE4_2) || defined(RTE_MACHINE_CPUFLAG_CRC32)
+#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_CRC32)
 #include <rte_hash_crc.h>
 /** Default four-byte key hash function if none is specified. */
 #define RTE_FBK_HASH_FUNC_DEFAULT		rte_hash_crc_4byte
@@ -115,7 +116,7 @@ struct rte_fbk_hash_table {
 	uint32_t init_val;		/**< For initialising hash function. */
 
 	/** A flat table of all buckets. */
-	union rte_fbk_hash_entry t[0];
+	union rte_fbk_hash_entry t[];
 };
 
 /**

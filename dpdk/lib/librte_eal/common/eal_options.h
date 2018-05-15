@@ -61,6 +61,8 @@ enum {
 	OPT_LOG_LEVEL_NUM,
 #define OPT_MASTER_LCORE      "master-lcore"
 	OPT_MASTER_LCORE_NUM,
+#define OPT_MBUF_POOL_OPS_NAME "mbuf-pool-ops-name"
+	OPT_MBUF_POOL_OPS_NAME_NUM,
 #define OPT_PROC_TYPE         "proc-type"
 	OPT_PROC_TYPE_NUM,
 #define OPT_NO_HPET           "no-hpet"
@@ -81,8 +83,6 @@ enum {
 	OPT_VFIO_INTR_NUM,
 #define OPT_VMWARE_TSC_MAP    "vmware-tsc-map"
 	OPT_VMWARE_TSC_MAP_NUM,
-#define OPT_XEN_DOM0          "xen-dom0"
-	OPT_XEN_DOM0_NUM,
 	OPT_LONG_MAX_NUM
 };
 
@@ -91,6 +91,7 @@ extern const struct option eal_long_options[];
 
 int eal_parse_common_option(int opt, const char *argv,
 			    struct internal_config *conf);
+int eal_option_device_parse(void);
 int eal_adjust_config(struct internal_config *internal_cfg);
 int eal_check_common_options(struct internal_config *internal_cfg);
 void eal_common_usage(void);

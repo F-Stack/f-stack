@@ -219,19 +219,15 @@ enum i40e_status_code i40e_read_nvm_word(struct i40e_hw *hw, u16 offset,
 {
 	enum i40e_status_code ret_code = I40E_SUCCESS;
 
-#ifdef X722_SUPPORT
-	if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE) {
-		ret_code = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
-		if (!ret_code) {
+	ret_code = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
+	if (!ret_code) {
+		if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE) {
 			ret_code = i40e_read_nvm_word_aq(hw, offset, data);
-			i40e_release_nvm(hw);
+		} else {
+			ret_code = i40e_read_nvm_word_srctl(hw, offset, data);
 		}
-	} else {
-		ret_code = i40e_read_nvm_word_srctl(hw, offset, data);
+		i40e_release_nvm(hw);
 	}
-#else
-	ret_code = i40e_read_nvm_word_srctl(hw, offset, data);
-#endif
 	return ret_code;
 }
 
@@ -249,14 +245,10 @@ enum i40e_status_code __i40e_read_nvm_word(struct i40e_hw *hw,
 {
 	enum i40e_status_code ret_code = I40E_SUCCESS;
 
-#ifdef X722_SUPPORT
 	if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE)
 		ret_code = i40e_read_nvm_word_aq(hw, offset, data);
 	else
 		ret_code = i40e_read_nvm_word_srctl(hw, offset, data);
-#else
-	ret_code = i40e_read_nvm_word_srctl(hw, offset, data);
-#endif
 	return ret_code;
 }
 
@@ -348,14 +340,10 @@ enum i40e_status_code __i40e_read_nvm_buffer(struct i40e_hw *hw,
 {
 	enum i40e_status_code ret_code = I40E_SUCCESS;
 
-#ifdef X722_SUPPORT
 	if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE)
 		ret_code = i40e_read_nvm_buffer_aq(hw, offset, words, data);
 	else
 		ret_code = i40e_read_nvm_buffer_srctl(hw, offset, words, data);
-#else
-	ret_code = i40e_read_nvm_buffer_srctl(hw, offset, words, data);
-#endif
 	return ret_code;
 }
 
@@ -375,7 +363,6 @@ enum i40e_status_code i40e_read_nvm_buffer(struct i40e_hw *hw, u16 offset,
 {
 	enum i40e_status_code ret_code = I40E_SUCCESS;
 
-#ifdef X722_SUPPORT
 	if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE) {
 		ret_code = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
 		if (!ret_code) {
@@ -386,9 +373,6 @@ enum i40e_status_code i40e_read_nvm_buffer(struct i40e_hw *hw, u16 offset,
 	} else {
 		ret_code = i40e_read_nvm_buffer_srctl(hw, offset, words, data);
 	}
-#else
-	ret_code = i40e_read_nvm_buffer_srctl(hw, offset, words, data);
-#endif
 	return ret_code;
 }
 
@@ -765,12 +749,18 @@ enum i40e_status_code i40e_validate_nvm_checksum(struct i40e_hw *hw,
 
 	DEBUGFUNC("i40e_validate_nvm_checksum");
 
-	if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE)
-		ret_code = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
+	/* acquire_nvm provides exclusive NVM lock to synchronize access across
+	 * PFs. X710 uses i40e_read_nvm_word_srctl which polls for done bit
+	 * twice (first time to be able to write address to I40E_GLNVM_SRCTL
+	 * register, second to read data from I40E_GLNVM_SRDATA. One PF can see
+	 * done bit and try to write address, while another one will interpret
+	 * it as a good time to read data. It will cause invalid data to be
+	 * read.
+	 */
+	ret_code = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
 	if (!ret_code) {
 		ret_code = i40e_calc_nvm_checksum(hw, &checksum_local);
-		if (hw->flags & I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE)
-			i40e_release_nvm(hw);
+	i40e_release_nvm(hw);
 		if (ret_code != I40E_SUCCESS)
 			goto i40e_validate_nvm_checksum_exit;
 	} else {
@@ -901,9 +891,25 @@ enum i40e_status_code i40e_nvmupd_command(struct i40e_hw *hw,
 			*((u16 *)&bytes[2]) = hw->nvm_wait_opcode;
 		}
 
+		/* Clear error status on read */
+		if (hw->nvmupd_state == I40E_NVMUPD_STATE_ERROR)
+			hw->nvmupd_state = I40E_NVMUPD_STATE_INIT;
+
 		return I40E_SUCCESS;
 	}
 
+	/* Clear status even it is not read and log */
+	if (hw->nvmupd_state == I40E_NVMUPD_STATE_ERROR) {
+		i40e_debug(hw, I40E_DEBUG_NVM,
+			   "Clearing I40E_NVMUPD_STATE_ERROR state without reading\n");
+		hw->nvmupd_state = I40E_NVMUPD_STATE_INIT;
+	}
+
+	/* Acquire lock to prevent race condition where adminq_task
+	 * can execute after i40e_nvmupd_nvm_read/write but before state
+	 * variables (nvm_wait_opcode, nvm_release_on_done) are updated
+	 */
+	i40e_acquire_spinlock(&hw->aq.arq_spinlock);
 	switch (hw->nvmupd_state) {
 	case I40E_NVMUPD_STATE_INIT:
 		status = i40e_nvmupd_state_init(hw, cmd, bytes, perrno);
@@ -939,6 +945,7 @@ enum i40e_status_code i40e_nvmupd_command(struct i40e_hw *hw,
 		*perrno = -ESRCH;
 		break;
 	}
+	i40e_release_spinlock(&hw->aq.arq_spinlock);
 	return status;
 }
 
@@ -1253,6 +1260,7 @@ retry:
 void i40e_nvmupd_check_wait_event(struct i40e_hw *hw, u16 opcode)
 {
 	if (opcode == hw->nvm_wait_opcode) {
+
 		i40e_debug(hw, I40E_DEBUG_NVM,
 			   "NVMUPD: clearing wait on opcode 0x%04x\n", opcode);
 		if (hw->nvm_release_on_done) {
@@ -1260,6 +1268,11 @@ void i40e_nvmupd_check_wait_event(struct i40e_hw *hw, u16 opcode)
 			hw->nvm_release_on_done = false;
 		}
 		hw->nvm_wait_opcode = 0;
+
+		if (hw->aq.arq_last_status) {
+			hw->nvmupd_state = I40E_NVMUPD_STATE_ERROR;
+			return;
+		}
 
 		switch (hw->nvmupd_state) {
 		case I40E_NVMUPD_STATE_INIT_WAIT:
@@ -1423,7 +1436,8 @@ STATIC enum i40e_status_code i40e_nvmupd_exec_aq(struct i40e_hw *hw,
 
 		if (hw->nvm_buff.va) {
 			buff = hw->nvm_buff.va;
-			memcpy(buff, &bytes[aq_desc_len], aq_data_len);
+			i40e_memcpy(buff, &bytes[aq_desc_len], aq_data_len,
+				I40E_NONDMA_TO_NONDMA);
 		}
 	}
 
@@ -1496,7 +1510,7 @@ STATIC enum i40e_status_code i40e_nvmupd_get_aq_result(struct i40e_hw *hw,
 			   __func__, cmd->offset, cmd->offset + len);
 
 		buff = ((u8 *)&hw->nvm_wb_desc) + cmd->offset;
-		memcpy(bytes, buff, len);
+		i40e_memcpy(bytes, buff, len, I40E_NONDMA_TO_NONDMA);
 
 		bytes += len;
 		remainder -= len;
@@ -1510,7 +1524,7 @@ STATIC enum i40e_status_code i40e_nvmupd_get_aq_result(struct i40e_hw *hw,
 
 		i40e_debug(hw, I40E_DEBUG_NVM, "%s: databuf bytes %d to %d\n",
 			   __func__, start_byte, start_byte + remainder);
-		memcpy(bytes, buff, remainder);
+		i40e_memcpy(bytes, buff, remainder, I40E_NONDMA_TO_NONDMA);
 	}
 
 	return I40E_SUCCESS;

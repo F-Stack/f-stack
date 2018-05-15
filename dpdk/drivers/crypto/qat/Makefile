@@ -43,6 +43,9 @@ CFLAGS += -O3
 # external library include paths
 CFLAGS += -I$(SRCDIR)/qat_adf
 LDLIBS += -lcrypto
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_cryptodev
+LDLIBS += -lrte_pci -lrte_bus_pci
 
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += qat_crypto.c
@@ -55,12 +58,5 @@ SYMLINK-y-include +=
 
 # versioning export map
 EXPORT_MAP := rte_pmd_qat_version.map
-
-# library dependencies
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_cryptodev
-
 
 include $(RTE_SDK)/mk/rte.lib.mk

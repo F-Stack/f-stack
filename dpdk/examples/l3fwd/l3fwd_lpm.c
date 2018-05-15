@@ -46,7 +46,6 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_cycles.h>
 #include <rte_mbuf.h>
@@ -105,8 +104,95 @@ static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
 struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 
-#if defined(__SSE4_1__)
+static inline uint16_t
+lpm_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
+{
+	uint32_t next_hop;
+	struct rte_lpm *ipv4_l3fwd_lookup_struct =
+		(struct rte_lpm *)lookup_struct;
+
+	return (uint16_t) ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct,
+		rte_be_to_cpu_32(((struct ipv4_hdr *)ipv4_hdr)->dst_addr),
+		&next_hop) == 0) ? next_hop : portid);
+}
+
+static inline uint16_t
+lpm_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
+{
+	uint32_t next_hop;
+	struct rte_lpm6 *ipv6_l3fwd_lookup_struct =
+		(struct rte_lpm6 *)lookup_struct;
+
+	return (uint16_t) ((rte_lpm6_lookup(ipv6_l3fwd_lookup_struct,
+			((struct ipv6_hdr *)ipv6_hdr)->dst_addr,
+			&next_hop) == 0) ?  next_hop : portid);
+}
+
+static __rte_always_inline uint16_t
+lpm_get_dst_port(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
+		uint16_t portid)
+{
+	struct ipv6_hdr *ipv6_hdr;
+	struct ipv4_hdr *ipv4_hdr;
+	struct ether_hdr *eth_hdr;
+
+	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
+
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		ipv4_hdr = (struct ipv4_hdr *)(eth_hdr + 1);
+
+		return lpm_get_ipv4_dst_port(ipv4_hdr, portid,
+					     qconf->ipv4_lookup_struct);
+	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
+
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
+
+		return lpm_get_ipv6_dst_port(ipv6_hdr, portid,
+					     qconf->ipv6_lookup_struct);
+	}
+
+	return portid;
+}
+
+/*
+ * lpm_get_dst_port optimized routine for packets where dst_ipv4 is already
+ * precalculated. If packet is ipv6 dst_addr is taken directly from packet
+ * header and dst_ipv4 value is not used.
+ */
+static __rte_always_inline uint16_t
+lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
+	uint32_t dst_ipv4, uint16_t portid)
+{
+	uint32_t next_hop;
+	struct ipv6_hdr *ipv6_hdr;
+	struct ether_hdr *eth_hdr;
+
+	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
+		return (uint16_t) ((rte_lpm_lookup(qconf->ipv4_lookup_struct,
+						   dst_ipv4, &next_hop) == 0)
+				   ? next_hop : portid);
+
+	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
+
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
+
+		return (uint16_t) ((rte_lpm6_lookup(qconf->ipv6_lookup_struct,
+				ipv6_hdr->dst_addr, &next_hop) == 0)
+				? next_hop : portid);
+
+	}
+
+	return portid;
+}
+
+#if defined(RTE_ARCH_X86)
 #include "l3fwd_lpm_sse.h"
+#elif defined RTE_MACHINE_CPUFLAG_NEON
+#include "l3fwd_lpm_neon.h"
+#elif defined(RTE_ARCH_PPC_64)
+#include "l3fwd_lpm_altivec.h"
 #else
 #include "l3fwd_lpm.h"
 #endif
@@ -119,7 +205,8 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 	unsigned lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int i, nb_rx;
-	uint8_t portid, queueid;
+	uint16_t portid;
+	uint8_t queueid;
 	struct lcore_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 		US_PER_S * BURST_TX_DRAIN_US;
@@ -141,7 +228,7 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 		portid = qconf->rx_queue_list[i].port_id;
 		queueid = qconf->rx_queue_list[i].queue_id;
 		RTE_LOG(INFO, L3FWD,
-			" -- lcoreid=%u portid=%hhu rxqueueid=%hhu\n",
+			" -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
 			lcore_id, portid, queueid);
 	}
 
@@ -179,13 +266,14 @@ lpm_main_loop(__attribute__((unused)) void *dummy)
 			if (nb_rx == 0)
 				continue;
 
-#if defined(__SSE4_1__)
+#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON \
+			 || defined RTE_ARCH_PPC_64
 			l3fwd_lpm_send_packets(nb_rx, pkts_burst,
 						portid, qconf);
 #else
 			l3fwd_lpm_no_opt_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
-#endif /* __SSE_4_1__ */
+#endif /* X86 */
 		}
 	}
 
@@ -329,7 +417,7 @@ lpm_parse_ptype(struct rte_mbuf *m)
 }
 
 uint16_t
-lpm_cb_parse_ptype(uint8_t port __rte_unused, uint16_t queue __rte_unused,
+lpm_cb_parse_ptype(uint16_t port __rte_unused, uint16_t queue __rte_unused,
 		   struct rte_mbuf *pkts[], uint16_t nb_pkts,
 		   uint16_t max_pkts __rte_unused,
 		   void *user_param __rte_unused)

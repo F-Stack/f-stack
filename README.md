@@ -33,12 +33,16 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # clone F-Stack
     mkdir /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
- 
+
+    # install libnuma-dev
+    yum install numactl-devel          # on Centos
+    #sudo apt-get install libnuma-dev  # on Ubuntu
+
     cd f-stack
     # compile DPDK
-    cd dpdk/tools
+    cd dpdk/usertools
     ./dpdk-setup.sh # compile with x86_64-native-linuxapp-gcc
- 
+
     # Set hugepage
     # single-node system
     echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages

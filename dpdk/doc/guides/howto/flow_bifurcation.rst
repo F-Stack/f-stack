@@ -119,14 +119,14 @@ The typical procedure to achieve this is as follows:
    .. code-block:: console
 
        modprobe vfio-pci
-       dpdk_nic_bind.py -b vfio-pci 01:10.0
-       dpdk_nic_bind.py -b vfio-pci 01:10.1
+       dpdk-devbind.py -b vfio-pci 01:10.0
+       dpdk-devbind.py -b vfio-pci 01:10.1
 
 #. Run a DPDK application on the VFs:
 
    .. code-block:: console
 
-       testpmd -c 0xff -n 4 -- -i -w 01:10.0 -w 01:10.1 --forward-mode=mac
+       testpmd -l 0-7 -n 4 -- -i -w 01:10.0 -w 01:10.1 --forward-mode=mac
 
 In this example, traffic matching the rules will go through the VF by matching
 the filter rule. All other traffic, not matching the rules, will go through
@@ -279,14 +279,14 @@ The typical procedure to achieve this is as follows:
    .. code-block:: console
 
        modprobe vfio-pci
-       dpdk_nic_bind.py -b vfio-pci 01:10.0
-       dpdk_nic_bind.py -b vfio-pci 01:10.1
+       dpdk-devbind.py -b vfio-pci 01:10.0
+       dpdk-devbind.py -b vfio-pci 01:10.1
 
 #. run DPDK application on VFs:
 
    .. code-block:: console
 
-       testpmd -c 0xff -n 4 -- -i -w 01:10.0 -w 01:10.1 --forward-mode=mac
+       testpmd -l 0-7 -n 4 -- -i -w 01:10.0 -w 01:10.1 --forward-mode=mac
 
 .. note::
 

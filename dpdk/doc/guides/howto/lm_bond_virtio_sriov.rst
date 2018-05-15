@@ -142,7 +142,7 @@ Bonding is port 2 (P2).
 .. code-block:: console
 
    testpmd> create bonded device 1 0
-   Created new bonded device eth_bond_testpmd_0 on (port 2).
+   Created new bonded device net_bond_testpmd_0 on (port 2).
    testpmd> add bonding slave 0 2
    testpmd> add bonding slave 1 2
    testpmd> show bonding config 2
@@ -613,17 +613,17 @@ Set up DPDK in the Virtual Machine
    cat  /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
 
    ifconfig -a
-   /root/dpdk/tools/dpdk_nic_bind.py --status
+   /root/dpdk/usertools/dpdk-devbind.py --status
 
    rmmod virtio-pci ixgbevf
 
    modprobe uio
    insmod /root/dpdk/x86_64-default-linuxapp-gcc/kmod/igb_uio.ko
 
-   /root/dpdk/tools/dpdk_nic_bind.py -b igb_uio 0000:00:03.0
-   /root/dpdk/tools/dpdk_nic_bind.py -b igb_uio 0000:00:04.0
+   /root/dpdk/usertools/dpdk-devbind.py -b igb_uio 0000:00:03.0
+   /root/dpdk/usertools/dpdk-devbind.py -b igb_uio 0000:00:04.0
 
-   /root/dpdk/tools/dpdk_nic_bind.py --status
+   /root/dpdk/usertools/dpdk-devbind.py --status
 
 run_testpmd_bonding_in_vm.sh
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -641,7 +641,7 @@ Run testpmd in the Virtual Machine.
    # use for bonding of virtio and vf tests in VM
 
    /root/dpdk/x86_64-default-linuxapp-gcc/app/testpmd \
-   -c f -n 4 --socket-mem 350 --  --i --port-topology=chained
+   -l 0-3 -n 4 --socket-mem 350 --  --i --port-topology=chained
 
 .. _lm_bond_virtio_sriov_switch_conf:
 

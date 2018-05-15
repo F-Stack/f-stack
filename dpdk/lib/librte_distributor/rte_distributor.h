@@ -1,8 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
+ *   Copyright(c) 2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -31,8 +30,8 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _RTE_DISTRIBUTE_H_
-#define _RTE_DISTRIBUTE_H_
+#ifndef _RTE_DISTRIBUTOR_H_
+#define _RTE_DISTRIBUTOR_H_
 
 /**
  * @file
@@ -46,7 +45,12 @@
 extern "C" {
 #endif
 
-#define RTE_DISTRIBUTOR_NAMESIZE 32 /**< Length of name for instance */
+/* Type of distribution (burst/single) */
+enum rte_distributor_alg_type {
+	RTE_DIST_ALG_BURST = 0,
+	RTE_DIST_ALG_SINGLE,
+	RTE_DIST_NUM_ALG_TYPES
+};
 
 struct rte_distributor;
 struct rte_mbuf;
@@ -64,12 +68,17 @@ struct rte_mbuf;
  * @param num_workers
  *   The maximum number of workers that will request packets from this
  *   distributor
+ * @param alg_type
+ *   Call the legacy API, or use the new burst API. legacy uses 32-bit
+ *   flow ID, and works on a single packet at a time. Latest uses 15-
+ *   bit flow ID and works on up to 8 packets at a time to workers.
  * @return
  *   The newly created distributor instance
  */
 struct rte_distributor *
-rte_distributor_create(const char *name, unsigned socket_id,
-		unsigned num_workers);
+rte_distributor_create(const char *name, unsigned int socket_id,
+		unsigned int num_workers,
+		unsigned int alg_type);
 
 /*  *** APIS to be called on the distributor lcore ***  */
 /*
@@ -85,7 +94,8 @@ rte_distributor_create(const char *name, unsigned socket_id,
 /**
  * Process a set of packets by distributing them among workers that request
  * packets. The distributor will ensure that no two packets that have the
- * same flow id, or tag, in the mbuf will be procesed at the same time.
+ * same flow id, or tag, in the mbuf will be processed on different cores at
+ * the same time.
  *
  * The user is advocated to set tag for each mbuf before calling this function.
  * If user doesn't set the tag, the tag value can be various values depending on
@@ -104,7 +114,7 @@ rte_distributor_create(const char *name, unsigned socket_id,
  */
 int
 rte_distributor_process(struct rte_distributor *d,
-		struct rte_mbuf **mbufs, unsigned num_mbufs);
+		struct rte_mbuf **mbufs, unsigned int num_mbufs);
 
 /**
  * Get a set of mbufs that have been returned to the distributor by workers
@@ -122,7 +132,7 @@ rte_distributor_process(struct rte_distributor *d,
  */
 int
 rte_distributor_returned_pkts(struct rte_distributor *d,
-		struct rte_mbuf **mbufs, unsigned max_mbufs);
+		struct rte_mbuf **mbufs, unsigned int max_mbufs);
 
 /**
  * Flush the distributor component, so that there are no in-flight or
@@ -161,7 +171,7 @@ rte_distributor_clear_returns(struct rte_distributor *d);
  */
 
 /**
- * API called by a worker to get a new packet to process. Any previous packet
+ * API called by a worker to get new packets to process. Any previous packets
  * given to the worker is assumed to have completed processing, and may be
  * optionally returned to the distributor via the oldpkt parameter.
  *
@@ -170,15 +180,20 @@ rte_distributor_clear_returns(struct rte_distributor *d);
  * @param worker_id
  *   The worker instance number to use - must be less that num_workers passed
  *   at distributor creation time.
+ * @param pkts
+ *   The mbufs pointer array to be filled in (up to 8 packets)
  * @param oldpkt
  *   The previous packet, if any, being processed by the worker
+ * @param retcount
+ *   The number of packets being returned
  *
  * @return
- *   A new packet to be processed by the worker thread.
+ *   The number of packets in the pkts array
  */
-struct rte_mbuf *
+int
 rte_distributor_get_pkt(struct rte_distributor *d,
-		unsigned worker_id, struct rte_mbuf *oldpkt);
+	unsigned int worker_id, struct rte_mbuf **pkts,
+	struct rte_mbuf **oldpkt, unsigned int retcount);
 
 /**
  * API called by a worker to return a completed packet without requesting a
@@ -189,23 +204,25 @@ rte_distributor_get_pkt(struct rte_distributor *d,
  * @param worker_id
  *   The worker instance number to use - must be less that num_workers passed
  *   at distributor creation time.
- * @param mbuf
- *   The previous packet being processed by the worker
+ * @param oldpkt
+ *   The previous packets being processed by the worker
+ * @param num
+ *   The number of packets in the oldpkt array
  */
 int
-rte_distributor_return_pkt(struct rte_distributor *d, unsigned worker_id,
-		struct rte_mbuf *mbuf);
+rte_distributor_return_pkt(struct rte_distributor *d,
+	unsigned int worker_id, struct rte_mbuf **oldpkt, int num);
 
 /**
  * API called by a worker to request a new packet to process.
  * Any previous packet given to the worker is assumed to have completed
  * processing, and may be optionally returned to the distributor via
  * the oldpkt parameter.
- * Unlike rte_distributor_get_pkt(), this function does not wait for a new
- * packet to be provided by the distributor.
+ * Unlike rte_distributor_get_pkt_burst(), this function does not wait for a
+ * new packet to be provided by the distributor.
  *
- * NOTE: after calling this function, rte_distributor_poll_pkt() should
- * be used to poll for the packet requested. The rte_distributor_get_pkt()
+ * NOTE: after calling this function, rte_distributor_poll_pkt_burst() should
+ * be used to poll for the packet requested. The rte_distributor_get_pkt_burst()
  * API should *not* be used to try and retrieve the new packet.
  *
  * @param d
@@ -214,11 +231,14 @@ rte_distributor_return_pkt(struct rte_distributor *d, unsigned worker_id,
  *   The worker instance number to use - must be less that num_workers passed
  *   at distributor creation time.
  * @param oldpkt
- *   The previous packet, if any, being processed by the worker
+ *   The returning packets, if any, processed by the worker
+ * @param count
+ *   The number of returning packets
  */
 void
 rte_distributor_request_pkt(struct rte_distributor *d,
-		unsigned worker_id, struct rte_mbuf *oldpkt);
+		unsigned int worker_id, struct rte_mbuf **oldpkt,
+		unsigned int count);
 
 /**
  * API called by a worker to check for a new packet that was previously
@@ -231,14 +251,16 @@ rte_distributor_request_pkt(struct rte_distributor *d,
  * @param worker_id
  *   The worker instance number to use - must be less that num_workers passed
  *   at distributor creation time.
+ * @param mbufs
+ *   The array of mbufs being given to the worker
  *
  * @return
- *   A new packet to be processed by the worker thread, or NULL if no
+ *   The number of packets being given to the worker thread, zero if no
  *   packet is yet available.
  */
-struct rte_mbuf *
+int
 rte_distributor_poll_pkt(struct rte_distributor *d,
-		unsigned worker_id);
+		unsigned int worker_id, struct rte_mbuf **mbufs);
 
 #ifdef __cplusplus
 }

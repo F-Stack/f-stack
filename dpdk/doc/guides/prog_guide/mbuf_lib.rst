@@ -175,8 +175,8 @@ a vxlan-encapsulated tcp packet:
     set out_ip checksum to 0 in the packet
     set out_udp checksum to pseudo header using rte_ipv4_phdr_cksum()
 
-   This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM
-   and DEV_TX_OFFLOAD_UDP_CKSUM.
+  This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM
+  and DEV_TX_OFFLOAD_UDP_CKSUM.
 
 - calculate checksum of in_ip::
 
@@ -228,8 +228,8 @@ a vxlan-encapsulated tcp packet:
     set in_ip checksum to 0 in the packet
     set in_tcp checksum to pseudo header using rte_ipv4_phdr_cksum()
 
-   This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM,
-   DEV_TX_OFFLOAD_UDP_CKSUM and DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM.
+  This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM,
+  DEV_TX_OFFLOAD_UDP_CKSUM and DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM.
 
 The list of flags and their precise meaning is described in the mbuf API
 documentation (rte_mbuf.h). Also refer to the testpmd source code
@@ -253,7 +253,8 @@ Similarly, whenever the indirect buffer is detached, the reference counter on th
 If the resulting reference counter is equal to 0, the direct buffer is freed since it is no longer in use.
 
 There are a few things to remember when dealing with indirect buffers.
-First of all, it is not possible to attach an indirect buffer to another indirect buffer.
+First of all, an indirect buffer is never attached to another indirect buffer.
+Attempting to attach buffer A to indirect buffer B that is attached to C, makes rte_pktmbuf_attach() automatically attach A to C, effectively cloning B.
 Secondly, for a buffer to become indirect, its reference counter must be equal to 1,
 that is, it must not be already referenced by another indirect buffer.
 Finally, it is not possible to reattach an indirect buffer to the direct buffer (unless it is detached first).

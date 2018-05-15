@@ -41,6 +41,10 @@
  * packet dump library to provide packet capturing support on dpdk.
  */
 
+#include <stdint.h>
+#include <rte_mempool.h>
+#include <rte_ring.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -109,7 +113,7 @@ rte_pdump_uninit(void);
  */
 
 int
-rte_pdump_enable(uint8_t port, uint16_t queue, uint32_t flags,
+rte_pdump_enable(uint16_t port, uint16_t queue, uint32_t flags,
 		struct rte_ring *ring,
 		struct rte_mempool *mp,
 		void *filter);
@@ -132,7 +136,7 @@ rte_pdump_enable(uint8_t port, uint16_t queue, uint32_t flags,
  */
 
 int
-rte_pdump_disable(uint8_t port, uint16_t queue, uint32_t flags);
+rte_pdump_disable(uint16_t port, uint16_t queue, uint32_t flags);
 
 /**
  * Enables packet capturing on given device id and queue.
@@ -197,7 +201,7 @@ rte_pdump_disable_by_deviceid(char *device_id, uint16_t queue,
  *
  * @param path
  * directory path for server or client socket.
- * @type
+ * @param type
  * specifies RTE_PDUMP_SOCKET_SERVER if socket path is for server.
  * (or)
  * specifies RTE_PDUMP_SOCKET_CLIENT if socket path is for client.

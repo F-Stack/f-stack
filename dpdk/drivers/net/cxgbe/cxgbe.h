@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2015 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -47,6 +47,7 @@
 #define CXGBE_MAX_RX_PKTLEN (9000 + ETHER_HDR_LEN + ETHER_CRC_LEN) /* max pkt */
 
 int cxgbe_probe(struct adapter *adapter);
+void cxgbe_get_speed_caps(struct port_info *pi, u32 *speed_caps);
 int cxgbe_up(struct adapter *adap);
 int cxgbe_down(struct port_info *pi);
 void cxgbe_close(struct adapter *adapter);
@@ -59,5 +60,6 @@ int setup_sge_fwevtq(struct adapter *adapter);
 void cfg_queues(struct rte_eth_dev *eth_dev);
 int cfg_queue_count(struct rte_eth_dev *eth_dev);
 int setup_rss(struct port_info *pi);
+void cxgbe_enable_rx_queues(struct port_info *pi);
 
 #endif /* _CXGBE_H_ */

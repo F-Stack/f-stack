@@ -58,7 +58,7 @@
 #endif
 
 /* Hash function used if none is specified */
-#if defined(RTE_MACHINE_CPUFLAG_SSE4_2) || defined(RTE_MACHINE_CPUFLAG_CRC32)
+#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_CRC32)
 #include <rte_hash_crc.h>
 #define DEFAULT_HASH_FUNC       rte_hash_crc
 #else
@@ -130,9 +130,11 @@ enum add_key_case {
 };
 
 /** Number of items per bucket. */
-#define RTE_HASH_BUCKET_ENTRIES		4
+#define RTE_HASH_BUCKET_ENTRIES		8
 
 #define NULL_SIGNATURE			0
+
+#define EMPTY_SLOT			0
 
 #define KEY_ALIGNMENT			16
 
@@ -151,17 +153,6 @@ struct lcore_cache {
 	void *objs[LCORE_CACHE_SIZE]; /**< Cache objects */
 } __rte_cache_aligned;
 
-/* Structure storing both primary and secondary hashes */
-struct rte_hash_signatures {
-	union {
-		struct {
-			hash_sig_t current;
-			hash_sig_t alt;
-		};
-		uint64_t sig;
-	};
-};
-
 /* Structure that stores key-value pair */
 struct rte_hash_key {
 	union {
@@ -172,11 +163,22 @@ struct rte_hash_key {
 	char key[0];
 } __attribute__((aligned(KEY_ALIGNMENT)));
 
+/* All different signature compare functions */
+enum rte_hash_sig_compare_function {
+	RTE_HASH_COMPARE_SCALAR = 0,
+	RTE_HASH_COMPARE_SSE,
+	RTE_HASH_COMPARE_AVX2,
+	RTE_HASH_COMPARE_NUM
+};
+
 /** Bucket structure */
 struct rte_hash_bucket {
-	struct rte_hash_signatures signatures[RTE_HASH_BUCKET_ENTRIES];
-	/* Includes dummy key index that always contains index 0 */
-	uint32_t key_idx[RTE_HASH_BUCKET_ENTRIES + 1];
+	hash_sig_t sig_current[RTE_HASH_BUCKET_ENTRIES];
+
+	uint32_t key_idx[RTE_HASH_BUCKET_ENTRIES];
+
+	hash_sig_t sig_alt[RTE_HASH_BUCKET_ENTRIES];
+
 	uint8_t flag[RTE_HASH_BUCKET_ENTRIES];
 } __rte_cache_aligned;
 
@@ -185,30 +187,38 @@ struct rte_hash {
 	char name[RTE_HASH_NAMESIZE];   /**< Name of the hash. */
 	uint32_t entries;               /**< Total table entries. */
 	uint32_t num_buckets;           /**< Number of buckets in table. */
-	uint32_t key_len;               /**< Length of hash key. */
+
+	struct rte_ring *free_slots;
+	/**< Ring that stores all indexes of the free slots in the key table */
+	uint8_t hw_trans_mem_support;
+	/**< Hardware transactional memory support */
+	struct lcore_cache *local_free_slots;
+	/**< Local cache per lcore, storing some indexes of the free slots */
+	enum add_key_case add_key; /**< Multi-writer hash add behavior */
+
+	rte_spinlock_t *multiwriter_lock; /**< Multi-writer spinlock for w/o TM */
+
+	/* Fields used in lookup */
+
+	uint32_t key_len __rte_cache_aligned;
+	/**< Length of hash key. */
 	rte_hash_function hash_func;    /**< Function used to calculate hash. */
 	uint32_t hash_func_init_val;    /**< Init value used by hash_func. */
 	rte_hash_cmp_eq_t rte_hash_custom_cmp_eq;
 	/**< Custom function used to compare keys. */
 	enum cmp_jump_table_case cmp_jump_table_idx;
 	/**< Indicates which compare function to use. */
-	uint32_t bucket_bitmask;        /**< Bitmask for getting bucket index
-						from hash signature. */
+	enum rte_hash_sig_compare_function sig_cmp_fn;
+	/**< Indicates which signature compare function to use. */
+	uint32_t bucket_bitmask;
+	/**< Bitmask for getting bucket index from hash signature. */
 	uint32_t key_entry_size;         /**< Size of each key entry. */
 
-	struct rte_ring *free_slots;    /**< Ring that stores all indexes
-						of the free slots in the key table */
 	void *key_store;                /**< Table storing all keys and data */
-	struct rte_hash_bucket *buckets;	/**< Table with buckets storing all the
-							hash values and key indexes
-							to the key table*/
-	uint8_t hw_trans_mem_support;	/**< Hardware transactional
-							memory support */
-	struct lcore_cache *local_free_slots;
-	/**< Local cache per lcore, storing some indexes of the free slots */
-	enum add_key_case add_key; /**< Multi-writer hash add behavior */
-
-	rte_spinlock_t *multiwriter_lock; /**< Multi-writer spinlock for w/o TM */
+	struct rte_hash_bucket *buckets;
+	/**< Table with buckets storing all the	hash values and key indexes
+	 * to the key table.
+	 */
 } __rte_cache_aligned;
 
 struct queue_node {

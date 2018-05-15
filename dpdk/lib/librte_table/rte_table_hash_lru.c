@@ -1,34 +1,34 @@
 /*-
- *	 BSD LICENSE
+ *   BSD LICENSE
  *
- *	 Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *	 All rights reserved.
+ *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
+ *   All rights reserved.
  *
- *	 Redistribution and use in source and binary forms, with or without
- *	 modification, are permitted provided that the following conditions
- *	 are met:
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
  *
- *	* Redistributions of source code must retain the above copyright
- *		 notice, this list of conditions and the following disclaimer.
- *	* Redistributions in binary form must reproduce the above copyright
- *		 notice, this list of conditions and the following disclaimer in
- *		 the documentation and/or other materials provided with the
- *		 distribution.
- *	* Neither the name of Intel Corporation nor the names of its
- *		 contributors may be used to endorse or promote products derived
- *		 from this software without specific prior written permission.
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
  *
- *	 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *	 "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *	 LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *	 A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *	 OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *	 SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *	 LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *	 DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *	 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *	 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *	 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <string.h>
@@ -86,7 +86,6 @@ struct rte_table_hash {
 	uint32_t n_buckets;
 	rte_table_hash_op_hash f_hash;
 	uint64_t seed;
-	uint32_t signature_offset;
 	uint32_t key_offset;
 
 	/* Internal */
@@ -99,6 +98,7 @@ struct rte_table_hash {
 	struct grinder grinders[RTE_PORT_IN_BURST_SIZE_MAX];
 
 	/* Tables */
+	uint64_t *key_mask;
 	struct bucket *buckets;
 	uint8_t *key_mem;
 	uint8_t *data_mem;
@@ -109,29 +109,53 @@ struct rte_table_hash {
 };
 
 static int
-check_params_create(struct rte_table_hash_lru_params *params)
+keycmp(void *a, void *b, void *b_mask, uint32_t n_bytes)
 {
-	uint32_t n_buckets_min;
+	uint64_t *a64 = a, *b64 = b, *b_mask64 = b_mask;
+	uint32_t i;
+
+	for (i = 0; i < n_bytes / sizeof(uint64_t); i++)
+		if (a64[i] != (b64[i] & b_mask64[i]))
+			return 1;
+
+	return 0;
+}
+
+static void
+keycpy(void *dst, void *src, void *src_mask, uint32_t n_bytes)
+{
+	uint64_t *dst64 = dst, *src64 = src, *src_mask64 = src_mask;
+	uint32_t i;
+
+	for (i = 0; i < n_bytes / sizeof(uint64_t); i++)
+		dst64[i] = src64[i] & src_mask64[i];
+}
+
+static int
+check_params_create(struct rte_table_hash_params *params)
+{
+	/* name */
+	if (params->name == NULL) {
+		RTE_LOG(ERR, TABLE, "%s: name invalid value\n", __func__);
+		return -EINVAL;
+	}
 
 	/* key_size */
-	if ((params->key_size == 0) ||
+	if ((params->key_size < sizeof(uint64_t)) ||
 		(!rte_is_power_of_2(params->key_size))) {
 		RTE_LOG(ERR, TABLE, "%s: key_size invalid value\n", __func__);
 		return -EINVAL;
 	}
 
 	/* n_keys */
-	if ((params->n_keys == 0) ||
-		(!rte_is_power_of_2(params->n_keys))) {
+	if (params->n_keys == 0) {
 		RTE_LOG(ERR, TABLE, "%s: n_keys invalid value\n", __func__);
 		return -EINVAL;
 	}
 
 	/* n_buckets */
-	n_buckets_min = (params->n_keys + KEYS_PER_BUCKET - 1) / params->n_keys;
 	if ((params->n_buckets == 0) ||
-		(!rte_is_power_of_2(params->n_keys)) ||
-		(params->n_buckets < n_buckets_min)) {
+		(!rte_is_power_of_2(params->n_buckets))) {
 		RTE_LOG(ERR, TABLE, "%s: n_buckets invalid value\n", __func__);
 		return -EINVAL;
 	}
@@ -148,13 +172,13 @@ check_params_create(struct rte_table_hash_lru_params *params)
 static void *
 rte_table_hash_lru_create(void *params, int socket_id, uint32_t entry_size)
 {
-	struct rte_table_hash_lru_params *p =
-		(struct rte_table_hash_lru_params *) params;
+	struct rte_table_hash_params *p = params;
 	struct rte_table_hash *t;
-	uint32_t total_size, table_meta_sz;
-	uint32_t bucket_sz, key_sz, key_stack_sz, data_sz;
-	uint32_t bucket_offset, key_offset, key_stack_offset, data_offset;
-	uint32_t i;
+	uint64_t table_meta_sz, key_mask_sz, bucket_sz, key_sz, key_stack_sz;
+	uint64_t data_sz, total_size;
+	uint64_t key_mask_offset, bucket_offset, key_offset, key_stack_offset;
+	uint64_t data_offset;
+	uint32_t n_buckets, i;
 
 	/* Check input parameters */
 	if ((check_params_create(p) != 0) ||
@@ -164,33 +188,65 @@ rte_table_hash_lru_create(void *params, int socket_id, uint32_t entry_size)
 		return NULL;
 	}
 
+	/*
+	 * Table dimensioning
+	 *
+	 * Objective: Pick the number of buckets (n_buckets) so that there a chance
+	 * to store n_keys keys in the table.
+	 *
+	 * Note: Since the buckets do not get extended, it is not possible to
+	 * guarantee that n_keys keys can be stored in the table at any time. In the
+	 * worst case scenario when all the n_keys fall into the same bucket, only
+	 * a maximum of KEYS_PER_BUCKET keys will be stored in the table. This case
+	 * defeats the purpose of the hash table. It indicates unsuitable f_hash or
+	 * n_keys to n_buckets ratio.
+	 *
+	 * MIN(n_buckets) = (n_keys + KEYS_PER_BUCKET - 1) / KEYS_PER_BUCKET
+	 */
+	n_buckets = rte_align32pow2(
+		(p->n_keys + KEYS_PER_BUCKET - 1) / KEYS_PER_BUCKET);
+	n_buckets = RTE_MAX(n_buckets, p->n_buckets);
+
 	/* Memory allocation */
 	table_meta_sz = RTE_CACHE_LINE_ROUNDUP(sizeof(struct rte_table_hash));
-	bucket_sz = RTE_CACHE_LINE_ROUNDUP(p->n_buckets * sizeof(struct bucket));
+	key_mask_sz = RTE_CACHE_LINE_ROUNDUP(p->key_size);
+	bucket_sz = RTE_CACHE_LINE_ROUNDUP(n_buckets * sizeof(struct bucket));
 	key_sz = RTE_CACHE_LINE_ROUNDUP(p->n_keys * p->key_size);
 	key_stack_sz = RTE_CACHE_LINE_ROUNDUP(p->n_keys * sizeof(uint32_t));
 	data_sz = RTE_CACHE_LINE_ROUNDUP(p->n_keys * entry_size);
-	total_size = table_meta_sz + bucket_sz + key_sz + key_stack_sz +
-		data_sz;
+	total_size = table_meta_sz + key_mask_sz + bucket_sz + key_sz +
+		key_stack_sz + data_sz;
 
-	t = rte_zmalloc_socket("TABLE", total_size, RTE_CACHE_LINE_SIZE, socket_id);
-	if (t == NULL) {
+	if (total_size > SIZE_MAX) {
 		RTE_LOG(ERR, TABLE,
-			"%s: Cannot allocate %u bytes for hash table\n",
-			__func__, total_size);
+			"%s: Cannot allocate %" PRIu64 " bytes for hash "
+			"table %s\n",
+			__func__, total_size, p->name);
 		return NULL;
 	}
-	RTE_LOG(INFO, TABLE, "%s (%u-byte key): Hash table memory footprint is "
-		"%u bytes\n", __func__, p->key_size, total_size);
+
+	t = rte_zmalloc_socket(p->name,
+		(size_t)total_size,
+		RTE_CACHE_LINE_SIZE,
+		socket_id);
+	if (t == NULL) {
+		RTE_LOG(ERR, TABLE,
+			"%s: Cannot allocate %" PRIu64 " bytes for hash "
+			"table %s\n",
+			__func__, total_size, p->name);
+		return NULL;
+	}
+	RTE_LOG(INFO, TABLE, "%s (%u-byte key): Hash table %s memory footprint"
+		" is %" PRIu64 " bytes\n",
+		__func__, p->key_size, p->name, total_size);
 
 	/* Memory initialization */
 	t->key_size = p->key_size;
 	t->entry_size = entry_size;
 	t->n_keys = p->n_keys;
-	t->n_buckets = p->n_buckets;
+	t->n_buckets = n_buckets;
 	t->f_hash = p->f_hash;
 	t->seed = p->seed;
-	t->signature_offset = p->signature_offset;
 	t->key_offset = p->key_offset;
 
 	/* Internal */
@@ -199,15 +255,23 @@ rte_table_hash_lru_create(void *params, int socket_id, uint32_t entry_size)
 	t->data_size_shl = __builtin_ctzl(entry_size);
 
 	/* Tables */
-	bucket_offset = 0;
+	key_mask_offset = 0;
+	bucket_offset = key_mask_offset + key_mask_sz;
 	key_offset = bucket_offset + bucket_sz;
 	key_stack_offset = key_offset + key_sz;
 	data_offset = key_stack_offset + key_stack_sz;
 
+	t->key_mask = (uint64_t *) &t->memory[key_mask_offset];
 	t->buckets = (struct bucket *) &t->memory[bucket_offset];
 	t->key_mem = &t->memory[key_offset];
 	t->key_stack = (uint32_t *) &t->memory[key_stack_offset];
 	t->data_mem = &t->memory[data_offset];
+
+	/* Key mask */
+	if (p->key_mask == NULL)
+		memset(t->key_mask, 0xFF, p->key_size);
+	else
+		memcpy(t->key_mask, p->key_mask, p->key_size);
 
 	/* Key stack */
 	for (i = 0; i < t->n_keys; i++)
@@ -227,7 +291,7 @@ rte_table_hash_lru_create(void *params, int socket_id, uint32_t entry_size)
 static int
 rte_table_hash_lru_free(void *table)
 {
-	struct rte_table_hash *t = (struct rte_table_hash *) table;
+	struct rte_table_hash *t = table;
 
 	/* Check input parameters */
 	if (t == NULL)
@@ -241,12 +305,12 @@ static int
 rte_table_hash_lru_entry_add(void *table, void *key, void *entry,
 	int *key_found, void **entry_ptr)
 {
-	struct rte_table_hash *t = (struct rte_table_hash *) table;
+	struct rte_table_hash *t = table;
 	struct bucket *bkt;
 	uint64_t sig;
 	uint32_t bkt_index, i;
 
-	sig = t->f_hash(key, t->key_size, t->seed);
+	sig = t->f_hash(key, t->key_mask, t->key_size, t->seed);
 	bkt_index = sig & t->bucket_mask;
 	bkt = &t->buckets[bkt_index];
 	sig = (sig >> 16) | 1LLU;
@@ -258,8 +322,8 @@ rte_table_hash_lru_entry_add(void *table, void *key, void *entry,
 		uint8_t *bkt_key = &t->key_mem[bkt_key_index <<
 			t->key_size_shl];
 
-		if ((sig == bkt_sig) && (memcmp(key, bkt_key, t->key_size)
-			== 0)) {
+		if ((sig == bkt_sig) && (keycmp(bkt_key, key, t->key_mask,
+			t->key_size) == 0)) {
 			uint8_t *data = &t->data_mem[bkt_key_index <<
 				t->data_size_shl];
 
@@ -292,7 +356,7 @@ rte_table_hash_lru_entry_add(void *table, void *key, void *entry,
 
 			bkt->sig[i] = (uint16_t) sig;
 			bkt->key_pos[i] = bkt_key_index;
-			memcpy(bkt_key, key, t->key_size);
+			keycpy(bkt_key, key, t->key_mask, t->key_size);
 			memcpy(data, entry, t->entry_size);
 			lru_update(bkt, i);
 
@@ -311,7 +375,7 @@ rte_table_hash_lru_entry_add(void *table, void *key, void *entry,
 		uint8_t *data = &t->data_mem[bkt_key_index << t->data_size_shl];
 
 		bkt->sig[pos] = (uint16_t) sig;
-		memcpy(bkt_key, key, t->key_size);
+		keycpy(bkt_key, key, t->key_mask, t->key_size);
 		memcpy(data, entry, t->entry_size);
 		lru_update(bkt, pos);
 
@@ -325,12 +389,12 @@ static int
 rte_table_hash_lru_entry_delete(void *table, void *key, int *key_found,
 	void *entry)
 {
-	struct rte_table_hash *t = (struct rte_table_hash *) table;
+	struct rte_table_hash *t = table;
 	struct bucket *bkt;
 	uint64_t sig;
 	uint32_t bkt_index, i;
 
-	sig = t->f_hash(key, t->key_size, t->seed);
+	sig = t->f_hash(key, t->key_mask, t->key_size, t->seed);
 	bkt_index = sig & t->bucket_mask;
 	bkt = &t->buckets[bkt_index];
 	sig = (sig >> 16) | 1LLU;
@@ -343,14 +407,15 @@ rte_table_hash_lru_entry_delete(void *table, void *key, int *key_found,
 			t->key_size_shl];
 
 		if ((sig == bkt_sig) &&
-			(memcmp(key, bkt_key, t->key_size) == 0)) {
+			(keycmp(bkt_key, key, t->key_mask, t->key_size) == 0)) {
 			uint8_t *data = &t->data_mem[bkt_key_index <<
 				t->data_size_shl];
 
 			bkt->sig[i] = 0;
 			t->key_stack[t->key_stack_tos++] = bkt_key_index;
 			*key_found = 1;
-			memcpy(entry, data, t->entry_size);
+			if (entry)
+				memcpy(entry, data, t->entry_size);
 			return 0;
 		}
 	}
@@ -365,8 +430,7 @@ static int rte_table_hash_lru_lookup_unoptimized(
 	struct rte_mbuf **pkts,
 	uint64_t pkts_mask,
 	uint64_t *lookup_hit_mask,
-	void **entries,
-	int dosig)
+	void **entries)
 {
 	struct rte_table_hash *t = (struct rte_table_hash *) table;
 	uint64_t pkts_mask_out = 0;
@@ -387,11 +451,7 @@ static int rte_table_hash_lru_lookup_unoptimized(
 
 		pkt = pkts[pkt_index];
 		key = RTE_MBUF_METADATA_UINT8_PTR(pkt, t->key_offset);
-		if (dosig)
-			sig = (uint64_t) t->f_hash(key, t->key_size, t->seed);
-		else
-			sig = RTE_MBUF_METADATA_UINT32(pkt,
-				t->signature_offset);
+		sig = (uint64_t) t->f_hash(key, t->key_mask, t->key_size, t->seed);
 
 		bkt_index = sig & t->bucket_mask;
 		bkt = &t->buckets[bkt_index];
@@ -404,7 +464,7 @@ static int rte_table_hash_lru_lookup_unoptimized(
 			uint8_t *bkt_key = &t->key_mem[bkt_key_index <<
 				t->key_size_shl];
 
-			if ((sig == bkt_sig) && (memcmp(key, bkt_key,
+			if ((sig == bkt_sig) && (keycmp(bkt_key, key, t->key_mask,
 				t->key_size) == 0)) {
 				uint8_t *data = &t->data_mem[bkt_key_index <<
 					t->data_size_shl];
@@ -502,74 +562,75 @@ static int rte_table_hash_lru_lookup_unoptimized(
 	match_pos = (LUT_MATCH_POS >> (mask_all << 1)) & 3;	\
 }
 
-#define lookup_cmp_key(mbuf, key, match_key, f)			\
-{								\
+#define lookup_cmp_key(mbuf, key, match_key, f)				\
+{									\
 	uint64_t *pkt_key = RTE_MBUF_METADATA_UINT64_PTR(mbuf, f->key_offset);\
-	uint64_t *bkt_key = (uint64_t *) key;			\
-								\
-	switch (f->key_size) {					\
-	case 8:							\
-	{							\
-		uint64_t xor = pkt_key[0] ^ bkt_key[0];		\
-		match_key = 0;					\
-		if (xor == 0)					\
-			match_key = 1;				\
-	}							\
-	break;							\
-								\
-	case 16:						\
-	{							\
-		uint64_t xor[2], or;				\
-								\
-		xor[0] = pkt_key[0] ^ bkt_key[0];		\
-		xor[1] = pkt_key[1] ^ bkt_key[1];		\
-		or = xor[0] | xor[1];				\
-		match_key = 0;					\
-		if (or == 0)					\
-			match_key = 1;				\
-	}							\
-	break;							\
-								\
-	case 32:						\
-	{							\
-		uint64_t xor[4], or;				\
-								\
-		xor[0] = pkt_key[0] ^ bkt_key[0];		\
-		xor[1] = pkt_key[1] ^ bkt_key[1];		\
-		xor[2] = pkt_key[2] ^ bkt_key[2];		\
-		xor[3] = pkt_key[3] ^ bkt_key[3];		\
-		or = xor[0] | xor[1] | xor[2] | xor[3];		\
-		match_key = 0;					\
-		if (or == 0)					\
-			match_key = 1;				\
-	}							\
-	break;							\
-								\
-	case 64:						\
-	{							\
-		uint64_t xor[8], or;				\
-								\
-		xor[0] = pkt_key[0] ^ bkt_key[0];		\
-		xor[1] = pkt_key[1] ^ bkt_key[1];		\
-		xor[2] = pkt_key[2] ^ bkt_key[2];		\
-		xor[3] = pkt_key[3] ^ bkt_key[3];		\
-		xor[4] = pkt_key[4] ^ bkt_key[4];		\
-		xor[5] = pkt_key[5] ^ bkt_key[5];		\
-		xor[6] = pkt_key[6] ^ bkt_key[6];		\
-		xor[7] = pkt_key[7] ^ bkt_key[7];		\
-		or = xor[0] | xor[1] | xor[2] | xor[3] |	\
-			xor[4] | xor[5] | xor[6] | xor[7];	\
-		match_key = 0;					\
-		if (or == 0)					\
-			match_key = 1;				\
-	}							\
-	break;							\
-								\
-	default:						\
-		match_key = 0;					\
-		if (memcmp(pkt_key, bkt_key, f->key_size) == 0)	\
-			match_key = 1;				\
-	}							\
+	uint64_t *bkt_key = (uint64_t *) key;				\
+	uint64_t *key_mask = f->key_mask;					\
+									\
+	switch (f->key_size) {						\
+	case 8:								\
+	{								\
+		uint64_t xor = (pkt_key[0] & key_mask[0]) ^ bkt_key[0];	\
+		match_key = 0;						\
+		if (xor == 0)						\
+			match_key = 1;					\
+	}								\
+	break;								\
+									\
+	case 16:							\
+	{								\
+		uint64_t xor[2], or;					\
+									\
+		xor[0] = (pkt_key[0] & key_mask[0]) ^ bkt_key[0];		\
+		xor[1] = (pkt_key[1] & key_mask[1]) ^ bkt_key[1];		\
+		or = xor[0] | xor[1];					\
+		match_key = 0;						\
+		if (or == 0)						\
+			match_key = 1;					\
+	}								\
+	break;								\
+									\
+	case 32:							\
+	{								\
+		uint64_t xor[4], or;					\
+									\
+		xor[0] = (pkt_key[0] & key_mask[0]) ^ bkt_key[0];		\
+		xor[1] = (pkt_key[1] & key_mask[1]) ^ bkt_key[1];		\
+		xor[2] = (pkt_key[2] & key_mask[2]) ^ bkt_key[2];		\
+		xor[3] = (pkt_key[3] & key_mask[3]) ^ bkt_key[3];		\
+		or = xor[0] | xor[1] | xor[2] | xor[3];			\
+		match_key = 0;						\
+		if (or == 0)						\
+			match_key = 1;					\
+	}								\
+	break;								\
+									\
+	case 64:							\
+	{								\
+		uint64_t xor[8], or;					\
+									\
+		xor[0] = (pkt_key[0] & key_mask[0]) ^ bkt_key[0];		\
+		xor[1] = (pkt_key[1] & key_mask[1]) ^ bkt_key[1];		\
+		xor[2] = (pkt_key[2] & key_mask[2]) ^ bkt_key[2];		\
+		xor[3] = (pkt_key[3] & key_mask[3]) ^ bkt_key[3];		\
+		xor[4] = (pkt_key[4] & key_mask[4]) ^ bkt_key[4];		\
+		xor[5] = (pkt_key[5] & key_mask[5]) ^ bkt_key[5];		\
+		xor[6] = (pkt_key[6] & key_mask[6]) ^ bkt_key[6];		\
+		xor[7] = (pkt_key[7] & key_mask[7]) ^ bkt_key[7];		\
+		or = xor[0] | xor[1] | xor[2] | xor[3] |		\
+			xor[4] | xor[5] | xor[6] | xor[7];		\
+		match_key = 0;						\
+		if (or == 0)						\
+			match_key = 1;					\
+	}								\
+	break;								\
+									\
+	default:							\
+		match_key = 0;						\
+		if (keycmp(bkt_key, pkt_key, key_mask, f->key_size) == 0)	\
+			match_key = 1;					\
+	}								\
 }
 
 #define lookup2_stage0(t, g, pkts, pkts_mask, pkt00_index, pkt01_index)\
@@ -616,38 +677,7 @@ static int rte_table_hash_lru_lookup_unoptimized(
 	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf01, key_offset));\
 }
 
-#define lookup2_stage1(t, g, pkts, pkt10_index, pkt11_index)	\
-{								\
-	struct grinder *g10, *g11;				\
-	uint64_t sig10, sig11, bkt10_index, bkt11_index;	\
-	struct rte_mbuf *mbuf10, *mbuf11;			\
-	struct bucket *bkt10, *bkt11, *buckets = t->buckets;	\
-	uint64_t bucket_mask = t->bucket_mask;			\
-	uint32_t signature_offset = t->signature_offset;	\
-								\
-	mbuf10 = pkts[pkt10_index];				\
-	sig10 = (uint64_t) RTE_MBUF_METADATA_UINT32(mbuf10, signature_offset);\
-	bkt10_index = sig10 & bucket_mask;			\
-	bkt10 = &buckets[bkt10_index];				\
-								\
-	mbuf11 = pkts[pkt11_index];				\
-	sig11 = (uint64_t) RTE_MBUF_METADATA_UINT32(mbuf11, signature_offset);\
-	bkt11_index = sig11 & bucket_mask;			\
-	bkt11 = &buckets[bkt11_index];				\
-								\
-	rte_prefetch0(bkt10);					\
-	rte_prefetch0(bkt11);					\
-								\
-	g10 = &g[pkt10_index];					\
-	g10->sig = sig10;					\
-	g10->bkt = bkt10;					\
-								\
-	g11 = &g[pkt11_index];					\
-	g11->sig = sig11;					\
-	g11->bkt = bkt11;					\
-}
-
-#define lookup2_stage1_dosig(t, g, pkts, pkt10_index, pkt11_index)\
+#define lookup2_stage1(t, g, pkts, pkt10_index, pkt11_index)\
 {								\
 	struct grinder *g10, *g11;				\
 	uint64_t sig10, sig11, bkt10_index, bkt11_index;	\
@@ -662,13 +692,13 @@ static int rte_table_hash_lru_lookup_unoptimized(
 								\
 	mbuf10 = pkts[pkt10_index];				\
 	key10 = RTE_MBUF_METADATA_UINT8_PTR(mbuf10, key_offset);\
-	sig10 = (uint64_t) f_hash(key10, key_size, seed);	\
+	sig10 = (uint64_t) f_hash(key10, t->key_mask, key_size, seed);\
 	bkt10_index = sig10 & bucket_mask;			\
 	bkt10 = &buckets[bkt10_index];				\
 								\
 	mbuf11 = pkts[pkt11_index];				\
 	key11 = RTE_MBUF_METADATA_UINT8_PTR(mbuf11, key_offset);\
-	sig11 = (uint64_t) f_hash(key11, key_size, seed);	\
+	sig11 = (uint64_t) f_hash(key11, t->key_mask, key_size, seed);\
 	bkt11_index = sig11 & bucket_mask;			\
 	bkt11 = &buckets[bkt11_index];				\
 								\
@@ -819,7 +849,7 @@ static int rte_table_hash_lru_lookup(
 	/* Cannot run the pipeline with less than 7 packets */
 	if (__builtin_popcountll(pkts_mask) < 7)
 		return rte_table_hash_lru_lookup_unoptimized(table, pkts,
-			pkts_mask, lookup_hit_mask, entries, 0);
+			pkts_mask, lookup_hit_mask, entries);
 
 	/* Pipeline stage 0 */
 	lookup2_stage0(t, g, pkts, pkts_mask, pkt00_index, pkt01_index);
@@ -923,140 +953,7 @@ static int rte_table_hash_lru_lookup(
 		uint64_t pkts_mask_out_slow = 0;
 
 		status = rte_table_hash_lru_lookup_unoptimized(table, pkts,
-			pkts_mask_match_many, &pkts_mask_out_slow, entries, 0);
-		pkts_mask_out |= pkts_mask_out_slow;
-	}
-
-	*lookup_hit_mask = pkts_mask_out;
-	RTE_TABLE_HASH_LRU_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in - __builtin_popcountll(pkts_mask_out));
-	return status;
-}
-
-static int rte_table_hash_lru_lookup_dosig(
-	void *table,
-	struct rte_mbuf **pkts,
-	uint64_t pkts_mask,
-	uint64_t *lookup_hit_mask,
-	void **entries)
-{
-	struct rte_table_hash *t = (struct rte_table_hash *) table;
-	struct grinder *g = t->grinders;
-	uint64_t pkt00_index, pkt01_index, pkt10_index, pkt11_index;
-	uint64_t pkt20_index, pkt21_index, pkt30_index, pkt31_index;
-	uint64_t pkts_mask_out = 0, pkts_mask_match_many = 0;
-	int status = 0;
-
-	__rte_unused uint32_t n_pkts_in = __builtin_popcountll(pkts_mask);
-	RTE_TABLE_HASH_LRU_STATS_PKTS_IN_ADD(t, n_pkts_in);
-
-	/* Cannot run the pipeline with less than 7 packets */
-	if (__builtin_popcountll(pkts_mask) < 7)
-		return rte_table_hash_lru_lookup_unoptimized(table, pkts,
-			pkts_mask, lookup_hit_mask, entries, 1);
-
-	/* Pipeline stage 0 */
-	lookup2_stage0(t, g, pkts, pkts_mask, pkt00_index, pkt01_index);
-
-	/* Pipeline feed */
-	pkt10_index = pkt00_index;
-	pkt11_index = pkt01_index;
-
-	/* Pipeline stage 0 */
-	lookup2_stage0(t, g, pkts, pkts_mask, pkt00_index, pkt01_index);
-
-	/* Pipeline stage 1 */
-	lookup2_stage1_dosig(t, g, pkts, pkt10_index, pkt11_index);
-
-	/* Pipeline feed */
-	pkt20_index = pkt10_index;
-	pkt21_index = pkt11_index;
-	pkt10_index = pkt00_index;
-	pkt11_index = pkt01_index;
-
-	/* Pipeline stage 0 */
-	lookup2_stage0(t, g, pkts, pkts_mask, pkt00_index, pkt01_index);
-
-	/* Pipeline stage 1 */
-	lookup2_stage1_dosig(t, g, pkts, pkt10_index, pkt11_index);
-
-	/* Pipeline stage 2 */
-	lookup2_stage2(t, g, pkt20_index, pkt21_index, pkts_mask_match_many);
-
-	/*
-	* Pipeline run
-	*
-	*/
-	for ( ; pkts_mask; ) {
-		/* Pipeline feed */
-		pkt30_index = pkt20_index;
-		pkt31_index = pkt21_index;
-		pkt20_index = pkt10_index;
-		pkt21_index = pkt11_index;
-		pkt10_index = pkt00_index;
-		pkt11_index = pkt01_index;
-
-		/* Pipeline stage 0 */
-		lookup2_stage0_with_odd_support(t, g, pkts, pkts_mask,
-			pkt00_index, pkt01_index);
-
-		/* Pipeline stage 1 */
-		lookup2_stage1_dosig(t, g, pkts, pkt10_index, pkt11_index);
-
-		/* Pipeline stage 2 */
-		lookup2_stage2(t, g, pkt20_index, pkt21_index,
-			pkts_mask_match_many);
-
-		/* Pipeline stage 3 */
-		lookup2_stage3(t, g, pkts, pkt30_index, pkt31_index,
-			pkts_mask_out, entries);
-	}
-
-	/* Pipeline feed */
-	pkt30_index = pkt20_index;
-	pkt31_index = pkt21_index;
-	pkt20_index = pkt10_index;
-	pkt21_index = pkt11_index;
-	pkt10_index = pkt00_index;
-	pkt11_index = pkt01_index;
-
-	/* Pipeline stage 1 */
-	lookup2_stage1_dosig(t, g, pkts, pkt10_index, pkt11_index);
-
-	/* Pipeline stage 2 */
-	lookup2_stage2(t, g, pkt20_index, pkt21_index, pkts_mask_match_many);
-
-	/* Pipeline stage 3 */
-	lookup2_stage3(t, g, pkts, pkt30_index, pkt31_index, pkts_mask_out,
-		entries);
-
-	/* Pipeline feed */
-	pkt30_index = pkt20_index;
-	pkt31_index = pkt21_index;
-	pkt20_index = pkt10_index;
-	pkt21_index = pkt11_index;
-
-	/* Pipeline stage 2 */
-	lookup2_stage2(t, g, pkt20_index, pkt21_index, pkts_mask_match_many);
-
-	/* Pipeline stage 3 */
-	lookup2_stage3(t, g, pkts, pkt30_index, pkt31_index, pkts_mask_out,
-		entries);
-
-	/* Pipeline feed */
-	pkt30_index = pkt20_index;
-	pkt31_index = pkt21_index;
-
-	/* Pipeline stage 3 */
-	lookup2_stage3(t, g, pkts, pkt30_index, pkt31_index, pkts_mask_out,
-		entries);
-
-	/* Slow path */
-	pkts_mask_match_many &= ~pkts_mask_out;
-	if (pkts_mask_match_many) {
-		uint64_t pkts_mask_out_slow = 0;
-
-		status = rte_table_hash_lru_lookup_unoptimized(table, pkts,
-			pkts_mask_match_many, &pkts_mask_out_slow, entries, 1);
+			pkts_mask_match_many, &pkts_mask_out_slow, entries);
 		pkts_mask_out |= pkts_mask_out_slow;
 	}
 
@@ -1068,7 +965,7 @@ static int rte_table_hash_lru_lookup_dosig(
 static int
 rte_table_hash_lru_stats_read(void *table, struct rte_table_stats *stats, int clear)
 {
-	struct rte_table_hash *t = (struct rte_table_hash *) table;
+	struct rte_table_hash *t = table;
 
 	if (stats != NULL)
 		memcpy(stats, &t->stats, sizeof(t->stats));
@@ -1087,16 +984,5 @@ struct rte_table_ops rte_table_hash_lru_ops = {
 	.f_add_bulk = NULL,
 	.f_delete_bulk = NULL,
 	.f_lookup = rte_table_hash_lru_lookup,
-	.f_stats = rte_table_hash_lru_stats_read,
-};
-
-struct rte_table_ops rte_table_hash_lru_dosig_ops = {
-	.f_create = rte_table_hash_lru_create,
-	.f_free = rte_table_hash_lru_free,
-	.f_add = rte_table_hash_lru_entry_add,
-	.f_delete = rte_table_hash_lru_entry_delete,
-	.f_add_bulk = NULL,
-	.f_delete_bulk = NULL,
-	.f_lookup = rte_table_hash_lru_lookup_dosig,
 	.f_stats = rte_table_hash_lru_stats_read,
 };

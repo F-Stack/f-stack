@@ -54,14 +54,12 @@ SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) += cmdline_socket.c
 SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) += cmdline_parse_portlist.c
 
 CFLAGS += -D_GNU_SOURCE
+LDLIBS += -lrte_eal
 
 # install includes
 INCS := cmdline.h cmdline_parse.h cmdline_parse_num.h cmdline_parse_ipaddr.h
 INCS += cmdline_parse_etheraddr.h cmdline_parse_string.h cmdline_rdline.h
 INCS += cmdline_vt100.h cmdline_socket.h cmdline_cirbuf.h cmdline_parse_portlist.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_CMDLINE)-include := $(INCS)
-
-# this lib needs eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_CMDLINE) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

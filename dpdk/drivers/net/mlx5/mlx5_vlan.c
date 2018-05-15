@@ -36,74 +36,12 @@
 #include <assert.h>
 #include <stdint.h>
 
-/* DPDK headers don't like -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
 #include <rte_ethdev.h>
 #include <rte_common.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
 
 #include "mlx5_utils.h"
 #include "mlx5.h"
 #include "mlx5_autoconf.h"
-
-/**
- * Configure a VLAN filter.
- *
- * @param dev
- *   Pointer to Ethernet device structure.
- * @param vlan_id
- *   VLAN ID to filter.
- * @param on
- *   Toggle filter.
- *
- * @return
- *   0 on success, errno value on failure.
- */
-static int
-vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
-{
-	struct priv *priv = dev->data->dev_private;
-	unsigned int i;
-
-	DEBUG("%p: %s VLAN filter ID %" PRIu16,
-	      (void *)dev, (on ? "enable" : "disable"), vlan_id);
-	assert(priv->vlan_filter_n <= RTE_DIM(priv->vlan_filter));
-	for (i = 0; (i != priv->vlan_filter_n); ++i)
-		if (priv->vlan_filter[i] == vlan_id)
-			break;
-	/* Check if there's room for another VLAN filter. */
-	if (i == RTE_DIM(priv->vlan_filter))
-		return ENOMEM;
-	if (i < priv->vlan_filter_n) {
-		assert(priv->vlan_filter_n != 0);
-		/* Enabling an existing VLAN filter has no effect. */
-		if (on)
-			return 0;
-		/* Remove VLAN filter from list. */
-		--priv->vlan_filter_n;
-		memmove(&priv->vlan_filter[i],
-			&priv->vlan_filter[i + 1],
-			sizeof(priv->vlan_filter[i]) *
-			(priv->vlan_filter_n - i));
-		priv->vlan_filter[priv->vlan_filter_n] = 0;
-	} else {
-		assert(i == priv->vlan_filter_n);
-		/* Disabling an unknown VLAN filter has no effect. */
-		if (!on)
-			return 0;
-		/* Add new VLAN filter. */
-		priv->vlan_filter[priv->vlan_filter_n] = vlan_id;
-		++priv->vlan_filter_n;
-	}
-	/* Rehash flows in all hash RX queues. */
-	priv_mac_addrs_disable(priv);
-	priv_special_flow_disable_all(priv);
-	return priv_rehash_flows(priv);
-}
 
 /**
  * DPDK callback to configure a VLAN filter.
@@ -122,13 +60,47 @@ int
 mlx5_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 {
 	struct priv *priv = dev->data->dev_private;
-	int ret;
+	unsigned int i;
+	int ret = 0;
 
 	priv_lock(priv);
-	ret = vlan_filter_set(dev, vlan_id, on);
+	DEBUG("%p: %s VLAN filter ID %" PRIu16,
+	      (void *)dev, (on ? "enable" : "disable"), vlan_id);
+	assert(priv->vlan_filter_n <= RTE_DIM(priv->vlan_filter));
+	for (i = 0; (i != priv->vlan_filter_n); ++i)
+		if (priv->vlan_filter[i] == vlan_id)
+			break;
+	/* Check if there's room for another VLAN filter. */
+	if (i == RTE_DIM(priv->vlan_filter)) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	if (i < priv->vlan_filter_n) {
+		assert(priv->vlan_filter_n != 0);
+		/* Enabling an existing VLAN filter has no effect. */
+		if (on)
+			goto out;
+		/* Remove VLAN filter from list. */
+		--priv->vlan_filter_n;
+		memmove(&priv->vlan_filter[i],
+			&priv->vlan_filter[i + 1],
+			sizeof(priv->vlan_filter[i]) *
+			(priv->vlan_filter_n - i));
+		priv->vlan_filter[priv->vlan_filter_n] = 0;
+	} else {
+		assert(i == priv->vlan_filter_n);
+		/* Disabling an unknown VLAN filter has no effect. */
+		if (!on)
+			goto out;
+		/* Add new VLAN filter. */
+		priv->vlan_filter[priv->vlan_filter_n] = vlan_id;
+		++priv->vlan_filter_n;
+	}
+	if (dev->data->dev_started)
+		priv_dev_traffic_restart(priv, dev);
+out:
 	priv_unlock(priv);
-	assert(ret >= 0);
-	return -ret;
+	return ret;
 }
 
 /**
@@ -144,22 +116,29 @@ mlx5_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 static void
 priv_vlan_strip_queue_set(struct priv *priv, uint16_t idx, int on)
 {
-	struct rxq *rxq = (*priv->rxqs)[idx];
-	struct rxq_ctrl *rxq_ctrl = container_of(rxq, struct rxq_ctrl, rxq);
-	struct ibv_exp_wq_attr mod;
+	struct mlx5_rxq_data *rxq = (*priv->rxqs)[idx];
+	struct mlx5_rxq_ctrl *rxq_ctrl =
+		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
+	struct ibv_wq_attr mod;
 	uint16_t vlan_offloads =
-		(on ? IBV_EXP_RECEIVE_WQ_CVLAN_STRIP : 0) |
+		(on ? IBV_WQ_FLAGS_CVLAN_STRIPPING : 0) |
 		0;
 	int err;
 
 	DEBUG("set VLAN offloads 0x%x for port %d queue %d",
 	      vlan_offloads, rxq->port_id, idx);
-	mod = (struct ibv_exp_wq_attr){
-		.attr_mask = IBV_EXP_WQ_ATTR_VLAN_OFFLOADS,
-		.vlan_offloads = vlan_offloads,
+	if (!rxq_ctrl->ibv) {
+		/* Update related bits in RX queue. */
+		rxq->vlan_strip = !!on;
+		return;
+	}
+	mod = (struct ibv_wq_attr){
+		.attr_mask = IBV_WQ_ATTR_FLAGS,
+		.flags_mask = IBV_WQ_FLAGS_CVLAN_STRIPPING,
+		.flags = vlan_offloads,
 	};
 
-	err = ibv_exp_modify_wq(rxq_ctrl->wq, &mod);
+	err = ibv_modify_wq(rxq_ctrl->ibv->wq, &mod);
 	if (err) {
 		ERROR("%p: failed to modified stripping mode: %s",
 		      (void *)priv, strerror(err));
@@ -210,7 +189,7 @@ mlx5_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue, int on)
  * @param mask
  *   VLAN offload bit mask.
  */
-void
+int
 mlx5_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	struct priv *priv = dev->data->dev_private;
@@ -221,7 +200,7 @@ mlx5_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 
 		if (!priv->hw_vlan_strip) {
 			ERROR("VLAN stripping is not supported");
-			return;
+			return 0;
 		}
 
 		/* Run on every RX queue and set/reset VLAN stripping. */
@@ -230,4 +209,6 @@ mlx5_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 			priv_vlan_strip_queue_set(priv, i, hw_vlan_strip);
 		priv_unlock(priv);
 	}
+
+	return 0;
 }

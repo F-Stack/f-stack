@@ -51,43 +51,24 @@ The lookup method is the Four-byte Key (FBK) hash-based method.
 The lookup table is composed of pairs of destination IPv4 address (the FBK)
 and a port mask associated with that IPv4 address.
 
+.. note::
+
+    The max port mask supported in the given hash table is 0xf, so only first
+    four ports can be supported.
+    If using non-consecutive ports, use the destination IPv4 address accordingly.
+
 For convenience and simplicity, this sample application does not take IANA-assigned multicast addresses into account,
 but instead equates the last four bytes of the multicast group (that is, the last four bytes of the destination IP address)
 with the mask of ports to multicast packets to.
 Also, the application does not consider the Ethernet addresses;
 it looks only at the IPv4 destination address for any given packet.
 
-Building the Application
-------------------------
+Compiling the Application
+-------------------------
 
-To compile the application:
+To compile the sample application see :doc:`compiling`.
 
-#.  Go to the sample application directory:
-
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/ipv4_multicast
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
-
-.. note::
-
-    The compiled application is written to the build subdirectory.
-    To have the application written to a different location,
-    the O=/path/to/build/directory option may be specified in the make command.
+The application is located in the ``ipv4_multicast`` sub-directory.
 
 Running the Application
 -----------------------
@@ -113,11 +94,11 @@ Typically, to run the IPv4 Multicast sample application, issue the following com
 
 .. code-block:: console
 
-    ./build/ipv4_multicast -c 0x00f -n 3 -- -p 0x3 -q 1
+    ./build/ipv4_multicast -l 0-3 -n 3 -- -p 0x3 -q 1
 
 In this command:
 
-*   The -c option enables cores 0, 1, 2 and 3
+*   The -l option enables cores 0, 1, 2 and 3
 
 *   The -n option specifies 3 memory channels
 
@@ -145,12 +126,12 @@ Memory pools for indirect buffers are initialized differently from the memory po
 
 .. code-block:: c
 
-    packet_pool = rte_mempool_create("packet_pool", NB_PKT_MBUF, PKT_MBUF_SIZE, 32, sizeof(struct rte_pktmbuf_pool_private),
-                                     rte_pktmbuf_pool_init, NULL, rte_pktmbuf_init, NULL, rte_socket_id(), 0);
-
-    header_pool = rte_mempool_create("header_pool", NB_HDR_MBUF, HDR_MBUF_SIZE, 32, 0, NULL, NULL, rte_pktmbuf_init, NULL, rte_socket_id(), 0);
-    clone_pool = rte_mempool_create("clone_pool", NB_CLONE_MBUF,
-    CLONE_MBUF_SIZE, 32, 0, NULL, NULL, rte_pktmbuf_init, NULL, rte_socket_id(), 0);
+    packet_pool = rte_pktmbuf_pool_create("packet_pool", NB_PKT_MBUF, 32,
+			0, PKT_MBUF_DATA_SIZE, rte_socket_id());
+    header_pool = rte_pktmbuf_pool_create("header_pool", NB_HDR_MBUF, 32,
+			0, HDR_MBUF_DATA_SIZE, rte_socket_id());
+    clone_pool = rte_pktmbuf_pool_create("clone_pool", NB_CLONE_MBUF, 32,
+			0, 0, rte_socket_id());
 
 The reason for this is because indirect buffers are not supposed to hold any packet data and
 therefore can be initialized with lower amount of reserved memory for each buffer.
@@ -262,7 +243,7 @@ The actual packet transmission is done in the mcast_send_pkt() function:
 
 .. code-block:: c
 
-    static inline void mcast_send_pkt(struct rte_mbuf *pkt, struct ether_addr *dest_addr, struct lcore_queue_conf *qconf, uint8_t port)
+    static inline void mcast_send_pkt(struct rte_mbuf *pkt, struct ether_addr *dest_addr, struct lcore_queue_conf *qconf, uint16_t port)
     {
         struct ether_hdr *ethdr;
         uint16_t len;
@@ -358,7 +339,7 @@ It is the mcast_out_pkt() function that performs the packet duplication (either 
         /* update header's fields */
 
         hdr->pkt.pkt_len = (uint16_t)(hdr->pkt.data_len + pkt->pkt.pkt_len);
-        hdr->pkt.nb_segs = (uint8_t)(pkt->pkt.nb_segs + 1);
+        hdr->pkt.nb_segs = pkt->pkt.nb_segs + 1;
 
         /* copy metadata from source packet */
 

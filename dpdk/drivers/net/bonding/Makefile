@@ -38,10 +38,14 @@ LIB = librte_pmd_bond.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs -lrte_cmdline
+LDLIBS += -lrte_pci -lrte_bus_pci
+LDLIBS += -lrte_bus_vdev
 
-EXPORT_MAP := rte_eth_bond_version.map
+EXPORT_MAP := rte_pmd_bond_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 #
 # all source are stored in SRCS-y
@@ -57,14 +61,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += rte_eth_bond_alb.c
 #
 SYMLINK-y-include += rte_eth_bond.h
 SYMLINK-y-include += rte_eth_bond_8023ad.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_kvargs
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_cmdline
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += lib/librte_ring
 
 include $(RTE_SDK)/mk/rte.lib.mk

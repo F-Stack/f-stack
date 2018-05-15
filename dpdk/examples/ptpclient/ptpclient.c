@@ -158,12 +158,12 @@ struct ptpv2_data_slave_ordinary {
 	struct clock_id master_clock_id;
 	struct timeval new_adj;
 	int64_t delta;
-	uint8_t portid;
+	uint16_t portid;
 	uint16_t seqID_SYNC;
 	uint16_t seqID_FOLLOWUP;
 	uint8_t ptpset;
 	uint8_t kernel_time_set;
-	uint8_t current_ptp_port;
+	uint16_t current_ptp_port;
 };
 
 static struct ptpv2_data_slave_ordinary ptp_data;
@@ -202,7 +202,7 @@ ns_to_timeval(int64_t nsec)
  * coming from the mbuf_pool passed as a parameter.
  */
 static inline int
-port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_conf port_conf = port_conf_default;
@@ -210,6 +210,8 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	const uint16_t tx_rings = 1;
 	int retval;
 	uint16_t q;
+	uint16_t nb_rxd = RX_RING_SIZE;
+	uint16_t nb_txd = TX_RING_SIZE;
 
 	if (port >= rte_eth_dev_count())
 		return -1;
@@ -219,9 +221,13 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	if (retval != 0)
 		return retval;
 
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+	if (retval != 0)
+		return retval;
+
 	/* Allocate and set up 1 RX queue per Ethernet port. */
 	for (q = 0; q < rx_rings; q++) {
-		retval = rte_eth_rx_queue_setup(port, q, RX_RING_SIZE,
+		retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
 				rte_eth_dev_socket_id(port), NULL, mbuf_pool);
 
 		if (retval < 0)
@@ -237,7 +243,7 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 		txconf = &dev_info.default_txconf;
 		txconf->txq_flags = 0;
 
-		retval = rte_eth_tx_queue_setup(port, q, TX_RING_SIZE,
+		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
 				rte_eth_dev_socket_id(port), txconf);
 		if (retval < 0)
 			return retval;
@@ -549,7 +555,7 @@ parse_drsp(struct ptpv2_data_slave_ordinary *ptp_data)
  * functionality.
  */
 static void
-parse_ptp_frames(uint8_t portid, struct rte_mbuf *m) {
+parse_ptp_frames(uint16_t portid, struct rte_mbuf *m) {
 	struct ptp_header *ptp_hdr;
 	struct ether_hdr *eth_hdr;
 	uint16_t eth_type;
@@ -587,7 +593,7 @@ parse_ptp_frames(uint8_t portid, struct rte_mbuf *m) {
 static __attribute__((noreturn)) void
 lcore_main(void)
 {
-	uint8_t portid;
+	uint16_t portid;
 	unsigned nb_rx;
 	struct rte_mbuf *m;
 
@@ -708,7 +714,7 @@ ptp_parse_args(int argc, char **argv)
 
 	argv[optind-1] = prgname;
 
-	optind = 0; /* Reset getopt lib. */
+	optind = 1; /* Reset getopt lib. */
 
 	return 0;
 }
@@ -722,7 +728,7 @@ main(int argc, char *argv[])
 {
 	unsigned nb_ports;
 
-	uint8_t portid;
+	uint16_t portid;
 
 	/* Initialize the Environment Abstraction Layer (EAL). */
 	int ret = rte_eal_init(argc, argv);

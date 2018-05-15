@@ -7,12 +7,12 @@ This document outlines the guidelines for submitting code to DPDK.
 
 The DPDK development process is modelled (loosely) on the Linux Kernel development model so it is worth reading the
 Linux kernel guide on submitting patches:
-`How to Get Your Change Into the Linux Kernel <http://www.kernel.org/doc/Documentation/SubmittingPatches>`_.
+`How to Get Your Change Into the Linux Kernel <https://www.kernel.org/doc/html/latest/process/submitting-patches.html>`_.
 The rationale for many of the DPDK guidelines is explained in greater detail in the kernel guidelines.
 
 
 The DPDK Development Process
------------------------------
+----------------------------
 
 The DPDK development process has the following features:
 
@@ -20,25 +20,94 @@ The DPDK development process has the following features:
 * There is a mailing list where developers submit patches.
 * There are maintainers for hierarchical components.
 * Patches are reviewed publicly on the mailing list.
-* Successfully reviewed patches are merged to the master branch of the repository.
+* Successfully reviewed patches are merged to the repository.
+* Patches should be sent to the target repository or sub-tree, see below.
+* All sub-repositories are merged into main repository for ``-rc1`` and ``-rc2`` versions of the release.
+* After the ``-rc2`` release all patches should target the main repository.
 
 The mailing list for DPDK development is `dev@dpdk.org <http://dpdk.org/ml/archives/dev/>`_.
 Contributors will need to `register for the mailing list <http://dpdk.org/ml/listinfo/dev>`_ in order to submit patches.
-It is also worth registering for the DPDK `Patchwork <http://dpdk.org/dev/patchwxispork/project/dpdk/list/>`_
+It is also worth registering for the DPDK `Patchwork <http://dpdk.org/dev/patchwork/project/dpdk/list/>`_
 
 The development process requires some familiarity with the ``git`` version control system.
 Refer to the `Pro Git Book <http://www.git-scm.com/book/>`_ for further information.
 
 
+Maintainers and Sub-trees
+-------------------------
+
+The DPDK maintenance hierarchy is divided into a main repository ``dpdk`` and sub-repositories ``dpdk-next-*``.
+
+There are maintainers for the trees and for components within the tree.
+
+Trees and maintainers are listed in the ``MAINTAINERS`` file. For example::
+
+    Crypto Drivers
+    --------------
+    M: Some Name <some.name@email.com>
+    B: Another Name <another.name@email.com>
+    T: git://dpdk.org/next/dpdk-next-crypto
+
+    Intel AES-NI GCM PMD
+    M: Some One <some.one@email.com>
+    F: drivers/crypto/aesni_gcm/
+    F: doc/guides/cryptodevs/aesni_gcm.rst
+
+Where:
+
+* ``M`` is a tree or component maintainer.
+* ``B`` is a tree backup maintainer.
+* ``T`` is a repository tree.
+* ``F`` is a maintained file or directory.
+
+Additional details are given in the ``MAINTAINERS`` file.
+
+The role of the component maintainers is to:
+
+* Review patches for the component or delegate the review.
+  The review should be done, ideally, within 1 week of submission to the mailing list.
+* Add an ``acked-by`` to patches, or patchsets, that are ready for committing to a tree.
+* Reply to questions asked about the component.
+
+Component maintainers can be added or removed by submitting a patch to the ``MAINTAINERS`` file.
+Maintainers should have demonstrated a reasonable level of contributions or reviews to the component area.
+The maintainer should be confirmed by an ``ack`` from an established contributor.
+There can be more than one component maintainer if desired.
+
+The role of the tree maintainers is to:
+
+* Maintain the overall quality of their tree.
+  This can entail additional review, compilation checks or other tests deemed necessary by the maintainer.
+* Commit patches that have been reviewed by component maintainers and/or other contributors.
+  The tree maintainer should determine if patches have been reviewed sufficiently.
+* Ensure that patches are reviewed in a timely manner.
+* Prepare the tree for integration.
+* Ensure that there is a designated back-up maintainer and coordinate a handover for periods where the
+  tree maintainer can't perform their role.
+
+Tree maintainers can be added or removed by submitting a patch to the ``MAINTAINERS`` file.
+The proposer should justify the need for a new sub-tree and should have demonstrated a sufficient level of contributions in the area or to a similar area.
+The maintainer should be confirmed by an ``ack`` from an existing tree maintainer.
+Disagreements on trees or maintainers can be brought to the Technical Board.
+
+The backup maintainer for the master tree should be selected from the existing sub-tree maintainers from the project.
+The backup maintainer for a sub-tree should be selected from among the component maintainers within that sub-tree.
+
+
 Getting the Source Code
 -----------------------
 
-The source code can be cloned using either of the following::
+The source code can be cloned using either of the following:
+
+main repository::
 
     git clone git://dpdk.org/dpdk
-
     git clone http://dpdk.org/git/dpdk
 
+sub-repositories (`list <http://dpdk.org/browse/next>`_)::
+
+    git clone git://dpdk.org/next/dpdk-next-*
+    git clone http://dpdk.org/git/next/dpdk-next-*
 
 Make your Changes
 -----------------
@@ -124,7 +193,7 @@ Here are some guidelines for the body of a commit message:
       git commit --signoff # or -s
 
   The purpose of the signoff is explained in the
-  `Developer's Certificate of Origin <http://www.kernel.org/doc/Documentation/SubmittingPatches>`_
+  `Developer's Certificate of Origin <https://www.kernel.org/doc/html/latest/process/submitting-patches.html#developer-s-certificate-of-origin-1-1>`_
   section of the Linux kernel guidelines.
 
   .. Note::
@@ -138,18 +207,21 @@ Here are some guidelines for the body of a commit message:
 
 * The text of the commit message should be wrapped at 72 characters.
 
-* When fixing a regression, it is a good idea to reference the id of the commit which introduced the bug.
-  You can generate the required text using the following git alias::
+* When fixing a regression, it is required to reference the id of the commit
+  which introduced the bug, and put the original author of that commit on CC.
+  You can generate the required lines using the following git alias, which prints
+  the commit SHA and the author of the original code::
 
-     git config alias.fixline "log -1 --abbrev=12 --format='Fixes: %h (\"%s\")'"
+     git config alias.fixline "log -1 --abbrev=12 --format='Fixes: %h (\"%s\")%nCc: %ae'"
 
-  The ``Fixes:`` line can then be added to the commit message::
+  The output of ``git fixline <SHA>`` must then be added to the commit message::
 
-     doc: fix vhost sample parameter
+     doc: fix some parameter description
 
-     Update the docs to reflect removed dev-index.
+     Update the docs, fixing description of some parameter.
 
-     Fixes: 17b8320a3e11 ("vhost: remove index parameter")
+     Fixes: abcdefgh1234 ("doc: add some parameter")
+     Cc: author@example.com
 
      Signed-off-by: Alex Smith <alex.smith@example.com>
 
@@ -157,13 +229,9 @@ Here are some guidelines for the body of a commit message:
 
 * Use correct capitalization, punctuation and spelling.
 
-In addition to the ``Signed-off-by:`` name the commit messages can also have one or more of the following:
-
-* ``Reported-by:`` The reporter of the issue.
-* ``Tested-by:`` The tester of the change.
-* ``Reviewed-by:`` The reviewer of the change.
-* ``Suggested-by:`` The person who suggested the change.
-* ``Acked-by:`` When a previous version of the patch was acked and the ack is still relevant.
+In addition to the ``Signed-off-by:`` name the commit messages can also have
+tags for who reported, suggested, tested and reviewed the patch being
+posted. Please refer to the `Tested, Acked and Reviewed by`_ section.
 
 
 Creating Patches
@@ -230,7 +298,7 @@ For example::
 Checking the Patches
 --------------------
 
-Patches should be checked for formatting and syntax issues using the ``checkpatches.sh`` script in the ``scripts``
+Patches should be checked for formatting and syntax issues using the ``checkpatches.sh`` script in the ``devtools``
 directory of the DPDK repo.
 This uses the Linux kernel development tool ``checkpatch.pl`` which  can be obtained by cloning, and periodically,
 updating the Linux kernel sources.
@@ -245,7 +313,7 @@ files, in order of preference::
 
 Once the environment variable the script can be run as follows::
 
-   scripts/checkpatches.sh ~/patch/
+   devtools/checkpatches.sh ~/patch/
 
 The script usage is::
 
@@ -272,10 +340,10 @@ Where the range is a ``git log`` option.
 Checking Compilation
 --------------------
 
-Compilation of patches and changes should be tested using the the ``test-build.sh`` script in the ``scripts``
+Compilation of patches and changes should be tested using the the ``test-build.sh`` script in the ``devtools``
 directory of the DPDK repo::
 
-  scripts/test-build.sh x86_64-native-linuxapp-gcc+next+shared
+  devtools/test-build.sh x86_64-native-linuxapp-gcc+next+shared
 
 The script usage is::
 
@@ -294,12 +362,11 @@ Examples of configs are::
    x86_64-native-linuxapp-gcc+next+shared
    x86_64-native-linuxapp-clang+shared
 
-The builds can be modifies via the following environmental variables:
+The builds can be modified via the following environmental variables:
 
 * ``DPDK_BUILD_TEST_CONFIGS`` (target1+option1+option2 target2)
 * ``DPDK_DEP_CFLAGS``
 * ``DPDK_DEP_LDFLAGS``
-* ``DPDK_DEP_MOFED`` (y/[n])
 * ``DPDK_DEP_PCAP`` (y/[n])
 * ``DPDK_NOTIFY`` (notify-send)
 
@@ -336,6 +403,10 @@ The appropriate maintainer can be found in the ``MAINTAINERS`` file::
 
    git send-email --to maintainer@some.org --cc dev@dpdk.org 000*.patch
 
+Script ``get-maintainer.sh`` can be used to select maintainers automatically::
+
+  git send-email --to-cmd ./devtools/get-maintainer.sh --cc dev@dpdk.org 000*.patch
+
 New additions can be sent without a maintainer::
 
    git send-email --to dev@dpdk.org 000*.patch
@@ -359,9 +430,57 @@ The options ``--annotate`` and ``confirm = always`` are recommended for checking
 The Review Process
 ------------------
 
-The more work you put into the previous steps the easier it will be to get a patch accepted.
+Patches are reviewed by the community, relying on the experience and
+collaboration of the members to double-check each other's work. There are a
+number of ways to indicate that you have checked a patch on the mailing list.
 
-The general cycle for patch review and acceptance is:
+
+Tested, Acked and Reviewed by
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To indicate that you have interacted with a patch on the mailing list you
+should respond to the patch in an email with one of the following tags:
+
+ * Reviewed-by:
+ * Acked-by:
+ * Tested-by:
+ * Reported-by:
+ * Suggested-by:
+
+The tag should be on a separate line as follows::
+
+   tag-here: Name Surname <email@address.com>
+
+Each of these tags has a specific meaning. In general, the DPDK community
+follows the kernel usage of the tags. A short summary of the meanings of each
+tag is given here for reference:
+
+.. _statement: https://www.kernel.org/doc/html/latest/process/submitting-patches.html#reviewer-s-statement-of-oversight
+
+``Reviewed-by:`` is a strong statement_ that the patch is an appropriate state
+for merging without any remaining serious technical issues. Reviews from
+community members who are known to understand the subject area and to perform
+thorough reviews will increase the likelihood of the patch getting merged.
+
+``Acked-by:`` is a record that the person named was not directly involved in
+the preparation of the patch but wishes to signify and record their acceptance
+and approval of it.
+
+``Tested-by:`` indicates that the patch has been successfully tested (in some
+environment) by the person named.
+
+``Reported-by:`` is used to acknowledge person who found or reported the bug.
+
+``Suggested-by:`` indicates that the patch idea was suggested by the named
+person.
+
+
+
+Steps to getting your patch merged
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The more work you put into the previous steps the easier it will be to get a
+patch accepted. The general cycle for patch review and acceptance is:
 
 #. Submit the patch.
 
@@ -392,4 +511,20 @@ The general cycle for patch review and acceptance is:
 #. In addition a patch will not be accepted if it doesn't address comments from a previous version with fixes or
    valid arguments.
 
-#. Acked patches will be merged in the current or next merge window.
+#. It is the responsibility of a maintainer to ensure that patches are reviewed and to provide an ``ack`` or
+   ``nack`` of those patches as appropriate.
+
+#. Once a patch has been acked by the relevant maintainer, reviewers may still comment on it for a further
+   two weeks. After that time, the patch should be merged into the relevant git tree for the next release.
+   Additional notes and restrictions:
+
+   * Patches should be acked by a maintainer at least two days before the release merge
+     deadline, in order to make that release.
+   * For patches acked with less than two weeks to go to the merge deadline, all additional
+     comments should be made no later than two days before the merge deadline.
+   * After the appropriate time for additional feedback has passed, if the patch has not yet
+     been merged to the relevant tree by the committer, it should be treated as though it had,
+     in that any additional changes needed to it must be addressed by a follow-on patch, rather
+     than rework of the original.
+   * Trivial patches may be merged sooner than described above at the tree committer's
+     discretion.

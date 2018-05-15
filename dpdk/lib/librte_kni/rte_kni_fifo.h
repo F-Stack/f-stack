@@ -73,7 +73,7 @@ kni_fifo_put(struct rte_kni_fifo *fifo, void **data, unsigned num)
 }
 
 /**
- * Get up to num elements from the fifo. Return the number actully read
+ * Get up to num elements from the fifo. Return the number actually read
  */
 static inline unsigned
 kni_fifo_get(struct rte_kni_fifo *fifo, void **data, unsigned num)
@@ -90,4 +90,13 @@ kni_fifo_get(struct rte_kni_fifo *fifo, void **data, unsigned num)
 	}
 	fifo->read = new_read;
 	return i;
+}
+
+/**
+ * Get the num of elements in the fifo
+ */
+static inline uint32_t
+kni_fifo_count(struct rte_kni_fifo *fifo)
+{
+	return (fifo->len + fifo->write - fifo->read) & (fifo->len - 1);
 }

@@ -33,18 +33,25 @@ include $(RTE_SDK)/mk/internal/rte.compile-pre.mk
 include $(RTE_SDK)/mk/internal/rte.install-pre.mk
 include $(RTE_SDK)/mk/internal/rte.clean-pre.mk
 include $(RTE_SDK)/mk/internal/rte.build-pre.mk
-include $(RTE_SDK)/mk/internal/rte.depdirs-pre.mk
 
 EXTLIB_BUILD ?= n
 
 # VPATH contains at least SRCDIR
 VPATH += $(SRCDIR)
 
+ifneq ($(CONFIG_RTE_MAJOR_ABI),)
+ifneq ($(LIBABIVER),)
+LIBABIVER := $(CONFIG_RTE_MAJOR_ABI)
+endif
+endif
+
 ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),y)
 LIB := $(patsubst %.a,%.so.$(LIBABIVER),$(LIB))
 ifeq ($(EXTLIB_BUILD),n)
+ifeq ($(CONFIG_RTE_MAJOR_ABI),)
 ifeq ($(CONFIG_RTE_NEXT_ABI),y)
 LIB := $(LIB).1
+endif
 endif
 CPU_LDFLAGS += --version-script=$(SRCDIR)/$(EXPORT_MAP)
 endif
@@ -52,14 +59,20 @@ endif
 
 
 _BUILD = $(LIB)
-_INSTALL = $(INSTALL-FILES-y) $(SYMLINK-FILES-y) $(RTE_OUTPUT)/lib/$(LIB)
+PREINSTALL = $(SYMLINK-FILES-y)
+_INSTALL = $(INSTALL-FILES-y) $(RTE_OUTPUT)/lib/$(LIB)
 _CLEAN = doclean
 
 .PHONY: all
 all: install
 
 .PHONY: install
+ifeq ($(SYMLINK-FILES-y),)
 install: build _postinstall
+else
+install: _preinstall build _postinstall
+build: _preinstall
+endif
 
 _postinstall: build
 
@@ -70,19 +83,12 @@ exe2cmd = $(strip $(call dotfile,$(patsubst %,%.cmd,$(1))))
 
 ifeq ($(LINK_USING_CC),1)
 # Override the definition of LD here, since we're linking with CC
-LD := $(CC) $(CPU_CFLAGS)
+LD := $(CC) $(CPU_CFLAGS) $(EXTRA_CFLAGS)
 _CPU_LDFLAGS := $(call linkerprefix,$(CPU_LDFLAGS))
 override EXTRA_LDFLAGS := $(call linkerprefix,$(EXTRA_LDFLAGS))
 else
 _CPU_LDFLAGS := $(CPU_LDFLAGS)
 endif
-
-# Translate DEPDIRS-y into LDLIBS
-# Ignore (sub)directory dependencies which do not provide an actual library
-_IGNORE_DIRS = lib/librte_eal/% lib/librte_net lib/librte_compat
-_DEPDIRS = $(filter-out $(_IGNORE_DIRS),$(DEPDIRS-y))
-_LDDIRS = $(subst librte_ether,libethdev,$(_DEPDIRS))
-LDLIBS += $(subst lib/lib,-l,$(_LDDIRS))
 
 O_TO_A = $(AR) crDs $(LIB) $(OBJS-y)
 O_TO_A_STR = $(subst ','\'',$(O_TO_A)) #'# fix syntax highlight
@@ -156,11 +162,7 @@ $(RTE_OUTPUT)/lib/$(LIB): $(LIB)
 	@[ -d $(RTE_OUTPUT)/lib ] || mkdir -p $(RTE_OUTPUT)/lib
 	$(Q)cp -f $(LIB) $(RTE_OUTPUT)/lib
 ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),y)
-ifeq ($(CONFIG_RTE_NEXT_ABI)$(EXTLIB_BUILD),yn)
-	$(Q)ln -s -f $< $(basename $(basename $@))
-else
-	$(Q)ln -s -f $< $(basename $@)
-endif
+	$(Q)ln -s -f $< $(shell echo $@ | sed 's/\.so.*/.so/')
 endif
 
 #
@@ -172,14 +174,13 @@ clean: _postclean
 .PHONY: doclean
 doclean:
 	$(Q)rm -rf $(LIB) $(OBJS-all) $(DEPS-all) $(DEPSTMP-all) \
-	  $(CMDS-all) $(INSTALL-FILES-all)
+	  $(CMDS-all) .$(LIB).cmd $(INSTALL-FILES-all) *.pmd.c *.pmd.o
 	$(Q)rm -f $(_BUILD_TARGETS) $(_INSTALL_TARGETS) $(_CLEAN_TARGETS)
 
 include $(RTE_SDK)/mk/internal/rte.compile-post.mk
 include $(RTE_SDK)/mk/internal/rte.install-post.mk
 include $(RTE_SDK)/mk/internal/rte.clean-post.mk
 include $(RTE_SDK)/mk/internal/rte.build-post.mk
-include $(RTE_SDK)/mk/internal/rte.depdirs-post.mk
 
 .PHONY: FORCE
 FORCE:

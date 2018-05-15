@@ -31,16 +31,16 @@
 SZEDATA2 poll mode driver library
 =================================
 
-The SZEDATA2 poll mode driver library implements support for cards from COMBO
-family (**COMBO-80G**, **COMBO-100G**).
-The SZEDATA2 PMD uses interface provided by libsze2 library to communicate
-with COMBO cards over sze2 layer.
+The SZEDATA2 poll mode driver library implements support for the Netcope
+FPGA Boards (**NFB-***), FPGA-based programmable NICs.
+The SZEDATA2 PMD uses interface provided by the libsze2 library to communicate
+with the NFB cards over the sze2 layer.
 
-More information about family of
-`COMBO cards <https://www.liberouter.org/technologies/cards/>`_
+More information about the
+`NFB cards <http://www.netcope.com/en/products/fpga-boards>`_
 and used technology
-(`NetCOPE platform <https://www.liberouter.org/technologies/netcope/>`_) can be
-found on the `Liberouter website <https://www.liberouter.org/>`_.
+(`Netcope Development Kit <http://www.netcope.com/en/products/fpga-development-kit>`_)
+can be found on the `Netcope Technologies website <http://www.netcope.com/>`_.
 
 .. note::
 
@@ -77,7 +77,7 @@ separately:
    sharing of resources for user space applications.
 
 Information about getting the dependencies can be found `here
-<https://www.liberouter.org/technologies/netcope/access-to-libsze2-library/>`_.
+<http://www.netcope.com/en/company/community-support/dpdk-libsze2>`_.
 
 Configuration
 -------------
@@ -91,14 +91,34 @@ These configuration options can be modified before compilation in the
 
 *  ``CONFIG_RTE_LIBRTE_PMD_SZEDATA2_AS`` default value: **0**
 
-   This option defines type of firmware address space.
-   Currently supported value is:
+   This option defines type of firmware address space and must be set
+   according to the used card and mode.
+   Currently supported values are:
 
-   * **0** for firmwares:
+   * **0** - for cards (modes):
 
-      * NIC_100G1_LR4
-      * HANIC_100G1_LR4
-      * HANIC_100G1_SR10
+      * NFB-100G1 (100G1)
+
+   * **1** - for cards (modes):
+
+      * NFB-100G2Q (100G1)
+
+   * **2** - for cards (modes):
+
+      * NFB-40G2 (40G2)
+      * NFB-100G2C (100G2)
+      * NFB-100G2Q (40G2)
+
+   * **3** - for cards (modes):
+
+      * NFB-40G2 (10G8)
+      * NFB-100G2Q (10G8)
+
+   * **4** - for cards (modes):
+
+      * NFB-100G1 (10G10)
+
+   * **5** - for experimental firmwares and future use
 
 Using the SZEDATA2 PMD
 ----------------------
@@ -117,7 +137,7 @@ transmit channel:
 
 .. code-block:: console
 
-   $RTE_TARGET/app/testpmd -c 0xf -n 2 \
+   $RTE_TARGET/app/testpmd -l 0-3 -n 2 \
    -- --port-topology=chained --rxq=2 --txq=2 --nb-cores=2 -i -a
 
 Example output:

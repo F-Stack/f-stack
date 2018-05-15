@@ -38,9 +38,9 @@
 
 #include <rte_launch.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_atomic.h>
+#include <rte_pause.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 
@@ -54,7 +54,8 @@ rte_eal_wait_lcore(unsigned slave_id)
 		return 0;
 
 	while (lcore_config[slave_id].state != WAIT &&
-	       lcore_config[slave_id].state != FINISHED);
+	       lcore_config[slave_id].state != FINISHED)
+		rte_pause();
 
 	rte_rmb();
 

@@ -121,6 +121,18 @@ POSSIBILITY OF SUCH DAMAGE.
 #if !defined(EXTERNAL_RELEASE) || defined(ULP_SUPPORT)
 #define E1000_FEXTNVM7_DISABLE_SMB_PERST	0x00000020
 #endif /* !EXTERNAL_RELEASE || ULP_SUPPORT */
+#define E1000_FEXTNVM9_IOSFSB_CLKGATE_DIS	0x00000800
+#define E1000_FEXTNVM9_IOSFSB_CLKREQ_DIS	0x00001000
+#define E1000_FEXTNVM11_DISABLE_PB_READ		0x00000200
+#define E1000_FEXTNVM11_DISABLE_MULR_FIX	0x00002000
+
+/* bit24: RXDCTL thresholds granularity: 0 - cache lines, 1 - descriptors */
+#define E1000_RXDCTL_THRESH_UNIT_DESC	0x01000000
+
+#define NVM_SIZE_MULTIPLIER 4096  /*multiplier for NVMS field*/
+#define E1000_FLASH_BASE_ADDR 0xE000 /*offset of NVM access regs*/
+#define E1000_CTRL_EXT_NVMVS 0x3 /*NVM valid sector */
+#define E1000_TARC0_CB_MULTIQ_3_REQ	(1 << 28 | 1 << 29)
 #define PCIE_ICH8_SNOOP_ALL	PCIE_NO_SNOOP_ALL
 
 #define E1000_ICH_RAR_ENTRIES	7
@@ -198,6 +210,10 @@ POSSIBILITY OF SUCH DAMAGE.
 #define I218_ULP_CONFIG1_INBAND_EXIT	0x0020 /* Inband on ULP exit */
 #define I218_ULP_CONFIG1_WOL_HOST	0x0040 /* WoL Host on ULP exit */
 #define I218_ULP_CONFIG1_RESET_TO_SMBUS	0x0100 /* Reset to SMBus mode */
+/* enable ULP even if when phy powered down via lanphypc */
+#define I218_ULP_CONFIG1_EN_ULP_LANPHYPC	0x0400
+/* disable clear of sticky ULP on PERST */
+#define I218_ULP_CONFIG1_DIS_CLR_STICKY_ON_PERST	0x0800
 #define I218_ULP_CONFIG1_DISABLE_SMB_PERST	0x1000 /* Disable on PERST# */
 
 #endif /* !EXTERNAL_RELEASE || ULP_SUPPORT */
@@ -234,8 +250,11 @@ POSSIBILITY OF SUCH DAMAGE.
 
 /* PHY Power Management Control */
 #define HV_PM_CTRL		PHY_REG(770, 17)
-#define HV_PM_CTRL_PLL_STOP_IN_K1_GIGA	0x100
+#define HV_PM_CTRL_K1_CLK_REQ		0x200
 #define HV_PM_CTRL_K1_ENABLE		0x4000
+
+#define I217_PLL_CLOCK_GATE_REG	PHY_REG(772, 28)
+#define I217_PLL_CLOCK_GATE_MASK	0x07FF
 
 #define SW_FLAG_TIMEOUT		1000 /* SW Semaphore flag timeout in ms */
 

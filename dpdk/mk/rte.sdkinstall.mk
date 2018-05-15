@@ -66,6 +66,7 @@ includedir  ?=      $(prefix)/include/dpdk
 datarootdir ?=      $(prefix)/share
 docdir      ?=       $(datarootdir)/doc/dpdk
 datadir     ?=       $(datarootdir)/dpdk
+mandir      ?=       $(datarootdir)/man
 sdkdir      ?=                $(datadir)
 targetdir   ?=                $(datadir)/$(RTE_TARGET)
 
@@ -76,7 +77,7 @@ rte_mkdir = test -d $1 || mkdir -p $1
 
 # Create the relative symbolic link $2 -> $1
 # May be replaced with --relative option of ln from coreutils-8.16
-rte_symlink = ln -snf $$($(RTE_SDK)/scripts/relpath.sh $1 $(dir $2)) $2
+rte_symlink = ln -snf $$($(RTE_SDK)/buildtools/relpath.sh $1 $(dir $2)) $2
 
 .PHONY: pre_install
 pre_install:
@@ -121,18 +122,22 @@ install-runtime:
 		--exclude 'app/cmdline*' --exclude app/test \
 		--exclude app/testacl --exclude app/testpipeline app | \
 	    tar -xf -      -C $(DESTDIR)$(bindir) --strip-components=1 \
-		--keep-newer-files --warning=no-ignore-newer
+		--keep-newer-files
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(datadir))
-	$(Q)cp -a $(RTE_SDK)/tools $(DESTDIR)$(datadir)
-	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-setup.sh, \
-	                           $(DESTDIR)$(datadir)/tools/setup.sh)
-	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-devbind.py, \
-	                           $(DESTDIR)$(datadir)/tools/dpdk_nic_bind.py)
+	$(Q)cp -a $(RTE_SDK)/usertools $(DESTDIR)$(datadir)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(sbindir))
-	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-devbind.py, \
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/usertools/dpdk-devbind.py, \
 	                           $(DESTDIR)$(sbindir)/dpdk-devbind)
-	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-pmdinfo.py, \
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/usertools/dpdk-pmdinfo.py, \
 	                           $(DESTDIR)$(bindir)/dpdk-pmdinfo)
+ifneq ($(wildcard $O/doc/man/*/*.1),)
+	$(Q)$(call rte_mkdir,      $(DESTDIR)$(mandir)/man1)
+	$(Q)cp -a $O/doc/man/*/*.1 $(DESTDIR)$(mandir)/man1
+endif
+ifneq ($(wildcard $O/doc/man/*/*.8),)
+	$(Q)$(call rte_mkdir,      $(DESTDIR)$(mandir)/man8)
+	$(Q)cp -a $O/doc/man/*/*.8 $(DESTDIR)$(mandir)/man8
+endif
 
 install-kmod:
 ifneq ($(wildcard $O/kmod/*),)
@@ -144,10 +149,10 @@ install-sdk:
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(includedir))
 	$(Q)tar -chf -     -C $O include | \
 	    tar -xf -      -C $(DESTDIR)$(includedir) --strip-components=1 \
-		--keep-newer-files --warning=no-ignore-newer
+		--keep-newer-files
 	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(sdkdir))
 	$(Q)cp -a               $(RTE_SDK)/mk            $(DESTDIR)$(sdkdir)
-	$(Q)cp -a               $(RTE_SDK)/scripts       $(DESTDIR)$(sdkdir)
+	$(Q)cp -a               $(RTE_SDK)/buildtools    $(DESTDIR)$(sdkdir)
 	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(targetdir)/app)
 	$(Q)cp -a               $O/.config               $(DESTDIR)$(targetdir)
 	$(Q)cp -a               $O/app/dpdk-pmdinfogen   $(DESTDIR)$(targetdir)/app
@@ -155,11 +160,11 @@ install-sdk:
 	$(Q)$(call rte_symlink, $(DESTDIR)$(libdir),     $(DESTDIR)$(targetdir)/lib)
 
 install-doc:
-ifneq ($(wildcard $O/doc),)
+ifneq ($(wildcard $O/doc/html),)
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(docdir))
-	$(Q)tar -cf -      -C $O/doc html --exclude 'html/guides/.*' | \
+	$(Q)tar -cf -      -C $O/doc --exclude 'html/guides/.*' html | \
 	    tar -xf -      -C $(DESTDIR)$(docdir) --strip-components=1 \
-		--keep-newer-files --warning=no-ignore-newer
+		--keep-newer-files
 endif
 ifneq ($(wildcard $O/doc/*/*/*pdf),)
 	$(Q)$(call rte_mkdir,     $(DESTDIR)$(docdir)/guides)

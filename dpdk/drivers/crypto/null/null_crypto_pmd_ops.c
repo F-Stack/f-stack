@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -56,7 +56,7 @@ static const struct rte_cryptodev_capabilities null_crypto_pmd_capabilities[] = 
 					.max = 0,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, },
 		}, },
 	},
@@ -72,11 +72,7 @@ static const struct rte_cryptodev_capabilities null_crypto_pmd_capabilities[] = 
 					.max = 0,
 					.increment = 0
 				},
-				.iv_size = {
-					.min = 0,
-					.max = 0,
-					.increment = 0
-				}
+				.iv_size = { 0 }
 			}, },
 		}, }
 	},
@@ -85,7 +81,8 @@ static const struct rte_cryptodev_capabilities null_crypto_pmd_capabilities[] = 
 
 /** Configure device */
 static int
-null_crypto_pmd_config(__rte_unused struct rte_cryptodev *dev)
+null_crypto_pmd_config(__rte_unused struct rte_cryptodev *dev,
+		__rte_unused struct rte_cryptodev_config *config)
 {
 	return 0;
 }
@@ -150,7 +147,7 @@ null_crypto_pmd_info_get(struct rte_cryptodev *dev,
 	struct null_crypto_private *internals = dev->data->dev_private;
 
 	if (dev_info != NULL) {
-		dev_info->dev_type = dev->dev_type;
+		dev_info->driver_id = dev->driver_id;
 		dev_info->max_nb_queue_pairs = internals->max_nb_qpairs;
 		dev_info->sym.max_nb_sessions = internals->max_nb_sessions;
 		dev_info->feature_flags = dev->feature_flags;
@@ -178,7 +175,7 @@ null_crypto_pmd_qp_set_unique_name(struct rte_cryptodev *dev,
 			"null_crypto_pmd_%u_qp_%u",
 			dev->data->dev_id, qp->id);
 
-	if (n > sizeof(qp->name))
+	if (n >= sizeof(qp->name))
 		return -1;
 
 	return 0;
@@ -193,7 +190,7 @@ null_crypto_pmd_qp_create_processed_pkts_ring(struct null_crypto_qp *qp,
 
 	r = rte_ring_lookup(qp->name);
 	if (r) {
-		if (r->prod.size >= ring_size) {
+		if (rte_ring_get_size(r) >= ring_size) {
 			NULL_CRYPTO_LOG_INFO(
 				"Reusing existing ring %s for processed packets",
 				qp->name);
@@ -214,7 +211,7 @@ null_crypto_pmd_qp_create_processed_pkts_ring(struct null_crypto_qp *qp,
 static int
 null_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		 int socket_id)
+		int socket_id, struct rte_mempool *session_pool)
 {
 	struct null_crypto_private *internals = dev->data->dev_private;
 	struct null_crypto_qp *qp;
@@ -257,7 +254,7 @@ null_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		goto qp_setup_cleanup;
 	}
 
-	qp->sess_mp = dev->data->session_pool;
+	qp->sess_mp = session_pool;
 
 	memset(&qp->qp_stats, 0, sizeof(qp->qp_stats));
 
@@ -301,33 +298,56 @@ null_crypto_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
 }
 
 /** Configure a null crypto session from a crypto xform chain */
-static void *
+static int
 null_crypto_pmd_session_configure(struct rte_cryptodev *dev __rte_unused,
-		struct rte_crypto_sym_xform *xform, void *sess)
+		struct rte_crypto_sym_xform *xform,
+		struct rte_cryptodev_sym_session *sess,
+		struct rte_mempool *mp)
 {
-	int retval;
+	void *sess_private_data;
+	int ret;
 
 	if (unlikely(sess == NULL)) {
 		NULL_CRYPTO_LOG_ERR("invalid session struct");
-		return NULL;
-	}
-	retval = null_crypto_set_session_parameters(
-			(struct null_crypto_session *)sess, xform);
-	if (retval != 0) {
-		NULL_CRYPTO_LOG_ERR("failed configure session parameters");
-		return NULL;
+		return -EINVAL;
 	}
 
-	return sess;
+	if (rte_mempool_get(mp, &sess_private_data)) {
+		CDEV_LOG_ERR(
+			"Couldn't get object from session mempool");
+		return -ENOMEM;
+	}
+
+	ret = null_crypto_set_session_parameters(sess_private_data, xform);
+	if (ret != 0) {
+		NULL_CRYPTO_LOG_ERR("failed configure session parameters");
+
+		/* Return session to mempool */
+		rte_mempool_put(mp, sess_private_data);
+		return ret;
+	}
+
+	set_session_private_data(sess, dev->driver_id,
+		sess_private_data);
+
+	return 0;
 }
 
 /** Clear the memory of session so it doesn't leave key material behind */
 static void
-null_crypto_pmd_session_clear(struct rte_cryptodev *dev __rte_unused,
-		void *sess)
+null_crypto_pmd_session_clear(struct rte_cryptodev *dev,
+		struct rte_cryptodev_sym_session *sess)
 {
-	if (sess)
-		memset(sess, 0, sizeof(struct null_crypto_session));
+	uint8_t index = dev->driver_id;
+	void *sess_priv = get_session_private_data(sess, index);
+
+	/* Zero out the whole structure */
+	if (sess_priv) {
+		memset(sess_priv, 0, sizeof(struct null_crypto_session));
+		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
+		set_session_private_data(sess, index, NULL);
+		rte_mempool_put(sess_mp, sess_priv);
+	}
 }
 
 struct rte_cryptodev_ops pmd_ops = {

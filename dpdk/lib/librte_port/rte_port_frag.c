@@ -88,7 +88,7 @@ static void *
 rte_port_ring_reader_frag_create(void *params, int socket_id, int is_ipv4)
 {
 	struct rte_port_ring_reader_frag_params *conf =
-			(struct rte_port_ring_reader_frag_params *) params;
+			params;
 	struct rte_port_ring_reader_frag *port;
 
 	/* Check input parameters */
@@ -159,7 +159,7 @@ rte_port_ring_reader_frag_rx(void *port,
 		uint32_t n_pkts)
 {
 	struct rte_port_ring_reader_frag *p =
-			(struct rte_port_ring_reader_frag *) port;
+			port;
 	uint32_t n_pkts_out;
 
 	n_pkts_out = 0;
@@ -186,7 +186,8 @@ rte_port_ring_reader_frag_rx(void *port,
 		/* If "pkts" buffer is empty, read packet burst from ring */
 		if (p->n_pkts == 0) {
 			p->n_pkts = rte_ring_sc_dequeue_burst(p->ring,
-				(void **) p->pkts, RTE_PORT_IN_BURST_SIZE_MAX);
+				(void **) p->pkts, RTE_PORT_IN_BURST_SIZE_MAX,
+				NULL);
 			RTE_PORT_RING_READER_FRAG_STATS_PKTS_IN_ADD(p, p->n_pkts);
 			if (p->n_pkts == 0)
 				return n_pkts_out;
@@ -276,7 +277,7 @@ rte_port_frag_reader_stats_read(void *port,
 		struct rte_port_in_stats *stats, int clear)
 {
 	struct rte_port_ring_reader_frag *p =
-		(struct rte_port_ring_reader_frag *) port;
+		port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));

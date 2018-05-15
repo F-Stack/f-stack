@@ -37,6 +37,9 @@
 #include "enic_compat.h"
 #include "rq_enet_desc.h"
 #include "enic.h"
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_tcp.h>
 
 #define RTE_PMD_USE_PREFETCH
 
@@ -129,6 +132,60 @@ enic_cq_rx_desc_n_bytes(struct cq_desc *cqd)
 		CQ_ENET_RQ_DESC_BYTES_WRITTEN_MASK;
 }
 
+/* Find the offset to L5. This is needed by enic TSO implementation.
+ * Return 0 if not a TCP packet or can't figure out the length.
+ */
+static inline uint8_t tso_header_len(struct rte_mbuf *mbuf)
+{
+	struct ether_hdr *eh;
+	struct vlan_hdr *vh;
+	struct ipv4_hdr *ip4;
+	struct ipv6_hdr *ip6;
+	struct tcp_hdr *th;
+	uint8_t hdr_len;
+	uint16_t ether_type;
+
+	/* offset past Ethernet header */
+	eh = rte_pktmbuf_mtod(mbuf, struct ether_hdr *);
+	ether_type = eh->ether_type;
+	hdr_len = sizeof(struct ether_hdr);
+	if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_VLAN)) {
+		vh = rte_pktmbuf_mtod_offset(mbuf, struct vlan_hdr *, hdr_len);
+		ether_type = vh->eth_proto;
+		hdr_len += sizeof(struct vlan_hdr);
+	}
+
+	/* offset past IP header */
+	switch (rte_be_to_cpu_16(ether_type)) {
+	case ETHER_TYPE_IPv4:
+		ip4 = rte_pktmbuf_mtod_offset(mbuf, struct ipv4_hdr *, hdr_len);
+		if (ip4->next_proto_id != IPPROTO_TCP)
+			return 0;
+		hdr_len += (ip4->version_ihl & 0xf) * 4;
+		break;
+	case ETHER_TYPE_IPv6:
+		ip6 = rte_pktmbuf_mtod_offset(mbuf, struct ipv6_hdr *, hdr_len);
+		if (ip6->proto != IPPROTO_TCP)
+			return 0;
+		hdr_len += sizeof(struct ipv6_hdr);
+		break;
+	default:
+		return 0;
+	}
+
+	if ((hdr_len + sizeof(struct tcp_hdr)) > mbuf->pkt_len)
+		return 0;
+
+	/* offset past TCP header */
+	th = rte_pktmbuf_mtod_offset(mbuf, struct tcp_hdr *, hdr_len);
+	hdr_len += (th->data_off >> 4) * 4;
+
+	if (hdr_len > mbuf->pkt_len)
+		return 0;
+
+	return hdr_len;
+}
+
 static inline uint8_t
 enic_cq_rx_check_err(struct cq_desc *cqd)
 {
@@ -149,30 +206,18 @@ enic_cq_rx_flags_to_pkt_type(struct cq_desc *cqd)
 	uint8_t cqrd_flags = cqrd->flags;
 	static const uint32_t cq_type_table[128] __rte_cache_aligned = {
 		[0x00] = RTE_PTYPE_UNKNOWN,
-		[0x20] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_NONFRAG,
-		[0x22] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_UDP,
-		[0x24] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_TCP,
-		[0x60] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_FRAG,
-		[0x62] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_UDP,
-		[0x64] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_TCP,
-		[0x10] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_NONFRAG,
-		[0x12] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_UDP,
-		[0x14] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_TCP,
-		[0x50] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_FRAG,
-		[0x52] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_UDP,
-		[0x54] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN
-			  | RTE_PTYPE_L4_TCP,
+		[0x20] = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_NONFRAG,
+		[0x22] = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_UDP,
+		[0x24] = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_TCP,
+		[0x60] = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_FRAG,
+		[0x62] = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_UDP,
+		[0x64] = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_L4_TCP,
+		[0x10] = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_NONFRAG,
+		[0x12] = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_UDP,
+		[0x14] = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_TCP,
+		[0x50] = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_FRAG,
+		[0x52] = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_UDP,
+		[0x54] = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN | RTE_PTYPE_L4_TCP,
 		/* All others reserved */
 	};
 	cqrd_flags &= CQ_ENET_RQ_DESC_FLAGS_IPV4_FRAGMENT
@@ -185,9 +230,10 @@ static inline void
 enic_cq_rx_to_pkt_flags(struct cq_desc *cqd, struct rte_mbuf *mbuf)
 {
 	struct cq_enet_rq_desc *cqrd = (struct cq_enet_rq_desc *)cqd;
-	uint16_t ciflags, bwflags, pkt_flags = 0;
+	uint16_t ciflags, bwflags, pkt_flags = 0, vlan_tci;
 	ciflags = enic_cq_rx_desc_ciflags(cqrd);
 	bwflags = enic_cq_rx_desc_bwflags(cqrd);
+	vlan_tci = enic_cq_rx_desc_vlan(cqrd);
 
 	mbuf->ol_flags = 0;
 
@@ -195,36 +241,73 @@ enic_cq_rx_to_pkt_flags(struct cq_desc *cqd, struct rte_mbuf *mbuf)
 	if (unlikely(!enic_cq_rx_desc_eop(ciflags)))
 		goto mbuf_flags_done;
 
-	/* VLAN stripping */
+	/* VLAN STRIPPED flag. The L2 packet type updated here also */
 	if (bwflags & CQ_ENET_RQ_DESC_FLAGS_VLAN_STRIPPED) {
-		pkt_flags |= PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED;
-		mbuf->vlan_tci = enic_cq_rx_desc_vlan(cqrd);
+		pkt_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
+		mbuf->packet_type |= RTE_PTYPE_L2_ETHER;
 	} else {
-		mbuf->vlan_tci = 0;
+		if (vlan_tci != 0)
+			mbuf->packet_type |= RTE_PTYPE_L2_ETHER_VLAN;
+		else
+			mbuf->packet_type |= RTE_PTYPE_L2_ETHER;
 	}
+	mbuf->vlan_tci = vlan_tci;
 
-	/* RSS flag */
-	if (enic_cq_rx_desc_rss_type(cqrd)) {
+	if ((cqd->type_color & CQ_DESC_TYPE_MASK) == CQ_DESC_TYPE_CLASSIFIER) {
+		struct cq_enet_rq_clsf_desc *clsf_cqd;
+		uint16_t filter_id;
+		clsf_cqd = (struct cq_enet_rq_clsf_desc *)cqd;
+		filter_id = clsf_cqd->filter_id;
+		if (filter_id) {
+			pkt_flags |= PKT_RX_FDIR;
+			if (filter_id != ENIC_MAGIC_FILTER_ID) {
+				mbuf->hash.fdir.hi = clsf_cqd->filter_id;
+				pkt_flags |= PKT_RX_FDIR_ID;
+			}
+		}
+	} else if (enic_cq_rx_desc_rss_type(cqrd)) {
+		/* RSS flag */
 		pkt_flags |= PKT_RX_RSS_HASH;
 		mbuf->hash.rss = enic_cq_rx_desc_rss_hash(cqrd);
 	}
 
 	/* checksum flags */
-	if (!enic_cq_rx_desc_csum_not_calc(cqrd) &&
-		(mbuf->packet_type & RTE_PTYPE_L3_IPV4)) {
-		uint32_t l4_flags = mbuf->packet_type & RTE_PTYPE_L4_MASK;
+	if (mbuf->packet_type & RTE_PTYPE_L3_IPV4) {
+		if (enic_cq_rx_desc_csum_not_calc(cqrd))
+			pkt_flags |= (PKT_RX_IP_CKSUM_UNKNOWN &
+				     PKT_RX_L4_CKSUM_UNKNOWN);
+		else {
+			uint32_t l4_flags;
+			l4_flags = mbuf->packet_type & RTE_PTYPE_L4_MASK;
 
-		if (unlikely(!enic_cq_rx_desc_ipv4_csum_ok(cqrd)))
-			pkt_flags |= PKT_RX_IP_CKSUM_BAD;
-		if (l4_flags == RTE_PTYPE_L4_UDP ||
-		    l4_flags == RTE_PTYPE_L4_TCP) {
-			if (unlikely(!enic_cq_rx_desc_tcp_udp_csum_ok(cqrd)))
-				pkt_flags |= PKT_RX_L4_CKSUM_BAD;
+			if (enic_cq_rx_desc_ipv4_csum_ok(cqrd))
+				pkt_flags |= PKT_RX_IP_CKSUM_GOOD;
+			else
+				pkt_flags |= PKT_RX_IP_CKSUM_BAD;
+
+			if (l4_flags == RTE_PTYPE_L4_UDP ||
+			    l4_flags == RTE_PTYPE_L4_TCP) {
+				if (enic_cq_rx_desc_tcp_udp_csum_ok(cqrd))
+					pkt_flags |= PKT_RX_L4_CKSUM_GOOD;
+				else
+					pkt_flags |= PKT_RX_L4_CKSUM_BAD;
+			}
 		}
 	}
 
  mbuf_flags_done:
 	mbuf->ol_flags = pkt_flags;
+}
+
+/* dummy receive function to replace actual function in
+ * order to do safe reconfiguration operations.
+ */
+uint16_t
+enic_dummy_recv_pkts(__rte_unused void *rx_queue,
+		     __rte_unused struct rte_mbuf **rx_pkts,
+		     __rte_unused uint16_t nb_pkts)
+{
+	return 0;
 }
 
 uint16_t
@@ -304,7 +387,7 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		/* Push descriptor for newly allocated mbuf */
 		nmb->data_off = RTE_PKTMBUF_HEADROOM;
-		dma_addr = (dma_addr_t)(nmb->buf_physaddr +
+		dma_addr = (dma_addr_t)(nmb->buf_iova +
 					RTE_PKTMBUF_HEADROOM);
 		rq_enet_desc_enc(rqd_ptr, dma_addr,
 				(rq->is_sop ? RQ_ENET_TYPE_ONLY_SOP
@@ -316,7 +399,6 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		if (rq->is_sop) {
 			first_seg = rxmb;
-			first_seg->nb_segs = 1;
 			first_seg->pkt_len = seg_length;
 		} else {
 			first_seg->pkt_len = (uint16_t)(first_seg->pkt_len
@@ -325,7 +407,6 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			last_seg->next = rxmb;
 		}
 
-		rxmb->next = NULL;
 		rxmb->port = enic->port_id;
 		rxmb->data_len = seg_length;
 
@@ -376,10 +457,11 @@ enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		rte_mb();
 		if (data_rq->in_use)
-			iowrite32(data_rq->posted_index,
-				  &data_rq->ctrl->posted_index);
+			iowrite32_relaxed(data_rq->posted_index,
+					  &data_rq->ctrl->posted_index);
 		rte_compiler_barrier();
-		iowrite32(sop_rq->posted_index, &sop_rq->ctrl->posted_index);
+		iowrite32_relaxed(sop_rq->posted_index,
+				  &sop_rq->ctrl->posted_index);
 	}
 
 
@@ -402,7 +484,7 @@ static inline void enic_free_wq_bufs(struct vnic_wq *wq, u16 completed_index)
 	pool = ((struct rte_mbuf *)buf->mb)->pool;
 	for (i = 0; i < nb_to_free; i++) {
 		buf = &wq->bufs[tail_idx];
-		m = __rte_pktmbuf_prefree_seg((struct rte_mbuf *)(buf->mb));
+		m = rte_pktmbuf_prefree_seg((struct rte_mbuf *)(buf->mb));
 		buf->mb = NULL;
 
 		if (unlikely(m == NULL)) {
@@ -422,7 +504,8 @@ static inline void enic_free_wq_bufs(struct vnic_wq *wq, u16 completed_index)
 		tail_idx = enic_ring_incr(desc_count, tail_idx);
 	}
 
-	rte_mempool_put_bulk(pool, (void **)free, nb_free);
+	if (nb_free > 0)
+		rte_mempool_put_bulk(pool, (void **)free, nb_free);
 
 	wq->tail_idx = tail_idx;
 	wq->ring.desc_avail += nb_to_free;
@@ -462,44 +545,70 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint8_t vlan_tag_insert;
 	uint8_t eop;
 	uint64_t bus_addr;
+	uint8_t offload_mode;
+	uint16_t header_len;
+	uint64_t tso;
+	rte_atomic64_t *tx_oversized;
 
 	enic_cleanup_wq(enic, wq);
 	wq_desc_avail = vnic_wq_desc_avail(wq);
 	head_idx = wq->head_idx;
 	desc_count = wq->ring.desc_count;
 	ol_flags_mask = PKT_TX_VLAN_PKT | PKT_TX_IP_CKSUM | PKT_TX_L4_MASK;
+	tx_oversized = &enic->soft_stats.tx_oversized;
 
 	nb_pkts = RTE_MIN(nb_pkts, ENIC_TX_XMIT_MAX);
 
 	for (index = 0; index < nb_pkts; index++) {
 		tx_pkt = *tx_pkts++;
+		pkt_len = tx_pkt->pkt_len;
+		data_len = tx_pkt->data_len;
+		ol_flags = tx_pkt->ol_flags;
 		nb_segs = tx_pkt->nb_segs;
+		tso = ol_flags & PKT_TX_TCP_SEG;
+
+		/* drop packet if it's too big to send */
+		if (unlikely(!tso && pkt_len > ENIC_TX_MAX_PKT_SIZE)) {
+			rte_pktmbuf_free(tx_pkt);
+			rte_atomic64_inc(tx_oversized);
+			continue;
+		}
+
 		if (nb_segs > wq_desc_avail) {
 			if (index > 0)
 				goto post;
 			goto done;
 		}
 
-		pkt_len = tx_pkt->pkt_len;
-		data_len = tx_pkt->data_len;
-		ol_flags = tx_pkt->ol_flags;
 		mss = 0;
 		vlan_id = 0;
 		vlan_tag_insert = 0;
 		bus_addr = (dma_addr_t)
-			   (tx_pkt->buf_physaddr + tx_pkt->data_off);
+			   (tx_pkt->buf_iova + tx_pkt->data_off);
 
 		descs = (struct wq_enet_desc *)wq->ring.descs;
 		desc_p = descs + head_idx;
 
 		eop = (data_len == pkt_len);
+		offload_mode = WQ_ENET_OFFLOAD_MODE_CSUM;
+		header_len = 0;
 
-		if (ol_flags & ol_flags_mask) {
-			if (ol_flags & PKT_TX_VLAN_PKT) {
-				vlan_tag_insert = 1;
-				vlan_id = tx_pkt->vlan_tci;
+		if (tso) {
+			header_len = tso_header_len(tx_pkt);
+
+			/* Drop if non-TCP packet or TSO seg size is too big */
+			if (unlikely(header_len == 0 || ((tx_pkt->tso_segsz +
+			    header_len) > ENIC_TX_MAX_PKT_SIZE))) {
+				rte_pktmbuf_free(tx_pkt);
+				rte_atomic64_inc(tx_oversized);
+				continue;
 			}
 
+			offload_mode = WQ_ENET_OFFLOAD_MODE_TSO;
+			mss = tx_pkt->tso_segsz;
+		}
+
+		if ((ol_flags & ol_flags_mask) && (header_len == 0)) {
 			if (ol_flags & PKT_TX_IP_CKSUM)
 				mss |= ENIC_CALC_IP_CKSUM;
 
@@ -512,8 +621,14 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			}
 		}
 
-		wq_enet_desc_enc(&desc_tmp, bus_addr, data_len, mss, 0, 0, eop,
-				 eop, 0, vlan_tag_insert, vlan_id, 0);
+		if (ol_flags & PKT_TX_VLAN_PKT) {
+			vlan_tag_insert = 1;
+			vlan_id = tx_pkt->vlan_tci;
+		}
+
+		wq_enet_desc_enc(&desc_tmp, bus_addr, data_len, mss, header_len,
+				 offload_mode, eop, eop, 0, vlan_tag_insert,
+				 vlan_id, 0);
 
 		*desc_p = desc_tmp;
 		buf = &wq->bufs[head_idx];
@@ -529,12 +644,13 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 				if (tx_pkt->next == NULL)
 					eop = 1;
 				desc_p = descs + head_idx;
-				bus_addr = (dma_addr_t)(tx_pkt->buf_physaddr
+				bus_addr = (dma_addr_t)(tx_pkt->buf_iova
 					   + tx_pkt->data_off);
 				wq_enet_desc_enc((struct wq_enet_desc *)
 						 &desc_tmp, bus_addr, data_len,
-						 mss, 0, 0, eop, eop, 0,
-						 vlan_tag_insert, vlan_id, 0);
+						 mss, 0, offload_mode, eop, eop,
+						 0, vlan_tag_insert, vlan_id,
+						 0);
 
 				*desc_p = desc_tmp;
 				buf = &wq->bufs[head_idx];
@@ -546,7 +662,7 @@ uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	}
  post:
 	rte_wmb();
-	iowrite32(head_idx, &wq->ctrl->posted_index);
+	iowrite32_relaxed(head_idx, &wq->ctrl->posted_index);
  done:
 	wq->ring.desc_avail = wq_desc_avail;
 	wq->head_idx = head_idx;

@@ -33,10 +33,16 @@
 
 #ifndef _BNXT_CPR_H_
 #define _BNXT_CPR_H_
+#include <stdbool.h>
+
+#include <rte_io.h>
 
 #define CMP_VALID(cmp, raw_cons, ring)					\
 	(!!(((struct cmpl_base *)(cmp))->info3_v & CMPL_BASE_V) ==	\
 	 !((raw_cons) & ((ring)->ring_size)))
+
+#define CMPL_VALID(cmp, v)						\
+	(!!(((struct cmpl_base *)(cmp))->info3_v & CMPL_BASE_V) == !(v))
 
 #define CMP_TYPE(cmp)						\
 	(((struct cmpl_base *)cmp)->type & CMPL_BASE_TYPE_MASK)
@@ -45,17 +51,33 @@
 #define NEXT_RAW_CMP(idx)	ADV_RAW_CMP(idx, 1)
 #define RING_CMP(ring, idx)	((idx) & (ring)->ring_mask)
 #define NEXT_CMP(idx)		RING_CMP(ADV_RAW_CMP(idx, 1))
+#define FLIP_VALID(cons, mask, val)	((cons) >= (mask) ? !(val) : (val))
 
 #define DB_CP_REARM_FLAGS	(DB_KEY_CP | DB_IDX_VALID)
 #define DB_CP_FLAGS		(DB_KEY_CP | DB_IDX_VALID | DB_IRQ_DIS)
 
 #define B_CP_DB_REARM(cpr, raw_cons)					\
-		(*(uint32_t *)((cpr)->cp_doorbell) = (DB_CP_REARM_FLAGS | \
-				RING_CMP(cpr->cp_ring_struct, raw_cons)))
+	rte_write32((DB_CP_REARM_FLAGS |				\
+		    RING_CMP(((cpr)->cp_ring_struct), raw_cons)),	\
+		    ((cpr)->cp_doorbell))
 
-#define B_CP_DIS_DB(cpr, raw_cons)					\
+#define B_CP_DB_ARM(cpr)	rte_write32((DB_KEY_CP), ((cpr)->cp_doorbell))
+#define B_CP_DB_DISARM(cpr)	(*(uint32_t *)((cpr)->cp_doorbell) = \
+				 DB_KEY_CP | DB_IRQ_DIS)
+
+#define B_CP_DB_IDX_ARM(cpr, cons)					\
+		(*(uint32_t *)((cpr)->cp_doorbell) = (DB_CP_REARM_FLAGS | \
+				(cons)))
+
+#define B_CP_DB_IDX_DISARM(cpr, cons)	do {				\
+		rte_smp_wmb();						\
 		(*(uint32_t *)((cpr)->cp_doorbell) = (DB_CP_FLAGS |	\
-				RING_CMP(cpr->cp_ring_struct, raw_cons)))
+				(cons));				\
+} while (0)
+#define B_CP_DIS_DB(cpr, raw_cons)					\
+	rte_write32((DB_CP_FLAGS |					\
+		    RING_CMP(((cpr)->cp_ring_struct), raw_cons)),	\
+		    ((cpr)->cp_doorbell))
 
 struct bnxt_ring;
 struct bnxt_cp_ring_info {
@@ -64,13 +86,15 @@ struct bnxt_cp_ring_info {
 
 	struct cmpl_base	*cp_desc_ring;
 
-	phys_addr_t		cp_desc_mapping;
+	rte_iova_t		cp_desc_mapping;
 
 	struct ctx_hw_stats	*hw_stats;
-	phys_addr_t		hw_stats_map;
+	rte_iova_t		hw_stats_map;
 	uint32_t		hw_stats_ctx_id;
 
 	struct bnxt_ring	*cp_ring_struct;
+	uint16_t		cp_cons;
+	bool			valid;
 };
 
 #define RX_CMP_L2_ERRORS						\
@@ -78,6 +102,7 @@ struct bnxt_cp_ring_info {
 
 
 struct bnxt;
+int bnxt_alloc_def_cp_ring(struct bnxt *bp);
 void bnxt_free_def_cp_ring(struct bnxt *bp);
 int bnxt_init_def_ring_struct(struct bnxt *bp, unsigned int socket_id);
 void bnxt_handle_async_event(struct bnxt *bp, struct cmpl_base *cmp);

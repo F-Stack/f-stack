@@ -68,8 +68,8 @@
 #define CMD_LINE_OPT_SER_SOCK_PATH "server-socket-path"
 #define CMD_LINE_OPT_CLI_SOCK_PATH "client-socket-path"
 
-#define VDEV_PCAP "eth_pcap_%s_%d,tx_pcap=%s"
-#define VDEV_IFACE "eth_pcap_%s_%d,tx_iface=%s"
+#define VDEV_PCAP "net_pcap_%s_%d,tx_pcap=%s"
+#define VDEV_IFACE "net_pcap_%s_%d,tx_iface=%s"
 #define TX_STREAM_SIZE 64
 
 #define MP_NAME "pdump_pool_%d"
@@ -92,7 +92,6 @@
 #define BURST_SIZE 32
 #define NUM_VDEVS 2
 
-#define RTE_RING_SZ_MASK  (unsigned)(0x0fffffff) /**< Ring size mask */
 /* true if x is a power of 2 */
 #define POWEROF2(x) ((((x)-1) & (x)) == 0)
 
@@ -132,7 +131,7 @@ struct pdump_stats {
 
 struct pdump_tuples {
 	/* cli params */
-	uint8_t port;
+	uint16_t port;
 	char *device_id;
 	uint16_t queue;
 	char rx_dev[TX_STREAM_SIZE];
@@ -497,7 +496,7 @@ pdump_rxtx(struct rte_ring *ring, uint8_t vdev_id, struct pdump_stats *stats)
 
 	/* first dequeue packets from ring of primary process */
 	const uint16_t nb_in_deq = rte_ring_dequeue_burst(ring,
-			(void *)rxtx_bufs, BURST_SIZE);
+			(void *)rxtx_bufs, BURST_SIZE, NULL);
 	stats->dequeue_pkts += nb_in_deq;
 
 	if (nb_in_deq) {
@@ -580,7 +579,7 @@ signal_handler(int sig_num)
 }
 
 static inline int
-configure_vdev(uint8_t port_id)
+configure_vdev(uint16_t port_id)
 {
 	struct ether_addr addr;
 	const uint16_t rxRings = 0, txRings = 1;
@@ -610,7 +609,7 @@ configure_vdev(uint8_t port_id)
 	rte_eth_macaddr_get(port_id, &addr);
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			(unsigned)port_id,
+			port_id,
 			addr.addr_bytes[0], addr.addr_bytes[1],
 			addr.addr_bytes[2], addr.addr_bytes[3],
 			addr.addr_bytes[4], addr.addr_bytes[5]);
@@ -624,7 +623,7 @@ static void
 create_mp_ring_vdev(void)
 {
 	int i;
-	uint8_t portid;
+	uint16_t portid;
 	struct pdump_tuples *pt = NULL;
 	struct rte_mempool *mbuf_pool = NULL;
 	char vdev_args[SIZE];

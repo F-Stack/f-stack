@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright 2012-2015 6WIND S.A.
- *   Copyright 2012 Mellanox.
+ *   Copyright 2012 6WIND S.A.
+ *   Copyright 2012 Mellanox
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -34,37 +34,38 @@
 #ifndef RTE_PMD_MLX4_H_
 #define RTE_PMD_MLX4_H_
 
-#include <stddef.h>
+#include <net/if.h>
 #include <stdint.h>
-#include <limits.h>
+#include <sys/queue.h>
 
-/*
- * Maximum number of simultaneous MAC addresses supported.
- *
- * According to ConnectX's Programmer Reference Manual:
- *   The L2 Address Match is implemented by comparing a MAC/VLAN combination
- *   of 128 MAC addresses and 127 VLAN values, comprising 128x127 possible
- *   L2 addresses.
- */
+/* Verbs headers do not support -pedantic. */
+#ifdef PEDANTIC
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+#include <infiniband/verbs.h>
+#ifdef PEDANTIC
+#pragma GCC diagnostic error "-Wpedantic"
+#endif
+
+#include <rte_ethdev.h>
+#include <rte_ether.h>
+#include <rte_interrupts.h>
+#include <rte_mempool.h>
+#include <rte_spinlock.h>
+
+/** Maximum number of simultaneous MAC addresses. This value is arbitrary. */
 #define MLX4_MAX_MAC_ADDRESSES 128
 
-/* Maximum number of simultaneous VLAN filters supported. See above. */
-#define MLX4_MAX_VLAN_IDS 127
-
-/* Request send completion once in every 64 sends, might be less. */
+/** Request send completion once in every 64 sends, might be less. */
 #define MLX4_PMD_TX_PER_COMP_REQ 64
 
-/* Maximum number of Scatter/Gather Elements per Work Request. */
-#ifndef MLX4_PMD_SGE_WR_N
-#define MLX4_PMD_SGE_WR_N 4
-#endif
-
-/* Maximum size for inline data. */
-#ifndef MLX4_PMD_MAX_INLINE
+/** Maximum size for inline data. */
 #define MLX4_PMD_MAX_INLINE 0
-#endif
 
-/*
+/** Fixed RSS hash key size in bytes. Cannot be modified. */
+#define MLX4_RSS_HASH_KEY_SIZE 40
+
+/**
  * Maximum number of cached Memory Pools (MPs) per TX queue. Each RTE MP
  * from which buffers are to be transmitted will have to be mapped by this
  * driver to their own Memory Region (MR). This is a slow operation.
@@ -75,16 +76,11 @@
 #define MLX4_PMD_TX_MP_CACHE 8
 #endif
 
-/*
- * If defined, only use software counters. The PMD will never ask the hardware
- * for these, and many of them won't be available.
- */
-#ifndef MLX4_PMD_SOFT_COUNTERS
-#define MLX4_PMD_SOFT_COUNTERS 1
-#endif
+/** Interrupt alarm timeout value in microseconds. */
+#define MLX4_INTR_ALARM_TIMEOUT 100000
 
-/* Alarm timeout. */
-#define MLX4_ALARM_TIMEOUT_US 100000
+/** Port parameter. */
+#define MLX4_PMD_PORT_KVARG "port"
 
 enum {
 	PCI_VENDOR_ID_MELLANOX = 0x15b3,
@@ -96,68 +92,92 @@ enum {
 	PCI_DEVICE_ID_MELLANOX_CONNECTX3PRO = 0x1007,
 };
 
-#define MLX4_DRIVER_NAME "librte_pmd_mlx4"
+/** Driver name reported to lower layers and used in log output. */
+#define MLX4_DRIVER_NAME "net_mlx4"
 
-/* Bit-field manipulation. */
-#define BITFIELD_DECLARE(bf, type, size)				\
-	type bf[(((size_t)(size) / (sizeof(type) * CHAR_BIT)) +		\
-		 !!((size_t)(size) % (sizeof(type) * CHAR_BIT)))]
-#define BITFIELD_DEFINE(bf, type, size)					\
-	BITFIELD_DECLARE((bf), type, (size)) = { 0 }
-#define BITFIELD_SET(bf, b)						\
-	(assert((size_t)(b) < (sizeof(bf) * CHAR_BIT)),			\
-	 (void)((bf)[((b) / (sizeof((bf)[0]) * CHAR_BIT))] |=		\
-		((size_t)1 << ((b) % (sizeof((bf)[0]) * CHAR_BIT)))))
-#define BITFIELD_RESET(bf, b)						\
-	(assert((size_t)(b) < (sizeof(bf) * CHAR_BIT)),			\
-	 (void)((bf)[((b) / (sizeof((bf)[0]) * CHAR_BIT))] &=		\
-		~((size_t)1 << ((b) % (sizeof((bf)[0]) * CHAR_BIT)))))
-#define BITFIELD_ISSET(bf, b)						\
-	(assert((size_t)(b) < (sizeof(bf) * CHAR_BIT)),			\
-	 !!(((bf)[((b) / (sizeof((bf)[0]) * CHAR_BIT))] &		\
-	     ((size_t)1 << ((b) % (sizeof((bf)[0]) * CHAR_BIT))))))
+struct mlx4_drop;
+struct mlx4_rss;
+struct rxq;
+struct txq;
+struct rte_flow;
 
-/* Number of elements in array. */
-#define elemof(a) (sizeof(a) / sizeof((a)[0]))
+/** Memory region descriptor. */
+struct mlx4_mr {
+	LIST_ENTRY(mlx4_mr) next; /**< Next entry in list. */
+	uintptr_t start; /**< Base address for memory region. */
+	uintptr_t end; /**< End address for memory region. */
+	uint32_t lkey; /**< L_Key extracted from @p mr. */
+	uint32_t refcnt; /**< Reference count for this object. */
+	struct priv *priv; /**< Back pointer to private data. */
+	struct ibv_mr *mr; /**< Memory region associated with @p mp. */
+	struct rte_mempool *mp; /**< Target memory pool (mempool). */
+};
 
-/* Cast pointer p to structure member m to its parent structure of type t. */
-#define containerof(p, t, m) ((t *)((uint8_t *)(p) - offsetof(t, m)))
+/** Private data structure. */
+struct priv {
+	struct rte_eth_dev *dev; /**< Ethernet device. */
+	struct ibv_context *ctx; /**< Verbs context. */
+	struct ibv_device_attr device_attr; /**< Device properties. */
+	struct ibv_pd *pd; /**< Protection Domain. */
+	/* Device properties. */
+	uint16_t mtu; /**< Configured MTU. */
+	uint8_t port; /**< Physical port number. */
+	uint32_t started:1; /**< Device started, flows enabled. */
+	uint32_t vf:1; /**< This is a VF device. */
+	uint32_t intr_alarm:1; /**< An interrupt alarm is scheduled. */
+	uint32_t isolated:1; /**< Toggle isolated mode. */
+	uint32_t hw_csum:1; /* Checksum offload is supported. */
+	uint32_t hw_csum_l2tun:1; /* Checksum support for L2 tunnels. */
+	struct rte_intr_handle intr_handle; /**< Port interrupt handle. */
+	struct mlx4_drop *drop; /**< Shared resources for drop flow rules. */
+	LIST_HEAD(, mlx4_rss) rss; /**< Shared targets for Rx flow rules. */
+	LIST_HEAD(, rte_flow) flows; /**< Configured flow rule handles. */
+	LIST_HEAD(, mlx4_mr) mr; /**< Registered memory regions. */
+	rte_spinlock_t mr_lock; /**< Lock for @p mr access. */
+	struct ether_addr mac[MLX4_MAX_MAC_ADDRESSES];
+	/**< Configured MAC addresses. Unused entries are zeroed. */
+};
 
-/* Branch prediction helpers. */
-#ifndef likely
-#define likely(c) __builtin_expect(!!(c), 1)
-#endif
-#ifndef unlikely
-#define unlikely(c) __builtin_expect(!!(c), 0)
-#endif
+/* mlx4_ethdev.c */
 
-/* Debugging */
-#ifndef NDEBUG
-#include <stdio.h>
-#define DEBUG__(m, ...)						\
-	(fprintf(stderr, "%s:%d: %s(): " m "%c",		\
-		 __FILE__, __LINE__, __func__, __VA_ARGS__),	\
-	 fflush(stderr),					\
-	 (void)0)
-/*
- * Save/restore errno around DEBUG__().
- * XXX somewhat undefined behavior, but works.
- */
-#define DEBUG_(...)				\
-	(errno = ((int []){			\
-		*(volatile int *)&errno,	\
-		(DEBUG__(__VA_ARGS__), 0)	\
-	})[0])
-#define DEBUG(...) DEBUG_(__VA_ARGS__, '\n')
-#define claim_zero(...) assert((__VA_ARGS__) == 0)
-#define claim_nonzero(...) assert((__VA_ARGS__) != 0)
-#define claim_positive(...) assert((__VA_ARGS__) >= 0)
-#else /* NDEBUG */
-/* No-ops. */
-#define DEBUG(...) (void)0
-#define claim_zero(...) (__VA_ARGS__)
-#define claim_nonzero(...) (__VA_ARGS__)
-#define claim_positive(...) (__VA_ARGS__)
-#endif /* NDEBUG */
+int mlx4_get_ifname(const struct priv *priv, char (*ifname)[IF_NAMESIZE]);
+int mlx4_get_mac(struct priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN]);
+int mlx4_mtu_get(struct priv *priv, uint16_t *mtu);
+int mlx4_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
+int mlx4_dev_set_link_down(struct rte_eth_dev *dev);
+int mlx4_dev_set_link_up(struct rte_eth_dev *dev);
+void mlx4_promiscuous_enable(struct rte_eth_dev *dev);
+void mlx4_promiscuous_disable(struct rte_eth_dev *dev);
+void mlx4_allmulticast_enable(struct rte_eth_dev *dev);
+void mlx4_allmulticast_disable(struct rte_eth_dev *dev);
+void mlx4_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
+int mlx4_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
+		      uint32_t index, uint32_t vmdq);
+void mlx4_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr);
+int mlx4_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on);
+int mlx4_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
+void mlx4_stats_reset(struct rte_eth_dev *dev);
+void mlx4_dev_infos_get(struct rte_eth_dev *dev,
+			struct rte_eth_dev_info *info);
+int mlx4_link_update(struct rte_eth_dev *dev, int wait_to_complete);
+int mlx4_flow_ctrl_get(struct rte_eth_dev *dev,
+		       struct rte_eth_fc_conf *fc_conf);
+int mlx4_flow_ctrl_set(struct rte_eth_dev *dev,
+		       struct rte_eth_fc_conf *fc_conf);
+const uint32_t *mlx4_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+
+/* mlx4_intr.c */
+
+int mlx4_intr_uninstall(struct priv *priv);
+int mlx4_intr_install(struct priv *priv);
+int mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx);
+int mlx4_rx_intr_enable(struct rte_eth_dev *dev, uint16_t idx);
+
+/* mlx4_mr.c */
+
+struct mlx4_mr *mlx4_mr_get(struct priv *priv, struct rte_mempool *mp);
+void mlx4_mr_put(struct mlx4_mr *mr);
+uint32_t mlx4_txq_add_mr(struct txq *txq, struct rte_mempool *mp,
+			 uint32_t i);
 
 #endif /* RTE_PMD_MLX4_H_ */

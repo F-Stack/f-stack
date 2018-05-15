@@ -32,7 +32,7 @@ ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
 
-# Default target, can be overriden by command line or environment
+# Default target, can be overridden by command line or environment
 RTE_TARGET ?= x86_64-native-linuxapp-gcc
 
 include $(RTE_SDK)/mk/rte.vars.mk
@@ -40,18 +40,18 @@ include $(RTE_SDK)/mk/rte.vars.mk
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += bond
 DIRS-y += cmdline
 DIRS-$(CONFIG_RTE_LIBRTE_DISTRIBUTOR) += distributor
-ifneq ($(ICP_ROOT),)
-DIRS-y += dpdk_qat
-endif
 DIRS-y += ethtool
 DIRS-y += exception_path
+DIRS-$(CONFIG_RTE_LIBRTE_EFD) += server_node_efd
+DIRS-$(CONFIG_RTE_LIBRTE_FLOW_CLASSIFY) += flow_classify
+DIRS-y += flow_filtering
 DIRS-y += helloworld
 DIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += ip_pipeline
 ifeq ($(CONFIG_RTE_LIBRTE_LPM),y)
 DIRS-$(CONFIG_RTE_IP_FRAG) += ip_reassembly
 DIRS-$(CONFIG_RTE_IP_FRAG) += ip_fragmentation
 endif
-ifeq ($(CONFIG_RTE_LIBRTE_ACL)$(CONFIG_RTE_LIBRTE_HASH)$(CONFIG_RTE_LIBRTE_LPM),yyy)
+ifeq ($(CONFIG_RTE_LIBRTE_ACL)$(CONFIG_RTE_LIBRTE_HASH)$(CONFIG_RTE_LIBRTE_LPM)$(CONFIG_RTE_LIBRTE_SECURITY),yyyy)
 DIRS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += ipsec-secgw
 endif
 DIRS-$(CONFIG_RTE_LIBRTE_HASH) += ipv4_multicast
@@ -61,7 +61,6 @@ ifneq ($(PQOS_INSTALL_PATH),)
 DIRS-y += l2fwd-cat
 endif
 DIRS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += l2fwd-crypto
-DIRS-$(CONFIG_RTE_LIBRTE_IVSHMEM) += l2fwd-ivshmem
 DIRS-$(CONFIG_RTE_LIBRTE_JOBSTATS) += l2fwd-jobstats
 DIRS-y += l2fwd-keepalive
 DIRS-y += l2fwd-keepalive/ka-agent
@@ -78,18 +77,21 @@ DIRS-$(CONFIG_RTE_LIBRTE_LPM) += load_balancer
 DIRS-y += multi_process
 DIRS-y += netmap_compat/bridge
 DIRS-$(CONFIG_RTE_LIBRTE_REORDER) += packet_ordering
+ifeq ($(CONFIG_RTE_ARCH_X86_64),y)
+DIRS-y += performance-thread
+endif
 DIRS-$(CONFIG_RTE_LIBRTE_IEEE1588) += ptpclient
 DIRS-$(CONFIG_RTE_LIBRTE_METER) += qos_meter
 DIRS-$(CONFIG_RTE_LIBRTE_SCHED) += qos_sched
 DIRS-y += quota_watermark
 DIRS-$(CONFIG_RTE_ETHDEV_RXTX_CALLBACKS) += rxtx_callbacks
+DIRS-y += service_cores
 DIRS-y += skeleton
 ifeq ($(CONFIG_RTE_LIBRTE_HASH),y)
 DIRS-$(CONFIG_RTE_LIBRTE_VHOST) += tep_termination
 endif
 DIRS-$(CONFIG_RTE_LIBRTE_TIMER) += timer
-DIRS-$(CONFIG_RTE_LIBRTE_VHOST) += vhost
-DIRS-$(CONFIG_RTE_LIBRTE_XEN_DOM0) += vhost_xen
+DIRS-$(CONFIG_RTE_LIBRTE_VHOST) += vhost vhost_scsi
 DIRS-y += vmdq
 DIRS-y += vmdq_dcb
 ifeq ($(CONFIG_RTE_LIBRTE_POWER), y)
@@ -99,5 +101,7 @@ else
 $(info vm_power_manager requires libvirt >= 0.9.3)
 endif
 endif
+
+DIRS-y += eventdev_pipeline_sw_pmd
 
 include $(RTE_SDK)/mk/rte.extsubdir.mk

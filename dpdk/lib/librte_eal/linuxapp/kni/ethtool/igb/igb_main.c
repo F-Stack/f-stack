@@ -17,7 +17,7 @@
   51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
 
   The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
+  the file called "LICENSE.GPL".
 
   Contact Information:
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -137,11 +137,20 @@ static void igb_clean_all_tx_rings(struct igb_adapter *);
 static void igb_clean_all_rx_rings(struct igb_adapter *);
 static void igb_clean_tx_ring(struct igb_ring *);
 static void igb_set_rx_mode(struct net_device *);
+#ifdef HAVE_TIMER_SETUP
+static void igb_update_phy_info(struct timer_list *);
+static void igb_watchdog(struct timer_list *);
+#else
 static void igb_update_phy_info(unsigned long);
 static void igb_watchdog(unsigned long);
+#endif
 static void igb_watchdog_task(struct work_struct *);
 static void igb_dma_err_task(struct work_struct *);
+#ifdef HAVE_TIMER_SETUP
+static void igb_dma_err_timer(struct timer_list *);
+#else
 static void igb_dma_err_timer(unsigned long data);
+#endif
 static netdev_tx_t igb_xmit_frame(struct sk_buff *skb, struct net_device *);
 static struct net_device_stats *igb_get_stats(struct net_device *);
 static int igb_change_mtu(struct net_device *, int);
@@ -1035,10 +1044,10 @@ static void igb_set_interrupt_capability(struct igb_adapter *adapter, bool msix)
 			err = pci_enable_msix(pdev,
 			                      adapter->msix_entries, numvecs);
 #else
-                       err = pci_enable_msix_range(pdev,
-                                       adapter->msix_entries,
-                                       numvecs,
-                                       numvecs);
+			err = pci_enable_msix_range(pdev,
+					adapter->msix_entries,
+					numvecs,
+					numvecs);
 #endif
 			if (err == 0)
 				break;
@@ -1133,7 +1142,7 @@ static int igb_alloc_q_vector(struct igb_adapter *adapter,
 	/* initialize pointer to rings */
 	ring = q_vector->ring;
 
-	/* intialize ITR */
+	/* initialize ITR */
 	if (rxr_count) {
 		/* rx or rx/tx vector */
 		if (!adapter->rx_itr_setting || adapter->rx_itr_setting > 3)
@@ -1569,6 +1578,7 @@ static void igb_check_swap_media(struct igb_adapter *adapter)
 	ctrl_ext = E1000_READ_REG(hw, E1000_CTRL_EXT);
 	connsw = E1000_READ_REG(hw, E1000_CONNSW);
 	link = igb_has_link(adapter);
+	(void) link;
 
 	/* need to live swap if current media is copper and we have fiber/serdes
 	 * to go to.
@@ -1635,7 +1645,7 @@ static void igb_check_swap_media(struct igb_adapter *adapter)
  */
 static int igb_get_i2c_data(void *data)
 {
-	struct igb_adapter *adapter = (struct igb_adapter *)data;
+	struct igb_adapter *adapter = data;
 	struct e1000_hw *hw = &adapter->hw;
 	s32 i2cctl = E1000_READ_REG(hw, E1000_I2CPARAMS);
 
@@ -1650,7 +1660,7 @@ static int igb_get_i2c_data(void *data)
  */
 static void igb_set_i2c_data(void *data, int state)
 {
-	struct igb_adapter *adapter = (struct igb_adapter *)data;
+	struct igb_adapter *adapter = data;
 	struct e1000_hw *hw = &adapter->hw;
 	s32 i2cctl = E1000_READ_REG(hw, E1000_I2CPARAMS);
 
@@ -1675,7 +1685,7 @@ static void igb_set_i2c_data(void *data, int state)
  */
 static void igb_set_i2c_clk(void *data, int state)
 {
-	struct igb_adapter *adapter = (struct igb_adapter *)data;
+	struct igb_adapter *adapter = data;
 	struct e1000_hw *hw = &adapter->hw;
 	s32 i2cctl = E1000_READ_REG(hw, E1000_I2CPARAMS);
 
@@ -1697,7 +1707,7 @@ static void igb_set_i2c_clk(void *data, int state)
  */
 static int igb_get_i2c_clk(void *data)
 {
-	struct igb_adapter *adapter = (struct igb_adapter *)data;
+	struct igb_adapter *adapter = data;
 	struct e1000_hw *hw = &adapter->hw;
 	s32 i2cctl = E1000_READ_REG(hw, E1000_I2CPARAMS);
 
@@ -2805,6 +2815,12 @@ static int __devinit igb_probe(struct pci_dev *pdev,
 	/* Check if Media Autosense is enabled */
 	if (hw->mac.type == e1000_82580)
 		igb_init_mas(adapter);
+#ifdef HAVE_TIMER_SETUP
+	timer_setup(&adapter->watchdog_timer, &igb_watchdog, 0);
+	if (adapter->flags & IGB_FLAG_DETECT_BAD_DMA)
+		timer_setup(&adapter->dma_err_timer, &igb_dma_err_timer, 0);
+	timer_setup(&adapter->phy_info_timer, &igb_update_phy_info, 0);
+#else
 	setup_timer(&adapter->watchdog_timer, &igb_watchdog,
 	            (unsigned long) adapter);
 	if (adapter->flags & IGB_FLAG_DETECT_BAD_DMA)
@@ -2812,6 +2828,7 @@ static int __devinit igb_probe(struct pci_dev *pdev,
 			    (unsigned long) adapter);
 	setup_timer(&adapter->phy_info_timer, &igb_update_phy_info,
 	            (unsigned long) adapter);
+#endif
 
 	INIT_WORK(&adapter->reset_task, igb_reset_task);
 	INIT_WORK(&adapter->watchdog_task, igb_watchdog_task);
@@ -4542,9 +4559,15 @@ static void igb_spoof_check(struct igb_adapter *adapter)
 
 /* Need to wait a few seconds after link up to get diagnostic information from
  * the phy */
+#ifdef HAVE_TIMER_SETUP
+static void igb_update_phy_info(struct timer_list *t)
+{
+	struct igb_adapter *adapter = from_timer(adapter, t, phy_info_timer);
+#else
 static void igb_update_phy_info(unsigned long data)
 {
 	struct igb_adapter *adapter = (struct igb_adapter *) data;
+#endif
 	e1000_get_phy_info(&adapter->hw);
 }
 
@@ -4593,9 +4616,15 @@ bool igb_has_link(struct igb_adapter *adapter)
  * igb_watchdog - Timer Call-back
  * @data: pointer to adapter cast into an unsigned long
  **/
+#ifdef HAVE_TIMER_SETUP
+static void igb_watchdog(struct timer_list *t)
+{
+	struct igb_adapter *adapter = from_timer(adapter, t, watchdog_timer);
+#else
 static void igb_watchdog(unsigned long data)
 {
 	struct igb_adapter *adapter = (struct igb_adapter *)data;
+#endif
 	/* Do the rest outside of interrupt context */
 	schedule_work(&adapter->watchdog_task);
 }
@@ -4853,9 +4882,15 @@ dma_timer_reset:
  * igb_dma_err_timer - Timer Call-back
  * @data: pointer to adapter cast into an unsigned long
  **/
+#ifdef HAVE_TIMER_SETUP
+static void igb_dma_err_timer(struct timer_list *t)
+{
+	struct igb_adapter *adapter = from_timer(adapter, t, dma_err_timer);
+#else
 static void igb_dma_err_timer(unsigned long data)
 {
 	struct igb_adapter *adapter = (struct igb_adapter *)data;
+#endif
 	/* Do the rest outside of interrupt context */
 	schedule_work(&adapter->dma_err_task);
 }
@@ -10050,6 +10085,12 @@ int igb_kni_probe(struct pci_dev *pdev,
 		igb_init_mas(adapter);
 
 #ifdef NO_KNI
+#ifdef HAVE_TIMER_SETUP
+	timer_setup(&adapter->watchdog_timer, &igb_watchdog, 0);
+	if (adapter->flags & IGB_FLAG_DETECT_BAD_DMA)
+		timer_setup(&adapter->dma_err_timer, &igb_dma_err_timer, 0);
+	timer_setup(&adapter->phy_info_timer, &igb_update_phy_info, 0);
+#else
 	setup_timer(&adapter->watchdog_timer, &igb_watchdog,
 	            (unsigned long) adapter);
 	if (adapter->flags & IGB_FLAG_DETECT_BAD_DMA)
@@ -10057,6 +10098,7 @@ int igb_kni_probe(struct pci_dev *pdev,
 			    (unsigned long) adapter);
 	setup_timer(&adapter->phy_info_timer, &igb_update_phy_info,
 	            (unsigned long) adapter);
+#endif
 
 	INIT_WORK(&adapter->reset_task, igb_reset_task);
 	INIT_WORK(&adapter->watchdog_task, igb_watchdog_task);

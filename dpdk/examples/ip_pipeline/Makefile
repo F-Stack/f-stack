@@ -36,8 +36,6 @@ endif
 # Default target, can be overridden by command line or environment
 RTE_TARGET ?= x86_64-native-linuxapp-gcc
 
-DIRS-(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline
-
 include $(RTE_SDK)/mk/rte.vars.mk
 
 # binary name
@@ -45,7 +43,7 @@ APP = ip_pipeline
 
 VPATH += $(SRCDIR)/pipeline
 
-INC += $(wildcard *.h) $(wildcard pipeline/*.h)
+INC += $(sort $(wildcard *.h)) $(sort $(wildcard pipeline/*.h))
 
 # all source are stored in SRCS-y
 SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) := main.c

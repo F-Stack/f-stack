@@ -57,7 +57,6 @@
 #include <rte_alarm.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_atomic.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_dev.h>
@@ -150,7 +149,7 @@ static int map_mbuf(struct rte_mbuf *mbuf, dma_addr_t *addr)
 	struct rte_mbuf *m = mbuf;
 
 	for (; m; m = m->next, addr++) {
-		*addr = m->buf_physaddr + rte_pktmbuf_headroom(m);
+		*addr = m->buf_iova + rte_pktmbuf_headroom(m);
 		if (*addr == 0)
 			goto out_err;
 	}
@@ -338,12 +337,12 @@ static inline void ring_fl_db(struct adapter *adap, struct sge_fl *q)
 		 * mechanism.
 		 */
 		if (unlikely(!q->bar2_addr)) {
-			t4_write_reg(adap, MYPF_REG(A_SGE_PF_KDOORBELL),
-				     val | V_QID(q->cntxt_id));
+			t4_write_reg_relaxed(adap, MYPF_REG(A_SGE_PF_KDOORBELL),
+					     val | V_QID(q->cntxt_id));
 		} else {
-			writel(val | V_QID(q->bar2_qid),
-			       (void *)((uintptr_t)q->bar2_addr +
-			       SGE_UDB_KDOORBELL));
+			writel_relaxed(val | V_QID(q->bar2_qid),
+				       (void *)((uintptr_t)q->bar2_addr +
+				       SGE_UDB_KDOORBELL));
 
 			/*
 			 * This Write memory Barrier will force the write to
@@ -388,7 +387,7 @@ static unsigned int refill_fl_usembufs(struct adapter *adap, struct sge_fl *q,
 	struct rte_pktmbuf_pool_private *mbp_priv;
 	u8 jumbo_en = rxq->rspq.eth_dev->data->dev_conf.rxmode.jumbo_frame;
 
-	/* Use jumbo mtu buffers iff mbuf data room size can fit jumbo data. */
+	/* Use jumbo mtu buffers if mbuf data room size can fit jumbo data. */
 	mbp_priv = rte_mempool_get_priv(rxq->rspq.mb_pool);
 	if (jumbo_en &&
 	    ((mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM) >= 9000))
@@ -415,12 +414,18 @@ static unsigned int refill_fl_usembufs(struct adapter *adap, struct sge_fl *q,
 		}
 
 		rte_mbuf_refcnt_set(mbuf, 1);
-		mbuf->data_off = RTE_PKTMBUF_HEADROOM;
+		mbuf->data_off =
+			(uint16_t)(RTE_PTR_ALIGN((char *)mbuf->buf_addr +
+						 RTE_PKTMBUF_HEADROOM,
+						 adap->sge.fl_align) -
+				   (char *)mbuf->buf_addr);
 		mbuf->next = NULL;
 		mbuf->nb_segs = 1;
 		mbuf->port = rxq->rspq.port_id;
 
-		mapping = (dma_addr_t)(mbuf->buf_physaddr + mbuf->data_off);
+		mapping = (dma_addr_t)RTE_ALIGN(mbuf->buf_iova +
+						mbuf->data_off,
+						adap->sge.fl_align);
 		mapping |= buf_size_idx;
 		*d++ = cpu_to_be64(mapping);
 		set_rx_sw_desc(sd, mbuf, mapping);
@@ -591,7 +596,7 @@ static inline unsigned int calc_tx_flits(const struct rte_mbuf *m)
 	 * Write Header (incorporated as part of the cpl_tx_pkt_lso and
 	 * cpl_tx_pkt structures), followed by either a TX Packet Write CPL
 	 * message or, if we're doing a Large Send Offload, an LSO CPL message
-	 * with an embeded TX Packet Write CPL message.
+	 * with an embedded TX Packet Write CPL message.
 	 */
 	flits = sgl_len(m->nb_segs);
 	if (m->tso_segsz)
@@ -680,6 +685,10 @@ static void write_sgl(struct rte_mbuf *mbuf, struct sge_txq *q,
 
 #define Q_IDXDIFF(q, idx) IDXDIFF((q)->pidx, (q)->idx, (q)->size)
 #define R_IDXDIFF(q, idx) IDXDIFF((q)->cidx, (q)->idx, (q)->size)
+
+#define PIDXDIFF(head, tail, wrap) \
+	((tail) >= (head) ? (tail) - (head) : (wrap) - (head) + (tail))
+#define P_IDXDIFF(q, idx) PIDXDIFF((q)->cidx, idx, (q)->size)
 
 /**
  * ring_tx_db - ring a Tx queue's doorbell
@@ -771,7 +780,7 @@ static u64 hwcsum(enum chip_type chip, const struct rte_mbuf *m)
 	}
 
 	if (likely(csum_type >= TX_CSUM_TCPIP)) {
-		int hdr_len = V_TXPKT_IPHDR_LEN(m->l3_len);
+		u64 hdr_len = V_TXPKT_IPHDR_LEN(m->l3_len);
 		int eth_hdr_len = m->l2_len;
 
 		if (CHELSIO_CHIP_VERSION(chip) <= CHELSIO_T5)
@@ -846,7 +855,7 @@ static inline void ship_tx_pkt_coalesce_wr(struct adapter *adap,
 
 	/* fill the pkts WR header */
 	wr = (void *)&q->desc[q->pidx];
-	wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS_WR));
+	wr->op_pkd = htonl(V_FW_WR_OP(FW_ETH_TX_PKTS2_WR));
 
 	wr_mid = V_FW_WR_LEN16(DIV_ROUND_UP(q->coalesce.flits, 2));
 	ndesc = flits_to_desc(q->coalesce.flits);
@@ -890,14 +899,10 @@ static inline int should_tx_packet_coalesce(struct sge_eth_txq *txq,
 	struct sge_txq *q = &txq->q;
 	unsigned int flits, ndesc;
 	unsigned char type = 0;
-	int credits, hw_cidx = ntohs(q->stat->cidx);
-	int in_use = q->pidx - hw_cidx + flits_to_desc(q->coalesce.flits);
+	int credits;
 
 	/* use coal WR type 1 when no frags are present */
 	type = (mbuf->nb_segs == 1) ? 1 : 0;
-
-	if (in_use < 0)
-		in_use += q->size;
 
 	if (unlikely(type != q->coalesce.type && q->coalesce.idx))
 		ship_tx_pkt_coalesce_wr(adap, txq);
@@ -973,7 +978,7 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 					struct rte_mbuf *mbuf,
 					int flits, struct adapter *adap,
 					const struct port_info *pi,
-					dma_addr_t *addr)
+					dma_addr_t *addr, uint16_t nb_pkts)
 {
 	u64 cntrl, *end;
 	struct sge_txq *q = &txq->q;
@@ -982,6 +987,10 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 	struct cpl_tx_pkt_core *cpl;
 	struct tx_sw_desc *sd;
 	unsigned int idx = q->coalesce.idx, len = mbuf->pkt_len;
+
+#ifdef RTE_LIBRTE_CXGBE_TPUT
+	RTE_SET_USED(nb_pkts);
+#endif
 
 	if (q->coalesce.type == 0) {
 		mc = (struct ulp_txpkt *)q->coalesce.ptr;
@@ -1052,7 +1061,11 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 	sd->coalesce.idx = (idx & 1) + 1;
 
 	/* send the coaelsced work request if max reached */
-	if (++q->coalesce.idx == ETH_COALESCE_PKT_NUM)
+	if (++q->coalesce.idx == ETH_COALESCE_PKT_NUM
+#ifndef RTE_LIBRTE_CXGBE_TPUT
+	    || q->coalesce.idx >= nb_pkts
+#endif
+	    )
 		ship_tx_pkt_coalesce_wr(adap, txq);
 	return 0;
 }
@@ -1064,7 +1077,8 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
  *
  * Add a packet to an SGE Ethernet Tx queue.  Runs with softirqs disabled.
  */
-int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf)
+int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
+		uint16_t nb_pkts)
 {
 	const struct port_info *pi;
 	struct cpl_tx_pkt_lso_core *lso;
@@ -1118,7 +1132,7 @@ out_free:
 			}
 			rte_prefetch0((volatile void *)addr);
 			return tx_do_packet_coalesce(txq, mbuf, cflits, adap,
-						     pi, addr);
+						     pi, addr, nb_pkts);
 		} else {
 			return -EBUSY;
 		}
@@ -1189,9 +1203,15 @@ out_free:
 		else
 			lso->len = htonl(V_LSO_T5_XFER_SIZE(m->pkt_len));
 		cpl = (void *)(lso + 1);
-		cntrl = V_TXPKT_CSUM_TYPE(v6 ? TX_CSUM_TCPIP6 : TX_CSUM_TCPIP) |
-			V_TXPKT_IPHDR_LEN(l3hdr_len) |
-			V_TXPKT_ETHHDR_LEN(eth_xtra_len);
+
+		if (CHELSIO_CHIP_VERSION(adap->params.chip) <= CHELSIO_T5)
+			cntrl = V_TXPKT_ETHHDR_LEN(eth_xtra_len);
+		else
+			cntrl = V_T6_TXPKT_ETHHDR_LEN(eth_xtra_len);
+
+		cntrl |= V_TXPKT_CSUM_TYPE(v6 ? TX_CSUM_TCPIP6 :
+						TX_CSUM_TCPIP) |
+			 V_TXPKT_IPHDR_LEN(l3hdr_len);
 		txq->stats.tso++;
 		txq->stats.tx_cso += m->tso_segsz;
 	}
@@ -1298,7 +1318,7 @@ alloc_sw_ring:
 	if (metadata)
 		*(void **)metadata = s;
 
-	*phys = (uint64_t)tz->phys_addr;
+	*phys = (uint64_t)tz->iova;
 	return tz->addr;
 }
 
@@ -1348,10 +1368,16 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 	const struct rss_header *rss_hdr;
 	bool csum_ok;
 	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
+	u16 err_vec;
 
 	rss_hdr = (const void *)rsp;
 	pkt = (const void *)&rsp[1];
-	csum_ok = pkt->csum_calc && !pkt->err_vec;
+	/* Compressed error vector is enabled for T6 only */
+	if (q->adapter->params.tp.rx_pkt_encap)
+		err_vec = G_T6_COMPR_RXERR_VEC(ntohs(pkt->err_vec));
+	else
+		err_vec = ntohs(pkt->err_vec);
+	csum_ok = pkt->csum_calc && !err_vec;
 
 	mbuf = t4_pktgl_to_mbuf(si);
 	if (unlikely(!mbuf)) {
@@ -1379,27 +1405,13 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 	}
 
 	if (pkt->vlan_ex) {
-		mbuf->ol_flags |= PKT_RX_VLAN_PKT;
+		mbuf->ol_flags |= PKT_RX_VLAN;
 		mbuf->vlan_tci = ntohs(pkt->vlan);
 	}
 	rxq->stats.pkts++;
 	rxq->stats.rx_bytes += mbuf->pkt_len;
 
 	return 0;
-}
-
-/**
- * is_new_response - check if a response is newly written
- * @r: the response descriptor
- * @q: the response queue
- *
- * Returns true if a response descriptor contains a yet unprocessed
- * response.
- */
-static inline bool is_new_response(const struct rsp_ctrl *r,
-				   const struct sge_rspq *q)
-{
-	return (r->u.type_gen >> S_RSPD_GEN) == q->gen;
 }
 
 #define CXGB4_MSG_AN ((void *)1)
@@ -1443,11 +1455,11 @@ static int process_responses(struct sge_rspq *q, int budget,
 	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
 
 	while (likely(budget_left)) {
+		if (q->cidx == ntohs(q->stat->pidx))
+			break;
+
 		rc = (const struct rsp_ctrl *)
 		     ((const char *)q->cur_desc + (q->iqe_len - sizeof(*rc)));
-
-		if (!is_new_response(rc, q))
-			break;
 
 		/*
 		 * Ensure response has been read
@@ -1456,63 +1468,101 @@ static int process_responses(struct sge_rspq *q, int budget,
 		rsp_type = G_RSPD_TYPE(rc->u.type_gen);
 
 		if (likely(rsp_type == X_RSPD_TYPE_FLBUF)) {
-			const struct rx_sw_desc *rsd =
-						&rxq->fl.sdesc[rxq->fl.cidx];
-			const struct rss_header *rss_hdr =
-						(const void *)q->cur_desc;
-			const struct cpl_rx_pkt *cpl =
-						(const void *)&q->cur_desc[1];
-			bool csum_ok = cpl->csum_calc && !cpl->err_vec;
-			struct rte_mbuf *pkt, *npkt;
-			u32 len, bufsz;
+			unsigned int stat_pidx;
+			int stat_pidx_diff;
 
-			len = ntohl(rc->pldbuflen_qid);
-			BUG_ON(!(len & F_RSPD_NEWBUF));
-			pkt = rsd->buf;
-			npkt = pkt;
-			len = G_RSPD_LEN(len);
-			pkt->pkt_len = len;
+			stat_pidx = ntohs(q->stat->pidx);
+			stat_pidx_diff = P_IDXDIFF(q, stat_pidx);
+			while (stat_pidx_diff && budget_left) {
+				const struct rx_sw_desc *rsd =
+					&rxq->fl.sdesc[rxq->fl.cidx];
+				const struct rss_header *rss_hdr =
+					(const void *)q->cur_desc;
+				const struct cpl_rx_pkt *cpl =
+					(const void *)&q->cur_desc[1];
+				struct rte_mbuf *pkt, *npkt;
+				u32 len, bufsz;
+				bool csum_ok;
+				u16 err_vec;
 
-			/* Chain mbufs into len if necessary */
-			while (len) {
-				struct rte_mbuf *new_pkt = rsd->buf;
+				rc = (const struct rsp_ctrl *)
+				     ((const char *)q->cur_desc +
+				      (q->iqe_len - sizeof(*rc)));
 
-				bufsz = min(get_buf_size(q->adapter, rsd), len);
-				new_pkt->data_len = bufsz;
-				unmap_rx_buf(&rxq->fl);
-				len -= bufsz;
-				npkt->next = new_pkt;
-				npkt = new_pkt;
-				pkt->nb_segs++;
-				rsd = &rxq->fl.sdesc[rxq->fl.cidx];
+				rsp_type = G_RSPD_TYPE(rc->u.type_gen);
+				if (unlikely(rsp_type != X_RSPD_TYPE_FLBUF))
+					break;
+
+				len = ntohl(rc->pldbuflen_qid);
+				BUG_ON(!(len & F_RSPD_NEWBUF));
+				pkt = rsd->buf;
+				npkt = pkt;
+				len = G_RSPD_LEN(len);
+				pkt->pkt_len = len;
+
+				/* Compressed error vector is enabled for
+				 * T6 only
+				 */
+				if (q->adapter->params.tp.rx_pkt_encap)
+					err_vec = G_T6_COMPR_RXERR_VEC(
+							ntohs(cpl->err_vec));
+				else
+					err_vec = ntohs(cpl->err_vec);
+				csum_ok = cpl->csum_calc && !err_vec;
+
+				/* Chain mbufs into len if necessary */
+				while (len) {
+					struct rte_mbuf *new_pkt = rsd->buf;
+
+					bufsz = min(get_buf_size(q->adapter,
+								 rsd), len);
+					new_pkt->data_len = bufsz;
+					unmap_rx_buf(&rxq->fl);
+					len -= bufsz;
+					npkt->next = new_pkt;
+					npkt = new_pkt;
+					pkt->nb_segs++;
+					rsd = &rxq->fl.sdesc[rxq->fl.cidx];
+				}
+				npkt->next = NULL;
+				pkt->nb_segs--;
+
+				if (cpl->l2info & htonl(F_RXF_IP)) {
+					pkt->packet_type = RTE_PTYPE_L3_IPV4;
+					if (unlikely(!csum_ok))
+						pkt->ol_flags |=
+							PKT_RX_IP_CKSUM_BAD;
+
+					if ((cpl->l2info &
+					     htonl(F_RXF_UDP | F_RXF_TCP)) &&
+					    !csum_ok)
+						pkt->ol_flags |=
+							PKT_RX_L4_CKSUM_BAD;
+				} else if (cpl->l2info & htonl(F_RXF_IP6)) {
+					pkt->packet_type = RTE_PTYPE_L3_IPV6;
+				}
+
+				if (!rss_hdr->filter_tid &&
+				    rss_hdr->hash_type) {
+					pkt->ol_flags |= PKT_RX_RSS_HASH;
+					pkt->hash.rss =
+						ntohl(rss_hdr->hash_val);
+				}
+
+				if (cpl->vlan_ex) {
+					pkt->ol_flags |= PKT_RX_VLAN;
+					pkt->vlan_tci = ntohs(cpl->vlan);
+				}
+
+				rxq->stats.pkts++;
+				rxq->stats.rx_bytes += pkt->pkt_len;
+				rx_pkts[budget - budget_left] = pkt;
+
+				rspq_next(q);
+				budget_left--;
+				stat_pidx_diff--;
 			}
-			npkt->next = NULL;
-			pkt->nb_segs--;
-
-			if (cpl->l2info & htonl(F_RXF_IP)) {
-				pkt->packet_type = RTE_PTYPE_L3_IPV4;
-				if (unlikely(!csum_ok))
-					pkt->ol_flags |= PKT_RX_IP_CKSUM_BAD;
-
-				if ((cpl->l2info &
-				     htonl(F_RXF_UDP | F_RXF_TCP)) && !csum_ok)
-					pkt->ol_flags |= PKT_RX_L4_CKSUM_BAD;
-			} else if (cpl->l2info & htonl(F_RXF_IP6)) {
-				pkt->packet_type = RTE_PTYPE_L3_IPV6;
-			}
-
-			if (!rss_hdr->filter_tid && rss_hdr->hash_type) {
-				pkt->ol_flags |= PKT_RX_RSS_HASH;
-				pkt->hash.rss = ntohl(rss_hdr->hash_val);
-			}
-
-			if (cpl->vlan_ex) {
-				pkt->ol_flags |= PKT_RX_VLAN_PKT;
-				pkt->vlan_tci = ntohs(cpl->vlan);
-			}
-			rxq->stats.pkts++;
-			rxq->stats.rx_bytes += pkt->pkt_len;
-			rx_pkts[budget - budget_left] = pkt;
+			continue;
 		} else if (likely(rsp_type == X_RSPD_TYPE_CPL)) {
 			ret = q->handler(q, q->cur_desc, NULL);
 		} else {
@@ -1527,35 +1577,6 @@ static int process_responses(struct sge_rspq *q, int budget,
 
 		rspq_next(q);
 		budget_left--;
-
-		if (R_IDXDIFF(q, gts_idx) >= 64) {
-			unsigned int cidx_inc = R_IDXDIFF(q, gts_idx);
-			unsigned int params;
-			u32 val;
-
-			if (fl_cap(&rxq->fl) - rxq->fl.avail >= 64)
-				__refill_fl(q->adapter, &rxq->fl);
-			params = V_QINTR_TIMER_IDX(X_TIMERREG_UPDATE_CIDX);
-			q->next_intr_params = params;
-			val = V_CIDXINC(cidx_inc) | V_SEINTARM(params);
-
-			if (unlikely(!q->bar2_addr))
-				t4_write_reg(q->adapter, MYPF_REG(A_SGE_PF_GTS),
-					     val |
-					     V_INGRESSQID((u32)q->cntxt_id));
-			else {
-				writel(val | V_INGRESSQID(q->bar2_qid),
-				       (void *)((uintptr_t)q->bar2_addr +
-				       SGE_UDB_GTS));
-				/*
-				 * This Write memory Barrier will force the
-				 * write to the User Doorbell area to be
-				 * flushed.
-				 */
-				wmb();
-			}
-			q->gts_idx = q->cidx;
-		}
 	}
 
 	/*
@@ -1573,10 +1594,38 @@ static int process_responses(struct sge_rspq *q, int budget,
 int cxgbe_poll(struct sge_rspq *q, struct rte_mbuf **rx_pkts,
 	       unsigned int budget, unsigned int *work_done)
 {
-	int err = 0;
+	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
+	unsigned int cidx_inc;
+	unsigned int params;
+	u32 val;
 
 	*work_done = process_responses(q, budget, rx_pkts);
-	return err;
+
+	if (*work_done) {
+		cidx_inc = R_IDXDIFF(q, gts_idx);
+
+		if (q->offset >= 0 && fl_cap(&rxq->fl) - rxq->fl.avail >= 64)
+			__refill_fl(q->adapter, &rxq->fl);
+
+		params = q->intr_params;
+		q->next_intr_params = params;
+		val = V_CIDXINC(cidx_inc) | V_SEINTARM(params);
+
+		if (unlikely(!q->bar2_addr)) {
+			t4_write_reg(q->adapter, MYPF_REG(A_SGE_PF_GTS),
+				     val | V_INGRESSQID((u32)q->cntxt_id));
+		} else {
+			writel(val | V_INGRESSQID(q->bar2_qid),
+			       (void *)((uintptr_t)q->bar2_addr + SGE_UDB_GTS));
+			/* This Write memory Barrier will force the
+			 * write to the User Doorbell area to be
+			 * flushed.
+			 */
+			wmb();
+		}
+		q->gts_idx = q->cidx;
+	}
+	return 0;
 }
 
 /**
@@ -1645,7 +1694,8 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	iq->size = cxgbe_roundup(iq->size, 16);
 
 	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-		 eth_dev->driver->pci_drv.name, fwevtq ? "fwq_ring" : "rx_ring",
+		 eth_dev->device->driver->name,
+		 fwevtq ? "fwq_ring" : "rx_ring",
 		 eth_dev->data->port_id, queue_id);
 	snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
 
@@ -1665,24 +1715,25 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		      V_FW_IQ_CMD_IQASYNCH(fwevtq) |
 		      V_FW_IQ_CMD_VIID(pi->viid) |
 		      V_FW_IQ_CMD_IQANDST(intr_idx < 0) |
-		      V_FW_IQ_CMD_IQANUD(X_UPDATEDELIVERY_INTERRUPT) |
+		      V_FW_IQ_CMD_IQANUD(X_UPDATEDELIVERY_STATUS_PAGE) |
 		      V_FW_IQ_CMD_IQANDSTINDEX(intr_idx >= 0 ? intr_idx :
 							       -intr_idx - 1));
 	c.iqdroprss_to_iqesize =
-		htons(V_FW_IQ_CMD_IQPCIECH(pi->tx_chan) |
+		htons(V_FW_IQ_CMD_IQPCIECH(cong > 0 ? cxgbe_ffs(cong) - 1 :
+						      pi->tx_chan) |
 		      F_FW_IQ_CMD_IQGTSMODE |
 		      V_FW_IQ_CMD_IQINTCNTTHRESH(iq->pktcnt_idx) |
 		      V_FW_IQ_CMD_IQESIZE(ilog2(iq->iqe_len) - 4));
 	c.iqsize = htons(iq->size);
 	c.iqaddr = cpu_to_be64(iq->phys_addr);
 	if (cong >= 0)
-		c.iqns_to_fl0congen = htonl(F_FW_IQ_CMD_IQFLINTCONGEN);
+		c.iqns_to_fl0congen = htonl(F_FW_IQ_CMD_IQFLINTCONGEN |
+					    F_FW_IQ_CMD_IQRO);
 
 	if (fl) {
 		struct sge_eth_rxq *rxq = container_of(fl, struct sge_eth_rxq,
 						       fl);
-		enum chip_type chip = (enum chip_type)CHELSIO_CHIP_VERSION(
-				adap->params.chip);
+		unsigned int chip_ver = CHELSIO_CHIP_VERSION(adap->params.chip);
 
 		/*
 		 * Allocate the ring for the hardware free list (with space
@@ -1697,7 +1748,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		fl->size = cxgbe_roundup(fl->size, 8);
 
 		snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-			 eth_dev->driver->pci_drv.name,
+			 eth_dev->device->driver->name,
 			 fwevtq ? "fwq_ring" : "fl_ring",
 			 eth_dev->data->port_id, queue_id);
 		snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
@@ -1728,9 +1779,12 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		 * Hence maximum allowed burst size will be 448 bytes.
 		 */
 		c.fl0dcaen_to_fl0cidxfthresh =
-			htons(V_FW_IQ_CMD_FL0FBMIN(X_FETCHBURSTMIN_128B) |
-			      V_FW_IQ_CMD_FL0FBMAX((chip <= CHELSIO_T5) ?
-			      X_FETCHBURSTMAX_512B : X_FETCHBURSTMAX_256B));
+			htons(V_FW_IQ_CMD_FL0FBMIN(chip_ver <= CHELSIO_T5 ?
+						   X_FETCHBURSTMIN_128B :
+						   X_FETCHBURSTMIN_64B) |
+			      V_FW_IQ_CMD_FL0FBMAX(chip_ver <= CHELSIO_T5 ?
+						   X_FETCHBURSTMAX_512B :
+						   X_FETCHBURSTMAX_256B));
 		c.fl0size = htons(flsz);
 		c.fl0addr = cpu_to_be64(fl->addr);
 	}
@@ -1749,6 +1803,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	iq->bar2_addr = bar2_address(adap, iq->cntxt_id, T4_BAR2_QTYPE_INGRESS,
 				     &iq->bar2_qid);
 	iq->size--;                           /* subtract status entry */
+	iq->stat = (void *)&iq->desc[iq->size * 8];
 	iq->eth_dev = eth_dev;
 	iq->handler = hnd;
 	iq->port_id = pi->port_id;
@@ -1893,7 +1948,7 @@ int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,
 	nentries = txq->q.size + s->stat_len / sizeof(struct tx_desc);
 
 	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-		 eth_dev->driver->pci_drv.name, "tx_ring",
+		 eth_dev->device->driver->name, "tx_ring",
 		 eth_dev->data->port_id, queue_id);
 	snprintf(z_name_sw, sizeof(z_name_sw), "%s_sw_ring", z_name);
 
@@ -2186,8 +2241,7 @@ static int t4_sge_init_soft(struct adapter *adap)
 int t4_sge_init(struct adapter *adap)
 {
 	struct sge *s = &adap->sge;
-	u32 sge_control, sge_control2, sge_conm_ctrl;
-	unsigned int ingpadboundary, ingpackboundary;
+	u32 sge_control, sge_conm_ctrl;
 	int ret, egress_threshold;
 
 	/*
@@ -2197,34 +2251,7 @@ int t4_sge_init(struct adapter *adap)
 	sge_control = t4_read_reg(adap, A_SGE_CONTROL);
 	s->pktshift = G_PKTSHIFT(sge_control);
 	s->stat_len = (sge_control & F_EGRSTATUSPAGESIZE) ? 128 : 64;
-
-	/*
-	 * T4 uses a single control field to specify both the PCIe Padding and
-	 * Packing Boundary.  T5 introduced the ability to specify these
-	 * separately.  The actual Ingress Packet Data alignment boundary
-	 * within Packed Buffer Mode is the maximum of these two
-	 * specifications.
-	 */
-	ingpadboundary = 1 << (G_INGPADBOUNDARY(sge_control) +
-			 X_INGPADBOUNDARY_SHIFT);
-	s->fl_align = ingpadboundary;
-
-	if (!is_t4(adap->params.chip) && !adap->use_unpacked_mode) {
-		/*
-		 * T5 has a weird interpretation of one of the PCIe Packing
-		 * Boundary values.  No idea why ...
-		 */
-		sge_control2 = t4_read_reg(adap, A_SGE_CONTROL2);
-		ingpackboundary = G_INGPACKBOUNDARY(sge_control2);
-		if (ingpackboundary == X_INGPACKBOUNDARY_16B)
-			ingpackboundary = 16;
-		else
-			ingpackboundary = 1 << (ingpackboundary +
-					  X_INGPACKBOUNDARY_SHIFT);
-
-		s->fl_align = max(ingpadboundary, ingpackboundary);
-	}
-
+	s->fl_align = t4_fl_pkt_align(adap);
 	ret = t4_sge_init_soft(adap);
 	if (ret < 0) {
 		dev_err(adap, "%s: t4_sge_init_soft failed, error %d\n",

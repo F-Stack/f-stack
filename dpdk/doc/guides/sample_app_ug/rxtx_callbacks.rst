@@ -45,23 +45,9 @@ prior to transmission to calculate the elapsed time, in CPU cycles.
 Compiling the Application
 -------------------------
 
-To compile the application export the path to the DPDK source tree and go to
-the example directory:
+To compile the sample application see :doc:`compiling`.
 
-.. code-block:: console
-
-    export RTE_SDK=/path/to/rte_sdk
-
-    cd ${RTE_SDK}/examples/rxtx_callbacks
-
-
-Set the target, for example:
-
-.. code-block:: console
-
-    export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-See the *DPDK Getting Started* Guide for possible ``RTE_TARGET`` values.
+The application is located in the ``rxtx_callbacks`` sub-directory.
 
 The callbacks feature requires that the ``CONFIG_RTE_ETHDEV_RXTX_CALLBACKS``
 setting is on in the ``config/common_`` config file that applies to the
@@ -71,13 +57,6 @@ target. This is generally on by default:
 
     CONFIG_RTE_ETHDEV_RXTX_CALLBACKS=y
 
-Build the application as follows:
-
-.. code-block:: console
-
-    make
-
-
 Running the Application
 -----------------------
 
@@ -85,7 +64,7 @@ To run the example in a ``linuxapp`` environment:
 
 .. code-block:: console
 
-    ./build/rxtx_callbacks -c 2 -n 4
+    ./build/rxtx_callbacks -l 1 -n 4
 
 Refer to *DPDK Getting Started Guide* for general information on running
 applications and the Environment Abstraction Layer (EAL) options.
@@ -124,7 +103,7 @@ comments:
 .. code-block:: c
 
     static inline int
-    port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+    port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     {
         struct rte_eth_conf port_conf = port_conf_default;
         const uint16_t rx_rings = 1, tx_rings = 1;
@@ -196,7 +175,7 @@ all packets received:
 .. code-block:: c
 
     static uint16_t
-    add_timestamps(uint8_t port __rte_unused, uint16_t qidx __rte_unused,
+    add_timestamps(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
             struct rte_mbuf **pkts, uint16_t nb_pkts, void *_ __rte_unused)
     {
         unsigned i;
@@ -222,7 +201,7 @@ packets prior to transmission:
 .. code-block:: c
 
     static uint16_t
-    calc_latency(uint8_t port __rte_unused, uint16_t qidx __rte_unused,
+    calc_latency(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
             struct rte_mbuf **pkts, uint16_t nb_pkts, void *_ __rte_unused)
     {
         uint64_t cycles = 0;

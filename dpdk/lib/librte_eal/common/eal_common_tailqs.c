@@ -40,13 +40,11 @@
 #include <inttypes.h>
 
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
 #include <rte_eal_memconfig.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_memory.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_log.h>
@@ -188,8 +186,7 @@ rte_eal_tailqs_init(void)
 		if (t->head == NULL) {
 			RTE_LOG(ERR, EAL,
 				"Cannot initialize tailq: %s\n", t->name);
-			/* no need to TAILQ_REMOVE, we are going to panic in
-			 * rte_eal_init() */
+			/* TAILQ_REMOVE not needed, error is already fatal */
 			goto fail;
 		}
 	}

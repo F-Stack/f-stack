@@ -39,6 +39,10 @@ SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxq.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_txq.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxtx.c
+ifneq ($(filter y,$(CONFIG_RTE_ARCH_X86_64) \
+		  $(CONFIG_RTE_ARCH_ARM64)),)
+SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxtx_vec.c
+endif
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_trigger.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_mac.c
@@ -46,19 +50,13 @@ SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxmode.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_vlan.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_stats.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rss.c
-SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_fdir.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_mr.c
-
-# Dependencies.
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_kvargs
+SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_flow.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_socket.c
 
 # Basic CFLAGS.
 CFLAGS += -O3
-CFLAGS += -std=gnu99 -Wall -Wextra
+CFLAGS += -std=c11 -Wall -Wextra
 CFLAGS += -g
 CFLAGS += -I.
 CFLAGS += -D_BSD_SOURCE
@@ -66,7 +64,10 @@ CFLAGS += -D_DEFAULT_SOURCE
 CFLAGS += -D_XOPEN_SOURCE=600
 CFLAGS += $(WERROR_FLAGS)
 CFLAGS += -Wno-strict-prototypes
-LDLIBS += -libverbs
+LDLIBS += -libverbs -lmlx5
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_bus_pci
 
 # A few warnings cannot be avoided in external headers.
 CFLAGS += -Wno-error=cast-qual
@@ -104,22 +105,27 @@ endif
 
 mlx5_autoconf.h.new: FORCE
 
-mlx5_autoconf.h.new: $(RTE_SDK)/scripts/auto-config-h.sh
+mlx5_autoconf.h.new: $(RTE_SDK)/buildtools/auto-config-h.sh
 	$Q $(RM) -f -- '$@'
 	$Q sh -- '$<' '$@' \
-		HAVE_VERBS_IBV_EXP_CQ_COMPRESSED_CQE \
-		infiniband/verbs_exp.h \
-		enum IBV_EXP_CQ_COMPRESSED_CQE \
+		HAVE_IBV_DEVICE_VXLAN_SUPPORT \
+		infiniband/verbs.h \
+		enum IBV_DEVICE_VXLAN_SUPPORT \
 		$(AUTOCONF_OUTPUT)
 	$Q sh -- '$<' '$@' \
-		HAVE_VERBS_MLX5_ETH_VLAN_INLINE_HEADER_SIZE \
-		infiniband/mlx5_hw.h \
-		enum MLX5_ETH_VLAN_INLINE_HEADER_SIZE \
+		HAVE_IBV_WQ_FLAG_RX_END_PADDING \
+		infiniband/verbs.h \
+		enum IBV_WQ_FLAG_RX_END_PADDING \
 		$(AUTOCONF_OUTPUT)
 	$Q sh -- '$<' '$@' \
-		HAVE_VERBS_MLX5_OPCODE_TSO \
-		infiniband/mlx5_hw.h \
-		enum MLX5_OPCODE_TSO \
+		HAVE_IBV_MLX5_MOD_MPW \
+		infiniband/mlx5dv.h \
+		enum MLX5DV_CONTEXT_FLAGS_MPW_ALLOWED \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_IBV_MLX5_MOD_CQE_128B_COMP \
+		infiniband/mlx5dv.h \
+		enum MLX5DV_CONTEXT_FLAGS_CQE_128B_COMP \
 		$(AUTOCONF_OUTPUT)
 	$Q sh -- '$<' '$@' \
 		HAVE_ETHTOOL_LINK_MODE_25G \
@@ -135,6 +141,11 @@ mlx5_autoconf.h.new: $(RTE_SDK)/scripts/auto-config-h.sh
 		HAVE_ETHTOOL_LINK_MODE_100G \
 		/usr/include/linux/ethtool.h \
 		enum ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT \
+		infiniband/verbs.h \
+		enum IBV_FLOW_SPEC_ACTION_COUNT \
 		$(AUTOCONF_OUTPUT)
 
 # Create mlx5_autoconf.h or update it in case it differs from the new one.

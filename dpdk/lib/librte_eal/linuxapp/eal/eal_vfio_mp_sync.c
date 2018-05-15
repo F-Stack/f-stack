@@ -49,12 +49,12 @@
 #endif
 
 #include <rte_log.h>
-#include <rte_pci.h>
 #include <rte_eal_memconfig.h>
 #include <rte_malloc.h>
+#include <rte_vfio.h>
 
 #include "eal_filesystem.h"
-#include "eal_pci_init.h"
+#include "eal_vfio.h"
 #include "eal_thread.h"
 
 /**
@@ -267,7 +267,7 @@ vfio_mp_sync_connect_to_primary(void)
 static __attribute__((noreturn)) void *
 vfio_mp_sync_thread(void __rte_unused * arg)
 {
-	int ret, fd, vfio_group_no;
+	int ret, fd, vfio_data;
 
 	/* wait for requests on the socket */
 	for (;;) {
@@ -301,16 +301,18 @@ vfio_mp_sync_thread(void __rte_unused * arg)
 				vfio_mp_sync_send_request(conn_sock, SOCKET_ERR);
 			else
 				vfio_mp_sync_send_fd(conn_sock, fd);
+			if (fd >= 0)
+				close(fd);
 			break;
 		case SOCKET_REQ_GROUP:
 			/* wait for group number */
-			vfio_group_no = vfio_mp_sync_receive_request(conn_sock);
-			if (vfio_group_no < 0) {
+			vfio_data = vfio_mp_sync_receive_request(conn_sock);
+			if (vfio_data < 0) {
 				close(conn_sock);
 				continue;
 			}
 
-			fd = vfio_get_group_fd(vfio_group_no);
+			fd = vfio_get_group_fd(vfio_data);
 
 			if (fd < 0)
 				vfio_mp_sync_send_request(conn_sock, SOCKET_ERR);
@@ -322,6 +324,21 @@ vfio_mp_sync_thread(void __rte_unused * arg)
 				vfio_mp_sync_send_request(conn_sock, SOCKET_OK);
 				vfio_mp_sync_send_fd(conn_sock, fd);
 			}
+			break;
+		case SOCKET_CLR_GROUP:
+			/* wait for group fd */
+			vfio_data = vfio_mp_sync_receive_request(conn_sock);
+			if (vfio_data < 0) {
+				close(conn_sock);
+				continue;
+			}
+
+			ret = clear_group(vfio_data);
+
+			if (ret < 0)
+				vfio_mp_sync_send_request(conn_sock, SOCKET_NO_FD);
+			else
+				vfio_mp_sync_send_request(conn_sock, SOCKET_OK);
 			break;
 		default:
 			vfio_mp_sync_send_request(conn_sock, SOCKET_ERR);

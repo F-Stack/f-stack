@@ -47,9 +47,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -58,7 +56,6 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -81,7 +78,7 @@ static struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -309,7 +306,7 @@ app_init_rings_tx(void)
 				continue;
 			}
 
-			if (app_get_lcore_for_nic_tx((uint8_t) port, &lcore_io) < 0) {
+			if (app_get_lcore_for_nic_tx(port, &lcore_io) < 0) {
 				rte_panic("Algorithmic error (no I/O core to handle TX of port %u)\n",
 					port);
 			}
@@ -360,11 +357,12 @@ app_init_rings_tx(void)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	uint32_t n_rx_queues, n_tx_queues;
 
@@ -384,14 +382,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(unsigned)link.link_speed,
+					printf(
+					"Port%d Link Up - speed %uMbps - %s\n",
+						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-							(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -423,13 +420,16 @@ app_init_nics(void)
 {
 	unsigned socket;
 	uint32_t lcore;
-	uint8_t port, queue;
+	uint16_t port;
+	uint8_t queue;
 	int ret;
 	uint32_t n_rx_queues, n_tx_queues;
 
 	/* Init NIC ports and queues, then start the ports */
 	for (port = 0; port < APP_MAX_NIC_PORTS; port ++) {
 		struct rte_mempool *pool;
+		uint16_t nic_rx_ring_size;
+		uint16_t nic_tx_ring_size;
 
 		n_rx_queues = app_get_nic_rx_queues_per_port(port);
 		n_tx_queues = app.nic_tx_port_mask[port];
@@ -439,16 +439,27 @@ app_init_nics(void)
 		}
 
 		/* Init port */
-		printf("Initializing NIC port %u ...\n", (unsigned) port);
+		printf("Initializing NIC port %u ...\n", port);
 		ret = rte_eth_dev_configure(
 			port,
 			(uint8_t) n_rx_queues,
 			(uint8_t) n_tx_queues,
 			&port_conf);
 		if (ret < 0) {
-			rte_panic("Cannot init NIC port %u (%d)\n", (unsigned) port, ret);
+			rte_panic("Cannot init NIC port %u (%d)\n", port, ret);
 		}
 		rte_eth_promiscuous_enable(port);
+
+		nic_rx_ring_size = app.nic_rx_ring_size;
+		nic_tx_ring_size = app.nic_tx_ring_size;
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(
+			port, &nic_rx_ring_size, &nic_tx_ring_size);
+		if (ret < 0) {
+			rte_panic("Cannot adjust number of descriptors for port %u (%d)\n",
+				  port, ret);
+		}
+		app.nic_rx_ring_size = nic_rx_ring_size;
+		app.nic_tx_ring_size = nic_tx_ring_size;
 
 		/* Init RX queues */
 		for (queue = 0; queue < APP_MAX_RX_QUEUES_PER_NIC_PORT; queue ++) {
@@ -461,8 +472,7 @@ app_init_nics(void)
 			pool = app.lcore_params[lcore].pool;
 
 			printf("Initializing NIC port %u RX queue %u ...\n",
-				(unsigned) port,
-				(unsigned) queue);
+				port, queue);
 			ret = rte_eth_rx_queue_setup(
 				port,
 				queue,
@@ -472,9 +482,7 @@ app_init_nics(void)
 				pool);
 			if (ret < 0) {
 				rte_panic("Cannot init RX queue %u for port %u (%d)\n",
-					(unsigned) queue,
-					(unsigned) port,
-					ret);
+					  queue, port, ret);
 			}
 		}
 
@@ -483,7 +491,7 @@ app_init_nics(void)
 			app_get_lcore_for_nic_tx(port, &lcore);
 			socket = rte_lcore_to_socket_id(lcore);
 			printf("Initializing NIC port %u TX queue 0 ...\n",
-				(unsigned) port);
+				port);
 			ret = rte_eth_tx_queue_setup(
 				port,
 				0,

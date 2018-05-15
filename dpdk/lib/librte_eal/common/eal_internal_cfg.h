@@ -65,7 +65,6 @@ struct internal_config {
 	volatile unsigned force_nrank;    /**< force number of ranks */
 	volatile unsigned no_hugetlbfs;   /**< true to disable hugetlbfs */
 	unsigned hugepage_unlink;         /**< true to unlink backing files */
-	volatile unsigned xen_dom0_support; /**< support app running on Xen Dom0*/
 	volatile unsigned no_pci;         /**< true to disable PCI */
 	volatile unsigned no_hpet;        /**< true to disable HPET */
 	volatile unsigned vmware_tsc_map; /**< true to use VMware TSC mapping
@@ -78,12 +77,11 @@ struct internal_config {
 	volatile uint64_t socket_mem[RTE_MAX_NUMA_NODES]; /**< amount of memory per socket */
 	uintptr_t base_virtaddr;          /**< base address to try and reserve memory from */
 	volatile int syslog_facility;	  /**< facility passed to openlog() */
-	volatile uint32_t log_level;	  /**< default log level */
 	/** default interrupt mode for VFIO */
 	volatile enum rte_intr_mode vfio_intr_mode;
 	const char *hugefile_prefix;      /**< the base filename of hugetlbfs files */
 	const char *hugepage_dir;         /**< specific hugetlbfs directory to use */
-
+	const char *mbuf_pool_ops_name;   /**< mbuf pool ops name */
 	unsigned num_hugepage_sizes;      /**< how many sizes on this system */
 	struct hugepage_info hugepage_info[MAX_HUGEPAGE_SIZES];
 };

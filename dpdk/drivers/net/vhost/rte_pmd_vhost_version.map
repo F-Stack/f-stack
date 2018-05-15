@@ -1,10 +1,13 @@
 DPDK_16.04 {
 	global:
 
-	rte_eth_vhost_feature_disable;
-	rte_eth_vhost_feature_enable;
-	rte_eth_vhost_feature_get;
 	rte_eth_vhost_get_queue_event;
 
 	local: *;
+};
+
+DPDK_16.11 {
+	global:
+
+	rte_eth_vhost_get_vid_from_port_id;
 };

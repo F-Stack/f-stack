@@ -50,17 +50,14 @@ performs L2 forwarding for each packet that is received on an RX_PORT.
 The destination port is the adjacent port from the enabled portmask, that is,
 if the first four ports are enabled (portmask 0xf),
 ports 1 and 2 forward into each other, and ports 3 and 4 forward into each other.
-Also, the MAC addresses are affected as follows:
+Also, if MAC addresses updating is enabled, the MAC addresses are affected as follows:
 
 *   The source MAC address is replaced by the TX_PORT MAC address
 
 *   The destination MAC address is replaced by  02:00:00:00:00:TX_PORT_ID
 
-This application can be used to benchmark performance using a traffic-generator, as shown in the :numref:`figure_l2_fwd_benchmark_setup`.
-
-The application can also be used in a virtualized environment as shown in :numref:`figure_l2_fwd_virtenv_benchmark_setup`.
-
-The L2 Forwarding application can also be used as a starting point for developing a new application based on the DPDK.
+This application can be used to benchmark performance using a traffic-generator, as shown in the :numref:`figure_l2_fwd_benchmark_setup`,
+or in a virtualized environment as shown in :numref:`figure_l2_fwd_virtenv_benchmark_setup`.
 
 .. _figure_l2_fwd_benchmark_setup:
 
@@ -68,12 +65,22 @@ The L2 Forwarding application can also be used as a starting point for developin
 
    Performance Benchmark Setup (Basic Environment)
 
-
 .. _figure_l2_fwd_virtenv_benchmark_setup:
 
 .. figure:: img/l2_fwd_virtenv_benchmark_setup.*
 
    Performance Benchmark Setup (Virtualized Environment)
+
+This application may be used for basic VM to VM communication as shown in :numref:`figure_l2_fwd_vm2vm`,
+when MAC addresses updating is disabled.
+
+.. _figure_l2_fwd_vm2vm:
+
+.. figure:: img/l2_fwd_vm2vm.*
+
+   Virtual Machine to Virtual Machine communication.
+
+The L2 Forwarding application can also be used as a starting point for developing a new application based on the DPDK.
 
 .. _l2_fwd_vf_setup:
 
@@ -100,26 +107,9 @@ in this case enabling a total of four Virtual Functions.
 Compiling the Application
 -------------------------
 
-#.  Go to the example directory:
+To compile the sample application see :doc:`compiling`.
 
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/l2fwd
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    *See the DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``l2fwd`` sub-directory.
 
 Running the Application
 -----------------------
@@ -128,7 +118,7 @@ The application requires a number of command line options:
 
 .. code-block:: console
 
-    ./build/l2fwd [EAL options] -- -p PORTMASK [-q NQ]
+    ./build/l2fwd [EAL options] -- -p PORTMASK [-q NQ] --[no-]mac-updating
 
 where,
 
@@ -136,11 +126,14 @@ where,
 
 *   q NQ: A number of queues (=ports) per lcore (default is 1)
 
-To run the application in linuxapp environment with 4 lcores, 16 ports and 8 RX queues per lcore, issue the command:
+*   --[no-]mac-updating: Enable or disable MAC addresses updating (enabled by default).
+
+To run the application in linuxapp environment with 4 lcores, 16 ports and 8 RX queues per lcore and MAC address
+updating enabled, issue the command:
 
 .. code-block:: console
 
-    $ ./build/l2fwd -c f -n 4 -- -q 8 -p ffff
+    $ ./build/l2fwd -l 0-3 -n 4 -- -q 8 -p ffff
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications
 and the Environment Abstraction Layer (EAL) options.
@@ -197,31 +190,25 @@ and the application to store network packet data:
 
     /* create the mbuf pool */
 
-    l2fwd_pktmbuf_pool = rte_mempool_create("mbuf_pool", NB_MBUF, MBUF_SIZE, 32, sizeof(struct rte_pktmbuf_pool_private),
-        rte_pktmbuf_pool_init, NULL, rte_pktmbuf_init, NULL, SOCKET0, 0);
+    l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF,
+	MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+	rte_socket_id());
 
     if (l2fwd_pktmbuf_pool == NULL)
         rte_panic("Cannot init mbuf pool\n");
 
 The rte_mempool is a generic structure used to handle pools of objects.
-In this case, it is necessary to create a pool that will be used by the driver,
-which expects to have some reserved space in the mempool structure,
-sizeof(struct rte_pktmbuf_pool_private) bytes.
-The number of allocated pkt mbufs is NB_MBUF, with a size of MBUF_SIZE each.
+In this case, it is necessary to create a pool that will be used by the driver.
+The number of allocated pkt mbufs is NB_MBUF, with a data room size of
+RTE_MBUF_DEFAULT_BUF_SIZE each.
 A per-lcore cache of 32 mbufs is kept.
 The memory is allocated in NUMA socket 0,
 but it is possible to extend this code to allocate one mbuf pool per socket.
 
-Two callback pointers are also given to the rte_mempool_create() function:
-
-*   The first callback pointer is to rte_pktmbuf_pool_init() and is used
-    to initialize the private data of the mempool, which is needed by the driver.
-    This function is provided by the mbuf API, but can be copied and extended by the developer.
-
-*   The second callback pointer given to rte_mempool_create() is the mbuf initializer.
-    The default is used, that is, rte_pktmbuf_init(), which is provided in the rte_mbuf library.
-    If a more complex application wants to extend the rte_pktmbuf structure for its own needs,
-    a new function derived from rte_pktmbuf_init( ) can be created.
+The rte_pktmbuf_pool_create() function uses the default mbuf pool and mbuf
+initializers, respectively rte_pktmbuf_pool_init() and rte_pktmbuf_init().
+An advanced application may want to use the mempool API to create the
+mbuf pool with more control.
 
 .. _l2_fwd_app_dvr_init:
 
@@ -234,7 +221,7 @@ in the *DPDK Programmer's Guide* - Rel 1.4 EAR and the *DPDK API Reference*.
 
 .. code-block:: c
 
-    if (rte_eal_pci_probe() < 0)
+    if (rte_pci_probe() < 0)
         rte_exit(EXIT_FAILURE, "Cannot probe PCI\n");
 
     nb_ports = rte_eth_dev_count();
@@ -275,7 +262,7 @@ Observe that:
 
 *   rte_igb_pmd_init_all() simultaneously registers the driver as a PCI driver and as an Ethernet* Poll Mode Driver.
 
-*   rte_eal_pci_probe() parses the devices on the PCI bus and initializes recognized devices.
+*   rte_pci_probe() parses the devices on the PCI bus and initializes recognized devices.
 
 The next step is to configure the RX and TX queues.
 For each port, there is only one RX queue (only one lcore is able to poll a given port).
@@ -415,7 +402,8 @@ Packets are read in a burst of size MAX_PKT_BURST.
 The rte_eth_rx_burst() function writes the mbuf pointers in a local table and returns the number of available mbufs in the table.
 
 Then, each mbuf in the table is processed by the l2fwd_simple_forward() function.
-The processing is very simple: process the TX port from the RX port, then replace the source and destination MAC addresses.
+The processing is very simple: process the TX port from the RX port, then replace the source and destination MAC addresses if MAC
+addresses updating is enabled.
 
 .. note::
 
@@ -469,7 +457,7 @@ If the table is full, the whole packets table is transmitted using the l2fwd_sen
     /* Send the packet on an output interface */
 
     static int
-    l2fwd_send_packet(struct rte_mbuf *m, uint8_t port)
+    l2fwd_send_packet(struct rte_mbuf *m, uint16_t port)
     {
         unsigned lcore_id, len;
         struct lcore_queue_conf *qconf;

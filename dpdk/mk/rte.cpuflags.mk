@@ -70,7 +70,9 @@ CPUFLAGS += PCLMULQDQ
 endif
 
 ifneq ($(filter $(AUTO_CPUFLAGS),__AVX__),)
+ifeq ($(CONFIG_RTE_ENABLE_AVX),y)
 CPUFLAGS += AVX
+endif
 endif
 
 ifneq ($(filter $(AUTO_CPUFLAGS),__RDRND__),)
@@ -86,11 +88,15 @@ CPUFLAGS += F16C
 endif
 
 ifneq ($(filter $(AUTO_CPUFLAGS),__AVX2__),)
+ifeq ($(CONFIG_RTE_ENABLE_AVX),y)
 CPUFLAGS += AVX2
+endif
 endif
 
 ifneq ($(filter $(AUTO_CPUFLAGS),__AVX512F__),)
+ifeq ($(CONFIG_RTE_ENABLE_AVX512),y)
 CPUFLAGS += AVX512F
+endif
 endif
 
 # IBM Power CPU flags
@@ -119,6 +125,12 @@ ifneq ($(filter $(AUTO_CPUFLAGS),__ARM_FEATURE_CRC32),)
 CPUFLAGS += CRC32
 endif
 
+ifneq ($(filter $(AUTO_CPUFLAGS),__ARM_FEATURE_CRYPTO),)
+CPUFLAGS += AES
+CPUFLAGS += PMULL
+CPUFLAGS += SHA1
+CPUFLAGS += SHA2
+endif
 
 MACHINE_CFLAGS += $(addprefix -DRTE_MACHINE_CPUFLAG_,$(CPUFLAGS))
 

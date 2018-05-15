@@ -33,12 +33,14 @@
 
 #include <rte_ether.h>
 #include <rte_ethdev.h>
+#include <rte_ethdev_pci.h>
 #include <rte_tcp.h>
 #include <rte_atomic.h>
 #include <rte_dev.h>
 #include <rte_errno.h>
 #include <rte_version.h>
 #include <rte_eal_memconfig.h>
+#include <rte_net.h>
 
 #include "ena_ethdev.h"
 #include "ena_logs.h"
@@ -168,7 +170,15 @@ static const struct ena_stats ena_stats_ena_com_strings[] = {
 #define PCI_DEVICE_ID_ENA_VF	0xEC20
 #define PCI_DEVICE_ID_ENA_LLQ_VF	0xEC21
 
-static struct rte_pci_id pci_id_ena_map[] = {
+#define	ENA_TX_OFFLOAD_MASK	(\
+	PKT_TX_L4_MASK |         \
+	PKT_TX_IP_CKSUM |        \
+	PKT_TX_TCP_SEG)
+
+#define	ENA_TX_OFFLOAD_NOTSUP_MASK	\
+	(PKT_TX_OFFLOAD_MASK ^ ENA_TX_OFFLOAD_MASK)
+
+static const struct rte_pci_id pci_id_ena_map[] = {
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_AMAZON, PCI_DEVICE_ID_ENA_VF) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_AMAZON, PCI_DEVICE_ID_ENA_LLQ_VF) },
 	{ .device_id = 0 },
@@ -179,6 +189,8 @@ static int ena_device_init(struct ena_com_dev *ena_dev,
 static int ena_dev_configure(struct rte_eth_dev *dev);
 static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts);
+static uint16_t eth_ena_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts);
 static int ena_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 			      uint16_t nb_desc, unsigned int socket_id,
 			      const struct rte_eth_txconf *tx_conf);
@@ -193,7 +205,7 @@ static void ena_init_rings(struct ena_adapter *adapter);
 static int ena_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 static int ena_start(struct rte_eth_dev *dev);
 static void ena_close(struct rte_eth_dev *dev);
-static void ena_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
+static int ena_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
 static void ena_rx_queue_release_all(struct rte_eth_dev *dev);
 static void ena_tx_queue_release_all(struct rte_eth_dev *dev);
 static void ena_rx_queue_release(void *queue);
@@ -201,12 +213,12 @@ static void ena_tx_queue_release(void *queue);
 static void ena_rx_queue_release_bufs(struct ena_ring *ring);
 static void ena_tx_queue_release_bufs(struct ena_ring *ring);
 static int ena_link_update(struct rte_eth_dev *dev,
-			   __rte_unused int wait_to_complete);
+			   int wait_to_complete);
 static int ena_queue_restart(struct ena_ring *ring);
 static int ena_queue_restart_all(struct rte_eth_dev *dev,
 				 enum ena_ring_type ring_type);
 static void ena_stats_restart(struct rte_eth_dev *dev);
-static void ena_infos_get(__rte_unused struct rte_eth_dev *dev,
+static void ena_infos_get(struct rte_eth_dev *dev,
 			  struct rte_eth_dev_info *dev_info);
 static int ena_rss_reta_update(struct rte_eth_dev *dev,
 			       struct rte_eth_rss_reta_entry64 *reta_conf,
@@ -216,7 +228,7 @@ static int ena_rss_reta_query(struct rte_eth_dev *dev,
 			      uint16_t reta_size);
 static int ena_get_sset_count(struct rte_eth_dev *dev, int sset);
 
-static struct eth_dev_ops ena_dev_ops = {
+static const struct eth_dev_ops ena_dev_ops = {
 	.dev_configure        = ena_dev_configure,
 	.dev_infos_get        = ena_infos_get,
 	.rx_queue_setup       = ena_rx_queue_setup,
@@ -248,16 +260,17 @@ static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 				       struct ena_com_rx_ctx *ena_rx_ctx)
 {
 	uint64_t ol_flags = 0;
+	uint32_t packet_type = 0;
 
 	if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_TCP)
-		ol_flags |= PKT_TX_TCP_CKSUM;
+		packet_type |= RTE_PTYPE_L4_TCP;
 	else if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_UDP)
-		ol_flags |= PKT_TX_UDP_CKSUM;
+		packet_type |= RTE_PTYPE_L4_UDP;
 
 	if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV4)
-		ol_flags |= PKT_TX_IPV4;
+		packet_type |= RTE_PTYPE_L3_IPV4;
 	else if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV6)
-		ol_flags |= PKT_TX_IPV6;
+		packet_type |= RTE_PTYPE_L3_IPV6;
 
 	if (unlikely(ena_rx_ctx->l4_csum_err))
 		ol_flags |= PKT_RX_L4_CKSUM_BAD;
@@ -265,6 +278,7 @@ static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 		ol_flags |= PKT_RX_IP_CKSUM_BAD;
 
 	mbuf->ol_flags = ol_flags;
+	mbuf->packet_type = packet_type;
 }
 
 static inline void ena_tx_mbuf_prepare(struct rte_mbuf *mbuf,
@@ -357,12 +371,9 @@ static void ena_config_host_info(struct ena_com_dev *ena_dev)
 
 	rc = ena_com_set_host_attributes(ena_dev);
 	if (rc) {
-		if (rc == -EPERM)
-			RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
-		else
-			RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
-
-		goto err;
+		RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
+		if (rc != -EPERM)
+			goto err;
 	}
 
 	return;
@@ -413,11 +424,9 @@ static void ena_config_debug_area(struct ena_adapter *adapter)
 
 	rc = ena_com_set_host_attributes(&adapter->ena_dev);
 	if (rc) {
-		if (rc == -EPERM)
-			RTE_LOG(WARNING, PMD, "Cannot set host attributes\n");
-		else
-			RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
-		goto err;
+		RTE_LOG(WARNING, PMD, "Cannot set host attributes\n");
+		if (rc != -EPERM)
+			goto err;
 	}
 
 	return;
@@ -674,26 +683,23 @@ static void ena_rx_queue_release_bufs(struct ena_ring *ring)
 			ring->rx_buffer_info[ring->next_to_clean & ring_mask];
 
 		if (m)
-			__rte_mbuf_raw_free(m);
+			rte_mbuf_raw_free(m);
 
-		ring->next_to_clean =
-			ENA_CIRC_INC(ring->next_to_clean, 1, ring->ring_size);
+		ring->next_to_clean++;
 	}
 }
 
 static void ena_tx_queue_release_bufs(struct ena_ring *ring)
 {
-	unsigned int ring_mask = ring->ring_size - 1;
+	unsigned int i;
 
-	while (ring->next_to_clean != ring->next_to_use) {
-		struct ena_tx_buffer *tx_buf =
-			&ring->tx_buffer_info[ring->next_to_clean & ring_mask];
+	for (i = 0; i < ring->ring_size; ++i) {
+		struct ena_tx_buffer *tx_buf = &ring->tx_buffer_info[i];
 
 		if (tx_buf->mbuf)
 			rte_pktmbuf_free(tx_buf->mbuf);
 
-		ring->next_to_clean =
-			ENA_CIRC_INC(ring->next_to_clean, 1, ring->ring_size);
+		ring->next_to_clean++;
 	}
 }
 
@@ -737,7 +743,7 @@ static int ena_queue_restart_all(struct rte_eth_dev *dev,
 
 			if (rc) {
 				PMD_INIT_LOG(ERR,
-					     "failed to restart queue %d type(%d)\n",
+					     "failed to restart queue %d type(%d)",
 					     i, ring_type);
 				return -1;
 			}
@@ -763,7 +769,7 @@ static int ena_check_valid_conf(struct ena_adapter *adapter)
 	uint32_t max_frame_len = ena_get_mtu_conf(adapter);
 
 	if (max_frame_len > adapter->max_mtu) {
-		PMD_INIT_LOG(ERR, "Unsupported MTU of %d\n", max_frame_len);
+		PMD_INIT_LOG(ERR, "Unsupported MTU of %d", max_frame_len);
 		return -1;
 	}
 
@@ -790,7 +796,7 @@ ena_calc_queue_size(struct ena_com_dev *ena_dev,
 		queue_size = rte_align32pow2(queue_size >> 1);
 
 	if (queue_size == 0) {
-		PMD_INIT_LOG(ERR, "Invalid queue size\n");
+		PMD_INIT_LOG(ERR, "Invalid queue size");
 		return -EFAULT;
 	}
 
@@ -807,7 +813,7 @@ static void ena_stats_restart(struct rte_eth_dev *dev)
 	rte_atomic64_init(&adapter->drv_stats->rx_nombuf);
 }
 
-static void ena_stats_get(struct rte_eth_dev *dev,
+static int ena_stats_get(struct rte_eth_dev *dev,
 			  struct rte_eth_stats *stats)
 {
 	struct ena_admin_basic_stats ena_stats;
@@ -817,13 +823,13 @@ static void ena_stats_get(struct rte_eth_dev *dev,
 	int rc;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
+		return -ENOTSUP;
 
 	memset(&ena_stats, 0, sizeof(ena_stats));
 	rc = ena_com_get_dev_basic_stats(ena_dev, &ena_stats);
 	if (unlikely(rc)) {
 		RTE_LOG(ERR, PMD, "Could not retrieve statistics from ENA");
-		return;
+		return rc;
 	}
 
 	/* Set of basic statistics from ENA */
@@ -842,6 +848,7 @@ static void ena_stats_get(struct rte_eth_dev *dev,
 	stats->ierrors = rte_atomic64_read(&adapter->drv_stats->ierrors);
 	stats->oerrors = rte_atomic64_read(&adapter->drv_stats->oerrors);
 	stats->rx_nombuf = rte_atomic64_read(&adapter->drv_stats->rx_nombuf);
+	return 0;
 }
 
 static int ena_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
@@ -915,7 +922,7 @@ static int ena_start(struct rte_eth_dev *dev)
 
 static int ena_queue_restart(struct ena_ring *ring)
 {
-	int rc;
+	int rc, bufs_num;
 
 	ena_assert_msg(ring->configured == 1,
 		       "Trying to restart unconfigured queue\n");
@@ -926,9 +933,10 @@ static int ena_queue_restart(struct ena_ring *ring)
 	if (ring->type == ENA_RING_TYPE_TX)
 		return 0;
 
-	rc = ena_populate_rx_queue(ring, ring->ring_size - 1);
-	if ((unsigned int)rc != ring->ring_size - 1) {
-		PMD_INIT_LOG(ERR, "Failed to populate rx ring !\n");
+	bufs_num = ring->ring_size - 1;
+	rc = ena_populate_rx_queue(ring, bufs_num);
+	if (rc != bufs_num) {
+		PMD_INIT_LOG(ERR, "Failed to populate rx ring !");
 		return (-1);
 	}
 
@@ -960,6 +968,13 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 			"API violation. Queue %d is already configured\n",
 			queue_idx);
 		return -1;
+	}
+
+	if (!rte_is_power_of_2(nb_desc)) {
+		RTE_LOG(ERR, PMD,
+			"Unsupported size of RX queue: %d is not a power of 2.",
+			nb_desc);
+		return -EINVAL;
 	}
 
 	if (nb_desc > adapter->tx_ring_size) {
@@ -1056,6 +1071,13 @@ static int ena_rx_queue_setup(struct rte_eth_dev *dev,
 		return -1;
 	}
 
+	if (!rte_is_power_of_2(nb_desc)) {
+		RTE_LOG(ERR, PMD,
+			"Unsupported size of TX queue: %d is not a power of 2.",
+			nb_desc);
+		return -EINVAL;
+	}
+
 	if (nb_desc > adapter->rx_ring_size) {
 		RTE_LOG(ERR, PMD,
 			"Unsupported size of RX queue (max size: %d)\n",
@@ -1115,23 +1137,25 @@ static int ena_populate_rx_queue(struct ena_ring *rxq, unsigned int count)
 {
 	unsigned int i;
 	int rc;
-	unsigned int ring_size = rxq->ring_size;
-	unsigned int ring_mask = ring_size - 1;
-	int next_to_use = rxq->next_to_use & ring_mask;
+	uint16_t ring_size = rxq->ring_size;
+	uint16_t ring_mask = ring_size - 1;
+	uint16_t next_to_use = rxq->next_to_use;
+	uint16_t in_use;
 	struct rte_mbuf **mbufs = &rxq->rx_buffer_info[0];
 
 	if (unlikely(!count))
 		return 0;
 
-	ena_assert_msg((((ENA_CIRC_COUNT(rxq->next_to_use, rxq->next_to_clean,
-					 rxq->ring_size)) +
-			 count) < rxq->ring_size), "bad ring state");
+	in_use = rxq->next_to_use - rxq->next_to_clean;
+	ena_assert_msg(((in_use + count) < ring_size), "bad ring state");
 
-	count = RTE_MIN(count, ring_size - next_to_use);
+	count = RTE_MIN(count,
+			(uint16_t)(ring_size - (next_to_use & ring_mask)));
 
 	/* get resources for incoming packets */
 	rc = rte_mempool_get_bulk(rxq->mb_pool,
-				  (void **)(&mbufs[next_to_use]), count);
+				  (void **)(&mbufs[next_to_use & ring_mask]),
+				  count);
 	if (unlikely(rc < 0)) {
 		rte_atomic64_inc(&rxq->adapter->drv_stats->rx_nombuf);
 		PMD_RX_LOG(DEBUG, "there are no enough free buffers");
@@ -1139,21 +1163,24 @@ static int ena_populate_rx_queue(struct ena_ring *rxq, unsigned int count)
 	}
 
 	for (i = 0; i < count; i++) {
-		struct rte_mbuf *mbuf = mbufs[next_to_use];
+		uint16_t next_to_use_masked = next_to_use & ring_mask;
+		struct rte_mbuf *mbuf = mbufs[next_to_use_masked];
 		struct ena_com_buf ebuf;
 
 		rte_prefetch0(mbufs[((next_to_use + 4) & ring_mask)]);
 		/* prepare physical address for DMA transaction */
-		ebuf.paddr = mbuf->buf_physaddr + RTE_PKTMBUF_HEADROOM;
+		ebuf.paddr = mbuf->buf_iova + RTE_PKTMBUF_HEADROOM;
 		ebuf.len = mbuf->buf_len - RTE_PKTMBUF_HEADROOM;
 		/* pass resource to device */
 		rc = ena_com_add_single_rx_desc(rxq->ena_com_io_sq,
-						&ebuf, next_to_use);
+						&ebuf, next_to_use_masked);
 		if (unlikely(rc)) {
+			rte_mempool_put_bulk(rxq->mb_pool, (void **)(&mbuf),
+					     count - i);
 			RTE_LOG(WARNING, PMD, "failed adding rx desc\n");
 			break;
 		}
-		next_to_use = ENA_RX_RING_IDX_NEXT(next_to_use, ring_size);
+		next_to_use++;
 	}
 
 	/* When we submitted free recources to device... */
@@ -1213,13 +1240,13 @@ static int ena_device_init(struct ena_com_dev *ena_dev,
 		goto err_mmio_read_less;
 	}
 
-	ena_config_host_info(ena_dev);
-
 	/* To enable the msix interrupts the driver needs to know the number
 	 * of queues. So the driver uses polling mode to retrieve this
 	 * information.
 	 */
 	ena_com_set_admin_polling_mode(ena_dev, true);
+
+	ena_config_host_info(ena_dev);
 
 	/* Get Device Attributes and features */
 	rc = ena_com_get_dev_attr_feat(ena_dev, get_feat_ctx);
@@ -1257,16 +1284,17 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	eth_dev->dev_ops = &ena_dev_ops;
 	eth_dev->rx_pkt_burst = &eth_ena_recv_pkts;
 	eth_dev->tx_pkt_burst = &eth_ena_xmit_pkts;
+	eth_dev->tx_pkt_prepare = &eth_ena_prep_pkts;
 	adapter->rte_eth_dev_data = eth_dev->data;
 	adapter->rte_dev = eth_dev;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	pci_dev = eth_dev->pci_dev;
+	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	adapter->pdev = pci_dev;
 
-	PMD_INIT_LOG(INFO, "Initializing %x:%x:%x.%d\n",
+	PMD_INIT_LOG(INFO, "Initializing %x:%x:%x.%d",
 		     pci_dev->addr.domain,
 		     pci_dev->addr.bus,
 		     pci_dev->addr.devid,
@@ -1283,7 +1311,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	else if (adapter->regs)
 		ena_dev->tx_mem_queue_type = ENA_ADMIN_PLACEMENT_POLICY_HOST;
 	else
-		PMD_INIT_LOG(CRIT, "Failed to access registers BAR(%d)\n",
+		PMD_INIT_LOG(CRIT, "Failed to access registers BAR(%d)",
 			     ENA_REGS_BAR);
 
 	ena_dev->reg_bar = adapter->regs;
@@ -1297,7 +1325,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	/* device specific initialization routine */
 	rc = ena_device_init(ena_dev, &get_feat_ctx);
 	if (rc) {
-		PMD_INIT_LOG(CRIT, "Failed to init ENA device\n");
+		PMD_INIT_LOG(CRIT, "Failed to init ENA device");
 		return -1;
 	}
 
@@ -1305,7 +1333,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 		if (get_feat_ctx.max_queues.max_llq_num == 0) {
 			PMD_INIT_LOG(ERR,
 				     "Trying to use LLQ but llq_num is 0.\n"
-				     "Fall back into regular queues.\n");
+				     "Fall back into regular queues.");
 			ena_dev->tx_mem_queue_type =
 				ENA_ADMIN_PLACEMENT_POLICY_HOST;
 			adapter->num_queues =
@@ -1333,6 +1361,10 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	/* Set max MTU for this device */
 	adapter->max_mtu = get_feat_ctx.dev_attr.max_mtu;
 
+	/* set device support for TSO */
+	adapter->tso4_supported = get_feat_ctx.offload.tx &
+				  ENA_ADMIN_FEATURE_OFFLOAD_DESC_TSO_IPV4_MASK;
+
 	/* Copy MAC address and point DPDK to it */
 	eth_dev->data->mac_addrs = (struct ether_addr *)adapter->mac_addr;
 	ether_addr_copy((struct ether_addr *)get_feat_ctx.dev_attr.mac_addr,
@@ -1359,7 +1391,7 @@ static int ena_dev_configure(struct rte_eth_dev *dev)
 
 	if (!(adapter->state == ENA_ADAPTER_STATE_INIT ||
 	      adapter->state == ENA_ADAPTER_STATE_STOPPED)) {
-		PMD_INIT_LOG(ERR, "Illegal adapter state: %d\n",
+		PMD_INIT_LOG(ERR, "Illegal adapter state: %d",
 			     adapter->state);
 		return -1;
 	}
@@ -1421,6 +1453,8 @@ static void ena_infos_get(struct rte_eth_dev *dev,
 	ena_dev = &adapter->ena_dev;
 	ena_assert_msg(ena_dev != NULL, "Uninitialized device");
 
+	dev_info->pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+
 	dev_info->speed_capa =
 			ETH_LINK_SPEED_1G   |
 			ETH_LINK_SPEED_2_5G |
@@ -1449,7 +1483,7 @@ static void ena_infos_get(struct rte_eth_dev *dev,
 			DEV_TX_OFFLOAD_UDP_CKSUM |
 			DEV_TX_OFFLOAD_TCP_CKSUM;
 
-	if (feat.offload.tx &
+	if (feat.offload.rx_supported &
 	    ENA_ADMIN_FEATURE_OFFLOAD_DESC_RX_L4_IPV4_CSUM_MASK)
 		rx_feat |= DEV_RX_OFFLOAD_IPV4_CKSUM |
 			DEV_RX_OFFLOAD_UDP_CKSUM  |
@@ -1475,7 +1509,7 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	unsigned int ring_size = rx_ring->ring_size;
 	unsigned int ring_mask = ring_size - 1;
 	uint16_t next_to_clean = rx_ring->next_to_clean;
-	int desc_in_use = 0;
+	uint16_t desc_in_use = 0;
 	unsigned int recv_idx = 0;
 	struct rte_mbuf *mbuf = NULL;
 	struct rte_mbuf *mbuf_head = NULL;
@@ -1493,8 +1527,7 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		return 0;
 	}
 
-	desc_in_use = ENA_CIRC_COUNT(rx_ring->next_to_use,
-				     next_to_clean, ring_size);
+	desc_in_use = rx_ring->next_to_use - next_to_clean;
 	if (unlikely(nb_pkts > desc_in_use))
 		nb_pkts = desc_in_use;
 
@@ -1535,8 +1568,7 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 			mbuf_prev = mbuf;
 			segments++;
-			next_to_clean =
-				ENA_RX_RING_IDX_NEXT(next_to_clean, ring_size);
+			next_to_clean++;
 		}
 
 		/* fill mbuf attributes if any */
@@ -1548,20 +1580,92 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		recv_idx++;
 	}
 
-	/* Burst refill to save doorbells, memory barriers, const interval */
-	if (ring_size - desc_in_use - 1 > ENA_RING_DESCS_RATIO(ring_size))
-		ena_populate_rx_queue(rx_ring, ring_size - desc_in_use - 1);
+	rx_ring->next_to_clean = next_to_clean;
 
-	rx_ring->next_to_clean = next_to_clean & ring_mask;
+	desc_in_use = desc_in_use - completed + 1;
+	/* Burst refill to save doorbells, memory barriers, const interval */
+	if (ring_size - desc_in_use > ENA_RING_DESCS_RATIO(ring_size))
+		ena_populate_rx_queue(rx_ring, ring_size - desc_in_use);
 
 	return recv_idx;
+}
+
+static uint16_t
+eth_ena_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int32_t ret;
+	uint32_t i;
+	struct rte_mbuf *m;
+	struct ena_ring *tx_ring = (struct ena_ring *)(tx_queue);
+	struct ipv4_hdr *ip_hdr;
+	uint64_t ol_flags;
+	uint16_t frag_field;
+
+	for (i = 0; i != nb_pkts; i++) {
+		m = tx_pkts[i];
+		ol_flags = m->ol_flags;
+
+		if (!(ol_flags & PKT_TX_IPV4))
+			continue;
+
+		/* If there was not L2 header length specified, assume it is
+		 * length of the ethernet header.
+		 */
+		if (unlikely(m->l2_len == 0))
+			m->l2_len = sizeof(struct ether_hdr);
+
+		ip_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
+						 m->l2_len);
+		frag_field = rte_be_to_cpu_16(ip_hdr->fragment_offset);
+
+		if ((frag_field & IPV4_HDR_DF_FLAG) != 0) {
+			m->packet_type |= RTE_PTYPE_L4_NONFRAG;
+
+			/* If IPv4 header has DF flag enabled and TSO support is
+			 * disabled, partial chcecksum should not be calculated.
+			 */
+			if (!tx_ring->adapter->tso4_supported)
+				continue;
+		}
+
+		if ((ol_flags & ENA_TX_OFFLOAD_NOTSUP_MASK) != 0 ||
+				(ol_flags & PKT_TX_L4_MASK) ==
+				PKT_TX_SCTP_CKSUM) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+
+		/* In case we are supposed to TSO and have DF not set (DF=0)
+		 * hardware must be provided with partial checksum, otherwise
+		 * it will take care of necessary calculations.
+		 */
+
+		ret = rte_net_intel_cksum_flags_prepare(m,
+			ol_flags & ~PKT_TX_TCP_SEG);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+
+	return i;
 }
 
 static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts)
 {
 	struct ena_ring *tx_ring = (struct ena_ring *)(tx_queue);
-	unsigned int next_to_use = tx_ring->next_to_use;
+	uint16_t next_to_use = tx_ring->next_to_use;
+	uint16_t next_to_clean = tx_ring->next_to_clean;
 	struct rte_mbuf *mbuf;
 	unsigned int ring_size = tx_ring->ring_size;
 	unsigned int ring_mask = ring_size - 1;
@@ -1569,7 +1673,7 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	struct ena_tx_buffer *tx_info;
 	struct ena_com_buf *ebuf;
 	uint16_t rc, req_id, total_tx_descs = 0;
-	uint16_t sent_idx = 0;
+	uint16_t sent_idx = 0, empty_tx_reqs;
 	int nb_hw_desc;
 
 	/* Check adapter state */
@@ -1579,10 +1683,14 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		return 0;
 	}
 
+	empty_tx_reqs = ring_size - (next_to_use - next_to_clean);
+	if (nb_pkts > empty_tx_reqs)
+		nb_pkts = empty_tx_reqs;
+
 	for (sent_idx = 0; sent_idx < nb_pkts; sent_idx++) {
 		mbuf = tx_pkts[sent_idx];
 
-		req_id = tx_ring->empty_tx_reqs[next_to_use];
+		req_id = tx_ring->empty_tx_reqs[next_to_use & ring_mask];
 		tx_info = &tx_ring->tx_buffer_info[req_id];
 		tx_info->mbuf = mbuf;
 		tx_info->num_of_bufs = 0;
@@ -1620,7 +1728,7 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		 * consideration pushed header
 		 */
 		if (mbuf->data_len > ena_tx_ctx.header_len) {
-			ebuf->paddr = mbuf->buf_physaddr +
+			ebuf->paddr = mbuf->buf_iova +
 				      mbuf->data_off +
 				      ena_tx_ctx.header_len;
 			ebuf->len = mbuf->data_len - ena_tx_ctx.header_len;
@@ -1629,7 +1737,7 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		}
 
 		while ((mbuf = mbuf->next) != NULL) {
-			ebuf->paddr = mbuf->buf_physaddr + mbuf->data_off;
+			ebuf->paddr = mbuf->buf_iova + mbuf->data_off;
 			ebuf->len = mbuf->data_len;
 			ebuf++;
 			tx_info->num_of_bufs++;
@@ -1645,7 +1753,7 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 		tx_info->tx_descs = nb_hw_desc;
 
-		next_to_use = ENA_TX_RING_IDX_NEXT(next_to_use, ring_size);
+		next_to_use++;
 	}
 
 	/* If there are ready packets to be xmitted... */
@@ -1666,12 +1774,11 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		/* Free whole mbuf chain  */
 		mbuf = tx_info->mbuf;
 		rte_pktmbuf_free(mbuf);
+		tx_info->mbuf = NULL;
 
 		/* Put back descriptor to the ring for reuse */
-		tx_ring->empty_tx_reqs[tx_ring->next_to_clean] = req_id;
-		tx_ring->next_to_clean =
-			ENA_TX_RING_IDX_NEXT(tx_ring->next_to_clean,
-					     tx_ring->ring_size);
+		tx_ring->empty_tx_reqs[next_to_clean & ring_mask] = req_id;
+		next_to_clean++;
 
 		/* If too many descs to clean, leave it for another run */
 		if (unlikely(total_tx_descs > ENA_RING_DESCS_RATIO(ring_size)))
@@ -1681,33 +1788,31 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	if (total_tx_descs > 0) {
 		/* acknowledge completion of sent packets */
 		ena_com_comp_ack(tx_ring->ena_com_io_sq, total_tx_descs);
+		tx_ring->next_to_clean = next_to_clean;
 	}
 
 	return sent_idx;
 }
 
-static struct eth_driver rte_ena_pmd = {
-	{
-		.name = "rte_ena_pmd",
-		.id_table = pci_id_ena_map,
-		.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
-	},
-	.eth_dev_init = eth_ena_dev_init,
-	.dev_private_size = sizeof(struct ena_adapter),
-};
-
-static int
-rte_ena_pmd_init(const char *name __rte_unused,
-		 const char *params __rte_unused)
+static int eth_ena_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
+	struct rte_pci_device *pci_dev)
 {
-	rte_eth_driver_register(&rte_ena_pmd);
-	return 0;
+	return rte_eth_dev_pci_generic_probe(pci_dev,
+		sizeof(struct ena_adapter), eth_ena_dev_init);
+}
+
+static int eth_ena_pci_remove(struct rte_pci_device *pci_dev)
+{
+	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+}
+
+static struct rte_pci_driver rte_ena_pmd = {
+	.id_table = pci_id_ena_map,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
+	.probe = eth_ena_pci_probe,
+	.remove = eth_ena_pci_remove,
 };
 
-struct rte_driver ena_pmd_drv = {
-	.type = PMD_PDEV,
-	.init = rte_ena_pmd_init,
-};
-
-PMD_REGISTER_DRIVER(ena_pmd_drv, ena);
-DRIVER_REGISTER_PCI_TABLE(ena, pci_id_ena_map);
+RTE_PMD_REGISTER_PCI(net_ena, rte_ena_pmd);
+RTE_PMD_REGISTER_PCI_TABLE(net_ena, pci_id_ena_map);
+RTE_PMD_REGISTER_KMOD_DEP(net_ena, "* igb_uio | uio_pci_generic | vfio-pci");

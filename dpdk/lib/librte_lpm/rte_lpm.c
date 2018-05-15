@@ -36,7 +36,6 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <errno.h>
 #include <sys/queue.h>
 
 #include <rte_log.h>
@@ -44,7 +43,6 @@
 #include <rte_common.h>
 #include <rte_memory.h>        /* for definition of RTE_CACHE_LINE_SIZE */
 #include <rte_malloc.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_eal_memconfig.h>
 #include <rte_per_lcore.h>
@@ -219,6 +217,7 @@ rte_lpm_create_v20(const char *name, int socket_id, int max_rules,
 	te = rte_zmalloc("LPM_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
 		RTE_LOG(ERR, LPM, "Failed to allocate tailq entry\n");
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -228,6 +227,7 @@ rte_lpm_create_v20(const char *name, int socket_id, int max_rules,
 	if (lpm == NULL) {
 		RTE_LOG(ERR, LPM, "LPM memory allocation failed\n");
 		rte_free(te);
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -293,6 +293,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 	te = rte_zmalloc("LPM_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
 		RTE_LOG(ERR, LPM, "Failed to allocate tailq entry\n");
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -302,6 +303,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 	if (lpm == NULL) {
 		RTE_LOG(ERR, LPM, "LPM memory allocation failed\n");
 		rte_free(te);
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -313,6 +315,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 		rte_free(lpm);
 		lpm = NULL;
 		rte_free(te);
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -325,6 +328,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 		rte_free(lpm);
 		lpm = NULL;
 		rte_free(te);
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -908,7 +912,7 @@ add_depth_big_v20(struct rte_lpm_v20 *lpm, uint32_t ip_masked, uint8_t depth,
 		 */
 
 		struct rte_lpm_tbl_entry_v20 new_tbl24_entry = {
-			{ .group_idx = (uint8_t)tbl8_group_index, },
+			.group_idx = (uint8_t)tbl8_group_index,
 			.valid = VALID,
 			.valid_group = 1,
 			.depth = 0,
@@ -942,14 +946,9 @@ add_depth_big_v20(struct rte_lpm_v20 *lpm, uint32_t ip_masked, uint8_t depth,
 
 		/* Insert new rule into the tbl8 entry. */
 		for (i = tbl8_index; i < tbl8_index + tbl8_range; i++) {
-			if (!lpm->tbl8[i].valid ||
-					lpm->tbl8[i].depth <= depth) {
-				lpm->tbl8[i].valid = VALID;
-				lpm->tbl8[i].depth = depth;
-				lpm->tbl8[i].next_hop = next_hop;
-
-				continue;
-			}
+			lpm->tbl8[i].valid = VALID;
+			lpm->tbl8[i].depth = depth;
+			lpm->tbl8[i].next_hop = next_hop;
 		}
 
 		/*
@@ -959,7 +958,7 @@ add_depth_big_v20(struct rte_lpm_v20 *lpm, uint32_t ip_masked, uint8_t depth,
 		 */
 
 		struct rte_lpm_tbl_entry_v20 new_tbl24_entry = {
-				{ .group_idx = (uint8_t)tbl8_group_index, },
+				.group_idx = (uint8_t)tbl8_group_index,
 				.valid = VALID,
 				.valid_group = 1,
 				.depth = 0,
@@ -1039,7 +1038,7 @@ add_depth_big_v1604(struct rte_lpm *lpm, uint32_t ip_masked, uint8_t depth,
 		 */
 
 		struct rte_lpm_tbl_entry new_tbl24_entry = {
-			.group_idx = (uint8_t)tbl8_group_index,
+			.group_idx = tbl8_group_index,
 			.valid = VALID,
 			.valid_group = 1,
 			.depth = 0,
@@ -1073,14 +1072,9 @@ add_depth_big_v1604(struct rte_lpm *lpm, uint32_t ip_masked, uint8_t depth,
 
 		/* Insert new rule into the tbl8 entry. */
 		for (i = tbl8_index; i < tbl8_index + tbl8_range; i++) {
-			if (!lpm->tbl8[i].valid ||
-					lpm->tbl8[i].depth <= depth) {
-				lpm->tbl8[i].valid = VALID;
-				lpm->tbl8[i].depth = depth;
-				lpm->tbl8[i].next_hop = next_hop;
-
-				continue;
-			}
+			lpm->tbl8[i].valid = VALID;
+			lpm->tbl8[i].depth = depth;
+			lpm->tbl8[i].next_hop = next_hop;
 		}
 
 		/*
@@ -1090,7 +1084,7 @@ add_depth_big_v1604(struct rte_lpm *lpm, uint32_t ip_masked, uint8_t depth,
 		 */
 
 		struct rte_lpm_tbl_entry new_tbl24_entry = {
-				.group_idx = (uint8_t)tbl8_group_index,
+				.group_idx = tbl8_group_index,
 				.valid = VALID,
 				.valid_group = 1,
 				.depth = 0,
@@ -1371,7 +1365,7 @@ delete_depth_small_v20(struct rte_lpm_v20 *lpm, uint32_t ip_masked,
 		 */
 
 		struct rte_lpm_tbl_entry_v20 new_tbl24_entry = {
-			{.next_hop = lpm->rules_tbl[sub_rule_index].next_hop,},
+			.next_hop = lpm->rules_tbl[sub_rule_index].next_hop,
 			.valid = VALID,
 			.valid_group = 0,
 			.depth = sub_rule_depth,
@@ -1674,7 +1668,7 @@ delete_depth_big_v20(struct rte_lpm_v20 *lpm, uint32_t ip_masked,
 	} else if (tbl8_recycle_index > -1) {
 		/* Update tbl24 entry. */
 		struct rte_lpm_tbl_entry_v20 new_tbl24_entry = {
-			{ .next_hop = lpm->tbl8[tbl8_recycle_index].next_hop, },
+			.next_hop = lpm->tbl8[tbl8_recycle_index].next_hop,
 			.valid = VALID,
 			.valid_group = 0,
 			.depth = lpm->tbl8[tbl8_recycle_index].depth,

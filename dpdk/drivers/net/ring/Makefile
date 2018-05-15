@@ -38,8 +38,11 @@ LIB = librte_pmd_ring.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_bus_vdev
 
-EXPORT_MAP := rte_eth_ring_version.map
+EXPORT_MAP := rte_pmd_ring_version.map
 
 LIBABIVER := 2
 
@@ -52,10 +55,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_RING) += rte_eth_ring.c
 # Export include files
 #
 SYMLINK-y-include += rte_eth_ring.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_RING) += lib/librte_eal lib/librte_ring
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_RING) += lib/librte_mbuf lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_RING) += lib/librte_kvargs
 
 include $(RTE_SDK)/mk/rte.lib.mk

@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
+    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions
@@ -11,7 +11,7 @@
     notice, this list of conditions and the following disclaimer in
     the documentation and/or other materials provided with the
     distribution.
-    * Neither the name of Intel Corporation nor the names of its
+    * Neither the name of 6WIND S.A. nor the names of its
     contributors may be used to endorse or promote products derived
     from this software without specific prior written permission.
 
@@ -28,68 +28,32 @@
     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Crypto Device Supported Functionality Matrices
-----------------------------------------------
+==============================================
 
 Supported Feature Flags
+-----------------------
 
-.. csv-table::
-   :header: "Feature Flags", "qat", "null", "aesni_mb", "aesni_gcm", "snow3g", "kasumi"
-   :stub-columns: 1
+.. _table_crypto_pmd_features:
 
-   "RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO",x,x,x,x,x,x
-   "RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO",,,,,,
-   "RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING",x,x,x,x,x,x
-   "RTE_CRYPTODEV_FF_CPU_SSE",,,x,x,x,x
-   "RTE_CRYPTODEV_FF_CPU_AVX",,,x,x,x,x
-   "RTE_CRYPTODEV_FF_CPU_AVX2",,,x,x,,
-   "RTE_CRYPTODEV_FF_CPU_AESNI",,,x,x,,
-   "RTE_CRYPTODEV_FF_HW_ACCELERATED",x,,,,,
+.. include:: overview_feature_table.txt
 
 Supported Cipher Algorithms
+---------------------------
 
-.. csv-table::
-   :header: "Cipher Algorithms", "qat", "null", "aesni_mb", "aesni_gcm", "snow3g", "kasumi"
-   :stub-columns: 1
+.. _table_crypto_pmd_cipher_algos:
 
-   "NULL",,x,,,,
-   "AES_CBC_128",x,,x,,,
-   "AES_CBC_192",x,,x,,,
-   "AES_CBC_256",x,,x,,,
-   "AES_CTR_128",x,,x,,,
-   "AES_CTR_192",x,,x,,,
-   "AES_CTR_256",x,,x,,,
-   "SNOW3G_UEA2",x,,,,x,
-   "KASUMI_F8",,,,,,x
+.. include:: overview_cipher_table.txt
 
 Supported Authentication Algorithms
+-----------------------------------
 
-.. csv-table::
-   :header: "Cipher Algorithms", "qat", "null", "aesni_mb", "aesni_gcm", "snow3g", "kasumi"
-   :stub-columns: 1
+.. _table_crypto_pmd_auth_algos:
 
-   "NONE",,x,,,,
-   "MD5",,,,,,
-   "MD5_HMAC",,,x,,,
-   "SHA1",,,,,,
-   "SHA1_HMAC",x,,x,,,
-   "SHA224",,,,,,
-   "SHA224_HMAC",,,x,,,
-   "SHA256",,,,,,
-   "SHA256_HMAC",x,,x,,,
-   "SHA384",,,,,,
-   "SHA384_HMAC",,,x,,,
-   "SHA512",,,,,,
-   "SHA512_HMAC",x,,x,,,
-   "AES_XCBC",x,,x,,,
-   "SNOW3G_UIA2",x,,,,x,
-   "KASUMI_F9",,,,,,x
+.. include:: overview_auth_table.txt
 
 Supported AEAD Algorithms
+-------------------------
 
-.. csv-table::
-   :header: "AEAD Algorithms", "qat", "null", "aesni_mb", "aesni_gcm", "snow3g", "kasumi"
-   :stub-columns: 1
+.. _table_crypto_pmd_aead_algos:
 
-   "AES_GCM_128",x,,x,,,
-   "AES_GCM_192",x,,,,,
-   "AES_GCM_256",x,,,,,
+.. include:: overview_aead_table.txt

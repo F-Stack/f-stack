@@ -42,7 +42,6 @@
 
 #include <rte_common.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
@@ -78,7 +77,7 @@ static void cmd_send_parsed(void *parsed_result,
 
 	if (rte_mempool_get(message_pool, &msg) < 0)
 		rte_panic("Failed to get message buffer\n");
-	snprintf((char *)msg, string_size, "%s", res->message);
+	snprintf((char *)msg, STR_TOKEN_SIZE, "%s", res->message);
 	if (rte_ring_enqueue(send_ring, msg) < 0) {
 		printf("Failed to send message - message discarded\n");
 		rte_mempool_put(message_pool, msg);

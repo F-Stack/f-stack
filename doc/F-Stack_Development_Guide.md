@@ -1,15 +1,15 @@
 # F-Stack Development Guide
 
-With the rapid development of NIC, the poor performance of data packets processing with Linux kernel has become the bottleneck. However the rapid development of the Internet needs high performance of network processing, kernel bypass has caught more and more attention. There are various similar technologies appear, such as DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow, all data streams are processed in user space. Therefore kernel bypass can avoid performance bottlenecks caused by kernel packet copy, thread scheduling, system calls and interrupt. Further more, kernel bypass can achieve higher performance with multi optimizing methods.  Within various techniques, DPDK has been widely used because of its more thorough isolation from kernel scheduling and active community support.
+With the rapid development of Network Interface Cards the poor performance of data packet processing with the Linux kernel has become the bottleneck in modern network systems. Yet, the increasing demands of the Internet's growth demand a higher performant network processing solution. Kernel bypass has emerged to catch more and more attention. There are various similar technologies such as: DPDK, NETMAP and PF_RING. The main idea of kernel bypass is that Linux is only used to deal with control flow; all data streams are processed in user space. Therefore, kernel bypass can avoid performance bottlenecks caused by kernel packet copying, thread scheduling, system calls, and interrupts. Furthermore, kernel bypass can achieve higher performance with multi-optimizing methods. Within various techniques, DPDK has been widely used because of it's more thorough isolation from kernel scheduling and active community support.
 
-F-Stack is an open source network framework with high performance based on DPDK. With follow characteristics
+F-Stack is an open source high performant network framework based on DPDK with the following characteristics:
 
-1. Ultra high network performance which can achieve network card under full load, 10 million concurrent, five million RPS, 1 million CPS.
-2. Transplant FreeBSD 11.01 user space stack, provides a complete stack function, cut a great amount of irrelevant features. Therefore greatly enhance the performance.
-3. Support Nginx, Redis and other mature applications, service can easily use F-Stack
-4. With Multi-process architecture, easy to extend
-5. Provide micro thread interface. Various applications with long time consuming can easily use F-Stack to get high performance without processing complex asynchronous logic.
-6. Provide Epoll/kqueue interface that allow many kinds of applications easily use F-Stack
+1. Ultra high network performance which the network card can achieve under full load: 10 million concurrent connections, 5 million RPS, 1 million CPS.
+2. Transplant FreeBSD 11.01 user space stack, which provides a complete stack function, and cut a great amount of irrelevant features. This greatly enhances network performance.
+3. Support Nginx, Redis, and other mature applications. Services can easily use F-Stack.
+4. Easy to extend with multi-process architecture.
+5. Provides micro thread interface. Various applications with stateful applications can easily use F-Stack to get high performance without processing complex asynchronous logic.
+6. Provide an Epoll/Kqueue interface that allow many kinds of applications to easily use F-Stack.
 
 ## Structure of F-Stack code
 

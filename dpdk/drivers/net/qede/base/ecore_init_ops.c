@@ -40,6 +40,13 @@ void ecore_init_clear_rt_data(struct ecore_hwfn *p_hwfn)
 
 void ecore_init_store_rt_reg(struct ecore_hwfn *p_hwfn, u32 rt_offset, u32 val)
 {
+	if (rt_offset >= RUNTIME_ARRAY_SIZE) {
+		DP_ERR(p_hwfn,
+		       "Avoid storing %u in rt_data at index %u since RUNTIME_ARRAY_SIZE is %u!\n",
+		       val, rt_offset, RUNTIME_ARRAY_SIZE);
+		return;
+	}
+
 	p_hwfn->rt_data.init_val[rt_offset] = val;
 	p_hwfn->rt_data.b_valid[rt_offset] = true;
 }
@@ -48,6 +55,14 @@ void ecore_init_store_rt_agg(struct ecore_hwfn *p_hwfn,
 			     u32 rt_offset, u32 *p_val, osal_size_t size)
 {
 	osal_size_t i;
+
+	if ((rt_offset + size - 1) >= RUNTIME_ARRAY_SIZE) {
+		DP_ERR(p_hwfn,
+		       "Avoid storing values in rt_data at indices %u-%u since RUNTIME_ARRAY_SIZE is %u!\n",
+		       rt_offset, (u32)(rt_offset + size - 1),
+		       RUNTIME_ARRAY_SIZE);
+		return;
+	}
 
 	for (i = 0; i < size / sizeof(u32); i++) {
 		p_hwfn->rt_data.init_val[rt_offset + i] = p_val[i];
@@ -63,8 +78,8 @@ static enum _ecore_status_t ecore_init_rt(struct ecore_hwfn *p_hwfn,
 {
 	u32 *p_init_val = &p_hwfn->rt_data.init_val[rt_offset];
 	bool *p_valid = &p_hwfn->rt_data.b_valid[rt_offset];
-	enum _ecore_status_t rc = ECORE_SUCCESS;
 	u16 i, segment;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
 
 	/* Since not all RT entries are initialized, go over the RT and
 	 * for each segment of initialized values use DMA.
@@ -161,8 +176,7 @@ static enum _ecore_status_t ecore_init_array_dmae(struct ecore_hwfn *p_hwfn,
 
 static enum _ecore_status_t ecore_init_fill_dmae(struct ecore_hwfn *p_hwfn,
 						 struct ecore_ptt *p_ptt,
-						 u32 addr, u32 fill,
-						 u32 fill_count)
+						 u32 addr, u32 fill_count)
 {
 	static u32 zero_buffer[DMAE_MAX_RW_SIZE];
 
@@ -190,19 +204,19 @@ static enum _ecore_status_t ecore_init_cmd_array(struct ecore_hwfn *p_hwfn,
 						 bool b_must_dmae,
 						 bool b_can_dmae)
 {
+	u32 dmae_array_offset = OSAL_LE32_TO_CPU(cmd->args.array_offset);
+	u32 data = OSAL_LE32_TO_CPU(cmd->data);
+	u32 addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 #ifdef CONFIG_ECORE_ZIPPED_FW
 	u32 offset, output_len, input_len, max_size;
 #endif
-	u32 dmae_array_offset = OSAL_LE32_TO_CPU(cmd->args.array_offset);
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
-	enum _ecore_status_t rc = ECORE_SUCCESS;
 	union init_array_hdr *hdr;
 	const u32 *array_data;
-	u32 size, addr, data;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
+	u32 size;
 
 	array_data = p_dev->fw_data->arr_data;
-	data = OSAL_LE32_TO_CPU(cmd->data);
-	addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 
 	hdr = (union init_array_hdr *)
 		(uintptr_t)(array_data + dmae_array_offset);
@@ -251,9 +265,9 @@ static enum _ecore_status_t ecore_init_cmd_array(struct ecore_hwfn *p_hwfn,
 							   b_can_dmae);
 				if (rc)
 					break;
-			}
-			break;
 		}
+		break;
+	}
 	case INIT_ARR_STANDARD:
 		size = GET_FIELD(data, INIT_ARRAY_STANDARD_HDR_SIZE);
 		rc = ecore_init_array_dmae(p_hwfn, p_ptt, addr,
@@ -272,13 +286,10 @@ static enum _ecore_status_t ecore_init_cmd_wr(struct ecore_hwfn *p_hwfn,
 					      struct init_write_op *p_cmd,
 					      bool b_can_dmae)
 {
+	u32 data = OSAL_LE32_TO_CPU(p_cmd->data);
+	bool b_must_dmae = GET_FIELD(data, INIT_WRITE_OP_WIDE_BUS);
+	u32 addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 	enum _ecore_status_t rc = ECORE_SUCCESS;
-	bool b_must_dmae;
-	u32 addr, data;
-
-	data = OSAL_LE32_TO_CPU(p_cmd->data);
-	b_must_dmae = GET_FIELD(data, INIT_WRITE_OP_WIDE_BUS);
-	addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 
 	/* Sanitize */
 	if (b_must_dmae && !b_can_dmae) {
@@ -297,7 +308,7 @@ static enum _ecore_status_t ecore_init_cmd_wr(struct ecore_hwfn *p_hwfn,
 	case INIT_SRC_ZEROS:
 		data = OSAL_LE32_TO_CPU(p_cmd->args.zeros_count);
 		if (b_must_dmae || (b_can_dmae && (data >= 64)))
-			rc = ecore_init_fill_dmae(p_hwfn, p_ptt, addr, 0, data);
+			rc = ecore_init_fill_dmae(p_hwfn, p_ptt, addr, data);
 		else
 			ecore_init_fill(p_hwfn, p_ptt, addr, 0, data);
 		break;
@@ -306,10 +317,10 @@ static enum _ecore_status_t ecore_init_cmd_wr(struct ecore_hwfn *p_hwfn,
 					  b_must_dmae, b_can_dmae);
 		break;
 	case INIT_SRC_RUNTIME:
-		ecore_init_rt(p_hwfn, p_ptt, addr,
-			      OSAL_LE16_TO_CPU(p_cmd->args.runtime.offset),
-			      OSAL_LE16_TO_CPU(p_cmd->args.runtime.size),
-			      b_must_dmae);
+		rc = ecore_init_rt(p_hwfn, p_ptt, addr,
+				   OSAL_LE16_TO_CPU(p_cmd->args.runtime.offset),
+				   OSAL_LE16_TO_CPU(p_cmd->args.runtime.size),
+				   b_must_dmae);
 		break;
 	}
 
@@ -385,10 +396,13 @@ static void ecore_init_cmd_rd(struct ecore_hwfn *p_hwfn,
 		       OSAL_LE32_TO_CPU(cmd->op_data));
 }
 
-/* init_ops callbacks entry point */
+/* init_ops callbacks entry point.
+ * OSAL_UNUSED is temporary used to avoid unused-parameter compilation warnings.
+ * Should be removed when the function is actually used.
+ */
 static void ecore_init_cmd_cb(struct ecore_hwfn *p_hwfn,
-			      struct ecore_ptt *p_ptt,
-			      struct init_callback_op *p_cmd)
+			      struct ecore_ptt OSAL_UNUSED * p_ptt,
+			      struct init_callback_op OSAL_UNUSED * p_cmd)
 {
 	DP_NOTICE(p_hwfn, true,
 		  "Currently init values have no need of callbacks\n");
@@ -432,17 +446,16 @@ static u32 ecore_init_cmd_mode(struct ecore_hwfn *p_hwfn,
 				 INIT_IF_MODE_OP_CMD_OFFSET);
 }
 
-static u32 ecore_init_cmd_phase(struct ecore_hwfn *p_hwfn,
-				struct init_if_phase_op *p_cmd,
+static u32 ecore_init_cmd_phase(struct init_if_phase_op *p_cmd,
 				u32 phase, u32 phase_id)
 {
 	u32 data = OSAL_LE32_TO_CPU(p_cmd->phase_data);
+	u32 op_data = OSAL_LE32_TO_CPU(p_cmd->op_data);
 
 	if (!(GET_FIELD(data, INIT_IF_PHASE_OP_PHASE) == phase &&
 	      (GET_FIELD(data, INIT_IF_PHASE_OP_PHASE_ID) == ANY_PHASE_ID ||
 	       GET_FIELD(data, INIT_IF_PHASE_OP_PHASE_ID) == phase_id)))
-		return GET_FIELD(OSAL_LE32_TO_CPU(p_cmd->op_data),
-				 INIT_IF_PHASE_OP_CMD_OFFSET);
+		return GET_FIELD(op_data, INIT_IF_PHASE_OP_CMD_OFFSET);
 	else
 		return 0;
 }
@@ -452,10 +465,10 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 				    int phase, int phase_id, int modes)
 {
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
-	enum _ecore_status_t rc = ECORE_SUCCESS;
 	u32 cmd_num, num_init_ops;
 	union init_op *init_ops;
 	bool b_dmae = false;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
 
 	num_init_ops = p_dev->fw_data->init_ops_size;
 	init_ops = p_dev->fw_data->init_ops;
@@ -488,8 +501,8 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 						       modes);
 			break;
 		case INIT_OP_IF_PHASE:
-			cmd_num += ecore_init_cmd_phase(p_hwfn, &cmd->if_phase,
-							phase, phase_id);
+			cmd_num += ecore_init_cmd_phase(&cmd->if_phase, phase,
+							phase_id);
 			b_dmae = GET_FIELD(data, INIT_IF_PHASE_OP_DMAE_ENABLE);
 			break;
 		case INIT_OP_DELAY:
@@ -513,7 +526,8 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 	return rc;
 }
 
-void ecore_gtt_init(struct ecore_hwfn *p_hwfn)
+void ecore_gtt_init(struct ecore_hwfn *p_hwfn,
+		    struct ecore_ptt *p_ptt)
 {
 	u32 gtt_base;
 	u32 i;
@@ -525,13 +539,13 @@ void ecore_gtt_init(struct ecore_hwfn *p_hwfn)
 		 * not too bright, but it should work on the simple FPGA/EMUL
 		 * scenarios.
 		 */
-		bool initialized = false; /* @DPDK */
+		static bool initialized;
 		int poll_cnt = 500;
 		u32 val;
 
 		/* initialize PTT/GTT (poll for completion) */
 		if (!initialized) {
-			ecore_wr(p_hwfn, p_hwfn->p_main_ptt,
+			ecore_wr(p_hwfn, p_ptt,
 				 PGLUE_B_REG_START_INIT_PTT_GTT, 1);
 			initialized = true;
 		}
@@ -540,7 +554,7 @@ void ecore_gtt_init(struct ecore_hwfn *p_hwfn)
 			/* ptt might be overrided by HW until this is done */
 			OSAL_UDELAY(10);
 			ecore_ptt_invalidate(p_hwfn);
-			val = ecore_rd(p_hwfn, p_hwfn->p_main_ptt,
+			val = ecore_rd(p_hwfn, p_ptt,
 				       PGLUE_B_REG_INIT_DONE_PTT_GTT);
 		} while ((val != 1) && --poll_cnt);
 
@@ -560,7 +574,11 @@ void ecore_gtt_init(struct ecore_hwfn *p_hwfn)
 }
 
 enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
-					const u8 *data)
+#ifdef CONFIG_ECORE_BINARY_FW
+					const u8 *fw_data)
+#else
+					const u8 OSAL_UNUSED * fw_data)
+#endif
 {
 	struct ecore_fw_data *fw = p_dev->fw_data;
 
@@ -568,24 +586,24 @@ enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
 	struct bin_buffer_hdr *buf_hdr;
 	u32 offset, len;
 
-	if (!data) {
+	if (!fw_data) {
 		DP_NOTICE(p_dev, true, "Invalid fw data\n");
 		return ECORE_INVAL;
 	}
 
-	buf_hdr = (struct bin_buffer_hdr *)(uintptr_t)data;
+	buf_hdr = (struct bin_buffer_hdr *)(uintptr_t)fw_data;
 
-	offset = buf_hdr[BIN_BUF_FW_VER_INFO].offset;
-	fw->fw_ver_info = (struct fw_ver_info *)((uintptr_t)(data + offset));
+	offset = buf_hdr[BIN_BUF_INIT_FW_VER_INFO].offset;
+	fw->fw_ver_info = (struct fw_ver_info *)((uintptr_t)(fw_data + offset));
 
 	offset = buf_hdr[BIN_BUF_INIT_CMD].offset;
-	fw->init_ops = (union init_op *)((uintptr_t)(data + offset));
+	fw->init_ops = (union init_op *)((uintptr_t)(fw_data + offset));
 
 	offset = buf_hdr[BIN_BUF_INIT_VAL].offset;
-	fw->arr_data = (u32 *)((uintptr_t)(data + offset));
+	fw->arr_data = (u32 *)((uintptr_t)(fw_data + offset));
 
 	offset = buf_hdr[BIN_BUF_INIT_MODE_TREE].offset;
-	fw->modes_tree_buf = (u8 *)((uintptr_t)(data + offset));
+	fw->modes_tree_buf = (u8 *)((uintptr_t)(fw_data + offset));
 	len = buf_hdr[BIN_BUF_INIT_CMD].length;
 	fw->init_ops_size = len / sizeof(struct init_raw_op);
 #else

@@ -35,16 +35,6 @@
 #include "vnic_dev.h"
 #include "vnic_cq.h"
 
-int vnic_cq_mem_size(struct vnic_cq *cq, unsigned int desc_count,
-	unsigned int desc_size)
-{
-	int mem_size;
-
-	mem_size = vnic_dev_desc_ring_size(&cq->ring, desc_count, desc_size);
-
-	return mem_size;
-}
-
 void vnic_cq_free(struct vnic_cq *cq)
 {
 	vnic_dev_free_desc_ring(cq->vdev, &cq->ring);
@@ -65,11 +55,11 @@ int vnic_cq_alloc(struct vnic_dev *vdev, struct vnic_cq *cq, unsigned int index,
 
 	cq->ctrl = vnic_dev_get_res(vdev, RES_TYPE_CQ, index);
 	if (!cq->ctrl) {
-		pr_err("Failed to hook CQ[%d] resource\n", index);
+		pr_err("Failed to hook CQ[%u] resource\n", index);
 		return -EINVAL;
 	}
 
-	snprintf(res_name, sizeof(res_name), "%d-cq-%d", instance++, index);
+	snprintf(res_name, sizeof(res_name), "%d-cq-%u", instance++, index);
 	err = vnic_dev_alloc_desc_ring(vdev, &cq->ring, desc_count, desc_size,
 		socket_id, res_name);
 	if (err)

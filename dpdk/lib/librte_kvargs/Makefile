@@ -37,6 +37,7 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_kvargs.a
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3
+LDLIBS += -lrte_eal
 
 EXPORT_MAP := rte_kvargs_version.map
 
@@ -48,8 +49,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_KVARGS) := rte_kvargs.c
 # install includes
 INCS := rte_kvargs.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_KVARGS)-include := $(INCS)
-
-# this lib needs eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_KVARGS) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

@@ -35,6 +35,7 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_kni.a
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3 -fno-strict-aliasing
+LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ethdev
 
 EXPORT_MAP := rte_kni_version.map
 
@@ -45,10 +46,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_KNI) := rte_kni.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_KNI)-include := rte_kni.h
-
-DEPDIRS-$(CONFIG_RTE_LIBRTE_KNI) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_KNI) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_KNI) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_KNI) += lib/librte_ether
 
 include $(RTE_SDK)/mk/rte.lib.mk

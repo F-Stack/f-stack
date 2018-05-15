@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -35,6 +35,9 @@
 
 #include <sso_kasumi.h>
 
+#define CRYPTODEV_NAME_KASUMI_PMD	crypto_kasumi
+/**< KASUMI PMD device name */
+
 #define KASUMI_LOG_ERR(fmt, args...) \
 	RTE_LOG(ERR, CRYPTODEV, "[%s] %s() line %u: " fmt "\n",  \
 			RTE_STR(CRYPTODEV_NAME_KASUMI_PMD), \
@@ -54,6 +57,8 @@
 #define KASUMI_LOG_INFO(fmt, args...)
 #define KASUMI_LOG_DBG(fmt, args...)
 #endif
+
+#define KASUMI_DIGEST_LENGTH 4
 
 /** private data structure for each virtual KASUMI device */
 struct kasumi_private {
@@ -75,6 +80,11 @@ struct kasumi_qp {
 	/**< Session Mempool */
 	struct rte_cryptodev_stats qp_stats;
 	/**< Queue pair statistics */
+	uint8_t temp_digest[KASUMI_DIGEST_LENGTH];
+	/**< Buffer used to store the digest generated
+	 * by the driver when verifying a digest provided
+	 * by the user (using authentication verify operation)
+	 */
 } __rte_cache_aligned;
 
 enum kasumi_operation {
@@ -92,6 +102,7 @@ struct kasumi_session {
 	sso_kasumi_key_sched_t pKeySched_hash;
 	enum kasumi_operation op;
 	enum rte_crypto_auth_operation auth_op;
+	uint16_t cipher_iv_offset;
 } __rte_cache_aligned;
 
 

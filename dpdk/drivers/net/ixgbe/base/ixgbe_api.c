@@ -106,8 +106,10 @@ s32 ixgbe_init_shared_code(struct ixgbe_hw *hw)
 		status = ixgbe_init_ops_X550(hw);
 		break;
 	case ixgbe_mac_X550EM_x:
+		status = ixgbe_init_ops_X550EM_x(hw);
+		break;
 	case ixgbe_mac_X550EM_a:
-		status = ixgbe_init_ops_X550EM(hw);
+		status = ixgbe_init_ops_X550EM_a(hw);
 		break;
 	case ixgbe_mac_82599_vf:
 	case ixgbe_mac_X540_vf:
@@ -203,6 +205,7 @@ s32 ixgbe_set_mac_type(struct ixgbe_hw *hw)
 	case IXGBE_DEV_ID_X550EM_X_10G_T:
 	case IXGBE_DEV_ID_X550EM_X_1G_T:
 	case IXGBE_DEV_ID_X550EM_X_SFP:
+	case IXGBE_DEV_ID_X550EM_X_XFI:
 		hw->mac.type = ixgbe_mac_X550EM_x;
 		hw->mvals = ixgbe_mvals_X550EM_x;
 		break;
@@ -1090,7 +1093,7 @@ s32 ixgbe_set_vfta(struct ixgbe_hw *hw, u32 vlan, u32 vind, bool vlan_on,
 		   bool vlvf_bypass)
 {
 	return ixgbe_call_func(hw, hw->mac.ops.set_vfta, (hw, vlan, vind,
-				  vlan_on, vlvf_bypass), IXGBE_NOT_IMPLEMENTED);
+			       vlan_on, vlvf_bypass), IXGBE_NOT_IMPLEMENTED);
 }
 
 /**
@@ -1100,7 +1103,7 @@ s32 ixgbe_set_vfta(struct ixgbe_hw *hw, u32 vlan, u32 vind, bool vlan_on,
  *  @vind: VMDq output index that maps queue to VLAN id in VLVFB
  *  @vlan_on: boolean flag to turn on/off VLAN in VLVF
  *  @vfta_delta: pointer to the difference between the current value of VFTA
- *               and the desired value
+ *		 and the desired value
  *  @vfta: the desired value of the VFTA
  *  @vlvf_bypass: boolean flag indicating updating the default pool is okay
  *
@@ -1110,7 +1113,7 @@ s32 ixgbe_set_vlvf(struct ixgbe_hw *hw, u32 vlan, u32 vind, bool vlan_on,
 		   u32 *vfta_delta, u32 vfta, bool vlvf_bypass)
 {
 	return ixgbe_call_func(hw, hw->mac.ops.set_vlvf, (hw, vlan, vind,
-				vlan_on, vfta_delta, vfta, vlvf_bypass),
+			       vlan_on, vfta_delta, vfta, vlvf_bypass),
 			       IXGBE_NOT_IMPLEMENTED);
 }
 
@@ -1145,12 +1148,15 @@ s32 ixgbe_setup_fc(struct ixgbe_hw *hw)
  * @min: driver minor number to be sent to firmware
  * @build: driver build number to be sent to firmware
  * @ver: driver version number to be sent to firmware
+ * @len: length of driver_ver string
+ * @driver_ver: driver string
  **/
 s32 ixgbe_set_fw_drv_ver(struct ixgbe_hw *hw, u8 maj, u8 min, u8 build,
-			 u8 ver)
+			 u8 ver, u16 len, char *driver_ver)
 {
 	return ixgbe_call_func(hw, hw->mac.ops.set_fw_drv_ver, (hw, maj, min,
-			       build, ver), IXGBE_NOT_IMPLEMENTED);
+			       build, ver, len, driver_ver),
+			       IXGBE_NOT_IMPLEMENTED);
 }
 
 
@@ -1573,7 +1579,7 @@ s32 ixgbe_read_i2c_eeprom(struct ixgbe_hw *hw, u8 byte_offset, u8 *eeprom_data)
  *
  *  Determines physical layer capabilities of the current configuration.
  **/
-u32 ixgbe_get_supported_physical_layer(struct ixgbe_hw *hw)
+u64 ixgbe_get_supported_physical_layer(struct ixgbe_hw *hw)
 {
 	return ixgbe_call_func(hw, hw->mac.ops.get_supported_physical_layer,
 			       (hw), IXGBE_PHYSICAL_LAYER_UNKNOWN);
@@ -1658,6 +1664,7 @@ void ixgbe_init_swfw_semaphore(struct ixgbe_hw *hw)
 	if (hw->mac.ops.init_swfw_sync)
 		hw->mac.ops.init_swfw_sync(hw);
 }
+
 
 void ixgbe_disable_rx(struct ixgbe_hw *hw)
 {

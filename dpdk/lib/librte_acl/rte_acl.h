@@ -120,8 +120,6 @@ enum {
 	RTE_ACL_MIN_PRIORITY = 0,
 };
 
-#define	RTE_ACL_INVALID_USERDATA	0
-
 #define	RTE_ACL_MASKLEN_TO_BITMASK(v, s)	\
 ((v) == 0 ? (v) : (typeof(v))((uint64_t)-1 << ((s) * CHAR_BIT - (v))))
 
@@ -144,7 +142,7 @@ struct rte_acl_rule_data {
 	struct rte_acl_field field[fld_num];         \
 }
 
-RTE_ACL_RULE_DEF(rte_acl_rule, 0);
+RTE_ACL_RULE_DEF(rte_acl_rule,);
 
 #define	RTE_ACL_RULE_SZ(fld_num)	\
 	(sizeof(struct rte_acl_rule) + sizeof(struct rte_acl_field) * (fld_num))
@@ -271,6 +269,7 @@ enum rte_acl_classify_alg {
 	RTE_ACL_CLASSIFY_SSE = 2,     /**< requires SSE4.1 support. */
 	RTE_ACL_CLASSIFY_AVX2 = 3,    /**< requires AVX2 support. */
 	RTE_ACL_CLASSIFY_NEON = 4,    /**< requires NEON support. */
+	RTE_ACL_CLASSIFY_ALTIVEC = 5,    /**< requires ALTIVEC support. */
 	RTE_ACL_CLASSIFY_NUM          /* should always be the last one. */
 };
 

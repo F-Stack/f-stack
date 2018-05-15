@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2013-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2013-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -35,6 +35,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_common.h>
+#include <rte_net.h>
 #include "fm10k.h"
 #include "base/fm10k_type.h"
 
@@ -64,6 +65,15 @@ static inline void dump_rxd(union fm10k_rx_desc *rxd)
 	PMD_RX_LOG(DEBUG, "+----------------|----------------+");
 }
 #endif
+
+#define FM10K_TX_OFFLOAD_MASK (  \
+		PKT_TX_VLAN_PKT |        \
+		PKT_TX_IP_CKSUM |        \
+		PKT_TX_L4_MASK |         \
+		PKT_TX_TCP_SEG)
+
+#define FM10K_TX_OFFLOAD_NOTSUP_MASK \
+		(PKT_TX_OFFLOAD_MASK ^ FM10K_TX_OFFLOAD_MASK)
 
 /* @note: When this function is changed, make corresponding change to
  * fm10k_dev_supported_ptypes_get()
@@ -101,11 +111,15 @@ rx_desc_to_ol_flags(struct rte_mbuf *m, const union fm10k_rx_desc *d)
 		(FM10K_RXD_STATUS_IPCS | FM10K_RXD_STATUS_IPE)) ==
 		(FM10K_RXD_STATUS_IPCS | FM10K_RXD_STATUS_IPE)))
 		m->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+	else
+		m->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
 
 	if (unlikely((d->d.staterr &
 		(FM10K_RXD_STATUS_L4CS | FM10K_RXD_STATUS_L4E)) ==
 		(FM10K_RXD_STATUS_L4CS | FM10K_RXD_STATUS_L4E)))
 		m->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+	else
+		m->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
 }
 
 uint16_t
@@ -144,10 +158,10 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * Packets in fm10k device always carry at least one VLAN tag.
 		 * For those packets coming in without VLAN tag,
 		 * the port default VLAN tag will be used.
-		 * So, always PKT_RX_VLAN_PKT flag is set and vlan_tci
+		 * So, always PKT_RX_VLAN flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		mbuf->ol_flags |= PKT_RX_VLAN_PKT;
+		mbuf->ol_flags |= PKT_RX_VLAN;
 		mbuf->vlan_tci = desc.w.vlan;
 		/**
 		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
@@ -184,7 +198,7 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 					q->alloc_thresh);
 
 		if (unlikely(ret != 0)) {
-			uint8_t port = q->port_id;
+			uint16_t port = q->port_id;
 			PMD_RX_LOG(ERR, "Failed to alloc mbuf");
 			/*
 			 * Need to restore next_dd if we cannot allocate new
@@ -305,10 +319,10 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * Packets in fm10k device always carry at least one VLAN tag.
 		 * For those packets coming in without VLAN tag,
 		 * the port default VLAN tag will be used.
-		 * So, always PKT_RX_VLAN_PKT flag is set and vlan_tci
+		 * So, always PKT_RX_VLAN flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		first_seg->ol_flags |= PKT_RX_VLAN_PKT;
+		first_seg->ol_flags |= PKT_RX_VLAN;
 		first_seg->vlan_tci = desc.w.vlan;
 		/**
 		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
@@ -342,7 +356,7 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 					q->alloc_thresh);
 
 		if (unlikely(ret != 0)) {
-			uint8_t port = q->port_id;
+			uint16_t port = q->port_id;
 			PMD_RX_LOG(ERR, "Failed to alloc mbuf");
 			/*
 			 * Need to restore next_dd if we cannot allocate new
@@ -420,12 +434,12 @@ static inline void tx_free_bulk_mbuf(struct rte_mbuf **txep, int num)
 	if (unlikely(num == 0))
 		return;
 
-	m = __rte_pktmbuf_prefree_seg(txep[0]);
+	m = rte_pktmbuf_prefree_seg(txep[0]);
 	if (likely(m != NULL)) {
 		free[0] = m;
 		nb_free = 1;
 		for (i = 1; i < num; i++) {
-			m = __rte_pktmbuf_prefree_seg(txep[i]);
+			m = rte_pktmbuf_prefree_seg(txep[i]);
 			if (likely(m != NULL)) {
 				if (likely(m->pool == free[0]->pool))
 					free[nb_free++] = m;
@@ -441,7 +455,7 @@ static inline void tx_free_bulk_mbuf(struct rte_mbuf **txep, int num)
 		rte_mempool_put_bulk(free[0]->pool, (void **)free, nb_free);
 	} else {
 		for (i = 1; i < num; i++) {
-			m = __rte_pktmbuf_prefree_seg(txep[i]);
+			m = rte_pktmbuf_prefree_seg(txep[i]);
 			if (m != NULL)
 				rte_mempool_put(m->pool, m);
 			txep[i] = NULL;
@@ -592,4 +606,42 @@ fm10k_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		FM10K_PCI_REG_WRITE(q->tail_ptr, q->next_free);
 
 	return count;
+}
+
+uint16_t
+fm10k_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int i, ret;
+	struct rte_mbuf *m;
+
+	for (i = 0; i < nb_pkts; i++) {
+		m = tx_pkts[i];
+
+		if ((m->ol_flags & PKT_TX_TCP_SEG) &&
+				(m->tso_segsz < FM10K_TSO_MINMSS)) {
+			rte_errno = -EINVAL;
+			return i;
+		}
+
+		if (m->ol_flags & FM10K_TX_OFFLOAD_NOTSUP_MASK) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+		ret = rte_net_intel_cksum_prepare(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+
+	return i;
 }

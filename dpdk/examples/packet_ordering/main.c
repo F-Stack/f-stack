@@ -216,7 +216,7 @@ parse_args(int argc, char **argv)
 	}
 
 	argv[optind-1] = prgname;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return 0;
 }
 
@@ -229,7 +229,7 @@ flush_tx_error_callback(struct rte_mbuf **unsent, uint16_t count,
 
 	/* free the mbufs which failed from transmit */
 	app_stats.tx.ro_tx_failed_pkts += count;
-	RTE_LOG(DEBUG, REORDERAPP, "%s:Packet loss with tx_burst\n", __func__);
+	RTE_LOG_DP(DEBUG, REORDERAPP, "%s:Packet loss with tx_burst\n", __func__);
 	pktmbuf_free_bulk(unsent, count);
 
 }
@@ -269,27 +269,30 @@ configure_tx_buffers(struct rte_eth_dev_tx_buffer *tx_buffer[])
 				rte_eth_dev_socket_id(port_id));
 		if (tx_buffer[port_id] == NULL)
 			rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
-					(unsigned) port_id);
+				 port_id);
 
 		rte_eth_tx_buffer_init(tx_buffer[port_id], MAX_PKTS_BURST);
 
 		ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[port_id],
 				flush_tx_error_callback, NULL);
 		if (ret < 0)
-			rte_exit(EXIT_FAILURE, "Cannot set error callback for "
-					"tx buffer on port %u\n", (unsigned) port_id);
+			rte_exit(EXIT_FAILURE,
+			"Cannot set error callback for tx buffer on port %u\n",
+				 port_id);
 	}
 	return 0;
 }
 
 static inline int
-configure_eth_port(uint8_t port_id)
+configure_eth_port(uint16_t port_id)
 {
 	struct ether_addr addr;
 	const uint16_t rxRings = 1, txRings = 1;
 	const uint8_t nb_ports = rte_eth_dev_count();
 	int ret;
 	uint16_t q;
+	uint16_t nb_rxd = RX_DESC_PER_QUEUE;
+	uint16_t nb_txd = TX_DESC_PER_QUEUE;
 
 	if (port_id > nb_ports)
 		return -1;
@@ -298,8 +301,12 @@ configure_eth_port(uint8_t port_id)
 	if (ret != 0)
 		return ret;
 
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
+	if (ret != 0)
+		return ret;
+
 	for (q = 0; q < rxRings; q++) {
-		ret = rte_eth_rx_queue_setup(port_id, q, RX_DESC_PER_QUEUE,
+		ret = rte_eth_rx_queue_setup(port_id, q, nb_rxd,
 				rte_eth_dev_socket_id(port_id), NULL,
 				mbuf_pool);
 		if (ret < 0)
@@ -307,7 +314,7 @@ configure_eth_port(uint8_t port_id)
 	}
 
 	for (q = 0; q < txRings; q++) {
-		ret = rte_eth_tx_queue_setup(port_id, q, TX_DESC_PER_QUEUE,
+		ret = rte_eth_tx_queue_setup(port_id, q, nb_txd,
 				rte_eth_dev_socket_id(port_id), NULL);
 		if (ret < 0)
 			return ret;
@@ -320,7 +327,7 @@ configure_eth_port(uint8_t port_id)
 	rte_eth_macaddr_get(port_id, &addr);
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			(unsigned)port_id,
+			port_id,
 			addr.addr_bytes[0], addr.addr_bytes[1],
 			addr.addr_bytes[2], addr.addr_bytes[3],
 			addr.addr_bytes[4], addr.addr_bytes[5]);
@@ -395,7 +402,7 @@ rx_thread(struct rte_ring *ring_out)
 	uint32_t seqn = 0;
 	uint16_t i, ret = 0;
 	uint16_t nb_rx_pkts;
-	uint8_t port_id;
+	uint16_t port_id;
 	struct rte_mbuf *pkts[MAX_PKTS_BURST];
 
 	RTE_LOG(INFO, REORDERAPP, "%s() started on lcore %u\n", __func__,
@@ -410,7 +417,7 @@ rx_thread(struct rte_ring *ring_out)
 				nb_rx_pkts = rte_eth_rx_burst(port_id, 0,
 								pkts, MAX_PKTS_BURST);
 				if (nb_rx_pkts == 0) {
-					RTE_LOG(DEBUG, REORDERAPP,
+					RTE_LOG_DP(DEBUG, REORDERAPP,
 					"%s():Received zero packets\n",	__func__);
 					continue;
 				}
@@ -421,8 +428,8 @@ rx_thread(struct rte_ring *ring_out)
 					pkts[i++]->seqn = seqn++;
 
 				/* enqueue to rx_to_workers ring */
-				ret = rte_ring_enqueue_burst(ring_out, (void *) pkts,
-								nb_rx_pkts);
+				ret = rte_ring_enqueue_burst(ring_out,
+						(void *)pkts, nb_rx_pkts, NULL);
 				app_stats.rx.enqueue_pkts += ret;
 				if (unlikely(ret < nb_rx_pkts)) {
 					app_stats.rx.enqueue_failed_pkts +=
@@ -462,7 +469,7 @@ worker_thread(void *args_ptr)
 
 		/* dequeue the mbufs from rx_to_workers ring */
 		burst_size = rte_ring_dequeue_burst(ring_in,
-				(void *)burst_buffer, MAX_PKTS_BURST);
+				(void *)burst_buffer, MAX_PKTS_BURST, NULL);
 		if (unlikely(burst_size == 0))
 			continue;
 
@@ -473,7 +480,8 @@ worker_thread(void *args_ptr)
 			burst_buffer[i++]->port ^= xor_val;
 
 		/* enqueue the modified mbufs to workers_to_tx ring */
-		ret = rte_ring_enqueue_burst(ring_out, (void *)burst_buffer, burst_size);
+		ret = rte_ring_enqueue_burst(ring_out, (void *)burst_buffer,
+				burst_size, NULL);
 		__sync_fetch_and_add(&app_stats.wkr.enqueue_pkts, ret);
 		if (unlikely(ret < burst_size)) {
 			/* Return the mbufs to their respective pool, dropping packets */
@@ -509,7 +517,7 @@ send_thread(struct send_thread_args *args)
 
 		/* deque the mbufs from workers_to_tx ring */
 		nb_dq_mbufs = rte_ring_dequeue_burst(args->ring_in,
-				(void *)mbufs, MAX_PKTS_BURST);
+				(void *)mbufs, MAX_PKTS_BURST, NULL);
 
 		if (unlikely(nb_dq_mbufs == 0))
 			continue;
@@ -522,7 +530,7 @@ send_thread(struct send_thread_args *args)
 
 			if (ret == -1 && rte_errno == ERANGE) {
 				/* Too early pkts should be transmitted out directly */
-				RTE_LOG(DEBUG, REORDERAPP,
+				RTE_LOG_DP(DEBUG, REORDERAPP,
 						"%s():Cannot reorder early packet "
 						"direct enqueuing to TX\n", __func__);
 				outp = mbufs[i]->port;
@@ -594,7 +602,7 @@ tx_thread(struct rte_ring *ring_in)
 
 		/* deque the mbufs from workers_to_tx ring */
 		dqnum = rte_ring_dequeue_burst(ring_in,
-				(void *)mbufs, MAX_PKTS_BURST);
+				(void *)mbufs, MAX_PKTS_BURST, NULL);
 
 		if (unlikely(dqnum == 0))
 			continue;
@@ -625,8 +633,8 @@ main(int argc, char **argv)
 	int ret;
 	unsigned nb_ports;
 	unsigned int lcore_id, last_lcore_id, master_lcore_id;
-	uint8_t port_id;
-	uint8_t nb_ports_available;
+	uint16_t port_id;
+	uint16_t nb_ports_available;
 	struct worker_thread_args worker_args = {NULL, NULL};
 	struct send_thread_args send_args = {NULL, NULL};
 	struct rte_ring *rx_to_workers;
@@ -680,7 +688,7 @@ main(int argc, char **argv)
 			continue;
 		}
 		/* init port */
-		printf("Initializing port %u... done\n", (unsigned) port_id);
+		printf("Initializing port %u... done\n", port_id);
 
 		if (configure_eth_port(port_id) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot initialize port %"PRIu8"\n",

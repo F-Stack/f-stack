@@ -17,7 +17,7 @@
   51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
 
   The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
+  the file called "LICENSE.GPL".
 
   Contact Information:
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -607,7 +607,7 @@ struct igb_adapter {
 	int int_mode;
 	u32 rss_queues;
 	u32 vmdq_pools;
-	char fw_version[32];
+	char fw_version[43];
 	u32 wvbr;
 	struct igb_mac_addr *mac_table;
 #ifdef CONFIG_IGB_VMDQ_NETDEV

@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2016 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -66,6 +66,12 @@ enum {
 	PAUSE_RX      = 1 << 0,
 	PAUSE_TX      = 1 << 1,
 	PAUSE_AUTONEG = 1 << 2
+};
+
+enum {
+	FEC_RS        = 1 << 0,
+	FEC_BASER_RS  = 1 << 1,
+	FEC_RESERVED  = 1 << 2,
 };
 
 struct port_stats {
@@ -151,6 +157,11 @@ struct tp_params {
 	u32 vlan_pri_map;               /* cached TP_VLAN_PRI_MAP */
 	u32 ingress_config;             /* cached TP_INGRESS_CONFIG */
 
+	/* cached TP_OUT_CONFIG compressed error vector
+	 * and passing outer header info for encapsulated packets.
+	 */
+	int rx_pkt_encap;
+
 	/*
 	 * TP_VLAN_PRI_MAP Compressed Filter Tuple field offsets.  This is a
 	 * subset of the set of fields which may be present in the Compressed
@@ -210,7 +221,9 @@ struct adapter_params {
 	unsigned int sf_nsec;             /* # of flash sectors */
 
 	unsigned int fw_vers;
+	unsigned int bs_vers;
 	unsigned int tp_vers;
+	unsigned int er_vers;
 
 	unsigned short mtus[NMTUS];
 	unsigned short a_wnd[NCCTRL_WIN];
@@ -231,10 +244,12 @@ struct adapter_params {
 struct link_config {
 	unsigned short supported;        /* link capabilities */
 	unsigned short advertising;      /* advertised capabilities */
-	unsigned short requested_speed;  /* speed user has requested */
-	unsigned short speed;            /* actual link speed */
+	unsigned int   requested_speed;  /* speed user has requested */
+	unsigned int   speed;            /* actual link speed */
 	unsigned char  requested_fc;     /* flow control user has requested */
 	unsigned char  fc;               /* actual link flow control */
+	unsigned char  requested_fec;    /* Forward Error Correction user */
+	unsigned char  fec;              /* has requested and actual FEC */
 	unsigned char  autoneg;          /* autonegotiating? */
 	unsigned char  link_ok;          /* link up? */
 };
@@ -272,6 +287,7 @@ int t4_fw_bye(struct adapter *adap, unsigned int mbox);
 int t4_fw_reset(struct adapter *adap, unsigned int mbox, int reset);
 int t4_fw_halt(struct adapter *adap, unsigned int mbox, int reset);
 int t4_fw_restart(struct adapter *adap, unsigned int mbox, int reset);
+int t4_fl_pkt_align(struct adapter *adap);
 int t4_fixup_host_params_compat(struct adapter *adap, unsigned int page_size,
 				unsigned int cache_line_size,
 				enum chip_type chip_compat);
@@ -374,7 +390,8 @@ int t4_get_vpd_params(struct adapter *adapter, struct vpd_params *p);
 int t4_read_flash(struct adapter *adapter, unsigned int addr,
 		  unsigned int nwords, u32 *data, int byte_oriented);
 int t4_flash_cfg_addr(struct adapter *adapter);
-unsigned int t4_get_mps_bg_map(struct adapter *adapter, int idx);
+unsigned int t4_get_mps_bg_map(struct adapter *adapter, unsigned int pidx);
+unsigned int t4_get_tp_ch_map(struct adapter *adapter, unsigned int pidx);
 const char *t4_get_port_type_description(enum fw_port_type port_type);
 void t4_get_port_stats(struct adapter *adap, int idx, struct port_stats *p);
 void t4_get_port_stats_offset(struct adapter *adap, int idx,
@@ -382,9 +399,10 @@ void t4_get_port_stats_offset(struct adapter *adap, int idx,
 			      struct port_stats *offset);
 void t4_clr_port_stats(struct adapter *adap, int idx);
 void t4_reset_link_config(struct adapter *adap, int idx);
-int t4_get_fw_version(struct adapter *adapter, u32 *vers);
-int t4_get_tp_version(struct adapter *adapter, u32 *vers);
+int t4_get_version_info(struct adapter *adapter);
+void t4_dump_version_info(struct adapter *adapter);
 int t4_get_flash_params(struct adapter *adapter);
+int t4_get_chip_type(struct adapter *adap, int ver);
 int t4_prep_adapter(struct adapter *adapter);
 int t4_port_init(struct adapter *adap, int mbox, int pf, int vf);
 int t4_init_rss_mode(struct adapter *adap, int mbox);

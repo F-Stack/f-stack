@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -48,16 +48,16 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_MD5_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
+					.min = 1,
 					.max = 64,
-					.increment = 0
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 12,
 					.max = 12,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -69,16 +69,16 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA1_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
+					.min = 1,
 					.max = 64,
-					.increment = 0
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 12,
 					.max = 12,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -90,16 +90,16 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA224_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
+					.min = 1,
 					.max = 64,
-					.increment = 0
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 14,
 					.max = 14,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -111,16 +111,16 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA256_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
+					.min = 1,
 					.max = 64,
-					.increment = 0
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 16,
 					.max = 16,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -132,16 +132,16 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA384_HMAC,
 				.block_size = 128,
 				.key_size = {
-					.min = 128,
+					.min = 1,
 					.max = 128,
-					.increment = 0
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 24,
 					.max = 24,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -153,16 +153,16 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA512_HMAC,
 				.block_size = 128,
 				.key_size = {
-					.min = 128,
+					.min = 1,
 					.max = 128,
-					.increment = 0
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 32,
 					.max = 32,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -183,7 +183,7 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 					.max = 12,
 					.increment = 0
 				},
-				.aad_size = { 0 }
+				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -220,6 +220,26 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 					.increment = 8
 				},
 				.iv_size = {
+					.min = 12,
+					.max = 16,
+					.increment = 4
+				}
+			}, }
+		}, }
+	},
+	{	/* AES DOCSIS BPI */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_AES_DOCSISBPI,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.iv_size = {
 					.min = 16,
 					.max = 16,
 					.increment = 0
@@ -227,13 +247,57 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* DES CBC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_DES_CBC,
+				.block_size = 8,
+				.key_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* DES DOCSIS BPI */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_DES_DOCSISBPI,
+				.block_size = 8,
+				.key_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+
+
+
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
 
 
 /** Configure device */
 static int
-aesni_mb_pmd_config(__rte_unused struct rte_cryptodev *dev)
+aesni_mb_pmd_config(__rte_unused struct rte_cryptodev *dev,
+		__rte_unused struct rte_cryptodev_config *config)
 {
 	return 0;
 }
@@ -299,7 +363,7 @@ aesni_mb_pmd_info_get(struct rte_cryptodev *dev,
 	struct aesni_mb_private *internals = dev->data->dev_private;
 
 	if (dev_info != NULL) {
-		dev_info->dev_type = dev->dev_type;
+		dev_info->driver_id = dev->driver_id;
 		dev_info->feature_flags = dev->feature_flags;
 		dev_info->capabilities = aesni_mb_pmd_capabilities;
 		dev_info->max_nb_queue_pairs = internals->max_nb_queue_pairs;
@@ -311,8 +375,14 @@ aesni_mb_pmd_info_get(struct rte_cryptodev *dev,
 static int
 aesni_mb_pmd_qp_release(struct rte_cryptodev *dev, uint16_t qp_id)
 {
-	if (dev->data->queue_pairs[qp_id] != NULL) {
-		rte_free(dev->data->queue_pairs[qp_id]);
+	struct aesni_mb_qp *qp = dev->data->queue_pairs[qp_id];
+	struct rte_ring *r = NULL;
+
+	if (qp != NULL) {
+		r = rte_ring_lookup(qp->name);
+		if (r)
+			rte_ring_free(r);
+		rte_free(qp);
 		dev->data->queue_pairs[qp_id] = NULL;
 	}
 	return 0;
@@ -327,7 +397,7 @@ aesni_mb_pmd_qp_set_unique_name(struct rte_cryptodev *dev,
 			"aesni_mb_pmd_%u_qp_%u",
 			dev->data->dev_id, qp->id);
 
-	if (n > sizeof(qp->name))
+	if (n >= sizeof(qp->name))
 		return -1;
 
 	return 0;
@@ -336,24 +406,32 @@ aesni_mb_pmd_qp_set_unique_name(struct rte_cryptodev *dev,
 /** Create a ring to place processed operations on */
 static struct rte_ring *
 aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
-		unsigned ring_size, int socket_id)
+		const char *str, unsigned int ring_size, int socket_id)
 {
 	struct rte_ring *r;
+	char ring_name[RTE_CRYPTODEV_NAME_LEN];
 
-	r = rte_ring_lookup(qp->name);
+	unsigned int n = snprintf(ring_name, sizeof(ring_name),
+				"%s_%s",
+				qp->name, str);
+
+	if (n >= sizeof(ring_name))
+		return NULL;
+
+	r = rte_ring_lookup(ring_name);
 	if (r) {
-		if (r->prod.size >= ring_size) {
+		if (rte_ring_get_size(r) >= ring_size) {
 			MB_LOG_INFO("Reusing existing ring %s for processed ops",
-					 qp->name);
+			ring_name);
 			return r;
 		}
 
 		MB_LOG_ERR("Unable to reuse existing ring %s for processed ops",
-				 qp->name);
+			ring_name);
 		return NULL;
 	}
 
-	return rte_ring_create(qp->name, ring_size, socket_id,
+	return rte_ring_create(ring_name, ring_size, socket_id,
 			RING_F_SP_ENQ | RING_F_SC_DEQ);
 }
 
@@ -361,7 +439,7 @@ aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
 static int
 aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		 int socket_id)
+		int socket_id, struct rte_mempool *session_pool)
 {
 	struct aesni_mb_qp *qp = NULL;
 	struct aesni_mb_private *internals = dev->data->dev_private;
@@ -382,20 +460,25 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (aesni_mb_pmd_qp_set_unique_name(dev, qp))
 		goto qp_setup_cleanup;
 
-	qp->ops = &job_ops[internals->vector_mode];
 
-	qp->processed_ops = aesni_mb_pmd_qp_create_processed_ops_ring(qp,
-			qp_conf->nb_descriptors, socket_id);
-	if (qp->processed_ops == NULL)
+	qp->op_fns = &job_ops[internals->vector_mode];
+
+	qp->ingress_queue = aesni_mb_pmd_qp_create_processed_ops_ring(qp,
+			"ingress", qp_conf->nb_descriptors, socket_id);
+	if (qp->ingress_queue == NULL)
 		goto qp_setup_cleanup;
 
-	qp->sess_mp = dev->data->session_pool;
+	qp->sess_mp = session_pool;
 
 	memset(&qp->stats, 0, sizeof(qp->stats));
 
-	/* Initialise multi-buffer manager */
-	(*qp->ops->job.init_mgr)(&qp->mb_mgr);
+	char mp_name[RTE_MEMPOOL_NAMESIZE];
 
+	snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
+				"digest_mp_%u_%u", dev->data->dev_id, qp_id);
+
+	/* Initialise multi-buffer manager */
+	(*qp->op_fns->job.init_mgr)(&qp->mb_mgr);
 	return 0;
 
 qp_setup_cleanup:
@@ -436,36 +519,58 @@ aesni_mb_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
 }
 
 /** Configure a aesni multi-buffer session from a crypto xform chain */
-static void *
+static int
 aesni_mb_pmd_session_configure(struct rte_cryptodev *dev,
-		struct rte_crypto_sym_xform *xform,	void *sess)
+		struct rte_crypto_sym_xform *xform,
+		struct rte_cryptodev_sym_session *sess,
+		struct rte_mempool *mempool)
 {
+	void *sess_private_data;
 	struct aesni_mb_private *internals = dev->data->dev_private;
+	int ret;
 
 	if (unlikely(sess == NULL)) {
 		MB_LOG_ERR("invalid session struct");
-		return NULL;
+		return -EINVAL;
 	}
 
-	if (aesni_mb_set_session_parameters(&job_ops[internals->vector_mode],
-			sess, xform) != 0) {
+	if (rte_mempool_get(mempool, &sess_private_data)) {
+		CDEV_LOG_ERR(
+			"Couldn't get object from session mempool");
+		return -ENOMEM;
+	}
+
+	ret = aesni_mb_set_session_parameters(&job_ops[internals->vector_mode],
+			sess_private_data, xform);
+	if (ret != 0) {
 		MB_LOG_ERR("failed configure session parameters");
-		return NULL;
+
+		/* Return session to mempool */
+		rte_mempool_put(mempool, sess_private_data);
+		return ret;
 	}
 
-	return sess;
+	set_session_private_data(sess, dev->driver_id,
+			sess_private_data);
+
+	return 0;
 }
 
 /** Clear the memory of session so it doesn't leave key material behind */
 static void
-aesni_mb_pmd_session_clear(struct rte_cryptodev *dev __rte_unused, void *sess)
+aesni_mb_pmd_session_clear(struct rte_cryptodev *dev,
+		struct rte_cryptodev_sym_session *sess)
 {
-	/*
-	 * Current just resetting the whole data structure, need to investigate
-	 * whether a more selective reset of key would be more performant
-	 */
-	if (sess)
-		memset(sess, 0, sizeof(struct aesni_mb_session));
+	uint8_t index = dev->driver_id;
+	void *sess_priv = get_session_private_data(sess, index);
+
+	/* Zero out the whole structure */
+	if (sess_priv) {
+		memset(sess_priv, 0, sizeof(struct aesni_mb_session));
+		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
+		set_session_private_data(sess, index, NULL);
+		rte_mempool_put(sess_mp, sess_priv);
+	}
 }
 
 struct rte_cryptodev_ops aesni_mb_pmd_ops = {

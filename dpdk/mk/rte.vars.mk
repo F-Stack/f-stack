@@ -46,6 +46,9 @@ endif
 # define Q to '@' or not. $(Q) is used to prefix all shell commands to
 # be executed silently.
 Q=@
+ifeq '$V' '0'
+override V=
+endif
 ifdef V
 ifeq ("$(origin V)", "command line")
 Q=
@@ -93,7 +96,7 @@ ifeq ($(RTE_TOOLCHAIN),)
 $(error RTE_TOOLCHAIN is not defined)
 endif
 
-# can be overriden by make command line or exported environment variable
+# can be overridden by make command line or exported environment variable
 RTE_KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 export RTE_TARGET
@@ -104,7 +107,7 @@ export RTE_TOOLCHAIN
 
 # developer build automatically enabled in a git tree
 ifneq ($(wildcard $(RTE_SDK)/.git),)
-RTE_DEVEL_BUILD := y
+RTE_DEVEL_BUILD ?= y
 endif
 
 # SRCDIR is the current source directory

@@ -41,6 +41,8 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+#include <rte_common.h>
 #include "generic/rte_byteorder.h"
 
 /* fix missing __builtin_bswap16 for gcc older then 4.8 */
@@ -50,7 +52,7 @@ static inline uint16_t rte_arch_bswap16(uint16_t _x)
 {
 	register uint16_t x = _x;
 
-	asm volatile ("rev16 %0,%1"
+	asm volatile ("rev16 %w0,%w1"
 		      : "=r" (x)
 		      : "r" (x)
 		      );

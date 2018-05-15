@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2015 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -420,6 +420,26 @@
 #define A_PCIE_FW 0x30b8
 #define A_PCIE_FW_PF 0x30bc
 
+#define A_PCIE_CFG2 0x3018
+
+#define S_TOTMAXTAG    0
+#define M_TOTMAXTAG    0x3U
+#define V_TOTMAXTAG(x) ((x) << S_TOTMAXTAG)
+
+#define S_T6_TOTMAXTAG    0
+#define M_T6_TOTMAXTAG    0x7U
+#define V_T6_TOTMAXTAG(x) ((x) << S_T6_TOTMAXTAG)
+
+#define A_PCIE_CMD_CFG	0x5980
+
+#define S_MINTAG	0
+#define M_MINTAG	0xffU
+#define V_MINTAG(x)	((x) << S_MINTAG)
+
+#define S_T6_MINTAG	0
+#define M_T6_MINTAG	0xffU
+#define V_T6_MINTAG(x)	((x) << S_T6_MINTAG)
+
 /* registers for module CIM */
 #define CIM_BASE_ADDR 0x7b00
 
@@ -443,6 +463,12 @@
 #define F_UPCRST    V_UPCRST(1U)
 
 /* registers for module TP */
+#define A_TP_OUT_CONFIG 0x7d04
+
+#define S_CRXPKTENC    3
+#define V_CRXPKTENC(x) ((x) << S_CRXPKTENC)
+#define F_CRXPKTENC    V_CRXPKTENC(1U)
+
 #define TP_BASE_ADDR 0x7d00
 
 #define A_TP_TIMER_RESOLUTION 0x7d90
@@ -552,6 +578,24 @@
 #define M_VF    0x7fU
 #define V_VF(x) ((x) << S_VF)
 #define G_VF(x) (((x) >> S_VF) & M_VF)
+
+#define A_MPS_STAT_CTL 0x9600
+
+#define S_COUNTPAUSEMCRX    5
+#define V_COUNTPAUSEMCRX(x) ((x) << S_COUNTPAUSEMCRX)
+#define F_COUNTPAUSEMCRX    V_COUNTPAUSEMCRX(1U)
+
+#define S_COUNTPAUSESTATRX    4
+#define V_COUNTPAUSESTATRX(x) ((x) << S_COUNTPAUSESTATRX)
+#define F_COUNTPAUSESTATRX    V_COUNTPAUSESTATRX(1U)
+
+#define S_COUNTPAUSEMCTX    3
+#define V_COUNTPAUSEMCTX(x) ((x) << S_COUNTPAUSEMCTX)
+#define F_COUNTPAUSEMCTX    V_COUNTPAUSEMCTX(1U)
+
+#define S_COUNTPAUSESTATTX    2
+#define V_COUNTPAUSESTATTX(x) ((x) << S_COUNTPAUSESTATTX)
+#define F_COUNTPAUSESTATTX    V_COUNTPAUSESTATTX(1U)
 
 #define A_MPS_PORT_STAT_TX_PORT_BYTES_L 0x400
 #define A_MPS_PORT_STAT_TX_PORT_BYTES_H 0x404
@@ -762,6 +806,11 @@
 #define M_SOURCEPF    0x7U
 #define V_SOURCEPF(x) ((x) << S_SOURCEPF)
 #define G_SOURCEPF(x) (((x) >> S_SOURCEPF) & M_SOURCEPF)
+
+#define S_T6_SOURCEPF    9
+#define M_T6_SOURCEPF    0x7U
+#define V_T6_SOURCEPF(x) ((x) << S_T6_SOURCEPF)
+#define G_T6_SOURCEPF(x) (((x) >> S_T6_SOURCEPF) & M_T6_SOURCEPF)
 
 #define A_PL_PF_INT_ENABLE 0x3c4
 

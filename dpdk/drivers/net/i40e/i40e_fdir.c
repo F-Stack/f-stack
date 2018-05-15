@@ -49,6 +49,7 @@
 #include <rte_udp.h>
 #include <rte_tcp.h>
 #include <rte_sctp.h>
+#include <rte_hash_crc.h>
 
 #include "i40e_logs.h"
 #include "base/i40e_type.h"
@@ -67,15 +68,23 @@
 #define I40E_FDIR_IP_DEFAULT_VERSION_IHL    0x45
 #define I40E_FDIR_TCP_DEFAULT_DATAOFF       0x50
 #define I40E_FDIR_IPv6_DEFAULT_VTC_FLOW     0x60000000
-#define I40E_FDIR_IPv6_TC_OFFSET            20
 
 #define I40E_FDIR_IPv6_DEFAULT_HOP_LIMITS   0xFF
 #define I40E_FDIR_IPv6_PAYLOAD_LEN          380
 #define I40E_FDIR_UDP_DEFAULT_LEN           400
+#define I40E_FDIR_GTP_DEFAULT_LEN           384
+#define I40E_FDIR_INNER_IP_DEFAULT_LEN      384
+#define I40E_FDIR_INNER_IPV6_DEFAULT_LEN    344
 
-/* Wait count and interval for fdir filter programming */
-#define I40E_FDIR_WAIT_COUNT       10
-#define I40E_FDIR_WAIT_INTERVAL_US 1000
+#define I40E_FDIR_GTPC_DST_PORT             2123
+#define I40E_FDIR_GTPU_DST_PORT             2152
+#define I40E_FDIR_GTP_VER_FLAG_0X30         0x30
+#define I40E_FDIR_GTP_VER_FLAG_0X32         0x32
+#define I40E_FDIR_GTP_MSG_TYPE_0X01         0x01
+#define I40E_FDIR_GTP_MSG_TYPE_0XFF         0xFF
+
+/* Wait time for fdir filter programming */
+#define I40E_FDIR_MAX_WAIT_US 10000
 
 /* Wait count and interval for fdir filter flush */
 #define I40E_FDIR_FLUSH_RETRY       50
@@ -84,21 +93,6 @@
 #define I40E_COUNTER_PF           2
 /* Statistic counter index for one pf */
 #define I40E_COUNTER_INDEX_FDIR(pf_id)   (0 + (pf_id) * I40E_COUNTER_PF)
-#define I40E_MAX_FLX_SOURCE_OFF           480
-#define I40E_FLX_OFFSET_IN_FIELD_VECTOR   50
-
-#define NONUSE_FLX_PIT_DEST_OFF 63
-#define NONUSE_FLX_PIT_FSIZE    1
-#define MK_FLX_PIT(src_offset, fsize, dst_offset) ( \
-	(((src_offset) << I40E_PRTQF_FLX_PIT_SOURCE_OFF_SHIFT) & \
-		I40E_PRTQF_FLX_PIT_SOURCE_OFF_MASK) | \
-	(((fsize) << I40E_PRTQF_FLX_PIT_FSIZE_SHIFT) & \
-			I40E_PRTQF_FLX_PIT_FSIZE_MASK) | \
-	((((dst_offset) == NONUSE_FLX_PIT_DEST_OFF ? \
-			NONUSE_FLX_PIT_DEST_OFF : \
-			((dst_offset) + I40E_FLX_OFFSET_IN_FIELD_VECTOR)) << \
-			I40E_PRTQF_FLX_PIT_DEST_OFF_SHIFT) & \
-			I40E_PRTQF_FLX_PIT_DEST_OFF_MASK))
 
 #define I40E_FDIR_FLOWS ( \
 	(1 << RTE_ETH_FLOW_FRAG_IPV4) | \
@@ -113,13 +107,22 @@
 	(1 << RTE_ETH_FLOW_NONFRAG_IPV6_OTHER) | \
 	(1 << RTE_ETH_FLOW_L2_PAYLOAD))
 
-#define I40E_FLEX_WORD_MASK(off) (0x80 >> (off))
-
 static int i40e_fdir_filter_programming(struct i40e_pf *pf,
 			enum i40e_filter_pctype pctype,
 			const struct rte_eth_fdir_filter *filter,
 			bool add);
-static int i40e_fdir_flush(struct rte_eth_dev *dev);
+static int i40e_fdir_filter_convert(const struct i40e_fdir_filter_conf *input,
+			 struct i40e_fdir_filter *filter);
+static struct i40e_fdir_filter *
+i40e_sw_fdir_filter_lookup(struct i40e_fdir_info *fdir_info,
+			const struct i40e_fdir_input *input);
+static int i40e_sw_fdir_filter_insert(struct i40e_pf *pf,
+				   struct i40e_fdir_filter *filter);
+static int
+i40e_flow_fdir_filter_programming(struct i40e_pf *pf,
+				  enum i40e_filter_pctype pctype,
+				  const struct i40e_fdir_filter_conf *filter,
+				  bool add);
 
 static int
 i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
@@ -165,7 +168,6 @@ i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
 
 	rte_wmb();
 	/* Init the RX tail regieter. */
-	I40E_PCI_REG_WRITE(rxq->qrx_tail, 0);
 	I40E_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
 
 	return err;
@@ -251,7 +253,7 @@ i40e_fdir_setup(struct i40e_pf *pf)
 
 	/* reserve memory for the fdir programming packet */
 	snprintf(z_name, sizeof(z_name), "%s_%s_%d",
-			eth_dev->driver->pci_drv.name,
+			eth_dev->device->driver->name,
 			I40E_FDIR_MZ_NAME,
 			eth_dev->data->port_id);
 	mz = i40e_memzone_reserve(z_name, I40E_FDIR_PKT_LEN, SOCKET_ID_ANY);
@@ -262,7 +264,7 @@ i40e_fdir_setup(struct i40e_pf *pf)
 		goto fail_mem;
 	}
 	pf->fdir.prg_pkt = mz->addr;
-	pf->fdir.dma_addr = rte_mem_phy2mch(mz->memseg_id, mz->phys_addr);
+	pf->fdir.dma_addr = mz->iova;
 
 	pf->fdir.match_counter_index = I40E_COUNTER_INDEX_FDIR(hw->pf_id);
 	PMD_DRV_LOG(INFO, "FDIR setup successfully, with programming queue %u.",
@@ -294,8 +296,12 @@ i40e_fdir_teardown(struct i40e_pf *pf)
 	vsi = pf->fdir.fdir_vsi;
 	if (!vsi)
 		return;
-	i40e_switch_tx_queue(hw, vsi->base_queue, FALSE);
-	i40e_switch_rx_queue(hw, vsi->base_queue, FALSE);
+	int err = i40e_switch_tx_queue(hw, vsi->base_queue, FALSE);
+	if (err)
+		PMD_DRV_LOG(DEBUG, "Failed to do FDIR TX switch off");
+	err = i40e_switch_rx_queue(hw, vsi->base_queue, FALSE);
+	if (err)
+		PMD_DRV_LOG(DEBUG, "Failed to do FDIR RX switch off");
 	i40e_dev_rx_queue_release(pf->fdir.rxq);
 	pf->fdir.rxq = NULL;
 	i40e_dev_tx_queue_release(pf->fdir.txq);
@@ -332,6 +338,7 @@ i40e_init_flx_pld(struct i40e_pf *pf)
 	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
 	uint8_t pctype;
 	int i, index;
+	uint16_t flow_type;
 
 	/*
 	 * Define the bytes stream extracted as flexible payload in
@@ -353,7 +360,9 @@ i40e_init_flx_pld(struct i40e_pf *pf)
 	/* initialize the masks */
 	for (pctype = I40E_FILTER_PCTYPE_NONF_IPV4_UDP;
 	     pctype <= I40E_FILTER_PCTYPE_L2_PAYLOAD; pctype++) {
-		if (!I40E_VALID_PCTYPE((enum i40e_filter_pctype)pctype))
+		flow_type = i40e_pctype_to_flowtype(pf->adapter, pctype);
+
+		if (flow_type == RTE_ETH_FLOW_UNKNOWN)
 			continue;
 		pf->fdir.flex_mask[pctype].word_mask = 0;
 		i40e_write_rx_ctl(hw, I40E_PRTQF_FD_FLXINSET(pctype), 0);
@@ -364,8 +373,6 @@ i40e_init_flx_pld(struct i40e_pf *pf)
 		}
 	}
 }
-
-#define I40E_WORD(hi, lo) (uint16_t)((((hi) << 8) & 0xFF00) | ((lo) & 0xFF))
 
 #define I40E_VALIDATE_FLEX_PIT(flex_pit1, flex_pit2) do { \
 	if ((flex_pit2).src_offset < \
@@ -453,7 +460,8 @@ i40e_check_fdir_flex_payload(const struct rte_eth_flex_payload_cfg *flex_cfg)
  * arguments are valid
  */
 static int
-i40e_check_fdir_flex_conf(const struct rte_eth_fdir_flex_conf *conf)
+i40e_check_fdir_flex_conf(const struct i40e_adapter *adapter,
+			  const struct rte_eth_fdir_flex_conf *conf)
 {
 	const struct rte_eth_flex_payload_cfg *flex_cfg;
 	const struct rte_eth_fdir_flex_mask *flex_mask;
@@ -461,6 +469,7 @@ i40e_check_fdir_flex_conf(const struct rte_eth_fdir_flex_conf *conf)
 	uint8_t nb_bitmask;
 	uint16_t i, j;
 	int ret = 0;
+	enum i40e_filter_pctype pctype;
 
 	if (conf == NULL) {
 		PMD_DRV_LOG(INFO, "NULL pointer.");
@@ -491,7 +500,8 @@ i40e_check_fdir_flex_conf(const struct rte_eth_fdir_flex_conf *conf)
 	}
 	for (i = 0; i < conf->nb_flexmasks; i++) {
 		flex_mask = &conf->flex_mask[i];
-		if (!I40E_VALID_FLOW(flex_mask->flow_type)) {
+		pctype = i40e_flowtype_to_pctype(adapter, flex_mask->flow_type);
+		if (pctype == I40E_FILTER_PCTYPE_INVALID) {
 			PMD_DRV_LOG(WARNING, "invalid flow type.");
 			return -EINVAL;
 		}
@@ -654,18 +664,36 @@ i40e_fdir_configure(struct rte_eth_dev *dev)
 	i40e_init_flx_pld(pf); /* set flex config to default value */
 
 	conf = &dev->data->dev_conf.fdir_conf.flex_conf;
-	ret = i40e_check_fdir_flex_conf(conf);
+	ret = i40e_check_fdir_flex_conf(pf->adapter, conf);
 	if (ret < 0) {
 		PMD_DRV_LOG(ERR, " invalid configuration arguments.");
 		return -EINVAL;
 	}
-	/* configure flex payload */
-	for (i = 0; i < conf->nb_payloads; i++)
-		i40e_set_flx_pld_cfg(pf, &conf->flex_set[i]);
-	/* configure flex mask*/
-	for (i = 0; i < conf->nb_flexmasks; i++) {
-		pctype = i40e_flowtype_to_pctype(conf->flex_mask[i].flow_type);
-		i40e_set_flex_mask_on_pctype(pf, pctype, &conf->flex_mask[i]);
+
+	if (!pf->support_multi_driver) {
+		/* configure flex payload */
+		for (i = 0; i < conf->nb_payloads; i++)
+			i40e_set_flx_pld_cfg(pf, &conf->flex_set[i]);
+		/* configure flex mask*/
+		for (i = 0; i < conf->nb_flexmasks; i++) {
+			if (hw->mac.type == I40E_MAC_X722) {
+				/* get pctype value in fd pctype register */
+				pctype = (enum i40e_filter_pctype)
+					  i40e_read_rx_ctl(hw,
+						I40E_GLQF_FD_PCTYPES(
+						(int)i40e_flowtype_to_pctype(
+						pf->adapter,
+						conf->flex_mask[i].flow_type)));
+			} else {
+				pctype = i40e_flowtype_to_pctype(pf->adapter,
+						  conf->flex_mask[i].flow_type);
+			}
+
+			i40e_set_flex_mask_on_pctype(pf, pctype,
+						     &conf->flex_mask[i]);
+		}
+	} else {
+		PMD_DRV_LOG(ERR, "Not support flexible payload.");
 	}
 
 	return ret;
@@ -921,6 +949,358 @@ i40e_fdir_construct_pkt(struct i40e_pf *pf,
 		dst = pf->fdir.flex_set[pit_idx].dst_offset * sizeof(uint16_t);
 		ptr = payload +
 			pf->fdir.flex_set[pit_idx].src_offset * sizeof(uint16_t);
+		rte_memcpy(ptr,
+				 &fdir_input->flow_ext.flexbytes[dst],
+				 size * sizeof(uint16_t));
+	}
+
+	return 0;
+}
+
+static struct i40e_customized_pctype *
+i40e_flow_fdir_find_customized_pctype(struct i40e_pf *pf, uint8_t pctype)
+{
+	struct i40e_customized_pctype *cus_pctype;
+	enum i40e_new_pctype i = I40E_CUSTOMIZED_GTPC;
+
+	for (; i < I40E_CUSTOMIZED_MAX; i++) {
+		cus_pctype = &pf->customized_pctype[i];
+		if (pctype == cus_pctype->pctype)
+			return cus_pctype;
+	}
+	return NULL;
+}
+
+static inline int
+i40e_flow_fdir_fill_eth_ip_head(struct i40e_pf *pf,
+				const struct i40e_fdir_input *fdir_input,
+				unsigned char *raw_pkt,
+				bool vlan)
+{
+	struct i40e_customized_pctype *cus_pctype = NULL;
+	static uint8_t vlan_frame[] = {0x81, 0, 0, 0};
+	uint16_t *ether_type;
+	uint8_t len = 2 * sizeof(struct ether_addr);
+	struct ipv4_hdr *ip;
+	struct ipv6_hdr *ip6;
+	uint8_t pctype = fdir_input->pctype;
+	bool is_customized_pctype = fdir_input->flow_ext.customized_pctype;
+	static const uint8_t next_proto[] = {
+		[I40E_FILTER_PCTYPE_FRAG_IPV4] = IPPROTO_IP,
+		[I40E_FILTER_PCTYPE_NONF_IPV4_TCP] = IPPROTO_TCP,
+		[I40E_FILTER_PCTYPE_NONF_IPV4_UDP] = IPPROTO_UDP,
+		[I40E_FILTER_PCTYPE_NONF_IPV4_SCTP] = IPPROTO_SCTP,
+		[I40E_FILTER_PCTYPE_NONF_IPV4_OTHER] = IPPROTO_IP,
+		[I40E_FILTER_PCTYPE_FRAG_IPV6] = IPPROTO_NONE,
+		[I40E_FILTER_PCTYPE_NONF_IPV6_TCP] = IPPROTO_TCP,
+		[I40E_FILTER_PCTYPE_NONF_IPV6_UDP] = IPPROTO_UDP,
+		[I40E_FILTER_PCTYPE_NONF_IPV6_SCTP] = IPPROTO_SCTP,
+		[I40E_FILTER_PCTYPE_NONF_IPV6_OTHER] = IPPROTO_NONE,
+	};
+
+	raw_pkt += 2 * sizeof(struct ether_addr);
+	if (vlan && fdir_input->flow_ext.vlan_tci) {
+		rte_memcpy(raw_pkt, vlan_frame, sizeof(vlan_frame));
+		rte_memcpy(raw_pkt + sizeof(uint16_t),
+			   &fdir_input->flow_ext.vlan_tci,
+			   sizeof(uint16_t));
+		raw_pkt += sizeof(vlan_frame);
+		len += sizeof(vlan_frame);
+	}
+	ether_type = (uint16_t *)raw_pkt;
+	raw_pkt += sizeof(uint16_t);
+	len += sizeof(uint16_t);
+
+	if (is_customized_pctype) {
+		cus_pctype = i40e_flow_fdir_find_customized_pctype(pf, pctype);
+		if (!cus_pctype) {
+			PMD_DRV_LOG(ERR, "unknown pctype %u.",
+				    fdir_input->pctype);
+			return -1;
+		}
+	}
+
+	if (pctype == I40E_FILTER_PCTYPE_L2_PAYLOAD)
+		*ether_type = fdir_input->flow.l2_flow.ether_type;
+	else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV4_TCP ||
+		 pctype == I40E_FILTER_PCTYPE_NONF_IPV4_UDP ||
+		 pctype == I40E_FILTER_PCTYPE_NONF_IPV4_SCTP ||
+		 pctype == I40E_FILTER_PCTYPE_NONF_IPV4_OTHER ||
+		 pctype == I40E_FILTER_PCTYPE_FRAG_IPV4 ||
+		 is_customized_pctype) {
+		ip = (struct ipv4_hdr *)raw_pkt;
+
+		*ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		ip->version_ihl = I40E_FDIR_IP_DEFAULT_VERSION_IHL;
+		/* set len to by default */
+		ip->total_length = rte_cpu_to_be_16(I40E_FDIR_IP_DEFAULT_LEN);
+		ip->time_to_live = fdir_input->flow.ip4_flow.ttl ?
+			fdir_input->flow.ip4_flow.ttl :
+			I40E_FDIR_IP_DEFAULT_TTL;
+		ip->type_of_service = fdir_input->flow.ip4_flow.tos;
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		ip->src_addr = fdir_input->flow.ip4_flow.dst_ip;
+		ip->dst_addr = fdir_input->flow.ip4_flow.src_ip;
+
+		if (!is_customized_pctype)
+			ip->next_proto_id = fdir_input->flow.ip4_flow.proto ?
+				fdir_input->flow.ip4_flow.proto :
+				next_proto[fdir_input->pctype];
+		else if (cus_pctype->index == I40E_CUSTOMIZED_GTPC ||
+			 cus_pctype->index == I40E_CUSTOMIZED_GTPU_IPV4 ||
+			 cus_pctype->index == I40E_CUSTOMIZED_GTPU_IPV6 ||
+			 cus_pctype->index == I40E_CUSTOMIZED_GTPU)
+			ip->next_proto_id = IPPROTO_UDP;
+		len += sizeof(struct ipv4_hdr);
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV6_TCP ||
+		   pctype == I40E_FILTER_PCTYPE_NONF_IPV6_UDP ||
+		   pctype == I40E_FILTER_PCTYPE_NONF_IPV6_SCTP ||
+		   pctype == I40E_FILTER_PCTYPE_NONF_IPV6_OTHER ||
+		   pctype == I40E_FILTER_PCTYPE_FRAG_IPV6) {
+		ip6 = (struct ipv6_hdr *)raw_pkt;
+
+		*ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		ip6->vtc_flow =
+			rte_cpu_to_be_32(I40E_FDIR_IPv6_DEFAULT_VTC_FLOW |
+					 (fdir_input->flow.ipv6_flow.tc <<
+					  I40E_FDIR_IPv6_TC_OFFSET));
+		ip6->payload_len =
+			rte_cpu_to_be_16(I40E_FDIR_IPv6_PAYLOAD_LEN);
+		ip6->proto = fdir_input->flow.ipv6_flow.proto ?
+			fdir_input->flow.ipv6_flow.proto :
+			next_proto[fdir_input->pctype];
+		ip6->hop_limits = fdir_input->flow.ipv6_flow.hop_limits ?
+			fdir_input->flow.ipv6_flow.hop_limits :
+			I40E_FDIR_IPv6_DEFAULT_HOP_LIMITS;
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		rte_memcpy(&ip6->src_addr,
+			   &fdir_input->flow.ipv6_flow.dst_ip,
+			   IPV6_ADDR_LEN);
+		rte_memcpy(&ip6->dst_addr,
+			   &fdir_input->flow.ipv6_flow.src_ip,
+			   IPV6_ADDR_LEN);
+		len += sizeof(struct ipv6_hdr);
+	} else {
+		PMD_DRV_LOG(ERR, "unknown pctype %u.",
+			    fdir_input->pctype);
+		return -1;
+	}
+
+	return len;
+}
+
+/**
+ * i40e_flow_fdir_construct_pkt - construct packet based on fields in input
+ * @pf: board private structure
+ * @fdir_input: input set of the flow director entry
+ * @raw_pkt: a packet to be constructed
+ */
+static int
+i40e_flow_fdir_construct_pkt(struct i40e_pf *pf,
+			     const struct i40e_fdir_input *fdir_input,
+			     unsigned char *raw_pkt)
+{
+	unsigned char *payload = NULL;
+	unsigned char *ptr;
+	struct udp_hdr *udp;
+	struct tcp_hdr *tcp;
+	struct sctp_hdr *sctp;
+	struct rte_flow_item_gtp *gtp;
+	struct ipv4_hdr *gtp_ipv4;
+	struct ipv6_hdr *gtp_ipv6;
+	uint8_t size, dst = 0;
+	uint8_t i, pit_idx, set_idx = I40E_FLXPLD_L4_IDX; /* use l4 by default*/
+	int len;
+	uint8_t pctype = fdir_input->pctype;
+	struct i40e_customized_pctype *cus_pctype;
+
+	/* raw pcket template - just copy contents of the raw packet */
+	if (fdir_input->flow_ext.pkt_template) {
+		memcpy(raw_pkt, fdir_input->flow.raw_flow.packet,
+		       fdir_input->flow.raw_flow.length);
+		return 0;
+	}
+
+	/* fill the ethernet and IP head */
+	len = i40e_flow_fdir_fill_eth_ip_head(pf, fdir_input, raw_pkt,
+					      !!fdir_input->flow_ext.vlan_tci);
+	if (len < 0)
+		return -EINVAL;
+
+	/* fill the L4 head */
+	if (pctype == I40E_FILTER_PCTYPE_NONF_IPV4_UDP) {
+		udp = (struct udp_hdr *)(raw_pkt + len);
+		payload = (unsigned char *)udp + sizeof(struct udp_hdr);
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		udp->src_port = fdir_input->flow.udp4_flow.dst_port;
+		udp->dst_port = fdir_input->flow.udp4_flow.src_port;
+		udp->dgram_len = rte_cpu_to_be_16(I40E_FDIR_UDP_DEFAULT_LEN);
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV4_TCP) {
+		tcp = (struct tcp_hdr *)(raw_pkt + len);
+		payload = (unsigned char *)tcp + sizeof(struct tcp_hdr);
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		tcp->src_port = fdir_input->flow.tcp4_flow.dst_port;
+		tcp->dst_port = fdir_input->flow.tcp4_flow.src_port;
+		tcp->data_off = I40E_FDIR_TCP_DEFAULT_DATAOFF;
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV4_SCTP) {
+		sctp = (struct sctp_hdr *)(raw_pkt + len);
+		payload = (unsigned char *)sctp + sizeof(struct sctp_hdr);
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		sctp->src_port = fdir_input->flow.sctp4_flow.dst_port;
+		sctp->dst_port = fdir_input->flow.sctp4_flow.src_port;
+		sctp->tag = fdir_input->flow.sctp4_flow.verify_tag;
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV4_OTHER ||
+		   pctype == I40E_FILTER_PCTYPE_FRAG_IPV4) {
+		payload = raw_pkt + len;
+		set_idx = I40E_FLXPLD_L3_IDX;
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV6_UDP) {
+		udp = (struct udp_hdr *)(raw_pkt + len);
+		payload = (unsigned char *)udp + sizeof(struct udp_hdr);
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		udp->src_port = fdir_input->flow.udp6_flow.dst_port;
+		udp->dst_port = fdir_input->flow.udp6_flow.src_port;
+		udp->dgram_len = rte_cpu_to_be_16(I40E_FDIR_IPv6_PAYLOAD_LEN);
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV6_TCP) {
+		tcp = (struct tcp_hdr *)(raw_pkt + len);
+		payload = (unsigned char *)tcp + sizeof(struct tcp_hdr);
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		tcp->data_off = I40E_FDIR_TCP_DEFAULT_DATAOFF;
+		tcp->src_port = fdir_input->flow.udp6_flow.dst_port;
+		tcp->dst_port = fdir_input->flow.udp6_flow.src_port;
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV6_SCTP) {
+		sctp = (struct sctp_hdr *)(raw_pkt + len);
+		payload = (unsigned char *)sctp + sizeof(struct sctp_hdr);
+		/**
+		 * The source and destination fields in the transmitted packet
+		 * need to be presented in a reversed order with respect
+		 * to the expected received packets.
+		 */
+		sctp->src_port = fdir_input->flow.sctp6_flow.dst_port;
+		sctp->dst_port = fdir_input->flow.sctp6_flow.src_port;
+		sctp->tag = fdir_input->flow.sctp6_flow.verify_tag;
+	} else if (pctype == I40E_FILTER_PCTYPE_NONF_IPV6_OTHER ||
+		   pctype == I40E_FILTER_PCTYPE_FRAG_IPV6) {
+		payload = raw_pkt + len;
+		set_idx = I40E_FLXPLD_L3_IDX;
+	} else if (pctype == I40E_FILTER_PCTYPE_L2_PAYLOAD) {
+		payload = raw_pkt + len;
+		/**
+		 * ARP packet is a special case on which the payload
+		 * starts after the whole ARP header
+		 */
+		if (fdir_input->flow.l2_flow.ether_type ==
+				rte_cpu_to_be_16(ETHER_TYPE_ARP))
+			payload += sizeof(struct arp_hdr);
+		set_idx = I40E_FLXPLD_L2_IDX;
+	} else if (fdir_input->flow_ext.customized_pctype) {
+		/* If customized pctype is used */
+		cus_pctype = i40e_flow_fdir_find_customized_pctype(pf, pctype);
+		if (cus_pctype->index == I40E_CUSTOMIZED_GTPC ||
+		    cus_pctype->index == I40E_CUSTOMIZED_GTPU_IPV4 ||
+		    cus_pctype->index == I40E_CUSTOMIZED_GTPU_IPV6 ||
+		    cus_pctype->index == I40E_CUSTOMIZED_GTPU) {
+			udp = (struct udp_hdr *)(raw_pkt + len);
+			udp->dgram_len =
+				rte_cpu_to_be_16(I40E_FDIR_UDP_DEFAULT_LEN);
+
+			gtp = (struct rte_flow_item_gtp *)
+				((unsigned char *)udp + sizeof(struct udp_hdr));
+			gtp->msg_len =
+				rte_cpu_to_be_16(I40E_FDIR_GTP_DEFAULT_LEN);
+			gtp->teid = fdir_input->flow.gtp_flow.teid;
+			gtp->msg_type = I40E_FDIR_GTP_MSG_TYPE_0X01;
+
+			/* GTP-C message type is not supported. */
+			if (cus_pctype->index == I40E_CUSTOMIZED_GTPC) {
+				udp->dst_port =
+				      rte_cpu_to_be_16(I40E_FDIR_GTPC_DST_PORT);
+				gtp->v_pt_rsv_flags =
+					I40E_FDIR_GTP_VER_FLAG_0X32;
+			} else {
+				udp->dst_port =
+				      rte_cpu_to_be_16(I40E_FDIR_GTPU_DST_PORT);
+				gtp->v_pt_rsv_flags =
+					I40E_FDIR_GTP_VER_FLAG_0X30;
+			}
+
+			if (cus_pctype->index == I40E_CUSTOMIZED_GTPU_IPV4) {
+				gtp->msg_type = I40E_FDIR_GTP_MSG_TYPE_0XFF;
+				gtp_ipv4 = (struct ipv4_hdr *)
+					((unsigned char *)gtp +
+					 sizeof(struct rte_flow_item_gtp));
+				gtp_ipv4->version_ihl =
+					I40E_FDIR_IP_DEFAULT_VERSION_IHL;
+				gtp_ipv4->next_proto_id = IPPROTO_IP;
+				gtp_ipv4->total_length =
+					rte_cpu_to_be_16(
+						I40E_FDIR_INNER_IP_DEFAULT_LEN);
+				payload = (unsigned char *)gtp_ipv4 +
+					sizeof(struct ipv4_hdr);
+			} else if (cus_pctype->index ==
+				   I40E_CUSTOMIZED_GTPU_IPV6) {
+				gtp->msg_type = I40E_FDIR_GTP_MSG_TYPE_0XFF;
+				gtp_ipv6 = (struct ipv6_hdr *)
+					((unsigned char *)gtp +
+					 sizeof(struct rte_flow_item_gtp));
+				gtp_ipv6->vtc_flow =
+					rte_cpu_to_be_32(
+					       I40E_FDIR_IPv6_DEFAULT_VTC_FLOW |
+					       (0 << I40E_FDIR_IPv6_TC_OFFSET));
+				gtp_ipv6->proto = IPPROTO_NONE;
+				gtp_ipv6->payload_len =
+					rte_cpu_to_be_16(
+					      I40E_FDIR_INNER_IPV6_DEFAULT_LEN);
+				gtp_ipv6->hop_limits =
+					I40E_FDIR_IPv6_DEFAULT_HOP_LIMITS;
+				payload = (unsigned char *)gtp_ipv6 +
+					sizeof(struct ipv6_hdr);
+			} else
+				payload = (unsigned char *)gtp +
+					sizeof(struct rte_flow_item_gtp);
+		}
+	} else {
+		PMD_DRV_LOG(ERR, "unknown pctype %u.",
+			    fdir_input->pctype);
+		return -1;
+	}
+
+	/* fill the flexbytes to payload */
+	for (i = 0; i < I40E_MAX_FLXPLD_FIED; i++) {
+		pit_idx = set_idx * I40E_MAX_FLXPLD_FIED + i;
+		size = pf->fdir.flex_set[pit_idx].size;
+		if (size == 0)
+			continue;
+		dst = pf->fdir.flex_set[pit_idx].dst_offset * sizeof(uint16_t);
+		ptr = payload +
+		      pf->fdir.flex_set[pit_idx].src_offset * sizeof(uint16_t);
 		(void)rte_memcpy(ptr,
 				 &fdir_input->flow_ext.flexbytes[dst],
 				 size * sizeof(uint16_t));
@@ -991,14 +1371,110 @@ i40e_check_fdir_programming_status(struct i40e_rx_queue *rxq)
 				PMD_DRV_LOG(ERR, "invalid programming status"
 					    " reported, error = %u.", error);
 		} else
-			PMD_DRV_LOG(ERR, "unknown programming status"
+			PMD_DRV_LOG(INFO, "unknown programming status"
 				    " reported, len = %d, id = %u.", len, id);
 		rxdp->wb.qword1.status_error_len = 0;
 		rxq->rx_tail++;
 		if (unlikely(rxq->rx_tail == rxq->nb_rx_desc))
 			rxq->rx_tail = 0;
+		if (rxq->rx_tail == 0)
+			I40E_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
+		else
+			I40E_PCI_REG_WRITE(rxq->qrx_tail, rxq->rx_tail - 1);
 	}
+
 	return ret;
+}
+
+static int
+i40e_fdir_filter_convert(const struct i40e_fdir_filter_conf *input,
+			 struct i40e_fdir_filter *filter)
+{
+	rte_memcpy(&filter->fdir, input, sizeof(struct i40e_fdir_filter_conf));
+	if (input->input.flow_ext.pkt_template) {
+		filter->fdir.input.flow.raw_flow.packet = NULL;
+		filter->fdir.input.flow.raw_flow.length =
+			rte_hash_crc(input->input.flow.raw_flow.packet,
+				     input->input.flow.raw_flow.length,
+				     input->input.flow.raw_flow.pctype);
+	}
+	return 0;
+}
+
+/* Check if there exists the flow director filter */
+static struct i40e_fdir_filter *
+i40e_sw_fdir_filter_lookup(struct i40e_fdir_info *fdir_info,
+			const struct i40e_fdir_input *input)
+{
+	int ret;
+
+	if (input->flow_ext.pkt_template)
+		ret = rte_hash_lookup_with_hash(fdir_info->hash_table,
+						(const void *)input,
+						input->flow.raw_flow.length);
+	else
+		ret = rte_hash_lookup(fdir_info->hash_table,
+				      (const void *)input);
+	if (ret < 0)
+		return NULL;
+
+	return fdir_info->hash_map[ret];
+}
+
+/* Add a flow director filter into the SW list */
+static int
+i40e_sw_fdir_filter_insert(struct i40e_pf *pf, struct i40e_fdir_filter *filter)
+{
+	struct i40e_fdir_info *fdir_info = &pf->fdir;
+	int ret;
+
+	if (filter->fdir.input.flow_ext.pkt_template)
+		ret = rte_hash_add_key_with_hash(fdir_info->hash_table,
+				 &filter->fdir.input,
+				 filter->fdir.input.flow.raw_flow.length);
+	else
+		ret = rte_hash_add_key(fdir_info->hash_table,
+				       &filter->fdir.input);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to insert fdir filter to hash table %d!",
+			    ret);
+		return ret;
+	}
+	fdir_info->hash_map[ret] = filter;
+
+	TAILQ_INSERT_TAIL(&fdir_info->fdir_list, filter, rules);
+
+	return 0;
+}
+
+/* Delete a flow director filter from the SW list */
+int
+i40e_sw_fdir_filter_del(struct i40e_pf *pf, struct i40e_fdir_input *input)
+{
+	struct i40e_fdir_info *fdir_info = &pf->fdir;
+	struct i40e_fdir_filter *filter;
+	int ret;
+
+	if (input->flow_ext.pkt_template)
+		ret = rte_hash_del_key_with_hash(fdir_info->hash_table,
+						 input,
+						 input->flow.raw_flow.length);
+	else
+		ret = rte_hash_del_key(fdir_info->hash_table, input);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to delete fdir filter to hash table %d!",
+			    ret);
+		return ret;
+	}
+	filter = fdir_info->hash_map[ret];
+	fdir_info->hash_map[ret] = NULL;
+
+	TAILQ_REMOVE(&fdir_info->fdir_list, filter, rules);
+	rte_free(filter);
+
+	return 0;
 }
 
 /*
@@ -1007,11 +1483,12 @@ i40e_check_fdir_programming_status(struct i40e_rx_queue *rxq)
  * @filter: fdir filter entry
  * @add: 0 - delete, 1 - add
  */
-static int
+int
 i40e_add_del_fdir_filter(struct rte_eth_dev *dev,
-			    const struct rte_eth_fdir_filter *filter,
-			    bool add)
+			 const struct rte_eth_fdir_filter *filter,
+			 bool add)
 {
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	unsigned char *pkt = (unsigned char *)pf->fdir.prg_pkt;
 	enum i40e_filter_pctype pctype;
@@ -1023,7 +1500,8 @@ i40e_add_del_fdir_filter(struct rte_eth_dev *dev,
 		return -ENOTSUP;
 	}
 
-	if (!I40E_VALID_FLOW(filter->input.flow_type)) {
+	pctype = i40e_flowtype_to_pctype(pf->adapter, filter->input.flow_type);
+	if (pctype == I40E_FILTER_PCTYPE_INVALID) {
 		PMD_DRV_LOG(ERR, "invalid flow_type input.");
 		return -EINVAL;
 	}
@@ -1044,13 +1522,122 @@ i40e_add_del_fdir_filter(struct rte_eth_dev *dev,
 		PMD_DRV_LOG(ERR, "construct packet for fdir fails.");
 		return ret;
 	}
-	pctype = i40e_flowtype_to_pctype(filter->input.flow_type);
+
+	if (hw->mac.type == I40E_MAC_X722) {
+		/* get translated pctype value in fd pctype register */
+		pctype = (enum i40e_filter_pctype)i40e_read_rx_ctl(
+			hw, I40E_GLQF_FD_PCTYPES((int)pctype));
+	}
+
 	ret = i40e_fdir_filter_programming(pf, pctype, filter, add);
 	if (ret < 0) {
 		PMD_DRV_LOG(ERR, "fdir programming fails for PCTYPE(%u).",
 			    pctype);
 		return ret;
 	}
+
+	return ret;
+}
+
+/**
+ * i40e_flow_add_del_fdir_filter - add or remove a flow director filter.
+ * @pf: board private structure
+ * @filter: fdir filter entry
+ * @add: 0 - delete, 1 - add
+ */
+int
+i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
+			      const struct i40e_fdir_filter_conf *filter,
+			      bool add)
+{
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	unsigned char *pkt = (unsigned char *)pf->fdir.prg_pkt;
+	enum i40e_filter_pctype pctype;
+	struct i40e_fdir_info *fdir_info = &pf->fdir;
+	struct i40e_fdir_filter *fdir_filter, *node;
+	struct i40e_fdir_filter check_filter; /* Check if the filter exists */
+	int ret = 0;
+
+	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_PERFECT) {
+		PMD_DRV_LOG(ERR, "FDIR is not enabled, please check the mode in fdir_conf.");
+		return -ENOTSUP;
+	}
+
+	if (filter->action.rx_queue >= pf->dev_data->nb_rx_queues) {
+		PMD_DRV_LOG(ERR, "Invalid queue ID");
+		return -EINVAL;
+	}
+	if (filter->input.flow_ext.is_vf &&
+	    filter->input.flow_ext.dst_id >= pf->vf_num) {
+		PMD_DRV_LOG(ERR, "Invalid VF ID");
+		return -EINVAL;
+	}
+	if (filter->input.flow_ext.pkt_template) {
+		if (filter->input.flow.raw_flow.length > I40E_FDIR_PKT_LEN ||
+		    !filter->input.flow.raw_flow.packet) {
+			PMD_DRV_LOG(ERR, "Invalid raw packet template"
+				" flow filter parameters!");
+			return -EINVAL;
+		}
+		pctype = filter->input.flow.raw_flow.pctype;
+	} else {
+		pctype = filter->input.pctype;
+	}
+
+	/* Check if there is the filter in SW list */
+	memset(&check_filter, 0, sizeof(check_filter));
+	i40e_fdir_filter_convert(filter, &check_filter);
+	node = i40e_sw_fdir_filter_lookup(fdir_info, &check_filter.fdir.input);
+	if (add && node) {
+		PMD_DRV_LOG(ERR,
+			    "Conflict with existing flow director rules!");
+		return -EINVAL;
+	}
+
+	if (!add && !node) {
+		PMD_DRV_LOG(ERR,
+			    "There's no corresponding flow firector filter!");
+		return -EINVAL;
+	}
+
+	memset(pkt, 0, I40E_FDIR_PKT_LEN);
+
+	ret = i40e_flow_fdir_construct_pkt(pf, &filter->input, pkt);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "construct packet for fdir fails.");
+		return ret;
+	}
+
+	if (hw->mac.type == I40E_MAC_X722) {
+		/* get translated pctype value in fd pctype register */
+		pctype = (enum i40e_filter_pctype)i40e_read_rx_ctl(
+			hw, I40E_GLQF_FD_PCTYPES((int)pctype));
+	}
+
+	ret = i40e_flow_fdir_filter_programming(pf, pctype, filter, add);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "fdir programming fails for PCTYPE(%u).",
+			    pctype);
+		return ret;
+	}
+
+	if (add) {
+		fdir_filter = rte_zmalloc("fdir_filter",
+					  sizeof(*fdir_filter), 0);
+		if (fdir_filter == NULL) {
+			PMD_DRV_LOG(ERR, "Failed to alloc memory.");
+			return -ENOMEM;
+		}
+
+		rte_memcpy(fdir_filter, &check_filter, sizeof(check_filter));
+		ret = i40e_sw_fdir_filter_insert(pf, fdir_filter);
+		if (ret < 0)
+			rte_free(fdir_filter);
+	} else {
+		ret = i40e_sw_fdir_filter_del(pf, &node->fdir.input);
+	}
+
 	return ret;
 }
 
@@ -1166,25 +1753,158 @@ i40e_fdir_filter_programming(struct i40e_pf *pf,
 	/* Update the tx tail register */
 	rte_wmb();
 	I40E_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
-
-	for (i = 0; i < I40E_FDIR_WAIT_COUNT; i++) {
-		rte_delay_us(I40E_FDIR_WAIT_INTERVAL_US);
+	for (i = 0; i < I40E_FDIR_MAX_WAIT_US; i++) {
 		if ((txdp->cmd_type_offset_bsz &
 				rte_cpu_to_le_64(I40E_TXD_QW1_DTYPE_MASK)) ==
 				rte_cpu_to_le_64(I40E_TX_DESC_DTYPE_DESC_DONE))
 			break;
+		rte_delay_us(1);
 	}
-	if (i >= I40E_FDIR_WAIT_COUNT) {
+	if (i >= I40E_FDIR_MAX_WAIT_US) {
 		PMD_DRV_LOG(ERR, "Failed to program FDIR filter:"
 			    " time out to get DD on tx queue.");
 		return -ETIMEDOUT;
 	}
 	/* totally delay 10 ms to check programming status*/
-	rte_delay_us((I40E_FDIR_WAIT_COUNT - i) * I40E_FDIR_WAIT_INTERVAL_US);
+	for (; i < I40E_FDIR_MAX_WAIT_US; i++) {
+		if (i40e_check_fdir_programming_status(rxq) >= 0)
+			return 0;
+		rte_delay_us(1);
+	}
+	PMD_DRV_LOG(ERR,
+		"Failed to program FDIR filter: programming status reported.");
+	return -ETIMEDOUT;
+}
+
+/*
+ * i40e_flow_fdir_filter_programming - Program a flow director filter rule.
+ * Is done by Flow Director Programming Descriptor followed by packet
+ * structure that contains the filter fields need to match.
+ * @pf: board private structure
+ * @pctype: pctype
+ * @filter: fdir filter entry
+ * @add: 0 - delete, 1 - add
+ */
+static int
+i40e_flow_fdir_filter_programming(struct i40e_pf *pf,
+				  enum i40e_filter_pctype pctype,
+				  const struct i40e_fdir_filter_conf *filter,
+				  bool add)
+{
+	struct i40e_tx_queue *txq = pf->fdir.txq;
+	struct i40e_rx_queue *rxq = pf->fdir.rxq;
+	const struct i40e_fdir_action *fdir_action = &filter->action;
+	volatile struct i40e_tx_desc *txdp;
+	volatile struct i40e_filter_program_desc *fdirdp;
+	uint32_t td_cmd;
+	uint16_t vsi_id, i;
+	uint8_t dest;
+
+	PMD_DRV_LOG(INFO, "filling filter programming descriptor.");
+	fdirdp = (volatile struct i40e_filter_program_desc *)
+				(&txq->tx_ring[txq->tx_tail]);
+
+	fdirdp->qindex_flex_ptype_vsi =
+			rte_cpu_to_le_32((fdir_action->rx_queue <<
+					  I40E_TXD_FLTR_QW0_QINDEX_SHIFT) &
+					  I40E_TXD_FLTR_QW0_QINDEX_MASK);
+
+	fdirdp->qindex_flex_ptype_vsi |=
+			rte_cpu_to_le_32((fdir_action->flex_off <<
+					  I40E_TXD_FLTR_QW0_FLEXOFF_SHIFT) &
+					  I40E_TXD_FLTR_QW0_FLEXOFF_MASK);
+
+	fdirdp->qindex_flex_ptype_vsi |=
+			rte_cpu_to_le_32((pctype <<
+					  I40E_TXD_FLTR_QW0_PCTYPE_SHIFT) &
+					  I40E_TXD_FLTR_QW0_PCTYPE_MASK);
+
+	if (filter->input.flow_ext.is_vf)
+		vsi_id = pf->vfs[filter->input.flow_ext.dst_id].vsi->vsi_id;
+	else
+		/* Use LAN VSI Id by default */
+		vsi_id = pf->main_vsi->vsi_id;
+	fdirdp->qindex_flex_ptype_vsi |=
+		rte_cpu_to_le_32(((uint32_t)vsi_id <<
+				  I40E_TXD_FLTR_QW0_DEST_VSI_SHIFT) &
+				  I40E_TXD_FLTR_QW0_DEST_VSI_MASK);
+
+	fdirdp->dtype_cmd_cntindex =
+			rte_cpu_to_le_32(I40E_TX_DESC_DTYPE_FILTER_PROG);
+
+	if (add)
+		fdirdp->dtype_cmd_cntindex |= rte_cpu_to_le_32(
+				I40E_FILTER_PROGRAM_DESC_PCMD_ADD_UPDATE <<
+				I40E_TXD_FLTR_QW1_PCMD_SHIFT);
+	else
+		fdirdp->dtype_cmd_cntindex |= rte_cpu_to_le_32(
+				I40E_FILTER_PROGRAM_DESC_PCMD_REMOVE <<
+				I40E_TXD_FLTR_QW1_PCMD_SHIFT);
+
+	if (fdir_action->behavior == I40E_FDIR_REJECT)
+		dest = I40E_FILTER_PROGRAM_DESC_DEST_DROP_PACKET;
+	else if (fdir_action->behavior == I40E_FDIR_ACCEPT)
+		dest = I40E_FILTER_PROGRAM_DESC_DEST_DIRECT_PACKET_QINDEX;
+	else if (fdir_action->behavior == I40E_FDIR_PASSTHRU)
+		dest = I40E_FILTER_PROGRAM_DESC_DEST_DIRECT_PACKET_OTHER;
+	else {
+		PMD_DRV_LOG(ERR, "Failed to program FDIR filter: unsupported fdir behavior.");
+		return -EINVAL;
+	}
+
+	fdirdp->dtype_cmd_cntindex |= rte_cpu_to_le_32((dest <<
+				I40E_TXD_FLTR_QW1_DEST_SHIFT) &
+				I40E_TXD_FLTR_QW1_DEST_MASK);
+
+	fdirdp->dtype_cmd_cntindex |=
+		rte_cpu_to_le_32((fdir_action->report_status <<
+				I40E_TXD_FLTR_QW1_FD_STATUS_SHIFT) &
+				I40E_TXD_FLTR_QW1_FD_STATUS_MASK);
+
+	fdirdp->dtype_cmd_cntindex |=
+			rte_cpu_to_le_32(I40E_TXD_FLTR_QW1_CNT_ENA_MASK);
+	fdirdp->dtype_cmd_cntindex |=
+			rte_cpu_to_le_32(
+			((uint32_t)pf->fdir.match_counter_index <<
+			I40E_TXD_FLTR_QW1_CNTINDEX_SHIFT) &
+			I40E_TXD_FLTR_QW1_CNTINDEX_MASK);
+
+	fdirdp->fd_id = rte_cpu_to_le_32(filter->soft_id);
+
+	PMD_DRV_LOG(INFO, "filling transmit descriptor.");
+	txdp = &txq->tx_ring[txq->tx_tail + 1];
+	txdp->buffer_addr = rte_cpu_to_le_64(pf->fdir.dma_addr);
+	td_cmd = I40E_TX_DESC_CMD_EOP |
+		 I40E_TX_DESC_CMD_RS  |
+		 I40E_TX_DESC_CMD_DUMMY;
+
+	txdp->cmd_type_offset_bsz =
+		i40e_build_ctob(td_cmd, 0, I40E_FDIR_PKT_LEN, 0);
+
+	txq->tx_tail += 2; /* set 2 descriptors above, fdirdp and txdp */
+	if (txq->tx_tail >= txq->nb_tx_desc)
+		txq->tx_tail = 0;
+	/* Update the tx tail register */
+	rte_wmb();
+	I40E_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	for (i = 0; i < I40E_FDIR_MAX_WAIT_US; i++) {
+		if ((txdp->cmd_type_offset_bsz &
+				rte_cpu_to_le_64(I40E_TXD_QW1_DTYPE_MASK)) ==
+				rte_cpu_to_le_64(I40E_TX_DESC_DTYPE_DESC_DONE))
+			break;
+		rte_delay_us(1);
+	}
+	if (i >= I40E_FDIR_MAX_WAIT_US) {
+		PMD_DRV_LOG(ERR,
+		    "Failed to program FDIR filter: time out to get DD on tx queue.");
+		return -ETIMEDOUT;
+	}
+	/* totally delay 10 ms to check programming status*/
+	rte_delay_us(I40E_FDIR_MAX_WAIT_US);
 	if (i40e_check_fdir_programming_status(rxq) < 0) {
-		PMD_DRV_LOG(ERR, "Failed to program FDIR filter:"
-			    " programming status reported.");
-		return -ENOSYS;
+		PMD_DRV_LOG(ERR,
+		    "Failed to program FDIR filter: programming status reported.");
+		return -ETIMEDOUT;
 	}
 
 	return 0;
@@ -1194,7 +1914,7 @@ i40e_fdir_filter_programming(struct i40e_pf *pf,
  * i40e_fdir_flush - clear all filters of Flow Director table
  * @pf: board private structure
  */
-static int
+int
 i40e_fdir_flush(struct rte_eth_dev *dev)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
@@ -1281,9 +2001,11 @@ i40e_fdir_info_get_flex_mask(struct i40e_pf *pf,
 	     i <= I40E_FILTER_PCTYPE_L2_PAYLOAD;
 	     i++) {
 		mask =  &pf->fdir.flex_mask[i];
-		if (!I40E_VALID_PCTYPE((enum i40e_filter_pctype)i))
+		flow_type = i40e_pctype_to_flowtype(pf->adapter,
+						    (enum i40e_filter_pctype)i);
+		if (flow_type == RTE_ETH_FLOW_UNKNOWN)
 			continue;
-		flow_type = i40e_pctype_to_flowtype((enum i40e_filter_pctype)i);
+
 		for (j = 0; j < I40E_FDIR_MAX_FLEXWORD_NUM; j++) {
 			if (mask->word_mask & I40E_FLEX_WORD_MASK(j)) {
 				ptr->mask[j * sizeof(uint16_t)] = UINT8_MAX;
@@ -1448,4 +2170,31 @@ i40e_fdir_ctrl_func(struct rte_eth_dev *dev,
 		break;
 	}
 	return ret;
+}
+
+/* Restore flow director filter */
+void
+i40e_fdir_filter_restore(struct i40e_pf *pf)
+{
+	struct rte_eth_dev *dev = I40E_VSI_TO_ETH_DEV(pf->main_vsi);
+	struct i40e_fdir_filter_list *fdir_list = &pf->fdir.fdir_list;
+	struct i40e_fdir_filter *f;
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	uint32_t fdstat;
+	uint32_t guarant_cnt;  /**< Number of filters in guaranteed spaces. */
+	uint32_t best_cnt;     /**< Number of filters in best effort spaces. */
+
+	TAILQ_FOREACH(f, fdir_list, rules)
+		i40e_flow_add_del_fdir_filter(dev, &f->fdir, TRUE);
+
+	fdstat = I40E_READ_REG(hw, I40E_PFQF_FDSTAT);
+	guarant_cnt =
+		(uint32_t)((fdstat & I40E_PFQF_FDSTAT_GUARANT_CNT_MASK) >>
+			   I40E_PFQF_FDSTAT_GUARANT_CNT_SHIFT);
+	best_cnt =
+		(uint32_t)((fdstat & I40E_PFQF_FDSTAT_BEST_CNT_MASK) >>
+			   I40E_PFQF_FDSTAT_BEST_CNT_SHIFT);
+
+	PMD_DRV_LOG(INFO, "FDIR: Guarant count: %d,  Best count: %d",
+		    guarant_cnt, best_cnt);
 }

@@ -13,11 +13,15 @@ General Guidelines
 ------------------
 
 #. Whenever possible, ABI should be preserved
-#. The libraries marked in experimental state may change without constraint.
+#. Libraries or APIs marked in ``experimental`` state may change without constraint.
+#. New APIs will be marked as ``experimental`` for at least one release to allow
+   any issues found by users of the new API to be fixed quickly
 #. The addition of symbols is generally not problematic
 #. The modification of symbols can generally be managed with versioning
 #. The removal of symbols generally is an ABI break and requires bumping of the
    LIBABIVER macro
+#. Updates to the minimum hardware requirements, which drop support for hardware which
+   was previously supported, should be treated as an ABI change.
 
 What is an ABI
 --------------
@@ -39,6 +43,13 @@ ABI versions are set at the time of major release labeling, and the ABI may
 change multiple times, without warning, between the last release label and the
 HEAD label of the git tree.
 
+APIs marked as ``experimental`` are not considered part of the ABI and may
+change without warning at any time.  Since changes to APIs are most likely
+immediately after their introduction, as users begin to take advantage of
+those new APIs and start finding issues with them, new DPDK APIs will be
+automatically marked as ``experimental`` to allow for a period of stabilization
+before they become part of a tracked ABI.
+
 ABI versions, once released, are available until such time as their
 deprecation has been noted in the Release Notes for at least one major release
 cycle. For example consider the case where the ABI for DPDK 2.0 has been
@@ -55,6 +66,14 @@ being provided. The requirements for doing so are:
 
 #. At least 3 acknowledgments of the need to do so must be made on the
    dpdk.org mailing list.
+
+   - The acknowledgment of the maintainer of the component is mandatory, or if
+     no maintainer is available for the component, the tree/sub-tree maintainer
+     for that component must acknowledge the ABI change instead.
+
+   - It is also recommended that acknowledgments from different "areas of
+     interest" be sought for each deprecation, for example: from NIC vendors,
+     CPU vendors, end-users, etc.
 
 #. The changes (including an alternative map file) must be gated with
    the ``RTE_NEXT_ABI`` option, and provided with a deprecation notice at the
@@ -76,6 +95,13 @@ be made to preserve the ABI whenever possible. The ABI should only be changed
 for significant reasons, such as performance enhancements. ABI breakage due to
 changes such as reorganizing public structure fields for aesthetic or
 readability purposes should be avoided.
+
+.. note::
+
+   Updates to the minimum hardware requirements, which drop support for hardware
+   which was previously supported, should be treated as an ABI change, and
+   follow the relevant deprecation policy procedures as above: 3 acks and
+   announcement at least one release in advance.
 
 Examples of Deprecation Notices
 -------------------------------
@@ -132,6 +158,31 @@ The macros exported are:
 * ``MAP_STATIC_SYMBOL(f, p)``: Declare the prototype ``f``, and map it to the
   fully qualified function ``p``, so that if a symbol becomes versioned, it
   can still be mapped back to the public symbol name.
+
+Setting a Major ABI version
+---------------------------
+
+Downstreams might want to provide different DPDK releases at the same time to
+support multiple consumers of DPDK linked against older and newer sonames.
+
+Also due to the interdependencies that DPDK libraries can have applications
+might end up with an executable space in which multiple versions of a library
+are mapped by ld.so.
+
+Think of LibA that got an ABI bump and LibB that did not get an ABI bump but is
+depending on LibA.
+
+.. note::
+
+    Application
+    \-> LibA.old
+    \-> LibB.new -> LibA.new
+
+That is a conflict which can be avoided by setting ``CONFIG_RTE_MAJOR_ABI``.
+If set, the value of ``CONFIG_RTE_MAJOR_ABI`` overwrites all - otherwise per
+library - versions defined in the libraries ``LIBABIVER``.
+An example might be ``CONFIG_RTE_MAJOR_ABI=16.11`` which will make all libraries
+``librte<?>.so.16.11`` instead of ``librte<?>.so.<LIBABIVER>``.
 
 Examples of ABI Macro use
 -------------------------
@@ -331,11 +382,12 @@ defined, we add this
 
 .. code-block:: c
 
-   struct rte_acl_create_v21(const struct rte_acl_param *param, int debug)
+   struct rte_acl_ctx *
+   rte_acl_create_v21(const struct rte_acl_param *param, int debug)
    {
         ...
    }
-   MAP_STATIC_SYMBOL(struct rte_acl_create(const struct rte_acl_param *param, int debug), rte_acl_create_v21);
+   MAP_STATIC_SYMBOL(struct rte_acl_ctx *rte_acl_create(const struct rte_acl_param *param, int debug), rte_acl_create_v21);
 
 That tells the compiler that, when building a static library, any calls to the
 symbol ``rte_acl_create`` should be linked to ``rte_acl_create_v21``
@@ -456,7 +508,7 @@ versions of the symbol.
 Running the ABI Validator
 -------------------------
 
-The ``scripts`` directory in the DPDK source tree contains a utility program,
+The ``devtools`` directory in the DPDK source tree contains a utility program,
 ``validate-abi.sh``, for validating the DPDK ABI based on the Linux `ABI
 Compliance Checker
 <http://ispras.linuxbase.org/index.php/ABI_compliance_checker>`_.
@@ -469,7 +521,7 @@ utilities which can be installed via a package manager. For example::
 
 The syntax of the ``validate-abi.sh`` utility is::
 
-   ./scripts/validate-abi.sh <REV1> <REV2> <TARGET>
+   ./devtools/validate-abi.sh <REV1> <REV2> <TARGET>
 
 Where ``REV1`` and ``REV2`` are valid gitrevisions(7)
 https://www.kernel.org/pub/software/scm/git/docs/gitrevisions.html
@@ -478,13 +530,13 @@ on the local repo and target is the usual DPDK compilation target.
 For example::
 
    # Check between the previous and latest commit:
-   ./scripts/validate-abi.sh HEAD~1 HEAD x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh HEAD~1 HEAD x86_64-native-linuxapp-gcc
 
    # Check between two tags:
-   ./scripts/validate-abi.sh v2.0.0 v2.1.0 x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh v2.0.0 v2.1.0 x86_64-native-linuxapp-gcc
 
    # Check between git master and local topic-branch "vhost-hacking":
-   ./scripts/validate-abi.sh master vhost-hacking x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh master vhost-hacking x86_64-native-linuxapp-gcc
 
 After the validation script completes (it can take a while since it need to
 compile both tags) it will create compatibility reports in the

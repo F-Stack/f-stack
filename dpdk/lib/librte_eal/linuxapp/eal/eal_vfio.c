@@ -39,6 +39,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_eal_memconfig.h>
+#include <rte_vfio.h>
 
 #include "eal_filesystem.h"
 #include "eal_vfio.h"
@@ -50,12 +51,15 @@
 static struct vfio_config vfio_cfg;
 
 static int vfio_type1_dma_map(int);
+static int vfio_spapr_dma_map(int);
 static int vfio_noiommu_dma_map(int);
 
 /* IOMMU types we support */
 static const struct vfio_iommu_type iommu_types[] = {
 	/* x86 IOMMU, otherwise known as type 1 */
 	{ RTE_VFIO_TYPE1, "Type 1", &vfio_type1_dma_map},
+	/* ppc64 IOMMU, otherwise known as spapr */
+	{ RTE_VFIO_SPAPR, "sPAPR", &vfio_spapr_dma_map},
 	/* IOMMU-less mode */
 	{ RTE_VFIO_NOIOMMU, "No-IOMMU", &vfio_noiommu_dma_map},
 };
@@ -66,12 +70,31 @@ vfio_get_group_fd(int iommu_group_no)
 	int i;
 	int vfio_group_fd;
 	char filename[PATH_MAX];
+	struct vfio_group *cur_grp;
 
 	/* check if we already have the group descriptor open */
-	for (i = 0; i < vfio_cfg.vfio_group_idx; i++)
+	for (i = 0; i < VFIO_MAX_GROUPS; i++)
 		if (vfio_cfg.vfio_groups[i].group_no == iommu_group_no)
 			return vfio_cfg.vfio_groups[i].fd;
 
+	/* Lets see first if there is room for a new group */
+	if (vfio_cfg.vfio_active_groups == VFIO_MAX_GROUPS) {
+		RTE_LOG(ERR, EAL, "Maximum number of VFIO groups reached!\n");
+		return -1;
+	}
+
+	/* Now lets get an index for the new group */
+	for (i = 0; i < VFIO_MAX_GROUPS; i++)
+		if (vfio_cfg.vfio_groups[i].group_no == -1) {
+			cur_grp = &vfio_cfg.vfio_groups[i];
+			break;
+		}
+
+	/* This should not happen */
+	if (i == VFIO_MAX_GROUPS) {
+		RTE_LOG(ERR, EAL, "No VFIO group free slot found\n");
+		return -1;
+	}
 	/* if primary, try to open the group */
 	if (internal_config.process_type == RTE_PROC_PRIMARY) {
 		/* try regular group format */
@@ -101,14 +124,9 @@ vfio_get_group_fd(int iommu_group_no)
 			/* noiommu group found */
 		}
 
-		/* if the fd is valid, create a new group for it */
-		if (vfio_cfg.vfio_group_idx == VFIO_MAX_GROUPS) {
-			RTE_LOG(ERR, EAL, "Maximum number of VFIO groups reached!\n");
-			close(vfio_group_fd);
-			return -1;
-		}
-		vfio_cfg.vfio_groups[vfio_cfg.vfio_group_idx].group_no = iommu_group_no;
-		vfio_cfg.vfio_groups[vfio_cfg.vfio_group_idx].fd = vfio_group_fd;
+		cur_grp->group_no = iommu_group_no;
+		cur_grp->fd = vfio_group_fd;
+		vfio_cfg.vfio_active_groups++;
 		return vfio_group_fd;
 	}
 	/* if we're in a secondary process, request group fd from the primary
@@ -140,9 +158,12 @@ vfio_get_group_fd(int iommu_group_no)
 			return 0;
 		case SOCKET_OK:
 			vfio_group_fd = vfio_mp_sync_receive_fd(socket_fd);
-			/* if we got the fd, return it */
+			/* if we got the fd, store it and return it */
 			if (vfio_group_fd > 0) {
 				close(socket_fd);
+				cur_grp->group_no = iommu_group_no;
+				cur_grp->fd = vfio_group_fd;
+				vfio_cfg.vfio_active_groups++;
 				return vfio_group_fd;
 			}
 			/* fall-through on error */
@@ -155,14 +176,115 @@ vfio_get_group_fd(int iommu_group_no)
 	return -1;
 }
 
-static void
-clear_current_group(void)
+
+static int
+get_vfio_group_idx(int vfio_group_fd)
 {
-	vfio_cfg.vfio_groups[vfio_cfg.vfio_group_idx].group_no = 0;
-	vfio_cfg.vfio_groups[vfio_cfg.vfio_group_idx].fd = -1;
+	int i;
+	for (i = 0; i < VFIO_MAX_GROUPS; i++)
+		if (vfio_cfg.vfio_groups[i].fd == vfio_group_fd)
+			return i;
+	return -1;
 }
 
-int vfio_setup_device(const char *sysfs_base, const char *dev_addr,
+static void
+vfio_group_device_get(int vfio_group_fd)
+{
+	int i;
+
+	i = get_vfio_group_idx(vfio_group_fd);
+	if (i < 0 || i > (VFIO_MAX_GROUPS - 1))
+		RTE_LOG(ERR, EAL, "  wrong vfio_group index (%d)\n", i);
+	else
+		vfio_cfg.vfio_groups[i].devices++;
+}
+
+static void
+vfio_group_device_put(int vfio_group_fd)
+{
+	int i;
+
+	i = get_vfio_group_idx(vfio_group_fd);
+	if (i < 0 || i > (VFIO_MAX_GROUPS - 1))
+		RTE_LOG(ERR, EAL, "  wrong vfio_group index (%d)\n", i);
+	else
+		vfio_cfg.vfio_groups[i].devices--;
+}
+
+static int
+vfio_group_device_count(int vfio_group_fd)
+{
+	int i;
+
+	i = get_vfio_group_idx(vfio_group_fd);
+	if (i < 0 || i > (VFIO_MAX_GROUPS - 1)) {
+		RTE_LOG(ERR, EAL, "  wrong vfio_group index (%d)\n", i);
+		return -1;
+	}
+
+	return vfio_cfg.vfio_groups[i].devices;
+}
+
+int
+clear_group(int vfio_group_fd)
+{
+	int i;
+	int socket_fd, ret;
+
+	if (internal_config.process_type == RTE_PROC_PRIMARY) {
+
+		i = get_vfio_group_idx(vfio_group_fd);
+		if (i < 0)
+			return -1;
+		vfio_cfg.vfio_groups[i].group_no = -1;
+		vfio_cfg.vfio_groups[i].fd = -1;
+		vfio_cfg.vfio_groups[i].devices = 0;
+		vfio_cfg.vfio_active_groups--;
+		return 0;
+	}
+
+	/* This is just for SECONDARY processes */
+	socket_fd = vfio_mp_sync_connect_to_primary();
+
+	if (socket_fd < 0) {
+		RTE_LOG(ERR, EAL, "  cannot connect to primary process!\n");
+		return -1;
+	}
+
+	if (vfio_mp_sync_send_request(socket_fd, SOCKET_CLR_GROUP) < 0) {
+		RTE_LOG(ERR, EAL, "  cannot request container fd!\n");
+		close(socket_fd);
+		return -1;
+	}
+
+	if (vfio_mp_sync_send_request(socket_fd, vfio_group_fd) < 0) {
+		RTE_LOG(ERR, EAL, "  cannot send group fd!\n");
+		close(socket_fd);
+		return -1;
+	}
+
+	ret = vfio_mp_sync_receive_request(socket_fd);
+	switch (ret) {
+	case SOCKET_NO_FD:
+		RTE_LOG(ERR, EAL, "  BAD VFIO group fd!\n");
+		close(socket_fd);
+		break;
+	case SOCKET_OK:
+		close(socket_fd);
+		return 0;
+	case SOCKET_ERR:
+		RTE_LOG(ERR, EAL, "  Socket error\n");
+		close(socket_fd);
+		break;
+	default:
+		RTE_LOG(ERR, EAL, "  UNKNOWN reply, %d\n", ret);
+		close(socket_fd);
+	}
+	return -1;
+}
+
+int
+rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 		int *vfio_dev_fd, struct vfio_device_info *device_info)
 {
 	struct vfio_group_status group_status = {
@@ -189,18 +311,10 @@ int vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 	if (vfio_group_fd < 0)
 		return -1;
 
-	/* store group fd */
-	vfio_cfg.vfio_groups[vfio_cfg.vfio_group_idx].group_no = iommu_group_no;
-	vfio_cfg.vfio_groups[vfio_cfg.vfio_group_idx].fd = vfio_group_fd;
-
 	/* if group_fd == 0, that means the device isn't managed by VFIO */
 	if (vfio_group_fd == 0) {
-		RTE_LOG(WARNING, EAL, "  %s not managed by VFIO driver, skipping\n",
+		RTE_LOG(WARNING, EAL, " %s not managed by VFIO driver, skipping\n",
 				dev_addr);
-		/* we store 0 as group fd to distinguish between existing but
-		 * unbound VFIO groups, and groups that don't exist at all.
-		 */
-		vfio_cfg.vfio_group_idx++;
 		return 1;
 	}
 
@@ -215,12 +329,12 @@ int vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 		RTE_LOG(ERR, EAL, "  %s cannot get group status, "
 				"error %i (%s)\n", dev_addr, errno, strerror(errno));
 		close(vfio_group_fd);
-		clear_current_group();
+		clear_group(vfio_group_fd);
 		return -1;
 	} else if (!(group_status.flags & VFIO_GROUP_FLAGS_VIABLE)) {
 		RTE_LOG(ERR, EAL, "  %s VFIO group is not viable!\n", dev_addr);
 		close(vfio_group_fd);
-		clear_current_group();
+		clear_group(vfio_group_fd);
 		return -1;
 	}
 
@@ -234,66 +348,137 @@ int vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 			RTE_LOG(ERR, EAL, "  %s cannot add VFIO group to container, "
 					"error %i (%s)\n", dev_addr, errno, strerror(errno));
 			close(vfio_group_fd);
-			clear_current_group();
+			clear_group(vfio_group_fd);
 			return -1;
 		}
-		/*
-		 * at this point we know that this group has been successfully
-		 * initialized, so we increment vfio_group_idx to indicate that we can
-		 * add new groups.
-		 */
-		vfio_cfg.vfio_group_idx++;
-	}
 
-	/*
-	 * pick an IOMMU type and set up DMA mappings for container
-	 *
-	 * needs to be done only once, only when at least one group is assigned to
-	 * a container and only in primary process
-	 */
-	if (internal_config.process_type == RTE_PROC_PRIMARY &&
-			vfio_cfg.vfio_container_has_dma == 0) {
-		/* select an IOMMU type which we will be using */
-		const struct vfio_iommu_type *t =
+		/*
+		 * pick an IOMMU type and set up DMA mappings for container
+		 *
+		 * needs to be done only once, only when first group is
+		 * assigned to a container and only in primary process.
+		 * Note this can happen several times with the hotplug
+		 * functionality.
+		 */
+		if (internal_config.process_type == RTE_PROC_PRIMARY &&
+				vfio_cfg.vfio_active_groups == 1) {
+			/* select an IOMMU type which we will be using */
+			const struct vfio_iommu_type *t =
 				vfio_set_iommu_type(vfio_cfg.vfio_container_fd);
-		if (!t) {
-			RTE_LOG(ERR, EAL, "  %s failed to select IOMMU type\n", dev_addr);
-			return -1;
+			if (!t) {
+				RTE_LOG(ERR, EAL,
+					"  %s failed to select IOMMU type\n",
+					dev_addr);
+				close(vfio_group_fd);
+				clear_group(vfio_group_fd);
+				return -1;
+			}
+			ret = t->dma_map_func(vfio_cfg.vfio_container_fd);
+			if (ret) {
+				RTE_LOG(ERR, EAL,
+					"  %s DMA remapping failed, error %i (%s)\n",
+					dev_addr, errno, strerror(errno));
+				close(vfio_group_fd);
+				clear_group(vfio_group_fd);
+				return -1;
+			}
 		}
-		ret = t->dma_map_func(vfio_cfg.vfio_container_fd);
-		if (ret) {
-			RTE_LOG(ERR, EAL, "  %s DMA remapping failed, "
-					"error %i (%s)\n", dev_addr, errno, strerror(errno));
-			return -1;
-		}
-		vfio_cfg.vfio_container_has_dma = 1;
 	}
 
 	/* get a file descriptor for the device */
 	*vfio_dev_fd = ioctl(vfio_group_fd, VFIO_GROUP_GET_DEVICE_FD, dev_addr);
 	if (*vfio_dev_fd < 0) {
-		/* if we cannot get a device fd, this simply means that this
-		* particular port is not bound to VFIO
-		*/
-		RTE_LOG(WARNING, EAL, "  %s not managed by VFIO driver, skipping\n",
+		/* if we cannot get a device fd, this implies a problem with
+		 * the VFIO group or the container not having IOMMU configured.
+		 */
+
+		RTE_LOG(WARNING, EAL, "Getting a vfio_dev_fd for %s failed\n",
 				dev_addr);
-		return 1;
+		close(vfio_group_fd);
+		clear_group(vfio_group_fd);
+		return -1;
 	}
 
 	/* test and setup the device */
 	ret = ioctl(*vfio_dev_fd, VFIO_DEVICE_GET_INFO, device_info);
 	if (ret) {
 		RTE_LOG(ERR, EAL, "  %s cannot get device info, "
-				"error %i (%s)\n", dev_addr, errno, strerror(errno));
+				"error %i (%s)\n", dev_addr, errno,
+				strerror(errno));
 		close(*vfio_dev_fd);
+		close(vfio_group_fd);
+		clear_group(vfio_group_fd);
 		return -1;
+	}
+	vfio_group_device_get(vfio_group_fd);
+
+	return 0;
+}
+
+int
+rte_vfio_release_device(const char *sysfs_base, const char *dev_addr,
+		    int vfio_dev_fd)
+{
+	struct vfio_group_status group_status = {
+			.argsz = sizeof(group_status)
+	};
+	int vfio_group_fd;
+	int iommu_group_no;
+	int ret;
+
+	/* get group number */
+	ret = vfio_get_group_no(sysfs_base, dev_addr, &iommu_group_no);
+	if (ret <= 0) {
+		RTE_LOG(WARNING, EAL, "  %s not managed by VFIO driver\n",
+			dev_addr);
+		/* This is an error at this point. */
+		return -1;
+	}
+
+	/* get the actual group fd */
+	vfio_group_fd = vfio_get_group_fd(iommu_group_no);
+	if (vfio_group_fd <= 0) {
+		RTE_LOG(INFO, EAL, "vfio_get_group_fd failed for %s\n",
+				   dev_addr);
+		return -1;
+	}
+
+	/* At this point we got an active group. Closing it will make the
+	 * container detachment. If this is the last active group, VFIO kernel
+	 * code will unset the container and the IOMMU mappings.
+	 */
+
+	/* Closing a device */
+	if (close(vfio_dev_fd) < 0) {
+		RTE_LOG(INFO, EAL, "Error when closing vfio_dev_fd for %s\n",
+				   dev_addr);
+		return -1;
+	}
+
+	/* An VFIO group can have several devices attached. Just when there is
+	 * no devices remaining should the group be closed.
+	 */
+	vfio_group_device_put(vfio_group_fd);
+	if (!vfio_group_device_count(vfio_group_fd)) {
+
+		if (close(vfio_group_fd) < 0) {
+			RTE_LOG(INFO, EAL, "Error when closing vfio_group_fd for %s\n",
+				dev_addr);
+			return -1;
+		}
+
+		if (clear_group(vfio_group_fd) < 0) {
+			RTE_LOG(INFO, EAL, "Error when clearing group for %s\n",
+					   dev_addr);
+			return -1;
+		}
 	}
 
 	return 0;
 }
 
 int
-vfio_enable(const char *modname)
+rte_vfio_enable(const char *modname)
 {
 	/* initialize group list */
 	int i;
@@ -302,12 +487,13 @@ vfio_enable(const char *modname)
 	for (i = 0; i < VFIO_MAX_GROUPS; i++) {
 		vfio_cfg.vfio_groups[i].fd = -1;
 		vfio_cfg.vfio_groups[i].group_no = -1;
+		vfio_cfg.vfio_groups[i].devices = 0;
 	}
 
 	/* inform the user that we are probing for VFIO */
 	RTE_LOG(INFO, EAL, "Probing VFIO support...\n");
 
-	/* check if vfio-pci module is loaded */
+	/* check if vfio module is loaded */
 	vfio_available = rte_eal_check_module(modname);
 
 	/* return error directly */
@@ -337,9 +523,9 @@ vfio_enable(const char *modname)
 }
 
 int
-vfio_is_enabled(const char *modname)
+rte_vfio_is_enabled(const char *modname)
 {
-	const int mod_available = rte_eal_check_module(modname);
+	const int mod_available = rte_eal_check_module(modname) > 0;
 	return vfio_cfg.vfio_enabled && mod_available;
 }
 
@@ -524,16 +710,124 @@ vfio_type1_dma_map(int vfio_container_fd)
 		dma_map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
 		dma_map.vaddr = ms[i].addr_64;
 		dma_map.size = ms[i].len;
-		dma_map.iova = ms[i].phys_addr;
+		if (rte_eal_iova_mode() == RTE_IOVA_VA)
+			dma_map.iova = dma_map.vaddr;
+		else
+			dma_map.iova = ms[i].iova;
 		dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
 
 		ret = ioctl(vfio_container_fd, VFIO_IOMMU_MAP_DMA, &dma_map);
 
 		if (ret) {
 			RTE_LOG(ERR, EAL, "  cannot set up DMA remapping, "
-					"error %i (%s)\n", errno, strerror(errno));
+					  "error %i (%s)\n", errno,
+					  strerror(errno));
 			return -1;
 		}
+	}
+
+	return 0;
+}
+
+static int
+vfio_spapr_dma_map(int vfio_container_fd)
+{
+	const struct rte_memseg *ms = rte_eal_get_physmem_layout();
+	int i, ret;
+
+	struct vfio_iommu_spapr_register_memory reg = {
+		.argsz = sizeof(reg),
+		.flags = 0
+	};
+	struct vfio_iommu_spapr_tce_info info = {
+		.argsz = sizeof(info),
+	};
+	struct vfio_iommu_spapr_tce_create create = {
+		.argsz = sizeof(create),
+	};
+	struct vfio_iommu_spapr_tce_remove remove = {
+		.argsz = sizeof(remove),
+	};
+
+	/* query spapr iommu info */
+	ret = ioctl(vfio_container_fd, VFIO_IOMMU_SPAPR_TCE_GET_INFO, &info);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "  cannot get iommu info, "
+				"error %i (%s)\n", errno, strerror(errno));
+		return -1;
+	}
+
+	/* remove default DMA of 32 bit window */
+	remove.start_addr = info.dma32_window_start;
+	ret = ioctl(vfio_container_fd, VFIO_IOMMU_SPAPR_TCE_REMOVE, &remove);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "  cannot remove default DMA window, "
+				"error %i (%s)\n", errno, strerror(errno));
+		return -1;
+	}
+
+	/* create DMA window from 0 to max(phys_addr + len) */
+	for (i = 0; i < RTE_MAX_MEMSEG; i++) {
+		if (ms[i].addr == NULL)
+			break;
+
+		create.window_size = RTE_MAX(create.window_size,
+				ms[i].iova + ms[i].len);
+	}
+
+	/* sPAPR requires window size to be a power of 2 */
+	create.window_size = rte_align64pow2(create.window_size);
+	create.page_shift = __builtin_ctzll(ms->hugepage_sz);
+	create.levels = 1;
+
+	ret = ioctl(vfio_container_fd, VFIO_IOMMU_SPAPR_TCE_CREATE, &create);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "  cannot create new DMA window, "
+				"error %i (%s)\n", errno, strerror(errno));
+		return -1;
+	}
+
+	if (create.start_addr != 0) {
+		RTE_LOG(ERR, EAL, "  DMA window start address != 0\n");
+		return -1;
+	}
+
+	/* map all DPDK segments for DMA. use 1:1 PA to IOVA mapping */
+	for (i = 0; i < RTE_MAX_MEMSEG; i++) {
+		struct vfio_iommu_type1_dma_map dma_map;
+
+		if (ms[i].addr == NULL)
+			break;
+
+		reg.vaddr = (uintptr_t) ms[i].addr;
+		reg.size = ms[i].len;
+		ret = ioctl(vfio_container_fd,
+			VFIO_IOMMU_SPAPR_REGISTER_MEMORY, &reg);
+		if (ret) {
+			RTE_LOG(ERR, EAL, "  cannot register vaddr for IOMMU, "
+				"error %i (%s)\n", errno, strerror(errno));
+			return -1;
+		}
+
+		memset(&dma_map, 0, sizeof(dma_map));
+		dma_map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
+		dma_map.vaddr = ms[i].addr_64;
+		dma_map.size = ms[i].len;
+		if (rte_eal_iova_mode() == RTE_IOVA_VA)
+			dma_map.iova = dma_map.vaddr;
+		else
+			dma_map.iova = ms[i].iova;
+		dma_map.flags = VFIO_DMA_MAP_FLAG_READ |
+				 VFIO_DMA_MAP_FLAG_WRITE;
+
+		ret = ioctl(vfio_container_fd, VFIO_IOMMU_MAP_DMA, &dma_map);
+
+		if (ret) {
+			RTE_LOG(ERR, EAL, "  cannot set up DMA remapping, "
+				"error %i (%s)\n", errno, strerror(errno));
+			return -1;
+		}
+
 	}
 
 	return 0;
@@ -544,6 +838,25 @@ vfio_noiommu_dma_map(int __rte_unused vfio_container_fd)
 {
 	/* No-IOMMU mode does not need DMA mapping */
 	return 0;
+}
+
+int
+rte_vfio_noiommu_is_enabled(void)
+{
+	int fd, ret, cnt __rte_unused;
+	char c;
+
+	ret = -1;
+	fd = open(VFIO_NOIOMMU_MODE, O_RDONLY);
+	if (fd < 0)
+		return -1;
+
+	cnt = read(fd, &c, 1);
+	if (c == 'Y')
+		ret = 1;
+
+	close(fd);
+	return ret;
 }
 
 #endif

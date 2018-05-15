@@ -41,7 +41,7 @@
 ICC_MAJOR_VERSION = $(shell icc -dumpversion | cut -f1 -d.)
 
 ifeq ($(shell test $(ICC_MAJOR_VERSION) -lt 12 && echo 1), 1)
-	MACHINE_CFLAGS = -xSSE3
+	MACHINE_CFLAGS = -xSSE4.2
 $(warning You are not using ICC 12.x or higher. This is neither supported, nor tested.)
 
 else
@@ -71,5 +71,10 @@ else
 		MACHINE_CFLAGS := $(patsubst -xSSSE3_ATOM,-xSSE3_ATOM,$(MACHINE_CFLAGS))
 		# remove march options
 		MACHINE_CFLAGS := $(patsubst -march=%,-xSSE3,$(MACHINE_CFLAGS))
+	endif
+
+	# Disable thunderx PMD for icc <= 16.0
+	ifeq ($(shell test $(ICC_MAJOR_VERSION) -le 16 && echo 1), 1)
+		CONFIG_RTE_LIBRTE_THUNDERX_NICVF_PMD=d
 	endif
 endif
