@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright (C) Cavium networks Ltd. 2016.
+ *   Copyright (C) Cavium, Inc. 2016.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -13,7 +13,7 @@
  *       notice, this list of conditions and the following disclaimer in
  *       the documentation and/or other materials provided with the
  *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
+ *     * Neither the name of Cavium, Inc nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -59,41 +59,30 @@
 /* utils */
 #include <rte_common.h>
 #define nicvf_min(x, y) RTE_MIN(x, y)
+#define nicvf_log2_u32(x) rte_log2_u32(x)
 
 /* byte order */
 #include <rte_byteorder.h>
 #define nicvf_cpu_to_be_64(x) rte_cpu_to_be_64(x)
 #define nicvf_be_to_cpu_64(x) rte_be_to_cpu_64(x)
 
+#define NICVF_BYTE_ORDER RTE_BYTE_ORDER
+#define NICVF_BIG_ENDIAN RTE_BIG_ENDIAN
+#define NICVF_LITTLE_ENDIAN RTE_LITTLE_ENDIAN
+
 /* Constants */
 #include <rte_ether.h>
 #define NICVF_MAC_ADDR_SIZE ETHER_ADDR_LEN
 
+#include <rte_io.h>
+#define nicvf_addr_write(addr, val) rte_write64_relaxed((val), (void *)(addr))
+#define nicvf_addr_read(addr) rte_read64_relaxed((void *)(addr))
+
 /* ARM64 specific functions */
 #if defined(RTE_ARCH_ARM64)
 #define nicvf_prefetch_store_keep(_ptr) ({\
-	asm volatile("prfm pstl1keep, %a0\n" : : "p" (_ptr)); })
+	asm volatile("prfm pstl1keep, [%x0]\n" : : "r" (_ptr)); })
 
-static inline void __attribute__((always_inline))
-nicvf_addr_write(uintptr_t addr, uint64_t val)
-{
-	asm volatile(
-		    "str %x[val], [%x[addr]]"
-		    :
-		    : [val] "r" (val), [addr] "r" (addr));
-}
-
-static inline uint64_t __attribute__((always_inline))
-nicvf_addr_read(uintptr_t addr)
-{
-	uint64_t val;
-
-	asm volatile(
-		    "ldr %x[val], [%x[addr]]"
-		    : [val] "=r" (val)
-		    : [addr] "r" (addr));
-	return val;
-}
 
 #define NICVF_LOAD_PAIR(reg1, reg2, addr) ({		\
 			asm volatile(			\
@@ -105,18 +94,6 @@ nicvf_addr_read(uintptr_t addr)
 #else /* non optimized functions for building on non arm64 arch */
 
 #define nicvf_prefetch_store_keep(_ptr) do {} while (0)
-
-static inline void __attribute__((always_inline))
-nicvf_addr_write(uintptr_t addr, uint64_t val)
-{
-	*(volatile uint64_t *)addr = val;
-}
-
-static inline uint64_t __attribute__((always_inline))
-nicvf_addr_read(uintptr_t addr)
-{
-	return	*(volatile uint64_t *)addr;
-}
 
 #define NICVF_LOAD_PAIR(reg1, reg2, addr)		\
 do {							\

@@ -41,14 +41,18 @@
 #include <rte_common.h>
 #include <rte_log.h>
 #include <rte_cycles.h>
+#include <rte_pause.h>
 
 #include "eal_private.h"
 
 /* The frequency of the RDTSC timer resolution */
 static uint64_t eal_tsc_resolution_hz;
 
+/* Pointer to user delay function */
+void (*rte_delay_us)(unsigned int) = NULL;
+
 void
-rte_delay_us(unsigned us)
+rte_delay_us_block(unsigned int us)
 {
 	const uint64_t start = rte_get_timer_cycles();
 	const uint64_t ticks = (uint64_t)us * rte_get_timer_hz() / 1E6;
@@ -76,11 +80,25 @@ estimate_tsc_freq(void)
 void
 set_tsc_freq(void)
 {
-	uint64_t freq = get_tsc_freq();
+	uint64_t freq;
 
+	freq = get_tsc_freq_arch();
+	if (!freq)
+		freq = get_tsc_freq();
 	if (!freq)
 		freq = estimate_tsc_freq();
 
 	RTE_LOG(DEBUG, EAL, "TSC frequency is ~%" PRIu64 " KHz\n", freq / 1000);
 	eal_tsc_resolution_hz = freq;
+}
+
+void rte_delay_us_callback_register(void (*userfunc)(unsigned int))
+{
+	rte_delay_us = userfunc;
+}
+
+RTE_INIT(rte_timer_init)
+{
+	/* set rte_delay_us_block as a delay function */
+	rte_delay_us_callback_register(rte_delay_us_block);
 }

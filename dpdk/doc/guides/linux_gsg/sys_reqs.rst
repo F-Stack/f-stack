@@ -43,14 +43,21 @@ BIOS Setting Prerequisite on x86
 
 For the majority of platforms, no special BIOS settings are needed to use basic DPDK functionality.
 However, for additional HPET timer and power management functionality,
-and high performance of small packets on 40G NIC, BIOS setting changes may be needed.
+and high performance of small packets, BIOS setting changes may be needed.
 Consult the section on :ref:`Enabling Additional Functionality <Enabling_Additional_Functionality>`
 for more information on the required changes.
+
+.. note::
+
+   If UEFI secure boot is enabled, the Linux kernel may disallow the use of
+   UIO on the system. Therefore, devices for use by DPDK should be bound to the
+   ``vfio-pci`` kernel module rather than ``igb_uio`` or ``uio_pci_generic``.
+   For more details see :ref:`linux_gsg_binding_kernel`.
 
 Compilation of the DPDK
 -----------------------
 
-**Required Tools:**
+**Required Tools and Libraries:**
 
 .. note::
 
@@ -61,8 +68,8 @@ Compilation of the DPDK
 
 *   coreutils: ``cmp``, ``sed``, ``grep``, ``arch``, etc.
 
-*   gcc: versions 4.5.x or later is recommended for ``i686/x86_64``. Versions 4.8.x or later is recommended
-    for ``ppc_64`` and ``x86_x32`` ABI. On some distributions, some specific compiler flags and linker flags are enabled by
+*   gcc: versions 4.9 or later is recommended for all platforms.
+    On some distributions, some specific compiler flags and linker flags are enabled by
     default and affect performance (``-fstack-protector``, for example). Please refer to the documentation
     of your distribution and to ``gcc -dumpspecs``.
 
@@ -79,14 +86,14 @@ Compilation of the DPDK
 
     * glibc.ppc64, libgcc.ppc64, libstdc++.ppc64 and glibc-devel.ppc64 for IBM ppc_64;
 
-.. note::
+    .. note::
 
-    x86_x32 ABI is currently supported with distribution packages only on Ubuntu
-    higher than 13.10 or recent Debian distribution. The only supported  compiler is gcc 4.8+.
+       x86_x32 ABI is currently supported with distribution packages only on Ubuntu
+       higher than 13.10 or recent Debian distribution. The only supported  compiler is gcc 4.9+.
 
-.. note::
+*   libnuma-devel - library for handling NUMA (Non Uniform Memory Access).
 
-    Python, version 2.6 or 2.7, to use various helper scripts included in the DPDK package.
+*   Python, version 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
 
 
 **Optional Tools:**
@@ -130,8 +137,6 @@ System Software
     the vendor supplied kernel configurations can be used to run most DPDK applications.
 
     For other kernel builds, options which should be enabled for DPDK include:
-
-    *   UIO support
 
     *   HUGETLBFS
 
@@ -202,6 +207,12 @@ On a NUMA machine, pages should be allocated explicitly on separate nodes::
 
     For 1G pages, it is not possible to reserve the hugepage memory after the system has booted.
 
+    On IBM POWER system, the nr_overcommit_hugepages should be set to the same value as nr_hugepages.
+    For example, if the required page number is 128, the following commands are used::
+
+        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_hugepages
+        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_overcommit_hugepages
+
 Using Hugepages with the DPDK
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -217,56 +228,3 @@ The mount point can be made permanent across reboots, by adding the following li
 For 1GB pages, the page size must be specified as a mount option::
 
     nodev /mnt/huge_1GB hugetlbfs pagesize=1GB 0 0
-
-Xen Domain0 Support in the Linux Environment
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The existing memory management implementation is based on the Linux kernel hugepage mechanism.
-On the Xen hypervisor, hugepage support for DomainU (DomU) Guests means that DPDK applications work as normal for guests.
-
-However, Domain0 (Dom0) does not support hugepages.
-To work around this limitation, a new kernel module rte_dom0_mm is added to facilitate the allocation and mapping of memory via
-**IOCTL** (allocation) and **MMAP** (mapping).
-
-Enabling Xen Dom0 Mode in the DPDK
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-By default, Xen Dom0 mode is disabled in the DPDK build configuration files.
-To support Xen Dom0, the CONFIG_RTE_LIBRTE_XEN_DOM0 setting should be changed to “y”, which enables the Xen Dom0 mode at compile time.
-
-Furthermore, the CONFIG_RTE_EAL_ALLOW_INV_SOCKET_ID setting should also be changed to “y” in the case of the wrong socket ID being received.
-
-Loading the DPDK rte_dom0_mm Module
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To run any DPDK application on Xen Dom0, the ``rte_dom0_mm`` module must be loaded into the running kernel with rsv_memsize option.
-The module is found in the kmod sub-directory of the DPDK target directory.
-This module should be loaded using the insmod command as shown below (assuming that the current directory is the DPDK target directory)::
-
-    sudo insmod kmod/rte_dom0_mm.ko rsv_memsize=X
-
-The value X cannot be greater than 4096(MB).
-
-Configuring Memory for DPDK Use
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-After the rte_dom0_mm.ko kernel module has been loaded, the user must configure the memory size for DPDK usage.
-This is done by echoing the memory size to a memsize file in the /sys/devices/ directory.
-Use the following command (assuming that 2048 MB is required)::
-
-    echo 2048 > /sys/kernel/mm/dom0-mm/memsize-mB/memsize
-
-The user can also check how much memory has already been used::
-
-    cat /sys/kernel/mm/dom0-mm/memsize-mB/memsize_rsvd
-
-Xen Domain0 does not support NUMA configuration, as a result the ``--socket-mem`` command line option is invalid for Xen Domain0.
-
-.. note::
-
-    The memsize value cannot be greater than the rsv_memsize value.
-
-Running the DPDK Application on Xen Domain0
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To run the DPDK application on Xen Domain0, an extra command line option ``--xen-dom0`` is required.

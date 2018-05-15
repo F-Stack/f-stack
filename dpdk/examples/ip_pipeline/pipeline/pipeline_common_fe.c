@@ -36,7 +36,6 @@
 #include <unistd.h>
 
 #include <rte_common.h>
-#include <rte_ring.h>
 #include <rte_malloc.h>
 #include <cmdline_rdline.h>
 #include <cmdline_parse.h>
@@ -157,6 +156,7 @@ app_pipeline_track_pktq_out_to_link(struct app_params *app,
 			break;
 		}
 
+		case APP_PKTQ_OUT_TAP:
 		case APP_PKTQ_OUT_SINK:
 		default:
 			return NULL;

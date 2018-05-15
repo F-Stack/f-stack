@@ -59,6 +59,10 @@
 #define DEBUG_APP 0
 #define HELLOW_WORLD_MAX_LTHREADS 10
 
+#ifndef __GLIBC__ /* sched_getcpu() is glibc-specific */
+#define sched_getcpu() rte_lcore_id()
+#endif
+
 __thread int print_count;
 __thread pthread_mutex_t print_lock;
 
@@ -157,6 +161,7 @@ static void initial_lthread(void *args __attribute__((unused)))
 	pthread_override_set(1);
 
 	uint64_t i;
+	int ret;
 
 	/* initialize mutex for shared counter */
 	print_count = 0;
@@ -175,15 +180,18 @@ static void initial_lthread(void *args __attribute__((unused)))
 		 * use an attribute to pass the desired lcore
 		 */
 		pthread_attr_t attr;
-		cpu_set_t cpuset;
+		rte_cpuset_t cpuset;
 
 		CPU_ZERO(&cpuset);
 		CPU_SET(lcore, &cpuset);
 		pthread_attr_init(&attr);
-		pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpuset);
+		pthread_attr_setaffinity_np(&attr, sizeof(rte_cpuset_t), &cpuset);
 
 		/* create the thread */
-		pthread_create(&tid[i], &attr, helloworld_pthread, (void *) i);
+		ret = pthread_create(&tid[i], &attr,
+				helloworld_pthread, (void *) i);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE, "Cannot create helloworld thread\n");
 	}
 
 	/* wait for 1s to allow threads

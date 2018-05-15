@@ -34,8 +34,9 @@
 #ifndef _EAL_PRIVATE_H_
 #define _EAL_PRIVATE_H_
 
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <rte_pci.h>
 
 /**
  * Initialize the memzone subsystem (private to eal).
@@ -47,7 +48,9 @@
 int rte_eal_memzone_init(void);
 
 /**
- * Common log initialization function (private to eal).
+ * Common log initialization function (private to eal).  Determines
+ * where log data is written when no call to rte_openlog_stream is
+ * in effect.
  *
  * @param default_log
  *   The default log stream to be used.
@@ -55,7 +58,7 @@ int rte_eal_memzone_init(void);
  *   - 0 on success
  *   - Negative on error
  */
-int rte_eal_common_log_init(FILE *default_log);
+void eal_log_set_default(FILE *default_log);
 
 /**
  * Fill configuration with number of physical and logical processors
@@ -97,16 +100,6 @@ int rte_eal_memory_init(void);
 int rte_eal_timer_init(void);
 
 /**
- * Init early logs
- *
- * This function is private to EAL.
- *
- * @return
- *   0 on success, negative on error
- */
-int rte_eal_log_early_init(void);
-
-/**
  * Init the default log stream
  *
  * This function is private to EAL.
@@ -115,116 +108,6 @@ int rte_eal_log_early_init(void);
  *   0 on success, negative on error
  */
 int rte_eal_log_init(const char *id, int facility);
-
-/**
- * Init the default log stream
- *
- * This function is private to EAL.
- *
- * @return
- *   0 on success, negative on error
- */
-int rte_eal_pci_init(void);
-
-#ifdef RTE_LIBRTE_IVSHMEM
-/**
- * Init the memory from IVSHMEM devices
- *
- * This function is private to EAL.
- *
- * @return
- *  0 on success, negative on error
- */
-int rte_eal_ivshmem_init(void);
-
-/**
- * Init objects in IVSHMEM devices
- *
- * This function is private to EAL.
- *
- * @return
- *  0 on success, negative on error
- */
-int rte_eal_ivshmem_obj_init(void);
-#endif
-
-struct rte_pci_driver;
-struct rte_pci_device;
-
-/**
- * Unbind kernel driver for this device
- *
- * This function is private to EAL.
- *
- * @return
- *   0 on success, negative on error
- */
-int pci_unbind_kernel_driver(struct rte_pci_device *dev);
-
-/**
- * Map the PCI resource of a PCI device in virtual memory
- *
- * This function is private to EAL.
- *
- * @return
- *   0 on success, negative on error
- */
-int pci_uio_map_resource(struct rte_pci_device *dev);
-
-/**
- * Unmap the PCI resource of a PCI device
- *
- * This function is private to EAL.
- */
-void pci_uio_unmap_resource(struct rte_pci_device *dev);
-
-/**
- * Allocate uio resource for PCI device
- *
- * This function is private to EAL.
- *
- * @param dev
- *   PCI device to allocate uio resource
- * @param uio_res
- *   Pointer to uio resource.
- *   If the function returns 0, the pointer will be filled.
- * @return
- *   0 on success, negative on error
- */
-int pci_uio_alloc_resource(struct rte_pci_device *dev,
-		struct mapped_pci_resource **uio_res);
-
-/**
- * Free uio resource for PCI device
- *
- * This function is private to EAL.
- *
- * @param dev
- *   PCI device to free uio resource
- * @param uio_res
- *   Pointer to uio resource.
- */
-void pci_uio_free_resource(struct rte_pci_device *dev,
-		struct mapped_pci_resource *uio_res);
-
-/**
- * Map device memory to uio resource
- *
- * This function is private to EAL.
- *
- * @param dev
- *   PCI device that has memory information.
- * @param res_idx
- *   Memory resource index of the PCI device.
- * @param uio_res
- *  uio resource that will keep mapping information.
- * @param map_idx
- *   Mapping information index of the uio resource.
- * @return
- *   0 on success, negative on error
- */
-int pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
-		struct mapped_pci_resource *uio_res, int map_idx);
 
 /**
  * Init tail queues for non-EAL library structures. This is to allow
@@ -257,13 +140,6 @@ int rte_eal_intr_init(void);
  *  0 on success, negative on error
  */
 int rte_eal_alarm_init(void);
-
-/**
- * This function initialises any virtual devices
- *
- * This function is private to the EAL.
- */
-int rte_eal_dev_init(void);
 
 /**
  * Function is to check if the kernel module(like, vfio, vfio_iommu_type1,
@@ -308,6 +184,17 @@ void set_tsc_freq(void);
 uint64_t get_tsc_freq(void);
 
 /**
+ * Get TSC frequency if the architecture supports.
+ *
+ * This function is private to the EAL.
+ *
+ * @return
+ *   The number of TSC cycles in one second.
+ *   Returns zero if the architecture support is not available.
+ */
+uint64_t get_tsc_freq_arch(void);
+
+/**
  * Prepare physical memory mapping
  * i.e. hugepages on Linux and
  *      contigmem on BSD.
@@ -324,5 +211,17 @@ int rte_eal_hugepage_init(void);
  * This function is private to the EAL.
  */
 int rte_eal_hugepage_attach(void);
+
+/**
+ * Find a bus capable of identifying a device.
+ *
+ * @param str
+ *   A device identifier (PCI address, virtual PMD name, ...).
+ *
+ * @return
+ *   A valid bus handle if found.
+ *   NULL if no bus is able to parse this device.
+ */
+struct rte_bus *rte_bus_find_by_device_name(const char *str);
 
 #endif /* _EAL_PRIVATE_H_ */

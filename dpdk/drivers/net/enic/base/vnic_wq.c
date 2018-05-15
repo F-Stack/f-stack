@@ -52,7 +52,7 @@ int vnic_wq_alloc_ring(struct vnic_dev *vdev, struct vnic_wq *wq,
 	char res_name[NAME_MAX];
 	static int instance;
 
-	snprintf(res_name, sizeof(res_name), "%d-wq-%d", instance++, wq->index);
+	snprintf(res_name, sizeof(res_name), "%d-wq-%u", instance++, wq->index);
 	return vnic_dev_alloc_desc_ring(vdev, &wq->ring, desc_count, desc_size,
 		wq->socket_id, res_name);
 }
@@ -143,11 +143,6 @@ void vnic_wq_init(struct vnic_wq *wq, unsigned int cq_index,
 		error_interrupt_enable,
 		error_interrupt_offset);
 	wq->last_completed_index = 0;
-}
-
-void vnic_wq_error_out(struct vnic_wq *wq, unsigned int error)
-{
-	iowrite32(error, &wq->ctrl->error_status);
 }
 
 unsigned int vnic_wq_error_status(struct vnic_wq *wq)

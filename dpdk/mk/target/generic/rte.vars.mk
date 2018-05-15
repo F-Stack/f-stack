@@ -38,32 +38,36 @@
 #
 # machine:
 #
-#   - can define ARCH variable (overriden by cmdline value)
-#   - can define CROSS variable (overriden by cmdline value)
-#   - define MACHINE_CFLAGS variable (overriden by cmdline value)
-#   - define MACHINE_LDFLAGS variable (overriden by cmdline value)
-#   - define MACHINE_ASFLAGS variable (overriden by cmdline value)
-#   - can define CPU_CFLAGS variable (overriden by cmdline value) that
+#   - can define ARCH variable (overridden by cmdline value)
+#   - can define CROSS variable (overridden by cmdline value)
+#   - define MACHINE_CFLAGS variable (overridden by cmdline value)
+#   - define MACHINE_LDFLAGS variable (overridden by cmdline value)
+#   - define MACHINE_ASFLAGS variable (overridden by cmdline value)
+#   - can define CPU_CFLAGS variable (overridden by cmdline value) that
 #     overrides the one defined in arch.
-#   - can define CPU_LDFLAGS variable (overriden by cmdline value) that
+#   - can define CPU_LDFLAGS variable (overridden by cmdline value) that
 #     overrides the one defined in arch.
-#   - can define CPU_ASFLAGS variable (overriden by cmdline value) that
+#   - can define CPU_ASFLAGS variable (overridden by cmdline value) that
 #     overrides the one defined in arch.
 #
+ifneq ($(wildcard $(RTE_SDK)/mk/machine/$(RTE_MACHINE)/rte.vars.mk),)
 include $(RTE_SDK)/mk/machine/$(RTE_MACHINE)/rte.vars.mk
+else
+MACHINE_CFLAGS := -march=$(RTE_MACHINE)
+endif
 
 #
 # arch:
 #
-#   - define ARCH variable (overriden by cmdline or by previous
+#   - define ARCH variable (overridden by cmdline or by previous
 #     optional define in machine .mk)
-#   - define CROSS variable (overriden by cmdline or previous define
+#   - define CROSS variable (overridden by cmdline or previous define
 #     in machine .mk)
-#   - define CPU_CFLAGS variable (overriden by cmdline or previous
+#   - define CPU_CFLAGS variable (overridden by cmdline or previous
 #     define in machine .mk)
-#   - define CPU_LDFLAGS variable (overriden by cmdline or previous
+#   - define CPU_LDFLAGS variable (overridden by cmdline or previous
 #     define in machine .mk)
-#   - define CPU_ASFLAGS variable (overriden by cmdline or previous
+#   - define CPU_ASFLAGS variable (overridden by cmdline or previous
 #     define in machine .mk)
 #   - may override any previously defined variable
 #
@@ -73,9 +77,9 @@ include $(RTE_SDK)/mk/arch/$(RTE_ARCH)/rte.vars.mk
 # toolchain:
 #
 #   - define CC, LD, AR, AS, ...
-#   - define TOOLCHAIN_CFLAGS variable (overriden by cmdline value)
-#   - define TOOLCHAIN_LDFLAGS variable (overriden by cmdline value)
-#   - define TOOLCHAIN_ASFLAGS variable (overriden by cmdline value)
+#   - define TOOLCHAIN_CFLAGS variable (overridden by cmdline value)
+#   - define TOOLCHAIN_LDFLAGS variable (overridden by cmdline value)
+#   - define TOOLCHAIN_ASFLAGS variable (overridden by cmdline value)
 #   - may override any previously defined variable
 #
 include $(RTE_SDK)/mk/toolchain/$(RTE_TOOLCHAIN)/rte.vars.mk
@@ -83,9 +87,9 @@ include $(RTE_SDK)/mk/toolchain/$(RTE_TOOLCHAIN)/rte.vars.mk
 #
 # exec-env:
 #
-#   - define EXECENV_CFLAGS variable (overriden by cmdline)
-#   - define EXECENV_LDFLAGS variable (overriden by cmdline)
-#   - define EXECENV_ASFLAGS variable (overriden by cmdline)
+#   - define EXECENV_CFLAGS variable (overridden by cmdline)
+#   - define EXECENV_LDFLAGS variable (overridden by cmdline)
+#   - define EXECENV_ASFLAGS variable (overridden by cmdline)
 #   - may override any previously defined variable
 #
 include $(RTE_SDK)/mk/exec-env/$(RTE_EXEC_ENV)/rte.vars.mk
@@ -121,9 +125,6 @@ LDFLAGS += -L$(RTE_OUTPUT)/lib
 ifeq ($(BUILDING_RTE_SDK),1)
 # building sdk
 CFLAGS += -include $(RTE_OUTPUT)/include/rte_config.h
-ifeq ($(CONFIG_RTE_INSECURE_FUNCTION_WARNING),y)
-CFLAGS += -include rte_warnings.h
-endif
 else
 # if we are building an external application, include SDK's lib and
 # includes too
@@ -132,9 +133,6 @@ ifneq ($(wildcard $(RTE_OUTPUT)/include/rte_config.h),)
 CFLAGS += -include $(RTE_OUTPUT)/include/rte_config.h
 endif
 CFLAGS += -include $(RTE_SDK_BIN)/include/rte_config.h
-ifeq ($(CONFIG_RTE_INSECURE_FUNCTION_WARNING),y)
-CFLAGS += -include rte_warnings.h
-endif
 LDFLAGS += -L$(RTE_SDK_BIN)/lib
 endif
 

@@ -88,7 +88,7 @@ The ports required and their locations are as follows:
 For compiling and using the DPDK with gcc, the compiler must be installed
 from the ports collection:
 
-* gcc: version 4.8 is recommended ``/usr/ports/lang/gcc48``.
+* gcc: version 4.9 is recommended ``/usr/ports/lang/gcc49``.
   Ensure that ``CPU_OPTS`` is selected (default is OFF).
 
 When running the make config-recursive command, a dialog may be presented to the
@@ -111,10 +111,6 @@ First, uncompress the archive and move to the DPDK source directory:
     unzip DPDK-<version>.zip
     cd DPDK-<version>
 
-    ls
-    app/ config/ examples/ lib/ LICENSE.GPL LICENSE.LGPL Makefile
-    mk/ scripts/ tools/
-
 The DPDK is composed of several directories:
 
 *   lib: Source code of DPDK libraries
@@ -123,7 +119,7 @@ The DPDK is composed of several directories:
 
 *   examples: Source code of DPDK applications
 
-*   config, tools, scripts, mk: Framework-related makefiles, scripts and configuration
+*   config, buildtools, mk: Framework-related makefiles, scripts and configuration
 
 Installation of the DPDK Target Environments
 --------------------------------------------
@@ -168,7 +164,7 @@ For example to compile for FreeBSD use:
    If the compiler binary to be used does not correspond to that given in the
    TOOLCHAIN part of the target, the compiler command may need to be explicitly
    specified. For example, if compiling for gcc, where the gcc binary is called
-   gcc4.8, the command would need to be ``gmake install T=<target> CC=gcc4.8``.
+   gcc4.9, the command would need to be ``gmake install T=<target> CC=gcc4.9``.
 
 Browsing the Installed DPDK Environment Target
 ----------------------------------------------
@@ -177,14 +173,7 @@ Once a target is created, it contains all the libraries and header files for the
 DPDK environment that are required to build customer applications.
 In addition, the test and testpmd applications are built under the build/app
 directory, which may be used for testing.  A kmod directory is also present that
-contains the kernel modules to install:
-
-.. code-block:: console
-
-    ls x86_64-native-bsdapp-gcc
-
-    app build include kmod lib Makefile
-
+contains the kernel modules to install.
 
 .. _loading_contigmem:
 

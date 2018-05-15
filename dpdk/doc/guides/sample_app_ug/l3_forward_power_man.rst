@@ -104,28 +104,9 @@ instead of always running to the C0 state waiting for packets.
 Compiling the Application
 -------------------------
 
-To compile the application:
+To compile the sample application see :doc:`compiling`.
 
-#.  Go to the sample application directory:
-
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/l3fwd-power
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``l3fwd-power`` sub-directory.
 
 Running the Application
 -----------------------
@@ -181,11 +162,11 @@ responsible for checking if it needs to scale down frequency at run time by chec
         struct lcore_conf *qconf;
         int ret;
         unsigned nb_ports;
-        uint16_t queueid;
+        uint16_t queueid, portid;
         unsigned lcore_id;
         uint64_t hz;
         uint32_t n_tx_queue, nb_lcores;
-        uint8_t portid, nb_rx_queue, queue, socketid;
+        uint8_t nb_rx_queue, queue, socketid;
 
         // ...
 

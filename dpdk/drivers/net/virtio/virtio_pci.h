@@ -37,6 +37,7 @@
 #include <stdint.h>
 
 #include <rte_pci.h>
+#include <rte_bus_pci.h>
 #include <rte_ethdev.h>
 
 struct virtqueue;
@@ -44,8 +45,8 @@ struct virtnet_ctl;
 
 /* VirtIO PCI vendor/device ID. */
 #define VIRTIO_PCI_VENDORID     0x1AF4
-#define VIRTIO_PCI_DEVICEID_MIN 0x1000
-#define VIRTIO_PCI_DEVICEID_MAX 0x103F
+#define VIRTIO_PCI_LEGACY_DEVICEID_NET 0x1000
+#define VIRTIO_PCI_MODERN_DEVICEID_NET 0x1041
 
 /* VirtIO ABI version, this must match exactly. */
 #define VIRTIO_PCI_ABI_VERSION 0
@@ -106,6 +107,7 @@ struct virtnet_ctl;
 /* The feature bitmap for virtio net */
 #define VIRTIO_NET_F_CSUM	0	/* Host handles pkts w/ partial csum */
 #define VIRTIO_NET_F_GUEST_CSUM	1	/* Guest handles pkts w/ partial csum */
+#define VIRTIO_NET_F_MTU	3	/* Initial MTU advice. */
 #define VIRTIO_NET_F_MAC	5	/* Host has given MAC address. */
 #define VIRTIO_NET_F_GUEST_TSO4	7	/* Guest can handle TSOv4 in. */
 #define VIRTIO_NET_F_GUEST_TSO6	8	/* Guest can handle TSOv6 in. */
@@ -138,6 +140,7 @@ struct virtnet_ctl;
 #define VIRTIO_RING_F_INDIRECT_DESC	28
 
 #define VIRTIO_F_VERSION_1		32
+#define VIRTIO_F_IOMMU_PLATFORM	33
 
 /*
  * Some VirtIO feature bits (currently bits 28 through 31) are
@@ -145,7 +148,7 @@ struct virtnet_ctl;
  * rest are per-device feature bits.
  */
 #define VIRTIO_TRANSPORT_F_START 28
-#define VIRTIO_TRANSPORT_F_END   32
+#define VIRTIO_TRANSPORT_F_END   34
 
 /* The Guest publishes the used index for which it expects an interrupt
  * at the end of the avail ring. Host should ignore the avail->flags field. */
@@ -159,7 +162,8 @@ struct virtnet_ctl;
 /*
  * Maximum number of virtqueues per device.
  */
-#define VIRTIO_MAX_VIRTQUEUES 8
+#define VIRTIO_MAX_VIRTQUEUE_PAIRS 8
+#define VIRTIO_MAX_VIRTQUEUES (VIRTIO_MAX_VIRTQUEUE_PAIRS * 2 + 1)
 
 /* Common configuration */
 #define VIRTIO_PCI_CAP_COMMON_CFG	1
@@ -234,6 +238,9 @@ struct virtio_pci_ops {
 
 	uint16_t (*set_config_irq)(struct virtio_hw *hw, uint16_t vec);
 
+	uint16_t (*set_queue_irq)(struct virtio_hw *hw, struct virtqueue *vq,
+			uint16_t vec);
+
 	uint16_t (*get_queue_num)(struct virtio_hw *hw, uint16_t queue_id);
 	int (*setup_queue)(struct virtio_hw *hw, struct virtqueue *vq);
 	void (*del_queue)(struct virtio_hw *hw, struct virtqueue *vq);
@@ -244,25 +251,45 @@ struct virtio_net_config;
 
 struct virtio_hw {
 	struct virtnet_ctl *cvq;
-	struct rte_pci_ioport io;
+	uint64_t    req_guest_features;
 	uint64_t    guest_features;
-	uint32_t    max_tx_queues;
-	uint32_t    max_rx_queues;
+	uint32_t    max_queue_pairs;
+	uint16_t    started;
+	uint16_t	max_mtu;
 	uint16_t    vtnet_hdr_size;
 	uint8_t	    vlan_strip;
 	uint8_t	    use_msix;
-	uint8_t     started;
 	uint8_t     modern;
+	uint8_t     use_simple_rx;
+	uint8_t     use_simple_tx;
+	uint16_t    port_id;
 	uint8_t     mac_addr[ETHER_ADDR_LEN];
 	uint32_t    notify_off_multiplier;
 	uint8_t     *isr;
 	uint16_t    *notify_base;
-	struct rte_pci_device *dev;
 	struct virtio_pci_common_cfg *common_cfg;
 	struct virtio_net_config *dev_cfg;
-	const struct virtio_pci_ops *vtpci_ops;
 	void	    *virtio_user_dev;
+
+	struct virtqueue **vqs;
 };
+
+
+/*
+ * While virtio_hw is stored in shared memory, this structure stores
+ * some infos that may vary in the multiple process model locally.
+ * For example, the vtpci_ops pointer.
+ */
+struct virtio_hw_internal {
+	const struct virtio_pci_ops *vtpci_ops;
+	struct rte_pci_ioport io;
+};
+
+#define VTPCI_OPS(hw)	(virtio_hw_internal[(hw)->port_id].vtpci_ops)
+#define VTPCI_IO(hw)	(&virtio_hw_internal[(hw)->port_id].io)
+
+extern struct virtio_hw_internal virtio_hw_internal[RTE_MAX_ETHPORTS];
+
 
 /*
  * This structure is just a reference to read
@@ -275,6 +302,7 @@ struct virtio_net_config {
 	/* See VIRTIO_NET_F_STATUS and VIRTIO_NET_S_* above */
 	uint16_t   status;
 	uint16_t   max_virtqueue_pairs;
+	uint16_t   mtu;
 } __attribute__((packed));
 
 /*
@@ -286,6 +314,12 @@ struct virtio_net_config {
 /* The alignment to use between consumer and producer parts of vring. */
 #define VIRTIO_PCI_VRING_ALIGN 4096
 
+enum virtio_msix_status {
+	VIRTIO_MSIX_NONE = 0,
+	VIRTIO_MSIX_DISABLED = 1,
+	VIRTIO_MSIX_ENABLED = 2
+};
+
 static inline int
 vtpci_with_feature(struct virtio_hw *hw, uint64_t bit)
 {
@@ -295,8 +329,7 @@ vtpci_with_feature(struct virtio_hw *hw, uint64_t bit)
 /*
  * Function declaration from virtio_pci.c
  */
-int vtpci_init(struct rte_pci_device *, struct virtio_hw *,
-	       uint32_t *dev_flags);
+int vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw);
 void vtpci_reset(struct virtio_hw *);
 
 void vtpci_reinit_complete(struct virtio_hw *);
@@ -312,6 +345,10 @@ void vtpci_read_dev_config(struct virtio_hw *, size_t, void *, int);
 
 uint8_t vtpci_isr(struct virtio_hw *);
 
-uint16_t vtpci_irq_config(struct virtio_hw *, uint16_t);
+enum virtio_msix_status vtpci_msix_detect(struct rte_pci_device *dev);
+
+extern const struct virtio_pci_ops legacy_ops;
+extern const struct virtio_pci_ops modern_ops;
+extern const struct virtio_pci_ops virtio_user_ops;
 
 #endif /* _VIRTIO_PCI_H_ */

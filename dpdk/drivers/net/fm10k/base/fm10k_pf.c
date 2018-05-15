@@ -66,21 +66,21 @@ STATIC s32 fm10k_reset_hw_pf(struct fm10k_hw *hw)
 
 	/* shut down all rings */
 	err = fm10k_disable_queues_generic(hw, FM10K_MAX_QUEUES);
-	if (err)
+	if (err == FM10K_ERR_REQUESTS_PENDING) {
+		hw->mac.reset_while_pending++;
+		goto force_reset;
+	} else if (err) {
 		return err;
+	}
 
 	/* Verify that DMA is no longer active */
 	reg = FM10K_READ_REG(hw, FM10K_DMA_CTRL);
 	if (reg & (FM10K_DMA_CTRL_TX_ACTIVE | FM10K_DMA_CTRL_RX_ACTIVE))
 		return FM10K_ERR_DMA_PENDING;
 
-	/* verify the switch is ready for reset */
-	reg = FM10K_READ_REG(hw, FM10K_DMA_CTRL2);
-	if (!(reg & FM10K_DMA_CTRL2_SWITCH_READY))
-		goto out;
-
+force_reset:
 	/* Inititate data path reset */
-	reg |= FM10K_DMA_CTRL_DATAPATH_RESET;
+	reg = FM10K_DMA_CTRL_DATAPATH_RESET;
 	FM10K_WRITE_REG(hw, FM10K_DMA_CTRL, reg);
 
 	/* Flush write and allow 100us for reset to complete */
@@ -90,10 +90,9 @@ STATIC s32 fm10k_reset_hw_pf(struct fm10k_hw *hw)
 	/* Verify we made it out of reset */
 	reg = FM10K_READ_REG(hw, FM10K_IP);
 	if (!(reg & FM10K_IP_NOTINRESET))
-		err = FM10K_ERR_RESET_FAILED;
+		return FM10K_ERR_RESET_FAILED;
 
-out:
-	return err;
+	return FM10K_SUCCESS;
 }
 
 /**
@@ -255,8 +254,8 @@ STATIC s32 fm10k_update_vlan_pf(struct fm10k_hw *hw, u32 vid, u8 vsi, bool set)
 
 	/* VLAN multi-bit write:
 	 * The multi-bit write has several parts to it.
-	 *    3			  2		      1			  0
-	 *  1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
+	 *               24              16               8               0
+	 *  7 6 5 4 3 2 1 0 7 6 5 4 3 2 1 0 7 6 5 4 3 2 1 0 7 6 5 4 3 2 1 0
 	 * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 	 * | RSVD0 |         Length        |C|RSVD0|        VLAN ID        |
 	 * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -412,7 +411,7 @@ STATIC s32 fm10k_update_uc_addr_pf(struct fm10k_hw *hw, u16 glort,
 	DEBUGFUNC("fm10k_update_uc_addr_pf");
 
 	/* verify MAC address is valid */
-	if (!FM10K_IS_VALID_ETHER_ADDR(mac))
+	if (!IS_VALID_ETHER_ADDR(mac))
 		return FM10K_ERR_PARAM;
 
 	return fm10k_update_xc_addr_pf(hw, glort, mac, vid, add, flags);
@@ -435,7 +434,7 @@ STATIC s32 fm10k_update_mc_addr_pf(struct fm10k_hw *hw, u16 glort,
 	DEBUGFUNC("fm10k_update_mc_addr_pf");
 
 	/* verify multicast address is valid */
-	if (!FM10K_IS_MULTICAST_ETHER_ADDR(mac))
+	if (!IS_MULTICAST_ETHER_ADDR(mac))
 		return FM10K_ERR_PARAM;
 
 	return fm10k_update_xc_addr_pf(hw, glort, mac, vid, add, 0);
@@ -535,6 +534,10 @@ STATIC s32 fm10k_update_lport_state_pf(struct fm10k_hw *hw, u16 glort,
 	/* if glort is not valid return error */
 	if (!fm10k_glort_valid_pf(hw, glort))
 		return FM10K_ERR_PARAM;
+
+	/* reset multicast mode if deleting lport */
+	if (!enable)
+		fm10k_update_xcast_mode_pf(hw, glort, FM10K_XCAST_MODE_NONE);
 
 	/* construct the lport message from the 2 pieces of data we have */
 	lport_msg = ((u32)count << 16) | glort;
@@ -908,13 +911,13 @@ STATIC s32 fm10k_iov_assign_default_mac_vlan_pf(struct fm10k_hw *hw,
 	vf_q_idx = fm10k_vf_queue_index(hw, vf_idx);
 	qmap_idx = qmap_stride * vf_idx;
 
-	/* MAP Tx queue back to 0 temporarily, and disable it */
-	FM10K_WRITE_REG(hw, FM10K_TQMAP(qmap_idx), 0);
-	FM10K_WRITE_REG(hw, FM10K_TXDCTL(vf_q_idx), 0);
-
-	/* determine correct default VLAN ID */
+	/* Determine correct default VLAN ID. The FM10K_VLAN_OVERRIDE bit is
+	 * used here to indicate to the VF that it will not have privilege to
+	 * write VLAN_TABLE. All policy is enforced on the PF but this allows
+	 * the VF to correctly report errors to userspace rqeuests.
+	 */
 	if (vf_info->pf_vid)
-		vf_vid = vf_info->pf_vid | FM10K_VLAN_CLEAR;
+		vf_vid = vf_info->pf_vid | FM10K_VLAN_OVERRIDE;
 	else
 		vf_vid = vf_info->sw_vid;
 
@@ -923,9 +926,35 @@ STATIC s32 fm10k_iov_assign_default_mac_vlan_pf(struct fm10k_hw *hw,
 	fm10k_tlv_attr_put_mac_vlan(msg, FM10K_MAC_VLAN_MSG_DEFAULT_MAC,
 				    vf_info->mac, vf_vid);
 
-	/* load onto outgoing mailbox, ignore any errors on enqueue */
-	if (vf_info->mbx.ops.enqueue_tx)
-		vf_info->mbx.ops.enqueue_tx(hw, &vf_info->mbx, msg);
+	/* Configure Queue control register with new VLAN ID. The TXQCTL
+	 * register is RO from the VF, so the PF must do this even in the
+	 * case of notifying the VF of a new VID via the mailbox.
+	 */
+	txqctl = ((u32)vf_vid << FM10K_TXQCTL_VID_SHIFT) &
+		 FM10K_TXQCTL_VID_MASK;
+	txqctl |= (vf_idx << FM10K_TXQCTL_TC_SHIFT) |
+		  FM10K_TXQCTL_VF | vf_idx;
+
+	for (i = 0; i < queues_per_pool; i++)
+		FM10K_WRITE_REG(hw, FM10K_TXQCTL(vf_q_idx + i), txqctl);
+
+	/* try loading a message onto outgoing mailbox first */
+	if (vf_info->mbx.ops.enqueue_tx) {
+		err = vf_info->mbx.ops.enqueue_tx(hw, &vf_info->mbx, msg);
+		if (err != FM10K_MBX_ERR_NO_MBX)
+			return err;
+		err = FM10K_SUCCESS;
+	}
+
+	/* If we aren't connected to a mailbox, this is most likely because
+	 * the VF driver is not running. It should thus be safe to re-map
+	 * queues and use the registers to pass the MAC address so that the VF
+	 * driver gets correct information during its initialization.
+	 */
+
+	/* MAP Tx queue back to 0 temporarily, and disable it */
+	FM10K_WRITE_REG(hw, FM10K_TQMAP(qmap_idx), 0);
+	FM10K_WRITE_REG(hw, FM10K_TXDCTL(vf_q_idx), 0);
 
 	/* verify ring has disabled before modifying base address registers */
 	txdctl = FM10K_READ_REG(hw, FM10K_TXDCTL(vf_q_idx));
@@ -941,7 +970,7 @@ STATIC s32 fm10k_iov_assign_default_mac_vlan_pf(struct fm10k_hw *hw,
 	}
 
 	/* Update base address registers to contain MAC address */
-	if (FM10K_IS_VALID_ETHER_ADDR(vf_info->mac)) {
+	if (IS_VALID_ETHER_ADDR(vf_info->mac)) {
 		tdbal = (((u32)vf_info->mac[3]) << 24) |
 			(((u32)vf_info->mac[4]) << 16) |
 			(((u32)vf_info->mac[5]) << 8);
@@ -964,16 +993,6 @@ STATIC s32 fm10k_iov_assign_default_mac_vlan_pf(struct fm10k_hw *hw,
 						   FM10K_TDLEN_ITR_SCALE_SHIFT);
 
 err_out:
-	/* configure Queue control register */
-	txqctl = ((u32)vf_vid << FM10K_TXQCTL_VID_SHIFT) &
-		 FM10K_TXQCTL_VID_MASK;
-	txqctl |= (vf_idx << FM10K_TXQCTL_TC_SHIFT) |
-		  FM10K_TXQCTL_VF | vf_idx;
-
-	/* assign VLAN ID */
-	for (i = 0; i < queues_per_pool; i++)
-		FM10K_WRITE_REG(hw, FM10K_TXQCTL(vf_q_idx + i), txqctl);
-
 	/* restore the queue back to VF ownership */
 	FM10K_WRITE_REG(hw, FM10K_TQMAP(qmap_idx), vf_q_idx);
 	return err;
@@ -1081,7 +1100,7 @@ STATIC s32 fm10k_iov_reset_resources_pf(struct fm10k_hw *hw,
 	FM10K_WRITE_REG(hw, FM10K_MRQC(vf_info->vsi), 0);
 
 	/* Update base address registers to contain MAC address */
-	if (FM10K_IS_VALID_ETHER_ADDR(vf_info->mac)) {
+	if (IS_VALID_ETHER_ADDR(vf_info->mac)) {
 		tdbal = (((u32)vf_info->mac[3]) << 24) |
 			(((u32)vf_info->mac[4]) << 16) |
 			(((u32)vf_info->mac[5]) << 8);
@@ -1267,18 +1286,32 @@ s32 fm10k_iov_msg_mac_vlan_pf(struct fm10k_hw *hw, u32 **results,
 		if (err)
 			return err;
 
-		/* verify upper 16 bits are zero */
-		if (vid >> 16)
-			return FM10K_ERR_PARAM;
-
 		set = !(vid & FM10K_VLAN_CLEAR);
 		vid &= ~FM10K_VLAN_CLEAR;
 
-		err = fm10k_iov_select_vid(vf_info, (u16)vid);
-		if (err < 0)
-			return err;
+		/* if the length field has been set, this is a multi-bit
+		 * update request. For multi-bit requests, simply disallow
+		 * them when the pf_vid has been set. In this case, the PF
+		 * should have already cleared the VLAN_TABLE, and if we
+		 * allowed them, it could allow a rogue VF to receive traffic
+		 * on a VLAN it was not assigned. In the single-bit case, we
+		 * need to modify requests for VLAN 0 to use the default PF or
+		 * SW vid when assigned.
+		 */
 
-		vid = err;
+		if (vid >> 16) {
+			/* prevent multi-bit requests when PF has
+			 * administratively set the VLAN for this VF
+			 */
+			if (vf_info->pf_vid)
+				return FM10K_ERR_PARAM;
+		} else {
+			err = fm10k_iov_select_vid(vf_info, (u16)vid);
+			if (err < 0)
+				return err;
+
+			vid = err;
+		}
 
 		/* update VSI info for VF in regards to VLAN table */
 		err = hw->mac.ops.update_vlan(hw, vid, vf_info->vsi, set);
@@ -1293,7 +1326,7 @@ s32 fm10k_iov_msg_mac_vlan_pf(struct fm10k_hw *hw, u32 **results,
 			return err;
 
 		/* block attempts to set MAC for a locked device */
-		if (FM10K_IS_VALID_ETHER_ADDR(vf_info->mac) &&
+		if (IS_VALID_ETHER_ADDR(vf_info->mac) &&
 		    memcmp(mac, vf_info->mac, ETH_ALEN))
 			return FM10K_ERR_PARAM;
 
@@ -1670,13 +1703,12 @@ STATIC s32 fm10k_request_lport_map_pf(struct fm10k_hw *hw)
  *  @hw: pointer to hardware structure
  *  @switch_ready: pointer to boolean value that will record switch state
  *
- *  This funciton will check the DMA_CTRL2 register and mailbox in order
+ *  This function will check the DMA_CTRL2 register and mailbox in order
  *  to determine if the switch is ready for the PF to begin requesting
  *  addresses and mapping traffic to the local interface.
  **/
 STATIC s32 fm10k_get_host_state_pf(struct fm10k_hw *hw, bool *switch_ready)
 {
-	s32 ret_val = FM10K_SUCCESS;
 	u32 dma_ctrl2;
 
 	DEBUGFUNC("fm10k_get_host_state_pf");
@@ -1684,23 +1716,16 @@ STATIC s32 fm10k_get_host_state_pf(struct fm10k_hw *hw, bool *switch_ready)
 	/* verify the switch is ready for interaction */
 	dma_ctrl2 = FM10K_READ_REG(hw, FM10K_DMA_CTRL2);
 	if (!(dma_ctrl2 & FM10K_DMA_CTRL2_SWITCH_READY))
-		goto out;
+		return FM10K_SUCCESS;
 
 	/* retrieve generic host state info */
-	ret_val = fm10k_get_host_state_generic(hw, switch_ready);
-	if (ret_val)
-		goto out;
-
-	/* interface cannot receive traffic without logical ports */
-	if (hw->mac.dglort_map == FM10K_DGLORTMAP_NONE)
-		ret_val = fm10k_request_lport_map_pf(hw);
-
-out:
-	return ret_val;
+	return fm10k_get_host_state_generic(hw, switch_ready);
 }
 
 /* This structure defines the attibutes to be parsed below */
 const struct fm10k_tlv_attr fm10k_lport_map_msg_attr[] = {
+	FM10K_TLV_ATTR_LE_STRUCT(FM10K_PF_ATTR_ID_ERR,
+				 sizeof(struct fm10k_swapi_error)),
 	FM10K_TLV_ATTR_U32(FM10K_PF_ATTR_ID_LPORT_MAP),
 	FM10K_TLV_ATTR_LAST
 };
@@ -2082,6 +2107,7 @@ s32 fm10k_init_ops_pf(struct fm10k_hw *hw)
 	mac->ops.set_dma_mask = &fm10k_set_dma_mask_pf;
 	mac->ops.get_fault = &fm10k_get_fault_pf;
 	mac->ops.get_host_state = &fm10k_get_host_state_pf;
+	mac->ops.request_lport_map = &fm10k_request_lport_map_pf;
 	mac->ops.adjust_systime = &fm10k_adjust_systime_pf;
 	mac->ops.notify_offset = &fm10k_notify_offset_pf;
 	mac->ops.read_systime = &fm10k_read_systime_pf;

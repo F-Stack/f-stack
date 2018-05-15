@@ -39,33 +39,12 @@ It is intended as a demonstration of the basic components of a DPDK forwarding
 application. For more detailed implementations see the L2 and L3 forwarding
 sample applications.
 
-
 Compiling the Application
 -------------------------
 
-To compile the application export the path to the DPDK source tree and go to
-the example directory:
+To compile the sample application see :doc:`compiling`.
 
-.. code-block:: console
-
-    export RTE_SDK=/path/to/rte_sdk
-
-    cd ${RTE_SDK}/examples/skeleton
-
-Set the target, for example:
-
-.. code-block:: console
-
-    export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-See the *DPDK Getting Started* Guide for possible ``RTE_TARGET`` values.
-
-Build the application as follows:
-
-.. code-block:: console
-
-    make
-
+The application is located in the ``skeleton`` sub-directory.
 
 Running the Application
 -----------------------
@@ -74,7 +53,7 @@ To run the example in a ``linuxapp`` environment:
 
 .. code-block:: console
 
-    ./build/basicfwd -c 2 -n 4
+    ./build/basicfwd -l 1 -n 4
 
 Refer to *DPDK Getting Started Guide* for general information on running
 applications and the Environment Abstraction Layer (EAL) options.
@@ -160,7 +139,7 @@ Forwarding application is shown below:
 .. code-block:: c
 
     static inline int
-    port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+    port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     {
         struct rte_eth_conf port_conf = port_conf_default;
         const uint16_t rx_rings = 1, tx_rings = 1;
@@ -241,8 +220,8 @@ looks like the following:
     static __attribute__((noreturn)) void
     lcore_main(void)
     {
-        const uint8_t nb_ports = rte_eth_dev_count();
-        uint8_t port;
+        const uint16_t nb_ports = rte_eth_dev_count();
+        uint16_t port;
 
         /*
          * Check that the port is on the same NUMA node as the polling thread

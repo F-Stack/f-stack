@@ -62,6 +62,10 @@
 #ifndef LTHREAD_SCHED_H_
 #define LTHREAD_SCHED_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "lthread_int.h"
 #include "lthread_queue.h"
 #include "lthread_objcache.h"
@@ -108,8 +112,8 @@ static inline uint64_t _sched_now(void)
 	return 1;
 }
 
-static inline void
-_affinitize(void) __attribute__ ((always_inline));
+static __rte_always_inline void
+_affinitize(void);
 static inline void
 _affinitize(void)
 {
@@ -119,8 +123,8 @@ _affinitize(void)
 	ctx_switch(&(THIS_SCHED)->ctx, &lt->ctx);
 }
 
-static inline void
-_suspend(void) __attribute__ ((always_inline));
+static __rte_always_inline void
+_suspend(void);
 static inline void
 _suspend(void)
 {
@@ -132,8 +136,8 @@ _suspend(void)
 	(THIS_SCHED)->nb_blocked_threads--;
 }
 
-static inline void
-_reschedule(void) __attribute__ ((always_inline));
+static __rte_always_inline void
+_reschedule(void);
 static inline void
 _reschedule(void)
 {
@@ -148,5 +152,8 @@ extern struct lthread_sched *schedcore[];
 void _sched_timer_cb(struct rte_timer *tim, void *arg);
 void _sched_shutdown(__rte_unused void *arg);
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif				/* LTHREAD_SCHED_H_ */

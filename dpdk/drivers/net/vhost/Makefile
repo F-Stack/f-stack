@@ -37,13 +37,16 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_pmd_vhost.a
 
 LDLIBS += -lpthread
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs -lrte_vhost
+LDLIBS += -lrte_bus_vdev
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
 EXPORT_MAP := rte_pmd_vhost_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 #
 # all source are stored in SRCS-y
@@ -54,13 +57,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += rte_eth_vhost.c
 # Export include files
 #
 SYMLINK-y-include += rte_eth_vhost.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_kvargs
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_VHOST) += lib/librte_vhost
 
 include $(RTE_SDK)/mk/rte.lib.mk

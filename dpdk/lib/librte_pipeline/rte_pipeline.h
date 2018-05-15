@@ -87,6 +87,7 @@ extern "C" {
 
 #include <rte_port.h>
 #include <rte_table.h>
+#include <rte_common.h>
 
 struct rte_mbuf;
 
@@ -244,6 +245,7 @@ struct rte_pipeline_table_entry {
 	/** Reserved action */
 	enum rte_pipeline_action action;
 
+	RTE_STD_C11
 	union {
 		/** Output port ID (meta-data for "Send packet to output port"
 		action) */
@@ -252,7 +254,7 @@ struct rte_pipeline_table_entry {
 		uint32_t table_id;
 	};
 	/** Start of table entry area for user defined actions and meta-data */
-	uint8_t action_data[0];
+	__extension__ uint8_t action_data[0];
 };
 
 /**
@@ -481,7 +483,7 @@ int rte_pipeline_table_entry_delete(struct rte_pipeline *p,
  * @param keys
  *   Array containing table entry keys
  * @param entries
- *   Array containung new contents for every table entry identified by key
+ *   Array containing new contents for every table entry identified by key
  * @param n_keys
  *   Number of keys to add
  * @param key_found

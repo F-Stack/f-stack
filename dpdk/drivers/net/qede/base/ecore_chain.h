@@ -54,21 +54,9 @@ struct ecore_chain_pbl_u32 {
 	u32 cons_page_idx;
 };
 
-struct ecore_chain_pbl {
-	/* Base address of a pre-allocated buffer for pbl */
-	dma_addr_t p_phys_table;
-	void *p_virt_table;
-
-	/* Table for keeping the virtual addresses of the chain pages,
-	 * respectively to the physical addresses in the pbl table.
-	 */
-	void **pp_virt_addr_tbl;
-
-	/* Index to current used page by producer/consumer */
-	union {
-		struct ecore_chain_pbl_u16 pbl16;
-		struct ecore_chain_pbl_u32 pbl32;
-	} u;
+struct ecore_chain_ext_pbl {
+	dma_addr_t p_pbl_phys;
+	void *p_pbl_virt;
 };
 
 struct ecore_chain_u16 {
@@ -84,40 +72,77 @@ struct ecore_chain_u32 {
 };
 
 struct ecore_chain {
-	/* Address of first page of the chain */
-	void *p_virt_addr;
-	dma_addr_t p_phys_addr;
-
+	/* fastpath portion of the chain - required for commands such
+	 * as produce / consume.
+	 */
 	/* Point to next element to produce/consume */
 	void *p_prod_elem;
 	void *p_cons_elem;
 
-	enum ecore_chain_mode mode;
-	enum ecore_chain_use_mode intended_use;
+	/* Fastpath portions of the PBL [if exists] */
 
-	enum ecore_chain_cnt_type cnt_type;
+	struct {
+		/* Table for keeping the virtual addresses of the chain pages,
+		 * respectively to the physical addresses in the pbl table.
+		 */
+		void		**pp_virt_addr_tbl;
+
+		union {
+			struct ecore_chain_pbl_u16	u16;
+			struct ecore_chain_pbl_u32	u32;
+		} c;
+	} pbl;
+
 	union {
 		struct ecore_chain_u16 chain16;
 		struct ecore_chain_u32 chain32;
 	} u;
 
-	u32 page_cnt;
+	/* Capacity counts only usable elements */
+	u32				capacity;
+	u32				page_cnt;
 
-	/* Number of elements - capacity is for usable elements only,
-	 * while size will contain total number of elements [for entire chain].
+	/* A u8 would suffice for mode, but it would save as a lot of headaches
+	 * on castings & defaults.
 	 */
-	u32 capacity;
-	u32 size;
+	enum ecore_chain_mode		mode;
 
 	/* Elements information for fast calculations */
 	u16 elem_per_page;
 	u16 elem_per_page_mask;
-	u16 elem_unusable;
-	u16 usable_per_page;
 	u16 elem_size;
 	u16 next_page_mask;
+	u16 usable_per_page;
+	u8 elem_unusable;
 
-	struct ecore_chain_pbl pbl;
+	u8				cnt_type;
+
+	/* Slowpath of the chain - required for initialization and destruction,
+	 * but isn't involved in regular functionality.
+	 */
+
+	/* Base address of a pre-allocated buffer for pbl */
+	struct {
+		dma_addr_t		p_phys_table;
+		void			*p_virt_table;
+	} pbl_sp;
+
+	/* Address of first page of the chain  - the address is required
+	 * for fastpath operation [consume/produce] but only for the the SINGLE
+	 * flavour which isn't considered fastpath [== SPQ].
+	 */
+	void				*p_virt_addr;
+	dma_addr_t			p_phys_addr;
+
+	/* Total number of elements [for entire chain] */
+	u32				size;
+
+	u8				intended_use;
+
+	/* TBD - do we really need this? Couldn't find usage for it */
+	bool				b_external_pbl;
+
+	void *dp_ctx;
 };
 
 #define ECORE_CHAIN_PBL_ENTRY_SIZE	(8)
@@ -126,10 +151,10 @@ struct ecore_chain {
 
 #define UNUSABLE_ELEMS_PER_PAGE(elem_size, mode)		\
 	  ((mode == ECORE_CHAIN_MODE_NEXT_PTR) ?		\
-	   (1 + ((sizeof(struct ecore_chain_next) - 1) /		\
-	   (elem_size))) : 0)
+	   (u8)(1 + ((sizeof(struct ecore_chain_next) - 1) /	\
+		     (elem_size))) : 0)
 
-#define USABLE_ELEMS_PER_PAGE(elem_size, mode)			\
+#define USABLE_ELEMS_PER_PAGE(elem_size, mode)		\
 	((u32)(ELEMS_PER_PAGE(elem_size) -			\
 	UNUSABLE_ELEMS_PER_PAGE(elem_size, mode)))
 
@@ -183,7 +208,7 @@ static OSAL_INLINE u16 ecore_chain_get_elem_left(struct ecore_chain *p_chain)
 		     (u32)p_chain->u.chain16.cons_idx);
 	if (p_chain->mode == ECORE_CHAIN_MODE_NEXT_PTR)
 		used -= p_chain->u.chain16.prod_idx / p_chain->elem_per_page -
-		    p_chain->u.chain16.cons_idx / p_chain->elem_per_page;
+			p_chain->u.chain16.cons_idx / p_chain->elem_per_page;
 
 	return (u16)(p_chain->capacity - used);
 }
@@ -196,11 +221,11 @@ ecore_chain_get_elem_left_u32(struct ecore_chain *p_chain)
 	OSAL_ASSERT(is_chain_u32(p_chain));
 
 	used = (u32)(((u64)ECORE_U32_MAX + 1 +
-		       (u64)(p_chain->u.chain32.prod_idx)) -
-		      (u64)p_chain->u.chain32.cons_idx);
+		      (u64)(p_chain->u.chain32.prod_idx)) -
+		     (u64)p_chain->u.chain32.cons_idx);
 	if (p_chain->mode == ECORE_CHAIN_MODE_NEXT_PTR)
 		used -= p_chain->u.chain32.prod_idx / p_chain->elem_per_page -
-		    p_chain->u.chain32.cons_idx / p_chain->elem_per_page;
+			p_chain->u.chain32.cons_idx / p_chain->elem_per_page;
 
 	return p_chain->capacity - used;
 }
@@ -236,7 +261,7 @@ u16 ecore_chain_get_usable_per_page(struct ecore_chain *p_chain)
 }
 
 static OSAL_INLINE
-u16 ecore_chain_get_unusable_per_page(struct ecore_chain *p_chain)
+u8 ecore_chain_get_unusable_per_page(struct ecore_chain *p_chain)
 {
 	return p_chain->elem_unusable;
 }
@@ -254,7 +279,7 @@ static OSAL_INLINE u32 ecore_chain_get_page_cnt(struct ecore_chain *p_chain)
 static OSAL_INLINE
 dma_addr_t ecore_chain_get_pbl_phys(struct ecore_chain *p_chain)
 {
-	return p_chain->pbl.p_phys_table;
+	return p_chain->pbl_sp.p_phys_table;
 }
 
 /**
@@ -279,9 +304,9 @@ ecore_chain_advance_page(struct ecore_chain *p_chain, void **p_next_elem,
 		p_next = (struct ecore_chain_next *)(*p_next_elem);
 		*p_next_elem = p_next->next_virt;
 		if (is_chain_u16(p_chain))
-			*(u16 *)idx_to_inc += p_chain->elem_unusable;
+			*(u16 *)idx_to_inc += (u16)p_chain->elem_unusable;
 		else
-			*(u32 *)idx_to_inc += p_chain->elem_unusable;
+			*(u32 *)idx_to_inc += (u16)p_chain->elem_unusable;
 		break;
 	case ECORE_CHAIN_MODE_SINGLE:
 		*p_next_elem = p_chain->p_virt_addr;
@@ -307,21 +332,23 @@ ecore_chain_advance_page(struct ecore_chain *p_chain, void **p_next_elem,
 	(((p)->u.chain32.idx & (p)->elem_per_page_mask) == (p)->usable_per_page)
 
 #define is_unusable_next_idx(p, idx)		\
-	((((p)->u.chain16.idx + 1) & (p)->elem_per_page_mask) == \
-	(p)->usable_per_page)
+	((((p)->u.chain16.idx + 1) &		\
+	(p)->elem_per_page_mask) == (p)->usable_per_page)
 
 #define is_unusable_next_idx_u32(p, idx)	\
-	((((p)->u.chain32.idx + 1) & (p)->elem_per_page_mask) \
-	== (p)->usable_per_page)
+	((((p)->u.chain32.idx + 1) &		\
+	(p)->elem_per_page_mask) == (p)->usable_per_page)
 
 #define test_and_skip(p, idx)						\
 	do {								\
 		if (is_chain_u16(p)) {					\
 			if (is_unusable_idx(p, idx))			\
-				(p)->u.chain16.idx += (p)->elem_unusable; \
+				(p)->u.chain16.idx +=			\
+					(p)->elem_unusable;		\
 		} else {						\
 			if (is_unusable_idx_u32(p, idx))		\
-				(p)->u.chain32.idx += (p)->elem_unusable; \
+				(p)->u.chain32.idx +=			\
+					(p)->elem_unusable;		\
 		}							\
 	} while (0)
 
@@ -380,7 +407,7 @@ static OSAL_INLINE void *ecore_chain_produce(struct ecore_chain *p_chain)
 		if ((p_chain->u.chain16.prod_idx &
 		     p_chain->elem_per_page_mask) == p_chain->next_page_mask) {
 			p_prod_idx = &p_chain->u.chain16.prod_idx;
-			p_prod_page_idx = &p_chain->pbl.u.pbl16.prod_page_idx;
+			p_prod_page_idx = &p_chain->pbl.c.u16.prod_page_idx;
 			ecore_chain_advance_page(p_chain, &p_chain->p_prod_elem,
 						 p_prod_idx, p_prod_page_idx);
 		}
@@ -389,7 +416,7 @@ static OSAL_INLINE void *ecore_chain_produce(struct ecore_chain *p_chain)
 		if ((p_chain->u.chain32.prod_idx &
 		     p_chain->elem_per_page_mask) == p_chain->next_page_mask) {
 			p_prod_idx = &p_chain->u.chain32.prod_idx;
-			p_prod_page_idx = &p_chain->pbl.u.pbl32.prod_page_idx;
+			p_prod_page_idx = &p_chain->pbl.c.u32.prod_page_idx;
 			ecore_chain_advance_page(p_chain, &p_chain->p_prod_elem,
 						 p_prod_idx, p_prod_page_idx);
 		}
@@ -454,7 +481,7 @@ static OSAL_INLINE void *ecore_chain_consume(struct ecore_chain *p_chain)
 		if ((p_chain->u.chain16.cons_idx &
 		     p_chain->elem_per_page_mask) == p_chain->next_page_mask) {
 			p_cons_idx = &p_chain->u.chain16.cons_idx;
-			p_cons_page_idx = &p_chain->pbl.u.pbl16.cons_page_idx;
+			p_cons_page_idx = &p_chain->pbl.c.u16.cons_page_idx;
 			ecore_chain_advance_page(p_chain, &p_chain->p_cons_elem,
 						 p_cons_idx, p_cons_page_idx);
 		}
@@ -463,7 +490,7 @@ static OSAL_INLINE void *ecore_chain_consume(struct ecore_chain *p_chain)
 		if ((p_chain->u.chain32.cons_idx &
 		     p_chain->elem_per_page_mask) == p_chain->next_page_mask) {
 			p_cons_idx = &p_chain->u.chain32.cons_idx;
-			p_cons_page_idx = &p_chain->pbl.u.pbl32.cons_page_idx;
+			p_cons_page_idx = &p_chain->pbl.c.u32.cons_page_idx;
 			ecore_chain_advance_page(p_chain, &p_chain->p_cons_elem,
 						 p_cons_idx, p_cons_page_idx);
 		}
@@ -507,24 +534,25 @@ static OSAL_INLINE void ecore_chain_reset(struct ecore_chain *p_chain)
 		u32 reset_val = p_chain->page_cnt - 1;
 
 		if (is_chain_u16(p_chain)) {
-			p_chain->pbl.u.pbl16.prod_page_idx = (u16)reset_val;
-			p_chain->pbl.u.pbl16.cons_page_idx = (u16)reset_val;
+			p_chain->pbl.c.u16.prod_page_idx = (u16)reset_val;
+			p_chain->pbl.c.u16.cons_page_idx = (u16)reset_val;
 		} else {
-			p_chain->pbl.u.pbl32.prod_page_idx = reset_val;
-			p_chain->pbl.u.pbl32.cons_page_idx = reset_val;
+			p_chain->pbl.c.u32.prod_page_idx = reset_val;
+			p_chain->pbl.c.u32.cons_page_idx = reset_val;
 		}
 	}
 
 	switch (p_chain->intended_use) {
-	case ECORE_CHAIN_USE_TO_CONSUME_PRODUCE:
-	case ECORE_CHAIN_USE_TO_PRODUCE:
-		/* Do nothing */
-		break;
-
 	case ECORE_CHAIN_USE_TO_CONSUME:
 		/* produce empty elements */
 		for (i = 0; i < p_chain->capacity; i++)
 			ecore_chain_recycle_consumed(p_chain);
+		break;
+
+	case ECORE_CHAIN_USE_TO_CONSUME_PRODUCE:
+	case ECORE_CHAIN_USE_TO_PRODUCE:
+	default:
+		/* Do nothing */
 		break;
 	}
 }
@@ -540,20 +568,21 @@ static OSAL_INLINE void ecore_chain_reset(struct ecore_chain *p_chain)
  * @param intended_use
  * @param mode
  * @param cnt_type
+ * @param dp_ctx
  */
 static OSAL_INLINE void
 ecore_chain_init_params(struct ecore_chain *p_chain, u32 page_cnt, u8 elem_size,
 			enum ecore_chain_use_mode intended_use,
 			enum ecore_chain_mode mode,
-			enum ecore_chain_cnt_type cnt_type)
+			enum ecore_chain_cnt_type cnt_type, void *dp_ctx)
 {
 	/* chain fixed parameters */
 	p_chain->p_virt_addr = OSAL_NULL;
 	p_chain->p_phys_addr = 0;
 	p_chain->elem_size = elem_size;
-	p_chain->intended_use = intended_use;
+	p_chain->intended_use = (u8)intended_use;
 	p_chain->mode = mode;
-	p_chain->cnt_type = cnt_type;
+	p_chain->cnt_type = (u8)cnt_type;
 
 	p_chain->elem_per_page = ELEMS_PER_PAGE(elem_size);
 	p_chain->usable_per_page = USABLE_ELEMS_PER_PAGE(elem_size, mode);
@@ -565,10 +594,12 @@ ecore_chain_init_params(struct ecore_chain *p_chain, u32 page_cnt, u8 elem_size,
 	p_chain->page_cnt = page_cnt;
 	p_chain->capacity = p_chain->usable_per_page * page_cnt;
 	p_chain->size = p_chain->elem_per_page * page_cnt;
-
-	p_chain->pbl.p_phys_table = 0;
-	p_chain->pbl.p_virt_table = OSAL_NULL;
+	p_chain->b_external_pbl = false;
+	p_chain->pbl_sp.p_phys_table = 0;
+	p_chain->pbl_sp.p_virt_table = OSAL_NULL;
 	p_chain->pbl.pp_virt_addr_tbl = OSAL_NULL;
+
+	p_chain->dp_ctx = dp_ctx;
 }
 
 /**
@@ -609,8 +640,8 @@ static OSAL_INLINE void ecore_chain_init_pbl_mem(struct ecore_chain *p_chain,
 						 dma_addr_t p_phys_pbl,
 						 void **pp_virt_addr_tbl)
 {
-	p_chain->pbl.p_phys_table = p_phys_pbl;
-	p_chain->pbl.p_virt_table = p_virt_pbl;
+	p_chain->pbl_sp.p_phys_table = p_phys_pbl;
+	p_chain->pbl_sp.p_virt_table = p_virt_pbl;
 	p_chain->pbl.pp_virt_addr_tbl = pp_virt_addr_tbl;
 }
 
@@ -720,5 +751,15 @@ static OSAL_INLINE void ecore_chain_pbl_zero_mem(struct ecore_chain *p_chain)
 		OSAL_MEM_ZERO(p_chain->pbl.pp_virt_addr_tbl[i],
 			      ECORE_CHAIN_PAGE_SIZE);
 }
+
+int ecore_chain_print(struct ecore_chain *p_chain, char *buffer,
+		      u32 buffer_size, u32 *element_indx, u32 stop_indx,
+		      bool print_metadata,
+		      int (*func_ptr_print_element)(struct ecore_chain *p_chain,
+						    void *p_element,
+						    char *buffer),
+		      int (*func_ptr_print_metadata)(struct ecore_chain
+						     *p_chain,
+						     char *buffer));
 
 #endif /* __ECORE_CHAIN_H__ */

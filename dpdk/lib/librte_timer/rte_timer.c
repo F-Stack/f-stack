@@ -43,14 +43,13 @@
 #include <rte_cycles.h>
 #include <rte_per_lcore.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_spinlock.h>
 #include <rte_random.h>
+#include <rte_pause.h>
 
 #include "rte_timer.h"
 
@@ -183,7 +182,7 @@ timer_set_running_state(struct rte_timer *tim)
 			return -1;
 
 		/* here, we know that timer is stopped or pending,
-		 * mark it atomically as beeing configured */
+		 * mark it atomically as being configured */
 		status.state = RTE_TIMER_RUNNING;
 		status.owner = (int16_t)lcore_id;
 		success = rte_atomic32_cmpset(&tim->status.u32,
@@ -196,7 +195,7 @@ timer_set_running_state(struct rte_timer *tim)
 
 /*
  * Return a skiplist level for a new entry.
- * This probabalistically gives a level with p=1/4 that an entry at level n
+ * This probabilistically gives a level with p=1/4 that an entry at level n
  * will also appear at level n+1.
  */
 static uint32_t
@@ -432,7 +431,8 @@ rte_timer_reset(struct rte_timer *tim, uint64_t ticks,
 	uint64_t period;
 
 	if (unlikely((tim_lcore != (unsigned)LCORE_ID_ANY) &&
-			!rte_lcore_is_enabled(tim_lcore)))
+			!(rte_lcore_is_enabled(tim_lcore) ||
+			  rte_lcore_has_role(tim_lcore, ROLE_SERVICE) == 0)))
 		return -1;
 
 	if (type == PERIODICAL)
@@ -525,7 +525,7 @@ void rte_timer_manage(void)
 		return;
 	cur_time = rte_get_timer_cycles();
 
-#ifdef RTE_ARCH_X86_64
+#ifdef RTE_ARCH_64
 	/* on 64-bit the value cached in the pending_head.expired will be
 	 * updated atomically, so we can consult that for a quick check here
 	 * outside the lock */

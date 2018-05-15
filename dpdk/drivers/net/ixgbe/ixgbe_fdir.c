@@ -43,6 +43,7 @@
 #include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
+#include <rte_malloc.h>
 
 #include "ixgbe_logs.h"
 #include "base/ixgbe_api.h"
@@ -111,10 +112,8 @@
 static int fdir_erase_filter_82599(struct ixgbe_hw *hw, uint32_t fdirhash);
 static int fdir_set_input_mask(struct rte_eth_dev *dev,
 			       const struct rte_eth_fdir_masks *input_mask);
-static int fdir_set_input_mask_82599(struct rte_eth_dev *dev,
-		const struct rte_eth_fdir_masks *input_mask);
-static int fdir_set_input_mask_x550(struct rte_eth_dev *dev,
-				    const struct rte_eth_fdir_masks *input_mask);
+static int fdir_set_input_mask_82599(struct rte_eth_dev *dev);
+static int fdir_set_input_mask_x550(struct rte_eth_dev *dev);
 static int ixgbe_set_fdir_flex_conf(struct rte_eth_dev *dev,
 		const struct rte_eth_fdir_flex_conf *conf, uint32_t *fdirctrl);
 static int fdir_enable_82599(struct ixgbe_hw *hw, uint32_t fdirctrl);
@@ -294,8 +293,7 @@ reverse_fdir_bitmasks(uint16_t hi_dword, uint16_t lo_dword)
  * but makes use of the rte_fdir_masks structure to see which bits to set.
  */
 static int
-fdir_set_input_mask_82599(struct rte_eth_dev *dev,
-		const struct rte_eth_fdir_masks *input_mask)
+fdir_set_input_mask_82599(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_hw_fdir_info *info =
@@ -304,11 +302,9 @@ fdir_set_input_mask_82599(struct rte_eth_dev *dev,
 	 * mask VM pool and DIPv6 since there are currently not supported
 	 * mask FLEX byte, it will be set in flex_conf
 	 */
-	uint32_t fdirm = IXGBE_FDIRM_POOL | IXGBE_FDIRM_DIPv6 | IXGBE_FDIRM_FLEX;
+	uint32_t fdirm = IXGBE_FDIRM_POOL | IXGBE_FDIRM_DIPv6;
 	uint32_t fdirtcpm;  /* TCP source and destination port masks. */
 	uint32_t fdiripv6m; /* IPv6 source and destination masks. */
-	uint16_t dst_ipv6m = 0;
-	uint16_t src_ipv6m = 0;
 	volatile uint32_t *reg;
 
 	PMD_INIT_FUNC_TRACE();
@@ -319,31 +315,34 @@ fdir_set_input_mask_82599(struct rte_eth_dev *dev,
 	 * a VLAN of 0 is unspecified, so mask that out as well.  L4type
 	 * cannot be masked out in this implementation.
 	 */
-	if (input_mask->dst_port_mask == 0 && input_mask->src_port_mask == 0)
+	if (info->mask.dst_port_mask == 0 && info->mask.src_port_mask == 0)
 		/* use the L4 protocol mask for raw IPv4/IPv6 traffic */
 		fdirm |= IXGBE_FDIRM_L4P;
 
-	if (input_mask->vlan_tci_mask == rte_cpu_to_be_16(0x0FFF))
+	if (info->mask.vlan_tci_mask == rte_cpu_to_be_16(0x0FFF))
 		/* mask VLAN Priority */
 		fdirm |= IXGBE_FDIRM_VLANP;
-	else if (input_mask->vlan_tci_mask == rte_cpu_to_be_16(0xE000))
+	else if (info->mask.vlan_tci_mask == rte_cpu_to_be_16(0xE000))
 		/* mask VLAN ID */
 		fdirm |= IXGBE_FDIRM_VLANID;
-	else if (input_mask->vlan_tci_mask == 0)
+	else if (info->mask.vlan_tci_mask == 0)
 		/* mask VLAN ID and Priority */
 		fdirm |= IXGBE_FDIRM_VLANID | IXGBE_FDIRM_VLANP;
-	else if (input_mask->vlan_tci_mask != rte_cpu_to_be_16(0xEFFF)) {
+	else if (info->mask.vlan_tci_mask != rte_cpu_to_be_16(0xEFFF)) {
 		PMD_INIT_LOG(ERR, "invalid vlan_tci_mask");
 		return -EINVAL;
 	}
-	info->mask.vlan_tci_mask = input_mask->vlan_tci_mask;
+
+	/* flex byte mask */
+	if (info->mask.flex_bytes_mask == 0)
+		fdirm |= IXGBE_FDIRM_FLEX;
 
 	IXGBE_WRITE_REG(hw, IXGBE_FDIRM, fdirm);
 
 	/* store the TCP/UDP port masks, bit reversed from port layout */
 	fdirtcpm = reverse_fdir_bitmasks(
-			rte_be_to_cpu_16(input_mask->dst_port_mask),
-			rte_be_to_cpu_16(input_mask->src_port_mask));
+			rte_be_to_cpu_16(info->mask.dst_port_mask),
+			rte_be_to_cpu_16(info->mask.src_port_mask));
 
 	/* write all the same so that UDP, TCP and SCTP use the same mask
 	 * (little-endian)
@@ -351,30 +350,23 @@ fdir_set_input_mask_82599(struct rte_eth_dev *dev,
 	IXGBE_WRITE_REG(hw, IXGBE_FDIRTCPM, ~fdirtcpm);
 	IXGBE_WRITE_REG(hw, IXGBE_FDIRUDPM, ~fdirtcpm);
 	IXGBE_WRITE_REG(hw, IXGBE_FDIRSCTPM, ~fdirtcpm);
-	info->mask.src_port_mask = input_mask->src_port_mask;
-	info->mask.dst_port_mask = input_mask->dst_port_mask;
 
 	/* Store source and destination IPv4 masks (big-endian),
 	 * can not use IXGBE_WRITE_REG.
 	 */
 	reg = IXGBE_PCI_REG_ADDR(hw, IXGBE_FDIRSIP4M);
-	*reg = ~(input_mask->ipv4_mask.src_ip);
+	*reg = ~(info->mask.src_ipv4_mask);
 	reg = IXGBE_PCI_REG_ADDR(hw, IXGBE_FDIRDIP4M);
-	*reg = ~(input_mask->ipv4_mask.dst_ip);
-	info->mask.src_ipv4_mask = input_mask->ipv4_mask.src_ip;
-	info->mask.dst_ipv4_mask = input_mask->ipv4_mask.dst_ip;
+	*reg = ~(info->mask.dst_ipv4_mask);
 
 	if (dev->data->dev_conf.fdir_conf.mode == RTE_FDIR_MODE_SIGNATURE) {
 		/*
 		 * Store source and destination IPv6 masks (bit reversed)
 		 */
-		IPV6_ADDR_TO_MASK(input_mask->ipv6_mask.src_ip, src_ipv6m);
-		IPV6_ADDR_TO_MASK(input_mask->ipv6_mask.dst_ip, dst_ipv6m);
-		fdiripv6m = (dst_ipv6m << 16) | src_ipv6m;
+		fdiripv6m = (info->mask.dst_ipv6_mask << 16) |
+			    info->mask.src_ipv6_mask;
 
 		IXGBE_WRITE_REG(hw, IXGBE_FDIRIP6M, ~fdiripv6m);
-		info->mask.src_ipv6_mask = src_ipv6m;
-		info->mask.dst_ipv6_mask = dst_ipv6m;
 	}
 
 	return IXGBE_SUCCESS;
@@ -385,8 +377,7 @@ fdir_set_input_mask_82599(struct rte_eth_dev *dev,
  * but makes use of the rte_fdir_masks structure to see which bits to set.
  */
 static int
-fdir_set_input_mask_x550(struct rte_eth_dev *dev,
-			 const struct rte_eth_fdir_masks *input_mask)
+fdir_set_input_mask_x550(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_hw_fdir_info *info =
@@ -409,20 +400,19 @@ fdir_set_input_mask_x550(struct rte_eth_dev *dev,
 	/* some bits must be set for mac vlan or tunnel mode */
 	fdirm |= IXGBE_FDIRM_L4P | IXGBE_FDIRM_L3P;
 
-	if (input_mask->vlan_tci_mask == rte_cpu_to_be_16(0x0FFF))
+	if (info->mask.vlan_tci_mask == rte_cpu_to_be_16(0x0FFF))
 		/* mask VLAN Priority */
 		fdirm |= IXGBE_FDIRM_VLANP;
-	else if (input_mask->vlan_tci_mask == rte_cpu_to_be_16(0xE000))
+	else if (info->mask.vlan_tci_mask == rte_cpu_to_be_16(0xE000))
 		/* mask VLAN ID */
 		fdirm |= IXGBE_FDIRM_VLANID;
-	else if (input_mask->vlan_tci_mask == 0)
+	else if (info->mask.vlan_tci_mask == 0)
 		/* mask VLAN ID and Priority */
 		fdirm |= IXGBE_FDIRM_VLANID | IXGBE_FDIRM_VLANP;
-	else if (input_mask->vlan_tci_mask != rte_cpu_to_be_16(0xEFFF)) {
+	else if (info->mask.vlan_tci_mask != rte_cpu_to_be_16(0xEFFF)) {
 		PMD_INIT_LOG(ERR, "invalid vlan_tci_mask");
 		return -EINVAL;
 	}
-	info->mask.vlan_tci_mask = input_mask->vlan_tci_mask;
 
 	IXGBE_WRITE_REG(hw, IXGBE_FDIRM, fdirm);
 
@@ -433,12 +423,11 @@ fdir_set_input_mask_x550(struct rte_eth_dev *dev,
 				IXGBE_FDIRIP6M_TNI_VNI;
 
 	if (mode == RTE_FDIR_MODE_PERFECT_TUNNEL) {
-		mac_mask = input_mask->mac_addr_byte_mask;
+		mac_mask = info->mask.mac_addr_byte_mask;
 		fdiripv6m |= (mac_mask << IXGBE_FDIRIP6M_INNER_MAC_SHIFT)
 				& IXGBE_FDIRIP6M_INNER_MAC;
-		info->mask.mac_addr_byte_mask = input_mask->mac_addr_byte_mask;
 
-		switch (input_mask->tunnel_type_mask) {
+		switch (info->mask.tunnel_type_mask) {
 		case 0:
 			/* Mask turnnel type */
 			fdiripv6m |= IXGBE_FDIRIP6M_TUNNEL_TYPE;
@@ -449,10 +438,8 @@ fdir_set_input_mask_x550(struct rte_eth_dev *dev,
 			PMD_INIT_LOG(ERR, "invalid tunnel_type_mask");
 			return -EINVAL;
 		}
-		info->mask.tunnel_type_mask =
-			input_mask->tunnel_type_mask;
 
-		switch (rte_be_to_cpu_32(input_mask->tunnel_id_mask)) {
+		switch (rte_be_to_cpu_32(info->mask.tunnel_id_mask)) {
 		case 0x0:
 			/* Mask vxlan id */
 			fdiripv6m |= IXGBE_FDIRIP6M_TNI_VNI;
@@ -466,8 +453,6 @@ fdir_set_input_mask_x550(struct rte_eth_dev *dev,
 			PMD_INIT_LOG(ERR, "invalid tunnel_id_mask");
 			return -EINVAL;
 		}
-		info->mask.tunnel_id_mask =
-			input_mask->tunnel_id_mask;
 	}
 
 	IXGBE_WRITE_REG(hw, IXGBE_FDIRIP6M, fdiripv6m);
@@ -481,20 +466,113 @@ fdir_set_input_mask_x550(struct rte_eth_dev *dev,
 }
 
 static int
-fdir_set_input_mask(struct rte_eth_dev *dev,
-		    const struct rte_eth_fdir_masks *input_mask)
+ixgbe_fdir_store_input_mask_82599(struct rte_eth_dev *dev,
+				  const struct rte_eth_fdir_masks *input_mask)
+{
+	struct ixgbe_hw_fdir_info *info =
+		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
+	uint16_t dst_ipv6m = 0;
+	uint16_t src_ipv6m = 0;
+
+	memset(&info->mask, 0, sizeof(struct ixgbe_hw_fdir_mask));
+	info->mask.vlan_tci_mask = input_mask->vlan_tci_mask;
+	info->mask.src_port_mask = input_mask->src_port_mask;
+	info->mask.dst_port_mask = input_mask->dst_port_mask;
+	info->mask.src_ipv4_mask = input_mask->ipv4_mask.src_ip;
+	info->mask.dst_ipv4_mask = input_mask->ipv4_mask.dst_ip;
+	IPV6_ADDR_TO_MASK(input_mask->ipv6_mask.src_ip, src_ipv6m);
+	IPV6_ADDR_TO_MASK(input_mask->ipv6_mask.dst_ip, dst_ipv6m);
+	info->mask.src_ipv6_mask = src_ipv6m;
+	info->mask.dst_ipv6_mask = dst_ipv6m;
+
+	return IXGBE_SUCCESS;
+}
+
+static int
+ixgbe_fdir_store_input_mask_x550(struct rte_eth_dev *dev,
+				 const struct rte_eth_fdir_masks *input_mask)
+{
+	struct ixgbe_hw_fdir_info *info =
+		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
+
+	memset(&info->mask, 0, sizeof(struct ixgbe_hw_fdir_mask));
+	info->mask.vlan_tci_mask = input_mask->vlan_tci_mask;
+	info->mask.mac_addr_byte_mask = input_mask->mac_addr_byte_mask;
+	info->mask.tunnel_type_mask = input_mask->tunnel_type_mask;
+	info->mask.tunnel_id_mask = input_mask->tunnel_id_mask;
+
+	return IXGBE_SUCCESS;
+}
+
+static int
+ixgbe_fdir_store_input_mask(struct rte_eth_dev *dev,
+			    const struct rte_eth_fdir_masks *input_mask)
 {
 	enum rte_fdir_mode mode = dev->data->dev_conf.fdir_conf.mode;
 
 	if (mode >= RTE_FDIR_MODE_SIGNATURE &&
 	    mode <= RTE_FDIR_MODE_PERFECT)
-		return fdir_set_input_mask_82599(dev, input_mask);
+		return ixgbe_fdir_store_input_mask_82599(dev, input_mask);
 	else if (mode >= RTE_FDIR_MODE_PERFECT_MAC_VLAN &&
 		 mode <= RTE_FDIR_MODE_PERFECT_TUNNEL)
-		return fdir_set_input_mask_x550(dev, input_mask);
+		return ixgbe_fdir_store_input_mask_x550(dev, input_mask);
 
 	PMD_DRV_LOG(ERR, "Not supported fdir mode - %d!", mode);
 	return -ENOTSUP;
+}
+
+int
+ixgbe_fdir_set_input_mask(struct rte_eth_dev *dev)
+{
+	enum rte_fdir_mode mode = dev->data->dev_conf.fdir_conf.mode;
+
+	if (mode >= RTE_FDIR_MODE_SIGNATURE &&
+	    mode <= RTE_FDIR_MODE_PERFECT)
+		return fdir_set_input_mask_82599(dev);
+	else if (mode >= RTE_FDIR_MODE_PERFECT_MAC_VLAN &&
+		 mode <= RTE_FDIR_MODE_PERFECT_TUNNEL)
+		return fdir_set_input_mask_x550(dev);
+
+	PMD_DRV_LOG(ERR, "Not supported fdir mode - %d!", mode);
+	return -ENOTSUP;
+}
+
+int
+ixgbe_fdir_set_flexbytes_offset(struct rte_eth_dev *dev,
+				uint16_t offset)
+{
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint32_t fdirctrl;
+	int i;
+
+	fdirctrl = IXGBE_READ_REG(hw, IXGBE_FDIRCTRL);
+
+	fdirctrl &= ~IXGBE_FDIRCTRL_FLEX_MASK;
+	fdirctrl |= ((offset >> 1) /* convert to word offset */
+		<< IXGBE_FDIRCTRL_FLEX_SHIFT);
+
+	IXGBE_WRITE_REG(hw, IXGBE_FDIRCTRL, fdirctrl);
+	IXGBE_WRITE_FLUSH(hw);
+	for (i = 0; i < IXGBE_FDIR_INIT_DONE_POLL; i++) {
+		if (IXGBE_READ_REG(hw, IXGBE_FDIRCTRL) &
+			IXGBE_FDIRCTRL_INIT_DONE)
+			break;
+		msec_delay(1);
+	}
+	return 0;
+}
+
+static int
+fdir_set_input_mask(struct rte_eth_dev *dev,
+		    const struct rte_eth_fdir_masks *input_mask)
+{
+	int ret;
+
+	ret = ixgbe_fdir_store_input_mask(dev, input_mask);
+	if (ret)
+		return ret;
+
+	return ixgbe_fdir_set_input_mask(dev);
 }
 
 /*
@@ -605,7 +683,7 @@ ixgbe_fdir_configure(struct rte_eth_dev *dev)
 
 	/*
 	 * The defaults in the HW for RX PB 1-7 are not zero and so should be
-	 * intialized to zero for non DCB mode otherwise actual total RX PB
+	 * initialized to zero for non DCB mode otherwise actual total RX PB
 	 * would be bigger than programmed and filter space would run into
 	 * the PB 0 region.
 	 */
@@ -681,6 +759,7 @@ ixgbe_fdir_filter_to_atr_input(const struct rte_eth_fdir_filter *fdir_filter,
 			fdir_filter->input.flow.udp4_flow.src_port;
 		input->formatted.dst_port =
 			fdir_filter->input.flow.udp4_flow.dst_port;
+		/* fall-through */
 	/*for SCTP flow type, port and verify_tag are meaningless in ixgbe.*/
 	case RTE_ETH_FLOW_NONFRAG_IPV4_SCTP:
 	case RTE_ETH_FLOW_NONFRAG_IPV4_OTHER:
@@ -696,6 +775,7 @@ ixgbe_fdir_filter_to_atr_input(const struct rte_eth_fdir_filter *fdir_filter,
 			fdir_filter->input.flow.udp6_flow.src_port;
 		input->formatted.dst_port =
 			fdir_filter->input.flow.udp6_flow.dst_port;
+		/* fall-through */
 	/*for SCTP flow type, port and verify_tag are meaningless in ixgbe.*/
 	case RTE_ETH_FLOW_NONFRAG_IPV6_SCTP:
 	case RTE_ETH_FLOW_NONFRAG_IPV6_OTHER:
@@ -1075,8 +1155,236 @@ fdir_erase_filter_82599(struct ixgbe_hw *hw, uint32_t fdirhash)
 
 }
 
-/*
- * ixgbe_add_del_fdir_filter - add or remove a flow diretor filter.
+static inline struct ixgbe_fdir_filter *
+ixgbe_fdir_filter_lookup(struct ixgbe_hw_fdir_info *fdir_info,
+			 union ixgbe_atr_input *key)
+{
+	int ret;
+
+	ret = rte_hash_lookup(fdir_info->hash_handle, (const void *)key);
+	if (ret < 0)
+		return NULL;
+
+	return fdir_info->hash_map[ret];
+}
+
+static inline int
+ixgbe_insert_fdir_filter(struct ixgbe_hw_fdir_info *fdir_info,
+			 struct ixgbe_fdir_filter *fdir_filter)
+{
+	int ret;
+
+	ret = rte_hash_add_key(fdir_info->hash_handle,
+			       &fdir_filter->ixgbe_fdir);
+
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to insert fdir filter to hash table %d!",
+			    ret);
+		return ret;
+	}
+
+	fdir_info->hash_map[ret] = fdir_filter;
+
+	TAILQ_INSERT_TAIL(&fdir_info->fdir_list, fdir_filter, entries);
+
+	return 0;
+}
+
+static inline int
+ixgbe_remove_fdir_filter(struct ixgbe_hw_fdir_info *fdir_info,
+			 union ixgbe_atr_input *key)
+{
+	int ret;
+	struct ixgbe_fdir_filter *fdir_filter;
+
+	ret = rte_hash_del_key(fdir_info->hash_handle, key);
+
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "No such fdir filter to delete %d!", ret);
+		return ret;
+	}
+
+	fdir_filter = fdir_info->hash_map[ret];
+	fdir_info->hash_map[ret] = NULL;
+
+	TAILQ_REMOVE(&fdir_info->fdir_list, fdir_filter, entries);
+	rte_free(fdir_filter);
+
+	return 0;
+}
+
+static int
+ixgbe_interpret_fdir_filter(struct rte_eth_dev *dev,
+			    const struct rte_eth_fdir_filter *fdir_filter,
+			    struct ixgbe_fdir_rule *rule)
+{
+	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+	int err;
+
+	memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
+
+	err = ixgbe_fdir_filter_to_atr_input(fdir_filter,
+					     &rule->ixgbe_fdir,
+					     fdir_mode);
+	if (err)
+		return err;
+
+	rule->mode = fdir_mode;
+	if (fdir_filter->action.behavior == RTE_ETH_FDIR_REJECT)
+		rule->fdirflags = IXGBE_FDIRCMD_DROP;
+	rule->queue = fdir_filter->action.rx_queue;
+	rule->soft_id = fdir_filter->soft_id;
+
+	return 0;
+}
+
+int
+ixgbe_fdir_filter_program(struct rte_eth_dev *dev,
+			  struct ixgbe_fdir_rule *rule,
+			  bool del,
+			  bool update)
+{
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint32_t fdircmd_flags;
+	uint32_t fdirhash;
+	uint8_t queue;
+	bool is_perfect = FALSE;
+	int err;
+	struct ixgbe_hw_fdir_info *info =
+		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
+	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+	struct ixgbe_fdir_filter *node;
+	bool add_node = FALSE;
+
+	if (fdir_mode == RTE_FDIR_MODE_NONE ||
+	    fdir_mode != rule->mode)
+		return -ENOTSUP;
+
+	/*
+	 * Sanity check for x550.
+	 * When adding a new filter with flow type set to IPv4,
+	 * the flow director mask should be configed before,
+	 * and the L4 protocol and ports are masked.
+	 */
+	if ((!del) &&
+	    (hw->mac.type == ixgbe_mac_X550 ||
+	     hw->mac.type == ixgbe_mac_X550EM_x ||
+	     hw->mac.type == ixgbe_mac_X550EM_a) &&
+	    (rule->ixgbe_fdir.formatted.flow_type ==
+	     IXGBE_ATR_FLOW_TYPE_IPV4 ||
+	     rule->ixgbe_fdir.formatted.flow_type ==
+	     IXGBE_ATR_FLOW_TYPE_IPV6) &&
+	    (info->mask.src_port_mask != 0 ||
+	     info->mask.dst_port_mask != 0) &&
+	    (rule->mode != RTE_FDIR_MODE_PERFECT_MAC_VLAN &&
+	     rule->mode != RTE_FDIR_MODE_PERFECT_TUNNEL)) {
+		PMD_DRV_LOG(ERR, "By this device,"
+			    " IPv4 is not supported without"
+			    " L4 protocol and ports masked!");
+		return -ENOTSUP;
+	}
+
+	if (fdir_mode >= RTE_FDIR_MODE_PERFECT &&
+	    fdir_mode <= RTE_FDIR_MODE_PERFECT_TUNNEL)
+		is_perfect = TRUE;
+
+	if (is_perfect) {
+		if (rule->ixgbe_fdir.formatted.flow_type &
+		    IXGBE_ATR_L4TYPE_IPV6_MASK) {
+			PMD_DRV_LOG(ERR, "IPv6 is not supported in"
+				    " perfect mode!");
+			return -ENOTSUP;
+		}
+		fdirhash = atr_compute_perfect_hash_82599(&rule->ixgbe_fdir,
+							  dev->data->dev_conf.fdir_conf.pballoc);
+		fdirhash |= rule->soft_id <<
+			IXGBE_FDIRHASH_SIG_SW_INDEX_SHIFT;
+	} else
+		fdirhash = atr_compute_sig_hash_82599(&rule->ixgbe_fdir,
+						      dev->data->dev_conf.fdir_conf.pballoc);
+
+	if (del) {
+		err = ixgbe_remove_fdir_filter(info, &rule->ixgbe_fdir);
+		if (err < 0)
+			return err;
+
+		err = fdir_erase_filter_82599(hw, fdirhash);
+		if (err < 0)
+			PMD_DRV_LOG(ERR, "Fail to delete FDIR filter!");
+		else
+			PMD_DRV_LOG(DEBUG, "Success to delete FDIR filter!");
+		return err;
+	}
+	/* add or update an fdir filter*/
+	fdircmd_flags = (update) ? IXGBE_FDIRCMD_FILTER_UPDATE : 0;
+	if (rule->fdirflags & IXGBE_FDIRCMD_DROP) {
+		if (is_perfect) {
+			queue = dev->data->dev_conf.fdir_conf.drop_queue;
+			fdircmd_flags |= IXGBE_FDIRCMD_DROP;
+		} else {
+			PMD_DRV_LOG(ERR, "Drop option is not supported in"
+				    " signature mode.");
+			return -EINVAL;
+		}
+	} else if (rule->queue < IXGBE_MAX_RX_QUEUE_NUM)
+		queue = (uint8_t)rule->queue;
+	else
+		return -EINVAL;
+
+	node = ixgbe_fdir_filter_lookup(info, &rule->ixgbe_fdir);
+	if (node) {
+		if (update) {
+			node->fdirflags = fdircmd_flags;
+			node->fdirhash = fdirhash;
+			node->queue = queue;
+		} else {
+			PMD_DRV_LOG(ERR, "Conflict with existing fdir filter!");
+			return -EINVAL;
+		}
+	} else {
+		add_node = TRUE;
+		node = rte_zmalloc("ixgbe_fdir",
+				   sizeof(struct ixgbe_fdir_filter),
+				   0);
+		if (!node)
+			return -ENOMEM;
+		rte_memcpy(&node->ixgbe_fdir,
+				 &rule->ixgbe_fdir,
+				 sizeof(union ixgbe_atr_input));
+		node->fdirflags = fdircmd_flags;
+		node->fdirhash = fdirhash;
+		node->queue = queue;
+
+		err = ixgbe_insert_fdir_filter(info, node);
+		if (err < 0) {
+			rte_free(node);
+			return err;
+		}
+	}
+
+	if (is_perfect) {
+		err = fdir_write_perfect_filter_82599(hw, &rule->ixgbe_fdir,
+						      queue, fdircmd_flags,
+						      fdirhash, fdir_mode);
+	} else {
+		err = fdir_add_signature_filter_82599(hw, &rule->ixgbe_fdir,
+						      queue, fdircmd_flags,
+						      fdirhash);
+	}
+	if (err < 0) {
+		PMD_DRV_LOG(ERR, "Fail to add FDIR filter!");
+
+		if (add_node)
+			(void)ixgbe_remove_fdir_filter(info, &rule->ixgbe_fdir);
+	} else {
+		PMD_DRV_LOG(DEBUG, "Success to add FDIR filter");
+	}
+
+	return err;
+}
+
+/* ixgbe_add_del_fdir_filter - add or remove a flow diretor filter.
  * @dev: pointer to the structure rte_eth_dev
  * @fdir_filter: fdir filter entry
  * @del: 1 - delete, 0 - add
@@ -1088,104 +1396,15 @@ ixgbe_add_del_fdir_filter(struct rte_eth_dev *dev,
 			  bool del,
 			  bool update)
 {
-	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	uint32_t fdircmd_flags;
-	uint32_t fdirhash;
-	union ixgbe_atr_input input;
-	uint8_t queue;
-	bool is_perfect = FALSE;
+	struct ixgbe_fdir_rule rule;
 	int err;
-	struct ixgbe_hw_fdir_info *info =
-		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
-	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
 
-	if (fdir_mode == RTE_FDIR_MODE_NONE)
-		return -ENOTSUP;
+	err = ixgbe_interpret_fdir_filter(dev, fdir_filter, &rule);
 
-	/*
-	 * Sanity check for x550.
-	 * When adding a new filter with flow type set to IPv4-other,
-	 * the flow director mask should be configed before,
-	 * and the L4 protocol and ports are masked.
-	 */
-	if ((!del) &&
-	    (hw->mac.type == ixgbe_mac_X550 ||
-	     hw->mac.type == ixgbe_mac_X550EM_x ||
-	     hw->mac.type == ixgbe_mac_X550EM_a) &&
-	    (fdir_filter->input.flow_type ==
-	     RTE_ETH_FLOW_NONFRAG_IPV4_OTHER) &&
-	    (info->mask.src_port_mask != 0 ||
-	     info->mask.dst_port_mask != 0)) {
-		PMD_DRV_LOG(ERR, "By this device,"
-			    " IPv4-other is not supported without"
-			    " L4 protocol and ports masked!");
-		return -ENOTSUP;
-	}
-
-	if (fdir_mode >= RTE_FDIR_MODE_PERFECT &&
-	    fdir_mode <= RTE_FDIR_MODE_PERFECT_TUNNEL)
-		is_perfect = TRUE;
-
-	memset(&input, 0, sizeof(input));
-
-	err = ixgbe_fdir_filter_to_atr_input(fdir_filter, &input,
-					     fdir_mode);
 	if (err)
 		return err;
 
-	if (is_perfect) {
-		if (input.formatted.flow_type & IXGBE_ATR_L4TYPE_IPV6_MASK) {
-			PMD_DRV_LOG(ERR, "IPv6 is not supported in"
-				    " perfect mode!");
-			return -ENOTSUP;
-		}
-		fdirhash = atr_compute_perfect_hash_82599(&input,
-							  dev->data->dev_conf.fdir_conf.pballoc);
-		fdirhash |= fdir_filter->soft_id <<
-			IXGBE_FDIRHASH_SIG_SW_INDEX_SHIFT;
-	} else
-		fdirhash = atr_compute_sig_hash_82599(&input,
-						      dev->data->dev_conf.fdir_conf.pballoc);
-
-	if (del) {
-		err = fdir_erase_filter_82599(hw, fdirhash);
-		if (err < 0)
-			PMD_DRV_LOG(ERR, "Fail to delete FDIR filter!");
-		else
-			PMD_DRV_LOG(DEBUG, "Success to delete FDIR filter!");
-		return err;
-	}
-	/* add or update an fdir filter*/
-	fdircmd_flags = (update) ? IXGBE_FDIRCMD_FILTER_UPDATE : 0;
-	if (fdir_filter->action.behavior == RTE_ETH_FDIR_REJECT) {
-		if (is_perfect) {
-			queue = dev->data->dev_conf.fdir_conf.drop_queue;
-			fdircmd_flags |= IXGBE_FDIRCMD_DROP;
-		} else {
-			PMD_DRV_LOG(ERR, "Drop option is not supported in"
-				    " signature mode.");
-			return -EINVAL;
-		}
-	} else if (fdir_filter->action.behavior == RTE_ETH_FDIR_ACCEPT &&
-		   fdir_filter->action.rx_queue < IXGBE_MAX_RX_QUEUE_NUM)
-		queue = (uint8_t)fdir_filter->action.rx_queue;
-	else
-		return -EINVAL;
-
-	if (is_perfect) {
-		err = fdir_write_perfect_filter_82599(hw, &input, queue,
-						      fdircmd_flags, fdirhash,
-						      fdir_mode);
-	} else {
-		err = fdir_add_signature_filter_82599(hw, &input, queue,
-						      fdircmd_flags, fdirhash);
-	}
-	if (err < 0)
-		PMD_DRV_LOG(ERR, "Fail to add FDIR filter!");
-	else
-		PMD_DRV_LOG(DEBUG, "Success to add FDIR filter");
-
-	return err;
+	return ixgbe_fdir_filter_program(dev, &rule, del, update);
 }
 
 static int
@@ -1376,5 +1595,68 @@ ixgbe_fdir_ctrl_func(struct rte_eth_dev *dev,
 		ret = -EINVAL;
 		break;
 	}
+	return ret;
+}
+
+/* restore flow director filter */
+void
+ixgbe_fdir_filter_restore(struct rte_eth_dev *dev)
+{
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ixgbe_hw_fdir_info *fdir_info =
+		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
+	struct ixgbe_fdir_filter *node;
+	bool is_perfect = FALSE;
+	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+
+	if (fdir_mode >= RTE_FDIR_MODE_PERFECT &&
+	    fdir_mode <= RTE_FDIR_MODE_PERFECT_TUNNEL)
+		is_perfect = TRUE;
+
+	if (is_perfect) {
+		TAILQ_FOREACH(node, &fdir_info->fdir_list, entries) {
+			(void)fdir_write_perfect_filter_82599(hw,
+							      &node->ixgbe_fdir,
+							      node->queue,
+							      node->fdirflags,
+							      node->fdirhash,
+							      fdir_mode);
+		}
+	} else {
+		TAILQ_FOREACH(node, &fdir_info->fdir_list, entries) {
+			(void)fdir_add_signature_filter_82599(hw,
+							      &node->ixgbe_fdir,
+							      node->queue,
+							      node->fdirflags,
+							      node->fdirhash);
+		}
+	}
+}
+
+/* remove all the flow director filters */
+int
+ixgbe_clear_all_fdir_filter(struct rte_eth_dev *dev)
+{
+	struct ixgbe_hw_fdir_info *fdir_info =
+		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
+	struct ixgbe_fdir_filter *fdir_filter;
+	struct ixgbe_fdir_filter *filter_flag;
+	int ret = 0;
+
+	/* flush flow director */
+	rte_hash_reset(fdir_info->hash_handle);
+	memset(fdir_info->hash_map, 0,
+	       sizeof(struct ixgbe_fdir_filter *) * IXGBE_MAX_FDIR_FILTER_NUM);
+	filter_flag = TAILQ_FIRST(&fdir_info->fdir_list);
+	while ((fdir_filter = TAILQ_FIRST(&fdir_info->fdir_list))) {
+		TAILQ_REMOVE(&fdir_info->fdir_list,
+			     fdir_filter,
+			     entries);
+		rte_free(fdir_filter);
+	}
+
+	if (filter_flag != NULL)
+		ret = ixgbe_fdir_flush(dev);
+
 	return ret;
 }

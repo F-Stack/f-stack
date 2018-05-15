@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2016 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -51,13 +51,12 @@
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_tailq.h>
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_atomic.h>
+#include <rte_ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_dev.h>
@@ -205,9 +204,12 @@ static inline bool is_x_1g_port(const struct link_config *lc)
 
 static inline bool is_x_10g_port(const struct link_config *lc)
 {
-	return ((lc->supported & FW_PORT_CAP_SPEED_10G) != 0 ||
-		(lc->supported & FW_PORT_CAP_SPEED_40G) != 0 ||
-		(lc->supported & FW_PORT_CAP_SPEED_100G) != 0);
+	unsigned int speeds, high_speeds;
+
+	speeds = V_FW_PORT_CAP_SPEED(G_FW_PORT_CAP_SPEED(lc->supported));
+	high_speeds = speeds & ~(FW_PORT_CAP_SPEED_100M | FW_PORT_CAP_SPEED_1G);
+
+	return high_speeds != 0;
 }
 
 inline void init_rspq(struct adapter *adap, struct sge_rspq *q,
@@ -297,7 +299,7 @@ void cfg_queues(struct rte_eth_dev *eth_dev)
 		for (i = 0; i < ARRAY_SIZE(s->ethrxq); i++) {
 			struct sge_eth_rxq *r = &s->ethrxq[i];
 
-			init_rspq(adap, &r->rspq, 0, 0, 1024, 64);
+			init_rspq(adap, &r->rspq, 5, 32, 1024, 64);
 			r->usembufs = 1;
 			r->fl.size = (r->usembufs ? 1024 : 72);
 		}
@@ -362,6 +364,17 @@ static int init_rss(struct adapter *adap)
 	return 0;
 }
 
+/**
+ * Dump basic information about the adapter.
+ */
+static void print_adapter_info(struct adapter *adap)
+{
+	/**
+	 * Hardware/Firmware/etc. Version/Revision IDs.
+	 */
+	t4_dump_version_info(adap);
+}
+
 static void print_port_info(struct adapter *adap)
 {
 	int i;
@@ -373,13 +386,17 @@ static void print_port_info(struct adapter *adap)
 		char *bufp = buf;
 
 		if (pi->link_cfg.supported & FW_PORT_CAP_SPEED_100M)
-			bufp += sprintf(bufp, "100/");
+			bufp += sprintf(bufp, "100M/");
 		if (pi->link_cfg.supported & FW_PORT_CAP_SPEED_1G)
-			bufp += sprintf(bufp, "1000/");
+			bufp += sprintf(bufp, "1G/");
 		if (pi->link_cfg.supported & FW_PORT_CAP_SPEED_10G)
 			bufp += sprintf(bufp, "10G/");
+		if (pi->link_cfg.supported & FW_PORT_CAP_SPEED_25G)
+			bufp += sprintf(bufp, "25G/");
 		if (pi->link_cfg.supported & FW_PORT_CAP_SPEED_40G)
 			bufp += sprintf(bufp, "40G/");
+		if (pi->link_cfg.supported & FW_PORT_CAP_SPEED_100G)
+			bufp += sprintf(bufp, "100G/");
 		if (bufp != buf)
 			--bufp;
 		sprintf(bufp, "BASE-%s",
@@ -392,6 +409,36 @@ static void print_port_info(struct adapter *adap)
 			 CHELSIO_CHIP_RELEASE(adap->params.chip), buf,
 			 (adap->flags & USING_MSIX) ? " MSI-X" :
 			 (adap->flags & USING_MSI) ? " MSI" : "");
+	}
+}
+
+static void configure_pcie_ext_tag(struct adapter *adapter)
+{
+	u16 v;
+	int pos = t4_os_find_pci_capability(adapter, PCI_CAP_ID_EXP);
+
+	if (!pos)
+		return;
+
+	if (pos > 0) {
+		t4_os_pci_read_cfg2(adapter, pos + PCI_EXP_DEVCTL, &v);
+		v |= PCI_EXP_DEVCTL_EXT_TAG;
+		t4_os_pci_write_cfg2(adapter, pos + PCI_EXP_DEVCTL, v);
+		if (is_t6(adapter->params.chip)) {
+			t4_set_reg_field(adapter, A_PCIE_CFG2,
+					 V_T6_TOTMAXTAG(M_T6_TOTMAXTAG),
+					 V_T6_TOTMAXTAG(7));
+			t4_set_reg_field(adapter, A_PCIE_CMD_CFG,
+					 V_T6_MINTAG(M_T6_MINTAG),
+					 V_T6_MINTAG(8));
+		} else {
+			t4_set_reg_field(adapter, A_PCIE_CFG2,
+					 V_TOTMAXTAG(M_TOTMAXTAG),
+					 V_TOTMAXTAG(3));
+			t4_set_reg_field(adapter, A_PCIE_CMD_CFG,
+					 V_MINTAG(M_MINTAG),
+					 V_MINTAG(8));
+		}
 	}
 }
 
@@ -425,6 +472,9 @@ static int adap_init0_tweaks(struct adapter *adapter)
 	t4_set_reg_field(adapter, A_SGE_FLM_CFG,
 			 V_CREDITCNT(M_CREDITCNT) | M_CREDITCNTPACKING,
 			 V_CREDITCNT(3) | V_CREDITCNTPACKING(1));
+
+	t4_set_reg_field(adapter, A_SGE_INGRESS_RX_THRESHOLD,
+			 V_THRESHOLD_3(M_THRESHOLD_3), V_THRESHOLD_3(32U));
 
 	t4_set_reg_field(adapter, A_SGE_CONTROL2, V_IDMAARBROUNDROBIN(1U),
 			 V_IDMAARBROUNDROBIN(1U));
@@ -574,7 +624,7 @@ static int adap_init0_config(struct adapter *adapter, int reset)
 	/*
 	 * Return successfully and note that we're operating with parameters
 	 * not supplied by the driver, rather than from hard-wired
-	 * initialization constants burried in the driver.
+	 * initialization constants buried in the driver.
 	 */
 	dev_info(adapter,
 		 "Successfully configured using Firmware Configuration File \"%s\", version %#x, computed checksum %#x\n",
@@ -640,18 +690,7 @@ static int adap_init0(struct adapter *adap)
 		state = (enum dev_state)((unsigned)state & ~DEV_STATE_INIT);
 	}
 
-	t4_get_fw_version(adap, &adap->params.fw_vers);
-	t4_get_tp_version(adap, &adap->params.tp_vers);
-
-	dev_info(adap, "fw: %u.%u.%u.%u, TP: %u.%u.%u.%u\n",
-		 G_FW_HDR_FW_VER_MAJOR(adap->params.fw_vers),
-		 G_FW_HDR_FW_VER_MINOR(adap->params.fw_vers),
-		 G_FW_HDR_FW_VER_MICRO(adap->params.fw_vers),
-		 G_FW_HDR_FW_VER_BUILD(adap->params.fw_vers),
-		 G_FW_HDR_FW_VER_MAJOR(adap->params.tp_vers),
-		 G_FW_HDR_FW_VER_MINOR(adap->params.tp_vers),
-		 G_FW_HDR_FW_VER_MICRO(adap->params.tp_vers),
-		 G_FW_HDR_FW_VER_BUILD(adap->params.tp_vers));
+	t4_get_version_info(adap);
 
 	ret = t4_get_core_clock(adap, &adap->params.vpd);
 	if (ret < 0) {
@@ -659,26 +698,6 @@ static int adap_init0(struct adapter *adap)
 			__func__, -ret);
 		goto bye;
 	}
-
-	/*
-	 * Find out what ports are available to us.  Note that we need to do
-	 * this before calling adap_init0_no_config() since it needs nports
-	 * and portvec ...
-	 */
-	v = V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) |
-	    V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_PORTVEC);
-	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, &v, &port_vec);
-	if (ret < 0) {
-		dev_err(adap, "%s: failure in t4_queury_params; error = %d\n",
-			__func__, ret);
-		goto bye;
-	}
-
-	adap->params.nports = hweight32(port_vec);
-	adap->params.portvec = port_vec;
-
-	dev_debug(adap, "%s: adap->params.nports = %u\n", __func__,
-		  adap->params.nports);
 
 	/*
 	 * If the firmware is initialized already (and we're not forcing a
@@ -703,6 +722,22 @@ static int adap_init0(struct adapter *adap)
 		dev_err(adap, "could not initialize adapter, error %d\n", -ret);
 		goto bye;
 	}
+
+	/* Find out what ports are available to us. */
+	v = V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) |
+	    V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_PORTVEC);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, &v, &port_vec);
+	if (ret < 0) {
+		dev_err(adap, "%s: failure in t4_query_params; error = %d\n",
+			__func__, ret);
+		goto bye;
+	}
+
+	adap->params.nports = hweight32(port_vec);
+	adap->params.portvec = port_vec;
+
+	dev_debug(adap, "%s: adap->params.nports = %u\n", __func__,
+		  adap->params.nports);
 
 	/*
 	 * Give the SGE code a chance to pull in anything that it needs ...
@@ -792,6 +827,7 @@ static int adap_init0(struct adapter *adap)
 	}
 	t4_init_sge_params(adap);
 	t4_init_tp_params(adap);
+	configure_pcie_ext_tag(adap);
 
 	adap->params.drv_memwin = MEMWIN_NIC;
 	adap->flags |= FW_OK;
@@ -832,10 +868,10 @@ void t4_os_portmod_changed(const struct adapter *adap, int port_id)
 		dev_info(adap, "Port%d: %s port module inserted\n", pi->port_id,
 			 mod_str[pi->mod_type]);
 	else if (pi->mod_type == FW_PORT_MOD_TYPE_NOTSUPPORTED)
-		dev_info(adap, "Port%d: unsupported optical port module inserted\n",
+		dev_info(adap, "Port%d: unsupported port module inserted\n",
 			 pi->port_id);
 	else if (pi->mod_type == FW_PORT_MOD_TYPE_UNKNOWN)
-		dev_info(adap, "Port%d: unknown port module inserted, forcing TWINAX\n",
+		dev_info(adap, "Port%d: unknown port module inserted\n",
 			 pi->port_id);
 	else if (pi->mod_type == FW_PORT_MOD_TYPE_ERROR)
 		dev_info(adap, "Port%d: transceiver module error\n",
@@ -959,7 +995,7 @@ int setup_rss(struct port_info *pi)
 	dev_debug(adapter, "%s:  pi->rss_size = %u; pi->n_rx_qsets = %u\n",
 		  __func__, pi->rss_size, pi->n_rx_qsets);
 
-	if (!pi->flags & PORT_RSS_DONE) {
+	if (!(pi->flags & PORT_RSS_DONE)) {
 		if (adapter->flags & FULL_INIT_DONE) {
 			/* Fill default values with equal distribution */
 			for (j = 0; j < pi->rss_size; j++)
@@ -977,33 +1013,126 @@ int setup_rss(struct port_info *pi)
 /*
  * Enable NAPI scheduling and interrupt generation for all Rx queues.
  */
-static void enable_rx(struct adapter *adap)
+static void enable_rx(struct adapter *adap, struct sge_rspq *q)
 {
-	struct sge *s = &adap->sge;
-	struct sge_rspq *q = &s->fw_evtq;
-	int i, j;
-
 	/* 0-increment GTS to start the timer and enable interrupts */
 	t4_write_reg(adap, MYPF_REG(A_SGE_PF_GTS),
 		     V_SEINTARM(q->intr_params) |
 		     V_INGRESSQID(q->cntxt_id));
+}
 
-	for_each_port(adap, i) {
-		const struct port_info *pi = &adap->port[i];
-		struct rte_eth_dev *eth_dev = pi->eth_dev;
+void cxgbe_enable_rx_queues(struct port_info *pi)
+{
+	struct adapter *adap = pi->adapter;
+	struct sge *s = &adap->sge;
+	unsigned int i;
 
-		for (j = 0; j < eth_dev->data->nb_rx_queues; j++) {
-			q = eth_dev->data->rx_queues[j];
+	for (i = 0; i < pi->n_rx_qsets; i++)
+		enable_rx(adap, &s->ethrxq[pi->first_qset + i].rspq);
+}
 
-			/*
-			 * 0-increment GTS to start the timer and enable
-			 * interrupts
-			 */
-			t4_write_reg(adap, MYPF_REG(A_SGE_PF_GTS),
-				     V_SEINTARM(q->intr_params) |
-				     V_INGRESSQID(q->cntxt_id));
-		}
+/**
+ * fw_caps_to_speed_caps - translate Firmware Port Caps to Speed Caps.
+ * @port_type: Firmware Port Type
+ * @fw_caps: Firmware Port Capabilities
+ * @speed_caps: Device Info Speed Capabilities
+ *
+ * Translate a Firmware Port Capabilities specification to Device Info
+ * Speed Capabilities.
+ */
+static void fw_caps_to_speed_caps(enum fw_port_type port_type,
+				  unsigned int fw_caps,
+				  u32 *speed_caps)
+{
+#define SET_SPEED(__speed_name) \
+	do { \
+		*speed_caps |= ETH_LINK_ ## __speed_name; \
+	} while (0)
+
+#define FW_CAPS_TO_SPEED(__fw_name) \
+	do { \
+		if (fw_caps & FW_PORT_CAP_ ## __fw_name) \
+			SET_SPEED(__fw_name); \
+	} while (0)
+
+	switch (port_type) {
+	case FW_PORT_TYPE_BT_SGMII:
+	case FW_PORT_TYPE_BT_XFI:
+	case FW_PORT_TYPE_BT_XAUI:
+		FW_CAPS_TO_SPEED(SPEED_100M);
+		FW_CAPS_TO_SPEED(SPEED_1G);
+		FW_CAPS_TO_SPEED(SPEED_10G);
+		break;
+
+	case FW_PORT_TYPE_KX4:
+	case FW_PORT_TYPE_KX:
+	case FW_PORT_TYPE_FIBER_XFI:
+	case FW_PORT_TYPE_FIBER_XAUI:
+	case FW_PORT_TYPE_SFP:
+	case FW_PORT_TYPE_QSFP_10G:
+	case FW_PORT_TYPE_QSA:
+		FW_CAPS_TO_SPEED(SPEED_1G);
+		FW_CAPS_TO_SPEED(SPEED_10G);
+		break;
+
+	case FW_PORT_TYPE_KR:
+		SET_SPEED(SPEED_10G);
+		break;
+
+	case FW_PORT_TYPE_BP_AP:
+	case FW_PORT_TYPE_BP4_AP:
+		SET_SPEED(SPEED_1G);
+		SET_SPEED(SPEED_10G);
+		break;
+
+	case FW_PORT_TYPE_BP40_BA:
+	case FW_PORT_TYPE_QSFP:
+		SET_SPEED(SPEED_40G);
+		break;
+
+	case FW_PORT_TYPE_CR_QSFP:
+	case FW_PORT_TYPE_SFP28:
+	case FW_PORT_TYPE_KR_SFP28:
+		FW_CAPS_TO_SPEED(SPEED_1G);
+		FW_CAPS_TO_SPEED(SPEED_10G);
+		FW_CAPS_TO_SPEED(SPEED_25G);
+		break;
+
+	case FW_PORT_TYPE_CR2_QSFP:
+		SET_SPEED(SPEED_50G);
+		break;
+
+	case FW_PORT_TYPE_KR4_100G:
+	case FW_PORT_TYPE_CR4_QSFP:
+		FW_CAPS_TO_SPEED(SPEED_25G);
+		FW_CAPS_TO_SPEED(SPEED_40G);
+		FW_CAPS_TO_SPEED(SPEED_100G);
+		break;
+
+	default:
+		break;
 	}
+
+#undef FW_CAPS_TO_SPEED
+#undef SET_SPEED
+}
+
+/**
+ * cxgbe_get_speed_caps - Fetch supported speed capabilities
+ * @pi: Underlying port's info
+ * @speed_caps: Device Info speed capabilities
+ *
+ * Fetch supported speed capabilities of the underlying port.
+ */
+void cxgbe_get_speed_caps(struct port_info *pi, u32 *speed_caps)
+{
+	*speed_caps = 0;
+
+	fw_caps_to_speed_caps(pi->port_type, pi->link_cfg.supported,
+			      speed_caps);
+
+	if (!(pi->link_cfg.supported & FW_PORT_CAP_ANEG))
+		*speed_caps |= ETH_LINK_SPEED_FIXED;
 }
 
 /**
@@ -1016,7 +1145,7 @@ static void enable_rx(struct adapter *adap)
  */
 int cxgbe_up(struct adapter *adap)
 {
-	enable_rx(adap);
+	enable_rx(adap, &adap->sge.fw_evtq);
 	t4_sge_tx_monitor_start(adap);
 	t4_intr_enable(adap);
 	adap->flags |= FULL_INIT_DONE;
@@ -1072,10 +1201,20 @@ void cxgbe_close(struct adapter *adapter)
 int cxgbe_probe(struct adapter *adapter)
 {
 	struct port_info *pi;
+	int chip;
 	int func, i;
 	int err = 0;
+	u32 whoami;
 
-	func = G_SOURCEPF(t4_read_reg(adapter, A_PL_WHOAMI));
+	whoami = t4_read_reg(adapter, A_PL_WHOAMI);
+	chip = t4_get_chip_type(adapter,
+			CHELSIO_PCI_ID_VER(adapter->pdev->id.device_id));
+	if (chip < 0)
+		return chip;
+
+	func = CHELSIO_CHIP_VERSION(chip) <= CHELSIO_T5 ?
+	       G_SOURCEPF(whoami) : G_T6_SOURCEPF(whoami);
+
 	adapter->mbox = func;
 	adapter->pf = func;
 
@@ -1150,7 +1289,7 @@ int cxgbe_probe(struct adapter *adapter)
 		 */
 
 		/* reserve an ethdev entry */
-		pi->eth_dev = rte_eth_dev_allocate(name, RTE_ETH_DEV_PCI);
+		pi->eth_dev = rte_eth_dev_allocate(name);
 		if (!pi->eth_dev)
 			goto out_free;
 
@@ -1163,16 +1302,13 @@ int cxgbe_probe(struct adapter *adapter)
 		pi->eth_dev->data = data;
 
 allocate_mac:
-		pi->eth_dev->pci_dev = adapter->pdev;
+		pi->eth_dev->device = &adapter->pdev->device;
 		pi->eth_dev->data->dev_private = pi;
-		pi->eth_dev->driver = adapter->eth_dev->driver;
 		pi->eth_dev->dev_ops = adapter->eth_dev->dev_ops;
 		pi->eth_dev->tx_pkt_burst = adapter->eth_dev->tx_pkt_burst;
 		pi->eth_dev->rx_pkt_burst = adapter->eth_dev->rx_pkt_burst;
 
-		rte_eth_copy_pci_info(pi->eth_dev, pi->eth_dev->pci_dev);
-
-		TAILQ_INIT(&pi->eth_dev->link_intr_cbs);
+		rte_eth_copy_pci_info(pi->eth_dev, adapter->pdev);
 
 		pi->eth_dev->data->mac_addrs = rte_zmalloc(name,
 							   ETHER_ADDR_LEN, 0);
@@ -1195,6 +1331,7 @@ allocate_mac:
 
 	cfg_queues(adapter->eth_dev);
 
+	print_adapter_info(adapter);
 	print_port_info(adapter);
 
 	err = init_rss(adapter);

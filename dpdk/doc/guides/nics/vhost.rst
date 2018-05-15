@@ -66,6 +66,11 @@ The user can specify below arguments in `--vdev` option.
     It is used to specify the number of queues virtio-net device has.
     (Default: 1)
 
+#.  ``iommu-support``:
+
+    It is used to enable iommu support in vhost library.
+    (Default: 0 (disabled))
+
 Vhost PMD event handling
 ------------------------
 
@@ -92,7 +97,7 @@ This section demonstrates vhost PMD with testpmd DPDK sample application.
 
     .. code-block:: console
 
-        ./testpmd -c f -n 4 --vdev 'eth_vhost0,iface=/tmp/sock0,queues=1' -- -i
+        ./testpmd -l 0-3 -n 4 --vdev 'net_vhost0,iface=/tmp/sock0,queues=1' -- -i
 
     Other basic DPDK preparations like hugepage enabling here.
     Please refer to the *DPDK Getting Started Guide* for detailed instructions.

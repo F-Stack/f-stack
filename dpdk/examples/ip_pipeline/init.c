@@ -34,6 +34,14 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <netinet/in.h>
+#ifdef RTE_EXEC_ENV_LINUXAPP
+#include <linux/if.h>
+#include <linux/if_tun.h>
+#endif
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <rte_cycles.h>
 #include <rte_ethdev.h>
@@ -41,6 +49,7 @@
 #include <rte_ip.h>
 #include <rte_eal.h>
 #include <rte_malloc.h>
+#include <rte_bus_pci.h>
 
 #include "app.h"
 #include "pipeline.h"
@@ -61,7 +70,8 @@ static void
 app_init_core_map(struct app_params *app)
 {
 	APP_LOG(app, HIGH, "Initializing CPU core map ...");
-	app->core_map = cpu_core_map_init(4, 32, 4, 0);
+	app->core_map = cpu_core_map_init(RTE_MAX_NUMA_NODES, RTE_MAX_LCORE,
+				4, 0);
 
 	if (app->core_map == NULL)
 		rte_panic("Cannot create CPU core map\n");
@@ -70,11 +80,14 @@ app_init_core_map(struct app_params *app)
 		cpu_core_map_print(app->core_map);
 }
 
+/* Core Mask String in Hex Representation */
+#define APP_CORE_MASK_STRING_SIZE ((64 * APP_CORE_MASK_SIZE) / 8 * 2 + 1)
+
 static void
 app_init_core_mask(struct app_params *app)
 {
-	uint64_t mask = 0;
 	uint32_t i;
+	char core_mask_str[APP_CORE_MASK_STRING_SIZE];
 
 	for (i = 0; i < app->n_pipelines; i++) {
 		struct app_pipeline_params *p = &app->pipeline_params[i];
@@ -88,17 +101,18 @@ app_init_core_mask(struct app_params *app)
 		if (lcore_id < 0)
 			rte_panic("Cannot create CPU core mask\n");
 
-		mask |= 1LLU << lcore_id;
+		app_core_enable_in_core_mask(app, lcore_id);
 	}
 
-	app->core_mask = mask;
-	APP_LOG(app, HIGH, "CPU core mask = 0x%016" PRIx64, app->core_mask);
+	app_core_build_core_mask_string(app, core_mask_str);
+	APP_LOG(app, HIGH, "CPU core mask = 0x%s", core_mask_str);
 }
 
 static void
 app_init_eal(struct app_params *app)
 {
 	char buffer[256];
+	char core_mask_str[APP_CORE_MASK_STRING_SIZE];
 	struct app_eal_params *p = &app->eal_params;
 	uint32_t n_args = 0;
 	uint32_t i;
@@ -106,7 +120,8 @@ app_init_eal(struct app_params *app)
 
 	app->eal_argv[n_args++] = strdup(app->app_name);
 
-	snprintf(buffer, sizeof(buffer), "-c%" PRIx64, app->core_mask);
+	app_core_build_core_mask_string(app, core_mask_str);
+	snprintf(buffer, sizeof(buffer), "-c%s", core_mask_str);
 	app->eal_argv[n_args++] = strdup(buffer);
 
 	if (p->coremap) {
@@ -282,11 +297,6 @@ app_init_eal(struct app_params *app)
 		app->eal_argv[n_args++] = strdup(buffer);
 	}
 
-	if ((p->xen_dom0_present) && (p->xen_dom0)) {
-		snprintf(buffer, sizeof(buffer), "--xen-dom0");
-		app->eal_argv[n_args++] = strdup(buffer);
-	}
-
 	snprintf(buffer, sizeof(buffer), "--");
 	app->eal_argv[n_args++] = strdup(buffer);
 
@@ -316,16 +326,14 @@ app_init_mempool(struct app_params *app)
 		struct app_mempool_params *p = &app->mempool_params[i];
 
 		APP_LOG(app, HIGH, "Initializing %s ...", p->name);
-		app->mempool[i] = rte_mempool_create(
-				p->name,
-				p->pool_size,
-				p->buffer_size,
-				p->cache_size,
-				sizeof(struct rte_pktmbuf_pool_private),
-				rte_pktmbuf_pool_init, NULL,
-				rte_pktmbuf_init, NULL,
-				p->cpu_socket_id,
-				0);
+		app->mempool[i] = rte_pktmbuf_pool_create(
+			p->name,
+			p->pool_size,
+			p->cache_size,
+			0, /* priv_size */
+			p->buffer_size -
+				sizeof(struct rte_mbuf), /* mbuf data size */
+			p->cpu_socket_id);
 
 		if (app->mempool[i] == NULL)
 			rte_panic("%s init error\n", p->name);
@@ -606,28 +614,11 @@ app_link_set_tcp_syn_filter(struct app_params *app, struct app_link_params *cp)
 	}
 }
 
-static int
-app_link_is_virtual(struct app_link_params *p)
-{
-	uint32_t pmd_id = p->pmd_id;
-	struct rte_eth_dev *dev = &rte_eth_devices[pmd_id];
-
-	if (dev->dev_type == RTE_ETH_DEV_VIRTUAL)
-		return 1;
-
-	return 0;
-}
-
 void
 app_link_up_internal(struct app_params *app, struct app_link_params *cp)
 {
 	uint32_t i;
 	int status;
-
-	if (app_link_is_virtual(cp)) {
-		cp->state = 1;
-		return;
-	}
 
 	/* For each link, add filters for IP of current link */
 	if (cp->ip != 0) {
@@ -722,7 +713,8 @@ app_link_up_internal(struct app_params *app, struct app_link_params *cp)
 
 	/* PMD link up */
 	status = rte_eth_dev_set_link_up(cp->pmd_id);
-	if (status < 0)
+	/* Do not panic if PMD does not provide link up functionality */
+	if (status < 0 && status != -ENOTSUP)
 		rte_panic("%s (%" PRIu32 "): PMD set link up error %"
 			PRId32 "\n", cp->name, cp->pmd_id, status);
 
@@ -736,14 +728,10 @@ app_link_down_internal(struct app_params *app, struct app_link_params *cp)
 	uint32_t i;
 	int status;
 
-	if (app_link_is_virtual(cp)) {
-		cp->state = 0;
-		return;
-	}
-
 	/* PMD link down */
 	status = rte_eth_dev_set_link_down(cp->pmd_id);
-	if (status < 0)
+	/* Do not panic if PMD does not provide link down functionality */
+	if (status < 0 && status != -ENOTSUP)
 		rte_panic("%s (%" PRIu32 "): PMD set link down error %"
 			PRId32 "\n", cp->name, cp->pmd_id, status);
 
@@ -1011,16 +999,30 @@ app_init_link(struct app_params *app)
 			struct app_pktq_hwq_in_params *p_rxq =
 				&app->hwq_in_params[j];
 			uint32_t rxq_link_id, rxq_queue_id;
+			uint16_t nb_rxd = p_rxq->size;
 
 			sscanf(p_rxq->name, "RXQ%" PRIu32 ".%" PRIu32,
 				&rxq_link_id, &rxq_queue_id);
 			if (rxq_link_id != link_id)
 				continue;
 
+			status = rte_eth_dev_adjust_nb_rx_tx_desc(
+				p_link->pmd_id,
+				&nb_rxd,
+				NULL);
+			if (status < 0)
+				rte_panic("%s (%" PRIu32 "): "
+					"%s adjust number of Rx descriptors "
+					"error (%" PRId32 ")\n",
+					p_link->name,
+					p_link->pmd_id,
+					p_rxq->name,
+					status);
+
 			status = rte_eth_rx_queue_setup(
 				p_link->pmd_id,
 				rxq_queue_id,
-				p_rxq->size,
+				nb_rxd,
 				app_get_cpu_socket_id(p_link->pmd_id),
 				&p_rxq->conf,
 				app->mempool[p_rxq->mempool_id]);
@@ -1038,16 +1040,30 @@ app_init_link(struct app_params *app)
 			struct app_pktq_hwq_out_params *p_txq =
 				&app->hwq_out_params[j];
 			uint32_t txq_link_id, txq_queue_id;
+			uint16_t nb_txd = p_txq->size;
 
 			sscanf(p_txq->name, "TXQ%" PRIu32 ".%" PRIu32,
 				&txq_link_id, &txq_queue_id);
 			if (txq_link_id != link_id)
 				continue;
 
+			status = rte_eth_dev_adjust_nb_rx_tx_desc(
+				p_link->pmd_id,
+				NULL,
+				&nb_txd);
+			if (status < 0)
+				rte_panic("%s (%" PRIu32 "): "
+					"%s adjust number of Tx descriptors "
+					"error (%" PRId32 ")\n",
+					p_link->name,
+					p_link->pmd_id,
+					p_txq->name,
+					status);
+
 			status = rte_eth_tx_queue_setup(
 				p_link->pmd_id,
 				txq_queue_id,
-				p_txq->size,
+				nb_txd,
 				app_get_cpu_socket_id(p_link->pmd_id),
 				&p_txq->conf);
 			if (status < 0)
@@ -1176,9 +1192,47 @@ app_init_tm(struct app_params *app)
 	}
 }
 
+#ifndef RTE_EXEC_ENV_LINUXAPP
+static void
+app_init_tap(struct app_params *app) {
+	if (app->n_pktq_tap == 0)
+		return;
+
+	rte_panic("TAP device not supported.\n");
+}
+#else
+static void
+app_init_tap(struct app_params *app)
+{
+	uint32_t i;
+
+	for (i = 0; i < app->n_pktq_tap; i++) {
+		struct app_pktq_tap_params *p_tap = &app->tap_params[i];
+		struct ifreq ifr;
+		int fd, status;
+
+		APP_LOG(app, HIGH, "Initializing %s ...", p_tap->name);
+
+		fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK);
+		if (fd < 0)
+			rte_panic("Cannot open file /dev/net/tun\n");
+
+		memset(&ifr, 0, sizeof(ifr));
+		ifr.ifr_flags = IFF_TAP | IFF_NO_PI; /* No packet information */
+		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", p_tap->name);
+
+		status = ioctl(fd, TUNSETIFF, (void *) &ifr);
+		if (status < 0)
+			rte_panic("TAP setup error\n");
+
+		app->tap[i] = fd;
+	}
+}
+#endif
+
 #ifdef RTE_LIBRTE_KNI
 static int
-kni_config_network_interface(uint8_t port_id, uint8_t if_up) {
+kni_config_network_interface(uint16_t port_id, uint8_t if_up) {
 	int ret = 0;
 
 	if (port_id >= rte_eth_dev_count())
@@ -1192,7 +1246,7 @@ kni_config_network_interface(uint8_t port_id, uint8_t if_up) {
 }
 
 static int
-kni_change_mtu(uint8_t port_id, unsigned new_mtu) {
+kni_change_mtu(uint16_t port_id, unsigned int new_mtu) {
 	int ret;
 
 	if (port_id >= rte_eth_dev_count())
@@ -1392,6 +1446,24 @@ void app_pipeline_params_get(struct app_params *app,
 			out->burst_size = app->tm_params[in->id].burst_read;
 			break;
 		}
+#ifdef RTE_EXEC_ENV_LINUXAPP
+		case APP_PKTQ_IN_TAP:
+		{
+			struct app_pktq_tap_params *tap_params =
+				&app->tap_params[in->id];
+			struct app_mempool_params *mempool_params =
+				&app->mempool_params[tap_params->mempool_id];
+			struct rte_mempool *mempool =
+				app->mempool[tap_params->mempool_id];
+
+			out->type = PIPELINE_PORT_IN_FD_READER;
+			out->params.fd.fd = app->tap[in->id];
+			out->params.fd.mtu = mempool_params->buffer_size;
+			out->params.fd.mempool = mempool;
+			out->burst_size = app->tap_params[in->id].burst_read;
+			break;
+		}
+#endif
 #ifdef RTE_LIBRTE_KNI
 		case APP_PKTQ_IN_KNI:
 		{
@@ -1536,6 +1608,19 @@ void app_pipeline_params_get(struct app_params *app,
 				app->tm_params[in->id].burst_write;
 			break;
 		}
+#ifdef RTE_EXEC_ENV_LINUXAPP
+		case APP_PKTQ_OUT_TAP:
+		{
+			struct rte_port_fd_writer_params *params =
+				&out->params.fd;
+
+			out->type = PIPELINE_PORT_OUT_FD_WRITER;
+			params->fd = app->tap[in->id];
+			params->tx_burst_sz =
+				app->tap_params[in->id].burst_write;
+			break;
+		}
+#endif
 #ifdef RTE_LIBRTE_KNI
 		case APP_PKTQ_OUT_KNI:
 		{
@@ -1641,7 +1726,7 @@ app_init_pipelines(struct app_params *app)
 		data->ptype = ptype;
 
 		data->timer_period = (rte_get_tsc_hz() *
-			params->timer_period) / 100;
+			params->timer_period) / 1000;
 	}
 }
 
@@ -1752,6 +1837,7 @@ int app_init(struct app_params *app)
 	app_init_link(app);
 	app_init_swq(app);
 	app_init_tm(app);
+	app_init_tap(app);
 	app_init_kni(app);
 	app_init_msgq(app);
 

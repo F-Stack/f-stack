@@ -35,7 +35,6 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <errno.h>
 #include <sys/queue.h>
 
 #include <rte_log.h>
@@ -43,7 +42,6 @@
 #include <rte_common.h>
 #include <rte_memory.h>
 #include <rte_malloc.h>
-#include <rte_memzone.h>
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_eal_memconfig.h>
@@ -97,7 +95,7 @@ struct rte_lpm6_tbl_entry {
 /** Rules tbl entry structure. */
 struct rte_lpm6_rule {
 	uint8_t ip[RTE_LPM6_IPV6_ADDR_SIZE]; /**< Rule IP address. */
-	uint8_t next_hop; /**< Rule next hop. */
+	uint32_t next_hop; /**< Rule next hop. */
 	uint8_t depth; /**< Rule depth. */
 };
 
@@ -192,6 +190,7 @@ rte_lpm6_create(const char *name, int socket_id,
 	te = rte_zmalloc("LPM6_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
 		RTE_LOG(ERR, LPM, "Failed to allocate tailq entry!\n");
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -202,6 +201,7 @@ rte_lpm6_create(const char *name, int socket_id,
 	if (lpm == NULL) {
 		RTE_LOG(ERR, LPM, "LPM memory allocation failed\n");
 		rte_free(te);
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -213,6 +213,7 @@ rte_lpm6_create(const char *name, int socket_id,
 		rte_free(lpm);
 		lpm = NULL;
 		rte_free(te);
+		rte_errno = ENOMEM;
 		goto exit;
 	}
 
@@ -297,7 +298,7 @@ rte_lpm6_free(struct rte_lpm6 *lpm)
  * the nexthop if so. Otherwise it adds a new rule if enough space is available.
  */
 static inline int32_t
-rule_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t next_hop, uint8_t depth)
+rule_add(struct rte_lpm6 *lpm, uint8_t *ip, uint32_t next_hop, uint8_t depth)
 {
 	uint32_t rule_index;
 
@@ -340,7 +341,7 @@ rule_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t next_hop, uint8_t depth)
  */
 static void
 expand_rule(struct rte_lpm6 *lpm, uint32_t tbl8_gindex, uint8_t depth,
-		uint8_t next_hop)
+		uint32_t next_hop)
 {
 	uint32_t tbl8_group_end, tbl8_gindex_next, j;
 
@@ -377,7 +378,7 @@ expand_rule(struct rte_lpm6 *lpm, uint32_t tbl8_gindex, uint8_t depth,
 static inline int
 add_step(struct rte_lpm6 *lpm, struct rte_lpm6_tbl_entry *tbl,
 		struct rte_lpm6_tbl_entry **tbl_next, uint8_t *ip, uint8_t bytes,
-		uint8_t first_byte, uint8_t depth, uint8_t next_hop)
+		uint8_t first_byte, uint8_t depth, uint32_t next_hop)
 {
 	uint32_t tbl_index, tbl_range, tbl8_group_start, tbl8_group_end, i;
 	int32_t tbl8_gindex;
@@ -507,11 +508,19 @@ add_step(struct rte_lpm6 *lpm, struct rte_lpm6_tbl_entry *tbl,
  * Add a route
  */
 int
-rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
+rte_lpm6_add_v20(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
 		uint8_t next_hop)
 {
+	return rte_lpm6_add_v1705(lpm, ip, depth, next_hop);
+}
+VERSION_SYMBOL(rte_lpm6_add, _v20, 2.0);
+
+int
+rte_lpm6_add_v1705(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
+		uint32_t next_hop)
+{
 	struct rte_lpm6_tbl_entry *tbl;
-	struct rte_lpm6_tbl_entry *tbl_next;
+	struct rte_lpm6_tbl_entry *tbl_next = NULL;
 	int32_t rule_index;
 	int status;
 	uint8_t masked_ip[RTE_LPM6_IPV6_ADDR_SIZE];
@@ -560,6 +569,10 @@ rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
 
 	return status;
 }
+BIND_DEFAULT_SYMBOL(rte_lpm6_add, _v1705, 17.05);
+MAP_STATIC_SYMBOL(int rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip,
+				uint8_t depth, uint32_t next_hop),
+		rte_lpm6_add_v1705);
 
 /*
  * Takes a pointer to a table entry and inspect one level.
@@ -569,7 +582,7 @@ rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
 static inline int
 lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
 		const struct rte_lpm6_tbl_entry **tbl_next, uint8_t *ip,
-		uint8_t first_byte, uint8_t *next_hop)
+		uint8_t first_byte, uint32_t *next_hop)
 {
 	uint32_t tbl8_index, tbl_entry;
 
@@ -589,7 +602,7 @@ lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
 		return 1;
 	} else {
 		/* If not extended then we can have a match. */
-		*next_hop = (uint8_t)tbl_entry;
+		*next_hop = ((uint32_t)tbl_entry & RTE_LPM6_TBL8_BITMASK);
 		return (tbl_entry & RTE_LPM6_LOOKUP_SUCCESS) ? 0 : -ENOENT;
 	}
 }
@@ -598,7 +611,26 @@ lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
  * Looks up an IP
  */
 int
-rte_lpm6_lookup(const struct rte_lpm6 *lpm, uint8_t *ip, uint8_t *next_hop)
+rte_lpm6_lookup_v20(const struct rte_lpm6 *lpm, uint8_t *ip, uint8_t *next_hop)
+{
+	uint32_t next_hop32 = 0;
+	int32_t status;
+
+	/* DEBUG: Check user input arguments. */
+	if (next_hop == NULL)
+		return -EINVAL;
+
+	status = rte_lpm6_lookup_v1705(lpm, ip, &next_hop32);
+	if (status == 0)
+		*next_hop = (uint8_t)next_hop32;
+
+	return status;
+}
+VERSION_SYMBOL(rte_lpm6_lookup, _v20, 2.0);
+
+int
+rte_lpm6_lookup_v1705(const struct rte_lpm6 *lpm, uint8_t *ip,
+		uint32_t *next_hop)
 {
 	const struct rte_lpm6_tbl_entry *tbl;
 	const struct rte_lpm6_tbl_entry *tbl_next = NULL;
@@ -625,20 +657,23 @@ rte_lpm6_lookup(const struct rte_lpm6 *lpm, uint8_t *ip, uint8_t *next_hop)
 
 	return status;
 }
+BIND_DEFAULT_SYMBOL(rte_lpm6_lookup, _v1705, 17.05);
+MAP_STATIC_SYMBOL(int rte_lpm6_lookup(const struct rte_lpm6 *lpm, uint8_t *ip,
+				uint32_t *next_hop), rte_lpm6_lookup_v1705);
 
 /*
  * Looks up a group of IP addresses
  */
 int
-rte_lpm6_lookup_bulk_func(const struct rte_lpm6 *lpm,
+rte_lpm6_lookup_bulk_func_v20(const struct rte_lpm6 *lpm,
 		uint8_t ips[][RTE_LPM6_IPV6_ADDR_SIZE],
 		int16_t * next_hops, unsigned n)
 {
 	unsigned i;
 	const struct rte_lpm6_tbl_entry *tbl;
 	const struct rte_lpm6_tbl_entry *tbl_next = NULL;
-	uint32_t tbl24_index;
-	uint8_t first_byte, next_hop;
+	uint32_t tbl24_index, next_hop;
+	uint8_t first_byte;
 	int status;
 
 	/* DEBUG: Check user input arguments. */
@@ -664,11 +699,59 @@ rte_lpm6_lookup_bulk_func(const struct rte_lpm6 *lpm,
 		if (status < 0)
 			next_hops[i] = -1;
 		else
-			next_hops[i] = next_hop;
+			next_hops[i] = (int16_t)next_hop;
 	}
 
 	return 0;
 }
+VERSION_SYMBOL(rte_lpm6_lookup_bulk_func, _v20, 2.0);
+
+int
+rte_lpm6_lookup_bulk_func_v1705(const struct rte_lpm6 *lpm,
+		uint8_t ips[][RTE_LPM6_IPV6_ADDR_SIZE],
+		int32_t *next_hops, unsigned int n)
+{
+	unsigned int i;
+	const struct rte_lpm6_tbl_entry *tbl;
+	const struct rte_lpm6_tbl_entry *tbl_next = NULL;
+	uint32_t tbl24_index, next_hop;
+	uint8_t first_byte;
+	int status;
+
+	/* DEBUG: Check user input arguments. */
+	if ((lpm == NULL) || (ips == NULL) || (next_hops == NULL))
+		return -EINVAL;
+
+	for (i = 0; i < n; i++) {
+		first_byte = LOOKUP_FIRST_BYTE;
+		tbl24_index = (ips[i][0] << BYTES2_SIZE) |
+				(ips[i][1] << BYTE_SIZE) | ips[i][2];
+
+		/* Calculate pointer to the first entry to be inspected */
+		tbl = &lpm->tbl24[tbl24_index];
+
+		do {
+			/* Continue inspecting following levels
+			 * until success or failure
+			 */
+			status = lookup_step(lpm, tbl, &tbl_next, ips[i],
+					first_byte++, &next_hop);
+			tbl = tbl_next;
+		} while (status == 1);
+
+		if (status < 0)
+			next_hops[i] = -1;
+		else
+			next_hops[i] = (int32_t)next_hop;
+	}
+
+	return 0;
+}
+BIND_DEFAULT_SYMBOL(rte_lpm6_lookup_bulk_func, _v1705, 17.05);
+MAP_STATIC_SYMBOL(int rte_lpm6_lookup_bulk_func(const struct rte_lpm6 *lpm,
+				uint8_t ips[][RTE_LPM6_IPV6_ADDR_SIZE],
+				int32_t *next_hops, unsigned int n),
+		rte_lpm6_lookup_bulk_func_v1705);
 
 /*
  * Finds a rule in rule table.
@@ -698,8 +781,28 @@ rule_find(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth)
  * Look for a rule in the high-level rules table
  */
 int
-rte_lpm6_is_rule_present(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
-uint8_t *next_hop)
+rte_lpm6_is_rule_present_v20(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
+		uint8_t *next_hop)
+{
+	uint32_t next_hop32 = 0;
+	int32_t status;
+
+	/* DEBUG: Check user input arguments. */
+	if (next_hop == NULL)
+		return -EINVAL;
+
+	status = rte_lpm6_is_rule_present_v1705(lpm, ip, depth, &next_hop32);
+	if (status > 0)
+		*next_hop = (uint8_t)next_hop32;
+
+	return status;
+
+}
+VERSION_SYMBOL(rte_lpm6_is_rule_present, _v20, 2.0);
+
+int
+rte_lpm6_is_rule_present_v1705(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
+		uint32_t *next_hop)
 {
 	uint8_t ip_masked[RTE_LPM6_IPV6_ADDR_SIZE];
 	int32_t rule_index;
@@ -724,6 +827,10 @@ uint8_t *next_hop)
 	/* If rule is not found return 0. */
 	return 0;
 }
+BIND_DEFAULT_SYMBOL(rte_lpm6_is_rule_present, _v1705, 17.05);
+MAP_STATIC_SYMBOL(int rte_lpm6_is_rule_present(struct rte_lpm6 *lpm,
+				uint8_t *ip, uint8_t depth, uint32_t *next_hop),
+		rte_lpm6_is_rule_present_v1705);
 
 /*
  * Delete a rule from the rule table.

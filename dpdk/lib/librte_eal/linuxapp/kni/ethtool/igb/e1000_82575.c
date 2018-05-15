@@ -17,7 +17,7 @@
   51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
 
   The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
+  the file called "LICENSE.GPL".
 
   Contact Information:
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -241,7 +241,7 @@ static s32 e1000_init_phy_params_82575(struct e1000_hw *hw)
 		else
 			phy->ops.get_cable_length = e1000_get_cable_length_m88;
 		phy->ops.force_speed_duplex = e1000_phy_force_speed_duplex_m88;
-		/* Check if this PHY is confgured for media swap. */
+		/* Check if this PHY is configured for media swap. */
 		if (phy->id == M88E1112_E_PHY_ID) {
 			u16 data;
 
@@ -1357,7 +1357,7 @@ static s32 e1000_get_pcs_speed_and_duplex_82575(struct e1000_hw *hw,
  *  @hw: pointer to the HW structure
  *
  *  In the case of serdes shut down sfp and PCS on driver unload
- *  when management pass thru is not enabled.
+ *  when management pass through is not enabled.
  **/
 void e1000_shutdown_serdes_link_82575(struct e1000_hw *hw)
 {

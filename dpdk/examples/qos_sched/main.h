@@ -69,8 +69,13 @@ extern "C" {
 #define BURST_TX_DRAIN_US 100
 
 #ifndef APP_MAX_LCORE
+#if (RTE_MAX_LCORE > 64)
 #define APP_MAX_LCORE 64
+#else
+#define APP_MAX_LCORE RTE_MAX_LCORE
 #endif
+#endif
+
 #define MAX_DATA_STREAMS (APP_MAX_LCORE/2)
 #define MAX_SCHED_SUBPORTS		8
 #define MAX_SCHED_PIPES		4096
@@ -101,8 +106,8 @@ struct thread_conf
 	uint32_t n_mbufs;
 	struct rte_mbuf **m_table;
 
-	uint8_t rx_port;
-	uint8_t tx_port;
+	uint16_t rx_port;
+	uint16_t tx_port;
 	uint16_t rx_queue;
 	uint16_t tx_queue;
 	struct rte_ring *rx_ring;
@@ -120,8 +125,8 @@ struct flow_conf
 	uint32_t rx_core;
 	uint32_t wt_core;
 	uint32_t tx_core;
-	uint8_t rx_port;
-	uint8_t tx_port;
+	uint16_t rx_port;
+	uint16_t tx_port;
 	uint16_t rx_queue;
 	uint16_t tx_queue;
 	struct rte_ring *rx_ring;
@@ -183,13 +188,15 @@ void app_worker_thread(struct thread_conf **qconf);
 void app_mixed_thread(struct thread_conf **qconf);
 
 void app_stat(void);
-int subport_stat(uint8_t port_id, uint32_t subport_id);
-int pipe_stat(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id);
-int qavg_q(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id, uint8_t tc, uint8_t q);
-int qavg_tcpipe(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id, uint8_t tc);
-int qavg_pipe(uint8_t port_id, uint32_t subport_id, uint32_t pipe_id);
-int qavg_tcsubport(uint8_t port_id, uint32_t subport_id, uint8_t tc);
-int qavg_subport(uint8_t port_id, uint32_t subport_id);
+int subport_stat(uint16_t port_id, uint32_t subport_id);
+int pipe_stat(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id);
+int qavg_q(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id,
+	   uint8_t tc, uint8_t q);
+int qavg_tcpipe(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id,
+		uint8_t tc);
+int qavg_pipe(uint16_t port_id, uint32_t subport_id, uint32_t pipe_id);
+int qavg_tcsubport(uint16_t port_id, uint32_t subport_id, uint8_t tc);
+int qavg_subport(uint16_t port_id, uint32_t subport_id);
 
 #ifdef __cplusplus
 }

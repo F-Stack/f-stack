@@ -17,7 +17,7 @@
   51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
 
   The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
+  the file called "LICENSE.GPL".
 
   Contact Information:
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
@@ -1108,7 +1108,7 @@ static inline u32 _kc_netif_msg_init(int debug_value, int default_msg_enable_bit
 #define pci_register_driver pci_module_init
 
 /*
- * Most of the dma compat code is copied/modifed from the 2.4.37
+ * Most of the dma compat code is copied/modified from the 2.4.37
  * /include/linux/libata-compat.h header file
  */
 /* These definitions mirror those in pci.h, so they can be used
@@ -3139,5 +3139,17 @@ static inline int __kc_pci_vfs_assigned(struct pci_dev *dev)
 #if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0) )
 #define SET_ETHTOOL_OPS(netdev, ops) ((netdev)->ethtool_ops = (ops))
 #endif /* >= 3.16.0 */
+
+/*
+ * vlan_tx_tag_* macros renamed to skb_vlan_tag_* (Linux commit: df8a39defad4)
+ * For older kernels backported this commit, need to use renamed functions.
+ * This fix is specific to RedHat/CentOS kernels.
+ */
+#if (defined(RHEL_RELEASE_CODE) && \
+	RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(6, 8) && \
+	LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 34))
+#define vlan_tx_tag_get skb_vlan_tag_get
+#define vlan_tx_tag_present skb_vlan_tag_present
+#endif
 
 #endif /* _KCOMPAT_H_ */

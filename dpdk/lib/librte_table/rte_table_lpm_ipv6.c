@@ -81,7 +81,7 @@ static void *
 rte_table_lpm_ipv6_create(void *params, int socket_id, uint32_t entry_size)
 {
 	struct rte_table_lpm_ipv6_params *p =
-		(struct rte_table_lpm_ipv6_params *) params;
+		params;
 	struct rte_table_lpm_ipv6 *lpm;
 	struct rte_lpm6_config lpm6_config;
 	uint32_t total_size, nht_size;
@@ -152,7 +152,7 @@ rte_table_lpm_ipv6_create(void *params, int socket_id, uint32_t entry_size)
 static int
 rte_table_lpm_ipv6_free(void *table)
 {
-	struct rte_table_lpm_ipv6 *lpm = (struct rte_table_lpm_ipv6 *) table;
+	struct rte_table_lpm_ipv6 *lpm = table;
 
 	/* Check input parameters */
 	if (lpm == NULL) {
@@ -208,12 +208,11 @@ rte_table_lpm_ipv6_entry_add(
 	int *key_found,
 	void **entry_ptr)
 {
-	struct rte_table_lpm_ipv6 *lpm = (struct rte_table_lpm_ipv6 *) table;
+	struct rte_table_lpm_ipv6 *lpm = table;
 	struct rte_table_lpm_ipv6_key *ip_prefix =
-		(struct rte_table_lpm_ipv6_key *) key;
-	uint32_t nht_pos, nht_pos0_valid;
+		key;
+	uint32_t nht_pos, nht_pos0, nht_pos0_valid;
 	int status;
-	uint8_t nht_pos0;
 
 	/* Check input parameters */
 	if (lpm == NULL) {
@@ -256,7 +255,7 @@ rte_table_lpm_ipv6_entry_add(
 
 	/* Add rule to low level LPM table */
 	if (rte_lpm6_add(lpm->lpm, ip_prefix->ip, ip_prefix->depth,
-		(uint8_t) nht_pos) < 0) {
+		nht_pos) < 0) {
 		RTE_LOG(ERR, TABLE, "%s: LPM IPv6 rule add failed\n", __func__);
 		return -1;
 	}
@@ -277,10 +276,10 @@ rte_table_lpm_ipv6_entry_delete(
 	int *key_found,
 	void *entry)
 {
-	struct rte_table_lpm_ipv6 *lpm = (struct rte_table_lpm_ipv6 *) table;
+	struct rte_table_lpm_ipv6 *lpm = table;
 	struct rte_table_lpm_ipv6_key *ip_prefix =
-		(struct rte_table_lpm_ipv6_key *) key;
-	uint8_t nht_pos;
+		key;
+	uint32_t nht_pos;
 	int status;
 
 	/* Check input parameters */
@@ -356,7 +355,7 @@ rte_table_lpm_ipv6_lookup(
 			uint8_t *ip = RTE_MBUF_METADATA_UINT8_PTR(pkt,
 				lpm->offset);
 			int status;
-			uint8_t nht_pos;
+			uint32_t nht_pos;
 
 			status = rte_lpm6_lookup(lpm->lpm, ip, &nht_pos);
 			if (status == 0) {
@@ -375,7 +374,7 @@ rte_table_lpm_ipv6_lookup(
 static int
 rte_table_lpm_ipv6_stats_read(void *table, struct rte_table_stats *stats, int clear)
 {
-	struct rte_table_lpm_ipv6 *t = (struct rte_table_lpm_ipv6 *) table;
+	struct rte_table_lpm_ipv6 *t = table;
 
 	if (stats != NULL)
 		memcpy(stats, &t->stats, sizeof(t->stats));

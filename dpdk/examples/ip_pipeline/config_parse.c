@@ -1,4 +1,4 @@
-﻿/*-
+/*-
  *   BSD LICENSE
  *
  *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
@@ -103,7 +103,7 @@ static const struct app_link_params link_params_default = {
 			.hw_vlan_strip  = 0, /* VLAN strip */
 			.hw_vlan_extend = 0, /* Extended VLAN */
 			.jumbo_frame    = 0, /* Jumbo frame support */
-			.hw_strip_crc   = 0, /* CRC strip by HW */
+			.hw_strip_crc   = 1, /* CRC strip by HW */
 			.enable_scatter = 0, /* Scattered packets RX handler */
 
 			.max_rx_pkt_len = 9000, /* Jumbo frame max packet len */
@@ -189,6 +189,15 @@ struct app_pktq_tm_params default_tm_params = {
 	.burst_write = 32,
 };
 
+struct app_pktq_tap_params default_tap_params = {
+	.parsed = 0,
+	.burst_read = 32,
+	.burst_write = 32,
+	.dropless = 0,
+	.n_retries = 0,
+	.mempool_id = 0,
+};
+
 struct app_pktq_kni_params default_kni_params = {
 	.parsed = 0,
 	.socket_id = 0,
@@ -207,7 +216,7 @@ struct app_pktq_source_params default_source_params = {
 	.parsed = 0,
 	.mempool_id = 0,
 	.burst = 32,
-	.file_name = NULL,
+	.file_name = "./config/packets.pcap",
 	.n_bytes_per_pkt = 0,
 };
 
@@ -800,21 +809,6 @@ parse_eal(struct app_params *app,
 			continue;
 		}
 
-		/* xen_dom0 */
-		if (strcmp(entry->name, "xen_dom0") == 0) {
-			int val;
-
-			PARSE_ERROR_DUPLICATE((p->xen_dom0_present == 0),
-				section_name,
-				entry->name);
-			p->xen_dom0_present = 1;
-
-			val = parser_read_arg_bool(entry->value);
-			PARSE_ERROR((val >= 0), section_name, entry->name);
-			p->xen_dom0 = val;
-			continue;
-		}
-
 		/* unrecognized */
 		PARSE_ERROR_INVALID(0, section_name, entry->name);
 	}
@@ -852,6 +846,9 @@ parse_pipeline_pktq_in(struct app_params *app,
 			type = APP_PKTQ_IN_TM;
 			id = APP_PARAM_ADD(app->tm_params, name);
 			APP_PARAM_ADD_LINK_FOR_TM(app, name);
+		} else if (validate_name(name, "TAP", 1) == 0) {
+			type = APP_PKTQ_IN_TAP;
+			id = APP_PARAM_ADD(app->tap_params, name);
 		} else if (validate_name(name, "KNI", 1) == 0) {
 			type = APP_PKTQ_IN_KNI;
 			id = APP_PARAM_ADD(app->kni_params, name);
@@ -901,6 +898,9 @@ parse_pipeline_pktq_out(struct app_params *app,
 			type = APP_PKTQ_OUT_TM;
 			id = APP_PARAM_ADD(app->tm_params, name);
 			APP_PARAM_ADD_LINK_FOR_TM(app, name);
+		} else if (validate_name(name, "TAP", 1) == 0) {
+			type = APP_PKTQ_OUT_TAP;
+			id = APP_PARAM_ADD(app->tap_params, name);
 		} else if (validate_name(name, "KNI", 1) == 0) {
 			type = APP_PKTQ_OUT_KNI;
 			id = APP_PARAM_ADD(app->kni_params, name);
@@ -1896,6 +1896,88 @@ parse_tm(struct app_params *app,
 }
 
 static void
+parse_tap(struct app_params *app,
+	const char *section_name,
+	struct rte_cfgfile *cfg)
+{
+	struct app_pktq_tap_params *param;
+	struct rte_cfgfile_entry *entries;
+	int n_entries, i;
+	ssize_t param_idx;
+
+	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
+	PARSE_ERROR_SECTION_NO_ENTRIES((n_entries > 0), section_name);
+
+	entries = malloc(n_entries * sizeof(struct rte_cfgfile_entry));
+	PARSE_ERROR_MALLOC(entries != NULL);
+
+	rte_cfgfile_section_entries(cfg, section_name, entries, n_entries);
+
+	param_idx = APP_PARAM_ADD(app->tap_params, section_name);
+	param = &app->tap_params[param_idx];
+	PARSE_CHECK_DUPLICATE_SECTION(param);
+
+	for (i = 0; i < n_entries; i++) {
+		struct rte_cfgfile_entry *ent = &entries[i];
+
+		if (strcmp(ent->name, "burst_read") == 0) {
+			int status = parser_read_uint32(
+				&param->burst_read, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "burst_write") == 0) {
+			int status = parser_read_uint32(
+				&param->burst_write, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "dropless") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->dropless = status;
+			continue;
+		}
+
+		if (strcmp(ent->name, "n_retries") == 0) {
+			int status = parser_read_uint64(&param->n_retries,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "mempool") == 0) {
+			int status = validate_name(ent->value,
+				"MEMPOOL", 1);
+			ssize_t idx;
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+
+			idx = APP_PARAM_ADD(app->mempool_params, ent->value);
+			param->mempool_id = idx;
+
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
+	}
+
+	free(entries);
+}
+
+static void
 parse_kni(struct app_params *app,
 		  const char *section_name,
 		  struct rte_cfgfile *cfg)
@@ -2286,6 +2368,7 @@ static const struct config_section cfg_file_scheme[] = {
 	{"TXQ", 2, parse_txq},
 	{"SWQ", 1, parse_swq},
 	{"TM", 1, parse_tm},
+	{"TAP", 1, parse_tap},
 	{"KNI", 1, parse_kni},
 	{"SOURCE", 1, parse_source},
 	{"SINK", 1, parse_sink},
@@ -2425,6 +2508,7 @@ app_config_parse(struct app_params *app, const char *file_name)
 	APP_PARAM_COUNT(app->hwq_out_params, app->n_pktq_hwq_out);
 	APP_PARAM_COUNT(app->swq_params, app->n_pktq_swq);
 	APP_PARAM_COUNT(app->tm_params, app->n_pktq_tm);
+	APP_PARAM_COUNT(app->tap_params, app->n_pktq_tap);
 	APP_PARAM_COUNT(app->kni_params, app->n_pktq_kni);
 	APP_PARAM_COUNT(app->source_params, app->n_pktq_source);
 	APP_PARAM_COUNT(app->sink_params, app->n_pktq_sink);
@@ -2543,10 +2627,6 @@ save_eal_params(struct app_params *app, FILE *f)
 
 	if (p->vfio_intr)
 		fprintf(f, "%s = %s\n", "vfio_intr", p->vfio_intr);
-
-	if (p->xen_dom0_present)
-		fprintf(f, "%s = %s\n", "xen_dom0",
-			(p->xen_dom0) ? "yes" : "no");
 
 	fputc('\n', f);
 }
@@ -2789,6 +2869,30 @@ save_tm_params(struct app_params *app, FILE *f)
 }
 
 static void
+save_tap_params(struct app_params *app, FILE *f)
+{
+	struct app_pktq_tap_params *p;
+	size_t i, count;
+
+	count = RTE_DIM(app->tap_params);
+	for (i = 0; i < count; i++) {
+		p = &app->tap_params[i];
+		if (!APP_PARAM_VALID(p))
+			continue;
+
+		fprintf(f, "[%s]\n", p->name);
+		fprintf(f, "%s = %" PRIu32 "\n", "burst_read", p->burst_read);
+		fprintf(f, "%s = %" PRIu32 "\n", "burst_write", p->burst_write);
+		fprintf(f, "%s = %s\n", "dropless", p->dropless ? "yes" : "no");
+		fprintf(f, "%s = %" PRIu64 "\n", "n_retries", p->n_retries);
+		fprintf(f, "%s = %s\n", "mempool",
+			app->mempool_params[p->mempool_id].name);
+
+		fputc('\n', f);
+	}
+}
+
+static void
 save_kni_params(struct app_params *app, FILE *f)
 {
 	struct app_pktq_kni_params *p;
@@ -2942,6 +3046,9 @@ save_pipeline_params(struct app_params *app, FILE *f)
 				case APP_PKTQ_IN_TM:
 					name = app->tm_params[pp->id].name;
 					break;
+				case APP_PKTQ_IN_TAP:
+					name = app->tap_params[pp->id].name;
+					break;
 				case APP_PKTQ_IN_KNI:
 					name = app->kni_params[pp->id].name;
 					break;
@@ -2978,6 +3085,9 @@ save_pipeline_params(struct app_params *app, FILE *f)
 					break;
 				case APP_PKTQ_OUT_TM:
 					name = app->tm_params[pp->id].name;
+					break;
+				case APP_PKTQ_OUT_TAP:
+					name = app->tap_params[pp->id].name;
 					break;
 				case APP_PKTQ_OUT_KNI:
 					name = app->kni_params[pp->id].name;
@@ -3067,6 +3177,7 @@ app_config_save(struct app_params *app, const char *file_name)
 	save_txq_params(app, file);
 	save_swq_params(app, file);
 	save_tm_params(app, file);
+	save_tap_params(app, file);
 	save_kni_params(app, file);
 	save_source_params(app, file);
 	save_sink_params(app, file);
@@ -3082,10 +3193,6 @@ app_config_init(struct app_params *app)
 	size_t i;
 
 	memcpy(app, &app_params_default, sizeof(struct app_params));
-
-	/* configure default_source_params */
-	default_source_params.file_name = strdup("./config/packets.pcap");
-	PARSE_ERROR_MALLOC(default_source_params.file_name != NULL);
 
 	for (i = 0; i < RTE_DIM(app->mempool_params); i++)
 		memcpy(&app->mempool_params[i],
@@ -3116,6 +3223,11 @@ app_config_init(struct app_params *app)
 		memcpy(&app->tm_params[i],
 			&default_tm_params,
 			sizeof(default_tm_params));
+
+	for (i = 0; i < RTE_DIM(app->tap_params); i++)
+		memcpy(&app->tap_params[i],
+			&default_tap_params,
+			sizeof(default_tap_params));
 
 	for (i = 0; i < RTE_DIM(app->kni_params); i++)
 		memcpy(&app->kni_params[i],
@@ -3276,7 +3388,7 @@ app_config_args(struct app_params *app, int argc, char **argv)
 			app_print_usage(argv[0]);
 		}
 
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 
 	/* Check dependencies between args */
 	if (preproc_params_present && (preproc_present == 0))

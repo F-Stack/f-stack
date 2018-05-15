@@ -16,7 +16,7 @@ ifeq ($(FF_PATH),)
     $(error variable FF_PATH is not set)
 endif
 ifeq ($(FF_DPDK),)
-    $(error variable FF_DPDK is not set)
+    FF_DPDK= $(FF_PATH)/dpdk/x86_64-native-linuxapp-gcc
 endif
 
 release_hdr := $(shell sh -c './mkreleasehdr.sh')
@@ -119,12 +119,9 @@ endif
 FINAL_CFLAGS+= -DHAVE_FF_KQUEUE
 FINAL_CFLAGS+= -I$(FF_PATH)/lib
 
-FINAL_LIBS+= -L$(FF_PATH)/lib -L$(FF_DPDK)/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
-FINAL_LIBS+= -g -Wl,--no-as-needed -fvisibility=default -pthread -lm -lrt
-FINAL_LIBS+= -Wl,--whole-archive -lrte_pmd_vmxnet3_uio -lrte_pmd_i40e -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_pmd_ring
-FINAL_LIBS+= -Wl,--whole-archive -lrte_hash -lrte_kvargs -Wl,-lrte_mbuf -lethdev -lrte_eal -Wl,-lrte_mempool
-FINAL_LIBS+= -lrte_ring -lrte_cmdline -lrte_cfgfile -lrte_kni -lrte_timer -Wl,-lrte_pmd_virtio
-FINAL_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lm -lcrypto
+FINAL_LIBS+= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
+FINAL_LIBS+= -L${FF_DPDK}/lib -Wl,--whole-archive,-ldpdk,--no-whole-archive
+FINAL_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma
 
 REDIS_CC=$(QUIET_CC)$(CC) $(FINAL_CFLAGS)
 REDIS_LD=$(QUIET_LINK)$(CC) $(FINAL_LDFLAGS)

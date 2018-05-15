@@ -42,7 +42,6 @@
 #include <fcntl.h>
 #include <sys/time.h>
 #include <sys/mman.h>
-#include <execinfo.h>
 #include <sched.h>
 
 #include <rte_malloc.h>
@@ -63,9 +62,7 @@ RTE_DEFINE_PER_LTHREAD(void *, dummy);
 
 static struct lthread_key key_table[LTHREAD_MAX_KEYS];
 
-void lthread_tls_ctor(void) __attribute__((constructor));
-
-void lthread_tls_ctor(void)
+RTE_INIT(thread_tls_ctor)
 {
 	key_pool = NULL;
 	key_pool_init = 0;
@@ -199,11 +196,12 @@ void _lthread_tls_destroy(struct lthread *lt)
 void
 *lthread_getspecific(unsigned int k)
 {
+	void *res = NULL;
 
-	if (k > LTHREAD_MAX_KEYS)
-		return NULL;
+	if (k < LTHREAD_MAX_KEYS)
+		res = THIS_LTHREAD->tls->data[k];
 
-	return THIS_LTHREAD->tls->data[k];
+	return res;
 }
 
 /*
@@ -213,7 +211,7 @@ void
  */
 int lthread_setspecific(unsigned int k, const void *data)
 {
-	if (k > LTHREAD_MAX_KEYS)
+	if (k >= LTHREAD_MAX_KEYS)
 		return POSIX_ERRNO(EINVAL);
 
 	int n = THIS_LTHREAD->tls->nb_keys_inuse;

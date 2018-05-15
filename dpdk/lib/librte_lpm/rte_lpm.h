@@ -45,6 +45,7 @@
 #include <stdlib.h>
 #include <rte_branch_prediction.h>
 #include <rte_byteorder.h>
+#include <rte_config.h>
 #include <rte_memory.h>
 #include <rte_common.h>
 #include <rte_vect.h>
@@ -93,12 +94,14 @@ extern "C" {
 
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 /** @internal Tbl24 entry structure. */
+__extension__
 struct rte_lpm_tbl_entry_v20 {
 	/**
 	 * Stores Next hop (tbl8 or tbl24 when valid_group is not set) or
 	 * a group index pointing to a tbl8 structure (tbl24 only, when
 	 * valid_group is set)
 	 */
+	RTE_STD_C11
 	union {
 		uint8_t next_hop;
 		uint8_t group_idx;
@@ -116,6 +119,7 @@ struct rte_lpm_tbl_entry_v20 {
 	uint8_t depth       :6; /**< Rule depth. */
 };
 
+__extension__
 struct rte_lpm_tbl_entry {
 	/**
 	 * Stores Next hop (tbl8 or tbl24 when valid_group is not set) or
@@ -137,6 +141,7 @@ struct rte_lpm_tbl_entry {
 };
 
 #else
+__extension__
 struct rte_lpm_tbl_entry_v20 {
 	uint8_t depth       :6;
 	uint8_t valid_group :1;
@@ -147,6 +152,7 @@ struct rte_lpm_tbl_entry_v20 {
 	};
 };
 
+__extension__
 struct rte_lpm_tbl_entry {
 	uint32_t depth       :6;
 	uint32_t valid_group :1;
@@ -193,7 +199,7 @@ struct rte_lpm_v20 {
 			__rte_cache_aligned; /**< LPM tbl24 table. */
 	struct rte_lpm_tbl_entry_v20 tbl8[RTE_LPM_TBL8_NUM_ENTRIES]
 			__rte_cache_aligned; /**< LPM tbl8 table. */
-	struct rte_lpm_rule_v20 rules_tbl[0] \
+	struct rte_lpm_rule_v20 rules_tbl[]
 			__rte_cache_aligned; /**< LPM rules. */
 };
 
@@ -480,6 +486,8 @@ rte_lpm_lookupx4(const struct rte_lpm *lpm, xmm_t ip, uint32_t hop[4],
 
 #if defined(RTE_ARCH_ARM) || defined(RTE_ARCH_ARM64)
 #include "rte_lpm_neon.h"
+#elif defined(RTE_ARCH_PPC_64)
+#include "rte_lpm_altivec.h"
 #else
 #include "rte_lpm_sse.h"
 #endif

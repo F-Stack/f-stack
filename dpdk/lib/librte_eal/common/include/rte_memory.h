@@ -44,16 +44,14 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#ifdef RTE_EXEC_ENV_LINUXAPP
-#include <exec-env/rte_dom0_common.h>
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include <rte_common.h>
+#include <rte_config.h>
 
+__extension__
 enum rte_page_sizes {
 	RTE_PGSIZE_4K    = 1ULL << 12,
 	RTE_PGSIZE_64K   = 1ULL << 16,
@@ -95,30 +93,37 @@ enum rte_page_sizes {
  */
 #define __rte_cache_min_aligned __rte_aligned(RTE_CACHE_LINE_MIN_SIZE)
 
-typedef uint64_t phys_addr_t; /**< Physical address definition. */
+typedef uint64_t phys_addr_t; /**< Physical address. */
 #define RTE_BAD_PHYS_ADDR ((phys_addr_t)-1)
+/**
+ * IO virtual address type.
+ * When the physical addressing mode (IOVA as PA) is in use,
+ * the translation from an IO virtual address (IOVA) to a physical address
+ * is a direct mapping, i.e. the same value.
+ * Otherwise, in virtual mode (IOVA as VA), an IOMMU may do the translation.
+ */
+typedef uint64_t rte_iova_t;
+#define RTE_BAD_IOVA ((rte_iova_t)-1)
 
 /**
  * Physical memory segment descriptor.
  */
 struct rte_memseg {
-	phys_addr_t phys_addr;      /**< Start physical address. */
+	RTE_STD_C11
+	union {
+		phys_addr_t phys_addr;  /**< deprecated - Start physical address. */
+		rte_iova_t iova;        /**< Start IO address. */
+	};
+	RTE_STD_C11
 	union {
 		void *addr;         /**< Start virtual address. */
 		uint64_t addr_64;   /**< Makes sure addr is always 64 bits */
 	};
-#ifdef RTE_LIBRTE_IVSHMEM
-	phys_addr_t ioremap_addr; /**< Real physical address inside the VM */
-#endif
 	size_t len;               /**< Length of the segment. */
 	uint64_t hugepage_sz;       /**< The pagesize of underlying memory */
 	int32_t socket_id;          /**< NUMA socket ID. */
 	uint32_t nchannel;          /**< Number of channels. */
 	uint32_t nrank;             /**< Number of ranks. */
-#ifdef RTE_LIBRTE_XEN_DOM0
-	 /**< store segment MFNs */
-	uint64_t mfn[DOM0_NUM_MEMBLOCK];
-#endif
 } __rte_packed;
 
 /**
@@ -139,9 +144,19 @@ int rte_mem_lock_page(const void *virt);
  * @param virt
  *   The virtual address.
  * @return
- *   The physical address or RTE_BAD_PHYS_ADDR on error.
+ *   The physical address or RTE_BAD_IOVA on error.
  */
 phys_addr_t rte_mem_virt2phy(const void *virt);
+
+/**
+ * Get IO virtual address of any mapped virtual address in the current process.
+ *
+ * @param virt
+ *   The virtual address.
+ * @return
+ *   The IO address or RTE_BAD_IOVA on error.
+ */
+rte_iova_t rte_mem_virt2iova(const void *virt);
 
 /**
  * Get the layout of the available physical memory.
@@ -161,7 +176,7 @@ phys_addr_t rte_mem_virt2phy(const void *virt);
 const struct rte_memseg *rte_eal_get_physmem_layout(void);
 
 /**
- * Dump the physical memory layout to the console.
+ * Dump the physical memory layout to a file.
  *
  * @param f
  *   A pointer to a file for output
@@ -194,68 +209,16 @@ unsigned rte_memory_get_nchannel(void);
  */
 unsigned rte_memory_get_nrank(void);
 
-#ifdef RTE_LIBRTE_XEN_DOM0
-
-/**< Internal use only - should DOM0 memory mapping be used */
-int rte_xen_dom0_supported(void);
-
-/**< Internal use only - phys to virt mapping for xen */
-phys_addr_t rte_xen_mem_phy2mch(int32_t, const phys_addr_t);
-
 /**
- * Return the physical address of elt, which is an element of the pool mp.
- *
- * @param memseg_id
- *   Identifier of the memory segment owning the physical address. If
- *   set to -1, find it automatically.
- * @param phy_addr
- *   physical address of elt.
+ * Drivers based on uio will not load unless physical
+ * addresses are obtainable. It is only possible to get
+ * physical addresses when running as a privileged user.
  *
  * @return
- *   The physical address or RTE_BAD_PHYS_ADDR on error.
+ *   1 if the system is able to obtain physical addresses.
+ *   0 if using DMA addresses through an IOMMU.
  */
-static inline phys_addr_t
-rte_mem_phy2mch(int32_t memseg_id, const phys_addr_t phy_addr)
-{
-	if (rte_xen_dom0_supported())
-		return rte_xen_mem_phy2mch(memseg_id, phy_addr);
-	else
-		return phy_addr;
-}
-
-/**
- * Memory init for supporting application running on Xen domain0.
- *
- * @param void
- *
- * @return
- *       0: successfully
- *	 negative: error
- */
-int rte_xen_dom0_memory_init(void);
-
-/**
- * Attach to memory setments of primary process on Xen domain0.
- *
- * @param void
- *
- * @return
- *       0: successfully
- *       negative: error
- */
-int rte_xen_dom0_memory_attach(void);
-#else
-static inline int rte_xen_dom0_supported(void)
-{
-	return 0;
-}
-
-static inline phys_addr_t
-rte_mem_phy2mch(int32_t memseg_id __rte_unused, const phys_addr_t phy_addr)
-{
-	return phy_addr;
-}
-#endif
+int rte_eal_using_phys_addrs(void);
 
 #ifdef __cplusplus
 }

@@ -49,6 +49,7 @@ extern "C" {
 #include <stdio.h>
 #include <sys/queue.h>
 
+#include <rte_config.h>
 #include <rte_log.h>
 
 __attribute__((format(printf, 2, 0)))
@@ -69,6 +70,19 @@ rte_pmd_debug_trace(const char *func_name, const char *fmt, ...)
 
 	rte_log(RTE_LOG_ERR, RTE_LOGTYPE_PMD, "%s: %s", func_name, buffer);
 }
+
+/*
+ * Enable RTE_PMD_DEBUG_TRACE() when at least one component relying on the
+ * RTE_*_RET() macros defined below is compiled in debug mode.
+ */
+#if defined(RTE_LIBRTE_ETHDEV_DEBUG) || \
+	defined(RTE_LIBRTE_CRYPTODEV_DEBUG) || \
+	defined(RTE_LIBRTE_EVENTDEV_DEBUG)
+#define RTE_PMD_DEBUG_TRACE(...) \
+	rte_pmd_debug_trace(__func__, __VA_ARGS__)
+#else
+#define RTE_PMD_DEBUG_TRACE(...) (void)0
+#endif
 
 /* Macros for checking for restricting functions to primary instance only */
 #define RTE_PROC_PRIMARY_OR_ERR_RET(retval) do { \
@@ -100,26 +114,33 @@ rte_pmd_debug_trace(const char *func_name, const char *fmt, ...)
 	} \
 } while (0)
 
-
-/** Double linked list of device drivers. */
-TAILQ_HEAD(rte_driver_list, rte_driver);
+/**
+ * Device driver.
+ */
+enum rte_kernel_driver {
+	RTE_KDRV_UNKNOWN = 0,
+	RTE_KDRV_IGB_UIO,
+	RTE_KDRV_VFIO,
+	RTE_KDRV_UIO_GENERIC,
+	RTE_KDRV_NIC_UIO,
+	RTE_KDRV_NONE,
+};
 
 /**
- * Initialization function called for each device driver once.
+ * Device policies.
  */
-typedef int (rte_dev_init_t)(const char *name, const char *args);
+enum rte_dev_policy {
+	RTE_DEV_WHITELISTED,
+	RTE_DEV_BLACKLISTED,
+};
 
 /**
- * Uninitilization function called for each device driver once.
+ * A generic memory resource representation.
  */
-typedef int (rte_dev_uninit_t)(const char *name);
-
-/**
- * Driver type enumeration
- */
-enum pmd_type {
-	PMD_VDEV = 0,
-	PMD_PDEV = 1,
+struct rte_mem_resource {
+	uint64_t phys_addr; /**< Physical address, 0 if not resource. */
+	uint64_t len;       /**< Length of the resource. */
+	void *addr;         /**< Virtual address, NULL when not mapped. */
 };
 
 /**
@@ -127,84 +148,150 @@ enum pmd_type {
  */
 struct rte_driver {
 	TAILQ_ENTRY(rte_driver) next;  /**< Next in list. */
-	enum pmd_type type;		   /**< PMD Driver type */
 	const char *name;                   /**< Driver name. */
-	rte_dev_init_t *init;              /**< Device init. function. */
-	rte_dev_uninit_t *uninit;          /**< Device uninit. function. */
+	const char *alias;              /**< Driver alias. */
+};
+
+/*
+ * Internal identifier length
+ * Sufficiently large to allow for UUID or PCI address
+ */
+#define RTE_DEV_NAME_MAX_LEN 64
+
+/**
+ * A structure describing a generic device.
+ */
+struct rte_device {
+	TAILQ_ENTRY(rte_device) next; /**< Next device */
+	const char *name;             /**< Device name */
+	const struct rte_driver *driver;/**< Associated driver */
+	int numa_node;                /**< NUMA node connection */
+	struct rte_devargs *devargs;  /**< Device user arguments */
 };
 
 /**
- * Register a device driver.
- *
- * @param driver
- *   A pointer to a rte_dev structure describing the driver
- *   to be registered.
- */
-void rte_eal_driver_register(struct rte_driver *driver);
-
-/**
- * Unregister a device driver.
- *
- * @param driver
- *   A pointer to a rte_dev structure describing the driver
- *   to be unregistered.
- */
-void rte_eal_driver_unregister(struct rte_driver *driver);
-
-/**
- * Initalize all the registered drivers in this process
- */
-int rte_eal_dev_init(void);
-
-/**
- * Initialize a driver specified by name.
+ * Attach a device to a registered driver.
  *
  * @param name
- *   The pointer to a driver name to be initialized.
- * @param args
- *   The pointer to arguments used by driver initialization.
+ *   The device name, that refers to a pci device (or some private
+ *   way of designating a vdev device). Based on this device name, eal
+ *   will identify a driver capable of handling it and pass it to the
+ *   driver probing function.
+ * @param devargs
+ *   Device arguments to be passed to the driver.
  * @return
- *  0 on success, negative on error
+ *   0 on success, negative on error.
  */
-int rte_eal_vdev_init(const char *name, const char *args);
+int rte_eal_dev_attach(const char *name, const char *devargs);
 
 /**
- * Uninitalize a driver specified by name.
+ * Detach a device from its driver.
  *
- * @param name
- *   The pointer to a driver name to be initialized.
+ * @param dev
+ *   A pointer to a rte_device structure.
  * @return
- *  0 on success, negative on error
+ *   0 on success, negative on error.
  */
-int rte_eal_vdev_uninit(const char *name);
+int rte_eal_dev_detach(struct rte_device *dev);
 
-#define DRIVER_EXPORT_NAME_ARRAY(n, idx) n##idx[]
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Hotplug add a given device to a specific bus.
+ *
+ * @param busname
+ *   The bus name the device is added to.
+ * @param devname
+ *   The device name. Based on this device name, eal will identify a driver
+ *   capable of handling it and pass it to the driver probing function.
+ * @param devargs
+ *   Device arguments to be passed to the driver.
+ * @return
+ *   0 on success, negative on error.
+ */
+int rte_eal_hotplug_add(const char *busname, const char *devname,
+			const char *devargs);
 
-#define DRIVER_EXPORT_NAME(name, idx) \
-static const char DRIVER_EXPORT_NAME_ARRAY(this_pmd_name, idx) \
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Hotplug remove a given device from a specific bus.
+ *
+ * @param busname
+ *   The bus name the device is removed from.
+ * @param devname
+ *   The device name being removed.
+ * @return
+ *   0 on success, negative on error.
+ */
+int rte_eal_hotplug_remove(const char *busname, const char *devname);
+
+/**
+ * Device comparison function.
+ *
+ * This type of function is used to compare an rte_device with arbitrary
+ * data.
+ *
+ * @param dev
+ *   Device handle.
+ *
+ * @param data
+ *   Data to compare against. The type of this parameter is determined by
+ *   the kind of comparison performed by the function.
+ *
+ * @return
+ *   0 if the device matches the data.
+ *   !0 if the device does not match.
+ *   <0 if ordering is possible and the device is lower than the data.
+ *   >0 if ordering is possible and the device is greater than the data.
+ */
+typedef int (*rte_dev_cmp_t)(const struct rte_device *dev, const void *data);
+
+#define RTE_PMD_EXPORT_NAME_ARRAY(n, idx) n##idx[]
+
+#define RTE_PMD_EXPORT_NAME(name, idx) \
+static const char RTE_PMD_EXPORT_NAME_ARRAY(this_pmd_name, idx) \
 __attribute__((used)) = RTE_STR(name)
-
-#define PMD_REGISTER_DRIVER(drv, nm)\
-void devinitfn_ ##drv(void);\
-void __attribute__((constructor, used)) devinitfn_ ##drv(void)\
-{\
-	(drv).name = RTE_STR(nm);\
-	rte_eal_driver_register(&drv);\
-} \
-DRIVER_EXPORT_NAME(nm, __COUNTER__)
 
 #define DRV_EXP_TAG(name, tag) __##name##_##tag
 
-#define DRIVER_REGISTER_PCI_TABLE(name, table) \
+#define RTE_PMD_REGISTER_PCI_TABLE(name, table) \
 static const char DRV_EXP_TAG(name, pci_tbl_export)[] __attribute__((used)) = \
 RTE_STR(table)
 
-#define DRIVER_REGISTER_PARAM_STRING(name, str) \
+#define RTE_PMD_REGISTER_PARAM_STRING(name, str) \
 static const char DRV_EXP_TAG(name, param_string_export)[] \
+__attribute__((used)) = str
+
+/**
+ * Advertise the list of kernel modules required to run this driver
+ *
+ * This string lists the kernel modules required for the devices
+ * associated to a PMD. The format of each line of the string is:
+ * "<device-pattern> <kmod-expression>".
+ *
+ * The possible formats for the device pattern are:
+ *   "*"                     all devices supported by this driver
+ *   "pci:*"                 all PCI devices supported by this driver
+ *   "pci:v8086:d*:sv*:sd*"  all PCI devices supported by this driver
+ *                           whose vendor id is 0x8086.
+ *
+ * The format of the kernel modules list is a parenthesed expression
+ * containing logical-and (&) and logical-or (|).
+ *
+ * The device pattern and the kmod expression are separated by a space.
+ *
+ * Example:
+ * - "* igb_uio | uio_pci_generic | vfio"
+ */
+#define RTE_PMD_REGISTER_KMOD_DEP(name, str) \
+static const char DRV_EXP_TAG(name, kmod_dep_export)[] \
 __attribute__((used)) = str
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _RTE_VDEV_H_ */
+#endif /* _RTE_DEV_H_ */

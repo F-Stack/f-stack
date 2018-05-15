@@ -37,6 +37,9 @@ LIB = librte_pmd_null_crypto.a
 # build flags
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_cryptodev
+LDLIBS += -lrte_bus_vdev
 
 # library version
 LIBABIVER := 1
@@ -50,12 +53,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += null_crypto_pmd_ops.c
 
 # export include files
 SYMLINK-y-include +=
-
-# library dependencies
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += lib/librte_ring
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += lib/librte_cryptodev
 
 include $(RTE_SDK)/mk/rte.lib.mk

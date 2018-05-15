@@ -201,9 +201,12 @@ Compiling and Running the Host Application
 Compiling
 ~~~~~~~~~
 
-#. export RTE_SDK=/path/to/rte_sdk
-#. cd ${RTE_SDK}/examples/vm_power_manager
-#. make
+Compiling the Application
+-------------------------
+
+To compile the sample application see :doc:`compiling`.
+
+The application is located in the ``vm_power_manager`` sub-directory.
 
 Running
 ~~~~~~~
@@ -220,7 +223,7 @@ on cores 0 & 1 on a system with 4 memory channels:
 
 .. code-block:: console
 
- ./build/vm_power_mgr -c 0x3 -n 4
+ ./build/vm_power_mgr -l 0-1 -n 4
 
 After successful initialization the user is presented with VM Power Manager CLI:
 
@@ -342,7 +345,7 @@ for example to run on cores 0,1,2,3 on a system with 4 memory channels:
 
 .. code-block:: console
 
- ./build/guest_vm_power_mgr -c 0xf -n 4
+ ./build/guest_vm_power_mgr -l 0-3 -n 4
 
 
 After successful initialization the user is presented with VM Power Manager Guest CLI:

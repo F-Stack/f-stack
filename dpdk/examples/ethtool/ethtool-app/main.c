@@ -122,6 +122,8 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 	struct rte_eth_conf cfg_port;
 	struct rte_eth_dev_info dev_info;
 	char str_name[16];
+	uint16_t nb_rxd = PORT_RX_QUEUE_SIZE;
+	uint16_t nb_txd = PORT_TX_QUEUE_SIZE;
 
 	memset(&cfg_port, 0, sizeof(cfg_port));
 	cfg_port.txmode.mq_mode = ETH_MQ_TX_NONE;
@@ -154,15 +156,19 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 		if (rte_eth_dev_configure(idx_port, 1, 1, &cfg_port) < 0)
 			rte_exit(EXIT_FAILURE,
 				 "rte_eth_dev_configure failed");
+		if (rte_eth_dev_adjust_nb_rx_tx_desc(idx_port, &nb_rxd,
+						     &nb_txd) < 0)
+			rte_exit(EXIT_FAILURE,
+				 "rte_eth_dev_adjust_nb_rx_tx_desc failed");
 		if (rte_eth_rx_queue_setup(
-			    idx_port, 0, PORT_RX_QUEUE_SIZE,
+			    idx_port, 0, nb_rxd,
 			    rte_eth_dev_socket_id(idx_port), NULL,
 			    ptr_port->pkt_pool) < 0)
 			rte_exit(EXIT_FAILURE,
 				 "rte_eth_rx_queue_setup failed"
 				);
 		if (rte_eth_tx_queue_setup(
-			    idx_port, 0, PORT_TX_QUEUE_SIZE,
+			    idx_port, 0, nb_txd,
 			    rte_eth_dev_socket_id(idx_port), NULL) < 0)
 			rte_exit(EXIT_FAILURE,
 				 "rte_eth_tx_queue_setup failed"
@@ -172,7 +178,6 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 				 "%s:%i: rte_eth_dev_start failed",
 				 __FILE__, __LINE__
 				);
-		rte_eth_promiscuous_enable(idx_port);
 		rte_eth_macaddr_get(idx_port, &ptr_port->mac_addr);
 		rte_spinlock_init(&ptr_port->lock);
 	}
@@ -265,7 +270,7 @@ int main(int argc, char **argv)
 	uint32_t id_core;
 	uint32_t cnt_ports;
 
-	/* Init runtime enviornment */
+	/* Init runtime environment */
 	cnt_args_parsed = rte_eal_init(argc, argv);
 	if (cnt_args_parsed < 0)
 		rte_exit(EXIT_FAILURE, "rte_eal_init(): Failed");

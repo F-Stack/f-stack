@@ -32,6 +32,8 @@
  */
 
 #include <rte_devargs.h>
+#include <rte_pci.h>
+#include <rte_bus_pci.h>
 #include <rte_kvargs.h>
 
 #include <cmdline_parse.h>
@@ -47,22 +49,21 @@ const char *pmd_bond_init_valid_arguments[] = {
 	PMD_BOND_XMIT_POLICY_KVARG,
 	PMD_BOND_SOCKET_ID_KVARG,
 	PMD_BOND_MAC_ADDR_KVARG,
-
+	PMD_BOND_AGG_MODE_KVARG,
+	"driver",
 	NULL
 };
 
 static inline int
 find_port_id_by_pci_addr(const struct rte_pci_addr *pci_addr)
 {
+	struct rte_pci_device *pci_dev;
 	struct rte_pci_addr *eth_pci_addr;
 	unsigned i;
 
 	for (i = 0; i < rte_eth_dev_count(); i++) {
-
-		if (rte_eth_devices[i].pci_dev == NULL)
-			continue;
-
-		eth_pci_addr = &(rte_eth_devices[i].pci_dev->addr);
+		pci_dev = RTE_ETH_DEV_TO_PCI(&rte_eth_devices[i]);
+		eth_pci_addr = &pci_dev->addr;
 
 		if (pci_addr->bus == eth_pci_addr->bus &&
 			pci_addr->devid == eth_pci_addr->devid &&
@@ -82,10 +83,20 @@ find_port_id_by_dev_name(const char *name)
 		if (rte_eth_devices[i].data == NULL)
 			continue;
 
-		if (strcmp(rte_eth_devices[i].data->name, name) == 0)
+		if (strcmp(rte_eth_devices[i].device->name, name) == 0)
 			return i;
 	}
 	return -1;
+}
+
+static inline int
+bond_pci_addr_cmp(const struct rte_device *dev, const void *_pci_addr)
+{
+	struct rte_pci_device *pdev;
+	const struct rte_pci_addr *paddr = _pci_addr;
+
+	pdev = RTE_DEV_TO_PCI(*(struct rte_device **)(void *)&dev);
+	return rte_eal_compare_pci_addr(&pdev->addr, paddr);
 }
 
 /**
@@ -96,10 +107,23 @@ static inline int
 parse_port_id(const char *port_str)
 {
 	struct rte_pci_addr dev_addr;
+	struct rte_bus *pci_bus;
+	struct rte_device *dev;
 	int port_id;
 
+	pci_bus = rte_bus_find_by_name("pci");
+	if (pci_bus == NULL) {
+		RTE_LOG(ERR, PMD, "unable to find PCI bus\n");
+		return -1;
+	}
+
 	/* try parsing as pci address, physical devices */
-	if (eal_parse_pci_DomBDF(port_str, &dev_addr) == 0) {
+	if (pci_bus->parse(port_str, &dev_addr) == 0) {
+		dev = pci_bus->find_device(NULL, bond_pci_addr_cmp, &dev_addr);
+		if (dev == NULL) {
+			RTE_LOG(ERR, PMD, "unable to find PCI device\n");
+			return -1;
+		}
 		port_id = find_port_id_by_pci_addr(&dev_addr);
 		if (port_id < 0)
 			return -1;
@@ -126,7 +150,7 @@ parse_port_id(const char *port_str)
 }
 
 int
-bond_ethdev_parse_slave_port_kvarg(const char *key __rte_unused,
+bond_ethdev_parse_slave_port_kvarg(const char *key,
 		const char *value, void *extra_args)
 {
 	struct bond_ethdev_slave_ports *slave_ports;
@@ -143,7 +167,7 @@ bond_ethdev_parse_slave_port_kvarg(const char *key __rte_unused,
 			return -1;
 		} else
 			slave_ports->slaves[slave_ports->slave_count++] =
-					(uint8_t)port_id;
+					port_id;
 	}
 	return 0;
 }
@@ -182,6 +206,38 @@ bond_ethdev_parse_slave_mode_kvarg(const char *key __rte_unused,
 }
 
 int
+bond_ethdev_parse_slave_agg_mode_kvarg(const char *key __rte_unused,
+		const char *value, void *extra_args)
+{
+	uint8_t *agg_mode;
+
+	if (value == NULL || extra_args == NULL)
+		return -1;
+
+	agg_mode = extra_args;
+
+	errno = 0;
+	if (strncmp(value, "stable", 6) == 0)
+		*agg_mode = AGG_STABLE;
+
+	if (strncmp(value, "bandwidth", 9) == 0)
+		*agg_mode = AGG_BANDWIDTH;
+
+	if (strncmp(value, "count", 5) == 0)
+		*agg_mode = AGG_COUNT;
+
+	switch (*agg_mode) {
+	case AGG_STABLE:
+	case AGG_BANDWIDTH:
+	case AGG_COUNT:
+		return 0;
+	default:
+		RTE_BOND_LOG(ERR, "Invalid agg mode value stable/bandwidth/count");
+		return -1;
+	}
+}
+
+int
 bond_ethdev_parse_socket_id_kvarg(const char *key __rte_unused,
 		const char *value, void *extra_args)
 {
@@ -196,8 +252,8 @@ bond_ethdev_parse_socket_id_kvarg(const char *key __rte_unused,
 	if (*endptr != 0 || errno != 0)
 		return -1;
 
-	/* validate mode value */
-	if (socket_id >= 0 && socket_id < number_of_sockets()) {
+	/* validate socket id value */
+	if (socket_id >= 0) {
 		*(uint8_t *)extra_args = (uint8_t)socket_id;
 		return 0;
 	}

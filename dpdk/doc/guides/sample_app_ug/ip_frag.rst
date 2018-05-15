@@ -59,31 +59,12 @@ Any unmatched packets are forwarded to the originating port.
 By default, input frame sizes up to 9.5 KB are supported.
 Before forwarding, the input IP packet is fragmented to fit into the "standard" Ethernet* v2 MTU (1500 bytes).
 
-Building the Application
-------------------------
+Compiling the Application
+-------------------------
 
-To build the application:
+To compile the sample application see :doc:`compiling`.
 
-#.  Go to the sample application directory:
-
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/ip_fragmentation
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``ip_fragmentation`` sub-directory.
 
 Running the Application
 -----------------------
@@ -111,7 +92,7 @@ To run the example in linuxapp environment with 2 lcores (2,4) over 2 ports(0,2)
 
 .. code-block:: console
 
-    ./build/ip_fragmentation -c 0x14 -n 3 -- -p 5
+    ./build/ip_fragmentation -l 2,4 -n 3 -- -p 5
     EAL: coremask set to 14
     EAL: Detected lcore 0 on socket 0
     EAL: Detected lcore 1 on socket 1
@@ -140,7 +121,7 @@ To run the example in linuxapp environment with 1 lcore (4) over 2 ports(0,2) wi
 
 .. code-block:: console
 
-    ./build/ip_fragmentation -c 0x10 -n 3 -- -p 5 -q 2
+    ./build/ip_fragmentation -l 4 -n 3 -- -p 5 -q 2
 
 To test the application, flows should be set up in the flow generator that match the values in the
 l3fwd_ipv4_route_array and/or l3fwd_ipv6_route_array table.

@@ -41,17 +41,17 @@ KASUMI PMD has support for:
 
 Cipher algorithm:
 
-* RTE_CRYPTO_SYM_CIPHER_KASUMI_F8
+* RTE_CRYPTO_CIPHER_KASUMI_F8
 
 Authentication algorithm:
 
-* RTE_CRYPTO_SYM_AUTH_KASUMI_F9
+* RTE_CRYPTO_AUTH_KASUMI_F9
 
 Limitations
 -----------
 
 * Chained mbufs are not supported.
-* KASUMI(F9) supported only if hash offset field is byte-aligned.
+* KASUMI(F9) supported only if hash offset and length field is byte-aligned.
 * In-place bit-level operations for KASUMI(F8) are not supported
   (if length and/or offset of data to be ciphered is not byte-aligned).
 
@@ -68,7 +68,25 @@ and click on "Kasumi Bit Stream crypto library" link, to download the library.
 After downloading the library, the user needs to unpack and compile it
 on their system before building DPDK::
 
-   make kasumi
+   make
+
+**Note**: When encrypting with KASUMI F8, by default the library
+encrypts full blocks of 8 bytes, regardless the number of bytes to
+be encrypted provided (which leads to a possible buffer overflow).
+To avoid this situation, it is necessary not to pass
+3GPP_SAFE_BUFFERS as a compilation flag.
+Also, this is required when using chained operations
+(cipher-then-auth/auth-then-cipher).
+For this, in the Makefile of the library, make sure that this flag
+is commented out::
+
+  #EXTRA_CFLAGS  += -D_3GPP_SAFE_BUFFERS
+
+**Note**: To build the PMD as a shared library, the libsso_kasumi
+library must be built as follows::
+
+  make KASUMI_CFLAGS=-DKASUMI_C
+
 
 Initialization
 --------------
@@ -84,9 +102,9 @@ In order to enable this virtual crypto PMD, user must:
 
 To use the PMD in an application, user must:
 
-* Call rte_eal_vdev_init("cryptodev_kasumi_pmd") within the application.
+* Call rte_vdev_init("crypto_kasumi") within the application.
 
-* Use --vdev="cryptodev_kasumi_pmd" in the EAL options, which will call rte_eal_vdev_init() internally.
+* Use --vdev="crypto_kasumi" in the EAL options, which will call rte_vdev_init() internally.
 
 The following parameters (all optional) can be provided in the previous two calls:
 
@@ -101,4 +119,22 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -c 40 -n 4 --vdev="cryptodev_kasumi_pmd,socket_id=1,max_nb_sessions=128"
+    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_kasumi,socket_id=0,max_nb_sessions=128" \
+    -- -p 1 --cdev SW --chain CIPHER_ONLY --cipher_algo "kasumi-f8"
+
+Extra notes on KASUMI F9
+------------------------
+
+When using KASUMI F9 authentication algorithm, the input buffer must be
+constructed according to the 3GPP KASUMI specifications (section 4.4, page 13):
+`<http://cryptome.org/3gpp/35201-900.pdf>`_.
+Input buffer has to have COUNT (4 bytes), FRESH (4 bytes), MESSAGE and DIRECTION (1 bit)
+concatenated. After the DIRECTION bit, a single '1' bit is appended, followed by
+between 0 and 7 '0' bits, so that the total length of the buffer is multiple of 8 bits.
+Note that the actual message can be any length, specified in bits.
+
+Once this buffer is passed this way, when creating the crypto operation,
+length of data to authenticate (op.sym.auth.data.length) must be the length
+of all the items described above, including the padding at the end.
+Also, offset of data to authenticate (op.sym.auth.data.offset)
+must be such that points at the start of the COUNT bytes.

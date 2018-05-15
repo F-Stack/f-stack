@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright (C) Cavium networks Ltd. 2015.
+ *   Copyright (C) Cavium, Inc. 2015.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -13,7 +13,7 @@
  *       notice, this list of conditions and the following disclaimer in
  *       the documentation and/or other materials provided with the
  *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
+ *     * Neither the name of Cavium, Inc nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -43,43 +43,26 @@ extern "C" {
 
 #include "generic/rte_atomic.h"
 
-#define dmb(opt)  do { asm volatile("dmb " #opt : : : "memory"); } while (0)
+#define dsb(opt) asm volatile("dsb " #opt : : : "memory")
+#define dmb(opt) asm volatile("dmb " #opt : : : "memory")
 
-/**
- * General memory barrier.
- *
- * Guarantees that the LOAD and STORE operations generated before the
- * barrier occur before the LOAD and STORE operations generated after.
- * This function is architecture dependent.
- */
-static inline void rte_mb(void)
-{
-	dmb(ish);
-}
+#define rte_mb() dsb(sy)
 
-/**
- * Write memory barrier.
- *
- * Guarantees that the STORE operations generated before the barrier
- * occur before the STORE operations generated after.
- * This function is architecture dependent.
- */
-static inline void rte_wmb(void)
-{
-	dmb(ishst);
-}
+#define rte_wmb() dsb(st)
 
-/**
- * Read memory barrier.
- *
- * Guarantees that the LOAD operations generated before the barrier
- * occur before the LOAD operations generated after.
- * This function is architecture dependent.
- */
-static inline void rte_rmb(void)
-{
-	dmb(ishld);
-}
+#define rte_rmb() dsb(ld)
+
+#define rte_smp_mb() dmb(ish)
+
+#define rte_smp_wmb() dmb(ishst)
+
+#define rte_smp_rmb() dmb(ishld)
+
+#define rte_io_mb() rte_mb()
+
+#define rte_io_wmb() rte_wmb()
+
+#define rte_io_rmb() rte_rmb()
 
 #ifdef __cplusplus
 }

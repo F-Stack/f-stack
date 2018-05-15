@@ -141,14 +141,17 @@ process_inner_cksums(struct ether_hdr *eth_hdr, union tunnel_offload_info *info)
 				ethertype, ol_flags);
 	} else if (l4_proto == IPPROTO_TCP) {
 		tcp_hdr = (struct tcp_hdr *)((char *)l3_hdr + info->l3_len);
-		ol_flags |= PKT_TX_TCP_CKSUM;
-		tcp_hdr->cksum = get_psd_sum(l3_hdr, ethertype,
-				ol_flags);
+		/* Put PKT_TX_TCP_SEG bit setting before get_psd_sum(), because
+		 * it depends on PKT_TX_TCP_SEG to calculate pseudo-header
+		 * checksum.
+		 */
 		if (tso_segsz != 0) {
 			ol_flags |= PKT_TX_TCP_SEG;
 			info->tso_segsz = tso_segsz;
 			info->l4_len = (tcp_hdr->data_off & 0xf0) >> 2;
 		}
+		ol_flags |= PKT_TX_TCP_CKSUM;
+		tcp_hdr->cksum = get_psd_sum(l3_hdr, ethertype, ol_flags);
 
 	} else if (l4_proto == IPPROTO_SCTP) {
 		sctp_hdr = (struct sctp_hdr *)((char *)l3_hdr + info->l3_len);
@@ -236,6 +239,8 @@ encapsulation(struct rte_mbuf *m, uint8_t queue_id)
 
 	m->outer_l2_len = sizeof(struct ether_hdr);
 	m->outer_l3_len = sizeof(struct ipv4_hdr);
+
+	ol_flags |= PKT_TX_TUNNEL_VXLAN;
 
 	m->ol_flags |= ol_flags;
 	m->tso_segsz = tx_offload.tso_segsz;

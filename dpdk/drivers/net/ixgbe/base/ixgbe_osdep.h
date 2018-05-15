@@ -44,6 +44,7 @@
 #include <rte_cycles.h>
 #include <rte_log.h>
 #include <rte_byteorder.h>
+#include <rte_io.h>
 
 #include "../ixgbe_logs.h"
 #include "../ixgbe_bypass_defines.h"
@@ -81,6 +82,7 @@
 #define UNREFERENCED_2PARAMETER(_p, _q)
 #define UNREFERENCED_3PARAMETER(_p, _q, _r) 
 #define UNREFERENCED_4PARAMETER(_p, _q, _r, _s) 
+#define UNREFERENCED_5PARAMETER(_p, _q, _r, _s, _t)
 
 /* Shared code error reporting */
 enum {
@@ -95,11 +97,13 @@ enum {
 #define STATIC static
 #define IXGBE_NTOHL(_i)	rte_be_to_cpu_32(_i)
 #define IXGBE_NTOHS(_i)	rte_be_to_cpu_16(_i)
+#define IXGBE_CPU_TO_LE16(_i)  rte_cpu_to_le_16(_i)
 #define IXGBE_CPU_TO_LE32(_i)  rte_cpu_to_le_32(_i)
-#define IXGBE_LE32_TO_CPU(_i) rte_le_to_cpu_32(_i)
+#define IXGBE_LE32_TO_CPU(_i)  rte_le_to_cpu_32(_i)
 #define IXGBE_LE32_TO_CPUS(_i) rte_le_to_cpu_32(_i)
 #define IXGBE_CPU_TO_BE16(_i)  rte_cpu_to_be_16(_i)
 #define IXGBE_CPU_TO_BE32(_i)  rte_cpu_to_be_32(_i)
+#define IXGBE_BE32_TO_CPU(_i)  rte_be_to_cpu_32(_i)
 
 typedef uint8_t		u8;
 typedef int8_t		s8;
@@ -120,16 +124,18 @@ typedef int		bool;
 
 #define prefetch(x) rte_prefetch0(x)
 
-#define IXGBE_PCI_REG(reg) (*((volatile uint32_t *)(reg)))
+#define IXGBE_PCI_REG(reg) rte_read32(reg)
 
 static inline uint32_t ixgbe_read_addr(volatile void* addr)
 {
 	return rte_le_to_cpu_32(IXGBE_PCI_REG(addr));
 }
 
-#define IXGBE_PCI_REG_WRITE(reg, value) do { \
-	IXGBE_PCI_REG((reg)) = (rte_cpu_to_le_32(value)); \
-} while(0)
+#define IXGBE_PCI_REG_WRITE(reg, value)			\
+	rte_write32((rte_cpu_to_le_32(value)), reg)
+
+#define IXGBE_PCI_REG_WRITE_RELAXED(reg, value)		\
+	rte_write32_relaxed((rte_cpu_to_le_32(value)), reg)
 
 #define IXGBE_PCI_REG_ADDR(hw, reg) \
 	((volatile uint32_t *)((char *)(hw)->hw_addr + (reg)))
@@ -154,5 +160,13 @@ static inline uint32_t ixgbe_read_addr(volatile void* addr)
 
 #define IXGBE_WRITE_REG_ARRAY(hw, reg, index, value) \
 	IXGBE_PCI_REG_WRITE(IXGBE_PCI_REG_ARRAY_ADDR((hw), (reg), (index)), (value))
+
+#define IXGBE_WRITE_REG_THEN_POLL_MASK(hw, reg, val, mask, poll_ms)	\
+do {									\
+	uint32_t cnt = poll_ms;						\
+	IXGBE_WRITE_REG(hw, (reg), (val));				\
+	while (((IXGBE_READ_REG(hw, (reg))) & (mask)) && (cnt--))	\
+		rte_delay_ms(1);					\
+} while (0)
 
 #endif /* _IXGBE_OS_H_ */

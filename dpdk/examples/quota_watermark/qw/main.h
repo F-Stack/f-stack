@@ -37,14 +37,15 @@
 #include "../include/conf.h"
 
 enum ring_state {
-    RING_READY,
-    RING_OVERLOADED,
+	RING_READY,
+	RING_OVERLOADED,
 };
 
 extern int *quota;
 extern unsigned int *low_watermark;
+extern unsigned int *high_watermark;
 
-extern uint8_t port_pairs[RTE_MAX_ETHPORTS];
+extern uint16_t port_pairs[RTE_MAX_ETHPORTS];
 
 extern struct rte_ring *rings[RTE_MAX_LCORE][RTE_MAX_ETHPORTS];
 extern struct rte_mempool *mbuf_pool;
@@ -53,7 +54,7 @@ extern struct rte_mempool *mbuf_pool;
 static inline int
 is_bit_set(int i, unsigned int mask)
 {
-    return (1 << i) & mask;
+	return (1 << i) & mask;
 }
 
 #endif /* _MAIN_H_ */

@@ -39,6 +39,8 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <rte_atomic.h>
 #include <rte_byteorder.h>
 #include <rte_cycles.h>
+#include <rte_io.h>
+
 #include "../fm10k_logs.h"
 
 /* TODO: this does not look like it should be used... */
@@ -88,17 +90,16 @@ typedef int        bool;
 #endif
 
 /* offsets are WORD offsets, not BYTE offsets */
-#define FM10K_WRITE_REG(hw, reg, val)    \
-	((((volatile uint32_t *)(hw)->hw_addr)[(reg)]) = ((uint32_t)(val)))
-#define FM10K_READ_REG(hw, reg)          \
-	(((volatile uint32_t *)(hw)->hw_addr)[(reg)])
+#define FM10K_WRITE_REG(hw, reg, val)		\
+	rte_write32((val), ((hw)->hw_addr + (reg)))
+
+#define FM10K_READ_REG(hw, reg) rte_read32(((hw)->hw_addr + (reg)))
+
 #define FM10K_WRITE_FLUSH(a) FM10K_READ_REG(a, FM10K_CTRL)
 
-#define FM10K_PCI_REG(reg) (*((volatile uint32_t *)(reg)))
+#define FM10K_PCI_REG(reg) rte_read32(reg)
 
-#define FM10K_PCI_REG_WRITE(reg, value) do { \
-	FM10K_PCI_REG((reg)) = (value); \
-} while (0)
+#define FM10K_PCI_REG_WRITE(reg, value) rte_write32((value), (reg))
 
 /* not implemented */
 #define FM10K_READ_PCI_WORD(hw, reg)     0
@@ -161,23 +162,6 @@ typedef int        bool;
 #define FM10K_TXINT_TIMER_SHIFT			8
 #define FM10K_RXD_PKTTYPE_MASK		0x03F0
 #define FM10K_RXD_PKTTYPE_SHIFT		4
-
-enum fm10k_rdesc_pkt_type {
-	/* L3 type */
-	FM10K_PKTTYPE_OTHER	= 0x00,
-	FM10K_PKTTYPE_IPV4	= 0x01,
-	FM10K_PKTTYPE_IPV4_EX	= 0x02,
-	FM10K_PKTTYPE_IPV6	= 0x03,
-	FM10K_PKTTYPE_IPV6_EX	= 0x04,
-
-	/* L4 type */
-	FM10K_PKTTYPE_TCP	= 0x08,
-	FM10K_PKTTYPE_UDP	= 0x10,
-	FM10K_PKTTYPE_GRE	= 0x18,
-	FM10K_PKTTYPE_VXLAN	= 0x20,
-	FM10K_PKTTYPE_NVGRE	= 0x28,
-	FM10K_PKTTYPE_GENEVE	= 0x30
-};
 
 #define FM10K_RXD_STATUS_IPCS		0x0008 /* Indicates IPv4 csum */
 #define FM10K_RXD_STATUS_HBO		0x0400 /* header buffer overrun */

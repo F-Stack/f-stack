@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2015 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -84,6 +84,7 @@ enum fw_memtype {
 enum fw_wr_opcodes {
 	FW_ETH_TX_PKT_WR	= 0x08,
 	FW_ETH_TX_PKTS_WR	= 0x09,
+	FW_ETH_TX_PKTS2_WR      = 0x78,
 };
 
 /*
@@ -591,6 +592,13 @@ struct fw_iq_cmd {
 #define G_FW_IQ_CMD_IQESIZE(x)	\
 	(((x) >> S_FW_IQ_CMD_IQESIZE) & M_FW_IQ_CMD_IQESIZE)
 
+#define S_FW_IQ_CMD_IQRO                30
+#define M_FW_IQ_CMD_IQRO                0x1
+#define V_FW_IQ_CMD_IQRO(x)             ((x) << S_FW_IQ_CMD_IQRO)
+#define G_FW_IQ_CMD_IQRO(x)             \
+	(((x) >> S_FW_IQ_CMD_IQRO) & M_FW_IQ_CMD_IQRO)
+#define F_FW_IQ_CMD_IQRO                V_FW_IQ_CMD_IQRO(1U)
+
 #define S_FW_IQ_CMD_IQFLINTCONGEN	27
 #define M_FW_IQ_CMD_IQFLINTCONGEN	0x1
 #define V_FW_IQ_CMD_IQFLINTCONGEN(x)	((x) << S_FW_IQ_CMD_IQFLINTCONGEN)
@@ -1061,7 +1069,7 @@ struct fw_vi_stats_cmd {
 enum fw_port_cap {
 	FW_PORT_CAP_SPEED_100M		= 0x0001,
 	FW_PORT_CAP_SPEED_1G		= 0x0002,
-	FW_PORT_CAP_SPEED_2_5G		= 0x0004,
+	FW_PORT_CAP_SPEED_25G		= 0x0004,
 	FW_PORT_CAP_SPEED_10G		= 0x0008,
 	FW_PORT_CAP_SPEED_40G		= 0x0010,
 	FW_PORT_CAP_SPEED_100G		= 0x0020,
@@ -1070,12 +1078,18 @@ enum fw_port_cap {
 	FW_PORT_CAP_ANEG		= 0x0100,
 	FW_PORT_CAP_MDIX		= 0x0200,
 	FW_PORT_CAP_MDIAUTO		= 0x0400,
-	FW_PORT_CAP_FEC			= 0x0800,
-	FW_PORT_CAP_TECHKR		= 0x1000,
-	FW_PORT_CAP_TECHKX4		= 0x2000,
+	FW_PORT_CAP_FEC_RS              = 0x0800,
+	FW_PORT_CAP_FEC_BASER_RS        = 0x1000,
+	FW_PORT_CAP_FEC_RESERVED        = 0x2000,
 	FW_PORT_CAP_802_3_PAUSE		= 0x4000,
 	FW_PORT_CAP_802_3_ASM_DIR	= 0x8000,
 };
+
+#define S_FW_PORT_CAP_SPEED     0
+#define M_FW_PORT_CAP_SPEED     0x3f
+#define V_FW_PORT_CAP_SPEED(x)  ((x) << S_FW_PORT_CAP_SPEED)
+#define G_FW_PORT_CAP_SPEED(x) \
+	(((x) >> S_FW_PORT_CAP_SPEED) & M_FW_PORT_CAP_SPEED)
 
 enum fw_port_mdi {
 	FW_PORT_CAP_MDI_AUTO,
@@ -1279,7 +1293,12 @@ enum fw_port_type {
 	FW_PORT_TYPE_QSFP	= 14, /* No, 4, Yes, No, No, No, 40G */
 	FW_PORT_TYPE_BP40_BA	= 15,
 	/* No, 4, No, No, Yes, Yes, 40G/10G/1G, BP ANGE */
-
+	FW_PORT_TYPE_KR4_100G	= 16, /* No, 4, 100G/40G/25G, Backplane */
+	FW_PORT_TYPE_CR4_QSFP	= 17, /* No, 4, 100G/40G/25G */
+	FW_PORT_TYPE_CR_QSFP	= 18, /* No, 1, 25G Spider cable */
+	FW_PORT_TYPE_CR2_QSFP	= 19, /* No, 2, 50G */
+	FW_PORT_TYPE_SFP28	= 20, /* No, 1, 25G/10G/1G */
+	FW_PORT_TYPE_KR_SFP28	= 21, /* No, 1, 25G/10G/1G using Backplane */
 	FW_PORT_TYPE_NONE = M_FW_PORT_CMD_PTYPE
 };
 

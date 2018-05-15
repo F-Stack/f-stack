@@ -54,16 +54,12 @@ CFLAGS += -I$(LIBSSO_SNOW3G_PATH)
 CFLAGS += -I$(LIBSSO_SNOW3G_PATH)/include
 CFLAGS += -I$(LIBSSO_SNOW3G_PATH)/build
 LDLIBS += -L$(LIBSSO_SNOW3G_PATH)/build -lsso_snow3g
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_cryptodev
+LDLIBS += -lrte_bus_vdev
 
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += rte_snow3g_pmd.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += rte_snow3g_pmd_ops.c
-
-# library dependencies
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += lib/librte_ring
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += lib/librte_cryptodev
 
 include $(RTE_SDK)/mk/rte.lib.mk

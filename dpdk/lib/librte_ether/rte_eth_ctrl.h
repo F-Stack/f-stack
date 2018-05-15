@@ -34,6 +34,10 @@
 #ifndef _RTE_ETH_CTRL_H_
 #define _RTE_ETH_CTRL_H_
 
+#include <stdint.h>
+#include <rte_common.h>
+#include "rte_ether.h"
+
 /**
  * @file
  *
@@ -95,6 +99,7 @@ enum rte_filter_type {
 	RTE_ETH_FILTER_FDIR,
 	RTE_ETH_FILTER_HASH,
 	RTE_ETH_FILTER_L2_TUNNEL,
+	RTE_ETH_FILTER_GENERIC,
 	RTE_ETH_FILTER_MAX
 };
 

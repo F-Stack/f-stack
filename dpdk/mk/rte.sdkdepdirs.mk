@@ -35,30 +35,3 @@ endif
 ifeq (,$(wildcard $(RTE_OUTPUT)/Makefile))
   $(error "need a make config first")
 endif
-
-# use a "for" in a shell to process dependencies: we don't want this
-# task to be run in parallel.
-.PHONY: depdirs
-depdirs: $(RTE_OUTPUT)/.depdirs
-$(RTE_OUTPUT)/.depdirs: $(RTE_OUTPUT)/.config
-	@rm -f $(RTE_OUTPUT)/.depdirs ; \
-	for d in $(ROOTDIRS-y); do \
-		if [ -f $(RTE_SRCDIR)/$$d/Makefile ]; then \
-			[ -d $(BUILDDIR)/$$d ] || mkdir -p $(BUILDDIR)/$$d ; \
-			$(MAKE) S=$$d -f $(RTE_SRCDIR)/$$d/Makefile depdirs \
-				>> $(RTE_OUTPUT)/.depdirs ; \
-		fi ; \
-	done
-
-.PHONY: depgraph
-depgraph:
-	@echo "digraph unix {" ; \
-	echo "    size=\"6,6\";" ; \
-	echo "    node [color=lightblue2, style=filled];" ; \
-	for d in $(ROOTDIRS-y); do \
-		echo "    \"root\" -> \"$$d\"" ; \
-		if [ -f $(RTE_SRCDIR)/$$d/Makefile ]; then \
-			$(MAKE) S=$$d -f $(RTE_SRCDIR)/$$d/Makefile depgraph ; \
-		fi ; \
-	done ; \
-	echo "}"

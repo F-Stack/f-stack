@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -35,6 +35,9 @@
 
 #include "aesni_gcm_ops.h"
 
+#define CRYPTODEV_NAME_AESNI_GCM_PMD	crypto_aesni_gcm
+/**< AES-NI GCM PMD device name */
+
 #define GCM_LOG_ERR(fmt, args...) \
 	RTE_LOG(ERR, CRYPTODEV, "[%s] %s() line %u: " fmt "\n",  \
 			RTE_STR(CRYPTODEV_NAME_AESNI_GCM_PMD), \
@@ -55,6 +58,8 @@
 #define GCM_LOG_DBG(fmt, args...)
 #endif
 
+/* Maximum length for digest */
+#define DIGEST_LENGTH_MAX 16
 
 /** private data structure for each virtual AESNI GCM device */
 struct aesni_gcm_private {
@@ -67,38 +72,57 @@ struct aesni_gcm_private {
 };
 
 struct aesni_gcm_qp {
-	uint16_t id;
-	/**< Queue Pair Identifier */
-	char name[RTE_CRYPTODEV_NAME_LEN];
-	/**< Unique Queue Pair Name */
 	const struct aesni_gcm_ops *ops;
 	/**< Architecture dependent function pointer table of the gcm APIs */
 	struct rte_ring *processed_pkts;
 	/**< Ring for placing process packets */
+	struct gcm_context_data gdata_ctx; /* (16 * 5) + 8 = 88 B */
+	/**< GCM parameters */
+	struct rte_cryptodev_stats qp_stats; /* 8 * 4 = 32 B */
+	/**< Queue pair statistics */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
-	struct rte_cryptodev_stats qp_stats;
-	/**< Queue pair statistics */
+	uint16_t id;
+	/**< Queue Pair Identifier */
+	char name[RTE_CRYPTODEV_NAME_LEN];
+	/**< Unique Queue Pair Name */
+	uint8_t temp_digest[DIGEST_LENGTH_MAX];
+	/**< Buffer used to store the digest generated
+	 * by the driver when verifying a digest provided
+	 * by the user (using authentication verify operation)
+	 */
 } __rte_cache_aligned;
 
 
 enum aesni_gcm_operation {
 	AESNI_GCM_OP_AUTHENTICATED_ENCRYPTION,
-	AESNI_GCM_OP_AUTHENTICATED_DECRYPTION
+	AESNI_GCM_OP_AUTHENTICATED_DECRYPTION,
+	AESNI_GMAC_OP_GENERATE,
+	AESNI_GMAC_OP_VERIFY
 };
 
 /** AESNI GCM private session structure */
 struct aesni_gcm_session {
+	struct {
+		uint16_t length;
+		uint16_t offset;
+	} iv;
+	/**< IV parameters */
+	uint16_t aad_length;
+	/**< AAD length */
+	uint16_t digest_length;
+	/**< Digest length */
 	enum aesni_gcm_operation op;
 	/**< GCM operation type */
-	struct gcm_data gdata __rte_cache_aligned;
+	enum aesni_gcm_key key;
+	/**< GCM key type */
+	struct gcm_key_data gdata_key;
 	/**< GCM parameters */
 };
 
 
 /**
  * Setup GCM session parameters
- * @param	ops	gcm ops function pointer table
  * @param	sess	aesni gcm session structure
  * @param	xform	crypto transform chain
  *

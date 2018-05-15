@@ -50,7 +50,7 @@ extern "C" {
 
 #include <stdio.h>
 #include <sys/queue.h>
-#include <rte_pci.h>
+#include <rte_bus.h>
 
 /**
  * Type of generic device
@@ -76,18 +76,12 @@ struct rte_devargs {
 	TAILQ_ENTRY(rte_devargs) next;
 	/** Type of device. */
 	enum rte_devtype type;
-	union {
-		/** Used if type is RTE_DEVTYPE_*_PCI. */
-		struct {
-			/** PCI location. */
-			struct rte_pci_addr addr;
-		} pci;
-		/** Used if type is RTE_DEVTYPE_VIRTUAL. */
-		struct {
-			/** Driver name. */
-			char drv_name[32];
-		} virt;
-	};
+	/** Device policy. */
+	enum rte_dev_policy policy;
+	/** Bus handle for the device. */
+	struct rte_bus *bus;
+	/** Name of the device. */
+	char name[RTE_DEV_NAME_MAX_LEN];
 	/** Arguments string as given by user or "" for no argument. */
 	char *args;
 };
@@ -106,8 +100,8 @@ extern struct rte_devargs_list devargs_list;
  * "04:00.0,arg=val".
  *
  * For virtual devices, the format of arguments string is "DRIVER_NAME*"
- * or "DRIVER_NAME*,key=val,key2=val2,...". Examples: "eth_ring",
- * "eth_ring0", "eth_pmdAnything,arg=0:arg2=1".
+ * or "DRIVER_NAME*,key=val,key2=val2,...". Examples: "net_ring",
+ * "net_ring0", "net_pmdAnything,arg=0:arg2=1".
  *
  * The function parses the arguments string to get driver name and driver
  * arguments.
@@ -127,6 +121,39 @@ int rte_eal_parse_devargs_str(const char *devargs_str,
 				char **drvname, char **drvargs);
 
 /**
+ * Parse a device string.
+ *
+ * Verify that a bus is capable of handling the device passed
+ * in argument. Store which bus will handle the device, its name
+ * and the eventual device parameters.
+ *
+ * @param dev
+ *   The device declaration string.
+ * @param da
+ *   The devargs structure holding the device information.
+ *
+ * @return
+ *   - 0 on success.
+ *   - Negative errno on error.
+ */
+int
+rte_eal_devargs_parse(const char *dev,
+		      struct rte_devargs *da);
+
+/**
+ * Insert an rte_devargs in the global list.
+ *
+ * @param da
+ *  The devargs structure to insert.
+ *
+ * @return
+ *   - 0 on success
+ *   - Negative on error.
+ */
+int
+rte_eal_devargs_insert(struct rte_devargs *da);
+
+/**
  * Add a device to the user device list
  *
  * For PCI devices, the format of arguments string is "PCI_ADDR" or
@@ -134,8 +161,8 @@ int rte_eal_parse_devargs_str(const char *devargs_str,
  * "04:00.0,arg=val".
  *
  * For virtual devices, the format of arguments string is "DRIVER_NAME*"
- * or "DRIVER_NAME*,key=val,key2=val2,...". Examples: "eth_ring",
- * "eth_ring0", "eth_pmdAnything,arg=0:arg2=1". The validity of the
+ * or "DRIVER_NAME*,key=val,key2=val2,...". Examples: "net_ring",
+ * "net_ring0", "net_pmdAnything,arg=0:arg2=1". The validity of the
  * driver name is not checked by this function, it is done when probing
  * the drivers.
  *
@@ -149,6 +176,24 @@ int rte_eal_parse_devargs_str(const char *devargs_str,
  *   - A negative value on error
  */
 int rte_eal_devargs_add(enum rte_devtype devtype, const char *devargs_str);
+
+/**
+ * Remove a device from the user device list.
+ * Its resources are freed.
+ * If the devargs cannot be found, nothing happens.
+ *
+ * @param busname
+ *   bus name of the devargs to remove.
+ *
+ * @param devname
+ *   device name of the devargs to remove.
+ *
+ * @return
+ *   0 on success.
+ *   <0 on error.
+ *   >0 if the devargs was not within the user device list.
+ */
+int rte_eal_devargs_remove(const char *busname, const char *devname);
 
 /**
  * Count the number of user devices of a specified type

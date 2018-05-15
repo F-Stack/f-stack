@@ -139,6 +139,21 @@ nb_common_chars(const char * s1, const char * s2)
 	return i;
 }
 
+/** Retrieve either static or dynamic token at a given index. */
+static cmdline_parse_token_hdr_t *
+get_token(cmdline_parse_inst_t *inst, unsigned int index)
+{
+	cmdline_parse_token_hdr_t *token_p;
+
+	/* check presence of static tokens first */
+	if (inst->tokens[0] || !inst->f)
+		return inst->tokens[index];
+	/* generate dynamic token */
+	token_p = NULL;
+	inst->f(&token_p, NULL, &inst->tokens[index]);
+	return token_p;
+}
+
 /**
  * try to match the buffer with an instruction (only the first
  * nb_match_token tokens if != 0). Return 0 if we match all the
@@ -148,18 +163,20 @@ static int
 match_inst(cmdline_parse_inst_t *inst, const char *buf,
 	   unsigned int nb_match_token, void *resbuf, unsigned resbuf_size)
 {
-	unsigned int token_num=0;
-	cmdline_parse_token_hdr_t * token_p;
+	cmdline_parse_token_hdr_t *token_p = NULL;
 	unsigned int i=0;
 	int n = 0;
 	struct cmdline_token_hdr token_hdr;
 
-	token_p = inst->tokens[token_num];
-	if (token_p)
+	if (resbuf != NULL)
+		memset(resbuf, 0, resbuf_size);
+	/* check if we match all tokens of inst */
+	while (!nb_match_token || i < nb_match_token) {
+		token_p = get_token(inst, i);
+		if (!token_p)
+			break;
 		memcpy(&token_hdr, token_p, sizeof(token_hdr));
 
-	/* check if we match all tokens of inst */
-	while (token_p && (!nb_match_token || i<nb_match_token)) {
 		debug_printf("TK\n");
 		/* skip spaces */
 		while (isblank2(*buf)) {
@@ -194,11 +211,6 @@ match_inst(cmdline_parse_inst_t *inst, const char *buf,
 		debug_printf("TK parsed (len=%d)\n", n);
 		i++;
 		buf += n;
-
-		token_num ++;
-		token_p = inst->tokens[token_num];
-		if (token_p)
-			memcpy(&token_hdr, token_p, sizeof(token_hdr));
 	}
 
 	/* does not match */
@@ -238,7 +250,10 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 	unsigned int inst_num=0;
 	cmdline_parse_inst_t *inst;
 	const char *curbuf;
-	char result_buf[CMDLINE_PARSE_RESULT_BUFSIZE];
+	union {
+		char buf[CMDLINE_PARSE_RESULT_BUFSIZE];
+		long double align; /* strong alignment constraint for buf */
+	} result, tmp_result;
 	void (*f)(void *, struct cmdline *, void *) = NULL;
 	void *data = NULL;
 	int comment = 0;
@@ -250,6 +265,7 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 #ifdef RTE_LIBRTE_CMDLINE_DEBUG
 	char debug_buf[BUFSIZ];
 #endif
+	char *result_buf = result.buf;
 
 	if (!cl || !buf)
 		return CMDLINE_PARSE_BAD_ARGS;
@@ -299,7 +315,8 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 		debug_printf("INST %d\n", inst_num);
 
 		/* fully parsed */
-		tok = match_inst(inst, buf, 0, result_buf, sizeof(result_buf));
+		tok = match_inst(inst, buf, 0, result_buf,
+				 CMDLINE_PARSE_RESULT_BUFSIZE);
 
 		if (tok > 0) /* we matched at least one token */
 			err = CMDLINE_PARSE_BAD_ARGS;
@@ -316,6 +333,7 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 				if (!f) {
 					memcpy(&f, &inst->f, sizeof(f));
 					memcpy(&data, &inst->data, sizeof(data));
+					result_buf = tmp_result.buf;
 				}
 				else {
 					/* more than 1 inst matches */
@@ -333,7 +351,7 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 
 	/* call func */
 	if (f) {
-		f(result_buf, cl, data);
+		f(result.buf, cl, data);
 	}
 
 	/* no match */
@@ -396,11 +414,12 @@ cmdline_complete(struct cmdline *cl, const char *buf, int *state,
 		inst = ctx[inst_num];
 		while (inst) {
 			/* parse the first tokens of the inst */
-			if (nb_token && match_inst(inst, buf, nb_token, NULL, 0))
+			if (nb_token &&
+			    match_inst(inst, buf, nb_token, NULL, 0))
 				goto next;
 
 			debug_printf("instruction match\n");
-			token_p = inst->tokens[nb_token];
+			token_p = get_token(inst, nb_token);
 			if (token_p)
 				memcpy(&token_hdr, token_p, sizeof(token_hdr));
 
@@ -490,10 +509,11 @@ cmdline_complete(struct cmdline *cl, const char *buf, int *state,
 		/* we need to redo it */
 		inst = ctx[inst_num];
 
-		if (nb_token && match_inst(inst, buf, nb_token, NULL, 0))
+		if (nb_token &&
+		    match_inst(inst, buf, nb_token, NULL, 0))
 			goto next2;
 
-		token_p = inst->tokens[nb_token];
+		token_p = get_token(inst, nb_token);
 		if (token_p)
 			memcpy(&token_hdr, token_p, sizeof(token_hdr));
 

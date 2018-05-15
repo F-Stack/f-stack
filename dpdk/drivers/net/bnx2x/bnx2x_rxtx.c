@@ -19,7 +19,8 @@ ring_dma_zone_reserve(struct rte_eth_dev *dev, const char *ring_name,
 	const struct rte_memzone *mz;
 
 	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-			dev->driver->pci_drv.name, ring_name, dev->data->port_id, queue_id);
+			dev->device->driver->name, ring_name,
+			dev->data->port_id, queue_id);
 
 	mz = rte_memzone_lookup(z_name);
 	if (mz)
@@ -59,7 +60,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		       uint16_t queue_idx,
 		       uint16_t nb_desc,
 		       unsigned int socket_id,
-		       const struct rte_eth_rxconf *rx_conf,
+		       __rte_unused const struct rte_eth_rxconf *rx_conf,
 		       struct rte_mempool *mp)
 {
 	uint16_t j, idx;
@@ -70,8 +71,8 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	struct bnx2x_softc *sc = dev->data->dev_private;
 	struct bnx2x_fastpath *fp = &sc->fp[queue_idx];
 	struct eth_rx_cqe_next_page *nextpg;
-	phys_addr_t *rx_bd;
-	phys_addr_t busaddr;
+	rte_iova_t *rx_bd;
+	rte_iova_t busaddr;
 
 	/* First allocate the rx queue data structure */
 	rxq = rte_zmalloc_socket("ethdev RX queue", sizeof(struct bnx2x_rx_queue),
@@ -84,7 +85,6 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->mb_pool = mp;
 	rxq->queue_id = queue_idx;
 	rxq->port_id = dev->data->port_id;
-	rxq->crc_len = (uint8_t)((dev->data->dev_conf.rxmode.hw_strip_crc) ? 0 : ETHER_CRC_LEN);
 
 	rxq->nb_rx_pages = 1;
 	while (USABLE_RX_BD(rxq) < nb_desc)
@@ -94,13 +94,9 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	sc->rx_ring_size = USABLE_RX_BD(rxq);
 	rxq->nb_cq_pages = RCQ_BD_PAGES(rxq);
 
-	rxq->rx_free_thresh = rx_conf->rx_free_thresh ?
-		rx_conf->rx_free_thresh : DEFAULT_RX_FREE_THRESH;
-
-	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
+	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, usable_bd=%lu, "
 		       "total_bd=%lu, rx_pages=%u, cq_pages=%u",
-		       queue_idx, nb_desc, rxq->rx_free_thresh,
-		       (unsigned long)USABLE_RX_BD(rxq),
+		       queue_idx, nb_desc, (unsigned long)USABLE_RX_BD(rxq),
 		       (unsigned long)TOTAL_RX_BD(rxq), rxq->nb_rx_pages,
 		       rxq->nb_cq_pages);
 
@@ -112,7 +108,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		bnx2x_rx_queue_release(rxq);
 		return -ENOMEM;
 	}
-	fp->rx_desc_mapping = rxq->rx_ring_phys_addr = (uint64_t)dma->phys_addr;
+	fp->rx_desc_mapping = rxq->rx_ring_phys_addr = (uint64_t)dma->iova;
 	rxq->rx_ring = (uint64_t*)dma->addr;
 	memset((void *)rxq->rx_ring, 0, dma_size);
 
@@ -135,7 +131,6 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	/* Initialize software ring entries */
-	rxq->rx_mbuf_alloc = 0;
 	for (idx = 0; idx < rxq->nb_rx_desc; idx = NEXT_RX_BD(idx)) {
 		mbuf = rte_mbuf_raw_alloc(mp);
 		if (NULL == mbuf) {
@@ -145,8 +140,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			return -ENOMEM;
 		}
 		rxq->sw_ring[idx] = mbuf;
-		rxq->rx_ring[idx] = mbuf->buf_physaddr;
-		rxq->rx_mbuf_alloc++;
+		rxq->rx_ring[idx] = mbuf->buf_iova;
 	}
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -160,7 +154,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		PMD_RX_LOG(ERR, "RCQ  alloc failed");
 		return -ENOMEM;
 	}
-	fp->rx_comp_mapping = rxq->cq_ring_phys_addr = (uint64_t)dma->phys_addr;
+	fp->rx_comp_mapping = rxq->cq_ring_phys_addr = (uint64_t)dma->iova;
 	rxq->cq_ring = (union eth_rx_cqe*)dma->addr;
 
 	/* Link the CQ chain pages. */
@@ -279,6 +273,8 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 
 	txq->tx_free_thresh = tx_conf->tx_free_thresh ?
 		tx_conf->tx_free_thresh : DEFAULT_TX_FREE_THRESH;
+	txq->tx_free_thresh = min(txq->tx_free_thresh,
+				  txq->nb_tx_desc - BDS_PER_TX_PKT);
 
 	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
 		     "total_bd=%lu, tx_pages=%u",
@@ -293,7 +289,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		bnx2x_tx_queue_release(txq);
 		return -ENOMEM;
 	}
-	fp->tx_desc_mapping = txq->tx_ring_phys_addr = (uint64_t)tz->phys_addr;
+	fp->tx_desc_mapping = txq->tx_ring_phys_addr = (uint64_t)tz->iova;
 	txq->tx_ring = (union eth_tx_bd_types *) tz->addr;
 	memset(txq->tx_ring, 0, tsize);
 
@@ -404,7 +400,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		rx_mb = rxq->sw_ring[bd_cons];
 		rxq->sw_ring[bd_cons] = new_mb;
-		rxq->rx_ring[bd_prod] = new_mb->buf_physaddr;
+		rxq->rx_ring[bd_prod] = new_mb->buf_iova;
 
 		rx_pref = NEXT_RX_BD(bd_cons) & MAX_RX_BD(rxq);
 		rte_prefetch0(rxq->sw_ring[rx_pref]);
@@ -426,7 +422,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 */
 		if (cqe_fp->pars_flags.flags & PARSING_FLAGS_VLAN) {
 			rx_mb->vlan_tci = cqe_fp->vlan_tag;
-			rx_mb->ol_flags |= PKT_RX_VLAN_PKT;
+			rx_mb->ol_flags |= PKT_RX_VLAN;
 		}
 
 		rx_pkts[nb_rx] = rx_mb;

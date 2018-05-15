@@ -38,6 +38,9 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+#include <rte_common.h>
+#include <rte_config.h>
 #include <emmintrin.h>
 #include "generic/rte_atomic.h"
 
@@ -58,6 +61,12 @@ extern "C" {
 #define rte_smp_wmb() rte_compiler_barrier()
 
 #define rte_smp_rmb() rte_compiler_barrier()
+
+#define rte_io_mb() rte_mb()
+
+#define rte_io_wmb() rte_compiler_barrier()
+
+#define rte_io_rmb() rte_compiler_barrier()
 
 /*------------------------- 16 bit atomic operations -------------------------*/
 

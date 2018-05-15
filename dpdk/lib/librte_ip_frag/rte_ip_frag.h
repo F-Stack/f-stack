@@ -48,6 +48,7 @@ extern "C" {
 #include <stdint.h>
 #include <stdio.h>
 
+#include <rte_config.h>
 #include <rte_malloc.h>
 #include <rte_memory.h>
 #include <rte_ip.h>
@@ -70,7 +71,7 @@ struct ip_frag {
 	struct rte_mbuf *mb;   /**< fragment mbuf */
 };
 
-/** @internal <src addr, dst_addr, id> to uniquely indetify fragmented datagram. */
+/** @internal <src addr, dst_addr, id> to uniquely identify fragmented datagram. */
 struct ip_frag_key {
 	uint64_t src_dst[4];      /**< src address, first 8 bytes used for IPv4 */
 	uint32_t id;           /**< dst address */
@@ -118,13 +119,13 @@ struct rte_ip_frag_tbl {
 	uint32_t             entry_mask;      /**< hash value mask. */
 	uint32_t             max_entries;     /**< max entries allowed. */
 	uint32_t             use_entries;     /**< entries in use. */
-	uint32_t             bucket_entries;  /**< hash assocaitivity. */
+	uint32_t             bucket_entries;  /**< hash associativity. */
 	uint32_t             nb_entries;      /**< total size of the table. */
 	uint32_t             nb_buckets;      /**< num of associativity lines. */
 	struct ip_frag_pkt *last;         /**< last used entry. */
 	struct ip_pkt_list lru;           /**< LRU list for table entries. */
 	struct ip_frag_tbl_stat stat;     /**< statistics counters. */
-	struct ip_frag_pkt pkt[0];        /**< hash table. */
+	__extension__ struct ip_frag_pkt pkt[0]; /**< hash table. */
 };
 
 /** IPv6 fragment extension header */
@@ -180,11 +181,8 @@ struct rte_ip_frag_tbl * rte_ip_frag_table_create(uint32_t bucket_num,
  * @param tbl
  *   Fragmentation table to free.
  */
-static inline void
-rte_ip_frag_table_destroy(struct rte_ip_frag_tbl *tbl)
-{
-	rte_free(tbl);
-}
+void
+rte_ip_frag_table_destroy(struct rte_ip_frag_tbl *tbl);
 
 /**
  * This function implements the fragmentation of IPv6 packets.
@@ -233,7 +231,7 @@ rte_ipv6_fragment_packet(struct rte_mbuf *pkt_in,
  *   Pointer to the IPv6 fragment extension header.
  * @return
  *   Pointer to mbuf for reassembled packet, or NULL if:
- *   - an error occured.
+ *   - an error occurred.
  *   - not all fragments of the packet are collected yet.
  */
 struct rte_mbuf *rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
@@ -306,8 +304,8 @@ int32_t rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
  * @param ip_hdr
  *   Pointer to the IPV4 header inside the fragment.
  * @return
- *   Pointer to mbuf for reassebled packet, or NULL if:
- *   - an error occured.
+ *   Pointer to mbuf for reassembled packet, or NULL if:
+ *   - an error occurred.
  *   - not all fragments of the packet are collected yet.
  */
 struct rte_mbuf * rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,

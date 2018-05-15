@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -33,16 +33,26 @@
 
 #ifndef _IXGBE_ETHDEV_H_
 #define _IXGBE_ETHDEV_H_
+#include "base/ixgbe_type.h"
 #include "base/ixgbe_dcb.h"
 #include "base/ixgbe_dcb_82599.h"
 #include "base/ixgbe_dcb_82598.h"
 #include "ixgbe_bypass.h"
+#ifdef RTE_LIBRTE_SECURITY
+#include "ixgbe_ipsec.h"
+#endif
 #include <rte_time.h>
+#include <rte_hash.h>
+#include <rte_pci.h>
+#include <rte_bus_pci.h>
+#include <rte_tm_driver.h>
 
 /* need update link, bit flag */
 #define IXGBE_FLAG_NEED_LINK_UPDATE (uint32_t)(1 << 0)
 #define IXGBE_FLAG_MAILBOX          (uint32_t)(1 << 1)
 #define IXGBE_FLAG_PHY_INTERRUPT    (uint32_t)(1 << 2)
+#define IXGBE_FLAG_MACSEC           (uint32_t)(1 << 3)
+#define IXGBE_FLAG_NEED_LINK_CONFIG (uint32_t)(1 << 4)
 
 /*
  * Defines that were not part of ixgbe_type.h as they are not used by the
@@ -69,7 +79,7 @@
 #endif
 #define IXGBE_HWSTRIP_BITMAP_SIZE (IXGBE_MAX_RX_QUEUE_NUM / (sizeof(uint32_t) * NBBY))
 
-/* EITR Inteval is in 2048ns uinits for 1G and 10G link */
+/* EITR Interval is in 2048ns uinits for 1G and 10G link */
 #define IXGBE_EITR_INTERVAL_UNIT_NS	2048
 #define IXGBE_EITR_ITR_INT_SHIFT       3
 #define IXGBE_EITR_INTERVAL_US(us) \
@@ -130,10 +140,35 @@
 #define IXGBE_MISC_VEC_ID               RTE_INTR_VEC_ZERO_OFFSET
 #define IXGBE_RX_VEC_START              RTE_INTR_VEC_RXTX_OFFSET
 
+#define IXGBE_SECTX_MINSECIFG_MASK      0x0000000F
+
+#define IXGBE_MACSEC_PNTHRSH            0xFFFFFE00
+
+#define IXGBE_MAX_FDIR_FILTER_NUM       (1024 * 32)
+#define IXGBE_MAX_L2_TN_FILTER_NUM      128
+
+#define MAC_TYPE_FILTER_SUP_EXT(type)    do {\
+	if ((type) != ixgbe_mac_82599EB && (type) != ixgbe_mac_X540)\
+		return -ENOTSUP;\
+} while (0)
+
+#define MAC_TYPE_FILTER_SUP(type)    do {\
+	if ((type) != ixgbe_mac_82599EB && (type) != ixgbe_mac_X540 &&\
+		(type) != ixgbe_mac_X550 && (type) != ixgbe_mac_X550EM_x &&\
+		(type) != ixgbe_mac_X550EM_a)\
+		return -ENOTSUP;\
+} while (0)
+
+/* Link speed for X550 auto negotiation */
+#define IXGBE_LINK_SPEED_X550_AUTONEG	(IXGBE_LINK_SPEED_100_FULL | \
+					 IXGBE_LINK_SPEED_1GB_FULL | \
+					 IXGBE_LINK_SPEED_2_5GB_FULL | \
+					 IXGBE_LINK_SPEED_5GB_FULL | \
+					 IXGBE_LINK_SPEED_10GB_FULL)
+
 /*
  * Information about the fdir mode.
  */
-
 struct ixgbe_hw_fdir_mask {
 	uint16_t vlan_tci_mask;
 	uint32_t src_ipv4_mask;
@@ -148,6 +183,29 @@ struct ixgbe_hw_fdir_mask {
 	uint8_t  tunnel_type_mask;
 };
 
+struct ixgbe_fdir_filter {
+	TAILQ_ENTRY(ixgbe_fdir_filter) entries;
+	union ixgbe_atr_input ixgbe_fdir; /* key of fdir filter*/
+	uint32_t fdirflags; /* drop or forward */
+	uint32_t fdirhash; /* hash value for fdir */
+	uint8_t queue; /* assigned rx queue */
+};
+
+/* list of fdir filters */
+TAILQ_HEAD(ixgbe_fdir_filter_list, ixgbe_fdir_filter);
+
+struct ixgbe_fdir_rule {
+	struct ixgbe_hw_fdir_mask mask;
+	union ixgbe_atr_input ixgbe_fdir; /* key of fdir filter*/
+	bool b_spec; /* If TRUE, ixgbe_fdir, fdirflags, queue have meaning. */
+	bool b_mask; /* If TRUE, mask has meaning. */
+	enum rte_fdir_mode mode; /* IP, MAC VLAN, Tunnel */
+	uint32_t fdirflags; /* drop or forward */
+	uint32_t soft_id; /* an unique value for this rule */
+	uint8_t queue; /* assigned rx queue */
+	uint8_t flex_bytes_offset;
+};
+
 struct ixgbe_hw_fdir_info {
 	struct ixgbe_hw_fdir_mask mask;
 	uint8_t     flex_bytes_offset;
@@ -159,12 +217,19 @@ struct ixgbe_hw_fdir_info {
 	uint64_t    remove;
 	uint64_t    f_add;
 	uint64_t    f_remove;
+	struct ixgbe_fdir_filter_list fdir_list; /* filter list*/
+	/* store the pointers of the filters, index is the hash value. */
+	struct ixgbe_fdir_filter **hash_map;
+	struct rte_hash *hash_handle; /* cuckoo hash handler */
+	bool mask_added; /* If already got mask from consistent filter */
 };
 
 /* structure for interrupt relative data */
 struct ixgbe_interrupt {
 	uint32_t flags;
 	uint32_t mask;
+	/*to save original mask during delayed handler */
+	uint32_t mask_original;
 };
 
 struct ixgbe_stat_mapping_registers {
@@ -252,16 +317,155 @@ struct ixgbe_5tuple_filter {
 	(RTE_ALIGN(IXGBE_MAX_FTQF_FILTERS, (sizeof(uint32_t) * NBBY)) / \
 	 (sizeof(uint32_t) * NBBY))
 
+struct ixgbe_ethertype_filter {
+	uint16_t ethertype;
+	uint32_t etqf;
+	uint32_t etqs;
+	/**
+	 * If this filter is added by configuration,
+	 * it should not be removed.
+	 */
+	bool     conf;
+};
+
 /*
  * Structure to store filters' info.
  */
 struct ixgbe_filter_info {
 	uint8_t ethertype_mask;  /* Bit mask for every used ethertype filter */
 	/* store used ethertype filters*/
-	uint16_t ethertype_filters[IXGBE_MAX_ETQF_FILTERS];
+	struct ixgbe_ethertype_filter ethertype_filters[IXGBE_MAX_ETQF_FILTERS];
 	/* Bit mask for every used 5tuple filter */
 	uint32_t fivetuple_mask[IXGBE_5TUPLE_ARRAY_SIZE];
 	struct ixgbe_5tuple_filter_list fivetuple_list;
+	/* store the SYN filter info */
+	uint32_t syn_info;
+};
+
+struct ixgbe_l2_tn_key {
+	enum rte_eth_tunnel_type          l2_tn_type;
+	uint32_t                          tn_id;
+};
+
+struct ixgbe_l2_tn_filter {
+	TAILQ_ENTRY(ixgbe_l2_tn_filter)    entries;
+	struct ixgbe_l2_tn_key             key;
+	uint32_t                           pool;
+};
+
+TAILQ_HEAD(ixgbe_l2_tn_filter_list, ixgbe_l2_tn_filter);
+
+struct ixgbe_l2_tn_info {
+	struct ixgbe_l2_tn_filter_list      l2_tn_list;
+	struct ixgbe_l2_tn_filter         **hash_map;
+	struct rte_hash                    *hash_handle;
+	bool e_tag_en; /* e-tag enabled */
+	bool e_tag_fwd_en; /* e-tag based forwarding enabled */
+	bool e_tag_ether_type; /* ether type for e-tag */
+};
+
+struct rte_flow {
+	enum rte_filter_type filter_type;
+	void *rule;
+};
+
+/*
+ * Statistics counters collected by the MACsec
+ */
+struct ixgbe_macsec_stats {
+	/* TX port statistics */
+	uint64_t out_pkts_untagged;
+	uint64_t out_pkts_encrypted;
+	uint64_t out_pkts_protected;
+	uint64_t out_octets_encrypted;
+	uint64_t out_octets_protected;
+
+	/* RX port statistics */
+	uint64_t in_pkts_untagged;
+	uint64_t in_pkts_badtag;
+	uint64_t in_pkts_nosci;
+	uint64_t in_pkts_unknownsci;
+	uint64_t in_octets_decrypted;
+	uint64_t in_octets_validated;
+
+	/* RX SC statistics */
+	uint64_t in_pkts_unchecked;
+	uint64_t in_pkts_delayed;
+	uint64_t in_pkts_late;
+
+	/* RX SA statistics */
+	uint64_t in_pkts_ok;
+	uint64_t in_pkts_invalid;
+	uint64_t in_pkts_notvalid;
+	uint64_t in_pkts_unusedsa;
+	uint64_t in_pkts_notusingsa;
+};
+
+/* The configuration of bandwidth */
+struct ixgbe_bw_conf {
+	uint8_t tc_num; /* Number of TCs. */
+};
+
+/* Struct to store Traffic Manager shaper profile. */
+struct ixgbe_tm_shaper_profile {
+	TAILQ_ENTRY(ixgbe_tm_shaper_profile) node;
+	uint32_t shaper_profile_id;
+	uint32_t reference_count;
+	struct rte_tm_shaper_params profile;
+};
+
+TAILQ_HEAD(ixgbe_shaper_profile_list, ixgbe_tm_shaper_profile);
+
+/* node type of Traffic Manager */
+enum ixgbe_tm_node_type {
+	IXGBE_TM_NODE_TYPE_PORT,
+	IXGBE_TM_NODE_TYPE_TC,
+	IXGBE_TM_NODE_TYPE_QUEUE,
+	IXGBE_TM_NODE_TYPE_MAX,
+};
+
+/* Struct to store Traffic Manager node configuration. */
+struct ixgbe_tm_node {
+	TAILQ_ENTRY(ixgbe_tm_node) node;
+	uint32_t id;
+	uint32_t priority;
+	uint32_t weight;
+	uint32_t reference_count;
+	uint16_t no;
+	struct ixgbe_tm_node *parent;
+	struct ixgbe_tm_shaper_profile *shaper_profile;
+	struct rte_tm_node_params params;
+};
+
+TAILQ_HEAD(ixgbe_tm_node_list, ixgbe_tm_node);
+
+/* The configuration of Traffic Manager */
+struct ixgbe_tm_conf {
+	struct ixgbe_shaper_profile_list shaper_profile_list;
+	struct ixgbe_tm_node *root; /* root node - port */
+	struct ixgbe_tm_node_list tc_list; /* node list for all the TCs */
+	struct ixgbe_tm_node_list queue_list; /* node list for all the queues */
+	/**
+	 * The number of added TC nodes.
+	 * It should be no more than the TC number of this port.
+	 */
+	uint32_t nb_tc_node;
+	/**
+	 * The number of added queue nodes.
+	 * It should be no more than the queue number of this port.
+	 */
+	uint32_t nb_queue_node;
+	/**
+	 * This flag is used to check if APP can change the TM node
+	 * configuration.
+	 * When it's true, means the configuration is applied to HW,
+	 * APP should not change the configuration.
+	 * As we don't support on-the-fly configuration, when starting
+	 * the port, APP should call the hierarchy_commit API to set this
+	 * flag to true. When stopping the port, this flag should be set
+	 * to false.
+	 */
+	bool committed;
 };
 
 /*
@@ -270,6 +474,7 @@ struct ixgbe_filter_info {
 struct ixgbe_adapter {
 	struct ixgbe_hw             hw;
 	struct ixgbe_hw_stats       stats;
+	struct ixgbe_macsec_stats   macsec_stats;
 	struct ixgbe_hw_fdir_info   fdir;
 	struct ixgbe_interrupt      intr;
 	struct ixgbe_stat_mapping_registers stat_mappings;
@@ -279,16 +484,21 @@ struct ixgbe_adapter {
 	struct ixgbe_mirror_info    mr_data;
 	struct ixgbe_vf_info        *vfdata;
 	struct ixgbe_uta_info       uta_info;
-#ifdef RTE_NIC_BYPASS
+#ifdef RTE_LIBRTE_IXGBE_BYPASS
 	struct ixgbe_bypass_info    bps;
-#endif /* RTE_NIC_BYPASS */
+#endif /* RTE_LIBRTE_IXGBE_BYPASS */
 	struct ixgbe_filter_info    filter;
-
+	struct ixgbe_l2_tn_info     l2_tn;
+	struct ixgbe_bw_conf        bw_conf;
+#ifdef RTE_LIBRTE_SECURITY
+	struct ixgbe_ipsec          ipsec;
+#endif
 	bool rx_bulk_alloc_allowed;
 	bool rx_vec_allowed;
 	struct rte_timecounter      systime_tc;
 	struct rte_timecounter      rx_tstamp_tc;
 	struct rte_timecounter      tx_tstamp_tc;
+ 	struct ixgbe_tm_conf        tm_conf;
 };
 
 #define IXGBE_DEV_PRIVATE_TO_HW(adapter)\
@@ -296,6 +506,9 @@ struct ixgbe_adapter {
 
 #define IXGBE_DEV_PRIVATE_TO_STATS(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->stats)
+
+#define IXGBE_DEV_PRIVATE_TO_MACSEC_STATS(adapter) \
+	(&((struct ixgbe_adapter *)adapter)->macsec_stats)
 
 #define IXGBE_DEV_PRIVATE_TO_INTR(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->intr)
@@ -327,6 +540,18 @@ struct ixgbe_adapter {
 #define IXGBE_DEV_PRIVATE_TO_FILTER_INFO(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->filter)
 
+#define IXGBE_DEV_PRIVATE_TO_L2_TN_INFO(adapter) \
+	(&((struct ixgbe_adapter *)adapter)->l2_tn)
+
+#define IXGBE_DEV_PRIVATE_TO_BW_CONF(adapter) \
+	(&((struct ixgbe_adapter *)adapter)->bw_conf)
+
+#define IXGBE_DEV_PRIVATE_TO_TM_CONF(adapter) \
+	(&((struct ixgbe_adapter *)adapter)->tm_conf)
+
+#define IXGBE_DEV_PRIVATE_TO_IPSEC(adapter)\
+	(&((struct ixgbe_adapter *)adapter)->ipsec)
+
 /*
  * RX/TX function prototypes
  */
@@ -351,7 +576,9 @@ uint32_t ixgbe_dev_rx_queue_count(struct rte_eth_dev *dev,
 		uint16_t rx_queue_id);
 
 int ixgbe_dev_rx_descriptor_done(void *rx_queue, uint16_t offset);
-int ixgbevf_dev_rx_descriptor_done(void *rx_queue, uint16_t offset);
+
+int ixgbe_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
+int ixgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
 
 int ixgbe_dev_rx_init(struct rte_eth_dev *dev);
 
@@ -396,6 +623,9 @@ uint16_t ixgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 uint16_t ixgbe_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
 
+uint16_t ixgbe_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts);
+
 int ixgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
 			      struct rte_eth_rss_conf *rss_conf);
 
@@ -412,10 +642,34 @@ uint32_t ixgbe_rssrk_reg_get(enum ixgbe_mac_type mac_type, uint8_t i);
 
 bool ixgbe_rss_update_sp(enum ixgbe_mac_type mac_type);
 
+int ixgbe_add_del_ntuple_filter(struct rte_eth_dev *dev,
+			struct rte_eth_ntuple_filter *filter,
+			bool add);
+int ixgbe_add_del_ethertype_filter(struct rte_eth_dev *dev,
+			struct rte_eth_ethertype_filter *filter,
+			bool add);
+int ixgbe_syn_filter_set(struct rte_eth_dev *dev,
+			struct rte_eth_syn_filter *filter,
+			bool add);
+int
+ixgbe_dev_l2_tunnel_filter_add(struct rte_eth_dev *dev,
+			       struct rte_eth_l2_tunnel_conf *l2_tunnel,
+			       bool restore);
+int
+ixgbe_dev_l2_tunnel_filter_del(struct rte_eth_dev *dev,
+			       struct rte_eth_l2_tunnel_conf *l2_tunnel);
+void ixgbe_filterlist_init(void);
+void ixgbe_filterlist_flush(void);
 /*
  * Flow director function prototypes
  */
 int ixgbe_fdir_configure(struct rte_eth_dev *dev);
+int ixgbe_fdir_set_input_mask(struct rte_eth_dev *dev);
+int ixgbe_fdir_set_flexbytes_offset(struct rte_eth_dev *dev,
+				    uint16_t offset);
+int ixgbe_fdir_filter_program(struct rte_eth_dev *dev,
+			      struct ixgbe_fdir_rule *rule,
+			      bool del, bool update);
 
 void ixgbe_configure_dcb(struct rte_eth_dev *dev);
 
@@ -442,4 +696,79 @@ uint32_t ixgbe_convert_vm_rx_mask_to_val(uint16_t rx_mask, uint32_t orig_val);
 
 int ixgbe_fdir_ctrl_func(struct rte_eth_dev *dev,
 			enum rte_filter_op filter_op, void *arg);
+void ixgbe_fdir_filter_restore(struct rte_eth_dev *dev);
+int ixgbe_clear_all_fdir_filter(struct rte_eth_dev *dev);
+
+extern const struct rte_flow_ops ixgbe_flow_ops;
+
+void ixgbe_clear_all_ethertype_filter(struct rte_eth_dev *dev);
+void ixgbe_clear_all_ntuple_filter(struct rte_eth_dev *dev);
+void ixgbe_clear_syn_filter(struct rte_eth_dev *dev);
+int ixgbe_clear_all_l2_tn_filter(struct rte_eth_dev *dev);
+
+int ixgbe_disable_sec_tx_path_generic(struct ixgbe_hw *hw);
+
+int ixgbe_enable_sec_tx_path_generic(struct ixgbe_hw *hw);
+
+int ixgbe_vt_check(struct ixgbe_hw *hw);
+int ixgbe_set_vf_rate_limit(struct rte_eth_dev *dev, uint16_t vf,
+			    uint16_t tx_rate, uint64_t q_msk);
+bool is_ixgbe_supported(struct rte_eth_dev *dev);
+int ixgbe_tm_ops_get(struct rte_eth_dev *dev, void *ops);
+void ixgbe_tm_conf_init(struct rte_eth_dev *dev);
+void ixgbe_tm_conf_uninit(struct rte_eth_dev *dev);
+int ixgbe_set_queue_rate_limit(struct rte_eth_dev *dev, uint16_t queue_idx,
+			       uint16_t tx_rate);
+
+static inline int
+ixgbe_ethertype_filter_lookup(struct ixgbe_filter_info *filter_info,
+			      uint16_t ethertype)
+{
+	int i;
+
+	for (i = 0; i < IXGBE_MAX_ETQF_FILTERS; i++) {
+		if (filter_info->ethertype_filters[i].ethertype == ethertype &&
+		    (filter_info->ethertype_mask & (1 << i)))
+			return i;
+	}
+	return -1;
+}
+
+static inline int
+ixgbe_ethertype_filter_insert(struct ixgbe_filter_info *filter_info,
+			      struct ixgbe_ethertype_filter *ethertype_filter)
+{
+	int i;
+
+	for (i = 0; i < IXGBE_MAX_ETQF_FILTERS; i++) {
+		if (!(filter_info->ethertype_mask & (1 << i))) {
+			filter_info->ethertype_mask |= 1 << i;
+			filter_info->ethertype_filters[i].ethertype =
+				ethertype_filter->ethertype;
+			filter_info->ethertype_filters[i].etqf =
+				ethertype_filter->etqf;
+			filter_info->ethertype_filters[i].etqs =
+				ethertype_filter->etqs;
+			filter_info->ethertype_filters[i].conf =
+				ethertype_filter->conf;
+			return i;
+		}
+	}
+	return -1;
+}
+
+static inline int
+ixgbe_ethertype_filter_remove(struct ixgbe_filter_info *filter_info,
+			      uint8_t idx)
+{
+	if (idx >= IXGBE_MAX_ETQF_FILTERS)
+		return -1;
+	filter_info->ethertype_mask &= ~(1 << idx);
+	filter_info->ethertype_filters[idx].ethertype = 0;
+	filter_info->ethertype_filters[idx].etqf = 0;
+	filter_info->ethertype_filters[idx].etqs = 0;
+	filter_info->ethertype_filters[idx].etqs = FALSE;
+	return idx;
+}
+
 #endif /* _IXGBE_ETHDEV_H_ */

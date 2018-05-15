@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright (C) Cavium networks Ltd. 2015.
+ *   Copyright (C) Cavium, Inc. 2015.
  *   Copyright(c) 2015 RehiveTech. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -14,7 +14,7 @@
  *       notice, this list of conditions and the following disclaimer in
  *       the documentation and/or other materials provided with the
  *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
+ *     * Neither the name of Cavium, Inc nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -137,7 +137,7 @@ rte_cpu_get_features(hwcap_registers_t out)
 	_Elfx_auxv_t auxv;
 
 	auxv_fd = open("/proc/self/auxv", O_RDONLY);
-	assert(auxv_fd);
+	assert(auxv_fd != -1);
 	while (read(auxv_fd, &auxv, sizeof(auxv)) == sizeof(auxv)) {
 		if (auxv.a_type == AT_HWCAP) {
 			out[REG_HWCAP] = auxv.a_un.a_val;

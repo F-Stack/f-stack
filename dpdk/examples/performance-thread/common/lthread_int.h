@@ -59,8 +59,11 @@
  * SUCH DAMAGE.
  */
 #ifndef LTHREAD_INT_H
-#include <lthread_api.h>
 #define LTHREAD_INT_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include <stdint.h>
 #include <sys/time.h>
@@ -69,10 +72,10 @@
 #include <pthread.h>
 #include <time.h>
 
+#include <rte_memory.h>
 #include <rte_cycles.h>
 #include <rte_per_lcore.h>
 #include <rte_timer.h>
-#include <rte_ring.h>
 #include <rte_atomic_64.h>
 #include <rte_spinlock.h>
 #include <ctx.h>
@@ -196,5 +199,9 @@ struct lthread {
 	char funcname[MAX_LTHREAD_NAME_SIZE];	/* thread func name */
 	uint64_t diag_ref;			/* ref to user diag data */
 } __rte_cache_aligned;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif				/* LTHREAD_INT_H */

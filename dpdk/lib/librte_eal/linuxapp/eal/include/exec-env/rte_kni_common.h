@@ -61,6 +61,10 @@
 
 #ifdef __KERNEL__
 #include <linux/if.h>
+#define RTE_STD_C11
+#else
+#include <rte_common.h>
+#include <rte_config.h>
 #endif
 
 /**
@@ -85,6 +89,7 @@ enum rte_kni_req_id {
  */
 struct rte_kni_request {
 	uint32_t req_id;             /**< Request id */
+	RTE_STD_C11
 	union {
 		uint32_t new_mtu;    /**< New MTU */
 		uint8_t if_up;       /**< 1: interface up, 0: interface down */
@@ -102,7 +107,7 @@ struct rte_kni_fifo {
 	volatile unsigned read;      /**< Next position to be read */
 	unsigned len;                /**< Circular buffer length */
 	unsigned elem_size;          /**< Pointer size - for 32/64 bit OS */
-	void * volatile buffer[0];   /**< The buffer contains mbuf pointers */
+	void *volatile buffer[];     /**< The buffer contains mbuf pointers */
 };
 
 /*
@@ -111,11 +116,11 @@ struct rte_kni_fifo {
  */
 struct rte_kni_mbuf {
 	void *buf_addr __attribute__((__aligned__(RTE_CACHE_LINE_SIZE)));
-	char pad0[10];
+	uint64_t buf_physaddr;
 	uint16_t data_off;      /**< Start address of data in segment buffer. */
 	char pad1[2];
-	uint8_t nb_segs;        /**< Number of segments. */
-	char pad4[1];
+	uint16_t nb_segs;       /**< Number of segments. */
+	char pad4[2];
 	uint64_t ol_flags;      /**< Offload features. */
 	char pad2[4];
 	uint32_t pkt_len;       /**< Total pkt len: sum of all segment data_len. */
@@ -159,6 +164,7 @@ struct rte_kni_device_info {
 	uint16_t group_id;            /**< Group ID */
 	uint32_t core_id;             /**< core ID to bind for kernel thread */
 
+	__extension__
 	uint8_t force_bind : 1;       /**< Flag for kernel thread binding */
 
 	/* mbuf size */

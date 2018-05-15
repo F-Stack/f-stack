@@ -30,13 +30,21 @@
 #   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# list the C files belonhing to the lthread subsystem, these are common to all lthread apps
-SRCS-y +=	../common/lthread.c \
-			../common/lthread_sched.c \
-			../common/lthread_cond.c \
-			../common/lthread_tls.c \
-			../common/lthread_mutex.c \
-			../common/lthread_diag.c \
-			../common/arch/x86/ctx.c
+# list the C files belonging to the lthread subsystem, these are common to all
+# lthread apps. Any makefile including this should set VPATH to include this
+# directory path
+#
 
-INCLUDES += -I$(RTE_SDK)/examples/performance-thread/common/ -I$(RTE_SDK)/examples/performance-thread/common/arch/x86/
+MKFILE_PATH=$(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+ifeq ($(CONFIG_RTE_ARCH_X86_64),y)
+ARCH_PATH += $(MKFILE_PATH)/arch/x86
+else ifeq ($(CONFIG_RTE_ARCH_ARM64),y)
+ARCH_PATH += $(MKFILE_PATH)/arch/arm64
+endif
+
+VPATH := $(MKFILE_PATH) $(ARCH_PATH)
+
+SRCS-y += lthread.c lthread_sched.c lthread_cond.c lthread_tls.c lthread_mutex.c lthread_diag.c ctx.c
+
+INCLUDES += -I$(MKFILE_PATH) -I$(ARCH_PATH)

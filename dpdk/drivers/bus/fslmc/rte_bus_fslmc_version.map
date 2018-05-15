@@ -1,0 +1,91 @@
+DPDK_17.05 {
+	global:
+
+	dpaa2_affine_qbman_swp;
+	dpaa2_affine_qbman_swp_sec;
+	dpaa2_alloc_dpbp_dev;
+	dpaa2_alloc_dq_storage;
+	dpaa2_free_dpbp_dev;
+	dpaa2_free_dq_storage;
+	dpbp_disable;
+	dpbp_enable;
+	dpbp_get_attributes;
+	dpbp_get_num_free_bufs;
+	dpbp_open;
+	dpbp_reset;
+	dpio_close;
+	dpio_disable;
+	dpio_enable;
+	dpio_get_attributes;
+	dpio_open;
+	dpio_reset;
+	dpio_set_stashing_destination;
+	mc_send_command;
+	per_lcore__dpaa2_io;
+	qbman_check_command_complete;
+	qbman_eq_desc_clear;
+	qbman_eq_desc_set_fq;
+	qbman_eq_desc_set_no_orp;
+	qbman_eq_desc_set_qd;
+	qbman_eq_desc_set_response;
+	qbman_get_version;
+	qbman_pull_desc_clear;
+	qbman_pull_desc_set_fq;
+	qbman_pull_desc_set_numframes;
+	qbman_pull_desc_set_storage;
+	qbman_release_desc_clear;
+	qbman_release_desc_set_bpid;
+	qbman_result_DQ_fd;
+	qbman_result_DQ_flags;
+	qbman_result_has_new_result;
+	qbman_swp_acquire;
+	qbman_swp_pull;
+	qbman_swp_release;
+	qbman_swp_send_multiple;
+	rte_fslmc_driver_register;
+	rte_fslmc_driver_unregister;
+	rte_fslmc_vfio_dmamap;
+	rte_mcp_ptr_list;
+
+	local: *;
+};
+
+DPDK_17.08 {
+	global:
+
+	dpaa2_io_portal;
+	dpaa2_get_qbman_swp;
+	dpci_set_rx_queue;
+	dpcon_open;
+	dpcon_get_attributes;
+	dpio_add_static_dequeue_channel;
+	dpio_remove_static_dequeue_channel;
+	mc_get_soc_version;
+	mc_get_version;
+	qbman_check_new_result;
+	qbman_eq_desc_set_dca;
+	qbman_get_dqrr_from_idx;
+	qbman_get_dqrr_idx;
+	qbman_result_DQ_fqd_ctx;
+	qbman_result_SCN_state;
+	qbman_swp_dqrr_consume;
+	qbman_swp_dqrr_next;
+	qbman_swp_enqueue_multiple;
+	qbman_swp_enqueue_multiple_desc;
+	qbman_swp_interrupt_clear_status;
+	qbman_swp_push_set;
+	rte_dpaa2_alloc_dpci_dev;
+	rte_fslmc_object_register;
+	rte_global_active_dqs_list;
+
+} DPDK_17.05;
+
+DPDK_17.11 {
+	global:
+
+	dpaa2_dpbp_supported;
+	rte_dpaa2_dev_type;
+	rte_dpaa2_intr_disable;
+	rte_dpaa2_intr_enable;
+
+} DPDK_17.08;

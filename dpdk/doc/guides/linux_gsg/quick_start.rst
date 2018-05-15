@@ -33,7 +33,7 @@
 Quick Start Setup Script
 ========================
 
-The dpdk-setup.sh script, found in the tools subdirectory, allows the user to perform the following tasks:
+The dpdk-setup.sh script, found in the usertools subdirectory, allows the user to perform the following tasks:
 
 *   Build the DPDK libraries
 
@@ -108,7 +108,7 @@ Some options in the script prompt the user for further data before proceeding.
 
 .. code-block:: console
 
-    source tools/dpdk-setup.sh
+    source usertools/dpdk-setup.sh
 
     ------------------------------------------------------------------------
 
@@ -126,19 +126,15 @@ Some options in the script prompt the user for further data before proceeding.
 
     [3] ppc_64-power8-linuxapp-gcc
 
-    [4] x86_64-ivshmem-linuxapp-gcc
+    [4] x86_64-native-bsdapp-clang
 
-    [5] x86_64-ivshmem-linuxapp-icc
+    [5] x86_64-native-bsdapp-gcc
 
-    [6] x86_64-native-bsdapp-clang
+    [6] x86_64-native-linuxapp-clang
 
-    [7] x86_64-native-bsdapp-gcc
+    [7] x86_64-native-linuxapp-gcc
 
-    [8] x86_64-native-linuxapp-clang
-
-    [9] x86_64-native-linuxapp-gcc
-
-    [10] x86_64-native-linuxapp-icc
+    [8] x86_64-native-linuxapp-icc
 
     ------------------------------------------------------------------------
 
@@ -286,7 +282,7 @@ the logical core layout of the platform should be determined when selecting a co
       INSTALL-APP helloworld
       INSTALL-MAP helloworld.map
 
-    sudo ./build/app/helloworld -c 0xf -n 3
+    sudo ./build/app/helloworld -l 0-3 -n 3
     [sudo] password for rte:
 
     EAL: coremask set to f

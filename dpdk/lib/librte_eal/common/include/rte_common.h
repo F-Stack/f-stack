@@ -51,12 +51,27 @@ extern "C" {
 #include <errno.h>
 #include <limits.h>
 
+#include <rte_config.h>
+
 #ifndef typeof
 #define typeof __typeof__
 #endif
 
 #ifndef asm
 #define asm __asm__
+#endif
+
+/** C extension macro for environments lacking C11 features. */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
+#define RTE_STD_C11 __extension__
+#else
+#define RTE_STD_C11
+#endif
+
+/** Define GCC_VERSION **/
+#ifdef RTE_TOOLCHAIN_GCC
+#define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 +	\
+		__GNUC_PATCHLEVEL__)
 #endif
 
 #ifdef RTE_ARCH_STRICT_ALIGN
@@ -94,6 +109,39 @@ typedef uint16_t unaligned_uint16_t;
  * as to avoid a compiler warning
  */
 #define RTE_SET_USED(x) (void)(x)
+
+/**
+ * Run function before main() with low priority.
+ *
+ * The constructor will be run after prioritized constructors.
+ *
+ * @param func
+ *   Constructor function.
+ */
+#define RTE_INIT(func) \
+static void __attribute__((constructor, used)) func(void)
+
+/**
+ * Run function before main() with high priority.
+ *
+ * @param func
+ *   Constructor function.
+ * @param prio
+ *   Priority number must be above 100.
+ *   Lowest number is the first to run.
+ */
+#define RTE_INIT_PRIO(func, prio) \
+static void __attribute__((constructor(prio), used)) func(void)
+
+/**
+ * Force a function to be inlined
+ */
+#define __rte_always_inline inline __attribute__((always_inline))
+
+/**
+ * Force a function to be noinlined
+ */
+#define __rte_noinline  __attribute__((noinline))
 
 /*********** Macros for pointer arithmetic ********/
 
@@ -268,7 +316,8 @@ rte_align64pow2(uint64_t v)
 /**
  * Macro to return the minimum of two numbers
  */
-#define RTE_MIN(a, b) ({ \
+#define RTE_MIN(a, b) \
+	__extension__ ({ \
 		typeof (a) _a = (a); \
 		typeof (b) _b = (b); \
 		_a < _b ? _a : _b; \
@@ -277,28 +326,14 @@ rte_align64pow2(uint64_t v)
 /**
  * Macro to return the maximum of two numbers
  */
-#define RTE_MAX(a, b) ({ \
+#define RTE_MAX(a, b) \
+	__extension__ ({ \
 		typeof (a) _a = (a); \
 		typeof (b) _b = (b); \
 		_a > _b ? _a : _b; \
 	})
 
 /*********** Other general functions / macros ********/
-
-#ifdef __SSE2__
-#include <emmintrin.h>
-/**
- * PAUSE instruction for tight loops (avoid busy waiting)
- */
-static inline void
-rte_pause (void)
-{
-	_mm_pause();
-}
-#else
-static inline void
-rte_pause(void) {}
-#endif
 
 /**
  * Searches the input parameter for the least significant set bit
@@ -317,14 +352,63 @@ rte_bsf32(uint32_t v)
 	return __builtin_ctz(v);
 }
 
+/**
+ * Return the rounded-up log2 of a integer.
+ *
+ * @param v
+ *     The input parameter.
+ * @return
+ *     The rounded-up log2 of the input, or 0 if the input is 0.
+ */
+static inline uint32_t
+rte_log2_u32(uint32_t v)
+{
+	if (v == 0)
+		return 0;
+	v = rte_align32pow2(v);
+	return rte_bsf32(v);
+}
+
 #ifndef offsetof
 /** Return the offset of a field in a structure. */
 #define offsetof(TYPE, MEMBER)  __builtin_offsetof (TYPE, MEMBER)
 #endif
 
+/**
+ * Return pointer to the wrapping struct instance.
+ *
+ * Example:
+ *
+ *  struct wrapper {
+ *      ...
+ *      struct child c;
+ *      ...
+ *  };
+ *
+ *  struct child *x = obtain(...);
+ *  struct wrapper *w = container_of(x, struct wrapper, c);
+ */
+#ifndef container_of
+#define container_of(ptr, type, member)	__extension__ ({		\
+			const typeof(((type *)0)->member) *_ptr = (ptr); \
+			__attribute__((unused)) type *_target_ptr =	\
+				(type *)(ptr);				\
+			(type *)(((uintptr_t)_ptr) - offsetof(type, member)); \
+		})
+#endif
+
 #define _RTE_STR(x) #x
 /** Take a macro value and get a string version of it */
 #define RTE_STR(x) _RTE_STR(x)
+
+/**
+ * ISO C helpers to modify format strings using variadic macros.
+ * This is a replacement for the ", ## __VA_ARGS__" GNU extension.
+ * An empty %s argument is appended to avoid a dangling comma.
+ */
+#define RTE_FMT(fmt, ...) fmt "%.0s", __VA_ARGS__ ""
+#define RTE_FMT_HEAD(fmt, ...) fmt
+#define RTE_FMT_TAIL(fmt, ...) __VA_ARGS__
 
 /** Mask value of type "tp" for the first "ln" bit set. */
 #define	RTE_LEN2MASK(ln, tp)	\

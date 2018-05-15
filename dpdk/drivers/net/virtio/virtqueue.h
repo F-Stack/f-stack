@@ -38,12 +38,12 @@
 
 #include <rte_atomic.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_mempool.h>
 
 #include "virtio_pci.h"
 #include "virtio_ring.h"
 #include "virtio_logs.h"
+#include "virtio_rxtx.h"
 
 struct rte_mbuf;
 
@@ -70,10 +70,16 @@ struct rte_mbuf;
 /**
  * Return the physical address (or virtual address in case of
  * virtio-user) of mbuf data buffer.
+ *
+ * The address is firstly casted to the word size (sizeof(uintptr_t))
+ * before casting it to uint64_t. This is to make it work with different
+ * combination of word size (64 bit and 32 bit) and virtio device
+ * (virtio-pci and virtio-user).
  */
-#define VIRTIO_MBUF_ADDR(mb, vq) (*(uint64_t *)((uintptr_t)(mb) + (vq)->offset))
+#define VIRTIO_MBUF_ADDR(mb, vq) \
+	((uint64_t)(*(uintptr_t *)((uintptr_t)(mb) + (vq)->offset)))
 #else
-#define VIRTIO_MBUF_ADDR(mb, vq) ((mb)->buf_physaddr)
+#define VIRTIO_MBUF_ADDR(mb, vq) ((mb)->buf_iova)
 #endif
 
 /**
@@ -136,8 +142,8 @@ struct virtio_net_ctrl_mac {
 } __attribute__((__packed__));
 
 #define VIRTIO_NET_CTRL_MAC    1
- #define VIRTIO_NET_CTRL_MAC_TABLE_SET        0
- #define VIRTIO_NET_CTRL_MAC_ADDR_SET         1
+#define VIRTIO_NET_CTRL_MAC_TABLE_SET        0
+#define VIRTIO_NET_CTRL_MAC_ADDR_SET         1
 
 /**
  * Control VLAN filtering
@@ -191,8 +197,14 @@ struct virtqueue {
 	void *vq_ring_virt_mem;  /**< linear address of vring*/
 	unsigned int vq_ring_size;
 
-	phys_addr_t vq_ring_mem; /**< physical address of vring,
-				  * or virtual address for virtio_user. */
+	union {
+		struct virtnet_rx rxq;
+		struct virtnet_tx txq;
+		struct virtnet_ctl cq;
+	};
+
+	rte_iova_t vq_ring_mem; /**< physical address of vring,
+	                         * or virtual address for virtio_user. */
 
 	/**
 	 * Head of the free chain in the descriptor table. If
@@ -204,7 +216,6 @@ struct virtqueue {
 	uint16_t  vq_queue_index;   /**< PCI queue index */
 	uint16_t offset; /**< relative offset to obtain addr in mbuf */
 	uint16_t  *notify_addr;
-	int configured;
 	struct rte_mbuf **sw_ring;  /**< RX software ring. */
 	struct vq_desc_extra vq_descx[0];
 };
@@ -223,6 +234,7 @@ struct virtqueue {
  */
 struct virtio_net_hdr {
 #define VIRTIO_NET_HDR_F_NEEDS_CSUM 1    /**< Use csum_start,csum_offset*/
+#define VIRTIO_NET_HDR_F_DATA_VALID 2    /**< Checksum is valid */
 	uint8_t flags;
 #define VIRTIO_NET_HDR_GSO_NONE     0    /**< Not a GSO frame */
 #define VIRTIO_NET_HDR_GSO_TCPV4    1    /**< GSO frame, IPv4 TCP (TSO) */
@@ -267,7 +279,21 @@ vring_desc_init(struct vring_desc *dp, uint16_t n)
 /**
  * Tell the backend not to interrupt us.
  */
-void virtqueue_disable_intr(struct virtqueue *vq);
+static inline void
+virtqueue_disable_intr(struct virtqueue *vq)
+{
+	vq->vq_ring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+}
+
+/**
+ * Tell the backend to interrupt us.
+ */
+static inline void
+virtqueue_enable_intr(struct virtqueue *vq)
+{
+	vq->vq_ring.avail->flags &= (~VRING_AVAIL_F_NO_INTERRUPT);
+}
+
 /**
  *  Dump virtqueue internal structures, for debug purpose only.
  */
@@ -277,13 +303,29 @@ void virtqueue_dump(struct virtqueue *vq);
  */
 struct rte_mbuf *virtqueue_detatch_unused(struct virtqueue *vq);
 
+/* Flush the elements in the used ring. */
+void virtqueue_rxvq_flush(struct virtqueue *vq);
+
 static inline int
 virtqueue_full(const struct virtqueue *vq)
 {
 	return vq->vq_free_cnt == 0;
 }
 
+static inline int
+virtio_get_queue_type(struct virtio_hw *hw, uint16_t vtpci_queue_idx)
+{
+	if (vtpci_queue_idx == hw->max_queue_pairs * 2)
+		return VTNET_CQ;
+	else if (vtpci_queue_idx % 2 == 0)
+		return VTNET_RQ;
+	else
+		return VTNET_TQ;
+}
+
 #define VIRTQUEUE_NUSED(vq) ((uint16_t)((vq)->vq_ring.used->idx - (vq)->vq_used_cons_idx))
+
+void vq_ring_free_chain(struct virtqueue *vq, uint16_t desc_idx);
 
 static inline void
 vq_update_avail_idx(struct virtqueue *vq)
@@ -323,7 +365,7 @@ virtqueue_notify(struct virtqueue *vq)
 	 * For virtio on IA, the notificaiton is through io port operation
 	 * which is a serialization instruction itself.
 	 */
-	vq->hw->vtpci_ops->notify_queue(vq->hw, vq);
+	VTPCI_OPS(vq->hw)->notify_queue(vq->hw, vq);
 }
 
 #ifdef RTE_LIBRTE_VIRTIO_DEBUG_DUMP

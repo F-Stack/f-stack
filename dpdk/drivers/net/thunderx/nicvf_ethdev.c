@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright (C) Cavium networks Ltd. 2016.
+ *   Copyright (C) Cavium, Inc. 2016.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -13,7 +13,7 @@
  *       notice, this list of conditions and the following disclaimer in
  *       the documentation and/or other materials provided with the
  *       distribution.
- *     * Neither the name of Cavium networks nor the names of its
+ *     * Neither the name of Cavium, Inc nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -41,7 +41,6 @@
 #include <inttypes.h>
 #include <netinet/in.h>
 #include <sys/queue.h>
-#include <sys/timerfd.h>
 
 #include <rte_alarm.h>
 #include <rte_atomic.h>
@@ -54,6 +53,7 @@
 #include <rte_eal.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
+#include <rte_ethdev_pci.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
 #include <rte_memory.h>
@@ -61,15 +61,20 @@
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_pci.h>
+#include <rte_bus_pci.h>
 #include <rte_tailq.h>
 
 #include "base/nicvf_plat.h"
 
 #include "nicvf_ethdev.h"
 #include "nicvf_rxtx.h"
+#include "nicvf_svf.h"
 #include "nicvf_logs.h"
 
 static void nicvf_dev_stop(struct rte_eth_dev *dev);
+static void nicvf_dev_stop_cleanup(struct rte_eth_dev *dev, bool cleanup);
+static void nicvf_vf_stop(struct rte_eth_dev *dev, struct nicvf *nic,
+			  bool cleanup);
 
 static inline int
 nicvf_atomic_write_link_status(struct rte_eth_dev *dev,
@@ -95,53 +100,76 @@ nicvf_set_eth_link_status(struct nicvf *nic, struct rte_eth_link *link)
 	else if (nic->duplex == NICVF_FULL_DUPLEX)
 		link->link_duplex = ETH_LINK_FULL_DUPLEX;
 	link->link_speed = nic->speed;
-	link->link_autoneg = ETH_LINK_SPEED_AUTONEG;
+	link->link_autoneg = ETH_LINK_AUTONEG;
 }
 
 static void
 nicvf_interrupt(void *arg)
 {
-	struct nicvf *nic = arg;
+	struct rte_eth_dev *dev = arg;
+	struct nicvf *nic = nicvf_pmd_priv(dev);
 
 	if (nicvf_reg_poll_interrupts(nic) == NIC_MBOX_MSG_BGX_LINK_CHANGE) {
-		if (nic->eth_dev->data->dev_conf.intr_conf.lsc)
-			nicvf_set_eth_link_status(nic,
-					&nic->eth_dev->data->dev_link);
-		_rte_eth_dev_callback_process(nic->eth_dev,
-				RTE_ETH_EVENT_INTR_LSC);
+		if (dev->data->dev_conf.intr_conf.lsc)
+			nicvf_set_eth_link_status(nic, &dev->data->dev_link);
+		_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC,
+					      NULL, NULL);
 	}
 
 	rte_eal_alarm_set(NICVF_INTR_POLL_INTERVAL_MS * 1000,
-				nicvf_interrupt, nic);
+				nicvf_interrupt, dev);
+}
+
+static void
+nicvf_vf_interrupt(void *arg)
+{
+	struct nicvf *nic = arg;
+
+	nicvf_reg_poll_interrupts(nic);
+
+	rte_eal_alarm_set(NICVF_INTR_POLL_INTERVAL_MS * 1000,
+				nicvf_vf_interrupt, nic);
 }
 
 static int
-nicvf_periodic_alarm_start(struct nicvf *nic)
+nicvf_periodic_alarm_start(void (fn)(void *), void *arg)
 {
-	return rte_eal_alarm_set(NICVF_INTR_POLL_INTERVAL_MS * 1000,
-					nicvf_interrupt, nic);
+	return rte_eal_alarm_set(NICVF_INTR_POLL_INTERVAL_MS * 1000, fn, arg);
 }
 
 static int
-nicvf_periodic_alarm_stop(struct nicvf *nic)
+nicvf_periodic_alarm_stop(void (fn)(void *), void *arg)
 {
-	return rte_eal_alarm_cancel(nicvf_interrupt, nic);
+	return rte_eal_alarm_cancel(fn, arg);
 }
 
 /*
  * Return 0 means link status changed, -1 means not changed
  */
 static int
-nicvf_dev_link_update(struct rte_eth_dev *dev,
-		      int wait_to_complete __rte_unused)
+nicvf_dev_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 {
+#define CHECK_INTERVAL 100  /* 100ms */
+#define MAX_CHECK_TIME 90   /* 9s (90 * 100ms) in total */
 	struct rte_eth_link link;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
+	int i;
 
 	PMD_INIT_FUNC_TRACE();
 
-	memset(&link, 0, sizeof(link));
-	nicvf_set_eth_link_status(nic, &link);
+	if (wait_to_complete) {
+		/* rte_eth_link_get() might need to wait up to 9 seconds */
+		for (i = 0; i < MAX_CHECK_TIME; i++) {
+			memset(&link, 0, sizeof(link));
+			nicvf_set_eth_link_status(nic, &link);
+			if (link.link_status)
+				break;
+			rte_delay_ms(CHECK_INTERVAL);
+		}
+	} else {
+		memset(&link, 0, sizeof(link));
+		nicvf_set_eth_link_status(nic, &link);
+	}
 	return nicvf_atomic_write_link_status(dev, &link);
 }
 
@@ -150,6 +178,7 @@ nicvf_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 {
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 	uint32_t buffsz, frame_size = mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
+	size_t i;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -185,6 +214,10 @@ nicvf_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	/* Update max frame size */
 	dev->data->dev_conf.rxmode.max_rx_pkt_len = (uint32_t)frame_size;
 	nic->mtu = mtu;
+
+	for (i = 0; i < nic->sqs_count; i++)
+		nic->snicvf[i]->mtu = mtu;
+
 	return 0;
 }
 
@@ -210,7 +243,7 @@ nicvf_dev_get_regs(struct rte_eth_dev *dev, struct rte_dev_reg_info *regs)
 	return -ENOTSUP;
 }
 
-static void
+static int
 nicvf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	uint16_t qidx;
@@ -218,10 +251,16 @@ nicvf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	struct nicvf_hw_tx_qstats tx_qstats;
 	struct nicvf_hw_stats port_stats;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
+	uint16_t rx_start, rx_end;
+	uint16_t tx_start, tx_end;
+	size_t i;
+
+	/* RX queue indices for the first VF */
+	nicvf_rx_range(dev, nic, &rx_start, &rx_end);
 
 	/* Reading per RX ring stats */
-	for (qidx = 0; qidx < dev->data->nb_rx_queues; qidx++) {
-		if (qidx == RTE_ETHDEV_QUEUE_STAT_CNTRS)
+	for (qidx = rx_start; qidx <= rx_end; qidx++) {
+		if (qidx >= RTE_ETHDEV_QUEUE_STAT_CNTRS)
 			break;
 
 		nicvf_hw_get_rx_qstats(nic, &rx_qstats, qidx);
@@ -229,14 +268,51 @@ nicvf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		stats->q_ipackets[qidx] = rx_qstats.q_rx_packets;
 	}
 
+	/* TX queue indices for the first VF */
+	nicvf_tx_range(dev, nic, &tx_start, &tx_end);
+
 	/* Reading per TX ring stats */
-	for (qidx = 0; qidx < dev->data->nb_tx_queues; qidx++) {
-		if (qidx == RTE_ETHDEV_QUEUE_STAT_CNTRS)
+	for (qidx = tx_start; qidx <= tx_end; qidx++) {
+		if (qidx >= RTE_ETHDEV_QUEUE_STAT_CNTRS)
 			break;
 
 		nicvf_hw_get_tx_qstats(nic, &tx_qstats, qidx);
 		stats->q_obytes[qidx] = tx_qstats.q_tx_bytes;
 		stats->q_opackets[qidx] = tx_qstats.q_tx_packets;
+	}
+
+	for (i = 0; i < nic->sqs_count; i++) {
+		struct nicvf *snic = nic->snicvf[i];
+
+		if (snic == NULL)
+			break;
+
+		/* RX queue indices for a secondary VF */
+		nicvf_rx_range(dev, snic, &rx_start, &rx_end);
+
+		/* Reading per RX ring stats */
+		for (qidx = rx_start; qidx <= rx_end; qidx++) {
+			if (qidx >= RTE_ETHDEV_QUEUE_STAT_CNTRS)
+				break;
+
+			nicvf_hw_get_rx_qstats(snic, &rx_qstats,
+					       qidx % MAX_RCV_QUEUES_PER_QS);
+			stats->q_ibytes[qidx] = rx_qstats.q_rx_bytes;
+			stats->q_ipackets[qidx] = rx_qstats.q_rx_packets;
+		}
+
+		/* TX queue indices for a secondary VF */
+		nicvf_tx_range(dev, snic, &tx_start, &tx_end);
+		/* Reading per TX ring stats */
+		for (qidx = tx_start; qidx <= tx_end; qidx++) {
+			if (qidx >= RTE_ETHDEV_QUEUE_STAT_CNTRS)
+				break;
+
+			nicvf_hw_get_tx_qstats(snic, &tx_qstats,
+					       qidx % MAX_SND_QUEUES_PER_QS);
+			stats->q_obytes[qidx] = tx_qstats.q_tx_bytes;
+			stats->q_opackets[qidx] = tx_qstats.q_tx_packets;
+		}
 	}
 
 	nicvf_hw_get_stats(nic, &port_stats);
@@ -257,6 +333,8 @@ nicvf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->opackets += port_stats.tx_bcast_frames_ok;
 	stats->opackets += port_stats.tx_mcast_frames_ok;
 	stats->oerrors = port_stats.tx_drops;
+
+	return 0;
 }
 
 static const uint32_t *
@@ -265,7 +343,7 @@ nicvf_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	size_t copied;
 	static uint32_t ptypes[32];
 	struct nicvf *nic = nicvf_pmd_priv(dev);
-	static const uint32_t ptypes_pass1[] = {
+	static const uint32_t ptypes_common[] = {
 		RTE_PTYPE_L3_IPV4,
 		RTE_PTYPE_L3_IPV4_EXT,
 		RTE_PTYPE_L3_IPV6,
@@ -274,7 +352,7 @@ nicvf_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_L4_UDP,
 		RTE_PTYPE_L4_FRAG,
 	};
-	static const uint32_t ptypes_pass2[] = {
+	static const uint32_t ptypes_tunnel[] = {
 		RTE_PTYPE_TUNNEL_GRE,
 		RTE_PTYPE_TUNNEL_GENEVE,
 		RTE_PTYPE_TUNNEL_VXLAN,
@@ -282,12 +360,12 @@ nicvf_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	};
 	static const uint32_t ptypes_end = RTE_PTYPE_UNKNOWN;
 
-	copied = sizeof(ptypes_pass1);
-	memcpy(ptypes, ptypes_pass1, copied);
-	if (nicvf_hw_version(nic) == NICVF_PASS2) {
-		memcpy((char *)ptypes + copied, ptypes_pass2,
-			sizeof(ptypes_pass2));
-		copied += sizeof(ptypes_pass2);
+	copied = sizeof(ptypes_common);
+	memcpy(ptypes, ptypes_common, copied);
+	if (nicvf_hw_cap(nic) & NICVF_CAP_TUNNEL_PARSING) {
+		memcpy((char *)ptypes + copied, ptypes_tunnel,
+			sizeof(ptypes_tunnel));
+		copied += sizeof(ptypes_tunnel);
 	}
 
 	memcpy((char *)ptypes + copied, &ptypes_end, sizeof(ptypes_end));
@@ -304,13 +382,36 @@ nicvf_dev_stats_reset(struct rte_eth_dev *dev)
 	int i;
 	uint16_t rxqs = 0, txqs = 0;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
+	uint16_t rx_start, rx_end;
+	uint16_t tx_start, tx_end;
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++)
+	/* Reset all primary nic counters */
+	nicvf_rx_range(dev, nic, &rx_start, &rx_end);
+	for (i = rx_start; i <= rx_end; i++)
 		rxqs |= (0x3 << (i * 2));
-	for (i = 0; i < dev->data->nb_tx_queues; i++)
+
+	nicvf_tx_range(dev, nic, &tx_start, &tx_end);
+	for (i = tx_start; i <= tx_end; i++)
 		txqs |= (0x3 << (i * 2));
 
 	nicvf_mbox_reset_stat_counters(nic, 0x3FFF, 0x1F, rxqs, txqs);
+
+	/* Reset secondary nic queue counters */
+	for (i = 0; i < nic->sqs_count; i++) {
+		struct nicvf *snic = nic->snicvf[i];
+		if (snic == NULL)
+			break;
+
+		nicvf_rx_range(dev, snic, &rx_start, &rx_end);
+		for (i = rx_start; i <= rx_end; i++)
+			rxqs |= (0x3 << ((i % MAX_CMP_QUEUES_PER_QS) * 2));
+
+		nicvf_tx_range(dev, snic, &tx_start, &tx_end);
+		for (i = tx_start; i <= tx_end; i++)
+			txqs |= (0x3 << ((i % MAX_SND_QUEUES_PER_QS) * 2));
+
+		nicvf_mbox_reset_stat_counters(snic, 0, 0, rxqs, txqs);
+	}
 }
 
 /* Promiscuous mode enabled by default in LMAC to VF 1:1 map configuration */
@@ -488,14 +589,15 @@ nicvf_dev_rss_hash_update(struct rte_eth_dev *dev,
 }
 
 static int
-nicvf_qset_cq_alloc(struct nicvf *nic, struct nicvf_rxq *rxq, uint16_t qidx,
-		    uint32_t desc_cnt)
+nicvf_qset_cq_alloc(struct rte_eth_dev *dev, struct nicvf *nic,
+		    struct nicvf_rxq *rxq, uint16_t qidx, uint32_t desc_cnt)
 {
 	const struct rte_memzone *rz;
 	uint32_t ring_size = CMP_QUEUE_SZ_MAX * sizeof(union cq_entry_t);
 
-	rz = rte_eth_dma_zone_reserve(nic->eth_dev, "cq_ring", qidx, ring_size,
-					NICVF_CQ_BASE_ALIGN_BYTES, nic->node);
+	rz = rte_eth_dma_zone_reserve(dev, "cq_ring",
+				      nicvf_netdev_qidx(nic, qidx), ring_size,
+				      NICVF_CQ_BASE_ALIGN_BYTES, nic->node);
 	if (rz == NULL) {
 		PMD_INIT_LOG(ERR, "Failed to allocate mem for cq hw ring");
 		return -ENOMEM;
@@ -503,7 +605,7 @@ nicvf_qset_cq_alloc(struct nicvf *nic, struct nicvf_rxq *rxq, uint16_t qidx,
 
 	memset(rz->addr, 0, ring_size);
 
-	rxq->phys = rz->phys_addr;
+	rxq->phys = rz->iova;
 	rxq->desc = rz->addr;
 	rxq->qlen_mask = desc_cnt - 1;
 
@@ -511,14 +613,15 @@ nicvf_qset_cq_alloc(struct nicvf *nic, struct nicvf_rxq *rxq, uint16_t qidx,
 }
 
 static int
-nicvf_qset_sq_alloc(struct nicvf *nic,  struct nicvf_txq *sq, uint16_t qidx,
-		    uint32_t desc_cnt)
+nicvf_qset_sq_alloc(struct rte_eth_dev *dev, struct nicvf *nic,
+		    struct nicvf_txq *sq, uint16_t qidx, uint32_t desc_cnt)
 {
 	const struct rte_memzone *rz;
 	uint32_t ring_size = SND_QUEUE_SZ_MAX * sizeof(union sq_entry_t);
 
-	rz = rte_eth_dma_zone_reserve(nic->eth_dev, "sq", qidx, ring_size,
-				NICVF_SQ_BASE_ALIGN_BYTES, nic->node);
+	rz = rte_eth_dma_zone_reserve(dev, "sq",
+				      nicvf_netdev_qidx(nic, qidx), ring_size,
+				      NICVF_SQ_BASE_ALIGN_BYTES, nic->node);
 	if (rz == NULL) {
 		PMD_INIT_LOG(ERR, "Failed allocate mem for sq hw ring");
 		return -ENOMEM;
@@ -526,7 +629,7 @@ nicvf_qset_sq_alloc(struct nicvf *nic,  struct nicvf_txq *sq, uint16_t qidx,
 
 	memset(rz->addr, 0, ring_size);
 
-	sq->phys = rz->phys_addr;
+	sq->phys = rz->iova;
 	sq->desc = rz->addr;
 	sq->qlen_mask = desc_cnt - 1;
 
@@ -534,7 +637,8 @@ nicvf_qset_sq_alloc(struct nicvf *nic,  struct nicvf_txq *sq, uint16_t qidx,
 }
 
 static int
-nicvf_qset_rbdr_alloc(struct nicvf *nic, uint32_t desc_cnt, uint32_t buffsz)
+nicvf_qset_rbdr_alloc(struct rte_eth_dev *dev, struct nicvf *nic,
+		      uint32_t desc_cnt, uint32_t buffsz)
 {
 	struct nicvf_rbdr *rbdr;
 	const struct rte_memzone *rz;
@@ -549,8 +653,9 @@ nicvf_qset_rbdr_alloc(struct nicvf *nic, uint32_t desc_cnt, uint32_t buffsz)
 	}
 
 	ring_size = sizeof(struct rbdr_entry_t) * RBDR_QUEUE_SZ_MAX;
-	rz = rte_eth_dma_zone_reserve(nic->eth_dev, "rbdr", 0, ring_size,
-				   NICVF_RBDR_BASE_ALIGN_BYTES, nic->node);
+	rz = rte_eth_dma_zone_reserve(dev, "rbdr",
+				      nicvf_netdev_qidx(nic, 0), ring_size,
+				      NICVF_RBDR_BASE_ALIGN_BYTES, nic->node);
 	if (rz == NULL) {
 		PMD_INIT_LOG(ERR, "Failed to allocate mem for rbdr desc ring");
 		return -ENOMEM;
@@ -558,7 +663,7 @@ nicvf_qset_rbdr_alloc(struct nicvf *nic, uint32_t desc_cnt, uint32_t buffsz)
 
 	memset(rz->addr, 0, ring_size);
 
-	rbdr->phys = rz->phys_addr;
+	rbdr->phys = rz->iova;
 	rbdr->tail = 0;
 	rbdr->next_tail = 0;
 	rbdr->desc = rz->addr;
@@ -574,14 +679,19 @@ nicvf_qset_rbdr_alloc(struct nicvf *nic, uint32_t desc_cnt, uint32_t buffsz)
 }
 
 static void
-nicvf_rbdr_release_mbuf(struct nicvf *nic, nicvf_phys_addr_t phy)
+nicvf_rbdr_release_mbuf(struct rte_eth_dev *dev, struct nicvf *nic,
+			nicvf_iova_addr_t phy)
 {
 	uint16_t qidx;
 	void *obj;
 	struct nicvf_rxq *rxq;
+	uint16_t rx_start, rx_end;
 
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++) {
-		rxq = nic->eth_dev->data->rx_queues[qidx];
+	/* Get queue ranges for this VF */
+	nicvf_rx_range(dev, nic, &rx_start, &rx_end);
+
+	for (qidx = rx_start; qidx <= rx_end; qidx++) {
+		rxq = dev->data->rx_queues[qidx];
 		if (rxq->precharge_cnt) {
 			obj = (void *)nicvf_mbuff_phy2virt(phy,
 							   rxq->mbuf_phys_off);
@@ -593,7 +703,7 @@ nicvf_rbdr_release_mbuf(struct nicvf *nic, nicvf_phys_addr_t phy)
 }
 
 static inline void
-nicvf_rbdr_release_mbufs(struct nicvf *nic)
+nicvf_rbdr_release_mbufs(struct rte_eth_dev *dev, struct nicvf *nic)
 {
 	uint32_t qlen_mask, head;
 	struct rbdr_entry_t *entry;
@@ -603,7 +713,7 @@ nicvf_rbdr_release_mbufs(struct nicvf *nic)
 	head = rbdr->head;
 	while (head != rbdr->tail) {
 		entry = rbdr->desc + head;
-		nicvf_rbdr_release_mbuf(nic, entry->full_addr);
+		nicvf_rbdr_release_mbuf(dev, nic, entry->full_addr);
 		head++;
 		head = head & qlen_mask;
 	}
@@ -638,48 +748,60 @@ nicvf_tx_queue_reset(struct nicvf_txq *txq)
 }
 
 static inline int
-nicvf_start_tx_queue(struct rte_eth_dev *dev, uint16_t qidx)
+nicvf_vf_start_tx_queue(struct rte_eth_dev *dev, struct nicvf *nic,
+			uint16_t qidx)
 {
 	struct nicvf_txq *txq;
 	int ret;
 
-	if (dev->data->tx_queue_state[qidx] == RTE_ETH_QUEUE_STATE_STARTED)
+	assert(qidx < MAX_SND_QUEUES_PER_QS);
+
+	if (dev->data->tx_queue_state[nicvf_netdev_qidx(nic, qidx)] ==
+		RTE_ETH_QUEUE_STATE_STARTED)
 		return 0;
 
-	txq = dev->data->tx_queues[qidx];
+	txq = dev->data->tx_queues[nicvf_netdev_qidx(nic, qidx)];
 	txq->pool = NULL;
-	ret = nicvf_qset_sq_config(nicvf_pmd_priv(dev), qidx, txq);
+	ret = nicvf_qset_sq_config(nic, qidx, txq);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to configure sq %d %d", qidx, ret);
+		PMD_INIT_LOG(ERR, "Failed to configure sq VF%d %d %d",
+			     nic->vf_id, qidx, ret);
 		goto config_sq_error;
 	}
 
-	dev->data->tx_queue_state[qidx] = RTE_ETH_QUEUE_STATE_STARTED;
+	dev->data->tx_queue_state[nicvf_netdev_qidx(nic, qidx)] =
+		RTE_ETH_QUEUE_STATE_STARTED;
 	return ret;
 
 config_sq_error:
-	nicvf_qset_sq_reclaim(nicvf_pmd_priv(dev), qidx);
+	nicvf_qset_sq_reclaim(nic, qidx);
 	return ret;
 }
 
 static inline int
-nicvf_stop_tx_queue(struct rte_eth_dev *dev, uint16_t qidx)
+nicvf_vf_stop_tx_queue(struct rte_eth_dev *dev, struct nicvf *nic,
+		       uint16_t qidx)
 {
 	struct nicvf_txq *txq;
 	int ret;
 
-	if (dev->data->tx_queue_state[qidx] == RTE_ETH_QUEUE_STATE_STOPPED)
+	assert(qidx < MAX_SND_QUEUES_PER_QS);
+
+	if (dev->data->tx_queue_state[nicvf_netdev_qidx(nic, qidx)] ==
+		RTE_ETH_QUEUE_STATE_STOPPED)
 		return 0;
 
-	ret = nicvf_qset_sq_reclaim(nicvf_pmd_priv(dev), qidx);
+	ret = nicvf_qset_sq_reclaim(nic, qidx);
 	if (ret)
-		PMD_INIT_LOG(ERR, "Failed to reclaim sq %d %d", qidx, ret);
+		PMD_INIT_LOG(ERR, "Failed to reclaim sq VF%d %d %d",
+			     nic->vf_id, qidx, ret);
 
-	txq = dev->data->tx_queues[qidx];
+	txq = dev->data->tx_queues[nicvf_netdev_qidx(nic, qidx)];
 	nicvf_tx_queue_release_mbufs(txq);
 	nicvf_tx_queue_reset(txq);
 
-	dev->data->tx_queue_state[qidx] = RTE_ETH_QUEUE_STATE_STOPPED;
+	dev->data->tx_queue_state[nicvf_netdev_qidx(nic, qidx)] =
+		RTE_ETH_QUEUE_STATE_STOPPED;
 	return ret;
 }
 
@@ -691,7 +813,7 @@ nicvf_configure_cpi(struct rte_eth_dev *dev)
 	int ret;
 
 	/* Count started rx queues */
-	for (qidx = qcnt = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++)
+	for (qidx = qcnt = 0; qidx < dev->data->nb_rx_queues; qidx++)
 		if (dev->data->rx_queue_state[qidx] ==
 		    RTE_ETH_QUEUE_STATE_STARTED)
 			qcnt++;
@@ -715,14 +837,13 @@ nicvf_configure_rss(struct rte_eth_dev *dev)
 			dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf);
 	PMD_DRV_LOG(INFO, "mode=%d rx_queues=%d loopback=%d rsshf=0x%" PRIx64,
 		    dev->data->dev_conf.rxmode.mq_mode,
-		    nic->eth_dev->data->nb_rx_queues,
-		    nic->eth_dev->data->dev_conf.lpbk_mode, rsshf);
+		    dev->data->nb_rx_queues,
+		    dev->data->dev_conf.lpbk_mode, rsshf);
 
 	if (dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_NONE)
 		ret = nicvf_rss_term(nic);
 	else if (dev->data->dev_conf.rxmode.mq_mode == ETH_MQ_RX_RSS)
-		ret = nicvf_rss_config(nic,
-				       nic->eth_dev->data->nb_rx_queues, rsshf);
+		ret = nicvf_rss_config(nic, dev->data->nb_rx_queues, rsshf);
 	if (ret)
 		PMD_INIT_LOG(ERR, "Failed to configure RSS %d", ret);
 
@@ -827,6 +948,11 @@ nicvf_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 
 	PMD_INIT_FUNC_TRACE();
 
+	if (qidx >= MAX_SND_QUEUES_PER_QS)
+		nic = nic->snicvf[qidx / MAX_SND_QUEUES_PER_QS - 1];
+
+	qidx = qidx % MAX_SND_QUEUES_PER_QS;
+
 	/* Socket id check */
 	if (socket_id != (unsigned int)SOCKET_ID_ANY && socket_id != nic->node)
 		PMD_DRV_LOG(WARNING, "socket_id expected %d, configured %d",
@@ -861,18 +987,20 @@ nicvf_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	}
 
 	/* Free memory prior to re-allocation if needed. */
-	if (dev->data->tx_queues[qidx] != NULL) {
+	if (dev->data->tx_queues[nicvf_netdev_qidx(nic, qidx)] != NULL) {
 		PMD_TX_LOG(DEBUG, "Freeing memory prior to re-allocation %d",
-				qidx);
-		nicvf_dev_tx_queue_release(dev->data->tx_queues[qidx]);
-		dev->data->tx_queues[qidx] = NULL;
+				nicvf_netdev_qidx(nic, qidx));
+		nicvf_dev_tx_queue_release(
+			dev->data->tx_queues[nicvf_netdev_qidx(nic, qidx)]);
+		dev->data->tx_queues[nicvf_netdev_qidx(nic, qidx)] = NULL;
 	}
 
 	/* Allocating tx queue data structure */
 	txq = rte_zmalloc_socket("ethdev TX queue", sizeof(struct nicvf_txq),
 					RTE_CACHE_LINE_SIZE, nic->node);
 	if (txq == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate txq=%d", qidx);
+		PMD_INIT_LOG(ERR, "Failed to allocate txq=%d",
+			     nicvf_netdev_qidx(nic, qidx));
 		return -ENOMEM;
 	}
 
@@ -906,7 +1034,7 @@ nicvf_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 		return -ENOMEM;
 	}
 
-	if (nicvf_qset_sq_alloc(nic, txq, qidx, nb_desc)) {
+	if (nicvf_qset_sq_alloc(dev, nic, txq, qidx, nb_desc)) {
 		PMD_INIT_LOG(ERR, "Failed to allocate mem for sq %d", qidx);
 		nicvf_dev_tx_queue_release(txq);
 		return -ENOMEM;
@@ -915,26 +1043,28 @@ nicvf_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	nicvf_tx_queue_reset(txq);
 
 	PMD_TX_LOG(DEBUG, "[%d] txq=%p nb_desc=%d desc=%p phys=0x%" PRIx64,
-			qidx, txq, nb_desc, txq->desc, txq->phys);
+			nicvf_netdev_qidx(nic, qidx), txq, nb_desc, txq->desc,
+			txq->phys);
 
-	dev->data->tx_queues[qidx] = txq;
-	dev->data->tx_queue_state[qidx] = RTE_ETH_QUEUE_STATE_STOPPED;
+	dev->data->tx_queues[nicvf_netdev_qidx(nic, qidx)] = txq;
+	dev->data->tx_queue_state[nicvf_netdev_qidx(nic, qidx)] =
+		RTE_ETH_QUEUE_STATE_STOPPED;
 	return 0;
 }
 
 static inline void
-nicvf_rx_queue_release_mbufs(struct nicvf_rxq *rxq)
+nicvf_rx_queue_release_mbufs(struct rte_eth_dev *dev, struct nicvf_rxq *rxq)
 {
 	uint32_t rxq_cnt;
 	uint32_t nb_pkts, released_pkts = 0;
 	uint32_t refill_cnt = 0;
-	struct rte_eth_dev *dev = rxq->nic->eth_dev;
 	struct rte_mbuf *rx_pkts[NICVF_MAX_RX_FREE_THRESH];
 
 	if (dev->rx_pkt_burst == NULL)
 		return;
 
-	while ((rxq_cnt = nicvf_dev_rx_queue_count(dev, rxq->queue_id))) {
+	while ((rxq_cnt = nicvf_dev_rx_queue_count(dev,
+				nicvf_netdev_qidx(rxq->nic, rxq->queue_id)))) {
 		nb_pkts = dev->rx_pkt_burst(rxq, rx_pkts,
 					NICVF_MAX_RX_FREE_THRESH);
 		PMD_DRV_LOG(INFO, "nb_pkts=%d  rxq_cnt=%d", nb_pkts, rxq_cnt);
@@ -944,7 +1074,10 @@ nicvf_rx_queue_release_mbufs(struct nicvf_rxq *rxq)
 		}
 	}
 
-	refill_cnt += nicvf_dev_rbdr_refill(dev, rxq->queue_id);
+
+	refill_cnt += nicvf_dev_rbdr_refill(dev,
+			nicvf_netdev_qidx(rxq->nic, rxq->queue_id));
+
 	PMD_DRV_LOG(INFO, "free_cnt=%d  refill_cnt=%d",
 		    released_pkts, refill_cnt);
 }
@@ -958,31 +1091,37 @@ nicvf_rx_queue_reset(struct nicvf_rxq *rxq)
 }
 
 static inline int
-nicvf_start_rx_queue(struct rte_eth_dev *dev, uint16_t qidx)
+nicvf_vf_start_rx_queue(struct rte_eth_dev *dev, struct nicvf *nic,
+			uint16_t qidx)
 {
-	struct nicvf *nic = nicvf_pmd_priv(dev);
 	struct nicvf_rxq *rxq;
 	int ret;
 
-	if (dev->data->rx_queue_state[qidx] == RTE_ETH_QUEUE_STATE_STARTED)
+	assert(qidx < MAX_RCV_QUEUES_PER_QS);
+
+	if (dev->data->rx_queue_state[nicvf_netdev_qidx(nic, qidx)] ==
+		RTE_ETH_QUEUE_STATE_STARTED)
 		return 0;
 
 	/* Update rbdr pointer to all rxq */
-	rxq = dev->data->rx_queues[qidx];
+	rxq = dev->data->rx_queues[nicvf_netdev_qidx(nic, qidx)];
 	rxq->shared_rbdr = nic->rbdr;
 
 	ret = nicvf_qset_rq_config(nic, qidx, rxq);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to configure rq %d %d", qidx, ret);
+		PMD_INIT_LOG(ERR, "Failed to configure rq VF%d %d %d",
+			     nic->vf_id, qidx, ret);
 		goto config_rq_error;
 	}
 	ret = nicvf_qset_cq_config(nic, qidx, rxq);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to configure cq %d %d", qidx, ret);
+		PMD_INIT_LOG(ERR, "Failed to configure cq VF%d %d %d",
+			     nic->vf_id, qidx, ret);
 		goto config_cq_error;
 	}
 
-	dev->data->rx_queue_state[qidx] = RTE_ETH_QUEUE_STATE_STARTED;
+	dev->data->rx_queue_state[nicvf_netdev_qidx(nic, qidx)] =
+		RTE_ETH_QUEUE_STATE_STARTED;
 	return 0;
 
 config_cq_error:
@@ -993,50 +1132,57 @@ config_rq_error:
 }
 
 static inline int
-nicvf_stop_rx_queue(struct rte_eth_dev *dev, uint16_t qidx)
+nicvf_vf_stop_rx_queue(struct rte_eth_dev *dev, struct nicvf *nic,
+		       uint16_t qidx)
 {
-	struct nicvf *nic = nicvf_pmd_priv(dev);
 	struct nicvf_rxq *rxq;
 	int ret, other_error;
 
-	if (dev->data->rx_queue_state[qidx] == RTE_ETH_QUEUE_STATE_STOPPED)
+	if (dev->data->rx_queue_state[nicvf_netdev_qidx(nic, qidx)] ==
+		RTE_ETH_QUEUE_STATE_STOPPED)
 		return 0;
 
 	ret = nicvf_qset_rq_reclaim(nic, qidx);
 	if (ret)
-		PMD_INIT_LOG(ERR, "Failed to reclaim rq %d %d", qidx, ret);
+		PMD_INIT_LOG(ERR, "Failed to reclaim rq VF%d %d %d",
+			     nic->vf_id, qidx, ret);
 
 	other_error = ret;
-	rxq = dev->data->rx_queues[qidx];
-	nicvf_rx_queue_release_mbufs(rxq);
+	rxq = dev->data->rx_queues[nicvf_netdev_qidx(nic, qidx)];
+	nicvf_rx_queue_release_mbufs(dev, rxq);
 	nicvf_rx_queue_reset(rxq);
 
 	ret = nicvf_qset_cq_reclaim(nic, qidx);
 	if (ret)
-		PMD_INIT_LOG(ERR, "Failed to reclaim cq %d %d", qidx, ret);
+		PMD_INIT_LOG(ERR, "Failed to reclaim cq VF%d %d %d",
+			     nic->vf_id, qidx, ret);
 
 	other_error |= ret;
-	dev->data->rx_queue_state[qidx] = RTE_ETH_QUEUE_STATE_STOPPED;
+	dev->data->rx_queue_state[nicvf_netdev_qidx(nic, qidx)] =
+		RTE_ETH_QUEUE_STATE_STOPPED;
 	return other_error;
 }
 
 static void
 nicvf_dev_rx_queue_release(void *rx_queue)
 {
-	struct nicvf_rxq *rxq = rx_queue;
-
 	PMD_INIT_FUNC_TRACE();
 
-	if (rxq)
-		rte_free(rxq);
+	rte_free(rx_queue);
 }
 
 static int
 nicvf_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t qidx)
 {
+	struct nicvf *nic = nicvf_pmd_priv(dev);
 	int ret;
 
-	ret = nicvf_start_rx_queue(dev, qidx);
+	if (qidx >= MAX_RCV_QUEUES_PER_QS)
+		nic = nic->snicvf[(qidx / MAX_RCV_QUEUES_PER_QS - 1)];
+
+	qidx = qidx % MAX_RCV_QUEUES_PER_QS;
+
+	ret = nicvf_vf_start_rx_queue(dev, nic, qidx);
 	if (ret)
 		return ret;
 
@@ -1051,8 +1197,14 @@ static int
 nicvf_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t qidx)
 {
 	int ret;
+	struct nicvf *nic = nicvf_pmd_priv(dev);
 
-	ret = nicvf_stop_rx_queue(dev, qidx);
+	if (qidx >= MAX_SND_QUEUES_PER_QS)
+		nic = nic->snicvf[(qidx / MAX_SND_QUEUES_PER_QS - 1)];
+
+	qidx = qidx % MAX_RCV_QUEUES_PER_QS;
+
+	ret = nicvf_vf_stop_rx_queue(dev, nic, qidx);
 	ret |= nicvf_configure_cpi(dev);
 	ret |= nicvf_configure_rss_reta(dev);
 	return ret;
@@ -1061,13 +1213,52 @@ nicvf_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t qidx)
 static int
 nicvf_dev_tx_queue_start(struct rte_eth_dev *dev, uint16_t qidx)
 {
-	return nicvf_start_tx_queue(dev, qidx);
+	struct nicvf *nic = nicvf_pmd_priv(dev);
+
+	if (qidx >= MAX_SND_QUEUES_PER_QS)
+		nic = nic->snicvf[(qidx / MAX_SND_QUEUES_PER_QS - 1)];
+
+	qidx = qidx % MAX_SND_QUEUES_PER_QS;
+
+	return nicvf_vf_start_tx_queue(dev, nic, qidx);
 }
 
 static int
 nicvf_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t qidx)
 {
-	return nicvf_stop_tx_queue(dev, qidx);
+	struct nicvf *nic = nicvf_pmd_priv(dev);
+
+	if (qidx >= MAX_SND_QUEUES_PER_QS)
+		nic = nic->snicvf[(qidx / MAX_SND_QUEUES_PER_QS - 1)];
+
+	qidx = qidx % MAX_SND_QUEUES_PER_QS;
+
+	return nicvf_vf_stop_tx_queue(dev, nic, qidx);
+}
+
+static inline void
+nicvf_rxq_mbuf_setup(struct nicvf_rxq *rxq)
+{
+	uintptr_t p;
+	struct rte_mbuf mb_def;
+
+	RTE_BUILD_BUG_ON(sizeof(union mbuf_initializer) != 8);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_off) % 8 != 0);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, refcnt) -
+				offsetof(struct rte_mbuf, data_off) != 2);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, nb_segs) -
+				offsetof(struct rte_mbuf, data_off) != 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, port) -
+				offsetof(struct rte_mbuf, data_off) != 6);
+	mb_def.nb_segs = 1;
+	mb_def.data_off = RTE_PKTMBUF_HEADROOM;
+	mb_def.port = rxq->port_id;
+	rte_mbuf_refcnt_set(&mb_def, 1);
+
+	/* Prevent compiler reordering: rearm_data covers previous fields */
+	rte_compiler_barrier();
+	p = (uintptr_t)&mb_def.rearm_data;
+	rxq->mbuf_initializer.value = *(uint64_t *)p;
 }
 
 static int
@@ -1082,14 +1273,25 @@ nicvf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 
 	PMD_INIT_FUNC_TRACE();
 
+	if (qidx >= MAX_RCV_QUEUES_PER_QS)
+		nic = nic->snicvf[qidx / MAX_RCV_QUEUES_PER_QS - 1];
+
+	qidx = qidx % MAX_RCV_QUEUES_PER_QS;
+
 	/* Socket id check */
 	if (socket_id != (unsigned int)SOCKET_ID_ANY && socket_id != nic->node)
 		PMD_DRV_LOG(WARNING, "socket_id expected %d, configured %d",
 		socket_id, nic->node);
 
-	/* Mempool memory should be contiguous */
+	/* Mempool memory must be contiguous, so must be one memory segment*/
 	if (mp->nb_mem_chunks != 1) {
-		PMD_INIT_LOG(ERR, "Non contiguous mempool, check huge page sz");
+		PMD_INIT_LOG(ERR, "Non-contiguous mempool, add more huge pages");
+		return -EINVAL;
+	}
+
+	/* Mempool memory must be physically contiguous */
+	if (mp->flags & MEMPOOL_F_NO_PHYS_CONTIG) {
+		PMD_INIT_LOG(ERR, "Mempool memory must be physically contiguous");
 		return -EINVAL;
 	}
 
@@ -1118,18 +1320,20 @@ nicvf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	}
 
 	/* Free memory prior to re-allocation if needed */
-	if (dev->data->rx_queues[qidx] != NULL) {
+	if (dev->data->rx_queues[nicvf_netdev_qidx(nic, qidx)] != NULL) {
 		PMD_RX_LOG(DEBUG, "Freeing memory prior to re-allocation %d",
-				qidx);
-		nicvf_dev_rx_queue_release(dev->data->rx_queues[qidx]);
-		dev->data->rx_queues[qidx] = NULL;
+				nicvf_netdev_qidx(nic, qidx));
+		nicvf_dev_rx_queue_release(
+			dev->data->rx_queues[nicvf_netdev_qidx(nic, qidx)]);
+		dev->data->rx_queues[nicvf_netdev_qidx(nic, qidx)] = NULL;
 	}
 
 	/* Allocate rxq memory */
 	rxq = rte_zmalloc_socket("ethdev rx queue", sizeof(struct nicvf_rxq),
 					RTE_CACHE_LINE_SIZE, nic->node);
 	if (rxq == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to allocate rxq=%d", qidx);
+		PMD_INIT_LOG(ERR, "Failed to allocate rxq=%d",
+			     nicvf_netdev_qidx(nic, qidx));
 		return -ENOMEM;
 	}
 
@@ -1142,10 +1346,16 @@ nicvf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	rxq->cq_status = nicvf_qset_base(nic, qidx) + NIC_QSET_CQ_0_7_STATUS;
 	rxq->cq_door = nicvf_qset_base(nic, qidx) + NIC_QSET_CQ_0_7_DOOR;
 	rxq->precharge_cnt = 0;
-	rxq->rbptr_offset = NICVF_CQE_RBPTR_WORD;
+
+	if (nicvf_hw_cap(nic) & NICVF_CAP_CQE_RX2)
+		rxq->rbptr_offset = NICVF_CQE_RX2_RBPTR_WORD;
+	else
+		rxq->rbptr_offset = NICVF_CQE_RBPTR_WORD;
+
+	nicvf_rxq_mbuf_setup(rxq);
 
 	/* Alloc completion queue */
-	if (nicvf_qset_cq_alloc(nic, rxq, rxq->queue_id, nb_desc)) {
+	if (nicvf_qset_cq_alloc(dev, nic, rxq, rxq->queue_id, nb_desc)) {
 		PMD_INIT_LOG(ERR, "failed to allocate cq %u", rxq->queue_id);
 		nicvf_dev_rx_queue_release(rxq);
 		return -ENOMEM;
@@ -1154,11 +1364,12 @@ nicvf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	nicvf_rx_queue_reset(rxq);
 
 	PMD_RX_LOG(DEBUG, "[%d] rxq=%p pool=%s nb_desc=(%d/%d) phy=%" PRIx64,
-			qidx, rxq, mp->name, nb_desc,
+			nicvf_netdev_qidx(nic, qidx), rxq, mp->name, nb_desc,
 			rte_mempool_avail_count(mp), rxq->phys);
 
-	dev->data->rx_queues[qidx] = rxq;
-	dev->data->rx_queue_state[qidx] = RTE_ETH_QUEUE_STATE_STOPPED;
+	dev->data->rx_queues[nicvf_netdev_qidx(nic, qidx)] = rxq;
+	dev->data->rx_queue_state[nicvf_netdev_qidx(nic, qidx)] =
+		RTE_ETH_QUEUE_STATE_STOPPED;
 	return 0;
 }
 
@@ -1166,15 +1377,27 @@ static void
 nicvf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct nicvf *nic = nicvf_pmd_priv(dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 
 	PMD_INIT_FUNC_TRACE();
 
+	dev_info->pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+
+	/* Autonegotiation may be disabled */
+	dev_info->speed_capa = ETH_LINK_SPEED_FIXED;
+	dev_info->speed_capa |= ETH_LINK_SPEED_10M | ETH_LINK_SPEED_100M |
+				 ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G;
+	if (nicvf_hw_version(nic) != PCI_SUB_DEVICE_ID_CN81XX_NICVF)
+		dev_info->speed_capa |= ETH_LINK_SPEED_40G;
+
 	dev_info->min_rx_bufsize = ETHER_MIN_MTU;
 	dev_info->max_rx_pktlen = NIC_HW_MAX_FRS;
-	dev_info->max_rx_queues = (uint16_t)MAX_RCV_QUEUES_PER_QS;
-	dev_info->max_tx_queues = (uint16_t)MAX_SND_QUEUES_PER_QS;
+	dev_info->max_rx_queues =
+			(uint16_t)MAX_RCV_QUEUES_PER_QS * (MAX_SQS_PER_VF + 1);
+	dev_info->max_tx_queues =
+			(uint16_t)MAX_SND_QUEUES_PER_QS * (MAX_SQS_PER_VF + 1);
 	dev_info->max_mac_addrs = 1;
-	dev_info->max_vfs = dev->pci_dev->max_vfs;
+	dev_info->max_vfs = pci_dev->max_vfs;
 
 	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP;
 	dev_info->tx_offload_capa =
@@ -1206,16 +1429,21 @@ nicvf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	};
 }
 
-static nicvf_phys_addr_t
-rbdr_rte_mempool_get(void *opaque)
+static nicvf_iova_addr_t
+rbdr_rte_mempool_get(void *dev, void *opaque)
 {
 	uint16_t qidx;
 	uintptr_t mbuf;
 	struct nicvf_rxq *rxq;
-	struct nicvf *nic = nicvf_pmd_priv((struct rte_eth_dev *)opaque);
+	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)dev;
+	struct nicvf *nic = (struct nicvf *)opaque;
+	uint16_t rx_start, rx_end;
 
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++) {
-		rxq = nic->eth_dev->data->rx_queues[qidx];
+	/* Get queue ranges for this VF */
+	nicvf_rx_range(eth_dev, nic, &rx_start, &rx_end);
+
+	for (qidx = rx_start; qidx <= rx_end; qidx++) {
+		rxq = eth_dev->data->rx_queues[qidx];
 		/* Maintain equal buffer count across all pools */
 		if (rxq->precharge_cnt >= rxq->qlen_mask)
 			continue;
@@ -1228,25 +1456,25 @@ rbdr_rte_mempool_get(void *opaque)
 }
 
 static int
-nicvf_dev_start(struct rte_eth_dev *dev)
+nicvf_vf_start(struct rte_eth_dev *dev, struct nicvf *nic, uint32_t rbdrsz)
 {
 	int ret;
-	uint16_t qidx;
-	uint32_t buffsz = 0, rbdrsz = 0;
+	uint16_t qidx, data_off;
 	uint32_t total_rxq_desc, nb_rbdr_desc, exp_buffs;
 	uint64_t mbuf_phys_off = 0;
 	struct nicvf_rxq *rxq;
-	struct rte_pktmbuf_pool_private *mbp_priv;
 	struct rte_mbuf *mbuf;
-	struct nicvf *nic = nicvf_pmd_priv(dev);
-	struct rte_eth_rxmode *rx_conf = &dev->data->dev_conf.rxmode;
-	uint16_t mtu;
+	uint16_t rx_start, rx_end;
+	uint16_t tx_start, tx_end;
 
 	PMD_INIT_FUNC_TRACE();
 
 	/* Userspace process exited without proper shutdown in last run */
 	if (nicvf_qset_rbdr_active(nic, 0))
-		nicvf_dev_stop(dev);
+		nicvf_vf_stop(dev, nic, false);
+
+	/* Get queue ranges for this VF */
+	nicvf_rx_range(dev, nic, &rx_start, &rx_end);
 
 	/*
 	 * Thunderx nicvf PMD can support more than one pool per port only when
@@ -1261,55 +1489,47 @@ nicvf_dev_start(struct rte_eth_dev *dev)
 	 *
 	 */
 
-	/* Validate RBDR buff size */
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++) {
-		rxq = dev->data->rx_queues[qidx];
-		mbp_priv = rte_mempool_get_priv(rxq->pool);
-		buffsz = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
-		if (buffsz % 128) {
-			PMD_INIT_LOG(ERR, "rxbuf size must be multiply of 128");
-			return -EINVAL;
-		}
-		if (rbdrsz == 0)
-			rbdrsz = buffsz;
-		if (rbdrsz != buffsz) {
-			PMD_INIT_LOG(ERR, "buffsz not same, qid=%d (%d/%d)",
-				     qidx, rbdrsz, buffsz);
-			return -EINVAL;
-		}
-	}
-
 	/* Validate mempool attributes */
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++) {
+	for (qidx = rx_start; qidx <= rx_end; qidx++) {
 		rxq = dev->data->rx_queues[qidx];
 		rxq->mbuf_phys_off = nicvf_mempool_phy_offset(rxq->pool);
 		mbuf = rte_pktmbuf_alloc(rxq->pool);
 		if (mbuf == NULL) {
-			PMD_INIT_LOG(ERR, "Failed allocate mbuf qid=%d pool=%s",
-				     qidx, rxq->pool->name);
+			PMD_INIT_LOG(ERR, "Failed allocate mbuf VF%d qid=%d "
+				     "pool=%s",
+				     nic->vf_id, qidx, rxq->pool->name);
 			return -ENOMEM;
 		}
-		rxq->mbuf_phys_off -= nicvf_mbuff_meta_length(mbuf);
-		rxq->mbuf_phys_off -= RTE_PKTMBUF_HEADROOM;
+		data_off = nicvf_mbuff_meta_length(mbuf);
+		data_off += RTE_PKTMBUF_HEADROOM;
 		rte_pktmbuf_free(mbuf);
+
+		if (data_off % RTE_CACHE_LINE_SIZE) {
+			PMD_INIT_LOG(ERR, "%s: unaligned data_off=%d delta=%d",
+				rxq->pool->name, data_off,
+				data_off % RTE_CACHE_LINE_SIZE);
+			return -EINVAL;
+		}
+		rxq->mbuf_phys_off -= data_off;
 
 		if (mbuf_phys_off == 0)
 			mbuf_phys_off = rxq->mbuf_phys_off;
 		if (mbuf_phys_off != rxq->mbuf_phys_off) {
-			PMD_INIT_LOG(ERR, "pool params not same,%s %" PRIx64,
-				     rxq->pool->name, mbuf_phys_off);
+			PMD_INIT_LOG(ERR, "pool params not same,%s VF%d %"
+				     PRIx64, rxq->pool->name, nic->vf_id,
+				     mbuf_phys_off);
 			return -EINVAL;
 		}
 	}
 
 	/* Check the level of buffers in the pool */
 	total_rxq_desc = 0;
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++) {
+	for (qidx = rx_start; qidx <= rx_end; qidx++) {
 		rxq = dev->data->rx_queues[qidx];
 		/* Count total numbers of rxq descs */
 		total_rxq_desc += rxq->qlen_mask + 1;
 		exp_buffs = RTE_MEMPOOL_CACHE_MAX_SIZE + rxq->rx_free_thresh;
-		exp_buffs *= nic->eth_dev->data->nb_rx_queues;
+		exp_buffs *= dev->data->nb_rx_queues;
 		if (rte_mempool_avail_count(rxq->pool) < exp_buffs) {
 			PMD_INIT_LOG(ERR, "Buff shortage in pool=%s (%d/%d)",
 				     rxq->pool->name,
@@ -1322,82 +1542,171 @@ nicvf_dev_start(struct rte_eth_dev *dev)
 	/* Check RBDR desc overflow */
 	ret = nicvf_qsize_rbdr_roundup(total_rxq_desc);
 	if (ret == 0) {
-		PMD_INIT_LOG(ERR, "Reached RBDR desc limit, reduce nr desc");
+		PMD_INIT_LOG(ERR, "Reached RBDR desc limit, reduce nr desc "
+			     "VF%d", nic->vf_id);
 		return -ENOMEM;
 	}
 
 	/* Enable qset */
 	ret = nicvf_qset_config(nic);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to enable qset %d", ret);
+		PMD_INIT_LOG(ERR, "Failed to enable qset %d VF%d", ret,
+			     nic->vf_id);
 		return ret;
 	}
 
 	/* Allocate RBDR and RBDR ring desc */
 	nb_rbdr_desc = nicvf_qsize_rbdr_roundup(total_rxq_desc);
-	ret = nicvf_qset_rbdr_alloc(nic, nb_rbdr_desc, rbdrsz);
+	ret = nicvf_qset_rbdr_alloc(dev, nic, nb_rbdr_desc, rbdrsz);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to allocate memory for rbdr alloc");
+		PMD_INIT_LOG(ERR, "Failed to allocate memory for rbdr alloc "
+			     "VF%d", nic->vf_id);
 		goto qset_reclaim;
 	}
 
 	/* Enable and configure RBDR registers */
 	ret = nicvf_qset_rbdr_config(nic, 0);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to configure rbdr %d", ret);
+		PMD_INIT_LOG(ERR, "Failed to configure rbdr %d VF%d", ret,
+			     nic->vf_id);
 		goto qset_rbdr_free;
 	}
 
 	/* Fill rte_mempool buffers in RBDR pool and precharge it */
-	ret = nicvf_qset_rbdr_precharge(nic, 0, rbdr_rte_mempool_get,
-					dev, total_rxq_desc);
+	ret = nicvf_qset_rbdr_precharge(dev, nic, 0, rbdr_rte_mempool_get,
+					total_rxq_desc);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to fill rbdr %d", ret);
+		PMD_INIT_LOG(ERR, "Failed to fill rbdr %d VF%d", ret,
+			     nic->vf_id);
 		goto qset_rbdr_reclaim;
 	}
 
-	PMD_DRV_LOG(INFO, "Filled %d out of %d entries in RBDR",
-		     nic->rbdr->tail, nb_rbdr_desc);
-
-	/* Configure RX queues */
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++) {
-		ret = nicvf_start_rx_queue(dev, qidx);
-		if (ret)
-			goto start_rxq_error;
-	}
+	PMD_DRV_LOG(INFO, "Filled %d out of %d entries in RBDR VF%d",
+		     nic->rbdr->tail, nb_rbdr_desc, nic->vf_id);
 
 	/* Configure VLAN Strip */
 	nicvf_vlan_hw_strip(nic, dev->data->dev_conf.rxmode.hw_vlan_strip);
 
+	/* Based on the packet type(IPv4 or IPv6), the nicvf HW aligns L3 data
+	 * to the 64bit memory address.
+	 * The alignment creates a hole in mbuf(between the end of headroom and
+	 * packet data start). The new revision of the HW provides an option to
+	 * disable the L3 alignment feature and make mbuf layout looks
+	 * more like other NICs. For better application compatibility, disabling
+	 * l3 alignment feature on the hardware revisions it supports
+	 */
+	nicvf_apad_config(nic, false);
+
+	/* Get queue ranges for this VF */
+	nicvf_tx_range(dev, nic, &tx_start, &tx_end);
+
 	/* Configure TX queues */
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_tx_queues; qidx++) {
-		ret = nicvf_start_tx_queue(dev, qidx);
+	for (qidx = tx_start; qidx <= tx_end; qidx++) {
+		ret = nicvf_vf_start_tx_queue(dev, nic,
+			qidx % MAX_SND_QUEUES_PER_QS);
 		if (ret)
 			goto start_txq_error;
 	}
 
-	/* Configure CPI algorithm */
-	ret = nicvf_configure_cpi(dev);
-	if (ret)
-		goto start_txq_error;
+	/* Configure RX queues */
+	for (qidx = rx_start; qidx <= rx_end; qidx++) {
+		ret = nicvf_vf_start_rx_queue(dev, nic,
+			qidx % MAX_RCV_QUEUES_PER_QS);
+		if (ret)
+			goto start_rxq_error;
+	}
 
-	/* Configure RSS */
-	ret = nicvf_configure_rss(dev);
-	if (ret)
-		goto qset_rss_error;
+	if (!nic->sqs_mode) {
+		/* Configure CPI algorithm */
+		ret = nicvf_configure_cpi(dev);
+		if (ret)
+			goto start_txq_error;
+
+		ret = nicvf_mbox_get_rss_size(nic);
+		if (ret) {
+			PMD_INIT_LOG(ERR, "Failed to get rss table size");
+			goto qset_rss_error;
+		}
+
+		/* Configure RSS */
+		ret = nicvf_configure_rss(dev);
+		if (ret)
+			goto qset_rss_error;
+	}
+
+	/* Done; Let PF make the BGX's RX and TX switches to ON position */
+	nicvf_mbox_cfg_done(nic);
+	return 0;
+
+qset_rss_error:
+	nicvf_rss_term(nic);
+start_rxq_error:
+	for (qidx = rx_start; qidx <= rx_end; qidx++)
+		nicvf_vf_stop_rx_queue(dev, nic, qidx % MAX_RCV_QUEUES_PER_QS);
+start_txq_error:
+	for (qidx = tx_start; qidx <= tx_end; qidx++)
+		nicvf_vf_stop_tx_queue(dev, nic, qidx % MAX_SND_QUEUES_PER_QS);
+qset_rbdr_reclaim:
+	nicvf_qset_rbdr_reclaim(nic, 0);
+	nicvf_rbdr_release_mbufs(dev, nic);
+qset_rbdr_free:
+	if (nic->rbdr) {
+		rte_free(nic->rbdr);
+		nic->rbdr = NULL;
+	}
+qset_reclaim:
+	nicvf_qset_reclaim(nic);
+	return ret;
+}
+
+static int
+nicvf_dev_start(struct rte_eth_dev *dev)
+{
+	uint16_t qidx;
+	int ret;
+	size_t i;
+	struct nicvf *nic = nicvf_pmd_priv(dev);
+	struct rte_eth_rxmode *rx_conf = &dev->data->dev_conf.rxmode;
+	uint16_t mtu;
+	uint32_t buffsz = 0, rbdrsz = 0;
+	struct rte_pktmbuf_pool_private *mbp_priv;
+	struct nicvf_rxq *rxq;
+
+	PMD_INIT_FUNC_TRACE();
+
+	/* This function must be called for a primary device */
+	assert_primary(nic);
+
+	/* Validate RBDR buff size */
+	for (qidx = 0; qidx < dev->data->nb_rx_queues; qidx++) {
+		rxq = dev->data->rx_queues[qidx];
+		mbp_priv = rte_mempool_get_priv(rxq->pool);
+		buffsz = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
+		if (buffsz % 128) {
+			PMD_INIT_LOG(ERR, "rxbuf size must be multiply of 128");
+			return -EINVAL;
+		}
+		if (rbdrsz == 0)
+			rbdrsz = buffsz;
+		if (rbdrsz != buffsz) {
+			PMD_INIT_LOG(ERR, "buffsz not same, qidx=%d (%d/%d)",
+				     qidx, rbdrsz, buffsz);
+			return -EINVAL;
+		}
+	}
 
 	/* Configure loopback */
 	ret = nicvf_loopback_config(nic, dev->data->dev_conf.lpbk_mode);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Failed to configure loopback %d", ret);
-		goto qset_rss_error;
+		return ret;
 	}
 
 	/* Reset all statistics counters attached to this port */
 	ret = nicvf_mbox_reset_stat_counters(nic, 0x3FFF, 0x1F, 0xFFFF, 0xFFFF);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Failed to reset stat counters %d", ret);
-		goto qset_rss_error;
+		return ret;
 	}
 
 	/* Setup scatter mode if needed by jumbo */
@@ -1418,62 +1727,94 @@ nicvf_dev_start(struct rte_eth_dev *dev)
 		return -EBUSY;
 	}
 
+	ret = nicvf_vf_start(dev, nic, rbdrsz);
+	if (ret != 0)
+		return ret;
+
+	for (i = 0; i < nic->sqs_count; i++) {
+		assert(nic->snicvf[i]);
+
+		ret = nicvf_vf_start(dev, nic->snicvf[i], rbdrsz);
+		if (ret != 0)
+			return ret;
+	}
+
 	/* Configure callbacks based on scatter mode */
 	nicvf_set_tx_function(dev);
 	nicvf_set_rx_function(dev);
 
-	/* Done; Let PF make the BGX's RX and TX switches to ON position */
-	nicvf_mbox_cfg_done(nic);
 	return 0;
-
-qset_rss_error:
-	nicvf_rss_term(nic);
-start_txq_error:
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_tx_queues; qidx++)
-		nicvf_stop_tx_queue(dev, qidx);
-start_rxq_error:
-	for (qidx = 0; qidx < nic->eth_dev->data->nb_rx_queues; qidx++)
-		nicvf_stop_rx_queue(dev, qidx);
-qset_rbdr_reclaim:
-	nicvf_qset_rbdr_reclaim(nic, 0);
-	nicvf_rbdr_release_mbufs(nic);
-qset_rbdr_free:
-	if (nic->rbdr) {
-		rte_free(nic->rbdr);
-		nic->rbdr = NULL;
-	}
-qset_reclaim:
-	nicvf_qset_reclaim(nic);
-	return ret;
 }
 
 static void
-nicvf_dev_stop(struct rte_eth_dev *dev)
+nicvf_dev_stop_cleanup(struct rte_eth_dev *dev, bool cleanup)
 {
+	size_t i;
 	int ret;
-	uint16_t qidx;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
 
-	/* Let PF make the BGX's RX and TX switches to OFF position */
-	nicvf_mbox_shutdown(nic);
+	/* Teardown secondary vf first */
+	for (i = 0; i < nic->sqs_count; i++) {
+		if (!nic->snicvf[i])
+			continue;
+
+		nicvf_vf_stop(dev, nic->snicvf[i], cleanup);
+	}
+
+	/* Stop the primary VF now */
+	nicvf_vf_stop(dev, nic, cleanup);
 
 	/* Disable loopback */
 	ret = nicvf_loopback_config(nic, 0);
 	if (ret)
 		PMD_INIT_LOG(ERR, "Failed to disable loopback %d", ret);
 
+	/* Reclaim CPI configuration */
+	ret = nicvf_mbox_config_cpi(nic, 0);
+	if (ret)
+		PMD_INIT_LOG(ERR, "Failed to reclaim CPI config %d", ret);
+}
+
+static void
+nicvf_dev_stop(struct rte_eth_dev *dev)
+{
+	PMD_INIT_FUNC_TRACE();
+
+	nicvf_dev_stop_cleanup(dev, false);
+}
+
+static void
+nicvf_vf_stop(struct rte_eth_dev *dev, struct nicvf *nic, bool cleanup)
+{
+	int ret;
+	uint16_t qidx;
+	uint16_t tx_start, tx_end;
+	uint16_t rx_start, rx_end;
+
+	PMD_INIT_FUNC_TRACE();
+
+	if (cleanup) {
+		/* Let PF make the BGX's RX and TX switches to OFF position */
+		nicvf_mbox_shutdown(nic);
+	}
+
 	/* Disable VLAN Strip */
 	nicvf_vlan_hw_strip(nic, 0);
 
-	/* Reclaim sq */
-	for (qidx = 0; qidx < dev->data->nb_tx_queues; qidx++)
-		nicvf_stop_tx_queue(dev, qidx);
+	/* Get queue ranges for this VF */
+	nicvf_tx_range(dev, nic, &tx_start, &tx_end);
+
+	for (qidx = tx_start; qidx <= tx_end; qidx++)
+		nicvf_vf_stop_tx_queue(dev, nic, qidx % MAX_SND_QUEUES_PER_QS);
+
+	/* Get queue ranges for this VF */
+	nicvf_rx_range(dev, nic, &rx_start, &rx_end);
 
 	/* Reclaim rq */
-	for (qidx = 0; qidx < dev->data->nb_rx_queues; qidx++)
-		nicvf_stop_rx_queue(dev, qidx);
+	for (qidx = rx_start; qidx <= rx_end; qidx++)
+		nicvf_vf_stop_rx_queue(dev, nic, qidx % MAX_RCV_QUEUES_PER_QS);
 
 	/* Reclaim RBDR */
 	ret = nicvf_qset_rbdr_reclaim(nic, 0);
@@ -1482,17 +1823,10 @@ nicvf_dev_stop(struct rte_eth_dev *dev)
 
 	/* Move all charged buffers in RBDR back to pool */
 	if (nic->rbdr != NULL)
-		nicvf_rbdr_release_mbufs(nic);
-
-	/* Reclaim CPI configuration */
-	if (!nic->sqs_mode) {
-		ret = nicvf_mbox_config_cpi(nic, 0);
-		if (ret)
-			PMD_INIT_LOG(ERR, "Failed to reclaim CPI config");
-	}
+		nicvf_rbdr_release_mbufs(dev, nic);
 
 	/* Disable qset */
-	ret = nicvf_qset_config(nic);
+	ret = nicvf_qset_reclaim(nic);
 	if (ret)
 		PMD_INIT_LOG(ERR, "Failed to disable qset %d", ret);
 
@@ -1509,21 +1843,54 @@ nicvf_dev_stop(struct rte_eth_dev *dev)
 static void
 nicvf_dev_close(struct rte_eth_dev *dev)
 {
+	size_t i;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
 
-	nicvf_dev_stop(dev);
-	nicvf_periodic_alarm_stop(nic);
+	nicvf_dev_stop_cleanup(dev, true);
+	nicvf_periodic_alarm_stop(nicvf_interrupt, dev);
+
+	for (i = 0; i < nic->sqs_count; i++) {
+		if (!nic->snicvf[i])
+			continue;
+
+		nicvf_periodic_alarm_stop(nicvf_vf_interrupt, nic->snicvf[i]);
+	}
+}
+
+static int
+nicvf_request_sqs(struct nicvf *nic)
+{
+	size_t i;
+
+	assert_primary(nic);
+	assert(nic->sqs_count > 0);
+	assert(nic->sqs_count <= MAX_SQS_PER_VF);
+
+	/* Set no of Rx/Tx queues in each of the SQsets */
+	for (i = 0; i < nic->sqs_count; i++) {
+		if (nicvf_svf_empty())
+			rte_panic("Cannot assign sufficient number of "
+				  "secondary queues to primary VF%" PRIu8 "\n",
+				  nic->vf_id);
+
+		nic->snicvf[i] = nicvf_svf_pop();
+		nic->snicvf[i]->sqs_id = i;
+	}
+
+	return nicvf_mbox_request_sqs(nic);
 }
 
 static int
 nicvf_dev_configure(struct rte_eth_dev *dev)
 {
-	struct rte_eth_conf *conf = &dev->data->dev_conf;
+	struct rte_eth_dev_data *data = dev->data;
+	struct rte_eth_conf *conf = &data->dev_conf;
 	struct rte_eth_rxmode *rxmode = &conf->rxmode;
 	struct rte_eth_txmode *txmode = &conf->txmode;
 	struct nicvf *nic = nicvf_pmd_priv(dev);
+	uint8_t cqcount;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1588,6 +1955,26 @@ nicvf_dev_configure(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
+	assert_primary(nic);
+	NICVF_STATIC_ASSERT(MAX_RCV_QUEUES_PER_QS == MAX_SND_QUEUES_PER_QS);
+	cqcount = RTE_MAX(data->nb_tx_queues, data->nb_rx_queues);
+	if (cqcount > MAX_RCV_QUEUES_PER_QS) {
+		nic->sqs_count = RTE_ALIGN_CEIL(cqcount, MAX_RCV_QUEUES_PER_QS);
+		nic->sqs_count = (nic->sqs_count / MAX_RCV_QUEUES_PER_QS) - 1;
+	} else {
+		nic->sqs_count = 0;
+	}
+
+	assert(nic->sqs_count <= MAX_SQS_PER_VF);
+
+	if (nic->sqs_count > 0) {
+		if (nicvf_request_sqs(nic)) {
+			rte_panic("Cannot assign sufficient number of "
+				  "secondary queues to PORT%d VF%" PRIu8 "\n",
+				  dev->data->port_id, nic->vf_id);
+		}
+	}
+
 	PMD_INIT_LOG(DEBUG, "Configured ethdev port%d hwcap=0x%" PRIx64,
 		dev->data->port_id, nicvf_hw_cap(nic));
 
@@ -1636,20 +2023,25 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
-		/* Setup callbacks for secondary process */
-		nicvf_set_tx_function(eth_dev);
-		nicvf_set_rx_function(eth_dev);
-		return 0;
+		if (nic) {
+			/* Setup callbacks for secondary process */
+			nicvf_set_tx_function(eth_dev);
+			nicvf_set_rx_function(eth_dev);
+			return 0;
+		} else {
+			/* If nic == NULL than it is secondary function
+			 * so ethdev need to be released by caller */
+			return ENOTSUP;
+		}
 	}
 
-	pci_dev = eth_dev->pci_dev;
+	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	nic->device_id = pci_dev->id.device_id;
 	nic->vendor_id = pci_dev->id.vendor_id;
 	nic->subsystem_device_id = pci_dev->id.subsystem_device_id;
 	nic->subsystem_vendor_id = pci_dev->id.subsystem_vendor_id;
-	nic->eth_dev = eth_dev;
 
 	PMD_INIT_LOG(DEBUG, "nicvf: device (%x:%x) %u:%u:%u:%u",
 			pci_dev->id.vendor_id, pci_dev->id.device_id,
@@ -1665,7 +2057,7 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 	nicvf_disable_all_interrupts(nic);
 
-	ret = nicvf_periodic_alarm_start(nic);
+	ret = nicvf_periodic_alarm_start(nicvf_interrupt, eth_dev);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "Failed to start period alarm");
 		goto fail;
@@ -1685,11 +2077,28 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 			);
 	}
 
+	ret = nicvf_base_init(nic);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "Failed to execute nicvf_base_init");
+		goto malloc_fail;
+	}
+
 	if (nic->sqs_mode) {
-		PMD_INIT_LOG(INFO, "Unsupported SQS VF detected, Detaching...");
-		/* Detach port by returning Positive error number */
-		ret = ENOTSUP;
-		goto alarm_fail;
+		/* Push nic to stack of secondary vfs */
+		nicvf_svf_push(nic);
+
+		/* Steal nic pointer from the device for further reuse */
+		eth_dev->data->dev_private = NULL;
+
+		nicvf_periodic_alarm_stop(nicvf_interrupt, eth_dev);
+		ret = nicvf_periodic_alarm_start(nicvf_vf_interrupt, nic);
+		if (ret) {
+			PMD_INIT_LOG(ERR, "Failed to start period alarm");
+			goto fail;
+		}
+
+		/* Detach port by returning positive error number */
+		return ENOTSUP;
 	}
 
 	eth_dev->data->mac_addrs = rte_zmalloc("mac_addr", ETHER_ADDR_LEN, 0);
@@ -1710,18 +2119,6 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 		goto malloc_fail;
 	}
 
-	ret = nicvf_base_init(nic);
-	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to execute nicvf_base_init");
-		goto malloc_fail;
-	}
-
-	ret = nicvf_mbox_get_rss_size(nic);
-	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to get rss table size");
-		goto malloc_fail;
-	}
-
 	PMD_INIT_LOG(INFO, "Port %d (%x:%x) mac=%02x:%02x:%02x:%02x:%02x:%02x",
 		eth_dev->data->port_id, nic->vendor_id, nic->device_id,
 		nic->mac_addr[0], nic->mac_addr[1], nic->mac_addr[2],
@@ -1732,7 +2129,7 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 malloc_fail:
 	rte_free(eth_dev->data->mac_addrs);
 alarm_fail:
-	nicvf_periodic_alarm_stop(nic);
+	nicvf_periodic_alarm_stop(nicvf_interrupt, eth_dev);
 fail:
 	return ret;
 }
@@ -1741,47 +2138,56 @@ static const struct rte_pci_id pci_id_nicvf_map[] = {
 	{
 		.class_id = RTE_CLASS_ANY_ID,
 		.vendor_id = PCI_VENDOR_ID_CAVIUM,
-		.device_id = PCI_DEVICE_ID_THUNDERX_PASS1_NICVF,
+		.device_id = PCI_DEVICE_ID_THUNDERX_CN88XX_PASS1_NICVF,
 		.subsystem_vendor_id = PCI_VENDOR_ID_CAVIUM,
-		.subsystem_device_id = PCI_SUB_DEVICE_ID_THUNDERX_PASS1_NICVF,
+		.subsystem_device_id = PCI_SUB_DEVICE_ID_CN88XX_PASS1_NICVF,
 	},
 	{
 		.class_id = RTE_CLASS_ANY_ID,
 		.vendor_id = PCI_VENDOR_ID_CAVIUM,
-		.device_id = PCI_DEVICE_ID_THUNDERX_PASS2_NICVF,
+		.device_id = PCI_DEVICE_ID_THUNDERX_NICVF,
 		.subsystem_vendor_id = PCI_VENDOR_ID_CAVIUM,
-		.subsystem_device_id = PCI_SUB_DEVICE_ID_THUNDERX_PASS2_NICVF,
+		.subsystem_device_id = PCI_SUB_DEVICE_ID_CN88XX_PASS2_NICVF,
+	},
+	{
+		.class_id = RTE_CLASS_ANY_ID,
+		.vendor_id = PCI_VENDOR_ID_CAVIUM,
+		.device_id = PCI_DEVICE_ID_THUNDERX_NICVF,
+		.subsystem_vendor_id = PCI_VENDOR_ID_CAVIUM,
+		.subsystem_device_id = PCI_SUB_DEVICE_ID_CN81XX_NICVF,
+	},
+	{
+		.class_id = RTE_CLASS_ANY_ID,
+		.vendor_id = PCI_VENDOR_ID_CAVIUM,
+		.device_id = PCI_DEVICE_ID_THUNDERX_NICVF,
+		.subsystem_vendor_id = PCI_VENDOR_ID_CAVIUM,
+		.subsystem_device_id = PCI_SUB_DEVICE_ID_CN83XX_NICVF,
 	},
 	{
 		.vendor_id = 0,
 	},
 };
 
-static struct eth_driver rte_nicvf_pmd = {
-	.pci_drv = {
-		.name = "rte_nicvf_pmd",
-		.id_table = pci_id_nicvf_map,
-		.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
-	},
-	.eth_dev_init = nicvf_eth_dev_init,
-	.dev_private_size = sizeof(struct nicvf),
-};
-
-static int
-rte_nicvf_pmd_init(const char *name __rte_unused, const char *para __rte_unused)
+static int nicvf_eth_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
+	struct rte_pci_device *pci_dev)
 {
-	PMD_INIT_FUNC_TRACE();
-	PMD_INIT_LOG(INFO, "librte_pmd_thunderx nicvf version %s",
-			THUNDERX_NICVF_PMD_VERSION);
-
-	rte_eth_driver_register(&rte_nicvf_pmd);
-	return 0;
+	return rte_eth_dev_pci_generic_probe(pci_dev, sizeof(struct nicvf),
+		nicvf_eth_dev_init);
 }
 
-static struct rte_driver rte_nicvf_driver = {
-	.type = PMD_PDEV,
-	.init = rte_nicvf_pmd_init,
+static int nicvf_eth_pci_remove(struct rte_pci_device *pci_dev)
+{
+	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+}
+
+static struct rte_pci_driver rte_nicvf_pmd = {
+	.id_table = pci_id_nicvf_map,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_KEEP_MAPPED_RES |
+			RTE_PCI_DRV_INTR_LSC,
+	.probe = nicvf_eth_pci_probe,
+	.remove = nicvf_eth_pci_remove,
 };
 
-PMD_REGISTER_DRIVER(rte_nicvf_driver, thunderx_nicvf);
-DRIVER_REGISTER_PCI_TABLE(thunderx_nicvf, pci_id_nicvf_map);
+RTE_PMD_REGISTER_PCI(net_thunderx, rte_nicvf_pmd);
+RTE_PMD_REGISTER_PCI_TABLE(net_thunderx, pci_id_nicvf_map);
+RTE_PMD_REGISTER_KMOD_DEP(net_thunderx, "* igb_uio | uio_pci_generic | vfio-pci");

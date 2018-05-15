@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -45,83 +45,101 @@ enum aesni_gcm_vector_mode {
 	RTE_AESNI_GCM_NOT_SUPPORTED = 0,
 	RTE_AESNI_GCM_SSE,
 	RTE_AESNI_GCM_AVX,
-	RTE_AESNI_GCM_AVX2
+	RTE_AESNI_GCM_AVX2,
+	RTE_AESNI_GCM_VECTOR_NUM
 };
 
-typedef void (*aes_keyexp_128_enc_t)(void *key, void *enc_exp_keys);
+enum aesni_gcm_key {
+	AESNI_GCM_KEY_128,
+	AESNI_GCM_KEY_192,
+	AESNI_GCM_KEY_256,
+	AESNI_GCM_KEY_NUM
+};
 
-typedef void (*aesni_gcm_t)(gcm_data *my_ctx_data, u8 *out, const u8 *in,
-		u64 plaintext_len, u8 *iv, const u8 *aad, u64 aad_len,
-		u8 *auth_tag, u64 auth_tag_len);
 
-typedef void (*aesni_gcm_precomp_t)(gcm_data *my_ctx_data, u8 *hash_subkey);
+typedef void (*aesni_gcm_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data, uint8_t *out,
+		const uint8_t *in, uint64_t plaintext_len, const uint8_t *iv,
+		const uint8_t *aad, uint64_t aad_len,
+		uint8_t *auth_tag, uint64_t auth_tag_len);
+
+typedef void (*aesni_gcm_precomp_t)(const void *key, struct gcm_key_data *gcm_data);
+
+typedef void (*aesni_gcm_init_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data,
+		const uint8_t *iv,
+		uint8_t const *aad,
+		uint64_t aad_len);
+
+typedef void (*aesni_gcm_update_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data,
+		uint8_t *out,
+		const uint8_t *in,
+		uint64_t plaintext_len);
+
+typedef void (*aesni_gcm_finalize_t)(const struct gcm_key_data *gcm_key_data,
+		struct gcm_context_data *gcm_ctx_data,
+		uint8_t *auth_tag,
+		uint64_t auth_tag_len);
 
 /** GCM library function pointer table */
 struct aesni_gcm_ops {
-	struct {
-		struct {
-			aes_keyexp_128_enc_t aes128_enc;
-			/**< AES128 enc key expansion */
-		} keyexp;
-		/**< Key expansion functions */
-	} aux; /**< Auxiliary functions */
-
-	struct {
-		aesni_gcm_t enc;	/**< GCM encode function pointer */
-		aesni_gcm_t dec;	/**< GCM decode function pointer */
-		aesni_gcm_precomp_t precomp;	/**< GCM pre-compute */
-	} gcm; /**< GCM functions */
+	aesni_gcm_t enc;        /**< GCM encode function pointer */
+	aesni_gcm_t dec;        /**< GCM decode function pointer */
+	aesni_gcm_precomp_t precomp;    /**< GCM pre-compute */
+	aesni_gcm_init_t init;
+	aesni_gcm_update_t update_enc;
+	aesni_gcm_update_t update_dec;
+	aesni_gcm_finalize_t finalize;
 };
 
+#define AES_GCM_FN(keylen, arch) \
+aes_gcm_enc_##keylen##_##arch,\
+aes_gcm_dec_##keylen##_##arch,\
+aes_gcm_pre_##keylen##_##arch,\
+aes_gcm_init_##keylen##_##arch,\
+aes_gcm_enc_##keylen##_update_##arch,\
+aes_gcm_dec_##keylen##_update_##arch,\
+aes_gcm_enc_##keylen##_finalize_##arch,
 
-static const struct aesni_gcm_ops gcm_ops[] = {
+static const struct aesni_gcm_ops gcm_ops[RTE_AESNI_GCM_VECTOR_NUM][AESNI_GCM_KEY_NUM] = {
 	[RTE_AESNI_GCM_NOT_SUPPORTED] = {
-		.aux = {
-			.keyexp = {
-				NULL
-			}
-		},
-		.gcm = {
-			NULL
-		}
+		[AESNI_GCM_KEY_128] = {NULL},
+		[AESNI_GCM_KEY_192] = {NULL},
+		[AESNI_GCM_KEY_256] = {NULL}
 	},
 	[RTE_AESNI_GCM_SSE] = {
-		.aux = {
-			.keyexp = {
-				aes_keyexp_128_enc_sse
-			}
+		[AESNI_GCM_KEY_128] = {
+			AES_GCM_FN(128, sse)
 		},
-		.gcm = {
-			aesni_gcm_enc_sse,
-			aesni_gcm_dec_sse,
-			aesni_gcm_precomp_sse
+		[AESNI_GCM_KEY_192] = {
+			AES_GCM_FN(192, sse)
+		},
+		[AESNI_GCM_KEY_256] = {
+			AES_GCM_FN(256, sse)
 		}
 	},
 	[RTE_AESNI_GCM_AVX] = {
-		.aux = {
-			.keyexp = {
-				aes_keyexp_128_enc_avx,
-			}
+		[AESNI_GCM_KEY_128] = {
+			AES_GCM_FN(128, avx_gen2)
 		},
-		.gcm = {
-			aesni_gcm_enc_avx_gen2,
-			aesni_gcm_dec_avx_gen2,
-			aesni_gcm_precomp_avx_gen2
+		[AESNI_GCM_KEY_192] = {
+			AES_GCM_FN(192, avx_gen2)
+		},
+		[AESNI_GCM_KEY_256] = {
+			AES_GCM_FN(256, avx_gen2)
 		}
 	},
 	[RTE_AESNI_GCM_AVX2] = {
-		.aux = {
-			.keyexp = {
-				aes_keyexp_128_enc_avx2,
-			}
+		[AESNI_GCM_KEY_128] = {
+			AES_GCM_FN(128, avx_gen4)
 		},
-		.gcm = {
-			aesni_gcm_enc_avx_gen4,
-			aesni_gcm_dec_avx_gen4,
-			aesni_gcm_precomp_avx_gen4
+		[AESNI_GCM_KEY_192] = {
+			AES_GCM_FN(192, avx_gen4)
+		},
+		[AESNI_GCM_KEY_256] = {
+			AES_GCM_FN(256, avx_gen4)
 		}
 	}
 };
-
-
 #endif /* _AESNI_GCM_OPS_H_ */

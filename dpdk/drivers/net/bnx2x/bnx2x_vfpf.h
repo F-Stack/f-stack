@@ -40,6 +40,13 @@ struct vf_resource_query {
 
 #define TLV_BUFFER_SIZE			1024
 
+#define VFPF_RX_MASK_ACCEPT_NONE		0x00000000
+#define VFPF_RX_MASK_ACCEPT_MATCHED_UNICAST	0x00000001
+#define VFPF_RX_MASK_ACCEPT_MATCHED_MULTICAST	0x00000002
+#define VFPF_RX_MASK_ACCEPT_ALL_UNICAST		0x00000004
+#define VFPF_RX_MASK_ACCEPT_ALL_MULTICAST	0x00000008
+#define VFPF_RX_MASK_ACCEPT_BROADCAST		0x00000010
+
 /* general tlv header (used for both vf->pf request and pf->vf response) */
 struct channel_tlv {
 	uint16_t type;
@@ -47,8 +54,7 @@ struct channel_tlv {
 };
 
 struct vf_first_tlv {
-	uint16_t type;
-	uint16_t length;
+	struct channel_tlv tl;
 	uint32_t reply_offset;
 };
 
@@ -58,16 +64,14 @@ struct tlv_buffer_size {
 
 /* tlv struct for all PF replies except acquire */
 struct vf_common_reply_tlv {
-	uint16_t type;
-	uint16_t length;
+	struct channel_tlv tl;
 	uint8_t status;
 	uint8_t pad[3];
 };
 
 /* used to terminate and pad a tlv list */
 struct channel_list_end_tlv {
-	uint16_t type;
-	uint16_t length;
+	struct channel_tlv tl;
 	uint32_t pad;
 };
 
@@ -278,7 +282,7 @@ struct bnx2x_vf_bulletin {
 	uint16_t version;
 	uint16_t length;
 
-	uint64_t valid_bitmap;	/* bitmap indicating wich fields
+	uint64_t valid_bitmap;	/* bitmap indicating which fields
 					 * hold valid values
 					 */
 
@@ -327,7 +331,6 @@ struct bnx2x_vf_mbx_msg {
 	union resp_tlvs resp;
 };
 
-void bnx2x_add_tlv(void *tlvs_list, uint16_t offset, uint16_t type, uint16_t length);
 int bnx2x_vf_set_mac(struct bnx2x_softc *sc, int set);
 int bnx2x_vf_config_rss(struct bnx2x_softc *sc, struct ecore_config_rss_params *params);
 

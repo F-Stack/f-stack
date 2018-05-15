@@ -53,13 +53,15 @@ extern "C" {
 
 #include <stdint.h>
 #include <rte_byteorder.h>
+#include <rte_config.h>
 #include <rte_ip.h>
+#include <rte_common.h>
 
-#ifdef __SSE3__
+#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_NEON)
 #include <rte_vect.h>
 #endif
 
-#ifdef __SSE3__
+#ifdef RTE_ARCH_X86
 /* Byte swap mask used for converting IPv6 address
  * 4-byte chunks to CPU byte order
  */
@@ -102,6 +104,7 @@ static const __m128i rte_thash_ipv6_bswap_mask = {
 struct rte_ipv4_tuple {
 	uint32_t	src_addr;
 	uint32_t	dst_addr;
+	RTE_STD_C11
 	union {
 		struct {
 			uint16_t dport;
@@ -119,6 +122,7 @@ struct rte_ipv4_tuple {
 struct rte_ipv6_tuple {
 	uint8_t		src_addr[16];
 	uint8_t		dst_addr[16];
+	RTE_STD_C11
 	union {
 		struct {
 			uint16_t dport;
@@ -131,7 +135,7 @@ struct rte_ipv6_tuple {
 union rte_thash_tuple {
 	struct rte_ipv4_tuple	v4;
 	struct rte_ipv6_tuple	v6;
-#ifdef __SSE3__
+#ifdef RTE_ARCH_X86
 } __attribute__((aligned(XMM_SIZE)));
 #else
 };
@@ -166,13 +170,18 @@ rte_convert_rss_key(const uint32_t *orig, uint32_t *targ, int len)
 static inline void
 rte_thash_load_v6_addrs(const struct ipv6_hdr *orig, union rte_thash_tuple *targ)
 {
-#ifdef __SSE3__
+#ifdef RTE_ARCH_X86
 	__m128i ipv6 = _mm_loadu_si128((const __m128i *)orig->src_addr);
 	*(__m128i *)targ->v6.src_addr =
 			_mm_shuffle_epi8(ipv6, rte_thash_ipv6_bswap_mask);
 	ipv6 = _mm_loadu_si128((const __m128i *)orig->dst_addr);
 	*(__m128i *)targ->v6.dst_addr =
 			_mm_shuffle_epi8(ipv6, rte_thash_ipv6_bswap_mask);
+#elif defined(RTE_MACHINE_CPUFLAG_NEON)
+	uint8x16_t ipv6 = vld1q_u8((uint8_t const *)orig->src_addr);
+	vst1q_u8((uint8_t *)targ->v6.src_addr, vrev32q_u8(ipv6));
+	ipv6 = vld1q_u8((uint8_t const *)orig->dst_addr);
+	vst1q_u8((uint8_t *)targ->v6.dst_addr, vrev32q_u8(ipv6));
 #else
 	int i;
 	for (i = 0; i < 4; i++) {
@@ -199,15 +208,14 @@ static inline uint32_t
 rte_softrss(uint32_t *input_tuple, uint32_t input_len,
 		const uint8_t *rss_key)
 {
-	uint32_t i, j, ret = 0;
+	uint32_t i, j, map, ret = 0;
 
 	for (j = 0; j < input_len; j++) {
-		for (i = 0; i < 32; i++) {
-			if (input_tuple[j] & (1 << (31 - i))) {
-				ret ^= rte_cpu_to_be_32(((const uint32_t *)rss_key)[j]) << i |
+		for (map = input_tuple[j]; map;	map &= (map - 1)) {
+			i = rte_bsf32(map);
+			ret ^= rte_cpu_to_be_32(((const uint32_t *)rss_key)[j]) << (31 - i) |
 					(uint32_t)((uint64_t)(rte_cpu_to_be_32(((const uint32_t *)rss_key)[j + 1])) >>
-					(32 - i));
-			}
+					(i + 1));
 		}
 	}
 	return ret;
@@ -230,14 +238,13 @@ static inline uint32_t
 rte_softrss_be(uint32_t *input_tuple, uint32_t input_len,
 		const uint8_t *rss_key)
 {
-	uint32_t i, j, ret = 0;
+	uint32_t i, j, map, ret = 0;
 
 	for (j = 0; j < input_len; j++) {
-		for (i = 0; i < 32; i++) {
-			if (input_tuple[j] & (1 << (31 - i))) {
-				ret ^= ((const uint32_t *)rss_key)[j] << i |
-					(uint32_t)((uint64_t)(((const uint32_t *)rss_key)[j + 1]) >> (32 - i));
-			}
+		for (map = input_tuple[j]; map;	map &= (map - 1)) {
+			i = rte_bsf32(map);
+			ret ^= ((const uint32_t *)rss_key)[j] << (31 - i) |
+				(uint32_t)((uint64_t)(((const uint32_t *)rss_key)[j + 1]) >> (i + 1));
 		}
 	}
 	return ret;

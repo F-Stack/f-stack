@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2015 Chelsio Communications.
+ *   Copyright(c) 2014-2017 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -55,10 +55,15 @@
 #define X_RXPKTCPLMODE_SPLIT		1
 #define X_INGPCIEBOUNDARY_32B		0
 #define X_INGPADBOUNDARY_SHIFT		5
+#define X_INGPADBOUNDARY_32B		0
+
+#define X_T6_INGPADBOUNDARY_SHIFT	3
+#define X_T6_INGPADBOUNDARY_8B		0
 
 /* CONTROL2 register */
 #define X_INGPACKBOUNDARY_SHIFT		5
 #define X_INGPACKBOUNDARY_16B		0
+#define X_INGPACKBOUNDARY_64B		1
 
 /* GTS register */
 #define X_TIMERREG_RESTART_COUNTER	6
@@ -77,7 +82,7 @@
 /*
  * Ingress Context field values
  */
-#define X_UPDATEDELIVERY_INTERRUPT	1
+#define X_UPDATEDELIVERY_STATUS_PAGE	2
 
 #define X_RSPD_TYPE_FLBUF		0
 #define X_RSPD_TYPE_CPL			1

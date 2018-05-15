@@ -49,15 +49,12 @@
 #include <rte_cycles.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
-#include <rte_memory.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
@@ -67,6 +64,8 @@
 #include <rte_string_fns.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
+#include <rte_net.h>
+#include <rte_flow.h>
 
 #include "testpmd.h"
 
@@ -92,14 +91,15 @@ pkt_burst_receive(struct fwd_stream *fs)
 	uint16_t nb_rx;
 	uint16_t i, packet_type;
 	uint16_t is_encapsulation;
+	char buf[256];
+	struct rte_net_hdr_lens hdr_lens;
+	uint32_t sw_packet_type;
 
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t start_tsc;
 	uint64_t end_tsc;
 	uint64_t core_cycles;
-#endif
 
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	start_tsc = rte_rdtsc();
 #endif
 
@@ -121,7 +121,7 @@ pkt_burst_receive(struct fwd_stream *fs)
 	 */
 	if (verbose_level > 0)
 		printf("port %u/queue %u: received %u packets\n",
-		       (unsigned) fs->rx_port,
+		       fs->rx_port,
 		       (unsigned) fs->rx_queue,
 		       (unsigned) nb_rx);
 	for (i = 0; i < nb_rx; i++) {
@@ -144,7 +144,8 @@ pkt_burst_receive(struct fwd_stream *fs)
 		if (ol_flags & PKT_RX_RSS_HASH) {
 			printf(" - RSS hash=0x%x", (unsigned) mb->hash.rss);
 			printf(" - RSS queue=0x%x",(unsigned) fs->rx_queue);
-		} else if (ol_flags & PKT_RX_FDIR) {
+		}
+		if (ol_flags & PKT_RX_FDIR) {
 			printf(" - FDIR matched ");
 			if (ol_flags & PKT_RX_FDIR_ID)
 				printf("ID=0x%x",
@@ -156,183 +157,35 @@ pkt_burst_receive(struct fwd_stream *fs)
 				printf("hash=0x%x ID=0x%x ",
 				       mb->hash.fdir.hash, mb->hash.fdir.id);
 		}
+		if (ol_flags & PKT_RX_TIMESTAMP)
+			printf(" - timestamp %"PRIu64" ", mb->timestamp);
 		if (ol_flags & PKT_RX_VLAN_STRIPPED)
 			printf(" - VLAN tci=0x%x", mb->vlan_tci);
 		if (ol_flags & PKT_RX_QINQ_STRIPPED)
 			printf(" - QinQ VLAN tci=0x%x, VLAN tci outer=0x%x",
 					mb->vlan_tci, mb->vlan_tci_outer);
 		if (mb->packet_type) {
-			uint32_t ptype;
-
-			/* (outer) L2 packet type */
-			ptype = mb->packet_type & RTE_PTYPE_L2_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_L2_ETHER:
-				printf(" - (outer) L2 type: ETHER");
-				break;
-			case RTE_PTYPE_L2_ETHER_TIMESYNC:
-				printf(" - (outer) L2 type: ETHER_Timesync");
-				break;
-			case RTE_PTYPE_L2_ETHER_ARP:
-				printf(" - (outer) L2 type: ETHER_ARP");
-				break;
-			case RTE_PTYPE_L2_ETHER_LLDP:
-				printf(" - (outer) L2 type: ETHER_LLDP");
-				break;
-			case RTE_PTYPE_L2_ETHER_NSH:
-				printf(" - (outer) L2 type: ETHER_NSH");
-				break;
-			default:
-				printf(" - (outer) L2 type: Unknown");
-				break;
-			}
-
-			/* (outer) L3 packet type */
-			ptype = mb->packet_type & RTE_PTYPE_L3_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_L3_IPV4:
-				printf(" - (outer) L3 type: IPV4");
-				break;
-			case RTE_PTYPE_L3_IPV4_EXT:
-				printf(" - (outer) L3 type: IPV4_EXT");
-				break;
-			case RTE_PTYPE_L3_IPV6:
-				printf(" - (outer) L3 type: IPV6");
-				break;
-			case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
-				printf(" - (outer) L3 type: IPV4_EXT_UNKNOWN");
-				break;
-			case RTE_PTYPE_L3_IPV6_EXT:
-				printf(" - (outer) L3 type: IPV6_EXT");
-				break;
-			case RTE_PTYPE_L3_IPV6_EXT_UNKNOWN:
-				printf(" - (outer) L3 type: IPV6_EXT_UNKNOWN");
-				break;
-			default:
-				printf(" - (outer) L3 type: Unknown");
-				break;
-			}
-
-			/* (outer) L4 packet type */
-			ptype = mb->packet_type & RTE_PTYPE_L4_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_L4_TCP:
-				printf(" - (outer) L4 type: TCP");
-				break;
-			case RTE_PTYPE_L4_UDP:
-				printf(" - (outer) L4 type: UDP");
-				break;
-			case RTE_PTYPE_L4_FRAG:
-				printf(" - (outer) L4 type: L4_FRAG");
-				break;
-			case RTE_PTYPE_L4_SCTP:
-				printf(" - (outer) L4 type: SCTP");
-				break;
-			case RTE_PTYPE_L4_ICMP:
-				printf(" - (outer) L4 type: ICMP");
-				break;
-			case RTE_PTYPE_L4_NONFRAG:
-				printf(" - (outer) L4 type: L4_NONFRAG");
-				break;
-			default:
-				printf(" - (outer) L4 type: Unknown");
-				break;
-			}
-
-			/* packet tunnel type */
-			ptype = mb->packet_type & RTE_PTYPE_TUNNEL_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_TUNNEL_IP:
-				printf(" - Tunnel type: IP");
-				break;
-			case RTE_PTYPE_TUNNEL_GRE:
-				printf(" - Tunnel type: GRE");
-				break;
-			case RTE_PTYPE_TUNNEL_VXLAN:
-				printf(" - Tunnel type: VXLAN");
-				break;
-			case RTE_PTYPE_TUNNEL_NVGRE:
-				printf(" - Tunnel type: NVGRE");
-				break;
-			case RTE_PTYPE_TUNNEL_GENEVE:
-				printf(" - Tunnel type: GENEVE");
-				break;
-			case RTE_PTYPE_TUNNEL_GRENAT:
-				printf(" - Tunnel type: GRENAT");
-				break;
-			default:
-				printf(" - Tunnel type: Unknown");
-				break;
-			}
-
-			/* inner L2 packet type */
-			ptype = mb->packet_type & RTE_PTYPE_INNER_L2_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_INNER_L2_ETHER:
-				printf(" - Inner L2 type: ETHER");
-				break;
-			case RTE_PTYPE_INNER_L2_ETHER_VLAN:
-				printf(" - Inner L2 type: ETHER_VLAN");
-				break;
-			default:
-				printf(" - Inner L2 type: Unknown");
-				break;
-			}
-
-			/* inner L3 packet type */
-			ptype = mb->packet_type & RTE_PTYPE_INNER_L3_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_INNER_L3_IPV4:
-				printf(" - Inner L3 type: IPV4");
-				break;
-			case RTE_PTYPE_INNER_L3_IPV4_EXT:
-				printf(" - Inner L3 type: IPV4_EXT");
-				break;
-			case RTE_PTYPE_INNER_L3_IPV6:
-				printf(" - Inner L3 type: IPV6");
-				break;
-			case RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN:
-				printf(" - Inner L3 type: IPV4_EXT_UNKNOWN");
-				break;
-			case RTE_PTYPE_INNER_L3_IPV6_EXT:
-				printf(" - Inner L3 type: IPV6_EXT");
-				break;
-			case RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN:
-				printf(" - Inner L3 type: IPV6_EXT_UNKNOWN");
-				break;
-			default:
-				printf(" - Inner L3 type: Unknown");
-				break;
-			}
-
-			/* inner L4 packet type */
-			ptype = mb->packet_type & RTE_PTYPE_INNER_L4_MASK;
-			switch (ptype) {
-			case RTE_PTYPE_INNER_L4_TCP:
-				printf(" - Inner L4 type: TCP");
-				break;
-			case RTE_PTYPE_INNER_L4_UDP:
-				printf(" - Inner L4 type: UDP");
-				break;
-			case RTE_PTYPE_INNER_L4_FRAG:
-				printf(" - Inner L4 type: L4_FRAG");
-				break;
-			case RTE_PTYPE_INNER_L4_SCTP:
-				printf(" - Inner L4 type: SCTP");
-				break;
-			case RTE_PTYPE_INNER_L4_ICMP:
-				printf(" - Inner L4 type: ICMP");
-				break;
-			case RTE_PTYPE_INNER_L4_NONFRAG:
-				printf(" - Inner L4 type: L4_NONFRAG");
-				break;
-			default:
-				printf(" - Inner L4 type: Unknown");
-				break;
-			}
-			printf("\n");
-		} else
-			printf("Unknown packet type\n");
+			rte_get_ptype_name(mb->packet_type, buf, sizeof(buf));
+			printf(" - hw ptype: %s", buf);
+		}
+		sw_packet_type = rte_net_get_ptype(mb, &hdr_lens,
+			RTE_PTYPE_ALL_MASK);
+		rte_get_ptype_name(sw_packet_type, buf, sizeof(buf));
+		printf(" - sw ptype: %s", buf);
+		if (sw_packet_type & RTE_PTYPE_L2_MASK)
+			printf(" - l2_len=%d", hdr_lens.l2_len);
+		if (sw_packet_type & RTE_PTYPE_L3_MASK)
+			printf(" - l3_len=%d", hdr_lens.l3_len);
+		if (sw_packet_type & RTE_PTYPE_L4_MASK)
+			printf(" - l4_len=%d", hdr_lens.l4_len);
+		if (sw_packet_type & RTE_PTYPE_TUNNEL_MASK)
+			printf(" - tunnel_len=%d", hdr_lens.tunnel_len);
+		if (sw_packet_type & RTE_PTYPE_INNER_L2_MASK)
+			printf(" - inner_l2_len=%d", hdr_lens.inner_l2_len);
+		if (sw_packet_type & RTE_PTYPE_INNER_L3_MASK)
+			printf(" - inner_l3_len=%d", hdr_lens.inner_l3_len);
+		if (sw_packet_type & RTE_PTYPE_INNER_L4_MASK)
+			printf(" - inner_l4_len=%d", hdr_lens.inner_l4_len);
 		if (is_encapsulation) {
 			struct ipv4_hdr *ipv4_hdr;
 			struct ipv6_hdr *ipv6_hdr;
@@ -376,19 +229,8 @@ pkt_burst_receive(struct fwd_stream *fs)
 		}
 		printf(" - Receive queue=0x%x", (unsigned) fs->rx_queue);
 		printf("\n");
-		if (ol_flags != 0) {
-			unsigned rxf;
-			const char *name;
-
-			for (rxf = 0; rxf < sizeof(mb->ol_flags) * 8; rxf++) {
-				if ((ol_flags & (1ULL << rxf)) == 0)
-					continue;
-				name = rte_get_rx_ol_flag_name(1ULL << rxf);
-				if (name == NULL)
-					continue;
-				printf("  %s\n", name);
-			}
-		}
+		rte_get_rx_ol_flag_list(mb->ol_flags, buf, sizeof(buf));
+		printf("  ol_flags: %s\n", buf);
 		rte_pktmbuf_free(mb);
 	}
 

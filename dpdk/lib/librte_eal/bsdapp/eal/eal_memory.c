@@ -54,9 +54,14 @@ phys_addr_t
 rte_mem_virt2phy(const void *virtaddr)
 {
 	/* XXX not implemented. This function is only used by
-	 * rte_mempool_virt2phy() when hugepages are disabled. */
+	 * rte_mempool_virt2iova() when hugepages are disabled. */
 	(void)virtaddr;
-	return RTE_BAD_PHYS_ADDR;
+	return RTE_BAD_IOVA;
+}
+rte_iova_t
+rte_mem_virt2iova(const void *virtaddr)
+{
+	return rte_mem_virt2phy(virtaddr);
 }
 
 int
@@ -73,7 +78,7 @@ rte_eal_hugepage_init(void)
 	/* for debug purposes, hugetlbfs can be disabled */
 	if (internal_config.no_hugetlbfs) {
 		addr = malloc(internal_config.memory);
-		mcfg->memseg[0].phys_addr = (phys_addr_t)(uintptr_t)addr;
+		mcfg->memseg[0].iova = (rte_iova_t)(uintptr_t)addr;
 		mcfg->memseg[0].addr = addr;
 		mcfg->memseg[0].hugepage_sz = RTE_PGSIZE_4K;
 		mcfg->memseg[0].len = internal_config.memory;
@@ -88,7 +93,7 @@ rte_eal_hugepage_init(void)
 		hpi = &internal_config.hugepage_info[i];
 		for (j = 0; j < hpi->num_pages[0]; j++) {
 			struct rte_memseg *seg;
-			uint64_t physaddr;
+			rte_iova_t physaddr;
 			int error;
 			size_t sysctl_size = sizeof(physaddr);
 			char physaddr_str[64];
@@ -114,7 +119,7 @@ rte_eal_hugepage_init(void)
 
 			seg = &mcfg->memseg[seg_idx++];
 			seg->addr = addr;
-			seg->phys_addr = physaddr;
+			seg->iova = physaddr;
 			seg->hugepage_sz = hpi->hugepage_sz;
 			seg->len = hpi->hugepage_sz;
 			seg->nchannel = mcfg->nchannel;
@@ -191,4 +196,10 @@ error:
 	if (fd_hugepage >= 0)
 		close(fd_hugepage);
 	return -1;
+}
+
+int
+rte_eal_using_phys_addrs(void)
+{
+	return 0;
 }

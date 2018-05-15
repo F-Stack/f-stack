@@ -294,7 +294,7 @@ rte_malloc_get_socket_stats(int socket,
 /**
  * Dump statistics.
  *
- * Dump for the specified type to the console. If the type argument is
+ * Dump for the specified type to a file. If the type argument is
  * NULL, all memory types will be dumped.
  *
  * @param f
@@ -323,17 +323,24 @@ int
 rte_malloc_set_limit(const char *type, size_t max);
 
 /**
- * Return the physical address of a virtual address obtained through
+ * Return the IO address of a virtual address obtained through
  * rte_malloc
  *
  * @param addr
- *   Adress obtained from a previous rte_malloc call
+ *   Address obtained from a previous rte_malloc call
  * @return
- *   NULL on error
- *   otherwise return physical address of the buffer
+ *   RTE_BAD_IOVA on error
+ *   otherwise return an address suitable for IO
  */
-phys_addr_t
-rte_malloc_virt2phy(const void *addr);
+rte_iova_t
+rte_malloc_virt2iova(const void *addr);
+
+__rte_deprecated
+static inline phys_addr_t
+rte_malloc_virt2phy(const void *addr)
+{
+	return rte_malloc_virt2iova(addr);
+}
 
 #ifdef __cplusplus
 }

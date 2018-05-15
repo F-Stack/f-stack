@@ -31,7 +31,7 @@
 #define BNX2X_PMD_VER_PREFIX "BNX2X PMD"
 #define BNX2X_PMD_VERSION_MAJOR 1
 #define BNX2X_PMD_VERSION_MINOR 0
-#define BNX2X_PMD_VERSION_REVISION 1
+#define BNX2X_PMD_VERSION_REVISION 5
 #define BNX2X_PMD_VERSION_PATCH 1
 
 static inline const char *
@@ -120,7 +120,7 @@ static int bnx2x_alloc_mem(struct bnx2x_softc *sc);
 static void bnx2x_free_mem(struct bnx2x_softc *sc);
 static int bnx2x_alloc_fw_stats_mem(struct bnx2x_softc *sc);
 static void bnx2x_free_fw_stats_mem(struct bnx2x_softc *sc);
-static __attribute__ ((noinline))
+static __rte_noinline
 int bnx2x_nic_load(struct bnx2x_softc *sc);
 
 static int bnx2x_handle_sp_tq(struct bnx2x_softc *sc);
@@ -184,7 +184,7 @@ bnx2x_dma_alloc(struct bnx2x_softc *sc, size_t size, struct bnx2x_dma *dma,
 		PMD_DRV_LOG(ERR, "DMA alloc failed for %s", msg);
 		return -ENOMEM;
 	}
-	dma->paddr = (uint64_t) z->phys_addr;
+	dma->paddr = (uint64_t) z->iova;
 	dma->vaddr = z->addr;
 
 	PMD_DRV_LOG(DEBUG, "%s: virt=%p phys=%" PRIx64, msg, dma->vaddr, dma->paddr);
@@ -419,7 +419,7 @@ void bnx2x_read_dmae(struct bnx2x_softc *sc, uint32_t src_addr, uint32_t len32)
 }
 
 void
-bnx2x_write_dmae(struct bnx2x_softc *sc, phys_addr_t dma_addr, uint32_t dst_addr,
+bnx2x_write_dmae(struct bnx2x_softc *sc, rte_iova_t dma_addr, uint32_t dst_addr,
 	       uint32_t len32)
 {
 	struct dmae_command dmae;
@@ -447,7 +447,7 @@ bnx2x_write_dmae(struct bnx2x_softc *sc, phys_addr_t dma_addr, uint32_t dst_addr
 }
 
 static void
-bnx2x_write_dmae_phys_len(struct bnx2x_softc *sc, phys_addr_t phys_addr,
+bnx2x_write_dmae_phys_len(struct bnx2x_softc *sc, rte_iova_t phys_addr,
 			uint32_t addr, uint32_t len)
 {
 	uint32_t dmae_wr_max = DMAE_LEN32_WR_MAX(sc);
@@ -823,14 +823,14 @@ bnx2x_fw_command(struct bnx2x_softc *sc, uint32_t command, uint32_t param)
 
 static void
 __storm_memset_dma_mapping(struct bnx2x_softc *sc, uint32_t addr,
-			   phys_addr_t mapping)
+			   rte_iova_t mapping)
 {
 	REG_WR(sc, addr, U64_LO(mapping));
 	REG_WR(sc, (addr + 4), U64_HI(mapping));
 }
 
 static void
-storm_memset_spq_addr(struct bnx2x_softc *sc, phys_addr_t mapping,
+storm_memset_spq_addr(struct bnx2x_softc *sc, rte_iova_t mapping,
 		      uint16_t abs_fid)
 {
 	uint32_t addr = (XSEM_REG_FAST_MEMORY +
@@ -887,7 +887,7 @@ storm_memset_eq_prod(struct bnx2x_softc *sc, uint16_t eq_prod, uint16_t pfid)
 /*
  * Post a slowpath command.
  *
- * A slowpath command is used to propogate a configuration change through
+ * A slowpath command is used to propagate a configuration change through
  * the controller in a controlled manner, allowing each STORM processor and
  * other H/W blocks to phase in the change.  The commands sent on the
  * slowpath are referred to as ramrods.  Depending on the ramrod used the
@@ -1397,10 +1397,10 @@ bnx2x_del_all_macs(struct bnx2x_softc *sc, struct ecore_vlan_mac_obj *mac_obj,
 	return rc;
 }
 
-int
+static int
 bnx2x_fill_accept_flags(struct bnx2x_softc *sc, uint32_t rx_mode,
-		      unsigned long *rx_accept_flags,
-		      unsigned long *tx_accept_flags)
+			unsigned long *rx_accept_flags,
+			unsigned long *tx_accept_flags)
 {
 	/* Clear the flags first */
 	*rx_accept_flags = 0;
@@ -1438,6 +1438,7 @@ bnx2x_fill_accept_flags(struct bnx2x_softc *sc, uint32_t rx_mode,
 
 		break;
 
+	case BNX2X_RX_MODE_ALLMULTI_PROMISC:
 	case BNX2X_RX_MODE_PROMISC:
 		/*
 		 * According to deffinition of SI mode, iface in promisc mode
@@ -1497,7 +1498,7 @@ bnx2x_set_q_rx_mode(struct bnx2x_softc *sc, uint8_t cl_id,
 
 	ramrod_param.rdata = BNX2X_SP(sc, rx_mode_rdata);
 	ramrod_param.rdata_mapping =
-	    (phys_addr_t)BNX2X_SP_MAPPING(sc, rx_mode_rdata),
+	    (rte_iova_t)BNX2X_SP_MAPPING(sc, rx_mode_rdata),
 	    bnx2x_set_bit(ECORE_FILTER_RX_MODE_PENDING, &sc->sp_state);
 
 	ramrod_param.ramrod_flags = ramrod_flags;
@@ -1961,7 +1962,7 @@ static void bnx2x_squeeze_objects(struct bnx2x_softc *sc)
 }
 
 /* stop the controller */
-__attribute__ ((noinline))
+__rte_noinline
 int
 bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link)
 {
@@ -2001,7 +2002,7 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 
 	/*
 	 * Nothing to do during unload if previous bnx2x_nic_load()
-	 * did not completed succesfully - all resourses are released.
+	 * did not completed successfully - all resourses are released.
 	 */
 	if ((sc->state == BNX2X_STATE_CLOSED) || (sc->state == BNX2X_STATE_ERROR)) {
 		return 0;
@@ -2134,7 +2135,7 @@ int bnx2x_tx_encap(struct bnx2x_tx_queue *txq, struct rte_mbuf *m0)
 	tx_start_bd = &txq->tx_ring[TX_BD(bd_prod, txq)].start_bd;
 
 	tx_start_bd->addr =
-	    rte_cpu_to_le_64(rte_mbuf_data_dma_addr(m0));
+	    rte_cpu_to_le_64(rte_mbuf_data_iova(m0));
 	tx_start_bd->nbytes = rte_cpu_to_le_16(m0->data_len);
 	tx_start_bd->bd_flags.as_bitfield = ETH_TX_BD_FLAGS_START_BD;
 	tx_start_bd->general_data =
@@ -2219,7 +2220,7 @@ int bnx2x_tx_encap(struct bnx2x_tx_queue *txq, struct rte_mbuf *m0)
 	}
 
 	PMD_TX_LOG(DEBUG,
-		   "start bd: nbytes %d flags %x vlan %x\n",
+		   "start bd: nbytes %d flags %x vlan %x",
 		   tx_start_bd->nbytes,
 		   tx_start_bd->bd_flags.as_bitfield,
 		   tx_start_bd->vlan_or_ethertype);
@@ -3930,7 +3931,7 @@ static void bnx2x_attn_int_deasserted2(struct bnx2x_softc *sc, uint32_t attn)
 			mask1 = REG_RD(sc, PXP2_REG_PXP2_INT_MASK_1);
 			val0 = REG_RD(sc, PXP2_REG_PXP2_INT_STS_0);
 			/*
-			 * If the olny PXP2_EOP_ERROR_BIT is set in
+			 * If the only PXP2_EOP_ERROR_BIT is set in
 			 * STS0 and STS1 - clear it
 			 *
 			 * probably we lose additional attentions between
@@ -4598,9 +4599,9 @@ static void bnx2x_init_func_obj(struct bnx2x_softc *sc)
 	ecore_init_func_obj(sc,
 			    &sc->func_obj,
 			    BNX2X_SP(sc, func_rdata),
-			    (phys_addr_t)BNX2X_SP_MAPPING(sc, func_rdata),
+			    (rte_iova_t)BNX2X_SP_MAPPING(sc, func_rdata),
 			    BNX2X_SP(sc, func_afex_rdata),
-			    (phys_addr_t)BNX2X_SP_MAPPING(sc, func_afex_rdata),
+			    (rte_iova_t)BNX2X_SP_MAPPING(sc, func_afex_rdata),
 			    &bnx2x_func_sp_drv);
 }
 
@@ -4771,7 +4772,7 @@ static void bnx2x_map_sb_state_machines(struct hc_index_data *index_data)
 }
 
 static void
-bnx2x_init_sb(struct bnx2x_softc *sc, phys_addr_t busaddr, int vfid,
+bnx2x_init_sb(struct bnx2x_softc *sc, rte_iova_t busaddr, int vfid,
 	    uint8_t vf_valid, int fw_sb_id, int igu_sb_id)
 {
 	struct hc_status_block_data_e2 sb_data_e2;
@@ -4917,7 +4918,7 @@ static void bnx2x_init_eth_fp(struct bnx2x_softc *sc, int idx)
 			     sc->max_cos,
 			     SC_FUNC(sc),
 			     BNX2X_SP(sc, q_rdata),
-			     (phys_addr_t)BNX2X_SP_MAPPING(sc, q_rdata),
+			     (rte_iova_t)BNX2X_SP_MAPPING(sc, q_rdata),
 			     q_type);
 
 	/* configure classification DBs */
@@ -4927,7 +4928,7 @@ static void bnx2x_init_eth_fp(struct bnx2x_softc *sc, int idx)
 			   idx,
 			   SC_FUNC(sc),
 			   BNX2X_SP(sc, mac_rdata),
-			   (phys_addr_t)BNX2X_SP_MAPPING(sc, mac_rdata),
+			   (rte_iova_t)BNX2X_SP_MAPPING(sc, mac_rdata),
 			   ECORE_FILTER_MAC_PENDING, &sc->sp_state,
 			   ECORE_OBJ_TYPE_RX_TX, &sc->macs_pool);
 }
@@ -5027,7 +5028,7 @@ static void bnx2x_init_tx_rings(struct bnx2x_softc *sc)
 static void bnx2x_init_def_sb(struct bnx2x_softc *sc)
 {
 	struct host_sp_status_block *def_sb = sc->def_sb;
-	phys_addr_t mapping = sc->def_sb_dma.paddr;
+	rte_iova_t mapping = sc->def_sb_dma.paddr;
 	int igu_sp_sb_index;
 	int igu_seg_id;
 	int port = SC_PORT(sc);
@@ -5699,7 +5700,7 @@ static void bnx2x_init_objs(struct bnx2x_softc *sc)
 			     SC_FUNC(sc),
 			     SC_FUNC(sc),
 			     BNX2X_SP(sc, mcast_rdata),
-			     (phys_addr_t)BNX2X_SP_MAPPING(sc, mcast_rdata),
+			     (rte_iova_t)BNX2X_SP_MAPPING(sc, mcast_rdata),
 			     ECORE_FILTER_MCAST_PENDING,
 			     &sc->sp_state, o_type);
 
@@ -5723,7 +5724,7 @@ static void bnx2x_init_objs(struct bnx2x_softc *sc)
 				  SC_FUNC(sc),
 				  SC_FUNC(sc),
 				  BNX2X_SP(sc, rss_rdata),
-				  (phys_addr_t)BNX2X_SP_MAPPING(sc, rss_rdata),
+				  (rte_iova_t)BNX2X_SP_MAPPING(sc, rss_rdata),
 				  ECORE_FILTER_RSS_CONF_PENDING,
 				  &sc->sp_state, ECORE_OBJ_TYPE_RX);
 }
@@ -5909,7 +5910,7 @@ static void bnx2x_set_234_gates(struct bnx2x_softc *sc, uint8_t close)
 			       (val | HC_CONFIG_0_REG_BLOCK_DISABLE_0));
 
 	} else {
-/* Prevent incomming interrupts in IGU */
+/* Prevent incoming interrupts in IGU */
 		val = REG_RD(sc, IGU_REG_BLOCK_CONFIGURATION);
 
 		if (close)
@@ -6444,9 +6445,9 @@ bnx2x_pf_rx_q_prep(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 	pause->pri_map = 1;
 
 	/* rxq setup */
-	rxq_init->dscr_map = (phys_addr_t)rxq->rx_ring_phys_addr;
-	rxq_init->rcq_map = (phys_addr_t)rxq->cq_ring_phys_addr;
-	rxq_init->rcq_np_map = (phys_addr_t)(rxq->cq_ring_phys_addr +
+	rxq_init->dscr_map = (rte_iova_t)rxq->rx_ring_phys_addr;
+	rxq_init->rcq_map = (rte_iova_t)rxq->cq_ring_phys_addr;
+	rxq_init->rcq_np_map = (rte_iova_t)(rxq->cq_ring_phys_addr +
 					      BNX2X_PAGE_SIZE);
 
 	/*
@@ -6485,7 +6486,7 @@ bnx2x_pf_tx_q_prep(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 		PMD_TX_LOG(ERR, "ERROR: TX queue is NULL");
 		return;
 	}
-	txq_init->dscr_map = (phys_addr_t)txq->tx_ring_phys_addr;
+	txq_init->dscr_map = (rte_iova_t)txq->tx_ring_phys_addr;
 	txq_init->sb_cq_index = HC_INDEX_ETH_FIRST_TX_CQ_CONS + cos;
 	txq_init->traffic_type = LLFC_TRAFFIC_TYPE_NW;
 	txq_init->fw_sb_id = fp->fw_sb_id;
@@ -6603,7 +6604,7 @@ bnx2x_config_rss_pf(struct bnx2x_softc *sc, struct ecore_rss_config_obj *rss_obj
 	/* Hash bits */
 	params.rss_result_mask = MULTI_MASK;
 
-	(void)rte_memcpy(params.ind_table, rss_obj->ind_table,
+	rte_memcpy(params.ind_table, rss_obj->ind_table,
 			 sizeof(params.ind_table));
 
 	if (config_hash) {
@@ -6670,7 +6671,7 @@ bnx2x_set_mac_one(struct bnx2x_softc *sc, uint8_t * mac,
 
 	/* fill a user request section if needed */
 	if (!bnx2x_test_bit(RAMROD_CONT, ramrod_flags)) {
-		(void)rte_memcpy(ramrod_param.user_req.u.mac.mac, mac,
+		rte_memcpy(ramrod_param.user_req.u.mac.mac, mac,
 				 ETH_ALEN);
 
 		bnx2x_set_bit(mac_type, &ramrod_param.user_req.vlan_mac_flags);
@@ -6878,7 +6879,7 @@ static void bnx2x_link_report(struct bnx2x_softc *sc)
 	sc->link_cnt++;
 
 	/* report new link params and remember the state for the next time */
-	(void)rte_memcpy(&sc->last_reported_link, &cur_data, sizeof(cur_data));
+	rte_memcpy(&sc->last_reported_link, &cur_data, sizeof(cur_data));
 
 	if (bnx2x_test_bit(BNX2X_LINK_REPORT_LINK_DOWN,
 			 &cur_data.link_report_flags)) {
@@ -7016,34 +7017,6 @@ static int bnx2x_initial_phy_init(struct bnx2x_softc *sc, int load_mode)
 
 	bnx2x_set_requested_fc(sc);
 
-	if (CHIP_REV_IS_SLOW(sc)) {
-		uint32_t bond = CHIP_BOND_ID(sc);
-		uint32_t feat = 0;
-
-		if (CHIP_IS_E2(sc) && CHIP_IS_MODE_4_PORT(sc)) {
-			feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_BMAC;
-		} else if (bond & 0x4) {
-			if (CHIP_IS_E3(sc)) {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_XMAC;
-			} else {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_BMAC;
-			}
-		} else if (bond & 0x8) {
-			if (CHIP_IS_E3(sc)) {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_UMAC;
-			} else {
-				feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_EMAC;
-			}
-		}
-
-/* disable EMAC for E3 and above */
-		if (bond & 0x2) {
-			feat |= ELINK_FEATURE_CONFIG_EMUL_DISABLE_EMAC;
-		}
-
-		sc->link_params.feature_config_flags |= feat;
-	}
-
 	if (load_mode == LOAD_DIAG) {
 		lp->loopback_mode = ELINK_LOOPBACK_XGXS;
 /* Prefer doing PHY loopback at 10G speed, if possible */
@@ -7151,7 +7124,7 @@ void bnx2x_periodic_callout(struct bnx2x_softc *sc)
 }
 
 /* start the controller */
-static __attribute__ ((noinline))
+static __rte_noinline
 int bnx2x_nic_load(struct bnx2x_softc *sc)
 {
 	uint32_t val;
@@ -11086,7 +11059,7 @@ static int bnx2x_init_hw_func(struct bnx2x_softc *sc)
 	for (i = 0; i < L2_ILT_LINES(sc); i++) {
 		ilt->lines[cdu_ilt_start + i].page = sc->context[i].vcxt;
 		ilt->lines[cdu_ilt_start + i].page_mapping =
-		    (phys_addr_t)sc->context[i].vcxt_dma.paddr;
+		    (rte_iova_t)sc->context[i].vcxt_dma.paddr;
 		ilt->lines[cdu_ilt_start + i].size = sc->context[i].size;
 	}
 	ecore_ilt_init_op(sc, INITOP_SET);
@@ -11384,7 +11357,7 @@ static void bnx2x_reset_port(struct bnx2x_softc *sc)
 	}
 }
 
-static void bnx2x_ilt_wr(struct bnx2x_softc *sc, uint32_t index, phys_addr_t addr)
+static void bnx2x_ilt_wr(struct bnx2x_softc *sc, uint32_t index, rte_iova_t addr)
 {
 	int reg;
 	uint32_t wb_write[2];
@@ -11614,7 +11587,7 @@ static int ecore_gunzip(struct bnx2x_softc *sc, const uint8_t * zbuf, int len)
 }
 
 static void
-ecore_write_dmae_phys_len(struct bnx2x_softc *sc, phys_addr_t phys_addr,
+ecore_write_dmae_phys_len(struct bnx2x_softc *sc, rte_iova_t phys_addr,
 			  uint32_t addr, uint32_t len)
 {
 	bnx2x_write_dmae_phys_len(sc, phys_addr, addr, len);

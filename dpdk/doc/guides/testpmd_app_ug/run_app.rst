@@ -72,7 +72,7 @@ See the DPDK Getting Started Guides for more information on these options.
 
 *   ``-b, --pci-blacklist domain:bus:devid.func``
 
-    Blacklist a PCI devise to prevent EAL from using it. Multiple -b options are allowed.
+    Blacklist a PCI device to prevent EAL from using it. Multiple -b options are allowed.
 
 *   ``-d LIB.so``
 
@@ -94,10 +94,6 @@ See the DPDK Getting Started Guides for more information on these options.
 
     Display the version information on startup.
 
-*   ``--xen-dom0``
-
-    Support application running on Xen Domain0 without hugetlbfs.
-
 *   ``--syslog``
 
     Set the syslog facility.
@@ -109,6 +105,10 @@ See the DPDK Getting Started Guides for more information on these options.
 *   ``--huge-dir``
 
     Specify the directory where the hugetlbfs is mounted.
+
+*   ``mbuf-pool-ops-name``:
+
+    Pool ops name for mbuf to use.
 
 *   ``--proc-type``
 
@@ -130,7 +130,7 @@ See the DPDK Getting Started Guides for more information on these options.
 
     For example::
 
-       --vdev 'eth_pcap0,rx_pcap=input.pcap,tx_pcap=output.pcap'
+       --vdev 'net_pcap0,rx_pcap=input.pcap,tx_pcap=output.pcap'
 
 *   ``--base-virtaddr``
 
@@ -165,7 +165,7 @@ They must be separated from the EAL options, shown in the previous section, with
 
 .. code-block:: console
 
-    sudo ./testpmd -c 0xF -n 4 -- -i --portmask=0x1 --nb-cores=2
+    sudo ./testpmd -l 0-3 -n 4 -- -i --portmask=0x1 --nb-cores=2
 
 The commandline options are:
 
@@ -187,6 +187,19 @@ The commandline options are:
 *   ``-a, --auto-start``
 
     Start forwarding on initialization.
+
+*   ``--tx-first``
+
+    Start forwarding, after sending a burst of packets first.
+
+.. Note::
+
+   This flag should be only used in non-interactive mode.
+
+*   ``--stats-period PERIOD``
+
+    Display statistics every PERIOD seconds, if interactive mode is disabled.
+    The default value is 0, which means that the statistics will not be displayed.
 
 *   ``--nb-cores=N``
 
@@ -211,7 +224,12 @@ The commandline options are:
 
 *   ``--numa``
 
-    Enable NUMA-aware allocation of RX/TX rings and of RX memory buffers (mbufs).
+    Enable NUMA-aware allocation of RX/TX rings and of RX memory buffers
+    (mbufs). [Default setting]
+
+*   ``--no-numa``
+
+    Disable NUMA-aware allocation of RX/TX rings and of RX memory buffers (mbufs).
 
 *   ``--port-numa-config=(port,socket)[,(port,socket)]``
 
@@ -281,9 +299,13 @@ The commandline options are:
     In perfect filter mode, when a rule is added with queue = -1, the packet will be enqueued into the RX drop-queue.
     If the drop-queue does not exist, the packet is dropped. The default value is N=127.
 
-*   ``--crc-strip``
+*   ``--disable-crc-strip``
 
-    Enable hardware CRC stripping.
+    Disable hardware CRC stripping.
+
+*   ``--enable-lro``
+
+    Enable large receive offload.
 
 *   ``--enable-rx-cksum``
 
@@ -340,6 +362,7 @@ The commandline options are:
        csum
        icmpecho
        ieee1588
+       tm
 
 *   ``--rss-ip``
 
@@ -450,8 +473,39 @@ The commandline options are:
 
 *   ``--txpkts=X[,Y]``
 
-    Set TX segment sizes.
+    Set TX segment sizes or total packet length. Valid for ``tx-only``
+    and ``flowgen`` forwarding modes.
 
 *   ``--disable-link-check``
 
     Disable check on link status when starting/stopping ports.
+
+*   ``--no-lsc-interrupt``
+
+    Disable LSC interrupts for all ports, even those supporting it.
+
+*   ``--no-rmv-interrupt``
+
+    Disable RMV interrupts for all ports, even those supporting it.
+
+*   ``--bitrate-stats=N``
+
+    Set the logical core N to perform bitrate calculation.
+
+*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>``
+
+    Enable printing the occurrence of the designated event. Using all will
+    enable all of them.
+
+*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>``
+
+    Disable printing the occurrence of the designated event. Using all will
+    disable all of them.
+
+*   ``--flow-isolate-all``
+
+    Providing this parameter requests flow API isolated mode on all ports at
+    initialization time. It ensures all traffic is received through the
+    configured flow rules only (see flow command).
+
+    Ports that do not support this mode are automatically discarded.

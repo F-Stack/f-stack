@@ -50,10 +50,9 @@ FF_PROG_CFLAGS+= -I${TOPDIR}/tools/compat/include -D__BSD_VISIBLE
 FF_PROG_CFLAGS+= -include ${FF_DPDK}/include/rte_config.h
 FF_PROG_CFLAGS+= -I${FF_DPDK}/include
 
-FF_PROG_LIBS:= -L${TOPDIR}/tools/compat -Wl,--whole-archive -lffcompat
-FF_PROG_LIBS+= -Wl,--no-whole-archive -L${FF_DPDK}/lib
-FF_PROG_LIBS+= -Wl,--whole-archive -lrte_eal -lrte_mempool -lrte_ring
-FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -pthread
+FF_PROG_LIBS:= -L${TOPDIR}/tools/compat -Wl,--whole-archive,-lffcompat,--no-whole-archive
+FF_PROG_LIBS+= -L${FF_DPDK}/lib -Wl,--whole-archive,-ldpdk,--no-whole-archive
+FF_PROG_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma
 
 CFLAGS+= -Wno-unused-but-set-variable -Wno-unused-variable
 CFLAGS+= ${FF_PROG_CFLAGS}

@@ -60,14 +60,14 @@ struct rte_port_ethdev_reader {
 	struct rte_port_in_stats stats;
 
 	uint16_t queue_id;
-	uint8_t port_id;
+	uint16_t port_id;
 };
 
 static void *
 rte_port_ethdev_reader_create(void *params, int socket_id)
 {
 	struct rte_port_ethdev_reader_params *conf =
-			(struct rte_port_ethdev_reader_params *) params;
+			params;
 	struct rte_port_ethdev_reader *port;
 
 	/* Check input parameters */
@@ -95,7 +95,7 @@ static int
 rte_port_ethdev_reader_rx(void *port, struct rte_mbuf **pkts, uint32_t n_pkts)
 {
 	struct rte_port_ethdev_reader *p =
-		(struct rte_port_ethdev_reader *) port;
+		port;
 	uint16_t rx_pkt_cnt;
 
 	rx_pkt_cnt = rte_eth_rx_burst(p->port_id, p->queue_id, pkts, n_pkts);
@@ -120,7 +120,7 @@ static int rte_port_ethdev_reader_stats_read(void *port,
 		struct rte_port_in_stats *stats, int clear)
 {
 	struct rte_port_ethdev_reader *p =
-			(struct rte_port_ethdev_reader *) port;
+			port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));
@@ -156,14 +156,14 @@ struct rte_port_ethdev_writer {
 	uint16_t tx_buf_count;
 	uint64_t bsz_mask;
 	uint16_t queue_id;
-	uint8_t port_id;
+	uint16_t port_id;
 };
 
 static void *
 rte_port_ethdev_writer_create(void *params, int socket_id)
 {
 	struct rte_port_ethdev_writer_params *conf =
-			(struct rte_port_ethdev_writer_params *) params;
+			params;
 	struct rte_port_ethdev_writer *port;
 
 	/* Check input parameters */
@@ -212,7 +212,7 @@ static int
 rte_port_ethdev_writer_tx(void *port, struct rte_mbuf *pkt)
 {
 	struct rte_port_ethdev_writer *p =
-		(struct rte_port_ethdev_writer *) port;
+		port;
 
 	p->tx_buf[p->tx_buf_count++] = pkt;
 	RTE_PORT_ETHDEV_WRITER_STATS_PKTS_IN_ADD(p, 1);
@@ -228,7 +228,7 @@ rte_port_ethdev_writer_tx_bulk(void *port,
 		uint64_t pkts_mask)
 {
 	struct rte_port_ethdev_writer *p =
-		(struct rte_port_ethdev_writer *) port;
+		port;
 	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
 	uint64_t expr = (pkts_mask & (pkts_mask + 1)) |
@@ -274,7 +274,7 @@ static int
 rte_port_ethdev_writer_flush(void *port)
 {
 	struct rte_port_ethdev_writer *p =
-		(struct rte_port_ethdev_writer *) port;
+		port;
 
 	if (p->tx_buf_count > 0)
 		send_burst(p);
@@ -300,7 +300,7 @@ static int rte_port_ethdev_writer_stats_read(void *port,
 		struct rte_port_out_stats *stats, int clear)
 {
 	struct rte_port_ethdev_writer *p =
-		(struct rte_port_ethdev_writer *) port;
+		port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));
@@ -337,14 +337,14 @@ struct rte_port_ethdev_writer_nodrop {
 	uint64_t bsz_mask;
 	uint64_t n_retries;
 	uint16_t queue_id;
-	uint8_t port_id;
+	uint16_t port_id;
 };
 
 static void *
 rte_port_ethdev_writer_nodrop_create(void *params, int socket_id)
 {
 	struct rte_port_ethdev_writer_nodrop_params *conf =
-			(struct rte_port_ethdev_writer_nodrop_params *) params;
+			params;
 	struct rte_port_ethdev_writer_nodrop *port;
 
 	/* Check input parameters */
@@ -418,7 +418,7 @@ static int
 rte_port_ethdev_writer_nodrop_tx(void *port, struct rte_mbuf *pkt)
 {
 	struct rte_port_ethdev_writer_nodrop *p =
-		(struct rte_port_ethdev_writer_nodrop *) port;
+		port;
 
 	p->tx_buf[p->tx_buf_count++] = pkt;
 	RTE_PORT_ETHDEV_WRITER_NODROP_STATS_PKTS_IN_ADD(p, 1);
@@ -434,7 +434,7 @@ rte_port_ethdev_writer_nodrop_tx_bulk(void *port,
 		uint64_t pkts_mask)
 {
 	struct rte_port_ethdev_writer_nodrop *p =
-		(struct rte_port_ethdev_writer_nodrop *) port;
+		port;
 
 	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
@@ -456,8 +456,8 @@ rte_port_ethdev_writer_nodrop_tx_bulk(void *port,
 			return 0;
 
 		/*
-		 * If we didnt manage to send all packets in single burst, move
-		 * remaining packets to the buffer and call send burst.
+		 * If we did not manage to send all packets in single burst,
+		 * move remaining packets to the buffer and call send burst.
 		 */
 		for (; n_pkts_ok < n_pkts; n_pkts_ok++) {
 			struct rte_mbuf *pkt = pkts[n_pkts_ok];
@@ -487,7 +487,7 @@ static int
 rte_port_ethdev_writer_nodrop_flush(void *port)
 {
 	struct rte_port_ethdev_writer_nodrop *p =
-		(struct rte_port_ethdev_writer_nodrop *) port;
+		port;
 
 	if (p->tx_buf_count > 0)
 		send_burst_nodrop(p);
@@ -513,7 +513,7 @@ static int rte_port_ethdev_writer_nodrop_stats_read(void *port,
 		struct rte_port_out_stats *stats, int clear)
 {
 	struct rte_port_ethdev_writer_nodrop *p =
-		(struct rte_port_ethdev_writer_nodrop *) port;
+		port;
 
 	if (stats != NULL)
 		memcpy(stats, &p->stats, sizeof(p->stats));

@@ -32,10 +32,10 @@
 #
 # toolchain:
 #
-#   - define CC, LD, AR, AS, ... (overriden by cmdline value)
-#   - define TOOLCHAIN_CFLAGS variable (overriden by cmdline value)
-#   - define TOOLCHAIN_LDFLAGS variable (overriden by cmdline value)
-#   - define TOOLCHAIN_ASFLAGS variable (overriden by cmdline value)
+#   - define CC, LD, AR, AS, ... (overridden by cmdline value)
+#   - define TOOLCHAIN_CFLAGS variable (overridden by cmdline value)
+#   - define TOOLCHAIN_LDFLAGS variable (overridden by cmdline value)
+#   - define TOOLCHAIN_ASFLAGS variable (overridden by cmdline value)
 #
 
 CC        = $(CROSS)gcc
@@ -81,9 +81,9 @@ ifeq ($(RTE_DEVEL_BUILD),y)
 WERROR_FLAGS += -Werror
 endif
 
-# There are many issues reported for ARMv7 architecture
+# There are many issues reported for strict alignment architectures
 # which are not necessarily fatal. Report as warnings.
-ifeq ($(CONFIG_RTE_ARCH_ARMv7),y)
+ifeq ($(CONFIG_RTE_ARCH_STRICT_ALIGN),y)
 WERROR_FLAGS += -Wno-error=cast-align
 endif
 
@@ -97,6 +97,13 @@ endif
 # workaround GCC bug with warning "may be used uninitialized"
 ifeq ($(shell test $(GCC_VERSION) -lt 47 && echo 1), 1)
 WERROR_FLAGS += -Wno-uninitialized
+endif
+
+ifeq ($(shell test $(GCC_VERSION) -gt 70 && echo 1), 1)
+# Tell GCC only to error for switch fallthroughs without a suitable comment
+WERROR_FLAGS += -Wimplicit-fallthrough=2
+# Ignore errors for snprintf truncation
+WERROR_FLAGS += -Wno-format-truncation
 endif
 
 export CC AS AR LD OBJCOPY OBJDUMP STRIP READELF

@@ -35,6 +35,7 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_power.a
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3 -fno-strict-aliasing
+LDLIBS += -lrte_eal
 
 EXPORT_MAP := rte_power_version.map
 
@@ -46,8 +47,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_POWER) += rte_power_kvm_vm.c guest_channel.c
 
 # install this header file
 SYMLINK-$(CONFIG_RTE_LIBRTE_POWER)-include := rte_power.h
-
-# this lib needs eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_POWER) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+    Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -95,9 +95,6 @@ Other features are supported using optional MACRO configuration. They include:
 
 *   HW extend dual VLAN
 
-*   Enabled by RX_OLFLAGS (RTE_IXGBE_RX_OLFLAGS_ENABLE=y)
-
-
 To guarantee the constraint, configuration flags in dev_conf.rxmode will be checked:
 
 *   hw_vlan_strip
@@ -129,7 +126,7 @@ The tx_rs_thresh value must be greater than or equal to RTE_PMD_IXGBE_TX_MAX_BUR
 but less or equal to RTE_IXGBE_TX_MAX_FREE_BUF_SZ.
 Consequently, by default the tx_rs_thresh value is in the range 32 to 64.
 
-Feature not Supported by RX Vector PMD
+Feature not Supported by TX Vector PMD
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 TX vPMD only works when txq_flags is set to IXGBE_SIMPLE_FLAGS.
@@ -147,41 +144,34 @@ The following MACROs are used for these three features:
 
 *   ETH_TXQ_FLAGS_NOXSUMTCP
 
+Application Programming Interface
+---------------------------------
+
+In DPDK release v16.11 an API for ixgbe specific functions has been added to the ixgbe PMD.
+The declarations for the API functions are in the header ``rte_pmd_ixgbe.h``.
 
 Sample Application Notes
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-testpmd
-^^^^^^^
-
-By default, using CONFIG_RTE_IXGBE_RX_OLFLAGS_ENABLE=y:
-
-.. code-block:: console
-
-    ./x86_64-native-linuxapp-gcc/app/testpmd -c 300 -n 4 -- -i --burst=32 --rxfreet=32 --mbcache=250 --txpt=32 --rxht=8 --rxwt=0 --txfreet=32 --txrst=32 --txqflags=0xf01
-
-When CONFIG_RTE_IXGBE_RX_OLFLAGS_ENABLE=n, better performance can be achieved:
-
-.. code-block:: console
-
-    ./x86_64-native-linuxapp-gcc/app/testpmd -c 300 -n 4 -- -i --burst=32 --rxfreet=32 --mbcache=250 --txpt=32 --rxht=8 --rxwt=0 --txfreet=32 --txrst=32 --txqflags=0xf01 --disable-hw-vlan
+------------------------
 
 l3fwd
-^^^^^
+~~~~~
 
 When running l3fwd with vPMD, there is one thing to note.
 In the configuration, ensure that port_conf.rxmode.hw_ip_checksum=0.
 Otherwise, by default, RX vPMD is disabled.
 
 load_balancer
-^^^^^^^^^^^^^
+~~~~~~~~~~~~~
 
 As in the case of l3fwd, set configure port_conf.rxmode.hw_ip_checksum=0 to enable vPMD.
 In addition, for improved performance, use -bsz "(32,32),(64,64),(32,32)" in load_balancer to avoid using the default burst size of 144.
 
 
+Limitations or Known issues
+---------------------------
+
 Malicious Driver Detection not Supported
-----------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Intel x550 series NICs support a feature called MDD (Malicious
 Driver Detection) which checks the behavior of the VF driver.
@@ -195,14 +185,17 @@ There's significant performance impact to support MDD. DPDK should check if
 the advanced context descriptor should be set and set it. And DPDK has to ask
 the info about the header length from the upper layer, because parsing the
 packet itself is not acceptable. So, it's too expensive to support MDD.
-When using kernel PF + DPDK VF on x550, please make sure using the kernel
-driver that disables MDD or can disable MDD. (Some kernel driver can use
-this CLI 'insmod ixgbe.ko MDD=0,0' to disable MDD. Some kernel driver disables
-it by default.)
+When using kernel PF + DPDK VF on x550, please make sure to use a kernel
+PF driver that disables MDD or can disable MDD.
+
+Some kernel drivers already disable MDD by default while some kernels can use
+the command ``insmod ixgbe.ko MDD=0,0`` to disable MDD. Each "0" in the
+command refers to a port. For example, if there are 6 ixgbe ports, the command
+should be changed to ``insmod ixgbe.ko MDD=0,0,0,0,0,0``.
 
 
 Statistics
-----------
+~~~~~~~~~~
 
 The statistics of ixgbe hardware must be polled regularly in order for it to
 remain consistent. Running a DPDK application without polling the statistics will
@@ -224,3 +217,71 @@ be calculated as follows:
   max_read_interval = ~4 mins 48 sec.
 
 In order to ensure valid results, it is recommended to poll every 4 minutes.
+
+MTU setting
+~~~~~~~~~~~
+
+Although the user can set the MTU separately on PF and VF ports, the ixgbe NIC
+only supports one global MTU per physical port.
+So when the user sets different MTUs on PF and VF ports in one physical port,
+the real MTU for all these PF and VF ports is the largest value set.
+This behavior is based on the kernel driver behavior.
+
+VF MAC address setting
+~~~~~~~~~~~~~~~~~~~~~~
+
+On ixgbe, the concept of "pool" can be used for different things depending on
+the mode. In VMDq mode, "pool" means a VMDq pool. In IOV mode, "pool" means a
+VF.
+
+There is no RTE API to add a VF's MAC address from the PF. On ixgbe, the
+``rte_eth_dev_mac_addr_add()`` function can be used to add a VF's MAC address,
+as a workaround.
+
+
+Inline crypto processing support
+--------------------------------
+
+Inline IPsec processing is supported for ``RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO``
+mode for ESP packets only:
+
+- ESP authentication only: AES-128-GMAC (128-bit key)
+- ESP encryption and authentication: AES-128-GCM (128-bit key)
+
+IPsec Security Gateway Sample Application supports inline IPsec processing for
+ixgbe PMD.
+
+For more details see the IPsec Security Gateway Sample Application and Security
+library documentation.
+
+
+Supported Chipsets and NICs
+---------------------------
+
+- Intel 82599EB 10 Gigabit Ethernet Controller
+- Intel 82598EB 10 Gigabit Ethernet Controller
+- Intel 82599ES 10 Gigabit Ethernet Controller
+- Intel 82599EN 10 Gigabit Ethernet Controller
+- Intel Ethernet Controller X540-AT2
+- Intel Ethernet Controller X550-BT2
+- Intel Ethernet Controller X550-AT2
+- Intel Ethernet Controller X550-AT
+- Intel Ethernet Converged Network Adapter X520-SR1
+- Intel Ethernet Converged Network Adapter X520-SR2
+- Intel Ethernet Converged Network Adapter X520-LR1
+- Intel Ethernet Converged Network Adapter X520-DA1
+- Intel Ethernet Converged Network Adapter X520-DA2
+- Intel Ethernet Converged Network Adapter X520-DA4
+- Intel Ethernet Converged Network Adapter X520-QDA1
+- Intel Ethernet Converged Network Adapter X520-T2
+- Intel 10 Gigabit AF DA Dual Port Server Adapter
+- Intel 10 Gigabit AT Server Adapter
+- Intel 10 Gigabit AT2 Server Adapter
+- Intel 10 Gigabit CX4 Dual Port Server Adapter
+- Intel 10 Gigabit XF LR Server Adapter
+- Intel 10 Gigabit XF SR Dual Port Server Adapter
+- Intel 10 Gigabit XF SR Server Adapter
+- Intel Ethernet Converged Network Adapter X540-T1
+- Intel Ethernet Converged Network Adapter X540-T2
+- Intel Ethernet Converged Network Adapter X550-T1
+- Intel Ethernet Converged Network Adapter X550-T2

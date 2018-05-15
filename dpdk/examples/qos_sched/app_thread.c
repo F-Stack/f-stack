@@ -107,7 +107,7 @@ app_rx_thread(struct thread_conf **confs)
 			}
 
 			if (unlikely(rte_ring_sp_enqueue_bulk(conf->rx_ring,
-								(void **)rx_mbufs, nb_rx) != 0)) {
+					(void **)rx_mbufs, nb_rx, NULL) == 0)) {
 				for(i = 0; i < nb_rx; i++) {
 					rte_pktmbuf_free(rx_mbufs[i]);
 
@@ -179,8 +179,8 @@ app_tx_thread(struct thread_conf **confs)
 
 	while ((conf = confs[conf_idx])) {
 		retval = rte_ring_sc_dequeue_bulk(conf->tx_ring, (void **)mbufs,
-					burst_conf.qos_dequeue);
-		if (likely(retval == 0)) {
+					burst_conf.qos_dequeue, NULL);
+		if (likely(retval != 0)) {
 			app_send_packets(conf, mbufs, burst_conf.qos_dequeue);
 
 			conf->counter = 0; /* reset empty read loop counter */
@@ -218,7 +218,7 @@ app_worker_thread(struct thread_conf **confs)
 
 		/* Read packet from the ring */
 		nb_pkt = rte_ring_sc_dequeue_burst(conf->rx_ring, (void **)mbufs,
-					burst_conf.ring_burst);
+					burst_conf.ring_burst, NULL);
 		if (likely(nb_pkt)) {
 			int nb_sent = rte_sched_port_enqueue(conf->sched_port, mbufs,
 					nb_pkt);
@@ -230,7 +230,9 @@ app_worker_thread(struct thread_conf **confs)
 		nb_pkt = rte_sched_port_dequeue(conf->sched_port, mbufs,
 					burst_conf.qos_dequeue);
 		if (likely(nb_pkt > 0))
-			while (rte_ring_sp_enqueue_bulk(conf->tx_ring, (void **)mbufs, nb_pkt) != 0);
+			while (rte_ring_sp_enqueue_bulk(conf->tx_ring,
+					(void **)mbufs, nb_pkt, NULL) == 0)
+				; /* empty body */
 
 		conf_idx++;
 		if (confs[conf_idx] == NULL)
@@ -252,7 +254,7 @@ app_mixed_thread(struct thread_conf **confs)
 
 		/* Read packet from the ring */
 		nb_pkt = rte_ring_sc_dequeue_burst(conf->rx_ring, (void **)mbufs,
-					burst_conf.ring_burst);
+					burst_conf.ring_burst, NULL);
 		if (likely(nb_pkt)) {
 			int nb_sent = rte_sched_port_enqueue(conf->sched_port, mbufs,
 					nb_pkt);

@@ -23,27 +23,28 @@
 #define ECORE_BAR_ACQUIRE_TIMEOUT 1000
 
 /* Invalid values */
-#define ECORE_BAR_INVALID_OFFSET		-1
+#define ECORE_BAR_INVALID_OFFSET	(OSAL_CPU_TO_LE32(-1))
 
 struct ecore_ptt {
 	osal_list_entry_t list_entry;
 	unsigned int idx;
 	struct pxp_ptt_entry pxp;
+	u8 hwfn_id;
 };
 
 struct ecore_ptt_pool {
 	osal_list_t free_list;
-	osal_spinlock_t lock;
+	osal_spinlock_t lock; /* ptt synchronized access */
 	struct ecore_ptt ptts[PXP_EXTERNAL_BAR_PF_WINDOW_NUM];
 };
 
 enum _ecore_status_t ecore_ptt_pool_alloc(struct ecore_hwfn *p_hwfn)
 {
-	struct ecore_ptt_pool *p_pool;
+	struct ecore_ptt_pool *p_pool = OSAL_ALLOC(p_hwfn->p_dev,
+						   GFP_KERNEL,
+						   sizeof(*p_pool));
 	int i;
 
-	p_pool = OSAL_ALLOC(p_hwfn->p_dev, GFP_KERNEL,
-			    sizeof(struct ecore_ptt_pool));
 	if (!p_pool)
 		return ECORE_NOMEM;
 
@@ -52,6 +53,7 @@ enum _ecore_status_t ecore_ptt_pool_alloc(struct ecore_hwfn *p_hwfn)
 		p_pool->ptts[i].idx = i;
 		p_pool->ptts[i].pxp.offset = ECORE_BAR_INVALID_OFFSET;
 		p_pool->ptts[i].pxp.pretend.control = 0;
+		p_pool->ptts[i].hwfn_id = p_hwfn->my_id;
 
 		/* There are special PTT entries that are taken only by design.
 		 * The rest are added ot the list for general usage.
@@ -62,7 +64,9 @@ enum _ecore_status_t ecore_ptt_pool_alloc(struct ecore_hwfn *p_hwfn)
 	}
 
 	p_hwfn->p_ptt_pool = p_pool;
+#ifdef CONFIG_ECORE_LOCK_ALLOC
 	OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_pool->lock);
+#endif
 	OSAL_SPIN_LOCK_INIT(&p_pool->lock);
 
 	return ECORE_SUCCESS;
@@ -81,10 +85,11 @@ void ecore_ptt_invalidate(struct ecore_hwfn *p_hwfn)
 
 void ecore_ptt_pool_free(struct ecore_hwfn *p_hwfn)
 {
+#ifdef CONFIG_ECORE_LOCK_ALLOC
 	if (p_hwfn->p_ptt_pool)
 		OSAL_SPIN_LOCK_DEALLOC(&p_hwfn->p_ptt_pool->lock);
+#endif
 	OSAL_FREE(p_hwfn->p_dev, p_hwfn->p_ptt_pool);
-	p_hwfn->p_ptt_pool = OSAL_NULL;
 }
 
 struct ecore_ptt *ecore_ptt_acquire(struct ecore_hwfn *p_hwfn)
@@ -95,42 +100,46 @@ struct ecore_ptt *ecore_ptt_acquire(struct ecore_hwfn *p_hwfn)
 	/* Take the free PTT from the list */
 	for (i = 0; i < ECORE_BAR_ACQUIRE_TIMEOUT; i++) {
 		OSAL_SPIN_LOCK(&p_hwfn->p_ptt_pool->lock);
-		if (!OSAL_LIST_IS_EMPTY(&p_hwfn->p_ptt_pool->free_list))
-			break;
+		if (!OSAL_LIST_IS_EMPTY(&p_hwfn->p_ptt_pool->free_list)) {
+			p_ptt = OSAL_LIST_FIRST_ENTRY(
+						&p_hwfn->p_ptt_pool->free_list,
+						struct ecore_ptt, list_entry);
+			OSAL_LIST_REMOVE_ENTRY(&p_ptt->list_entry,
+					       &p_hwfn->p_ptt_pool->free_list);
+
+			OSAL_SPIN_UNLOCK(&p_hwfn->p_ptt_pool->lock);
+
+			DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
+				   "allocated ptt %d\n", p_ptt->idx);
+
+			return p_ptt;
+		}
+
 		OSAL_SPIN_UNLOCK(&p_hwfn->p_ptt_pool->lock);
 		OSAL_MSLEEP(1);
 	}
 
-	/* We should not time-out, but it can happen... --> Lock isn't held */
-	if (i == ECORE_BAR_ACQUIRE_TIMEOUT) {
-		DP_NOTICE(p_hwfn, true, "Failed to allocate PTT\n");
-		return OSAL_NULL;
-	}
-
-	p_ptt = OSAL_LIST_FIRST_ENTRY(&p_hwfn->p_ptt_pool->free_list,
-				      struct ecore_ptt, list_entry);
-	OSAL_LIST_REMOVE_ENTRY(&p_ptt->list_entry,
-			       &p_hwfn->p_ptt_pool->free_list);
-	OSAL_SPIN_UNLOCK(&p_hwfn->p_ptt_pool->lock);
-
-	DP_VERBOSE(p_hwfn, ECORE_MSG_HW, "allocated ptt %d\n", p_ptt->idx);
-
-	return p_ptt;
+	DP_NOTICE(p_hwfn, true,
+		  "PTT acquire timeout - failed to allocate PTT\n");
+	return OSAL_NULL;
 }
 
 void ecore_ptt_release(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 {
 	/* This PTT should not be set to pretend if it is being released */
+	/* TODO - add some pretend sanity checks, to make sure pretend
+	 * isn't set on this ptt
+	 */
 
 	OSAL_SPIN_LOCK(&p_hwfn->p_ptt_pool->lock);
 	OSAL_LIST_PUSH_HEAD(&p_ptt->list_entry, &p_hwfn->p_ptt_pool->free_list);
 	OSAL_SPIN_UNLOCK(&p_hwfn->p_ptt_pool->lock);
 }
 
-u32 ecore_ptt_get_hw_addr(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
+static u32 ecore_ptt_get_hw_addr(struct ecore_ptt *p_ptt)
 {
 	/* The HW is using DWORDS and we need to translate it to Bytes */
-	return p_ptt->pxp.offset << 2;
+	return OSAL_LE32_TO_CPU(p_ptt->pxp.offset) << 2;
 }
 
 static u32 ecore_ptt_config_addr(struct ecore_ptt *p_ptt)
@@ -150,7 +159,7 @@ void ecore_ptt_set_win(struct ecore_hwfn *p_hwfn,
 {
 	u32 prev_hw_addr;
 
-	prev_hw_addr = ecore_ptt_get_hw_addr(p_hwfn, p_ptt);
+	prev_hw_addr = ecore_ptt_get_hw_addr(p_ptt);
 
 	if (new_hw_addr == prev_hw_addr)
 		return;
@@ -161,20 +170,26 @@ void ecore_ptt_set_win(struct ecore_hwfn *p_hwfn,
 		   p_ptt->idx, new_hw_addr);
 
 	/* The HW is using DWORDS and the address is in Bytes */
-	p_ptt->pxp.offset = new_hw_addr >> 2;
+	p_ptt->pxp.offset = OSAL_CPU_TO_LE32(new_hw_addr >> 2);
 
 	REG_WR(p_hwfn,
 	       ecore_ptt_config_addr(p_ptt) +
-	       OFFSETOF(struct pxp_ptt_entry, offset), p_ptt->pxp.offset);
+	       OFFSETOF(struct pxp_ptt_entry, offset),
+	       OSAL_LE32_TO_CPU(p_ptt->pxp.offset));
 }
 
 static u32 ecore_set_ptt(struct ecore_hwfn *p_hwfn,
 			 struct ecore_ptt *p_ptt, u32 hw_addr)
 {
-	u32 win_hw_addr = ecore_ptt_get_hw_addr(p_hwfn, p_ptt);
+	u32 win_hw_addr = ecore_ptt_get_hw_addr(p_ptt);
 	u32 offset;
 
 	offset = hw_addr - win_hw_addr;
+
+	if (p_ptt->hwfn_id != p_hwfn->my_id)
+		DP_NOTICE(p_hwfn, true,
+			  "ptt[%d] of hwfn[%02x] is used by hwfn[%02x]!\n",
+			  p_ptt->idx, p_ptt->hwfn_id, p_hwfn->my_id);
 
 	/* Verify the address is within the window */
 	if (hw_addr < win_hw_addr ||
@@ -198,11 +213,37 @@ struct ecore_ptt *ecore_get_reserved_ptt(struct ecore_hwfn *p_hwfn,
 	return &p_hwfn->p_ptt_pool->ptts[ptt_idx];
 }
 
+static bool ecore_is_reg_fifo_empty(struct ecore_hwfn *p_hwfn,
+				    struct ecore_ptt *p_ptt)
+{
+	bool is_empty = true;
+	u32 bar_addr;
+
+	if (!p_hwfn->p_dev->chk_reg_fifo)
+		goto out;
+
+	/* ecore_rd() cannot be used here since it calls this function */
+	bar_addr = ecore_set_ptt(p_hwfn, p_ptt, GRC_REG_TRACE_FIFO_VALID_DATA);
+	is_empty = REG_RD(p_hwfn, bar_addr) == 0;
+
+#ifndef ASIC_ONLY
+	if (CHIP_REV_IS_SLOW(p_hwfn->p_dev))
+		OSAL_UDELAY(100);
+#endif
+
+out:
+	return is_empty;
+}
+
 void ecore_wr(struct ecore_hwfn *p_hwfn,
 	      struct ecore_ptt *p_ptt, u32 hw_addr, u32 val)
 {
-	u32 bar_addr = ecore_set_ptt(p_hwfn, p_ptt, hw_addr);
+	bool prev_fifo_err;
+	u32 bar_addr;
 
+	prev_fifo_err = !ecore_is_reg_fifo_empty(p_hwfn, p_ptt);
+
+	bar_addr = ecore_set_ptt(p_hwfn, p_ptt, hw_addr);
 	REG_WR(p_hwfn, bar_addr, val);
 	DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
 		   "bar_addr 0x%x, hw_addr 0x%x, val 0x%x\n",
@@ -212,12 +253,21 @@ void ecore_wr(struct ecore_hwfn *p_hwfn,
 	if (CHIP_REV_IS_SLOW(p_hwfn->p_dev))
 		OSAL_UDELAY(100);
 #endif
+
+	OSAL_WARN(!prev_fifo_err && !ecore_is_reg_fifo_empty(p_hwfn, p_ptt),
+		  "reg_fifo err was caused by a call to ecore_wr(0x%x, 0x%x)\n",
+		  hw_addr, val);
 }
 
 u32 ecore_rd(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt, u32 hw_addr)
 {
-	u32 bar_addr = ecore_set_ptt(p_hwfn, p_ptt, hw_addr);
-	u32 val = REG_RD(p_hwfn, bar_addr);
+	bool prev_fifo_err;
+	u32 bar_addr, val;
+
+	prev_fifo_err = !ecore_is_reg_fifo_empty(p_hwfn, p_ptt);
+
+	bar_addr = ecore_set_ptt(p_hwfn, p_ptt, hw_addr);
+	val = REG_RD(p_hwfn, bar_addr);
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
 		   "bar_addr 0x%x, hw_addr 0x%x, val 0x%x\n",
@@ -227,6 +277,10 @@ u32 ecore_rd(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt, u32 hw_addr)
 	if (CHIP_REV_IS_SLOW(p_hwfn->p_dev))
 		OSAL_UDELAY(100);
 #endif
+
+	OSAL_WARN(!prev_fifo_err && !ecore_is_reg_fifo_empty(p_hwfn, p_ptt),
+		  "reg_fifo error was caused by a call to ecore_rd(0x%x)\n",
+		  hw_addr);
 
 	return val;
 }
@@ -292,60 +346,59 @@ void ecore_memcpy_to(struct ecore_hwfn *p_hwfn,
 void ecore_fid_pretend(struct ecore_hwfn *p_hwfn,
 		       struct ecore_ptt *p_ptt, u16 fid)
 {
-	void *p_pretend;
 	u16 control = 0;
 
 	SET_FIELD(control, PXP_PRETEND_CMD_IS_CONCRETE, 1);
 	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_FUNCTION, 1);
 
-	/* Every pretend undos prev pretends, including previous port pretend */
+/* Every pretend undos prev pretends, including previous port pretend */
+
 	SET_FIELD(control, PXP_PRETEND_CMD_PORT, 0);
 	SET_FIELD(control, PXP_PRETEND_CMD_USE_PORT, 0);
 	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_PORT, 1);
-	p_ptt->pxp.pretend.control = OSAL_CPU_TO_LE16(control);
 
 	if (!GET_FIELD(fid, PXP_CONCRETE_FID_VFVALID))
 		fid = GET_FIELD(fid, PXP_CONCRETE_FID_PFID);
 
+	p_ptt->pxp.pretend.control = OSAL_CPU_TO_LE16(control);
 	p_ptt->pxp.pretend.fid.concrete_fid.fid = OSAL_CPU_TO_LE16(fid);
 
-	p_pretend = &p_ptt->pxp.pretend;
 	REG_WR(p_hwfn,
 	       ecore_ptt_config_addr(p_ptt) +
-	       OFFSETOF(struct pxp_ptt_entry, pretend), *(u32 *)p_pretend);
+	       OFFSETOF(struct pxp_ptt_entry, pretend),
+			*(u32 *)&p_ptt->pxp.pretend);
 }
 
 void ecore_port_pretend(struct ecore_hwfn *p_hwfn,
 			struct ecore_ptt *p_ptt, u8 port_id)
 {
-	void *p_pretend;
 	u16 control = 0;
 
 	SET_FIELD(control, PXP_PRETEND_CMD_PORT, port_id);
 	SET_FIELD(control, PXP_PRETEND_CMD_USE_PORT, 1);
 	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_PORT, 1);
-	p_ptt->pxp.pretend.control = control;
+	p_ptt->pxp.pretend.control = OSAL_CPU_TO_LE16(control);
 
-	p_pretend = &p_ptt->pxp.pretend;
 	REG_WR(p_hwfn,
 	       ecore_ptt_config_addr(p_ptt) +
-	       OFFSETOF(struct pxp_ptt_entry, pretend), *(u32 *)p_pretend);
+	       OFFSETOF(struct pxp_ptt_entry, pretend),
+			*(u32 *)&p_ptt->pxp.pretend);
 }
 
 void ecore_port_unpretend(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 {
-	void *p_pretend;
 	u16 control = 0;
 
 	SET_FIELD(control, PXP_PRETEND_CMD_PORT, 0);
 	SET_FIELD(control, PXP_PRETEND_CMD_USE_PORT, 0);
 	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_PORT, 1);
-	p_ptt->pxp.pretend.control = control;
 
-	p_pretend = &p_ptt->pxp.pretend;
+	p_ptt->pxp.pretend.control = OSAL_CPU_TO_LE16(control);
+
 	REG_WR(p_hwfn,
 	       ecore_ptt_config_addr(p_ptt) +
-	       OFFSETOF(struct pxp_ptt_entry, pretend), *(u32 *)p_pretend);
+	       OFFSETOF(struct pxp_ptt_entry, pretend),
+			*(u32 *)&p_ptt->pxp.pretend);
 }
 
 u32 ecore_vfid_to_concrete(struct ecore_hwfn *p_hwfn, u8 vfid)
@@ -442,15 +495,16 @@ static u32 ecore_dmae_idx_to_go_cmd(u8 idx)
 {
 	OSAL_BUILD_BUG_ON((DMAE_REG_GO_C31 - DMAE_REG_GO_C0) != 31 * 4);
 
-	return DMAE_REG_GO_C0 + idx * 4;
+	/* All the DMAE 'go' registers form an array in internal memory */
+	return DMAE_REG_GO_C0 + (idx << 2);
 }
 
-static enum _ecore_status_t
-ecore_dmae_post_command(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
+static enum _ecore_status_t ecore_dmae_post_command(struct ecore_hwfn *p_hwfn,
+						    struct ecore_ptt *p_ptt)
 {
 	struct dmae_cmd *p_command = p_hwfn->dmae_info.p_dmae_cmd;
-	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 	u8 idx_cmd = p_hwfn->dmae_info.channel, i;
+	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 
 	/* verify address is not OSAL_NULL */
 	if ((((!p_command->dst_addr_lo) && (!p_command->dst_addr_hi)) ||
@@ -459,13 +513,14 @@ ecore_dmae_post_command(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 			  "source or destination address 0 idx_cmd=%d\n"
 			  "opcode = [0x%08x,0x%04x] len=0x%x"
 			  " src=0x%x:%x dst=0x%x:%x\n",
-			  idx_cmd, (u32)p_command->opcode,
-			  (u16)p_command->opcode_b,
-			  (int)p_command->length,
-			  (int)p_command->src_addr_hi,
-			  (int)p_command->src_addr_lo,
-			  (int)p_command->dst_addr_hi,
-			  (int)p_command->dst_addr_lo);
+			  idx_cmd,
+			  OSAL_LE32_TO_CPU(p_command->opcode),
+			  OSAL_LE16_TO_CPU(p_command->opcode_b),
+			  OSAL_LE16_TO_CPU(p_command->length_dw),
+			  OSAL_LE32_TO_CPU(p_command->src_addr_hi),
+			  OSAL_LE32_TO_CPU(p_command->src_addr_lo),
+			  OSAL_LE32_TO_CPU(p_command->dst_addr_hi),
+			  OSAL_LE32_TO_CPU(p_command->dst_addr_lo));
 
 		return ECORE_INVAL;
 	}
@@ -473,12 +528,14 @@ ecore_dmae_post_command(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 	DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
 		   "Posting DMAE command [idx %d]: opcode = [0x%08x,0x%04x]"
 		   "len=0x%x src=0x%x:%x dst=0x%x:%x\n",
-		   idx_cmd, (u32)p_command->opcode,
-		   (u16)p_command->opcode_b,
-		   (int)p_command->length,
-		   (int)p_command->src_addr_hi,
-		   (int)p_command->src_addr_lo,
-		   (int)p_command->dst_addr_hi, (int)p_command->dst_addr_lo);
+		   idx_cmd,
+		   OSAL_LE32_TO_CPU(p_command->opcode),
+		   OSAL_LE16_TO_CPU(p_command->opcode_b),
+		   OSAL_LE16_TO_CPU(p_command->length_dw),
+		   OSAL_LE32_TO_CPU(p_command->src_addr_hi),
+		   OSAL_LE32_TO_CPU(p_command->src_addr_lo),
+		   OSAL_LE32_TO_CPU(p_command->dst_addr_hi),
+		   OSAL_LE32_TO_CPU(p_command->dst_addr_lo));
 
 	/* Copy the command to DMAE - need to do it before every call
 	 * for source/dest address no reset.
@@ -514,8 +571,7 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn *p_hwfn)
 	if (*p_comp == OSAL_NULL) {
 		DP_NOTICE(p_hwfn, true,
 			  "Failed to allocate `p_completion_word'\n");
-		ecore_dmae_info_free(p_hwfn);
-		return ECORE_NOMEM;
+		goto err;
 	}
 
 	p_addr = &p_hwfn->dmae_info.dmae_cmd_phys_addr;
@@ -524,8 +580,7 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn *p_hwfn)
 	if (*p_cmd == OSAL_NULL) {
 		DP_NOTICE(p_hwfn, true,
 			  "Failed to allocate `struct dmae_cmd'\n");
-		ecore_dmae_info_free(p_hwfn);
-		return ECORE_NOMEM;
+		goto err;
 	}
 
 	p_addr = &p_hwfn->dmae_info.intermediate_buffer_phys_addr;
@@ -534,14 +589,15 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn *p_hwfn)
 	if (*p_buff == OSAL_NULL) {
 		DP_NOTICE(p_hwfn, true,
 			  "Failed to allocate `intermediate_buffer'\n");
-		ecore_dmae_info_free(p_hwfn);
-		return ECORE_NOMEM;
+		goto err;
 	}
 
-	/* DMAE_E4_TODO : Need to change this to reflect proper channel */
 	p_hwfn->dmae_info.channel = p_hwfn->rel_pf_id;
 
 	return ECORE_SUCCESS;
+err:
+	ecore_dmae_info_free(p_hwfn);
+	return ECORE_NOMEM;
 }
 
 void ecore_dmae_info_free(struct ecore_hwfn *p_hwfn)
@@ -580,8 +636,8 @@ void ecore_dmae_info_free(struct ecore_hwfn *p_hwfn)
 
 static enum _ecore_status_t ecore_dmae_operation_wait(struct ecore_hwfn *p_hwfn)
 {
-	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 	u32 wait_cnt_limit = 10000, wait_cnt = 0;
+	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 
 #ifndef ASIC_ONLY
 	u32 factor = (CHIP_REV_IS_EMUL(p_hwfn->p_dev) ?
@@ -598,9 +654,6 @@ static enum _ecore_status_t ecore_dmae_operation_wait(struct ecore_hwfn *p_hwfn)
 	 */
 	OSAL_BARRIER(p_hwfn->p_dev);
 	while (*p_hwfn->dmae_info.p_completion_word != DMAE_COMPLETION_VAL) {
-		/* DMAE_E4_TODO : using OSAL_MSLEEP instead of mm_wait since mm
-		 * functions are getting depriciated. Need to review for future.
-		 */
 		OSAL_UDELAY(DMAE_MIN_WAIT_TIME);
 		if (++wait_cnt > wait_cnt_limit) {
 			DP_NOTICE(p_hwfn->p_dev, ECORE_MSG_HW,
@@ -629,7 +682,7 @@ ecore_dmae_execute_sub_operation(struct ecore_hwfn *p_hwfn,
 				 struct ecore_ptt *p_ptt,
 				 u64 src_addr,
 				 u64 dst_addr,
-				 u8 src_type, u8 dst_type, u32 length)
+				 u8 src_type, u8 dst_type, u32 length_dw)
 {
 	dma_addr_t phys = p_hwfn->dmae_info.intermediate_buffer_phys_addr;
 	struct dmae_cmd *cmd = p_hwfn->dmae_info.p_dmae_cmd;
@@ -638,16 +691,16 @@ ecore_dmae_execute_sub_operation(struct ecore_hwfn *p_hwfn,
 	switch (src_type) {
 	case ECORE_DMAE_ADDRESS_GRC:
 	case ECORE_DMAE_ADDRESS_HOST_PHYS:
-		cmd->src_addr_hi = DMA_HI(src_addr);
-		cmd->src_addr_lo = DMA_LO(src_addr);
+		cmd->src_addr_hi = OSAL_CPU_TO_LE32(DMA_HI(src_addr));
+		cmd->src_addr_lo = OSAL_CPU_TO_LE32(DMA_LO(src_addr));
 		break;
 		/* for virt source addresses we use the intermediate buffer. */
 	case ECORE_DMAE_ADDRESS_HOST_VIRT:
-		cmd->src_addr_hi = DMA_HI(phys);
-		cmd->src_addr_lo = DMA_LO(phys);
+		cmd->src_addr_hi = OSAL_CPU_TO_LE32(DMA_HI(phys));
+		cmd->src_addr_lo = OSAL_CPU_TO_LE32(DMA_LO(phys));
 		OSAL_MEMCPY(&p_hwfn->dmae_info.p_intermediate_buffer[0],
 			    (void *)(osal_uintptr_t)src_addr,
-			    length * sizeof(u32));
+			    length_dw * sizeof(u32));
 		break;
 	default:
 		return ECORE_INVAL;
@@ -656,26 +709,26 @@ ecore_dmae_execute_sub_operation(struct ecore_hwfn *p_hwfn,
 	switch (dst_type) {
 	case ECORE_DMAE_ADDRESS_GRC:
 	case ECORE_DMAE_ADDRESS_HOST_PHYS:
-		cmd->dst_addr_hi = DMA_HI(dst_addr);
-		cmd->dst_addr_lo = DMA_LO(dst_addr);
+		cmd->dst_addr_hi = OSAL_CPU_TO_LE32(DMA_HI(dst_addr));
+		cmd->dst_addr_lo = OSAL_CPU_TO_LE32(DMA_LO(dst_addr));
 		break;
 		/* for virt destination address we use the intermediate buff. */
 	case ECORE_DMAE_ADDRESS_HOST_VIRT:
-		cmd->dst_addr_hi = DMA_HI(phys);
-		cmd->dst_addr_lo = DMA_LO(phys);
+		cmd->dst_addr_hi = OSAL_CPU_TO_LE32(DMA_HI(phys));
+		cmd->dst_addr_lo = OSAL_CPU_TO_LE32(DMA_LO(phys));
 		break;
 	default:
 		return ECORE_INVAL;
 	}
 
-	cmd->length = (u16)length;
+	cmd->length_dw = OSAL_CPU_TO_LE16((u16)length_dw);
 
 	if (src_type == ECORE_DMAE_ADDRESS_HOST_VIRT ||
 	    src_type == ECORE_DMAE_ADDRESS_HOST_PHYS)
 		OSAL_DMA_SYNC(p_hwfn->p_dev,
 			      (void *)HILO_U64(cmd->src_addr_hi,
 					       cmd->src_addr_lo),
-			      length * sizeof(u32), false);
+			      length_dw * sizeof(u32), false);
 
 	ecore_dmae_post_command(p_hwfn, p_ptt);
 
@@ -687,21 +740,21 @@ ecore_dmae_execute_sub_operation(struct ecore_hwfn *p_hwfn,
 		OSAL_DMA_SYNC(p_hwfn->p_dev,
 			      (void *)HILO_U64(cmd->src_addr_hi,
 					       cmd->src_addr_lo),
-			      length * sizeof(u32), true);
+			      length_dw * sizeof(u32), true);
 
 	if (ecore_status != ECORE_SUCCESS) {
 		DP_NOTICE(p_hwfn, ECORE_MSG_HW,
-			  "ecore_dmae_host2grc: Wait Failed. source_addr"
-			  " 0x%lx, grc_addr 0x%lx, size_in_dwords 0x%x\n",
+			  "Wait Failed. source_addr 0x%lx, grc_addr 0x%lx, size_in_dwords 0x%x, intermediate buffer 0x%lx.\n",
 			  (unsigned long)src_addr, (unsigned long)dst_addr,
-			  length);
+			  length_dw,
+			  (unsigned long)p_hwfn->dmae_info.intermediate_buffer_phys_addr);
 		return ecore_status;
 	}
 
 	if (dst_type == ECORE_DMAE_ADDRESS_HOST_VIRT)
 		OSAL_MEMCPY((void *)(osal_uintptr_t)(dst_addr),
 			    &p_hwfn->dmae_info.p_intermediate_buffer[0],
-			    length * sizeof(u32));
+			    length_dw * sizeof(u32));
 
 	return ECORE_SUCCESS;
 }
@@ -719,18 +772,39 @@ ecore_dmae_execute_command(struct ecore_hwfn *p_hwfn,
 	dma_addr_t phys = p_hwfn->dmae_info.completion_word_phys_addr;
 	u16 length_cur = 0, i = 0, cnt_split = 0, length_mod = 0;
 	struct dmae_cmd *cmd = p_hwfn->dmae_info.p_dmae_cmd;
-	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 	u64 src_addr_split = 0, dst_addr_split = 0;
 	u16 length_limit = DMAE_MAX_RW_SIZE;
+	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 	u32 offset = 0;
+
+	if (p_hwfn->p_dev->recov_in_prog) {
+		DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
+			   "Recovery is in progress. Avoid DMAE transaction [{src: addr 0x%lx, type %d}, {dst: addr 0x%lx, type %d}, size %d].\n",
+			   (unsigned long)src_addr, src_type,
+			   (unsigned long)dst_addr, dst_type,
+			   size_in_dwords);
+		/* Return success to let the flow to be completed successfully
+		 * w/o any error handling.
+		 */
+		return ECORE_SUCCESS;
+	}
+
+	if (!cmd) {
+		DP_NOTICE(p_hwfn, true,
+			  "ecore_dmae_execute_sub_operation failed. Invalid state. source_addr 0x%lx, destination addr 0x%lx, size_in_dwords 0x%x\n",
+			  (unsigned long)src_addr,
+			  (unsigned long)dst_addr,
+			  length_cur);
+		return ECORE_INVAL;
+	}
 
 	ecore_dmae_opcode(p_hwfn,
 			  (src_type == ECORE_DMAE_ADDRESS_GRC),
 			  (dst_type == ECORE_DMAE_ADDRESS_GRC), p_params);
 
-	cmd->comp_addr_lo = DMA_LO(phys);
-	cmd->comp_addr_hi = DMA_HI(phys);
-	cmd->comp_val = DMAE_COMPLETION_VAL;
+	cmd->comp_addr_lo = OSAL_CPU_TO_LE32(DMA_LO(phys));
+	cmd->comp_addr_hi = OSAL_CPU_TO_LE32(DMA_HI(phys));
+	cmd->comp_val = OSAL_CPU_TO_LE32(DMAE_COMPLETION_VAL);
 
 	/* Check if the grc_addr is valid like < MAX_GRC_OFFSET */
 	cnt_split = size_in_dwords / length_limit;
@@ -854,44 +928,6 @@ ecore_dmae_host2host(struct ecore_hwfn *p_hwfn,
 	OSAL_MUTEX_RELEASE(&p_hwfn->dmae_info.mutex);
 
 	return rc;
-}
-
-u16 ecore_get_qm_pq(struct ecore_hwfn *p_hwfn,
-		    enum protocol_type proto,
-		    union ecore_qm_pq_params *p_params)
-{
-	u16 pq_id = 0;
-
-	if ((proto == PROTOCOLID_CORE ||
-	     proto == PROTOCOLID_ETH) && !p_params) {
-		DP_NOTICE(p_hwfn, true,
-			  "Protocol %d received NULL PQ params\n", proto);
-		return 0;
-	}
-
-	switch (proto) {
-	case PROTOCOLID_CORE:
-		if (p_params->core.tc == LB_TC)
-			pq_id = p_hwfn->qm_info.pure_lb_pq;
-		else if (p_params->core.tc == OOO_LB_TC)
-			pq_id = p_hwfn->qm_info.ooo_pq;
-		else
-			pq_id = p_hwfn->qm_info.offload_pq;
-		break;
-	case PROTOCOLID_ETH:
-		pq_id = p_params->eth.tc;
-		/* TODO - multi-CoS for VFs? */
-		if (p_params->eth.is_vf)
-			pq_id += p_hwfn->qm_info.vf_queues_offset +
-			    p_params->eth.vf_id;
-		break;
-	default:
-		pq_id = 0;
-	}
-
-	pq_id = CM_TX_PQ_BASE + pq_id + RESC_START(p_hwfn, ECORE_PQ);
-
-	return pq_id;
 }
 
 void ecore_hw_err_notify(struct ecore_hwfn *p_hwfn,

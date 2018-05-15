@@ -119,7 +119,7 @@ struct rte_kni_memzone_pool {
 
 	uint32_t max_ifaces;                /**< Max. num of KNI ifaces */
 	struct rte_kni_memzone_slot *slots;        /**< Pool slots */
-	rte_spinlock_t mutex;               /**< alloc/relase mutex */
+	rte_spinlock_t mutex;               /**< alloc/release mutex */
 
 	/* Free memzone slots linked-list */
 	struct rte_kni_memzone_slot *free;         /**< First empty slot */
@@ -210,14 +210,18 @@ rte_kni_init(unsigned int max_kni_ifaces)
 	if (max_kni_ifaces == 0) {
 		RTE_LOG(ERR, KNI, "Invalid number of max_kni_ifaces %d\n",
 							max_kni_ifaces);
-		rte_panic("Unable to initialize KNI\n");
+		RTE_LOG(ERR, KNI, "Unable to initialize KNI\n");
+		return;
 	}
 
 	/* Check FD and open */
 	if (kni_fd < 0) {
 		kni_fd = open("/dev/" KNI_DEVICE, O_RDWR);
-		if (kni_fd < 0)
-			rte_panic("Can not open /dev/%s\n", KNI_DEVICE);
+		if (kni_fd < 0) {
+			RTE_LOG(ERR, KNI,
+				"Can not open /dev/%s\n", KNI_DEVICE);
+			return;
+		}
 	}
 
 	/* Allocate slot objects */
@@ -307,8 +311,8 @@ rte_kni_init(unsigned int max_kni_ifaces)
 	return;
 
 kni_fail:
-	rte_panic("Unable to allocate memory for max_kni_ifaces:%d. Increase the amount of hugepages memory\n",
-			 max_kni_ifaces);
+	RTE_LOG(ERR, KNI, "Unable to allocate memory for max_kni_ifaces:%d."
+		"Increase the amount of hugepages memory\n", max_kni_ifaces);
 }
 
 
@@ -321,9 +325,7 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 	struct rte_kni_device_info dev_info;
 	struct rte_kni *ctx;
 	char intf_name[RTE_KNI_NAMESIZE];
-	char mz_name[RTE_MEMZONE_NAMESIZE];
 	const struct rte_memzone *mz;
-	const struct rte_mempool *mp;
 	struct rte_kni_memzone_slot *slot = NULL;
 
 	if (!pktmbuf_pool || !conf || !conf->name[0])
@@ -338,7 +340,7 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 	/* Get an available slot from the pool */
 	slot = kni_memzone_pool_alloc();
 	if (!slot) {
-		RTE_LOG(ERR, KNI, "Cannot allocate more KNI interfaces; increase the number of max_kni_ifaces(current %d) or release unusued ones.\n",
+		RTE_LOG(ERR, KNI, "Cannot allocate more KNI interfaces; increase the number of max_kni_ifaces(current %d) or release unused ones.\n",
 			kni_memzone_pool.max_ifaces);
 		return NULL;
 	}
@@ -414,19 +416,6 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 	dev_info.sync_va = mz->addr;
 	dev_info.sync_phys = mz->phys_addr;
 
-
-	/* MBUF mempool */
-	snprintf(mz_name, sizeof(mz_name), RTE_MEMPOOL_MZ_FORMAT,
-		pktmbuf_pool->name);
-	mz = rte_memzone_lookup(mz_name);
-	KNI_MEM_CHECK(mz == NULL);
-	mp = (struct rte_mempool *)mz->addr;
-	/* KNI currently requires to have only one memory chunk */
-	if (mp->nb_mem_chunks != 1)
-		goto kni_fail;
-
-	dev_info.mbuf_va = STAILQ_FIRST(&mp->mem_list)->addr;
-	dev_info.mbuf_phys = STAILQ_FIRST(&mp->mem_list)->phys_addr;
 	ctx->pktmbuf_pool = pktmbuf_pool;
 	ctx->group_id = conf->group_id;
 	ctx->slot_id = slot->id;
@@ -462,11 +451,44 @@ kni_free_fifo(struct rte_kni_fifo *fifo)
 	} while (ret);
 }
 
+static void *
+va2pa(struct rte_mbuf *m)
+{
+	return (void *)((unsigned long)m -
+			((unsigned long)m->buf_addr -
+			 (unsigned long)m->buf_iova));
+}
+
+static void
+obj_free(struct rte_mempool *mp __rte_unused, void *opaque, void *obj,
+		unsigned obj_idx __rte_unused)
+{
+	struct rte_mbuf *m = obj;
+	void *mbuf_phys = opaque;
+
+	if (va2pa(m) == mbuf_phys)
+		rte_pktmbuf_free(m);
+}
+
+static void
+kni_free_fifo_phy(struct rte_mempool *mp, struct rte_kni_fifo *fifo)
+{
+	void *mbuf_phys;
+	int ret;
+
+	do {
+		ret = kni_fifo_get(fifo, &mbuf_phys, 1);
+		if (ret)
+			rte_mempool_obj_iter(mp, obj_free, mbuf_phys);
+	} while (ret);
+}
+
 int
 rte_kni_release(struct rte_kni *kni)
 {
 	struct rte_kni_device_info dev_info;
 	uint32_t slot_id;
+	uint32_t retry = 5;
 
 	if (!kni || !kni->in_use)
 		return -1;
@@ -478,9 +500,16 @@ rte_kni_release(struct rte_kni *kni)
 	}
 
 	/* mbufs in all fifo should be released, except request/response */
+
+	/* wait until all rxq packets processed by kernel */
+	while (kni_fifo_count(kni->rx_q) && retry--)
+		usleep(1000);
+
+	if (kni_fifo_count(kni->rx_q))
+		RTE_LOG(ERR, KNI, "Fail to free all Rx-q items\n");
+
+	kni_free_fifo_phy(kni->pktmbuf_pool, kni->alloc_q);
 	kni_free_fifo(kni->tx_q);
-	kni_free_fifo(kni->rx_q);
-	kni_free_fifo(kni->alloc_q);
 	kni_free_fifo(kni->free_q);
 
 	slot_id = kni->slot_id;
@@ -490,8 +519,9 @@ rte_kni_release(struct rte_kni *kni)
 
 	/* Release memzone */
 	if (slot_id > kni_memzone_pool.max_ifaces) {
-		rte_panic("KNI pool: corrupted slot ID: %d, max: %d\n",
+		RTE_LOG(ERR, KNI, "KNI pool: corrupted slot ID: %d, max: %d\n",
 			slot_id, kni_memzone_pool.max_ifaces);
+		return -1;
 	}
 	kni_memzone_pool_release(&kni_memzone_pool.slots[slot_id]);
 
@@ -513,7 +543,8 @@ rte_kni_handle_request(struct rte_kni *kni)
 		return 0; /* It is OK of can not getting the request mbuf */
 
 	if (req != kni->sync_addr) {
-		rte_panic("Wrong req pointer %p\n", req);
+		RTE_LOG(ERR, KNI, "Wrong req pointer %p\n", req);
+		return -1;
 	}
 
 	/* Analyze the request and call the relevant actions for it */
@@ -547,7 +578,14 @@ rte_kni_handle_request(struct rte_kni *kni)
 unsigned
 rte_kni_tx_burst(struct rte_kni *kni, struct rte_mbuf **mbufs, unsigned num)
 {
-	unsigned ret = kni_fifo_put(kni->rx_q, (void **)mbufs, num);
+	void *phy_mbufs[num];
+	unsigned int ret;
+	unsigned int i;
+
+	for (i = 0; i < num; i++)
+		phy_mbufs[i] = va2pa(mbufs[i]);
+
+	ret = kni_fifo_put(kni->rx_q, phy_mbufs, num);
 
 	/* Get mbufs from free_q and then free them */
 	kni_free_mbufs(kni);
@@ -585,6 +623,8 @@ kni_allocate_mbufs(struct rte_kni *kni)
 {
 	int i, ret;
 	struct rte_mbuf *pkts[MAX_MBUF_BURST_NUM];
+	void *phys[MAX_MBUF_BURST_NUM];
+	int allocq_free;
 
 	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pool) !=
 			 offsetof(struct rte_kni_mbuf, pool));
@@ -607,20 +647,23 @@ kni_allocate_mbufs(struct rte_kni *kni)
 		return;
 	}
 
-	for (i = 0; i < MAX_MBUF_BURST_NUM; i++) {
+	allocq_free = (kni->alloc_q->read - kni->alloc_q->write - 1) \
+			& (MAX_MBUF_BURST_NUM - 1);
+	for (i = 0; i < allocq_free; i++) {
 		pkts[i] = rte_pktmbuf_alloc(kni->pktmbuf_pool);
 		if (unlikely(pkts[i] == NULL)) {
 			/* Out of memory */
 			RTE_LOG(ERR, KNI, "Out of memory\n");
 			break;
 		}
+		phys[i] = va2pa(pkts[i]);
 	}
 
-	/* No pkt mbuf alocated */
+	/* No pkt mbuf allocated */
 	if (i <= 0)
 		return;
 
-	ret = kni_fifo_put(kni->alloc_q, (void **)pkts, i);
+	ret = kni_fifo_put(kni->alloc_q, phys, i);
 
 	/* Check if any mbufs not put into alloc_q, and then free them */
 	if (ret >= 0 && ret < i && ret < MAX_MBUF_BURST_NUM) {

@@ -35,18 +35,16 @@ include $(RTE_SDK)/mk/rte.vars.mk
 LIB = librte_mbuf.a
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3
+LDLIBS += -lrte_eal -lrte_mempool
 
 EXPORT_MAP := rte_mbuf_version.map
 
-LIBABIVER := 2
+LIBABIVER := 3
 
 # all source are stored in SRCS-y
-SRCS-$(CONFIG_RTE_LIBRTE_MBUF) := rte_mbuf.c
+SRCS-$(CONFIG_RTE_LIBRTE_MBUF) := rte_mbuf.c rte_mbuf_ptype.c
 
 # install includes
-SYMLINK-$(CONFIG_RTE_LIBRTE_MBUF)-include := rte_mbuf.h
-
-# this lib needs eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_MBUF) += lib/librte_eal lib/librte_mempool
+SYMLINK-$(CONFIG_RTE_LIBRTE_MBUF)-include := rte_mbuf.h rte_mbuf_ptype.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

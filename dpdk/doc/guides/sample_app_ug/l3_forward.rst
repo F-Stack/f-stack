@@ -42,7 +42,7 @@ The initialization and run-time paths are very similar to those of the :doc:`l2_
 The main difference from the L2 Forwarding sample application is that the forwarding decision
 is made based on information read from the input packet.
 
-The lookup method is either hash-based or LPM-based and is selected at compile time. When the selected lookup method is hash-based,
+The lookup method is either hash-based or LPM-based and is selected at run time. When the selected lookup method is hash-based,
 a hash object is used to emulate the flow classification stage.
 The hash object is used in correlation with a flow table to map each input packet to its flow at runtime.
 
@@ -62,28 +62,9 @@ In the sample application, hash-based forwarding supports IPv4 and IPv6. LPM-bas
 Compiling the Application
 -------------------------
 
-To compile the application:
+To compile the sample application see :doc:`compiling`.
 
-#.  Go to the sample application directory:
-
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/l3fwd
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the *DPDK Getting Started Guide* for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``l3fwd`` sub-directory.
 
 Running the Application
 -----------------------
@@ -129,43 +110,33 @@ Where,
 
 * ``--parse-ptype:`` Optional, set to use software to analyze packet type. Without this option, hardware will check the packet type.
 
-For example, consider a dual processor socket platform where cores 0-7 and 16-23 appear on socket 0, while cores 8-15 and 24-31 appear on socket 1.
-Let's say that the programmer wants to use memory from both NUMA nodes, the platform has only two ports, one connected to each NUMA node,
-and the programmer wants to use two cores from each processor socket to do the packet processing.
+For example, consider a dual processor socket platform with 8 physical cores, where cores 0-7 and 16-23 appear on socket 0,
+while cores 8-15 and 24-31 appear on socket 1.
 
-To enable L3 forwarding between two ports, using two cores, cores 1 and 2, from each processor,
-while also taking advantage of local memory access by optimizing around NUMA, the programmer must enable two queues from each port,
-pin to the appropriate cores and allocate memory from the appropriate NUMA node. This is achieved using the following command:
+To enable L3 forwarding between two ports, assuming that both ports are in the same socket, using two cores, cores 1 and 2,
+(which are in the same socket too), use the following command:
 
 .. code-block:: console
 
-    ./build/l3fwd -c 606 -n 4 -- -p 0x3 --config="(0,0,1),(0,1,2),(1,0,9),(1,1,10)"
+    ./build/l3fwd -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)"
 
 In this command:
 
-*   The -c option enables cores 0, 1, 2, 3
+*   The -l option enables cores 1, 2
 
 *   The -p option enables ports 0 and 1
 
-*   The --config option enables two queues on each port and maps each (port,queue) pair to a specific core.
-    Logic to enable multiple RX queues using RSS and to allocate memory from the correct NUMA nodes
-    is included in the application and is done transparently.
+*   The --config option enables one queue on each port and maps each (port,queue) pair to a specific core.
     The following table shows the mapping in this example:
 
 +----------+-----------+-----------+-------------------------------------+
 | **Port** | **Queue** | **lcore** | **Description**                     |
 |          |           |           |                                     |
 +----------+-----------+-----------+-------------------------------------+
-| 0        | 0         | 0         | Map queue 0 from port 0 to lcore 0. |
+| 0        | 0         | 1         | Map queue 0 from port 0 to lcore 1. |
 |          |           |           |                                     |
 +----------+-----------+-----------+-------------------------------------+
-| 0        | 1         | 2         | Map queue 1 from port 0 to lcore 2. |
-|          |           |           |                                     |
-+----------+-----------+-----------+-------------------------------------+
-| 1        | 0         | 1         | Map queue 0 from port 1 to lcore 1. |
-|          |           |           |                                     |
-+----------+-----------+-----------+-------------------------------------+
-| 1        | 1         | 3         | Map queue 1 from port 1 to lcore 3. |
+| 1        | 0         | 2         | Map queue 0 from port 1 to lcore 2. |
 |          |           |           |                                     |
 +----------+-----------+-----------+-------------------------------------+
 
@@ -293,7 +264,7 @@ The get_ipv4_dst_port() function is shown below:
 .. code-block:: c
 
     static inline uint8_t
-    get_ipv4_dst_port(void *ipv4_hdr, uint8_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
+    get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
     {
         int ret = 0;
         union ipv4_5tuple_host key;
@@ -322,7 +293,7 @@ The key code snippet of simple_ipv4_fwd_4pkts() is shown below:
 .. code-block:: c
 
     static inline void
-    simple_ipv4_fwd_4pkts(struct rte_mbuf* m[4], uint8_t portid, struct lcore_conf *qconf)
+    simple_ipv4_fwd_4pkts(struct rte_mbuf* m[4], uint16_t portid, struct lcore_conf *qconf)
     {
         // ...
 
@@ -361,10 +332,10 @@ for LPM-based lookups is done by the get_ipv4_dst_port() function below:
 
 .. code-block:: c
 
-    static inline uint8_t
-    get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint8_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
+    static inline uint16_t
+    get_ipv4_dst_port(struct ipv4_hdr *ipv4_hdr, uint16_t portid, lookup_struct_t *ipv4_l3fwd_lookup_struct)
     {
         uint8_t next_hop;
 
-        return (uint8_t) ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct, rte_be_to_cpu_32(ipv4_hdr->dst_addr), &next_hop) == 0)? next_hop : portid);
+        return ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct, rte_be_to_cpu_32(ipv4_hdr->dst_addr), &next_hop) == 0)? next_hop : portid);
     }

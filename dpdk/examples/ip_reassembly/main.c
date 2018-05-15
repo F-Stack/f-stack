@@ -49,9 +49,7 @@
 #include <rte_log.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_cycles.h>
@@ -60,12 +58,10 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
@@ -86,10 +82,10 @@
 #define MAX_JUMBO_PKT_LEN  9600
 
 #define	BUF_SIZE	RTE_MBUF_DEFAULT_DATAROOM
-#define MBUF_SIZE	\
-	(BUF_SIZE + sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM)
+#define	MBUF_DATA_SIZE	RTE_MBUF_DEFAULT_BUF_SIZE
 
 #define NB_MBUF 8192
+#define MEMPOOL_CACHE_SIZE 256
 
 /* allow max jumbo frame 9.5 KB */
 #define JUMBO_FRAME_MAX_SIZE	0x2600
@@ -168,7 +164,7 @@ struct rx_queue {
 	struct rte_mempool *pool;
 	struct rte_lpm *lpm;
 	struct rte_lpm6 *lpm6;
-	uint8_t portid;
+	uint16_t portid;
 };
 
 struct tx_lcore_stat {
@@ -201,7 +197,7 @@ static struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 1, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.rx_adv_conf = {
 			.rss_conf = {
@@ -279,7 +275,7 @@ static struct rte_lpm6 *socket_lpm6[RTE_MAX_NUMA_NODES];
  * send burst of packets on an output interface.
  */
 static inline uint32_t
-send_burst(struct lcore_queue_conf *qconf, uint32_t thresh, uint8_t port)
+send_burst(struct lcore_queue_conf *qconf, uint32_t thresh, uint16_t port)
 {
 	uint32_t fill, len, k, n;
 	struct mbuf_table *txmb;
@@ -309,7 +305,7 @@ send_burst(struct lcore_queue_conf *qconf, uint32_t thresh, uint8_t port)
 
 /* Enqueue a single packet, and send burst if queue is filled */
 static inline int
-send_single_packet(struct rte_mbuf *m, uint8_t port)
+send_single_packet(struct rte_mbuf *m, uint16_t port)
 {
 	uint32_t fill, lcore_id, len;
 	struct lcore_queue_conf *qconf;
@@ -339,7 +335,7 @@ send_single_packet(struct rte_mbuf *m, uint8_t port)
 }
 
 static inline void
-reassemble(struct rte_mbuf *m, uint8_t portid, uint32_t queue,
+reassemble(struct rte_mbuf *m, uint16_t portid, uint32_t queue,
 	struct lcore_queue_conf *qconf, uint64_t tms)
 {
 	struct ether_hdr *eth_hdr;
@@ -347,8 +343,8 @@ reassemble(struct rte_mbuf *m, uint8_t portid, uint32_t queue,
 	struct rte_ip_frag_death_row *dr;
 	struct rx_queue *rxq;
 	void *d_addr_bytes;
-	uint32_t next_hop_ipv4;
-	uint8_t next_hop_ipv6, dst_port;
+	uint32_t next_hop;
+	uint16_t dst_port;
 
 	rxq = &qconf->rx_queue_list[queue];
 
@@ -391,9 +387,9 @@ reassemble(struct rte_mbuf *m, uint8_t portid, uint32_t queue,
 		ip_dst = rte_be_to_cpu_32(ip_hdr->dst_addr);
 
 		/* Find destination port */
-		if (rte_lpm_lookup(rxq->lpm, ip_dst, &next_hop_ipv4) == 0 &&
-				(enabled_port_mask & 1 << next_hop_ipv4) != 0) {
-			dst_port = next_hop_ipv4;
+		if (rte_lpm_lookup(rxq->lpm, ip_dst, &next_hop) == 0 &&
+				(enabled_port_mask & 1 << next_hop) != 0) {
+			dst_port = next_hop;
 		}
 
 		eth_hdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv4);
@@ -428,9 +424,10 @@ reassemble(struct rte_mbuf *m, uint8_t portid, uint32_t queue,
 		}
 
 		/* Find destination port */
-		if (rte_lpm6_lookup(rxq->lpm6, ip_hdr->dst_addr, &next_hop_ipv6) == 0 &&
-				(enabled_port_mask & 1 << next_hop_ipv6) != 0) {
-			dst_port = next_hop_ipv6;
+		if (rte_lpm6_lookup(rxq->lpm6, ip_hdr->dst_addr,
+						&next_hop) == 0 &&
+				(enabled_port_mask & 1 << next_hop) != 0) {
+			dst_port = next_hop;
 		}
 
 		eth_hdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv6);
@@ -455,7 +452,7 @@ main_loop(__attribute__((unused)) void *dummy)
 	unsigned lcore_id;
 	uint64_t diff_tsc, cur_tsc, prev_tsc;
 	int i, j, nb_rx;
-	uint8_t portid;
+	uint16_t portid;
 	struct lcore_queue_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
@@ -474,7 +471,7 @@ main_loop(__attribute__((unused)) void *dummy)
 	for (i = 0; i < qconf->n_rx_queue; i++) {
 
 		portid = qconf->rx_queue_list[i].portid;
-		RTE_LOG(INFO, IP_RSMBL, " -- lcoreid=%u portid=%hhu\n", lcore_id,
+		RTE_LOG(INFO, IP_RSMBL, " -- lcoreid=%u portid=%u\n", lcore_id,
 			portid);
 	}
 
@@ -719,7 +716,7 @@ parse_args(int argc, char **argv)
 		argv[optind-1] = prgname;
 
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
@@ -733,11 +730,12 @@ print_ethaddr(const char *name, const struct ether_addr *eth_addr)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
@@ -752,14 +750,13 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint8_t)portid,
-						(unsigned)link.link_speed,
+					printf(
+					"Port%d Link Up. Speed %u Mbps - %s\n",
+						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 					("full-duplex") : ("half-duplex\n"));
 				else
-					printf("Port %d Link Down\n",
-						(uint8_t)portid);
+					printf("Port %d Link Down\n", portid);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -904,17 +901,17 @@ setup_queue_tbl(struct rx_queue *rxq, uint32_t lcore, uint32_t queue)
 	nb_mbuf = RTE_MAX(max_flow_num, 2UL * MAX_PKT_BURST) * MAX_FRAG_NUM;
 	nb_mbuf *= (port_conf.rxmode.max_rx_pkt_len + BUF_SIZE - 1) / BUF_SIZE;
 	nb_mbuf *= 2; /* ipv4 and ipv6 */
-	nb_mbuf += RTE_TEST_RX_DESC_DEFAULT + RTE_TEST_TX_DESC_DEFAULT;
+	nb_mbuf += nb_rxd + nb_txd;
 
 	nb_mbuf = RTE_MAX(nb_mbuf, (uint32_t)NB_MBUF);
 
 	snprintf(buf, sizeof(buf), "mbuf_pool_%u_%u", lcore, queue);
 
-	if ((rxq->pool = rte_mempool_create(buf, nb_mbuf, MBUF_SIZE, 0,
-			sizeof(struct rte_pktmbuf_pool_private),
-			rte_pktmbuf_pool_init, NULL, rte_pktmbuf_init, NULL,
-			socket, MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET)) == NULL) {
-		RTE_LOG(ERR, IP_RSMBL, "mempool_create(%s) failed", buf);
+	rxq->pool = rte_pktmbuf_pool_create(buf, nb_mbuf, MEMPOOL_CACHE_SIZE, 0,
+					    MBUF_DATA_SIZE, socket);
+	if (rxq->pool == NULL) {
+		RTE_LOG(ERR, IP_RSMBL,
+			"rte_pktmbuf_pool_create(%s) failed", buf);
 		return -1;
 	}
 
@@ -988,7 +985,7 @@ queue_dump_stat(void)
 		qconf = &lcore_queue_conf[lcore];
 		for (i = 0; i < qconf->n_rx_queue; i++) {
 
-			fprintf(stdout, " -- lcoreid=%u portid=%hhu "
+			fprintf(stdout, " -- lcoreid=%u portid=%u "
 				"frag tbl stat:\n",
 				lcore,  qconf->rx_queue_list[i].portid);
 			rte_ip_frag_table_statistics_dump(stdout,
@@ -1025,7 +1022,7 @@ main(int argc, char **argv)
 	uint16_t queueid;
 	unsigned lcore_id = 0, rx_lcore_id = 0;
 	uint32_t n_tx_queue, nb_lcores;
-	uint8_t portid;
+	uint16_t portid;
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -1063,6 +1060,11 @@ main(int argc, char **argv)
 
 		qconf = &lcore_queue_conf[rx_lcore_id];
 
+		/* limit the frame size to the maximum supported by NIC */
+		rte_eth_dev_info_get(portid, &dev_info);
+		port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
+		    dev_info.max_rx_pktlen, port_conf.rxmode.max_rx_pkt_len);
+
 		/* get the lcore_id for this port */
 		while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
 			   qconf->n_rx_queue == (unsigned)rx_queue_per_lcore) {
@@ -1083,6 +1085,14 @@ main(int argc, char **argv)
 		rxq->portid = portid;
 		rxq->lpm = socket_lpm[socket];
 		rxq->lpm6 = socket_lpm6[socket];
+
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
+						       &nb_txd);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot adjust number of descriptors: err=%d, port=%d\n",
+				 ret, portid);
+
 		if (setup_queue_tbl(rxq, rx_lcore_id, queueid) < 0)
 			rte_exit(EXIT_FAILURE, "Failed to set up queue table\n");
 		qconf->n_rx_queue++;
@@ -1129,7 +1139,6 @@ main(int argc, char **argv)
 			printf("txq=%u,%d,%d ", lcore_id, queueid, socket);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
 			txconf = &dev_info.default_txconf;
 			txconf->txq_flags = 0;
 
@@ -1166,7 +1175,7 @@ main(int argc, char **argv)
 	if (init_routing_table() < 0)
 		rte_exit(EXIT_FAILURE, "Cannot init routing table\n");
 
-	check_all_ports_link_status((uint8_t)nb_ports, enabled_port_mask);
+	check_all_ports_link_status(nb_ports, enabled_port_mask);
 
 	signal(SIGUSR1, signal_handler);
 	signal(SIGTERM, signal_handler);

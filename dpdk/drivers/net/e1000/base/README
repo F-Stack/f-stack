@@ -1,7 +1,7 @@
 ..
      BSD LICENSE
    
-     Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+     Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
      All rights reserved.
    
      Redistribution and use in source and binary forms, with or without
@@ -31,8 +31,29 @@
      OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 This directory contains source code of FreeBSD em & igb drivers of version
-cid-shared-code.2015.10.09 released by ND. The sub-directory of base/
+cid-shared-code.2016.11.22 released by ND. The sub-directory of base/
 contains the original source package.
+
+This driver is valid for the product(s) listed below
+* Intel® Ethernet Controller 82540
+* Intel® Ethernet Controller 82545 Series
+* Intel® Ethernet Controller 82546 Series
+* Intel® Ethernet Controller 82571 Series
+* Intel® Ethernet Controller 82572 Series
+* Intel® Ethernet Controller 82573
+* Intel® Ethernet Controller 82574
+* Intel® Ethernet Controller 82583
+* Intel® Ethernet Controller I217 Series
+* Intel® Ethernet Controller I218 Series
+* Intel® Ethernet Controller I219 Series
+* Intel® Ethernet Controller 82576 Series
+* Intel® Ethernet Controller 82575 Series
+* Intel® Ethernet Controller 82580 Series
+* Intel® Ethernet Controller I350 Series
+* Intel® Ethernet Controller I210 Series
+* Intel® Ethernet Controller I211
+* Intel® Ethernet Controller I354 Series
+* Intel® Ethernet Controller DH89XXCC Series
 
 Updating the driver
 ===================

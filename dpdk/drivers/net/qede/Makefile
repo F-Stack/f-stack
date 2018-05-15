@@ -13,8 +13,9 @@ LIB = librte_pmd_qede.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
-
-LDLIBS += -lz
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_bus_pci
 
 EXPORT_MAP := rte_pmd_qede_version.map
 
@@ -48,16 +49,19 @@ endif
 endif
 
 ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
-ifeq ($(shell gcc -Wno-unused-but-set-variable -Werror -E - < /dev/null > /dev/null 2>&1; echo $$?),0)
+ifeq ($(shell test $(GCC_VERSION) -ge 44 && echo 1), 1)
 CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
 endif
 CFLAGS_BASE_DRIVER += -Wno-missing-declarations
-ifeq ($(shell gcc -Wno-maybe-uninitialized -Werror -E - < /dev/null > /dev/null 2>&1; echo $$?),0)
+ifeq ($(shell test $(GCC_VERSION) -ge 46 && echo 1), 1)
 CFLAGS_BASE_DRIVER += -Wno-maybe-uninitialized
 endif
 CFLAGS_BASE_DRIVER += -Wno-strict-prototypes
 ifeq ($(shell test $(GCC_VERSION) -ge 60 && echo 1), 1)
 CFLAGS_BASE_DRIVER += -Wno-shift-negative-value
+ifeq ($(shell test $(GCC_VERSION) -ge 70 && echo 1), 1)
+CFLAGS_BASE_DRIVER += -Wno-implicit-fallthrough
+endif
 endif
 else ifeq ($(CONFIG_RTE_TOOLCHAIN_CLANG),y)
 CFLAGS_BASE_DRIVER += -Wno-format-extra-args
@@ -68,8 +72,9 @@ CFLAGS_BASE_DRIVER += -Wno-sometimes-uninitialized
 ifeq ($(shell clang -Wno-pointer-bool-conversion -Werror -E - < /dev/null > /dev/null 2>&1; echo $$?),0)
 CFLAGS_BASE_DRIVER += -Wno-pointer-bool-conversion
 endif
-else
-CFLAGS_BASE_DRIVER += -wd188 #188: enumerated type mixed with another type
+else #ICC
+CFLAGS_BASE_DRIVER += -wd188   #188: enumerated type mixed with another type
+CFLAGS_qede_ethdev.o += -wd279 #279: controlling expression is constant
 endif
 
 #
@@ -77,34 +82,31 @@ endif
 # to disable warnings in them
 #
 #
-BASE_DRIVER_OBJS=$(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c)))
-$(foreach obj, $(BASE_DRIVER_OBJS), $(eval CFLAGS+=$(CFLAGS_BASE_DRIVER)))
+BASE_DRIVER_OBJS=$(sort $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.c))))
+$(foreach obj, $(BASE_DRIVER_OBJS), $(eval CFLAGS_$(obj)+=$(CFLAGS_BASE_DRIVER)))
+
+VPATH += $(SRCDIR)/base
 
 #
 # all source are stored in SRCS-y
 #
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_dev.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_hw.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_cxt.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_l2.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_sp_commands.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_init_fw_funcs.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_spq.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_init_ops.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_mcp.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_int.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_dcbx.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/bcm_osal.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_sriov.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += base/ecore_vf.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_dev.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_hw.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_cxt.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_l2.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_sp_commands.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_init_fw_funcs.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_spq.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_init_ops.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_mcp.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_int.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_dcbx.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += bcm_osal.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_sriov.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_vf.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_ethdev.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_eth_if.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_main.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_rxtx.c
-
-# dependent libs:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += lib/librte_eal lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += lib/librte_mempool lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += lib/librte_net
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_fdir.c
 
 include $(RTE_SDK)/mk/rte.lib.mk

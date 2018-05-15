@@ -37,26 +37,9 @@ The application simply prints an "helloworld" message on every enabled lcore.
 Compiling the Application
 -------------------------
 
-#.  Go to the example directory:
+To compile the sample application see :doc:`compiling`.
 
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/helloworld
-
-#.  Set the target (a default target is used if not specified). For example:
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-    See the *DPDK Getting Started* Guide for possible RTE_TARGET values.
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
+The application is located in the ``helloworld`` sub-directory.
 
 Running the Application
 -----------------------
@@ -65,7 +48,7 @@ To run the example in a linuxapp environment:
 
 .. code-block:: console
 
-    $ ./build/helloworld -c f -n 4
+    $ ./build/helloworld -l 0-3 -n 4
 
 Refer to *DPDK Getting Started Guide* for general information on running applications
 and the Environment Abstraction Layer (EAL) options.

@@ -75,12 +75,23 @@ rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 	return -ENOTSUP;
 }
 
+int __attribute__ ((weak))
+rte_acl_classify_altivec(__rte_unused const struct rte_acl_ctx *ctx,
+	__rte_unused const uint8_t **data,
+	__rte_unused uint32_t *results,
+	__rte_unused uint32_t num,
+	__rte_unused uint32_t categories)
+{
+	return -ENOTSUP;
+}
+
 static const rte_acl_classify_t classify_fns[] = {
 	[RTE_ACL_CLASSIFY_DEFAULT] = rte_acl_classify_scalar,
 	[RTE_ACL_CLASSIFY_SCALAR] = rte_acl_classify_scalar,
 	[RTE_ACL_CLASSIFY_SSE] = rte_acl_classify_sse,
 	[RTE_ACL_CLASSIFY_AVX2] = rte_acl_classify_avx2,
 	[RTE_ACL_CLASSIFY_NEON] = rte_acl_classify_neon,
+	[RTE_ACL_CLASSIFY_ALTIVEC] = rte_acl_classify_altivec,
 };
 
 /* by default, use always available scalar code path. */
@@ -109,8 +120,7 @@ rte_acl_set_ctx_classify(struct rte_acl_ctx *ctx, enum rte_acl_classify_alg alg)
  * if both conditions are met:
  * at build time compiler supports AVX2 and target cpu supports AVX2.
  */
-static void __attribute__((constructor))
-rte_acl_init(void)
+RTE_INIT(rte_acl_init)
 {
 	enum rte_acl_classify_alg alg = RTE_ACL_CLASSIFY_DEFAULT;
 
@@ -119,6 +129,8 @@ rte_acl_init(void)
 #elif defined(RTE_ARCH_ARM)
 	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON))
 		alg =  RTE_ACL_CLASSIFY_NEON;
+#elif defined(RTE_ARCH_PPC_64)
+	alg = RTE_ACL_CLASSIFY_ALTIVEC;
 #else
 #ifdef CC_AVX2_SUPPORT
 	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2))
@@ -300,8 +312,7 @@ acl_check_rule(const struct rte_acl_rule_data *rd)
 	if ((RTE_LEN2MASK(RTE_ACL_MAX_CATEGORIES, typeof(rd->category_mask)) &
 			rd->category_mask) == 0 ||
 			rd->priority > RTE_ACL_MAX_PRIORITY ||
-			rd->priority < RTE_ACL_MIN_PRIORITY ||
-			rd->userdata == RTE_ACL_INVALID_USERDATA)
+			rd->priority < RTE_ACL_MIN_PRIORITY)
 		return -EINVAL;
 	return 0;
 }

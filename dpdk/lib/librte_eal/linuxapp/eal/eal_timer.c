@@ -49,7 +49,6 @@
 #include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
-#include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_debug.h>
 
@@ -114,7 +113,7 @@ static pthread_t msb_inc_thread_id;
 
 /*
  * This function runs on a specific thread to update a global variable
- * containing used to process MSB of the HPET (unfortunatelly, we need
+ * containing used to process MSB of the HPET (unfortunately, we need
  * this because hpet is 32 bits by default under linux).
  */
 static void

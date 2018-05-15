@@ -44,22 +44,102 @@
 
 #define WD_TIMEOUT 5 /*jiffies */
 
-#define MBUF_BURST_SZ 32
-
 #define KNI_WAIT_RESPONSE_TIMEOUT 300 /* 3 seconds */
 
 /* typedef for rx function */
 typedef void (*kni_net_rx_t)(struct kni_dev *kni);
 
-static int kni_net_tx(struct sk_buff *skb, struct net_device *dev);
 static void kni_net_rx_normal(struct kni_dev *kni);
-static void kni_net_rx_lo_fifo(struct kni_dev *kni);
-static void kni_net_rx_lo_fifo_skb(struct kni_dev *kni);
-static int kni_net_process_request(struct kni_dev *kni,
-			struct rte_kni_request *req);
 
 /* kni rx function pointer, with default to normal rx */
 static kni_net_rx_t kni_net_rx_func = kni_net_rx_normal;
+
+/* physical address to kernel virtual address */
+static void *
+pa2kva(void *pa)
+{
+	return phys_to_virt((unsigned long)pa);
+}
+
+/* physical address to virtual address */
+static void *
+pa2va(void *pa, struct rte_kni_mbuf *m)
+{
+	void *va;
+
+	va = (void *)((unsigned long)pa +
+			(unsigned long)m->buf_addr -
+			(unsigned long)m->buf_physaddr);
+	return va;
+}
+
+/* mbuf data kernel virtual address from mbuf kernel virtual address */
+static void *
+kva2data_kva(struct rte_kni_mbuf *m)
+{
+	return phys_to_virt(m->buf_physaddr + m->data_off);
+}
+
+/* virtual address to physical address */
+static void *
+va2pa(void *va, struct rte_kni_mbuf *m)
+{
+	void *pa;
+
+	pa = (void *)((unsigned long)va -
+			((unsigned long)m->buf_addr -
+			 (unsigned long)m->buf_physaddr));
+	return pa;
+}
+
+/*
+ * It can be called to process the request.
+ */
+static int
+kni_net_process_request(struct kni_dev *kni, struct rte_kni_request *req)
+{
+	int ret = -1;
+	void *resp_va;
+	uint32_t num;
+	int ret_val;
+
+	if (!kni || !req) {
+		pr_err("No kni instance or request\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&kni->sync_lock);
+
+	/* Construct data */
+	memcpy(kni->sync_kva, req, sizeof(struct rte_kni_request));
+	num = kni_fifo_put(kni->req_q, &kni->sync_va, 1);
+	if (num < 1) {
+		pr_err("Cannot send to req_q\n");
+		ret = -EBUSY;
+		goto fail;
+	}
+
+	ret_val = wait_event_interruptible_timeout(kni->wq,
+			kni_fifo_count(kni->resp_q), 3 * HZ);
+	if (signal_pending(current) || ret_val <= 0) {
+		ret = -ETIME;
+		goto fail;
+	}
+	num = kni_fifo_get(kni->resp_q, (void **)&resp_va, 1);
+	if (num != 1 || resp_va != kni->sync_va) {
+		/* This should never happen */
+		pr_err("No data in resp_q\n");
+		ret = -ENODATA;
+		goto fail;
+	}
+
+	memcpy(req, kni->sync_kva, sizeof(struct rte_kni_request));
+	ret = 0;
+
+fail:
+	mutex_unlock(&kni->sync_lock);
+	return ret;
+}
 
 /*
  * Open and close
@@ -116,317 +196,17 @@ kni_net_config(struct net_device *dev, struct ifmap *map)
 }
 
 /*
- * RX: normal working mode
- */
-static void
-kni_net_rx_normal(struct kni_dev *kni)
-{
-	unsigned ret;
-	uint32_t len;
-	unsigned i, num_rx, num_fq;
-	struct rte_kni_mbuf *kva;
-	struct rte_kni_mbuf *va[MBUF_BURST_SZ];
-	void * data_kva;
-
-	struct sk_buff *skb;
-	struct net_device *dev = kni->net_dev;
-
-	/* Get the number of free entries in free_q */
-	num_fq = kni_fifo_free_count(kni->free_q);
-	if (num_fq == 0) {
-		/* No room on the free_q, bail out */
-		return;
-	}
-
-	/* Calculate the number of entries to dequeue from rx_q */
-	num_rx = min(num_fq, (unsigned)MBUF_BURST_SZ);
-
-	/* Burst dequeue from rx_q */
-	num_rx = kni_fifo_get(kni->rx_q, (void **)va, num_rx);
-	if (num_rx == 0)
-		return;
-
-	/* Transfer received packets to netif */
-	for (i = 0; i < num_rx; i++) {
-		kva = (void *)va[i] - kni->mbuf_va + kni->mbuf_kva;
-		len = kva->pkt_len;
-
-		data_kva = kva->buf_addr + kva->data_off - kni->mbuf_va
-				+ kni->mbuf_kva;
-
-		skb = dev_alloc_skb(len + 2);
-		if (!skb) {
-			KNI_ERR("Out of mem, dropping pkts\n");
-			/* Update statistics */
-			kni->stats.rx_dropped++;
-			continue;
-		}
-
-		/* Align IP on 16B boundary */
-		skb_reserve(skb, 2);
-
-		if (kva->nb_segs == 1) {
-			memcpy(skb_put(skb, len), data_kva, len);
-		} else {
-			int nb_segs;
-			int kva_nb_segs = kva->nb_segs;
-
-			for (nb_segs = 0; nb_segs < kva_nb_segs; nb_segs++) {
-				memcpy(skb_put(skb, kva->data_len),
-					data_kva, kva->data_len);
-
-				if (!kva->next)
-					break;
-
-				kva = kva->next - kni->mbuf_va + kni->mbuf_kva;
-				data_kva = kva->buf_addr + kva->data_off
-					- kni->mbuf_va + kni->mbuf_kva;
-			}
-		}
-
-		skb->dev = dev;
-		skb->protocol = eth_type_trans(skb, dev);
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
-
-		/* Call netif interface */
-		netif_rx_ni(skb);
-
-		/* Update statistics */
-		kni->stats.rx_bytes += len;
-		kni->stats.rx_packets++;
-	}
-
-	/* Burst enqueue mbufs into free_q */
-	ret = kni_fifo_put(kni->free_q, (void **)va, num_rx);
-	if (ret != num_rx)
-		/* Failing should not happen */
-		KNI_ERR("Fail to enqueue entries into free_q\n");
-}
-
-/*
- * RX: loopback with enqueue/dequeue fifos.
- */
-static void
-kni_net_rx_lo_fifo(struct kni_dev *kni)
-{
-	unsigned ret;
-	uint32_t len;
-	unsigned i, num, num_rq, num_tq, num_aq, num_fq;
-	struct rte_kni_mbuf *kva;
-	struct rte_kni_mbuf *va[MBUF_BURST_SZ];
-	void * data_kva;
-
-	struct rte_kni_mbuf *alloc_kva;
-	struct rte_kni_mbuf *alloc_va[MBUF_BURST_SZ];
-	void *alloc_data_kva;
-
-	/* Get the number of entries in rx_q */
-	num_rq = kni_fifo_count(kni->rx_q);
-
-	/* Get the number of free entrie in tx_q */
-	num_tq = kni_fifo_free_count(kni->tx_q);
-
-	/* Get the number of entries in alloc_q */
-	num_aq = kni_fifo_count(kni->alloc_q);
-
-	/* Get the number of free entries in free_q */
-	num_fq = kni_fifo_free_count(kni->free_q);
-
-	/* Calculate the number of entries to be dequeued from rx_q */
-	num = min(num_rq, num_tq);
-	num = min(num, num_aq);
-	num = min(num, num_fq);
-	num = min(num, (unsigned)MBUF_BURST_SZ);
-
-	/* Return if no entry to dequeue from rx_q */
-	if (num == 0)
-		return;
-
-	/* Burst dequeue from rx_q */
-	ret = kni_fifo_get(kni->rx_q, (void **)va, num);
-	if (ret == 0)
-		return; /* Failing should not happen */
-
-	/* Dequeue entries from alloc_q */
-	ret = kni_fifo_get(kni->alloc_q, (void **)alloc_va, num);
-	if (ret) {
-		num = ret;
-		/* Copy mbufs */
-		for (i = 0; i < num; i++) {
-			kva = (void *)va[i] - kni->mbuf_va + kni->mbuf_kva;
-			len = kva->pkt_len;
-			data_kva = kva->buf_addr + kva->data_off -
-					kni->mbuf_va + kni->mbuf_kva;
-
-			alloc_kva = (void *)alloc_va[i] - kni->mbuf_va +
-							kni->mbuf_kva;
-			alloc_data_kva = alloc_kva->buf_addr +
-					alloc_kva->data_off - kni->mbuf_va +
-							kni->mbuf_kva;
-			memcpy(alloc_data_kva, data_kva, len);
-			alloc_kva->pkt_len = len;
-			alloc_kva->data_len = len;
-
-			kni->stats.tx_bytes += len;
-			kni->stats.rx_bytes += len;
-		}
-
-		/* Burst enqueue mbufs into tx_q */
-		ret = kni_fifo_put(kni->tx_q, (void **)alloc_va, num);
-		if (ret != num)
-			/* Failing should not happen */
-			KNI_ERR("Fail to enqueue mbufs into tx_q\n");
-	}
-
-	/* Burst enqueue mbufs into free_q */
-	ret = kni_fifo_put(kni->free_q, (void **)va, num);
-	if (ret != num)
-		/* Failing should not happen */
-		KNI_ERR("Fail to enqueue mbufs into free_q\n");
-
-	/**
-	 * Update statistic, and enqueue/dequeue failure is impossible,
-	 * as all queues are checked at first.
-	 */
-	kni->stats.tx_packets += num;
-	kni->stats.rx_packets += num;
-}
-
-/*
- * RX: loopback with enqueue/dequeue fifos and sk buffer copies.
- */
-static void
-kni_net_rx_lo_fifo_skb(struct kni_dev *kni)
-{
-	unsigned ret;
-	uint32_t len;
-	unsigned i, num_rq, num_fq, num;
-	struct rte_kni_mbuf *kva;
-	struct rte_kni_mbuf *va[MBUF_BURST_SZ];
-	void * data_kva;
-
-	struct sk_buff *skb;
-	struct net_device *dev = kni->net_dev;
-
-	/* Get the number of entries in rx_q */
-	num_rq = kni_fifo_count(kni->rx_q);
-
-	/* Get the number of free entries in free_q */
-	num_fq = kni_fifo_free_count(kni->free_q);
-
-	/* Calculate the number of entries to dequeue from rx_q */
-	num = min(num_rq, num_fq);
-	num = min(num, (unsigned)MBUF_BURST_SZ);
-
-	/* Return if no entry to dequeue from rx_q */
-	if (num == 0)
-		return;
-
-	/* Burst dequeue mbufs from rx_q */
-	ret = kni_fifo_get(kni->rx_q, (void **)va, num);
-	if (ret == 0)
-		return;
-
-	/* Copy mbufs to sk buffer and then call tx interface */
-	for (i = 0; i < num; i++) {
-		kva = (void *)va[i] - kni->mbuf_va + kni->mbuf_kva;
-		len = kva->pkt_len;
-		data_kva = kva->buf_addr + kva->data_off - kni->mbuf_va +
-				kni->mbuf_kva;
-
-		skb = dev_alloc_skb(len + 2);
-		if (skb == NULL)
-			KNI_ERR("Out of mem, dropping pkts\n");
-		else {
-			/* Align IP on 16B boundary */
-			skb_reserve(skb, 2);
-			memcpy(skb_put(skb, len), data_kva, len);
-			skb->dev = dev;
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
-			dev_kfree_skb(skb);
-		}
-
-		/* Simulate real usage, allocate/copy skb twice */
-		skb = dev_alloc_skb(len + 2);
-		if (skb == NULL) {
-			KNI_ERR("Out of mem, dropping pkts\n");
-			kni->stats.rx_dropped++;
-			continue;
-		}
-
-		/* Align IP on 16B boundary */
-		skb_reserve(skb, 2);
-
-		if (kva->nb_segs == 1) {
-			memcpy(skb_put(skb, len), data_kva, len);
-		} else {
-			int nb_segs;
-			int kva_nb_segs = kva->nb_segs;
-
-			for (nb_segs = 0; nb_segs < kva_nb_segs; nb_segs++) {
-				memcpy(skb_put(skb, kva->data_len),
-					data_kva, kva->data_len);
-
-				if (!kva->next)
-					break;
-
-				kva = kva->next - kni->mbuf_va + kni->mbuf_kva;
-				data_kva = kva->buf_addr + kva->data_off
-					- kni->mbuf_va + kni->mbuf_kva;
-			}
-		}
-
-		skb->dev = dev;
-		skb->ip_summed = CHECKSUM_UNNECESSARY;
-
-		kni->stats.rx_bytes += len;
-		kni->stats.rx_packets++;
-
-		/* call tx interface */
-		kni_net_tx(skb, dev);
-	}
-
-	/* enqueue all the mbufs from rx_q into free_q */
-	ret = kni_fifo_put(kni->free_q, (void **)&va, num);
-	if (ret != num)
-		/* Failing should not happen */
-		KNI_ERR("Fail to enqueue mbufs into free_q\n");
-}
-
-/* rx interface */
-void
-kni_net_rx(struct kni_dev *kni)
-{
-	/**
-	 * It doesn't need to check if it is NULL pointer,
-	 * as it has a default value
-	 */
-	(*kni_net_rx_func)(kni);
-}
-
-/*
  * Transmit a packet (called by the kernel)
  */
-#ifdef RTE_KNI_VHOST
-static int
-kni_net_tx(struct sk_buff *skb, struct net_device *dev)
-{
-	struct kni_dev *kni = netdev_priv(dev);
-
-	dev_kfree_skb(skb);
-	kni->stats.tx_dropped++;
-
-	return NETDEV_TX_OK;
-}
-#else
 static int
 kni_net_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	int len = 0;
-	unsigned ret;
+	uint32_t ret;
 	struct kni_dev *kni = netdev_priv(dev);
 	struct rte_kni_mbuf *pkt_kva = NULL;
-	struct rte_kni_mbuf *pkt_va = NULL;
+	void *pkt_pa = NULL;
+	void *pkt_va = NULL;
 
 	/* save the timestamp */
 #ifdef HAVE_TRANS_START_HELPER
@@ -453,13 +233,13 @@ kni_net_tx(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	/* dequeue a mbuf from alloc_q */
-	ret = kni_fifo_get(kni->alloc_q, (void **)&pkt_va, 1);
+	ret = kni_fifo_get(kni->alloc_q, &pkt_pa, 1);
 	if (likely(ret == 1)) {
 		void *data_kva;
 
-		pkt_kva = (void *)pkt_va - kni->mbuf_va + kni->mbuf_kva;
-		data_kva = pkt_kva->buf_addr + pkt_kva->data_off - kni->mbuf_va
-				+ kni->mbuf_kva;
+		pkt_kva = pa2kva(pkt_pa);
+		data_kva = kva2data_kva(pkt_kva);
+		pkt_va = pa2va(pkt_pa, pkt_kva);
 
 		len = skb->len;
 		memcpy(data_kva, skb->data, len);
@@ -471,15 +251,15 @@ kni_net_tx(struct sk_buff *skb, struct net_device *dev)
 		pkt_kva->data_len = len;
 
 		/* enqueue mbuf into tx_q */
-		ret = kni_fifo_put(kni->tx_q, (void **)&pkt_va, 1);
+		ret = kni_fifo_put(kni->tx_q, &pkt_va, 1);
 		if (unlikely(ret != 1)) {
 			/* Failing should not happen */
-			KNI_ERR("Fail to enqueue mbuf into tx_q\n");
+			pr_err("Fail to enqueue mbuf into tx_q\n");
 			goto drop;
 		}
 	} else {
 		/* Failing should not happen */
-		KNI_ERR("Fail to dequeue mbuf from alloc_q\n");
+		pr_err("Fail to dequeue mbuf from alloc_q\n");
 		goto drop;
 	}
 
@@ -497,22 +277,294 @@ drop:
 
 	return NETDEV_TX_OK;
 }
-#endif
+
+/*
+ * RX: normal working mode
+ */
+static void
+kni_net_rx_normal(struct kni_dev *kni)
+{
+	uint32_t ret;
+	uint32_t len;
+	uint32_t i, num_rx, num_fq;
+	struct rte_kni_mbuf *kva;
+	void *data_kva;
+	struct sk_buff *skb;
+	struct net_device *dev = kni->net_dev;
+
+	/* Get the number of free entries in free_q */
+	num_fq = kni_fifo_free_count(kni->free_q);
+	if (num_fq == 0) {
+		/* No room on the free_q, bail out */
+		return;
+	}
+
+	/* Calculate the number of entries to dequeue from rx_q */
+	num_rx = min_t(uint32_t, num_fq, MBUF_BURST_SZ);
+
+	/* Burst dequeue from rx_q */
+	num_rx = kni_fifo_get(kni->rx_q, kni->pa, num_rx);
+	if (num_rx == 0)
+		return;
+
+	/* Transfer received packets to netif */
+	for (i = 0; i < num_rx; i++) {
+		kva = pa2kva(kni->pa[i]);
+		len = kva->pkt_len;
+		data_kva = kva2data_kva(kva);
+		kni->va[i] = pa2va(kni->pa[i], kva);
+
+		skb = dev_alloc_skb(len + 2);
+		if (!skb) {
+			/* Update statistics */
+			kni->stats.rx_dropped++;
+			continue;
+		}
+
+		/* Align IP on 16B boundary */
+		skb_reserve(skb, 2);
+
+		if (kva->nb_segs == 1) {
+			memcpy(skb_put(skb, len), data_kva, len);
+		} else {
+			int nb_segs;
+			int kva_nb_segs = kva->nb_segs;
+
+			for (nb_segs = 0; nb_segs < kva_nb_segs; nb_segs++) {
+				memcpy(skb_put(skb, kva->data_len),
+					data_kva, kva->data_len);
+
+				if (!kva->next)
+					break;
+
+				kva = pa2kva(va2pa(kva->next, kva));
+				data_kva = kva2data_kva(kva);
+			}
+		}
+
+		skb->dev = dev;
+		skb->protocol = eth_type_trans(skb, dev);
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+		/* Call netif interface */
+		netif_rx_ni(skb);
+
+		/* Update statistics */
+		kni->stats.rx_bytes += len;
+		kni->stats.rx_packets++;
+	}
+
+	/* Burst enqueue mbufs into free_q */
+	ret = kni_fifo_put(kni->free_q, kni->va, num_rx);
+	if (ret != num_rx)
+		/* Failing should not happen */
+		pr_err("Fail to enqueue entries into free_q\n");
+}
+
+/*
+ * RX: loopback with enqueue/dequeue fifos.
+ */
+static void
+kni_net_rx_lo_fifo(struct kni_dev *kni)
+{
+	uint32_t ret;
+	uint32_t len;
+	uint32_t i, num, num_rq, num_tq, num_aq, num_fq;
+	struct rte_kni_mbuf *kva;
+	void *data_kva;
+	struct rte_kni_mbuf *alloc_kva;
+	void *alloc_data_kva;
+
+	/* Get the number of entries in rx_q */
+	num_rq = kni_fifo_count(kni->rx_q);
+
+	/* Get the number of free entrie in tx_q */
+	num_tq = kni_fifo_free_count(kni->tx_q);
+
+	/* Get the number of entries in alloc_q */
+	num_aq = kni_fifo_count(kni->alloc_q);
+
+	/* Get the number of free entries in free_q */
+	num_fq = kni_fifo_free_count(kni->free_q);
+
+	/* Calculate the number of entries to be dequeued from rx_q */
+	num = min(num_rq, num_tq);
+	num = min(num, num_aq);
+	num = min(num, num_fq);
+	num = min_t(uint32_t, num, MBUF_BURST_SZ);
+
+	/* Return if no entry to dequeue from rx_q */
+	if (num == 0)
+		return;
+
+	/* Burst dequeue from rx_q */
+	ret = kni_fifo_get(kni->rx_q, kni->pa, num);
+	if (ret == 0)
+		return; /* Failing should not happen */
+
+	/* Dequeue entries from alloc_q */
+	ret = kni_fifo_get(kni->alloc_q, kni->alloc_pa, num);
+	if (ret) {
+		num = ret;
+		/* Copy mbufs */
+		for (i = 0; i < num; i++) {
+			kva = pa2kva(kni->pa[i]);
+			len = kva->pkt_len;
+			data_kva = kva2data_kva(kva);
+			kni->va[i] = pa2va(kni->pa[i], kva);
+
+			alloc_kva = pa2kva(kni->alloc_pa[i]);
+			alloc_data_kva = kva2data_kva(alloc_kva);
+			kni->alloc_va[i] = pa2va(kni->alloc_pa[i], alloc_kva);
+
+			memcpy(alloc_data_kva, data_kva, len);
+			alloc_kva->pkt_len = len;
+			alloc_kva->data_len = len;
+
+			kni->stats.tx_bytes += len;
+			kni->stats.rx_bytes += len;
+		}
+
+		/* Burst enqueue mbufs into tx_q */
+		ret = kni_fifo_put(kni->tx_q, kni->alloc_va, num);
+		if (ret != num)
+			/* Failing should not happen */
+			pr_err("Fail to enqueue mbufs into tx_q\n");
+	}
+
+	/* Burst enqueue mbufs into free_q */
+	ret = kni_fifo_put(kni->free_q, kni->va, num);
+	if (ret != num)
+		/* Failing should not happen */
+		pr_err("Fail to enqueue mbufs into free_q\n");
+
+	/**
+	 * Update statistic, and enqueue/dequeue failure is impossible,
+	 * as all queues are checked at first.
+	 */
+	kni->stats.tx_packets += num;
+	kni->stats.rx_packets += num;
+}
+
+/*
+ * RX: loopback with enqueue/dequeue fifos and sk buffer copies.
+ */
+static void
+kni_net_rx_lo_fifo_skb(struct kni_dev *kni)
+{
+	uint32_t ret;
+	uint32_t len;
+	uint32_t i, num_rq, num_fq, num;
+	struct rte_kni_mbuf *kva;
+	void *data_kva;
+	struct sk_buff *skb;
+	struct net_device *dev = kni->net_dev;
+
+	/* Get the number of entries in rx_q */
+	num_rq = kni_fifo_count(kni->rx_q);
+
+	/* Get the number of free entries in free_q */
+	num_fq = kni_fifo_free_count(kni->free_q);
+
+	/* Calculate the number of entries to dequeue from rx_q */
+	num = min(num_rq, num_fq);
+	num = min_t(uint32_t, num, MBUF_BURST_SZ);
+
+	/* Return if no entry to dequeue from rx_q */
+	if (num == 0)
+		return;
+
+	/* Burst dequeue mbufs from rx_q */
+	ret = kni_fifo_get(kni->rx_q, kni->pa, num);
+	if (ret == 0)
+		return;
+
+	/* Copy mbufs to sk buffer and then call tx interface */
+	for (i = 0; i < num; i++) {
+		kva = pa2kva(kni->pa[i]);
+		len = kva->pkt_len;
+		data_kva = kva2data_kva(kva);
+		kni->va[i] = pa2va(kni->pa[i], kva);
+
+		skb = dev_alloc_skb(len + 2);
+		if (skb) {
+			/* Align IP on 16B boundary */
+			skb_reserve(skb, 2);
+			memcpy(skb_put(skb, len), data_kva, len);
+			skb->dev = dev;
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
+			dev_kfree_skb(skb);
+		}
+
+		/* Simulate real usage, allocate/copy skb twice */
+		skb = dev_alloc_skb(len + 2);
+		if (skb == NULL) {
+			kni->stats.rx_dropped++;
+			continue;
+		}
+
+		/* Align IP on 16B boundary */
+		skb_reserve(skb, 2);
+
+		if (kva->nb_segs == 1) {
+			memcpy(skb_put(skb, len), data_kva, len);
+		} else {
+			int nb_segs;
+			int kva_nb_segs = kva->nb_segs;
+
+			for (nb_segs = 0; nb_segs < kva_nb_segs; nb_segs++) {
+				memcpy(skb_put(skb, kva->data_len),
+					data_kva, kva->data_len);
+
+				if (!kva->next)
+					break;
+
+				kva = pa2kva(va2pa(kva->next, kva));
+				data_kva = kva2data_kva(kva);
+			}
+		}
+
+		skb->dev = dev;
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+		kni->stats.rx_bytes += len;
+		kni->stats.rx_packets++;
+
+		/* call tx interface */
+		kni_net_tx(skb, dev);
+	}
+
+	/* enqueue all the mbufs from rx_q into free_q */
+	ret = kni_fifo_put(kni->free_q, kni->va, num);
+	if (ret != num)
+		/* Failing should not happen */
+		pr_err("Fail to enqueue mbufs into free_q\n");
+}
+
+/* rx interface */
+void
+kni_net_rx(struct kni_dev *kni)
+{
+	/**
+	 * It doesn't need to check if it is NULL pointer,
+	 * as it has a default value
+	 */
+	(*kni_net_rx_func)(kni);
+}
 
 /*
  * Deal with a transmit timeout.
  */
 static void
-kni_net_tx_timeout (struct net_device *dev)
+kni_net_tx_timeout(struct net_device *dev)
 {
 	struct kni_dev *kni = netdev_priv(dev);
 
-	KNI_DBG("Transmit timeout at %ld, latency %ld\n", jiffies,
-			jiffies - dev->trans_start);
+	pr_debug("Transmit timeout at %ld, latency %ld\n", jiffies,
+			jiffies - dev_trans_start(dev));
 
 	kni->stats.tx_errors++;
 	netif_wake_queue(dev);
-	return;
 }
 
 /*
@@ -521,8 +573,8 @@ kni_net_tx_timeout (struct net_device *dev)
 static int
 kni_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
-	KNI_DBG("kni_net_ioctl %d\n",
-		((struct kni_dev *)netdev_priv(dev))->group_id);
+	pr_debug("kni_net_ioctl group:%d cmd:%d\n",
+		((struct kni_dev *)netdev_priv(dev))->group_id, cmd);
 
 	return 0;
 }
@@ -539,7 +591,7 @@ kni_net_change_mtu(struct net_device *dev, int new_mtu)
 	struct rte_kni_request req;
 	struct kni_dev *kni = netdev_priv(dev);
 
-	KNI_DBG("kni_net_change_mtu new mtu %d to be set\n", new_mtu);
+	pr_debug("kni_net_change_mtu new mtu %d to be set\n", new_mtu);
 
 	memset(&req, 0, sizeof(req));
 	req.req_id = RTE_KNI_REQ_CHANGE_MTU;
@@ -562,61 +614,13 @@ kni_net_poll_resp(struct kni_dev *kni)
 }
 
 /*
- * It can be called to process the request.
- */
-static int
-kni_net_process_request(struct kni_dev *kni, struct rte_kni_request *req)
-{
-	int ret = -1;
-	void *resp_va;
-	unsigned num;
-	int ret_val;
-
-	if (!kni || !req) {
-		KNI_ERR("No kni instance or request\n");
-		return -EINVAL;
-	}
-
-	mutex_lock(&kni->sync_lock);
-
-	/* Construct data */
-	memcpy(kni->sync_kva, req, sizeof(struct rte_kni_request));
-	num = kni_fifo_put(kni->req_q, &kni->sync_va, 1);
-	if (num < 1) {
-		KNI_ERR("Cannot send to req_q\n");
-		ret = -EBUSY;
-		goto fail;
-	}
-
-	ret_val = wait_event_interruptible_timeout(kni->wq,
-			kni_fifo_count(kni->resp_q), 3 * HZ);
-	if (signal_pending(current) || ret_val <= 0) {
-		ret = -ETIME;
-		goto fail;
-	}
-	num = kni_fifo_get(kni->resp_q, (void **)&resp_va, 1);
-	if (num != 1 || resp_va != kni->sync_va) {
-		/* This should never happen */
-		KNI_ERR("No data in resp_q\n");
-		ret = -ENODATA;
-		goto fail;
-	}
-
-	memcpy(req, kni->sync_kva, sizeof(struct rte_kni_request));
-	ret = 0;
-
-fail:
-	mutex_unlock(&kni->sync_lock);
-	return ret;
-}
-
-/*
  * Return statistics to the caller
  */
 static struct net_device_stats *
 kni_net_stats(struct net_device *dev)
 {
 	struct kni_dev *kni = netdev_priv(dev);
+
 	return &kni->stats;
 }
 
@@ -626,7 +630,7 @@ kni_net_stats(struct net_device *dev)
 static int
 kni_net_header(struct sk_buff *skb, struct net_device *dev,
 		unsigned short type, const void *daddr,
-		const void *saddr, unsigned int len)
+		const void *saddr, uint32_t len)
 {
 	struct ethhdr *eth = (struct ethhdr *) skb_push(skb, ETH_HLEN);
 
@@ -636,7 +640,6 @@ kni_net_header(struct sk_buff *skb, struct net_device *dev,
 
 	return dev->hard_header_len;
 }
-
 
 /*
  * Re-fill the eth header
@@ -662,9 +665,11 @@ kni_net_rebuild_header(struct sk_buff *skb)
  *
  * Returns 0 on success, negative on failure
  **/
-static int kni_net_set_mac(struct net_device *netdev, void *p)
+static int
+kni_net_set_mac(struct net_device *netdev, void *p)
 {
 	struct sockaddr *addr = p;
+
 	if (!is_valid_ether_addr((unsigned char *)(addr->sa_data)))
 		return -EADDRNOTAVAIL;
 	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
@@ -672,7 +677,8 @@ static int kni_net_set_mac(struct net_device *netdev, void *p)
 }
 
 #ifdef HAVE_CHANGE_CARRIER_CB
-static int kni_net_change_carrier(struct net_device *dev, bool new_carrier)
+static int
+kni_net_change_carrier(struct net_device *dev, bool new_carrier)
 {
 	if (new_carrier)
 		netif_carrier_on(dev);
@@ -711,8 +717,6 @@ kni_net_init(struct net_device *dev)
 {
 	struct kni_dev *kni = netdev_priv(dev);
 
-	KNI_DBG("kni_net_init\n");
-
 	init_waitqueue_head(&kni->wq);
 	mutex_init(&kni->sync_lock);
 
@@ -726,18 +730,18 @@ void
 kni_net_config_lo_mode(char *lo_str)
 {
 	if (!lo_str) {
-		KNI_PRINT("loopback disabled");
+		pr_debug("loopback disabled");
 		return;
 	}
 
 	if (!strcmp(lo_str, "lo_mode_none"))
-		KNI_PRINT("loopback disabled");
+		pr_debug("loopback disabled");
 	else if (!strcmp(lo_str, "lo_mode_fifo")) {
-		KNI_PRINT("loopback mode=lo_mode_fifo enabled");
+		pr_debug("loopback mode=lo_mode_fifo enabled");
 		kni_net_rx_func = kni_net_rx_lo_fifo;
 	} else if (!strcmp(lo_str, "lo_mode_fifo_skb")) {
-		KNI_PRINT("loopback mode=lo_mode_fifo_skb enabled");
+		pr_debug("loopback mode=lo_mode_fifo_skb enabled");
 		kni_net_rx_func = kni_net_rx_lo_fifo_skb;
 	} else
-		KNI_PRINT("Incognizant parameter, loopback disabled");
+		pr_debug("Incognizant parameter, loopback disabled");
 }

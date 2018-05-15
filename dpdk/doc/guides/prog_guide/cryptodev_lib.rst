@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
+    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions
@@ -68,13 +68,13 @@ From the command line using the --vdev EAL option
 
 .. code-block:: console
 
-   --vdev  'cryptodev_aesni_mb_pmd0,max_nb_queue_pairs=2,max_nb_sessions=1024,socket_id=0'
+   --vdev  'crypto_aesni_mb0,max_nb_queue_pairs=2,max_nb_sessions=1024,socket_id=0'
 
-Our using the rte_eal_vdev_init API within the application code.
+Our using the rte_vdev_init API within the application code.
 
 .. code-block:: c
 
-   rte_eal_vdev_init("cryptodev_aesni_mb_pmd",
+   rte_vdev_init("crypto_aesni_mb",
                      "max_nb_queue_pairs=2,max_nb_sessions=1024,socket_id=0")
 
 All virtual Crypto devices support the following initialization parameters:
@@ -114,9 +114,8 @@ The rte_cryptodev_configure API is used to configure a Crypto device.
    int rte_cryptodev_configure(uint8_t dev_id,
                                struct rte_cryptodev_config *config)
 
-The ``rte_cryptodev_config`` structure is used to pass the configuration parameters.
-In contains parameter for socket selection, number of queue pairs and the
-session mempool configuration.
+The ``rte_cryptodev_config`` structure is used to pass the configuration
+parameters for socket selection and number of queue pairs.
 
 .. code-block:: c
 
@@ -125,12 +124,6 @@ session mempool configuration.
         /**< Socket to allocate resources on */
         uint16_t nb_queue_pairs;
         /**< Number of queue pairs to configure on device */
-
-        struct {
-            uint32_t nb_objs;
-            uint32_t cache_size;
-        } session_mp;
-        /**< Session mempool configuration */
     };
 
 
@@ -188,8 +181,9 @@ the device having hardware acceleration or supporting symmetric Crypto
 operations,
 
 The capabilities mechanism defines the individual algorithms/functions which
-the device supports, such as a specific symmetric Crypto cipher or
-authentication operation.
+the device supports, such as a specific symmetric Crypto cipher,
+authentication operation or Authenticated Encryption with Associated Data
+(AEAD) operation.
 
 
 Device Features
@@ -245,7 +239,8 @@ algorithm AES_CBC.
                         .max = 12,
                         .increment = 0
                     },
-                    .aad_size = { 0 }
+                    .aad_size = { 0 },
+                    .iv_size = { 0 }
                 }
             }
         },
@@ -291,7 +286,7 @@ relevant information for the device.
 
     struct rte_cryptodev_info {
         const char *driver_name;
-        enum rte_cryptodev_type dev_type;
+        uint8_t driver_id;
         struct rte_pci_device *pci_dev;
 
         uint64_t feature_flags;
@@ -359,11 +354,11 @@ Crypto operation to be processed on a particular Crypto device poll mode driver.
 
 .. figure:: img/crypto_op.*
 
-The operation structure includes the operation type and the operation status,
-a reference to the operation specific data, which can vary in size and content
-depending on the operation being provisioned. It also contains the source
-mempool for the operation, if it allocate from a mempool. Finally an
-opaque pointer for user specific data is provided.
+The operation structure includes the operation type, the operation status
+and the session type (session-based/less), a reference to the operation
+specific data, which can vary in size and content depending on the operation
+being provisioned. It also contains the source mempool for the operation,
+if it allocated from a mempool.
 
 If Crypto operations are allocated from a Crypto operation mempool, see next
 section, there is also the ability to allocate private memory with the
@@ -431,7 +426,7 @@ operations, as well as also supporting AEAD operations.
 Session and Session Management
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Session are used in symmetric cryptographic processing to store the immutable
+Sessions are used in symmetric cryptographic processing to store the immutable
 data defined in a cryptographic transform which is used in the operation
 processing of a packet flow. Sessions are used to manage information such as
 expand cipher keys and HMAC IPADs and OPADs, which need to be calculated for a
@@ -442,29 +437,33 @@ Crypto workloads.
 
 .. figure:: img/cryptodev_sym_sess.*
 
-The Crypto device framework provides a set of session pool management APIs for
-the creation and freeing of the sessions, utilizing the Mempool Library.
+The Crypto device framework provides APIs to allocate and initizalize sessions
+for crypto devices, where sessions are mempool objects.
+It is the application's responsibility to create and manage the session mempools.
+This approach allows for different scenarios such as having a single session
+mempool for all crypto devices (where the mempool object size is big
+enough to hold the private session of any crypto device), as well as having
+multiple session mempools of different sizes for better memory usage.
 
-The framework also provides hooks so the PMDs can pass the amount of memory
-required for that PMDs private session parameters, as well as initialization
-functions for the configuration of the session parameters and freeing function
-so the PMD can managed the memory on destruction of a session.
+An application can use ``rte_cryptodev_get_private_session_size()`` to
+get the private session size of given crypto device. This function would allow
+an application to calculate the max device session size of all crypto devices
+to create a single session mempool.
+If instead an application creates multiple session mempools, the Crypto device
+framework also provides ``rte_cryptodev_get_header_session_size`` to get
+the size of an uninitialized session.
 
-**Note**: Sessions created on a particular device can only be used on Crypto
-devices of the same type, and if you try to use a session on a device different
-to that on which it was created then the Crypto operation will fail.
+Once the session mempools have been created, ``rte_cryptodev_sym_session_create()``
+is used to allocate an uninitialized session from the given mempool.
+The session then must be initialized using ``rte_cryptodev_sym_session_init()``
+for each of the required crypto devices. A symmetric transform chain
+is used to specify the operation and its parameters. See the section below for
+details on transforms.
 
-``rte_cryptodev_sym_session_create()`` is used to create a symmetric session on
-Crypto device. A symmetric transform chain is used to specify the particular
-operation and its parameters. See the section below for details on transforms.
-
-.. code-block:: c
-
-   struct rte_cryptodev_sym_session * rte_cryptodev_sym_session_create(
-          uint8_t dev_id, struct rte_crypto_sym_xform *xform);
-
-**Note**: For AEAD operations the algorithm selected for authentication and
-ciphering must aligned, eg AES_GCM.
+When a session is no longer used, user must call ``rte_cryptodev_sym_session_clear()``
+for each of the crypto devices that are using the session, to free all driver
+private session data. Once this is done, session should be freed using
+``rte_cryptodev_sym_session_free`` which returns them to their mempool.
 
 
 Transforms and Transform Chaining
@@ -476,9 +475,8 @@ operations such as cipher encrypt and authentication generate, the next pointer
 allows transform to be chained together. Crypto devices which support chaining
 must publish the chaining of symmetric Crypto operations feature flag.
 
-Currently there are two transforms types cipher and authentication, to specify
-an AEAD operation it is required to chain a cipher and an authentication
-transform together. Also it is important to note that the order in which the
+Currently there are three transforms types cipher, authentication and AEAD.
+Also it is important to note that the order in which the
 transforms are passed indicates the order of the chaining.
 
 .. code-block:: c
@@ -493,6 +491,8 @@ transforms are passed indicates the order of the chaining.
             /**< Authentication / hash xform */
             struct rte_crypto_cipher_xform cipher;
             /**< Cipher xform */
+            struct rte_crypto_aead_xform aead;
+            /**< AEAD xform */
         };
     };
 
@@ -512,9 +512,9 @@ buffer. It is used for either cipher, authentication, AEAD and chained
 operations.
 
 As a minimum the symmetric operation must have a source data buffer (``m_src``),
-the session type (session-based/less), a valid session (or transform chain if in
-session-less mode) and the minimum authentication/ cipher parameters required
-depending on the type of operation specified in the session or the transform
+a valid session (or transform chain if in session-less mode) and the minimum
+authentication/ cipher/ AEAD parameters required depending on the type of operation
+specified in the session or the transform
 chain.
 
 .. code-block:: c
@@ -523,8 +523,6 @@ chain.
         struct rte_mbuf *m_src;
         struct rte_mbuf *m_dst;
 
-        enum rte_crypto_sym_op_sess_type type;
-
         union {
             struct rte_cryptodev_sym_session *session;
             /**< Handle for the initialised session context */
@@ -532,38 +530,254 @@ chain.
             /**< Session-less API Crypto operation parameters */
         };
 
-        struct {
+        union {
             struct {
-                uint32_t offset;
-                uint32_t length;
-            } data;   /**< Data offsets and length for ciphering */
+                struct {
+                    uint32_t offset;
+                    uint32_t length;
+                } data; /**< Data offsets and length for AEAD */
+
+                struct {
+                    uint8_t *data;
+                    rte_iova_t phys_addr;
+                } digest; /**< Digest parameters */
+
+                struct {
+                    uint8_t *data;
+                    rte_iova_t phys_addr;
+                } aad;
+                /**< Additional authentication parameters */
+            } aead;
 
             struct {
-                uint8_t *data;
-                phys_addr_t phys_addr;
-                uint16_t length;
-            } iv;     /**< Initialisation vector parameters */
-        } cipher;
+                struct {
+                    struct {
+                        uint32_t offset;
+                        uint32_t length;
+                    } data; /**< Data offsets and length for ciphering */
+                } cipher;
 
-        struct {
-            struct {
-                uint32_t offset;
-                uint32_t length;
-            } data;   /**< Data offsets and length for authentication */
+                struct {
+                    struct {
+                        uint32_t offset;
+                        uint32_t length;
+                    } data;
+                    /**< Data offsets and length for authentication */
 
-            struct {
-                uint8_t *data;
-                phys_addr_t phys_addr;
-                uint16_t length;
-            } digest; /**< Digest parameters */
+                    struct {
+                        uint8_t *data;
+                        rte_iova_t phys_addr;
+                    } digest; /**< Digest parameters */
+                } auth;
+            };
+        };
+    };
 
-            struct {
-                uint8_t *data;
-                phys_addr_t phys_addr;
-                uint16_t length;
-            } aad;    /**< Additional authentication parameters */
-        } auth;
+Sample code
+-----------
+
+There are various sample applications that show how to use the cryptodev library,
+such as the L2fwd with Crypto sample application (L2fwd-crypto) and
+the IPSec Security Gateway application (ipsec-secgw).
+
+While these applications demonstrate how an application can be created to perform
+generic crypto operation, the required complexity hides the basic steps of
+how to use the cryptodev APIs.
+
+The following sample code shows the basic steps to encrypt several buffers
+with AES-CBC (although performing other crypto operations is similar),
+using one of the crypto PMDs available in DPDK.
+
+.. code-block:: c
+
+    /*
+     * Simple example to encrypt several buffers with AES-CBC using
+     * the Cryptodev APIs.
+     */
+
+    #define MAX_SESSIONS         1024
+    #define NUM_MBUFS            1024
+    #define POOL_CACHE_SIZE      128
+    #define BURST_SIZE           32
+    #define BUFFER_SIZE          1024
+    #define AES_CBC_IV_LENGTH    16
+    #define AES_CBC_KEY_LENGTH   16
+    #define IV_OFFSET            (sizeof(struct rte_crypto_op) + \
+                                 sizeof(struct rte_crypto_sym_op))
+
+    struct rte_mempool *mbuf_pool, *crypto_op_pool, *session_pool;
+    unsigned int session_size;
+    int ret;
+
+    /* Initialize EAL. */
+    ret = rte_eal_init(argc, argv);
+    if (ret < 0)
+        rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
+
+    uint8_t socket_id = rte_socket_id();
+
+    /* Create the mbuf pool. */
+    mbuf_pool = rte_pktmbuf_pool_create("mbuf_pool",
+                                    NUM_MBUFS,
+                                    POOL_CACHE_SIZE,
+                                    0,
+                                    RTE_MBUF_DEFAULT_BUF_SIZE,
+                                    socket_id);
+    if (mbuf_pool == NULL)
+        rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+
+    /*
+     * The IV is always placed after the crypto operation,
+     * so some private data is required to be reserved.
+     */
+    unsigned int crypto_op_private_data = AES_CBC_IV_LENGTH;
+
+    /* Create crypto operation pool. */
+    crypto_op_pool = rte_crypto_op_pool_create("crypto_op_pool",
+                                            RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+                                            NUM_MBUFS,
+                                            POOL_CACHE_SIZE,
+                                            crypto_op_private_data,
+                                            socket_id);
+    if (crypto_op_pool == NULL)
+        rte_exit(EXIT_FAILURE, "Cannot create crypto op pool\n");
+
+    /* Create the virtual crypto device. */
+    char args[128];
+    const char *crypto_name = "crypto_aesni_mb0";
+    snprintf(args, sizeof(args), "socket_id=%d", socket_id);
+    ret = rte_vdev_init(crypto_name, args);
+    if (ret != 0)
+        rte_exit(EXIT_FAILURE, "Cannot create virtual device");
+
+    uint8_t cdev_id = rte_cryptodev_get_dev_id(crypto_name);
+
+    /* Get private session data size. */
+    session_size = rte_cryptodev_get_private_session_size(cdev_id);
+
+    /*
+     * Create session mempool, with two objects per session,
+     * one for the session header and another one for the
+     * private session data for the crypto device.
+     */
+    session_pool = rte_mempool_create("session_pool",
+                                    MAX_SESSIONS * 2,
+                                    session_size,
+                                    POOL_CACHE_SIZE,
+                                    0, NULL, NULL, NULL,
+                                    NULL, socket_id,
+                                    0);
+
+    /* Configure the crypto device. */
+    struct rte_cryptodev_config conf = {
+        .nb_queue_pairs = 1,
+        .socket_id = socket_id
+    };
+    struct rte_cryptodev_qp_conf qp_conf = {
+        .nb_descriptors = 2048
+    };
+
+    if (rte_cryptodev_configure(cdev_id, &conf) < 0)
+        rte_exit(EXIT_FAILURE, "Failed to configure cryptodev %u", cdev_id);
+
+    if (rte_cryptodev_queue_pair_setup(cdev_id, 0, &qp_conf,
+                            socket_id, session_pool) < 0)
+        rte_exit(EXIT_FAILURE, "Failed to setup queue pair\n");
+
+    if (rte_cryptodev_start(cdev_id) < 0)
+        rte_exit(EXIT_FAILURE, "Failed to start device\n");
+
+    /* Create the crypto transform. */
+    uint8_t cipher_key[16] = {0};
+    struct rte_crypto_sym_xform cipher_xform = {
+        .next = NULL,
+        .type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+        .cipher = {
+            .op = RTE_CRYPTO_CIPHER_OP_ENCRYPT,
+            .algo = RTE_CRYPTO_CIPHER_AES_CBC,
+            .key = {
+                .data = cipher_key,
+                .length = AES_CBC_KEY_LENGTH
+            },
+            .iv = {
+                .offset = IV_OFFSET,
+                .length = AES_CBC_IV_LENGTH
+            }
+        }
+    };
+
+    /* Create crypto session and initialize it for the crypto device. */
+    struct rte_cryptodev_sym_session *session;
+    session = rte_cryptodev_sym_session_create(session_pool);
+    if (session == NULL)
+        rte_exit(EXIT_FAILURE, "Session could not be created\n");
+
+    if (rte_cryptodev_sym_session_init(cdev_id, session,
+                    &cipher_xform, session_pool) < 0)
+        rte_exit(EXIT_FAILURE, "Session could not be initialized "
+                    "for the crypto device\n");
+
+    /* Get a burst of crypto operations. */
+    struct rte_crypto_op *crypto_ops[BURST_SIZE];
+    if (rte_crypto_op_bulk_alloc(crypto_op_pool,
+                            RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+                            crypto_ops, BURST_SIZE) == 0)
+        rte_exit(EXIT_FAILURE, "Not enough crypto operations available\n");
+
+    /* Get a burst of mbufs. */
+    struct rte_mbuf *mbufs[BURST_SIZE];
+    if (rte_pktmbuf_alloc_bulk(mbuf_pool, mbufs, BURST_SIZE) < 0)
+        rte_exit(EXIT_FAILURE, "Not enough mbufs available");
+
+    /* Initialize the mbufs and append them to the crypto operations. */
+    unsigned int i;
+    for (i = 0; i < BURST_SIZE; i++) {
+        if (rte_pktmbuf_append(mbufs[i], BUFFER_SIZE) == NULL)
+            rte_exit(EXIT_FAILURE, "Not enough room in the mbuf\n");
+        crypto_ops[i]->sym->m_src = mbufs[i];
     }
+
+    /* Set up the crypto operations. */
+    for (i = 0; i < BURST_SIZE; i++) {
+        struct rte_crypto_op *op = crypto_ops[i];
+        /* Modify bytes of the IV at the end of the crypto operation */
+        uint8_t *iv_ptr = rte_crypto_op_ctod_offset(op, uint8_t *,
+                                                IV_OFFSET);
+
+        generate_random_bytes(iv_ptr, AES_CBC_IV_LENGTH);
+
+        op->sym->cipher.data.offset = 0;
+        op->sym->cipher.data.length = BUFFER_SIZE;
+
+        /* Attach the crypto session to the operation */
+        rte_crypto_op_attach_sym_session(op, session);
+    }
+
+    /* Enqueue the crypto operations in the crypto device. */
+    uint16_t num_enqueued_ops = rte_cryptodev_enqueue_burst(cdev_id, 0,
+                                            crypto_ops, BURST_SIZE);
+
+    /*
+     * Dequeue the crypto operations until all the operations
+     * are proccessed in the crypto device.
+     */
+    uint16_t num_dequeued_ops, total_num_dequeued_ops = 0;
+    do {
+        struct rte_crypto_op *dequeued_ops[BURST_SIZE];
+        num_dequeued_ops = rte_cryptodev_dequeue_burst(cdev_id, 0,
+                                        dequeued_ops, BURST_SIZE);
+        total_num_dequeued_ops += num_dequeued_ops;
+
+        /* Check if operation was processed successfully */
+        for (i = 0; i < num_dequeued_ops; i++) {
+            if (dequeued_ops[i]->status != RTE_CRYPTO_OP_STATUS_SUCCESS)
+                rte_exit(EXIT_FAILURE,
+                        "Some operations were not processed correctly");
+        }
+
+        rte_mempool_put_bulk(crypto_op_pool, (void **)dequeued_ops,
+                                            num_dequeued_ops);
+    } while (total_num_dequeued_ops < num_enqueued_ops);
 
 
 Asymmetric Cryptography

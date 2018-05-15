@@ -640,3 +640,105 @@ I40e VF may not receive packets in the promiscuous mode
 
 **Driver/Module**:
    Poll Mode Driver (PMD).
+
+
+uio pci generic module bind failed in X710/XL710/XXV710
+-------------------------------------------------------
+
+**Description**:
+   The ``uio_pci_generic`` module is not supported by XL710, since the errata of XL710
+   states that the Interrupt Status bit is not implemented. The errata is the item #71
+   from the `xl710 controller spec
+   <http://www.intel.com/content/www/us/en/embedded/products/networking/xl710-10-40-controller-spec-update.html>`_.
+   The hw limitation is the same as other X710/XXV710 NICs.
+
+**Implication**:
+   When use ``--bind=uio_pci_generic``, the ``uio_pci_generic`` module probes device and check the Interrupt
+   Status bit. Since it is not supported by X710/XL710/XXV710, it return a *failed* value. The statement
+   that these products don’t support INTx masking, is indicated in the related `linux kernel commit
+   <https://git.kernel.org/cgit/linux/kernel/git/stable/linux-stable.git/commit/drivers/pci/quirks.c?id=8bcf4525c5d43306c5fd07e132bc8650e3491aec>`_.
+
+**Resolution/Workaround**:
+   Do not bind the ``uio_pci_generic`` module in X710/XL710/XXV710 NICs.
+
+**Affected Environment/Platform**:
+   All.
+
+**Driver/Module**:
+   Poll Mode Driver (PMD).
+
+
+virtio tx_burst() function cannot do TSO on shared packets
+----------------------------------------------------------
+
+**Description**:
+   The standard TX function of virtio driver does not manage shared
+   packets properly when doing TSO. These packets should be read-only
+   but the driver modifies them.
+
+   When doing TSO, the virtio standard expects that the L4 checksum is
+   set to the pseudo header checksum in the packet data, which is
+   different than the DPDK API. The driver patches the L4 checksum to
+   conform to the virtio standard, but this solution is invalid when
+   dealing with shared packets (clones), because the packet data should
+   not be modified.
+
+**Implication**:
+   In this situation, the shared data will be modified by the driver,
+   potentially causing race conditions with the other users of the mbuf
+   data.
+
+**Resolution/Workaround**:
+   The workaround in the application is to ensure that the network
+   headers in the packet data are not shared.
+
+**Affected Environment/Platform**:
+   Virtual machines running a virtio driver.
+
+**Driver/Module**:
+   Poll Mode Driver (PMD).
+
+
+igb uio legacy mode can not be used in X710/XL710/XXV710
+--------------------------------------------------------
+
+**Description**:
+   X710/XL710/XXV710 NICs lack support for indicating INTx is asserted via the interrupt
+   bit in the PCI status register. Linux delected them from INTx support table. The related
+   `commit <https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/commit/drivers/pci/quirks.c?id=8bcf4525c5d43306c5fd07e132bc8650e3491aec>`_.
+
+**Implication**:
+   When insmod ``igb_uio`` with ``intr_mode=legacy`` and test link status interrupt. Since
+   INTx interrupt is not supported by X710/XL710/XXV710, it will cause Input/Output error
+   when reading file descriptor.
+
+**Resolution/Workaround**:
+   Do not bind ``igb_uio`` with legacy mode in X710/XL710/XXV710 NICs, or do not use kernel
+   version >4.7 when you bind ``igb_uio`` with legacy mode.
+
+**Affected Environment/Platform**:
+   ALL.
+
+**Driver/Module**:
+   Poll Mode Driver (PMD).
+
+
+igb_uio can not be used when running l3fwd-power
+------------------------------------------------
+
+**Description**:
+   Link Status Change(LSC) interrupt and packet receiving interrupt are all enabled in l3fwd-power
+   APP. Because of UIO only support one interrupt, so these two kinds of interrupt need to share
+   one, and the receiving interrupt have the higher priority, so can't get the right link status.
+
+**Implication**:
+   When insmod ``igb_uio`` and running l3fwd-power APP, link status getting doesn't work properly.
+
+**Resolution/Workaround**:
+   Use vfio-pci when LSC and packet receiving interrupt enabled.
+
+**Affected Environment/Platform**:
+   ALL.
+
+**Driver/Module**:
+   ``igb_uio`` module.

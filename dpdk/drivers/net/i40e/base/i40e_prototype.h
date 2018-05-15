@@ -36,7 +36,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 #include "i40e_type.h"
 #include "i40e_alloc.h"
-#include "i40e_virtchnl.h"
+#include "virtchnl.h"
 
 /* Prototypes for shared code functions that are not in
  * the standard function pointer structures.  These are
@@ -78,7 +78,6 @@ void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask,
 void i40e_idle_aq(struct i40e_hw *hw);
 bool i40e_check_asq_alive(struct i40e_hw *hw);
 enum i40e_status_code i40e_aq_queue_shutdown(struct i40e_hw *hw, bool unloading);
-#ifdef X722_SUPPORT
 
 enum i40e_status_code i40e_aq_get_rss_lut(struct i40e_hw *hw, u16 seid,
 					  bool pf_lut, u8 *lut, u16 lut_size);
@@ -90,11 +89,8 @@ enum i40e_status_code i40e_aq_get_rss_key(struct i40e_hw *hw,
 enum i40e_status_code i40e_aq_set_rss_key(struct i40e_hw *hw,
 				     u16 seid,
 				     struct i40e_aqc_get_set_rss_key_data *key);
-#endif
-#ifndef I40E_NDIS_SUPPORT
 const char *i40e_aq_str(struct i40e_hw *hw, enum i40e_admin_queue_err aq_err);
 const char *i40e_stat_str(struct i40e_hw *hw, enum i40e_status_code stat_err);
-#endif /* I40E_NDIS_SUPPORT */
 
 #ifdef PF_DRIVER
 
@@ -123,6 +119,8 @@ enum i40e_status_code i40e_aq_debug_read_register(struct i40e_hw *hw,
 enum i40e_status_code i40e_aq_set_phy_debug(struct i40e_hw *hw, u8 cmd_flags,
 				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_set_default_vsi(struct i40e_hw *hw, u16 vsi_id,
+				struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code i40e_aq_clear_default_vsi(struct i40e_hw *hw, u16 vsi_id,
 				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_get_phy_capabilities(struct i40e_hw *hw,
 			bool qualified_modules, bool report_init,
@@ -170,10 +168,16 @@ enum i40e_status_code i40e_aq_set_vsi_unicast_promiscuous(struct i40e_hw *hw,
 		bool rx_only_promisc);
 enum i40e_status_code i40e_aq_set_vsi_multicast_promiscuous(struct i40e_hw *hw,
 		u16 vsi_id, bool set, struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code i40e_aq_set_vsi_full_promiscuous(struct i40e_hw *hw,
+				u16 seid, bool set,
+				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_set_vsi_mc_promisc_on_vlan(struct i40e_hw *hw,
 				u16 seid, bool enable, u16 vid,
 				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_set_vsi_uc_promisc_on_vlan(struct i40e_hw *hw,
+				u16 seid, bool enable, u16 vid,
+				struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code i40e_aq_set_vsi_bc_promisc_on_vlan(struct i40e_hw *hw,
 				u16 seid, bool enable, u16 vid,
 				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_set_vsi_vlan_promisc(struct i40e_hw *hw,
@@ -400,11 +404,21 @@ enum i40e_status_code i40e_aq_add_cloud_filters(struct i40e_hw *hw,
 		u16 vsi,
 		struct i40e_aqc_add_remove_cloud_filters_element_data *filters,
 		u8 filter_count);
-
+enum i40e_status_code i40e_aq_add_cloud_filters_big_buffer(struct i40e_hw *hw,
+	u16 seid,
+	struct i40e_aqc_add_rm_cloud_filt_elem_ext *filters,
+	u8 filter_count);
 enum i40e_status_code i40e_aq_remove_cloud_filters(struct i40e_hw *hw,
 		u16 vsi,
 		struct i40e_aqc_add_remove_cloud_filters_element_data *filters,
 		u8 filter_count);
+enum i40e_status_code i40e_aq_remove_cloud_filters_big_buffer(
+	struct i40e_hw *hw, u16 seid,
+	struct i40e_aqc_add_rm_cloud_filt_elem_ext *filters,
+	u8 filter_count);
+enum i40e_status_code i40e_aq_replace_cloud_filters(struct i40e_hw *hw,
+		struct i40e_aqc_replace_cloud_filters_cmd *filters,
+		struct i40e_aqc_replace_cloud_filters_cmd_buf *cmd_buf);
 enum i40e_status_code i40e_aq_alternate_read(struct i40e_hw *hw,
 				u32 reg_addr0, u32 *reg_val0,
 				u32 reg_addr1, u32 *reg_val1);
@@ -438,6 +452,7 @@ enum i40e_status_code i40e_get_port_mac_addr(struct i40e_hw *hw, u8 *mac_addr);
 enum i40e_status_code i40e_read_pba_string(struct i40e_hw *hw, u8 *pba_num,
 					    u32 pba_num_size);
 void i40e_pre_tx_queue_cfg(struct i40e_hw *hw, u32 queue, bool enable);
+enum i40e_status_code i40e_get_san_mac_addr(struct i40e_hw *hw, u8 *mac_addr);
 enum i40e_aq_link_speed i40e_get_link_speed(struct i40e_hw *hw);
 /* prototype for functions used for NVM access */
 enum i40e_status_code i40e_init_nvm(struct i40e_hw *hw);
@@ -489,10 +504,10 @@ void i40e_destroy_spinlock(struct i40e_spinlock *sp);
 
 /* i40e_common for VF drivers*/
 void i40e_vf_parse_hw_config(struct i40e_hw *hw,
-			     struct i40e_virtchnl_vf_resource *msg);
+			     struct virtchnl_vf_resource *msg);
 enum i40e_status_code i40e_vf_reset(struct i40e_hw *hw);
 enum i40e_status_code i40e_aq_send_msg_to_pf(struct i40e_hw *hw,
-				enum i40e_virtchnl_ops v_opcode,
+				enum virtchnl_ops v_opcode,
 				enum i40e_status_code v_retval,
 				u8 *msg, u16 msglen,
 				struct i40e_asq_cmd_details *cmd_details);
@@ -518,7 +533,15 @@ enum i40e_status_code i40e_aq_rx_ctl_write_register(struct i40e_hw *hw,
 				u32 reg_addr, u32 reg_val,
 				struct i40e_asq_cmd_details *cmd_details);
 void i40e_write_rx_ctl(struct i40e_hw *hw, u32 reg_addr, u32 reg_val);
-#ifdef X722_SUPPORT
+enum i40e_status_code i40e_aq_set_phy_register(struct i40e_hw *hw,
+				u8 phy_select, u8 dev_addr,
+				u32 reg_addr, u32 reg_val,
+				struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code i40e_aq_get_phy_register(struct i40e_hw *hw,
+				u8 phy_select, u8 dev_addr,
+				u32 reg_addr, u32 *reg_val,
+				struct i40e_asq_cmd_details *cmd_details);
+
 enum i40e_status_code i40e_aq_set_arp_proxy_config(struct i40e_hw *hw,
 			struct i40e_aqc_arp_proxy_data *proxy_config,
 			struct i40e_asq_cmd_details *cmd_details);
@@ -534,12 +557,46 @@ enum i40e_status_code i40e_aq_set_clear_wol_filter(struct i40e_hw *hw,
 enum i40e_status_code i40e_aq_get_wake_event_reason(struct i40e_hw *hw,
 			u16 *wake_reason,
 			struct i40e_asq_cmd_details *cmd_details);
-#endif
-enum i40e_status_code i40e_read_phy_register(struct i40e_hw *hw, u8 page,
-					     u16 reg, u8 phy_addr, u16 *value);
-enum i40e_status_code i40e_write_phy_register(struct i40e_hw *hw, u8 page,
-					      u16 reg, u8 phy_addr, u16 value);
+enum i40e_status_code i40e_aq_clear_all_wol_filters(struct i40e_hw *hw,
+			struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code i40e_read_phy_register_clause22(struct i40e_hw *hw,
+					u16 reg, u8 phy_addr, u16 *value);
+enum i40e_status_code i40e_write_phy_register_clause22(struct i40e_hw *hw,
+					u16 reg, u8 phy_addr, u16 value);
+enum i40e_status_code i40e_read_phy_register_clause45(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 *value);
+enum i40e_status_code i40e_write_phy_register_clause45(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 value);
+enum i40e_status_code i40e_read_phy_register(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 *value);
+enum i40e_status_code i40e_write_phy_register(struct i40e_hw *hw,
+				u8 page, u16 reg, u8 phy_addr, u16 value);
 u8 i40e_get_phy_address(struct i40e_hw *hw, u8 dev_num);
 enum i40e_status_code i40e_blink_phy_link_led(struct i40e_hw *hw,
 					      u32 time, u32 interval);
+enum i40e_status_code i40e_aq_write_ddp(struct i40e_hw *hw, void *buff,
+					u16 buff_size, u32 track_id,
+					u32 *error_offset, u32 *error_info,
+					struct i40e_asq_cmd_details *
+					cmd_details);
+enum i40e_status_code i40e_aq_get_ddp_list(struct i40e_hw *hw, void *buff,
+					   u16 buff_size, u8 flags,
+					   struct i40e_asq_cmd_details *
+					   cmd_details);
+struct i40e_generic_seg_header *
+i40e_find_segment_in_package(u32 segment_type,
+			     struct i40e_package_header *pkg_header);
+struct i40e_profile_section_header *
+i40e_find_section_in_profile(u32 section_type,
+			     struct i40e_profile_segment *profile);
+enum i40e_status_code
+i40e_write_profile(struct i40e_hw *hw, struct i40e_profile_segment *i40e_seg,
+		   u32 track_id);
+enum i40e_status_code
+i40e_rollback_profile(struct i40e_hw *hw, struct i40e_profile_segment *i40e_seg,
+		      u32 track_id);
+enum i40e_status_code
+i40e_add_pinfo_to_list(struct i40e_hw *hw,
+		       struct i40e_profile_segment *profile,
+		       u8 *profile_info_sec, u32 track_id);
 #endif /* _I40E_PROTOTYPE_H_ */

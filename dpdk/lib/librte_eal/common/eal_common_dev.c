@@ -37,116 +37,200 @@
 #include <inttypes.h>
 #include <sys/queue.h>
 
+#include <rte_bus.h>
 #include <rte_dev.h>
 #include <rte_devargs.h>
 #include <rte_debug.h>
-#include <rte_devargs.h>
 #include <rte_log.h>
 
 #include "eal_private.h"
 
-/** Global list of device drivers. */
-static struct rte_driver_list dev_driver_list =
-	TAILQ_HEAD_INITIALIZER(dev_driver_list);
-
-/* register a driver */
-void
-rte_eal_driver_register(struct rte_driver *driver)
+static int cmp_detached_dev_name(const struct rte_device *dev,
+	const void *_name)
 {
-	TAILQ_INSERT_TAIL(&dev_driver_list, driver, next);
+	const char *name = _name;
+
+	/* skip attached devices */
+	if (dev->driver != NULL)
+		return 1;
+
+	return strcmp(dev->name, name);
 }
 
-/* unregister a driver */
-void
-rte_eal_driver_unregister(struct rte_driver *driver)
+static int cmp_dev_name(const struct rte_device *dev, const void *_name)
 {
-	TAILQ_REMOVE(&dev_driver_list, driver, next);
+	const char *name = _name;
+
+	return strcmp(dev->name, name);
 }
 
-int
-rte_eal_vdev_init(const char *name, const char *args)
+int rte_eal_dev_attach(const char *name, const char *devargs)
 {
-	struct rte_driver *driver;
+	struct rte_bus *bus;
 
-	if (name == NULL)
+	if (name == NULL || devargs == NULL) {
+		RTE_LOG(ERR, EAL, "Invalid device or arguments provided\n");
 		return -EINVAL;
-
-	TAILQ_FOREACH(driver, &dev_driver_list, next) {
-		if (driver->type != PMD_VDEV)
-			continue;
-
-		/*
-		 * search a driver prefix in virtual device name.
-		 * For example, if the driver is pcap PMD, driver->name
-		 * will be "eth_pcap", but "name" will be "eth_pcapN".
-		 * So use strncmp to compare.
-		 */
-		if (!strncmp(driver->name, name, strlen(driver->name)))
-			return driver->init(name, args);
 	}
 
-	RTE_LOG(ERR, EAL, "no driver found for %s\n", name);
-	return -EINVAL;
+	bus = rte_bus_find_by_device_name(name);
+	if (bus == NULL) {
+		RTE_LOG(ERR, EAL, "Unable to find a bus for the device '%s'\n",
+			name);
+		return -EINVAL;
+	}
+	if (strcmp(bus->name, "pci") == 0 || strcmp(bus->name, "vdev") == 0)
+		return rte_eal_hotplug_add(bus->name, name, devargs);
+
+	RTE_LOG(ERR, EAL,
+		"Device attach is only supported for PCI and vdev devices.\n");
+
+	return -ENOTSUP;
 }
 
-int
-rte_eal_dev_init(void)
+int rte_eal_dev_detach(struct rte_device *dev)
 {
-	struct rte_devargs *devargs;
-	struct rte_driver *driver;
+	struct rte_bus *bus;
+	int ret;
 
-	/*
-	 * Note that the dev_driver_list is populated here
-	 * from calls made to rte_eal_driver_register from constructor functions
-	 * embedded into PMD modules via the PMD_REGISTER_DRIVER macro
-	 */
-
-	/* call the init function for each virtual device */
-	TAILQ_FOREACH(devargs, &devargs_list, next) {
-
-		if (devargs->type != RTE_DEVTYPE_VIRTUAL)
-			continue;
-
-		if (rte_eal_vdev_init(devargs->virt.drv_name,
-					devargs->args)) {
-			RTE_LOG(ERR, EAL, "failed to initialize %s device\n",
-					devargs->virt.drv_name);
-			return -1;
-		}
+	if (dev == NULL) {
+		RTE_LOG(ERR, EAL, "Invalid device provided.\n");
+		return -EINVAL;
 	}
 
-	/* Once the vdevs are initalized, start calling all the pdev drivers */
-	TAILQ_FOREACH(driver, &dev_driver_list, next) {
-		if (driver->type != PMD_PDEV)
-			continue;
-		/* PDEV drivers don't get passed any parameters */
-		driver->init(NULL, NULL);
+	bus = rte_bus_find_by_device(dev);
+	if (bus == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot find bus for device (%s)\n",
+			dev->name);
+		return -EINVAL;
 	}
+
+	if (bus->unplug == NULL) {
+		RTE_LOG(ERR, EAL, "Bus function not supported\n");
+		return -ENOTSUP;
+	}
+
+	ret = bus->unplug(dev);
+	if (ret)
+		RTE_LOG(ERR, EAL, "Driver cannot detach the device (%s)\n",
+			dev->name);
+	return ret;
+}
+
+static char *
+full_dev_name(const char *bus, const char *dev, const char *args)
+{
+	char *name;
+	size_t len;
+
+	len = snprintf(NULL, 0, "%s:%s,%s", bus, dev, args) + 1;
+	name = calloc(1, len);
+	if (name == NULL) {
+		RTE_LOG(ERR, EAL, "Could not allocate full device name\n");
+		return NULL;
+	}
+	snprintf(name, len, "%s:%s,%s", bus, dev, args);
+	return name;
+}
+
+int rte_eal_hotplug_add(const char *busname, const char *devname,
+			const char *devargs)
+{
+	struct rte_bus *bus;
+	struct rte_device *dev;
+	struct rte_devargs *da;
+	char *name;
+	int ret;
+
+	bus = rte_bus_find_by_name(busname);
+	if (bus == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot find bus (%s)\n", busname);
+		return -ENOENT;
+	}
+
+	if (bus->plug == NULL) {
+		RTE_LOG(ERR, EAL, "Function plug not supported by bus (%s)\n",
+			bus->name);
+		return -ENOTSUP;
+	}
+
+	name = full_dev_name(busname, devname, devargs);
+	if (name == NULL)
+		return -ENOMEM;
+
+	da = calloc(1, sizeof(*da));
+	if (da == NULL) {
+		ret = -ENOMEM;
+		goto err_name;
+	}
+
+	ret = rte_eal_devargs_parse(name, da);
+	if (ret)
+		goto err_devarg;
+
+	ret = rte_eal_devargs_insert(da);
+	if (ret)
+		goto err_devarg;
+
+	ret = bus->scan();
+	if (ret)
+		goto err_devarg;
+
+	dev = bus->find_device(NULL, cmp_detached_dev_name, devname);
+	if (dev == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot find unplugged device (%s)\n",
+			devname);
+		ret = -ENODEV;
+		goto err_devarg;
+	}
+
+	ret = bus->plug(dev);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "Driver cannot attach the device (%s)\n",
+			dev->name);
+		goto err_devarg;
+	}
+	free(name);
 	return 0;
+
+err_devarg:
+	if (rte_eal_devargs_remove(busname, devname)) {
+		free(da->args);
+		free(da);
+	}
+err_name:
+	free(name);
+	return ret;
 }
 
-int
-rte_eal_vdev_uninit(const char *name)
+int rte_eal_hotplug_remove(const char *busname, const char *devname)
 {
-	struct rte_driver *driver;
+	struct rte_bus *bus;
+	struct rte_device *dev;
+	int ret;
 
-	if (name == NULL)
-		return -EINVAL;
-
-	TAILQ_FOREACH(driver, &dev_driver_list, next) {
-		if (driver->type != PMD_VDEV)
-			continue;
-
-		/*
-		 * search a driver prefix in virtual device name.
-		 * For example, if the driver is pcap PMD, driver->name
-		 * will be "eth_pcap", but "name" will be "eth_pcapN".
-		 * So use strncmp to compare.
-		 */
-		if (!strncmp(driver->name, name, strlen(driver->name)))
-			return driver->uninit(name);
+	bus = rte_bus_find_by_name(busname);
+	if (bus == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot find bus (%s)\n", busname);
+		return -ENOENT;
 	}
 
-	RTE_LOG(ERR, EAL, "no driver found for %s\n", name);
-	return -EINVAL;
+	if (bus->unplug == NULL) {
+		RTE_LOG(ERR, EAL, "Function unplug not supported by bus (%s)\n",
+			bus->name);
+		return -ENOTSUP;
+	}
+
+	dev = bus->find_device(NULL, cmp_dev_name, devname);
+	if (dev == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot find plugged device (%s)\n", devname);
+		return -EINVAL;
+	}
+
+	ret = bus->unplug(dev);
+	if (ret)
+		RTE_LOG(ERR, EAL, "Driver cannot detach the device (%s)\n",
+			dev->name);
+	rte_eal_devargs_remove(busname, devname);
+	return ret;
 }

@@ -49,11 +49,11 @@ STATIC s32 fm10k_stop_hw_vf(struct fm10k_hw *hw)
 
 	/* we need to disable the queues before taking further steps */
 	err = fm10k_stop_hw_generic(hw);
-	if (err)
+	if (err && err != FM10K_ERR_REQUESTS_PENDING)
 		return err;
 
 	/* If permanent address is set then we need to restore it */
-	if (FM10K_IS_VALID_ETHER_ADDR(perm_addr)) {
+	if (IS_VALID_ETHER_ADDR(perm_addr)) {
 		bal = (((u32)perm_addr[3]) << 24) |
 		      (((u32)perm_addr[4]) << 16) |
 		      (((u32)perm_addr[5]) << 8);
@@ -82,7 +82,7 @@ STATIC s32 fm10k_stop_hw_vf(struct fm10k_hw *hw)
 		FM10K_WRITE_REG(hw, FM10K_TDLEN(i), tdlen);
 	}
 
-	return FM10K_SUCCESS;
+	return err;
 }
 
 /**
@@ -100,7 +100,9 @@ STATIC s32 fm10k_reset_hw_vf(struct fm10k_hw *hw)
 
 	/* shut down queues we own and reset DMA configuration */
 	err = fm10k_stop_hw_vf(hw);
-	if (err)
+	if (err == FM10K_ERR_REQUESTS_PENDING)
+		hw->mac.reset_while_pending++;
+	else if (err)
 		return err;
 
 	/* Inititate VF reset */
@@ -113,9 +115,9 @@ STATIC s32 fm10k_reset_hw_vf(struct fm10k_hw *hw)
 	/* Clear reset bit and verify it was cleared */
 	FM10K_WRITE_REG(hw, FM10K_VFCTRL, 0);
 	if (FM10K_READ_REG(hw, FM10K_VFCTRL) & FM10K_VFCTRL_RST)
-		err = FM10K_ERR_RESET_FAILED;
+		return FM10K_ERR_RESET_FAILED;
 
-	return err;
+	return FM10K_SUCCESS;
 }
 
 /**
@@ -225,7 +227,7 @@ STATIC s32 fm10k_update_vlan_vf(struct fm10k_hw *hw, u32 vid, u8 vsi, bool set)
 	if (vsi)
 		return FM10K_ERR_PARAM;
 
-	/* verify upper 4 bits of vid and length are 0 */
+	/* clever trick to verify reserved bits in both vid and length */
 	if ((vid << 16 | vid) >> 28)
 		return FM10K_ERR_PARAM;
 
@@ -268,7 +270,7 @@ s32 fm10k_msg_mac_vlan_vf(struct fm10k_hw *hw, u32 **results,
 
 	memcpy(hw->mac.perm_addr, perm_addr, ETH_ALEN);
 	hw->mac.default_vid = vid & (FM10K_VLAN_TABLE_VID_MAX - 1);
-	hw->mac.vlan_override = !!(vid & FM10K_VLAN_CLEAR);
+	hw->mac.vlan_override = !!(vid & FM10K_VLAN_OVERRIDE);
 
 	return FM10K_SUCCESS;
 }
@@ -339,11 +341,11 @@ STATIC s32 fm10k_update_uc_addr_vf(struct fm10k_hw *hw, u16 glort,
 		return FM10K_ERR_PARAM;
 
 	/* verify MAC address is valid */
-	if (!FM10K_IS_VALID_ETHER_ADDR(mac))
+	if (!IS_VALID_ETHER_ADDR(mac))
 		return FM10K_ERR_PARAM;
 
 	/* verify we are not locked down on the MAC address */
-	if (FM10K_IS_VALID_ETHER_ADDR(hw->mac.perm_addr) &&
+	if (IS_VALID_ETHER_ADDR(hw->mac.perm_addr) &&
 	    memcmp(hw->mac.perm_addr, mac, ETH_ALEN))
 		return FM10K_ERR_PARAM;
 
@@ -385,7 +387,7 @@ STATIC s32 fm10k_update_mc_addr_vf(struct fm10k_hw *hw, u16 glort,
 		return FM10K_ERR_PARAM;
 
 	/* verify multicast address is valid */
-	if (!FM10K_IS_MULTICAST_ETHER_ADDR(mac))
+	if (!IS_MULTICAST_ETHER_ADDR(mac))
 		return FM10K_ERR_PARAM;
 
 	/* add bit to notify us if this is a set or clear operation */

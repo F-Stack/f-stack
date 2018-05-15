@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -56,7 +56,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -66,18 +65,28 @@
 #include <rte_udp.h>
 #include <rte_tcp.h>
 #include <rte_sctp.h>
+#include <rte_net.h>
 #include <rte_string_fns.h>
 
 #include "e1000_logs.h"
 #include "base/e1000_api.h"
 #include "e1000_ethdev.h"
 
+#ifdef RTE_LIBRTE_IEEE1588
+#define IGB_TX_IEEE1588_TMST PKT_TX_IEEE1588_TMST
+#else
+#define IGB_TX_IEEE1588_TMST 0
+#endif
 /* Bit Mask to indicate what bits required for building TX context */
 #define IGB_TX_OFFLOAD_MASK (			 \
 		PKT_TX_VLAN_PKT |		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
-		PKT_TX_TCP_SEG)
+		PKT_TX_TCP_SEG |		 \
+		IGB_TX_IEEE1588_TMST)
+
+#define IGB_TX_OFFLOAD_NOTSUP_MASK \
+		(PKT_TX_OFFLOAD_MASK ^ IGB_TX_OFFLOAD_MASK)
 
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
@@ -93,6 +102,13 @@ struct igb_tx_entry {
 	struct rte_mbuf *mbuf; /**< mbuf associated with TX desc, if any. */
 	uint16_t next_id; /**< Index of next descriptor in ring. */
 	uint16_t last_id; /**< Index of last scattered descriptor. */
+};
+
+/**
+ * rx queue flags
+ */
+enum igb_rxq_flags {
+	IGB_RXQ_FLAG_LB_BSWAP_VLAN = 0x01,
 };
 
 /**
@@ -113,12 +129,13 @@ struct igb_rx_queue {
 	uint16_t            rx_free_thresh; /**< max free RX desc to hold. */
 	uint16_t            queue_id;   /**< RX queue index. */
 	uint16_t            reg_idx;    /**< RX queue register index. */
-	uint8_t             port_id;    /**< Device port identifier. */
+	uint16_t            port_id;    /**< Device port identifier. */
 	uint8_t             pthresh;    /**< Prefetch threshold register. */
 	uint8_t             hthresh;    /**< Host threshold register. */
 	uint8_t             wthresh;    /**< Write-back threshold register. */
 	uint8_t             crc_len;    /**< 0 if CRC stripped, 4 otherwise. */
 	uint8_t             drop_en;  /**< If not 0, set SRRCTL.Drop_En. */
+	uint32_t            flags;      /**< RX flags. */
 };
 
 /**
@@ -182,7 +199,7 @@ struct igb_tx_queue {
 	/**< Index of first used TX descriptor. */
 	uint16_t               queue_id; /**< TX queue index. */
 	uint16_t               reg_idx;  /**< TX queue register index. */
-	uint8_t                port_id;  /**< Device port identifier. */
+	uint16_t               port_id;  /**< Device port identifier. */
 	uint8_t                pthresh;  /**< Prefetch threshold register. */
 	uint8_t                hthresh;  /**< Host threshold register. */
 	uint8_t                wthresh;  /**< Write-back threshold register. */
@@ -580,7 +597,7 @@ eth_igb_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * Set up transmit descriptor.
 			 */
 			slen = (uint16_t) m_seg->data_len;
-			buf_dma_addr = rte_mbuf_data_dma_addr(m_seg);
+			buf_dma_addr = rte_mbuf_data_iova(m_seg);
 			txd->read.buffer_addr =
 				rte_cpu_to_le_64(buf_dma_addr);
 			txd->read.cmd_type_len =
@@ -606,13 +623,59 @@ eth_igb_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	/*
 	 * Set the Transmit Descriptor Tail (TDT).
 	 */
-	E1000_PCI_REG_WRITE(txq->tdt_reg_addr, tx_id);
+	E1000_PCI_REG_WRITE_RELAXED(txq->tdt_reg_addr, tx_id);
 	PMD_TX_LOG(DEBUG, "port_id=%u queue_id=%u tx_tail=%u nb_tx=%u",
 		   (unsigned) txq->port_id, (unsigned) txq->queue_id,
 		   (unsigned) tx_id, (unsigned) nb_tx);
 	txq->tx_tail = tx_id;
 
 	return nb_tx;
+}
+
+/*********************************************************************
+ *
+ *  TX prep functions
+ *
+ **********************************************************************/
+uint16_t
+eth_igb_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int i, ret;
+	struct rte_mbuf *m;
+
+	for (i = 0; i < nb_pkts; i++) {
+		m = tx_pkts[i];
+
+		/* Check some limitations for TSO in hardware */
+		if (m->ol_flags & PKT_TX_TCP_SEG)
+			if ((m->tso_segsz > IGB_TSO_MAX_MSS) ||
+					(m->l2_len + m->l3_len + m->l4_len >
+					IGB_TSO_MAX_HDRLEN)) {
+				rte_errno = -EINVAL;
+				return i;
+			}
+
+		if (m->ol_flags & IGB_TX_OFFLOAD_NOTSUP_MASK) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+		ret = rte_net_intel_cksum_prepare(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+
+	return i;
 }
 
 /*********************************************************************
@@ -730,7 +793,7 @@ rx_desc_status_to_pkt_flags(uint32_t rx_status)
 
 	/* Check if VLAN present */
 	pkt_flags = ((rx_status & E1000_RXD_STAT_VP) ?
-		PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED : 0);
+		PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED : 0);
 
 #if defined(RTE_LIBRTE_IEEE1588)
 	if (rx_status & E1000_RXD_STAT_TMST)
@@ -748,7 +811,9 @@ rx_desc_error_to_pkt_flags(uint32_t rx_status)
 	 */
 
 	static uint64_t error_to_pkt_flags_map[4] = {
-		0,  PKT_RX_L4_CKSUM_BAD, PKT_RX_IP_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD,
+		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD,
 		PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD
 	};
 	return error_to_pkt_flags_map[(rx_status >>
@@ -860,7 +925,7 @@ eth_igb_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 		rxdp->read.hdr_addr = 0;
 		rxdp->read.pkt_addr = dma_addr;
 
@@ -889,9 +954,17 @@ eth_igb_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		rxm->hash.rss = rxd.wb.lower.hi_dword.rss;
 		hlen_type_rss = rte_le_to_cpu_32(rxd.wb.lower.lo_dword.data);
-		/* Only valid if PKT_RX_VLAN_PKT set in pkt_flags */
-		rxm->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
 
+		/*
+		 * The vlan_tci field is only valid when PKT_RX_VLAN is
+		 * set in the pkt_flags field and must be in CPU byte order.
+		 */
+		if ((staterr & rte_cpu_to_le_32(E1000_RXDEXT_STATERR_LB)) &&
+				(rxq->flags & IGB_RXQ_FLAG_LB_BSWAP_VLAN)) {
+			rxm->vlan_tci = rte_be_to_cpu_16(rxd.wb.upper.vlan);
+		} else {
+			rxm->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
+		}
 		pkt_flags = rx_desc_hlen_type_rss_to_pkt_flags(rxq, hlen_type_rss);
 		pkt_flags = pkt_flags | rx_desc_status_to_pkt_flags(staterr);
 		pkt_flags = pkt_flags | rx_desc_error_to_pkt_flags(staterr);
@@ -1046,7 +1119,7 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 */
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
-		dma = rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
+		dma = rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 		rxdp->read.pkt_addr = dma;
 		rxdp->read.hdr_addr = 0;
 
@@ -1123,10 +1196,17 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		first_seg->hash.rss = rxd.wb.lower.hi_dword.rss;
 
 		/*
-		 * The vlan_tci field is only valid when PKT_RX_VLAN_PKT is
-		 * set in the pkt_flags field.
+		 * The vlan_tci field is only valid when PKT_RX_VLAN is
+		 * set in the pkt_flags field and must be in CPU byte order.
 		 */
-		first_seg->vlan_tci = rte_le_to_cpu_16(rxd.wb.upper.vlan);
+		if ((staterr & rte_cpu_to_le_32(E1000_RXDEXT_STATERR_LB)) &&
+				(rxq->flags & IGB_RXQ_FLAG_LB_BSWAP_VLAN)) {
+			first_seg->vlan_tci =
+				rte_be_to_cpu_16(rxd.wb.upper.vlan);
+		} else {
+			first_seg->vlan_tci =
+				rte_le_to_cpu_16(rxd.wb.upper.vlan);
+		}
 		hlen_type_rss = rte_le_to_cpu_32(rxd.wb.lower.lo_dword.data);
 		pkt_flags = rx_desc_hlen_type_rss_to_pkt_flags(rxq, hlen_type_rss);
 		pkt_flags = pkt_flags | rx_desc_status_to_pkt_flags(staterr);
@@ -1224,6 +1304,132 @@ void
 eth_igb_tx_queue_release(void *txq)
 {
 	igb_tx_queue_release(txq);
+}
+
+static int
+igb_tx_done_cleanup(struct igb_tx_queue *txq, uint32_t free_cnt)
+{
+	struct igb_tx_entry *sw_ring;
+	volatile union e1000_adv_tx_desc *txr;
+	uint16_t tx_first; /* First segment analyzed. */
+	uint16_t tx_id;    /* Current segment being processed. */
+	uint16_t tx_last;  /* Last segment in the current packet. */
+	uint16_t tx_next;  /* First segment of the next packet. */
+	int count;
+
+	if (txq != NULL) {
+		count = 0;
+		sw_ring = txq->sw_ring;
+		txr = txq->tx_ring;
+
+		/*
+		 * tx_tail is the last sent packet on the sw_ring. Goto the end
+		 * of that packet (the last segment in the packet chain) and
+		 * then the next segment will be the start of the oldest segment
+		 * in the sw_ring. This is the first packet that will be
+		 * attempted to be freed.
+		 */
+
+		/* Get last segment in most recently added packet. */
+		tx_first = sw_ring[txq->tx_tail].last_id;
+
+		/* Get the next segment, which is the oldest segment in ring. */
+		tx_first = sw_ring[tx_first].next_id;
+
+		/* Set the current index to the first. */
+		tx_id = tx_first;
+
+		/*
+		 * Loop through each packet. For each packet, verify that an
+		 * mbuf exists and that the last segment is free. If so, free
+		 * it and move on.
+		 */
+		while (1) {
+			tx_last = sw_ring[tx_id].last_id;
+
+			if (sw_ring[tx_last].mbuf) {
+				if (txr[tx_last].wb.status &
+						E1000_TXD_STAT_DD) {
+					/*
+					 * Increment the number of packets
+					 * freed.
+					 */
+					count++;
+
+					/* Get the start of the next packet. */
+					tx_next = sw_ring[tx_last].next_id;
+
+					/*
+					 * Loop through all segments in a
+					 * packet.
+					 */
+					do {
+						rte_pktmbuf_free_seg(sw_ring[tx_id].mbuf);
+						sw_ring[tx_id].mbuf = NULL;
+						sw_ring[tx_id].last_id = tx_id;
+
+						/* Move to next segemnt. */
+						tx_id = sw_ring[tx_id].next_id;
+
+					} while (tx_id != tx_next);
+
+					if (unlikely(count == (int)free_cnt))
+						break;
+				} else
+					/*
+					 * mbuf still in use, nothing left to
+					 * free.
+					 */
+					break;
+			} else {
+				/*
+				 * There are multiple reasons to be here:
+				 * 1) All the packets on the ring have been
+				 *    freed - tx_id is equal to tx_first
+				 *    and some packets have been freed.
+				 *    - Done, exit
+				 * 2) Interfaces has not sent a rings worth of
+				 *    packets yet, so the segment after tail is
+				 *    still empty. Or a previous call to this
+				 *    function freed some of the segments but
+				 *    not all so there is a hole in the list.
+				 *    Hopefully this is a rare case.
+				 *    - Walk the list and find the next mbuf. If
+				 *      there isn't one, then done.
+				 */
+				if (likely((tx_id == tx_first) && (count != 0)))
+					break;
+
+				/*
+				 * Walk the list and find the next mbuf, if any.
+				 */
+				do {
+					/* Move to next segemnt. */
+					tx_id = sw_ring[tx_id].next_id;
+
+					if (sw_ring[tx_id].mbuf)
+						break;
+
+				} while (tx_id != tx_first);
+
+				/*
+				 * Determine why previous loop bailed. If there
+				 * is not an mbuf, done.
+				 */
+				if (sw_ring[tx_id].mbuf == NULL)
+					break;
+			}
+		}
+	} else
+		count = -ENODEV;
+
+	return count;
+}
+
+int
+eth_igb_tx_done_cleanup(void *txq, uint32_t free_cnt)
+{
+	return igb_tx_done_cleanup(txq, free_cnt);
 }
 
 static void
@@ -1347,7 +1553,7 @@ eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->port_id = dev->data->port_id;
 
 	txq->tdt_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_TDT(txq->reg_idx));
-	txq->tx_ring_phys_addr = rte_mem_phy2mch(tz->memseg_id, tz->phys_addr);
+	txq->tx_ring_phys_addr = tz->iova;
 
 	txq->tx_ring = (union e1000_adv_tx_desc *) tz->addr;
 	/* Allocate software ring */
@@ -1363,6 +1569,7 @@ eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 
 	igb_reset_tx_queue(txq, dev);
 	dev->tx_pkt_burst = eth_igb_xmit_pkts;
+	dev->tx_pkt_prepare = &eth_igb_prep_pkts;
 	dev->data->tx_queues[queue_idx] = txq;
 
 	return 0;
@@ -1483,7 +1690,7 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 	rxq->rdt_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_RDT(rxq->reg_idx));
 	rxq->rdh_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_RDH(rxq->reg_idx));
-	rxq->rx_ring_phys_addr = rte_mem_phy2mch(rz->memseg_id, rz->phys_addr);
+	rxq->rx_ring_phys_addr = rz->iova;
 	rxq->rx_ring = (union e1000_adv_rx_desc *) rz->addr;
 
 	/* Allocate software ring. */
@@ -1510,11 +1717,6 @@ eth_igb_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	volatile union e1000_adv_rx_desc *rxdp;
 	struct igb_rx_queue *rxq;
 	uint32_t desc = 0;
-
-	if (rx_queue_id >= dev->data->nb_rx_queues) {
-		PMD_RX_LOG(ERR, "Invalid RX queue id=%d", rx_queue_id);
-		return 0;
-	}
 
 	rxq = dev->data->rx_queues[rx_queue_id];
 	rxdp = &(rxq->rx_ring[rxq->rx_tail]);
@@ -1546,6 +1748,51 @@ eth_igb_rx_descriptor_done(void *rx_queue, uint16_t offset)
 
 	rxdp = &rxq->rx_ring[desc];
 	return !!(rxdp->wb.upper.status_error & E1000_RXD_STAT_DD);
+}
+
+int
+eth_igb_rx_descriptor_status(void *rx_queue, uint16_t offset)
+{
+	struct igb_rx_queue *rxq = rx_queue;
+	volatile uint32_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= rxq->nb_rx_desc))
+		return -EINVAL;
+
+	if (offset >= rxq->nb_rx_desc - rxq->nb_rx_hold)
+		return RTE_ETH_RX_DESC_UNAVAIL;
+
+	desc = rxq->rx_tail + offset;
+	if (desc >= rxq->nb_rx_desc)
+		desc -= rxq->nb_rx_desc;
+
+	status = &rxq->rx_ring[desc].wb.upper.status_error;
+	if (*status & rte_cpu_to_le_32(E1000_RXD_STAT_DD))
+		return RTE_ETH_RX_DESC_DONE;
+
+	return RTE_ETH_RX_DESC_AVAIL;
+}
+
+int
+eth_igb_tx_descriptor_status(void *tx_queue, uint16_t offset)
+{
+	struct igb_tx_queue *txq = tx_queue;
+	volatile uint32_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= txq->nb_tx_desc))
+		return -EINVAL;
+
+	desc = txq->tx_tail + offset;
+	if (desc >= txq->nb_tx_desc)
+		desc -= txq->nb_tx_desc;
+
+	status = &txq->tx_ring[desc].wb.status;
+	if (*status & rte_cpu_to_le_32(E1000_TXD_STAT_DD))
+		return RTE_ETH_TX_DESC_DONE;
+
+	return RTE_ETH_TX_DESC_FULL;
 }
 
 void
@@ -1956,7 +2203,7 @@ igb_alloc_rx_queue_mbufs(struct igb_rx_queue *rxq)
 			return -ENOMEM;
 		}
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(mbuf));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 		rxd = &rxq->rx_ring[i];
 		rxd->read.hdr_addr = 0;
 		rxd->read.pkt_addr = dma_addr;
@@ -2053,6 +2300,17 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 		uint32_t rxdctl;
 
 		rxq = dev->data->rx_queues[i];
+
+		rxq->flags = 0;
+		/*
+		 * i350 and i354 vlan packets have vlan tags byte swapped.
+		 */
+		if (hw->mac.type == e1000_i350 || hw->mac.type == e1000_i354) {
+			rxq->flags |= IGB_RXQ_FLAG_LB_BSWAP_VLAN;
+			PMD_INIT_LOG(DEBUG, "IGB rx vlan bswap required");
+		} else {
+			PMD_INIT_LOG(DEBUG, "IGB rx vlan bswap not required");
+		}
 
 		/* Allocate buffers for descriptor rings and set up queue */
 		ret = igb_alloc_rx_queue_mbufs(rxq);
@@ -2178,9 +2436,11 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 
 	/* Enable both L3/L4 rx checksum offload */
 	if (dev->data->dev_conf.rxmode.hw_ip_checksum)
-		rxcsum |= (E1000_RXCSUM_IPOFL  | E1000_RXCSUM_TUOFL);
+		rxcsum |= (E1000_RXCSUM_IPOFL | E1000_RXCSUM_TUOFL |
+				E1000_RXCSUM_CRCOFL);
 	else
-		rxcsum &= ~(E1000_RXCSUM_IPOFL | E1000_RXCSUM_TUOFL);
+		rxcsum &= ~(E1000_RXCSUM_IPOFL | E1000_RXCSUM_TUOFL |
+				E1000_RXCSUM_CRCOFL);
 	E1000_WRITE_REG(hw, E1000_RXCSUM, rxcsum);
 
 	/* Setup the Receive Control Register. */
@@ -2330,6 +2590,17 @@ eth_igbvf_rx_init(struct rte_eth_dev *dev)
 		uint32_t rxdctl;
 
 		rxq = dev->data->rx_queues[i];
+
+		rxq->flags = 0;
+		/*
+		 * i350VF LB vlan packets have vlan tags byte swapped.
+		 */
+		if (hw->mac.type == e1000_vfadapt_i350) {
+			rxq->flags |= IGB_RXQ_FLAG_LB_BSWAP_VLAN;
+			PMD_INIT_LOG(DEBUG, "IGB rx vlan bswap required");
+		} else {
+			PMD_INIT_LOG(DEBUG, "IGB rx vlan bswap not required");
+		}
 
 		/* Allocate buffers for descriptor rings and set up queue */
 		ret = igb_alloc_rx_queue_mbufs(rxq);

@@ -38,6 +38,7 @@ LIB = librte_cfgfile.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+CFLAGS += -I$(SRCDIR)/../librte_eal/common/include
 
 EXPORT_MAP := rte_cfgfile_version.map
 
@@ -50,8 +51,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_CFGFILE) += rte_cfgfile.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_CFGFILE)-include += rte_cfgfile.h
-
-# this lib needs eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_CFGFILE) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

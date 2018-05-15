@@ -2,6 +2,7 @@
  *   BSD LICENSE
  *
  *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2013 6WIND.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -15,36 +16,6 @@
  *       the documentation and/or other materials provided with the
  *       distribution.
  *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-/*   BSD LICENSE
- *
- *   Copyright(c) 2013 6WIND.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
  *       contributors may be used to endorse or promote products derived
  *       from this software without specific prior written permission.
  *
@@ -150,15 +121,17 @@ int rte_eal_hpet_init(int make_default);
 static inline uint64_t
 rte_get_timer_cycles(void)
 {
+#ifdef RTE_LIBEAL_USE_HPET
 	switch(eal_timer_source) {
 	case EAL_TIMER_TSC:
-		return rte_get_tsc_cycles();
-	case EAL_TIMER_HPET:
-#ifdef RTE_LIBEAL_USE_HPET
-		return rte_get_hpet_cycles();
 #endif
+		return rte_get_tsc_cycles();
+#ifdef RTE_LIBEAL_USE_HPET
+	case EAL_TIMER_HPET:
+		return rte_get_hpet_cycles();
 	default: rte_panic("Invalid timer source specified\n");
 	}
+#endif
 }
 
 /**
@@ -170,25 +143,28 @@ rte_get_timer_cycles(void)
 static inline uint64_t
 rte_get_timer_hz(void)
 {
+#ifdef RTE_LIBEAL_USE_HPET
 	switch(eal_timer_source) {
 	case EAL_TIMER_TSC:
-		return rte_get_tsc_hz();
-	case EAL_TIMER_HPET:
-#ifdef RTE_LIBEAL_USE_HPET
-		return rte_get_hpet_hz();
 #endif
+		return rte_get_tsc_hz();
+#ifdef RTE_LIBEAL_USE_HPET
+	case EAL_TIMER_HPET:
+		return rte_get_hpet_hz();
 	default: rte_panic("Invalid timer source specified\n");
 	}
+#endif
 }
-
 /**
  * Wait at least us microseconds.
+ * This function can be replaced with user-defined function.
+ * @see rte_delay_us_callback_register
  *
  * @param us
  *   The number of microseconds to wait.
  */
-void
-rte_delay_us(unsigned us);
+extern void
+(*rte_delay_us)(unsigned int us);
 
 /**
  * Wait at least ms milliseconds.
@@ -201,5 +177,22 @@ rte_delay_ms(unsigned ms)
 {
 	rte_delay_us(ms * 1000);
 }
+
+/**
+ * Blocking delay function.
+ *
+ * @param us
+ *   Number of microseconds to wait.
+ */
+void rte_delay_us_block(unsigned int us);
+
+/**
+ * Replace rte_delay_us with user defined function.
+ *
+ * @param userfunc
+ *   User function which replaces rte_delay_us. rte_delay_us_block restores
+ *   buildin block delay function.
+ */
+void rte_delay_us_callback_register(void(*userfunc)(unsigned int));
 
 #endif /* _RTE_CYCLES_H_ */

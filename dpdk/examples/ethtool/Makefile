@@ -46,4 +46,6 @@ else
 DIRS-y += lib ethtool-app
 endif
 
+DEPDIRS-ethtool-app := lib
+
 include $(RTE_SDK)/mk/rte.extsubdir.mk

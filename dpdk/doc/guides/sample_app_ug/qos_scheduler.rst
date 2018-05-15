@@ -58,30 +58,13 @@ The TX thread, if present, reads from the TX ring and write the packets to the T
 Compiling the Application
 -------------------------
 
-To compile the application:
+To compile the sample application see :doc:`compiling`.
 
-#.  Go to the sample application directory:
-
-    .. code-block:: console
-
-        export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/qos_sched
-
-#.  Set the target (a default target is used if not specified). For example:
+The application is located in the ``qos_sched`` sub-directory.
 
     .. note::
 
         This application is intended as a linuxapp only.
-
-    .. code-block:: console
-
-        export RTE_TARGET=x86_64-native-linuxapp-gcc
-
-#.  Build the application:
-
-    .. code-block:: console
-
-        make
 
 .. note::
 
@@ -289,7 +272,7 @@ The following is an example command with a single packet flow configuration:
 
 .. code-block:: console
 
-    ./qos_sched -c a2 -n 4 -- --pfc "3,2,5,7" --cfg ./profile.cfg
+    ./qos_sched -l 1,5,7 -n 4 -- --pfc "3,2,5,7" --cfg ./profile.cfg
 
 This example uses a single packet flow configuration which creates one RX thread on lcore 5 reading
 from port 3 and a worker thread on lcore 7 writing to port 2.
@@ -298,12 +281,12 @@ Another example with 2 packet flow configurations using different ports but shar
 
 .. code-block:: console
 
-   ./qos_sched -c c6 -n 4 -- --pfc "3,2,2,6,7" --pfc "1,0,2,6,7" --cfg ./profile.cfg
+   ./qos_sched -l 1,2,6,7 -n 4 -- --pfc "3,2,2,6,7" --pfc "1,0,2,6,7" --cfg ./profile.cfg
 
 Note that independent cores for the packet flow configurations for each of the RX, WT and TX thread are also supported,
 providing flexibility to balance the work.
 
-The EAL coremask is constrained to contain the default mastercore 1 and the RX, WT and TX cores only.
+The EAL coremask/corelist is constrained to contain the default mastercore 1 and the RX, WT and TX cores only.
 
 Explanation
 -----------

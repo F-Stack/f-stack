@@ -51,7 +51,7 @@
 #define MIN_DATA_SIZE (RTE_CACHE_LINE_SIZE)
 
 /*
- * initialise a general malloc_elem header structure
+ * Initialize a general malloc_elem header structure
  */
 void
 malloc_elem_init(struct malloc_elem *elem,
@@ -69,7 +69,7 @@ malloc_elem_init(struct malloc_elem *elem,
 }
 
 /*
- * initialise a dummy malloc_elem header for the end-of-memseg marker
+ * Initialize a dummy malloc_elem header for the end-of-memseg marker
  */
 void
 malloc_elem_mkend(struct malloc_elem *elem, struct malloc_elem *prev)
@@ -98,6 +98,7 @@ elem_start_pt(struct malloc_elem *elem, size_t size, unsigned align,
 	if ((new_data_start & bmask) != ((end_pt - 1) & bmask)) {
 		end_pt = RTE_ALIGN_FLOOR(end_pt, bound);
 		new_data_start = RTE_ALIGN_FLOOR((end_pt - size), align);
+		end_pt = new_data_start + size;
 		if (((end_pt - 1) & bmask) != (new_data_start & bmask))
 			return NULL;
 	}
@@ -228,7 +229,7 @@ malloc_elem_alloc(struct malloc_elem *elem, size_t size, unsigned align,
 		elem->pad = old_elem_size;
 
 		/* put a dummy header in padding, to point to real element header */
-		if (elem->pad > 0){ /* pad will be at least 64-bytes, as everything
+		if (elem->pad > 0) { /* pad will be at least 64-bytes, as everything
 		                     * is cache-line aligned */
 			new_elem->pad = elem->pad;
 			new_elem->state = ELEM_PAD;
@@ -252,7 +253,7 @@ malloc_elem_alloc(struct malloc_elem *elem, size_t size, unsigned align,
 }
 
 /*
- * joing two struct malloc_elem together. elem1 and elem2 must
+ * join two struct malloc_elem together. elem1 and elem2 must
  * be contiguous in memory.
  */
 static inline void
@@ -275,14 +276,14 @@ malloc_elem_free(struct malloc_elem *elem)
 		return -1;
 
 	rte_spinlock_lock(&(elem->heap->lock));
-	size_t sz = elem->size - sizeof(*elem);
+	size_t sz = elem->size - sizeof(*elem) - MALLOC_ELEM_TRAILER_LEN;
 	uint8_t *ptr = (uint8_t *)&elem[1];
 	struct malloc_elem *next = RTE_PTR_ADD(elem, elem->size);
 	if (next->state == ELEM_FREE){
 		/* remove from free list, join to this one */
 		elem_free_list_remove(next);
 		join_elem(elem, next);
-		sz += sizeof(*elem);
+		sz += (sizeof(*elem) + MALLOC_ELEM_TRAILER_LEN);
 	}
 
 	/* check if previous element is free, if so join with it and return,
@@ -291,8 +292,8 @@ malloc_elem_free(struct malloc_elem *elem)
 	if (elem->prev != NULL && elem->prev->state == ELEM_FREE) {
 		elem_free_list_remove(elem->prev);
 		join_elem(elem->prev, elem);
-		sz += sizeof(*elem);
-		ptr -= sizeof(*elem);
+		sz += (sizeof(*elem) + MALLOC_ELEM_TRAILER_LEN);
+		ptr -= (sizeof(*elem) + MALLOC_ELEM_TRAILER_LEN);
 		elem = elem->prev;
 	}
 	malloc_elem_free_list_insert(elem);
@@ -314,17 +315,16 @@ malloc_elem_free(struct malloc_elem *elem)
 int
 malloc_elem_resize(struct malloc_elem *elem, size_t size)
 {
-	const size_t new_size = size + MALLOC_ELEM_OVERHEAD;
+	const size_t new_size = size + elem->pad + MALLOC_ELEM_OVERHEAD;
 	/* if we request a smaller size, then always return ok */
-	const size_t current_size = elem->size - elem->pad;
-	if (current_size >= new_size)
+	if (elem->size >= new_size)
 		return 0;
 
 	struct malloc_elem *next = RTE_PTR_ADD(elem, elem->size);
 	rte_spinlock_lock(&elem->heap->lock);
 	if (next ->state != ELEM_FREE)
 		goto err_return;
-	if (current_size + next->size < new_size)
+	if (elem->size + next->size < new_size)
 		goto err_return;
 
 	/* we now know the element fits, so remove from free list,
@@ -333,7 +333,7 @@ malloc_elem_resize(struct malloc_elem *elem, size_t size)
 	elem_free_list_remove(next);
 	join_elem(elem, next);
 
-	if (elem->size - new_size >= MIN_DATA_SIZE + MALLOC_ELEM_OVERHEAD){
+	if (elem->size - new_size >= MIN_DATA_SIZE + MALLOC_ELEM_OVERHEAD) {
 		/* now we have a big block together. Lets cut it down a bit, by splitting */
 		struct malloc_elem *split_pt = RTE_PTR_ADD(elem, new_size);
 		split_pt = RTE_PTR_ALIGN_CEIL(split_pt, RTE_CACHE_LINE_SIZE);

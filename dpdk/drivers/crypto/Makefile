@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -33,9 +33,16 @@ include $(RTE_SDK)/mk/rte.vars.mk
 
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += aesni_gcm
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB) += aesni_mb
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_ARMV8_CRYPTO) += armv8
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_OPENSSL) += openssl
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += qat
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_CRYPTO_SCHEDULER) += scheduler
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G) += snow3g
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_KASUMI) += kasumi
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_ZUC) += zuc
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_MRVL_CRYPTO) += mrvl
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += null
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_DPAA2_SEC) += dpaa2_sec
+DIRS-$(CONFIG_RTE_LIBRTE_PMD_DPAA_SEC) += dpaa_sec
 
 include $(RTE_SDK)/mk/rte.subdir.mk

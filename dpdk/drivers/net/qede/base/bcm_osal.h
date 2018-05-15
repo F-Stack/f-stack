@@ -18,14 +18,17 @@
 #include <rte_cycles.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
+#include <rte_io.h>
 
 /* Forward declaration */
 struct ecore_dev;
 struct ecore_hwfn;
+struct ecore_ptt;
 struct ecore_vf_acquire_sw_info;
 struct vf_pf_resc_request;
 enum ecore_mcp_protocol_type;
 union ecore_mcp_protocol_stats;
+enum ecore_hw_err_type;
 
 void qed_link_update(struct ecore_hwfn *hwfn);
 
@@ -40,6 +43,10 @@ void qed_link_update(struct ecore_hwfn *hwfn);
 #define __BIG_ENDIAN
 #endif
 #endif
+
+#define OSAL_WARN(arg1, arg2, arg3, ...) (0)
+
+#define UNUSED(x)	(void)(x)
 
 /* Memory Types */
 typedef uint8_t u8;
@@ -56,7 +63,7 @@ typedef u32 OSAL_BE32;
 
 #define osal_uintptr_t uintptr_t
 
-typedef phys_addr_t dma_addr_t;
+typedef rte_iova_t dma_addr_t;
 
 typedef rte_spinlock_t osal_spinlock_t;
 
@@ -86,8 +93,12 @@ typedef int bool;
 #define OSAL_ALLOC(dev, GFP, size) rte_malloc("qede", size, 0)
 #define OSAL_ZALLOC(dev, GFP, size) rte_zmalloc("qede", size, 0)
 #define OSAL_CALLOC(dev, GFP, num, size) rte_calloc("qede", num, size, 0)
-#define OSAL_VALLOC(dev, size) rte_malloc("qede", size, 0)
-#define OSAL_FREE(dev, memory) rte_free((void *)memory)
+#define OSAL_VZALLOC(dev, size) rte_zmalloc("qede", size, 0)
+#define OSAL_FREE(dev, memory)		  \
+	do {				  \
+		rte_free((void *)memory); \
+		memory = OSAL_NULL;	  \
+	} while (0)
 #define OSAL_VFREE(dev, memory) OSAL_FREE(dev, memory)
 #define OSAL_MEM_ZERO(mem, size) bzero(mem, size)
 #define OSAL_MEMCPY(dst, src, size) rte_memcpy(dst, src, size)
@@ -100,29 +111,31 @@ void *osal_dma_alloc_coherent(struct ecore_dev *, dma_addr_t *, size_t);
 void *osal_dma_alloc_coherent_aligned(struct ecore_dev *, dma_addr_t *,
 				      size_t, int);
 
+void osal_dma_free_mem(struct ecore_dev *edev, dma_addr_t phys);
+
 #define OSAL_DMA_ALLOC_COHERENT(dev, phys, size) \
 	osal_dma_alloc_coherent(dev, phys, size)
 
 #define OSAL_DMA_ALLOC_COHERENT_ALIGNED(dev, phys, size, align) \
 	osal_dma_alloc_coherent_aligned(dev, phys, size, align)
 
-/* TODO: */
-#define OSAL_DMA_FREE_COHERENT(dev, virt, phys, size) nothing
+#define OSAL_DMA_FREE_COHERENT(dev, virt, phys, size) \
+	osal_dma_free_mem(dev, phys)
 
 /* HW reads/writes */
 
-#define DIRECT_REG_RD(_dev, _reg_addr) \
-	(*((volatile u32 *) (_reg_addr)))
+#define DIRECT_REG_RD(_dev, _reg_addr) rte_read32(_reg_addr)
 
 #define REG_RD(_p_hwfn, _reg_offset) \
 	DIRECT_REG_RD(_p_hwfn,		\
 			((u8 *)(uintptr_t)(_p_hwfn->regview) + (_reg_offset)))
 
-#define DIRECT_REG_WR16(_reg_addr, _val) \
-	(*((volatile u16 *)(_reg_addr)) = _val)
+#define DIRECT_REG_WR16(_reg_addr, _val) rte_write16((_val), (_reg_addr))
 
-#define DIRECT_REG_WR(_dev, _reg_addr, _val) \
-	(*((volatile u32 *)(_reg_addr)) = _val)
+#define DIRECT_REG_WR(_dev, _reg_addr, _val) rte_write32((_val), (_reg_addr))
+
+#define DIRECT_REG_WR_RELAXED(_dev, _reg_addr, _val) \
+	rte_write32_relaxed((_val), (_reg_addr))
 
 #define REG_WR(_p_hwfn, _reg_offset, _val) \
 	DIRECT_REG_WR(NULL,  \
@@ -132,9 +145,13 @@ void *osal_dma_alloc_coherent_aligned(struct ecore_dev *, dma_addr_t *,
 	DIRECT_REG_WR16(((u8 *)(uintptr_t)(_p_hwfn->regview) + \
 			(_reg_offset)), (u16)_val)
 
-#define DOORBELL(_p_hwfn, _db_addr, _val) \
-	DIRECT_REG_WR(_p_hwfn, \
-	     ((u8 *)(uintptr_t)(_p_hwfn->doorbells) + (_db_addr)), (u32)_val)
+#define DOORBELL(_p_hwfn, _db_addr, _val)				\
+	DIRECT_REG_WR_RELAXED((_p_hwfn),				\
+			      ((u8 *)(uintptr_t)(_p_hwfn->doorbells) +	\
+			      (_db_addr)), (u32)_val)
+
+#define DIRECT_REG_WR64(hwfn, addr, value) nothing
+#define DIRECT_REG_RD64(hwfn, addr) 0
 
 /* Mutexes */
 
@@ -150,7 +167,12 @@ typedef pthread_mutex_t osal_mutex_t;
 #define OSAL_SPIN_LOCK_INIT(lock) rte_spinlock_init(lock)
 #define OSAL_SPIN_LOCK(lock) rte_spinlock_lock(lock)
 #define OSAL_SPIN_UNLOCK(lock) rte_spinlock_unlock(lock)
-#define OSAL_SPIN_LOCK_IRQSAVE(lock, flags) nothing
+#define OSAL_SPIN_LOCK_IRQSAVE(lock, flags)	\
+	do {					\
+		UNUSED(lock);			\
+		flags = 0;			\
+		UNUSED(flags);			\
+	} while (0)
 #define OSAL_SPIN_UNLOCK_IRQSAVE(lock, flags) nothing
 #define OSAL_SPIN_LOCK_ALLOC(hwfn, lock) nothing
 #define OSAL_SPIN_LOCK_DEALLOC(lock) nothing
@@ -160,6 +182,7 @@ typedef pthread_mutex_t osal_mutex_t;
 #define OSAL_DPC_ALLOC(hwfn) OSAL_ALLOC(hwfn, GFP, sizeof(osal_dpc_t))
 #define OSAL_DPC_INIT(dpc, hwfn) nothing
 #define OSAL_POLL_MODE_DPC(hwfn) nothing
+#define OSAL_DPC_SYNC(hwfn) nothing
 
 /* Lists */
 
@@ -284,7 +307,8 @@ typedef struct osal_list_t {
 #define OSAL_WMB(dev)			rte_wmb()
 #define OSAL_DMA_SYNC(dev, addr, length, is_post) nothing
 
-#define OSAL_BITS_PER_BYTE		(8)
+#define OSAL_BIT(nr)            (1UL << (nr))
+#define OSAL_BITS_PER_BYTE	(8)
 #define OSAL_BITS_PER_UL	(sizeof(unsigned long) * OSAL_BITS_PER_BYTE)
 #define OSAL_BITS_PER_UL_MASK		(OSAL_BITS_PER_UL - 1)
 
@@ -301,6 +325,10 @@ bool qede_test_bit(u32, unsigned long *);
 #define OSAL_TEST_BIT(bit, bitmap) \
 	qede_test_bit(bit, bitmap)
 
+u32 qede_find_first_bit(unsigned long *, u32);
+#define OSAL_FIND_FIRST_BIT(bitmap, length) \
+	qede_find_first_bit(bitmap, length)
+
 u32 qede_find_first_zero_bit(unsigned long *, u32);
 #define OSAL_FIND_FIRST_ZERO_BIT(bitmap, length) \
 	qede_find_first_zero_bit(bitmap, length)
@@ -308,7 +336,10 @@ u32 qede_find_first_zero_bit(unsigned long *, u32);
 #define OSAL_BUILD_BUG_ON(cond)		nothing
 #define ETH_ALEN			ETHER_ADDR_LEN
 
+#define OSAL_BITMAP_WEIGHT(bitmap, count) 0
+
 #define OSAL_LINK_UPDATE(hwfn) qed_link_update(hwfn)
+#define OSAL_TRANSCEIVER_UPDATE(hwfn) nothing
 #define OSAL_DCBX_AEN(hwfn, mib_type) nothing
 
 /* SR-IOV channel */
@@ -317,6 +348,7 @@ u32 qede_find_first_zero_bit(unsigned long *, u32);
 #define OSAL_VF_SEND_MSG2PF(dev, done, msg, reply_addr, msg_size, reply_size) 0
 #define OSAL_VF_CQE_COMPLETION(_dev_p, _cqe, _protocol)	(0)
 #define OSAL_PF_VF_MSG(hwfn, vfid) 0
+#define OSAL_PF_VF_MALICIOUS(hwfn, vfid) nothing
 #define OSAL_IOV_CHK_UCAST(hwfn, vfid, params) 0
 #define OSAL_IOV_POST_START_VPORT(hwfn, vf, vport_id, opaque_fid) nothing
 #define OSAL_IOV_VF_ACQUIRE(hwfn, vfid) 0
@@ -324,11 +356,16 @@ u32 qede_find_first_zero_bit(unsigned long *, u32);
 #define OSAL_IOV_VF_VPORT_UPDATE(hwfn, vfid, p_params, p_mask) 0
 #define OSAL_VF_UPDATE_ACQUIRE_RESC_RESP(_dev_p, _resc_resp) 0
 #define OSAL_IOV_GET_OS_TYPE() 0
+#define OSAL_IOV_VF_MSG_TYPE(hwfn, vfid, vf_msg_type) nothing
+#define OSAL_IOV_PF_RESP_TYPE(hwfn, vfid, pf_resp_type) nothing
+#define OSAL_IOV_VF_VPORT_STOP(hwfn, vf) nothing
 
 u32 qede_unzip_data(struct ecore_hwfn *p_hwfn, u32 input_len,
 		   u8 *input_buf, u32 max_size, u8 *unzip_buf);
 void qede_vf_fill_driver_data(struct ecore_hwfn *, struct vf_pf_resc_request *,
 			      struct ecore_vf_acquire_sw_info *);
+void qede_hw_err_notify(struct ecore_hwfn *p_hwfn,
+			enum ecore_hw_err_type err_type);
 #define OSAL_VF_FILL_ACQUIRE_RESC_REQ(_dev_p, _resc_req, _os_info) \
 	qede_vf_fill_driver_data(_dev_p, _resc_req, _os_info)
 
@@ -337,10 +374,11 @@ void qede_vf_fill_driver_data(struct ecore_hwfn *, struct vf_pf_resc_request *,
 
 /* TODO: */
 #define OSAL_SCHEDULE_RECOVERY_HANDLER(hwfn) nothing
-#define OSAL_HW_ERROR_OCCURRED(hwfn, err_type) nothing
+#define OSAL_HW_ERROR_OCCURRED(hwfn, err_type) \
+	qede_hw_err_notify(hwfn, err_type)
 
 #define OSAL_NVM_IS_ACCESS_ENABLED(hwfn) (1)
-#define OSAL_NUM_ACTIVE_CPU()	0
+#define OSAL_NUM_CPUS()	0
 
 /* Utility functions */
 
@@ -377,16 +415,21 @@ u32 qede_osal_log2(u32);
 #define OSAL_ARRAY_SIZE(arr) RTE_DIM(arr)
 #define OSAL_SPRINTF(name, pattern, ...) \
 	sprintf(name, pattern, ##__VA_ARGS__)
+#define OSAL_SNPRINTF(buf, size, format, ...) \
+	snprintf(buf, size, format, ##__VA_ARGS__)
 #define OSAL_STRLEN(string) strlen(string)
 #define OSAL_STRCPY(dst, string) strcpy(dst, string)
 #define OSAL_STRNCPY(dst, string, len) strncpy(dst, string, len)
 #define OSAL_STRCMP(str1, str2) strcmp(str1, str2)
+#define OSAL_STRTOUL(str, base, res) 0
 
 #define OSAL_INLINE inline
 #define OSAL_REG_ADDR(_p_hwfn, _offset) \
 		(void *)((u8 *)(uintptr_t)(_p_hwfn->regview) + (_offset))
 #define OSAL_PAGE_SIZE 4096
+#define OSAL_CACHE_LINE_SIZE RTE_CACHE_LINE_SIZE
 #define OSAL_IOMEM volatile
+#define OSAL_UNUSED    __attribute__((unused))
 #define OSAL_UNLIKELY(x)  __builtin_expect(!!(x), 0)
 #define OSAL_MIN_T(type, __min1, __min2)	\
 	((type)(__min1) < (type)(__min2) ? (type)(__min1) : (type)(__min2))
@@ -399,5 +442,17 @@ void qede_get_mcp_proto_stats(struct ecore_dev *, enum ecore_mcp_protocol_type,
 	qede_get_mcp_proto_stats(dev, type, stats)
 
 #define	OSAL_SLOWPATH_IRQ_REQ(p_hwfn) (0)
+
+u32 qede_crc32(u32 crc, u8 *ptr, u32 length);
+#define OSAL_CRC32(crc, buf, length) qede_crc32(crc, buf, length)
+#define OSAL_CRC8_POPULATE(table, polynomial) nothing
+#define OSAL_CRC8(table, pdata, nbytes, crc) 0
+#define OSAL_MFW_TLV_REQ(p_hwfn) nothing
+#define OSAL_MFW_FILL_TLV_DATA(type, buf, data) (0)
+#define OSAL_MFW_CMD_PREEMPT(p_hwfn) nothing
+#define OSAL_PF_VALIDATE_MODIFY_TUNN_CONFIG(p_hwfn, mask, b_update, tunn) 0
+
+#define OSAL_DIV_S64(a, b)	((a) / (b))
+#define OSAL_LLDP_RX_TLVS(p_hwfn, tlv_buf, tlv_size) nothing
 
 #endif /* __BCM_OSAL_H */

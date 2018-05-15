@@ -191,7 +191,7 @@ struct layout {
 	dst->c = src->c;					\
 }
 
-static inline __attribute__((always_inline)) void
+static __rte_always_inline void
 pkt_work_routing(
 	struct rte_mbuf *pkt,
 	struct rte_pipeline_table_entry *table_entry,
@@ -317,7 +317,7 @@ pkt_work_routing(
 	}
 }
 
-static inline __attribute__((always_inline)) void
+static __rte_always_inline void
 pkt4_work_routing(
 	struct rte_mbuf **pkts,
 	struct rte_pipeline_table_entry **table_entries,
@@ -1349,17 +1349,20 @@ pipeline_routing_init(struct pipeline_params *params,
 
 	/* ARP table configuration */
 	if (p_rt->params.n_arp_entries) {
-		struct rte_table_hash_key8_ext_params table_arp_params = {
-			.n_entries = p_rt->params.n_arp_entries,
-			.n_entries_ext = p_rt->params.n_arp_entries,
+		struct rte_table_hash_params table_arp_params = {
+			.name = p->name,
+			.key_size = 8,
+			.key_offset = p_rt->params.arp_key_offset,
+			.key_mask = NULL,
+			.n_keys = p_rt->params.n_arp_entries,
+			.n_buckets =
+				rte_align32pow2(p_rt->params.n_arp_entries / 4),
 			.f_hash = hash_default_key8,
 			.seed = 0,
-			.signature_offset = 0, /* Unused */
-			.key_offset = p_rt->params.arp_key_offset,
 		};
 
 		struct rte_pipeline_table_params table_params = {
-			.ops = &rte_table_hash_key8_ext_dosig_ops,
+			.ops = &rte_table_hash_key8_ext_ops,
 			.arg_create = &table_arp_params,
 			.f_action_hit = get_arp_table_ah_hit(p_rt),
 			.f_action_miss = NULL,

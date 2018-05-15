@@ -35,7 +35,7 @@ Multi-process Support
 
 In the DPDK, multi-process support is designed to allow a group of DPDK processes
 to work together in a simple transparent manner to perform packet processing,
-or other workloads, on Intel® architecture hardware.
+or other workloads.
 To support this functionality,
 a number of additions have been made to the core DPDK Environment Abstraction Layer (EAL).
 
@@ -173,7 +173,7 @@ Some of these are documented below:
     so it is recommended that it be disabled only when absolutely necessary,
     and only when the implications of this change have been understood.
 
-*   All DPDK processes running as a single application and using shared memory must have distinct coremask arguments.
+*   All DPDK processes running as a single application and using shared memory must have distinct coremask/corelist arguments.
     It is not possible to have a primary and secondary instance, or two secondary instances,
     using any of the same logical cores.
     Attempting to do so can cause corruption of memory pool caches, among other issues.

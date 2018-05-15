@@ -158,7 +158,7 @@ Configurations before running DPDK
 
       cd dpdk_folder
 
-      tools/cpu_layout.py
+      usertools/cpu_layout.py
 
    Or run ``lscpu`` to check the the cores on each socket.
 
@@ -186,75 +186,5 @@ Configurations before running DPDK
    **Note**: To get the best performance, ensure that the core and NICs are in the same socket.
    In the example above ``85:00.0`` is on socket 1 and should be used by cores on socket 1 for the best performance.
 
-4. Bind the test ports to DPDK compatible drivers, such as igb_uio. For example bind two ports to a DPDK compatible driver and check the status:
-
-   .. code-block:: console
-
-
-      # Bind ports 82:00.0 and 85:00.0 to dpdk driver
-      ./dpdk_folder/tools/dpdk-devbind.py -b igb_uio 82:00.0 85:00.0
-
-      # Check the port driver status
-      ./dpdk_folder/tools/dpdk-devbind.py --status
-
-   See ``dpdk-devbind.py --help`` for more details.
-
-
-More details about DPDK setup and Linux kernel requirements see :ref:`linux_gsg_compiling_dpdk`.
-
-
-Example of getting best performance for an Intel NIC
-----------------------------------------------------
-
-The following is an example of running the DPDK ``l3fwd`` sample application to get high performance with an
-Intel server platform and Intel XL710 NICs.
-For specific 40G NIC configuration please refer to the i40e NIC guide.
-
-The example scenario is to get best performance with two Intel XL710 40GbE ports.
-See :numref:`figure_intel_perf_test_setup` for the performance test setup.
-
-.. _figure_intel_perf_test_setup:
-
-.. figure:: img/intel_perf_test_setup.*
-
-   Performance Test Setup
-
-
-1. Add two Intel XL710 NICs to the platform, and use one port per card to get best performance.
-   The reason for using two NICs is to overcome a PCIe Gen3's limitation since it cannot provide 80G bandwidth
-   for two 40G ports, but two different PCIe Gen3 x8 slot can.
-   Refer to the sample NICs output above, then we can select ``82:00.0`` and ``85:00.0`` as test ports::
-
-      82:00.0 Ethernet [0200]: Intel XL710 for 40GbE QSFP+ [8086:1583]
-      85:00.0 Ethernet [0200]: Intel XL710 for 40GbE QSFP+ [8086:1583]
-
-2. Connect the ports to the traffic generator. For high speed testing, it's best to use a hardware traffic generator.
-
-3. Check the PCI devices numa node (socket id) and get the cores number on the exact socket id.
-   In this case, ``82:00.0`` and ``85:00.0`` are both in socket 1, and the cores on socket 1 in the referenced platform
-   are 18-35 and 54-71.
-   Note: Don't use 2 logical cores on the same core (e.g core18 has 2 logical cores, core18 and core54), instead, use 2 logical
-   cores from different cores (e.g core18 and core19).
-
-4. Bind these two ports to igb_uio.
-
-5. As to XL710 40G port, we need at least two queue pairs to achieve best performance, then two queues per port
-   will be required, and each queue pair will need a dedicated CPU core for receiving/transmitting packets.
-
-6. The DPDK sample application ``l3fwd`` will be used for performance testing, with using two ports for bi-directional forwarding.
-   Compile the ``l3fwd sample`` with the default lpm mode.
-
-7. The command line of running l3fwd would be something like the followings::
-
-      ./l3fwd -c 0x3c0000 -n 4 -w 82:00.0 -w 85:00.0 \
-              -- -p 0x3 --config '(0,0,18),(0,1,19),(1,0,20),(1,1,21)'
-
-   This means that the application uses core 18 for port 0, queue pair 0 forwarding, core 19 for port 0, queue pair 1 forwarding,
-   core 20 for port 1, queue pair 0 forwarding, and core 21 for port 1, queue pair 1 forwarding.
-
-
-8. Configure the traffic at a traffic generator.
-
-   * Start creating a stream on packet generator.
-
-   * Set the Ethernet II type to 0x0800.
+4. Check which kernel drivers needs to be loaded and whether there is a need to unbind the network ports from their kernel drivers.
+More details about DPDK setup and Linux kernel requirements see :ref:`linux_gsg_compiling_dpdk` and :ref:`linux_gsg_linux_drivers`.

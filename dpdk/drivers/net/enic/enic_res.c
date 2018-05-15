@@ -62,6 +62,7 @@ int enic_get_vnic_config(struct enic *enic)
 		return err;
 	}
 
+
 #define GET_CONFIG(m) \
 	do { \
 		err = vnic_dev_spec(enic->vdev, \
@@ -88,15 +89,35 @@ int enic_get_vnic_config(struct enic *enic)
 	/* max packet size is only defined in newer VIC firmware
 	 * and will be 0 for legacy firmware and VICs
 	 */
-	if (c->max_pkt_size > ENIC_DEFAULT_MAX_PKT_SIZE)
+	if (c->max_pkt_size > ENIC_DEFAULT_RX_MAX_PKT_SIZE)
 		enic->max_mtu = c->max_pkt_size - (ETHER_HDR_LEN + 4);
 	else
-		enic->max_mtu = ENIC_DEFAULT_MAX_PKT_SIZE - (ETHER_HDR_LEN + 4);
+		enic->max_mtu = ENIC_DEFAULT_RX_MAX_PKT_SIZE
+				- (ETHER_HDR_LEN + 4);
 	if (c->mtu == 0)
 		c->mtu = 1500;
 
 	enic->rte_dev->data->mtu = min_t(u16, enic->max_mtu,
 					 max_t(u16, ENIC_MIN_MTU, c->mtu));
+
+	enic->adv_filters = vnic_dev_capable_adv_filters(enic->vdev);
+	dev_info(enic, "Advanced Filters %savailable\n", ((enic->adv_filters)
+		 ? "" : "not "));
+
+	err = vnic_dev_capable_filter_mode(enic->vdev, &enic->flow_filter_mode,
+					   &enic->filter_tags);
+	if (err) {
+		dev_err(enic_get_dev(enic),
+			"Error getting filter modes, %d\n", err);
+		return err;
+	}
+
+	dev_info(enic, "Flow api filter mode: %s, Filter tagging %savailable\n",
+		((enic->flow_filter_mode == FILTER_DPDK_1) ? "DPDK" :
+		((enic->flow_filter_mode == FILTER_USNIC_IP) ? "USNIC" :
+		((enic->flow_filter_mode == FILTER_IPV4_5TUPLE) ? "5TUPLE" :
+		"NONE"))),
+		((enic->filter_tags) ? "" : "not "));
 
 	c->wq_desc_count =
 		min_t(u32, ENIC_MAX_WQ_DESCS,

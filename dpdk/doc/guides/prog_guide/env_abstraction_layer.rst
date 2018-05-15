@@ -117,17 +117,6 @@ The physical address of the reserved memory for that memory zone is also returne
 
     Memory reservations done using the APIs provided by rte_malloc are also backed by pages from the hugetlbfs filesystem.
 
-Xen Dom0 support without hugetbls
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The existing memory management implementation is based on the Linux kernel hugepage mechanism.
-However, Xen Dom0 does not support hugepages, so a new Linux kernel module rte_dom0_mm is added to workaround this limitation.
-
-The EAL uses IOCTL interface to notify the Linux kernel module rte_dom0_mm to allocate memory of specified size,
-and get all memory segments information from the module,
-and the EAL uses MMAP interface to map the allocated memory.
-For each memory segment, the physical addresses are contiguous within it but actual hardware addresses are contiguous within 2MB.
-
 PCI Access
 ~~~~~~~~~~
 
@@ -164,7 +153,7 @@ which can trigger the generation of a core file, readable by gdb.
 CPU Feature Identification
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The EAL can query the CPU at runtime (using the rte_cpu_get_feature() function) to determine which CPU features are available.
+The EAL can query the CPU at runtime (using the rte_cpu_get_features() function) to determine which CPU features are available.
 
 User Space Interrupt Event
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -178,8 +167,8 @@ The EAL also allows timed callbacks to be used in the same way as for NIC interr
 
 .. note::
 
-    In DPDK PMD, the only interrupts handled by the dedicated host thread are those for link status change,
-    i.e. link up and link down notification.
+    In DPDK PMD, the only interrupts handled by the dedicated host thread are those for link status change
+    (link up and link down notification) and for sudden device removal.
 
 
 + RX Interrupt Event
@@ -206,6 +195,23 @@ The eth_dev driver takes responsibility to program the latter mapping.
 
 The RX interrupt are controlled/enabled/disabled by ethdev APIs - 'rte_eth_dev_rx_intr_*'. They return failure if the PMD
 hasn't support them yet. The intr_conf.rxq flag is used to turn on the capability of RX interrupt per device.
+
++ Device Removal Event
+
+This event is triggered by a device being removed at a bus level. Its
+underlying resources may have been made unavailable (i.e. PCI mappings
+unmapped). The PMD must make sure that on such occurrence, the application can
+still safely use its callbacks.
+
+This event can be subscribed to in the same way one would subscribe to a link
+status change event. The execution context is thus the same, i.e. it is the
+dedicated interrupt host thread.
+
+Considering this, it is likely that an application would want to close a
+device having emitted a Device Removal Event. In such case, calling
+``rte_eth_dev_close()`` can trigger it to unregister its own Device Removal Event
+callback. Care must be taken not to close the device from the interrupt handler
+context. It is necessary to reschedule such closing operation.
 
 Blacklisting
 ~~~~~~~~~~~~
@@ -303,7 +309,7 @@ All these impacts are mentioned in :ref:`known_issue_label` section.
 Public Thread API
 ~~~~~~~~~~~~~~~~~
 
-There are two public APIs ``rte_thread_set_affinity()`` and ``rte_pthread_get_affinity()`` introduced for threads.
+There are two public APIs ``rte_thread_set_affinity()`` and ``rte_thread_get_affinity()`` introduced for threads.
 When they're used in any pthread context, the Thread Local Storage(TLS) will be set/get.
 
 Those TLS include *_cpuset* and *_socket_id*:
@@ -351,11 +357,6 @@ Known Issues
   2. It MAY be used by multi-producer/consumer pthread whose scheduling policy are all SCHED_OTHER(cfs). User SHOULD be aware of the performance penalty before using it.
 
   3. It MUST not be used by multi-producer/consumer pthreads, whose scheduling policies are SCHED_FIFO or SCHED_RR.
-
-  ``RTE_RING_PAUSE_REP_COUNT`` is defined for rte_ring to reduce contention. It's mainly for case 2, a yield is issued after number of times pause repeat.
-
-  It adds a sched_yield() syscall if the thread spins for too long while waiting on the other thread to finish its operations on the ring.
-  This gives the preempted thread a chance to proceed and finish with the ring enqueue/dequeue operation.
 
 + rte_timer
 

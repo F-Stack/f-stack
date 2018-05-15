@@ -47,7 +47,6 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_cycles.h>
 #include <rte_mbuf.h>
@@ -58,13 +57,17 @@
 
 #include "l3fwd.h"
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_CRC32)
+#define EM_HASH_CRC 1
+#endif
+
+#ifdef EM_HASH_CRC
 #include <rte_hash_crc.h>
 #define DEFAULT_HASH_FUNC       rte_hash_crc
 #else
 #include <rte_jhash.h>
 #define DEFAULT_HASH_FUNC       rte_jhash
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#endif
 
 #define IPV6_ADDR_LEN 16
 
@@ -169,17 +172,17 @@ ipv4_hash_crc(const void *data, __rte_unused uint32_t data_len,
 	t = k->proto;
 	p = (const uint32_t *)&k->port_src;
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef EM_HASH_CRC
 	init_val = rte_hash_crc_4byte(t, init_val);
 	init_val = rte_hash_crc_4byte(k->ip_src, init_val);
 	init_val = rte_hash_crc_4byte(k->ip_dst, init_val);
 	init_val = rte_hash_crc_4byte(*p, init_val);
-#else /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#else
 	init_val = rte_jhash_1word(t, init_val);
 	init_val = rte_jhash_1word(k->ip_src, init_val);
 	init_val = rte_jhash_1word(k->ip_dst, init_val);
 	init_val = rte_jhash_1word(*p, init_val);
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#endif
 
 	return init_val;
 }
@@ -191,16 +194,16 @@ ipv6_hash_crc(const void *data, __rte_unused uint32_t data_len,
 	const union ipv6_5tuple_host *k;
 	uint32_t t;
 	const uint32_t *p;
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef EM_HASH_CRC
 	const uint32_t  *ip_src0, *ip_src1, *ip_src2, *ip_src3;
 	const uint32_t  *ip_dst0, *ip_dst1, *ip_dst2, *ip_dst3;
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#endif
 
 	k = data;
 	t = k->proto;
 	p = (const uint32_t *)&k->port_src;
 
-#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+#ifdef EM_HASH_CRC
 	ip_src0 = (const uint32_t *) k->ip_src;
 	ip_src1 = (const uint32_t *)(k->ip_src+4);
 	ip_src2 = (const uint32_t *)(k->ip_src+8);
@@ -219,14 +222,14 @@ ipv6_hash_crc(const void *data, __rte_unused uint32_t data_len,
 	init_val = rte_hash_crc_4byte(*ip_dst2, init_val);
 	init_val = rte_hash_crc_4byte(*ip_dst3, init_val);
 	init_val = rte_hash_crc_4byte(*p, init_val);
-#else /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#else
 	init_val = rte_jhash_1word(t, init_val);
 	init_val = rte_jhash(k->ip_src,
 			sizeof(uint8_t) * IPV6_ADDR_LEN, init_val);
 	init_val = rte_jhash(k->ip_dst,
 			sizeof(uint8_t) * IPV6_ADDR_LEN, init_val);
 	init_val = rte_jhash_1word(*p, init_val);
-#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+#endif
 	return init_val;
 }
 
@@ -243,7 +246,7 @@ static rte_xmm_t mask0;
 static rte_xmm_t mask1;
 static rte_xmm_t mask2;
 
-#if defined(__SSE2__)
+#if defined(RTE_MACHINE_CPUFLAG_SSE2)
 static inline xmm_t
 em_mask_key(void *key, xmm_t mask)
 {
@@ -259,12 +262,20 @@ em_mask_key(void *key, xmm_t mask)
 
 	return vandq_s32(data, mask);
 }
+#elif defined(RTE_MACHINE_CPUFLAG_ALTIVEC)
+static inline xmm_t
+em_mask_key(void *key, xmm_t mask)
+{
+	xmm_t data = vec_ld(0, (xmm_t *)(key));
+
+	return vec_and(data, mask);
+}
 #else
-#error No vector engine (SSE, NEON) available, check your toolchain
+#error No vector engine (SSE, NEON, ALTIVEC) available, check your toolchain
 #endif
 
-static inline uint8_t
-em_get_ipv4_dst_port(void *ipv4_hdr, uint8_t portid, void *lookup_struct)
+static inline uint16_t
+em_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
 {
 	int ret = 0;
 	union ipv4_5tuple_host key;
@@ -281,11 +292,11 @@ em_get_ipv4_dst_port(void *ipv4_hdr, uint8_t portid, void *lookup_struct)
 
 	/* Find destination port */
 	ret = rte_hash_lookup(ipv4_l3fwd_lookup_struct, (const void *)&key);
-	return (uint8_t)((ret < 0) ? portid : ipv4_l3fwd_out_if[ret]);
+	return (ret < 0) ? portid : ipv4_l3fwd_out_if[ret];
 }
 
-static inline uint8_t
-em_get_ipv6_dst_port(void *ipv6_hdr,  uint8_t portid, void *lookup_struct)
+static inline uint16_t
+em_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
 {
 	int ret = 0;
 	union ipv6_5tuple_host key;
@@ -314,14 +325,14 @@ em_get_ipv6_dst_port(void *ipv6_hdr,  uint8_t portid, void *lookup_struct)
 
 	/* Find destination port */
 	ret = rte_hash_lookup(ipv6_l3fwd_lookup_struct, (const void *)&key);
-	return (uint8_t)((ret < 0) ? portid : ipv6_l3fwd_out_if[ret]);
+	return (ret < 0) ? portid : ipv6_l3fwd_out_if[ret];
 }
 
-#if defined(__SSE4_1__)
+#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON
 #if defined(NO_HASH_MULTI_LOOKUP)
-#include "l3fwd_em_sse.h"
+#include "l3fwd_em_sequential.h"
 #else
-#include "l3fwd_em_hlm_sse.h"
+#include "l3fwd_em_hlm.h"
 #endif
 #else
 #include "l3fwd_em.h"
@@ -603,7 +614,7 @@ em_parse_ptype(struct rte_mbuf *m)
 				packet_type |= RTE_PTYPE_L4_UDP;
 		} else
 			packet_type |= RTE_PTYPE_L3_IPV4_EXT;
-	} else if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {
+	} else if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6)) {
 		ipv6_hdr = (struct ipv6_hdr *)l3;
 		if (ipv6_hdr->proto == IPPROTO_TCP)
 			packet_type |= RTE_PTYPE_L3_IPV6 | RTE_PTYPE_L4_TCP;
@@ -617,7 +628,7 @@ em_parse_ptype(struct rte_mbuf *m)
 }
 
 uint16_t
-em_cb_parse_ptype(uint8_t port __rte_unused, uint16_t queue __rte_unused,
+em_cb_parse_ptype(uint16_t port __rte_unused, uint16_t queue __rte_unused,
 		  struct rte_mbuf *pkts[], uint16_t nb_pkts,
 		  uint16_t max_pkts __rte_unused,
 		  void *user_param __rte_unused)
@@ -638,7 +649,8 @@ em_main_loop(__attribute__((unused)) void *dummy)
 	unsigned lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc;
 	int i, nb_rx;
-	uint8_t portid, queueid;
+	uint8_t queueid;
+	uint16_t portid;
 	struct lcore_conf *qconf;
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 		US_PER_S * BURST_TX_DRAIN_US;
@@ -660,7 +672,7 @@ em_main_loop(__attribute__((unused)) void *dummy)
 		portid = qconf->rx_queue_list[i].port_id;
 		queueid = qconf->rx_queue_list[i].queue_id;
 		RTE_LOG(INFO, L3FWD,
-			" -- lcoreid=%u portid=%hhu rxqueueid=%hhu\n",
+			" -- lcoreid=%u portid=%u rxqueueid=%hhu\n",
 			lcore_id, portid, queueid);
 	}
 
@@ -698,13 +710,13 @@ em_main_loop(__attribute__((unused)) void *dummy)
 			if (nb_rx == 0)
 				continue;
 
-#if defined(__SSE4_1__)
+#if defined RTE_ARCH_X86 || defined RTE_MACHINE_CPUFLAG_NEON
 			l3fwd_em_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
 #else
 			l3fwd_em_no_opt_send_packets(nb_rx, pkts_burst,
 							portid, qconf);
-#endif /* __SSE_4_1__ */
+#endif
 		}
 	}
 

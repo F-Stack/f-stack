@@ -40,6 +40,7 @@ CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
 LDLIBS += -lm
+LDLIBS += -lrte_eal
 
 EXPORT_MAP := rte_meter_version.map
 
@@ -52,8 +53,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_METER) := rte_meter.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_METER)-include := rte_meter.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_METER) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

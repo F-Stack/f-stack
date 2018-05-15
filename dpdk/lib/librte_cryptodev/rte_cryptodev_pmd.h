@@ -46,96 +46,45 @@ extern "C" {
 
 #include <string.h>
 
+#include <rte_config.h>
 #include <rte_dev.h>
-#include <rte_pci.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_log.h>
+#include <rte_common.h>
 
 #include "rte_crypto.h"
 #include "rte_cryptodev.h"
 
 
-#ifdef RTE_LIBRTE_CRYPTODEV_DEBUG
-#define RTE_PMD_DEBUG_TRACE(...) \
-	rte_pmd_debug_trace(__func__, __VA_ARGS__)
-#else
-#define RTE_PMD_DEBUG_TRACE(fmt, args...)
-#endif
+#define RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS	8
+#define RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS	2048
 
-struct rte_cryptodev_session {
-	struct {
-		uint8_t dev_id;
-		enum rte_cryptodev_type type;
-		struct rte_mempool *mp;
-	} __rte_aligned(8);
+#define RTE_CRYPTODEV_PMD_NAME_ARG			("name")
+#define RTE_CRYPTODEV_PMD_MAX_NB_QP_ARG			("max_nb_queue_pairs")
+#define RTE_CRYPTODEV_PMD_MAX_NB_SESS_ARG		("max_nb_sessions")
+#define RTE_CRYPTODEV_PMD_SOCKET_ID_ARG			("socket_id")
 
-	char _private[0];
+
+static const char * const cryptodev_pmd_valid_params[] = {
+	RTE_CRYPTODEV_PMD_NAME_ARG,
+	RTE_CRYPTODEV_PMD_MAX_NB_QP_ARG,
+	RTE_CRYPTODEV_PMD_MAX_NB_SESS_ARG,
+	RTE_CRYPTODEV_PMD_SOCKET_ID_ARG
 };
 
-struct rte_cryptodev_driver;
-
 /**
- * Initialisation function of a crypto driver invoked for each matching
- * crypto PCI device detected during the PCI probing phase.
- *
- * @param	drv	The pointer to the [matching] crypto driver structure
- *			supplied by the PMD when it registered itself.
- * @param	dev	The dev pointer is the address of the *rte_cryptodev*
- *			structure associated with the matching device and which
- *			has been [automatically] allocated in the
- *			*rte_crypto_devices* array.
- *
- * @return
- *   - 0: Success, the device is properly initialised by the driver.
- *        In particular, the driver MUST have set up the *dev_ops* pointer
- *        of the *dev* structure.
- *   - <0: Error code of the device initialisation failure.
+ * @internal
+ * Initialisation parameters for crypto devices
  */
-typedef int (*cryptodev_init_t)(struct rte_cryptodev_driver *drv,
-		struct rte_cryptodev *dev);
-
-/**
- * Finalisation function of a driver invoked for each matching
- * PCI device detected during the PCI closing phase.
- *
- * @param	drv	The pointer to the [matching] driver structure supplied
- *			by the PMD when it registered itself.
- * @param	dev	The dev pointer is the address of the *rte_cryptodev*
- *			structure associated with the matching device and which
- *			has been [automatically] allocated in the
- *			*rte_crypto_devices* array.
- *
- *  * @return
- *   - 0: Success, the device is properly finalised by the driver.
- *        In particular, the driver MUST free the *dev_ops* pointer
- *        of the *dev* structure.
- *   - <0: Error code of the device initialisation failure.
- */
-typedef int (*cryptodev_uninit_t)(const struct rte_cryptodev_driver  *drv,
-				struct rte_cryptodev *dev);
-
-/**
- * The structure associated with a PMD driver.
- *
- * Each driver acts as a PCI driver and is represented by a generic
- * *crypto_driver* structure that holds:
- *
- * - An *rte_pci_driver* structure (which must be the first field).
- *
- * - The *cryptodev_init* function invoked for each matching PCI device.
- *
- * - The size of the private data to allocate for each matching device.
- */
-struct rte_cryptodev_driver {
-	struct rte_pci_driver pci_drv;	/**< The PMD is also a PCI driver. */
-	unsigned dev_private_size;	/**< Size of device private data. */
-
-	cryptodev_init_t cryptodev_init;	/**< Device init function. */
-	cryptodev_uninit_t cryptodev_uninit;	/**< Device uninit function. */
+struct rte_cryptodev_pmd_init_params {
+	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
+	size_t private_data_size;
+	int socket_id;
+	unsigned int max_nb_queue_pairs;
+	unsigned int max_nb_sessions;
 };
-
 
 /** Global structure used for maintaining state of allocated crypto devices */
 struct rte_cryptodev_global {
@@ -144,6 +93,13 @@ struct rte_cryptodev_global {
 	/**< Device private data */
 	uint8_t nb_devs;		/**< Number of devices found */
 	uint8_t max_devs;		/**< Max number of devices */
+};
+
+/* Cryptodev driver, containing the driver ID */
+struct cryptodev_driver {
+	TAILQ_ENTRY(cryptodev_driver) next; /**< Next in list. */
+	const struct rte_driver *driver;
+	uint8_t id;
 };
 
 /** pointer to global crypto devices data structure. */
@@ -158,11 +114,8 @@ extern struct rte_cryptodev_global *rte_cryptodev_globals;
  * @return
  *   - The rte_cryptodev structure pointer for the given device ID.
  */
-static inline struct rte_cryptodev *
-rte_cryptodev_pmd_get_dev(uint8_t dev_id)
-{
-	return &rte_cryptodev_globals->devs[dev_id];
-}
+struct rte_cryptodev *
+rte_cryptodev_pmd_get_dev(uint8_t dev_id);
 
 /**
  * Get the rte_cryptodev structure device pointer for the named device.
@@ -172,24 +125,8 @@ rte_cryptodev_pmd_get_dev(uint8_t dev_id)
  * @return
  *   - The rte_cryptodev structure pointer for the given device ID.
  */
-static inline struct rte_cryptodev *
-rte_cryptodev_pmd_get_named_dev(const char *name)
-{
-	struct rte_cryptodev *dev;
-	unsigned i;
-
-	if (name == NULL)
-		return NULL;
-
-	for (i = 0, dev = &rte_cryptodev_globals->devs[i];
-			i < rte_cryptodev_globals->max_devs; i++) {
-		if ((dev->attached == RTE_CRYPTODEV_ATTACHED) &&
-				(strcmp(dev->data->name, name) == 0))
-			return dev;
-	}
-
-	return NULL;
-}
+struct rte_cryptodev *
+rte_cryptodev_pmd_get_named_dev(const char *name);
 
 /**
  * Validate if the crypto device index is valid attached crypto device.
@@ -199,20 +136,8 @@ rte_cryptodev_pmd_get_named_dev(const char *name)
  * @return
  *   - If the device index is valid (1) or not (0).
  */
-static inline unsigned
-rte_cryptodev_pmd_is_valid_dev(uint8_t dev_id)
-{
-	struct rte_cryptodev *dev = NULL;
-
-	if (dev_id >= rte_cryptodev_globals->nb_devs)
-		return 0;
-
-	dev = rte_cryptodev_pmd_get_dev(dev_id);
-	if (dev->attached != RTE_CRYPTODEV_ATTACHED)
-		return 0;
-	else
-		return 1;
-}
+unsigned int
+rte_cryptodev_pmd_is_valid_dev(uint8_t dev_id);
 
 /**
  * The pool of rte_cryptodev structures.
@@ -230,10 +155,12 @@ extern struct rte_cryptodev *rte_cryptodevs;
  *	Function used to configure device.
  *
  * @param	dev	Crypto device pointer
+ *		config	Crypto device configurations
  *
  * @return	Returns 0 on success
  */
-typedef int (*cryptodev_configure_t)(struct rte_cryptodev *dev);
+typedef int (*cryptodev_configure_t)(struct rte_cryptodev *dev,
+		struct rte_cryptodev_config *config);
 
 /**
  * Function used to start a configured device.
@@ -317,12 +244,13 @@ typedef int (*cryptodev_queue_pair_stop_t)(struct rte_cryptodev *dev,
  * @param	qp_id		Queue Pair Index
  * @param	qp_conf		Queue configuration structure
  * @param	socket_id	Socket Index
+ * @param	session_pool	Pointer to device session mempool
  *
  * @return	Returns 0 on success.
  */
 typedef int (*cryptodev_queue_pair_setup_t)(struct rte_cryptodev *dev,
 		uint16_t qp_id,	const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id);
+		int socket_id, struct rte_mempool *session_pool);
 
 /**
  * Release memory resources allocated by given queue pair.
@@ -376,40 +304,58 @@ typedef unsigned (*cryptodev_sym_get_session_private_size_t)(
 		struct rte_cryptodev *dev);
 
 /**
- * Initialize a Crypto session on a device.
- *
- * @param	dev		Crypto device pointer
- * @param	xform		Single or chain of crypto xforms
- * @param	priv_sess	Pointer to cryptodev's private session structure
- *
- * @return
- *  - Returns private session structure on success.
- *  - Returns NULL on failure.
- */
-typedef void (*cryptodev_sym_initialize_session_t)(struct rte_mempool *mempool,
-		void *session_private);
-
-/**
  * Configure a Crypto session on a device.
  *
  * @param	dev		Crypto device pointer
  * @param	xform		Single or chain of crypto xforms
  * @param	priv_sess	Pointer to cryptodev's private session structure
+ * @param	mp		Mempool where the private session is allocated
  *
  * @return
- *  - Returns private session structure on success.
- *  - Returns NULL on failure.
+ *  - Returns 0 if private session structure have been created successfully.
+ *  - Returns -EINVAL if input parameters are invalid.
+ *  - Returns -ENOTSUP if crypto device does not support the crypto transform.
+ *  - Returns -ENOMEM if the private session could not be allocated.
  */
-typedef void * (*cryptodev_sym_configure_session_t)(struct rte_cryptodev *dev,
-		struct rte_crypto_sym_xform *xform, void *session_private);
+typedef int (*cryptodev_sym_configure_session_t)(struct rte_cryptodev *dev,
+		struct rte_crypto_sym_xform *xform,
+		struct rte_cryptodev_sym_session *session,
+		struct rte_mempool *mp);
 
 /**
- * Free Crypto session.
- * @param	session		Cryptodev session structure to free
+ * Free driver private session data.
+ *
+ * @param	dev		Crypto device pointer
+ * @param	sess		Cryptodev session structure
  */
 typedef void (*cryptodev_sym_free_session_t)(struct rte_cryptodev *dev,
-		void *session_private);
+		struct rte_cryptodev_sym_session *sess);
 
+/**
+ * Optional API for drivers to attach sessions with queue pair.
+ * @param	dev		Crypto device pointer
+ * @param	qp_id		queue pair id for attaching session
+ * @param	priv_sess       Pointer to cryptodev's private session structure
+ * @return
+ *  - Return 0 on success
+ */
+typedef int (*cryptodev_sym_queue_pair_attach_session_t)(
+		  struct rte_cryptodev *dev,
+		  uint16_t qp_id,
+		  void *session_private);
+
+/**
+ * Optional API for drivers to detach sessions from queue pair.
+ * @param	dev		Crypto device pointer
+ * @param	qp_id		queue pair id for detaching session
+ * @param	priv_sess       Pointer to cryptodev's private session structure
+ * @return
+ *  - Return 0 on success
+ */
+typedef int (*cryptodev_sym_queue_pair_detach_session_t)(
+		  struct rte_cryptodev *dev,
+		  uint16_t qp_id,
+		  void *session_private);
 
 /** Crypto device operations function pointer table */
 struct rte_cryptodev_ops {
@@ -438,12 +384,14 @@ struct rte_cryptodev_ops {
 
 	cryptodev_sym_get_session_private_size_t session_get_size;
 	/**< Return private session. */
-	cryptodev_sym_initialize_session_t session_initialize;
-	/**< Initialization function for private session data */
 	cryptodev_sym_configure_session_t session_configure;
 	/**< Configure a Crypto session. */
 	cryptodev_sym_free_session_t session_clear;
 	/**< Clear a Crypto sessions private data. */
+	cryptodev_sym_queue_pair_attach_session_t qp_attach_session;
+	/**< Attach session to queue pair. */
+	cryptodev_sym_queue_pair_detach_session_t qp_detach_session;
+	/**< Detach session from queue pair. */
 };
 
 
@@ -454,30 +402,12 @@ struct rte_cryptodev_ops {
  * to that slot for the driver to use.
  *
  * @param	name		Unique identifier name for each device
- * @param	type		Device type of this Crypto device
  * @param	socket_id	Socket to allocate resources on.
  * @return
  *   - Slot in the rte_dev_devices array for a new device;
  */
 struct rte_cryptodev *
-rte_cryptodev_pmd_allocate(const char *name, enum pmd_type type, int socket_id);
-
-/**
- * Creates a new virtual crypto device and returns the pointer
- * to that device.
- *
- * @param	name			PMD type name
- * @param	dev_private_size	Size of crypto PMDs private data
- * @param	socket_id		Socket to allocate resources on.
- *
- * @return
- *   - Cryptodev pointer if device is successfully created.
- *   - NULL if device cannot be created.
- */
-struct rte_cryptodev *
-rte_cryptodev_pmd_virtual_dev_init(const char *name, size_t dev_private_size,
-		int socket_id);
-
+rte_cryptodev_pmd_allocate(const char *name, int socket_id);
 
 /**
  * Function for internal use by dummy drivers primarily, e.g. ring-based
@@ -494,33 +424,60 @@ rte_cryptodev_pmd_release_device(struct rte_cryptodev *cryptodev);
 
 
 /**
- * Register a Crypto [Poll Mode] driver.
+ * @internal
  *
- * Function invoked by the initialization function of a Crypto driver
- * to simultaneously register itself as Crypto Poll Mode Driver and to either:
+ * PMD assist function to parse initialisation arguments for crypto driver
+ * when creating a new crypto PMD device instance.
  *
- *	a - register itself as PCI driver if the crypto device is a physical
- *		device, by invoking the rte_eal_pci_register() function to
- *		register the *pci_drv* structure embedded in the *crypto_drv*
- *		structure, after having stored the address of the
- *		rte_cryptodev_init() function in the *devinit* field of the
- *		*pci_drv* structure.
+ * PMD driver should set default values for that PMD before calling function,
+ * these default values will be over-written with successfully parsed values
+ * from args string.
  *
- *		During the PCI probing phase, the rte_cryptodev_init()
- *		function is invoked for each PCI [device] matching the
- *		embedded PCI identifiers provided by the driver.
+ * @param	params	parsed PMD initialisation parameters
+ * @param	args	input argument string to parse
  *
- *	b, complete the initialization sequence if the device is a virtual
- *		device by calling the rte_cryptodev_init() directly passing a
- *		NULL parameter for the rte_pci_device structure.
- *
- *   @param crypto_drv	crypto_driver structure associated with the crypto
- *					driver.
- *   @param type		pmd type
+ * @return
+ *  - 0 on success
+ *  - errno on failure
  */
-extern int
-rte_cryptodev_pmd_driver_register(struct rte_cryptodev_driver *crypto_drv,
-		enum pmd_type type);
+int
+rte_cryptodev_pmd_parse_input_args(
+		struct rte_cryptodev_pmd_init_params *params,
+		const char *args);
+
+/**
+ * @internal
+ *
+ * PMD assist function to provide boiler plate code for crypto driver to create
+ * and allocate resources for a new crypto PMD device instance.
+ *
+ * @param	name	crypto device name.
+ * @param	device	base device instance
+ * @param	params	PMD initialisation parameters
+ *
+ * @return
+ *  - crypto device instance on success
+ *  - NULL on creation failure
+ */
+struct rte_cryptodev *
+rte_cryptodev_pmd_create(const char *name,
+		struct rte_device *device,
+		struct rte_cryptodev_pmd_init_params *params);
+
+/**
+ * @internal
+ *
+ * PMD assist function to provide boiler plate code for crypto driver to
+ * destroy and free resources associated with a crypto PMD device instance.
+ *
+ * @param	cryptodev	crypto device handle.
+ *
+ * @return
+ *  - 0 on success
+ *  - errno on failure
+ */
+int
+rte_cryptodev_pmd_destroy(struct rte_cryptodev *cryptodev);
 
 /**
  * Executes all the user application registered callbacks for the specific
@@ -535,6 +492,48 @@ rte_cryptodev_pmd_driver_register(struct rte_cryptodev_driver *crypto_drv,
 void rte_cryptodev_pmd_callback_process(struct rte_cryptodev *dev,
 				enum rte_cryptodev_event_type event);
 
+/**
+ * @internal
+ * Create unique device name
+ */
+int
+rte_cryptodev_pmd_create_dev_name(char *name, const char *dev_name_prefix);
+
+/**
+ * @internal
+ * Allocate Cryptodev driver.
+ *
+ * @param crypto_drv
+ *   Pointer to cryptodev_driver.
+ * @param drv
+ *   Pointer to rte_driver.
+ *
+ * @return
+ *  The driver type identifier
+ */
+uint8_t rte_cryptodev_allocate_driver(struct cryptodev_driver *crypto_drv,
+		const struct rte_driver *drv);
+
+
+#define RTE_PMD_REGISTER_CRYPTO_DRIVER(crypto_drv, drv, driver_id)\
+RTE_INIT(init_ ##driver_id);\
+static void init_ ##driver_id(void)\
+{\
+	driver_id = rte_cryptodev_allocate_driver(&crypto_drv, &(drv).driver);\
+}
+
+static inline void *
+get_session_private_data(const struct rte_cryptodev_sym_session *sess,
+		uint8_t driver_id) {
+	return sess->sess_private_data[driver_id];
+}
+
+static inline void
+set_session_private_data(struct rte_cryptodev_sym_session *sess,
+		uint8_t driver_id, void *private_data)
+{
+	sess->sess_private_data[driver_id] = private_data;
+}
 
 #ifdef __cplusplus
 }

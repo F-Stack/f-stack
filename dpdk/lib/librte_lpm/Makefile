@@ -36,6 +36,7 @@ LIB = librte_lpm.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR)
+LDLIBS += -lrte_eal
 
 EXPORT_MAP := rte_lpm_version.map
 
@@ -51,9 +52,8 @@ ifneq ($(filter y,$(CONFIG_RTE_ARCH_ARM) $(CONFIG_RTE_ARCH_ARM64)),)
 SYMLINK-$(CONFIG_RTE_LIBRTE_LPM)-include += rte_lpm_neon.h
 else ifeq ($(CONFIG_RTE_ARCH_X86),y)
 SYMLINK-$(CONFIG_RTE_LIBRTE_LPM)-include += rte_lpm_sse.h
+else ifeq ($(CONFIG_RTE_ARCH_PPC_64),y)
+SYMLINK-$(CONFIG_RTE_LIBRTE_LPM)-include += rte_lpm_altivec.h
 endif
-
-# this lib needs eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_LPM) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

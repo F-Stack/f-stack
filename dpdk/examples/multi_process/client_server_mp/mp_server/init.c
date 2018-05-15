@@ -56,7 +56,6 @@
 #include <rte_memcpy.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
@@ -114,7 +113,7 @@ init_mbuf_pools(void)
  * - start the port and report its status to stdout
  */
 static int
-init_port(uint8_t port_num)
+init_port(uint16_t port_num)
 {
 	/* for port configuration all features are off by default */
 	const struct rte_eth_conf port_conf = {
@@ -123,19 +122,24 @@ init_port(uint8_t port_num)
 		}
 	};
 	const uint16_t rx_rings = 1, tx_rings = num_clients;
-	const uint16_t rx_ring_size = RTE_MP_RX_DESC_DEFAULT;
-	const uint16_t tx_ring_size = RTE_MP_TX_DESC_DEFAULT;
+	uint16_t rx_ring_size = RTE_MP_RX_DESC_DEFAULT;
+	uint16_t tx_ring_size = RTE_MP_TX_DESC_DEFAULT;
 
 	uint16_t q;
 	int retval;
 
-	printf("Port %u init ... ", (unsigned)port_num);
+	printf("Port %u init ... ", port_num);
 	fflush(stdout);
 
 	/* Standard DPDK port initialisation - config port, then set up
 	 * rx and tx rings */
 	if ((retval = rte_eth_dev_configure(port_num, rx_rings, tx_rings,
 		&port_conf)) != 0)
+		return retval;
+
+	retval = rte_eth_dev_adjust_nb_rx_tx_desc(port_num, &rx_ring_size,
+			&tx_ring_size);
+	if (retval != 0)
 		return retval;
 
 	for (q = 0; q < rx_rings; q++) {
@@ -195,11 +199,12 @@ init_shm_rings(void)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
-	uint8_t portid, count, all_ports_up, print_flag = 0;
+	uint16_t portid;
+	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 
 	printf("\nChecking link status");
@@ -257,7 +262,7 @@ init(int argc, char *argv[])
 {
 	int retval;
 	const struct rte_memzone *mz;
-	uint8_t i, total_ports;
+	uint16_t i, total_ports;
 
 	/* init EAL, parsing EAL args */
 	retval = rte_eal_init(argc, argv);

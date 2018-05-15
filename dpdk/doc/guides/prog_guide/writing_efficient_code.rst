@@ -105,6 +105,21 @@ meaning that if all memory access operations are done on the first channel only,
 
 By default, the  :ref:`Mempool Library <Mempool_Library>` spreads the addresses of objects among memory channels.
 
+Locking memory pages
+~~~~~~~~~~~~~~~~~~~~
+
+The underlying operating system is allowed to load/unload memory pages at its own discretion.
+These page loads could impact the performance, as the process is on hold when the kernel fetches them.
+
+To avoid these you could pre-load, and lock them into memory with the ``mlockall()`` call.
+
+.. code-block:: c
+
+    if (mlockall(MCL_CURRENT | MCL_FUTURE)) {
+        RTE_LOG(NOTICE, USER1, "mlockall() failed with error \"%s\"\n",
+                strerror(errno));
+    }
+
 Communication Between lcores
 ----------------------------
 
@@ -124,7 +139,7 @@ The code algorithm that dequeues messages may be something similar to the follow
 
     while (1) {
         /* Process as many elements as can be dequeued. */
-        count = rte_ring_dequeue_burst(ring, obj_table, MAX_BULK);
+        count = rte_ring_dequeue_burst(ring, obj_table, MAX_BULK, NULL);
         if (unlikely(count == 0))
             continue;
 

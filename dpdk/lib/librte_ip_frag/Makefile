@@ -36,8 +36,10 @@ LIB = librte_ip_frag.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR)
+LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ethdev
+LDLIBS += -lrte_hash
 
-EXPORT_MAP := rte_ipfrag_version.map
+EXPORT_MAP := rte_ip_frag_version.map
 
 LIBABIVER := 1
 
@@ -51,10 +53,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_IP_FRAG) += ip_frag_internal.c
 
 # install this header file
 SYMLINK-$(CONFIG_RTE_LIBRTE_IP_FRAG)-include += rte_ip_frag.h
-
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IP_FRAG) += lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IP_FRAG) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IP_FRAG) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IP_FRAG) += lib/librte_mempool
 
 include $(RTE_SDK)/mk/rte.lib.mk

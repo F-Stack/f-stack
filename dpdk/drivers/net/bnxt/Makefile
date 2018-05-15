@@ -38,10 +38,15 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_bnxt.a
 
-LIBABIVER := 1
+EXPORT_MAP := rte_pmd_bnxt_version.map
+
+LIBABIVER := 2
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
+LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_bus_pci
 
 EXPORT_MAP := rte_pmd_bnxt_version.map
 
@@ -59,16 +64,13 @@ SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_stats.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_txq.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_txr.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_vnic.c
+SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_irq.c
+SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += rte_pmd_bnxt.c
 
 #
 # Export include files
 #
 SYMLINK-y-include +=
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_eal
+SYMLINK-$(CONFIG_RTE_LIBRTE_BNXT_PMD)-include := rte_pmd_bnxt.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

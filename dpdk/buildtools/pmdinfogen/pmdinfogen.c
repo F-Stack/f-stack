@@ -158,7 +158,8 @@ static int parse_elf(struct elf_info *info, const char *filename)
 		 * There are more than 64k sections,
 		 * read count from .sh_size.
 		 */
-		info->num_sections = TO_NATIVE(endian, 32, sechdrs[0].sh_size);
+		info->num_sections =
+			TO_NATIVE(endian, ADDR_SIZE, sechdrs[0].sh_size);
 	} else {
 		info->num_sections = hdr->e_shnum;
 	}
@@ -181,7 +182,7 @@ static int parse_elf(struct elf_info *info, const char *filename)
 		sechdrs[i].sh_offset    =
 			TO_NATIVE(endian, ADDR_SIZE, sechdrs[i].sh_offset);
 		sechdrs[i].sh_size      =
-			TO_NATIVE(endian, 32, sechdrs[i].sh_size);
+			TO_NATIVE(endian, ADDR_SIZE, sechdrs[i].sh_size);
 		sechdrs[i].sh_link      =
 			TO_NATIVE(endian, 32, sechdrs[i].sh_link);
 		sechdrs[i].sh_info      =
@@ -226,13 +227,14 @@ static int parse_elf(struct elf_info *info, const char *filename)
 	}
 	if (!info->symtab_start)
 		fprintf(stderr, "%s has no symtab?\n", filename);
-
-	/* Fix endianness in symbols */
-	for (sym = info->symtab_start; sym < info->symtab_stop; sym++) {
-		sym->st_shndx = TO_NATIVE(endian, 16, sym->st_shndx);
-		sym->st_name  = TO_NATIVE(endian, 32, sym->st_name);
-		sym->st_value = TO_NATIVE(endian, ADDR_SIZE, sym->st_value);
-		sym->st_size  = TO_NATIVE(endian, ADDR_SIZE, sym->st_size);
+	else {
+		/* Fix endianness in symbols */
+		for (sym = info->symtab_start; sym < info->symtab_stop; sym++) {
+			sym->st_shndx = TO_NATIVE(endian, 16, sym->st_shndx);
+			sym->st_name  = TO_NATIVE(endian, 32, sym->st_name);
+			sym->st_value = TO_NATIVE(endian, ADDR_SIZE, sym->st_value);
+			sym->st_size  = TO_NATIVE(endian, ADDR_SIZE, sym->st_size);
+		}
 	}
 
 	if (symtab_shndx_idx != ~0U) {
@@ -269,6 +271,7 @@ struct opt_tag {
 
 static const struct opt_tag opt_tags[] = {
 	{"_param_string_export", "params"},
+	{"_kmod_dep_export", "kmod"},
 };
 
 static int complete_pmd_entry(struct elf_info *info, struct pmd_driver *drv)
@@ -325,6 +328,10 @@ static int locate_pmd_entries(struct elf_info *info)
 
 	do {
 		new = calloc(sizeof(struct pmd_driver), 1);
+		if (new == NULL) {
+			fprintf(stderr, "Failed to calloc memory\n");
+			return -1;
+		}
 		new->name_sym = find_sym_in_symtab(info, "this_pmd_name", last);
 		last = new->name_sym;
 		if (!new->name_sym)
@@ -395,7 +402,7 @@ static void output_pmd_info_string(struct elf_info *info, char *outfile)
 
 int main(int argc, char **argv)
 {
-	struct elf_info info;
+	struct elf_info info = {0};
 	int rc = 1;
 
 	if (argc < 3) {
@@ -406,7 +413,8 @@ int main(int argc, char **argv)
 	}
 	parse_elf(&info, argv[1]);
 
-	locate_pmd_entries(&info);
+	if (locate_pmd_entries(&info) < 0)
+		exit(1);
 
 	if (info.drivers) {
 		output_pmd_info_string(&info, argv[2]);

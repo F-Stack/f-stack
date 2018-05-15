@@ -48,6 +48,21 @@
 
 #define POSIX_ERRNO(x)  (x)
 
+/* some releases of FreeBSD 10, e.g. 10.0, don't have CPU_COUNT macro */
+#ifndef CPU_COUNT
+#define CPU_COUNT(x) __cpu_count(x)
+
+static inline unsigned int
+__cpu_count(const rte_cpuset_t *cpuset)
+{
+	unsigned int i, count = 0;
+	for (i = 0; i < RTE_MAX_LCORE; i++)
+		if (CPU_ISSET(i, cpuset))
+			count++;
+	return count;
+}
+#endif
+
 /*
  * this flag determines at run time if we override pthread
  * calls and map then to equivalent lthread calls
@@ -159,7 +174,7 @@ int (*f_pthread_setschedparam)
 int (*f_pthread_yield)
 	(void);
 int (*f_pthread_setaffinity_np)
-	(pthread_t thread, size_t cpusetsize, const cpu_set_t *cpuset);
+	(pthread_t thread, size_t cpusetsize, const rte_cpuset_t *cpuset);
 int (*f_nanosleep)
 	(const struct timespec *req, struct timespec *rem);
 } _sys_pthread_funcs = {
@@ -187,10 +202,7 @@ static void *__libc_dl_handle = RTLD_NEXT;
  * The constructor function initialises the
  * function pointers for pthread library functions
  */
-void
-pthread_intercept_ctor(void)__attribute__((constructor));
-void
-pthread_intercept_ctor(void)
+RTE_INIT(pthread_intercept_ctor)
 {
 	override = 0;
 	/*
@@ -390,11 +402,11 @@ pthread_create(pthread_t *__restrict tid,
 
 		if (attr != NULL) {
 			/* determine CPU being requested */
-			cpu_set_t cpuset;
+			rte_cpuset_t cpuset;
 
 			CPU_ZERO(&cpuset);
 			pthread_attr_getaffinity_np(attr,
-						sizeof(cpu_set_t),
+						sizeof(rte_cpuset_t),
 						&cpuset);
 
 			if (CPU_COUNT(&cpuset) != 1)
@@ -576,15 +588,26 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *a)
 	return _sys_pthread_funcs.f_pthread_rwlock_wrlock(a);
 }
 
-int pthread_yield(void)
+#ifdef RTE_EXEC_ENV_LINUXAPP
+int
+pthread_yield(void)
 {
 	if (override) {
 		lthread_yield();
 		return 0;
 	}
 	return _sys_pthread_funcs.f_pthread_yield();
-
 }
+#else
+void
+pthread_yield(void)
+{
+	if (override)
+		lthread_yield();
+	else
+		_sys_pthread_funcs.f_pthread_yield();
+}
+#endif
 
 pthread_t pthread_self(void)
 {
@@ -686,7 +709,7 @@ int nanosleep(const struct timespec *req, struct timespec *rem)
 
 int
 pthread_setaffinity_np(pthread_t thread, size_t cpusetsize,
-		       const cpu_set_t *cpuset)
+		       const rte_cpuset_t *cpuset)
 {
 	if (override) {
 		/* we only allow affinity with a single CPU */

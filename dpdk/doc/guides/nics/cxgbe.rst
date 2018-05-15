@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright 2015 Chelsio Communications.
+    Copyright 2015-2017 Chelsio Communications.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,8 +32,8 @@ CXGBE Poll Mode Driver
 ======================
 
 The CXGBE PMD (**librte_pmd_cxgbe**) provides poll mode driver support
-for **Chelsio T5** 10/40 Gbps family of adapters. CXGBE PMD has support
-for the latest Linux and FreeBSD operating systems.
+for **Chelsio Terminator** 10/25/40/100 Gbps family of adapters. CXGBE PMD
+has support for the latest Linux and FreeBSD operating systems.
 
 More information can be found at `Chelsio Communications Official Website
 <http://www.chelsio.com>`_.
@@ -55,9 +55,10 @@ CXGBE PMD has support for:
 Limitations
 -----------
 
-The Chelsio T5 devices provide two/four ports but expose a single PCI bus
-address, thus, librte_pmd_cxgbe registers itself as a
-PCI driver that allocates one Ethernet device per detected port.
+The Chelsio Terminator series of devices provide two/four ports but
+expose a single PCI bus address, thus, librte_pmd_cxgbe registers
+itself as a PCI driver that allocates one Ethernet device per detected
+port.
 
 For this reason, one cannot whitelist/blacklist a single port without
 whitelisting/blacklisting the other ports on the same device.
@@ -70,10 +71,16 @@ Supported Chelsio T5 NICs
 - 40G NICs: T580-CR, T580-LP-CR, T580-SO-CR
 - Other T5 NICs: T522-CR
 
+Supported Chelsio T6 NICs
+-------------------------
+
+- 25G NICs: T6425-CR, T6225-CR, T6225-LL-CR, T6225-SO-CR
+- 100G NICs: T62100-CR, T62100-LP-CR, T62100-SO-CR
+
 Prerequisites
 -------------
 
-- Requires firmware version **1.13.32.0** and higher. Visit
+- Requires firmware version **1.16.43.0** and higher. Visit
   `Chelsio Download Center <http://service.chelsio.com>`_ to get latest firmware
   bundled with the latest Chelsio Unified Wire package.
 
@@ -123,26 +130,17 @@ enabling debugging options may affect system performance.
 
   Toggle display of receiving data path run-time check messages.
 
+- ``CONFIG_RTE_LIBRTE_CXGBE_TPUT`` (default **y**)
+
+  Toggle behaviour to prefer Throughput or Latency.
+
 .. _driver-compilation:
 
-Driver Compilation
-~~~~~~~~~~~~~~~~~~
+Driver compilation and testing
+------------------------------
 
-To compile CXGBE PMD for Linux x86_64 gcc target, run the following "make"
-command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   make config T=x86_64-native-linuxapp-gcc install
-
-To compile CXGBE PMD for FreeBSD x86_64 clang target, run the following "gmake"
-command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   gmake config T=x86_64-native-bsdapp-clang install
+Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
+for details.
 
 Linux
 -----
@@ -210,20 +208,13 @@ Unified Wire package for Linux operating system are as follows:
 
    .. code-block:: console
 
-      firmware-version: 1.13.32.0, TP 0.1.4.8
+      firmware-version: 1.16.43.0, TP 0.1.4.9
 
 Running testpmd
 ~~~~~~~~~~~~~~~
 
-This section demonstrates how to launch **testpmd** with Chelsio T5
+This section demonstrates how to launch **testpmd** with Chelsio
 devices managed by librte_pmd_cxgbe in Linux operating system.
-
-#. Change to DPDK source directory where the target has been compiled in
-   section :ref:`driver-compilation`:
-
-   .. code-block:: console
-
-      cd <DPDK-source-directory>
 
 #. Load the kernel module:
 
@@ -246,7 +237,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
 
    .. note::
 
-      Both the interfaces of a Chelsio T5 2-port adapter are bound to the
+      Both the interfaces of a Chelsio 2-port adapter are bound to the
       same PCI bus address.
 
 #. Unload the kernel module:
@@ -255,59 +246,15 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
 
       modprobe -ar cxgb4 csiostor
 
-#. Request huge pages:
+#. Running testpmd
 
-   .. code-block:: console
-
-      echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages/nr_hugepages
-
-#. Mount huge pages:
-
-   .. code-block:: console
-
-      mkdir /mnt/huge
-      mount -t hugetlbfs nodev /mnt/huge
-
-#. Load igb_uio or vfio-pci driver:
-
-   .. code-block:: console
-
-      insmod ./x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-
-   or
-
-   .. code-block:: console
-
-      modprobe vfio-pci
-
-#. Bind the Chelsio T5 adapters to igb_uio or vfio-pci loaded in the previous
-   step:
-
-   .. code-block:: console
-
-      ./tools/dpdk-devbind.py --bind igb_uio 0000:02:00.4
-
-   or
-
-   Setup VFIO permissions for regular users and then bind to vfio-pci:
-
-   .. code-block:: console
-
-      sudo chmod a+x /dev/vfio
-
-      sudo chmod 0666 /dev/vfio/*
-
-      ./tools/dpdk-devbind.py --bind vfio-pci 0000:02:00.4
+   Follow instructions available in the document
+   :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
+   to run testpmd.
 
    .. note::
 
-      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio T5 NICs.
-
-#. Start testpmd with basic parameters:
-
-   .. code-block:: console
-
-      ./x86_64-native-linuxapp-gcc/app/testpmd -c 0xf -n 4 -w 0000:02:00.4 -- -i
+      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio NICs.
 
    Example output:
 
@@ -319,7 +266,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
       EAL:   PCI memory mapped at 0x7fd7c0200000
       EAL:   PCI memory mapped at 0x7fd77cdfd000
       EAL:   PCI memory mapped at 0x7fd7c10b7000
-      PMD: rte_cxgbe_pmd: fw: 1.13.32.0, TP: 0.1.4.8
+      PMD: rte_cxgbe_pmd: fw: 1.16.43.0, TP: 0.1.4.9
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)
@@ -334,10 +281,10 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
       Done
       testpmd>
 
-.. note::
+   .. note::
 
-   Flow control pause TX/RX is disabled by default and can be enabled via
-   testpmd. Refer section :ref:`flow-control` for more details.
+      Flow control pause TX/RX is disabled by default and can be enabled via
+      testpmd. Refer section :ref:`flow-control` for more details.
 
 FreeBSD
 -------
@@ -403,12 +350,12 @@ Unified Wire package for FreeBSD operating system are as follows:
 
    .. code-block:: console
 
-      dev.t5nex.0.firmware_version: 1.13.32.0
+      dev.t5nex.0.firmware_version: 1.16.43.0
 
 Running testpmd
 ~~~~~~~~~~~~~~~
 
-This section demonstrates how to launch **testpmd** with Chelsio T5
+This section demonstrates how to launch **testpmd** with Chelsio
 devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
 #. Change to DPDK source directory where the target has been compiled in
@@ -477,7 +424,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. note::
 
-      Both the interfaces of a Chelsio T5 2-port adapter are bound to the
+      Both the interfaces of a Chelsio 2-port adapter are bound to the
       same PCI bus address.
 
 #. Unload the kernel module:
@@ -497,7 +444,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. note::
 
-      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio T5 NICs.
+      Currently, CXGBE PMD only supports the binding of PF4 for Chelsio NICs.
 
 #. Load nic_uio kernel driver:
 
@@ -509,7 +456,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. code-block:: console
 
-      ./x86_64-native-bsdapp-clang/app/testpmd -c 0xf -n 4 -w 0000:02:00.4 -- -i
+      ./x86_64-native-bsdapp-clang/app/testpmd -l 0-3 -n 4 -w 0000:02:00.4 -- -i
 
    Example output:
 
@@ -521,7 +468,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
       EAL:   PCI memory mapped at 0x8007ec000
       EAL:   PCI memory mapped at 0x842800000
       EAL:   PCI memory mapped at 0x80086c000
-      PMD: rte_cxgbe_pmd: fw: 1.13.32.0, TP: 0.1.4.8
+      PMD: rte_cxgbe_pmd: fw: 1.16.43.0, TP: 0.1.4.9
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)

@@ -492,40 +492,16 @@ static void *pipeline_fc_init(struct pipeline_params *params,
 	/* Tables */
 	p->n_tables = 1;
 	{
-		struct rte_table_hash_key8_ext_params
-			table_hash_key8_params = {
-			.n_entries = p_fc->n_flows,
-			.n_entries_ext = p_fc->n_flows,
-			.signature_offset = p_fc->hash_offset,
-			.key_offset = p_fc->key_offset,
-			.f_hash = hash_func[(p_fc->key_size / 8) - 1],
-			.key_mask = (p_fc->key_mask_present) ?
-				p_fc->key_mask : NULL,
-			.seed = 0,
-		};
-
-		struct rte_table_hash_key16_ext_params
-			table_hash_key16_params = {
-			.n_entries = p_fc->n_flows,
-			.n_entries_ext = p_fc->n_flows,
-			.signature_offset = p_fc->hash_offset,
-			.key_offset = p_fc->key_offset,
-			.f_hash = hash_func[(p_fc->key_size / 8) - 1],
-			.key_mask = (p_fc->key_mask_present) ?
-				p_fc->key_mask : NULL,
-			.seed = 0,
-		};
-
-		struct rte_table_hash_ext_params
-			table_hash_params = {
+		struct rte_table_hash_params table_hash_params = {
+			.name = p->name,
 			.key_size = p_fc->key_size,
+			.key_offset = p_fc->key_offset,
+			.key_mask = (p_fc->key_mask_present) ?
+				p_fc->key_mask : NULL,
 			.n_keys = p_fc->n_flows,
-			.n_buckets = p_fc->n_flows / 4,
-			.n_buckets_ext = p_fc->n_flows / 4,
+			.n_buckets = rte_align32pow2(p_fc->n_flows / 4),
 			.f_hash = hash_func[(p_fc->key_size / 8) - 1],
 			.seed = 0,
-			.signature_offset = p_fc->hash_offset,
-			.key_offset = p_fc->key_offset,
 		};
 
 		struct rte_pipeline_table_params table_params = {
@@ -542,31 +518,18 @@ static void *pipeline_fc_init(struct pipeline_params *params,
 
 		switch (p_fc->key_size) {
 		case 8:
-			if (p_fc->hash_offset != 0) {
-				table_params.ops =
-					&rte_table_hash_key8_ext_ops;
-			} else {
-				table_params.ops =
-					&rte_table_hash_key8_ext_dosig_ops;
-			}
-			table_params.arg_create = &table_hash_key8_params;
+			table_params.ops = &rte_table_hash_key8_ext_ops;
 			break;
 
 		case 16:
-			if (p_fc->hash_offset != 0) {
-				table_params.ops =
-					&rte_table_hash_key16_ext_ops;
-			} else {
-				table_params.ops =
-					&rte_table_hash_key16_ext_dosig_ops;
-			}
-			table_params.arg_create = &table_hash_key16_params;
+			table_params.ops = &rte_table_hash_key16_ext_ops;
 			break;
 
 		default:
 			table_params.ops = &rte_table_hash_ext_ops;
-			table_params.arg_create = &table_hash_params;
 		}
+
+		table_params.arg_create = &table_hash_params;
 
 		status = rte_pipeline_table_create(p->p,
 			&table_params,

@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -50,6 +50,8 @@
 #include <rte_tcp.h>
 #include <rte_sctp.h>
 #include <rte_udp.h>
+#include <rte_ip.h>
+#include <rte_net.h>
 
 #include "i40e_logs.h"
 #include "base/i40e_prototype.h"
@@ -59,7 +61,6 @@
 
 #define DEFAULT_TX_RS_THRESH   32
 #define DEFAULT_TX_FREE_THRESH 32
-#define I40E_MAX_PKT_TYPE      256
 
 #define I40E_TX_MAX_BURST  32
 
@@ -73,11 +74,30 @@
 
 #define I40E_TXD_CMD (I40E_TX_DESC_CMD_EOP | I40E_TX_DESC_CMD_RS)
 
+#ifdef RTE_LIBRTE_IEEE1588
+#define I40E_TX_IEEE1588_TMST PKT_TX_IEEE1588_TMST
+#else
+#define I40E_TX_IEEE1588_TMST 0
+#endif
+
 #define I40E_TX_CKSUM_OFFLOAD_MASK (		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
 		PKT_TX_TCP_SEG |		 \
 		PKT_TX_OUTER_IP_CKSUM)
+
+#define I40E_TX_OFFLOAD_MASK (  \
+		PKT_TX_IP_CKSUM |       \
+		PKT_TX_L4_MASK |        \
+		PKT_TX_OUTER_IP_CKSUM | \
+		PKT_TX_TCP_SEG |        \
+		PKT_TX_QINQ_PKT |       \
+		PKT_TX_VLAN_PKT |	\
+		PKT_TX_TUNNEL_MASK |	\
+		I40E_TX_IEEE1588_TMST)
+
+#define I40E_TX_OFFLOAD_NOTSUP_MASK \
+		(PKT_TX_OFFLOAD_MASK ^ I40E_TX_OFFLOAD_MASK)
 
 static uint16_t i40e_xmit_pkts_simple(void *tx_queue,
 				      struct rte_mbuf **tx_pkts,
@@ -88,7 +108,7 @@ i40e_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union i40e_rx_desc *rxdp)
 {
 	if (rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len) &
 		(1 << I40E_RX_DESC_STATUS_L2TAG1P_SHIFT)) {
-		mb->ol_flags |= PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED;
+		mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		mb->vlan_tci =
 			rte_le_to_cpu_16(rxdp->wb.qword0.lo_dword.l2tag1);
 		PMD_RX_LOG(DEBUG, "Descriptor l2tag1: %u",
@@ -138,12 +158,21 @@ i40e_rxd_error_to_pkt_flags(uint64_t qword)
 	uint64_t error_bits = (qword >> I40E_RXD_QW1_ERROR_SHIFT);
 
 #define I40E_RX_ERR_BITS 0x3f
-	if (likely((error_bits & I40E_RX_ERR_BITS) == 0))
+	if (likely((error_bits & I40E_RX_ERR_BITS) == 0)) {
+		flags |= (PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD);
 		return flags;
+	}
+
 	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_IPE_SHIFT)))
 		flags |= PKT_RX_IP_CKSUM_BAD;
+	else
+		flags |= PKT_RX_IP_CKSUM_GOOD;
+
 	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_L4E_SHIFT)))
 		flags |= PKT_RX_L4_CKSUM_BAD;
+	else
+		flags |= PKT_RX_L4_CKSUM_GOOD;
+
 	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_EIPE_SHIFT)))
 		flags |= PKT_RX_EIP_CKSUM_BAD;
 
@@ -173,569 +202,6 @@ i40e_get_iee15888_flags(struct rte_mbuf *mb, uint64_t qword)
 	return pkt_flags;
 }
 #endif
-
-/* For each value it means, datasheet of hardware can tell more details
- *
- * @note: fix i40e_dev_supported_ptypes_get() if any change here.
- */
-static inline uint32_t
-i40e_rxd_pkt_type_mapping(uint8_t ptype)
-{
-	static const uint32_t type_table[UINT8_MAX + 1] __rte_cache_aligned = {
-		/* L2 types */
-		/* [0] reserved */
-		[1] = RTE_PTYPE_L2_ETHER,
-		[2] = RTE_PTYPE_L2_ETHER_TIMESYNC,
-		/* [3] - [5] reserved */
-		[6] = RTE_PTYPE_L2_ETHER_LLDP,
-		/* [7] - [10] reserved */
-		[11] = RTE_PTYPE_L2_ETHER_ARP,
-		/* [12] - [21] reserved */
-
-		/* Non tunneled IPv4 */
-		[22] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_FRAG,
-		[23] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_NONFRAG,
-		[24] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_UDP,
-		/* [25] reserved */
-		[26] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_TCP,
-		[27] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_SCTP,
-		[28] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_ICMP,
-
-		/* IPv4 --> IPv4 */
-		[29] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[30] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[31] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [32] reserved */
-		[33] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[34] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[35] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> IPv6 */
-		[36] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[37] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[38] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [39] reserved */
-		[40] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[41] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[42] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN */
-		[43] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> IPv4 */
-		[44] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[45] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[46] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [47] reserved */
-		[48] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[49] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[50] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> IPv6 */
-		[51] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[52] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[53] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [54] reserved */
-		[55] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[56] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[57] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC */
-		[58] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC --> IPv4 */
-		[59] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[60] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[61] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [62] reserved */
-		[63] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[64] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[65] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC --> IPv6 */
-		[66] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[67] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[68] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [69] reserved */
-		[70] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[71] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[72] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC/VLAN */
-		[73] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv4 */
-		[74] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[75] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[76] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [77] reserved */
-		[78] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[79] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[80] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv6 */
-		[81] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[82] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[83] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [84] reserved */
-		[85] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[86] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[87] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* Non tunneled IPv6 */
-		[88] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_FRAG,
-		[89] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_NONFRAG,
-		[90] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_UDP,
-		/* [91] reserved */
-		[92] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_TCP,
-		[93] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_SCTP,
-		[94] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_ICMP,
-
-		/* IPv6 --> IPv4 */
-		[95] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[96] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[97] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [98] reserved */
-		[99] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[100] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[101] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> IPv6 */
-		[102] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[103] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[104] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [105] reserved */
-		[106] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[107] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[108] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_IP |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> GRE/Teredo/VXLAN */
-		[109] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> IPv4 */
-		[110] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[111] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[112] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [113] reserved */
-		[114] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[115] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[116] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> IPv6 */
-		[117] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[118] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[119] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [120] reserved */
-		[121] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[122] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[123] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC */
-		[124] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC --> IPv4 */
-		[125] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[126] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[127] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [128] reserved */
-		[129] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[130] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[131] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC --> IPv6 */
-		[132] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[133] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[134] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [135] reserved */
-		[136] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[137] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[138] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC/VLAN */
-		[139] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv4 */
-		[140] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[141] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[142] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [143] reserved */
-		[144] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[145] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[146] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv6 */
-		[147] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_FRAG,
-		[148] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_NONFRAG,
-		[149] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_UDP,
-		/* [150] reserved */
-		[151] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_TCP,
-		[152] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[153] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_ICMP,
-
-		/* L2 NSH packet type */
-		[154] = RTE_PTYPE_L2_ETHER_NSH,
-		[155] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_FRAG,
-		[156] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_NONFRAG,
-		[157] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_UDP,
-		[158] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_TCP,
-		[159] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_SCTP,
-		[160] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_L4_ICMP,
-		[161] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_FRAG,
-		[162] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_NONFRAG,
-		[163] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_UDP,
-		[164] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_TCP,
-		[165] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_SCTP,
-		[166] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_L4_ICMP,
-
-		/* All others reserved */
-	};
-
-	return type_table[ptype];
-}
 
 #define I40E_RX_DESC_EXT_STATUS_FLEXBH_MASK   0x03
 #define I40E_RX_DESC_EXT_STATUS_FLEXBH_FD_ID  0x01
@@ -779,33 +245,65 @@ i40e_rxd_build_fdir(volatile union i40e_rx_desc *rxdp, struct rte_mbuf *mb)
 #endif
 	return flags;
 }
+
+static inline void
+i40e_parse_tunneling_params(uint64_t ol_flags,
+			    union i40e_tx_offload tx_offload,
+			    uint32_t *cd_tunneling)
+{
+	/* EIPT: External (outer) IP header type */
+	if (ol_flags & PKT_TX_OUTER_IP_CKSUM)
+		*cd_tunneling |= I40E_TX_CTX_EXT_IP_IPV4;
+	else if (ol_flags & PKT_TX_OUTER_IPV4)
+		*cd_tunneling |= I40E_TX_CTX_EXT_IP_IPV4_NO_CSUM;
+	else if (ol_flags & PKT_TX_OUTER_IPV6)
+		*cd_tunneling |= I40E_TX_CTX_EXT_IP_IPV6;
+
+	/* EIPLEN: External (outer) IP header length, in DWords */
+	*cd_tunneling |= (tx_offload.outer_l3_len >> 2) <<
+		I40E_TXD_CTX_QW0_EXT_IPLEN_SHIFT;
+
+	/* L4TUNT: L4 Tunneling Type */
+	switch (ol_flags & PKT_TX_TUNNEL_MASK) {
+	case PKT_TX_TUNNEL_IPIP:
+		/* for non UDP / GRE tunneling, set to 00b */
+		break;
+	case PKT_TX_TUNNEL_VXLAN:
+	case PKT_TX_TUNNEL_GENEVE:
+		*cd_tunneling |= I40E_TXD_CTX_UDP_TUNNELING;
+		break;
+	case PKT_TX_TUNNEL_GRE:
+		*cd_tunneling |= I40E_TXD_CTX_GRE_TUNNELING;
+		break;
+	default:
+		PMD_TX_LOG(ERR, "Tunnel type not supported");
+		return;
+	}
+
+	/* L4TUNLEN: L4 Tunneling Length, in Words
+	 *
+	 * We depend on app to set rte_mbuf.l2_len correctly.
+	 * For IP in GRE it should be set to the length of the GRE
+	 * header;
+	 * for MAC in GRE or MAC in UDP it should be set to the length
+	 * of the GRE or UDP headers plus the inner MAC up to including
+	 * its last Ethertype.
+	 */
+	*cd_tunneling |= (tx_offload.l2_len >> 1) <<
+		I40E_TXD_CTX_QW0_NATLEN_SHIFT;
+}
+
 static inline void
 i40e_txd_enable_checksum(uint64_t ol_flags,
 			uint32_t *td_cmd,
 			uint32_t *td_offset,
-			union i40e_tx_offload tx_offload,
-			uint32_t *cd_tunneling)
+			union i40e_tx_offload tx_offload)
 {
-	/* UDP tunneling packet TX checksum offload */
-	if (ol_flags & PKT_TX_OUTER_IP_CKSUM) {
-
+	/* Set MACLEN */
+	if (ol_flags & PKT_TX_TUNNEL_MASK)
 		*td_offset |= (tx_offload.outer_l2_len >> 1)
 				<< I40E_TX_DESC_LENGTH_MACLEN_SHIFT;
-
-		if (ol_flags & PKT_TX_OUTER_IP_CKSUM)
-			*cd_tunneling |= I40E_TX_CTX_EXT_IP_IPV4;
-		else if (ol_flags & PKT_TX_OUTER_IPV4)
-			*cd_tunneling |= I40E_TX_CTX_EXT_IP_IPV4_NO_CSUM;
-		else if (ol_flags & PKT_TX_OUTER_IPV6)
-			*cd_tunneling |= I40E_TX_CTX_EXT_IP_IPV6;
-
-		/* Now set the ctx descriptor fields */
-		*cd_tunneling |= (tx_offload.outer_l3_len >> 2) <<
-				I40E_TXD_CTX_QW0_EXT_IPLEN_SHIFT |
-				(tx_offload.l2_len >> 1) <<
-				I40E_TXD_CTX_QW0_NATLEN_SHIFT;
-
-	} else
+	else
 		*td_offset |= (tx_offload.l2_len >> 1)
 			<< I40E_TX_DESC_LENGTH_MACLEN_SHIFT;
 
@@ -934,15 +432,6 @@ check_rx_burst_bulk_alloc_preconditions(__rte_unused struct i40e_rx_queue *rxq)
 			     "rxq->rx_free_thresh=%d",
 			     rxq->nb_rx_desc, rxq->rx_free_thresh);
 		ret = -EINVAL;
-	} else if (!(rxq->nb_rx_desc < (I40E_MAX_RING_DESC -
-				RTE_PMD_I40E_RX_MAX_BURST))) {
-		PMD_INIT_LOG(DEBUG, "Rx Burst Bulk Alloc Preconditions: "
-			     "rxq->nb_rx_desc=%d, "
-			     "I40E_MAX_RING_DESC=%d, "
-			     "RTE_PMD_I40E_RX_MAX_BURST=%d",
-			     rxq->nb_rx_desc, I40E_MAX_RING_DESC,
-			     RTE_PMD_I40E_RX_MAX_BURST);
-		ret = -EINVAL;
 	}
 #else
 	ret = -EINVAL;
@@ -968,6 +457,7 @@ i40e_rx_scan_hw_ring(struct i40e_rx_queue *rxq)
 	int32_t s[I40E_LOOK_AHEAD], nb_dd;
 	int32_t i, j, nb_rx = 0;
 	uint64_t pkt_flags;
+	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
 
 	rxdp = &rxq->rx_ring[rxq->rx_tail];
 	rxep = &rxq->sw_ring[rxq->rx_tail];
@@ -994,6 +484,8 @@ i40e_rx_scan_hw_ring(struct i40e_rx_queue *rxq)
 					I40E_RXD_QW1_STATUS_SHIFT;
 		}
 
+		rte_smp_rmb();
+
 		/* Compute how many status bits were set */
 		for (j = 0, nb_dd = 0; j < I40E_LOOK_AHEAD; j++)
 			nb_dd += s[j] & (1 << I40E_RX_DESC_STATUS_DD_SHIFT);
@@ -1014,9 +506,9 @@ i40e_rx_scan_hw_ring(struct i40e_rx_queue *rxq)
 			pkt_flags = i40e_rxd_status_to_pkt_flags(qword1);
 			pkt_flags |= i40e_rxd_error_to_pkt_flags(qword1);
 			mb->packet_type =
-				i40e_rxd_pkt_type_mapping((uint8_t)((qword1 &
-						I40E_RXD_QW1_PTYPE_MASK) >>
-						I40E_RXD_QW1_PTYPE_SHIFT));
+				ptype_tbl[(uint8_t)((qword1 &
+				I40E_RXD_QW1_PTYPE_MASK) >>
+				I40E_RXD_QW1_PTYPE_SHIFT)];
 			if (pkt_flags & PKT_RX_RSS_HASH)
 				mb->hash.rss = rte_le_to_cpu_32(\
 					rxdp[j].wb.qword0.hi_dword.rss);
@@ -1097,14 +589,14 @@ i40e_rx_alloc_bufs(struct i40e_rx_queue *rxq)
 		mb->nb_segs = 1;
 		mb->port = rxq->port_id;
 		dma_addr = rte_cpu_to_le_64(\
-			rte_mbuf_data_dma_addr_default(mb));
+			rte_mbuf_data_iova_default(mb));
 		rxdp[i].read.hdr_addr = 0;
 		rxdp[i].read.pkt_addr = dma_addr;
 	}
 
 	/* Update rx tail regsiter */
 	rte_wmb();
-	I40E_PCI_REG_WRITE(rxq->qrx_tail, rxq->rx_free_trigger);
+	I40E_PCI_REG_WRITE_RELAXED(rxq->qrx_tail, rxq->rx_free_trigger);
 
 	rxq->rx_free_trigger =
 		(uint16_t)(rxq->rx_free_trigger + rxq->rx_free_thresh);
@@ -1118,6 +610,7 @@ static inline uint16_t
 rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
 	struct i40e_rx_queue *rxq = (struct i40e_rx_queue *)rx_queue;
+	struct rte_eth_dev *dev;
 	uint16_t nb_rx = 0;
 
 	if (!nb_pkts)
@@ -1135,9 +628,10 @@ rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		if (i40e_rx_alloc_bufs(rxq) != 0) {
 			uint16_t i, j;
 
-			PMD_RX_LOG(DEBUG, "Rx mbuf alloc failed for "
-				   "port_id=%u, queue_id=%u",
-				   rxq->port_id, rxq->queue_id);
+			dev = I40E_VSI_TO_ETH_DEV(rxq->vsi);
+			dev->data->rx_mbuf_alloc_failed +=
+				rxq->rx_free_thresh;
+
 			rxq->rx_nb_avail = 0;
 			rxq->rx_tail = (uint16_t)(rxq->rx_tail - nb_rx);
 			for (i = 0, j = rxq->rx_tail; i < nb_rx; i++, j++)
@@ -1199,6 +693,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	union i40e_rx_desc rxd;
 	struct i40e_rx_entry *sw_ring;
 	struct i40e_rx_entry *rxe;
+	struct rte_eth_dev *dev;
 	struct rte_mbuf *rxm;
 	struct rte_mbuf *nmb;
 	uint16_t nb_rx;
@@ -1208,6 +703,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	uint16_t rx_id, nb_hold;
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
+	uint32_t *ptype_tbl;
 
 	nb_rx = 0;
 	nb_hold = 0;
@@ -1215,6 +711,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	rx_id = rxq->rx_tail;
 	rx_ring = rxq->rx_ring;
 	sw_ring = rxq->sw_ring;
+	ptype_tbl = rxq->vsi->adapter->ptype_tbl;
 
 	while (nb_rx < nb_pkts) {
 		rxdp = &rx_ring[rx_id];
@@ -1227,10 +724,13 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			break;
 
 		nmb = rte_mbuf_raw_alloc(rxq->mp);
-		if (unlikely(!nmb))
+		if (unlikely(!nmb)) {
+			dev = I40E_VSI_TO_ETH_DEV(rxq->vsi);
+			dev->data->rx_mbuf_alloc_failed++;
 			break;
-		rxd = *rxdp;
+		}
 
+		rxd = *rxdp;
 		nb_hold++;
 		rxe = &sw_ring[rx_id];
 		rx_id++;
@@ -1252,7 +752,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 		rxdp->read.hdr_addr = 0;
 		rxdp->read.pkt_addr = dma_addr;
 
@@ -1271,8 +771,8 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		pkt_flags = i40e_rxd_status_to_pkt_flags(qword1);
 		pkt_flags |= i40e_rxd_error_to_pkt_flags(qword1);
 		rxm->packet_type =
-			i40e_rxd_pkt_type_mapping((uint8_t)((qword1 &
-			I40E_RXD_QW1_PTYPE_MASK) >> I40E_RXD_QW1_PTYPE_SHIFT));
+			ptype_tbl[(uint8_t)((qword1 &
+			I40E_RXD_QW1_PTYPE_MASK) >> I40E_RXD_QW1_PTYPE_SHIFT)];
 		if (pkt_flags & PKT_RX_RSS_HASH)
 			rxm->hash.rss =
 				rte_le_to_cpu_32(rxd.wb.qword0.hi_dword.rss);
@@ -1322,10 +822,12 @@ i40e_recv_scattered_pkts(void *rx_queue,
 	struct rte_mbuf *nmb, *rxm;
 	uint16_t rx_id = rxq->rx_tail;
 	uint16_t nb_rx = 0, nb_hold = 0, rx_packet_len;
+	struct rte_eth_dev *dev;
 	uint32_t rx_status;
 	uint64_t qword1;
 	uint64_t dma_addr;
 	uint64_t pkt_flags;
+	uint32_t *ptype_tbl = rxq->vsi->adapter->ptype_tbl;
 
 	while (nb_rx < nb_pkts) {
 		rxdp = &rx_ring[rx_id];
@@ -1338,8 +840,12 @@ i40e_recv_scattered_pkts(void *rx_queue,
 			break;
 
 		nmb = rte_mbuf_raw_alloc(rxq->mp);
-		if (unlikely(!nmb))
+		if (unlikely(!nmb)) {
+			dev = I40E_VSI_TO_ETH_DEV(rxq->vsi);
+			dev->data->rx_mbuf_alloc_failed++;
 			break;
+		}
+
 		rxd = *rxdp;
 		nb_hold++;
 		rxe = &sw_ring[rx_id];
@@ -1363,7 +869,7 @@ i40e_recv_scattered_pkts(void *rx_queue,
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(nmb));
 
 		/* Set data buffer address and data length of the mbuf */
 		rxdp->read.hdr_addr = 0;
@@ -1433,8 +939,8 @@ i40e_recv_scattered_pkts(void *rx_queue,
 		pkt_flags = i40e_rxd_status_to_pkt_flags(qword1);
 		pkt_flags |= i40e_rxd_error_to_pkt_flags(qword1);
 		first_seg->packet_type =
-			i40e_rxd_pkt_type_mapping((uint8_t)((qword1 &
-			I40E_RXD_QW1_PTYPE_MASK) >> I40E_RXD_QW1_PTYPE_SHIFT));
+			ptype_tbl[(uint8_t)((qword1 &
+			I40E_RXD_QW1_PTYPE_MASK) >> I40E_RXD_QW1_PTYPE_SHIFT)];
 		if (pkt_flags & PKT_RX_RSS_HASH)
 			first_seg->hash.rss =
 				rte_le_to_cpu_32(rxd.wb.qword0.hi_dword.rss);
@@ -1484,7 +990,8 @@ i40e_calc_context_desc(uint64_t flags)
 {
 	static uint64_t mask = PKT_TX_OUTER_IP_CKSUM |
 		PKT_TX_TCP_SEG |
-		PKT_TX_QINQ_PKT;
+		PKT_TX_QINQ_PKT |
+		PKT_TX_TUNNEL_MASK;
 
 #ifdef RTE_LIBRTE_IEEE1588
 	mask |= PKT_TX_IEEE1588_TMST;
@@ -1506,7 +1013,7 @@ i40e_set_tso_ctx(struct rte_mbuf *mbuf, union i40e_tx_offload tx_offload)
 	}
 
 	/**
-	 * in case of tunneling packet, the outer_l2_len and
+	 * in case of non tunneling packet, the outer_l2_len and
 	 * outer_l3_len must be 0.
 	 */
 	hdr_len = tx_offload.outer_l2_len +
@@ -1541,7 +1048,6 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	uint16_t nb_tx;
 	uint32_t td_cmd;
 	uint32_t td_offset;
-	uint32_t tx_flags;
 	uint32_t td_tag;
 	uint64_t ol_flags;
 	uint16_t nb_used;
@@ -1565,7 +1071,6 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		td_cmd = 0;
 		td_tag = 0;
 		td_offset = 0;
-		tx_flags = 0;
 
 		tx_pkt = *tx_pkts++;
 		RTE_MBUF_PREFETCH_TO_FREE(txe->mbuf);
@@ -1612,23 +1117,22 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		/* Descriptor based VLAN insertion */
 		if (ol_flags & (PKT_TX_VLAN_PKT | PKT_TX_QINQ_PKT)) {
-			tx_flags |= tx_pkt->vlan_tci <<
-				I40E_TX_FLAG_L2TAG1_SHIFT;
-			tx_flags |= I40E_TX_FLAG_INSERT_VLAN;
 			td_cmd |= I40E_TX_DESC_CMD_IL2TAG1;
-			td_tag = (tx_flags & I40E_TX_FLAG_L2TAG1_MASK) >>
-						I40E_TX_FLAG_L2TAG1_SHIFT;
+			td_tag = tx_pkt->vlan_tci;
 		}
 
 		/* Always enable CRC offload insertion */
 		td_cmd |= I40E_TX_DESC_CMD_ICRC;
 
-		/* Enable checksum offloading */
+		/* Fill in tunneling parameters if necessary */
 		cd_tunneling_params = 0;
-		if (ol_flags & I40E_TX_CKSUM_OFFLOAD_MASK) {
-			i40e_txd_enable_checksum(ol_flags, &td_cmd, &td_offset,
-				tx_offload, &cd_tunneling_params);
-		}
+		if (ol_flags & PKT_TX_TUNNEL_MASK)
+			i40e_parse_tunneling_params(ol_flags, tx_offload,
+						    &cd_tunneling_params);
+		/* Enable checksum offloading */
+		if (ol_flags & I40E_TX_CKSUM_OFFLOAD_MASK)
+			i40e_txd_enable_checksum(ol_flags, &td_cmd,
+						 &td_offset, tx_offload);
 
 		if (nb_ctx) {
 			/* Setup TX context descriptor if required */
@@ -1698,7 +1202,7 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 			/* Setup TX Descriptor */
 			slen = m_seg->data_len;
-			buf_dma_addr = rte_mbuf_data_dma_addr(m_seg);
+			buf_dma_addr = rte_mbuf_data_iova(m_seg);
 
 			PMD_TX_LOG(DEBUG, "mbuf: %p, TDD[%u]:\n"
 				"buf_dma_addr: %#"PRIx64";\n"
@@ -1747,13 +1251,13 @@ end_of_tx:
 		   (unsigned) txq->port_id, (unsigned) txq->queue_id,
 		   (unsigned) tx_id, (unsigned) nb_tx);
 
-	I40E_PCI_REG_WRITE(txq->qtx_tail, tx_id);
+	I40E_PCI_REG_WRITE_RELAXED(txq->qtx_tail, tx_id);
 	txq->tx_tail = tx_id;
 
 	return nb_tx;
 }
 
-static inline int __attribute__((always_inline))
+static __rte_always_inline int
 i40e_tx_free_bufs(struct i40e_tx_queue *txq)
 {
 	struct i40e_tx_entry *txep;
@@ -1797,7 +1301,7 @@ tx4(volatile struct i40e_tx_desc *txdp, struct rte_mbuf **pkts)
 	uint32_t i;
 
 	for (i = 0; i < 4; i++, txdp++, pkts++) {
-		dma_addr = rte_mbuf_data_dma_addr(*pkts);
+		dma_addr = rte_mbuf_data_iova(*pkts);
 		txdp->buffer_addr = rte_cpu_to_le_64(dma_addr);
 		txdp->cmd_type_offset_bsz =
 			i40e_build_ctob((uint32_t)I40E_TD_CMD, 0,
@@ -1811,7 +1315,7 @@ tx1(volatile struct i40e_tx_desc *txdp, struct rte_mbuf **pkts)
 {
 	uint64_t dma_addr;
 
-	dma_addr = rte_mbuf_data_dma_addr(*pkts);
+	dma_addr = rte_mbuf_data_iova(*pkts);
 	txdp->buffer_addr = rte_cpu_to_le_64(dma_addr);
 	txdp->cmd_type_offset_bsz =
 		i40e_build_ctob((uint32_t)I40E_TD_CMD, 0,
@@ -1899,7 +1403,7 @@ tx_xmit_pkts(struct i40e_tx_queue *txq,
 
 	/* Update the tx tail register */
 	rte_wmb();
-	I40E_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	I40E_PCI_REG_WRITE_RELAXED(txq->qtx_tail, txq->tx_tail);
 
 	return nb_pkts;
 }
@@ -1928,6 +1432,82 @@ i40e_xmit_pkts_simple(void *tx_queue,
 	}
 
 	return nb_tx;
+}
+
+static uint16_t
+i40e_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+		   uint16_t nb_pkts)
+{
+	uint16_t nb_tx = 0;
+	struct i40e_tx_queue *txq = (struct i40e_tx_queue *)tx_queue;
+
+	while (nb_pkts) {
+		uint16_t ret, num;
+
+		num = (uint16_t)RTE_MIN(nb_pkts, txq->tx_rs_thresh);
+		ret = i40e_xmit_fixed_burst_vec(tx_queue, &tx_pkts[nb_tx],
+						num);
+		nb_tx += ret;
+		nb_pkts -= ret;
+		if (ret < num)
+			break;
+	}
+
+	return nb_tx;
+}
+
+/*********************************************************************
+ *
+ *  TX prep functions
+ *
+ **********************************************************************/
+uint16_t
+i40e_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int i, ret;
+	uint64_t ol_flags;
+	struct rte_mbuf *m;
+
+	for (i = 0; i < nb_pkts; i++) {
+		m = tx_pkts[i];
+		ol_flags = m->ol_flags;
+
+		/* Check for m->nb_segs to not exceed the limits. */
+		if (!(ol_flags & PKT_TX_TCP_SEG)) {
+			if (m->nb_segs > I40E_TX_MAX_SEG ||
+			    m->nb_segs > I40E_TX_MAX_MTU_SEG) {
+				rte_errno = -EINVAL;
+				return i;
+			}
+		} else if ((m->tso_segsz < I40E_MIN_TSO_MSS) ||
+				(m->tso_segsz > I40E_MAX_TSO_MSS)) {
+			/* MSS outside the range (256B - 9674B) are considered
+			 * malicious
+			 */
+			rte_errno = -EINVAL;
+			return i;
+		}
+
+		if (ol_flags & I40E_TX_OFFLOAD_NOTSUP_MASK) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+		ret = rte_net_intel_cksum_prepare(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+	return i;
 }
 
 /*
@@ -2025,7 +1605,7 @@ i40e_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		rxq = dev->data->rx_queues[rx_queue_id];
 
 		/*
-		* rx_queue_id is queue id aplication refers to, while
+		* rx_queue_id is queue id application refers to, while
 		* rxq->reg_idx is the real queue index.
 		*/
 		err = i40e_switch_rx_queue(hw, rxq->reg_idx, FALSE);
@@ -2056,7 +1636,7 @@ i40e_dev_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 		txq = dev->data->tx_queues[tx_queue_id];
 
 		/*
-		* tx_queue_id is queue id aplication refers to, while
+		* tx_queue_id is queue id application refers to, while
 		* rxq->reg_idx is the real queue index.
 		*/
 		err = i40e_switch_tx_queue(hw, txq->reg_idx, TRUE);
@@ -2081,7 +1661,7 @@ i40e_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 		txq = dev->data->tx_queues[tx_queue_id];
 
 		/*
-		* tx_queue_id is queue id aplication refers to, while
+		* tx_queue_id is queue id application refers to, while
 		* txq->reg_idx is the real queue index.
 		*/
 		err = i40e_switch_tx_queue(hw, txq->reg_idx, FALSE);
@@ -2136,7 +1716,9 @@ i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 #ifdef RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC
 	    dev->rx_pkt_burst == i40e_recv_pkts_bulk_alloc ||
 #endif
-	    dev->rx_pkt_burst == i40e_recv_scattered_pkts)
+	    dev->rx_pkt_burst == i40e_recv_scattered_pkts ||
+	    dev->rx_pkt_burst == i40e_recv_scattered_pkts_vec ||
+	    dev->rx_pkt_burst == i40e_recv_pkts_vec)
 		return ptypes;
 	return NULL;
 }
@@ -2149,36 +1731,42 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			const struct rte_eth_rxconf *rx_conf,
 			struct rte_mempool *mp)
 {
-	struct i40e_vsi *vsi;
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_adapter *ad =
 		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct i40e_vsi *vsi;
+	struct i40e_pf *pf = NULL;
+	struct i40e_vf *vf = NULL;
 	struct i40e_rx_queue *rxq;
 	const struct rte_memzone *rz;
 	uint32_t ring_size;
 	uint16_t len, i;
-	uint16_t base, bsf, tc_mapping;
-	int use_def_burst_func = 1;
+	uint16_t reg_idx, base, bsf, tc_mapping;
+	int q_offset, use_def_burst_func = 1;
 
 	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
-		struct i40e_vf *vf =
-			I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+		vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
-	} else
+		if (!vsi)
+			return -EINVAL;
+		reg_idx = queue_idx;
+	} else {
+		pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 		vsi = i40e_pf_get_vsi_by_qindex(pf, queue_idx);
-
-	if (vsi == NULL) {
-		PMD_DRV_LOG(ERR, "VSI not available or queue "
-			    "index exceeds the maximum");
-		return I40E_ERR_PARAM;
+		if (!vsi)
+			return -EINVAL;
+		q_offset = i40e_get_queue_offset_by_qindex(pf, queue_idx);
+		if (q_offset < 0)
+			return -EINVAL;
+		reg_idx = vsi->base_queue + q_offset;
 	}
+
 	if (nb_desc % I40E_ALIGN_RING_DESC != 0 ||
-			(nb_desc > I40E_MAX_RING_DESC) ||
-			(nb_desc < I40E_MIN_RING_DESC)) {
+	    (nb_desc > I40E_MAX_RING_DESC) ||
+	    (nb_desc < I40E_MIN_RING_DESC)) {
 		PMD_DRV_LOG(ERR, "Number (%u) of receive descriptors is "
 			    "invalid", nb_desc);
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 	}
 
 	/* Free memory if needed */
@@ -2201,12 +1789,7 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->nb_rx_desc = nb_desc;
 	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
 	rxq->queue_id = queue_idx;
-	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF)
-		rxq->reg_idx = queue_idx;
-	else /* PF device */
-		rxq->reg_idx = vsi->base_queue +
-			i40e_get_queue_offset_by_qindex(pf, queue_idx);
-
+	rxq->reg_idx = reg_idx;
 	rxq->port_id = dev->data->port_id;
 	rxq->crc_len = (uint8_t) ((dev->data->dev_conf.rxmode.hw_strip_crc) ?
 							0 : ETHER_CRC_LEN);
@@ -2215,8 +1798,17 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->rx_deferred_start = rx_conf->rx_deferred_start;
 
 	/* Allocate the maximun number of RX ring hardware descriptor. */
-	ring_size = sizeof(union i40e_rx_desc) * I40E_MAX_RING_DESC;
-	ring_size = RTE_ALIGN(ring_size, I40E_DMA_MEM_ALIGN);
+	len = I40E_MAX_RING_DESC;
+
+	/**
+	 * Allocating a little more memory because vectorized/bulk_alloc Rx
+	 * functions doesn't check boundaries each time.
+	 */
+	len += RTE_PMD_I40E_RX_MAX_BURST;
+
+	ring_size = RTE_ALIGN(len * sizeof(union i40e_rx_desc),
+			      I40E_DMA_MEM_ALIGN);
+
 	rz = rte_eth_dma_zone_reserve(dev, "rx_ring", queue_idx,
 			      ring_size, I40E_RING_BASE_ALIGN, socket_id);
 	if (!rz) {
@@ -2228,14 +1820,10 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	/* Zero all the descriptors in the ring. */
 	memset(rz->addr, 0, ring_size);
 
-	rxq->rx_ring_phys_addr = rte_mem_phy2mch(rz->memseg_id, rz->phys_addr);
+	rxq->rx_ring_phys_addr = rz->iova;
 	rxq->rx_ring = (union i40e_rx_desc *)rz->addr;
 
-#ifdef RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC
 	len = (uint16_t)(nb_desc + RTE_PMD_I40E_RX_MAX_BURST);
-#else
-	len = nb_desc;
-#endif
 
 	/* Allocate the software ring. */
 	rxq->sw_ring =
@@ -2310,11 +1898,6 @@ i40e_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	struct i40e_rx_queue *rxq;
 	uint16_t desc = 0;
 
-	if (unlikely(rx_queue_id >= dev->data->nb_rx_queues)) {
-		PMD_DRV_LOG(ERR, "Invalid RX queue id %u", rx_queue_id);
-		return 0;
-	}
-
 	rxq = dev->data->rx_queues[rx_queue_id];
 	rxdp = &(rxq->rx_ring[rxq->rx_tail]);
 	while ((desc < rxq->nb_rx_desc) &&
@@ -2345,7 +1928,7 @@ i40e_dev_rx_descriptor_done(void *rx_queue, uint16_t offset)
 	int ret;
 
 	if (unlikely(offset >= rxq->nb_rx_desc)) {
-		PMD_DRV_LOG(ERR, "Invalid RX queue id %u", offset);
+		PMD_DRV_LOG(ERR, "Invalid RX descriptor id %u", offset);
 		return 0;
 	}
 
@@ -2363,40 +1946,104 @@ i40e_dev_rx_descriptor_done(void *rx_queue, uint16_t offset)
 }
 
 int
+i40e_dev_rx_descriptor_status(void *rx_queue, uint16_t offset)
+{
+	struct i40e_rx_queue *rxq = rx_queue;
+	volatile uint64_t *status;
+	uint64_t mask;
+	uint32_t desc;
+
+	if (unlikely(offset >= rxq->nb_rx_desc))
+		return -EINVAL;
+
+	if (offset >= rxq->nb_rx_desc - rxq->nb_rx_hold)
+		return RTE_ETH_RX_DESC_UNAVAIL;
+
+	desc = rxq->rx_tail + offset;
+	if (desc >= rxq->nb_rx_desc)
+		desc -= rxq->nb_rx_desc;
+
+	status = &rxq->rx_ring[desc].wb.qword1.status_error_len;
+	mask = rte_le_to_cpu_64((1ULL << I40E_RX_DESC_STATUS_DD_SHIFT)
+		<< I40E_RXD_QW1_STATUS_SHIFT);
+	if (*status & mask)
+		return RTE_ETH_RX_DESC_DONE;
+
+	return RTE_ETH_RX_DESC_AVAIL;
+}
+
+int
+i40e_dev_tx_descriptor_status(void *tx_queue, uint16_t offset)
+{
+	struct i40e_tx_queue *txq = tx_queue;
+	volatile uint64_t *status;
+	uint64_t mask, expect;
+	uint32_t desc;
+
+	if (unlikely(offset >= txq->nb_tx_desc))
+		return -EINVAL;
+
+	desc = txq->tx_tail + offset;
+	/* go to next desc that has the RS bit */
+	desc = ((desc + txq->tx_rs_thresh - 1) / txq->tx_rs_thresh) *
+		txq->tx_rs_thresh;
+	if (desc >= txq->nb_tx_desc) {
+		desc -= txq->nb_tx_desc;
+		if (desc >= txq->nb_tx_desc)
+			desc -= txq->nb_tx_desc;
+	}
+
+	status = &txq->tx_ring[desc].cmd_type_offset_bsz;
+	mask = rte_le_to_cpu_64(I40E_TXD_QW1_DTYPE_MASK);
+	expect = rte_cpu_to_le_64(
+		I40E_TX_DESC_DTYPE_DESC_DONE << I40E_TXD_QW1_DTYPE_SHIFT);
+	if ((*status & mask) == expect)
+		return RTE_ETH_TX_DESC_DONE;
+
+	return RTE_ETH_TX_DESC_FULL;
+}
+
+int
 i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			uint16_t queue_idx,
 			uint16_t nb_desc,
 			unsigned int socket_id,
 			const struct rte_eth_txconf *tx_conf)
 {
-	struct i40e_vsi *vsi;
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct i40e_vsi *vsi;
+	struct i40e_pf *pf = NULL;
+	struct i40e_vf *vf = NULL;
 	struct i40e_tx_queue *txq;
 	const struct rte_memzone *tz;
 	uint32_t ring_size;
 	uint16_t tx_rs_thresh, tx_free_thresh;
-	uint16_t i, base, bsf, tc_mapping;
+	uint16_t reg_idx, i, base, bsf, tc_mapping;
+	int q_offset;
 
 	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
-		struct i40e_vf *vf =
-			I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+		vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
-	} else
+		if (!vsi)
+			return -EINVAL;
+		reg_idx = queue_idx;
+	} else {
+		pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 		vsi = i40e_pf_get_vsi_by_qindex(pf, queue_idx);
-
-	if (vsi == NULL) {
-		PMD_DRV_LOG(ERR, "VSI is NULL, or queue index (%u) "
-			    "exceeds the maximum", queue_idx);
-		return I40E_ERR_PARAM;
+		if (!vsi)
+			return -EINVAL;
+		q_offset = i40e_get_queue_offset_by_qindex(pf, queue_idx);
+		if (q_offset < 0)
+			return -EINVAL;
+		reg_idx = vsi->base_queue + q_offset;
 	}
 
 	if (nb_desc % I40E_ALIGN_RING_DESC != 0 ||
-			(nb_desc > I40E_MAX_RING_DESC) ||
-			(nb_desc < I40E_MIN_RING_DESC)) {
+	    (nb_desc > I40E_MAX_RING_DESC) ||
+	    (nb_desc < I40E_MIN_RING_DESC)) {
 		PMD_DRV_LOG(ERR, "Number (%u) of transmit descriptors is "
 			    "invalid", nb_desc);
-		return I40E_ERR_PARAM;
+		return -EINVAL;
 	}
 
 	/**
@@ -2433,8 +2080,7 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return I40E_ERR_PARAM;
 	}
 	if (tx_free_thresh >= (nb_desc - 3)) {
-		PMD_INIT_LOG(ERR, "tx_rs_thresh must be less than the "
-			     "tx_free_thresh must be less than the "
+		PMD_INIT_LOG(ERR, "tx_free_thresh must be less than the "
 			     "number of TX descriptors minus 3. "
 			     "(tx_free_thresh=%u port=%d queue=%d)",
 			     (unsigned int)tx_free_thresh,
@@ -2506,18 +2152,13 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->hthresh = tx_conf->tx_thresh.hthresh;
 	txq->wthresh = tx_conf->tx_thresh.wthresh;
 	txq->queue_id = queue_idx;
-	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF)
-		txq->reg_idx = queue_idx;
-	else /* PF device */
-		txq->reg_idx = vsi->base_queue +
-			i40e_get_queue_offset_by_qindex(pf, queue_idx);
-
+	txq->reg_idx = reg_idx;
 	txq->port_id = dev->data->port_id;
 	txq->txq_flags = tx_conf->txq_flags;
 	txq->vsi = vsi;
 	txq->tx_deferred_start = tx_conf->tx_deferred_start;
 
-	txq->tx_ring_phys_addr = rte_mem_phy2mch(tz->memseg_id, tz->phys_addr);
+	txq->tx_ring_phys_addr = tz->iova;
 	txq->tx_ring = (struct i40e_tx_desc *)tz->addr;
 
 	/* Allocate software ring */
@@ -2579,12 +2220,8 @@ i40e_memzone_reserve(const char *name, uint32_t len, int socket_id)
 	if (mz)
 		return mz;
 
-	if (rte_xen_dom0_supported())
-		mz = rte_memzone_reserve_bounded(name, len,
-				socket_id, 0, I40E_RING_BASE_ALIGN, RTE_PGSIZE_2M);
-	else
-		mz = rte_memzone_reserve_aligned(name, len,
-				socket_id, 0, I40E_RING_BASE_ALIGN);
+	mz = rte_memzone_reserve_aligned(name, len,
+					 socket_id, 0, I40E_RING_BASE_ALIGN);
 	return mz;
 }
 
@@ -2644,11 +2281,11 @@ i40e_reset_rx_queue(struct i40e_rx_queue *rxq)
 	for (i = 0; i < len * sizeof(union i40e_rx_desc); i++)
 		((volatile char *)rxq->rx_ring)[i] = 0;
 
-#ifdef RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC
 	memset(&rxq->fake_mbuf, 0x0, sizeof(rxq->fake_mbuf));
 	for (i = 0; i < RTE_PMD_I40E_RX_MAX_BURST; ++i)
 		rxq->sw_ring[rxq->nb_rx_desc + i].mbuf = &rxq->fake_mbuf;
 
+#ifdef RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC
 	rxq->rx_nb_avail = 0;
 	rxq->rx_next_avail = 0;
 	rxq->rx_free_trigger = (uint16_t)(rxq->rx_free_thresh - 1);
@@ -2665,17 +2302,39 @@ i40e_reset_rx_queue(struct i40e_rx_queue *rxq)
 void
 i40e_tx_queue_release_mbufs(struct i40e_tx_queue *txq)
 {
+	struct rte_eth_dev *dev;
 	uint16_t i;
+
+	dev = &rte_eth_devices[txq->port_id];
 
 	if (!txq || !txq->sw_ring) {
 		PMD_DRV_LOG(DEBUG, "Pointer to rxq or sw_ring is NULL");
 		return;
 	}
 
-	for (i = 0; i < txq->nb_tx_desc; i++) {
-		if (txq->sw_ring[i].mbuf) {
+	/**
+	 *  vPMD tx will not set sw_ring's mbuf to NULL after free,
+	 *  so need to free remains more carefully.
+	 */
+	if (dev->tx_pkt_burst == i40e_xmit_pkts_vec) {
+		i = txq->tx_next_dd - txq->tx_rs_thresh + 1;
+		if (txq->tx_tail < i) {
+			for (; i < txq->nb_tx_desc; i++) {
+				rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
+				txq->sw_ring[i].mbuf = NULL;
+			}
+			i = 0;
+		}
+		for (; i < txq->tx_tail; i++) {
 			rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
 			txq->sw_ring[i].mbuf = NULL;
+		}
+	} else {
+		for (i = 0; i < txq->nb_tx_desc; i++) {
+			if (txq->sw_ring[i].mbuf) {
+				rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
+				txq->sw_ring[i].mbuf = NULL;
+			}
 		}
 	}
 }
@@ -2789,7 +2448,7 @@ i40e_alloc_rx_queue_mbufs(struct i40e_rx_queue *rxq)
 		mbuf->port = rxq->port_id;
 
 		dma_addr =
-			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(mbuf));
+			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
 		rxd = &rxq->rx_ring[i];
 		rxd->read.pkt_addr = dma_addr;
@@ -2832,7 +2491,7 @@ i40e_rx_queue_config(struct i40e_rx_queue *rxq)
 	case I40E_FLAG_HEADER_SPLIT_DISABLED:
 	default:
 		rxq->rx_hdr_len = 0;
-		rxq->rx_buf_len = RTE_ALIGN(buf_size,
+		rxq->rx_buf_len = RTE_ALIGN_FLOOR(buf_size,
 			(1 << I40E_RXQ_CTX_DBUFF_SHIFT));
 		rxq->hs_mode = i40e_header_split_none;
 		break;
@@ -3033,7 +2692,7 @@ i40e_fdir_setup_tx_resources(struct i40e_pf *pf)
 	txq->reg_idx = pf->fdir.fdir_vsi->base_queue;
 	txq->vsi = pf->fdir.fdir_vsi;
 
-	txq->tx_ring_phys_addr = rte_mem_phy2mch(tz->memseg_id, tz->phys_addr);
+	txq->tx_ring_phys_addr = tz->iova;
 	txq->tx_ring = (struct i40e_tx_desc *)tz->addr;
 	/*
 	 * don't need to allocate software ring and reset for the fdir
@@ -3089,7 +2748,8 @@ i40e_fdir_setup_rx_resources(struct i40e_pf *pf)
 	rxq->reg_idx = pf->fdir.fdir_vsi->base_queue;
 	rxq->vsi = pf->fdir.fdir_vsi;
 
-	rxq->rx_ring_phys_addr = rte_mem_phy2mch(rz->memseg_id, rz->phys_addr);
+	rxq->rx_ring_phys_addr = rz->iova;
+	memset(rz->addr, 0, I40E_FDIR_NUM_RX_DESC * sizeof(union i40e_rx_desc));
 	rxq->rx_ring = (union i40e_rx_desc *)rz->addr;
 
 	/*
@@ -3280,9 +2940,80 @@ i40e_set_tx_function(struct rte_eth_dev *dev)
 			PMD_INIT_LOG(DEBUG, "Simple tx finally be used.");
 			dev->tx_pkt_burst = i40e_xmit_pkts_simple;
 		}
+		dev->tx_pkt_prepare = NULL;
 	} else {
 		PMD_INIT_LOG(DEBUG, "Xmit tx finally be used.");
 		dev->tx_pkt_burst = i40e_xmit_pkts;
+		dev->tx_pkt_prepare = i40e_prep_pkts;
+	}
+}
+
+void __attribute__((cold))
+i40e_set_default_ptype_table(struct rte_eth_dev *dev)
+{
+	struct i40e_adapter *ad =
+		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	int i;
+
+	for (i = 0; i < I40E_MAX_PKT_TYPE; i++)
+		ad->ptype_tbl[i] = i40e_get_default_pkt_type(i);
+}
+
+void __attribute__((cold))
+i40e_set_default_pctype_table(struct rte_eth_dev *dev)
+{
+	struct i40e_adapter *ad =
+			I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int i;
+
+	for (i = 0; i < I40E_FLOW_TYPE_MAX; i++)
+		ad->pctypes_tbl[i] = 0ULL;
+	ad->flow_types_mask = 0ULL;
+	ad->pctypes_mask = 0ULL;
+
+	ad->pctypes_tbl[RTE_ETH_FLOW_FRAG_IPV4] =
+				(1ULL << I40E_FILTER_PCTYPE_FRAG_IPV4);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_UDP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_TCP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_TCP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_SCTP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_SCTP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_OTHER] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_OTHER);
+	ad->pctypes_tbl[RTE_ETH_FLOW_FRAG_IPV6] =
+				(1ULL << I40E_FILTER_PCTYPE_FRAG_IPV6);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_UDP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_TCP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_TCP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_SCTP] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_SCTP);
+	ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_OTHER] =
+				(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_OTHER);
+	ad->pctypes_tbl[RTE_ETH_FLOW_L2_PAYLOAD] =
+				(1ULL << I40E_FILTER_PCTYPE_L2_PAYLOAD);
+
+	if (hw->mac.type == I40E_MAC_X722) {
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_UNICAST_IPV4_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV4_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV4_TCP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_IPV4_TCP_SYN_NO_ACK);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_UNICAST_IPV6_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_UDP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_MULTICAST_IPV6_UDP);
+		ad->pctypes_tbl[RTE_ETH_FLOW_NONFRAG_IPV6_TCP] |=
+			(1ULL << I40E_FILTER_PCTYPE_NONF_IPV6_TCP_SYN_NO_ACK);
+	}
+
+	for (i = 0; i < I40E_FLOW_TYPE_MAX; i++) {
+		if (ad->pctypes_tbl[i])
+			ad->flow_types_mask |= (1ULL << i);
+		ad->pctypes_mask |= ad->pctypes_tbl[i];
 	}
 }
 
@@ -3330,9 +3061,9 @@ i40e_rx_queue_release_mbufs_vec(struct i40e_rx_queue __rte_unused*rxq)
 }
 
 uint16_t __attribute__((weak))
-i40e_xmit_pkts_vec(void __rte_unused *tx_queue,
-		   struct rte_mbuf __rte_unused **tx_pkts,
-		   uint16_t __rte_unused nb_pkts)
+i40e_xmit_fixed_burst_vec(void __rte_unused * tx_queue,
+			  struct rte_mbuf __rte_unused **tx_pkts,
+			  uint16_t __rte_unused nb_pkts)
 {
 	return 0;
 }
