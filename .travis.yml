@@ -13,6 +13,7 @@ compiler:
 install:
   - sudo apt-get install -y coreutils build-essential git
   - sudo apt-get install -y linux-headers-`uname -r`
+  - sudo apt-get install -y libnuma-dev
 
 script:
   - make -C dpdk install T=x86_64-native-linuxapp-gcc
