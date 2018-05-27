@@ -121,6 +121,9 @@ static int (*real_ioctl)(int, int, void *);
 
 static int (*real_gettimeofday)(struct timeval *tv, struct timezone *tz);
 
+static int (*real_getpeername)(int sockfd, struct sockaddr * name, socklen_t *namelen);
+static int (*real_getsockname)(int s, struct sockaddr *name, socklen_t *namelen);
+
 static __thread int inited;
 
 #define SYSCALL(func)                                       \
@@ -134,7 +137,7 @@ static __thread int inited;
 extern intptr_t    ngx_max_sockets;
 
 /*-
- * Make sockfd assigned by the fstack plus the value of maximum kernel socket. 
+ * Make sockfd assigned by the fstack plus the value of maximum kernel socket.
  *  so we can tell them apart according to different scopes.
  * Solve the condominium ownership at Application Layer and obtain more freedom.
  * fstack tried to do this by 'fd_reserve', unfortunately, it doesn't work well.
@@ -185,7 +188,7 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
     if (rc == 0) {
         /* Ensure that the socket we converted
                 does not exceed the maximum value of 'int' */
-                
+
         if(ngx_max_sockets + (unsigned)ff_getmaxfd() > INT_MAX)
         {
             rc = -1;
@@ -267,6 +270,32 @@ connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
     }
 
     return SYSCALL(connect)(sockfd, addr, addrlen);
+}
+
+int
+getpeername(int sockfd, struct sockaddr * name,
+    socklen_t *namelen)
+{
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
+        return ff_getpeername(sockfd,
+            (struct linux_sockaddr *)name, namelen);
+    }
+
+    return SYSCALL(getpeername)(sockfd, name, namelen);
+}
+
+int
+getsockname(int sockfd, struct sockaddr *name,
+    socklen_t *namelen)
+{
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
+        return ff_getsockname(sockfd,
+            (struct linux_sockaddr *)name, namelen);
+    }
+
+    return SYSCALL(getsockname)(sockfd, name, namelen);
 }
 
 ssize_t
@@ -477,7 +506,7 @@ kqueue(void)
 }
 
 int
-kevent(int kq, const struct kevent *changelist, int nchanges, 
+kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents, const struct timespec *timeout)
 {
     struct kevent     *kev;
