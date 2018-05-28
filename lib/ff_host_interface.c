@@ -197,7 +197,7 @@ ff_arc4rand(void *ptr, unsigned int len, int reseed)
 {
     (void)reseed;
 
-    RAND_pseudo_bytes(ptr, len);
+    RAND_bytes(ptr, len);
 }
 
 uint32_t
