@@ -7,17 +7,10 @@
 
 See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 
-## Clone F-Stack
+## clone F-Stack
 
 	mkdir /data/f-stack
 	git clone https://github.com/F-Stack/f-stack.git /data/f-stack
-
-## Install libnuma-dev
-
-	# on Centos
-	yum install numactl-devel
-	# on Ubuntu
-	sudo apt-get install libnuma-dev
 
 ## Compile DPDK
 
@@ -50,20 +43,20 @@ The mount point can be made permanent across reboots, by adding the following li
 
 ## offload NIC
 
-	modprobe uio
-	insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-	insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
-	python dpdk-devbind.py --status
-	ifconfig eth0 down
-	python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
+    modprobe uio
+    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
+    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
+    python dpdk-devbind.py --status
+    ifconfig eth0 down
+    python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
 ## Compile  lib
 
-	export FF_PATH=/data/f-stack
-	export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
-	cd ../../
-	cd lib
-	make
+    export FF_PATH=/data/f-stack
+    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
+    cd ../../
+    cd lib
+    make
 
 ### Compile Nginx
 
@@ -79,5 +72,8 @@ The mount point can be made permanent across reboots, by adding the following li
 
 	cd app/redis-3.2.8/
 	make
-	make install
+	# run with start.sh
+	./start.sh -b ./redis-server -o /path/to/redis.conf
+	# or run like this:
+	#./redis-server --conf=config.ini --proc-type=primary --proc-id=0 /path/to/redis.conf
 
