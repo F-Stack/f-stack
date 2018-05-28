@@ -31,16 +31,19 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 ## Quick Start
 
     # clone F-Stack
-    mkdir /data/f-stack
-    git clone https://github.com/F-Stack/f-stack.git /data/f-stack
+    cd /path/to/build/f-stack
+    git clone https://github.com/F-Stack/f-stack.git
 
     # install libnuma-dev
     yum install numactl-devel          # on Centos
     #sudo apt-get install libnuma-dev  # on Ubuntu
 
     cd f-stack
+    # setup building environment
+    source env.sh
+
     # compile DPDK
-    cd dpdk/usertools
+    cd $FF_PATH/dpdk/usertools
     ./dpdk-setup.sh # compile with x86_64-native-linuxapp-gcc
 
     # Set hugepage
@@ -60,24 +63,22 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
     # offload NIC
     modprobe uio
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
-    python dpdk-devbind.py --status
+    insmod $FF_PATH/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
+    insmod $FF_PATH/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
+    python $FF_PATH/dpdk/usertools/dpdk-devbind.py --status
     ifconfig eth0 down
-    python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
+    python $FF_PATH/dpdk/usertools/dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
     # On Ubuntu, use gawk instead of the default mawk.
     #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
 
     # Compile F-Stack
-    export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
-    cd ../../lib/
+    cd $FF_PATH/lib/
     make
 
 #### Nginx
 
-    cd app/nginx-1.11.10
+    cd $FF_PATH/app/nginx-1.11.10
     bash ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
     make
     make install
@@ -88,7 +89,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
 
 #### Redis
 
-    cd app/redis-3.2.8/
+    cd $FF_PATH/app/redis-3.2.8/
     make
     make install
 
