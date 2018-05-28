@@ -6,3 +6,17 @@
 *.o
 *.so
 *.swap
+dpdk/x86_64-native-linuxapp-gcc/
+example/helloworld
+example/helloworld_epoll
+lib/bus_if.h
+lib/cryptodev_if.c
+lib/cryptodev_if.h
+lib/device_if.h
+lib/filtered_predefined_macros.h
+lib/linker_if.c
+lib/linker_if.h
+lib/machine_include/
+lib/vnode_if.h
+lib/vnode_if_newproto.h
+lib/vnode_if_typedef.h
