@@ -835,6 +835,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
     uint8_t rx_csum = ctx->hw_features.rx_csum;
     if (rx_csum) {
         if (pkt->ol_flags & (PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD)) {
+            rte_pktmbuf_free(pkt);
             return;
         }
     }
