@@ -573,8 +573,8 @@ static int
 init_port_start(void)
 {
     int nb_ports = ff_global_cfg.dpdk.nb_ports;
-    unsigned socketid = rte_lcore_to_socket_id(rte_lcore_id());
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[socketid];
+    unsigned socketid = 0;
+    struct rte_mempool *mbuf_pool;
     uint16_t i;
 
     for (i = 0; i < nb_ports; i++) {
@@ -710,6 +710,12 @@ init_port_start(void)
         }
         uint16_t q;
         for (q = 0; q < nb_queues; q++) {
+            if (numa_on) {
+                uint16_t lcore_id = lcore_conf.port_cfgs[port_id].lcore_list[q];
+                socketid = rte_lcore_to_socket_id(lcore_id);
+            }
+            mbuf_pool = pktmbuf_pool[socketid];
+
             ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
                 socketid, &dev_info.default_txconf);
             if (ret < 0) {
