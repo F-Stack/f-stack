@@ -109,6 +109,9 @@ int ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
 
 int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 
+int ff_dup(int oldfd);
+int ff_dup2(int oldfd, int newfd);
+
 /* POSIX-LIKE api end */
 
 
@@ -171,6 +174,13 @@ void ff_regist_packet_dispatcher(dispatch_func_t func);
 
 
 /* internal api begin */
+
+/* FreeBSD style calls. Used for tools. */
+int ff_ioctl_freebsd(int fd, unsigned long request, ...);
+int ff_setsockopt_freebsd(int s, int level, int optname,
+    const void *optval, socklen_t optlen);
+int ff_getsockopt_freebsd(int s, int level, int optname,
+    void *optval, socklen_t *optlen);
 
 /*
  * Handle rtctl.

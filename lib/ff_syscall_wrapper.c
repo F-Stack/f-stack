@@ -52,6 +52,9 @@
 #include <sys/fcntl.h>
 #include <net/route.h>
 
+#include <net/if.h>
+#include <sys/sockio.h>
+
 #include <machine/stdarg.h>
 
 #include "ff_api.h"
@@ -140,6 +143,27 @@
 #define LINUX_TIOCPKT_DOSTOP        32
 #define LINUX_TIOCPKT_IOCTL         64
 
+#define LINUX_SIOCGIFCONF     0x8912
+#define LINUX_SIOCGIFFLAGS    0x8913
+#define LINUX_SIOCSIFFLAGS    0x8914
+#define LINUX_SIOCGIFADDR     0x8915
+#define LINUX_SIOCSIFADDR     0x8916
+#define LINUX_SIOCGIFDSTADDR  0x8917
+#define LINUX_SIOCSIFDSTADDR  0x8918
+#define LINUX_SIOCGIFBRDADDR  0x8919
+#define LINUX_SIOCSIFBRDADDR  0x891a
+#define LINUX_SIOCGIFNETMASK  0x891b
+#define LINUX_SIOCSIFNETMASK  0x891c
+#define LINUX_SIOCGIFMETRIC   0x891d
+#define LINUX_SIOCSIFMETRIC   0x891e
+#define LINUX_SIOCGIFMTU      0x8921
+#define LINUX_SIOCSIFMTU      0x8922
+#define LINUX_SIOCSIFNAME     0x8923
+#define LINUX_SIOCADDMULTI    0x8931
+#define LINUX_SIOCDELMULTI    0x8932
+#define LINUX_SIOCGIFINDEX    0x8933
+#define LINUX_SIOCDIFADDR     0x8936
+
 /* ioctl define end */
 
 
@@ -217,8 +241,48 @@ linux2freebsd_ioctl(unsigned long request)
             return TIOCPKT_DOSTOP;
         case LINUX_TIOCPKT_IOCTL:
             return TIOCPKT_IOCTL;
+        case LINUX_SIOCGIFCONF:
+            return SIOCGIFCONF;
+        case LINUX_SIOCGIFFLAGS:
+            return SIOCGIFFLAGS;
+        case LINUX_SIOCSIFFLAGS:
+            return SIOCSIFFLAGS;
+        case LINUX_SIOCGIFADDR:
+            return SIOCGIFADDR;
+        case LINUX_SIOCSIFADDR:
+            return SIOCSIFADDR;
+        case LINUX_SIOCGIFDSTADDR:
+            return SIOCGIFDSTADDR;
+        case LINUX_SIOCSIFDSTADDR:
+            return SIOCSIFDSTADDR;
+        case LINUX_SIOCGIFBRDADDR:
+            return SIOCGIFBRDADDR;
+        case LINUX_SIOCSIFBRDADDR:
+            return SIOCSIFBRDADDR;
+        case LINUX_SIOCGIFNETMASK:
+            return SIOCGIFNETMASK;
+        case LINUX_SIOCSIFNETMASK:
+            return SIOCSIFNETMASK;
+        case LINUX_SIOCGIFMETRIC:
+            return SIOCGIFMETRIC;
+        case LINUX_SIOCSIFMETRIC:
+            return SIOCSIFMETRIC;
+        case LINUX_SIOCGIFMTU:
+            return SIOCGIFMTU;
+        case LINUX_SIOCSIFMTU:
+            return SIOCSIFMTU;
+        case LINUX_SIOCSIFNAME:
+            return SIOCSIFNAME;
+        case LINUX_SIOCADDMULTI:
+            return SIOCADDMULTI;
+        case LINUX_SIOCDELMULTI:
+            return SIOCDELMULTI;
+        case LINUX_SIOCGIFINDEX:
+            return SIOCGIFINDEX;
+        case LINUX_SIOCDIFADDR:
+            return SIOCDIFADDR;
         default:
-            return request;
+            return -1;
     }
 }
 
@@ -259,7 +323,7 @@ so_opt_convert(int optname)
         case LINUX_SO_PROTOCOL:
             return SO_PROTOCOL;
         default:
-            return optname;
+            return -1;
     }
 }
 
@@ -286,7 +350,7 @@ ip_opt_convert(int optname)
         case LINUX_IP_DROP_MEMBERSHIP:
             return IP_DROP_MEMBERSHIP;
         default:
-            return optname;
+            return -1;
     }
 }
 
@@ -307,7 +371,7 @@ tcp_opt_convert(int optname)
         case LINUX_TCP_MD5SIG:
             return TCP_MD5SIG;
         default:
-            return optname;
+            return -1;
     }
 }
 
@@ -322,7 +386,7 @@ linux2freebsd_opt(int level, int optname)
         case IPPROTO_TCP:
             return tcp_opt_convert(optname);
         default:
-            return optname;
+            return -1;
     }
 }
 
@@ -383,7 +447,24 @@ ff_getsockopt(int s, int level, int optname, void *optval,
         goto kern_fail;
     }
 
-    if ((rc = kern_getsockopt(curthread, s, level, optname, 
+    if ((rc = kern_getsockopt(curthread, s, level, optname,
+            optval, UIO_USERSPACE, optlen)))
+        goto kern_fail;
+
+    return (rc);
+
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+
+int
+ff_getsockopt_freebsd(int s, int level, int optname,
+    void *optval, socklen_t *optlen)
+{
+    int rc;
+
+    if ((rc = kern_getsockopt(curthread, s, level, optname,
             optval, UIO_USERSPACE, optlen)))
         goto kern_fail;
 
@@ -409,7 +490,24 @@ ff_setsockopt(int s, int level, int optname, const void *optval,
         goto kern_fail;
     }
 
-    if ((rc = kern_setsockopt(curthread, s, level, optname, 
+    if ((rc = kern_setsockopt(curthread, s, level, optname,
+            __DECONST(void *, optval), UIO_USERSPACE, optlen)))
+        goto kern_fail;
+
+    return (rc);
+
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+
+int
+ff_setsockopt_freebsd(int s, int level, int optname,
+    const void *optval, socklen_t optlen)
+{
+    int rc;
+
+    if ((rc = kern_setsockopt(curthread, s, level, optname,
             __DECONST(void *, optval), UIO_USERSPACE, optlen)))
         goto kern_fail;
 
@@ -438,6 +536,27 @@ ff_ioctl(int fd, unsigned long request, ...)
     argp = va_arg(ap, caddr_t);
     va_end(ap);
     if ((rc = kern_ioctl(curthread, fd, req, argp)))
+        goto kern_fail;
+
+    return (rc);
+
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+
+int
+ff_ioctl_freebsd(int fd, unsigned long request, ...)
+{
+    int rc;
+    va_list ap;
+    caddr_t argp;
+
+    va_start(ap, request);
+
+    argp = va_arg(ap, caddr_t);
+    va_end(ap);
+    if ((rc = kern_ioctl(curthread, fd, request, argp)))
         goto kern_fail;
 
     return (rc);
@@ -814,12 +933,12 @@ ff_getpeername(int s, struct linux_sockaddr * name,
         freebsd2linux_sockaddr(name, pf);
 
     if(pf != NULL)
-        free(pf, M_SONAME);    
+        free(pf, M_SONAME);
     return (rc);
     
 kern_fail:
     if(pf != NULL)
-        free(pf, M_SONAME);    
+        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }
@@ -843,7 +962,7 @@ ff_getsockname(int s, struct linux_sockaddr *name,
 
 kern_fail:
     if(pf != NULL)
-        free(pf, M_SONAME);    
+        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }
@@ -1035,6 +1154,43 @@ ff_gettimeofday(struct timeval *tv, struct timezone *tz)
     ff_get_current_time(&(tv->tv_sec), &nsec);
     tv->tv_usec = nsec/1000;
     return 0;
+}
+
+int
+ff_dup(int oldfd)
+{
+    int rc;
+    struct dup_args da = {
+        .fd = oldfd,
+    };
+    if ((rc = sys_dup(curthread, &da)))
+        goto kern_fail;
+
+    rc = curthread->td_retval[0];
+
+    return (rc);
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+
+int
+ff_dup2(int oldfd, int newfd)
+{
+    int rc;
+    struct dup2_args da = {
+        .from = oldfd,
+        .to = newfd
+    };
+    if ((rc = sys_dup2(curthread, &da)))
+        goto kern_fail;
+
+    rc = curthread->td_retval[0];
+
+    return (rc);
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
 }
 
 int
