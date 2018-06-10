@@ -511,9 +511,13 @@ ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
         }
     }
 
-    if (cfg->dpdk.proc_type == NULL ||
-        (strcmp(cfg->dpdk.proc_type, "primary") &&
-        strcmp(cfg->dpdk.proc_type, "secondary"))) {
+    if (cfg->dpdk.proc_type == NULL) {
+        cfg->dpdk.proc_type = strdup("auto");
+    }
+
+    if (strcmp(cfg->dpdk.proc_type, "primary") &&
+        strcmp(cfg->dpdk.proc_type, "secondary") &&
+        strcmp(cfg->dpdk.proc_type, "auto")) {
         printf("invalid proc-type\n");
         return -1;
     }

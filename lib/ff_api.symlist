@@ -45,3 +45,8 @@ ff_gettimeofday
 ff_fdisused
 ff_getmaxfd
 ff_ngctl
+ff_ioctl_freebsd
+ff_getsockopt_freebsd
+ff_setsockopt_freebsd
+ff_dup
+ff_dup2

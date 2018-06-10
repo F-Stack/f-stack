@@ -1077,7 +1077,7 @@ handle_ioctl_msg(struct ff_msg *msg)
         goto done;
     }
 
-    ret = ff_ioctl(fd, msg->ioctl.cmd, msg->ioctl.data);
+    ret = ff_ioctl_freebsd(fd, msg->ioctl.cmd, msg->ioctl.data);
 
     ff_close(fd);
 
@@ -1136,12 +1136,12 @@ handle_ipfw_msg(struct ff_msg *msg)
 
     switch (msg->ipfw.cmd) {
         case FF_IPFW_GET:
-            ret = ff_getsockopt(fd, msg->ipfw.level,
+            ret = ff_getsockopt_freebsd(fd, msg->ipfw.level,
                 msg->ipfw.optname, msg->ipfw.optval,
                 msg->ipfw.optlen);
             break;
         case FF_IPFW_SET:
-            ret = ff_setsockopt(fd, msg->ipfw.level,
+            ret = ff_setsockopt_freebsd(fd, msg->ipfw.level,
                 msg->ipfw.optname, msg->ipfw.optval,
                 *(msg->ipfw.optlen)); 
             break;
