@@ -372,7 +372,7 @@ ff_veth_attach(struct ff_port_cfg *cfg)
 
     sc = malloc(sizeof(struct ff_veth_softc), M_DEVBUF, M_WAITOK);
     if (NULL == sc) {
-        printf("%s: ff_veth_softc allocation failed\n", sc->host_ifname);
+        printf("ff_veth_softc allocation failed\n");
         goto fail;
     }
     memset(sc, 0, sizeof(struct ff_veth_softc));
