@@ -523,8 +523,8 @@ ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
     }
 
     if ((uint16_t)cfg->dpdk.proc_id > RTE_MAX_LCORE) {
-        printf("proc_id:%d is too large\n", cfg->dpdk.proc_id);
-        return -1;
+        printf("invalid proc_id:%d, use default 0\n", cfg->dpdk.proc_id);
+        cfg->dpdk.proc_id = 0;
     }
 
     return 0;
