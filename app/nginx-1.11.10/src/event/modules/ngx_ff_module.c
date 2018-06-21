@@ -117,6 +117,8 @@ static ssize_t (*real_readv)(int, const struct iovec *, int);
 static ssize_t (*real_read)(int, void *, size_t);
 static ssize_t (*real_write)(int, const void *, size_t);
 
+static int (*real_shutdown)(int, int);
+
 static int (*real_ioctl)(int, int, void *);
 
 static int (*real_gettimeofday)(struct timeval *tv, struct timezone *tz);
@@ -442,6 +444,17 @@ close(int sockfd)
     }
 
     return SYSCALL(close)(sockfd);
+}
+
+int
+shutdown(int sockfd, int how)
+{
+    if(is_fstack_fd(sockfd)){
+        sockfd = restore_fstack_fd(sockfd);
+        return ff_close(sockfd);
+    }
+
+    return SYSCALL(shutdown)(sockfd, how);
 }
 
 ssize_t
