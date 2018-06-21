@@ -451,7 +451,7 @@ shutdown(int sockfd, int how)
 {
     if(is_fstack_fd(sockfd)){
         sockfd = restore_fstack_fd(sockfd);
-        return ff_close(sockfd);
+        return ff_shutdown(sockfd, how);
     }
 
     return SYSCALL(shutdown)(sockfd, how);
