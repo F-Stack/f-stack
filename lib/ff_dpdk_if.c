@@ -88,10 +88,10 @@
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_ETHPORTS
 #define MAX_RX_QUEUE_PER_PORT 128
 
+#ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
 #define KNI_QUEUE_SIZE 2048
 
-#ifdef FF_KNI
 static int enable_kni;
 static int kni_accept;
 #endif
@@ -361,8 +361,10 @@ init_mem_pool(void)
         nb_ports*nb_lcores*MAX_PKT_BURST    +
         nb_ports*nb_tx_queue*TX_QUEUE_SIZE  +
         nb_lcores*MEMPOOL_CACHE_SIZE +
+#ifdef FF_KNI
         nb_ports*KNI_MBUF_MAX +
         nb_ports*KNI_QUEUE_SIZE +
+#endif
         nb_lcores*nb_ports*DISPATCH_RING_SIZE),
         (unsigned)8192);
 
