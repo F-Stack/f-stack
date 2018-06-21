@@ -91,8 +91,10 @@
 #define KNI_MBUF_MAX 2048
 #define KNI_QUEUE_SIZE 2048
 
+#ifdef FF_KNI
 static int enable_kni;
 static int kni_accept;
+#endif
 
 static int numa_on;
 
@@ -520,6 +522,7 @@ init_msg_ring(void)
     return 0;
 }
 
+#ifdef FF_KNI
 static int
 init_kni(void)
 {
@@ -543,6 +546,7 @@ init_kni(void)
 
     return 0;
 }
+#endif
 
 static void
 set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
@@ -820,10 +824,12 @@ ff_dpdk_init(int argc, char **argv)
 
     init_msg_ring();
 
+#ifdef FF_KNI
     enable_kni = ff_global_cfg.kni.enable;
     if (enable_kni) {
         init_kni();
     }
+#endif
 
     ret = init_port_start();
     if (ret < 0) {
@@ -891,6 +897,9 @@ protocol_filter(const void *data, uint16_t len)
     if(ntohs(hdr->ether_type) == ETHER_TYPE_ARP)
         return FILTER_ARP;
 
+#ifndef FF_KNI
+    return FILTER_UNKNOWN;
+#else
     if (!enable_kni) {
         return FILTER_UNKNOWN;
     }
@@ -900,6 +909,7 @@ protocol_filter(const void *data, uint16_t len)
 
     return ff_kni_proto_filter(data + ETHER_HDR_LEN,
         len - ETHER_HDR_LEN);
+#endif
 }
 
 static inline void
@@ -1024,6 +1034,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 }
             }
 
+#ifdef FF_KNI
             if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
@@ -1031,12 +1042,14 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                     ff_kni_enqueue(port_id, mbuf_clone);
                 }
             }
-
+#endif
             ff_veth_input(ctx, rtem);
+#ifdef FF_KNI
         } else if (enable_kni &&
             ((filter == FILTER_KNI && kni_accept) ||
             (filter == FILTER_UNKNOWN && !kni_accept)) ) {
             ff_kni_enqueue(port_id, rtem);
+#endif
         } else {
             ff_veth_input(ctx, rtem);
         }
@@ -1443,9 +1456,11 @@ main_loop(void *arg)
             queue_id = qconf->rx_queue_list[i].queue_id;
             ctx = veth_ctx[port_id];
 
+#ifdef FF_KNI
             if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
             }
+#endif
 
             process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 

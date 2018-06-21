@@ -16,7 +16,10 @@ OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
 
 HOST_OS:=$(shell uname -s)
-#DEBUG=-O0 -gdwarf-2 -g3
+
+#DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+
+#FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
 
@@ -40,9 +43,13 @@ INCLUDES+= -I./opt
 # Include search path for files that only include host OS headers
 HOST_INCLUDES= -I.
 ifndef DEBUG
-HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb
+HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb -Wno-format-truncation
 else
 HOST_CFLAGS = ${DEBUG} 
+endif
+
+ifdef FF_KNI
+HOST_CFLAGS+= -DFF_KNI
 endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}
@@ -165,10 +172,14 @@ FF_HOST_SRCS+=              \
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_dpdk_if.c        \
-	ff_dpdk_kni.c       \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
 	ff_init.c
+
+ifdef FF_KNI
+FF_HOST_SRCS+=              \
+	ff_dpdk_kni.c
+endif
 
 ifdef FF_IPSEC
 CRYPTO_ASM_SRCS+=                       \
