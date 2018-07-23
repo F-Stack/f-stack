@@ -385,7 +385,12 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
                       "start worker processes shm_open");
         exit(2);
     }
-    (void) ftruncate(shm_fd, sizeof(sem_t));
+    r = ftruncate(shm_fd, sizeof(sem_t));
+    if (r == -1) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                      "start worker processes ftruncate");
+        exit(2);
+    }
     ngx_ff_worker_sem = (sem_t *) mmap(NULL, sizeof(sem_t),
                       PROT_READ|PROT_WRITE,MAP_SHARED, shm_fd, 0);
     if (ngx_ff_worker_sem == MAP_FAILED) {
