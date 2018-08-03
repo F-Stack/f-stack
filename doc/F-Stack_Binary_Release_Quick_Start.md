@@ -10,6 +10,7 @@ Before you start to use f-stack-binary-release package, please make sure you:
 
 ```sh
 $ sudo -i
+$ wget https://github.com/F-Stack/f-stack/releases/download/v1.12/f-stack-binary-release.tar.gz
 $ tar zxf f-stack-binary-release.tar.gz
 $ cd f-stack-binary-release/scripts
 # set_env.sh will offload the NIC, if you only have one NIC, the following three commands must run in a script
