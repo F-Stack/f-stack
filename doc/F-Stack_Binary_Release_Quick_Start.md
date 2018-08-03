@@ -91,4 +91,4 @@ $ rm -rf /path/to/f-stack-binary-release
 
 ## Compile f-stack by yourself
 
-If your OS version is not in the above list or you want to compile f-stack by yourself, you can refer to another document *compile_f-stack_in_different_linux_releases.md*.
+If your OS version is not in the above list or you want to compile f-stack by yourself, you can refer to another document [Build_Guide](https://github.com/F-Stack/f-stack/blob/master/doc/F-Stack_Build_Guide.md).
