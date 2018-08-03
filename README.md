@@ -102,6 +102,10 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     route add -net 0.0.0.0 gw <gateway> dev veth0
     # route add -net ...  # other route rules
 
+## Binary Release
+
+We provide a  f-stack-binary-release package that you can use F-Stack directly without compiling. For more details, see [Binary_Release_Quick_Start](https://github.com/F-Stack/f-stack/blob/master/doc/F-Stack_Binary_Release_Quick_Start.md).
+
 ## Nginx Testing Result
 
 Test environment
