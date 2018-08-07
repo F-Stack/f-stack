@@ -2558,6 +2558,36 @@ void closeListeningSockets(int unlink_unix_socket) {
     }
 }
 
+/* Reset cpu affinity as soon as new process fork().
+  * For new process will use same cpu core with redis server. */
+void resetCpuAffinity(const char* name)
+{
+	int j = 0, s = 0;
+	cput_set_t cpuset_frm, cpuset_to;
+	pthread_t thread;
+#ifdef __linux__
+	thread = pthread_self();
+	CPU_ZERO(&cpuset_frm);
+	CPU_ZERO(&cpuset_to);
+	
+	pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset_frm);
+	for (j = 0; j < CPU_SETSIZE; j++)
+	{
+		if ( CPU_ISSET(j, &cpuset_frm) )
+			continue;
+		CPU_SET(j, &cpuset_to);
+    }
+    s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset_to);
+    if (s != 0)
+        serverLog(LL_WARNING,"set cpu affinity, failed.");
+    if (name!=NULL)
+    {
+    	pthread_setname_np(thread, name);
+    }
+#endif
+	return;
+}
+
 int prepareForShutdown(int flags) {
     int save = flags & SHUTDOWN_SAVE;
     int nosave = flags & SHUTDOWN_NOSAVE;
