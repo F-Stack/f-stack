@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <inttypes.h>
+#define _GNU_SOURCE
 #include <pthread.h>
 #include <syslog.h>
 #include <netinet/in.h>
@@ -1332,6 +1333,8 @@ void populateCommandTable(void);
 void resetCommandTableStats(void);
 void adjustOpenFilesLimit(void);
 void closeListeningSockets(int unlink_unix_socket);
+void resetCpuAffinity(const char* name);
+
 void updateCachedTime(void);
 void resetServerStats(void);
 unsigned int getLRUClock(void);
