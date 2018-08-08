@@ -2565,7 +2565,7 @@ void resetCpuAffinity(const char* name)
 	int j = 0, s = 0;
 	cput_set_t cpuset_frm, cpuset_to;
 	pthread_t thread;
-#ifdef __linux__
+#ifdef HAVE_FF_KQUEUE
 	thread = pthread_self();
 	CPU_ZERO(&cpuset_frm);
 	CPU_ZERO(&cpuset_to);
