@@ -930,6 +930,7 @@ int rdbSaveBackground(char *filename) {
 
         /* Child */
         closeListeningSockets(0);
+        resetCpuAffinity("rdb-bgsave");
         redisSetProcTitle("redis-rdb-bgsave");
         retval = rdbSave(filename);
         if (retval == C_OK) {
@@ -1631,6 +1632,7 @@ int rdbSaveToSlavesSockets(void) {
         zfree(fds);
 
         closeListeningSockets(0);
+        resetCpuAffinity("rdb2slave");
         redisSetProcTitle("redis-rdb-to-slaves");
 
         retval = rdbSaveRioWithEOFMark(&slave_sockets,NULL);
