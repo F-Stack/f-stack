@@ -1611,6 +1611,7 @@ int ldbStartSession(client *c) {
              * to the clients. */
             serverLog(LL_WARNING,"Redis forked for debugging eval");
             closeListeningSockets(0);
+            resetCpuAffinity("redis-dbg");
         } else {
             /* Parent */
             listAddNodeTail(ldb.children,(void*)(unsigned long)cp);
