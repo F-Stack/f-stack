@@ -188,6 +188,9 @@ struct ff_dpdk_if_context {
 
 static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
 
+static struct ff_top_args ff_top_status;
+static struct ff_traffic_args ff_traffic;
+
 extern void ff_hardclock(void);
 
 static void
@@ -994,6 +997,11 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         void *data = rte_pktmbuf_mtod(rtem, void*);
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
+        if (!pkts_from_ring) {
+            ff_traffic.rx_packets++;
+            ff_traffic.rx_bytes += len;
+        }
+
         if (!pkts_from_ring && packet_dispatcher) {
             int ret = (*packet_dispatcher)(data, len, queue_id, nb_queues);
             if (ret < 0 || ret >= nb_queues) {
@@ -1184,6 +1192,13 @@ done:
 #endif
 
 static inline void
+handle_traffic_msg(struct ff_msg *msg)
+{
+    msg->traffic = ff_traffic;
+    msg->result = 0;
+}
+
+static inline void
 handle_default_msg(struct ff_msg *msg)
 {
     msg->result = ENOTSUP;
@@ -1215,6 +1230,9 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             handle_ipfw_msg(msg);
             break;
 #endif
+        case FF_TRAFFIC:
+            handle_traffic_msg(msg);
+            break;
         default:
             handle_default_msg(msg);
             break;
@@ -1251,6 +1269,12 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
         for (i = 0; i < n; i++) {
             ff_dump_packets(qconf->pcap[port], m_table[i]);
         }
+    }
+
+    ff_traffic.tx_packets += n;
+    uint16_t i;
+    for (i = 0; i < n; i++) {
+        ff_traffic.tx_bytes += rte_pktmbuf_data_len(m_table[i]);
     }
 
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
@@ -1509,14 +1533,14 @@ main_loop(void *arg)
 
         if (!idle) {
             sys_tsc = div_tsc - cur_tsc;
-            ff_status.sys_tsc += sys_tsc;
+            ff_top_status.sys_tsc += sys_tsc;
         }
 
-        ff_status.usr_tsc += usr_tsc;
-        ff_status.work_tsc += end_tsc - cur_tsc;
-        ff_status.idle_tsc += end_tsc - cur_tsc - usr_tsc - sys_tsc;
+        ff_top_status.usr_tsc += usr_tsc;
+        ff_top_status.work_tsc += end_tsc - cur_tsc;
+        ff_top_status.idle_tsc += end_tsc - cur_tsc - usr_tsc - sys_tsc;
 
-        ff_status.loops++;
+        ff_top_status.loops++;
     }
 
     return 0;

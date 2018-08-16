@@ -42,6 +42,7 @@ enum FF_MSG_TYPE {
     FF_TOP,
     FF_NGCTL,
     FF_IPFW_CTL,
+    FF_TRAFFIC,
 };
 
 struct ff_sysctl_args {
@@ -92,6 +93,13 @@ struct ff_ipfw_args {
     socklen_t *optlen;
 };
 
+struct ff_traffic_args {
+    uint64_t rx_packets;
+    uint64_t rx_bytes;
+    uint64_t tx_packets;
+    uint64_t tx_bytes;
+};
+
 #define MAX_MSG_BUF_SIZE 10240
 
 /* structure of ipc msg */
@@ -111,6 +119,7 @@ struct ff_msg {
         struct ff_top_args top;
         struct ff_ngctl_args ngctl;
         struct ff_ipfw_args ipfw;
+        struct ff_traffic_args traffic;
     };
 } __attribute__((packed)) __rte_cache_aligned;
 
