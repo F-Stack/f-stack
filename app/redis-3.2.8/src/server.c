@@ -2563,7 +2563,7 @@ void closeListeningSockets(int unlink_unix_socket) {
 void resetCpuAffinity(const char* name)
 {
 	int j = 0, s = 0;
-	cput_set_t cpuset_frm, cpuset_to;
+	cpu_set_t cpuset_frm, cpuset_to;
 	pthread_t thread;
 #ifdef HAVE_FF_KQUEUE
 	thread = pthread_self();
