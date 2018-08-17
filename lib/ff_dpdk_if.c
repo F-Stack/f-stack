@@ -1130,11 +1130,10 @@ handle_route_msg(struct ff_msg *msg)
     }
 }
 
-static struct ff_top_args ff_status;
 static inline void
 handle_top_msg(struct ff_msg *msg)
 {
-    msg->top = ff_status;
+    msg->top = ff_top_status;
     msg->result = 0;
 }
 
