@@ -35,6 +35,8 @@ SRCS=   ${PROG}.c
 endif
 endif
 
+PROGDIR= ${TOPDIR}/tools/sbin
+
 HEADERS+= $(filter %.h,${SRCS})
 OBJS+= $(patsubst %.c,%.o, $(filter %.c,${SRCS}))
 OBJS+= $(patsubst %.cc,%.o, $(filter %.cc,${SRCS}))
@@ -63,13 +65,13 @@ LIBS+= ${FF_PROG_LIBS}
 CFLAGS+= $(foreach n,${LIBADD},-I${TOPDIR}/tools/lib${n})
 LIBS+= $(foreach n,${LIBADD},-L${TOPDIR}/tools/lib${n} -l${n})
 
-CLEANFILES+= ${PROG} ${OBJS}
+CLEANFILES+= ${PROGDIR}/${PROG} ${OBJS}
 
 ${PROG}: ${HEADERS} ${OBJS}
 ifdef PROG_CXX
-	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ ${OBJS} ${LIBS} 
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o ${PROGDIR}/${PROG} ${OBJS} ${LIBS}
 else
-	${CC} ${CFLAGS} ${LDFLAGS} -o $@ ${OBJS} ${LIBS}
+	${CC} ${CFLAGS} ${LDFLAGS} -o ${PROGDIR}/${PROG} ${OBJS} ${LIBS}
 endif
 
 clean:

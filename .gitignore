@@ -20,16 +20,3 @@ lib/machine_include/
 lib/vnode_if.h
 lib/vnode_if_newproto.h
 lib/vnode_if_typedef.h
-app/nginx-1.11.10/Makefile
-app/nginx-1.11.10/objs/
-tools/arp/arp
-tools/ifconfig/ifconfig
-tools/ipfw/ipfw
-tools/netstat/netstat
-tools/netstat/nl_defs.h
-tools/netstat/nl_symbols.c
-tools/ngctl/ngctl
-tools/route/keywords.h
-tools/route/route
-tools/sysctl/sysctl
-tools/top/top
