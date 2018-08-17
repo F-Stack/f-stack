@@ -2,6 +2,8 @@
 
 Directory `compat` implements an ipc library using dpdk `rte_ring` and ports some source files compatible with FreeBSD and Linux.
 
+Directory `sbin` contains all the tools binary that compiled.
+
 All other directories are useful tools ported from FreeBSD.
 Since F-Stack is multi-process architecture and every process has an independent stack, so we must communicate with every F-Stack process.
 Each tool add an option `-p`(Which F-Stack process to communicate with, default 0), except that, it is same with the original FreeBSD.
@@ -48,38 +50,38 @@ Examples:
 ```
      Add a default route:
 
-       ./route -p 0 add -net 0.0.0.0/0 192.168.1.1
+       ./sbin/route -p 0 add -net 0.0.0.0/0 192.168.1.1
 
      A shorter version of adding a default route can also be written as:
 
-       ./route -p 0 add default 192.168.1.1
+       ./sbin/route -p 0 add default 192.168.1.1
 
      Add a static route to the 172.16.10.0/24 network via the 172.16.1.1 gate-
      way:
 
-       ./route -p 0 add -net 172.16.10.0/24 172.16.1.1
+       ./sbin/route -p 0 add -net 172.16.10.0/24 172.16.1.1
 
      Change the gateway of an already established static route in the routing
      table:
 
-       ./route -p 0 change -net 172.16.10.0/24 172.16.1.2
+       ./sbin/route -p 0 change -net 172.16.10.0/24 172.16.1.2
 
      Display the route for a destination network:
 
-       ./route -p 0 show 172.16.10.0
+       ./sbin/route -p 0 show 172.16.10.0
 
      Delete a static route from the routing table:
 
-       ./route -p 0 delete -net 172.16.10.0/24 172.16.1.2
+       ./sbin/route -p 0 delete -net 172.16.10.0/24 172.16.1.2
 
      Remove all routes from the routing table:
 
-       ./route -p 0 flush
+       ./sbin/route -p 0 flush
 
     FreeBSD uses `netstat -rn ` to list the route table which we havn't ported,
     you can execute the following command instead, `-d` means debug mode, `-v`
     means verbose.
-        ./route -p 0 -d -v flush
+       ./sbin/route -p 0 -d -v flush
 ```
 Note that, if you want to modify the route table, you must use `-p` to execute the same command for each f-stack process.
 
@@ -92,7 +94,7 @@ top [-p <f-stack proc_id>] [-d <secs>] [-n num]
 ```
 Examples:
 ```
-./tools/top/top 
+./sbin/top 
 
 |---------|---------|---------|---------------|
 |     idle|      sys|      usr|           loop|
@@ -219,7 +221,7 @@ traffic [-p <f-stack proc_id>] [-d <secs>] [-n num]
 ```
 Examples:
 ```
-./tools/traffic/traffic 
+./sbin/traffic 
 
 |--------------------|--------------------|--------------------|--------------------|
 |          rx packets|            rx bytes|          tx packets|            tx bytes|
