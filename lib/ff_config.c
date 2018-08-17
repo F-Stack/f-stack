@@ -297,7 +297,7 @@ __parse_config_list(uint16_t *arr, int *sz, const char *value) {
         }
     }
     if (nr_ele <= 0) {
-        printf("list %s is empty\n", value);
+        fprintf(stderr, "list %s is empty\n", value);
         return 1;
     }
     sort_uint16_array(arr, nr_ele);
@@ -430,6 +430,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.tso = atoi(value);
     } else if (MATCH("dpdk", "vlan_strip")) {
         pconfig->dpdk.vlan_strip = atoi(value);
+    } else if (MATCH("dpdk", "idle_sleep")) {
+        pconfig->dpdk.idle_sleep = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "method")) {

@@ -24,6 +24,7 @@
  *
  */
 #include <assert.h>
+#include <unistd.h>
 
 #include <rte_common.h>
 #include <rte_byteorder.h>
@@ -97,6 +98,8 @@ static int kni_accept;
 #endif
 
 static int numa_on;
+
+static unsigned idle_sleep;
 
 static struct rte_timer freebsd_clock;
 
@@ -821,6 +824,8 @@ ff_dpdk_init(int argc, char **argv)
 
     numa_on = ff_global_cfg.dpdk.numa_on;
 
+    idle_sleep = ff_global_cfg.dpdk.idle_sleep;
+
     init_lcore_conf();
 
     init_mem_pool();
@@ -1429,7 +1434,7 @@ main_loop(void *arg)
     struct loop_routine *lr = (struct loop_routine *)arg;
 
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-    uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc;
+    uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc, idle_sleep_tsc;
     int i, j, nb_rx, idle;
     uint16_t port_id, queue_id;
     struct lcore_conf *qconf;
@@ -1524,10 +1529,18 @@ main_loop(void *arg)
             lr->loop(lr->arg);
         }
 
+        idle_sleep_tsc = rte_rdtsc();
+        if (likely(idle && idle_sleep)) {
+            usleep(idle_sleep);
+            end_tsc = rte_rdtsc();
+        } else {
+            end_tsc = idle_sleep_tsc;
+        }
+
         end_tsc = rte_rdtsc();
 
         if (usch_tsc == cur_tsc) {
-            usr_tsc = end_tsc - div_tsc;
+            usr_tsc = idle_sleep_tsc - div_tsc;
         }
 
         if (!idle) {

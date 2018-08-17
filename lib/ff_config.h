@@ -31,8 +31,8 @@
 extern "C" {
 #endif
 
-// dpdk argc, argv, max argc: 4, member of dpdk_config
-#define DPDK_CONFIG_NUM 4
+// dpdk argc, argv, max argc: 16, member of dpdk_config
+#define DPDK_CONFIG_NUM 16
 #define DPDK_CONFIG_MAXLEN 64
 #define DPDK_MAX_LCORE 128
 
@@ -88,12 +88,16 @@ struct ff_config {
         int numa_on;
         int tso;
         int vlan_strip;
+
+        /* sleep x microseconds when no pkts incomming */
+        unsigned idle_sleep;
+
         /* list of proc-lcore */
         uint16_t *proc_lcore;
 
         int nb_ports;
-        uint16_t *portid_list;
         uint16_t max_portid;
+        uint16_t *portid_list;
         // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
     } dpdk;
