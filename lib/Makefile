@@ -19,7 +19,7 @@ HOST_OS:=$(shell uname -s)
 
 #DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
-#FF_KNI=1
+FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
 
