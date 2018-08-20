@@ -1339,6 +1339,12 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
             }
         }
 
+        if (prev != NULL) {
+            prev->next = cur;
+        }
+        head->nb_segs++;
+
+        prev = cur;
         void *data = rte_pktmbuf_mtod(cur, void*);
         int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
         int ret = ff_mbuf_copydata(m, data, off, len);
@@ -1348,15 +1354,10 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
             return -1;
         }
 
-        if (prev != NULL) {
-            prev->next = cur;
-        }
-        prev = cur;
 
         cur->data_len = len;
         off += len;
         total -= len;
-        head->nb_segs++;
         cur = NULL;
     }
 
