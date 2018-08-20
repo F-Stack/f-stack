@@ -419,18 +419,21 @@ create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
 {
     struct rte_ring *ring;
 
-    if (name == NULL)
-        return NULL;
-
-    /* If already create, just attached it */
-    if (likely((ring = rte_ring_lookup(name)) != NULL))
-        return ring;
+    if (name == NULL) {
+        rte_exit(EXIT_FAILURE, "create ring failed, no name!\n");
+    }
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        return rte_ring_create(name, count, socket_id, flags);
+        ring = rte_ring_create(name, count, socket_id, flags);
     } else {
-        return rte_ring_lookup(name);
+        ring = rte_ring_lookup(name);
     }
+
+    if (ring == NULL) {
+        rte_exit(EXIT_FAILURE, "create ring:%s failed!\n", name);
+    }
+
+    return ring;
 }
 
 static int

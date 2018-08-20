@@ -420,6 +420,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
+    } else if (MATCH("dpdk", "base_virtaddr")) {
+        pconfig->dpdk.base_virtaddr= strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "promiscuous")) {
@@ -485,6 +487,10 @@ dpdk_args_setup(struct ff_config *cfg)
         sprintf(temp, "--proc-type=%s", cfg->dpdk.proc_type);
         dpdk_argv[n++] = strdup(temp);
     }
+    if (cfg->dpdk.base_virtaddr) {
+        sprintf(temp, "--base-virtaddr=%s", cfg->dpdk.base_virtaddr);
+        dpdk_argv[n++] = strdup(temp);
+    }
 
     dpdk_argc = n;
 
@@ -520,7 +526,7 @@ ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
     if (strcmp(cfg->dpdk.proc_type, "primary") &&
         strcmp(cfg->dpdk.proc_type, "secondary") &&
         strcmp(cfg->dpdk.proc_type, "auto")) {
-        printf("invalid proc-type\n");
+        printf("invalid proc-type:%s\n", cfg->dpdk.proc_type);
         return -1;
     }
 

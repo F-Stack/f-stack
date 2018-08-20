@@ -79,6 +79,9 @@ struct ff_config {
         /* mask of current proc on all lcores */
         char *proc_mask;
 
+        /* specify base virtual address to map. */
+        char *base_virtaddr;
+
         int nb_channel;
         int memory;
         int no_huge;
