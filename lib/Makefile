@@ -27,6 +27,10 @@ ifeq ($(FF_DPDK),)
     FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
 endif
 
+ifdef RTE_SDK
+    FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
+endif
+
 DPDK_CFLAGS= -Wall -Werror -include ${FF_DPDK}/include/rte_config.h
 DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3
 DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
