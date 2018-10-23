@@ -1114,6 +1114,7 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			return (error);
 	}
 #else
+if (lport == 0)
 {
     struct ifaddr *ifa;
     struct ifnet *ifp;
