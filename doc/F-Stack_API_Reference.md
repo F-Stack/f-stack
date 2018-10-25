@@ -1,14 +1,14 @@
 # F-Stack API Reference
 
-F-Stack is a high performance network framework based on DPDK.
+F-Stack (FF) is a high-performance network framework based on DPDK.
 
-FF API provides standard Kqueue/Epoll interface, and a micro threading framework (SPP).
+FF API provides the standard Kqueue/Epoll interface, and a micro threading framework (SPP).
 
-In order to facilitate a variety of services can use F-Stack simpler and faster, F-Stack has integrated Nginx and Redis。
+In order to facilitate a variety of services to use F-Stack simpler and faster, F-Stack has been integrated with Nginx and Redis。
 
 ## FF API
 
- The header file ff_api.h defines the following API, which should be used to replace the system called when using the F-Sstack.
+The header file ff_api.h defines the following API, which should be used to replace the system calls when using F-Stack.
 
 ### Initialize
 
@@ -18,12 +18,12 @@ In order to facilitate a variety of services can use F-Stack simpler and faster,
 	conf:Profile path
 	argv：-c <coremask>,the coremask parameters can cover the coremask in configuration file
 
- Initialize F-Stack，include DPDK/FreeBSD network stack, etc.
+Initialize F-Stack，including DPDK/FreeBSD network stack, etc.
 
 #### ff_run
 
 	void ff_run(loop_func_t loop, void *arg);
-loop is a callbask function，the service logic is implemented by the user, and be called by each poll of F-Stack .
+loop is a callbask function，the service logic is implemented by the user, and called by each poll of F-Stack .
 
 ### Control API
 
@@ -32,7 +32,7 @@ loop is a callbask function，the service logic is implemented by the user, and 
 	int ff_fcntl(int fd, int cmd, ...);
 
  fcntl() performs one of the operations described below on the open file descriptor fd.  The operation is determined by cmd.
-more info see man fcntl
+more info see man fcntl.
 
 #### ff_sysctl
 
@@ -40,14 +40,14 @@ more info see man fcntl
 	const void *newp, size_t newlen);
 
  ff_sysctl is used to modify kernel parameters at runtime.
-However, it is currently only supported before F-Stack is started.
+However, it is  supported only before F-Stack is started.
 
 #### ff_ioctl
 
 	int ff_ioctl(int fd, unsigned long request, ...);
 
   The ioctl() function manipulates the underlying device parameters of special files.
-  more info see man ioctl
+  more info see man ioctl.
 
 ### Network API
 
@@ -55,8 +55,8 @@ However, it is currently only supported before F-Stack is started.
 
 	int ff_socket(int domain, int type, int protocol);
 
-  creates an endpoint for communication and returns a file descriptor that refers to that endpoint.
-  more info see man socket
+  ff_socket creates an endpoint for communication and returns a file descriptor that refers to that endpoint.
+  more info see man socket.
 
 #### ff_setsockopt & ff_getsockopt
 
@@ -65,15 +65,15 @@ However, it is currently only supported before F-Stack is started.
 	int ff_setsockopt(int s, int level, int optname, const void *optval,
 	socklen_t optlen);
 
-  getsockopt() and setsockopt() manipulate options for the socket referred to by the file descriptor sockfd.
+  getsockopt() and setsockopt() manipulate options for the socket denoted by the file descriptor sockfd.
   more info see man getsockopt and man setsockopt.
 
 #### ff_socketpair
 
 	int ff_socketpair(int domain, int type, int protocol, int *sv);
 
-  The socketpair() call creates an unnamed pair of connected sockets in the specified domain, of the specified type, and using the optionally specified protocol.
-  more info see man socketpair
+  The socketpair() call creates an unnamed pair of connected sockets in the given domain in the specified type, and uses the optionally given protocol.
+  more info see man socketpair.
 
 #### Socket operation function
 
@@ -123,7 +123,7 @@ However, it is currently only supported before F-Stack is started.
 	ssize_t ff_sendto(int s, const void *buf, size_t len, int flags, const struct linux_sockaddr *to, socklen_t tolen);
 	ssize_t ff_sendmsg(int s, const struct msghdr *msg, int flags);
 
-  send a message on a socket.
+ Functions to send a message on a socket.
   more info see man send.
 
 #### ff\_recv & ff\_recvfrom & ff\_recvmsg
@@ -132,7 +132,7 @@ However, it is currently only supported before F-Stack is started.
 	ssize_t ff_recvfrom(int s, void *buf, size_t len, int flags, struct linux_sockaddr *from, socklen_t *fromlen);
 	ssize_t ff_recvmsg(int s, struct msghdr *msg, int flags);
 
-  receive a message from a socket.
+  Functions to receive a message from a socket.
   more info see man recv.
 
 #### ff_select
@@ -146,7 +146,7 @@ However, it is currently only supported before F-Stack is started.
 
 	int ff_poll(struct pollfd fds[], nfds_t nfds, int timeout);
 
-  wait for some event on a file descriptor.
+  ff_poll waits for events on a file descriptor.
   more info see man poll.
 
 ### Kqueue API
@@ -156,7 +156,7 @@ However, it is currently only supported before F-Stack is started.
 	int ff_kqueue(void);
 	int ff_kevent(int kq, const struct kevent *changelist, int nchanges, struct kevent *eventlist, int nevents, const struct timespec *timeout);
 
-  The kqueue() system call provides a generic method	of notifying the user when an event happens or a	condition holds, based on the results of small pieces of kernel code termed filters.
+  The kqueue() system call provides a generic method of notifying the user when an event occurs or a condition holds, based on the results of small pieces of kernel code termed filters.
   more info see man kqueue on FreeBSD System Calls Manual.
 
 ### Epoll API
@@ -172,12 +172,12 @@ However, it is currently only supported before F-Stack is started.
 
 	int ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
 
-  This system call performs control operations on the epoll(7) instance referred to by the file descriptor epfd.
+  This system call performs control operations on the epoll(7) instance referred by the file descriptor epfd.
   more info see man epoll_ctl.
 
 ### Micro Thread API `micro_thread/mt_api.h`
 
-  In order to develop asynchronous program convenient without complex asynchronous logic processing, reference [SPP's micro thread framework](https://github.com/Tencent/MSEC/tree/master/spp_rpc) F-Stack provides a micro thread framework, synchronous programming can be achieved using the asynchronous call.
+  In order to develop asynchronous program convenient without complex asynchronous logic processing (reference [SPP's micro thread framework](https://github.com/Tencent/MSEC/tree/master/spp_rpc)), F-Stack provides a micro thread framework so that synchronous programming can be achieved using asynchronous calls.
 
 #### UDP send/recv interface
 
@@ -204,7 +204,7 @@ However, it is currently only supported before F-Stack is started.
     
     int mt_tcpsendrcv_ex(struct sockaddr_in* dst, void* pkg, int len, void* rcv_buf, int* buf_size, int timeout, MtFuncTcpMsgLen func, MT_TCP_CONN_TYPE type = MT_TCP_LONG);
     
-  Tcp send and recv interface, you can choose if the connection is keep-alive or close.The parameter of buf can't use `static`.
+  TCP send and recv interface, you can choose if the connection is keep-alive or close.The parameter of buf can't use `static`.
 
 
     int mt_tcpsendrcv_ex(struct sockaddr_in* dst, void* pkg, int len, void*& rcv_buf, int& recv_pkg_size, int timeout, MtFuncTcpMsgChecker check_func, void* msg_ctx=NULL, MT_TCP_CONN_TYPE type = MT_TCP_LONG, bool keep_rcv_buf=false);
@@ -217,6 +217,6 @@ However, it is currently only supported before F-Stack is started.
 
   Use connection pool to send and recv tcp packet, keep-alive default are 10 mintues. The parameter of buf can't use `static`.
 
-#### Socet API of micro thread
+#### Socket API for micro threads
 
   see `micro_thread/mt_api.h`.
