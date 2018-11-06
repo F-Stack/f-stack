@@ -22,7 +22,7 @@ extern int is_fstack_fd(int sockfd);
 static ngx_inline int
 ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t *ls, int *type)
 {
-    if (ngx_process <= NGX_PROCESS_MASTER) {
+    if (ngx_ff_process == NGX_FF_PROCESS_NONE) {
 
         /* process master,  kernel network stack*/
         if (!ls->belong_to_host) {
@@ -32,7 +32,7 @@ ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t *ls, int 
                 return 1;
             }
         }
-    } else if (NGX_PROCESS_WORKER == ngx_process) {
+    } else {
         /* process worker, fstack */
         if (ls->belong_to_host) {
             return 1;
@@ -45,11 +45,6 @@ ngx_ff_skip_listening_socket(ngx_cycle_t *cycle, const ngx_listening_t *ls, int 
         if(type) {
             *type |= SOCK_FSTACK;
         }
-    } else {
-        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
-                            "unexpected process type: %d, ignored",
-                            ngx_process);
-        exit(1);
     }
 
     return 0;
