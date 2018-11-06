@@ -117,12 +117,13 @@ ngx_ff_epoll_init(ngx_cycle_t *cycle, ngx_msec_t timer)
         ngx_free(event_list);
     }
 
-    event_list = ngx_alloc(sizeof(struct epoll_event), cycle->log);
+    nevents = 64;
+
+    event_list = ngx_alloc(sizeof(struct epoll_event) * nevents, cycle->log);
     if (event_list == NULL) {
         return NGX_ERROR;
     }
 
-    nevents = 8;
     return NGX_OK;
 }
 
