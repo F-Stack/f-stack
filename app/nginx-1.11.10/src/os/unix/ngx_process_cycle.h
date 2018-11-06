@@ -37,6 +37,12 @@ typedef struct {
 void ngx_master_process_cycle(ngx_cycle_t *cycle);
 void ngx_single_process_cycle(ngx_cycle_t *cycle);
 
+#if (NGX_HAVE_FSTACK)
+#define                NGX_FF_PROCESS_NONE         0
+#define                NGX_FF_PROCESS_PRIMARY      1
+#define                NGX_FF_PROCESS_SECONDARY    2
+extern ngx_int_t       ngx_ff_process;
+#endif
 
 extern ngx_uint_t      ngx_process;
 extern ngx_uint_t      ngx_worker;

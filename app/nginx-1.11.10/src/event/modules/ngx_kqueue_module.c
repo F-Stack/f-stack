@@ -128,7 +128,7 @@ ngx_kqueue_init(ngx_cycle_t *cycle, ngx_msec_t timer)
 #endif
 
 #if (NGX_HAVE_FSTACK)
-    if(ngx_process != NGX_PROCESS_WORKER) {
+    if(ngx_ff_process == NGX_FF_PROCESS_NONE) {
         return NGX_OK;
     }
 #endif
