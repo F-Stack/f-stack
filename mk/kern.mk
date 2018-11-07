@@ -101,6 +101,10 @@ CFLAGS+=
 INLINE_LIMIT?=	8000
 endif
 
+ifeq (${MACHINE_CPUARCH},arm64)
+INLINE_LIMIT?=	15000
+endif
+
 #
 # GCC SSP support
 #
