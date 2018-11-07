@@ -24,11 +24,19 @@ FF_KNI=1
 #FF_IPFW=1
 
 ifeq ($(FF_DPDK),)
-    FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+ifeq (${MACHINE_CPUARCH},aarch64)
+    FF_DPDK=${TOPDIR}/dpdk/build
+else
+    #FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+endif
 endif
 
 ifdef RTE_SDK
-    FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
+ifeq (${MACHINE_CPUARCH},aarch64) 
+    FF_DPDK=${RTE_SDK}/build
+else
+    #FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
+endif
 endif
 
 DPDK_CFLAGS= -Wall -Werror -include ${FF_DPDK}/include/rte_config.h
@@ -90,6 +98,13 @@ ifneq (${COMPILER_TYPE},clang)
 CFLAGS += -mno-thumb-interwork
 endif
 
+endif
+
+#
+# fix the MACHINE_CPUARCH to match the FreeBSD directory name
+#
+ifeq (${MACHINE_CPUARCH},aarch64)
+MACHINE_CPUARCH=arm64
 endif
 
 
@@ -262,7 +277,7 @@ KERN_MHEADERS+=		\
 KERN_MSRCS+=		\
 	linker_if.m
 
-
+ifeq (${MACHINE_CPUARCH},arm64)
 LIBKERN_SRCS+=		 \
 	bcd.c		 \
 	crc32.c          \
@@ -270,7 +285,19 @@ LIBKERN_SRCS+=		 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
 	strnlen.c        \
-	zlib.c
+	zlib.c		 \
+	fls.c		 \
+	flsl.c
+else
+LIBKERN_SRCS+=		 \
+	bcd.c		 \
+	crc32.c          \
+	inet_ntoa.c	 \
+	jenkins_hash.c   \
+	strlcpy.c	 \
+	strnlen.c        \
+	zlib.c		 
+endif
 
 
 MACHINE_SRCS+=		 \
