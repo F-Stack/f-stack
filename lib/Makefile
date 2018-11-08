@@ -23,8 +23,10 @@ FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
 
+include ${TOPDIR}/mk/kern.pre.mk
+
 ifeq ($(FF_DPDK),)
-ifeq (${shell uname -m},aarch64)
+ifeq (${MACHINE_CPUARCH},aarch64)
     FF_DPDK=${TOPDIR}/dpdk/build
 else
     FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
@@ -32,7 +34,7 @@ endif
 endif
 
 ifdef RTE_SDK
-ifeq (${shell uname -m},aarch64) 
+ifeq (${MACHINE_CPUARCH},aarch64) 
     FF_DPDK=${RTE_SDK}/build
 else
     FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
@@ -44,8 +46,6 @@ DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2
 DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
 DPDK_CFLAGS+= -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2
 DPDK_CFLAGS+= -I${FF_DPDK}/include
-
-include ${TOPDIR}/mk/kern.pre.mk
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
