@@ -23,12 +23,22 @@ FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
 
+include ${TOPDIR}/mk/kern.pre.mk
+
 ifeq ($(FF_DPDK),)
+ifeq (${MACHINE_CPUARCH},aarch64)
+    FF_DPDK=${TOPDIR}/dpdk/build
+else
     FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+endif
 endif
 
 ifdef RTE_SDK
+ifeq (${MACHINE_CPUARCH},aarch64) 
+    FF_DPDK=${RTE_SDK}/build
+else
     FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
+endif
 endif
 
 DPDK_CFLAGS= -Wall -Werror -include ${FF_DPDK}/include/rte_config.h
@@ -36,8 +46,6 @@ DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2
 DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
 DPDK_CFLAGS+= -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2
 DPDK_CFLAGS+= -I${FF_DPDK}/include
-
-include ${TOPDIR}/mk/kern.pre.mk
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
@@ -90,6 +98,13 @@ ifneq (${COMPILER_TYPE},clang)
 CFLAGS += -mno-thumb-interwork
 endif
 
+endif
+
+#
+# fix the MACHINE_CPUARCH to match the FreeBSD directory name
+#
+ifeq (${MACHINE_CPUARCH},aarch64)
+MACHINE_CPUARCH=arm64
 endif
 
 
@@ -262,7 +277,7 @@ KERN_MHEADERS+=		\
 KERN_MSRCS+=		\
 	linker_if.m
 
-
+ifeq (${MACHINE_CPUARCH},arm64)
 LIBKERN_SRCS+=		 \
 	bcd.c		 \
 	crc32.c          \
@@ -270,7 +285,19 @@ LIBKERN_SRCS+=		 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
 	strnlen.c        \
-	zlib.c
+	zlib.c		 \
+	fls.c		 \
+	flsl.c
+else
+LIBKERN_SRCS+=		 \
+	bcd.c		 \
+	crc32.c          \
+	inet_ntoa.c	 \
+	jenkins_hash.c   \
+	strlcpy.c	 \
+	strnlen.c        \
+	zlib.c		 
+endif
 
 
 MACHINE_SRCS+=		 \
