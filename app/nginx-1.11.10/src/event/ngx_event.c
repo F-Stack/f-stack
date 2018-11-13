@@ -252,10 +252,10 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
 #if (NGX_HAVE_FSTACK)
     /* 
-     * NGX_PROCESS_WORKERs run on both fstack and kernel,
+     * NGX_FF_PROCESS_*s run on both fstack and kernel,
      * others ( e.g. cache manager/loader ) only run on kernel.
      */
-    if(ngx_process == NGX_PROCESS_WORKER) {
+    if(!!ngx_ff_process) {
         (void) ngx_process_events(cycle, timer, flags);
 
         /*
