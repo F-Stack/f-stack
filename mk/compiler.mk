@@ -4,7 +4,7 @@
 
 ifndef COMPILER_TYPE
   ifeq ($(patsubst gcc%,gcc,$(notdir ${CC})),gcc)
-COMPILER_TYPE:=	gcc  
+COMPILER_TYPE:= gcc
   else ifeq ($(notdir ${CC}), clang)
 COMPILER_TYPE:=	clang
   else
