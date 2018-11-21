@@ -1624,10 +1624,12 @@ static void cmd_add_port_tm_nonleaf_node_parsed(void *parsed_result,
 
 	np.shaper_profile_id = res->shaper_profile_id;
 	np.n_shared_shapers = n_shared_shapers;
-	if (np.n_shared_shapers)
+	if (np.n_shared_shapers) {
 		np.shared_shaper_id = &shared_shaper_id[0];
-	else
-		np.shared_shaper_id = NULL;
+	} else {
+		free(shared_shaper_id);
+		shared_shaper_id = NULL;
+	}
 
 	np.nonleaf.n_sp_priorities = res->n_sp_priorities;
 	np.stats_mask = res->stats_mask;
@@ -1779,10 +1781,12 @@ static void cmd_add_port_tm_leaf_node_parsed(void *parsed_result,
 	np.shaper_profile_id = res->shaper_profile_id;
 	np.n_shared_shapers = n_shared_shapers;
 
-	if (np.n_shared_shapers)
+	if (np.n_shared_shapers) {
 		np.shared_shaper_id = &shared_shaper_id[0];
-	else
-		np.shared_shaper_id = NULL;
+	} else {
+		free(shared_shaper_id);
+		shared_shaper_id = NULL;
+	}
 
 	np.leaf.cman = res->cman_mode;
 	np.leaf.wred.wred_profile_id = res->wred_profile_id;

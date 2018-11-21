@@ -248,6 +248,17 @@ static int bnxt_init_chip(struct bnxt *bp)
 	/* VNIC configuration */
 	for (i = 0; i < bp->nr_vnics; i++) {
 		struct bnxt_vnic_info *vnic = &bp->vnic_info[i];
+		uint32_t size = sizeof(*vnic->fw_grp_ids) * bp->max_ring_grps;
+
+		vnic->fw_grp_ids = rte_zmalloc("vnic_fw_grp_ids", size, 0);
+		if (!vnic->fw_grp_ids) {
+			RTE_LOG(ERR, PMD,
+				"Failed to alloc %d bytes for group ids\n",
+				size);
+			rc = -ENOMEM;
+			goto err_out;
+		}
+		memset(vnic->fw_grp_ids, -1, size);
 
 		rc = bnxt_hwrm_vnic_alloc(bp, vnic);
 		if (rc) {
@@ -400,10 +411,6 @@ static int bnxt_init_nic(struct bnxt *bp)
 	bnxt_init_vnics(bp);
 	bnxt_init_filters(bp);
 
-	rc = bnxt_init_chip(bp);
-	if (rc)
-		return rc;
-
 	return 0;
 }
 
@@ -433,7 +440,7 @@ static void bnxt_dev_info_get_op(struct rte_eth_dev *eth_dev,
 	/* For the sake of symmetry, max_rx_queues = max_tx_queues */
 	dev_info->max_rx_queues = max_rx_rings;
 	dev_info->max_tx_queues = max_rx_rings;
-	dev_info->reta_size = bp->max_rsscos_ctx;
+	dev_info->reta_size = HW_HASH_INDEX_SIZE;
 	dev_info->hash_key_size = 40;
 	max_vnics = bp->max_vnics;
 
@@ -465,7 +472,8 @@ static void bnxt_dev_info_get_op(struct rte_eth_dev *eth_dev,
 			.wthresh = 0,
 		},
 		.rx_free_thresh = 32,
-		.rx_drop_en = 0,
+		/* If no descriptors available, pkts are dropped by default */
+		.rx_drop_en = 1,
 	};
 
 	dev_info->default_txconf = (struct rte_eth_txconf) {
@@ -572,7 +580,7 @@ static int bnxt_dev_start_op(struct rte_eth_dev *eth_dev)
 	}
 	bp->dev_stopped = 0;
 
-	rc = bnxt_init_nic(bp);
+	rc = bnxt_init_chip(bp);
 	if (rc)
 		goto error;
 
@@ -631,6 +639,8 @@ static void bnxt_dev_stop_op(struct rte_eth_dev *eth_dev)
 	}
 	bnxt_set_hwrm_link_config(bp, false);
 	bnxt_hwrm_port_clr_stats(bp);
+	bnxt_free_tx_mbufs(bp);
+	bnxt_free_rx_mbufs(bp);
 	bnxt_shutdown_nic(bp);
 	bp->dev_stopped = 1;
 }
@@ -642,8 +652,6 @@ static void bnxt_dev_close_op(struct rte_eth_dev *eth_dev)
 	if (bp->dev_stopped == 0)
 		bnxt_dev_stop_op(eth_dev);
 
-	bnxt_free_tx_mbufs(bp);
-	bnxt_free_rx_mbufs(bp);
 	bnxt_free_mem(bp);
 	if (eth_dev->data->mac_addrs != NULL) {
 		rte_free(eth_dev->data->mac_addrs);
@@ -1271,9 +1279,9 @@ static int bnxt_add_vlan_filter(struct bnxt *bp, uint16_t vlan_id)
 	struct bnxt_vnic_info *vnic;
 	unsigned int i;
 	int rc = 0;
-	uint32_t en = HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_OVLAN |
-		HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_OVLAN_MASK;
-	uint32_t chk = HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_OVLAN;
+	uint32_t en = HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_IVLAN |
+		HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_IVLAN_MASK;
+	uint32_t chk = HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_IVLAN;
 
 	/* Cycle through all VNICs */
 	for (i = 0; i < bp->nr_vnics; i++) {
@@ -1320,8 +1328,8 @@ static int bnxt_add_vlan_filter(struct bnxt *bp, uint16_t vlan_id)
 				memcpy(new_filter->l2_addr, filter->l2_addr,
 				       ETHER_ADDR_LEN);
 				/* MAC + VLAN ID filter */
-				new_filter->l2_ovlan = vlan_id;
-				new_filter->l2_ovlan_mask = 0xF000;
+				new_filter->l2_ivlan = vlan_id;
+				new_filter->l2_ivlan_mask = 0xF000;
 				new_filter->enables |= en;
 				rc = bnxt_hwrm_set_l2_filter(bp,
 							     vnic->fw_vnic_id,
@@ -1544,6 +1552,7 @@ static int bnxt_mtu_set_op(struct rte_eth_dev *eth_dev, uint16_t new_mtu)
 
 	for (i = 0; i < bp->nr_vnics; i++) {
 		struct bnxt_vnic_info *vnic = &bp->vnic_info[i];
+		uint16_t size = 0;
 
 		vnic->mru = bp->eth_dev->data->mtu + ETHER_HDR_LEN +
 					ETHER_CRC_LEN + VLAN_TAG_SIZE * 2;
@@ -1551,9 +1560,14 @@ static int bnxt_mtu_set_op(struct rte_eth_dev *eth_dev, uint16_t new_mtu)
 		if (rc)
 			break;
 
-		rc = bnxt_hwrm_vnic_plcmode_cfg(bp, vnic);
-		if (rc)
-			return rc;
+		size = rte_pktmbuf_data_room_size(bp->rx_queues[0]->mb_pool);
+		size -= RTE_PKTMBUF_HEADROOM;
+
+		if (size < new_mtu) {
+			rc = bnxt_hwrm_vnic_plcmode_cfg(bp, vnic);
+			if (rc)
+				return rc;
+		}
 	}
 
 	return rc;
@@ -3057,6 +3071,7 @@ skip_init:
 		goto error_free_int;
 
 	bnxt_enable_int(bp);
+	bnxt_init_nic(bp);
 
 	return 0;
 

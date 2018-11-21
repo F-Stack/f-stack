@@ -87,6 +87,8 @@ struct rte_event_eth_rx_adapter {
 	int socket_id;
 	/* Per adapter EAL service */
 	uint32_t service_id;
+	/* Adapter started flag */
+	uint8_t rxa_started;
 } __rte_cache_aligned;
 
 /* Per eth device */
@@ -219,6 +221,8 @@ eth_poll_wrr_calc(struct rte_event_eth_rx_adapter *rx_adapter)
 					&rx_adapter->eth_devices[d];
 			nb_rx_queues = dev_info->dev->data->nb_rx_queues;
 			if (dev_info->rx_queue == NULL)
+				continue;
+			if (dev_info->internal_event_port)
 				continue;
 			for (q = 0; q < nb_rx_queues; q++) {
 				struct eth_rx_queue_info *queue_info =
@@ -414,14 +418,14 @@ flush_event_buffer(struct rte_event_eth_rx_adapter *rx_adapter)
 
 static inline void
 fill_event_buffer(struct rte_event_eth_rx_adapter *rx_adapter,
-	uint8_t dev_id,
+	uint16_t eth_dev_id,
 	uint16_t rx_queue_id,
 	struct rte_mbuf **mbufs,
 	uint16_t num)
 {
 	uint32_t i;
 	struct eth_device_info *eth_device_info =
-					&rx_adapter->eth_devices[dev_id];
+					&rx_adapter->eth_devices[eth_dev_id];
 	struct eth_rx_queue_info *eth_rx_queue_info =
 					&eth_device_info->rx_queue[rx_queue_id];
 
@@ -476,7 +480,7 @@ fill_event_buffer(struct rte_event_eth_rx_adapter *rx_adapter,
  * the hypervisor's switching layer where adjustments can be made to deal with
  * it.
  */
-static inline uint32_t
+static inline void
 eth_rx_poll(struct rte_event_eth_rx_adapter *rx_adapter)
 {
 	uint32_t num_queue;
@@ -503,8 +507,10 @@ eth_rx_poll(struct rte_event_eth_rx_adapter *rx_adapter)
 		 */
 		if (buf->count >= BATCH_SIZE)
 			flush_event_buffer(rx_adapter);
-		if (BATCH_SIZE > (ETH_EVENT_BUFFER_SIZE - buf->count))
-			break;
+		if (BATCH_SIZE > (ETH_EVENT_BUFFER_SIZE - buf->count)) {
+			rx_adapter->wrr_pos = wrr_pos;
+			return;
+		}
 
 		stats->rx_poll_count++;
 		n = rte_eth_rx_burst(d, qid, mbufs, BATCH_SIZE);
@@ -519,7 +525,7 @@ eth_rx_poll(struct rte_event_eth_rx_adapter *rx_adapter)
 			if (nb_rx > max_nb_rx) {
 				rx_adapter->wrr_pos =
 				    (wrr_pos + 1) % rx_adapter->wrr_len;
-				return nb_rx;
+				break;
 			}
 		}
 
@@ -527,20 +533,22 @@ eth_rx_poll(struct rte_event_eth_rx_adapter *rx_adapter)
 			wrr_pos = 0;
 	}
 
-	return nb_rx;
+	if (buf->count >= BATCH_SIZE)
+		flush_event_buffer(rx_adapter);
 }
 
 static int
 event_eth_rx_adapter_service_func(void *args)
 {
 	struct rte_event_eth_rx_adapter *rx_adapter = args;
-	struct rte_eth_event_enqueue_buffer *buf;
 
-	buf = &rx_adapter->event_enqueue_buffer;
 	if (rte_spinlock_trylock(&rx_adapter->rx_lock) == 0)
 		return 0;
-	if (eth_rx_poll(rx_adapter) == 0 && buf->count)
-		flush_event_buffer(rx_adapter);
+	if (!rx_adapter->rxa_started) {
+		return 0;
+		rte_spinlock_unlock(&rx_adapter->rx_lock);
+	}
+	eth_rx_poll(rx_adapter);
 	rte_spinlock_unlock(&rx_adapter->rx_lock);
 	return 0;
 }
@@ -829,8 +837,12 @@ rx_adapter_ctrl(uint8_t id, int start)
 						&rte_eth_devices[i]);
 	}
 
-	if (use_service)
+	if (use_service) {
+		rte_spinlock_lock(&rx_adapter->rx_lock);
+		rx_adapter->rxa_started = start;
 		rte_service_runstate_set(rx_adapter->service_id, start);
+		rte_spinlock_unlock(&rx_adapter->rx_lock);
+	}
 
 	return 0;
 }
@@ -1032,6 +1044,7 @@ rte_event_eth_rx_adapter_queue_add(uint8_t id,
 				&rte_eth_devices[eth_dev_id],
 				rx_queue_id, queue_conf);
 		if (ret == 0) {
+			dev_info->internal_event_port = 1;
 			update_queue_info(rx_adapter,
 					&rx_adapter->eth_devices[eth_dev_id],
 					rx_queue_id,
@@ -1039,6 +1052,7 @@ rte_event_eth_rx_adapter_queue_add(uint8_t id,
 		}
 	} else {
 		rte_spinlock_lock(&rx_adapter->rx_lock);
+		dev_info->internal_event_port = 0;
 		ret = init_service(rx_adapter, id);
 		if (ret == 0)
 			ret = add_rx_queue(rx_adapter, eth_dev_id, rx_queue_id,

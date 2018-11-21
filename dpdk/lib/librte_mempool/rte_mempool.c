@@ -437,12 +437,18 @@ rte_mempool_populate_iova(struct rte_mempool *mp, char *vaddr,
 	}
 
 	/* not enough room to store one object */
-	if (i == 0)
-		return -EINVAL;
+	if (i == 0) {
+		ret = -EINVAL;
+		goto fail;
+	}
 
 	STAILQ_INSERT_TAIL(&mp->mem_list, memhdr, next);
 	mp->nb_mem_chunks++;
 	return i;
+
+fail:
+	rte_free(memhdr);
+	return ret;
 }
 
 int
@@ -514,9 +520,6 @@ rte_mempool_populate_virt(struct rte_mempool *mp, char *addr,
 	size_t off, phys_len;
 	int ret, cnt = 0;
 
-	/* mempool must not be populated */
-	if (mp->nb_mem_chunks != 0)
-		return -EEXIST;
 	/* address and len must be page-aligned */
 	if (RTE_PTR_ALIGN_CEIL(addr, pg_sz) != addr)
 		return -EINVAL;
@@ -685,7 +688,7 @@ rte_mempool_populate_anon(struct rte_mempool *mp)
 	char *addr;
 
 	/* mempool is already populated, error */
-	if (!STAILQ_EMPTY(&mp->mem_list)) {
+	if ((!STAILQ_EMPTY(&mp->mem_list)) || mp->nb_mem_chunks != 0) {
 		rte_errno = EINVAL;
 		return 0;
 	}

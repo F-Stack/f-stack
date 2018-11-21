@@ -149,15 +149,11 @@ nic_stats_display(portid_t port_id)
 	struct rte_eth_stats stats;
 	struct rte_port *port = &ports[port_id];
 	uint8_t i;
-	portid_t pid;
 
 	static const char *nic_stats_border = "########################";
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
-		printf("Valid port range is [0");
-		RTE_ETH_FOREACH_DEV(pid)
-			printf(", %d", pid);
-		printf("]\n");
+		print_valid_ports();
 		return;
 	}
 	rte_eth_stats_get(port_id, &stats);
@@ -231,13 +227,8 @@ nic_stats_display(portid_t port_id)
 void
 nic_stats_clear(portid_t port_id)
 {
-	portid_t pid;
-
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
-		printf("Valid port range is [0");
-		RTE_ETH_FOREACH_DEV(pid)
-			printf(", %d", pid);
-		printf("]\n");
+		print_valid_ports();
 		return;
 	}
 	rte_eth_stats_reset(port_id);
@@ -314,15 +305,11 @@ nic_stats_mapping_display(portid_t port_id)
 {
 	struct rte_port *port = &ports[port_id];
 	uint16_t i;
-	portid_t pid;
 
 	static const char *nic_stats_mapping_border = "########################";
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
-		printf("Valid port range is [0");
-		RTE_ETH_FOREACH_DEV(pid)
-			printf(", %d", pid);
-		printf("]\n");
+		print_valid_ports();
 		return;
 	}
 
@@ -434,14 +421,10 @@ port_infos_display(portid_t port_id)
 	int vlan_offload;
 	struct rte_mempool * mp;
 	static const char *info_border = "*********************";
-	portid_t pid;
 	uint16_t mtu;
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
-		printf("Valid port range is [0");
-		RTE_ETH_FOREACH_DEV(pid)
-			printf(", %d", pid);
-		printf("]\n");
+		print_valid_ports();
 		return;
 	}
 	port = &ports[port_id];
@@ -737,6 +720,17 @@ port_id_is_invalid(portid_t port_id, enum print_warning warning)
 		printf("Invalid port %d\n", port_id);
 
 	return 1;
+}
+
+void print_valid_ports(void)
+{
+	portid_t pid;
+
+	printf("The valid ports array is [");
+	RTE_ETH_FOREACH_DEV(pid) {
+		printf(" %d", pid);
+	}
+	printf(" ]\n");
 }
 
 static int

@@ -155,13 +155,13 @@ F: test/test/test_bitmap.c
 
 ARM v7
 M: Jan Viktorin <viktorin@rehivetech.com>
-M: Jianbo Liu <jianbo.liu@arm.com>
+M: Gavin Hu <gavin.hu@arm.com>
 F: lib/librte_eal/common/arch/arm/
 F: lib/librte_eal/common/include/arch/arm/
 
 ARM v8
 M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
-M: Jianbo Liu <jianbo.liu@arm.com>
+M: Gavin Hu <gavin.hu@arm.com>
 F: lib/librte_eal/common/include/arch/arm/*_64.h
 F: lib/librte_net/net_crc_neon.h
 F: lib/librte_acl/acl_run_neon.*
@@ -428,14 +428,14 @@ F: drivers/net/fm10k/
 F: doc/guides/nics/features/fm10k*.ini
 
 Mellanox mlx4
-M: Adrien Mazarguil <adrien.mazarguil@6wind.com>
+M: Matan Azrad <matan@mellanox.com>
+M: Shahaf Shuler <shahafs@mellanox.com>
 F: drivers/net/mlx4/
 F: doc/guides/nics/mlx4.rst
 F: doc/guides/nics/features/mlx4.ini
 
 Mellanox mlx5
-M: Adrien Mazarguil <adrien.mazarguil@6wind.com>
-M: Nelio Laranjeiro <nelio.laranjeiro@6wind.com>
+M: Shahaf Shuler <shahafs@mellanox.com>
 M: Yongseok Koh <yskoh@mellanox.com>
 F: drivers/net/mlx5/
 F: doc/guides/nics/mlx5.rst
@@ -446,7 +446,6 @@ M: Jacek Siuda <jck@semihalf.com>
 M: Tomasz Duszynski <tdu@semihalf.com>
 M: Dmitri Epshtein <dima@marvell.com>
 M: Natalie Samsonov <nsamsono@marvell.com>
-M: Jianbo Liu <jianbo.liu@arm.com>
 F: drivers/net/mrvl/
 F: doc/guides/nics/mrvl.rst
 F: doc/guides/nics/features/mrvl.ini
@@ -630,7 +629,6 @@ M: Jacek Siuda <jck@semihalf.com>
 M: Tomasz Duszynski <tdu@semihalf.com>
 M: Dmitri Epshtein <dima@marvell.com>
 M: Natalie Samsonov <nsamsono@marvell.com>
-M: Jianbo Liu <jianbo.liu@arm.org>
 F: drivers/crypto/mrvl/
 F: doc/guides/cryptodevs/mrvl.rst
 F: doc/guides/cryptodevs/features/mrvl.ini

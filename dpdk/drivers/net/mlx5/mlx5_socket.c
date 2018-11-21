@@ -45,92 +45,105 @@
 /**
  * Initialise the socket to communicate with the secondary process
  *
- * @param[in] priv
- *   Pointer to private structure.
+ * @param[in] dev
+ *   Pointer to Ethernet device.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-priv_socket_init(struct priv *priv)
+mlx5_socket_init(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct sockaddr_un sun = {
 		.sun_family = AF_UNIX,
 	};
 	int ret;
 	int flags;
-	struct stat file_stat;
 
+	/*
+	 * Close the last socket that was used to communicate
+	 * with the secondary process
+	 */
+	if (priv->primary_socket)
+		mlx5_socket_uninit(dev);
 	/*
 	 * Initialise the socket to communicate with the secondary
 	 * process.
 	 */
 	ret = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (ret < 0) {
-		WARN("secondary process not supported: %s", strerror(errno));
-		return ret;
+		rte_errno = errno;
+		DRV_LOG(WARNING, "port %u secondary process not supported: %s",
+			dev->data->port_id, strerror(errno));
+		goto error;
 	}
 	priv->primary_socket = ret;
 	flags = fcntl(priv->primary_socket, F_GETFL, 0);
-	if (flags == -1)
-		goto out;
+	if (flags == -1) {
+		rte_errno = errno;
+		goto error;
+	}
 	ret = fcntl(priv->primary_socket, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0)
-		goto out;
+	if (ret < 0) {
+		rte_errno = errno;
+		goto error;
+	}
 	snprintf(sun.sun_path, sizeof(sun.sun_path), "/var/tmp/%s_%d",
 		 MLX5_DRIVER_NAME, priv->primary_socket);
-	ret = stat(sun.sun_path, &file_stat);
-	if (!ret)
-		claim_zero(remove(sun.sun_path));
+	remove(sun.sun_path);
 	ret = bind(priv->primary_socket, (const struct sockaddr *)&sun,
 		   sizeof(sun));
 	if (ret < 0) {
-		WARN("cannot bind socket, secondary process not supported: %s",
-		     strerror(errno));
+		rte_errno = errno;
+		DRV_LOG(WARNING,
+			"port %u cannot bind socket, secondary process not"
+			" supported: %s",
+			dev->data->port_id, strerror(errno));
 		goto close;
 	}
 	ret = listen(priv->primary_socket, 0);
 	if (ret < 0) {
-		WARN("Secondary process not supported: %s", strerror(errno));
+		rte_errno = errno;
+		DRV_LOG(WARNING, "port %u secondary process not supported: %s",
+			dev->data->port_id, strerror(errno));
 		goto close;
 	}
-	return ret;
+	return 0;
 close:
 	remove(sun.sun_path);
-out:
+error:
 	claim_zero(close(priv->primary_socket));
 	priv->primary_socket = 0;
-	return -(ret);
+	return -rte_errno;
 }
 
 /**
  * Un-Initialise the socket to communicate with the secondary process
  *
- * @param[in] priv
- *   Pointer to private structure.
- *
- * @return
- *   0 on success, errno value on failure.
+ * @param[in] dev
  */
-int
-priv_socket_uninit(struct priv *priv)
+void
+mlx5_socket_uninit(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
+
 	MKSTR(path, "/var/tmp/%s_%d", MLX5_DRIVER_NAME, priv->primary_socket);
 	claim_zero(close(priv->primary_socket));
 	priv->primary_socket = 0;
 	claim_zero(remove(path));
-	return 0;
 }
 
 /**
  * Handle socket interrupts.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  */
 void
-priv_socket_handle(struct priv *priv)
+mlx5_socket_handle(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	int conn_sock;
 	int ret = 0;
 	struct cmsghdr *cmsg = NULL;
@@ -152,25 +165,30 @@ priv_socket_handle(struct priv *priv)
 	/* Accept the connection from the client. */
 	conn_sock = accept(priv->primary_socket, NULL, NULL);
 	if (conn_sock < 0) {
-		WARN("connection failed: %s", strerror(errno));
+		DRV_LOG(WARNING, "port %u connection failed: %s",
+			dev->data->port_id, strerror(errno));
 		return;
 	}
 	ret = setsockopt(conn_sock, SOL_SOCKET, SO_PASSCRED, &(int){1},
 					 sizeof(int));
 	if (ret < 0) {
-		WARN("cannot change socket options");
-		goto out;
+		ret = errno;
+		DRV_LOG(WARNING, "port %u cannot change socket options: %s",
+			dev->data->port_id, strerror(rte_errno));
+		goto error;
 	}
 	ret = recvmsg(conn_sock, &msg, MSG_WAITALL);
 	if (ret < 0) {
-		WARN("received an empty message: %s", strerror(errno));
-		goto out;
+		ret = errno;
+		DRV_LOG(WARNING, "port %u received an empty message: %s",
+			dev->data->port_id, strerror(rte_errno));
+		goto error;
 	}
 	/* Expect to receive credentials only. */
 	cmsg = CMSG_FIRSTHDR(&msg);
 	if (cmsg == NULL) {
-		WARN("no message");
-		goto out;
+		DRV_LOG(WARNING, "port %u no message", dev->data->port_id);
+		goto error;
 	}
 	if ((cmsg->cmsg_type == SCM_CREDENTIALS) &&
 		(cmsg->cmsg_len >= sizeof(*cred))) {
@@ -179,14 +197,16 @@ priv_socket_handle(struct priv *priv)
 	}
 	cmsg = CMSG_NXTHDR(&msg, cmsg);
 	if (cmsg != NULL) {
-		WARN("Message wrongly formatted");
-		goto out;
+		DRV_LOG(WARNING, "port %u message wrongly formatted",
+			dev->data->port_id);
+		goto error;
 	}
 	/* Make sure all the ancillary data was received and valid. */
 	if ((cred == NULL) || (cred->uid != getuid()) ||
 	    (cred->gid != getgid())) {
-		WARN("wrong credentials");
-		goto out;
+		DRV_LOG(WARNING, "port %u wrong credentials",
+			dev->data->port_id);
+		goto error;
 	}
 	/* Set-up the ancillary data. */
 	cmsg = CMSG_FIRSTHDR(&msg);
@@ -198,27 +218,29 @@ priv_socket_handle(struct priv *priv)
 	*fd = priv->ctx->cmd_fd;
 	ret = sendmsg(conn_sock, &msg, 0);
 	if (ret < 0)
-		WARN("cannot send response");
-out:
+		DRV_LOG(WARNING, "port %u cannot send response",
+			dev->data->port_id);
+error:
 	close(conn_sock);
 }
 
 /**
  * Connect to the primary process.
  *
- * @param[in] priv
- *   Pointer to private structure.
+ * @param[in] dev
+ *   Pointer to Ethernet structure.
  *
  * @return
- *   fd on success, negative errno value on failure.
+ *   fd on success, negative errno value otherwise and rte_errno is set.
  */
 int
-priv_socket_connect(struct priv *priv)
+mlx5_socket_connect(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct sockaddr_un sun = {
 		.sun_family = AF_UNIX,
 	};
-	int socket_fd;
+	int socket_fd = -1;
 	int *fd = NULL;
 	int ret;
 	struct ucred *cred;
@@ -238,57 +260,75 @@ priv_socket_connect(struct priv *priv)
 
 	ret = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (ret < 0) {
-		WARN("cannot connect to primary");
-		return ret;
+		rte_errno = errno;
+		DRV_LOG(WARNING, "port %u cannot connect to primary",
+			dev->data->port_id);
+		goto error;
 	}
 	socket_fd = ret;
 	snprintf(sun.sun_path, sizeof(sun.sun_path), "/var/tmp/%s_%d",
 		 MLX5_DRIVER_NAME, priv->primary_socket);
 	ret = connect(socket_fd, (const struct sockaddr *)&sun, sizeof(sun));
 	if (ret < 0) {
-		WARN("cannot connect to primary");
-		goto out;
+		rte_errno = errno;
+		DRV_LOG(WARNING, "port %u cannot connect to primary",
+			dev->data->port_id);
+		goto error;
 	}
 	cmsg = CMSG_FIRSTHDR(&msg);
 	if (cmsg == NULL) {
-		DEBUG("cannot get first message");
-		goto out;
+		rte_errno = EINVAL;
+		DRV_LOG(DEBUG, "port %u cannot get first message",
+			dev->data->port_id);
+		goto error;
 	}
 	cmsg->cmsg_level = SOL_SOCKET;
 	cmsg->cmsg_type = SCM_CREDENTIALS;
 	cmsg->cmsg_len = CMSG_LEN(sizeof(*cred));
 	cred = (struct ucred *)CMSG_DATA(cmsg);
 	if (cred == NULL) {
-		DEBUG("no credentials received");
-		goto out;
+		rte_errno = EINVAL;
+		DRV_LOG(DEBUG, "port %u no credentials received",
+			dev->data->port_id);
+		goto error;
 	}
 	cred->pid = getpid();
 	cred->uid = getuid();
 	cred->gid = getgid();
 	ret = sendmsg(socket_fd, &msg, MSG_DONTWAIT);
 	if (ret < 0) {
-		WARN("cannot send credentials to primary: %s",
-		     strerror(errno));
-		goto out;
+		rte_errno = errno;
+		DRV_LOG(WARNING,
+			"port %u cannot send credentials to primary: %s",
+			dev->data->port_id, strerror(errno));
+		goto error;
 	}
 	ret = recvmsg(socket_fd, &msg, MSG_WAITALL);
 	if (ret <= 0) {
-		WARN("no message from primary: %s", strerror(errno));
-		goto out;
+		rte_errno = errno;
+		DRV_LOG(WARNING, "port %u no message from primary: %s",
+			dev->data->port_id, strerror(errno));
+		goto error;
 	}
 	cmsg = CMSG_FIRSTHDR(&msg);
 	if (cmsg == NULL) {
-		WARN("No file descriptor received");
-		goto out;
+		rte_errno = EINVAL;
+		DRV_LOG(WARNING, "port %u no file descriptor received",
+			dev->data->port_id);
+		goto error;
 	}
 	fd = (int *)CMSG_DATA(cmsg);
-	if (*fd <= 0) {
-		WARN("no file descriptor received: %s", strerror(errno));
-		ret = *fd;
-		goto out;
+	if (*fd < 0) {
+		DRV_LOG(WARNING, "port %u no file descriptor received: %s",
+			dev->data->port_id, strerror(errno));
+		rte_errno = *fd;
+		goto error;
 	}
 	ret = *fd;
-out:
 	close(socket_fd);
 	return ret;
+error:
+	if (socket_fd != -1)
+		close(socket_fd);
+	return -rte_errno;
 }

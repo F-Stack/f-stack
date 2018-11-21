@@ -279,7 +279,7 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 	/* Start the slowpath */
 	memset(&hw_init_params, 0, sizeof(hw_init_params));
 	hw_init_params.b_hw_start = true;
-	hw_init_params.int_mode = ECORE_INT_MODE_MSIX;
+	hw_init_params.int_mode = params->int_mode;
 	hw_init_params.allow_npar_tx_switch = true;
 	hw_init_params.bin_fw_data = data;
 
@@ -633,8 +633,11 @@ void qed_link_update(struct ecore_hwfn *hwfn)
 {
 	struct ecore_dev *edev = hwfn->p_dev;
 	struct qede_dev *qdev = (struct qede_dev *)edev;
+	struct rte_eth_dev *dev = (struct rte_eth_dev *)qdev->ethdev;
 
-	qede_link_update((struct rte_eth_dev *)qdev->ethdev, 0);
+	if (!qede_link_update(dev, 0))
+		_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC,
+					      NULL, NULL);
 }
 
 static int qed_drain(struct ecore_dev *edev)

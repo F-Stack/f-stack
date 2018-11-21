@@ -782,25 +782,23 @@ int enic_alloc_wq(struct enic *enic, uint16_t queue_idx,
 	static int instance;
 
 	wq->socket_id = socket_id;
-	if (nb_desc) {
-		if (nb_desc > enic->config.wq_desc_count) {
-			dev_warning(enic,
-				"WQ %d - number of tx desc in cmd line (%d)"\
-				"is greater than that in the UCSM/CIMC adapter"\
-				"policy.  Applying the value in the adapter "\
-				"policy (%d)\n",
-				queue_idx, nb_desc, enic->config.wq_desc_count);
-		} else if (nb_desc != enic->config.wq_desc_count) {
-			enic->config.wq_desc_count = nb_desc;
-			dev_info(enic,
-				"TX Queues - effective number of descs:%d\n",
-				nb_desc);
-		}
+	if (nb_desc > enic->config.wq_desc_count) {
+		dev_warning(enic,
+			    "WQ %d - number of tx desc in cmd line (%d) "
+			    "is greater than that in the UCSM/CIMC adapter "
+			    "policy.  Applying the value in the adapter "
+			    "policy (%d)\n",
+			    queue_idx, nb_desc, enic->config.wq_desc_count);
+		nb_desc = enic->config.wq_desc_count;
+	} else if (nb_desc != enic->config.wq_desc_count) {
+		dev_info(enic,
+			 "TX Queues - effective number of descs:%d\n",
+			 nb_desc);
 	}
 
 	/* Allocate queue resources */
 	err = vnic_wq_alloc(enic->vdev, &enic->wq[queue_idx], queue_idx,
-		enic->config.wq_desc_count,
+		nb_desc,
 		sizeof(struct wq_enet_desc));
 	if (err) {
 		dev_err(enic, "error in allocation of wq\n");
@@ -808,7 +806,7 @@ int enic_alloc_wq(struct enic *enic, uint16_t queue_idx,
 	}
 
 	err = vnic_cq_alloc(enic->vdev, &enic->cq[cq_index], cq_index,
-		socket_id, enic->config.wq_desc_count,
+		socket_id, nb_desc,
 		sizeof(struct cq_enet_wq_desc));
 	if (err) {
 		vnic_wq_free(wq);
@@ -1252,6 +1250,8 @@ int enic_set_mtu(struct enic *enic, uint16_t new_mtu)
 	/* free and reallocate RQs with the new MTU */
 	for (rq_idx = 0; rq_idx < enic->rq_count; rq_idx++) {
 		rq = &enic->rq[enic_rte_rq_idx_to_sop_idx(rq_idx)];
+		if (!rq->in_use)
+			continue;
 
 		enic_free_rq(rq);
 		rc = enic_alloc_rq(enic, rq_idx, rq->socket_id, rq->mp,
@@ -1383,6 +1383,15 @@ int enic_probe(struct enic *enic)
 		enic_alloc_consistent,
 		enic_free_consistent);
 
+	/*
+	 * Allocate the consistent memory for stats upfront so both primary and
+	 * secondary processes can dump stats.
+	 */
+	err = vnic_dev_alloc_stats_mem(enic->vdev);
+	if (err) {
+		dev_err(enic, "Failed to allocate cmd memory, aborting\n");
+		goto err_out_unregister;
+	}
 	/* Issue device open to get device in known state */
 	err = enic_dev_open(enic);
 	if (err) {
@@ -1391,8 +1400,10 @@ int enic_probe(struct enic *enic)
 	}
 
 	/* Set ingress vlan rewrite mode before vnic initialization */
+	dev_debug(enic, "Set ig_vlan_rewrite_mode=%u\n",
+		  enic->ig_vlan_rewrite_mode);
 	err = vnic_dev_set_ig_vlan_rewrite_mode(enic->vdev,
-		IG_VLAN_REWRITE_MODE_PASS_THRU);
+		enic->ig_vlan_rewrite_mode);
 	if (err) {
 		dev_err(enic,
 			"Failed to set ingress vlan rewrite mode, aborting.\n");

@@ -44,10 +44,12 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
+#include <rte_common.h>
 #include <rte_ethdev.h>
 #include <rte_flow.h>
 #include <rte_flow_driver.h>
 #include <rte_malloc.h>
+#include <rte_ip.h>
 
 #include "mlx5.h"
 #include "mlx5_defs.h"
@@ -61,12 +63,6 @@
 #define MLX5_IPV6 6
 
 #ifndef HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT
-struct ibv_counter_set_init_attr {
-	int dummy;
-};
-struct ibv_flow_spec_counter_action {
-	int dummy;
-};
 struct ibv_counter_set {
 	int dummy;
 };
@@ -83,40 +79,46 @@ ibv_destroy_counter_set(struct ibv_counter_set *cs)
 extern const struct eth_dev_ops mlx5_dev_ops;
 extern const struct eth_dev_ops mlx5_dev_ops_isolate;
 
+/** Structure give to the conversion functions. */
+struct mlx5_flow_data {
+	struct mlx5_flow_parse *parser; /** Parser context. */
+	struct rte_flow_error *error; /** Error context. */
+};
+
 static int
 mlx5_flow_create_eth(const struct rte_flow_item *item,
 		     const void *default_mask,
-		     void *data);
+		     struct mlx5_flow_data *data);
 
 static int
 mlx5_flow_create_vlan(const struct rte_flow_item *item,
 		      const void *default_mask,
-		      void *data);
+		      struct mlx5_flow_data *data);
 
 static int
 mlx5_flow_create_ipv4(const struct rte_flow_item *item,
 		      const void *default_mask,
-		      void *data);
+		      struct mlx5_flow_data *data);
 
 static int
 mlx5_flow_create_ipv6(const struct rte_flow_item *item,
 		      const void *default_mask,
-		      void *data);
+		      struct mlx5_flow_data *data);
 
 static int
 mlx5_flow_create_udp(const struct rte_flow_item *item,
 		     const void *default_mask,
-		     void *data);
+		     struct mlx5_flow_data *data);
 
 static int
 mlx5_flow_create_tcp(const struct rte_flow_item *item,
 		     const void *default_mask,
-		     void *data);
+		     struct mlx5_flow_data *data);
 
 static int
 mlx5_flow_create_vxlan(const struct rte_flow_item *item,
 		       const void *default_mask,
-		       void *data);
+		       struct mlx5_flow_data *data);
 
 struct mlx5_flow_parse;
 
@@ -128,7 +130,7 @@ static int
 mlx5_flow_create_flag_mark(struct mlx5_flow_parse *parser, uint32_t mark_id);
 
 static int
-mlx5_flow_create_count(struct priv *priv, struct mlx5_flow_parse *parser);
+mlx5_flow_create_count(struct rte_eth_dev *dev, struct mlx5_flow_parse *parser);
 
 /* Hash RX queue types. */
 enum hash_rxq_type {
@@ -157,7 +159,7 @@ const struct hash_rxq_init hash_rxq_init[] = {
 				IBV_RX_HASH_SRC_PORT_TCP |
 				IBV_RX_HASH_DST_PORT_TCP),
 		.dpdk_rss_hf = ETH_RSS_NONFRAG_IPV4_TCP,
-		.flow_priority = 0,
+		.flow_priority = 1,
 		.ip_version = MLX5_IPV4,
 	},
 	[HASH_RXQ_UDPV4] = {
@@ -166,7 +168,7 @@ const struct hash_rxq_init hash_rxq_init[] = {
 				IBV_RX_HASH_SRC_PORT_UDP |
 				IBV_RX_HASH_DST_PORT_UDP),
 		.dpdk_rss_hf = ETH_RSS_NONFRAG_IPV4_UDP,
-		.flow_priority = 0,
+		.flow_priority = 1,
 		.ip_version = MLX5_IPV4,
 	},
 	[HASH_RXQ_IPV4] = {
@@ -174,7 +176,7 @@ const struct hash_rxq_init hash_rxq_init[] = {
 				IBV_RX_HASH_DST_IPV4),
 		.dpdk_rss_hf = (ETH_RSS_IPV4 |
 				ETH_RSS_FRAG_IPV4),
-		.flow_priority = 1,
+		.flow_priority = 2,
 		.ip_version = MLX5_IPV4,
 	},
 	[HASH_RXQ_TCPV6] = {
@@ -183,7 +185,7 @@ const struct hash_rxq_init hash_rxq_init[] = {
 				IBV_RX_HASH_SRC_PORT_TCP |
 				IBV_RX_HASH_DST_PORT_TCP),
 		.dpdk_rss_hf = ETH_RSS_NONFRAG_IPV6_TCP,
-		.flow_priority = 0,
+		.flow_priority = 1,
 		.ip_version = MLX5_IPV6,
 	},
 	[HASH_RXQ_UDPV6] = {
@@ -192,7 +194,7 @@ const struct hash_rxq_init hash_rxq_init[] = {
 				IBV_RX_HASH_SRC_PORT_UDP |
 				IBV_RX_HASH_DST_PORT_UDP),
 		.dpdk_rss_hf = ETH_RSS_NONFRAG_IPV6_UDP,
-		.flow_priority = 0,
+		.flow_priority = 1,
 		.ip_version = MLX5_IPV6,
 	},
 	[HASH_RXQ_IPV6] = {
@@ -200,13 +202,13 @@ const struct hash_rxq_init hash_rxq_init[] = {
 				IBV_RX_HASH_DST_IPV6),
 		.dpdk_rss_hf = (ETH_RSS_IPV6 |
 				ETH_RSS_FRAG_IPV6),
-		.flow_priority = 1,
+		.flow_priority = 2,
 		.ip_version = MLX5_IPV6,
 	},
 	[HASH_RXQ_ETH] = {
 		.hash_fields = 0,
 		.dpdk_rss_hf = 0,
-		.flow_priority = 2,
+		.flow_priority = 3,
 	},
 };
 
@@ -286,11 +288,12 @@ struct mlx5_flow_items {
 	 *   Internal structure to store the conversion.
 	 *
 	 * @return
-	 *   0 on success, negative value otherwise.
+	 *   0 on success, a negative errno value otherwise and rte_errno is
+	 *   set.
 	 */
 	int (*convert)(const struct rte_flow_item *item,
 		       const void *default_mask,
-		       void *data);
+		       struct mlx5_flow_data *data);
 	/** Size in bytes of the destination structure. */
 	const unsigned int dst_sz;
 	/** List of possible following items.  */
@@ -475,9 +478,17 @@ struct mlx5_fdir {
 		struct rte_flow_item_ipv6 ipv6;
 	} l3;
 	union {
+		struct rte_flow_item_ipv4 ipv4;
+		struct rte_flow_item_ipv6 ipv6;
+	} l3_mask;
+	union {
 		struct rte_flow_item_udp udp;
 		struct rte_flow_item_tcp tcp;
 	} l4;
+	union {
+		struct rte_flow_item_udp udp;
+		struct rte_flow_item_tcp tcp;
+	} l4_mask;
 	struct rte_flow_action_queue queue;
 };
 
@@ -488,7 +499,7 @@ struct ibv_spec_header {
 };
 
 /**
- * Check support for a given item.
+ * Check item is fully supported by the NIC matching capability.
  *
  * @param item[in]
  *   Item specification.
@@ -499,87 +510,71 @@ struct ibv_spec_header {
  *   Bit-Mask size in bytes.
  *
  * @return
- *   0 on success.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_item_validate(const struct rte_flow_item *item,
 			const uint8_t *mask, unsigned int size)
 {
-	int ret = 0;
+	unsigned int i;
+	const uint8_t *spec = item->spec;
+	const uint8_t *last = item->last;
+	const uint8_t *m = item->mask ? item->mask : mask;
 
-	if (!item->spec && (item->mask || item->last))
-		return -1;
-	if (item->spec && !item->mask) {
-		unsigned int i;
-		const uint8_t *spec = item->spec;
-
-		for (i = 0; i < size; ++i)
-			if ((spec[i] | mask[i]) != mask[i])
-				return -1;
+	if (!spec && (item->mask || last))
+		goto error;
+	if (!spec)
+		return 0;
+	/*
+	 * Single-pass check to make sure that:
+	 * - item->mask is supported, no bits are set outside mask.
+	 * - Both masked item->spec and item->last are equal (no range
+	 *   supported).
+	 */
+	for (i = 0; i < size; i++) {
+		if (!m[i])
+			continue;
+		if ((m[i] | mask[i]) != mask[i])
+			goto error;
+		if (last && ((spec[i] & m[i]) != (last[i] & m[i])))
+			goto error;
 	}
-	if (item->last && !item->mask) {
-		unsigned int i;
-		const uint8_t *spec = item->last;
-
-		for (i = 0; i < size; ++i)
-			if ((spec[i] | mask[i]) != mask[i])
-				return -1;
-	}
-	if (item->mask) {
-		unsigned int i;
-		const uint8_t *spec = item->spec;
-
-		for (i = 0; i < size; ++i)
-			if ((spec[i] | mask[i]) != mask[i])
-				return -1;
-	}
-	if (item->spec && item->last) {
-		uint8_t spec[size];
-		uint8_t last[size];
-		const uint8_t *apply = mask;
-		unsigned int i;
-
-		if (item->mask)
-			apply = item->mask;
-		for (i = 0; i < size; ++i) {
-			spec[i] = ((const uint8_t *)item->spec)[i] & apply[i];
-			last[i] = ((const uint8_t *)item->last)[i] & apply[i];
-		}
-		ret = memcmp(spec, last, size);
-	}
-	return ret;
+	return 0;
+error:
+	rte_errno = ENOTSUP;
+	return -rte_errno;
 }
 
 /**
  * Copy the RSS configuration from the user ones, of the rss_conf is null,
  * uses the driver one.
  *
- * @param priv
- *   Pointer to private structure.
  * @param parser
  *   Internal parser structure.
  * @param rss_conf
  *   User RSS configuration to save.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_convert_rss_conf(struct priv *priv,
-			   struct mlx5_flow_parse *parser,
+mlx5_flow_convert_rss_conf(struct mlx5_flow_parse *parser,
 			   const struct rte_eth_rss_conf *rss_conf)
 {
 	/*
 	 * This function is also called at the beginning of
-	 * priv_flow_convert_actions() to initialize the parser with the
+	 * mlx5_flow_convert_actions() to initialize the parser with the
 	 * device default RSS configuration.
 	 */
-	(void)priv;
 	if (rss_conf) {
-		if (rss_conf->rss_hf & MLX5_RSS_HF_MASK)
-			return EINVAL;
-		if (rss_conf->rss_key_len != 40)
-			return EINVAL;
+		if (rss_conf->rss_hf & MLX5_RSS_HF_MASK) {
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+		if (rss_conf->rss_key_len != 40) {
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
 		if (rss_conf->rss_key_len && rss_conf->rss_key) {
 			parser->rss_conf.rss_key_len = rss_conf->rss_key_len;
 			memcpy(parser->rss_key, rss_conf->rss_key,
@@ -594,26 +589,18 @@ priv_flow_convert_rss_conf(struct priv *priv,
 /**
  * Extract attribute to the parser.
  *
- * @param priv
- *   Pointer to private structure.
  * @param[in] attr
  *   Flow rule attributes.
  * @param[out] error
  *   Perform verbose error reporting if not NULL.
- * @param[in, out] parser
- *   Internal parser structure.
  *
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_convert_attributes(struct priv *priv,
-			     const struct rte_flow_attr *attr,
-			     struct rte_flow_error *error,
-			     struct mlx5_flow_parse *parser)
+mlx5_flow_convert_attributes(const struct rte_flow_attr *attr,
+			     struct rte_flow_error *error)
 {
-	(void)priv;
-	(void)parser;
 	if (attr->group) {
 		rte_flow_error_set(error, ENOTSUP,
 				   RTE_FLOW_ERROR_TYPE_ATTR_GROUP,
@@ -648,8 +635,8 @@ priv_flow_convert_attributes(struct priv *priv,
 /**
  * Extract actions request to the parser.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param[in] actions
  *   Associated actions (list terminated by the END action).
  * @param[out] error
@@ -661,18 +648,23 @@ priv_flow_convert_attributes(struct priv *priv,
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_convert_actions(struct priv *priv,
+mlx5_flow_convert_actions(struct rte_eth_dev *dev,
 			  const struct rte_flow_action actions[],
 			  struct rte_flow_error *error,
 			  struct mlx5_flow_parse *parser)
 {
+	struct priv *priv = dev->data->dev_private;
+	int ret;
+
 	/*
 	 * Add default RSS configuration necessary for Verbs to create QP even
 	 * if no RSS is necessary.
 	 */
-	priv_flow_convert_rss_conf(priv, parser,
-				   (const struct rte_eth_rss_conf *)
-				   &priv->rss_conf);
+	ret = mlx5_flow_convert_rss_conf(parser,
+					 (const struct rte_eth_rss_conf *)
+					 &priv->rss_conf);
+	if (ret)
+		return ret;
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; ++actions) {
 		if (actions->type == RTE_FLOW_ACTION_TYPE_VOID) {
 			continue;
@@ -737,6 +729,14 @@ priv_flow_convert_actions(struct priv *priv,
 					return -rte_errno;
 				}
 			}
+			if (rss->num > RTE_DIM(parser->queues)) {
+				rte_flow_error_set(error, EINVAL,
+						   RTE_FLOW_ERROR_TYPE_ACTION,
+						   actions,
+						   "too many queues for RSS"
+						   " context");
+				return -rte_errno;
+			}
 			for (n = 0; n < rss->num; ++n) {
 				if (rss->queue[n] >= priv->rxqs_n) {
 					rte_flow_error_set(error, EINVAL,
@@ -750,8 +750,7 @@ priv_flow_convert_actions(struct priv *priv,
 			for (n = 0; n < rss->num; ++n)
 				parser->queues[n] = rss->queue[n];
 			parser->queues_n = rss->num;
-			if (priv_flow_convert_rss_conf(priv, parser,
-						       rss->rss_conf)) {
+			if (mlx5_flow_convert_rss_conf(parser, rss->rss_conf)) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ACTION,
 						   actions,
@@ -805,8 +804,6 @@ exit_action_not_supported:
 /**
  * Validate items.
  *
- * @param priv
- *   Pointer to private structure.
  * @param[in] items
  *   Pattern specification (list terminated by the END pattern item).
  * @param[out] error
@@ -818,22 +815,20 @@ exit_action_not_supported:
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_convert_items_validate(struct priv *priv,
-				 const struct rte_flow_item items[],
+mlx5_flow_convert_items_validate(const struct rte_flow_item items[],
 				 struct rte_flow_error *error,
 				 struct mlx5_flow_parse *parser)
 {
 	const struct mlx5_flow_items *cur_item = mlx5_flow_items;
 	unsigned int i;
+	int ret = 0;
 
-	(void)priv;
 	/* Initialise the offsets to start after verbs attribute. */
 	for (i = 0; i != hash_rxq_init_n; ++i)
 		parser->queue[i].offset = sizeof(struct ibv_flow_attr);
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; ++items) {
 		const struct mlx5_flow_items *token = NULL;
 		unsigned int n;
-		int err;
 
 		if (items->type == RTE_FLOW_ITEM_TYPE_VOID)
 			continue;
@@ -846,13 +841,15 @@ priv_flow_convert_items_validate(struct priv *priv,
 				break;
 			}
 		}
-		if (!token)
+		if (!token) {
+			ret = -ENOTSUP;
 			goto exit_item_not_supported;
+		}
 		cur_item = token;
-		err = mlx5_flow_item_validate(items,
+		ret = mlx5_flow_item_validate(items,
 					      (const uint8_t *)cur_item->mask,
 					      cur_item->mask_sz);
-		if (err)
+		if (ret)
 			goto exit_item_not_supported;
 		if (items->type == RTE_FLOW_ITEM_TYPE_VXLAN) {
 			if (parser->inner) {
@@ -882,64 +879,90 @@ priv_flow_convert_items_validate(struct priv *priv,
 				sizeof(struct ibv_flow_spec_action_tag);
 	}
 	if (parser->count) {
+#ifdef HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT
 		unsigned int size = sizeof(struct ibv_flow_spec_counter_action);
 
 		for (i = 0; i != hash_rxq_init_n; ++i)
 			parser->queue[i].offset += size;
+#else
+		rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ACTION,
+				   items,
+				   "Count action supported only on "
+				   "MLNX_OFED_4.2 and above");
+#endif
 	}
 	return 0;
 exit_item_not_supported:
-	rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
-			   items, "item not supported");
-	return -rte_errno;
+	return rte_flow_error_set(error, -ret, RTE_FLOW_ERROR_TYPE_ITEM,
+				  items, "item not supported");
 }
 
 /**
  * Allocate memory space to store verbs flow attributes.
  *
- * @param priv
- *   Pointer to private structure.
- * @param[in] priority
- *   Flow priority.
  * @param[in] size
  *   Amount of byte to allocate.
  * @param[out] error
  *   Perform verbose error reporting if not NULL.
  *
  * @return
- *   A verbs flow attribute on success, NULL otherwise.
+ *   A verbs flow attribute on success, NULL otherwise and rte_errno is set.
  */
-static struct ibv_flow_attr*
-priv_flow_convert_allocate(struct priv *priv,
-			   unsigned int priority,
-			   unsigned int size,
-			   struct rte_flow_error *error)
+static struct ibv_flow_attr *
+mlx5_flow_convert_allocate(unsigned int size, struct rte_flow_error *error)
 {
 	struct ibv_flow_attr *ibv_attr;
 
-	(void)priv;
 	ibv_attr = rte_calloc(__func__, 1, size, 0);
 	if (!ibv_attr) {
 		rte_flow_error_set(error, ENOMEM,
 				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 				   NULL,
-				   "cannot allocate verbs spec attributes.");
+				   "cannot allocate verbs spec attributes");
 		return NULL;
 	}
-	ibv_attr->priority = priority;
 	return ibv_attr;
+}
+
+/**
+ * Make inner packet matching with an higher priority from the non Inner
+ * matching.
+ *
+ * @param[in, out] parser
+ *   Internal parser structure.
+ * @param attr
+ *   User flow attribute.
+ */
+static void
+mlx5_flow_update_priority(struct mlx5_flow_parse *parser,
+			  const struct rte_flow_attr *attr)
+{
+	unsigned int i;
+
+	if (parser->drop) {
+		parser->queue[HASH_RXQ_ETH].ibv_attr->priority =
+			attr->priority +
+			hash_rxq_init[HASH_RXQ_ETH].flow_priority;
+		return;
+	}
+	for (i = 0; i != hash_rxq_init_n; ++i) {
+		if (parser->queue[i].ibv_attr) {
+			parser->queue[i].ibv_attr->priority =
+				attr->priority +
+				hash_rxq_init[i].flow_priority -
+				(parser->inner ? 1 : 0);
+		}
+	}
 }
 
 /**
  * Finalise verbs flow attributes.
  *
- * @param priv
- *   Pointer to private structure.
  * @param[in, out] parser
  *   Internal parser structure.
  */
 static void
-priv_flow_convert_finalise(struct priv *priv, struct mlx5_flow_parse *parser)
+mlx5_flow_convert_finalise(struct mlx5_flow_parse *parser)
 {
 	const unsigned int ipv4 =
 		hash_rxq_init[parser->layer].ip_version == MLX5_IPV4;
@@ -950,7 +973,16 @@ priv_flow_convert_finalise(struct priv *priv, struct mlx5_flow_parse *parser)
 	const enum hash_rxq_type ip = ipv4 ? HASH_RXQ_IPV4 : HASH_RXQ_IPV6;
 	unsigned int i;
 
-	(void)priv;
+	/* Remove any other flow not matching the pattern. */
+	if (parser->queues_n == 1 && !parser->rss_conf.rss_hf) {
+		for (i = 0; i != hash_rxq_init_n; ++i) {
+			if (i == HASH_RXQ_ETH)
+				continue;
+			rte_free(parser->queue[i].ibv_attr);
+			parser->queue[i].ibv_attr = NULL;
+		}
+		return;
+	}
 	if (parser->layer == HASH_RXQ_ETH) {
 		goto fill;
 	} else {
@@ -1049,8 +1081,8 @@ fill:
 /**
  * Validate and convert a flow supported by the NIC.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param[in] attr
  *   Flow rule attributes.
  * @param[in] pattern
@@ -1066,7 +1098,7 @@ fill:
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_convert(struct priv *priv,
+mlx5_flow_convert(struct rte_eth_dev *dev,
 		  const struct rte_flow_attr *attr,
 		  const struct rte_flow_item items[],
 		  const struct rte_flow_action actions[],
@@ -1083,35 +1115,31 @@ priv_flow_convert(struct priv *priv,
 		.layer = HASH_RXQ_ETH,
 		.mark_id = MLX5_FLOW_MARK_DEFAULT,
 	};
-	ret = priv_flow_convert_attributes(priv, attr, error, parser);
+	ret = mlx5_flow_convert_attributes(attr, error);
 	if (ret)
 		return ret;
-	ret = priv_flow_convert_actions(priv, actions, error, parser);
+	ret = mlx5_flow_convert_actions(dev, actions, error, parser);
 	if (ret)
 		return ret;
-	ret = priv_flow_convert_items_validate(priv, items, error, parser);
+	ret = mlx5_flow_convert_items_validate(items, error, parser);
 	if (ret)
 		return ret;
-	priv_flow_convert_finalise(priv, parser);
+	mlx5_flow_convert_finalise(parser);
 	/*
 	 * Second step.
 	 * Allocate the memory space to store verbs specifications.
 	 */
 	if (parser->drop) {
+		unsigned int offset = parser->queue[HASH_RXQ_ETH].offset;
+
 		parser->queue[HASH_RXQ_ETH].ibv_attr =
-			priv_flow_convert_allocate
-			(priv, attr->priority,
-			 parser->queue[HASH_RXQ_ETH].offset,
-			 error);
+			mlx5_flow_convert_allocate(offset, error);
 		if (!parser->queue[HASH_RXQ_ETH].ibv_attr)
-			return ENOMEM;
+			goto exit_enomem;
 		parser->queue[HASH_RXQ_ETH].offset =
 			sizeof(struct ibv_flow_attr);
 	} else {
 		for (i = 0; i != hash_rxq_init_n; ++i) {
-			unsigned int priority =
-				attr->priority +
-				hash_rxq_init[i].flow_priority;
 			unsigned int offset;
 
 			if (!(parser->rss_conf.rss_hf &
@@ -1120,8 +1148,7 @@ priv_flow_convert(struct priv *priv,
 				continue;
 			offset = parser->queue[i].offset;
 			parser->queue[i].ibv_attr =
-				priv_flow_convert_allocate(priv, priority,
-							   offset, error);
+				mlx5_flow_convert_allocate(offset, error);
 			if (!parser->queue[i].ibv_attr)
 				goto exit_enomem;
 			parser->queue[i].offset = sizeof(struct ibv_flow_attr);
@@ -1130,6 +1157,11 @@ priv_flow_convert(struct priv *priv,
 	/* Third step. Conversion parse, fill the specifications. */
 	parser->inner = 0;
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; ++items) {
+		struct mlx5_flow_data data = {
+			.parser = parser,
+			.error = error,
+		};
+
 		if (items->type == RTE_FLOW_ITEM_TYPE_VOID)
 			continue;
 		cur_item = &mlx5_flow_items[items->type];
@@ -1137,18 +1169,14 @@ priv_flow_convert(struct priv *priv,
 					(cur_item->default_mask ?
 					 cur_item->default_mask :
 					 cur_item->mask),
-					parser);
-		if (ret) {
-			rte_flow_error_set(error, ret,
-					   RTE_FLOW_ERROR_TYPE_ITEM,
-					   items, "item not supported");
+					 &data);
+		if (ret)
 			goto exit_free;
-		}
 	}
 	if (parser->mark)
 		mlx5_flow_create_flag_mark(parser, parser->mark_id);
 	if (parser->count && parser->create) {
-		mlx5_flow_create_count(priv, parser);
+		mlx5_flow_create_count(dev, parser);
 		if (!parser->cs)
 			goto exit_count_error;
 	}
@@ -1156,13 +1184,9 @@ priv_flow_convert(struct priv *priv,
 	 * Last step. Complete missing specification to reach the RSS
 	 * configuration.
 	 */
-	if (!parser->drop) {
-		priv_flow_convert_finalise(priv, parser);
-	} else {
-		parser->queue[HASH_RXQ_ETH].ibv_attr->priority =
-			attr->priority +
-			hash_rxq_init[parser->layer].flow_priority;
-	}
+	if (!parser->drop)
+		mlx5_flow_convert_finalise(parser);
+	mlx5_flow_update_priority(parser, attr);
 exit_free:
 	/* Only verification is expected, all resources should be released. */
 	if (!parser->create) {
@@ -1181,13 +1205,13 @@ exit_enomem:
 			parser->queue[i].ibv_attr = NULL;
 		}
 	}
-	rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-			   NULL, "cannot allocate verbs spec attributes.");
-	return ret;
+	rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+			   NULL, "cannot allocate verbs spec attributes");
+	return -rte_errno;
 exit_count_error:
 	rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-			   NULL, "cannot create counter.");
-	return rte_errno;
+			   NULL, "cannot create counter");
+	return -rte_errno;
 }
 
 /**
@@ -1233,15 +1257,18 @@ mlx5_flow_create_copy(struct mlx5_flow_parse *parser, void *src,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_eth(const struct rte_flow_item *item,
 		     const void *default_mask,
-		     void *data)
+		     struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_eth *spec = item->spec;
 	const struct rte_flow_item_eth *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	const unsigned int eth_size = sizeof(struct ibv_flow_spec_eth);
 	struct ibv_flow_spec_eth eth = {
 		.type = parser->inner | IBV_FLOW_SPEC_ETH,
@@ -1282,15 +1309,18 @@ mlx5_flow_create_eth(const struct rte_flow_item *item,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_vlan(const struct rte_flow_item *item,
 		      const void *default_mask,
-		      void *data)
+		      struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_vlan *spec = item->spec;
 	const struct rte_flow_item_vlan *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	struct ibv_flow_spec_eth *eth;
 	const unsigned int eth_size = sizeof(struct ibv_flow_spec_eth);
 
@@ -1308,9 +1338,18 @@ mlx5_flow_create_vlan(const struct rte_flow_item *item,
 			eth->val.vlan_tag = spec->tci;
 			eth->mask.vlan_tag = mask->tci;
 			eth->val.vlan_tag &= eth->mask.vlan_tag;
+			/*
+			 * From verbs perspective an empty VLAN is equivalent
+			 * to a packet without VLAN layer.
+			 */
+			if (!eth->mask.vlan_tag)
+				goto error;
 		}
+		return 0;
 	}
-	return 0;
+error:
+	return rte_flow_error_set(data->error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
+				  item, "VLAN cannot be empty");
 }
 
 /**
@@ -1322,15 +1361,18 @@ mlx5_flow_create_vlan(const struct rte_flow_item *item,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_ipv4(const struct rte_flow_item *item,
 		      const void *default_mask,
-		      void *data)
+		      struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_ipv4 *spec = item->spec;
 	const struct rte_flow_item_ipv4 *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	unsigned int ipv4_size = sizeof(struct ibv_flow_spec_ipv4_ext);
 	struct ibv_flow_spec_ipv4_ext ipv4 = {
 		.type = parser->inner | IBV_FLOW_SPEC_IPV4_EXT,
@@ -1374,15 +1416,18 @@ mlx5_flow_create_ipv4(const struct rte_flow_item *item,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_ipv6(const struct rte_flow_item *item,
 		      const void *default_mask,
-		      void *data)
+		      struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_ipv6 *spec = item->spec;
 	const struct rte_flow_item_ipv6 *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	unsigned int ipv6_size = sizeof(struct ibv_flow_spec_ipv6);
 	struct ibv_flow_spec_ipv6 ipv6 = {
 		.type = parser->inner | IBV_FLOW_SPEC_IPV6,
@@ -1394,6 +1439,8 @@ mlx5_flow_create_ipv6(const struct rte_flow_item *item,
 		parser->layer = HASH_RXQ_IPV6;
 	if (spec) {
 		unsigned int i;
+		uint32_t vtc_flow_val;
+		uint32_t vtc_flow_mask;
 
 		if (!mask)
 			mask = default_mask;
@@ -1405,7 +1452,20 @@ mlx5_flow_create_ipv6(const struct rte_flow_item *item,
 		       RTE_DIM(ipv6.mask.src_ip));
 		memcpy(&ipv6.mask.dst_ip, mask->hdr.dst_addr,
 		       RTE_DIM(ipv6.mask.dst_ip));
-		ipv6.mask.flow_label = mask->hdr.vtc_flow;
+		vtc_flow_val = rte_be_to_cpu_32(spec->hdr.vtc_flow);
+		vtc_flow_mask = rte_be_to_cpu_32(mask->hdr.vtc_flow);
+		ipv6.val.flow_label =
+			rte_cpu_to_be_32((vtc_flow_val & IPV6_HDR_FL_MASK) >>
+					 IPV6_HDR_FL_SHIFT);
+		ipv6.val.traffic_class = (vtc_flow_val & IPV6_HDR_TC_MASK) >>
+					 IPV6_HDR_TC_SHIFT;
+		ipv6.val.next_hdr = spec->hdr.proto;
+		ipv6.val.hop_limit = spec->hdr.hop_limits;
+		ipv6.mask.flow_label =
+			rte_cpu_to_be_32((vtc_flow_mask & IPV6_HDR_FL_MASK) >>
+					 IPV6_HDR_FL_SHIFT);
+		ipv6.mask.traffic_class = (vtc_flow_mask & IPV6_HDR_TC_MASK) >>
+					  IPV6_HDR_TC_SHIFT;
 		ipv6.mask.next_hdr = mask->hdr.proto;
 		ipv6.mask.hop_limit = mask->hdr.hop_limits;
 		/* Remove unwanted bits from values. */
@@ -1414,6 +1474,7 @@ mlx5_flow_create_ipv6(const struct rte_flow_item *item,
 			ipv6.val.dst_ip[i] &= ipv6.mask.dst_ip[i];
 		}
 		ipv6.val.flow_label &= ipv6.mask.flow_label;
+		ipv6.val.traffic_class &= ipv6.mask.traffic_class;
 		ipv6.val.next_hdr &= ipv6.mask.next_hdr;
 		ipv6.val.hop_limit &= ipv6.mask.hop_limit;
 	}
@@ -1430,15 +1491,18 @@ mlx5_flow_create_ipv6(const struct rte_flow_item *item,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_udp(const struct rte_flow_item *item,
 		     const void *default_mask,
-		     void *data)
+		     struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_udp *spec = item->spec;
 	const struct rte_flow_item_udp *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	unsigned int udp_size = sizeof(struct ibv_flow_spec_tcp_udp);
 	struct ibv_flow_spec_tcp_udp udp = {
 		.type = parser->inner | IBV_FLOW_SPEC_UDP,
@@ -1476,15 +1540,18 @@ mlx5_flow_create_udp(const struct rte_flow_item *item,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_tcp(const struct rte_flow_item *item,
 		     const void *default_mask,
-		     void *data)
+		     struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_tcp *spec = item->spec;
 	const struct rte_flow_item_tcp *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	unsigned int tcp_size = sizeof(struct ibv_flow_spec_tcp_udp);
 	struct ibv_flow_spec_tcp_udp tcp = {
 		.type = parser->inner | IBV_FLOW_SPEC_TCP,
@@ -1522,15 +1589,18 @@ mlx5_flow_create_tcp(const struct rte_flow_item *item,
  *   Default bit-masks to use when item->mask is not provided.
  * @param data[in, out]
  *   User structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_vxlan(const struct rte_flow_item *item,
 		       const void *default_mask,
-		       void *data)
+		       struct mlx5_flow_data *data)
 {
 	const struct rte_flow_item_vxlan *spec = item->spec;
 	const struct rte_flow_item_vxlan *mask = item->mask;
-	struct mlx5_flow_parse *parser = (struct mlx5_flow_parse *)data;
+	struct mlx5_flow_parse *parser = data->parser;
 	unsigned int size = sizeof(struct ibv_flow_spec_tunnel);
 	struct ibv_flow_spec_tunnel vxlan = {
 		.type = parser->inner | IBV_FLOW_SPEC_VXLAN_TUNNEL,
@@ -1562,7 +1632,10 @@ mlx5_flow_create_vxlan(const struct rte_flow_item *item,
 	 * To avoid such situation, VNI 0 is currently refused.
 	 */
 	if (!vxlan.val.tunnel_id)
-		return EINVAL;
+		return rte_flow_error_set(data->error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
+					  item,
+					  "VxLAN vni cannot be 0");
 	mlx5_flow_create_copy(parser, &vxlan, size);
 	return 0;
 }
@@ -1574,6 +1647,9 @@ mlx5_flow_create_vxlan(const struct rte_flow_item *item,
  *   Internal parser structure.
  * @param mark_id
  *   Mark identifier.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 mlx5_flow_create_flag_mark(struct mlx5_flow_parse *parser, uint32_t mark_id)
@@ -1593,19 +1669,20 @@ mlx5_flow_create_flag_mark(struct mlx5_flow_parse *parser, uint32_t mark_id)
 /**
  * Convert count action to Verbs specification.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param parser
  *   Pointer to MLX5 flow parser structure.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx5_flow_create_count(struct priv *priv __rte_unused,
+mlx5_flow_create_count(struct rte_eth_dev *dev __rte_unused,
 		       struct mlx5_flow_parse *parser __rte_unused)
 {
 #ifdef HAVE_IBV_DEVICE_COUNTERS_SET_SUPPORT
+	struct priv *priv = dev->data->dev_private;
 	unsigned int size = sizeof(struct ibv_flow_spec_counter_action);
 	struct ibv_counter_set_init_attr init_attr = {0};
 	struct ibv_flow_spec_counter_action counter = {
@@ -1616,8 +1693,10 @@ mlx5_flow_create_count(struct priv *priv __rte_unused,
 
 	init_attr.counter_set_id = 0;
 	parser->cs = ibv_create_counter_set(priv->ctx, &init_attr);
-	if (!parser->cs)
-		return EINVAL;
+	if (!parser->cs) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
 	counter.counter_set_handle = parser->cs->handle;
 	mlx5_flow_create_copy(parser, &counter, size);
 #endif
@@ -1627,8 +1706,8 @@ mlx5_flow_create_count(struct priv *priv __rte_unused,
 /**
  * Complete flow rule creation with a drop queue.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param parser
  *   Internal parser structure.
  * @param flow
@@ -1637,17 +1716,17 @@ mlx5_flow_create_count(struct priv *priv __rte_unused,
  *   Perform verbose error reporting if not NULL.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_create_action_queue_drop(struct priv *priv,
+mlx5_flow_create_action_queue_drop(struct rte_eth_dev *dev,
 				   struct mlx5_flow_parse *parser,
 				   struct rte_flow *flow,
 				   struct rte_flow_error *error)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct ibv_flow_spec_action_drop *drop;
 	unsigned int size = sizeof(struct ibv_flow_spec_action_drop);
-	int err = 0;
 
 	assert(priv->pd);
 	assert(priv->ctx);
@@ -1664,7 +1743,7 @@ priv_flow_create_action_queue_drop(struct priv *priv,
 		parser->queue[HASH_RXQ_ETH].ibv_attr;
 	if (parser->count)
 		flow->cs = parser->cs;
-	if (!priv->dev->data->dev_started)
+	if (!dev->data->dev_started)
 		return 0;
 	parser->queue[HASH_RXQ_ETH].ibv_attr = NULL;
 	flow->frxq[HASH_RXQ_ETH].ibv_flow =
@@ -1673,7 +1752,6 @@ priv_flow_create_action_queue_drop(struct priv *priv,
 	if (!flow->frxq[HASH_RXQ_ETH].ibv_flow) {
 		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "flow rule creation failure");
-		err = ENOMEM;
 		goto error;
 	}
 	return 0;
@@ -1692,14 +1770,14 @@ error:
 		flow->cs = NULL;
 		parser->cs = NULL;
 	}
-	return err;
+	return -rte_errno;
 }
 
 /**
  * Create hash Rx queues when RSS is enabled.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param parser
  *   Internal parser structure.
  * @param flow
@@ -1708,10 +1786,10 @@ error:
  *   Perform verbose error reporting if not NULL.
  *
  * @return
- *   0 on success, a errno value otherwise and rte_errno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_create_action_queue_rss(struct priv *priv,
+mlx5_flow_create_action_queue_rss(struct rte_eth_dev *dev,
 				  struct mlx5_flow_parse *parser,
 				  struct rte_flow *flow,
 				  struct rte_flow_error *error)
@@ -1726,29 +1804,29 @@ priv_flow_create_action_queue_rss(struct priv *priv,
 		flow->frxq[i].ibv_attr = parser->queue[i].ibv_attr;
 		parser->queue[i].ibv_attr = NULL;
 		hash_fields = hash_rxq_init[i].hash_fields;
-		if (!priv->dev->data->dev_started)
+		if (!dev->data->dev_started)
 			continue;
 		flow->frxq[i].hrxq =
-			mlx5_priv_hrxq_get(priv,
-					   parser->rss_conf.rss_key,
-					   parser->rss_conf.rss_key_len,
-					   hash_fields,
-					   parser->queues,
-					   parser->queues_n);
+			mlx5_hrxq_get(dev,
+				      parser->rss_conf.rss_key,
+				      parser->rss_conf.rss_key_len,
+				      hash_fields,
+				      parser->queues,
+				      parser->queues_n);
 		if (flow->frxq[i].hrxq)
 			continue;
 		flow->frxq[i].hrxq =
-			mlx5_priv_hrxq_new(priv,
-					   parser->rss_conf.rss_key,
-					   parser->rss_conf.rss_key_len,
-					   hash_fields,
-					   parser->queues,
-					   parser->queues_n);
+			mlx5_hrxq_new(dev,
+				      parser->rss_conf.rss_key,
+				      parser->rss_conf.rss_key_len,
+				      hash_fields,
+				      parser->queues,
+				      parser->queues_n);
 		if (!flow->frxq[i].hrxq) {
-			rte_flow_error_set(error, ENOMEM,
-					   RTE_FLOW_ERROR_TYPE_HANDLE,
-					   NULL, "cannot create hash rxq");
-			return ENOMEM;
+			return rte_flow_error_set(error, ENOMEM,
+						  RTE_FLOW_ERROR_TYPE_HANDLE,
+						  NULL,
+						  "cannot create hash rxq");
 		}
 	}
 	return 0;
@@ -1757,8 +1835,8 @@ priv_flow_create_action_queue_rss(struct priv *priv,
 /**
  * Complete flow rule creation.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param parser
  *   Internal parser structure.
  * @param flow
@@ -1767,26 +1845,28 @@ priv_flow_create_action_queue_rss(struct priv *priv,
  *   Perform verbose error reporting if not NULL.
  *
  * @return
- *   0 on success, a errno value otherwise and rte_errno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_create_action_queue(struct priv *priv,
+mlx5_flow_create_action_queue(struct rte_eth_dev *dev,
 			      struct mlx5_flow_parse *parser,
 			      struct rte_flow *flow,
 			      struct rte_flow_error *error)
 {
-	int err = 0;
+	struct priv *priv __rte_unused = dev->data->dev_private;
+	int ret;
 	unsigned int i;
+	unsigned int flows_n = 0;
 
 	assert(priv->pd);
 	assert(priv->ctx);
 	assert(!parser->drop);
-	err = priv_flow_create_action_queue_rss(priv, parser, flow, error);
-	if (err)
+	ret = mlx5_flow_create_action_queue_rss(dev, parser, flow, error);
+	if (ret)
 		goto error;
 	if (parser->count)
 		flow->cs = parser->cs;
-	if (!priv->dev->data->dev_started)
+	if (!dev->data->dev_started)
 		return 0;
 	for (i = 0; i != hash_rxq_init_n; ++i) {
 		if (!flow->frxq[i].hrxq)
@@ -1798,13 +1878,19 @@ priv_flow_create_action_queue(struct priv *priv,
 			rte_flow_error_set(error, ENOMEM,
 					   RTE_FLOW_ERROR_TYPE_HANDLE,
 					   NULL, "flow rule creation failure");
-			err = ENOMEM;
 			goto error;
 		}
-		DEBUG("%p type %d QP %p ibv_flow %p",
-		      (void *)flow, i,
-		      (void *)flow->frxq[i].hrxq,
-		      (void *)flow->frxq[i].ibv_flow);
+		++flows_n;
+		DRV_LOG(DEBUG, "port %u %p type %d QP %p ibv_flow %p",
+			dev->data->port_id,
+			(void *)flow, i,
+			(void *)flow->frxq[i].hrxq,
+			(void *)flow->frxq[i].ibv_flow);
+	}
+	if (!flows_n) {
+		rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_HANDLE,
+				   NULL, "internal error in flow creation");
+		goto error;
 	}
 	for (i = 0; i != parser->queues_n; ++i) {
 		struct mlx5_rxq_data *q =
@@ -1814,6 +1900,7 @@ priv_flow_create_action_queue(struct priv *priv,
 	}
 	return 0;
 error:
+	ret = rte_errno; /* Save rte_errno before cleanup. */
 	assert(flow);
 	for (i = 0; i != hash_rxq_init_n; ++i) {
 		if (flow->frxq[i].ibv_flow) {
@@ -1822,7 +1909,7 @@ error:
 			claim_zero(ibv_destroy_flow(ibv_flow));
 		}
 		if (flow->frxq[i].hrxq)
-			mlx5_priv_hrxq_release(priv, flow->frxq[i].hrxq);
+			mlx5_hrxq_release(dev, flow->frxq[i].hrxq);
 		if (flow->frxq[i].ibv_attr)
 			rte_free(flow->frxq[i].ibv_attr);
 	}
@@ -1831,14 +1918,15 @@ error:
 		flow->cs = NULL;
 		parser->cs = NULL;
 	}
-	return err;
+	rte_errno = ret; /* Restore rte_errno. */
+	return -rte_errno;
 }
 
 /**
  * Convert a flow.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param list
  *   Pointer to a TAILQ flow list.
  * @param[in] attr
@@ -1851,23 +1939,23 @@ error:
  *   Perform verbose error reporting if not NULL.
  *
  * @return
- *   A flow on success, NULL otherwise.
+ *   A flow on success, NULL otherwise and rte_errno is set.
  */
 static struct rte_flow *
-priv_flow_create(struct priv *priv,
-		 struct mlx5_flows *list,
-		 const struct rte_flow_attr *attr,
-		 const struct rte_flow_item items[],
-		 const struct rte_flow_action actions[],
-		 struct rte_flow_error *error)
+mlx5_flow_list_create(struct rte_eth_dev *dev,
+		      struct mlx5_flows *list,
+		      const struct rte_flow_attr *attr,
+		      const struct rte_flow_item items[],
+		      const struct rte_flow_action actions[],
+		      struct rte_flow_error *error)
 {
 	struct mlx5_flow_parse parser = { .create = 1, };
 	struct rte_flow *flow = NULL;
 	unsigned int i;
-	int err;
+	int ret;
 
-	err = priv_flow_convert(priv, attr, items, actions, error, &parser);
-	if (err)
+	ret = mlx5_flow_convert(dev, attr, items, actions, error, &parser);
+	if (ret)
 		goto exit;
 	flow = rte_calloc(__func__, 1,
 			  sizeof(*flow) + parser.queues_n * sizeof(uint16_t),
@@ -1890,14 +1978,15 @@ priv_flow_create(struct priv *priv,
 	memcpy(flow->rss_key, parser.rss_key, parser.rss_conf.rss_key_len);
 	/* finalise the flow. */
 	if (parser.drop)
-		err = priv_flow_create_action_queue_drop(priv, &parser, flow,
+		ret = mlx5_flow_create_action_queue_drop(dev, &parser, flow,
 							 error);
 	else
-		err = priv_flow_create_action_queue(priv, &parser, flow, error);
-	if (err)
+		ret = mlx5_flow_create_action_queue(dev, &parser, flow, error);
+	if (ret)
 		goto exit;
 	TAILQ_INSERT_TAIL(list, flow, next);
-	DEBUG("Flow created %p", (void *)flow);
+	DRV_LOG(DEBUG, "port %u flow created %p", dev->data->port_id,
+		(void *)flow);
 	return flow;
 exit:
 	for (i = 0; i != hash_rxq_init_n; ++i) {
@@ -1921,14 +2010,9 @@ mlx5_flow_validate(struct rte_eth_dev *dev,
 		   const struct rte_flow_action actions[],
 		   struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
-	int ret;
 	struct mlx5_flow_parse parser = { .create = 0, };
 
-	priv_lock(priv);
-	ret = priv_flow_convert(priv, attr, items, actions, error, &parser);
-	priv_unlock(priv);
-	return ret;
+	return mlx5_flow_convert(dev, attr, items, actions, error, &parser);
 }
 
 /**
@@ -1945,30 +2029,26 @@ mlx5_flow_create(struct rte_eth_dev *dev,
 		 struct rte_flow_error *error)
 {
 	struct priv *priv = dev->data->dev_private;
-	struct rte_flow *flow;
 
-	priv_lock(priv);
-	flow = priv_flow_create(priv, &priv->flows, attr, items, actions,
-				error);
-	priv_unlock(priv);
-	return flow;
+	return mlx5_flow_list_create(dev, &priv->flows, attr, items, actions,
+				     error);
 }
 
 /**
- * Destroy a flow.
+ * Destroy a flow in a list.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param list
  *   Pointer to a TAILQ flow list.
  * @param[in] flow
  *   Flow to destroy.
  */
 static void
-priv_flow_destroy(struct priv *priv,
-		  struct mlx5_flows *list,
-		  struct rte_flow *flow)
+mlx5_flow_list_destroy(struct rte_eth_dev *dev, struct mlx5_flows *list,
+		       struct rte_flow *flow)
 {
+	struct priv *priv = dev->data->dev_private;
 	unsigned int i;
 
 	if (flow->drop || !flow->mark)
@@ -2015,7 +2095,7 @@ free:
 			if (frxq->ibv_flow)
 				claim_zero(ibv_destroy_flow(frxq->ibv_flow));
 			if (frxq->hrxq)
-				mlx5_priv_hrxq_release(priv, frxq->hrxq);
+				mlx5_hrxq_release(dev, frxq->hrxq);
 			if (frxq->ibv_attr)
 				rte_free(frxq->ibv_attr);
 		}
@@ -2025,53 +2105,60 @@ free:
 		flow->cs = NULL;
 	}
 	TAILQ_REMOVE(list, flow, next);
-	DEBUG("Flow destroyed %p", (void *)flow);
+	DRV_LOG(DEBUG, "port %u flow destroyed %p", dev->data->port_id,
+		(void *)flow);
 	rte_free(flow);
 }
 
 /**
  * Destroy all flows.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param list
  *   Pointer to a TAILQ flow list.
  */
 void
-priv_flow_flush(struct priv *priv, struct mlx5_flows *list)
+mlx5_flow_list_flush(struct rte_eth_dev *dev, struct mlx5_flows *list)
 {
 	while (!TAILQ_EMPTY(list)) {
 		struct rte_flow *flow;
 
 		flow = TAILQ_FIRST(list);
-		priv_flow_destroy(priv, list, flow);
+		mlx5_flow_list_destroy(dev, list, flow);
 	}
 }
 
 /**
  * Create drop queue.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  *
  * @return
- *   0 on success.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-priv_flow_create_drop_queue(struct priv *priv)
+mlx5_flow_create_drop_queue(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq_drop *fdq = NULL;
 
 	assert(priv->pd);
 	assert(priv->ctx);
 	fdq = rte_calloc(__func__, 1, sizeof(*fdq), 0);
 	if (!fdq) {
-		WARN("cannot allocate memory for drop queue");
-		goto error;
+		DRV_LOG(WARNING,
+			"port %u cannot allocate memory for drop queue",
+			dev->data->port_id);
+		rte_errno = ENOMEM;
+		return -rte_errno;
 	}
 	fdq->cq = ibv_create_cq(priv->ctx, 1, NULL, NULL, 0);
 	if (!fdq->cq) {
-		WARN("cannot allocate CQ for drop queue");
+		DRV_LOG(WARNING, "port %u cannot allocate CQ for drop queue",
+			dev->data->port_id);
+		rte_errno = errno;
 		goto error;
 	}
 	fdq->wq = ibv_create_wq(priv->ctx,
@@ -2083,7 +2170,9 @@ priv_flow_create_drop_queue(struct priv *priv)
 			.cq = fdq->cq,
 			});
 	if (!fdq->wq) {
-		WARN("cannot allocate WQ for drop queue");
+		DRV_LOG(WARNING, "port %u cannot allocate WQ for drop queue",
+			dev->data->port_id);
+		rte_errno = errno;
 		goto error;
 	}
 	fdq->ind_table = ibv_create_rwq_ind_table(priv->ctx,
@@ -2093,7 +2182,11 @@ priv_flow_create_drop_queue(struct priv *priv)
 			.comp_mask = 0,
 			});
 	if (!fdq->ind_table) {
-		WARN("cannot allocate indirection table for drop queue");
+		DRV_LOG(WARNING,
+			"port %u cannot allocate indirection table for drop"
+			" queue",
+			dev->data->port_id);
+		rte_errno = errno;
 		goto error;
 	}
 	fdq->qp = ibv_create_qp_ex(priv->ctx,
@@ -2114,7 +2207,9 @@ priv_flow_create_drop_queue(struct priv *priv)
 			.pd = priv->pd
 		});
 	if (!fdq->qp) {
-		WARN("cannot allocate QP for drop queue");
+		DRV_LOG(WARNING, "port %u cannot allocate QP for drop queue",
+			dev->data->port_id);
+		rte_errno = errno;
 		goto error;
 	}
 	priv->flow_drop_queue = fdq;
@@ -2131,18 +2226,19 @@ error:
 	if (fdq)
 		rte_free(fdq);
 	priv->flow_drop_queue = NULL;
-	return -1;
+	return -rte_errno;
 }
 
 /**
  * Delete drop queue.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  */
 void
-priv_flow_delete_drop_queue(struct priv *priv)
+mlx5_flow_delete_drop_queue(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq_drop *fdq = priv->flow_drop_queue;
 
 	if (!fdq)
@@ -2162,14 +2258,15 @@ priv_flow_delete_drop_queue(struct priv *priv)
 /**
  * Remove all flows.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param list
  *   Pointer to a TAILQ flow list.
  */
 void
-priv_flow_stop(struct priv *priv, struct mlx5_flows *list)
+mlx5_flow_stop(struct rte_eth_dev *dev, struct mlx5_flows *list)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct rte_flow *flow;
 
 	TAILQ_FOREACH_REVERSE(flow, list, mlx5_flows, next) {
@@ -2182,7 +2279,8 @@ priv_flow_stop(struct priv *priv, struct mlx5_flows *list)
 			claim_zero(ibv_destroy_flow
 				   (flow->frxq[HASH_RXQ_ETH].ibv_flow));
 			flow->frxq[HASH_RXQ_ETH].ibv_flow = NULL;
-			DEBUG("Flow %p removed", (void *)flow);
+			DRV_LOG(DEBUG, "port %u flow %p removed",
+				dev->data->port_id, (void *)flow);
 			/* Next flow. */
 			continue;
 		}
@@ -2211,27 +2309,29 @@ priv_flow_stop(struct priv *priv, struct mlx5_flows *list)
 				continue;
 			claim_zero(ibv_destroy_flow(flow->frxq[i].ibv_flow));
 			flow->frxq[i].ibv_flow = NULL;
-			mlx5_priv_hrxq_release(priv, flow->frxq[i].hrxq);
+			mlx5_hrxq_release(dev, flow->frxq[i].hrxq);
 			flow->frxq[i].hrxq = NULL;
 		}
-		DEBUG("Flow %p removed", (void *)flow);
+		DRV_LOG(DEBUG, "port %u flow %p removed", dev->data->port_id,
+			(void *)flow);
 	}
 }
 
 /**
  * Add all flows.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param list
  *   Pointer to a TAILQ flow list.
  *
  * @return
- *   0 on success, a errno value otherwise and rte_errno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-priv_flow_start(struct priv *priv, struct mlx5_flows *list)
+mlx5_flow_start(struct rte_eth_dev *dev, struct mlx5_flows *list)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct rte_flow *flow;
 
 	TAILQ_FOREACH(flow, list, next) {
@@ -2243,12 +2343,14 @@ priv_flow_start(struct priv *priv, struct mlx5_flows *list)
 				(priv->flow_drop_queue->qp,
 				 flow->frxq[HASH_RXQ_ETH].ibv_attr);
 			if (!flow->frxq[HASH_RXQ_ETH].ibv_flow) {
-				DEBUG("Flow %p cannot be applied",
-				      (void *)flow);
+				DRV_LOG(DEBUG,
+					"port %u flow %p cannot be applied",
+					dev->data->port_id, (void *)flow);
 				rte_errno = EINVAL;
-				return rte_errno;
+				return -rte_errno;
 			}
-			DEBUG("Flow %p applied", (void *)flow);
+			DRV_LOG(DEBUG, "port %u flow %p applied",
+				dev->data->port_id, (void *)flow);
 			/* Next flow. */
 			continue;
 		}
@@ -2256,36 +2358,39 @@ priv_flow_start(struct priv *priv, struct mlx5_flows *list)
 			if (!flow->frxq[i].ibv_attr)
 				continue;
 			flow->frxq[i].hrxq =
-				mlx5_priv_hrxq_get(priv, flow->rss_conf.rss_key,
-						   flow->rss_conf.rss_key_len,
-						   hash_rxq_init[i].hash_fields,
-						   (*flow->queues),
-						   flow->queues_n);
+				mlx5_hrxq_get(dev, flow->rss_conf.rss_key,
+					      flow->rss_conf.rss_key_len,
+					      hash_rxq_init[i].hash_fields,
+					      (*flow->queues),
+					      flow->queues_n);
 			if (flow->frxq[i].hrxq)
 				goto flow_create;
 			flow->frxq[i].hrxq =
-				mlx5_priv_hrxq_new(priv, flow->rss_conf.rss_key,
-						   flow->rss_conf.rss_key_len,
-						   hash_rxq_init[i].hash_fields,
-						   (*flow->queues),
-						   flow->queues_n);
+				mlx5_hrxq_new(dev, flow->rss_conf.rss_key,
+					      flow->rss_conf.rss_key_len,
+					      hash_rxq_init[i].hash_fields,
+					      (*flow->queues),
+					      flow->queues_n);
 			if (!flow->frxq[i].hrxq) {
-				DEBUG("Flow %p cannot be applied",
-				      (void *)flow);
+				DRV_LOG(DEBUG,
+					"port %u flow %p cannot be applied",
+					dev->data->port_id, (void *)flow);
 				rte_errno = EINVAL;
-				return rte_errno;
+				return -rte_errno;
 			}
 flow_create:
 			flow->frxq[i].ibv_flow =
 				ibv_create_flow(flow->frxq[i].hrxq->qp,
 						flow->frxq[i].ibv_attr);
 			if (!flow->frxq[i].ibv_flow) {
-				DEBUG("Flow %p cannot be applied",
-				      (void *)flow);
+				DRV_LOG(DEBUG,
+					"port %u flow %p cannot be applied",
+					dev->data->port_id, (void *)flow);
 				rte_errno = EINVAL;
-				return rte_errno;
+				return -rte_errno;
 			}
-			DEBUG("Flow %p applied", (void *)flow);
+			DRV_LOG(DEBUG, "port %u flow %p applied",
+				dev->data->port_id, (void *)flow);
 		}
 		if (!flow->mark)
 			continue;
@@ -2298,20 +2403,21 @@ flow_create:
 /**
  * Verify the flow list is empty
  *
- * @param priv
- *  Pointer to private structure.
+ * @param dev
+ *  Pointer to Ethernet device.
  *
  * @return the number of flows not released.
  */
 int
-priv_flow_verify(struct priv *priv)
+mlx5_flow_verify(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct rte_flow *flow;
 	int ret = 0;
 
 	TAILQ_FOREACH(flow, &priv->flows, next) {
-		DEBUG("%p: flow %p still referenced", (void *)priv,
-		      (void *)flow);
+		DRV_LOG(DEBUG, "port %u flow %p still referenced",
+			dev->data->port_id, (void *)flow);
 		++ret;
 	}
 	return ret;
@@ -2332,7 +2438,7 @@ priv_flow_verify(struct priv *priv)
  *   A VLAN flow mask to apply.
  *
  * @return
- *   0 on success.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
 mlx5_ctrl_flow_vlan(struct rte_eth_dev *dev,
@@ -2384,17 +2490,19 @@ mlx5_ctrl_flow_vlan(struct rte_eth_dev *dev,
 		} local;
 	} action_rss;
 
-	if (!priv->reta_idx_n)
-		return EINVAL;
+	if (!priv->reta_idx_n) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
 	for (i = 0; i != priv->reta_idx_n; ++i)
 		action_rss.local.queue[i] = (*priv->reta_idx)[i];
 	action_rss.local.rss_conf = &priv->rss_conf;
 	action_rss.local.num = priv->reta_idx_n;
 	actions[0].conf = (const void *)&action_rss.rss;
-	flow = priv_flow_create(priv, &priv->ctrl_flows, &attr, items, actions,
-				&error);
+	flow = mlx5_flow_list_create(dev, &priv->ctrl_flows, &attr, items,
+				     actions, &error);
 	if (!flow)
-		return rte_errno;
+		return -rte_errno;
 	return 0;
 }
 
@@ -2409,7 +2517,7 @@ mlx5_ctrl_flow_vlan(struct rte_eth_dev *dev,
  *   An Ethernet flow mask to apply.
  *
  * @return
- *   0 on success.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
 mlx5_ctrl_flow(struct rte_eth_dev *dev,
@@ -2428,14 +2536,11 @@ mlx5_ctrl_flow(struct rte_eth_dev *dev,
 int
 mlx5_flow_destroy(struct rte_eth_dev *dev,
 		  struct rte_flow *flow,
-		  struct rte_flow_error *error)
+		  struct rte_flow_error *error __rte_unused)
 {
 	struct priv *priv = dev->data->dev_private;
 
-	(void)error;
-	priv_lock(priv);
-	priv_flow_destroy(priv, &priv->flows, flow);
-	priv_unlock(priv);
+	mlx5_flow_list_destroy(dev, &priv->flows, flow);
 	return 0;
 }
 
@@ -2447,14 +2552,11 @@ mlx5_flow_destroy(struct rte_eth_dev *dev,
  */
 int
 mlx5_flow_flush(struct rte_eth_dev *dev,
-		struct rte_flow_error *error)
+		struct rte_flow_error *error __rte_unused)
 {
 	struct priv *priv = dev->data->dev_private;
 
-	(void)error;
-	priv_lock(priv);
-	priv_flow_flush(priv, &priv->flows);
-	priv_unlock(priv);
+	mlx5_flow_list_flush(dev, &priv->flows);
 	return 0;
 }
 
@@ -2468,10 +2570,10 @@ mlx5_flow_flush(struct rte_eth_dev *dev,
  *   returned data from the counter.
  *
  * @return
- *   0 on success, a errno value otherwise and rte_errno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_flow_query_count(struct ibv_counter_set *cs,
+mlx5_flow_query_count(struct ibv_counter_set *cs,
 		      struct mlx5_flow_counter_stats *counter_stats,
 		      struct rte_flow_query_count *query_count,
 		      struct rte_flow_error *error)
@@ -2485,15 +2587,13 @@ priv_flow_query_count(struct ibv_counter_set *cs,
 		.out = counters,
 		.outlen = 2 * sizeof(uint64_t),
 	};
-	int res = ibv_query_counter_set(&query_cs_attr, &query_out);
+	int err = ibv_query_counter_set(&query_cs_attr, &query_out);
 
-	if (res) {
-		rte_flow_error_set(error, -res,
-				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-				   NULL,
-				   "cannot read counter");
-		return -res;
-	}
+	if (err)
+		return rte_flow_error_set(error, err,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL,
+					  "cannot read counter");
 	query_count->hits_set = 1;
 	query_count->bytes_set = 1;
 	query_count->hits = counters[0] - counter_stats->hits;
@@ -2512,29 +2612,28 @@ priv_flow_query_count(struct ibv_counter_set *cs,
  * @see rte_flow_ops
  */
 int
-mlx5_flow_query(struct rte_eth_dev *dev,
+mlx5_flow_query(struct rte_eth_dev *dev __rte_unused,
 		struct rte_flow *flow,
 		enum rte_flow_action_type action __rte_unused,
 		void *data,
 		struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
-	int res = EINVAL;
-
-	priv_lock(priv);
 	if (flow->cs) {
-		res = priv_flow_query_count(flow->cs,
-					&flow->counter_stats,
-					(struct rte_flow_query_count *)data,
-					error);
+		int ret;
+
+		ret = mlx5_flow_query_count(flow->cs,
+					    &flow->counter_stats,
+					    (struct rte_flow_query_count *)data,
+					    error);
+		if (ret)
+			return ret;
 	} else {
-		rte_flow_error_set(error, res,
-				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-				   NULL,
-				   "no counter found for flow");
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL,
+					  "no counter found for flow");
 	}
-	priv_unlock(priv);
-	return -res;
+	return 0;
 }
 #endif
 
@@ -2551,48 +2650,50 @@ mlx5_flow_isolate(struct rte_eth_dev *dev,
 {
 	struct priv *priv = dev->data->dev_private;
 
-	priv_lock(priv);
 	if (dev->data->dev_started) {
 		rte_flow_error_set(error, EBUSY,
 				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 				   NULL,
 				   "port must be stopped first");
-		priv_unlock(priv);
 		return -rte_errno;
 	}
 	priv->isolated = !!enable;
 	if (enable)
-		priv->dev->dev_ops = &mlx5_dev_ops_isolate;
+		dev->dev_ops = &mlx5_dev_ops_isolate;
 	else
-		priv->dev->dev_ops = &mlx5_dev_ops;
-	priv_unlock(priv);
+		dev->dev_ops = &mlx5_dev_ops;
 	return 0;
 }
 
 /**
  * Convert a flow director filter to a generic flow.
  *
- * @param priv
- *   Private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param fdir_filter
  *   Flow director filter to add.
  * @param attributes
  *   Generic flow parameters structure.
  *
  * @return
- *  0 on success, errno value on error.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_fdir_filter_convert(struct priv *priv,
+mlx5_fdir_filter_convert(struct rte_eth_dev *dev,
 			 const struct rte_eth_fdir_filter *fdir_filter,
 			 struct mlx5_fdir *attributes)
 {
+	struct priv *priv = dev->data->dev_private;
 	const struct rte_eth_fdir_input *input = &fdir_filter->input;
+	const struct rte_eth_fdir_masks *mask =
+		&dev->data->dev_conf.fdir_conf.mask;
 
 	/* Validate queue number. */
 	if (fdir_filter->action.rx_queue >= priv->rxqs_n) {
-		ERROR("invalid queue number %d", fdir_filter->action.rx_queue);
-		return EINVAL;
+		DRV_LOG(ERR, "port %u invalid queue number %d",
+			dev->data->port_id, fdir_filter->action.rx_queue);
+		rte_errno = EINVAL;
+		return -rte_errno;
 	}
 	attributes->attr.ingress = 1;
 	attributes->items[0] = (struct rte_flow_item) {
@@ -2613,53 +2714,17 @@ priv_fdir_filter_convert(struct priv *priv,
 		};
 		break;
 	default:
-		ERROR("invalid behavior %d", fdir_filter->action.behavior);
-		return ENOTSUP;
+		DRV_LOG(ERR, "port %u invalid behavior %d",
+			dev->data->port_id,
+			fdir_filter->action.behavior);
+		rte_errno = ENOTSUP;
+		return -rte_errno;
 	}
 	attributes->queue.index = fdir_filter->action.rx_queue;
+	/* Handle L3. */
 	switch (fdir_filter->input.flow_type) {
 	case RTE_ETH_FLOW_NONFRAG_IPV4_UDP:
-		attributes->l3.ipv4.hdr = (struct ipv4_hdr){
-			.src_addr = input->flow.udp4_flow.ip.src_ip,
-			.dst_addr = input->flow.udp4_flow.ip.dst_ip,
-			.time_to_live = input->flow.udp4_flow.ip.ttl,
-			.type_of_service = input->flow.udp4_flow.ip.tos,
-			.next_proto_id = input->flow.udp4_flow.ip.proto,
-		};
-		attributes->l4.udp.hdr = (struct udp_hdr){
-			.src_port = input->flow.udp4_flow.src_port,
-			.dst_port = input->flow.udp4_flow.dst_port,
-		};
-		attributes->items[1] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_IPV4,
-			.spec = &attributes->l3,
-		};
-		attributes->items[2] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_UDP,
-			.spec = &attributes->l4,
-		};
-		break;
 	case RTE_ETH_FLOW_NONFRAG_IPV4_TCP:
-		attributes->l3.ipv4.hdr = (struct ipv4_hdr){
-			.src_addr = input->flow.tcp4_flow.ip.src_ip,
-			.dst_addr = input->flow.tcp4_flow.ip.dst_ip,
-			.time_to_live = input->flow.tcp4_flow.ip.ttl,
-			.type_of_service = input->flow.tcp4_flow.ip.tos,
-			.next_proto_id = input->flow.tcp4_flow.ip.proto,
-		};
-		attributes->l4.tcp.hdr = (struct tcp_hdr){
-			.src_port = input->flow.tcp4_flow.src_port,
-			.dst_port = input->flow.tcp4_flow.dst_port,
-		};
-		attributes->items[1] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_IPV4,
-			.spec = &attributes->l3,
-		};
-		attributes->items[2] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_TCP,
-			.spec = &attributes->l4,
-		};
-		break;
 	case RTE_ETH_FLOW_NONFRAG_IPV4_OTHER:
 		attributes->l3.ipv4.hdr = (struct ipv4_hdr){
 			.src_addr = input->flow.ip4_flow.src_ip,
@@ -2668,79 +2733,121 @@ priv_fdir_filter_convert(struct priv *priv,
 			.type_of_service = input->flow.ip4_flow.tos,
 			.next_proto_id = input->flow.ip4_flow.proto,
 		};
+		attributes->l3_mask.ipv4.hdr = (struct ipv4_hdr){
+			.src_addr = mask->ipv4_mask.src_ip,
+			.dst_addr = mask->ipv4_mask.dst_ip,
+			.time_to_live = mask->ipv4_mask.ttl,
+			.type_of_service = mask->ipv4_mask.tos,
+			.next_proto_id = mask->ipv4_mask.proto,
+		};
 		attributes->items[1] = (struct rte_flow_item){
 			.type = RTE_FLOW_ITEM_TYPE_IPV4,
 			.spec = &attributes->l3,
+			.mask = &attributes->l3_mask,
 		};
 		break;
 	case RTE_ETH_FLOW_NONFRAG_IPV6_UDP:
-		attributes->l3.ipv6.hdr = (struct ipv6_hdr){
-			.hop_limits = input->flow.udp6_flow.ip.hop_limits,
-			.proto = input->flow.udp6_flow.ip.proto,
-		};
-		memcpy(attributes->l3.ipv6.hdr.src_addr,
-		       input->flow.udp6_flow.ip.src_ip,
-		       RTE_DIM(attributes->l3.ipv6.hdr.src_addr));
-		memcpy(attributes->l3.ipv6.hdr.dst_addr,
-		       input->flow.udp6_flow.ip.dst_ip,
-		       RTE_DIM(attributes->l3.ipv6.hdr.src_addr));
-		attributes->l4.udp.hdr = (struct udp_hdr){
-			.src_port = input->flow.udp6_flow.src_port,
-			.dst_port = input->flow.udp6_flow.dst_port,
-		};
-		attributes->items[1] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_IPV6,
-			.spec = &attributes->l3,
-		};
-		attributes->items[2] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_UDP,
-			.spec = &attributes->l4,
-		};
-		break;
 	case RTE_ETH_FLOW_NONFRAG_IPV6_TCP:
-		attributes->l3.ipv6.hdr = (struct ipv6_hdr){
-			.hop_limits = input->flow.tcp6_flow.ip.hop_limits,
-			.proto = input->flow.tcp6_flow.ip.proto,
-		};
-		memcpy(attributes->l3.ipv6.hdr.src_addr,
-		       input->flow.tcp6_flow.ip.src_ip,
-		       RTE_DIM(attributes->l3.ipv6.hdr.src_addr));
-		memcpy(attributes->l3.ipv6.hdr.dst_addr,
-		       input->flow.tcp6_flow.ip.dst_ip,
-		       RTE_DIM(attributes->l3.ipv6.hdr.src_addr));
-		attributes->l4.tcp.hdr = (struct tcp_hdr){
-			.src_port = input->flow.tcp6_flow.src_port,
-			.dst_port = input->flow.tcp6_flow.dst_port,
-		};
-		attributes->items[1] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_IPV6,
-			.spec = &attributes->l3,
-		};
-		attributes->items[2] = (struct rte_flow_item){
-			.type = RTE_FLOW_ITEM_TYPE_TCP,
-			.spec = &attributes->l4,
-		};
-		break;
 	case RTE_ETH_FLOW_NONFRAG_IPV6_OTHER:
 		attributes->l3.ipv6.hdr = (struct ipv6_hdr){
 			.hop_limits = input->flow.ipv6_flow.hop_limits,
 			.proto = input->flow.ipv6_flow.proto,
 		};
+
 		memcpy(attributes->l3.ipv6.hdr.src_addr,
 		       input->flow.ipv6_flow.src_ip,
 		       RTE_DIM(attributes->l3.ipv6.hdr.src_addr));
 		memcpy(attributes->l3.ipv6.hdr.dst_addr,
 		       input->flow.ipv6_flow.dst_ip,
 		       RTE_DIM(attributes->l3.ipv6.hdr.src_addr));
+		memcpy(attributes->l3_mask.ipv6.hdr.src_addr,
+		       mask->ipv6_mask.src_ip,
+		       RTE_DIM(attributes->l3_mask.ipv6.hdr.src_addr));
+		memcpy(attributes->l3_mask.ipv6.hdr.dst_addr,
+		       mask->ipv6_mask.dst_ip,
+		       RTE_DIM(attributes->l3_mask.ipv6.hdr.src_addr));
 		attributes->items[1] = (struct rte_flow_item){
 			.type = RTE_FLOW_ITEM_TYPE_IPV6,
 			.spec = &attributes->l3,
+			.mask = &attributes->l3_mask,
 		};
 		break;
 	default:
-		ERROR("invalid flow type%d",
-		      fdir_filter->input.flow_type);
-		return ENOTSUP;
+		DRV_LOG(ERR, "port %u invalid flow type%d",
+			dev->data->port_id, fdir_filter->input.flow_type);
+		rte_errno = ENOTSUP;
+		return -rte_errno;
+	}
+	/* Handle L4. */
+	switch (fdir_filter->input.flow_type) {
+	case RTE_ETH_FLOW_NONFRAG_IPV4_UDP:
+		attributes->l4.udp.hdr = (struct udp_hdr){
+			.src_port = input->flow.udp4_flow.src_port,
+			.dst_port = input->flow.udp4_flow.dst_port,
+		};
+		attributes->l4_mask.udp.hdr = (struct udp_hdr){
+			.src_port = mask->src_port_mask,
+			.dst_port = mask->dst_port_mask,
+		};
+		attributes->items[2] = (struct rte_flow_item){
+			.type = RTE_FLOW_ITEM_TYPE_UDP,
+			.spec = &attributes->l4,
+			.mask = &attributes->l4_mask,
+		};
+		break;
+	case RTE_ETH_FLOW_NONFRAG_IPV4_TCP:
+		attributes->l4.tcp.hdr = (struct tcp_hdr){
+			.src_port = input->flow.tcp4_flow.src_port,
+			.dst_port = input->flow.tcp4_flow.dst_port,
+		};
+		attributes->l4_mask.tcp.hdr = (struct tcp_hdr){
+			.src_port = mask->src_port_mask,
+			.dst_port = mask->dst_port_mask,
+		};
+		attributes->items[2] = (struct rte_flow_item){
+			.type = RTE_FLOW_ITEM_TYPE_TCP,
+			.spec = &attributes->l4,
+			.mask = &attributes->l4_mask,
+		};
+		break;
+	case RTE_ETH_FLOW_NONFRAG_IPV6_UDP:
+		attributes->l4.udp.hdr = (struct udp_hdr){
+			.src_port = input->flow.udp6_flow.src_port,
+			.dst_port = input->flow.udp6_flow.dst_port,
+		};
+		attributes->l4_mask.udp.hdr = (struct udp_hdr){
+			.src_port = mask->src_port_mask,
+			.dst_port = mask->dst_port_mask,
+		};
+		attributes->items[2] = (struct rte_flow_item){
+			.type = RTE_FLOW_ITEM_TYPE_UDP,
+			.spec = &attributes->l4,
+			.mask = &attributes->l4_mask,
+		};
+		break;
+	case RTE_ETH_FLOW_NONFRAG_IPV6_TCP:
+		attributes->l4.tcp.hdr = (struct tcp_hdr){
+			.src_port = input->flow.tcp6_flow.src_port,
+			.dst_port = input->flow.tcp6_flow.dst_port,
+		};
+		attributes->l4_mask.tcp.hdr = (struct tcp_hdr){
+			.src_port = mask->src_port_mask,
+			.dst_port = mask->dst_port_mask,
+		};
+		attributes->items[2] = (struct rte_flow_item){
+			.type = RTE_FLOW_ITEM_TYPE_TCP,
+			.spec = &attributes->l4,
+			.mask = &attributes->l4_mask,
+		};
+		break;
+	case RTE_ETH_FLOW_NONFRAG_IPV4_OTHER:
+	case RTE_ETH_FLOW_NONFRAG_IPV6_OTHER:
+		break;
+	default:
+		DRV_LOG(ERR, "port %u invalid flow type%d",
+			dev->data->port_id, fdir_filter->input.flow_type);
+		rte_errno = ENOTSUP;
+		return -rte_errno;
 	}
 	return 0;
 }
@@ -2748,18 +2855,19 @@ priv_fdir_filter_convert(struct priv *priv,
 /**
  * Add new flow director filter and store it in list.
  *
- * @param priv
- *   Private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param fdir_filter
  *   Flow director filter to add.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_fdir_filter_add(struct priv *priv,
+mlx5_fdir_filter_add(struct rte_eth_dev *dev,
 		     const struct rte_eth_fdir_filter *fdir_filter)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct mlx5_fdir attributes = {
 		.attr.group = 0,
 		.l2_mask = {
@@ -2775,41 +2883,40 @@ priv_fdir_filter_add(struct priv *priv,
 	struct rte_flow *flow;
 	int ret;
 
-	ret = priv_fdir_filter_convert(priv, fdir_filter, &attributes);
+	ret = mlx5_fdir_filter_convert(dev, fdir_filter, &attributes);
 	if (ret)
-		return -ret;
-	ret = priv_flow_convert(priv, &attributes.attr, attributes.items,
+		return ret;
+	ret = mlx5_flow_convert(dev, &attributes.attr, attributes.items,
 				attributes.actions, &error, &parser);
 	if (ret)
-		return -ret;
-	flow = priv_flow_create(priv,
-				&priv->flows,
-				&attributes.attr,
-				attributes.items,
-				attributes.actions,
-				&error);
+		return ret;
+	flow = mlx5_flow_list_create(dev, &priv->flows, &attributes.attr,
+				     attributes.items, attributes.actions,
+				     &error);
 	if (flow) {
-		DEBUG("FDIR created %p", (void *)flow);
+		DRV_LOG(DEBUG, "port %u FDIR created %p", dev->data->port_id,
+			(void *)flow);
 		return 0;
 	}
-	return ENOTSUP;
+	return -rte_errno;
 }
 
 /**
  * Delete specific filter.
  *
- * @param priv
- *   Private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param fdir_filter
  *   Filter to be deleted.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_fdir_filter_delete(struct priv *priv,
+mlx5_fdir_filter_delete(struct rte_eth_dev *dev,
 			const struct rte_eth_fdir_filter *fdir_filter)
 {
+	struct priv *priv = dev->data->dev_private;
 	struct mlx5_fdir attributes = {
 		.attr.group = 0,
 	};
@@ -2822,10 +2929,10 @@ priv_fdir_filter_delete(struct priv *priv,
 	unsigned int i;
 	int ret;
 
-	ret = priv_fdir_filter_convert(priv, fdir_filter, &attributes);
+	ret = mlx5_fdir_filter_convert(dev, fdir_filter, &attributes);
 	if (ret)
-		return -ret;
-	ret = priv_flow_convert(priv, &attributes.attr, attributes.items,
+		return ret;
+	ret = mlx5_flow_convert(dev, &attributes.attr, attributes.items,
 				attributes.actions, &error, &parser);
 	if (ret)
 		goto exit;
@@ -2853,11 +2960,25 @@ priv_fdir_filter_delete(struct priv *priv,
 		struct ibv_spec_header *flow_h;
 		void *flow_spec;
 		unsigned int specs_n;
+		unsigned int queue_id;
 
-		attr = parser.queue[HASH_RXQ_ETH].ibv_attr;
-		flow_attr = flow->frxq[HASH_RXQ_ETH].ibv_attr;
+		/*
+		 * Search for a non-empty ibv_attr. There should be only one
+		 * because no RSS action is allowed for FDIR. This should have
+		 * been referenced directly by parser.layer but due to a bug in
+		 * mlx5_flow_convert() as of v17.11.4, parser.layer isn't
+		 * correct. This bug will have to be addressed later.
+		 */
+		for (queue_id = 0; queue_id != hash_rxq_init_n; ++queue_id) {
+			attr = parser.queue[queue_id].ibv_attr;
+			if (attr)
+				break;
+		}
+		assert(!parser.drop || queue_id == HASH_RXQ_ETH);
+		flow_attr = flow->frxq[queue_id].ibv_attr;
 		/* Compare first the attributes. */
-		if (memcmp(attr, flow_attr, sizeof(struct ibv_flow_attr)))
+		if (!flow_attr ||
+		    memcmp(attr, flow_attr, sizeof(struct ibv_flow_attr)))
 			continue;
 		if (attr->num_of_specs == 0)
 			continue;
@@ -2883,66 +3004,73 @@ wrong_flow:
 		continue;
 	}
 	if (flow)
-		priv_flow_destroy(priv, &priv->flows, flow);
+		mlx5_flow_list_destroy(dev, &priv->flows, flow);
 exit:
+	if (ret)
+		ret = rte_errno; /* Save rte_errno before cleanup. */
 	for (i = 0; i != hash_rxq_init_n; ++i) {
 		if (parser.queue[i].ibv_attr)
 			rte_free(parser.queue[i].ibv_attr);
 	}
-	return -ret;
+	if (ret) {
+		rte_errno = ret; /* Restore rte_errno. */
+		return -rte_errno;
+	}
+	return 0;
 }
 
 /**
  * Update queue for specific filter.
  *
- * @param priv
- *   Private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param fdir_filter
  *   Filter to be updated.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_fdir_filter_update(struct priv *priv,
+mlx5_fdir_filter_update(struct rte_eth_dev *dev,
 			const struct rte_eth_fdir_filter *fdir_filter)
 {
 	int ret;
 
-	ret = priv_fdir_filter_delete(priv, fdir_filter);
+	ret = mlx5_fdir_filter_delete(dev, fdir_filter);
 	if (ret)
 		return ret;
-	ret = priv_fdir_filter_add(priv, fdir_filter);
-	return ret;
+	return mlx5_fdir_filter_add(dev, fdir_filter);
 }
 
 /**
  * Flush all filters.
  *
- * @param priv
- *   Private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  */
 static void
-priv_fdir_filter_flush(struct priv *priv)
+mlx5_fdir_filter_flush(struct rte_eth_dev *dev)
 {
-	priv_flow_flush(priv, &priv->flows);
+	struct priv *priv = dev->data->dev_private;
+
+	mlx5_flow_list_flush(dev, &priv->flows);
 }
 
 /**
  * Get flow director information.
  *
- * @param priv
- *   Private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param[out] fdir_info
  *   Resulting flow director information.
  */
 static void
-priv_fdir_info_get(struct priv *priv, struct rte_eth_fdir_info *fdir_info)
+mlx5_fdir_info_get(struct rte_eth_dev *dev, struct rte_eth_fdir_info *fdir_info)
 {
 	struct rte_eth_fdir_masks *mask =
-		&priv->dev->data->dev_conf.fdir_conf.mask;
+		&dev->data->dev_conf.fdir_conf.mask;
 
-	fdir_info->mode = priv->dev->data->dev_conf.fdir_conf.mode;
+	fdir_info->mode = dev->data->dev_conf.fdir_conf.mode;
 	fdir_info->guarant_spc = 0;
 	rte_memcpy(&fdir_info->mask, mask, sizeof(fdir_info->mask));
 	fdir_info->max_flexpayload = 0;
@@ -2956,54 +3084,52 @@ priv_fdir_info_get(struct priv *priv, struct rte_eth_fdir_info *fdir_info)
 /**
  * Deal with flow director operations.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  * @param filter_op
  *   Operation to perform.
  * @param arg
  *   Pointer to operation-specific structure.
  *
  * @return
- *   0 on success, errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-priv_fdir_ctrl_func(struct priv *priv, enum rte_filter_op filter_op, void *arg)
+mlx5_fdir_ctrl_func(struct rte_eth_dev *dev, enum rte_filter_op filter_op,
+		    void *arg)
 {
 	enum rte_fdir_mode fdir_mode =
-		priv->dev->data->dev_conf.fdir_conf.mode;
-	int ret = 0;
+		dev->data->dev_conf.fdir_conf.mode;
 
 	if (filter_op == RTE_ETH_FILTER_NOP)
 		return 0;
 	if (fdir_mode != RTE_FDIR_MODE_PERFECT &&
 	    fdir_mode != RTE_FDIR_MODE_PERFECT_MAC_VLAN) {
-		ERROR("%p: flow director mode %d not supported",
-		      (void *)priv, fdir_mode);
-		return EINVAL;
+		DRV_LOG(ERR, "port %u flow director mode %d not supported",
+			dev->data->port_id, fdir_mode);
+		rte_errno = EINVAL;
+		return -rte_errno;
 	}
 	switch (filter_op) {
 	case RTE_ETH_FILTER_ADD:
-		ret = priv_fdir_filter_add(priv, arg);
-		break;
+		return mlx5_fdir_filter_add(dev, arg);
 	case RTE_ETH_FILTER_UPDATE:
-		ret = priv_fdir_filter_update(priv, arg);
-		break;
+		return mlx5_fdir_filter_update(dev, arg);
 	case RTE_ETH_FILTER_DELETE:
-		ret = priv_fdir_filter_delete(priv, arg);
-		break;
+		return mlx5_fdir_filter_delete(dev, arg);
 	case RTE_ETH_FILTER_FLUSH:
-		priv_fdir_filter_flush(priv);
+		mlx5_fdir_filter_flush(dev);
 		break;
 	case RTE_ETH_FILTER_INFO:
-		priv_fdir_info_get(priv, arg);
+		mlx5_fdir_info_get(dev, arg);
 		break;
 	default:
-		DEBUG("%p: unknown operation %u", (void *)priv,
-		      filter_op);
-		ret = EINVAL;
-		break;
+		DRV_LOG(DEBUG, "port %u unknown operation %u",
+			dev->data->port_id, filter_op);
+		rte_errno = EINVAL;
+		return -rte_errno;
 	}
-	return ret;
+	return 0;
 }
 
 /**
@@ -3019,7 +3145,7 @@ priv_fdir_ctrl_func(struct priv *priv, enum rte_filter_op filter_op, void *arg)
  *   Pointer to operation-specific structure.
  *
  * @return
- *   0 on success, negative errno value on failure.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
 mlx5_dev_filter_ctrl(struct rte_eth_dev *dev,
@@ -3027,24 +3153,21 @@ mlx5_dev_filter_ctrl(struct rte_eth_dev *dev,
 		     enum rte_filter_op filter_op,
 		     void *arg)
 {
-	int ret = EINVAL;
-	struct priv *priv = dev->data->dev_private;
-
 	switch (filter_type) {
 	case RTE_ETH_FILTER_GENERIC:
-		if (filter_op != RTE_ETH_FILTER_GET)
-			return -EINVAL;
+		if (filter_op != RTE_ETH_FILTER_GET) {
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
 		*(const void **)arg = &mlx5_flow_ops;
 		return 0;
 	case RTE_ETH_FILTER_FDIR:
-		priv_lock(priv);
-		ret = priv_fdir_ctrl_func(priv, filter_op, arg);
-		priv_unlock(priv);
-		break;
+		return mlx5_fdir_ctrl_func(dev, filter_op, arg);
 	default:
-		ERROR("%p: filter type (%d) not supported",
-		      (void *)dev, filter_type);
-		break;
+		DRV_LOG(ERR, "port %u filter type (%d) not supported",
+			dev->data->port_id, filter_type);
+		rte_errno = ENOTSUP;
+		return -rte_errno;
 	}
-	return -ret;
+	return 0;
 }

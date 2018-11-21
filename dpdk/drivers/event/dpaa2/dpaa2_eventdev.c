@@ -489,7 +489,6 @@ dpaa2_eventdev_port_unlink(struct rte_eventdev *dev, void *port,
 		dpio_remove_static_dequeue_channel(dpaa2_portal->dpio_dev->dpio,
 					0, dpaa2_portal->dpio_dev->token,
 			evq_info->dpcon->dpcon_id);
-		evq_info->link = 0;
 	}
 
 	return (int)nb_unlinks;
@@ -510,8 +509,6 @@ dpaa2_eventdev_port_link(struct rte_eventdev *dev, void *port,
 
 	for (i = 0; i < nb_links; i++) {
 		evq_info = &priv->evq_info[queues[i]];
-		if (evq_info->link)
-			continue;
 
 		ret = dpio_add_static_dequeue_channel(
 			dpaa2_portal->dpio_dev->dpio,
@@ -526,7 +523,6 @@ dpaa2_eventdev_port_link(struct rte_eventdev *dev, void *port,
 		qbman_swp_push_set(dpaa2_portal->dpio_dev->sw_portal,
 				   channel_index, 1);
 		evq_info->dpcon->channel_index = channel_index;
-		evq_info->link = 1;
 	}
 
 	RTE_SET_USED(priorities);
@@ -540,7 +536,6 @@ err:
 		dpio_remove_static_dequeue_channel(dpaa2_portal->dpio_dev->dpio,
 					0, dpaa2_portal->dpio_dev->token,
 			evq_info->dpcon->dpcon_id);
-		evq_info->link = 0;
 	}
 	return ret;
 }

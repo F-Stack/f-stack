@@ -49,8 +49,8 @@ struct mc_scheduler_ctx {
 	uint32_t num_workers;             /**< Number of workers polling */
 	uint32_t stop_signal;
 
-	struct rte_ring *sched_enq_ring[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKER_CORES];
-	struct rte_ring *sched_deq_ring[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKER_CORES];
+	struct rte_ring *sched_enq_ring[RTE_MAX_LCORE];
+	struct rte_ring *sched_deq_ring[RTE_MAX_LCORE];
 };
 
 struct mc_scheduler_qp_ctx {
@@ -356,11 +356,13 @@ static int
 scheduler_create_private_ctx(struct rte_cryptodev *dev)
 {
 	struct scheduler_ctx *sched_ctx = dev->data->dev_private;
-	struct mc_scheduler_ctx *mc_ctx;
+	struct mc_scheduler_ctx *mc_ctx = NULL;
 	uint16_t i;
 
-	if (sched_ctx->private_ctx)
+	if (sched_ctx->private_ctx) {
 		rte_free(sched_ctx->private_ctx);
+		sched_ctx->private_ctx = NULL;
+	}
 
 	mc_ctx = rte_zmalloc_socket(NULL, sizeof(struct mc_scheduler_ctx), 0,
 			rte_socket_id());
@@ -373,25 +375,48 @@ scheduler_create_private_ctx(struct rte_cryptodev *dev)
 	for (i = 0; i < sched_ctx->nb_wc; i++) {
 		char r_name[16];
 
-		snprintf(r_name, sizeof(r_name), MC_SCHED_ENQ_RING_NAME_PREFIX "%u", i);
-		mc_ctx->sched_enq_ring[i] = rte_ring_create(r_name, PER_SLAVE_BUFF_SIZE,
-					rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+		snprintf(r_name, sizeof(r_name), MC_SCHED_ENQ_RING_NAME_PREFIX
+				"%u_%u", dev->data->dev_id, i);
+		mc_ctx->sched_enq_ring[i] = rte_ring_lookup(r_name);
 		if (!mc_ctx->sched_enq_ring[i]) {
-			CS_LOG_ERR("Cannot create ring for worker %u", i);
-			return -1;
+			mc_ctx->sched_enq_ring[i] = rte_ring_create(r_name,
+						PER_SLAVE_BUFF_SIZE,
+						rte_socket_id(),
+						RING_F_SC_DEQ | RING_F_SP_ENQ);
+			if (!mc_ctx->sched_enq_ring[i]) {
+				CS_LOG_ERR("Cannot create ring for worker %u",
+					   i);
+				goto exit;
+			}
 		}
-		snprintf(r_name, sizeof(r_name), MC_SCHED_DEQ_RING_NAME_PREFIX "%u", i);
-		mc_ctx->sched_deq_ring[i] = rte_ring_create(r_name, PER_SLAVE_BUFF_SIZE,
-					rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+		snprintf(r_name, sizeof(r_name), MC_SCHED_DEQ_RING_NAME_PREFIX
+				"%u_%u", dev->data->dev_id, i);
+		mc_ctx->sched_deq_ring[i] = rte_ring_lookup(r_name);
 		if (!mc_ctx->sched_deq_ring[i]) {
-			CS_LOG_ERR("Cannot create ring for worker %u", i);
-			return -1;
+			mc_ctx->sched_deq_ring[i] = rte_ring_create(r_name,
+						PER_SLAVE_BUFF_SIZE,
+						rte_socket_id(),
+						RING_F_SC_DEQ | RING_F_SP_ENQ);
+			if (!mc_ctx->sched_deq_ring[i]) {
+				CS_LOG_ERR("Cannot create ring for worker %u",
+					   i);
+				goto exit;
+			}
 		}
 	}
 
 	sched_ctx->private_ctx = (void *)mc_ctx;
 
 	return 0;
+
+exit:
+	for (i = 0; i < sched_ctx->nb_wc; i++) {
+		rte_ring_free(mc_ctx->sched_enq_ring[i]);
+		rte_ring_free(mc_ctx->sched_deq_ring[i]);
+	}
+	rte_free(mc_ctx);
+
+	return -1;
 }
 
 struct rte_cryptodev_scheduler_ops scheduler_mc_ops = {

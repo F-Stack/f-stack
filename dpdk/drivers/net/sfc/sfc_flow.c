@@ -107,7 +107,6 @@ sfc_flow_parse_init(const struct rte_flow_item *item,
 	const uint8_t *spec;
 	const uint8_t *mask;
 	const uint8_t *last;
-	uint8_t match;
 	uint8_t supp;
 	unsigned int i;
 
@@ -168,12 +167,11 @@ sfc_flow_parse_init(const struct rte_flow_item *item,
 		return -rte_errno;
 	}
 
-	/* Check that mask and spec not asks for more match than supp_mask */
+	/* Check that mask does not ask for more match than supp_mask */
 	for (i = 0; i < size; i++) {
-		match = spec[i] | mask[i];
 		supp = ((const uint8_t *)supp_mask)[i];
 
-		if ((match | supp) != supp) {
+		if (~supp & mask[i]) {
 			rte_flow_error_set(error, ENOTSUP,
 					   RTE_FLOW_ERROR_TYPE_ITEM, item,
 					   "Item's field is not supported");
@@ -332,7 +330,8 @@ sfc_flow_parse_vlan(const struct rte_flow_item *item,
 	 * the outer tag and the next matches the inner tag.
 	 */
 	if (mask->tci == supp_mask.tci) {
-		vid = rte_bswap16(spec->tci);
+		/* Apply mask to keep VID only */
+		vid = rte_bswap16(spec->tci & mask->tci);
 
 		if (!(efx_spec->efs_match_flags &
 		      EFX_FILTER_MATCH_OUTER_VID)) {

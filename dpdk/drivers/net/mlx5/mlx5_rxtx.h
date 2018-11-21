@@ -154,6 +154,7 @@ struct mlx5_rxq_ctrl {
 	struct mlx5_rxq_data rxq; /* Data path structure. */
 	unsigned int socket; /* CPU socket ID for allocations. */
 	unsigned int irq:1; /* Whether IRQ is enabled. */
+	uint16_t idx; /* Queue index. */
 };
 
 /* Indirection table. */
@@ -184,7 +185,9 @@ struct mlx5_txq_data {
 	uint16_t elts_comp; /* Counter since last completion request. */
 	uint16_t mpw_comp; /* WQ index since last completion request. */
 	uint16_t cq_ci; /* Consumer index for completion queue. */
+#ifndef NDEBUG
 	uint16_t cq_pi; /* Producer index for completion queue. */
+#endif
 	uint16_t wqe_ci; /* Consumer index for work queue. */
 	uint16_t wqe_pi; /* Producer index for work queue. */
 	uint16_t elts_n:4; /* (*elts)[] length (in log2). */
@@ -204,7 +207,7 @@ struct mlx5_txq_data {
 	volatile void *wqes; /* Work queue (use volatile to write into). */
 	volatile uint32_t *qp_db; /* Work queue doorbell. */
 	volatile uint32_t *cq_db; /* Completion queue doorbell. */
-	volatile void *bf_reg; /* Blueflame register. */
+	volatile void *bf_reg; /* Blueflame register remapped. */
 	struct mlx5_mr *mp2mr[MLX5_PMD_TX_MP_CACHE]; /* MR translation table. */
 	struct rte_mbuf *(*elts)[]; /* TX elements. */
 	struct mlx5_txq_stats stats; /* TX queue counters. */
@@ -214,6 +217,7 @@ struct mlx5_txq_data {
 struct mlx5_txq_ibv {
 	LIST_ENTRY(mlx5_txq_ibv) next; /* Pointer to the next element. */
 	rte_atomic32_t refcnt; /* Reference counter. */
+	struct mlx5_txq_ctrl *txq_ctrl; /* Pointer to the control queue. */
 	struct ibv_cq *cq; /* Completion Queue. */
 	struct ibv_qp *qp; /* Queue Pair. */
 };
@@ -229,6 +233,8 @@ struct mlx5_txq_ctrl {
 	struct mlx5_txq_ibv *ibv; /* Verbs queue object. */
 	struct mlx5_txq_data txq; /* Data path structure. */
 	off_t uar_mmap_offset; /* UAR mmap offset for non-primary process. */
+	volatile void *bf_reg_orig; /* Blueflame register from verbs. */
+	uint16_t idx; /* Queue index. */
 };
 
 /* mlx5_rxq.c */
@@ -236,93 +242,104 @@ struct mlx5_txq_ctrl {
 extern uint8_t rss_hash_default_key[];
 extern const size_t rss_hash_default_key_len;
 
-void mlx5_rxq_cleanup(struct mlx5_rxq_ctrl *);
-int mlx5_rx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
-			const struct rte_eth_rxconf *, struct rte_mempool *);
-void mlx5_rx_queue_release(void *);
-int priv_rx_intr_vec_enable(struct priv *priv);
-void priv_rx_intr_vec_disable(struct priv *priv);
+void mlx5_rxq_cleanup(struct mlx5_rxq_ctrl *rxq_ctrl);
+int mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
+			unsigned int socket, const struct rte_eth_rxconf *conf,
+			struct rte_mempool *mp);
+void mlx5_rx_queue_release(void *dpdk_rxq);
+int mlx5_rx_intr_vec_enable(struct rte_eth_dev *dev);
+void mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev);
 int mlx5_rx_intr_enable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int mlx5_rx_intr_disable(struct rte_eth_dev *dev, uint16_t rx_queue_id);
-struct mlx5_rxq_ibv *mlx5_priv_rxq_ibv_new(struct priv *, uint16_t);
-struct mlx5_rxq_ibv *mlx5_priv_rxq_ibv_get(struct priv *, uint16_t);
-int mlx5_priv_rxq_ibv_release(struct priv *, struct mlx5_rxq_ibv *);
-int mlx5_priv_rxq_ibv_releasable(struct priv *, struct mlx5_rxq_ibv *);
-int mlx5_priv_rxq_ibv_verify(struct priv *);
-struct mlx5_rxq_ctrl *mlx5_priv_rxq_new(struct priv *, uint16_t,
-					uint16_t, unsigned int,
-					struct rte_mempool *);
-struct mlx5_rxq_ctrl *mlx5_priv_rxq_get(struct priv *, uint16_t);
-int mlx5_priv_rxq_release(struct priv *, uint16_t);
-int mlx5_priv_rxq_releasable(struct priv *, uint16_t);
-int mlx5_priv_rxq_verify(struct priv *);
-int rxq_alloc_elts(struct mlx5_rxq_ctrl *);
-struct mlx5_ind_table_ibv *mlx5_priv_ind_table_ibv_new(struct priv *,
-						       uint16_t [],
-						       uint16_t);
-struct mlx5_ind_table_ibv *mlx5_priv_ind_table_ibv_get(struct priv *,
-						       uint16_t [],
-						       uint16_t);
-int mlx5_priv_ind_table_ibv_release(struct priv *, struct mlx5_ind_table_ibv *);
-int mlx5_priv_ind_table_ibv_verify(struct priv *);
-struct mlx5_hrxq *mlx5_priv_hrxq_new(struct priv *, uint8_t *, uint8_t,
-				     uint64_t, uint16_t [], uint16_t);
-struct mlx5_hrxq *mlx5_priv_hrxq_get(struct priv *, uint8_t *, uint8_t,
-				     uint64_t, uint16_t [], uint16_t);
-int mlx5_priv_hrxq_release(struct priv *, struct mlx5_hrxq *);
-int mlx5_priv_hrxq_ibv_verify(struct priv *);
+struct mlx5_rxq_ibv *mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_rxq_ibv *mlx5_rxq_ibv_get(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_rxq_ibv_release(struct mlx5_rxq_ibv *rxq_ibv);
+int mlx5_rxq_ibv_releasable(struct mlx5_rxq_ibv *rxq_ibv);
+int mlx5_rxq_ibv_verify(struct rte_eth_dev *dev);
+struct mlx5_rxq_ctrl *mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx,
+				   uint16_t desc, unsigned int socket,
+				   struct rte_mempool *mp);
+struct mlx5_rxq_ctrl *mlx5_rxq_get(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_rxq_releasable(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_rxq_verify(struct rte_eth_dev *dev);
+int rxq_alloc_elts(struct mlx5_rxq_ctrl *rxq_ctrl);
+struct mlx5_ind_table_ibv *mlx5_ind_table_ibv_new(struct rte_eth_dev *dev,
+						  uint16_t queues[],
+						  uint16_t queues_n);
+struct mlx5_ind_table_ibv *mlx5_ind_table_ibv_get(struct rte_eth_dev *dev,
+						  uint16_t queues[],
+						  uint16_t queues_n);
+int mlx5_ind_table_ibv_release(struct rte_eth_dev *dev,
+			       struct mlx5_ind_table_ibv *ind_tbl);
+int mlx5_ind_table_ibv_verify(struct rte_eth_dev *dev);
+struct mlx5_hrxq *mlx5_hrxq_new(struct rte_eth_dev *dev, uint8_t *rss_key,
+				uint8_t rss_key_len, uint64_t hash_fields,
+				uint16_t queues[], uint16_t queues_n);
+struct mlx5_hrxq *mlx5_hrxq_get(struct rte_eth_dev *dev, uint8_t *rss_key,
+				uint8_t rss_key_len, uint64_t hash_fields,
+				uint16_t queues[], uint16_t queues_n);
+int mlx5_hrxq_release(struct rte_eth_dev *dev, struct mlx5_hrxq *hxrq);
+int mlx5_hrxq_ibv_verify(struct rte_eth_dev *dev);
 
 /* mlx5_txq.c */
 
-int mlx5_tx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
-			const struct rte_eth_txconf *);
-void mlx5_tx_queue_release(void *);
-int priv_tx_uar_remap(struct priv *priv, int fd);
-struct mlx5_txq_ibv *mlx5_priv_txq_ibv_new(struct priv *, uint16_t);
-struct mlx5_txq_ibv *mlx5_priv_txq_ibv_get(struct priv *, uint16_t);
-int mlx5_priv_txq_ibv_release(struct priv *, struct mlx5_txq_ibv *);
-int mlx5_priv_txq_ibv_releasable(struct priv *, struct mlx5_txq_ibv *);
-int mlx5_priv_txq_ibv_verify(struct priv *);
-struct mlx5_txq_ctrl *mlx5_priv_txq_new(struct priv *, uint16_t,
-					uint16_t, unsigned int,
-					const struct rte_eth_txconf *);
-struct mlx5_txq_ctrl *mlx5_priv_txq_get(struct priv *, uint16_t);
-int mlx5_priv_txq_release(struct priv *, uint16_t);
-int mlx5_priv_txq_releasable(struct priv *, uint16_t);
-int mlx5_priv_txq_verify(struct priv *);
-void txq_alloc_elts(struct mlx5_txq_ctrl *);
+int mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
+			unsigned int socket, const struct rte_eth_txconf *conf);
+void mlx5_tx_queue_release(void *dpdk_txq);
+int mlx5_tx_uar_remap(struct rte_eth_dev *dev, int fd);
+struct mlx5_txq_ibv *mlx5_txq_ibv_new(struct rte_eth_dev *dev, uint16_t idx);
+struct mlx5_txq_ibv *mlx5_txq_ibv_get(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_txq_ibv_release(struct mlx5_txq_ibv *txq_ibv);
+int mlx5_txq_ibv_releasable(struct mlx5_txq_ibv *txq_ibv);
+int mlx5_txq_ibv_verify(struct rte_eth_dev *dev);
+struct mlx5_txq_ctrl *mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx,
+				   uint16_t desc, unsigned int socket,
+				   const struct rte_eth_txconf *conf);
+struct mlx5_txq_ctrl *mlx5_txq_get(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_txq_releasable(struct rte_eth_dev *dev, uint16_t idx);
+int mlx5_txq_verify(struct rte_eth_dev *dev);
+void txq_alloc_elts(struct mlx5_txq_ctrl *txq_ctrl);
 
 /* mlx5_rxtx.c */
 
 extern uint32_t mlx5_ptype_table[];
 
 void mlx5_set_ptype_table(void);
-uint16_t mlx5_tx_burst(void *, struct rte_mbuf **, uint16_t);
-uint16_t mlx5_tx_burst_mpw(void *, struct rte_mbuf **, uint16_t);
-uint16_t mlx5_tx_burst_mpw_inline(void *, struct rte_mbuf **, uint16_t);
-uint16_t mlx5_tx_burst_empw(void *, struct rte_mbuf **, uint16_t);
-uint16_t mlx5_rx_burst(void *, struct rte_mbuf **, uint16_t);
-uint16_t removed_tx_burst(void *, struct rte_mbuf **, uint16_t);
-uint16_t removed_rx_burst(void *, struct rte_mbuf **, uint16_t);
-int mlx5_rx_descriptor_status(void *, uint16_t);
-int mlx5_tx_descriptor_status(void *, uint16_t);
+uint16_t mlx5_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts,
+		       uint16_t pkts_n);
+uint16_t mlx5_tx_burst_mpw(void *dpdk_txq, struct rte_mbuf **pkts,
+			   uint16_t pkts_n);
+uint16_t mlx5_tx_burst_mpw_inline(void *dpdk_txq, struct rte_mbuf **pkts,
+				  uint16_t pkts_n);
+uint16_t mlx5_tx_burst_empw(void *dpdk_txq, struct rte_mbuf **pkts,
+			    uint16_t pkts_n);
+uint16_t mlx5_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n);
+uint16_t removed_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts,
+			  uint16_t pkts_n);
+uint16_t removed_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts,
+			  uint16_t pkts_n);
+int mlx5_rx_descriptor_status(void *rx_queue, uint16_t offset);
+int mlx5_tx_descriptor_status(void *tx_queue, uint16_t offset);
 
 /* Vectorized version of mlx5_rxtx.c */
-int priv_check_raw_vec_tx_support(struct priv *);
-int priv_check_vec_tx_support(struct priv *);
-int rxq_check_vec_support(struct mlx5_rxq_data *);
-int priv_check_vec_rx_support(struct priv *);
-uint16_t mlx5_tx_burst_raw_vec(void *, struct rte_mbuf **, uint16_t);
-uint16_t mlx5_tx_burst_vec(void *, struct rte_mbuf **, uint16_t);
-uint16_t mlx5_rx_burst_vec(void *, struct rte_mbuf **, uint16_t);
+int mlx5_check_raw_vec_tx_support(struct rte_eth_dev *dev);
+int mlx5_check_vec_tx_support(struct rte_eth_dev *dev);
+int mlx5_rxq_check_vec_support(struct mlx5_rxq_data *rxq_data);
+int mlx5_check_vec_rx_support(struct rte_eth_dev *dev);
+uint16_t mlx5_tx_burst_raw_vec(void *dpdk_txq, struct rte_mbuf **pkts,
+			       uint16_t pkts_n);
+uint16_t mlx5_tx_burst_vec(void *dpdk_txq, struct rte_mbuf **pkts,
+			   uint16_t pkts_n);
+uint16_t mlx5_rx_burst_vec(void *dpdk_txq, struct rte_mbuf **pkts,
+			   uint16_t pkts_n);
 
 /* mlx5_mr.c */
 
-void mlx5_mp2mr_iter(struct rte_mempool *, void *);
-struct mlx5_mr *priv_txq_mp2mr_reg(struct priv *priv, struct mlx5_txq_data *,
-				   struct rte_mempool *, unsigned int);
-struct mlx5_mr *mlx5_txq_mp2mr_reg(struct mlx5_txq_data *, struct rte_mempool *,
-				   unsigned int);
+void mlx5_mp2mr_iter(struct rte_mempool *mp, void *arg);
+struct mlx5_mr *mlx5_txq_mp2mr_reg(struct mlx5_txq_data *txq,
+				   struct rte_mempool *mp, unsigned int idx);
 
 #ifndef NDEBUG
 /**
@@ -385,9 +402,10 @@ check_cqe(volatile struct mlx5_cqe *cqe,
 		    (syndrome == MLX5_CQE_SYNDROME_REMOTE_ABORTED_ERR))
 			return 0;
 		if (!check_cqe_seen(cqe)) {
-			ERROR("unexpected CQE error %u (0x%02x)"
-			      " syndrome 0x%02x",
-			      op_code, op_code, syndrome);
+			DRV_LOG(ERR,
+				"unexpected CQE error %u (0x%02x) syndrome"
+				" 0x%02x",
+				op_code, op_code, syndrome);
 			rte_hexdump(stderr, "MLX5 Error CQE:",
 				    (const void *)((uintptr_t)err_cqe),
 				    sizeof(*err_cqe));
@@ -396,8 +414,8 @@ check_cqe(volatile struct mlx5_cqe *cqe,
 	} else if ((op_code != MLX5_CQE_RESP_SEND) &&
 		   (op_code != MLX5_CQE_REQ)) {
 		if (!check_cqe_seen(cqe)) {
-			ERROR("unexpected CQE opcode %u (0x%02x)",
-			      op_code, op_code);
+			DRV_LOG(ERR, "unexpected CQE opcode %u (0x%02x)",
+				op_code, op_code);
 			rte_hexdump(stderr, "MLX5 CQE:",
 				    (const void *)((uintptr_t)cqe),
 				    sizeof(*cqe));
@@ -457,7 +475,7 @@ mlx5_tx_complete(struct mlx5_txq_data *txq)
 	if ((MLX5_CQE_OPCODE(cqe->op_own) == MLX5_CQE_RESP_ERR) ||
 	    (MLX5_CQE_OPCODE(cqe->op_own) == MLX5_CQE_REQ_ERR)) {
 		if (!check_cqe_seen(cqe)) {
-			ERROR("unexpected error CQE, TX stopped");
+			DRV_LOG(ERR, "unexpected error CQE, Tx stopped");
 			rte_hexdump(stderr, "MLX5 TXQ:",
 				    (const void *)((uintptr_t)txq->wqes),
 				    ((1 << txq->wqe_n) *
@@ -558,8 +576,6 @@ mlx5_tx_mb2mr(struct mlx5_txq_data *txq, struct rte_mbuf *mb)
 		if (txq->mp2mr[i]->start <= addr &&
 		    txq->mp2mr[i]->end > addr) {
 			assert(txq->mp2mr[i]->lkey != (uint32_t)-1);
-			assert(rte_cpu_to_be_32(txq->mp2mr[i]->mr->lkey) ==
-			       txq->mp2mr[i]->lkey);
 			txq->mr_cache_idx = i;
 			return txq->mp2mr[i]->lkey;
 		}
@@ -573,6 +589,11 @@ mlx5_tx_mb2mr(struct mlx5_txq_data *txq, struct rte_mbuf *mb)
 		rte_atomic32_inc(&mr->refcnt);
 		txq->mr_cache_idx = i >= RTE_DIM(txq->mp2mr) ? i - 1 : i;
 		return mr->lkey;
+	} else {
+		struct rte_mempool *mp = mlx5_tx_mb2mp(mb);
+
+		DRV_LOG(WARNING, "failed to register mempool 0x%p(%s)",
+			(void *)mp, mp->name);
 	}
 	return (uint32_t)-1;
 }

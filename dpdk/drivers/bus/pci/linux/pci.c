@@ -43,6 +43,7 @@
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
 #include <rte_vfio.h>
+#include <rte_memory.h>
 
 #include "eal_private.h"
 #include "eal_filesystem.h"
@@ -582,7 +583,6 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 {
 #define VTD_CAP_MGAW_SHIFT	16
 #define VTD_CAP_MGAW_MASK	(0x3fULL << VTD_CAP_MGAW_SHIFT)
-#define X86_VA_WIDTH 47 /* From Documentation/x86/x86_64/mm.txt */
 	struct rte_pci_addr *addr = &dev->addr;
 	char filename[PATH_MAX];
 	FILE *fp;
@@ -613,10 +613,12 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 	fclose(fp);
 
 	mgaw = ((vtd_cap_reg & VTD_CAP_MGAW_MASK) >> VTD_CAP_MGAW_SHIFT) + 1;
-	if (mgaw < X86_VA_WIDTH)
+
+	if (!rte_eal_check_dma_mask(mgaw))
+		return true;
+	else
 		return false;
 
-	return true;
 }
 #elif defined(RTE_ARCH_PPC_64)
 static bool
@@ -640,13 +642,17 @@ pci_devices_iommu_support_va(void)
 {
 	struct rte_pci_device *dev = NULL;
 	struct rte_pci_driver *drv = NULL;
+	int iommu_dma_mask_check_done = 0;
 
 	FOREACH_DRIVER_ON_PCIBUS(drv) {
 		FOREACH_DEVICE_ON_PCIBUS(dev) {
 			if (!rte_pci_match(drv, dev))
 				continue;
-			if (!pci_one_device_iommu_support_va(dev))
-				return false;
+			if (!iommu_dma_mask_check_done) {
+				if (!pci_one_device_iommu_support_va(dev))
+					return false;
+				iommu_dma_mask_check_done  = 1;
+			}
 		}
 	}
 	return true;

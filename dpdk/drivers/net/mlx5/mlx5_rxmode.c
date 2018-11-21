@@ -60,8 +60,21 @@
 void
 mlx5_promiscuous_enable(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
+	int ret;
+
 	dev->data->promiscuous = 1;
-	mlx5_traffic_restart(dev);
+	if (priv->isolated) {
+		DRV_LOG(WARNING,
+			"port %u cannot enable promiscuous mode"
+			" in flow isolation mode",
+			dev->data->port_id);
+		return;
+	}
+	ret = mlx5_traffic_restart(dev);
+	if (ret)
+		DRV_LOG(ERR, "port %u cannot enable promiscuous mode: %s",
+			dev->data->port_id, strerror(rte_errno));
 }
 
 /**
@@ -73,8 +86,13 @@ mlx5_promiscuous_enable(struct rte_eth_dev *dev)
 void
 mlx5_promiscuous_disable(struct rte_eth_dev *dev)
 {
+	int ret;
+
 	dev->data->promiscuous = 0;
-	mlx5_traffic_restart(dev);
+	ret = mlx5_traffic_restart(dev);
+	if (ret)
+		DRV_LOG(ERR, "port %u cannot disable promiscuous mode: %s",
+			dev->data->port_id, strerror(rte_errno));
 }
 
 /**
@@ -86,8 +104,21 @@ mlx5_promiscuous_disable(struct rte_eth_dev *dev)
 void
 mlx5_allmulticast_enable(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
+	int ret;
+
 	dev->data->all_multicast = 1;
-	mlx5_traffic_restart(dev);
+	if (priv->isolated) {
+		DRV_LOG(WARNING,
+			"port %u cannot enable allmulticast mode"
+			" in flow isolation mode",
+			dev->data->port_id);
+		return;
+	}
+	ret = mlx5_traffic_restart(dev);
+	if (ret)
+		DRV_LOG(ERR, "port %u cannot enable allmulicast mode: %s",
+			dev->data->port_id, strerror(rte_errno));
 }
 
 /**
@@ -99,6 +130,11 @@ mlx5_allmulticast_enable(struct rte_eth_dev *dev)
 void
 mlx5_allmulticast_disable(struct rte_eth_dev *dev)
 {
+	int ret;
+
 	dev->data->all_multicast = 0;
-	mlx5_traffic_restart(dev);
+	ret = mlx5_traffic_restart(dev);
+	if (ret)
+		DRV_LOG(ERR, "port %u cannot disable allmulicast mode: %s",
+			dev->data->port_id, strerror(rte_errno));
 }

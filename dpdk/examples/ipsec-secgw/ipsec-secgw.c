@@ -302,6 +302,7 @@ prepare_tx_pkt(struct rte_mbuf *pkt, uint16_t port)
 		pkt->l3_len = sizeof(struct ip);
 		pkt->l2_len = ETHER_HDR_LEN;
 
+		ip->ip_sum = 0;
 		ethhdr->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
 	} else {
 		pkt->ol_flags |= PKT_TX_IPV6;
@@ -475,11 +476,13 @@ outbound_sp(struct sp_ctx *sp, struct traffic_type *ip,
 		sa_idx = ip->res[i] & PROTECT_MASK;
 		if (ip->res[i] & DISCARD)
 			rte_pktmbuf_free(m);
+		else if (ip->res[i] & BYPASS)
+			ip->pkts[j++] = m;
 		else if (sa_idx < IPSEC_SA_MAX_ENTRIES) {
 			ipsec->res[ipsec->num] = sa_idx;
 			ipsec->pkts[ipsec->num++] = m;
-		} else /* BYPASS */
-			ip->pkts[j++] = m;
+		} else /* invalid SA idx */
+			rte_pktmbuf_free(m);
 	}
 	ip->num = j;
 }

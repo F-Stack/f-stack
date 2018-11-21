@@ -203,10 +203,11 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
 	txq->elts_comp += (uint16_t)(elts_head - txq->elts_head);
 	txq->elts_head = elts_head;
 	if (txq->elts_comp >= MLX5_TX_COMP_THRESH) {
+		/* A CQE slot must always be available. */
+		assert((1u << txq->cqe_n) - (txq->cq_pi++ - txq->cq_ci));
 		wqe->ctrl[2] = rte_cpu_to_be_32(8);
 		wqe->ctrl[3] = txq->elts_head;
 		txq->elts_comp = 0;
-		++txq->cq_pi;
 	}
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	txq->stats.opackets += n;
@@ -305,9 +306,10 @@ txq_burst_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	if (txq->elts_comp + pkts_n < MLX5_TX_COMP_THRESH) {
 		txq->elts_comp += pkts_n;
 	} else {
+		/* A CQE slot must always be available. */
+		assert((1u << txq->cqe_n) - (txq->cq_pi++ - txq->cq_ci));
 		/* Request a completion. */
 		txq->elts_comp = 0;
-		++txq->cq_pi;
 		comp_req = 8;
 	}
 	/* Fill CTRL in the header. */
@@ -735,7 +737,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	 *   N - (rq_ci - rq_pi) := # of buffers consumed (to be replenished).
 	 */
 	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
-	if (repl_n >= MLX5_VPMD_RXQ_RPLNSH_THRESH)
+	if (repl_n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n))
 		mlx5_rx_replenish_bulk_mbuf(rxq, repl_n);
 	/* See if there're unreturned mbufs from compressed CQE. */
 	rcvd_pkt = rxq->cq_ci - rxq->rq_pi;
@@ -825,7 +827,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		/* B.2 copy mbuf pointers. */
 		_mm_storeu_si128((__m128i *)&pkts[pos], mbp1);
 		_mm_storeu_si128((__m128i *)&pkts[pos + 2], mbp2);
-		rte_compiler_barrier();
+		rte_io_rmb();
 		/* C.1 load remained CQE data and extract necessary fields. */
 		cqe_tmp2 = _mm_load_si128((__m128i *)&cq[pos + p3]);
 		cqe_tmp1 = _mm_load_si128((__m128i *)&cq[pos + p2]);

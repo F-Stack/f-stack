@@ -70,13 +70,21 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 
+#ifndef APP_MAX_LCORE
+#if (RTE_MAX_LCORE > 64)
+#define APP_MAX_LCORE 64
+#else
+#define APP_MAX_LCORE RTE_MAX_LCORE
+#endif
+#endif
+
 /* Macros for printing using RTE_LOG */
 #define RTE_LOGTYPE_APP RTE_LOGTYPE_USER1
 #define FATAL_ERROR(fmt, args...)       rte_exit(EXIT_FAILURE, fmt "\n", ##args)
 #define PRINT_INFO(fmt, args...)        RTE_LOG(INFO, APP, fmt "\n", ##args)
 
 /* Max ports than can be used (each port is associated with two lcores) */
-#define MAX_PORTS               (RTE_MAX_LCORE / 2)
+#define MAX_PORTS               (APP_MAX_LCORE / 2)
 
 /* Max size of a single packet */
 #define MAX_PACKET_SZ (2048)
@@ -133,7 +141,7 @@ static uint64_t input_cores_mask = 0;
 static uint64_t output_cores_mask = 0;
 
 /* Array storing port_id that is associated with each lcore */
-static uint16_t port_ids[RTE_MAX_LCORE];
+static uint16_t port_ids[APP_MAX_LCORE];
 
 /* Structure type for recording lcore-specific stats */
 struct stats {
@@ -143,7 +151,7 @@ struct stats {
 };
 
 /* Array of lcore-specific stats */
-static struct stats lcore_stats[RTE_MAX_LCORE];
+static struct stats lcore_stats[APP_MAX_LCORE];
 
 /* Print out statistics on packets handled */
 static void
@@ -156,6 +164,9 @@ print_stats(void)
 	       " Lcore    Port            RX            TX    Dropped on TX\n"
 	       "-------  ------  ------------  ------------  ---------------\n");
 	RTE_LCORE_FOREACH(i) {
+		/* limit ourselves to application supported cores only */
+		if (i >= APP_MAX_LCORE)
+			break;
 		printf("%6u %7u %13"PRIu64" %13"PRIu64" %16"PRIu64"\n",
 		       i, (unsigned)port_ids[i],
 		       lcore_stats[i].rx, lcore_stats[i].tx,
@@ -362,7 +373,9 @@ setup_port_lcore_affinities(void)
 	uint16_t rx_port = 0;
 
 	/* Setup port_ids[] array, and check masks were ok */
-	RTE_LCORE_FOREACH(i) {
+	for (i = 0; i < APP_MAX_LCORE; i++) {
+		if (!rte_lcore_is_enabled(i))
+			continue;
 		if (input_cores_mask & (1ULL << i)) {
 			/* Skip ports that are not enabled */
 			while ((ports_mask & (1 << rx_port)) == 0) {

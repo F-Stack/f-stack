@@ -192,9 +192,15 @@ static void qede_rx_queue_release_mbufs(struct qede_rx_queue *rxq)
 void qede_rx_queue_release(void *rx_queue)
 {
 	struct qede_rx_queue *rxq = rx_queue;
+	struct qede_dev *qdev = rxq->qdev;
+	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
+
+	PMD_INIT_FUNC_TRACE(edev);
 
 	if (rxq) {
 		qede_rx_queue_release_mbufs(rxq);
+		qdev->ops->common->chain_free(edev, &rxq->rx_bd_ring);
+		qdev->ops->common->chain_free(edev, &rxq->rx_comp_ring);
 		rte_free(rxq->sw_rx_ring);
 		rte_free(rxq);
 	}
@@ -350,9 +356,14 @@ static void qede_tx_queue_release_mbufs(struct qede_tx_queue *txq)
 void qede_tx_queue_release(void *tx_queue)
 {
 	struct qede_tx_queue *txq = tx_queue;
+	struct qede_dev *qdev = txq->qdev;
+	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
+
+	PMD_INIT_FUNC_TRACE(edev);
 
 	if (txq) {
 		qede_tx_queue_release_mbufs(txq);
+		qdev->ops->common->chain_free(edev, &txq->tx_pbl);
 		rte_free(txq->sw_tx_ring);
 		rte_free(txq);
 	}
@@ -417,6 +428,8 @@ int qede_alloc_fp_resc(struct qede_dev *qdev)
 
 	for (sb_idx = 0; sb_idx < QEDE_RXTX_MAX(qdev); sb_idx++) {
 		fp = &qdev->fp_array[sb_idx];
+		if (!fp)
+			continue;
 		fp->sb_info = rte_calloc("sb", 1, sizeof(struct ecore_sb_info),
 				RTE_CACHE_LINE_SIZE);
 		if (!fp->sb_info) {
@@ -439,8 +452,6 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
 	struct qede_fastpath *fp;
-	struct qede_rx_queue *rxq;
-	struct qede_tx_queue *txq;
 	uint16_t sb_idx;
 	uint8_t i;
 
@@ -448,6 +459,8 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 
 	for (sb_idx = 0; sb_idx < QEDE_RXTX_MAX(qdev); sb_idx++) {
 		fp = &qdev->fp_array[sb_idx];
+		if (!fp)
+			continue;
 		DP_INFO(edev, "Free sb_info index 0x%x\n",
 				fp->sb_info->igu_sb_id);
 		if (fp->sb_info) {
@@ -463,21 +476,13 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
 		if (eth_dev->data->rx_queues[i]) {
 			qede_rx_queue_release(eth_dev->data->rx_queues[i]);
-			rxq = eth_dev->data->rx_queues[i];
-			qdev->ops->common->chain_free(edev,
-						      &rxq->rx_bd_ring);
-			qdev->ops->common->chain_free(edev,
-						      &rxq->rx_comp_ring);
 			eth_dev->data->rx_queues[i] = NULL;
 		}
 	}
 
 	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
 		if (eth_dev->data->tx_queues[i]) {
-			txq = eth_dev->data->tx_queues[i];
 			qede_tx_queue_release(eth_dev->data->tx_queues[i]);
-			qdev->ops->common->chain_free(edev,
-						      &txq->tx_pbl);
 			eth_dev->data->tx_queues[i] = NULL;
 		}
 	}
@@ -1462,6 +1467,8 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			 */
 			rx_mb->data_off = offset + RTE_PKTMBUF_HEADROOM;
 			packet_type |= qede_rx_cqe_to_pkt_type_outer(rx_mb);
+		} else {
+			packet_type |= qede_rx_cqe_to_pkt_type(parse_flag);
 		}
 
 		/* Common handling for non-tunnel packets and for inner
@@ -1483,7 +1490,6 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			ol_flags |= PKT_RX_IP_CKSUM_BAD;
 		} else {
 			ol_flags |= PKT_RX_IP_CKSUM_GOOD;
-			packet_type |= qede_rx_cqe_to_pkt_type(parse_flag);
 		}
 
 		if (CQE_HAS_VLAN(parse_flag) ||
@@ -1627,6 +1633,7 @@ qede_encode_sg_bd(struct qede_tx_queue *p_txq, struct rte_mbuf *m_seg,
 			QEDE_BD_SET_ADDR_LEN(tx_bd, mapping, m_seg->data_len);
 			PMD_TX_LOG(DEBUG, txq, "BD len %04x", m_seg->data_len);
 		}
+		start_seg++;
 		m_seg = m_seg->next;
 	}
 

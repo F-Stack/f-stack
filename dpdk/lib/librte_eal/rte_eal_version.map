@@ -184,6 +184,7 @@ DPDK_17.11 {
 
 	rte_eal_create_uio_dev;
 	rte_bus_get_iommu_class;
+	rte_eal_check_dma_mask;
 	rte_eal_has_pci;
 	rte_eal_iova_mode;
 	rte_eal_mbuf_default_mempool_ops;

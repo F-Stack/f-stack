@@ -117,6 +117,7 @@ struct pmd_internal {
 	char *dev_name;
 	char *iface_name;
 	uint16_t max_queues;
+	int vid;
 	rte_atomic32_t started;
 };
 
@@ -527,6 +528,9 @@ update_queuing_status(struct rte_eth_dev *dev)
 	unsigned int i;
 	int allow_queuing = 1;
 
+	if (!dev->data->rx_queues || !dev->data->tx_queues)
+		return;
+
 	if (rte_atomic32_read(&internal->started) == 0 ||
 	    rte_atomic32_read(&internal->dev_attached) == 0)
 		allow_queuing = 0;
@@ -551,13 +555,36 @@ update_queuing_status(struct rte_eth_dev *dev)
 	}
 }
 
+static void
+queue_setup(struct rte_eth_dev *eth_dev, struct pmd_internal *internal)
+{
+	struct vhost_queue *vq;
+	int i;
+
+	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
+		vq = eth_dev->data->rx_queues[i];
+		if (!vq)
+			continue;
+		vq->vid = internal->vid;
+		vq->internal = internal;
+		vq->port = eth_dev->data->port_id;
+	}
+	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+		vq = eth_dev->data->tx_queues[i];
+		if (!vq)
+			continue;
+		vq->vid = internal->vid;
+		vq->internal = internal;
+		vq->port = eth_dev->data->port_id;
+	}
+}
+
 static int
 new_device(int vid)
 {
 	struct rte_eth_dev *eth_dev;
 	struct internal_list *list;
 	struct pmd_internal *internal;
-	struct vhost_queue *vq;
 	unsigned i;
 	char ifname[PATH_MAX];
 #ifdef RTE_LIBRTE_VHOST_NUMA
@@ -580,22 +607,11 @@ new_device(int vid)
 		eth_dev->data->numa_node = newnode;
 #endif
 
-	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
-		vq = eth_dev->data->rx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = vid;
-		vq->internal = internal;
-		vq->port = eth_dev->data->port_id;
-	}
-	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
-		vq = eth_dev->data->tx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = vid;
-		vq->internal = internal;
-		vq->port = eth_dev->data->port_id;
-	}
+	internal->vid = vid;
+	if (rte_atomic32_read(&internal->started) == 1)
+		queue_setup(eth_dev, internal);
+	else
+		RTE_LOG(INFO, PMD, "RX/TX queues not exist yet\n");
 
 	for (i = 0; i < rte_vhost_get_vring_num(vid); i++)
 		rte_vhost_enable_guest_notification(vid, i, 0);
@@ -640,17 +656,19 @@ destroy_device(int vid)
 
 	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 
-	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
-		vq = eth_dev->data->rx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = -1;
-	}
-	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
-		vq = eth_dev->data->tx_queues[i];
-		if (vq == NULL)
-			continue;
-		vq->vid = -1;
+	if (eth_dev->data->rx_queues && eth_dev->data->tx_queues) {
+		for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
+			vq = eth_dev->data->rx_queues[i];
+			if (!vq)
+				continue;
+			vq->vid = -1;
+		}
+		for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
+			vq = eth_dev->data->tx_queues[i];
+			if (!vq)
+				continue;
+			vq->vid = -1;
+		}
 	}
 
 	state = vring_states[eth_dev->data->port_id];
@@ -773,12 +791,13 @@ rte_eth_vhost_get_vid_from_port_id(uint16_t port_id)
 }
 
 static int
-eth_dev_start(struct rte_eth_dev *dev)
+eth_dev_start(struct rte_eth_dev *eth_dev)
 {
-	struct pmd_internal *internal = dev->data->dev_private;
+	struct pmd_internal *internal = eth_dev->data->dev_private;
 
+	queue_setup(eth_dev, internal);
 	rte_atomic32_set(&internal->started, 1);
-	update_queuing_status(dev);
+	update_queuing_status(eth_dev);
 
 	return 0;
 }
@@ -816,10 +835,13 @@ eth_dev_close(struct rte_eth_dev *dev)
 	pthread_mutex_unlock(&internal_list_lock);
 	rte_free(list);
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++)
-		rte_free(dev->data->rx_queues[i]);
-	for (i = 0; i < dev->data->nb_tx_queues; i++)
-		rte_free(dev->data->tx_queues[i]);
+	if (dev->data->rx_queues)
+		for (i = 0; i < dev->data->nb_rx_queues; i++)
+			rte_free(dev->data->rx_queues[i]);
+
+	if (dev->data->tx_queues)
+		for (i = 0; i < dev->data->nb_tx_queues; i++)
+			rte_free(dev->data->tx_queues[i]);
 
 	rte_free(dev->data->mac_addrs);
 	free(internal->dev_name);
@@ -1086,6 +1108,7 @@ eth_dev_vhost_create(struct rte_vdev_device *dev, char *iface_name,
 	data->nb_rx_queues = queues;
 	data->nb_tx_queues = queues;
 	internal->max_queues = queues;
+	internal->vid = -1;
 	data->dev_link = pmd_link;
 	data->mac_addrs = eth_addr;
 	data->dev_flags = RTE_ETH_DEV_INTR_LSC;

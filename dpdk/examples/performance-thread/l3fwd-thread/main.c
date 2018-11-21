@@ -2021,17 +2021,18 @@ cpu_load_collector(__rte_unused void *arg) {
  *
  * This loop is used to start empty scheduler on lcore.
  */
-static void
+static void *
 lthread_null(__rte_unused void *args)
 {
 	int lcore_id = rte_lcore_id();
 
 	RTE_LOG(INFO, L3FWD, "Starting scheduler on lcore %d.\n", lcore_id);
 	lthread_exit(NULL);
+	return NULL;
 }
 
 /* main processing loop */
-static void
+static void *
 lthread_tx_per_ring(void *dummy)
 {
 	int nb_rx;
@@ -2076,6 +2077,7 @@ lthread_tx_per_ring(void *dummy)
 			lthread_cond_wait(ready, 0);
 
 	}
+	return NULL;
 }
 
 /*
@@ -2084,7 +2086,7 @@ lthread_tx_per_ring(void *dummy)
  * This lthread is used to spawn one new lthread per ring from producers.
  *
  */
-static void
+static void *
 lthread_tx(void *args)
 {
 	struct lthread *lt;
@@ -2129,9 +2131,10 @@ lthread_tx(void *args)
 		}
 
 	}
+	return NULL;
 }
 
-static void
+static void *
 lthread_rx(void *dummy)
 {
 	int ret;
@@ -2155,7 +2158,7 @@ lthread_rx(void *dummy)
 
 	if (rx_conf->n_rx_queue == 0) {
 		RTE_LOG(INFO, L3FWD, "lcore %u has nothing to do\n", rte_lcore_id());
-		return;
+		return NULL;
 	}
 
 	RTE_LOG(INFO, L3FWD, "Entering main Rx loop on lcore %u\n", rte_lcore_id());
@@ -2227,6 +2230,7 @@ lthread_rx(void *dummy)
 			lthread_yield();
 		}
 	}
+	return NULL;
 }
 
 /*
@@ -2235,8 +2239,9 @@ lthread_rx(void *dummy)
  * This lthread loop spawns all rx and tx lthreads on master lcore
  */
 
-static void
-lthread_spawner(__rte_unused void *arg) {
+static void *
+lthread_spawner(__rte_unused void *arg)
+{
 	struct lthread *lt[MAX_THREAD];
 	int i;
 	int n_thread = 0;
@@ -2277,6 +2282,7 @@ lthread_spawner(__rte_unused void *arg) {
 	for (i = 0; i < n_thread; i++)
 		lthread_join(lt[i], NULL);
 
+	return NULL;
 }
 
 /*

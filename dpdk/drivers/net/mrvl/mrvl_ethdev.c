@@ -674,7 +674,8 @@ mrvl_dev_stop(struct rte_eth_dev *dev)
 		pp2_cls_qos_tbl_deinit(priv->qos_tbl);
 		priv->qos_tbl = NULL;
 	}
-	pp2_ppio_deinit(priv->ppio);
+	if (priv->ppio)
+		pp2_ppio_deinit(priv->ppio);
 	priv->ppio = NULL;
 }
 
@@ -1217,8 +1218,8 @@ mrvl_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 static int
 mrvl_fill_bpool(struct mrvl_rxq *rxq, int num)
 {
-	struct buff_release_entry entries[MRVL_PP2_TXD_MAX];
-	struct rte_mbuf *mbufs[MRVL_PP2_TXD_MAX];
+	struct buff_release_entry entries[MRVL_PP2_RXD_MAX];
+	struct rte_mbuf *mbufs[MRVL_PP2_RXD_MAX];
 	int i, ret;
 	unsigned int core_id;
 	struct pp2_hif *hif;
@@ -1374,9 +1375,12 @@ mrvl_rx_queue_release(void *rxq)
 	if (core_id == LCORE_ID_ANY)
 		core_id = 0;
 
+	if (!q)
+		return;
+
 	hif = mrvl_get_hif(q->priv, core_id);
 
-	if (!q || !hif)
+	if (!hif)
 		return;
 
 	tc = q->priv->rxq_map[q->queue_id].tc;

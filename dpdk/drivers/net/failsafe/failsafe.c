@@ -210,7 +210,7 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 							       mac);
 			if (ret) {
 				ERROR("Failed to set default MAC address");
-				goto free_args;
+				goto cancel_alarm;
 			}
 		}
 	} else {
@@ -240,6 +240,8 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		mac->addr_bytes[4], mac->addr_bytes[5]);
 	dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC;
 	return 0;
+cancel_alarm:
+	failsafe_hotplug_alarm_cancel(dev);
 free_args:
 	failsafe_args_free(dev);
 free_subs:

@@ -469,11 +469,15 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 
 	if (likely(RX_CMP_IP_CS_OK(rxcmp1)))
 		mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+	else if (likely(RX_CMP_IP_CS_UNKNOWN(rxcmp1)))
+		mbuf->ol_flags |= PKT_RX_IP_CKSUM_UNKNOWN;
 	else
 		mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
 
 	if (likely(RX_CMP_L4_CS_OK(rxcmp1)))
 		mbuf->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+	else if (likely(RX_CMP_L4_CS_UNKNOWN(rxcmp1)))
+		mbuf->ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
 	else
 		mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
 
@@ -730,7 +734,7 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 	if (rxq->rx_buf_use_size <= size)
 		size = rxq->rx_buf_use_size;
 
-	type = RX_PROD_PKT_BD_TYPE_RX_PROD_PKT;
+	type = RX_PROD_PKT_BD_TYPE_RX_PROD_PKT | RX_PROD_PKT_BD_FLAGS_EOP_PAD;
 
 	rxr = rxq->rx_ring;
 	ring = rxr->rx_ring_struct;

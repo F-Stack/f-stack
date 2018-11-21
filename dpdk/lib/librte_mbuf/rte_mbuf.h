@@ -222,14 +222,17 @@ extern "C" {
 
 /**
  * Bits 45:48 used for the tunnel type.
- * When doing Tx offload like TSO or checksum, the HW needs to configure the
- * tunnel type into the HW descriptors.
+ * The tunnel type must be specified for TSO or checksum on the inner part
+ * of tunnel packets.
+ * These flags can be used with PKT_TX_TCP_SEG for TSO, or PKT_TX_xxx_CKSUM.
+ * The mbuf fields for inner and outer header lengths are required:
+ * outer_l2_len, outer_l3_len, l2_len, l3_len, l4_len and tso_segsz for TSO.
  */
 #define PKT_TX_TUNNEL_VXLAN   (0x1ULL << 45)
 #define PKT_TX_TUNNEL_GRE     (0x2ULL << 45)
 #define PKT_TX_TUNNEL_IPIP    (0x3ULL << 45)
 #define PKT_TX_TUNNEL_GENEVE  (0x4ULL << 45)
-/**< TX packet with MPLS-in-UDP RFC 7510 header. */
+/** TX packet with MPLS-in-UDP RFC 7510 header. */
 #define PKT_TX_TUNNEL_MPLSINUDP (0x5ULL << 45)
 /* add new TX TUNNEL type here */
 #define PKT_TX_TUNNEL_MASK    (0xFULL << 45)
@@ -245,12 +248,8 @@ extern "C" {
  *  - set the PKT_TX_TCP_SEG flag in mbuf->ol_flags (this flag implies
  *    PKT_TX_TCP_CKSUM)
  *  - set the flag PKT_TX_IPV4 or PKT_TX_IPV6
- *  - if it's IPv4, set the PKT_TX_IP_CKSUM flag and write the IP checksum
- *    to 0 in the packet
+ *  - if it's IPv4, set the PKT_TX_IP_CKSUM flag
  *  - fill the mbuf offload information: l2_len, l3_len, l4_len, tso_segsz
- *  - calculate the pseudo header checksum without taking ip_len in account,
- *    and set it in the TCP header. Refer to rte_ipv4_phdr_cksum() and
- *    rte_ipv6_phdr_cksum() that can be used as helpers.
  */
 #define PKT_TX_TCP_SEG       (1ULL << 50)
 
@@ -263,9 +262,6 @@ extern "C" {
  *  - fill l2_len and l3_len in mbuf
  *  - set the flags PKT_TX_TCP_CKSUM, PKT_TX_SCTP_CKSUM or PKT_TX_UDP_CKSUM
  *  - set the flag PKT_TX_IPV4 or PKT_TX_IPV6
- *  - calculate the pseudo header checksum and set it in the L4 header (only
- *    for TCP or UDP). See rte_ipv4_phdr_cksum() and rte_ipv6_phdr_cksum().
- *    For SCTP, set the crc field to 0.
  */
 #define PKT_TX_L4_NO_CKSUM   (0ULL << 52) /**< Disable L4 cksum of TX pkt. */
 #define PKT_TX_TCP_CKSUM     (1ULL << 52) /**< TCP cksum of TX pkt. computed by NIC. */
@@ -277,7 +273,6 @@ extern "C" {
  * Offload the IP checksum in the hardware. The flag PKT_TX_IPV4 should
  * also be set by the application, although a PMD will only check
  * PKT_TX_IP_CKSUM.
- *  - set the IP checksum field in the packet to 0
  *  - fill the mbuf offload information: l2_len, l3_len
  */
 #define PKT_TX_IP_CKSUM      (1ULL << 54)
@@ -302,10 +297,8 @@ extern "C" {
 
 /**
  * Offload the IP checksum of an external header in the hardware. The
- * flag PKT_TX_OUTER_IPV4 should also be set by the application, alto ugh
- * a PMD will only check PKT_TX_IP_CKSUM.  The IP checksum field in the
- * packet must be set to 0.
- *  - set the outer IP checksum field in the packet to 0
+ * flag PKT_TX_OUTER_IPV4 should also be set by the application, although
+ * a PMD will only check PKT_TX_OUTER_IP_CKSUM.
  *  - fill the mbuf offload information: outer_l2_len, outer_l3_len
  */
 #define PKT_TX_OUTER_IP_CKSUM   (1ULL << 58)
