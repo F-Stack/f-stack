@@ -252,6 +252,35 @@ Generic Flow API is supported. The baseline support is:
 More features may be added in future firmware and new versions of the VIC.
 Please refer to the release notes.
 
+Ingress VLAN Rewrite
+--------------------
+
+VIC adapters can tag, untag, or modify the VLAN headers of ingress
+packets. The ingress VLAN rewrite mode controls this behavior. By
+default, it is set to pass-through, where the NIC does not modify the
+VLAN header in any way so that the application can see the original
+header. This mode is sufficient for many applications, but may not be
+suitable for others. Such applications may change the mode by setting
+``devargs`` parameter ``ig-vlan-rewrite`` to one of the following.
+
+- ``pass``: Pass-through mode. The NIC does not modify the VLAN
+  header. This is the default mode.
+
+- ``priority``: Priority-tag default VLAN mode. If the ingress packet
+  is tagged with the default VLAN, the NIC replaces its VLAN header
+  with the priority tag (VLAN ID 0).
+
+- ``trunk``: Default trunk mode. The NIC tags untagged ingress packets
+  with the default VLAN. Tagged ingress packets are not modified. To
+  the application, every packet appears as tagged.
+
+- ``untag``: Untag default VLAN mode. If the ingress packet is tagged
+  with the default VLAN, the NIC removes or untags its VLAN header so
+  that the application sees an untagged packet. As a result, the
+  default VLAN becomes `untagged`. This mode can be useful for
+  applications such as OVS-DPDK performance benchmarks that utilize
+  only the default VLAN and want to see only untagged packets.
+
 .. _enic_limitations:
 
 Limitations
@@ -267,15 +296,24 @@ Limitations
   In test setups where an Ethernet port of a Cisco adapter in TRUNK mode is
   connected point-to-point to another adapter port or connected though a router
   instead of a switch, all ingress packets will be VLAN tagged. Programs such
-  as l3fwd which do not account for VLAN tags in packets will misbehave. The
-  solution is to enable VLAN stripping on ingress. The follow code fragment is
-  example of how to accomplish this:
+  as l3fwd may not account for VLAN tags in packets and may misbehave. One
+  solution is to enable VLAN stripping on ingress so the VLAN tag is removed
+  from the packet and put into the mbuf->vlan_tci field. Here is an example
+  of how to accomplish this:
 
 .. code-block:: console
 
      vlan_offload = rte_eth_dev_get_vlan_offload(port);
      vlan_offload |= ETH_VLAN_STRIP_OFFLOAD;
      rte_eth_dev_set_vlan_offload(port, vlan_offload);
+
+Another alternative is modify the adapter's ingress VLAN rewrite mode so that
+packets with the default VLAN tag are stripped by the adapter and presented to
+DPDK as untagged packets. In this case mbuf->vlan_tci and the PKT_RX_VLAN and
+PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
+``devargs`` parameter ``ig-vlan-rewrite=untag``. For example::
+
+    -w 12:00.0,ig-vlan-rewrite=untag
 
 - Limited flow director support on 1200 series and 1300 series Cisco VIC
   adapters with old firmware. Please see :ref:`enic-flow-director`.

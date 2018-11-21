@@ -124,7 +124,7 @@ fs_dev_configure(struct rte_eth_dev *dev)
 			ERROR("Could not configure sub_device %d", i);
 			return ret;
 		}
-		if (rmv_interrupt) {
+		if (rmv_interrupt && sdev->rmv_callback == 0) {
 			ret = rte_eth_dev_callback_register(PORT_ID(sdev),
 					RTE_ETH_EVENT_INTR_RMV,
 					failsafe_eth_rmv_event_callback,
@@ -132,9 +132,11 @@ fs_dev_configure(struct rte_eth_dev *dev)
 			if (ret)
 				WARN("Failed to register RMV callback for sub_device %d",
 				     SUB_ID(sdev));
+			else
+				sdev->rmv_callback = 1;
 		}
 		dev->data->dev_conf.intr_conf.rmv = 0;
-		if (lsc_interrupt) {
+		if (lsc_interrupt && sdev->lsc_callback == 0) {
 			ret = rte_eth_dev_callback_register(PORT_ID(sdev),
 						RTE_ETH_EVENT_INTR_LSC,
 						failsafe_eth_lsc_event_callback,
@@ -142,6 +144,8 @@ fs_dev_configure(struct rte_eth_dev *dev)
 			if (ret)
 				WARN("Failed to register LSC callback for sub_device %d",
 				     SUB_ID(sdev));
+			else
+				sdev->lsc_callback = 1;
 		}
 		dev->data->dev_conf.intr_conf.lsc = lsc_enabled;
 		sdev->state = DEV_ACTIVE;
@@ -237,6 +241,7 @@ fs_dev_close(struct rte_eth_dev *dev)
 	PRIV(dev)->state = DEV_ACTIVE - 1;
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
 		DEBUG("Closing sub_device %d", i);
+		failsafe_eth_dev_unregister_callbacks(sdev);
 		rte_eth_dev_close(PORT_ID(sdev));
 		sdev->state = DEV_ACTIVE - 1;
 	}

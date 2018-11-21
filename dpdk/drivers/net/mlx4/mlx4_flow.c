@@ -116,7 +116,7 @@ static uint64_t
 mlx4_conv_rss_hf(uint64_t rss_hf)
 {
 	enum { IPV4, IPV6, TCP, UDP, };
-	const uint64_t in[] = {
+	static const uint64_t in[] = {
 		[IPV4] = (ETH_RSS_IPV4 |
 			  ETH_RSS_FRAG_IPV4 |
 			  ETH_RSS_NONFRAG_IPV4_TCP |
@@ -139,7 +139,7 @@ mlx4_conv_rss_hf(uint64_t rss_hf)
 		 */
 		[UDP] = 0,
 	};
-	const uint64_t out[RTE_DIM(in)] = {
+	static const uint64_t out[RTE_DIM(in)] = {
 		[IPV4] = IBV_RX_HASH_SRC_IPV4 | IBV_RX_HASH_DST_IPV4,
 		[IPV6] = IBV_RX_HASH_SRC_IPV6 | IBV_RX_HASH_DST_IPV6,
 		[TCP] = IBV_RX_HASH_SRC_PORT_TCP | IBV_RX_HASH_DST_PORT_TCP,
@@ -379,6 +379,9 @@ error:
  * Additional mlx4-specific constraints on supported fields:
  *
  * - No support for partial masks.
+ * - Due to HW/FW limitation, flow rule priority is not taken into account
+ *   when matching UDP destination ports, doing is therefore only supported
+ *   at the highest priority level (0).
  *
  * @param[in, out] flow
  *   Flow rule handle to update.
@@ -408,6 +411,11 @@ mlx4_flow_merge_udp(struct rte_flow *flow,
 	    ((uint16_t)(mask->hdr.src_port + 1) > UINT16_C(1) ||
 	     (uint16_t)(mask->hdr.dst_port + 1) > UINT16_C(1))) {
 		msg = "mlx4 does not support matching partial UDP fields";
+		goto error;
+	}
+	if (mask && mask->hdr.dst_port && flow->priority) {
+		msg = "combining UDP destination port matching with a nonzero"
+			" priority level is not supported";
 		goto error;
 	}
 	if (!flow->ibv_attr)
@@ -674,6 +682,7 @@ mlx4_flow_prepare(struct priv *priv,
 			 NULL, "only ingress is supported");
 fill:
 	proc = mlx4_flow_proc_item_list;
+	flow->priority = attr->priority;
 	/* Go over pattern. */
 	for (item = pattern; item->type; ++item) {
 		const struct mlx4_flow_proc_item *next = NULL;
@@ -839,11 +848,14 @@ fill:
 			},
 		};
 
-		if (!mlx4_zmallocv(__func__, vec, RTE_DIM(vec)))
+		if (!mlx4_zmallocv(__func__, vec, RTE_DIM(vec))) {
+			if (temp.rss)
+				mlx4_rss_put(temp.rss);
 			return rte_flow_error_set
 				(error, -rte_errno,
 				 RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 				 "flow rule handle allocation failure");
+		}
 		/* Most fields will be updated by second pass. */
 		*flow = (struct rte_flow){
 			.ibv_attr = temp.ibv_attr,
@@ -1217,9 +1229,12 @@ mlx4_flow_internal_next_vlan(struct priv *priv, uint16_t vlan)
  *
  * Various flow rules are created depending on the mode the device is in:
  *
- * 1. Promiscuous: port MAC + catch-all (VLAN filtering is ignored).
- * 2. All multicast: port MAC/VLAN + catch-all multicast.
- * 3. Otherwise: port MAC/VLAN + broadcast MAC/VLAN.
+ * 1. Promiscuous:
+ *       port MAC + broadcast + catch-all (VLAN filtering is ignored).
+ * 2. All multicast:
+ *       port MAC/VLAN + broadcast + catch-all multicast.
+ * 3. Otherwise:
+ *       port MAC/VLAN + broadcast MAC/VLAN.
  *
  * About MAC flow rules:
  *
@@ -1298,9 +1313,6 @@ mlx4_flow_internal(struct priv *priv, struct rte_flow_error *error)
 		!priv->dev->data->promiscuous ?
 		&vlan_spec.tci :
 		NULL;
-	int broadcast =
-		!priv->dev->data->promiscuous &&
-		!priv->dev->data->all_multicast;
 	uint16_t vlan = 0;
 	struct rte_flow *flow;
 	unsigned int i;
@@ -1334,7 +1346,7 @@ next_vlan:
 			rule_vlan = NULL;
 		}
 	}
-	for (i = 0; i != RTE_DIM(priv->mac) + broadcast; ++i) {
+	for (i = 0; i != RTE_DIM(priv->mac) + 1; ++i) {
 		const struct ether_addr *mac;
 
 		/* Broadcasts are handled by an extra iteration. */
@@ -1398,7 +1410,7 @@ next_vlan:
 			goto next_vlan;
 	}
 	/* Take care of promiscuous and all multicast flow rules. */
-	if (!broadcast) {
+	if (priv->dev->data->promiscuous || priv->dev->data->all_multicast) {
 		for (flow = LIST_FIRST(&priv->flows);
 		     flow && flow->internal;
 		     flow = LIST_NEXT(flow, next)) {

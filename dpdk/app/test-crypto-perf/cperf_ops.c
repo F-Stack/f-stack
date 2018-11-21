@@ -507,6 +507,7 @@ cperf_create_session(struct rte_mempool *sess_mp,
 		auth_xform.next = NULL;
 		auth_xform.auth.algo = options->auth_algo;
 		auth_xform.auth.op = options->auth_op;
+		auth_xform.auth.iv.offset = iv_offset;
 
 		/* auth different than null */
 		if (options->auth_algo != RTE_CRYPTO_AUTH_NULL) {
@@ -561,6 +562,8 @@ cperf_create_session(struct rte_mempool *sess_mp,
 		auth_xform.next = NULL;
 		auth_xform.auth.algo = options->auth_algo;
 		auth_xform.auth.op = options->auth_op;
+		auth_xform.auth.iv.offset = iv_offset +
+			cipher_xform.cipher.iv.length;
 
 		/* auth different than null */
 		if (options->auth_algo != RTE_CRYPTO_AUTH_NULL) {

@@ -124,7 +124,7 @@ static struct rte_eth_link pmd_link = {
 		.link_speed = ETH_SPEED_NUM_10G,
 		.link_duplex = ETH_LINK_FULL_DUPLEX,
 		.link_status = ETH_LINK_DOWN,
-		.link_autoneg = ETH_LINK_AUTONEG,
+		.link_autoneg = ETH_LINK_FIXED,
 };
 
 static int
@@ -687,19 +687,19 @@ static const struct eth_dev_ops ops = {
 static int
 open_rx_pcap(const char *key, const char *value, void *extra_args)
 {
-	unsigned int i;
 	const char *pcap_filename = value;
 	struct pmd_devargs *rx = extra_args;
 	pcap_t *pcap = NULL;
 
-	for (i = 0; i < rx->num_of_queue; i++) {
-		if (open_single_rx_pcap(pcap_filename, &pcap) < 0)
-			return -1;
+	if (rx->num_of_queue >= RTE_PMD_PCAP_MAX_QUEUES)
+		return -1;
+	if (open_single_rx_pcap(pcap_filename, &pcap) < 0)
+		return -1;
 
-		rx->queue[i].pcap = pcap;
-		rx->queue[i].name = pcap_filename;
-		rx->queue[i].type = key;
-	}
+	rx->queue[rx->num_of_queue].pcap = pcap;
+	rx->queue[rx->num_of_queue].name = pcap_filename;
+	rx->queue[rx->num_of_queue].type = key;
+	rx->num_of_queue++;
 
 	return 0;
 }
@@ -711,19 +711,19 @@ open_rx_pcap(const char *key, const char *value, void *extra_args)
 static int
 open_tx_pcap(const char *key, const char *value, void *extra_args)
 {
-	unsigned int i;
 	const char *pcap_filename = value;
 	struct pmd_devargs *dumpers = extra_args;
 	pcap_dumper_t *dumper;
 
-	for (i = 0; i < dumpers->num_of_queue; i++) {
-		if (open_single_tx_pcap(pcap_filename, &dumper) < 0)
-			return -1;
+	if (dumpers->num_of_queue >= RTE_PMD_PCAP_MAX_QUEUES)
+		return -1;
+	if (open_single_tx_pcap(pcap_filename, &dumper) < 0)
+		return -1;
 
-		dumpers->queue[i].dumper = dumper;
-		dumpers->queue[i].name = pcap_filename;
-		dumpers->queue[i].type = key;
-	}
+	dumpers->queue[dumpers->num_of_queue].dumper = dumper;
+	dumpers->queue[dumpers->num_of_queue].name = pcap_filename;
+	dumpers->queue[dumpers->num_of_queue].type = key;
+	dumpers->num_of_queue++;
 
 	return 0;
 }
@@ -754,18 +754,18 @@ open_rx_tx_iface(const char *key, const char *value, void *extra_args)
 static inline int
 open_rx_iface(const char *key, const char *value, void *extra_args)
 {
-	unsigned int i;
 	const char *iface = value;
 	struct pmd_devargs *rx = extra_args;
 	pcap_t *pcap = NULL;
 
-	for (i = 0; i < rx->num_of_queue; i++) {
-		if (open_single_iface(iface, &pcap) < 0)
-			return -1;
-		rx->queue[i].pcap = pcap;
-		rx->queue[i].name = iface;
-		rx->queue[i].type = key;
-	}
+	if (rx->num_of_queue >= RTE_PMD_PCAP_MAX_QUEUES)
+		return -1;
+	if (open_single_iface(iface, &pcap) < 0)
+		return -1;
+	rx->queue[rx->num_of_queue].pcap = pcap;
+	rx->queue[rx->num_of_queue].name = iface;
+	rx->queue[rx->num_of_queue].type = key;
+	rx->num_of_queue++;
 
 	return 0;
 }
@@ -776,18 +776,18 @@ open_rx_iface(const char *key, const char *value, void *extra_args)
 static int
 open_tx_iface(const char *key, const char *value, void *extra_args)
 {
-	unsigned int i;
 	const char *iface = value;
 	struct pmd_devargs *tx = extra_args;
 	pcap_t *pcap;
 
-	for (i = 0; i < tx->num_of_queue; i++) {
-		if (open_single_iface(iface, &pcap) < 0)
-			return -1;
-		tx->queue[i].pcap = pcap;
-		tx->queue[i].name = iface;
-		tx->queue[i].type = key;
-	}
+	if (tx->num_of_queue >= RTE_PMD_PCAP_MAX_QUEUES)
+		return -1;
+	if (open_single_iface(iface, &pcap) < 0)
+		return -1;
+	tx->queue[tx->num_of_queue].pcap = pcap;
+	tx->queue[tx->num_of_queue].name = iface;
+	tx->queue[tx->num_of_queue].type = key;
+	tx->num_of_queue++;
 
 	return 0;
 }
@@ -977,15 +977,8 @@ pmd_pcap_probe(struct rte_vdev_device *dev)
 	 * We check whether we want to open a RX stream from a real NIC or a
 	 * pcap file
 	 */
-	pcaps.num_of_queue = rte_kvargs_count(kvlist, ETH_PCAP_RX_PCAP_ARG);
-	if (pcaps.num_of_queue)
-		is_rx_pcap = 1;
-	else
-		pcaps.num_of_queue = rte_kvargs_count(kvlist,
-				ETH_PCAP_RX_IFACE_ARG);
-
-	if (pcaps.num_of_queue > RTE_PMD_PCAP_MAX_QUEUES)
-		pcaps.num_of_queue = RTE_PMD_PCAP_MAX_QUEUES;
+	is_rx_pcap = rte_kvargs_count(kvlist, ETH_PCAP_RX_PCAP_ARG) ? 1 : 0;
+	pcaps.num_of_queue = 0;
 
 	if (is_rx_pcap)
 		ret = rte_kvargs_process(kvlist, ETH_PCAP_RX_PCAP_ARG,
@@ -1001,15 +994,8 @@ pmd_pcap_probe(struct rte_vdev_device *dev)
 	 * We check whether we want to open a TX stream to a real NIC or a
 	 * pcap file
 	 */
-	dumpers.num_of_queue = rte_kvargs_count(kvlist, ETH_PCAP_TX_PCAP_ARG);
-	if (dumpers.num_of_queue)
-		is_tx_pcap = 1;
-	else
-		dumpers.num_of_queue = rte_kvargs_count(kvlist,
-				ETH_PCAP_TX_IFACE_ARG);
-
-	if (dumpers.num_of_queue > RTE_PMD_PCAP_MAX_QUEUES)
-		dumpers.num_of_queue = RTE_PMD_PCAP_MAX_QUEUES;
+	is_tx_pcap = rte_kvargs_count(kvlist, ETH_PCAP_TX_PCAP_ARG) ? 1 : 0;
+	dumpers.num_of_queue = 0;
 
 	if (is_tx_pcap)
 		ret = rte_kvargs_process(kvlist, ETH_PCAP_TX_PCAP_ARG,

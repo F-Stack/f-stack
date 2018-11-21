@@ -544,7 +544,7 @@ parse_cfg_file(const char *cfg_filename)
 				goto error_exit;
 			}
 
-			strncpy(str + strlen(str), oneline,
+			memcpy(str + strlen(str), oneline,
 				strlen(oneline));
 
 			continue;

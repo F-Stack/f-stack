@@ -210,7 +210,7 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 			break;
 		case SPC_VPD_UNIT_SERIAL_NUMBER:
 			hlen = 4;
-			strncpy((char *)vpage->params, bdev->name, 32);
+			memcpy((char *)vpage->params, bdev->name, 32);
 			vpage->alloc_len = rte_cpu_to_be_16(32);
 			break;
 		case SPC_VPD_DEVICE_IDENTIFICATION:
@@ -247,7 +247,7 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 			strncpy((char *)desig->desig, "INTEL", 8);
 			vhost_strcpy_pad((char *)&desig->desig[8],
 					 bdev->product_name, 16, ' ');
-			strncpy((char *)&desig->desig[24], bdev->name, 32);
+			memcpy((char *)&desig->desig[24], bdev->name, 32);
 			len += sizeof(struct scsi_desig_desc) + 8 + 16 + 32;
 
 			buf += sizeof(struct scsi_desig_desc) + desig->len;
@@ -312,7 +312,7 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 				bdev->product_name);
 
 		/* PRODUCT REVISION LEVEL */
-		strncpy((char *)inqdata->product_rev, "0001", 4);
+		memcpy((char *)inqdata->product_rev, "0001", 4);
 
 		/* Standard inquiry data ends here. Only populate
 		 * remaining fields if alloc_len indicates enough

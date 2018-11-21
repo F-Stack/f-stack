@@ -567,7 +567,7 @@ test_device_configure_invalid_dev_id(void)
 	dev_id = ts_params->valid_devs[ts_params->valid_dev_count - 1];
 
 	/* Stop the device in case it's started so it can be configured */
-	rte_cryptodev_stop(ts_params->valid_devs[dev_id]);
+	rte_cryptodev_stop(dev_id);
 
 	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(dev_id, &ts_params->conf),
 			"Failed test for rte_cryptodev_configure: "
@@ -6484,7 +6484,7 @@ test_multi_session_random_usage(void)
 		sessions[i] = rte_cryptodev_sym_session_create(
 				ts_params->session_mpool);
 
-		rte_memcpy(&ut_paramz[i].ut_params, &testsuite_params,
+		rte_memcpy(&ut_paramz[i].ut_params, &unittest_params,
 				sizeof(struct crypto_unittest_params));
 
 		test_AES_CBC_HMAC_SHA512_decrypt_create_session_params(

@@ -296,6 +296,8 @@ sfc_ef10_rx_ev_to_offloads(struct sfc_ef10_rxq *rxq, const efx_qword_t rx_ev,
 		/* Override Layer 2 packet type */
 		l2_ptype = RTE_PTYPE_L2_ETHER_ARP;
 		break;
+	case ESE_DZ_L3_CLASS_UNKNOWN:
+		break;
 	default:
 		/* Unexpected Layer 3 class */
 		SFC_ASSERT(false);

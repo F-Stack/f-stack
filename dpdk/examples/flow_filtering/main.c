@@ -149,6 +149,22 @@ init_port(void)
 			/**< CRC stripped by hardware */
 			.hw_strip_crc   = 1,
 		},
+		/*
+		 * Initialize fdir_conf of rte_eth_conf.
+		 * Fdir is used in flow filtering for I40e,
+		 * so rte_flow rules involve some fdir
+		 * configurations. In long term it's better
+		 * that drivers don't require any fdir
+		 * configuration for rte_flow, but we need to
+		 * get this workaround so that sample app can
+		 * run on I40e.
+		 */
+		.fdir_conf = {
+			.mode = RTE_FDIR_MODE_PERFECT,
+			.pballoc = RTE_FDIR_PBALLOC_64K,
+			.status = RTE_FDIR_REPORT_STATUS,
+			.drop_queue = 127,
+		},
 	};
 
 	printf(":: initializing port: %d\n", port_id);

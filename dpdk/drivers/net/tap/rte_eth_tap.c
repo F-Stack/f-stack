@@ -95,7 +95,7 @@ static struct rte_eth_link pmd_link = {
 	.link_speed = ETH_SPEED_NUM_10G,
 	.link_duplex = ETH_LINK_FULL_DUPLEX,
 	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_AUTONEG
+	.link_autoneg = ETH_LINK_FIXED,
 };
 
 static void
@@ -544,7 +544,9 @@ apply:
 	case SIOCSIFMTU:
 		break;
 	default:
-		RTE_ASSERT(!"unsupported request type: must not happen");
+		RTE_LOG(WARNING, PMD, "%s: ioctl() called with wrong arg\n",
+			pmd->name);
+		return -EINVAL;
 	}
 	if (ioctl(pmd->ioctl_sock, request, ifr) < 0)
 		goto error;

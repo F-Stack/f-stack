@@ -1877,7 +1877,6 @@ struct rte_eth_dev *rte_eth_dev_allocated(const char *name);
  * to that slot for the driver to use.
  *
  * @param	name	Unique identifier name for each Ethernet device
- * @param	type	Device type of this Ethernet device
  * @return
  *   - Slot in the rte_dev_devices array for a new device;
  */
@@ -2543,7 +2542,7 @@ void rte_eth_xstats_reset(uint16_t port_id);
  * @param stat_idx
  *   The per-queue packet statistics functionality number that the transmit
  *   queue is to be assigned.
- *   The value must be in the range [0, RTE_MAX_ETHPORT_QUEUE_STATS_MAPS - 1].
+ *   The value must be in the range [0, RTE_ETHDEV_QUEUE_STAT_CNTRS - 1].
  * @return
  *   Zero if successful. Non-zero otherwise.
  */
@@ -2563,7 +2562,7 @@ int rte_eth_dev_set_tx_queue_stats_mapping(uint16_t port_id,
  * @param stat_idx
  *   The per-queue packet statistics functionality number that the receive
  *   queue is to be assigned.
- *   The value must be in the range [0, RTE_MAX_ETHPORT_QUEUE_STATS_MAPS - 1].
+ *   The value must be in the range [0, RTE_ETHDEV_QUEUE_STAT_CNTRS - 1].
  * @return
  *   Zero if successful. Non-zero otherwise.
  */
@@ -3124,6 +3123,9 @@ static inline int rte_eth_tx_descriptor_status(uint16_t port_id,
  * If the PMD is DEV_TX_OFFLOAD_MT_LOCKFREE capable, multiple threads can
  * invoke this function concurrently on the same tx queue without SW lock.
  * @see rte_eth_dev_info_get, struct rte_eth_txconf::txq_flags
+ *
+ * @see rte_eth_tx_prepare to perform some prior checks or adjustments
+ * for offloads.
  *
  * @param port_id
  *   The port identifier of the Ethernet device.

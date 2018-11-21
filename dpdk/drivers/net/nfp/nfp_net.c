@@ -301,7 +301,7 @@ nfp_net_tx_queue_release_mbufs(struct nfp_net_txq *txq)
 
 	for (i = 0; i < txq->tx_count; i++) {
 		if (txq->txbufs[i].mbuf) {
-			rte_pktmbuf_free(txq->txbufs[i].mbuf);
+			rte_pktmbuf_free_seg(txq->txbufs[i].mbuf);
 			txq->txbufs[i].mbuf = NULL;
 		}
 	}
@@ -1244,9 +1244,9 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
 	dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
 
-	dev_info->speed_capa = ETH_SPEED_NUM_1G | ETH_LINK_SPEED_10G |
-			       ETH_SPEED_NUM_25G | ETH_SPEED_NUM_40G |
-			       ETH_SPEED_NUM_50G | ETH_LINK_SPEED_100G;
+	dev_info->speed_capa = ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
+			       ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G |
+			       ETH_LINK_SPEED_50G | ETH_LINK_SPEED_100G;
 
 	if (hw->cap & NFP_NET_CFG_CTRL_LSO)
 		dev_info->tx_offload_capa |= DEV_TX_OFFLOAD_TCP_TSO;
@@ -1995,15 +1995,15 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			break;
 		}
 
+		rxds = &rxq->rxds[rxq->rd_p];
+		if ((rxds->rxd.meta_len_dd & PCIE_DESC_RX_DD) == 0)
+			break;
+
 		/*
 		 * Memory barrier to ensure that we won't do other
 		 * reads before the DD bit.
 		 */
 		rte_rmb();
-
-		rxds = &rxq->rxds[rxq->rd_p];
-		if ((rxds->rxd.meta_len_dd & PCIE_DESC_RX_DD) == 0)
-			break;
 
 		/*
 		 * We got a packet. Let's alloc a new mbuff for refilling the
@@ -2064,6 +2064,8 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		/* No scatter mode supported */
 		mb->nb_segs = 1;
 		mb->next = NULL;
+
+		mb->port = rxq->port_id;
 
 		/* Checking the RSS flag */
 		nfp_net_set_hash(rxq, rxds, mb);
@@ -2290,11 +2292,15 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				txq->wr_p = 0;
 
 			pkt_size -= dma_size;
-			if (!pkt_size)
-				/* End of packet */
-				txds->offset_eop |= PCIE_DESC_TX_EOP;
+
+			/*
+			 * Making the EOP, packets with just one segment
+			 * the priority
+			 */
+			if (likely(!pkt_size))
+				txds->offset_eop = PCIE_DESC_TX_EOP;
 			else
-				txds->offset_eop &= PCIE_DESC_TX_OFFSET_MASK;
+				txds->offset_eop = 0;
 
 			pkt = pkt->next;
 			/* Referencing next free TX descriptor */
@@ -2646,6 +2652,14 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+
+	/* NFP can not handle DMA addresses requiring more than 40 bits */
+	if (rte_eal_check_dma_mask(40) < 0) {
+		RTE_LOG(INFO, PMD, "device %s can not be used:",
+				   pci_dev->device.name);
+		RTE_LOG(INFO, PMD, "\trestricted dma mask to 40 bits!\n");
+		return -ENODEV;
+	};
 
 	if ((pci_dev->id.device_id == PCI_DEVICE_ID_NFP4000_PF_NIC) ||
 	    (pci_dev->id.device_id == PCI_DEVICE_ID_NFP6000_PF_NIC)) {
@@ -3043,14 +3057,16 @@ static int eth_nfp_pci_remove(struct rte_pci_device *pci_dev)
 
 static struct rte_pci_driver rte_nfp_net_pf_pmd = {
 	.id_table = pci_id_nfp_pf_net_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+		     RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = nfp_pf_pci_probe,
 	.remove = eth_nfp_pci_remove,
 };
 
 static struct rte_pci_driver rte_nfp_net_vf_pmd = {
 	.id_table = pci_id_nfp_vf_net_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+		     RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = eth_nfp_pci_probe,
 	.remove = eth_nfp_pci_remove,
 };

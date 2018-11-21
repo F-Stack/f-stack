@@ -109,6 +109,49 @@ rte_dump_physmem_layout(FILE *f)
 	}
 }
 
+/* 63 bits is good enough for a sanity check */
+#define MAX_DMA_MASK_BITS 63
+
+/* check memseg iovas are within the required range based on dma mask */
+int
+rte_eal_check_dma_mask(uint8_t maskbits)
+{
+
+	const struct rte_mem_config *mcfg;
+	uint64_t mask;
+	int i;
+
+	/* sanity check */
+	if (maskbits > MAX_DMA_MASK_BITS) {
+		RTE_LOG(INFO, EAL, "wrong dma mask size %u (Max: %u)\n",
+				   maskbits, MAX_DMA_MASK_BITS);
+		return -1;
+	}
+
+	/* create dma mask */
+	mask = ~((1ULL << maskbits) - 1);
+
+	/* get pointer to global configuration */
+	mcfg = rte_eal_get_configuration()->mem_config;
+
+	for (i = 0; i < RTE_MAX_MEMSEG; i++) {
+		if (mcfg->memseg[i].addr == NULL)
+			break;
+
+		if (mcfg->memseg[i].iova & mask) {
+			RTE_LOG(INFO, EAL,
+				"memseg[%d] iova %"PRIx64" out of range:\n",
+				i, mcfg->memseg[i].iova);
+
+			RTE_LOG(INFO, EAL, "\tusing dma mask %"PRIx64"\n",
+				mask);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
 /* return the number of memory channels */
 unsigned rte_memory_get_nchannel(void)
 {

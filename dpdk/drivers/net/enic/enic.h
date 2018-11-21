@@ -139,6 +139,7 @@ struct enic {
 	u8 adv_filters;
 	u32 flow_filter_mode;
 	u8 filter_tags;
+	uint8_t ig_vlan_rewrite_mode; /* devargs ig-vlan-rewrite */
 
 	unsigned int flags;
 	unsigned int priv_flags;

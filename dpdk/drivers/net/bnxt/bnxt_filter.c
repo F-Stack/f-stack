@@ -159,6 +159,14 @@ void bnxt_free_filter_mem(struct bnxt *bp)
 
 	rte_free(bp->filter_info);
 	bp->filter_info = NULL;
+
+	for (i = 0; i < bp->pf.max_vfs; i++) {
+		STAILQ_FOREACH(filter, &bp->pf.vf_info[i].filter, next) {
+			rte_free(filter);
+			STAILQ_REMOVE(&bp->pf.vf_info[i].filter, filter,
+				      bnxt_filter_info, next);
+		}
+	}
 }
 
 int bnxt_alloc_filter_mem(struct bnxt *bp)
@@ -1045,9 +1053,13 @@ bnxt_match_filter(struct bnxt *bp, struct bnxt_filter_info *nf)
 				    sizeof(nf->dst_ipaddr_mask))) {
 				if (mf->dst_id == nf->dst_id)
 					return -EEXIST;
-				/* Same Flow, Different queue
+				/*
+				 * Same Flow, Different queue
 				 * Clear the old ntuple filter
+				 * Reuse the matching L2 filter
+				 * ID for the new filter
 				 */
+				nf->fw_l2_filter_id = mf->fw_l2_filter_id;
 				if (nf->filter_type == HWRM_CFA_EM_FILTER)
 					bnxt_hwrm_clear_em_filter(bp, mf);
 				if (nf->filter_type == HWRM_CFA_NTUPLE_FILTER)

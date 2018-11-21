@@ -1515,7 +1515,10 @@ struct protocol_dcb_data {
 	u8 dcb_priority /* dcbPri flag value */;
 	u8 dcb_tc /* dcb TC value */;
 	u8 dscp_val /* dscp value to write if dscp_enable_flag is set */;
-	u8 reserved0;
+/* When DCB is enabled - if this flag is set, dont add VLAN 0 tag to untagged
+ * frames
+ */
+	u8 dcb_dont_add_vlan0;
 };
 
 /*

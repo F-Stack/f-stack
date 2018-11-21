@@ -18,6 +18,22 @@
 #define NFP_CFG_EXP_BAR         7
 
 #define NFP_CFG_EXP_BAR_CFG_BASE	0x30000
+#define NFP_LOCKFILE_PATH_FMT "%s/nfp%d"
+
+/* get nfp lock file path (/var/lock if root, $HOME otherwise) */
+static void
+nspu_get_lockfile_path(char *buffer, int bufsz, nfpu_desc_t *desc)
+{
+	const char *dir = "/var/lock";
+	const char *home_dir = getenv("HOME");
+
+	if (getuid() != 0 && home_dir != NULL)
+		dir = home_dir;
+
+	/* use current prefix as file path */
+	snprintf(buffer, bufsz, NFP_LOCKFILE_PATH_FMT, dir,
+			desc->nfp);
+}
 
 /* There could be other NFP userspace tools using the NSP interface.
  * Make sure there is no other process using it and locking the access for
@@ -30,9 +46,7 @@ nspv_aquire_process_lock(nfpu_desc_t *desc)
 	struct flock lock;
 	char lockname[30];
 
-	memset(&lock, 0, sizeof(lock));
-
-	snprintf(lockname, sizeof(lockname), "/var/lock/nfp%d", desc->nfp);
+	nspu_get_lockfile_path(lockname, sizeof(lockname), desc);
 
 	/* Using S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH */
 	desc->lock = open(lockname, O_RDWR | O_CREAT, 0666);
@@ -101,8 +115,12 @@ nfpu_open(struct rte_pci_device *pci_dev, nfpu_desc_t *desc, int nfp)
 int
 nfpu_close(nfpu_desc_t *desc)
 {
+	char lockname[30];
+
 	rte_free(desc->nspu);
 	close(desc->lock);
-	unlink("/var/lock/nfp0");
+
+	nspu_get_lockfile_path(lockname, sizeof(lockname), desc);
+	unlink(lockname);
 	return 0;
 }

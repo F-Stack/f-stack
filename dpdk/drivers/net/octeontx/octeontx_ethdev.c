@@ -127,7 +127,7 @@ octeontx_port_open(struct octeontx_nic *nic)
 	int res;
 
 	res = 0;
-
+	memset(&bgx_port_conf, 0x0, sizeof(bgx_port_conf));
 	PMD_INIT_FUNC_TRACE();
 
 	res = octeontx_bgx_port_open(nic->port_id, &bgx_port_conf);
@@ -377,6 +377,9 @@ octeontx_dev_close(struct rte_eth_dev *dev)
 
 		rte_free(txq);
 	}
+
+	dev->tx_pkt_burst = NULL;
+	dev->rx_pkt_burst = NULL;
 }
 
 static int
@@ -470,9 +473,6 @@ octeontx_dev_stop(struct rte_eth_dev *dev)
 			     ret);
 		return;
 	}
-
-	dev->tx_pkt_burst = NULL;
-	dev->rx_pkt_burst = NULL;
 }
 
 static void
@@ -537,7 +537,6 @@ octeontx_dev_link_update(struct rte_eth_dev *dev,
 	struct rte_eth_link link;
 	int res;
 
-	res = 0;
 	PMD_INIT_FUNC_TRACE();
 
 	res = octeontx_port_link_status(nic);
@@ -571,6 +570,7 @@ octeontx_dev_link_update(struct rte_eth_dev *dev,
 	case OCTEONTX_LINK_SPEED_RESERVE1:
 	case OCTEONTX_LINK_SPEED_RESERVE2:
 	default:
+		link.link_speed = ETH_SPEED_NUM_NONE;
 		octeontx_log_err("incorrect link speed %d", nic->speed);
 		break;
 	}
@@ -1142,7 +1142,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	return data->port_id;
 
 err:
-	if (port)
+	if (nic)
 		octeontx_port_close(nic);
 
 	if (eth_dev != NULL) {

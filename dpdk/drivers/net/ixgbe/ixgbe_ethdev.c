@@ -1366,6 +1366,8 @@ eth_ixgbe_dev_uninit(struct rte_eth_dev *eth_dev)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	struct ixgbe_hw *hw;
+	int retries = 0;
+	int ret;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1386,8 +1388,20 @@ eth_ixgbe_dev_uninit(struct rte_eth_dev *eth_dev)
 
 	/* disable uio intr before callback unregister */
 	rte_intr_disable(intr_handle);
-	rte_intr_callback_unregister(intr_handle,
-				     ixgbe_dev_interrupt_handler, eth_dev);
+
+	do {
+		ret = rte_intr_callback_unregister(intr_handle,
+				ixgbe_dev_interrupt_handler, eth_dev);
+		if (ret >= 0) {
+			break;
+		} else if (ret != -EAGAIN) {
+			PMD_INIT_LOG(ERR,
+				"intr callback unregister failed: %d",
+				ret);
+			return ret;
+		}
+		rte_delay_ms(100);
+	} while (retries++ < (10 + IXGBE_LINK_UP_TIME));
 
 	/* uninitialize PF if max_vfs not zero */
 	ixgbe_pf_host_uninit(eth_dev);
@@ -2316,11 +2330,6 @@ ixgbe_check_mq_mode(struct rte_eth_dev *dev)
 		if (dev_conf->rxmode.mq_mode == ETH_MQ_RX_DCB) {
 			const struct rte_eth_dcb_rx_conf *conf;
 
-			if (nb_rx_q != IXGBE_DCB_NB_QUEUES) {
-				PMD_INIT_LOG(ERR, "DCB selected, nb_rx_q != %d.",
-						 IXGBE_DCB_NB_QUEUES);
-				return -EINVAL;
-			}
 			conf = &dev_conf->rx_adv_conf.dcb_rx_conf;
 			if (!(conf->nb_tcs == ETH_4_TCS ||
 			       conf->nb_tcs == ETH_8_TCS)) {
@@ -2334,11 +2343,6 @@ ixgbe_check_mq_mode(struct rte_eth_dev *dev)
 		if (dev_conf->txmode.mq_mode == ETH_MQ_TX_DCB) {
 			const struct rte_eth_dcb_tx_conf *conf;
 
-			if (nb_tx_q != IXGBE_DCB_NB_QUEUES) {
-				PMD_INIT_LOG(ERR, "DCB, nb_tx_q != %d.",
-						 IXGBE_DCB_NB_QUEUES);
-				return -EINVAL;
-			}
 			conf = &dev_conf->tx_adv_conf.dcb_tx_conf;
 			if (!(conf->nb_tcs == ETH_4_TCS ||
 			       conf->nb_tcs == ETH_8_TCS)) {
@@ -3886,7 +3890,7 @@ ixgbevf_check_link(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 	/* for SFP+ modules and DA cables on 82599 it can take up to 500usecs
 	 * before the link status is correct
 	 */
-	if (mac->type == ixgbe_mac_82599_vf) {
+	if (mac->type == ixgbe_mac_82599_vf && wait_to_complete) {
 		int i;
 
 		for (i = 0; i < 5; i++) {
@@ -5822,8 +5826,12 @@ ixgbe_configure_msix(struct rte_eth_dev *dev)
 
 	/* won't configure msix register if no mapping is done
 	 * between intr vector and event fd
+	 * but if misx has been enabled already, need to configure
+	 * auto clean, auto mask and throttling.
 	 */
-	if (!rte_intr_dp_is_en(intr_handle))
+	gpie = IXGBE_READ_REG(hw, IXGBE_GPIE);
+	if (!rte_intr_dp_is_en(intr_handle) &&
+	    !(gpie & (IXGBE_GPIE_MSIX_MODE | IXGBE_GPIE_PBA_SUPPORT)))
 		return;
 
 	if (rte_intr_allow_others(intr_handle))
@@ -5847,27 +5855,30 @@ ixgbe_configure_msix(struct rte_eth_dev *dev)
 	/* Populate the IVAR table and set the ITR values to the
 	 * corresponding register.
 	 */
-	for (queue_id = 0; queue_id < dev->data->nb_rx_queues;
-	     queue_id++) {
-		/* by default, 1:1 mapping */
-		ixgbe_set_ivar_map(hw, 0, queue_id, vec);
-		intr_handle->intr_vec[queue_id] = vec;
-		if (vec < base + intr_handle->nb_efd - 1)
-			vec++;
-	}
+	if (rte_intr_dp_is_en(intr_handle)) {
+		for (queue_id = 0; queue_id < dev->data->nb_rx_queues;
+			queue_id++) {
+			/* by default, 1:1 mapping */
+			ixgbe_set_ivar_map(hw, 0, queue_id, vec);
+			intr_handle->intr_vec[queue_id] = vec;
+			if (vec < base + intr_handle->nb_efd - 1)
+				vec++;
+		}
 
-	switch (hw->mac.type) {
-	case ixgbe_mac_82598EB:
-		ixgbe_set_ivar_map(hw, -1, IXGBE_IVAR_OTHER_CAUSES_INDEX,
-				   IXGBE_MISC_VEC_ID);
-		break;
-	case ixgbe_mac_82599EB:
-	case ixgbe_mac_X540:
-	case ixgbe_mac_X550:
-		ixgbe_set_ivar_map(hw, -1, 1, IXGBE_MISC_VEC_ID);
-		break;
-	default:
-		break;
+		switch (hw->mac.type) {
+		case ixgbe_mac_82598EB:
+			ixgbe_set_ivar_map(hw, -1,
+					   IXGBE_IVAR_OTHER_CAUSES_INDEX,
+					   IXGBE_MISC_VEC_ID);
+			break;
+		case ixgbe_mac_82599EB:
+		case ixgbe_mac_X540:
+		case ixgbe_mac_X550:
+			ixgbe_set_ivar_map(hw, -1, 1, IXGBE_MISC_VEC_ID);
+			break;
+		default:
+			break;
+		}
 	}
 	IXGBE_WRITE_REG(hw, IXGBE_EITR(IXGBE_MISC_VEC_ID),
 			IXGBE_MIN_INTER_INTERRUPT_INTERVAL_DEFAULT & 0xFFF);

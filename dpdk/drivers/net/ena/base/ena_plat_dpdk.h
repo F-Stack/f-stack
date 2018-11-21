@@ -116,11 +116,13 @@ typedef uint64_t dma_addr_t;
 #define ENA_MIN16(x, y) RTE_MIN((x), (y))
 #define ENA_MIN8(x, y) RTE_MIN((x), (y))
 
+#define BITS_PER_LONG_LONG (__SIZEOF_LONG_LONG__ * 8)
 #define U64_C(x) x ## ULL
 #define BIT(nr)         (1UL << (nr))
 #define BITS_PER_LONG	(__SIZEOF_LONG__ * 8)
 #define GENMASK(h, l)	(((~0UL) << (l)) & (~0UL >> (BITS_PER_LONG - 1 - (h))))
-#define GENMASK_ULL(h, l) (((U64_C(1) << ((h) - (l) + 1)) - 1) << (l))
+#define GENMASK_ULL(h, l) (((~0ULL) - (1ULL << (l)) + 1) & \
+			  (~0ULL >> (BITS_PER_LONG_LONG - 1 - (h))))
 
 #ifdef RTE_LIBRTE_ENA_COM_DEBUG
 #define ena_trc_dbg(format, arg...)					\
@@ -189,10 +191,15 @@ typedef uint64_t dma_addr_t;
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
 		mz = rte_memzone_reserve(z_name, size, SOCKET_ID_ANY, 0); \
-		memset(mz->addr, 0, size);				\
-		virt = mz->addr;					\
-		phys = mz->iova;					\
 		handle = mz;						\
+		if (mz == NULL) {					\
+			virt = NULL;					\
+			phys = 0;					\
+		} else {						\
+			memset(mz->addr, 0, size);			\
+			virt = mz->addr;				\
+			phys = mz->iova;				\
+		}							\
 	} while (0)
 #define ENA_MEM_FREE_COHERENT(dmadev, size, virt, phys, handle) 	\
 		({ ENA_TOUCH(size); ENA_TOUCH(phys);			\
@@ -207,21 +214,20 @@ typedef uint64_t dma_addr_t;
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
 		mz = rte_memzone_reserve(z_name, size, node, 0); \
-		memset(mz->addr, 0, size);				\
-		virt = mz->addr;					\
-		phys = mz->iova;					\
+		if (mz == NULL) {					\
+			virt = NULL;					\
+			phys = 0;					\
+		} else {						\
+			memset(mz->addr, 0, size);			\
+			virt = mz->addr;				\
+			phys = mz->iova;				\
+		}							\
 	} while (0)
 
 #define ENA_MEM_ALLOC_NODE(dmadev, size, virt, node, dev_node) \
 	do {								\
-		const struct rte_memzone *mz;				\
-		char z_name[RTE_MEMZONE_NAMESIZE];			\
 		ENA_TOUCH(dmadev); ENA_TOUCH(dev_node);			\
-		snprintf(z_name, sizeof(z_name),			\
-				"ena_alloc_%d", ena_alloc_cnt++);	\
-		mz = rte_memzone_reserve(z_name, size, node, 0); \
-		memset(mz->addr, 0, size);				\
-		virt = mz->addr;					\
+		virt = rte_zmalloc_socket(NULL, size, 0, node);		\
 	} while (0)
 
 #define ENA_MEM_ALLOC(dmadev, size) rte_zmalloc(NULL, size, 1)

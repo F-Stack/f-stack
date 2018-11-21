@@ -197,6 +197,10 @@ err_ret:
 		RTE_LOG(ERR, PMD, "%s failed rc:%d\n", \
 			__func__, rc); \
 		rte_spinlock_unlock(&bp->hwrm_lock); \
+		if (rc == HWRM_ERR_CODE_RESOURCE_ACCESS_DENIED) \
+			rc = -EACCES; \
+		else if (rc > 0) \
+			rc = -EINVAL; \
 		return rc; \
 	} \
 	if (resp->error_code) { \
@@ -218,6 +222,10 @@ err_ret:
 				"%s error %d\n", __func__, rc); \
 		} \
 		rte_spinlock_unlock(&bp->hwrm_lock); \
+		if (rc == HWRM_ERR_CODE_RESOURCE_ACCESS_DENIED) \
+			rc = -EACCES; \
+		else if (rc > 0) \
+			rc = -EINVAL; \
 		return rc; \
 	} \
 } while (0)
@@ -251,6 +259,9 @@ int bnxt_hwrm_cfa_l2_set_rx_mask(struct bnxt *bp,
 	struct hwrm_cfa_l2_set_rx_mask_input req = {.req_type = 0 };
 	struct hwrm_cfa_l2_set_rx_mask_output *resp = bp->hwrm_cmd_resp_addr;
 	uint32_t mask = 0;
+
+	if (vnic->fw_vnic_id == INVALID_HW_RING_ID)
+		return rc;
 
 	HWRM_PREP(req, CFA_L2_SET_RX_MASK);
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
@@ -403,13 +414,13 @@ int bnxt_hwrm_set_l2_filter(struct bnxt *bp,
 		req.l2_ovlan = filter->l2_ovlan;
 	if (enables &
 	    HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_IVLAN)
-		req.l2_ovlan = filter->l2_ivlan;
+		req.l2_ivlan = filter->l2_ivlan;
 	if (enables &
 	    HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_OVLAN_MASK)
 		req.l2_ovlan_mask = filter->l2_ovlan_mask;
 	if (enables &
 	    HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_IVLAN_MASK)
-		req.l2_ovlan_mask = filter->l2_ivlan_mask;
+		req.l2_ivlan_mask = filter->l2_ivlan_mask;
 	if (enables & HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_SRC_ID)
 		req.src_id = rte_cpu_to_le_32(filter->src_id);
 	if (enables & HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_SRC_TYPE)
@@ -1089,8 +1100,9 @@ int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	/* map ring groups to this vnic */
 	RTE_LOG(DEBUG, PMD, "Alloc VNIC. Start %x, End %x\n",
 		vnic->start_grp_id, vnic->end_grp_id);
-	for (i = vnic->start_grp_id, j = 0; i <= vnic->end_grp_id; i++, j++)
+	for (i = vnic->start_grp_id, j = 0; i < vnic->end_grp_id; i++, j++)
 		vnic->fw_grp_ids[j] = bp->grp_info[i].fw_grp_id;
+
 	vnic->dflt_ring_grp = bp->grp_info[vnic->start_grp_id].fw_grp_id;
 	vnic->rss_rule = (uint16_t)HWRM_NA_SIGNATURE;
 	vnic->cos_rule = (uint16_t)HWRM_NA_SIGNATURE;
@@ -1100,7 +1112,8 @@ int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	HWRM_PREP(req, VNIC_ALLOC);
 
 	if (vnic->func_default)
-		req.flags = HWRM_VNIC_ALLOC_INPUT_FLAGS_DEFAULT;
+		req.flags =
+			rte_cpu_to_le_32(HWRM_VNIC_ALLOC_INPUT_FLAGS_DEFAULT);
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
 	HWRM_CHECK_RESULT();
@@ -1121,7 +1134,7 @@ static int bnxt_hwrm_vnic_plcmodes_qcfg(struct bnxt *bp,
 
 	HWRM_PREP(req, VNIC_PLCMODES_QCFG);
 
-	req.vnic_id = rte_cpu_to_le_32(vnic->fw_vnic_id);
+	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
@@ -1149,7 +1162,7 @@ static int bnxt_hwrm_vnic_plcmodes_cfg(struct bnxt *bp,
 
 	HWRM_PREP(req, VNIC_PLCMODES_CFG);
 
-	req.vnic_id = rte_cpu_to_le_32(vnic->fw_vnic_id);
+	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 	req.flags = rte_cpu_to_le_32(pmode->flags);
 	req.jumbo_thresh = rte_cpu_to_le_16(pmode->jumbo_thresh);
 	req.hds_offset = rte_cpu_to_le_16(pmode->hds_offset);
@@ -1381,6 +1394,11 @@ int bnxt_hwrm_vnic_plcmode_cfg(struct bnxt *bp,
 	struct hwrm_vnic_plcmodes_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 	uint16_t size;
 
+	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
+		RTE_LOG(DEBUG, PMD, "VNIC ID %x\n", vnic->fw_vnic_id);
+		return rc;
+	}
+
 	HWRM_PREP(req, VNIC_PLCMODES_CFG);
 
 	req.flags = rte_cpu_to_le_32(
@@ -1393,7 +1411,7 @@ int bnxt_hwrm_vnic_plcmode_cfg(struct bnxt *bp,
 	size -= RTE_PKTMBUF_HEADROOM;
 
 	req.jumbo_thresh = rte_cpu_to_le_16(size);
-	req.vnic_id = rte_cpu_to_le_32(vnic->fw_vnic_id);
+	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
@@ -1424,12 +1442,12 @@ int bnxt_hwrm_vnic_tpa_cfg(struct bnxt *bp,
 				HWRM_VNIC_TPA_CFG_INPUT_FLAGS_GRO |
 				HWRM_VNIC_TPA_CFG_INPUT_FLAGS_AGG_WITH_ECN |
 			HWRM_VNIC_TPA_CFG_INPUT_FLAGS_AGG_WITH_SAME_GRE_SEQ);
-		req.vnic_id = rte_cpu_to_le_32(vnic->fw_vnic_id);
 		req.max_agg_segs = rte_cpu_to_le_16(5);
 		req.max_aggs =
 			rte_cpu_to_le_16(HWRM_VNIC_TPA_CFG_INPUT_MAX_AGGS_MAX);
 		req.min_agg_len = rte_cpu_to_le_32(512);
 	}
+	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
@@ -1794,6 +1812,7 @@ int bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 			rc = bnxt_hwrm_clear_ntuple_filter(bp, filter);
 		else
 			rc = bnxt_hwrm_clear_l2_filter(bp, filter);
+		STAILQ_REMOVE(&vnic->filter, filter, bnxt_filter_info, next);
 		//if (rc)
 			//break;
 	}
@@ -1881,6 +1900,8 @@ void bnxt_free_all_hwrm_resources(struct bnxt *bp)
 		bnxt_hwrm_vnic_tpa_cfg(bp, vnic, false);
 
 		bnxt_hwrm_vnic_free(bp, vnic);
+
+		rte_free(vnic->fw_grp_ids);
 	}
 	/* Ring resources */
 	bnxt_free_all_hwrm_rings(bp);
@@ -3093,13 +3114,12 @@ int bnxt_get_nvram_directory(struct bnxt *bp, uint32_t len, uint8_t *data)
 	req.host_dest_addr = rte_cpu_to_le_64(dma_handle);
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
-	HWRM_CHECK_RESULT();
-	HWRM_UNLOCK();
-
 	if (rc == 0)
 		memcpy(data, buf, len > buflen ? buflen : len);
 
 	rte_free(buf);
+	HWRM_CHECK_RESULT();
+	HWRM_UNLOCK();
 
 	return rc;
 }
@@ -3131,12 +3151,13 @@ int bnxt_hwrm_get_nvram_item(struct bnxt *bp, uint32_t index,
 	req.offset = rte_cpu_to_le_32(offset);
 	req.len = rte_cpu_to_le_32(length);
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
-	HWRM_CHECK_RESULT();
-	HWRM_UNLOCK();
 	if (rc == 0)
 		memcpy(data, buf, length);
 
 	rte_free(buf);
+	HWRM_CHECK_RESULT();
+	HWRM_UNLOCK();
+
 	return rc;
 }
 
@@ -3167,14 +3188,6 @@ int bnxt_hwrm_flash_nvram(struct bnxt *bp, uint16_t dir_type,
 	rte_iova_t dma_handle;
 	uint8_t *buf;
 
-	HWRM_PREP(req, NVM_WRITE);
-
-	req.dir_type = rte_cpu_to_le_16(dir_type);
-	req.dir_ordinal = rte_cpu_to_le_16(dir_ordinal);
-	req.dir_ext = rte_cpu_to_le_16(dir_ext);
-	req.dir_attr = rte_cpu_to_le_16(dir_attr);
-	req.dir_data_length = rte_cpu_to_le_32(data_len);
-
 	buf = rte_malloc("nvm_write", data_len, 0);
 	rte_mem_lock_page(buf);
 	if (!buf)
@@ -3187,14 +3200,22 @@ int bnxt_hwrm_flash_nvram(struct bnxt *bp, uint16_t dir_type,
 		return -ENOMEM;
 	}
 	memcpy(buf, data, data_len);
+
+	HWRM_PREP(req, NVM_WRITE);
+
+	req.dir_type = rte_cpu_to_le_16(dir_type);
+	req.dir_ordinal = rte_cpu_to_le_16(dir_ordinal);
+	req.dir_ext = rte_cpu_to_le_16(dir_ext);
+	req.dir_attr = rte_cpu_to_le_16(dir_attr);
+	req.dir_data_length = rte_cpu_to_le_32(data_len);
 	req.host_src_addr = rte_cpu_to_le_64(dma_handle);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
+	rte_free(buf);
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
-	rte_free(buf);
 	return rc;
 }
 

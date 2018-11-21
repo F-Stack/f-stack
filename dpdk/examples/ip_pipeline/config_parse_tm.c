@@ -352,7 +352,7 @@ tm_cfgfile_load_sched_subport(
 					char name[CFG_NAME_LEN + 1];
 
 					profile = atoi(entries[j].value);
-					strncpy(name,
+					memcpy(name,
 						entries[j].name,
 						sizeof(name));
 					n_tokens = rte_strsplit(

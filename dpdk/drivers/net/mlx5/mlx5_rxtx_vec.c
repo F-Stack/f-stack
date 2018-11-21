@@ -276,15 +276,16 @@ mlx5_rx_burst_vec(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 /**
  * Check Tx queue flags are set for raw vectorized Tx.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  *
  * @return
  *   1 if supported, negative errno value if not.
  */
 int __attribute__((cold))
-priv_check_raw_vec_tx_support(struct priv *priv)
+mlx5_check_raw_vec_tx_support(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	uint16_t i;
 
 	/* All the configured queues should support. */
@@ -303,15 +304,17 @@ priv_check_raw_vec_tx_support(struct priv *priv)
 /**
  * Check a device can support vectorized TX.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  *
  * @return
  *   1 if supported, negative errno value if not.
  */
 int __attribute__((cold))
-priv_check_vec_tx_support(struct priv *priv)
+mlx5_check_vec_tx_support(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
+
 	if (!priv->tx_vec_en ||
 	    priv->txqs_n > MLX5_VPMD_MIN_TXQS ||
 	    priv->mps != MLX5_MPW_ENHANCED ||
@@ -330,7 +333,7 @@ priv_check_vec_tx_support(struct priv *priv)
  *   1 if supported, negative errno value if not.
  */
 int __attribute__((cold))
-rxq_check_vec_support(struct mlx5_rxq_data *rxq)
+mlx5_rxq_check_vec_support(struct mlx5_rxq_data *rxq)
 {
 	struct mlx5_rxq_ctrl *ctrl =
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
@@ -343,15 +346,16 @@ rxq_check_vec_support(struct mlx5_rxq_data *rxq)
 /**
  * Check a device can support vectorized RX.
  *
- * @param priv
- *   Pointer to private structure.
+ * @param dev
+ *   Pointer to Ethernet device.
  *
  * @return
  *   1 if supported, negative errno value if not.
  */
 int __attribute__((cold))
-priv_check_vec_rx_support(struct priv *priv)
+mlx5_check_vec_rx_support(struct rte_eth_dev *dev)
 {
+	struct priv *priv = dev->data->dev_private;
 	uint16_t i;
 
 	if (!priv->rx_vec_en)
@@ -362,7 +366,7 @@ priv_check_vec_rx_support(struct priv *priv)
 
 		if (!rxq)
 			continue;
-		if (rxq_check_vec_support(rxq) < 0)
+		if (mlx5_rxq_check_vec_support(rxq) < 0)
 			break;
 	}
 	if (i != priv->rxqs_n)

@@ -108,7 +108,11 @@ Limitations
 - Port statistics through software counters only. Flow statistics are
   supported by hardware counters.
 - Hardware checksum RX offloads for VXLAN inner header are not supported yet.
-- Forked secondary process not supported.
+- For secondary process:
+
+  - Forked secondary process not supported.
+  - All mempools must be initialized before rte_eth_dev_start().
+
 - Flow pattern without any specific vlan will match for vlan packets as well:
 
   When VLAN spec is not specified in the pattern, the matching rule will be created with VLAN as a wild card.
