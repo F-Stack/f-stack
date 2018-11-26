@@ -1278,7 +1278,8 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 
 	static int adapters_found;
 
-	memset(adapter, 0, sizeof(struct ena_adapter));
+    // Temporary modification for multi process
+	// memset(adapter, 0, sizeof(struct ena_adapter));
 	ena_dev = &adapter->ena_dev;
 
 	eth_dev->dev_ops = &ena_dev_ops;
