@@ -403,6 +403,61 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
 }
 
 static int
+vdev_cfg_handler(struct ff_config *cfg, const char *section,
+    const char *name, const char *value) {
+
+    if (cfg->dpdk.nb_vdev == 0) {
+        fprintf(stderr, "vdev_cfg_handler: must config dpdk.nb_vdev first\n");
+        return 0;
+    }
+
+    if (cfg->dpdk.vdev_cfgs == NULL) {
+        struct ff_vdev_cfg *vc = calloc(RTE_MAX_ETHPORTS, sizeof(struct ff_vdev_cfg));
+        if (vc == NULL) {
+            fprintf(stderr, "vdev_cfg_handler malloc failed\n");
+            return 0;
+        }
+        cfg->dpdk.vdev_cfgs = vc;
+    }
+
+    int vdevid;
+    int ret = sscanf(section, "vdev%d", &vdevid);
+    if (ret != 1) {
+        fprintf(stderr, "vdev_cfg_handler section[%s] error\n", section);
+        return 0;
+    }
+
+    /* just return true if vdevid >= nb_vdev because it has no effect */
+    if (vdevid > cfg->dpdk.nb_vdev) {
+        fprintf(stderr, "vdev_cfg_handler section[%s] bigger than max vdev id\n", section);
+        return 1;
+    }
+
+    struct ff_vdev_cfg *cur = &cfg->dpdk.vdev_cfgs[vdevid];
+    if (cur->name == NULL) {
+        cur->name = strdup(section);
+        cur->vdev_id = vdevid;
+    }
+
+    if (strcmp(name, "iface") == 0) {
+        cur->iface = strdup(value);
+    } else if (strcmp(name, "path") == 0) {
+        cur->path = strdup(value);
+    } else if (strcmp(name, "queues") == 0) {
+        cur->nb_queues = atoi(value);
+    } else if (strcmp(name, "queue_size") == 0) {
+        cur->queue_size = atoi(value);
+    } else if (strcmp(name, "mac") == 0) {
+        cur->mac = strdup(value);
+    } else if (strcmp(name, "cq") == 0) {
+        cur->nb_cq = atoi(value);
+    }
+
+    return 1;
+}
+
+
+static int
 ini_parse_handler(void* user, const char* section, const char* name,
     const char* value)
 {
@@ -424,6 +479,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.base_virtaddr= strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
+    } else if (MATCH("dpdk", "nb_vdev")) {
+        pconfig->dpdk.nb_vdev = atoi(value);
     } else if (MATCH("dpdk", "promiscuous")) {
         pconfig->dpdk.promiscuous = atoi(value);
     } else if (MATCH("dpdk", "numa_on")) {
@@ -456,6 +513,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return freebsd_conf_handler(pconfig, "sysctl", name, value);
     } else if (strncmp(section, "port", 4) == 0) {
         return port_cfg_handler(pconfig, section, name, value);
+    } else if (strncmp(section, "vdev", 4) == 0) {
+        return vdev_cfg_handler(pconfig, section, name, value);
     }
 
     return 1;
@@ -492,7 +551,39 @@ dpdk_args_setup(struct ff_config *cfg)
         dpdk_argv[n++] = strdup(temp);
     }
 
+    if (cfg->dpdk.nb_vdev) {
+        for (i=0; i<cfg->dpdk.nb_vdev; i++) {
+            sprintf(temp, "--vdev=virtio_user%d,path=%s",
+                cfg->dpdk.vdev_cfgs[i].vdev_id,
+                cfg->dpdk.vdev_cfgs[i].path);
+            if (cfg->dpdk.vdev_cfgs[i].nb_queues) {
+                sprintf(temp, "%s,queues=%u",
+                    temp, cfg->dpdk.vdev_cfgs[i].nb_queues);
+            }
+            if (cfg->dpdk.vdev_cfgs[i].nb_cq) {
+                sprintf(temp, "%s,cq=%u",
+                    temp, cfg->dpdk.vdev_cfgs[i].nb_cq);
+            }
+            if (cfg->dpdk.vdev_cfgs[i].queue_size) {
+                sprintf(temp, "%s,queue_size=%u",
+                    temp, cfg->dpdk.vdev_cfgs[i].queue_size);
+            }
+            if (cfg->dpdk.vdev_cfgs[i].mac) {
+                sprintf(temp, "%s,mac=%s",
+                    temp, cfg->dpdk.vdev_cfgs[i].mac);
+            }
+            dpdk_argv[n++] = strdup(temp);
+        }
+        sprintf(temp, "--no-pci");
+        dpdk_argv[n++] = strdup(temp);
+        sprintf(temp, "--file-prefix=container");
+        dpdk_argv[n++] = strdup(temp);
+    }
+
     dpdk_argc = n;
+
+    for (i=0; i<n; i++)
+	    printf("%s ", dpdk_argv[i]);
 
     return n;
 }
