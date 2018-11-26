@@ -511,6 +511,8 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		eth_dev = rte_eth_dev_attach_secondary(rte_vdev_device_name(dev));
 		if (!eth_dev)
 			goto end;
+		// CONTAINER(DOCKER): Fixed virtio_user can't run in multi-progress mode.
+		eth_dev->device = &dev->device;
 	}
 
 	/* previously called by rte_pci_probe() for physical dev */
