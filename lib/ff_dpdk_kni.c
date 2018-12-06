@@ -340,7 +340,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
         struct rte_kni_ops ops;
         struct rte_eth_dev_info dev_info;
         const struct rte_pci_device *pci_dev;
-		const struct rte_bus *bus = NULL;
+        const struct rte_bus *bus = NULL;
 
         kni_stat[port_id] = (struct kni_interface_stats*)rte_zmalloc(
             "kni:stat_lcore",
