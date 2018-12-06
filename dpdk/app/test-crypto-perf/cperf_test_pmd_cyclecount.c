@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <stdbool.h>
@@ -169,10 +141,11 @@ pmd_cyclecount_bench_ops(struct pmd_cyclecount_state *state, uint32_t cur_op,
 	uint32_t iter_ops_needed =
 			RTE_MIN(state->opts->nb_descriptors, iter_ops_left);
 	uint32_t cur_iter_op;
+	uint32_t imix_idx = 0;
 
 	for (cur_iter_op = 0; cur_iter_op < iter_ops_needed;
 			cur_iter_op += test_burst_size) {
-		uint32_t burst_size = RTE_MIN(state->opts->total_ops - cur_op,
+		uint32_t burst_size = RTE_MIN(iter_ops_needed - cur_iter_op,
 				test_burst_size);
 		struct rte_crypto_op **ops = &state->ctx->ops[cur_iter_op];
 
@@ -181,7 +154,7 @@ pmd_cyclecount_bench_ops(struct pmd_cyclecount_state *state, uint32_t cur_op,
 					burst_size) != 0) {
 			RTE_LOG(ERR, USER1,
 					"Failed to allocate more crypto operations "
-					"from the the crypto operation pool.\n"
+					"from the crypto operation pool.\n"
 					"Consider increasing the pool size "
 					"with --pool-sz\n");
 				return -1;
@@ -193,7 +166,8 @@ pmd_cyclecount_bench_ops(struct pmd_cyclecount_state *state, uint32_t cur_op,
 				state->ctx->dst_buf_offset,
 				burst_size,
 				state->ctx->sess, state->opts,
-				state->ctx->test_vector, iv_offset);
+				state->ctx->test_vector, iv_offset,
+				&imix_idx);
 
 #ifdef CPERF_LINEARIZATION_ENABLE
 		/* Check if source mbufs require coalescing */
@@ -218,6 +192,7 @@ pmd_cyclecount_build_ops(struct pmd_cyclecount_state *state,
 		uint32_t iter_ops_needed, uint16_t test_burst_size)
 {
 	uint32_t cur_iter_op;
+	uint32_t imix_idx = 0;
 
 	for (cur_iter_op = 0; cur_iter_op < iter_ops_needed;
 			cur_iter_op += test_burst_size) {
@@ -230,7 +205,7 @@ pmd_cyclecount_build_ops(struct pmd_cyclecount_state *state,
 					burst_size) != 0) {
 			RTE_LOG(ERR, USER1,
 					"Failed to allocate more crypto operations "
-					"from the the crypto operation pool.\n"
+					"from the crypto operation pool.\n"
 					"Consider increasing the pool size "
 					"with --pool-sz\n");
 				return -1;
@@ -242,7 +217,8 @@ pmd_cyclecount_build_ops(struct pmd_cyclecount_state *state,
 				state->ctx->dst_buf_offset,
 				burst_size,
 				state->ctx->sess, state->opts,
-				state->ctx->test_vector, iv_offset);
+				state->ctx->test_vector, iv_offset,
+				&imix_idx);
 	}
 	return 0;
 }

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <stdint.h>
@@ -50,7 +21,6 @@
 #include "scsi_spec.h"
 
 #define VIRTIO_SCSI_FEATURES ((1 << VIRTIO_F_NOTIFY_ON_EMPTY) |\
-			      (1 << VIRTIO_RING_F_EVENT_IDX) |\
 			      (1 << VIRTIO_SCSI_F_INOUT) |\
 			      (1 << VIRTIO_SCSI_F_CHANGE))
 
@@ -110,7 +80,7 @@ descriptor_is_wr(struct vring_desc *cur_desc)
 }
 
 static void
-submit_completion(struct vhost_scsi_task *task)
+submit_completion(struct vhost_scsi_task *task, uint32_t q_idx)
 {
 	struct rte_vhost_vring *vq;
 	struct vring_used *used;
@@ -131,7 +101,7 @@ submit_completion(struct vhost_scsi_task *task)
 	/* Send an interrupt back to the guest VM so that it knows
 	 * a completion is ready to be processed.
 	 */
-	eventfd_write(vq->callfd, (eventfd_t)1);
+	rte_vhost_vring_call(task->bdev->vid, q_idx);
 }
 
 static void
@@ -301,7 +271,7 @@ process_requestq(struct vhost_scsi_ctrlr *ctrlr, uint32_t q_idx)
 			task->resp->status = 0;
 			task->resp->resid = 0;
 		}
-		submit_completion(task);
+		submit_completion(task, q_idx);
 		rte_free(task);
 	}
 }

@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_MCP_API_H__
@@ -185,6 +183,12 @@ enum ecore_ov_driver_state {
 	ECORE_OV_DRIVER_STATE_NOT_LOADED,
 	ECORE_OV_DRIVER_STATE_DISABLED,
 	ECORE_OV_DRIVER_STATE_ACTIVE
+};
+
+enum ecore_ov_eswitch {
+	ECORE_OV_ESWITCH_NONE,
+	ECORE_OV_ESWITCH_VEB,
+	ECORE_OV_ESWITCH_VEPA
 };
 
 #define ECORE_MAX_NPIV_ENTRIES 128
@@ -523,6 +527,10 @@ union ecore_mfw_tlv_data {
 	struct ecore_mfw_tlv_iscsi iscsi;
 };
 
+enum ecore_hw_info_change {
+	ECORE_HW_INFO_CHANGE_OVLAN,
+};
+
 /**
  * @brief - returns the link params of the hw function
  *
@@ -552,7 +560,7 @@ struct ecore_mcp_link_capabilities
 *ecore_mcp_get_link_capabilities(struct ecore_hwfn *p_hwfn);
 
 /**
- * @brief Request the MFW to set the the link according to 'link_input'.
+ * @brief Request the MFW to set the link according to 'link_input'.
  *
  * @param p_hwfn
  * @param p_ptt
@@ -593,6 +601,54 @@ enum _ecore_status_t ecore_mcp_get_mfw_ver(struct ecore_hwfn *p_hwfn,
 enum _ecore_status_t ecore_mcp_get_media_type(struct ecore_hwfn *p_hwfn,
 					      struct ecore_ptt *p_ptt,
 					      u32 *media_type);
+
+/**
+ * @brief Get transceiver data of the port.
+ *
+ * @param p_dev      - ecore dev pointer
+ * @param p_ptt
+ * @param p_transceiver_state - transceiver state.
+ * @param p_transceiver_type - media type value
+ *
+ * @return enum _ecore_status_t -
+ *      ECORE_SUCCESS - Operation was successful.
+ *      ECORE_BUSY - Operation failed
+ */
+enum _ecore_status_t ecore_mcp_get_transceiver_data(struct ecore_hwfn *p_hwfn,
+						    struct ecore_ptt *p_ptt,
+						    u32 *p_transceiver_state,
+						    u32 *p_tranceiver_type);
+
+/**
+ * @brief Get transceiver supported speed mask.
+ *
+ * @param p_dev      - ecore dev pointer
+ * @param p_ptt
+ * @param p_speed_mask - Bit mask of all supported speeds.
+ *
+ * @return enum _ecore_status_t -
+ *      ECORE_SUCCESS - Operation was successful.
+ *      ECORE_BUSY - Operation failed
+ */
+
+enum _ecore_status_t ecore_mcp_trans_speed_mask(struct ecore_hwfn *p_hwfn,
+						struct ecore_ptt *p_ptt,
+						u32 *p_speed_mask);
+
+/**
+ * @brief Get board configuration.
+ *
+ * @param p_dev      - ecore dev pointer
+ * @param p_ptt
+ * @param p_board_config - Board config.
+ *
+ * @return enum _ecore_status_t -
+ *      ECORE_SUCCESS - Operation was successful.
+ *      ECORE_BUSY - Operation failed
+ */
+enum _ecore_status_t ecore_mcp_get_board_config(struct ecore_hwfn *p_hwfn,
+						struct ecore_ptt *p_ptt,
+						u32 *p_board_config);
 
 /**
  * @brief - Sends a command to the MCP mailbox.
@@ -766,6 +822,32 @@ enum _ecore_status_t ecore_mcp_ov_update_mtu(struct ecore_hwfn *p_hwfn,
 					     struct ecore_ptt *p_ptt, u16 mtu);
 
 /**
+ * @brief Send MAC address to MFW
+ *
+ *  @param p_hwfn
+ *  @param p_ptt
+ *  @param mac - MAC address
+ *
+ * @return enum _ecore_status_t - ECORE_SUCCESS - operation was successful.
+ */
+enum _ecore_status_t
+ecore_mcp_ov_update_mac(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+			u8 *mac);
+
+/**
+ * @brief Send eswitch mode to MFW
+ *
+ *  @param p_hwfn
+ *  @param p_ptt
+ *  @param eswitch - eswitch mode
+ *
+ * @return enum _ecore_status_t - ECORE_SUCCESS - operation was successful.
+ */
+enum _ecore_status_t
+ecore_mcp_ov_update_eswitch(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+			    enum ecore_ov_eswitch eswitch);
+
+/**
  * @brief Set LED status
  *
  *  @param p_hwfn
@@ -861,7 +943,7 @@ enum _ecore_status_t ecore_mcp_nvm_resp(struct ecore_dev *p_dev, u8 *p_buf);
  * @return enum _ecore_status_t - ECORE_SUCCESS - operation was successful.
  */
 enum _ecore_status_t ecore_mcp_phy_read(struct ecore_dev *p_dev, u32 cmd,
-					u32 addr, u8 *p_buf, u32 len);
+					u32 addr, u8 *p_buf, u32 *p_len);
 
 /**
  * @brief Read from nvm

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -41,6 +12,7 @@
 
 #include <rte_common.h>
 #include <rte_memory.h>
+#include <rte_eal_memconfig.h>
 #include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_eal.h>
@@ -407,7 +379,7 @@ test_realloc(void)
 		printf("NULL pointer returned from rte_zmalloc\n");
 		return -1;
 	}
-	snprintf(ptr1, size1, "%s" ,hello_str);
+	strlcpy(ptr1, hello_str, size1);
 	char *ptr2 = rte_realloc(ptr1, size2, RTE_CACHE_LINE_SIZE);
 	if (!ptr2){
 		rte_free(ptr1);
@@ -734,19 +706,24 @@ err_return:
 	return -1;
 }
 
+static int
+check_socket_mem(const struct rte_memseg_list *msl, void *arg)
+{
+	int32_t *socket = arg;
+
+	if (msl->external)
+		return 0;
+
+	return *socket == msl->socket_id;
+}
+
 /* Check if memory is available on a specific socket */
 static int
 is_mem_on_socket(int32_t socket)
 {
-	const struct rte_memseg *ms = rte_eal_get_physmem_layout();
-	unsigned i;
-
-	for (i = 0; i < RTE_MAX_MEMSEG; i++) {
-		if (socket == ms[i].socket_id)
-			return 1;
-	}
-	return 0;
+	return rte_memseg_list_walk(check_socket_mem, &socket);
 }
+
 
 /*
  * Find what socket a memory address is on. Only works for addresses within
@@ -755,16 +732,9 @@ is_mem_on_socket(int32_t socket)
 static int32_t
 addr_to_socket(void * addr)
 {
-	const struct rte_memseg *ms = rte_eal_get_physmem_layout();
-	unsigned i;
+	const struct rte_memseg *ms = rte_mem_virt2memseg(addr, NULL);
+	return ms == NULL ? -1 : ms->socket_id;
 
-	for (i = 0; i < RTE_MAX_MEMSEG; i++) {
-		if ((ms[i].addr <= addr) &&
-				((uintptr_t)addr <
-				((uintptr_t)ms[i].addr + (uintptr_t)ms[i].len)))
-			return ms[i].socket_id;
-	}
-	return -1;
 }
 
 /* Test using rte_[c|m|zm]alloc_socket() on a specific socket */

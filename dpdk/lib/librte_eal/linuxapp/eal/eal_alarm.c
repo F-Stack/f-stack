@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -48,7 +19,6 @@
 #include <rte_launch.h>
 #include <rte_lcore.h>
 #include <rte_errno.h>
-#include <rte_malloc.h>
 #include <rte_spinlock.h>
 #include <eal_private.h>
 
@@ -60,7 +30,9 @@
 #define NS_PER_US 1000
 #define US_PER_MS 1000
 #define MS_PER_S 1000
+#ifndef US_PER_S
 #define US_PER_S (US_PER_MS * MS_PER_S)
+#endif
 
 #ifdef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
 #define CLOCK_TYPE_ID CLOCK_MONOTONIC_RAW
@@ -120,7 +92,7 @@ eal_alarm_callback(void *arg __rte_unused)
 		rte_spinlock_lock(&alarm_list_lk);
 
 		LIST_REMOVE(ap, next);
-		rte_free(ap);
+		free(ap);
 	}
 
 	if (!LIST_EMPTY(&alarm_list)) {
@@ -151,7 +123,7 @@ rte_eal_alarm_set(uint64_t us, rte_eal_alarm_callback cb_fn, void *cb_arg)
 	if (us < 1 || us > (UINT64_MAX - US_PER_S) || cb_fn == NULL)
 		return -EINVAL;
 
-	new_alarm = rte_zmalloc(NULL, sizeof(*new_alarm), 0);
+	new_alarm = calloc(1, sizeof(*new_alarm));
 	if (new_alarm == NULL)
 		return -ENOMEM;
 
@@ -225,7 +197,7 @@ rte_eal_alarm_cancel(rte_eal_alarm_callback cb_fn, void *cb_arg)
 
 			if (ap->executing == 0) {
 				LIST_REMOVE(ap, next);
-				rte_free(ap);
+				free(ap);
 				count++;
 			} else {
 				/* If calling from other context, mark that alarm is executing
@@ -249,7 +221,7 @@ rte_eal_alarm_cancel(rte_eal_alarm_callback cb_fn, void *cb_arg)
 
 				if (ap->executing == 0) {
 					LIST_REMOVE(ap, next);
-					rte_free(ap);
+					free(ap);
 					count++;
 					ap = ap_prev;
 				} else if (pthread_equal(ap->executing_id, pthread_self()) == 0)

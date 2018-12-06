@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 .. _doc_guidelines:
 
 DPDK Documentation Guidelines
@@ -80,7 +83,7 @@ added to by the developer.
 * **API documentation**
 
   The API documentation explains how to use the public DPDK functions.
-  The `API index page <http://dpdk.org/doc/api/>`_ shows the generated API documentation with related groups of functions.
+  The `API index page <http://doc.dpdk.org/api/>`_ shows the generated API documentation with related groups of functions.
 
   The API documentation should be updated via Doxygen comments when new functions are added.
 
@@ -294,8 +297,8 @@ Line Length
 
      testpmd -l 2-3 -n 4 \
              --vdev=virtio_user0,path=/dev/vhost-net,queues=2,queue_size=1024 \
-             -- -i --txqflags=0x0 --disable-hw-vlan --enable-lro \
-             --enable-rx-cksum --txq=2 --rxq=2 --rxd=1024  --txd=1024
+             -- -i --tx-offloads=0x0000002c --enable-lro --txq=2 --rxq=2 \
+             --txd=1024 --rxd=1024
 
 
 Whitespace
@@ -612,19 +615,14 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
   .. code-block:: c
 
      /**
-      * Attach a new Ethernet device specified by arguments.
+      * Try to take the lock.
       *
-      * @param devargs
-      *  A pointer to a strings array describing the new device
-      *  to be attached. The strings should be a pci address like
-      *  `0000:01:00.0` or **virtual** device name like `net_pcap0`.
-      * @param port_id
-      *  A pointer to a port identifier actually attached.
-      *
+      * @param sl
+      *   A pointer to the spinlock.
       * @return
-      *  0 on success and port_id is filled, negative on error.
+      *   1 if the lock is successfully taken; 0 otherwise.
       */
-     int rte_eth_dev_attach(const char *devargs, uint8_t *port_id);
+     int rte_spinlock_trylock(rte_spinlock_t *sl);
 
 * Doxygen supports Markdown style syntax such as bold, italics, fixed width text and lists.
   For example the second line in the ``devargs`` parameter in the previous example will be rendered as:
@@ -655,7 +653,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
        */
 
   In the API documentation the functions will be rendered as links, see the
-  `online section of the rte_ethdev.h docs <http://dpdk.org/doc/api/rte__ethdev_8h.html>`_ that contains the above text.
+  `online section of the rte_ethdev.h docs <http://doc.dpdk.org/api/rte__ethdev_8h.html>`_ that contains the above text.
 
 * The ``@see`` keyword can be used to create a *see also* link to another file or library.
   This directive should be placed on one line at the bottom of the documentation section.

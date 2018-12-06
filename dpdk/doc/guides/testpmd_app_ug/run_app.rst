@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Running the Application
 =======================
@@ -34,127 +7,9 @@ Running the Application
 EAL Command-line Options
 ------------------------
 
-The following are the EAL command-line options that can be used in conjunction with the testpmd,
-or any other DPDK application.
-See the DPDK Getting Started Guides for more information on these options.
-
-*   ``-c COREMASK``
-
-    Set the hexadecimal bitmask of the cores to run on.
-
-*   ``-l CORELIST``
-
-    List of cores to run on
-
-    The argument format is ``<c1>[-c2][,c3[-c4],...]``
-    where ``c1``, ``c2``, etc are core indexes between 0 and 128.
-
-*   ``--lcores COREMAP``
-
-    Map lcore set to physical cpu set
-
-    The argument format is::
-
-       <lcores[@cpus]>[<,lcores[@cpus]>...]
-
-    Lcore and CPU lists are grouped by ``(`` and ``)`` Within the group.
-    The ``-`` character is used as a range separator and ``,`` is used as a single number separator.
-    The grouping ``()`` can be omitted for single element group.
-    The ``@`` can be omitted if cpus and lcores have the same value.
-
-*   ``--master-lcore ID``
-
-    Core ID that is used as master.
-
-*   ``-n NUM``
-
-    Set the number of memory channels to use.
-
-*   ``-b, --pci-blacklist domain:bus:devid.func``
-
-    Blacklist a PCI device to prevent EAL from using it. Multiple -b options are allowed.
-
-*   ``-d LIB.so``
-
-    Load an external driver. Multiple -d options are allowed.
-
-*   ``-w, --pci-whitelist domain:bus:devid:func``
-
-    Add a PCI device in white list.
-
-*   ``-m MB``
-
-    Memory to allocate. See also ``--socket-mem``.
-
-*   ``-r NUM``
-
-    Set the number of memory ranks (auto-detected by default).
-
-*   ``-v``
-
-    Display the version information on startup.
-
-*   ``--syslog``
-
-    Set the syslog facility.
-
-*   ``--socket-mem``
-
-    Set the memory to allocate on specific sockets (use comma separated values).
-
-*   ``--huge-dir``
-
-    Specify the directory where the hugetlbfs is mounted.
-
-*   ``mbuf-pool-ops-name``:
-
-    Pool ops name for mbuf to use.
-
-*   ``--proc-type``
-
-    Set the type of the current process.
-
-*   ``--file-prefix``
-
-    Prefix for hugepage filenames.
-
-*   ``-vmware-tsc-map``
-
-    Use VMware TSC map instead of native RDTSC.
-
-*   ``--vdev``
-
-    Add a virtual device using the format::
-
-       <driver><id>[,key=val, ...]
-
-    For example::
-
-       --vdev 'net_pcap0,rx_pcap=input.pcap,tx_pcap=output.pcap'
-
-*   ``--base-virtaddr``
-
-    Specify base virtual address.
-
-*   ``--create-uio-dev``
-
-    Create ``/dev/uioX`` (usually done by hotplug).
-
-*   ``--no-shconf``
-
-    No shared config (mmap-ed files).
-
-*   ``--no-pci``
-
-    Disable pci.
-
-*   ``--no-hpet``
-
-    Disable hpet.
-
-*   ``--no-huge``
-
-    Use malloc instead of hugetlbfs.
+Please refer to  :doc:`../linux_gsg/linux_eal_parameters` or
+:doc:`../freebsd_gsg/freebsd_eal_parameters` for a list of available EAL
+command-line options.
 
 
 Testpmd Command-line Options
@@ -315,21 +170,21 @@ The commandline options are:
 
     Enable scatter (multi-segment) RX.
 
-*   ``--disable-hw-vlan``
+*   ``--enable-hw-vlan``
 
-    Disable hardware VLAN.
+    Enable hardware VLAN.
 
-*   ``--disable-hw-vlan-filter``
+*   ``--enable-hw-vlan-filter``
 
-    Disable hardware VLAN filter.
+    Enable hardware VLAN filter.
 
-*   ``--disable-hw-vlan-strip``
+*   ``--enable-hw-vlan-strip``
 
-    Disable hardware VLAN strip.
+    Enable hardware VLAN strip.
 
-*   ``--disable-hw-vlan-extend``
+*   ``--enable-hw-vlan-extend``
 
-    Disable hardware VLAN extend.
+    Enable hardware VLAN extend.
 
 *   ``--enable-drop-en``
 
@@ -355,7 +210,7 @@ The commandline options are:
 
        io (the default)
        mac
-       mac_swap
+       macswap
        flowgen
        rxonly
        txonly
@@ -363,6 +218,7 @@ The commandline options are:
        icmpecho
        ieee1588
        tm
+       noisy
 
 *   ``--rss-ip``
 
@@ -395,7 +251,9 @@ The commandline options are:
 *   ``--burst=N``
 
     Set the number of packets per burst to N, where 1 <= N <= 512.
-    The default value is 16.
+    The default value is 32.
+    If set to 0, driver default is used if defined. Else, if driver
+    default is not defined, default of 32 is used.
 
 *   ``--mbcache=N``
 
@@ -447,18 +305,6 @@ The commandline options are:
     Set the transmit RS bit threshold of TX rings to N, where 0 <= N <= value of ``--txd``.
     The default value is 0.
 
-*   ``--txqflags=0xXXXXXXXX``
-
-    Set the hexadecimal bitmask of TX queue flags, where 0 <= N <= 0x7FFFFFFF.
-    The default value is 0.
-
-    .. note::
-
-       When using hardware offload functions such as vlan or checksum
-       add ``txqflags=0`` to force the full-featured TX code path.
-       In some PMDs this may already be the default.
-
-
 *   ``--rx-queue-stats-mapping=(port,queue,mapping)[,(port,queue,mapping)]``
 
     Set the RX queues statistics counters mapping 0 <= mapping <= 15.
@@ -492,12 +338,12 @@ The commandline options are:
 
     Set the logical core N to perform bitrate calculation.
 
-*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>``
+*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|all>``
 
     Enable printing the occurrence of the designated event. Using all will
     enable all of them.
 
-*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|all>``
+*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|all>``
 
     Disable printing the occurrence of the designated event. Using all will
     disable all of them.
@@ -509,3 +355,69 @@ The commandline options are:
     configured flow rules only (see flow command).
 
     Ports that do not support this mode are automatically discarded.
+
+*   ``--tx-offloads=0xXXXXXXXX``
+
+    Set the hexadecimal bitmask of TX queue offloads.
+    The default value is 0.
+
+*   ``--hot-plug``
+
+    Enable device event monitor machenism for hotplug.
+
+*   ``--vxlan-gpe-port=N``
+
+    Set the UDP port number of tunnel VXLAN-GPE to N.
+    The default value is 4790.
+
+*   ``--mlockall``
+
+    Enable locking all memory.
+
+*   ``--no-mlockall``
+
+    Disable locking all memory.
+
+*   ``--mp-alloc <native|anon|xmem|xmemhuge>``
+
+    Select mempool allocation mode:
+
+    * native: create and populate mempool using native DPDK memory
+    * anon: create mempool using native DPDK memory, but populate using
+      anonymous memory
+    * xmem: create and populate mempool using externally and anonymously
+      allocated area
+    * xmemhuge: create and populate mempool using externally and anonymously
+      allocated hugepage area
+
+*   ``--noisy-tx-sw-buffer-size``
+
+    Set the number of maximum elements  of the FIFO queue to be created
+    for buffering packets. Only available with the noisy forwarding mode.
+    The default value is 0.
+
+*   ``--noisy-tx-sw-buffer-flushtime=N``
+
+    Set the time before packets in the FIFO queue is flushed.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--noisy-lkup-memory=N``
+
+    Set the size of the noisy neighbour simulation memory buffer in MB to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+
+*   ``--noisy-lkup-num-reads=N``
+
+    Set the number of reads to be done in noisy neighbour simulation memory buffer to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--noisy-lkup-num-writes=N``
+
+    Set the number of writes to be done in noisy neighbour simulation memory buffer to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--noisy-lkup-num-reads-writes=N``
+
+    Set the number of r/w accesses to be done in noisy neighbour simulation memory buffer to N.
+    Only available with the noisy forwarding mode. The default value is 0.

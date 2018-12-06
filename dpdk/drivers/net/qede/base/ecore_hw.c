@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -38,6 +36,12 @@ struct ecore_ptt_pool {
 	struct ecore_ptt ptts[PXP_EXTERNAL_BAR_PF_WINDOW_NUM];
 };
 
+void __ecore_ptt_pool_free(struct ecore_hwfn *p_hwfn)
+{
+	OSAL_FREE(p_hwfn->p_dev, p_hwfn->p_ptt_pool);
+	p_hwfn->p_ptt_pool = OSAL_NULL;
+}
+
 enum _ecore_status_t ecore_ptt_pool_alloc(struct ecore_hwfn *p_hwfn)
 {
 	struct ecore_ptt_pool *p_pool = OSAL_ALLOC(p_hwfn->p_dev,
@@ -65,10 +69,12 @@ enum _ecore_status_t ecore_ptt_pool_alloc(struct ecore_hwfn *p_hwfn)
 
 	p_hwfn->p_ptt_pool = p_pool;
 #ifdef CONFIG_ECORE_LOCK_ALLOC
-	OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_pool->lock);
+	if (OSAL_SPIN_LOCK_ALLOC(p_hwfn, &p_pool->lock)) {
+		__ecore_ptt_pool_free(p_hwfn);
+		return ECORE_NOMEM;
+	}
 #endif
 	OSAL_SPIN_LOCK_INIT(&p_pool->lock);
-
 	return ECORE_SUCCESS;
 }
 
@@ -89,7 +95,7 @@ void ecore_ptt_pool_free(struct ecore_hwfn *p_hwfn)
 	if (p_hwfn->p_ptt_pool)
 		OSAL_SPIN_LOCK_DEALLOC(&p_hwfn->p_ptt_pool->lock);
 #endif
-	OSAL_FREE(p_hwfn->p_dev, p_hwfn->p_ptt_pool);
+	__ecore_ptt_pool_free(p_hwfn);
 }
 
 struct ecore_ptt *ecore_ptt_acquire(struct ecore_hwfn *p_hwfn)
@@ -401,6 +407,30 @@ void ecore_port_unpretend(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 			*(u32 *)&p_ptt->pxp.pretend);
 }
 
+void ecore_port_fid_pretend(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+			    u8 port_id, u16 fid)
+{
+	u16 control = 0;
+
+	SET_FIELD(control, PXP_PRETEND_CMD_PORT, port_id);
+	SET_FIELD(control, PXP_PRETEND_CMD_USE_PORT, 1);
+	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_PORT, 1);
+
+	SET_FIELD(control, PXP_PRETEND_CMD_IS_CONCRETE, 1);
+	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_FUNCTION, 1);
+
+	if (!GET_FIELD(fid, PXP_CONCRETE_FID_VFVALID))
+		fid = GET_FIELD(fid, PXP_CONCRETE_FID_PFID);
+
+	p_ptt->pxp.pretend.control = OSAL_CPU_TO_LE16(control);
+	p_ptt->pxp.pretend.fid.concrete_fid.fid = OSAL_CPU_TO_LE16(fid);
+
+	REG_WR(p_hwfn,
+	       ecore_ptt_config_addr(p_ptt) +
+	       OFFSETOF(struct pxp_ptt_entry, pretend),
+	       *(u32 *)&p_ptt->pxp.pretend);
+}
+
 u32 ecore_vfid_to_concrete(struct ecore_hwfn *p_hwfn, u8 vfid)
 {
 	u32 concrete_fid = 0;
@@ -420,14 +450,17 @@ u32 ecore_vfid_to_concrete(struct ecore_hwfn *p_hwfn, u8 vfid)
  * If this changes, this needs to be revisted.
  */
 
-/* Ecore DMAE
- * =============
- */
+/* DMAE */
+
+#define ECORE_DMAE_FLAGS_IS_SET(params, flag)	\
+	((params) != OSAL_NULL && ((params)->flags & ECORE_DMAE_FLAG_##flag))
+
 static void ecore_dmae_opcode(struct ecore_hwfn *p_hwfn,
 			      const u8 is_src_type_grc,
 			      const u8 is_dst_type_grc,
 			      struct ecore_dmae_params *p_params)
 {
+	u8 src_pfid, dst_pfid, port_id;
 	u16 opcode_b = 0;
 	u32 opcode = 0;
 
@@ -437,16 +470,20 @@ static void ecore_dmae_opcode(struct ecore_hwfn *p_hwfn,
 	 */
 	opcode |= (is_src_type_grc ? DMAE_CMD_SRC_MASK_GRC
 		   : DMAE_CMD_SRC_MASK_PCIE) << DMAE_CMD_SRC_SHIFT;
-	opcode |= (p_hwfn->rel_pf_id & DMAE_CMD_SRC_PF_ID_MASK) <<
-	    DMAE_CMD_SRC_PF_ID_SHIFT;
+	src_pfid = ECORE_DMAE_FLAGS_IS_SET(p_params, PF_SRC) ?
+		   p_params->src_pfid : p_hwfn->rel_pf_id;
+	opcode |= (src_pfid & DMAE_CMD_SRC_PF_ID_MASK) <<
+		  DMAE_CMD_SRC_PF_ID_SHIFT;
 
 	/* The destination of the DMA can be: 0-None 1-PCIe 2-GRC 3-None */
 	opcode |= (is_dst_type_grc ? DMAE_CMD_DST_MASK_GRC
 		   : DMAE_CMD_DST_MASK_PCIE) << DMAE_CMD_DST_SHIFT;
-	opcode |= (p_hwfn->rel_pf_id & DMAE_CMD_DST_PF_ID_MASK) <<
-	    DMAE_CMD_DST_PF_ID_SHIFT;
+	dst_pfid = ECORE_DMAE_FLAGS_IS_SET(p_params, PF_DST) ?
+		   p_params->dst_pfid : p_hwfn->rel_pf_id;
+	opcode |= (dst_pfid & DMAE_CMD_DST_PF_ID_MASK) <<
+		  DMAE_CMD_DST_PF_ID_SHIFT;
 
-	/* DMAE_E4_TODO need to check which value to specifiy here. */
+	/* DMAE_E4_TODO need to check which value to specify here. */
 	/* opcode |= (!b_complete_to_host)<< DMAE_CMD_C_DST_SHIFT; */
 
 	/* Whether to write a completion word to the completion destination:
@@ -456,7 +493,7 @@ static void ecore_dmae_opcode(struct ecore_hwfn *p_hwfn,
 	opcode |= DMAE_CMD_COMP_WORD_EN_MASK << DMAE_CMD_COMP_WORD_EN_SHIFT;
 	opcode |= DMAE_CMD_SRC_ADDR_RESET_MASK << DMAE_CMD_SRC_ADDR_RESET_SHIFT;
 
-	if (p_params->flags & ECORE_DMAE_FLAG_COMPLETION_DST)
+	if (ECORE_DMAE_FLAGS_IS_SET(p_params, COMPLETION_DST))
 		opcode |= 1 << DMAE_CMD_COMP_FUNC_SHIFT;
 
 	/* swapping mode 3 - big endian there should be a define ifdefed in
@@ -464,7 +501,9 @@ static void ecore_dmae_opcode(struct ecore_hwfn *p_hwfn,
 	 */
 	opcode |= DMAE_CMD_ENDIANITY << DMAE_CMD_ENDIANITY_MODE_SHIFT;
 
-	opcode |= p_hwfn->port_id << DMAE_CMD_PORT_ID_SHIFT;
+	port_id = (ECORE_DMAE_FLAGS_IS_SET(p_params, PORT)) ?
+		  p_params->port_id : p_hwfn->port_id;
+	opcode |= port_id << DMAE_CMD_PORT_ID_SHIFT;
 
 	/* reset source address in next go */
 	opcode |= DMAE_CMD_SRC_ADDR_RESET_MASK << DMAE_CMD_SRC_ADDR_RESET_SHIFT;
@@ -473,14 +512,14 @@ static void ecore_dmae_opcode(struct ecore_hwfn *p_hwfn,
 	opcode |= DMAE_CMD_DST_ADDR_RESET_MASK << DMAE_CMD_DST_ADDR_RESET_SHIFT;
 
 	/* SRC/DST VFID: all 1's - pf, otherwise VF id */
-	if (p_params->flags & ECORE_DMAE_FLAG_VF_SRC) {
+	if (ECORE_DMAE_FLAGS_IS_SET(p_params, VF_SRC)) {
 		opcode |= (1 << DMAE_CMD_SRC_VF_ID_VALID_SHIFT);
 		opcode_b |= (p_params->src_vfid << DMAE_CMD_SRC_VF_ID_SHIFT);
 	} else {
 		opcode_b |= (DMAE_CMD_SRC_VF_ID_MASK <<
 			     DMAE_CMD_SRC_VF_ID_SHIFT);
 	}
-	if (p_params->flags & ECORE_DMAE_FLAG_VF_DST) {
+	if (ECORE_DMAE_FLAGS_IS_SET(p_params, VF_DST)) {
 		opcode |= 1 << DMAE_CMD_DST_VF_ID_VALID_SHIFT;
 		opcode_b |= p_params->dst_vfid << DMAE_CMD_DST_VF_ID_SHIFT;
 	} else {
@@ -569,7 +608,7 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn *p_hwfn)
 
 	*p_comp = OSAL_DMA_ALLOC_COHERENT(p_hwfn->p_dev, p_addr, sizeof(u32));
 	if (*p_comp == OSAL_NULL) {
-		DP_NOTICE(p_hwfn, true,
+		DP_NOTICE(p_hwfn, false,
 			  "Failed to allocate `p_completion_word'\n");
 		goto err;
 	}
@@ -578,7 +617,7 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn *p_hwfn)
 	*p_cmd = OSAL_DMA_ALLOC_COHERENT(p_hwfn->p_dev, p_addr,
 					 sizeof(struct dmae_cmd));
 	if (*p_cmd == OSAL_NULL) {
-		DP_NOTICE(p_hwfn, true,
+		DP_NOTICE(p_hwfn, false,
 			  "Failed to allocate `struct dmae_cmd'\n");
 		goto err;
 	}
@@ -587,12 +626,13 @@ enum _ecore_status_t ecore_dmae_info_alloc(struct ecore_hwfn *p_hwfn)
 	*p_buff = OSAL_DMA_ALLOC_COHERENT(p_hwfn->p_dev, p_addr,
 					  sizeof(u32) * DMAE_MAX_RW_SIZE);
 	if (*p_buff == OSAL_NULL) {
-		DP_NOTICE(p_hwfn, true,
+		DP_NOTICE(p_hwfn, false,
 			  "Failed to allocate `intermediate_buffer'\n");
 		goto err;
 	}
 
-	p_hwfn->dmae_info.channel = p_hwfn->rel_pf_id;
+		p_hwfn->dmae_info.channel = p_hwfn->rel_pf_id;
+		p_hwfn->dmae_info.b_mem_ready = true;
 
 	return ECORE_SUCCESS;
 err:
@@ -604,8 +644,9 @@ void ecore_dmae_info_free(struct ecore_hwfn *p_hwfn)
 {
 	dma_addr_t p_phys;
 
-	/* Just make sure no one is in the middle */
-	OSAL_MUTEX_ACQUIRE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_LOCK(&p_hwfn->dmae_info.lock);
+	p_hwfn->dmae_info.b_mem_ready = false;
+	OSAL_SPIN_UNLOCK(&p_hwfn->dmae_info.lock);
 
 	if (p_hwfn->dmae_info.p_completion_word != OSAL_NULL) {
 		p_phys = p_hwfn->dmae_info.completion_word_phys_addr;
@@ -630,8 +671,6 @@ void ecore_dmae_info_free(struct ecore_hwfn *p_hwfn)
 				       p_phys, sizeof(u32) * DMAE_MAX_RW_SIZE);
 		p_hwfn->dmae_info.p_intermediate_buffer = OSAL_NULL;
 	}
-
-	OSAL_MUTEX_RELEASE(&p_hwfn->dmae_info.mutex);
 }
 
 static enum _ecore_status_t ecore_dmae_operation_wait(struct ecore_hwfn *p_hwfn)
@@ -777,6 +816,15 @@ ecore_dmae_execute_command(struct ecore_hwfn *p_hwfn,
 	enum _ecore_status_t ecore_status = ECORE_SUCCESS;
 	u32 offset = 0;
 
+	if (!p_hwfn->dmae_info.b_mem_ready) {
+		DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
+			   "No buffers allocated. Avoid DMAE transaction [{src: addr 0x%lx, type %d}, {dst: addr 0x%lx, type %d}, size %d].\n",
+			   (unsigned long)src_addr, src_type,
+			   (unsigned long)dst_addr, dst_type,
+			   size_in_dwords);
+		return ECORE_NOMEM;
+	}
+
 	if (p_hwfn->p_dev->recov_in_prog) {
 		DP_VERBOSE(p_hwfn, ECORE_MSG_HW,
 			   "Recovery is in progress. Avoid DMAE transaction [{src: addr 0x%lx, type %d}, {dst: addr 0x%lx, type %d}, size %d].\n",
@@ -816,7 +864,7 @@ ecore_dmae_execute_command(struct ecore_hwfn *p_hwfn,
 	for (i = 0; i <= cnt_split; i++) {
 		offset = length_limit * i;
 
-		if (!(p_params->flags & ECORE_DMAE_FLAG_RW_REPL_SRC)) {
+		if (!ECORE_DMAE_FLAGS_IS_SET(p_params, RW_REPL_SRC)) {
 			if (src_type == ECORE_DMAE_ADDRESS_GRC)
 				src_addr_split = src_addr + offset;
 			else
@@ -857,53 +905,47 @@ ecore_dmae_execute_command(struct ecore_hwfn *p_hwfn,
 	return ecore_status;
 }
 
-enum _ecore_status_t
-ecore_dmae_host2grc(struct ecore_hwfn *p_hwfn,
-		    struct ecore_ptt *p_ptt,
-		    u64 source_addr,
-		    u32 grc_addr, u32 size_in_dwords, u32 flags)
+enum _ecore_status_t ecore_dmae_host2grc(struct ecore_hwfn *p_hwfn,
+					 struct ecore_ptt *p_ptt,
+					 u64 source_addr,
+					 u32 grc_addr,
+					 u32 size_in_dwords,
+					 struct ecore_dmae_params *p_params)
 {
 	u32 grc_addr_in_dw = grc_addr / sizeof(u32);
-	struct ecore_dmae_params params;
 	enum _ecore_status_t rc;
 
-	OSAL_MEMSET(&params, 0, sizeof(struct ecore_dmae_params));
-	params.flags = flags;
-
-	OSAL_MUTEX_ACQUIRE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_LOCK(&p_hwfn->dmae_info.lock);
 
 	rc = ecore_dmae_execute_command(p_hwfn, p_ptt, source_addr,
 					grc_addr_in_dw,
 					ECORE_DMAE_ADDRESS_HOST_VIRT,
 					ECORE_DMAE_ADDRESS_GRC,
-					size_in_dwords, &params);
+					size_in_dwords, p_params);
 
-	OSAL_MUTEX_RELEASE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_UNLOCK(&p_hwfn->dmae_info.lock);
 
 	return rc;
 }
 
-enum _ecore_status_t
-ecore_dmae_grc2host(struct ecore_hwfn *p_hwfn,
-		    struct ecore_ptt *p_ptt,
-		    u32 grc_addr,
-		    dma_addr_t dest_addr, u32 size_in_dwords, u32 flags)
+enum _ecore_status_t ecore_dmae_grc2host(struct ecore_hwfn *p_hwfn,
+					 struct ecore_ptt *p_ptt,
+					 u32 grc_addr,
+					 dma_addr_t dest_addr,
+					 u32 size_in_dwords,
+					 struct ecore_dmae_params *p_params)
 {
 	u32 grc_addr_in_dw = grc_addr / sizeof(u32);
-	struct ecore_dmae_params params;
 	enum _ecore_status_t rc;
 
-	OSAL_MEMSET(&params, 0, sizeof(struct ecore_dmae_params));
-	params.flags = flags;
-
-	OSAL_MUTEX_ACQUIRE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_LOCK(&p_hwfn->dmae_info.lock);
 
 	rc = ecore_dmae_execute_command(p_hwfn, p_ptt, grc_addr_in_dw,
 					dest_addr, ECORE_DMAE_ADDRESS_GRC,
 					ECORE_DMAE_ADDRESS_HOST_VIRT,
-					size_in_dwords, &params);
+					size_in_dwords, p_params);
 
-	OSAL_MUTEX_RELEASE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_UNLOCK(&p_hwfn->dmae_info.lock);
 
 	return rc;
 }
@@ -917,7 +959,7 @@ ecore_dmae_host2host(struct ecore_hwfn *p_hwfn,
 {
 	enum _ecore_status_t rc;
 
-	OSAL_MUTEX_ACQUIRE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_LOCK(&p_hwfn->dmae_info.lock);
 
 	rc = ecore_dmae_execute_command(p_hwfn, p_ptt, source_addr,
 					dest_addr,
@@ -925,7 +967,7 @@ ecore_dmae_host2host(struct ecore_hwfn *p_hwfn,
 					ECORE_DMAE_ADDRESS_HOST_PHYS,
 					size_in_dwords, p_params);
 
-	OSAL_MUTEX_RELEASE(&p_hwfn->dmae_info.mutex);
+	OSAL_SPIN_UNLOCK(&p_hwfn->dmae_info.lock);
 
 	return rc;
 }
@@ -943,4 +985,103 @@ void ecore_hw_err_notify(struct ecore_hwfn *p_hwfn,
 	}
 
 	OSAL_HW_ERROR_OCCURRED(p_hwfn, err_type);
+}
+
+enum _ecore_status_t ecore_dmae_sanity(struct ecore_hwfn *p_hwfn,
+				       struct ecore_ptt *p_ptt,
+				       const char *phase)
+{
+	u32 size = OSAL_PAGE_SIZE / 2, val;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
+	dma_addr_t p_phys;
+	void *p_virt;
+	u32 *p_tmp;
+
+	p_virt = OSAL_DMA_ALLOC_COHERENT(p_hwfn->p_dev, &p_phys, 2 * size);
+	if (!p_virt) {
+		DP_NOTICE(p_hwfn, false,
+			  "DMAE sanity [%s]: failed to allocate memory\n",
+			  phase);
+		return ECORE_NOMEM;
+	}
+
+	/* Fill the bottom half of the allocated memory with a known pattern */
+	for (p_tmp = (u32 *)p_virt;
+	     p_tmp < (u32 *)((u8 *)p_virt + size);
+	     p_tmp++) {
+		/* Save the address itself as the value */
+		val = (u32)(osal_uintptr_t)p_tmp;
+		*p_tmp = val;
+	}
+
+	/* Zero the top half of the allocated memory */
+	OSAL_MEM_ZERO((u8 *)p_virt + size, size);
+
+	DP_VERBOSE(p_hwfn, ECORE_MSG_SP,
+		   "DMAE sanity [%s]: src_addr={phys 0x%lx, virt %p}, dst_addr={phys 0x%lx, virt %p}, size 0x%x\n",
+		   phase, (unsigned long)p_phys, p_virt,
+		   (unsigned long)(p_phys + size),
+		   (u8 *)p_virt + size, size);
+
+	rc = ecore_dmae_host2host(p_hwfn, p_ptt, p_phys, p_phys + size,
+				  size / 4 /* size_in_dwords */,
+				  OSAL_NULL /* default parameters */);
+	if (rc != ECORE_SUCCESS) {
+		DP_NOTICE(p_hwfn, false,
+			  "DMAE sanity [%s]: ecore_dmae_host2host() failed. rc = %d.\n",
+			  phase, rc);
+		goto out;
+	}
+
+	/* Verify that the top half of the allocated memory has the pattern */
+	for (p_tmp = (u32 *)((u8 *)p_virt + size);
+	     p_tmp < (u32 *)((u8 *)p_virt + (2 * size));
+	     p_tmp++) {
+		/* The corresponding address in the bottom half */
+		val = (u32)(osal_uintptr_t)p_tmp - size;
+
+		if (*p_tmp != val) {
+			DP_NOTICE(p_hwfn, false,
+				  "DMAE sanity [%s]: addr={phys 0x%lx, virt %p}, read_val 0x%08x, expected_val 0x%08x\n",
+				  phase,
+				  (unsigned long)p_phys +
+				   ((u8 *)p_tmp - (u8 *)p_virt),
+				  p_tmp, *p_tmp, val);
+			rc = ECORE_UNKNOWN_ERROR;
+			goto out;
+		}
+	}
+
+out:
+	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_virt, p_phys, 2 * size);
+	return rc;
+}
+
+void ecore_ppfid_wr(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+		    u8 abs_ppfid, u32 hw_addr, u32 val)
+{
+	u8 pfid = ECORE_PFID_BY_PPFID(p_hwfn, abs_ppfid);
+
+	ecore_fid_pretend(p_hwfn, p_ptt,
+			  pfid << PXP_PRETEND_CONCRETE_FID_PFID_SHIFT);
+	ecore_wr(p_hwfn, p_ptt, hw_addr, val);
+	ecore_fid_pretend(p_hwfn, p_ptt,
+			  p_hwfn->rel_pf_id <<
+			  PXP_PRETEND_CONCRETE_FID_PFID_SHIFT);
+}
+
+u32 ecore_ppfid_rd(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+		   u8 abs_ppfid, u32 hw_addr)
+{
+	u8 pfid = ECORE_PFID_BY_PPFID(p_hwfn, abs_ppfid);
+	u32 val;
+
+	ecore_fid_pretend(p_hwfn, p_ptt,
+			  pfid << PXP_PRETEND_CONCRETE_FID_PFID_SHIFT);
+	val = ecore_rd(p_hwfn, p_ptt, hw_addr);
+	ecore_fid_pretend(p_hwfn, p_ptt,
+			  p_hwfn->rel_pf_id <<
+			  PXP_PRETEND_CONCRETE_FID_PFID_SHIFT);
+
+	return val;
 }

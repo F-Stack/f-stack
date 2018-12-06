@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 /**
@@ -55,13 +27,14 @@
 #include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_errno.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_flow.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
 #include "mlx4.h"
+#include "mlx4_glue.h"
 #include "mlx4_flow.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
@@ -115,7 +88,7 @@ mlx4_rss_hash_key_default[MLX4_RSS_HASH_KEY_SIZE] = {
  */
 struct mlx4_rss *
 mlx4_rss_get(struct priv *priv, uint64_t fields,
-	     uint8_t key[MLX4_RSS_HASH_KEY_SIZE],
+	     const uint8_t key[MLX4_RSS_HASH_KEY_SIZE],
 	     uint16_t queues, const uint16_t queue_id[])
 {
 	struct mlx4_rss *rss;
@@ -231,7 +204,7 @@ mlx4_rss_attach(struct mlx4_rss *rss)
 		}
 		ind_tbl[i] = rxq->wq;
 	}
-	rss->ind = ibv_create_rwq_ind_table
+	rss->ind = mlx4_glue->create_rwq_ind_table
 		(priv->ctx,
 		 &(struct ibv_rwq_ind_table_init_attr){
 			.log_ind_tbl_size = rte_log2_u32(RTE_DIM(ind_tbl)),
@@ -243,7 +216,7 @@ mlx4_rss_attach(struct mlx4_rss *rss)
 		msg = "RSS indirection table creation failure";
 		goto error;
 	}
-	rss->qp = ibv_create_qp_ex
+	rss->qp = mlx4_glue->create_qp_ex
 		(priv->ctx,
 		 &(struct ibv_qp_init_attr_ex){
 			.comp_mask = (IBV_QP_INIT_ATTR_PD |
@@ -264,7 +237,7 @@ mlx4_rss_attach(struct mlx4_rss *rss)
 		msg = "RSS hash QP creation failure";
 		goto error;
 	}
-	ret = ibv_modify_qp
+	ret = mlx4_glue->modify_qp
 		(rss->qp,
 		 &(struct ibv_qp_attr){
 			.qp_state = IBV_QPS_INIT,
@@ -275,7 +248,7 @@ mlx4_rss_attach(struct mlx4_rss *rss)
 		msg = "failed to switch RSS hash QP to INIT state";
 		goto error;
 	}
-	ret = ibv_modify_qp
+	ret = mlx4_glue->modify_qp
 		(rss->qp,
 		 &(struct ibv_qp_attr){
 			.qp_state = IBV_QPS_RTR,
@@ -288,11 +261,11 @@ mlx4_rss_attach(struct mlx4_rss *rss)
 	return 0;
 error:
 	if (rss->qp) {
-		claim_zero(ibv_destroy_qp(rss->qp));
+		claim_zero(mlx4_glue->destroy_qp(rss->qp));
 		rss->qp = NULL;
 	}
 	if (rss->ind) {
-		claim_zero(ibv_destroy_rwq_ind_table(rss->ind));
+		claim_zero(mlx4_glue->destroy_rwq_ind_table(rss->ind));
 		rss->ind = NULL;
 	}
 	while (i--)
@@ -325,9 +298,9 @@ mlx4_rss_detach(struct mlx4_rss *rss)
 	assert(rss->ind);
 	if (--rss->usecnt)
 		return;
-	claim_zero(ibv_destroy_qp(rss->qp));
+	claim_zero(mlx4_glue->destroy_qp(rss->qp));
 	rss->qp = NULL;
-	claim_zero(ibv_destroy_rwq_ind_table(rss->ind));
+	claim_zero(mlx4_glue->destroy_rwq_ind_table(rss->ind));
 	rss->ind = NULL;
 	for (i = 0; i != rss->queues; ++i)
 		mlx4_rxq_detach(priv->dev->data->rx_queues[rss->queue_id[i]]);
@@ -372,9 +345,10 @@ mlx4_rss_init(struct priv *priv)
 		return -rte_errno;
 	}
 	/* Prepare range for RSS contexts before creating the first WQ. */
-	ret = mlx4dv_set_context_attr(priv->ctx,
-				      MLX4DV_SET_CTX_ATTR_LOG_WQS_RANGE_SZ,
-				      &log2_range);
+	ret = mlx4_glue->dv_set_context_attr
+		(priv->ctx,
+		 MLX4DV_SET_CTX_ATTR_LOG_WQS_RANGE_SZ,
+		 &log2_range);
 	if (ret) {
 		ERROR("cannot set up range size for RSS context to %u"
 		      " (for %u Rx queues), error: %s",
@@ -410,13 +384,13 @@ mlx4_rss_init(struct priv *priv)
 		 * sequentially and are guaranteed to never be reused in the
 		 * same context by the underlying implementation.
 		 */
-		cq = ibv_create_cq(priv->ctx, 1, NULL, NULL, 0);
+		cq = mlx4_glue->create_cq(priv->ctx, 1, NULL, NULL, 0);
 		if (!cq) {
 			ret = ENOMEM;
 			msg = "placeholder CQ creation failure";
 			goto error;
 		}
-		wq = ibv_create_wq
+		wq = mlx4_glue->create_wq
 			(priv->ctx,
 			 &(struct ibv_wq_init_attr){
 				.wq_type = IBV_WQT_RQ,
@@ -427,11 +401,11 @@ mlx4_rss_init(struct priv *priv)
 			 });
 		if (wq) {
 			wq_num = wq->wq_num;
-			claim_zero(ibv_destroy_wq(wq));
+			claim_zero(mlx4_glue->destroy_wq(wq));
 		} else {
 			wq_num = 0; /* Shut up GCC 4.8 warnings. */
 		}
-		claim_zero(ibv_destroy_cq(cq));
+		claim_zero(mlx4_glue->destroy_cq(cq));
 		if (!wq) {
 			ret = ENOMEM;
 			msg = "placeholder WQ creation failure";
@@ -520,6 +494,7 @@ mlx4_rxq_attach(struct rxq *rxq)
 	}
 
 	struct priv *priv = rxq->priv;
+	struct rte_eth_dev *dev = priv->dev;
 	const uint32_t elts_n = 1 << rxq->elts_n;
 	const uint32_t sges_n = 1 << rxq->sges_n;
 	struct rte_mbuf *(*elts)[elts_n] = rxq->elts;
@@ -529,18 +504,26 @@ mlx4_rxq_attach(struct rxq *rxq)
 	const char *msg;
 	struct ibv_cq *cq = NULL;
 	struct ibv_wq *wq = NULL;
+	uint32_t create_flags = 0;
+	uint32_t comp_mask = 0;
 	volatile struct mlx4_wqe_data_seg (*wqes)[];
 	unsigned int i;
 	int ret;
 
 	assert(rte_is_power_of_2(elts_n));
-	cq = ibv_create_cq(priv->ctx, elts_n / sges_n, NULL, rxq->channel, 0);
+	cq = mlx4_glue->create_cq(priv->ctx, elts_n / sges_n, NULL,
+				  rxq->channel, 0);
 	if (!cq) {
 		ret = ENOMEM;
 		msg = "CQ creation failure";
 		goto error;
 	}
-	wq = ibv_create_wq
+	/* By default, FCS (CRC) is stripped by hardware. */
+	if (rxq->crc_present) {
+		create_flags |= IBV_WQ_FLAGS_SCATTER_FCS;
+		comp_mask |= IBV_WQ_INIT_ATTR_FLAGS;
+	}
+	wq = mlx4_glue->create_wq
 		(priv->ctx,
 		 &(struct ibv_wq_init_attr){
 			.wq_type = IBV_WQT_RQ,
@@ -548,13 +531,15 @@ mlx4_rxq_attach(struct rxq *rxq)
 			.max_sge = sges_n,
 			.pd = priv->pd,
 			.cq = cq,
+			.comp_mask = comp_mask,
+			.create_flags = create_flags,
 		 });
 	if (!wq) {
 		ret = errno ? errno : EINVAL;
 		msg = "WQ creation failure";
 		goto error;
 	}
-	ret = ibv_modify_wq
+	ret = mlx4_glue->modify_wq
 		(wq,
 		 &(struct ibv_wq_attr){
 			.attr_mask = IBV_WQ_ATTR_STATE,
@@ -569,11 +554,16 @@ mlx4_rxq_attach(struct rxq *rxq)
 	mlxdv.cq.out = &dv_cq;
 	mlxdv.rwq.in = wq;
 	mlxdv.rwq.out = &dv_rwq;
-	ret = mlx4dv_init_obj(&mlxdv, MLX4DV_OBJ_RWQ | MLX4DV_OBJ_CQ);
+	ret = mlx4_glue->dv_init_obj(&mlxdv, MLX4DV_OBJ_RWQ | MLX4DV_OBJ_CQ);
 	if (ret) {
 		msg = "failed to obtain device information from WQ/CQ objects";
 		goto error;
 	}
+	/* Pre-register Rx mempool. */
+	DEBUG("port %u Rx queue %u registering mp %s having %u chunks",
+	      priv->dev->data->port_id, rxq->stats.idx,
+	      rxq->mp->name, rxq->mp->nb_mem_chunks);
+	mlx4_mr_update_mp(dev, &rxq->mr_ctrl, rxq->mp);
 	wqes = (volatile struct mlx4_wqe_data_seg (*)[])
 		((uintptr_t)dv_rwq.buf.buf + dv_rwq.rq.offset);
 	for (i = 0; i != RTE_DIM(*elts); ++i) {
@@ -605,7 +595,7 @@ mlx4_rxq_attach(struct rxq *rxq)
 			.addr = rte_cpu_to_be_64(rte_pktmbuf_mtod(buf,
 								  uintptr_t)),
 			.byte_count = rte_cpu_to_be_32(buf->data_len),
-			.lkey = rte_cpu_to_be_32(rxq->mr->lkey),
+			.lkey = mlx4_rx_mb2mr(rxq, buf),
 		};
 		(*elts)[i] = buf;
 	}
@@ -631,9 +621,9 @@ mlx4_rxq_attach(struct rxq *rxq)
 	return 0;
 error:
 	if (wq)
-		claim_zero(ibv_destroy_wq(wq));
+		claim_zero(mlx4_glue->destroy_wq(wq));
 	if (cq)
-		claim_zero(ibv_destroy_cq(cq));
+		claim_zero(mlx4_glue->destroy_cq(cq));
 	--rxq->usecnt;
 	rte_errno = ret;
 	ERROR("error while attaching Rx queue %p: %s: %s",
@@ -662,9 +652,9 @@ mlx4_rxq_detach(struct rxq *rxq)
 	memset(&rxq->mcq, 0, sizeof(rxq->mcq));
 	rxq->rq_db = NULL;
 	rxq->wqes = NULL;
-	claim_zero(ibv_destroy_wq(rxq->wq));
+	claim_zero(mlx4_glue->destroy_wq(rxq->wq));
 	rxq->wq = NULL;
-	claim_zero(ibv_destroy_cq(rxq->cq));
+	claim_zero(mlx4_glue->destroy_cq(rxq->cq));
 	rxq->cq = NULL;
 	DEBUG("%p: freeing Rx queue elements", (void *)rxq);
 	for (i = 0; (i != RTE_DIM(*elts)); ++i) {
@@ -673,6 +663,45 @@ mlx4_rxq_detach(struct rxq *rxq)
 		rte_pktmbuf_free_seg((*elts)[i]);
 		(*elts)[i] = NULL;
 	}
+}
+
+/**
+ * Returns the per-queue supported offloads.
+ *
+ * @param priv
+ *   Pointer to private structure.
+ *
+ * @return
+ *   Supported Tx offloads.
+ */
+uint64_t
+mlx4_get_rx_queue_offloads(struct priv *priv)
+{
+	uint64_t offloads = DEV_RX_OFFLOAD_SCATTER |
+			    DEV_RX_OFFLOAD_KEEP_CRC |
+			    DEV_RX_OFFLOAD_JUMBO_FRAME;
+
+	if (priv->hw_csum)
+		offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+	return offloads;
+}
+
+/**
+ * Returns the per-port supported offloads.
+ *
+ * @param priv
+ *   Pointer to private structure.
+ *
+ * @return
+ *   Supported Rx offloads.
+ */
+uint64_t
+mlx4_get_rx_port_offloads(struct priv *priv)
+{
+	uint64_t offloads = DEV_RX_OFFLOAD_VLAN_FILTER;
+
+	(void)priv;
+	return offloads;
 }
 
 /**
@@ -716,10 +745,14 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		},
 	};
 	int ret;
+	uint32_t crc_present;
+	uint64_t offloads;
 
-	(void)conf; /* Thresholds configuration (ignored). */
+	offloads = conf->offloads | dev->data->dev_conf.rxmode.offloads;
+
 	DEBUG("%p: configuring queue %u for %u descriptors",
 	      (void *)dev, idx, desc);
+
 	if (idx >= dev->data->nb_rx_queues) {
 		rte_errno = EOVERFLOW;
 		ERROR("%p: queue index out of range (%u >= %u)",
@@ -744,6 +777,23 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		     " to the next power of two (%u)",
 		     (void *)dev, idx, desc);
 	}
+	/* By default, FCS (CRC) is stripped by hardware. */
+	crc_present = 0;
+	if (offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
+		if (priv->hw_fcs_strip) {
+			crc_present = 1;
+		} else {
+			WARN("%p: CRC stripping has been disabled but will still"
+			     " be performed by hardware, make sure MLNX_OFED and"
+			     " firmware are up to date",
+			     (void *)dev);
+		}
+	}
+	DEBUG("%p: CRC stripping is %s, %u bytes will be subtracted from"
+	      " incoming frames to hide it",
+	      (void *)dev,
+	      crc_present ? "disabled" : "enabled",
+	      crc_present << 2);
 	/* Allocate and initialize Rx queue. */
 	mlx4_zmallocv_socket("RXQ", vec, RTE_DIM(vec), socket);
 	if (!rxq) {
@@ -759,10 +809,11 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		.elts_n = rte_log2_u32(desc),
 		.elts = elts,
 		/* Toggle Rx checksum offload if hardware supports it. */
-		.csum = (priv->hw_csum &&
-			 dev->data->dev_conf.rxmode.hw_ip_checksum),
-		.csum_l2tun = (priv->hw_csum_l2tun &&
-			       dev->data->dev_conf.rxmode.hw_ip_checksum),
+		.csum = priv->hw_csum &&
+			(offloads & DEV_RX_OFFLOAD_CHECKSUM),
+		.csum_l2tun = priv->hw_csum_l2tun &&
+			      (offloads & DEV_RX_OFFLOAD_CHECKSUM),
+		.crc_present = crc_present,
 		.l2tun_offload = priv->hw_csum_l2tun,
 		.stats = {
 			.idx = idx,
@@ -774,7 +825,7 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	if (dev->data->dev_conf.rxmode.max_rx_pkt_len <=
 	    (mb_len - RTE_PKTMBUF_HEADROOM)) {
 		;
-	} else if (dev->data->dev_conf.rxmode.enable_scatter) {
+	} else if (offloads & DEV_RX_OFFLOAD_SCATTER) {
 		uint32_t size =
 			RTE_PKTMBUF_HEADROOM +
 			dev->data->dev_conf.rxmode.max_rx_pkt_len;
@@ -817,15 +868,13 @@ mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		      1 << rxq->sges_n);
 		goto error;
 	}
-	/* Use the entire Rx mempool as the memory region. */
-	rxq->mr = mlx4_mr_get(priv, mp);
-	if (!rxq->mr) {
-		ERROR("%p: MR creation failure: %s",
-		      (void *)dev, strerror(rte_errno));
+	if (mlx4_mr_btree_init(&rxq->mr_ctrl.cache_bh,
+			       MLX4_MR_BTREE_CACHE_N, socket)) {
+		/* rte_errno is already set. */
 		goto error;
 	}
 	if (dev->data->dev_conf.intr_conf.rxq) {
-		rxq->channel = ibv_create_comp_channel(priv->ctx);
+		rxq->channel = mlx4_glue->create_comp_channel(priv->ctx);
 		if (rxq->channel == NULL) {
 			rte_errno = ENOMEM;
 			ERROR("%p: Rx interrupt completion channel creation"
@@ -880,8 +929,7 @@ mlx4_rx_queue_release(void *dpdk_rxq)
 	assert(!rxq->wqes);
 	assert(!rxq->rq_db);
 	if (rxq->channel)
-		claim_zero(ibv_destroy_comp_channel(rxq->channel));
-	if (rxq->mr)
-		mlx4_mr_put(rxq->mr);
+		claim_zero(mlx4_glue->destroy_comp_channel(rxq->channel));
+	mlx4_mr_btree_free(&rxq->mr_ctrl.cache_bh);
 	rte_free(rxq);
 }

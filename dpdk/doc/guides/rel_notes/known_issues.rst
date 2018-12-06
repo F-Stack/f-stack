@@ -1,33 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Known Issues and Limitations in Legacy Releases
 ===============================================
@@ -739,6 +711,118 @@ igb_uio can not be used when running l3fwd-power
 
 **Affected Environment/Platform**:
    ALL.
+
+**Driver/Module**:
+   ``igb_uio`` module.
+
+
+Linux kernel 4.10.0 iommu attribute read error
+----------------------------------------------
+
+**Description**:
+   When VT-d is enabled (``iommu=pt intel_iommu=on``), reading IOMMU attributes from
+   /sys/devices/virtual/iommu/dmarXXX/intel-iommu/cap on Linux kernel 4.10.0 error.
+   This bug is fixed in `Linux commmit a7fdb6e648fb
+   <https://patchwork.kernel.org/patch/9595727/>`_,
+   This bug is introduced in `Linux commmit 39ab9555c241
+   <https://patchwork.kernel.org/patch/9554403/>`_,
+
+**Implication**:
+   When binding devices to VFIO and attempting to run testpmd application,
+   testpmd (and other DPDK applications) will not initialize.
+
+**Resolution/Workaround**:
+   Use other linux kernel version. It only happens in linux kernel 4.10.0.
+
+**Affected Environment/Platform**:
+   ALL OS of linux kernel 4.10.0.
+
+**Driver/Module**:
+   ``vfio-pci`` module.
+
+Netvsc driver and application restart
+-------------------------------------
+
+**Description**:
+   The Linux kernel uio_hv_generic driver does not completely shutdown and clean up
+   resources properly if application using Netvsc PMD exits.
+
+**Implication**:
+   When application using Netvsc PMD is restarted it can not complete initialization
+   handshake sequence with the host.
+
+**Resolution/Workaround**:
+   Either reboot the guest or remove and reinsert the hv_uio_generic module.
+
+**Affected Environment/Platform**:
+   Linux Hyper-V.
+
+**Driver/Module**:
+   ``uio_hv_generic`` module.
+
+
+PHY link up fails when rebinding i40e NICs to kernel driver
+-----------------------------------------------------------
+
+**Description**:
+   Some kernel drivers are not able to handle the link status correctly
+   after DPDK application sets the PHY to link down.
+
+**Implication**:
+   The link status can't be set to "up" after the NIC is rebound to the
+   kernel driver. Before a DPDK application quits it will invoke the
+   function ``i40e_dev_stop()`` which will sets the PHY to link down. Some
+   kernel drivers may not be able to handle the link status correctly after
+   it retakes control of the device. This is a known PHY link configuration
+   issue in the i40e kernel driver. The fix has been addressed in the 2.7.4 rc
+   version. So if the i40e kernel driver is < 2.7.4 and doesn't have the
+   fix backported it will encounter this issue.
+
+**Resolution/Workaround**:
+   First try to remove and reinsert the i40e kernel driver. If that fails
+   reboot the system.
+
+**Affected Environment/Platform**:
+   All.
+
+**Driver/Module**:
+   Poll Mode Driver (PMD).
+
+
+Restricted vdev ethdev operations supported in secondary process
+----------------------------------------------------------------
+**Description**
+   In current virtual device sharing model, Ethernet device data structure will be
+   shared between primary and secondary process. Only those Ethernet device operations
+   which based on it are workable in secondary process.
+
+**Implication**
+   Some Ethernet device operations like device start/stop will be failed on virtual
+   device in secondary process.
+
+**Affected Environment/Platform**:
+   ALL.
+
+**Driver/Module**:
+   Virtual Device Poll Mode Driver (PMD).
+
+
+Kernel crash when hot-unplug igb_uio device while DPDK application is running
+-----------------------------------------------------------------------------
+
+**Description**:
+   When device has been bound to igb_uio driver and application is running,
+   hot-unplugging the device may cause kernel crash.
+
+**Reason**:
+   When device is hot-unplugged, igb_uio driver will be removed which will destroy UIO resources.
+   Later trying to access any uio resource will cause kernel crash.
+
+**Resolution/Workaround**:
+   If using DPDK for PCI HW hot-unplug, prefer to bind device with VFIO instead of IGB_UIO.
+
+**Affected Environment/Platform**:
+    ALL.
 
 **Driver/Module**:
    ``igb_uio`` module.

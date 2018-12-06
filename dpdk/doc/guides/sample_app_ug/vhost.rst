@@ -1,34 +1,5 @@
-
-..  BSD LICENSE
-    Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2016 Intel Corporation.
 
 Vhost Sample Application
 ========================
@@ -107,7 +78,7 @@ could be done by:
 .. code-block:: console
 
    modprobe uio_pci_generic
-   $RTE_SDK/usertools/dpdk-devbind.py -b=uio_pci_generic 0000:00:04.0
+   $RTE_SDK/usertools/dpdk-devbind.py -b uio_pci_generic 0000:00:04.0
 
 Then start testpmd for packet forwarding testing.
 
@@ -176,13 +147,20 @@ retries on an RX burst, it takes effect only when rx retry is enabled. The
 default value is 15.
 
 **--dequeue-zero-copy**
-Dequeue zero copy will be enabled when this option is given.
+Dequeue zero copy will be enabled when this option is given. it is worth to
+note that if NIC is binded to driver with iommu enabled, dequeue zero copy
+cannot work at VM2NIC mode (vm2vm=0) due to currently we don't setup iommu
+dma mapping for guest memory.
 
 **--vlan-strip 0|1**
 VLAN strip option is removed, because different NICs have different behaviors
 when disabling VLAN strip. Such feature, which heavily depends on hardware,
 should be removed from this example to reduce confusion. Now, VLAN strip is
 enabled and cannot be disabled.
+
+**--builtin-net-driver**
+A very simple vhost-user net driver which demonstrates how to use the generic
+vhost APIs will be used when this option is given. It is disabled by default.
 
 Common Issues
 -------------
@@ -204,15 +182,22 @@ Common Issues
   The command above indicates how many hugepages are free to support QEMU's
   allocation request.
 
-* vhost-user will not work with QEMU without the ``-mem-prealloc`` option
-
-  The current implementation works properly only when the guest memory is
-  pre-allocated.
-
-* vhost-user will not work with a QEMU version without shared memory mapping:
-
-  Make sure ``share=on`` QEMU option is given.
-
 * Failed to build DPDK in VM
 
   Make sure "-cpu host" QEMU option is given.
+
+* Device start fails if NIC's max queues > the default number of 128
+
+  mbuf pool size is dependent on the MAX_QUEUES configuration, if NIC's
+  max queue number is larger than 128, device start will fail due to
+  insufficient mbuf.
+
+  Change the default number to make it work as below, just set the number
+  according to the NIC's property. ::
+
+      make EXTRA_CFLAGS="-DMAX_QUEUES=320"
+
+* Option "builtin-net-driver" is incompatible with QEMU
+
+  QEMU vhost net device start will fail if protocol feature is not negotiated.
+  DPDK virtio-user pmd can be the replacement of QEMU.

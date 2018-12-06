@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2013 - 2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #ifndef _VIRTCHNL_H_
 #define _VIRTCHNL_H_
@@ -240,7 +211,7 @@ struct virtchnl_vsi_resource {
 
 VIRTCHNL_CHECK_STRUCT_LEN(16, virtchnl_vsi_resource);
 
-/* VF offload flags
+/* VF capability flags
  * VIRTCHNL_VF_OFFLOAD_L2 flag is inclusive of base mode L2 offloads including
  * TX/RX Checksum offloading and TSO for non-tunnelled packets.
  */
@@ -269,7 +240,7 @@ struct virtchnl_vf_resource {
 	u16 max_vectors;
 	u16 max_mtu;
 
-	u32 vf_offload_flags;
+	u32 vf_cap_flags;
 	u32 rss_key_size;
 	u32 rss_lut_size;
 
@@ -349,8 +320,8 @@ VIRTCHNL_CHECK_STRUCT_LEN(72, virtchnl_vsi_queue_config_info);
  * additional queues must be negotiated.  This is a best effort request as it
  * is possible the PF does not have enough queues left to support the request.
  * If the PF cannot support the number requested it will respond with the
- * maximum number it is able to support; otherwise it will respond with the
- * number requested.
+ * maximum number it is able to support.  If the request is successful, PF will
+ * then reset the VF to institute required changes.
  */
 
 /* VF resource request */
@@ -509,7 +480,7 @@ VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_rss_key);
 struct virtchnl_rss_lut {
 	u16 vsi_id;
 	u16 lut_entries;
-	u8 lut[1];        /* RSS lookup table*/
+	u8 lut[1];        /* RSS lookup table */
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_rss_lut);
@@ -764,7 +735,7 @@ virtchnl_vc_validate_vf_msg(struct virtchnl_version_info *ver, u32 v_opcode,
 		return VIRTCHNL_ERR_PARAM;
 	}
 	/* few more checks */
-	if ((valid_len != msglen) || (err_msg_format))
+	if (err_msg_format || valid_len != msglen)
 		return VIRTCHNL_STATUS_ERR_OPCODE_MISMATCH;
 
 	return 0;

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2017 Intel Corporation
+
+# makefile for building kernel modules using meson
+# takes parameters from the environment
+
+# source file is passed via KMOD_SRC as relative path, we only use final
+# (tail) component of it (:T), as VPATH is used to find actual file. The
+# VPATH is similarly extracted from the non-final (head) portion of the
+# path (:H) converted to absolute path (:tA).  This use of VPATH is to have
+# the .o files placed in the build, not source directory
+
+VPATH := ${KMOD_SRC:H:tA}
+SRCS := ${KMOD_SRC:T} device_if.h bus_if.h pci_if.h
+CFLAGS += $(KMOD_CFLAGS)
+.OBJDIR: ${KMOD_OBJDIR}
+
+.include <bsd.kmod.mk>

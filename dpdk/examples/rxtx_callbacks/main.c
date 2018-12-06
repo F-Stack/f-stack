@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <stdint.h>
@@ -39,18 +10,18 @@
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 
-#define RX_RING_SIZE 128
-#define TX_RING_SIZE 512
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
 static const struct rte_eth_conf port_conf_default = {
-	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN, },
+	.rxmode = {
+		.max_rx_pkt_len = ETHER_MAX_LEN,
+	},
 };
-
-static unsigned nb_ports;
 
 static struct {
 	uint64_t total_cycles;
@@ -105,9 +76,16 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	uint16_t nb_txd = TX_RING_SIZE;
 	int retval;
 	uint16_t q;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_txconf txconf;
 
-	if (port >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
+
+	rte_eth_dev_info_get(port, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
 	if (retval != 0)
@@ -124,9 +102,11 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 	}
 
+	txconf = dev_info.default_txconf;
+	txconf.offloads = port_conf.txmode.offloads;
 	for (q = 0; q < tx_rings; q++) {
 		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
-				rte_eth_dev_socket_id(port), NULL);
+				rte_eth_dev_socket_id(port), &txconf);
 		if (retval < 0)
 			return retval;
 	}
@@ -161,7 +141,7 @@ lcore_main(void)
 {
 	uint16_t port;
 
-	for (port = 0; port < nb_ports; port++)
+	RTE_ETH_FOREACH_DEV(port)
 		if (rte_eth_dev_socket_id(port) > 0 &&
 				rte_eth_dev_socket_id(port) !=
 						(int)rte_socket_id())
@@ -172,7 +152,7 @@ lcore_main(void)
 	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
 			rte_lcore_id());
 	for (;;) {
-		for (port = 0; port < nb_ports; port++) {
+		RTE_ETH_FOREACH_DEV(port) {
 			struct rte_mbuf *bufs[BURST_SIZE];
 			const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
 					bufs, BURST_SIZE);
@@ -195,6 +175,7 @@ int
 main(int argc, char *argv[])
 {
 	struct rte_mempool *mbuf_pool;
+	uint16_t nb_ports;
 	uint16_t portid;
 
 	/* init EAL */
@@ -205,7 +186,7 @@ main(int argc, char *argv[])
 	argc -= ret;
 	argv += ret;
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports < 2 || (nb_ports & 1))
 		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
@@ -216,7 +197,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++)
+	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu8"\n",
 					portid);

@@ -1,35 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   Copyright 2013-2014 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation.
+ * Copyright 2013-2014 6WIND S.A.
  */
 
 #ifndef _RTE_BUS_PCI_H_
@@ -91,10 +62,12 @@ struct rte_pci_device {
 	struct rte_mem_resource mem_resource[PCI_MAX_RESOURCE];
 					    /**< PCI Memory Resource */
 	struct rte_intr_handle intr_handle; /**< Interrupt handle */
-	struct rte_pci_driver *driver;      /**< Associated driver */
+	struct rte_pci_driver *driver;      /**< PCI driver used in probing */
 	uint16_t max_vfs;                   /**< sriov enable if not zero */
 	enum rte_kernel_driver kdrv;        /**< Kernel driver passthrough */
 	char name[PCI_PRI_STR_SIZE+1];      /**< PCI location (ASCII) */
+	struct rte_intr_handle vfio_req_intr_handle;
+				/**< Handler of VFIO request interrupt */
 };
 
 /**
@@ -150,7 +123,7 @@ struct rte_pci_driver {
 	pci_probe_t *probe;                /**< Device Probe function. */
 	pci_remove_t *remove;              /**< Device Remove function. */
 	const struct rte_pci_id *id_table; /**< ID table, NULL terminated. */
-	uint32_t drv_flags;                /**< Flags contolling handling of device. */
+	uint32_t drv_flags;                /**< Flags RTE_PCI_DRV_*. */
 };
 
 /**
@@ -164,6 +137,10 @@ struct rte_pci_bus {
 
 /** Device needs PCI BAR mapping (done with either IGB_UIO or VFIO) */
 #define RTE_PCI_DRV_NEED_MAPPING 0x0001
+/** Device needs PCI BAR mapping with enabled write combining (wc) */
+#define RTE_PCI_DRV_WC_ACTIVATE 0x0002
+/** Device already probed can be probed again to check for new ports. */
+#define RTE_PCI_DRV_PROBE_AGAIN 0x0004
 /** Device driver supports link state interrupt */
 #define RTE_PCI_DRV_INTR_LSC	0x0008
 /** Device driver supports device removal interrupt */
@@ -218,8 +195,7 @@ void rte_pci_register(struct rte_pci_driver *driver);
 
 /** Helper for PCI device registration from driver (eth, crypto) instance */
 #define RTE_PMD_REGISTER_PCI(nm, pci_drv) \
-RTE_INIT(pciinitfn_ ##nm); \
-static void pciinitfn_ ##nm(void) \
+RTE_INIT(pciinitfn_ ##nm) \
 {\
 	(pci_drv).driver.name = RTE_STR(nm);\
 	rte_pci_register(&pci_drv); \
@@ -247,6 +223,8 @@ void rte_pci_unregister(struct rte_pci_driver *driver);
  *   The length of the data buffer.
  * @param offset
  *   The offset into PCI config space
+ * @return
+ *  Number of bytes read on success, negative on error.
  */
 int rte_pci_read_config(const struct rte_pci_device *device,
 		void *buf, size_t len, off_t offset);

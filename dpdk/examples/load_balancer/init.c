@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -74,11 +45,7 @@ static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode	= ETH_MQ_RX_RSS,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -430,6 +397,10 @@ app_init_nics(void)
 		struct rte_mempool *pool;
 		uint16_t nic_rx_ring_size;
 		uint16_t nic_tx_ring_size;
+		struct rte_eth_rxconf rxq_conf;
+		struct rte_eth_txconf txq_conf;
+		struct rte_eth_dev_info dev_info;
+		struct rte_eth_conf local_port_conf = port_conf;
 
 		n_rx_queues = app_get_nic_rx_queues_per_port(port);
 		n_tx_queues = app.nic_tx_port_mask[port];
@@ -440,11 +411,27 @@ app_init_nics(void)
 
 		/* Init port */
 		printf("Initializing NIC port %u ...\n", port);
+		rte_eth_dev_info_get(port, &dev_info);
+		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+			local_port_conf.txmode.offloads |=
+				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
+			dev_info.flow_type_rss_offloads;
+		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf !=
+				port_conf.rx_adv_conf.rss_conf.rss_hf) {
+			printf("Port %u modified RSS hash function based on hardware support,"
+				"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+				port,
+				port_conf.rx_adv_conf.rss_conf.rss_hf,
+				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
+		}
+
 		ret = rte_eth_dev_configure(
 			port,
 			(uint8_t) n_rx_queues,
 			(uint8_t) n_tx_queues,
-			&port_conf);
+			&local_port_conf);
 		if (ret < 0) {
 			rte_panic("Cannot init NIC port %u (%d)\n", port, ret);
 		}
@@ -461,6 +448,8 @@ app_init_nics(void)
 		app.nic_rx_ring_size = nic_rx_ring_size;
 		app.nic_tx_ring_size = nic_tx_ring_size;
 
+		rxq_conf = dev_info.default_rxconf;
+		rxq_conf.offloads = local_port_conf.rxmode.offloads;
 		/* Init RX queues */
 		for (queue = 0; queue < APP_MAX_RX_QUEUES_PER_NIC_PORT; queue ++) {
 			if (app.nic_rx_queue_mask[port][queue] == 0) {
@@ -478,7 +467,7 @@ app_init_nics(void)
 				queue,
 				(uint16_t) app.nic_rx_ring_size,
 				socket,
-				NULL,
+				&rxq_conf,
 				pool);
 			if (ret < 0) {
 				rte_panic("Cannot init RX queue %u for port %u (%d)\n",
@@ -486,6 +475,8 @@ app_init_nics(void)
 			}
 		}
 
+		txq_conf = dev_info.default_txconf;
+		txq_conf.offloads = local_port_conf.txmode.offloads;
 		/* Init TX queues */
 		if (app.nic_tx_port_mask[port] == 1) {
 			app_get_lcore_for_nic_tx(port, &lcore);
@@ -497,7 +488,7 @@ app_init_nics(void)
 				0,
 				(uint16_t) app.nic_tx_ring_size,
 				socket,
-				NULL);
+				&txq_conf);
 			if (ret < 0) {
 				rte_panic("Cannot init TX queue 0 for port %d (%d)\n",
 					port,

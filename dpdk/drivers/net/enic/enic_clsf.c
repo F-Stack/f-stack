@@ -1,40 +1,11 @@
-/*
- * Copyright 2008-2014 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #include <libgen.h>
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_hash.h>
 #include <rte_byteorder.h>
@@ -140,7 +111,6 @@ copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 	     struct rte_eth_fdir_masks *masks)
 {
 	struct filter_generic_1 *gp = &fltr->u.generic_1;
-	int i;
 
 	fltr->type = FILTER_DPDK_1;
 	memset(gp, 0, sizeof(*gp));
@@ -302,18 +272,14 @@ copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
 			ipv6_mask.proto = masks->ipv6_mask.proto;
 			ipv6_val.proto = input->flow.ipv6_flow.proto;
 		}
-		for (i = 0; i < 4; i++) {
-			*(uint32_t *)&ipv6_mask.src_addr[i * 4] =
-					masks->ipv6_mask.src_ip[i];
-			*(uint32_t *)&ipv6_val.src_addr[i * 4] =
-					input->flow.ipv6_flow.src_ip[i];
-		}
-		for (i = 0; i < 4; i++) {
-			*(uint32_t *)&ipv6_mask.dst_addr[i * 4] =
-					masks->ipv6_mask.src_ip[i];
-			*(uint32_t *)&ipv6_val.dst_addr[i * 4] =
-					input->flow.ipv6_flow.dst_ip[i];
-		}
+		memcpy(ipv6_mask.src_addr, masks->ipv6_mask.src_ip,
+		       sizeof(ipv6_mask.src_addr));
+		memcpy(ipv6_val.src_addr, input->flow.ipv6_flow.src_ip,
+		       sizeof(ipv6_val.src_addr));
+		memcpy(ipv6_mask.dst_addr, masks->ipv6_mask.dst_ip,
+		       sizeof(ipv6_mask.dst_addr));
+		memcpy(ipv6_val.dst_addr, input->flow.ipv6_flow.dst_ip,
+		       sizeof(ipv6_val.dst_addr));
 		if (input->flow.ipv6_flow.tc) {
 			ipv6_mask.vtc_flow = masks->ipv6_mask.tc << 12;
 			ipv6_val.vtc_flow = input->flow.ipv6_flow.tc << 12;

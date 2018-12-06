@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <rte_debug.h>
@@ -182,6 +160,35 @@ sfc_ev_dp_rx(void *arg, __rte_unused uint32_t label, uint32_t id,
 
 	SFC_ASSERT(evq->sa->dp_rx->qrx_ev != NULL);
 	return evq->sa->dp_rx->qrx_ev(dp_rxq, id);
+}
+
+static boolean_t
+sfc_ev_nop_rx_ps(void *arg, uint32_t label, uint32_t id,
+		 uint32_t pkt_count, uint16_t flags)
+{
+	struct sfc_evq *evq = arg;
+
+	sfc_err(evq->sa,
+		"EVQ %u unexpected packed stream Rx event label=%u id=%#x pkt_count=%u flags=%#x",
+		evq->evq_index, label, id, pkt_count, flags);
+	return B_TRUE;
+}
+
+/* It is not actually used on datapath, but required on RxQ flush */
+static boolean_t
+sfc_ev_dp_rx_ps(void *arg, __rte_unused uint32_t label, uint32_t id,
+		__rte_unused uint32_t pkt_count, __rte_unused uint16_t flags)
+{
+	struct sfc_evq *evq = arg;
+	struct sfc_dp_rxq *dp_rxq;
+
+	dp_rxq = evq->dp_rxq;
+	SFC_ASSERT(dp_rxq != NULL);
+
+	if (evq->sa->dp_rx->qrx_ps_ev != NULL)
+		return evq->sa->dp_rx->qrx_ps_ev(dp_rxq, id);
+	else
+		return B_FALSE;
 }
 
 static boolean_t
@@ -404,27 +411,11 @@ sfc_ev_link_change(void *arg, efx_link_mode_t link_mode)
 {
 	struct sfc_evq *evq = arg;
 	struct sfc_adapter *sa = evq->sa;
-	struct rte_eth_link *dev_link = &sa->eth_dev->data->dev_link;
 	struct rte_eth_link new_link;
-	uint64_t new_link_u64;
-	uint64_t old_link_u64;
-
-	EFX_STATIC_ASSERT(sizeof(*dev_link) == sizeof(rte_atomic64_t));
 
 	sfc_port_link_mode_to_info(link_mode, &new_link);
-
-	new_link_u64 = *(uint64_t *)&new_link;
-	do {
-		old_link_u64 = rte_atomic64_read((rte_atomic64_t *)dev_link);
-		if (old_link_u64 == new_link_u64)
-			break;
-
-		if (rte_atomic64_cmpset((volatile uint64_t *)dev_link,
-					old_link_u64, new_link_u64)) {
-			evq->sa->port.lsc_seq++;
-			break;
-		}
-	} while (B_TRUE);
+	if (rte_eth_linkstatus_set(sa->eth_dev, &new_link))
+		evq->sa->port.lsc_seq++;
 
 	return B_FALSE;
 }
@@ -432,6 +423,7 @@ sfc_ev_link_change(void *arg, efx_link_mode_t link_mode)
 static const efx_ev_callbacks_t sfc_ev_callbacks = {
 	.eec_initialized	= sfc_ev_initialized,
 	.eec_rx			= sfc_ev_nop_rx,
+	.eec_rx_ps		= sfc_ev_nop_rx_ps,
 	.eec_tx			= sfc_ev_nop_tx,
 	.eec_exception		= sfc_ev_exception,
 	.eec_rxq_flush_done	= sfc_ev_nop_rxq_flush_done,
@@ -447,6 +439,7 @@ static const efx_ev_callbacks_t sfc_ev_callbacks = {
 static const efx_ev_callbacks_t sfc_ev_callbacks_efx_rx = {
 	.eec_initialized	= sfc_ev_initialized,
 	.eec_rx			= sfc_ev_efx_rx,
+	.eec_rx_ps		= sfc_ev_nop_rx_ps,
 	.eec_tx			= sfc_ev_nop_tx,
 	.eec_exception		= sfc_ev_exception,
 	.eec_rxq_flush_done	= sfc_ev_rxq_flush_done,
@@ -462,6 +455,7 @@ static const efx_ev_callbacks_t sfc_ev_callbacks_efx_rx = {
 static const efx_ev_callbacks_t sfc_ev_callbacks_dp_rx = {
 	.eec_initialized	= sfc_ev_initialized,
 	.eec_rx			= sfc_ev_dp_rx,
+	.eec_rx_ps		= sfc_ev_dp_rx_ps,
 	.eec_tx			= sfc_ev_nop_tx,
 	.eec_exception		= sfc_ev_exception,
 	.eec_rxq_flush_done	= sfc_ev_rxq_flush_done,
@@ -477,6 +471,7 @@ static const efx_ev_callbacks_t sfc_ev_callbacks_dp_rx = {
 static const efx_ev_callbacks_t sfc_ev_callbacks_efx_tx = {
 	.eec_initialized	= sfc_ev_initialized,
 	.eec_rx			= sfc_ev_nop_rx,
+	.eec_rx_ps		= sfc_ev_nop_rx_ps,
 	.eec_tx			= sfc_ev_tx,
 	.eec_exception		= sfc_ev_exception,
 	.eec_rxq_flush_done	= sfc_ev_nop_rxq_flush_done,
@@ -492,6 +487,7 @@ static const efx_ev_callbacks_t sfc_ev_callbacks_efx_tx = {
 static const efx_ev_callbacks_t sfc_ev_callbacks_dp_tx = {
 	.eec_initialized	= sfc_ev_initialized,
 	.eec_rx			= sfc_ev_nop_rx,
+	.eec_rx_ps		= sfc_ev_nop_rx_ps,
 	.eec_tx			= sfc_ev_dp_tx,
 	.eec_exception		= sfc_ev_exception,
 	.eec_rxq_flush_done	= sfc_ev_nop_rxq_flush_done,

@@ -1,36 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <rte_malloc.h>
+#include <rte_mbuf_pool_ops.h>
 
 #include "cperf_test_common.h"
 
@@ -38,12 +11,15 @@ struct obj_params {
 	uint32_t src_buf_offset;
 	uint32_t dst_buf_offset;
 	uint16_t segment_sz;
+	uint16_t headroom_sz;
+	uint16_t data_len;
 	uint16_t segments_nb;
 };
 
 static void
 fill_single_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
-		void *obj, uint32_t mbuf_offset, uint16_t segment_sz)
+		void *obj, uint32_t mbuf_offset, uint16_t segment_sz,
+		uint16_t headroom, uint16_t data_len)
 {
 	uint32_t mbuf_hdr_size = sizeof(struct rte_mbuf);
 
@@ -53,10 +29,10 @@ fill_single_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 	m->buf_iova = rte_mempool_virt2iova(obj) +
 		mbuf_offset + mbuf_hdr_size;
 	m->buf_len = segment_sz;
-	m->data_len = segment_sz;
+	m->data_len = data_len;
 
-	/* No headroom needed for the buffer */
-	m->data_off = 0;
+	/* Use headroom specified for the buffer */
+	m->data_off = headroom;
 
 	/* init some constant fields */
 	m->pool = mp;
@@ -69,7 +45,7 @@ fill_single_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 static void
 fill_multi_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 		void *obj, uint32_t mbuf_offset, uint16_t segment_sz,
-		uint16_t segments_nb)
+		uint16_t headroom, uint16_t data_len, uint16_t segments_nb)
 {
 	uint16_t mbuf_hdr_size = sizeof(struct rte_mbuf);
 	uint16_t remaining_segments = segments_nb;
@@ -84,10 +60,10 @@ fill_multi_seg_mbuf(struct rte_mbuf *m, struct rte_mempool *mp,
 		m->buf_iova = next_seg_phys_addr;
 		next_seg_phys_addr += mbuf_hdr_size + segment_sz;
 		m->buf_len = segment_sz;
-		m->data_len = segment_sz;
+		m->data_len = data_len;
 
-		/* No headroom needed for the buffer */
-		m->data_off = 0;
+		/* Use headroom specified for the buffer */
+		m->data_off = headroom;
 
 		/* init some constant fields */
 		m->pool = mp;
@@ -126,10 +102,12 @@ mempool_obj_init(struct rte_mempool *mp,
 	op->sym->m_src = m;
 	if (params->segments_nb == 1)
 		fill_single_seg_mbuf(m, mp, obj, params->src_buf_offset,
-				params->segment_sz);
+				params->segment_sz, params->headroom_sz,
+				params->data_len);
 	else
 		fill_multi_seg_mbuf(m, mp, obj, params->src_buf_offset,
-				params->segment_sz, params->segments_nb);
+				params->segment_sz, params->headroom_sz,
+				params->data_len, params->segments_nb);
 
 
 	/* Set destination buffer */
@@ -137,7 +115,8 @@ mempool_obj_init(struct rte_mempool *mp,
 		m = (struct rte_mbuf *) ((uint8_t *) obj +
 				params->dst_buf_offset);
 		fill_single_seg_mbuf(m, mp, obj, params->dst_buf_offset,
-				params->segment_sz);
+				params->segment_sz, params->headroom_sz,
+				params->data_len);
 		op->sym->m_dst = m;
 	} else
 		op->sym->m_dst = NULL;
@@ -152,6 +131,7 @@ cperf_alloc_common_memory(const struct cperf_options *options,
 			uint32_t *dst_buf_offset,
 			struct rte_mempool **pool)
 {
+	const char *mp_ops_name;
 	char pool_name[32] = "";
 	int ret;
 
@@ -198,6 +178,11 @@ cperf_alloc_common_memory(const struct cperf_options *options,
 
 	struct obj_params params = {
 		.segment_sz = options->segment_sz,
+		.headroom_sz = options->headroom_sz,
+		/* Data len = segment size - (headroom + tailroom) */
+		.data_len = options->segment_sz -
+			    options->headroom_sz -
+			    options->tailroom_sz,
 		.segments_nb = segments_nb,
 		.src_buf_offset = crypto_op_total_size_padded,
 		.dst_buf_offset = 0
@@ -221,8 +206,10 @@ cperf_alloc_common_memory(const struct cperf_options *options,
 		return -1;
 	}
 
+	mp_ops_name = rte_mbuf_best_mempool_ops();
+
 	ret = rte_mempool_set_ops_byname(*pool,
-		RTE_MBUF_DEFAULT_MEMPOOL_OPS, NULL);
+		mp_ops_name, NULL);
 	if (ret != 0) {
 		RTE_LOG(ERR, USER1,
 			 "Error setting mempool handler for device %u\n",

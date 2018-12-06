@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2017 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Intel Corporation.
 
 Features Overview
 =================
@@ -235,7 +208,7 @@ Supports TCP Segmentation Offloading.
 
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_TCP_TSO``.
 * **[uses]       rte_eth_desc_lim**: ``nb_seg_max``, ``nb_mtu_seg_max``.
-* **[uses]       mbuf**: ``mbuf.ol_flags:PKT_TX_TCP_SEG``.
+* **[uses]       mbuf**: ``mbuf.ol_flags:`` ``PKT_TX_TCP_SEG``, ``PKT_TX_IPV4``, ``PKT_TX_IPV6``, ``PKT_TX_IP_CKSUM``.
 * **[uses]       mbuf**: ``mbuf.tso_segsz``, ``mbuf.l2_len``, ``mbuf.l3_len``, ``mbuf.l4_len``.
 * **[implements] datapath**: ``TSO functionality``.
 * **[provides]   rte_eth_dev_info**: ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_TCP_TSO,DEV_TX_OFFLOAD_UDP_TSO``.
@@ -302,6 +275,17 @@ Supports RSS hashing on RX.
 * **[uses]     user config**: ``dev_conf.rxmode.mq_mode`` = ``ETH_MQ_RX_RSS_FLAG``.
 * **[uses]     user config**: ``dev_conf.rx_adv_conf.rss_conf``.
 * **[provides] rte_eth_dev_info**: ``flow_type_rss_offloads``.
+* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
+
+
+.. _nic_features_inner_rss:
+
+Inner RSS
+---------
+
+Supports RX RSS hashing on Inner headers.
+
+* **[users]    rte_flow_action_rss**: ``level``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
 
 
@@ -529,8 +513,9 @@ CRC offload
 -----------
 
 Supports CRC stripping by hardware.
+A PMD assumed to support CRC stripping by default. PMD should advertise if it supports keeping CRC.
 
-* **[uses] rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_CRC_STRIP``.
+* **[uses] rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_KEEP_CRC``.
 
 
 .. _nic_features_vlan_offload:
@@ -542,8 +527,9 @@ Supports VLAN offload to hardware.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_VLAN_STRIP,DEV_RX_OFFLOAD_VLAN_FILTER,DEV_RX_OFFLOAD_VLAN_EXTEND``.
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_VLAN_INSERT``.
+* **[uses]       mbuf**: ``mbuf.ol_flags:PKT_TX_VLAN``, ``mbuf.vlan_tci``.
 * **[implements] eth_dev_ops**: ``vlan_offload_set``.
-* **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_VLAN_STRIPPED``, ``mbuf.vlan_tci``.
+* **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_VLAN_STRIPPED``, ``mbuf.ol_flags:PKT_RX_VLAN`` ``mbuf.vlan_tci``.
 * **[provides]   rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_VLAN_STRIP``,
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_VLAN_INSERT``.
 * **[related]    API**: ``rte_eth_dev_set_vlan_offload()``,
@@ -559,9 +545,10 @@ Supports QinQ (queue in queue) offload.
 
 * **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_QINQ_STRIP``.
 * **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_QINQ_INSERT``.
-* **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_QINQ_PKT``.
-* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_QINQ_STRIPPED``, ``mbuf.vlan_tci``,
-   ``mbuf.vlan_tci_outer``.
+* **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_QINQ``, ``mbuf.vlan_tci_outer``.
+* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_QINQ_STRIPPED``, ``mbuf.ol_flags:PKT_RX_QINQ``,
+  ``mbuf.ol_flags:PKT_RX_VLAN_STRIPPED``, ``mbuf.ol_flags:PKT_RX_VLAN``
+  ``mbuf.vlan_tci``, ``mbuf.vlan_tci_outer``.
 * **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_QINQ_STRIP``,
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_QINQ_INSERT``.
 
@@ -577,6 +564,7 @@ Supports L3 checksum offload.
 * **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_IPV4_CKSUM``.
 * **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_IP_CKSUM``,
   ``mbuf.ol_flags:PKT_TX_IPV4`` | ``PKT_TX_IPV6``.
+* **[uses]     mbuf**: ``mbuf.l2_len``, ``mbuf.l3_len``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_IP_CKSUM_UNKNOWN`` |
   ``PKT_RX_IP_CKSUM_BAD`` | ``PKT_RX_IP_CKSUM_GOOD`` |
   ``PKT_RX_IP_CKSUM_NONE``.
@@ -591,16 +579,16 @@ L4 checksum offload
 
 Supports L4 checksum offload.
 
-* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM``.
+* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM,DEV_RX_OFFLOAD_SCTP_CKSUM``.
 * **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_UDP_CKSUM,DEV_TX_OFFLOAD_TCP_CKSUM,DEV_TX_OFFLOAD_SCTP_CKSUM``.
-* **[uses]     user config**: ``dev_conf.rxmode.hw_ip_checksum``.
 * **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_IPV4`` | ``PKT_TX_IPV6``,
   ``mbuf.ol_flags:PKT_TX_L4_NO_CKSUM`` | ``PKT_TX_TCP_CKSUM`` |
   ``PKT_TX_SCTP_CKSUM`` | ``PKT_TX_UDP_CKSUM``.
+* **[uses]     mbuf**: ``mbuf.l2_len``, ``mbuf.l3_len``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_L4_CKSUM_UNKNOWN`` |
   ``PKT_RX_L4_CKSUM_BAD`` | ``PKT_RX_L4_CKSUM_GOOD`` |
   ``PKT_RX_L4_CKSUM_NONE``.
-* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM``,
+* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM,DEV_RX_OFFLOAD_SCTP_CKSUM``,
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_UDP_CKSUM,DEV_TX_OFFLOAD_TCP_CKSUM,DEV_TX_OFFLOAD_SCTP_CKSUM``.
 
 .. _nic_features_hw_timestamp:
@@ -654,6 +642,16 @@ Inner L4 checksum
 -----------------
 
 Supports inner packet L4 checksum.
+
+* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_OUTER_UDP_CKSUM``.
+* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_OUTER_L4_CKSUM_UNKNOWN`` |
+  ``PKT_RX_OUTER_L4_CKSUM_BAD`` | ``PKT_RX_OUTER_L4_CKSUM_GOOD`` | ``PKT_RX_OUTER_L4_CKSUM_INVALID``.
+* **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_OUTER_UDP_CKSUM``.
+* **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_OUTER_IPV4`` | ``PKT_TX_OUTER_IPV6``.
+  ``mbuf.ol_flags:PKT_TX_OUTER_UDP_CKSUM``.
+* **[uses]     mbuf**: ``mbuf.outer_l2_len``, ``mbuf.outer_l3_len``.
+* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_OUTER_UDP_CKSUM``,
+  ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_OUTER_UDP_CKSUM``.
 
 
 .. _nic_features_packet_type_parsing:
@@ -774,6 +772,17 @@ Supports getting/setting device eeprom data.
 * **[implements] eth_dev_ops**: ``get_eeprom_length``, ``get_eeprom``, ``set_eeprom``.
 * **[related]    API**: ``rte_eth_dev_get_eeprom_length()``, ``rte_eth_dev_get_eeprom()``,
   ``rte_eth_dev_set_eeprom()``.
+
+
+.. _nic_features_module_eeprom_dump:
+
+Module EEPROM dump
+------------------
+
+Supports getting information and data of plugin module eeprom.
+
+* **[implements] eth_dev_ops**: ``get_module_info``, ``get_module_eeprom``.
+* **[related]    API**: ``rte_eth_dev_get_module_info()``, ``rte_eth_dev_get_module_eeprom()``.
 
 
 .. _nic_features_register_dump:
@@ -919,7 +928,25 @@ Documentation describes performance values.
 
 See ``dpdk.org/doc/perf/*``.
 
+.. _nic_features_runtime_rx_queue_setup:
 
+Runtime Rx queue setup
+----------------------
+
+Supports Rx queue setup after device started.
+
+* **[provides] rte_eth_dev_info**: ``dev_capa:RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP``.
+* **[related]  API**: ``rte_eth_dev_info_get()``.
+
+.. _nic_features_runtime_tx_queue_setup:
+
+Runtime Tx queue setup
+----------------------
+
+Supports Tx queue setup after device started.
+
+* **[provides] rte_eth_dev_info**: ``dev_capa:RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP``.
+* **[related]  API**: ``rte_eth_dev_info_get()``.
 
 .. _nic_features_other:
 

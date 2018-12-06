@@ -1,41 +1,8 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2016-2017 NXP.
+ * Copyright 2016-2017 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 #ifndef __FSL_DPSECI_H
 #define __FSL_DPSECI_H
@@ -53,7 +20,7 @@ struct fsl_mc_io;
 /**
  * Maximum number of Tx/Rx priorities per DPSECI object
  */
-#define DPSECI_PRIO_NUM		8
+#define DPSECI_MAX_QUEUE_NUM		16
 
 /**
  * All queues considered; see dpseci_set_rx_queue()
@@ -91,7 +58,7 @@ struct dpseci_cfg {
 	uint32_t options;
 	uint8_t num_tx_queues;
 	uint8_t num_rx_queues;
-	uint8_t priorities[DPSECI_PRIO_NUM];
+	uint8_t priorities[DPSECI_MAX_QUEUE_NUM];
 };
 
 int dpseci_create(struct fsl_mc_io *mc_io,
@@ -292,6 +259,10 @@ int dpseci_get_tx_queue(struct fsl_mc_io *mc_io,
  *			implemented in this version of SEC.
  * @aes_acc_num:	The number of copies of the AES module that are
  *			implemented in this version of SEC.
+ * @ccha_acc_num:	The number of copies of the ChaCha20 module that are
+ *			implemented in this version of SEC.
+ * @ptha_acc_num:	The number of copies of the Poly1305 module that are
+ *			implemented in this version of SEC.
  **/
 
 struct dpseci_sec_attr {
@@ -312,6 +283,8 @@ struct dpseci_sec_attr {
 	uint8_t arc4_acc_num;
 	uint8_t des_acc_num;
 	uint8_t aes_acc_num;
+	uint8_t ccha_acc_num;
+	uint8_t ptha_acc_num;
 };
 
 int dpseci_get_sec_attr(struct fsl_mc_io *mc_io,
@@ -349,6 +322,21 @@ int dpseci_get_api_version(struct fsl_mc_io *mc_io,
 			   uint32_t cmd_flags,
 			   uint16_t *major_ver,
 			   uint16_t *minor_ver);
+
+int dpseci_set_opr(struct fsl_mc_io *mc_io,
+		   uint32_t cmd_flags,
+		   uint16_t token,
+		   uint8_t index,
+		   uint8_t options,
+		   struct opr_cfg *cfg);
+
+int dpseci_get_opr(struct fsl_mc_io *mc_io,
+		   uint32_t cmd_flags,
+		   uint16_t token,
+		   uint8_t index,
+		   struct opr_cfg *cfg,
+		   struct opr_qry *qry);
+
 /**
  * enum dpseci_congestion_unit - DPSECI congestion units
  * @DPSECI_CONGESTION_UNIT_BYTES: bytes units

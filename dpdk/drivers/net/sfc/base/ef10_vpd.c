@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2009-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2009-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #include "efx.h"
@@ -34,7 +10,7 @@
 
 #if EFSYS_OPT_VPD
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
 
 #include "ef10_tlv_layout.h"
 
@@ -50,7 +26,8 @@ ef10_vpd_init(
 
 	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_PROBE);
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	if (enp->en_nic_cfg.enc_vpd_is_global) {
 		tag = TLV_TAG_GLOBAL_STATIC_VPD;
@@ -106,7 +83,8 @@ ef10_vpd_size(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	/*
 	 * This function returns the total size the user should allocate
@@ -139,7 +117,8 @@ ef10_vpd_read(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	if (enp->en_nic_cfg.enc_vpd_is_global) {
 		tag = TLV_TAG_GLOBAL_DYNAMIC_VPD;
@@ -157,19 +136,22 @@ ef10_vpd_read(
 		rc = ENOSPC;
 		goto fail2;
 	}
-	memcpy(data, dvpd, dvpd_size);
+	if (dvpd != NULL)
+		memcpy(data, dvpd, dvpd_size);
 
 	/* Pad data with all-1s, consistent with update operations */
 	memset(data + dvpd_size, 0xff, size - dvpd_size);
 
-	EFSYS_KMEM_FREE(enp->en_esip, dvpd_size, dvpd);
+	if (dvpd != NULL)
+		EFSYS_KMEM_FREE(enp->en_esip, dvpd_size, dvpd);
 
 	return (0);
 
 fail2:
 	EFSYS_PROBE(fail2);
 
-	EFSYS_KMEM_FREE(enp->en_esip, dvpd_size, dvpd);
+	if (dvpd != NULL)
+		EFSYS_KMEM_FREE(enp->en_esip, dvpd_size, dvpd);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 
@@ -191,7 +173,8 @@ ef10_vpd_verify(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	/*
 	 * Strictly you could take the view that dynamic vpd is optional.
@@ -312,7 +295,8 @@ ef10_vpd_get(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	/* Attempt to satisfy the request from svpd first */
 	if (enp->en_arch.ef10.ena_svpd_length > 0) {
@@ -358,7 +342,8 @@ ef10_vpd_set(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	/* If the provided (tag,keyword) exists in svpd, then it is readonly */
 	if (enp->en_arch.ef10.ena_svpd_length > 0) {
@@ -411,7 +396,8 @@ ef10_vpd_write(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	if (enp->en_nic_cfg.enc_vpd_is_global) {
 		tag = TLV_TAG_GLOBAL_DYNAMIC_VPD;
@@ -447,7 +433,8 @@ ef10_vpd_fini(
 	__in			efx_nic_t *enp)
 {
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	if (enp->en_arch.ef10.ena_svpd_length > 0) {
 		EFSYS_KMEM_FREE(enp->en_esip, enp->en_arch.ef10.ena_svpd_length,
@@ -458,6 +445,6 @@ ef10_vpd_fini(
 	}
 }
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
 
 #endif	/* EFSYS_OPT_VPD */

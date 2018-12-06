@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_COMMON_EFSYS_H
@@ -48,6 +26,7 @@
 #include <rte_io.h>
 
 #include "sfc_debug.h"
+#include "sfc_log.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,10 +47,6 @@ extern "C" {
 #endif
 #include "efx_types.h"
 
-
-#ifndef _NOTE
-#define _NOTE(s)
-#endif
 
 typedef bool boolean_t;
 
@@ -127,40 +102,6 @@ prefetch_read_once(const volatile void *addr)
 	rte_prefetch_non_temporal(addr);
 }
 
-/* Modifiers used for Windows builds */
-#define __in
-#define __in_opt
-#define __in_ecount(_n)
-#define __in_ecount_opt(_n)
-#define __in_bcount(_n)
-#define __in_bcount_opt(_n)
-
-#define __out
-#define __out_opt
-#define __out_ecount(_n)
-#define __out_ecount_opt(_n)
-#define __out_bcount(_n)
-#define __out_bcount_opt(_n)
-#define __out_bcount_part(_n, _l)
-#define __out_bcount_part_opt(_n, _l)
-
-#define __deref_out
-
-#define __inout
-#define __inout_opt
-#define __inout_ecount(_n)
-#define __inout_ecount_opt(_n)
-#define __inout_bcount(_n)
-#define __inout_bcount_opt(_n)
-#define __inout_bcount_full_opt(_n)
-
-#define __deref_out_bcount_opt(n)
-
-#define __checkReturn
-#define __success(_x)
-
-#define __drv_when(_p, _c)
-
 /* Code inclusion options */
 
 
@@ -172,6 +113,8 @@ prefetch_read_once(const volatile void *addr)
 #define EFSYS_OPT_HUNTINGTON 1
 /* Enable SFN8xxx support */
 #define EFSYS_OPT_MEDFORD 1
+/* Enable SFN2xxx support */
+#define EFSYS_OPT_MEDFORD2 1
 #ifdef RTE_LIBRTE_SFC_EFX_DEBUG
 #define EFSYS_OPT_CHECK_REG 1
 #else
@@ -185,7 +128,7 @@ prefetch_read_once(const volatile void *addr)
 
 #define EFSYS_OPT_MAC_STATS 1
 
-#define EFSYS_OPT_LOOPBACK 0
+#define EFSYS_OPT_LOOPBACK 1
 
 #define EFSYS_OPT_MON_MCDI 0
 #define EFSYS_OPT_MON_STATS 0
@@ -198,6 +141,7 @@ prefetch_read_once(const volatile void *addr)
 #define EFSYS_OPT_VPD 0
 #define EFSYS_OPT_NVRAM 0
 #define EFSYS_OPT_BOOTCFG 0
+#define EFSYS_OPT_IMAGE_LAYOUT 0
 
 #define EFSYS_OPT_DIAG 0
 #define EFSYS_OPT_RX_SCALE 1
@@ -215,6 +159,12 @@ prefetch_read_once(const volatile void *addr)
 #define EFSYS_OPT_ALLOW_UNCONFIGURED_NIC 0
 
 #define EFSYS_OPT_RX_PACKED_STREAM 0
+
+#define EFSYS_OPT_RX_ES_SUPER_BUFFER 1
+
+#define EFSYS_OPT_TUNNEL 1
+
+#define EFSYS_OPT_FW_SUBVARIANT_AWARE 1
 
 /* ID */
 
@@ -391,6 +341,9 @@ typedef struct efsys_mem_s {
 		_NOTE(CONSTANTCONDITION);				\
 	} while (B_FALSE)
 
+
+#define	EFSYS_MEM_SIZE(_esmp)						\
+	((_esmp)->esm_mz->len)
 
 #define EFSYS_MEM_ADDR(_esmp)						\
 	((_esmp)->esm_addr)
@@ -743,7 +696,7 @@ typedef uint64_t	efsys_stat_t;
 #define EFSYS_ERR(_esip, _code, _dword0, _dword1)			\
 	do {								\
 		(void)(_esip);						\
-		RTE_LOG(ERR, PMD, "FATAL ERROR #%u (0x%08x%08x)\n",	\
+		SFC_GENERIC_LOG(ERR, "FATAL ERROR #%u (0x%08x%08x)",	\
 			(_code), (_dword0), (_dword1));			\
 		_NOTE(CONSTANTCONDITION);				\
 	} while (B_FALSE)

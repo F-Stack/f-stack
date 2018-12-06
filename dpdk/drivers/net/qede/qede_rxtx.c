@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include <rte_net.h>
@@ -35,6 +33,49 @@ static inline int qede_alloc_rx_buffer(struct qede_rx_queue *rxq)
 	rx_bd->addr.lo = rte_cpu_to_le_32(U64_LO(mapping));
 	rxq->sw_rx_prod++;
 	return 0;
+}
+
+/* Criterias for calculating Rx buffer size -
+ * 1) rx_buf_size should not exceed the size of mbuf
+ * 2) In scattered_rx mode - minimum rx_buf_size should be
+ *    (MTU + Maximum L2 Header Size + 2) / ETH_RX_MAX_BUFF_PER_PKT
+ * 3) In regular mode - minimum rx_buf_size should be
+ *    (MTU + Maximum L2 Header Size + 2)
+ *    In above cases +2 corrosponds to 2 bytes padding in front of L2
+ *    header.
+ * 4) rx_buf_size should be cacheline-size aligned. So considering
+ *    criteria 1, we need to adjust the size to floor instead of ceil,
+ *    so that we don't exceed mbuf size while ceiling rx_buf_size.
+ */
+int
+qede_calc_rx_buf_size(struct rte_eth_dev *dev, uint16_t mbufsz,
+		      uint16_t max_frame_size)
+{
+	struct qede_dev *qdev = QEDE_INIT_QDEV(dev);
+	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
+	int rx_buf_size;
+
+	if (dev->data->scattered_rx) {
+		/* per HW limitation, only ETH_RX_MAX_BUFF_PER_PKT number of
+		 * bufferes can be used for single packet. So need to make sure
+		 * mbuf size is sufficient enough for this.
+		 */
+		if ((mbufsz * ETH_RX_MAX_BUFF_PER_PKT) <
+		     (max_frame_size + QEDE_ETH_OVERHEAD)) {
+			DP_ERR(edev, "mbuf %d size is not enough to hold max fragments (%d) for max rx packet length (%d)\n",
+			       mbufsz, ETH_RX_MAX_BUFF_PER_PKT, max_frame_size);
+			return -EINVAL;
+		}
+
+		rx_buf_size = RTE_MAX(mbufsz,
+				      (max_frame_size + QEDE_ETH_OVERHEAD) /
+				       ETH_RX_MAX_BUFF_PER_PKT);
+	} else {
+		rx_buf_size = max_frame_size + QEDE_ETH_OVERHEAD;
+	}
+
+	/* Align to cache-line size if needed */
+	return QEDE_FLOOR_TO_CACHE_LINE_SIZE(rx_buf_size);
 }
 
 int
@@ -87,7 +128,9 @@ qede_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 
 	/* Fix up RX buffer size */
 	bufsz = (uint16_t)rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM;
-	if ((rxmode->enable_scatter)			||
+	/* cache align the mbuf size to simplfy rx_buf_size calculation */
+	bufsz = QEDE_FLOOR_TO_CACHE_LINE_SIZE(bufsz);
+	if ((rxmode->offloads & DEV_RX_OFFLOAD_SCATTER)	||
 	    (max_rx_pkt_len + QEDE_ETH_OVERHEAD) > bufsz) {
 		if (!dev->data->scattered_rx) {
 			DP_INFO(edev, "Forcing scatter-gather mode\n");
@@ -95,13 +138,13 @@ qede_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		}
 	}
 
-	if (dev->data->scattered_rx)
-		rxq->rx_buf_size = bufsz + ETHER_HDR_LEN +
-				   ETHER_CRC_LEN + QEDE_ETH_OVERHEAD;
-	else
-		rxq->rx_buf_size = max_rx_pkt_len + QEDE_ETH_OVERHEAD;
-	/* Align to cache-line size if needed */
-	rxq->rx_buf_size = QEDE_CEIL_TO_CACHE_LINE_SIZE(rxq->rx_buf_size);
+	rc = qede_calc_rx_buf_size(dev, bufsz, max_rx_pkt_len);
+	if (rc < 0) {
+		rte_free(rxq);
+		return rc;
+	}
+
+	rxq->rx_buf_size = rc;
 
 	DP_INFO(edev, "mtu %u mbufsz %u bd_max_bytes %u scatter_mode %d\n",
 		qdev->mtu, bufsz, rxq->rx_buf_size, dev->data->scattered_rx);
@@ -192,12 +235,13 @@ static void qede_rx_queue_release_mbufs(struct qede_rx_queue *rxq)
 void qede_rx_queue_release(void *rx_queue)
 {
 	struct qede_rx_queue *rxq = rx_queue;
-	struct qede_dev *qdev = rxq->qdev;
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-
-	PMD_INIT_FUNC_TRACE(edev);
+	struct qede_dev *qdev;
+	struct ecore_dev *edev;
 
 	if (rxq) {
+		qdev = rxq->qdev;
+		edev = QEDE_INIT_EDEV(qdev);
+		PMD_INIT_FUNC_TRACE(edev);
 		qede_rx_queue_release_mbufs(rxq);
 		qdev->ops->common->chain_free(edev, &rxq->rx_bd_ring);
 		qdev->ops->common->chain_free(edev, &rxq->rx_comp_ring);
@@ -356,12 +400,13 @@ static void qede_tx_queue_release_mbufs(struct qede_tx_queue *txq)
 void qede_tx_queue_release(void *tx_queue)
 {
 	struct qede_tx_queue *txq = tx_queue;
-	struct qede_dev *qdev = txq->qdev;
-	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-
-	PMD_INIT_FUNC_TRACE(edev);
+	struct qede_dev *qdev;
+	struct ecore_dev *edev;
 
 	if (txq) {
+		qdev = txq->qdev;
+		edev = QEDE_INIT_EDEV(qdev);
+		PMD_INIT_FUNC_TRACE(edev);
 		qede_tx_queue_release_mbufs(txq);
 		qdev->ops->common->chain_free(edev, &txq->tx_pbl);
 		rte_free(txq->sw_tx_ring);
@@ -1716,6 +1761,18 @@ qede_xmit_prep_pkts(__rte_unused void *p_txq, struct rte_mbuf **tx_pkts,
 			}
 		}
 		if (ol_flags & QEDE_TX_OFFLOAD_NOTSUP_MASK) {
+			/* We support only limited tunnel protocols */
+			if (ol_flags & PKT_TX_TUNNEL_MASK) {
+				uint64_t temp;
+
+				temp = ol_flags & PKT_TX_TUNNEL_MASK;
+				if (temp == PKT_TX_TUNNEL_VXLAN ||
+				    temp == PKT_TX_TUNNEL_GENEVE ||
+				    temp == PKT_TX_TUNNEL_MPLSINUDP ||
+				    temp == PKT_TX_TUNNEL_GRE)
+					break;
+			}
+
 			rte_errno = -ENOTSUP;
 			break;
 		}
@@ -1840,15 +1897,14 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 * offloads. Don't rely on pkt_type marked by Rx, instead use
 		 * tx_ol_flags to decide.
 		 */
-		if (((tx_ol_flags & PKT_TX_TUNNEL_MASK) ==
-						PKT_TX_TUNNEL_VXLAN) ||
-		    ((tx_ol_flags & PKT_TX_TUNNEL_MASK) ==
-						PKT_TX_TUNNEL_MPLSINUDP)) {
+		tunn_flg = !!(tx_ol_flags & PKT_TX_TUNNEL_MASK);
+
+		if (tunn_flg) {
 			/* Check against max which is Tunnel IPv6 + ext */
 			if (unlikely(txq->nb_tx_avail <
 				ETH_TX_MIN_BDS_PER_TUNN_IPV6_WITH_EXT_PKT))
 					break;
-			tunn_flg = true;
+
 			/* First indicate its a tunnel pkt */
 			bd1_bf |= ETH_TX_DATA_1ST_BD_TUNN_FLAG_MASK <<
 				  ETH_TX_DATA_1ST_BD_TUNN_FLAG_SHIFT;
@@ -1972,7 +2028,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 
 		/* Descriptor based VLAN insertion */
-		if (tx_ol_flags & (PKT_TX_VLAN_PKT | PKT_TX_QINQ_PKT)) {
+		if (tx_ol_flags & PKT_TX_VLAN_PKT) {
 			vlan = rte_cpu_to_le_16(mbuf->vlan_tci);
 			bd1_bd_flags_bf |=
 			    1 << ETH_TX_1ST_BD_FLAGS_VLAN_INSERTION_SHIFT;
@@ -1987,7 +2043,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * csum offload is requested then we need to force
 			 * recalculation of L4 tunnel header csum also.
 			 */
-			if (tunn_flg) {
+			if (tunn_flg && ((tx_ol_flags & PKT_TX_TUNNEL_MASK) !=
+							PKT_TX_TUNNEL_GRE)) {
 				bd1_bd_flags_bf |=
 					ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK <<
 					ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_SHIFT;
@@ -2107,4 +2164,85 @@ qede_rxtx_pkts_dummy(__rte_unused void *p_rxq,
 		     __rte_unused uint16_t nb_pkts)
 {
 	return 0;
+}
+
+
+/* this function does a fake walk through over completion queue
+ * to calculate number of BDs used by HW.
+ * At the end, it restores the state of completion queue.
+ */
+static uint16_t
+qede_parse_fp_cqe(struct qede_rx_queue *rxq)
+{
+	uint16_t hw_comp_cons, sw_comp_cons, bd_count = 0;
+	union eth_rx_cqe *cqe, *orig_cqe = NULL;
+
+	hw_comp_cons = rte_le_to_cpu_16(*rxq->hw_cons_ptr);
+	sw_comp_cons = ecore_chain_get_cons_idx(&rxq->rx_comp_ring);
+
+	if (hw_comp_cons == sw_comp_cons)
+		return 0;
+
+	/* Get the CQE from the completion ring */
+	cqe = (union eth_rx_cqe *)ecore_chain_consume(&rxq->rx_comp_ring);
+	orig_cqe = cqe;
+
+	while (sw_comp_cons != hw_comp_cons) {
+		switch (cqe->fast_path_regular.type) {
+		case ETH_RX_CQE_TYPE_REGULAR:
+			bd_count += cqe->fast_path_regular.bd_num;
+			break;
+		case ETH_RX_CQE_TYPE_TPA_END:
+			bd_count += cqe->fast_path_tpa_end.num_of_bds;
+			break;
+		default:
+			break;
+		}
+
+		cqe =
+		(union eth_rx_cqe *)ecore_chain_consume(&rxq->rx_comp_ring);
+		sw_comp_cons = ecore_chain_get_cons_idx(&rxq->rx_comp_ring);
+	}
+
+	/* revert comp_ring to original state */
+	ecore_chain_set_cons(&rxq->rx_comp_ring, sw_comp_cons, orig_cqe);
+
+	return bd_count;
+}
+
+int
+qede_rx_descriptor_status(void *p_rxq, uint16_t offset)
+{
+	uint16_t hw_bd_cons, sw_bd_cons, sw_bd_prod;
+	uint16_t produced, consumed;
+	struct qede_rx_queue *rxq = p_rxq;
+
+	if (offset > rxq->nb_rx_desc)
+		return -EINVAL;
+
+	sw_bd_cons = ecore_chain_get_cons_idx(&rxq->rx_bd_ring);
+	sw_bd_prod = ecore_chain_get_prod_idx(&rxq->rx_bd_ring);
+
+	/* find BDs used by HW from completion queue elements */
+	hw_bd_cons = sw_bd_cons + qede_parse_fp_cqe(rxq);
+
+	if (hw_bd_cons < sw_bd_cons)
+		/* wraparound case */
+		consumed = (0xffff - sw_bd_cons) + hw_bd_cons;
+	else
+		consumed = hw_bd_cons - sw_bd_cons;
+
+	if (offset <= consumed)
+		return RTE_ETH_RX_DESC_DONE;
+
+	if (sw_bd_prod < sw_bd_cons)
+		/* wraparound case */
+		produced = (0xffff - sw_bd_cons) + sw_bd_prod;
+	else
+		produced = sw_bd_prod - sw_bd_cons;
+
+	if (offset <= produced)
+		return RTE_ETH_RX_DESC_AVAIL;
+
+	return RTE_ETH_RX_DESC_UNAVAIL;
 }

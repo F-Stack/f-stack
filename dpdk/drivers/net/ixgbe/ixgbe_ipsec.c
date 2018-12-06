@@ -1,37 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_ethdev_pci.h>
 #include <rte_ip.h>
 #include <rte_jhash.h>
@@ -70,6 +41,8 @@ static void
 ixgbe_crypto_clear_ipsec_tables(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ixgbe_ipsec *priv = IXGBE_DEV_PRIVATE_TO_IPSEC(
+				dev->data->dev_private);
 	int i = 0;
 
 	/* clear Rx IP table*/
@@ -106,6 +79,10 @@ ixgbe_crypto_clear_ipsec_tables(struct rte_eth_dev *dev)
 		IXGBE_WRITE_REG(hw, IXGBE_IPSTXSALT, 0);
 		IXGBE_WAIT_TWRITE;
 	}
+
+	memset(priv->rx_ip_tbl, 0, sizeof(priv->rx_ip_tbl));
+	memset(priv->rx_sa_tbl, 0, sizeof(priv->rx_sa_tbl));
+	memset(priv->tx_sa_tbl, 0, sizeof(priv->tx_sa_tbl));
 }
 
 static int
@@ -173,16 +150,6 @@ ixgbe_crypto_add_sa(struct ixgbe_crypto_session *ic_session)
 		priv->rx_sa_tbl[sa_index].spi =
 			rte_cpu_to_be_32(ic_session->spi);
 		priv->rx_sa_tbl[sa_index].ip_index = ip_index;
-		priv->rx_sa_tbl[sa_index].key[3] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[0]);
-		priv->rx_sa_tbl[sa_index].key[2] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[4]);
-		priv->rx_sa_tbl[sa_index].key[1] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[8]);
-		priv->rx_sa_tbl[sa_index].key[0] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[12]);
-		priv->rx_sa_tbl[sa_index].salt =
-			rte_cpu_to_be_32(ic_session->salt);
 		priv->rx_sa_tbl[sa_index].mode = IPSRXMOD_VALID;
 		if (ic_session->op == IXGBE_OP_AUTHENTICATED_DECRYPTION)
 			priv->rx_sa_tbl[sa_index].mode |=
@@ -225,15 +192,15 @@ ixgbe_crypto_add_sa(struct ixgbe_crypto_session *ic_session)
 		reg_val = IPSRXIDX_RX_EN | IPSRXIDX_WRITE |
 				IPSRXIDX_TABLE_KEY | (sa_index << 3);
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXKEY(0),
-				priv->rx_sa_tbl[sa_index].key[0]);
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[12]));
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXKEY(1),
-				priv->rx_sa_tbl[sa_index].key[1]);
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[8]));
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXKEY(2),
-				priv->rx_sa_tbl[sa_index].key[2]);
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[4]));
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXKEY(3),
-				priv->rx_sa_tbl[sa_index].key[3]);
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[0]));
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXSALT,
-				priv->rx_sa_tbl[sa_index].salt);
+				rte_cpu_to_be_32(ic_session->salt));
 		IXGBE_WRITE_REG(hw, IXGBE_IPSRXMOD,
 				priv->rx_sa_tbl[sa_index].mode);
 		IXGBE_WAIT_RWRITE;
@@ -257,32 +224,22 @@ ixgbe_crypto_add_sa(struct ixgbe_crypto_session *ic_session)
 
 		priv->tx_sa_tbl[sa_index].spi =
 			rte_cpu_to_be_32(ic_session->spi);
-		priv->tx_sa_tbl[sa_index].key[3] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[0]);
-		priv->tx_sa_tbl[sa_index].key[2] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[4]);
-		priv->tx_sa_tbl[sa_index].key[1] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[8]);
-		priv->tx_sa_tbl[sa_index].key[0] =
-			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[12]);
-		priv->tx_sa_tbl[sa_index].salt =
-			rte_cpu_to_be_32(ic_session->salt);
-
-		reg_val = IPSRXIDX_RX_EN | IPSRXIDX_WRITE | (sa_index << 3);
-		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(0),
-				priv->tx_sa_tbl[sa_index].key[0]);
-		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(1),
-				priv->tx_sa_tbl[sa_index].key[1]);
-		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(2),
-				priv->tx_sa_tbl[sa_index].key[2]);
-		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(3),
-				priv->tx_sa_tbl[sa_index].key[3]);
-		IXGBE_WRITE_REG(hw, IXGBE_IPSTXSALT,
-				priv->tx_sa_tbl[sa_index].salt);
-		IXGBE_WAIT_TWRITE;
-
 		priv->tx_sa_tbl[i].used = 1;
 		ic_session->sa_index = sa_index;
+
+		/* write Key table entry*/
+		reg_val = IPSRXIDX_RX_EN | IPSRXIDX_WRITE | (sa_index << 3);
+		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(0),
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[12]));
+		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(1),
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[8]));
+		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(2),
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[4]));
+		IXGBE_WRITE_REG(hw, IXGBE_IPSTXKEY(3),
+			rte_cpu_to_be_32(*(uint32_t *)&ic_session->key[0]));
+		IXGBE_WRITE_REG(hw, IXGBE_IPSTXSALT,
+				rte_cpu_to_be_32(ic_session->salt));
+		IXGBE_WAIT_TWRITE;
 	}
 
 	return 0;
@@ -407,6 +364,7 @@ ixgbe_crypto_create_session(void *device,
 			conf->crypto_xform->aead.algo !=
 					RTE_CRYPTO_AEAD_AES_GCM) {
 		PMD_DRV_LOG(ERR, "Unsupported crypto transformation mode\n");
+		rte_mempool_put(mempool, (void *)ic_session);
 		return -ENOTSUP;
 	}
 	aead_xform = &conf->crypto_xform->aead;
@@ -416,6 +374,7 @@ ixgbe_crypto_create_session(void *device,
 			ic_session->op = IXGBE_OP_AUTHENTICATED_DECRYPTION;
 		} else {
 			PMD_DRV_LOG(ERR, "IPsec decryption not enabled\n");
+			rte_mempool_put(mempool, (void *)ic_session);
 			return -ENOTSUP;
 		}
 	} else {
@@ -423,6 +382,7 @@ ixgbe_crypto_create_session(void *device,
 			ic_session->op = IXGBE_OP_AUTHENTICATED_ENCRYPTION;
 		} else {
 			PMD_DRV_LOG(ERR, "IPsec encryption not enabled\n");
+			rte_mempool_put(mempool, (void *)ic_session);
 			return -ENOTSUP;
 		}
 	}
@@ -438,11 +398,18 @@ ixgbe_crypto_create_session(void *device,
 	if (ic_session->op == IXGBE_OP_AUTHENTICATED_ENCRYPTION) {
 		if (ixgbe_crypto_add_sa(ic_session)) {
 			PMD_DRV_LOG(ERR, "Failed to add SA\n");
+			rte_mempool_put(mempool, (void *)ic_session);
 			return -EPERM;
 		}
 	}
 
 	return 0;
+}
+
+static unsigned int
+ixgbe_crypto_session_get_size(__rte_unused void *device)
+{
+	return sizeof(struct ixgbe_crypto_session);
 }
 
 static int
@@ -635,13 +602,18 @@ ixgbe_crypto_enable_ipsec(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t reg;
+	uint64_t rx_offloads;
+	uint64_t tx_offloads;
+
+	rx_offloads = dev->data->dev_conf.rxmode.offloads;
+	tx_offloads = dev->data->dev_conf.txmode.offloads;
 
 	/* sanity checks */
-	if (dev->data->dev_conf.rxmode.enable_lro) {
+	if (rx_offloads & DEV_RX_OFFLOAD_TCP_LRO) {
 		PMD_DRV_LOG(ERR, "RSC and IPsec not supported");
 		return -1;
 	}
-	if (!dev->data->dev_conf.rxmode.hw_strip_crc) {
+	if (rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
 		PMD_DRV_LOG(ERR, "HW CRC strip needs to be enabled for IPsec");
 		return -1;
 	}
@@ -661,7 +633,7 @@ ixgbe_crypto_enable_ipsec(struct rte_eth_dev *dev)
 	reg |= IXGBE_HLREG0_TXCRCEN | IXGBE_HLREG0_RXCRCSTRP;
 	IXGBE_WRITE_REG(hw, IXGBE_HLREG0, reg);
 
-	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_SECURITY) {
+	if (rx_offloads & DEV_RX_OFFLOAD_SECURITY) {
 		IXGBE_WRITE_REG(hw, IXGBE_SECRXCTRL, 0);
 		reg = IXGBE_READ_REG(hw, IXGBE_SECRXCTRL);
 		if (reg != 0) {
@@ -669,7 +641,7 @@ ixgbe_crypto_enable_ipsec(struct rte_eth_dev *dev)
 			return -1;
 		}
 	}
-	if (dev->data->dev_conf.txmode.offloads & DEV_TX_OFFLOAD_SECURITY) {
+	if (tx_offloads & DEV_TX_OFFLOAD_SECURITY) {
 		IXGBE_WRITE_REG(hw, IXGBE_SECTXCTRL,
 				IXGBE_SECTXCTRL_STORE_FORWARD);
 		reg = IXGBE_READ_REG(hw, IXGBE_SECTXCTRL);
@@ -717,21 +689,44 @@ ixgbe_crypto_add_ingress_sa_from_flow(const void *sess,
 static struct rte_security_ops ixgbe_security_ops = {
 	.session_create = ixgbe_crypto_create_session,
 	.session_update = NULL,
+	.session_get_size = ixgbe_crypto_session_get_size,
 	.session_stats_get = NULL,
 	.session_destroy = ixgbe_crypto_remove_session,
 	.set_pkt_metadata = ixgbe_crypto_update_mb,
 	.capabilities_get = ixgbe_crypto_capabilities_get
 };
 
-struct rte_security_ctx *
+static int
+ixgbe_crypto_capable(struct rte_eth_dev *dev)
+{
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint32_t reg_i, reg, capable = 1;
+	/* test if rx crypto can be enabled and then write back initial value*/
+	reg_i = IXGBE_READ_REG(hw, IXGBE_SECRXCTRL);
+	IXGBE_WRITE_REG(hw, IXGBE_SECRXCTRL, 0);
+	reg = IXGBE_READ_REG(hw, IXGBE_SECRXCTRL);
+	if (reg != 0)
+		capable = 0;
+	IXGBE_WRITE_REG(hw, IXGBE_SECRXCTRL, reg_i);
+	return capable;
+}
+
+int
 ixgbe_ipsec_ctx_create(struct rte_eth_dev *dev)
 {
-	struct rte_security_ctx *ctx = rte_malloc("rte_security_instances_ops",
-					sizeof(struct rte_security_ctx), 0);
-	if (ctx) {
-		ctx->device = (void *)dev;
-		ctx->ops = &ixgbe_security_ops;
-		ctx->sess_cnt = 0;
+	struct rte_security_ctx *ctx = NULL;
+
+	if (ixgbe_crypto_capable(dev)) {
+		ctx = rte_malloc("rte_security_instances_ops",
+				 sizeof(struct rte_security_ctx), 0);
+		if (ctx) {
+			ctx->device = (void *)dev;
+			ctx->ops = &ixgbe_security_ops;
+			ctx->sess_cnt = 0;
+			dev->security_ctx = ctx;
+		} else {
+			return -ENOMEM;
+		}
 	}
-	return ctx;
+	return 0;
 }

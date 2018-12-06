@@ -1,31 +1,6 @@
-..  BSD LICENSE
-    Copyright 2017 NXP.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2017 NXP
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of NXP nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 DPAA Poll Mode Driver
 =====================
@@ -187,6 +162,16 @@ Manager.
   this pool.
 
 
+Whitelisting & Blacklisting
+---------------------------
+
+For blacklisting a DPAA device, following commands can be used.
+
+ .. code-block:: console
+
+    <dpdk app> <EAL args> -b "dpaa_bus:fmX-macY" -- ...
+    e.g. "dpaa_bus:fm1-mac4"
+
 Supported DPAA SoCs
 -------------------
 
@@ -196,65 +181,8 @@ Supported DPAA SoCs
 Prerequisites
 -------------
 
-There are three main pre-requisities for executing DPAA PMD on a DPAA
-compatible board:
+See :doc:`../platform/dpaa` for setup information
 
-1. **ARM 64 Tool Chain**
-
-   For example, the `*aarch64* Linaro Toolchain <https://releases.linaro.org/components/toolchain/binaries/6.4-2017.08/aarch64-linux-gnu/>`_.
-
-2. **Linux Kernel**
-
-   It can be obtained from `NXP's Github hosting <https://github.com/qoriq-open-source/linux>`_.
-
-3. **Rootfile system**
-
-   Any *aarch64* supporting filesystem can be used. For example,
-   Ubuntu 15.10 (Wily) or 16.04 LTS (Xenial) userland which can be obtained
-   from `here <http://cdimage.ubuntu.com/ubuntu-base/releases/16.04/release/ubuntu-base-16.04.1-base-arm64.tar.gz>`_.
-
-4. **FMC Tool**
-
-   Before any DPDK application can be executed, the Frame Manager Configuration
-   Tool (FMC) need to be executed to set the configurations of the queues. This
-   includes the queue state, RSS and other policies.
-   This tool can be obtained from `NXP (Freescale) Public Git Repository <https://github.com/qoriq-open-source/fmc>`_.
-
-   This tool needs configuration files which are available in the
-   :ref:`DPDK Extra Scripts <extra_scripts>`, described below for DPDK usages.
-
-As an alternative method, DPAA PMD can also be executed using images provided
-as part of SDK from NXP. The SDK includes all the above prerequisites necessary
-to bring up a DPAA board.
-
-The following dependencies are not part of DPDK and must be installed
-separately:
-
-- **NXP Linux SDK**
-
-  NXP Linux software development kit (SDK) includes support for family
-  of QorIQ® ARM-Architecture-based system on chip (SoC) processors
-  and corresponding boards.
-
-  It includes the Linux board support packages (BSPs) for NXP SoCs,
-  a fully operational tool chain, kernel and board specific modules.
-
-  SDK and related information can be obtained from:  `NXP QorIQ SDK  <http://www.nxp.com/products/software-and-tools/run-time-software/linux-sdk/linux-sdk-for-qoriq-processors:SDKLINUX>`_.
-
-
-.. _extra_scripts:
-
-- **DPDK Extra Scripts**
-
-  DPAA based resources can be configured easily with the help of ready scripts
-  as provided in the DPDK Extra repository.
-
-  `DPDK Extras Scripts <https://github.com/qoriq-open-source/dpdk-extras>`_.
-
-Currently supported by DPDK:
-
-- NXP SDK **2.0+**.
-- Supported architectures:  **arm64 LE**.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>`
   to setup the basic DPDK environment.
@@ -314,6 +242,17 @@ state during application initialization:
   of packets.
   In case the application is configured to use lesser number of queues than
   configured above, it might result in packet loss (because of distribution).
+
+- ``DPAA_PUSH_QUEUES_NUMBER`` (default 4)
+
+  This defines the number of High performance queues to be used for ethdev Rx.
+  These queues use one private HW portal per queue configured, so they are
+  limited in the system. The first configured ethdev queues will be
+  automatically be assigned from the these high perf PUSH queues. Any queue
+  configuration beyond that will be standard Rx queues. The application can
+  choose to change their number if HW portals are limited.
+  The valid values are from '0' to '4'. The valuse shall be set to '0' if the
+  application want to use eventdev with DPAA device.
 
 
 Driver compilation and testing

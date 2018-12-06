@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 #include <rte_reorder.h>
 #include <rte_cryptodev.h>
@@ -36,6 +8,8 @@
 
 #include "rte_cryptodev_scheduler.h"
 #include "scheduler_pmd_private.h"
+
+int scheduler_logtype_driver;
 
 /** update the scheduler pmd's capability with attaching device's
  *  capability.
@@ -196,30 +170,30 @@ rte_cryptodev_scheduler_slave_attach(uint8_t scheduler_id, uint8_t slave_id)
 	uint32_t i;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
 	if (dev->data->dev_started) {
-		CS_LOG_ERR("Illegal operation");
+		CR_SCHED_LOG(ERR, "Illegal operation");
 		return -EBUSY;
 	}
 
 	sched_ctx = dev->data->dev_private;
 	if (sched_ctx->nb_slaves >=
 			RTE_CRYPTODEV_SCHEDULER_MAX_NB_SLAVES) {
-		CS_LOG_ERR("Too many slaves attached");
+		CR_SCHED_LOG(ERR, "Too many slaves attached");
 		return -ENOMEM;
 	}
 
 	for (i = 0; i < sched_ctx->nb_slaves; i++)
 		if (sched_ctx->slaves[i].dev_id == slave_id) {
-			CS_LOG_ERR("Slave already added");
+			CR_SCHED_LOG(ERR, "Slave already added");
 			return -ENOTSUP;
 		}
 
@@ -236,7 +210,7 @@ rte_cryptodev_scheduler_slave_attach(uint8_t scheduler_id, uint8_t slave_id)
 		slave->driver_id = 0;
 		sched_ctx->nb_slaves--;
 
-		CS_LOG_ERR("capabilities update failed");
+		CR_SCHED_LOG(ERR, "capabilities update failed");
 		return -ENOTSUP;
 	}
 
@@ -255,17 +229,17 @@ rte_cryptodev_scheduler_slave_detach(uint8_t scheduler_id, uint8_t slave_id)
 	uint32_t i, slave_pos;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
 	if (dev->data->dev_started) {
-		CS_LOG_ERR("Illegal operation");
+		CR_SCHED_LOG(ERR, "Illegal operation");
 		return -EBUSY;
 	}
 
@@ -275,12 +249,12 @@ rte_cryptodev_scheduler_slave_detach(uint8_t scheduler_id, uint8_t slave_id)
 		if (sched_ctx->slaves[slave_pos].dev_id == slave_id)
 			break;
 	if (slave_pos == sched_ctx->nb_slaves) {
-		CS_LOG_ERR("Cannot find slave");
+		CR_SCHED_LOG(ERR, "Cannot find slave");
 		return -ENOTSUP;
 	}
 
 	if (sched_ctx->ops.slave_detach(dev, slave_id) < 0) {
-		CS_LOG_ERR("Failed to detach slave");
+		CR_SCHED_LOG(ERR, "Failed to detach slave");
 		return -ENOTSUP;
 	}
 
@@ -293,7 +267,7 @@ rte_cryptodev_scheduler_slave_detach(uint8_t scheduler_id, uint8_t slave_id)
 	sched_ctx->nb_slaves--;
 
 	if (update_scheduler_capability(sched_ctx) < 0) {
-		CS_LOG_ERR("capabilities update failed");
+		CR_SCHED_LOG(ERR, "capabilities update failed");
 		return -ENOTSUP;
 	}
 
@@ -312,17 +286,17 @@ rte_cryptodev_scheduler_mode_set(uint8_t scheduler_id,
 	struct scheduler_ctx *sched_ctx;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
 	if (dev->data->dev_started) {
-		CS_LOG_ERR("Illegal operation");
+		CR_SCHED_LOG(ERR, "Illegal operation");
 		return -EBUSY;
 	}
 
@@ -334,34 +308,34 @@ rte_cryptodev_scheduler_mode_set(uint8_t scheduler_id,
 	switch (mode) {
 	case CDEV_SCHED_MODE_ROUNDROBIN:
 		if (rte_cryptodev_scheduler_load_user_scheduler(scheduler_id,
-				roundrobin_scheduler) < 0) {
-			CS_LOG_ERR("Failed to load scheduler");
+				crypto_scheduler_roundrobin) < 0) {
+			CR_SCHED_LOG(ERR, "Failed to load scheduler");
 			return -1;
 		}
 		break;
 	case CDEV_SCHED_MODE_PKT_SIZE_DISTR:
 		if (rte_cryptodev_scheduler_load_user_scheduler(scheduler_id,
-				pkt_size_based_distr_scheduler) < 0) {
-			CS_LOG_ERR("Failed to load scheduler");
+				crypto_scheduler_pkt_size_based_distr) < 0) {
+			CR_SCHED_LOG(ERR, "Failed to load scheduler");
 			return -1;
 		}
 		break;
 	case CDEV_SCHED_MODE_FAILOVER:
 		if (rte_cryptodev_scheduler_load_user_scheduler(scheduler_id,
-				failover_scheduler) < 0) {
-			CS_LOG_ERR("Failed to load scheduler");
+				crypto_scheduler_failover) < 0) {
+			CR_SCHED_LOG(ERR, "Failed to load scheduler");
 			return -1;
 		}
 		break;
 	case CDEV_SCHED_MODE_MULTICORE:
 		if (rte_cryptodev_scheduler_load_user_scheduler(scheduler_id,
-				multicore_scheduler) < 0) {
-			CS_LOG_ERR("Failed to load scheduler");
+				crypto_scheduler_multicore) < 0) {
+			CR_SCHED_LOG(ERR, "Failed to load scheduler");
 			return -1;
 		}
 		break;
 	default:
-		CS_LOG_ERR("Not yet supported");
+		CR_SCHED_LOG(ERR, "Not yet supported");
 		return -ENOTSUP;
 	}
 
@@ -375,12 +349,12 @@ rte_cryptodev_scheduler_mode_get(uint8_t scheduler_id)
 	struct scheduler_ctx *sched_ctx;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
@@ -397,17 +371,17 @@ rte_cryptodev_scheduler_ordering_set(uint8_t scheduler_id,
 	struct scheduler_ctx *sched_ctx;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
 	if (dev->data->dev_started) {
-		CS_LOG_ERR("Illegal operation");
+		CR_SCHED_LOG(ERR, "Illegal operation");
 		return -EBUSY;
 	}
 
@@ -425,12 +399,12 @@ rte_cryptodev_scheduler_ordering_get(uint8_t scheduler_id)
 	struct scheduler_ctx *sched_ctx;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
@@ -447,25 +421,25 @@ rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
 	struct scheduler_ctx *sched_ctx;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
 	if (dev->data->dev_started) {
-		CS_LOG_ERR("Illegal operation");
+		CR_SCHED_LOG(ERR, "Illegal operation");
 		return -EBUSY;
 	}
 
 	sched_ctx = dev->data->dev_private;
 
 	if (strlen(scheduler->name) > RTE_CRYPTODEV_NAME_MAX_LEN - 1) {
-		CS_LOG_ERR("Invalid name %s, should be less than "
-				"%u bytes.\n", scheduler->name,
+		CR_SCHED_LOG(ERR, "Invalid name %s, should be less than "
+				"%u bytes.", scheduler->name,
 				RTE_CRYPTODEV_NAME_MAX_LEN);
 		return -EINVAL;
 	}
@@ -474,8 +448,8 @@ rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
 
 	if (strlen(scheduler->description) >
 			RTE_CRYPTODEV_SCHEDULER_DESC_MAX_LEN - 1) {
-		CS_LOG_ERR("Invalid description %s, should be less than "
-				"%u bytes.\n", scheduler->description,
+		CR_SCHED_LOG(ERR, "Invalid description %s, should be less than "
+				"%u bytes.", scheduler->description,
 				RTE_CRYPTODEV_SCHEDULER_DESC_MAX_LEN - 1);
 		return -EINVAL;
 	}
@@ -501,7 +475,7 @@ rte_cryptodev_scheduler_load_user_scheduler(uint8_t scheduler_id,
 		int ret = (*sched_ctx->ops.create_private_ctx)(dev);
 
 		if (ret < 0) {
-			CS_LOG_ERR("Unable to create scheduler private "
+			CR_SCHED_LOG(ERR, "Unable to create scheduler private "
 					"context");
 			return ret;
 		}
@@ -520,12 +494,12 @@ rte_cryptodev_scheduler_slaves_get(uint8_t scheduler_id, uint8_t *slaves)
 	uint32_t nb_slaves = 0;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
@@ -553,17 +527,17 @@ rte_cryptodev_scheduler_option_set(uint8_t scheduler_id,
 
 	if (option_type == CDEV_SCHED_OPTION_NOT_SET ||
 			option_type >= CDEV_SCHED_OPTION_COUNT) {
-		CS_LOG_ERR("Invalid option parameter");
+		CR_SCHED_LOG(ERR, "Invalid option parameter");
 		return -EINVAL;
 	}
 
 	if (!option) {
-		CS_LOG_ERR("Invalid option parameter");
+		CR_SCHED_LOG(ERR, "Invalid option parameter");
 		return -EINVAL;
 	}
 
 	if (dev->data->dev_started) {
-		CS_LOG_ERR("Illegal operation");
+		CR_SCHED_LOG(ERR, "Illegal operation");
 		return -EBUSY;
 	}
 
@@ -583,17 +557,17 @@ rte_cryptodev_scheduler_option_get(uint8_t scheduler_id,
 	struct scheduler_ctx *sched_ctx;
 
 	if (!dev) {
-		CS_LOG_ERR("Operation not supported");
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
 	if (!option) {
-		CS_LOG_ERR("Invalid option parameter");
+		CR_SCHED_LOG(ERR, "Invalid option parameter");
 		return -EINVAL;
 	}
 
-	if (dev->driver_id != cryptodev_driver_id) {
-		CS_LOG_ERR("Operation not supported");
+	if (dev->driver_id != cryptodev_scheduler_driver_id) {
+		CR_SCHED_LOG(ERR, "Operation not supported");
 		return -ENOTSUP;
 	}
 
@@ -602,4 +576,9 @@ rte_cryptodev_scheduler_option_get(uint8_t scheduler_id,
 	RTE_FUNC_PTR_OR_ERR_RET(*sched_ctx->ops.option_get, -ENOTSUP);
 
 	return (*sched_ctx->ops.option_get)(dev, option_type, option);
+}
+
+RTE_INIT(scheduler_init_log)
+{
+	scheduler_logtype_driver = rte_log_register("pmd.crypto.scheduler");
 }

@@ -1,41 +1,8 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2010-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP.
+ * Copyright 2017 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <sys/types.h>
@@ -46,6 +13,7 @@
 #include <fman.h>
 #include <of.h>
 #include <rte_dpaa_logs.h>
+#include <rte_string_fns.h>
 
 #define QMI_PORT_REGS_OFFSET		0x400
 
@@ -216,7 +184,7 @@ fman_if_init(const struct device_node *dpa_node)
 	}
 	memset(__if, 0, sizeof(*__if));
 	INIT_LIST_HEAD(&__if->__if.bpool_list);
-	strncpy(__if->node_path, dpa_node->full_name, PATH_MAX - 1);
+	strlcpy(__if->node_path, dpa_node->full_name, PATH_MAX - 1);
 	__if->node_path[PATH_MAX - 1] = '\0';
 
 	/* Obtain the MAC node used by this interface except macless */
@@ -333,7 +301,7 @@ fman_if_init(const struct device_node *dpa_node)
 
 	_errno = fman_get_mac_index(regs_addr_host, &__if->__if.mac_idx);
 	if (_errno) {
-		FMAN_ERR(-EINVAL, "Invalid register address: %lu",
+		FMAN_ERR(-EINVAL, "Invalid register address: %" PRIx64,
 			 regs_addr_host);
 		goto err;
 	}
@@ -537,7 +505,7 @@ fman_if_init(const struct device_node *dpa_node)
 
 	/* Parsing of the network interface is complete, add it to the list */
 	DPAA_BUS_LOG(DEBUG, "Found %s, Tx Channel = %x, FMAN = %x,"
-		    "Port ID = %x\n",
+		    "Port ID = %x",
 		    dname, __if->__if.tx_channel_id, __if->__if.fman_idx,
 		    __if->__if.mac_idx);
 
@@ -601,7 +569,7 @@ fman_finish(void)
 		/* release the mapping */
 		_errno = munmap(__if->ccsr_map, __if->regs_size);
 		if (unlikely(_errno < 0))
-			fprintf(stderr, "%s:%hu:%s(): munmap() = %d (%s)\n",
+			fprintf(stderr, "%s:%d:%s(): munmap() = %d (%s)\n",
 				__FILE__, __LINE__, __func__,
 				-errno, strerror(errno));
 		printf("Tearing down %s\n", __if->node_path);

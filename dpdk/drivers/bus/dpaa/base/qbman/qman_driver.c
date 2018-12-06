@@ -1,41 +1,8 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2008-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP.
+ * Copyright 2017 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <fsl_usd.h>
@@ -53,12 +20,12 @@ u16 qm_channel_caam = QMAN_CHANNEL_CAAM;
 u16 qm_channel_pme = QMAN_CHANNEL_PME;
 
 /* Ccsr map address to access ccsrbased register */
-void *qman_ccsr_map;
+static void *qman_ccsr_map;
 /* The qman clock frequency */
-u32 qman_clk;
+static u32 qman_clk;
 
-static __thread int fd = -1;
-static __thread struct qm_portal_config pcfg;
+static __thread int qmfd = -1;
+static __thread struct qm_portal_config qpcfg;
 static __thread struct dpaa_ioctl_portal_map map = {
 	.type = dpaa_portal_qman
 };
@@ -77,16 +44,16 @@ static int fsl_qman_portal_init(uint32_t index, int is_shared)
 		error(0, ret, "pthread_getaffinity_np()");
 		return ret;
 	}
-	pcfg.cpu = -1;
+	qpcfg.cpu = -1;
 	for (loop = 0; loop < CPU_SETSIZE; loop++)
 		if (CPU_ISSET(loop, &cpuset)) {
-			if (pcfg.cpu != -1) {
+			if (qpcfg.cpu != -1) {
 				pr_err("Thread is not affine to 1 cpu\n");
 				return -EINVAL;
 			}
-			pcfg.cpu = loop;
+			qpcfg.cpu = loop;
 		}
-	if (pcfg.cpu == -1) {
+	if (qpcfg.cpu == -1) {
 		pr_err("Bug in getaffinity handling!\n");
 		return -EINVAL;
 	}
@@ -98,36 +65,36 @@ static int fsl_qman_portal_init(uint32_t index, int is_shared)
 		error(0, ret, "process_portal_map()");
 		return ret;
 	}
-	pcfg.channel = map.channel;
-	pcfg.pools = map.pools;
-	pcfg.index = map.index;
+	qpcfg.channel = map.channel;
+	qpcfg.pools = map.pools;
+	qpcfg.index = map.index;
 
 	/* Make the portal's cache-[enabled|inhibited] regions */
-	pcfg.addr_virt[DPAA_PORTAL_CE] = map.addr.cena;
-	pcfg.addr_virt[DPAA_PORTAL_CI] = map.addr.cinh;
+	qpcfg.addr_virt[DPAA_PORTAL_CE] = map.addr.cena;
+	qpcfg.addr_virt[DPAA_PORTAL_CI] = map.addr.cinh;
 
-	fd = open(QMAN_PORTAL_IRQ_PATH, O_RDONLY);
-	if (fd == -1) {
+	qmfd = open(QMAN_PORTAL_IRQ_PATH, O_RDONLY);
+	if (qmfd == -1) {
 		pr_err("QMan irq init failed\n");
 		process_portal_unmap(&map.addr);
 		return -EBUSY;
 	}
 
-	pcfg.is_shared = is_shared;
-	pcfg.node = NULL;
-	pcfg.irq = fd;
+	qpcfg.is_shared = is_shared;
+	qpcfg.node = NULL;
+	qpcfg.irq = qmfd;
 
-	portal = qman_create_affine_portal(&pcfg, NULL);
+	portal = qman_create_affine_portal(&qpcfg, NULL, 0);
 	if (!portal) {
 		pr_err("Qman portal initialisation failed (%d)\n",
-		       pcfg.cpu);
+		       qpcfg.cpu);
 		process_portal_unmap(&map.addr);
 		return -EBUSY;
 	}
 
 	irq_map.type = dpaa_portal_qman;
 	irq_map.portal_cinh = map.addr.cinh;
-	process_portal_irq_map(fd, &irq_map);
+	process_portal_irq_map(qmfd, &irq_map);
 	return 0;
 }
 
@@ -136,14 +103,19 @@ static int fsl_qman_portal_finish(void)
 	__maybe_unused const struct qm_portal_config *cfg;
 	int ret;
 
-	process_portal_irq_unmap(fd);
+	process_portal_irq_unmap(qmfd);
 
-	cfg = qman_destroy_affine_portal();
-	DPAA_BUG_ON(cfg != &pcfg);
+	cfg = qman_destroy_affine_portal(NULL);
+	DPAA_BUG_ON(cfg != &qpcfg);
 	ret = process_portal_unmap(&map.addr);
 	if (ret)
 		error(0, ret, "process_portal_unmap()");
 	return ret;
+}
+
+int qman_thread_fd(void)
+{
+	return qmfd;
 }
 
 int qman_thread_init(void)
@@ -161,20 +133,129 @@ int qman_thread_finish(void)
 
 void qman_thread_irq(void)
 {
-	qbman_invoke_irq(pcfg.irq);
+	qbman_invoke_irq(qpcfg.irq);
 
 	/* Now we need to uninhibit interrupts. This is the only code outside
 	 * the regular portal driver that manipulates any portal register, so
 	 * rather than breaking that encapsulation I am simply hard-coding the
 	 * offset to the inhibit register here.
 	 */
-	out_be32(pcfg.addr_virt[DPAA_PORTAL_CI] + 0xe0c, 0);
+	out_be32(qpcfg.addr_virt[DPAA_PORTAL_CI] + 0x36C0, 0);
+}
+
+struct qman_portal *fsl_qman_portal_create(void)
+{
+	cpu_set_t cpuset;
+	struct qman_portal *res;
+
+	struct qm_portal_config *q_pcfg;
+	int loop, ret;
+	struct dpaa_ioctl_irq_map irq_map;
+	struct dpaa_ioctl_portal_map q_map = {0};
+	int q_fd;
+
+	q_pcfg = kzalloc((sizeof(struct qm_portal_config)), 0);
+	if (!q_pcfg) {
+		error(0, -1, "q_pcfg kzalloc failed");
+		return NULL;
+	}
+
+	/* Verify the thread's cpu-affinity */
+	ret = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t),
+				     &cpuset);
+	if (ret) {
+		error(0, ret, "pthread_getaffinity_np()");
+		kfree(q_pcfg);
+		return NULL;
+	}
+
+	q_pcfg->cpu = -1;
+	for (loop = 0; loop < CPU_SETSIZE; loop++)
+		if (CPU_ISSET(loop, &cpuset)) {
+			if (q_pcfg->cpu != -1) {
+				pr_err("Thread is not affine to 1 cpu\n");
+				kfree(q_pcfg);
+				return NULL;
+			}
+			q_pcfg->cpu = loop;
+		}
+	if (q_pcfg->cpu == -1) {
+		pr_err("Bug in getaffinity handling!\n");
+		kfree(q_pcfg);
+		return NULL;
+	}
+
+	/* Allocate and map a qman portal */
+	q_map.type = dpaa_portal_qman;
+	q_map.index = QBMAN_ANY_PORTAL_IDX;
+	ret = process_portal_map(&q_map);
+	if (ret) {
+		error(0, ret, "process_portal_map()");
+		kfree(q_pcfg);
+		return NULL;
+	}
+	q_pcfg->channel = q_map.channel;
+	q_pcfg->pools = q_map.pools;
+	q_pcfg->index = q_map.index;
+
+	/* Make the portal's cache-[enabled|inhibited] regions */
+	q_pcfg->addr_virt[DPAA_PORTAL_CE] = q_map.addr.cena;
+	q_pcfg->addr_virt[DPAA_PORTAL_CI] = q_map.addr.cinh;
+
+	q_fd = open(QMAN_PORTAL_IRQ_PATH, O_RDONLY);
+	if (q_fd == -1) {
+		pr_err("QMan irq init failed\n");
+		goto err1;
+	}
+
+	q_pcfg->irq = q_fd;
+
+	res = qman_create_affine_portal(q_pcfg, NULL, true);
+	if (!res) {
+		pr_err("Qman portal initialisation failed (%d)\n",
+		       q_pcfg->cpu);
+		goto err2;
+	}
+
+	irq_map.type = dpaa_portal_qman;
+	irq_map.portal_cinh = q_map.addr.cinh;
+	process_portal_irq_map(q_fd, &irq_map);
+
+	return res;
+err2:
+	close(q_fd);
+err1:
+	process_portal_unmap(&q_map.addr);
+	kfree(q_pcfg);
+	return NULL;
+}
+
+int fsl_qman_portal_destroy(struct qman_portal *qp)
+{
+	const struct qm_portal_config *cfg;
+	struct dpaa_portal_map addr;
+	int ret;
+
+	cfg = qman_destroy_affine_portal(qp);
+	kfree(qp);
+
+	process_portal_irq_unmap(cfg->irq);
+
+	addr.cena = cfg->addr_virt[DPAA_PORTAL_CE];
+	addr.cinh = cfg->addr_virt[DPAA_PORTAL_CI];
+
+	ret = process_portal_unmap(&addr);
+	if (ret)
+		pr_err("process_portal_unmap() (%d)\n", ret);
+
+	kfree((void *)cfg);
+
+	return ret;
 }
 
 int qman_global_init(void)
 {
 	const struct device_node *dt_node;
-	int ret = 0;
 	size_t lenp;
 	const u32 *chanid;
 	static int ccsr_map_fd;
@@ -280,9 +361,7 @@ int qman_global_init(void)
 		qman_clk = be32_to_cpu(*clk);
 
 #ifdef CONFIG_FSL_QMAN_FQ_LOOKUP
-	ret = qman_setup_fq_lookup_table(CONFIG_FSL_QMAN_FQ_LOOKUP_MAX);
-	if (ret)
-		return ret;
+	return qman_setup_fq_lookup_table(CONFIG_FSL_QMAN_FQ_LOOKUP_MAX);
 #endif
 	return 0;
 }

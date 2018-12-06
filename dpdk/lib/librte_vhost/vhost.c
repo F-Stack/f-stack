@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <linux/vhost.h>
@@ -37,6 +8,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #ifdef RTE_LIBRTE_VHOST_NUMA
+#include <numa.h>
 #include <numaif.h>
 #endif
 
@@ -97,20 +69,7 @@ __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	return 0;
 }
 
-struct virtio_net *
-get_device(int vid)
-{
-	struct virtio_net *dev = vhost_devices[vid];
-
-	if (unlikely(!dev)) {
-		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%d) device not found.\n", vid);
-	}
-
-	return dev;
-}
-
-static void
+void
 cleanup_vq(struct vhost_virtqueue *vq, int destroy)
 {
 	if ((vq->callfd >= 0) && (destroy != 0))
@@ -134,6 +93,18 @@ cleanup_device(struct virtio_net *dev, int destroy)
 		cleanup_vq(dev->virtqueue[i], destroy);
 }
 
+void
+free_vq(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+	if (vq_is_packed(dev))
+		rte_free(vq->shadow_used_packed);
+	else
+		rte_free(vq->shadow_used_split);
+	rte_free(vq->batch_copy_elems);
+	rte_mempool_free(vq->iotlb_pool);
+	rte_free(vq);
+}
+
 /*
  * Release virtqueues and device memory.
  */
@@ -141,27 +112,17 @@ static void
 free_device(struct virtio_net *dev)
 {
 	uint32_t i;
-	struct vhost_virtqueue *vq;
 
-	for (i = 0; i < dev->nr_vring; i++) {
-		vq = dev->virtqueue[i];
-
-		rte_free(vq->shadow_used_ring);
-		rte_free(vq->batch_copy_elems);
-		rte_mempool_free(vq->iotlb_pool);
-		rte_free(vq);
-	}
+	for (i = 0; i < dev->nr_vring; i++)
+		free_vq(dev, dev->virtqueue[i]);
 
 	rte_free(dev);
 }
 
-int
-vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq)
+static int
+vring_translate_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 {
 	uint64_t req_size, size;
-
-	if (!(dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM)))
-		goto out;
 
 	req_size = sizeof(struct vring_desc) * vq->size;
 	size = req_size;
@@ -193,6 +154,55 @@ vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	if (!vq->used || size != req_size)
 		return -1;
 
+	return 0;
+}
+
+static int
+vring_translate_packed(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+	uint64_t req_size, size;
+
+	req_size = sizeof(struct vring_packed_desc) * vq->size;
+	size = req_size;
+	vq->desc_packed = (struct vring_packed_desc *)(uintptr_t)
+		vhost_iova_to_vva(dev, vq, vq->ring_addrs.desc_user_addr,
+				&size, VHOST_ACCESS_RW);
+	if (!vq->desc_packed || size != req_size)
+		return -1;
+
+	req_size = sizeof(struct vring_packed_desc_event);
+	size = req_size;
+	vq->driver_event = (struct vring_packed_desc_event *)(uintptr_t)
+		vhost_iova_to_vva(dev, vq, vq->ring_addrs.avail_user_addr,
+				&size, VHOST_ACCESS_RW);
+	if (!vq->driver_event || size != req_size)
+		return -1;
+
+	req_size = sizeof(struct vring_packed_desc_event);
+	size = req_size;
+	vq->device_event = (struct vring_packed_desc_event *)(uintptr_t)
+		vhost_iova_to_vva(dev, vq, vq->ring_addrs.used_user_addr,
+				&size, VHOST_ACCESS_RW);
+	if (!vq->device_event || size != req_size)
+		return -1;
+
+	return 0;
+}
+
+int
+vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+
+	if (!(dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM)))
+		goto out;
+
+	if (vq_is_packed(dev)) {
+		if (vring_translate_packed(dev, vq) < 0)
+			return -1;
+	} else {
+		if (vring_translate_split(dev, vq) < 0)
+			return -1;
+	}
 out:
 	vq->access_ok = 1;
 
@@ -274,6 +284,9 @@ alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx)
 	dev->virtqueue[vring_idx] = vq;
 	init_vring_queue(dev, vring_idx);
 	rte_spinlock_init(&vq->access_lock);
+	vq->avail_wrap_counter = 1;
+	vq->used_wrap_counter = 1;
+	vq->signalled_used_valid = false;
 
 	dev->nr_vring += 1;
 
@@ -292,7 +305,7 @@ reset_device(struct virtio_net *dev)
 
 	dev->features = 0;
 	dev->protocol_features = 0;
-	dev->flags = 0;
+	dev->flags &= VIRTIO_DEV_BUILTIN_VIRTIO_NET;
 
 	for (i = 0; i < dev->nr_vring; i++)
 		reset_vring_queue(dev, i);
@@ -308,6 +321,17 @@ vhost_new_device(void)
 	struct virtio_net *dev;
 	int i;
 
+	for (i = 0; i < MAX_VHOST_DEVICE; i++) {
+		if (vhost_devices[i] == NULL)
+			break;
+	}
+
+	if (i == MAX_VHOST_DEVICE) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"Failed to find a free slot for new device.\n");
+		return -1;
+	}
+
 	dev = rte_zmalloc(NULL, sizeof(struct virtio_net), 0);
 	if (dev == NULL) {
 		RTE_LOG(ERR, VHOST_CONFIG,
@@ -315,22 +339,31 @@ vhost_new_device(void)
 		return -1;
 	}
 
-	for (i = 0; i < MAX_VHOST_DEVICE; i++) {
-		if (vhost_devices[i] == NULL)
-			break;
-	}
-	if (i == MAX_VHOST_DEVICE) {
-		RTE_LOG(ERR, VHOST_CONFIG,
-			"Failed to find a free slot for new device.\n");
-		rte_free(dev);
-		return -1;
-	}
-
 	vhost_devices[i] = dev;
 	dev->vid = i;
+	dev->flags = VIRTIO_DEV_BUILTIN_VIRTIO_NET;
 	dev->slave_req_fd = -1;
+	dev->vdpa_dev_id = -1;
+	dev->postcopy_ufd = -1;
+	rte_spinlock_init(&dev->slave_req_lock);
 
 	return i;
+}
+
+void
+vhost_destroy_device_notify(struct virtio_net *dev)
+{
+	struct rte_vdpa_device *vdpa_dev;
+	int did;
+
+	if (dev->flags & VIRTIO_DEV_RUNNING) {
+		did = dev->vdpa_dev_id;
+		vdpa_dev = rte_vdpa_get_device(did);
+		if (vdpa_dev && vdpa_dev->ops->dev_close)
+			vdpa_dev->ops->dev_close(dev->vid);
+		dev->flags &= ~VIRTIO_DEV_RUNNING;
+		dev->notify_ops->destroy_device(dev->vid);
+	}
 }
 
 /*
@@ -345,15 +378,39 @@ vhost_destroy_device(int vid)
 	if (dev == NULL)
 		return;
 
-	if (dev->flags & VIRTIO_DEV_RUNNING) {
-		dev->flags &= ~VIRTIO_DEV_RUNNING;
-		dev->notify_ops->destroy_device(vid);
-	}
+	vhost_destroy_device_notify(dev);
 
 	cleanup_device(dev, 1);
 	free_device(dev);
 
 	vhost_devices[vid] = NULL;
+}
+
+void
+vhost_attach_vdpa_device(int vid, int did)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return;
+
+	if (rte_vdpa_get_device(did) == NULL)
+		return;
+
+	dev->vdpa_dev_id = did;
+}
+
+void
+vhost_detach_vdpa_device(int vid)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return;
+
+	vhost_user_host_notifier_ctrl(vid, false);
+
+	dev->vdpa_dev_id = -1;
 }
 
 void
@@ -384,6 +441,20 @@ vhost_enable_dequeue_zero_copy(int vid)
 	dev->dequeue_zero_copy = 1;
 }
 
+void
+vhost_set_builtin_virtio_net(int vid, bool enable)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return;
+
+	if (enable)
+		dev->flags |= VIRTIO_DEV_BUILTIN_VIRTIO_NET;
+	else
+		dev->flags &= ~VIRTIO_DEV_BUILTIN_VIRTIO_NET;
+}
+
 int
 rte_vhost_get_mtu(int vid, uint16_t *mtu)
 {
@@ -411,7 +482,7 @@ rte_vhost_get_numa_node(int vid)
 	int numa_node;
 	int ret;
 
-	if (dev == NULL)
+	if (dev == NULL || numa_available() != 0)
 		return -1;
 
 	ret = get_mempolicy(&numa_node, NULL, 0, dev,
@@ -534,6 +605,31 @@ rte_vhost_get_vhost_vring(int vid, uint16_t vring_idx,
 	return 0;
 }
 
+int
+rte_vhost_vring_call(int vid, uint16_t vring_idx)
+{
+	struct virtio_net *dev;
+	struct vhost_virtqueue *vq;
+
+	dev = get_device(vid);
+	if (!dev)
+		return -1;
+
+	if (vring_idx >= VHOST_MAX_VRING)
+		return -1;
+
+	vq = dev->virtqueue[vring_idx];
+	if (!vq)
+		return -1;
+
+	if (vq_is_packed(dev))
+		vhost_vring_call_packed(dev, vq);
+	else
+		vhost_vring_call_split(dev, vq);
+
+	return 0;
+}
+
 uint16_t
 rte_vhost_avail_entries(int vid, uint16_t queue_id)
 {
@@ -551,21 +647,60 @@ rte_vhost_avail_entries(int vid, uint16_t queue_id)
 	return *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx;
 }
 
+static inline void
+vhost_enable_notify_split(struct virtio_net *dev,
+		struct vhost_virtqueue *vq, int enable)
+{
+	if (!(dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))) {
+		if (enable)
+			vq->used->flags &= ~VRING_USED_F_NO_NOTIFY;
+		else
+			vq->used->flags |= VRING_USED_F_NO_NOTIFY;
+	} else {
+		if (enable)
+			vhost_avail_event(vq) = vq->last_avail_idx;
+	}
+}
+
+static inline void
+vhost_enable_notify_packed(struct virtio_net *dev,
+		struct vhost_virtqueue *vq, int enable)
+{
+	uint16_t flags;
+
+	if (!enable) {
+		vq->device_event->flags = VRING_EVENT_F_DISABLE;
+		return;
+	}
+
+	flags = VRING_EVENT_F_ENABLE;
+	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX)) {
+		flags = VRING_EVENT_F_DESC;
+		vq->device_event->off_wrap = vq->last_avail_idx |
+			vq->avail_wrap_counter << 15;
+	}
+
+	rte_smp_wmb();
+
+	vq->device_event->flags = flags;
+}
+
 int
 rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 {
 	struct virtio_net *dev = get_device(vid);
+	struct vhost_virtqueue *vq;
 
-	if (dev == NULL)
+	if (!dev)
 		return -1;
 
-	if (enable) {
-		RTE_LOG(ERR, VHOST_CONFIG,
-			"guest notification isn't supported.\n");
-		return -1;
-	}
+	vq = dev->virtqueue[queue_id];
 
-	dev->virtqueue[queue_id]->used->flags = VRING_USED_F_NO_NOTIFY;
+	if (vq_is_packed(dev))
+		vhost_enable_notify_packed(dev, vq, enable);
+	else
+		vhost_enable_notify_split(dev, vq, enable);
+
 	return 0;
 }
 
@@ -624,4 +759,77 @@ rte_vhost_rx_queue_count(int vid, uint16_t qid)
 		return 0;
 
 	return *((volatile uint16_t *)&vq->avail->idx) - vq->last_avail_idx;
+}
+
+int rte_vhost_get_vdpa_device_id(int vid)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return -1;
+
+	return dev->vdpa_dev_id;
+}
+
+int rte_vhost_get_log_base(int vid, uint64_t *log_base,
+		uint64_t *log_size)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (!dev)
+		return -1;
+
+	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
+		RTE_LOG(ERR, VHOST_DATA,
+			"(%d) %s: built-in vhost net backend is disabled.\n",
+			dev->vid, __func__);
+		return -1;
+	}
+
+	*log_base = dev->log_base;
+	*log_size = dev->log_size;
+
+	return 0;
+}
+
+int rte_vhost_get_vring_base(int vid, uint16_t queue_id,
+		uint16_t *last_avail_idx, uint16_t *last_used_idx)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (!dev)
+		return -1;
+
+	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
+		RTE_LOG(ERR, VHOST_DATA,
+			"(%d) %s: built-in vhost net backend is disabled.\n",
+			dev->vid, __func__);
+		return -1;
+	}
+
+	*last_avail_idx = dev->virtqueue[queue_id]->last_avail_idx;
+	*last_used_idx = dev->virtqueue[queue_id]->last_used_idx;
+
+	return 0;
+}
+
+int rte_vhost_set_vring_base(int vid, uint16_t queue_id,
+		uint16_t last_avail_idx, uint16_t last_used_idx)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (!dev)
+		return -1;
+
+	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
+		RTE_LOG(ERR, VHOST_DATA,
+			"(%d) %s: built-in vhost net backend is disabled.\n",
+			dev->vid, __func__);
+		return -1;
+	}
+
+	dev->virtqueue[queue_id]->last_avail_idx = last_avail_idx;
+	dev->virtqueue[queue_id]->last_used_idx = last_used_idx;
+
+	return 0;
 }

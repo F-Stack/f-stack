@@ -1,38 +1,11 @@
-..  BSD LICENSE
-    Copyright (C) Cavium, Inc. 2017.
-    All rights reserved.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Cavium, Inc
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
+OCTEON TX Poll Mode driver
+==========================
 
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Cavium, Inc nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-OCTEONTX Poll Mode driver
-=========================
-
-The OCTEONTX ETHDEV PMD (**librte_pmd_octeontx**) provides poll mode ethdev
-driver support for the inbuilt network device found in the **Cavium OCTEONTX**
+The OCTEON TX ETHDEV PMD (**librte_pmd_octeontx**) provides poll mode ethdev
+driver support for the inbuilt network device found in the **Cavium OCTEON TX**
 SoC family as well as their virtual functions (VF) in SR-IOV context.
 
 More information can be found at `Cavium, Inc Official Website
@@ -41,7 +14,7 @@ More information can be found at `Cavium, Inc Official Website
 Features
 --------
 
-Features of the OCTEONTX Ethdev PMD are:
+Features of the OCTEON TX Ethdev PMD are:
 
 - Packet type information
 - Promiscuous mode
@@ -53,8 +26,8 @@ Features of the OCTEONTX Ethdev PMD are:
 - Lock-free Tx queue
 - HW offloaded `ethdev Rx queue` to `eventdev event queue` packet injection
 
-Supported OCTEONTX SoCs
------------------------
+Supported OCTEON TX SoCs
+------------------------
 
 - CN83xx
 
@@ -86,34 +59,13 @@ Please note that enabling debugging options may affect system performance.
 
   Toggle compilation of the ``librte_pmd_octeontx`` driver.
 
-- ``CONFIG_RTE_LIBRTE_OCTEONTX_DEBUG_DRIVER`` (default ``n``)
-
-  Toggle display of generic debugging messages
-
-- ``CONFIG_RTE_LIBRTE_OCTEONTX_DEBUG_INIT`` (default ``n``)
-
-  Toggle display of initialization related messages.
-
-- ``CONFIG_RTE_LIBRTE_OCTEONTX_DEBUG_RX`` (default ``n``)
-
-  Toggle display of receive path message
-
-- ``CONFIG_RTE_LIBRTE_OCTEONTX_DEBUG_TX`` (default ``n``)
-
-  Toggle display of transmit path message
-
-- ``CONFIG_RTE_LIBRTE_OCTEONTX_DEBUG_MBOX`` (default ``n``)
-
-  Toggle display of mbox related message
-
-
 Driver compilation and testing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
 for details.
 
-To compile the OCTEONTX PMD for Linux arm64 gcc target, run the
+To compile the OCTEON TX PMD for Linux arm64 gcc target, run the
 following ``make`` command:
 
 .. code-block:: console
@@ -136,8 +88,8 @@ following ``make`` command:
                 --mbuf-pool-ops-name="octeontx_fpavf" \
                 --vdev='event_octeontx' \
                 --vdev='eth_octeontx,nr_port=2' \
-                -- --rxq=1 --txq=1 --nb-core=2 --total-num-mbufs=16384 \
-                --disable-hw-vlan-filter -i
+                -- --rxq=1 --txq=1 --nb-core=2 \
+                --total-num-mbufs=16384 -i
       .....
       EAL: Detected 24 lcore(s)
       EAL: Probing VFIO support...
@@ -170,7 +122,7 @@ following ``make`` command:
 Initialization
 --------------
 
-The octeontx ethdev pmd is exposed as a vdev device which consists of a set
+The OCTEON TX ethdev pmd is exposed as a vdev device which consists of a set
 of PKI and PKO PCIe VF devices. On EAL initialization,
 PKI/PKO PCIe VF devices will be probed and then the vdev device can be created
 from the application code, or from the EAL command line based on
@@ -204,22 +156,21 @@ Limitations
 
 ``octeontx_fpavf`` external mempool handler dependency
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The OCTEONTX SoC family NIC has inbuilt HW assisted external mempool manager.
+The OCTEON TX SoC family NIC has inbuilt HW assisted external mempool manager.
 This driver will only work with ``octeontx_fpavf`` external mempool handler
 as it is the most performance effective way for packet allocation and Tx buffer
-recycling on OCTEONTX SoC platform.
+recycling on OCTEON TX SoC platform.
 
 CRC striping
 ~~~~~~~~~~~~
 
-The OCTEONTX SoC family NICs strip the CRC for every packets coming into the
-host interface. So, CRC will be stripped even when the
-``rxmode.hw_strip_crc`` member is set to 0 in ``struct rte_eth_conf``.
+The OCTEON TX SoC family NICs strip the CRC for every packets coming into the
+host interface irrespective of the offload configuration.
 
 Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
-The OCTEONTX SoC family NICs support a maximum of a 32K jumbo frame. The value
+The OCTEON TX SoC family NICs support a maximum of a 32K jumbo frame. The value
 is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
 member of ``struct rte_eth_conf`` is set to a value lower than 32k, frames
 up to 32k bytes can still reach the host interface.

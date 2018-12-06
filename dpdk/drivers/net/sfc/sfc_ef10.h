@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017 Solarflare Communications Inc.
+ * Copyright (c) 2017-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_EF10_H
@@ -100,6 +78,40 @@ sfc_ef10_ev_present(const efx_qword_t ev)
 	return ~EFX_QWORD_FIELD(ev, EFX_DWORD_0) |
 	       ~EFX_QWORD_FIELD(ev, EFX_DWORD_1);
 }
+
+
+/**
+ * Alignment requirement for value written to RX WPTR:
+ * the WPTR must be aligned to an 8 descriptor boundary.
+ */
+#define SFC_EF10_RX_WPTR_ALIGN	8u
+
+static inline void
+sfc_ef10_rx_qpush(volatile void *doorbell, unsigned int added,
+		  unsigned int ptr_mask)
+{
+	efx_dword_t dword;
+
+	/* Hardware has alignment restriction for WPTR */
+	RTE_BUILD_BUG_ON(SFC_RX_REFILL_BULK % SFC_EF10_RX_WPTR_ALIGN != 0);
+	SFC_ASSERT(RTE_ALIGN(added, SFC_EF10_RX_WPTR_ALIGN) == added);
+
+	EFX_POPULATE_DWORD_1(dword, ERF_DZ_RX_DESC_WPTR, added & ptr_mask);
+
+	/* DMA sync to device is not required */
+
+	/*
+	 * rte_write32() has rte_io_wmb() which guarantees that the STORE
+	 * operations (i.e. Rx and event descriptor updates) that precede
+	 * the rte_io_wmb() call are visible to NIC before the STORE
+	 * operations that follow it (i.e. doorbell write).
+	 */
+	rte_write32(dword.ed_u32[0], doorbell);
+}
+
+
+const uint32_t * sfc_ef10_supported_ptypes_get(uint32_t tunnel_encaps);
+
 
 #ifdef __cplusplus
 }

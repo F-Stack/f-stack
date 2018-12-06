@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2012 6WIND S.A.
- *   Copyright 2012 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2012 6WIND S.A.
+ * Copyright 2012 Mellanox Technologies, Ltd
  */
 
 #ifndef RTE_PMD_MLX4_H_
@@ -47,11 +19,18 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_interrupts.h>
 #include <rte_mempool.h>
-#include <rte_spinlock.h>
+#include <rte_rwlock.h>
+
+#include "mlx4_mr.h"
+
+#ifndef IBV_RX_HASH_INNER
+/** This is not necessarily defined by supported RDMA core versions. */
+#define IBV_RX_HASH_INNER (1ull << 31)
+#endif /* IBV_RX_HASH_INNER */
 
 /** Maximum number of simultaneous MAC addresses. This value is arbitrary. */
 #define MLX4_MAX_MAC_ADDRESSES 128
@@ -65,19 +44,11 @@
 /** Fixed RSS hash key size in bytes. Cannot be modified. */
 #define MLX4_RSS_HASH_KEY_SIZE 40
 
-/**
- * Maximum number of cached Memory Pools (MPs) per TX queue. Each RTE MP
- * from which buffers are to be transmitted will have to be mapped by this
- * driver to their own Memory Region (MR). This is a slow operation.
- *
- * This value is always 1 for RX queues.
- */
-#ifndef MLX4_PMD_TX_MP_CACHE
-#define MLX4_PMD_TX_MP_CACHE 8
-#endif
-
 /** Interrupt alarm timeout value in microseconds. */
 #define MLX4_INTR_ALARM_TIMEOUT 100000
+
+/* Maximum packet headers size (L2+L3+L4) for TSO. */
+#define MLX4_MAX_TSO_HEADER 192
 
 /** Port parameter. */
 #define MLX4_PMD_PORT_KVARG "port"
@@ -101,20 +72,12 @@ struct rxq;
 struct txq;
 struct rte_flow;
 
-/** Memory region descriptor. */
-struct mlx4_mr {
-	LIST_ENTRY(mlx4_mr) next; /**< Next entry in list. */
-	uintptr_t start; /**< Base address for memory region. */
-	uintptr_t end; /**< End address for memory region. */
-	uint32_t lkey; /**< L_Key extracted from @p mr. */
-	uint32_t refcnt; /**< Reference count for this object. */
-	struct priv *priv; /**< Back pointer to private data. */
-	struct ibv_mr *mr; /**< Memory region associated with @p mp. */
-	struct rte_mempool *mp; /**< Target memory pool (mempool). */
-};
+LIST_HEAD(mlx4_dev_list, priv);
+LIST_HEAD(mlx4_mr_list, mlx4_mr);
 
 /** Private data structure. */
 struct priv {
+	LIST_ENTRY(priv) mem_event_cb; /* Called by memory event callback. */
 	struct rte_eth_dev *dev; /**< Ethernet device. */
 	struct ibv_context *ctx; /**< Verbs context. */
 	struct ibv_device_attr device_attr; /**< Device properties. */
@@ -127,15 +90,24 @@ struct priv {
 	uint32_t intr_alarm:1; /**< An interrupt alarm is scheduled. */
 	uint32_t isolated:1; /**< Toggle isolated mode. */
 	uint32_t rss_init:1; /**< Common RSS context is initialized. */
-	uint32_t hw_csum:1; /* Checksum offload is supported. */
-	uint32_t hw_csum_l2tun:1; /* Checksum support for L2 tunnels. */
+	uint32_t hw_csum:1; /**< Checksum offload is supported. */
+	uint32_t hw_csum_l2tun:1; /**< Checksum support for L2 tunnels. */
+	uint32_t hw_fcs_strip:1; /**< FCS stripping toggling is supported. */
+	uint32_t tso:1; /**< Transmit segmentation offload is supported. */
+	uint32_t tso_max_payload_sz; /**< Max supported TSO payload size. */
 	uint32_t hw_rss_max_qps; /**< Max Rx Queues supported by RSS. */
+	uint64_t hw_rss_sup; /**< Supported RSS hash fields (Verbs format). */
 	struct rte_intr_handle intr_handle; /**< Port interrupt handle. */
 	struct mlx4_drop *drop; /**< Shared resources for drop flow rules. */
+	struct {
+		uint32_t dev_gen; /* Generation number to flush local caches. */
+		rte_rwlock_t rwlock; /* MR Lock. */
+		struct mlx4_mr_btree cache; /* Global MR cache table. */
+		struct mlx4_mr_list mr_list; /* Registered MR list. */
+		struct mlx4_mr_list mr_free_list; /* Freed MR list. */
+	} mr;
 	LIST_HEAD(, mlx4_rss) rss; /**< Shared targets for Rx flow rules. */
 	LIST_HEAD(, rte_flow) flows; /**< Configured flow rule handles. */
-	LIST_HEAD(, mlx4_mr) mr; /**< Registered memory regions. */
-	rte_spinlock_t mr_lock; /**< Lock for @p mr access. */
 	struct ether_addr mac[MLX4_MAX_MAC_ADDRESSES];
 	/**< Configured MAC addresses. Unused entries are zeroed. */
 };
@@ -155,7 +127,7 @@ void mlx4_allmulticast_disable(struct rte_eth_dev *dev);
 void mlx4_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
 int mlx4_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
 		      uint32_t index, uint32_t vmdq);
-void mlx4_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr);
+int mlx4_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr);
 int mlx4_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on);
 int mlx4_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
 void mlx4_stats_reset(struct rte_eth_dev *dev);
@@ -167,6 +139,7 @@ int mlx4_flow_ctrl_get(struct rte_eth_dev *dev,
 int mlx4_flow_ctrl_set(struct rte_eth_dev *dev,
 		       struct rte_eth_fc_conf *fc_conf);
 const uint32_t *mlx4_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+int mlx4_is_removed(struct rte_eth_dev *dev);
 
 /* mlx4_intr.c */
 
@@ -176,12 +149,5 @@ int mlx4_rxq_intr_enable(struct priv *priv);
 void mlx4_rxq_intr_disable(struct priv *priv);
 int mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx);
 int mlx4_rx_intr_enable(struct rte_eth_dev *dev, uint16_t idx);
-
-/* mlx4_mr.c */
-
-struct mlx4_mr *mlx4_mr_get(struct priv *priv, struct rte_mempool *mp);
-void mlx4_mr_put(struct mlx4_mr *mr);
-uint32_t mlx4_txq_add_mr(struct txq *txq, struct rte_mempool *mp,
-			 uint32_t i);
 
 #endif /* RTE_PMD_MLX4_H_ */

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -36,9 +7,27 @@
 #include <unistd.h>
 #include <limits.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "test.h"
 
+#ifndef RTE_LIBRTE_POWER
+
+static int
+test_power_acpi_cpufreq(void)
+{
+	printf("Power management library not supported, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+static int
+test_power_acpi_caps(void)
+{
+	printf("Power management library not supported, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
 #include <rte_power.h>
 
 #define TEST_POWER_LCORE_ID      2U
@@ -46,7 +35,7 @@
 #define TEST_POWER_FREQS_NUM_MAX ((unsigned)RTE_MAX_LCORE_FREQS)
 
 #define TEST_POWER_SYSFILE_CUR_FREQ \
-	"/sys/devices/system/cpu/cpu%u/cpufreq/scaling_cur_freq"
+	"/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_cur_freq"
 
 static uint32_t total_freq_num;
 static uint32_t freqs[TEST_POWER_FREQS_NUM_MAX];
@@ -452,7 +441,7 @@ test_power_acpi_cpufreq(void)
 				"correctly(APCI cpufreq) or operating in another valid "
 				"Power management environment\n", TEST_POWER_LCORE_ID);
 		rte_power_unset_env();
-		return -1;
+		return TEST_SKIPPED;
 	}
 
 	/**
@@ -537,4 +526,41 @@ fail_all:
 	return -1;
 }
 
+static int
+test_power_acpi_caps(void)
+{
+	struct rte_power_core_capabilities caps;
+	int ret;
+
+	ret = rte_power_set_env(PM_ENV_ACPI_CPUFREQ);
+	if (ret) {
+		printf("Error setting ACPI environment\n");
+		return -1;
+	}
+
+	ret = rte_power_init(TEST_POWER_LCORE_ID);
+	if (ret < 0) {
+		printf("Cannot initialise power management for lcore %u, this "
+			"may occur if environment is not configured "
+			"correctly(APCI cpufreq) or operating in another valid "
+			"Power management environment\n", TEST_POWER_LCORE_ID);
+		rte_power_unset_env();
+		return -1;
+	}
+
+	ret = rte_power_get_capabilities(TEST_POWER_LCORE_ID, &caps);
+	if (ret) {
+		printf("ACPI: Error getting capabilities\n");
+		return -1;
+	}
+
+	printf("ACPI: Capabilities %"PRIx64"\n", caps.capabilities);
+
+	rte_power_unset_env();
+	return 0;
+}
+
+#endif
+
 REGISTER_TEST_COMMAND(power_acpi_cpufreq_autotest, test_power_acpi_cpufreq);
+REGISTER_TEST_COMMAND(power_acpi_caps_autotest, test_power_acpi_caps);

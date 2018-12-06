@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_L2_API_H__
@@ -139,6 +137,16 @@ struct ecore_filter_accept_flags {
 #define ECORE_ACCEPT_MCAST_MATCHED	0x08
 #define ECORE_ACCEPT_MCAST_UNMATCHED	0x10
 #define ECORE_ACCEPT_BCAST		0x20
+#define ECORE_ACCEPT_ANY_VNI		0x40
+};
+
+enum ecore_filter_config_mode {
+	ECORE_FILTER_CONFIG_MODE_DISABLE,
+	ECORE_FILTER_CONFIG_MODE_5_TUPLE,
+	ECORE_FILTER_CONFIG_MODE_L4_PORT,
+	ECORE_FILTER_CONFIG_MODE_IP_DEST,
+	ECORE_FILTER_CONFIG_MODE_TUNN_TYPE,
+	ECORE_FILTER_CONFIG_MODE_IP_SRC,
 };
 
 struct ecore_arfs_config_params {
@@ -146,7 +154,7 @@ struct ecore_arfs_config_params {
 	bool udp;
 	bool ipv4;
 	bool ipv6;
-	bool arfs_enable;	/* Enable or disable arfs mode */
+	enum ecore_filter_config_mode mode;
 };
 
 /* Add / remove / move / remove-all unicast MAC-VLAN filters.
@@ -339,7 +347,10 @@ struct ecore_sp_vport_update_params {
 	/* MTU change - notice this requires the vport to be disabled.
 	 * If non-zero, value would be used.
 	 */
-	u16 mtu;
+	u16                     mtu;
+	u8			update_ctl_frame_check;
+	u8			mac_chk_en;
+	u8			ethtype_chk_en;
 };
 
 /**
@@ -462,4 +473,28 @@ ecore_configure_rfs_ntuple_filter(struct ecore_hwfn *p_hwfn,
 				  dma_addr_t p_addr, u16 length,
 				  u16 qid, u8 vport_id,
 				  bool b_is_add);
+
+/**
+ * @brief - ecore_update_eth_rss_ind_table_entry
+ *
+ * This function being used to update RSS indirection table entry to FW RAM
+ * instead of using the SP vport update ramrod with rss params.
+ *
+ * Notice:
+ * This function supports only one outstanding command per engine. Ecore
+ * clients which use this function should call ecore_mcp_ind_table_lock() prior
+ * to it and ecore_mcp_ind_table_unlock() after it.
+ *
+ * @params p_hwfn
+ * @params vport_id
+ * @params ind_table_index
+ * @params ind_table_value
+ *
+ * @return enum _ecore_status_t
+ */
+enum _ecore_status_t
+ecore_update_eth_rss_ind_table_entry(struct ecore_hwfn *p_hwfn,
+				     u8 vport_id,
+				     u8 ind_table_index,
+				     u16 ind_table_value);
 #endif
