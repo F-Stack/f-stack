@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -36,6 +7,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sched.h>
 #include <assert.h>
 #include <string.h>
@@ -44,6 +16,7 @@
 #include <rte_memory.h>
 #include <rte_log.h>
 
+#include "eal_private.h"
 #include "eal_thread.h"
 
 RTE_DECLARE_PER_LCORE(unsigned , _socket_id);
@@ -61,10 +34,7 @@ rte_lcore_has_role(unsigned int lcore_id, enum rte_lcore_role_t role)
 	if (lcore_id >= RTE_MAX_LCORE)
 		return -EINVAL;
 
-	if (cfg->lcore_role[lcore_id] == role)
-		return 0;
-
-	return -EINVAL;
+	return cfg->lcore_role[lcore_id] == role;
 }
 
 int eal_cpuset_socket_id(rte_cpuset_t *cpusetp)
@@ -168,4 +138,95 @@ exit:
 		str[out - 1] = '\0';
 
 	return ret;
+}
+
+
+struct rte_thread_ctrl_params {
+	void *(*start_routine)(void *);
+	void *arg;
+	pthread_barrier_t configured;
+};
+
+static void *rte_thread_init(void *arg)
+{
+	int ret;
+	struct rte_thread_ctrl_params *params = arg;
+	void *(*start_routine)(void *) = params->start_routine;
+	void *routine_arg = params->arg;
+
+	ret = pthread_barrier_wait(&params->configured);
+	if (ret == PTHREAD_BARRIER_SERIAL_THREAD) {
+		pthread_barrier_destroy(&params->configured);
+		free(params);
+	}
+
+	return start_routine(routine_arg);
+}
+
+__rte_experimental int
+rte_ctrl_thread_create(pthread_t *thread, const char *name,
+		const pthread_attr_t *attr,
+		void *(*start_routine)(void *), void *arg)
+{
+	struct rte_thread_ctrl_params *params;
+	unsigned int lcore_id;
+	rte_cpuset_t cpuset;
+	int cpu_found, ret;
+
+	params = malloc(sizeof(*params));
+	if (!params)
+		return -ENOMEM;
+
+	params->start_routine = start_routine;
+	params->arg = arg;
+
+	pthread_barrier_init(&params->configured, NULL, 2);
+
+	ret = pthread_create(thread, attr, rte_thread_init, (void *)params);
+	if (ret != 0) {
+		free(params);
+		return -ret;
+	}
+
+	if (name != NULL) {
+		ret = rte_thread_setname(*thread, name);
+		if (ret < 0)
+			RTE_LOG(DEBUG, EAL,
+				"Cannot set name for ctrl thread\n");
+	}
+
+	cpu_found = 0;
+	CPU_ZERO(&cpuset);
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		if (eal_cpu_detected(lcore_id) &&
+				rte_lcore_has_role(lcore_id, ROLE_OFF)) {
+			CPU_SET(lcore_id, &cpuset);
+			cpu_found = 1;
+		}
+	}
+	/* if no detected cpu is off, use master core */
+	if (!cpu_found)
+		CPU_SET(rte_get_master_lcore(), &cpuset);
+
+	ret = pthread_setaffinity_np(*thread, sizeof(cpuset), &cpuset);
+	if (ret < 0)
+		goto fail;
+
+	ret = pthread_barrier_wait(&params->configured);
+	if (ret == PTHREAD_BARRIER_SERIAL_THREAD) {
+		pthread_barrier_destroy(&params->configured);
+		free(params);
+	}
+
+	return 0;
+
+fail:
+	if (PTHREAD_BARRIER_SERIAL_THREAD ==
+	    pthread_barrier_wait(&params->configured)) {
+		pthread_barrier_destroy(&params->configured);
+		free(params);
+	}
+	pthread_cancel(*thread);
+	pthread_join(*thread, NULL);
+	return -ret;
 }

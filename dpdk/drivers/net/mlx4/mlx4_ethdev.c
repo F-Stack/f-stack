@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 /**
@@ -63,13 +35,15 @@
 
 #include <rte_bus_pci.h>
 #include <rte_errno.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_flow.h>
 #include <rte_pci.h>
+#include <rte_string_fns.h>
 
 #include "mlx4.h"
 #include "mlx4_flow.h"
+#include "mlx4_glue.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
 
@@ -147,7 +121,7 @@ try_dev_id:
 			goto try_dev_id;
 		dev_port_prev = dev_port;
 		if (dev_port == (priv->port - 1u))
-			snprintf(match, sizeof(match), "%s", name);
+			strlcpy(match, name, sizeof(match));
 	}
 	closedir(dir);
 	if (match[0] == '\0') {
@@ -386,6 +360,8 @@ mlx4_rxmode_toggle(struct rte_eth_dev *dev, enum rxmode_toggle toggle)
 		mode = "all multicast";
 		dev->data->all_multicast = toggle & 1;
 		break;
+	default:
+		mode = "undefined";
 	}
 	if (!mlx4_flow_sync(priv, &error))
 		return;
@@ -560,11 +536,14 @@ mlx4_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
  *   Pointer to Ethernet device structure.
  * @param mac_addr
  *   MAC address to register.
+ *
+ * @return
+ *   0 on success, negative errno value otherwise and rte_errno is set.
  */
-void
+int
 mlx4_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 {
-	mlx4_mac_addr_add(dev, mac_addr, 0, 0);
+	return mlx4_mac_addr_add(dev, mac_addr, 0, 0);
 }
 
 /**
@@ -582,7 +561,6 @@ mlx4_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	unsigned int max;
 	char ifname[IF_NAMESIZE];
 
-	info->pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	/* FIXME: we should ask the device for these values. */
 	info->min_rx_bufsize = 32;
 	info->max_rx_pktlen = 65536;
@@ -598,18 +576,10 @@ mlx4_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->max_rx_queues = max;
 	info->max_tx_queues = max;
 	info->max_mac_addrs = RTE_DIM(priv->mac);
-	info->rx_offload_capa = 0;
-	info->tx_offload_capa = 0;
-	if (priv->hw_csum) {
-		info->tx_offload_capa |= (DEV_TX_OFFLOAD_IPV4_CKSUM |
-					  DEV_TX_OFFLOAD_UDP_CKSUM |
-					  DEV_TX_OFFLOAD_TCP_CKSUM);
-		info->rx_offload_capa |= (DEV_RX_OFFLOAD_IPV4_CKSUM |
-					  DEV_RX_OFFLOAD_UDP_CKSUM |
-					  DEV_RX_OFFLOAD_TCP_CKSUM);
-	}
-	if (priv->hw_csum_l2tun)
-		info->tx_offload_capa |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
+	info->tx_offload_capa = mlx4_get_tx_port_offloads(priv);
+	info->rx_queue_offload_capa = mlx4_get_rx_queue_offloads(priv);
+	info->rx_offload_capa = (mlx4_get_rx_port_offloads(priv) |
+				 info->rx_queue_offload_capa);
 	if (mlx4_get_ifname(priv, &ifname) == 0)
 		info->if_index = if_nametoindex(ifname);
 	info->hash_key_size = MLX4_RSS_HASH_KEY_SIZE;
@@ -619,6 +589,7 @@ mlx4_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 			ETH_LINK_SPEED_20G |
 			ETH_LINK_SPEED_40G |
 			ETH_LINK_SPEED_56G;
+	info->flow_type_rss_offloads = mlx4_conv_rss_types(priv, 0, 1);
 }
 
 /**
@@ -745,7 +716,7 @@ mlx4_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 	}
 	link_speed = ethtool_cmd_speed(&edata);
 	if (link_speed == -1)
-		dev_link.link_speed = 0;
+		dev_link.link_speed = ETH_SPEED_NUM_NONE;
 	else
 		dev_link.link_speed = link_speed;
 	dev_link.link_duplex = ((edata.duplex == DUPLEX_HALF) ?
@@ -891,4 +862,24 @@ mlx4_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 			return ptypes;
 	}
 	return NULL;
+}
+
+/**
+ * Check if mlx4 device was removed.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   1 when device is removed, otherwise 0.
+ */
+int
+mlx4_is_removed(struct rte_eth_dev *dev)
+{
+	struct ibv_device_attr device_attr;
+	struct priv *priv = dev->data->dev_private;
+
+	if (mlx4_glue->query_device(priv->ctx, &device_attr) == EIO)
+		return 1;
+	return 0;
 }

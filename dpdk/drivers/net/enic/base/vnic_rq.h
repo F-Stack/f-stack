@@ -1,40 +1,12 @@
-/*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #ifndef _VNIC_RQ_H_
 #define _VNIC_RQ_H_
 
+#include <stdbool.h>
 
 #include "vnic_dev.h"
 #include "vnic_cq.h"
@@ -80,6 +52,8 @@ struct vnic_rq {
 	struct vnic_dev *vdev;
 	struct vnic_rq_ctrl __iomem *ctrl;	/* memory-mapped */
 	struct vnic_dev_ring ring;
+	struct rte_mbuf **free_mbufs;		/* reserve of free mbufs */
+	int num_free_mbufs;
 	struct rte_mbuf **mbuf_ring;		/* array of allocated mbufs */
 	unsigned int mbuf_next_idx;		/* next mb to consume */
 	void *os_buf_head;
@@ -98,6 +72,7 @@ struct vnic_rq {
 	struct rte_mbuf *pkt_last_seg;
 	unsigned int max_mbufs_per_pkt;
 	uint16_t tot_nb_desc;
+	bool need_initial_post;
 };
 
 static inline unsigned int vnic_rq_desc_avail(struct vnic_rq *rq)

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <fcntl.h>
@@ -173,6 +144,39 @@ pci_uio_unmap(struct mapped_pci_resource *uio_res)
 		if (rte_eal_process_type() == RTE_PROC_PRIMARY)
 			rte_free(uio_res->maps[i].path);
 	}
+}
+
+/* remap the PCI resource of a PCI device in anonymous virtual memory */
+int
+pci_uio_remap_resource(struct rte_pci_device *dev)
+{
+	int i;
+	void *map_address;
+
+	if (dev == NULL)
+		return -1;
+
+	/* Remap all BARs */
+	for (i = 0; i != PCI_MAX_RESOURCE; i++) {
+		/* skip empty BAR */
+		if (dev->mem_resource[i].phys_addr == 0)
+			continue;
+		map_address = mmap(dev->mem_resource[i].addr,
+				(size_t)dev->mem_resource[i].len,
+				PROT_READ | PROT_WRITE,
+				MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+		if (map_address == MAP_FAILED) {
+			RTE_LOG(ERR, EAL,
+				"Cannot remap resource for device %s\n",
+				dev->name);
+			return -1;
+		}
+		RTE_LOG(INFO, EAL,
+			"Successful remap resource for device %s\n",
+			dev->name);
+	}
+
+	return 0;
 }
 
 static struct mapped_pci_resource *

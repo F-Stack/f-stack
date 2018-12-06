@@ -1,34 +1,5 @@
-/**
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdint.h>
@@ -113,6 +84,7 @@ rte_fbk_hash_create(const struct rte_fbk_hash_params *params)
 			sizeof(*ht) + (sizeof(ht->t[0]) * params->entries);
 	uint32_t i;
 	struct rte_fbk_hash_list *fbk_hash_list;
+	rte_fbk_hash_fn default_hash_func = (rte_fbk_hash_fn)rte_jhash_1word;
 
 	fbk_hash_list = RTE_TAILQ_CAST(rte_fbk_hash_tailq.head,
 				       rte_fbk_hash_list);
@@ -152,13 +124,21 @@ rte_fbk_hash_create(const struct rte_fbk_hash_params *params)
 	}
 
 	/* Allocate memory for table. */
-	ht = (struct rte_fbk_hash_table *)rte_zmalloc_socket(hash_name, mem_size,
+	ht = rte_zmalloc_socket(hash_name, mem_size,
 			0, params->socket_id);
 	if (ht == NULL) {
 		RTE_LOG(ERR, HASH, "Failed to allocate fbk hash table\n");
 		rte_free(te);
 		goto exit;
 	}
+
+	/* Default hash function */
+#if defined(RTE_ARCH_X86)
+	default_hash_func = (rte_fbk_hash_fn)rte_hash_crc_4byte;
+#elif defined(RTE_ARCH_ARM64)
+	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_CRC32))
+		default_hash_func = (rte_fbk_hash_fn)rte_hash_crc_4byte;
+#endif
 
 	/* Set up hash table context. */
 	snprintf(ht->name, sizeof(ht->name), "%s", params->name);
@@ -176,7 +156,7 @@ rte_fbk_hash_create(const struct rte_fbk_hash_params *params)
 		ht->init_val = params->init_val;
 	}
 	else {
-		ht->hash_func = RTE_FBK_HASH_FUNC_DEFAULT;
+		ht->hash_func = default_hash_func;
 		ht->init_val = RTE_FBK_HASH_INIT_VAL_DEFAULT;
 	}
 

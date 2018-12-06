@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 #include <string.h>
 
@@ -55,7 +27,7 @@ scheduler_attach_init_slave(struct rte_cryptodev *dev)
 		int status;
 
 		if (!slave_dev) {
-			CS_LOG_ERR("Failed to locate slave dev %s",
+			CR_SCHED_LOG(ERR, "Failed to locate slave dev %s",
 					dev_name);
 			return -EINVAL;
 		}
@@ -64,12 +36,12 @@ scheduler_attach_init_slave(struct rte_cryptodev *dev)
 				scheduler_id, slave_dev->data->dev_id);
 
 		if (status < 0) {
-			CS_LOG_ERR("Failed to attach slave cryptodev %u",
+			CR_SCHED_LOG(ERR, "Failed to attach slave cryptodev %u",
 					slave_dev->data->dev_id);
 			return status;
 		}
 
-		CS_LOG_INFO("Scheduler %s attached slave %s\n",
+		CR_SCHED_LOG(INFO, "Scheduler %s attached slave %s",
 				dev->data->name,
 				sched_ctx->init_slave_names[i]);
 
@@ -130,7 +102,7 @@ update_order_ring(struct rte_cryptodev *dev, uint16_t qp_id)
 		if (snprintf(order_ring_name, RTE_CRYPTODEV_NAME_MAX_LEN,
 			"%s_rb_%u_%u", RTE_STR(CRYPTODEV_NAME_SCHEDULER_PMD),
 			dev->data->dev_id, qp_id) < 0) {
-			CS_LOG_ERR("failed to create unique reorder buffer "
+			CR_SCHED_LOG(ERR, "failed to create unique reorder buffer"
 					"name");
 			return -ENOMEM;
 		}
@@ -139,7 +111,7 @@ update_order_ring(struct rte_cryptodev *dev, uint16_t qp_id)
 				buff_size, rte_socket_id(),
 				RING_F_SP_ENQ | RING_F_SC_DEQ);
 		if (!qp_ctx->order_ring) {
-			CS_LOG_ERR("failed to create order ring");
+			CR_SCHED_LOG(ERR, "failed to create order ring");
 			return -ENOMEM;
 		}
 	} else {
@@ -173,18 +145,18 @@ scheduler_pmd_start(struct rte_cryptodev *dev)
 	for (i = 0; i < dev->data->nb_queue_pairs; i++) {
 		ret = update_order_ring(dev, i);
 		if (ret < 0) {
-			CS_LOG_ERR("Failed to update reorder buffer");
+			CR_SCHED_LOG(ERR, "Failed to update reorder buffer");
 			return ret;
 		}
 	}
 
 	if (sched_ctx->mode == CDEV_SCHED_MODE_NOT_SET) {
-		CS_LOG_ERR("Scheduler mode is not set");
+		CR_SCHED_LOG(ERR, "Scheduler mode is not set");
 		return -1;
 	}
 
 	if (!sched_ctx->nb_slaves) {
-		CS_LOG_ERR("No slave in the scheduler");
+		CR_SCHED_LOG(ERR, "No slave in the scheduler");
 		return -1;
 	}
 
@@ -194,7 +166,7 @@ scheduler_pmd_start(struct rte_cryptodev *dev)
 		uint8_t slave_dev_id = sched_ctx->slaves[i].dev_id;
 
 		if ((*sched_ctx->ops.slave_attach)(dev, slave_dev_id) < 0) {
-			CS_LOG_ERR("Failed to attach slave");
+			CR_SCHED_LOG(ERR, "Failed to attach slave");
 			return -ENOTSUP;
 		}
 	}
@@ -202,7 +174,7 @@ scheduler_pmd_start(struct rte_cryptodev *dev)
 	RTE_FUNC_PTR_OR_ERR_RET(*sched_ctx->ops.scheduler_start, -ENOTSUP);
 
 	if ((*sched_ctx->ops.scheduler_start)(dev) < 0) {
-		CS_LOG_ERR("Scheduler start failed");
+		CR_SCHED_LOG(ERR, "Scheduler start failed");
 		return -1;
 	}
 
@@ -214,7 +186,7 @@ scheduler_pmd_start(struct rte_cryptodev *dev)
 
 		ret = (*slave_dev->dev_ops->dev_start)(slave_dev);
 		if (ret < 0) {
-			CS_LOG_ERR("Failed to start slave dev %u",
+			CR_SCHED_LOG(ERR, "Failed to start slave dev %u",
 					slave_dev_id);
 			return ret;
 		}
@@ -349,8 +321,9 @@ scheduler_pmd_info_get(struct rte_cryptodev *dev,
 		struct rte_cryptodev_info *dev_info)
 {
 	struct scheduler_ctx *sched_ctx = dev->data->dev_private;
-	uint32_t max_nb_sessions = sched_ctx->nb_slaves ?
-			UINT32_MAX : RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS;
+	uint32_t max_nb_sess = 0;
+	uint16_t headroom_sz = 0;
+	uint16_t tailroom_sz = 0;
 	uint32_t i;
 
 	if (!dev_info)
@@ -366,17 +339,32 @@ scheduler_pmd_info_get(struct rte_cryptodev *dev,
 		struct rte_cryptodev_info slave_info;
 
 		rte_cryptodev_info_get(slave_dev_id, &slave_info);
-		max_nb_sessions = slave_info.sym.max_nb_sessions <
-				max_nb_sessions ?
-				slave_info.sym.max_nb_sessions :
-				max_nb_sessions;
+		uint32_t dev_max_sess = slave_info.sym.max_nb_sessions;
+		if (dev_max_sess != 0) {
+			if (max_nb_sess == 0 ||	dev_max_sess < max_nb_sess)
+				max_nb_sess = slave_info.sym.max_nb_sessions;
+		}
+
+		/* Get the max headroom requirement among slave PMDs */
+		headroom_sz = slave_info.min_mbuf_headroom_req >
+				headroom_sz ?
+				slave_info.min_mbuf_headroom_req :
+				headroom_sz;
+
+		/* Get the max tailroom requirement among slave PMDs */
+		tailroom_sz = slave_info.min_mbuf_tailroom_req >
+				tailroom_sz ?
+				slave_info.min_mbuf_tailroom_req :
+				tailroom_sz;
 	}
 
 	dev_info->driver_id = dev->driver_id;
 	dev_info->feature_flags = dev->feature_flags;
 	dev_info->capabilities = sched_ctx->capabilities;
 	dev_info->max_nb_queue_pairs = sched_ctx->max_nb_queue_pairs;
-	dev_info->sym.max_nb_sessions = max_nb_sessions;
+	dev_info->min_mbuf_headroom_req = headroom_sz;
+	dev_info->min_mbuf_tailroom_req = tailroom_sz;
+	dev_info->sym.max_nb_sessions = max_nb_sess;
 }
 
 /** Release queue pair */
@@ -414,7 +402,7 @@ scheduler_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (snprintf(name, RTE_CRYPTODEV_NAME_MAX_LEN,
 			"CRYTO_SCHE PMD %u QP %u",
 			dev->data->dev_id, qp_id) < 0) {
-		CS_LOG_ERR("Failed to create unique queue pair name");
+		CR_SCHED_LOG(ERR, "Failed to create unique queue pair name");
 		return -EFAULT;
 	}
 
@@ -452,35 +440,19 @@ scheduler_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	 */
 	ret = scheduler_attach_init_slave(dev);
 	if (ret < 0) {
-		CS_LOG_ERR("Failed to attach slave");
+		CR_SCHED_LOG(ERR, "Failed to attach slave");
 		scheduler_pmd_qp_release(dev, qp_id);
 		return ret;
 	}
 
 	if (*sched_ctx->ops.config_queue_pair) {
 		if ((*sched_ctx->ops.config_queue_pair)(dev, qp_id) < 0) {
-			CS_LOG_ERR("Unable to configure queue pair");
+			CR_SCHED_LOG(ERR, "Unable to configure queue pair");
 			return -1;
 		}
 	}
 
 	return 0;
-}
-
-/** Start queue pair */
-static int
-scheduler_pmd_qp_start(__rte_unused struct rte_cryptodev *dev,
-		__rte_unused uint16_t queue_pair_id)
-{
-	return -ENOTSUP;
-}
-
-/** Stop queue pair */
-static int
-scheduler_pmd_qp_stop(__rte_unused struct rte_cryptodev *dev,
-		__rte_unused uint16_t queue_pair_id)
-{
-	return -ENOTSUP;
 }
 
 /** Return the number of allocated queue pairs */
@@ -491,7 +463,7 @@ scheduler_pmd_qp_count(struct rte_cryptodev *dev)
 }
 
 static uint32_t
-scheduler_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
+scheduler_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 {
 	struct scheduler_ctx *sched_ctx = dev->data->dev_private;
 	uint8_t i = 0;
@@ -501,7 +473,7 @@ scheduler_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
 	for (i = 0; i < sched_ctx->nb_slaves; i++) {
 		uint8_t slave_dev_id = sched_ctx->slaves[i].dev_id;
 		struct rte_cryptodev *dev = &rte_cryptodevs[slave_dev_id];
-		uint32_t priv_sess_size = (*dev->dev_ops->session_get_size)(dev);
+		uint32_t priv_sess_size = (*dev->dev_ops->sym_session_get_size)(dev);
 
 		if (max_priv_sess_size < priv_sess_size)
 			max_priv_sess_size = priv_sess_size;
@@ -511,7 +483,7 @@ scheduler_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
 }
 
 static int
-scheduler_pmd_session_configure(struct rte_cryptodev *dev,
+scheduler_pmd_sym_session_configure(struct rte_cryptodev *dev,
 	struct rte_crypto_sym_xform *xform,
 	struct rte_cryptodev_sym_session *sess,
 	struct rte_mempool *mempool)
@@ -526,7 +498,7 @@ scheduler_pmd_session_configure(struct rte_cryptodev *dev,
 		ret = rte_cryptodev_sym_session_init(slave->dev_id, sess,
 					xform, mempool);
 		if (ret < 0) {
-			CS_LOG_ERR("unabled to config sym session");
+			CR_SCHED_LOG(ERR, "unable to config sym session");
 			return ret;
 		}
 	}
@@ -536,7 +508,7 @@ scheduler_pmd_session_configure(struct rte_cryptodev *dev,
 
 /** Clear the memory of session so it doesn't leave key material behind */
 static void
-scheduler_pmd_session_clear(struct rte_cryptodev *dev,
+scheduler_pmd_sym_session_clear(struct rte_cryptodev *dev,
 		struct rte_cryptodev_sym_session *sess)
 {
 	struct scheduler_ctx *sched_ctx = dev->data->dev_private;
@@ -550,7 +522,7 @@ scheduler_pmd_session_clear(struct rte_cryptodev *dev,
 	}
 }
 
-struct rte_cryptodev_ops scheduler_pmd_ops = {
+static struct rte_cryptodev_ops scheduler_pmd_ops = {
 		.dev_configure		= scheduler_pmd_config,
 		.dev_start		= scheduler_pmd_start,
 		.dev_stop		= scheduler_pmd_stop,
@@ -563,13 +535,11 @@ struct rte_cryptodev_ops scheduler_pmd_ops = {
 
 		.queue_pair_setup	= scheduler_pmd_qp_setup,
 		.queue_pair_release	= scheduler_pmd_qp_release,
-		.queue_pair_start	= scheduler_pmd_qp_start,
-		.queue_pair_stop	= scheduler_pmd_qp_stop,
 		.queue_pair_count	= scheduler_pmd_qp_count,
 
-		.session_get_size	= scheduler_pmd_session_get_size,
-		.session_configure	= scheduler_pmd_session_configure,
-		.session_clear		= scheduler_pmd_session_clear,
+		.sym_session_get_size	= scheduler_pmd_sym_session_get_size,
+		.sym_session_configure	= scheduler_pmd_sym_session_configure,
+		.sym_session_clear	= scheduler_pmd_sym_session_clear,
 };
 
 struct rte_cryptodev_ops *rte_crypto_scheduler_pmd_ops = &scheduler_pmd_ops;

@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -108,12 +86,12 @@ sfc_intr_line_handler(void *cb_arg)
 
 exit:
 	if (lsc_seq != sa->port.lsc_seq) {
-		sfc_info(sa, "link status change event: link %s",
+		sfc_notice(sa, "link status change event: link %s",
 			 sa->eth_dev->data->dev_link.link_status ?
 			 "UP" : "DOWN");
 		_rte_eth_dev_callback_process(sa->eth_dev,
 					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL, NULL);
+					      NULL);
 	}
 }
 
@@ -152,10 +130,10 @@ sfc_intr_message_handler(void *cb_arg)
 
 exit:
 	if (lsc_seq != sa->port.lsc_seq) {
-		sfc_info(sa, "link status change event");
+		sfc_notice(sa, "link status change event");
 		_rte_eth_dev_callback_process(sa->eth_dev,
 					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL, NULL);
+					      NULL);
 	}
 }
 
@@ -273,7 +251,7 @@ sfc_intr_configure(struct sfc_adapter *sa)
 	intr->handler = NULL;
 	intr->lsc_intr = (sa->eth_dev->data->dev_conf.intr_conf.lsc != 0);
 	if (!intr->lsc_intr) {
-		sfc_info(sa, "LSC tracking using interrupts is disabled");
+		sfc_notice(sa, "LSC tracking using interrupts is disabled");
 		goto done;
 	}
 

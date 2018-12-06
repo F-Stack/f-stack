@@ -1,38 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #include <stdio.h>
 #include <unistd.h>
 
+#include <rte_malloc.h>
+#include <rte_random.h>
 #include <rte_eal.h>
 #include <rte_cryptodev.h>
 #ifdef RTE_LIBRTE_PMD_CRYPTO_SCHEDULER
@@ -47,8 +21,6 @@
 #include "cperf_test_verify.h"
 #include "cperf_test_pmd_cyclecount.h"
 
-#define NUM_SESSIONS 2048
-#define SESS_MEMPOOL_CACHE_SIZE 64
 
 const char *cperf_test_type_strs[] = {
 	[CPERF_TEST_TYPE_THROUGHPUT] = "throughput",
@@ -93,6 +65,7 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs,
 			struct rte_mempool *session_pool_socket[])
 {
 	uint8_t enabled_cdev_count = 0, nb_lcores, cdev_id;
+	uint32_t sessions_needed = 0;
 	unsigned int i, j;
 	int ret;
 
@@ -123,7 +96,7 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs,
 	uint32_t max_sess_size = 0, sess_size;
 
 	for (cdev_id = 0; cdev_id < rte_cryptodev_count(); cdev_id++) {
-		sess_size = rte_cryptodev_get_private_session_size(cdev_id);
+		sess_size = rte_cryptodev_sym_get_private_session_size(cdev_id);
 		if (sess_size > max_sess_size)
 			max_sess_size = sess_size;
 	}
@@ -175,17 +148,62 @@ cperf_initialize_cryptodev(struct cperf_options *opts, uint8_t *enabled_cdevs,
 			.nb_descriptors = opts->nb_descriptors
 		};
 
+		/**
+		 * Device info specifies the min headroom and tailroom
+		 * requirement for the crypto PMD. This need to be honoured
+		 * by the application, while creating mbuf.
+		 */
+		if (opts->headroom_sz < cdev_info.min_mbuf_headroom_req) {
+			/* Update headroom */
+			opts->headroom_sz = cdev_info.min_mbuf_headroom_req;
+		}
+		if (opts->tailroom_sz < cdev_info.min_mbuf_tailroom_req) {
+			/* Update tailroom */
+			opts->tailroom_sz = cdev_info.min_mbuf_tailroom_req;
+		}
+
+		/* Update segment size to include headroom & tailroom */
+		opts->segment_sz += (opts->headroom_sz + opts->tailroom_sz);
+
+		uint32_t dev_max_nb_sess = cdev_info.sym.max_nb_sessions;
+		/*
+		 * Two sessions objects are required for each session
+		 * (one for the header, one for the private data)
+		 */
+		if (!strcmp((const char *)opts->device_type,
+					"crypto_scheduler")) {
+#ifdef RTE_LIBRTE_PMD_CRYPTO_SCHEDULER
+			uint32_t nb_slaves =
+				rte_cryptodev_scheduler_slaves_get(cdev_id,
+								NULL);
+
+			sessions_needed = 2 * enabled_cdev_count *
+				opts->nb_qps * nb_slaves;
+#endif
+		} else
+			sessions_needed = 2 * enabled_cdev_count *
+						opts->nb_qps;
+
+		/*
+		 * A single session is required per queue pair
+		 * in each device
+		 */
+		if (dev_max_nb_sess != 0 && dev_max_nb_sess < opts->nb_qps) {
+			RTE_LOG(ERR, USER1,
+				"Device does not support at least "
+				"%u sessions\n", opts->nb_qps);
+			return -ENOTSUP;
+		}
 		if (session_pool_socket[socket_id] == NULL) {
 			char mp_name[RTE_MEMPOOL_NAMESIZE];
 			struct rte_mempool *sess_mp;
 
 			snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
 				"sess_mp_%u", socket_id);
-
 			sess_mp = rte_mempool_create(mp_name,
-						NUM_SESSIONS,
+						sessions_needed,
 						max_sess_size,
-						SESS_MEMPOOL_CACHE_SIZE,
+						0,
 						0, NULL, NULL, NULL,
 						NULL, socket_id,
 						0);
@@ -324,7 +342,9 @@ cperf_check_test_vector(struct cperf_options *opts,
 				return -1;
 			if (test_vec->ciphertext.length < opts->max_buffer_size)
 				return -1;
-			if (test_vec->cipher_iv.data == NULL)
+			/* Cipher IV is only required for some algorithms */
+			if (opts->cipher_iv_sz &&
+					test_vec->cipher_iv.data == NULL)
 				return -1;
 			if (test_vec->cipher_iv.length != opts->cipher_iv_sz)
 				return -1;
@@ -339,7 +359,9 @@ cperf_check_test_vector(struct cperf_options *opts,
 				return -1;
 			if (test_vec->plaintext.length < opts->max_buffer_size)
 				return -1;
-			if (test_vec->auth_key.data == NULL)
+			/* Auth key is only required for some algorithms */
+			if (opts->auth_key_sz &&
+					test_vec->auth_key.data == NULL)
 				return -1;
 			if (test_vec->auth_key.length != opts->auth_key_sz)
 				return -1;
@@ -402,6 +424,10 @@ cperf_check_test_vector(struct cperf_options *opts,
 		if (test_vec->ciphertext.data == NULL)
 			return -1;
 		if (test_vec->ciphertext.length < opts->max_buffer_size)
+			return -1;
+		if (test_vec->aead_key.data == NULL)
+			return -1;
+		if (test_vec->aead_key.length != opts->aead_key_sz)
 			return -1;
 		if (test_vec->aead_iv.data == NULL)
 			return -1;
@@ -542,13 +568,45 @@ main(int argc, char **argv)
 		i++;
 	}
 
-	/* Get first size from range or list */
-	if (opts.inc_buffer_size != 0)
-		opts.test_buffer_size = opts.min_buffer_size;
-	else
-		opts.test_buffer_size = opts.buffer_size_list[0];
+	if (opts.imix_distribution_count != 0) {
+		uint8_t buffer_size_count = opts.buffer_size_count;
+		uint16_t distribution_total[buffer_size_count];
+		uint32_t op_idx;
+		uint32_t test_average_size = 0;
+		const uint32_t *buffer_size_list = opts.buffer_size_list;
+		const uint32_t *imix_distribution_list = opts.imix_distribution_list;
 
-	while (opts.test_buffer_size <= opts.max_buffer_size) {
+		opts.imix_buffer_sizes = rte_malloc(NULL,
+					sizeof(uint32_t) * opts.pool_sz,
+					0);
+		/*
+		 * Calculate accumulated distribution of
+		 * probabilities per packet size
+		 */
+		distribution_total[0] = imix_distribution_list[0];
+		for (i = 1; i < buffer_size_count; i++)
+			distribution_total[i] = imix_distribution_list[i] +
+				distribution_total[i-1];
+
+		/* Calculate a random sequence of packet sizes, based on distribution */
+		for (op_idx = 0; op_idx < opts.pool_sz; op_idx++) {
+			uint16_t random_number = rte_rand() %
+				distribution_total[buffer_size_count - 1];
+			for (i = 0; i < buffer_size_count; i++)
+				if (random_number < distribution_total[i])
+					break;
+
+			opts.imix_buffer_sizes[op_idx] = buffer_size_list[i];
+		}
+
+		/* Calculate average buffer size for the IMIX distribution */
+		for (i = 0; i < buffer_size_count; i++)
+			test_average_size += buffer_size_list[i] *
+				imix_distribution_list[i];
+
+		opts.test_buffer_size = test_average_size /
+				distribution_total[buffer_size_count - 1];
+
 		i = 0;
 		RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 
@@ -567,14 +625,43 @@ main(int argc, char **argv)
 			rte_eal_wait_lcore(lcore_id);
 			i++;
 		}
+	} else {
 
 		/* Get next size from range or list */
 		if (opts.inc_buffer_size != 0)
-			opts.test_buffer_size += opts.inc_buffer_size;
-		else {
-			if (++buffer_size_idx == opts.buffer_size_count)
-				break;
-			opts.test_buffer_size = opts.buffer_size_list[buffer_size_idx];
+			opts.test_buffer_size = opts.min_buffer_size;
+		else
+			opts.test_buffer_size = opts.buffer_size_list[0];
+
+		while (opts.test_buffer_size <= opts.max_buffer_size) {
+			i = 0;
+			RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+
+				if (i == total_nb_qps)
+					break;
+
+				rte_eal_remote_launch(cperf_testmap[opts.test].runner,
+					ctx[i], lcore_id);
+				i++;
+			}
+			i = 0;
+			RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+
+				if (i == total_nb_qps)
+					break;
+				rte_eal_wait_lcore(lcore_id);
+				i++;
+			}
+
+			/* Get next size from range or list */
+			if (opts.inc_buffer_size != 0)
+				opts.test_buffer_size += opts.inc_buffer_size;
+			else {
+				if (++buffer_size_idx == opts.buffer_size_count)
+					break;
+				opts.test_buffer_size =
+					opts.buffer_size_list[buffer_size_idx];
+			}
 		}
 	}
 
@@ -603,8 +690,6 @@ err:
 		if (i == total_nb_qps)
 			break;
 
-		cdev_id = enabled_cdevs[i];
-
 		if (ctx[i] && cperf_testmap[opts.test].destructor)
 			cperf_testmap[opts.test].destructor(ctx[i]);
 		i++;
@@ -613,7 +698,7 @@ err:
 	for (i = 0; i < nb_cryptodevs &&
 			i < RTE_CRYPTO_MAX_DEVS; i++)
 		rte_cryptodev_stop(enabled_cdevs[i]);
-
+	rte_free(opts.imix_buffer_sizes);
 	free_test_vector(t_vec, &opts);
 
 	printf("\n");

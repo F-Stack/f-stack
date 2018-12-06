@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -42,6 +13,7 @@
 
 #include <sys/queue.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 
@@ -72,7 +44,8 @@ static unsigned char *global_cpumaps;
 static virVcpuInfo *global_vircpuinfo;
 static size_t global_maplen;
 
-static unsigned global_n_host_cpus;
+static unsigned int global_n_host_cpus;
+static bool global_hypervisor_available;
 
 /*
  * Represents a single Virtual Machine
@@ -227,7 +200,11 @@ get_pcpus_mask(struct channel_info *chan_info, unsigned vcpu)
 {
 	struct virtual_machine_info *vm_info =
 			(struct virtual_machine_info *)chan_info->priv_info;
-	return rte_atomic64_read(&vm_info->pcpu_mask[vcpu]);
+
+	if (global_hypervisor_available && (vm_info != NULL))
+		return rte_atomic64_read(&vm_info->pcpu_mask[vcpu]);
+	else
+		return 0;
 }
 
 static inline int
@@ -309,6 +286,38 @@ open_non_blocking_channel(struct channel_info *info)
 }
 
 static int
+open_host_channel(struct channel_info *info)
+{
+	int flags;
+
+	info->fd = open(info->channel_path, O_RDWR | O_RSYNC);
+	if (info->fd == -1) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "Error(%s) opening fifo for '%s'\n",
+				strerror(errno),
+				info->channel_path);
+		return -1;
+	}
+
+	/* Get current flags */
+	flags = fcntl(info->fd, F_GETFL, 0);
+	if (flags < 0) {
+		RTE_LOG(WARNING, CHANNEL_MANAGER, "Error(%s) fcntl get flags socket for"
+				"'%s'\n", strerror(errno), info->channel_path);
+		return 1;
+	}
+	/* Set to Non Blocking */
+	flags |= O_NONBLOCK;
+	if (fcntl(info->fd, F_SETFL, flags) < 0) {
+		RTE_LOG(WARNING, CHANNEL_MANAGER,
+				"Error(%s) setting non-blocking "
+				"socket for '%s'\n",
+				strerror(errno), info->channel_path);
+		return -1;
+	}
+	return 0;
+}
+
+static int
 setup_channel_info(struct virtual_machine_info **vm_info_dptr,
 		struct channel_info **chan_info_dptr, unsigned channel_num)
 {
@@ -318,6 +327,7 @@ setup_channel_info(struct virtual_machine_info **vm_info_dptr,
 	chan_info->channel_num = channel_num;
 	chan_info->priv_info = (void *)vm_info;
 	chan_info->status = CHANNEL_MGR_CHANNEL_DISCONNECTED;
+	chan_info->type = CHANNEL_TYPE_BINARY;
 	if (open_non_blocking_channel(chan_info) < 0) {
 		RTE_LOG(ERR, CHANNEL_MANAGER, "Could not open channel: "
 				"'%s' for VM '%s'\n",
@@ -337,6 +347,42 @@ setup_channel_info(struct virtual_machine_info **vm_info_dptr,
 	vm_info->channels[channel_num] = chan_info;
 	chan_info->status = CHANNEL_MGR_CHANNEL_CONNECTED;
 	rte_spinlock_unlock(&(vm_info->config_spinlock));
+	return 0;
+}
+
+static void
+fifo_path(char *dst, unsigned int len)
+{
+	snprintf(dst, len, "%sfifo", CHANNEL_MGR_SOCKET_PATH);
+}
+
+static int
+setup_host_channel_info(struct channel_info **chan_info_dptr,
+		unsigned int channel_num)
+{
+	struct channel_info *chan_info = *chan_info_dptr;
+
+	chan_info->channel_num = channel_num;
+	chan_info->priv_info = (void *)NULL;
+	chan_info->status = CHANNEL_MGR_CHANNEL_DISCONNECTED;
+	chan_info->type = CHANNEL_TYPE_JSON;
+
+	fifo_path(chan_info->channel_path, sizeof(chan_info->channel_path));
+
+	if (open_host_channel(chan_info) < 0) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "Could not open host channel: "
+				"'%s'\n",
+				chan_info->channel_path);
+		return -1;
+	}
+	if (add_channel_to_monitor(&chan_info) < 0) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "Could add channel: "
+				"'%s' to epoll ctl\n",
+				chan_info->channel_path);
+		return -1;
+
+	}
+	chan_info->status = CHANNEL_MGR_CHANNEL_CONNECTED;
 	return 0;
 }
 
@@ -495,6 +541,45 @@ add_channels(const char *vm_name, unsigned *channel_list,
 }
 
 int
+add_host_channel(void)
+{
+	struct channel_info *chan_info;
+	char socket_path[PATH_MAX];
+	int num_channels_enabled = 0;
+	int ret;
+
+	fifo_path(socket_path, sizeof(socket_path));
+
+	ret = mkfifo(socket_path, 0660);
+	if ((errno != EEXIST) && (ret < 0)) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "Cannot create fifo '%s' error: "
+				"%s\n", socket_path, strerror(errno));
+		return 0;
+	}
+
+	if (access(socket_path, F_OK) < 0) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "Channel path '%s' error: "
+				"%s\n", socket_path, strerror(errno));
+		return 0;
+	}
+	chan_info = rte_malloc(NULL, sizeof(*chan_info), 0);
+	if (chan_info == NULL) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "Error allocating memory for "
+				"channel '%s'\n", socket_path);
+		return 0;
+	}
+	snprintf(chan_info->channel_path,
+			sizeof(chan_info->channel_path), "%s", socket_path);
+	if (setup_host_channel_info(&chan_info, 0) < 0) {
+		rte_free(chan_info);
+		return 0;
+	}
+	num_channels_enabled++;
+
+	return num_channels_enabled;
+}
+
+int
 remove_channel(struct channel_info **chan_info_dptr)
 {
 	struct virtual_machine_info *vm_info;
@@ -588,6 +673,8 @@ get_all_vm(int *num_vm, int *num_vcpu)
 				VIR_CONNECT_LIST_DOMAINS_PERSISTENT;
 	unsigned int domain_flag = VIR_DOMAIN_VCPU_CONFIG;
 
+	if (!global_hypervisor_available)
+		return;
 
 	memset(global_cpumaps, 0, CHANNEL_CMDS_MAX_CPUS*global_maplen);
 	if (virNodeGetInfo(global_vir_conn_ptr, &node_info)) {
@@ -797,38 +884,42 @@ connect_hypervisor(const char *path)
 	}
 	return 0;
 }
-
 int
-channel_manager_init(const char *path)
+channel_manager_init(const char *path __rte_unused)
 {
 	virNodeInfo info;
 
 	LIST_INIT(&vm_list_head);
 	if (connect_hypervisor(path) < 0) {
-		RTE_LOG(ERR, CHANNEL_MANAGER, "Unable to initialize channel manager\n");
-		return -1;
+		global_n_host_cpus = 64;
+		global_hypervisor_available = 0;
+		RTE_LOG(INFO, CHANNEL_MANAGER, "Unable to initialize channel manager\n");
+	} else {
+		global_hypervisor_available = 1;
+
+		global_maplen = VIR_CPU_MAPLEN(CHANNEL_CMDS_MAX_CPUS);
+
+		global_vircpuinfo = rte_zmalloc(NULL,
+				sizeof(*global_vircpuinfo) *
+				CHANNEL_CMDS_MAX_CPUS, RTE_CACHE_LINE_SIZE);
+		if (global_vircpuinfo == NULL) {
+			RTE_LOG(ERR, CHANNEL_MANAGER, "Error allocating memory for CPU Info\n");
+			goto error;
+		}
+		global_cpumaps = rte_zmalloc(NULL,
+				CHANNEL_CMDS_MAX_CPUS * global_maplen,
+				RTE_CACHE_LINE_SIZE);
+		if (global_cpumaps == NULL)
+			goto error;
+
+		if (virNodeGetInfo(global_vir_conn_ptr, &info)) {
+			RTE_LOG(ERR, CHANNEL_MANAGER, "Unable to retrieve node Info\n");
+			goto error;
+		}
+		global_n_host_cpus = (unsigned int)info.cpus;
 	}
 
-	global_maplen = VIR_CPU_MAPLEN(CHANNEL_CMDS_MAX_CPUS);
 
-	global_vircpuinfo = rte_zmalloc(NULL, sizeof(*global_vircpuinfo) *
-			CHANNEL_CMDS_MAX_CPUS, RTE_CACHE_LINE_SIZE);
-	if (global_vircpuinfo == NULL) {
-		RTE_LOG(ERR, CHANNEL_MANAGER, "Error allocating memory for CPU Info\n");
-		goto error;
-	}
-	global_cpumaps = rte_zmalloc(NULL, CHANNEL_CMDS_MAX_CPUS * global_maplen,
-			RTE_CACHE_LINE_SIZE);
-	if (global_cpumaps == NULL) {
-		goto error;
-	}
-
-	if (virNodeGetInfo(global_vir_conn_ptr, &info)) {
-		RTE_LOG(ERR, CHANNEL_MANAGER, "Unable to retrieve node Info\n");
-		goto error;
-	}
-
-	global_n_host_cpus = (unsigned)info.cpus;
 
 	if (global_n_host_cpus > CHANNEL_CMDS_MAX_CPUS) {
 		RTE_LOG(WARNING, CHANNEL_MANAGER, "The number of host CPUs(%u) exceeds the "
@@ -840,7 +931,8 @@ channel_manager_init(const char *path)
 
 	return 0;
 error:
-	disconnect_hypervisor();
+	if (global_hypervisor_available)
+		disconnect_hypervisor();
 	return -1;
 }
 
@@ -867,7 +959,10 @@ channel_manager_exit(void)
 		rte_free(vm_info);
 	}
 
-	rte_free(global_cpumaps);
-	rte_free(global_vircpuinfo);
-	disconnect_hypervisor();
+	if (global_hypervisor_available) {
+		/* Only needed if hypervisor available */
+		rte_free(global_cpumaps);
+		rte_free(global_vircpuinfo);
+		disconnect_hypervisor();
+	}
 }

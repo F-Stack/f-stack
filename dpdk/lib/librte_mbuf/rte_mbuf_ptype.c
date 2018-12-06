@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 6WIND S.A.
  */
 
 #include <stdint.h>
@@ -47,6 +18,9 @@ const char *rte_get_ptype_l2_name(uint32_t ptype)
 	case RTE_PTYPE_L2_ETHER_NSH: return "L2_ETHER_NSH";
 	case RTE_PTYPE_L2_ETHER_VLAN: return "L2_ETHER_VLAN";
 	case RTE_PTYPE_L2_ETHER_QINQ: return "L2_ETHER_QINQ";
+	case RTE_PTYPE_L2_ETHER_PPPOE: return "L2_ETHER_PPPOE";
+	case RTE_PTYPE_L2_ETHER_FCOE: return "L2_ETHER_FCOE";
+	case RTE_PTYPE_L2_ETHER_MPLS: return "L2_ETHER_MPLS";
 	default: return "L2_UNKNOWN";
 	}
 }
@@ -75,6 +49,7 @@ const char *rte_get_ptype_l4_name(uint32_t ptype)
 	case RTE_PTYPE_L4_SCTP: return "L4_SCTP";
 	case RTE_PTYPE_L4_ICMP: return "L4_ICMP";
 	case RTE_PTYPE_L4_NONFRAG: return "L4_NONFRAG";
+	case RTE_PTYPE_L4_IGMP: return "L4_IGMP";
 	default: return "L4_UNKNOWN";
 	}
 }
@@ -92,6 +67,10 @@ const char *rte_get_ptype_tunnel_name(uint32_t ptype)
 	case RTE_PTYPE_TUNNEL_GTPC: return "TUNNEL_GTPC";
 	case RTE_PTYPE_TUNNEL_GTPU: return "TUNNEL_GTPU";
 	case RTE_PTYPE_TUNNEL_ESP: return "TUNNEL_ESP";
+	case RTE_PTYPE_TUNNEL_L2TP: return "TUNNEL_L2TP";
+	case RTE_PTYPE_TUNNEL_VXLAN_GPE: return "TUNNEL_VXLAN_GPE";
+	case RTE_PTYPE_TUNNEL_MPLS_IN_UDP: return "TUNNEL_MPLS_IN_UDP";
+	case RTE_PTYPE_TUNNEL_MPLS_IN_GRE: return "TUNNEL_MPLS_IN_GRE";
 	default: return "TUNNEL_UNKNOWN";
 	}
 }

@@ -1,40 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #ifndef _I40E_RXTX_VEC_COMMON_H_
 #define _I40E_RXTX_VEC_COMMON_H_
 #include <stdint.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "i40e_ethdev.h"
@@ -221,22 +192,58 @@ static inline int
 i40e_rx_vec_dev_conf_condition_check_default(struct rte_eth_dev *dev)
 {
 #ifndef RTE_LIBRTE_IEEE1588
+	struct i40e_adapter *ad =
+		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct rte_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
+	struct i40e_rx_queue *rxq;
+	uint16_t desc, i;
+	bool first_queue;
 
 	/* no fdir support */
 	if (fconf->mode != RTE_FDIR_MODE_NONE)
 		return -1;
 
-	 /* - no csum error report support
-	 * - no header split support
-	 */
-	if (rxmode->header_split == 1)
+	 /* no header split support */
+	if (rxmode->offloads & DEV_RX_OFFLOAD_HEADER_SPLIT)
 		return -1;
 
 	/* no QinQ support */
-	if (rxmode->hw_vlan_extend == 1)
+	if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_EXTEND)
 		return -1;
+
+	/**
+	 * Vector mode is allowed only when number of Rx queue
+	 * descriptor is power of 2.
+	 */
+	if (!dev->data->dev_started) {
+		first_queue = true;
+		for (i = 0; i < dev->data->nb_rx_queues; i++) {
+			rxq = dev->data->rx_queues[i];
+			if (!rxq)
+				continue;
+			desc = rxq->nb_rx_desc;
+			if (first_queue)
+				ad->rx_vec_allowed =
+					rte_is_power_of_2(desc);
+			else
+				ad->rx_vec_allowed =
+					ad->rx_vec_allowed ?
+					rte_is_power_of_2(desc) :
+					ad->rx_vec_allowed;
+			first_queue = false;
+		}
+	} else {
+		/* Only check the first queue's descriptor number */
+		for (i = 0; i < dev->data->nb_rx_queues; i++) {
+			rxq = dev->data->rx_queues[i];
+			if (!rxq)
+				continue;
+			desc = rxq->nb_rx_desc;
+			ad->rx_vec_allowed = rte_is_power_of_2(desc);
+			break;
+		}
+	}
 
 	return 0;
 #else

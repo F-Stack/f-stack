@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -46,6 +17,9 @@
 #include <rte_eal_memconfig.h>
 #include <rte_malloc.h>
 #include <rte_vfio.h>
+#include <rte_eal.h>
+#include <rte_bus.h>
+#include <rte_spinlock.h>
 
 #include "eal_filesystem.h"
 
@@ -64,7 +38,9 @@
 
 #ifdef VFIO_PRESENT
 
+#ifndef PAGE_SIZE
 #define PAGE_SIZE   (sysconf(_SC_PAGESIZE))
+#endif
 #define PAGE_MASK   (~(PAGE_SIZE - 1))
 
 static struct rte_tailq_elem rte_vfio_tailq = {
@@ -306,6 +282,125 @@ pci_vfio_setup_interrupts(struct rte_pci_device *dev, int vfio_dev_fd)
 	return -1;
 }
 
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+/*
+ * Spinlock for device hot-unplug failure handling.
+ * If it tries to access bus or device, such as handle sigbus on bus
+ * or handle memory failure for device, just need to use this lock.
+ * It could protect the bus and the device to avoid race condition.
+ */
+static rte_spinlock_t failure_handle_lock = RTE_SPINLOCK_INITIALIZER;
+
+static void
+pci_vfio_req_handler(void *param)
+{
+	struct rte_bus *bus;
+	int ret;
+	struct rte_device *device = (struct rte_device *)param;
+
+	rte_spinlock_lock(&failure_handle_lock);
+	bus = rte_bus_find_by_device(device);
+	if (bus == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot find bus for device (%s)\n",
+			device->name);
+		goto handle_end;
+	}
+
+	/*
+	 * vfio kernel module request user space to release allocated
+	 * resources before device be deleted in kernel, so it can directly
+	 * call the vfio bus hot-unplug handler to process it.
+	 */
+	ret = bus->hot_unplug_handler(device);
+	if (ret)
+		RTE_LOG(ERR, EAL,
+			"Can not handle hot-unplug for device (%s)\n",
+			device->name);
+handle_end:
+	rte_spinlock_unlock(&failure_handle_lock);
+}
+
+/* enable notifier (only enable req now) */
+static int
+pci_vfio_enable_notifier(struct rte_pci_device *dev, int vfio_dev_fd)
+{
+	int ret;
+	int fd = -1;
+
+	/* set up an eventfd for req notifier */
+	fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (fd < 0) {
+		RTE_LOG(ERR, EAL, "Cannot set up eventfd, error %i (%s)\n",
+			errno, strerror(errno));
+		return -1;
+	}
+
+	dev->vfio_req_intr_handle.fd = fd;
+	dev->vfio_req_intr_handle.type = RTE_INTR_HANDLE_VFIO_REQ;
+	dev->vfio_req_intr_handle.vfio_dev_fd = vfio_dev_fd;
+
+	ret = rte_intr_callback_register(&dev->vfio_req_intr_handle,
+					 pci_vfio_req_handler,
+					 (void *)&dev->device);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "Fail to register req notifier handler.\n");
+		goto error;
+	}
+
+	ret = rte_intr_enable(&dev->vfio_req_intr_handle);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "Fail to enable req notifier.\n");
+		ret = rte_intr_callback_unregister(&dev->vfio_req_intr_handle,
+						 pci_vfio_req_handler,
+						 (void *)&dev->device);
+		if (ret < 0)
+			RTE_LOG(ERR, EAL,
+				"Fail to unregister req notifier handler.\n");
+		goto error;
+	}
+
+	return 0;
+error:
+	close(fd);
+
+	dev->vfio_req_intr_handle.fd = -1;
+	dev->vfio_req_intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	dev->vfio_req_intr_handle.vfio_dev_fd = -1;
+
+	return -1;
+}
+
+/* disable notifier (only disable req now) */
+static int
+pci_vfio_disable_notifier(struct rte_pci_device *dev)
+{
+	int ret;
+
+	ret = rte_intr_disable(&dev->vfio_req_intr_handle);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "fail to disable req notifier.\n");
+		return -1;
+	}
+
+	ret = rte_intr_callback_unregister(&dev->vfio_req_intr_handle,
+					   pci_vfio_req_handler,
+					   (void *)&dev->device);
+	if (ret < 0) {
+		RTE_LOG(ERR, EAL,
+			 "fail to unregister req notifier handler.\n");
+		return -1;
+	}
+
+	close(dev->vfio_req_intr_handle.fd);
+
+	dev->vfio_req_intr_handle.fd = -1;
+	dev->vfio_req_intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	dev->vfio_req_intr_handle.vfio_dev_fd = -1;
+
+	return 0;
+}
+#endif
+
 static int
 pci_vfio_is_ioport_bar(int vfio_dev_fd, int bar_index)
 {
@@ -444,6 +539,93 @@ pci_vfio_mmap_bar(int vfio_dev_fd, struct mapped_pci_resource *vfio_res,
 	return 0;
 }
 
+/*
+ * region info may contain capability headers, so we need to keep reallocating
+ * the memory until we match allocated memory size with argsz.
+ */
+static int
+pci_vfio_get_region_info(int vfio_dev_fd, struct vfio_region_info **info,
+		int region)
+{
+	struct vfio_region_info *ri;
+	size_t argsz = sizeof(*ri);
+	int ret;
+
+	ri = malloc(sizeof(*ri));
+	if (ri == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot allocate memory for region info\n");
+		return -1;
+	}
+again:
+	memset(ri, 0, argsz);
+	ri->argsz = argsz;
+	ri->index = region;
+
+	ret = ioctl(vfio_dev_fd, VFIO_DEVICE_GET_REGION_INFO, ri);
+	if (ret < 0) {
+		free(ri);
+		return ret;
+	}
+	if (ri->argsz != argsz) {
+		struct vfio_region_info *tmp;
+
+		argsz = ri->argsz;
+		tmp = realloc(ri, argsz);
+
+		if (tmp == NULL) {
+			/* realloc failed but the ri is still there */
+			free(ri);
+			RTE_LOG(ERR, EAL, "Cannot reallocate memory for region info\n");
+			return -1;
+		}
+		ri = tmp;
+		goto again;
+	}
+	*info = ri;
+
+	return 0;
+}
+
+static struct vfio_info_cap_header *
+pci_vfio_info_cap(struct vfio_region_info *info, int cap)
+{
+	struct vfio_info_cap_header *h;
+	size_t offset;
+
+	if ((info->flags & RTE_VFIO_INFO_FLAG_CAPS) == 0) {
+		/* VFIO info does not advertise capabilities */
+		return NULL;
+	}
+
+	offset = VFIO_CAP_OFFSET(info);
+	while (offset != 0) {
+		h = RTE_PTR_ADD(info, offset);
+		if (h->id == cap)
+			return h;
+		offset = h->next;
+	}
+	return NULL;
+}
+
+static int
+pci_vfio_msix_is_mappable(int vfio_dev_fd, int msix_region)
+{
+	struct vfio_region_info *info;
+	int ret;
+
+	ret = pci_vfio_get_region_info(vfio_dev_fd, &info, msix_region);
+	if (ret < 0)
+		return -1;
+
+	ret = pci_vfio_info_cap(info, RTE_VFIO_CAP_MSIX_MAPPABLE) != NULL;
+
+	/* cleanup */
+	free(info);
+
+	return ret;
+}
+
+
 static int
 pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 {
@@ -459,6 +641,9 @@ pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 	struct pci_map *maps;
 
 	dev->intr_handle.fd = -1;
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	dev->vfio_req_intr_handle.fd = -1;
+#endif
 
 	/* store PCI address string */
 	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
@@ -493,56 +678,75 @@ pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 	if (ret < 0) {
 		RTE_LOG(ERR, EAL, "  %s cannot get MSI-X BAR number!\n",
 				pci_addr);
-		goto err_vfio_dev_fd;
+		goto err_vfio_res;
+	}
+	/* if we found our MSI-X BAR region, check if we can mmap it */
+	if (vfio_res->msix_table.bar_index != -1) {
+		int ret = pci_vfio_msix_is_mappable(vfio_dev_fd,
+				vfio_res->msix_table.bar_index);
+		if (ret < 0) {
+			RTE_LOG(ERR, EAL, "Couldn't check if MSI-X BAR is mappable\n");
+			goto err_vfio_res;
+		} else if (ret != 0) {
+			/* we can map it, so we don't care where it is */
+			RTE_LOG(DEBUG, EAL, "VFIO reports MSI-X BAR as mappable\n");
+			vfio_res->msix_table.bar_index = -1;
+		}
 	}
 
 	for (i = 0; i < (int) vfio_res->nb_maps; i++) {
-		struct vfio_region_info reg = { .argsz = sizeof(reg) };
+		struct vfio_region_info *reg = NULL;
 		void *bar_addr;
 
-		reg.index = i;
-
-		ret = ioctl(vfio_dev_fd, VFIO_DEVICE_GET_REGION_INFO, &reg);
-		if (ret) {
+		ret = pci_vfio_get_region_info(vfio_dev_fd, &reg, i);
+		if (ret < 0) {
 			RTE_LOG(ERR, EAL, "  %s cannot get device region info "
-					"error %i (%s)\n", pci_addr, errno, strerror(errno));
+				"error %i (%s)\n", pci_addr, errno,
+				strerror(errno));
 			goto err_vfio_res;
 		}
 
 		/* chk for io port region */
 		ret = pci_vfio_is_ioport_bar(vfio_dev_fd, i);
-		if (ret < 0)
+		if (ret < 0) {
+			free(reg);
 			goto err_vfio_res;
-		else if (ret) {
+		} else if (ret) {
 			RTE_LOG(INFO, EAL, "Ignore mapping IO port bar(%d)\n",
 					i);
+			free(reg);
 			continue;
 		}
 
 		/* skip non-mmapable BARs */
-		if ((reg.flags & VFIO_REGION_INFO_FLAG_MMAP) == 0)
+		if ((reg->flags & VFIO_REGION_INFO_FLAG_MMAP) == 0) {
+			free(reg);
 			continue;
+		}
 
 		/* try mapping somewhere close to the end of hugepages */
 		if (pci_map_addr == NULL)
 			pci_map_addr = pci_find_max_end_va();
 
 		bar_addr = pci_map_addr;
-		pci_map_addr = RTE_PTR_ADD(bar_addr, (size_t) reg.size);
+		pci_map_addr = RTE_PTR_ADD(bar_addr, (size_t) reg->size);
 
 		maps[i].addr = bar_addr;
-		maps[i].offset = reg.offset;
-		maps[i].size = reg.size;
+		maps[i].offset = reg->offset;
+		maps[i].size = reg->size;
 		maps[i].path = NULL; /* vfio doesn't have per-resource paths */
 
 		ret = pci_vfio_mmap_bar(vfio_dev_fd, vfio_res, i, 0);
 		if (ret < 0) {
 			RTE_LOG(ERR, EAL, "  %s mapping BAR%i failed: %s\n",
 					pci_addr, i, strerror(errno));
+			free(reg);
 			goto err_vfio_res;
 		}
 
 		dev->mem_resource[i].addr = maps[i].addr;
+
+		free(reg);
 	}
 
 	if (pci_rte_vfio_setup_device(dev, vfio_dev_fd) < 0) {
@@ -550,6 +754,13 @@ pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 		goto err_vfio_res;
 	}
 
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	if (pci_vfio_enable_notifier(dev, vfio_dev_fd) != 0) {
+		RTE_LOG(ERR, EAL, "Error setting up notifier!\n");
+		goto err_vfio_res;
+	}
+
+#endif
 	TAILQ_INSERT_TAIL(vfio_res_list, vfio_res, next);
 
 	return 0;
@@ -575,15 +786,13 @@ pci_vfio_map_resource_secondary(struct rte_pci_device *dev)
 	struct pci_map *maps;
 
 	dev->intr_handle.fd = -1;
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	dev->vfio_req_intr_handle.fd = -1;
+#endif
 
 	/* store PCI address string */
 	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
 			loc->domain, loc->bus, loc->devid, loc->function);
-
-	ret = rte_vfio_setup_device(rte_pci_get_sysfs_path(), pci_addr,
-					&vfio_dev_fd, &device_info);
-	if (ret)
-		return ret;
 
 	/* if we're in a secondary process, just find our tailq entry */
 	TAILQ_FOREACH(vfio_res, vfio_res_list, next) {
@@ -596,8 +805,13 @@ pci_vfio_map_resource_secondary(struct rte_pci_device *dev)
 	if (vfio_res == NULL) {
 		RTE_LOG(ERR, EAL, "  %s cannot find TAILQ entry for PCI device!\n",
 				pci_addr);
-		goto err_vfio_dev_fd;
+		return -1;
 	}
+
+	ret = rte_vfio_setup_device(rte_pci_get_sysfs_path(), pci_addr,
+					&vfio_dev_fd, &device_info);
+	if (ret)
+		return ret;
 
 	/* map BARs */
 	maps = vfio_res->maps;
@@ -612,6 +826,12 @@ pci_vfio_map_resource_secondary(struct rte_pci_device *dev)
 
 		dev->mem_resource[i].addr = maps[i].addr;
 	}
+
+	/* we need save vfio_dev_fd, so it can be used during release */
+	dev->intr_handle.vfio_dev_fd = vfio_dev_fd;
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	dev->vfio_req_intr_handle.vfio_dev_fd = vfio_dev_fd;
+#endif
 
 	return 0;
 err_vfio_dev_fd:
@@ -632,22 +852,66 @@ pci_vfio_map_resource(struct rte_pci_device *dev)
 		return pci_vfio_map_resource_secondary(dev);
 }
 
-int
-pci_vfio_unmap_resource(struct rte_pci_device *dev)
+static struct mapped_pci_resource *
+find_and_unmap_vfio_resource(struct mapped_pci_res_list *vfio_res_list,
+			struct rte_pci_device *dev,
+			const char *pci_addr)
+{
+	struct mapped_pci_resource *vfio_res = NULL;
+	struct pci_map *maps;
+	int i;
+
+	/* Get vfio_res */
+	TAILQ_FOREACH(vfio_res, vfio_res_list, next) {
+		if (rte_pci_addr_cmp(&vfio_res->pci_addr, &dev->addr))
+			continue;
+		break;
+	}
+
+	if  (vfio_res == NULL)
+		return vfio_res;
+
+	RTE_LOG(INFO, EAL, "Releasing pci mapped resource for %s\n",
+		pci_addr);
+
+	maps = vfio_res->maps;
+	for (i = 0; i < (int) vfio_res->nb_maps; i++) {
+
+		/*
+		 * We do not need to be aware of MSI-X table BAR mappings as
+		 * when mapping. Just using current maps array is enough
+		 */
+		if (maps[i].addr) {
+			RTE_LOG(INFO, EAL, "Calling pci_unmap_resource for %s at %p\n",
+				pci_addr, maps[i].addr);
+			pci_unmap_resource(maps[i].addr, maps[i].size);
+		}
+	}
+
+	return vfio_res;
+}
+
+static int
+pci_vfio_unmap_resource_primary(struct rte_pci_device *dev)
 {
 	char pci_addr[PATH_MAX] = {0};
 	struct rte_pci_addr *loc = &dev->addr;
-	int i, ret;
 	struct mapped_pci_resource *vfio_res = NULL;
 	struct mapped_pci_res_list *vfio_res_list;
-
-	struct pci_map *maps;
+	int ret;
 
 	/* store PCI address string */
 	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
 			loc->domain, loc->bus, loc->devid, loc->function);
 
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	ret = pci_vfio_disable_notifier(dev);
+	if (ret) {
+		RTE_LOG(ERR, EAL, "fail to disable req notifier.\n");
+		return -1;
+	}
 
+#endif
 	if (close(dev->intr_handle.fd) < 0) {
 		RTE_LOG(INFO, EAL, "Error when closing eventfd file descriptor for %s\n",
 			pci_addr);
@@ -668,13 +932,10 @@ pci_vfio_unmap_resource(struct rte_pci_device *dev)
 		return ret;
 	}
 
-	vfio_res_list = RTE_TAILQ_CAST(rte_vfio_tailq.head, mapped_pci_res_list);
-	/* Get vfio_res */
-	TAILQ_FOREACH(vfio_res, vfio_res_list, next) {
-		if (rte_pci_addr_cmp(&vfio_res->pci_addr, &dev->addr))
-			continue;
-		break;
-	}
+	vfio_res_list =
+		RTE_TAILQ_CAST(rte_vfio_tailq.head, mapped_pci_res_list);
+	vfio_res = find_and_unmap_vfio_resource(vfio_res_list, dev, pci_addr);
+
 	/* if we haven't found our tailq entry, something's wrong */
 	if (vfio_res == NULL) {
 		RTE_LOG(ERR, EAL, "  %s cannot find TAILQ entry for PCI device!\n",
@@ -682,27 +943,53 @@ pci_vfio_unmap_resource(struct rte_pci_device *dev)
 		return -1;
 	}
 
-	/* unmap BARs */
-	maps = vfio_res->maps;
-
-	RTE_LOG(INFO, EAL, "Releasing pci mapped resource for %s\n",
-		pci_addr);
-	for (i = 0; i < (int) vfio_res->nb_maps; i++) {
-
-		/*
-		 * We do not need to be aware of MSI-X table BAR mappings as
-		 * when mapping. Just using current maps array is enough
-		 */
-		if (maps[i].addr) {
-			RTE_LOG(INFO, EAL, "Calling pci_unmap_resource for %s at %p\n",
-				pci_addr, maps[i].addr);
-			pci_unmap_resource(maps[i].addr, maps[i].size);
-		}
-	}
-
 	TAILQ_REMOVE(vfio_res_list, vfio_res, next);
 
 	return 0;
+}
+
+static int
+pci_vfio_unmap_resource_secondary(struct rte_pci_device *dev)
+{
+	char pci_addr[PATH_MAX] = {0};
+	struct rte_pci_addr *loc = &dev->addr;
+	struct mapped_pci_resource *vfio_res = NULL;
+	struct mapped_pci_res_list *vfio_res_list;
+	int ret;
+
+	/* store PCI address string */
+	snprintf(pci_addr, sizeof(pci_addr), PCI_PRI_FMT,
+			loc->domain, loc->bus, loc->devid, loc->function);
+
+	ret = rte_vfio_release_device(rte_pci_get_sysfs_path(), pci_addr,
+				  dev->intr_handle.vfio_dev_fd);
+	if (ret < 0) {
+		RTE_LOG(ERR, EAL,
+			"%s(): cannot release device\n", __func__);
+		return ret;
+	}
+
+	vfio_res_list =
+		RTE_TAILQ_CAST(rte_vfio_tailq.head, mapped_pci_res_list);
+	vfio_res = find_and_unmap_vfio_resource(vfio_res_list, dev, pci_addr);
+
+	/* if we haven't found our tailq entry, something's wrong */
+	if (vfio_res == NULL) {
+		RTE_LOG(ERR, EAL, "  %s cannot find TAILQ entry for PCI device!\n",
+				pci_addr);
+		return -1;
+	}
+
+	return 0;
+}
+
+int
+pci_vfio_unmap_resource(struct rte_pci_device *dev)
+{
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		return pci_vfio_unmap_resource_primary(dev);
+	else
+		return pci_vfio_unmap_resource_secondary(dev);
 }
 
 int

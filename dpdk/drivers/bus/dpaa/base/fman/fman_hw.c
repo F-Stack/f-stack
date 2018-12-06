@@ -1,30 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright 2017 NXP.
+ * Copyright 2017 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <sys/types.h>
@@ -39,6 +16,7 @@
 #include <fsl_fman_crc64.h>
 #include <fsl_bman.h>
 
+#define FMAN_SP_SG_DISABLE                          0x80000000
 #define FMAN_SP_EXT_BUF_MARG_START_SHIFT            16
 
 /* Instantiate the global variable that the inline CRC64 implementation (in
@@ -559,6 +537,47 @@ fman_if_get_maxfrm(struct fman_if *fm_if)
 	reg_maxfrm = &((struct memac_regs *)__if->ccsr_map)->maxfrm;
 
 	return (in_be32(reg_maxfrm) | 0x0000FFFF);
+}
+
+/* MSB in fmbm_rebm register
+ * 0 - If BMI cannot store the frame in a single buffer it may select a buffer
+ *     of smaller size and store the frame in scatter gather (S/G) buffers
+ * 1 - Scatter gather format is not enabled for frame storage. If BMI cannot
+ *     store the frame in a single buffer, the frame is discarded.
+ */
+
+int
+fman_if_get_sg_enable(struct fman_if *fm_if)
+{
+	u32 fmbm_rebm;
+
+	struct __fman_if *__if = container_of(fm_if, struct __fman_if, __if);
+
+	assert(fman_ccsr_map_fd != -1);
+
+	fmbm_rebm = in_be32(&((struct rx_bmi_regs *)__if->bmi_map)->fmbm_rebm);
+
+	return (fmbm_rebm & FMAN_SP_SG_DISABLE) ? 0 : 1;
+}
+
+void
+fman_if_set_sg(struct fman_if *fm_if, int enable)
+{
+	struct __fman_if *__if = container_of(fm_if, struct __fman_if, __if);
+	unsigned int *fmbm_rebm;
+	int val;
+	int fmbm_mask = FMAN_SP_SG_DISABLE;
+
+	if (enable)
+		val = 0;
+	else
+		val = FMAN_SP_SG_DISABLE;
+
+	assert(fman_ccsr_map_fd != -1);
+
+	fmbm_rebm = &((struct rx_bmi_regs *)__if->bmi_map)->fmbm_rebm;
+
+	out_be32(fmbm_rebm, (in_be32(fmbm_rebm) & ~fmbm_mask) | val);
 }
 
 void

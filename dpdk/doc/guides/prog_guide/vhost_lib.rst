@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2016 Intel Corporation.
 
 Vhost Library
 =============
@@ -92,14 +65,18 @@ The following is an overview of some key Vhost API functions:
     * zero copy is really good for VM2VM case. For iperf between two VMs, the
       boost could be above 70% (when TSO is enableld).
 
-    * for VM2NIC case, the ``nb_tx_desc`` has to be small enough: <= 64 if virtio
-      indirect feature is not enabled and <= 128 if it is enabled.
+    * For zero copy in VM2NIC case, guest Tx used vring may be starved if the
+      PMD driver consume the mbuf but not release them timely.
 
-      This is because when dequeue zero copy is enabled, guest Tx used vring will
-      be updated only when corresponding mbuf is freed. Thus, the nb_tx_desc
-      has to be small enough so that the PMD driver will run out of available
-      Tx descriptors and free mbufs timely. Otherwise, guest Tx vring would be
-      starved.
+      For example, i40e driver has an optimization to maximum NIC pipeline which
+      postpones returning transmitted mbuf until only tx_free_threshold free
+      descs left. The virtio TX used ring will be starved if the formula
+      (num_i40e_tx_desc - num_virtio_tx_desc > tx_free_threshold) is true, since
+      i40e will not return back mbuf.
+
+      A performance tip for tuning zero copy in VM2NIC case is to adjust the
+      frequency of mbuf free (i.e. adjust tx_free_threshold of i40e driver) to
+      balance consumer and producer.
 
     * Guest memory should be backended with huge pages to achieve better
       performance. Using 1G page size is the best.
@@ -109,6 +86,11 @@ The following is an overview of some key Vhost API functions:
       more page segments. To make it simple, DPDK vhost does a linear search
       of those segments, thus the fewer the segments, the quicker we will get
       the mapping. NOTE: we may speed it by using tree searching in future.
+
+    * zero copy can not work when using vfio-pci with iommu mode currently, this
+      is because we don't setup iommu dma mapping for guest memory. If you have
+      to use vfio-pci driver, please insert vfio-pci kernel module in noiommu
+      mode.
 
   - ``RTE_VHOST_USER_IOMMU_SUPPORT``
 
@@ -123,6 +105,14 @@ The following is an overview of some key Vhost API functions:
     which implementation is buggy in Qemu v2.7.0-v2.9.0 when doing multiqueue.
     Enabling this flag with these Qemu version results in Qemu being blocked
     when multiple queue pairs are declared.
+
+  - ``RTE_VHOST_USER_POSTCOPY_SUPPORT``
+
+    Postcopy live-migration support will be enabled when this flag is set.
+    It is disabled by default.
+
+    Enabling this flag should only be done when the calling application does
+    not pre-fault the guest shared memory, otherwise migration would fail.
 
 * ``rte_vhost_driver_set_features(path, features)``
 
@@ -187,6 +177,31 @@ The following is an overview of some key Vhost API functions:
 
   Receives (dequeues) ``count`` packets from guest, and stored them at ``pkts``.
 
+* ``rte_vhost_crypto_create(vid, cryptodev_id, sess_mempool, socket_id)``
+
+  As an extension of new_device(), this function adds virtio-crypto workload
+  acceleration capability to the device. All crypto workload is processed by
+  DPDK cryptodev with the device ID of ``cryptodev_id``.
+
+* ``rte_vhost_crypto_free(vid)``
+
+  Frees the memory and vhost-user message handlers created in
+  rte_vhost_crypto_create().
+
+* ``rte_vhost_crypto_fetch_requests(vid, queue_id, ops, nb_ops)``
+
+  Receives (dequeues) ``nb_ops`` virtio-crypto requests from guest, parses
+  them to DPDK Crypto Operations, and fills the ``ops`` with parsing results.
+
+* ``rte_vhost_crypto_finalize_requests(queue_id, ops, nb_ops)``
+
+  After the ``ops`` are dequeued from Cryptodev, finalizes the jobs and
+  notifies the guest(s).
+
+* ``rte_vhost_crypto_set_zero_copy(vid, option)``
+
+  Enable or disable zero copy feature of the vhost crypto backend.
+
 Vhost-user Implementations
 --------------------------
 
@@ -241,8 +256,88 @@ the vhost device from the data plane.
 
 When the socket connection is closed, vhost will destroy the device.
 
+Guest memory requirement
+------------------------
+
+* Memory pre-allocation
+
+  For non-zerocopy, guest memory pre-allocation is not a must. This can help
+  save of memory. If users really want the guest memory to be pre-allocated
+  (e.g., for performance reason), we can add option ``-mem-prealloc`` when
+  starting QEMU. Or, we can lock all memory at vhost side which will force
+  memory to be allocated when mmap at vhost side; option --mlockall in
+  ovs-dpdk is an example in hand.
+
+  For zerocopy, we force the VM memory to be pre-allocated at vhost lib when
+  mapping the guest memory; and also we need to lock the memory to prevent
+  pages being swapped out to disk.
+
+* Memory sharing
+
+  Make sure ``share=on`` QEMU option is given. vhost-user will not work with
+  a QEMU version without shared memory mapping.
+
 Vhost supported vSwitch reference
 ---------------------------------
 
 For more vhost details and how to support vhost in vSwitch, please refer to
 the vhost example in the DPDK Sample Applications Guide.
+
+Vhost data path acceleration (vDPA)
+-----------------------------------
+
+vDPA supports selective datapath in vhost-user lib by enabling virtio ring
+compatible devices to serve virtio driver directly for datapath acceleration.
+
+``rte_vhost_driver_attach_vdpa_device`` is used to configure the vhost device
+with accelerated backend.
+
+Also vhost device capabilities are made configurable to adopt various devices.
+Such capabilities include supported features, protocol features, queue number.
+
+Finally, a set of device ops is defined for device specific operations:
+
+* ``get_queue_num``
+
+  Called to get supported queue number of the device.
+
+* ``get_features``
+
+  Called to get supported features of the device.
+
+* ``get_protocol_features``
+
+  Called to get supported protocol features of the device.
+
+* ``dev_conf``
+
+  Called to configure the actual device when the virtio device becomes ready.
+
+* ``dev_close``
+
+  Called to close the actual device when the virtio device is stopped.
+
+* ``set_vring_state``
+
+  Called to change the state of the vring in the actual device when vring state
+  changes.
+
+* ``set_features``
+
+  Called to set the negotiated features to device.
+
+* ``migration_done``
+
+  Called to allow the device to response to RARP sending.
+
+* ``get_vfio_group_fd``
+
+   Called to get the VFIO group fd of the device.
+
+* ``get_vfio_device_fd``
+
+  Called to get the VFIO device fd of the device.
+
+* ``get_notify_area``
+
+  Called to get the notify area info of the queue.

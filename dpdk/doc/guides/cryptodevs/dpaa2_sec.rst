@@ -1,31 +1,6 @@
-..  BSD LICENSE
-    Copyright 2016 NXP.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2016 NXP
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of NXP nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 NXP DPAA2 CAAM (DPAA2_SEC)
@@ -154,15 +129,25 @@ AEAD algorithms:
 Supported DPAA2 SoCs
 --------------------
 
-* LS2080A/LS2040A
+* LS2160A
 * LS2084A/LS2044A
 * LS2088A/LS2048A
 * LS1088A/LS1048A
 
+Whitelisting & Blacklisting
+---------------------------
+
+For blacklisting a DPAA2 SEC device, following commands can be used.
+
+ .. code-block:: console
+
+    <dpdk app> <EAL args> -b "fslmc:dpseci.x" -- ...
+
+Where x is the device object id as configured in resource container.
+
 Limitations
 -----------
 
-* Chained mbufs are not supported.
 * Hash followed by Cipher mode is not supported
 * Only supports the session-oriented API implementation (session-less APIs are not supported).
 
@@ -172,31 +157,15 @@ Prerequisites
 DPAA2_SEC driver has similar pre-requisites as described in :ref:`dpaa2_overview`.
 The following dependencies are not part of DPDK and must be installed separately:
 
-* **NXP Linux SDK**
-
-  NXP Linux software development kit (SDK) includes support for the family
-  of QorIQ® ARM-Architecture-based system on chip (SoC) processors
-  and corresponding boards.
-
-  It includes the Linux board support packages (BSPs) for NXP SoCs,
-  a fully operational tool chain, kernel and board specific modules.
-
-  SDK and related information can be obtained from:  `NXP QorIQ SDK  <http://www.nxp.com/products/software-and-tools/run-time-software/linux-sdk/linux-sdk-for-qoriq-processors:SDKLINUX>`_.
-
-* **DPDK Extra Scripts**
-
-  DPAA2 based resources can be configured easily with the help of ready scripts
-  as provided in the DPDK helper repository.
-
-  `DPDK Extra Scripts <https://github.com/qoriq-open-source/dpdk-extras>`_.
+See :doc:`../platform/dpaa2` for setup information
 
 Currently supported by DPDK:
 
-* NXP SDK **17.08+**.
-* MC Firmware version **10.3.1** and higher.
-* Supported architectures:  **arm64 LE**.
+- NXP SDK **18.09+**.
+- MC Firmware version **10.10.0** and higher.
+- Supported architectures:  **arm64 LE**.
 
-* Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
+- Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
 Pre-Installation Configuration
 ------------------------------
@@ -214,20 +183,6 @@ Please note that enabling debugging options may affect system performance.
   By default it is only enabled in defconfig_arm64-dpaa2-* config.
   Toggle compilation of the ``librte_pmd_dpaa2_sec`` driver.
 
-* ``CONFIG_RTE_LIBRTE_DPAA2_SEC_DEBUG_INIT`` (default ``n``)
-  Toggle display of initialization related driver messages
-
-* ``CONFIG_RTE_LIBRTE_DPAA2_SEC_DEBUG_DRIVER`` (default ``n``)
-  Toggle display of driver runtime messages
-
-* ``CONFIG_RTE_LIBRTE_DPAA2_SEC_DEBUG_RX`` (default ``n``)
-  Toggle display of receive fast path run-time message
-
-* ``CONFIG_RTE_DPAA2_SEC_PMD_MAX_NB_SESSIONS``
-  By default it is set as 2048 in defconfig_arm64-dpaa2-* config.
-  It indicates Number of sessions to create in the session memory pool
-  on a single DPAA2 SEC device.
-
 Installations
 -------------
 To compile the DPAA2_SEC PMD for Linux arm64 gcc target, run the
@@ -237,3 +192,15 @@ following ``make`` command:
 
    cd <DPDK-source-directory>
    make config T=arm64-dpaa2-linuxapp-gcc install
+
+Enabling logs
+-------------
+
+For enabling logs, use the following EAL parameter:
+
+.. code-block:: console
+
+   ./your_crypto_application <EAL args> --log-level=pmd.crypto.dpaa2:<level>
+
+Using ``crypto.dpaa2`` as log matching criteria, all Crypto PMD logs can be
+enabled which are lower than logging ``level``.

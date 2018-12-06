@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 NXP.
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 NXP.
+ * Copyright(c) 2017 Intel Corporation.
  */
 
 #ifndef _RTE_SECURITY_H_
@@ -36,7 +8,6 @@
 
 /**
  * @file rte_security.h
- * @b EXPERIMENTAL: this API may change without prior notice
  *
  * RTE Security Common Definitions
  *
@@ -52,6 +23,7 @@ extern "C" {
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 
+#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_crypto.h>
 #include <rte_mbuf.h>
@@ -221,6 +193,8 @@ struct rte_security_ipsec_xform {
 	/**< IPsec SA Mode - transport/tunnel */
 	struct rte_security_ipsec_tunnel_param tunnel;
 	/**< Tunnel parameters, NULL for transport mode */
+	uint64_t esn_soft_limit;
+	/**< ESN for which the overflow event need to be raised */
 };
 
 /**
@@ -229,6 +203,64 @@ struct rte_security_ipsec_xform {
 struct rte_security_macsec_xform {
 	/** To be Filled */
 	int dummy;
+};
+
+/**
+ * PDCP Mode of session
+ */
+enum rte_security_pdcp_domain {
+	RTE_SECURITY_PDCP_MODE_CONTROL,	/**< PDCP control plane */
+	RTE_SECURITY_PDCP_MODE_DATA,	/**< PDCP data plane */
+};
+
+/** PDCP Frame direction */
+enum rte_security_pdcp_direction {
+	RTE_SECURITY_PDCP_UPLINK,	/**< Uplink */
+	RTE_SECURITY_PDCP_DOWNLINK,	/**< Downlink */
+};
+
+/** PDCP Sequence Number Size selectors */
+enum rte_security_pdcp_sn_size {
+	/** PDCP_SN_SIZE_5: 5bit sequence number */
+	RTE_SECURITY_PDCP_SN_SIZE_5 = 5,
+	/** PDCP_SN_SIZE_7: 7bit sequence number */
+	RTE_SECURITY_PDCP_SN_SIZE_7 = 7,
+	/** PDCP_SN_SIZE_12: 12bit sequence number */
+	RTE_SECURITY_PDCP_SN_SIZE_12 = 12,
+	/** PDCP_SN_SIZE_15: 15bit sequence number */
+	RTE_SECURITY_PDCP_SN_SIZE_15 = 15,
+	/** PDCP_SN_SIZE_18: 18bit sequence number */
+	RTE_SECURITY_PDCP_SN_SIZE_18 = 18
+};
+
+/**
+ * PDCP security association configuration data.
+ *
+ * This structure contains data required to create a PDCP security session.
+ */
+struct rte_security_pdcp_xform {
+	int8_t bearer;	/**< PDCP bearer ID */
+	/** Enable in order delivery, this field shall be set only if
+	 * driver/HW is capable. See RTE_SECURITY_PDCP_ORDERING_CAP.
+	 */
+	uint8_t en_ordering;
+	/** Notify driver/HW to detect and remove duplicate packets.
+	 * This field should be set only when driver/hw is capable.
+	 * See RTE_SECURITY_PDCP_DUP_DETECT_CAP.
+	 */
+	uint8_t remove_duplicates;
+	/** PDCP mode of operation: Control or data */
+	enum rte_security_pdcp_domain domain;
+	/** PDCP Frame Direction 0:UL 1:DL */
+	enum rte_security_pdcp_direction pkt_dir;
+	/** Sequence number size, 5/7/12/15/18 */
+	enum rte_security_pdcp_sn_size sn_size;
+	/** Starting Hyper Frame Number to be used together with the SN
+	 * from the PDCP frames
+	 */
+	uint32_t hfn;
+	/** HFN Threshold for key renegotiation */
+	uint32_t hfn_threshold;
 };
 
 /**
@@ -257,6 +289,8 @@ enum rte_security_session_protocol {
 	/**< IPsec Protocol */
 	RTE_SECURITY_PROTOCOL_MACSEC,
 	/**< MACSec Protocol */
+	RTE_SECURITY_PROTOCOL_PDCP,
+	/**< PDCP Protocol */
 };
 
 /**
@@ -271,10 +305,13 @@ struct rte_security_session_conf {
 	union {
 		struct rte_security_ipsec_xform ipsec;
 		struct rte_security_macsec_xform macsec;
+		struct rte_security_pdcp_xform pdcp;
 	};
 	/**< Configuration parameters for security session */
 	struct rte_crypto_sym_xform *crypto_xform;
 	/**< Security Session Crypto Transformations */
+	void *userdata;
+	/**< Application specific userdata to be saved with session */
 };
 
 struct rte_security_session {
@@ -307,10 +344,22 @@ rte_security_session_create(struct rte_security_ctx *instance,
  *  - On success returns 0
  *  - On failure return errno
  */
-int
+int __rte_experimental
 rte_security_session_update(struct rte_security_ctx *instance,
 			    struct rte_security_session *sess,
 			    struct rte_security_session_conf *conf);
+
+/**
+ * Get the size of the security session data for a device.
+ *
+ * @param   instance	security instance.
+ *
+ * @return
+ *   - Size of the private data, if successful
+ *   - 0 if device is invalid or does not support the operation.
+ */
+unsigned int
+rte_security_session_get_size(struct rte_security_ctx *instance);
 
 /**
  * Free security session header and the session private data and
@@ -345,6 +394,26 @@ int
 rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
 			      struct rte_security_session *sess,
 			      struct rte_mbuf *mb, void *params);
+
+/**
+ * Get userdata associated with the security session. Device specific metadata
+ * provided would be used to uniquely identify the security session being
+ * referred to. This userdata would be registered while creating the session,
+ * and application can use this to identify the SA etc.
+ *
+ * Device specific metadata would be set in mbuf for inline processed inbound
+ * packets. In addition, the same metadata would be set for IPsec events
+ * reported by rte_eth_event framework.
+ *
+ * @param   instance	security instance
+ * @param   md		device-specific metadata
+ *
+ * @return
+ *  - On success, userdata
+ *  - On failure, NULL
+ */
+void * __rte_experimental
+rte_security_get_userdata(struct rte_security_ctx *instance, uint64_t md);
 
 /**
  * Attach a session to a symmetric crypto operation
@@ -404,6 +473,10 @@ struct rte_security_ipsec_stats {
 
 };
 
+struct rte_security_pdcp_stats {
+	uint64_t reserved;
+};
+
 struct rte_security_stats {
 	enum rte_security_session_protocol protocol;
 	/**< Security protocol to be configured */
@@ -412,6 +485,7 @@ struct rte_security_stats {
 	union {
 		struct rte_security_macsec_stats macsec;
 		struct rte_security_ipsec_stats ipsec;
+		struct rte_security_pdcp_stats pdcp;
 	};
 };
 
@@ -425,7 +499,7 @@ struct rte_security_stats {
  *  - On success return 0
  *  - On failure errno
  */
-int
+int __rte_experimental
 rte_security_session_stats_get(struct rte_security_ctx *instance,
 			       struct rte_security_session *sess,
 			       struct rte_security_stats *stats);
@@ -456,6 +530,13 @@ struct rte_security_capability {
 			int dummy;
 		} macsec;
 		/**< MACsec capability */
+		struct {
+			enum rte_security_pdcp_domain domain;
+			/**< PDCP mode of operation: Control or data */
+			uint32_t capa_flags;
+			/**< Capabilitity flags, see RTE_SECURITY_PDCP_* */
+		} pdcp;
+		/**< PDCP capability */
 	};
 
 	const struct rte_cryptodev_capabilities *crypto_capabilities;
@@ -464,6 +545,19 @@ struct rte_security_capability {
 	uint32_t ol_flags;
 	/**< Device offload flags */
 };
+
+/** Underlying Hardware/driver which support PDCP may or may not support
+ * packet ordering. Set RTE_SECURITY_PDCP_ORDERING_CAP if it support.
+ * If it is not set, driver/HW assumes packets received are in order
+ * and it will be application's responsibility to maintain ordering.
+ */
+#define RTE_SECURITY_PDCP_ORDERING_CAP		0x00000001
+
+/** Underlying Hardware/driver which support PDCP may or may not detect
+ * duplicate packet. Set RTE_SECURITY_PDCP_DUP_DETECT_CAP if it support.
+ * If it is not set, driver/HW assumes there is no duplicate packet received.
+ */
+#define RTE_SECURITY_PDCP_DUP_DETECT_CAP	0x00000002
 
 #define RTE_SECURITY_TX_OLOAD_NEED_MDATA	0x00000001
 /**< HW needs metadata update, see rte_security_set_pkt_metadata().
@@ -497,6 +591,10 @@ struct rte_security_capability_idx {
 			enum rte_security_ipsec_sa_mode mode;
 			enum rte_security_ipsec_sa_direction direction;
 		} ipsec;
+		struct {
+			enum rte_security_pdcp_domain domain;
+			uint32_t capa_flags;
+		} pdcp;
 	};
 };
 

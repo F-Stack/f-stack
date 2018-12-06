@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Profile Your Application
 ========================
@@ -60,38 +33,12 @@ Refer to the
 for details about application profiling.
 
 
-Empty cycles tracing
+Profiling with VTune
 ~~~~~~~~~~~~~~~~~~~~
 
-Iterations that yielded no RX packets (empty cycles, wasted iterations) can
-be analyzed using VTune Amplifier. This profiling employs the
-`Instrumentation and Tracing Technology (ITT) API
-<https://software.intel.com/en-us/node/544195>`_
-feature of VTune Amplifier and requires only reconfiguring the DPDK library,
-no changes in a DPDK application are needed.
-
-To trace wasted iterations on RX queues, first reconfigure DPDK with
-``CONFIG_RTE_ETHDEV_RXTX_CALLBACKS`` and
-``CONFIG_RTE_ETHDEV_PROFILE_ITT_WASTED_RX_ITERATIONS`` enabled.
-
-Then rebuild DPDK, specifying paths to the ITT header and library, which can
-be found in any VTune Amplifier distribution in the *include* and *lib*
-directories respectively:
-
-.. code-block:: console
-
-    make EXTRA_CFLAGS=-I<path to ittnotify.h> \
-         EXTRA_LDLIBS="-L<path to libittnotify.a> -littnotify"
-
-Finally, to see wasted iterations in your performance analysis results,
-select the *"Analyze user tasks, events, and counters"* checkbox in the
-*"Analysis Type"* tab when configuring analysis via VTune Amplifier GUI.
-Alternatively, when running VTune Amplifier via command line, specify
-``-knob enable-user-tasks=true`` option.
-
-Collected regions of wasted iterations will be marked on VTune Amplifier's
-timeline as ITT tasks. These ITT tasks have predefined names, containing
-Ethernet device and RX queue identifiers.
+To allow VTune attaching to the DPDK application, reconfigure and recompile
+the DPDK with ``CONFIG_RTE_ETHDEV_RXTX_CALLBACKS`` and
+``CONFIG_RTE_ETHDEV_PROFILE_WITH_VTUNE`` enabled.
 
 
 Profiling on ARM64

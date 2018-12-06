@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2007-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2007-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #include "efx.h"
@@ -40,7 +16,7 @@ siena_mac_multicast_list_set(
 #endif /* EFSYS_OPT_SIENA */
 
 #if EFSYS_OPT_SIENA
-static const efx_mac_ops_t	__efx_siena_mac_ops = {
+static const efx_mac_ops_t	__efx_mac_siena_ops = {
 	siena_mac_poll,				/* emo_poll */
 	siena_mac_up,				/* emo_up */
 	siena_mac_reconfigure,			/* emo_addr_set */
@@ -63,8 +39,8 @@ static const efx_mac_ops_t	__efx_siena_mac_ops = {
 };
 #endif	/* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
-static const efx_mac_ops_t	__efx_ef10_mac_ops = {
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+static const efx_mac_ops_t	__efx_mac_ef10_ops = {
 	ef10_mac_poll,				/* emo_poll */
 	ef10_mac_up,				/* emo_up */
 	ef10_mac_addr_set,			/* emo_addr_set */
@@ -86,7 +62,7 @@ static const efx_mac_ops_t	__efx_ef10_mac_ops = {
 	ef10_mac_stats_update			/* emo_stats_update */
 #endif	/* EFSYS_OPT_MAC_STATS */
 };
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
 
 	__checkReturn			efx_rc_t
 efx_mac_pdu_set(
@@ -516,7 +492,7 @@ efx_mac_filter_default_rxq_clear(
 
 #if EFSYS_OPT_NAMES
 
-/* START MKCONFIG GENERATED EfxMacStatNamesBlock c11b91b42f922516 */
+/* START MKCONFIG GENERATED EfxMacStatNamesBlock 1a45a82fcfb30c1b */
 static const char * const __efx_mac_stat_name[] = {
 	"rx_octets",
 	"rx_pkts",
@@ -599,6 +575,31 @@ static const char * const __efx_mac_stat_name[] = {
 	"vadapter_tx_bad_packets",
 	"vadapter_tx_bad_bytes",
 	"vadapter_tx_overflow",
+	"fec_uncorrected_errors",
+	"fec_corrected_errors",
+	"fec_corrected_symbols_lane0",
+	"fec_corrected_symbols_lane1",
+	"fec_corrected_symbols_lane2",
+	"fec_corrected_symbols_lane3",
+	"ctpio_vi_busy_fallback",
+	"ctpio_long_write_success",
+	"ctpio_missing_dbell_fail",
+	"ctpio_overflow_fail",
+	"ctpio_underflow_fail",
+	"ctpio_timeout_fail",
+	"ctpio_noncontig_wr_fail",
+	"ctpio_frm_clobber_fail",
+	"ctpio_invalid_wr_fail",
+	"ctpio_vi_clobber_fallback",
+	"ctpio_unqualified_fallback",
+	"ctpio_runt_fallback",
+	"ctpio_success",
+	"ctpio_fallback",
+	"ctpio_poison",
+	"ctpio_erase",
+	"rxdp_scatter_disabled_trunc",
+	"rxdp_hlb_idle",
+	"rxdp_hlb_timeout",
 };
 /* END MKCONFIG GENERATED EfxMacStatNamesBlock */
 
@@ -751,15 +752,8 @@ efx_mac_stats_upload(
 	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_PORT);
 	EFSYS_ASSERT(emop != NULL);
 
-	/*
-	 * Don't assert !ep_mac_stats_pending, because the client might
-	 * have failed to finalise statistics when previously stopping
-	 * the port.
-	 */
 	if ((rc = emop->emo_stats_upload(enp, esmp)) != 0)
 		goto fail1;
-
-	epp->ep_mac_stats_pending = B_TRUE;
 
 	return (0);
 
@@ -820,8 +814,6 @@ efx_mac_stats_update(
 	EFSYS_ASSERT(emop != NULL);
 
 	rc = emop->emo_stats_update(enp, esmp, essp, generationp);
-	if (rc == 0)
-		epp->ep_mac_stats_pending = B_FALSE;
 
 	return (rc);
 }
@@ -840,24 +832,31 @@ efx_mac_select(
 	switch (enp->en_family) {
 #if EFSYS_OPT_SIENA
 	case EFX_FAMILY_SIENA:
-		emop = &__efx_siena_mac_ops;
+		emop = &__efx_mac_siena_ops;
 		type = EFX_MAC_SIENA;
 		break;
 #endif /* EFSYS_OPT_SIENA */
 
 #if EFSYS_OPT_HUNTINGTON
 	case EFX_FAMILY_HUNTINGTON:
-		emop = &__efx_ef10_mac_ops;
+		emop = &__efx_mac_ef10_ops;
 		type = EFX_MAC_HUNTINGTON;
 		break;
 #endif /* EFSYS_OPT_HUNTINGTON */
 
 #if EFSYS_OPT_MEDFORD
 	case EFX_FAMILY_MEDFORD:
-		emop = &__efx_ef10_mac_ops;
+		emop = &__efx_mac_ef10_ops;
 		type = EFX_MAC_MEDFORD;
 		break;
 #endif /* EFSYS_OPT_MEDFORD */
+
+#if EFSYS_OPT_MEDFORD2
+	case EFX_FAMILY_MEDFORD2:
+		emop = &__efx_mac_ef10_ops;
+		type = EFX_MAC_MEDFORD2;
+		break;
+#endif /* EFSYS_OPT_MEDFORD2 */
 
 	default:
 		rc = EINVAL;

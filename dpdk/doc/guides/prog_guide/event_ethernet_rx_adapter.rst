@@ -1,31 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2017 Intel Corporation. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Intel Corporation.
 
 Event Ethernet Rx Adapter Library
 =================================
@@ -38,7 +12,11 @@ be supported in hardware or require a software thread to receive packets from
 the ethdev port using ethdev poll mode APIs and enqueue these as events to the
 event device using the eventdev API. Both transfer mechanisms may be present on
 the same platform depending on the particular combination of the ethdev and
-the event device.
+the event device. For SW based packet transfer, if the mbuf does not have a
+timestamp set, the adapter adds a timestamp to the mbuf using
+rte_get_tsc_cycles(), this provides a more accurate timestamp as compared to
+if the application were to set the timestamp since it avoids event device
+schedule latency.
 
 The Event Ethernet Rx Adapter library is intended for the application code to
 configure both transfer mechanisms using a common API. A capability API allows
@@ -166,3 +144,44 @@ enqueued event counts are a sum of the counts from the eventdev PMD callbacks
 if the callback is supported, and the counts maintained by the service function,
 if one exists. The service function also maintains a count of cycles for which
 it was not able to enqueue to the event device.
+
+Interrupt Based Rx Queues
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The service core function is typically set up to poll ethernet Rx queues for
+packets. Certain queues may have low packet rates and it would be more
+efficient to enable the Rx queue interrupt and read packets after receiving
+the interrupt.
+
+The servicing_weight member of struct rte_event_eth_rx_adapter_queue_conf
+is applicable when the adapter uses a service core function. The application
+has to enable Rx queue interrupts when configuring the ethernet device
+using the ``rte_eth_dev_configure()`` function and then use a servicing_weight
+of zero when addding the Rx queue to the adapter.
+
+The adapter creates a thread blocked on the interrupt, on an interrupt this
+thread enqueues the port id and the queue id to a ring buffer. The adapter
+service function dequeues the port id and queue id from the ring buffer,
+invokes the ``rte_eth_rx_burst()`` to receive packets on the queue and
+converts the received packets to events in the same manner as packets
+received on a polled Rx queue. The interrupt thread is affinitized to the same
+CPUs as the lcores of the Rx adapter service function, if the Rx adapter
+service function has not been mapped to any lcores, the interrupt thread
+is mapped to the master lcore.
+
+Rx Callback for SW Rx Adapter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For SW based packet transfers, i.e., when the
+``RTE_EVENT_ETH_RX_ADAPTER_CAP_INTERNAL_PORT`` is not set in the adapter's
+capabilities flags for a particular ethernet device, the service function
+temporarily enqueues mbufs to an event buffer before batch enqueueing these
+to the event device. If the buffer fills up, the service function stops
+dequeueing packets from the ethernet device. The application may want to
+monitor the buffer fill level and instruct the service function to selectively
+enqueue packets to the event device. The application may also use some other
+criteria to decide which packets should enter the event device even when
+the event buffer fill level is low. The
+``rte_event_eth_rx_adapter_cb_register()`` function allow the application
+to register a callback that selects which packets to enqueue to the event
+device.

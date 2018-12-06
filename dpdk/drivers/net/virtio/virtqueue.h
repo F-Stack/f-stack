@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _VIRTQUEUE_H_
@@ -158,6 +129,17 @@ struct virtio_net_ctrl_mac {
 #define VIRTIO_NET_CTRL_VLAN_ADD 0
 #define VIRTIO_NET_CTRL_VLAN_DEL 1
 
+/*
+ * Control link announce acknowledgement
+ *
+ * The command VIRTIO_NET_CTRL_ANNOUNCE_ACK is used to indicate that
+ * driver has recevied the notification; device would clear the
+ * VIRTIO_NET_S_ANNOUNCE bit in the status field after it receives
+ * this command.
+ */
+#define VIRTIO_NET_CTRL_ANNOUNCE     3
+#define VIRTIO_NET_CTRL_ANNOUNCE_ACK 0
+
 struct virtio_net_ctrl_hdr {
 	uint8_t class;
 	uint8_t cmd;
@@ -225,8 +207,6 @@ struct virtqueue {
 #define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET        0
 #define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MIN        1
 #define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX        0x8000
-
-#define VIRTIO_NET_CTRL_MAC_ADDR_SET         1
 
 /**
  * This is the first element of the scatter-gather list.  If you don't
@@ -301,7 +281,7 @@ void virtqueue_dump(struct virtqueue *vq);
 /**
  *  Get all mbufs to be freed.
  */
-struct rte_mbuf *virtqueue_detatch_unused(struct virtqueue *vq);
+struct rte_mbuf *virtqueue_detach_unused(struct virtqueue *vq);
 
 /* Flush the elements in the used ring. */
 void virtqueue_rxvq_flush(struct virtqueue *vq);
@@ -326,6 +306,8 @@ virtio_get_queue_type(struct virtio_hw *hw, uint16_t vtpci_queue_idx)
 #define VIRTQUEUE_NUSED(vq) ((uint16_t)((vq)->vq_ring.used->idx - (vq)->vq_used_cons_idx))
 
 void vq_ring_free_chain(struct virtqueue *vq, uint16_t desc_idx);
+void vq_ring_free_inorder(struct virtqueue *vq, uint16_t desc_idx,
+			  uint16_t num);
 
 static inline void
 vq_update_avail_idx(struct virtqueue *vq)

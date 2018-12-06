@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <stdint.h>
@@ -120,8 +91,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_RX_DESC_DEFAULT 128
-#define RTE_TX_DESC_DEFAULT 512
+#define RTE_RX_DESC_DEFAULT 1024
+#define RTE_TX_DESC_DEFAULT 1024
 
 #define BOND_IP_1	7
 #define BOND_IP_2	0
@@ -151,11 +122,6 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode = ETH_MQ_RX_NONE,
 		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -174,11 +140,31 @@ slave_port_init(uint16_t portid, struct rte_mempool *mbuf_pool)
 	int retval;
 	uint16_t nb_rxd = RTE_RX_DESC_DEFAULT;
 	uint16_t nb_txd = RTE_TX_DESC_DEFAULT;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
+	struct rte_eth_conf local_port_conf = port_conf;
 
-	if (portid >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(portid))
 		rte_exit(EXIT_FAILURE, "Invalid port\n");
 
-	retval = rte_eth_dev_configure(portid, 1, 1, &port_conf);
+	rte_eth_dev_info_get(portid, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		local_port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
+		dev_info.flow_type_rss_offloads;
+	if (local_port_conf.rx_adv_conf.rss_conf.rss_hf !=
+			port_conf.rx_adv_conf.rss_conf.rss_hf) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			portid,
+			port_conf.rx_adv_conf.rss_conf.rss_hf,
+			local_port_conf.rx_adv_conf.rss_conf.rss_hf);
+	}
+
+	retval = rte_eth_dev_configure(portid, 1, 1, &local_port_conf);
 	if (retval != 0)
 		rte_exit(EXIT_FAILURE, "port %u: configuration failed (res=%d)\n",
 				portid, retval);
@@ -189,16 +175,21 @@ slave_port_init(uint16_t portid, struct rte_mempool *mbuf_pool)
 				"failed (res=%d)\n", portid, retval);
 
 	/* RX setup */
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = local_port_conf.rxmode.offloads;
 	retval = rte_eth_rx_queue_setup(portid, 0, nb_rxd,
-					rte_eth_dev_socket_id(portid), NULL,
+					rte_eth_dev_socket_id(portid),
+					&rxq_conf,
 					mbuf_pool);
 	if (retval < 0)
 		rte_exit(retval, " port %u: RX queue 0 setup failed (res=%d)",
 				portid, retval);
 
 	/* TX setup */
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = local_port_conf.txmode.offloads;
 	retval = rte_eth_tx_queue_setup(portid, 0, nb_txd,
-				rte_eth_dev_socket_id(portid), NULL);
+				rte_eth_dev_socket_id(portid), &txq_conf);
 
 	if (retval < 0)
 		rte_exit(retval, "port %u: TX queue 0 setup failed (res=%d)",
@@ -225,6 +216,10 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 	uint8_t i;
 	uint16_t nb_rxd = RTE_RX_DESC_DEFAULT;
 	uint16_t nb_txd = RTE_TX_DESC_DEFAULT;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
+	struct rte_eth_conf local_port_conf = port_conf;
 
 	retval = rte_eth_bond_create("net_bonding0", BONDING_MODE_ALB,
 			0 /*SOCKET_ID_ANY*/);
@@ -234,7 +229,11 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 
 	BOND_PORT = retval;
 
-	retval = rte_eth_dev_configure(BOND_PORT, 1, 1, &port_conf);
+	rte_eth_dev_info_get(BOND_PORT, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		local_port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+	retval = rte_eth_dev_configure(BOND_PORT, 1, 1, &local_port_conf);
 	if (retval != 0)
 		rte_exit(EXIT_FAILURE, "port %u: configuration failed (res=%d)\n",
 				BOND_PORT, retval);
@@ -245,16 +244,20 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 				"failed (res=%d)\n", BOND_PORT, retval);
 
 	/* RX setup */
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = local_port_conf.rxmode.offloads;
 	retval = rte_eth_rx_queue_setup(BOND_PORT, 0, nb_rxd,
-					rte_eth_dev_socket_id(BOND_PORT), NULL,
-					mbuf_pool);
+					rte_eth_dev_socket_id(BOND_PORT),
+					&rxq_conf, mbuf_pool);
 	if (retval < 0)
 		rte_exit(retval, " port %u: RX queue 0 setup failed (res=%d)",
 				BOND_PORT, retval);
 
 	/* TX setup */
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = local_port_conf.txmode.offloads;
 	retval = rte_eth_tx_queue_setup(BOND_PORT, 0, nb_txd,
-				rte_eth_dev_socket_id(BOND_PORT), NULL);
+				rte_eth_dev_socket_id(BOND_PORT), &txq_conf);
 
 	if (retval < 0)
 		rte_exit(retval, "port %u: TX queue 0 setup failed (res=%d)",
@@ -743,17 +746,17 @@ int
 main(int argc, char *argv[])
 {
 	int ret;
-	uint8_t nb_ports, i;
+	uint16_t nb_ports, i;
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
-	rte_eal_devargs_dump(stdout);
+	rte_devargs_dump(stdout);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
 	argc -= ret;
 	argv += ret;
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "Give at least one port\n");
 	else if (nb_ports > MAX_PORTS)
@@ -766,7 +769,7 @@ main(int argc, char *argv[])
 
 	/* initialize all ports */
 	slaves_count = nb_ports;
-	for (i = 0; i < nb_ports; i++) {
+	RTE_ETH_FOREACH_DEV(i) {
 		slave_port_init(i, mbuf_pool);
 		slaves[i] = i;
 	}

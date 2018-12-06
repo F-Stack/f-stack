@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2018 Intel Corporation
  */
 
 #ifndef _RTE_EAL_H_
@@ -42,8 +13,10 @@
 
 #include <stdint.h>
 #include <sched.h>
+#include <time.h>
 
 #include <rte_config.h>
+#include <rte_compat.h>
 #include <rte_per_lcore.h>
 #include <rte_bus.h>
 
@@ -84,6 +57,8 @@ enum rte_proc_type_t {
 struct rte_config {
 	uint32_t master_lcore;       /**< Id of the master lcore */
 	uint32_t lcore_count;        /**< Number of available logical cores. */
+	uint32_t numa_node_count;    /**< Number of detected NUMA nodes. */
+	uint32_t numa_nodes[RTE_MAX_NUMA_NODES]; /**< List of detected NUMA nodes. */
 	uint32_t service_lcore_count;/**< Number of available service cores. */
 	enum rte_lcore_role_t lcore_role[RTE_MAX_LCORE]; /**< State of cores. */
 
@@ -199,6 +174,22 @@ int rte_eal_iopl_init(void);
 int rte_eal_init(int argc, char **argv);
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Clean up the Environment Abstraction Layer (EAL)
+ *
+ * This function must be called to release any internal resources that EAL has
+ * allocated during rte_eal_init(). After this call, no DPDK function calls may
+ * be made. It is expected that common usage of this function is to call it
+ * just before terminating the process.
+ *
+ * @return 0 Successfully released all internal EAL resources
+ * @return -EFAULT There was an error in releasing all resources.
+ */
+int __rte_experimental rte_eal_cleanup(void);
+
+/**
  * Check if a primary process is currently alive
  *
  * This function returns true when a primary process is currently
@@ -214,6 +205,186 @@ int rte_eal_init(int argc, char **argv);
  *  - If dead, returns 0.
  */
 int rte_eal_primary_proc_alive(const char *config_file_path);
+
+#define RTE_MP_MAX_FD_NUM	8    /* The max amount of fds */
+#define RTE_MP_MAX_NAME_LEN	64   /* The max length of action name */
+#define RTE_MP_MAX_PARAM_LEN	256  /* The max length of param */
+struct rte_mp_msg {
+	char name[RTE_MP_MAX_NAME_LEN];
+	int len_param;
+	int num_fds;
+	uint8_t param[RTE_MP_MAX_PARAM_LEN];
+	int fds[RTE_MP_MAX_FD_NUM];
+};
+
+struct rte_mp_reply {
+	int nb_sent;
+	int nb_received;
+	struct rte_mp_msg *msgs; /* caller to free */
+};
+
+/**
+ * Action function typedef used by other components.
+ *
+ * As we create  socket channel for primary/secondary communication, use
+ * this function typedef to register action for coming messages.
+ */
+typedef int (*rte_mp_t)(const struct rte_mp_msg *msg, const void *peer);
+
+/**
+ * Asynchronous reply function typedef used by other components.
+ *
+ * As we create socket channel for primary/secondary communication, use
+ * this function typedef to register action for coming responses to asynchronous
+ * requests.
+ */
+typedef int (*rte_mp_async_reply_t)(const struct rte_mp_msg *request,
+		const struct rte_mp_reply *reply);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Register an action function for primary/secondary communication.
+ *
+ * Call this function to register an action, if the calling component wants
+ * to response the messages from the corresponding component in its primary
+ * process or secondary processes.
+ *
+ * @param name
+ *   The name argument plays as the nonredundant key to find the action.
+ *
+ * @param action
+ *   The action argument is the function pointer to the action function.
+ *
+ * @return
+ *  - 0 on success.
+ *  - (<0) on failure.
+ */
+int __rte_experimental
+rte_mp_action_register(const char *name, rte_mp_t action);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Unregister an action function for primary/secondary communication.
+ *
+ * Call this function to unregister an action  if the calling component does
+ * not want to response the messages from the corresponding component in its
+ * primary process or secondary processes.
+ *
+ * @param name
+ *   The name argument plays as the nonredundant key to find the action.
+ *
+ */
+void __rte_experimental
+rte_mp_action_unregister(const char *name);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Send a message to the peer process.
+ *
+ * This function will send a message which will be responsed by the action
+ * identified by name in the peer process.
+ *
+ * @param msg
+ *   The msg argument contains the customized message.
+ *
+ * @return
+ *  - On success, return 0.
+ *  - On failure, return -1, and the reason will be stored in rte_errno.
+ */
+int __rte_experimental
+rte_mp_sendmsg(struct rte_mp_msg *msg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Send a request to the peer process and expect a reply.
+ *
+ * This function sends a request message to the peer process, and will
+ * block until receiving reply message from the peer process.
+ *
+ * @note The caller is responsible to free reply->replies.
+ *
+ * @param req
+ *   The req argument contains the customized request message.
+ *
+ * @param reply
+ *   The reply argument will be for storing all the replied messages;
+ *   the caller is responsible for free reply->msgs.
+ *
+ * @param ts
+ *   The ts argument specifies how long we can wait for the peer(s) to reply.
+ *
+ * @return
+ *  - On success, return 0.
+ *  - On failure, return -1, and the reason will be stored in rte_errno.
+ */
+int __rte_experimental
+rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
+	       const struct timespec *ts);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Send a request to the peer process and expect a reply in a separate callback.
+ *
+ * This function sends a request message to the peer process, and will not
+ * block. Instead, reply will be received in a separate callback.
+ *
+ * @param req
+ *   The req argument contains the customized request message.
+ *
+ * @param ts
+ *   The ts argument specifies how long we can wait for the peer(s) to reply.
+ *
+ * @param clb
+ *   The callback to trigger when all responses for this request have arrived.
+ *
+ * @return
+ *  - On success, return 0.
+ *  - On failure, return -1, and the reason will be stored in rte_errno.
+ */
+int __rte_experimental
+rte_mp_request_async(struct rte_mp_msg *req, const struct timespec *ts,
+		rte_mp_async_reply_t clb);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Send a reply to the peer process.
+ *
+ * This function will send a reply message in response to a request message
+ * received previously.
+ *
+ * @param msg
+ *   The msg argument contains the customized message.
+ *
+ * @param peer
+ *   The peer argument is the pointer to the peer socket path.
+ *
+ * @return
+ *  - On success, return 0.
+ *  - On failure, return -1, and the reason will be stored in rte_errno.
+ */
+int __rte_experimental
+rte_mp_reply(struct rte_mp_msg *msg, const char *peer);
+
+/**
+ * Register all mp action callbacks for hotplug.
+ *
+ * @return
+ *   0 on success, negative on error.
+ */
+int __rte_experimental
+rte_mp_dev_hotplug_init(void);
 
 /**
  * Usage function typedef used by the application usage function.
@@ -328,13 +499,22 @@ static inline int rte_gettid(void)
 enum rte_iova_mode rte_eal_iova_mode(void);
 
 /**
- * Get default pool ops name for mbuf
+ * Get user provided pool ops name for mbuf
  *
  * @return
- *   returns default pool ops name.
+ *   returns user provided pool ops name.
  */
 const char *
-rte_eal_mbuf_default_mempool_ops(void);
+rte_eal_mbuf_user_pool_ops(void);
+
+/**
+ * Get the runtime directory of DPDK
+ *
+ * @return
+ *  The runtime directory path of DPDK
+ */
+const char *
+rte_eal_get_runtime_dir(void);
 
 #ifdef __cplusplus
 }

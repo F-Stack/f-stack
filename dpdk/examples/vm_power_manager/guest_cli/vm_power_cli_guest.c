@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 
@@ -61,6 +32,72 @@
 struct cmd_quit_result {
 	cmdline_fixed_string_t quit;
 };
+
+union PFID {
+	struct ether_addr addr;
+	uint64_t pfid;
+};
+
+static struct channel_packet policy;
+
+struct channel_packet *
+get_policy(void)
+{
+	return &policy;
+}
+
+int
+set_policy_mac(int port, int idx)
+{
+	struct channel_packet *policy;
+	union PFID pfid;
+
+	/* Use port MAC address as the vfid */
+	rte_eth_macaddr_get(port, &pfid.addr);
+
+	printf("Port %u MAC: %02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":"
+			"%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 "\n",
+			port,
+			pfid.addr.addr_bytes[0], pfid.addr.addr_bytes[1],
+			pfid.addr.addr_bytes[2], pfid.addr.addr_bytes[3],
+			pfid.addr.addr_bytes[4], pfid.addr.addr_bytes[5]);
+	policy = get_policy();
+	policy->vfid[idx] = pfid.pfid;
+	return 0;
+}
+
+void
+set_policy_defaults(struct channel_packet *pkt)
+{
+	set_policy_mac(0, 0);
+	pkt->nb_mac_to_monitor = 1;
+
+	pkt->t_boost_status.tbEnabled = false;
+
+	pkt->vcpu_to_control[0] = 0;
+	pkt->vcpu_to_control[1] = 1;
+	pkt->num_vcpu = 2;
+	/* Dummy Population. */
+	pkt->traffic_policy.min_packet_thresh = 96000;
+	pkt->traffic_policy.avg_max_packet_thresh = 1800000;
+	pkt->traffic_policy.max_max_packet_thresh = 2000000;
+
+	pkt->timer_policy.busy_hours[0] = 3;
+	pkt->timer_policy.busy_hours[1] = 4;
+	pkt->timer_policy.busy_hours[2] = 5;
+	pkt->timer_policy.quiet_hours[0] = 11;
+	pkt->timer_policy.quiet_hours[1] = 12;
+	pkt->timer_policy.quiet_hours[2] = 13;
+
+	pkt->timer_policy.hours_to_use_traffic_profile[0] = 8;
+	pkt->timer_policy.hours_to_use_traffic_profile[1] = 10;
+
+	pkt->core_type = CORE_TYPE_VIRTUAL;
+	pkt->workload = LOW;
+	pkt->policy_to_use = TIME;
+	pkt->command = PKT_POLICY;
+	strcpy(pkt->vm_name, "ubuntu2");
+}
 
 static void cmd_quit_parsed(__attribute__((unused)) void *parsed_result,
 				__attribute__((unused)) struct cmdline *cl,
@@ -147,54 +184,12 @@ struct cmd_send_policy_result {
 	cmdline_fixed_string_t cmd;
 };
 
-union PFID {
-	struct ether_addr addr;
-	uint64_t pfid;
-};
-
 static inline int
-send_policy(void)
+send_policy(struct channel_packet *pkt)
 {
-	struct channel_packet pkt;
 	int ret;
 
-	union PFID pfid;
-	/* Use port MAC address as the vfid */
-	rte_eth_macaddr_get(0, &pfid.addr);
-	printf("Port %u MAC: %02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":"
-			"%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 "\n",
-			1,
-			pfid.addr.addr_bytes[0], pfid.addr.addr_bytes[1],
-			pfid.addr.addr_bytes[2], pfid.addr.addr_bytes[3],
-			pfid.addr.addr_bytes[4], pfid.addr.addr_bytes[5]);
-	pkt.vfid[0] = pfid.pfid;
-
-	pkt.nb_mac_to_monitor = 1;
-	pkt.t_boost_status.tbEnabled = false;
-
-	pkt.vcpu_to_control[0] = 0;
-	pkt.vcpu_to_control[1] = 1;
-	pkt.num_vcpu = 2;
-	/* Dummy Population. */
-	pkt.traffic_policy.min_packet_thresh = 96000;
-	pkt.traffic_policy.avg_max_packet_thresh = 1800000;
-	pkt.traffic_policy.max_max_packet_thresh = 2000000;
-
-	pkt.timer_policy.busy_hours[0] = 3;
-	pkt.timer_policy.busy_hours[1] = 4;
-	pkt.timer_policy.busy_hours[2] = 5;
-	pkt.timer_policy.quiet_hours[0] = 11;
-	pkt.timer_policy.quiet_hours[1] = 12;
-	pkt.timer_policy.quiet_hours[2] = 13;
-
-	pkt.timer_policy.hours_to_use_traffic_profile[0] = 8;
-	pkt.timer_policy.hours_to_use_traffic_profile[1] = 10;
-
-	pkt.workload = LOW;
-	pkt.policy_to_use = TIME;
-	pkt.command = PKT_POLICY;
-	strcpy(pkt.vm_name, "ubuntu2");
-	ret = rte_power_guest_channel_send_msg(&pkt, 1);
+	ret = rte_power_guest_channel_send_msg(pkt, 1);
 	if (ret == 0)
 		return 1;
 	RTE_LOG(DEBUG, POWER, "Error sending message: %s\n",
@@ -211,7 +206,7 @@ cmd_send_policy_parsed(void *parsed_result, struct cmdline *cl,
 
 	if (!strcmp(res->cmd, "now")) {
 		printf("Sending Policy down now!\n");
-		ret = send_policy();
+		ret = send_policy(&policy);
 	}
 	if (ret != 1)
 		cmdline_printf(cl, "Error sending message: %s\n",

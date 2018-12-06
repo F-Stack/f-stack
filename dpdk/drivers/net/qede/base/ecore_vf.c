@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -34,7 +32,7 @@ static void *ecore_vf_pf_prep(struct ecore_hwfn *p_hwfn, u16 type, u16 length)
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 		   "preparing to send %s tlv over vf pf channel\n",
-		   ecore_channel_tlvs_string[type]);
+		   qede_ecore_channel_tlvs_string[type]);
 
 	/* Reset Request offset */
 	p_iov->offset = (u8 *)(p_iov->vf2pf_request);
@@ -567,13 +565,20 @@ enum _ecore_status_t ecore_vf_hw_prepare(struct ecore_hwfn *p_hwfn)
 							   phys,
 							   p_iov->bulletin.
 							   size);
+	if (!p_iov->bulletin.p_virt) {
+		DP_NOTICE(p_hwfn, false, "Failed to alloc bulletin memory\n");
+		goto free_pf2vf_reply;
+	}
 	DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 		   "VF's bulletin Board [%p virt 0x%lx phys 0x%08x bytes]\n",
 		   p_iov->bulletin.p_virt, (unsigned long)p_iov->bulletin.phys,
 		   p_iov->bulletin.size);
 
 #ifdef CONFIG_ECORE_LOCK_ALLOC
-	OSAL_MUTEX_ALLOC(p_hwfn, &p_iov->mutex);
+	if (OSAL_MUTEX_ALLOC(p_hwfn, &p_iov->mutex)) {
+		DP_NOTICE(p_hwfn, false, "Failed to allocate p_iov->mutex\n");
+		goto free_bulletin_mem;
+	}
 #endif
 	OSAL_MUTEX_INIT(&p_iov->mutex);
 
@@ -611,6 +616,16 @@ enum _ecore_status_t ecore_vf_hw_prepare(struct ecore_hwfn *p_hwfn)
 
 	return rc;
 
+#ifdef CONFIG_ECORE_LOCK_ALLOC
+free_bulletin_mem:
+	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_iov->bulletin.p_virt,
+			       p_iov->bulletin.phys,
+			       p_iov->bulletin.size);
+#endif
+free_pf2vf_reply:
+	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_iov->pf2vf_reply,
+			       p_iov->pf2vf_reply_phys,
+			       sizeof(union pfvf_tlvs));
 free_vf2pf_request:
 	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_iov->vf2pf_request,
 			       p_iov->vf2pf_request_phys,
@@ -1169,7 +1184,7 @@ ecore_vf_handle_vp_update_is_needed(struct ecore_hwfn *p_hwfn,
 		return !!p_data->sge_tpa_params;
 	default:
 		DP_INFO(p_hwfn, "Unexpected vport-update TLV[%d] %s\n",
-			tlv, ecore_channel_tlvs_string[tlv]);
+			tlv, qede_ecore_channel_tlvs_string[tlv]);
 		return false;
 	}
 }
@@ -1193,7 +1208,7 @@ ecore_vf_handle_vp_update_tlvs_resp(struct ecore_hwfn *p_hwfn,
 		if (p_resp && p_resp->hdr.status)
 			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 				   "TLV[%d] type %s Configuration %s\n",
-				   tlv, ecore_channel_tlvs_string[tlv],
+				   tlv, qede_ecore_channel_tlvs_string[tlv],
 				   (p_resp && p_resp->hdr.status) ? "succeeded"
 								  : "failed");
 	}

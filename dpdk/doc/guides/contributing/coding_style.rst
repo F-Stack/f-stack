@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 .. _coding_style:
 
 DPDK Coding Style
@@ -243,6 +246,15 @@ Structure Declarations
 * Major structures should be declared at the top of the file in which they are used, or in separate header files if they are used in multiple source files.
 * Use of the structures should be by separate variable declarations and those declarations must be extern if they are declared in a header file.
 * Externally visible structure definitions should have the structure name prefixed by ``rte_`` to avoid namespace collisions.
+
+.. note::
+
+    Uses of ``bool`` in structures are not preferred as is wastes space and
+    it's also not clear as to what type size the bool is. A preferred use of
+    ``bool`` is mainly as a return type from functions that return true/false,
+    and maybe local variable functions.
+
+    Ref: `LKML <https://lkml.org/lkml/2017/11/21/384>`_
 
 Queues
 ~~~~~~
@@ -614,8 +626,8 @@ In the DPDK environment, use the logging interface provided:
   * is DEBUG) */
  rte_log_set_level(my_logtype2, RTE_LOG_NOTICE);
 
- /* enable all PMD logs (whose identifier string starts with "pmd") */
- rte_log_set_level_regexp("pmd.*", RTE_LOG_DEBUG);
+ /* enable all PMD logs (whose identifier string starts with "pmd.") */
+ rte_log_set_level_pattern("pmd.*", RTE_LOG_DEBUG);
 
  /* log in debug level */
  rte_log_set_global_level(RTE_LOG_DEBUG);
@@ -694,6 +706,56 @@ Control Statements
                  /* NOTREACHED */
          }
 
+Dynamic Logging
+---------------
+
+DPDK provides infrastructure to perform logging during runtime. This is very
+useful for enabling debug output without recompilation. To enable or disable
+logging of a particular topic, the ``--log-level`` parameter can be provided
+to EAL, which will change the log level. DPDK code can register topics,
+which allows the user to adjust the log verbosity for that specific topic.
+
+In general, the naming scheme is as follows: ``type.section.name``
+
+ * Type is the type of component, where ``lib``, ``pmd``, ``bus`` and ``user``
+   are the common options.
+ * Section refers to a specific area, for example a poll-mode-driver for an
+   ethernet device would use ``pmd.net``, while an eventdev PMD uses
+   ``pmd.event``.
+ * The name identifies the individual item that the log applies to.
+   The name section must align with
+   the directory that the PMD code resides. See examples below for clarity.
+
+Examples:
+
+ * The virtio network PMD in ``drivers/net/virtio`` uses ``pmd.net.virtio``
+ * The eventdev software poll mode driver in ``drivers/event/sw`` uses ``pmd.event.sw``
+ * The octeontx mempool driver in ``drivers/mempool/octeontx`` uses ``pmd.mempool.octeontx``
+ * The DPDK hash library in ``lib/librte_hash`` uses ``lib.hash``
+
+Specializations
+~~~~~~~~~~~~~~~
+
+In addition to the above logging topic, any PMD or library can further split
+logging output by using "specializations". A specialization could be the
+difference between initialization code, and logs of events that occur at runtime.
+
+An example could be the initialization log messages getting one
+specialization, while another specialization handles mailbox command logging.
+Each PMD, library or component can create as many specializations as required.
+
+A specialization looks like this:
+
+ * Initialization output: ``type.section.name.init``
+ * PF/VF mailbox output: ``type.section.name.mbox``
+
+A real world example is the i40e poll mode driver which exposes two
+specializations, one for initialization ``pmd.net.i40e.init`` and the other for
+the remaining driver logs ``pmd.net.i40e.driver``.
+
+Note that specializations have no formatting rules, but please follow
+a precedent if one exists. In order to see all current log topics and
+specializations, run the ``app/test`` binary, and use the ``dump_log_types``
 
 Python Code
 -----------
@@ -702,3 +764,235 @@ All Python code should work with Python 2.7+ and 3.2+ and be compliant with
 `PEP8 (Style Guide for Python Code) <https://www.python.org/dev/peps/pep-0008/>`_.
 
 The ``pep8`` tool can be used for testing compliance with the guidelines.
+
+Integrating with the Build System
+---------------------------------
+
+DPDK supports being built in two different ways:
+
+* using ``make`` - or more specifically "GNU make", i.e. ``gmake`` on FreeBSD
+* using the tools ``meson`` and ``ninja``
+
+Any new library or driver to be integrated into DPDK should support being
+built with both systems. While building using ``make`` is a legacy approach, and
+most build-system enhancements are being done using ``meson`` and ``ninja``
+there are no plans at this time to deprecate the legacy ``make`` build system.
+
+Therefore all new component additions should include both a ``Makefile`` and a
+``meson.build`` file, and should be added to the component lists in both the
+``Makefile`` and ``meson.build`` files in the relevant top-level directory:
+either ``lib`` directory or a ``driver`` subdirectory.
+
+Makefile Contents
+~~~~~~~~~~~~~~~~~
+
+The ``Makefile`` for the component should be of the following format, where
+``<name>`` corresponds to the name of the library in question, e.g. hash,
+lpm, etc. For drivers, the same format of Makefile is used.
+
+.. code-block:: none
+
+	# pull in basic DPDK definitions, including whether library is to be
+	# built or not
+	include $(RTE_SDK)/mk/rte.vars.mk
+
+	# library name
+	LIB = librte_<name>.a
+
+	# any library cflags needed. Generally add "-O3 $(WERROR_FLAGS)"
+	CFLAGS += -O3
+	CFLAGS += $(WERROR_FLAGS)
+
+	# the symbol version information for the library, and .so version
+	EXPORT_MAP := rte_<name>_version.map
+	LIBABIVER := 1
+
+	# all source filenames are stored in SRCS-y
+	SRCS-$(CONFIG_RTE_LIBRTE_<NAME>) += rte_<name>.c
+
+	# install includes
+	SYMLINK-$(CONFIG_RTE_LIBRTE_<NAME>)-include += rte_<name>.h
+
+	# pull in rules to build the library
+	include $(RTE_SDK)/mk/rte.lib.mk
+
+Meson Build File Contents - Libraries
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``meson.build`` file for a new DPDK library should be of the following basic
+format.
+
+.. code-block:: python
+
+	sources = files('file1.c', ...)
+	headers = files('file1.c', ...)
+
+
+The will build based on a number of conventions and assumptions within the DPDK
+itself, for example, that the library name is the same as the directory name in
+which the files are stored.
+
+For a library ``meson.build`` file, there are number of variables which can be
+set, some mandatory, others optional. The mandatory fields are:
+
+sources
+	**Default Value = []**.
+	This variable should list out the files to be compiled up to create the
+	library. Files must be specified using the meson ``files()`` function.
+
+
+The optional fields are:
+
+allow_experimental_apis
+	**Default Value = false**
+	Used to allow the library to make use of APIs marked as experimental.
+	Set to ``true`` if the C files in the library call any functions
+	marked as experimental in any included header files.
+
+build
+	**Default Value = true**
+	Used to optionally compile a library, based on its dependencies or
+	environment. A simple example of use would be:
+
+.. code-block:: python
+
+	if host_machine.system() != 'linux'
+	        build = false
+	endif
+
+
+cflags
+	**Default Value = [<-march/-mcpu flags>]**.
+	Used to specify any additional cflags that need to be passed to compile
+	the sources in the library.
+
+deps
+	**Default Value = ['eal']**.
+	Used to list the internal library dependencies of the library. It should
+	be assigned to using ``+=`` rather than overwriting using ``=``.  The
+	dependencies should be specified as strings, each one giving the name of
+	a DPDK library, without the ``librte_`` prefix. Dependencies are handled
+	recursively, so specifying e.g. ``mempool``, will automatically also
+	make the library depend upon the mempool library's dependencies too -
+	``ring`` and ``eal``. For libraries that only depend upon EAL, this
+	variable may be omitted from the ``meson.build`` file.  For example:
+
+.. code-block:: python
+
+	deps += ['ethdev']
+
+
+ext_deps
+	**Default Value = []**.
+	Used to specify external dependencies of this library. They should be
+	returned as dependency objects, as returned from the meson
+	``dependency()`` or ``find_library()`` functions. Before returning
+	these, they should be checked to ensure the dependencies have been
+	found, and, if not, the ``build`` variable should be set to ``false``.
+	For example:
+
+.. code-block:: python
+
+	my_dep = dependency('libX', required: 'false')
+	if my_dep.found()
+		ext_deps += my_dep
+	else
+		build = false
+	endif
+
+
+headers
+	**Default Value = []**.
+	Used to return the list of header files for the library that should be
+	installed to $PREFIX/include when ``ninja install`` is run. As with
+	source files, these should be specified using the meson ``files()``
+	function.
+
+includes:
+	**Default Value = []**.
+	Used to indicate any additional header file paths which should be
+	added to the header search path for other libs depending on this
+	library. EAL uses this so that other libraries building against it
+	can find the headers in subdirectories of the main EAL directory. The
+	base directory of each library is always given in the include path,
+	it does not need to be specified here.
+
+name
+	**Default Value = library name derived from the directory name**.
+	If a library's .so or .a file differs from that given in the directory
+	name, the name should be specified using this variable. In practice,
+	since the convention is that for a library called ``librte_xyz.so``, the
+	sources are stored in a directory ``lib/librte_xyz``, this value should
+	never be needed for new libraries.
+
+.. note::
+
+	The name value also provides the name used to find the function version
+	map file, as part of the build process, so if the directory name and
+	library names differ, the ``version.map`` file should be named
+	consistently with the library, not the directory
+
+objs
+	**Default Value = []**.
+	This variable can be used to pass to the library build some pre-built
+	objects that were compiled up as part of another target given in the
+	included library ``meson.build`` file.
+
+version
+	**Default Value = 1**.
+	Specifies the ABI version of the library, and is used as the major
+	version number of the resulting ``.so`` library.
+
+Meson Build File Contents - Drivers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For drivers, the values are largely the same as for libraries. The variables
+supported are:
+
+allow_experimental_apis
+	As above.
+
+build
+	As above.
+
+cflags
+	As above.
+
+deps
+	As above.
+
+ext_deps
+	As above.
+
+includes
+	**Default Value = <driver directory>** Some drivers include a base
+	directory for additional source files and headers, so we have this
+	variable to allow the headers from that base directory to be found when
+	compiling driver sources. Should be appended to using ``+=`` rather than
+	overwritten using ``=``.  The values appended should be meson include
+	objects got using the ``include_directories()`` function. For example:
+
+.. code-block:: python
+
+	includes += include_directories('base')
+
+name
+	As above, though note that each driver class can define it's own naming
+	scheme for the resulting ``.so`` files.
+
+objs
+	As above, generally used for the contents of the ``base`` directory.
+
+pkgconfig_extra_libs
+	**Default Value = []**
+	This variable is used to pass additional library link flags through to
+	the DPDK pkgconfig file generated, for example, to track any additional
+	libraries that may need to be linked into the build - especially when
+	using static libraries. Anything added here will be appended to the end
+	of the ``pkgconfig --libs`` output.
+
+sources [mandatory]
+	As above
+
+version
+	As above

@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_DCBX_API_H__
@@ -229,6 +227,16 @@ ecore_lldp_set_params(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 enum _ecore_status_t
 ecore_lldp_set_system_tlvs(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 			   struct ecore_lldp_sys_tlvs *p_params);
+
+/* Returns priority value for a given dscp index */
+enum _ecore_status_t
+ecore_dcbx_get_dscp_priority(struct ecore_hwfn *p_hwfn,
+			     u8 dscp_index, u8 *p_dscp_pri);
+
+/* Sets priority value for a given dscp index */
+enum _ecore_status_t
+ecore_dcbx_set_dscp_priority(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
+			     u8 dscp_index, u8 pri_val);
 
 static const struct ecore_dcbx_app_metadata ecore_dcbx_app_update[] = {
 	{DCBX_PROTOCOL_ISCSI, "ISCSI", ECORE_PCI_ISCSI},

@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #include <unistd.h>
@@ -207,6 +179,23 @@ fs_eth_dev_conf_apply(struct rte_eth_dev *dev,
 			return ret;
 		}
 	}
+	/*
+	 * Propagate multicast MAC addresses to sub-devices,
+	 * if non zero number of addresses is set.
+	 * The condition is required to avoid breakage of failsafe
+	 * for sub-devices which do not support the operation
+	 * if the feature is really not used.
+	 */
+	if (PRIV(dev)->nb_mcast_addr > 0) {
+		DEBUG("Configuring multicast MAC addresses");
+		ret = rte_eth_dev_set_mc_addr_list(PORT_ID(sdev),
+						   PRIV(dev)->mcast_addrs,
+						   PRIV(dev)->nb_mcast_addr);
+		if (ret) {
+			ERROR("Failed to apply multicast MAC addresses");
+			return ret;
+		}
+	}
 	/* VLAN filter */
 	vfc1 = &dev->data->vlan_filter_conf;
 	vfc2 = &edev->data->vlan_filter_conf;
@@ -258,9 +247,9 @@ fs_eth_dev_conf_apply(struct rte_eth_dev *dev,
 			DEBUG("Creating flow #%" PRIu32, i++);
 			flow->flows[SUB_ID(sdev)] =
 				rte_flow_create(PORT_ID(sdev),
-						&flow->fd->attr,
-						flow->fd->items,
-						flow->fd->actions,
+						flow->rule.attr,
+						flow->rule.pattern,
+						flow->rule.actions,
 						&ferror);
 			ret = rte_errno;
 			if (ret)
@@ -283,6 +272,7 @@ fs_dev_remove(struct sub_device *sdev)
 		return;
 	switch (sdev->state) {
 	case DEV_STARTED:
+		failsafe_rx_intr_uninstall_subdevice(sdev);
 		rte_eth_dev_stop(PORT_ID(sdev));
 		sdev->state = DEV_ACTIVE;
 		/* fallthrough */
@@ -292,13 +282,12 @@ fs_dev_remove(struct sub_device *sdev)
 		sdev->state = DEV_PROBED;
 		/* fallthrough */
 	case DEV_PROBED:
-		ret = rte_eal_hotplug_remove(sdev->bus->name,
-					     sdev->dev->name);
+		ret = rte_dev_remove(sdev->dev);
 		if (ret) {
 			ERROR("Bus detach failed for sub_device %u",
 			      SUB_ID(sdev));
 		} else {
-			ETH(sdev)->state = RTE_ETH_DEV_UNUSED;
+			rte_eth_dev_release_port(ETH(sdev));
 		}
 		sdev->state = DEV_PARSED;
 		/* fallthrough */
@@ -308,6 +297,7 @@ fs_dev_remove(struct sub_device *sdev)
 		/* the end */
 		break;
 	}
+	sdev->remove = 0;
 	failsafe_hotplug_alarm_install(sdev->fs_dev);
 }
 
@@ -384,9 +374,94 @@ failsafe_dev_remove(struct rte_eth_dev *dev)
 
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
 		if (sdev->remove && fs_rxtx_clean(sdev)) {
+			if (fs_lock(dev, 1) != 0)
+				return;
 			fs_dev_stats_save(sdev);
 			fs_dev_remove(sdev);
+			fs_unlock(dev, 1);
 		}
+}
+
+static int
+failsafe_eth_dev_rx_queues_sync(struct rte_eth_dev *dev)
+{
+	struct rxq *rxq;
+	int ret;
+	uint16_t i;
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxq = dev->data->rx_queues[i];
+
+		if (rxq->info.conf.rx_deferred_start &&
+		    dev->data->rx_queue_state[i] ==
+						RTE_ETH_QUEUE_STATE_STARTED) {
+			/*
+			 * The subdevice Rx queue does not launch on device
+			 * start if deferred start flag is set. It needs to be
+			 * started manually in case an appropriate failsafe Rx
+			 * queue has been started earlier.
+			 */
+			ret = dev->dev_ops->rx_queue_start(dev, i);
+			if (ret) {
+				ERROR("Could not synchronize Rx queue %d", i);
+				return ret;
+			}
+		} else if (dev->data->rx_queue_state[i] ==
+						RTE_ETH_QUEUE_STATE_STOPPED) {
+			/*
+			 * The subdevice Rx queue needs to be stopped manually
+			 * in case an appropriate failsafe Rx queue has been
+			 * stopped earlier.
+			 */
+			ret = dev->dev_ops->rx_queue_stop(dev, i);
+			if (ret) {
+				ERROR("Could not synchronize Rx queue %d", i);
+				return ret;
+			}
+		}
+	}
+	return 0;
+}
+
+static int
+failsafe_eth_dev_tx_queues_sync(struct rte_eth_dev *dev)
+{
+	struct txq *txq;
+	int ret;
+	uint16_t i;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+
+		if (txq->info.conf.tx_deferred_start &&
+		    dev->data->tx_queue_state[i] ==
+						RTE_ETH_QUEUE_STATE_STARTED) {
+			/*
+			 * The subdevice Tx queue does not launch on device
+			 * start if deferred start flag is set. It needs to be
+			 * started manually in case an appropriate failsafe Tx
+			 * queue has been started earlier.
+			 */
+			ret = dev->dev_ops->tx_queue_start(dev, i);
+			if (ret) {
+				ERROR("Could not synchronize Tx queue %d", i);
+				return ret;
+			}
+		} else if (dev->data->tx_queue_state[i] ==
+						RTE_ETH_QUEUE_STATE_STOPPED) {
+			/*
+			 * The subdevice Tx queue needs to be stopped manually
+			 * in case an appropriate failsafe Tx queue has been
+			 * stopped earlier.
+			 */
+			ret = dev->dev_ops->tx_queue_stop(dev, i);
+			if (ret) {
+				ERROR("Could not synchronize Tx queue %d", i);
+				return ret;
+			}
+		}
+	}
+	return 0;
 }
 
 int
@@ -447,6 +522,12 @@ failsafe_eth_dev_state_sync(struct rte_eth_dev *dev)
 	ret = dev->dev_ops->dev_start(dev);
 	if (ret)
 		goto err_remove;
+	ret = failsafe_eth_dev_rx_queues_sync(dev);
+	if (ret)
+		goto err_remove;
+	ret = failsafe_eth_dev_tx_queues_sync(dev);
+	if (ret)
+		goto err_remove;
 	return 0;
 err_remove:
 	FOREACH_SUBDEV(sdev, i, dev)
@@ -485,15 +566,17 @@ failsafe_eth_rmv_event_callback(uint16_t port_id __rte_unused,
 {
 	struct sub_device *sdev = cb_arg;
 
+	fs_lock(sdev->fs_dev, 0);
 	/* Switch as soon as possible tx_dev. */
 	fs_switch_dev(sdev->fs_dev, sdev);
 	/* Use safe bursts in any case. */
-	set_burst_fn(sdev->fs_dev, 1);
+	failsafe_set_burst_fn(sdev->fs_dev, 1);
 	/*
 	 * Async removal, the sub-PMD will try to unregister
 	 * the callback at the source of the current thread context.
 	 */
 	sdev->remove = 1;
+	fs_unlock(sdev->fs_dev, 0);
 	return 0;
 }
 
@@ -510,7 +593,30 @@ failsafe_eth_lsc_event_callback(uint16_t port_id __rte_unused,
 	if (ret)
 		return _rte_eth_dev_callback_process(dev,
 						     RTE_ETH_EVENT_INTR_LSC,
-						     NULL, NULL);
+						     NULL);
 	else
 		return 0;
+}
+
+/* Take sub-device ownership before it becomes exposed to the application. */
+int
+failsafe_eth_new_event_callback(uint16_t port_id,
+				enum rte_eth_event_type event __rte_unused,
+				void *cb_arg, void *out __rte_unused)
+{
+	struct rte_eth_dev *fs_dev = cb_arg;
+	struct sub_device *sdev;
+	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	uint8_t i;
+
+	FOREACH_SUBDEV_STATE(sdev, i, fs_dev, DEV_PARSED) {
+		if (sdev->state >= DEV_PROBED)
+			continue;
+		if (strcmp(sdev->devargs.name, dev->device->name) != 0)
+			continue;
+		rte_eth_dev_owner_set(port_id, &PRIV(fs_dev)->my_owner);
+		/* The actual owner will be checked after the port probing. */
+		break;
+	}
+	return 0;
 }

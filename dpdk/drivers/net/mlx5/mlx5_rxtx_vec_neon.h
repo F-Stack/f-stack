@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #ifndef RTE_PMD_MLX5_RXTX_VEC_NEON_H_
@@ -168,7 +140,7 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
 			break;
 		wqe = &((volatile struct mlx5_wqe64 *)
 			 txq->wqes)[wqe_ci & wq_mask].hdr;
-		cs_flags = txq_ol_cksum_to_cs(txq, buf);
+		cs_flags = txq_ol_cksum_to_cs(buf);
 		/* Title WQEBB pointer. */
 		t_wqe = (uint8x16_t *)wqe;
 		dseg = (uint8_t *)(wqe + 1);
@@ -219,7 +191,7 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
  * Send burst of packets with Enhanced MPW. If it encounters a multi-seg packet,
  * it returns to make it processed by txq_scatter_v(). All the packets in
  * the pkts list should be single segment packets having same offload flags.
- * This must be checked by txq_check_multiseg() and txq_calc_offload().
+ * This must be checked by txq_count_contig_single_seg() and txq_calc_offload().
  *
  * @param txq
  *   Pointer to TX queue structure.
@@ -229,13 +201,15 @@ txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
  *   Number of packets to be sent (<= MLX5_VPMD_TX_MAX_BURST).
  * @param cs_flags
  *   Checksum offload flags to be written in the descriptor.
+ * @param metadata
+ *   Metadata value to be written in the descriptor.
  *
  * @return
  *   Number of packets successfully transmitted (<= pkts_n).
  */
 static inline uint16_t
 txq_burst_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts, uint16_t pkts_n,
-	    uint8_t cs_flags)
+	    uint8_t cs_flags, rte_be32_t metadata)
 {
 	struct rte_mbuf **elts;
 	uint16_t elts_head = txq->elts_head;
@@ -321,11 +295,8 @@ txq_burst_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	ctrl = vqtbl1q_u8(ctrl, ctrl_shuf_m);
 	vst1q_u8((void *)t_wqe, ctrl);
 	/* Fill ESEG in the header. */
-	vst1q_u8((void *)(t_wqe + 1),
-		 ((uint8x16_t) { 0, 0, 0, 0,
-				 cs_flags, 0, 0, 0,
-				 0, 0, 0, 0,
-				 0, 0, 0, 0 }));
+	vst1q_u32((void *)(t_wqe + 1),
+		 ((uint32x4_t) { 0, cs_flags, metadata, 0 }));
 #ifdef MLX5_PMD_SOFT_COUNTERS
 	txq->stats.opackets += pkts_n;
 #endif
@@ -573,6 +544,7 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 	const uint64x1_t mbuf_init = vld1_u64(&rxq->mbuf_initializer);
 	const uint64x1_t r32_mask = vcreate_u64(0xffffffff);
 	uint64x2_t rearm0, rearm1, rearm2, rearm3;
+	uint8_t pt_idx0, pt_idx1, pt_idx2, pt_idx3;
 
 	if (rxq->mark) {
 		const uint32x4_t ft_def = vdupq_n_u32(MLX5_FLOW_MARK_DEFAULT);
@@ -605,14 +577,18 @@ rxq_cq_to_ptype_oflags_v(struct mlx5_rxq_data *rxq,
 	ptype = vshrn_n_u32(ptype_info, 10);
 	/* Errored packets will have RTE_PTYPE_ALL_MASK. */
 	ptype = vorr_u16(ptype, op_err);
-	pkts[0]->packet_type =
-		mlx5_ptype_table[vget_lane_u8(vreinterpret_u8_u16(ptype), 6)];
-	pkts[1]->packet_type =
-		mlx5_ptype_table[vget_lane_u8(vreinterpret_u8_u16(ptype), 4)];
-	pkts[2]->packet_type =
-		mlx5_ptype_table[vget_lane_u8(vreinterpret_u8_u16(ptype), 2)];
-	pkts[3]->packet_type =
-		mlx5_ptype_table[vget_lane_u8(vreinterpret_u8_u16(ptype), 0)];
+	pt_idx0 = vget_lane_u8(vreinterpret_u8_u16(ptype), 6);
+	pt_idx1 = vget_lane_u8(vreinterpret_u8_u16(ptype), 4);
+	pt_idx2 = vget_lane_u8(vreinterpret_u8_u16(ptype), 2);
+	pt_idx3 = vget_lane_u8(vreinterpret_u8_u16(ptype), 0);
+	pkts[0]->packet_type = mlx5_ptype_table[pt_idx0] |
+			       !!(pt_idx0 & (1 << 6)) * rxq->tunnel;
+	pkts[1]->packet_type = mlx5_ptype_table[pt_idx1] |
+			       !!(pt_idx1 & (1 << 6)) * rxq->tunnel;
+	pkts[2]->packet_type = mlx5_ptype_table[pt_idx2] |
+			       !!(pt_idx2 & (1 << 6)) * rxq->tunnel;
+	pkts[3]->packet_type = mlx5_ptype_table[pt_idx3] |
+			       !!(pt_idx3 & (1 << 6)) * rxq->tunnel;
 	/* Fill flags for checksum and VLAN. */
 	pinfo = vandq_u32(ptype_info, ptype_ol_mask);
 	pinfo = vreinterpretq_u32_u8(
@@ -756,7 +732,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	 *   N - (rq_ci - rq_pi) := # of buffers consumed (to be replenished).
 	 */
 	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
-	if (repl_n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n))
+	if (repl_n >= rxq->rq_repl_thresh)
 		mlx5_rx_replenish_bulk_mbuf(rxq, repl_n);
 	/* See if there're unreturned mbufs from compressed CQE. */
 	rcvd_pkt = rxq->cq_ci - rxq->rq_pi;
@@ -834,7 +810,7 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		/* B.0 (CQE 0) load a block having op_own. */
 		c0 = vld1q_u64((uint64_t *)(p0 + 48));
 		/* Synchronize for loading the rest of blocks. */
-		rte_io_rmb();
+		rte_cio_rmb();
 		/* Prefetch next 4 CQEs. */
 		if (pkts_n - pos >= 2 * MLX5_VPMD_DESCS_PER_LOOP) {
 			unsigned int next = pos + MLX5_VPMD_DESCS_PER_LOOP;

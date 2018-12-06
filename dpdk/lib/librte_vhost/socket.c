@@ -1,39 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdbool.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -69,6 +39,7 @@ struct vhost_user_socket {
 	bool reconnect;
 	bool dequeue_zero_copy;
 	bool iommu_support;
+	bool use_builtin_virtio_net;
 
 	/*
 	 * The "supported_features" indicates the feature bits the
@@ -79,6 +50,15 @@ struct vhost_user_socket {
 	 */
 	uint64_t supported_features;
 	uint64_t features;
+
+	uint64_t protocol_features;
+
+	/*
+	 * Device id to identify a specific backend device.
+	 * It's set to -1 for the default software implementation.
+	 * If valid, one socket can have 1 connection only.
+	 */
+	int vdpa_dev_id;
 
 	struct vhost_device_ops const *notify_ops;
 };
@@ -116,16 +96,22 @@ static struct vhost_user vhost_user = {
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
 };
 
-/* return bytes# of read on success or negative val on failure. */
+/*
+ * return bytes# of read on success or negative val on failure. Update fdnum
+ * with number of fds read.
+ */
 int
-read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
+read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
+		int *fd_num)
 {
 	struct iovec iov;
 	struct msghdr msgh;
-	size_t fdsize = fd_num * sizeof(int);
-	char control[CMSG_SPACE(fdsize)];
+	char control[CMSG_SPACE(max_fds * sizeof(int))];
 	struct cmsghdr *cmsg;
+	int got_fds = 0;
 	int ret;
+
+	*fd_num = 0;
 
 	memset(&msgh, 0, sizeof(msgh));
 	iov.iov_base = buf;
@@ -151,10 +137,16 @@ read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 		cmsg = CMSG_NXTHDR(&msgh, cmsg)) {
 		if ((cmsg->cmsg_level == SOL_SOCKET) &&
 			(cmsg->cmsg_type == SCM_RIGHTS)) {
-			memcpy(fds, CMSG_DATA(cmsg), fdsize);
+			got_fds = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+			*fd_num = got_fds;
+			memcpy(fds, CMSG_DATA(cmsg), got_fds * sizeof(int));
 			break;
 		}
 	}
+
+	/* Clear out unused file descriptors */
+	while (got_fds < max_fds)
+		fds[got_fds++] = -1;
 
 	return ret;
 }
@@ -196,7 +188,7 @@ send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num)
 	}
 
 	do {
-		ret = sendmsg(sockfd, &msgh, 0);
+		ret = sendmsg(sockfd, &msgh, MSG_NOSIGNAL);
 	} while (ret < 0 && errno == EINTR);
 
 	if (ret < 0) {
@@ -215,6 +207,9 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	struct vhost_user_connection *conn;
 	int ret;
 
+	if (vsocket == NULL)
+		return;
+
 	conn = malloc(sizeof(*conn));
 	if (conn == NULL) {
 		close(fd);
@@ -228,6 +223,10 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 
 	size = strnlen(vsocket->path, PATH_MAX);
 	vhost_set_ifname(vid, vsocket->path, size);
+
+	vhost_set_builtin_virtio_net(vid, vsocket->use_builtin_virtio_net);
+
+	vhost_attach_vdpa_device(vid, vsocket->vdpa_dev_id);
 
 	if (vsocket->dequeue_zero_copy)
 		vhost_enable_dequeue_zero_copy(vid);
@@ -263,6 +262,8 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	pthread_mutex_lock(&vsocket->conn_mutex);
 	TAILQ_INSERT_TAIL(&vsocket->conn_list, conn, next);
 	pthread_mutex_unlock(&vsocket->conn_mutex);
+
+	fdset_pipe_notify(&vhost_user.fdset);
 	return;
 
 err:
@@ -349,6 +350,16 @@ vhost_user_start_server(struct vhost_user_socket *vsocket)
 	int fd = vsocket->socket_fd;
 	const char *path = vsocket->path;
 
+	/*
+	 * bind () may fail if the socket file with the same name already
+	 * exists. But the library obviously should not delete the file
+	 * provided by the user, since we can not be sure that it is not
+	 * being used by other applications. Moreover, many applications form
+	 * socket names based on user input, which is prone to errors.
+	 *
+	 * The user must ensure that the socket does not exist before
+	 * registering the vhost driver in server mode.
+	 */
 	ret = bind(fd, (struct sockaddr *)&vsocket->un, sizeof(vsocket->un));
 	if (ret < 0) {
 		RTE_LOG(ERR, VHOST_CONFIG,
@@ -475,7 +486,7 @@ vhost_user_reconnect_init(void)
 	}
 	TAILQ_INIT(&reconn_list.head);
 
-	ret = pthread_create(&reconn_tid, NULL,
+	ret = rte_ctrl_thread_create(&reconn_tid, "vhost_reconn", NULL,
 			     vhost_user_client_reconnect, NULL);
 	if (ret != 0) {
 		RTE_LOG(ERR, VHOST_CONFIG, "failed to create reconnect thread");
@@ -546,12 +557,64 @@ find_vhost_user_socket(const char *path)
 }
 
 int
+rte_vhost_driver_attach_vdpa_device(const char *path, int did)
+{
+	struct vhost_user_socket *vsocket;
+
+	if (rte_vdpa_get_device(did) == NULL)
+		return -1;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (vsocket)
+		vsocket->vdpa_dev_id = did;
+	pthread_mutex_unlock(&vhost_user.mutex);
+
+	return vsocket ? 0 : -1;
+}
+
+int
+rte_vhost_driver_detach_vdpa_device(const char *path)
+{
+	struct vhost_user_socket *vsocket;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (vsocket)
+		vsocket->vdpa_dev_id = -1;
+	pthread_mutex_unlock(&vhost_user.mutex);
+
+	return vsocket ? 0 : -1;
+}
+
+int
+rte_vhost_driver_get_vdpa_device_id(const char *path)
+{
+	struct vhost_user_socket *vsocket;
+	int did = -1;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (vsocket)
+		did = vsocket->vdpa_dev_id;
+	pthread_mutex_unlock(&vhost_user.mutex);
+
+	return did;
+}
+
+int
 rte_vhost_driver_disable_features(const char *path, uint64_t features)
 {
 	struct vhost_user_socket *vsocket;
 
 	pthread_mutex_lock(&vhost_user.mutex);
 	vsocket = find_vhost_user_socket(path);
+
+	/* Note that use_builtin_virtio_net is not affected by this function
+	 * since callers may want to selectively disable features of the
+	 * built-in vhost net device backend.
+	 */
+
 	if (vsocket)
 		vsocket->features &= ~features;
 	pthread_mutex_unlock(&vhost_user.mutex);
@@ -592,6 +655,11 @@ rte_vhost_driver_set_features(const char *path, uint64_t features)
 	if (vsocket) {
 		vsocket->supported_features = features;
 		vsocket->features = features;
+
+		/* Anyone setting feature bits is implementing their own vhost
+		 * device backend.
+		 */
+		vsocket->use_builtin_virtio_net = false;
 	}
 	pthread_mutex_unlock(&vhost_user.mutex);
 
@@ -602,19 +670,136 @@ int
 rte_vhost_driver_get_features(const char *path, uint64_t *features)
 {
 	struct vhost_user_socket *vsocket;
+	uint64_t vdpa_features;
+	struct rte_vdpa_device *vdpa_dev;
+	int did = -1;
+	int ret = 0;
 
 	pthread_mutex_lock(&vhost_user.mutex);
 	vsocket = find_vhost_user_socket(path);
-	if (vsocket)
-		*features = vsocket->features;
-	pthread_mutex_unlock(&vhost_user.mutex);
-
 	if (!vsocket) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"socket file %s is not registered yet.\n", path);
-		return -1;
-	} else {
-		return 0;
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	did = vsocket->vdpa_dev_id;
+	vdpa_dev = rte_vdpa_get_device(did);
+	if (!vdpa_dev || !vdpa_dev->ops->get_features) {
+		*features = vsocket->features;
+		goto unlock_exit;
+	}
+
+	if (vdpa_dev->ops->get_features(did, &vdpa_features) < 0) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+				"failed to get vdpa features "
+				"for socket file %s.\n", path);
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	*features = vsocket->features & vdpa_features;
+
+unlock_exit:
+	pthread_mutex_unlock(&vhost_user.mutex);
+	return ret;
+}
+
+int
+rte_vhost_driver_get_protocol_features(const char *path,
+		uint64_t *protocol_features)
+{
+	struct vhost_user_socket *vsocket;
+	uint64_t vdpa_protocol_features;
+	struct rte_vdpa_device *vdpa_dev;
+	int did = -1;
+	int ret = 0;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (!vsocket) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"socket file %s is not registered yet.\n", path);
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	did = vsocket->vdpa_dev_id;
+	vdpa_dev = rte_vdpa_get_device(did);
+	if (!vdpa_dev || !vdpa_dev->ops->get_protocol_features) {
+		*protocol_features = vsocket->protocol_features;
+		goto unlock_exit;
+	}
+
+	if (vdpa_dev->ops->get_protocol_features(did,
+				&vdpa_protocol_features) < 0) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+				"failed to get vdpa protocol features "
+				"for socket file %s.\n", path);
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	*protocol_features = vsocket->protocol_features
+		& vdpa_protocol_features;
+
+unlock_exit:
+	pthread_mutex_unlock(&vhost_user.mutex);
+	return ret;
+}
+
+int
+rte_vhost_driver_get_queue_num(const char *path, uint32_t *queue_num)
+{
+	struct vhost_user_socket *vsocket;
+	uint32_t vdpa_queue_num;
+	struct rte_vdpa_device *vdpa_dev;
+	int did = -1;
+	int ret = 0;
+
+	pthread_mutex_lock(&vhost_user.mutex);
+	vsocket = find_vhost_user_socket(path);
+	if (!vsocket) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"socket file %s is not registered yet.\n", path);
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	did = vsocket->vdpa_dev_id;
+	vdpa_dev = rte_vdpa_get_device(did);
+	if (!vdpa_dev || !vdpa_dev->ops->get_queue_num) {
+		*queue_num = VHOST_MAX_QUEUE_PAIRS;
+		goto unlock_exit;
+	}
+
+	if (vdpa_dev->ops->get_queue_num(did, &vdpa_queue_num) < 0) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+				"failed to get vdpa queue number "
+				"for socket file %s.\n", path);
+		ret = -1;
+		goto unlock_exit;
+	}
+
+	*queue_num = RTE_MIN((uint32_t)VHOST_MAX_QUEUE_PAIRS, vdpa_queue_num);
+
+unlock_exit:
+	pthread_mutex_unlock(&vhost_user.mutex);
+	return ret;
+}
+
+static void
+vhost_user_socket_mem_free(struct vhost_user_socket *vsocket)
+{
+	if (vsocket && vsocket->path) {
+		free(vsocket->path);
+		vsocket->path = NULL;
+	}
+
+	if (vsocket) {
+		free(vsocket);
+		vsocket = NULL;
 	}
 }
 
@@ -648,7 +833,7 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	if (vsocket->path == NULL) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"error: failed to copy socket path string\n");
-		free(vsocket);
+		vhost_user_socket_mem_free(vsocket);
 		goto out;
 	}
 	TAILQ_INIT(&vsocket->conn_list);
@@ -672,12 +857,41 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 	 * rte_vhost_driver_set_features(), which will overwrite following
 	 * two values.
 	 */
+	vsocket->use_builtin_virtio_net = true;
 	vsocket->supported_features = VIRTIO_NET_SUPPORTED_FEATURES;
 	vsocket->features           = VIRTIO_NET_SUPPORTED_FEATURES;
+	vsocket->protocol_features  = VHOST_USER_PROTOCOL_FEATURES;
+
+	/*
+	 * Dequeue zero copy can't assure descriptors returned in order.
+	 * Also, it requires that the guest memory is populated, which is
+	 * not compatible with postcopy.
+	 */
+	if (vsocket->dequeue_zero_copy) {
+		vsocket->supported_features &= ~(1ULL << VIRTIO_F_IN_ORDER);
+		vsocket->features &= ~(1ULL << VIRTIO_F_IN_ORDER);
+
+		RTE_LOG(INFO, VHOST_CONFIG,
+			"Dequeue zero copy requested, disabling postcopy support\n");
+		vsocket->protocol_features &=
+			~(1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT);
+	}
 
 	if (!(flags & RTE_VHOST_USER_IOMMU_SUPPORT)) {
 		vsocket->supported_features &= ~(1ULL << VIRTIO_F_IOMMU_PLATFORM);
 		vsocket->features &= ~(1ULL << VIRTIO_F_IOMMU_PLATFORM);
+	}
+
+	if (!(flags & RTE_VHOST_USER_POSTCOPY_SUPPORT)) {
+		vsocket->protocol_features &=
+			~(1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT);
+	} else {
+#ifndef RTE_LIBRTE_VHOST_POSTCOPY
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"Postcopy requested but not compiled\n");
+		ret = -1;
+		goto out_mutex;
+#endif
 	}
 
 	if ((flags & RTE_VHOST_USER_CLIENT) != 0) {
@@ -705,8 +919,7 @@ out_mutex:
 			"error: failed to destroy connection mutex\n");
 	}
 out_free:
-	free(vsocket->path);
-	free(vsocket);
+	vhost_user_socket_mem_free(vsocket);
 out:
 	pthread_mutex_unlock(&vhost_user.mutex);
 
@@ -753,14 +966,6 @@ rte_vhost_driver_unregister(const char *path)
 		struct vhost_user_socket *vsocket = vhost_user.vsockets[i];
 
 		if (!strcmp(vsocket->path, path)) {
-			if (vsocket->is_server) {
-				fdset_del(&vhost_user.fdset, vsocket->socket_fd);
-				close(vsocket->socket_fd);
-				unlink(path);
-			} else if (vsocket->reconnect) {
-				vhost_user_remove_reconnect(vsocket);
-			}
-
 again:
 			pthread_mutex_lock(&vsocket->conn_mutex);
 			for (conn = TAILQ_FIRST(&vsocket->conn_list);
@@ -790,9 +995,17 @@ again:
 			}
 			pthread_mutex_unlock(&vsocket->conn_mutex);
 
+			if (vsocket->is_server) {
+				fdset_del(&vhost_user.fdset,
+						vsocket->socket_fd);
+				close(vsocket->socket_fd);
+				unlink(path);
+			} else if (vsocket->reconnect) {
+				vhost_user_remove_reconnect(vsocket);
+			}
+
 			pthread_mutex_destroy(&vsocket->conn_mutex);
-			free(vsocket->path);
-			free(vsocket);
+			vhost_user_socket_mem_free(vsocket);
 
 			count = --vhost_user.vsocket_cnt;
 			vhost_user.vsockets[i] = vhost_user.vsockets[count];
@@ -851,11 +1064,26 @@ rte_vhost_driver_start(const char *path)
 		return -1;
 
 	if (fdset_tid == 0) {
-		int ret = pthread_create(&fdset_tid, NULL, fdset_event_dispatch,
-				     &vhost_user.fdset);
-		if (ret != 0)
+		/**
+		 * create a pipe which will be waited by poll and notified to
+		 * rebuild the wait list of poll.
+		 */
+		if (fdset_pipe_init(&vhost_user.fdset) < 0) {
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"failed to create pipe for vhost fdset\n");
+			return -1;
+		}
+
+		int ret = rte_ctrl_thread_create(&fdset_tid,
+			"vhost-events", NULL, fdset_event_dispatch,
+			&vhost_user.fdset);
+		if (ret != 0) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"failed to create fdset handling thread");
+
+			fdset_pipe_uninit(&vhost_user.fdset);
+			return -1;
+		}
 	}
 
 	if (vsocket->is_server)

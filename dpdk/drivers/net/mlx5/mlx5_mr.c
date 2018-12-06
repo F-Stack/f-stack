@@ -1,38 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 6WIND S.A.
- *   Copyright 2016 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 6WIND S.A.
+ * Copyright 2016 Mellanox Technologies, Ltd
  */
 
-/* Verbs header. */
-/* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
 #ifdef PEDANTIC
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
@@ -43,359 +13,1358 @@
 
 #include <rte_mempool.h>
 #include <rte_malloc.h>
+#include <rte_rwlock.h>
 
 #include "mlx5.h"
+#include "mlx5_mr.h"
 #include "mlx5_rxtx.h"
+#include "mlx5_glue.h"
 
-struct mlx5_check_mempool_data {
-	int ret;
-	char *start;
-	char *end;
-};
-
-/* Called by mlx5_check_mempool() when iterating the memory chunks. */
-static void
-mlx5_check_mempool_cb(struct rte_mempool *mp __rte_unused,
-		      void *opaque, struct rte_mempool_memhdr *memhdr,
-		      unsigned int mem_idx __rte_unused)
-{
-	struct mlx5_check_mempool_data *data = opaque;
-
-	/* It already failed, skip the next chunks. */
-	if (data->ret != 0)
-		return;
-	/* It is the first chunk. */
-	if (data->start == NULL && data->end == NULL) {
-		data->start = memhdr->addr;
-		data->end = data->start + memhdr->len;
-		return;
-	}
-	if (data->end == memhdr->addr) {
-		data->end += memhdr->len;
-		return;
-	}
-	if (data->start == (char *)memhdr->addr + memhdr->len) {
-		data->start -= memhdr->len;
-		return;
-	}
-	/* Error, mempool is not virtually contiguous. */
-	data->ret = -1;
-}
-
-/**
- * Check if a mempool can be used: it must be virtually contiguous.
- *
- * @param[in] mp
- *   Pointer to memory pool.
- * @param[out] start
- *   Pointer to the start address of the mempool virtual memory area
- * @param[out] end
- *   Pointer to the end address of the mempool virtual memory area
- *
- * @return
- *   0 on success (mempool is virtually contiguous), -1 on error.
- */
-static int
-mlx5_check_mempool(struct rte_mempool *mp, uintptr_t *start,
-		   uintptr_t *end)
-{
-	struct mlx5_check_mempool_data data;
-
-	memset(&data, 0, sizeof(data));
-	rte_mempool_mem_iter(mp, mlx5_check_mempool_cb, &data);
-	*start = (uintptr_t)data.start;
-	*end = (uintptr_t)data.end;
-	return data.ret;
-}
-
-/**
- * Register a Memory Region (MR) <-> Memory Pool (MP) association in
- * txq->mp2mr[]. If mp2mr[] is full, remove an entry first.
- *
- * @param txq
- *   Pointer to TX queue structure.
- * @param[in] mp
- *   Memory Pool for which a Memory Region lkey must be returned.
- * @param idx
- *   Index of the next available entry.
- *
- * @return
- *   mr on success, NULL on failure and rte_errno is set.
- */
-struct mlx5_mr *
-mlx5_txq_mp2mr_reg(struct mlx5_txq_data *txq, struct rte_mempool *mp,
-		   unsigned int idx)
-{
-	struct mlx5_txq_ctrl *txq_ctrl =
-		container_of(txq, struct mlx5_txq_ctrl, txq);
-	struct rte_eth_dev *dev;
-	struct mlx5_mr *mr;
-
-	rte_spinlock_lock(&txq_ctrl->priv->mr_lock);
-	/* Add a new entry, register MR first. */
-	DRV_LOG(DEBUG, "port %u discovered new memory pool \"%s\" (%p)",
-		PORT_ID(txq_ctrl->priv), mp->name, (void *)mp);
-	dev = ETH_DEV(txq_ctrl->priv);
-	mr = mlx5_mr_get(dev, mp);
-	if (mr == NULL) {
-		if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
-			DRV_LOG(DEBUG,
-				"port %u using unregistered mempool 0x%p(%s)"
-				" in secondary process, please create mempool"
-				" before rte_eth_dev_start()",
-				PORT_ID(txq_ctrl->priv), (void *)mp, mp->name);
-			rte_spinlock_unlock(&txq_ctrl->priv->mr_lock);
-			rte_errno = ENOTSUP;
-			return NULL;
-		}
-		mr = mlx5_mr_new(dev, mp);
-	}
-	if (unlikely(mr == NULL)) {
-		DRV_LOG(DEBUG,
-			"port %u unable to configure memory region,"
-			" ibv_reg_mr() failed.",
-			PORT_ID(txq_ctrl->priv));
-		rte_spinlock_unlock(&txq_ctrl->priv->mr_lock);
-		return NULL;
-	}
-	if (unlikely(idx == RTE_DIM(txq->mp2mr))) {
-		/* Table is full, remove oldest entry. */
-		DRV_LOG(DEBUG,
-			"port %u memory region <-> memory pool table full, "
-			" dropping oldest entry",
-			PORT_ID(txq_ctrl->priv));
-		--idx;
-		mlx5_mr_release(txq->mp2mr[0]);
-		memmove(&txq->mp2mr[0], &txq->mp2mr[1],
-			(sizeof(txq->mp2mr) - sizeof(txq->mp2mr[0])));
-	}
-	/* Store the new entry. */
-	txq_ctrl->txq.mp2mr[idx] = mr;
-	DRV_LOG(DEBUG,
-		"port %u new memory region lkey for MP \"%s\" (%p): 0x%08"
-		PRIu32,
-		PORT_ID(txq_ctrl->priv), mp->name, (void *)mp,
-		txq_ctrl->txq.mp2mr[idx]->lkey);
-	rte_spinlock_unlock(&txq_ctrl->priv->mr_lock);
-	return mr;
-}
-
-struct mlx5_mp2mr_mbuf_check_data {
-	int ret;
-};
-
-/**
- * Callback function for rte_mempool_obj_iter() to check whether a given
- * mempool object looks like a mbuf.
- *
- * @param[in] mp
- *   The mempool pointer
- * @param[in] arg
- *   Context data (struct txq_mp2mr_mbuf_check_data). Contains the
- *   return value.
- * @param[in] obj
- *   Object address.
- * @param index
- *   Object index, unused.
- */
-static void
-txq_mp2mr_mbuf_check(struct rte_mempool *mp, void *arg, void *obj,
-	uint32_t index __rte_unused)
-{
-	struct mlx5_mp2mr_mbuf_check_data *data = arg;
-	struct rte_mbuf *buf = obj;
-
-	/*
-	 * Check whether mbuf structure fits element size and whether mempool
-	 * pointer is valid.
-	 */
-	if (sizeof(*buf) > mp->elt_size || buf->pool != mp)
-		data->ret = -1;
-}
-
-/**
- * Iterator function for rte_mempool_walk() to register existing mempools and
- * fill the MP to MR cache of a TX queue.
- *
- * @param[in] mp
- *   Memory Pool to register.
- * @param *arg
- *   Pointer to TX queue structure.
- */
-void
-mlx5_mp2mr_iter(struct rte_mempool *mp, void *arg)
-{
-	struct priv *priv = (struct priv *)arg;
-	struct mlx5_mp2mr_mbuf_check_data data = {
-		.ret = 0,
-	};
-	struct mlx5_mr *mr;
-
-	/* Register mempool only if the first element looks like a mbuf. */
-	if (rte_mempool_obj_iter(mp, txq_mp2mr_mbuf_check, &data) == 0 ||
-			data.ret == -1)
-		return;
-	mr = mlx5_mr_get(ETH_DEV(priv), mp);
-	if (mr) {
-		mlx5_mr_release(mr);
-		return;
-	}
-	mr = mlx5_mr_new(ETH_DEV(priv), mp);
-	if (!mr)
-		DRV_LOG(ERR, "port %u cannot create memory region: %s",
-			PORT_ID(priv), strerror(rte_errno));
-}
-
-/**
- * Register a new memory region from the mempool and store it in the memory
- * region list.
- *
- * @param dev
- *   Pointer to Ethernet device.
- * @param mp
- *   Pointer to the memory pool to register.
- *
- * @return
- *   The memory region on success, NULL on failure and rte_errno is set.
- */
-struct mlx5_mr *
-mlx5_mr_new(struct rte_eth_dev *dev, struct rte_mempool *mp)
-{
-	struct priv *priv = dev->data->dev_private;
-	const struct rte_memseg *ms = rte_eal_get_physmem_layout();
+struct mr_find_contig_memsegs_data {
+	uintptr_t addr;
 	uintptr_t start;
 	uintptr_t end;
-	unsigned int i;
-	struct mlx5_mr *mr;
+	const struct rte_memseg_list *msl;
+};
 
-	mr = rte_zmalloc_socket(__func__, sizeof(*mr), 0, mp->socket_id);
-	if (!mr) {
-		DRV_LOG(DEBUG,
-			"port %u unable to configure memory region,"
-			" ibv_reg_mr() failed.",
-			dev->data->port_id);
-		rte_errno = ENOMEM;
-		return NULL;
-	}
-	if (mlx5_check_mempool(mp, &start, &end) != 0) {
-		DRV_LOG(ERR, "port %u mempool %p: not virtually contiguous",
-			dev->data->port_id, (void *)mp);
-		rte_errno = ENOMEM;
-		return NULL;
-	}
-	DRV_LOG(DEBUG, "port %u mempool %p area start=%p end=%p size=%zu",
-		dev->data->port_id, (void *)mp, (void *)start, (void *)end,
-		(size_t)(end - start));
-	/* Save original addresses for exact MR lookup. */
-	mr->start = start;
-	mr->end = end;
-	/* Round start and end to page boundary if found in memory segments. */
-	for (i = 0; (i < RTE_MAX_MEMSEG) && (ms[i].addr != NULL); ++i) {
-		uintptr_t addr = (uintptr_t)ms[i].addr;
-		size_t len = ms[i].len;
-		unsigned int align = ms[i].hugepage_sz;
+struct mr_update_mp_data {
+	struct rte_eth_dev *dev;
+	struct mlx5_mr_ctrl *mr_ctrl;
+	int ret;
+};
 
-		if ((start > addr) && (start < addr + len))
-			start = RTE_ALIGN_FLOOR(start, align);
-		if ((end > addr) && (end < addr + len))
-			end = RTE_ALIGN_CEIL(end, align);
+/**
+ * Expand B-tree table to a given size. Can't be called with holding
+ * memory_hotplug_lock or priv->mr.rwlock due to rte_realloc().
+ *
+ * @param bt
+ *   Pointer to B-tree structure.
+ * @param n
+ *   Number of entries for expansion.
+ *
+ * @return
+ *   0 on success, -1 on failure.
+ */
+static int
+mr_btree_expand(struct mlx5_mr_btree *bt, int n)
+{
+	void *mem;
+	int ret = 0;
+
+	if (n <= bt->size)
+		return ret;
+	/*
+	 * Downside of directly using rte_realloc() is that SOCKET_ID_ANY is
+	 * used inside if there's no room to expand. Because this is a quite
+	 * rare case and a part of very slow path, it is very acceptable.
+	 * Initially cache_bh[] will be given practically enough space and once
+	 * it is expanded, expansion wouldn't be needed again ever.
+	 */
+	mem = rte_realloc(bt->table, n * sizeof(struct mlx5_mr_cache), 0);
+	if (mem == NULL) {
+		/* Not an error, B-tree search will be skipped. */
+		DRV_LOG(WARNING, "failed to expand MR B-tree (%p) table",
+			(void *)bt);
+		ret = -1;
+	} else {
+		DRV_LOG(DEBUG, "expanded MR B-tree table (size=%u)", n);
+		bt->table = mem;
+		bt->size = n;
 	}
-	DRV_LOG(DEBUG,
-		"port %u mempool %p using start=%p end=%p size=%zu for memory"
-		" region",
-		dev->data->port_id, (void *)mp, (void *)start, (void *)end,
-		(size_t)(end - start));
-	mr->mr = ibv_reg_mr(priv->pd, (void *)start, end - start,
-			    IBV_ACCESS_LOCAL_WRITE);
-	if (!mr->mr) {
-		rte_errno = ENOMEM;
-		return NULL;
-	}
-	mr->mp = mp;
-	mr->lkey = rte_cpu_to_be_32(mr->mr->lkey);
-	rte_atomic32_inc(&mr->refcnt);
-	DRV_LOG(DEBUG, "port %u new memory Region %p refcnt: %d",
-		dev->data->port_id, (void *)mr, rte_atomic32_read(&mr->refcnt));
-	LIST_INSERT_HEAD(&priv->mr, mr, next);
-	return mr;
+	return ret;
 }
 
 /**
- * Search the memory region object in the memory region list.
+ * Look up LKey from given B-tree lookup table, store the last index and return
+ * searched LKey.
+ *
+ * @param bt
+ *   Pointer to B-tree structure.
+ * @param[out] idx
+ *   Pointer to index. Even on search failure, returns index where it stops
+ *   searching so that index can be used when inserting a new entry.
+ * @param addr
+ *   Search key.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+static uint32_t
+mr_btree_lookup(struct mlx5_mr_btree *bt, uint16_t *idx, uintptr_t addr)
+{
+	struct mlx5_mr_cache *lkp_tbl;
+	uint16_t n;
+	uint16_t base = 0;
+
+	assert(bt != NULL);
+	lkp_tbl = *bt->table;
+	n = bt->len;
+	/* First entry must be NULL for comparison. */
+	assert(bt->len > 0 || (lkp_tbl[0].start == 0 &&
+			       lkp_tbl[0].lkey == UINT32_MAX));
+	/* Binary search. */
+	do {
+		register uint16_t delta = n >> 1;
+
+		if (addr < lkp_tbl[base + delta].start) {
+			n = delta;
+		} else {
+			base += delta;
+			n -= delta;
+		}
+	} while (n > 1);
+	assert(addr >= lkp_tbl[base].start);
+	*idx = base;
+	if (addr < lkp_tbl[base].end)
+		return lkp_tbl[base].lkey;
+	/* Not found. */
+	return UINT32_MAX;
+}
+
+/**
+ * Insert an entry to B-tree lookup table.
+ *
+ * @param bt
+ *   Pointer to B-tree structure.
+ * @param entry
+ *   Pointer to new entry to insert.
+ *
+ * @return
+ *   0 on success, -1 on failure.
+ */
+static int
+mr_btree_insert(struct mlx5_mr_btree *bt, struct mlx5_mr_cache *entry)
+{
+	struct mlx5_mr_cache *lkp_tbl;
+	uint16_t idx = 0;
+	size_t shift;
+
+	assert(bt != NULL);
+	assert(bt->len <= bt->size);
+	assert(bt->len > 0);
+	lkp_tbl = *bt->table;
+	/* Find out the slot for insertion. */
+	if (mr_btree_lookup(bt, &idx, entry->start) != UINT32_MAX) {
+		DRV_LOG(DEBUG,
+			"abort insertion to B-tree(%p): already exist at"
+			" idx=%u [0x%" PRIxPTR ", 0x%" PRIxPTR ") lkey=0x%x",
+			(void *)bt, idx, entry->start, entry->end, entry->lkey);
+		/* Already exist, return. */
+		return 0;
+	}
+	/* If table is full, return error. */
+	if (unlikely(bt->len == bt->size)) {
+		bt->overflow = 1;
+		return -1;
+	}
+	/* Insert entry. */
+	++idx;
+	shift = (bt->len - idx) * sizeof(struct mlx5_mr_cache);
+	if (shift)
+		memmove(&lkp_tbl[idx + 1], &lkp_tbl[idx], shift);
+	lkp_tbl[idx] = *entry;
+	bt->len++;
+	DRV_LOG(DEBUG,
+		"inserted B-tree(%p)[%u],"
+		" [0x%" PRIxPTR ", 0x%" PRIxPTR ") lkey=0x%x",
+		(void *)bt, idx, entry->start, entry->end, entry->lkey);
+	return 0;
+}
+
+/**
+ * Initialize B-tree and allocate memory for lookup table.
+ *
+ * @param bt
+ *   Pointer to B-tree structure.
+ * @param n
+ *   Number of entries to allocate.
+ * @param socket
+ *   NUMA socket on which memory must be allocated.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_mr_btree_init(struct mlx5_mr_btree *bt, int n, int socket)
+{
+	if (bt == NULL) {
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	assert(!bt->table && !bt->size);
+	memset(bt, 0, sizeof(*bt));
+	bt->table = rte_calloc_socket("B-tree table",
+				      n, sizeof(struct mlx5_mr_cache),
+				      0, socket);
+	if (bt->table == NULL) {
+		rte_errno = ENOMEM;
+		DEBUG("failed to allocate memory for btree cache on socket %d",
+		      socket);
+		return -rte_errno;
+	}
+	bt->size = n;
+	/* First entry must be NULL for binary search. */
+	(*bt->table)[bt->len++] = (struct mlx5_mr_cache) {
+		.lkey = UINT32_MAX,
+	};
+	DEBUG("initialized B-tree %p with table %p",
+	      (void *)bt, (void *)bt->table);
+	return 0;
+}
+
+/**
+ * Free B-tree resources.
+ *
+ * @param bt
+ *   Pointer to B-tree structure.
+ */
+void
+mlx5_mr_btree_free(struct mlx5_mr_btree *bt)
+{
+	if (bt == NULL)
+		return;
+	DEBUG("freeing B-tree %p with table %p",
+	      (void *)bt, (void *)bt->table);
+	rte_free(bt->table);
+	memset(bt, 0, sizeof(*bt));
+}
+
+/**
+ * Dump all the entries in a B-tree
+ *
+ * @param bt
+ *   Pointer to B-tree structure.
+ */
+void
+mlx5_mr_btree_dump(struct mlx5_mr_btree *bt __rte_unused)
+{
+#ifndef NDEBUG
+	int idx;
+	struct mlx5_mr_cache *lkp_tbl;
+
+	if (bt == NULL)
+		return;
+	lkp_tbl = *bt->table;
+	for (idx = 0; idx < bt->len; ++idx) {
+		struct mlx5_mr_cache *entry = &lkp_tbl[idx];
+
+		DEBUG("B-tree(%p)[%u],"
+		      " [0x%" PRIxPTR ", 0x%" PRIxPTR ") lkey=0x%x",
+		      (void *)bt, idx, entry->start, entry->end, entry->lkey);
+	}
+#endif
+}
+
+/**
+ * Find virtually contiguous memory chunk in a given MR.
+ *
+ * @param dev
+ *   Pointer to MR structure.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry. If not found, this will not be
+ *   updated.
+ * @param start_idx
+ *   Start index of the memseg bitmap.
+ *
+ * @return
+ *   Next index to go on lookup.
+ */
+static int
+mr_find_next_chunk(struct mlx5_mr *mr, struct mlx5_mr_cache *entry,
+		   int base_idx)
+{
+	uintptr_t start = 0;
+	uintptr_t end = 0;
+	uint32_t idx = 0;
+
+	/* MR for external memory doesn't have memseg list. */
+	if (mr->msl == NULL) {
+		struct ibv_mr *ibv_mr = mr->ibv_mr;
+
+		assert(mr->ms_bmp_n == 1);
+		assert(mr->ms_n == 1);
+		assert(base_idx == 0);
+		/*
+		 * Can't search it from memseg list but get it directly from
+		 * verbs MR as there's only one chunk.
+		 */
+		entry->start = (uintptr_t)ibv_mr->addr;
+		entry->end = (uintptr_t)ibv_mr->addr + mr->ibv_mr->length;
+		entry->lkey = rte_cpu_to_be_32(mr->ibv_mr->lkey);
+		/* Returning 1 ends iteration. */
+		return 1;
+	}
+	for (idx = base_idx; idx < mr->ms_bmp_n; ++idx) {
+		if (rte_bitmap_get(mr->ms_bmp, idx)) {
+			const struct rte_memseg_list *msl;
+			const struct rte_memseg *ms;
+
+			msl = mr->msl;
+			ms = rte_fbarray_get(&msl->memseg_arr,
+					     mr->ms_base_idx + idx);
+			assert(msl->page_sz == ms->hugepage_sz);
+			if (!start)
+				start = ms->addr_64;
+			end = ms->addr_64 + ms->hugepage_sz;
+		} else if (start) {
+			/* Passed the end of a fragment. */
+			break;
+		}
+	}
+	if (start) {
+		/* Found one chunk. */
+		entry->start = start;
+		entry->end = end;
+		entry->lkey = rte_cpu_to_be_32(mr->ibv_mr->lkey);
+	}
+	return idx;
+}
+
+/**
+ * Insert a MR to the global B-tree cache. It may fail due to low-on-memory.
+ * Then, this entry will have to be searched by mr_lookup_dev_list() in
+ * mlx5_mr_create() on miss.
  *
  * @param dev
  *   Pointer to Ethernet device.
- * @param mp
- *   Pointer to the memory pool to register.
+ * @param mr
+ *   Pointer to MR to insert.
  *
  * @return
- *   The memory region on success.
+ *   0 on success, -1 on failure.
  */
-struct mlx5_mr *
-mlx5_mr_get(struct rte_eth_dev *dev, struct rte_mempool *mp)
+static int
+mr_insert_dev_cache(struct rte_eth_dev *dev, struct mlx5_mr *mr)
+{
+	struct priv *priv = dev->data->dev_private;
+	unsigned int n;
+
+	DRV_LOG(DEBUG, "port %u inserting MR(%p) to global cache",
+		dev->data->port_id, (void *)mr);
+	for (n = 0; n < mr->ms_bmp_n; ) {
+		struct mlx5_mr_cache entry;
+
+		memset(&entry, 0, sizeof(entry));
+		/* Find a contiguous chunk and advance the index. */
+		n = mr_find_next_chunk(mr, &entry, n);
+		if (!entry.end)
+			break;
+		if (mr_btree_insert(&priv->mr.cache, &entry) < 0) {
+			/*
+			 * Overflowed, but the global table cannot be expanded
+			 * because of deadlock.
+			 */
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/**
+ * Look up address in the original global MR list.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry. If no match, this will not be updated.
+ * @param addr
+ *   Search key.
+ *
+ * @return
+ *   Found MR on match, NULL otherwise.
+ */
+static struct mlx5_mr *
+mr_lookup_dev_list(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+		   uintptr_t addr)
 {
 	struct priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr;
 
-	assert(mp);
-	if (LIST_EMPTY(&priv->mr))
-		return NULL;
-	LIST_FOREACH(mr, &priv->mr, next) {
-		if (mr->mp == mp) {
-			rte_atomic32_inc(&mr->refcnt);
-			DRV_LOG(DEBUG, "port %u memory region %p refcnt: %d",
-				dev->data->port_id, (void *)mr,
-				rte_atomic32_read(&mr->refcnt));
-			return mr;
+	/* Iterate all the existing MRs. */
+	LIST_FOREACH(mr, &priv->mr.mr_list, mr) {
+		unsigned int n;
+
+		if (mr->ms_n == 0)
+			continue;
+		for (n = 0; n < mr->ms_bmp_n; ) {
+			struct mlx5_mr_cache ret;
+
+			memset(&ret, 0, sizeof(ret));
+			n = mr_find_next_chunk(mr, &ret, n);
+			if (addr >= ret.start && addr < ret.end) {
+				/* Found. */
+				*entry = ret;
+				return mr;
+			}
 		}
 	}
 	return NULL;
 }
 
 /**
- * Release the memory region object.
+ * Look up address on device.
  *
- * @param  mr
- *   Pointer to memory region to release.
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry. If no match, this will not be updated.
+ * @param addr
+ *   Search key.
  *
  * @return
- *   1 while a reference on it exists, 0 when freed.
+ *   Searched LKey on success, UINT32_MAX on failure and rte_errno is set.
  */
-int
-mlx5_mr_release(struct mlx5_mr *mr)
+static uint32_t
+mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+	      uintptr_t addr)
 {
-	assert(mr);
-	DRV_LOG(DEBUG, "memory region %p refcnt: %d", (void *)mr,
-		rte_atomic32_read(&mr->refcnt));
-	if (rte_atomic32_dec_and_test(&mr->refcnt)) {
-		claim_zero(ibv_dereg_mr(mr->mr));
-		LIST_REMOVE(mr, next);
-		rte_free(mr);
-		return 0;
+	struct priv *priv = dev->data->dev_private;
+	uint16_t idx;
+	uint32_t lkey = UINT32_MAX;
+	struct mlx5_mr *mr;
+
+	/*
+	 * If the global cache has overflowed since it failed to expand the
+	 * B-tree table, it can't have all the existing MRs. Then, the address
+	 * has to be searched by traversing the original MR list instead, which
+	 * is very slow path. Otherwise, the global cache is all inclusive.
+	 */
+	if (!unlikely(priv->mr.cache.overflow)) {
+		lkey = mr_btree_lookup(&priv->mr.cache, &idx, addr);
+		if (lkey != UINT32_MAX)
+			*entry = (*priv->mr.cache.table)[idx];
+	} else {
+		/* Falling back to the slowest path. */
+		mr = mr_lookup_dev_list(dev, entry, addr);
+		if (mr != NULL)
+			lkey = entry->lkey;
 	}
+	assert(lkey == UINT32_MAX || (addr >= entry->start &&
+				      addr < entry->end));
+	return lkey;
+}
+
+/**
+ * Free MR resources. MR lock must not be held to avoid a deadlock. rte_free()
+ * can raise memory free event and the callback function will spin on the lock.
+ *
+ * @param mr
+ *   Pointer to MR to free.
+ */
+static void
+mr_free(struct mlx5_mr *mr)
+{
+	if (mr == NULL)
+		return;
+	DRV_LOG(DEBUG, "freeing MR(%p):", (void *)mr);
+	if (mr->ibv_mr != NULL)
+		claim_zero(mlx5_glue->dereg_mr(mr->ibv_mr));
+	if (mr->ms_bmp != NULL)
+		rte_bitmap_free(mr->ms_bmp);
+	rte_free(mr);
+}
+
+/**
+ * Releass resources of detached MR having no online entry.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+static void
+mlx5_mr_garbage_collect(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
+	struct mlx5_mr *mr_next;
+	struct mlx5_mr_list free_list = LIST_HEAD_INITIALIZER(free_list);
+
+	/* Must be called from the primary process. */
+	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	/*
+	 * MR can't be freed with holding the lock because rte_free() could call
+	 * memory free callback function. This will be a deadlock situation.
+	 */
+	rte_rwlock_write_lock(&priv->mr.rwlock);
+	/* Detach the whole free list and release it after unlocking. */
+	free_list = priv->mr.mr_free_list;
+	LIST_INIT(&priv->mr.mr_free_list);
+	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	/* Release resources. */
+	mr_next = LIST_FIRST(&free_list);
+	while (mr_next != NULL) {
+		struct mlx5_mr *mr = mr_next;
+
+		mr_next = LIST_NEXT(mr, mr);
+		mr_free(mr);
+	}
+}
+
+/* Called during rte_memseg_contig_walk() by mlx5_mr_create(). */
+static int
+mr_find_contig_memsegs_cb(const struct rte_memseg_list *msl,
+			  const struct rte_memseg *ms, size_t len, void *arg)
+{
+	struct mr_find_contig_memsegs_data *data = arg;
+
+	if (data->addr < ms->addr_64 || data->addr >= ms->addr_64 + len)
+		return 0;
+	/* Found, save it and stop walking. */
+	data->start = ms->addr_64;
+	data->end = ms->addr_64 + len;
+	data->msl = msl;
 	return 1;
 }
 
 /**
- * Verify the flow list is empty
+ * Create a new global Memroy Region (MR) for a missing virtual address.
+ * Register entire virtually contiguous memory chunk around the address.
  *
  * @param dev
  *   Pointer to Ethernet device.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry, found in the global cache or newly
+ *   created. If failed to create one, this will not be updated.
+ * @param addr
+ *   Target virtual address to register.
  *
  * @return
- *   The number of object not released.
+ *   Searched LKey on success, UINT32_MAX on failure and rte_errno is set.
  */
-int
-mlx5_mr_verify(struct rte_eth_dev *dev)
+static uint32_t
+mlx5_mr_create(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+	       uintptr_t addr)
 {
 	struct priv *priv = dev->data->dev_private;
-	int ret = 0;
+	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
+	const struct rte_memseg_list *msl;
+	const struct rte_memseg *ms;
+	struct mlx5_mr *mr = NULL;
+	size_t len;
+	uint32_t ms_n;
+	uint32_t bmp_size;
+	void *bmp_mem;
+	int ms_idx_shift = -1;
+	unsigned int n;
+	struct mr_find_contig_memsegs_data data = {
+		.addr = addr,
+	};
+	struct mr_find_contig_memsegs_data data_re;
+
+	DRV_LOG(DEBUG, "port %u creating a MR using address (%p)",
+		dev->data->port_id, (void *)addr);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		DRV_LOG(WARNING,
+			"port %u using address (%p) of unregistered mempool"
+			" in secondary process, please create mempool"
+			" before rte_eth_dev_start()",
+			dev->data->port_id, (void *)addr);
+		rte_errno = EPERM;
+		goto err_nolock;
+	}
+	/*
+	 * Release detached MRs if any. This can't be called with holding either
+	 * memory_hotplug_lock or priv->mr.rwlock. MRs on the free list have
+	 * been detached by the memory free event but it couldn't be released
+	 * inside the callback due to deadlock. As a result, releasing resources
+	 * is quite opportunistic.
+	 */
+	mlx5_mr_garbage_collect(dev);
+	/*
+	 * Find out a contiguous virtual address chunk in use, to which the
+	 * given address belongs, in order to register maximum range. In the
+	 * best case where mempools are not dynamically recreated and
+	 * '--socket-mem' is specified as an EAL option, it is very likely to
+	 * have only one MR(LKey) per a socket and per a hugepage-size even
+	 * though the system memory is highly fragmented.
+	 */
+	if (!rte_memseg_contig_walk(mr_find_contig_memsegs_cb, &data)) {
+		DRV_LOG(WARNING,
+			"port %u unable to find virtually contiguous"
+			" chunk for address (%p)."
+			" rte_memseg_contig_walk() failed.",
+			dev->data->port_id, (void *)addr);
+		rte_errno = ENXIO;
+		goto err_nolock;
+	}
+alloc_resources:
+	/* Addresses must be page-aligned. */
+	assert(rte_is_aligned((void *)data.start, data.msl->page_sz));
+	assert(rte_is_aligned((void *)data.end, data.msl->page_sz));
+	msl = data.msl;
+	ms = rte_mem_virt2memseg((void *)data.start, msl);
+	len = data.end - data.start;
+	assert(msl->page_sz == ms->hugepage_sz);
+	/* Number of memsegs in the range. */
+	ms_n = len / msl->page_sz;
+	DEBUG("port %u extending %p to [0x%" PRIxPTR ", 0x%" PRIxPTR "),"
+	      " page_sz=0x%" PRIx64 ", ms_n=%u",
+	      dev->data->port_id, (void *)addr,
+	      data.start, data.end, msl->page_sz, ms_n);
+	/* Size of memory for bitmap. */
+	bmp_size = rte_bitmap_get_memory_footprint(ms_n);
+	mr = rte_zmalloc_socket(NULL,
+				RTE_ALIGN_CEIL(sizeof(*mr),
+					       RTE_CACHE_LINE_SIZE) +
+				bmp_size,
+				RTE_CACHE_LINE_SIZE, msl->socket_id);
+	if (mr == NULL) {
+		DEBUG("port %u unable to allocate memory for a new MR of"
+		      " address (%p).",
+		      dev->data->port_id, (void *)addr);
+		rte_errno = ENOMEM;
+		goto err_nolock;
+	}
+	mr->msl = msl;
+	/*
+	 * Save the index of the first memseg and initialize memseg bitmap. To
+	 * see if a memseg of ms_idx in the memseg-list is still valid, check:
+	 *	rte_bitmap_get(mr->bmp, ms_idx - mr->ms_base_idx)
+	 */
+	mr->ms_base_idx = rte_fbarray_find_idx(&msl->memseg_arr, ms);
+	bmp_mem = RTE_PTR_ALIGN_CEIL(mr + 1, RTE_CACHE_LINE_SIZE);
+	mr->ms_bmp = rte_bitmap_init(ms_n, bmp_mem, bmp_size);
+	if (mr->ms_bmp == NULL) {
+		DEBUG("port %u unable to initialize bitamp for a new MR of"
+		      " address (%p).",
+		      dev->data->port_id, (void *)addr);
+		rte_errno = EINVAL;
+		goto err_nolock;
+	}
+	/*
+	 * Should recheck whether the extended contiguous chunk is still valid.
+	 * Because memory_hotplug_lock can't be held if there's any memory
+	 * related calls in a critical path, resource allocation above can't be
+	 * locked. If the memory has been changed at this point, try again with
+	 * just single page. If not, go on with the big chunk atomically from
+	 * here.
+	 */
+	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
+	data_re = data;
+	if (len > msl->page_sz &&
+	    !rte_memseg_contig_walk(mr_find_contig_memsegs_cb, &data_re)) {
+		DEBUG("port %u unable to find virtually contiguous"
+		      " chunk for address (%p)."
+		      " rte_memseg_contig_walk() failed.",
+		      dev->data->port_id, (void *)addr);
+		rte_errno = ENXIO;
+		goto err_memlock;
+	}
+	if (data.start != data_re.start || data.end != data_re.end) {
+		/*
+		 * The extended contiguous chunk has been changed. Try again
+		 * with single memseg instead.
+		 */
+		data.start = RTE_ALIGN_FLOOR(addr, msl->page_sz);
+		data.end = data.start + msl->page_sz;
+		rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+		mr_free(mr);
+		goto alloc_resources;
+	}
+	assert(data.msl == data_re.msl);
+	rte_rwlock_write_lock(&priv->mr.rwlock);
+	/*
+	 * Check the address is really missing. If other thread already created
+	 * one or it is not found due to overflow, abort and return.
+	 */
+	if (mr_lookup_dev(dev, entry, addr) != UINT32_MAX) {
+		/*
+		 * Insert to the global cache table. It may fail due to
+		 * low-on-memory. Then, this entry will have to be searched
+		 * here again.
+		 */
+		mr_btree_insert(&priv->mr.cache, entry);
+		DEBUG("port %u found MR for %p on final lookup, abort",
+		      dev->data->port_id, (void *)addr);
+		rte_rwlock_write_unlock(&priv->mr.rwlock);
+		rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+		/*
+		 * Must be unlocked before calling rte_free() because
+		 * mlx5_mr_mem_event_free_cb() can be called inside.
+		 */
+		mr_free(mr);
+		return entry->lkey;
+	}
+	/*
+	 * Trim start and end addresses for verbs MR. Set bits for registering
+	 * memsegs but exclude already registered ones. Bitmap can be
+	 * fragmented.
+	 */
+	for (n = 0; n < ms_n; ++n) {
+		uintptr_t start;
+		struct mlx5_mr_cache ret;
+
+		memset(&ret, 0, sizeof(ret));
+		start = data_re.start + n * msl->page_sz;
+		/* Exclude memsegs already registered by other MRs. */
+		if (mr_lookup_dev(dev, &ret, start) == UINT32_MAX) {
+			/*
+			 * Start from the first unregistered memseg in the
+			 * extended range.
+			 */
+			if (ms_idx_shift == -1) {
+				mr->ms_base_idx += n;
+				data.start = start;
+				ms_idx_shift = n;
+			}
+			data.end = start + msl->page_sz;
+			rte_bitmap_set(mr->ms_bmp, n - ms_idx_shift);
+			++mr->ms_n;
+		}
+	}
+	len = data.end - data.start;
+	mr->ms_bmp_n = len / msl->page_sz;
+	assert(ms_idx_shift + mr->ms_bmp_n <= ms_n);
+	/*
+	 * Finally create a verbs MR for the memory chunk. ibv_reg_mr() can be
+	 * called with holding the memory lock because it doesn't use
+	 * mlx5_alloc_buf_extern() which eventually calls rte_malloc_socket()
+	 * through mlx5_alloc_verbs_buf().
+	 */
+	mr->ibv_mr = mlx5_glue->reg_mr(priv->pd, (void *)data.start, len,
+				       IBV_ACCESS_LOCAL_WRITE);
+	if (mr->ibv_mr == NULL) {
+		DEBUG("port %u fail to create a verbs MR for address (%p)",
+		      dev->data->port_id, (void *)addr);
+		rte_errno = EINVAL;
+		goto err_mrlock;
+	}
+	assert((uintptr_t)mr->ibv_mr->addr == data.start);
+	assert(mr->ibv_mr->length == len);
+	LIST_INSERT_HEAD(&priv->mr.mr_list, mr, mr);
+	DEBUG("port %u MR CREATED (%p) for %p:\n"
+	      "  [0x%" PRIxPTR ", 0x%" PRIxPTR "),"
+	      " lkey=0x%x base_idx=%u ms_n=%u, ms_bmp_n=%u",
+	      dev->data->port_id, (void *)mr, (void *)addr,
+	      data.start, data.end, rte_cpu_to_be_32(mr->ibv_mr->lkey),
+	      mr->ms_base_idx, mr->ms_n, mr->ms_bmp_n);
+	/* Insert to the global cache table. */
+	mr_insert_dev_cache(dev, mr);
+	/* Fill in output data. */
+	mr_lookup_dev(dev, entry, addr);
+	/* Lookup can't fail. */
+	assert(entry->lkey != UINT32_MAX);
+	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+	return entry->lkey;
+err_mrlock:
+	rte_rwlock_write_unlock(&priv->mr.rwlock);
+err_memlock:
+	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+err_nolock:
+	/*
+	 * In case of error, as this can be called in a datapath, a warning
+	 * message per an error is preferable instead. Must be unlocked before
+	 * calling rte_free() because mlx5_mr_mem_event_free_cb() can be called
+	 * inside.
+	 */
+	mr_free(mr);
+	return UINT32_MAX;
+}
+
+/**
+ * Rebuild the global B-tree cache of device from the original MR list.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+static void
+mr_rebuild_dev_cache(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr;
 
-	LIST_FOREACH(mr, &priv->mr, next) {
-		DRV_LOG(DEBUG, "port %u memory region %p still referenced",
-			dev->data->port_id, (void *)mr);
-		++ret;
+	DRV_LOG(DEBUG, "port %u rebuild dev cache[]", dev->data->port_id);
+	/* Flush cache to rebuild. */
+	priv->mr.cache.len = 1;
+	priv->mr.cache.overflow = 0;
+	/* Iterate all the existing MRs. */
+	LIST_FOREACH(mr, &priv->mr.mr_list, mr)
+		if (mr_insert_dev_cache(dev, mr) < 0)
+			return;
+}
+
+/**
+ * Callback for memory free event. Iterate freed memsegs and check whether it
+ * belongs to an existing MR. If found, clear the bit from bitmap of MR. As a
+ * result, the MR would be fragmented. If it becomes empty, the MR will be freed
+ * later by mlx5_mr_garbage_collect(). Even if this callback is called from a
+ * secondary process, the garbage collector will be called in primary process
+ * as the secondary process can't call mlx5_mr_create().
+ *
+ * The global cache must be rebuilt if there's any change and this event has to
+ * be propagated to dataplane threads to flush the local caches.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param addr
+ *   Address of freed memory.
+ * @param len
+ *   Size of freed memory.
+ */
+static void
+mlx5_mr_mem_event_free_cb(struct rte_eth_dev *dev, const void *addr, size_t len)
+{
+	struct priv *priv = dev->data->dev_private;
+	const struct rte_memseg_list *msl;
+	struct mlx5_mr *mr;
+	int ms_n;
+	int i;
+	int rebuild = 0;
+
+	DEBUG("port %u free callback: addr=%p, len=%zu",
+	      dev->data->port_id, addr, len);
+	msl = rte_mem_virt2memseg_list(addr);
+	/* addr and len must be page-aligned. */
+	assert((uintptr_t)addr == RTE_ALIGN((uintptr_t)addr, msl->page_sz));
+	assert(len == RTE_ALIGN(len, msl->page_sz));
+	ms_n = len / msl->page_sz;
+	rte_rwlock_write_lock(&priv->mr.rwlock);
+	/* Clear bits of freed memsegs from MR. */
+	for (i = 0; i < ms_n; ++i) {
+		const struct rte_memseg *ms;
+		struct mlx5_mr_cache entry;
+		uintptr_t start;
+		int ms_idx;
+		uint32_t pos;
+
+		/* Find MR having this memseg. */
+		start = (uintptr_t)addr + i * msl->page_sz;
+		mr = mr_lookup_dev_list(dev, &entry, start);
+		if (mr == NULL)
+			continue;
+		assert(mr->msl); /* Can't be external memory. */
+		ms = rte_mem_virt2memseg((void *)start, msl);
+		assert(ms != NULL);
+		assert(msl->page_sz == ms->hugepage_sz);
+		ms_idx = rte_fbarray_find_idx(&msl->memseg_arr, ms);
+		pos = ms_idx - mr->ms_base_idx;
+		assert(rte_bitmap_get(mr->ms_bmp, pos));
+		assert(pos < mr->ms_bmp_n);
+		DEBUG("port %u MR(%p): clear bitmap[%u] for addr %p",
+		      dev->data->port_id, (void *)mr, pos, (void *)start);
+		rte_bitmap_clear(mr->ms_bmp, pos);
+		if (--mr->ms_n == 0) {
+			LIST_REMOVE(mr, mr);
+			LIST_INSERT_HEAD(&priv->mr.mr_free_list, mr, mr);
+			DEBUG("port %u remove MR(%p) from list",
+			      dev->data->port_id, (void *)mr);
+		}
+		/*
+		 * MR is fragmented or will be freed. the global cache must be
+		 * rebuilt.
+		 */
+		rebuild = 1;
 	}
-	return ret;
+	if (rebuild) {
+		mr_rebuild_dev_cache(dev);
+		/*
+		 * Flush local caches by propagating invalidation across cores.
+		 * rte_smp_wmb() is enough to synchronize this event. If one of
+		 * freed memsegs is seen by other core, that means the memseg
+		 * has been allocated by allocator, which will come after this
+		 * free call. Therefore, this store instruction (incrementing
+		 * generation below) will be guaranteed to be seen by other core
+		 * before the core sees the newly allocated memory.
+		 */
+		++priv->mr.dev_gen;
+		DEBUG("broadcasting local cache flush, gen=%d",
+		      priv->mr.dev_gen);
+		rte_smp_wmb();
+	}
+	rte_rwlock_write_unlock(&priv->mr.rwlock);
+}
+
+/**
+ * Callback for memory event. This can be called from both primary and secondary
+ * process.
+ *
+ * @param event_type
+ *   Memory event type.
+ * @param addr
+ *   Address of memory.
+ * @param len
+ *   Size of memory.
+ */
+void
+mlx5_mr_mem_event_cb(enum rte_mem_event event_type, const void *addr,
+		     size_t len, void *arg __rte_unused)
+{
+	struct priv *priv;
+	struct mlx5_dev_list *dev_list = &mlx5_shared_data->mem_event_cb_list;
+
+	switch (event_type) {
+	case RTE_MEM_EVENT_FREE:
+		rte_rwlock_write_lock(&mlx5_shared_data->mem_event_rwlock);
+		/* Iterate all the existing mlx5 devices. */
+		LIST_FOREACH(priv, dev_list, mem_event_cb)
+			mlx5_mr_mem_event_free_cb(ETH_DEV(priv), addr, len);
+		rte_rwlock_write_unlock(&mlx5_shared_data->mem_event_rwlock);
+		break;
+	case RTE_MEM_EVENT_ALLOC:
+	default:
+		break;
+	}
+}
+
+/**
+ * Look up address in the global MR cache table. If not found, create a new MR.
+ * Insert the found/created entry to local bottom-half cache table.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param mr_ctrl
+ *   Pointer to per-queue MR control structure.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry, found in the global cache or newly
+ *   created. If failed to create one, this is not written.
+ * @param addr
+ *   Search key.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+static uint32_t
+mlx5_mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
+		   struct mlx5_mr_cache *entry, uintptr_t addr)
+{
+	struct priv *priv = dev->data->dev_private;
+	struct mlx5_mr_btree *bt = &mr_ctrl->cache_bh;
+	uint16_t idx;
+	uint32_t lkey;
+
+	/* If local cache table is full, try to double it. */
+	if (unlikely(bt->len == bt->size))
+		mr_btree_expand(bt, bt->size << 1);
+	/* Look up in the global cache. */
+	rte_rwlock_read_lock(&priv->mr.rwlock);
+	lkey = mr_btree_lookup(&priv->mr.cache, &idx, addr);
+	if (lkey != UINT32_MAX) {
+		/* Found. */
+		*entry = (*priv->mr.cache.table)[idx];
+		rte_rwlock_read_unlock(&priv->mr.rwlock);
+		/*
+		 * Update local cache. Even if it fails, return the found entry
+		 * to update top-half cache. Next time, this entry will be found
+		 * in the global cache.
+		 */
+		mr_btree_insert(bt, entry);
+		return lkey;
+	}
+	rte_rwlock_read_unlock(&priv->mr.rwlock);
+	/* First time to see the address? Create a new MR. */
+	lkey = mlx5_mr_create(dev, entry, addr);
+	/*
+	 * Update the local cache if successfully created a new global MR. Even
+	 * if failed to create one, there's no action to take in this datapath
+	 * code. As returning LKey is invalid, this will eventually make HW
+	 * fail.
+	 */
+	if (lkey != UINT32_MAX)
+		mr_btree_insert(bt, entry);
+	return lkey;
+}
+
+/**
+ * Bottom-half of LKey search on datapath. Firstly search in cache_bh[] and if
+ * misses, search in the global MR cache table and update the new entry to
+ * per-queue local caches.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param mr_ctrl
+ *   Pointer to per-queue MR control structure.
+ * @param addr
+ *   Search key.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+static uint32_t
+mlx5_mr_addr2mr_bh(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
+		   uintptr_t addr)
+{
+	uint32_t lkey;
+	uint16_t bh_idx = 0;
+	/* Victim in top-half cache to replace with new entry. */
+	struct mlx5_mr_cache *repl = &mr_ctrl->cache[mr_ctrl->head];
+
+	/* Binary-search MR translation table. */
+	lkey = mr_btree_lookup(&mr_ctrl->cache_bh, &bh_idx, addr);
+	/* Update top-half cache. */
+	if (likely(lkey != UINT32_MAX)) {
+		*repl = (*mr_ctrl->cache_bh.table)[bh_idx];
+	} else {
+		/*
+		 * If missed in local lookup table, search in the global cache
+		 * and local cache_bh[] will be updated inside if possible.
+		 * Top-half cache entry will also be updated.
+		 */
+		lkey = mlx5_mr_lookup_dev(dev, mr_ctrl, repl, addr);
+		if (unlikely(lkey == UINT32_MAX))
+			return UINT32_MAX;
+	}
+	/* Update the most recently used entry. */
+	mr_ctrl->mru = mr_ctrl->head;
+	/* Point to the next victim, the oldest. */
+	mr_ctrl->head = (mr_ctrl->head + 1) % MLX5_MR_CACHE_N;
+	return lkey;
+}
+
+/**
+ * Bottom-half of LKey search on Rx.
+ *
+ * @param rxq
+ *   Pointer to Rx queue structure.
+ * @param addr
+ *   Search key.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+uint32_t
+mlx5_rx_addr2mr_bh(struct mlx5_rxq_data *rxq, uintptr_t addr)
+{
+	struct mlx5_rxq_ctrl *rxq_ctrl =
+		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
+	struct mlx5_mr_ctrl *mr_ctrl = &rxq->mr_ctrl;
+	struct priv *priv = rxq_ctrl->priv;
+
+	DRV_LOG(DEBUG,
+		"Rx queue %u: miss on top-half, mru=%u, head=%u, addr=%p",
+		rxq_ctrl->idx, mr_ctrl->mru, mr_ctrl->head, (void *)addr);
+	return mlx5_mr_addr2mr_bh(ETH_DEV(priv), mr_ctrl, addr);
+}
+
+/**
+ * Bottom-half of LKey search on Tx.
+ *
+ * @param txq
+ *   Pointer to Tx queue structure.
+ * @param addr
+ *   Search key.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+static uint32_t
+mlx5_tx_addr2mr_bh(struct mlx5_txq_data *txq, uintptr_t addr)
+{
+	struct mlx5_txq_ctrl *txq_ctrl =
+		container_of(txq, struct mlx5_txq_ctrl, txq);
+	struct mlx5_mr_ctrl *mr_ctrl = &txq->mr_ctrl;
+	struct priv *priv = txq_ctrl->priv;
+
+	DRV_LOG(DEBUG,
+		"Tx queue %u: miss on top-half, mru=%u, head=%u, addr=%p",
+		txq_ctrl->idx, mr_ctrl->mru, mr_ctrl->head, (void *)addr);
+	return mlx5_mr_addr2mr_bh(ETH_DEV(priv), mr_ctrl, addr);
+}
+
+/**
+ * Bottom-half of LKey search on Tx. If it can't be searched in the memseg
+ * list, register the mempool of the mbuf as externally allocated memory.
+ *
+ * @param txq
+ *   Pointer to Tx queue structure.
+ * @param mb
+ *   Pointer to mbuf.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+uint32_t
+mlx5_tx_mb2mr_bh(struct mlx5_txq_data *txq, struct rte_mbuf *mb)
+{
+	uintptr_t addr = (uintptr_t)mb->buf_addr;
+	uint32_t lkey;
+
+	lkey = mlx5_tx_addr2mr_bh(txq, addr);
+	if (lkey == UINT32_MAX && rte_errno == ENXIO) {
+		/* Mempool may have externally allocated memory. */
+		return mlx5_tx_update_ext_mp(txq, addr, mlx5_mb2mp(mb));
+	}
+	return lkey;
+}
+
+/**
+ * Flush all of the local cache entries.
+ *
+ * @param mr_ctrl
+ *   Pointer to per-queue MR control structure.
+ */
+void
+mlx5_mr_flush_local_cache(struct mlx5_mr_ctrl *mr_ctrl)
+{
+	/* Reset the most-recently-used index. */
+	mr_ctrl->mru = 0;
+	/* Reset the linear search array. */
+	mr_ctrl->head = 0;
+	memset(mr_ctrl->cache, 0, sizeof(mr_ctrl->cache));
+	/* Reset the B-tree table. */
+	mr_ctrl->cache_bh.len = 1;
+	mr_ctrl->cache_bh.overflow = 0;
+	/* Update the generation number. */
+	mr_ctrl->cur_gen = *mr_ctrl->dev_gen_ptr;
+	DRV_LOG(DEBUG, "mr_ctrl(%p): flushed, cur_gen=%d",
+		(void *)mr_ctrl, mr_ctrl->cur_gen);
+}
+
+/**
+ * Called during rte_mempool_mem_iter() by mlx5_mr_update_ext_mp().
+ *
+ * Externally allocated chunk is registered and a MR is created for the chunk.
+ * The MR object is added to the global list. If memseg list of a MR object
+ * (mr->msl) is null, the MR object can be regarded as externally allocated
+ * memory.
+ *
+ * Once external memory is registered, it should be static. If the memory is
+ * freed and the virtual address range has different physical memory mapped
+ * again, it may cause crash on device due to the wrong translation entry. PMD
+ * can't track the free event of the external memory for now.
+ */
+static void
+mlx5_mr_update_ext_mp_cb(struct rte_mempool *mp, void *opaque,
+			 struct rte_mempool_memhdr *memhdr,
+			 unsigned mem_idx __rte_unused)
+{
+	struct mr_update_mp_data *data = opaque;
+	struct rte_eth_dev *dev = data->dev;
+	struct priv *priv = dev->data->dev_private;
+	struct mlx5_mr_ctrl *mr_ctrl = data->mr_ctrl;
+	struct mlx5_mr *mr = NULL;
+	uintptr_t addr = (uintptr_t)memhdr->addr;
+	size_t len = memhdr->len;
+	struct mlx5_mr_cache entry;
+	uint32_t lkey;
+
+	/* If already registered, it should return. */
+	rte_rwlock_read_lock(&priv->mr.rwlock);
+	lkey = mr_lookup_dev(dev, &entry, addr);
+	rte_rwlock_read_unlock(&priv->mr.rwlock);
+	if (lkey != UINT32_MAX)
+		return;
+	mr = rte_zmalloc_socket(NULL,
+				RTE_ALIGN_CEIL(sizeof(*mr),
+					       RTE_CACHE_LINE_SIZE),
+				RTE_CACHE_LINE_SIZE, mp->socket_id);
+	if (mr == NULL) {
+		DRV_LOG(WARNING,
+			"port %u unable to allocate memory for a new MR of"
+			" mempool (%s).",
+			dev->data->port_id, mp->name);
+		data->ret = -1;
+		return;
+	}
+	DRV_LOG(DEBUG, "port %u register MR for chunk #%d of mempool (%s)",
+		dev->data->port_id, mem_idx, mp->name);
+	mr->ibv_mr = mlx5_glue->reg_mr(priv->pd, (void *)addr, len,
+				       IBV_ACCESS_LOCAL_WRITE);
+	if (mr->ibv_mr == NULL) {
+		DRV_LOG(WARNING,
+			"port %u fail to create a verbs MR for address (%p)",
+			dev->data->port_id, (void *)addr);
+		rte_free(mr);
+		data->ret = -1;
+		return;
+	}
+	mr->msl = NULL; /* Mark it is external memory. */
+	mr->ms_bmp = NULL;
+	mr->ms_n = 1;
+	mr->ms_bmp_n = 1;
+	rte_rwlock_write_lock(&priv->mr.rwlock);
+	LIST_INSERT_HEAD(&priv->mr.mr_list, mr, mr);
+	DRV_LOG(DEBUG,
+		"port %u MR CREATED (%p) for external memory %p:\n"
+		"  [0x%" PRIxPTR ", 0x%" PRIxPTR "),"
+		" lkey=0x%x base_idx=%u ms_n=%u, ms_bmp_n=%u",
+		dev->data->port_id, (void *)mr, (void *)addr,
+		addr, addr + len, rte_cpu_to_be_32(mr->ibv_mr->lkey),
+		mr->ms_base_idx, mr->ms_n, mr->ms_bmp_n);
+	/* Insert to the global cache table. */
+	mr_insert_dev_cache(dev, mr);
+	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	/* Insert to the local cache table */
+	mlx5_mr_addr2mr_bh(dev, mr_ctrl, addr);
+}
+
+/**
+ * Register MR for entire memory chunks in a Mempool having externally allocated
+ * memory and fill in local cache.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param mr_ctrl
+ *   Pointer to per-queue MR control structure.
+ * @param mp
+ *   Pointer to registering Mempool.
+ *
+ * @return
+ *   0 on success, -1 on failure.
+ */
+static uint32_t
+mlx5_mr_update_ext_mp(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
+		      struct rte_mempool *mp)
+{
+	struct mr_update_mp_data data = {
+		.dev = dev,
+		.mr_ctrl = mr_ctrl,
+		.ret = 0,
+	};
+
+	rte_mempool_mem_iter(mp, mlx5_mr_update_ext_mp_cb, &data);
+	return data.ret;
+}
+
+/**
+ * Register MR entire memory chunks in a Mempool having externally allocated
+ * memory and search LKey of the address to return.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param addr
+ *   Search key.
+ * @param mp
+ *   Pointer to registering Mempool where addr belongs.
+ *
+ * @return
+ *   LKey for address on success, UINT32_MAX on failure.
+ */
+uint32_t
+mlx5_tx_update_ext_mp(struct mlx5_txq_data *txq, uintptr_t addr,
+		      struct rte_mempool *mp)
+{
+	struct mlx5_txq_ctrl *txq_ctrl =
+		container_of(txq, struct mlx5_txq_ctrl, txq);
+	struct mlx5_mr_ctrl *mr_ctrl = &txq->mr_ctrl;
+	struct priv *priv = txq_ctrl->priv;
+
+	mlx5_mr_update_ext_mp(ETH_DEV(priv), mr_ctrl, mp);
+	return mlx5_tx_addr2mr_bh(txq, addr);
+}
+
+/* Called during rte_mempool_mem_iter() by mlx5_mr_update_mp(). */
+static void
+mlx5_mr_update_mp_cb(struct rte_mempool *mp __rte_unused, void *opaque,
+		     struct rte_mempool_memhdr *memhdr,
+		     unsigned mem_idx __rte_unused)
+{
+	struct mr_update_mp_data *data = opaque;
+	uint32_t lkey;
+
+	/* Stop iteration if failed in the previous walk. */
+	if (data->ret < 0)
+		return;
+	/* Register address of the chunk and update local caches. */
+	lkey = mlx5_mr_addr2mr_bh(data->dev, data->mr_ctrl,
+				  (uintptr_t)memhdr->addr);
+	if (lkey == UINT32_MAX)
+		data->ret = -1;
+}
+
+/**
+ * Register entire memory chunks in a Mempool.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param mr_ctrl
+ *   Pointer to per-queue MR control structure.
+ * @param mp
+ *   Pointer to registering Mempool.
+ *
+ * @return
+ *   0 on success, -1 on failure.
+ */
+int
+mlx5_mr_update_mp(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
+		  struct rte_mempool *mp)
+{
+	struct mr_update_mp_data data = {
+		.dev = dev,
+		.mr_ctrl = mr_ctrl,
+		.ret = 0,
+	};
+
+	rte_mempool_mem_iter(mp, mlx5_mr_update_mp_cb, &data);
+	if (data.ret < 0 && rte_errno == ENXIO) {
+		/* Mempool may have externally allocated memory. */
+		return mlx5_mr_update_ext_mp(dev, mr_ctrl, mp);
+	}
+	return data.ret;
+}
+
+/**
+ * Dump all the created MRs and the global cache entries.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_mr_dump_dev(struct rte_eth_dev *dev __rte_unused)
+{
+#ifndef NDEBUG
+	struct priv *priv = dev->data->dev_private;
+	struct mlx5_mr *mr;
+	int mr_n = 0;
+	int chunk_n = 0;
+
+	rte_rwlock_read_lock(&priv->mr.rwlock);
+	/* Iterate all the existing MRs. */
+	LIST_FOREACH(mr, &priv->mr.mr_list, mr) {
+		unsigned int n;
+
+		DEBUG("port %u MR[%u], LKey = 0x%x, ms_n = %u, ms_bmp_n = %u",
+		      dev->data->port_id, mr_n++,
+		      rte_cpu_to_be_32(mr->ibv_mr->lkey),
+		      mr->ms_n, mr->ms_bmp_n);
+		if (mr->ms_n == 0)
+			continue;
+		for (n = 0; n < mr->ms_bmp_n; ) {
+			struct mlx5_mr_cache ret = { 0, };
+
+			n = mr_find_next_chunk(mr, &ret, n);
+			if (!ret.end)
+				break;
+			DEBUG("  chunk[%u], [0x%" PRIxPTR ", 0x%" PRIxPTR ")",
+			      chunk_n++, ret.start, ret.end);
+		}
+	}
+	DEBUG("port %u dumping global cache", dev->data->port_id);
+	mlx5_mr_btree_dump(&priv->mr.cache);
+	rte_rwlock_read_unlock(&priv->mr.rwlock);
+#endif
+}
+
+/**
+ * Release all the created MRs and resources. Remove device from memory callback
+ * list.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_mr_release(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
+	struct mlx5_mr *mr_next = LIST_FIRST(&priv->mr.mr_list);
+
+	/* Remove from memory callback device list. */
+	rte_rwlock_write_lock(&mlx5_shared_data->mem_event_rwlock);
+	LIST_REMOVE(priv, mem_event_cb);
+	rte_rwlock_write_unlock(&mlx5_shared_data->mem_event_rwlock);
+	if (rte_log_get_level(mlx5_logtype) == RTE_LOG_DEBUG)
+		mlx5_mr_dump_dev(dev);
+	rte_rwlock_write_lock(&priv->mr.rwlock);
+	/* Detach from MR list and move to free list. */
+	while (mr_next != NULL) {
+		struct mlx5_mr *mr = mr_next;
+
+		mr_next = LIST_NEXT(mr, mr);
+		LIST_REMOVE(mr, mr);
+		LIST_INSERT_HEAD(&priv->mr.mr_free_list, mr, mr);
+	}
+	LIST_INIT(&priv->mr.mr_list);
+	/* Free global cache. */
+	mlx5_mr_btree_free(&priv->mr.cache);
+	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	/* Free all remaining MRs. */
+	mlx5_mr_garbage_collect(dev);
 }

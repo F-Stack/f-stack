@@ -1,39 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include "base/ixgbe_api.h"
+#include "base/ixgbe_x550.h"
 #include "ixgbe_ethdev.h"
 #include "rte_pmd_ixgbe.h"
 
@@ -909,6 +881,34 @@ rte_pmd_ixgbe_set_tc_bw_alloc(uint16_t port,
 	return 0;
 }
 
+int __rte_experimental
+rte_pmd_ixgbe_upd_fctrl_sbp(uint16_t port, int enable)
+{
+	struct ixgbe_hw *hw;
+	struct rte_eth_dev *dev;
+	uint32_t fctrl;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	if (!hw)
+		return -ENOTSUP;
+
+	fctrl = IXGBE_READ_REG(hw, IXGBE_FCTRL);
+
+	/* If 'enable' set the SBP bit else clear it */
+	if (enable)
+		fctrl |= IXGBE_FCTRL_SBP;
+	else
+		fctrl &= ~(IXGBE_FCTRL_SBP);
+
+	IXGBE_WRITE_REG(hw, IXGBE_FCTRL, fctrl);
+	return 0;
+}
+
 #ifdef RTE_LIBRTE_IXGBE_BYPASS
 int
 rte_pmd_ixgbe_bypass_init(uint16_t port_id)
@@ -1041,3 +1041,204 @@ rte_pmd_ixgbe_bypass_wd_reset(uint16_t port_id)
 	return ixgbe_bypass_wd_reset(dev);
 }
 #endif
+
+/**
+ *  rte_pmd_ixgbe_acquire_swfw - Acquire SWFW semaphore
+ *  @hw: pointer to hardware structure
+ *  @mask: Mask to specify which semaphore to acquire
+ *
+ *  Acquires the SWFW semaphore and get the shared phy token as needed
+ */
+STATIC s32 rte_pmd_ixgbe_acquire_swfw(struct ixgbe_hw *hw, u32 mask)
+{
+	int retries = FW_PHY_TOKEN_RETRIES;
+	s32 status = IXGBE_SUCCESS;
+
+	while (--retries) {
+		status = ixgbe_acquire_swfw_semaphore(hw, mask);
+		if (status) {
+			PMD_DRV_LOG(ERR, "Get SWFW sem failed, Status = %d\n",
+				    status);
+			return status;
+		}
+		status = ixgbe_get_phy_token(hw);
+		if (status == IXGBE_SUCCESS)
+			return IXGBE_SUCCESS;
+
+		if (status == IXGBE_ERR_TOKEN_RETRY)
+			PMD_DRV_LOG(ERR, "Get PHY token failed, Status = %d\n",
+				    status);
+
+		ixgbe_release_swfw_semaphore(hw, mask);
+		if (status != IXGBE_ERR_TOKEN_RETRY) {
+			PMD_DRV_LOG(ERR,
+				    "Retry get PHY token failed, Status=%d\n",
+				    status);
+			return status;
+		}
+	}
+	PMD_DRV_LOG(ERR, "swfw acquisition retries failed!: PHY ID = 0x%08X\n",
+		    hw->phy.id);
+	return status;
+}
+
+/**
+ *  rte_pmd_ixgbe_release_swfw_sync - Release SWFW semaphore
+ *  @hw: pointer to hardware structure
+ *  @mask: Mask to specify which semaphore to release
+ *
+ *  Releases the SWFW semaphore and puts the shared phy token as needed
+ */
+STATIC void rte_pmd_ixgbe_release_swfw(struct ixgbe_hw *hw, u32 mask)
+{
+	ixgbe_put_phy_token(hw);
+	ixgbe_release_swfw_semaphore(hw, mask);
+}
+
+int __rte_experimental
+rte_pmd_ixgbe_mdio_lock(uint16_t port)
+{
+	struct ixgbe_hw *hw;
+	struct rte_eth_dev *dev;
+	u32 swfw_mask;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	if (!hw)
+		return -ENOTSUP;
+
+	if (hw->bus.lan_id)
+		swfw_mask = IXGBE_GSSR_PHY1_SM;
+	else
+		swfw_mask = IXGBE_GSSR_PHY0_SM;
+
+	if (rte_pmd_ixgbe_acquire_swfw(hw, swfw_mask))
+		return IXGBE_ERR_SWFW_SYNC;
+
+	return IXGBE_SUCCESS;
+}
+
+int __rte_experimental
+rte_pmd_ixgbe_mdio_unlock(uint16_t port)
+{
+	struct rte_eth_dev *dev;
+	struct ixgbe_hw *hw;
+	u32 swfw_mask;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	if (!hw)
+		return -ENOTSUP;
+
+	if (hw->bus.lan_id)
+		swfw_mask = IXGBE_GSSR_PHY1_SM;
+	else
+		swfw_mask = IXGBE_GSSR_PHY0_SM;
+
+	rte_pmd_ixgbe_release_swfw(hw, swfw_mask);
+
+	return IXGBE_SUCCESS;
+}
+
+int __rte_experimental
+rte_pmd_ixgbe_mdio_unlocked_read(uint16_t port, uint32_t reg_addr,
+				 uint32_t dev_type, uint16_t *phy_data)
+{
+	struct ixgbe_hw *hw;
+	struct rte_eth_dev *dev;
+	u32 i, data, command;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	if (!hw)
+		return -ENOTSUP;
+
+	/* Setup and write the read command */
+	command = (reg_addr << IXGBE_MSCA_DEV_TYPE_SHIFT) |
+		  (dev_type << IXGBE_MSCA_PHY_ADDR_SHIFT) |
+		  IXGBE_MSCA_OLD_PROTOCOL | IXGBE_MSCA_READ_AUTOINC |
+		  IXGBE_MSCA_MDI_COMMAND;
+
+	IXGBE_WRITE_REG(hw, IXGBE_MSCA, command);
+
+	/* Check every 10 usec to see if the access completed.
+	 * The MDI Command bit will clear when the operation is
+	 * complete
+	 */
+	for (i = 0; i < IXGBE_MDIO_COMMAND_TIMEOUT; i++) {
+		usec_delay(10);
+
+		command = IXGBE_READ_REG(hw, IXGBE_MSCA);
+		if (!(command & IXGBE_MSCA_MDI_COMMAND))
+			break;
+	}
+	if (command & IXGBE_MSCA_MDI_COMMAND)
+		return IXGBE_ERR_PHY;
+
+	/* Read operation is complete.  Get the data from MSRWD */
+	data = IXGBE_READ_REG(hw, IXGBE_MSRWD);
+	data >>= IXGBE_MSRWD_READ_DATA_SHIFT;
+	*phy_data = (u16)data;
+
+	return 0;
+}
+
+int __rte_experimental
+rte_pmd_ixgbe_mdio_unlocked_write(uint16_t port, uint32_t reg_addr,
+				  uint32_t dev_type, uint16_t phy_data)
+{
+	struct ixgbe_hw *hw;
+	u32 i, command;
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	if (!hw)
+		return -ENOTSUP;
+
+	/* Put the data in the MDI single read and write data register*/
+	IXGBE_WRITE_REG(hw, IXGBE_MSRWD, (u32)phy_data);
+
+	/* Setup and write the write command */
+	command = (reg_addr << IXGBE_MSCA_DEV_TYPE_SHIFT) |
+		  (dev_type << IXGBE_MSCA_PHY_ADDR_SHIFT) |
+		  IXGBE_MSCA_OLD_PROTOCOL | IXGBE_MSCA_WRITE |
+		  IXGBE_MSCA_MDI_COMMAND;
+
+	IXGBE_WRITE_REG(hw, IXGBE_MSCA, command);
+
+	/* Check every 10 usec to see if the access completed.
+	 * The MDI Command bit will clear when the operation is
+	 * complete
+	 */
+	for (i = 0; i < IXGBE_MDIO_COMMAND_TIMEOUT; i++) {
+		usec_delay(10);
+
+		command = IXGBE_READ_REG(hw, IXGBE_MSCA);
+		if (!(command & IXGBE_MSCA_MDI_COMMAND))
+			break;
+	}
+	if (command & IXGBE_MSCA_MDI_COMMAND) {
+		ERROR_REPORT1(IXGBE_ERROR_POLLING,
+			      "PHY write cmd didn't complete\n");
+		return IXGBE_ERR_PHY;
+	}
+	return 0;
+}

@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) Broadcom Limited.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Broadcom
+ * All rights reserved.
  */
 
 #include <unistd.h>
@@ -54,7 +26,9 @@
 
 #include <rte_io.h>
 
-#define HWRM_CMD_TIMEOUT		10000
+#define HWRM_CMD_TIMEOUT		6000000
+#define HWRM_SPEC_CODE_1_8_3		0x10803
+#define HWRM_VERSION_1_9_1		0x10901
 
 struct bnxt_plcmodes_cfg {
 	uint32_t	flags;
@@ -79,7 +53,7 @@ static int page_getenum(size_t size)
 		return 22;
 	if (size <= 1 << 30)
 		return 30;
-	RTE_LOG(ERR, PMD, "Page size %zu out of range\n", size);
+	PMD_DRV_LOG(ERR, "Page size %zu out of range\n", size);
 	return sizeof(void *) * 8 - 1;
 }
 
@@ -96,7 +70,7 @@ static int page_roundup(size_t size)
  */
 
 static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
-					uint32_t msg_len)
+				  uint32_t msg_len, bool use_kong_mb)
 {
 	unsigned int i;
 	struct input *req = msg;
@@ -106,6 +80,10 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 	uint8_t *valid;
 	uint16_t max_req_len = bp->max_req_len;
 	struct hwrm_short_input short_input = { 0 };
+	uint16_t bar_offset = use_kong_mb ?
+		GRCPF_REG_KONG_CHANNEL_OFFSET : GRCPF_REG_CHIMP_CHANNEL_OFFSET;
+	uint16_t mb_trigger_offset = use_kong_mb ?
+		GRCPF_REG_KONG_COMM_TRIGGER : GRCPF_REG_CHIMP_COMM_TRIGGER;
 
 	if (bp->flags & BNXT_FLAG_SHORT_CMD) {
 		void *short_cmd_req = bp->hwrm_short_cmd_req_addr;
@@ -115,7 +93,7 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 
 		short_input.req_type = rte_cpu_to_le_16(req->req_type);
 		short_input.signature = rte_cpu_to_le_16(
-					HWRM_SHORT_REQ_SIGNATURE_SHORT_CMD);
+					HWRM_SHORT_INPUT_SIGNATURE_SHORT_CMD);
 		short_input.size = rte_cpu_to_le_16(msg_len);
 		short_input.req_addr =
 			rte_cpu_to_le_64(bp->hwrm_short_cmd_req_dma_addr);
@@ -131,19 +109,19 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 
 	/* Write request msg to hwrm channel */
 	for (i = 0; i < msg_len; i += 4) {
-		bar = (uint8_t *)bp->bar0 + i;
+		bar = (uint8_t *)bp->bar0 + bar_offset + i;
 		rte_write32(*data, bar);
 		data++;
 	}
 
 	/* Zero the rest of the request space */
 	for (; i < max_req_len; i += 4) {
-		bar = (uint8_t *)bp->bar0 + i;
+		bar = (uint8_t *)bp->bar0 + bar_offset + i;
 		rte_write32(0, bar);
 	}
 
 	/* Ring channel doorbell */
-	bar = (uint8_t *)bp->bar0 + 0x100;
+	bar = (uint8_t *)bp->bar0 + mb_trigger_offset;
 	rte_write32(1, bar);
 
 	/* Poll for the valid bit */
@@ -157,11 +135,11 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 			if (*valid == HWRM_RESP_VALID_KEY)
 				break;
 		}
-		rte_delay_us(600);
+		rte_delay_us(1);
 	}
 
 	if (i >= HWRM_CMD_TIMEOUT) {
-		RTE_LOG(ERR, PMD, "Error sending msg 0x%04x\n",
+		PMD_DRV_LOG(ERR, "Error sending msg 0x%04x\n",
 			req->req_type);
 		goto err_ret;
 	}
@@ -182,20 +160,32 @@ err_ret:
  *
  * HWRM_UNLOCK() must be called after all response processing is completed.
  */
-#define HWRM_PREP(req, type) do { \
+#define HWRM_PREP(req, type, kong) do { \
 	rte_spinlock_lock(&bp->hwrm_lock); \
 	memset(bp->hwrm_cmd_resp_addr, 0, bp->max_resp_len); \
 	req.req_type = rte_cpu_to_le_16(HWRM_##type); \
 	req.cmpl_ring = rte_cpu_to_le_16(-1); \
-	req.seq_id = rte_cpu_to_le_16(bp->hwrm_cmd_seq++); \
+	req.seq_id = kong ? rte_cpu_to_le_16(bp->kong_cmd_seq++) :\
+		rte_cpu_to_le_16(bp->hwrm_cmd_seq++); \
 	req.target_id = rte_cpu_to_le_16(0xffff); \
 	req.resp_addr = rte_cpu_to_le_64(bp->hwrm_cmd_resp_dma_addr); \
 } while (0)
 
+#define HWRM_CHECK_RESULT_SILENT() do {\
+	if (rc) { \
+		rte_spinlock_unlock(&bp->hwrm_lock); \
+		return rc; \
+	} \
+	if (resp->error_code) { \
+		rc = rte_le_to_cpu_16(resp->error_code); \
+		rte_spinlock_unlock(&bp->hwrm_lock); \
+		return rc; \
+	} \
+} while (0)
+
 #define HWRM_CHECK_RESULT() do {\
 	if (rc) { \
-		RTE_LOG(ERR, PMD, "%s failed rc:%d\n", \
-			__func__, rc); \
+		PMD_DRV_LOG(ERR, "failed rc:%d\n", rc); \
 		rte_spinlock_unlock(&bp->hwrm_lock); \
 		if (rc == HWRM_ERR_CODE_RESOURCE_ACCESS_DENIED) \
 			rc = -EACCES; \
@@ -208,18 +198,15 @@ err_ret:
 		if (resp->resp_len >= 16) { \
 			struct hwrm_err_output *tmp_hwrm_err_op = \
 						(void *)resp; \
-			RTE_LOG(ERR, PMD, \
-				"%s error %d:%d:%08x:%04x\n", \
-				__func__, \
+			PMD_DRV_LOG(ERR, \
+				"error %d:%d:%08x:%04x\n", \
 				rc, tmp_hwrm_err_op->cmd_err, \
 				rte_le_to_cpu_32(\
 					tmp_hwrm_err_op->opaque_0), \
 				rte_le_to_cpu_16(\
 					tmp_hwrm_err_op->opaque_1)); \
-		} \
-		else { \
-			RTE_LOG(ERR, PMD, \
-				"%s error %d\n", __func__, rc); \
+		} else { \
+			PMD_DRV_LOG(ERR, "error %d\n", rc); \
 		} \
 		rte_spinlock_unlock(&bp->hwrm_lock); \
 		if (rc == HWRM_ERR_CODE_RESOURCE_ACCESS_DENIED) \
@@ -238,11 +225,11 @@ int bnxt_hwrm_cfa_l2_clear_rx_mask(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	struct hwrm_cfa_l2_set_rx_mask_input req = {.req_type = 0 };
 	struct hwrm_cfa_l2_set_rx_mask_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, CFA_L2_SET_RX_MASK);
+	HWRM_PREP(req, CFA_L2_SET_RX_MASK, BNXT_USE_CHIMP_MB);
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 	req.mask = 0;
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -263,7 +250,7 @@ int bnxt_hwrm_cfa_l2_set_rx_mask(struct bnxt *bp,
 	if (vnic->fw_vnic_id == INVALID_HW_RING_ID)
 		return rc;
 
-	HWRM_PREP(req, CFA_L2_SET_RX_MASK);
+	HWRM_PREP(req, CFA_L2_SET_RX_MASK, BNXT_USE_CHIMP_MB);
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
 	/* FIXME add multicast flag, when multicast adding options is supported
@@ -293,7 +280,7 @@ int bnxt_hwrm_cfa_l2_set_rx_mask(struct bnxt *bp,
 	}
 	req.mask = rte_cpu_to_le_32(mask);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -325,14 +312,14 @@ int bnxt_hwrm_cfa_vlan_antispoof_cfg(struct bnxt *bp, uint16_t fid,
 				return 0;
 		}
 	}
-	HWRM_PREP(req, CFA_VLAN_ANTISPOOF_CFG);
+	HWRM_PREP(req, CFA_VLAN_ANTISPOOF_CFG, BNXT_USE_CHIMP_MB);
 	req.fid = rte_cpu_to_le_16(fid);
 
 	req.vlan_tag_mask_tbl_addr =
 		rte_cpu_to_le_64(rte_mem_virt2iova(vlan_table));
 	req.num_vlan_entries = rte_cpu_to_le_32((uint32_t)vlan_count);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -350,16 +337,16 @@ int bnxt_hwrm_clear_l2_filter(struct bnxt *bp,
 	if (filter->fw_l2_filter_id == UINT64_MAX)
 		return 0;
 
-	HWRM_PREP(req, CFA_L2_FILTER_FREE);
+	HWRM_PREP(req, CFA_L2_FILTER_FREE, BNXT_USE_CHIMP_MB);
 
 	req.l2_filter_id = rte_cpu_to_le_64(filter->fw_l2_filter_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
-	filter->fw_l2_filter_id = -1;
+	filter->fw_l2_filter_id = UINT64_MAX;
 
 	return 0;
 }
@@ -380,7 +367,7 @@ int bnxt_hwrm_set_l2_filter(struct bnxt *bp,
 	//TODO: Is there a better way to add VLANs to each VNIC in case of VMDQ
 	if ((dev_conf->rxmode.mq_mode & ETH_MQ_RX_VMDQ_FLAG) &&
 	    conf->pool_map[j].pools & (1UL << j)) {
-		RTE_LOG(DEBUG, PMD,
+		PMD_DRV_LOG(DEBUG,
 			"Add vlan %u to vmdq pool %u\n",
 			conf->pool_map[j].vlan_id, j);
 
@@ -393,9 +380,11 @@ int bnxt_hwrm_set_l2_filter(struct bnxt *bp,
 	if (filter->fw_l2_filter_id != UINT64_MAX)
 		bnxt_hwrm_clear_l2_filter(bp, filter);
 
-	HWRM_PREP(req, CFA_L2_FILTER_ALLOC);
+	HWRM_PREP(req, CFA_L2_FILTER_ALLOC, BNXT_USE_CHIMP_MB);
 
 	req.flags = rte_cpu_to_le_32(filter->flags);
+	req.flags |=
+	rte_cpu_to_le_32(HWRM_CFA_L2_FILTER_ALLOC_INPUT_FLAGS_OUTERMOST);
 
 	enables = filter->enables |
 	      HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_DST_ID;
@@ -428,7 +417,7 @@ int bnxt_hwrm_set_l2_filter(struct bnxt *bp,
 
 	req.enables = rte_cpu_to_le_32(enables);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -438,26 +427,113 @@ int bnxt_hwrm_set_l2_filter(struct bnxt *bp,
 	return rc;
 }
 
-int bnxt_hwrm_func_qcaps(struct bnxt *bp)
+int bnxt_hwrm_ptp_cfg(struct bnxt *bp)
+{
+	struct hwrm_port_mac_cfg_input req = {.req_type = 0};
+	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
+	uint32_t flags = 0;
+	int rc;
+
+	if (!ptp)
+		return 0;
+
+	HWRM_PREP(req, PORT_MAC_CFG, BNXT_USE_CHIMP_MB);
+
+	if (ptp->rx_filter)
+		flags |= HWRM_PORT_MAC_CFG_INPUT_FLAGS_PTP_RX_TS_CAPTURE_ENABLE;
+	else
+		flags |=
+			HWRM_PORT_MAC_CFG_INPUT_FLAGS_PTP_RX_TS_CAPTURE_DISABLE;
+	if (ptp->tx_tstamp_en)
+		flags |= HWRM_PORT_MAC_CFG_INPUT_FLAGS_PTP_TX_TS_CAPTURE_ENABLE;
+	else
+		flags |=
+			HWRM_PORT_MAC_CFG_INPUT_FLAGS_PTP_TX_TS_CAPTURE_DISABLE;
+	req.flags = rte_cpu_to_le_32(flags);
+	req.enables = rte_cpu_to_le_32
+		(HWRM_PORT_MAC_CFG_INPUT_ENABLES_RX_TS_CAPTURE_PTP_MSG_TYPE);
+	req.rx_ts_capture_ptp_msg_type = rte_cpu_to_le_16(ptp->rxctl);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+	HWRM_UNLOCK();
+
+	return rc;
+}
+
+static int bnxt_hwrm_ptp_qcfg(struct bnxt *bp)
+{
+	int rc = 0;
+	struct hwrm_port_mac_ptp_qcfg_input req = {.req_type = 0};
+	struct hwrm_port_mac_ptp_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
+	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
+
+/*	if (bp->hwrm_spec_code < 0x10801 || ptp)  TBD  */
+	if (ptp)
+		return 0;
+
+	HWRM_PREP(req, PORT_MAC_PTP_QCFG, BNXT_USE_CHIMP_MB);
+
+	req.port_id = rte_cpu_to_le_16(bp->pf.port_id);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	HWRM_CHECK_RESULT();
+
+	if (!(resp->flags & HWRM_PORT_MAC_PTP_QCFG_OUTPUT_FLAGS_DIRECT_ACCESS))
+		return 0;
+
+	ptp = rte_zmalloc("ptp_cfg", sizeof(*ptp), 0);
+	if (!ptp)
+		return -ENOMEM;
+
+	ptp->rx_regs[BNXT_PTP_RX_TS_L] =
+		rte_le_to_cpu_32(resp->rx_ts_reg_off_lower);
+	ptp->rx_regs[BNXT_PTP_RX_TS_H] =
+		rte_le_to_cpu_32(resp->rx_ts_reg_off_upper);
+	ptp->rx_regs[BNXT_PTP_RX_SEQ] =
+		rte_le_to_cpu_32(resp->rx_ts_reg_off_seq_id);
+	ptp->rx_regs[BNXT_PTP_RX_FIFO] =
+		rte_le_to_cpu_32(resp->rx_ts_reg_off_fifo);
+	ptp->rx_regs[BNXT_PTP_RX_FIFO_ADV] =
+		rte_le_to_cpu_32(resp->rx_ts_reg_off_fifo_adv);
+	ptp->tx_regs[BNXT_PTP_TX_TS_L] =
+		rte_le_to_cpu_32(resp->tx_ts_reg_off_lower);
+	ptp->tx_regs[BNXT_PTP_TX_TS_H] =
+		rte_le_to_cpu_32(resp->tx_ts_reg_off_upper);
+	ptp->tx_regs[BNXT_PTP_TX_SEQ] =
+		rte_le_to_cpu_32(resp->tx_ts_reg_off_seq_id);
+	ptp->tx_regs[BNXT_PTP_TX_FIFO] =
+		rte_le_to_cpu_32(resp->tx_ts_reg_off_fifo);
+
+	ptp->bp = bp;
+	bp->ptp_cfg = ptp;
+
+	return 0;
+}
+
+static int __bnxt_hwrm_func_qcaps(struct bnxt *bp)
 {
 	int rc = 0;
 	struct hwrm_func_qcaps_input req = {.req_type = 0 };
 	struct hwrm_func_qcaps_output *resp = bp->hwrm_cmd_resp_addr;
 	uint16_t new_max_vfs;
+	uint32_t flags;
 	int i;
 
-	HWRM_PREP(req, FUNC_QCAPS);
+	HWRM_PREP(req, FUNC_QCAPS, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(0xffff);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
 	bp->max_ring_grps = rte_le_to_cpu_32(resp->max_hw_ring_grps);
+	flags = rte_le_to_cpu_32(resp->flags);
 	if (BNXT_PF(bp)) {
 		bp->pf.port_id = resp->port_id;
 		bp->pf.first_vf_id = rte_le_to_cpu_16(resp->first_vf_id);
+		bp->pf.total_vfs = rte_le_to_cpu_16(resp->max_vfs);
 		new_max_vfs = bp->pdev->max_vfs;
 		if (new_max_vfs != bp->pf.max_vfs) {
 			if (bp->pf.vf_info)
@@ -472,7 +548,7 @@ int bnxt_hwrm_func_qcaps(struct bnxt *bp)
 						    getpagesize(),
 						    getpagesize());
 				if (bp->pf.vf_info[i].vlan_table == NULL)
-					RTE_LOG(ERR, PMD,
+					PMD_DRV_LOG(ERR,
 					"Fail to alloc VLAN table for VF %d\n",
 					i);
 				else
@@ -483,7 +559,7 @@ int bnxt_hwrm_func_qcaps(struct bnxt *bp)
 						    getpagesize(),
 						    getpagesize());
 				if (bp->pf.vf_info[i].vlan_as_table == NULL)
-					RTE_LOG(ERR, PMD,
+					PMD_DRV_LOG(ERR,
 					"Alloc VLAN AS table for VF %d fail\n",
 					i);
 				else
@@ -511,9 +587,31 @@ int bnxt_hwrm_func_qcaps(struct bnxt *bp)
 		bp->max_vnics = 1;
 	}
 	bp->max_stat_ctx = rte_le_to_cpu_16(resp->max_stat_ctx);
-	if (BNXT_PF(bp))
+	if (BNXT_PF(bp)) {
 		bp->pf.total_vnics = rte_le_to_cpu_16(resp->max_vnics);
+		if (flags & HWRM_FUNC_QCAPS_OUTPUT_FLAGS_PTP_SUPPORTED) {
+			bp->flags |= BNXT_FLAG_PTP_SUPPORTED;
+			PMD_DRV_LOG(INFO, "PTP SUPPORTED\n");
+			HWRM_UNLOCK();
+			bnxt_hwrm_ptp_qcfg(bp);
+		}
+	}
+
 	HWRM_UNLOCK();
+
+	return rc;
+}
+
+int bnxt_hwrm_func_qcaps(struct bnxt *bp)
+{
+	int rc;
+
+	rc = __bnxt_hwrm_func_qcaps(bp);
+	if (!rc && bp->hwrm_spec_code >= HWRM_SPEC_CODE_1_8_3) {
+		rc = bnxt_hwrm_func_resc_qcaps(bp);
+		if (!rc)
+			bp->flags |= BNXT_FLAG_NEW_RM;
+	}
 
 	return rc;
 }
@@ -524,11 +622,11 @@ int bnxt_hwrm_func_reset(struct bnxt *bp)
 	struct hwrm_func_reset_input req = {.req_type = 0 };
 	struct hwrm_func_reset_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, FUNC_RESET);
+	HWRM_PREP(req, FUNC_RESET, BNXT_USE_CHIMP_MB);
 
 	req.enables = rte_cpu_to_le_32(0);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -545,7 +643,7 @@ int bnxt_hwrm_func_driver_register(struct bnxt *bp)
 	if (bp->flags & BNXT_FLAG_REGISTERED)
 		return 0;
 
-	HWRM_PREP(req, FUNC_DRV_RGTR);
+	HWRM_PREP(req, FUNC_DRV_RGTR, BNXT_USE_CHIMP_MB);
 	req.enables = rte_cpu_to_le_32(HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_VER |
 			HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_ASYNC_EVENT_FWD);
 	req.ver_maj = RTE_VER_YEAR;
@@ -554,16 +652,30 @@ int bnxt_hwrm_func_driver_register(struct bnxt *bp)
 
 	if (BNXT_PF(bp)) {
 		req.enables |= rte_cpu_to_le_32(
-			HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_VF_INPUT_FWD);
+			HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_VF_REQ_FWD);
 		memcpy(req.vf_req_fwd, bp->pf.vf_req_fwd,
 		       RTE_MIN(sizeof(req.vf_req_fwd),
 			       sizeof(bp->pf.vf_req_fwd)));
+
+		/*
+		 * PF can sniff HWRM API issued by VF. This can be set up by
+		 * linux driver and inherited by the DPDK PF driver. Clear
+		 * this HWRM sniffer list in FW because DPDK PF driver does
+		 * not support this.
+		 */
+		req.flags =
+		rte_cpu_to_le_32(HWRM_FUNC_DRV_RGTR_INPUT_FLAGS_FWD_NONE_MODE);
 	}
 
-	req.async_event_fwd[0] |= rte_cpu_to_le_32(0x1);   /* TODO: Use MACRO */
-	//memset(req.async_event_fwd, 0xff, sizeof(req.async_event_fwd));
+	req.async_event_fwd[0] |=
+		rte_cpu_to_le_32(ASYNC_CMPL_EVENT_ID_LINK_STATUS_CHANGE |
+				 ASYNC_CMPL_EVENT_ID_PORT_CONN_NOT_ALLOWED |
+				 ASYNC_CMPL_EVENT_ID_LINK_SPEED_CFG_CHANGE);
+	req.async_event_fwd[1] |=
+		rte_cpu_to_le_32(ASYNC_CMPL_EVENT_ID_PF_DRVR_UNLOAD |
+				 ASYNC_CMPL_EVENT_ID_VF_CFG_CHANGE);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -573,68 +685,150 @@ int bnxt_hwrm_func_driver_register(struct bnxt *bp)
 	return rc;
 }
 
+int bnxt_hwrm_check_vf_rings(struct bnxt *bp)
+{
+	if (!(BNXT_VF(bp) && (bp->flags & BNXT_FLAG_NEW_RM)))
+		return 0;
+
+	return bnxt_hwrm_func_reserve_vf_resc(bp, true);
+}
+
+int bnxt_hwrm_func_reserve_vf_resc(struct bnxt *bp, bool test)
+{
+	int rc;
+	uint32_t flags = 0;
+	uint32_t enables;
+	struct hwrm_func_vf_cfg_output *resp = bp->hwrm_cmd_resp_addr;
+	struct hwrm_func_vf_cfg_input req = {0};
+
+	HWRM_PREP(req, FUNC_VF_CFG, BNXT_USE_CHIMP_MB);
+
+	req.enables = rte_cpu_to_le_32
+			(HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_RX_RINGS  |
+			HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_TX_RINGS   |
+			HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_STAT_CTXS  |
+			HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_CMPL_RINGS |
+			HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_HW_RING_GRPS |
+			HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_VNICS);
+
+	req.num_tx_rings = rte_cpu_to_le_16(bp->tx_nr_rings);
+	req.num_rx_rings = rte_cpu_to_le_16(bp->rx_nr_rings *
+					    AGG_RING_MULTIPLIER);
+	req.num_stat_ctxs = rte_cpu_to_le_16(bp->rx_nr_rings + bp->tx_nr_rings);
+	req.num_cmpl_rings = rte_cpu_to_le_16(bp->rx_nr_rings +
+					      bp->tx_nr_rings);
+	req.num_hw_ring_grps = rte_cpu_to_le_16(bp->rx_nr_rings);
+	req.num_vnics = rte_cpu_to_le_16(bp->rx_nr_rings);
+	if (bp->vf_resv_strategy ==
+	    HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESV_STRATEGY_MINIMAL_STATIC) {
+		enables = HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_VNICS |
+				HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_L2_CTXS |
+				HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_RSSCOS_CTXS;
+		req.enables |= rte_cpu_to_le_32(enables);
+		req.num_rsscos_ctxs = rte_cpu_to_le_16(BNXT_VF_RSV_NUM_RSS_CTX);
+		req.num_l2_ctxs = rte_cpu_to_le_16(BNXT_VF_RSV_NUM_L2_CTX);
+		req.num_vnics = rte_cpu_to_le_16(BNXT_VF_RSV_NUM_VNIC);
+	}
+
+	if (test)
+		flags = HWRM_FUNC_VF_CFG_INPUT_FLAGS_TX_ASSETS_TEST |
+			HWRM_FUNC_VF_CFG_INPUT_FLAGS_RX_ASSETS_TEST |
+			HWRM_FUNC_VF_CFG_INPUT_FLAGS_CMPL_ASSETS_TEST |
+			HWRM_FUNC_VF_CFG_INPUT_FLAGS_RING_GRP_ASSETS_TEST |
+			HWRM_FUNC_VF_CFG_INPUT_FLAGS_STAT_CTX_ASSETS_TEST |
+			HWRM_FUNC_VF_CFG_INPUT_FLAGS_VNIC_ASSETS_TEST;
+
+	req.flags = rte_cpu_to_le_32(flags);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	if (test)
+		HWRM_CHECK_RESULT_SILENT();
+	else
+		HWRM_CHECK_RESULT();
+
+	HWRM_UNLOCK();
+	return rc;
+}
+
+int bnxt_hwrm_func_resc_qcaps(struct bnxt *bp)
+{
+	int rc;
+	struct hwrm_func_resource_qcaps_output *resp = bp->hwrm_cmd_resp_addr;
+	struct hwrm_func_resource_qcaps_input req = {0};
+
+	HWRM_PREP(req, FUNC_RESOURCE_QCAPS, BNXT_USE_CHIMP_MB);
+	req.fid = rte_cpu_to_le_16(0xffff);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	HWRM_CHECK_RESULT();
+
+	if (BNXT_VF(bp)) {
+		bp->max_rsscos_ctx = rte_le_to_cpu_16(resp->max_rsscos_ctx);
+		bp->max_cp_rings = rte_le_to_cpu_16(resp->max_cmpl_rings);
+		bp->max_tx_rings = rte_le_to_cpu_16(resp->max_tx_rings);
+		bp->max_rx_rings = rte_le_to_cpu_16(resp->max_rx_rings);
+		bp->max_ring_grps = rte_le_to_cpu_32(resp->max_hw_ring_grps);
+		bp->max_l2_ctx = rte_le_to_cpu_16(resp->max_l2_ctxs);
+		bp->max_vnics = rte_le_to_cpu_16(resp->max_vnics);
+		bp->max_stat_ctx = rte_le_to_cpu_16(resp->max_stat_ctx);
+	}
+	bp->vf_resv_strategy = rte_le_to_cpu_16(resp->vf_reservation_strategy);
+	if (bp->vf_resv_strategy >
+	    HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESV_STRATEGY_MINIMAL_STATIC)
+		bp->vf_resv_strategy =
+		HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESERVATION_STRATEGY_MAXIMAL;
+
+	HWRM_UNLOCK();
+	return rc;
+}
+
 int bnxt_hwrm_ver_get(struct bnxt *bp)
 {
 	int rc = 0;
 	struct hwrm_ver_get_input req = {.req_type = 0 };
 	struct hwrm_ver_get_output *resp = bp->hwrm_cmd_resp_addr;
-	uint32_t my_version;
 	uint32_t fw_version;
 	uint16_t max_resp_len;
 	char type[RTE_MEMZONE_NAMESIZE];
 	uint32_t dev_caps_cfg;
 
 	bp->max_req_len = HWRM_MAX_REQ_LEN;
-	HWRM_PREP(req, VER_GET);
+	HWRM_PREP(req, VER_GET, BNXT_USE_CHIMP_MB);
 
 	req.hwrm_intf_maj = HWRM_VERSION_MAJOR;
 	req.hwrm_intf_min = HWRM_VERSION_MINOR;
 	req.hwrm_intf_upd = HWRM_VERSION_UPDATE;
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
-	RTE_LOG(INFO, PMD, "%d.%d.%d:%d.%d.%d\n",
-		resp->hwrm_intf_maj, resp->hwrm_intf_min,
-		resp->hwrm_intf_upd,
-		resp->hwrm_fw_maj, resp->hwrm_fw_min, resp->hwrm_fw_bld);
-	bp->fw_ver = (resp->hwrm_fw_maj << 24) | (resp->hwrm_fw_min << 16) |
-			(resp->hwrm_fw_bld << 8) | resp->hwrm_fw_rsvd;
-	RTE_LOG(INFO, PMD, "Driver HWRM version: %d.%d.%d\n",
+	PMD_DRV_LOG(INFO, "%d.%d.%d:%d.%d.%d\n",
+		resp->hwrm_intf_maj_8b, resp->hwrm_intf_min_8b,
+		resp->hwrm_intf_upd_8b, resp->hwrm_fw_maj_8b,
+		resp->hwrm_fw_min_8b, resp->hwrm_fw_bld_8b);
+	bp->fw_ver = (resp->hwrm_fw_maj_8b << 24) |
+		     (resp->hwrm_fw_min_8b << 16) |
+		     (resp->hwrm_fw_bld_8b << 8) |
+		     resp->hwrm_fw_rsvd_8b;
+	PMD_DRV_LOG(INFO, "Driver HWRM version: %d.%d.%d\n",
 		HWRM_VERSION_MAJOR, HWRM_VERSION_MINOR, HWRM_VERSION_UPDATE);
 
-	my_version = HWRM_VERSION_MAJOR << 16;
-	my_version |= HWRM_VERSION_MINOR << 8;
-	my_version |= HWRM_VERSION_UPDATE;
+	fw_version = resp->hwrm_intf_maj_8b << 16;
+	fw_version |= resp->hwrm_intf_min_8b << 8;
+	fw_version |= resp->hwrm_intf_upd_8b;
+	bp->hwrm_spec_code = fw_version;
 
-	fw_version = resp->hwrm_intf_maj << 16;
-	fw_version |= resp->hwrm_intf_min << 8;
-	fw_version |= resp->hwrm_intf_upd;
-
-	if (resp->hwrm_intf_maj != HWRM_VERSION_MAJOR) {
-		RTE_LOG(ERR, PMD, "Unsupported firmware API version\n");
+	if (resp->hwrm_intf_maj_8b != HWRM_VERSION_MAJOR) {
+		PMD_DRV_LOG(ERR, "Unsupported firmware API version\n");
 		rc = -EINVAL;
 		goto error;
 	}
 
-	if (my_version != fw_version) {
-		RTE_LOG(INFO, PMD, "BNXT Driver/HWRM API mismatch.\n");
-		if (my_version < fw_version) {
-			RTE_LOG(INFO, PMD,
-				"Firmware API version is newer than driver.\n");
-			RTE_LOG(INFO, PMD,
-				"The driver may be missing features.\n");
-		} else {
-			RTE_LOG(INFO, PMD,
-				"Firmware API version is older than driver.\n");
-			RTE_LOG(INFO, PMD,
-				"Not all driver features may be functional.\n");
-		}
-	}
-
 	if (bp->max_req_len > resp->max_req_win_len) {
-		RTE_LOG(ERR, PMD, "Unsupported request length\n");
+		PMD_DRV_LOG(ERR, "Unsupported request length\n");
 		rc = -EINVAL;
 	}
 	bp->max_req_len = rte_le_to_cpu_16(resp->max_req_win_len);
@@ -657,7 +851,7 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 		bp->hwrm_cmd_resp_dma_addr =
 			rte_mem_virt2iova(bp->hwrm_cmd_resp_addr);
 		if (bp->hwrm_cmd_resp_dma_addr == 0) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 			"Unable to map response buffer to physical memory.\n");
 			rc = -ENOMEM;
 			goto error;
@@ -668,8 +862,8 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 	if ((dev_caps_cfg &
 		HWRM_VER_GET_OUTPUT_DEV_CAPS_CFG_SHORT_CMD_SUPPORTED) &&
 	    (dev_caps_cfg &
-	     HWRM_VER_GET_OUTPUT_DEV_CAPS_CFG_SHORT_CMD_INPUTUIRED)) {
-		RTE_LOG(DEBUG, PMD, "Short command supported\n");
+	     HWRM_VER_GET_OUTPUT_DEV_CAPS_CFG_SHORT_CMD_REQUIRED)) {
+		PMD_DRV_LOG(DEBUG, "Short command supported\n");
 
 		rte_free(bp->hwrm_short_cmd_req_addr);
 
@@ -684,7 +878,7 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 			rte_mem_virt2iova(bp->hwrm_short_cmd_req_addr);
 		if (bp->hwrm_short_cmd_req_dma_addr == 0) {
 			rte_free(bp->hwrm_short_cmd_req_addr);
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"Unable to map buffer to physical memory.\n");
 			rc = -ENOMEM;
 			goto error;
@@ -692,6 +886,14 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 
 		bp->flags |= BNXT_FLAG_SHORT_CMD;
 	}
+	if (dev_caps_cfg &
+	    HWRM_VER_GET_OUTPUT_DEV_CAPS_CFG_KONG_MB_CHNL_SUPPORTED) {
+		bp->flags |= BNXT_FLAG_KONG_MB_EN;
+		PMD_DRV_LOG(DEBUG, "Kong mailbox channel enabled\n");
+	}
+	if (dev_caps_cfg &
+	    HWRM_VER_GET_OUTPUT_DEV_CAPS_CFG_TRUSTED_VF_SUPPORTED)
+		PMD_DRV_LOG(DEBUG, "FW supports Trusted VFs\n");
 
 error:
 	HWRM_UNLOCK();
@@ -707,10 +909,10 @@ int bnxt_hwrm_func_driver_unregister(struct bnxt *bp, uint32_t flags)
 	if (!(bp->flags & BNXT_FLAG_REGISTERED))
 		return 0;
 
-	HWRM_PREP(req, FUNC_DRV_UNRGTR);
+	HWRM_PREP(req, FUNC_DRV_UNRGTR, BNXT_USE_CHIMP_MB);
 	req.flags = flags;
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -727,13 +929,13 @@ static int bnxt_hwrm_port_phy_cfg(struct bnxt *bp, struct bnxt_link_info *conf)
 	struct hwrm_port_phy_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 	uint32_t enables = 0;
 
-	HWRM_PREP(req, PORT_PHY_CFG);
+	HWRM_PREP(req, PORT_PHY_CFG, BNXT_USE_CHIMP_MB);
 
 	if (conf->link_up) {
 		/* Setting Fixed Speed. But AutoNeg is ON, So disable it */
 		if (bp->link_info.auto_mode && conf->link_speed) {
 			req.auto_mode = HWRM_PORT_PHY_CFG_INPUT_AUTO_MODE_NONE;
-			RTE_LOG(DEBUG, PMD, "Disabling AutoNeg\n");
+			PMD_DRV_LOG(DEBUG, "Disabling AutoNeg\n");
 		}
 
 		req.flags = rte_cpu_to_le_32(conf->phy_flags);
@@ -773,10 +975,10 @@ static int bnxt_hwrm_port_phy_cfg(struct bnxt *bp, struct bnxt_link_info *conf)
 	} else {
 		req.flags =
 		rte_cpu_to_le_32(HWRM_PORT_PHY_CFG_INPUT_FLAGS_FORCE_LINK_DWN);
-		RTE_LOG(INFO, PMD, "Force Link Down\n");
+		PMD_DRV_LOG(INFO, "Force Link Down\n");
 	}
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -791,9 +993,9 @@ static int bnxt_hwrm_port_phy_qcfg(struct bnxt *bp,
 	struct hwrm_port_phy_qcfg_input req = {0};
 	struct hwrm_port_phy_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, PORT_PHY_QCFG);
+	HWRM_PREP(req, PORT_PHY_QCFG, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -820,13 +1022,13 @@ static int bnxt_hwrm_port_phy_qcfg(struct bnxt *bp,
 
 	HWRM_UNLOCK();
 
-	RTE_LOG(DEBUG, PMD, "Link Speed %d\n", link_info->link_speed);
-	RTE_LOG(DEBUG, PMD, "Auto Mode %d\n", link_info->auto_mode);
-	RTE_LOG(DEBUG, PMD, "Support Speeds %x\n", link_info->support_speeds);
-	RTE_LOG(DEBUG, PMD, "Auto Link Speed %x\n", link_info->auto_link_speed);
-	RTE_LOG(DEBUG, PMD, "Auto Link Speed Mask %x\n",
+	PMD_DRV_LOG(DEBUG, "Link Speed %d\n", link_info->link_speed);
+	PMD_DRV_LOG(DEBUG, "Auto Mode %d\n", link_info->auto_mode);
+	PMD_DRV_LOG(DEBUG, "Support Speeds %x\n", link_info->support_speeds);
+	PMD_DRV_LOG(DEBUG, "Auto Link Speed %x\n", link_info->auto_link_speed);
+	PMD_DRV_LOG(DEBUG, "Auto Link Speed Mask %x\n",
 		    link_info->auto_link_speed_mask);
-	RTE_LOG(DEBUG, PMD, "Forced Link Speed %x\n",
+	PMD_DRV_LOG(DEBUG, "Forced Link Speed %x\n",
 		    link_info->force_link_speed);
 
 	return rc;
@@ -837,10 +1039,16 @@ int bnxt_hwrm_queue_qportcfg(struct bnxt *bp)
 	int rc = 0;
 	struct hwrm_queue_qportcfg_input req = {.req_type = 0 };
 	struct hwrm_queue_qportcfg_output *resp = bp->hwrm_cmd_resp_addr;
+	int i;
 
-	HWRM_PREP(req, QUEUE_QPORTCFG);
+	HWRM_PREP(req, QUEUE_QPORTCFG, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	req.flags = HWRM_QUEUE_QPORTCFG_INPUT_FLAGS_PATH_TX;
+	/* HWRM Version >= 1.9.1 */
+	if (bp->hwrm_spec_code >= HWRM_VERSION_1_9_1)
+		req.drv_qmap_cap =
+			HWRM_QUEUE_QPORTCFG_INPUT_DRV_QMAP_CAP_ENABLED;
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -859,6 +1067,20 @@ int bnxt_hwrm_queue_qportcfg(struct bnxt *bp)
 
 	HWRM_UNLOCK();
 
+	if (bp->hwrm_spec_code < HWRM_VERSION_1_9_1) {
+		bp->tx_cosq_id = bp->cos_queue[0].id;
+	} else {
+		/* iterate and find the COSq profile to use for Tx */
+		for (i = 0; i < BNXT_COS_QUEUE_COUNT; i++) {
+			if (bp->cos_queue[i].profile ==
+				HWRM_QUEUE_SERVICE_PROFILE_LOSSY) {
+				bp->tx_cosq_id = bp->cos_queue[i].id;
+				break;
+			}
+		}
+	}
+	PMD_DRV_LOG(DEBUG, "Tx Cos Queue to use: %d\n", bp->tx_cosq_id);
+
 	return rc;
 }
 
@@ -872,7 +1094,7 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 	struct hwrm_ring_alloc_input req = {.req_type = 0 };
 	struct hwrm_ring_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, RING_ALLOC);
+	HWRM_PREP(req, RING_ALLOC, BNXT_USE_CHIMP_MB);
 
 	req.page_tbl_addr = rte_cpu_to_le_64(ring->bd_dma);
 	req.fbo = rte_cpu_to_le_32(0);
@@ -882,7 +1104,7 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 
 	switch (ring_type) {
 	case HWRM_RING_ALLOC_INPUT_RING_TYPE_TX:
-		req.queue_id = bp->cos_queue[0].id;
+		req.queue_id = rte_cpu_to_le_16(bp->tx_cosq_id);
 		/* FALLTHROUGH */
 	case HWRM_RING_ALLOC_INPUT_RING_TYPE_RX:
 		req.ring_type = ring_type;
@@ -901,36 +1123,36 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 		req.int_mode = HWRM_RING_ALLOC_INPUT_INT_MODE_MSIX;
 		break;
 	default:
-		RTE_LOG(ERR, PMD, "hwrm alloc invalid ring type %d\n",
+		PMD_DRV_LOG(ERR, "hwrm alloc invalid ring type %d\n",
 			ring_type);
 		HWRM_UNLOCK();
 		return -1;
 	}
 	req.enables = rte_cpu_to_le_32(enables);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	if (rc || resp->error_code) {
 		if (rc == 0 && resp->error_code)
 			rc = rte_le_to_cpu_16(resp->error_code);
 		switch (ring_type) {
 		case HWRM_RING_FREE_INPUT_RING_TYPE_L2_CMPL:
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"hwrm_ring_alloc cp failed. rc:%d\n", rc);
 			HWRM_UNLOCK();
 			return rc;
 		case HWRM_RING_FREE_INPUT_RING_TYPE_RX:
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"hwrm_ring_alloc rx failed. rc:%d\n", rc);
 			HWRM_UNLOCK();
 			return rc;
 		case HWRM_RING_FREE_INPUT_RING_TYPE_TX:
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"hwrm_ring_alloc tx failed. rc:%d\n", rc);
 			HWRM_UNLOCK();
 			return rc;
 		default:
-			RTE_LOG(ERR, PMD, "Invalid ring. rc:%d\n", rc);
+			PMD_DRV_LOG(ERR, "Invalid ring. rc:%d\n", rc);
 			HWRM_UNLOCK();
 			return rc;
 		}
@@ -948,12 +1170,12 @@ int bnxt_hwrm_ring_free(struct bnxt *bp,
 	struct hwrm_ring_free_input req = {.req_type = 0 };
 	struct hwrm_ring_free_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, RING_FREE);
+	HWRM_PREP(req, RING_FREE, BNXT_USE_CHIMP_MB);
 
 	req.ring_type = ring_type;
 	req.ring_id = rte_cpu_to_le_16(ring->fw_ring_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	if (rc || resp->error_code) {
 		if (rc == 0 && resp->error_code)
@@ -962,19 +1184,19 @@ int bnxt_hwrm_ring_free(struct bnxt *bp,
 
 		switch (ring_type) {
 		case HWRM_RING_FREE_INPUT_RING_TYPE_L2_CMPL:
-			RTE_LOG(ERR, PMD, "hwrm_ring_free cp failed. rc:%d\n",
+			PMD_DRV_LOG(ERR, "hwrm_ring_free cp failed. rc:%d\n",
 				rc);
 			return rc;
 		case HWRM_RING_FREE_INPUT_RING_TYPE_RX:
-			RTE_LOG(ERR, PMD, "hwrm_ring_free rx failed. rc:%d\n",
+			PMD_DRV_LOG(ERR, "hwrm_ring_free rx failed. rc:%d\n",
 				rc);
 			return rc;
 		case HWRM_RING_FREE_INPUT_RING_TYPE_TX:
-			RTE_LOG(ERR, PMD, "hwrm_ring_free tx failed. rc:%d\n",
+			PMD_DRV_LOG(ERR, "hwrm_ring_free tx failed. rc:%d\n",
 				rc);
 			return rc;
 		default:
-			RTE_LOG(ERR, PMD, "Invalid ring, rc:%d\n", rc);
+			PMD_DRV_LOG(ERR, "Invalid ring, rc:%d\n", rc);
 			return rc;
 		}
 	}
@@ -988,14 +1210,14 @@ int bnxt_hwrm_ring_grp_alloc(struct bnxt *bp, unsigned int idx)
 	struct hwrm_ring_grp_alloc_input req = {.req_type = 0 };
 	struct hwrm_ring_grp_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, RING_GRP_ALLOC);
+	HWRM_PREP(req, RING_GRP_ALLOC, BNXT_USE_CHIMP_MB);
 
 	req.cr = rte_cpu_to_le_16(bp->grp_info[idx].cp_fw_ring_id);
 	req.rr = rte_cpu_to_le_16(bp->grp_info[idx].rx_fw_ring_id);
 	req.ar = rte_cpu_to_le_16(bp->grp_info[idx].ag_fw_ring_id);
 	req.sc = rte_cpu_to_le_16(bp->grp_info[idx].fw_stats_ctx);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -1013,11 +1235,11 @@ int bnxt_hwrm_ring_grp_free(struct bnxt *bp, unsigned int idx)
 	struct hwrm_ring_grp_free_input req = {.req_type = 0 };
 	struct hwrm_ring_grp_free_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, RING_GRP_FREE);
+	HWRM_PREP(req, RING_GRP_FREE, BNXT_USE_CHIMP_MB);
 
 	req.ring_group_id = rte_cpu_to_le_16(bp->grp_info[idx].fw_grp_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1035,11 +1257,11 @@ int bnxt_hwrm_stat_clear(struct bnxt *bp, struct bnxt_cp_ring_info *cpr)
 	if (cpr->hw_stats_ctx_id == (uint32_t)HWRM_NA_SIGNATURE)
 		return rc;
 
-	HWRM_PREP(req, STAT_CTX_CLR_STATS);
+	HWRM_PREP(req, STAT_CTX_CLR_STATS, BNXT_USE_CHIMP_MB);
 
 	req.stat_ctx_id = rte_cpu_to_le_16(cpr->hw_stats_ctx_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1054,14 +1276,14 @@ int bnxt_hwrm_stat_ctx_alloc(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 	struct hwrm_stat_ctx_alloc_input req = {.req_type = 0 };
 	struct hwrm_stat_ctx_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, STAT_CTX_ALLOC);
+	HWRM_PREP(req, STAT_CTX_ALLOC, BNXT_USE_CHIMP_MB);
 
 	req.update_period_ms = rte_cpu_to_le_32(0);
 
 	req.stats_dma_addr =
 	    rte_cpu_to_le_64(cpr->hw_stats_map);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -1079,11 +1301,11 @@ int bnxt_hwrm_stat_ctx_free(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 	struct hwrm_stat_ctx_free_input req = {.req_type = 0 };
 	struct hwrm_stat_ctx_free_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, STAT_CTX_FREE);
+	HWRM_PREP(req, STAT_CTX_FREE, BNXT_USE_CHIMP_MB);
 
 	req.stat_ctx_id = rte_cpu_to_le_16(cpr->hw_stats_ctx_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1098,7 +1320,7 @@ int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	struct hwrm_vnic_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 
 	/* map ring groups to this vnic */
-	RTE_LOG(DEBUG, PMD, "Alloc VNIC. Start %x, End %x\n",
+	PMD_DRV_LOG(DEBUG, "Alloc VNIC. Start %x, End %x\n",
 		vnic->start_grp_id, vnic->end_grp_id);
 	for (i = vnic->start_grp_id, j = 0; i < vnic->end_grp_id; i++, j++)
 		vnic->fw_grp_ids[j] = bp->grp_info[i].fw_grp_id;
@@ -1109,18 +1331,18 @@ int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	vnic->lb_rule = (uint16_t)HWRM_NA_SIGNATURE;
 	vnic->mru = bp->eth_dev->data->mtu + ETHER_HDR_LEN +
 				ETHER_CRC_LEN + VLAN_TAG_SIZE;
-	HWRM_PREP(req, VNIC_ALLOC);
+	HWRM_PREP(req, VNIC_ALLOC, BNXT_USE_CHIMP_MB);
 
 	if (vnic->func_default)
 		req.flags =
 			rte_cpu_to_le_32(HWRM_VNIC_ALLOC_INPUT_FLAGS_DEFAULT);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
 	vnic->fw_vnic_id = rte_le_to_cpu_16(resp->vnic_id);
 	HWRM_UNLOCK();
-	RTE_LOG(DEBUG, PMD, "VNIC ID %x\n", vnic->fw_vnic_id);
+	PMD_DRV_LOG(DEBUG, "VNIC ID %x\n", vnic->fw_vnic_id);
 	return rc;
 }
 
@@ -1132,11 +1354,11 @@ static int bnxt_hwrm_vnic_plcmodes_qcfg(struct bnxt *bp,
 	struct hwrm_vnic_plcmodes_qcfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_plcmodes_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, VNIC_PLCMODES_QCFG);
+	HWRM_PREP(req, VNIC_PLCMODES_QCFG, BNXT_USE_CHIMP_MB);
 
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -1160,7 +1382,7 @@ static int bnxt_hwrm_vnic_plcmodes_cfg(struct bnxt *bp,
 	struct hwrm_vnic_plcmodes_cfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_plcmodes_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, VNIC_PLCMODES_CFG);
+	HWRM_PREP(req, VNIC_PLCMODES_CFG, BNXT_USE_CHIMP_MB);
 
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 	req.flags = rte_cpu_to_le_32(pmode->flags);
@@ -1173,7 +1395,7 @@ static int bnxt_hwrm_vnic_plcmodes_cfg(struct bnxt *bp,
 	    HWRM_VNIC_PLCMODES_CFG_INPUT_ENABLES_JUMBO_THRESH_VALID
 	);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1190,7 +1412,7 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	struct bnxt_plcmodes_cfg pmodes;
 
 	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
-		RTE_LOG(DEBUG, PMD, "VNIC ID %x\n", vnic->fw_vnic_id);
+		PMD_DRV_LOG(DEBUG, "VNIC ID %x\n", vnic->fw_vnic_id);
 		return rc;
 	}
 
@@ -1198,7 +1420,7 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	if (rc)
 		return rc;
 
-	HWRM_PREP(req, VNIC_CFG);
+	HWRM_PREP(req, VNIC_CFG, BNXT_USE_CHIMP_MB);
 
 	/* Only RSS support for now TBD: COS & LB */
 	req.enables =
@@ -1218,9 +1440,12 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	req.cos_rule = rte_cpu_to_le_16(vnic->cos_rule);
 	req.lb_rule = rte_cpu_to_le_16(vnic->lb_rule);
 	req.mru = rte_cpu_to_le_16(vnic->mru);
-	if (vnic->func_default)
+	/* Configure default VNIC only once. */
+	if (vnic->func_default && !(bp->flags & BNXT_FLAG_DFLT_VNIC_SET)) {
 		req.flags |=
 		    rte_cpu_to_le_32(HWRM_VNIC_CFG_INPUT_FLAGS_DEFAULT);
+		bp->flags |= BNXT_FLAG_DFLT_VNIC_SET;
+	}
 	if (vnic->vlan_strip)
 		req.flags |=
 		    rte_cpu_to_le_32(HWRM_VNIC_CFG_INPUT_FLAGS_VLAN_STRIP_MODE);
@@ -1237,7 +1462,7 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 		req.flags |= rte_cpu_to_le_32(
 			HWRM_VNIC_QCFG_OUTPUT_FLAGS_RSS_DFLT_CR_MODE);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1255,17 +1480,17 @@ int bnxt_hwrm_vnic_qcfg(struct bnxt *bp, struct bnxt_vnic_info *vnic,
 	struct hwrm_vnic_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
 
 	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
-		RTE_LOG(DEBUG, PMD, "VNIC QCFG ID %d\n", vnic->fw_vnic_id);
+		PMD_DRV_LOG(DEBUG, "VNIC QCFG ID %d\n", vnic->fw_vnic_id);
 		return rc;
 	}
-	HWRM_PREP(req, VNIC_QCFG);
+	HWRM_PREP(req, VNIC_QCFG, BNXT_USE_CHIMP_MB);
 
 	req.enables =
 		rte_cpu_to_le_32(HWRM_VNIC_QCFG_INPUT_ENABLES_VF_ID_VALID);
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 	req.vf_id = rte_cpu_to_le_16(fw_vf_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -1299,15 +1524,15 @@ int bnxt_hwrm_vnic_ctx_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	struct hwrm_vnic_rss_cos_lb_ctx_alloc_output *resp =
 						bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, VNIC_RSS_COS_LB_CTX_ALLOC);
+	HWRM_PREP(req, VNIC_RSS_COS_LB_CTX_ALLOC, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
 	vnic->rss_rule = rte_le_to_cpu_16(resp->rss_cos_lb_ctx_id);
 	HWRM_UNLOCK();
-	RTE_LOG(DEBUG, PMD, "VNIC RSS Rule %x\n", vnic->rss_rule);
+	PMD_DRV_LOG(DEBUG, "VNIC RSS Rule %x\n", vnic->rss_rule);
 
 	return rc;
 }
@@ -1320,14 +1545,14 @@ int bnxt_hwrm_vnic_ctx_free(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 						bp->hwrm_cmd_resp_addr;
 
 	if (vnic->rss_rule == 0xffff) {
-		RTE_LOG(DEBUG, PMD, "VNIC RSS Rule %x\n", vnic->rss_rule);
+		PMD_DRV_LOG(DEBUG, "VNIC RSS Rule %x\n", vnic->rss_rule);
 		return rc;
 	}
-	HWRM_PREP(req, VNIC_RSS_COS_LB_CTX_FREE);
+	HWRM_PREP(req, VNIC_RSS_COS_LB_CTX_FREE, BNXT_USE_CHIMP_MB);
 
 	req.rss_cos_lb_ctx_id = rte_cpu_to_le_16(vnic->rss_rule);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1344,20 +1569,24 @@ int bnxt_hwrm_vnic_free(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	struct hwrm_vnic_free_output *resp = bp->hwrm_cmd_resp_addr;
 
 	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
-		RTE_LOG(DEBUG, PMD, "VNIC FREE ID %x\n", vnic->fw_vnic_id);
+		PMD_DRV_LOG(DEBUG, "VNIC FREE ID %x\n", vnic->fw_vnic_id);
 		return rc;
 	}
 
-	HWRM_PREP(req, VNIC_FREE);
+	HWRM_PREP(req, VNIC_FREE, BNXT_USE_CHIMP_MB);
 
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
 	vnic->fw_vnic_id = INVALID_HW_RING_ID;
+	/* Configure default VNIC again if necessary. */
+	if (vnic->func_default && (bp->flags & BNXT_FLAG_DFLT_VNIC_SET))
+		bp->flags &= ~BNXT_FLAG_DFLT_VNIC_SET;
+
 	return rc;
 }
 
@@ -1368,9 +1597,10 @@ int bnxt_hwrm_vnic_rss_cfg(struct bnxt *bp,
 	struct hwrm_vnic_rss_cfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_rss_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, VNIC_RSS_CFG);
+	HWRM_PREP(req, VNIC_RSS_CFG, BNXT_USE_CHIMP_MB);
 
 	req.hash_type = rte_cpu_to_le_32(vnic->hash_type);
+	req.hash_mode_flags = vnic->hash_mode;
 
 	req.ring_grp_tbl_addr =
 	    rte_cpu_to_le_64(vnic->rss_table_dma_addr);
@@ -1378,7 +1608,7 @@ int bnxt_hwrm_vnic_rss_cfg(struct bnxt *bp,
 	    rte_cpu_to_le_64(vnic->rss_hash_key_dma_addr);
 	req.rss_ctx_idx = rte_cpu_to_le_16(vnic->rss_rule);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1395,11 +1625,11 @@ int bnxt_hwrm_vnic_plcmode_cfg(struct bnxt *bp,
 	uint16_t size;
 
 	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
-		RTE_LOG(DEBUG, PMD, "VNIC ID %x\n", vnic->fw_vnic_id);
+		PMD_DRV_LOG(DEBUG, "VNIC ID %x\n", vnic->fw_vnic_id);
 		return rc;
 	}
 
-	HWRM_PREP(req, VNIC_PLCMODES_CFG);
+	HWRM_PREP(req, VNIC_PLCMODES_CFG, BNXT_USE_CHIMP_MB);
 
 	req.flags = rte_cpu_to_le_32(
 			HWRM_VNIC_PLCMODES_CFG_INPUT_FLAGS_JUMBO_PLACEMENT);
@@ -1413,7 +1643,7 @@ int bnxt_hwrm_vnic_plcmode_cfg(struct bnxt *bp,
 	req.jumbo_thresh = rte_cpu_to_le_16(size);
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1428,7 +1658,7 @@ int bnxt_hwrm_vnic_tpa_cfg(struct bnxt *bp,
 	struct hwrm_vnic_tpa_cfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_tpa_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, VNIC_TPA_CFG);
+	HWRM_PREP(req, VNIC_TPA_CFG, BNXT_USE_CHIMP_MB);
 
 	if (enable) {
 		req.enables = rte_cpu_to_le_32(
@@ -1449,7 +1679,7 @@ int bnxt_hwrm_vnic_tpa_cfg(struct bnxt *bp,
 	}
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1469,9 +1699,9 @@ int bnxt_hwrm_func_vf_mac(struct bnxt *bp, uint16_t vf, const uint8_t *mac_addr)
 	memcpy(req.dflt_mac_addr, mac_addr, sizeof(req.dflt_mac_addr));
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
@@ -1487,11 +1717,11 @@ int bnxt_hwrm_func_qstats_tx_drop(struct bnxt *bp, uint16_t fid,
 	struct hwrm_func_qstats_input req = {.req_type = 0};
 	struct hwrm_func_qstats_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, FUNC_QSTATS);
+	HWRM_PREP(req, FUNC_QSTATS, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(fid);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -1510,11 +1740,11 @@ int bnxt_hwrm_func_qstats(struct bnxt *bp, uint16_t fid,
 	struct hwrm_func_qstats_input req = {.req_type = 0};
 	struct hwrm_func_qstats_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, FUNC_QSTATS);
+	HWRM_PREP(req, FUNC_QSTATS, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(fid);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -1532,10 +1762,9 @@ int bnxt_hwrm_func_qstats(struct bnxt *bp, uint16_t fid,
 	stats->obytes += rte_le_to_cpu_64(resp->tx_mcast_bytes);
 	stats->obytes += rte_le_to_cpu_64(resp->tx_bcast_bytes);
 
-	stats->ierrors = rte_le_to_cpu_64(resp->rx_err_pkts);
-	stats->oerrors = rte_le_to_cpu_64(resp->tx_err_pkts);
-
-	stats->imissed = rte_le_to_cpu_64(resp->rx_drop_pkts);
+	stats->imissed = rte_le_to_cpu_64(resp->rx_discard_pkts);
+	stats->ierrors = rte_le_to_cpu_64(resp->rx_drop_pkts);
+	stats->oerrors = rte_le_to_cpu_64(resp->tx_discard_pkts);
 
 	HWRM_UNLOCK();
 
@@ -1548,11 +1777,11 @@ int bnxt_hwrm_func_clr_stats(struct bnxt *bp, uint16_t fid)
 	struct hwrm_func_clr_stats_input req = {.req_type = 0};
 	struct hwrm_func_clr_stats_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, FUNC_CLR_STATS);
+	HWRM_PREP(req, FUNC_CLR_STATS, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(fid);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -1657,8 +1886,7 @@ int bnxt_free_all_hwrm_ring_grps(struct bnxt *bp)
 	return rc;
 }
 
-static void bnxt_free_cp_ring(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
-				unsigned int idx __rte_unused)
+static void bnxt_free_cp_ring(struct bnxt *bp, struct bnxt_cp_ring_info *cpr)
 {
 	struct bnxt_ring *cp_ring = cpr->cp_ring_struct;
 
@@ -1670,17 +1898,52 @@ static void bnxt_free_cp_ring(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 	cpr->cp_raw_cons = 0;
 }
 
+void bnxt_free_hwrm_rx_ring(struct bnxt *bp, int queue_index)
+{
+	struct bnxt_rx_queue *rxq = bp->rx_queues[queue_index];
+	struct bnxt_rx_ring_info *rxr = rxq->rx_ring;
+	struct bnxt_ring *ring = rxr->rx_ring_struct;
+	struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
+
+	if (ring->fw_ring_id != INVALID_HW_RING_ID) {
+		bnxt_hwrm_ring_free(bp, ring,
+				    HWRM_RING_FREE_INPUT_RING_TYPE_RX);
+		ring->fw_ring_id = INVALID_HW_RING_ID;
+		bp->grp_info[queue_index].rx_fw_ring_id = INVALID_HW_RING_ID;
+		memset(rxr->rx_desc_ring, 0,
+		       rxr->rx_ring_struct->ring_size *
+		       sizeof(*rxr->rx_desc_ring));
+		memset(rxr->rx_buf_ring, 0,
+		       rxr->rx_ring_struct->ring_size *
+		       sizeof(*rxr->rx_buf_ring));
+		rxr->rx_prod = 0;
+	}
+	ring = rxr->ag_ring_struct;
+	if (ring->fw_ring_id != INVALID_HW_RING_ID) {
+		bnxt_hwrm_ring_free(bp, ring,
+				    HWRM_RING_FREE_INPUT_RING_TYPE_RX);
+		ring->fw_ring_id = INVALID_HW_RING_ID;
+		memset(rxr->ag_buf_ring, 0,
+		       rxr->ag_ring_struct->ring_size *
+		       sizeof(*rxr->ag_buf_ring));
+		rxr->ag_prod = 0;
+		bp->grp_info[queue_index].ag_fw_ring_id = INVALID_HW_RING_ID;
+	}
+	if (cpr->cp_ring_struct->fw_ring_id != INVALID_HW_RING_ID)
+		bnxt_free_cp_ring(bp, cpr);
+
+	bp->grp_info[queue_index].cp_fw_ring_id = INVALID_HW_RING_ID;
+}
+
 int bnxt_free_all_hwrm_rings(struct bnxt *bp)
 {
 	unsigned int i;
-	int rc = 0;
 
 	for (i = 0; i < bp->tx_cp_nr_rings; i++) {
 		struct bnxt_tx_queue *txq = bp->tx_queues[i];
 		struct bnxt_tx_ring_info *txr = txq->tx_ring;
 		struct bnxt_ring *ring = txr->tx_ring_struct;
 		struct bnxt_cp_ring_info *cpr = txq->cp_ring;
-		unsigned int idx = bp->rx_cp_nr_rings + i + 1;
 
 		if (ring->fw_ring_id != INVALID_HW_RING_ID) {
 			bnxt_hwrm_ring_free(bp, ring,
@@ -1696,60 +1959,15 @@ int bnxt_free_all_hwrm_rings(struct bnxt *bp)
 			txr->tx_cons = 0;
 		}
 		if (cpr->cp_ring_struct->fw_ring_id != INVALID_HW_RING_ID) {
-			bnxt_free_cp_ring(bp, cpr, idx);
+			bnxt_free_cp_ring(bp, cpr);
 			cpr->cp_ring_struct->fw_ring_id = INVALID_HW_RING_ID;
 		}
 	}
 
-	for (i = 0; i < bp->rx_cp_nr_rings; i++) {
-		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
-		struct bnxt_rx_ring_info *rxr = rxq->rx_ring;
-		struct bnxt_ring *ring = rxr->rx_ring_struct;
-		struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
-		unsigned int idx = i + 1;
+	for (i = 0; i < bp->rx_cp_nr_rings; i++)
+		bnxt_free_hwrm_rx_ring(bp, i);
 
-		if (ring->fw_ring_id != INVALID_HW_RING_ID) {
-			bnxt_hwrm_ring_free(bp, ring,
-					HWRM_RING_FREE_INPUT_RING_TYPE_RX);
-			ring->fw_ring_id = INVALID_HW_RING_ID;
-			bp->grp_info[idx].rx_fw_ring_id = INVALID_HW_RING_ID;
-			memset(rxr->rx_desc_ring, 0,
-					rxr->rx_ring_struct->ring_size *
-					sizeof(*rxr->rx_desc_ring));
-			memset(rxr->rx_buf_ring, 0,
-					rxr->rx_ring_struct->ring_size *
-					sizeof(*rxr->rx_buf_ring));
-			rxr->rx_prod = 0;
-		}
-		ring = rxr->ag_ring_struct;
-		if (ring->fw_ring_id != INVALID_HW_RING_ID) {
-			bnxt_hwrm_ring_free(bp, ring,
-					    HWRM_RING_FREE_INPUT_RING_TYPE_RX);
-			ring->fw_ring_id = INVALID_HW_RING_ID;
-			memset(rxr->ag_buf_ring, 0,
-			       rxr->ag_ring_struct->ring_size *
-			       sizeof(*rxr->ag_buf_ring));
-			rxr->ag_prod = 0;
-			bp->grp_info[i].ag_fw_ring_id = INVALID_HW_RING_ID;
-		}
-		if (cpr->cp_ring_struct->fw_ring_id != INVALID_HW_RING_ID) {
-			bnxt_free_cp_ring(bp, cpr, idx);
-			bp->grp_info[i].cp_fw_ring_id = INVALID_HW_RING_ID;
-			cpr->cp_ring_struct->fw_ring_id = INVALID_HW_RING_ID;
-		}
-	}
-
-	/* Default completion ring */
-	{
-		struct bnxt_cp_ring_info *cpr = bp->def_cp_ring;
-
-		if (cpr->cp_ring_struct->fw_ring_id != INVALID_HW_RING_ID) {
-			bnxt_free_cp_ring(bp, cpr, 0);
-			cpr->cp_ring_struct->fw_ring_id = INVALID_HW_RING_ID;
-		}
-	}
-
-	return rc;
+	return 0;
 }
 
 int bnxt_alloc_all_hwrm_ring_grps(struct bnxt *bp)
@@ -1791,7 +2009,7 @@ int bnxt_alloc_hwrm_resources(struct bnxt *bp)
 	bp->hwrm_cmd_resp_dma_addr =
 		rte_mem_virt2iova(bp->hwrm_cmd_resp_addr);
 	if (bp->hwrm_cmd_resp_dma_addr == 0) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
 	}
@@ -1828,7 +2046,7 @@ bnxt_clear_hwrm_vnic_flows(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 
 	STAILQ_FOREACH(flow, &vnic->flow_list, next) {
 		filter = flow->filter;
-		RTE_LOG(ERR, PMD, "filter type %d\n", filter->filter_type);
+		PMD_DRV_LOG(ERR, "filter type %d\n", filter->filter_type);
 		if (filter->filter_type == HWRM_CFA_EM_FILTER)
 			rc = bnxt_hwrm_clear_em_filter(bp, filter);
 		else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
@@ -1920,6 +2138,7 @@ static uint16_t bnxt_parse_eth_link_duplex(uint32_t conf_link_speed)
 	switch (conf_link_speed) {
 	case ETH_LINK_SPEED_10M_HD:
 	case ETH_LINK_SPEED_100M_HD:
+		/* FALLTHROUGH */
 		return HWRM_PORT_PHY_CFG_INPUT_AUTO_DUPLEX_HALF;
 	}
 	return hw_link_duplex;
@@ -1940,6 +2159,7 @@ static uint16_t bnxt_parse_eth_link_speed(uint32_t conf_link_speed)
 	switch (conf_link_speed & ~ETH_LINK_SPEED_FIXED) {
 	case ETH_LINK_SPEED_100M:
 	case ETH_LINK_SPEED_100M_HD:
+		/* FALLTHROUGH */
 		eth_link_speed =
 			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_100MB;
 		break;
@@ -1971,8 +2191,12 @@ static uint16_t bnxt_parse_eth_link_speed(uint32_t conf_link_speed)
 		eth_link_speed =
 			HWRM_PORT_PHY_CFG_INPUT_FORCE_LINK_SPEED_50GB;
 		break;
+	case ETH_LINK_SPEED_100G:
+		eth_link_speed =
+			HWRM_PORT_PHY_CFG_INPUT_FORCE_LINK_SPEED_100GB;
+		break;
 	default:
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Unsupported link speed %d; default to AUTO\n",
 			conf_link_speed);
 		break;
@@ -1983,7 +2207,7 @@ static uint16_t bnxt_parse_eth_link_speed(uint32_t conf_link_speed)
 #define BNXT_SUPPORTED_SPEEDS (ETH_LINK_SPEED_100M | ETH_LINK_SPEED_100M_HD | \
 		ETH_LINK_SPEED_1G | ETH_LINK_SPEED_2_5G | \
 		ETH_LINK_SPEED_10G | ETH_LINK_SPEED_20G | ETH_LINK_SPEED_25G | \
-		ETH_LINK_SPEED_40G | ETH_LINK_SPEED_50G)
+		ETH_LINK_SPEED_40G | ETH_LINK_SPEED_50G | ETH_LINK_SPEED_100G)
 
 static int bnxt_valid_link_speed(uint32_t link_speed, uint16_t port_id)
 {
@@ -1996,20 +2220,20 @@ static int bnxt_valid_link_speed(uint32_t link_speed, uint16_t port_id)
 		one_speed = link_speed & ~ETH_LINK_SPEED_FIXED;
 
 		if (one_speed & (one_speed - 1)) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"Invalid advertised speeds (%u) for port %u\n",
 				link_speed, port_id);
 			return -EINVAL;
 		}
 		if ((one_speed & BNXT_SUPPORTED_SPEEDS) != one_speed) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"Unsupported advertised speed (%u) for port %u\n",
 				link_speed, port_id);
 			return -EINVAL;
 		}
 	} else {
 		if (!(link_speed & BNXT_SUPPORTED_SPEEDS)) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"Unsupported advertised speeds (%u) for port %u\n",
 				link_speed, port_id);
 			return -EINVAL;
@@ -2047,6 +2271,8 @@ bnxt_parse_eth_link_speed_mask(struct bnxt *bp, uint32_t link_speed)
 		ret |= HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_40GB;
 	if (link_speed & ETH_LINK_SPEED_50G)
 		ret |= HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_50GB;
+	if (link_speed & ETH_LINK_SPEED_100G)
+		ret |= HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_100GB;
 	return ret;
 }
 
@@ -2079,9 +2305,12 @@ static uint32_t bnxt_parse_hw_link_speed(uint16_t hw_link_speed)
 	case HWRM_PORT_PHY_QCFG_OUTPUT_LINK_SPEED_50GB:
 		eth_link_speed = ETH_SPEED_NUM_50G;
 		break;
+	case HWRM_PORT_PHY_QCFG_OUTPUT_LINK_SPEED_100GB:
+		eth_link_speed = ETH_SPEED_NUM_100G;
+		break;
 	case HWRM_PORT_PHY_QCFG_OUTPUT_LINK_SPEED_2GB:
 	default:
-		RTE_LOG(ERR, PMD, "HWRM link speed %d not defined\n",
+		PMD_DRV_LOG(ERR, "HWRM link speed %d not defined\n",
 			hw_link_speed);
 		break;
 	}
@@ -2095,13 +2324,14 @@ static uint16_t bnxt_parse_hw_link_duplex(uint16_t hw_link_duplex)
 	switch (hw_link_duplex) {
 	case HWRM_PORT_PHY_CFG_INPUT_AUTO_DUPLEX_BOTH:
 	case HWRM_PORT_PHY_CFG_INPUT_AUTO_DUPLEX_FULL:
+		/* FALLTHROUGH */
 		eth_link_duplex = ETH_LINK_FULL_DUPLEX;
 		break;
 	case HWRM_PORT_PHY_CFG_INPUT_AUTO_DUPLEX_HALF:
 		eth_link_duplex = ETH_LINK_HALF_DUPLEX;
 		break;
 	default:
-		RTE_LOG(ERR, PMD, "HWRM link duplex %d not defined\n",
+		PMD_DRV_LOG(ERR, "HWRM link duplex %d not defined\n",
 			hw_link_duplex);
 		break;
 	}
@@ -2115,7 +2345,7 @@ int bnxt_get_hwrm_link_config(struct bnxt *bp, struct rte_eth_link *link)
 
 	rc = bnxt_hwrm_port_phy_qcfg(bp, link_info);
 	if (rc) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Get link config failed with rc %d\n", rc);
 		goto exit;
 	}
@@ -2140,7 +2370,7 @@ int bnxt_set_hwrm_link_config(struct bnxt *bp, bool link_up)
 	struct bnxt_link_info link_req;
 	uint16_t speed, autoneg;
 
-	if (BNXT_NPAR_PF(bp) || BNXT_VF(bp))
+	if (!BNXT_SINGLE_PF(bp) || BNXT_VF(bp))
 		return 0;
 
 	rc = bnxt_valid_link_speed(dev_conf->link_speeds,
@@ -2171,7 +2401,7 @@ int bnxt_set_hwrm_link_config(struct bnxt *bp, bool link_up)
 		    HWRM_PORT_PHY_QCFG_OUTPUT_PHY_TYPE_BASETE ||
 		    bp->link_info.media_type ==
 		    HWRM_PORT_PHY_QCFG_OUTPUT_MEDIA_TYPE_TP) {
-			RTE_LOG(ERR, PMD, "10GBase-T devices must autoneg\n");
+			PMD_DRV_LOG(ERR, "10GBase-T devices must autoneg\n");
 			return -EINVAL;
 		}
 
@@ -2191,7 +2421,7 @@ int bnxt_set_hwrm_link_config(struct bnxt *bp, bool link_up)
 port_phy_cfg:
 	rc = bnxt_hwrm_port_phy_cfg(bp, &link_req);
 	if (rc) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Set link config failed with rc %d\n", rc);
 	}
 
@@ -2204,22 +2434,32 @@ int bnxt_hwrm_func_qcfg(struct bnxt *bp)
 {
 	struct hwrm_func_qcfg_input req = {0};
 	struct hwrm_func_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
+	uint16_t flags;
 	int rc = 0;
 
-	HWRM_PREP(req, FUNC_QCFG);
+	HWRM_PREP(req, FUNC_QCFG, BNXT_USE_CHIMP_MB);
 	req.fid = rte_cpu_to_le_16(0xffff);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
 	/* Hard Coded.. 0xfff VLAN ID mask */
 	bp->vlan = rte_le_to_cpu_16(resp->vlan) & 0xfff;
+	flags = rte_le_to_cpu_16(resp->flags);
+	if (BNXT_PF(bp) && (flags & HWRM_FUNC_QCFG_OUTPUT_FLAGS_MULTI_HOST))
+		bp->flags |= BNXT_FLAG_MULTI_HOST;
+
+	if (BNXT_VF(bp) && (flags & HWRM_FUNC_QCFG_OUTPUT_FLAGS_TRUSTED_VF)) {
+		bp->flags |= BNXT_FLAG_TRUSTED_VF_EN;
+		PMD_DRV_LOG(INFO, "Trusted VF cap enabled\n");
+	}
 
 	switch (resp->port_partition_type) {
 	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR1_0:
 	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR1_5:
 	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR2_0:
+		/* FALLTHROUGH */
 		bp->port_partition_type = resp->port_partition_type;
 		break;
 	default:
@@ -2277,7 +2517,8 @@ static int bnxt_hwrm_pf_func_cfg(struct bnxt *bp, int tx_rings)
 	req.flags = rte_cpu_to_le_32(bp->pf.func_cfg_flags);
 	req.mtu = rte_cpu_to_le_16(BNXT_MAX_MTU);
 	req.mru = rte_cpu_to_le_16(bp->eth_dev->data->mtu + ETHER_HDR_LEN +
-				   ETHER_CRC_LEN + VLAN_TAG_SIZE);
+				   ETHER_CRC_LEN + VLAN_TAG_SIZE *
+				   BNXT_NUM_VLANS);
 	req.num_rsscos_ctxs = rte_cpu_to_le_16(bp->max_rsscos_ctx);
 	req.num_stat_ctxs = rte_cpu_to_le_16(bp->max_stat_ctx);
 	req.num_cmpl_rings = rte_cpu_to_le_16(bp->max_cp_rings);
@@ -2288,9 +2529,9 @@ static int bnxt_hwrm_pf_func_cfg(struct bnxt *bp, int tx_rings)
 	req.num_hw_ring_grps = rte_cpu_to_le_16(bp->max_ring_grps);
 	req.fid = rte_cpu_to_le_16(0xffff);
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2314,9 +2555,11 @@ static void populate_vf_func_cfg_req(struct bnxt *bp,
 			HWRM_FUNC_CFG_INPUT_ENABLES_NUM_HW_RING_GRPS);
 
 	req->mtu = rte_cpu_to_le_16(bp->eth_dev->data->mtu + ETHER_HDR_LEN +
-				    ETHER_CRC_LEN + VLAN_TAG_SIZE);
+				    ETHER_CRC_LEN + VLAN_TAG_SIZE *
+				    BNXT_NUM_VLANS);
 	req->mru = rte_cpu_to_le_16(bp->eth_dev->data->mtu + ETHER_HDR_LEN +
-				    ETHER_CRC_LEN + VLAN_TAG_SIZE);
+				    ETHER_CRC_LEN + VLAN_TAG_SIZE *
+				    BNXT_NUM_VLANS);
 	req->num_rsscos_ctxs = rte_cpu_to_le_16(bp->max_rsscos_ctx /
 						(num_vfs + 1));
 	req->num_stat_ctxs = rte_cpu_to_le_16(bp->max_stat_ctx / (num_vfs + 1));
@@ -2359,16 +2602,16 @@ static void reserve_resources_from_vf(struct bnxt *bp,
 	int rc;
 
 	/* Get the actual allocated values now */
-	HWRM_PREP(req, FUNC_QCAPS);
+	HWRM_PREP(req, FUNC_QCAPS, BNXT_USE_CHIMP_MB);
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	if (rc) {
-		RTE_LOG(ERR, PMD, "hwrm_func_qcaps failed rc:%d\n", rc);
+		PMD_DRV_LOG(ERR, "hwrm_func_qcaps failed rc:%d\n", rc);
 		copy_func_cfg_to_qcaps(cfg_req, resp);
 	} else if (resp->error_code) {
 		rc = rte_le_to_cpu_16(resp->error_code);
-		RTE_LOG(ERR, PMD, "hwrm_func_qcaps error %d\n", rc);
+		PMD_DRV_LOG(ERR, "hwrm_func_qcaps error %d\n", rc);
 		copy_func_cfg_to_qcaps(cfg_req, resp);
 	}
 
@@ -2395,15 +2638,15 @@ int bnxt_hwrm_func_qcfg_current_vf_vlan(struct bnxt *bp, int vf)
 	int rc;
 
 	/* Check for zero MAC address */
-	HWRM_PREP(req, FUNC_QCFG);
+	HWRM_PREP(req, FUNC_QCFG, BNXT_USE_CHIMP_MB);
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	if (rc) {
-		RTE_LOG(ERR, PMD, "hwrm_func_qcfg failed rc:%d\n", rc);
+		PMD_DRV_LOG(ERR, "hwrm_func_qcfg failed rc:%d\n", rc);
 		return -1;
 	} else if (resp->error_code) {
 		rc = rte_le_to_cpu_16(resp->error_code);
-		RTE_LOG(ERR, PMD, "hwrm_func_qcfg error %d\n", rc);
+		PMD_DRV_LOG(ERR, "hwrm_func_qcfg error %d\n", rc);
 		return -1;
 	}
 	rc = rte_le_to_cpu_16(resp->vlan);
@@ -2420,9 +2663,9 @@ static int update_pf_resource_max(struct bnxt *bp)
 	int rc;
 
 	/* And copy the allocated numbers into the pf struct */
-	HWRM_PREP(req, FUNC_QCFG);
+	HWRM_PREP(req, FUNC_QCFG, BNXT_USE_CHIMP_MB);
 	req.fid = rte_cpu_to_le_16(0xffff);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	HWRM_CHECK_RESULT();
 
 	/* Only TX ring value reflects actual allocation? TODO */
@@ -2439,7 +2682,7 @@ int bnxt_hwrm_allocate_pf_only(struct bnxt *bp)
 	int rc;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD, "Attempt to allcoate VFs on a VF!\n");
+		PMD_DRV_LOG(ERR, "Attempt to allcoate VFs on a VF!\n");
 		return -1;
 	}
 
@@ -2466,7 +2709,7 @@ int bnxt_hwrm_allocate_vfs(struct bnxt *bp, int num_vfs)
 	size_t req_buf_sz;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD, "Attempt to allcoate VFs on a VF!\n");
+		PMD_DRV_LOG(ERR, "Attempt to allcoate VFs on a VF!\n");
 		return -1;
 	}
 
@@ -2522,19 +2765,22 @@ int bnxt_hwrm_allocate_vfs(struct bnxt *bp, int num_vfs)
 	for (i = 0; i < num_vfs; i++) {
 		add_random_mac_if_needed(bp, &req, i);
 
-		HWRM_PREP(req, FUNC_CFG);
+		HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 		req.flags = rte_cpu_to_le_32(bp->pf.vf_info[i].func_cfg_flags);
 		req.fid = rte_cpu_to_le_16(bp->pf.vf_info[i].fid);
-		rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+		rc = bnxt_hwrm_send_message(bp,
+					    &req,
+					    sizeof(req),
+					    BNXT_USE_CHIMP_MB);
 
 		/* Clear enable flag for next pass */
 		req.enables &= ~rte_cpu_to_le_32(
 				HWRM_FUNC_CFG_INPUT_ENABLES_DFLT_MAC_ADDR);
 
 		if (rc || resp->error_code) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"Failed to initizlie VF %d\n", i);
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"Not all VFs available. (%d, %d)\n",
 				rc, resp->error_code);
 			HWRM_UNLOCK();
@@ -2575,13 +2821,13 @@ int bnxt_hwrm_pf_evb_mode(struct bnxt *bp)
 	struct hwrm_func_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 	int rc;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(0xffff);
 	req.enables = rte_cpu_to_le_32(HWRM_FUNC_CFG_INPUT_ENABLES_EVB_MODE);
 	req.evb_mode = bp->pf.evb_mode;
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
@@ -2595,10 +2841,10 @@ int bnxt_hwrm_tunnel_dst_port_alloc(struct bnxt *bp, uint16_t port,
 	struct hwrm_tunnel_dst_port_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 	int rc = 0;
 
-	HWRM_PREP(req, TUNNEL_DST_PORT_ALLOC);
+	HWRM_PREP(req, TUNNEL_DST_PORT_ALLOC, BNXT_USE_CHIMP_MB);
 	req.tunnel_type = tunnel_type;
 	req.tunnel_dst_port_val = port;
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	HWRM_CHECK_RESULT();
 
 	switch (tunnel_type) {
@@ -2626,11 +2872,11 @@ int bnxt_hwrm_tunnel_dst_port_free(struct bnxt *bp, uint16_t port,
 	struct hwrm_tunnel_dst_port_free_output *resp = bp->hwrm_cmd_resp_addr;
 	int rc = 0;
 
-	HWRM_PREP(req, TUNNEL_DST_PORT_FREE);
+	HWRM_PREP(req, TUNNEL_DST_PORT_FREE, BNXT_USE_CHIMP_MB);
 
 	req.tunnel_type = tunnel_type;
 	req.tunnel_dst_port_id = rte_cpu_to_be_16(port);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2645,11 +2891,11 @@ int bnxt_hwrm_func_cfg_vf_set_flags(struct bnxt *bp, uint16_t vf,
 	struct hwrm_func_cfg_input req = {0};
 	int rc;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
 	req.flags = rte_cpu_to_le_32(flags);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2675,21 +2921,21 @@ int bnxt_hwrm_func_buf_rgtr(struct bnxt *bp)
 	struct hwrm_func_buf_rgtr_input req = {.req_type = 0 };
 	struct hwrm_func_buf_rgtr_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, FUNC_BUF_RGTR);
+	HWRM_PREP(req, FUNC_BUF_RGTR, BNXT_USE_CHIMP_MB);
 
 	req.req_buf_num_pages = rte_cpu_to_le_16(1);
 	req.req_buf_page_size = rte_cpu_to_le_16(
 			 page_getenum(bp->pf.active_vfs * HWRM_MAX_REQ_LEN));
 	req.req_buf_len = rte_cpu_to_le_16(HWRM_MAX_REQ_LEN);
-	req.req_buf_page_addr[0] =
+	req.req_buf_page_addr0 =
 		rte_cpu_to_le_64(rte_mem_virt2iova(bp->pf.vf_req_buf));
-	if (req.req_buf_page_addr[0] == 0) {
-		RTE_LOG(ERR, PMD,
+	if (req.req_buf_page_addr0 == 0) {
+		PMD_DRV_LOG(ERR,
 			"unable to map buffer address to physical memory\n");
 		return -ENOMEM;
 	}
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2703,9 +2949,9 @@ int bnxt_hwrm_func_buf_unrgtr(struct bnxt *bp)
 	struct hwrm_func_buf_unrgtr_input req = {.req_type = 0 };
 	struct hwrm_func_buf_unrgtr_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, FUNC_BUF_UNRGTR);
+	HWRM_PREP(req, FUNC_BUF_UNRGTR, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2719,7 +2965,7 @@ int bnxt_hwrm_func_cfg_def_cp(struct bnxt *bp)
 	struct hwrm_func_cfg_input req = {0};
 	int rc;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(0xffff);
 	req.flags = rte_cpu_to_le_32(bp->pf.func_cfg_flags);
@@ -2727,7 +2973,7 @@ int bnxt_hwrm_func_cfg_def_cp(struct bnxt *bp)
 			HWRM_FUNC_CFG_INPUT_ENABLES_ASYNC_EVENT_CR);
 	req.async_event_cr = rte_cpu_to_le_16(
 			bp->def_cp_ring->cp_ring_struct->fw_ring_id);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2741,13 +2987,13 @@ int bnxt_hwrm_vf_func_cfg_def_cp(struct bnxt *bp)
 	struct hwrm_func_vf_cfg_input req = {0};
 	int rc;
 
-	HWRM_PREP(req, FUNC_VF_CFG);
+	HWRM_PREP(req, FUNC_VF_CFG, BNXT_USE_CHIMP_MB);
 
 	req.enables = rte_cpu_to_le_32(
-			HWRM_FUNC_CFG_INPUT_ENABLES_ASYNC_EVENT_CR);
+			HWRM_FUNC_VF_CFG_INPUT_ENABLES_ASYNC_EVENT_CR);
 	req.async_event_cr = rte_cpu_to_le_16(
 			bp->def_cp_ring->cp_ring_struct->fw_ring_id);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2763,7 +3009,7 @@ int bnxt_hwrm_set_default_vlan(struct bnxt *bp, int vf, uint8_t is_vf)
 	uint32_t func_cfg_flags;
 	int rc = 0;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	if (is_vf) {
 		dflt_vlan = bp->pf.vf_info[vf].dflt_vlan;
@@ -2780,7 +3026,7 @@ int bnxt_hwrm_set_default_vlan(struct bnxt *bp, int vf, uint8_t is_vf)
 	req.enables |= rte_cpu_to_le_32(HWRM_FUNC_CFG_INPUT_ENABLES_DFLT_VLAN);
 	req.dflt_vlan = rte_cpu_to_le_16(dflt_vlan);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2795,13 +3041,13 @@ int bnxt_hwrm_func_bw_cfg(struct bnxt *bp, uint16_t vf,
 	struct hwrm_func_cfg_input req = {0};
 	int rc;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
 	req.enables |= rte_cpu_to_le_32(enables);
 	req.flags = rte_cpu_to_le_32(bp->pf.vf_info[vf].func_cfg_flags);
 	req.max_bw = rte_cpu_to_le_32(max_bw);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2815,17 +3061,29 @@ int bnxt_hwrm_set_vf_vlan(struct bnxt *bp, int vf)
 	struct hwrm_func_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 	int rc = 0;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	req.flags = rte_cpu_to_le_32(bp->pf.vf_info[vf].func_cfg_flags);
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
 	req.enables |= rte_cpu_to_le_32(HWRM_FUNC_CFG_INPUT_ENABLES_DFLT_VLAN);
 	req.dflt_vlan = rte_cpu_to_le_16(bp->pf.vf_info[vf].dflt_vlan);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
+
+	return rc;
+}
+
+int bnxt_hwrm_set_async_event_cr(struct bnxt *bp)
+{
+	int rc;
+
+	if (BNXT_PF(bp))
+		rc = bnxt_hwrm_func_cfg_def_cp(bp);
+	else
+		rc = bnxt_hwrm_vf_func_cfg_def_cp(bp);
 
 	return rc;
 }
@@ -2840,12 +3098,12 @@ int bnxt_hwrm_reject_fwd_resp(struct bnxt *bp, uint16_t target_id,
 	if (ec_size > sizeof(req.encap_request))
 		return -1;
 
-	HWRM_PREP(req, REJECT_FWD_RESP);
+	HWRM_PREP(req, REJECT_FWD_RESP, BNXT_USE_CHIMP_MB);
 
 	req.encap_resp_target_id = rte_cpu_to_le_16(target_id);
 	memcpy(req.encap_request, encaped, ec_size);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2860,10 +3118,10 @@ int bnxt_hwrm_func_qcfg_vf_default_mac(struct bnxt *bp, uint16_t vf,
 	struct hwrm_func_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
 	int rc;
 
-	HWRM_PREP(req, FUNC_QCFG);
+	HWRM_PREP(req, FUNC_QCFG, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -2884,12 +3142,12 @@ int bnxt_hwrm_exec_fwd_resp(struct bnxt *bp, uint16_t target_id,
 	if (ec_size > sizeof(req.encap_request))
 		return -1;
 
-	HWRM_PREP(req, EXEC_FWD_RESP);
+	HWRM_PREP(req, EXEC_FWD_RESP, BNXT_USE_CHIMP_MB);
 
 	req.encap_resp_target_id = rte_cpu_to_le_16(target_id);
 	memcpy(req.encap_request, encaped, ec_size);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2904,11 +3162,11 @@ int bnxt_hwrm_ctx_qstats(struct bnxt *bp, uint32_t cid, int idx,
 	struct hwrm_stat_ctx_query_input req = {.req_type = 0};
 	struct hwrm_stat_ctx_query_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, STAT_CTX_QUERY);
+	HWRM_PREP(req, STAT_CTX_QUERY, BNXT_USE_CHIMP_MB);
 
 	req.stat_ctx_id = rte_cpu_to_le_32(cid);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -2944,15 +3202,12 @@ int bnxt_hwrm_port_qstats(struct bnxt *bp)
 	struct bnxt_pf_info *pf = &bp->pf;
 	int rc;
 
-	if (!(bp->flags & BNXT_FLAG_PORT_STATS))
-		return 0;
-
-	HWRM_PREP(req, PORT_QSTATS);
+	HWRM_PREP(req, PORT_QSTATS, BNXT_USE_CHIMP_MB);
 
 	req.port_id = rte_cpu_to_le_16(pf->port_id);
 	req.tx_stat_host_addr = rte_cpu_to_le_64(bp->hw_tx_port_stats_map);
 	req.rx_stat_host_addr = rte_cpu_to_le_64(bp->hw_rx_port_stats_map);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2967,13 +3222,15 @@ int bnxt_hwrm_port_clr_stats(struct bnxt *bp)
 	struct bnxt_pf_info *pf = &bp->pf;
 	int rc;
 
-	if (!(bp->flags & BNXT_FLAG_PORT_STATS))
+	/* Not allowed on NS2 device, NPAR, MultiHost, VF */
+	if (!(bp->flags & BNXT_FLAG_PORT_STATS) || BNXT_VF(bp) ||
+	    BNXT_NPAR(bp) || BNXT_MH(bp) || BNXT_TOTAL_VFS(bp))
 		return 0;
 
-	HWRM_PREP(req, PORT_CLR_STATS);
+	HWRM_PREP(req, PORT_CLR_STATS, BNXT_USE_CHIMP_MB);
 
 	req.port_id = rte_cpu_to_le_16(pf->port_id);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -2990,9 +3247,9 @@ int bnxt_hwrm_port_led_qcaps(struct bnxt *bp)
 	if (BNXT_VF(bp))
 		return 0;
 
-	HWRM_PREP(req, PORT_LED_QCAPS);
+	HWRM_PREP(req, PORT_LED_QCAPS, BNXT_USE_CHIMP_MB);
 	req.port_id = bp->pf.port_id;
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -3032,7 +3289,7 @@ int bnxt_hwrm_port_led_cfg(struct bnxt *bp, bool led_on)
 	if (!bp->num_leds || BNXT_VF(bp))
 		return -EOPNOTSUPP;
 
-	HWRM_PREP(req, PORT_LED_CFG);
+	HWRM_PREP(req, PORT_LED_CFG, BNXT_USE_CHIMP_MB);
 
 	if (led_on) {
 		led_state = HWRM_PORT_LED_CFG_INPUT_LED0_STATE_BLINKALT;
@@ -3050,7 +3307,7 @@ int bnxt_hwrm_port_led_cfg(struct bnxt *bp, bool led_on)
 		led_cfg->led_group_id = bp->leds[i].led_group_id;
 	}
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -3065,9 +3322,9 @@ int bnxt_hwrm_nvm_get_dir_info(struct bnxt *bp, uint32_t *entries,
 	struct hwrm_nvm_get_dir_info_input req = {0};
 	struct hwrm_nvm_get_dir_info_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, NVM_GET_DIR_INFO);
+	HWRM_PREP(req, NVM_GET_DIR_INFO, BNXT_USE_CHIMP_MB);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -3106,13 +3363,13 @@ int bnxt_get_nvram_directory(struct bnxt *bp, uint32_t len, uint8_t *data)
 		return -ENOMEM;
 	dma_handle = rte_mem_virt2iova(buf);
 	if (dma_handle == 0) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
 	}
-	HWRM_PREP(req, NVM_GET_DIR_ENTRIES);
+	HWRM_PREP(req, NVM_GET_DIR_ENTRIES, BNXT_USE_CHIMP_MB);
 	req.host_dest_addr = rte_cpu_to_le_64(dma_handle);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	if (rc == 0)
 		memcpy(data, buf, len > buflen ? buflen : len);
@@ -3141,16 +3398,16 @@ int bnxt_hwrm_get_nvram_item(struct bnxt *bp, uint32_t index,
 
 	dma_handle = rte_mem_virt2iova(buf);
 	if (dma_handle == 0) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
 	}
-	HWRM_PREP(req, NVM_READ);
+	HWRM_PREP(req, NVM_READ, BNXT_USE_CHIMP_MB);
 	req.host_dest_addr = rte_cpu_to_le_64(dma_handle);
 	req.dir_idx = rte_cpu_to_le_16(index);
 	req.offset = rte_cpu_to_le_32(offset);
 	req.len = rte_cpu_to_le_32(length);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	if (rc == 0)
 		memcpy(data, buf, length);
 
@@ -3167,9 +3424,9 @@ int bnxt_hwrm_erase_nvram_directory(struct bnxt *bp, uint8_t index)
 	struct hwrm_nvm_erase_dir_entry_input req = {0};
 	struct hwrm_nvm_erase_dir_entry_output *resp = bp->hwrm_cmd_resp_addr;
 
-	HWRM_PREP(req, NVM_ERASE_DIR_ENTRY);
+	HWRM_PREP(req, NVM_ERASE_DIR_ENTRY, BNXT_USE_CHIMP_MB);
 	req.dir_idx = rte_cpu_to_le_16(index);
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
@@ -3195,13 +3452,13 @@ int bnxt_hwrm_flash_nvram(struct bnxt *bp, uint16_t dir_type,
 
 	dma_handle = rte_mem_virt2iova(buf);
 	if (dma_handle == 0) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
 	}
 	memcpy(buf, data, data_len);
 
-	HWRM_PREP(req, NVM_WRITE);
+	HWRM_PREP(req, NVM_WRITE, BNXT_USE_CHIMP_MB);
 
 	req.dir_type = rte_cpu_to_le_16(dir_type);
 	req.dir_ordinal = rte_cpu_to_le_16(dir_ordinal);
@@ -3210,7 +3467,7 @@ int bnxt_hwrm_flash_nvram(struct bnxt *bp, uint16_t dir_type,
 	req.dir_data_length = rte_cpu_to_le_32(data_len);
 	req.host_src_addr = rte_cpu_to_le_64(dma_handle);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	rte_free(buf);
 	HWRM_CHECK_RESULT();
@@ -3252,7 +3509,7 @@ static int bnxt_hwrm_func_vf_vnic_query(struct bnxt *bp, uint16_t vf,
 	int rc;
 
 	/* First query all VNIC ids */
-	HWRM_PREP(req, FUNC_VF_VNIC_IDS_QUERY);
+	HWRM_PREP(req, FUNC_VF_VNIC_IDS_QUERY, BNXT_USE_CHIMP_MB);
 
 	req.vf_id = rte_cpu_to_le_16(bp->pf.first_vf_id + vf);
 	req.max_vnic_id_cnt = rte_cpu_to_le_32(bp->pf.total_vnics);
@@ -3260,19 +3517,19 @@ static int bnxt_hwrm_func_vf_vnic_query(struct bnxt *bp, uint16_t vf,
 
 	if (req.vnic_id_tbl_addr == 0) {
 		HWRM_UNLOCK();
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 		"unable to map VNIC ID table address to physical memory\n");
 		return -ENOMEM;
 	}
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 	if (rc) {
 		HWRM_UNLOCK();
-		RTE_LOG(ERR, PMD, "hwrm_func_vf_vnic_query failed rc:%d\n", rc);
+		PMD_DRV_LOG(ERR, "hwrm_func_vf_vnic_query failed rc:%d\n", rc);
 		return -1;
 	} else if (resp->error_code) {
 		rc = rte_le_to_cpu_16(resp->error_code);
 		HWRM_UNLOCK();
-		RTE_LOG(ERR, PMD, "hwrm_func_vf_vnic_query error %d\n", rc);
+		PMD_DRV_LOG(ERR, "hwrm_func_vf_vnic_query error %d\n", rc);
 		return -1;
 	}
 	rc = rte_le_to_cpu_32(resp->vnic_id_cnt);
@@ -3344,7 +3601,7 @@ int bnxt_hwrm_func_cfg_vf_set_vlan_anti_spoof(struct bnxt *bp, uint16_t vf,
 	struct hwrm_func_cfg_input req = {0};
 	int rc;
 
-	HWRM_PREP(req, FUNC_CFG);
+	HWRM_PREP(req, FUNC_CFG, BNXT_USE_CHIMP_MB);
 
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
 	req.enables |= rte_cpu_to_le_32(
@@ -3352,7 +3609,7 @@ int bnxt_hwrm_func_cfg_vf_set_vlan_anti_spoof(struct bnxt *bp, uint16_t vf,
 	req.vlan_antispoof_mode = on ?
 		HWRM_FUNC_CFG_INPUT_VLAN_ANTISPOOF_MODE_VALIDATE_VLAN :
 		HWRM_FUNC_CFG_INPUT_VLAN_ANTISPOOF_MODE_NOCHECK;
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
@@ -3403,7 +3660,7 @@ int bnxt_hwrm_func_qcfg_vf_dflt_vnic_id(struct bnxt *bp, int vf)
 		}
 	}
 	/* Could not find a default VNIC. */
-	RTE_LOG(ERR, PMD, "No default VNIC\n");
+	PMD_DRV_LOG(ERR, "No default VNIC\n");
 exit:
 	rte_free(vnic_ids);
 	return -1;
@@ -3421,7 +3678,7 @@ int bnxt_hwrm_set_em_filter(struct bnxt *bp,
 	if (filter->fw_em_filter_id != UINT64_MAX)
 		bnxt_hwrm_clear_em_filter(bp, filter);
 
-	HWRM_PREP(req, CFA_EM_FLOW_ALLOC);
+	HWRM_PREP(req, CFA_EM_FLOW_ALLOC, BNXT_USE_KONG(bp));
 
 	req.flags = rte_cpu_to_le_32(filter->flags);
 
@@ -3474,7 +3731,7 @@ int bnxt_hwrm_set_em_filter(struct bnxt *bp,
 
 	req.enables = rte_cpu_to_le_32(enables);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_KONG(bp));
 
 	HWRM_CHECK_RESULT();
 
@@ -3493,18 +3750,18 @@ int bnxt_hwrm_clear_em_filter(struct bnxt *bp, struct bnxt_filter_info *filter)
 	if (filter->fw_em_filter_id == UINT64_MAX)
 		return 0;
 
-	RTE_LOG(ERR, PMD, "Clear EM filter\n");
-	HWRM_PREP(req, CFA_EM_FLOW_FREE);
+	PMD_DRV_LOG(ERR, "Clear EM filter\n");
+	HWRM_PREP(req, CFA_EM_FLOW_FREE, BNXT_USE_KONG(bp));
 
 	req.em_filter_id = rte_cpu_to_le_64(filter->fw_em_filter_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_KONG(bp));
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
-	filter->fw_em_filter_id = -1;
-	filter->fw_l2_filter_id = -1;
+	filter->fw_em_filter_id = UINT64_MAX;
+	filter->fw_l2_filter_id = UINT64_MAX;
 
 	return 0;
 }
@@ -3522,7 +3779,7 @@ int bnxt_hwrm_set_ntuple_filter(struct bnxt *bp,
 	if (filter->fw_ntuple_filter_id != UINT64_MAX)
 		bnxt_hwrm_clear_ntuple_filter(bp, filter);
 
-	HWRM_PREP(req, CFA_NTUPLE_FILTER_ALLOC);
+	HWRM_PREP(req, CFA_NTUPLE_FILTER_ALLOC, BNXT_USE_CHIMP_MB);
 
 	req.flags = rte_cpu_to_le_32(filter->flags);
 
@@ -3585,7 +3842,7 @@ int bnxt_hwrm_set_ntuple_filter(struct bnxt *bp,
 
 	req.enables = rte_cpu_to_le_32(enables);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 
@@ -3606,16 +3863,139 @@ int bnxt_hwrm_clear_ntuple_filter(struct bnxt *bp,
 	if (filter->fw_ntuple_filter_id == UINT64_MAX)
 		return 0;
 
-	HWRM_PREP(req, CFA_NTUPLE_FILTER_FREE);
+	HWRM_PREP(req, CFA_NTUPLE_FILTER_FREE, BNXT_USE_CHIMP_MB);
 
 	req.ntuple_filter_id = rte_cpu_to_le_64(filter->fw_ntuple_filter_id);
 
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
 	HWRM_UNLOCK();
 
-	filter->fw_ntuple_filter_id = -1;
+	filter->fw_ntuple_filter_id = UINT64_MAX;
 
 	return 0;
+}
+
+int bnxt_vnic_rss_configure(struct bnxt *bp, struct bnxt_vnic_info *vnic)
+{
+	unsigned int rss_idx, fw_idx, i;
+
+	if (vnic->rss_table && vnic->hash_type) {
+		/*
+		 * Fill the RSS hash & redirection table with
+		 * ring group ids for all VNICs
+		 */
+		for (rss_idx = 0, fw_idx = 0; rss_idx < HW_HASH_INDEX_SIZE;
+			rss_idx++, fw_idx++) {
+			for (i = 0; i < bp->rx_cp_nr_rings; i++) {
+				fw_idx %= bp->rx_cp_nr_rings;
+				if (vnic->fw_grp_ids[fw_idx] !=
+				    INVALID_HW_RING_ID)
+					break;
+				fw_idx++;
+			}
+			if (i == bp->rx_cp_nr_rings)
+				return 0;
+			vnic->rss_table[rss_idx] =
+				vnic->fw_grp_ids[fw_idx];
+		}
+		return bnxt_hwrm_vnic_rss_cfg(bp, vnic);
+	}
+	return 0;
+}
+
+static void bnxt_hwrm_set_coal_params(struct bnxt_coal *hw_coal,
+	struct hwrm_ring_cmpl_ring_cfg_aggint_params_input *req)
+{
+	uint16_t flags;
+
+	req->num_cmpl_aggr_int = rte_cpu_to_le_16(hw_coal->num_cmpl_aggr_int);
+
+	/* This is a 6-bit value and must not be 0, or we'll get non stop IRQ */
+	req->num_cmpl_dma_aggr = rte_cpu_to_le_16(hw_coal->num_cmpl_dma_aggr);
+
+	/* This is a 6-bit value and must not be 0, or we'll get non stop IRQ */
+	req->num_cmpl_dma_aggr_during_int =
+		rte_cpu_to_le_16(hw_coal->num_cmpl_dma_aggr_during_int);
+
+	req->int_lat_tmr_max = rte_cpu_to_le_16(hw_coal->int_lat_tmr_max);
+
+	/* min timer set to 1/2 of interrupt timer */
+	req->int_lat_tmr_min = rte_cpu_to_le_16(hw_coal->int_lat_tmr_min);
+
+	/* buf timer set to 1/4 of interrupt timer */
+	req->cmpl_aggr_dma_tmr = rte_cpu_to_le_16(hw_coal->cmpl_aggr_dma_tmr);
+
+	req->cmpl_aggr_dma_tmr_during_int =
+		rte_cpu_to_le_16(hw_coal->cmpl_aggr_dma_tmr_during_int);
+
+	flags = HWRM_RING_CMPL_RING_CFG_AGGINT_PARAMS_INPUT_FLAGS_TIMER_RESET |
+		HWRM_RING_CMPL_RING_CFG_AGGINT_PARAMS_INPUT_FLAGS_RING_IDLE;
+	req->flags = rte_cpu_to_le_16(flags);
+}
+
+int bnxt_hwrm_set_ring_coal(struct bnxt *bp,
+			struct bnxt_coal *coal, uint16_t ring_id)
+{
+	struct hwrm_ring_cmpl_ring_cfg_aggint_params_input req = {0};
+	struct hwrm_ring_cmpl_ring_cfg_aggint_params_output *resp =
+						bp->hwrm_cmd_resp_addr;
+	int rc;
+
+	/* Set ring coalesce parameters only for Stratus 100G NIC */
+	if (!bnxt_stratus_device(bp))
+		return 0;
+
+	HWRM_PREP(req, RING_CMPL_RING_CFG_AGGINT_PARAMS, BNXT_USE_CHIMP_MB);
+	bnxt_hwrm_set_coal_params(coal, &req);
+	req.ring_id = rte_cpu_to_le_16(ring_id);
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+	HWRM_CHECK_RESULT();
+	HWRM_UNLOCK();
+	return 0;
+}
+
+int bnxt_hwrm_ext_port_qstats(struct bnxt *bp)
+{
+	struct hwrm_port_qstats_ext_input req = {0};
+	struct hwrm_port_qstats_ext_output *resp = bp->hwrm_cmd_resp_addr;
+	struct bnxt_pf_info *pf = &bp->pf;
+	int rc;
+
+	if (!(bp->flags & BNXT_FLAG_EXT_RX_PORT_STATS ||
+	      bp->flags & BNXT_FLAG_EXT_TX_PORT_STATS))
+		return 0;
+
+	HWRM_PREP(req, PORT_QSTATS_EXT, BNXT_USE_CHIMP_MB);
+
+	req.port_id = rte_cpu_to_le_16(pf->port_id);
+	if (bp->flags & BNXT_FLAG_EXT_TX_PORT_STATS) {
+		req.tx_stat_host_addr =
+			rte_cpu_to_le_64(bp->hw_tx_port_stats_map);
+		req.tx_stat_size =
+			rte_cpu_to_le_16(sizeof(struct tx_port_stats_ext));
+	}
+	if (bp->flags & BNXT_FLAG_EXT_RX_PORT_STATS) {
+		req.rx_stat_host_addr =
+			rte_cpu_to_le_64(bp->hw_rx_port_stats_map);
+		req.rx_stat_size =
+			rte_cpu_to_le_16(sizeof(struct rx_port_stats_ext));
+	}
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	if (rc) {
+		bp->fw_rx_port_stats_ext_size = 0;
+		bp->fw_tx_port_stats_ext_size = 0;
+	} else {
+		bp->fw_rx_port_stats_ext_size =
+			rte_le_to_cpu_16(resp->rx_stat_size);
+		bp->fw_tx_port_stats_ext_size =
+			rte_le_to_cpu_16(resp->tx_stat_size);
+	}
+
+	HWRM_CHECK_RESULT();
+	HWRM_UNLOCK();
+
+	return rc;
 }

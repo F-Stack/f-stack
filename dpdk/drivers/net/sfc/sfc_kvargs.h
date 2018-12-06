@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_KVARGS_H
@@ -39,10 +17,6 @@ extern "C" {
 #endif
 
 #define SFC_KVARG_VALUES_BOOL		"[1|y|yes|on|0|n|no|off]"
-
-#define SFC_KVARG_DEBUG_INIT		"debug_init"
-
-#define SFC_KVARG_MCDI_LOGGING		"mcdi_logging"
 
 #define SFC_KVARG_PERF_PROFILE		"perf_profile"
 
@@ -59,17 +33,35 @@ extern "C" {
 #define SFC_KVARG_DATAPATH_EFX		"efx"
 #define SFC_KVARG_DATAPATH_EF10		"ef10"
 #define SFC_KVARG_DATAPATH_EF10_SIMPLE	"ef10_simple"
+#define SFC_KVARG_DATAPATH_EF10_ESSB	"ef10_essb"
 
 #define SFC_KVARG_RX_DATAPATH		"rx_datapath"
 #define SFC_KVARG_VALUES_RX_DATAPATH \
 	"[" SFC_KVARG_DATAPATH_EFX "|" \
-	    SFC_KVARG_DATAPATH_EF10 "]"
+	    SFC_KVARG_DATAPATH_EF10 "|" \
+	    SFC_KVARG_DATAPATH_EF10_ESSB "]"
 
 #define SFC_KVARG_TX_DATAPATH		"tx_datapath"
 #define SFC_KVARG_VALUES_TX_DATAPATH \
 	"[" SFC_KVARG_DATAPATH_EFX "|" \
 	    SFC_KVARG_DATAPATH_EF10 "|" \
 	    SFC_KVARG_DATAPATH_EF10_SIMPLE "]"
+
+#define SFC_KVARG_FW_VARIANT		"fw_variant"
+
+#define SFC_KVARG_FW_VARIANT_DONT_CARE		"dont-care"
+#define SFC_KVARG_FW_VARIANT_FULL_FEATURED	"full-feature"
+#define SFC_KVARG_FW_VARIANT_LOW_LATENCY	"ultra-low-latency"
+#define SFC_KVARG_FW_VARIANT_PACKED_STREAM	"capture-packed-stream"
+#define SFC_KVARG_FW_VARIANT_DPDK		"dpdk"
+#define SFC_KVARG_VALUES_FW_VARIANT \
+	"[" SFC_KVARG_FW_VARIANT_DONT_CARE "|" \
+	    SFC_KVARG_FW_VARIANT_FULL_FEATURED "|" \
+	    SFC_KVARG_FW_VARIANT_LOW_LATENCY "|" \
+	    SFC_KVARG_FW_VARIANT_PACKED_STREAM "|" \
+	    SFC_KVARG_FW_VARIANT_DPDK "]"
+
+#define SFC_KVARG_RXD_WAIT_TIMEOUT_NS	"rxd_wait_timeout_ns"
 
 struct sfc_adapter;
 

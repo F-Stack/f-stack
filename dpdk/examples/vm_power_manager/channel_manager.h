@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef CHANNEL_MANAGER_H_
@@ -66,7 +37,7 @@ struct sockaddr_un _sockaddr_un;
 #define UNIX_PATH_MAX sizeof(_sockaddr_un.sun_path)
 #endif
 
-#define MAX_VMS 4
+#define MAX_CLIENTS 64
 #define MAX_VCPUS 20
 
 
@@ -76,12 +47,19 @@ struct libvirt_vm_info {
 	uint8_t num_cpus;
 };
 
-struct libvirt_vm_info lvm_info[MAX_VMS];
+struct libvirt_vm_info lvm_info[MAX_CLIENTS];
 /* Communication Channel Status */
 enum channel_status { CHANNEL_MGR_CHANNEL_DISCONNECTED = 0,
 	CHANNEL_MGR_CHANNEL_CONNECTED,
 	CHANNEL_MGR_CHANNEL_DISABLED,
 	CHANNEL_MGR_CHANNEL_PROCESSING};
+
+/* Communication Channel Type */
+enum channel_type {
+	CHANNEL_TYPE_BINARY = 0,
+	CHANNEL_TYPE_INI,
+	CHANNEL_TYPE_JSON
+};
 
 /* VM libvirt(qemu/KVM) connection status */
 enum vm_status { CHANNEL_MGR_VM_INACTIVE = 0, CHANNEL_MGR_VM_ACTIVE};
@@ -95,6 +73,7 @@ struct channel_info {
 	volatile uint32_t status;    /**< Connection status(enum channel_status) */
 	int fd;                      /**< AF_UNIX socket fd */
 	unsigned channel_num;        /**< CHANNEL_MGR_SOCKET_PATH/<vm_name>.channel_num */
+	enum channel_type type;      /**< Binary, ini, json, etc. */
 	void *priv_info;             /**< Pointer to private info, do not modify */
 };
 
@@ -254,6 +233,15 @@ int add_all_channels(const char *vm_name);
  */
 int add_channels(const char *vm_name, unsigned *channel_list,
 		unsigned num_channels);
+
+/**
+ * Set up a fifo by which host applications can send command an policies
+ * through a fifo to the vm_power_manager
+ *
+ * @return
+ *  - 0 for success
+ */
+int add_host_channel(void);
 
 /**
  * Remove a channel definition from the channel manager. This must only be

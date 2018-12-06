@@ -1,38 +1,18 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <stdbool.h>
 
 #include <rte_mbuf.h>
 #include <rte_io.h>
+#include <rte_ip.h>
+#include <rte_tcp.h>
 
 #include "efx.h"
 #include "efx_types.h"
@@ -43,6 +23,7 @@
 #include "sfc_tweak.h"
 #include "sfc_kvargs.h"
 #include "sfc_ef10.h"
+#include "sfc_tso.h"
 
 #define sfc_ef10_tx_err(dpq, ...) \
 	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, ERR, dpq, __VA_ARGS__)
@@ -77,12 +58,16 @@ struct sfc_ef10_txq {
 	unsigned int			ptr_mask;
 	unsigned int			added;
 	unsigned int			completed;
+	unsigned int			max_fill_level;
 	unsigned int			free_thresh;
 	unsigned int			evq_read_ptr;
 	struct sfc_ef10_tx_sw_desc	*sw_ring;
 	efx_qword_t			*txq_hw_ring;
 	volatile void			*doorbell;
 	efx_qword_t			*evq_hw_ring;
+	uint8_t				*tsoh;
+	rte_iova_t			tsoh_iova;
+	uint16_t			tso_tcp_header_offset_limit;
 
 	/* Datapath transmit queue anchor */
 	struct sfc_dp_txq		dp;
@@ -205,6 +190,30 @@ sfc_ef10_tx_qdesc_dma_create(rte_iova_t addr, uint16_t size, bool eop,
 			     ESF_DZ_TX_KER_BUF_ADDR, addr);
 }
 
+static void
+sfc_ef10_tx_qdesc_tso2_create(struct sfc_ef10_txq * const txq,
+			      unsigned int added, uint16_t ipv4_id,
+			      uint16_t outer_ipv4_id, uint32_t tcp_seq,
+			      uint16_t tcp_mss)
+{
+	EFX_POPULATE_QWORD_5(txq->txq_hw_ring[added & txq->ptr_mask],
+			    ESF_DZ_TX_DESC_IS_OPT, 1,
+			    ESF_DZ_TX_OPTION_TYPE,
+			    ESE_DZ_TX_OPTION_DESC_TSO,
+			    ESF_DZ_TX_TSO_OPTION_TYPE,
+			    ESE_DZ_TX_TSO_OPTION_DESC_FATSO2A,
+			    ESF_DZ_TX_TSO_IP_ID, ipv4_id,
+			    ESF_DZ_TX_TSO_TCP_SEQNO, tcp_seq);
+	EFX_POPULATE_QWORD_5(txq->txq_hw_ring[(added + 1) & txq->ptr_mask],
+			    ESF_DZ_TX_DESC_IS_OPT, 1,
+			    ESF_DZ_TX_OPTION_TYPE,
+			    ESE_DZ_TX_OPTION_DESC_TSO,
+			    ESF_DZ_TX_TSO_OPTION_TYPE,
+			    ESE_DZ_TX_TSO_OPTION_DESC_FATSO2B,
+			    ESF_DZ_TX_TSO_TCP_MSS, tcp_mss,
+			    ESF_DZ_TX_TSO_OUTER_IPID, outer_ipv4_id);
+}
+
 static inline void
 sfc_ef10_tx_qpush(struct sfc_ef10_txq *txq, unsigned int added,
 		  unsigned int pushed)
@@ -284,11 +293,256 @@ sfc_ef10_tx_pkt_descs_max(const struct rte_mbuf *m)
 				    extra_descs_per_pkt);
 }
 
+static bool
+sfc_ef10_try_reap(struct sfc_ef10_txq * const txq, unsigned int added,
+		  unsigned int needed_desc, unsigned int *dma_desc_space,
+		  bool *reap_done)
+{
+	if (*reap_done)
+		return false;
+
+	if (added != txq->added) {
+		sfc_ef10_tx_qpush(txq, added, txq->added);
+		txq->added = added;
+	}
+
+	sfc_ef10_tx_reap(txq);
+	*reap_done = true;
+
+	/*
+	 * Recalculate DMA descriptor space since Tx reap may change
+	 * the number of completed descriptors
+	 */
+	*dma_desc_space = txq->max_fill_level -
+		(added - txq->completed);
+
+	return (needed_desc <= *dma_desc_space);
+}
+
+static int
+sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
+		      unsigned int *added, unsigned int *dma_desc_space,
+		      bool *reap_done)
+{
+	size_t iph_off = m_seg->l2_len;
+	size_t tcph_off = m_seg->l2_len + m_seg->l3_len;
+	size_t header_len = m_seg->l2_len + m_seg->l3_len + m_seg->l4_len;
+	/* Offset of the payload in the last segment that contains the header */
+	size_t in_off = 0;
+	const struct tcp_hdr *th;
+	uint16_t packet_id;
+	uint32_t sent_seq;
+	uint8_t *hdr_addr;
+	rte_iova_t hdr_iova;
+	struct rte_mbuf *first_m_seg = m_seg;
+	unsigned int pkt_start = *added;
+	unsigned int needed_desc;
+	struct rte_mbuf *m_seg_to_free_up_to = first_m_seg;
+	bool eop;
+
+	/* Both checks may be done, so use bit OR to have only one branching */
+	if (unlikely((header_len > SFC_TSOH_STD_LEN) |
+		     (tcph_off > txq->tso_tcp_header_offset_limit)))
+		return EMSGSIZE;
+
+	/*
+	 * Preliminary estimation of required DMA descriptors, including extra
+	 * descriptor for TSO header that is needed when the header is
+	 * separated from payload in one segment. It does not include
+	 * extra descriptors that may appear when a big segment is split across
+	 * several descriptors.
+	 */
+	needed_desc = m_seg->nb_segs +
+			(unsigned int)SFC_TSO_OPT_DESCS_NUM +
+			(unsigned int)SFC_TSO_HDR_DESCS_NUM;
+
+	if (needed_desc > *dma_desc_space &&
+	    !sfc_ef10_try_reap(txq, pkt_start, needed_desc,
+			       dma_desc_space, reap_done)) {
+		/*
+		 * If a future Tx reap may increase available DMA descriptor
+		 * space, do not try to send the packet.
+		 */
+		if (txq->completed != pkt_start)
+			return ENOSPC;
+		/*
+		 * Do not allow to send packet if the maximum DMA
+		 * descriptor space is not sufficient to hold TSO
+		 * descriptors, header descriptor and at least 1
+		 * segment descriptor.
+		 */
+		if (*dma_desc_space < SFC_TSO_OPT_DESCS_NUM +
+				SFC_TSO_HDR_DESCS_NUM + 1)
+			return EMSGSIZE;
+	}
+
+	/* Check if the header is not fragmented */
+	if (rte_pktmbuf_data_len(m_seg) >= header_len) {
+		hdr_addr = rte_pktmbuf_mtod(m_seg, uint8_t *);
+		hdr_iova = rte_mbuf_data_iova(m_seg);
+		if (rte_pktmbuf_data_len(m_seg) == header_len) {
+			/*
+			 * Associate header mbuf with header descriptor
+			 * which is located after TSO descriptors.
+			 */
+			txq->sw_ring[(pkt_start + SFC_TSO_OPT_DESCS_NUM) &
+				     txq->ptr_mask].mbuf = m_seg;
+			m_seg = m_seg->next;
+			in_off = 0;
+
+			/*
+			 * If there is no payload offset (payload starts at the
+			 * beginning of a segment) then an extra descriptor for
+			 * separated header is not needed.
+			 */
+			needed_desc--;
+		} else {
+			in_off = header_len;
+		}
+	} else {
+		unsigned int copied_segs;
+		unsigned int hdr_addr_off = (*added & txq->ptr_mask) *
+				SFC_TSOH_STD_LEN;
+
+		hdr_addr = txq->tsoh + hdr_addr_off;
+		hdr_iova = txq->tsoh_iova + hdr_addr_off;
+		copied_segs = sfc_tso_prepare_header(hdr_addr, header_len,
+						     &m_seg, &in_off);
+
+		m_seg_to_free_up_to = m_seg;
+		/*
+		 * Reduce the number of needed descriptors by the number of
+		 * segments that entirely consist of header data.
+		 */
+		needed_desc -= copied_segs;
+
+		/* Extra descriptor for separated header is not needed */
+		if (in_off == 0)
+			needed_desc--;
+	}
+
+	switch (first_m_seg->ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) {
+	case PKT_TX_IPV4: {
+		const struct ipv4_hdr *iphe4;
+
+		iphe4 = (const struct ipv4_hdr *)(hdr_addr + iph_off);
+		rte_memcpy(&packet_id, &iphe4->packet_id, sizeof(uint16_t));
+		packet_id = rte_be_to_cpu_16(packet_id);
+		break;
+	}
+	case PKT_TX_IPV6:
+		packet_id = 0;
+		break;
+	default:
+		return EINVAL;
+	}
+
+	th = (const struct tcp_hdr *)(hdr_addr + tcph_off);
+	rte_memcpy(&sent_seq, &th->sent_seq, sizeof(uint32_t));
+	sent_seq = rte_be_to_cpu_32(sent_seq);
+
+	sfc_ef10_tx_qdesc_tso2_create(txq, *added, packet_id, 0, sent_seq,
+			first_m_seg->tso_segsz);
+	(*added) += SFC_TSO_OPT_DESCS_NUM;
+
+	sfc_ef10_tx_qdesc_dma_create(hdr_iova, header_len, false,
+			&txq->txq_hw_ring[(*added) & txq->ptr_mask]);
+	(*added)++;
+
+	do {
+		rte_iova_t next_frag = rte_mbuf_data_iova(m_seg);
+		unsigned int seg_len = rte_pktmbuf_data_len(m_seg);
+		unsigned int id;
+
+		next_frag += in_off;
+		seg_len -= in_off;
+		in_off = 0;
+
+		do {
+			rte_iova_t frag_addr = next_frag;
+			size_t frag_len;
+
+			frag_len = RTE_MIN(seg_len,
+					   SFC_EF10_TX_DMA_DESC_LEN_MAX);
+
+			next_frag += frag_len;
+			seg_len -= frag_len;
+
+			eop = (seg_len == 0 && m_seg->next == NULL);
+
+			id = (*added) & txq->ptr_mask;
+			(*added)++;
+
+			/*
+			 * Initially we assume that one DMA descriptor is needed
+			 * for every segment. When the segment is split across
+			 * several DMA descriptors, increase the estimation.
+			 */
+			needed_desc += (seg_len != 0);
+
+			/*
+			 * When no more descriptors can be added, but not all
+			 * segments are processed.
+			 */
+			if (*added - pkt_start == *dma_desc_space &&
+			    !eop &&
+			    !sfc_ef10_try_reap(txq, pkt_start, needed_desc,
+						dma_desc_space, reap_done)) {
+				struct rte_mbuf *m;
+				struct rte_mbuf *m_next;
+
+				if (txq->completed != pkt_start) {
+					unsigned int i;
+
+					/*
+					 * Reset mbuf associations with added
+					 * descriptors.
+					 */
+					for (i = pkt_start; i != *added; i++) {
+						id = i & txq->ptr_mask;
+						txq->sw_ring[id].mbuf = NULL;
+					}
+					return ENOSPC;
+				}
+
+				/* Free the segments that cannot be sent */
+				for (m = m_seg->next; m != NULL; m = m_next) {
+					m_next = m->next;
+					rte_pktmbuf_free_seg(m);
+				}
+				eop = true;
+				/* Ignore the rest of the segment */
+				seg_len = 0;
+			}
+
+			sfc_ef10_tx_qdesc_dma_create(frag_addr, frag_len,
+					eop, &txq->txq_hw_ring[id]);
+
+		} while (seg_len != 0);
+
+		txq->sw_ring[id].mbuf = m_seg;
+
+		m_seg = m_seg->next;
+	} while (!eop);
+
+	/*
+	 * Free segments which content was entirely copied to the TSO header
+	 * memory space of Tx queue
+	 */
+	for (m_seg = first_m_seg; m_seg != m_seg_to_free_up_to;) {
+		struct rte_mbuf *seg_to_free = m_seg;
+
+		m_seg = m_seg->next;
+		rte_pktmbuf_free_seg(seg_to_free);
+	}
+
+	return 0;
+}
+
 static uint16_t
 sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
 	struct sfc_ef10_txq * const txq = sfc_ef10_txq_by_dp_txq(tx_queue);
-	unsigned int ptr_mask;
 	unsigned int added;
 	unsigned int dma_desc_space;
 	bool reap_done;
@@ -299,16 +553,13 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		     (SFC_EF10_TXQ_NOT_RUNNING | SFC_EF10_TXQ_EXCEPTION)))
 		return 0;
 
-	ptr_mask = txq->ptr_mask;
 	added = txq->added;
-	dma_desc_space = SFC_EF10_TXQ_LIMIT(ptr_mask + 1) -
-			 (added - txq->completed);
+	dma_desc_space = txq->max_fill_level - (added - txq->completed);
 
 	reap_done = (dma_desc_space < txq->free_thresh);
 	if (reap_done) {
 		sfc_ef10_tx_reap(txq);
-		dma_desc_space = SFC_EF10_TXQ_LIMIT(ptr_mask + 1) -
-				 (added - txq->completed);
+		dma_desc_space = txq->max_fill_level - (added - txq->completed);
 	}
 
 	for (pktp = &tx_pkts[0], pktp_end = &tx_pkts[nb_pkts];
@@ -320,6 +571,30 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		if (likely(pktp + 1 != pktp_end))
 			rte_mbuf_prefetch_part1(pktp[1]);
+
+		if (m_seg->ol_flags & PKT_TX_TCP_SEG) {
+			int rc;
+
+			rc = sfc_ef10_xmit_tso_pkt(txq, m_seg, &added,
+					&dma_desc_space, &reap_done);
+			if (rc != 0) {
+				added = pkt_start;
+
+				/* Packet can be sent in following xmit calls */
+				if (likely(rc == ENOSPC))
+					break;
+
+				/*
+				 * Packet cannot be sent, tell RTE that
+				 * it is sent, but actually drop it and
+				 * continue with another packet
+				 */
+				rte_pktmbuf_free(*pktp);
+				continue;
+			}
+
+			goto dma_desc_space_update;
+		}
 
 		if (sfc_ef10_tx_pkt_descs_max(m_seg) > dma_desc_space) {
 			if (reap_done)
@@ -333,7 +608,7 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 			sfc_ef10_tx_reap(txq);
 			reap_done = true;
-			dma_desc_space = SFC_EF10_TXQ_LIMIT(ptr_mask + 1) -
+			dma_desc_space = txq->max_fill_level -
 				(added - txq->completed);
 			if (sfc_ef10_tx_pkt_descs_max(m_seg) > dma_desc_space)
 				break;
@@ -343,7 +618,7 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		do {
 			rte_iova_t seg_addr = rte_mbuf_data_iova(m_seg);
 			unsigned int seg_len = rte_pktmbuf_data_len(m_seg);
-			unsigned int id = added & ptr_mask;
+			unsigned int id = added & txq->ptr_mask;
 
 			SFC_ASSERT(seg_len <= SFC_EF10_TX_DMA_DESC_LEN_MAX);
 
@@ -374,6 +649,7 @@ sfc_ef10_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		} while ((m_seg = m_seg->next) != 0);
 
+dma_desc_space_update:
 		dma_desc_space -= (added - pkt_start);
 	}
 
@@ -446,14 +722,12 @@ sfc_ef10_simple_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	ptr_mask = txq->ptr_mask;
 	added = txq->added;
-	dma_desc_space = SFC_EF10_TXQ_LIMIT(ptr_mask + 1) -
-			 (added - txq->completed);
+	dma_desc_space = txq->max_fill_level - (added - txq->completed);
 
 	reap_done = (dma_desc_space < RTE_MAX(txq->free_thresh, nb_pkts));
 	if (reap_done) {
 		sfc_ef10_simple_tx_reap(txq);
-		dma_desc_space = SFC_EF10_TXQ_LIMIT(ptr_mask + 1) -
-				 (added - txq->completed);
+		dma_desc_space = txq->max_fill_level - (added - txq->completed);
 	}
 
 	pktp_end = &tx_pkts[MIN(nb_pkts, dma_desc_space)];
@@ -486,6 +760,40 @@ sfc_ef10_simple_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	return pktp - &tx_pkts[0];
 }
 
+static sfc_dp_tx_get_dev_info_t sfc_ef10_get_dev_info;
+static void
+sfc_ef10_get_dev_info(struct rte_eth_dev_info *dev_info)
+{
+	/*
+	 * Number of descriptors just defines maximum number of pushed
+	 * descriptors (fill level).
+	 */
+	dev_info->tx_desc_lim.nb_min = 1;
+	dev_info->tx_desc_lim.nb_align = 1;
+}
+
+static sfc_dp_tx_qsize_up_rings_t sfc_ef10_tx_qsize_up_rings;
+static int
+sfc_ef10_tx_qsize_up_rings(uint16_t nb_tx_desc,
+			   unsigned int *txq_entries,
+			   unsigned int *evq_entries,
+			   unsigned int *txq_max_fill_level)
+{
+	/*
+	 * rte_ethdev API guarantees that the number meets min, max and
+	 * alignment requirements.
+	 */
+	if (nb_tx_desc <= EFX_TXQ_MINNDESCS)
+		*txq_entries = EFX_TXQ_MINNDESCS;
+	else
+		*txq_entries = rte_align32pow2(nb_tx_desc);
+
+	*evq_entries = *txq_entries;
+
+	*txq_max_fill_level = RTE_MIN(nb_tx_desc,
+				      SFC_EF10_TXQ_LIMIT(*evq_entries));
+	return 0;
+}
 
 static sfc_dp_tx_qcreate_t sfc_ef10_tx_qcreate;
 static int
@@ -517,17 +825,34 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (txq->sw_ring == NULL)
 		goto fail_sw_ring_alloc;
 
+	if (info->offloads & DEV_TX_OFFLOAD_TCP_TSO) {
+		txq->tsoh = rte_calloc_socket("sfc-ef10-txq-tsoh",
+					      info->txq_entries,
+					      SFC_TSOH_STD_LEN,
+					      RTE_CACHE_LINE_SIZE,
+					      socket_id);
+		if (txq->tsoh == NULL)
+			goto fail_tsoh_alloc;
+
+		txq->tsoh_iova = rte_malloc_virt2iova(txq->tsoh);
+	}
+
 	txq->flags = SFC_EF10_TXQ_NOT_RUNNING;
 	txq->ptr_mask = info->txq_entries - 1;
+	txq->max_fill_level = info->max_fill_level;
 	txq->free_thresh = info->free_thresh;
 	txq->txq_hw_ring = info->txq_hw_ring;
 	txq->doorbell = (volatile uint8_t *)info->mem_bar +
 			ER_DZ_TX_DESC_UPD_REG_OFST +
-			info->hw_index * ER_DZ_TX_DESC_UPD_REG_STEP;
+			(info->hw_index << info->vi_window_shift);
 	txq->evq_hw_ring = info->evq_hw_ring;
+	txq->tso_tcp_header_offset_limit = info->tso_tcp_header_offset_limit;
 
 	*dp_txqp = &txq->dp;
 	return 0;
+
+fail_tsoh_alloc:
+	rte_free(txq->sw_ring);
 
 fail_sw_ring_alloc:
 	rte_free(txq);
@@ -543,6 +868,7 @@ sfc_ef10_tx_qdestroy(struct sfc_dp_txq *dp_txq)
 {
 	struct sfc_ef10_txq *txq = sfc_ef10_txq_by_dp_txq(dp_txq);
 
+	rte_free(txq->tsoh);
 	rte_free(txq->sw_ring);
 	rte_free(txq);
 }
@@ -610,12 +936,49 @@ sfc_ef10_tx_qreap(struct sfc_dp_txq *dp_txq)
 	txq->flags &= ~SFC_EF10_TXQ_STARTED;
 }
 
+static unsigned int
+sfc_ef10_tx_qdesc_npending(struct sfc_ef10_txq *txq)
+{
+	const unsigned int curr_done = txq->completed - 1;
+	unsigned int anew_done = curr_done;
+	efx_qword_t tx_ev;
+	const unsigned int evq_old_read_ptr = txq->evq_read_ptr;
+
+	if (unlikely(txq->flags &
+		     (SFC_EF10_TXQ_NOT_RUNNING | SFC_EF10_TXQ_EXCEPTION)))
+		return 0;
+
+	while (sfc_ef10_tx_get_event(txq, &tx_ev))
+		anew_done = EFX_QWORD_FIELD(tx_ev, ESF_DZ_TX_DESCR_INDX);
+
+	/*
+	 * The function does not process events, so return event queue read
+	 * pointer to the original position to allow the events that were
+	 * read to be processed later
+	 */
+	txq->evq_read_ptr = evq_old_read_ptr;
+
+	return (anew_done - curr_done) & txq->ptr_mask;
+}
+
 static sfc_dp_tx_qdesc_status_t sfc_ef10_tx_qdesc_status;
 static int
-sfc_ef10_tx_qdesc_status(__rte_unused struct sfc_dp_txq *dp_txq,
-			 __rte_unused uint16_t offset)
+sfc_ef10_tx_qdesc_status(struct sfc_dp_txq *dp_txq,
+			 uint16_t offset)
 {
-	return -ENOTSUP;
+	struct sfc_ef10_txq *txq = sfc_ef10_txq_by_dp_txq(dp_txq);
+	unsigned int npending = sfc_ef10_tx_qdesc_npending(txq);
+
+	if (unlikely(offset > txq->ptr_mask))
+		return -EINVAL;
+
+	if (unlikely(offset >= txq->max_fill_level))
+		return RTE_ETH_TX_DESC_UNAVAIL;
+
+	if (unlikely(offset < npending))
+		return RTE_ETH_TX_DESC_FULL;
+
+	return RTE_ETH_TX_DESC_DONE;
 }
 
 struct sfc_dp_tx sfc_ef10_tx = {
@@ -624,10 +987,13 @@ struct sfc_dp_tx sfc_ef10_tx = {
 		.type		= SFC_DP_TX,
 		.hw_fw_caps	= SFC_DP_HW_FW_CAP_EF10,
 	},
-	.features		= SFC_DP_TX_FEAT_MULTI_SEG |
+	.features		= SFC_DP_TX_FEAT_TSO |
+				  SFC_DP_TX_FEAT_MULTI_SEG |
 				  SFC_DP_TX_FEAT_MULTI_POOL |
 				  SFC_DP_TX_FEAT_REFCNT |
 				  SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.get_dev_info		= sfc_ef10_get_dev_info,
+	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,
 	.qdestroy		= sfc_ef10_tx_qdestroy,
 	.qstart			= sfc_ef10_tx_qstart,
@@ -644,6 +1010,8 @@ struct sfc_dp_tx sfc_ef10_simple_tx = {
 		.type		= SFC_DP_TX,
 	},
 	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.get_dev_info		= sfc_ef10_get_dev_info,
+	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,
 	.qdestroy		= sfc_ef10_tx_qdestroy,
 	.qstart			= sfc_ef10_tx_qstart,

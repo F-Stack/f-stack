@@ -1,35 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   Copyright(c) 2012-2013 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
+ * Copyright(c) 2012-2013 6WIND S.A.
  */
 
 #include <string.h>
@@ -116,7 +87,7 @@ static pthread_t msb_inc_thread_id;
  * containing used to process MSB of the HPET (unfortunately, we need
  * this because hpet is 32 bits by default under linux).
  */
-static void
+static void *
 hpet_msb_inc(__attribute__((unused)) void *arg)
 {
 	uint32_t t;
@@ -127,6 +98,7 @@ hpet_msb_inc(__attribute__((unused)) void *arg)
 			eal_hpet_msb ++;
 		sleep(10);
 	}
+	return NULL;
 }
 
 uint64_t
@@ -166,7 +138,6 @@ int
 rte_eal_hpet_init(int make_default)
 {
 	int fd, ret;
-	char thread_name[RTE_MAX_THREAD_NAME_LEN];
 
 	if (internal_config.no_hpet) {
 		RTE_LOG(NOTICE, EAL, "HPET is disabled\n");
@@ -207,22 +178,13 @@ rte_eal_hpet_init(int make_default)
 
 	/* create a thread that will increment a global variable for
 	 * msb (hpet is 32 bits by default under linux) */
-	ret = pthread_create(&msb_inc_thread_id, NULL,
-			(void *(*)(void *))hpet_msb_inc, NULL);
+	ret = rte_ctrl_thread_create(&msb_inc_thread_id, "hpet-msb-inc", NULL,
+				     hpet_msb_inc, NULL);
 	if (ret != 0) {
 		RTE_LOG(ERR, EAL, "ERROR: Cannot create HPET timer thread!\n");
 		internal_config.no_hpet = 1;
 		return -1;
 	}
-
-	/*
-	 * Set thread_name for aid in debugging.
-	 */
-	snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "hpet-msb-inc");
-	ret = rte_thread_setname(msb_inc_thread_id, thread_name);
-	if (ret != 0)
-		RTE_LOG(DEBUG, EAL,
-			"Cannot set HPET timer thread name!\n");
 
 	if (make_default)
 		eal_timer_source = EAL_TIMER_HPET;

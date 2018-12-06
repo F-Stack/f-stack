@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_HSI_COMMON__
@@ -381,7 +379,7 @@ struct e4_xstorm_core_conn_ag_ctx {
 	__le16 reserved16 /* physical_q2 */;
 	__le16 tx_bd_cons /* word3 */;
 	__le16 tx_bd_or_spq_prod /* word4 */;
-	__le16 word5 /* word5 */;
+	__le16 updated_qm_pq_id /* word5 */;
 	__le16 conn_dpi /* conn_dpi */;
 	u8 byte3 /* byte3 */;
 	u8 byte4 /* byte4 */;
@@ -904,8 +902,10 @@ struct core_rx_start_ramrod_data {
 /* if set, 802.1q tags will be removed and copied to CQE */
 /* if set, 802.1q tags will be removed and copied to CQE */
 	u8 inner_vlan_stripping_en;
-/* if set, outer tag wont be stripped, valid only in MF OVLAN. */
-	u8 outer_vlan_stripping_dis;
+/* if set and inner vlan does not exist, the outer vlan will copied to CQE as
+ * inner vlan. should be used in MF_OVLAN mode only.
+ */
+	u8 report_outer_vlan;
 	u8 queue_id /* Light L2 RX Queue ID */;
 	u8 main_func_queue /* Is this the main queue for the PF */;
 /* Duplicate broadcast packets to LL2 main queue in mf_si mode. Valid if
@@ -922,7 +922,11 @@ struct core_rx_start_ramrod_data {
 	struct core_rx_action_on_error action_on_error;
 /* set when in GSI offload mode on ROCE connection */
 	u8 gsi_offload_flag;
-	u8 reserved[6];
+/* If set, the inner vlan (802.1q tag) priority that is written to cqe will be
+ * zero out, used for TenantDcb
+ */
+	u8 wipe_inner_vlan_pri_en;
+	u8 reserved[5];
 };
 
 
@@ -946,7 +950,9 @@ struct core_tx_bd_data {
 /* Do not allow additional VLAN manipulations on this packet (DCB) */
 #define CORE_TX_BD_DATA_FORCE_VLAN_MODE_MASK         0x1
 #define CORE_TX_BD_DATA_FORCE_VLAN_MODE_SHIFT        0
-/* Insert VLAN into packet */
+/* Insert VLAN into packet. Cannot be set for LB packets
+ * (tx_dst == CORE_TX_DEST_LB)
+ */
 #define CORE_TX_BD_DATA_VLAN_INSERTION_MASK          0x1
 #define CORE_TX_BD_DATA_VLAN_INSERTION_SHIFT         1
 /* This is the first BD of the packet (for debug) */
@@ -1042,7 +1048,11 @@ struct core_tx_start_ramrod_data {
 	__le16 qm_pq_id /* QM PQ ID */;
 /* set when in GSI offload mode on ROCE connection */
 	u8 gsi_offload_flag;
-	u8 resrved[3];
+/* vport id of the current connection, used to access non_rdma_in_to_in_pri_map
+ * which is per vport
+ */
+	u8 vport_id;
+	u8 resrved[2];
 };
 
 
@@ -1069,11 +1079,11 @@ struct core_tx_update_ramrod_data {
  * Enum flag for what type of dcb data to update
  */
 enum dcb_dscp_update_mode {
-/* use when no change should be done to dcb data */
+/* use when no change should be done to DCB data */
 	DONT_UPDATE_DCB_DSCP,
-	UPDATE_DCB /* use to update only l2 (vlan) priority */,
-	UPDATE_DSCP /* use to update only l3 dscp */,
-	UPDATE_DCB_DSCP /* update vlan pri and dscp */,
+	UPDATE_DCB /* use to update only L2 (vlan) priority */,
+	UPDATE_DSCP /* use to update only IP DSCP */,
+	UPDATE_DCB_DSCP /* update vlan pri and DSCP */,
 	MAX_DCB_DSCP_UPDATE_FLAG
 };
 
@@ -1166,6 +1176,25 @@ struct eth_rx_rate_limit {
 	u8 add_sub_cnst /* Add (1) or subtract (0) constant term */;
 	u8 reserved0;
 	__le16 reserved1;
+};
+
+
+/* Update RSS indirection table entry command. One outstanding command supported
+ * per PF.
+ */
+struct eth_tstorm_rss_update_data {
+/* Valid flag. Driver must set this flag, FW clear valid flag when ready for new
+ * RSS update command.
+ */
+	u8 valid;
+/* Global VPORT ID. If RSS is disable for VPORT, RSS update command will be
+ * ignored.
+ */
+	u8 vport_id;
+	u8 ind_table_index /* RSS indirect table index that will be updated. */;
+	u8 reserved;
+	__le16 ind_table_value /* RSS indirect table new value. */;
+	__le16 reserved1 /* reserved. */;
 };
 
 
@@ -1291,10 +1320,15 @@ enum fw_flow_ctrl_mode {
  * GFT profile type.
  */
 enum gft_profile_type {
-	GFT_PROFILE_TYPE_4_TUPLE /* 4 tuple, IP type and L4 type match. */,
-/* L4 destination port, IP type and L4 type match. */
+/* tunnel type, inner 4 tuple, IP type and L4 type match. */
+	GFT_PROFILE_TYPE_4_TUPLE,
+/* tunnel type, inner L4 destination port, IP type and L4 type match. */
 	GFT_PROFILE_TYPE_L4_DST_PORT,
-	GFT_PROFILE_TYPE_IP_DST_PORT /* IP destination port and IP type. */,
+/* tunnel type, inner IP destination address and IP type match. */
+	GFT_PROFILE_TYPE_IP_DST_ADDR,
+/* tunnel type, inner IP source address and IP type match. */
+	GFT_PROFILE_TYPE_IP_SRC_ADDR,
+	GFT_PROFILE_TYPE_TUNNEL_TYPE /* tunnel type and outer IP type match. */,
 	MAX_GFT_PROFILE_TYPE
 };
 
@@ -1411,8 +1445,9 @@ struct vlan_header {
  * outer tag configurations
  */
 struct outer_tag_config_struct {
-/* Enables the STAG Priority Change , Should be 1 for Bette Davis and UFP with
- * Host Control mode. Else - 0
+/* Enables updating S-tag priority from inner tag or DCB. Should be 1 for Bette
+ * Davis, UFP with Host Control mode, and UFP with DCB over base interface.
+ * else - 0.
  */
 	u8 enable_stag_pri_change;
 /* If inner_to_outer_pri_map is initialize then set pri_map_valid */
@@ -1455,6 +1490,10 @@ struct pf_start_tunnel_config {
  * FW will use a default port
  */
 	u8 set_geneve_udp_port_flg;
+/* Set no-innet-L2 VXLAN tunnel UDP destination port to
+ * no_inner_l2_vxlan_udp_port. If not set - FW will use a default port
+ */
+	u8 set_no_inner_l2_vxlan_udp_port_flg;
 	u8 tunnel_clss_vxlan /* Rx classification scheme for VXLAN tunnel. */;
 /* Rx classification scheme for l2 GENEVE tunnel. */
 	u8 tunnel_clss_l2geneve;
@@ -1462,11 +1501,15 @@ struct pf_start_tunnel_config {
 	u8 tunnel_clss_ipgeneve;
 	u8 tunnel_clss_l2gre /* Rx classification scheme for l2 GRE tunnel. */;
 	u8 tunnel_clss_ipgre /* Rx classification scheme for ip GRE tunnel. */;
-	u8 reserved;
 /* VXLAN tunnel UDP destination port. Valid if set_vxlan_udp_port_flg=1 */
 	__le16 vxlan_udp_port;
 /* GENEVE tunnel UDP destination port. Valid if set_geneve_udp_port_flg=1 */
 	__le16 geneve_udp_port;
+/* no-innet-L2 VXLAN  tunnel UDP destination port. Valid if
+ * set_no_inner_l2_vxlan_udp_port_flg=1
+ */
+	__le16 no_inner_l2_vxlan_udp_port;
+	__le16 reserved[3];
 };
 
 /*
@@ -1507,14 +1550,14 @@ struct pf_start_ramrod_data {
 
 
 /*
- * Data for port update ramrod
+ * Per protocol DCB data
  */
 struct protocol_dcb_data {
-	u8 dcb_enable_flag /* dcbEnable flag value */;
-	u8 dscp_enable_flag /* If set use dscp value */;
-	u8 dcb_priority /* dcbPri flag value */;
-	u8 dcb_tc /* dcb TC value */;
-	u8 dscp_val /* dscp value to write if dscp_enable_flag is set */;
+	u8 dcb_enable_flag /* Enable DCB */;
+	u8 dscp_enable_flag /* Enable updating DSCP value */;
+	u8 dcb_priority /* DCB priority */;
+	u8 dcb_tc /* DCB TC */;
+	u8 dscp_val /* DSCP value to write if dscp_enable_flag is set */;
 /* When DCB is enabled - if this flag is set, dont add VLAN 0 tag to untagged
  * frames
  */
@@ -1539,6 +1582,8 @@ struct pf_update_tunnel_config {
 	u8 set_vxlan_udp_port_flg;
 /* Update GENEVE tunnel UDP destination port. */
 	u8 set_geneve_udp_port_flg;
+/* Update no-innet-L2 VXLAN  tunnel UDP destination port. */
+	u8 set_no_inner_l2_vxlan_udp_port_flg;
 	u8 tunnel_clss_vxlan /* Classification scheme for VXLAN tunnel. */;
 /* Classification scheme for l2 GENEVE tunnel. */
 	u8 tunnel_clss_l2geneve;
@@ -1546,9 +1591,12 @@ struct pf_update_tunnel_config {
 	u8 tunnel_clss_ipgeneve;
 	u8 tunnel_clss_l2gre /* Classification scheme for l2 GRE tunnel. */;
 	u8 tunnel_clss_ipgre /* Classification scheme for ip GRE tunnel. */;
+	u8 reserved;
 	__le16 vxlan_udp_port /* VXLAN tunnel UDP destination port. */;
 	__le16 geneve_udp_port /* GENEVE tunnel UDP destination port. */;
-	__le16 reserved;
+/* no-innet-L2 VXLAN  tunnel UDP destination port. */
+	__le16 no_inner_l2_vxlan_udp_port;
+	__le16 reserved1[3];
 };
 
 /*
@@ -1578,8 +1626,9 @@ struct pf_update_ramrod_data {
 /* core iwarp related fields */
 	struct protocol_dcb_data iwarp_dcb_data;
 	__le16 mf_vlan /* new outer vlan id value */;
-/* enables the inner to outer TAG priority mapping. Should be 1 for Bette Davis
- * and UFP with Host Control mode, else - 0.
+/* enables updating S-tag priority from inner tag or DCB. Should be 1 for Bette
+ * Davis, UFP with Host Control mode, and UFP with DCB over base interface.
+ * else - 0
  */
 	u8 enable_stag_pri_change;
 	u8 reserved;
@@ -1677,6 +1726,13 @@ struct rl_update_ramrod_data {
 /* ID of last RL, that will be updated. If clear, single RL will updated. */
 	u8 rl_id_last;
 	u8 rl_dc_qcn_flg /* If set, RL will used for DCQCN. */;
+/* If set, alpha will be reset to 1 when the state machine is idle. */
+	u8 dcqcn_reset_alpha_on_idle;
+/* Byte counter threshold to change rate increase stage. */
+	u8 rl_bc_stage_th;
+/* Timer threshold to change rate increase stage. */
+	u8 rl_timer_stage_th;
+	u8 reserved1;
 	__le32 rl_bc_rate /* Byte Counter Limit. */;
 	__le16 rl_max_rate /* Maximum rate in 1.6 Mbps resolution. */;
 	__le16 rl_r_ai /* Active increase rate. */;
@@ -1685,7 +1741,7 @@ struct rl_update_ramrod_data {
 	__le32 dcqcn_k_us /* DCQCN Alpha update interval. */;
 	__le32 dcqcn_timeuot_us /* DCQCN timeout. */;
 	__le32 qcn_timeuot_us /* QCN timeout. */;
-	__le32 reserved[2];
+	__le32 reserved2;
 };
 
 
@@ -1742,6 +1798,7 @@ struct tstorm_per_port_stat {
 	struct regpair eth_vxlan_tunn_filter_discard;
 /* GENEVE dropped packets */
 	struct regpair eth_geneve_tunn_filter_discard;
+	struct regpair eth_gft_drop_pkt /* GFT dropped packets */;
 };
 
 
@@ -2131,6 +2188,53 @@ struct e4_ystorm_core_conn_ag_ctx {
 	__le32 reg2 /* reg2 */;
 	__le32 reg3 /* reg3 */;
 };
+
+
+struct fw_asserts_ram_section {
+/* The offset of the section in the RAM in RAM lines (64-bit units) */
+	__le16 section_ram_line_offset;
+/* The size of the section in RAM lines (64-bit units) */
+	__le16 section_ram_line_size;
+/* The offset of the asserts list within the section in dwords */
+	u8 list_dword_offset;
+/* The size of an assert list element in dwords */
+	u8 list_element_dword_size;
+	u8 list_num_elements /* The number of elements in the asserts list */;
+/* The offset of the next list index field within the section in dwords */
+	u8 list_next_index_dword_offset;
+};
+
+
+struct fw_ver_num {
+	u8 major /* Firmware major version number */;
+	u8 minor /* Firmware minor version number */;
+	u8 rev /* Firmware revision version number */;
+	u8 eng /* Firmware engineering version number (for bootleg versions) */;
+};
+
+struct fw_ver_info {
+	__le16 tools_ver /* Tools version number */;
+	u8 image_id /* FW image ID (e.g. main, l2b, kuku) */;
+	u8 reserved1;
+	struct fw_ver_num num /* FW version number */;
+	__le32 timestamp /* FW Timestamp in unix time  (sec. since 1970) */;
+	__le32 reserved2;
+};
+
+struct fw_info {
+	struct fw_ver_info ver /* FW version information */;
+/* Info regarding the FW asserts section in the Storm RAM */
+	struct fw_asserts_ram_section fw_asserts_section;
+};
+
+
+struct fw_info_location {
+	__le32 grc_addr /* GRC address where the fw_info struct is located. */;
+/* Size of the fw_info structure (thats located at the grc_addr). */
+	__le32 size;
+};
+
+
 
 
 /*

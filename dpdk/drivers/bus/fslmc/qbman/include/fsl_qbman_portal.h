@@ -1,29 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (C) 2014 Freescale Semiconductor, Inc.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of Freescale Semiconductor nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY Freescale Semiconductor ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL Freescale Semiconductor BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #ifndef _FSL_QBMAN_PORTAL_H
 #define _FSL_QBMAN_PORTAL_H
@@ -63,6 +41,15 @@ struct qbman_swp *qbman_swp_init(const struct qbman_swp_desc *d);
  *
  */
 void qbman_swp_finish(struct qbman_swp *p);
+
+/**
+ * qbman_swp_invalidate() - Invalidate the cache enabled area of the QBMan
+ * portal. This is required to be called if a portal moved to another core
+ * because the QBMan portal area is non coherent
+ * @p: the qbman_swp object to be invalidated
+ *
+ */
+void qbman_swp_invalidate(struct qbman_swp *p);
 
 /**
  * qbman_swp_get_desc() - Get the descriptor of the given portal object.
@@ -194,7 +181,7 @@ void qbman_swp_interrupt_set_inhibit(struct qbman_swp *p, int inhibit);
 /**
  * struct qbman_result - structure for qbman dequeue response and/or
  * notification.
- * @donot_manipulate_directly: the 16 32bit data to represent the whole
+ * @dont_manipulate_directly: the 16 32bit data to represent the whole
  * possible qbman dequeue result.
  */
 struct qbman_result {
@@ -284,7 +271,7 @@ void qbman_swp_push_set(struct qbman_swp *s, uint8_t channel_idx, int enable);
  */
 struct qbman_pull_desc {
 	union {
-		uint32_t donot_manipulate_directly[16];
+		uint32_t dont_manipulate_directly[16];
 		struct pull {
 			uint8_t verb;
 			uint8_t numf;
@@ -378,6 +365,14 @@ void qbman_pull_desc_set_channel(struct qbman_pull_desc *d, uint32_t chid,
 				 enum qbman_pull_type_e dct);
 
 /**
+ * qbman_pull_desc_set_rad() - Decide whether reschedule the fq after dequeue
+ *
+ * @rad: 1 = Reschedule the FQ after dequeue.
+ *	 0 = Allow the FQ to remain active after dequeue.
+ */
+void qbman_pull_desc_set_rad(struct qbman_pull_desc *d, int rad);
+
+/**
  * qbman_swp_pull() - Issue the pull dequeue command
  * @s: the software portal object.
  * @d: the software portal descriptor which has been configured with
@@ -403,12 +398,25 @@ int qbman_swp_pull(struct qbman_swp *s, struct qbman_pull_desc *d);
 const struct qbman_result *qbman_swp_dqrr_next(struct qbman_swp *p);
 
 /**
+ * qbman_swp_prefetch_dqrr_next() - prefetch the next DQRR entry.
+ * @s: the software portal object.
+ */
+void qbman_swp_prefetch_dqrr_next(struct qbman_swp *s);
+
+/**
  * qbman_swp_dqrr_consume() -  Consume DQRR entries previously returned from
  * qbman_swp_dqrr_next().
  * @s: the software portal object.
  * @dq: the DQRR entry to be consumed.
  */
 void qbman_swp_dqrr_consume(struct qbman_swp *s, const struct qbman_result *dq);
+
+/**
+ * qbman_swp_dqrr_idx_consume() -  Given the DQRR index consume the DQRR entry
+ * @s: the software portal object.
+ * @dqrr_index: the DQRR index entry to be consumed.
+ */
+void qbman_swp_dqrr_idx_consume(struct qbman_swp *s, uint8_t dqrr_index);
 
 /**
  * qbman_get_dqrr_idx() - Get dqrr index from the given dqrr
@@ -580,6 +588,9 @@ int qbman_result_is_FQPN(const struct qbman_result *dq);
 #define QBMAN_DQ_STAT_VOLATILE      0x02
 /* volatile dequeue command is expired */
 #define QBMAN_DQ_STAT_EXPIRED       0x01
+
+#define QBMAN_EQCR_DCA_IDXMASK		0x0f
+#define QBMAN_ENQUEUE_FLAG_DCA		(1ULL << 31)
 
 /**
  * qbman_result_DQ_flags() - Get the STAT field of dequeue response
@@ -781,7 +792,7 @@ uint64_t qbman_result_cgcu_icnt(const struct qbman_result *scn);
 /* struct qbman_eq_desc - structure of enqueue descriptor */
 struct qbman_eq_desc {
 	union {
-		uint32_t donot_manipulate_directly[8];
+		uint32_t dont_manipulate_directly[8];
 		struct eq {
 			uint8_t verb;
 			uint8_t dca;
@@ -802,11 +813,11 @@ struct qbman_eq_desc {
 
 /**
  * struct qbman_eq_response - structure of enqueue response
- * @donot_manipulate_directly: the 16 32bit data to represent the whole
+ * @dont_manipulate_directly: the 16 32bit data to represent the whole
  * enqueue response.
  */
 struct qbman_eq_response {
-	uint32_t donot_manipulate_directly[16];
+	uint32_t dont_manipulate_directly[16];
 };
 
 /**
@@ -964,6 +975,7 @@ int qbman_swp_enqueue(struct qbman_swp *s, const struct qbman_eq_desc *d,
  * @s: the software portal used for enqueue.
  * @d: the enqueue descriptor.
  * @fd: the frame descriptor to be enqueued.
+ * @flags: bit-mask of QBMAN_ENQUEUE_FLAG_*** options
  * @num_frames: the number of the frames to be enqueued.
  *
  * Return the number of enqueued frames, -EBUSY if the EQCR is not ready.
@@ -971,6 +983,7 @@ int qbman_swp_enqueue(struct qbman_swp *s, const struct qbman_eq_desc *d,
 int qbman_swp_enqueue_multiple(struct qbman_swp *s,
 			       const struct qbman_eq_desc *d,
 			       const struct qbman_fd *fd,
+			       uint32_t *flags,
 			       int num_frames);
 /**
  * qbman_swp_enqueue_multiple_desc() - Enqueue multiple frames with
@@ -1002,12 +1015,12 @@ int qbman_swp_enqueue_thresh(struct qbman_swp *s, unsigned int thresh);
 	/*******************/
 /**
  * struct qbman_release_desc - The structure for buffer release descriptor
- * @donot_manipulate_directly: the 32bit data to represent the whole
+ * @dont_manipulate_directly: the 32bit data to represent the whole
  * possible settings of qbman release descriptor.
  */
 struct qbman_release_desc {
 	union {
-		uint32_t donot_manipulate_directly[16];
+		uint32_t dont_manipulate_directly[16];
 		struct br {
 			uint8_t verb;
 			uint8_t reserved;

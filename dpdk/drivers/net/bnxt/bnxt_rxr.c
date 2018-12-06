@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) Broadcom Limited.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Broadcom
+ * All rights reserved.
  */
 
 #include <inttypes.h>
@@ -65,17 +37,18 @@ static inline int bnxt_alloc_rx_data(struct bnxt_rx_queue *rxq,
 {
 	struct rx_prod_pkt_bd *rxbd = &rxr->rx_desc_ring[prod];
 	struct bnxt_sw_rx_bd *rx_buf = &rxr->rx_buf_ring[prod];
-	struct rte_mbuf *data;
+	struct rte_mbuf *mbuf;
 
-	data = __bnxt_alloc_rx_data(rxq->mb_pool);
-	if (!data) {
-		rte_atomic64_inc(&rxq->bp->rx_mbuf_alloc_fail);
+	mbuf = __bnxt_alloc_rx_data(rxq->mb_pool);
+	if (!mbuf) {
+		rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
 		return -ENOMEM;
 	}
 
-	rx_buf->mbuf = data;
+	rx_buf->mbuf = mbuf;
+	mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 
-	rxbd->addr = rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR(rx_buf->mbuf));
+	rxbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
 	return 0;
 }
@@ -86,23 +59,24 @@ static inline int bnxt_alloc_ag_data(struct bnxt_rx_queue *rxq,
 {
 	struct rx_prod_pkt_bd *rxbd = &rxr->ag_desc_ring[prod];
 	struct bnxt_sw_rx_bd *rx_buf = &rxr->ag_buf_ring[prod];
-	struct rte_mbuf *data;
+	struct rte_mbuf *mbuf;
 
-	data = __bnxt_alloc_rx_data(rxq->mb_pool);
-	if (!data) {
-		rte_atomic64_inc(&rxq->bp->rx_mbuf_alloc_fail);
+	mbuf = __bnxt_alloc_rx_data(rxq->mb_pool);
+	if (!mbuf) {
+		rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
 		return -ENOMEM;
 	}
 
 	if (rxbd == NULL)
-		RTE_LOG(ERR, PMD, "Jumbo Frame. rxbd is NULL\n");
+		PMD_DRV_LOG(ERR, "Jumbo Frame. rxbd is NULL\n");
 	if (rx_buf == NULL)
-		RTE_LOG(ERR, PMD, "Jumbo Frame. rx_buf is NULL\n");
+		PMD_DRV_LOG(ERR, "Jumbo Frame. rx_buf is NULL\n");
 
 
-	rx_buf->mbuf = data;
+	rx_buf->mbuf = mbuf;
+	mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 
-	rxbd->addr = rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR(rx_buf->mbuf));
+	rxbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
 	return 0;
 }
@@ -123,29 +97,10 @@ static inline void bnxt_reuse_rx_mbuf(struct bnxt_rx_ring_info *rxr,
 
 	prod_bd = &rxr->rx_desc_ring[prod];
 
-	prod_bd->addr = rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR(mbuf));
+	prod_bd->address = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
 
 	rxr->rx_prod = prod;
 }
-
-#ifdef BNXT_DEBUG
-static void bnxt_reuse_ag_mbuf(struct bnxt_rx_ring_info *rxr, uint16_t cons,
-			       struct rte_mbuf *mbuf)
-{
-	uint16_t prod = rxr->ag_prod;
-	struct bnxt_sw_rx_bd *prod_rx_buf;
-	struct rx_prod_pkt_bd *prod_bd, *cons_bd;
-
-	prod_rx_buf = &rxr->ag_buf_ring[prod];
-
-	prod_rx_buf->mbuf = mbuf;
-
-	prod_bd = &rxr->ag_desc_ring[prod];
-	cons_bd = &rxr->ag_desc_ring[cons];
-
-	prod_bd->addr = cons_bd->addr;
-}
-#endif
 
 static inline
 struct rte_mbuf *bnxt_consume_rx_buf(struct bnxt_rx_ring_info *rxr,
@@ -234,7 +189,7 @@ static int bnxt_prod_ag_mbuf(struct bnxt_rx_queue *rxq)
 	/* TODO batch allocation for better performance */
 	while (rte_bitmap_get(rxr->ag_bitmap, next)) {
 		if (unlikely(bnxt_alloc_ag_data(rxq, rxr, next))) {
-			RTE_LOG(ERR, PMD,
+			PMD_DRV_LOG(ERR,
 				"agg mbuf alloc failed: prod=0x%x\n", next);
 			break;
 		}
@@ -327,7 +282,7 @@ static inline struct rte_mbuf *bnxt_tpa_end(
 	struct rte_mbuf *new_data = __bnxt_alloc_rx_data(rxq->mb_pool);
 	RTE_ASSERT(new_data != NULL);
 	if (!new_data) {
-		rte_atomic64_inc(&rxq->bp->rx_mbuf_alloc_fail);
+		rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
 		return NULL;
 	}
 	tpa_info->mbuf = new_data;
@@ -338,41 +293,57 @@ static inline struct rte_mbuf *bnxt_tpa_end(
 static uint32_t
 bnxt_parse_pkt_type(struct rx_pkt_cmpl *rxcmp, struct rx_pkt_cmpl_hi *rxcmp1)
 {
-	uint32_t pkt_type = 0;
-	uint32_t t_ipcs = 0, ip = 0, ip6 = 0;
-	uint32_t tcp = 0, udp = 0, icmp = 0;
-	uint32_t vlan = 0;
+	uint32_t l3, pkt_type = 0;
+	uint32_t t_ipcs = 0, ip6 = 0, vlan = 0;
+	uint32_t flags_type;
 
 	vlan = !!(rxcmp1->flags2 &
 		rte_cpu_to_le_32(RX_PKT_CMPL_FLAGS2_META_FORMAT_VLAN));
+	pkt_type |= vlan ? RTE_PTYPE_L2_ETHER_VLAN : RTE_PTYPE_L2_ETHER;
+
 	t_ipcs = !!(rxcmp1->flags2 &
 		rte_cpu_to_le_32(RX_PKT_CMPL_FLAGS2_T_IP_CS_CALC));
 	ip6 = !!(rxcmp1->flags2 &
 		 rte_cpu_to_le_32(RX_PKT_CMPL_FLAGS2_IP_TYPE));
-	icmp = !!(rxcmp->flags_type &
-		  rte_cpu_to_le_16(RX_PKT_CMPL_FLAGS_ITYPE_ICMP));
-	tcp = !!(rxcmp->flags_type &
-		 rte_cpu_to_le_16(RX_PKT_CMPL_FLAGS_ITYPE_TCP));
-	udp = !!(rxcmp->flags_type &
-		 rte_cpu_to_le_16(RX_PKT_CMPL_FLAGS_ITYPE_UDP));
-	ip = !!(rxcmp->flags_type &
-		rte_cpu_to_le_16(RX_PKT_CMPL_FLAGS_ITYPE_IP));
 
-	pkt_type |= ((ip || tcp || udp || icmp) && !t_ipcs && !ip6) ?
-		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN : 0;
-	pkt_type |= ((ip || tcp || udp || icmp) && !t_ipcs && ip6) ?
-		RTE_PTYPE_L3_IPV6_EXT_UNKNOWN : 0;
-	pkt_type |= (!t_ipcs &&  icmp) ? RTE_PTYPE_L4_ICMP : 0;
-	pkt_type |= (!t_ipcs &&  udp) ? RTE_PTYPE_L4_UDP : 0;
-	pkt_type |= (!t_ipcs &&  tcp) ? RTE_PTYPE_L4_TCP : 0;
-	pkt_type |= ((ip || tcp || udp || icmp) && t_ipcs && !ip6) ?
-		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN : 0;
-	pkt_type |= ((ip || tcp || udp || icmp) && t_ipcs && ip6) ?
-		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN : 0;
-	pkt_type |= (t_ipcs &&  icmp) ? RTE_PTYPE_INNER_L4_ICMP : 0;
-	pkt_type |= (t_ipcs &&  udp) ? RTE_PTYPE_INNER_L4_UDP : 0;
-	pkt_type |= (t_ipcs &&  tcp) ? RTE_PTYPE_INNER_L4_TCP : 0;
-	pkt_type |= vlan ? RTE_PTYPE_L2_ETHER_VLAN : 0;
+	flags_type = rxcmp->flags_type &
+		rte_cpu_to_le_32(RX_PKT_CMPL_FLAGS_ITYPE_MASK);
+
+	if (!t_ipcs && !ip6)
+		l3 = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
+	else if (!t_ipcs && ip6)
+		l3 = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
+	else if (t_ipcs && !ip6)
+		l3 = RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN;
+	else
+		l3 = RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN;
+
+	switch (flags_type) {
+	case RTE_LE32(RX_PKT_CMPL_FLAGS_ITYPE_ICMP):
+		if (!t_ipcs)
+			pkt_type |= l3 | RTE_PTYPE_L4_ICMP;
+		else
+			pkt_type |= l3 | RTE_PTYPE_INNER_L4_ICMP;
+		break;
+
+	case RTE_LE32(RX_PKT_CMPL_FLAGS_ITYPE_TCP):
+		if (!t_ipcs)
+			pkt_type |= l3 | RTE_PTYPE_L4_TCP;
+		else
+			pkt_type |= l3 | RTE_PTYPE_INNER_L4_TCP;
+		break;
+
+	case RTE_LE32(RX_PKT_CMPL_FLAGS_ITYPE_UDP):
+		if (!t_ipcs)
+			pkt_type |= l3 | RTE_PTYPE_L4_UDP;
+		else
+			pkt_type |= l3 | RTE_PTYPE_INNER_L4_UDP;
+		break;
+
+	case RTE_LE32(RX_PKT_CMPL_FLAGS_ITYPE_IP):
+		pkt_type |= l3;
+		break;
+	}
 
 	return pkt_type;
 }
@@ -387,9 +358,6 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	uint32_t tmp_raw_cons = *raw_cons;
 	uint16_t cons, prod, cp_cons =
 	    RING_CMP(cpr->cp_ring_struct, tmp_raw_cons);
-#ifdef BNXT_DEBUG
-	uint16_t ag_cons;
-#endif
 	struct rte_mbuf *mbuf;
 	int rc = 0;
 	uint8_t agg_buf = 0;
@@ -442,6 +410,7 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 
 	rte_prefetch0(mbuf);
 
+	mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 	mbuf->nb_segs = 1;
 	mbuf->next = NULL;
 	mbuf->pkt_len = rxcmp->len;
@@ -455,6 +424,10 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 		mbuf->hash.fdir.id = rxcmp1->cfa_code;
 		mbuf->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
 	}
+
+	if ((rxcmp->flags_type & rte_cpu_to_le_16(RX_PKT_CMPL_FLAGS_MASK)) ==
+	     RX_PKT_CMPL_FLAGS_ITYPE_PTP_W_TIMESTAMP)
+		mbuf->ol_flags |= PKT_RX_IEEE1588_PTP | PKT_RX_IEEE1588_TMST;
 
 	if (agg_buf)
 		bnxt_rx_pages(rxq, mbuf, &tmp_raw_cons, agg_buf);
@@ -487,8 +460,6 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	if (rxcmp1->errors_v2 & RX_CMP_L2_ERRORS) {
 		/* Re-install the mbuf back to the rx ring */
 		bnxt_reuse_rx_mbuf(rxr, cons, mbuf);
-		if (agg_buf)
-			bnxt_reuse_ag_mbuf(rxr, ag_cons, mbuf);
 
 		rc = -EIO;
 		goto next_rx;
@@ -511,7 +482,7 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	 */
 	prod = RING_NEXT(rxr->rx_ring_struct, prod);
 	if (bnxt_alloc_rx_data(rxq, rxr, prod)) {
-		RTE_LOG(ERR, PMD, "mbuf alloc failed with prod=0x%x\n", prod);
+		PMD_DRV_LOG(ERR, "mbuf alloc failed with prod=0x%x\n", prod);
 		rc = -ENOMEM;
 		goto rx;
 	}
@@ -543,6 +514,13 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint16_t prod = rxr->rx_prod;
 	uint16_t ag_prod = rxr->ag_prod;
 	int rc = 0;
+	bool evt = false;
+
+	/* If Rx Q was stopped return. RxQ0 cannot be stopped. */
+	if (unlikely(((rxq->rx_deferred_start ||
+		       !rte_spinlock_trylock(&rxq->lock)) &&
+		      rxq->queue_id)))
+		return 0;
 
 	/* Handle RX burst request */
 	while (1) {
@@ -563,25 +541,37 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 				nb_rx_pkts++;
 			if (rc == -EBUSY)	/* partial completion */
 				break;
+		} else {
+			evt =
+			bnxt_event_hwrm_resp_handler(rxq->bp,
+						     (struct cmpl_base *)rxcmp);
 		}
+
 		raw_cons = NEXT_RAW_CMP(raw_cons);
-		if (nb_rx_pkts == nb_pkts)
+		if (nb_rx_pkts == nb_pkts || evt)
 			break;
+		/* Post some Rx buf early in case of larger burst processing */
+		if (nb_rx_pkts == BNXT_RX_POST_THRESH)
+			B_RX_DB(rxr->rx_doorbell, rxr->rx_prod);
 	}
 
 	cpr->cp_raw_cons = raw_cons;
-	if (prod == rxr->rx_prod && ag_prod == rxr->ag_prod) {
+	if (!nb_rx_pkts && !evt) {
 		/*
 		 * For PMD, there is no need to keep on pushing to REARM
 		 * the doorbell if there are no new completions
 		 */
-		return nb_rx_pkts;
+		goto done;
 	}
 
-	B_CP_DIS_DB(cpr, cpr->cp_raw_cons);
-	B_RX_DB(rxr->rx_doorbell, rxr->rx_prod);
+	if (prod != rxr->rx_prod)
+		B_RX_DB(rxr->rx_doorbell, rxr->rx_prod);
+
 	/* Ring the AGG ring DB */
-	B_RX_DB(rxr->ag_doorbell, rxr->ag_prod);
+	if (ag_prod != rxr->ag_prod)
+		B_RX_DB(rxr->ag_doorbell, rxr->ag_prod);
+
+	B_CP_DIS_DB(cpr, cpr->cp_raw_cons);
 
 	/* Attempt to alloc Rx buf in case of a previous allocation failure. */
 	if (rc == -ENOMEM) {
@@ -600,11 +590,14 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 				rxr->rx_prod = i;
 				B_RX_DB(rxr->rx_doorbell, rxr->rx_prod);
 			} else {
-				RTE_LOG(ERR, PMD, "Alloc  mbuf failed\n");
+				PMD_DRV_LOG(ERR, "Alloc  mbuf failed\n");
 				break;
 			}
 		}
 	}
+
+done:
+	rte_spinlock_unlock(&rxq->lock);
 
 	return nb_rx_pkts;
 }
@@ -612,10 +605,13 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 void bnxt_free_rx_rings(struct bnxt *bp)
 {
 	int i;
+	struct bnxt_rx_queue *rxq;
+
+	if (!bp->rx_queues)
+		return;
 
 	for (i = 0; i < (int)bp->rx_nr_rings; i++) {
-		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
-
+		rxq = bp->rx_queues[i];
 		if (!rxq)
 			continue;
 
@@ -743,7 +739,7 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 	prod = rxr->rx_prod;
 	for (i = 0; i < ring->ring_size; i++) {
 		if (bnxt_alloc_rx_data(rxq, rxr, prod) != 0) {
-			RTE_LOG(WARNING, PMD,
+			PMD_DRV_LOG(WARNING,
 				"init'ed rx ring %d with %d/%d mbufs only\n",
 				rxq->queue_id, i, ring->ring_size);
 			break;
@@ -751,7 +747,6 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 		rxr->rx_prod = prod;
 		prod = RING_NEXT(rxr->rx_ring_struct, prod);
 	}
-	RTE_LOG(DEBUG, PMD, "%s\n", __func__);
 
 	ring = rxr->ag_ring_struct;
 	type = RX_PROD_AGG_BD_TYPE_RX_PROD_AGG;
@@ -760,7 +755,7 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 
 	for (i = 0; i < ring->ring_size; i++) {
 		if (bnxt_alloc_ag_data(rxq, rxr, prod) != 0) {
-			RTE_LOG(WARNING, PMD,
+			PMD_DRV_LOG(WARNING,
 			"init'ed AG ring %d with %d/%d mbufs only\n",
 			rxq->queue_id, i, ring->ring_size);
 			break;
@@ -768,19 +763,19 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 		rxr->ag_prod = prod;
 		prod = RING_NEXT(rxr->ag_ring_struct, prod);
 	}
-	RTE_LOG(DEBUG, PMD, "%s AGG Done!\n", __func__);
+	PMD_DRV_LOG(DEBUG, "AGG Done!\n");
 
 	if (rxr->tpa_info) {
 		for (i = 0; i < BNXT_TPA_MAX; i++) {
 			rxr->tpa_info[i].mbuf =
 				__bnxt_alloc_rx_data(rxq->mb_pool);
 			if (!rxr->tpa_info[i].mbuf) {
-				rte_atomic64_inc(&rxq->bp->rx_mbuf_alloc_fail);
+				rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
 				return -ENOMEM;
 			}
 		}
 	}
-	RTE_LOG(DEBUG, PMD, "%s TPA alloc Done!\n", __func__);
+	PMD_DRV_LOG(DEBUG, "TPA alloc Done!\n");
 
 	return 0;
 }

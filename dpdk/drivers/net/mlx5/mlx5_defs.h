@@ -1,48 +1,25 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2015 6WIND S.A.
- *   Copyright 2015 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2015 6WIND S.A.
+ * Copyright 2015 Mellanox Technologies, Ltd
  */
 
 #ifndef RTE_PMD_MLX5_DEFS_H_
 #define RTE_PMD_MLX5_DEFS_H_
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include "mlx5_autoconf.h"
 
 /* Reported driver name. */
 #define MLX5_DRIVER_NAME "net_mlx5"
 
+/* Maximum number of simultaneous unicast MAC addresses. */
+#define MLX5_MAX_UC_MAC_ADDRESSES 128
+/* Maximum number of simultaneous Multicast MAC addresses. */
+#define MLX5_MAX_MC_MAC_ADDRESSES 128
 /* Maximum number of simultaneous MAC addresses. */
-#define MLX5_MAX_MAC_ADDRESSES 128
+#define MLX5_MAX_MAC_ADDRESSES \
+	(MLX5_MAX_UC_MAC_ADDRESSES + MLX5_MAX_MC_MAC_ADDRESSES)
 
 /* Maximum number of simultaneous VLAN filters. */
 #define MLX5_MAX_VLAN_IDS 128
@@ -60,16 +37,11 @@
  */
 #define MLX5_TX_COMP_THRESH_INLINE_DIV (1 << 3)
 
-/*
- * Maximum number of cached Memory Pools (MPs) per TX queue. Each RTE MP
- * from which buffers are to be transmitted will have to be mapped by this
- * driver to their own Memory Region (MR). This is a slow operation.
- *
- * This value is always 1 for RX queues.
- */
-#ifndef MLX5_PMD_TX_MP_CACHE
-#define MLX5_PMD_TX_MP_CACHE 8
-#endif
+/* Size of per-queue MR cache array for linear search. */
+#define MLX5_MR_CACHE_N 8
+
+/* Size of MR cache table for binary search. */
+#define MLX5_MR_BTREE_CACHE_N 256
 
 /*
  * If defined, only use software counters. The PMD will never ask the hardware
@@ -86,10 +58,15 @@
 #define MLX5_MAX_XSTATS 32
 
 /* Maximum Packet headers size (L2+L3+L4) for TSO. */
-#define MLX5_MAX_TSO_HEADER 128
+#define MLX5_MAX_TSO_HEADER 192
 
-/* Default minimum number of Tx queues for vectorized Tx. */
-#define MLX5_VPMD_MIN_TXQS 4
+/* Default maximum number of Tx queues for vectorized Tx. */
+#if defined(RTE_ARCH_ARM64)
+#define MLX5_VPMD_MAX_TXQS 8
+#else
+#define MLX5_VPMD_MAX_TXQS 4
+#endif
+#define MLX5_VPMD_MAX_TXQS_BLUEFIELD 16
 
 /* Threshold of buffer replenishment for vectorized Rx. */
 #define MLX5_VPMD_RXQ_RPLNSH_THRESH(n) \
@@ -115,14 +92,46 @@
 #define MLX5_LINK_STATUS_TIMEOUT 10
 
 /* Reserved address space for UAR mapping. */
-#define MLX5_UAR_SIZE (1ULL << 32)
+#define MLX5_UAR_SIZE (1ULL << (sizeof(uintptr_t) * 4))
 
 /* Offset of reserved UAR address space to hugepage memory. Offset is used here
  * to minimize possibility of address next to hugepage being used by other code
  * in either primary or secondary process, failing to map TX UAR would make TX
  * packets invisible to HW.
  */
-#define MLX5_UAR_OFFSET (1ULL << 32)
+#define MLX5_UAR_OFFSET (1ULL << (sizeof(uintptr_t) * 4))
+
+/* Maximum number of UAR pages used by a port,
+ * These are the size and mask for an array of mutexes used to synchronize
+ * the access to port's UARs on platforms that do not support 64 bit writes.
+ * In such systems it is possible to issue the 64 bits DoorBells through two
+ * consecutive writes, each write 32 bits. The access to a UAR page (which can
+ * be accessible by all threads in the process) must be synchronized
+ * (for example, using a semaphore). Such a synchronization is not required
+ * when ringing DoorBells on different UAR pages.
+ * A port with 512 Tx queues uses 8, 4kBytes, UAR pages which are shared
+ * among the ports.
+ */
+#define MLX5_UAR_PAGE_NUM_MAX 64
+#define MLX5_UAR_PAGE_NUM_MASK ((MLX5_UAR_PAGE_NUM_MAX) - 1)
+
+/* Log 2 of the default number of strides per WQE for Multi-Packet RQ. */
+#define MLX5_MPRQ_STRIDE_NUM_N 6U
+
+/* Two-byte shift is disabled for Multi-Packet RQ. */
+#define MLX5_MPRQ_TWO_BYTE_SHIFT 0
+
+/*
+ * Minimum size of packet to be memcpy'd instead of being attached as an
+ * external buffer.
+ */
+#define MLX5_MPRQ_MEMCPY_DEFAULT_LEN 128
+
+/* Minimum number Rx queues to enable Multi-Packet RQ. */
+#define MLX5_MPRQ_MIN_RXQS 12
+
+/* Cache size of mempool for Multi-Packet RQ. */
+#define MLX5_MPRQ_MP_CACHE_SZ 32U
 
 /* Definition of static_assert found in /usr/include/assert.h */
 #ifndef HAVE_STATIC_ASSERT

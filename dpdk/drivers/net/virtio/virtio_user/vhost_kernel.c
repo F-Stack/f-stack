@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
  */
 
 #include <sys/types.h>
@@ -99,71 +70,63 @@ static uint64_t vhost_req_user_to_kernel[] = {
 	[VHOST_USER_SET_MEM_TABLE] = VHOST_SET_MEM_TABLE,
 };
 
-/* By default, vhost kernel module allows 64 regions, but DPDK allows
- * 256 segments. As a relief, below function merges those virtually
- * adjacent memsegs into one region.
+static int
+add_memseg_list(const struct rte_memseg_list *msl, void *arg)
+{
+	struct vhost_memory_kernel *vm = arg;
+	struct vhost_memory_region *mr;
+	void *start_addr;
+	uint64_t len;
+
+	if (msl->external)
+		return 0;
+
+	if (vm->nregions >= max_regions)
+		return -1;
+
+	start_addr = msl->base_va;
+	len = msl->page_sz * msl->memseg_arr.len;
+
+	mr = &vm->regions[vm->nregions++];
+
+	mr->guest_phys_addr = (uint64_t)(uintptr_t)start_addr;
+	mr->userspace_addr = (uint64_t)(uintptr_t)start_addr;
+	mr->memory_size = len;
+	mr->mmap_offset = 0; /* flags_padding */
+
+	PMD_DRV_LOG(DEBUG, "index=%u addr=%p len=%" PRIu64,
+			vm->nregions - 1, start_addr, len);
+
+	return 0;
+}
+
+/* By default, vhost kernel module allows 64 regions, but DPDK may
+ * have much more memory regions. Below function will treat each
+ * contiguous memory space reserved by DPDK as one region.
  */
 static struct vhost_memory_kernel *
 prepare_vhost_memory_kernel(void)
 {
-	uint32_t i, j, k = 0;
-	struct rte_memseg *seg;
-	struct vhost_memory_region *mr;
 	struct vhost_memory_kernel *vm;
 
 	vm = malloc(sizeof(struct vhost_memory_kernel) +
-		    max_regions *
-		    sizeof(struct vhost_memory_region));
+			max_regions *
+			sizeof(struct vhost_memory_region));
 	if (!vm)
 		return NULL;
 
-	for (i = 0; i < RTE_MAX_MEMSEG; ++i) {
-		seg = &rte_eal_get_configuration()->mem_config->memseg[i];
-		if (!seg->addr)
-			break;
+	vm->nregions = 0;
+	vm->padding = 0;
 
-		int new_region = 1;
-
-		for (j = 0; j < k; ++j) {
-			mr = &vm->regions[j];
-
-			if (mr->userspace_addr + mr->memory_size ==
-			    (uint64_t)(uintptr_t)seg->addr) {
-				mr->memory_size += seg->len;
-				new_region = 0;
-				break;
-			}
-
-			if ((uint64_t)(uintptr_t)seg->addr + seg->len ==
-			    mr->userspace_addr) {
-				mr->guest_phys_addr =
-					(uint64_t)(uintptr_t)seg->addr;
-				mr->userspace_addr =
-					(uint64_t)(uintptr_t)seg->addr;
-				mr->memory_size += seg->len;
-				new_region = 0;
-				break;
-			}
-		}
-
-		if (new_region == 0)
-			continue;
-
-		mr = &vm->regions[k++];
-		/* use vaddr here! */
-		mr->guest_phys_addr = (uint64_t)(uintptr_t)seg->addr;
-		mr->userspace_addr = (uint64_t)(uintptr_t)seg->addr;
-		mr->memory_size = seg->len;
-		mr->mmap_offset = 0;
-
-		if (k >= max_regions) {
-			free(vm);
-			return NULL;
-		}
+	/*
+	 * The memory lock has already been taken by memory subsystem
+	 * or virtio_user_start_device().
+	 */
+	if (rte_memseg_list_walk_thread_unsafe(add_memseg_list, vm) < 0) {
+		free(vm);
+		return NULL;
 	}
 
-	vm->nregions = k;
-	vm->padding = 0;
 	return vm;
 }
 
@@ -189,8 +152,8 @@ prepare_vhost_memory_kernel(void)
 	 (1ULL << VIRTIO_NET_F_HOST_TSO6) |	\
 	 (1ULL << VIRTIO_NET_F_CSUM))
 
-static int
-tap_supporte_mq(void)
+static unsigned int
+tap_support_features(void)
 {
 	int tapfd;
 	unsigned int tap_features;
@@ -209,7 +172,7 @@ tap_supporte_mq(void)
 	}
 
 	close(tapfd);
-	return tap_features & IFF_MULTI_QUEUE;
+	return tap_features;
 }
 
 static int
@@ -223,6 +186,7 @@ vhost_kernel_ioctl(struct virtio_user_dev *dev,
 	struct vhost_memory_kernel *vm = NULL;
 	int vhostfd;
 	unsigned int queue_sel;
+	unsigned int features;
 
 	PMD_DRV_LOG(INFO, "%s", vhost_msg_strings[req]);
 
@@ -276,17 +240,20 @@ vhost_kernel_ioctl(struct virtio_user_dev *dev,
 	}
 
 	if (!ret && req_kernel == VHOST_GET_FEATURES) {
+		features = tap_support_features();
 		/* with tap as the backend, all these features are supported
 		 * but not claimed by vhost-net, so we add them back when
 		 * reporting to upper layer.
 		 */
-		*((uint64_t *)arg) |= VHOST_KERNEL_GUEST_OFFLOADS_MASK;
-		*((uint64_t *)arg) |= VHOST_KERNEL_HOST_OFFLOADS_MASK;
+		if (features & IFF_VNET_HDR) {
+			*((uint64_t *)arg) |= VHOST_KERNEL_GUEST_OFFLOADS_MASK;
+			*((uint64_t *)arg) |= VHOST_KERNEL_HOST_OFFLOADS_MASK;
+		}
 
 		/* vhost_kernel will not declare this feature, but it does
 		 * support multi-queue.
 		 */
-		if (tap_supporte_mq())
+		if (features & IFF_MULTI_QUEUE)
 			*(uint64_t *)arg |= (1ull << VIRTIO_NET_F_MQ);
 	}
 
@@ -380,7 +347,8 @@ vhost_kernel_enable_queue_pair(struct virtio_user_dev *dev,
 	else
 		hdr_size = sizeof(struct virtio_net_hdr);
 
-	tapfd = vhost_kernel_open_tap(&dev->ifname, hdr_size, req_mq);
+	tapfd = vhost_kernel_open_tap(&dev->ifname, hdr_size, req_mq,
+			 (char *)dev->mac_addr, dev->features);
 	if (tapfd < 0) {
 		PMD_DRV_LOG(ERR, "fail to open tap for vhost kernel");
 		return -1;
@@ -396,7 +364,7 @@ vhost_kernel_enable_queue_pair(struct virtio_user_dev *dev,
 	return 0;
 }
 
-struct virtio_user_backend_ops ops_kernel = {
+struct virtio_user_backend_ops virtio_ops_kernel = {
 	.setup = vhost_kernel_setup,
 	.send_request = vhost_kernel_ioctl,
 	.enable_qp = vhost_kernel_enable_queue_pair

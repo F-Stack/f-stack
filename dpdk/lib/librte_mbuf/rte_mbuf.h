@@ -1,35 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   Copyright 2014 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
+ * Copyright 2014 6WIND S.A.
  */
 
 #ifndef _RTE_MBUF_H_
@@ -61,6 +32,7 @@
  */
 
 #include <stdint.h>
+#include <rte_compat.h>
 #include <rte_common.h>
 #include <rte_config.h>
 #include <rte_mempool.h>
@@ -168,7 +140,7 @@ extern "C" {
  * The 2 vlans have been stripped by the hardware and their tci are
  * saved in mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
  * This can only happen if vlan stripping is enabled in the RX
- * configuration of the PMD. If this flag is set,
+ * configuration of the PMD.
  * When PKT_RX_QINQ_STRIPPED is set, the flags (PKT_RX_VLAN |
  * PKT_RX_VLAN_STRIPPED | PKT_RX_QINQ) must also be set.
  */
@@ -198,16 +170,59 @@ extern "C" {
 
 /**
  * The RX packet is a double VLAN, and the outer tci has been
- * saved in in mbuf->vlan_tci_outer.
+ * saved in in mbuf->vlan_tci_outer. If PKT_RX_QINQ set, PKT_RX_VLAN
+ * also should be set and inner tci should be saved to mbuf->vlan_tci.
  * If the flag PKT_RX_QINQ_STRIPPED is also present, both VLANs
  * headers have been stripped from mbuf data, else they are still
  * present.
  */
 #define PKT_RX_QINQ          (1ULL << 20)
 
+/**
+ * Mask of bits used to determine the status of outer RX L4 checksum.
+ * - PKT_RX_OUTER_L4_CKSUM_UNKNOWN: no info about the outer RX L4 checksum
+ * - PKT_RX_OUTER_L4_CKSUM_BAD: the outer L4 checksum in the packet is wrong
+ * - PKT_RX_OUTER_L4_CKSUM_GOOD: the outer L4 checksum in the packet is valid
+ * - PKT_RX_OUTER_L4_CKSUM_INVALID: invalid outer L4 checksum state.
+ *
+ * The detection of PKT_RX_OUTER_L4_CKSUM_GOOD shall be based on the given
+ * HW capability, At minimum, the PMD should support
+ * PKT_RX_OUTER_L4_CKSUM_UNKNOWN and PKT_RX_OUTER_L4_CKSUM_BAD states
+ * if the DEV_RX_OFFLOAD_OUTER_UDP_CKSUM offload is available.
+ */
+#define PKT_RX_OUTER_L4_CKSUM_MASK	((1ULL << 21) | (1ULL << 22))
+
+#define PKT_RX_OUTER_L4_CKSUM_UNKNOWN	0
+#define PKT_RX_OUTER_L4_CKSUM_BAD	(1ULL << 21)
+#define PKT_RX_OUTER_L4_CKSUM_GOOD	(1ULL << 22)
+#define PKT_RX_OUTER_L4_CKSUM_INVALID	((1ULL << 21) | (1ULL << 22))
+
 /* add new RX flags here */
 
 /* add new TX flags here */
+
+/**
+ * Indicate that the metadata field in the mbuf is in use.
+ */
+#define PKT_TX_METADATA	(1ULL << 40)
+
+/**
+ * Outer UDP checksum offload flag. This flag is used for enabling
+ * outer UDP checksum in PMD. To use outer UDP checksum, the user needs to
+ * 1) Enable the following in mbuff,
+ * a) Fill outer_l2_len and outer_l3_len in mbuf.
+ * b) Set the PKT_TX_OUTER_UDP_CKSUM flag.
+ * c) Set the PKT_TX_OUTER_IPV4 or PKT_TX_OUTER_IPV6 flag.
+ * 2) Configure DEV_TX_OFFLOAD_OUTER_UDP_CKSUM offload flag.
+ */
+#define PKT_TX_OUTER_UDP_CKSUM     (1ULL << 41)
+
+/**
+ * UDP Fragmentation Offload flag. This flag is used for enabling UDP
+ * fragmentation in SW or in HW. When use UFO, mbuf->tso_segsz is used
+ * to store the MSS of UDP fragments.
+ */
+#define PKT_TX_UDP_SEG	(1ULL << 42)
 
 /**
  * Request security offload processing on the TX packet.
@@ -234,13 +249,41 @@ extern "C" {
 #define PKT_TX_TUNNEL_GENEVE  (0x4ULL << 45)
 /** TX packet with MPLS-in-UDP RFC 7510 header. */
 #define PKT_TX_TUNNEL_MPLSINUDP (0x5ULL << 45)
+#define PKT_TX_TUNNEL_VXLAN_GPE (0x6ULL << 45)
+/**
+ * Generic IP encapsulated tunnel type, used for TSO and checksum offload.
+ * It can be used for tunnels which are not standards or listed above.
+ * It is preferred to use specific tunnel flags like PKT_TX_TUNNEL_GRE
+ * or PKT_TX_TUNNEL_IPIP if possible.
+ * The ethdev must be configured with DEV_TX_OFFLOAD_IP_TNL_TSO.
+ * Outer and inner checksums are done according to the existing flags like
+ * PKT_TX_xxx_CKSUM.
+ * Specific tunnel headers that contain payload length, sequence id
+ * or checksum are not expected to be updated.
+ */
+#define PKT_TX_TUNNEL_IP (0xDULL << 45)
+/**
+ * Generic UDP encapsulated tunnel type, used for TSO and checksum offload.
+ * UDP tunnel type implies outer IP layer.
+ * It can be used for tunnels which are not standards or listed above.
+ * It is preferred to use specific tunnel flags like PKT_TX_TUNNEL_VXLAN
+ * if possible.
+ * The ethdev must be configured with DEV_TX_OFFLOAD_UDP_TNL_TSO.
+ * Outer and inner checksums are done according to the existing flags like
+ * PKT_TX_xxx_CKSUM.
+ * Specific tunnel headers that contain payload length, sequence id
+ * or checksum are not expected to be updated.
+ */
+#define PKT_TX_TUNNEL_UDP (0xEULL << 45)
 /* add new TX TUNNEL type here */
 #define PKT_TX_TUNNEL_MASK    (0xFULL << 45)
 
 /**
  * Second VLAN insertion (QinQ) flag.
  */
-#define PKT_TX_QINQ_PKT    (1ULL << 49)   /**< TX packet with double VLAN inserted. */
+#define PKT_TX_QINQ        (1ULL << 49)   /**< TX packet with double VLAN inserted. */
+/* this old name is deprecated */
+#define PKT_TX_QINQ_PKT    PKT_TX_QINQ
 
 /**
  * TCP segmentation offload. To enable this offload feature for a
@@ -293,7 +336,12 @@ extern "C" {
  */
 #define PKT_TX_IPV6          (1ULL << 56)
 
-#define PKT_TX_VLAN_PKT      (1ULL << 57) /**< TX packet is a 802.1q VLAN packet. */
+/**
+ * TX packet is a 802.1q VLAN packet.
+ */
+#define PKT_TX_VLAN          (1ULL << 57)
+/* this old name is deprecated */
+#define PKT_TX_VLAN_PKT      PKT_TX_VLAN
 
 /**
  * Offload the IP checksum of an external header in the hardware. The
@@ -322,23 +370,30 @@ extern "C" {
  * which can be set for packet.
  */
 #define PKT_TX_OFFLOAD_MASK (    \
+		PKT_TX_OUTER_IPV6 |	 \
+		PKT_TX_OUTER_IPV4 |	 \
+		PKT_TX_OUTER_IP_CKSUM |  \
+		PKT_TX_VLAN_PKT |        \
+		PKT_TX_IPV6 |		 \
+		PKT_TX_IPV4 |		 \
 		PKT_TX_IP_CKSUM |        \
 		PKT_TX_L4_MASK |         \
-		PKT_TX_OUTER_IP_CKSUM |  \
-		PKT_TX_TCP_SEG |         \
 		PKT_TX_IEEE1588_TMST |	 \
+		PKT_TX_TCP_SEG |         \
 		PKT_TX_QINQ_PKT |        \
-		PKT_TX_VLAN_PKT |        \
 		PKT_TX_TUNNEL_MASK |	 \
 		PKT_TX_MACSEC |		 \
-		PKT_TX_SEC_OFFLOAD)
+		PKT_TX_SEC_OFFLOAD |	 \
+		PKT_TX_UDP_SEG |	 \
+		PKT_TX_OUTER_UDP_CKSUM | \
+		PKT_TX_METADATA)
 
-#define __RESERVED           (1ULL << 61) /**< reserved for future mbuf use */
+/**
+ * Mbuf having an external buffer attached. shinfo in mbuf must be filled.
+ */
+#define EXT_ATTACHED_MBUF    (1ULL << 61)
 
 #define IND_ATTACHED_MBUF    (1ULL << 62) /**< Indirect attached mbuf */
-
-/* Use final bit of flags to indicate a control mbuf */
-#define CTRL_MBUF_FLAG       (1ULL << 63) /**< Mbuf contains control data */
 
 /** Alignment constraint of mbuf private area. */
 #define RTE_MBUF_PRIV_ALIGN 8
@@ -452,7 +507,9 @@ struct rte_mbuf {
 	};
 	uint16_t nb_segs;         /**< Number of segments. */
 
-	/** Input port (16 bits to support more than 256 virtual ports). */
+	/** Input port (16 bits to support more than 256 virtual ports).
+	 * The event eth Tx adapter uses this field to specify the output port.
+	 */
 	uint16_t port;
 
 	uint64_t ol_flags;        /**< Offload features. */
@@ -496,33 +553,52 @@ struct rte_mbuf {
 
 	uint32_t pkt_len;         /**< Total pkt len: sum of all segments. */
 	uint16_t data_len;        /**< Amount of data in segment buffer. */
-	/** VLAN TCI (CPU order), valid if PKT_RX_VLAN_STRIPPED is set. */
+	/** VLAN TCI (CPU order), valid if PKT_RX_VLAN is set. */
 	uint16_t vlan_tci;
 
+	RTE_STD_C11
 	union {
-		uint32_t rss;     /**< RSS hash result if RSS enabled */
-		struct {
-			RTE_STD_C11
-			union {
-				struct {
-					uint16_t hash;
-					uint16_t id;
+		union {
+			uint32_t rss;     /**< RSS hash result if RSS enabled */
+			struct {
+				union {
+					struct {
+						uint16_t hash;
+						uint16_t id;
+					};
+					uint32_t lo;
+					/**< Second 4 flexible bytes */
 				};
+				uint32_t hi;
+				/**< First 4 flexible bytes or FD ID, dependent
+				 * on PKT_RX_FDIR_* flag in ol_flags.
+				 */
+			} fdir;	/**< Filter identifier if FDIR enabled */
+			struct {
 				uint32_t lo;
-				/**< Second 4 flexible bytes */
-			};
-			uint32_t hi;
-			/**< First 4 flexible bytes or FD ID, dependent on
-			     PKT_RX_FDIR_* flag in ol_flags. */
-		} fdir;           /**< Filter identifier if FDIR enabled */
+				uint32_t hi;
+				/**< The event eth Tx adapter uses this field
+				 * to store Tx queue id.
+				 * @see rte_event_eth_tx_adapter_txq_set()
+				 */
+			} sched;          /**< Hierarchical scheduler */
+			/**< User defined tags. See rte_distributor_process() */
+			uint32_t usr;
+		} hash;                   /**< hash information */
 		struct {
-			uint32_t lo;
-			uint32_t hi;
-		} sched;          /**< Hierarchical scheduler */
-		uint32_t usr;	  /**< User defined tags. See rte_distributor_process() */
-	} hash;                   /**< hash information */
+			/**
+			 * Application specific metadata value
+			 * for egress flow rule match.
+			 * Valid if PKT_TX_METADATA is set.
+			 * Located here to allow conjunct use
+			 * with hash.sched.hi.
+			 */
+			uint32_t tx_metadata;
+			uint32_t reserved;
+		};
+	};
 
-	/** Outer VLAN TCI (CPU order), valid if PKT_RX_QINQ_STRIPPED is set. */
+	/** Outer VLAN TCI (CPU order), valid if PKT_RX_QINQ is set. */
 	uint16_t vlan_tci_outer;
 
 	uint16_t buf_len;         /**< Length of segment buffer. */
@@ -576,7 +652,26 @@ struct rte_mbuf {
 	/** Sequence number. See also rte_reorder_insert(). */
 	uint32_t seqn;
 
+	/** Shared data for external buffer attached to mbuf. See
+	 * rte_pktmbuf_attach_extbuf().
+	 */
+	struct rte_mbuf_ext_shared_info *shinfo;
+
 } __rte_cache_aligned;
+
+/**
+ * Function typedef of callback to free externally attached buffer.
+ */
+typedef void (*rte_mbuf_extbuf_free_callback_t)(void *addr, void *opaque);
+
+/**
+ * Shared data at the end of an external buffer.
+ */
+struct rte_mbuf_ext_shared_info {
+	rte_mbuf_extbuf_free_callback_t free_cb; /**< Free callback function */
+	void *fcb_opaque;                        /**< Free callback argument */
+	rte_atomic16_t refcnt_atomic;        /**< Atomically accessed refcnt */
+};
 
 /**< Maximum number of nb_segs allowed. */
 #define RTE_MBUF_MAX_NB_SEGS	UINT16_MAX
@@ -698,14 +793,53 @@ rte_mbuf_to_baddr(struct rte_mbuf *md)
 }
 
 /**
- * Returns TRUE if given mbuf is indirect, or FALSE otherwise.
+ * Return the starting address of the private data area embedded in
+ * the given mbuf.
+ *
+ * Note that no check is made to ensure that a private data area
+ * actually exists in the supplied mbuf.
+ *
+ * @param m
+ *   The pointer to the mbuf.
+ * @return
+ *   The starting address of the private data area of the given mbuf.
  */
-#define RTE_MBUF_INDIRECT(mb)   ((mb)->ol_flags & IND_ATTACHED_MBUF)
+static inline void * __rte_experimental
+rte_mbuf_to_priv(struct rte_mbuf *m)
+{
+	return RTE_PTR_ADD(m, sizeof(struct rte_mbuf));
+}
+
+/**
+ * Returns TRUE if given mbuf is cloned by mbuf indirection, or FALSE
+ * otherwise.
+ *
+ * If a mbuf has its data in another mbuf and references it by mbuf
+ * indirection, this mbuf can be defined as a cloned mbuf.
+ */
+#define RTE_MBUF_CLONED(mb)     ((mb)->ol_flags & IND_ATTACHED_MBUF)
+
+/**
+ * Deprecated.
+ * Use RTE_MBUF_CLONED().
+ */
+#define RTE_MBUF_INDIRECT(mb)   RTE_MBUF_CLONED(mb)
+
+/**
+ * Returns TRUE if given mbuf has an external buffer, or FALSE otherwise.
+ *
+ * External buffer is a user-provided anonymous buffer.
+ */
+#define RTE_MBUF_HAS_EXTBUF(mb) ((mb)->ol_flags & EXT_ATTACHED_MBUF)
 
 /**
  * Returns TRUE if given mbuf is direct, or FALSE otherwise.
+ *
+ * If a mbuf embeds its own data after the rte_mbuf structure, this mbuf
+ * can be defined as a direct mbuf.
  */
-#define RTE_MBUF_DIRECT(mb)     (!RTE_MBUF_INDIRECT(mb))
+#define RTE_MBUF_DIRECT(mb) \
+	(!((mb)->ol_flags & (IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF)))
 
 /**
  * Private data in case of pktmbuf pool.
@@ -755,7 +889,7 @@ rte_mbuf_refcnt_read(const struct rte_mbuf *m)
 static inline void
 rte_mbuf_refcnt_set(struct rte_mbuf *m, uint16_t new_value)
 {
-	rte_atomic16_set(&m->refcnt_atomic, new_value);
+	rte_atomic16_set(&m->refcnt_atomic, (int16_t)new_value);
 }
 
 /* internal */
@@ -785,8 +919,9 @@ rte_mbuf_refcnt_update(struct rte_mbuf *m, int16_t value)
 	 * reference counter can occur.
 	 */
 	if (likely(rte_mbuf_refcnt_read(m) == 1)) {
-		rte_mbuf_refcnt_set(m, 1 + value);
-		return 1 + value;
+		++value;
+		rte_mbuf_refcnt_set(m, (uint16_t)value);
+		return (uint16_t)value;
 	}
 
 	return __rte_mbuf_refcnt_update(m, value);
@@ -830,6 +965,59 @@ rte_mbuf_refcnt_set(struct rte_mbuf *m, uint16_t new_value)
 }
 
 #endif /* RTE_MBUF_REFCNT_ATOMIC */
+
+/**
+ * Reads the refcnt of an external buffer.
+ *
+ * @param shinfo
+ *   Shared data of the external buffer.
+ * @return
+ *   Reference count number.
+ */
+static inline uint16_t
+rte_mbuf_ext_refcnt_read(const struct rte_mbuf_ext_shared_info *shinfo)
+{
+	return (uint16_t)(rte_atomic16_read(&shinfo->refcnt_atomic));
+}
+
+/**
+ * Set refcnt of an external buffer.
+ *
+ * @param shinfo
+ *   Shared data of the external buffer.
+ * @param new_value
+ *   Value set
+ */
+static inline void
+rte_mbuf_ext_refcnt_set(struct rte_mbuf_ext_shared_info *shinfo,
+	uint16_t new_value)
+{
+	rte_atomic16_set(&shinfo->refcnt_atomic, (int16_t)new_value);
+}
+
+/**
+ * Add given value to refcnt of an external buffer and return its new
+ * value.
+ *
+ * @param shinfo
+ *   Shared data of the external buffer.
+ * @param value
+ *   Value to add/subtract
+ * @return
+ *   Updated value
+ */
+static inline uint16_t
+rte_mbuf_ext_refcnt_update(struct rte_mbuf_ext_shared_info *shinfo,
+	int16_t value)
+{
+	if (likely(rte_mbuf_ext_refcnt_read(shinfo) == 1)) {
+		++value;
+		rte_mbuf_ext_refcnt_set(shinfo, (uint16_t)value);
+		return (uint16_t)value;
+	}
+
+	return (uint16_t)rte_atomic16_add_return(&shinfo->refcnt_atomic, value);
+}
 
 /** Mbuf prefetch */
 #define RTE_MBUF_PREFETCH_TO_FREE(m) do {       \
@@ -882,11 +1070,9 @@ rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header);
 static inline struct rte_mbuf *rte_mbuf_raw_alloc(struct rte_mempool *mp)
 {
 	struct rte_mbuf *m;
-	void *mb = NULL;
 
-	if (rte_mempool_get(mp, &mb) < 0)
+	if (rte_mempool_get(mp, (void **)&m) < 0)
 		return NULL;
-	m = (struct rte_mbuf *)mb;
 	MBUF_RAW_ALLOC_CHECK(m);
 	return m;
 }
@@ -915,97 +1101,6 @@ rte_mbuf_raw_free(struct rte_mbuf *m)
 	__rte_mbuf_sanity_check(m, 0);
 	rte_mempool_put(m->pool, m);
 }
-
-/* compat with older versions */
-__rte_deprecated
-static inline void
-__rte_mbuf_raw_free(struct rte_mbuf *m)
-{
-	rte_mbuf_raw_free(m);
-}
-
-/* Operations on ctrl mbuf */
-
-/**
- * The control mbuf constructor.
- *
- * This function initializes some fields in an mbuf structure that are
- * not modified by the user once created (mbuf type, origin pool, buffer
- * start address, and so on). This function is given as a callback function
- * to rte_mempool_obj_iter() or rte_mempool_create() at pool creation time.
- *
- * @param mp
- *   The mempool from which the mbuf is allocated.
- * @param opaque_arg
- *   A pointer that can be used by the user to retrieve useful information
- *   for mbuf initialization. This pointer is the opaque argument passed to
- *   rte_mempool_obj_iter() or rte_mempool_create().
- * @param m
- *   The mbuf to initialize.
- * @param i
- *   The index of the mbuf in the pool table.
- */
-void rte_ctrlmbuf_init(struct rte_mempool *mp, void *opaque_arg,
-		void *m, unsigned i);
-
-/**
- * Allocate a new mbuf (type is ctrl) from mempool *mp*.
- *
- * This new mbuf is initialized with data pointing to the beginning of
- * buffer, and with a length of zero.
- *
- * @param mp
- *   The mempool from which the mbuf is allocated.
- * @return
- *   - The pointer to the new mbuf on success.
- *   - NULL if allocation failed.
- */
-#define rte_ctrlmbuf_alloc(mp) rte_pktmbuf_alloc(mp)
-
-/**
- * Free a control mbuf back into its original mempool.
- *
- * @param m
- *   The control mbuf to be freed.
- */
-#define rte_ctrlmbuf_free(m) rte_pktmbuf_free(m)
-
-/**
- * A macro that returns the pointer to the carried data.
- *
- * The value that can be read or assigned.
- *
- * @param m
- *   The control mbuf.
- */
-#define rte_ctrlmbuf_data(m) ((char *)((m)->buf_addr) + (m)->data_off)
-
-/**
- * A macro that returns the length of the carried data.
- *
- * The value that can be read or assigned.
- *
- * @param m
- *   The control mbuf.
- */
-#define rte_ctrlmbuf_len(m) rte_pktmbuf_data_len(m)
-
-/**
- * Tests if an mbuf is a control mbuf
- *
- * @param m
- *   The mbuf to be tested
- * @return
- *   - True (1) if the mbuf is a control mbuf
- *   - False(0) otherwise
- */
-static inline int
-rte_is_ctrlmbuf(struct rte_mbuf *m)
-{
-	return !!(m->ol_flags & CTRL_MBUF_FLAG);
-}
-
-/* Operations on pkt mbuf */
 
 /**
  * The packet mbuf constructor.
@@ -1089,6 +1184,48 @@ rte_pktmbuf_pool_create(const char *name, unsigned n,
 	int socket_id);
 
 /**
+ * Create a mbuf pool with a given mempool ops name
+ *
+ * This function creates and initializes a packet mbuf pool. It is
+ * a wrapper to rte_mempool functions.
+ *
+ * @param name
+ *   The name of the mbuf pool.
+ * @param n
+ *   The number of elements in the mbuf pool. The optimum size (in terms
+ *   of memory usage) for a mempool is when n is a power of two minus one:
+ *   n = (2^q - 1).
+ * @param cache_size
+ *   Size of the per-core object cache. See rte_mempool_create() for
+ *   details.
+ * @param priv_size
+ *   Size of application private are between the rte_mbuf structure
+ *   and the data buffer. This value must be aligned to RTE_MBUF_PRIV_ALIGN.
+ * @param data_room_size
+ *   Size of data buffer in each mbuf, including RTE_PKTMBUF_HEADROOM.
+ * @param socket_id
+ *   The socket identifier where the memory should be allocated. The
+ *   value can be *SOCKET_ID_ANY* if there is no NUMA constraint for the
+ *   reserved zone.
+ * @param ops_name
+ *   The mempool ops name to be used for this mempool instead of
+ *   default mempool. The value can be *NULL* to use default mempool.
+ * @return
+ *   The pointer to the new allocated mempool, on success. NULL on error
+ *   with rte_errno set appropriately. Possible rte_errno values include:
+ *    - E_RTE_NO_CONFIG - function could not get pointer to rte_config structure
+ *    - E_RTE_SECONDARY - function was called from a secondary process instance
+ *    - EINVAL - cache size provided is too large, or priv_size is not aligned.
+ *    - ENOSPC - the maximum number of memzones has already been allocated
+ *    - EEXIST - a memzone with the same name already exists
+ *    - ENOMEM - no appropriate memory area found in which to create memzone
+ */
+struct rte_mempool *
+rte_pktmbuf_pool_create_by_ops(const char *name, unsigned int n,
+	unsigned int cache_size, uint16_t priv_size, uint16_t data_room_size,
+	int socket_id, const char *ops_name);
+
+/**
  * Get the data room size of mbufs stored in a pktmbuf_pool
  *
  * The data room size is the amount of data that can be stored in a
@@ -1139,7 +1276,8 @@ rte_pktmbuf_priv_size(struct rte_mempool *mp)
  */
 static inline void rte_pktmbuf_reset_headroom(struct rte_mbuf *m)
 {
-	m->data_off = RTE_MIN(RTE_PKTMBUF_HEADROOM, (uint16_t)m->buf_len);
+	m->data_off = (uint16_t)RTE_MIN((uint16_t)RTE_PKTMBUF_HEADROOM,
+					(uint16_t)m->buf_len);
 }
 
 /**
@@ -1248,11 +1386,161 @@ static inline int rte_pktmbuf_alloc_bulk(struct rte_mempool *pool,
 }
 
 /**
+ * Initialize shared data at the end of an external buffer before attaching
+ * to a mbuf by ``rte_pktmbuf_attach_extbuf()``. This is not a mandatory
+ * initialization but a helper function to simply spare a few bytes at the
+ * end of the buffer for shared data. If shared data is allocated
+ * separately, this should not be called but application has to properly
+ * initialize the shared data according to its need.
+ *
+ * Free callback and its argument is saved and the refcnt is set to 1.
+ *
+ * @warning
+ * The value of buf_len will be reduced to RTE_PTR_DIFF(shinfo, buf_addr)
+ * after this initialization. This shall be used for
+ * ``rte_pktmbuf_attach_extbuf()``
+ *
+ * @param buf_addr
+ *   The pointer to the external buffer.
+ * @param [in,out] buf_len
+ *   The pointer to length of the external buffer. Input value must be
+ *   larger than the size of ``struct rte_mbuf_ext_shared_info`` and
+ *   padding for alignment. If not enough, this function will return NULL.
+ *   Adjusted buffer length will be returned through this pointer.
+ * @param free_cb
+ *   Free callback function to call when the external buffer needs to be
+ *   freed.
+ * @param fcb_opaque
+ *   Argument for the free callback function.
+ *
+ * @return
+ *   A pointer to the initialized shared data on success, return NULL
+ *   otherwise.
+ */
+static inline struct rte_mbuf_ext_shared_info *
+rte_pktmbuf_ext_shinfo_init_helper(void *buf_addr, uint16_t *buf_len,
+	rte_mbuf_extbuf_free_callback_t free_cb, void *fcb_opaque)
+{
+	struct rte_mbuf_ext_shared_info *shinfo;
+	void *buf_end = RTE_PTR_ADD(buf_addr, *buf_len);
+	void *addr;
+
+	addr = RTE_PTR_ALIGN_FLOOR(RTE_PTR_SUB(buf_end, sizeof(*shinfo)),
+				   sizeof(uintptr_t));
+	if (addr <= buf_addr)
+		return NULL;
+
+	shinfo = (struct rte_mbuf_ext_shared_info *)addr;
+	shinfo->free_cb = free_cb;
+	shinfo->fcb_opaque = fcb_opaque;
+	rte_mbuf_ext_refcnt_set(shinfo, 1);
+
+	*buf_len = (uint16_t)RTE_PTR_DIFF(shinfo, buf_addr);
+	return shinfo;
+}
+
+/**
+ * Attach an external buffer to a mbuf.
+ *
+ * User-managed anonymous buffer can be attached to an mbuf. When attaching
+ * it, corresponding free callback function and its argument should be
+ * provided via shinfo. This callback function will be called once all the
+ * mbufs are detached from the buffer (refcnt becomes zero).
+ *
+ * The headroom for the attaching mbuf will be set to zero and this can be
+ * properly adjusted after attachment. For example, ``rte_pktmbuf_adj()``
+ * or ``rte_pktmbuf_reset_headroom()`` might be used.
+ *
+ * More mbufs can be attached to the same external buffer by
+ * ``rte_pktmbuf_attach()`` once the external buffer has been attached by
+ * this API.
+ *
+ * Detachment can be done by either ``rte_pktmbuf_detach_extbuf()`` or
+ * ``rte_pktmbuf_detach()``.
+ *
+ * Memory for shared data must be provided and user must initialize all of
+ * the content properly, escpecially free callback and refcnt. The pointer
+ * of shared data will be stored in m->shinfo.
+ * ``rte_pktmbuf_ext_shinfo_init_helper`` can help to simply spare a few
+ * bytes at the end of buffer for the shared data, store free callback and
+ * its argument and set the refcnt to 1. The following is an example:
+ *
+ *   struct rte_mbuf_ext_shared_info *shinfo =
+ *          rte_pktmbuf_ext_shinfo_init_helper(buf_addr, &buf_len,
+ *                                             free_cb, fcb_arg);
+ *   rte_pktmbuf_attach_extbuf(m, buf_addr, buf_iova, buf_len, shinfo);
+ *   rte_pktmbuf_reset_headroom(m);
+ *   rte_pktmbuf_adj(m, data_len);
+ *
+ * Attaching an external buffer is quite similar to mbuf indirection in
+ * replacing buffer addresses and length of a mbuf, but a few differences:
+ * - When an indirect mbuf is attached, refcnt of the direct mbuf would be
+ *   2 as long as the direct mbuf itself isn't freed after the attachment.
+ *   In such cases, the buffer area of a direct mbuf must be read-only. But
+ *   external buffer has its own refcnt and it starts from 1. Unless
+ *   multiple mbufs are attached to a mbuf having an external buffer, the
+ *   external buffer is writable.
+ * - There's no need to allocate buffer from a mempool. Any buffer can be
+ *   attached with appropriate free callback and its IO address.
+ * - Smaller metadata is required to maintain shared data such as refcnt.
+ *
+ * @warning
+ * @b EXPERIMENTAL: This API may change without prior notice.
+ * Once external buffer is enabled by allowing experimental API,
+ * ``RTE_MBUF_DIRECT()`` and ``RTE_MBUF_INDIRECT()`` are no longer
+ * exclusive. A mbuf can be considered direct if it is neither indirect nor
+ * having external buffer.
+ *
+ * @param m
+ *   The pointer to the mbuf.
+ * @param buf_addr
+ *   The pointer to the external buffer.
+ * @param buf_iova
+ *   IO address of the external buffer.
+ * @param buf_len
+ *   The size of the external buffer.
+ * @param shinfo
+ *   User-provided memory for shared data of the external buffer.
+ */
+static inline void __rte_experimental
+rte_pktmbuf_attach_extbuf(struct rte_mbuf *m, void *buf_addr,
+	rte_iova_t buf_iova, uint16_t buf_len,
+	struct rte_mbuf_ext_shared_info *shinfo)
+{
+	/* mbuf should not be read-only */
+	RTE_ASSERT(RTE_MBUF_DIRECT(m) && rte_mbuf_refcnt_read(m) == 1);
+	RTE_ASSERT(shinfo->free_cb != NULL);
+
+	m->buf_addr = buf_addr;
+	m->buf_iova = buf_iova;
+	m->buf_len = buf_len;
+
+	m->data_len = 0;
+	m->data_off = 0;
+
+	m->ol_flags |= EXT_ATTACHED_MBUF;
+	m->shinfo = shinfo;
+}
+
+/**
+ * Detach the external buffer attached to a mbuf, same as
+ * ``rte_pktmbuf_detach()``
+ *
+ * @param m
+ *   The mbuf having external buffer.
+ */
+#define rte_pktmbuf_detach_extbuf(m) rte_pktmbuf_detach(m)
+
+/**
  * Attach packet mbuf to another packet mbuf.
  *
- * After attachment we refer the mbuf we attached as 'indirect',
- * while mbuf we attached to as 'direct'.
- * The direct mbuf's reference counter is incremented.
+ * If the mbuf we are attaching to isn't a direct buffer and is attached to
+ * an external buffer, the mbuf being attached will be attached to the
+ * external buffer instead of mbuf indirection.
+ *
+ * Otherwise, the mbuf will be indirectly attached. After attachment we
+ * refer the mbuf we attached as 'indirect', while mbuf we attached to as
+ * 'direct'.  The direct mbuf's reference counter is incremented.
  *
  * Right now, not supported:
  *  - attachment for already indirect mbuf (e.g. - mi has to be direct).
@@ -1266,19 +1554,20 @@ static inline int rte_pktmbuf_alloc_bulk(struct rte_mempool *pool,
  */
 static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
 {
-	struct rte_mbuf *md;
-
 	RTE_ASSERT(RTE_MBUF_DIRECT(mi) &&
 	    rte_mbuf_refcnt_read(mi) == 1);
 
-	/* if m is not direct, get the mbuf that embeds the data */
-	if (RTE_MBUF_DIRECT(m))
-		md = m;
-	else
-		md = rte_mbuf_from_indirect(m);
+	if (RTE_MBUF_HAS_EXTBUF(m)) {
+		rte_mbuf_ext_refcnt_update(m->shinfo, 1);
+		mi->ol_flags = m->ol_flags;
+		mi->shinfo = m->shinfo;
+	} else {
+		/* if m is not direct, get the mbuf that embeds the data */
+		rte_mbuf_refcnt_update(rte_mbuf_from_indirect(m), 1);
+		mi->priv_size = m->priv_size;
+		mi->ol_flags = m->ol_flags | IND_ATTACHED_MBUF;
+	}
 
-	rte_mbuf_refcnt_update(md, 1);
-	mi->priv_size = m->priv_size;
 	mi->buf_iova = m->buf_iova;
 	mi->buf_addr = m->buf_addr;
 	mi->buf_len = m->buf_len;
@@ -1294,7 +1583,6 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
 	mi->next = NULL;
 	mi->pkt_len = mi->data_len;
 	mi->nb_segs = 1;
-	mi->ol_flags = m->ol_flags | IND_ATTACHED_MBUF;
 	mi->packet_type = m->packet_type;
 	mi->timestamp = m->timestamp;
 
@@ -1303,12 +1591,52 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
 }
 
 /**
- * Detach an indirect packet mbuf.
+ * @internal used by rte_pktmbuf_detach().
  *
+ * Decrement the reference counter of the external buffer. When the
+ * reference counter becomes 0, the buffer is freed by pre-registered
+ * callback.
+ */
+static inline void
+__rte_pktmbuf_free_extbuf(struct rte_mbuf *m)
+{
+	RTE_ASSERT(RTE_MBUF_HAS_EXTBUF(m));
+	RTE_ASSERT(m->shinfo != NULL);
+
+	if (rte_mbuf_ext_refcnt_update(m->shinfo, -1) == 0)
+		m->shinfo->free_cb(m->buf_addr, m->shinfo->fcb_opaque);
+}
+
+/**
+ * @internal used by rte_pktmbuf_detach().
+ *
+ * Decrement the direct mbuf's reference counter. When the reference
+ * counter becomes 0, the direct mbuf is freed.
+ */
+static inline void
+__rte_pktmbuf_free_direct(struct rte_mbuf *m)
+{
+	struct rte_mbuf *md;
+
+	RTE_ASSERT(RTE_MBUF_INDIRECT(m));
+
+	md = rte_mbuf_from_indirect(m);
+
+	if (rte_mbuf_refcnt_update(md, -1) == 0) {
+		md->next = NULL;
+		md->nb_segs = 1;
+		rte_mbuf_refcnt_set(md, 1);
+		rte_mbuf_raw_free(md);
+	}
+}
+
+/**
+ * Detach a packet mbuf from external buffer or direct buffer.
+ *
+ *  - decrement refcnt and free the external/direct buffer if refcnt
+ *    becomes zero.
  *  - restore original mbuf address and length values.
  *  - reset pktmbuf data and data_len to their default values.
- *  - decrement the direct mbuf's reference counter. When the
- *  reference counter becomes 0, the direct mbuf is freed.
  *
  * All other fields of the given packet mbuf will be left intact.
  *
@@ -1317,12 +1645,17 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
  */
 static inline void rte_pktmbuf_detach(struct rte_mbuf *m)
 {
-	struct rte_mbuf *md = rte_mbuf_from_indirect(m);
 	struct rte_mempool *mp = m->pool;
-	uint32_t mbuf_size, buf_len, priv_size;
+	uint32_t mbuf_size, buf_len;
+	uint16_t priv_size;
+
+	if (RTE_MBUF_HAS_EXTBUF(m))
+		__rte_pktmbuf_free_extbuf(m);
+	else
+		__rte_pktmbuf_free_direct(m);
 
 	priv_size = rte_pktmbuf_priv_size(mp);
-	mbuf_size = sizeof(struct rte_mbuf) + priv_size;
+	mbuf_size = (uint32_t)(sizeof(struct rte_mbuf) + priv_size);
 	buf_len = rte_pktmbuf_data_room_size(mp);
 
 	m->priv_size = priv_size;
@@ -1332,13 +1665,6 @@ static inline void rte_pktmbuf_detach(struct rte_mbuf *m)
 	rte_pktmbuf_reset_headroom(m);
 	m->data_len = 0;
 	m->ol_flags = 0;
-
-	if (rte_mbuf_refcnt_update(md, -1) == 0) {
-		md->next = NULL;
-		md->nb_segs = 1;
-		rte_mbuf_refcnt_set(md, 1);
-		rte_mbuf_raw_free(md);
-	}
 }
 
 /**
@@ -1362,7 +1688,7 @@ rte_pktmbuf_prefree_seg(struct rte_mbuf *m)
 
 	if (likely(rte_mbuf_refcnt_read(m) == 1)) {
 
-		if (RTE_MBUF_INDIRECT(m))
+		if (!RTE_MBUF_DIRECT(m))
 			rte_pktmbuf_detach(m);
 
 		if (m->next != NULL) {
@@ -1374,7 +1700,7 @@ rte_pktmbuf_prefree_seg(struct rte_mbuf *m)
 
 	} else if (__rte_mbuf_refcnt_update(m, -1) == 0) {
 
-		if (RTE_MBUF_INDIRECT(m))
+		if (!RTE_MBUF_DIRECT(m))
 			rte_pktmbuf_detach(m);
 
 		if (m->next != NULL) {
@@ -1386,14 +1712,6 @@ rte_pktmbuf_prefree_seg(struct rte_mbuf *m)
 		return m;
 	}
 	return NULL;
-}
-
-/* deprecated, replaced by rte_pktmbuf_prefree_seg() */
-__rte_deprecated
-static inline struct rte_mbuf *
-__rte_pktmbuf_prefree_seg(struct rte_mbuf *m)
-{
-	return rte_pktmbuf_prefree_seg(m);
 }
 
 /**
@@ -1549,12 +1867,10 @@ static inline uint16_t rte_pktmbuf_tailroom(const struct rte_mbuf *m)
  */
 static inline struct rte_mbuf *rte_pktmbuf_lastseg(struct rte_mbuf *m)
 {
-	struct rte_mbuf *m2 = (struct rte_mbuf *)m;
-
 	__rte_mbuf_sanity_check(m, 1);
-	while (m2->next != NULL)
-		m2 = m2->next;
-	return m2;
+	while (m->next != NULL)
+		m = m->next;
+	return m;
 }
 
 /**
@@ -1659,7 +1975,10 @@ static inline char *rte_pktmbuf_prepend(struct rte_mbuf *m,
 	if (unlikely(len > rte_pktmbuf_headroom(m)))
 		return NULL;
 
-	m->data_off -= len;
+	/* NB: elaborating the subtraction like this instead of using
+	 *     -= allows us to ensure the result type is uint16_t
+	 *     avoiding compiler warnings on gcc 8.1 at least */
+	m->data_off = (uint16_t)(m->data_off - len);
 	m->data_len = (uint16_t)(m->data_len + len);
 	m->pkt_len  = (m->pkt_len + len);
 
@@ -1719,8 +2038,11 @@ static inline char *rte_pktmbuf_adj(struct rte_mbuf *m, uint16_t len)
 	if (unlikely(len > m->data_len))
 		return NULL;
 
+	/* NB: elaborating the addition like this instead of using
+	 *     += allows us to ensure the result type is uint16_t
+	 *     avoiding compiler warnings on gcc 8.1 at least */
 	m->data_len = (uint16_t)(m->data_len - len);
-	m->data_off += len;
+	m->data_off = (uint16_t)(m->data_off + len);
 	m->pkt_len  = (m->pkt_len - len);
 	return (char *)m->buf_addr + m->data_off;
 }
@@ -1832,8 +2154,11 @@ static inline int rte_pktmbuf_chain(struct rte_mbuf *head, struct rte_mbuf *tail
 	cur_tail = rte_pktmbuf_lastseg(head);
 	cur_tail->next = tail;
 
-	/* accumulate number of segments and total length. */
-	head->nb_segs += tail->nb_segs;
+	/* accumulate number of segments and total length.
+	 * NB: elaborating the addition like this instead of using
+	 *     -= allows us to ensure the result type is uint16_t
+	 *     avoiding compiler warnings on gcc 8.1 at least */
+	head->nb_segs = (uint16_t)(head->nb_segs + tail->nb_segs);
 	head->pkt_len += tail->pkt_len;
 
 	/* pkt_len is only set in the head */
@@ -1863,7 +2188,11 @@ rte_validate_tx_offload(const struct rte_mbuf *m)
 		return 0;
 
 	if (ol_flags & PKT_TX_OUTER_IP_CKSUM)
-		inner_l3_offset += m->outer_l2_len + m->outer_l3_len;
+		/* NB: elaborating the addition like this instead of using
+		 *     += gives the result uint64_t type instead of int,
+		 *     avoiding compiler warnings on gcc 8.1 at least */
+		inner_l3_offset = inner_l3_offset + m->outer_l2_len +
+				  m->outer_l3_len;
 
 	/* Headers are fragmented */
 	if (rte_pktmbuf_data_len(m) < inner_l3_offset + m->l3_len + m->l4_len)
@@ -1908,7 +2237,7 @@ rte_validate_tx_offload(const struct rte_mbuf *m)
 static inline int
 rte_pktmbuf_linearize(struct rte_mbuf *mbuf)
 {
-	int seg_len, copy_len;
+	size_t seg_len, copy_len;
 	struct rte_mbuf *m;
 	struct rte_mbuf *m_next;
 	char *buffer;

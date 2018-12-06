@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium, Inc. 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #include <stdio.h>
@@ -129,6 +101,7 @@ test_bitmap_slab_set_get(struct rte_bitmap *bmp)
 static int
 test_bitmap_set_get_clear(struct rte_bitmap *bmp)
 {
+	uint64_t val;
 	int i;
 
 	rte_bitmap_reset(bmp);
@@ -148,6 +121,23 @@ test_bitmap_set_get_clear(struct rte_bitmap *bmp)
 	for (i = 0; i < MAX_BITS; i++) {
 		if (rte_bitmap_get(bmp, i)) {
 			printf("Failed to clear set bit.\n");
+			return TEST_FAILED;
+		}
+	}
+
+	rte_bitmap_reset(bmp);
+
+	/* Alternate slab set test */
+	for (i = 0; i < MAX_BITS; i++) {
+		if (i % RTE_BITMAP_SLAB_BIT_SIZE)
+			rte_bitmap_set(bmp, i);
+	}
+
+	for (i = 0; i < MAX_BITS; i++) {
+		val = rte_bitmap_get(bmp, i);
+		if (((i % RTE_BITMAP_SLAB_BIT_SIZE) && !val) ||
+		    (!(i % RTE_BITMAP_SLAB_BIT_SIZE) && val)) {
+			printf("Failed to get set bit.\n");
 			return TEST_FAILED;
 		}
 	}

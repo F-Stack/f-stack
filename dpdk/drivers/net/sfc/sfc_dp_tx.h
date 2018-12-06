@@ -1,38 +1,16 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_DP_TX_H
 #define _SFC_DP_TX_H
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include "sfc_dp.h"
 
@@ -57,10 +35,12 @@ struct sfc_dp_txq {
  * readable.
  */
 struct sfc_dp_tx_qcreate_info {
+	/** Maximum number of pushed Tx descriptors */
+	unsigned int		max_fill_level;
 	/** Minimum number of unused Tx descriptors to do reap */
 	unsigned int		free_thresh;
-	/** Transmit queue configuration flags */
-	unsigned int		flags;
+	/** Offloads enabled on the transmit queue */
+	uint64_t		offloads;
 	/** Tx queue size */
 	unsigned int		txq_entries;
 	/** Maximum size of data in the DMA descriptor */
@@ -75,7 +55,37 @@ struct sfc_dp_tx_qcreate_info {
 	unsigned int		hw_index;
 	/** Virtual address of the memory-mapped BAR to push Tx doorbell */
 	volatile void		*mem_bar;
+	/** VI window size shift */
+	unsigned int		vi_window_shift;
+	/**
+	 * Maximum number of bytes into the packet the TCP header can start for
+	 * the hardware to apply TSO packet edits.
+	 */
+	uint16_t		tso_tcp_header_offset_limit;
 };
+
+/**
+ * Get Tx datapath specific device info.
+ *
+ * @param dev_info		Device info to be adjusted
+ */
+typedef void (sfc_dp_tx_get_dev_info_t)(struct rte_eth_dev_info *dev_info);
+
+/**
+ * Get size of transmit and event queue rings by the number of Tx
+ * descriptors.
+ *
+ * @param nb_tx_desc		Number of Tx descriptors
+ * @param txq_entries		Location for number of Tx ring entries
+ * @param evq_entries		Location for number of event ring entries
+ * @param txq_max_fill_level	Location for maximum Tx ring fill level
+ *
+ * @return 0 or positive errno.
+ */
+typedef int (sfc_dp_tx_qsize_up_rings_t)(uint16_t nb_tx_desc,
+					 unsigned int *txq_entries,
+					 unsigned int *evq_entries,
+					 unsigned int *txq_max_fill_level);
 
 /**
  * Allocate and initialize datapath transmit queue.
@@ -144,6 +154,8 @@ struct sfc_dp_tx {
 #define SFC_DP_TX_FEAT_MULTI_PROCESS	0x8
 #define SFC_DP_TX_FEAT_MULTI_POOL	0x10
 #define SFC_DP_TX_FEAT_REFCNT		0x20
+	sfc_dp_tx_get_dev_info_t	*get_dev_info;
+	sfc_dp_tx_qsize_up_rings_t	*qsize_up_rings;
 	sfc_dp_tx_qcreate_t		*qcreate;
 	sfc_dp_tx_qdestroy_t		*qdestroy;
 	sfc_dp_tx_qstart_t		*qstart;

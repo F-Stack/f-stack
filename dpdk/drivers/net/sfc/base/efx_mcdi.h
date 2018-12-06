@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2009-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2009-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #ifndef _SYS_EFX_MCDI_H
@@ -33,6 +9,10 @@
 
 #include "efx.h"
 #include "efx_regs_mcdi.h"
+
+#if EFSYS_OPT_NAMES
+#include "mc_driver_pcol_strs.h"
+#endif /* EFSYS_OPT_NAMES */
 
 #ifdef	__cplusplus
 extern "C" {
@@ -51,7 +31,7 @@ struct efx_mcdi_req_s {
 	unsigned int	emr_cmd;
 	uint8_t		*emr_in_buf;
 	size_t		emr_in_length;
-	/* Outputs: retcode, buffer, length, and length used*/
+	/* Outputs: retcode, buffer, length, and length used */
 	efx_rc_t	emr_rc;
 	uint8_t		*emr_out_buf;
 	size_t		emr_out_length;
@@ -190,11 +170,11 @@ efx_mcdi_mac_spoofing_supported(
 
 
 #if EFSYS_OPT_BIST
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
 extern	__checkReturn		efx_rc_t
 efx_mcdi_bist_enable_offline(
 	__in			efx_nic_t *enp);
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
 extern	__checkReturn		efx_rc_t
 efx_mcdi_bist_start(
 	__in			efx_nic_t *enp,
@@ -239,8 +219,8 @@ extern	__checkReturn	efx_rc_t
 efx_mcdi_phy_module_get_info(
 	__in			efx_nic_t *enp,
 	__in			uint8_t dev_addr,
-	__in			uint8_t offset,
-	__in			uint8_t len,
+	__in			size_t offset,
+	__in			size_t len,
 	__out_bcount(len)	uint8_t *data);
 
 #define	MCDI_IN(_emr, _type, _ofst)					\
@@ -382,6 +362,10 @@ efx_mcdi_phy_module_get_info(
 	EFX_WORD_FIELD(*MCDI_OUT2(_emr, efx_word_t, _ofst),		\
 		    EFX_WORD_0)
 
+#define	MCDI_OUT_WORD_FIELD(_emr, _ofst, _field)			\
+	EFX_WORD_FIELD(*MCDI_OUT2(_emr, efx_word_t, _ofst),		\
+		       MC_CMD_ ## _field)
+
 #define	MCDI_OUT_DWORD(_emr, _ofst)					\
 	EFX_DWORD_FIELD(*MCDI_OUT2(_emr, efx_dword_t, _ofst),		\
 			EFX_DWORD_0)
@@ -399,6 +383,17 @@ efx_mcdi_phy_module_get_info(
 #define	EFX_MCDI_HAVE_PRIVILEGE(mask, priv)				\
 	(((mask) & (MC_CMD_PRIVILEGE_MASK_IN_GRP_ ## priv)) ==		\
 	(MC_CMD_PRIVILEGE_MASK_IN_GRP_ ## priv))
+
+/*
+ * The buffer size must be a multiple of dword to ensure that MCDI works
+ * properly with Siena based boards (which use on-chip buffer). Also, it
+ * should be at minimum the size of two dwords to allow space for extended
+ * error responses if the request/response buffer sizes are smaller.
+ */
+#define EFX_MCDI_DECLARE_BUF(_name, _in_len, _out_len)			\
+	uint8_t _name[P2ROUNDUP(MAX(MAX(_in_len, _out_len),		\
+				    (2 * sizeof (efx_dword_t))),	\
+				sizeof (efx_dword_t))] = {0}
 
 typedef enum efx_mcdi_feature_id_e {
 	EFX_MCDI_FEATURE_FW_UPDATE = 0,

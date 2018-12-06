@@ -112,32 +112,6 @@ static uint8_t default_rsskey_40bytes[40] = {
     0xf3, 0x25, 0x3c, 0x06, 0x2a, 0xdc, 0x1f, 0xfc
 };
 
-static struct rte_eth_conf default_port_conf = {
-    .rxmode = {
-        .mq_mode = ETH_MQ_RX_RSS,
-        .max_rx_pkt_len = ETHER_MAX_LEN,
-        .split_hdr_size = 0, /**< hdr buf size */
-        .header_split   = 0, /**< Header Split disabled */
-        .hw_ip_checksum = 0, /**< IP checksum offload disabled */
-        .hw_vlan_filter = 0, /**< VLAN filtering disabled */
-        .hw_vlan_strip  = 0, /**< VLAN strip disabled. */
-        .hw_vlan_extend = 0, /**< Extended VLAN disabled. */
-        .jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-        .hw_strip_crc   = 0, /**< CRC stripped by hardware */
-        .enable_lro     = 0, /**< LRO disabled */
-    },
-    .rx_adv_conf = {
-        .rss_conf = {
-            .rss_key = default_rsskey_40bytes,
-            .rss_key_len = 40,
-            .rss_hf = ETH_RSS_PROTO_MASK,
-        },
-    },
-    .txmode = {
-        .mq_mode = ETH_MQ_TX_NONE,
-    },
-};
-
 struct mbuf_table {
     uint16_t len;
     struct rte_mbuf *m_table[MAX_PKT_BURST];
@@ -289,7 +263,7 @@ check_all_ports_link_status(void)
 static int
 init_lcore_conf(void)
 {
-    uint8_t nb_dev_ports = rte_eth_dev_count();
+    uint8_t nb_dev_ports = rte_eth_dev_count_avail();
     if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
     }
@@ -537,7 +511,7 @@ init_msg_ring(void)
 static int
 init_kni(void)
 {
-    int nb_ports = rte_eth_dev_count();
+    int nb_ports = rte_eth_dev_count_avail();
     kni_accept = 0;
     if(strcasecmp(ff_global_cfg.kni.method, "accept") == 0)
         kni_accept = 1;
@@ -624,55 +598,44 @@ init_port_start(void)
         rte_memcpy(pconf->mac,
             addr.addr_bytes, ETHER_ADDR_LEN);
 
-        /* Clear txq_flags - we do not need multi-mempool and refcnt */
-        dev_info.default_txconf.txq_flags = ETH_TXQ_FLAGS_NOMULTMEMP |
-            ETH_TXQ_FLAGS_NOREFCOUNT;
-
-        /* Disable features that are not supported by port's HW */
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMUDP;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMTCP;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_SCTP_CKSUM)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMSCTP;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VLAN_INSERT)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOVLANOFFL;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) &&
-            !(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
-        }
-
         struct rte_eth_conf port_conf = {0};
 
         /* Set RSS mode */
+        uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
         port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
-        port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_PROTO_MASK;
+        port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
         port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
         port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+        port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+         if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
+                ETH_RSS_PROTO_MASK) {
+            printf("Port %u modified RSS hash function based on hardware support,"
+                    "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                    port_id, default_rss_hf,
+                    port_conf.rx_adv_conf.rss_conf.rss_hf);
+        }
+
+        if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+            port_conf.txmode.offloads |=
+                DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
         /* Set Rx VLAN stripping */
         if (ff_global_cfg.dpdk.vlan_strip) {
             if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-                port_conf.rxmode.hw_vlan_strip = 1;
+                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
             }
         }
 
         /* Enable HW CRC stripping */
-        port_conf.rxmode.hw_strip_crc = 1;
+        if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_KEEP_CRC) {
+            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_KEEP_CRC;
+        }
 
         /* FIXME: Enable TCP LRO ?*/
         #if 0
         if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
             printf("LRO is supported\n");
-            port_conf.rxmode.enable_lro = 1;
+            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
             pconf->hw_features.rx_lro = 1;
         }
         #endif
@@ -682,7 +645,7 @@ init_port_start(void)
             (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
             (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
             printf("RX checksum offload supported\n");
-            port_conf.rxmode.hw_ip_checksum = 1;
+            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
             pconf->hw_features.rx_csum = 1;
         }
 

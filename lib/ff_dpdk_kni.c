@@ -134,7 +134,7 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 {
     int ret = 0;
 
-    if (port_id >= rte_eth_dev_count() || port_id >= RTE_MAX_ETHPORTS) {
+    if (port_id >= rte_eth_dev_count_avail() || port_id >= RTE_MAX_ETHPORTS) {
         printf("Invalid port id %d\n", port_id);
         return -EINVAL;
     }
@@ -339,6 +339,8 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
         struct rte_kni_conf conf;
         struct rte_kni_ops ops;
         struct rte_eth_dev_info dev_info;
+        const struct rte_pci_device *pci_dev;
+		const struct rte_bus *bus = NULL;
 
         kni_stat[port_id] = (struct kni_interface_stats*)rte_zmalloc(
             "kni:stat_lcore",
@@ -360,8 +362,13 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
 
         memset(&dev_info, 0, sizeof(dev_info));
         rte_eth_dev_info_get(port_id, &dev_info);
-        conf.addr = dev_info.pci_dev->addr;
-        conf.id = dev_info.pci_dev->id;
+        if (dev_info.device)
+			bus = rte_bus_find_by_device(dev_info.device);
+		if (bus && !strcmp(bus->name, "pci")) {
+			pci_dev = RTE_DEV_TO_PCI(dev_info.device);
+			conf.addr = pci_dev->addr;
+			conf.id = pci_dev->id;
+		}
 
         memset(&ops, 0, sizeof(ops));
         ops.port_id = port_id;

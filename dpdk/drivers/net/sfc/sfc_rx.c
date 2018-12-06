@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <rte_mempool.h>
@@ -88,8 +66,7 @@ sfc_efx_rx_qrefill(struct sfc_efx_rxq *rxq)
 	struct rte_mbuf *m;
 	uint16_t port_id = rxq->dp.dpq.port_id;
 
-	free_space = EFX_RXQ_LIMIT(rxq->ptr_mask + 1) -
-		(added - rxq->completed);
+	free_space = rxq->max_fill_level - (added - rxq->completed);
 
 	if (free_space < rxq->refill_threshold)
 		return;
@@ -119,13 +96,12 @@ sfc_efx_rx_qrefill(struct sfc_efx_rxq *rxq)
 		     ++i, id = (id + 1) & rxq->ptr_mask) {
 			m = objs[i];
 
+			MBUF_RAW_ALLOC_CHECK(m);
+
 			rxd = &rxq->sw_desc[id];
 			rxd->mbuf = m;
 
-			SFC_ASSERT(rte_mbuf_refcnt_read(m) == 1);
 			m->data_off = RTE_PKTMBUF_HEADROOM;
-			SFC_ASSERT(m->next == NULL);
-			SFC_ASSERT(m->nb_segs == 1);
 			m->port = port_id;
 
 			addr[i] = rte_pktmbuf_iova(m);
@@ -193,7 +169,7 @@ sfc_efx_rx_desc_flags_to_packet_type(const unsigned int desc_flags)
 }
 
 static const uint32_t *
-sfc_efx_supported_ptypes_get(void)
+sfc_efx_supported_ptypes_get(__rte_unused uint32_t tunnel_encaps)
 {
 	static const uint32_t ptypes[] = {
 		RTE_PTYPE_L2_ETHER,
@@ -207,7 +183,6 @@ sfc_efx_supported_ptypes_get(void)
 	return ptypes;
 }
 
-#if EFSYS_OPT_RX_SCALE
 static void
 sfc_efx_rx_set_rss_hash(struct sfc_efx_rxq *rxq, unsigned int flags,
 			struct rte_mbuf *m)
@@ -228,14 +203,6 @@ sfc_efx_rx_set_rss_hash(struct sfc_efx_rxq *rxq, unsigned int flags,
 		m->ol_flags |= PKT_RX_RSS_HASH;
 	}
 }
-#else
-static void
-sfc_efx_rx_set_rss_hash(__rte_unused struct sfc_efx_rxq *rxq,
-			__rte_unused unsigned int flags,
-			__rte_unused struct rte_mbuf *m)
-{
-}
-#endif
 
 static uint16_t
 sfc_efx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
@@ -328,7 +295,7 @@ sfc_efx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 discard:
 		discard_next = ((desc_flags & EFX_PKT_CONT) != 0);
-		rte_mempool_put(rxq->refill_mb_pool, m);
+		rte_mbuf_raw_free(m);
 		rxd->mbuf = NULL;
 	}
 
@@ -413,6 +380,20 @@ sfc_rxq_by_dp_rxq(const struct sfc_dp_rxq *dp_rxq)
 	return rxq;
 }
 
+static sfc_dp_rx_qsize_up_rings_t sfc_efx_rx_qsize_up_rings;
+static int
+sfc_efx_rx_qsize_up_rings(uint16_t nb_rx_desc,
+			  __rte_unused struct rte_mempool *mb_pool,
+			  unsigned int *rxq_entries,
+			  unsigned int *evq_entries,
+			  unsigned int *rxq_max_fill_level)
+{
+	*rxq_entries = nb_rx_desc;
+	*evq_entries = nb_rx_desc;
+	*rxq_max_fill_level = EFX_RXQ_LIMIT(*rxq_entries);
+	return 0;
+}
+
 static sfc_dp_rx_qcreate_t sfc_efx_rx_qcreate;
 static int
 sfc_efx_rx_qcreate(uint16_t port_id, uint16_t queue_id,
@@ -446,6 +427,7 @@ sfc_efx_rx_qcreate(uint16_t port_id, uint16_t queue_id,
 	rxq->ptr_mask = info->rxq_entries - 1;
 	rxq->batch_max = info->batch_max;
 	rxq->prefix_size = info->prefix_size;
+	rxq->max_fill_level = info->max_fill_level;
 	rxq->refill_threshold = info->refill_threshold;
 	rxq->buf_size = info->buf_size;
 	rxq->refill_mb_pool = info->refill_mb_pool;
@@ -515,7 +497,7 @@ sfc_efx_rx_qpurge(struct sfc_dp_rxq *dp_rxq)
 
 	for (i = rxq->completed; i != rxq->added; ++i) {
 		rxd = &rxq->sw_desc[i & rxq->ptr_mask];
-		rte_mempool_put(rxq->refill_mb_pool, rxd->mbuf);
+		rte_mbuf_raw_free(rxd->mbuf);
 		rxd->mbuf = NULL;
 		/* Packed stream relies on 0 in inactive SW desc.
 		 * Rx queue stop is not performance critical, so
@@ -534,7 +516,9 @@ struct sfc_dp_rx sfc_efx_rx = {
 		.type		= SFC_DP_RX,
 		.hw_fw_caps	= 0,
 	},
-	.features		= SFC_DP_RX_FEAT_SCATTER,
+	.features		= SFC_DP_RX_FEAT_SCATTER |
+				  SFC_DP_RX_FEAT_CHECKSUM,
+	.qsize_up_rings		= sfc_efx_rx_qsize_up_rings,
 	.qcreate		= sfc_efx_rx_qcreate,
 	.qdestroy		= sfc_efx_rx_qdestroy,
 	.qstart			= sfc_efx_rx_qstart,
@@ -616,7 +600,7 @@ sfc_rx_qflush(struct sfc_adapter *sa, unsigned int sw_index)
 			sfc_err(sa, "RxQ %u flush failed", sw_index);
 
 		if (rxq->state & SFC_RXQ_FLUSHED)
-			sfc_info(sa, "RxQ %u flushed", sw_index);
+			sfc_notice(sa, "RxQ %u flushed", sw_index);
 	}
 
 	sa->dp_rx->qpurge(rxq->dp);
@@ -625,7 +609,8 @@ sfc_rx_qflush(struct sfc_adapter *sa, unsigned int sw_index)
 static int
 sfc_rx_default_rxq_set_filter(struct sfc_adapter *sa, struct sfc_rxq *rxq)
 {
-	boolean_t rss = (sa->rss_channels > 0) ? B_TRUE : B_FALSE;
+	struct sfc_rss *rss = &sa->rss;
+	boolean_t need_rss = (rss->channels > 0) ? B_TRUE : B_FALSE;
 	struct sfc_port *port = &sa->port;
 	int rc;
 
@@ -637,7 +622,7 @@ sfc_rx_default_rxq_set_filter(struct sfc_adapter *sa, struct sfc_rxq *rxq)
 	 * repeat this step without promiscuous and all-multicast flags set
 	 */
 retry:
-	rc = efx_mac_filter_default_rxq_set(sa->nic, rxq->common, rss);
+	rc = efx_mac_filter_default_rxq_set(sa->nic, rxq->common, need_rss);
 	if (rc == 0)
 		return 0;
 	else if (rc != EOPNOTSUPP)
@@ -687,6 +672,7 @@ sfc_rx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 
 	rxq_info = &sa->rxq_info[sw_index];
 	rxq = rxq_info->rxq;
+	SFC_ASSERT(rxq != NULL);
 	SFC_ASSERT(rxq->state == SFC_RXQ_INITIALIZED);
 
 	evq = rxq->evq;
@@ -695,10 +681,37 @@ sfc_rx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 	if (rc != 0)
 		goto fail_ev_qstart;
 
-	rc = efx_rx_qcreate(sa->nic, rxq->hw_index, 0, rxq_info->type,
-			    &rxq->mem, rxq_info->entries,
-			    0 /* not used on EF10 */, evq->common,
-			    &rxq->common);
+	switch (rxq_info->type) {
+	case EFX_RXQ_TYPE_DEFAULT:
+		rc = efx_rx_qcreate(sa->nic, rxq->hw_index, 0, rxq_info->type,
+			&rxq->mem, rxq_info->entries, 0 /* not used on EF10 */,
+			rxq_info->type_flags, evq->common, &rxq->common);
+		break;
+	case EFX_RXQ_TYPE_ES_SUPER_BUFFER: {
+		struct rte_mempool *mp = rxq->refill_mb_pool;
+		struct rte_mempool_info mp_info;
+
+		rc = rte_mempool_ops_get_info(mp, &mp_info);
+		if (rc != 0) {
+			/* Positive errno is used in the driver */
+			rc = -rc;
+			goto fail_mp_get_info;
+		}
+		if (mp_info.contig_block_size <= 0) {
+			rc = EINVAL;
+			goto fail_bad_contig_block_size;
+		}
+		rc = efx_rx_qcreate_es_super_buffer(sa->nic, rxq->hw_index, 0,
+			mp_info.contig_block_size, rxq->buf_size,
+			mp->header_size + mp->elt_size + mp->trailer_size,
+			sa->rxd_wait_timeout_ns,
+			&rxq->mem, rxq_info->entries, rxq_info->type_flags,
+			evq->common, &rxq->common);
+		break;
+	}
+	default:
+		rc = ENOTSUP;
+	}
 	if (rc != 0)
 		goto fail_rx_qcreate;
 
@@ -729,6 +742,8 @@ fail_dp_qstart:
 	sfc_rx_qflush(sa, sw_index);
 
 fail_rx_qcreate:
+fail_bad_contig_block_size:
+fail_mp_get_info:
 	sfc_ev_qstop(evq);
 
 fail_ev_qstart:
@@ -748,7 +763,7 @@ sfc_rx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 	rxq_info = &sa->rxq_info[sw_index];
 	rxq = rxq_info->rxq;
 
-	if (rxq->state == SFC_RXQ_INITIALIZED)
+	if (rxq == NULL || rxq->state == SFC_RXQ_INITIALIZED)
 		return;
 	SFC_ASSERT(rxq->state & SFC_RXQ_STARTED);
 
@@ -770,11 +785,43 @@ sfc_rx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 	sfc_ev_qstop(rxq->evq);
 }
 
-static int
-sfc_rx_qcheck_conf(struct sfc_adapter *sa, uint16_t nb_rx_desc,
-		   const struct rte_eth_rxconf *rx_conf)
+uint64_t
+sfc_rx_get_dev_offload_caps(struct sfc_adapter *sa)
 {
-	const uint16_t rx_free_thresh_max = EFX_RXQ_LIMIT(nb_rx_desc);
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+	uint64_t caps = 0;
+
+	caps |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+
+	if (sa->dp_rx->features & SFC_DP_RX_FEAT_CHECKSUM) {
+		caps |= DEV_RX_OFFLOAD_IPV4_CKSUM;
+		caps |= DEV_RX_OFFLOAD_UDP_CKSUM;
+		caps |= DEV_RX_OFFLOAD_TCP_CKSUM;
+	}
+
+	if (encp->enc_tunnel_encapsulations_supported &&
+	    (sa->dp_rx->features & SFC_DP_RX_FEAT_TUNNELS))
+		caps |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM;
+
+	return caps;
+}
+
+uint64_t
+sfc_rx_get_queue_offload_caps(struct sfc_adapter *sa)
+{
+	uint64_t caps = 0;
+
+	if (sa->dp_rx->features & SFC_DP_RX_FEAT_SCATTER)
+		caps |= DEV_RX_OFFLOAD_SCATTER;
+
+	return caps;
+}
+
+static int
+sfc_rx_qcheck_conf(struct sfc_adapter *sa, unsigned int rxq_max_fill_level,
+		   const struct rte_eth_rxconf *rx_conf,
+		   __rte_unused uint64_t offloads)
+{
 	int rc = 0;
 
 	if (rx_conf->rx_thresh.pthresh != 0 ||
@@ -784,10 +831,10 @@ sfc_rx_qcheck_conf(struct sfc_adapter *sa, uint16_t nb_rx_desc,
 			"RxQ prefetch/host/writeback thresholds are not supported");
 	}
 
-	if (rx_conf->rx_free_thresh > rx_free_thresh_max) {
+	if (rx_conf->rx_free_thresh > rxq_max_fill_level) {
 		sfc_err(sa,
 			"RxQ free threshold too large: %u vs maximum %u",
-			rx_conf->rx_free_thresh, rx_free_thresh_max);
+			rx_conf->rx_free_thresh, rxq_max_fill_level);
 		rc = EINVAL;
 	}
 
@@ -906,14 +953,29 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	     struct rte_mempool *mb_pool)
 {
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+	struct sfc_rss *rss = &sa->rss;
 	int rc;
+	unsigned int rxq_entries;
+	unsigned int evq_entries;
+	unsigned int rxq_max_fill_level;
+	uint64_t offloads;
 	uint16_t buf_size;
 	struct sfc_rxq_info *rxq_info;
 	struct sfc_evq *evq;
 	struct sfc_rxq *rxq;
 	struct sfc_dp_rx_qcreate_info info;
 
-	rc = sfc_rx_qcheck_conf(sa, nb_rx_desc, rx_conf);
+	rc = sa->dp_rx->qsize_up_rings(nb_rx_desc, mb_pool, &rxq_entries,
+				       &evq_entries, &rxq_max_fill_level);
+	if (rc != 0)
+		goto fail_size_up_rings;
+	SFC_ASSERT(rxq_entries >= EFX_RXQ_MINNDESCS);
+	SFC_ASSERT(rxq_entries <= EFX_RXQ_MAXNDESCS);
+	SFC_ASSERT(rxq_max_fill_level <= nb_rx_desc);
+
+	offloads = rx_conf->offloads |
+		sa->eth_dev->data->dev_conf.rxmode.offloads;
+	rc = sfc_rx_qcheck_conf(sa, rxq_max_fill_level, rx_conf, offloads);
 	if (rc != 0)
 		goto fail_bad_conf;
 
@@ -926,7 +988,7 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	}
 
 	if ((buf_size < sa->port.pdu + encp->enc_rx_prefix_size) &&
-	    !sa->eth_dev->data->dev_conf.rxmode.enable_scatter) {
+	    (~offloads & DEV_RX_OFFLOAD_SCATTER)) {
 		sfc_err(sa, "Rx scatter is disabled and RxQ %u mbuf pool "
 			"object size is too small", sw_index);
 		sfc_err(sa, "RxQ %u calculated Rx buffer size is %u vs "
@@ -940,14 +1002,24 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	SFC_ASSERT(sw_index < sa->rxq_count);
 	rxq_info = &sa->rxq_info[sw_index];
 
-	SFC_ASSERT(nb_rx_desc <= rxq_info->max_entries);
-	rxq_info->entries = nb_rx_desc;
-	rxq_info->type =
-		sa->eth_dev->data->dev_conf.rxmode.enable_scatter ?
-		EFX_RXQ_TYPE_SCATTER : EFX_RXQ_TYPE_DEFAULT;
+	SFC_ASSERT(rxq_entries <= rxq_info->max_entries);
+	rxq_info->entries = rxq_entries;
+
+	if (sa->dp_rx->dp.hw_fw_caps & SFC_DP_HW_FW_CAP_RX_ES_SUPER_BUFFER)
+		rxq_info->type = EFX_RXQ_TYPE_ES_SUPER_BUFFER;
+	else
+		rxq_info->type = EFX_RXQ_TYPE_DEFAULT;
+
+	rxq_info->type_flags =
+		(offloads & DEV_RX_OFFLOAD_SCATTER) ?
+		EFX_RXQ_FLAG_SCATTER : EFX_RXQ_FLAG_NONE;
+
+	if ((encp->enc_tunnel_encapsulations_supported != 0) &&
+	    (sa->dp_rx->features & SFC_DP_RX_FEAT_TUNNELS))
+		rxq_info->type_flags |= EFX_RXQ_FLAG_INNER_CLASSES;
 
 	rc = sfc_ev_qinit(sa, SFC_EVQ_TYPE_RX, sw_index,
-			  rxq_info->entries, socket_id, &evq);
+			  evq_entries, socket_id, &evq);
 	if (rc != 0)
 		goto fail_ev_qinit;
 
@@ -964,6 +1036,7 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	rxq->refill_threshold =
 		RTE_MAX(rx_conf->rx_free_thresh, SFC_RX_REFILL_BULK);
 	rxq->refill_mb_pool = mb_pool;
+	rxq->buf_size = buf_size;
 
 	rc = sfc_dma_alloc(sa, "rxq", sw_index, EFX_RXQ_SIZE(rxq_info->entries),
 			   socket_id, &rxq->mem);
@@ -972,22 +1045,22 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 
 	memset(&info, 0, sizeof(info));
 	info.refill_mb_pool = rxq->refill_mb_pool;
+	info.max_fill_level = rxq_max_fill_level;
 	info.refill_threshold = rxq->refill_threshold;
 	info.buf_size = buf_size;
 	info.batch_max = encp->enc_rx_batch_max;
 	info.prefix_size = encp->enc_rx_prefix_size;
 
-#if EFSYS_OPT_RX_SCALE
-	if (sa->hash_support == EFX_RX_HASH_AVAILABLE && sa->rss_channels > 0)
+	if (rss->hash_support == EFX_RX_HASH_AVAILABLE && rss->channels > 0)
 		info.flags |= SFC_RXQ_FLAG_RSS_HASH;
-#endif
 
 	info.rxq_entries = rxq_info->entries;
 	info.rxq_hw_ring = rxq->mem.esm_base;
-	info.evq_entries = rxq_info->entries;
+	info.evq_entries = evq_entries;
 	info.evq_hw_ring = evq->mem.esm_base;
 	info.hw_index = rxq->hw_index;
 	info.mem_bar = sa->mem_bar.esb_base;
+	info.vi_window_shift = encp->enc_vi_window_shift;
 
 	rc = sa->dp_rx->qcreate(sa->eth_dev->data->port_id, sw_index,
 				&RTE_ETH_DEV_TO_PCI(sa->eth_dev)->addr,
@@ -1017,6 +1090,7 @@ fail_ev_qinit:
 	rxq_info->entries = 0;
 
 fail_bad_conf:
+fail_size_up_rings:
 	sfc_log_init(sa, "failed %d", rc);
 	return rc;
 }
@@ -1028,6 +1102,7 @@ sfc_rx_qfini(struct sfc_adapter *sa, unsigned int sw_index)
 	struct sfc_rxq *rxq;
 
 	SFC_ASSERT(sw_index < sa->rxq_count);
+	sa->eth_dev->data->rx_queues[sw_index] = NULL;
 
 	rxq_info = &sa->rxq_info[sw_index];
 
@@ -1048,84 +1123,199 @@ sfc_rx_qfini(struct sfc_adapter *sa, unsigned int sw_index)
 	rte_free(rxq);
 }
 
-#if EFSYS_OPT_RX_SCALE
-efx_rx_hash_type_t
-sfc_rte_to_efx_hash_type(uint64_t rss_hf)
+/*
+ * Mapping between RTE RSS hash functions and their EFX counterparts.
+ */
+static const struct sfc_rss_hf_rte_to_efx sfc_rss_hf_map[] = {
+	{ ETH_RSS_NONFRAG_IPV4_TCP,
+	  EFX_RX_HASH(IPV4_TCP, 4TUPLE) },
+	{ ETH_RSS_NONFRAG_IPV4_UDP,
+	  EFX_RX_HASH(IPV4_UDP, 4TUPLE) },
+	{ ETH_RSS_NONFRAG_IPV6_TCP | ETH_RSS_IPV6_TCP_EX,
+	  EFX_RX_HASH(IPV6_TCP, 4TUPLE) },
+	{ ETH_RSS_NONFRAG_IPV6_UDP | ETH_RSS_IPV6_UDP_EX,
+	  EFX_RX_HASH(IPV6_UDP, 4TUPLE) },
+	{ ETH_RSS_IPV4 | ETH_RSS_FRAG_IPV4 | ETH_RSS_NONFRAG_IPV4_OTHER,
+	  EFX_RX_HASH(IPV4_TCP, 2TUPLE) | EFX_RX_HASH(IPV4_UDP, 2TUPLE) |
+	  EFX_RX_HASH(IPV4, 2TUPLE) },
+	{ ETH_RSS_IPV6 | ETH_RSS_FRAG_IPV6 | ETH_RSS_NONFRAG_IPV6_OTHER |
+	  ETH_RSS_IPV6_EX,
+	  EFX_RX_HASH(IPV6_TCP, 2TUPLE) | EFX_RX_HASH(IPV6_UDP, 2TUPLE) |
+	  EFX_RX_HASH(IPV6, 2TUPLE) }
+};
+
+static efx_rx_hash_type_t
+sfc_rx_hash_types_mask_supp(efx_rx_hash_type_t hash_type,
+			    unsigned int *hash_type_flags_supported,
+			    unsigned int nb_hash_type_flags_supported)
 {
-	efx_rx_hash_type_t efx_hash_types = 0;
+	efx_rx_hash_type_t hash_type_masked = 0;
+	unsigned int i, j;
 
-	if ((rss_hf & (ETH_RSS_IPV4 | ETH_RSS_FRAG_IPV4 |
-		       ETH_RSS_NONFRAG_IPV4_OTHER)) != 0)
-		efx_hash_types |= EFX_RX_HASH_IPV4;
+	for (i = 0; i < nb_hash_type_flags_supported; ++i) {
+		unsigned int class_tuple_lbn[] = {
+			EFX_RX_CLASS_IPV4_TCP_LBN,
+			EFX_RX_CLASS_IPV4_UDP_LBN,
+			EFX_RX_CLASS_IPV4_LBN,
+			EFX_RX_CLASS_IPV6_TCP_LBN,
+			EFX_RX_CLASS_IPV6_UDP_LBN,
+			EFX_RX_CLASS_IPV6_LBN
+		};
 
-	if ((rss_hf & ETH_RSS_NONFRAG_IPV4_TCP) != 0)
-		efx_hash_types |= EFX_RX_HASH_TCPIPV4;
+		for (j = 0; j < RTE_DIM(class_tuple_lbn); ++j) {
+			unsigned int tuple_mask = EFX_RX_CLASS_HASH_4TUPLE;
+			unsigned int flag;
 
-	if ((rss_hf & (ETH_RSS_IPV6 | ETH_RSS_FRAG_IPV6 |
-			ETH_RSS_NONFRAG_IPV6_OTHER | ETH_RSS_IPV6_EX)) != 0)
-		efx_hash_types |= EFX_RX_HASH_IPV6;
+			tuple_mask <<= class_tuple_lbn[j];
+			flag = hash_type & tuple_mask;
 
-	if ((rss_hf & (ETH_RSS_NONFRAG_IPV6_TCP | ETH_RSS_IPV6_TCP_EX)) != 0)
-		efx_hash_types |= EFX_RX_HASH_TCPIPV6;
+			if (flag == hash_type_flags_supported[i])
+				hash_type_masked |= flag;
+		}
+	}
 
-	return efx_hash_types;
+	return hash_type_masked;
+}
+
+int
+sfc_rx_hash_init(struct sfc_adapter *sa)
+{
+	struct sfc_rss *rss = &sa->rss;
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+	uint32_t alg_mask = encp->enc_rx_scale_hash_alg_mask;
+	efx_rx_hash_alg_t alg;
+	unsigned int flags_supp[EFX_RX_HASH_NFLAGS];
+	unsigned int nb_flags_supp;
+	struct sfc_rss_hf_rte_to_efx *hf_map;
+	struct sfc_rss_hf_rte_to_efx *entry;
+	efx_rx_hash_type_t efx_hash_types;
+	unsigned int i;
+	int rc;
+
+	if (alg_mask & (1U << EFX_RX_HASHALG_TOEPLITZ))
+		alg = EFX_RX_HASHALG_TOEPLITZ;
+	else if (alg_mask & (1U << EFX_RX_HASHALG_PACKED_STREAM))
+		alg = EFX_RX_HASHALG_PACKED_STREAM;
+	else
+		return EINVAL;
+
+	rc = efx_rx_scale_hash_flags_get(sa->nic, alg, flags_supp,
+					 RTE_DIM(flags_supp), &nb_flags_supp);
+	if (rc != 0)
+		return rc;
+
+	hf_map = rte_calloc_socket("sfc-rss-hf-map",
+				   RTE_DIM(sfc_rss_hf_map),
+				   sizeof(*hf_map), 0, sa->socket_id);
+	if (hf_map == NULL)
+		return ENOMEM;
+
+	entry = hf_map;
+	efx_hash_types = 0;
+	for (i = 0; i < RTE_DIM(sfc_rss_hf_map); ++i) {
+		efx_rx_hash_type_t ht;
+
+		ht = sfc_rx_hash_types_mask_supp(sfc_rss_hf_map[i].efx,
+						 flags_supp, nb_flags_supp);
+		if (ht != 0) {
+			entry->rte = sfc_rss_hf_map[i].rte;
+			entry->efx = ht;
+			efx_hash_types |= ht;
+			++entry;
+		}
+	}
+
+	rss->hash_alg = alg;
+	rss->hf_map_nb_entries = (unsigned int)(entry - hf_map);
+	rss->hf_map = hf_map;
+	rss->hash_types = efx_hash_types;
+
+	return 0;
+}
+
+void
+sfc_rx_hash_fini(struct sfc_adapter *sa)
+{
+	struct sfc_rss *rss = &sa->rss;
+
+	rte_free(rss->hf_map);
+}
+
+int
+sfc_rx_hf_rte_to_efx(struct sfc_adapter *sa, uint64_t rte,
+		     efx_rx_hash_type_t *efx)
+{
+	struct sfc_rss *rss = &sa->rss;
+	efx_rx_hash_type_t hash_types = 0;
+	unsigned int i;
+
+	for (i = 0; i < rss->hf_map_nb_entries; ++i) {
+		uint64_t rte_mask = rss->hf_map[i].rte;
+
+		if ((rte & rte_mask) != 0) {
+			rte &= ~rte_mask;
+			hash_types |= rss->hf_map[i].efx;
+		}
+	}
+
+	if (rte != 0) {
+		sfc_err(sa, "unsupported hash functions requested");
+		return EINVAL;
+	}
+
+	*efx = hash_types;
+
+	return 0;
 }
 
 uint64_t
-sfc_efx_to_rte_hash_type(efx_rx_hash_type_t efx_hash_types)
+sfc_rx_hf_efx_to_rte(struct sfc_adapter *sa, efx_rx_hash_type_t efx)
 {
-	uint64_t rss_hf = 0;
+	struct sfc_rss *rss = &sa->rss;
+	uint64_t rte = 0;
+	unsigned int i;
 
-	if ((efx_hash_types & EFX_RX_HASH_IPV4) != 0)
-		rss_hf |= (ETH_RSS_IPV4 | ETH_RSS_FRAG_IPV4 |
-			   ETH_RSS_NONFRAG_IPV4_OTHER);
+	for (i = 0; i < rss->hf_map_nb_entries; ++i) {
+		efx_rx_hash_type_t hash_type = rss->hf_map[i].efx;
 
-	if ((efx_hash_types & EFX_RX_HASH_TCPIPV4) != 0)
-		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
+		if ((efx & hash_type) == hash_type)
+			rte |= rss->hf_map[i].rte;
+	}
 
-	if ((efx_hash_types & EFX_RX_HASH_IPV6) != 0)
-		rss_hf |= (ETH_RSS_IPV6 | ETH_RSS_FRAG_IPV6 |
-			   ETH_RSS_NONFRAG_IPV6_OTHER | ETH_RSS_IPV6_EX);
-
-	if ((efx_hash_types & EFX_RX_HASH_TCPIPV6) != 0)
-		rss_hf |= (ETH_RSS_NONFRAG_IPV6_TCP | ETH_RSS_IPV6_TCP_EX);
-
-	return rss_hf;
+	return rte;
 }
-#endif
 
-#if EFSYS_OPT_RX_SCALE
 static int
 sfc_rx_process_adv_conf_rss(struct sfc_adapter *sa,
 			    struct rte_eth_rss_conf *conf)
 {
-	efx_rx_hash_type_t efx_hash_types = sa->rss_hash_types;
+	struct sfc_rss *rss = &sa->rss;
+	efx_rx_hash_type_t efx_hash_types = rss->hash_types;
+	uint64_t rss_hf = sfc_rx_hf_efx_to_rte(sa, efx_hash_types);
+	int rc;
 
-	if (sa->rss_support != EFX_RX_SCALE_EXCLUSIVE) {
-		if ((conf->rss_hf != 0 && conf->rss_hf != SFC_RSS_OFFLOADS) ||
+	if (rss->context_type != EFX_RX_SCALE_EXCLUSIVE) {
+		if ((conf->rss_hf != 0 && conf->rss_hf != rss_hf) ||
 		    conf->rss_key != NULL)
 			return EINVAL;
 	}
 
 	if (conf->rss_hf != 0) {
-		if ((conf->rss_hf & ~SFC_RSS_OFFLOADS) != 0) {
-			sfc_err(sa, "unsupported hash functions requested");
-			return EINVAL;
-		}
-
-		efx_hash_types = sfc_rte_to_efx_hash_type(conf->rss_hf);
+		rc = sfc_rx_hf_rte_to_efx(sa, conf->rss_hf, &efx_hash_types);
+		if (rc != 0)
+			return rc;
 	}
 
 	if (conf->rss_key != NULL) {
-		if (conf->rss_key_len != sizeof(sa->rss_key)) {
+		if (conf->rss_key_len != sizeof(rss->key)) {
 			sfc_err(sa, "RSS key size is wrong (should be %lu)",
-				sizeof(sa->rss_key));
+				sizeof(rss->key));
 			return EINVAL;
 		}
-		rte_memcpy(sa->rss_key, conf->rss_key, sizeof(sa->rss_key));
+		rte_memcpy(rss->key, conf->rss_key, sizeof(rss->key));
 	}
 
-	sa->rss_hash_types = efx_hash_types;
+	rss->hash_types = efx_hash_types;
 
 	return 0;
 }
@@ -1133,35 +1323,28 @@ sfc_rx_process_adv_conf_rss(struct sfc_adapter *sa,
 static int
 sfc_rx_rss_config(struct sfc_adapter *sa)
 {
+	struct sfc_rss *rss = &sa->rss;
 	int rc = 0;
 
-	if (sa->rss_channels > 0) {
+	if (rss->channels > 0) {
 		rc = efx_rx_scale_mode_set(sa->nic, EFX_RSS_CONTEXT_DEFAULT,
-					   EFX_RX_HASHALG_TOEPLITZ,
-					   sa->rss_hash_types, B_TRUE);
+					   rss->hash_alg, rss->hash_types,
+					   B_TRUE);
 		if (rc != 0)
 			goto finish;
 
 		rc = efx_rx_scale_key_set(sa->nic, EFX_RSS_CONTEXT_DEFAULT,
-					  sa->rss_key,
-					  sizeof(sa->rss_key));
+					  rss->key, sizeof(rss->key));
 		if (rc != 0)
 			goto finish;
 
 		rc = efx_rx_scale_tbl_set(sa->nic, EFX_RSS_CONTEXT_DEFAULT,
-					  sa->rss_tbl, RTE_DIM(sa->rss_tbl));
+					  rss->tbl, RTE_DIM(rss->tbl));
 	}
 
 finish:
 	return rc;
 }
-#else
-static int
-sfc_rx_rss_config(__rte_unused struct sfc_adapter *sa)
-{
-	return 0;
-}
-#endif
 
 int
 sfc_rx_start(struct sfc_adapter *sa)
@@ -1180,7 +1363,8 @@ sfc_rx_start(struct sfc_adapter *sa)
 		goto fail_rss_config;
 
 	for (sw_index = 0; sw_index < sa->rxq_count; ++sw_index) {
-		if ((!sa->rxq_info[sw_index].deferred_start ||
+		if (sa->rxq_info[sw_index].rxq != NULL &&
+		    (!sa->rxq_info[sw_index].deferred_start ||
 		     sa->rxq_info[sw_index].deferred_started)) {
 			rc = sfc_rx_qstart(sa, sw_index);
 			if (rc != 0)
@@ -1235,63 +1419,42 @@ sfc_rx_qinit_info(struct sfc_adapter *sa, unsigned int sw_index)
 static int
 sfc_rx_check_mode(struct sfc_adapter *sa, struct rte_eth_rxmode *rxmode)
 {
+	uint64_t offloads_supported = sfc_rx_get_dev_offload_caps(sa) |
+				      sfc_rx_get_queue_offload_caps(sa);
+	struct sfc_rss *rss = &sa->rss;
 	int rc = 0;
 
 	switch (rxmode->mq_mode) {
 	case ETH_MQ_RX_NONE:
 		/* No special checks are required */
 		break;
-#if EFSYS_OPT_RX_SCALE
 	case ETH_MQ_RX_RSS:
-		if (sa->rss_support == EFX_RX_SCALE_UNAVAILABLE) {
+		if (rss->context_type == EFX_RX_SCALE_UNAVAILABLE) {
 			sfc_err(sa, "RSS is not available");
 			rc = EINVAL;
 		}
 		break;
-#endif
 	default:
 		sfc_err(sa, "Rx multi-queue mode %u not supported",
 			rxmode->mq_mode);
 		rc = EINVAL;
 	}
 
-	if (rxmode->header_split) {
-		sfc_err(sa, "Header split on Rx not supported");
-		rc = EINVAL;
+	/*
+	 * Requested offloads are validated against supported by ethdev,
+	 * so unsupported offloads cannot be added as the result of
+	 * below check.
+	 */
+	if ((rxmode->offloads & DEV_RX_OFFLOAD_CHECKSUM) !=
+	    (offloads_supported & DEV_RX_OFFLOAD_CHECKSUM)) {
+		sfc_warn(sa, "Rx checksum offloads cannot be disabled - always on (IPv4/TCP/UDP)");
+		rxmode->offloads |= DEV_RX_OFFLOAD_CHECKSUM;
 	}
 
-	if (rxmode->hw_vlan_filter) {
-		sfc_err(sa, "HW VLAN filtering not supported");
-		rc = EINVAL;
-	}
-
-	if (rxmode->hw_vlan_strip) {
-		sfc_err(sa, "HW VLAN stripping not supported");
-		rc = EINVAL;
-	}
-
-	if (rxmode->hw_vlan_extend) {
-		sfc_err(sa,
-			"Q-in-Q HW VLAN stripping not supported");
-		rc = EINVAL;
-	}
-
-	if (!rxmode->hw_strip_crc) {
-		sfc_warn(sa,
-			 "FCS stripping control not supported - always stripped");
-		rxmode->hw_strip_crc = 1;
-	}
-
-	if (rxmode->enable_scatter &&
-	    (~sa->dp_rx->features & SFC_DP_RX_FEAT_SCATTER)) {
-		sfc_err(sa, "Rx scatter not supported by %s datapath",
-			sa->dp_rx->dp.name);
-		rc = EINVAL;
-	}
-
-	if (rxmode->enable_lro) {
-		sfc_err(sa, "LRO not supported");
-		rc = EINVAL;
+	if ((offloads_supported & DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM) &&
+	    (~rxmode->offloads & DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM)) {
+		sfc_warn(sa, "Rx outer IPv4 checksum offload cannot be disabled - always on");
+		rxmode->offloads |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM;
 	}
 
 	return rc;
@@ -1328,6 +1491,7 @@ sfc_rx_fini_queues(struct sfc_adapter *sa, unsigned int nb_rx_queues)
 int
 sfc_rx_configure(struct sfc_adapter *sa)
 {
+	struct sfc_rss *rss = &sa->rss;
 	struct rte_eth_conf *dev_conf = &sa->eth_dev->data->dev_conf;
 	const unsigned int nb_rx_queues = sa->eth_dev->data->nb_rx_queues;
 	int rc;
@@ -1340,7 +1504,7 @@ sfc_rx_configure(struct sfc_adapter *sa)
 		goto fail_check_mode;
 
 	if (nb_rx_queues == sa->rxq_count)
-		goto done;
+		goto configure_rss;
 
 	if (sa->rxq_info == NULL) {
 		rc = ENOMEM;
@@ -1377,25 +1541,23 @@ sfc_rx_configure(struct sfc_adapter *sa)
 		sa->rxq_count++;
 	}
 
-#if EFSYS_OPT_RX_SCALE
-	sa->rss_channels = (dev_conf->rxmode.mq_mode == ETH_MQ_RX_RSS) ?
-			   MIN(sa->rxq_count, EFX_MAXRSS) : 0;
+configure_rss:
+	rss->channels = (dev_conf->rxmode.mq_mode == ETH_MQ_RX_RSS) ?
+			 MIN(sa->rxq_count, EFX_MAXRSS) : 0;
 
-	if (sa->rss_channels > 0) {
+	if (rss->channels > 0) {
 		struct rte_eth_rss_conf *adv_conf_rss;
 		unsigned int sw_index;
 
 		for (sw_index = 0; sw_index < EFX_RSS_TBL_SIZE; ++sw_index)
-			sa->rss_tbl[sw_index] = sw_index % sa->rss_channels;
+			rss->tbl[sw_index] = sw_index % rss->channels;
 
 		adv_conf_rss = &dev_conf->rx_adv_conf.rss_conf;
 		rc = sfc_rx_process_adv_conf_rss(sa, adv_conf_rss);
 		if (rc != 0)
 			goto fail_rx_process_adv_conf_rss;
 	}
-#endif
 
-done:
 	return 0;
 
 fail_rx_process_adv_conf_rss:
@@ -1417,9 +1579,11 @@ fail_check_mode:
 void
 sfc_rx_close(struct sfc_adapter *sa)
 {
+	struct sfc_rss *rss = &sa->rss;
+
 	sfc_rx_fini_queues(sa, 0);
 
-	sa->rss_channels = 0;
+	rss->channels = 0;
 
 	rte_free(sa->rxq_info);
 	sa->rxq_info = NULL;

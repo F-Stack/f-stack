@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2015 Intel Corporation.
 
 .. _Poll_Mode_Driver:
 
@@ -156,8 +129,8 @@ concurrently on the same tx queue without SW lock. This PMD feature found in som
 
 See `Hardware Offload`_ for ``DEV_TX_OFFLOAD_MT_LOCKFREE`` capability probing details.
 
-Device Identification and Configuration
----------------------------------------
+Device Identification, Ownership and Configuration
+--------------------------------------------------
 
 Device Identification
 ~~~~~~~~~~~~~~~~~~~~~
@@ -170,6 +143,16 @@ Based on their PCI identifier, NIC ports are assigned two other identifiers:
 
 *   A port name used to designate the port in console messages, for administration or debugging purposes.
     For ease of use, the port name includes the port index.
+
+Port Ownership
+~~~~~~~~~~~~~~
+The Ethernet devices ports can be owned by a single DPDK entity (application, library, PMD, process, etc).
+The ownership mechanism is controlled by ethdev APIs and allows to set/remove/get a port owner by DPDK entities.
+Allowing this should prevent any multiple management of Ethernet port by different entities.
+
+.. note::
+
+    It is the DPDK entity responsibility to set the port owner before using it and to manage the port usage synchronization between different threads or processes.
 
 Device Configuration
 ~~~~~~~~~~~~~~~~~~~~
@@ -313,22 +296,37 @@ described in the mbuf API documentation and in the in :ref:`Mbuf Library
 Per-Port and Per-Queue Offloads
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-In the DPDK offload API, offloads are divided into per-port and per-queue offloads.
+In the DPDK offload API, offloads are divided into per-port and per-queue offloads as follows:
+
+* A per-queue offloading can be enabled on a queue and disabled on another queue at the same time.
+* A pure per-port offload is the one supported by device but not per-queue type.
+* A pure per-port offloading can't be enabled on a queue and disabled on another queue at the same time.
+* A pure per-port offloading must be enabled or disabled on all queues at the same time.
+* Any offloading is per-queue or pure per-port type, but can't be both types at same devices.
+* Port capabilities = per-queue capabilities + pure per-port capabilities.
+* Any supported offloading can be enabled on all queues.
+
 The different offloads capabilities can be queried using ``rte_eth_dev_info_get()``.
+The ``dev_info->[rt]x_queue_offload_capa`` returned from ``rte_eth_dev_info_get()`` includes all per-queue offloading capabilities.
+The ``dev_info->[rt]x_offload_capa`` returned from ``rte_eth_dev_info_get()`` includes all pure per-port and per-queue offloading capabilities.
 Supported offloads can be either per-port or per-queue.
 
 Offloads are enabled using the existing ``DEV_TX_OFFLOAD_*`` or ``DEV_RX_OFFLOAD_*`` flags.
-Per-port offload configuration is set using ``rte_eth_dev_configure``.
-Per-queue offload configuration is set using ``rte_eth_rx_queue_setup`` and ``rte_eth_tx_queue_setup``.
-To enable per-port offload, the offload should be set on both device configuration and queue setup.
-In case of a mixed configuration the queue setup shall return with an error.
-To enable per-queue offload, the offload can be set only on the queue setup.
-Offloads which are not enabled are disabled by default.
+Any requested offloading by an application must be within the device capabilities.
+Any offloading is disabled by default if it is not set in the parameter
+``dev_conf->[rt]xmode.offloads`` to ``rte_eth_dev_configure()`` and
+``[rt]x_conf->offloads`` to ``rte_eth_[rt]x_queue_setup()``.
 
-For an application to use the Tx offloads API it should set the ``ETH_TXQ_FLAGS_IGNORE`` flag in the ``txq_flags`` field located in ``rte_eth_txconf`` struct.
-In such cases it is not required to set other flags in ``txq_flags``.
-For an application to use the Rx offloads API it should set the ``ignore_offload_bitfield`` bit in the ``rte_eth_rxmode`` struct.
-In such cases it is not required to set other bitfield offloads in the ``rxmode`` struct.
+If any offloading is enabled in ``rte_eth_dev_configure()`` by an application,
+it is enabled on all queues no matter whether it is per-queue or
+per-port type and no matter whether it is set or cleared in
+``[rt]x_conf->offloads`` to ``rte_eth_[rt]x_queue_setup()``.
+
+If a per-queue offloading hasn't been enabled in ``rte_eth_dev_configure()``,
+it can be enabled or disabled in ``rte_eth_[rt]x_queue_setup()`` for individual queue.
+A newly added offloads in ``[rt]x_conf->offloads`` to ``rte_eth_[rt]x_queue_setup()`` input by application
+is the one which hasn't been enabled in ``rte_eth_dev_configure()`` and is requested to be enabled
+in ``rte_eth_[rt]x_queue_setup()``. It must be per-queue type, otherwise trigger an error log.
 
 Poll Mode Driver API
 --------------------
@@ -361,6 +359,27 @@ Ethernet Device API
 ~~~~~~~~~~~~~~~~~~~
 
 The Ethernet device API exported by the Ethernet PMDs is described in the *DPDK API Reference*.
+
+.. _ethernet_device_standard_device_arguments:
+
+Ethernet Device Standard Device Arguments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Standard Ethernet device arguments allow for a set of commonly used arguments/
+parameters which are applicable to all Ethernet devices to be available to for
+specification of specific device and for passing common configuration
+parameters to those ports.
+
+* ``representor`` for a device which supports the creation of representor ports
+  this argument allows user to specify which switch ports to enable port
+  representors for.::
+
+   -w BDBF,representor=0
+   -w BDBF,representor=[0,4,6,9]
+   -w BDBF,representor=[0-31]
+
+Note: PMDs are not required to support the standard device arguments and users
+should consult the relevant PMD documentation to see support devargs.
 
 Extended Statistics API
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -581,8 +600,8 @@ thread safety all these operations should be called from the same thread.
 For example when PF is reset, the PF sends a message to notify VFs of
 this event and also trigger an interrupt to VFs. Then in the interrupt
 service routine the VFs detects this notification message and calls
-_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_RESET, NULL,
-NULL). This means that a PF reset triggers an RTE_ETH_EVENT_INTR_RESET
+_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_RESET, NULL).
+This means that a PF reset triggers an RTE_ETH_EVENT_INTR_RESET
 event within VFs. The function _rte_eth_dev_callback_process() will
 call the registered callback function. The callback function can trigger
 the application to handle all operations the VF reset requires including

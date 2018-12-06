@@ -1,33 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 What does "EAL: map_all_hugepages(): open failed: Permission denied Cannot init memory" mean?
 ---------------------------------------------------------------------------------------------
@@ -90,22 +62,16 @@ the wrong socket, the application simply will not start.
 On application startup, there is a lot of EAL information printed. Is there any way to reduce this?
 ---------------------------------------------------------------------------------------------------
 
-Yes, the option ``--log-level=`` accepts one of these numbers:
+Yes, the option ``--log-level=`` accepts either symbolic names (or numbers):
 
-.. code-block:: c
-
-    #define RTE_LOG_EMERG 1U    /* System is unusable. */
-    #define RTE_LOG_ALERT 2U    /* Action must be taken immediately. */
-    #define RTE_LOG_CRIT 3U     /* Critical conditions. */
-    #define RTE_LOG_ERR 4U      /* Error conditions. */
-    #define RTE_LOG_WARNING 5U  /* Warning conditions. */
-    #define RTE_LOG_NOTICE 6U   /* Normal but significant condition. */
-    #define RTE_LOG_INFO 7U     /* Informational. */
-    #define RTE_LOG_DEBUG 8U    /* Debug-level messages. */
-
-It is also possible to change the default level at compile time
-with ``CONFIG_RTE_LOG_LEVEL``.
-
+1. emergency
+2. alert
+3. critical
+4. error
+5. warning
+6. notice
+7. info
+8. debug
 
 How can I tune my network application to achieve lower latency?
 ---------------------------------------------------------------

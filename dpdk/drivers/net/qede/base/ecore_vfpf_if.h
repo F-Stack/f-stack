@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_VF_PF_IF_H__
@@ -700,6 +698,6 @@ enum {
 
 /*!!!!! Make sure to update STRINGS structure accordingly !!!!!*/
 };
-extern const char *ecore_channel_tlvs_string[];
+extern const char *qede_ecore_channel_tlvs_string[];
 
 #endif /* __ECORE_VF_PF_IF_H__ */

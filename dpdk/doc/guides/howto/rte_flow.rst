@@ -1,33 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2017 Mellanox Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Mellanox Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2017 Mellanox Technologies, Ltd
 
 Generic flow API - examples
 ===========================
@@ -60,10 +32,10 @@ Code
 .. code-block:: c
 
   /* create the attribute structure */
-  struct rte_flow_attr attr = {.ingress = 1};
+  struct rte_flow_attr attr = { .ingress = 1 };
   struct rte_flow_item pattern[MAX_PATTERN_IN_FLOW];
   struct rte_flow_action actions[MAX_ACTIONS_IN_FLOW];
-  struct rte_flow_item_etc eth;
+  struct rte_flow_item_eth eth;
   struct rte_flow_item_vlan vlan;
   struct rte_flow_item_ipv4 ipv4;
   struct rte_flow *flow;
@@ -83,15 +55,15 @@ Code
   pattern[2].spec = &ipv4;
 
   /* end the pattern array */
-  pattern[3].type = RTE_FLOW_ITEM)TYPE_END;
+  pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
 
   /* create the drop action */
   actions[0].type = RTE_FLOW_ACTION_TYPE_DROP;
   actions[1].type = RTE_FLOW_ACTION_TYPE_END;
 
   /* validate and create the flow rule */
-  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error)
-      flow = rte_flow_create(port_id, &attr, pattern, actions, &error)
+  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error))
+      flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
 
 Output
 ~~~~~~
@@ -148,7 +120,7 @@ clarity)::
 
   tpmd> flow create 0 ingress pattern eth / vlan /
                     ipv4 dst spec 192.168.3.0 dst mask 255.255.255.0 /
-	            end actions drop / end
+                    end actions drop / end
 
 Code
 ~~~~
@@ -158,7 +130,7 @@ Code
   struct rte_flow_attr attr = {.ingress = 1};
   struct rte_flow_item pattern[MAX_PATTERN_IN_FLOW];
   struct rte_flow_action actions[MAX_ACTIONS_IN_FLOW];
-  struct rte_flow_item_etc eth;
+  struct rte_flow_item_eth eth;
   struct rte_flow_item_vlan vlan;
   struct rte_flow_item_ipv4 ipv4;
   struct rte_flow_item_ipv4 ipv4_mask;
@@ -181,15 +153,15 @@ Code
   pattern[2].mask = &ipv4_mask;
 
   /* end the pattern array */
-  pattern[3].type = RTE_FLOW_ITEM)TYPE_END;
+  pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
 
   /* create the drop action */
   actions[0].type = RTE_FLOW_ACTION_TYPE_DROP;
   actions[1].type = RTE_FLOW_ACTION_TYPE_END;
 
   /* validate and create the flow rule */
-  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error)
-      flow = rte_flow_create(port_id, &attr, pattern, actions, &error)
+  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error))
+      flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
 
 Output
 ~~~~~~
@@ -255,10 +227,10 @@ Code
 
 .. code-block:: c
 
-  struct rte_flow_attr attr = {.ingress = 1};
+  struct rte_flow_attr attr = { .ingress = 1 };
   struct rte_flow_item pattern[MAX_PATTERN_IN_FLOW];
   struct rte_flow_action actions[MAX_ACTIONS_IN_FLOW];
-  struct rte_flow_item_etc eth;
+  struct rte_flow_item_eth eth;
   struct rte_flow_item_vlan vlan;
   struct rte_flow_action_queue queue = { .index = 3 };
   struct rte_flow *flow;
@@ -274,16 +246,16 @@ Code
   pattern[1].spec = &vlan;
 
   /* end the pattern array */
-  pattern[2].type = RTE_FLOW_ITEM)TYPE_END;
+  pattern[2].type = RTE_FLOW_ITEM_TYPE_END;
 
-  /* create the drop action */
+  /* create the queue action */
   actions[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
-  actions[0].conf = &queue
+  actions[0].conf = &queue;
   actions[1].type = RTE_FLOW_ACTION_TYPE_END;
 
   /* validate and create the flow rule */
-  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error)
-      flow = rte_flow_create(port_id, &attr, pattern, actions, &error)
+  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error))
+      flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
 
 Output
 ~~~~~~
