@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -34,7 +32,7 @@ static void *ecore_vf_pf_prep(struct ecore_hwfn *p_hwfn, u16 type, u16 length)
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 		   "preparing to send %s tlv over vf pf channel\n",
-		   ecore_channel_tlvs_string[type]);
+		   qede_ecore_channel_tlvs_string[type]);
 
 	/* Reset Request offset */
 	p_iov->offset = (u8 *)(p_iov->vf2pf_request);
@@ -567,13 +565,20 @@ enum _ecore_status_t ecore_vf_hw_prepare(struct ecore_hwfn *p_hwfn)
 							   phys,
 							   p_iov->bulletin.
 							   size);
+	if (!p_iov->bulletin.p_virt) {
+		DP_NOTICE(p_hwfn, false, "Failed to alloc bulletin memory\n");
+		goto free_pf2vf_reply;
+	}
 	DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 		   "VF's bulletin Board [%p virt 0x%lx phys 0x%08x bytes]\n",
 		   p_iov->bulletin.p_virt, (unsigned long)p_iov->bulletin.phys,
 		   p_iov->bulletin.size);
 
 #ifdef CONFIG_ECORE_LOCK_ALLOC
-	OSAL_MUTEX_ALLOC(p_hwfn, &p_iov->mutex);
+	if (OSAL_MUTEX_ALLOC(p_hwfn, &p_iov->mutex)) {
+		DP_NOTICE(p_hwfn, false, "Failed to allocate p_iov->mutex\n");
+		goto free_bulletin_mem;
+	}
 #endif
 	OSAL_MUTEX_INIT(&p_iov->mutex);
 
@@ -611,6 +616,16 @@ enum _ecore_status_t ecore_vf_hw_prepare(struct ecore_hwfn *p_hwfn)
 
 	return rc;
 
+#ifdef CONFIG_ECORE_LOCK_ALLOC
+free_bulletin_mem:
+	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_iov->bulletin.p_virt,
+			       p_iov->bulletin.phys,
+			       p_iov->bulletin.size);
+#endif
+free_pf2vf_reply:
+	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_iov->pf2vf_reply,
+			       p_iov->pf2vf_reply_phys,
+			       sizeof(union pfvf_tlvs));
 free_vf2pf_request:
 	OSAL_DMA_FREE_COHERENT(p_hwfn->p_dev, p_iov->vf2pf_request,
 			       p_iov->vf2pf_request_phys,
@@ -1169,7 +1184,7 @@ ecore_vf_handle_vp_update_is_needed(struct ecore_hwfn *p_hwfn,
 		return !!p_data->sge_tpa_params;
 	default:
 		DP_INFO(p_hwfn, "Unexpected vport-update TLV[%d] %s\n",
-			tlv, ecore_channel_tlvs_string[tlv]);
+			tlv, qede_ecore_channel_tlvs_string[tlv]);
 		return false;
 	}
 }
@@ -1193,7 +1208,7 @@ ecore_vf_handle_vp_update_tlvs_resp(struct ecore_hwfn *p_hwfn,
 		if (p_resp && p_resp->hdr.status)
 			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 				   "TLV[%d] type %s Configuration %s\n",
-				   tlv, ecore_channel_tlvs_string[tlv],
+				   tlv, qede_ecore_channel_tlvs_string[tlv],
 				   (p_resp && p_resp->hdr.status) ? "succeeded"
 								  : "failed");
 	}
@@ -1275,8 +1290,7 @@ ecore_vf_pf_vport_update(struct ecore_hwfn *p_hwfn,
 		resp_size += sizeof(struct pfvf_def_resp_tlv);
 
 		OSAL_MEMCPY(p_mcast_tlv->bins, p_params->bins,
-			    sizeof(unsigned long) *
-			    ETH_MULTICAST_MAC_BINS_IN_REGS);
+			    sizeof(u32) * ETH_MULTICAST_MAC_BINS_IN_REGS);
 	}
 
 	update_rx = p_params->accept_flags.update_rx_mode_config;
@@ -1473,7 +1487,7 @@ void ecore_vf_pf_filter_mcast(struct ecore_hwfn *p_hwfn,
 			u32 bit;
 
 			bit = ecore_mcast_bin_from_mac(p_filter_cmd->mac[i]);
-			OSAL_SET_BIT(bit, sp_params.bins);
+			sp_params.bins[bit / 32] |= 1 << (bit % 32);
 		}
 	}
 
@@ -1626,6 +1640,39 @@ ecore_vf_pf_set_coalesce(struct ecore_hwfn *p_hwfn, u16 rx_coal, u16 tx_coal,
 
 exit:
 	ecore_vf_pf_req_end(p_hwfn, rc);
+	return rc;
+}
+
+enum _ecore_status_t
+ecore_vf_pf_update_mtu(struct ecore_hwfn *p_hwfn, u16 mtu)
+{
+	struct ecore_vf_iov *p_iov = p_hwfn->vf_iov_info;
+	struct vfpf_update_mtu_tlv *p_req;
+	struct pfvf_def_resp_tlv *p_resp;
+	enum _ecore_status_t rc;
+
+	if (!mtu)
+		return ECORE_INVAL;
+
+	/* clear mailbox and prep header tlv */
+	p_req = ecore_vf_pf_prep(p_hwfn, CHANNEL_TLV_UPDATE_MTU,
+				 sizeof(*p_req));
+	p_req->mtu = mtu;
+	DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
+		   "Requesting MTU update to %d\n", mtu);
+
+	/* add list termination tlv */
+	ecore_add_tlv(&p_iov->offset,
+		      CHANNEL_TLV_LIST_END,
+		      sizeof(struct channel_list_end_tlv));
+
+	p_resp = &p_iov->pf2vf_reply->default_resp;
+	rc = ecore_send_msg2pf(p_hwfn, &p_resp->hdr.status, sizeof(*p_resp));
+	if (p_resp->hdr.status == PFVF_STATUS_NOT_SUPPORTED)
+		rc = ECORE_INVAL;
+
+	ecore_vf_pf_req_end(p_hwfn, rc);
+
 	return rc;
 }
 

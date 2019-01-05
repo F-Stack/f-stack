@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2018 Intel Corporation
  */
 
 #include <string.h>
@@ -158,7 +130,8 @@ snow3g_pmd_info_get(struct rte_cryptodev *dev,
 	if (dev_info != NULL) {
 		dev_info->driver_id = dev->driver_id;
 		dev_info->max_nb_queue_pairs = internals->max_nb_queue_pairs;
-		dev_info->sym.max_nb_sessions = internals->max_nb_sessions;
+		/* No limit of number of sessions */
+		dev_info->sym.max_nb_sessions = 0;
 		dev_info->feature_flags = dev->feature_flags;
 		dev_info->capabilities = snow3g_pmd_capabilities;
 	}
@@ -200,13 +173,13 @@ snow3g_pmd_qp_create_processed_ops_ring(struct snow3g_qp *qp,
 	r = rte_ring_lookup(qp->name);
 	if (r) {
 		if (rte_ring_get_size(r) >= ring_size) {
-			SNOW3G_LOG_INFO("Reusing existing ring %s"
+			SNOW3G_LOG(INFO, "Reusing existing ring %s"
 					" for processed packets",
 					 qp->name);
 			return r;
 		}
 
-		SNOW3G_LOG_ERR("Unable to reuse existing ring %s"
+		SNOW3G_LOG(ERR, "Unable to reuse existing ring %s"
 				" for processed packets",
 				 qp->name);
 		return NULL;
@@ -258,22 +231,6 @@ qp_setup_cleanup:
 	return -1;
 }
 
-/** Start queue pair */
-static int
-snow3g_pmd_qp_start(__rte_unused struct rte_cryptodev *dev,
-		__rte_unused uint16_t queue_pair_id)
-{
-	return -ENOTSUP;
-}
-
-/** Stop queue pair */
-static int
-snow3g_pmd_qp_stop(__rte_unused struct rte_cryptodev *dev,
-		__rte_unused uint16_t queue_pair_id)
-{
-	return -ENOTSUP;
-}
-
 /** Return the number of allocated queue pairs */
 static uint32_t
 snow3g_pmd_qp_count(struct rte_cryptodev *dev)
@@ -283,14 +240,14 @@ snow3g_pmd_qp_count(struct rte_cryptodev *dev)
 
 /** Returns the size of the SNOW 3G session structure */
 static unsigned
-snow3g_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
+snow3g_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 {
 	return sizeof(struct snow3g_session);
 }
 
 /** Configure a SNOW 3G session from a crypto xform chain */
 static int
-snow3g_pmd_session_configure(struct rte_cryptodev *dev __rte_unused,
+snow3g_pmd_sym_session_configure(struct rte_cryptodev *dev __rte_unused,
 		struct rte_crypto_sym_xform *xform,
 		struct rte_cryptodev_sym_session *sess,
 		struct rte_mempool *mempool)
@@ -299,26 +256,26 @@ snow3g_pmd_session_configure(struct rte_cryptodev *dev __rte_unused,
 	int ret;
 
 	if (unlikely(sess == NULL)) {
-		SNOW3G_LOG_ERR("invalid session struct");
+		SNOW3G_LOG(ERR, "invalid session struct");
 		return -EINVAL;
 	}
 
 	if (rte_mempool_get(mempool, &sess_private_data)) {
-		CDEV_LOG_ERR(
+		SNOW3G_LOG(ERR,
 			"Couldn't get object from session mempool");
 		return -ENOMEM;
 	}
 
 	ret = snow3g_set_session_parameters(sess_private_data, xform);
 	if (ret != 0) {
-		SNOW3G_LOG_ERR("failed configure session parameters");
+		SNOW3G_LOG(ERR, "failed configure session parameters");
 
 		/* Return session to mempool */
 		rte_mempool_put(mempool, sess_private_data);
 		return ret;
 	}
 
-	set_session_private_data(sess, dev->driver_id,
+	set_sym_session_private_data(sess, dev->driver_id,
 		sess_private_data);
 
 	return 0;
@@ -326,17 +283,17 @@ snow3g_pmd_session_configure(struct rte_cryptodev *dev __rte_unused,
 
 /** Clear the memory of session so it doesn't leave key material behind */
 static void
-snow3g_pmd_session_clear(struct rte_cryptodev *dev,
+snow3g_pmd_sym_session_clear(struct rte_cryptodev *dev,
 		struct rte_cryptodev_sym_session *sess)
 {
 	uint8_t index = dev->driver_id;
-	void *sess_priv = get_session_private_data(sess, index);
+	void *sess_priv = get_sym_session_private_data(sess, index);
 
 	/* Zero out the whole structure */
 	if (sess_priv) {
 		memset(sess_priv, 0, sizeof(struct snow3g_session));
 		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
-		set_session_private_data(sess, index, NULL);
+		set_sym_session_private_data(sess, index, NULL);
 		rte_mempool_put(sess_mp, sess_priv);
 	}
 }
@@ -354,13 +311,11 @@ struct rte_cryptodev_ops snow3g_pmd_ops = {
 
 		.queue_pair_setup   = snow3g_pmd_qp_setup,
 		.queue_pair_release = snow3g_pmd_qp_release,
-		.queue_pair_start   = snow3g_pmd_qp_start,
-		.queue_pair_stop    = snow3g_pmd_qp_stop,
 		.queue_pair_count   = snow3g_pmd_qp_count,
 
-		.session_get_size   = snow3g_pmd_session_get_size,
-		.session_configure  = snow3g_pmd_session_configure,
-		.session_clear      = snow3g_pmd_session_clear
+		.sym_session_get_size   = snow3g_pmd_sym_session_get_size,
+		.sym_session_configure  = snow3g_pmd_sym_session_configure,
+		.sym_session_clear      = snow3g_pmd_sym_session_clear
 };
 
 struct rte_cryptodev_ops *rte_snow3g_pmd_ops = &snow3g_pmd_ops;

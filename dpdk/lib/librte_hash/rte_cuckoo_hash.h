@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
+ * Copyright(c) 2018 Arm Limited
  */
 
 /* rte_cuckoo_hash.h
@@ -57,14 +29,8 @@
 #define RETURN_IF_TRUE(cond, retval)
 #endif
 
-/* Hash function used if none is specified */
-#if defined(RTE_ARCH_X86) || defined(RTE_MACHINE_CPUFLAG_CRC32)
 #include <rte_hash_crc.h>
-#define DEFAULT_HASH_FUNC       rte_hash_crc
-#else
 #include <rte_jhash.h>
-#define DEFAULT_HASH_FUNC       rte_jhash
-#endif
 
 #if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM64)
 /*
@@ -123,14 +89,13 @@ const rte_hash_cmp_eq_t cmp_jump_table[NUM_KEY_CMP_CASES] = {
 
 #endif
 
-enum add_key_case {
-	ADD_KEY_SINGLEWRITER = 0,
-	ADD_KEY_MULTIWRITER,
-	ADD_KEY_MULTIWRITER_TM,
-};
 
 /** Number of items per bucket. */
 #define RTE_HASH_BUCKET_ENTRIES		8
+
+#if !RTE_IS_POWER_OF_2(RTE_HASH_BUCKET_ENTRIES)
+#error RTE_HASH_BUCKET_ENTRIES must be a power of 2
+#endif
 
 #define NULL_SIGNATURE			0
 
@@ -139,8 +104,6 @@ enum add_key_case {
 #define KEY_ALIGNMENT			16
 
 #define LCORE_CACHE_SIZE		64
-
-#define RTE_HASH_MAX_PUSHES             100
 
 #define RTE_HASH_BFS_QUEUE_MAX_LEN       1000
 
@@ -161,25 +124,24 @@ struct rte_hash_key {
 	};
 	/* Variable key size */
 	char key[0];
-} __attribute__((aligned(KEY_ALIGNMENT)));
+};
 
 /* All different signature compare functions */
 enum rte_hash_sig_compare_function {
 	RTE_HASH_COMPARE_SCALAR = 0,
 	RTE_HASH_COMPARE_SSE,
-	RTE_HASH_COMPARE_AVX2,
 	RTE_HASH_COMPARE_NUM
 };
 
 /** Bucket structure */
 struct rte_hash_bucket {
-	hash_sig_t sig_current[RTE_HASH_BUCKET_ENTRIES];
+	uint16_t sig_current[RTE_HASH_BUCKET_ENTRIES];
 
 	uint32_t key_idx[RTE_HASH_BUCKET_ENTRIES];
 
-	hash_sig_t sig_alt[RTE_HASH_BUCKET_ENTRIES];
-
 	uint8_t flag[RTE_HASH_BUCKET_ENTRIES];
+
+	void *next;
 } __rte_cache_aligned;
 
 /** A hash table structure. */
@@ -190,18 +152,33 @@ struct rte_hash {
 
 	struct rte_ring *free_slots;
 	/**< Ring that stores all indexes of the free slots in the key table */
-	uint8_t hw_trans_mem_support;
-	/**< Hardware transactional memory support */
+
 	struct lcore_cache *local_free_slots;
 	/**< Local cache per lcore, storing some indexes of the free slots */
-	enum add_key_case add_key; /**< Multi-writer hash add behavior */
-
-	rte_spinlock_t *multiwriter_lock; /**< Multi-writer spinlock for w/o TM */
 
 	/* Fields used in lookup */
 
 	uint32_t key_len __rte_cache_aligned;
 	/**< Length of hash key. */
+	uint8_t hw_trans_mem_support;
+	/**< If hardware transactional memory is used. */
+	uint8_t use_local_cache;
+	/**< If multi-writer support is enabled, use local cache
+	 * to allocate key-store slots.
+	 */
+	uint8_t readwrite_concur_support;
+	/**< If read-write concurrency support is enabled */
+	uint8_t ext_table_support;     /**< Enable extendable bucket table */
+	uint8_t no_free_on_del;
+	/**< If key index should be freed on calling rte_hash_del_xxx APIs.
+	 * If this is set, rte_hash_free_key_with_position must be called to
+	 * free the key index associated with the deleted entry.
+	 * This flag is enabled by default.
+	 */
+	uint8_t readwrite_concur_lf_support;
+	/**< If read-write concurrency lock free support is enabled */
+	uint8_t writer_takes_lock;
+	/**< Indicates if the writer threads need to take lock */
 	rte_hash_function hash_func;    /**< Function used to calculate hash. */
 	uint32_t hash_func_init_val;    /**< Init value used by hash_func. */
 	rte_hash_cmp_eq_t rte_hash_custom_cmp_eq;
@@ -219,10 +196,16 @@ struct rte_hash {
 	/**< Table with buckets storing all the	hash values and key indexes
 	 * to the key table.
 	 */
+	rte_rwlock_t *readwrite_lock; /**< Read-write lock thread-safety. */
+	struct rte_hash_bucket *buckets_ext; /**< Extra buckets array */
+	struct rte_ring *free_ext_bkts; /**< Ring of indexes of free buckets */
+	uint32_t *tbl_chng_cnt;
+	/**< Indicates if the hash table changed from last read. */
 } __rte_cache_aligned;
 
 struct queue_node {
 	struct rte_hash_bucket *bkt; /* Current bucket on the bfs search */
+	uint32_t cur_bkt_idx;
 
 	struct queue_node *prev;     /* Parent(bucket) in search path */
 	int prev_slot;               /* Parent(slot) in search path */

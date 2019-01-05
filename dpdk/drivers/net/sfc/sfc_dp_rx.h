@@ -1,39 +1,17 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017 Solarflare Communications Inc.
+ * Copyright (c) 2017-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_DP_RX_H
 #define _SFC_DP_RX_H
 
 #include <rte_mempool.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include "sfc_dp.h"
 
@@ -60,6 +38,8 @@ struct sfc_dp_rxq {
 struct sfc_dp_rx_qcreate_info {
 	/** Memory pool to allocate Rx buffer from */
 	struct rte_mempool	*refill_mb_pool;
+	/** Maximum number of pushed Rx descriptors in the queue */
+	unsigned int		max_fill_level;
 	/** Minimum number of unused Rx descriptors to do refill */
 	unsigned int		refill_threshold;
 	/**
@@ -98,7 +78,46 @@ struct sfc_dp_rx_qcreate_info {
 	 * doorbell
 	 */
 	volatile void		*mem_bar;
+	/** VI window size shift */
+	unsigned int		vi_window_shift;
 };
+
+/**
+ * Get Rx datapath specific device info.
+ *
+ * @param dev_info		Device info to be adjusted
+ */
+typedef void (sfc_dp_rx_get_dev_info_t)(struct rte_eth_dev_info *dev_info);
+
+/**
+ * Test if an Rx datapath supports specific mempool ops.
+ *
+ * @param pool			The name of the pool operations to test.
+ *
+ * @return Check status.
+ * @retval	0		Best mempool ops choice.
+ * @retval	1		Mempool ops are supported.
+ * @retval	-ENOTSUP	Mempool ops not supported.
+ */
+typedef int (sfc_dp_rx_pool_ops_supported_t)(const char *pool);
+
+/**
+ * Get size of receive and event queue rings by the number of Rx
+ * descriptors and mempool configuration.
+ *
+ * @param nb_rx_desc		Number of Rx descriptors
+ * @param mb_pool		mbuf pool with Rx buffers
+ * @param rxq_entries		Location for number of Rx ring entries
+ * @param evq_entries		Location for number of event ring entries
+ * @param rxq_max_fill_level	Location for maximum Rx ring fill level
+ *
+ * @return 0 or positive errno.
+ */
+typedef int (sfc_dp_rx_qsize_up_rings_t)(uint16_t nb_rx_desc,
+					 struct rte_mempool *mb_pool,
+					 unsigned int *rxq_entries,
+					 unsigned int *evq_entries,
+					 unsigned int *rxq_max_fill_level);
 
 /**
  * Allocate and initialize datapath receive queue.
@@ -143,6 +162,12 @@ typedef void (sfc_dp_rx_qstop_t)(struct sfc_dp_rxq *dp_rxq,
 typedef bool (sfc_dp_rx_qrx_ev_t)(struct sfc_dp_rxq *dp_rxq, unsigned int id);
 
 /**
+ * Packed stream receive event handler used during queue flush only.
+ */
+typedef bool (sfc_dp_rx_qrx_ps_ev_t)(struct sfc_dp_rxq *dp_rxq,
+				     unsigned int id);
+
+/**
  * Receive queue purge function called after queue flush.
  *
  * Should be used to free unused recevie buffers.
@@ -150,7 +175,8 @@ typedef bool (sfc_dp_rx_qrx_ev_t)(struct sfc_dp_rxq *dp_rxq, unsigned int id);
 typedef void (sfc_dp_rx_qpurge_t)(struct sfc_dp_rxq *dp_rxq);
 
 /** Get packet types recognized/classified */
-typedef const uint32_t * (sfc_dp_rx_supported_ptypes_get_t)(void);
+typedef const uint32_t * (sfc_dp_rx_supported_ptypes_get_t)(
+				uint32_t tunnel_encaps);
 
 /** Get number of pending Rx descriptors */
 typedef unsigned int (sfc_dp_rx_qdesc_npending_t)(struct sfc_dp_rxq *dp_rxq);
@@ -166,11 +192,19 @@ struct sfc_dp_rx {
 	unsigned int				features;
 #define SFC_DP_RX_FEAT_SCATTER			0x1
 #define SFC_DP_RX_FEAT_MULTI_PROCESS		0x2
+#define SFC_DP_RX_FEAT_TUNNELS			0x4
+#define SFC_DP_RX_FEAT_FLOW_FLAG		0x8
+#define SFC_DP_RX_FEAT_FLOW_MARK		0x10
+#define SFC_DP_RX_FEAT_CHECKSUM			0x20
+	sfc_dp_rx_get_dev_info_t		*get_dev_info;
+	sfc_dp_rx_pool_ops_supported_t		*pool_ops_supported;
+	sfc_dp_rx_qsize_up_rings_t		*qsize_up_rings;
 	sfc_dp_rx_qcreate_t			*qcreate;
 	sfc_dp_rx_qdestroy_t			*qdestroy;
 	sfc_dp_rx_qstart_t			*qstart;
 	sfc_dp_rx_qstop_t			*qstop;
 	sfc_dp_rx_qrx_ev_t			*qrx_ev;
+	sfc_dp_rx_qrx_ps_ev_t			*qrx_ps_ev;
 	sfc_dp_rx_qpurge_t			*qpurge;
 	sfc_dp_rx_supported_ptypes_get_t	*supported_ptypes_get;
 	sfc_dp_rx_qdesc_npending_t		*qdesc_npending;
@@ -196,6 +230,7 @@ sfc_dp_find_rx_by_caps(struct sfc_dp_list *head, unsigned int avail_caps)
 
 extern struct sfc_dp_rx sfc_efx_rx;
 extern struct sfc_dp_rx sfc_ef10_rx;
+extern struct sfc_dp_rx sfc_ef10_essb_rx;
 
 #ifdef __cplusplus
 }

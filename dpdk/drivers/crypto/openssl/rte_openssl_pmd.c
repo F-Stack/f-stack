@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #include <rte_common.h>
@@ -42,6 +14,7 @@
 #include <openssl/evp.h>
 
 #include "rte_openssl_pmd_private.h"
+#include "compat.h"
 
 #define DES_BLOCK_SIZE 8
 
@@ -147,7 +120,7 @@ get_cipher_key_ede(uint8_t *key, int keylen, uint8_t *key_ede)
 		memcpy(key_ede + 16, key, 8);
 		break;
 	default:
-		OPENSSL_LOG_ERR("Unsupported key size");
+		OPENSSL_LOG(ERR, "Unsupported key size");
 		res = -EINVAL;
 	}
 
@@ -165,6 +138,9 @@ get_cipher_algo(enum rte_crypto_cipher_algorithm sess_algo, size_t keylen,
 		switch (sess_algo) {
 		case RTE_CRYPTO_CIPHER_3DES_CBC:
 			switch (keylen) {
+			case 8:
+				*algo = EVP_des_cbc();
+				break;
 			case 16:
 				*algo = EVP_des_ede_cbc();
 				break;
@@ -705,7 +681,7 @@ openssl_set_session_parameters(struct openssl_session *sess,
 		ret = openssl_set_session_cipher_parameters(
 				sess, cipher_xform);
 		if (ret != 0) {
-			OPENSSL_LOG_ERR(
+			OPENSSL_LOG(ERR,
 				"Invalid/unsupported cipher parameters");
 			return ret;
 		}
@@ -714,7 +690,7 @@ openssl_set_session_parameters(struct openssl_session *sess,
 	if (auth_xform) {
 		ret = openssl_set_session_auth_parameters(sess, auth_xform);
 		if (ret != 0) {
-			OPENSSL_LOG_ERR(
+			OPENSSL_LOG(ERR,
 				"Invalid/unsupported auth parameters");
 			return ret;
 		}
@@ -723,7 +699,7 @@ openssl_set_session_parameters(struct openssl_session *sess,
 	if (aead_xform) {
 		ret = openssl_set_session_aead_parameters(sess, aead_xform);
 		if (ret != 0) {
-			OPENSSL_LOG_ERR(
+			OPENSSL_LOG(ERR,
 				"Invalid/unsupported AEAD parameters");
 			return ret;
 		}
@@ -755,19 +731,36 @@ openssl_reset_session(struct openssl_session *sess)
 }
 
 /** Provide session for operation */
-static struct openssl_session *
+static void *
 get_session(struct openssl_qp *qp, struct rte_crypto_op *op)
 {
 	struct openssl_session *sess = NULL;
+	struct openssl_asym_session *asym_sess = NULL;
 
 	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
-		/* get existing session */
-		if (likely(op->sym->session != NULL))
-			sess = (struct openssl_session *)
-					get_session_private_data(
-					op->sym->session,
-					cryptodev_driver_id);
+		if (op->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC) {
+			/* get existing session */
+			if (likely(op->sym->session != NULL))
+				sess = (struct openssl_session *)
+						get_sym_session_private_data(
+						op->sym->session,
+						cryptodev_driver_id);
+		} else {
+			if (likely(op->asym->session != NULL))
+				asym_sess = (struct openssl_asym_session *)
+						get_asym_session_private_data(
+						op->asym->session,
+						cryptodev_driver_id);
+			if (asym_sess == NULL)
+				op->status =
+					RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+			return asym_sess;
+		}
 	} else {
+		/* sessionless asymmetric not supported */
+		if (op->type == RTE_CRYPTO_OP_TYPE_ASYMMETRIC)
+			return NULL;
+
 		/* provide internal session */
 		void *_sess = NULL;
 		void *_sess_private_data = NULL;
@@ -787,8 +780,8 @@ get_session(struct openssl_qp *qp, struct rte_crypto_op *op)
 			sess = NULL;
 		}
 		op->sym->session = (struct rte_cryptodev_sym_session *)_sess;
-		set_session_private_data(op->sym->session, cryptodev_driver_id,
-			_sess_private_data);
+		set_sym_session_private_data(op->sym->session,
+				cryptodev_driver_id, _sess_private_data);
 	}
 
 	if (sess == NULL)
@@ -912,7 +905,7 @@ process_openssl_cipher_encrypt(struct rte_mbuf *mbuf_src, uint8_t *dst,
 	return 0;
 
 process_cipher_encrypt_err:
-	OPENSSL_LOG_ERR("Process openssl cipher encrypt failed");
+	OPENSSL_LOG(ERR, "Process openssl cipher encrypt failed");
 	return -EINVAL;
 }
 
@@ -936,7 +929,7 @@ process_openssl_cipher_bpi_encrypt(uint8_t *src, uint8_t *dst,
 	return 0;
 
 process_cipher_encrypt_err:
-	OPENSSL_LOG_ERR("Process openssl cipher bpi encrypt failed");
+	OPENSSL_LOG(ERR, "Process openssl cipher bpi encrypt failed");
 	return -EINVAL;
 }
 /** Process standard openssl cipher decryption */
@@ -960,7 +953,7 @@ process_openssl_cipher_decrypt(struct rte_mbuf *mbuf_src, uint8_t *dst,
 	return 0;
 
 process_cipher_decrypt_err:
-	OPENSSL_LOG_ERR("Process openssl cipher decrypt failed");
+	OPENSSL_LOG(ERR, "Process openssl cipher decrypt failed");
 	return -EINVAL;
 }
 
@@ -1017,7 +1010,7 @@ process_openssl_cipher_des3ctr(struct rte_mbuf *mbuf_src, uint8_t *dst,
 	return 0;
 
 process_cipher_des3ctr_err:
-	OPENSSL_LOG_ERR("Process openssl cipher des 3 ede ctr failed");
+	OPENSSL_LOG(ERR, "Process openssl cipher des 3 ede ctr failed");
 	return -EINVAL;
 }
 
@@ -1055,7 +1048,7 @@ process_openssl_auth_encryption_gcm(struct rte_mbuf *mbuf_src, int offset,
 	return 0;
 
 process_auth_encryption_gcm_err:
-	OPENSSL_LOG_ERR("Process openssl auth encryption gcm failed");
+	OPENSSL_LOG(ERR, "Process openssl auth encryption gcm failed");
 	return -EINVAL;
 }
 
@@ -1096,7 +1089,7 @@ process_openssl_auth_encryption_ccm(struct rte_mbuf *mbuf_src, int offset,
 	return 0;
 
 process_auth_encryption_ccm_err:
-	OPENSSL_LOG_ERR("Process openssl auth encryption ccm failed");
+	OPENSSL_LOG(ERR, "Process openssl auth encryption ccm failed");
 	return -EINVAL;
 }
 
@@ -1134,7 +1127,7 @@ process_openssl_auth_decryption_gcm(struct rte_mbuf *mbuf_src, int offset,
 	return 0;
 
 process_auth_decryption_gcm_err:
-	OPENSSL_LOG_ERR("Process openssl auth decryption gcm failed");
+	OPENSSL_LOG(ERR, "Process openssl auth decryption gcm failed");
 	return -EINVAL;
 }
 
@@ -1173,7 +1166,7 @@ process_openssl_auth_decryption_ccm(struct rte_mbuf *mbuf_src, int offset,
 	return 0;
 
 process_auth_decryption_ccm_err:
-	OPENSSL_LOG_ERR("Process openssl auth decryption ccm failed");
+	OPENSSL_LOG(ERR, "Process openssl auth decryption ccm failed");
 	return -EINVAL;
 }
 
@@ -1226,7 +1219,7 @@ process_auth_final:
 	return 0;
 
 process_auth_err:
-	OPENSSL_LOG_ERR("Process openssl auth failed");
+	OPENSSL_LOG(ERR, "Process openssl auth failed");
 	return -EINVAL;
 }
 
@@ -1279,7 +1272,7 @@ process_auth_final:
 	return 0;
 
 process_auth_err:
-	OPENSSL_LOG_ERR("Process openssl auth failed");
+	OPENSSL_LOG(ERR, "Process openssl auth failed");
 	return -EINVAL;
 }
 
@@ -1516,15 +1509,7 @@ process_openssl_auth_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 
 	srclen = op->sym->auth.data.length;
 
-	if (sess->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY)
-		dst = qp->temp_digest;
-	else {
-		dst = op->sym->auth.digest.data;
-		if (dst == NULL)
-			dst = rte_pktmbuf_mtod_offset(mbuf_dst, uint8_t *,
-					op->sym->auth.data.offset +
-					op->sym->auth.data.length);
-	}
+	dst = qp->temp_digest;
 
 	switch (sess->auth.mode) {
 	case OPENSSL_AUTH_AS_AUTH:
@@ -1547,10 +1532,454 @@ process_openssl_auth_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 				sess->auth.digest_length) != 0) {
 			op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
 		}
+	} else {
+		uint8_t *auth_dst;
+
+		auth_dst = op->sym->auth.digest.data;
+		if (auth_dst == NULL)
+			auth_dst = rte_pktmbuf_mtod_offset(mbuf_dst, uint8_t *,
+					op->sym->auth.data.offset +
+					op->sym->auth.data.length);
+		memcpy(auth_dst, dst, sess->auth.digest_length);
 	}
 
 	if (status != 0)
 		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
+}
+
+/* process dsa sign operation */
+static int
+process_openssl_dsa_sign_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	struct rte_crypto_dsa_op_param *op = &cop->asym->dsa;
+	DSA *dsa = sess->u.s.dsa;
+	DSA_SIG *sign = NULL;
+
+	sign = DSA_do_sign(op->message.data,
+			op->message.length,
+			dsa);
+
+	if (sign == NULL) {
+		OPENSSL_LOG(ERR, "%s:%d\n", __func__, __LINE__);
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+	} else {
+		const BIGNUM *r = NULL, *s = NULL;
+		get_dsa_sign(sign, &r, &s);
+
+		op->r.length = BN_bn2bin(r, op->r.data);
+		op->s.length = BN_bn2bin(s, op->s.data);
+		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+	}
+
+	DSA_SIG_free(sign);
+
+	return 0;
+}
+
+/* process dsa verify operation */
+static int
+process_openssl_dsa_verify_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	struct rte_crypto_dsa_op_param *op = &cop->asym->dsa;
+	DSA *dsa = sess->u.s.dsa;
+	int ret;
+	DSA_SIG *sign = DSA_SIG_new();
+	BIGNUM *r = NULL, *s = NULL;
+	BIGNUM *pub_key = NULL;
+
+	if (sign == NULL) {
+		OPENSSL_LOG(ERR, " %s:%d\n", __func__, __LINE__);
+		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+		return -1;
+	}
+
+	r = BN_bin2bn(op->r.data,
+			op->r.length,
+			r);
+	s = BN_bin2bn(op->s.data,
+			op->s.length,
+			s);
+	pub_key = BN_bin2bn(op->y.data,
+			op->y.length,
+			pub_key);
+	if (!r || !s || !pub_key) {
+		if (r)
+			BN_free(r);
+		if (s)
+			BN_free(s);
+		if (pub_key)
+			BN_free(pub_key);
+
+		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+		return -1;
+	}
+	set_dsa_sign(sign, r, s);
+	set_dsa_pub_key(dsa, pub_key);
+
+	ret = DSA_do_verify(op->message.data,
+			op->message.length,
+			sign,
+			dsa);
+
+	if (ret != 1)
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+	else
+		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+
+	DSA_SIG_free(sign);
+
+	return 0;
+}
+
+/* process dh operation */
+static int
+process_openssl_dh_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	struct rte_crypto_dh_op_param *op = &cop->asym->dh;
+	DH *dh_key = sess->u.dh.dh_key;
+	BIGNUM *priv_key = NULL;
+	int ret = 0;
+
+	if (sess->u.dh.key_op &
+			(1 << RTE_CRYPTO_ASYM_OP_SHARED_SECRET_COMPUTE)) {
+		/* compute shared secret using peer public key
+		 * and current private key
+		 * shared secret = peer_key ^ priv_key mod p
+		 */
+		BIGNUM *peer_key = NULL;
+
+		/* copy private key and peer key and compute shared secret */
+		peer_key = BN_bin2bn(op->pub_key.data,
+				op->pub_key.length,
+				peer_key);
+		if (peer_key == NULL) {
+			cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+			return -1;
+		}
+		priv_key = BN_bin2bn(op->priv_key.data,
+				op->priv_key.length,
+				priv_key);
+		if (priv_key == NULL) {
+			BN_free(peer_key);
+			cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+			return -1;
+		}
+		ret = set_dh_priv_key(dh_key, priv_key);
+		if (ret) {
+			OPENSSL_LOG(ERR, "Failed to set private key\n");
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+			BN_free(peer_key);
+			BN_free(priv_key);
+			return 0;
+		}
+
+		ret = DH_compute_key(
+				op->shared_secret.data,
+				peer_key, dh_key);
+		if (ret < 0) {
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+			BN_free(peer_key);
+			/* priv key is already loaded into dh,
+			 * let's not free that directly here.
+			 * DH_free() will auto free it later.
+			 */
+			return 0;
+		}
+		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+		op->shared_secret.length = ret;
+		BN_free(peer_key);
+		return 0;
+	}
+
+	/*
+	 * other options are public and private key generations.
+	 *
+	 * if user provides private key,
+	 * then first set DH with user provided private key
+	 */
+	if ((sess->u.dh.key_op &
+			(1 << RTE_CRYPTO_ASYM_OP_PUBLIC_KEY_GENERATE)) &&
+			!(sess->u.dh.key_op &
+			(1 << RTE_CRYPTO_ASYM_OP_PRIVATE_KEY_GENERATE))) {
+		/* generate public key using user-provided private key
+		 * pub_key = g ^ priv_key mod p
+		 */
+
+		/* load private key into DH */
+		priv_key = BN_bin2bn(op->priv_key.data,
+				op->priv_key.length,
+				priv_key);
+		if (priv_key == NULL) {
+			cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+			return -1;
+		}
+		ret = set_dh_priv_key(dh_key, priv_key);
+		if (ret) {
+			OPENSSL_LOG(ERR, "Failed to set private key\n");
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+			BN_free(priv_key);
+			return 0;
+		}
+	}
+
+	/* generate public and private key pair.
+	 *
+	 * if private key already set, generates only public key.
+	 *
+	 * if private key is not already set, then set it to random value
+	 * and update internal private key.
+	 */
+	if (!DH_generate_key(dh_key)) {
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+		return 0;
+	}
+
+	if (sess->u.dh.key_op & (1 << RTE_CRYPTO_ASYM_OP_PUBLIC_KEY_GENERATE)) {
+		const BIGNUM *pub_key = NULL;
+
+		OPENSSL_LOG(DEBUG, "%s:%d update public key\n",
+				__func__, __LINE__);
+
+		/* get the generated keys */
+		get_dh_pub_key(dh_key, &pub_key);
+
+		/* output public key */
+		op->pub_key.length = BN_bn2bin(pub_key,
+				op->pub_key.data);
+	}
+
+	if (sess->u.dh.key_op &
+			(1 << RTE_CRYPTO_ASYM_OP_PRIVATE_KEY_GENERATE)) {
+		const BIGNUM *priv_key = NULL;
+
+		OPENSSL_LOG(DEBUG, "%s:%d updated priv key\n",
+				__func__, __LINE__);
+
+		/* get the generated keys */
+		get_dh_priv_key(dh_key, &priv_key);
+
+		/* provide generated private key back to user */
+		op->priv_key.length = BN_bn2bin(priv_key,
+				op->priv_key.data);
+	}
+
+	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+
+	return 0;
+}
+
+/* process modinv operation */
+static int
+process_openssl_modinv_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	struct rte_crypto_asym_op *op = cop->asym;
+	BIGNUM *base = BN_CTX_get(sess->u.m.ctx);
+	BIGNUM *res = BN_CTX_get(sess->u.m.ctx);
+
+	if (unlikely(base == NULL || res == NULL)) {
+		if (base)
+			BN_free(base);
+		if (res)
+			BN_free(res);
+		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+		return -1;
+	}
+
+	base = BN_bin2bn((const unsigned char *)op->modinv.base.data,
+			op->modinv.base.length, base);
+
+	if (BN_mod_inverse(res, base, sess->u.m.modulus, sess->u.m.ctx)) {
+		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+		op->modinv.base.length = BN_bn2bin(res, op->modinv.base.data);
+	} else {
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+	}
+
+	return 0;
+}
+
+/* process modexp operation */
+static int
+process_openssl_modexp_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	struct rte_crypto_asym_op *op = cop->asym;
+	BIGNUM *base = BN_CTX_get(sess->u.e.ctx);
+	BIGNUM *res = BN_CTX_get(sess->u.e.ctx);
+
+	if (unlikely(base == NULL || res == NULL)) {
+		if (base)
+			BN_free(base);
+		if (res)
+			BN_free(res);
+		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+		return -1;
+	}
+
+	base = BN_bin2bn((const unsigned char *)op->modinv.base.data,
+			op->modinv.base.length, base);
+
+	if (BN_mod_exp(res, base, sess->u.e.exp,
+				sess->u.e.mod, sess->u.e.ctx)) {
+		op->modinv.base.length = BN_bn2bin(res, op->modinv.base.data);
+		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+	} else {
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+	}
+
+	return 0;
+}
+
+/* process rsa operations */
+static int
+process_openssl_rsa_op(struct rte_crypto_op *cop,
+		struct openssl_asym_session *sess)
+{
+	int ret = 0;
+	struct rte_crypto_asym_op *op = cop->asym;
+	RSA *rsa = sess->u.r.rsa;
+	uint32_t pad = (op->rsa.pad);
+	uint8_t *tmp;
+
+	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+
+	switch (pad) {
+	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT0:
+	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT1:
+	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT2:
+		pad = RSA_PKCS1_PADDING;
+		break;
+	case RTE_CRYPTO_RSA_PADDING_NONE:
+		pad = RSA_NO_PADDING;
+		break;
+	default:
+		cop->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		OPENSSL_LOG(ERR,
+				"rsa pad type not supported %d\n", pad);
+		return 0;
+	}
+
+	switch (op->rsa.op_type) {
+	case RTE_CRYPTO_ASYM_OP_ENCRYPT:
+		ret = RSA_public_encrypt(op->rsa.message.length,
+				op->rsa.message.data,
+				op->rsa.message.data,
+				rsa,
+				pad);
+
+		if (ret > 0)
+			op->rsa.message.length = ret;
+		OPENSSL_LOG(DEBUG,
+				"length of encrypted text %d\n", ret);
+		break;
+
+	case RTE_CRYPTO_ASYM_OP_DECRYPT:
+		ret = RSA_private_decrypt(op->rsa.message.length,
+				op->rsa.message.data,
+				op->rsa.message.data,
+				rsa,
+				pad);
+		if (ret > 0)
+			op->rsa.message.length = ret;
+		break;
+
+	case RTE_CRYPTO_ASYM_OP_SIGN:
+		ret = RSA_private_encrypt(op->rsa.message.length,
+				op->rsa.message.data,
+				op->rsa.sign.data,
+				rsa,
+				pad);
+		if (ret > 0)
+			op->rsa.sign.length = ret;
+		break;
+
+	case RTE_CRYPTO_ASYM_OP_VERIFY:
+		tmp = rte_malloc(NULL, op->rsa.sign.length, 0);
+		if (tmp == NULL) {
+			OPENSSL_LOG(ERR, "Memory allocation failed");
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+			break;
+		}
+		ret = RSA_public_decrypt(op->rsa.sign.length,
+				op->rsa.sign.data,
+				tmp,
+				rsa,
+				pad);
+
+		OPENSSL_LOG(DEBUG,
+				"Length of public_decrypt %d "
+				"length of message %zd\n",
+				ret, op->rsa.message.length);
+		if ((ret <= 0) || (memcmp(tmp, op->rsa.message.data,
+				op->rsa.message.length))) {
+			OPENSSL_LOG(ERR, "RSA sign Verification failed");
+			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+		}
+		rte_free(tmp);
+		break;
+
+	default:
+		/* allow ops with invalid args to be pushed to
+		 * completion queue
+		 */
+		cop->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		break;
+	}
+
+	if (ret < 0)
+		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
+
+	return 0;
+}
+
+static int
+process_asym_op(struct openssl_qp *qp, struct rte_crypto_op *op,
+		struct openssl_asym_session *sess)
+{
+	int retval = 0;
+
+	op->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+
+	switch (sess->xfrm_type) {
+	case RTE_CRYPTO_ASYM_XFORM_RSA:
+		retval = process_openssl_rsa_op(op, sess);
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_MODEX:
+		retval = process_openssl_modexp_op(op, sess);
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_MODINV:
+		retval = process_openssl_modinv_op(op, sess);
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_DH:
+		retval = process_openssl_dh_op(op, sess);
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_DSA:
+		if (op->asym->dsa.op_type == RTE_CRYPTO_ASYM_OP_SIGN)
+			retval = process_openssl_dsa_sign_op(op, sess);
+		else if (op->asym->dsa.op_type ==
+				RTE_CRYPTO_ASYM_OP_VERIFY)
+			retval =
+				process_openssl_dsa_verify_op(op, sess);
+		else
+			op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		break;
+	default:
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		break;
+	}
+	if (!retval) {
+		/* op processed so push to completion queue as processed */
+		retval = rte_ring_enqueue(qp->processed_ops, (void *)op);
+		if (retval)
+			/* return error if failed to put in completion queue */
+			retval = -1;
+	}
+
+	return retval;
 }
 
 /** Process crypto operation for mbuf */
@@ -1597,7 +2026,7 @@ process_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 		openssl_reset_session(sess);
 		memset(sess, 0, sizeof(struct openssl_session));
 		memset(op->sym->session, 0,
-				rte_cryptodev_get_header_session_size());
+				rte_cryptodev_sym_get_header_session_size());
 		rte_mempool_put(qp->sess_mp, sess);
 		rte_mempool_put(qp->sess_mp, op->sym->session);
 		op->sym->session = NULL;
@@ -1625,7 +2054,7 @@ static uint16_t
 openssl_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 		uint16_t nb_ops)
 {
-	struct openssl_session *sess;
+	void *sess;
 	struct openssl_qp *qp = queue_pair;
 	int i, retval;
 
@@ -1634,7 +2063,12 @@ openssl_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 		if (unlikely(sess == NULL))
 			goto enqueue_err;
 
-		retval = process_op(qp, ops[i], sess);
+		if (ops[i]->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+			retval = process_op(qp, ops[i],
+					(struct openssl_session *) sess);
+		else
+			retval = process_asym_op(qp, ops[i],
+					(struct openssl_asym_session *) sess);
 		if (unlikely(retval < 0))
 			goto enqueue_err;
 	}
@@ -1674,7 +2108,7 @@ cryptodev_openssl_create(const char *name,
 
 	dev = rte_cryptodev_pmd_create(name, &vdev->device, init_params);
 	if (dev == NULL) {
-		OPENSSL_LOG_ERR("failed to create cryptodev vdev");
+		OPENSSL_LOG(ERR, "failed to create cryptodev vdev");
 		goto init_error;
 	}
 
@@ -1688,18 +2122,19 @@ cryptodev_openssl_create(const char *name,
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
 			RTE_CRYPTODEV_FF_CPU_AESNI |
-			RTE_CRYPTODEV_FF_MBUF_SCATTER_GATHER;
+			RTE_CRYPTODEV_FF_OOP_SGL_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO;
 
 	/* Set vector instructions mode supported */
 	internals = dev->data->dev_private;
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;
-	internals->max_nb_sessions = init_params->max_nb_sessions;
 
 	return 0;
 
 init_error:
-	OPENSSL_LOG_ERR("driver %s: cryptodev_openssl_create failed",
+	OPENSSL_LOG(ERR, "driver %s: create failed",
 			init_params->name);
 
 	cryptodev_openssl_remove(vdev);
@@ -1714,8 +2149,7 @@ cryptodev_openssl_probe(struct rte_vdev_device *vdev)
 		"",
 		sizeof(struct openssl_private),
 		rte_socket_id(),
-		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS,
-		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS
+		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS
 	};
 	const char *name;
 	const char *input_args;
@@ -1759,7 +2193,11 @@ RTE_PMD_REGISTER_VDEV(CRYPTODEV_NAME_OPENSSL_PMD,
 	cryptodev_openssl_pmd_drv);
 RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_OPENSSL_PMD,
 	"max_nb_queue_pairs=<int> "
-	"max_nb_sessions=<int> "
 	"socket_id=<int>");
-RTE_PMD_REGISTER_CRYPTO_DRIVER(openssl_crypto_drv, cryptodev_openssl_pmd_drv,
-		cryptodev_driver_id);
+RTE_PMD_REGISTER_CRYPTO_DRIVER(openssl_crypto_drv,
+		cryptodev_openssl_pmd_drv.driver, cryptodev_driver_id);
+
+RTE_INIT(openssl_init_log)
+{
+	openssl_logtype_driver = rte_log_register("pmd.crypto.openssl");
+}

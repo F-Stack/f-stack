@@ -1,33 +1,5 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2017 Intel Corporation
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -89,12 +61,17 @@ SRCS-y += test_prefetch.c
 SRCS-y += test_byteorder.c
 SRCS-y += test_per_lcore.c
 SRCS-y += test_atomic.c
+SRCS-y += test_barrier.c
 SRCS-y += test_malloc.c
 SRCS-y += test_cycles.c
 SRCS-y += test_spinlock.c
 SRCS-y += test_memory.c
 SRCS-y += test_memzone.c
 SRCS-y += test_bitmap.c
+SRCS-y += test_reciprocal_division.c
+SRCS-y += test_reciprocal_division_perf.c
+SRCS-y += test_fbarray.c
+SRCS-y += test_external_mem.c
 
 SRCS-y += test_ring.c
 SRCS-y += test_ring_perf.c
@@ -136,8 +113,9 @@ SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_thash.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_perf.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_functions.c
-SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_scaling.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_multiwriter.c
+SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite.c
+SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite_lf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm.c
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm_perf.c
@@ -186,7 +164,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_DISTRIBUTOR) += test_distributor_perf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_REORDER) += test_reorder.c
 
-SRCS-y += test_devargs.c
 SRCS-y += virtual_pmd.c
 SRCS-y += packet_burst_generator.c
 SRCS-$(CONFIG_RTE_LIBRTE_ACL) += test_acl.c
@@ -205,23 +182,42 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_RING) += test_pmd_ring_perf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += test_cryptodev_blockcipher.c
 SRCS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += test_cryptodev.c
+SRCS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += test_cryptodev_asym.c
+
+SRCS-$(CONFIG_RTE_LIBRTE_METRICS) += test_metrics.c
+
+ifeq ($(CONFIG_RTE_COMPRESSDEV_TEST),y)
+SRCS-$(CONFIG_RTE_LIBRTE_COMPRESSDEV) += test_compressdev.c
+endif
 
 ifeq ($(CONFIG_RTE_LIBRTE_EVENTDEV),y)
 SRCS-y += test_eventdev.c
 SRCS-y += test_event_ring.c
 SRCS-y += test_event_eth_rx_adapter.c
-SRCS-$(CONFIG_RTE_LIBRTE_PMD_SW_EVENTDEV) += test_eventdev_sw.c
-SRCS-$(CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF) += test_eventdev_octeontx.c
+SRCS-y += test_event_eth_tx_adapter.c
+SRCS-y += test_event_timer_adapter.c
+SRCS-y += test_event_crypto_adapter.c
+endif
+
+ifeq ($(CONFIG_RTE_LIBRTE_RAWDEV),y)
+SRCS-y += test_rawdev.c
 endif
 
 SRCS-$(CONFIG_RTE_LIBRTE_KVARGS) += test_kvargs.c
 
+SRCS-$(CONFIG_RTE_LIBRTE_BPF) += test_bpf.c
+
+CFLAGS += -DALLOW_EXPERIMENTAL_API
+
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
-CFLAGS += -D_GNU_SOURCE
-
 LDLIBS += -lm
+ifeq ($(CONFIG_RTE_COMPRESSDEV_TEST),y)
+ifeq ($(CONFIG_RTE_LIBRTE_COMPRESSDEV),y)
+LDLIBS += -lz
+endif
+endif
 
 # Disable VTA for memcpy test
 ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
@@ -232,6 +228,8 @@ CFLAGS_test_memcpy_perf.o += -fno-var-tracking-assignments
 # designated initializers.
 ifeq ($(shell test $(GCC_VERSION) -le 50 && echo 1), 1)
 CFLAGS_test_eventdev_sw.o += -Wno-missing-field-initializers
+CFLAGS_test_event_timer_adapter.o += -Wno-missing-field-initializers
+CFLAGS_test_event_crypto_adapter.o += -Wno-missing-field-initializers
 endif
 endif
 endif

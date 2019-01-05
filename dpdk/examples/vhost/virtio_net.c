@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <stdint.h>
@@ -132,7 +103,7 @@ enqueue_pkt(struct vhost_dev *dev, struct rte_vhost_vring *vr,
 
 			remain -= len;
 			guest_addr += len;
-			dst += len;
+			src += len;
 		}
 
 		desc_chunck_len = desc->len - dev->hdr_len;
@@ -258,13 +229,8 @@ vs_enqueue_pkts(struct vhost_dev *dev, uint16_t queue_id,
 	*(volatile uint16_t *)&vr->used->idx += count;
 	queue->last_used_idx += count;
 
-	/* flush used->idx update before we read avail->flags. */
-	rte_mb();
+	rte_vhost_vring_call(dev->vid, queue_id);
 
-	/* Kick the guest if necessary. */
-	if (!(vr->avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
-			&& (vr->callfd >= 0))
-		eventfd_write(vr->callfd, (eventfd_t)1);
 	return count;
 }
 
@@ -468,9 +434,7 @@ vs_dequeue_pkts(struct vhost_dev *dev, uint16_t queue_id,
 
 	vr->used->idx += i;
 
-	if (!(vr->avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
-			&& (vr->callfd >= 0))
-		eventfd_write(vr->callfd, (eventfd_t)1);
+	rte_vhost_vring_call(dev->vid, queue_id);
 
 	return i;
 }

@@ -1,48 +1,21 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation
 
 # The main logic behind running autotests in parallel
 
+from __future__ import print_function
 import StringIO
 import csv
-import multiprocessing
+from multiprocessing import Pool, Queue
 import pexpect
 import re
 import subprocess
 import sys
 import time
+import glob
+import os
 
 # wait for prompt
-
-
 def wait_prompt(child):
     try:
         child.sendline()
@@ -55,7 +28,90 @@ def wait_prompt(child):
     else:
         return False
 
-# run a test group
+
+# get all valid NUMA nodes
+def get_numa_nodes():
+    return [
+        int(
+            re.match(r"node(\d+)", os.path.basename(node))
+            .group(1)
+        )
+        for node in glob.glob("/sys/devices/system/node/node*")
+    ]
+
+
+# find first (or any, really) CPU on a particular node, will be used to spread
+# processes around NUMA nodes to avoid exhausting memory on particular node
+def first_cpu_on_node(node_nr):
+    cpu_path = glob.glob("/sys/devices/system/node/node%d/cpu*" % node_nr)[0]
+    cpu_name = os.path.basename(cpu_path)
+    m = re.match(r"cpu(\d+)", cpu_name)
+    return int(m.group(1))
+
+
+pool_child = None  # per-process child
+
+
+# we initialize each worker with a queue because we need per-pool unique
+# command-line arguments, but we cannot do different arguments in an initializer
+# because the API doesn't allow per-worker initializer arguments. so, instead,
+# we will initialize with a shared queue, and dequeue command-line arguments
+# from this queue
+def pool_init(queue, result_queue):
+    global pool_child
+
+    cmdline, prefix = queue.get()
+    start_time = time.time()
+    name = ("Start %s" % prefix) if prefix != "" else "Start"
+
+    # use default prefix if no prefix was specified
+    prefix_cmdline = "--file-prefix=%s" % prefix if prefix != "" else ""
+
+    # append prefix to cmdline
+    cmdline = "%s %s" % (cmdline, prefix_cmdline)
+
+    # prepare logging of init
+    startuplog = StringIO.StringIO()
+
+    # run test app
+    try:
+
+        print("\n%s %s\n" % ("=" * 20, prefix), file=startuplog)
+        print("\ncmdline=%s" % cmdline, file=startuplog)
+
+        pool_child = pexpect.spawn(cmdline, logfile=startuplog)
+
+        # wait for target to boot
+        if not wait_prompt(pool_child):
+            pool_child.close()
+
+            result = tuple((-1,
+                            "Fail [No prompt]",
+                            name,
+                            time.time() - start_time,
+                            startuplog.getvalue(),
+                            None))
+            pool_child = None
+        else:
+            result = tuple((0,
+                            "Success",
+                            name,
+                            time.time() - start_time,
+                            startuplog.getvalue(),
+                            None))
+    except:
+        result = tuple((-1,
+                        "Fail [Can't run]",
+                        name,
+                        time.time() - start_time,
+                        startuplog.getvalue(),
+                        None))
+        pool_child = None
+
+    result_queue.put(result)
+
+
+# run a test
 # each result tuple in results list consists of:
 #   result value (0 or -1)
 #   result string
@@ -64,134 +120,58 @@ def wait_prompt(child):
 #   raw test log
 #   test report (if not available, should be None)
 #
-# this function needs to be outside AutotestRunner class
-# because otherwise Pool won't work (or rather it will require
-# quite a bit of effort to make it work).
+# this function needs to be outside AutotestRunner class because otherwise Pool
+# won't work (or rather it will require quite a bit of effort to make it work).
+def run_test(target, test):
+    global pool_child
 
+    if pool_child is None:
+        return -1, "Fail [No test process]", test["Name"], 0, "", None
 
-def run_test_group(cmdline, test_group):
-    results = []
-    child = None
+    # create log buffer for each test
+    # in multiprocessing environment, the logging would be
+    # interleaved and will create a mess, hence the buffering
+    logfile = StringIO.StringIO()
+    pool_child.logfile = logfile
+
+    # make a note when the test started
     start_time = time.time()
-    startuplog = None
 
-    # run test app
     try:
-        # prepare logging of init
-        startuplog = StringIO.StringIO()
+        # print test name to log buffer
+        print("\n%s %s\n" % ("-" * 20, test["Name"]), file=logfile)
 
-        print >>startuplog, "\n%s %s\n" % ("=" * 20, test_group["Prefix"])
-        print >>startuplog, "\ncmdline=%s" % cmdline
+        # run test function associated with the test
+        result = test["Func"](pool_child, test["Command"])
 
-        child = pexpect.spawn(cmdline, logfile=startuplog)
+        # make a note when the test was finished
+        end_time = time.time()
 
-        # wait for target to boot
-        if not wait_prompt(child):
-            child.close()
+        log = logfile.getvalue()
 
-            results.append((-1,
-                            "Fail [No prompt]",
-                            "Start %s" % test_group["Prefix"],
-                            time.time() - start_time,
-                            startuplog.getvalue(),
-                            None))
+        # append test data to the result tuple
+        result += (test["Name"], end_time - start_time, log)
 
-            # mark all tests as failed
-            for test in test_group["Tests"]:
-                results.append((-1, "Fail [No prompt]", test["Name"],
-                                time.time() - start_time, "", None))
-            # exit test
-            return results
+        # call report function, if any defined, and supply it with
+        # target and complete log for test run
+        if test["Report"]:
+            report = test["Report"](target, log)
 
+            # append report to results tuple
+            result += (report,)
+        else:
+            # report is None
+            result += (None,)
     except:
-        results.append((-1,
-                        "Fail [Can't run]",
-                        "Start %s" % test_group["Prefix"],
-                        time.time() - start_time,
-                        startuplog.getvalue(),
-                        None))
+        # make a note when the test crashed
+        end_time = time.time()
 
-        # mark all tests as failed
-        for t in test_group["Tests"]:
-            results.append((-1, "Fail [Can't run]", t["Name"],
-                            time.time() - start_time, "", None))
-        # exit test
-        return results
-
-    # startup was successful
-    results.append((0, "Success", "Start %s" % test_group["Prefix"],
-                    time.time() - start_time, startuplog.getvalue(), None))
-
-    # parse the binary for available test commands
-    binary = cmdline.split()[0]
-    stripped = 'not stripped' not in subprocess.check_output(['file', binary])
-    if not stripped:
-        symbols = subprocess.check_output(['nm', binary]).decode('utf-8')
-        avail_cmds = re.findall('test_register_(\w+)', symbols)
-
-    # run all tests in test group
-    for test in test_group["Tests"]:
-
-        # create log buffer for each test
-        # in multiprocessing environment, the logging would be
-        # interleaved and will create a mess, hence the buffering
-        logfile = StringIO.StringIO()
-        child.logfile = logfile
-
-        result = ()
-
-        # make a note when the test started
-        start_time = time.time()
-
-        try:
-            # print test name to log buffer
-            print >>logfile, "\n%s %s\n" % ("-" * 20, test["Name"])
-
-            # run test function associated with the test
-            if stripped or test["Command"] in avail_cmds:
-                result = test["Func"](child, test["Command"])
-            else:
-                result = (0, "Skipped [Not Available]")
-
-            # make a note when the test was finished
-            end_time = time.time()
-
-            # append test data to the result tuple
-            result += (test["Name"], end_time - start_time,
-                       logfile.getvalue())
-
-            # call report function, if any defined, and supply it with
-            # target and complete log for test run
-            if test["Report"]:
-                report = test["Report"](self.target, log)
-
-                # append report to results tuple
-                result += (report,)
-            else:
-                # report is None
-                result += (None,)
-        except:
-            # make a note when the test crashed
-            end_time = time.time()
-
-            # mark test as failed
-            result = (-1, "Fail [Crash]", test["Name"],
-                      end_time - start_time, logfile.getvalue(), None)
-        finally:
-            # append the results to the results list
-            results.append(result)
-
-    # regardless of whether test has crashed, try quitting it
-    try:
-        child.sendline("quit")
-        child.close()
-    # if the test crashed, just do nothing instead
-    except:
-        # nop
-        pass
+        # mark test as failed
+        result = (-1, "Fail [Crash]", test["Name"],
+                  end_time - start_time, logfile.getvalue(), None)
 
     # return test results
-    return results
+    return result
 
 
 # class representing an instance of autotests run
@@ -209,11 +189,17 @@ class AutotestRunner:
     blacklist = []
     whitelist = []
 
-    def __init__(self, cmdline, target, blacklist, whitelist):
+    def __init__(self, cmdline, target, blacklist, whitelist, n_processes):
         self.cmdline = cmdline
         self.target = target
+        self.binary = cmdline.split()[0]
         self.blacklist = blacklist
         self.whitelist = whitelist
+        self.skipped = []
+        self.parallel_tests = []
+        self.non_parallel_tests = []
+        self.n_processes = n_processes
+        self.active_processes = 0
 
         # log file filename
         logfile = "%s.log" % target
@@ -227,177 +213,196 @@ class AutotestRunner:
         self.csvwriter.writerow(["test_name", "test_result", "result_str"])
 
     # set up cmdline string
-    def __get_cmdline(self, test):
-        cmdline = self.cmdline
-
-        # append memory limitations for each test
-        # otherwise tests won't run in parallel
-        if "i686" not in self.target:
-            cmdline += " --socket-mem=%s" % test["Memory"]
-        else:
-            # affinitize startup so that tests don't fail on i686
-            cmdline = "taskset 1 " + cmdline
-            cmdline += " -m " + str(sum(map(int, test["Memory"].split(","))))
-
-        # set group prefix for autotest group
-        # otherwise they won't run in parallel
-        cmdline += " --file-prefix=%s" % test["Prefix"]
+    def __get_cmdline(self, cpu_nr):
+        cmdline = ("taskset -c %i " % cpu_nr) + self.cmdline
 
         return cmdline
 
-    def add_parallel_test_group(self, test_group):
-        self.parallel_test_groups.append(test_group)
+    def __process_result(self, result):
 
-    def add_non_parallel_test_group(self, test_group):
-        self.non_parallel_test_groups.append(test_group)
+        # unpack result tuple
+        test_result, result_str, test_name, \
+            test_time, log, report = result
 
-    def __process_results(self, results):
-        # this iterates over individual test results
-        for i, result in enumerate(results):
+        # get total run time
+        cur_time = time.time()
+        total_time = int(cur_time - self.start)
 
-            # increase total number of tests that were run
-            # do not include "start" test
-            if i > 0:
-                self.n_tests += 1
+        # print results, test run time and total time since start
+        result = ("%s:" % test_name).ljust(30)
+        result += result_str.ljust(29)
+        result += "[%02dm %02ds]" % (test_time / 60, test_time % 60)
 
-            # unpack result tuple
-            test_result, result_str, test_name, \
-                test_time, log, report = result
+        # don't print out total time every line, it's the same anyway
+        print(result + "[%02dm %02ds]" % (total_time / 60, total_time % 60))
 
-            # get total run time
-            cur_time = time.time()
-            total_time = int(cur_time - self.start)
+        # if test failed and it wasn't a "start" test
+        if test_result < 0:
+            self.fails += 1
 
-            # print results, test run time and total time since start
-            result = ("%s:" % test_name).ljust(30)
-            result += result_str.ljust(29)
-            result += "[%02dm %02ds]" % (test_time / 60, test_time % 60)
+        # collect logs
+        self.log_buffers.append(log)
 
-            # don't print out total time every line, it's the same anyway
-            if i == len(results) - 1:
-                print(result,
-                      "[%02dm %02ds]" % (total_time / 60, total_time % 60))
+        # create report if it exists
+        if report:
+            try:
+                f = open("%s_%s_report.rst" %
+                         (self.target, test_name), "w")
+            except IOError:
+                print("Report for %s could not be created!" % test_name)
             else:
-                print(result)
+                with f:
+                    f.write(report)
 
-            # if test failed and it wasn't a "start" test
-            if test_result < 0 and not i == 0:
-                self.fails += 1
+        # write test result to CSV file
+        self.csvwriter.writerow([test_name, test_result, result_str])
 
-            # collect logs
-            self.log_buffers.append(log)
+    # this function checks individual test and decides if this test should be in
+    # the group by comparing it against  whitelist/blacklist. it also checks if
+    # the test is compiled into the binary, and marks it as skipped if necessary
+    def __filter_test(self, test):
+        test_cmd = test["Command"]
+        test_id = test_cmd
 
-            # create report if it exists
-            if report:
-                try:
-                    f = open("%s_%s_report.rst" %
-                             (self.target, test_name), "w")
-                except IOError:
-                    print("Report for %s could not be created!" % test_name)
-                else:
-                    with f:
-                        f.write(report)
+        # dump tests are specified in full e.g. "Dump_mempool"
+        if "_autotest" in test_id:
+            test_id = test_id[:-len("_autotest")]
 
-            # write test result to CSV file
-            if i != 0:
-                self.csvwriter.writerow([test_name, test_result, result_str])
+        # filter out blacklisted/whitelisted tests
+        if self.blacklist and test_id in self.blacklist:
+            return False
+        if self.whitelist and test_id not in self.whitelist:
+            return False
 
-    # this function iterates over test groups and removes each
-    # test that is not in whitelist/blacklist
-    def __filter_groups(self, test_groups):
-        groups_to_remove = []
+        # if test wasn't compiled in, remove it as well
 
-        # filter out tests from parallel test groups
-        for i, test_group in enumerate(test_groups):
+        # parse the binary for available test commands
+        stripped = 'not stripped' not in \
+                   subprocess.check_output(['file', self.binary])
+        if not stripped:
+            symbols = subprocess.check_output(['nm',
+                                               self.binary]).decode('utf-8')
+            avail_cmds = re.findall('test_register_(\w+)', symbols)
 
-            # iterate over a copy so that we could safely delete individual
-            # tests
-            for test in test_group["Tests"][:]:
-                test_id = test["Command"]
+            if test_cmd not in avail_cmds:
+                # notify user
+                result = 0, "Skipped [Not compiled]", test_id, 0, "", None
+                self.skipped.append(tuple(result))
+                return False
 
-                # dump tests are specified in full e.g. "Dump_mempool"
-                if "_autotest" in test_id:
-                    test_id = test_id[:-len("_autotest")]
+        return True
 
-                # filter out blacklisted/whitelisted tests
-                if self.blacklist and test_id in self.blacklist:
-                    test_group["Tests"].remove(test)
+    def __run_test_group(self, test_group, worker_cmdlines):
+        group_queue = Queue()
+        init_result_queue = Queue()
+        for proc, cmdline in enumerate(worker_cmdlines):
+            prefix = "test%i" % proc if len(worker_cmdlines) > 1 else ""
+            group_queue.put(tuple((cmdline, prefix)))
+
+        # create a pool of worker threads
+        # we will initialize child in the initializer, and we don't need to
+        # close the child because when the pool worker gets destroyed, child
+        # closes the process
+        pool = Pool(processes=len(worker_cmdlines),
+                    initializer=pool_init,
+                    initargs=(group_queue, init_result_queue))
+
+        results = []
+
+        # process all initialization results
+        for _ in range(len(worker_cmdlines)):
+            self.__process_result(init_result_queue.get())
+
+        # run all tests asynchronously
+        for test in test_group:
+            result = pool.apply_async(run_test, (self.target, test))
+            results.append(result)
+
+        # tell the pool to stop all processes once done
+        pool.close()
+
+        # iterate while we have group execution results to get
+        while len(results) > 0:
+            # iterate over a copy to be able to safely delete results
+            # this iterates over a list of group results
+            for async_result in results[:]:
+                # if the thread hasn't finished yet, continue
+                if not async_result.ready():
                     continue
-                if self.whitelist and test_id not in self.whitelist:
-                    test_group["Tests"].remove(test)
-                    continue
 
-            # modify or remove original group
-            if len(test_group["Tests"]) > 0:
-                test_groups[i] = test_group
-            else:
-                # remember which groups should be deleted
-                # put the numbers backwards so that we start
-                # deleting from the end, not from the beginning
-                groups_to_remove.insert(0, i)
+                res = async_result.get()
 
-        # remove test groups that need to be removed
-        for i in groups_to_remove:
-            del test_groups[i]
+                self.__process_result(res)
 
-        return test_groups
+                # remove result from results list once we're done with it
+                results.remove(async_result)
 
     # iterate over test groups and run tests associated with them
     def run_all_tests(self):
         # filter groups
-        self.parallel_test_groups = \
-            self.__filter_groups(self.parallel_test_groups)
-        self.non_parallel_test_groups = \
-            self.__filter_groups(self.non_parallel_test_groups)
+        self.parallel_tests = list(
+            filter(self.__filter_test,
+                   self.parallel_tests)
+        )
+        self.non_parallel_tests = list(
+            filter(self.__filter_test,
+                   self.non_parallel_tests)
+        )
 
-        # create a pool of worker threads
-        pool = multiprocessing.Pool(processes=1)
+        parallel_cmdlines = []
+        # FreeBSD doesn't have NUMA support
+        numa_nodes = get_numa_nodes()
+        if len(numa_nodes) > 0:
+            for proc in range(self.n_processes):
+                # spread cpu affinity between NUMA nodes to have less chance of
+                # running out of memory while running multiple test apps in
+                # parallel. to do that, alternate between NUMA nodes in a round
+                # robin fashion, and pick an arbitrary CPU from that node to
+                # taskset our execution to
+                numa_node = numa_nodes[self.active_processes % len(numa_nodes)]
+                cpu_nr = first_cpu_on_node(numa_node)
+                parallel_cmdlines += [self.__get_cmdline(cpu_nr)]
+                # increase number of active processes so that the next cmdline
+                # gets a different NUMA node
+                self.active_processes += 1
+        else:
+            parallel_cmdlines = [self.cmdline] * self.n_processes
 
-        results = []
+        print("Running tests with %d workers" % self.n_processes)
+
+        # create table header
+        print("")
+        print("Test name".ljust(30) + "Test result".ljust(29) +
+              "Test".center(9) + "Total".center(9))
+        print("=" * 80)
+
+        if len(self.skipped):
+            print("Skipped autotests:")
+
+            # print out any skipped tests
+            for result in self.skipped:
+                # unpack result tuple
+                test_result, result_str, test_name, _, _, _ = result
+                self.csvwriter.writerow([test_name, test_result, result_str])
+
+                t = ("%s:" % test_name).ljust(30)
+                t += result_str.ljust(29)
+                t += "[00m 00s]"
+
+                print(t)
+
+        # make a note of tests start time
+        self.start = time.time()
 
         # whatever happens, try to save as much logs as possible
         try:
+            if len(self.parallel_tests) > 0:
+                print("Parallel autotests:")
+                self.__run_test_group(self.parallel_tests, parallel_cmdlines)
 
-            # create table header
-            print("")
-            print("Test name".ljust(30), "Test result".ljust(29),
-                  "Test".center(9), "Total".center(9))
-            print("=" * 80)
-
-            # make a note of tests start time
-            self.start = time.time()
-
-            # assign worker threads to run test groups
-            for test_group in self.parallel_test_groups:
-                result = pool.apply_async(run_test_group,
-                                          [self.__get_cmdline(test_group),
-                                           test_group])
-                results.append(result)
-
-            # iterate while we have group execution results to get
-            while len(results) > 0:
-
-                # iterate over a copy to be able to safely delete results
-                # this iterates over a list of group results
-                for group_result in results[:]:
-
-                    # if the thread hasn't finished yet, continue
-                    if not group_result.ready():
-                        continue
-
-                    res = group_result.get()
-
-                    self.__process_results(res)
-
-                    # remove result from results list once we're done with it
-                    results.remove(group_result)
-
-            # run non_parallel tests. they are run one by one, synchronously
-            for test_group in self.non_parallel_test_groups:
-                group_result = run_test_group(
-                    self.__get_cmdline(test_group), test_group)
-
-                self.__process_results(group_result)
+            if len(self.non_parallel_tests) > 0:
+                print("Non-parallel autotests:")
+                self.__run_test_group(self.non_parallel_tests, [self.cmdline])
 
             # get total run time
             cur_time = time.time()

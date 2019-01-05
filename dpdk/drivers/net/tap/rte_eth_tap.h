@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #ifndef _RTE_ETH_TAP_H_
@@ -41,14 +13,24 @@
 
 #include <linux/if_tun.h>
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_ether.h>
+#include <rte_gso.h>
+#include "tap_log.h"
 
 #ifdef IFF_MULTI_QUEUE
-#define RTE_PMD_TAP_MAX_QUEUES	16
+#define RTE_PMD_TAP_MAX_QUEUES	TAP_MAX_QUEUES
 #else
 #define RTE_PMD_TAP_MAX_QUEUES	1
 #endif
+#define MAX_GSO_MBUFS 64
+
+enum rte_tuntap_type {
+	ETH_TUNTAP_TYPE_UNKNOWN,
+	ETH_TUNTAP_TYPE_TUN,
+	ETH_TUNTAP_TYPE_TAP,
+	ETH_TUNTAP_TYPE_MAX,
+};
 
 struct pkt_stats {
 	uint64_t opackets;              /* Number of output packets */
@@ -64,7 +46,7 @@ struct rx_queue {
 	struct rte_mempool *mp;         /* Mempool for RX packets */
 	uint32_t trigger_seen;          /* Last seen Rx trigger value */
 	uint16_t in_port;               /* Port ID */
-	int fd;
+	uint16_t queue_id;		/* queue ID*/
 	struct pkt_stats stats;         /* Stats for this RX queue */
 	uint16_t nb_rx_desc;            /* max number of mbufs available */
 	struct rte_eth_rxmode *rxmode;  /* RX features */
@@ -74,15 +56,20 @@ struct rx_queue {
 };
 
 struct tx_queue {
-	int fd;
+	int type;                       /* Type field - TUN|TAP */
 	uint16_t *mtu;                  /* Pointer to MTU from dev_data */
+	uint16_t csum:1;                /* Enable checksum offloading */
 	struct pkt_stats stats;         /* Stats for this TX queue */
+	struct rte_gso_ctx gso_ctx;     /* GSO context */
+	uint16_t out_port;              /* Port ID */
+	uint16_t queue_id;		/* queue ID*/
 };
 
 struct pmd_internals {
 	struct rte_eth_dev *dev;          /* Ethernet device. */
 	char remote_iface[RTE_ETH_NAME_MAX_LEN]; /* Remote netdevice name */
 	char name[RTE_ETH_NAME_MAX_LEN];  /* Internal Tap device name */
+	int type;                         /* Type field - TUN|TAP */
 	struct ether_addr eth_addr;       /* Mac address of the device port */
 	struct ifreq remote_initial_flags;   /* Remote netdevice flags on init */
 	int remote_if_index;              /* remote netdevice IF_INDEX */
@@ -90,12 +77,29 @@ struct pmd_internals {
 	int ioctl_sock;                   /* socket for ioctl calls */
 	int nlsk_fd;                      /* Netlink socket fd */
 	int flow_isolate;                 /* 1 if flow isolation is enabled */
+	int flower_support;               /* 1 if kernel supports, else 0 */
+	int flower_vlan_support;          /* 1 if kernel supports, else 0 */
+	int rss_enabled;                  /* 1 if RSS is enabled, else 0 */
+	/* implicit rules set when RSS is enabled */
+	int map_fd;                       /* BPF RSS map fd */
+	int bpf_fd[RTE_PMD_TAP_MAX_QUEUES];/* List of bpf fds per queue */
+	LIST_HEAD(tap_rss_flows, rte_flow) rss_flows;
 	LIST_HEAD(tap_flows, rte_flow) flows;        /* rte_flow rules */
 	/* implicit rte_flow rules set when a remote device is active */
 	LIST_HEAD(tap_implicit_flows, rte_flow) implicit_flows;
 	struct rx_queue rxq[RTE_PMD_TAP_MAX_QUEUES]; /* List of RX queues */
 	struct tx_queue txq[RTE_PMD_TAP_MAX_QUEUES]; /* List of TX queues */
 	struct rte_intr_handle intr_handle;          /* LSC interrupt handle. */
+	int ka_fd;                        /* keep-alive file descriptor */
 };
+
+struct pmd_process_private {
+	int rxq_fds[RTE_PMD_TAP_MAX_QUEUES];
+	int txq_fds[RTE_PMD_TAP_MAX_QUEUES];
+};
+
+/* tap_intr.c */
+
+int tap_rx_intr_vec_set(struct rte_eth_dev *dev, int set);
 
 #endif /* _RTE_ETH_TAP_H_ */

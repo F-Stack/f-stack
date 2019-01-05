@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stddef.h>
@@ -88,8 +59,11 @@ ipv6_frag_reassemble(struct ip_frag_pkt *fp)
 			/* previous fragment found. */
 			if (fp->frags[i].ofs + fp->frags[i].len == ofs) {
 
+				RTE_ASSERT(curr_idx != i);
+
 				/* adjust start of the last fragment data. */
-				rte_pktmbuf_adj(m, (uint16_t)(m->l2_len + m->l3_len));
+				rte_pktmbuf_adj(m,
+					(uint16_t)(m->l2_len + m->l3_len));
 				rte_pktmbuf_chain(fp->frags[i].mb, m);
 
 				/* this mbuf should not be accessed directly */
@@ -111,7 +85,9 @@ ipv6_frag_reassemble(struct ip_frag_pkt *fp)
 	/* chain with the first fragment. */
 	rte_pktmbuf_adj(m, (uint16_t)(m->l2_len + m->l3_len));
 	rte_pktmbuf_chain(fp->frags[IP_FIRST_FRAG_IDX].mb, m);
+	fp->frags[curr_idx].mb = NULL;
 	m = fp->frags[IP_FIRST_FRAG_IDX].mb;
+	fp->frags[IP_FIRST_FRAG_IDX].mb = NULL;
 
 	/* update mbuf fields for reassembled packet. */
 	m->ol_flags |= PKT_TX_IP_CKSUM;
@@ -162,12 +138,13 @@ ipv6_frag_reassemble(struct ip_frag_pkt *fp)
 #define FRAG_OFFSET(x) (rte_cpu_to_be_16(x) >> 3)
 struct rte_mbuf *
 rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
-		struct rte_ip_frag_death_row *dr, struct rte_mbuf *mb, uint64_t tms,
-		struct ipv6_hdr *ip_hdr, struct ipv6_extension_fragment *frag_hdr)
+	struct rte_ip_frag_death_row *dr, struct rte_mbuf *mb, uint64_t tms,
+	struct ipv6_hdr *ip_hdr, struct ipv6_extension_fragment *frag_hdr)
 {
 	struct ip_frag_pkt *fp;
 	struct ip_frag_key key;
-	uint16_t ip_len, ip_ofs;
+	uint16_t ip_ofs;
+	int32_t ip_len;
 
 	rte_memcpy(&key.src_dst[0], ip_hdr->src_addr, 16);
 	rte_memcpy(&key.src_dst[2], ip_hdr->dst_addr, 16);
@@ -178,15 +155,17 @@ rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	ip_ofs = FRAG_OFFSET(frag_hdr->frag_data) * 8;
 
 	/*
-	 * as per RFC2460, payload length contains all extension headers as well.
-	 * since we don't support anything but frag headers, this is what we remove
-	 * from the payload len.
+	 * as per RFC2460, payload length contains all extension headers
+	 * as well.
+	 * since we don't support anything but frag headers,
+	 * this is what we remove from the payload len.
 	 */
 	ip_len = rte_be_to_cpu_16(ip_hdr->payload_len) - sizeof(*frag_hdr);
 
 	IP_FRAG_LOG(DEBUG, "%s:%d:\n"
 		"mbuf: %p, tms: %" PRIu64
-		", key: <" IPv6_KEY_BYTES_FMT ", %#x>, ofs: %u, len: %u, flags: %#x\n"
+		", key: <" IPv6_KEY_BYTES_FMT ", %#x>, "
+		"ofs: %u, len: %d, flags: %#x\n"
 		"tbl: %p, max_cycles: %" PRIu64 ", entry_mask: %#x, "
 		"max_entries: %u, use_entries: %u\n\n",
 		__func__, __LINE__,
@@ -194,6 +173,12 @@ rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		RTE_IPV6_GET_MF(frag_hdr->frag_data),
 		tbl, tbl->max_cycles, tbl->entry_mask, tbl->max_entries,
 		tbl->use_entries);
+
+	/* check that fragment length is greater then zero. */
+	if (ip_len <= 0) {
+		IP_FRAG_MBUF2DR(dr, mb);
+		return NULL;
+	}
 
 	/* try to find/add entry into the fragment's table. */
 	fp = ip_frag_find(tbl, dr, &key, tms);

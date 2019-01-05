@@ -13,8 +13,14 @@ DPDK_2.0 {
 };
 
 DPDK_17.08 {
-    global:
+	global:
 
-    rte_ip_frag_table_destroy;
+	rte_ip_frag_table_destroy;
 
 } DPDK_2.0;
+
+EXPERIMENTAL {
+	global:
+
+	rte_frag_table_del_expired_entries;
+};

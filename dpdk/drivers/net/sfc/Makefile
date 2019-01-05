@@ -1,32 +1,10 @@
+# SPDX-License-Identifier: BSD-3-Clause
 #
-#   BSD LICENSE
-#
-# Copyright (c) 2016-2017 Solarflare Communications Inc.
+# Copyright (c) 2016-2018 Solarflare Communications Inc.
 # All rights reserved.
 #
 # This software was jointly developed between OKTET Labs (under contract
 # for Solarflare) and Solarflare Communications, Inc.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice,
-#    this list of conditions and the following disclaimer.
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-# THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-# PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
-# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
-# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
-# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
-# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
-# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
-# EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -35,6 +13,7 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_sfc_efx.a
 
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -I$(SRCDIR)/base/
 CFLAGS += -I$(SRCDIR)
 CFLAGS += -O3
@@ -67,11 +46,11 @@ else ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
 CFLAGS_BASE_DRIVER += -Wno-unused-but-set-variable
 # Suppress ICC false positive warning on 'bulk' may be used before its
 # value is set
-CFLAGS_sfc_ef10_tx.o += -wd3656
+CFLAGS_sfc_ef10_tx.o += -diag-disable 3656
 endif
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
-LDLIBS += -lrte_bus_pci
+LDLIBS += -lrte_bus_pci -lrte_pci
 
 #
 # List of base driver object files for which
@@ -81,7 +60,7 @@ BASE_DRIVER_OBJS=$(sort $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.
 $(foreach obj, $(BASE_DRIVER_OBJS), \
   $(eval CFLAGS_$(obj)+=$(CFLAGS_BASE_DRIVER)))
 
-EXPORT_MAP := rte_pmd_sfc_efx_version.map
+EXPORT_MAP := rte_pmd_sfc_version.map
 
 LIBABIVER := 1
 
@@ -102,6 +81,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += sfc_filter.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += sfc_flow.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += sfc_dp.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += sfc_ef10_rx.c
+SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += sfc_ef10_essb_rx.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += sfc_ef10_tx.c
 
 VPATH += $(SRCDIR)/base
@@ -122,6 +102,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_phy.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_port.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_rx.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_sram.c
+SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_tunnel.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_tx.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += efx_vpd.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += mcdi_mon.c
@@ -135,6 +116,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += siena_vpd.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_ev.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_filter.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_intr.c
+SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_image.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_mac.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_mcdi.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_nic.c
@@ -145,5 +127,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_tx.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += ef10_vpd.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += hunt_nic.c
 SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += medford_nic.c
+SRCS-$(CONFIG_RTE_LIBRTE_SFC_EFX_PMD) += medford2_nic.c
 
 include $(RTE_SDK)/mk/rte.lib.mk

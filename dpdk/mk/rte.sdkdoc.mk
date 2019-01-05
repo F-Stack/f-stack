@@ -1,34 +1,6 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
-#   Copyright(c) 2013-2015 6WIND S.A.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2015 Intel Corporation.
+# Copyright(c) 2013-2015 6WIND S.A.
 
 ifdef T
 ifeq ("$(origin T)", "command line")
@@ -71,15 +43,13 @@ clean: api-html-clean guides-html-clean guides-pdf-clean guides-man-clean
 api-html: $(API_EXAMPLES)
 	@echo 'doxygen for API...'
 	$(Q)mkdir -p $(RTE_OUTPUT)/doc/html
-	$(Q)(cat $(RTE_SDK)/doc/api/doxy-api.conf     && \
-	    printf 'PROJECT_NUMBER = '                && \
-	                     $(MAKE) -rRs showversion && \
-	    echo INPUT           += $(API_EXAMPLES)   && \
-	    echo OUTPUT_DIRECTORY = $(RTE_OUTPUT)/doc && \
-	    echo HTML_OUTPUT      = html/api          && \
-	    echo GENERATE_HTML    = YES               && \
-	    echo GENERATE_LATEX   = NO                && \
-	    echo GENERATE_MAN     = NO                )| \
+	$(Q)(sed -e "s|@VERSION@|`$(MAKE) -rRs showversion`|" \
+	         -e "s|@API_EXAMPLES@|$(API_EXAMPLES)|"       \
+	         -e "s|@OUTPUT@|$(RTE_OUTPUT)/doc|"           \
+	         -e "s|@HTML_OUTPUT@|html/api|"               \
+	         -e "s|@TOPDIR@|./|g"                         \
+	         -e "s|@STRIP_FROM_PATH@|./|g"                \
+	         $(RTE_SDK)/doc/api/doxy-api.conf.in)|        \
 	    doxygen -
 	$(Q)$(RTE_SDK)/doc/api/doxy-html-custom.sh $(RTE_OUTPUT)/doc/html/api/doxygen.css
 
@@ -91,10 +61,7 @@ api-html-clean:
 
 $(API_EXAMPLES): api-html-clean
 	$(Q)mkdir -p $(@D)
-	@printf '/**\n' > $(API_EXAMPLES)
-	@printf '@page examples DPDK Example Programs\n\n' >> $(API_EXAMPLES)
-	@find examples -type f -name '*.c' -printf '@example %p\n' | LC_ALL=C sort >> $(API_EXAMPLES)
-	@printf '*/\n' >> $(API_EXAMPLES)
+	$(Q)doc/api/generate_examples.sh examples $(API_EXAMPLES)
 
 guides-pdf-clean: guides-pdf-img-clean
 guides-pdf-img-clean:
@@ -117,7 +84,13 @@ guides-pdf-%:
 	$(Q)mv $(RTE_OUTPUT)/doc/pdf/guides/$*/doc.pdf \
 		$(RTE_OUTPUT)/doc/pdf/guides/$*.pdf
 
-guides-%:
+guides-html-prepare:
+	$(Q)install -D -m0644 $(RTE_SDK)/doc/guides/custom.css \
+		$(RTE_OUTPUT)/doc/html/guides/_static/css/custom.css
+
+guides-%-prepare: ;
+
+guides-%: guides-%-prepare
 	@echo 'sphinx processing $@...'
 	$(Q)$(RTE_SPHINX_BUILD) -b $* $(RTE_SPHINX_VERBOSE) \
 		-c $(RTE_SDK)/doc/guides $(RTE_SDK)/doc/guides \

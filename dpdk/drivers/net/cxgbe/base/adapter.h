@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2014-2017 Chelsio Communications.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Chelsio Communications nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Chelsio Communications.
+ * All rights reserved.
  */
 
 /* This file should not be included directly.  Include common.h instead. */
@@ -39,12 +11,16 @@
 #include <rte_bus_pci.h>
 #include <rte_mbuf.h>
 #include <rte_io.h>
+#include <rte_rwlock.h>
+#include <rte_ethdev.h>
 
 #include "cxgbe_compat.h"
 #include "t4_regs_values.h"
+#include "cxgbe_ofld.h"
 
 enum {
 	MAX_ETH_QSETS = 64,           /* # of Ethernet Tx/Rx queue sets */
+	MAX_CTRL_QUEUES = NCHAN,      /* # of control Tx queues */
 };
 
 struct adapter;
@@ -68,6 +44,7 @@ struct port_info {
 	u8     port_type;               /* firmware port type */
 	u8     mod_type;                /* firmware module type */
 	u8     port_id;                 /* physical port ID */
+	u8     pidx;			/* port index for this PF */
 	u8     tx_chan;                 /* associated channel */
 
 	u8     n_rx_qsets;              /* # of rx qsets */
@@ -77,6 +54,7 @@ struct port_info {
 	u16    *rss;                    /* rss table */
 	u8     rss_mode;                /* rss mode */
 	u16    rss_size;                /* size of VI's RSS table slice */
+	u64    rss_hf;			/* RSS Hash Function */
 };
 
 /* Enable or disable autonegotiation.  If this is set to enable,
@@ -196,6 +174,7 @@ struct sge_eth_rxq {                /* a SW Ethernet Rx queue */
  * scenario where a packet needs 32 bytes.
  */
 #define ETH_COALESCE_PKT_NUM 15
+#define ETH_COALESCE_VF_PKT_NUM 7
 #define ETH_COALESCE_PKT_PER_DESC 2
 
 struct tx_eth_coal_desc {
@@ -225,6 +204,10 @@ struct eth_coalesce {
 	unsigned int len;
 	unsigned int flits;
 	unsigned int max;
+	__u8 ethmacdst[ETHER_ADDR_LEN];
+	__u8 ethmacsrc[ETHER_ADDR_LEN];
+	__be16 ethtype;
+	__be16 vlantci;
 };
 
 struct sge_txq {
@@ -247,6 +230,7 @@ struct sge_txq {
 	unsigned int equeidx;	   /* last sent credit request */
 	unsigned int last_pidx;	   /* last pidx recorded by tx monitor */
 	unsigned int last_coal_idx;/* last coal-idx recorded by tx monitor */
+	unsigned int abs_id;
 
 	int db_disabled;            /* doorbell state */
 	unsigned short db_pidx;     /* doorbell producer index */
@@ -267,16 +251,27 @@ struct sge_eth_tx_stats {	/* Ethernet tx queue statistics */
 struct sge_eth_txq {                   /* state for an SGE Ethernet Tx queue */
 	struct sge_txq q;
 	struct rte_eth_dev *eth_dev;   /* port that this queue belongs to */
+	struct rte_eth_dev_data *data;
 	struct sge_eth_tx_stats stats; /* queue statistics */
 	rte_spinlock_t txq_lock;
 
 	unsigned int flags;            /* flags for state of the queue */
 } __rte_cache_aligned;
 
+struct sge_ctrl_txq {                /* State for an SGE control Tx queue */
+	struct sge_txq q;            /* txq */
+	struct adapter *adapter;     /* adapter associated with this queue */
+	rte_spinlock_t ctrlq_lock;   /* control queue lock */
+	u8 full;                     /* the Tx ring is full */
+	u64 txp;                     /* number of transmits */
+	struct rte_mempool *mb_pool; /* mempool to generate ctrl pkts */
+} __rte_cache_aligned;
+
 struct sge {
 	struct sge_eth_txq ethtxq[MAX_ETH_QSETS];
 	struct sge_eth_rxq ethrxq[MAX_ETH_QSETS];
 	struct sge_rspq fw_evtq __rte_cache_aligned;
+	struct sge_ctrl_txq ctrlq[MAX_CTRL_QUEUES];
 
 	u16 max_ethqsets;           /* # of available Ethernet queue sets */
 	u32 stat_len;               /* length of status page at ring end */
@@ -308,7 +303,7 @@ struct adapter {
 	struct rte_pci_device *pdev;       /* associated rte pci device */
 	struct rte_eth_dev *eth_dev;       /* first port's rte eth device */
 	struct adapter_params params;      /* adapter parameters */
-	struct port_info port[MAX_NPORTS]; /* ports belonging to this adapter */
+	struct port_info *port[MAX_NPORTS];/* ports belonging to this adapter */
 	struct sge sge;                    /* associated SGE */
 
 	/* support for single-threading access to adapter mailbox registers */
@@ -325,7 +320,79 @@ struct adapter {
 	unsigned int vpd_flag;
 
 	int use_unpacked_mode; /* unpacked rx mode state */
+	rte_spinlock_t win0_lock;
+
+	unsigned int clipt_start; /* CLIP table start */
+	unsigned int clipt_end;   /* CLIP table end */
+	unsigned int l2t_start;   /* Layer 2 table start */
+	unsigned int l2t_end;     /* Layer 2 table end */
+	struct clip_tbl *clipt;   /* CLIP table */
+	struct l2t_data *l2t;     /* Layer 2 table */
+	struct mpstcam_table *mpstcam;
+
+	struct tid_info tids;     /* Info used to access TID related tables */
 };
+
+/**
+ * t4_os_rwlock_init - initialize rwlock
+ * @lock: the rwlock
+ */
+static inline void t4_os_rwlock_init(rte_rwlock_t *lock)
+{
+	rte_rwlock_init(lock);
+}
+
+/**
+ * t4_os_write_lock - get a write lock
+ * @lock: the rwlock
+ */
+static inline void t4_os_write_lock(rte_rwlock_t *lock)
+{
+	rte_rwlock_write_lock(lock);
+}
+
+/**
+ * t4_os_write_unlock - unlock a write lock
+ * @lock: the rwlock
+ */
+static inline void t4_os_write_unlock(rte_rwlock_t *lock)
+{
+	rte_rwlock_write_unlock(lock);
+}
+
+/**
+ * ethdev2pinfo - return the port_info structure associated with a rte_eth_dev
+ * @dev: the rte_eth_dev
+ *
+ * Return the struct port_info associated with a rte_eth_dev
+ */
+static inline struct port_info *ethdev2pinfo(const struct rte_eth_dev *dev)
+{
+	return (struct port_info *)dev->data->dev_private;
+}
+
+/**
+ * adap2pinfo - return the port_info of a port
+ * @adap: the adapter
+ * @idx: the port index
+ *
+ * Return the port_info structure for the port of the given index.
+ */
+static inline struct port_info *adap2pinfo(const struct adapter *adap, int idx)
+{
+	return adap->port[idx];
+}
+
+/**
+ * ethdev2adap - return the adapter structure associated with a rte_eth_dev
+ * @dev: the rte_eth_dev
+ *
+ * Return the struct adapter associated with a rte_eth_dev
+ */
+static inline struct adapter *ethdev2adap(const struct rte_eth_dev *dev)
+{
+	return ethdev2pinfo(dev)->adapter;
+}
 
 #define CXGBE_PCI_REG(reg) rte_read32(reg)
 
@@ -602,7 +669,7 @@ static inline int t4_os_find_pci_capability(struct adapter *adapter, int cap)
 static inline void t4_os_set_hw_addr(struct adapter *adapter, int port_idx,
 				     u8 hw_addr[])
 {
-	struct port_info *pi = &adapter->port[port_idx];
+	struct port_info *pi = adap2pinfo(adapter, port_idx);
 
 	ether_addr_copy((struct ether_addr *)hw_addr,
 			&pi->eth_dev->data->mac_addrs[0]);
@@ -688,15 +755,35 @@ static inline void t4_os_atomic_list_del(struct mbox_entry *entry,
 }
 
 /**
- * adap2pinfo - return the port_info of a port
- * @adap: the adapter
- * @idx: the port index
- *
- * Return the port_info structure for the port of the given index.
+ * t4_init_completion - initialize completion
+ * @c: the completion context
  */
-static inline struct port_info *adap2pinfo(struct adapter *adap, int idx)
+static inline void t4_init_completion(struct t4_completion *c)
 {
-	return &adap->port[idx];
+	c->done = 0;
+	t4_os_lock_init(&c->lock);
+}
+
+/**
+ * t4_complete - set completion as done
+ * @c: the completion context
+ */
+static inline void t4_complete(struct t4_completion *c)
+{
+	t4_os_lock(&c->lock);
+	c->done = 1;
+	t4_os_unlock(&c->lock);
+}
+
+/**
+ * cxgbe_port_viid - get the VI id of a port
+ * @dev: the device for the port
+ *
+ * Return the VI id of the given port.
+ */
+static inline unsigned int cxgbe_port_viid(const struct rte_eth_dev *dev)
+{
+	return ethdev2pinfo(dev)->viid;
 }
 
 void *t4_alloc_mem(size_t size);
@@ -713,12 +800,17 @@ void t4_sge_tx_monitor_start(struct adapter *adap);
 void t4_sge_tx_monitor_stop(struct adapter *adap);
 int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
 		uint16_t nb_pkts);
+int t4_mgmt_tx(struct sge_ctrl_txq *txq, struct rte_mbuf *mbuf);
 int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 		     const struct pkt_gl *gl);
 int t4_sge_init(struct adapter *adap);
+int t4vf_sge_init(struct adapter *adap);
 int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,
 			 struct rte_eth_dev *eth_dev, uint16_t queue_id,
 			 unsigned int iqid, int socket_id);
+int t4_sge_alloc_ctrl_txq(struct adapter *adap, struct sge_ctrl_txq *txq,
+			  struct rte_eth_dev *eth_dev, uint16_t queue_id,
+			  unsigned int iqid, int socket_id);
 int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *rspq, bool fwevtq,
 		     struct rte_eth_dev *eth_dev, int intr_idx,
 		     struct sge_fl *fl, rspq_handler_t handler,
@@ -735,6 +827,7 @@ int cxgb4_set_rspq_intr_params(struct sge_rspq *q, unsigned int us,
 			       unsigned int cnt);
 int cxgbe_poll(struct sge_rspq *q, struct rte_mbuf **rx_pkts,
 	       unsigned int budget, unsigned int *work_done);
-int cxgb4_write_rss(const struct port_info *pi, const u16 *queues);
+int cxgbe_write_rss(const struct port_info *pi, const u16 *queues);
+int cxgbe_write_rss_conf(const struct port_info *pi, uint64_t flags);
 
 #endif /* __T4_ADAPTER_H__ */

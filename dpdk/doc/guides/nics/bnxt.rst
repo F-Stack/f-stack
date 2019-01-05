@@ -1,46 +1,20 @@
-..  BSD LICENSE
-    Copyright 2016 Broadcom Limited
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Broadcom Limited nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2016-2018 Broadcom
 
 BNXT Poll Mode Driver
 =====================
 
 The bnxt poll mode library (**librte_pmd_bnxt**) implements support for:
 
-  * **Broadcom NetXtreme-C®/NetXtreme-E® BCM5730X and BCM574XX family of
-    Ethernet Network Controllers**
+  * **Broadcom NetXtreme-C®/NetXtreme-E®/NetXtreme-S®
+    BCM5730X / BCM574XX / BCM58000 family of Ethernet Network Controllers**
 
     These adapters support Standards compliant 10/25/50/100Gbps 30MPPS
     full-duplex throughput.
 
     Information about the NetXtreme family of adapters can be found in the
     `NetXtreme® Brand section
-    <https://www.broadcom.com/products/ethernet-communication-and-switching?technology%5B%5D=88>`_
+    <https://www.broadcom.com/products/ethernet-connectivity/controllers/>`_
     of the `Broadcom website <http://www.broadcom.com/>`_.
 
   * **Broadcom StrataGX® BCM5871X Series of Communucations Processors**

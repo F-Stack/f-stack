@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <stdint.h>
@@ -44,8 +15,8 @@
 #include <rte_flow_classify.h>
 #include <rte_table_acl.h>
 
-#define RX_RING_SIZE 128
-#define TX_RING_SIZE 512
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
@@ -89,12 +60,13 @@ static struct{
 const char cb_port_delim[] = ":";
 
 static const struct rte_eth_conf port_conf_default = {
-	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN }
+	.rxmode = {
+		.max_rx_pkt_len = ETHER_MAX_LEN,
+	},
 };
 
 struct flow_classifier {
 	struct rte_flow_classifier *cls;
-	uint32_t table_id[RTE_FLOW_CLASSIFY_TABLE_MAX];
 };
 
 struct flow_classifier_acl {
@@ -195,7 +167,15 @@ static struct rte_flow_item  end_item = { RTE_FLOW_ITEM_TYPE_END,
 /* sample actions:
  * "actions count / end"
  */
-static struct rte_flow_action count_action = { RTE_FLOW_ACTION_TYPE_COUNT, 0};
+struct rte_flow_query_count count = {
+	.reset = 1,
+	.hits_set = 1,
+	.bytes_set = 1,
+	.hits = 0,
+	.bytes = 0,
+};
+static struct rte_flow_action count_action = { RTE_FLOW_ACTION_TYPE_COUNT,
+	&count};
 static struct rte_flow_action end_action = { RTE_FLOW_ACTION_TYPE_END, 0};
 static struct rte_flow_action actions[2];
 
@@ -216,9 +196,16 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	const uint16_t rx_rings = 1, tx_rings = 1;
 	int retval;
 	uint16_t q;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_txconf txconf;
 
-	if (port >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
+
+	rte_eth_dev_info_get(port, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	/* Configure the Ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -233,10 +220,12 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 	}
 
+	txconf = dev_info.default_txconf;
+	txconf.offloads = port_conf.txmode.offloads;
 	/* Allocate and set up 1 TX queue per Ethernet port. */
 	for (q = 0; q < tx_rings; q++) {
 		retval = rte_eth_tx_queue_setup(port, q, TX_RING_SIZE,
-				rte_eth_dev_socket_id(port), NULL);
+				rte_eth_dev_socket_id(port), &txconf);
 		if (retval < 0)
 			return retval;
 	}
@@ -268,13 +257,12 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 static __attribute__((noreturn)) void
 lcore_main(struct flow_classifier *cls_app)
 {
-	const uint8_t nb_ports = rte_eth_dev_count();
-	uint8_t port;
+	uint16_t port;
 	int ret;
 	int i = 0;
 
 	ret = rte_flow_classify_table_entry_delete(cls_app->cls,
-			cls_app->table_id[0], rules[7]);
+			rules[7]);
 	if (ret)
 		printf("table_entry_delete failed [7] %d\n\n", ret);
 	else
@@ -284,7 +272,7 @@ lcore_main(struct flow_classifier *cls_app)
 	 * Check that the port is on the same NUMA node as the polling thread
 	 * for best performance.
 	 */
-	for (port = 0; port < nb_ports; port++)
+	RTE_ETH_FOREACH_DEV(port)
 		if (rte_eth_dev_socket_id(port) > 0 &&
 			rte_eth_dev_socket_id(port) != (int)rte_socket_id()) {
 			printf("\n\n");
@@ -292,11 +280,10 @@ lcore_main(struct flow_classifier *cls_app)
 			       port);
 			printf("to polling thread.\n");
 			printf("Performance will not be optimal.\n");
-
-			printf("\nCore %u forwarding packets. ",
-			       rte_lcore_id());
-			printf("[Ctrl+C to quit]\n");
 		}
+	printf("\nCore %u forwarding packets. ", rte_lcore_id());
+	printf("[Ctrl+C to quit]\n");
+
 	/* Run until the application is quit or killed. */
 	for (;;) {
 		/*
@@ -304,7 +291,7 @@ lcore_main(struct flow_classifier *cls_app)
 		 * on the paired port.
 		 * The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
 		 */
-		for (port = 0; port < nb_ports; port++) {
+		RTE_ETH_FOREACH_DEV(port) {
 			/* Get burst of RX packets, from first port of pair. */
 			struct rte_mbuf *bufs[BURST_SIZE];
 			const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
@@ -317,7 +304,6 @@ lcore_main(struct flow_classifier *cls_app)
 				if (rules[i]) {
 					ret = rte_flow_classifier_query(
 						cls_app->cls,
-						cls_app->table_id[0],
 						bufs, nb_rx, rules[i],
 						&classify_stats);
 					if (ret)
@@ -634,9 +620,18 @@ add_classify_rule(struct rte_eth_ntuple_filter *ntuple_filter,
 	actions[0] = count_action;
 	actions[1] = end_action;
 
+	/* Validate and add rule */
+	ret = rte_flow_classify_validate(cls_app->cls, &attr,
+			pattern_ipv4_5tuple, actions, &error);
+	if (ret) {
+		printf("table entry validate failed ipv4_proto = %u\n",
+			ipv4_proto);
+		return ret;
+	}
+
 	rule = rte_flow_classify_table_entry_add(
-			cls_app->cls, cls_app->table_id[0], &key_found,
-			&attr, pattern_ipv4_5tuple, actions, &error);
+			cls_app->cls, &attr, pattern_ipv4_5tuple,
+			actions, &key_found, &error);
 	if (rule == NULL) {
 		printf("table entry add failed ipv4_proto = %u\n",
 			ipv4_proto);
@@ -755,8 +750,8 @@ int
 main(int argc, char *argv[])
 {
 	struct rte_mempool *mbuf_pool;
-	uint8_t nb_ports;
-	uint8_t portid;
+	uint16_t nb_ports;
+	uint16_t portid;
 	int ret;
 	int socket_id;
 	struct rte_table_acl_params table_acl_params;
@@ -779,7 +774,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Invalid flow_classify parameters\n");
 
 	/* Check that there is an even number of ports to send/receive on. */
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports < 2 || (nb_ports & 1))
 		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
@@ -791,7 +786,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* Initialize all ports. */
-	for (portid = 0; portid < nb_ports; portid++)
+	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu8 "\n",
 					portid);
@@ -809,7 +804,6 @@ main(int argc, char *argv[])
 
 	cls_params.name = "flow_classifier";
 	cls_params.socket_id = socket_id;
-	cls_params.type = RTE_FLOW_CLASSIFY_TABLE_TYPE_ACL;
 
 	cls_app->cls = rte_flow_classifier_create(&cls_params);
 	if (cls_app->cls == NULL) {
@@ -824,11 +818,11 @@ main(int argc, char *argv[])
 	memcpy(table_acl_params.field_format, ipv4_defs, sizeof(ipv4_defs));
 
 	/* initialise table create params */
-	cls_table_params.ops = &rte_table_acl_ops,
-	cls_table_params.arg_create = &table_acl_params,
+	cls_table_params.ops = &rte_table_acl_ops;
+	cls_table_params.arg_create = &table_acl_params;
+	cls_table_params.type = RTE_FLOW_CLASSIFY_TABLE_ACL_IP4_5TUPLE;
 
-	ret = rte_flow_classify_table_create(cls_app->cls, &cls_table_params,
-			&cls_app->table_id[0]);
+	ret = rte_flow_classify_table_create(cls_app->cls, &cls_table_params);
 	if (ret) {
 		rte_flow_classifier_free(cls_app->cls);
 		rte_free(cls_app);

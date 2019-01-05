@@ -1,41 +1,7 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
- *
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  * Copyright 2013-2015 Freescale Semiconductor Inc.
- * Copyright 2016-2017 NXP.
+ * Copyright 2016-2017 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 #ifndef __FSL_DPKG_H_
 #define __FSL_DPKG_H_
@@ -105,45 +71,41 @@ struct dpkg_mask {
 /**
  * struct dpkg_extract - A structure for defining a single extraction
  * @type: Determines how the union below is interpreted:
- *		DPKG_EXTRACT_FROM_HDR: selects 'from_hdr';
- *		DPKG_EXTRACT_FROM_DATA: selects 'from_data';
- *		DPKG_EXTRACT_FROM_PARSE: selects 'from_parse'
+ *	DPKG_EXTRACT_FROM_HDR: selects 'from_hdr';
+ *	DPKG_EXTRACT_FROM_DATA: selects 'from_data';
+ *	DPKG_EXTRACT_FROM_PARSE: selects 'from_parse'
  * @extract: Selects extraction method
+ * @extract.from_hdr: Used when 'type = DPKG_EXTRACT_FROM_HDR'
+ * @extract.from_data: Used when 'type = DPKG_EXTRACT_FROM_DATA'
+ * @extract.from_parse:  Used when 'type = DPKG_EXTRACT_FROM_PARSE'
+ * @extract.from_hdr.prot: Any of the supported headers
+ * @extract.from_hdr.type: Defines the type of header extraction:
+ *	DPKG_FROM_HDR: use size & offset below;
+ *	DPKG_FROM_FIELD: use field, size and offset below;
+ *	DPKG_FULL_FIELD: use field below
+ * @extract.from_hdr.field: One of the supported fields (NH_FLD_)
+ * @extract.from_hdr.size: Size in bytes
+ * @extract.from_hdr.offset: Byte offset
+ * @extract.from_hdr.hdr_index: Clear for cases not listed below;
+ *	Used for protocols that may have more than a single
+ *	header, 0 indicates an outer header;
+ *	Supported protocols (possible values):
+ *	NET_PROT_VLAN (0, HDR_INDEX_LAST);
+ *	NET_PROT_MPLS (0, 1, HDR_INDEX_LAST);
+ *	NET_PROT_IP(0, HDR_INDEX_LAST);
+ *	NET_PROT_IPv4(0, HDR_INDEX_LAST);
+ *	NET_PROT_IPv6(0, HDR_INDEX_LAST);
+ * @extract.from_data.size: Size in bytes
+ * @extract.from_data.offset: Byte offset
+ * @extract.from_parse.size: Size in bytes
+ * @extract.from_parse.offset: Byte offset
  * @num_of_byte_masks: Defines the number of valid entries in the array below;
  *		This is	also the number of bytes to be used as masks
  * @masks: Masks parameters
  */
 struct dpkg_extract {
 	enum dpkg_extract_type type;
-	/**
-	 * union extract - Selects extraction method
-	 * @from_hdr - Used when 'type = DPKG_EXTRACT_FROM_HDR'
-	 * @from_data - Used when 'type = DPKG_EXTRACT_FROM_DATA'
-	 * @from_parse - Used when 'type = DPKG_EXTRACT_FROM_PARSE'
-	 */
 	union {
-		/**
-		 * struct from_hdr - Used when 'type = DPKG_EXTRACT_FROM_HDR'
-		 * @prot: Any of the supported headers
-		 * @type: Defines the type of header extraction:
-		 *	DPKG_FROM_HDR: use size & offset below;
-		 *	DPKG_FROM_FIELD: use field, size and offset below;
-		 *	DPKG_FULL_FIELD: use field below
-		 * @field: One of the supported fields (NH_FLD_)
-		 *
-		 * @size: Size in bytes
-		 * @offset: Byte offset
-		 * @hdr_index: Clear for cases not listed below;
-		 *	Used for protocols that may have more than a single
-		 *	header, 0 indicates an outer header;
-		 *	Supported protocols (possible values):
-		 *	NET_PROT_VLAN (0, HDR_INDEX_LAST);
-		 *	NET_PROT_MPLS (0, 1, HDR_INDEX_LAST);
-		 *	NET_PROT_IP(0, HDR_INDEX_LAST);
-		 *	NET_PROT_IPv4(0, HDR_INDEX_LAST);
-		 *	NET_PROT_IPv6(0, HDR_INDEX_LAST);
-		 */
-
 		struct {
 			enum net_prot prot;
 			enum dpkg_extract_from_hdr_type type;
@@ -152,23 +114,10 @@ struct dpkg_extract {
 			uint8_t offset;
 			uint8_t hdr_index;
 		} from_hdr;
-		/**
-		 * struct from_data
-		 *	Used when 'type = DPKG_EXTRACT_FROM_DATA'
-		 * @size: Size in bytes
-		 * @offset: Byte offset
-		 */
 		struct {
 			uint8_t size;
 			uint8_t offset;
 		} from_data;
-
-		/**
-		 * struct from_parse
-		 *	Used when 'type = DPKG_EXTRACT_FROM_PARSE'
-		 * @size: Size in bytes
-		 * @offset: Byte offset
-		 */
 		struct {
 			uint8_t size;
 			uint8_t offset;

@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium, Inc 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #include <stdio.h>
@@ -55,6 +27,12 @@ evt_options_default(struct evt_options *opt)
 	opt->pool_sz = 16 * 1024;
 	opt->wkr_deq_dep = 16;
 	opt->nb_pkts = (1ULL << 26); /* do ~64M packets */
+	opt->nb_timers = 1E8;
+	opt->nb_timer_adptrs = 1;
+	opt->timer_tick_nsec = 1E3; /* 1000ns ~ 1us */
+	opt->max_tmo_nsec = 1E5;  /* 100000ns ~100us */
+	opt->expiry_nsec = 1E4;   /* 10000ns ~10us */
+	opt->prod_type = EVT_PROD_TYPE_SYNT;
 }
 
 typedef int (*option_parser_t)(struct evt_options *opt,
@@ -107,6 +85,29 @@ evt_parse_queue_priority(struct evt_options *opt, const char *arg __rte_unused)
 }
 
 static int
+evt_parse_eth_prod_type(struct evt_options *opt, const char *arg __rte_unused)
+{
+	opt->prod_type = EVT_PROD_TYPE_ETH_RX_ADPTR;
+	return 0;
+}
+
+static int
+evt_parse_timer_prod_type(struct evt_options *opt, const char *arg __rte_unused)
+{
+	opt->prod_type = EVT_PROD_TYPE_EVENT_TIMER_ADPTR;
+	return 0;
+}
+
+static int
+evt_parse_timer_prod_type_burst(struct evt_options *opt,
+		const char *arg __rte_unused)
+{
+	opt->prod_type = EVT_PROD_TYPE_EVENT_TIMER_ADPTR;
+	opt->timdev_use_burst = 1;
+	return 0;
+}
+
+static int
 evt_parse_test_name(struct evt_options *opt, const char *arg)
 {
 	snprintf(opt->test_name, EVT_TEST_NAME_MAX_LEN, "%s", arg);
@@ -135,6 +136,56 @@ evt_parse_nb_pkts(struct evt_options *opt, const char *arg)
 	int ret;
 
 	ret = parser_read_uint64(&(opt->nb_pkts), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_nb_timers(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint64(&(opt->nb_timers), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_timer_tick_nsec(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint64(&(opt->timer_tick_nsec), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_max_tmo_nsec(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint64(&(opt->max_tmo_nsec), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_expiry_nsec(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint64(&(opt->expiry_nsec), arg);
+
+	return ret;
+}
+
+static int
+evt_parse_nb_timer_adptrs(struct evt_options *opt, const char *arg)
+{
+	int ret;
+
+	ret = parser_read_uint8(&(opt->nb_timer_adptrs), arg);
 
 	return ret;
 }
@@ -189,6 +240,17 @@ usage(char *program)
 		"\t--worker_deq_depth : dequeue depth of the worker\n"
 		"\t--fwd_latency      : perform fwd_latency measurement\n"
 		"\t--queue_priority   : enable queue priority\n"
+		"\t--prod_type_ethdev : use ethernet device as producer.\n"
+		"\t--prod_type_timerdev : use event timer device as producer.\n"
+		"\t                     expity_nsec would be the timeout\n"
+		"\t                     in ns.\n"
+		"\t--prod_type_timerdev_burst : use timer device as producer\n"
+		"\t                             burst mode.\n"
+		"\t--nb_timers        : number of timers to arm.\n"
+		"\t--nb_timer_adptrs  : number of timer adapters to use.\n"
+		"\t--timer_tick_nsec  : timer tick interval in ns.\n"
+		"\t--max_tmo_nsec     : max timeout interval in ns.\n"
+		"\t--expiry_nsec        : event timer expiry ns.\n"
 		);
 	printf("available tests:\n");
 	evt_test_dump_names();
@@ -236,21 +298,29 @@ evt_parse_sched_type_list(struct evt_options *opt, const char *arg)
 }
 
 static struct option lgopts[] = {
-	{ EVT_NB_FLOWS,         1, 0, 0 },
-	{ EVT_DEVICE,           1, 0, 0 },
-	{ EVT_VERBOSE,          1, 0, 0 },
-	{ EVT_TEST,             1, 0, 0 },
-	{ EVT_PROD_LCORES,      1, 0, 0 },
-	{ EVT_WORK_LCORES,      1, 0, 0 },
-	{ EVT_SOCKET_ID,        1, 0, 0 },
-	{ EVT_POOL_SZ,          1, 0, 0 },
-	{ EVT_NB_PKTS,          1, 0, 0 },
-	{ EVT_WKR_DEQ_DEP,      1, 0, 0 },
-	{ EVT_SCHED_TYPE_LIST,  1, 0, 0 },
-	{ EVT_FWD_LATENCY,      0, 0, 0 },
-	{ EVT_QUEUE_PRIORITY,   0, 0, 0 },
-	{ EVT_HELP,             0, 0, 0 },
-	{ NULL,                 0, 0, 0 }
+	{ EVT_NB_FLOWS,            1, 0, 0 },
+	{ EVT_DEVICE,              1, 0, 0 },
+	{ EVT_VERBOSE,             1, 0, 0 },
+	{ EVT_TEST,                1, 0, 0 },
+	{ EVT_PROD_LCORES,         1, 0, 0 },
+	{ EVT_WORK_LCORES,         1, 0, 0 },
+	{ EVT_SOCKET_ID,           1, 0, 0 },
+	{ EVT_POOL_SZ,             1, 0, 0 },
+	{ EVT_NB_PKTS,             1, 0, 0 },
+	{ EVT_WKR_DEQ_DEP,         1, 0, 0 },
+	{ EVT_SCHED_TYPE_LIST,     1, 0, 0 },
+	{ EVT_FWD_LATENCY,         0, 0, 0 },
+	{ EVT_QUEUE_PRIORITY,      0, 0, 0 },
+	{ EVT_PROD_ETHDEV,         0, 0, 0 },
+	{ EVT_PROD_TIMERDEV,       0, 0, 0 },
+	{ EVT_PROD_TIMERDEV_BURST, 0, 0, 0 },
+	{ EVT_NB_TIMERS,           1, 0, 0 },
+	{ EVT_NB_TIMER_ADPTRS,     1, 0, 0 },
+	{ EVT_TIMER_TICK_NSEC,     1, 0, 0 },
+	{ EVT_MAX_TMO_NSEC,        1, 0, 0 },
+	{ EVT_EXPIRY_NSEC,         1, 0, 0 },
+	{ EVT_HELP,                0, 0, 0 },
+	{ NULL,                    0, 0, 0 }
 };
 
 static int
@@ -272,11 +342,19 @@ evt_opts_parse_long(int opt_idx, struct evt_options *opt)
 		{ EVT_SCHED_TYPE_LIST, evt_parse_sched_type_list},
 		{ EVT_FWD_LATENCY, evt_parse_fwd_latency},
 		{ EVT_QUEUE_PRIORITY, evt_parse_queue_priority},
+		{ EVT_PROD_ETHDEV, evt_parse_eth_prod_type},
+		{ EVT_PROD_TIMERDEV, evt_parse_timer_prod_type},
+		{ EVT_PROD_TIMERDEV_BURST, evt_parse_timer_prod_type_burst},
+		{ EVT_NB_TIMERS, evt_parse_nb_timers},
+		{ EVT_NB_TIMER_ADPTRS, evt_parse_nb_timer_adptrs},
+		{ EVT_TIMER_TICK_NSEC, evt_parse_timer_tick_nsec},
+		{ EVT_MAX_TMO_NSEC, evt_parse_max_tmo_nsec},
+		{ EVT_EXPIRY_NSEC, evt_parse_expiry_nsec},
 	};
 
 	for (i = 0; i < RTE_DIM(parsermap); i++) {
 		if (strncmp(lgopts[opt_idx].name, parsermap[i].lgopt_name,
-				strlen(parsermap[i].lgopt_name)) == 0)
+				strlen(lgopts[opt_idx].name)) == 0)
 			return parsermap[i].parser_fn(opt, optarg);
 	}
 
@@ -322,6 +400,7 @@ evt_options_dump(struct evt_options *opt)
 	evt_dump("pool_sz", "%d", opt->pool_sz);
 	evt_dump("master lcore", "%d", rte_get_master_lcore());
 	evt_dump("nb_pkts", "%"PRIu64, opt->nb_pkts);
+	evt_dump("nb_timers", "%"PRIu64, opt->nb_timers);
 	evt_dump_begin("available lcores");
 	RTE_LCORE_FOREACH(lcore_id)
 		printf("%d ", lcore_id);

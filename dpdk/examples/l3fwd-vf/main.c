@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -135,8 +106,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -190,11 +161,7 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode	= ETH_MQ_RX_RSS,
 		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -606,7 +573,7 @@ check_lcore_params(void)
 }
 
 static int
-check_port_config(const unsigned nb_ports)
+check_port_config(void)
 {
 	unsigned portid;
 	uint16_t i;
@@ -617,7 +584,7 @@ check_port_config(const unsigned nb_ports)
 			printf("port %u is not enabled in port mask\n", portid);
 			return -1;
 		}
-		if (portid >= nb_ports) {
+		if (!rte_eth_dev_is_valid_port(portid)) {
 			printf("port %u is not present on the board\n", portid);
 			return -1;
 		}
@@ -679,11 +646,10 @@ static void
 signal_handler(int signum)
 {
 	uint16_t portid;
-	uint16_t nb_ports = rte_eth_dev_count();
 
 	/* When we receive a SIGINT signal */
 	if (signum == SIGINT) {
-		for (portid = 0; portid < nb_ports; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			/* skip ports that are not enabled */
 			if ((enabled_port_mask & (1 << portid)) == 0)
 				continue;
@@ -981,15 +947,17 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "init_lcore_rx_queues failed\n");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 
-	if (check_port_config(nb_ports) < 0)
+	if (check_port_config() < 0)
 		rte_exit(EXIT_FAILURE, "check_port_config failed\n");
 
 	nb_lcores = rte_lcore_count();
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
+		struct rte_eth_conf local_port_conf = port_conf;
+
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("\nSkipping disabled port %d\n", portid);
@@ -1006,7 +974,25 @@ main(int argc, char **argv)
 
 		printf("Creating queues: nb_rxq=%d nb_txq=%u... ",
 			nb_rx_queue, (unsigned)1 );
-		ret = rte_eth_dev_configure(portid, nb_rx_queue, n_tx_queue, &port_conf);
+
+		rte_eth_dev_info_get(portid, &dev_info);
+		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+			local_port_conf.txmode.offloads |=
+				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
+			dev_info.flow_type_rss_offloads;
+		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf !=
+				port_conf.rx_adv_conf.rss_conf.rss_hf) {
+			printf("Port %u modified RSS hash function based on hardware support,"
+				"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+				portid,
+				port_conf.rx_adv_conf.rss_conf.rss_hf,
+				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
+		}
+
+		ret = rte_eth_dev_configure(portid, nb_rx_queue,
+					    n_tx_queue, &local_port_conf);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%d\n",
 				ret, portid);
@@ -1032,10 +1018,8 @@ main(int argc, char **argv)
 		printf("txq=%d,%d,%d ", portid, 0, socketid);
 		fflush(stdout);
 
-		rte_eth_dev_info_get(portid, &dev_info);
 		txconf = &dev_info.default_txconf;
-		if (port_conf.rxmode.jumbo_frame)
-			txconf->txq_flags = 0;
+		txconf->offloads = local_port_conf.txmode.offloads;
 		ret = rte_eth_tx_queue_setup(portid, 0, nb_txd,
 						 socketid, txconf);
 		if (ret < 0)
@@ -1046,6 +1030,8 @@ main(int argc, char **argv)
 	}
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		struct rte_eth_rxconf rxq_conf;
+
 		if (rte_lcore_is_enabled(lcore_id) == 0)
 			continue;
 		qconf = &lcore_conf[lcore_id];
@@ -1055,8 +1041,13 @@ main(int argc, char **argv)
 		fflush(stdout);
 		/* init RX queues */
 		for(queue = 0; queue < qconf->n_rx_queue; ++queue) {
+			struct rte_eth_dev *dev;
+			struct rte_eth_conf *conf;
+
 			portid = qconf->rx_queue_list[queue].port_id;
 			queueid = qconf->rx_queue_list[queue].queue_id;
+			dev = &rte_eth_devices[portid];
+			conf = &dev->data->dev_conf;
 
 			if (numa_on)
 				socketid = (uint8_t)rte_lcore_to_socket_id(lcore_id);
@@ -1066,8 +1057,11 @@ main(int argc, char **argv)
 			printf("rxq=%d,%d,%d ", portid, queueid, socketid);
 			fflush(stdout);
 
+			rte_eth_dev_info_get(portid, &dev_info);
+			rxq_conf = dev_info.default_rxconf;
+			rxq_conf.offloads = conf->rxmode.offloads;
 			ret = rte_eth_rx_queue_setup(portid, queueid, nb_rxd,
-						socketid, NULL,
+						socketid, &rxq_conf,
 						pktmbuf_pool[socketid]);
 			if (ret < 0)
 				rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup: err=%d,"
@@ -1077,7 +1071,7 @@ main(int argc, char **argv)
 	printf("\n");
 
 	/* start ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			continue;
 		}

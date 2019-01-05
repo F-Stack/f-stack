@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Cavium, Inc. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Cavium, Inc
  */
 
 #include <ctype.h>
@@ -57,42 +29,47 @@
 #include <rte_malloc.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
+#include <rte_cryptodev.h>
+#include <rte_cryptodev_pmd.h>
 
 #include "rte_eventdev.h"
 #include "rte_eventdev_pmd.h"
 
-struct rte_eventdev rte_event_devices[RTE_EVENT_MAX_DEVS];
+static struct rte_eventdev rte_event_devices[RTE_EVENT_MAX_DEVS];
 
-struct rte_eventdev *rte_eventdevs = &rte_event_devices[0];
+struct rte_eventdev *rte_eventdevs = rte_event_devices;
 
 static struct rte_eventdev_global eventdev_globals = {
 	.nb_devs		= 0
 };
-
-struct rte_eventdev_global *rte_eventdev_globals = &eventdev_globals;
 
 /* Event dev north bound API implementation */
 
 uint8_t
 rte_event_dev_count(void)
 {
-	return rte_eventdev_globals->nb_devs;
+	return eventdev_globals.nb_devs;
 }
 
 int
 rte_event_dev_get_dev_id(const char *name)
 {
 	int i;
+	uint8_t cmp;
 
 	if (!name)
 		return -EINVAL;
 
-	for (i = 0; i < rte_eventdev_globals->nb_devs; i++)
-		if ((strcmp(rte_event_devices[i].data->name, name)
-				== 0) &&
-				(rte_event_devices[i].attached ==
-						RTE_EVENTDEV_ATTACHED))
+	for (i = 0; i < eventdev_globals.nb_devs; i++) {
+		cmp = (strncmp(rte_event_devices[i].data->name, name,
+				RTE_EVENTDEV_NAME_MAX_LEN) == 0) ||
+			(rte_event_devices[i].dev ? (strncmp(
+				rte_event_devices[i].dev->driver->name, name,
+					 RTE_EVENTDEV_NAME_MAX_LEN) == 0) : 0);
+		if (cmp && (rte_event_devices[i].attached ==
+					RTE_EVENTDEV_ATTACHED))
 			return i;
+	}
 	return -ENODEV;
 }
 
@@ -130,7 +107,7 @@ rte_event_dev_info_get(uint8_t dev_id, struct rte_event_dev_info *dev_info)
 }
 
 int
-rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint8_t eth_port_id,
+rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
 				uint32_t *caps)
 {
 	struct rte_eventdev *dev;
@@ -149,6 +126,76 @@ rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint8_t eth_port_id,
 						&rte_eth_devices[eth_port_id],
 						caps)
 				: 0;
+}
+
+int __rte_experimental
+rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+	const struct rte_event_timer_adapter_ops *ops;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+
+	dev = &rte_eventdevs[dev_id];
+
+	if (caps == NULL)
+		return -EINVAL;
+	*caps = 0;
+
+	return dev->dev_ops->timer_adapter_caps_get ?
+				(*dev->dev_ops->timer_adapter_caps_get)(dev,
+									0,
+									caps,
+									&ops)
+				: 0;
+}
+
+int __rte_experimental
+rte_event_crypto_adapter_caps_get(uint8_t dev_id, uint8_t cdev_id,
+				  uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+	struct rte_cryptodev *cdev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	if (!rte_cryptodev_pmd_is_valid_dev(cdev_id))
+		return -EINVAL;
+
+	dev = &rte_eventdevs[dev_id];
+	cdev = rte_cryptodev_pmd_get_dev(cdev_id);
+
+	if (caps == NULL)
+		return -EINVAL;
+	*caps = 0;
+
+	return dev->dev_ops->crypto_adapter_caps_get ?
+		(*dev->dev_ops->crypto_adapter_caps_get)
+		(dev, cdev, caps) : -ENOTSUP;
+}
+
+int __rte_experimental
+rte_event_eth_tx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
+				uint32_t *caps)
+{
+	struct rte_eventdev *dev;
+	struct rte_eth_dev *eth_dev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(eth_port_id, -EINVAL);
+
+	dev = &rte_eventdevs[dev_id];
+	eth_dev = &rte_eth_devices[eth_port_id];
+
+	if (caps == NULL)
+		return -EINVAL;
+
+	*caps = 0;
+
+	return dev->dev_ops->eth_tx_adapter_caps_get ?
+			(*dev->dev_ops->eth_tx_adapter_caps_get)(dev,
+								eth_dev,
+								caps)
+			: 0;
 }
 
 static inline int
@@ -686,6 +733,15 @@ rte_event_port_setup(uint8_t dev_id, uint8_t port_id,
 		return -EINVAL;
 	}
 
+	if (port_conf && port_conf->disable_implicit_release &&
+	    !(dev->data->event_dev_cap &
+	      RTE_EVENT_DEV_CAP_IMPLICIT_RELEASE_DISABLE)) {
+		RTE_EDEV_LOG_ERR(
+		   "dev%d port%d Implicit release disable not supported",
+			dev_id, port_id);
+		return -EINVAL;
+	}
+
 	if (dev->data->dev_started) {
 		RTE_EDEV_LOG_ERR(
 		    "device %d must be stopped to allow port setup", dev_id);
@@ -888,7 +944,7 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 {
 	struct rte_eventdev *dev;
 	uint8_t all_queues[RTE_EVENT_MAX_QUEUES_PER_DEV];
-	int i, diag;
+	int i, diag, j;
 	uint16_t *links_map;
 
 	RTE_EVENTDEV_VALID_DEVID_OR_ERRNO_RET(dev_id, -EINVAL, 0);
@@ -906,13 +962,29 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 		return 0;
 	}
 
+	links_map = dev->data->links_map;
+	/* Point links_map to this port specific area */
+	links_map += (port_id * RTE_EVENT_MAX_QUEUES_PER_DEV);
+
 	if (queues == NULL) {
-		for (i = 0; i < dev->data->nb_queues; i++)
-			all_queues[i] = i;
+		j = 0;
+		for (i = 0; i < dev->data->nb_queues; i++) {
+			if (links_map[i] !=
+					EVENT_QUEUE_SERVICE_PRIORITY_INVALID) {
+				all_queues[j] = i;
+				j++;
+			}
+		}
 		queues = all_queues;
-		nb_unlinks = dev->data->nb_queues;
+	} else {
+		for (j = 0; j < nb_unlinks; j++) {
+			if (links_map[queues[j]] ==
+					EVENT_QUEUE_SERVICE_PRIORITY_INVALID)
+				break;
+		}
 	}
 
+	nb_unlinks = j;
 	for (i = 0; i < nb_unlinks; i++)
 		if (queues[i] >= dev->data->nb_queues) {
 			rte_errno = -EINVAL;
@@ -925,13 +997,32 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 	if (diag < 0)
 		return diag;
 
-	links_map = dev->data->links_map;
-	/* Point links_map to this port specific area */
-	links_map += (port_id * RTE_EVENT_MAX_QUEUES_PER_DEV);
 	for (i = 0; i < diag; i++)
 		links_map[queues[i]] = EVENT_QUEUE_SERVICE_PRIORITY_INVALID;
 
 	return diag;
+}
+
+int __rte_experimental
+rte_event_port_unlinks_in_progress(uint8_t dev_id, uint8_t port_id)
+{
+	struct rte_eventdev *dev;
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	dev = &rte_eventdevs[dev_id];
+	if (!is_valid_port(dev, port_id)) {
+		RTE_EDEV_LOG_ERR("Invalid port_id=%" PRIu8, port_id);
+		return -EINVAL;
+	}
+
+	/* Return 0 if the PMD does not implement unlinks in progress.
+	 * This allows PMDs which handle unlink synchronously to not implement
+	 * this function at all.
+	 */
+	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->port_unlinks_in_progress, 0);
+
+	return (*dev->dev_ops->port_unlinks_in_progress)(dev,
+			dev->data->ports[port_id]);
 }
 
 int
@@ -1092,6 +1183,16 @@ int rte_event_dev_xstats_reset(uint8_t dev_id,
 	return -ENOTSUP;
 }
 
+int rte_event_dev_selftest(uint8_t dev_id)
+{
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	struct rte_eventdev *dev = &rte_eventdevs[dev_id];
+
+	if (dev->dev_ops->dev_selftest != NULL)
+		return (*dev->dev_ops->dev_selftest)();
+	return -ENOTSUP;
+}
+
 int
 rte_event_dev_start(uint8_t dev_id)
 {
@@ -1115,6 +1216,23 @@ rte_event_dev_start(uint8_t dev_id)
 		dev->data->dev_started = 1;
 	else
 		return diag;
+
+	return 0;
+}
+
+int
+rte_event_dev_stop_flush_callback_register(uint8_t dev_id,
+		eventdev_stop_flush_t callback, void *userdata)
+{
+	struct rte_eventdev *dev;
+
+	RTE_EDEV_LOG_DEBUG("Stop flush register dev_id=%" PRIu8, dev_id);
+
+	RTE_EVENTDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
+	dev = &rte_eventdevs[dev_id];
+
+	dev->dev_ops->dev_stop_flush = callback;
+	dev->data->dev_stop_flush_arg = userdata;
 
 	return 0;
 }
@@ -1202,6 +1320,15 @@ rte_eventdev_find_free_device_index(void)
 	return RTE_EVENT_MAX_DEVS;
 }
 
+static uint16_t
+rte_event_tx_adapter_enqueue(__rte_unused void *port,
+			__rte_unused struct rte_event ev[],
+			__rte_unused uint16_t nb_events)
+{
+	rte_errno = ENOTSUP;
+	return 0;
+}
+
 struct rte_eventdev *
 rte_event_pmd_allocate(const char *name, int socket_id)
 {
@@ -1221,6 +1348,8 @@ rte_event_pmd_allocate(const char *name, int socket_id)
 	}
 
 	eventdev = &rte_eventdevs[dev_id];
+
+	eventdev->txa_enqueue = rte_event_tx_adapter_enqueue;
 
 	if (eventdev->data == NULL) {
 		struct rte_eventdev_data *eventdev_data = NULL;

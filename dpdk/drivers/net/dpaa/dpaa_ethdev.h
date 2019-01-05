@@ -1,52 +1,22 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2014-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2017 NXP.
+ *   Copyright 2017 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of  Freescale Semiconductor, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #ifndef __DPAA_ETHDEV_H__
 #define __DPAA_ETHDEV_H__
 
 /* System headers */
 #include <stdbool.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
+#include <rte_event_eth_rx_adapter.h>
 
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
 #include <of.h>
 #include <netcfg.h>
-
-/* DPAA SoC identifier; If this is not available, it can be concluded
- * that board is non-DPAA. Single slot is currently supported.
- */
-#define DPAA_SOC_ID_FILE		"/sys/devices/soc0/soc_id"
 
 #define DPAA_MBUF_HW_ANNOTATION		64
 #define DPAA_FD_PTA_SIZE		64
@@ -55,6 +25,13 @@
 #error "Annotation requirement is more than RTE_PKTMBUF_HEADROOM"
 #endif
 
+/* mbuf->seqn will be used to store event entry index for
+ * driver specific usage. For parallel mode queues, invalid
+ * index will be set and for atomic mode queues, valid value
+ * ranging from 1 to 16.
+ */
+#define DPAA_INVALID_MBUF_SEQN  0
+
 /* we will re-use the HEADROOM for annotation in RX */
 #define DPAA_HW_BUF_RESERVE	0
 #define DPAA_PACKET_LAYOUT_ALIGN	64
@@ -62,27 +39,35 @@
 /* Alignment to use for cpu-local structs to avoid coherency problems. */
 #define MAX_CACHELINE			64
 
-#define DPAA_MIN_RX_BUF_SIZE 512
 #define DPAA_MAX_RX_PKT_LEN  10240
 
-/* RX queue tail drop threshold
- * currently considering 32 KB packets.
- */
-#define CONG_THRESHOLD_RX_Q  (32 * 1024)
+#define DPAA_SGT_MAX_ENTRIES 16 /* maximum number of entries in SG Table */
+
+/* RX queue tail drop threshold (CGR Based) in frame count */
+#define CGR_RX_PERFQ_THRESH 256
 
 /*max mac filter for memac(8) including primary mac addr*/
 #define DPAA_MAX_MAC_FILTER (MEMAC_NUM_OF_PADDRS + 1)
 
 /*Maximum number of slots available in TX ring*/
-#define MAX_TX_RING_SLOTS	8
+#define DPAA_TX_BURST_SIZE	7
+
+/* Optimal burst size for RX and TX as default */
+#define DPAA_DEF_RX_BURST_SIZE 7
+#define DPAA_DEF_TX_BURST_SIZE DPAA_TX_BURST_SIZE
+
+#ifndef VLAN_TAG_SIZE
+#define VLAN_TAG_SIZE   4 /** < Vlan Header Length */
+#endif
 
 /* PCD frame queues */
 #define DPAA_PCD_FQID_START		0x400
 #define DPAA_PCD_FQID_MULTIPLIER	0x100
 #define DPAA_DEFAULT_NUM_PCD_QUEUES	1
+#define DPAA_MAX_NUM_PCD_QUEUES		4
 
 #define DPAA_IF_TX_PRIORITY		3
-#define DPAA_IF_RX_PRIORITY		4
+#define DPAA_IF_RX_PRIORITY		0
 #define DPAA_IF_DEBUG_PRIORITY		7
 
 #define DPAA_IF_RX_ANNOTATION_STASH	1
@@ -94,14 +79,10 @@
 #define DPAA_DEBUG_FQ_TX_ERROR   1
 
 #define DPAA_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_FRAG_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_NONFRAG_IPV4_SCTP | \
-	ETH_RSS_FRAG_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_NONFRAG_IPV6_SCTP)
+	ETH_RSS_IP | \
+	ETH_RSS_UDP | \
+	ETH_RSS_TCP | \
+	ETH_RSS_SCTP)
 
 #define DPAA_TX_CKSUM_OFFLOAD_MASK (             \
 		PKT_TX_IP_CKSUM |                \
@@ -129,6 +110,7 @@ struct dpaa_if {
 	char *name;
 	const struct fm_eth_port_cfg *cfg;
 	struct qman_fq *rx_queues;
+	struct qman_cgr *cgr_rx;
 	struct qman_fq *tx_queues;
 	struct qman_fq debug_queues[2];
 	uint16_t nb_rx_queues;
@@ -178,5 +160,28 @@ struct dpaa_if_stats {
 	uint64_t tpkt;		/**<Tx Packet */
 	uint64_t tund;		/**<Tx Undersized */
 };
+
+int
+dpaa_eth_eventq_attach(const struct rte_eth_dev *dev,
+		int eth_rx_queue_id,
+		u16 ch_id,
+		const struct rte_event_eth_rx_adapter_queue_conf *queue_conf);
+
+int
+dpaa_eth_eventq_detach(const struct rte_eth_dev *dev,
+			   int eth_rx_queue_id);
+
+enum qman_cb_dqrr_result
+dpaa_rx_cb_parallel(void *event,
+		    struct qman_portal *qm __always_unused,
+		    struct qman_fq *fq,
+		    const struct qm_dqrr_entry *dqrr,
+		    void **bufs);
+enum qman_cb_dqrr_result
+dpaa_rx_cb_atomic(void *event,
+		  struct qman_portal *qm __always_unused,
+		  struct qman_fq *fq,
+		  const struct qm_dqrr_entry *dqrr,
+		  void **bufs);
 
 #endif

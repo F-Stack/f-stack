@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2016 Intel Corporation.
 
 IXGBE Driver
 ============
@@ -95,15 +68,15 @@ Other features are supported using optional MACRO configuration. They include:
 
 *   HW extend dual VLAN
 
-To guarantee the constraint, configuration flags in dev_conf.rxmode will be checked:
+To guarantee the constraint, capabilities in dev_conf.rxmode.offloads will be checked:
 
-*   hw_vlan_strip
+*   DEV_RX_OFFLOAD_VLAN_STRIP
 
-*   hw_vlan_extend
+*   DEV_RX_OFFLOAD_VLAN_EXTEND
 
-*   hw_ip_checksum
+*   DEV_RX_OFFLOAD_CHECKSUM
 
-*   header_split
+*   DEV_RX_OFFLOAD_HEADER_SPLIT
 
 *   dev_conf
 
@@ -129,20 +102,9 @@ Consequently, by default the tx_rs_thresh value is in the range 32 to 64.
 Feature not Supported by TX Vector PMD
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-TX vPMD only works when txq_flags is set to IXGBE_SIMPLE_FLAGS.
+TX vPMD only works when offloads is set to 0
 
-This means that it does not support TX multi-segment, VLAN offload and TX csum offload.
-The following MACROs are used for these three features:
-
-*   ETH_TXQ_FLAGS_NOMULTSEGS
-
-*   ETH_TXQ_FLAGS_NOVLANOFFL
-
-*   ETH_TXQ_FLAGS_NOXSUMSCTP
-
-*   ETH_TXQ_FLAGS_NOXSUMUDP
-
-*   ETH_TXQ_FLAGS_NOXSUMTCP
+This means that it does not support any TX offload.
 
 Application Programming Interface
 ---------------------------------
@@ -157,13 +119,13 @@ l3fwd
 ~~~~~
 
 When running l3fwd with vPMD, there is one thing to note.
-In the configuration, ensure that port_conf.rxmode.hw_ip_checksum=0.
+In the configuration, ensure that DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads is NOT set.
 Otherwise, by default, RX vPMD is disabled.
 
 load_balancer
 ~~~~~~~~~~~~~
 
-As in the case of l3fwd, set configure port_conf.rxmode.hw_ip_checksum=0 to enable vPMD.
+As in the case of l3fwd, to enable vPMD, do NOT set DEV_RX_OFFLOAD_CHECKSUM in port_conf.rxmode.offloads.
 In addition, for improved performance, use -bsz "(32,32),(64,64),(32,32)" in load_balancer to avoid using the default burst size of 144.
 
 
@@ -238,6 +200,33 @@ There is no RTE API to add a VF's MAC address from the PF. On ixgbe, the
 ``rte_eth_dev_mac_addr_add()`` function can be used to add a VF's MAC address,
 as a workaround.
 
+X550 does not support legacy interrupt mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Desccription
+^^^^^^^^^^^^
+X550 cannot get interrupts if using ``uio_pci_generic`` module or using legacy
+interrupt mode of ``igb_uio`` or ``vfio``. Because the errata of X550 states
+that the Interrupt Status bit is not implemented. The errata is the item #22
+from `X550 spec update <https://www.intel.com/content/dam/www/public/us/en/
+documents/specification-updates/ethernet-x550-spec-update.pdf>`_
+
+Implication
+^^^^^^^^^^^
+When using ``uio_pci_generic`` module or using legacy interrupt mode of
+``igb_uio`` or ``vfio``, the Interrupt Status bit would be checked if the
+interrupt is coming. Since the bit is not implemented in X550, the irq cannot
+be handled correctly and cannot report the event fd to DPDK apps. Then apps
+cannot get interrupts and ``dmesg`` will show messages like ``irq #No.: ``
+``nobody cared.``
+
+Workaround
+^^^^^^^^^^
+Do not bind the ``uio_pci_generic`` module in X550 NICs.
+Do not bind ``igb_uio`` with legacy mode in X550 NICs.
+Before binding ``vfio`` with legacy mode in X550 NICs, use ``modprobe vfio ``
+``nointxmask=1`` to load ``vfio`` module if the intx is not shared with other
+devices.
 
 Inline crypto processing support
 --------------------------------
@@ -254,6 +243,20 @@ ixgbe PMD.
 For more details see the IPsec Security Gateway Sample Application and Security
 library documentation.
 
+
+Virtual Function Port Representors
+----------------------------------
+The IXGBE PF PMD supports the creation of VF port representors for the control
+and monitoring of IXGBE virtual function devices. Each port representor
+corresponds to a single virtual function of that device. Using the ``devargs``
+option ``representor`` the user can specify which virtual functions to create
+port representors for on initialization of the PF PMD by passing the VF IDs of
+the VFs which are required.::
+
+  -w DBDF,representor=[0,1,4]
+
+Currently hot-plugging of representor ports is not supported so all required
+representors must be specified on the creation of the PF.
 
 Supported Chipsets and NICs
 ---------------------------

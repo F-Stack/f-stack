@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_INT_H__
@@ -256,6 +254,8 @@ enum _ecore_status_t ecore_int_set_timer_res(struct ecore_hwfn *p_hwfn,
 #endif
 
 enum _ecore_status_t ecore_pglueb_rbc_attn_handler(struct ecore_hwfn *p_hwfn,
-						   struct ecore_ptt *p_ptt);
+						   struct ecore_ptt *p_ptt,
+						   bool is_hw_init);
+void ecore_pf_flr_igu_cleanup(struct ecore_hwfn *p_hwfn);
 
 #endif /* __ECORE_INT_H__ */

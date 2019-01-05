@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 6WIND. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 6WIND S.A.
  */
 
 #ifndef _PCI_PRIVATE_H_
@@ -39,8 +10,12 @@
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 
+extern struct rte_pci_bus rte_pci_bus;
+
 struct rte_pci_driver;
 struct rte_pci_device;
+
+extern struct rte_pci_bus rte_pci_bus;
 
 /**
  * Probe the PCI bus
@@ -60,36 +35,6 @@ rte_pci_probe(void);
  *  0 on success, negative on error
  */
 int rte_pci_scan(void);
-
-/**
- * Probe the single PCI device.
- *
- * Scan the content of the PCI bus, and find the pci device specified by pci
- * address, then call the probe() function for registered driver that has a
- * matching entry in its id_table for discovered device.
- *
- * @param addr
- *	The PCI Bus-Device-Function address to probe.
- * @return
- *   - 0 on success.
- *   - Negative on error.
- */
-int rte_pci_probe_one(const struct rte_pci_addr *addr);
-
-/**
- * Close the single PCI device.
- *
- * Scan the content of the PCI bus, and find the pci device specified by pci
- * address, then call the remove() function for registered driver that has a
- * matching entry in its id_table for discovered device.
- *
- * @param addr
- *	The PCI Bus-Device-Function address to close.
- * @return
- *   - 0 on success.
- *   - Negative on error.
- */
-int rte_pci_detach(const struct rte_pci_addr *addr);
 
 /**
  * Find the name of a PCI device.
@@ -123,16 +68,6 @@ void rte_pci_insert_device(struct rte_pci_device *exist_pci_dev,
 		struct rte_pci_device *new_pci_dev);
 
 /**
- * Remove a PCI device from the PCI Bus. This sets to NULL the bus references
- * in the PCI device object as well as the generic device object.
- *
- * @param pci_device
- *	PCI device to be removed from PCI Bus
- * @return void
- */
-void rte_pci_remove_device(struct rte_pci_device *pci_device);
-
-/**
  * Update a pci device object by asking the kernel for the latest information.
  *
  * This function is private to EAL.
@@ -144,16 +79,6 @@ void rte_pci_remove_device(struct rte_pci_device *pci_device);
  *   - negative on error.
  */
 int pci_update_device(const struct rte_pci_addr *addr);
-
-/**
- * Unbind kernel driver for this device
- *
- * This function is private to EAL.
- *
- * @return
- *   0 on success, negative on error
- */
-int pci_unbind_kernel_driver(struct rte_pci_device *dev);
 
 /**
  * Map the PCI resource of a PCI device in virtual memory
@@ -202,6 +127,18 @@ void pci_uio_free_resource(struct rte_pci_device *dev,
 		struct mapped_pci_resource *uio_res);
 
 /**
+ * Remap the PCI resource of a PCI device in anonymous virtual memory.
+ *
+ * @param dev
+ *   Point to the struct rte pci device.
+ * @return
+ *   - On success, zero.
+ *   - On failure, a negative value.
+ */
+int
+pci_uio_remap_resource(struct rte_pci_device *dev);
+
+/**
  * Map device memory to uio resource
  *
  * This function is private to EAL.
@@ -244,5 +181,28 @@ rte_pci_match(const struct rte_pci_driver *pci_drv,
  */
 enum rte_iova_mode
 rte_pci_get_iommu_class(void);
+
+/*
+ * Iterate over internal devices,
+ * matching any device against the provided
+ * string.
+ *
+ * @param start
+ *   Iteration starting point.
+ *
+ * @param str
+ *   Device string to match against.
+ *
+ * @param it
+ *   (unused) iterator structure.
+ *
+ * @return
+ *   A pointer to the next matching device if any.
+ *   NULL otherwise.
+ */
+void *
+rte_pci_dev_iterate(const void *start,
+		    const char *str,
+		    const struct rte_dev_iterator *it);
 
 #endif /* _PCI_PRIVATE_H_ */

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2018 Intel Corporation
  */
 
 #include <stdio.h>
@@ -39,6 +10,16 @@
 
 #include "test.h"
 
+#ifndef RTE_LIBRTE_POWER
+
+static int
+test_power_kvm_vm(void)
+{
+	printf("Power management library not supported, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
 #include <rte_power.h>
 
 #define TEST_POWER_VM_LCORE_ID            0U
@@ -117,9 +98,10 @@ test_power_kvm_vm(void)
 		printf("Cannot initialise power management for lcore %u, this "
 				"may occur if environment is not configured "
 				"correctly(KVM VM) or operating in another valid "
-				"Power management environment\n", TEST_POWER_VM_LCORE_ID);
+				"Power management environment\n",
+				TEST_POWER_VM_LCORE_ID);
 		rte_power_unset_env();
-		return -1;
+		return TEST_SKIPPED;
 	}
 
 	/* Test initialisation of previously initialised lcore */
@@ -191,6 +173,22 @@ test_power_kvm_vm(void)
 	if (ret == 1) {
 		printf("rte_power_freq_max unexpectedly succeeded on invalid lcore "
 				"%u\n", TEST_POWER_VM_LCORE_INVALID);
+		goto fail_all;
+	}
+
+	/* Test KVM_VM Enable Turbo of valid core */
+	ret = rte_power_freq_enable_turbo(TEST_POWER_VM_LCORE_ID);
+	if (ret == -1) {
+		printf("rte_power_freq_enable_turbo failed on valid lcore"
+			"%u\n", TEST_POWER_VM_LCORE_ID);
+		goto fail_all;
+	}
+
+	/* Test KVM_VM Disable Turbo of valid core */
+	ret = rte_power_freq_disable_turbo(TEST_POWER_VM_LCORE_ID);
+	if (ret == -1) {
+		printf("rte_power_freq_disable_turbo failed on valid lcore"
+		"%u\n", TEST_POWER_VM_LCORE_ID);
 		goto fail_all;
 	}
 
@@ -299,5 +297,6 @@ fail_all:
 	rte_power_unset_env();
 	return -1;
 }
+#endif
 
 REGISTER_TEST_COMMAND(power_kvm_vm_autotest, test_power_kvm_vm);

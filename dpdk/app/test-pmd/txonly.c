@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdarg.h>
@@ -194,6 +165,7 @@ pkt_burst_transmit(struct fwd_stream *fs)
 	uint32_t retry;
 	uint64_t ol_flags = 0;
 	uint8_t  i;
+	uint64_t tx_offloads;
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t start_tsc;
 	uint64_t end_tsc;
@@ -207,13 +179,14 @@ pkt_burst_transmit(struct fwd_stream *fs)
 
 	mbp = current_fwd_lcore()->mbp;
 	txp = &ports[fs->tx_port];
+	tx_offloads = txp->dev_conf.txmode.offloads;
 	vlan_tci = txp->tx_vlan_id;
 	vlan_tci_outer = txp->tx_vlan_id_outer;
-	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_VLAN)
+	if (tx_offloads	& DEV_TX_OFFLOAD_VLAN_INSERT)
 		ol_flags = PKT_TX_VLAN_PKT;
-	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_QINQ)
+	if (tx_offloads & DEV_TX_OFFLOAD_QINQ_INSERT)
 		ol_flags |= PKT_TX_QINQ_PKT;
-	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_MACSEC)
+	if (tx_offloads & DEV_TX_OFFLOAD_MACSEC_INSERT)
 		ol_flags |= PKT_TX_MACSEC;
 	for (nb_pkt = 0; nb_pkt < nb_pkt_per_burst; nb_pkt++) {
 		pkt = rte_mbuf_raw_alloc(mbp);

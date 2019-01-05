@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #include "ixgbe_x540.h"
 #include "ixgbe_type.h"
@@ -779,6 +750,9 @@ s32 ixgbe_acquire_swfw_sync_X540(struct ixgbe_hw *hw, u32 mask)
 
 	swmask |= swi2c_mask;
 	fwmask |= swi2c_mask << 2;
+	if (hw->mac.type >= ixgbe_mac_X550)
+		timeout = 1000;
+
 	for (i = 0; i < timeout; i++) {
 		/* SW NVM semaphore bit is used for access to all
 		 * SW_FW_SYNC bits (not just NVM)
@@ -802,14 +776,6 @@ s32 ixgbe_acquire_swfw_sync_X540(struct ixgbe_hw *hw, u32 mask)
 		 */
 		ixgbe_release_swfw_sync_semaphore(hw);
 		msec_delay(5);
-	}
-
-	/* Failed to get SW only semaphore */
-	if (swmask == IXGBE_GSSR_SW_MNG_SM) {
-		ERROR_REPORT1(IXGBE_ERROR_POLLING,
-			     "Failed to get SW only semaphore");
-		DEBUGOUT("Failed to get SW only semaphore, returning IXGBE_ERR_SWFW_SYNC\n");
-		return IXGBE_ERR_SWFW_SYNC;
 	}
 
 	/* If the resource is not released by the FW/HW the SW can assume that
@@ -836,7 +802,8 @@ s32 ixgbe_acquire_swfw_sync_X540(struct ixgbe_hw *hw, u32 mask)
 	 */
 	if (swfw_sync & swmask) {
 		u32 rmask = IXGBE_GSSR_EEP_SM | IXGBE_GSSR_PHY0_SM |
-			    IXGBE_GSSR_PHY1_SM | IXGBE_GSSR_MAC_CSR_SM;
+			    IXGBE_GSSR_PHY1_SM | IXGBE_GSSR_MAC_CSR_SM |
+			    IXGBE_GSSR_SW_MNG_SM;
 
 		if (swi2c_mask)
 			rmask |= IXGBE_GSSR_I2C_MASK;
@@ -970,14 +937,25 @@ STATIC void ixgbe_release_swfw_sync_semaphore(struct ixgbe_hw *hw)
  **/
 void ixgbe_init_swfw_sync_X540(struct ixgbe_hw *hw)
 {
+	u32 rmask;
+
 	/* First try to grab the semaphore but we don't need to bother
-	 * looking to see whether we got the lock or  not since we do
+	 * looking to see whether we got the lock or not since we do
 	 * the same thing regardless of whether we got the lock or not.
 	 * We got the lock - we release it.
 	 * We timeout trying to get the lock - we force its release.
 	 */
 	ixgbe_get_swfw_sync_semaphore(hw);
 	ixgbe_release_swfw_sync_semaphore(hw);
+
+	/* Acquire and release all software resources. */
+	rmask = IXGBE_GSSR_EEP_SM | IXGBE_GSSR_PHY0_SM |
+		IXGBE_GSSR_PHY1_SM | IXGBE_GSSR_MAC_CSR_SM |
+		IXGBE_GSSR_SW_MNG_SM;
+
+	rmask |= IXGBE_GSSR_I2C_MASK;
+	ixgbe_acquire_swfw_sync_X540(hw, rmask);
+	ixgbe_release_swfw_sync_X540(hw, rmask);
 }
 
 /**

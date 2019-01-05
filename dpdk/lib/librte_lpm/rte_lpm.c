@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -128,7 +99,7 @@ rte_lpm_find_existing_v20(const char *name)
 
 	rte_rwlock_read_lock(RTE_EAL_TAILQ_RWLOCK);
 	TAILQ_FOREACH(te, lpm_list, next) {
-		l = (struct rte_lpm_v20 *) te->data;
+		l = te->data;
 		if (strncmp(name, l->name, RTE_LPM_NAMESIZE) == 0)
 			break;
 	}
@@ -154,7 +125,7 @@ rte_lpm_find_existing_v1604(const char *name)
 
 	rte_rwlock_read_lock(RTE_EAL_TAILQ_RWLOCK);
 	TAILQ_FOREACH(te, lpm_list, next) {
-		l = (struct rte_lpm *) te->data;
+		l = te->data;
 		if (strncmp(name, l->name, RTE_LPM_NAMESIZE) == 0)
 			break;
 	}
@@ -203,12 +174,13 @@ rte_lpm_create_v20(const char *name, int socket_id, int max_rules,
 
 	/* guarantee there's no existing */
 	TAILQ_FOREACH(te, lpm_list, next) {
-		lpm = (struct rte_lpm_v20 *) te->data;
+		lpm = te->data;
 		if (strncmp(name, lpm->name, RTE_LPM_NAMESIZE) == 0)
 			break;
 	}
-	lpm = NULL;
+
 	if (te != NULL) {
+		lpm = NULL;
 		rte_errno = EEXIST;
 		goto exit;
 	}
@@ -222,7 +194,7 @@ rte_lpm_create_v20(const char *name, int socket_id, int max_rules,
 	}
 
 	/* Allocate memory to store the LPM data structures. */
-	lpm = (struct rte_lpm_v20 *)rte_zmalloc_socket(mem_name, mem_size,
+	lpm = rte_zmalloc_socket(mem_name, mem_size,
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (lpm == NULL) {
 		RTE_LOG(ERR, LPM, "LPM memory allocation failed\n");
@@ -235,7 +207,7 @@ rte_lpm_create_v20(const char *name, int socket_id, int max_rules,
 	lpm->max_rules = max_rules;
 	snprintf(lpm->name, sizeof(lpm->name), "%s", name);
 
-	te->data = (void *) lpm;
+	te->data = lpm;
 
 	TAILQ_INSERT_TAIL(lpm_list, te, next);
 
@@ -279,12 +251,13 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 
 	/* guarantee there's no existing */
 	TAILQ_FOREACH(te, lpm_list, next) {
-		lpm = (struct rte_lpm *) te->data;
+		lpm = te->data;
 		if (strncmp(name, lpm->name, RTE_LPM_NAMESIZE) == 0)
 			break;
 	}
-	lpm = NULL;
+
 	if (te != NULL) {
+		lpm = NULL;
 		rte_errno = EEXIST;
 		goto exit;
 	}
@@ -298,7 +271,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 	}
 
 	/* Allocate memory to store the LPM data structures. */
-	lpm = (struct rte_lpm *)rte_zmalloc_socket(mem_name, mem_size,
+	lpm = rte_zmalloc_socket(mem_name, mem_size,
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (lpm == NULL) {
 		RTE_LOG(ERR, LPM, "LPM memory allocation failed\n");
@@ -307,7 +280,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 		goto exit;
 	}
 
-	lpm->rules_tbl = (struct rte_lpm_rule *)rte_zmalloc_socket(NULL,
+	lpm->rules_tbl = rte_zmalloc_socket(NULL,
 			(size_t)rules_size, RTE_CACHE_LINE_SIZE, socket_id);
 
 	if (lpm->rules_tbl == NULL) {
@@ -319,7 +292,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 		goto exit;
 	}
 
-	lpm->tbl8 = (struct rte_lpm_tbl_entry *)rte_zmalloc_socket(NULL,
+	lpm->tbl8 = rte_zmalloc_socket(NULL,
 			(size_t)tbl8s_size, RTE_CACHE_LINE_SIZE, socket_id);
 
 	if (lpm->tbl8 == NULL) {
@@ -337,7 +310,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 	lpm->number_tbl8s = config->number_tbl8s;
 	snprintf(lpm->name, sizeof(lpm->name), "%s", name);
 
-	te->data = (void *) lpm;
+	te->data = lpm;
 
 	TAILQ_INSERT_TAIL(lpm_list, te, next);
 

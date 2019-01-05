@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2007-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2007-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #ifndef	_SYS_EFX_IMPL_H
@@ -53,9 +29,13 @@
 #include "medford_impl.h"
 #endif	/* EFSYS_OPT_MEDFORD */
 
-#if (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD)
+#if EFSYS_OPT_MEDFORD2
+#include "medford2_impl.h"
+#endif	/* EFSYS_OPT_MEDFORD2 */
+
+#if (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2)
 #include "ef10_impl.h"
-#endif	/* (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD) */
+#endif	/* (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2) */
 
 #ifdef	__cplusplus
 extern "C" {
@@ -74,16 +54,19 @@ extern "C" {
 #define	EFX_MOD_MON		0x00000400
 #define	EFX_MOD_FILTER		0x00001000
 #define	EFX_MOD_LIC		0x00002000
+#define	EFX_MOD_TUNNEL		0x00004000
 
 #define	EFX_RESET_PHY		0x00000001
 #define	EFX_RESET_RXQ_ERR	0x00000002
 #define	EFX_RESET_TXQ_ERR	0x00000004
+#define	EFX_RESET_HW_UNAVAIL	0x00000008
 
 typedef enum efx_mac_type_e {
 	EFX_MAC_INVALID = 0,
 	EFX_MAC_SIENA,
 	EFX_MAC_HUNTINGTON,
 	EFX_MAC_MEDFORD,
+	EFX_MAC_MEDFORD2,
 	EFX_MAC_NTYPES
 } efx_mac_type_t;
 
@@ -135,15 +118,35 @@ typedef struct efx_tx_ops_s {
 						uint32_t, uint8_t,
 						efx_desc_t *);
 	void		(*etxo_qdesc_tso2_create)(efx_txq_t *, uint16_t,
-						uint32_t, uint16_t,
+						uint16_t, uint32_t, uint16_t,
 						efx_desc_t *, int);
 	void		(*etxo_qdesc_vlantci_create)(efx_txq_t *, uint16_t,
+						efx_desc_t *);
+	void		(*etxo_qdesc_checksum_create)(efx_txq_t *, uint16_t,
 						efx_desc_t *);
 #if EFSYS_OPT_QSTATS
 	void		(*etxo_qstats_update)(efx_txq_t *,
 					      efsys_stat_t *);
 #endif
 } efx_tx_ops_t;
+
+typedef union efx_rxq_type_data_u {
+	/* Dummy member to have non-empty union if no options are enabled */
+	uint32_t	ertd_dummy;
+#if EFSYS_OPT_RX_PACKED_STREAM
+	struct {
+		uint32_t	eps_buf_size;
+	} ertd_packed_stream;
+#endif
+#if EFSYS_OPT_RX_ES_SUPER_BUFFER
+	struct {
+		uint32_t	eessb_bufs_per_desc;
+		uint32_t	eessb_max_dma_len;
+		uint32_t	eessb_buf_stride;
+		uint32_t	eessb_hol_block_timeout;
+	} ertd_es_super_buffer;
+#endif
+} efx_rxq_type_data_t;
 
 typedef struct efx_rx_ops_s {
 	efx_rc_t	(*erxo_init)(efx_nic_t *);
@@ -173,7 +176,7 @@ typedef struct efx_rx_ops_s {
 				      unsigned int);
 	void		(*erxo_qpush)(efx_rxq_t *, unsigned int, unsigned int *);
 #if EFSYS_OPT_RX_PACKED_STREAM
-	void		(*erxo_qps_update_credits)(efx_rxq_t *);
+	void		(*erxo_qpush_ps_credits)(efx_rxq_t *);
 	uint8_t *	(*erxo_qps_packet_info)(efx_rxq_t *, uint8_t *,
 						uint32_t, uint32_t,
 						uint16_t *, uint32_t *, uint32_t *);
@@ -182,7 +185,9 @@ typedef struct efx_rx_ops_s {
 	void		(*erxo_qenable)(efx_rxq_t *);
 	efx_rc_t	(*erxo_qcreate)(efx_nic_t *enp, unsigned int,
 					unsigned int, efx_rxq_type_t,
+					const efx_rxq_type_data_t *,
 					efsys_mem_t *, size_t, uint32_t,
+					unsigned int,
 					efx_evq_t *, efx_rxq_t *);
 	void		(*erxo_qdestroy)(efx_rxq_t *);
 } efx_rx_ops_t;
@@ -219,6 +224,7 @@ typedef struct efx_phy_ops_s {
 	efx_rc_t	(*epo_reconfigure)(efx_nic_t *);
 	efx_rc_t	(*epo_verify)(efx_nic_t *);
 	efx_rc_t	(*epo_oui_get)(efx_nic_t *, uint32_t *);
+	efx_rc_t	(*epo_link_state_get)(efx_nic_t *, efx_phy_link_state_t *);
 #if EFSYS_OPT_PHY_STATS
 	efx_rc_t	(*epo_stats_update)(efx_nic_t *, efsys_mem_t *,
 					    uint32_t *);
@@ -261,6 +267,12 @@ efx_filter_reconfigure(
 
 #endif /* EFSYS_OPT_FILTER */
 
+#if EFSYS_OPT_TUNNEL
+typedef struct efx_tunnel_ops_s {
+	boolean_t	(*eto_udp_encap_supported)(efx_nic_t *);
+	efx_rc_t	(*eto_reconfigure)(efx_nic_t *);
+} efx_tunnel_ops_t;
+#endif /* EFSYS_OPT_TUNNEL */
 
 typedef struct efx_port_s {
 	efx_mac_type_t		ep_mac_type;
@@ -296,7 +308,6 @@ typedef struct efx_port_s {
 	uint32_t		ep_default_adv_cap_mask;
 	uint32_t		ep_phy_cap_mask;
 	boolean_t		ep_mac_drain;
-	boolean_t		ep_mac_stats_pending;
 #if EFSYS_OPT_BIST
 	efx_bist_type_t		ep_current_bist;
 #endif
@@ -308,6 +319,8 @@ typedef struct efx_mon_ops_s {
 #if EFSYS_OPT_MON_STATS
 	efx_rc_t	(*emo_stats_update)(efx_nic_t *, efsys_mem_t *,
 					    efx_mon_stat_value_t *);
+	efx_rc_t	(*emo_limits_update)(efx_nic_t *,
+					     efx_mon_stat_limits_t *);
 #endif	/* EFSYS_OPT_MON_STATS */
 } efx_mon_ops_t;
 
@@ -345,6 +358,8 @@ typedef struct efx_nic_ops_s {
 	efx_rc_t	(*eno_get_vi_pool)(efx_nic_t *, uint32_t *);
 	efx_rc_t	(*eno_get_bar_region)(efx_nic_t *, efx_nic_region_t,
 					uint32_t *, size_t *);
+	boolean_t	(*eno_hw_unavailable)(efx_nic_t *);
+	void		(*eno_set_hw_unavailable)(efx_nic_t *);
 #if EFSYS_OPT_DIAG
 	efx_rc_t	(*eno_register_test)(efx_nic_t *);
 #endif	/* EFSYS_OPT_DIAG */
@@ -358,12 +373,7 @@ typedef struct efx_nic_ops_s {
 #ifndef EFX_RXQ_LIMIT_TARGET
 #define	EFX_RXQ_LIMIT_TARGET 512
 #endif
-#ifndef EFX_TXQ_DC_SIZE
-#define	EFX_TXQ_DC_SIZE 1 /* 16 descriptors */
-#endif
-#ifndef EFX_RXQ_DC_SIZE
-#define	EFX_RXQ_DC_SIZE 3 /* 64 descriptors */
-#endif
+
 
 #if EFSYS_OPT_FILTER
 
@@ -420,9 +430,9 @@ typedef struct efx_filter_s {
 #if EFSYS_OPT_SIENA
 	siena_filter_t		*ef_siena_filter;
 #endif /* EFSYS_OPT_SIENA */
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
 	ef10_filter_table_t	*ef_ef10_filter_table;
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
 } efx_filter_t;
 
 #if EFSYS_OPT_SIENA
@@ -437,6 +447,22 @@ siena_filter_tbl_clear(
 #endif	/* EFSYS_OPT_FILTER */
 
 #if EFSYS_OPT_MCDI
+
+#define	EFX_TUNNEL_MAXNENTRIES	(16)
+
+#if EFSYS_OPT_TUNNEL
+
+typedef struct efx_tunnel_udp_entry_s {
+	uint16_t			etue_port; /* host/cpu-endian */
+	uint16_t			etue_protocol;
+} efx_tunnel_udp_entry_t;
+
+typedef struct efx_tunnel_cfg_s {
+	efx_tunnel_udp_entry_t	etc_udp_entries[EFX_TUNNEL_MAXNENTRIES];
+	unsigned int		etc_udp_entries_num;
+} efx_tunnel_cfg_t;
+
+#endif /* EFSYS_OPT_TUNNEL */
 
 typedef struct efx_mcdi_ops_s {
 	efx_rc_t	(*emco_init)(efx_nic_t *, const efx_mcdi_transport_t *);
@@ -461,6 +487,10 @@ typedef struct efx_mcdi_s {
 #endif /* EFSYS_OPT_MCDI */
 
 #if EFSYS_OPT_NVRAM
+
+/* Invalid partition ID for en_nvram_partn_locked field of efx_nc_t */
+#define	EFX_NVRAM_PARTN_INVALID		(0xffffffffu)
+
 typedef struct efx_nvram_ops_s {
 #if EFSYS_OPT_DIAG
 	efx_rc_t	(*envo_test)(efx_nic_t *);
@@ -471,16 +501,19 @@ typedef struct efx_nvram_ops_s {
 	efx_rc_t	(*envo_partn_rw_start)(efx_nic_t *, uint32_t, size_t *);
 	efx_rc_t	(*envo_partn_read)(efx_nic_t *, uint32_t,
 					    unsigned int, caddr_t, size_t);
+	efx_rc_t	(*envo_partn_read_backup)(efx_nic_t *, uint32_t,
+					    unsigned int, caddr_t, size_t);
 	efx_rc_t	(*envo_partn_erase)(efx_nic_t *, uint32_t,
 					    unsigned int, size_t);
 	efx_rc_t	(*envo_partn_write)(efx_nic_t *, uint32_t,
 					    unsigned int, caddr_t, size_t);
-	efx_rc_t	(*envo_partn_rw_finish)(efx_nic_t *, uint32_t);
+	efx_rc_t	(*envo_partn_rw_finish)(efx_nic_t *, uint32_t,
+					    uint32_t *);
 	efx_rc_t	(*envo_partn_get_version)(efx_nic_t *, uint32_t,
 					    uint32_t *, uint16_t *);
 	efx_rc_t	(*envo_partn_set_version)(efx_nic_t *, uint32_t,
 					    uint16_t *);
-	efx_rc_t	(*envo_buffer_validate)(efx_nic_t *, uint32_t,
+	efx_rc_t	(*envo_buffer_validate)(uint32_t,
 					    caddr_t, size_t);
 } efx_nvram_ops_t;
 #endif /* EFSYS_OPT_NVRAM */
@@ -556,7 +589,7 @@ efx_mcdi_nvram_write(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in			uint32_t offset,
-	__out_bcount(size)	caddr_t data,
+	__in_bcount(size)	caddr_t data,
 	__in			size_t size);
 
 	__checkReturn		efx_rc_t
@@ -564,7 +597,7 @@ efx_mcdi_nvram_update_finish(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in			boolean_t reboot,
-	__out_opt		uint32_t *resultp);
+	__out_opt		uint32_t *verify_resultp);
 
 #if EFSYS_OPT_DIAG
 
@@ -639,15 +672,20 @@ struct efx_nic_s {
 	const efx_ev_ops_t	*en_eevop;
 	const efx_tx_ops_t	*en_etxop;
 	const efx_rx_ops_t	*en_erxop;
+	efx_fw_variant_t	efv;
 #if EFSYS_OPT_FILTER
 	efx_filter_t		en_filter;
 	const efx_filter_ops_t	*en_efop;
 #endif	/* EFSYS_OPT_FILTER */
+#if EFSYS_OPT_TUNNEL
+	efx_tunnel_cfg_t	en_tunnel_cfg;
+	const efx_tunnel_ops_t	*en_etop;
+#endif /* EFSYS_OPT_TUNNEL */
 #if EFSYS_OPT_MCDI
 	efx_mcdi_t		en_mcdi;
 #endif	/* EFSYS_OPT_MCDI */
 #if EFSYS_OPT_NVRAM
-	efx_nvram_type_t	en_nvram_locked;
+	uint32_t		en_nvram_partn_locked;
 	const efx_nvram_ops_t	*en_envop;
 #endif	/* EFSYS_OPT_NVRAM */
 #if EFSYS_OPT_VPD
@@ -678,7 +716,7 @@ struct efx_nic_s {
 #endif	/* EFSYS_OPT_SIENA */
 		int	enu_unused;
 	} en_u;
-#if (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD)
+#if (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2)
 	union en_arch {
 		struct {
 			int			ena_vi_base;
@@ -699,7 +737,7 @@ struct efx_nic_s {
 			size_t			ena_wc_mem_map_size;
 		} ef10;
 	} en_arch;
-#endif	/* (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD) */
+#endif	/* (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2) */
 };
 
 
@@ -711,9 +749,11 @@ typedef	boolean_t (*efx_ev_handler_t)(efx_evq_t *, efx_qword_t *,
 typedef struct efx_evq_rxq_state_s {
 	unsigned int			eers_rx_read_ptr;
 	unsigned int			eers_rx_mask;
-#if EFSYS_OPT_RX_PACKED_STREAM
+#if EFSYS_OPT_RX_PACKED_STREAM || EFSYS_OPT_RX_ES_SUPER_BUFFER
 	unsigned int			eers_rx_stream_npackets;
 	boolean_t			eers_rx_packed_stream;
+#endif
+#if EFSYS_OPT_RX_PACKED_STREAM
 	unsigned int			eers_rx_packed_stream_credits;
 #endif
 } efx_evq_rxq_state_t;
@@ -754,6 +794,7 @@ struct efx_rxq_s {
 	unsigned int			er_label;
 	unsigned int			er_mask;
 	efsys_mem_t			*er_esmp;
+	efx_evq_rxq_state_t		*er_ev_qstate;
 };
 
 #define	EFX_RXQ_MAGIC	0x15022005
@@ -817,6 +858,10 @@ struct efx_txq_s {
 									\
 		case EFX_FAMILY_MEDFORD:				\
 			rev = 'E';					\
+			break;						\
+									\
+		case EFX_FAMILY_MEDFORD2:				\
+			rev = 'F';					\
 			break;						\
 									\
 		default:						\
@@ -909,6 +954,15 @@ struct efx_txq_s {
 	_NOTE(CONSTANTCONDITION)					\
 	} while (B_FALSE)
 
+/*
+ * Accessors for memory BAR non-VI tables.
+ *
+ * Code used on EF10 *must* use EFX_BAR_VI_*() macros for per-VI registers,
+ * to ensure the correct runtime VI window size is used on Medford2.
+ *
+ * Siena-only code may continue using EFX_BAR_TBL_*() macros for VI registers.
+ */
+
 #define	EFX_BAR_TBL_READD(_enp, _reg, _index, _edp, _lock)		\
 	do {								\
 		EFX_CHECK_REG((_enp), (_reg));				\
@@ -931,21 +985,6 @@ struct efx_txq_s {
 		    uint32_t, (_edp)->ed_u32[0]);			\
 		EFSYS_BAR_WRITED((_enp)->en_esbp,			\
 		    (_reg ## _OFST + ((_index) * _reg ## _STEP)),	\
-		    (_edp), (_lock));					\
-	_NOTE(CONSTANTCONDITION)					\
-	} while (B_FALSE)
-
-#define	EFX_BAR_TBL_WRITED2(_enp, _reg, _index, _edp, _lock)		\
-	do {								\
-		EFX_CHECK_REG((_enp), (_reg));				\
-		EFSYS_PROBE4(efx_bar_tbl_writed, const char *, #_reg,	\
-		    uint32_t, (_index),					\
-		    uint32_t, _reg ## _OFST,				\
-		    uint32_t, (_edp)->ed_u32[0]);			\
-		EFSYS_BAR_WRITED((_enp)->en_esbp,			\
-		    (_reg ## _OFST +					\
-		    (2 * sizeof (efx_dword_t)) +			\
-		    ((_index) * _reg ## _STEP)),			\
 		    (_edp), (_lock));					\
 	_NOTE(CONSTANTCONDITION)					\
 	} while (B_FALSE)
@@ -1026,18 +1065,67 @@ struct efx_txq_s {
 	} while (B_FALSE)
 
 /*
- * Allow drivers to perform optimised 128-bit doorbell writes.
+ * Accessors for memory BAR per-VI registers.
+ *
+ * The VI window size is 8KB for Medford and all earlier controllers.
+ * For Medford2, the VI window size can be 8KB, 16KB or 64KB.
+ */
+
+#define	EFX_BAR_VI_READD(_enp, _reg, _index, _edp, _lock)		\
+	do {								\
+		EFX_CHECK_REG((_enp), (_reg));				\
+		EFSYS_BAR_READD((_enp)->en_esbp,			\
+		    ((_reg ## _OFST) +					\
+		    ((_index) << (_enp)->en_nic_cfg.enc_vi_window_shift)), \
+		    (_edp), (_lock));					\
+		EFSYS_PROBE4(efx_bar_vi_readd, const char *, #_reg,	\
+		    uint32_t, (_index),					\
+		    uint32_t, _reg ## _OFST,				\
+		    uint32_t, (_edp)->ed_u32[0]);			\
+	_NOTE(CONSTANTCONDITION)					\
+	} while (B_FALSE)
+
+#define	EFX_BAR_VI_WRITED(_enp, _reg, _index, _edp, _lock)		\
+	do {								\
+		EFX_CHECK_REG((_enp), (_reg));				\
+		EFSYS_PROBE4(efx_bar_vi_writed, const char *, #_reg,	\
+		    uint32_t, (_index),					\
+		    uint32_t, _reg ## _OFST,				\
+		    uint32_t, (_edp)->ed_u32[0]);			\
+		EFSYS_BAR_WRITED((_enp)->en_esbp,			\
+		    ((_reg ## _OFST) +					\
+		    ((_index) << (_enp)->en_nic_cfg.enc_vi_window_shift)), \
+		    (_edp), (_lock));					\
+	_NOTE(CONSTANTCONDITION)					\
+	} while (B_FALSE)
+
+#define	EFX_BAR_VI_WRITED2(_enp, _reg, _index, _edp, _lock)		\
+	do {								\
+		EFX_CHECK_REG((_enp), (_reg));				\
+		EFSYS_PROBE4(efx_bar_vi_writed, const char *, #_reg,	\
+		    uint32_t, (_index),					\
+		    uint32_t, _reg ## _OFST,				\
+		    uint32_t, (_edp)->ed_u32[0]);			\
+		EFSYS_BAR_WRITED((_enp)->en_esbp,			\
+		    ((_reg ## _OFST) +					\
+		    (2 * sizeof (efx_dword_t)) +			\
+		    ((_index) << (_enp)->en_nic_cfg.enc_vi_window_shift)), \
+		    (_edp), (_lock));					\
+	_NOTE(CONSTANTCONDITION)					\
+	} while (B_FALSE)
+
+/*
+ * Allow drivers to perform optimised 128-bit VI doorbell writes.
  * The DMA descriptor pointers (RX_DESC_UPD and TX_DESC_UPD) are
  * special-cased in the BIU on the Falcon/Siena and EF10 architectures to avoid
  * the need for locking in the host, and are the only ones known to be safe to
  * use 128-bites write with.
  */
-#define	EFX_BAR_TBL_DOORBELL_WRITEO(_enp, _reg, _index, _eop)		\
+#define	EFX_BAR_VI_DOORBELL_WRITEO(_enp, _reg, _index, _eop)		\
 	do {								\
 		EFX_CHECK_REG((_enp), (_reg));				\
-		EFSYS_PROBE7(efx_bar_tbl_doorbell_writeo,		\
-		    const char *,					\
-		    #_reg,						\
+		EFSYS_PROBE7(efx_bar_vi_doorbell_writeo,		\
+		    const char *, #_reg,				\
 		    uint32_t, (_index),					\
 		    uint32_t, _reg ## _OFST,				\
 		    uint32_t, (_eop)->eo_u32[3],			\
@@ -1045,7 +1133,8 @@ struct efx_txq_s {
 		    uint32_t, (_eop)->eo_u32[1],			\
 		    uint32_t, (_eop)->eo_u32[0]);			\
 		EFSYS_BAR_DOORBELL_WRITEO((_enp)->en_esbp,		\
-		    (_reg ## _OFST + ((_index) * _reg ## _STEP)),	\
+		    (_reg ## _OFST +					\
+		    ((_index) << (_enp)->en_nic_cfg.enc_vi_window_shift)), \
 		    (_eop));						\
 	_NOTE(CONSTANTCONDITION)					\
 	} while (B_FALSE)
@@ -1070,10 +1159,6 @@ struct efx_txq_s {
 			    (_entries) * sizeof (efx_desc_t));		\
 	_NOTE(CONSTANTCONDITION)					\
 	} while (B_FALSE)
-
-extern	__checkReturn	efx_rc_t
-efx_nic_biu_test(
-	__in		efx_nic_t *enp);
 
 extern	__checkReturn	efx_rc_t
 efx_mac_select(
@@ -1142,32 +1227,6 @@ efx_vpd_hunk_set(
 	__in			efx_vpd_value_t *evvp);
 
 #endif	/* EFSYS_OPT_VPD */
-
-#if EFSYS_OPT_DIAG
-
-extern	efx_sram_pattern_fn_t	__efx_sram_pattern_fns[];
-
-typedef struct efx_register_set_s {
-	unsigned int		address;
-	unsigned int		step;
-	unsigned int		rows;
-	efx_oword_t		mask;
-} efx_register_set_t;
-
-extern	__checkReturn	efx_rc_t
-efx_nic_test_registers(
-	__in		efx_nic_t *enp,
-	__in		efx_register_set_t *rsp,
-	__in		size_t count);
-
-extern	__checkReturn	efx_rc_t
-efx_nic_test_tables(
-	__in		efx_nic_t *enp,
-	__in		efx_register_set_t *rsp,
-	__in		efx_pattern_type_t pattern,
-	__in		size_t count);
-
-#endif	/* EFSYS_OPT_DIAG */
 
 #if EFSYS_OPT_MCDI
 

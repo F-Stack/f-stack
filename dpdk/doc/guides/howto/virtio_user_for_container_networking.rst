@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
 .. _virtio_user_for_container_networking:
 
@@ -123,7 +96,7 @@ some minor changes.
             dpdk-app-testpmd testpmd -l 6-7 -n 4 -m 1024 --no-pci \
             --vdev=virtio_user0,path=/var/run/usvhost \
             --file-prefix=container \
-            -- -i --txqflags=0xf00 --disable-hw-vlan
+            -- -i
 
 Note: If we run all above setup on the host, it's a shm-based IPC.
 
@@ -136,7 +109,8 @@ We have below limitations in this solution:
  * Cannot work with --no-huge option. Currently, DPDK uses anonymous mapping
    under this option which cannot be reopened to share with vhost backend.
  * Cannot work when there are more than VHOST_MEMORY_MAX_NREGIONS(8) hugepages.
-   In another word, do not use 2MB hugepage so far.
+   If you have more regions (especially when 2MB hugepages are used), the option,
+   --single-file-segments, can help to reduce the number of shared files.
  * Applications should not use file name like HUGEFILE_FMT ("%smap_%d"). That
    will bring confusion when sharing hugepage files with backend by name.
  * Root privilege is a must. DPDK resolves physical addresses of hugepages

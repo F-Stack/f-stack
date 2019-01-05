@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 6WIND S.A.
- *   Copyright 2016 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 6WIND S.A.
+ * Copyright 2016 Mellanox Technologies, Ltd
  */
 
 #ifndef RTE_PMD_MLX5_PRM_H_
@@ -48,6 +20,9 @@
 
 #include <rte_vect.h>
 #include "mlx5_autoconf.h"
+
+/* RSS hash key size. */
+#define MLX5_RSS_HASH_KEY_LEN 40
 
 /* Get CQE owner bit. */
 #define MLX5_CQE_OWNER(op_own) ((op_own) & MLX5_CQE_OWNER_MASK)
@@ -135,6 +110,30 @@
 /* Inner L4 checksum offload (Tunneled packets only). */
 #define MLX5_ETH_WQE_L4_INNER_CSUM (1u << 5)
 
+/* Outer L4 type is TCP. */
+#define MLX5_ETH_WQE_L4_OUTER_TCP  (0u << 5)
+
+/* Outer L4 type is UDP. */
+#define MLX5_ETH_WQE_L4_OUTER_UDP  (1u << 5)
+
+/* Outer L3 type is IPV4. */
+#define MLX5_ETH_WQE_L3_OUTER_IPV4 (0u << 4)
+
+/* Outer L3 type is IPV6. */
+#define MLX5_ETH_WQE_L3_OUTER_IPV6 (1u << 4)
+
+/* Inner L4 type is TCP. */
+#define MLX5_ETH_WQE_L4_INNER_TCP (0u << 1)
+
+/* Inner L4 type is UDP. */
+#define MLX5_ETH_WQE_L4_INNER_UDP (1u << 1)
+
+/* Inner L3 type is IPV4. */
+#define MLX5_ETH_WQE_L3_INNER_IPV4 (0u << 0)
+
+/* Inner L3 type is IPV6. */
+#define MLX5_ETH_WQE_L3_INNER_IPV6 (1u << 0)
+
 /* Is flow mark valid. */
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 #define MLX5_FLOW_MARK_IS_VALID(val) ((val) & 0xffffff00)
@@ -160,7 +159,7 @@ struct mlx5_wqe_eth_seg_small {
 	uint8_t	cs_flags;
 	uint8_t	rsvd1;
 	uint16_t mss;
-	uint32_t rsvd2;
+	uint32_t flow_table_metadata;
 	uint16_t inline_hdr_sz;
 	uint8_t inline_hdr[2];
 } __rte_aligned(MLX5_WQE_DWORD_SIZE);
@@ -223,13 +222,30 @@ struct mlx5_mpw {
 	} data;
 };
 
+/* WQE for Multi-Packet RQ. */
+struct mlx5_wqe_mprq {
+	struct mlx5_wqe_srq_next_seg next_seg;
+	struct mlx5_wqe_data_seg dseg;
+};
+
+#define MLX5_MPRQ_LEN_MASK 0x000ffff
+#define MLX5_MPRQ_LEN_SHIFT 0
+#define MLX5_MPRQ_STRIDE_NUM_MASK 0x3fff0000
+#define MLX5_MPRQ_STRIDE_NUM_SHIFT 16
+#define MLX5_MPRQ_FILLER_MASK 0x80000000
+#define MLX5_MPRQ_FILLER_SHIFT 31
+
+#define MLX5_MPRQ_STRIDE_SHIFT_BYTE 2
+
 /* CQ element structure - should be equal to the cache line size */
 struct mlx5_cqe {
 #if (RTE_CACHE_LINE_SIZE == 128)
 	uint8_t padding[64];
 #endif
 	uint8_t pkt_info;
-	uint8_t rsvd0[11];
+	uint8_t rsvd0;
+	uint16_t wqe_id;
+	uint8_t rsvd3[8];
 	uint32_t rx_hash_res;
 	uint8_t rx_hash_type;
 	uint8_t rsvd1[11];
@@ -264,6 +280,226 @@ struct mlx5_cqe {
 /* CQE format value. */
 #define MLX5_COMPRESSED 0x3
 
+/* The field of packet to be modified. */
+enum mlx5_modificaiton_field {
+	MLX5_MODI_OUT_SMAC_47_16 = 1,
+	MLX5_MODI_OUT_SMAC_15_0,
+	MLX5_MODI_OUT_ETHERTYPE,
+	MLX5_MODI_OUT_DMAC_47_16,
+	MLX5_MODI_OUT_DMAC_15_0,
+	MLX5_MODI_OUT_IP_DSCP,
+	MLX5_MODI_OUT_TCP_FLAGS,
+	MLX5_MODI_OUT_TCP_SPORT,
+	MLX5_MODI_OUT_TCP_DPORT,
+	MLX5_MODI_OUT_IPV4_TTL,
+	MLX5_MODI_OUT_UDP_SPORT,
+	MLX5_MODI_OUT_UDP_DPORT,
+	MLX5_MODI_OUT_SIPV6_127_96,
+	MLX5_MODI_OUT_SIPV6_95_64,
+	MLX5_MODI_OUT_SIPV6_63_32,
+	MLX5_MODI_OUT_SIPV6_31_0,
+	MLX5_MODI_OUT_DIPV6_127_96,
+	MLX5_MODI_OUT_DIPV6_95_64,
+	MLX5_MODI_OUT_DIPV6_63_32,
+	MLX5_MODI_OUT_DIPV6_31_0,
+	MLX5_MODI_OUT_SIPV4,
+	MLX5_MODI_OUT_DIPV4,
+	MLX5_MODI_IN_SMAC_47_16 = 0x31,
+	MLX5_MODI_IN_SMAC_15_0,
+	MLX5_MODI_IN_ETHERTYPE,
+	MLX5_MODI_IN_DMAC_47_16,
+	MLX5_MODI_IN_DMAC_15_0,
+	MLX5_MODI_IN_IP_DSCP,
+	MLX5_MODI_IN_TCP_FLAGS,
+	MLX5_MODI_IN_TCP_SPORT,
+	MLX5_MODI_IN_TCP_DPORT,
+	MLX5_MODI_IN_IPV4_TTL,
+	MLX5_MODI_IN_UDP_SPORT,
+	MLX5_MODI_IN_UDP_DPORT,
+	MLX5_MODI_IN_SIPV6_127_96,
+	MLX5_MODI_IN_SIPV6_95_64,
+	MLX5_MODI_IN_SIPV6_63_32,
+	MLX5_MODI_IN_SIPV6_31_0,
+	MLX5_MODI_IN_DIPV6_127_96,
+	MLX5_MODI_IN_DIPV6_95_64,
+	MLX5_MODI_IN_DIPV6_63_32,
+	MLX5_MODI_IN_DIPV6_31_0,
+	MLX5_MODI_IN_SIPV4,
+	MLX5_MODI_IN_DIPV4,
+	MLX5_MODI_OUT_IPV6_HOPLIMIT,
+	MLX5_MODI_IN_IPV6_HOPLIMIT,
+	MLX5_MODI_META_DATA_REG_A,
+	MLX5_MODI_META_DATA_REG_B = 0x50,
+};
+
+/* Modification sub command. */
+struct mlx5_modification_cmd {
+	union {
+		uint32_t data0;
+		struct {
+			unsigned int bits:5;
+			unsigned int rsvd0:3;
+			unsigned int src_offset:5; /* Start bit offset. */
+			unsigned int rsvd1:3;
+			unsigned int src_field:12;
+			unsigned int type:4;
+		};
+	};
+	union {
+		uint32_t data1;
+		uint8_t data[4];
+		struct {
+			unsigned int rsvd2:8;
+			unsigned int dst_offset:8;
+			unsigned int dst_field:12;
+			unsigned int rsvd3:4;
+		};
+	};
+};
+
+typedef uint32_t u32;
+typedef uint16_t u16;
+typedef uint8_t u8;
+
+#define __mlx5_nullp(typ) ((struct mlx5_ifc_##typ##_bits *)0)
+#define __mlx5_bit_sz(typ, fld) sizeof(__mlx5_nullp(typ)->fld)
+#define __mlx5_bit_off(typ, fld) ((unsigned int)(unsigned long) \
+				  (&(__mlx5_nullp(typ)->fld)))
+#define __mlx5_dw_bit_off(typ, fld) (32 - __mlx5_bit_sz(typ, fld) - \
+				    (__mlx5_bit_off(typ, fld) & 0x1f))
+#define __mlx5_dw_off(typ, fld) (__mlx5_bit_off(typ, fld) / 32)
+#define __mlx5_dw_mask(typ, fld) (__mlx5_mask(typ, fld) << \
+				  __mlx5_dw_bit_off(typ, fld))
+#define __mlx5_mask(typ, fld) ((u32)((1ull << __mlx5_bit_sz(typ, fld)) - 1))
+#define __mlx5_16_off(typ, fld) (__mlx5_bit_off(typ, fld) / 16)
+#define __mlx5_16_bit_off(typ, fld) (16 - __mlx5_bit_sz(typ, fld) - \
+				    (__mlx5_bit_off(typ, fld) & 0xf))
+#define __mlx5_mask16(typ, fld) ((u16)((1ull << __mlx5_bit_sz(typ, fld)) - 1))
+#define MLX5_ST_SZ_DW(typ) (sizeof(struct mlx5_ifc_##typ##_bits) / 32)
+#define MLX5_ST_SZ_DB(typ) (sizeof(struct mlx5_ifc_##typ##_bits) / 8)
+#define MLX5_BYTE_OFF(typ, fld) (__mlx5_bit_off(typ, fld) / 8)
+#define MLX5_ADDR_OF(typ, p, fld) ((char *)(p) + MLX5_BYTE_OFF(typ, fld))
+
+/* insert a value to a struct */
+#define MLX5_SET(typ, p, fld, v) \
+	do { \
+		u32 _v = v; \
+		*((__be32 *)(p) + __mlx5_dw_off(typ, fld)) = \
+		rte_cpu_to_be_32((rte_be_to_cpu_32(*((u32 *)(p) + \
+				  __mlx5_dw_off(typ, fld))) & \
+				  (~__mlx5_dw_mask(typ, fld))) | \
+				 (((_v) & __mlx5_mask(typ, fld)) << \
+				   __mlx5_dw_bit_off(typ, fld))); \
+	} while (0)
+#define MLX5_GET16(typ, p, fld) \
+	((rte_be_to_cpu_16(*((__be16 *)(p) + \
+	  __mlx5_16_off(typ, fld))) >> __mlx5_16_bit_off(typ, fld)) & \
+	 __mlx5_mask16(typ, fld))
+#define MLX5_FLD_SZ_BYTES(typ, fld) (__mlx5_bit_sz(typ, fld) / 8)
+
+struct mlx5_ifc_fte_match_set_misc_bits {
+	u8 reserved_at_0[0x8];
+	u8 source_sqn[0x18];
+	u8 reserved_at_20[0x10];
+	u8 source_port[0x10];
+	u8 outer_second_prio[0x3];
+	u8 outer_second_cfi[0x1];
+	u8 outer_second_vid[0xc];
+	u8 inner_second_prio[0x3];
+	u8 inner_second_cfi[0x1];
+	u8 inner_second_vid[0xc];
+	u8 outer_second_cvlan_tag[0x1];
+	u8 inner_second_cvlan_tag[0x1];
+	u8 outer_second_svlan_tag[0x1];
+	u8 inner_second_svlan_tag[0x1];
+	u8 reserved_at_64[0xc];
+	u8 gre_protocol[0x10];
+	u8 gre_key_h[0x18];
+	u8 gre_key_l[0x8];
+	u8 vxlan_vni[0x18];
+	u8 reserved_at_b8[0x8];
+	u8 reserved_at_c0[0x20];
+	u8 reserved_at_e0[0xc];
+	u8 outer_ipv6_flow_label[0x14];
+	u8 reserved_at_100[0xc];
+	u8 inner_ipv6_flow_label[0x14];
+	u8 reserved_at_120[0xe0];
+};
+
+struct mlx5_ifc_ipv4_layout_bits {
+	u8 reserved_at_0[0x60];
+	u8 ipv4[0x20];
+};
+
+struct mlx5_ifc_ipv6_layout_bits {
+	u8 ipv6[16][0x8];
+};
+
+union mlx5_ifc_ipv6_layout_ipv4_layout_auto_bits {
+	struct mlx5_ifc_ipv6_layout_bits ipv6_layout;
+	struct mlx5_ifc_ipv4_layout_bits ipv4_layout;
+	u8 reserved_at_0[0x80];
+};
+
+struct mlx5_ifc_fte_match_set_lyr_2_4_bits {
+	u8 smac_47_16[0x20];
+	u8 smac_15_0[0x10];
+	u8 ethertype[0x10];
+	u8 dmac_47_16[0x20];
+	u8 dmac_15_0[0x10];
+	u8 first_prio[0x3];
+	u8 first_cfi[0x1];
+	u8 first_vid[0xc];
+	u8 ip_protocol[0x8];
+	u8 ip_dscp[0x6];
+	u8 ip_ecn[0x2];
+	u8 cvlan_tag[0x1];
+	u8 svlan_tag[0x1];
+	u8 frag[0x1];
+	u8 ip_version[0x4];
+	u8 tcp_flags[0x9];
+	u8 tcp_sport[0x10];
+	u8 tcp_dport[0x10];
+	u8 reserved_at_c0[0x20];
+	u8 udp_sport[0x10];
+	u8 udp_dport[0x10];
+	union mlx5_ifc_ipv6_layout_ipv4_layout_auto_bits src_ipv4_src_ipv6;
+	union mlx5_ifc_ipv6_layout_ipv4_layout_auto_bits dst_ipv4_dst_ipv6;
+};
+
+struct mlx5_ifc_fte_match_mpls_bits {
+	u8 mpls_label[0x14];
+	u8 mpls_exp[0x3];
+	u8 mpls_s_bos[0x1];
+	u8 mpls_ttl[0x8];
+};
+
+struct mlx5_ifc_fte_match_set_misc2_bits {
+	struct mlx5_ifc_fte_match_mpls_bits outer_first_mpls;
+	struct mlx5_ifc_fte_match_mpls_bits inner_first_mpls;
+	struct mlx5_ifc_fte_match_mpls_bits outer_first_mpls_over_gre;
+	struct mlx5_ifc_fte_match_mpls_bits outer_first_mpls_over_udp;
+	u8 reserved_at_80[0x100];
+	u8 metadata_reg_a[0x20];
+	u8 reserved_at_1a0[0x60];
+};
+
+/* Flow matcher. */
+struct mlx5_ifc_fte_match_param_bits {
+	struct mlx5_ifc_fte_match_set_lyr_2_4_bits outer_headers;
+	struct mlx5_ifc_fte_match_set_misc_bits misc_parameters;
+	struct mlx5_ifc_fte_match_set_lyr_2_4_bits inner_headers;
+	struct mlx5_ifc_fte_match_set_misc2_bits misc_parameters_2;
+	u8 reserved_at_800[0x800];
+};
+
+enum {
+	MLX5_MATCH_CRITERIA_ENABLE_OUTER_BIT,
+	MLX5_MATCH_CRITERIA_ENABLE_MISC_BIT,
+	MLX5_MATCH_CRITERIA_ENABLE_INNER_BIT,
+	MLX5_MATCH_CRITERIA_ENABLE_MISC2_BIT
+};
+
 /* CQE format mask. */
 #define MLX5E_CQE_FORMAT_MASK 0xc
 
@@ -274,7 +510,10 @@ struct mlx5_cqe {
 struct mlx5_mini_cqe8 {
 	union {
 		uint32_t rx_hash_result;
-		uint32_t checksum;
+		struct {
+			uint16_t checksum;
+			uint16_t stride_idx;
+		};
 		struct {
 			uint16_t wqe_counter;
 			uint8_t  s_wqe_opcode;

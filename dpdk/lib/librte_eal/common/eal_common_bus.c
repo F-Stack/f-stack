@@ -36,10 +36,12 @@
 
 #include <rte_bus.h>
 #include <rte_debug.h>
+#include <rte_string_fns.h>
+#include <rte_errno.h>
 
 #include "eal_private.h"
 
-struct rte_bus_list rte_bus_list =
+static struct rte_bus_list rte_bus_list =
 	TAILQ_HEAD_INITIALIZER(rte_bus_list);
 
 void
@@ -212,7 +214,7 @@ rte_bus_find_by_device_name(const char *str)
 	char name[RTE_DEV_NAME_MAX_LEN];
 	char *c;
 
-	snprintf(name, sizeof(name), "%s", str);
+	strlcpy(name, str, sizeof(name));
 	c = strchr(name, ',');
 	if (c != NULL)
 		c[0] = '\0';
@@ -240,4 +242,46 @@ rte_bus_get_iommu_class(void)
 		mode = RTE_IOVA_PA;
 	}
 	return mode;
+}
+
+static int
+bus_handle_sigbus(const struct rte_bus *bus,
+			const void *failure_addr)
+{
+	int ret;
+
+	if (!bus->sigbus_handler)
+		return -1;
+
+	ret = bus->sigbus_handler(failure_addr);
+
+	/* find bus but handle failed, keep the errno be set. */
+	if (ret < 0 && rte_errno == 0)
+		rte_errno = ENOTSUP;
+
+	return ret > 0;
+}
+
+int
+rte_bus_sigbus_handler(const void *failure_addr)
+{
+	struct rte_bus *bus;
+
+	int ret = 0;
+	int old_errno = rte_errno;
+
+	rte_errno = 0;
+
+	bus = rte_bus_find(NULL, bus_handle_sigbus, failure_addr);
+	/* can not find bus. */
+	if (!bus)
+		return 1;
+	/* find bus but handle failed, pass on the new errno. */
+	else if (rte_errno != 0)
+		return -1;
+
+	/* restore the old errno. */
+	rte_errno = old_errno;
+
+	return ret;
 }

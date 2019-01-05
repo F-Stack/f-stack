@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2014-2017 Chelsio Communications.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Chelsio Communications nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Chelsio Communications.
+ * All rights reserved.
  */
 
 #include <sys/queue.h>
@@ -56,13 +28,15 @@
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_ethdev_pci.h>
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_dev.h>
 
 #include "cxgbe.h"
+#include "cxgbe_pfvf.h"
+#include "cxgbe_flow.h"
 
 /*
  * Macros needed to support the PCI Device ID Table ...
@@ -85,8 +59,8 @@
  */
 #include "t4_pci_id_tbl.h"
 
-static uint16_t cxgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
-				uint16_t nb_pkts)
+uint16_t cxgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+			 uint16_t nb_pkts)
 {
 	struct sge_eth_txq *txq = (struct sge_eth_txq *)tx_queue;
 	uint16_t pkts_sent, pkts_remain;
@@ -119,8 +93,8 @@ static uint16_t cxgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	return total_sent;
 }
 
-static uint16_t cxgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
-				uint16_t nb_pkts)
+uint16_t cxgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
+			 uint16_t nb_pkts)
 {
 	struct sge_eth_rxq *rxq = (struct sge_eth_rxq *)rx_queue;
 	unsigned int work_done;
@@ -135,8 +109,8 @@ static uint16_t cxgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return work_done;
 }
 
-static void cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
-			       struct rte_eth_dev_info *device_info)
+void cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
+			struct rte_eth_dev_info *device_info)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -148,8 +122,6 @@ static void cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
 		.nb_align = 1,
 	};
 
-	device_info->pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
-
 	device_info->min_rx_bufsize = CXGBE_MIN_RX_BUFSIZE;
 	device_info->max_rx_pktlen = CXGBE_MAX_RX_PKTLEN;
 	device_info->max_rx_queues = max_queues;
@@ -159,25 +131,22 @@ static void cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
 	device_info->max_vfs = adapter->params.arch.vfcount;
 	device_info->max_vmdq_pools = 0; /* XXX: For now no support for VMDQ */
 
-	device_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP |
-				       DEV_RX_OFFLOAD_IPV4_CKSUM |
-				       DEV_RX_OFFLOAD_UDP_CKSUM |
-				       DEV_RX_OFFLOAD_TCP_CKSUM;
+	device_info->rx_queue_offload_capa = 0UL;
+	device_info->rx_offload_capa = CXGBE_RX_OFFLOADS;
 
-	device_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
-				       DEV_TX_OFFLOAD_IPV4_CKSUM |
-				       DEV_TX_OFFLOAD_UDP_CKSUM |
-				       DEV_TX_OFFLOAD_TCP_CKSUM |
-				       DEV_TX_OFFLOAD_TCP_TSO;
+	device_info->tx_queue_offload_capa = 0UL;
+	device_info->tx_offload_capa = CXGBE_TX_OFFLOADS;
 
 	device_info->reta_size = pi->rss_size;
+	device_info->hash_key_size = CXGBE_DEFAULT_RSS_KEY_LEN;
+	device_info->flow_type_rss_offloads = CXGBE_RSS_HF_ALL;
 
 	device_info->rx_desc_lim = cxgbe_desc_lim;
 	device_info->tx_desc_lim = cxgbe_desc_lim;
 	cxgbe_get_speed_caps(pi, &device_info->speed_capa);
 }
 
-static void cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
+void cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -186,7 +155,7 @@ static void cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 		      1, -1, 1, -1, false);
 }
 
-static void cxgbe_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
+void cxgbe_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -195,7 +164,7 @@ static void cxgbe_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 		      0, -1, 1, -1, false);
 }
 
-static void cxgbe_dev_allmulticast_enable(struct rte_eth_dev *eth_dev)
+void cxgbe_dev_allmulticast_enable(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -206,7 +175,7 @@ static void cxgbe_dev_allmulticast_enable(struct rte_eth_dev *eth_dev)
 		      -1, 1, 1, -1, false);
 }
 
-static void cxgbe_dev_allmulticast_disable(struct rte_eth_dev *eth_dev)
+void cxgbe_dev_allmulticast_disable(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -217,28 +186,91 @@ static void cxgbe_dev_allmulticast_disable(struct rte_eth_dev *eth_dev)
 		      -1, 0, 1, -1, false);
 }
 
-static int cxgbe_dev_link_update(struct rte_eth_dev *eth_dev,
-				 __rte_unused int wait_to_complete)
+int cxgbe_dev_link_update(struct rte_eth_dev *eth_dev,
+			  int wait_to_complete)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
 	struct sge *s = &adapter->sge;
-	struct rte_eth_link *old_link = &eth_dev->data->dev_link;
-	unsigned int work_done, budget = 4;
+	struct rte_eth_link new_link = { 0 };
+	unsigned int i, work_done, budget = 32;
+	u8 old_link = pi->link_cfg.link_ok;
 
+	for (i = 0; i < CXGBE_LINK_STATUS_POLL_CNT; i++) {
+		cxgbe_poll(&s->fw_evtq, NULL, budget, &work_done);
+
+		/* Exit if link status changed or always forced up */
+		if (pi->link_cfg.link_ok != old_link || force_linkup(adapter))
+			break;
+
+		if (!wait_to_complete)
+			break;
+
+		rte_delay_ms(CXGBE_LINK_STATUS_POLL_MS);
+	}
+
+	new_link.link_status = force_linkup(adapter) ?
+			       ETH_LINK_UP : pi->link_cfg.link_ok;
+	new_link.link_autoneg = pi->link_cfg.autoneg;
+	new_link.link_duplex = ETH_LINK_FULL_DUPLEX;
+	new_link.link_speed = pi->link_cfg.speed;
+
+	return rte_eth_linkstatus_set(eth_dev, &new_link);
+}
+
+/**
+ * Set device link up.
+ */
+int cxgbe_dev_set_link_up(struct rte_eth_dev *dev)
+{
+	struct port_info *pi = (struct port_info *)(dev->data->dev_private);
+	struct adapter *adapter = pi->adapter;
+	unsigned int work_done, budget = 32;
+	struct sge *s = &adapter->sge;
+	int ret;
+
+	/* Flush all link events */
 	cxgbe_poll(&s->fw_evtq, NULL, budget, &work_done);
-	if (old_link->link_status == pi->link_cfg.link_ok)
-		return -1;  /* link not changed */
 
-	eth_dev->data->dev_link.link_status = pi->link_cfg.link_ok;
-	eth_dev->data->dev_link.link_duplex = ETH_LINK_FULL_DUPLEX;
-	eth_dev->data->dev_link.link_speed = pi->link_cfg.speed;
+	/* If link already up, nothing to do */
+	if (pi->link_cfg.link_ok)
+		return 0;
 
-	/* link has changed */
+	ret = cxgbe_set_link_status(pi, true);
+	if (ret)
+		return ret;
+
+	cxgbe_dev_link_update(dev, 1);
 	return 0;
 }
 
-static int cxgbe_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
+/**
+ * Set device link down.
+ */
+int cxgbe_dev_set_link_down(struct rte_eth_dev *dev)
+{
+	struct port_info *pi = (struct port_info *)(dev->data->dev_private);
+	struct adapter *adapter = pi->adapter;
+	unsigned int work_done, budget = 32;
+	struct sge *s = &adapter->sge;
+	int ret;
+
+	/* Flush all link events */
+	cxgbe_poll(&s->fw_evtq, NULL, budget, &work_done);
+
+	/* If link already down, nothing to do */
+	if (!pi->link_cfg.link_ok)
+		return 0;
+
+	ret = cxgbe_set_link_status(pi, false);
+	if (ret)
+		return ret;
+
+	cxgbe_dev_link_update(dev, 0);
+	return 0;
+}
+
+int cxgbe_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -254,9 +286,11 @@ static int cxgbe_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 
 	/* set to jumbo mode if needed */
 	if (new_mtu > ETHER_MAX_LEN)
-		eth_dev->data->dev_conf.rxmode.jumbo_frame = 1;
+		eth_dev->data->dev_conf.rxmode.offloads |=
+			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
-		eth_dev->data->dev_conf.rxmode.jumbo_frame = 0;
+		eth_dev->data->dev_conf.rxmode.offloads &=
+			~DEV_RX_OFFLOAD_JUMBO_FRAME;
 
 	err = t4_set_rxmode(adapter, adapter->mbox, pi->viid, new_mtu, -1, -1,
 			    -1, -1, true);
@@ -266,21 +300,13 @@ static int cxgbe_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	return err;
 }
 
-static int cxgbe_dev_tx_queue_start(struct rte_eth_dev *eth_dev,
-				    uint16_t tx_queue_id);
-static int cxgbe_dev_rx_queue_start(struct rte_eth_dev *eth_dev,
-				    uint16_t tx_queue_id);
-static void cxgbe_dev_tx_queue_release(void *q);
-static void cxgbe_dev_rx_queue_release(void *q);
-
 /*
  * Stop device.
  */
-static void cxgbe_dev_close(struct rte_eth_dev *eth_dev)
+void cxgbe_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
-	int i, dev_down = 0;
 
 	CXGBE_FUNC_TRACE();
 
@@ -294,30 +320,15 @@ static void cxgbe_dev_close(struct rte_eth_dev *eth_dev)
 	 *  have been disabled
 	 */
 	t4_sge_eth_clear_queues(pi);
-
-	/*  See if all ports are down */
-	for_each_port(adapter, i) {
-		pi = adap2pinfo(adapter, i);
-		/*
-		 * Skip first port of the adapter since it will be closed
-		 * by DPDK
-		 */
-		if (i == 0)
-			continue;
-		dev_down += (pi->eth_dev->data->dev_started == 0) ? 1 : 0;
-	}
-
-	/* If rest of the ports are stopped, then free up resources */
-	if (dev_down == (adapter->params.nports - 1))
-		cxgbe_close(adapter);
 }
 
 /* Start the device.
  * It returns 0 on success.
  */
-static int cxgbe_dev_start(struct rte_eth_dev *eth_dev)
+int cxgbe_dev_start(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct rte_eth_rxmode *rx_conf = &eth_dev->data->dev_conf.rxmode;
 	struct adapter *adapter = pi->adapter;
 	int err = 0, i;
 
@@ -337,6 +348,11 @@ static int cxgbe_dev_start(struct rte_eth_dev *eth_dev)
 		if (err < 0)
 			goto out;
 	}
+
+	if (rx_conf->offloads & DEV_RX_OFFLOAD_SCATTER)
+		eth_dev->data->scattered_rx = 1;
+	else
+		eth_dev->data->scattered_rx = 0;
 
 	cxgbe_enable_rx_queues(pi);
 
@@ -367,7 +383,7 @@ out:
 /*
  * Stop device: disable rx and tx functions to allow for reconfiguring.
  */
-static void cxgbe_dev_stop(struct rte_eth_dev *eth_dev)
+void cxgbe_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -384,9 +400,10 @@ static void cxgbe_dev_stop(struct rte_eth_dev *eth_dev)
 	 *  have been disabled
 	 */
 	t4_sge_eth_clear_queues(pi);
+	eth_dev->data->scattered_rx = 0;
 }
 
-static int cxgbe_dev_configure(struct rte_eth_dev *eth_dev)
+int cxgbe_dev_configure(struct rte_eth_dev *eth_dev)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -399,6 +416,11 @@ static int cxgbe_dev_configure(struct rte_eth_dev *eth_dev)
 		if (err)
 			return err;
 		adapter->flags |= FW_QUEUE_BOUND;
+		if (is_pf4(adapter)) {
+			err = setup_sge_ctrl_txq(adapter);
+			if (err)
+				return err;
+		}
 	}
 
 	err = cfg_queue_count(eth_dev);
@@ -408,8 +430,7 @@ static int cxgbe_dev_configure(struct rte_eth_dev *eth_dev)
 	return 0;
 }
 
-static int cxgbe_dev_tx_queue_start(struct rte_eth_dev *eth_dev,
-				    uint16_t tx_queue_id)
+int cxgbe_dev_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 {
 	int ret;
 	struct sge_eth_txq *txq = (struct sge_eth_txq *)
@@ -424,8 +445,7 @@ static int cxgbe_dev_tx_queue_start(struct rte_eth_dev *eth_dev,
 	return ret;
 }
 
-static int cxgbe_dev_tx_queue_stop(struct rte_eth_dev *eth_dev,
-				   uint16_t tx_queue_id)
+int cxgbe_dev_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 {
 	int ret;
 	struct sge_eth_txq *txq = (struct sge_eth_txq *)
@@ -440,10 +460,10 @@ static int cxgbe_dev_tx_queue_stop(struct rte_eth_dev *eth_dev,
 	return ret;
 }
 
-static int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
-				    uint16_t queue_idx,	uint16_t nb_desc,
-				    unsigned int socket_id,
-				    const struct rte_eth_txconf *tx_conf)
+int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
+			     uint16_t queue_idx, uint16_t nb_desc,
+			     unsigned int socket_id,
+			     const struct rte_eth_txconf *tx_conf __rte_unused)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -451,8 +471,6 @@ static int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 	struct sge_eth_txq *txq = &s->ethtxq[pi->first_qset + queue_idx];
 	int err = 0;
 	unsigned int temp_nb_desc;
-
-	RTE_SET_USED(tx_conf);
 
 	dev_debug(adapter, "%s: eth_dev->data->nb_tx_queues = %d; queue_idx = %d; nb_desc = %d; socket_id = %d; pi->first_qset = %u\n",
 		  __func__, eth_dev->data->nb_tx_queues, queue_idx, nb_desc,
@@ -488,13 +506,12 @@ static int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 	err = t4_sge_alloc_eth_txq(adapter, txq, eth_dev, queue_idx,
 				   s->fw_evtq.cntxt_id, socket_id);
 
-	dev_debug(adapter, "%s: txq->q.cntxt_id= %d err = %d\n",
-		  __func__, txq->q.cntxt_id, err);
-
+	dev_debug(adapter, "%s: txq->q.cntxt_id= %u txq->q.abs_id= %u err = %d\n",
+		  __func__, txq->q.cntxt_id, txq->q.abs_id, err);
 	return err;
 }
 
-static void cxgbe_dev_tx_queue_release(void *q)
+void cxgbe_dev_tx_queue_release(void *q)
 {
 	struct sge_eth_txq *txq = (struct sge_eth_txq *)q;
 
@@ -510,8 +527,7 @@ static void cxgbe_dev_tx_queue_release(void *q)
 	}
 }
 
-static int cxgbe_dev_rx_queue_start(struct rte_eth_dev *eth_dev,
-				    uint16_t rx_queue_id)
+int cxgbe_dev_rx_queue_start(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
 	int ret;
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
@@ -530,8 +546,7 @@ static int cxgbe_dev_rx_queue_start(struct rte_eth_dev *eth_dev,
 	return ret;
 }
 
-static int cxgbe_dev_rx_queue_stop(struct rte_eth_dev *eth_dev,
-				   uint16_t rx_queue_id)
+int cxgbe_dev_rx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
 	int ret;
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
@@ -549,11 +564,11 @@ static int cxgbe_dev_rx_queue_stop(struct rte_eth_dev *eth_dev,
 	return ret;
 }
 
-static int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
-				    uint16_t queue_idx,	uint16_t nb_desc,
-				    unsigned int socket_id,
-				    const struct rte_eth_rxconf *rx_conf,
-				    struct rte_mempool *mp)
+int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
+			     uint16_t queue_idx, uint16_t nb_desc,
+			     unsigned int socket_id,
+			     const struct rte_eth_rxconf *rx_conf __rte_unused,
+			     struct rte_mempool *mp)
 {
 	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
 	struct adapter *adapter = pi->adapter;
@@ -564,8 +579,6 @@ static int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	unsigned int temp_nb_desc;
 	struct rte_eth_dev_info dev_info;
 	unsigned int pkt_len = eth_dev->data->dev_conf.rxmode.max_rx_pkt_len;
-
-	RTE_SET_USED(rx_conf);
 
 	dev_debug(adapter, "%s: eth_dev->data->nb_rx_queues = %d; queue_idx = %d; nb_desc = %d; socket_id = %d; mp = %p\n",
 		  __func__, eth_dev->data->nb_rx_queues, queue_idx, nb_desc,
@@ -613,21 +626,25 @@ static int cxgbe_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 
 	/* Set to jumbo mode if necessary */
 	if (pkt_len > ETHER_MAX_LEN)
-		eth_dev->data->dev_conf.rxmode.jumbo_frame = 1;
+		eth_dev->data->dev_conf.rxmode.offloads |=
+			DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
-		eth_dev->data->dev_conf.rxmode.jumbo_frame = 0;
+		eth_dev->data->dev_conf.rxmode.offloads &=
+			~DEV_RX_OFFLOAD_JUMBO_FRAME;
 
 	err = t4_sge_alloc_rxq(adapter, &rxq->rspq, false, eth_dev, msi_idx,
 			       &rxq->fl, t4_ethrx_handler,
-			       t4_get_tp_ch_map(adapter, pi->tx_chan), mp,
+			       is_pf4(adapter) ?
+			       t4_get_tp_ch_map(adapter, pi->tx_chan) : 0, mp,
 			       queue_idx, socket_id);
 
-	dev_debug(adapter, "%s: err = %d; port_id = %d; cntxt_id = %u\n",
-		  __func__, err, pi->port_id, rxq->rspq.cntxt_id);
+	dev_debug(adapter, "%s: err = %d; port_id = %d; cntxt_id = %u; abs_id = %u\n",
+		  __func__, err, pi->port_id, rxq->rspq.cntxt_id,
+		  rxq->rspq.abs_id);
 	return err;
 }
 
-static void cxgbe_dev_rx_queue_release(void *q)
+void cxgbe_dev_rx_queue_release(void *q)
 {
 	struct sge_eth_rxq *rxq = (struct sge_eth_rxq *)q;
 	struct sge_rspq *rq = &rxq->rspq;
@@ -750,7 +767,7 @@ static int cxgbe_flow_ctrl_set(struct rte_eth_dev *eth_dev,
 	struct adapter *adapter = pi->adapter;
 	struct link_config *lc = &pi->link_cfg;
 
-	if (lc->supported & FW_PORT_CAP_ANEG) {
+	if (lc->pcaps & FW_PORT_CAP32_ANEG) {
 		if (fc_conf->autoneg)
 			lc->requested_fc |= PAUSE_AUTONEG;
 		else
@@ -773,7 +790,7 @@ static int cxgbe_flow_ctrl_set(struct rte_eth_dev *eth_dev,
 			     &pi->link_cfg);
 }
 
-static const uint32_t *
+const uint32_t *
 cxgbe_dev_supported_ptypes_get(struct rte_eth_dev *eth_dev)
 {
 	static const uint32_t ptypes[] = {
@@ -785,6 +802,88 @@ cxgbe_dev_supported_ptypes_get(struct rte_eth_dev *eth_dev)
 	if (eth_dev->rx_pkt_burst == cxgbe_recv_pkts)
 		return ptypes;
 	return NULL;
+}
+
+/* Update RSS hash configuration
+ */
+static int cxgbe_dev_rss_hash_update(struct rte_eth_dev *dev,
+				     struct rte_eth_rss_conf *rss_conf)
+{
+	struct port_info *pi = (struct port_info *)(dev->data->dev_private);
+	struct adapter *adapter = pi->adapter;
+	int err;
+
+	err = cxgbe_write_rss_conf(pi, rss_conf->rss_hf);
+	if (err)
+		return err;
+
+	pi->rss_hf = rss_conf->rss_hf;
+
+	if (rss_conf->rss_key) {
+		u32 key[10], mod_key[10];
+		int i, j;
+
+		memcpy(key, rss_conf->rss_key, CXGBE_DEFAULT_RSS_KEY_LEN);
+
+		for (i = 9, j = 0; i >= 0; i--, j++)
+			mod_key[j] = cpu_to_be32(key[i]);
+
+		t4_write_rss_key(adapter, mod_key, -1);
+	}
+
+	return 0;
+}
+
+/* Get RSS hash configuration
+ */
+static int cxgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
+				       struct rte_eth_rss_conf *rss_conf)
+{
+	struct port_info *pi = (struct port_info *)(dev->data->dev_private);
+	struct adapter *adapter = pi->adapter;
+	u64 rss_hf = 0;
+	u64 flags = 0;
+	int err;
+
+	err = t4_read_config_vi_rss(adapter, adapter->mbox, pi->viid,
+				    &flags, NULL);
+
+	if (err)
+		return err;
+
+	if (flags & F_FW_RSS_VI_CONFIG_CMD_IP6FOURTUPEN) {
+		rss_hf |= CXGBE_RSS_HF_TCP_IPV6_MASK;
+		if (flags & F_FW_RSS_VI_CONFIG_CMD_UDPEN)
+			rss_hf |= CXGBE_RSS_HF_UDP_IPV6_MASK;
+	}
+
+	if (flags & F_FW_RSS_VI_CONFIG_CMD_IP6TWOTUPEN)
+		rss_hf |= CXGBE_RSS_HF_IPV6_MASK;
+
+	if (flags & F_FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN) {
+		rss_hf |= ETH_RSS_NONFRAG_IPV4_TCP;
+		if (flags & F_FW_RSS_VI_CONFIG_CMD_UDPEN)
+			rss_hf |= ETH_RSS_NONFRAG_IPV4_UDP;
+	}
+
+	if (flags & F_FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN)
+		rss_hf |= CXGBE_RSS_HF_IPV4_MASK;
+
+	rss_conf->rss_hf = rss_hf;
+
+	if (rss_conf->rss_key) {
+		u32 key[10], mod_key[10];
+		int i, j;
+
+		t4_read_rss_key(adapter, key);
+
+		for (i = 9, j = 0; i >= 0; i--, j++)
+			mod_key[j] = be32_to_cpu(key[i]);
+
+		memcpy(rss_conf->rss_key, mod_key, CXGBE_DEFAULT_RSS_KEY_LEN);
+	}
+
+	return 0;
 }
 
 static int cxgbe_get_eeprom_length(struct rte_eth_dev *dev)
@@ -956,6 +1055,21 @@ static int cxgbe_get_regs(struct rte_eth_dev *eth_dev,
 	return 0;
 }
 
+int cxgbe_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *addr)
+{
+	struct port_info *pi = (struct port_info *)(dev->data->dev_private);
+	int ret;
+
+	ret = cxgbe_mpstcam_modify(pi, (int)pi->xact_addr_filt, (u8 *)addr);
+	if (ret < 0) {
+		dev_err(adapter, "failed to set mac addr; err = %d\n",
+			ret);
+		return ret;
+	}
+	pi->xact_addr_filt = ret;
+	return 0;
+}
+
 static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.dev_start		= cxgbe_dev_start,
 	.dev_stop		= cxgbe_dev_stop,
@@ -968,6 +1082,8 @@ static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.dev_infos_get		= cxgbe_dev_info_get,
 	.dev_supported_ptypes_get = cxgbe_dev_supported_ptypes_get,
 	.link_update		= cxgbe_dev_link_update,
+	.dev_set_link_up        = cxgbe_dev_set_link_up,
+	.dev_set_link_down      = cxgbe_dev_set_link_down,
 	.mtu_set		= cxgbe_dev_mtu_set,
 	.tx_queue_setup         = cxgbe_dev_tx_queue_setup,
 	.tx_queue_start		= cxgbe_dev_tx_queue_start,
@@ -977,6 +1093,7 @@ static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.rx_queue_start		= cxgbe_dev_rx_queue_start,
 	.rx_queue_stop		= cxgbe_dev_rx_queue_stop,
 	.rx_queue_release	= cxgbe_dev_rx_queue_release,
+	.filter_ctrl            = cxgbe_dev_filter_ctrl,
 	.stats_get		= cxgbe_dev_stats_get,
 	.stats_reset		= cxgbe_dev_stats_reset,
 	.flow_ctrl_get		= cxgbe_flow_ctrl_get,
@@ -985,6 +1102,9 @@ static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.get_eeprom		= cxgbe_get_eeprom,
 	.set_eeprom		= cxgbe_set_eeprom,
 	.get_reg		= cxgbe_get_regs,
+	.rss_hash_update	= cxgbe_dev_rss_hash_update,
+	.rss_hash_conf_get	= cxgbe_dev_rss_hash_conf_get,
+	.mac_addr_set		= cxgbe_mac_addr_set,
 };
 
 /*
@@ -1004,14 +1124,34 @@ static int eth_cxgbe_dev_init(struct rte_eth_dev *eth_dev)
 	eth_dev->dev_ops = &cxgbe_eth_dev_ops;
 	eth_dev->rx_pkt_burst = &cxgbe_recv_pkts;
 	eth_dev->tx_pkt_burst = &cxgbe_xmit_pkts;
-
-	/* for secondary processes, we don't initialise any further as primary
-	 * has already done this work.
-	 */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
-
 	pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+
+	/* for secondary processes, we attach to ethdevs allocated by primary
+	 * and do minimal initialization.
+	 */
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		int i;
+
+		for (i = 1; i < MAX_NPORTS; i++) {
+			struct rte_eth_dev *rest_eth_dev;
+			char namei[RTE_ETH_NAME_MAX_LEN];
+
+			snprintf(namei, sizeof(namei), "%s_%d",
+				 pci_dev->device.name, i);
+			rest_eth_dev = rte_eth_dev_attach_secondary(namei);
+			if (rest_eth_dev) {
+				rest_eth_dev->device = &pci_dev->device;
+				rest_eth_dev->dev_ops =
+					eth_dev->dev_ops;
+				rest_eth_dev->rx_pkt_burst =
+					eth_dev->rx_pkt_burst;
+				rest_eth_dev->tx_pkt_burst =
+					eth_dev->tx_pkt_burst;
+				rte_eth_dev_probing_finish(rest_eth_dev);
+			}
+		}
+		return 0;
+	}
 
 	snprintf(name, sizeof(name), "cxgbeadapter%d", eth_dev->data->port_id);
 	adapter = rte_zmalloc(name, sizeof(*adapter), 0);
@@ -1043,6 +1183,16 @@ out_free_adapter:
 	return err;
 }
 
+static int eth_cxgbe_dev_uninit(struct rte_eth_dev *eth_dev)
+{
+	struct port_info *pi = (struct port_info *)(eth_dev->data->dev_private);
+	struct adapter *adap = pi->adapter;
+
+	/* Free up other ports and all resources */
+	cxgbe_close(adap);
+	return 0;
+}
+
 static int eth_cxgbe_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct rte_pci_device *pci_dev)
 {
@@ -1052,7 +1202,7 @@ static int eth_cxgbe_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 static int eth_cxgbe_pci_remove(struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+	return rte_eth_dev_pci_generic_remove(pci_dev, eth_cxgbe_dev_uninit);
 }
 
 static struct rte_pci_driver rte_cxgbe_pmd = {
@@ -1065,3 +1215,6 @@ static struct rte_pci_driver rte_cxgbe_pmd = {
 RTE_PMD_REGISTER_PCI(net_cxgbe, rte_cxgbe_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_cxgbe, cxgb4_pci_tbl);
 RTE_PMD_REGISTER_KMOD_DEP(net_cxgbe, "* igb_uio | uio_pci_generic | vfio-pci");
+RTE_PMD_REGISTER_PARAM_STRING(net_cxgbe,
+			      CXGBE_DEVARG_KEEP_OVLAN "=<0|1> "
+			      CXGBE_DEVARG_FORCE_LINK_UP "=<0|1> ");

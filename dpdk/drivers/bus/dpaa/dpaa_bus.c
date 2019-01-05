@@ -1,33 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP.
+ *   Copyright 2017 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 /* System headers */
 #include <stdio.h>
@@ -45,7 +19,6 @@
 #include <rte_interrupts.h>
 #include <rte_log.h>
 #include <rte_debug.h>
-#include <rte_pci.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
@@ -53,13 +26,15 @@
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_bus.h>
+#include <rte_mbuf_pool_ops.h>
 
 #include <rte_dpaa_bus.h>
 #include <rte_dpaa_logs.h>
+#include <dpaax_iova_table.h>
 
 #include <fsl_usd.h>
 #include <fsl_qman.h>
@@ -70,25 +45,73 @@
 int dpaa_logtype_bus;
 int dpaa_logtype_mempool;
 int dpaa_logtype_pmd;
+int dpaa_logtype_eventdev;
 
-struct rte_dpaa_bus rte_dpaa_bus;
+static struct rte_dpaa_bus rte_dpaa_bus;
 struct netcfg_info *dpaa_netcfg;
 
 /* define a variable to hold the portal_key, once created.*/
-pthread_key_t dpaa_portal_key;
+static pthread_key_t dpaa_portal_key;
 
-RTE_DEFINE_PER_LCORE(bool, _dpaa_io);
+unsigned int dpaa_svr_family;
 
-static inline void
-dpaa_add_to_device_list(struct rte_dpaa_device *dev)
+#define FSL_DPAA_BUS_NAME	dpaa_bus
+
+RTE_DEFINE_PER_LCORE(bool, dpaa_io);
+RTE_DEFINE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
+
+static int
+compare_dpaa_devices(struct rte_dpaa_device *dev1,
+		     struct rte_dpaa_device *dev2)
 {
-	TAILQ_INSERT_TAIL(&rte_dpaa_bus.device_list, dev, next);
+	int comp = 0;
+
+	/* Segragating ETH from SEC devices */
+	if (dev1->device_type > dev2->device_type)
+		comp = 1;
+	else if (dev1->device_type < dev2->device_type)
+		comp = -1;
+	else
+		comp = 0;
+
+	if ((comp != 0) || (dev1->device_type != FSL_DPAA_ETH))
+		return comp;
+
+	if (dev1->id.fman_id > dev2->id.fman_id) {
+		comp = 1;
+	} else if (dev1->id.fman_id < dev2->id.fman_id) {
+		comp = -1;
+	} else {
+		/* FMAN ids match, check for mac_id */
+		if (dev1->id.mac_id > dev2->id.mac_id)
+			comp = 1;
+		else if (dev1->id.mac_id < dev2->id.mac_id)
+			comp = -1;
+		else
+			comp = 0;
+	}
+
+	return comp;
 }
 
 static inline void
-dpaa_remove_from_device_list(struct rte_dpaa_device *dev)
+dpaa_add_to_device_list(struct rte_dpaa_device *newdev)
 {
-	TAILQ_INSERT_TAIL(&rte_dpaa_bus.device_list, dev, next);
+	int comp, inserted = 0;
+	struct rte_dpaa_device *dev = NULL;
+	struct rte_dpaa_device *tdev = NULL;
+
+	TAILQ_FOREACH_SAFE(dev, &rte_dpaa_bus.device_list, next, tdev) {
+		comp = compare_dpaa_devices(newdev, dev);
+		if (comp < 0) {
+			TAILQ_INSERT_BEFORE(dev, newdev, next);
+			inserted = 1;
+			break;
+		}
+	}
+
+	if (!inserted)
+		TAILQ_INSERT_TAIL(&rte_dpaa_bus.device_list, newdev, next);
 }
 
 /*
@@ -109,6 +132,22 @@ dpaa_sec_available(void)
 
 static void dpaa_clean_device_list(void);
 
+static struct rte_devargs *
+dpaa_devargs_lookup(struct rte_dpaa_device *dev)
+{
+	struct rte_devargs *devargs;
+	char dev_name[32];
+
+	RTE_EAL_DEVARGS_FOREACH("dpaa_bus", devargs) {
+		devargs->bus->parse(devargs->name, &dev_name);
+		if (strcmp(dev_name, dev->device.name) == 0) {
+			DPAA_BUS_INFO("**Devargs matched %s", dev_name);
+			return devargs;
+		}
+	}
+	return NULL;
+}
+
 static int
 dpaa_create_device_list(void)
 {
@@ -127,6 +166,8 @@ dpaa_create_device_list(void)
 			goto cleanup;
 		}
 
+		dev->device.bus = &rte_dpaa_bus.bus;
+
 		cfg = &dpaa_netcfg->port_cfg[i];
 		fman_intf = cfg->fman_if;
 
@@ -140,8 +181,9 @@ dpaa_create_device_list(void)
 		memset(dev->name, 0, RTE_ETH_NAME_MAX_LEN);
 		sprintf(dev->name, "fm%d-mac%d", (fman_intf->fman_idx + 1),
 			fman_intf->mac_idx);
-		DPAA_BUS_LOG(DEBUG, "Device added: %s", dev->name);
+		DPAA_BUS_LOG(INFO, "%s netdev added", dev->name);
 		dev->device.name = dev->name;
+		dev->device.devargs = dpaa_devargs_lookup(dev);
 
 		dpaa_add_to_device_list(dev);
 	}
@@ -177,7 +219,9 @@ dpaa_create_device_list(void)
 		 */
 		memset(dev->name, 0, RTE_ETH_NAME_MAX_LEN);
 		sprintf(dev->name, "dpaa-sec%d", i);
-		DPAA_BUS_LOG(DEBUG, "Device added: %s", dev->name);
+		DPAA_BUS_LOG(INFO, "%s cryptodev added", dev->name);
+		dev->device.name = dev->name;
+		dev->device.devargs = dpaa_devargs_lookup(dev);
 
 		dpaa_add_to_device_list(dev);
 	}
@@ -204,9 +248,7 @@ dpaa_clean_device_list(void)
 	}
 }
 
-/** XXX move this function into a separate file */
-static int
-_dpaa_portal_init(void *arg)
+int rte_dpaa_portal_init(void *arg)
 {
 	cpu_set_t cpuset;
 	pthread_t id;
@@ -216,7 +258,7 @@ _dpaa_portal_init(void *arg)
 
 	BUS_INIT_FUNC_TRACE();
 
-	if ((uint64_t)arg == 1 || cpu == LCORE_ID_ANY)
+	if ((size_t)arg == 1 || cpu == LCORE_ID_ANY)
 		cpu = rte_get_master_lcore();
 	/* if the core id is not supported */
 	else
@@ -277,24 +319,45 @@ _dpaa_portal_init(void *arg)
 		return ret;
 	}
 
-	RTE_PER_LCORE(_dpaa_io) = true;
+	RTE_PER_LCORE(dpaa_io) = true;
 
 	DPAA_BUS_LOG(DEBUG, "QMAN thread initialized");
 
 	return 0;
 }
 
-/*
- * rte_dpaa_portal_init - Wrapper over _dpaa_portal_init with thread level check
- * XXX Complete this
- */
 int
-rte_dpaa_portal_init(void *arg)
+rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq)
 {
-	if (unlikely(!RTE_PER_LCORE(_dpaa_io)))
-		return _dpaa_portal_init(arg);
+	/* Affine above created portal with channel*/
+	u32 sdqcr;
+	struct qman_portal *qp;
+	int ret;
+
+	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+		ret = rte_dpaa_portal_init(arg);
+		if (ret < 0) {
+			DPAA_BUS_LOG(ERR, "portal initialization failure");
+			return ret;
+		}
+	}
+
+	/* Initialise qman specific portals */
+	qp = fsl_qman_portal_create();
+	if (!qp) {
+		DPAA_BUS_LOG(ERR, "Unable to alloc fq portal");
+		return -1;
+	}
+	fq->qp = qp;
+	sdqcr = QM_SDQCR_CHANNELS_POOL_CONV(fq->ch_id);
+	qman_static_dequeue_add(sdqcr, qp);
 
 	return 0;
+}
+
+int rte_dpaa_portal_fq_close(struct qman_fq *fq)
+{
+	return fsl_qman_portal_destroy(fq->qp);
 }
 
 void
@@ -315,7 +378,52 @@ dpaa_portal_finish(void *arg)
 	rte_free(dpaa_io_portal);
 	dpaa_io_portal = NULL;
 
-	RTE_PER_LCORE(_dpaa_io) = false;
+	RTE_PER_LCORE(dpaa_io) = false;
+}
+
+static int
+rte_dpaa_bus_parse(const char *name, void *out_name)
+{
+	int i, j;
+	int max_fman = 2, max_macs = 16;
+	char *sep = strchr(name, ':');
+
+	if (strncmp(name, RTE_STR(FSL_DPAA_BUS_NAME),
+		strlen(RTE_STR(FSL_DPAA_BUS_NAME)))) {
+		return -EINVAL;
+	}
+
+	if (!sep) {
+		DPAA_BUS_ERR("Incorrect device name observed");
+		return -EINVAL;
+	}
+
+	sep = (char *) (sep + 1);
+
+	for (i = 0; i < max_fman; i++) {
+		for (j = 0; j < max_macs; j++) {
+			char fm_name[16];
+			snprintf(fm_name, 16, "fm%d-mac%d", i, j);
+			if (strcmp(fm_name, sep) == 0) {
+				if (out_name)
+					strcpy(out_name, sep);
+				return 0;
+			}
+		}
+	}
+
+	for (i = 0; i < RTE_LIBRTE_DPAA_MAX_CRYPTODEV; i++) {
+		char sec_name[16];
+
+		snprintf(sec_name, 16, "dpaa-sec%d", i);
+		if (strcmp(sec_name, sep) == 0) {
+			if (out_name)
+				strcpy(out_name, sep);
+			return 0;
+		}
+	}
+
+	return -EINVAL;
 }
 
 #define DPAA_DEV_PATH1 "/sys/devices/platform/soc/soc:fsl,dpaa"
@@ -356,14 +464,11 @@ rte_dpaa_bus_scan(void)
 		return 0;
 	}
 
-	DPAA_BUS_LOG(DEBUG, "Bus: Address of netcfg=%p, Ethports=%d",
-		     dpaa_netcfg, dpaa_netcfg->num_ethports);
-
 #ifdef RTE_LIBRTE_DPAA_DEBUG_DRIVER
 	dump_netcfg(dpaa_netcfg);
 #endif
 
-	DPAA_BUS_LOG(DEBUG, "Number of devices = %d\n",
+	DPAA_BUS_LOG(DEBUG, "Number of ethernet devices = %d",
 		     dpaa_netcfg->num_ethports);
 	ret = dpaa_create_device_list();
 	if (ret) {
@@ -380,9 +485,6 @@ rte_dpaa_bus_scan(void)
 		dpaa_clean_device_list();
 		return ret;
 	}
-
-	DPAA_BUS_LOG(DEBUG, "dpaa_portal_key=%u, ret=%d\n",
-		    (unsigned int)dpaa_portal_key, ret);
 
 	return 0;
 }
@@ -419,22 +521,15 @@ static int
 rte_dpaa_device_match(struct rte_dpaa_driver *drv,
 		      struct rte_dpaa_device *dev)
 {
-	int ret = -1;
-
-	BUS_INIT_FUNC_TRACE();
-
 	if (!drv || !dev) {
 		DPAA_BUS_DEBUG("Invalid drv or dev received.");
-		return ret;
+		return -1;
 	}
 
-	if (drv->drv_type == dev->device_type) {
-		DPAA_BUS_INFO("Device: %s matches for driver: %s",
-			      dev->name, drv->driver.name);
-		ret = 0; /* Found a match */
-	}
+	if (drv->drv_type == dev->device_type)
+		return 0;
 
-	return ret;
+	return -1;
 }
 
 static int
@@ -443,8 +538,19 @@ rte_dpaa_bus_probe(void)
 	int ret = -1;
 	struct rte_dpaa_device *dev;
 	struct rte_dpaa_driver *drv;
+	FILE *svr_file = NULL;
+	unsigned int svr_ver;
+	int probe_all = rte_dpaa_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST;
 
-	BUS_INIT_FUNC_TRACE();
+	svr_file = fopen(DPAA_SOC_ID_FILE, "r");
+	if (svr_file) {
+		if (fscanf(svr_file, "svr:%x", &svr_ver) > 0)
+			dpaa_svr_family = svr_ver & SVR_MASK;
+		fclose(svr_file);
+	}
+
+	/* And initialize the PA->VA translation table */
+	dpaax_iova_table_populate();
 
 	/* For each registered driver, and device, call the driver->probe */
 	TAILQ_FOREACH(dev, &rte_dpaa_bus.device_list, next) {
@@ -453,15 +559,36 @@ rte_dpaa_bus_probe(void)
 			if (ret)
 				continue;
 
-			if (!drv->probe)
+			if (rte_dev_is_probed(&dev->device))
 				continue;
 
-			ret = drv->probe(drv, dev);
-			if (ret)
-				DPAA_BUS_ERR("Unable to probe.\n");
+			if (!drv->probe ||
+			    (dev->device.devargs &&
+			    dev->device.devargs->policy == RTE_DEV_BLACKLISTED))
+				continue;
+
+			if (probe_all ||
+			    (dev->device.devargs &&
+			    dev->device.devargs->policy ==
+			    RTE_DEV_WHITELISTED)) {
+				ret = drv->probe(drv, dev);
+				if (ret) {
+					DPAA_BUS_ERR("Unable to probe.\n");
+				} else {
+					dev->driver = drv;
+					dev->device.driver = &drv->driver;
+				}
+			}
 			break;
 		}
 	}
+
+	/* Register DPAA mempool ops only if any DPAA device has
+	 * been detected.
+	 */
+	if (!TAILQ_EMPTY(&rte_dpaa_bus.device_list))
+		rte_mbuf_set_platform_mempool_ops(DPAA_MEMPOOL_OPS_NAME);
+
 	return 0;
 }
 
@@ -497,10 +624,11 @@ rte_dpaa_get_iommu_class(void)
 	return RTE_IOVA_PA;
 }
 
-struct rte_dpaa_bus rte_dpaa_bus = {
+static struct rte_dpaa_bus rte_dpaa_bus = {
 	.bus = {
 		.scan = rte_dpaa_bus_scan,
 		.probe = rte_dpaa_bus_probe,
+		.parse = rte_dpaa_bus_parse,
 		.find_device = rte_dpaa_find_device,
 		.get_iommu_class = rte_dpaa_get_iommu_class,
 	},
@@ -511,9 +639,7 @@ struct rte_dpaa_bus rte_dpaa_bus = {
 
 RTE_REGISTER_BUS(FSL_DPAA_BUS_NAME, rte_dpaa_bus.bus);
 
-RTE_INIT(dpaa_init_log);
-static void
-dpaa_init_log(void)
+RTE_INIT(dpaa_init_log)
 {
 	dpaa_logtype_bus = rte_log_register("bus.dpaa");
 	if (dpaa_logtype_bus >= 0)
@@ -523,7 +649,11 @@ dpaa_init_log(void)
 	if (dpaa_logtype_mempool >= 0)
 		rte_log_set_level(dpaa_logtype_mempool, RTE_LOG_NOTICE);
 
-	dpaa_logtype_pmd = rte_log_register("pmd.dpaa");
+	dpaa_logtype_pmd = rte_log_register("pmd.net.dpaa");
 	if (dpaa_logtype_pmd >= 0)
 		rte_log_set_level(dpaa_logtype_pmd, RTE_LOG_NOTICE);
+
+	dpaa_logtype_eventdev = rte_log_register("pmd.event.dpaa");
+	if (dpaa_logtype_eventdev >= 0)
+		rte_log_set_level(dpaa_logtype_eventdev, RTE_LOG_NOTICE);
 }

@@ -1,35 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *	 notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *	 notice, this list of conditions and the following disclaimer in
- *	 the documentation and/or other materials provided with the
- *	 distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *	 contributors may be used to endorse or promote products derived
- *	 from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
  */
+
 #include <inttypes.h>
 #include <locale.h>
 
@@ -40,6 +12,7 @@
 #include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_spinlock.h>
+#include <rte_jhash.h>
 
 #include "test.h"
 
@@ -66,8 +39,8 @@ struct {
 	struct rte_hash *h;
 } tbl_multiwriter_test_params;
 
-const uint32_t nb_entries = 16*1024*1024;
-const uint32_t nb_total_tsx_insertion = 15*1024*1024;
+const uint32_t nb_entries = 5*1024*1024;
+const uint32_t nb_total_tsx_insertion = 4.5*1024*1024;
 uint32_t rounded_nb_total_tsx_insertion;
 
 static rte_atomic64_t gcycles;
@@ -76,18 +49,29 @@ static rte_atomic64_t ginsertions;
 static int use_htm;
 
 static int
-test_hash_multiwriter_worker(__attribute__((unused)) void *arg)
+test_hash_multiwriter_worker(void *arg)
 {
 	uint64_t i, offset;
+	uint16_t pos_core;
 	uint32_t lcore_id = rte_lcore_id();
 	uint64_t begin, cycles;
+	uint16_t *enabled_core_ids = (uint16_t *)arg;
 
-	offset = (lcore_id - rte_get_master_lcore())
-		* tbl_multiwriter_test_params.nb_tsx_insertion;
+	for (pos_core = 0; pos_core < rte_lcore_count(); pos_core++) {
+		if (enabled_core_ids[pos_core] == lcore_id)
+			break;
+	}
+
+	/*
+	 * Calculate offset for entries based on the position of the
+	 * logical core, from the master core (not counting not enabled cores)
+	 */
+	offset = pos_core * tbl_multiwriter_test_params.nb_tsx_insertion;
 
 	printf("Core #%d inserting %d: %'"PRId64" - %'"PRId64"\n",
 	       lcore_id, tbl_multiwriter_test_params.nb_tsx_insertion,
-	       offset, offset + tbl_multiwriter_test_params.nb_tsx_insertion);
+	       offset,
+	       offset + tbl_multiwriter_test_params.nb_tsx_insertion - 1);
 
 	begin = rte_rdtsc_precise();
 
@@ -116,6 +100,8 @@ test_hash_multiwriter(void)
 {
 	unsigned int i, rounded_nb_total_tsx_insertion;
 	static unsigned calledCount = 1;
+	uint16_t enabled_core_ids[RTE_MAX_LCORE];
+	uint16_t core_id;
 
 	uint32_t *keys;
 	uint32_t *found;
@@ -123,7 +109,7 @@ test_hash_multiwriter(void)
 	struct rte_hash_parameters hash_params = {
 		.entries = nb_entries,
 		.key_len = sizeof(uint32_t),
-		.hash_func = rte_hash_crc,
+		.hash_func = rte_jhash,
 		.hash_func_init_val = 0,
 		.socket_id = rte_socket_id(),
 	};
@@ -144,6 +130,7 @@ test_hash_multiwriter(void)
 
 	uint32_t duplicated_keys = 0;
 	uint32_t lost_keys = 0;
+	uint32_t count;
 
 	snprintf(name, 32, "test%u", calledCount++);
 	hash_params.name = name;
@@ -168,16 +155,17 @@ test_hash_multiwriter(void)
 		goto err1;
 	}
 
+	for (i = 0; i < nb_entries; i++)
+		keys[i] = i;
+
+	tbl_multiwriter_test_params.keys = keys;
+
 	found = rte_zmalloc(NULL, sizeof(uint32_t) * nb_entries, 0);
 	if (found == NULL) {
 		printf("RTE_ZMALLOC failed\n");
 		goto err2;
 	}
 
-	for (i = 0; i < nb_entries; i++)
-		keys[i] = i;
-
-	tbl_multiwriter_test_params.keys = keys;
 	tbl_multiwriter_test_params.found = found;
 
 	rte_atomic64_init(&gcycles);
@@ -186,10 +174,35 @@ test_hash_multiwriter(void)
 	rte_atomic64_init(&ginsertions);
 	rte_atomic64_clear(&ginsertions);
 
+	/* Get list of enabled cores */
+	i = 0;
+	for (core_id = 0; core_id < RTE_MAX_LCORE; core_id++) {
+		if (i == rte_lcore_count())
+			break;
+
+		if (rte_lcore_is_enabled(core_id)) {
+			enabled_core_ids[i] = core_id;
+			i++;
+		}
+	}
+
+	if (i != rte_lcore_count()) {
+		printf("Number of enabled cores in list is different from "
+				"number given by rte_lcore_count()\n");
+		goto err3;
+	}
+
 	/* Fire all threads. */
 	rte_eal_mp_remote_launch(test_hash_multiwriter_worker,
-				 NULL, CALL_MASTER);
+				 enabled_core_ids, CALL_MASTER);
 	rte_eal_mp_wait_lcore();
+
+	count = rte_hash_count(handle);
+	if (count != rounded_nb_total_tsx_insertion) {
+		printf("rte_hash_count returned wrong value %u, %d\n",
+				rounded_nb_total_tsx_insertion, count);
+		goto err3;
+	}
 
 	while (rte_hash_iterate(handle, &next_key, &next_data, &iter) >= 0) {
 		/* Search for the key in the list of keys added .*/

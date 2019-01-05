@@ -1,38 +1,14 @@
-/*
- * Copyright (c) 2012-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2012-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #include "efx.h"
 #include "efx_impl.h"
 
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
 
 	__checkReturn	efx_rc_t
 ef10_mac_poll(
@@ -46,10 +22,10 @@ ef10_mac_poll(
 	if ((rc = ef10_phy_get_link(enp, &els)) != 0)
 		goto fail1;
 
-	epp->ep_adv_cap_mask = els.els_adv_cap_mask;
-	epp->ep_fcntl = els.els_fcntl;
+	epp->ep_adv_cap_mask = els.epls.epls_adv_cap_mask;
+	epp->ep_fcntl = els.epls.epls_fcntl;
 
-	*link_modep = els.els_link_mode;
+	*link_modep = els.epls.epls_link_mode;
 
 	return (0);
 
@@ -99,11 +75,10 @@ efx_mcdi_vadapter_set_mac(
 {
 	efx_port_t *epp = &(enp->en_port);
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_VADAPTOR_SET_MAC_IN_LEN,
-			    MC_CMD_VADAPTOR_SET_MAC_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_VADAPTOR_SET_MAC_IN_LEN,
+		MC_CMD_VADAPTOR_SET_MAC_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_VADAPTOR_SET_MAC;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_VADAPTOR_SET_MAC_IN_LEN;
@@ -165,11 +140,10 @@ efx_mcdi_mtu_set(
 	__in		uint32_t mtu)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_SET_MAC_EXT_IN_LEN,
-			    MC_CMD_SET_MAC_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_SET_MAC_EXT_IN_LEN,
+		MC_CMD_SET_MAC_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_SET_MAC;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_SET_MAC_EXT_IN_LEN;
@@ -202,11 +176,10 @@ efx_mcdi_mtu_get(
 	__out		size_t *mtu)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_SET_MAC_EXT_IN_LEN,
-			    MC_CMD_SET_MAC_V2_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_SET_MAC_EXT_IN_LEN,
+		MC_CMD_SET_MAC_V2_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_SET_MAC;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_SET_MAC_EXT_IN_LEN;
@@ -298,11 +271,10 @@ ef10_mac_reconfigure(
 {
 	efx_port_t *epp = &(enp->en_port);
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_SET_MAC_IN_LEN,
-			    MC_CMD_SET_MAC_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_SET_MAC_IN_LEN,
+		MC_CMD_SET_MAC_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_SET_MAC;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_SET_MAC_IN_LEN;
@@ -380,7 +352,8 @@ ef10_mac_multicast_list_set(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	if ((rc = emop->emo_reconfigure(enp)) != 0)
 		goto fail1;
@@ -435,7 +408,7 @@ ef10_mac_filter_default_rxq_clear(
 
 	ef10_filter_default_rxq_clear(enp);
 
-	efx_filter_reconfigure(enp, epp->ep_mac_addr,
+	(void) efx_filter_reconfigure(enp, epp->ep_mac_addr,
 				    epp->ep_all_unicst, epp->ep_mulcst,
 				    epp->ep_all_mulcst, epp->ep_brdcst,
 				    epp->ep_mulcst_addr_list,
@@ -546,8 +519,44 @@ ef10_mac_stats_get_mask(
 			goto fail6;
 	}
 
+	if (encp->enc_fec_counters) {
+		const struct efx_mac_stats_range ef10_fec[] = {
+			{ EFX_MAC_FEC_UNCORRECTED_ERRORS,
+			    EFX_MAC_FEC_CORRECTED_SYMBOLS_LANE3 },
+		};
+		if ((rc = efx_mac_stats_mask_add_ranges(maskp, mask_size,
+		    ef10_fec, EFX_ARRAY_SIZE(ef10_fec))) != 0)
+			goto fail7;
+	}
+
+	if (encp->enc_mac_stats_nstats >= MC_CMD_MAC_NSTATS_V4) {
+		const struct efx_mac_stats_range ef10_rxdp_sdt[] = {
+			{ EFX_MAC_RXDP_SCATTER_DISABLED_TRUNC,
+			    EFX_MAC_RXDP_SCATTER_DISABLED_TRUNC },
+		};
+
+		if ((rc = efx_mac_stats_mask_add_ranges(maskp, mask_size,
+		    ef10_rxdp_sdt, EFX_ARRAY_SIZE(ef10_rxdp_sdt))) != 0)
+			goto fail8;
+	}
+
+	if (encp->enc_hlb_counters) {
+		const struct efx_mac_stats_range ef10_hlb[] = {
+			{ EFX_MAC_RXDP_HLB_IDLE, EFX_MAC_RXDP_HLB_TIMEOUT },
+		};
+		if ((rc = efx_mac_stats_mask_add_ranges(maskp, mask_size,
+		    ef10_hlb, EFX_ARRAY_SIZE(ef10_hlb))) != 0)
+			goto fail9;
+	}
+
 	return (0);
 
+fail9:
+	EFSYS_PROBE(fail9);
+fail8:
+	EFSYS_PROBE(fail8);
+fail7:
+	EFSYS_PROBE(fail7);
 fail6:
 	EFSYS_PROBE(fail6);
 fail5:
@@ -575,16 +584,45 @@ ef10_mac_stats_update(
 	__inout_ecount(EFX_MAC_NSTATS)	efsys_stat_t *stat,
 	__inout_opt			uint32_t *generationp)
 {
-	efx_qword_t value;
+	const efx_nic_cfg_t *encp = &enp->en_nic_cfg;
 	efx_qword_t generation_start;
 	efx_qword_t generation_end;
+	efx_qword_t value;
+	efx_rc_t rc;
 
-	_NOTE(ARGUNUSED(enp))
+	/*
+	 * The MAC_STATS contain start and end generation counters used to
+	 * detect when the DMA buffer has been updated during stats decode.
+	 * All stats counters are 64bit unsigned values.
+	 *
+	 * Siena-compatible MAC stats contain MC_CMD_MAC_NSTATS 64bit counters.
+	 * The generation end counter is at index MC_CMD_MAC_GENERATION_END
+	 * (same as MC_CMD_MAC_NSTATS-1).
+	 *
+	 * Medford2 and later use a larger DMA buffer: MAC_STATS_NUM_STATS from
+	 * MC_CMD_GET_CAPABILITIES_V4_OUT reports the number of 64bit counters.
+	 *
+	 * Firmware writes the generation end counter as the last counter in the
+	 * DMA buffer. Do not use MC_CMD_MAC_GENERATION_END, as that is only
+	 * correct for legacy Siena-compatible MAC stats.
+	 */
+
+	if (encp->enc_mac_stats_nstats < MC_CMD_MAC_NSTATS) {
+		/* MAC stats count too small for legacy MAC stats */
+		rc = ENOSPC;
+		goto fail1;
+	}
+	if (EFSYS_MEM_SIZE(esmp) <
+	    (encp->enc_mac_stats_nstats * sizeof (efx_qword_t))) {
+		/* DMA buffer too small */
+		rc = ENOSPC;
+		goto fail2;
+	}
 
 	/* Read END first so we don't race with the MC */
-	EFSYS_DMA_SYNC_FOR_KERNEL(esmp, 0, EFX_MAC_STATS_SIZE);
-	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_GENERATION_END,
-			    &generation_end);
+	EFSYS_DMA_SYNC_FOR_KERNEL(esmp, 0, EFSYS_MEM_SIZE(esmp));
+	EF10_MAC_STAT_READ(esmp, (encp->enc_mac_stats_nstats - 1),
+	    &generation_end);
 	EFSYS_MEM_READ_BARRIER();
 
 	/* TX */
@@ -612,7 +650,7 @@ ef10_mac_stats_update(
 	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_TX_LT64_PKTS, &value);
 	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_TX_LE_64_PKTS]), &value);
 	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_TX_64_PKTS, &value);
-	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_TX_LE_64_PKTS]), &value);
+	EFSYS_STAT_INCR_QWORD(&(stat[EFX_MAC_TX_LE_64_PKTS]), &value);
 
 	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_TX_65_TO_127_PKTS, &value);
 	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_TX_65_TO_127_PKTS]), &value);
@@ -875,7 +913,109 @@ ef10_mac_stats_update(
 	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_VADAPTER_TX_OVERFLOW]), &value);
 
 
-	EFSYS_DMA_SYNC_FOR_KERNEL(esmp, 0, EFX_MAC_STATS_SIZE);
+	if (encp->enc_mac_stats_nstats < MC_CMD_MAC_NSTATS_V2)
+		goto done;
+
+	/* FEC */
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_FEC_UNCORRECTED_ERRORS, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_FEC_UNCORRECTED_ERRORS]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_FEC_CORRECTED_ERRORS, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_FEC_CORRECTED_ERRORS]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_FEC_CORRECTED_SYMBOLS_LANE0,
+	    &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_FEC_CORRECTED_SYMBOLS_LANE0]),
+	    &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_FEC_CORRECTED_SYMBOLS_LANE1,
+	    &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_FEC_CORRECTED_SYMBOLS_LANE1]),
+	    &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_FEC_CORRECTED_SYMBOLS_LANE2,
+	    &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_FEC_CORRECTED_SYMBOLS_LANE2]),
+	    &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_FEC_CORRECTED_SYMBOLS_LANE3,
+	    &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_FEC_CORRECTED_SYMBOLS_LANE3]),
+	    &value);
+
+	if (encp->enc_mac_stats_nstats < MC_CMD_MAC_NSTATS_V3)
+		goto done;
+
+	/* CTPIO exceptions */
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_VI_BUSY_FALLBACK, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_VI_BUSY_FALLBACK]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_LONG_WRITE_SUCCESS, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_LONG_WRITE_SUCCESS]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_MISSING_DBELL_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_MISSING_DBELL_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_OVERFLOW_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_OVERFLOW_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_UNDERFLOW_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_UNDERFLOW_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_TIMEOUT_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_TIMEOUT_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_NONCONTIG_WR_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_NONCONTIG_WR_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_FRM_CLOBBER_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_FRM_CLOBBER_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_INVALID_WR_FAIL, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_INVALID_WR_FAIL]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_VI_CLOBBER_FALLBACK, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_VI_CLOBBER_FALLBACK]),
+	    &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_UNQUALIFIED_FALLBACK, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_UNQUALIFIED_FALLBACK]),
+	    &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_RUNT_FALLBACK, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_RUNT_FALLBACK]), &value);
+
+	/* CTPIO per-port stats */
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_SUCCESS, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_SUCCESS]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_FALLBACK, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_FALLBACK]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_POISON, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_POISON]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_CTPIO_ERASE, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_CTPIO_ERASE]), &value);
+
+	if (encp->enc_mac_stats_nstats < MC_CMD_MAC_NSTATS_V4)
+		goto done;
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_RXDP_SCATTER_DISABLED_TRUNC,
+	    &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_RXDP_SCATTER_DISABLED_TRUNC]),
+	    &value);
+
+	/* Head-of-line blocking */
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_RXDP_HLB_IDLE, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_RXDP_HLB_IDLE]), &value);
+
+	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_RXDP_HLB_TIMEOUT, &value);
+	EFSYS_STAT_SET_QWORD(&(stat[EFX_MAC_RXDP_HLB_TIMEOUT]), &value);
+
+done:
+	/* Read START generation counter */
+	EFSYS_DMA_SYNC_FOR_KERNEL(esmp, 0, EFSYS_MEM_SIZE(esmp));
 	EFSYS_MEM_READ_BARRIER();
 	EF10_MAC_STAT_READ(esmp, MC_CMD_MAC_GENERATION_START,
 			    &generation_start);
@@ -890,8 +1030,15 @@ ef10_mac_stats_update(
 		*generationp = EFX_QWORD_FIELD(generation_start, EFX_DWORD_0);
 
 	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
 }
 
 #endif	/* EFSYS_OPT_MAC_STATS */
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */

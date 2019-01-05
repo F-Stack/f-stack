@@ -168,6 +168,35 @@ typedef int (*rte_bus_unplug_t)(struct rte_device *dev);
 typedef int (*rte_bus_parse_t)(const char *name, void *addr);
 
 /**
+ * Implement a specific hot-unplug handler, which is responsible for
+ * handle the failure when device be hot-unplugged. When the event of
+ * hot-unplug be detected, it could call this function to handle
+ * the hot-unplug failure and avoid app crash.
+ * @param dev
+ *	Pointer of the device structure.
+ *
+ * @return
+ *	0 on success.
+ *	!0 on error.
+ */
+typedef int (*rte_bus_hot_unplug_handler_t)(struct rte_device *dev);
+
+/**
+ * Implement a specific sigbus handler, which is responsible for handling
+ * the sigbus error which is either original memory error, or specific memory
+ * error that caused of device be hot-unplugged. When sigbus error be captured,
+ * it could call this function to handle sigbus error.
+ * @param failure_addr
+ *	Pointer of the fault address of the sigbus error.
+ *
+ * @return
+ *	0 for success handle the sigbus for hot-unplug.
+ *	1 for not process it, because it is a generic sigbus error.
+ *	-1 for failed to handle the sigbus for hot-unplug.
+ */
+typedef int (*rte_bus_sigbus_handler_t)(const void *failure_addr);
+
+/**
  * Bus scan policies
  */
 enum rte_bus_scan_mode {
@@ -211,6 +240,12 @@ struct rte_bus {
 	rte_bus_parse_t parse;       /**< Parse a device name */
 	struct rte_bus_conf conf;    /**< Bus configuration */
 	rte_bus_get_iommu_class_t get_iommu_class; /**< Get iommu class */
+	rte_dev_iterate_t dev_iterate; /**< Device iterator. */
+	rte_bus_hot_unplug_handler_t hot_unplug_handler;
+				/**< handle hot-unplug failure on the bus */
+	rte_bus_sigbus_handler_t sigbus_handler;
+					/**< handle sigbus error on the bus */
+
 };
 
 /**
@@ -325,8 +360,7 @@ enum rte_iova_mode rte_bus_get_iommu_class(void);
  * The constructor has higher priority than PMD constructors.
  */
 #define RTE_REGISTER_BUS(nm, bus) \
-RTE_INIT_PRIO(businitfn_ ##nm, 110); \
-static void businitfn_ ##nm(void) \
+RTE_INIT_PRIO(businitfn_ ##nm, BUS) \
 {\
 	(bus).name = RTE_STR(nm);\
 	rte_bus_register(&bus); \

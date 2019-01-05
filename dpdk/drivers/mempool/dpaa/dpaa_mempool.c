@@ -1,33 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP.
+ *   Copyright 2017 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /* System headers */
@@ -52,6 +26,14 @@
 #include <rte_ring.h>
 
 #include <dpaa_mempool.h>
+#include <dpaax_iova_table.h>
+
+/* List of all the memseg information locally maintained in dpaa driver. This
+ * is to optimize the PA_to_VA searches until a better mechanism (algo) is
+ * available.
+ */
+struct dpaa_memseg_list rte_dpaa_memsegs
+	= TAILQ_HEAD_INITIALIZER(rte_dpaa_memsegs);
 
 struct dpaa_bp_info rte_dpaa_bpid_info[DPAA_MAX_BPOOLS];
 
@@ -99,6 +81,8 @@ dpaa_mbuf_create_pool(struct rte_mempool *mp)
 	rte_dpaa_bpid_info[bpid].meta_data_size =
 		sizeof(struct rte_mbuf) + rte_pktmbuf_priv_size(mp);
 	rte_dpaa_bpid_info[bpid].dpaa_ops_index = mp->ops_index;
+	rte_dpaa_bpid_info[bpid].ptov_off = 0;
+	rte_dpaa_bpid_info[bpid].flags = 0;
 
 	bp_info = rte_malloc(NULL,
 			     sizeof(struct dpaa_bp_info),
@@ -139,7 +123,8 @@ dpaa_buf_free(struct dpaa_bp_info *bp_info, uint64_t addr)
 	struct bm_buffer buf;
 	int ret;
 
-	DPAA_MEMPOOL_DEBUG("Free 0x%lx to bpid: %d", addr, bp_info->bpid);
+	DPAA_MEMPOOL_DPDEBUG("Free 0x%" PRIx64 " to bpid: %d",
+			   addr, bp_info->bpid);
 
 	bm_buffer_set64(&buf, addr);
 retry:
@@ -163,17 +148,29 @@ dpaa_mbuf_free_bulk(struct rte_mempool *pool,
 	DPAA_MEMPOOL_DPDEBUG("Request to free %d buffers in bpid = %d",
 			     n, bp_info->bpid);
 
-	ret = rte_dpaa_portal_init((void *)0);
-	if (ret) {
-		DPAA_MEMPOOL_ERR("rte_dpaa_portal_init failed with ret: %d",
-				 ret);
-		return 0;
+	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+		ret = rte_dpaa_portal_init((void *)0);
+		if (ret) {
+			DPAA_MEMPOOL_ERR("rte_dpaa_portal_init failed with ret: %d",
+					 ret);
+			return 0;
+		}
 	}
 
 	while (i < n) {
+		uint64_t phy = rte_mempool_virt2iova(obj_table[i]);
+
+		if (unlikely(!bp_info->ptov_off)) {
+			/* buffers are from single mem segment */
+			if (bp_info->flags & DPAA_MPOOL_SINGLE_SEGMENT) {
+				bp_info->ptov_off = (size_t)obj_table[i] - phy;
+				rte_dpaa_bpid_info[bp_info->bpid].ptov_off
+						= bp_info->ptov_off;
+			}
+		}
+
 		dpaa_buf_free(bp_info,
-			      (uint64_t)rte_mempool_virt2iova(obj_table[i]) +
-			      bp_info->meta_data_size);
+			      (uint64_t)phy + bp_info->meta_data_size);
 		i = i + 1;
 	}
 
@@ -206,11 +203,13 @@ dpaa_mbuf_alloc_bulk(struct rte_mempool *pool,
 		return -1;
 	}
 
-	ret = rte_dpaa_portal_init((void *)0);
-	if (ret) {
-		DPAA_MEMPOOL_ERR("rte_dpaa_portal_init failed with ret: %d",
-				 ret);
-		return -1;
+	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+		ret = rte_dpaa_portal_init((void *)0);
+		if (ret) {
+			DPAA_MEMPOOL_ERR("rte_dpaa_portal_init failed with ret: %d",
+					 ret);
+			return -1;
+		}
 	}
 
 	while (n < count) {
@@ -241,7 +240,7 @@ dpaa_mbuf_alloc_bulk(struct rte_mempool *pool,
 			 * i.e. first buffer is valid, remaining 6 buffers
 			 * may be null.
 			 */
-			bufaddr = (void *)rte_dpaa_mem_ptov(bufs[i].addr);
+			bufaddr = DPAA_MEMPOOL_PTOV(bp_info, bufs[i].addr);
 			m[n] = (struct rte_mbuf *)((char *)bufaddr
 						- bp_info->meta_data_size);
 			DPAA_MEMPOOL_DPDEBUG("Paddr (%p), FD (%p) from BMAN",
@@ -272,13 +271,71 @@ dpaa_mbuf_get_count(const struct rte_mempool *mp)
 	return bman_query_free_buffers(bp_info->bp);
 }
 
-struct rte_mempool_ops dpaa_mpool_ops = {
-	.name = "dpaa",
+static int
+dpaa_populate(struct rte_mempool *mp, unsigned int max_objs,
+	      void *vaddr, rte_iova_t paddr, size_t len,
+	      rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg)
+{
+	struct dpaa_bp_info *bp_info;
+	unsigned int total_elt_sz;
+
+	MEMPOOL_INIT_FUNC_TRACE();
+
+	if (!mp || !mp->pool_data) {
+		DPAA_MEMPOOL_ERR("Invalid mempool provided\n");
+		return 0;
+	}
+
+	/* Update the PA-VA Table */
+	dpaax_iova_table_update(paddr, vaddr, len);
+
+	bp_info = DPAA_MEMPOOL_TO_POOL_INFO(mp);
+	total_elt_sz = mp->header_size + mp->elt_size + mp->trailer_size;
+
+	DPAA_MEMPOOL_DEBUG("Req size %" PRIx64 " vs Available %u\n",
+			   (uint64_t)len, total_elt_sz * mp->size);
+
+	/* Detect pool area has sufficient space for elements in this memzone */
+	if (len >= total_elt_sz * mp->size)
+		bp_info->flags |= DPAA_MPOOL_SINGLE_SEGMENT;
+	struct dpaa_memseg *ms;
+
+	/* For each memory chunk pinned to the Mempool, a linked list of the
+	 * contained memsegs is created for searching when PA to VA
+	 * conversion is required.
+	 */
+	ms = rte_zmalloc(NULL, sizeof(struct dpaa_memseg), 0);
+	if (!ms) {
+		DPAA_MEMPOOL_ERR("Unable to allocate internal memory.");
+		DPAA_MEMPOOL_WARN("Fast Physical to Virtual Addr translation would not be available.");
+		/* If the element is not added, it would only lead to failure
+		 * in searching for the element and the logic would Fallback
+		 * to traditional DPDK memseg traversal code. So, this is not
+		 * a blocking error - but, error would be printed on screen.
+		 */
+		return 0;
+	}
+
+	ms->vaddr = vaddr;
+	ms->iova = paddr;
+	ms->len = len;
+	/* Head insertions are generally faster than tail insertions as the
+	 * buffers pinned are picked from rear end.
+	 */
+	TAILQ_INSERT_HEAD(&rte_dpaa_memsegs, ms, next);
+
+	return rte_mempool_op_populate_default(mp, max_objs, vaddr, paddr, len,
+					       obj_cb, obj_cb_arg);
+}
+
+static const struct rte_mempool_ops dpaa_mpool_ops = {
+	.name = DPAA_MEMPOOL_OPS_NAME,
 	.alloc = dpaa_mbuf_create_pool,
 	.free = dpaa_mbuf_free_pool,
 	.enqueue = dpaa_mbuf_free_bulk,
 	.dequeue = dpaa_mbuf_alloc_bulk,
 	.get_count = dpaa_mbuf_get_count,
+	.populate = dpaa_populate,
 };
 
 MEMPOOL_REGISTER_OPS(dpaa_mpool_ops);

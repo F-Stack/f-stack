@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Power Management
 ================
@@ -97,6 +70,14 @@ basis. This is achieved by enabling Turbo Boost Technology in the BIOS, then
 looping through the relevant cores and enabling/disabling Turbo Boost on each
 core.
 
+Use of Power Library in a Hyper-Threaded Environment
+----------------------------------------------------
+
+In the case where the power library is in use on a system with Hyper-Threading enabled,
+the frequency on the physical core is set to the highest frequency of the Hyper-Thread siblings.
+So even though an application may request a scale down, the core frequency will
+remain at the highest frequency until all Hyper-Threads on that core request a scale down.
+
 API Overview of the Power Library
 ---------------------------------
 
@@ -124,6 +105,92 @@ User Cases
 ----------
 
 The power management mechanism is used to save power when performing L3 forwarding.
+
+
+Empty Poll API
+--------------
+
+Abstract
+~~~~~~~~
+
+For packet processing workloads such as DPDK polling is continuous.
+This means CPU cores always show 100% busy independent of how much work
+those cores are doing. It is critical to accurately determine how busy
+a core is hugely important for the following reasons:
+
+        * No indication of overload conditions
+        * User does not know how much real load is on a system, resulting
+          in wasted energy as no power management is utilized
+
+Compared to the original l3fwd-power design, instead of going to sleep
+after detecting an empty poll, the new mechanism just lowers the core frequency.
+As a result, the application does not stop polling the device, which leads
+to improved handling of bursts of traffic.
+
+When the system become busy, the empty poll mechanism can also increase the core
+frequency (including turbo) to do best effort for intensive traffic. This gives
+us more flexible and balanced traffic awareness over the standard l3fwd-power
+application.
+
+
+Proposed Solution
+~~~~~~~~~~~~~~~~~
+The proposed solution focuses on how many times empty polls are executed.
+The less the number of empty polls, means current core is busy with processing
+workload, therefore, the higher frequency is needed. The high empty poll number
+indicates the current core not doing any real work therefore, we can lower the
+frequency to safe power.
+
+In the current implementation, each core has 1 empty-poll counter which assume
+1 core is dedicated to 1 queue. This will need to be expanded in the future to
+support multiple queues per core.
+
+Power state definition:
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* LOW:  Not currently used, reserved for future use.
+
+* MED:  the frequency is used to process modest traffic workload.
+
+* HIGH: the frequency is used to process busy traffic workload.
+
+There are two phases to establish the power management system:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+* Training phase. This phase is used to measure the optimal frequency
+  change thresholds for a given system. The thresholds will differ from
+  system to system due to differences in processor micro-architecture,
+  cache and device configurations.
+  In this phase, the user must ensure that no traffic can enter the
+  system so that counts can be measured for empty polls at low, medium
+  and high frequencies. Each frequency is measured for two seconds.
+  Once the training phase is complete, the threshold numbers are
+  displayed, and normal mode resumes, and traffic can be allowed into
+  the system. These threshold number can be used on the command line
+  when starting the application in normal mode to avoid re-training
+  every time.
+
+* Normal phase. Every 10ms the run-time counters are compared
+  to the supplied threshold values, and the decision will be made
+  whether to move to a different power state (by adjusting the
+  frequency).
+
+API Overview for Empty Poll Power Management
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+* **State Init**: initialize the power management system.
+
+* **State Free**: free the resource hold by power management system.
+
+* **Update Empty Poll Counter**: update the empty poll counter.
+
+* **Update Valid Poll Counter**: update the valid poll counter.
+
+* **Set the Fequence Index**: update the power state/frequency mapping.
+
+* **Detect empty poll state change**: empty poll state change detection algorithm then take action.
+
+User Cases
+----------
+The mechanism can applied to any device which is based on polling. e.g. NIC, FPGA.
 
 References
 ----------

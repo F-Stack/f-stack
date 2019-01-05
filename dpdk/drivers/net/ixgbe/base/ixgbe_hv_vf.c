@@ -1,41 +1,17 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #include "ixgbe_vf.h"
 #include "ixgbe_hv_vf.h"
 
 /**
  * Hyper-V variant - just a stub.
+ * @hw: unused
+ * @mc_addr_list: unused
+ * @mc_addr_count: unused
+ * @next: unused
+ * @clear: unused
  */
 static s32 ixgbevf_hv_update_mc_addr_list_vf(struct ixgbe_hw *hw, u8 *mc_addr_list,
 				 u32 mc_addr_count, ixgbe_mc_addr_itr next,
@@ -48,6 +24,8 @@ static s32 ixgbevf_hv_update_mc_addr_list_vf(struct ixgbe_hw *hw, u8 *mc_addr_li
 
 /**
  * Hyper-V variant - just a stub.
+ * @hw: unused
+ * @xcast_mode: unused
  */
 static s32 ixgbevf_hv_update_xcast_mode(struct ixgbe_hw *hw, int xcast_mode)
 {
@@ -58,6 +36,11 @@ static s32 ixgbevf_hv_update_xcast_mode(struct ixgbe_hw *hw, int xcast_mode)
 
 /**
  * Hyper-V variant - just a stub.
+ * @hw: unused
+ * @vlan: unused
+ * @vind: unused
+ * @vlan_on: unused
+ * @vlvf_bypass: unused
  */
 static s32 ixgbevf_hv_set_vfta_vf(struct ixgbe_hw *hw, u32 vlan, u32 vind,
 				  bool vlan_on, bool vlvf_bypass)
@@ -96,6 +79,11 @@ static s32 ixgbevf_hv_set_rar_vf(struct ixgbe_hw *hw, u32 index, u8 *addr, u32 v
 
 /**
  * Hyper-V variant; there is no mailbox communication.
+ * @hw: pointer to hardware structure
+ * @speed: pointer to link speed
+ * @link_up: true is link is up, false otherwise
+ * @autoneg_wait_to_complete: unused
+ *
  */
 static s32 ixgbevf_hv_check_mac_link_vf(struct ixgbe_hw *hw,
 					ixgbe_link_speed *speed,

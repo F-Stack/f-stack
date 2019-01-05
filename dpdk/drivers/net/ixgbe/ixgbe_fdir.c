@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <stdio.h>
@@ -42,7 +13,7 @@
 #include <rte_debug.h>
 #include <rte_pci.h>
 #include <rte_ether.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 
 #include "ixgbe_logs.h"
@@ -70,14 +41,14 @@
 #define IXGBE_FDIRCMD_CMD_INTERVAL_US   10
 
 #define IXGBE_FDIR_FLOW_TYPES ( \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV4_UDP) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV4_TCP) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV4_SCTP) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV4_OTHER) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV6_UDP) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV6_TCP) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV6_SCTP) | \
-	(1 << RTE_ETH_FLOW_NONFRAG_IPV6_OTHER))
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV4_UDP) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV4_TCP) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV4_SCTP) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV4_OTHER) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV6_UDP) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV6_TCP) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV6_SCTP) | \
+	(1ULL << RTE_ETH_FLOW_NONFRAG_IPV6_OTHER))
 
 #define IPV6_ADDR_TO_MASK(ipaddr, ipv6m) do { \
 	uint8_t ipv6_addr[16]; \
@@ -423,9 +394,12 @@ fdir_set_input_mask_x550(struct rte_eth_dev *dev)
 				IXGBE_FDIRIP6M_TNI_VNI;
 
 	if (mode == RTE_FDIR_MODE_PERFECT_TUNNEL) {
-		mac_mask = info->mask.mac_addr_byte_mask;
-		fdiripv6m |= (mac_mask << IXGBE_FDIRIP6M_INNER_MAC_SHIFT)
-				& IXGBE_FDIRIP6M_INNER_MAC;
+		fdiripv6m |= IXGBE_FDIRIP6M_INNER_MAC;
+		mac_mask = info->mask.mac_addr_byte_mask &
+			(IXGBE_FDIRIP6M_INNER_MAC >>
+			IXGBE_FDIRIP6M_INNER_MAC_SHIFT);
+		fdiripv6m &= ~((mac_mask << IXGBE_FDIRIP6M_INNER_MAC_SHIFT) &
+				IXGBE_FDIRIP6M_INNER_MAC);
 
 		switch (info->mask.tunnel_type_mask) {
 		case 0:
@@ -800,10 +774,19 @@ ixgbe_fdir_filter_to_atr_input(const struct rte_eth_fdir_filter *fdir_filter,
 			input->formatted.inner_mac,
 			fdir_filter->input.flow.tunnel_flow.mac_addr.addr_bytes,
 			sizeof(input->formatted.inner_mac));
-		input->formatted.tunnel_type =
-			fdir_filter->input.flow.tunnel_flow.tunnel_type;
+		if (fdir_filter->input.flow.tunnel_flow.tunnel_type ==
+				RTE_FDIR_TUNNEL_TYPE_VXLAN)
+			input->formatted.tunnel_type =
+					IXGBE_FDIR_VXLAN_TUNNEL_TYPE;
+		else if (fdir_filter->input.flow.tunnel_flow.tunnel_type ==
+				RTE_FDIR_TUNNEL_TYPE_NVGRE)
+			input->formatted.tunnel_type =
+					IXGBE_FDIR_NVGRE_TUNNEL_TYPE;
+		else
+			PMD_DRV_LOG(ERR, " invalid tunnel type arguments.");
+
 		input->formatted.tni_vni =
-			fdir_filter->input.flow.tunnel_flow.tunnel_id;
+			fdir_filter->input.flow.tunnel_flow.tunnel_id >> 8;
 	}
 
 	return 0;
@@ -1030,8 +1013,7 @@ fdir_write_perfect_filter_82599(struct ixgbe_hw *hw,
 			IXGBE_WRITE_REG(hw, IXGBE_FDIRSIPv6(2), 0);
 		} else {
 			/* tunnel mode */
-			if (input->formatted.tunnel_type !=
-				RTE_FDIR_TUNNEL_TYPE_NVGRE)
+			if (input->formatted.tunnel_type)
 				tunnel_type = 0x80000000;
 			tunnel_type |= addr_high;
 			IXGBE_WRITE_REG(hw, IXGBE_FDIRSIPv6(0), addr_low);
@@ -1039,6 +1021,9 @@ fdir_write_perfect_filter_82599(struct ixgbe_hw *hw,
 			IXGBE_WRITE_REG(hw, IXGBE_FDIRSIPv6(2),
 					input->formatted.tni_vni);
 		}
+		IXGBE_WRITE_REG(hw, IXGBE_FDIRIPSA, 0);
+		IXGBE_WRITE_REG(hw, IXGBE_FDIRIPDA, 0);
+		IXGBE_WRITE_REG(hw, IXGBE_FDIRPORT, 0);
 	}
 
 	/* record vlan (little-endian) and flex_bytes(big-endian) */
@@ -1436,7 +1421,7 @@ ixgbe_fdir_info_get(struct rte_eth_dev *dev, struct rte_eth_fdir_info *fdir_info
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_hw_fdir_info *info =
 			IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
-	uint32_t fdirctrl, max_num;
+	uint32_t fdirctrl, max_num, i;
 	uint8_t offset;
 
 	fdirctrl = IXGBE_READ_REG(hw, IXGBE_FDIRCTRL);
@@ -1468,9 +1453,11 @@ ixgbe_fdir_info_get(struct rte_eth_dev *dev, struct rte_eth_fdir_info *fdir_info
 
 	if (fdir_info->mode == RTE_FDIR_MODE_PERFECT_MAC_VLAN ||
 	    fdir_info->mode == RTE_FDIR_MODE_PERFECT_TUNNEL)
-		fdir_info->flow_types_mask[0] = 0;
+		fdir_info->flow_types_mask[0] = 0ULL;
 	else
 		fdir_info->flow_types_mask[0] = IXGBE_FDIR_FLOW_TYPES;
+	for (i = 1; i < RTE_FLOW_MASK_ARRAY_SIZE; i++)
+		fdir_info->flow_types_mask[i] = 0ULL;
 
 	fdir_info->flex_payload_unit = sizeof(uint16_t);
 	fdir_info->max_flex_payload_segment_num = 1;

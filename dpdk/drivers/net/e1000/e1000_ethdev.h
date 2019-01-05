@@ -1,38 +1,13 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #ifndef _E1000_ETHDEV_H_
 #define _E1000_ETHDEV_H_
+
+#include <stdint.h>
+
+#include <rte_flow.h>
 #include <rte_time.h>
 #include <rte_pci.h>
 
@@ -56,6 +31,7 @@
 #define E1000_CTRL_EXT_EXTEND_VLAN  (1<<26)    /* EXTENDED VLAN */
 #define IGB_VFTA_SIZE 128
 
+#define IGB_HKEY_MAX_INDEX             10
 #define IGB_MAX_RX_QUEUE_NUM           8
 #define IGB_MAX_RX_QUEUE_NUM_82576     16
 
@@ -257,6 +233,13 @@ struct igb_ethertype_filter {
 	uint32_t etqf;
 };
 
+struct igb_rte_flow_rss_conf {
+	struct rte_flow_action_rss conf; /**< RSS parameters. */
+	uint8_t key[IGB_HKEY_MAX_INDEX * sizeof(uint32_t)]; /* Hash key. */
+	/* Queues indices to use. */
+	uint16_t queue[IGB_MAX_RX_QUEUE_NUM_82576];
+};
+
 /*
  * Structure to store filters'info.
  */
@@ -274,6 +257,8 @@ struct e1000_filter_info {
 	struct e1000_2tuple_filter_list twotuple_list;
 	/* store the SYN filter info */
 	uint32_t syn_info;
+	/* store the rss filter info */
+	struct igb_rte_flow_rss_conf rss_info;
 };
 
 /*
@@ -342,6 +327,12 @@ struct igb_flex_filter_ele {
 	struct rte_eth_flex_filter filter_info;
 };
 
+/* rss filter  list structure */
+struct igb_rss_conf_ele {
+	TAILQ_ENTRY(igb_rss_conf_ele) entries;
+	struct igb_rte_flow_rss_conf filter_info;
+};
+
 /* igb_flow memory list structure */
 struct igb_flow_mem {
 	TAILQ_ENTRY(igb_flow_mem) entries;
@@ -357,6 +348,8 @@ TAILQ_HEAD(igb_syn_filter_list, igb_eth_syn_filter_ele);
 struct igb_syn_filter_list igb_filter_syn_list;
 TAILQ_HEAD(igb_flex_filter_list, igb_flex_filter_ele);
 struct igb_flex_filter_list igb_filter_flex_list;
+TAILQ_HEAD(igb_rss_filter_list, igb_rss_conf_ele);
+struct igb_rss_filter_list igb_filter_rss_list;
 TAILQ_HEAD(igb_flow_mem_list, igb_flow_mem);
 struct igb_flow_mem_list igb_flow_list;
 
@@ -370,6 +363,9 @@ void eth_igb_rx_queue_release(void *rxq);
 void igb_dev_clear_queues(struct rte_eth_dev *dev);
 void igb_dev_free_queues(struct rte_eth_dev *dev);
 
+uint64_t igb_get_rx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t igb_get_rx_queue_offloads_capa(struct rte_eth_dev *dev);
+
 int eth_igb_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
 		const struct rte_eth_rxconf *rx_conf,
@@ -382,6 +378,9 @@ int eth_igb_rx_descriptor_done(void *rx_queue, uint16_t offset);
 
 int eth_igb_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_igb_tx_descriptor_status(void *tx_queue, uint16_t offset);
+
+uint64_t igb_get_tx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t igb_get_tx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_igb_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
@@ -430,6 +429,8 @@ void igb_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 void igb_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
 
+uint32_t em_get_max_pktlen(struct rte_eth_dev *dev);
+
 /*
  * RX/TX EM function prototypes
  */
@@ -438,6 +439,9 @@ void eth_em_rx_queue_release(void *rxq);
 
 void em_dev_clear_queues(struct rte_eth_dev *dev);
 void em_dev_free_queues(struct rte_eth_dev *dev);
+
+uint64_t em_get_rx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t em_get_rx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_em_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -451,6 +455,9 @@ int eth_em_rx_descriptor_done(void *rx_queue, uint16_t offset);
 
 int eth_em_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int eth_em_tx_descriptor_status(void *tx_queue, uint16_t offset);
+
+uint64_t em_get_tx_port_offloads_capa(struct rte_eth_dev *dev);
+uint64_t em_get_tx_queue_offloads_capa(struct rte_eth_dev *dev);
 
 int eth_em_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
@@ -500,4 +507,13 @@ int eth_igb_syn_filter_set(struct rte_eth_dev *dev,
 int eth_igb_add_del_flex_filter(struct rte_eth_dev *dev,
 			struct rte_eth_flex_filter *filter,
 			bool add);
+int igb_rss_conf_init(struct rte_eth_dev *dev,
+		      struct igb_rte_flow_rss_conf *out,
+		      const struct rte_flow_action_rss *in);
+int igb_action_rss_same(const struct rte_flow_action_rss *comp,
+			const struct rte_flow_action_rss *with);
+int igb_config_rss_filter(struct rte_eth_dev *dev,
+			struct igb_rte_flow_rss_conf *conf,
+			bool add);
+
 #endif /* _E1000_ETHDEV_H_ */

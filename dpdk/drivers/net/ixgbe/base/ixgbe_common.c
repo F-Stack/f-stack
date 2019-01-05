@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #include "ixgbe_common.h"
 #include "ixgbe_phy.h"
@@ -264,7 +235,7 @@ s32 ixgbe_setup_fc_generic(struct ixgbe_hw *hw)
 		if (ret_val != IXGBE_SUCCESS)
 			goto out;
 
-		/* only backplane uses autoc so fall though */
+		/* fall through - only backplane uses autoc */
 	case ixgbe_media_type_fiber_qsfp:
 	case ixgbe_media_type_fiber:
 		reg = IXGBE_READ_REG(hw, IXGBE_PCS1GANA);
@@ -2093,6 +2064,7 @@ STATIC void ixgbe_shift_out_eeprom_bits(struct ixgbe_hw *hw, u16 data,
 /**
  *  ixgbe_shift_in_eeprom_bits - Shift data bits in from the EEPROM
  *  @hw: pointer to hardware structure
+ *  @count: number of bits to shift
  **/
 STATIC u16 ixgbe_shift_in_eeprom_bits(struct ixgbe_hw *hw, u16 count)
 {
@@ -2151,7 +2123,7 @@ STATIC void ixgbe_raise_eeprom_clk(struct ixgbe_hw *hw, u32 *eec)
 /**
  *  ixgbe_lower_eeprom_clk - Lowers the EEPROM's clock input.
  *  @hw: pointer to hardware structure
- *  @eecd: EECD's current value
+ *  @eec: EEC's current value
  **/
 STATIC void ixgbe_lower_eeprom_clk(struct ixgbe_hw *hw, u32 *eec)
 {
@@ -2531,6 +2503,7 @@ s32 ixgbe_init_rx_addrs_generic(struct ixgbe_hw *hw)
  *  ixgbe_add_uc_addr - Adds a secondary unicast address.
  *  @hw: pointer to hardware structure
  *  @addr: new address
+ *  @vmdq: VMDq "set" or "pool" index
  *
  *  Adds it to unused receive address register or goes into promiscuous mode.
  **/
@@ -2675,7 +2648,7 @@ STATIC s32 ixgbe_mta_vector(struct ixgbe_hw *hw, u8 *mc_addr)
 /**
  *  ixgbe_set_mta - Set bit-vector in multicast table
  *  @hw: pointer to hardware structure
- *  @hash_value: Multicast address hash value
+ *  @mc_addr: Multicast address
  *
  *  Sets the bit-vector in the multicast table.
  **/
@@ -3347,7 +3320,7 @@ void ixgbe_release_swfw_sync(struct ixgbe_hw *hw, u32 mask)
  **/
 s32 ixgbe_disable_sec_rx_path_generic(struct ixgbe_hw *hw)
 {
-#define IXGBE_MAX_SECRX_POLL 40
+#define IXGBE_MAX_SECRX_POLL 4000
 
 	int i;
 	int secrxreg;
@@ -3364,7 +3337,7 @@ s32 ixgbe_disable_sec_rx_path_generic(struct ixgbe_hw *hw)
 			break;
 		else
 			/* Use interrupt-safe sleep just in case */
-			usec_delay(1000);
+			usec_delay(10);
 	}
 
 	/* For informational purposes only */
@@ -3378,6 +3351,7 @@ s32 ixgbe_disable_sec_rx_path_generic(struct ixgbe_hw *hw)
 /**
  *  prot_autoc_read_generic - Hides MAC differences needed for AUTOC read
  *  @hw: pointer to hardware structure
+ *  @locked: bool to indicate whether the SW/FW lock was taken
  *  @reg_val: Value we read from AUTOC
  *
  *  The default case requires no protection so just to the register read.
@@ -3905,6 +3879,9 @@ s32 ixgbe_init_uta_tables_generic(struct ixgbe_hw *hw)
  *  ixgbe_find_vlvf_slot - find the vlanid or the first empty slot
  *  @hw: pointer to hardware structure
  *  @vlan: VLAN id to write to VLAN filter
+ *  @vlvf_bypass: true to find vlanid only, false returns first empty slot if
+ *		  vlanid not found
+ *
  *
  *  return the VLVF index where this VLAN id should be placed
  *
@@ -4246,10 +4223,17 @@ s32 ixgbe_check_mac_link_generic(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 		break;
 	case IXGBE_LINKS_SPEED_10_X550EM_A:
 		*speed = IXGBE_LINK_SPEED_UNKNOWN;
+#ifdef PREBOOT_SUPPORT
 		if (hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T ||
-		    hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T_L) {
+		    hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T_L ||
+		    hw->device_id == IXGBE_DEV_ID_X550EM_A_SGMII ||
+		    hw->device_id == IXGBE_DEV_ID_X550EM_A_SGMII_L)
 			*speed = IXGBE_LINK_SPEED_10_FULL;
-		}
+#else
+		if (hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T ||
+		    hw->device_id == IXGBE_DEV_ID_X550EM_A_1G_T_L)
+			*speed = IXGBE_LINK_SPEED_10_FULL;
+#endif /* PREBOOT_SUPPORT */
 		break;
 	default:
 		*speed = IXGBE_LINK_SPEED_UNKNOWN;
@@ -4577,10 +4561,11 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 				 u32 length, u32 timeout, bool return_data)
 {
 	u32 hdr_size = sizeof(struct ixgbe_hic_hdr);
-	u16 dword_len;
+	struct ixgbe_hic_hdr *resp = (struct ixgbe_hic_hdr *)buffer;
 	u16 buf_len;
 	s32 status;
 	u32 bi;
+	u32 dword_len;
 
 	DEBUGFUNC("ixgbe_host_interface_command");
 
@@ -4610,8 +4595,23 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 		IXGBE_LE32_TO_CPUS((uintptr_t)&buffer[bi]);
 	}
 
-	/* If there is any thing in data position pull it in */
-	buf_len = ((struct ixgbe_hic_hdr *)buffer)->buf_len;
+	/*
+	 * If there is any thing in data position pull it in
+	 * Read Flash command requires reading buffer length from
+	 * two byes instead of one byte
+	 */
+	if (resp->cmd == 0x30) {
+		for (; bi < dword_len + 2; bi++) {
+			buffer[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG,
+							  bi);
+			IXGBE_LE32_TO_CPUS(&buffer[bi]);
+		}
+		buf_len = (((u16)(resp->cmd_or_resp.ret_status) << 3)
+				  & 0xF00) | resp->buf_len;
+		hdr_size += (2 << 2);
+	} else {
+		buf_len = resp->buf_len;
+	}
 	if (!buf_len)
 		goto rel_out;
 
@@ -4643,6 +4643,8 @@ rel_out:
  *  @min: driver version minor number
  *  @build: driver version build number
  *  @sub: driver version sub build number
+ *  @len: unused
+ *  @driver_ver: unused
  *
  *  Sends driver version number to firmware through the manageability
  *  block.  On success return IXGBE_SUCCESS
@@ -4669,10 +4671,10 @@ s32 ixgbe_set_fw_drv_ver_generic(struct ixgbe_hw *hw, u8 maj, u8 min,
 	fw_cmd.ver_build = build;
 	fw_cmd.ver_sub = sub;
 	fw_cmd.hdr.checksum = 0;
-	fw_cmd.hdr.checksum = ixgbe_calculate_checksum((u8 *)&fw_cmd,
-				(FW_CEM_HDR_LEN + fw_cmd.hdr.buf_len));
 	fw_cmd.pad = 0;
 	fw_cmd.pad2 = 0;
+	fw_cmd.hdr.checksum = ixgbe_calculate_checksum((u8 *)&fw_cmd,
+				(FW_CEM_HDR_LEN + fw_cmd.hdr.buf_len));
 
 	for (i = 0; i <= FW_CEM_MAX_RETRIES; i++) {
 		ret_val = ixgbe_host_interface_command(hw, (u32 *)&fw_cmd,
@@ -4727,7 +4729,7 @@ void ixgbe_set_rxpba_generic(struct ixgbe_hw *hw, int num_pb, u32 headroom,
 		rxpktsize <<= IXGBE_RXPBSIZE_SHIFT;
 		for (; i < (num_pb / 2); i++)
 			IXGBE_WRITE_REG(hw, IXGBE_RXPBSIZE(i), rxpktsize);
-		/* Fall through to configure remaining packet buffers */
+		/* fall through - configure remaining packet buffers */
 	case PBA_STRATEGY_EQUAL:
 		rxpktsize = (pbsize / (num_pb - i)) << IXGBE_RXPBSIZE_SHIFT;
 		for (; i < num_pb; i++)
@@ -4830,7 +4832,6 @@ STATIC const u8 ixgbe_emc_therm_limit[4] = {
 /**
  *  ixgbe_get_thermal_sensor_data - Gathers thermal sensor data
  *  @hw: pointer to hardware structure
- *  @data: pointer to the thermal sensor data structure
  *
  *  Returns the thermal sensor data structure
  **/
@@ -4983,6 +4984,117 @@ eeprom_err:
 	return IXGBE_NOT_IMPLEMENTED;
 }
 
+/**
+ *  ixgbe_get_orom_version - Return option ROM from EEPROM
+ *
+ *  @hw: pointer to hardware structure
+ *  @nvm_ver: pointer to output structure
+ *
+ *  if valid option ROM version, nvm_ver->or_valid set to true
+ *  else nvm_ver->or_valid is false.
+ **/
+void ixgbe_get_orom_version(struct ixgbe_hw *hw,
+			    struct ixgbe_nvm_version *nvm_ver)
+{
+	u16 offset, eeprom_cfg_blkh, eeprom_cfg_blkl;
+
+	nvm_ver->or_valid = false;
+	/* Option Rom may or may not be present.  Start with pointer */
+	hw->eeprom.ops.read(hw, NVM_OROM_OFFSET, &offset);
+
+	/* make sure offset is valid */
+	if ((offset == 0x0) || (offset == NVM_INVALID_PTR))
+		return;
+
+	hw->eeprom.ops.read(hw, offset + NVM_OROM_BLK_HI, &eeprom_cfg_blkh);
+	hw->eeprom.ops.read(hw, offset + NVM_OROM_BLK_LOW, &eeprom_cfg_blkl);
+
+	/* option rom exists and is valid */
+	if ((eeprom_cfg_blkl | eeprom_cfg_blkh) == 0x0 ||
+	    eeprom_cfg_blkl == NVM_VER_INVALID ||
+	    eeprom_cfg_blkh == NVM_VER_INVALID)
+		return;
+
+	nvm_ver->or_valid = true;
+	nvm_ver->or_major = eeprom_cfg_blkl >> NVM_OROM_SHIFT;
+	nvm_ver->or_build = (eeprom_cfg_blkl << NVM_OROM_SHIFT) |
+			    (eeprom_cfg_blkh >> NVM_OROM_SHIFT);
+	nvm_ver->or_patch = eeprom_cfg_blkh & NVM_OROM_PATCH_MASK;
+}
+
+/**
+ *  ixgbe_get_oem_prod_version - Return OEM Product version
+ *
+ *  @hw: pointer to hardware structure
+ *  @nvm_ver: pointer to output structure
+ *
+ *  if valid OEM product version, nvm_ver->oem_valid set to true
+ *  else nvm_ver->oem_valid is false.
+ **/
+void ixgbe_get_oem_prod_version(struct ixgbe_hw *hw,
+				struct ixgbe_nvm_version *nvm_ver)
+{
+	u16 rel_num, prod_ver, mod_len, cap, offset;
+
+	nvm_ver->oem_valid = false;
+	hw->eeprom.ops.read(hw, NVM_OEM_PROD_VER_PTR, &offset);
+
+	/* Return is offset to OEM Product Version block is invalid */
+	if (offset == 0x0 && offset == NVM_INVALID_PTR)
+		return;
+
+	/* Read product version block */
+	hw->eeprom.ops.read(hw, offset, &mod_len);
+	hw->eeprom.ops.read(hw, offset + NVM_OEM_PROD_VER_CAP_OFF, &cap);
+
+	/* Return if OEM product version block is invalid */
+	if (mod_len != NVM_OEM_PROD_VER_MOD_LEN ||
+	    (cap & NVM_OEM_PROD_VER_CAP_MASK) != 0x0)
+		return;
+
+	hw->eeprom.ops.read(hw, offset + NVM_OEM_PROD_VER_OFF_L, &prod_ver);
+	hw->eeprom.ops.read(hw, offset + NVM_OEM_PROD_VER_OFF_H, &rel_num);
+
+	/* Return if version is invalid */
+	if ((rel_num | prod_ver) == 0x0 ||
+	    rel_num == NVM_VER_INVALID || prod_ver == NVM_VER_INVALID)
+		return;
+
+	nvm_ver->oem_major = prod_ver >> NVM_VER_SHIFT;
+	nvm_ver->oem_minor = prod_ver & NVM_VER_MASK;
+	nvm_ver->oem_release = rel_num;
+	nvm_ver->oem_valid = true;
+}
+
+/**
+ *  ixgbe_get_etk_id - Return Etrack ID from EEPROM
+ *
+ *  @hw: pointer to hardware structure
+ *  @nvm_ver: pointer to output structure
+ *
+ *  word read errors will return 0xFFFF
+ **/
+void ixgbe_get_etk_id(struct ixgbe_hw *hw, struct ixgbe_nvm_version *nvm_ver)
+{
+	u16 etk_id_l, etk_id_h;
+
+	if (hw->eeprom.ops.read(hw, NVM_ETK_OFF_LOW, &etk_id_l))
+		etk_id_l = NVM_VER_INVALID;
+	if (hw->eeprom.ops.read(hw, NVM_ETK_OFF_HI, &etk_id_h))
+		etk_id_h = NVM_VER_INVALID;
+
+	/* The word order for the version format is determined by high order
+	 * word bit 15.
+	 */
+	if ((etk_id_h & NVM_ETK_VALID) == 0) {
+		nvm_ver->etk_id = etk_id_h;
+		nvm_ver->etk_id |= (etk_id_l << NVM_ETK_SHIFT);
+	} else {
+		nvm_ver->etk_id = etk_id_l;
+		nvm_ver->etk_id |= (etk_id_h << NVM_ETK_SHIFT);
+	}
+}
+
 
 /**
  * ixgbe_dcb_get_rtrup2tc_generic - read rtrup2tc reg
@@ -5054,8 +5166,8 @@ bool ixgbe_mng_present(struct ixgbe_hw *hw)
 		return false;
 
 	fwsm = IXGBE_READ_REG(hw, IXGBE_FWSM_BY_MAC(hw));
-	fwsm &= IXGBE_FWSM_MODE_MASK;
-	return fwsm == IXGBE_FWSM_FW_MODE_PT;
+
+	return !!(fwsm & IXGBE_FWSM_FW_MODE_PT);
 }
 
 /**
@@ -5147,10 +5259,10 @@ s32 ixgbe_setup_mac_link_multispeed_fiber(struct ixgbe_hw *hw,
 		ixgbe_flap_tx_laser(hw);
 
 		/* Wait for the controller to acquire link.  Per IEEE 802.3ap,
-		 * Section 73.10.2, we may have to wait up to 500ms if KR is
+		 * Section 73.10.2, we may have to wait up to 1000ms if KR is
 		 * attempted.  82599 uses the same timing for 10g SFI.
 		 */
-		for (i = 0; i < 5; i++) {
+		for (i = 0; i < 10; i++) {
 			/* Wait for the link partner to also set speed */
 			msec_delay(100);
 

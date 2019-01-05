@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 /* include the precompiled configuration values - only once */
@@ -103,7 +101,8 @@ static enum _ecore_status_t ecore_init_rt(struct ecore_hwfn *p_hwfn,
 
 		rc = ecore_dmae_host2grc(p_hwfn, p_ptt,
 					 (osal_uintptr_t)(p_init_val + i),
-					 addr + (i << 2), segment, 0);
+					 addr + (i << 2), segment,
+					 OSAL_NULL /* default parameters */);
 		if (rc != ECORE_SUCCESS)
 			return rc;
 
@@ -167,8 +166,9 @@ static enum _ecore_status_t ecore_init_array_dmae(struct ecore_hwfn *p_hwfn,
 	} else {
 		rc = ecore_dmae_host2grc(p_hwfn, p_ptt,
 					 (osal_uintptr_t)(p_buf +
-							   dmae_data_offset),
-					 addr, size, 0);
+							  dmae_data_offset),
+					 addr, size,
+					 OSAL_NULL /* default parameters */);
 	}
 
 	return rc;
@@ -179,13 +179,15 @@ static enum _ecore_status_t ecore_init_fill_dmae(struct ecore_hwfn *p_hwfn,
 						 u32 addr, u32 fill_count)
 {
 	static u32 zero_buffer[DMAE_MAX_RW_SIZE];
+	struct ecore_dmae_params params;
 
 	OSAL_MEMSET(zero_buffer, 0, sizeof(u32) * DMAE_MAX_RW_SIZE);
 
+	OSAL_MEMSET(&params, 0, sizeof(params));
+	params.flags = ECORE_DMAE_FLAG_RW_REPL_SRC;
 	return ecore_dmae_host2grc(p_hwfn, p_ptt,
 				   (osal_uintptr_t)&zero_buffer[0],
-				   addr, fill_count,
-				   ECORE_DMAE_FLAG_RW_REPL_SRC);
+				   addr, fill_count, &params);
 }
 
 static void ecore_init_fill(struct ecore_hwfn *p_hwfn,
@@ -389,34 +391,40 @@ static void ecore_init_cmd_rd(struct ecore_hwfn *p_hwfn,
 	}
 
 	if (i == ECORE_INIT_MAX_POLL_COUNT)
-		DP_ERR(p_hwfn,
-		       "Timeout when polling reg: 0x%08x [ Waiting-for: %08x"
-		       " Got: %08x (comparsion %08x)]\n",
+		DP_ERR(p_hwfn, "Timeout when polling reg: 0x%08x [ Waiting-for: %08x Got: %08x (comparison %08x)]\n",
 		       addr, OSAL_LE32_TO_CPU(cmd->expected_val), val,
 		       OSAL_LE32_TO_CPU(cmd->op_data));
 }
 
-/* init_ops callbacks entry point.
- * OSAL_UNUSED is temporary used to avoid unused-parameter compilation warnings.
- * Should be removed when the function is actually used.
- */
-static void ecore_init_cmd_cb(struct ecore_hwfn *p_hwfn,
-			      struct ecore_ptt OSAL_UNUSED * p_ptt,
-			      struct init_callback_op OSAL_UNUSED * p_cmd)
+/* init_ops callbacks entry point */
+static enum _ecore_status_t ecore_init_cmd_cb(struct ecore_hwfn *p_hwfn,
+					      struct ecore_ptt *p_ptt,
+					      struct init_callback_op *p_cmd)
 {
-	DP_NOTICE(p_hwfn, true,
-		  "Currently init values have no need of callbacks\n");
+	enum _ecore_status_t rc;
+
+	switch (p_cmd->callback_id) {
+	case DMAE_READY_CB:
+		rc = ecore_dmae_sanity(p_hwfn, p_ptt, "engine_phase");
+		break;
+	default:
+		DP_NOTICE(p_hwfn, false, "Unexpected init op callback ID %d\n",
+			  p_cmd->callback_id);
+		return ECORE_INVAL;
+	}
+
+	return rc;
 }
 
 static u8 ecore_init_cmd_mode_match(struct ecore_hwfn *p_hwfn,
 				    u16 *p_offset, int modes)
 {
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
-	const u8 *modes_tree_buf;
 	u8 arg1, arg2, tree_val;
+	const u8 *modes_tree;
 
-	modes_tree_buf = p_dev->fw_data->modes_tree_buf;
-	tree_val = modes_tree_buf[(*p_offset)++];
+	modes_tree = p_dev->fw_data->modes_tree_buf;
+	tree_val = modes_tree[(*p_offset)++];
 	switch (tree_val) {
 	case INIT_MODE_OP_NOT:
 		return ecore_init_cmd_mode_match(p_hwfn, p_offset, modes) ^ 1;
@@ -466,12 +474,12 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 {
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
 	u32 cmd_num, num_init_ops;
-	union init_op *init_ops;
+	union init_op *init;
 	bool b_dmae = false;
 	enum _ecore_status_t rc = ECORE_SUCCESS;
 
 	num_init_ops = p_dev->fw_data->init_ops_size;
-	init_ops = p_dev->fw_data->init_ops;
+	init = p_dev->fw_data->init_ops;
 
 #ifdef CONFIG_ECORE_ZIPPED_FW
 	p_hwfn->unzip_buf = OSAL_ZALLOC(p_hwfn->p_dev, GFP_ATOMIC,
@@ -483,7 +491,7 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 #endif
 
 	for (cmd_num = 0; cmd_num < num_init_ops; cmd_num++) {
-		union init_op *cmd = &init_ops[cmd_num];
+		union init_op *cmd = &init[cmd_num];
 		u32 data = OSAL_LE32_TO_CPU(cmd->raw.op_data);
 
 		switch (GET_FIELD(data, INIT_CALLBACK_OP_OP)) {
@@ -513,7 +521,7 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 			break;
 
 		case INIT_OP_CALLBACK:
-			ecore_init_cmd_cb(p_hwfn, p_ptt, &cmd->callback);
+			rc = ecore_init_cmd_cb(p_hwfn, p_ptt, &cmd->callback);
 			break;
 		}
 

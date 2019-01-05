@@ -1,0 +1,30 @@
+option('allow_invalid_socket_id', type: 'boolean', value: false,
+	description: 'allow out-of-range NUMA socket id\'s for platforms that don\'t report the value correctly')
+option('drivers_install_subdir', type: 'string', value: 'dpdk/pmds-<VERSION>',
+	description: 'Subdirectory of libdir where to install PMDs. Defaults to using a versioned subdirectory.')
+option('enable_driver_mlx_glue', type: 'boolean', value: false,
+	description: 'Enable glue library for Mellanox PMDs')
+option('enable_kmods', type: 'boolean', value: true,
+	description: 'build kernel modules')
+option('enable_docs', type: 'boolean', value: false,
+	description: 'build documentation')
+option('examples', type: 'string', value: '',
+	description: 'Comma-separated list of examples to build by default')
+option('include_subdir_arch', type: 'string', value: '',
+	description: 'subdirectory where to install arch-dependent headers')
+option('kernel_dir', type: 'string', value: '',
+	description: 'path to the kernel for building kernel modules, they will be installed in $DEST_DIR/$kernel_dir/../extra/dpdk')
+option('lib_musdk_dir', type: 'string', value: '',
+	description: 'path to the MUSDK library installation directory')
+option('machine', type: 'string', value: 'native',
+	description: 'set the target machine type')
+option('max_lcores', type: 'string', value: '128',
+	description: 'maximum number of cores/threads supported by EAL')
+option('max_numa_nodes', type: 'string', value: '4',
+	description: 'maximum number of NUMA nodes supported by EAL')
+option('per_library_versions', type: 'boolean', value: true,
+	description: 'true: each lib gets its own version number, false: DPDK version used for each lib')
+option('use_hpet', type: 'boolean', value: false,
+	description: 'use HPET timer in EAL')
+option('tests', type: 'boolean', value: true,
+	description: 'build unit tests')

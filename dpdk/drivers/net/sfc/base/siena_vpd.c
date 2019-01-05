@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2009-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2009-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #include "efx.h"
@@ -60,21 +36,26 @@ siena_vpd_get_static(
 	if ((rc = siena_nvram_partn_size(enp, partn, &size)) != 0)
 		goto fail1;
 
+	if (size < SIENA_NVRAM_CHUNK) {
+		rc = EINVAL;
+		goto fail2;
+	}
+
 	EFSYS_KMEM_ALLOC(enp->en_esip, size, scfg);
 	if (scfg == NULL) {
 		rc = ENOMEM;
-		goto fail2;
+		goto fail3;
 	}
 
 	if ((rc = siena_nvram_partn_read(enp, partn, 0,
 	    (caddr_t)scfg, SIENA_NVRAM_CHUNK)) != 0)
-		goto fail3;
+		goto fail4;
 
 	/* Verify the magic number */
 	if (EFX_DWORD_FIELD(scfg->magic, EFX_DWORD_0) !=
 	    SIENA_MC_STATIC_CONFIG_MAGIC) {
 		rc = EINVAL;
-		goto fail4;
+		goto fail5;
 	}
 
 	/* All future versions of the structure must be backwards compatible */
@@ -88,7 +69,7 @@ siena_vpd_get_static(
 	if (hdr_length > size || vpd_offset > size || vpd_length > size ||
 	    vpd_length + vpd_offset > size) {
 		rc = EINVAL;
-		goto fail5;
+		goto fail6;
 	}
 
 	/* Read the remainder of scfg + static vpd */
@@ -97,7 +78,7 @@ siena_vpd_get_static(
 		if ((rc = siena_nvram_partn_read(enp, partn, SIENA_NVRAM_CHUNK,
 		    (caddr_t)scfg + SIENA_NVRAM_CHUNK,
 		    region - SIENA_NVRAM_CHUNK)) != 0)
-			goto fail6;
+			goto fail7;
 	}
 
 	/* Verify checksum */
@@ -106,7 +87,7 @@ siena_vpd_get_static(
 		cksum += ((uint8_t *)scfg)[pos];
 	if (cksum != 0) {
 		rc = EINVAL;
-		goto fail7;
+		goto fail8;
 	}
 
 	if (vpd_length == 0)
@@ -116,7 +97,7 @@ siena_vpd_get_static(
 		EFSYS_KMEM_ALLOC(enp->en_esip, vpd_length, svpd);
 		if (svpd == NULL) {
 			rc = ENOMEM;
-			goto fail8;
+			goto fail9;
 		}
 		memcpy(svpd, (caddr_t)scfg + vpd_offset, vpd_length);
 	}
@@ -128,6 +109,8 @@ siena_vpd_get_static(
 
 	return (0);
 
+fail9:
+	EFSYS_PROBE(fail9);
 fail8:
 	EFSYS_PROBE(fail8);
 fail7:
@@ -138,11 +121,11 @@ fail5:
 	EFSYS_PROBE(fail5);
 fail4:
 	EFSYS_PROBE(fail4);
-fail3:
-	EFSYS_PROBE(fail3);
 
 	EFSYS_KMEM_FREE(enp->en_esip, size, scfg);
 
+fail3:
+	EFSYS_PROBE(fail3);
 fail2:
 	EFSYS_PROBE(fail2);
 fail1:
@@ -572,7 +555,7 @@ siena_vpd_write(
 
 	EFSYS_KMEM_FREE(enp->en_esip, dcfg_size, dcfg);
 
-	siena_nvram_partn_unlock(enp, dcfg_partn);
+	siena_nvram_partn_unlock(enp, dcfg_partn, NULL);
 
 	return (0);
 
@@ -587,7 +570,7 @@ fail5:
 fail4:
 	EFSYS_PROBE(fail4);
 
-	siena_nvram_partn_unlock(enp, dcfg_partn);
+	siena_nvram_partn_unlock(enp, dcfg_partn, NULL);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:

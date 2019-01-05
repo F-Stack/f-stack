@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __COMMON_HSI__
@@ -96,10 +94,10 @@
 /****************************************************************************/
 
 
-#define FW_MAJOR_VERSION		8
-#define FW_MINOR_VERSION		30
-#define FW_REVISION_VERSION		12
-#define FW_ENGINEERING_VERSION	0
+#define FW_MAJOR_VERSION        8
+#define FW_MINOR_VERSION        37
+#define FW_REVISION_VERSION     7
+#define FW_ENGINEERING_VERSION  0
 
 /***********************/
 /* COMMON HW CONSTANTS */
@@ -1035,13 +1033,14 @@ struct db_rdma_dpm_params {
 #define DB_RDMA_DPM_PARAMS_WQE_SIZE_SHIFT           16
 #define DB_RDMA_DPM_PARAMS_RESERVED0_MASK           0x1
 #define DB_RDMA_DPM_PARAMS_RESERVED0_SHIFT          27
-/* RoCE completion flag */
-#define DB_RDMA_DPM_PARAMS_COMPLETION_FLG_MASK      0x1
-#define DB_RDMA_DPM_PARAMS_COMPLETION_FLG_SHIFT     28
+/* RoCE ack request (will be set 1) */
+#define DB_RDMA_DPM_PARAMS_ACK_REQUEST_MASK         0x1
+#define DB_RDMA_DPM_PARAMS_ACK_REQUEST_SHIFT        28
 #define DB_RDMA_DPM_PARAMS_S_FLG_MASK               0x1 /* RoCE S flag */
 #define DB_RDMA_DPM_PARAMS_S_FLG_SHIFT              29
-#define DB_RDMA_DPM_PARAMS_RESERVED1_MASK           0x1
-#define DB_RDMA_DPM_PARAMS_RESERVED1_SHIFT          30
+/* RoCE completion flag for FW use */
+#define DB_RDMA_DPM_PARAMS_COMPLETION_FLG_MASK      0x1
+#define DB_RDMA_DPM_PARAMS_COMPLETION_FLG_SHIFT     30
 /* Connection type is iWARP */
 #define DB_RDMA_DPM_PARAMS_CONN_TYPE_IS_IWARP_MASK  0x1
 #define DB_RDMA_DPM_PARAMS_CONN_TYPE_IS_IWARP_SHIFT 31

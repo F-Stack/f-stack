@@ -1,32 +1,6 @@
-/*
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation.
+ * All rights reserved.
  */
 
 #ifndef _RTE_EVENT_ETH_RX_ADAPTER_
@@ -47,7 +21,11 @@
  *
  * The adapter uses a EAL service core function for SW based packet transfer
  * and uses the eventdev PMD functions to configure HW based packet transfer
- * between the ethernet device and the event device.
+ * between the ethernet device and the event device. For SW based packet
+ * transfer, if the mbuf does not have a timestamp set, the adapter adds a
+ * timestamp to the mbuf using rte_get_tsc_cycles(), this provides a more
+ * accurate timestamp as compared to if the application were to set the time
+ * stamp since it avoids event device schedule latency.
  *
  * The ethernet Rx event adapter's functions are:
  *  - rte_event_eth_rx_adapter_create_ext()
@@ -85,7 +63,19 @@
  * rte_event_eth_rx_adapter_service_id_get() function can be used to retrieve
  * the service function ID of the adapter in this case.
  *
- * Note: Interrupt driven receive queues are currently unimplemented.
+ * For SW based packet transfers, i.e., when the
+ * RTE_EVENT_ETH_RX_ADAPTER_CAP_INTERNAL_PORT is not set in the adapter's
+ * capabilities flags for a particular ethernet device, the service function
+ * temporarily enqueues mbufs to an event buffer before batch enqueueing these
+ * to the event device. If the buffer fills up, the service function stops
+ * dequeueing packets from the ethernet device. The application may want to
+ * monitor the buffer fill level and instruct the service function to
+ * selectively buffer packets. The application may also use some other
+ * criteria to decide which packets should enter the event device even when
+ * the event buffer fill level is low. The
+ * rte_event_eth_rx_adapter_cb_register() function allows the
+ * application to register a callback that selects which packets to enqueue
+ * to the event device.
  */
 
 #ifdef __cplusplus
@@ -218,7 +208,50 @@ struct rte_event_eth_rx_adapter_stats {
 	 * block cycles can be used to compute the percentage of
 	 * cycles the service is blocked by the event device.
 	 */
+	uint64_t rx_intr_packets;
+	/**< Received packet count for interrupt mode Rx queues */
 };
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Callback function invoked by the SW adapter before it continues
+ * to process packets. The callback is passed the size of the enqueue
+ * buffer in the SW adapter and the occupancy of the buffer. The
+ * callback can use these values to decide which mbufs should be
+ * enqueued to the event device. If the return value of the callback
+ * is less than nb_mbuf then the SW adapter uses the return value to
+ * enqueue enq_mbuf[] to the event device.
+ *
+ * @param eth_dev_id
+ *  Port identifier of the Ethernet device.
+ * @param queue_id
+ *  Receive queue index.
+ * @param enqueue_buf_size
+ *  Total enqueue buffer size.
+ * @param enqueue_buf_count
+ *  mbuf count in enqueue buffer.
+ * @param mbuf
+ *  mbuf array.
+ * @param nb_mbuf
+ *  mbuf count.
+ * @param cb_arg
+ *  Callback argument.
+ * @param[out] enq_mbuf
+ *  The adapter enqueues enq_mbuf[] if the return value of the
+ *  callback is less than nb_mbuf
+ * @return
+ *  Returns the number of mbufs should be enqueued to eventdev
+ */
+typedef uint16_t (*rte_event_eth_rx_adapter_cb_fn)(uint16_t eth_dev_id,
+						uint16_t queue_id,
+						uint32_t enqueue_buf_size,
+						uint32_t enqueue_buf_count,
+						struct rte_mbuf **mbuf,
+						uint16_t nb_mbuf,
+						void *cb_arg,
+						struct rte_mbuf **enq_buf);
 
 /**
  * @warning
@@ -321,9 +354,15 @@ int rte_event_eth_rx_adapter_free(uint8_t id);
  * @return
  *  - 0: Success, Receive queue added correctly.
  *  - <0: Error code on failure.
+ *  - (-EIO) device reconfiguration and restart error. The adapter reconfigures
+ *  the event device with an additional port if it is required to use a service
+ *  function for packet transfer from the ethernet device to the event device.
+ *  If the device had been started before this call, this error code indicates
+ *  an error in restart following an error in reconfiguration, i.e., a
+ *  combination of the two error codes.
  */
 int rte_event_eth_rx_adapter_queue_add(uint8_t id,
-			uint8_t eth_dev_id,
+			uint16_t eth_dev_id,
 			int32_t rx_queue_id,
 			const struct rte_event_eth_rx_adapter_queue_conf *conf);
 
@@ -351,7 +390,7 @@ int rte_event_eth_rx_adapter_queue_add(uint8_t id,
  *  - 0: Success, Receive queue deleted correctly.
  *  - <0: Error code on failure.
  */
-int rte_event_eth_rx_adapter_queue_del(uint8_t id, uint8_t eth_dev_id,
+int rte_event_eth_rx_adapter_queue_del(uint8_t id, uint16_t eth_dev_id,
 				       int32_t rx_queue_id);
 
 /**
@@ -437,6 +476,32 @@ int rte_event_eth_rx_adapter_stats_reset(uint8_t id);
  * function, this function returns -ESRCH.
  */
 int rte_event_eth_rx_adapter_service_id_get(uint8_t id, uint32_t *service_id);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Register callback to process Rx packets, this is supported for
+ * SW based packet transfers.
+ * @see rte_event_eth_rx_cb_fn
+ *
+ * @param id
+ *  Adapter identifier.
+ * @param eth_dev_id
+ *  Port identifier of Ethernet device.
+ * @param cb_fn
+ *  Callback function.
+ * @param cb_arg
+ *  Callback arg.
+ * @return
+ *  - 0: Success
+ *  - <0: Error code on failure.
+ */
+int __rte_experimental
+rte_event_eth_rx_adapter_cb_register(uint8_t id,
+				uint16_t eth_dev_id,
+				rte_event_eth_rx_adapter_cb_fn cb_fn,
+				void *cb_arg);
 
 #ifdef __cplusplus
 }

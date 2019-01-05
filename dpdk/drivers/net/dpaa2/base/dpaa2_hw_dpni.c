@@ -1,41 +1,15 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP.
+ *   Copyright 2016 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Freescale Semiconductor, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <time.h>
 #include <net/if.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
@@ -43,7 +17,7 @@
 #include <rte_kvargs.h>
 #include <rte_dev.h>
 
-#include <fslmc_logs.h>
+#include <dpaa2_pmd_logs.h>
 #include <dpaa2_hw_pvt.h>
 #include <dpaa2_hw_mempool.h>
 
@@ -68,7 +42,7 @@ dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
 	p_params = rte_malloc(
 		NULL, DIST_PARAM_IOVA_SIZE, RTE_CACHE_LINE_SIZE);
 	if (!p_params) {
-		PMD_INIT_LOG(ERR, "Memory unavailable");
+		DPAA2_PMD_ERR("Unable to allocate flow-dist parameters");
 		return -ENOMEM;
 	}
 	memset(p_params, 0, DIST_PARAM_IOVA_SIZE);
@@ -76,8 +50,8 @@ dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
 
 	ret = dpaa2_distset_to_dpkg_profile_cfg(req_dist_set, &kg_cfg);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "given rss_hf (%lx) not supported",
-			     req_dist_set);
+		DPAA2_PMD_ERR("Given RSS Hash (%" PRIx64 ") not supported",
+			      req_dist_set);
 		rte_free(p_params);
 		return ret;
 	}
@@ -87,7 +61,7 @@ dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
 
 	ret = dpkg_prepare_key_cfg(&kg_cfg, p_params);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Unable to prepare extract parameters");
+		DPAA2_PMD_ERR("Unable to prepare extract parameters");
 		rte_free(p_params);
 		return ret;
 	}
@@ -96,7 +70,7 @@ dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
 				  &tc_cfg);
 	rte_free(p_params);
 	if (ret) {
-		PMD_INIT_LOG(ERR,
+		DPAA2_PMD_ERR(
 			     "Setting distribution for Rx failed with err: %d",
 			     ret);
 		return ret;
@@ -119,7 +93,7 @@ int dpaa2_remove_flow_dist(
 	p_params = rte_malloc(
 		NULL, DIST_PARAM_IOVA_SIZE, RTE_CACHE_LINE_SIZE);
 	if (!p_params) {
-		PMD_INIT_LOG(ERR, "Memory unavailable");
+		DPAA2_PMD_ERR("Unable to allocate flow-dist parameters");
 		return -ENOMEM;
 	}
 	memset(p_params, 0, DIST_PARAM_IOVA_SIZE);
@@ -131,7 +105,7 @@ int dpaa2_remove_flow_dist(
 
 	ret = dpkg_prepare_key_cfg(&kg_cfg, p_params);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Unable to prepare extract parameters");
+		DPAA2_PMD_ERR("Unable to prepare extract parameters");
 		rte_free(p_params);
 		return ret;
 	}
@@ -140,8 +114,8 @@ int dpaa2_remove_flow_dist(
 				  &tc_cfg);
 	rte_free(p_params);
 	if (ret)
-		PMD_INIT_LOG(ERR,
-			     "Setting distribution for Rx failed with err:%d",
+		DPAA2_PMD_ERR(
+			     "Setting distribution for Rx failed with err: %d",
 			     ret);
 	return ret;
 }
@@ -282,7 +256,7 @@ dpaa2_distset_to_dpkg_profile_cfg(
 				break;
 
 			default:
-				PMD_INIT_LOG(WARNING,
+				DPAA2_PMD_WARN(
 					     "Unsupported flow dist option %x",
 					     dist_field);
 				return -EINVAL;
@@ -333,7 +307,7 @@ dpaa2_attach_bp_list(struct dpaa2_dev_priv *priv,
 	retcode = dpni_set_buffer_layout(dpni, CMD_PRI_LOW, priv->token,
 					 DPNI_QUEUE_RX, &layout);
 	if (retcode) {
-		PMD_INIT_LOG(ERR, "Err(%d) in setting rx buffer layout\n",
+		DPAA2_PMD_ERR("Error configuring buffer pool Rx layout (%d)",
 			     retcode);
 		return retcode;
 	}
@@ -348,9 +322,9 @@ dpaa2_attach_bp_list(struct dpaa2_dev_priv *priv,
 
 	retcode = dpni_set_pools(dpni, CMD_PRI_LOW, priv->token, &bpool_cfg);
 	if (retcode != 0) {
-		PMD_INIT_LOG(ERR, "Error in attaching the buffer pool list"
-				" bpid = %d Error code = %d\n",
-				bpool_cfg.pools[0].dpbp_id, retcode);
+		DPAA2_PMD_ERR("Error configuring buffer pool on interface."
+			      " bpid = %d error code = %d",
+			      bpool_cfg.pools[0].dpbp_id, retcode);
 		return retcode;
 	}
 

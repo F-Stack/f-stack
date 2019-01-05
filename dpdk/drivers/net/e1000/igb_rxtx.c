@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #include <sys/queue.h>
@@ -60,7 +31,7 @@
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_prefetch.h>
 #include <rte_udp.h>
 #include <rte_tcp.h>
@@ -79,6 +50,10 @@
 #endif
 /* Bit Mask to indicate what bits required for building TX context */
 #define IGB_TX_OFFLOAD_MASK (			 \
+		PKT_TX_OUTER_IPV6 |	 \
+		PKT_TX_OUTER_IPV4 |	 \
+		PKT_TX_IPV6 |		 \
+		PKT_TX_IPV4 |		 \
 		PKT_TX_VLAN_PKT |		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
@@ -136,6 +111,7 @@ struct igb_rx_queue {
 	uint8_t             crc_len;    /**< 0 if CRC stripped, 4 otherwise. */
 	uint8_t             drop_en;  /**< If not 0, set SRRCTL.Drop_En. */
 	uint32_t            flags;      /**< RX flags. */
+	uint64_t	    offloads;   /**< offloads of DEV_RX_OFFLOAD_* */
 };
 
 /**
@@ -209,6 +185,7 @@ struct igb_tx_queue {
 	/**< Start context position for transmit queue. */
 	struct igb_advctx_info ctx_cache[IGB_CTX_NUM];
 	/**< Hardware context history.*/
+	uint64_t	       offloads; /**< offloads of DEV_TX_OFFLOAD_* */
 };
 
 #if 1
@@ -1476,6 +1453,33 @@ igb_reset_tx_queue(struct igb_tx_queue *txq, struct rte_eth_dev *dev)
 	igb_reset_tx_queue_stat(txq);
 }
 
+uint64_t
+igb_get_tx_port_offloads_capa(struct rte_eth_dev *dev)
+{
+	uint64_t tx_offload_capa;
+
+	RTE_SET_USED(dev);
+	tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
+			  DEV_TX_OFFLOAD_IPV4_CKSUM  |
+			  DEV_TX_OFFLOAD_UDP_CKSUM   |
+			  DEV_TX_OFFLOAD_TCP_CKSUM   |
+			  DEV_TX_OFFLOAD_SCTP_CKSUM  |
+			  DEV_TX_OFFLOAD_TCP_TSO     |
+			  DEV_TX_OFFLOAD_MULTI_SEGS;
+
+	return tx_offload_capa;
+}
+
+uint64_t
+igb_get_tx_queue_offloads_capa(struct rte_eth_dev *dev)
+{
+	uint64_t tx_queue_offload_capa;
+
+	tx_queue_offload_capa = igb_get_tx_port_offloads_capa(dev);
+
+	return tx_queue_offload_capa;
+}
+
 int
 eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 			 uint16_t queue_idx,
@@ -1487,6 +1491,9 @@ eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 	struct igb_tx_queue *txq;
 	struct e1000_hw     *hw;
 	uint32_t size;
+	uint64_t offloads;
+
+	offloads = tx_conf->offloads | dev->data->dev_conf.txmode.offloads;
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
@@ -1571,6 +1578,7 @@ eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 	dev->tx_pkt_burst = eth_igb_xmit_pkts;
 	dev->tx_pkt_prepare = &eth_igb_prep_pkts;
 	dev->data->tx_queues[queue_idx] = txq;
+	txq->offloads = offloads;
 
 	return 0;
 }
@@ -1622,6 +1630,45 @@ igb_reset_rx_queue(struct igb_rx_queue *rxq)
 	rxq->pkt_last_seg = NULL;
 }
 
+uint64_t
+igb_get_rx_port_offloads_capa(struct rte_eth_dev *dev)
+{
+	uint64_t rx_offload_capa;
+
+	RTE_SET_USED(dev);
+	rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP  |
+			  DEV_RX_OFFLOAD_VLAN_FILTER |
+			  DEV_RX_OFFLOAD_IPV4_CKSUM  |
+			  DEV_RX_OFFLOAD_UDP_CKSUM   |
+			  DEV_RX_OFFLOAD_TCP_CKSUM   |
+			  DEV_RX_OFFLOAD_JUMBO_FRAME |
+			  DEV_RX_OFFLOAD_KEEP_CRC    |
+			  DEV_RX_OFFLOAD_SCATTER;
+
+	return rx_offload_capa;
+}
+
+uint64_t
+igb_get_rx_queue_offloads_capa(struct rte_eth_dev *dev)
+{
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint64_t rx_queue_offload_capa;
+
+	switch (hw->mac.type) {
+	case e1000_vfadapt_i350:
+		/*
+		 * As only one Rx queue can be used, let per queue offloading
+		 * capability be same to per port queue offloading capability
+		 * for better convenience.
+		 */
+		rx_queue_offload_capa = igb_get_rx_port_offloads_capa(dev);
+		break;
+	default:
+		rx_queue_offload_capa = 0;
+	}
+	return rx_queue_offload_capa;
+}
+
 int
 eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 			 uint16_t queue_idx,
@@ -1634,6 +1681,9 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 	struct igb_rx_queue *rxq;
 	struct e1000_hw     *hw;
 	unsigned int size;
+	uint64_t offloads;
+
+	offloads = rx_conf->offloads | dev->data->dev_conf.rxmode.offloads;
 
 	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
@@ -1659,6 +1709,7 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 			  RTE_CACHE_LINE_SIZE);
 	if (rxq == NULL)
 		return -ENOMEM;
+	rxq->offloads = offloads;
 	rxq->mb_pool = mp;
 	rxq->nb_rx_desc = nb_desc;
 	rxq->pthresh = rx_conf->rx_thresh.pthresh;
@@ -1673,8 +1724,10 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->reg_idx = (uint16_t)((RTE_ETH_DEV_SRIOV(dev).active == 0) ?
 		queue_idx : RTE_ETH_DEV_SRIOV(dev).def_pool_q_idx + queue_idx);
 	rxq->port_id = dev->data->port_id;
-	rxq->crc_len = (uint8_t) ((dev->data->dev_conf.rxmode.hw_strip_crc) ? 0 :
-				  ETHER_CRC_LEN);
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
+		rxq->crc_len = ETHER_CRC_LEN;
+	else
+		rxq->crc_len = 0;
 
 	/*
 	 *  Allocate RX ring hardware descriptors. A memzone large enough to
@@ -2256,6 +2309,7 @@ igb_dev_mq_rx_configure(struct rte_eth_dev *dev)
 int
 eth_igb_rx_init(struct rte_eth_dev *dev)
 {
+	struct rte_eth_rxmode *rxmode;
 	struct e1000_hw     *hw;
 	struct igb_rx_queue *rxq;
 	uint32_t rctl;
@@ -2276,10 +2330,12 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 	rctl = E1000_READ_REG(hw, E1000_RCTL);
 	E1000_WRITE_REG(hw, E1000_RCTL, rctl & ~E1000_RCTL_EN);
 
+	rxmode = &dev->data->dev_conf.rxmode;
+
 	/*
 	 * Configure support of jumbo frames, if any.
 	 */
-	if (dev->data->dev_conf.rxmode.jumbo_frame == 1) {
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
 		rctl |= E1000_RCTL_LPE;
 
 		/*
@@ -2321,9 +2377,10 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 		 * Reset crc_len in case it was changed after queue setup by a
 		 *  call to configure
 		 */
-		rxq->crc_len =
-			(uint8_t)(dev->data->dev_conf.rxmode.hw_strip_crc ?
-							0 : ETHER_CRC_LEN);
+		if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
+			rxq->crc_len = ETHER_CRC_LEN;
+		else
+			rxq->crc_len = 0;
 
 		bus_addr = rxq->rx_ring_phys_addr;
 		E1000_WRITE_REG(hw, E1000_RDLEN(rxq->reg_idx),
@@ -2391,7 +2448,7 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 		E1000_WRITE_REG(hw, E1000_RXDCTL(rxq->reg_idx), rxdctl);
 	}
 
-	if (dev->data->dev_conf.rxmode.enable_scatter) {
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_SCATTER) {
 		if (!dev->data->scattered_rx)
 			PMD_INIT_LOG(DEBUG, "forcing scatter mode");
 		dev->rx_pkt_burst = eth_igb_recv_scattered_pkts;
@@ -2435,32 +2492,24 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 	rxcsum |= E1000_RXCSUM_PCSD;
 
 	/* Enable both L3/L4 rx checksum offload */
-	if (dev->data->dev_conf.rxmode.hw_ip_checksum)
-		rxcsum |= (E1000_RXCSUM_IPOFL | E1000_RXCSUM_TUOFL |
-				E1000_RXCSUM_CRCOFL);
+	if (rxmode->offloads & DEV_RX_OFFLOAD_IPV4_CKSUM)
+		rxcsum |= E1000_RXCSUM_IPOFL;
 	else
-		rxcsum &= ~(E1000_RXCSUM_IPOFL | E1000_RXCSUM_TUOFL |
-				E1000_RXCSUM_CRCOFL);
+		rxcsum &= ~E1000_RXCSUM_IPOFL;
+	if (rxmode->offloads &
+		(DEV_RX_OFFLOAD_TCP_CKSUM | DEV_RX_OFFLOAD_UDP_CKSUM))
+		rxcsum |= E1000_RXCSUM_TUOFL;
+	else
+		rxcsum &= ~E1000_RXCSUM_TUOFL;
+	if (rxmode->offloads & DEV_RX_OFFLOAD_CHECKSUM)
+		rxcsum |= E1000_RXCSUM_CRCOFL;
+	else
+		rxcsum &= ~E1000_RXCSUM_CRCOFL;
+
 	E1000_WRITE_REG(hw, E1000_RXCSUM, rxcsum);
 
 	/* Setup the Receive Control Register. */
-	if (dev->data->dev_conf.rxmode.hw_strip_crc) {
-		rctl |= E1000_RCTL_SECRC; /* Strip Ethernet CRC. */
-
-		/* set STRCRC bit in all queues */
-		if (hw->mac.type == e1000_i350 ||
-		    hw->mac.type == e1000_i210 ||
-		    hw->mac.type == e1000_i211 ||
-		    hw->mac.type == e1000_i354) {
-			for (i = 0; i < dev->data->nb_rx_queues; i++) {
-				rxq = dev->data->rx_queues[i];
-				uint32_t dvmolr = E1000_READ_REG(hw,
-					E1000_DVMOLR(rxq->reg_idx));
-				dvmolr |= E1000_DVMOLR_STRCRC;
-				E1000_WRITE_REG(hw, E1000_DVMOLR(rxq->reg_idx), dvmolr);
-			}
-		}
-	} else {
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
 		rctl &= ~E1000_RCTL_SECRC; /* Do not Strip Ethernet CRC. */
 
 		/* clear STRCRC bit in all queues */
@@ -2473,6 +2522,22 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 				uint32_t dvmolr = E1000_READ_REG(hw,
 					E1000_DVMOLR(rxq->reg_idx));
 				dvmolr &= ~E1000_DVMOLR_STRCRC;
+				E1000_WRITE_REG(hw, E1000_DVMOLR(rxq->reg_idx), dvmolr);
+			}
+		}
+	} else {
+		rctl |= E1000_RCTL_SECRC; /* Strip Ethernet CRC. */
+
+		/* set STRCRC bit in all queues */
+		if (hw->mac.type == e1000_i350 ||
+		    hw->mac.type == e1000_i210 ||
+		    hw->mac.type == e1000_i211 ||
+		    hw->mac.type == e1000_i354) {
+			for (i = 0; i < dev->data->nb_rx_queues; i++) {
+				rxq = dev->data->rx_queues[i];
+				uint32_t dvmolr = E1000_READ_REG(hw,
+					E1000_DVMOLR(rxq->reg_idx));
+				dvmolr |= E1000_DVMOLR_STRCRC;
 				E1000_WRITE_REG(hw, E1000_DVMOLR(rxq->reg_idx), dvmolr);
 			}
 		}
@@ -2683,7 +2748,7 @@ eth_igbvf_rx_init(struct rte_eth_dev *dev)
 		E1000_WRITE_REG(hw, E1000_RXDCTL(i), rxdctl);
 	}
 
-	if (dev->data->dev_conf.rxmode.enable_scatter) {
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_SCATTER) {
 		if (!dev->data->scattered_rx)
 			PMD_INIT_LOG(DEBUG, "forcing scatter mode");
 		dev->rx_pkt_burst = eth_igb_recv_scattered_pkts;
@@ -2770,6 +2835,7 @@ igb_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 
 	qinfo->conf.rx_free_thresh = rxq->rx_free_thresh;
 	qinfo->conf.rx_drop_en = rxq->drop_en;
+	qinfo->conf.offloads = rxq->offloads;
 }
 
 void
@@ -2785,4 +2851,111 @@ igb_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	qinfo->conf.tx_thresh.pthresh = txq->pthresh;
 	qinfo->conf.tx_thresh.hthresh = txq->hthresh;
 	qinfo->conf.tx_thresh.wthresh = txq->wthresh;
+	qinfo->conf.offloads = txq->offloads;
+}
+
+int
+igb_rss_conf_init(struct rte_eth_dev *dev,
+		  struct igb_rte_flow_rss_conf *out,
+		  const struct rte_flow_action_rss *in)
+{
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	if (in->key_len > RTE_DIM(out->key) ||
+	    ((hw->mac.type == e1000_82576) &&
+	     (in->queue_num > IGB_MAX_RX_QUEUE_NUM_82576)) ||
+	    ((hw->mac.type != e1000_82576) &&
+	     (in->queue_num > IGB_MAX_RX_QUEUE_NUM)))
+		return -EINVAL;
+	out->conf = (struct rte_flow_action_rss){
+		.func = in->func,
+		.level = in->level,
+		.types = in->types,
+		.key_len = in->key_len,
+		.queue_num = in->queue_num,
+		.key = memcpy(out->key, in->key, in->key_len),
+		.queue = memcpy(out->queue, in->queue,
+				sizeof(*in->queue) * in->queue_num),
+	};
+	return 0;
+}
+
+int
+igb_action_rss_same(const struct rte_flow_action_rss *comp,
+		    const struct rte_flow_action_rss *with)
+{
+	return (comp->func == with->func &&
+		comp->level == with->level &&
+		comp->types == with->types &&
+		comp->key_len == with->key_len &&
+		comp->queue_num == with->queue_num &&
+		!memcmp(comp->key, with->key, with->key_len) &&
+		!memcmp(comp->queue, with->queue,
+			sizeof(*with->queue) * with->queue_num));
+}
+
+int
+igb_config_rss_filter(struct rte_eth_dev *dev,
+		struct igb_rte_flow_rss_conf *conf, bool add)
+{
+	uint32_t shift;
+	uint16_t i, j;
+	struct rte_eth_rss_conf rss_conf = {
+		.rss_key = conf->conf.key_len ?
+			(void *)(uintptr_t)conf->conf.key : NULL,
+		.rss_key_len = conf->conf.key_len,
+		.rss_hf = conf->conf.types,
+	};
+	struct e1000_filter_info *filter_info =
+		E1000_DEV_PRIVATE_TO_FILTER_INFO(dev->data->dev_private);
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	if (!add) {
+		if (igb_action_rss_same(&filter_info->rss_info.conf,
+					&conf->conf)) {
+			igb_rss_disable(dev);
+			memset(&filter_info->rss_info, 0,
+				sizeof(struct igb_rte_flow_rss_conf));
+			return 0;
+		}
+		return -EINVAL;
+	}
+
+	if (filter_info->rss_info.conf.queue_num)
+		return -EINVAL;
+
+	/* Fill in redirection table. */
+	shift = (hw->mac.type == e1000_82575) ? 6 : 0;
+	for (i = 0, j = 0; i < 128; i++, j++) {
+		union e1000_reta {
+			uint32_t dword;
+			uint8_t  bytes[4];
+		} reta;
+		uint8_t q_idx;
+
+		if (j == conf->conf.queue_num)
+			j = 0;
+		q_idx = conf->conf.queue[j];
+		reta.bytes[i & 3] = (uint8_t)(q_idx << shift);
+		if ((i & 3) == 3)
+			E1000_WRITE_REG(hw, E1000_RETA(i >> 2), reta.dword);
+	}
+
+	/* Configure the RSS key and the RSS protocols used to compute
+	 * the RSS hash of input packets.
+	 */
+	if ((rss_conf.rss_hf & IGB_RSS_OFFLOAD_ALL) == 0) {
+		igb_rss_disable(dev);
+		return 0;
+	}
+	if (rss_conf.rss_key == NULL)
+		rss_conf.rss_key = rss_intel_key; /* Default hash key */
+	igb_hw_rss_hash_set(hw, &rss_conf);
+
+	if (igb_rss_conf_init(dev, &filter_info->rss_info, &conf->conf))
+		return -EINVAL;
+
+	return 0;
 }

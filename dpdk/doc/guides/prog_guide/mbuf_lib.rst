@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 .. _Mbuf_Library:
 
@@ -37,9 +10,8 @@ The mbuf library provides the ability to allocate and free buffers (mbufs)
 that may be used by the DPDK application to store message buffers.
 The message buffers are stored in a mempool, using the :ref:`Mempool Library <Mempool_Library>`.
 
-A rte_mbuf struct can carry network packet buffers
-or generic control buffers (indicated by the CTRL_MBUF_FLAG).
-This can be extended to other types.
+A rte_mbuf struct generally carries network packet buffers, but it can actually
+be any data (control data, events, ...).
 The rte_mbuf header structure is kept as small as possible and currently uses
 just two cache lines, with the most frequently used fields being on the first
 of the two cache lines.
@@ -95,13 +67,13 @@ Buffers Stored in Memory Pools
 The Buffer Manager uses the :ref:`Mempool Library <Mempool_Library>` to allocate buffers.
 Therefore, it ensures that the packet header is interleaved optimally across the channels and ranks for L3 processing.
 An mbuf contains a field indicating the pool that it originated from.
-When calling rte_ctrlmbuf_free(m) or rte_pktmbuf_free(m), the mbuf returns to its original pool.
+When calling rte_pktmbuf_free(m), the mbuf returns to its original pool.
 
 Constructors
 ------------
 
-Packet and control mbuf constructors are provided by the API.
-The rte_pktmbuf_init() and rte_ctrlmbuf_init() functions initialize some fields in the mbuf structure that
+Packet mbuf constructors are provided by the API.
+The rte_pktmbuf_init() function initializes some fields in the mbuf structure that
 are not modified by the user once created (mbuf type, origin pool, buffer start address, and so on).
 This function is given as a callback function to the rte_mempool_create() function at pool creation time.
 

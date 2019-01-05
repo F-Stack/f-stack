@@ -1,37 +1,11 @@
-/*
- * Copyright (c) 2017, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  */
 
 #include <errno.h>
+#include <stdint.h>
 #include <rte_log.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_flow_driver.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -42,15 +16,12 @@
 #include "vnic_dev.h"
 #include "vnic_nic.h"
 
-#ifdef RTE_LIBRTE_ENIC_DEBUG_FLOW
 #define FLOW_TRACE() \
-	RTE_LOG(DEBUG, PMD, "%s()\n", __func__)
+	rte_log(RTE_LOG_DEBUG, enicpmd_logtype_flow, \
+		"%s()\n", __func__)
 #define FLOW_LOG(level, fmt, args...) \
-	RTE_LOG(level, PMD, fmt, ## args)
-#else
-#define FLOW_TRACE() do { } while (0)
-#define FLOW_LOG(level, fmt, args...) do { } while (0)
-#endif
+	rte_log(RTE_LOG_ ## level, enicpmd_logtype_flow, \
+		fmt "\n", ##args)
 
 /** Info about how to copy items into enic filters. */
 struct enic_items {
@@ -303,10 +274,27 @@ static const enum rte_flow_action_type enic_supported_actions_v1[] = {
 };
 
 /** Supported actions for newer NICs */
-static const enum rte_flow_action_type enic_supported_actions_v2[] = {
+static const enum rte_flow_action_type enic_supported_actions_v2_id[] = {
 	RTE_FLOW_ACTION_TYPE_QUEUE,
 	RTE_FLOW_ACTION_TYPE_MARK,
 	RTE_FLOW_ACTION_TYPE_FLAG,
+	RTE_FLOW_ACTION_TYPE_END,
+};
+
+static const enum rte_flow_action_type enic_supported_actions_v2_drop[] = {
+	RTE_FLOW_ACTION_TYPE_QUEUE,
+	RTE_FLOW_ACTION_TYPE_MARK,
+	RTE_FLOW_ACTION_TYPE_FLAG,
+	RTE_FLOW_ACTION_TYPE_DROP,
+	RTE_FLOW_ACTION_TYPE_END,
+};
+
+static const enum rte_flow_action_type enic_supported_actions_v2_count[] = {
+	RTE_FLOW_ACTION_TYPE_QUEUE,
+	RTE_FLOW_ACTION_TYPE_MARK,
+	RTE_FLOW_ACTION_TYPE_FLAG,
+	RTE_FLOW_ACTION_TYPE_DROP,
+	RTE_FLOW_ACTION_TYPE_COUNT,
 	RTE_FLOW_ACTION_TYPE_END,
 };
 
@@ -316,8 +304,16 @@ static const struct enic_action_cap enic_action_cap[] = {
 		.actions = enic_supported_actions_v1,
 		.copy_fn = enic_copy_action_v1,
 	},
-	[FILTER_ACTION_V2_ALL] = {
-		.actions = enic_supported_actions_v2,
+	[FILTER_ACTION_FILTER_ID_FLAG] = {
+		.actions = enic_supported_actions_v2_id,
+		.copy_fn = enic_copy_action_v2,
+	},
+	[FILTER_ACTION_DROP_FLAG] = {
+		.actions = enic_supported_actions_v2_drop,
+		.copy_fn = enic_copy_action_v2,
+	},
+	[FILTER_ACTION_COUNTER_FLAG] = {
+		.actions = enic_supported_actions_v2_count,
 		.copy_fn = enic_copy_action_v2,
 	},
 };
@@ -574,16 +570,21 @@ enic_copy_item_vlan_v2(const struct rte_flow_item *item,
 	if (!spec)
 		return 0;
 
-	/* Don't support filtering in tpid */
-	if (mask) {
-		if (mask->tpid != 0)
-			return ENOTSUP;
-	} else {
+	if (!mask)
 		mask = &rte_flow_item_vlan_mask;
-		RTE_ASSERT(mask->tpid == 0);
-	}
 
 	if (*inner_ofst == 0) {
+		struct ether_hdr *eth_mask =
+			(void *)gp->layer[FILTER_GENERIC_1_L2].mask;
+		struct ether_hdr *eth_val =
+			(void *)gp->layer[FILTER_GENERIC_1_L2].val;
+
+		/* Outer TPID cannot be matched */
+		if (eth_mask->ether_type)
+			return ENOTSUP;
+		eth_mask->ether_type = mask->inner_type;
+		eth_val->ether_type = spec->inner_type;
+
 		/* Outer header. Use the vlan mask/val fields */
 		gp->mask_vlan = mask->tci;
 		gp->val_vlan = spec->tci;
@@ -982,6 +983,9 @@ static int
 enic_copy_action_v1(const struct rte_flow_action actions[],
 		    struct filter_action_v2 *enic_action)
 {
+	enum { FATE = 1, };
+	uint32_t overlap = 0;
+
 	FLOW_TRACE();
 
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
@@ -993,6 +997,10 @@ enic_copy_action_v1(const struct rte_flow_action actions[],
 			const struct rte_flow_action_queue *queue =
 				(const struct rte_flow_action_queue *)
 				actions->conf;
+
+			if (overlap & FATE)
+				return ENOTSUP;
+			overlap |= FATE;
 			enic_action->rq_idx =
 				enic_rte_rq_idx_to_sop_idx(queue->index);
 			break;
@@ -1002,6 +1010,8 @@ enic_copy_action_v1(const struct rte_flow_action actions[],
 			break;
 		}
 	}
+	if (!(overlap & FATE))
+		return ENOTSUP;
 	enic_action->type = FILTER_ACTION_RQ_STEERING;
 	return 0;
 }
@@ -1019,6 +1029,9 @@ static int
 enic_copy_action_v2(const struct rte_flow_action actions[],
 		    struct filter_action_v2 *enic_action)
 {
+	enum { FATE = 1, MARK = 2, };
+	uint32_t overlap = 0;
+
 	FLOW_TRACE();
 
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
@@ -1027,6 +1040,10 @@ enic_copy_action_v2(const struct rte_flow_action actions[],
 			const struct rte_flow_action_queue *queue =
 				(const struct rte_flow_action_queue *)
 				actions->conf;
+
+			if (overlap & FATE)
+				return ENOTSUP;
+			overlap |= FATE;
 			enic_action->rq_idx =
 				enic_rte_rq_idx_to_sop_idx(queue->index);
 			enic_action->flags |= FILTER_ACTION_RQ_STEERING_FLAG;
@@ -1037,6 +1054,9 @@ enic_copy_action_v2(const struct rte_flow_action actions[],
 				(const struct rte_flow_action_mark *)
 				actions->conf;
 
+			if (overlap & MARK)
+				return ENOTSUP;
+			overlap |= MARK;
 			/* ENIC_MAGIC_FILTER_ID is reserved and is the highest
 			 * in the range of allows mark ids.
 			 */
@@ -1047,8 +1067,22 @@ enic_copy_action_v2(const struct rte_flow_action actions[],
 			break;
 		}
 		case RTE_FLOW_ACTION_TYPE_FLAG: {
+			if (overlap & MARK)
+				return ENOTSUP;
+			overlap |= MARK;
 			enic_action->filter_id = ENIC_MAGIC_FILTER_ID;
 			enic_action->flags |= FILTER_ACTION_FILTER_ID_FLAG;
+			break;
+		}
+		case RTE_FLOW_ACTION_TYPE_DROP: {
+			if (overlap & FATE)
+				return ENOTSUP;
+			overlap |= FATE;
+			enic_action->flags |= FILTER_ACTION_DROP_FLAG;
+			break;
+		}
+		case RTE_FLOW_ACTION_TYPE_COUNT: {
+			enic_action->flags |= FILTER_ACTION_COUNTER_FLAG;
 			break;
 		}
 		case RTE_FLOW_ACTION_TYPE_VOID:
@@ -1058,6 +1092,8 @@ enic_copy_action_v2(const struct rte_flow_action actions[],
 			break;
 		}
 	}
+	if (!(overlap & FATE))
+		return ENOTSUP;
 	enic_action->type = FILTER_ACTION_V2;
 	return 0;
 }
@@ -1089,10 +1125,16 @@ enic_get_filter_cap(struct enic *enic)
 static const struct enic_action_cap *
 enic_get_action_cap(struct enic *enic)
 {
-	static const struct enic_action_cap *ea;
+	const struct enic_action_cap *ea;
+	uint8_t actions;
 
-	if (enic->filter_tags)
-		ea = &enic_action_cap[FILTER_ACTION_V2_ALL];
+	actions = enic->filter_actions;
+	if (actions & FILTER_ACTION_COUNTER_FLAG)
+		ea = &enic_action_cap[FILTER_ACTION_COUNTER_FLAG];
+	else if (actions & FILTER_ACTION_DROP_FLAG)
+		ea = &enic_action_cap[FILTER_ACTION_DROP_FLAG];
+	else if (actions & FILTER_ACTION_FILTER_ID_FLAG)
+		ea = &enic_action_cap[FILTER_ACTION_FILTER_ID_FLAG];
 	else
 		ea = &enic_action_cap[FILTER_ACTION_RQ_STEERING_FLAG];
 	return ea;
@@ -1298,6 +1340,12 @@ enic_flow_parse(struct rte_eth_dev *dev,
 					   NULL,
 					   "egress is not supported");
 			return -rte_errno;
+		} else if (attrs->transfer) {
+			rte_flow_error_set(error, ENOTSUP,
+					   RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
+					   NULL,
+					   "transfer is not supported");
+			return -rte_errno;
 		} else if (!attrs->ingress) {
 			rte_flow_error_set(error, ENOTSUP,
 					   RTE_FLOW_ERROR_TYPE_ATTR_INGRESS,
@@ -1366,8 +1414,10 @@ enic_flow_add_filter(struct enic *enic, struct filter_v2 *enic_filter,
 		   struct rte_flow_error *error)
 {
 	struct rte_flow *flow;
-	int ret;
-	u16 entry;
+	int err;
+	uint16_t entry;
+	int ctr_idx;
+	int last_max_flow_ctr;
 
 	FLOW_TRACE();
 
@@ -1378,20 +1428,64 @@ enic_flow_add_filter(struct enic *enic, struct filter_v2 *enic_filter,
 		return NULL;
 	}
 
+	flow->counter_idx = -1;
+	last_max_flow_ctr = -1;
+	if (enic_action->flags & FILTER_ACTION_COUNTER_FLAG) {
+		if (!vnic_dev_counter_alloc(enic->vdev, (uint32_t *)&ctr_idx)) {
+			rte_flow_error_set(error, ENOMEM,
+					   RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					   NULL, "cannot allocate counter");
+			goto unwind_flow_alloc;
+		}
+		flow->counter_idx = ctr_idx;
+		enic_action->counter_index = ctr_idx;
+
+		/* If index is the largest, increase the counter DMA size */
+		if (ctr_idx > enic->max_flow_counter) {
+			err = vnic_dev_counter_dma_cfg(enic->vdev,
+						 VNIC_FLOW_COUNTER_UPDATE_MSECS,
+						 ctr_idx + 1);
+			if (err) {
+				rte_flow_error_set(error, -err,
+					   RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					   NULL, "counter DMA config failed");
+				goto unwind_ctr_alloc;
+			}
+			last_max_flow_ctr = enic->max_flow_counter;
+			enic->max_flow_counter = ctr_idx;
+		}
+	}
+
 	/* entry[in] is the queue id, entry[out] is the filter Id for delete */
 	entry = enic_action->rq_idx;
-	ret = vnic_dev_classifier(enic->vdev, CLSF_ADD, &entry, enic_filter,
+	err = vnic_dev_classifier(enic->vdev, CLSF_ADD, &entry, enic_filter,
 				  enic_action);
-	if (!ret) {
-		flow->enic_filter_id = entry;
-		flow->enic_filter = *enic_filter;
-	} else {
-		rte_flow_error_set(error, ret, RTE_FLOW_ERROR_TYPE_HANDLE,
+	if (err) {
+		rte_flow_error_set(error, -err, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "vnic_dev_classifier error");
-		rte_free(flow);
-		return NULL;
+		goto unwind_ctr_dma_cfg;
 	}
+
+	flow->enic_filter_id = entry;
+	flow->enic_filter = *enic_filter;
+
 	return flow;
+
+/* unwind if there are errors */
+unwind_ctr_dma_cfg:
+	if (last_max_flow_ctr != -1) {
+		/* reduce counter DMA size */
+		vnic_dev_counter_dma_cfg(enic->vdev,
+					 VNIC_FLOW_COUNTER_UPDATE_MSECS,
+					 last_max_flow_ctr + 1);
+		enic->max_flow_counter = last_max_flow_ctr;
+	}
+unwind_ctr_alloc:
+	if (flow->counter_idx != -1)
+		vnic_dev_counter_free(enic->vdev, ctr_idx);
+unwind_flow_alloc:
+	rte_free(flow);
+	return NULL;
 }
 
 /**
@@ -1406,18 +1500,29 @@ enic_flow_add_filter(struct enic *enic, struct filter_v2 *enic_filter,
  * @param error[out]
  */
 static int
-enic_flow_del_filter(struct enic *enic, u16 filter_id,
+enic_flow_del_filter(struct enic *enic, struct rte_flow *flow,
 		   struct rte_flow_error *error)
 {
-	int ret;
+	u16 filter_id;
+	int err;
 
 	FLOW_TRACE();
 
-	ret = vnic_dev_classifier(enic->vdev, CLSF_DEL, &filter_id, NULL, NULL);
-	if (!ret)
-		rte_flow_error_set(error, ret, RTE_FLOW_ERROR_TYPE_HANDLE,
+	filter_id = flow->enic_filter_id;
+	err = vnic_dev_classifier(enic->vdev, CLSF_DEL, &filter_id, NULL, NULL);
+	if (err) {
+		rte_flow_error_set(error, -err, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "vnic_dev_classifier failed");
-	return ret;
+		return -err;
+	}
+
+	if (flow->counter_idx != -1) {
+		if (!vnic_dev_counter_free(enic->vdev, flow->counter_idx))
+			dev_err(enic, "counter free failed, idx: %d\n",
+				flow->counter_idx);
+		flow->counter_idx = -1;
+	}
+	return 0;
 }
 
 /*
@@ -1500,9 +1605,10 @@ enic_flow_destroy(struct rte_eth_dev *dev, struct rte_flow *flow,
 	FLOW_TRACE();
 
 	rte_spinlock_lock(&enic->flows_lock);
-	enic_flow_del_filter(enic, flow->enic_filter_id, error);
+	enic_flow_del_filter(enic, flow, error);
 	LIST_REMOVE(flow, next);
 	rte_spinlock_unlock(&enic->flows_lock);
+	rte_free(flow);
 	return 0;
 }
 
@@ -1524,10 +1630,74 @@ enic_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 
 	while (!LIST_EMPTY(&enic->flows)) {
 		flow = LIST_FIRST(&enic->flows);
-		enic_flow_del_filter(enic, flow->enic_filter_id, error);
+		enic_flow_del_filter(enic, flow, error);
 		LIST_REMOVE(flow, next);
+		rte_free(flow);
 	}
 	rte_spinlock_unlock(&enic->flows_lock);
+	return 0;
+}
+
+static int
+enic_flow_query_count(struct rte_eth_dev *dev,
+		      struct rte_flow *flow, void *data,
+		      struct rte_flow_error *error)
+{
+	struct enic *enic = pmd_priv(dev);
+	struct rte_flow_query_count *query;
+	uint64_t packets, bytes;
+
+	FLOW_TRACE();
+
+	if (flow->counter_idx == -1) {
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL,
+					  "flow does not have counter");
+	}
+	query = (struct rte_flow_query_count *)data;
+	if (!vnic_dev_counter_query(enic->vdev, flow->counter_idx,
+				    !!query->reset, &packets, &bytes)) {
+		return rte_flow_error_set
+			(error, EINVAL,
+			 RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+			 NULL,
+			 "cannot read counter");
+	}
+	query->hits_set = 1;
+	query->bytes_set = 1;
+	query->hits = packets;
+	query->bytes = bytes;
+	return 0;
+}
+
+static int
+enic_flow_query(struct rte_eth_dev *dev,
+		struct rte_flow *flow,
+		const struct rte_flow_action *actions,
+		void *data,
+		struct rte_flow_error *error)
+{
+	int ret = 0;
+
+	FLOW_TRACE();
+
+	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+		switch (actions->type) {
+		case RTE_FLOW_ACTION_TYPE_VOID:
+			break;
+		case RTE_FLOW_ACTION_TYPE_COUNT:
+			ret = enic_flow_query_count(dev, flow, data, error);
+			break;
+		default:
+			return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  actions,
+						  "action not supported");
+		}
+		if (ret < 0)
+			return ret;
+	}
 	return 0;
 }
 
@@ -1541,4 +1711,5 @@ const struct rte_flow_ops enic_flow_ops = {
 	.create = enic_flow_create,
 	.destroy = enic_flow_destroy,
 	.flush = enic_flow_flush,
+	.query = enic_flow_query,
 };

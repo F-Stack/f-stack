@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -295,6 +293,7 @@ ecore_tunn_set_pf_start_params(struct ecore_hwfn *p_hwfn,
 }
 
 #define ETH_P_8021Q 0x8100
+#define ETH_P_8021AD 0x88A8 /* 802.1ad Service VLAN         */
 
 enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 				       struct ecore_ptt *p_ptt,
@@ -308,7 +307,7 @@ enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 	struct ecore_sp_init_data init_data;
 	enum _ecore_status_t rc = ECORE_NOTIMPL;
 	u8 page_cnt;
-	int i;
+	u8 i;
 
 	/* update initial eq producer */
 	ecore_eq_prod_update(p_hwfn,
@@ -343,18 +342,27 @@ enum _ecore_status_t ecore_sp_pf_start(struct ecore_hwfn *p_hwfn,
 
 	p_ramrod->outer_tag_config.outer_tag.tci =
 		OSAL_CPU_TO_LE16(p_hwfn->hw_info.ovlan);
+	if (OSAL_TEST_BIT(ECORE_MF_8021Q_TAGGING, &p_hwfn->p_dev->mf_bits)) {
+		p_ramrod->outer_tag_config.outer_tag.tpid = ETH_P_8021Q;
+	} else if (OSAL_TEST_BIT(ECORE_MF_8021AD_TAGGING,
+		 &p_hwfn->p_dev->mf_bits)) {
+		p_ramrod->outer_tag_config.outer_tag.tpid = ETH_P_8021AD;
+		p_ramrod->outer_tag_config.enable_stag_pri_change = 1;
+	}
 
+	p_ramrod->outer_tag_config.pri_map_valid = 1;
+	for (i = 0; i < ECORE_MAX_PFC_PRIORITIES; i++)
+		p_ramrod->outer_tag_config.inner_to_outer_pri_map[i] = i;
+
+	/* enable_stag_pri_change should be set if port is in BD mode or,
+	 * UFP with Host Control mode or, UFP with DCB over base interface.
+	 */
 	if (OSAL_TEST_BIT(ECORE_MF_UFP_SPECIFIC, &p_hwfn->p_dev->mf_bits)) {
-		p_ramrod->outer_tag_config.outer_tag.tpid =
-			OSAL_CPU_TO_LE16(ETH_P_8021Q);
-		if (p_hwfn->ufp_info.pri_type == ECORE_UFP_PRI_OS)
+		if ((p_hwfn->ufp_info.pri_type == ECORE_UFP_PRI_OS) ||
+		    (p_hwfn->p_dcbx_info->results.dcbx_enabled))
 			p_ramrod->outer_tag_config.enable_stag_pri_change = 1;
 		else
 			p_ramrod->outer_tag_config.enable_stag_pri_change = 0;
-		p_ramrod->outer_tag_config.pri_map_valid = 1;
-		for (i = 0; i < 8; i++)
-			p_ramrod->outer_tag_config.inner_to_outer_pri_map[i] =
-									  (u8)i;
 	}
 
 	/* Place EQ address in RAMROD */
@@ -451,7 +459,8 @@ enum _ecore_status_t ecore_sp_pf_update_ufp(struct ecore_hwfn *p_hwfn)
 		return rc;
 
 	p_ent->ramrod.pf_update.update_enable_stag_pri_change = true;
-	if (p_hwfn->ufp_info.pri_type == ECORE_UFP_PRI_OS)
+	if ((p_hwfn->ufp_info.pri_type == ECORE_UFP_PRI_OS) ||
+	    (p_hwfn->p_dcbx_info->results.dcbx_enabled))
 		p_ent->ramrod.pf_update.enable_stag_pri_change = 1;
 	else
 		p_ent->ramrod.pf_update.enable_stag_pri_change = 0;
@@ -506,6 +515,10 @@ enum _ecore_status_t ecore_sp_rl_update(struct ecore_hwfn *p_hwfn,
 	rl_update->rl_id_first = params->rl_id_first;
 	rl_update->rl_id_last = params->rl_id_last;
 	rl_update->rl_dc_qcn_flg = params->rl_dc_qcn_flg;
+	rl_update->dcqcn_reset_alpha_on_idle =
+		params->dcqcn_reset_alpha_on_idle;
+	rl_update->rl_bc_stage_th = params->rl_bc_stage_th;
+	rl_update->rl_timer_stage_th = params->rl_timer_stage_th;
 	rl_update->rl_bc_rate = OSAL_CPU_TO_LE32(params->rl_bc_rate);
 	rl_update->rl_max_rate =
 		OSAL_CPU_TO_LE16(ecore_sp_rl_mb_to_qm(params->rl_max_rate));
@@ -520,12 +533,14 @@ enum _ecore_status_t ecore_sp_rl_update(struct ecore_hwfn *p_hwfn,
 		OSAL_CPU_TO_LE32(params->dcqcn_timeuot_us);
 	rl_update->qcn_timeuot_us = OSAL_CPU_TO_LE32(params->qcn_timeuot_us);
 
-	DP_VERBOSE(p_hwfn, ECORE_MSG_SPQ, "rl_params: qcn_update_param_flg %x, dcqcn_update_param_flg %x, rl_init_flg %x, rl_start_flg %x, rl_stop_flg %x, rl_id_first %x, rl_id_last %x, rl_dc_qcn_flg %x, rl_bc_rate %x, rl_max_rate %x, rl_r_ai %x, rl_r_hai %x, dcqcn_g %x, dcqcn_k_us %x, dcqcn_timeuot_us %x, qcn_timeuot_us %x\n",
+	DP_VERBOSE(p_hwfn, ECORE_MSG_SPQ, "rl_params: qcn_update_param_flg %x, dcqcn_update_param_flg %x, rl_init_flg %x, rl_start_flg %x, rl_stop_flg %x, rl_id_first %x, rl_id_last %x, rl_dc_qcn_flg %x,dcqcn_reset_alpha_on_idle %x, rl_bc_stage_th %x, rl_timer_stage_th %x, rl_bc_rate %x, rl_max_rate %x, rl_r_ai %x, rl_r_hai %x, dcqcn_g %x, dcqcn_k_us %x, dcqcn_timeuot_us %x, qcn_timeuot_us %x\n",
 		   rl_update->qcn_update_param_flg,
 		   rl_update->dcqcn_update_param_flg,
 		   rl_update->rl_init_flg, rl_update->rl_start_flg,
 		   rl_update->rl_stop_flg, rl_update->rl_id_first,
 		   rl_update->rl_id_last, rl_update->rl_dc_qcn_flg,
+		   rl_update->dcqcn_reset_alpha_on_idle,
+		   rl_update->rl_bc_stage_th, rl_update->rl_timer_stage_th,
 		   rl_update->rl_bc_rate, rl_update->rl_max_rate,
 		   rl_update->rl_r_ai, rl_update->rl_r_hai,
 		   rl_update->dcqcn_g, rl_update->dcqcn_k_us,

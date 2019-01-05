@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_LCORE_H_
@@ -86,7 +57,14 @@ RTE_DECLARE_PER_LCORE(unsigned, _lcore_id);  /**< Per thread "lcore id". */
 RTE_DECLARE_PER_LCORE(rte_cpuset_t, _cpuset); /**< Per thread "cpuset". */
 
 /**
- * Return the ID of the execution unit we are running on.
+ * Return the Application thread ID of the execution unit.
+ *
+ * Note: in most cases the lcore id returned here will also correspond
+ *   to the processor id of the CPU on which the thread is pinned, this
+ *   will not be the case if the user has explicitly changed the thread to
+ *   core affinities using --lcores EAL argument e.g. --lcores '(0-3)@10'
+ *   to run threads with lcore IDs 0, 1, 2 and 3 on physical core 10..
+ *
  * @return
  *  Logical core ID (in EAL thread) or LCORE_ID_ANY (in non-EAL thread)
  */
@@ -123,7 +101,12 @@ rte_lcore_count(void)
 
 /**
  * Return the index of the lcore starting from zero.
- * The order is physical or given by command line (-l option).
+ *
+ * When option -c or -l is given, the index corresponds
+ * to the order in the list.
+ * For example:
+ * -c 0x30, lcore 4 has index 0, and 5 has index 1.
+ * -l 22,18 lcore 22 has index 0, and 18 has index 1.
  *
  * @param lcore_id
  *   The targeted lcore, or -1 for the current one.
@@ -136,7 +119,7 @@ rte_lcore_index(int lcore_id)
 	if (lcore_id >= RTE_MAX_LCORE)
 		return -1;
 	if (lcore_id < 0)
-		lcore_id = rte_lcore_id();
+		lcore_id = (int)rte_lcore_id();
 	return lcore_config[lcore_id].core_index;
 }
 
@@ -147,6 +130,36 @@ rte_lcore_index(int lcore_id)
  *   the ID of current lcoreid's physical socket
  */
 unsigned rte_socket_id(void);
+
+/**
+ * Return number of physical sockets detected on the system.
+ *
+ * Note that number of nodes may not be correspondent to their physical id's:
+ * for example, a system may report two socket id's, but the actual socket id's
+ * may be 0 and 8.
+ *
+ * @return
+ *   the number of physical sockets as recognized by EAL
+ */
+unsigned int __rte_experimental
+rte_socket_count(void);
+
+/**
+ * Return socket id with a particular index.
+ *
+ * This will return socket id at a particular position in list of all detected
+ * physical socket id's. For example, on a machine with sockets [0, 8], passing
+ * 1 as a parameter will return 8.
+ *
+ * @param idx
+ *   index of physical socket id to return
+ *
+ * @return
+ *   - physical socket id as recognized by EAL
+ *   - -1 on error, with errno set to EINVAL
+ */
+int __rte_experimental
+rte_socket_id_by_idx(unsigned int idx);
 
 /**
  * Get the ID of the physical socket of the specified lcore
@@ -264,6 +277,32 @@ void rte_thread_get_affinity(rte_cpuset_t *cpusetp);
 int rte_thread_setname(pthread_t id, const char *name);
 
 /**
+ * Create a control thread.
+ *
+ * Wrapper to pthread_create(), pthread_setname_np() and
+ * pthread_setaffinity_np(). The dataplane and service lcores are
+ * excluded from the affinity of the new thread.
+ *
+ * @param thread
+ *   Filled with the thread id of the new created thread.
+ * @param name
+ *   The name of the control thread (max 16 characters including '\0').
+ * @param attr
+ *   Attributes for the new thread.
+ * @param start_routine
+ *   Function to be executed by the new thread.
+ * @param arg
+ *   Argument passed to start_routine.
+ * @return
+ *   On success, returns 0; on error, it returns a negative value
+ *   corresponding to the error number.
+ */
+__rte_experimental int
+rte_ctrl_thread_create(pthread_t *thread, const char *name,
+		const pthread_attr_t *attr,
+		void *(*start_routine)(void *), void *arg);
+
+/**
  * Test if the core supplied has a specific role
  *
  * @param lcore_id
@@ -272,7 +311,7 @@ int rte_thread_setname(pthread_t id, const char *name);
  * @param role
  *   The role to be checked against.
  * @return
- *   On success, return 0; otherwise return a negative value.
+ *   Boolean value: positive if test is true; otherwise returns 0.
  */
 int
 rte_lcore_has_role(unsigned int lcore_id, enum rte_lcore_role_t role);
