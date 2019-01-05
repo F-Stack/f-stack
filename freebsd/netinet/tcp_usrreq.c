@@ -1321,14 +1321,21 @@ tcp_connect(struct tcpcb *tp, struct sockaddr *nam, struct thread *td)
             error = EADDRINUSE;
             goto out;
         }
+		// inp->inp_lport != lport means in_pcbconnect_setup selected new port to inp->inp_lport.
+		// inp will inhash.
+        if (in_pcbinshash(inp) != 0) {
+			inp->inp_laddr.s_addr = INADDR_ANY;
+			inp->inp_lport = 0;
+			return (EAGAIN);
+		}
     }
-
-    if (in_pcbinshash(inp) != 0) {
-        inp->inp_laddr.s_addr = INADDR_ANY;
-        inp->inp_lport = 0;
-        return (EAGAIN);
+    else
+    {
+    	// app call bind() and connect(), lport is set when bind, and the inp is inhashed in bind() function.
+    	// in_pcbconnect_setup() update inp->inp_faddr/inp->inp_fport, so inp should be rehashed.
+    	in_pcbrehash(inp);
     }
-
+    
     if (anonport) {
         inp->inp_flags |= INP_ANONPORT;
     }
