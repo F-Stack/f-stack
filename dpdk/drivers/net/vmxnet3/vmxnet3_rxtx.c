@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include <sys/queue.h>
@@ -61,7 +32,7 @@
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_prefetch.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
@@ -486,6 +457,14 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		    rte_pktmbuf_pkt_len(txm) <= txq->txdata_desc_size) {
 			struct Vmxnet3_TxDataDesc *tdd;
 
+			/* Skip empty packets */
+			if (unlikely(rte_pktmbuf_pkt_len(txm) == 0)) {
+				txq->stats.drop_total++;
+				rte_pktmbuf_free(txm);
+				nb_tx++;
+				continue;
+			}
+
 			tdd = (struct Vmxnet3_TxDataDesc *)
 				((uint8 *)txq->data_ring.base +
 				 txq->cmd_ring.next2fill *
@@ -506,6 +485,11 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * maximum size of mbuf segment size.
 			 */
 			gdesc = txq->cmd_ring.base + txq->cmd_ring.next2fill;
+
+			/* Skip empty segments */
+			if (unlikely(m_seg->data_len == 0))
+				continue;
+
 			if (copy_size) {
 				uint64 offset =
 					(uint64)txq->cmd_ring.next2fill *
@@ -675,35 +659,154 @@ vmxnet3_post_rx_bufs(vmxnet3_rx_queue_t *rxq, uint8_t ring_id)
 		return i;
 }
 
-
-/* Receive side checksum and other offloads */
-static void
-vmxnet3_rx_offload(const Vmxnet3_RxCompDesc *rcd, struct rte_mbuf *rxm)
+/* MSS not provided by vmxnet3, guess one with available information */
+static uint16_t
+vmxnet3_guess_mss(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
+		struct rte_mbuf *rxm)
 {
-	/* Check for RSS */
-	if (rcd->rssType != VMXNET3_RCD_RSS_TYPE_NONE) {
-		rxm->ol_flags |= PKT_RX_RSS_HASH;
-		rxm->hash.rss = rcd->rssHash;
-	}
+	uint32_t hlen, slen;
+	struct ipv4_hdr *ipv4_hdr;
+	struct ipv6_hdr *ipv6_hdr;
+	struct tcp_hdr *tcp_hdr;
+	char *ptr;
 
-	/* Check packet type, checksum errors, etc. Only support IPv4 for now. */
+	RTE_ASSERT(rcd->tcp);
+
+	ptr = rte_pktmbuf_mtod(rxm, char *);
+	slen = rte_pktmbuf_data_len(rxm);
+	hlen = sizeof(struct ether_hdr);
+
 	if (rcd->v4) {
-		struct ether_hdr *eth = rte_pktmbuf_mtod(rxm, struct ether_hdr *);
-		struct ipv4_hdr *ip = (struct ipv4_hdr *)(eth + 1);
+		if (unlikely(slen < hlen + sizeof(struct ipv4_hdr)))
+			return hw->mtu - sizeof(struct ipv4_hdr)
+					- sizeof(struct tcp_hdr);
 
-		if (((ip->version_ihl & 0xf) << 2) > (int)sizeof(struct ipv4_hdr))
-			rxm->packet_type = RTE_PTYPE_L3_IPV4_EXT;
-		else
-			rxm->packet_type = RTE_PTYPE_L3_IPV4;
+		ipv4_hdr = (struct ipv4_hdr *)(ptr + hlen);
+		hlen += (ipv4_hdr->version_ihl & IPV4_HDR_IHL_MASK) *
+				IPV4_IHL_MULTIPLIER;
+	} else if (rcd->v6) {
+		if (unlikely(slen < hlen + sizeof(struct ipv6_hdr)))
+			return hw->mtu - sizeof(struct ipv6_hdr) -
+					sizeof(struct tcp_hdr);
 
-		if (!rcd->cnc) {
-			if (!rcd->ipc)
-				rxm->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		ipv6_hdr = (struct ipv6_hdr *)(ptr + hlen);
+		hlen += sizeof(struct ipv6_hdr);
+		if (unlikely(ipv6_hdr->proto != IPPROTO_TCP)) {
+			int frag;
 
-			if ((rcd->tcp || rcd->udp) && !rcd->tuc)
-				rxm->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+			rte_net_skip_ip6_ext(ipv6_hdr->proto, rxm,
+					&hlen, &frag);
 		}
 	}
+
+	if (unlikely(slen < hlen + sizeof(struct tcp_hdr)))
+		return hw->mtu - hlen - sizeof(struct tcp_hdr) +
+				sizeof(struct ether_hdr);
+
+	tcp_hdr = (struct tcp_hdr *)(ptr + hlen);
+	hlen += (tcp_hdr->data_off & 0xf0) >> 2;
+
+	if (rxm->udata64 > 1)
+		return (rte_pktmbuf_pkt_len(rxm) - hlen +
+				rxm->udata64 - 1) / rxm->udata64;
+	else
+		return hw->mtu - hlen + sizeof(struct ether_hdr);
+}
+
+/* Receive side checksum and other offloads */
+static inline void
+vmxnet3_rx_offload(struct vmxnet3_hw *hw, const Vmxnet3_RxCompDesc *rcd,
+		struct rte_mbuf *rxm, const uint8_t sop)
+{
+	uint64_t ol_flags = rxm->ol_flags;
+	uint32_t packet_type = rxm->packet_type;
+
+	/* Offloads set in sop */
+	if (sop) {
+		/* Set packet type */
+		packet_type |= RTE_PTYPE_L2_ETHER;
+
+		/* Check large packet receive */
+		if (VMXNET3_VERSION_GE_2(hw) &&
+		    rcd->type == VMXNET3_CDTYPE_RXCOMP_LRO) {
+			const Vmxnet3_RxCompDescExt *rcde =
+					(const Vmxnet3_RxCompDescExt *)rcd;
+
+			rxm->tso_segsz = rcde->mss;
+			rxm->udata64 = rcde->segCnt;
+			ol_flags |= PKT_RX_LRO;
+		}
+	} else { /* Offloads set in eop */
+		/* Check for RSS */
+		if (rcd->rssType != VMXNET3_RCD_RSS_TYPE_NONE) {
+			ol_flags |= PKT_RX_RSS_HASH;
+			rxm->hash.rss = rcd->rssHash;
+		}
+
+		/* Check for hardware stripped VLAN tag */
+		if (rcd->ts) {
+			ol_flags |= (PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
+			rxm->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
+		}
+
+		/* Check packet type, checksum errors, etc. */
+		if (rcd->cnc) {
+			ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
+		} else {
+			if (rcd->v4) {
+				packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
+
+				if (rcd->ipc)
+					ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+				else
+					ol_flags |= PKT_RX_IP_CKSUM_BAD;
+
+				if (rcd->tuc) {
+					ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+					if (rcd->tcp)
+						packet_type |= RTE_PTYPE_L4_TCP;
+					else
+						packet_type |= RTE_PTYPE_L4_UDP;
+				} else {
+					if (rcd->tcp) {
+						packet_type |= RTE_PTYPE_L4_TCP;
+						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+					} else if (rcd->udp) {
+						packet_type |= RTE_PTYPE_L4_UDP;
+						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+					}
+				}
+			} else if (rcd->v6) {
+				packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
+
+				if (rcd->tuc) {
+					ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+					if (rcd->tcp)
+						packet_type |= RTE_PTYPE_L4_TCP;
+					else
+						packet_type |= RTE_PTYPE_L4_UDP;
+				} else {
+					if (rcd->tcp) {
+						packet_type |= RTE_PTYPE_L4_TCP;
+						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+					} else if (rcd->udp) {
+						packet_type |= RTE_PTYPE_L4_UDP;
+						ol_flags |= PKT_RX_L4_CKSUM_BAD;
+					}
+				}
+			} else {
+				packet_type |= RTE_PTYPE_UNKNOWN;
+			}
+
+			/* Old variants of vmxnet3 do not provide MSS */
+			if ((ol_flags & PKT_RX_LRO) && rxm->tso_segsz == 0)
+				rxm->tso_segsz = vmxnet3_guess_mss(hw,
+						rcd, rxm);
+		}
+	}
+
+	rxm->ol_flags = ol_flags;
+	rxm->packet_type = packet_type;
 }
 
 /*
@@ -803,6 +906,7 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxm->data_off = RTE_PKTMBUF_HEADROOM;
 		rxm->ol_flags = 0;
 		rxm->vlan_tci = 0;
+		rxm->packet_type = 0;
 
 		/*
 		 * If this is the first buffer of the received packet,
@@ -834,29 +938,28 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			}
 
 			rxq->start_seg = rxm;
-			vmxnet3_rx_offload(rcd, rxm);
+			rxq->last_seg = rxm;
+			vmxnet3_rx_offload(hw, rcd, rxm, 1);
 		} else {
 			struct rte_mbuf *start = rxq->start_seg;
 
 			RTE_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_BODY);
 
-			start->pkt_len += rxm->data_len;
-			start->nb_segs++;
+			if (rxm->data_len) {
+				start->pkt_len += rxm->data_len;
+				start->nb_segs++;
 
-			rxq->last_seg->next = rxm;
+				rxq->last_seg->next = rxm;
+				rxq->last_seg = rxm;
+			} else {
+				rte_pktmbuf_free_seg(rxm);
+			}
 		}
-		rxq->last_seg = rxm;
 
 		if (rcd->eop) {
 			struct rte_mbuf *start = rxq->start_seg;
 
-			/* Check for hardware stripped VLAN tag */
-			if (rcd->ts) {
-				start->ol_flags |= (PKT_RX_VLAN |
-						PKT_RX_VLAN_STRIPPED);
-				start->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
-			}
-
+			vmxnet3_rx_offload(hw, rcd, start, 0);
 			rx_pkts[nb_rx++] = start;
 			rxq->start_seg = NULL;
 		}
@@ -910,7 +1013,7 @@ vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			   uint16_t queue_idx,
 			   uint16_t nb_desc,
 			   unsigned int socket_id,
-			   const struct rte_eth_txconf *tx_conf)
+			   const struct rte_eth_txconf *tx_conf __rte_unused)
 {
 	struct vmxnet3_hw *hw = dev->data->dev_private;
 	const struct rte_memzone *mz;
@@ -922,12 +1025,6 @@ vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev,
 
 	PMD_INIT_FUNC_TRACE();
 
-	if ((tx_conf->txq_flags & ETH_TXQ_FLAGS_NOXSUMSCTP) !=
-	    ETH_TXQ_FLAGS_NOXSUMSCTP) {
-		PMD_INIT_LOG(ERR, "SCTP checksum offload not supported");
-		return -EINVAL;
-	}
-
 	txq = rte_zmalloc("ethdev_tx_queue", sizeof(struct vmxnet3_tx_queue),
 			  RTE_CACHE_LINE_SIZE);
 	if (txq == NULL) {
@@ -937,7 +1034,7 @@ vmxnet3_dev_tx_queue_setup(struct rte_eth_dev *dev,
 
 	txq->queue_id = queue_idx;
 	txq->port_id = dev->data->port_id;
-	txq->shared = &hw->tqd_start[queue_idx];
+	txq->shared = NULL; /* set in vmxnet3_setup_driver_shared() */
 	txq->hw = hw;
 	txq->qid = queue_idx;
 	txq->stopped = TRUE;
@@ -1040,7 +1137,7 @@ vmxnet3_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->mp = mp;
 	rxq->queue_id = queue_idx;
 	rxq->port_id = dev->data->port_id;
-	rxq->shared = &hw->rqd_start[queue_idx];
+	rxq->shared = NULL; /* set in vmxnet3_setup_driver_shared() */
 	rxq->hw = hw;
 	rxq->qid1 = queue_idx;
 	rxq->qid2 = queue_idx + hw->num_rx_queues;

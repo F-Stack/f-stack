@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_POWER_H
@@ -91,7 +62,7 @@ enum power_management_env rte_power_get_env(void);
  *  - 0 on success.
  *  - Negative on error.
  */
-int rte_power_init(unsigned lcore_id);
+int rte_power_init(unsigned int lcore_id);
 
 /**
  * Exit power management on a specific lcore. This will call the environment
@@ -104,7 +75,7 @@ int rte_power_init(unsigned lcore_id);
  *  - 0 on success.
  *  - Negative on error.
  */
-int rte_power_exit(unsigned lcore_id);
+int rte_power_exit(unsigned int lcore_id);
 
 /**
  * Get the available frequencies of a specific lcore.
@@ -121,7 +92,7 @@ int rte_power_exit(unsigned lcore_id);
  * @return
  *  The number of available frequencies.
  */
-typedef uint32_t (*rte_power_freqs_t)(unsigned lcore_id, uint32_t *freqs,
+typedef uint32_t (*rte_power_freqs_t)(unsigned int lcore_id, uint32_t *freqs,
 		uint32_t num);
 
 extern rte_power_freqs_t rte_power_freqs;
@@ -137,7 +108,7 @@ extern rte_power_freqs_t rte_power_freqs;
  * @return
  *  The current index of available frequencies.
  */
-typedef uint32_t (*rte_power_get_freq_t)(unsigned lcore_id);
+typedef uint32_t (*rte_power_get_freq_t)(unsigned int lcore_id);
 
 extern rte_power_get_freq_t rte_power_get_freq;
 
@@ -157,7 +128,7 @@ extern rte_power_get_freq_t rte_power_get_freq;
  *  - 0 on success without frequency changed.
  *  - Negative on error.
  */
-typedef int (*rte_power_set_freq_t)(unsigned lcore_id, uint32_t index);
+typedef int (*rte_power_set_freq_t)(unsigned int lcore_id, uint32_t index);
 
 extern rte_power_set_freq_t rte_power_set_freq;
 
@@ -173,7 +144,7 @@ extern rte_power_set_freq_t rte_power_set_freq;
  *  - 0 on success without frequency changed.
  *  - Negative on error.
  */
-typedef int (*rte_power_freq_change_t)(unsigned lcore_id);
+typedef int (*rte_power_freq_change_t)(unsigned int lcore_id);
 
 /**
  * Scale up the frequency of a specific lcore according to the available
@@ -276,6 +247,38 @@ extern rte_power_freq_change_t rte_power_freq_enable_turbo;
  */
 extern rte_power_freq_change_t rte_power_freq_disable_turbo;
 
+/**
+ * Power capabilities summary.
+ */
+struct rte_power_core_capabilities {
+	RTE_STD_C11
+	union {
+		uint64_t capabilities;
+		RTE_STD_C11
+		struct {
+			uint64_t turbo:1;	/**< Turbo can be enabled. */
+		};
+	};
+};
+
+/**
+ * Returns power capabilities for a specific lcore.
+ * Function pointer definition. Review each environments
+ * specific documentation for usage.
+ *
+ * @param lcore_id
+ *  lcore id.
+ * @param caps
+ *  pointer to rte_power_core_capabilities object.
+ *
+ * @return
+ *  - 0 on success.
+ *  - Negative on error.
+ */
+typedef int (*rte_power_get_capabilities_t)(unsigned int lcore_id,
+		struct rte_power_core_capabilities *caps);
+
+extern rte_power_get_capabilities_t rte_power_get_capabilities;
 
 #ifdef __cplusplus
 }

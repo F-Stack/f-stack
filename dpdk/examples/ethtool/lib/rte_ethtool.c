@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 #include <stdio.h>
 #include <string.h>
@@ -51,6 +22,8 @@ rte_ethtool_get_drvinfo(uint16_t port_id, struct ethtool_drvinfo *drvinfo)
 {
 	struct rte_eth_dev_info dev_info;
 	struct rte_dev_reg_info reg_info;
+	const struct rte_pci_device *pci_dev;
+	const struct rte_bus *bus = NULL;
 	int n;
 	int ret;
 
@@ -75,15 +48,17 @@ rte_ethtool_get_drvinfo(uint16_t port_id, struct ethtool_drvinfo *drvinfo)
 	snprintf(drvinfo->version, sizeof(drvinfo->version), "%s",
 		rte_version());
 	/* TODO: replace bus_info by rte_devargs.name */
-	if (dev_info.pci_dev)
+	if (dev_info.device)
+		bus = rte_bus_find_by_device(dev_info.device);
+	if (bus && !strcmp(bus->name, "pci")) {
+		pci_dev = RTE_DEV_TO_PCI(dev_info.device);
 		snprintf(drvinfo->bus_info, sizeof(drvinfo->bus_info),
 			"%04x:%02x:%02x.%x",
-			dev_info.pci_dev->addr.domain,
-			dev_info.pci_dev->addr.bus,
-			dev_info.pci_dev->addr.devid,
-			dev_info.pci_dev->addr.function);
-	else
+			pci_dev->addr.domain, pci_dev->addr.bus,
+			pci_dev->addr.devid, pci_dev->addr.function);
+	} else {
 		snprintf(drvinfo->bus_info, sizeof(drvinfo->bus_info), "N/A");
+	}
 
 	memset(&reg_info, 0, sizeof(reg_info));
 	rte_eth_dev_get_reg_info(port_id, &reg_info);
@@ -198,6 +173,36 @@ rte_ethtool_set_eeprom(uint16_t port_id, struct ethtool_eeprom *eeprom,
 		return status;
 
 	eeprom->magic = eeprom_info.magic;
+
+	return 0;
+}
+
+int
+rte_ethtool_get_module_info(uint16_t port_id, uint32_t *modinfo)
+{
+	struct rte_eth_dev_module_info *info;
+
+	info = (struct rte_eth_dev_module_info *)modinfo;
+	return rte_eth_dev_get_module_info(port_id, info);
+}
+
+int
+rte_ethtool_get_module_eeprom(uint16_t port_id, struct ethtool_eeprom *eeprom,
+	void *words)
+{
+	struct rte_dev_eeprom_info eeprom_info;
+	int status;
+
+	if (eeprom == NULL || words == NULL)
+		return -EINVAL;
+
+	eeprom_info.offset = eeprom->offset;
+	eeprom_info.length = eeprom->len;
+	eeprom_info.data = words;
+
+	status = rte_eth_dev_get_module_eeprom(port_id, &eeprom_info);
+	if (status)
+		return status;
 
 	return 0;
 }

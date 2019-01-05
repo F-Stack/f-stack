@@ -1,34 +1,8 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2015-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP.
+ *   Copyright 2016 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Freescale Semiconductor, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _DPAA2_ETHDEV_H
@@ -76,6 +50,39 @@
 /* Disable RX tail drop, default is enable */
 #define DPAA2_RX_TAILDROP_OFF	0x04
 
+#define DPAA2_RSS_OFFLOAD_ALL ( \
+	ETH_RSS_IP | \
+	ETH_RSS_UDP | \
+	ETH_RSS_TCP | \
+	ETH_RSS_SCTP)
+
+/* LX2 FRC Parsed values (Little Endian) */
+#define DPAA2_PKT_TYPE_ETHER		0x0060
+#define DPAA2_PKT_TYPE_IPV4		0x0000
+#define DPAA2_PKT_TYPE_IPV6		0x0020
+#define DPAA2_PKT_TYPE_IPV4_EXT \
+			(0x0001 | DPAA2_PKT_TYPE_IPV4)
+#define DPAA2_PKT_TYPE_IPV6_EXT \
+			(0x0001 | DPAA2_PKT_TYPE_IPV6)
+#define DPAA2_PKT_TYPE_IPV4_TCP \
+			(0x000e | DPAA2_PKT_TYPE_IPV4)
+#define DPAA2_PKT_TYPE_IPV6_TCP \
+			(0x000e | DPAA2_PKT_TYPE_IPV6)
+#define DPAA2_PKT_TYPE_IPV4_UDP \
+			(0x0010 | DPAA2_PKT_TYPE_IPV4)
+#define DPAA2_PKT_TYPE_IPV6_UDP \
+			(0x0010 | DPAA2_PKT_TYPE_IPV6)
+#define DPAA2_PKT_TYPE_IPV4_SCTP	\
+			(0x000f | DPAA2_PKT_TYPE_IPV4)
+#define DPAA2_PKT_TYPE_IPV6_SCTP	\
+			(0x000f | DPAA2_PKT_TYPE_IPV6)
+#define DPAA2_PKT_TYPE_IPV4_ICMP \
+			(0x0003 | DPAA2_PKT_TYPE_IPV4_EXT)
+#define DPAA2_PKT_TYPE_IPV6_ICMP \
+			(0x0003 | DPAA2_PKT_TYPE_IPV6_EXT)
+#define DPAA2_PKT_TYPE_VLAN_1		0x0160
+#define DPAA2_PKT_TYPE_VLAN_2		0x0260
+
 struct dpaa2_dev_priv {
 	void *hw;
 	int32_t hw_id;
@@ -117,6 +124,11 @@ void dpaa2_dev_process_parallel_event(struct qbman_swp *swp,
 				      const struct qbman_result *dq,
 				      struct dpaa2_queue *rxq,
 				      struct rte_event *ev);
+void dpaa2_dev_process_atomic_event(struct qbman_swp *swp,
+				    const struct qbman_fd *fd,
+				    const struct qbman_result *dq,
+				    struct dpaa2_queue *rxq,
+				    struct rte_event *ev);
 uint16_t dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts);
 uint16_t dummy_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts);
 #endif /* _DPAA2_ETHDEV_H */

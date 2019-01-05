@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 #include <stdint.h>
@@ -123,20 +94,27 @@ static int
 init_port(uint16_t port_num)
 {
 	/* for port configuration all features are off by default */
-	const struct rte_eth_conf port_conf = {
+	struct rte_eth_conf port_conf = {
 		.rxmode = {
-			.mq_mode = ETH_MQ_RX_RSS
-		}
+			.mq_mode = ETH_MQ_RX_RSS,
+		},
 	};
 	const uint16_t rx_rings = 1, tx_rings = num_nodes;
 	uint16_t rx_ring_size = RTE_MP_RX_DESC_DEFAULT;
 	uint16_t tx_ring_size = RTE_MP_TX_DESC_DEFAULT;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_txconf txconf;
 
 	uint16_t q;
 	int retval;
 
 	printf("Port %u init ... ", port_num);
 	fflush(stdout);
+
+	rte_eth_dev_info_get(port_num, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	/*
 	 * Standard DPDK port initialisation - config port, then set up
@@ -159,10 +137,12 @@ init_port(uint16_t port_num)
 			return retval;
 	}
 
+	txconf = dev_info.default_txconf;
+	txconf.offloads = port_conf.txmode.offloads;
 	for (q = 0; q < tx_rings; q++) {
 		retval = rte_eth_tx_queue_setup(port_num, q, tx_ring_size,
 				rte_eth_dev_socket_id(port_num),
-				NULL);
+				&txconf);
 		if (retval < 0)
 			return retval;
 	}
@@ -328,7 +308,7 @@ init(int argc, char *argv[])
 	argv += retval;
 
 	/* get total number of ports */
-	total_ports = rte_eth_dev_count();
+	total_ports = rte_eth_dev_count_avail();
 
 	/* set up array for port data */
 	mz = rte_memzone_reserve(MZ_SHARED_INFO, sizeof(*info),

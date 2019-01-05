@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "efx.h"
@@ -143,6 +121,28 @@ sfc_port_init_dev_link(struct sfc_adapter *sa)
 	return 0;
 }
 
+#if EFSYS_OPT_LOOPBACK
+
+static efx_link_mode_t
+sfc_port_phy_caps_to_max_link_speed(uint32_t phy_caps)
+{
+	if (phy_caps & (1u << EFX_PHY_CAP_100000FDX))
+		return EFX_LINK_100000FDX;
+	if (phy_caps & (1u << EFX_PHY_CAP_50000FDX))
+		return EFX_LINK_50000FDX;
+	if (phy_caps & (1u << EFX_PHY_CAP_40000FDX))
+		return EFX_LINK_40000FDX;
+	if (phy_caps & (1u << EFX_PHY_CAP_25000FDX))
+		return EFX_LINK_25000FDX;
+	if (phy_caps & (1u << EFX_PHY_CAP_10000FDX))
+		return EFX_LINK_10000FDX;
+	if (phy_caps & (1u << EFX_PHY_CAP_1000FDX))
+		return EFX_LINK_1000FDX;
+	return EFX_LINK_UNKNOWN;
+}
+
+#endif
+
 int
 sfc_port_start(struct sfc_adapter *sa)
 {
@@ -165,6 +165,21 @@ sfc_port_start(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_port_init;
 
+#if EFSYS_OPT_LOOPBACK
+	if (sa->eth_dev->data->dev_conf.lpbk_mode != 0) {
+		efx_link_mode_t link_mode;
+
+		link_mode =
+			sfc_port_phy_caps_to_max_link_speed(port->phy_adv_cap);
+		sfc_log_init(sa, "set loopback link_mode=%u type=%u", link_mode,
+			     sa->eth_dev->data->dev_conf.lpbk_mode);
+		rc = efx_port_loopback_set(sa->nic, link_mode,
+			sa->eth_dev->data->dev_conf.lpbk_mode);
+		if (rc != 0)
+			goto fail_loopback_set;
+	}
+#endif
+
 	sfc_log_init(sa, "set flow control to %#x autoneg=%u",
 		     port->flow_ctrl, port->flow_ctrl_autoneg);
 	rc = efx_mac_fcntl_set(sa->nic, port->flow_ctrl,
@@ -176,6 +191,16 @@ sfc_port_start(struct sfc_adapter *sa)
 	efx_phy_adv_cap_get(sa->nic, EFX_PHY_CAP_CURRENT, &phy_adv_cap);
 	SFC_ASSERT((port->phy_adv_cap & phy_pause_caps) == 0);
 	phy_adv_cap = port->phy_adv_cap | (phy_adv_cap & phy_pause_caps);
+
+	/*
+	 * No controls for FEC yet. Use default FEC mode.
+	 * I.e. advertise everything supported (*_FEC=1), but do not request
+	 * anything explicitly (*_FEC_REQUESTED=0).
+	 */
+	phy_adv_cap |= port->phy_adv_cap_mask &
+		(1u << EFX_PHY_CAP_BASER_FEC |
+		 1u << EFX_PHY_CAP_RS_FEC |
+		 1u << EFX_PHY_CAP_25G_BASER_FEC);
 
 	sfc_log_init(sa, "set phy adv caps to %#x", phy_adv_cap);
 	rc = efx_phy_adv_cap_set(sa->nic, phy_adv_cap);
@@ -290,6 +315,9 @@ fail_mac_addr_set:
 fail_mac_pdu_set:
 fail_phy_adv_cap_set:
 fail_mac_fcntl_set:
+#if EFSYS_OPT_LOOPBACK
+fail_loopback_set:
+#endif
 	efx_port_fini(sa->nic);
 
 fail_port_init:
@@ -321,11 +349,12 @@ sfc_port_configure(struct sfc_adapter *sa)
 {
 	const struct rte_eth_dev_data *dev_data = sa->eth_dev->data;
 	struct sfc_port *port = &sa->port;
+	const struct rte_eth_rxmode *rxmode = &dev_data->dev_conf.rxmode;
 
 	sfc_log_init(sa, "entry");
 
-	if (dev_data->dev_conf.rxmode.jumbo_frame)
-		port->pdu = dev_data->dev_conf.rxmode.max_rx_pkt_len;
+	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
+		port->pdu = rxmode->max_rx_pkt_len;
 	else
 		port->pdu = EFX_MAC_PDU(dev_data->mtu);
 
@@ -344,6 +373,8 @@ sfc_port_attach(struct sfc_adapter *sa)
 	struct sfc_port *port = &sa->port;
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
 	const struct ether_addr *from;
+	uint32_t mac_nstats;
+	size_t mac_stats_size;
 	long kvarg_stats_update_period_ms;
 	int rc;
 
@@ -379,7 +410,9 @@ sfc_port_attach(struct sfc_adapter *sa)
 	if (port->mac_stats_buf == NULL)
 		goto fail_mac_stats_buf_alloc;
 
-	rc = sfc_dma_alloc(sa, "mac_stats", 0, EFX_MAC_STATS_SIZE,
+	mac_nstats = efx_nic_cfg_get(sa->nic)->enc_mac_stats_nstats;
+	mac_stats_size = RTE_ALIGN(mac_nstats * sizeof(uint64_t), EFX_BUF_SIZE);
+	rc = sfc_dma_alloc(sa, "mac_stats", 0, mac_stats_size,
 			   sa->socket_id, &port->mac_stats_dma_mem);
 	if (rc != 0)
 		goto fail_mac_stats_dma_alloc;
@@ -491,8 +524,20 @@ sfc_port_link_mode_to_info(efx_link_mode_t link_mode,
 		link_info->link_speed  = ETH_SPEED_NUM_10G;
 		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
 		break;
+	case EFX_LINK_25000FDX:
+		link_info->link_speed  = ETH_SPEED_NUM_25G;
+		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		break;
 	case EFX_LINK_40000FDX:
 		link_info->link_speed  = ETH_SPEED_NUM_40G;
+		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		break;
+	case EFX_LINK_50000FDX:
+		link_info->link_speed  = ETH_SPEED_NUM_50G;
+		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
+		break;
+	case EFX_LINK_100000FDX:
+		link_info->link_speed  = ETH_SPEED_NUM_100G;
 		link_info->link_duplex = ETH_LINK_FULL_DUPLEX;
 		break;
 	default:

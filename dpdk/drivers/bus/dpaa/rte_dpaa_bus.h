@@ -1,39 +1,14 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP.
+ *   Copyright 2017 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #ifndef __RTE_DPAA_BUS_H__
 #define __RTE_DPAA_BUS_H__
 
 #include <rte_bus.h>
 #include <rte_mempool.h>
+#include <dpaax_iova_table.h>
 
 #include <fsl_usd.h>
 #include <fsl_qman.h>
@@ -41,10 +16,23 @@
 #include <of.h>
 #include <netcfg.h>
 
-#define FSL_DPAA_BUS_NAME	"FSL_DPAA_BUS"
+#define DPAA_MEMPOOL_OPS_NAME	"dpaa"
 
 #define DEV_TO_DPAA_DEVICE(ptr)	\
 		container_of(ptr, struct rte_dpaa_device, device)
+
+/* DPAA SoC identifier; If this is not available, it can be concluded
+ * that board is non-DPAA. Single slot is currently supported.
+ */
+#define DPAA_SOC_ID_FILE	"/sys/devices/soc0/soc_id"
+
+#define SVR_LS1043A_FAMILY	0x87920000
+#define SVR_LS1046A_FAMILY	0x87070000
+#define SVR_MASK		0xffff0000
+
+extern unsigned int dpaa_svr_family;
+
+extern RTE_DEFINE_PER_LCORE(bool, dpaa_io);
 
 struct rte_dpaa_device;
 struct rte_dpaa_driver;
@@ -106,20 +94,40 @@ struct dpaa_portal {
 	uint64_t tid;/**< Parent Thread id for this portal */
 };
 
-/* TODO - this is costly, need to write a fast coversion routine */
+/* Various structures representing contiguous memory maps */
+struct dpaa_memseg {
+	TAILQ_ENTRY(dpaa_memseg) next;
+	char *vaddr;
+	rte_iova_t iova;
+	size_t len;
+};
+
+TAILQ_HEAD(dpaa_memseg_list, dpaa_memseg);
+extern struct dpaa_memseg_list rte_dpaa_memsegs;
+
+/* Either iterate over the list of internal memseg references or fallback to
+ * EAL memseg based iova2virt.
+ */
 static inline void *rte_dpaa_mem_ptov(phys_addr_t paddr)
 {
-	const struct rte_memseg *memseg = rte_eal_get_physmem_layout();
-	int i;
+	struct dpaa_memseg *ms;
+	void *va;
 
-	for (i = 0; i < RTE_MAX_MEMSEG && memseg[i].addr != NULL; i++) {
-		if (paddr >= memseg[i].iova && paddr <
-			memseg[i].iova + memseg[i].len)
-			return (uint8_t *)(memseg[i].addr) +
-			       (paddr - memseg[i].iova);
+	va = dpaax_iova_table_get_va(paddr);
+	if (likely(va != NULL))
+		return va;
+
+	/* Check if the address is already part of the memseg list internally
+	 * maintained by the dpaa driver.
+	 */
+	TAILQ_FOREACH(ms, &rte_dpaa_memsegs, next) {
+		if (paddr >= ms->iova && paddr <
+			ms->iova + ms->len)
+			return RTE_PTR_ADD(ms->vaddr, (uintptr_t)(paddr - ms->iova));
 	}
 
-	return NULL;
+	/* If not, Fallback to full memseg list searching */
+	return rte_mem_iova2virt(paddr);
 }
 
 /**
@@ -151,6 +159,10 @@ void rte_dpaa_driver_unregister(struct rte_dpaa_driver *driver);
  */
 int rte_dpaa_portal_init(void *arg);
 
+int rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq);
+
+int rte_dpaa_portal_fq_close(struct qman_fq *fq);
+
 /**
  * Cleanup a DPAA Portal
  */
@@ -158,13 +170,26 @@ void dpaa_portal_finish(void *arg);
 
 /** Helper for DPAA device registration from driver (eth, crypto) instance */
 #define RTE_PMD_REGISTER_DPAA(nm, dpaa_drv) \
-RTE_INIT(dpaainitfn_ ##nm); \
-static void dpaainitfn_ ##nm(void) \
+RTE_INIT(dpaainitfn_ ##nm) \
 {\
 	(dpaa_drv).driver.name = RTE_STR(nm);\
 	rte_dpaa_driver_register(&dpaa_drv); \
 } \
 RTE_PMD_EXPORT_NAME(nm, __COUNTER__)
+
+/* Create storage for dqrr entries per lcore */
+#define DPAA_PORTAL_DEQUEUE_DEPTH	16
+struct dpaa_portal_dqrr {
+	void *mbuf[DPAA_PORTAL_DEQUEUE_DEPTH];
+	uint64_t dqrr_held;
+	uint8_t dqrr_size;
+};
+
+RTE_DECLARE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
+
+#define DPAA_PER_LCORE_DQRR_SIZE       RTE_PER_LCORE(held_bufs).dqrr_size
+#define DPAA_PER_LCORE_DQRR_HELD       RTE_PER_LCORE(held_bufs).dqrr_held
+#define DPAA_PER_LCORE_DQRR_MBUF(i)    RTE_PER_LCORE(held_bufs).mbuf[i]
 
 #ifdef __cplusplus
 }

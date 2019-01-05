@@ -1,35 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2013 Intel Corporation. All rights reserved.
- *   Copyright(c) 2014 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2013 Intel Corporation.
+ * Copyright(c) 2014 6WIND S.A.
  */
 
 #ifndef _RTE_KVARGS_H_
@@ -53,6 +24,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <rte_compat.h>
 
 /** Maximum number of key/value associations */
 #define RTE_KVARGS_MAX 32
@@ -101,13 +74,43 @@ struct rte_kvargs *rte_kvargs_parse(const char *args,
 		const char *const valid_keys[]);
 
 /**
+ * Allocate a rte_kvargs and store key/value associations from a string.
+ * This version will consider any byte from valid_ends as a possible
+ * terminating character, and will not parse beyond any of their occurrence.
+ *
+ * The function allocates and fills an rte_kvargs structure from a given
+ * string whose format is key1=value1,key2=value2,...
+ *
+ * The structure can be freed with rte_kvargs_free().
+ *
+ * @param args
+ *   The input string containing the key/value associations
+ *
+ * @param valid_keys
+ *   A list of valid keys (table of const char *, the last must be NULL).
+ *   This argument is ignored if NULL
+ *
+ * @param valid_ends
+ *   Acceptable terminating characters.
+ *   If NULL, the behavior is the same as ``rte_kvargs_parse``.
+ *
+ * @return
+ *   - A pointer to an allocated rte_kvargs structure on success
+ *   - NULL on error
+ */
+__rte_experimental
+struct rte_kvargs *rte_kvargs_parse_delim(const char *args,
+		const char *const valid_keys[],
+		const char *valid_ends);
+
+/**
  * Free a rte_kvargs structure
  *
  * Free a rte_kvargs structure previously allocated with
  * rte_kvargs_parse().
  *
  * @param kvlist
- *   The rte_kvargs structure
+ *   The rte_kvargs structure. No error if NULL.
  */
 void rte_kvargs_free(struct rte_kvargs *kvlist);
 
@@ -116,11 +119,10 @@ void rte_kvargs_free(struct rte_kvargs *kvlist);
  *
  * For each key/value association that matches the given key, calls the
  * handler function with the for a given arg_name passing the value on the
- * dictionary for that key and a given extra argument. If *kvlist* is NULL
- * function does nothing.
+ * dictionary for that key and a given extra argument.
  *
  * @param kvlist
- *   The rte_kvargs structure
+ *   The rte_kvargs structure. No error if NULL.
  * @param key_match
  *   The key on which the handler should be called, or NULL to process handler
  *   on all associations
@@ -149,6 +151,32 @@ int rte_kvargs_process(const struct rte_kvargs *kvlist,
  */
 unsigned rte_kvargs_count(const struct rte_kvargs *kvlist,
 	const char *key_match);
+
+/**
+ * Generic kvarg handler for string comparison.
+ *
+ * This function can be used for a generic string comparison processing
+ * on a list of kvargs.
+ *
+ * @param key
+ *   kvarg pair key.
+ *
+ * @param value
+ *   kvarg pair value.
+ *
+ * @param opaque
+ *   Opaque pointer to a string.
+ *
+ * @return
+ *   0 if the strings match.
+ *   !0 otherwise or on error.
+ *
+ *   Unless strcmp, comparison ordering is not kept.
+ *   In order for rte_kvargs_process to stop processing on match error,
+ *   a negative value is returned even if strcmp had returned a positive one.
+ */
+__rte_experimental
+int rte_kvargs_strcmp(const char *key, const char *value, void *opaque);
 
 #ifdef __cplusplus
 }

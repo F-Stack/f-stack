@@ -1,32 +1,6 @@
-#   BSD LICENSE
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright 2017 NXP
 #
-#   Copyright 2017 NXP.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of NXP nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 include $(RTE_SDK)/mk/rte.vars.mk
 RTE_SDK_DPAA=$(RTE_SDK)/drivers/net/dpaa
@@ -43,13 +17,18 @@ CFLAGS += -I$(RTE_SDK_DPAA)/
 CFLAGS += -I$(RTE_SDK_DPAA)/include
 CFLAGS += -I$(RTE_SDK)/drivers/bus/dpaa
 CFLAGS += -I$(RTE_SDK)/drivers/bus/dpaa/include/
+CFLAGS += -I$(RTE_SDK)/drivers/bus/dpaa/base/qbman
 CFLAGS += -I$(RTE_SDK)/drivers/mempool/dpaa
+CFLAGS += -I$(RTE_SDK)/drivers/event/dpaa
 CFLAGS += -I$(RTE_SDK)/lib/librte_eal/common/include
 CFLAGS += -I$(RTE_SDK)/lib/librte_eal/linuxapp/eal/include
 
 EXPORT_MAP := rte_pmd_dpaa_version.map
 
 LIBABIVER := 1
+
+# depends on dpaa bus which uses experimental API
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 # Interfaces with DPDK
 SRCS-$(CONFIG_RTE_LIBRTE_DPAA_PMD) += dpaa_ethdev.c
@@ -59,5 +38,9 @@ LDLIBS += -lrte_bus_dpaa
 LDLIBS += -lrte_mempool_dpaa
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
+LDLIBS += -lrte_common_dpaax
+
+# install this header file
+SYMLINK-$(CONFIG_RTE_LIBRTE_DPAA_PMD)-include := rte_pmd_dpaa.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

@@ -1,32 +1,5 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright 2015 - 2016 CESNET
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of CESNET nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 SZEDATA2 poll mode driver library
 =================================
@@ -70,14 +43,25 @@ separately:
 
 *  **Kernel modules**
 
+   * combo6core
    * combov3
-   * szedata2_cv3
+   * szedata2
+   * szedata2_cv3 or szedata2_cv3_fdt
 
    Kernel modules manage initialization of hardware, allocation and
    sharing of resources for user space applications.
 
 Information about getting the dependencies can be found `here
 <http://www.netcope.com/en/company/community-support/dpdk-libsze2>`_.
+
+Versions of the packages
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The minimum version of the provided packages:
+
+* for DPDK from 18.05: **4.4.1**
+
+* for DPDK up to 18.02 (including): **3.0.5**
 
 Configuration
 -------------
@@ -89,37 +73,6 @@ These configuration options can be modified before compilation in the
 
    Value **y** enables compilation of szedata2 PMD.
 
-*  ``CONFIG_RTE_LIBRTE_PMD_SZEDATA2_AS`` default value: **0**
-
-   This option defines type of firmware address space and must be set
-   according to the used card and mode.
-   Currently supported values are:
-
-   * **0** - for cards (modes):
-
-      * NFB-100G1 (100G1)
-
-   * **1** - for cards (modes):
-
-      * NFB-100G2Q (100G1)
-
-   * **2** - for cards (modes):
-
-      * NFB-40G2 (40G2)
-      * NFB-100G2C (100G2)
-      * NFB-100G2Q (40G2)
-
-   * **3** - for cards (modes):
-
-      * NFB-40G2 (10G8)
-      * NFB-100G2Q (10G8)
-
-   * **4** - for cards (modes):
-
-      * NFB-100G1 (10G10)
-
-   * **5** - for experimental firmwares and future use
-
 Using the SZEDATA2 PMD
 ----------------------
 
@@ -128,6 +81,45 @@ SZEDATA2 device is automatically recognized during EAL initialization.
 No special command line options are needed.
 
 Kernel modules have to be loaded before running the DPDK application.
+
+NFB card architecture
+---------------------
+
+The NFB cards are multi-port multi-queue cards, where (generally) data from any
+Ethernet port may be sent to any queue.
+They were historically represented in DPDK as a single port.
+
+However, the new NFB-200G2QL card employs an addon cable which allows to connect
+it to two physical PCI-E slots at the same time (see the diagram below).
+This is done to allow 200 Gbps of traffic to be transferred through the PCI-E
+bus (note that a single PCI-E 3.0 x16 slot provides only 125 Gbps theoretical
+throughput).
+
+Since each slot may be connected to a different CPU and therefore to a different
+NUMA node, the card is represented as two ports in DPDK (each with half of the
+queues), which allows DPDK to work with data from the individual queues on the
+right NUMA node.
+
+.. figure:: img/szedata2_nfb200g_architecture.*
+    :align: center
+
+    NFB-200G2QL high-level diagram
+
+Limitations
+-----------
+
+The SZEDATA2 PMD does not support operations related to Ethernet ports
+(link_up, link_down, set_mac_address, etc.).
+
+NFB cards employ multiple Ethernet ports.
+Until now, Ethernet port-related operations were performed on all of them
+(since the whole card was represented as a single port).
+With NFB-200G2QL card, this is no longer viable (see above).
+
+Since there is no fixed mapping between the queues and Ethernet ports, and since
+a single card can be represented as two ports in DPDK, there is no way of
+telling which (if any) physical ports should be associated with individual
+ports in DPDK.
 
 Example of usage
 ----------------

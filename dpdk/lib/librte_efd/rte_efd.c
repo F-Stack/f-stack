@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 #include <stdio.h>
 #include <string.h>
@@ -587,7 +558,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	}
 
 	/* Create a new EFD table management structure */
-	table = (struct rte_efd_table *) rte_zmalloc_socket(NULL,
+	table = rte_zmalloc_socket(NULL,
 			sizeof(struct rte_efd_table),
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
@@ -609,7 +580,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	table->key_len = key_len;
 
 	/* key_array */
-	key_array = (uint8_t *) rte_zmalloc_socket(NULL,
+	key_array = rte_zmalloc_socket(NULL,
 			table->max_num_rules * table->key_len,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
@@ -645,7 +616,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			 * as a continuous block
 			 */
 			table->chunks[socket_id] =
-				(struct efd_online_chunk *) rte_zmalloc_socket(
+				rte_zmalloc_socket(
 				NULL,
 				online_table_size,
 				RTE_CACHE_LINE_SIZE,
@@ -695,7 +666,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	 */
 	offline_table_size = num_chunks * sizeof(struct efd_offline_chunk_rules);
 	table->offline_chunks =
-			(struct efd_offline_chunk_rules *) rte_zmalloc_socket(NULL,
+			rte_zmalloc_socket(NULL,
 			offline_table_size,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
@@ -721,7 +692,8 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			offline_cpu_socket, 0);
 	if (r == NULL) {
 		RTE_LOG(ERR, EFD, "memory allocation failed\n");
-		goto error_unlock_exit;
+		rte_efd_free(table);
+		return NULL;
 	}
 
 	/* Populate free slots ring. Entry zero is reserved for key misses. */

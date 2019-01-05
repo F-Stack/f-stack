@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_IP_FRAG_H_
@@ -73,9 +44,17 @@ struct ip_frag {
 
 /** @internal <src addr, dst_addr, id> to uniquely identify fragmented datagram. */
 struct ip_frag_key {
-	uint64_t src_dst[4];      /**< src address, first 8 bytes used for IPv4 */
-	uint32_t id;           /**< dst address */
-	uint32_t key_len;      /**< src/dst key length */
+	uint64_t src_dst[4];
+	/**< src and dst address, only first 8 bytes used for IPv4 */
+	RTE_STD_C11
+	union {
+		uint64_t id_key_len; /**< combined for easy fetch */
+		__extension__
+		struct {
+			uint32_t id;       /**< packet id */
+			uint32_t key_len;  /**< src/dst key length */
+		};
+	};
 };
 
 /**
@@ -94,10 +73,13 @@ struct ip_frag_pkt {
 
 #define IP_FRAG_DEATH_ROW_LEN 32 /**< death row size (in packets) */
 
+/* death row size in mbufs */
+#define IP_FRAG_DEATH_ROW_MBUF_LEN (IP_FRAG_DEATH_ROW_LEN * (IP_MAX_FRAG_NUM + 1))
+
 /** mbuf death row (packets to be freed) */
 struct rte_ip_frag_death_row {
 	uint32_t cnt;          /**< number of mbufs currently on death row */
-	struct rte_mbuf *row[IP_FRAG_DEATH_ROW_LEN * (IP_MAX_FRAG_NUM + 1)];
+	struct rte_mbuf *row[IP_FRAG_DEATH_ROW_MBUF_LEN];
 	/**< mbufs to be freed */
 };
 
@@ -353,6 +335,20 @@ void rte_ip_frag_free_death_row(struct rte_ip_frag_death_row *dr,
  */
 void
 rte_ip_frag_table_statistics_dump(FILE * f, const struct rte_ip_frag_tbl *tbl);
+
+/**
+ * Delete expired fragments
+ *
+ * @param tbl
+ *   Table to delete expired fragments from
+ * @param dr
+ *   Death row to free buffers to
+ * @param tms
+ *   Current timestamp
+ */
+void __rte_experimental
+rte_frag_table_del_expired_entries(struct rte_ip_frag_tbl *tbl,
+	struct rte_ip_frag_death_row *dr, uint64_t tms);
 
 #ifdef __cplusplus
 }

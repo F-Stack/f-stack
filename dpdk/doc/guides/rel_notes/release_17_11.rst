@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2017 The DPDK contributors
+
 DPDK Release 17.11
 ==================
 
@@ -56,7 +59,7 @@ New Features
 * **Added a new driver for Marvell Armada 7k/8k devices.**
 
   Added the new ``mrvl`` net driver for Marvell Armada 7k/8k devices. See the
-  :doc:`../nics/mrvl` NIC guide for more details on this new driver.
+  :doc:`../nics/mvpp2` NIC guide for more details on this new driver.
 
 * **Updated mlx4 driver.**
 
@@ -184,7 +187,7 @@ New Features
 
   A new crypto PMD has been added, which provides several ciphering and hashing
   algorithms. All cryptography operations use the MUSDK library crypto API.
-  See the :doc:`../cryptodevs/mrvl` document for more details.
+  See the :doc:`../cryptodevs/mvsam` document for more details.
 
 * **Add new benchmarking mode to dpdk-test-crypto-perf application.**
 
@@ -209,6 +212,19 @@ New Features
 * **Updated the IXGBE ethernet driver to support rte_security.**
 
   Updated ixgbe ethernet PMD to support ``rte_security`` inline IPSec offload.
+
+* **Updated i40e driver to support GTP-C/GTP-U.**
+
+  Updated i40e PMD to support GTP-C/GTP-U with GTP-C/GTP-U supporting
+  profiles which can be programmed by dynamic device personalization (DDP)
+  process.
+
+* **Added the i40e ethernet driver to support queue region feature.**
+
+  This feature enable queue regions configuration for RSS in PF,
+  so that different traffic classes or different packet
+  classification types can be separated into different queues in
+  different queue regions.
 
 * **Updated ipsec-secgw application to support rte_security.**
 
@@ -820,273 +836,3 @@ Tested Platforms
        * Host interface: PCI Express 3.0 x16
        * Device ID: 15b3:1017
        * Firmware version: 16.21.1000
-
-Fixes in 17.11 LTS Release
---------------------------
-
-17.11.1
-~~~~~~~
-
-* app/procinfo: add compilation option in config
-* app/testpmd: fix crash of txonly with multiple segments
-* app/testpmd: fix flow director filter
-* app/testpmd: fix flowgen forwarding offload flags
-* app/testpmd: fix invalid Rx queue number setting
-* app/testpmd: fix invalid Tx queue number setting
-* app/testpmd: fix port configuration print
-* app/testpmd: fix port id allocation
-* app/testpmd: fix port index in RSS forward config
-* app/testpmd: fix port topology in RSS forward config
-* app/testpmd: fix port validation
-* app/testpmd: remove xenvirt again
-* bus/dpaa: fix ARM big endian build
-* bus/dpaa: fix build when assert enabled
-* bus/dpaa: fix default IOVA mode
-* bus/fslmc: fix build with latest glibc
-* bus/fslmc: fix the cplusplus macro closure
-* bus/pci: fix interrupt handler type
-* bus/pci: forbid IOVA mode if IOMMU address width too small
-* bus/vdev: continue probing after a device failure
-* cmdline: avoid garbage in unused fields of parsed result
-* cmdline: fix dynamic tokens parsing
-* cryptodev: add missing CPU flag string
-* cryptodev: fix function prototype
-* cryptodev: fix session pointer cast
-* crypto/dpaa2_sec: fix enum conversion for GCM
-* crypto: fix pedantic compilation
-* crypto/qat: fix allocation check and leak
-* crypto/qat: fix null auth algo overwrite
-* crypto/qat: fix out-of-bounds access
-* crypto/qat: fix parameter type
-* crypto/scheduler: fix strncpy
-* doc: fix format in OpenSSL installation guide
-* doc: fix lists of supported crypto algorithms
-* drivers: change the deprecated memseg physaddr to IOVA
-* eal/arm64: remove the braces in memory barrier macros
-* eal/ppc64: revert arch-specific TSC freq query
-* eal/ppc: remove the braces in memory barrier macros
-* ethdev: fix link autonegotiation value
-* ethdev: fix missing imissed counter in xstats
-* ethdev: fix port data reset timing
-* ethdev: fix port id allocation
-* eventdev: fix doxygen comments
-* eventdev: set error code in port link/unlink functions
-* event/octeontx: fix Rx adapter port id mapping
-* event/sw: fix debug logging config option
-* event/sw: fix queue memory leak and multi-link bug
-* examples/bond: check mbuf allocation
-* examples/bond: fix vdev name
-* examples/ip_pipeline: fix timer period unit
-* examples/ipsec-secgw: fix corner case for SPI value
-* examples/ipsec-secgw: fix missing ingress flow attribute
-* examples/ipsec-secgw: fix SPI byte order in flow item
-* examples/ipsec-secgw: fix usage of incorrect port
-* examples/l3fwd-power: fix frequency detection
-* examples/l3fwd-power: fix Rx without interrupt
-* examples/vhost: fix sending ARP packet to self
-* examples/vhost: fix startup check
-* flow_classify: fix ISO C in exported header
-* igb_uio: allow multi-process access
-* keepalive: fix state alignment
-* kni: fix build dependency
-* kni: fix build with kernel 4.15
-* lib: fix missing includes in exported headers
-* log: fix memory leak in regexp level set
-* lpm: fix ARM big endian build
-* malloc: fix end for bounded elements
-* malloc: protect stats with lock
-* mbuf: fix NULL freeing when debug enabled
-* mbuf: fix performance of freeing with non atomic refcnt
-* member: fix ISO C in exported header
-* member: fix memory leak on error
-* mempool: fix first memory area notification
-* mempool: fix physical contiguous check
-* mempool/octeontx: fix improper memory barrier
-* mempool/octeontx: fix memory area registration
-* mempool/octeontx: fix natural alignment being optimized out
-* memzone: fix leak on allocation error
-* mk: fix external build
-* mk: remove TILE-Gx machine type
-* mk: support renamed Makefile in external project
-* net/bnxt: fix check for ether type
-* net/bnxt: fix double increment of idx during Tx ring alloc
-* net/bnxt: fix duplicate filter pattern creation error
-* net/bnxt: fix duplicate pattern for 5tuple filter
-* net/bnxt: fix group info usage
-* net/bnxt: fix link speed setting with autoneg off
-* net/bnxt: fix number of pools for RSS
-* net/bnxt: fix return code in MAC address set
-* net/bnxt: fix Rx checksum flags
-* net/bnxt: fix size of Tx ring in HW
-* net/bnxt: free the aggregation ring
-* net/bnxt: parse checksum offload flags
-* net/bonding: check error of MAC address setting
-* net/bonding: fix activated slave in 8023ad mode
-* net/bonding: fix bonding in 8023ad mode
-* net/bonding: fix setting slave MAC addresses
-* net/dpaa: fix FW version code
-* net/dpaa: fix potential memory leak
-* net/dpaa: fix the mbuf packet type if zero
-* net/dpaa: fix uninitialized and unused variables
-* net/e1000: fix null pointer check
-* net/e1000: fix VF Rx interrupt enabling
-* net/ena: do not set Tx L4 offloads in Rx path
-* net/enic: fix crash due to static max number of queues
-* net/enic: fix L4 Rx ptype comparison
-* net/failsafe: fix invalid free
-* net/failsafe: fix Rx safe check compiler hint
-* net: fix ESP header byte ordering definition
-* net/fm10k: fix logical port delete
-* net/i40e: add debug logs when writing global registers
-* net/i40e: add FDIR NVGRE parameter check
-* net/i40e: check multi-driver option parsing
-* net/i40e: exclude LLDP packet count
-* net/i40e: fix ARM big endian build
-* net/i40e: fix FDIR input set conflict
-* net/i40e: fix FDIR rule confiliction issue
-* net/i40e: fix flag for MAC address write
-* net/i40e: fix flow director Rx resource defect
-* net/i40e: fix interrupt conflict with multi-driver
-* net/i40e: fix ISO C in exported header
-* net/i40e: fix memory leak
-* net/i40e: fix multiple DDP packages conflict
-* net/i40e: fix multiple driver support
-* net/i40e: fix packet type for X722
-* net/i40e: fix port segmentation fault when restart
-* net/i40e: fix Rx interrupt
-* net/i40e: fix setting MAC address of VF
-* net/i40e: fix setting of MAC address on i40evf
-* net/i40e: fix VF reset stats crash
-* net/i40e: fix VF Rx interrupt enabling
-* net/i40e: fix VLAN offload setting
-* net/i40e: fix VLAN offload setting issue
-* net/i40e: fix VSI MAC filter on primary address change
-* net/i40e: warn when writing global registers
-* net/igb: fix Tx queue number assignment
-* net/ixgbe: fix ARM big endian build
-* net/ixgbe: fix max queue number for VF
-* net/ixgbe: fix parsing FDIR NVGRE issue
-* net/ixgbe: fix reset error handling
-* net/ixgbe: fix the failure of number of Tx queue check
-* net/ixgbe: fix tunnel filter fail problem
-* net/ixgbe: fix VF Rx interrupt enabling
-* net/ixgbe: fix wrong PBA setting
-* net/mlx4: fix drop flow resources leak
-* net/mlx4: fix Rx offload non-fragmented indication
-* net/mlx4: fix Tx packet drop application report
-* net/mlx4: fix unnecessary include
-* net/mlx4: revert workaround for broken Verbs
-* net/mlx5: cleanup allocation of ethtool stats
-* net/mlx5: fix calculation of flow ID flag
-* net/mlx5: fix deadlock of link status alarm
-* net/mlx5: fix flow item validation
-* net/mlx5: fix flow priority on queue action
-* net/mlx5: fix flow RSS configuration
-* net/mlx5: fix handling link status event
-* net/mlx5: fix HW checksum offload for outer IP
-* net/mlx5: fix link state on device start
-* net/mlx5: fix memory region boundary checks
-* net/mlx5: fix memory region cache last index
-* net/mlx5: fix memory region cache lookup
-* net/mlx5: fix memory region lookup
-* net/mlx5: fix Memory Region registration
-* net/mlx5: fix missing attribute size for drop action
-* net/mlx5: fix missing RSS capability
-* net/mlx5: fix overflow of Memory Region cache
-* net/mlx5: fix overwriting bit-fields in SW Rx queue
-* net/mlx5: fix port stop by verify flows are still present
-* net/mlx5: fix return value of start operation
-* net/mlx5: fix RSS key configuration
-* net/mlx5: fix secondary process verification
-* net/mlx5: fix Tx checksum offloads
-* net/mlx5: fix UAR remapping on non configured queues
-* net/mlx5: fix un-supported RSS hash fields use
-* net/mlx5: fix VLAN configuration after port stop
-* net/mlx5: remove parser/flow drop queue
-* net/mlx5: use PCI address as port name
-* net/mrvl: fix HIF objects allocation
-* net/mrvl: fix multiple probe
-* net/mrvl: fix oversize bpool handling
-* net/mrvl: fix shadow queue tail and size calculations
-* net/mrvl: keep shadow Txqs inside PMD Txq
-* net/nfp: fix CRC strip check behaviour
-* net/nfp: fix jumbo settings
-* net/nfp: fix MTU settings
-* net/octeontx: add channel to port id mapping
-* net/pcap: fix the NUMA id display in logs
-* net/qede/base: fix VF LRO tunnel configuration
-* net/qede: check tunnel L3 header
-* net/qede: fix clearing of queue stats
-* net/qede: fix few log messages
-* net/qede: fix MTU set and max Rx length
-* net/qede: fix to enable LRO over tunnels
-* net/qede: fix to reject config with no Rx queue
-* net/qede: fix tunnel header size in Tx BD configuration
-* net/qede: replace config option with run-time arg
-* net/sfc: do not hold management event queue lock while MCDI
-* net/sfc: fix DMA memory leak after kvarg processing failure
-* net/sfc: fix flow RSS check in error handling
-* net/sfc: fix incorrect bitwise ORing of L3/L4 packet types
-* net/sfc: fix initialization of flow structure
-* net/sfc: fix label name to be consistent
-* net/sfc: fix main MAC address handling
-* net/sfc: fix multicast address list copy memory leak
-* net/sfc: stop periodic DMA if MAC stats upload fails
-* net/szedata2: fix check of mmap return value
-* net/tap: fix cleanup on allocation failure
-* net/tap: remove unused kernel version definitions
-* net/thunderx: fix multi segment Tx function return
-* net/virtio: fix incorrect cast
-* net/virtio: fix memory leak when reinitializing device
-* net/virtio: fix queue flushing with vector Rx enabled
-* net/virtio: fix Rx and Tx handler selection for ARM32
-* net/virtio: fix typo in LRO support
-* net/virtio: fix vector Rx flushing
-* net/virtio-user: fix crash as features change
-* pdump: fix error check when creating/canceling thread
-* pmdinfogen: fix cross compilation for ARM big endian
-* security: fix device operation type
-* security: fix enum start value
-* security: fix pedantic compilation
-* service: fix lcore role after delete
-* service: fix number mapped cores count
-* service: fix possible mem leak on initialize
-* service: fix service core launch
-* test/bitmap: fix memory leak
-* test/crypto: fix missing include
-* test/eventdev: use CPU event type
-* test/memzone: fix freeing test
-* test/memzone: fix NULL freeing
-* test/memzone: fix wrong test
-* test: register test as failed if setup failed
-* test/reorder: fix memory leak
-* test/ring: fix memory leak
-* test/ring_perf: fix memory leak
-* test/table: fix memory leak
-* test/table: fix uninitialized parameter
-* test/timer_perf: fix memory leak
-* timer: fix reset on service cores
-* usertools/devbind: fix kernel module reporting
-* vfio: fix enabled check on error
-* vhost: fix crash
-* vhost: fix dequeue zero copy with virtio1
-* vhost: fix error code check when creating thread
-* vhost: fix IOTLB pool out-of-memory handling
-* vhost: fix mbuf free
-* vhost: protect active rings from async ring changes
-* vhost: remove pending IOTLB entry if miss request failed
-
-17.11.2
-~~~~~~~
-
-* examples/vhost: move to safe GPA translation API
-* examples/vhost_scsi: move to safe GPA translation API
-* vhost: add support for non-contiguous indirect descs tables (fixes CVE-2018-1059)
-* vhost: check all range is mapped when translating GPAs (fixes CVE-2018-1059)
-* vhost: deprecate unsafe GPA translation API (fixes CVE-2018-1059)
-* vhost: ensure all range is mapped when translating QVAs (fixes CVE-2018-1059)
-* vhost: fix indirect descriptors table translation size (fixes CVE-2018-1059)
-* vhost: handle virtually non-contiguous buffers in Rx (fixes CVE-2018-1059)
-* vhost: handle virtually non-contiguous buffers in Rx-mrg (fixes CVE-2018-1059)
-* vhost: handle virtually non-contiguous buffers in Tx (fixes CVE-2018-1059)
-* vhost: introduce safe API for GPA translation (fixes CVE-2018-1059)

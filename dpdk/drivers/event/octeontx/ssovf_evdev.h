@@ -1,38 +1,11 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium, Inc. 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #ifndef __SSOVF_EVDEV_H__
 #define __SSOVF_EVDEV_H__
 
+#include <rte_event_eth_tx_adapter.h>
 #include <rte_eventdev_pmd_vdev.h>
 #include <rte_io.h>
 
@@ -41,22 +14,16 @@
 
 #define EVENTDEV_NAME_OCTEONTX_PMD event_octeontx
 
-#ifdef RTE_LIBRTE_PMD_OCTEONTX_SSOVF_DEBUG
-#define ssovf_log_info(fmt, args...) \
-	RTE_LOG(INFO, EVENTDEV, "[%s] %s() " fmt "\n", \
-		RTE_STR(EVENTDEV_NAME_OCTEONTX_PMD), __func__, ## args)
-#define ssovf_log_dbg(fmt, args...) \
-	RTE_LOG(DEBUG, EVENTDEV, "[%s] %s() " fmt "\n", \
-		RTE_STR(EVENTDEV_NAME_OCTEONTX_PMD), __func__, ## args)
-#else
-#define ssovf_log_info(fmt, args...)
-#define ssovf_log_dbg(fmt, args...)
-#endif
+#define SSOVF_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, otx_logtype_ssovf, \
+			"[%s] %s() " fmt "\n", \
+			RTE_STR(EVENTDEV_NAME_OCTEONTX_PMD), __func__, ## args)
 
+#define ssovf_log_info(fmt, ...) SSOVF_LOG(INFO, fmt, ##__VA_ARGS__)
+#define ssovf_log_dbg(fmt, ...) SSOVF_LOG(DEBUG, fmt, ##__VA_ARGS__)
+#define ssovf_log_err(fmt, ...) SSOVF_LOG(ERR, fmt, ##__VA_ARGS__)
 #define ssovf_func_trace ssovf_log_dbg
-#define ssovf_log_err(fmt, args...) \
-	RTE_LOG(ERR, EVENTDEV, "[%s] %s() " fmt "\n", \
-		RTE_STR(EVENTDEV_NAME_OCTEONTX_PMD), __func__, ## args)
+#define ssovf_log_selftest ssovf_log_info
 
 #define SSO_MAX_VHGRP                     (64)
 #define SSO_MAX_VHWS                      (32)
@@ -114,8 +81,10 @@
 #define SSO_GRP_GET_PRIORITY              0x7
 #define SSO_GRP_SET_PRIORITY              0x8
 
+#define SSOVF_SELFTEST_ARG               ("selftest")
+
 /*
- * In Cavium OcteonTX SoC, all accesses to the device registers are
+ * In Cavium OCTEON TX SoC, all accesses to the device registers are
  * implictly strongly ordered. So, The relaxed version of IO operation is
  * safe to use with out any IO memory barriers.
  */
@@ -151,6 +120,16 @@ do {							\
 } while (0)
 #endif
 
+struct ssovf_info {
+	uint16_t domain; /* Domain id */
+	uint8_t total_ssovfs; /* Total sso groups available in domain */
+	uint8_t total_ssowvfs;/* Total sso hws available in domain */
+};
+
+enum ssovf_type {
+	OCTEONTX_SSO_GROUP, /* SSO group vf */
+	OCTEONTX_SSO_HWS,  /* SSO hardware workslot vf */
+};
 
 struct ssovf_evdev {
 	uint8_t max_event_queues;
@@ -180,6 +159,8 @@ ssovf_pmd_priv(const struct rte_eventdev *eventdev)
 	return eventdev->data->dev_private;
 }
 
+extern int otx_logtype_ssovf;
+
 uint16_t ssows_enq(void *port, const struct rte_event *ev);
 uint16_t ssows_enq_burst(void *port,
 		const struct rte_event ev[], uint16_t nb_events);
@@ -194,7 +175,15 @@ uint16_t ssows_deq_timeout(void *port, struct rte_event *ev,
 		uint64_t timeout_ticks);
 uint16_t ssows_deq_timeout_burst(void *port, struct rte_event ev[],
 		uint16_t nb_events, uint64_t timeout_ticks);
-void ssows_flush_events(struct ssows *ws, uint8_t queue_id);
+
+typedef void (*ssows_handle_event_t)(void *arg, struct rte_event ev);
+void ssows_flush_events(struct ssows *ws, uint8_t queue_id,
+		ssows_handle_event_t fn, void *arg);
 void ssows_reset(struct ssows *ws);
+uint16_t sso_event_tx_adapter_enqueue(void *port,
+		struct rte_event ev[], uint16_t nb_events);
+int ssovf_info(struct ssovf_info *info);
+void *ssovf_bar(enum ssovf_type, uint8_t id, uint8_t bar);
+int test_eventdev_octeontx(void);
 
 #endif /* __SSOVF_EVDEV_H__ */

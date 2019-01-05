@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_ETHER_H_
@@ -239,7 +210,7 @@ static inline void eth_random_addr(uint8_t *addr)
 	uint8_t *p = (uint8_t *)&rand;
 
 	rte_memcpy(addr, p, ETHER_ADDR_LEN);
-	addr[0] &= ~ETHER_GROUP_ADDR;       /* clear multicast bit */
+	addr[0] &= (uint8_t)~ETHER_GROUP_ADDR;       /* clear multicast bit */
 	addr[0] |= ETHER_LOCAL_ADMIN_ADDR;  /* set local assignment bit */
 }
 
@@ -330,13 +301,41 @@ struct vxlan_hdr {
 #define ETHER_TYPE_RARP 0x8035 /**< Reverse Arp Protocol. */
 #define ETHER_TYPE_VLAN 0x8100 /**< IEEE 802.1Q VLAN tagging. */
 #define ETHER_TYPE_QINQ 0x88A8 /**< IEEE 802.1ad QinQ tagging. */
+#define ETHER_TYPE_ETAG 0x893F /**< IEEE 802.1BR E-Tag. */
 #define ETHER_TYPE_1588 0x88F7 /**< IEEE 802.1AS 1588 Precise Time Protocol. */
 #define ETHER_TYPE_SLOW 0x8809 /**< Slow protocols (LACP and Marker). */
 #define ETHER_TYPE_TEB  0x6558 /**< Transparent Ethernet Bridging. */
 #define ETHER_TYPE_LLDP 0x88CC /**< LLDP Protocol. */
+#define ETHER_TYPE_MPLS 0x8847 /**< MPLS ethertype. */
+#define ETHER_TYPE_MPLSM 0x8848 /**< MPLS multicast ethertype. */
 
 #define ETHER_VXLAN_HLEN (sizeof(struct udp_hdr) + sizeof(struct vxlan_hdr))
 /**< VXLAN tunnel header length. */
+
+/**
+ * VXLAN-GPE protocol header (draft-ietf-nvo3-vxlan-gpe-05).
+ * Contains the 8-bit flag, 8-bit next-protocol, 24-bit VXLAN Network
+ * Identifier and Reserved fields (16 bits and 8 bits).
+ */
+struct vxlan_gpe_hdr {
+	uint8_t vx_flags;    /**< flag (8). */
+	uint8_t reserved[2]; /**< Reserved (16). */
+	uint8_t proto;       /**< next-protocol (8). */
+	uint32_t vx_vni;     /**< VNI (24) + Reserved (8). */
+} __attribute__((__packed__));
+
+/* VXLAN-GPE next protocol types */
+#define VXLAN_GPE_TYPE_IPV4 1 /**< IPv4 Protocol. */
+#define VXLAN_GPE_TYPE_IPV6 2 /**< IPv6 Protocol. */
+#define VXLAN_GPE_TYPE_ETH  3 /**< Ethernet Protocol. */
+#define VXLAN_GPE_TYPE_NSH  4 /**< NSH Protocol. */
+#define VXLAN_GPE_TYPE_MPLS 5 /**< MPLS Protocol. */
+#define VXLAN_GPE_TYPE_GBP  6 /**< GBP Protocol. */
+#define VXLAN_GPE_TYPE_VBNG 7 /**< vBNG Protocol. */
+
+#define ETHER_VXLAN_GPE_HLEN (sizeof(struct udp_hdr) + \
+			      sizeof(struct vxlan_gpe_hdr))
+/**< VXLAN-GPE tunnel header length. */
 
 /**
  * Extract VLAN tag information into mbuf
@@ -353,11 +352,12 @@ static inline int rte_vlan_strip(struct rte_mbuf *m)
 {
 	struct ether_hdr *eh
 		 = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	struct vlan_hdr *vh;
 
 	if (eh->ether_type != rte_cpu_to_be_16(ETHER_TYPE_VLAN))
 		return -1;
 
-	struct vlan_hdr *vh = (struct vlan_hdr *)(eh + 1);
+	vh = (struct vlan_hdr *)(eh + 1);
 	m->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 	m->vlan_tci = rte_be_to_cpu_16(vh->vlan_tci);
 

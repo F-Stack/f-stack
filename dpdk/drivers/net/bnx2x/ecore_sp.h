@@ -1,16 +1,14 @@
-/*-
- * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef ECORE_SP_H
@@ -217,8 +215,8 @@ ECORE_CRC32_LE(uint32_t seed, uint8_t *mac, uint32_t len)
     } while (0)
 
 
-#define ECORE_MSG(m, ...) \
-	PMD_DRV_LOG(DEBUG, m, ##__VA_ARGS__)
+#define ECORE_MSG(sc, m, ...) \
+	PMD_DRV_LOG(DEBUG, sc, m, ##__VA_ARGS__)
 
 typedef struct _ecore_list_entry_t
 {

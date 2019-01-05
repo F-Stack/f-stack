@@ -1,44 +1,16 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _VIRTIO_PCI_H_
 #define _VIRTIO_PCI_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 struct virtqueue;
 struct virtnet_ctl;
@@ -150,6 +122,12 @@ struct virtnet_ctl;
 #define VIRTIO_TRANSPORT_F_START 28
 #define VIRTIO_TRANSPORT_F_END   34
 
+/*
+ * Inorder feature indicates that all buffers are used by the device
+ * in the same order in which they have been made available.
+ */
+#define VIRTIO_F_IN_ORDER 35
+
 /* The Guest publishes the used index for which it expects an interrupt
  * at the end of the avail ring. Host should ignore the avail->flags field. */
 /* The Host publishes the avail index for which it expects a kick
@@ -226,7 +204,6 @@ struct virtio_pci_ops {
 			     void *dst, int len);
 	void (*write_dev_cfg)(struct virtio_hw *hw, size_t offset,
 			      const void *src, int len);
-	void (*reset)(struct virtio_hw *hw);
 
 	uint8_t (*get_status)(struct virtio_hw *hw);
 	void    (*set_status)(struct virtio_hw *hw, uint8_t status);
@@ -254,14 +231,17 @@ struct virtio_hw {
 	uint64_t    req_guest_features;
 	uint64_t    guest_features;
 	uint32_t    max_queue_pairs;
-	uint16_t    started;
+	bool        started;
 	uint16_t	max_mtu;
 	uint16_t    vtnet_hdr_size;
 	uint8_t	    vlan_strip;
 	uint8_t	    use_msix;
 	uint8_t     modern;
 	uint8_t     use_simple_rx;
-	uint8_t     use_simple_tx;
+	uint8_t     use_inorder_rx;
+	uint8_t     use_inorder_tx;
+	bool        has_tx_offload;
+	bool        has_rx_offload;
 	uint16_t    port_id;
 	uint8_t     mac_addr[ETHER_ADDR_LEN];
 	uint32_t    notify_off_multiplier;
@@ -270,6 +250,14 @@ struct virtio_hw {
 	struct virtio_pci_common_cfg *common_cfg;
 	struct virtio_net_config *dev_cfg;
 	void	    *virtio_user_dev;
+	/*
+	 * App management thread and virtio interrupt handler thread
+	 * both can change device state, this lock is meant to avoid
+	 * such a contention.
+	 */
+	rte_spinlock_t state_lock;
+	struct rte_mbuf **inject_pkts;
+	bool        opened;
 
 	struct virtqueue **vqs;
 };

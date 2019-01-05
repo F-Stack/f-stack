@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2015 6WIND S.A.
- *   Copyright 2015 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2015 6WIND S.A.
+ * Copyright 2015 Mellanox Technologies, Ltd
  */
 
 #ifndef RTE_PMD_MLX5_UTILS_H_
@@ -42,6 +14,16 @@
 #include <errno.h>
 
 #include "mlx5_defs.h"
+
+/*
+ * Compilation workaround for PPC64 when AltiVec is fully enabled, e.g. std=c11.
+ * Otherwise there would be a type conflict between stdbool and altivec.
+ */
+#if defined(__PPC64__) && !defined(__APPLE_ALTIVEC__)
+#undef bool
+/* redefine as in stdbool.h */
+#define bool _Bool
+#endif
 
 /* Bit-field manipulation. */
 #define BITFIELD_DECLARE(bf, type, size) \
@@ -89,14 +71,21 @@ pmd_drv_log_basename(const char *s)
 	return s;
 }
 
+extern int mlx5_logtype;
+
+#define PMD_DRV_LOG___(level, ...) \
+	rte_log(RTE_LOG_ ## level, \
+		mlx5_logtype, \
+		RTE_FMT(MLX5_DRIVER_NAME ": " \
+			RTE_FMT_HEAD(__VA_ARGS__,), \
+		RTE_FMT_TAIL(__VA_ARGS__,)))
+
 /*
  * When debugging is enabled (NDEBUG not defined), file, line and function
  * information replace the driver name (MLX5_DRIVER_NAME) in log messages.
  */
 #ifndef NDEBUG
 
-#define PMD_DRV_LOG___(level, ...) \
-	ERRNO_SAFE(RTE_LOG(level, PMD, __VA_ARGS__))
 #define PMD_DRV_LOG__(level, ...) \
 	PMD_DRV_LOG___(level, "%s:%u: %s(): " __VA_ARGS__)
 #define PMD_DRV_LOG_(level, s, ...) \
@@ -108,9 +97,6 @@ pmd_drv_log_basename(const char *s)
 		__VA_ARGS__)
 
 #else /* NDEBUG */
-
-#define PMD_DRV_LOG___(level, ...) \
-	ERRNO_SAFE(RTE_LOG(level, PMD, MLX5_DRIVER_NAME ": " __VA_ARGS__))
 #define PMD_DRV_LOG__(level, ...) \
 	PMD_DRV_LOG___(level, __VA_ARGS__)
 #define PMD_DRV_LOG_(level, s, ...) \
@@ -119,18 +105,15 @@ pmd_drv_log_basename(const char *s)
 #endif /* NDEBUG */
 
 /* Generic printf()-like logging macro with automatic line feed. */
-#define PMD_DRV_LOG(level, ...) \
+#define DRV_LOG(level, ...) \
 	PMD_DRV_LOG_(level, \
 		__VA_ARGS__ PMD_DRV_LOG_STRIP PMD_DRV_LOG_OPAREN, \
 		PMD_DRV_LOG_CPAREN)
 
-/*
- * Like assert(), DEBUG() becomes a no-op and claim_zero() does not perform
- * any check when debugging is disabled.
- */
+/* claim_zero() does not perform any check when debugging is disabled. */
 #ifndef NDEBUG
 
-#define DEBUG(...) PMD_DRV_LOG(DEBUG, __VA_ARGS__)
+#define DEBUG(...) DRV_LOG(DEBUG, __VA_ARGS__)
 #define claim_zero(...) assert((__VA_ARGS__) == 0)
 #define claim_nonzero(...) assert((__VA_ARGS__) != 0)
 
@@ -142,9 +125,9 @@ pmd_drv_log_basename(const char *s)
 
 #endif /* NDEBUG */
 
-#define INFO(...) PMD_DRV_LOG(INFO, __VA_ARGS__)
-#define WARN(...) PMD_DRV_LOG(WARNING, __VA_ARGS__)
-#define ERROR(...) PMD_DRV_LOG(ERR, __VA_ARGS__)
+#define INFO(...) DRV_LOG(INFO, __VA_ARGS__)
+#define WARN(...) DRV_LOG(WARNING, __VA_ARGS__)
+#define ERROR(...) DRV_LOG(ERR, __VA_ARGS__)
 
 /* Convenience macros for accessing mbuf fields. */
 #define NEXT(m) ((m)->next)

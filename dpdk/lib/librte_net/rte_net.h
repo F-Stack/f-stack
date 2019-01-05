@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 6WIND S.A.
  */
 
 #ifndef _RTE_NET_PTYPE_H_
@@ -56,6 +27,33 @@ struct rte_net_hdr_lens {
 	uint8_t inner_l3_len;
 	uint8_t inner_l4_len;
 };
+
+/**
+ * Skip IPv6 header extensions.
+ *
+ * This function skips all IPv6 extensions, returning size of
+ * complete header including options and final protocol value.
+ *
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * @param proto
+ *   Protocol field of IPv6 header.
+ * @param m
+ *   The packet mbuf to be parsed.
+ * @param off
+ *   On input, must contain the offset to the first byte following
+ *   IPv6 header, on output, contains offset to the first byte
+ *   of next layer (after any IPv6 extension header)
+ * @param frag
+ *   Contains 1 in output if packet is an IPv6 fragment.
+ * @return
+ *   Protocol that follows IPv6 header.
+ *   -1 if an error occurs during mbuf parsing.
+ */
+int __rte_experimental
+rte_net_skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
+	int *frag);
 
 /**
  * Parse an Ethernet packet to get its packet type.
@@ -124,14 +122,16 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 		(ol_flags & PKT_TX_OUTER_IPV6))
 		inner_l3_offset += m->outer_l2_len + m->outer_l3_len;
 
+	if (ol_flags & PKT_TX_IPV4) {
+		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
+				inner_l3_offset);
+
+		if (ol_flags & PKT_TX_IP_CKSUM)
+			ipv4_hdr->hdr_checksum = 0;
+	}
+
 	if ((ol_flags & PKT_TX_UDP_CKSUM) == PKT_TX_UDP_CKSUM) {
 		if (ol_flags & PKT_TX_IPV4) {
-			ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
-					inner_l3_offset);
-
-			if (ol_flags & PKT_TX_IP_CKSUM)
-				ipv4_hdr->hdr_checksum = 0;
-
 			udp_hdr = (struct udp_hdr *)((char *)ipv4_hdr +
 					m->l3_len);
 			udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(ipv4_hdr,
@@ -148,12 +148,6 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 	} else if ((ol_flags & PKT_TX_TCP_CKSUM) ||
 			(ol_flags & PKT_TX_TCP_SEG)) {
 		if (ol_flags & PKT_TX_IPV4) {
-			ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
-					inner_l3_offset);
-
-			if (ol_flags & PKT_TX_IP_CKSUM)
-				ipv4_hdr->hdr_checksum = 0;
-
 			/* non-TSO tcp or TSO */
 			tcp_hdr = (struct tcp_hdr *)((char *)ipv4_hdr +
 					m->l3_len);

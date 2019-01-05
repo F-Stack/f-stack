@@ -1,31 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of 6WIND S.A. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016-2017 Intel Corporation.
 
 Crypto Device Supported Functionality Matrices
 ==============================================
@@ -36,6 +10,33 @@ Supported Feature Flags
 .. _table_crypto_pmd_features:
 
 .. include:: overview_feature_table.txt
+
+.. Note::
+
+   - "In Place SGL" feature flag stands for "In place Scatter-gather list",
+     which means that an input buffer can consist of multiple segments,
+     being the operation in-place (input address = output address).
+
+   - "OOP SGL In SGL Out" feature flag stands for
+     "Out-of-place Scatter-gather list Input, Scatter-gater list Output",
+     which means pmd supports different scatter-gather styled input and output buffers
+     (i.e. both can consists of multiple segments).
+
+   - "OOP SGL In LB Out" feature flag stands for
+     "Out-of-place Scatter-gather list Input, Linear Buffers Output",
+     which means PMD supports input from scatter-gathered styled buffers,
+     outputting linear buffers (i.e. single segment).
+
+   - "OOP LB In SGL Out" feature flag stands for
+     "Out-of-place Linear Buffers Input, Scatter-gather list Output",
+     which means PMD supports input from linear buffer, outputting
+     scatter-gathered styled buffers.
+
+   - "OOP LB In LB Out" feature flag stands for
+     "Out-of-place Linear Buffers Input, Linear Buffers Output",
+     which means that Out-of-place operation is supported,
+     with linear input and output buffers.
+
 
 Supported Cipher Algorithms
 ---------------------------

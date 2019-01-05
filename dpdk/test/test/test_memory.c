@@ -1,41 +1,15 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
 #include <stdint.h>
 
+#include <rte_eal.h>
+#include <rte_eal_memconfig.h>
 #include <rte_memory.h>
 #include <rte_common.h>
+#include <rte_memzone.h>
 
 #include "test.h"
 
@@ -52,12 +26,21 @@
  */
 
 static int
+check_mem(const struct rte_memseg_list *msl __rte_unused,
+		const struct rte_memseg *ms, void *arg __rte_unused)
+{
+	volatile uint8_t *mem = (volatile uint8_t *) ms->addr;
+	size_t i, max = ms->len;
+
+	for (i = 0; i < max; i++, mem++)
+		*mem;
+	return 0;
+}
+
+static int
 test_memory(void)
 {
 	uint64_t s;
-	unsigned i;
-	size_t j;
-	const struct rte_memseg *mem;
 
 	/*
 	 * dump the mapped memory: the python-expect script checks
@@ -74,14 +57,7 @@ test_memory(void)
 	}
 
 	/* try to read memory (should not segfault) */
-	mem = rte_eal_get_physmem_layout();
-	for (i = 0; i < RTE_MAX_MEMSEG && mem[i].addr != NULL ; i++) {
-
-		/* check memory */
-		for (j = 0; j<mem[i].len; j++) {
-			*((volatile uint8_t *) mem[i].addr + j);
-		}
-	}
+	rte_memseg_walk(check_mem, NULL);
 
 	return 0;
 }

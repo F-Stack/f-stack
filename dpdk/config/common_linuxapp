@@ -1,34 +1,5 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2016 Intel Corporation
 
 #include "common_base"
 
@@ -43,11 +14,45 @@ CONFIG_RTE_LIBRTE_KNI=y
 CONFIG_RTE_LIBRTE_PMD_KNI=y
 CONFIG_RTE_LIBRTE_VHOST=y
 CONFIG_RTE_LIBRTE_VHOST_NUMA=y
+CONFIG_RTE_LIBRTE_VHOST_POSTCOPY=n
 CONFIG_RTE_LIBRTE_PMD_VHOST=y
+CONFIG_RTE_LIBRTE_IFC_PMD=y
 CONFIG_RTE_LIBRTE_PMD_AF_PACKET=y
+CONFIG_RTE_LIBRTE_PMD_SOFTNIC=y
 CONFIG_RTE_LIBRTE_PMD_TAP=y
 CONFIG_RTE_LIBRTE_AVP_PMD=y
+CONFIG_RTE_LIBRTE_VDEV_NETVSC_PMD=y
 CONFIG_RTE_LIBRTE_NFP_PMD=y
 CONFIG_RTE_LIBRTE_POWER=y
 CONFIG_RTE_VIRTIO_USER=y
 CONFIG_RTE_PROC_INFO=y
+
+CONFIG_RTE_LIBRTE_VMBUS=y
+CONFIG_RTE_LIBRTE_NETVSC_PMD=y
+
+#
+# Common libraries, before Bus/PMDs
+#
+CONFIG_RTE_LIBRTE_COMMON_DPAAX=y
+
+# NXP DPAA BUS and drivers
+CONFIG_RTE_LIBRTE_DPAA_BUS=y
+CONFIG_RTE_LIBRTE_DPAA_MEMPOOL=y
+CONFIG_RTE_LIBRTE_DPAA_PMD=y
+CONFIG_RTE_LIBRTE_PMD_DPAA_EVENTDEV=y
+CONFIG_RTE_LIBRTE_PMD_DPAA_SEC=y
+CONFIG_RTE_LIBRTE_PMD_CAAM_JR=y
+
+# NXP FSLMC BUS and DPAA2 drivers
+CONFIG_RTE_LIBRTE_FSLMC_BUS=y
+CONFIG_RTE_LIBRTE_DPAA2_MEMPOOL=y
+CONFIG_RTE_LIBRTE_DPAA2_PMD=y
+CONFIG_RTE_LIBRTE_PMD_DPAA2_EVENTDEV=y
+CONFIG_RTE_LIBRTE_PMD_DPAA2_SEC=y
+CONFIG_RTE_LIBRTE_PMD_DPAA2_CMDIF_RAWDEV=y
+CONFIG_RTE_LIBRTE_PMD_DPAA2_QDMA_RAWDEV=y
+
+#
+# NXP ENETC PMD Driver
+#
+CONFIG_RTE_LIBRTE_ENETC_PMD=y

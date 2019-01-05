@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright (C) Cavium, Inc. 2016.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Cavium, Inc nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Cavium, Inc
 
 ThunderX NICVF Poll Mode Driver
 ===============================
@@ -57,6 +30,7 @@ Features of the ThunderX PMD are:
 - SR-IOV VF
 - NUMA support
 - Multi queue set support (up to 96 queues (12 queue sets)) per port
+- Skip data bytes
 
 Supported ThunderX SoCs
 -----------------------
@@ -81,25 +55,13 @@ Please note that enabling debugging options may affect system performance.
 
   Toggle compilation of the ``librte_pmd_thunderx_nicvf`` driver.
 
-- ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_INIT`` (default ``n``)
-
-  Toggle display of initialization related messages.
-
 - ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_RX`` (default ``n``)
 
-  Toggle display of receive fast path run-time message
+  Toggle asserts of receive fast path.
 
 - ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_TX`` (default ``n``)
 
-  Toggle display of transmit fast path run-time message
-
-- ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_DRIVER`` (default ``n``)
-
-  Toggle display of generic debugging messages
-
-- ``CONFIG_RTE_LIBRTE_THUNDERX_NICVF_DEBUG_MBOX`` (default ``n``)
-
-  Toggle display of PF mailbox related run-time check messages
+  Toggle asserts of transmit fast path.
 
 Driver compilation and testing
 ------------------------------
@@ -216,7 +178,7 @@ This section provides instructions to configure SR-IOV with Linux OS.
    .. code-block:: console
 
       ./arm64-thunderx-linuxapp-gcc/app/testpmd -l 0-3 -n 4 -w 0002:01:00.2 \
-        -- -i --disable-hw-vlan-filter --disable-crc-strip --no-flush-rx \
+        -- -i --no-flush-rx \
         --port-topology=loop
 
       ...
@@ -351,6 +313,21 @@ We will choose four secondary queue sets from the ending of the list (0002:01:01
 
 The nicvf thunderx driver will make use of attached secondary VFs automatically during the interface configuration stage.
 
+
+Module params
+--------------
+
+skip_data_bytes
+~~~~~~~~~~~~~~~
+This feature is used to create a hole between HEADROOM and actual data. Size of hole is specified
+in bytes as module param("skip_data_bytes") to pmd.
+This scheme is useful when application would like to insert vlan header without disturbing HEADROOM.
+
+Example:
+   .. code-block:: console
+
+      -w 0002:01:00.2,skip_data_bytes=8
+
 Limitations
 -----------
 
@@ -358,8 +335,7 @@ CRC striping
 ~~~~~~~~~~~~
 
 The ThunderX SoC family NICs strip the CRC for every packets coming into the
-host interface. So, CRC will be stripped even when the
-``rxmode.hw_strip_crc`` member is set to 0 in ``struct rte_eth_conf``.
+host interface irrespective of the offload configuration.
 
 Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
@@ -375,3 +351,8 @@ Maximum packet segments
 The ThunderX SoC family NICs support up to 12 segments per packet when working
 in scatter/gather mode. So, setting MTU will result with ``EINVAL`` when the
 frame size does not fit in the maximum number of segments.
+
+skip_data_bytes
+~~~~~~~~~~~~~~~
+
+Maximum limit of skip_data_bytes is 128 bytes and number of bytes should be multiple of 8.

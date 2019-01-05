@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_VF_PF_IF_H__
@@ -396,7 +394,13 @@ struct vfpf_vport_update_mcast_bin_tlv {
 	struct channel_tlv	tl;
 	u8			padding[4];
 
-	u64		bins[8];
+	/* This was a mistake; There are only 256 approx bins,
+	 * and in HSI they're divided into 32-bit values.
+	 * As old VFs used to set-bit to the values on its side,
+	 * the upper half of the array is never expected to contain any data.
+	 */
+	u64		bins[4];
+	u64		obsolete_bins[4];
 };
 
 struct vfpf_vport_update_accept_param_tlv {
@@ -525,6 +529,18 @@ struct pfvf_read_coal_resp_tlv {
 	u8 padding[6];
 };
 
+struct vfpf_bulletin_update_mac_tlv {
+	struct vfpf_first_tlv first_tlv;
+	u8 mac[ETH_ALEN];
+	u8 padding[2];
+};
+
+struct vfpf_update_mtu_tlv {
+	struct vfpf_first_tlv first_tlv;
+	u16 mtu;
+	u8 padding[6];
+};
+
 union vfpf_tlvs {
 	struct vfpf_first_tlv			first_tlv;
 	struct vfpf_acquire_tlv			acquire;
@@ -539,6 +555,8 @@ union vfpf_tlvs {
 	struct vfpf_update_tunn_param_tlv	tunn_param_update;
 	struct vfpf_update_coalesce		update_coalesce;
 	struct vfpf_read_coal_req_tlv		read_coal_req;
+	struct vfpf_bulletin_update_mac_tlv	bulletin_update_mac;
+	struct vfpf_update_mtu_tlv		update_mtu;
 	struct tlv_buffer_size			tlv_buf_size;
 };
 
@@ -669,6 +687,8 @@ enum {
 	CHANNEL_TLV_COALESCE_UPDATE,
 	CHANNEL_TLV_QID,
 	CHANNEL_TLV_COALESCE_READ,
+	CHANNEL_TLV_BULLETIN_UPDATE_MAC,
+	CHANNEL_TLV_UPDATE_MTU,
 	CHANNEL_TLV_MAX,
 
 	/* Required for iterating over vport-update tlvs.
@@ -678,6 +698,6 @@ enum {
 
 /*!!!!! Make sure to update STRINGS structure accordingly !!!!!*/
 };
-extern const char *ecore_channel_tlvs_string[];
+extern const char *qede_ecore_channel_tlvs_string[];
 
 #endif /* __ECORE_VF_PF_IF_H__ */

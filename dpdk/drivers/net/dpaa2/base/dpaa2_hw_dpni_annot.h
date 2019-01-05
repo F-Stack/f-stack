@@ -1,34 +1,8 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP.
+ *   Copyright 2016 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Freescale Semiconductor, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /**
@@ -63,7 +37,7 @@ struct dpaa2_fas {
 	uint8_t ppid;
 	__le16 ifpid;
 	__le32 status;
-} __packed;
+}  __attribute__((__packed__));
 
 /**
  * HW Packet Annotation  Register structures
@@ -218,6 +192,66 @@ struct dpaa2_annot_hdr {
 #define L3_PROTO_CAPWAN__DATA_PRESENT		BIT_POS(2)
 #define L5_SOFT_PARSING_ERROR			BIT_POS(1)
 #define L3_IPV6_ROUTE_HDR_PRESENT		BIT_POS(0)
+
+#define DPAA2_L3_IPv4 (L3_IPV4_1_PRESENT | L3_IPV4_1_UNICAST | \
+	L3_IP_1_UNKNOWN_PROTOCOL | L3_IP_UNKNOWN_PROTOCOL)
+
+#define DPAA2_L3_IPv6 (L3_IPV6_1_PRESENT | L3_IPV6_1_UNICAST | \
+	L3_IP_1_UNKNOWN_PROTOCOL | L3_IP_UNKNOWN_PROTOCOL)
+
+#define DPAA2_L3_IPv4_TCP (L3_IPV4_1_PRESENT | L3_IPV4_1_UNICAST | \
+	L3_PROTO_TCP_PRESENT | L3_PROTO_TCP_CTRL_BIT_6_TO_11_PRESENT | \
+	L4_UNKNOWN_PROTOCOL)
+
+#define DPAA2_L3_IPv4_UDP (L3_IPV4_1_PRESENT | L3_IPV4_1_UNICAST | \
+	L3_PROTO_UDP_PRESENT | L4_UNKNOWN_PROTOCOL)
+
+#define DPAA2_L3_IPv6_TCP (L3_IPV6_1_PRESENT | L3_IPV6_1_UNICAST | \
+	L3_PROTO_TCP_PRESENT | L3_PROTO_TCP_CTRL_BIT_6_TO_11_PRESENT | \
+	L4_UNKNOWN_PROTOCOL)
+
+#define DPAA2_L3_IPv6_UDP (L3_IPV6_1_PRESENT | L3_IPV6_1_UNICAST | \
+	L3_PROTO_UDP_PRESENT | L4_UNKNOWN_PROTOCOL)
+
+/**
+ * Macros to get values in word5
+ */
+#define SHIM_OFFSET_1(var)		((uint64_t)(var) & 0xFF00000000000000)
+#define SHIM_OFFSET_2(var)		((uint64_t)(var) & 0x00FF000000000000)
+#define IP_PID_OFFSET(var)		((uint64_t)(var) & 0x0000FF0000000000)
+#define ETH_OFFSET(var)			((uint64_t)(var) & 0x000000FF00000000)
+#define LLC_SNAP_OFFSET(var)		((uint64_t)(var) & 0x00000000FF000000)
+#define VLAN_TCI_OFFSET_1(var)		((uint64_t)(var) & 0x0000000000FF0000)
+#define VLAN_TCI_OFFSET_N(var)		((uint64_t)(var) & 0x000000000000FF00)
+#define LAST_ETYPE_OFFSET(var)		((uint64_t)(var) & 0x00000000000000FF)
+
+/**
+ * Macros to get values in word6
+ */
+#define PPPOE_OFFSET(var)		((uint64_t)(var) & 0xFF00000000000000)
+#define MPLS_OFFSET_1(var)		((uint64_t)(var) & 0x00FF000000000000)
+#define MPLS_OFFSET_N(var)		((uint64_t)(var) & 0x0000FF0000000000)
+#define ARP_OR_IP_OFFSET_1(var)		((uint64_t)(var) & 0x000000FF00000000)
+#define IP_N_OR_MIN_ENCAP_OFFSET(var)	((uint64_t)(var) & 0x00000000FF000000)
+#define GRE_OFFSET(var)			((uint64_t)(var) & 0x0000000000FF0000)
+#define L4_OFFSET(var)			((uint64_t)(var) & 0x000000000000FF00)
+#define GTP_OR_ESP_OR_IPSEC_OFFSET(var)	((uint64_t)(var) & 0x00000000000000FF)
+
+/**
+ * Macros to get values in word7
+ */
+#define IPV6_ROUTING_HDR_OFFSET_1(var)	((uint64_t)(var) & 0xFF00000000000000)
+#define IPV6_ROUTING_HDR_OFFSET_2(var)	((uint64_t)(var) & 0x00FF000000000000)
+#define NEXT_HDR_OFFSET(var)		((uint64_t)(var) & 0x0000FF0000000000)
+#define IPV6_FRAG_OFFSET(var)		((uint64_t)(var) & 0x000000FF00000000)
+#define GROSS_RUNNING_SUM(var)		((uint64_t)(var) & 0x00000000FFFF0000)
+#define RUNNING_SUM(var)		((uint64_t)(var) & 0x000000000000FFFF)
+
+/**
+ * Macros to get values in word8
+ */
+#define PARSE_ERROR_CODE(var)		((uint64_t)(var) & 0xFF00000000000000)
+#define SOFT_PARSING_CONTEXT(var)	((uint64_t)(var) & 0x00FFFFFFFFFFFFFF)
 
 /* Debug frame, otherwise supposed to be discarded */
 #define DPAA2_ETH_FAS_DISC	      0x80000000

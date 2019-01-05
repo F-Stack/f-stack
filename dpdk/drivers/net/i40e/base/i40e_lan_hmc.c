@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2013 - 2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #include "i40e_osdep.h"
 #include "i40e_register.h"
@@ -143,7 +114,7 @@ enum i40e_status_code i40e_init_lan_hmc(struct i40e_hw *hw, u32 txq_num,
 		ret_code = I40E_ERR_INVALID_HMC_OBJ_COUNT;
 		DEBUGOUT3("i40e_init_lan_hmc: Tx context: asks for 0x%x but max allowed is 0x%x, returns error %d\n",
 			  txq_num, obj->max_cnt, ret_code);
-		goto init_lan_hmc_out;
+		goto free_hmc_out;
 	}
 
 	/* aggregate values into the full LAN object for later */
@@ -166,7 +137,7 @@ enum i40e_status_code i40e_init_lan_hmc(struct i40e_hw *hw, u32 txq_num,
 		ret_code = I40E_ERR_INVALID_HMC_OBJ_COUNT;
 		DEBUGOUT3("i40e_init_lan_hmc: Rx context: asks for 0x%x but max allowed is 0x%x, returns error %d\n",
 			  rxq_num, obj->max_cnt, ret_code);
-		goto init_lan_hmc_out;
+		goto free_hmc_out;
 	}
 
 	/* aggregate values into the full LAN object for later */
@@ -189,7 +160,7 @@ enum i40e_status_code i40e_init_lan_hmc(struct i40e_hw *hw, u32 txq_num,
 		ret_code = I40E_ERR_INVALID_HMC_OBJ_COUNT;
 		DEBUGOUT3("i40e_init_lan_hmc: FCoE context: asks for 0x%x but max allowed is 0x%x, returns error %d\n",
 			  fcoe_cntx_num, obj->max_cnt, ret_code);
-		goto init_lan_hmc_out;
+		goto free_hmc_out;
 	}
 
 	/* aggregate values into the full LAN object for later */
@@ -212,7 +183,7 @@ enum i40e_status_code i40e_init_lan_hmc(struct i40e_hw *hw, u32 txq_num,
 		ret_code = I40E_ERR_INVALID_HMC_OBJ_COUNT;
 		DEBUGOUT3("i40e_init_lan_hmc: FCoE filter: asks for 0x%x but max allowed is 0x%x, returns error %d\n",
 			  fcoe_filt_num, obj->max_cnt, ret_code);
-		goto init_lan_hmc_out;
+		goto free_hmc_out;
 	}
 
 	/* aggregate values into the full LAN object for later */
@@ -233,7 +204,7 @@ enum i40e_status_code i40e_init_lan_hmc(struct i40e_hw *hw, u32 txq_num,
 					  (sizeof(struct i40e_hmc_sd_entry) *
 					  hw->hmc.sd_table.sd_cnt));
 		if (ret_code)
-			goto init_lan_hmc_out;
+			goto free_hmc_out;
 		hw->hmc.sd_table.sd_entry =
 			(struct i40e_hmc_sd_entry *)hw->hmc.sd_table.addr.va;
 	}
@@ -241,6 +212,11 @@ enum i40e_status_code i40e_init_lan_hmc(struct i40e_hw *hw, u32 txq_num,
 	full_obj->size = l2fpm_size;
 
 init_lan_hmc_out:
+	return ret_code;
+free_hmc_out:
+	if (hw->hmc.hmc_obj_virt_mem.va)
+		i40e_free_virt_mem(hw, &hw->hmc.hmc_obj_virt_mem);
+
 	return ret_code;
 }
 

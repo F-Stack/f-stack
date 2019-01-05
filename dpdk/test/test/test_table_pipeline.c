@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -98,9 +69,9 @@ rte_pipeline_table_action_handler_hit
 table_action_stub_hit(struct rte_pipeline *p, struct rte_mbuf **pkts,
 	uint64_t pkts_mask, struct rte_pipeline_table_entry **entry, void *arg);
 
-rte_pipeline_table_action_handler_miss
+static int
 table_action_stub_miss(struct rte_pipeline *p, struct rte_mbuf **pkts,
-	uint64_t pkts_mask, struct rte_pipeline_table_entry **entry, void *arg);
+	uint64_t pkts_mask, struct rte_pipeline_table_entry *entry, void *arg);
 
 rte_pipeline_table_action_handler_hit
 table_action_0x00(__attribute__((unused)) struct rte_pipeline *p,
@@ -130,11 +101,11 @@ table_action_stub_hit(__attribute__((unused)) struct rte_pipeline *p,
 	return 0;
 }
 
-rte_pipeline_table_action_handler_miss
+static int
 table_action_stub_miss(struct rte_pipeline *p,
 	__attribute__((unused)) struct rte_mbuf **pkts,
 	uint64_t pkts_mask,
-	__attribute__((unused)) struct rte_pipeline_table_entry **entry,
+	__attribute__((unused)) struct rte_pipeline_table_entry *entry,
 	__attribute__((unused)) void *arg)
 {
 	printf("STUB Table Action Miss - setting mask to 0x%"PRIx64"\n",
@@ -546,8 +517,7 @@ test_table_pipeline(void)
 
 	/* TEST - one packet per port */
 	action_handler_hit = NULL;
-	action_handler_miss =
-		(rte_pipeline_table_action_handler_miss) table_action_stub_miss;
+	action_handler_miss = table_action_stub_miss;
 	table_entry_default_action = RTE_PIPELINE_ACTION_PORT;
 	override_miss_mask = 0x01; /* one packet per port */
 	setup_pipeline(e_TEST_STUB);
@@ -582,8 +552,7 @@ test_table_pipeline(void)
 
 	printf("TEST - two tables, hitmask override to 0x01\n");
 	connect_miss_action_to_table = 1;
-	action_handler_miss =
-		(rte_pipeline_table_action_handler_miss)table_action_stub_miss;
+	action_handler_miss = table_action_stub_miss;
 	override_miss_mask = 0x01;
 	setup_pipeline(e_TEST_STUB);
 	if (test_pipeline_single_filter(e_TEST_STUB, 2) < 0)

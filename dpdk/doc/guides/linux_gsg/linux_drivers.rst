@@ -1,33 +1,7 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2015 Intel Corporation.
-    Copyright(c) 2017 Mellanox Corporation.
+    Copyright 2017 Mellanox Technologies, Ltd
     All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 .. _linux_gsg_linux_drivers:
 
@@ -73,6 +47,13 @@ be loaded as shown below:
    UIO on the system. Therefore, devices for use by DPDK should be bound to the
    ``vfio-pci`` kernel module rather than ``igb_uio`` or ``uio_pci_generic``.
    For more details see :ref:`linux_gsg_binding_kernel` below.
+
+.. note::
+
+   If the devices used for DPDK are bound to the ``uio_pci_generic`` kernel module,
+   please make sure that the IOMMU is disabled or passthrough. One can add
+   ``intel_iommu=off`` or ``amd_iommu=off`` or ``intel_iommu=on iommu=pt``in GRUB
+   command line on x86_64 systems, or add ``iommu.passthrough=1`` on arm64 system.
 
 Since DPDK release 1.7 onward provides VFIO support, use of UIO is optional
 for platforms that support using VFIO.

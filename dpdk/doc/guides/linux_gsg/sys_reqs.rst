@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 System Requirements
 ===================
@@ -61,8 +34,8 @@ Compilation of the DPDK
 
 .. note::
 
-    Testing has been performed using Fedora 18. The setup commands and installed packages needed on other systems may be different.
-    For details on other Linux distributions and the versions tested, please consult the DPDK Release Notes.
+    The setup commands and installed packages needed on various systems may be different.
+    For details on Linux distributions and the versions tested, please consult the DPDK Release Notes.
 
 *   GNU ``make``.
 
@@ -91,7 +64,11 @@ Compilation of the DPDK
        x86_x32 ABI is currently supported with distribution packages only on Ubuntu
        higher than 13.10 or recent Debian distribution. The only supported  compiler is gcc 4.9+.
 
-*   libnuma-devel - library for handling NUMA (Non Uniform Memory Access).
+*   Library for handling NUMA (Non Uniform Memory Access).
+
+    * numactl-devel in Red Hat/Fedora;
+
+    * libnuma-dev in Debian/Ubuntu;
 
 *   Python, version 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
 
@@ -121,11 +98,21 @@ System Software
 
 **Required:**
 
-*   Kernel version >= 2.6.34
+*   Kernel version >= 3.2
+
+    The kernel version required is based on the oldest long term stable kernel available
+    at kernel.org when the DPDK version is in development.
 
     The kernel version in use can be checked using the command::
 
         uname -r
+
+.. note::
+
+    Kernel version 3.2 is no longer a kernel.org longterm stable kernel.
+    For DPDK 19.02 the minimum required kernel will be updated to
+    the current kernel.org oldest longterm stable supported kernel 3.16,
+    or recent versions of common distributions, notably RHEL/CentOS 7.
 
 *   glibc >= 2.7 (for features related to cpuset)
 
@@ -206,12 +193,6 @@ On a NUMA machine, pages should be allocated explicitly on separate nodes::
 .. note::
 
     For 1G pages, it is not possible to reserve the hugepage memory after the system has booted.
-
-    On IBM POWER system, the nr_overcommit_hugepages should be set to the same value as nr_hugepages.
-    For example, if the required page number is 128, the following commands are used::
-
-        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_hugepages
-        echo 128 > /sys/kernel/mm/hugepages/hugepages-16384kB/nr_overcommit_hugepages
 
 Using Hugepages with the DPDK
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

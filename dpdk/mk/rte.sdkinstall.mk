@@ -1,34 +1,6 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   Copyright 2015 6WIND S.A.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation.
+# Copyright 2015 6WIND S.A.
 
 # Configuration, compilation and installation can be done at once
 # with make install T=<config>
@@ -113,18 +85,22 @@ else
 	@echo Installation in $(DESTDIR)$(prefix)/ complete
 endif
 
+# when installing we want recursive copies preserving timestamps only, no
+# preservation of user/group ids or permissions
+CP_FLAGS=-dR --preserve=timestamps
+TAR_X_FLAGS=--strip-components=1 --keep-newer-files --no-same-owner --no-same-permissions
+
 install-runtime:
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(libdir))
-	$(Q)cp -a    $O/lib/* $(DESTDIR)$(libdir)
+	$(Q)cp $(CP_FLAGS)    $O/lib/* $(DESTDIR)$(libdir)
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(bindir))
 	$(Q)tar -cf -      -C $O --exclude 'app/*.map' \
 		--exclude app/dpdk-pmdinfogen \
 		--exclude 'app/cmdline*' --exclude app/test \
 		--exclude app/testacl --exclude app/testpipeline app | \
-	    tar -xf -      -C $(DESTDIR)$(bindir) --strip-components=1 \
-		--keep-newer-files
+	    tar -xf -      -C $(DESTDIR)$(bindir) $(TAR_X_FLAGS)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(datadir))
-	$(Q)cp -a $(RTE_SDK)/usertools $(DESTDIR)$(datadir)
+	$(Q)cp $(CP_FLAGS) $(RTE_SDK)/usertools $(DESTDIR)$(datadir)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(sbindir))
 	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/usertools/dpdk-devbind.py, \
 	                           $(DESTDIR)$(sbindir)/dpdk-devbind)
@@ -132,30 +108,29 @@ install-runtime:
 	                           $(DESTDIR)$(bindir)/dpdk-pmdinfo)
 ifneq ($(wildcard $O/doc/man/*/*.1),)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(mandir)/man1)
-	$(Q)cp -a $O/doc/man/*/*.1 $(DESTDIR)$(mandir)/man1
+	$(Q)cp $(CP_FLAGS) $O/doc/man/*/*.1 $(DESTDIR)$(mandir)/man1
 endif
 ifneq ($(wildcard $O/doc/man/*/*.8),)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(mandir)/man8)
-	$(Q)cp -a $O/doc/man/*/*.8 $(DESTDIR)$(mandir)/man8
+	$(Q)cp $(CP_FLAGS) $O/doc/man/*/*.8 $(DESTDIR)$(mandir)/man8
 endif
 
 install-kmod:
 ifneq ($(wildcard $O/kmod/*),)
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(kerneldir))
-	$(Q)cp -a   $O/kmod/* $(DESTDIR)$(kerneldir)
+	$(Q)cp $(CP_FLAGS)   $O/kmod/* $(DESTDIR)$(kerneldir)
 endif
 
 install-sdk:
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(includedir))
 	$(Q)tar -chf -     -C $O include | \
-	    tar -xf -      -C $(DESTDIR)$(includedir) --strip-components=1 \
-		--keep-newer-files
+	    tar -xf -      -C $(DESTDIR)$(includedir) $(TAR_X_FLAGS)
 	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(sdkdir))
-	$(Q)cp -a               $(RTE_SDK)/mk            $(DESTDIR)$(sdkdir)
-	$(Q)cp -a               $(RTE_SDK)/buildtools    $(DESTDIR)$(sdkdir)
+	$(Q)cp $(CP_FLAGS)      $(RTE_SDK)/mk            $(DESTDIR)$(sdkdir)
+	$(Q)cp $(CP_FLAGS)      $(RTE_SDK)/buildtools    $(DESTDIR)$(sdkdir)
 	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(targetdir)/app)
-	$(Q)cp -a               $O/.config               $(DESTDIR)$(targetdir)
-	$(Q)cp -a               $O/app/dpdk-pmdinfogen   $(DESTDIR)$(targetdir)/app
+	$(Q)cp $(CP_FLAGS)      $O/.config               $(DESTDIR)$(targetdir)
+	$(Q)cp $(CP_FLAGS)      $O/app/dpdk-pmdinfogen   $(DESTDIR)$(targetdir)/app
 	$(Q)$(call rte_symlink, $(DESTDIR)$(includedir), $(DESTDIR)$(targetdir)/include)
 	$(Q)$(call rte_symlink, $(DESTDIR)$(libdir),     $(DESTDIR)$(targetdir)/lib)
 
@@ -163,12 +138,11 @@ install-doc:
 ifneq ($(wildcard $O/doc/html),)
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(docdir))
 	$(Q)tar -cf -      -C $O/doc --exclude 'html/guides/.*' html | \
-	    tar -xf -      -C $(DESTDIR)$(docdir) --strip-components=1 \
-		--keep-newer-files
+	    tar -xf -      -C $(DESTDIR)$(docdir) $(TAR_X_FLAGS)
 endif
 ifneq ($(wildcard $O/doc/*/*/*pdf),)
 	$(Q)$(call rte_mkdir,     $(DESTDIR)$(docdir)/guides)
-	$(Q)cp -a $O/doc/*/*/*pdf $(DESTDIR)$(docdir)/guides
+	$(Q)cp $(CP_FLAGS) $O/doc/*/*/*pdf $(DESTDIR)$(docdir)/guides
 endif
 	$(Q)$(call rte_mkdir,         $(DESTDIR)$(datadir))
-	$(Q)cp -a $(RTE_SDK)/examples $(DESTDIR)$(datadir)
+	$(Q)cp $(CP_FLAGS) $(RTE_SDK)/examples $(DESTDIR)$(datadir)

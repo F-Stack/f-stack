@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 
 /**
@@ -126,9 +98,8 @@ rte_event_ring_enqueue_burst(struct rte_event_ring *r,
 		goto end;
 
 	ENQUEUE_PTRS(&r->r, &r[1], prod_head, events, n, struct rte_event);
-	rte_smp_wmb();
 
-	update_tail(&r->r.prod, prod_head, prod_next, 1);
+	update_tail(&r->r.prod, prod_head, prod_next, r->r.prod.single, 1);
 end:
 	if (free_space != NULL)
 		*free_space = free_entries - n;
@@ -168,9 +139,8 @@ rte_event_ring_dequeue_burst(struct rte_event_ring *r,
 		goto end;
 
 	DEQUEUE_PTRS(&r->r, &r[1], cons_head, events, n, struct rte_event);
-	rte_smp_rmb();
 
-	update_tail(&r->r.cons, cons_head, cons_next, 1);
+	update_tail(&r->r.cons, cons_head, cons_next, r->r.cons.single, 0);
 
 end:
 	if (available != NULL)

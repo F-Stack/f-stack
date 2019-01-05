@@ -84,7 +84,7 @@ Prerequisites
 
 - Requires firmware version **7.2.51.0**. It is included in most of the
   standard Linux distros. If it is not available visit
-  `QLogic Driver Download Center <http://driverdownloads.qlogic.com>`_
+  `linux-firmware git repository <https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/bnx2x/bnx2x-e2-7.2.51.0.fw>`_
   to get the required firmware.
 
 Pre-Installation Configuration
@@ -101,14 +101,6 @@ enabling debugging options may affect system performance.
   Toggle compilation of bnx2x driver. To use bnx2x PMD set this config parameter
   to 'y'. Also, in order for firmware binary to load user will need zlib devel
   package installed.
-
-- ``CONFIG_RTE_LIBRTE_BNX2X_DEBUG`` (default **n**)
-
-  Toggle display of generic debugging messages.
-
-- ``CONFIG_RTE_LIBRTE_BNX2X_DEBUG_INIT`` (default **n**)
-
-  Toggle display of initialization related messages.
 
 - ``CONFIG_RTE_LIBRTE_BNX2X_DEBUG_TX`` (default **n**)
 
@@ -202,6 +194,7 @@ This section provides instructions to configure SR-IOV with Linux OS.
    using the instructions outlined in the Application notes below.
 
 #. Running testpmd:
+   (Supply ``--log-level="pmd.net.bnx2x.driver",7`` to view informational messages):
 
    Follow instructions available in the document
    :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`

@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_VF_H__
@@ -319,5 +317,14 @@ void ecore_vf_set_vf_start_tunn_update_param(struct ecore_tunnel_info *p_tun);
 
 u32 ecore_vf_hw_bar_size(struct ecore_hwfn *p_hwfn,
 		     enum BAR_ID bar_id);
+
+/**
+ * @brief - ecore_vf_pf_update_mtu Update MTU for VF.
+ *
+ * @param p_hwfn
+ * @param - mtu
+ */
+enum _ecore_status_t
+ecore_vf_pf_update_mtu(struct ecore_hwfn *p_hwfn, u16 mtu);
 #endif
 #endif /* __ECORE_VF_H__ */

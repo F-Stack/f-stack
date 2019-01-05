@@ -1,40 +1,7 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2008-2012 Freescale Semiconductor, Inc.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef __FSL_QMAN_H
@@ -45,6 +12,7 @@ extern "C" {
 #endif
 
 #include <dpaa_rbtree.h>
+#include <rte_eventdev.h>
 
 /* FQ lookups (turn this on for 64bit user-space) */
 #if (__WORDSIZE == 64)
@@ -316,20 +284,20 @@ static inline dma_addr_t qm_sg_addr(const struct qm_sg_entry *sg)
 	} while (0)
 
 /* See 1.5.8.1: "Enqueue Command" */
-struct qm_eqcr_entry {
+struct __rte_aligned(8) qm_eqcr_entry {
 	u8 __dont_write_directly__verb;
 	u8 dca;
 	u16 seqnum;
 	u32 orp;	/* 24-bit */
 	u32 fqid;	/* 24-bit */
 	u32 tag;
-	struct qm_fd fd;
+	struct qm_fd fd; /* this has alignment 8 */
 	u8 __reserved3[32];
 } __packed;
 
 
 /* "Frame Dequeue Response" */
-struct qm_dqrr_entry {
+struct __rte_aligned(8) qm_dqrr_entry {
 	u8 verb;
 	u8 stat;
 	u16 seqnum;	/* 15-bit */
@@ -337,7 +305,7 @@ struct qm_dqrr_entry {
 	u8 __reserved2[3];
 	u32 fqid;	/* 24-bit */
 	u32 contextB;
-	struct qm_fd fd;
+	struct qm_fd fd; /* this has alignment 8 */
 	u8 __reserved4[32];
 };
 
@@ -355,18 +323,19 @@ struct qm_dqrr_entry {
 /* "ERN Message Response" */
 /* "FQ State Change Notification" */
 struct qm_mr_entry {
-	u8 verb;
 	union {
 		struct {
+			u8 verb;
 			u8 dca;
 			u16 seqnum;
 			u8 rc;		/* Rejection Code */
 			u32 orp:24;
 			u32 fqid;	/* 24-bit */
 			u32 tag;
-			struct qm_fd fd;
-		} __packed ern;
+			struct qm_fd fd; /* this has alignment 8 */
+		} __packed __rte_aligned(8) ern;
 		struct {
+			u8 verb;
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 			u8 colour:2;	/* See QM_MR_DCERN_COLOUR_* */
 			u8 __reserved1:4;
@@ -381,18 +350,19 @@ struct qm_mr_entry {
 			u32 __reserved3:24;
 			u32 fqid;	/* 24-bit */
 			u32 tag;
-			struct qm_fd fd;
-		} __packed dcern;
+			struct qm_fd fd; /* this has alignment 8 */
+		} __packed __rte_aligned(8) dcern;
 		struct {
+			u8 verb;
 			u8 fqs;		/* Frame Queue Status */
 			u8 __reserved1[6];
 			u32 fqid;	/* 24-bit */
 			u32 contextB;
 			u8 __reserved2[16];
-		} __packed fq;		/* FQRN/FQRNI/FQRL/FQPN */
+		} __packed __rte_aligned(8) fq;	/* FQRN/FQRNI/FQRL/FQPN */
 	};
 	u8 __reserved2[32];
-} __packed;
+} __packed __rte_aligned(8);
 #define QM_MR_VERB_VBIT			0x80
 /*
  * ERNs originating from direct-connect portals ("dcern") use 0x20 as a verb
@@ -1157,6 +1127,20 @@ typedef enum qman_cb_dqrr_result (*qman_cb_dqrr)(struct qman_portal *qm,
 					struct qman_fq *fq,
 					const struct qm_dqrr_entry *dqrr);
 
+typedef enum qman_cb_dqrr_result (*qman_dpdk_cb_dqrr)(void *event,
+					struct qman_portal *qm,
+					struct qman_fq *fq,
+					const struct qm_dqrr_entry *dqrr,
+					void **bd);
+
+/* This callback type is used when handling buffers in dpdk pull mode */
+typedef void (*qman_dpdk_pull_cb_dqrr)(struct qman_fq **fq,
+					struct qm_dqrr_entry **dqrr,
+					void **bufs,
+					int num_bufs);
+
+typedef void (*qman_dpdk_cb_prepare)(struct qm_dqrr_entry *dq, void **bufs);
+
 /*
  * This callback type is used when handling ERNs, FQRNs and FQRLs via MR. They
  * are always consumed after the callback returns.
@@ -1215,7 +1199,12 @@ enum qman_fq_state {
  */
 
 struct qman_fq_cb {
-	qman_cb_dqrr dqrr;	/* for dequeued frames */
+	union { /* for dequeued frames */
+		qman_dpdk_cb_dqrr dqrr_dpdk_cb;
+		qman_dpdk_pull_cb_dqrr dqrr_dpdk_pull_cb;
+		qman_cb_dqrr dqrr;
+	};
+	qman_dpdk_cb_prepare dqrr_prepare;
 	qman_cb_mr ern;		/* for s/w ERNs */
 	qman_cb_mr fqs;		/* frame-queue state changes*/
 };
@@ -1223,19 +1212,25 @@ struct qman_fq_cb {
 struct qman_fq {
 	/* Caller of qman_create_fq() provides these demux callbacks */
 	struct qman_fq_cb cb;
-	/*
-	 * These are internal to the driver, don't touch. In particular, they
-	 * may change, be removed, or extended (so you shouldn't rely on
-	 * sizeof(qman_fq) being a constant).
-	 */
-	spinlock_t fqlock;
-	u32 fqid;
+
+	u32 fqid_le;
+	u16 ch_id;
+	u8 cgr_groupid;
+	u8 is_static;
+
 	/* DPDK Interface */
 	void *dpaa_intf;
 
+	struct rte_event ev;
+	/* affined portal in case of static queue */
+	struct qman_portal *qp;
+
 	volatile unsigned long flags;
+
 	enum qman_fq_state state;
-	int cgr_groupid;
+	u32 fqid;
+	spinlock_t fqlock;
+
 	struct rb_node node;
 #ifdef CONFIG_FSL_QMAN_FQ_LOOKUP
 	u32 key;
@@ -1317,6 +1312,29 @@ struct qman_cgr {
  */
 int qman_get_portal_index(void);
 
+u32 qman_portal_dequeue(struct rte_event ev[], unsigned int poll_limit,
+			void **bufs);
+
+/**
+ * qman_irqsource_add - add processing sources to be interrupt-driven
+ * @bits: bitmask of QM_PIRQ_**I processing sources
+ *
+ * Adds processing sources that should be interrupt-driven (rather than
+ * processed via qman_poll_***() functions). Returns zero for success, or
+ * -EINVAL if the current CPU is sharing a portal hosted on another CPU.
+ */
+int qman_irqsource_add(u32 bits);
+
+/**
+ * qman_irqsource_remove - remove processing sources from being interrupt-driven
+ * @bits: bitmask of QM_PIRQ_**I processing sources
+ *
+ * Removes processing sources from being interrupt-driven, so that they will
+ * instead be processed via qman_poll_***() functions. Returns zero for success,
+ * or -EINVAL if the current CPU is sharing a portal hosted on another CPU.
+ */
+int qman_irqsource_remove(u32 bits);
+
 /**
  * qman_affine_channel - return the channel ID of an portal
  * @cpu: the cpu whose affine portal is the subject of the query
@@ -1327,14 +1345,18 @@ int qman_get_portal_index(void);
  */
 u16 qman_affine_channel(int cpu);
 
+unsigned int qman_portal_poll_rx(unsigned int poll_limit,
+				 void **bufs, struct qman_portal *q);
+
 /**
  * qman_set_vdq - Issue a volatile dequeue command
  * @fq: Frame Queue on which the volatile dequeue command is issued
  * @num: Number of Frames requested for volatile dequeue
+ * @vdqcr_flags: QM_VDQCR_EXACT flag to for VDQCR command
  *
  * This function will issue a volatile dequeue command to the QMAN.
  */
-int qman_set_vdq(struct qman_fq *fq, u16 num);
+int qman_set_vdq(struct qman_fq *fq, u16 num, uint32_t vdqcr_flags);
 
 /**
  * qman_dequeue - Get the DQRR entry after volatile dequeue command
@@ -1414,7 +1436,7 @@ void qman_start_dequeues(void);
  * (SDQCR). The requested pools are limited to those the portal has dequeue
  * access to.
  */
-void qman_static_dequeue_add(u32 pools);
+void qman_static_dequeue_add(u32 pools, struct qman_portal *qm);
 
 /**
  * qman_static_dequeue_del - Remove pool channels from the portal SDQCR
@@ -1424,7 +1446,7 @@ void qman_static_dequeue_add(u32 pools);
  * register (SDQCR). The requested pools are limited to those the portal has
  * dequeue access to.
  */
-void qman_static_dequeue_del(u32 pools);
+void qman_static_dequeue_del(u32 pools, struct qman_portal *qp);
 
 /**
  * qman_static_dequeue_get - return the portal's current SDQCR
@@ -1433,7 +1455,7 @@ void qman_static_dequeue_del(u32 pools);
  * entire register is returned, so if only the currently-enabled pool channels
  * are desired, mask the return value with QM_SDQCR_CHANNELS_POOL_MASK.
  */
-u32 qman_static_dequeue_get(void);
+u32 qman_static_dequeue_get(struct qman_portal *qp);
 
 /**
  * qman_dca - Perform a Discrete Consumption Acknowledgment
@@ -1447,7 +1469,21 @@ u32 qman_static_dequeue_get(void);
  * function must be called from the same CPU as that which processed the DQRR
  * entry in the first place.
  */
-void qman_dca(struct qm_dqrr_entry *dq, int park_request);
+void qman_dca(const struct qm_dqrr_entry *dq, int park_request);
+
+/**
+ * qman_dca_index - Perform a Discrete Consumption Acknowledgment
+ * @index: the DQRR index to be consumed
+ * @park_request: indicates whether the held-active @fq should be parked
+ *
+ * Only allowed in DCA-mode portals, for DQRR entries whose handler callback had
+ * previously returned 'qman_cb_dqrr_defer'. NB, as with the other APIs, this
+ * does not take a 'portal' argument but implies the core affine portal from the
+ * cpu that is currently executing the function. For reasons of locking, this
+ * function must be called from the same CPU as that which processed the DQRR
+ * entry in the first place.
+ */
+void qman_dca_index(u8 index, int park_request);
 
 /**
  * qman_eqcr_is_empty - Determine if portal's EQCR is empty
@@ -1644,6 +1680,13 @@ int qman_query_fq_has_pkts(struct qman_fq *fq);
 int qman_query_fq_np(struct qman_fq *fq, struct qm_mcr_queryfq_np *np);
 
 /**
+ * qman_query_fq_frmcnt - Queries fq frame count
+ * @fq: the frame queue object to be queried
+ * @frm_cnt: number of frames in the queue
+ */
+int qman_query_fq_frm_cnt(struct qman_fq *fq, u32 *frm_cnt);
+
+/**
  * qman_query_wq - Queries work queue lengths
  * @query_dedicated: If non-zero, query length of WQs in the channel dedicated
  *		to this software portal. Otherwise, query length of WQs in a
@@ -1708,9 +1751,22 @@ int qman_volatile_dequeue(struct qman_fq *fq, u32 flags, u32 vdqcr);
  */
 int qman_enqueue(struct qman_fq *fq, const struct qm_fd *fd, u32 flags);
 
-int qman_enqueue_multi(struct qman_fq *fq,
-		       const struct qm_fd *fd,
-		int frames_to_send);
+int qman_enqueue_multi(struct qman_fq *fq, const struct qm_fd *fd, u32 *flags,
+		       int frames_to_send);
+
+/**
+ * qman_enqueue_multi_fq - Enqueue multiple frames to their respective frame
+ * queues.
+ * @fq[]: Array of frame queue objects to enqueue to
+ * @fd: pointer to first descriptor of frame to be enqueued
+ * @frames_to_send: number of frames to be sent.
+ *
+ * This API is similar to qman_enqueue_multi(), but it takes fd which needs
+ * to be processed by different frame queues.
+ */
+int
+qman_enqueue_multi_fq(struct qman_fq *fq[], const struct qm_fd *fd,
+		      int frames_to_send);
 
 typedef int (*qman_cb_precommit) (void *arg);
 

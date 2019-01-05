@@ -33,7 +33,7 @@ extern "C" {
 
 // dpdk argc, argv, max argc: 16, member of dpdk_config
 #define DPDK_CONFIG_NUM 16
-#define DPDK_CONFIG_MAXLEN 64
+#define DPDK_CONFIG_MAXLEN 256
 #define DPDK_MAX_LCORE 128
 
 extern int dpdk_argc;
@@ -62,6 +62,19 @@ struct ff_port_cfg {
     uint16_t lcore_list[DPDK_MAX_LCORE];
 };
 
+struct ff_vdev_cfg {
+    char *name;
+    char *iface;
+    char *path;
+    char *mac;
+    uint8_t vdev_id;
+    uint8_t nb_queues;
+    uint8_t nb_cq;
+    uint16_t queue_size;
+};
+
+
+
 struct ff_freebsd_cfg {
     char *name;
     char *str;
@@ -88,6 +101,7 @@ struct ff_config {
         int nb_procs;
         int proc_id;
         int promiscuous;
+        int nb_vdev;
         int numa_on;
         int tso;
         int vlan_strip;
@@ -103,6 +117,7 @@ struct ff_config {
         uint16_t *portid_list;
         // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
+        struct ff_vdev_cfg *vdev_cfgs;
     } dpdk;
 
     struct {

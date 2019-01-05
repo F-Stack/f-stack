@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
 Packet Framework
 ================
@@ -124,6 +97,10 @@ Port Types
    | 8 | Sink             | Output port used to drop all input packets. Similar to Linux kernel /dev/null         |
    |   |                  | character device.                                                                     |
    |   |                  |                                                                                       |
+   +---+------------------+---------------------------------------------------------------------------------------+
+   | 9 | Sym_crypto       | Output port used to extract DPDK Cryptodev operations from a fixed offset of the      |
+   |   |                  | packet and then enqueue to the Cryptodev PMD. Input port used to dequeue the          |
+   |   |                  | Cryptodev operations from the Cryptodev PMD and then retrieve the packets from them.  |
    +---+------------------+---------------------------------------------------------------------------------------+
 
 Port Interface
@@ -1105,6 +1082,11 @@ with each table entry having its own set of enabled user actions and its own cop
    |   |                                   | checksum.                                                           |
    |   |                                   |                                                                     |
    +---+-----------------------------------+---------------------------------------------------------------------+
+   | 7 | Sym Crypto                        | Generate Cryptodev session based on the user-specified algorithm    |
+   |   |                                   | and key(s), and assemble the cryptodev operation based on the       |
+   |   |                                   | predefined offsets.                                                 |
+   |   |                                   |                                                                     |
+   +---+-----------------------------------+---------------------------------------------------------------------+
 
 Multicore Scaling
 -----------------
@@ -1160,7 +1142,7 @@ Typical devices with acceleration capabilities are:
 
 *   Inline accelerators: NICs, switches, FPGAs, etc;
 
-*   Look-aside accelerators: chipsets, FPGAs, etc.
+*   Look-aside accelerators: chipsets, FPGAs, Intel QuickAssist, etc.
 
 Usually, to support a specific functional block, specific implementation of Packet Framework tables and/or ports and/or actions has to be provided for each accelerator,
 with all the implementations sharing the same API: pure SW implementation (no acceleration), implementation using accelerator A, implementation using accelerator B, etc.

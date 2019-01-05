@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -54,6 +25,7 @@
 #include <rte_mempool.h>
 #include <rte_spinlock.h>
 #include <rte_malloc.h>
+#include <rte_mbuf_pool_ops.h>
 
 #include "test.h"
 
@@ -313,6 +285,7 @@ test_mempool_perf(void)
 	struct rte_mempool *mp_cache = NULL;
 	struct rte_mempool *mp_nocache = NULL;
 	struct rte_mempool *default_pool = NULL;
+	const char *default_pool_ops;
 	int ret = -1;
 
 	rte_atomic32_init(&synchro);
@@ -336,6 +309,7 @@ test_mempool_perf(void)
 	if (mp_cache == NULL)
 		goto err;
 
+	default_pool_ops = rte_mbuf_best_mempool_ops();
 	/* Create a mempool based on Default handler */
 	default_pool = rte_mempool_create_empty("default_pool",
 						MEMPOOL_SIZE,
@@ -344,21 +318,18 @@ test_mempool_perf(void)
 						SOCKET_ID_ANY, 0);
 
 	if (default_pool == NULL) {
-		printf("cannot allocate %s mempool\n",
-		       RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+		printf("cannot allocate %s mempool\n", default_pool_ops);
 		goto err;
 	}
 
-	if (rte_mempool_set_ops_byname(default_pool,
-				       RTE_MBUF_DEFAULT_MEMPOOL_OPS, NULL)
+	if (rte_mempool_set_ops_byname(default_pool, default_pool_ops, NULL)
 				       < 0) {
-		printf("cannot set %s handler\n", RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+		printf("cannot set %s handler\n", default_pool_ops);
 		goto err;
 	}
 
 	if (rte_mempool_populate_default(default_pool) < 0) {
-		printf("cannot populate %s mempool\n",
-		       RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+		printf("cannot populate %s mempool\n", default_pool_ops);
 		goto err;
 	}
 
@@ -378,7 +349,7 @@ test_mempool_perf(void)
 
 	/* performance test with 1, 2 and max cores */
 	printf("start performance test for %s (without cache)\n",
-	       RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+	       default_pool_ops);
 
 	if (do_one_mempool_test(default_pool, 1) < 0)
 		goto err;

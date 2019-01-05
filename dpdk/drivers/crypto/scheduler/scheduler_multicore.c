@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 #include <unistd.h>
 
@@ -49,8 +21,8 @@ struct mc_scheduler_ctx {
 	uint32_t num_workers;             /**< Number of workers polling */
 	uint32_t stop_signal;
 
-	struct rte_ring *sched_enq_ring[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKER_CORES];
-	struct rte_ring *sched_deq_ring[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKER_CORES];
+	struct rte_ring *sched_enq_ring[RTE_MAX_LCORE];
+	struct rte_ring *sched_deq_ring[RTE_MAX_LCORE];
 };
 
 struct mc_scheduler_qp_ctx {
@@ -206,7 +178,8 @@ mc_scheduler_worker(struct rte_cryptodev *dev)
 		}
 	}
 	if (worker_idx == -1) {
-		CS_LOG_ERR("worker on core %u:cannot find worker index!\n", core_id);
+		CR_SCHED_LOG(ERR, "worker on core %u:cannot find worker index!",
+			core_id);
 		return -1;
 	}
 
@@ -341,7 +314,7 @@ scheduler_config_qp(struct rte_cryptodev *dev, uint16_t qp_id)
 	mc_qp_ctx = rte_zmalloc_socket(NULL, sizeof(*mc_qp_ctx), 0,
 			rte_socket_id());
 	if (!mc_qp_ctx) {
-		CS_LOG_ERR("failed allocate memory for private queue pair");
+		CR_SCHED_LOG(ERR, "failed allocate memory for private queue pair");
 		return -ENOMEM;
 	}
 
@@ -356,16 +329,18 @@ static int
 scheduler_create_private_ctx(struct rte_cryptodev *dev)
 {
 	struct scheduler_ctx *sched_ctx = dev->data->dev_private;
-	struct mc_scheduler_ctx *mc_ctx;
+	struct mc_scheduler_ctx *mc_ctx = NULL;
 	uint16_t i;
 
-	if (sched_ctx->private_ctx)
+	if (sched_ctx->private_ctx) {
 		rte_free(sched_ctx->private_ctx);
+		sched_ctx->private_ctx = NULL;
+	}
 
 	mc_ctx = rte_zmalloc_socket(NULL, sizeof(struct mc_scheduler_ctx), 0,
 			rte_socket_id());
 	if (!mc_ctx) {
-		CS_LOG_ERR("failed allocate memory");
+		CR_SCHED_LOG(ERR, "failed allocate memory");
 		return -ENOMEM;
 	}
 
@@ -373,28 +348,51 @@ scheduler_create_private_ctx(struct rte_cryptodev *dev)
 	for (i = 0; i < sched_ctx->nb_wc; i++) {
 		char r_name[16];
 
-		snprintf(r_name, sizeof(r_name), MC_SCHED_ENQ_RING_NAME_PREFIX "%u", i);
-		mc_ctx->sched_enq_ring[i] = rte_ring_create(r_name, PER_SLAVE_BUFF_SIZE,
-					rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+		snprintf(r_name, sizeof(r_name), MC_SCHED_ENQ_RING_NAME_PREFIX
+				"%u_%u", dev->data->dev_id, i);
+		mc_ctx->sched_enq_ring[i] = rte_ring_lookup(r_name);
 		if (!mc_ctx->sched_enq_ring[i]) {
-			CS_LOG_ERR("Cannot create ring for worker %u", i);
-			return -1;
+			mc_ctx->sched_enq_ring[i] = rte_ring_create(r_name,
+						PER_SLAVE_BUFF_SIZE,
+						rte_socket_id(),
+						RING_F_SC_DEQ | RING_F_SP_ENQ);
+			if (!mc_ctx->sched_enq_ring[i]) {
+				CR_SCHED_LOG(ERR, "Cannot create ring for worker %u",
+					   i);
+				goto exit;
+			}
 		}
-		snprintf(r_name, sizeof(r_name), MC_SCHED_DEQ_RING_NAME_PREFIX "%u", i);
-		mc_ctx->sched_deq_ring[i] = rte_ring_create(r_name, PER_SLAVE_BUFF_SIZE,
-					rte_socket_id(), RING_F_SC_DEQ | RING_F_SP_ENQ);
+		snprintf(r_name, sizeof(r_name), MC_SCHED_DEQ_RING_NAME_PREFIX
+				"%u_%u", dev->data->dev_id, i);
+		mc_ctx->sched_deq_ring[i] = rte_ring_lookup(r_name);
 		if (!mc_ctx->sched_deq_ring[i]) {
-			CS_LOG_ERR("Cannot create ring for worker %u", i);
-			return -1;
+			mc_ctx->sched_deq_ring[i] = rte_ring_create(r_name,
+						PER_SLAVE_BUFF_SIZE,
+						rte_socket_id(),
+						RING_F_SC_DEQ | RING_F_SP_ENQ);
+			if (!mc_ctx->sched_deq_ring[i]) {
+				CR_SCHED_LOG(ERR, "Cannot create ring for worker %u",
+					   i);
+				goto exit;
+			}
 		}
 	}
 
 	sched_ctx->private_ctx = (void *)mc_ctx;
 
 	return 0;
+
+exit:
+	for (i = 0; i < sched_ctx->nb_wc; i++) {
+		rte_ring_free(mc_ctx->sched_enq_ring[i]);
+		rte_ring_free(mc_ctx->sched_deq_ring[i]);
+	}
+	rte_free(mc_ctx);
+
+	return -1;
 }
 
-struct rte_cryptodev_scheduler_ops scheduler_mc_ops = {
+static struct rte_cryptodev_scheduler_ops scheduler_mc_ops = {
 	slave_attach,
 	slave_detach,
 	scheduler_start,
@@ -405,11 +403,11 @@ struct rte_cryptodev_scheduler_ops scheduler_mc_ops = {
 	NULL	/* option_get */
 };
 
-struct rte_cryptodev_scheduler mc_scheduler = {
+static struct rte_cryptodev_scheduler mc_scheduler = {
 		.name = "multicore-scheduler",
 		.description = "scheduler which will run burst across multiple cpu cores",
 		.mode = CDEV_SCHED_MODE_MULTICORE,
 		.ops = &scheduler_mc_ops
 };
 
-struct rte_cryptodev_scheduler *multicore_scheduler = &mc_scheduler;
+struct rte_cryptodev_scheduler *crypto_scheduler_multicore = &mc_scheduler;

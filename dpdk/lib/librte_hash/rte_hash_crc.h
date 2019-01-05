@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_HASH_CRC_H_
@@ -367,13 +338,12 @@ crc32c_1word(uint32_t data, uint32_t init_val)
 static inline uint32_t
 crc32c_2words(uint64_t data, uint32_t init_val)
 {
+	uint32_t crc, term1, term2;
 	union {
 		uint64_t u64;
 		uint32_t u32[2];
 	} d;
 	d.u64 = data;
-
-	uint32_t crc, term1, term2;
 
 	crc = init_val;
 	crc ^= d.u32[0];
@@ -428,9 +398,9 @@ crc32c_sse42_u64_mimic(uint64_t data, uint64_t init_val)
 	} d;
 
 	d.u64 = data;
-	init_val = crc32c_sse42_u32(d.u32[0], init_val);
-	init_val = crc32c_sse42_u32(d.u32[1], init_val);
-	return init_val;
+	init_val = crc32c_sse42_u32(d.u32[0], (uint32_t)init_val);
+	init_val = crc32c_sse42_u32(d.u32[1], (uint32_t)init_val);
+	return (uint32_t)init_val;
 }
 #endif
 
@@ -442,7 +412,7 @@ crc32c_sse42_u64(uint64_t data, uint64_t init_val)
 			"crc32q %[data], %[init_val];"
 			: [init_val] "+r" (init_val)
 			: [data] "rm" (data));
-	return init_val;
+	return (uint32_t)init_val;
 }
 #endif
 
