@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #ifndef __ECORE_HW_H__
@@ -134,8 +136,8 @@ struct ecore_ptt *ecore_get_reserved_ptt(struct ecore_hwfn	*p_hwfn,
  *
  * @param p_hwfn
  * @param p_ptt
- * @param hw_addr
  * @param val
+ * @param hw_addr
  */
 void ecore_wr(struct ecore_hwfn	*p_hwfn,
 	      struct ecore_ptt	*p_ptt,
@@ -147,6 +149,7 @@ void ecore_wr(struct ecore_hwfn	*p_hwfn,
  *
  * @param p_hwfn
  * @param p_ptt
+ * @param val
  * @param hw_addr
  */
 u32 ecore_rd(struct ecore_hwfn	*p_hwfn,
@@ -222,18 +225,6 @@ void ecore_port_unpretend(struct ecore_hwfn	*p_hwfn,
 			  struct ecore_ptt	*p_ptt);
 
 /**
- * @brief ecore_port_fid_pretend - pretend to another port and another function
- *        when accessing the ptt window
- *
- * @param p_hwfn
- * @param p_ptt
- * @param port_id - the port to pretend to
- * @param fid - fid field of pxp_pretend structure. Can contain either pf / vf.
- */
-void ecore_port_fid_pretend(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
-			    u8 port_id, u16 fid);
-
-/**
  * @brief ecore_vfid_to_concrete - build a concrete FID for a
  *        given VF ID
  *
@@ -263,34 +254,5 @@ enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
 
 void ecore_hw_err_notify(struct ecore_hwfn *p_hwfn,
 			 enum ecore_hw_err_type err_type);
-
-enum _ecore_status_t ecore_dmae_sanity(struct ecore_hwfn *p_hwfn,
-				       struct ecore_ptt *p_ptt,
-				       const char *phase);
-
-/**
- * @brief ecore_ppfid_wr - Write value to BAR using the given ptt while
- *	pretending to a PF to which the given PPFID pertains.
- *
- * @param p_hwfn
- * @param p_ptt
- * @param abs_ppfid
- * @param hw_addr
- * @param val
- */
-void ecore_ppfid_wr(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
-		    u8 abs_ppfid, u32 hw_addr, u32 val);
-
-/**
- * @brief ecore_ppfid_rd - Read value from BAR using the given ptt while
- *	 pretending to a PF to which the given PPFID pertains.
- *
- * @param p_hwfn
- * @param p_ptt
- * @param abs_ppfid
- * @param hw_addr
- */
-u32 ecore_ppfid_rd(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
-		   u8 abs_ppfid, u32 hw_addr);
 
 #endif /* __ECORE_HW_H__ */

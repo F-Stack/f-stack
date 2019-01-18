@@ -1,13 +1,15 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2007-2013 Broadcom Corporation.
+/*-
+ * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
- * Copyright (c) 2014-2018 Cavium Inc.
+ * Copyright (c) 2014-2015 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.bnx2x_pmd for copyright and licensing details.
  */
 
 #ifndef ECORE_REG_H
@@ -1967,7 +1969,6 @@
 #define HW_LOCK_MAX_RESOURCE_VALUE		 31
 #define HW_LOCK_RESOURCE_DRV_FLAGS		 10
 #define HW_LOCK_RESOURCE_GPIO			 1
-#define HW_LOCK_RESOURCE_MDIO			 0
 #define HW_LOCK_RESOURCE_NVRAM			 12
 #define HW_LOCK_RESOURCE_PORT0_ATT_MASK		 3
 #define HW_LOCK_RESOURCE_RECOVERY_LEADER_0	 8

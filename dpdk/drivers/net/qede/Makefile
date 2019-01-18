@@ -1,7 +1,8 @@
-#    SPDX-License-Identifier: BSD-3-Clause
-#    Copyright (c) 2016 - 2018 Cavium Inc.
+#    Copyright (c) 2016 QLogic Corporation.
 #    All rights reserved.
-#    www.cavium.com
+#    www.qlogic.com
+#
+#    See LICENSE.qede_pmd for copyright and licensing details.
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -72,7 +73,8 @@ ifeq ($(shell clang -Wno-pointer-bool-conversion -Werror -E - < /dev/null > /dev
 CFLAGS_BASE_DRIVER += -Wno-pointer-bool-conversion
 endif
 else #ICC
-CFLAGS_qede_ethdev.o += -diag-disable 279 #279: controlling expression is constant
+CFLAGS_BASE_DRIVER += -wd188   #188: enumerated type mixed with another type
+CFLAGS_qede_ethdev.o += -wd279 #279: controlling expression is constant
 endif
 
 #
@@ -105,6 +107,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_vf.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_main.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_rxtx.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_filter.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_fdir.c
 
 include $(RTE_SDK)/mk/rte.lib.mk

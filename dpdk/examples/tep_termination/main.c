@@ -1,5 +1,34 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2015 Intel Corporation
+/*-
+ *   BSD LICENSE
+ *
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <arpa/inet.h>
@@ -515,10 +544,11 @@ check_ports_num(unsigned max_nb_ports)
 	}
 
 	for (portid = 0; portid < nb_ports; portid++) {
-		if (!rte_eth_dev_is_valid_port(ports[portid])) {
+		if (ports[portid] >= max_nb_ports) {
 			RTE_LOG(INFO, VHOST_PORT,
-				"\nSpecified port ID(%u) is not valid\n",
-				ports[portid]);
+				"\nSpecified port ID(%u) exceeds max "
+				" system port ID(%u)\n",
+				ports[portid], (max_nb_ports - 1));
 			ports[portid] = INVALID_PORT_ID;
 			valid_nb_ports--;
 		}
@@ -1061,8 +1091,8 @@ static const struct vhost_device_ops virtio_net_device_ops = {
  * This is a thread will wake up after a period to print stats if the user has
  * enabled them.
  */
-static void *
-print_stats(__rte_unused void *arg)
+static void
+print_stats(void)
 {
 	struct virtio_net_data_ll *dev_ll;
 	uint64_t tx_dropped, rx_dropped;
@@ -1119,8 +1149,6 @@ print_stats(__rte_unused void *arg)
 		}
 		printf("\n================================================\n");
 	}
-
-	return NULL;
 }
 
 /**
@@ -1136,6 +1164,7 @@ main(int argc, char *argv[])
 	uint16_t portid;
 	uint16_t queue_id;
 	static pthread_t tid;
+	char thread_name[RTE_MAX_THREAD_NAME_LEN];
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -1157,7 +1186,7 @@ main(int argc, char *argv[])
 	nb_switching_cores = rte_lcore_count()-1;
 
 	/* Get the number of physical ports. */
-	nb_ports = rte_eth_dev_count_avail();
+	nb_ports = rte_eth_dev_count();
 
 	/*
 	 * Update the global var NB_PORTS and global array PORTS
@@ -1185,7 +1214,7 @@ main(int argc, char *argv[])
 		vpool_array[queue_id].pool = mbuf_pool;
 
 	/* initialize all ports */
-	RTE_ETH_FOREACH_DEV(portid) {
+	for (portid = 0; portid < nb_ports; portid++) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			RTE_LOG(INFO, VHOST_PORT,
@@ -1206,10 +1235,13 @@ main(int argc, char *argv[])
 
 	/* Enable stats if the user option is set. */
 	if (enable_stats) {
-		ret = rte_ctrl_thread_create(&tid, "print-stats", NULL,
-					print_stats, NULL);
-		if (ret < 0)
+		ret = pthread_create(&tid, NULL, (void *)print_stats, NULL);
+		if (ret != 0)
 			rte_exit(EXIT_FAILURE, "Cannot create print-stats thread\n");
+		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "print-stats");
+		ret = rte_thread_setname(tid, thread_name);
+		if (ret != 0)
+			RTE_LOG(DEBUG, VHOST_CONFIG, "Cannot set print-stats name\n");
 	}
 
 	/* Launch all data cores. */
