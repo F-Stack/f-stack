@@ -1,17 +1,40 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/*-
+ *   BSD LICENSE
  *
- *   Copyright 2016 NXP
+ *   Copyright 2016 NXP.
  *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of NXP nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _DPAA_SEC_H_
 #define _DPAA_SEC_H_
 
-#define CRYPTODEV_NAME_DPAA_SEC_PMD	crypto_dpaa_sec
-/**< NXP DPAA - SEC PMD device name */
-
 #define NUM_POOL_CHANNELS	4
-#define DPAA_SEC_BURST		7
+#define DPAA_SEC_BURST		32
 #define DPAA_SEC_ALG_UNSUPPORT	(-1)
 #define TDES_CBC_IV_LEN		8
 #define AES_CBC_IV_LEN		16
@@ -26,7 +49,6 @@
 #define CTX_POOL_NUM_BUFS	32000
 #define CTX_POOL_BUF_SIZE	sizeof(struct dpaa_sec_op_ctx)
 #define CTX_POOL_CACHE_SIZE	512
-#define RTE_DPAA_SEC_PMD_MAX_NB_SESSIONS 2048
 
 #define DIR_ENC                 1
 #define DIR_DEC                 0
@@ -42,6 +64,36 @@ enum dpaa_sec_op_type {
 	DPAA_SEC_MAX
 };
 
+typedef struct dpaa_sec_session_entry {
+	uint8_t dir;         /*!< Operation Direction */
+	enum rte_crypto_cipher_algorithm cipher_alg; /*!< Cipher Algorithm*/
+	enum rte_crypto_auth_algorithm auth_alg; /*!< Authentication Algorithm*/
+	enum rte_crypto_aead_algorithm aead_alg; /*!< Authentication Algorithm*/
+	union {
+		struct {
+			uint8_t *data;	/**< pointer to key data */
+			size_t length;	/**< key length in bytes */
+		} aead_key;
+		struct {
+			struct {
+				uint8_t *data;	/**< pointer to key data */
+				size_t length;	/**< key length in bytes */
+			} cipher_key;
+			struct {
+				uint8_t *data;	/**< pointer to key data */
+				size_t length;	/**< key length in bytes */
+			} auth_key;
+		};
+	};
+	struct {
+		uint16_t length;
+		uint16_t offset;
+	} iv;	/**< Initialisation vector parameters */
+	uint16_t auth_only_len; /*!< Length of data for Auth only */
+	uint32_t digest_length;
+	struct dpaa_sec_qp *qp;
+	struct rte_mempool *ctx_pool; /* session mempool for dpaa_sec_op_ctx */
+} dpaa_sec_session;
 
 #define DPAA_SEC_MAX_DESC_SIZE  64
 /* code or cmd block to caam */
@@ -91,45 +143,11 @@ struct sec_cdb {
 	uint32_t sh_desc[DPAA_SEC_MAX_DESC_SIZE];
 };
 
-typedef struct dpaa_sec_session_entry {
-	uint8_t dir;         /*!< Operation Direction */
-	enum rte_crypto_cipher_algorithm cipher_alg; /*!< Cipher Algorithm*/
-	enum rte_crypto_auth_algorithm auth_alg; /*!< Authentication Algorithm*/
-	enum rte_crypto_aead_algorithm aead_alg; /*!< AEAD Algorithm*/
-	enum rte_security_session_protocol proto_alg; /*!< Security Algorithm*/
-	union {
-		struct {
-			uint8_t *data;	/**< pointer to key data */
-			size_t length;	/**< key length in bytes */
-		} aead_key;
-		struct {
-			struct {
-				uint8_t *data;	/**< pointer to key data */
-				size_t length;	/**< key length in bytes */
-			} cipher_key;
-			struct {
-				uint8_t *data;	/**< pointer to key data */
-				size_t length;	/**< key length in bytes */
-			} auth_key;
-		};
-	};
-	struct {
-		uint16_t length;
-		uint16_t offset;
-	} iv;	/**< Initialisation vector parameters */
-	uint16_t auth_only_len; /*!< Length of data for Auth only */
-	uint32_t digest_length;
-	struct ipsec_encap_pdb encap_pdb;
-	struct ip ip4_hdr;
-	struct ipsec_decap_pdb decap_pdb;
-	struct dpaa_sec_qp *qp;
-	struct qman_fq *inq;
-	struct sec_cdb cdb;	/**< cmd block associated with qp */
-	struct rte_mempool *ctx_pool; /* session mempool for dpaa_sec_op_ctx */
-} dpaa_sec_session;
-
 struct dpaa_sec_qp {
 	struct dpaa_sec_dev_private *internals;
+	struct sec_cdb cdb;		/* cmd block associated with qp */
+	dpaa_sec_session *ses;		/* session associated with qp */
+	struct qman_fq inq;
 	struct qman_fq outq;
 	int rx_pkts;
 	int rx_errs;
@@ -137,20 +155,14 @@ struct dpaa_sec_qp {
 	int tx_errs;
 };
 
-#define RTE_DPAA_MAX_NB_SEC_QPS 2
-#define RTE_DPAA_MAX_RX_QUEUE RTE_DPAA_SEC_PMD_MAX_NB_SESSIONS
-#define DPAA_MAX_DEQUEUE_NUM_FRAMES 63
-
+#define RTE_MAX_NB_SEC_QPS RTE_DPAA_SEC_PMD_MAX_NB_SESSIONS
 /* internal sec queue interface */
 struct dpaa_sec_dev_private {
 	void *sec_hw;
 	struct rte_mempool *ctx_pool; /* per dev mempool for dpaa_sec_op_ctx */
-	struct dpaa_sec_qp qps[RTE_DPAA_MAX_NB_SEC_QPS]; /* i/o queue for sec */
-	struct qman_fq inq[RTE_DPAA_MAX_RX_QUEUE];
-	unsigned char inq_attach[RTE_DPAA_MAX_RX_QUEUE];
+	struct dpaa_sec_qp qps[RTE_MAX_NB_SEC_QPS]; /* i/o queue for sec */
 	unsigned int max_nb_queue_pairs;
 	unsigned int max_nb_sessions;
-	rte_spinlock_t lock;
 };
 
 #define MAX_SG_ENTRIES		16
@@ -169,7 +181,6 @@ struct dpaa_sec_op_ctx {
 	struct rte_crypto_op *op;
 	struct rte_mempool *ctx_pool; /* mempool pointer for dpaa_sec_op_ctx */
 	uint32_t fd_status;
-	int64_t vtop_offset;
 	uint8_t digest[DPAA_MAX_NB_MAX_DIGEST];
 };
 
@@ -187,11 +198,10 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 1,
+					.min = 16,
 					.max = 16,
-					.increment = 1
+					.increment = 0
 				},
-				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -208,11 +218,10 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 1,
+					.min = 20,
 					.max = 20,
-					.increment = 1
+					.increment = 0
 				},
-				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -229,11 +238,10 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 1,
+					.min = 28,
 					.max = 28,
-					.increment = 1
+					.increment = 0
 				},
-				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -250,11 +258,10 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 1,
+					.min = 32,
 					.max = 32,
-					.increment = 1
+					.increment = 0
 				},
-				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -271,11 +278,10 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 1,
+					.min = 48,
 					.max = 48,
-					.increment = 1
+					.increment = 0
 				},
-				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -292,11 +298,10 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 1,
+					.min = 64,
 					.max = 64,
-					.increment = 1
+					.increment = 0
 				},
-				.iv_size = { 0 }
 			}, }
 		}, }
 	},
@@ -304,7 +309,7 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
 			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
-			{.aead = {
+			{.auth = {
 				.algo = RTE_CRYPTO_AEAD_AES_GCM,
 				.block_size = 16,
 				.key_size = {
@@ -393,61 +398,5 @@ static const struct rte_cryptodev_capabilities dpaa_sec_capabilities[] = {
 
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
-
-static const struct rte_security_capability dpaa_sec_security_cap[] = {
-	{ /* IPsec Lookaside Protocol offload ESP Transport Egress */
-		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
-		.protocol = RTE_SECURITY_PROTOCOL_IPSEC,
-		.ipsec = {
-			.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
-			.mode = RTE_SECURITY_IPSEC_SA_MODE_TUNNEL,
-			.direction = RTE_SECURITY_IPSEC_SA_DIR_EGRESS,
-			.options = { 0 }
-		},
-		.crypto_capabilities = dpaa_sec_capabilities
-	},
-	{ /* IPsec Lookaside Protocol offload ESP Tunnel Ingress */
-		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
-		.protocol = RTE_SECURITY_PROTOCOL_IPSEC,
-		.ipsec = {
-			.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
-			.mode = RTE_SECURITY_IPSEC_SA_MODE_TUNNEL,
-			.direction = RTE_SECURITY_IPSEC_SA_DIR_INGRESS,
-			.options = { 0 }
-		},
-		.crypto_capabilities = dpaa_sec_capabilities
-	},
-	{
-		.action = RTE_SECURITY_ACTION_TYPE_NONE
-	}
-};
-
-/**
- * Checksum
- *
- * @param buffer calculate chksum for buffer
- * @param len    buffer length
- *
- * @return checksum value in host cpu order
- */
-static inline uint16_t
-calc_chksum(void *buffer, int len)
-{
-	uint16_t *buf = (uint16_t *)buffer;
-	uint32_t sum = 0;
-	uint16_t result;
-
-	for (sum = 0; len > 1; len -= 2)
-		sum += *buf++;
-
-	if (len == 1)
-		sum += *(unsigned char *)buf;
-
-	sum = (sum >> 16) + (sum & 0xFFFF);
-	sum += (sum >> 16);
-	result = ~sum;
-
-	return  result;
-}
 
 #endif /* _DPAA_SEC_H_ */

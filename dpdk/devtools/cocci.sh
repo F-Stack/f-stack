@@ -44,7 +44,7 @@ PATCH_LIST="$@"
 	exit 1
 )
 
-tmp=$(mktemp -t dpdk.cocci.XXX)
+tmp=$(mktemp)
 
 for c in $PATCH_LIST; do
 	while true; do

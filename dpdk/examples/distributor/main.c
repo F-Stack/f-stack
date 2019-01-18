@@ -1,5 +1,33 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2017 Intel Corporation
+/*-
+ *   BSD LICENSE
+ *
+ *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <stdint.h>
@@ -17,8 +45,8 @@
 #include <rte_distributor.h>
 #include <rte_pause.h>
 
-#define RX_RING_SIZE 1024
-#define TX_RING_SIZE 1024
+#define RX_RING_SIZE 512
+#define TX_RING_SIZE 512
 #define NUM_MBUFS ((64*1024)-1)
 #define MBUF_CACHE_SIZE 128
 #define BURST_SIZE 64
@@ -112,27 +140,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	uint16_t q;
 	uint16_t nb_rxd = RX_RING_SIZE;
 	uint16_t nb_txd = TX_RING_SIZE;
-	struct rte_eth_dev_info dev_info;
-	struct rte_eth_txconf txconf;
 
-	if (!rte_eth_dev_is_valid_port(port))
+	if (port >= rte_eth_dev_count())
 		return -1;
-
-	rte_eth_dev_info_get(port, &dev_info);
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
-		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-
-	port_conf.rx_adv_conf.rss_conf.rss_hf &=
-		dev_info.flow_type_rss_offloads;
-	if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-			port_conf_default.rx_adv_conf.rss_conf.rss_hf) {
-		printf("Port %u modified RSS hash function based on hardware support,"
-			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
-			port,
-			port_conf_default.rx_adv_conf.rss_conf.rss_hf,
-			port_conf.rx_adv_conf.rss_conf.rss_hf);
-	}
 
 	retval = rte_eth_dev_configure(port, rxRings, txRings, &port_conf);
 	if (retval != 0)
@@ -150,12 +160,10 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 	}
 
-	txconf = dev_info.default_txconf;
-	txconf.offloads = port_conf.txmode.offloads;
 	for (q = 0; q < txRings; q++) {
 		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
 						rte_eth_dev_socket_id(port),
-						&txconf);
+						NULL);
 		if (retval < 0)
 			return retval;
 	}
@@ -202,12 +210,12 @@ struct lcore_params {
 static int
 lcore_rx(struct lcore_params *p)
 {
-	const uint16_t nb_ports = rte_eth_dev_count_avail();
+	const uint16_t nb_ports = rte_eth_dev_count();
 	const int socket_id = rte_socket_id();
 	uint16_t port;
 	struct rte_mbuf *bufs[BURST_SIZE*2];
 
-	RTE_ETH_FOREACH_DEV(port) {
+	for (port = 0; port < nb_ports; port++) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << port)) == 0)
 			continue;
@@ -304,11 +312,11 @@ flush_one_port(struct output_buffer *outbuf, uint8_t outp)
 }
 
 static inline void
-flush_all_ports(struct output_buffer *tx_buffers)
+flush_all_ports(struct output_buffer *tx_buffers, uint16_t nb_ports)
 {
 	uint16_t outp;
 
-	RTE_ETH_FOREACH_DEV(outp) {
+	for (outp = 0; outp < nb_ports; outp++) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << outp)) == 0)
 			continue;
@@ -376,10 +384,11 @@ static int
 lcore_tx(struct rte_ring *in_r)
 {
 	static struct output_buffer tx_buffers[RTE_MAX_ETHPORTS];
+	const uint16_t nb_ports = rte_eth_dev_count();
 	const int socket_id = rte_socket_id();
 	uint16_t port;
 
-	RTE_ETH_FOREACH_DEV(port) {
+	for (port = 0; port < nb_ports; port++) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << port)) == 0)
 			continue;
@@ -394,7 +403,7 @@ lcore_tx(struct rte_ring *in_r)
 	printf("\nCore %u doing packet TX.\n", rte_lcore_id());
 	while (!quit_signal) {
 
-		RTE_ETH_FOREACH_DEV(port) {
+		for (port = 0; port < nb_ports; port++) {
 			/* skip ports that are not enabled */
 			if ((enabled_port_mask & (1 << port)) == 0)
 				continue;
@@ -406,7 +415,7 @@ lcore_tx(struct rte_ring *in_r)
 
 			/* if we get no traffic, flush anything we have */
 			if (unlikely(nb_rx == 0)) {
-				flush_all_ports(tx_buffers);
+				flush_all_ports(tx_buffers, nb_ports);
 				continue;
 			}
 
@@ -454,14 +463,14 @@ print_stats(void)
 	unsigned int i, j;
 	const unsigned int num_workers = rte_lcore_count() - 4;
 
-	RTE_ETH_FOREACH_DEV(i) {
+	for (i = 0; i < rte_eth_dev_count(); i++) {
 		rte_eth_stats_get(i, &eth_stats);
 		app_stats.port_rx_pkts[i] = eth_stats.ipackets;
 		app_stats.port_tx_pkts[i] = eth_stats.opackets;
 	}
 
 	printf("\n\nRX Thread:\n");
-	RTE_ETH_FOREACH_DEV(i) {
+	for (i = 0; i < rte_eth_dev_count(); i++) {
 		printf("Port %u Pktsin : %5.2f\n", i,
 				(app_stats.port_rx_pkts[i] -
 				prev_app_stats.port_rx_pkts[i])/1000000.0);
@@ -500,7 +509,7 @@ print_stats(void)
 	printf(" - Dequeued:    %5.2f\n",
 			(app_stats.tx.dequeue_pkts -
 			prev_app_stats.tx.dequeue_pkts)/1000000.0);
-	RTE_ETH_FOREACH_DEV(i) {
+	for (i = 0; i < rte_eth_dev_count(); i++) {
 		printf("Port %u Pktsout: %5.2f\n",
 				i, (app_stats.port_tx_pkts[i] -
 				prev_app_stats.port_tx_pkts[i])/1000000.0);
@@ -551,7 +560,7 @@ lcore_worker(struct lcore_params *p)
 	 * for single port, xor_val will be zero so we won't modify the output
 	 * port, otherwise we send traffic from 0 to 1, 2 to 3, and vice versa
 	 */
-	const unsigned xor_val = (rte_eth_dev_count_avail() > 1);
+	const unsigned xor_val = (rte_eth_dev_count() > 1);
 	struct rte_mbuf *buf[8] __rte_cache_aligned;
 
 	for (i = 0; i < 8; i++)
@@ -687,7 +696,7 @@ main(int argc, char *argv[])
 				"1 lcore for packet TX\n"
 				"and at least 1 lcore for worker threads\n");
 
-	nb_ports = rte_eth_dev_count_avail();
+	nb_ports = rte_eth_dev_count();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "Error: no ethernet ports detected\n");
 	if (nb_ports != 1 && (nb_ports & 1))
@@ -702,7 +711,7 @@ main(int argc, char *argv[])
 	nb_ports_available = nb_ports;
 
 	/* initialize all ports */
-	RTE_ETH_FOREACH_DEV(portid) {
+	for (portid = 0; portid < nb_ports; portid++) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("\nSkipping disabled port %d\n", portid);

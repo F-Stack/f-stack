@@ -1,5 +1,33 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2016-2017 Intel Corporation
+/*
+ *   BSD LICENSE
+ *
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *	 * Redistributions of source code must retain the above copyright
+ *	   notice, this list of conditions and the following disclaimer.
+ *	 * Redistributions in binary form must reproduce the above copyright
+ *	   notice, this list of conditions and the following disclaimer in
+ *	   the documentation and/or other materials provided with the
+ *	   distribution.
+ *	 * Neither the name of Intel Corporation nor the names of its
+ *	   contributors may be used to endorse or promote products derived
+ *	   from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef TEST_CRYPTODEV_HASH_TEST_VECTORS_H_
@@ -319,70 +347,18 @@ hmac_sha512_test_vector = {
 	}
 };
 
-static const struct blockcipher_test_data
-cmac_test_vector = {
-	.auth_algo = RTE_CRYPTO_AUTH_AES_CMAC,
-	.ciphertext = {
-		.data = plaintext_hash,
-		.len = 512
-	},
-	.auth_key = {
-		.data = {
-			0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
-			0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C
-		},
-		.len = 16
-	},
-	.digest = {
-		.data = {
-			0x4C, 0x77, 0x87, 0xA0, 0x78, 0x8E, 0xEA, 0x96,
-			0xC1, 0xEB, 0x1E, 0x4E, 0x95, 0x8F, 0xED, 0x27
-		},
-		.len = 16,
-		.truncated_len = 16
-	}
-};
-
-static const struct blockcipher_test_data
-cmac_test_vector_12 = {
-	.auth_algo = RTE_CRYPTO_AUTH_AES_CMAC,
-	.ciphertext = {
-		.data = plaintext_hash,
-		.len = 512
-	},
-	.auth_key = {
-		.data = {
-			0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
-			0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C
-		},
-		.len = 16
-	},
-	.digest = {
-		.data = {
-			0x4C, 0x77, 0x87, 0xA0, 0x78, 0x8E, 0xEA, 0x96,
-			0xC1, 0xEB, 0x1E, 0x4E, 0x95, 0x8F, 0xED, 0x27
-		},
-		.len = 12,
-		.truncated_len = 12
-	}
-};
-
 static const struct blockcipher_test_case hash_test_cases[] = {
 	{
 		.test_descr = "MD5 Digest",
 		.test_data = &md5_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "MD5 Digest Verify",
 		.test_data = &md5_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "HMAC-MD5 Digest",
@@ -393,10 +369,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "HMAC-MD5 Digest Verify",
@@ -407,28 +380,19 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "SHA1 Digest",
 		.test_data = &sha1_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "SHA1 Digest Verify",
 		.test_data = &sha1_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "HMAC-SHA1 Digest",
@@ -439,21 +403,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
-	},
-	{
-		.test_descr = "HMAC-SHA1 Digest Scatter Gather",
-		.test_data = &hmac_sha1_test_vector,
-		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.feature_mask = BLOCKCIPHER_TEST_FEATURE_SG,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
-			    BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "HMAC-SHA1 Digest Verify",
@@ -464,39 +414,19 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
-	},
-	{
-		.test_descr = "HMAC-SHA1 Digest Verify Scatter Gather",
-		.test_data = &hmac_sha1_test_vector,
-		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.feature_mask = BLOCKCIPHER_TEST_FEATURE_SG,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
-			    BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "SHA224 Digest",
 		.test_data = &sha224_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "SHA224 Digest Verify",
 		.test_data = &sha224_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "HMAC-SHA224 Digest",
@@ -507,10 +437,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "HMAC-SHA224 Digest Verify",
@@ -521,28 +448,19 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "SHA256 Digest",
 		.test_data = &sha256_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "SHA256 Digest Verify",
 		.test_data = &sha256_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "HMAC-SHA256 Digest",
@@ -553,11 +471,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "HMAC-SHA256 Digest Verify",
@@ -568,29 +482,19 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "SHA384 Digest",
 		.test_data = &sha384_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "SHA384 Digest Verify",
 		.test_data = &sha384_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "HMAC-SHA384 Digest",
@@ -601,11 +505,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "HMAC-SHA384 Digest Verify",
@@ -616,29 +516,19 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "SHA512 Digest",
 		.test_data = &sha512_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "SHA512 Digest Verify",
 		.test_data = &sha512_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
-			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			    BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL
 	},
 	{
 		.test_descr = "HMAC-SHA512 Digest",
@@ -649,11 +539,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
+			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
 	{
 		.test_descr = "HMAC-SHA512 Digest Verify",
@@ -664,40 +550,8 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 			BLOCKCIPHER_TEST_TARGET_PMD_SCHEDULER |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA2_SEC |
 			BLOCKCIPHER_TEST_TARGET_PMD_DPAA_SEC |
-			BLOCKCIPHER_TEST_TARGET_PMD_CAAM_JR |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT |
-			BLOCKCIPHER_TEST_TARGET_PMD_CCP |
-			BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
-			BLOCKCIPHER_TEST_TARGET_PMD_OCTEONTX
-	},
-	{
-		.test_descr = "CMAC Digest 12B",
-		.test_data = &cmac_test_vector_12,
-		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_MB |
 			BLOCKCIPHER_TEST_TARGET_PMD_QAT
 	},
-	{
-		.test_descr = "CMAC Digest Verify 12B",
-		.test_data = &cmac_test_vector_12,
-		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_MB |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT
-	},
-	{
-		.test_descr = "CMAC Digest 16B",
-		.test_data = &cmac_test_vector,
-		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_MB |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT
-	},
-	{
-		.test_descr = "CMAC Digest Verify 16B",
-		.test_data = &cmac_test_vector,
-		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
-		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_MB |
-			BLOCKCIPHER_TEST_TARGET_PMD_QAT
-	}
 };
 
 #endif /* TEST_CRYPTODEV_HASH_TEST_VECTORS_H_ */

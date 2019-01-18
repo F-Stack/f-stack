@@ -35,3 +35,5 @@
 #include "ena_regs_defs.h"
 #include "ena_admin_defs.h"
 #include "ena_eth_io_defs.h"
+#include "ena_efa_admin_defs.h"
+#include "ena_efa_io_defs.h"

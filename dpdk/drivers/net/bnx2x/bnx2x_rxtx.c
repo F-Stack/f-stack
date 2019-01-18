@@ -1,8 +1,11 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/*
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015-2018 Cavium Inc.
+ *
+ * Copyright (c) 2015 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.bnx2x_pmd for copyright and licensing details.
  */
 
 #include "bnx2x.h"
@@ -12,8 +15,18 @@ static const struct rte_memzone *
 ring_dma_zone_reserve(struct rte_eth_dev *dev, const char *ring_name,
 		      uint16_t queue_id, uint32_t ring_size, int socket_id)
 {
-	return rte_eth_dma_zone_reserve(dev, ring_name, queue_id,
-			ring_size, BNX2X_PAGE_SIZE, socket_id);
+	char z_name[RTE_MEMZONE_NAMESIZE];
+	const struct rte_memzone *mz;
+
+	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
+			dev->device->driver->name, ring_name,
+			dev->data->port_id, queue_id);
+
+	mz = rte_memzone_lookup(z_name);
+	if (mz)
+		return mz;
+
+	return rte_memzone_reserve_aligned(z_name, ring_size, socket_id, 0, BNX2X_PAGE_SIZE);
 }
 
 static void
@@ -65,7 +78,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq = rte_zmalloc_socket("ethdev RX queue", sizeof(struct bnx2x_rx_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
 	if (NULL == rxq) {
-		PMD_DRV_LOG(ERR, sc, "rte_zmalloc for rxq failed!");
+		PMD_INIT_LOG(ERR, "rte_zmalloc for rxq failed!");
 		return -ENOMEM;
 	}
 	rxq->sc = sc;
@@ -81,7 +94,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	sc->rx_ring_size = USABLE_RX_BD(rxq);
 	rxq->nb_cq_pages = RCQ_BD_PAGES(rxq);
 
-	PMD_DRV_LOG(DEBUG, sc, "fp[%02d] req_bd=%u, usable_bd=%lu, "
+	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, usable_bd=%lu, "
 		       "total_bd=%lu, rx_pages=%u, cq_pages=%u",
 		       queue_idx, nb_desc, (unsigned long)USABLE_RX_BD(rxq),
 		       (unsigned long)TOTAL_RX_BD(rxq), rxq->nb_rx_pages,
@@ -127,8 +140,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			return -ENOMEM;
 		}
 		rxq->sw_ring[idx] = mbuf;
-		rxq->rx_ring[idx] =
-			rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
+		rxq->rx_ring[idx] = mbuf->buf_iova;
 	}
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
@@ -264,7 +276,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->tx_free_thresh = min(txq->tx_free_thresh,
 				  txq->nb_tx_desc - BDS_PER_TX_PKT);
 
-	PMD_DRV_LOG(DEBUG, sc, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
+	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
 		     "total_bd=%lu, tx_pages=%u",
 		     queue_idx, nb_desc, txq->tx_free_thresh,
 		     (unsigned long)USABLE_TX_BD(txq),
@@ -290,7 +302,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
-	/* PMD_DRV_LOG(DEBUG, sc, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
+	/* PMD_DRV_LOG(DEBUG, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
 	   txq->sw_ring, txq->tx_ring, txq->tx_ring_phys_addr); */
 
 	/* Link TX pages */
@@ -299,9 +311,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		busaddr = txq->tx_ring_phys_addr + BNX2X_PAGE_SIZE * (i % txq->nb_tx_pages);
 		tx_n_bd->addr_hi = rte_cpu_to_le_32(U64_HI(busaddr));
 		tx_n_bd->addr_lo = rte_cpu_to_le_32(U64_LO(busaddr));
-		/* PMD_DRV_LOG(DEBUG, sc, "link tx page %lu",
-		 *          (TOTAL_TX_BD_PER_PAGE * i - 1));
-		 */
+		/* PMD_DRV_LOG(DEBUG, "link tx page %lu", (TOTAL_TX_BD_PER_PAGE * i - 1)); */
 	}
 
 	txq->queue_id = queue_idx;
@@ -390,8 +400,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		rx_mb = rxq->sw_ring[bd_cons];
 		rxq->sw_ring[bd_cons] = new_mb;
-		rxq->rx_ring[bd_prod] =
-			rte_cpu_to_le_64(rte_mbuf_data_iova_default(new_mb));
+		rxq->rx_ring[bd_prod] = new_mb->buf_iova;
 
 		rx_pref = NEXT_RX_BD(bd_cons) & MAX_RX_BD(rxq);
 		rte_prefetch0(rxq->sw_ring[rx_pref]);
@@ -400,7 +409,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			rte_prefetch0(&rxq->sw_ring[rx_pref]);
 		}
 
-		rx_mb->data_off = pad + RTE_PKTMBUF_HEADROOM;
+		rx_mb->data_off = pad;
 		rx_mb->nb_segs = 1;
 		rx_mb->next = NULL;
 		rx_mb->pkt_len = rx_mb->data_len = len;
@@ -452,10 +461,9 @@ bnx2x_dev_rx_init(struct rte_eth_dev *dev)
 void
 bnx2x_dev_clear_queues(struct rte_eth_dev *dev)
 {
-	struct bnx2x_softc *sc = dev->data->dev_private;
 	uint8_t i;
 
-	PMD_INIT_FUNC_TRACE(sc);
+	PMD_INIT_FUNC_TRACE();
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		struct bnx2x_tx_queue *txq = dev->data->tx_queues[i];
