@@ -651,18 +651,21 @@ init_port_start(void)
 
         if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
             printf("TX ip checksum offload supported\n");
+            port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
             pconf->hw_features.tx_csum_ip = 1;
         }
 
         if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
             (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
             printf("TX TCP&UDP checksum offload supported\n");
+            port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM;
             pconf->hw_features.tx_csum_l4 = 1;
         }
 
         if (ff_global_cfg.dpdk.tso) {
             if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
                 printf("TSO is supported\n");
+                port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
                 pconf->hw_features.tx_tso = 1;
             }
         } else {
