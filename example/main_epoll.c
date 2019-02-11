@@ -89,7 +89,7 @@ int loop(void *arg)
                 char buf[256];
                 size_t readlen = ff_read( events[i].data.fd, buf, sizeof(buf));
                 if(readlen > 0) {
-                    ff_write( events[i].data.fd, html, sizeof(html));
+                    ff_write( events[i].data.fd, html, strlen(html));
                 } else {
                     ff_epoll_ctl(epfd, EPOLL_CTL_DEL,  events[i].data.fd, NULL);
                     ff_close( events[i].data.fd);
