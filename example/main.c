@@ -93,7 +93,7 @@ int loop(void *arg)
             char buf[256];
             size_t readlen = ff_read(clientfd, buf, sizeof(buf));
 
-            ff_write(clientfd, html, sizeof(html));
+            ff_write(clientfd, html, strlen(html));
         } else {
             printf("unknown event: %8.8X\n", event.flags);
         }
