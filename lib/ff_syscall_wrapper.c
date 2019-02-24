@@ -98,6 +98,7 @@
 #define LINUX_TCP_KEEPIDLE    4
 #define LINUX_TCP_KEEPINTVL   5
 #define LINUX_TCP_KEEPCNT     6
+#define LINUX_TCP_INFO        11
 #define LINUX_TCP_MD5SIG      14
 
 /* setsockopt/getsockopt define end */
@@ -368,6 +369,8 @@ tcp_opt_convert(int optname)
             return TCP_KEEPINTVL;
         case LINUX_TCP_KEEPCNT:
             return TCP_KEEPCNT;
+        case LINUX_TCP_INFO:
+            return TCP_INFO;
         case LINUX_TCP_MD5SIG:
             return TCP_MD5SIG;
         default:
