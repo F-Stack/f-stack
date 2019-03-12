@@ -1625,6 +1625,10 @@ in_pcblookup_local(struct inpcbinfo *pcbinfo, struct in_addr laddr,
 				if ((inp->inp_vflag & INP_IPV6) != 0)
 					wildcard += INP_LOOKUP_MAPPED_PCB_COST;
 #endif
+				if (inp == inp->inp_portlist.le_next){
+					match = inp;
+					break;
+				}
 				if (inp->inp_faddr.s_addr != INADDR_ANY)
 					wildcard++;
 				if (inp->inp_laddr.s_addr != INADDR_ANY) {
