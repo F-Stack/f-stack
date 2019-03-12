@@ -1,8 +1,34 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/*-
+ *   BSD LICENSE
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2018 NXP
+ *   Copyright 2016 NXP.
  *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Freescale Semiconductor, Inc nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include <unistd.h>
 #include <stdio.h>
@@ -24,7 +50,7 @@
 #include<sys/eventfd.h>
 
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
+#include <rte_ethdev.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
@@ -49,14 +75,6 @@ TAILQ_HEAD(dpio_dev_list, dpaa2_dpio_dev);
 static struct dpio_dev_list dpio_dev_list
 	= TAILQ_HEAD_INITIALIZER(dpio_dev_list); /*!< DPIO device list */
 static uint32_t io_space_count;
-
-/* Variable to store DPAA2 platform type */
-uint32_t dpaa2_svr_family;
-
-/* Variable to store DPAA2 DQRR size */
-uint8_t dpaa2_dqrr_size;
-/* Variable to store DPAA2 EQCR size */
-uint8_t dpaa2_eqcr_size;
 
 /*Stashing Macros default for LS208x*/
 static int dpaa2_core_cluster_base = 0x04;
@@ -91,7 +109,6 @@ dpaa2_core_cluster_sdest(int cpu_id)
 	return dpaa2_core_cluster_base + x;
 }
 
-#ifdef RTE_LIBRTE_PMD_DPAA2_EVENTDEV
 static void dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id)
 {
 #define STRING_LEN	28
@@ -106,7 +123,7 @@ static void dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id)
 	snprintf(string, STRING_LEN, "dpio.%d", dpio_id);
 	file = fopen("/proc/interrupts", "r");
 	if (!file) {
-		DPAA2_BUS_WARN("Failed to open /proc/interrupts file");
+		PMD_DRV_LOG(WARNING, "Failed to open /proc/interrupts file\n");
 		return;
 	}
 	while (getline(&temp, &len, file) != -1) {
@@ -117,8 +134,8 @@ static void dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id)
 	}
 
 	if (!token) {
-		DPAA2_BUS_WARN("Failed to get interrupt id for dpio.%d",
-			       dpio_id);
+		PMD_DRV_LOG(WARNING, "Failed to get interrupt id for dpio.%d\n",
+			    dpio_id);
 		if (temp)
 			free(temp);
 		fclose(file);
@@ -130,10 +147,10 @@ static void dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id)
 		 cpu_mask, token);
 	ret = system(command);
 	if (ret < 0)
-		DPAA2_BUS_DEBUG(
-			"Failed to affine interrupts on respective core");
+		PMD_DRV_LOG(WARNING,
+			"Failed to affine interrupts on respective core\n");
 	else
-		DPAA2_BUS_DEBUG(" %s command is executed", command);
+		PMD_DRV_LOG(WARNING, " %s command is executed\n", command);
 
 	free(temp);
 	fclose(file);
@@ -148,7 +165,7 @@ static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev)
 	dpio_epoll_fd = epoll_create(1);
 	ret = rte_dpaa2_intr_enable(&dpio_dev->intr_handle, 0);
 	if (ret) {
-		DPAA2_BUS_ERR("Interrupt registeration failed");
+		PMD_DRV_LOG(ERR, "Interrupt registeration failed\n");
 		return -1;
 	}
 
@@ -171,7 +188,7 @@ static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev)
 
 	ret = epoll_ctl(dpio_epoll_fd, EPOLL_CTL_ADD, eventfd, &epoll_ev);
 	if (ret < 0) {
-		DPAA2_BUS_ERR("epoll_ctl failed");
+		PMD_DRV_LOG(ERR, "epoll_ctl failed\n");
 		return -1;
 	}
 	dpio_dev->epoll_fd = dpio_epoll_fd;
@@ -180,18 +197,100 @@ static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev)
 
 	return 0;
 }
-#endif
+
+static int
+configure_dpio_qbman_swp(struct dpaa2_dpio_dev *dpio_dev)
+{
+	struct qbman_swp_desc p_des;
+	struct dpio_attr attr;
+
+	dpio_dev->dpio = malloc(sizeof(struct fsl_mc_io));
+	if (!dpio_dev->dpio) {
+		PMD_INIT_LOG(ERR, "Memory allocation failure\n");
+		return -1;
+	}
+
+	PMD_DRV_LOG(DEBUG, "Allocated  DPIO Portal[%p]", dpio_dev->dpio);
+	dpio_dev->dpio->regs = dpio_dev->mc_portal;
+	if (dpio_open(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->hw_id,
+		      &dpio_dev->token)) {
+		PMD_INIT_LOG(ERR, "Failed to allocate IO space\n");
+		free(dpio_dev->dpio);
+		return -1;
+	}
+
+	if (dpio_reset(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token)) {
+		PMD_INIT_LOG(ERR, "Failed to reset dpio\n");
+		dpio_close(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token);
+		free(dpio_dev->dpio);
+		return -1;
+	}
+
+	if (dpio_enable(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token)) {
+		PMD_INIT_LOG(ERR, "Failed to Enable dpio\n");
+		dpio_close(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token);
+		free(dpio_dev->dpio);
+		return -1;
+	}
+
+	if (dpio_get_attributes(dpio_dev->dpio, CMD_PRI_LOW,
+				dpio_dev->token, &attr)) {
+		PMD_INIT_LOG(ERR, "DPIO Get attribute failed\n");
+		dpio_disable(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token);
+		dpio_close(dpio_dev->dpio, CMD_PRI_LOW,  dpio_dev->token);
+		free(dpio_dev->dpio);
+		return -1;
+	}
+
+	/* Configure & setup SW portal */
+	p_des.block = NULL;
+	p_des.idx = attr.qbman_portal_id;
+	p_des.cena_bar = (void *)(dpio_dev->qbman_portal_ce_paddr);
+	p_des.cinh_bar = (void *)(dpio_dev->qbman_portal_ci_paddr);
+	p_des.irq = -1;
+	p_des.qman_version = attr.qbman_version;
+
+	dpio_dev->sw_portal = qbman_swp_init(&p_des);
+	if (dpio_dev->sw_portal == NULL) {
+		PMD_DRV_LOG(ERR, " QBMan SW Portal Init failed\n");
+		dpio_close(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token);
+		free(dpio_dev->dpio);
+		return -1;
+	}
+
+	return 0;
+}
 
 static int
 dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 {
 	int sdest, ret;
+	static int first_time;
+
+	/* find the SoC type for the first time */
+	if (!first_time) {
+		struct mc_soc_version mc_plat_info = {0};
+
+		if (mc_get_soc_version(dpio_dev->dpio,
+				       CMD_PRI_LOW, &mc_plat_info)) {
+			PMD_INIT_LOG(ERR, "\tmc_get_soc_version failed\n");
+		} else if ((mc_plat_info.svr & 0xffff0000) == SVR_LS1080A) {
+			dpaa2_core_cluster_base = 0x02;
+			dpaa2_cluster_sz = 4;
+			PMD_INIT_LOG(DEBUG, "\tLS108x (A53) Platform Detected");
+		} else if ((mc_plat_info.svr & 0xffff0000) == SVR_LX2160A) {
+			dpaa2_core_cluster_base = 0x00;
+			dpaa2_cluster_sz = 2;
+			PMD_INIT_LOG(DEBUG, "\tLX2160 Platform Detected");
+		}
+		first_time = 1;
+	}
 
 	/* Set the Stashing Destination */
 	if (cpu_id < 0) {
 		cpu_id = rte_get_master_lcore();
 		if (cpu_id < 0) {
-			DPAA2_BUS_ERR("Getting CPU Index failed");
+			RTE_LOG(ERR, PMD, "\tGetting CPU Index failed\n");
 			return -1;
 		}
 	}
@@ -200,22 +299,20 @@ dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 	 */
 
 	sdest = dpaa2_core_cluster_sdest(cpu_id);
-	DPAA2_BUS_DEBUG("Portal= %d  CPU= %u SDEST= %d",
-			dpio_dev->index, cpu_id, sdest);
+	PMD_DRV_LOG(DEBUG, "Portal= %d  CPU= %u SDEST= %d",
+		    dpio_dev->index, cpu_id, sdest);
 
 	ret = dpio_set_stashing_destination(dpio_dev->dpio, CMD_PRI_LOW,
 					    dpio_dev->token, sdest);
 	if (ret) {
-		DPAA2_BUS_ERR("%d ERROR in SDEST",  ret);
+		PMD_DRV_LOG(ERR, "%d ERROR in SDEST\n",  ret);
 		return -1;
 	}
 
-#ifdef RTE_LIBRTE_PMD_DPAA2_EVENTDEV
 	if (dpaa2_dpio_intr_init(dpio_dev)) {
-		DPAA2_BUS_ERR("Interrupt registration failed for dpio");
+		PMD_DRV_LOG(ERR, "Interrupt registration failed for dpio\n");
 		return -1;
 	}
-#endif
 
 	return 0;
 }
@@ -233,12 +330,12 @@ struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(int cpu_id)
 	if (!dpio_dev)
 		return NULL;
 
-	DPAA2_BUS_DEBUG("New Portal %p (%d) affined thread - %lu",
-			dpio_dev, dpio_dev->index, syscall(SYS_gettid));
+	PMD_DRV_LOG(DEBUG, "New Portal=0x%x (%d) affined thread - %lu",
+		    dpio_dev, dpio_dev->index, syscall(SYS_gettid));
 
 	ret = dpaa2_configure_stashing(dpio_dev, cpu_id);
 	if (ret)
-		DPAA2_BUS_ERR("dpaa2_configure_stashing failed");
+		PMD_DRV_LOG(ERR, "dpaa2_configure_stashing failed");
 
 	return dpio_dev;
 }
@@ -256,9 +353,8 @@ dpaa2_affine_qbman_swp(void)
 		return -1;
 
 	if (dpaa2_io_portal[lcore_id].dpio_dev) {
-		DPAA2_BUS_DP_INFO("DPAA Portal=%p (%d) is being shared"
-			    " between thread %" PRIu64 " and current "
-			    "%" PRIu64 "\n",
+		PMD_DRV_LOG(INFO, "DPAA Portal=0x%x (%d) is being shared"
+			    " between thread %lu and current  %lu",
 			    dpaa2_io_portal[lcore_id].dpio_dev,
 			    dpaa2_io_portal[lcore_id].dpio_dev->index,
 			    dpaa2_io_portal[lcore_id].net_tid,
@@ -269,8 +365,7 @@ dpaa2_affine_qbman_swp(void)
 				 [lcore_id].dpio_dev->ref_count);
 		dpaa2_io_portal[lcore_id].net_tid = tid;
 
-		DPAA2_BUS_DP_DEBUG("Old Portal=%p (%d) affined thread - "
-				   "%" PRIu64 "\n",
+		PMD_DRV_LOG(DEBUG, "Old Portal=0x%x (%d) affined thread - %lu",
 			    dpaa2_io_portal[lcore_id].dpio_dev,
 			    dpaa2_io_portal[lcore_id].dpio_dev->index,
 			    tid);
@@ -292,7 +387,7 @@ dpaa2_affine_qbman_swp(void)
 }
 
 int
-dpaa2_affine_qbman_ethrx_swp(void)
+dpaa2_affine_qbman_swp_sec(void)
 {
 	unsigned int lcore_id = rte_lcore_id();
 	uint64_t tid = syscall(SYS_gettid);
@@ -303,36 +398,32 @@ dpaa2_affine_qbman_ethrx_swp(void)
 	else if (lcore_id >= RTE_MAX_LCORE)
 		return -1;
 
-	if (dpaa2_io_portal[lcore_id].ethrx_dpio_dev) {
-		DPAA2_BUS_DP_INFO(
-			"DPAA Portal=%p (%d) is being shared between thread"
-			" %" PRIu64 " and current %" PRIu64 "\n",
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev,
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev->index,
-			dpaa2_io_portal[lcore_id].sec_tid,
-			tid);
-		RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev
-			= dpaa2_io_portal[lcore_id].ethrx_dpio_dev;
+	if (dpaa2_io_portal[lcore_id].sec_dpio_dev) {
+		PMD_DRV_LOG(INFO, "DPAA Portal=0x%x (%d) is being shared"
+			    " between thread %lu and current  %lu",
+			    dpaa2_io_portal[lcore_id].sec_dpio_dev,
+			    dpaa2_io_portal[lcore_id].sec_dpio_dev->index,
+			    dpaa2_io_portal[lcore_id].sec_tid,
+			    tid);
+		RTE_PER_LCORE(_dpaa2_io).sec_dpio_dev
+			= dpaa2_io_portal[lcore_id].sec_dpio_dev;
 		rte_atomic16_inc(&dpaa2_io_portal
-				 [lcore_id].ethrx_dpio_dev->ref_count);
+				 [lcore_id].sec_dpio_dev->ref_count);
 		dpaa2_io_portal[lcore_id].sec_tid = tid;
 
-		DPAA2_BUS_DP_DEBUG(
-			"Old Portal=%p (%d) affined thread"
-			" - %" PRIu64 "\n",
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev,
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev->index,
-			tid);
+		PMD_DRV_LOG(DEBUG, "Old Portal=0x%x (%d) affined thread - %lu",
+			    dpaa2_io_portal[lcore_id].sec_dpio_dev,
+			    dpaa2_io_portal[lcore_id].sec_dpio_dev->index,
+			    tid);
 		return 0;
 	}
 
 	/* Populate the dpaa2_io_portal structure */
-	dpaa2_io_portal[lcore_id].ethrx_dpio_dev =
-		dpaa2_get_qbman_swp(lcore_id);
+	dpaa2_io_portal[lcore_id].sec_dpio_dev = dpaa2_get_qbman_swp(lcore_id);
 
-	if (dpaa2_io_portal[lcore_id].ethrx_dpio_dev) {
-		RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev
-			= dpaa2_io_portal[lcore_id].ethrx_dpio_dev;
+	if (dpaa2_io_portal[lcore_id].sec_dpio_dev) {
+		RTE_PER_LCORE(_dpaa2_io).sec_dpio_dev
+			= dpaa2_io_portal[lcore_id].sec_dpio_dev;
 		dpaa2_io_portal[lcore_id].sec_tid = tid;
 		return 0;
 	} else {
@@ -345,20 +436,19 @@ dpaa2_create_dpio_device(int vdev_fd,
 			 struct vfio_device_info *obj_info,
 			 int object_id)
 {
-	struct dpaa2_dpio_dev *dpio_dev = NULL;
+	struct dpaa2_dpio_dev *dpio_dev;
 	struct vfio_region_info reg_info = { .argsz = sizeof(reg_info)};
-	struct qbman_swp_desc p_des;
-	struct dpio_attr attr;
 
 	if (obj_info->num_regions < NUM_DPIO_REGIONS) {
-		DPAA2_BUS_ERR("Not sufficient number of DPIO regions");
+		PMD_INIT_LOG(ERR, "ERROR, Not sufficient number "
+				"of DPIO regions.\n");
 		return -1;
 	}
 
-	dpio_dev = rte_zmalloc(NULL, sizeof(struct dpaa2_dpio_dev),
+	dpio_dev = rte_malloc(NULL, sizeof(struct dpaa2_dpio_dev),
 			      RTE_CACHE_LINE_SIZE);
 	if (!dpio_dev) {
-		DPAA2_BUS_ERR("Memory allocation failed for DPIO Device");
+		PMD_INIT_LOG(ERR, "Memory allocation failed for DPIO Device\n");
 		return -1;
 	}
 
@@ -368,123 +458,51 @@ dpaa2_create_dpio_device(int vdev_fd,
 	/* Using single portal  for all devices */
 	dpio_dev->mc_portal = rte_mcp_ptr_list[MC_PORTAL_INDEX];
 
-	dpio_dev->dpio = malloc(sizeof(struct fsl_mc_io));
-	if (!dpio_dev->dpio) {
-		DPAA2_BUS_ERR("Memory allocation failure");
-		goto err;
-	}
-
-	dpio_dev->dpio->regs = dpio_dev->mc_portal;
-	if (dpio_open(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->hw_id,
-		      &dpio_dev->token)) {
-		DPAA2_BUS_ERR("Failed to allocate IO space");
-		goto err;
-	}
-
-	if (dpio_reset(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token)) {
-		DPAA2_BUS_ERR("Failed to reset dpio");
-		goto err;
-	}
-
-	if (dpio_enable(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token)) {
-		DPAA2_BUS_ERR("Failed to Enable dpio");
-		goto err;
-	}
-
-	if (dpio_get_attributes(dpio_dev->dpio, CMD_PRI_LOW,
-				dpio_dev->token, &attr)) {
-		DPAA2_BUS_ERR("DPIO Get attribute failed");
-		goto err;
-	}
-
-	/* find the SoC type for the first time */
-	if (!dpaa2_svr_family) {
-		struct mc_soc_version mc_plat_info = {0};
-
-		if (mc_get_soc_version(dpio_dev->dpio,
-				       CMD_PRI_LOW, &mc_plat_info)) {
-			DPAA2_BUS_ERR("Unable to get SoC version information");
-		} else if ((mc_plat_info.svr & 0xffff0000) == SVR_LS1080A) {
-			dpaa2_core_cluster_base = 0x02;
-			dpaa2_cluster_sz = 4;
-			DPAA2_BUS_DEBUG("LS108x (A53) Platform Detected");
-		} else if ((mc_plat_info.svr & 0xffff0000) == SVR_LX2160A) {
-			dpaa2_core_cluster_base = 0x00;
-			dpaa2_cluster_sz = 2;
-			DPAA2_BUS_DEBUG("LX2160 Platform Detected");
-		}
-		dpaa2_svr_family = (mc_plat_info.svr & 0xffff0000);
-
-		if (dpaa2_svr_family == SVR_LX2160A) {
-			dpaa2_dqrr_size = DPAA2_LX2_DQRR_RING_SIZE;
-			dpaa2_eqcr_size = DPAA2_LX2_EQCR_RING_SIZE;
-		} else {
-			dpaa2_dqrr_size = DPAA2_DQRR_RING_SIZE;
-			dpaa2_eqcr_size = DPAA2_EQCR_RING_SIZE;
-		}
-	}
-
-	if (dpaa2_svr_family == SVR_LX2160A)
-		reg_info.index = DPAA2_SWP_CENA_MEM_REGION;
-	else
-		reg_info.index = DPAA2_SWP_CENA_REGION;
-
+	reg_info.index = 0;
 	if (ioctl(vdev_fd, VFIO_DEVICE_GET_REGION_INFO, &reg_info)) {
-		DPAA2_BUS_ERR("vfio: error getting region info");
-		goto err;
+		PMD_INIT_LOG(ERR, "vfio: error getting region info\n");
+		rte_free(dpio_dev);
+		return -1;
 	}
 
 	dpio_dev->ce_size = reg_info.size;
-	dpio_dev->qbman_portal_ce_paddr = (size_t)mmap(NULL, reg_info.size,
+	dpio_dev->qbman_portal_ce_paddr = (uint64_t)mmap(NULL, reg_info.size,
 				PROT_WRITE | PROT_READ, MAP_SHARED,
 				vdev_fd, reg_info.offset);
 
-	reg_info.index = DPAA2_SWP_CINH_REGION;
+	reg_info.index = 1;
 	if (ioctl(vdev_fd, VFIO_DEVICE_GET_REGION_INFO, &reg_info)) {
-		DPAA2_BUS_ERR("vfio: error getting region info");
-		goto err;
+		PMD_INIT_LOG(ERR, "vfio: error getting region info\n");
+		rte_free(dpio_dev);
+		return -1;
 	}
 
 	dpio_dev->ci_size = reg_info.size;
-	dpio_dev->qbman_portal_ci_paddr = (size_t)mmap(NULL, reg_info.size,
+	dpio_dev->qbman_portal_ci_paddr = (uint64_t)mmap(NULL, reg_info.size,
 				PROT_WRITE | PROT_READ, MAP_SHARED,
 				vdev_fd, reg_info.offset);
 
-	/* Configure & setup SW portal */
-	p_des.block = NULL;
-	p_des.idx = attr.qbman_portal_id;
-	p_des.cena_bar = (void *)(dpio_dev->qbman_portal_ce_paddr);
-	p_des.cinh_bar = (void *)(dpio_dev->qbman_portal_ci_paddr);
-	p_des.irq = -1;
-	p_des.qman_version = attr.qbman_version;
-
-	dpio_dev->sw_portal = qbman_swp_init(&p_des);
-	if (dpio_dev->sw_portal == NULL) {
-		DPAA2_BUS_ERR("QBMan SW Portal Init failed");
-		goto err;
+	if (configure_dpio_qbman_swp(dpio_dev)) {
+		PMD_INIT_LOG(ERR,
+			     "Fail to configure the dpio qbman portal for %d\n",
+			     dpio_dev->hw_id);
+		rte_free(dpio_dev);
+		return -1;
 	}
 
 	io_space_count++;
 	dpio_dev->index = io_space_count;
 
 	if (rte_dpaa2_vfio_setup_intr(&dpio_dev->intr_handle, vdev_fd, 1)) {
-		DPAA2_BUS_ERR("Fail to setup interrupt for %d",
-			      dpio_dev->hw_id);
-		goto err;
+		PMD_INIT_LOG(ERR, "Fail to setup interrupt for %d\n",
+			     dpio_dev->hw_id);
+		rte_free(dpio_dev);
 	}
 
 	TAILQ_INSERT_TAIL(&dpio_dev_list, dpio_dev, next);
+	RTE_LOG(DEBUG, PMD, "DPAA2: Added [dpio.%d]\n", object_id);
 
 	return 0;
-
-err:
-	if (dpio_dev->dpio) {
-		dpio_disable(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token);
-		dpio_close(dpio_dev->dpio, CMD_PRI_LOW,  dpio_dev->token);
-		free(dpio_dev->dpio);
-	}
-	rte_free(dpio_dev);
-	return -1;
 }
 
 void
@@ -505,7 +523,7 @@ dpaa2_alloc_dq_storage(struct queue_storage_info_t *q_storage)
 
 	for (i = 0; i < NUM_DQS_PER_QUEUE; i++) {
 		q_storage->dq_storage[i] = rte_malloc(NULL,
-			dpaa2_dqrr_size * sizeof(struct qbman_result),
+			DPAA2_DQRR_RING_SIZE * sizeof(struct qbman_result),
 			RTE_CACHE_LINE_SIZE);
 		if (!q_storage->dq_storage[i])
 			goto fail;

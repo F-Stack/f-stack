@@ -1,5 +1,34 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2015 Intel Corporation
+/*-
+ *   BSD LICENSE
+ *
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _RTE_HASH_H_
@@ -13,8 +42,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
-#include <rte_compat.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,30 +63,7 @@ extern "C" {
 /** Default behavior of insertion, single writer/multi writer */
 #define RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD 0x02
 
-/** Flag to support reader writer concurrency */
-#define RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY 0x04
-
-/** Flag to indicate the extendabe bucket table feature should be used */
-#define RTE_HASH_EXTRA_FLAGS_EXT_TABLE 0x08
-
-/** Flag to disable freeing of key index on hash delete.
- * Refer to rte_hash_del_xxx APIs for more details.
- * This is enabled by default when RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF
- * is enabled.
- */
-#define RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL 0x10
-
-/** Flag to support lock free reader writer concurrency. Both single writer
- * and multi writer use cases are supported.
- * Currently, extendable bucket table feature is not supported with
- * this feature.
- */
-#define RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF 0x20
-
-/**
- * The type of hash value of a key.
- * It should be a value of at least 32bit with fully random pattern.
- */
+/** Signature of key that is stored internally. */
 typedef uint32_t hash_sig_t;
 
 /** Type of function that can be used for calculating the hash value. */
@@ -141,12 +145,7 @@ void
 rte_hash_free(struct rte_hash *h);
 
 /**
- * Reset all hash structure, by zeroing all entries.
- * When RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
- * it is application's responsibility to make sure that
- * none of the readers are referencing the hash table
- * while calling this API.
- *
+ * Reset all hash structure, by zeroing all entries
  * @param h
  *   Hash table to reset
  */
@@ -154,27 +153,9 @@ void
 rte_hash_reset(struct rte_hash *h);
 
 /**
- * Return the number of keys in the hash table
- * @param h
- *  Hash table to query from
- * @return
- *   - -EINVAL if parameters are invalid
- *   - A value indicating how many keys were inserted in the table.
- */
-int32_t
-rte_hash_count(const struct rte_hash *h);
-
-/**
  * Add a key-value pair to an existing hash table.
  * This operation is not multi-thread safe
- * and should only be called from one thread by default.
- * Thread safety can be enabled by setting flag during
- * table creation.
- * If the key exists already in the table, this API updates its value
- * with 'data' passed in this API. It is the responsibility of
- * the application to manage any memory associated with the old value.
- * The readers might still be using the old value even after this API
- * has returned.
+ * and should only be called from one thread.
  *
  * @param h
  *   Hash table to add the key to.
@@ -194,14 +175,7 @@ rte_hash_add_key_data(const struct rte_hash *h, const void *key, void *data);
  * Add a key-value pair with a pre-computed hash value
  * to an existing hash table.
  * This operation is not multi-thread safe
- * and should only be called from one thread by default.
- * Thread safety can be enabled by setting flag during
- * table creation.
- * If the key exists already in the table, this API updates its value
- * with 'data' passed in this API. It is the responsibility of
- * the application to manage any memory associated with the old value.
- * The readers might still be using the old value even after this API
- * has returned.
+ * and should only be called from one thread.
  *
  * @param h
  *   Hash table to add the key to.
@@ -222,9 +196,7 @@ rte_hash_add_key_with_hash_data(const struct rte_hash *h, const void *key,
 
 /**
  * Add a key to an existing hash table. This operation is not multi-thread safe
- * and should only be called from one thread by default.
- * Thread safety can be enabled by setting flag during
- * table creation.
+ * and should only be called from one thread.
  *
  * @param h
  *   Hash table to add the key to.
@@ -242,9 +214,7 @@ rte_hash_add_key(const struct rte_hash *h, const void *key);
 /**
  * Add a key to an existing hash table.
  * This operation is not multi-thread safe
- * and should only be called from one thread by default.
- * Thread safety can be enabled by setting flag during
- * table creation.
+ * and should only be called from one thread.
  *
  * @param h
  *   Hash table to add the key to.
@@ -264,17 +234,7 @@ rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key, hash_sig_t
 /**
  * Remove a key from an existing hash table.
  * This operation is not multi-thread safe
- * and should only be called from one thread by default.
- * Thread safety can be enabled by setting flag during
- * table creation.
- * If RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL or
- * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
- * the key index returned by rte_hash_add_key_xxx APIs will not be
- * freed by this API. rte_hash_free_key_with_position API must be called
- * additionally to free the index associated with the key.
- * rte_hash_free_key_with_position API should be called after all
- * the readers have stopped referencing the entry corresponding to
- * this key. RCU mechanisms could be used to determine such a state.
+ * and should only be called from one thread.
  *
  * @param h
  *   Hash table to remove the key from.
@@ -293,17 +253,7 @@ rte_hash_del_key(const struct rte_hash *h, const void *key);
 /**
  * Remove a key from an existing hash table.
  * This operation is not multi-thread safe
- * and should only be called from one thread by default.
- * Thread safety can be enabled by setting flag during
- * table creation.
- * If RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL or
- * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
- * the key index returned by rte_hash_add_key_xxx APIs will not be
- * freed by this API. rte_hash_free_key_with_position API must be called
- * additionally to free the index associated with the key.
- * rte_hash_free_key_with_position API should be called after all
- * the readers have stopped referencing the entry corresponding to
- * this key. RCU mechanisms could be used to determine such a state.
+ * and should only be called from one thread.
  *
  * @param h
  *   Hash table to remove the key from.
@@ -323,9 +273,7 @@ rte_hash_del_key_with_hash(const struct rte_hash *h, const void *key, hash_sig_t
 
 /**
  * Find a key in the hash table given the position.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to get the key from.
@@ -343,38 +291,8 @@ rte_hash_get_key_with_position(const struct rte_hash *h, const int32_t position,
 			       void **key);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
- * Free a hash key in the hash table given the position
- * of the key. This operation is not multi-thread safe and should
- * only be called from one thread by default. Thread safety
- * can be enabled by setting flag during table creation.
- * If RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL or
- * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
- * the key index returned by rte_hash_del_key_xxx APIs must be freed
- * using this API. This API should be called after all the readers
- * have stopped referencing the entry corresponding to this key.
- * RCU mechanisms could be used to determine such a state.
- * This API does not validate if the key is already freed.
- *
- * @param h
- *   Hash table to free the key from.
- * @param position
- *   Position returned when the key was deleted.
- * @return
- *   - 0 if freed successfully
- *   - -EINVAL if the parameters are invalid.
- */
-int __rte_experimental
-rte_hash_free_key_with_position(const struct rte_hash *h,
-				const int32_t position);
-
-/**
  * Find a key-value pair in the hash table.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to look in.
@@ -395,9 +313,7 @@ rte_hash_lookup_data(const struct rte_hash *h, const void *key, void **data);
 /**
  * Find a key-value pair with a pre-computed hash value
  * to an existing hash table.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to look in.
@@ -420,9 +336,7 @@ rte_hash_lookup_with_hash_data(const struct rte_hash *h, const void *key,
 
 /**
  * Find a key in the hash table.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to look in.
@@ -440,16 +354,14 @@ rte_hash_lookup(const struct rte_hash *h, const void *key);
 
 /**
  * Find a key in the hash table.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to look in.
  * @param key
  *   Key to find.
  * @param sig
- *   Precomputed hash value for 'key'.
+ *   Hash value to remove from the hash table.
  * @return
  *   - -EINVAL if the parameters are invalid.
  *   - -ENOENT if the key is not found.
@@ -477,9 +389,7 @@ rte_hash_hash(const struct rte_hash *h, const void *key);
 
 /**
  * Find multiple keys in the hash table.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to look in.
@@ -500,9 +410,7 @@ rte_hash_lookup_bulk_data(const struct rte_hash *h, const void **keys,
 
 /**
  * Find multiple keys in the hash table.
- * This operation is multi-thread safe with regarding to other lookup threads.
- * Read-write concurrency can be enabled by setting flag during
- * table creation.
+ * This operation is multi-thread safe.
  *
  * @param h
  *   Hash table to look in.

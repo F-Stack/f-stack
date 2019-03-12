@@ -84,7 +84,6 @@ pkt_burst_mac_swap(struct fwd_stream *fs)
 	uint16_t i;
 	uint32_t retry;
 	uint64_t ol_flags = 0;
-	uint64_t tx_offloads;
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t start_tsc;
 	uint64_t end_tsc;
@@ -108,12 +107,11 @@ pkt_burst_mac_swap(struct fwd_stream *fs)
 #endif
 	fs->rx_packets += nb_rx;
 	txp = &ports[fs->tx_port];
-	tx_offloads = txp->dev_conf.txmode.offloads;
-	if (tx_offloads	& DEV_TX_OFFLOAD_VLAN_INSERT)
+	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_VLAN)
 		ol_flags = PKT_TX_VLAN_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_QINQ_INSERT)
+	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_QINQ)
 		ol_flags |= PKT_TX_QINQ_PKT;
-	if (tx_offloads & DEV_TX_OFFLOAD_MACSEC_INSERT)
+	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_MACSEC)
 		ol_flags |= PKT_TX_MACSEC;
 	for (i = 0; i < nb_rx; i++) {
 		if (likely(i < nb_rx - 1))
@@ -127,8 +125,7 @@ pkt_burst_mac_swap(struct fwd_stream *fs)
 		ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
 		ether_addr_copy(&addr, &eth_hdr->s_addr);
 
-		mb->ol_flags &= IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF;
-		mb->ol_flags |= ol_flags;
+		mb->ol_flags = ol_flags;
 		mb->l2_len = sizeof(struct ether_hdr);
 		mb->l3_len = sizeof(struct ipv4_hdr);
 		mb->vlan_tci = txp->tx_vlan_id;

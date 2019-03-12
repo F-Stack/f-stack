@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #include "bcm_osal.h"
@@ -832,7 +834,7 @@ static enum _ecore_status_t ecore_cxt_src_t2_alloc(struct ecore_hwfn *p_hwfn)
 				 p_mngr->t2_num_pages *
 				 sizeof(struct ecore_dma_mem));
 	if (!p_mngr->t2) {
-		DP_NOTICE(p_hwfn, false, "Failed to allocate t2 table\n");
+		DP_NOTICE(p_hwfn, true, "Failed to allocate t2 table\n");
 		rc = ECORE_NOMEM;
 		goto t2_fail;
 	}
@@ -917,9 +919,6 @@ static void ecore_ilt_shadow_free(struct ecore_hwfn *p_hwfn)
 	struct ecore_cxt_mngr *p_mngr = p_hwfn->p_cxt_mngr;
 	u32 ilt_size, i;
 
-	if (p_mngr->ilt_shadow == OSAL_NULL)
-		return;
-
 	ilt_size = ecore_cxt_ilt_shadow_size(p_cli);
 
 	for (i = 0; p_mngr->ilt_shadow && i < ilt_size; i++) {
@@ -932,7 +931,6 @@ static void ecore_ilt_shadow_free(struct ecore_hwfn *p_hwfn)
 		p_dma->p_virt = OSAL_NULL;
 	}
 	OSAL_FREE(p_hwfn->p_dev, p_mngr->ilt_shadow);
-	p_mngr->ilt_shadow = OSAL_NULL;
 }
 
 static enum _ecore_status_t
@@ -1002,7 +1000,8 @@ static enum _ecore_status_t ecore_ilt_shadow_alloc(struct ecore_hwfn *p_hwfn)
 					 size * sizeof(struct ecore_dma_mem));
 
 	if (!p_mngr->ilt_shadow) {
-		DP_NOTICE(p_hwfn, false, "Failed to allocate ilt shadow table\n");
+		DP_NOTICE(p_hwfn, true,
+			  "Failed to allocate ilt shadow table\n");
 		rc = ECORE_NOMEM;
 		goto ilt_shadow_fail;
 	}
@@ -1045,14 +1044,12 @@ static void ecore_cid_map_free(struct ecore_hwfn *p_hwfn)
 
 	for (type = 0; type < MAX_CONN_TYPES; type++) {
 		OSAL_FREE(p_hwfn->p_dev, p_mngr->acquired[type].cid_map);
-		p_mngr->acquired[type].cid_map = OSAL_NULL;
 		p_mngr->acquired[type].max_count = 0;
 		p_mngr->acquired[type].start_cid = 0;
 
 		for (vf = 0; vf < COMMON_MAX_NUM_VFS; vf++) {
 			OSAL_FREE(p_hwfn->p_dev,
 				  p_mngr->acquired_vf[type][vf].cid_map);
-			p_mngr->acquired_vf[type][vf].cid_map = OSAL_NULL;
 			p_mngr->acquired_vf[type][vf].max_count = 0;
 			p_mngr->acquired_vf[type][vf].start_cid = 0;
 		}
@@ -1129,12 +1126,10 @@ enum _ecore_status_t ecore_cxt_mngr_alloc(struct ecore_hwfn *p_hwfn)
 
 	p_mngr = OSAL_ZALLOC(p_hwfn->p_dev, GFP_KERNEL, sizeof(*p_mngr));
 	if (!p_mngr) {
-		DP_NOTICE(p_hwfn, false, "Failed to allocate `struct ecore_cxt_mngr'\n");
+		DP_NOTICE(p_hwfn, true,
+			  "Failed to allocate `struct ecore_cxt_mngr'\n");
 		return ECORE_NOMEM;
 	}
-
-	/* Set the cxt mangr pointer prior to further allocations */
-	p_hwfn->p_cxt_mngr = p_mngr;
 
 	/* Initialize ILT client registers */
 	clients = p_mngr->clients;
@@ -1177,12 +1172,12 @@ enum _ecore_status_t ecore_cxt_mngr_alloc(struct ecore_hwfn *p_hwfn)
 
 	/* Initialize the dynamic ILT allocation mutex */
 #ifdef CONFIG_ECORE_LOCK_ALLOC
-	if (OSAL_MUTEX_ALLOC(p_hwfn, &p_mngr->mutex)) {
-		DP_NOTICE(p_hwfn, false, "Failed to alloc p_mngr->mutex\n");
-		return ECORE_NOMEM;
-	}
+	OSAL_MUTEX_ALLOC(p_hwfn, &p_mngr->mutex);
 #endif
 	OSAL_MUTEX_INIT(&p_mngr->mutex);
+
+	/* Set the cxt mangr pointer priori to further allocations */
+	p_hwfn->p_cxt_mngr = p_mngr;
 
 	return ECORE_SUCCESS;
 }
@@ -1194,21 +1189,21 @@ enum _ecore_status_t ecore_cxt_tables_alloc(struct ecore_hwfn *p_hwfn)
 	/* Allocate the ILT shadow table */
 	rc = ecore_ilt_shadow_alloc(p_hwfn);
 	if (rc) {
-		DP_NOTICE(p_hwfn, false, "Failed to allocate ilt memory\n");
+		DP_NOTICE(p_hwfn, true, "Failed to allocate ilt memory\n");
 		goto tables_alloc_fail;
 	}
 
 	/* Allocate the T2  table */
 	rc = ecore_cxt_src_t2_alloc(p_hwfn);
 	if (rc) {
-		DP_NOTICE(p_hwfn, false, "Failed to allocate T2 memory\n");
+		DP_NOTICE(p_hwfn, true, "Failed to allocate T2 memory\n");
 		goto tables_alloc_fail;
 	}
 
 	/* Allocate and initialize the acquired cids bitmaps */
 	rc = ecore_cid_map_alloc(p_hwfn);
 	if (rc) {
-		DP_NOTICE(p_hwfn, false, "Failed to allocate cid maps\n");
+		DP_NOTICE(p_hwfn, true, "Failed to allocate cid maps\n");
 		goto tables_alloc_fail;
 	}
 
@@ -1432,8 +1427,7 @@ static void ecore_cdu_init_pf(struct ecore_hwfn *p_hwfn)
 	}
 }
 
-void ecore_qm_init_pf(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
-		      bool is_pf_loading)
+void ecore_qm_init_pf(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 {
 	struct ecore_qm_info *qm_info = &p_hwfn->qm_info;
 	struct ecore_mcp_link_state *p_link;
@@ -1444,9 +1438,8 @@ void ecore_qm_init_pf(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 
 	p_link = &ECORE_LEADING_HWFN(p_hwfn->p_dev)->mcp_info->link_output;
 
-	ecore_qm_pf_rt_init(p_hwfn, p_ptt, p_hwfn->rel_pf_id,
-			    qm_info->max_phys_tcs_per_port,
-			    is_pf_loading,
+	ecore_qm_pf_rt_init(p_hwfn, p_ptt, p_hwfn->port_id,
+			    p_hwfn->rel_pf_id, qm_info->max_phys_tcs_per_port,
 			    iids.cids, iids.vf_cids, iids.tids,
 			    qm_info->start_pq,
 			    qm_info->num_pqs - qm_info->num_vf_pqs,
@@ -1804,7 +1797,7 @@ void ecore_cxt_hw_init_common(struct ecore_hwfn *p_hwfn)
 
 void ecore_cxt_hw_init_pf(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt)
 {
-	ecore_qm_init_pf(p_hwfn, p_ptt, true);
+	ecore_qm_init_pf(p_hwfn, p_ptt);
 	ecore_cm_init_pf(p_hwfn);
 	ecore_dq_init_pf(p_hwfn);
 	ecore_cdu_init_pf(p_hwfn);
@@ -2114,7 +2107,7 @@ ecore_cxt_dynamic_ilt_alloc(struct ecore_hwfn *p_hwfn,
 
 	ecore_dmae_host2grc(p_hwfn, p_ptt, (u64)(osal_uintptr_t)&ilt_hw_entry,
 			    reg_offset, sizeof(ilt_hw_entry) / sizeof(u32),
-			    OSAL_NULL /* default parameters */);
+			    0 /* no flags */);
 
 	if (elem_type == ECORE_ELEM_CXT) {
 		u32 last_cid_allocated = (1 + (iid / elems_per_p)) *
@@ -2221,7 +2214,7 @@ ecore_cxt_free_ilt_range(struct ecore_hwfn *p_hwfn,
 				    (u64)(osal_uintptr_t)&ilt_hw_entry,
 				    reg_offset,
 				    sizeof(ilt_hw_entry) / sizeof(u32),
-				    OSAL_NULL /* default parameters */);
+				    0 /* no flags */);
 	}
 
 	ecore_ptt_release(p_hwfn, p_ptt);

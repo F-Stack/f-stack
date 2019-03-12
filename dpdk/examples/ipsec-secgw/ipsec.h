@@ -1,5 +1,34 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2016-2017 Intel Corporation
+/*-
+ *   BSD LICENSE
+ *
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
+ *   All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef __IPSEC_H__
@@ -17,12 +46,9 @@
 #define RTE_LOGTYPE_IPSEC_IPIP  RTE_LOGTYPE_USER3
 
 #define MAX_PKT_BURST 32
-#define MAX_INFLIGHT 128
 #define MAX_QP_PER_LCORE 256
 
 #define MAX_DIGEST_SIZE 32 /* Bytes -- 256 bits */
-
-#define IPSEC_OFFLOAD_ESN_SOFTLIMIT 0xffffff00
 
 #define IV_OFFSET		(sizeof(struct rte_crypto_op) + \
 				sizeof(struct rte_crypto_sym_op))
@@ -107,7 +133,7 @@ struct ipsec_sa {
 	uint32_t ol_flags;
 
 #define MAX_RTE_FLOW_PATTERN (4)
-#define MAX_RTE_FLOW_ACTIONS (3)
+#define MAX_RTE_FLOW_ACTIONS (2)
 	struct rte_flow_item pattern[MAX_RTE_FLOW_PATTERN];
 	struct rte_flow_action action[MAX_RTE_FLOW_ACTIONS];
 	struct rte_flow_attr attr;
@@ -133,6 +159,8 @@ struct cdev_qp {
 	uint16_t in_flight;
 	uint16_t len;
 	struct rte_crypto_op *buf[MAX_PKT_BURST] __rte_aligned(sizeof(void *));
+	struct rte_mbuf *ol_pkts[MAX_PKT_BURST] __rte_aligned(sizeof(void *));
+	uint16_t ol_pkts_cnt;
 };
 
 struct ipsec_ctx {
@@ -144,8 +172,6 @@ struct ipsec_ctx {
 	uint16_t last_qp;
 	struct cdev_qp tbl[MAX_QP_PER_LCORE];
 	struct rte_mempool *session_pool;
-	struct rte_mbuf *ol_pkts[MAX_PKT_BURST] __rte_aligned(sizeof(void *));
-	uint16_t ol_pkts_cnt;
 };
 
 struct cdev_key {
@@ -191,7 +217,7 @@ ipsec_metadata_size(void)
 static inline struct ipsec_mbuf_metadata *
 get_priv(struct rte_mbuf *m)
 {
-	return rte_mbuf_to_priv(m);
+	return RTE_PTR_ADD(m, sizeof(struct rte_mbuf));
 }
 
 static inline void *

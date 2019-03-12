@@ -144,6 +144,8 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
 
 
 /* dispatch api begin */
+#define FF_DISPATCH_ERROR (-1)
+#define FF_DISPATCH_RESPONSE (-2)
 
 /*
  * Packet dispatch callback function.
@@ -164,7 +166,7 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  *   Error occurs or packet is handled by user, packet will be freed.
  *
  */
-typedef int (*dispatch_func_t)(void *data, uint16_t len,
+typedef int (*dispatch_func_t)(void *data, uint16_t *len,
     uint16_t queue_id, uint16_t nb_queues);
 
 /* regist a packet dispath function */

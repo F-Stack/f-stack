@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #ifndef __ETH_COMMON__
@@ -117,9 +119,6 @@
 /* Number of etherType values configured by driver for control frame check */
 #define ETH_CTL_FRAME_ETH_TYPE_NUM              4
 
-/* GFS constants */
-#define ETH_GFT_TRASHCAN_VPORT         0x1FF /* GFT drop flow vport number */
-
 
 
 /*
@@ -177,11 +176,6 @@ struct eth_tx_1st_bd_flags {
 #define ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_MASK     0x1
 #define ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_SHIFT    6
 /* Recalculate Tunnel UDP/GRE Checksum (Depending on Tunnel Type) */
-#define ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK     0x1
-/* Recalculate Tunnel UDP/GRE Checksum (Depending on Tunnel Type). In case of
- * GRE tunnel, this flag means GRE CSO, and in this case GRE checksum field
- * Must be present.
- */
 #define ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK     0x1
 #define ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_SHIFT    7
 };

@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #ifndef GTT_REG_ADDR_H

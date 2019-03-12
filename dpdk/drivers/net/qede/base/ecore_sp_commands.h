@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #ifndef __ECORE_SP_COMMANDS_H__
@@ -119,9 +121,6 @@ struct ecore_rl_update_params {
 	u8 rl_stop_flg;
 	u8 rl_id_first;
 	u8 rl_id_last;
-	u8 dcqcn_reset_alpha_on_idle;
-	u8 rl_bc_stage_th;
-	u8 rl_timer_stage_th;
 	u8 rl_dc_qcn_flg; /* If set, RL will used for DCQCN */
 	u32 rl_bc_rate; /* Byte Counter Limit */
 	u32 rl_max_rate; /* Maximum rate in Mbps resolution */

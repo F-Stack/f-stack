@@ -1,31 +1,56 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2017 6WIND S.A.
- * Copyright 2017 Mellanox Technologies, Ltd
+/*-
+ *   BSD LICENSE
+ *
+ *   Copyright 2017 6WIND S.A.
+ *   Copyright 2017 Mellanox.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of 6WIND S.A. nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
 
 #include <rte_debug.h>
 #include <rte_devargs.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
-#include <rte_string_fns.h>
 
 #include "failsafe_private.h"
+
+#define DEVARGS_MAXLEN 4096
 
 /* Callback used when a new device is found in devargs */
 typedef int (parse_cb)(struct rte_eth_dev *dev, const char *params,
 		uint8_t head);
 
-uint64_t failsafe_hotplug_poll = FAILSAFE_HOTPLUG_DEFAULT_TIMEOUT_MS;
-int failsafe_mac_from_arg;
+uint64_t hotplug_poll = FAILSAFE_HOTPLUG_DEFAULT_TIMEOUT_MS;
+int mac_from_arg = 0;
 
-static const char * const pmd_failsafe_init_parameters[] = {
+const char *pmd_failsafe_init_parameters[] = {
 	PMD_FAILSAFE_HOTPLUG_POLL_KVARG,
 	PMD_FAILSAFE_MAC_KVARG,
 	NULL,
@@ -63,7 +88,7 @@ fs_parse_device(struct sub_device *sdev, char *args)
 
 	d = &sdev->devargs;
 	DEBUG("%s", args);
-	ret = rte_devargs_parse(d, args);
+	ret = rte_eal_devargs_parse(args, d);
 	if (ret) {
 		DEBUG("devargs parsing failed with code %d", ret);
 		return ret;
@@ -136,67 +161,6 @@ ret_pclose:
 }
 
 static int
-fs_read_fd(struct sub_device *sdev, char *fd_str)
-{
-	FILE *fp = NULL;
-	int fd = -1;
-	/* store possible newline as well */
-	char output[DEVARGS_MAXLEN + 1];
-	int err = -ENODEV;
-	int oflags;
-	int lcount;
-
-	RTE_ASSERT(fd_str != NULL || sdev->fd_str != NULL);
-	if (sdev->fd_str == NULL) {
-		sdev->fd_str = strdup(fd_str);
-		if (sdev->fd_str == NULL) {
-			ERROR("Command line allocation failed");
-			return -ENOMEM;
-		}
-	}
-	errno = 0;
-	fd = strtol(fd_str, &fd_str, 0);
-	if (errno || *fd_str || fd < 0) {
-		ERROR("Parsing FD number failed");
-		goto error;
-	}
-	/* Fiddle with copy of file descriptor */
-	fd = dup(fd);
-	if (fd == -1)
-		goto error;
-	oflags = fcntl(fd, F_GETFL);
-	if (oflags == -1)
-		goto error;
-	if (fcntl(fd, F_SETFL, oflags | O_NONBLOCK) == -1)
-		goto error;
-	fp = fdopen(fd, "r");
-	if (fp == NULL)
-		goto error;
-	fd = -1;
-	/* Only take the last line into account */
-	lcount = 0;
-	while (fgets(output, sizeof(output), fp))
-		++lcount;
-	if (lcount == 0)
-		goto error;
-	else if (ferror(fp) && errno != EAGAIN)
-		goto error;
-	/* Line must end with a newline character */
-	fs_sanitize_cmdline(output);
-	if (output[0] == '\0')
-		goto error;
-	err = fs_parse_device(sdev, output);
-	if (err)
-		ERROR("Parsing device '%s' failed", output);
-error:
-	if (fp)
-		fclose(fp);
-	if (fd != -1)
-		close(fd);
-	return err;
-}
-
-static int
 fs_parse_device_param(struct rte_eth_dev *dev, const char *param,
 		uint8_t head)
 {
@@ -234,14 +198,6 @@ fs_parse_device_param(struct rte_eth_dev *dev, const char *param,
 		ret = fs_execute_cmd(sdev, args);
 		if (ret == -ENODEV) {
 			DEBUG("Reading device info from command line failed");
-			ret = 0;
-		}
-		if (ret)
-			goto free_args;
-	} else if (strncmp(param, "fd(", 3) == 0) {
-		ret = fs_read_fd(sdev, args);
-		if (ret == -ENODEV) {
-			DEBUG("Reading device info from FD failed");
 			ret = 0;
 		}
 		if (ret)
@@ -341,7 +297,7 @@ fs_remove_sub_devices_definition(char params[DEVARGS_MAXLEN])
 		a = b + 1;
 	}
 out:
-	strlcpy(params, buffer, DEVARGS_MAXLEN);
+	snprintf(params, DEVARGS_MAXLEN, "%s", buffer);
 	return 0;
 }
 
@@ -393,7 +349,7 @@ failsafe_args_parse(struct rte_eth_dev *dev, const char *params)
 	ret = 0;
 	priv->subs_tx = FAILSAFE_MAX_ETHPORTS;
 	/* default parameters */
-	n = strlcpy(mut_params, params, sizeof(mut_params));
+	n = snprintf(mut_params, sizeof(mut_params), "%s", params);
 	if (n >= sizeof(mut_params)) {
 		ERROR("Parameter string too long (>=%zu)",
 				sizeof(mut_params));
@@ -420,7 +376,7 @@ failsafe_args_parse(struct rte_eth_dev *dev, const char *params)
 		if (arg_count == 1) {
 			ret = rte_kvargs_process(kvlist,
 					PMD_FAILSAFE_HOTPLUG_POLL_KVARG,
-					&fs_get_u64_arg, &failsafe_hotplug_poll);
+					&fs_get_u64_arg, &hotplug_poll);
 			if (ret < 0)
 				goto free_kvlist;
 		}
@@ -435,7 +391,7 @@ failsafe_args_parse(struct rte_eth_dev *dev, const char *params)
 			if (ret < 0)
 				goto free_kvlist;
 
-			failsafe_mac_from_arg = 1;
+			mac_from_arg = 1;
 		}
 	}
 	PRIV(dev)->state = DEV_PARSED;
@@ -453,8 +409,6 @@ failsafe_args_free(struct rte_eth_dev *dev)
 	FOREACH_SUBDEV(sdev, i, dev) {
 		free(sdev->cmdline);
 		sdev->cmdline = NULL;
-		free(sdev->fd_str);
-		sdev->fd_str = NULL;
 		free(sdev->devargs.args);
 		sdev->devargs.args = NULL;
 	}
@@ -470,8 +424,7 @@ fs_count_device(struct rte_eth_dev *dev, const char *param,
 		param[b] != '\0')
 		b++;
 	if (strncmp(param, "dev", b) != 0 &&
-	    strncmp(param, "exec", b) != 0 &&
-	    strncmp(param, "fd(", b) != 0) {
+	    strncmp(param, "exec", b) != 0) {
 		ERROR("Unrecognized device type: %.*s", (int)b, param);
 		return -EINVAL;
 	}
@@ -510,8 +463,6 @@ failsafe_args_parse_subs(struct rte_eth_dev *dev)
 			continue;
 		if (sdev->cmdline)
 			ret = fs_execute_cmd(sdev, sdev->cmdline);
-		else if (sdev->fd_str)
-			ret = fs_read_fd(sdev, sdev->fd_str);
 		else
 			ret = fs_parse_sub_device(sdev);
 		if (ret == 0)

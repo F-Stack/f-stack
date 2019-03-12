@@ -35,7 +35,15 @@
 #define ENA_COM
 
 #include "ena_plat.h"
-#include "ena_includes.h"
+#include "ena_common_defs.h"
+#include "ena_admin_defs.h"
+#include "ena_eth_io_defs.h"
+#include "ena_regs_defs.h"
+#if defined(__linux__) && !defined(__KERNEL__)
+#include <rte_lcore.h>
+#include <rte_spinlock.h>
+#define __iomem
+#endif
 
 #define ENA_MAX_NUM_IO_QUEUES		128U
 /* We need to queues for each IO (on for Tx and one for Rx) */
@@ -81,11 +89,6 @@
 #define ENA_INTR_DELAY_OLD_VALUE_WEIGHT			6
 #define ENA_INTR_DELAY_NEW_VALUE_WEIGHT			4
 
-#define ENA_INTR_MODER_LEVEL_STRIDE			1
-#define ENA_INTR_BYTE_COUNT_NOT_SUPPORTED		0xFFFFFF
-
-#define ENA_HW_HINTS_NO_TIMEOUT				0xFFFF
-
 enum ena_intr_moder_level {
 	ENA_INTR_MODER_LOWEST = 0,
 	ENA_INTR_MODER_LOW,
@@ -117,8 +120,8 @@ struct ena_com_rx_buf_info {
 };
 
 struct ena_com_io_desc_addr {
-	u8 __iomem *pbuf_dev_addr; /* LLQ address */
-	u8 *virt_addr;
+	u8  __iomem *pbuf_dev_addr; /* LLQ address */
+	u8  *virt_addr;
 	dma_addr_t phys_addr;
 	ena_mem_handle_t mem_handle;
 };
@@ -127,12 +130,13 @@ struct ena_com_tx_meta {
 	u16 mss;
 	u16 l3_hdr_len;
 	u16 l3_hdr_offset;
+	u16 l3_outer_hdr_len; /* In words */
+	u16 l3_outer_hdr_offset;
 	u16 l4_hdr_len; /* In words */
 };
 
 struct ena_com_io_cq {
 	struct ena_com_io_desc_addr cdesc_addr;
-	void *bus;
 
 	/* Interrupt unmask register */
 	u32 __iomem *unmask_reg;
@@ -170,7 +174,6 @@ struct ena_com_io_cq {
 
 struct ena_com_io_sq {
 	struct ena_com_io_desc_addr desc_addr;
-	void *bus;
 
 	u32 __iomem *db_addr;
 	u8 __iomem *header_addr;
@@ -225,11 +228,8 @@ struct ena_com_stats_admin {
 
 struct ena_com_admin_queue {
 	void *q_dmadev;
-	void *bus;
 	ena_spinlock_t q_lock; /* spinlock for the admin queue */
-
 	struct ena_comp_ctx *comp_ctx;
-	u32 completion_timeout;
 	u16 q_depth;
 	struct ena_com_admin_cq cq;
 	struct ena_com_admin_sq sq;
@@ -266,7 +266,6 @@ struct ena_com_mmio_read {
 	struct ena_admin_ena_mmio_req_read_less_resp *read_resp;
 	dma_addr_t read_resp_dma_addr;
 	ena_mem_handle_t read_resp_mem_handle;
-	u32 reg_read_to; /* in us */
 	u16 seq_num;
 	bool readless_supported;
 	/* spin lock to ensure a single outstanding read */
@@ -317,7 +316,6 @@ struct ena_com_dev {
 	u8 __iomem *reg_bar;
 	void __iomem *mem_bar;
 	void *dmadev;
-	void *bus;
 
 	enum ena_admin_placement_policy_type tx_mem_queue_type;
 	u32 tx_max_header_size;
@@ -342,7 +340,6 @@ struct ena_com_dev_get_features_ctx {
 	struct ena_admin_device_attr_feature_desc dev_attr;
 	struct ena_admin_feature_aenq_desc aenq;
 	struct ena_admin_feature_offload_desc offload;
-	struct ena_admin_ena_hw_hints hw_hints;
 };
 
 struct ena_com_create_io_ctx {
@@ -382,7 +379,7 @@ int ena_com_mmio_reg_read_request_init(struct ena_com_dev *ena_dev);
 
 /* ena_com_set_mmio_read_mode - Enable/disable the mmio reg read mechanism
  * @ena_dev: ENA communication layer struct
- * @readless_supported: readless mode (enable/disable)
+ * @realess_supported: readless mode (enable/disable)
  */
 void ena_com_set_mmio_read_mode(struct ena_com_dev *ena_dev,
 				bool readless_supported);
@@ -424,16 +421,14 @@ void ena_com_admin_destroy(struct ena_com_dev *ena_dev);
 
 /* ena_com_dev_reset - Perform device FLR to the device.
  * @ena_dev: ENA communication layer struct
- * @reset_reason: Specify what is the trigger for the reset in case of an error.
  *
  * @return - 0 on success, negative value on failure.
  */
-int ena_com_dev_reset(struct ena_com_dev *ena_dev,
-		      enum ena_regs_reset_reason_types reset_reason);
+int ena_com_dev_reset(struct ena_com_dev *ena_dev);
 
 /* ena_com_create_io_queue - Create io queue.
  * @ena_dev: ENA communication layer struct
- * @ctx - create context structure
+ * ena_com_create_io_ctx - create context structure
  *
  * Create the submission and the completion queues.
  *
@@ -442,9 +437,8 @@ int ena_com_dev_reset(struct ena_com_dev *ena_dev,
 int ena_com_create_io_queue(struct ena_com_dev *ena_dev,
 			    struct ena_com_create_io_ctx *ctx);
 
-/* ena_com_destroy_io_queue - Destroy IO queue with the queue id - qid.
+/* ena_com_admin_destroy - Destroy IO queue with the queue id - qid.
  * @ena_dev: ENA communication layer struct
- * @qid - the caller virtual queue id.
  */
 void ena_com_destroy_io_queue(struct ena_com_dev *ena_dev, u16 qid);
 
@@ -587,8 +581,9 @@ int ena_com_set_aenq_config(struct ena_com_dev *ena_dev, u32 groups_flag);
  *
  * @return: 0 on Success and negative value otherwise.
  */
-int ena_com_get_dev_attr_feat(struct ena_com_dev *ena_dev,
-			      struct ena_com_dev_get_features_ctx *get_feat_ctx);
+int
+ena_com_get_dev_attr_feat(struct ena_com_dev *ena_dev,
+			  struct ena_com_dev_get_features_ctx *get_feat_ctx);
 
 /* ena_com_get_dev_basic_stats - Get device basic statistics
  * @ena_dev: ENA communication layer struct
@@ -613,8 +608,9 @@ int ena_com_set_dev_mtu(struct ena_com_dev *ena_dev, int mtu);
  *
  * @return: 0 on Success and negative value otherwise.
  */
-int ena_com_get_offload_settings(struct ena_com_dev *ena_dev,
-				 struct ena_admin_feature_offload_desc *offload);
+int
+ena_com_get_offload_settings(struct ena_com_dev *ena_dev,
+			     struct ena_admin_feature_offload_desc *offload);
 
 /* ena_com_rss_init - Init RSS
  * @ena_dev: ENA communication layer struct
@@ -769,8 +765,8 @@ int ena_com_indirect_table_set(struct ena_com_dev *ena_dev);
  *
  * Retrieve the RSS indirection table from the device.
  *
- * @note: If the caller called ena_com_indirect_table_fill_entry but didn't flash
- * it to the device, the new configuration will be lost.
+ * @note: If the caller called ena_com_indirect_table_fill_entry but didn't
+ * flash it to the device, the new configuration will be lost.
  *
  * @return: 0 on Success and negative value otherwise.
  */
@@ -878,7 +874,8 @@ bool ena_com_interrupt_moderation_supported(struct ena_com_dev *ena_dev);
  * moderation table back to the default parameters.
  * @ena_dev: ENA communication layer struct
  */
-void ena_com_config_default_interrupt_moderation_table(struct ena_com_dev *ena_dev);
+void
+ena_com_config_default_interrupt_moderation_table(struct ena_com_dev *ena_dev);
 
 /* ena_com_update_nonadaptive_moderation_interval_tx - Update the
  * non-adaptive interval in Tx direction.
@@ -887,8 +884,9 @@ void ena_com_config_default_interrupt_moderation_table(struct ena_com_dev *ena_d
  *
  * @return - 0 on success, negative value on failure.
  */
-int ena_com_update_nonadaptive_moderation_interval_tx(struct ena_com_dev *ena_dev,
-						      u32 tx_coalesce_usecs);
+int
+ena_com_update_nonadaptive_moderation_interval_tx(struct ena_com_dev *ena_dev,
+						  u32 tx_coalesce_usecs);
 
 /* ena_com_update_nonadaptive_moderation_interval_rx - Update the
  * non-adaptive interval in Rx direction.
@@ -897,8 +895,9 @@ int ena_com_update_nonadaptive_moderation_interval_tx(struct ena_com_dev *ena_de
  *
  * @return - 0 on success, negative value on failure.
  */
-int ena_com_update_nonadaptive_moderation_interval_rx(struct ena_com_dev *ena_dev,
-						      u32 rx_coalesce_usecs);
+int
+ena_com_update_nonadaptive_moderation_interval_rx(struct ena_com_dev *ena_dev,
+						  u32 rx_coalesce_usecs);
 
 /* ena_com_get_nonadaptive_moderation_interval_tx - Retrieve the
  * non-adaptive interval in Tx direction.
@@ -906,7 +905,8 @@ int ena_com_update_nonadaptive_moderation_interval_rx(struct ena_com_dev *ena_de
  *
  * @return - interval in usec
  */
-unsigned int ena_com_get_nonadaptive_moderation_interval_tx(struct ena_com_dev *ena_dev);
+unsigned int
+ena_com_get_nonadaptive_moderation_interval_tx(struct ena_com_dev *ena_dev);
 
 /* ena_com_get_nonadaptive_moderation_interval_rx - Retrieve the
  * non-adaptive interval in Rx direction.
@@ -914,7 +914,8 @@ unsigned int ena_com_get_nonadaptive_moderation_interval_tx(struct ena_com_dev *
  *
  * @return - interval in usec
  */
-unsigned int ena_com_get_nonadaptive_moderation_interval_rx(struct ena_com_dev *ena_dev);
+unsigned int
+ena_com_get_nonadaptive_moderation_interval_rx(struct ena_com_dev *ena_dev);
 
 /* ena_com_init_intr_moderation_entry - Update a single entry in the interrupt
  * moderation table.
@@ -939,17 +940,20 @@ void ena_com_get_intr_moderation_entry(struct ena_com_dev *ena_dev,
 				       enum ena_intr_moder_level level,
 				       struct ena_intr_moder_entry *entry);
 
-static inline bool ena_com_get_adaptive_moderation_enabled(struct ena_com_dev *ena_dev)
+static inline bool
+ena_com_get_adaptive_moderation_enabled(struct ena_com_dev *ena_dev)
 {
 	return ena_dev->adaptive_coalescing;
 }
 
-static inline void ena_com_enable_adaptive_moderation(struct ena_com_dev *ena_dev)
+static inline void
+ena_com_enable_adaptive_moderation(struct ena_com_dev *ena_dev)
 {
 	ena_dev->adaptive_coalescing = true;
 }
 
-static inline void ena_com_disable_adaptive_moderation(struct ena_com_dev *ena_dev)
+static inline void
+ena_com_disable_adaptive_moderation(struct ena_com_dev *ena_dev)
 {
 	ena_dev->adaptive_coalescing = false;
 }
@@ -962,11 +966,12 @@ static inline void ena_com_disable_adaptive_moderation(struct ena_com_dev *ena_d
  * @moder_tbl_idx: Current table level as input update new level as return
  * value.
  */
-static inline void ena_com_calculate_interrupt_delay(struct ena_com_dev *ena_dev,
-						     unsigned int pkts,
-						     unsigned int bytes,
-						     unsigned int *smoothed_interval,
-						     unsigned int *moder_tbl_idx)
+static inline void
+ena_com_calculate_interrupt_delay(struct ena_com_dev *ena_dev,
+				  unsigned int pkts,
+				  unsigned int bytes,
+				  unsigned int *smoothed_interval,
+				  unsigned int *moder_tbl_idx)
 {
 	enum ena_intr_moder_level curr_moder_idx, new_moder_idx;
 	struct ena_intr_moder_entry *curr_moder_entry;
@@ -996,20 +1001,17 @@ static inline void ena_com_calculate_interrupt_delay(struct ena_com_dev *ena_dev
 	if (curr_moder_idx == ENA_INTR_MODER_LOWEST) {
 		if ((pkts > curr_moder_entry->pkts_per_interval) ||
 		    (bytes > curr_moder_entry->bytes_per_interval))
-			new_moder_idx =
-				(enum ena_intr_moder_level)(curr_moder_idx + ENA_INTR_MODER_LEVEL_STRIDE);
+			new_moder_idx = (enum ena_intr_moder_level)(curr_moder_idx + 1);
 	} else {
-		pred_moder_entry = &intr_moder_tbl[curr_moder_idx - ENA_INTR_MODER_LEVEL_STRIDE];
+		pred_moder_entry = &intr_moder_tbl[curr_moder_idx - 1];
 
 		if ((pkts <= pred_moder_entry->pkts_per_interval) ||
 		    (bytes <= pred_moder_entry->bytes_per_interval))
-			new_moder_idx =
-				(enum ena_intr_moder_level)(curr_moder_idx - ENA_INTR_MODER_LEVEL_STRIDE);
+			new_moder_idx = (enum ena_intr_moder_level)(curr_moder_idx - 1);
 		else if ((pkts > curr_moder_entry->pkts_per_interval) ||
 			 (bytes > curr_moder_entry->bytes_per_interval)) {
 			if (curr_moder_idx != ENA_INTR_MODER_HIGHEST)
-				new_moder_idx =
-					(enum ena_intr_moder_level)(curr_moder_idx + ENA_INTR_MODER_LEVEL_STRIDE);
+				new_moder_idx = (enum ena_intr_moder_level)(curr_moder_idx + 1);
 		}
 	}
 	new_moder_entry = &intr_moder_tbl[new_moder_idx];
@@ -1042,11 +1044,17 @@ static inline void ena_com_update_intr_reg(struct ena_eth_io_intr_reg *intr_reg,
 
 	intr_reg->intr_control |=
 		(tx_delay_interval << ENA_ETH_IO_INTR_REG_TX_INTR_DELAY_SHIFT)
-		& ENA_ETH_IO_INTR_REG_TX_INTR_DELAY_MASK;
+		& ENA_ETH_IO_INTR_REG_RX_INTR_DELAY_MASK;
 
 	if (unmask)
 		intr_reg->intr_control |= ENA_ETH_IO_INTR_REG_INTR_UNMASK_MASK;
 }
+
+int ena_com_get_dev_extended_stats(struct ena_com_dev *ena_dev, char *buff,
+				   u32 len);
+
+int ena_com_extended_stats_set_func_queue(struct ena_com_dev *ena_dev,
+					  u32 funct_queue);
 
 #if defined(__cplusplus)
 }
