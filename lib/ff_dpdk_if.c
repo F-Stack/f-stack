@@ -572,6 +572,10 @@ init_port_start(void)
         uint16_t nb_queues = pconf->nb_lcores;
 
         struct rte_eth_dev_info dev_info;
+        struct rte_eth_conf port_conf = {0};
+        struct rte_eth_rxconf rxq_conf;
+        struct rte_eth_txconf txq_conf;
+
         rte_eth_dev_info_get(port_id, &dev_info);
 
         if (nb_queues > dev_info.max_rx_queues) {
@@ -597,8 +601,6 @@ init_port_start(void)
 
         rte_memcpy(pconf->mac,
             addr.addr_bytes, ETHER_ADDR_LEN);
-
-        struct rte_eth_conf port_conf = {0};
 
         /* Set RSS mode */
         uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
@@ -689,6 +691,14 @@ init_port_start(void)
         if (ret != 0) {
             return ret;
         }
+
+        static uint16_t nb_rxd = RX_QUEUE_SIZE;
+        static uint16_t nb_txd = TX_QUEUE_SIZE;
+        ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
+        if (ret < 0)
+            printf("Could not adjust number of descriptors "
+                    "for port%u (%d)\n", (unsigned)port_id, ret);
+
         uint16_t q;
         for (q = 0; q < nb_queues; q++) {
             if (numa_on) {
@@ -697,14 +707,18 @@ init_port_start(void)
             }
             mbuf_pool = pktmbuf_pool[socketid];
 
-            ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
-                socketid, &dev_info.default_txconf);
+            txq_conf = dev_info.default_txconf;
+            txq_conf.offloads = port_conf.txmode.offloads;
+            ret = rte_eth_tx_queue_setup(port_id, q, nb_txd,
+                socketid, &txq_conf);
             if (ret < 0) {
                 return ret;
             }
-
-            ret = rte_eth_rx_queue_setup(port_id, q, RX_QUEUE_SIZE,
-                socketid, &dev_info.default_rxconf, mbuf_pool);
+            
+            rxq_conf = dev_info.default_rxconf;
+            rxq_conf.offloads = port_conf.rxmode.offloads;
+            ret = rte_eth_rx_queue_setup(port_id, q, nb_rxd,
+                socketid, &rxq_conf, mbuf_pool);
             if (ret < 0) {
                 return ret;
             }
