@@ -1277,18 +1277,18 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
             ff_dump_packets(qconf->pcap[port], m_table[i]);
         }
     }
-
-    ff_traffic.tx_packets += n;
-    uint16_t i;
-    for (i = 0; i < n; i++) {
-        ff_traffic.tx_bytes += rte_pktmbuf_data_len(m_table[i]);
-    }
-
+    
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
     if (unlikely(ret < n)) {
         do {
             rte_pktmbuf_free(m_table[ret]);
         } while (++ret < n);
+    }
+    
+    ff_traffic.tx_packets += ret;
+    uint16_t i;
+    for (i = 0; i < ret; i++) {
+        ff_traffic.tx_bytes += rte_pktmbuf_pkt_len(m_table[i]);
     }
 
     return 0;
