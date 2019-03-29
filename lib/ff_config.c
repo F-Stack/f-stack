@@ -506,6 +506,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             pconfig->freebsd.physmem = atol(value);
         } else if (strcmp(name, "fd_reserve") == 0) {
             pconfig->freebsd.fd_reserve = atoi(value);
+        } else if (strcmp(name, "memsz_MB") == 0) {
+            pconfig->freebsd.mem_size = atoi(value);
         } else {
             return freebsd_conf_handler(pconfig, "boot", name, value);
         }
@@ -713,6 +715,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;
     cfg->freebsd.fd_reserve = 0;
+    cfg->freebsd.mem_size =256;
 }
 
 int
