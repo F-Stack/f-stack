@@ -138,6 +138,7 @@ struct ff_config {
         long physmem;
         int hz;
         int fd_reserve;
+        int mem_size;
     } freebsd;
 };
 
