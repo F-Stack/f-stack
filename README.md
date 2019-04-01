@@ -31,7 +31,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 ## Quick Start
 
     # clone F-Stack
-    mkdir /data/f-stack
+    mkdir -p /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
     # install libnuma-dev
