@@ -448,10 +448,9 @@ void * ff_mbuf_mtod(void* bsd_mbuf)
 // get source rte_mbuf from ext cluster, which carry rte_mbuf while recving pkt, such as arp.
 void* ff_rte_frm_extcl(void* mbuf)
 {
-	struct mbuf* bsd_mbuf = mbuf;
+	struct mbuf *bsd_mbuf = mbuf;
 	
-	if ( bsd_mbuf->m_ext.ext_type==EXT_DISPOSABLE && bsd_mbuf->m_ext.ext_free==ff_mbuf_ext_free )
-	{
+	if ( bsd_mbuf->m_ext.ext_type==EXT_DISPOSABLE && bsd_mbuf->m_ext.ext_free==ff_mbuf_ext_free ){
 		return bsd_mbuf->m_ext.ext_arg1;
 	}
 	else 

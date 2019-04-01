@@ -715,7 +715,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;
     cfg->freebsd.fd_reserve = 0;
-    cfg->freebsd.mem_size =256;
+    cfg->freebsd.mem_size = 256;
 }
 
 int
