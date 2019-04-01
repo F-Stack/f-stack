@@ -71,7 +71,7 @@ struct mbuf_table {
     uint16_t len;
     struct rte_mbuf *m_table[MAX_PKT_BURST];
 #ifdef FF_USE_PAGE_ARRAY
-	void*			bsd_m_table[MAX_PKT_BURST];			// save bsd mbuf address which will be enquene into txring after NIC transmitted pkt.
+    void*            bsd_m_table[MAX_PKT_BURST];            // save bsd mbuf address which will be enquene into txring after NIC transmitted pkt.
 #endif
 };
 
@@ -100,8 +100,8 @@ struct lcore_conf {
 //  Then when txring.m_table[x] is reused, the packet in txring.m_table[x] had been transmited by NIC.
 //  that means the mbuf can be freed safely.
 struct mbuf_txring{
-	void* m_table[TX_QUEUE_SIZE];	
-	uint16_t head;		// next available element.
+    void* m_table[TX_QUEUE_SIZE];    
+    uint16_t head;        // next available element.
 };
 
 void ff_init_ref_pool(int nb_mbuf, int socketid);
