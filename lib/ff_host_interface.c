@@ -57,12 +57,12 @@ ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)
     int host_flags;
 
 #ifdef FF_USE_PAGE_ARRAY
-		if( len == 4096 ){
-			return ff_mem_get_page();
-		}
-		else
+        if( len == 4096 ){
+            return ff_mem_get_page();
+        }
+        else
 #endif
-		{
+        {
 
     assert(ff_PROT_NONE == PROT_NONE);
     host_prot = 0;
@@ -88,9 +88,9 @@ int
 ff_munmap(void *addr, uint64_t len)
 {
 #ifdef FF_USE_PAGE_ARRAY
-		if ( len == 4096 ){
-			return ff_mem_free_addr(addr);
-		}
+        if ( len == 4096 ){
+            return ff_mem_free_addr(addr);
+        }
 #endif
     //rte_free(addr);
     //return 0;
