@@ -107,6 +107,7 @@ static inline int 		stklist_push(StackList_t * p, uint64_t val);
 
 static int 				stklist_init(StackList_t*p, int size)
 {
+    
 	int i = 0;
 	
 	if (p==NULL || size<=0){
