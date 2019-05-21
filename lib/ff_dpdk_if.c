@@ -547,6 +547,10 @@ init_port_start(void)
         uint16_t nb_queues = pconf->nb_lcores;
 
         struct rte_eth_dev_info dev_info;
+        struct rte_eth_conf port_conf = {0};
+        struct rte_eth_rxconf rxq_conf;
+        struct rte_eth_txconf txq_conf;
+
         rte_eth_dev_info_get(port_id, &dev_info);
 
         if (nb_queues > dev_info.max_rx_queues) {
@@ -572,34 +576,6 @@ init_port_start(void)
 
         rte_memcpy(pconf->mac,
             addr.addr_bytes, ETHER_ADDR_LEN);
-
-        /* Clear txq_flags - we do not need multi-mempool and refcnt */
-        dev_info.default_txconf.txq_flags = ETH_TXQ_FLAGS_NOMULTMEMP |
-            ETH_TXQ_FLAGS_NOREFCOUNT;
-
-        /* Disable features that are not supported by port's HW */
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMUDP;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMTCP;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_SCTP_CKSUM)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMSCTP;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VLAN_INSERT)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOVLANOFFL;
-        }
-
-        if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) &&
-            !(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO)) {
-            dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
-        }
-
-        struct rte_eth_conf port_conf = {0};
 
         /* Set RSS mode */
         port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
@@ -637,18 +613,21 @@ init_port_start(void)
 
         if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
             printf("TX ip checksum offload supported\n");
+            port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
             pconf->hw_features.tx_csum_ip = 1;
         }
 
         if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
             (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
             printf("TX TCP&UDP checksum offload supported\n");
+            port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM;
             pconf->hw_features.tx_csum_l4 = 1;
         }
 
         if (ff_global_cfg.dpdk.tso) {
             if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
                 printf("TSO is supported\n");
+                port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
                 pconf->hw_features.tx_tso = 1;
             }
         } else {
@@ -672,6 +651,14 @@ init_port_start(void)
         if (ret != 0) {
             return ret;
         }
+
+        static uint16_t nb_rxd = RX_QUEUE_SIZE;
+        static uint16_t nb_txd = TX_QUEUE_SIZE;
+        ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
+        if (ret < 0)
+            printf("Could not adjust number of descriptors "
+                    "for port%u (%d)\n", (unsigned)port_id, ret);
+
         uint16_t q;
         for (q = 0; q < nb_queues; q++) {
             if (numa_on) {
@@ -680,14 +667,18 @@ init_port_start(void)
             }
             mbuf_pool = pktmbuf_pool[socketid];
 
-            ret = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE,
-                socketid, &dev_info.default_txconf);
+            txq_conf = dev_info.default_txconf;
+            txq_conf.offloads = port_conf.txmode.offloads;
+            ret = rte_eth_tx_queue_setup(port_id, q, nb_txd,
+                socketid, &txq_conf);
             if (ret < 0) {
                 return ret;
             }
-
-            ret = rte_eth_rx_queue_setup(port_id, q, RX_QUEUE_SIZE,
-                socketid, &dev_info.default_rxconf, mbuf_pool);
+            
+            rxq_conf = dev_info.default_rxconf;
+            rxq_conf.offloads = port_conf.rxmode.offloads;
+            ret = rte_eth_rx_queue_setup(port_id, q, nb_rxd,
+                socketid, &rxq_conf, mbuf_pool);
             if (ret < 0) {
                 return ret;
             }
