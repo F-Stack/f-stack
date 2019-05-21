@@ -27,7 +27,7 @@ char html[] =
 "Server: F-Stack\r\n"
 "Date: Sat, 25 Feb 2017 09:26:33 GMT\r\n"
 "Content-Type: text/html\r\n"
-"Content-Length: 439\r\n"
+"Content-Length: 438\r\n"
 "Last-Modified: Tue, 21 Feb 2017 09:44:03 GMT\r\n"
 "Connection: keep-alive\r\n"
 "Accept-Ranges: bytes\r\n"
@@ -93,7 +93,7 @@ int loop(void *arg)
             char buf[256];
             size_t readlen = ff_read(clientfd, buf, sizeof(buf));
 
-            ff_write(clientfd, html, sizeof(html));
+            ff_write(clientfd, html, sizeof(html) - 1);
         } else {
             printf("unknown event: %8.8X\n", event.flags);
         }
