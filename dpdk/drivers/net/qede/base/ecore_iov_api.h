@@ -1,7 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #ifndef __ECORE_SRIOV_API_H__
@@ -84,13 +86,6 @@ struct ecore_public_vf_info {
 	 */
 	u8 forced_mac[ETH_ALEN];
 	u16 forced_vlan;
-
-	/* Trusted VFs can configure promiscuous mode and
-	 * set MAC address inspite PF has set forced MAC.
-	 * Also store shadow promisc configuration if needed.
-	 */
-	bool is_trusted_configured;
-	bool is_trusted_request;
 };
 
 struct ecore_iov_vf_init_params {
@@ -545,17 +540,6 @@ bool ecore_iov_is_valid_vfpf_msg_length(u32 length);
 u32 ecore_iov_pfvf_msg_length(void);
 
 /**
- * @brief Returns MAC address if one is configured
- *
- * @parm p_hwfn
- * @parm rel_vf_id
- *
- * @return OSAL_NULL if mac isn't set; Otherwise, returns MAC.
- */
-u8 *ecore_iov_bulletin_get_mac(struct ecore_hwfn *p_hwfn,
-			       u16 rel_vf_id);
-
-/**
  * @brief Returns forced MAC address if one is configured
  *
  * @parm p_hwfn
@@ -702,16 +686,6 @@ bool ecore_iov_is_vf_started(struct ecore_hwfn *p_hwfn,
  */
 int ecore_iov_get_vf_min_rate(struct ecore_hwfn *p_hwfn, int vfid);
 
-/**
- * @brief - Configure min rate for VF's vport.
- * @param p_dev
- * @param vfid
- * @param - rate in Mbps
- *
- * @return
- */
-enum _ecore_status_t ecore_iov_configure_min_tx_rate(struct ecore_dev *p_dev,
-						     int vfid, u32 rate);
 #endif
 
 /**

@@ -1,13 +1,15 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2007-2013 Broadcom Corporation.
+/*-
+ * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
- * Copyright (c) 2014-2018 Cavium Inc.
+ * Copyright (c) 2014-2015 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.bnx2x_pmd for copyright and licensing details.
  */
 
 #ifndef ECORE_FW_DEFS_H

@@ -1,13 +1,14 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2016 - 2018 Cavium Inc.
+/*
+ * Copyright (c) 2016 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
 #include <limits.h>
 #include <time.h>
 #include <rte_alarm.h>
-#include <rte_string_fns.h>
 
 #include "qede_ethdev.h"
 
@@ -15,10 +16,10 @@
 #define QEDE_ALARM_TIMEOUT_US 100000
 
 /* Global variable to hold absolute path of fw file */
-char qede_fw_file[PATH_MAX];
+char fw_file[PATH_MAX];
 
-static const char * const QEDE_DEFAULT_FIRMWARE =
-	"/lib/firmware/qed/qed_init_values-8.37.7.0.bin";
+const char *QEDE_DEFAULT_FIRMWARE =
+	"/lib/firmware/qed/qed_init_values-8.30.12.0.bin";
 
 static void
 qed_update_pf_params(struct ecore_dev *edev, struct ecore_pf_params *params)
@@ -61,7 +62,6 @@ qed_probe(struct ecore_dev *edev, struct rte_pci_device *pci_dev,
 	hw_prepare_params.chk_reg_fifo = false;
 	hw_prepare_params.initiate_pf_flr = true;
 	hw_prepare_params.allow_mdump = false;
-	hw_prepare_params.b_en_pacing = false;
 	hw_prepare_params.epoch = (u32)time(NULL);
 	rc = ecore_hw_prepare(edev, &hw_prepare_params);
 	if (rc) {
@@ -126,11 +126,11 @@ static int qed_load_firmware_data(struct ecore_dev *edev)
 	const char *fw = RTE_LIBRTE_QEDE_FW;
 
 	if (strcmp(fw, "") == 0)
-		strcpy(qede_fw_file, QEDE_DEFAULT_FIRMWARE);
+		strcpy(fw_file, QEDE_DEFAULT_FIRMWARE);
 	else
-		strcpy(qede_fw_file, fw);
+		strcpy(fw_file, fw);
 
-	fd = open(qede_fw_file, O_RDONLY);
+	fd = open(fw_file, O_RDONLY);
 	if (fd < 0) {
 		DP_ERR(edev, "Can't open firmware file\n");
 		return -ENOENT;
@@ -234,8 +234,7 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 #ifdef CONFIG_ECORE_BINARY_FW
 		rc = qed_load_firmware_data(edev);
 		if (rc) {
-			DP_ERR(edev, "Failed to find fw file %s\n",
-				qede_fw_file);
+			DP_ERR(edev, "Failed to find fw file %s\n", fw_file);
 			goto err;
 		}
 #endif
@@ -288,7 +287,6 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 	drv_load_params.mfw_timeout_val = ECORE_LOAD_REQ_LOCK_TO_DEFAULT;
 	drv_load_params.avoid_eng_reset = false;
 	drv_load_params.override_force_load = ECORE_OVERRIDE_FORCE_LOAD_ALWAYS;
-	hw_init_params.avoid_eng_affin = false;
 	hw_init_params.p_drv_load_params = &drv_load_params;
 
 	rc = ecore_hw_init(edev, &hw_init_params);
@@ -304,8 +302,9 @@ static int qed_slowpath_start(struct ecore_dev *edev,
 		drv_version.version = (params->drv_major << 24) |
 		    (params->drv_minor << 16) |
 		    (params->drv_rev << 8) | (params->drv_eng);
-		strlcpy((char *)drv_version.name, (const char *)params->name,
-			sizeof(drv_version.name));
+		/* TBD: strlcpy() */
+		strncpy((char *)drv_version.name, (const char *)params->name,
+			MCP_DRV_VER_STR_SIZE - 4);
 		rc = ecore_mcp_send_drv_version(hwfn, hwfn->p_main_ptt,
 						&drv_version);
 		if (rc) {
@@ -637,8 +636,8 @@ void qed_link_update(struct ecore_hwfn *hwfn)
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)qdev->ethdev;
 
 	if (!qede_link_update(dev, 0))
-		_rte_eth_dev_callback_process(dev,
-					      RTE_ETH_EVENT_INTR_LSC, NULL);
+		_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC,
+					      NULL, NULL);
 }
 
 static int qed_drain(struct ecore_dev *edev)

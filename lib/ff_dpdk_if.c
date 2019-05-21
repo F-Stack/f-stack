@@ -25,6 +25,8 @@
  */
 #include <assert.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <errno.h>
 
 #include <rte_common.h>
 #include <rte_byteorder.h>
@@ -59,35 +61,7 @@
 #include "ff_host_interface.h"
 #include "ff_msg.h"
 #include "ff_api.h"
-
-#define MEMPOOL_CACHE_SIZE 256
-
-#define DISPATCH_RING_SIZE 2048
-
-#define MSG_RING_SIZE 32
-
-/*
- * Configurable number of RX/TX ring descriptors
- */
-#define RX_QUEUE_SIZE 512
-#define TX_QUEUE_SIZE 512
-
-#define MAX_PKT_BURST 32
-#define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
-
-/*
- * Try to avoid TX buffering if we have at least MAX_TX_BURST packets to send.
- */
-#define MAX_TX_BURST    (MAX_PKT_BURST / 2)
-
-#define NB_SOCKETS 8
-
-/* Configure how many packets ahead to prefetch, when reading packets */
-#define PREFETCH_OFFSET    3
-
-#define MAX_RX_QUEUE_PER_LCORE 16
-#define MAX_TX_QUEUE_PER_PORT RTE_MAX_ETHPORTS
-#define MAX_RX_QUEUE_PER_PORT 128
+#include "ff_memory.h"
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
@@ -112,34 +86,35 @@ static uint8_t default_rsskey_40bytes[40] = {
     0xf3, 0x25, 0x3c, 0x06, 0x2a, 0xdc, 0x1f, 0xfc
 };
 
-struct mbuf_table {
-    uint16_t len;
-    struct rte_mbuf *m_table[MAX_PKT_BURST];
+static struct rte_eth_conf default_port_conf = {
+    .rxmode = {
+        .mq_mode = ETH_MQ_RX_RSS,
+        .max_rx_pkt_len = ETHER_MAX_LEN,
+        .split_hdr_size = 0, /**< hdr buf size */
+        .header_split   = 0, /**< Header Split disabled */
+        .hw_ip_checksum = 0, /**< IP checksum offload disabled */
+        .hw_vlan_filter = 0, /**< VLAN filtering disabled */
+        .hw_vlan_strip  = 0, /**< VLAN strip disabled. */
+        .hw_vlan_extend = 0, /**< Extended VLAN disabled. */
+        .jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
+        .hw_strip_crc   = 0, /**< CRC stripped by hardware */
+        .enable_lro     = 0, /**< LRO disabled */
+    },
+    .rx_adv_conf = {
+        .rss_conf = {
+            .rss_key = default_rsskey_40bytes,
+            .rss_key_len = 40,
+            .rss_hf = ETH_RSS_PROTO_MASK,
+        },
+    },
+    .txmode = {
+        .mq_mode = ETH_MQ_TX_NONE,
+    },
 };
 
-struct lcore_rx_queue {
-    uint16_t port_id;
-    uint16_t queue_id;
-} __rte_cache_aligned;
+struct lcore_conf lcore_conf;
 
-struct lcore_conf {
-    uint16_t proc_id;
-    uint16_t socket_id;
-    uint16_t nb_queue_list[RTE_MAX_ETHPORTS];
-    struct ff_port_cfg *port_cfgs;
-
-    uint16_t nb_rx_queue;
-    struct lcore_rx_queue rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
-    uint16_t nb_tx_port;
-    uint16_t tx_port_id[RTE_MAX_ETHPORTS];
-    uint16_t tx_queue_id[RTE_MAX_ETHPORTS];
-    struct mbuf_table tx_mbufs[RTE_MAX_ETHPORTS];
-    char *pcap[RTE_MAX_ETHPORTS];
-} __rte_cache_aligned;
-
-static struct lcore_conf lcore_conf;
-
-static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
+struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
 static struct rte_ring **dispatch_ring[RTE_MAX_ETHPORTS];
 static dispatch_func_t packet_dispatcher;
@@ -155,19 +130,10 @@ struct ff_msg_ring {
 
 static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
 static struct rte_mempool *message_pool;
-
-struct ff_dpdk_if_context {
-    void *sc;
-    void *ifp;
-    uint16_t port_id;
-    struct ff_hw_features hw_features;
-} __rte_cache_aligned;
-
 static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
 
 static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
-
 extern void ff_hardclock(void);
 
 static void
@@ -263,7 +229,7 @@ check_all_ports_link_status(void)
 static int
 init_lcore_conf(void)
 {
-    uint8_t nb_dev_ports = rte_eth_dev_count_avail();
+    uint8_t nb_dev_ports = rte_eth_dev_count();
     if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
     }
@@ -383,6 +349,15 @@ init_mem_pool(void)
         } else {
             printf("create mbuf pool on socket %d\n", socketid);
         }
+        
+#ifdef FF_USE_PAGE_ARRAY
+        nb_mbuf = RTE_MAX (
+            nb_ports*nb_lcores*MAX_PKT_BURST    +
+            nb_ports*nb_tx_queue*TX_QUEUE_SIZE  +
+            nb_lcores*MEMPOOL_CACHE_SIZE,
+            (unsigned)4096);
+        ff_init_ref_pool(nb_mbuf, socketid);
+#endif
     }
 
     return 0;
@@ -511,7 +486,7 @@ init_msg_ring(void)
 static int
 init_kni(void)
 {
-    int nb_ports = rte_eth_dev_count_avail();
+    int nb_ports = rte_eth_dev_count();
     kni_accept = 0;
     if(strcasecmp(ff_global_cfg.kni.method, "accept") == 0)
         kni_accept = 1;
@@ -603,41 +578,26 @@ init_port_start(void)
             addr.addr_bytes, ETHER_ADDR_LEN);
 
         /* Set RSS mode */
-        uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
         port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
-        port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
+        port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_PROTO_MASK;
         port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
         port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-        port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
-         if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                ETH_RSS_PROTO_MASK) {
-            printf("Port %u modified RSS hash function based on hardware support,"
-                    "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-                    port_id, default_rss_hf,
-                    port_conf.rx_adv_conf.rss_conf.rss_hf);
-        }
-
-        if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
-            port_conf.txmode.offloads |=
-                DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
         /* Set Rx VLAN stripping */
         if (ff_global_cfg.dpdk.vlan_strip) {
             if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
-                port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
+                port_conf.rxmode.hw_vlan_strip = 1;
             }
         }
 
         /* Enable HW CRC stripping */
-        if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_KEEP_CRC) {
-            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_KEEP_CRC;
-        }
+        port_conf.rxmode.hw_strip_crc = 1;
 
         /* FIXME: Enable TCP LRO ?*/
         #if 0
         if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
             printf("LRO is supported\n");
-            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
+            port_conf.rxmode.enable_lro = 1;
             pconf->hw_features.rx_lro = 1;
         }
         #endif
@@ -647,7 +607,7 @@ init_port_start(void)
             (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) &&
             (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)) {
             printf("RX checksum offload supported\n");
-            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+            port_conf.rxmode.hw_ip_checksum = 1;
             pconf->hw_features.rx_csum = 1;
         }
 
@@ -823,6 +783,11 @@ ff_dpdk_init(int argc, char **argv)
         init_kni();
     }
 #endif
+
+#ifdef FF_USE_PAGE_ARRAY
+    ff_mmap_init();
+#endif
+
 
     ret = init_port_start();
     if (ret < 0) {
@@ -1257,20 +1222,26 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
             ff_dump_packets(qconf->pcap[port], m_table[i]);
         }
     }
-
-    ff_traffic.tx_packets += n;
-    uint16_t i;
-    for (i = 0; i < n; i++) {
-        ff_traffic.tx_bytes += rte_pktmbuf_data_len(m_table[i]);
-    }
-
+    
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
+    ff_traffic.tx_packets += ret;
+    uint16_t i;
+    for (i = 0; i < ret; i++) {
+        ff_traffic.tx_bytes += rte_pktmbuf_pkt_len(m_table[i]);
+#ifdef FF_USE_PAGE_ARRAY
+        if (qconf->tx_mbufs[port].bsd_m_table[i])
+            ff_enq_tx_bsdmbuf(port, qconf->tx_mbufs[port].bsd_m_table[i], m_table[i]->nb_segs);
+#endif
+    }    
     if (unlikely(ret < n)) {
         do {
             rte_pktmbuf_free(m_table[ret]);
+#ifdef FF_USE_PAGE_ARRAY
+            if ( qconf->tx_mbufs[port].bsd_m_table[ret] )
+                ff_mbuf_free(qconf->tx_mbufs[port].bsd_m_table[ret]);
+#endif
         } while (++ret < n);
     }
-
     return 0;
 }
 
@@ -1300,6 +1271,18 @@ int
 ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     int total)
 {
+#ifdef FF_USE_PAGE_ARRAY
+    struct lcore_conf *qconf = &lcore_conf;
+    int    len = 0;
+    
+    len = ff_if_send_onepkt(ctx, m,total);
+    if (unlikely(len == MAX_PKT_BURST)) {
+        send_burst(qconf, MAX_PKT_BURST, ctx->port_id);
+        len = 0;
+    }
+    qconf->tx_mbufs[ctx->port_id].len = len;
+    return 0;
+#endif
     struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
@@ -1650,4 +1633,5 @@ ff_get_tsc_ns()
     uint64_t hz = rte_get_tsc_hz();
     return ((double)cur_tsc/(double)hz) * NS_PER_S;
 }
+
 

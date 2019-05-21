@@ -1,3 +1,4 @@
 DPDK_17.05 {
-	local: *;
+
+    local: *;
 };

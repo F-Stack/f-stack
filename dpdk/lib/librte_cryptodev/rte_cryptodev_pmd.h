@@ -1,5 +1,32 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2016 Intel Corporation.
+/*-
+ *
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _RTE_CRYPTODEV_PMD_H_
@@ -32,15 +59,18 @@ extern "C" {
 
 
 #define RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS	8
+#define RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS	2048
 
 #define RTE_CRYPTODEV_PMD_NAME_ARG			("name")
 #define RTE_CRYPTODEV_PMD_MAX_NB_QP_ARG			("max_nb_queue_pairs")
+#define RTE_CRYPTODEV_PMD_MAX_NB_SESS_ARG		("max_nb_sessions")
 #define RTE_CRYPTODEV_PMD_SOCKET_ID_ARG			("socket_id")
 
 
 static const char * const cryptodev_pmd_valid_params[] = {
 	RTE_CRYPTODEV_PMD_NAME_ARG,
 	RTE_CRYPTODEV_PMD_MAX_NB_QP_ARG,
+	RTE_CRYPTODEV_PMD_MAX_NB_SESS_ARG,
 	RTE_CRYPTODEV_PMD_SOCKET_ID_ARG
 };
 
@@ -53,6 +83,7 @@ struct rte_cryptodev_pmd_init_params {
 	size_t private_data_size;
 	int socket_id;
 	unsigned int max_nb_queue_pairs;
+	unsigned int max_nb_sessions;
 };
 
 /** Global structure used for maintaining state of allocated crypto devices */
@@ -70,6 +101,9 @@ struct cryptodev_driver {
 	const struct rte_driver *driver;
 	uint8_t id;
 };
+
+/** pointer to global crypto devices data structure. */
+extern struct rte_cryptodev_global *rte_cryptodev_globals;
 
 /**
  * Get the rte_cryptodev structure device pointer for the device. Assumes a
@@ -182,6 +216,28 @@ typedef void (*cryptodev_info_get_t)(struct rte_cryptodev *dev,
 				struct rte_cryptodev_info *dev_info);
 
 /**
+ * Start queue pair of a device.
+ *
+ * @param	dev	Crypto device pointer
+ * @param	qp_id	Queue Pair Index
+ *
+ * @return	Returns 0 on success.
+ */
+typedef int (*cryptodev_queue_pair_start_t)(struct rte_cryptodev *dev,
+				uint16_t qp_id);
+
+/**
+ * Stop queue pair of a device.
+ *
+ * @param	dev	Crypto device pointer
+ * @param	qp_id	Queue Pair Index
+ *
+ * @return	Returns 0 on success.
+ */
+typedef int (*cryptodev_queue_pair_stop_t)(struct rte_cryptodev *dev,
+				uint16_t qp_id);
+
+/**
  * Setup a queue pair for a device.
  *
  * @param	dev		Crypto device pointer
@@ -246,17 +302,6 @@ typedef int (*cryptodev_sym_create_session_pool_t)(
  */
 typedef unsigned (*cryptodev_sym_get_session_private_size_t)(
 		struct rte_cryptodev *dev);
-/**
- * Get the size of a asymmetric cryptodev session
- *
- * @param	dev		Crypto device pointer
- *
- * @return
- *  - On success returns the size of the session structure for device
- *  - On failure returns 0
- */
-typedef unsigned int (*cryptodev_asym_get_session_private_size_t)(
-		struct rte_cryptodev *dev);
 
 /**
  * Configure a Crypto session on a device.
@@ -276,24 +321,7 @@ typedef int (*cryptodev_sym_configure_session_t)(struct rte_cryptodev *dev,
 		struct rte_crypto_sym_xform *xform,
 		struct rte_cryptodev_sym_session *session,
 		struct rte_mempool *mp);
-/**
- * Configure a Crypto asymmetric session on a device.
- *
- * @param	dev		Crypto device pointer
- * @param	xform		Single or chain of crypto xforms
- * @param	priv_sess	Pointer to cryptodev's private session structure
- * @param	mp		Mempool where the private session is allocated
- *
- * @return
- *  - Returns 0 if private session structure have been created successfully.
- *  - Returns -EINVAL if input parameters are invalid.
- *  - Returns -ENOTSUP if crypto device does not support the crypto transform.
- *  - Returns -ENOMEM if the private session could not be allocated.
- */
-typedef int (*cryptodev_asym_configure_session_t)(struct rte_cryptodev *dev,
-		struct rte_crypto_asym_xform *xform,
-		struct rte_cryptodev_asym_session *session,
-		struct rte_mempool *mp);
+
 /**
  * Free driver private session data.
  *
@@ -302,14 +330,32 @@ typedef int (*cryptodev_asym_configure_session_t)(struct rte_cryptodev *dev,
  */
 typedef void (*cryptodev_sym_free_session_t)(struct rte_cryptodev *dev,
 		struct rte_cryptodev_sym_session *sess);
+
 /**
- * Free asymmetric session private data.
- *
+ * Optional API for drivers to attach sessions with queue pair.
  * @param	dev		Crypto device pointer
- * @param	sess		Cryptodev session structure
+ * @param	qp_id		queue pair id for attaching session
+ * @param	priv_sess       Pointer to cryptodev's private session structure
+ * @return
+ *  - Return 0 on success
  */
-typedef void (*cryptodev_asym_free_session_t)(struct rte_cryptodev *dev,
-		struct rte_cryptodev_asym_session *sess);
+typedef int (*cryptodev_sym_queue_pair_attach_session_t)(
+		  struct rte_cryptodev *dev,
+		  uint16_t qp_id,
+		  void *session_private);
+
+/**
+ * Optional API for drivers to detach sessions from queue pair.
+ * @param	dev		Crypto device pointer
+ * @param	qp_id		queue pair id for detaching session
+ * @param	priv_sess       Pointer to cryptodev's private session structure
+ * @return
+ *  - Return 0 on success
+ */
+typedef int (*cryptodev_sym_queue_pair_detach_session_t)(
+		  struct rte_cryptodev *dev,
+		  uint16_t qp_id,
+		  void *session_private);
 
 /** Crypto device operations function pointer table */
 struct rte_cryptodev_ops {
@@ -329,21 +375,23 @@ struct rte_cryptodev_ops {
 	/**< Set up a device queue pair. */
 	cryptodev_queue_pair_release_t queue_pair_release;
 	/**< Release a queue pair. */
+	cryptodev_queue_pair_start_t queue_pair_start;
+	/**< Start a queue pair. */
+	cryptodev_queue_pair_stop_t queue_pair_stop;
+	/**< Stop a queue pair. */
 	cryptodev_queue_pair_count_t queue_pair_count;
 	/**< Get count of the queue pairs. */
 
-	cryptodev_sym_get_session_private_size_t sym_session_get_size;
+	cryptodev_sym_get_session_private_size_t session_get_size;
 	/**< Return private session. */
-	cryptodev_asym_get_session_private_size_t asym_session_get_size;
-	/**< Return asym session private size. */
-	cryptodev_sym_configure_session_t sym_session_configure;
+	cryptodev_sym_configure_session_t session_configure;
 	/**< Configure a Crypto session. */
-	cryptodev_asym_configure_session_t asym_session_configure;
-	/**< Configure asymmetric Crypto session. */
-	cryptodev_sym_free_session_t sym_session_clear;
+	cryptodev_sym_free_session_t session_clear;
 	/**< Clear a Crypto sessions private data. */
-	cryptodev_asym_free_session_t asym_session_clear;
-	/**< Clear a Crypto sessions private data. */
+	cryptodev_sym_queue_pair_attach_session_t qp_attach_session;
+	/**< Attach session to queue pair. */
+	cryptodev_sym_queue_pair_detach_session_t qp_detach_session;
+	/**< Detach session from queue pair. */
 };
 
 
@@ -468,32 +516,20 @@ uint8_t rte_cryptodev_allocate_driver(struct cryptodev_driver *crypto_drv,
 
 
 #define RTE_PMD_REGISTER_CRYPTO_DRIVER(crypto_drv, drv, driver_id)\
-RTE_INIT(init_ ##driver_id)\
+RTE_INIT(init_ ##driver_id);\
+static void init_ ##driver_id(void)\
 {\
-	driver_id = rte_cryptodev_allocate_driver(&crypto_drv, &(drv));\
+	driver_id = rte_cryptodev_allocate_driver(&crypto_drv, &(drv).driver);\
 }
 
 static inline void *
-get_sym_session_private_data(const struct rte_cryptodev_sym_session *sess,
+get_session_private_data(const struct rte_cryptodev_sym_session *sess,
 		uint8_t driver_id) {
 	return sess->sess_private_data[driver_id];
 }
 
 static inline void
-set_sym_session_private_data(struct rte_cryptodev_sym_session *sess,
-		uint8_t driver_id, void *private_data)
-{
-	sess->sess_private_data[driver_id] = private_data;
-}
-
-static inline void *
-get_asym_session_private_data(const struct rte_cryptodev_asym_session *sess,
-		uint8_t driver_id) {
-	return sess->sess_private_data[driver_id];
-}
-
-static inline void
-set_asym_session_private_data(struct rte_cryptodev_asym_session *sess,
+set_session_private_data(struct rte_cryptodev_sym_session *sess,
 		uint8_t driver_id, void *private_data)
 {
 	sess->sess_private_data[driver_id] = private_data;

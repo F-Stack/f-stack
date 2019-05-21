@@ -15,9 +15,3 @@ DPDK_2.0 {
 
 	local: *;
 };
-
-EXPERIMENTAL {
-	global:
-
-	rte_kni_update_link;
-};

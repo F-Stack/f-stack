@@ -435,6 +435,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
 
         memset(&dev_info, 0, sizeof(dev_info));
         rte_eth_dev_info_get(port_id, &dev_info);
+
         if (dev_info.device)
             bus = rte_bus_find_by_device(dev_info.device);
         if (bus && !strcmp(bus->name, "pci")) {

@@ -1,6 +1,3 @@
-..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2017 The DPDK contributors
-
 DPDK Release 17.02
 ==================
 
