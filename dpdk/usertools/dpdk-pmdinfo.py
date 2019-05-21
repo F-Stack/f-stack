@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-# SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2016  Neil Horman <nhorman@tuxdriver.com>
 
 # -------------------------------------------------------------------------
 #

@@ -1,8 +1,11 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/*
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015-2018 Cavium Inc.
+ *
+ * Copyright (c) 2015 QLogic Corporation.
  * All rights reserved.
- * www.cavium.com
+ * www.qlogic.com
+ *
+ * See LICENSE.bnx2x_pmd for copyright and licensing details.
  */
 
 #ifndef PMD_BNX2X_ETHDEV_H
@@ -30,7 +33,7 @@
 #include <rte_debug.h>
 #include <rte_pci.h>
 #include <rte_malloc.h>
-#include <rte_ethdev_driver.h>
+#include <rte_ethdev.h>
 #include <rte_spinlock.h>
 #include <rte_eal.h>
 #include <rte_mempool.h>

@@ -22,6 +22,8 @@ HOST_OS:=$(shell uname -s)
 FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
+#FF_USE_PAGE_ARRAY=1
+
 
 include ${TOPDIR}/mk/kern.pre.mk
 
@@ -73,6 +75,10 @@ endif
 
 ifdef FF_IPFW
 HOST_CFLAGS+= -DFF_IPFW
+endif
+
+ifdef FF_USE_PAGE_ARRAY
+HOST_CFLAGS+= -DFF_USE_PAGE_ARRAY
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -193,11 +199,16 @@ FF_HOST_SRCS+=              \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
-	ff_init.c
+	ff_init.c	
 
 ifdef FF_KNI
 FF_HOST_SRCS+=              \
 	ff_dpdk_kni.c
+endif
+
+ifdef FF_USE_PAGE_ARRAY
+FF_HOST_SRCS+=              \
+  ff_memory.c
 endif
 
 ifdef FF_IPSEC

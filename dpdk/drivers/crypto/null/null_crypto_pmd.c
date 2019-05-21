@@ -1,5 +1,33 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2016-2017 Intel Corporation
+/*-
+ *   BSD LICENSE
+ *
+ *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
+ *
+ *   Redistribution and use in source and binary forms, with or without
+ *   modification, are permitted provided that the following conditions
+ *   are met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in
+ *       the documentation and/or other materials provided with the
+ *       distribution.
+ *     * Neither the name of Intel Corporation nor the names of its
+ *       contributors may be used to endorse or promote products derived
+ *       from this software without specific prior written permission.
+ *
+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <rte_common.h>
@@ -78,7 +106,7 @@ get_session(struct null_crypto_qp *qp, struct rte_crypto_op *op)
 	if (op->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
 		if (likely(sym_op->session != NULL))
 			sess = (struct null_crypto_session *)
-					get_sym_session_private_data(
+					get_session_private_data(
 					sym_op->session, cryptodev_driver_id);
 	} else {
 		void *_sess = NULL;
@@ -99,8 +127,8 @@ get_session(struct null_crypto_qp *qp, struct rte_crypto_op *op)
 			sess = NULL;
 		}
 		sym_op->session = (struct rte_cryptodev_sym_session *)_sess;
-		set_sym_session_private_data(op->sym->session,
-				cryptodev_driver_id, _sess_private_data);
+		set_session_private_data(sym_op->session, cryptodev_driver_id,
+			_sess_private_data);
 	}
 
 	return sess;
@@ -161,9 +189,10 @@ cryptodev_null_create(const char *name,
 {
 	struct rte_cryptodev *dev;
 	struct null_crypto_private *internals;
+
 	dev = rte_cryptodev_pmd_create(name, &vdev->device, init_params);
 	if (dev == NULL) {
-		NULL_LOG(ERR, "failed to create cryptodev vdev");
+		NULL_CRYPTO_LOG_ERR("failed to create cryptodev vdev");
 		return -EFAULT;
 	}
 
@@ -176,11 +205,12 @@ cryptodev_null_create(const char *name,
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
-			RTE_CRYPTODEV_FF_IN_PLACE_SGL;
+			RTE_CRYPTODEV_FF_MBUF_SCATTER_GATHER;
 
 	internals = dev->data->dev_private;
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;
+	internals->max_nb_sessions = init_params->max_nb_sessions;
 
 	return 0;
 }
@@ -193,7 +223,8 @@ cryptodev_null_probe(struct rte_vdev_device *dev)
 		"",
 		sizeof(struct null_crypto_private),
 		rte_socket_id(),
-		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS
+		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS,
+		RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_SESSIONS
 	};
 	const char *name, *args;
 	int retval;
@@ -206,9 +237,8 @@ cryptodev_null_probe(struct rte_vdev_device *dev)
 
 	retval = rte_cryptodev_pmd_parse_input_args(&init_params, args);
 	if (retval) {
-		NULL_LOG(ERR,
-				"Failed to parse initialisation arguments[%s]",
-				args);
+		RTE_LOG(ERR, PMD,
+			"Failed to parse initialisation arguments[%s]\n", args);
 		return -EINVAL;
 	}
 
@@ -243,11 +273,7 @@ RTE_PMD_REGISTER_VDEV(CRYPTODEV_NAME_NULL_PMD, cryptodev_null_pmd_drv);
 RTE_PMD_REGISTER_ALIAS(CRYPTODEV_NAME_NULL_PMD, cryptodev_null_pmd);
 RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_NULL_PMD,
 	"max_nb_queue_pairs=<int> "
+	"max_nb_sessions=<int> "
 	"socket_id=<int>");
-RTE_PMD_REGISTER_CRYPTO_DRIVER(null_crypto_drv, cryptodev_null_pmd_drv.driver,
+RTE_PMD_REGISTER_CRYPTO_DRIVER(null_crypto_drv, cryptodev_null_pmd_drv,
 		cryptodev_driver_id);
-
-RTE_INIT(null_init_log)
-{
-	null_logtype_driver = rte_log_register("pmd.crypto.null");
-}

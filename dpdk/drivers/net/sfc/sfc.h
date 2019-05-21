@@ -1,10 +1,32 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/*-
+ *   BSD LICENSE
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
+ * Copyright (c) 2016-2017 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_H
@@ -14,10 +36,9 @@
 
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_ethdev_driver.h>
+#include <rte_ethdev.h>
 #include <rte_kvargs.h>
 #include <rte_spinlock.h>
-#include <rte_atomic.h>
 
 #include "efx.h"
 
@@ -25,6 +46,11 @@
 
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+#if EFSYS_OPT_RX_SCALE
+/** RSS hash offloads mask */
+#define SFC_RSS_OFFLOADS	(ETH_RSS_IP | ETH_RSS_TCP)
 #endif
 
 /*
@@ -99,7 +125,7 @@ struct sfc_mcdi {
 	efsys_mem_t			mem;
 	enum sfc_mcdi_state		state;
 	efx_mcdi_transport_t		transport;
-	uint32_t			logtype;
+	bool				logging;
 	uint32_t			proxy_handle;
 	efx_rc_t			proxy_result;
 };
@@ -151,24 +177,6 @@ struct sfc_port {
 	uint32_t		mac_stats_mask[EFX_MAC_STATS_MASK_NPAGES];
 };
 
-struct sfc_rss_hf_rte_to_efx {
-	uint64_t			rte;
-	efx_rx_hash_type_t		efx;
-};
-
-struct sfc_rss {
-	unsigned int			channels;
-	efx_rx_scale_context_type_t	context_type;
-	efx_rx_hash_support_t		hash_support;
-	efx_rx_hash_alg_t		hash_alg;
-	unsigned int			hf_map_nb_entries;
-	struct sfc_rss_hf_rte_to_efx	*hf_map;
-
-	efx_rx_hash_type_t		hash_types;
-	unsigned int			tbl[EFX_RSS_TBL_SIZE];
-	uint8_t				key[EFX_RSS_KEY_SIZE];
-};
-
 /* Adapter private data */
 struct sfc_adapter {
 	/*
@@ -183,13 +191,12 @@ struct sfc_adapter {
 	uint16_t			port_id;
 	struct rte_eth_dev		*eth_dev;
 	struct rte_kvargs		*kvargs;
-	uint32_t			logtype_main;
+	bool				debug_init;
 	int				socket_id;
 	efsys_bar_t			mem_bar;
 	efx_family_t			family;
 	efx_nic_t			*nic;
 	rte_spinlock_t			nic_lock;
-	rte_atomic32_t			restart_required;
 
 	struct sfc_mcdi			mcdi;
 	struct sfc_intr			intr;
@@ -238,9 +245,15 @@ struct sfc_adapter {
 
 	boolean_t			tso;
 
-	uint32_t			rxd_wait_timeout_ns;
+	unsigned int			rss_channels;
 
-	struct sfc_rss			rss;
+#if EFSYS_OPT_RX_SCALE
+	efx_rx_scale_context_type_t	rss_support;
+	efx_rx_hash_support_t		hash_support;
+	efx_rx_hash_type_t		rss_hash_types;
+	unsigned int			rss_tbl[EFX_RSS_TBL_SIZE];
+	uint8_t				rss_key[EFX_RSS_KEY_SIZE];
+#endif
 
 	/*
 	 * Shared memory copy of the Rx datapath name to be used by
@@ -309,18 +322,12 @@ int sfc_dma_alloc(const struct sfc_adapter *sa, const char *name, uint16_t id,
 		  size_t len, int socket_id, efsys_mem_t *esmp);
 void sfc_dma_free(const struct sfc_adapter *sa, efsys_mem_t *esmp);
 
-uint32_t sfc_register_logtype(struct sfc_adapter *sa,
-			      const char *lt_prefix_str,
-			      uint32_t ll_default);
-
 int sfc_probe(struct sfc_adapter *sa);
 void sfc_unprobe(struct sfc_adapter *sa);
 int sfc_attach(struct sfc_adapter *sa);
 void sfc_detach(struct sfc_adapter *sa);
 int sfc_start(struct sfc_adapter *sa);
 void sfc_stop(struct sfc_adapter *sa);
-
-void sfc_schedule_restart(struct sfc_adapter *sa);
 
 int sfc_mcdi_init(struct sfc_adapter *sa);
 void sfc_mcdi_fini(struct sfc_adapter *sa);

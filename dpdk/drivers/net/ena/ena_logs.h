@@ -34,10 +34,10 @@
 #ifndef _ENA_LOGS_H_
 #define _ENA_LOGS_H_
 
-extern int ena_logtype_init;
+#define RTE_LOGTYPE_ENA RTE_LOGTYPE_USER1
+
 #define PMD_INIT_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, ena_logtype_init, \
-		"%s(): " fmt "\n", __func__, ## args)
+	RTE_LOG(level, PMD, "%s(): " fmt "\n", __func__, ## args)
 
 #ifdef RTE_LIBRTE_ENA_DEBUG_RX
 #define PMD_RX_LOG(level, fmt, args...) \
@@ -60,9 +60,11 @@ extern int ena_logtype_init;
 #define PMD_TX_FREE_LOG(level, fmt, args...) do { } while (0)
 #endif
 
-extern int ena_logtype_driver;
+#ifdef RTE_LIBRTE_ENA_DEBUG_DRIVER
 #define PMD_DRV_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, ena_logtype_driver, \
-		"%s(): " fmt "\n", __func__, ## args)
+	RTE_LOG(level, PMD, "%s(): " fmt "\n", __func__, ## args)
+#else
+#define PMD_DRV_LOG(level, fmt, args...) do { } while (0)
+#endif
 
 #endif /* _ENA_LOGS_H_ */
