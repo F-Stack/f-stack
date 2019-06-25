@@ -1,39 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 NXP.
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 NXP.
+ * Copyright(c) 2017 Intel Corporation.
  */
 
 #include <rte_malloc.h>
 #include <rte_dev.h>
-
+#include "rte_compat.h"
 #include "rte_security.h"
 #include "rte_security_driver.h"
 
@@ -61,7 +33,7 @@ rte_security_session_create(struct rte_security_ctx *instance,
 	return sess;
 }
 
-int
+int __rte_experimental
 rte_security_session_update(struct rte_security_ctx *instance,
 			    struct rte_security_session *sess,
 			    struct rte_security_session_conf *conf)
@@ -70,7 +42,14 @@ rte_security_session_update(struct rte_security_ctx *instance,
 	return instance->ops->session_update(instance->device, sess, conf);
 }
 
-int
+unsigned int
+rte_security_session_get_size(struct rte_security_ctx *instance)
+{
+	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->session_get_size, 0);
+	return instance->ops->session_get_size(instance->device);
+}
+
+int __rte_experimental
 rte_security_session_stats_get(struct rte_security_ctx *instance,
 			       struct rte_security_session *sess,
 			       struct rte_security_stats *stats)
@@ -107,6 +86,18 @@ rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
 					       sess, m, params);
 }
 
+void * __rte_experimental
+rte_security_get_userdata(struct rte_security_ctx *instance, uint64_t md)
+{
+	void *userdata = NULL;
+
+	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->get_userdata, NULL);
+	if (instance->ops->get_userdata(instance->device, md, &userdata))
+		return NULL;
+
+	return userdata;
+}
+
 const struct rte_security_capability *
 rte_security_capabilities_get(struct rte_security_ctx *instance)
 {
@@ -139,6 +130,10 @@ rte_security_capability_get(struct rte_security_ctx *instance,
 							idx->ipsec.mode &&
 					capability->ipsec.direction ==
 							idx->ipsec.direction)
+					return capability;
+			} else if (idx->protocol == RTE_SECURITY_PROTOCOL_PDCP) {
+				if (capability->pdcp.domain ==
+							idx->pdcp.domain)
 					return capability;
 			}
 		}

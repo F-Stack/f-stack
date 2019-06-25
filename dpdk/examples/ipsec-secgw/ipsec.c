@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016-2017 Intel Corporation
  */
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -45,6 +16,28 @@
 
 #include "ipsec.h"
 #include "esp.h"
+
+static inline void
+set_ipsec_conf(struct ipsec_sa *sa, struct rte_security_ipsec_xform *ipsec)
+{
+	if (ipsec->mode == RTE_SECURITY_IPSEC_SA_MODE_TUNNEL) {
+		struct rte_security_ipsec_tunnel_param *tunnel =
+				&ipsec->tunnel;
+		if (sa->flags == IP4_TUNNEL) {
+			tunnel->type =
+				RTE_SECURITY_IPSEC_TUNNEL_IPV4;
+			tunnel->ipv4.ttl = IPDEFTTL;
+
+			memcpy((uint8_t *)&tunnel->ipv4.src_ip,
+				(uint8_t *)&sa->src.ip.ip4, 4);
+
+			memcpy((uint8_t *)&tunnel->ipv4.dst_ip,
+				(uint8_t *)&sa->dst.ip.ip4, 4);
+		}
+		/* TODO support for Transport and IPV6 tunnel */
+	}
+	ipsec->esn_soft_limit = IPSEC_OFFLOAD_ESN_SOFTLIMIT;
+}
 
 static inline int
 create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
@@ -95,7 +88,8 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL :
 					RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT,
 			} },
-			.crypto_xform = sa->xforms
+			.crypto_xform = sa->xforms,
+			.userdata = NULL,
 
 		};
 
@@ -104,23 +98,8 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 							rte_cryptodev_get_sec_ctx(
 							ipsec_ctx->tbl[cdev_id_qp].id);
 
-			if (sess_conf.ipsec.mode ==
-					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL) {
-				struct rte_security_ipsec_tunnel_param *tunnel =
-						&sess_conf.ipsec.tunnel;
-				if (sa->flags == IP4_TUNNEL) {
-					tunnel->type =
-						RTE_SECURITY_IPSEC_TUNNEL_IPV4;
-					tunnel->ipv4.ttl = IPDEFTTL;
-
-					memcpy((uint8_t *)&tunnel->ipv4.src_ip,
-						(uint8_t *)&sa->src.ip.ip4, 4);
-
-					memcpy((uint8_t *)&tunnel->ipv4.dst_ip,
-						(uint8_t *)&sa->dst.ip.ip4, 4);
-				}
-				/* TODO support for Transport and IPV6 tunnel */
-			}
+			/* Set IPsec parameters in conf */
+			set_ipsec_conf(sa, &(sess_conf.ipsec));
 
 			sa->sec_session = rte_security_session_create(ctx,
 					&sess_conf, ipsec_ctx->session_pool);
@@ -135,6 +114,7 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 							rte_eth_dev_get_sec_ctx(
 							sa->portid);
 			const struct rte_security_capability *sec_cap;
+			int ret = 0;
 
 			sa->sec_session = rte_security_session_create(ctx,
 					&sess_conf, ipsec_ctx->session_pool);
@@ -200,14 +180,143 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 					RTE_SECURITY_IPSEC_SA_DIR_EGRESS);
 			sa->attr.ingress = (sa->direction ==
 					RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
+			if (sa->attr.ingress) {
+				uint8_t rss_key[40];
+				struct rte_eth_rss_conf rss_conf = {
+					.rss_key = rss_key,
+					.rss_key_len = 40,
+				};
+				struct rte_eth_dev *eth_dev;
+				uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
+				struct rte_flow_action_rss action_rss;
+				unsigned int i;
+				unsigned int j;
+
+				sa->action[2].type = RTE_FLOW_ACTION_TYPE_END;
+				/* Try RSS. */
+				sa->action[1].type = RTE_FLOW_ACTION_TYPE_RSS;
+				sa->action[1].conf = &action_rss;
+				eth_dev = ctx->device;
+				rte_eth_dev_rss_hash_conf_get(sa->portid,
+							      &rss_conf);
+				for (i = 0, j = 0;
+				     i < eth_dev->data->nb_rx_queues; ++i)
+					if (eth_dev->data->rx_queues[i])
+						queue[j++] = i;
+				action_rss = (struct rte_flow_action_rss){
+					.types = rss_conf.rss_hf,
+					.key_len = rss_conf.rss_key_len,
+					.queue_num = j,
+					.key = rss_key,
+					.queue = queue,
+				};
+				ret = rte_flow_validate(sa->portid, &sa->attr,
+							sa->pattern, sa->action,
+							&err);
+				if (!ret)
+					goto flow_create;
+				/* Try Queue. */
+				sa->action[1].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+				sa->action[1].conf =
+					&(struct rte_flow_action_queue){
+					.index = 0,
+				};
+				ret = rte_flow_validate(sa->portid, &sa->attr,
+							sa->pattern, sa->action,
+							&err);
+				/* Try End. */
+				sa->action[1].type = RTE_FLOW_ACTION_TYPE_END;
+				sa->action[1].conf = NULL;
+				ret = rte_flow_validate(sa->portid, &sa->attr,
+							sa->pattern, sa->action,
+							&err);
+				if (ret)
+					goto flow_create_failure;
+			} else if (sa->attr.egress &&
+				   (sa->ol_flags &
+				    RTE_SECURITY_TX_HW_TRAILER_OFFLOAD)) {
+				sa->action[1].type =
+					RTE_FLOW_ACTION_TYPE_PASSTHRU;
+				sa->action[2].type =
+					RTE_FLOW_ACTION_TYPE_END;
+			}
+flow_create:
 			sa->flow = rte_flow_create(sa->portid,
 				&sa->attr, sa->pattern, sa->action, &err);
 			if (sa->flow == NULL) {
+flow_create_failure:
 				RTE_LOG(ERR, IPSEC,
 					"Failed to create ipsec flow msg: %s\n",
 					err.message);
 				return -1;
 			}
+		} else if (sa->type ==
+				RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL) {
+			struct rte_security_ctx *ctx =
+					(struct rte_security_ctx *)
+					rte_eth_dev_get_sec_ctx(sa->portid);
+			const struct rte_security_capability *sec_cap;
+
+			if (ctx == NULL) {
+				RTE_LOG(ERR, IPSEC,
+				"Ethernet device doesn't have security features registered\n");
+				return -1;
+			}
+
+			/* Set IPsec parameters in conf */
+			set_ipsec_conf(sa, &(sess_conf.ipsec));
+
+			/* Save SA as userdata for the security session. When
+			 * the packet is received, this userdata will be
+			 * retrieved using the metadata from the packet.
+			 *
+			 * The PMD is expected to set similar metadata for other
+			 * operations, like rte_eth_event, which are tied to
+			 * security session. In such cases, the userdata could
+			 * be obtained to uniquely identify the security
+			 * parameters denoted.
+			 */
+
+			sess_conf.userdata = (void *) sa;
+
+			sa->sec_session = rte_security_session_create(ctx,
+					&sess_conf, ipsec_ctx->session_pool);
+			if (sa->sec_session == NULL) {
+				RTE_LOG(ERR, IPSEC,
+				"SEC Session init failed: err: %d\n", ret);
+				return -1;
+			}
+
+			sec_cap = rte_security_capabilities_get(ctx);
+
+			if (sec_cap == NULL) {
+				RTE_LOG(ERR, IPSEC,
+				"No capabilities registered\n");
+				return -1;
+			}
+
+			/* iterate until ESP tunnel*/
+			while (sec_cap->action !=
+					RTE_SECURITY_ACTION_TYPE_NONE) {
+
+				if (sec_cap->action == sa->type &&
+				    sec_cap->protocol ==
+					RTE_SECURITY_PROTOCOL_IPSEC &&
+				    sec_cap->ipsec.mode ==
+					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL &&
+				    sec_cap->ipsec.direction == sa->direction)
+					break;
+				sec_cap++;
+			}
+
+			if (sec_cap->action == RTE_SECURITY_ACTION_TYPE_NONE) {
+				RTE_LOG(ERR, IPSEC,
+				"No suitable security capability found\n");
+				return -1;
+			}
+
+			sa->ol_flags = sec_cap->ol_flags;
+			sa->security_ctx = ctx;
 		}
 	} else {
 		sa->crypto_session = rte_cryptodev_sym_session_create(
@@ -218,18 +327,6 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 
 		rte_cryptodev_info_get(ipsec_ctx->tbl[cdev_id_qp].id,
 				&cdev_info);
-		if (cdev_info.sym.max_nb_sessions_per_qp > 0) {
-			ret = rte_cryptodev_queue_pair_attach_sym_session(
-					ipsec_ctx->tbl[cdev_id_qp].id,
-					ipsec_ctx->tbl[cdev_id_qp].qp,
-					sa->crypto_session);
-			if (ret < 0) {
-				RTE_LOG(ERR, IPSEC,
-					"Session cannot be attached to qp %u\n",
-					ipsec_ctx->tbl[cdev_id_qp].qp);
-				return -1;
-			}
-		}
 	}
 	sa->cdev_id_qp = cdev_id_qp;
 
@@ -239,13 +336,19 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 static inline void
 enqueue_cop(struct cdev_qp *cqp, struct rte_crypto_op *cop)
 {
-	int32_t ret, i;
+	int32_t ret = 0, i;
 
 	cqp->buf[cqp->len++] = cop;
 
 	if (cqp->len == MAX_PKT_BURST) {
-		ret = rte_cryptodev_enqueue_burst(cqp->id, cqp->qp,
-				cqp->buf, cqp->len);
+		int enq_size = cqp->len;
+		if ((cqp->in_flight + enq_size) > MAX_INFLIGHT)
+			enq_size -=
+			    (int)((cqp->in_flight + enq_size) - MAX_INFLIGHT);
+
+		if (enq_size > 0)
+			ret = rte_cryptodev_enqueue_burst(cqp->id, cqp->qp,
+					cqp->buf, enq_size);
 		if (ret < cqp->len) {
 			RTE_LOG_DP(DEBUG, IPSEC, "Cryptodev %u queue %u:"
 					" enqueued %u crypto ops out of %u\n",
@@ -268,7 +371,6 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 	struct ipsec_mbuf_metadata *priv;
 	struct rte_crypto_sym_op *sym_cop;
 	struct ipsec_sa *sa;
-	struct cdev_qp *cqp;
 
 	for (i = 0; i < nb_pkts; i++) {
 		if (unlikely(sas[i] == NULL)) {
@@ -325,7 +427,18 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 			}
 			break;
 		case RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL:
-			break;
+			if ((unlikely(sa->sec_session == NULL)) &&
+					create_session(ipsec_ctx, sa)) {
+				rte_pktmbuf_free(pkts[i]);
+				continue;
+			}
+
+			ipsec_ctx->ol_pkts[ipsec_ctx->ol_pkts_cnt++] = pkts[i];
+			if (sa->ol_flags & RTE_SECURITY_TX_OLOAD_NEED_MDATA)
+				rte_security_set_pkt_metadata(
+						sa->security_ctx,
+						sa->sec_session, pkts[i], NULL);
+			continue;
 		case RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO:
 			priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
 			priv->cop.status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
@@ -347,8 +460,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 				continue;
 			}
 
-			cqp = &ipsec_ctx->tbl[sa->cdev_id_qp];
-			cqp->ol_pkts[cqp->ol_pkts_cnt++] = pkts[i];
+			ipsec_ctx->ol_pkts[ipsec_ctx->ol_pkts_cnt++] = pkts[i];
 			if (sa->ol_flags & RTE_SECURITY_TX_OLOAD_NEED_MDATA)
 				rte_security_set_pkt_metadata(
 						sa->security_ctx,
@@ -378,8 +490,8 @@ ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 		if (ipsec_ctx->last_qp == ipsec_ctx->nb_qps)
 			ipsec_ctx->last_qp %= ipsec_ctx->nb_qps;
 
-		while (cqp->ol_pkts_cnt > 0 && nb_pkts < max_pkts) {
-			pkt = cqp->ol_pkts[--cqp->ol_pkts_cnt];
+		while (ipsec_ctx->ol_pkts_cnt > 0 && nb_pkts < max_pkts) {
+			pkt = ipsec_ctx->ol_pkts[--ipsec_ctx->ol_pkts_cnt];
 			rte_prefetch0(pkt);
 			priv = get_priv(pkt);
 			sa = priv->sa;

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2018 Intel Corporation
  */
 
 /**
@@ -41,7 +12,6 @@
 #define EAL_FILESYSTEM_H
 
 /** Path of rte config file. */
-#define RUNTIME_CONFIG_FMT "%s/.%s_config"
 
 #include <stdint.h>
 #include <limits.h>
@@ -51,48 +21,83 @@
 #include <rte_string_fns.h>
 #include "eal_internal_cfg.h"
 
-static const char *default_config_dir = "/var/run";
+/* sets up platform-specific runtime data dir */
+int
+eal_create_runtime_dir(void);
 
+#define RUNTIME_CONFIG_FNAME "config"
 static inline const char *
 eal_runtime_config_path(void)
 {
 	static char buffer[PATH_MAX]; /* static so auto-zeroed */
-	const char *directory = default_config_dir;
-	const char *home_dir = getenv("HOME");
 
-	if (getuid() != 0 && home_dir != NULL)
-		directory = home_dir;
-	snprintf(buffer, sizeof(buffer) - 1, RUNTIME_CONFIG_FMT, directory,
-			internal_config.hugefile_prefix);
+	snprintf(buffer, sizeof(buffer) - 1, "%s/%s", rte_eal_get_runtime_dir(),
+			RUNTIME_CONFIG_FNAME);
+	return buffer;
+}
+
+/** Path of primary/secondary communication unix socket file. */
+#define MP_SOCKET_FNAME "mp_socket"
+static inline const char *
+eal_mp_socket_path(void)
+{
+	static char buffer[PATH_MAX]; /* static so auto-zeroed */
+
+	snprintf(buffer, sizeof(buffer) - 1, "%s/%s", rte_eal_get_runtime_dir(),
+			MP_SOCKET_FNAME);
+	return buffer;
+}
+
+#define FBARRAY_NAME_FMT "%s/fbarray_%s"
+static inline const char *
+eal_get_fbarray_path(char *buffer, size_t buflen, const char *name) {
+	snprintf(buffer, buflen, FBARRAY_NAME_FMT, rte_eal_get_runtime_dir(),
+			name);
 	return buffer;
 }
 
 /** Path of hugepage info file. */
-#define HUGEPAGE_INFO_FMT "%s/.%s_hugepage_info"
-
+#define HUGEPAGE_INFO_FNAME "hugepage_info"
 static inline const char *
 eal_hugepage_info_path(void)
 {
 	static char buffer[PATH_MAX]; /* static so auto-zeroed */
-	const char *directory = default_config_dir;
-	const char *home_dir = getenv("HOME");
 
-	if (getuid() != 0 && home_dir != NULL)
-		directory = home_dir;
-	snprintf(buffer, sizeof(buffer) - 1, HUGEPAGE_INFO_FMT, directory,
-			internal_config.hugefile_prefix);
+	snprintf(buffer, sizeof(buffer) - 1, "%s/%s", rte_eal_get_runtime_dir(),
+			HUGEPAGE_INFO_FNAME);
+	return buffer;
+}
+
+/** Path of hugepage data file. */
+#define HUGEPAGE_DATA_FNAME "hugepage_data"
+static inline const char *
+eal_hugepage_data_path(void)
+{
+	static char buffer[PATH_MAX]; /* static so auto-zeroed */
+
+	snprintf(buffer, sizeof(buffer) - 1, "%s/%s", rte_eal_get_runtime_dir(),
+			HUGEPAGE_DATA_FNAME);
 	return buffer;
 }
 
 /** String format for hugepage map files. */
 #define HUGEFILE_FMT "%s/%smap_%d"
-#define TEMP_HUGEFILE_FMT "%s/%smap_temp_%d"
-
 static inline const char *
 eal_get_hugefile_path(char *buffer, size_t buflen, const char *hugedir, int f_id)
 {
 	snprintf(buffer, buflen, HUGEFILE_FMT, hugedir,
 			internal_config.hugefile_prefix, f_id);
+	buffer[buflen - 1] = '\0';
+	return buffer;
+}
+
+/** String format for hugepage map lock files. */
+#define HUGEFILE_LOCK_FMT "%s/map_%d.lock"
+static inline const char *
+eal_get_hugefile_lock_path(char *buffer, size_t buflen, int f_id)
+{
+	snprintf(buffer, buflen, HUGEFILE_LOCK_FMT, rte_eal_get_runtime_dir(),
+			f_id);
 	buffer[buflen - 1] = '\0';
 	return buffer;
 }

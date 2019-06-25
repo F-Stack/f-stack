@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stddef.h>
@@ -65,8 +36,11 @@ ipv4_frag_reassemble(struct ip_frag_pkt *fp)
 			/* previous fragment found. */
 			if(fp->frags[i].ofs + fp->frags[i].len == ofs) {
 
+				RTE_ASSERT(curr_idx != i);
+
 				/* adjust start of the last fragment data. */
-				rte_pktmbuf_adj(m, (uint16_t)(m->l2_len + m->l3_len));
+				rte_pktmbuf_adj(m,
+					(uint16_t)(m->l2_len + m->l3_len));
 				rte_pktmbuf_chain(fp->frags[i].mb, m);
 
 				/* this mbuf should not be accessed directly */
@@ -125,14 +99,14 @@ ipv4_frag_reassemble(struct ip_frag_pkt *fp)
  */
 struct rte_mbuf *
 rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
-		struct rte_ip_frag_death_row *dr, struct rte_mbuf *mb, uint64_t tms,
-		struct ipv4_hdr *ip_hdr)
+	struct rte_ip_frag_death_row *dr, struct rte_mbuf *mb, uint64_t tms,
+	struct ipv4_hdr *ip_hdr)
 {
 	struct ip_frag_pkt *fp;
 	struct ip_frag_key key;
 	const unaligned_uint64_t *psd;
-	uint16_t ip_len;
 	uint16_t flag_offset, ip_ofs, ip_flag;
+	int32_t ip_len;
 
 	flag_offset = rte_be_to_cpu_16(ip_hdr->fragment_offset);
 	ip_ofs = (uint16_t)(flag_offset & IPV4_HDR_OFFSET_MASK);
@@ -145,18 +119,23 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	key.key_len = IPV4_KEYLEN;
 
 	ip_ofs *= IPV4_HDR_OFFSET_UNITS;
-	ip_len = (uint16_t)(rte_be_to_cpu_16(ip_hdr->total_length) -
-		mb->l3_len);
+	ip_len = rte_be_to_cpu_16(ip_hdr->total_length) - mb->l3_len;
 
 	IP_FRAG_LOG(DEBUG, "%s:%d:\n"
 		"mbuf: %p, tms: %" PRIu64
-		", key: <%" PRIx64 ", %#x>, ofs: %u, len: %u, flags: %#x\n"
+		", key: <%" PRIx64 ", %#x>, ofs: %u, len: %d, flags: %#x\n"
 		"tbl: %p, max_cycles: %" PRIu64 ", entry_mask: %#x, "
 		"max_entries: %u, use_entries: %u\n\n",
 		__func__, __LINE__,
 		mb, tms, key.src_dst[0], key.id, ip_ofs, ip_len, ip_flag,
 		tbl, tbl->max_cycles, tbl->entry_mask, tbl->max_entries,
 		tbl->use_entries);
+
+	/* check that fragment length is greater then zero. */
+	if (ip_len <= 0) {
+		IP_FRAG_MBUF2DR(dr, mb);
+		return NULL;
+	}
 
 	/* try to find/add entry into the fragment's table. */
 	if ((fp = ip_frag_find(tbl, dr, &key, tms)) == NULL) {

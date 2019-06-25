@@ -1,37 +1,9 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
+#include <inttypes.h>
 #include <string.h>
 #include <math.h>
 #include <rte_common.h>
@@ -99,6 +71,9 @@ test_align(void)
 #define FAIL_ALIGN(x, i, p)\
 	{printf(x "() test failed: %u %u\n", i, p);\
 	return -1;}
+#define FAIL_ALIGN64(x, j, q)\
+	{printf(x "() test failed: %"PRIu64" %"PRIu64"\n", j, q);\
+	return -1; }
 #define ERROR_FLOOR(res, i, pow) \
 		(res % pow) || 						/* check if not aligned */ \
 		((res / pow) != (i / pow))  		/* check if correct alignment */
@@ -109,12 +84,34 @@ test_align(void)
 			val / pow != (i / pow) + 1)		/* if not aligned, hence +1 */
 
 	uint32_t i, p, val;
+	uint64_t j, q;
 
 	for (i = 1, p = 1; i <= MAX_NUM; i ++) {
 		if (rte_align32pow2(i) != p)
 			FAIL_ALIGN("rte_align32pow2", i, p);
 		if (i == p)
 			p <<= 1;
+	}
+
+	for (i = 1, p = 1; i <= MAX_NUM; i++) {
+		if (rte_align32prevpow2(i) != p)
+			FAIL_ALIGN("rte_align32prevpow2", i, p);
+		if (rte_is_power_of_2(i + 1))
+			p = i + 1;
+	}
+
+	for (j = 1, q = 1; j <= MAX_NUM ; j++) {
+		if (rte_align64pow2(j) != q)
+			FAIL_ALIGN64("rte_align64pow2", j, q);
+		if (j == q)
+			q <<= 1;
+	}
+
+	for (j = 1, q = 1; j <= MAX_NUM ; j++) {
+		if (rte_align64prevpow2(j) != q)
+			FAIL_ALIGN64("rte_align64prevpow2", j, q);
+		if (rte_is_power_of_2(j + 1))
+			q = j + 1;
 	}
 
 	for (p = 2; p <= MAX_NUM; p <<= 1) {
@@ -157,6 +154,18 @@ test_align(void)
 				FAIL("rte_is_aligned");
 		}
 	}
+
+	for (p = 1; p <= MAX_NUM / 2; p++) {
+		for (i = 1; i <= MAX_NUM / 2; i++) {
+			val = RTE_ALIGN_MUL_CEIL(i, p);
+			if (val % p != 0 || val < i)
+				FAIL_ALIGN("RTE_ALIGN_MUL_CEIL", i, p);
+			val = RTE_ALIGN_MUL_FLOOR(i, p);
+			if (val % p != 0 || val > i)
+				FAIL_ALIGN("RTE_ALIGN_MUL_FLOOR", i, p);
+		}
+	}
+
 	return 0;
 }
 
@@ -180,6 +189,37 @@ test_log2(void)
 }
 
 static int
+test_fls(void)
+{
+	struct fls_test_vector {
+		uint32_t arg;
+		int rc;
+	};
+	int expected, rc;
+	uint32_t i, arg;
+
+	const struct fls_test_vector test[] = {
+		{0x0, 0},
+		{0x1, 1},
+		{0x4000, 15},
+		{0x80000000, 32},
+	};
+
+	for (i = 0; i < RTE_DIM(test); i++) {
+		arg = test[i].arg;
+		rc = rte_fls_u32(arg);
+		expected = test[i].rc;
+		if (rc != expected) {
+			printf("Wrong rte_fls_u32(0x%x) rc=%d, expected=%d\n",
+				arg, rc, expected);
+			return TEST_FAILED;
+		}
+	}
+
+	return 0;
+}
+
+static int
 test_common(void)
 {
 	int ret = 0;
@@ -187,6 +227,7 @@ test_common(void)
 	ret |= test_macros(0);
 	ret |= test_misc();
 	ret |= test_log2();
+	ret |= test_fls();
 
 	return ret;
 }

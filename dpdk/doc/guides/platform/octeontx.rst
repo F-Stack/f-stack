@@ -1,38 +1,12 @@
-..  BSD LICENSE
-    Copyright (C) Cavium, Inc. 2017. All rights reserved.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Cavium, Inc
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
+OCTEON TX Board Support Package
+===============================
 
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Cavium, Inc nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-OCTEONTX Board Support Package
-==============================
-
-This doc has information about steps to setup octeontx platform
+This doc has information about steps to setup OCTEON TX platform
 and information about common offload hw block drivers of
-**Cavium OCTEONTX** SoC family.
+**Cavium OCTEON TX** SoC family.
 
 
 More information about SoC can be found at `Cavium, Inc Official Website
@@ -41,25 +15,35 @@ More information about SoC can be found at `Cavium, Inc Official Website
 Common Offload HW Block Drivers
 -------------------------------
 
-1. **Eventdev Driver**
-   See :doc: `../eventdevs/octeontx.rst` for octeontx ssovf eventdev driver
+1. **Crypto Driver**
+   See :doc:`../cryptodevs/octeontx` for octeontx crypto driver
    information.
 
-2. **Mempool Driver**
-   See :doc: `../mempool/octeontx.rst` for octeontx fpavf mempool driver
+2. **Eventdev Driver**
+   See :doc:`../eventdevs/octeontx` for octeontx ssovf eventdev driver
+   information.
+
+3. **Mempool Driver**
+   See :doc:`../mempool/octeontx` for octeontx fpavf mempool driver
    information.
 
 Steps To Setup Platform
 -----------------------
 
 There are three main pre-prerequisites for setting up Platform drivers on
-OCTEONTX compatible board:
+OCTEON TX compatible board:
 
-1. **OCTEONTX Linux kernel PF driver for Network acceleration HW blocks**
+1. **OCTEON TX Linux kernel PF driver for Network acceleration HW blocks**
 
-   The OCTEONTX Linux kernel drivers (includes the required PF driver for the
+   The OCTEON TX Linux kernel drivers (includes the required PF driver for the
    Platform drivers) are available on Github at `octeontx-kmod <https://github.com/caviumnetworks/octeontx-kmod>`_
    along with build, install and dpdk usage instructions.
+
+.. note::
+
+   The PF driver and the required microcode for the crypto offload block will be
+   available with OCTEON TX SDK only. So for using crypto offload, follow the steps
+   mentioned in :ref:`setup_platform_using_OCTEON_TX_SDK`.
 
 2. **ARM64 Tool Chain**
 
@@ -74,8 +58,104 @@ OCTEONTX compatible board:
 
    As an alternative method, Platform drivers can also be executed using images provided
    as part of SDK from Cavium. The SDK includes all the above prerequisites necessary
-   to bring up a OCTEONTX board.
+   to bring up a OCTEON TX board. Please refer :ref:`setup_platform_using_OCTEON_TX_SDK`.
 
-   SDK and related information can be obtained from: `Cavium support site <https://support.cavium.com/>`_.
+- Follow the DPDK :doc:`../linux_gsg/index` to setup the basic DPDK environment.
 
-- Follow the DPDK :doc: `../linux_gsg/index.rst` to setup the basic DPDK environment.
+.. _setup_platform_using_OCTEON_TX_SDK:
+
+Setup Platform Using OCTEON TX SDK
+----------------------------------
+
+The OCTEON TX platform drivers can be compiled either natively on
+**OCTEON TX** :sup:`®` board or cross-compiled on an x86 based platform.
+
+The **OCTEON TX** :sup:`®` board must be running the linux kernel based on
+OCTEON TX SDK 6.2.0 patch 3. In this, the PF drivers for all hardware
+offload blocks are already built in.
+
+Native Compilation
+~~~~~~~~~~~~~~~~~~
+
+If the kernel and modules are cross-compiled and copied to the target board,
+some intermediate binaries required for native build would be missing on the
+target board. To make sure all the required binaries are available in the
+native architecture, the linux sources need to be compiled once natively.
+
+.. code-block:: console
+
+        cd /lib/modules/$(uname -r)/source
+        make menuconfig
+        make
+
+The above steps would rebuild the modules and the required intermediate binaries.
+Once the target is ready for native compilation, the OCTEON TX platform
+drivers can be compiled with the following steps,
+
+.. code-block:: console
+
+        cd <dpdk directory>
+        make config T=arm64-thunderx-linuxapp-gcc
+        make
+
+The example applications can be compiled using the following:
+
+.. code-block:: console
+
+        cd <dpdk directory>
+        export RTE_SDK=$PWD
+        export RTE_TARGET=build
+        cd examples/<application>
+        make
+
+Cross Compilation
+~~~~~~~~~~~~~~~~~
+
+The DPDK applications can be cross-compiled on any x86 based platform. The
+OCTEON TX SDK need to be installed on the build system. The SDK package will
+provide the required toolchain etc.
+
+Refer to :doc:`../linux_gsg/cross_build_dpdk_for_arm64` for further steps on
+compilation. The 'host' & 'CC' to be used in the commands would change,
+in addition to the paths to which libnuma related files have to be
+copied.
+
+The following steps can be used to perform cross-compilation with OCTEON TX
+SDK 6.2.0 patch 3:
+
+.. code-block:: console
+
+        cd <sdk_install_dir>
+        source env-setup
+
+        git clone https://github.com/numactl/numactl.git
+        cd numactl
+        git checkout v2.0.11 -b v2.0.11
+        ./autogen.sh
+        autoconf -i
+        ./configure --host=aarch64-thunderx-linux CC=aarch64-thunderx-linux-gnu-gcc --prefix=<numa install dir>
+        make install
+
+The above steps will prepare build system with numa additions. Now this build system can be used
+to build applications for **OCTEON TX** :sup:`®` platforms.
+
+.. code-block:: console
+
+        cd <dpdk directory>
+        export RTE_SDK=$PWD
+        export RTE_KERNELDIR=$THUNDER_ROOT/linux/kernel/linux
+        make config T=arm64-thunderx-linuxapp-gcc
+        make -j CROSS=aarch64-thunderx-linux-gnu- CONFIG_RTE_KNI_KMOD=n CONFIG_RTE_EAL_IGB_UIO=n EXTRA_CFLAGS="-isystem <numa_install_dir>/include" EXTRA_LDFLAGS="-L<numa_install_dir>/lib -lnuma"
+
+If NUMA support is not required, it can be disabled as explained in
+:doc:`../linux_gsg/cross_build_dpdk_for_arm64`.
+
+Following steps could be used in that case.
+
+.. code-block:: console
+
+        make config T=arm64-thunderx-linuxapp-gcc
+        make CROSS=aarch64-thunderx-linux-gnu-
+
+
+SDK and related information can be obtained from: `Cavium support site <https://support.cavium.com/>`_.

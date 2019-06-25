@@ -1,33 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016 NXP.
+ *   Copyright 2016 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _RTE_FSLMC_H_
@@ -57,16 +31,27 @@ extern "C" {
 #include <rte_dev.h>
 #include <rte_bus.h>
 #include <rte_tailq.h>
+#include <rte_devargs.h>
 
 #include <fslmc_vfio.h>
 
 #define FSLMC_OBJECT_MAX_LEN 32   /**< Length of each device on bus */
+
+
+/** Device driver supports link state interrupt */
+#define RTE_DPAA2_DRV_INTR_LSC	0x0008
+
+/** Device driver supports IOVA as VA */
+#define RTE_DPAA2_DRV_IOVA_AS_VA 0X0040
 
 struct rte_dpaa2_driver;
 
 /* DPAA2 Device and Driver lists for FSLMC bus */
 TAILQ_HEAD(rte_fslmc_device_list, rte_dpaa2_device);
 TAILQ_HEAD(rte_fslmc_driver_list, rte_dpaa2_driver);
+
+#define RTE_DEV_TO_FSLMC_CONST(ptr) \
+	container_of(ptr, const struct rte_dpaa2_device, device)
 
 extern struct rte_fslmc_bus rte_fslmc_bus;
 
@@ -80,8 +65,10 @@ enum rte_dpaa2_dev_type {
 	DPAA2_IO,	/**< DPIO type device */
 	DPAA2_CI,	/**< DPCI type device */
 	DPAA2_MPORTAL,  /**< DPMCP type device */
+	DPAA2_QDMA,     /**< DPDMAI type device */
 	/* Unknown device placeholder */
-	DPAA2_UNKNOWN
+	DPAA2_UNKNOWN,
+	DPAA2_DEVTYPE_MAX,
 };
 
 TAILQ_HEAD(rte_dpaa2_object_list, rte_dpaa2_object);
@@ -109,6 +96,7 @@ struct rte_dpaa2_device {
 	union {
 		struct rte_eth_dev *eth_dev;        /**< ethernet device */
 		struct rte_cryptodev *cryptodev;    /**< Crypto Device */
+		struct rte_rawdev *rawdev;          /**< Raw Device */
 	};
 	enum rte_dpaa2_dev_type dev_type;   /**< Device Type */
 	uint16_t object_id;                 /**< DPAA2 Object ID */
@@ -143,9 +131,27 @@ struct rte_fslmc_bus {
 				/**< FSLMC DPAA2 Device list */
 	struct rte_fslmc_driver_list driver_list;
 				/**< FSLMC DPAA2 Driver list */
-	int device_count;
-				/**< Optional: Count of devices on bus */
+	int device_count[DPAA2_DEVTYPE_MAX];
+				/**< Count of all devices scanned */
 };
+
+#define DPAA2_PORTAL_DEQUEUE_DEPTH	32
+
+/* Create storage for dqrr entries per lcore */
+struct dpaa2_portal_dqrr {
+	struct rte_mbuf *mbuf[DPAA2_PORTAL_DEQUEUE_DEPTH];
+	uint64_t dqrr_held;
+	uint8_t dqrr_size;
+};
+
+RTE_DECLARE_PER_LCORE(struct dpaa2_portal_dqrr, dpaa2_held_bufs);
+
+#define DPAA2_PER_LCORE_DQRR_SIZE \
+	RTE_PER_LCORE(dpaa2_held_bufs).dqrr_size
+#define DPAA2_PER_LCORE_DQRR_HELD \
+	RTE_PER_LCORE(dpaa2_held_bufs).dqrr_held
+#define DPAA2_PER_LCORE_DQRR_MBUF(i) \
+	RTE_PER_LCORE(dpaa2_held_bufs).mbuf[i]
 
 /**
  * Register a DPAA2 driver.
@@ -167,8 +173,7 @@ void rte_fslmc_driver_unregister(struct rte_dpaa2_driver *driver);
 
 /** Helper for DPAA2 device registration from driver (eth, crypto) instance */
 #define RTE_PMD_REGISTER_DPAA2(nm, dpaa2_drv) \
-RTE_INIT(dpaa2initfn_ ##nm); \
-static void dpaa2initfn_ ##nm(void) \
+RTE_INIT(dpaa2initfn_ ##nm) \
 {\
 	(dpaa2_drv).driver.name = RTE_STR(nm);\
 	rte_fslmc_driver_register(&dpaa2_drv); \
@@ -184,10 +189,20 @@ RTE_PMD_EXPORT_NAME(nm, __COUNTER__)
  */
 void rte_fslmc_object_register(struct rte_dpaa2_object *object);
 
+/**
+ * Count of a particular type of DPAA2 device scanned on the bus.
+ *
+ * @param dev_type
+ *   Type of device as rte_dpaa2_dev_type enumerator
+ * @return
+ *   >=0 for count; 0 indicates either no device of the said type scanned or
+ *   invalid device type.
+ */
+uint32_t rte_fslmc_get_device_count(enum rte_dpaa2_dev_type device_type);
+
 /** Helper for DPAA2 object registration */
 #define RTE_PMD_REGISTER_DPAA2_OBJECT(nm, dpaa2_obj) \
-RTE_INIT(dpaa2objinitfn_ ##nm); \
-static void dpaa2objinitfn_ ##nm(void) \
+RTE_INIT(dpaa2objinitfn_ ##nm) \
 {\
 	(dpaa2_obj).name = RTE_STR(nm);\
 	rte_fslmc_object_register(&dpaa2_obj); \

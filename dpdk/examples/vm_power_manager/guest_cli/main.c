@@ -1,53 +1,21 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
-/*
 #include <stdio.h>
-#include <string.h>
-#include <stdint.h>
-#include <sys/epoll.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <stdlib.h>
-#include <errno.h>
-*/
 #include <signal.h>
+#include <getopt.h>
+#include <string.h>
 
 #include <rte_lcore.h>
 #include <rte_power.h>
 #include <rte_debug.h>
+#include <rte_eal.h>
+#include <rte_log.h>
 
 #include "vm_power_cli_guest.h"
+#include "parse.h"
 
 static void
 sig_handler(int signo)
@@ -59,6 +27,136 @@ sig_handler(int signo)
 		rte_power_exit(lcore_id);
 	}
 
+}
+
+#define MAX_HOURS 24
+
+/* Parse the argument given in the command line of the application */
+static int
+parse_args(int argc, char **argv)
+{
+	int opt, ret;
+	char **argvopt;
+	int option_index;
+	char *prgname = argv[0];
+	const struct option lgopts[] = {
+		{ "vm-name", required_argument, 0, 'n'},
+		{ "busy-hours", required_argument, 0, 'b'},
+		{ "quiet-hours", required_argument, 0, 'q'},
+		{ "port-list", required_argument, 0, 'p'},
+		{ "vcpu-list", required_argument, 0, 'l'},
+		{ "policy", required_argument, 0, 'o'},
+		{NULL, 0, 0, 0}
+	};
+	struct channel_packet *policy;
+	unsigned short int hours[MAX_HOURS];
+	unsigned short int cores[MAX_VCPU_PER_VM];
+	unsigned short int ports[MAX_VCPU_PER_VM];
+	int i, cnt, idx;
+
+	policy = get_policy();
+	set_policy_defaults(policy);
+
+	argvopt = argv;
+
+	while ((opt = getopt_long(argc, argvopt, "n:b:q:p:",
+				  lgopts, &option_index)) != EOF) {
+
+		switch (opt) {
+		/* portmask */
+		case 'n':
+			strcpy(policy->vm_name, optarg);
+			printf("Setting VM Name to [%s]\n", policy->vm_name);
+			break;
+		case 'b':
+		case 'q':
+			//printf("***Processing set using [%s]\n", optarg);
+			cnt = parse_set(optarg, hours, MAX_HOURS);
+			if (cnt < 0) {
+				printf("Invalid value passed to quiet/busy hours - [%s]\n",
+						optarg);
+				break;
+			}
+			idx = 0;
+			for (i = 0; i < MAX_HOURS; i++) {
+				if (hours[i]) {
+					if (opt == 'b') {
+						printf("***Busy Hour %d\n", i);
+						policy->timer_policy.busy_hours
+							[idx++] = i;
+					} else {
+						printf("***Quiet Hour %d\n", i);
+						policy->timer_policy.quiet_hours
+							[idx++] = i;
+					}
+				}
+			}
+			break;
+		case 'l':
+			cnt = parse_set(optarg, cores, MAX_VCPU_PER_VM);
+			if (cnt < 0) {
+				printf("Invalid value passed to vcpu-list - [%s]\n",
+						optarg);
+				break;
+			}
+			idx = 0;
+			for (i = 0; i < MAX_VCPU_PER_VM; i++) {
+				if (cores[i]) {
+					printf("***Using core %d\n", i);
+					policy->vcpu_to_control[idx++] = i;
+				}
+			}
+			policy->num_vcpu = idx;
+			printf("Total cores: %d\n", idx);
+			break;
+		case 'p':
+			cnt = parse_set(optarg, ports, MAX_VCPU_PER_VM);
+			if (cnt < 0) {
+				printf("Invalid value passed to port-list - [%s]\n",
+						optarg);
+				break;
+			}
+			idx = 0;
+			for (i = 0; i < MAX_VCPU_PER_VM; i++) {
+				if (ports[i]) {
+					printf("***Using port %d\n", i);
+					set_policy_mac(i, idx++);
+				}
+			}
+			policy->nb_mac_to_monitor = idx;
+			printf("Total Ports: %d\n", idx);
+			break;
+		case 'o':
+			if (!strcmp(optarg, "TRAFFIC"))
+				policy->policy_to_use = TRAFFIC;
+			else if (!strcmp(optarg, "TIME"))
+				policy->policy_to_use = TIME;
+			else if (!strcmp(optarg, "WORKLOAD"))
+				policy->policy_to_use = WORKLOAD;
+			else if (!strcmp(optarg, "BRANCH_RATIO"))
+				policy->policy_to_use = BRANCH_RATIO;
+			else {
+				printf("Invalid policy specified: %s\n",
+						optarg);
+				return -1;
+			}
+			break;
+		/* long options */
+
+		case 0:
+			break;
+
+		default:
+			return -1;
+		}
+	}
+
+	if (optind >= 0)
+		argv[optind-1] = prgname;
+
+	ret = optind-1;
+	optind = 0; /* reset getopt lib */
+	return ret;
 }
 
 int
@@ -73,6 +171,14 @@ main(int argc, char **argv)
 
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
+
+	argc -= ret;
+	argv += ret;
+
+	/* parse application arguments (after the EAL ones) */
+	ret = parse_args(argc, argv);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "Invalid arguments\n");
 
 	rte_power_set_env(PM_ENV_KVM_VM);
 	RTE_LCORE_FOREACH(lcore_id) {

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #include <stdio.h>
@@ -85,11 +56,7 @@ static struct rte_eth_conf port_conf = {
 		.mq_mode	= ETH_MQ_RX_RSS,
 		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0,
-		.hw_ip_checksum = 1,
-		.hw_vlan_filter = 0,
-		.jumbo_frame    = 0,
-		.hw_strip_crc   = 1,
+		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -102,8 +69,8 @@ static struct rte_eth_conf port_conf = {
 	},
 };
 
-#define NIC_RX_QUEUE_DESC               128
-#define NIC_TX_QUEUE_DESC               512
+#define NIC_RX_QUEUE_DESC               1024
+#define NIC_TX_QUEUE_DESC               1024
 
 #define NIC_RX_QUEUE                    0
 #define NIC_TX_QUEUE                    0
@@ -121,13 +88,22 @@ static uint16_t port_tx;
 static struct rte_mbuf *pkts_rx[PKT_RX_BURST_MAX];
 struct rte_eth_dev_tx_buffer *tx_buffer;
 
-struct rte_meter_srtcm_params app_srtcm_params[] = {
-	{.cir = 1000000 * 46,  .cbs = 2048, .ebs = 2048},
+struct rte_meter_srtcm_params app_srtcm_params = {
+	.cir = 1000000 * 46,
+	.cbs = 2048,
+	.ebs = 2048
 };
 
-struct rte_meter_trtcm_params app_trtcm_params[] = {
-	{.cir = 1000000 * 46,  .pir = 1500000 * 46,  .cbs = 2048, .pbs = 2048},
+struct rte_meter_srtcm_profile app_srtcm_profile;
+
+struct rte_meter_trtcm_params app_trtcm_params = {
+	.cir = 1000000 * 46,
+	.pir = 1500000 * 46,
+	.cbs = 2048,
+	.pbs = 2048
 };
+
+struct rte_meter_trtcm_profile app_trtcm_profile;
 
 #define APP_FLOWS_MAX  256
 
@@ -136,12 +112,21 @@ FLOW_METER app_flows[APP_FLOWS_MAX];
 static int
 app_configure_flow_table(void)
 {
-	uint32_t i, j;
+	uint32_t i;
 	int ret;
 
-	for (i = 0, j = 0; i < APP_FLOWS_MAX;
-			i ++, j = (j + 1) % RTE_DIM(PARAMS)) {
-		ret = FUNC_CONFIG(&app_flows[i], &PARAMS[j]);
+	ret = rte_meter_srtcm_profile_config(&app_srtcm_profile,
+		&app_srtcm_params);
+	if (ret)
+		return ret;
+
+	ret = rte_meter_trtcm_profile_config(&app_trtcm_profile,
+		&app_trtcm_params);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < APP_FLOWS_MAX; i++) {
+		ret = FUNC_CONFIG(&app_flows[i], &PROFILE);
 		if (ret)
 			return ret;
 	}
@@ -166,7 +151,10 @@ app_pkt_handle(struct rte_mbuf *pkt, uint64_t time)
 	enum policer_action action;
 
 	/* color input is not used for blind modes */
-	output_color = (uint8_t) FUNC_METER(&app_flows[flow_id], time, pkt_len,
+	output_color = (uint8_t) FUNC_METER(&app_flows[flow_id],
+		&PROFILE,
+		time,
+		pkt_len,
 		(enum rte_meter_color) input_color);
 
 	/* Apply policing and set the output color */
@@ -310,6 +298,10 @@ main(int argc, char **argv)
 	uint32_t lcore_id;
 	uint16_t nb_rxd = NIC_RX_QUEUE_DESC;
 	uint16_t nb_txd = NIC_TX_QUEUE_DESC;
+	struct rte_eth_conf conf;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
+	struct rte_eth_dev_info dev_info;
 	int ret;
 
 	/* EAL init */
@@ -335,7 +327,22 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Buffer pool creation error\n");
 
 	/* NIC init */
-	ret = rte_eth_dev_configure(port_rx, 1, 1, &port_conf);
+	conf = port_conf;
+	rte_eth_dev_info_get(port_rx, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		conf.txmode.offloads |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+	if (conf.rx_adv_conf.rss_conf.rss_hf !=
+			port_conf.rx_adv_conf.rss_conf.rss_hf) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			port_rx,
+			port_conf.rx_adv_conf.rss_conf.rss_hf,
+			conf.rx_adv_conf.rss_conf.rss_hf);
+	}
+
+	ret = rte_eth_dev_configure(port_rx, 1, 1, &conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Port %d configuration error (%d)\n", port_rx, ret);
 
@@ -344,19 +351,38 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Port %d adjust number of descriptors error (%d)\n",
 				port_rx, ret);
 
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = conf.rxmode.offloads;
 	ret = rte_eth_rx_queue_setup(port_rx, NIC_RX_QUEUE, nb_rxd,
 				rte_eth_dev_socket_id(port_rx),
-				NULL, pool);
+				&rxq_conf, pool);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Port %d RX queue setup error (%d)\n", port_rx, ret);
 
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = conf.txmode.offloads;
 	ret = rte_eth_tx_queue_setup(port_rx, NIC_TX_QUEUE, nb_txd,
 				rte_eth_dev_socket_id(port_rx),
-				NULL);
+				&txq_conf);
 	if (ret < 0)
 	rte_exit(EXIT_FAILURE, "Port %d TX queue setup error (%d)\n", port_rx, ret);
 
-	ret = rte_eth_dev_configure(port_tx, 1, 1, &port_conf);
+	conf = port_conf;
+	rte_eth_dev_info_get(port_tx, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		conf.txmode.offloads |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+	if (conf.rx_adv_conf.rss_conf.rss_hf !=
+			port_conf.rx_adv_conf.rss_conf.rss_hf) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			port_tx,
+			port_conf.rx_adv_conf.rss_conf.rss_hf,
+			conf.rx_adv_conf.rss_conf.rss_hf);
+	}
+
+	ret = rte_eth_dev_configure(port_tx, 1, 1, &conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Port %d configuration error (%d)\n", port_tx, ret);
 
@@ -367,12 +393,16 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Port %d adjust number of descriptors error (%d)\n",
 				port_tx, ret);
 
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = conf.rxmode.offloads;
 	ret = rte_eth_rx_queue_setup(port_tx, NIC_RX_QUEUE, nb_rxd,
 				rte_eth_dev_socket_id(port_tx),
 				NULL, pool);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Port %d RX queue setup error (%d)\n", port_tx, ret);
 
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = conf.txmode.offloads;
 	ret = rte_eth_tx_queue_setup(port_tx, NIC_TX_QUEUE, nb_txd,
 				rte_eth_dev_socket_id(port_tx),
 				NULL);

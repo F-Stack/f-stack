@@ -73,10 +73,10 @@ typedef uint64_t dma_addr_t;
 #define ENA_COM_INVAL	-EINVAL
 #define ENA_COM_NO_SPACE	-ENOSPC
 #define ENA_COM_NO_DEVICE	-ENODEV
-#define ENA_COM_PERMISSION	-EPERM
 #define ENA_COM_TIMER_EXPIRED	-ETIME
 #define ENA_COM_FAULT	-EFAULT
 #define ENA_COM_TRY_AGAIN	-EAGAIN
+#define ENA_COM_UNSUPPORTED    -EOPNOTSUPP
 
 #define ____cacheline_aligned __rte_cache_aligned
 
@@ -96,7 +96,7 @@ typedef uint64_t dma_addr_t;
 #define ENA_GET_SYSTEM_USECS()						\
 	(rte_get_timer_cycles() * US_PER_S / rte_get_timer_hz())
 
-#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
+#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
 #define ENA_ASSERT(cond, format, arg...)				\
 	do {								\
 		if (unlikely(!(cond))) {				\
@@ -140,6 +140,15 @@ typedef uint64_t dma_addr_t;
 #define ena_trc_err(format, arg...) do { } while (0)
 #endif /* RTE_LIBRTE_ENA_COM_DEBUG */
 
+#define ENA_WARN(cond, format, arg...)                                 \
+do {                                                                   \
+       if (unlikely(cond)) {                                           \
+               ena_trc_err(                                            \
+                       "Warn failed on %s:%s:%d:" format,              \
+                       __FILE__, __func__, __LINE__, ##arg);           \
+       }                                                               \
+} while (0)
+
 /* Spinlock related methods */
 #define ena_spinlock_t rte_spinlock_t
 #define ENA_SPINLOCK_INIT(spinlock) rte_spinlock_init(&spinlock)
@@ -179,9 +188,20 @@ typedef uint64_t dma_addr_t;
 #define ENA_WAIT_EVENT_SIGNAL(waitevent) pthread_cond_signal(&waitevent.cond)
 /* pthread condition doesn't need to be rearmed after usage */
 #define ENA_WAIT_EVENT_CLEAR(...)
+#define ENA_WAIT_EVENT_DESTROY(waitqueue) ((void)(waitqueue))
 
 #define ena_wait_event_t ena_wait_queue_t
 #define ENA_MIGHT_SLEEP()
+
+#define ENA_TIME_EXPIRE(timeout)  (timeout < rte_get_timer_cycles())
+#define ENA_GET_SYSTEM_TIMEOUT(timeout_us)                             \
+       (timeout_us * rte_get_timer_hz() / 1000000 + rte_get_timer_cycles())
+
+/*
+ * Each rte_memzone should have unique name.
+ * To satisfy it, count number of allocations and add it to name.
+ */
+extern uint32_t ena_alloc_cnt;
 
 #define ENA_MEM_ALLOC_COHERENT(dmadev, size, virt, phys, handle)	\
 	do {								\
@@ -190,7 +210,8 @@ typedef uint64_t dma_addr_t;
 		ENA_TOUCH(dmadev); ENA_TOUCH(handle);			\
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
-		mz = rte_memzone_reserve(z_name, size, SOCKET_ID_ANY, 0); \
+		mz = rte_memzone_reserve(z_name, size, SOCKET_ID_ANY,	\
+				RTE_MEMZONE_IOVA_CONTIG);		\
 		handle = mz;						\
 		if (mz == NULL) {					\
 			virt = NULL;					\
@@ -206,14 +227,17 @@ typedef uint64_t dma_addr_t;
 		   ENA_TOUCH(dmadev);					\
 		   rte_memzone_free(handle); })
 
-#define ENA_MEM_ALLOC_COHERENT_NODE(dmadev, size, virt, phys, node, dev_node) \
+#define ENA_MEM_ALLOC_COHERENT_NODE(					\
+	dmadev, size, virt, phys, mem_handle, node, dev_node)		\
 	do {								\
 		const struct rte_memzone *mz;				\
 		char z_name[RTE_MEMZONE_NAMESIZE];			\
 		ENA_TOUCH(dmadev); ENA_TOUCH(dev_node);			\
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
-		mz = rte_memzone_reserve(z_name, size, node, 0); \
+		mz = rte_memzone_reserve(z_name, size, node,		\
+				RTE_MEMZONE_IOVA_CONTIG);		\
+		mem_handle = mz;					\
 		if (mz == NULL) {					\
 			virt = NULL;					\
 			phys = 0;					\
@@ -233,8 +257,10 @@ typedef uint64_t dma_addr_t;
 #define ENA_MEM_ALLOC(dmadev, size) rte_zmalloc(NULL, size, 1)
 #define ENA_MEM_FREE(dmadev, ptr) ({ENA_TOUCH(dmadev); rte_free(ptr); })
 
-#define ENA_REG_WRITE32(value, reg) rte_write32_relaxed((value), (reg))
-#define ENA_REG_READ32(reg) rte_read32_relaxed((reg))
+#define ENA_REG_WRITE32(bus, value, reg)				\
+	({ (void)(bus); rte_write32_relaxed((value), (reg)); })
+#define ENA_REG_READ32(bus, reg)					\
+	({ (void)(bus); rte_read32_relaxed((reg)); })
 
 #define ATOMIC32_INC(i32_ptr) rte_atomic32_inc(i32_ptr)
 #define ATOMIC32_DEC(i32_ptr) rte_atomic32_dec(i32_ptr)
@@ -249,5 +275,12 @@ typedef uint64_t dma_addr_t;
 #define ERR_PTR(error) ((void *)(long)error)
 #define PTR_ERR(error) ((long)(void *)error)
 #define might_sleep()
+
+#define lower_32_bits(x) ((uint32_t)(x))
+#define upper_32_bits(x) ((uint32_t)(((x) >> 16) >> 16))
+
+#ifndef READ_ONCE
+#define READ_ONCE(var) (*((volatile typeof(var) *)(&(var))))
+#endif
 
 #endif /* DPDK_ENA_COM_ENA_PLAT_DPDK_H_ */

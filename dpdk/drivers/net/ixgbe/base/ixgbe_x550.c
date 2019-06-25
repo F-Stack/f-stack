@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #include "ixgbe_x550.h"
 #include "ixgbe_x540.h"
@@ -82,6 +53,7 @@ s32 ixgbe_init_ops_X550(struct ixgbe_hw *hw)
 	mac->ops.enable_mdd = ixgbe_enable_mdd_X550;
 	mac->ops.mdd_event = ixgbe_mdd_event_X550;
 	mac->ops.restore_mdd_vf = ixgbe_restore_mdd_vf_X550;
+	mac->ops.fw_recovery_mode = ixgbe_fw_recovery_mode_X550;
 	mac->ops.disable_rx = ixgbe_disable_rx_x550;
 	/* Manageability interface */
 	mac->ops.set_fw_drv_ver = ixgbe_set_fw_drv_ver_x550;
@@ -336,98 +308,6 @@ STATIC void ixgbe_setup_mux_ctl(struct ixgbe_hw *hw)
 }
 
 /**
- * ixgbe_read_phy_reg_mdi_22 - Read from a clause 22 PHY register without lock
- * @hw: pointer to hardware structure
- * @reg_addr: 32 bit address of PHY register to read
- * @dev_type: always unused
- * @phy_data: Pointer to read data from PHY register
- */
-STATIC s32 ixgbe_read_phy_reg_mdi_22(struct ixgbe_hw *hw, u32 reg_addr,
-				     u32 dev_type, u16 *phy_data)
-{
-	u32 i, data, command;
-	UNREFERENCED_1PARAMETER(dev_type);
-
-	/* Setup and write the read command */
-	command = (reg_addr << IXGBE_MSCA_DEV_TYPE_SHIFT) |
-		  (hw->phy.addr << IXGBE_MSCA_PHY_ADDR_SHIFT) |
-		  IXGBE_MSCA_OLD_PROTOCOL | IXGBE_MSCA_READ_AUTOINC |
-		  IXGBE_MSCA_MDI_COMMAND;
-
-	IXGBE_WRITE_REG(hw, IXGBE_MSCA, command);
-
-	/* Check every 10 usec to see if the access completed.
-	 * The MDI Command bit will clear when the operation is
-	 * complete
-	 */
-	for (i = 0; i < IXGBE_MDIO_COMMAND_TIMEOUT; i++) {
-		usec_delay(10);
-
-		command = IXGBE_READ_REG(hw, IXGBE_MSCA);
-		if (!(command & IXGBE_MSCA_MDI_COMMAND))
-			break;
-	}
-
-	if (command & IXGBE_MSCA_MDI_COMMAND) {
-		ERROR_REPORT1(IXGBE_ERROR_POLLING,
-			      "PHY read command did not complete.\n");
-		return IXGBE_ERR_PHY;
-	}
-
-	/* Read operation is complete.  Get the data from MSRWD */
-	data = IXGBE_READ_REG(hw, IXGBE_MSRWD);
-	data >>= IXGBE_MSRWD_READ_DATA_SHIFT;
-	*phy_data = (u16)data;
-
-	return IXGBE_SUCCESS;
-}
-
-/**
- * ixgbe_write_phy_reg_mdi_22 - Write to a clause 22 PHY register without lock
- * @hw: pointer to hardware structure
- * @reg_addr: 32 bit PHY register to write
- * @dev_type: always unused
- * @phy_data: Data to write to the PHY register
- */
-STATIC s32 ixgbe_write_phy_reg_mdi_22(struct ixgbe_hw *hw, u32 reg_addr,
-				      u32 dev_type, u16 phy_data)
-{
-	u32 i, command;
-	UNREFERENCED_1PARAMETER(dev_type);
-
-	/* Put the data in the MDI single read and write data register*/
-	IXGBE_WRITE_REG(hw, IXGBE_MSRWD, (u32)phy_data);
-
-	/* Setup and write the write command */
-	command = (reg_addr << IXGBE_MSCA_DEV_TYPE_SHIFT) |
-		  (hw->phy.addr << IXGBE_MSCA_PHY_ADDR_SHIFT) |
-		  IXGBE_MSCA_OLD_PROTOCOL | IXGBE_MSCA_WRITE |
-		  IXGBE_MSCA_MDI_COMMAND;
-
-	IXGBE_WRITE_REG(hw, IXGBE_MSCA, command);
-
-	/* Check every 10 usec to see if the access completed.
-	 * The MDI Command bit will clear when the operation is
-	 * complete
-	 */
-	for (i = 0; i < IXGBE_MDIO_COMMAND_TIMEOUT; i++) {
-		usec_delay(10);
-
-		command = IXGBE_READ_REG(hw, IXGBE_MSCA);
-		if (!(command & IXGBE_MSCA_MDI_COMMAND))
-			break;
-	}
-
-	if (command & IXGBE_MSCA_MDI_COMMAND) {
-		ERROR_REPORT1(IXGBE_ERROR_POLLING,
-			      "PHY write cmd didn't complete\n");
-		return IXGBE_ERR_PHY;
-	}
-
-	return IXGBE_SUCCESS;
-}
-
-/**
  * ixgbe_identify_phy_x550em - Get PHY type based on device id
  * @hw: pointer to hardware structure
  *
@@ -441,7 +321,7 @@ STATIC s32 ixgbe_identify_phy_x550em(struct ixgbe_hw *hw)
 
 	switch (hw->device_id) {
 	case IXGBE_DEV_ID_X550EM_A_SFP:
-		return ixgbe_identify_module_generic(hw);
+		return ixgbe_identify_sfp_module_X550em(hw);
 	case IXGBE_DEV_ID_X550EM_X_SFP:
 		/* set up for CS4227 usage */
 		ixgbe_setup_mux_ctl(hw);
@@ -449,7 +329,7 @@ STATIC s32 ixgbe_identify_phy_x550em(struct ixgbe_hw *hw)
 		/* Fallthrough */
 
 	case IXGBE_DEV_ID_X550EM_A_SFP_N:
-		return ixgbe_identify_module_generic(hw);
+		return ixgbe_identify_sfp_module_X550em(hw);
 		break;
 	case IXGBE_DEV_ID_X550EM_X_KX4:
 		hw->phy.type = ixgbe_phy_x550em_kx4;
@@ -467,14 +347,10 @@ STATIC s32 ixgbe_identify_phy_x550em(struct ixgbe_hw *hw)
 		return ixgbe_identify_phy_generic(hw);
 	case IXGBE_DEV_ID_X550EM_X_1G_T:
 		hw->phy.type = ixgbe_phy_ext_1g_t;
-		hw->phy.ops.read_reg = NULL;
-		hw->phy.ops.write_reg = NULL;
 		break;
 	case IXGBE_DEV_ID_X550EM_A_1G_T:
 	case IXGBE_DEV_ID_X550EM_A_1G_T_L:
 		hw->phy.type = ixgbe_phy_fw;
-		hw->phy.ops.read_reg = NULL;
-		hw->phy.ops.write_reg = NULL;
 		if (hw->bus.lan_id)
 			hw->phy.phy_semaphore_mask |= IXGBE_GSSR_PHY1_SM;
 		else
@@ -1764,9 +1640,12 @@ STATIC s32 ixgbe_restart_an_internal_phy_x550em(struct ixgbe_hw *hw)
 	return status;
 }
 
+#ifndef PREBOOT_SUPPORT
 /**
  * ixgbe_setup_sgmii - Set up link for sgmii
  * @hw: pointer to hardware structure
+ * @speed: new link speed
+ * @autoneg_wait: true when waiting for completion is needed
  */
 STATIC s32 ixgbe_setup_sgmii(struct ixgbe_hw *hw, ixgbe_link_speed speed,
 			     bool autoneg_wait)
@@ -1831,9 +1710,12 @@ STATIC s32 ixgbe_setup_sgmii(struct ixgbe_hw *hw, ixgbe_link_speed speed,
 	return hw->phy.ops.setup_link_speed(hw, speed, autoneg_wait);
 }
 
+#endif /* PREBOOT_SUPPORT */
 /**
- * ixgbe_setup_sgmii_fw - Set up link for sgmii with firmware-controlled PHYs
+ * ixgbe_setup_sgmii_fw - Set up link for internal PHY SGMII auto-negotiation
  * @hw: pointer to hardware structure
+ * @speed: new link speed
+ * @autoneg_wait: true when waiting for completion is needed
  */
 STATIC s32 ixgbe_setup_sgmii_fw(struct ixgbe_hw *hw, ixgbe_link_speed speed,
 				bool autoneg_wait)
@@ -1953,7 +1835,11 @@ void ixgbe_init_mac_link_ops_X550em(struct ixgbe_hw *hw)
 	case ixgbe_media_type_backplane:
 		if (hw->device_id == IXGBE_DEV_ID_X550EM_A_SGMII ||
 		    hw->device_id == IXGBE_DEV_ID_X550EM_A_SGMII_L)
+#ifdef PREBOOT_SUPPORT
+			mac->ops.setup_link = ixgbe_setup_sgmii_fw;
+#else
 			mac->ops.setup_link = ixgbe_setup_sgmii;
+#endif /* PREBOOT_SUPPORT */
 		break;
 	default:
 		break;
@@ -2003,8 +1889,18 @@ s32 ixgbe_get_link_capabilities_X550em(struct ixgbe_hw *hw,
 	} else {
 		switch (hw->phy.type) {
 		case ixgbe_phy_ext_1g_t:
-		case ixgbe_phy_sgmii:
+#ifdef PREBOOT_SUPPORT
 			*speed = IXGBE_LINK_SPEED_1GB_FULL;
+			break;
+#endif /* PREBOOT_SUPPORT */
+		case ixgbe_phy_sgmii:
+#ifdef PREBOOT_SUPPORT
+			*speed = IXGBE_LINK_SPEED_1GB_FULL |
+				 IXGBE_LINK_SPEED_100_FULL |
+				 IXGBE_LINK_SPEED_10_FULL;
+#else
+			*speed = IXGBE_LINK_SPEED_1GB_FULL;
+#endif /* PREBOOT_SUPPORT */
 			break;
 		case ixgbe_phy_x550em_kr:
 			if (hw->mac.type == ixgbe_mac_X550EM_a) {
@@ -2376,10 +2272,10 @@ s32 ixgbe_init_phy_ops_X550em(struct ixgbe_hw *hw)
 	switch (hw->device_id) {
 	case IXGBE_DEV_ID_X550EM_A_1G_T:
 	case IXGBE_DEV_ID_X550EM_A_1G_T_L:
-		phy->ops.read_reg_mdi = ixgbe_read_phy_reg_mdi_22;
-		phy->ops.write_reg_mdi = ixgbe_write_phy_reg_mdi_22;
-		hw->phy.ops.read_reg = ixgbe_read_phy_reg_x550a;
-		hw->phy.ops.write_reg = ixgbe_write_phy_reg_x550a;
+		phy->ops.read_reg_mdi = NULL;
+		phy->ops.write_reg_mdi = NULL;
+		hw->phy.ops.read_reg = NULL;
+		hw->phy.ops.write_reg = NULL;
 		phy->ops.check_overtemp = ixgbe_check_overtemp_fw;
 		if (hw->bus.lan_id)
 			hw->phy.phy_semaphore_mask |= IXGBE_GSSR_PHY1_SM;
@@ -2400,6 +2296,9 @@ s32 ixgbe_init_phy_ops_X550em(struct ixgbe_hw *hw)
 		/* set up for CS4227 usage */
 		hw->phy.phy_semaphore_mask = IXGBE_GSSR_SHARED_I2C_SM;
 		break;
+	case IXGBE_DEV_ID_X550EM_X_1G_T:
+		phy->ops.read_reg_mdi = NULL;
+		phy->ops.write_reg_mdi = NULL;
 	default:
 		break;
 	}
@@ -2536,7 +2435,8 @@ s32 ixgbe_reset_hw_X550em(struct ixgbe_hw *hw)
 		DEBUGOUT1("Failed to initialize PHY ops, STATUS = %d\n",
 			  status);
 
-	if (status == IXGBE_ERR_SFP_NOT_SUPPORTED) {
+	if (status == IXGBE_ERR_SFP_NOT_SUPPORTED ||
+	    status == IXGBE_ERR_PHY_ADDR_INVALID) {
 		DEBUGOUT("Returning from reset HW due to PHY init failure\n");
 		return status;
 	}
@@ -2697,6 +2597,8 @@ s32 ixgbe_setup_kr_x550em(struct ixgbe_hw *hw)
 /**
  *  ixgbe_setup_mac_link_sfp_x550em - Setup internal/external the PHY for SFP
  *  @hw: pointer to hardware structure
+ *  @speed: new link speed
+ *  @autoneg_wait_to_complete: unused
  *
  *  Configure the external PHY and the integrated KR PHY for SFP support.
  **/
@@ -2789,8 +2691,10 @@ STATIC s32 ixgbe_setup_sfi_x550a(struct ixgbe_hw *hw, ixgbe_link_speed *speed)
 /**
  *  ixgbe_setup_mac_link_sfp_x550a - Setup internal PHY for SFP
  *  @hw: pointer to hardware structure
+ *  @speed: new link speed
+ *  @autoneg_wait_to_complete: unused
  *
- *  Configure the the integrated PHY for SFP support.
+ *  Configure the integrated PHY for SFP support.
  **/
 s32 ixgbe_setup_mac_link_sfp_x550a(struct ixgbe_hw *hw,
 				    ixgbe_link_speed speed,
@@ -2876,9 +2780,9 @@ s32 ixgbe_setup_mac_link_sfp_x550a(struct ixgbe_hw *hw,
 				 (IXGBE_CS4227_EDC_MODE_SR << 1));
 
 		if (setup_linear)
-			reg_phy_ext = (IXGBE_CS4227_EDC_MODE_CX1 << 1) | 0x1;
+			reg_phy_ext |= (IXGBE_CS4227_EDC_MODE_CX1 << 1) | 0x1;
 		else
-			reg_phy_ext = (IXGBE_CS4227_EDC_MODE_SR << 1) | 0x1;
+			reg_phy_ext |= (IXGBE_CS4227_EDC_MODE_SR << 1) | 0x1;
 		ret_val = hw->phy.ops.write_reg(hw, reg_slice,
 					 IXGBE_MDIO_ZERO_DEV_TYPE, reg_phy_ext);
 
@@ -3211,6 +3115,8 @@ s32 ixgbe_read_ee_hostif_X550(struct ixgbe_hw *hw, u16 offset, u16 *data)
 	buffer.address = IXGBE_CPU_TO_BE32(offset * 2);
 	/* one word */
 	buffer.length = IXGBE_CPU_TO_BE16(sizeof(u16));
+	buffer.pad2 = 0;
+	buffer.pad3 = 0;
 
 	status = hw->mac.ops.acquire_swfw_sync(hw, mask);
 	if (status)
@@ -3269,6 +3175,8 @@ s32 ixgbe_read_ee_hostif_buffer_X550(struct ixgbe_hw *hw,
 		/* convert offset from words to bytes */
 		buffer.address = IXGBE_CPU_TO_BE32((offset + current_word) * 2);
 		buffer.length = IXGBE_CPU_TO_BE16(words_to_read * 2);
+		buffer.pad2 = 0;
+		buffer.pad3 = 0;
 
 		status = ixgbe_hic_unlocked(hw, (u32 *)&buffer, sizeof(buffer),
 					    IXGBE_HI_COMMAND_TIMEOUT);
@@ -3406,6 +3314,8 @@ out:
  * @ptr: pointer offset in eeprom
  * @size: size of section pointed by ptr, if 0 first word will be used as size
  * @csum: address of checksum to update
+ * @buffer: pointer to buffer containing calculated checksum
+ * @buffer_size: size of buffer
  *
  * Returns error status for any failure
  */
@@ -3740,7 +3650,13 @@ u64 ixgbe_get_supported_physical_layer_X550em(struct ixgbe_hw *hw)
 			physical_layer |= IXGBE_PHYSICAL_LAYER_10BASE_T;
 		break;
 	case ixgbe_phy_sgmii:
+#ifdef PREBOOT_SUPPORT
+		physical_layer = IXGBE_PHYSICAL_LAYER_1000BASE_KX |
+				 IXGBE_PHYSICAL_LAYER_100BASE_TX |
+				 IXGBE_PHYSICAL_LAYER_10BASE_T;
+#else
 		physical_layer = IXGBE_PHYSICAL_LAYER_1000BASE_KX;
+#endif /* PREBOOT_SUPPORT */
 		break;
 	case ixgbe_phy_ext_1g_t:
 		physical_layer |= IXGBE_PHYSICAL_LAYER_1000BASE_T;
@@ -3777,6 +3693,7 @@ s32 ixgbe_get_bus_info_X550em(struct ixgbe_hw *hw)
 
 /**
  * ixgbe_disable_rx_x550 - Disable RX unit
+ * @hw: pointer to hardware structure
  *
  * Enables the Rx DMA unit for x550
  **/
@@ -4421,6 +4338,7 @@ STATIC void ixgbe_release_swfw_sync_X550a(struct ixgbe_hw *hw, u32 mask)
  *  ixgbe_read_phy_reg_x550a  - Reads specified PHY register
  *  @hw: pointer to hardware structure
  *  @reg_addr: 32 bit address of PHY register to read
+ *  @device_type: 5 bit device type
  *  @phy_data: Pointer to read data from PHY register
  *
  *  Reads a value from a specified PHY register using the SWFW lock and PHY
@@ -4714,4 +4632,19 @@ s32 ixgbe_set_fw_drv_ver_x550(struct ixgbe_hw *hw, u8 maj, u8 min,
 	}
 
 	return ret_val;
+}
+
+/**
+ * ixgbe_fw_recovery_mode_X550 - Check FW NVM recovery mode
+ * @hw: pointer t hardware structure
+ *
+ * Returns true if in FW NVM recovery mode.
+ **/
+bool ixgbe_fw_recovery_mode_X550(struct ixgbe_hw *hw)
+{
+	u32 fwsm;
+
+	fwsm = IXGBE_READ_REG(hw, IXGBE_FWSM_BY_MAC(hw));
+
+	return !!(fwsm & IXGBE_FWSM_FW_NVM_RECOVERY_MODE);
 }

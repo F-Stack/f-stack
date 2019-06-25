@@ -2,7 +2,6 @@ DPDK_2.0 {
 	global:
 
 	__rte_panic;
-	devargs_list;
 	eal_parse_sysfs_value;
 	eal_timer_source;
 	lcore_config;
@@ -20,12 +19,8 @@ DPDK_2.0 {
 	rte_dump_tailq;
 	rte_eal_alarm_cancel;
 	rte_eal_alarm_set;
-	rte_eal_devargs_add;
-	rte_eal_devargs_dump;
-	rte_eal_devargs_type_count;
 	rte_eal_get_configuration;
 	rte_eal_get_lcore_state;
-	rte_eal_get_physmem_layout;
 	rte_eal_get_physmem_size;
 	rte_eal_has_hugepages;
 	rte_eal_hpet_init;
@@ -34,7 +29,6 @@ DPDK_2.0 {
 	rte_eal_lcore_role;
 	rte_eal_mp_remote_launch;
 	rte_eal_mp_wait_lcore;
-	rte_eal_parse_devargs_str;
 	rte_eal_process_type;
 	rte_eal_remote_launch;
 	rte_eal_tailq_lookup;
@@ -136,8 +130,6 @@ DPDK_16.11 {
 
 	rte_delay_us_block;
 	rte_delay_us_callback_register;
-	rte_eal_dev_attach;
-	rte_eal_dev_detach;
 
 } DPDK_16.07;
 
@@ -163,9 +155,6 @@ DPDK_17.05 {
 	rte_log_set_global_level;
 	rte_log_set_level;
 	rte_log_set_level_regexp;
-	vfio_get_container_fd;
-	vfio_get_group_fd;
-	vfio_get_group_no;
 
 } DPDK_17.02;
 
@@ -184,10 +173,8 @@ DPDK_17.11 {
 
 	rte_eal_create_uio_dev;
 	rte_bus_get_iommu_class;
-	rte_eal_check_dma_mask;
 	rte_eal_has_pci;
 	rte_eal_iova_mode;
-	rte_eal_mbuf_default_mempool_ops;
 	rte_eal_using_phys_addrs;
 	rte_eal_vfio_intr_mode;
 	rte_lcore_has_role;
@@ -201,18 +188,28 @@ DPDK_17.11 {
 
 } DPDK_17.08;
 
-EXPERIMENTAL {
+DPDK_18.02 {
 	global:
 
-	rte_eal_devargs_insert;
-	rte_eal_devargs_parse;
-	rte_eal_devargs_remove;
-	rte_eal_hotplug_add;
-	rte_eal_hotplug_remove;
+	rte_hypervisor_get;
+	rte_hypervisor_get_name;
+	rte_vfio_clear_group;
+	rte_reciprocal_value;
+	rte_reciprocal_value_u64;
+
+}  DPDK_17.11;
+
+DPDK_18.05 {
+	global:
+
+	rte_log_set_level_pattern;
+	rte_service_attr_get;
+	rte_service_attr_reset_all;
 	rte_service_component_register;
-	rte_service_component_unregister;
 	rte_service_component_runstate_set;
+	rte_service_component_unregister;
 	rte_service_dump;
+	rte_service_finalize;
 	rte_service_get_by_id;
 	rte_service_get_by_name;
 	rte_service_get_count;
@@ -228,7 +225,6 @@ EXPERIMENTAL {
 	rte_service_map_lcore_get;
 	rte_service_map_lcore_set;
 	rte_service_probe_capability;
-	rte_service_reset;
 	rte_service_run_iter_on_app_lcore;
 	rte_service_runstate_get;
 	rte_service_runstate_set;
@@ -236,4 +232,132 @@ EXPERIMENTAL {
 	rte_service_set_stats_enable;
 	rte_service_start_with_defaults;
 
-} DPDK_17.11;
+} DPDK_18.02;
+
+DPDK_18.08 {
+	global:
+
+	rte_eal_mbuf_user_pool_ops;
+	rte_uuid_compare;
+	rte_uuid_is_null;
+	rte_uuid_parse;
+	rte_uuid_unparse;
+	rte_vfio_container_create;
+	rte_vfio_container_destroy;
+	rte_vfio_container_dma_map;
+	rte_vfio_container_dma_unmap;
+	rte_vfio_container_group_bind;
+	rte_vfio_container_group_unbind;
+	rte_vfio_dma_map;
+	rte_vfio_dma_unmap;
+	rte_vfio_get_container_fd;
+	rte_vfio_get_group_fd;
+	rte_vfio_get_group_num;
+
+} DPDK_18.05;
+
+DPDK_18.11 {
+	global:
+
+	rte_dev_probe;
+	rte_dev_remove;
+	rte_eal_get_runtime_dir;
+	rte_eal_hotplug_add;
+	rte_eal_hotplug_remove;
+	rte_strscpy;
+
+} DPDK_18.08;
+
+EXPERIMENTAL {
+	global:
+
+	rte_class_find;
+	rte_class_find_by_name;
+	rte_class_register;
+	rte_class_unregister;
+	rte_ctrl_thread_create;
+	rte_delay_us_sleep;
+	rte_dev_event_callback_process;
+	rte_dev_event_callback_register;
+	rte_dev_event_callback_unregister;
+	rte_dev_event_monitor_start;
+	rte_dev_event_monitor_stop;
+	rte_dev_hotplug_handle_disable;
+	rte_dev_hotplug_handle_enable;
+	rte_dev_is_probed;
+	rte_dev_iterator_init;
+	rte_dev_iterator_next;
+	rte_devargs_add;
+	rte_devargs_dump;
+	rte_devargs_insert;
+	rte_devargs_next;
+	rte_devargs_parse;
+	rte_devargs_parsef;
+	rte_devargs_remove;
+	rte_devargs_type_count;
+	rte_eal_cleanup;
+	rte_fbarray_attach;
+	rte_fbarray_destroy;
+	rte_fbarray_detach;
+	rte_fbarray_dump_metadata;
+	rte_fbarray_find_idx;
+	rte_fbarray_find_next_free;
+	rte_fbarray_find_next_used;
+	rte_fbarray_find_next_n_free;
+	rte_fbarray_find_next_n_used;
+	rte_fbarray_find_prev_free;
+	rte_fbarray_find_prev_used;
+	rte_fbarray_find_prev_n_free;
+	rte_fbarray_find_prev_n_used;
+	rte_fbarray_find_contig_free;
+	rte_fbarray_find_contig_used;
+	rte_fbarray_find_rev_contig_free;
+	rte_fbarray_find_rev_contig_used;
+	rte_fbarray_get;
+	rte_fbarray_init;
+	rte_fbarray_is_used;
+	rte_fbarray_set_free;
+	rte_fbarray_set_used;
+	rte_log_register_type_and_pick_level;
+	rte_malloc_dump_heaps;
+	rte_malloc_heap_create;
+	rte_malloc_heap_destroy;
+	rte_malloc_heap_get_socket;
+	rte_malloc_heap_memory_add;
+	rte_malloc_heap_memory_attach;
+	rte_malloc_heap_memory_detach;
+	rte_malloc_heap_memory_remove;
+	rte_malloc_heap_socket_is_external;
+	rte_mem_alloc_validator_register;
+	rte_mem_alloc_validator_unregister;
+	rte_mem_check_dma_mask;
+	rte_mem_check_dma_mask_thread_unsafe;
+	rte_mem_event_callback_register;
+	rte_mem_event_callback_unregister;
+	rte_mem_iova2virt;
+	rte_mem_set_dma_mask;
+	rte_mem_virt2memseg;
+	rte_mem_virt2memseg_list;
+	rte_memseg_contig_walk;
+	rte_memseg_contig_walk_thread_unsafe;
+	rte_memseg_get_fd;
+	rte_memseg_get_fd_offset;
+	rte_memseg_get_fd_thread_unsafe;
+	rte_memseg_get_fd_offset_thread_unsafe;
+	rte_memseg_list_walk;
+	rte_memseg_list_walk_thread_unsafe;
+	rte_memseg_walk;
+	rte_memseg_walk_thread_unsafe;
+	rte_mp_action_register;
+	rte_mp_action_unregister;
+	rte_mp_reply;
+	rte_mp_request_sync;
+	rte_mp_request_async;
+	rte_mp_sendmsg;
+	rte_option_register;
+	rte_service_lcore_attr_get;
+	rte_service_lcore_attr_reset_all;
+	rte_service_may_be_active;
+	rte_socket_count;
+	rte_socket_id_by_idx;
+};

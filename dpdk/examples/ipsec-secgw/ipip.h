@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
  */
 
 #ifndef __IPIP_H__
@@ -56,6 +27,10 @@ ipip_outbound(struct rte_mbuf *m, uint32_t offset, uint32_t is_ipv6,
 	if (inip4->ip_v == IPVERSION) {
 		/* XXX This should be done by the forwarding engine instead */
 		inip4->ip_ttl -= 1;
+		if (inip4->ip_sum >= rte_cpu_to_be_16(0xffff - 0x100))
+			inip4->ip_sum += rte_cpu_to_be_16(0x100) + 1;
+		else
+			inip4->ip_sum += rte_cpu_to_be_16(0x100);
 		ds_ecn = inip4->ip_tos;
 	} else {
 		inip6 = (struct ip6_hdr *)inip4;
@@ -103,7 +78,7 @@ ipip_outbound(struct rte_mbuf *m, uint32_t offset, uint32_t is_ipv6,
 
 	outip4->ip_src.s_addr = src->ip.ip4;
 	outip4->ip_dst.s_addr = dst->ip.ip4;
-
+	m->packet_type &= ~RTE_PTYPE_L4_MASK;
 	return outip4;
 }
 
@@ -124,8 +99,17 @@ ip6ip_outbound(struct rte_mbuf *m, uint32_t offset,
 static inline void
 ip4_ecn_setup(struct ip *ip4)
 {
-	if (ip4->ip_tos & IPTOS_ECN_MASK)
+	if (ip4->ip_tos & IPTOS_ECN_MASK) {
+		unsigned long sum;
+		uint8_t old;
+
+		old = ip4->ip_tos;
 		ip4->ip_tos |= IPTOS_ECN_CE;
+		sum = old + (~(*(uint8_t *)&ip4->ip_tos) & 0xff);
+		sum += rte_be_to_cpu_16(ip4->ip_sum);
+		sum = (sum & 0xffff) + (sum >> 16);
+		ip4->ip_sum = rte_cpu_to_be_16(sum + (sum >> 16));
+	}
 }
 
 static inline void
@@ -169,6 +153,15 @@ ipip_inbound(struct rte_mbuf *m, uint32_t offset)
 			ip4_ecn_setup(inip4);
 		/* XXX This should be done by the forwarding engine instead */
 		inip4->ip_ttl -= 1;
+		if (inip4->ip_sum >= rte_cpu_to_be_16(0xffff - 0x100))
+			inip4->ip_sum += rte_cpu_to_be_16(0x100) + 1;
+		else
+			inip4->ip_sum += rte_cpu_to_be_16(0x100);
+		m->packet_type &= ~RTE_PTYPE_L4_MASK;
+		if (inip4->ip_p == IPPROTO_UDP)
+			m->packet_type |= RTE_PTYPE_L4_UDP;
+		else if (inip4->ip_p == IPPROTO_TCP)
+			m->packet_type |= RTE_PTYPE_L4_TCP;
 	} else {
 		inip6 = (struct ip6_hdr *)inip4;
 		if (set_ecn)

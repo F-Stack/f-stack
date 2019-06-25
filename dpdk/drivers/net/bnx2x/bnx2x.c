@@ -1,4 +1,4 @@
-/*-
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
@@ -6,11 +6,9 @@
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #define BNX2X_DRIVER_VERSION "1.78.18"
@@ -31,7 +29,7 @@
 #define BNX2X_PMD_VER_PREFIX "BNX2X PMD"
 #define BNX2X_PMD_VERSION_MAJOR 1
 #define BNX2X_PMD_VERSION_MINOR 0
-#define BNX2X_PMD_VERSION_REVISION 5
+#define BNX2X_PMD_VERSION_REVISION 7
 #define BNX2X_PMD_VERSION_PATCH 1
 
 static inline const char *
@@ -114,6 +112,7 @@ static void bnx2x_pf_disable(struct bnx2x_softc *sc);
 static void bnx2x_update_rx_prod(struct bnx2x_softc *sc,
 				 struct bnx2x_fastpath *fp,
 				 uint16_t rx_bd_prod, uint16_t rx_cq_prod);
+static void bnx2x_link_report_locked(struct bnx2x_softc *sc);
 static void bnx2x_link_report(struct bnx2x_softc *sc);
 void bnx2x_link_status_update(struct bnx2x_softc *sc);
 static int bnx2x_alloc_mem(struct bnx2x_softc *sc);
@@ -176,17 +175,18 @@ bnx2x_dma_alloc(struct bnx2x_softc *sc, size_t size, struct bnx2x_dma *dma,
 			rte_get_timer_cycles());
 
 	/* Caller must take care that strlen(mz_name) < RTE_MEMZONE_NAMESIZE */
-	z = rte_memzone_reserve_aligned(mz_name, (uint64_t) (size),
+	z = rte_memzone_reserve_aligned(mz_name, (uint64_t)size,
 					SOCKET_ID_ANY,
-					0, align);
+					RTE_MEMZONE_IOVA_CONTIG, align);
 	if (z == NULL) {
-		PMD_DRV_LOG(ERR, "DMA alloc failed for %s", msg);
+		PMD_DRV_LOG(ERR, sc, "DMA alloc failed for %s", msg);
 		return -ENOMEM;
 	}
 	dma->paddr = (uint64_t) z->iova;
 	dma->vaddr = z->addr;
 
-	PMD_DRV_LOG(DEBUG, "%s: virt=%p phys=%" PRIx64, msg, dma->vaddr, dma->paddr);
+	PMD_DRV_LOG(DEBUG, sc,
+		    "%s: virt=%p phys=%" PRIx64, msg, dma->vaddr, dma->paddr);
 
 	return 0;
 }
@@ -199,11 +199,16 @@ static int bnx2x_acquire_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 	uint32_t hw_lock_control_reg;
 	int cnt;
 
-	PMD_INIT_FUNC_TRACE();
+#ifndef RTE_LIBRTE_BNX2X_DEBUG_PERIODIC
+	if (resource)
+		PMD_INIT_FUNC_TRACE(sc);
+#else
+	PMD_INIT_FUNC_TRACE(sc);
+#endif
 
 	/* validate the resource is within range */
 	if (resource > HW_LOCK_MAX_RESOURCE_VALUE) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "resource 0x%x > HW_LOCK_MAX_RESOURCE_VALUE",
 			    resource);
 		return -1;
@@ -219,7 +224,7 @@ static int bnx2x_acquire_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 	/* validate the resource is not already taken */
 	lock_status = REG_RD(sc, hw_lock_control_reg);
 	if (lock_status & resource_bit) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "resource in use (status 0x%x bit 0x%x)",
 			    lock_status, resource_bit);
 		return -1;
@@ -235,7 +240,8 @@ static int bnx2x_acquire_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 		DELAY(5000);
 	}
 
-	PMD_DRV_LOG(NOTICE, "Resource lock timeout!");
+	PMD_DRV_LOG(NOTICE, sc, "Resource 0x%x resource_bit 0x%x lock timeout!",
+		    resource, resource_bit);
 	return -1;
 }
 
@@ -246,13 +252,18 @@ static int bnx2x_release_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 	int func = SC_FUNC(sc);
 	uint32_t hw_lock_control_reg;
 
-	PMD_INIT_FUNC_TRACE();
+#ifndef RTE_LIBRTE_BNX2X_DEBUG_PERIODIC
+	if (resource)
+		PMD_INIT_FUNC_TRACE(sc);
+#else
+	PMD_INIT_FUNC_TRACE(sc);
+#endif
 
 	/* validate the resource is within range */
 	if (resource > HW_LOCK_MAX_RESOURCE_VALUE) {
-		PMD_DRV_LOG(NOTICE,
-			    "resource 0x%x > HW_LOCK_MAX_RESOURCE_VALUE",
-			    resource);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "(resource 0x%x > HW_LOCK_MAX_RESOURCE_VALUE)"
+			    " resource_bit 0x%x", resource, resource_bit);
 		return -1;
 	}
 
@@ -266,7 +277,7 @@ static int bnx2x_release_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 	/* validate the resource is currently taken */
 	lock_status = REG_RD(sc, hw_lock_control_reg);
 	if (!(lock_status & resource_bit)) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "resource not in use (status 0x%x bit 0x%x)",
 			    lock_status, resource_bit);
 		return -1;
@@ -274,6 +285,18 @@ static int bnx2x_release_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 
 	REG_WR(sc, hw_lock_control_reg, resource_bit);
 	return 0;
+}
+
+static void bnx2x_acquire_phy_lock(struct bnx2x_softc *sc)
+{
+	BNX2X_PHY_LOCK(sc);
+	bnx2x_acquire_hw_lock(sc, HW_LOCK_RESOURCE_MDIO);
+}
+
+static void bnx2x_release_phy_lock(struct bnx2x_softc *sc)
+{
+	bnx2x_release_hw_lock(sc, HW_LOCK_RESOURCE_MDIO);
+	BNX2X_PHY_UNLOCK(sc);
 }
 
 /* copy command into DMAE command memory and set DMAE command Go */
@@ -368,7 +391,7 @@ bnx2x_issue_dmae_with_comp(struct bnx2x_softc *sc, struct dmae_command *dmae)
 		if (!timeout ||
 		    (sc->recovery_state != BNX2X_RECOVERY_DONE &&
 		     sc->recovery_state != BNX2X_RECOVERY_NIC_LOADING)) {
-			PMD_DRV_LOG(INFO, "DMAE timeout!");
+			PMD_DRV_LOG(INFO, sc, "DMAE timeout!");
 			return DMAE_TIMEOUT;
 		}
 
@@ -377,7 +400,7 @@ bnx2x_issue_dmae_with_comp(struct bnx2x_softc *sc, struct dmae_command *dmae)
 	}
 
 	if (*wb_comp & DMAE_PCI_ERR_FLAG) {
-		PMD_DRV_LOG(INFO, "DMAE PCI error!");
+		PMD_DRV_LOG(INFO, sc, "DMAE PCI error!");
 		return DMAE_PCI_ERROR;
 	}
 
@@ -536,7 +559,7 @@ void
 elink_cb_event_log(__rte_unused struct bnx2x_softc *sc,
 		   __rte_unused const elink_log_id_t elink_log_id, ...)
 {
-	PMD_DRV_LOG(DEBUG, "ELINK EVENT LOG (%d)", elink_log_id);
+	PMD_DRV_LOG(DEBUG, sc, "ELINK EVENT LOG (%d)", elink_log_id);
 }
 
 static int bnx2x_set_spio(struct bnx2x_softc *sc, int spio, uint32_t mode)
@@ -545,7 +568,7 @@ static int bnx2x_set_spio(struct bnx2x_softc *sc, int spio, uint32_t mode)
 
 	/* Only 2 SPIOs are configurable */
 	if ((spio != MISC_SPIO_SPIO4) && (spio != MISC_SPIO_SPIO5)) {
-		PMD_DRV_LOG(NOTICE, "Invalid SPIO 0x%x", spio);
+		PMD_DRV_LOG(NOTICE, sc, "Invalid SPIO 0x%x", spio);
 		return -1;
 	}
 
@@ -595,7 +618,7 @@ static int bnx2x_gpio_read(struct bnx2x_softc *sc, int gpio_num, uint8_t port)
 	uint32_t gpio_reg;
 
 	if (gpio_num > MISC_REGISTERS_GPIO_3) {
-		PMD_DRV_LOG(NOTICE, "Invalid GPIO %d", gpio_num);
+		PMD_DRV_LOG(NOTICE, sc, "Invalid GPIO %d", gpio_num);
 		return -1;
 	}
 
@@ -620,7 +643,7 @@ bnx2x_gpio_write(struct bnx2x_softc *sc, int gpio_num, uint32_t mode, uint8_t po
 	uint32_t gpio_reg;
 
 	if (gpio_num > MISC_REGISTERS_GPIO_3) {
-		PMD_DRV_LOG(NOTICE, "Invalid GPIO %d", gpio_num);
+		PMD_DRV_LOG(NOTICE, sc, "Invalid GPIO %d", gpio_num);
 		return -1;
 	}
 
@@ -689,7 +712,8 @@ bnx2x_gpio_mult_write(struct bnx2x_softc *sc, uint8_t pins, uint32_t mode)
 		break;
 
 	default:
-		PMD_DRV_LOG(NOTICE, "Invalid GPIO mode assignment %d", mode);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "Invalid GPIO mode assignment %d", mode);
 		bnx2x_release_hw_lock(sc, HW_LOCK_RESOURCE_GPIO);
 		return -1;
 	}
@@ -715,7 +739,7 @@ bnx2x_gpio_int_write(struct bnx2x_softc *sc, int gpio_num, uint32_t mode,
 	uint32_t gpio_reg;
 
 	if (gpio_num > MISC_REGISTERS_GPIO_3) {
-		PMD_DRV_LOG(NOTICE, "Invalid GPIO %d", gpio_num);
+		PMD_DRV_LOG(NOTICE, sc, "Invalid GPIO %d", gpio_num);
 		return -1;
 	}
 
@@ -792,7 +816,7 @@ elink_cb_fw_command(struct bnx2x_softc *sc, uint32_t command, uint32_t param)
 	SHMEM_WR(sc, func_mb[mb_idx].drv_mb_param, param);
 	SHMEM_WR(sc, func_mb[mb_idx].drv_mb_header, (command | seq));
 
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "wrote command 0x%08x to FW MB param 0x%08x",
 		    (command | seq), param);
 
@@ -807,7 +831,7 @@ elink_cb_fw_command(struct bnx2x_softc *sc, uint32_t command, uint32_t param)
 		rc &= FW_MSG_CODE_MASK;
 	} else {
 		/* Ruh-roh! */
-		PMD_DRV_LOG(NOTICE, "FW failed to respond!");
+		PMD_DRV_LOG(NOTICE, sc, "FW failed to respond!");
 		rc = 0;
 	}
 
@@ -1025,12 +1049,12 @@ bnx2x_sp_post(struct bnx2x_softc *sc, int command, int cid, uint32_t data_hi,
 
 	if (common) {
 		if (!atomic_load_acq_long(&sc->eq_spq_left)) {
-			PMD_DRV_LOG(INFO, "EQ ring is full!");
+			PMD_DRV_LOG(INFO, sc, "EQ ring is full!");
 			return -1;
 		}
 	} else {
 		if (!atomic_load_acq_long(&sc->cq_spq_left)) {
-			PMD_DRV_LOG(INFO, "SPQ ring is full!");
+			PMD_DRV_LOG(INFO, sc, "SPQ ring is full!");
 			return -1;
 		}
 	}
@@ -1063,7 +1087,7 @@ bnx2x_sp_post(struct bnx2x_softc *sc, int command, int cid, uint32_t data_hi,
 		atomic_subtract_acq_long(&sc->cq_spq_left, 1);
 	}
 
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "SPQE[%x] (%x:%x) (cmd, common?) (%d,%d) hw_cid %x"
 		    "data (%x:%x) type(0x%x) left (CQ, EQ) (%lx,%lx)",
 		    sc->spq_prod_idx,
@@ -1129,51 +1153,50 @@ static void
 bnx2x_sp_event(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 	     union eth_rx_cqe *rr_cqe)
 {
-#ifdef RTE_LIBRTE_BNX2X_DEBUG
 	int cid = SW_CID(rr_cqe->ramrod_cqe.conn_and_cmd_data);
-#endif
 	int command = CQE_CMD(rr_cqe->ramrod_cqe.conn_and_cmd_data);
 	enum ecore_queue_cmd drv_cmd = ECORE_Q_CMD_MAX;
 	struct ecore_queue_sp_obj *q_obj = &BNX2X_SP_OBJ(sc, fp).q_obj;
 
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "fp=%d cid=%d got ramrod #%d state is %x type is %d",
 		    fp->index, cid, command, sc->state,
 		    rr_cqe->ramrod_cqe.ramrod_type);
 
 	switch (command) {
 	case (RAMROD_CMD_ID_ETH_CLIENT_UPDATE):
-		PMD_DRV_LOG(DEBUG, "got UPDATE ramrod. CID %d", cid);
+		PMD_DRV_LOG(DEBUG, sc, "got UPDATE ramrod. CID %d", cid);
 		drv_cmd = ECORE_Q_CMD_UPDATE;
 		break;
 
 	case (RAMROD_CMD_ID_ETH_CLIENT_SETUP):
-		PMD_DRV_LOG(DEBUG, "got MULTI[%d] setup ramrod", cid);
+		PMD_DRV_LOG(DEBUG, sc, "got MULTI[%d] setup ramrod", cid);
 		drv_cmd = ECORE_Q_CMD_SETUP;
 		break;
 
 	case (RAMROD_CMD_ID_ETH_TX_QUEUE_SETUP):
-		PMD_DRV_LOG(DEBUG, "got MULTI[%d] tx-only setup ramrod", cid);
+		PMD_DRV_LOG(DEBUG, sc,
+			    "got MULTI[%d] tx-only setup ramrod", cid);
 		drv_cmd = ECORE_Q_CMD_SETUP_TX_ONLY;
 		break;
 
 	case (RAMROD_CMD_ID_ETH_HALT):
-		PMD_DRV_LOG(DEBUG, "got MULTI[%d] halt ramrod", cid);
+		PMD_DRV_LOG(DEBUG, sc, "got MULTI[%d] halt ramrod", cid);
 		drv_cmd = ECORE_Q_CMD_HALT;
 		break;
 
 	case (RAMROD_CMD_ID_ETH_TERMINATE):
-		PMD_DRV_LOG(DEBUG, "got MULTI[%d] teminate ramrod", cid);
+		PMD_DRV_LOG(DEBUG, sc, "got MULTI[%d] teminate ramrod", cid);
 		drv_cmd = ECORE_Q_CMD_TERMINATE;
 		break;
 
 	case (RAMROD_CMD_ID_ETH_EMPTY):
-		PMD_DRV_LOG(DEBUG, "got MULTI[%d] empty ramrod", cid);
+		PMD_DRV_LOG(DEBUG, sc, "got MULTI[%d] empty ramrod", cid);
 		drv_cmd = ECORE_Q_CMD_EMPTY;
 		break;
 
 	default:
-		PMD_DRV_LOG(DEBUG,
+		PMD_DRV_LOG(DEBUG, sc,
 			    "ERROR: unexpected MC reply (%d)"
 			    "on fp[%d]", command, fp->index);
 		return;
@@ -1195,7 +1218,7 @@ bnx2x_sp_event(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 
 	atomic_add_acq_long(&sc->cq_spq_left, 1);
 
-	PMD_DRV_LOG(DEBUG, "sc->cq_spq_left 0x%lx",
+	PMD_DRV_LOG(DEBUG, sc, "sc->cq_spq_left 0x%lx",
 		    atomic_load_acq_long(&sc->cq_spq_left));
 }
 
@@ -1391,7 +1414,7 @@ bnx2x_del_all_macs(struct bnx2x_softc *sc, struct ecore_vlan_mac_obj *mac_obj,
 
 	rc = mac_obj->delete_all(sc, mac_obj, &vlan_mac_flags, &ramrod_flags);
 	if (rc < 0)
-		PMD_DRV_LOG(ERR, "Failed to delete MACs (%d)", rc);
+		PMD_DRV_LOG(ERR, sc, "Failed to delete MACs (%d)", rc);
 
 	return rc;
 }
@@ -1542,13 +1565,13 @@ static int bnx2x_nic_load_no_mcp(struct bnx2x_softc *sc)
 	int path = SC_PATH(sc);
 	int port = SC_PORT(sc);
 
-	PMD_DRV_LOG(INFO, "NO MCP - load counts[%d]      %d, %d, %d",
+	PMD_DRV_LOG(INFO, sc, "NO MCP - load counts[%d]      %d, %d, %d",
 		    path, load_count[path][0], load_count[path][1],
 		    load_count[path][2]);
 
 	load_count[path][0]++;
 	load_count[path][1 + port]++;
-	PMD_DRV_LOG(INFO, "NO MCP - new load counts[%d]  %d, %d, %d",
+	PMD_DRV_LOG(INFO, sc, "NO MCP - new load counts[%d]  %d, %d, %d",
 		    path, load_count[path][0], load_count[path][1],
 		    load_count[path][2]);
 	if (load_count[path][0] == 1)
@@ -1565,12 +1588,12 @@ static int bnx2x_nic_unload_no_mcp(struct bnx2x_softc *sc)
 	int port = SC_PORT(sc);
 	int path = SC_PATH(sc);
 
-	PMD_DRV_LOG(INFO, "NO MCP - load counts[%d]      %d, %d, %d",
+	PMD_DRV_LOG(INFO, sc, "NO MCP - load counts[%d]      %d, %d, %d",
 		    path, load_count[path][0], load_count[path][1],
 		    load_count[path][2]);
 	load_count[path][0]--;
 	load_count[path][1 + port]--;
-	PMD_DRV_LOG(INFO, "NO MCP - new load counts[%d]  %d, %d, %d",
+	PMD_DRV_LOG(INFO, sc, "NO MCP - new load counts[%d]  %d, %d, %d",
 		    path, load_count[path][0], load_count[path][1],
 		    load_count[path][2]);
 	if (load_count[path][0] == 0) {
@@ -1650,7 +1673,7 @@ static int bnx2x_func_wait_started(struct bnx2x_softc *sc)
 		 */
 		struct ecore_func_state_params func_params = { NULL };
 
-		PMD_DRV_LOG(NOTICE, "Unexpected function state! "
+		PMD_DRV_LOG(NOTICE, sc, "Unexpected function state! "
 			    "Forcing STARTED-->TX_STOPPED-->STARTED");
 
 		func_params.f_obj = &sc->func_obj;
@@ -1674,7 +1697,7 @@ static int bnx2x_stop_queue(struct bnx2x_softc *sc, int index)
 	struct ecore_queue_state_params q_params = { NULL };
 	int rc;
 
-	PMD_DRV_LOG(DEBUG, "stopping queue %d cid %d", index, fp->index);
+	PMD_DRV_LOG(DEBUG, sc, "stopping queue %d cid %d", index, fp->index);
 
 	q_params.q_obj = &sc->sp_objs[fp->index].q_obj;
 	/* We want to wait for completion in this context */
@@ -1725,7 +1748,7 @@ static uint8_t bnx2x_wait_sp_comp(struct bnx2x_softc *sc, unsigned long mask)
 
 	tmp = atomic_load_acq_long(&sc->sp_state);
 	if (tmp & mask) {
-		PMD_DRV_LOG(INFO, "Filtering completion timed out: "
+		PMD_DRV_LOG(INFO, sc, "Filtering completion timed out: "
 			    "sp_state 0x%lx, mask 0x%lx", tmp, mask);
 		return FALSE;
 	}
@@ -1751,7 +1774,7 @@ static int bnx2x_func_stop(struct bnx2x_softc *sc)
 	 */
 	rc = ecore_func_state_change(sc, &func_params);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "FUNC_STOP ramrod failed. "
+		PMD_DRV_LOG(NOTICE, sc, "FUNC_STOP ramrod failed. "
 			    "Running a dry transaction");
 		bnx2x_set_bit(RAMROD_DRV_CLR_ONLY, &func_params.ramrod_flags);
 		return ecore_func_state_change(sc, &func_params);
@@ -1800,14 +1823,16 @@ bnx2x_chip_cleanup(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_li
 	rc = bnx2x_del_all_macs(sc, &sc->sp_objs[0].mac_obj, ECORE_ETH_MAC,
 			      FALSE);
 	if (rc < 0) {
-		PMD_DRV_LOG(NOTICE, "Failed to delete all ETH MACs (%d)", rc);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "Failed to delete all ETH MACs (%d)", rc);
 	}
 
 	/* Clean up UC list  */
 	rc = bnx2x_del_all_macs(sc, &sc->sp_objs[0].mac_obj, ECORE_UC_LIST_MAC,
 			      TRUE);
 	if (rc < 0) {
-		PMD_DRV_LOG(NOTICE, "Failed to delete UC MACs list (%d)", rc);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "Failed to delete UC MACs list (%d)", rc);
 	}
 
 	/* Disable LLH */
@@ -1830,7 +1855,7 @@ bnx2x_chip_cleanup(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_li
 	rparam.mcast_obj = &sc->mcast_obj;
 	rc = ecore_config_mcast(sc, &rparam, ECORE_MCAST_CMD_DEL);
 	if (rc < 0) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "Failed to send DEL MCAST command (%d)", rc);
 	}
 
@@ -1847,7 +1872,7 @@ bnx2x_chip_cleanup(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_li
 	 */
 	rc = bnx2x_func_wait_started(sc);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "bnx2x_func_wait_started failed");
+		PMD_DRV_LOG(NOTICE, sc, "bnx2x_func_wait_started failed");
 	}
 
 	/*
@@ -1865,14 +1890,14 @@ bnx2x_chip_cleanup(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_li
 	 * very wrong has happen.
 	 */
 	if (!bnx2x_wait_sp_comp(sc, ~0x0UL)) {
-		PMD_DRV_LOG(NOTICE, "Common slow path ramrods got stuck!");
+		PMD_DRV_LOG(NOTICE, sc, "Common slow path ramrods got stuck!");
 	}
 
 unload_error:
 
 	rc = bnx2x_func_stop(sc);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Function stop failed!");
+		PMD_DRV_LOG(NOTICE, sc, "Function stop failed!");
 	}
 
 	/* disable HW interrupts */
@@ -1881,7 +1906,7 @@ unload_error:
 	/* Reset the chip */
 	rc = bnx2x_reset_hw(sc, reset_code);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Hardware reset failed");
+		PMD_DRV_LOG(NOTICE, sc, "Hardware reset failed");
 	}
 
 	/* Report UNLOAD_DONE to MCP */
@@ -1892,7 +1917,7 @@ static void bnx2x_disable_close_the_gate(struct bnx2x_softc *sc)
 {
 	uint32_t val;
 
-	PMD_DRV_LOG(DEBUG, "Disabling 'close the gates'");
+	PMD_DRV_LOG(DEBUG, sc, "Disabling 'close the gates'");
 
 	val = REG_RD(sc, MISC_REG_AEU_GENERAL_MASK);
 	val &= ~(MISC_AEU_GENERAL_MASK_REG_AEU_PXP_CLOSE_MASK |
@@ -1923,7 +1948,7 @@ static void bnx2x_squeeze_objects(struct bnx2x_softc *sc)
 	rc = mac_obj->delete_all(sc, &sc->sp_objs->mac_obj, &vlan_mac_flags,
 				 &ramrod_flags);
 	if (rc != 0) {
-		PMD_DRV_LOG(NOTICE, "Failed to clean ETH MACs (%d)", rc);
+		PMD_DRV_LOG(NOTICE, sc, "Failed to clean ETH MACs (%d)", rc);
 	}
 
 	/* Cleanup UC list */
@@ -1931,7 +1956,8 @@ static void bnx2x_squeeze_objects(struct bnx2x_softc *sc)
 	bnx2x_set_bit(ECORE_UC_LIST_MAC, &vlan_mac_flags);
 	rc = mac_obj->delete_all(sc, mac_obj, &vlan_mac_flags, &ramrod_flags);
 	if (rc != 0) {
-		PMD_DRV_LOG(NOTICE, "Failed to clean UC list MACs (%d)", rc);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "Failed to clean UC list MACs (%d)", rc);
 	}
 
 	/* Now clean mcast object... */
@@ -1942,7 +1968,7 @@ static void bnx2x_squeeze_objects(struct bnx2x_softc *sc)
 	/* Add a DEL command... */
 	rc = ecore_config_mcast(sc, &rparam, ECORE_MCAST_CMD_DEL);
 	if (rc < 0) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "Failed to send DEL MCAST command (%d)", rc);
 	}
 
@@ -1951,7 +1977,7 @@ static void bnx2x_squeeze_objects(struct bnx2x_softc *sc)
 	rc = ecore_config_mcast(sc, &rparam, ECORE_MCAST_CMD_CONT);
 	while (rc != 0) {
 		if (rc < 0) {
-			PMD_DRV_LOG(NOTICE,
+			PMD_DRV_LOG(NOTICE, sc,
 				    "Failed to clean MCAST object (%d)", rc);
 			return;
 		}
@@ -1968,7 +1994,7 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 	uint8_t global = FALSE;
 	uint32_t val;
 
-	PMD_DRV_LOG(DEBUG, "Starting NIC unload...");
+	PMD_DRV_LOG(DEBUG, sc, "Starting NIC unload...");
 
 	/* mark driver as unloaded in shmem2 */
 	if (IS_PF(sc) && SHMEM2_HAS(sc, drv_capabilities_flag)) {
@@ -1992,7 +2018,7 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 		bnx2x_release_leader_lock(sc);
 		mb();
 
-		PMD_DRV_LOG(NOTICE, "Can't unload in closed or error state");
+		PMD_DRV_LOG(NOTICE, sc, "Can't unload in closed or error state");
 		return -1;
 	}
 
@@ -2097,7 +2123,7 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 		bnx2x_disable_close_the_gate(sc);
 	}
 
-	PMD_DRV_LOG(DEBUG, "Ended NIC unload");
+	PMD_DRV_LOG(DEBUG, sc, "Ended NIC unload");
 
 	return 0;
 }
@@ -2245,7 +2271,7 @@ static void bnx2x_ilt_set_info(struct bnx2x_softc *sc)
 	struct ecore_ilt *ilt = sc->ilt;
 	uint16_t line = 0;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	ilt->start_line = FUNC_ILT_BASE(SC_FUNC(sc));
 
@@ -2399,7 +2425,7 @@ static int bnx2x_alloc_mem(struct bnx2x_softc *sc)
 	bnx2x_alloc_ilt_lines_mem(sc);
 
 	if (ecore_ilt_mem_op(sc, ILT_MEMOP_ALLOC)) {
-		PMD_DRV_LOG(NOTICE, "ecore_ilt_mem_op ILT_MEMOP_ALLOC failed");
+		PMD_DRV_LOG(NOTICE, sc, "ecore_ilt_mem_op ILT_MEMOP_ALLOC failed");
 		bnx2x_free_mem(sc);
 		return -1;
 	}
@@ -2602,7 +2628,7 @@ static void bnx2x_set_pf_load(struct bnx2x_softc *sc)
 
 	bnx2x_acquire_hw_lock(sc, HW_LOCK_RESOURCE_RECOVERY_REG);
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	val = REG_RD(sc, BNX2X_RECOVERY_GLOB_REG);
 
@@ -2655,14 +2681,14 @@ static uint8_t bnx2x_clear_pf_load(struct bnx2x_softc *sc)
 /* send load requrest to mcp and analyze response */
 static int bnx2x_nic_load_request(struct bnx2x_softc *sc, uint32_t * load_code)
 {
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	/* init fw_seq */
 	sc->fw_seq =
 	    (SHMEM_RD(sc, func_mb[SC_FW_MB_IDX(sc)].drv_mb_header) &
 	     DRV_MSG_SEQ_NUMBER_MASK);
 
-	PMD_DRV_LOG(DEBUG, "initial fw_seq 0x%04x", sc->fw_seq);
+	PMD_DRV_LOG(DEBUG, sc, "initial fw_seq 0x%04x", sc->fw_seq);
 
 #ifdef BNX2X_PULSE
 	/* get the current FW pulse sequence */
@@ -2681,13 +2707,13 @@ static int bnx2x_nic_load_request(struct bnx2x_softc *sc, uint32_t * load_code)
 
 	/* if the MCP fails to respond we must abort */
 	if (!(*load_code)) {
-		PMD_DRV_LOG(NOTICE, "MCP response failure!");
+		PMD_DRV_LOG(NOTICE, sc, "MCP response failure!");
 		return -1;
 	}
 
 	/* if MCP refused then must abort */
 	if ((*load_code) == FW_MSG_CODE_DRV_LOAD_REFUSED) {
-		PMD_DRV_LOG(NOTICE, "MCP refused load request");
+		PMD_DRV_LOG(NOTICE, sc, "MCP refused load request");
 		return -1;
 	}
 
@@ -2714,12 +2740,12 @@ static int bnx2x_nic_load_analyze_req(struct bnx2x_softc *sc, uint32_t load_code
 
 		/* read loaded FW from chip */
 		loaded_fw = REG_RD(sc, XSEM_REG_PRAM);
-		PMD_DRV_LOG(DEBUG, "loaded FW 0x%08x / my FW 0x%08x",
+		PMD_DRV_LOG(DEBUG, sc, "loaded FW 0x%08x / my FW 0x%08x",
 			    loaded_fw, my_fw);
 
 		/* abort nic load if version mismatch */
 		if (my_fw != loaded_fw) {
-			PMD_DRV_LOG(NOTICE,
+			PMD_DRV_LOG(NOTICE, sc,
 				    "FW 0x%08x already loaded (mine is 0x%08x)",
 				    loaded_fw, my_fw);
 			return -1;
@@ -2734,7 +2760,7 @@ static void bnx2x_nic_load_pmf(struct bnx2x_softc *sc, uint32_t load_code)
 {
 	uint32_t ncsi_oem_data_addr;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	if ((load_code == FW_MSG_CODE_DRV_LOAD_COMMON) ||
 	    (load_code == FW_MSG_CODE_DRV_LOAD_COMMON_CHIP) ||
@@ -2749,7 +2775,7 @@ static void bnx2x_nic_load_pmf(struct bnx2x_softc *sc, uint32_t load_code)
 		sc->port.pmf = 0;
 	}
 
-	PMD_DRV_LOG(DEBUG, "pmf %d", sc->port.pmf);
+	PMD_DRV_LOG(DEBUG, sc, "pmf %d", sc->port.pmf);
 
 	if (load_code == FW_MSG_CODE_DRV_LOAD_COMMON_CHIP) {
 		if (SHMEM2_HAS(sc, ncsi_oem_data_addr)) {
@@ -2792,10 +2818,10 @@ static void bnx2x_read_mf_cfg(struct bnx2x_softc *sc)
 
 	if (sc->devinfo.mf_info.mf_config[SC_VN(sc)] &
 	    FUNC_MF_CFG_FUNC_DISABLED) {
-		PMD_DRV_LOG(DEBUG, "mf_cfg function disabled");
+		PMD_DRV_LOG(DEBUG, sc, "mf_cfg function disabled");
 		sc->flags |= BNX2X_MF_FUNC_DIS;
 	} else {
-		PMD_DRV_LOG(DEBUG, "mf_cfg function enabled");
+		PMD_DRV_LOG(DEBUG, sc, "mf_cfg function enabled");
 		sc->flags &= ~BNX2X_MF_FUNC_DIS;
 	}
 }
@@ -2816,7 +2842,7 @@ static int bnx2x_acquire_alr(struct bnx2x_softc *sc)
 	}
 
 	if (!(val & (1L << 31))) {
-		PMD_DRV_LOG(NOTICE, "Cannot acquire MCP access lock register");
+		PMD_DRV_LOG(NOTICE, sc, "Cannot acquire MCP access lock register");
 		return -1;
 	}
 
@@ -2844,7 +2870,7 @@ static void bnx2x_fan_failure(struct bnx2x_softc *sc)
 		 ext_phy_config);
 
 	/* log the failure */
-	PMD_DRV_LOG(INFO,
+	PMD_DRV_LOG(INFO, sc,
 		    "Fan Failure has caused the driver to shutdown "
 		    "the card to prevent permanent damage. "
 		    "Please contact OEM Support for assistance");
@@ -2901,7 +2927,7 @@ static void bnx2x_link_attn(struct bnx2x_softc *sc)
 		}
 	}
 
-	bnx2x_link_report(sc);
+	bnx2x_link_report_locked(sc);
 
 	if (IS_MF(sc)) {
 		bnx2x_link_sync_notify(sc);
@@ -2922,7 +2948,7 @@ static void bnx2x_attn_int_asserted(struct bnx2x_softc *sc, uint32_t asserted)
 	uint32_t cnt;
 
 	if (sc->attn_state & asserted) {
-		PMD_DRV_LOG(ERR, "IGU ERROR attn=0x%08x", asserted);
+		PMD_DRV_LOG(ERR, sc, "IGU ERROR attn=0x%08x", asserted);
 	}
 
 	bnx2x_acquire_hw_lock(sc, HW_LOCK_RESOURCE_PORT0_ATT_MASK + port);
@@ -2940,6 +2966,7 @@ static void bnx2x_attn_int_asserted(struct bnx2x_softc *sc, uint32_t asserted)
 	if (asserted & ATTN_HARD_WIRED_MASK) {
 		if (asserted & ATTN_NIG_FOR_FUNC) {
 
+			bnx2x_acquire_phy_lock(sc);
 			/* save nig interrupt mask */
 			nig_mask = REG_RD(sc, nig_int_mask_addr);
 
@@ -2954,45 +2981,45 @@ static void bnx2x_attn_int_asserted(struct bnx2x_softc *sc, uint32_t asserted)
 		}
 
 		if (asserted & ATTN_SW_TIMER_4_FUNC) {
-			PMD_DRV_LOG(DEBUG, "ATTN_SW_TIMER_4_FUNC!");
+			PMD_DRV_LOG(DEBUG, sc, "ATTN_SW_TIMER_4_FUNC!");
 		}
 
 		if (asserted & GPIO_2_FUNC) {
-			PMD_DRV_LOG(DEBUG, "GPIO_2_FUNC!");
+			PMD_DRV_LOG(DEBUG, sc, "GPIO_2_FUNC!");
 		}
 
 		if (asserted & GPIO_3_FUNC) {
-			PMD_DRV_LOG(DEBUG, "GPIO_3_FUNC!");
+			PMD_DRV_LOG(DEBUG, sc, "GPIO_3_FUNC!");
 		}
 
 		if (asserted & GPIO_4_FUNC) {
-			PMD_DRV_LOG(DEBUG, "GPIO_4_FUNC!");
+			PMD_DRV_LOG(DEBUG, sc, "GPIO_4_FUNC!");
 		}
 
 		if (port == 0) {
 			if (asserted & ATTN_GENERAL_ATTN_1) {
-				PMD_DRV_LOG(DEBUG, "ATTN_GENERAL_ATTN_1!");
+				PMD_DRV_LOG(DEBUG, sc, "ATTN_GENERAL_ATTN_1!");
 				REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_1, 0x0);
 			}
 			if (asserted & ATTN_GENERAL_ATTN_2) {
-				PMD_DRV_LOG(DEBUG, "ATTN_GENERAL_ATTN_2!");
+				PMD_DRV_LOG(DEBUG, sc, "ATTN_GENERAL_ATTN_2!");
 				REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_2, 0x0);
 			}
 			if (asserted & ATTN_GENERAL_ATTN_3) {
-				PMD_DRV_LOG(DEBUG, "ATTN_GENERAL_ATTN_3!");
+				PMD_DRV_LOG(DEBUG, sc, "ATTN_GENERAL_ATTN_3!");
 				REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_3, 0x0);
 			}
 		} else {
 			if (asserted & ATTN_GENERAL_ATTN_4) {
-				PMD_DRV_LOG(DEBUG, "ATTN_GENERAL_ATTN_4!");
+				PMD_DRV_LOG(DEBUG, sc, "ATTN_GENERAL_ATTN_4!");
 				REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_4, 0x0);
 			}
 			if (asserted & ATTN_GENERAL_ATTN_5) {
-				PMD_DRV_LOG(DEBUG, "ATTN_GENERAL_ATTN_5!");
+				PMD_DRV_LOG(DEBUG, sc, "ATTN_GENERAL_ATTN_5!");
 				REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_5, 0x0);
 			}
 			if (asserted & ATTN_GENERAL_ATTN_6) {
-				PMD_DRV_LOG(DEBUG, "ATTN_GENERAL_ATTN_6!");
+				PMD_DRV_LOG(DEBUG, sc, "ATTN_GENERAL_ATTN_6!");
 				REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_6, 0x0);
 			}
 		}
@@ -3006,7 +3033,7 @@ static void bnx2x_attn_int_asserted(struct bnx2x_softc *sc, uint32_t asserted)
 		reg_addr = (BAR_IGU_INTMEM + IGU_CMD_ATTN_BIT_SET_UPPER * 8);
 	}
 
-	PMD_DRV_LOG(DEBUG, "about to mask 0x%08x at %s addr 0x%08x",
+	PMD_DRV_LOG(DEBUG, sc, "about to mask 0x%08x at %s addr 0x%08x",
 		    asserted,
 		    (sc->devinfo.int_block == INT_BLOCK_HC) ? "HC" : "IGU",
 		    reg_addr);
@@ -3028,7 +3055,7 @@ static void bnx2x_attn_int_asserted(struct bnx2x_softc *sc, uint32_t asserted)
 				 && (++cnt < MAX_IGU_ATTN_ACK_TO));
 
 			if (!igu_acked) {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Failed to verify IGU ack on time");
 			}
 
@@ -3037,6 +3064,7 @@ static void bnx2x_attn_int_asserted(struct bnx2x_softc *sc, uint32_t asserted)
 
 		REG_WR(sc, nig_int_mask_addr, nig_mask);
 
+		bnx2x_release_phy_lock(sc);
 	}
 }
 
@@ -3044,7 +3072,7 @@ static void
 bnx2x_print_next_block(__rte_unused struct bnx2x_softc *sc, __rte_unused int idx,
 		     __rte_unused const char *blk)
 {
-	PMD_DRV_LOG(INFO, "%s%s", idx ? ", " : "", blk);
+	PMD_DRV_LOG(INFO, sc, "%s%s", idx ? ", " : "", blk);
 }
 
 static int
@@ -3352,7 +3380,7 @@ bnx2x_parity_attn(struct bnx2x_softc *sc, uint8_t * global, uint8_t print,
 	    (sig[2] & HW_PRTY_ASSERT_SET_2) ||
 	    (sig[3] & HW_PRTY_ASSERT_SET_3) ||
 	    (sig[4] & HW_PRTY_ASSERT_SET_4)) {
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(ERR, sc,
 			    "Parity error: HW block parity attention:"
 			    "[0]:0x%08x [1]:0x%08x [2]:0x%08x [3]:0x%08x [4]:0x%08x",
 			    (uint32_t) (sig[0] & HW_PRTY_ASSERT_SET_0),
@@ -3362,7 +3390,7 @@ bnx2x_parity_attn(struct bnx2x_softc *sc, uint8_t * global, uint8_t print,
 			    (uint32_t) (sig[4] & HW_PRTY_ASSERT_SET_4));
 
 		if (print)
-			PMD_DRV_LOG(INFO, "Parity errors detected in blocks: ");
+			PMD_DRV_LOG(INFO, sc, "Parity errors detected in blocks: ");
 
 		par_num =
 		    bnx2x_check_blocks_with_parity0(sc, sig[0] &
@@ -3386,7 +3414,7 @@ bnx2x_parity_attn(struct bnx2x_softc *sc, uint8_t * global, uint8_t print,
 						  par_num, print);
 
 		if (print)
-			PMD_DRV_LOG(INFO, "");
+			PMD_DRV_LOG(INFO, sc, "");
 
 		return TRUE;
 	}
@@ -3418,64 +3446,64 @@ static void bnx2x_attn_int_deasserted4(struct bnx2x_softc *sc, uint32_t attn)
 
 	if (attn & AEU_INPUTS_ATTN_BITS_PGLUE_HW_INTERRUPT) {
 		val = REG_RD(sc, PGLUE_B_REG_PGLUE_B_INT_STS_CLR);
-		PMD_DRV_LOG(INFO, "ERROR: PGLUE hw attention 0x%08x", val);
+		PMD_DRV_LOG(INFO, sc, "ERROR: PGLUE hw attention 0x%08x", val);
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_ADDRESS_ERROR)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_ADDRESS_ERROR");
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_INCORRECT_RCV_BEHAVIOR)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_INCORRECT_RCV_BEHAVIOR");
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_WAS_ERROR_ATTN)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_WAS_ERROR_ATTN");
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_VF_LENGTH_VIOLATION_ATTN)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_VF_LENGTH_VIOLATION_ATTN");
 		if (val &
 		    PGLUE_B_PGLUE_B_INT_STS_REG_VF_GRC_SPACE_VIOLATION_ATTN)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_VF_GRC_SPACE_VIOLATION_ATTN");
 		if (val &
 		    PGLUE_B_PGLUE_B_INT_STS_REG_VF_MSIX_BAR_VIOLATION_ATTN)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_VF_MSIX_BAR_VIOLATION_ATTN");
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_TCPL_ERROR_ATTN)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_TCPL_ERROR_ATTN");
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_TCPL_IN_TWO_RCBS_ATTN)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_TCPL_IN_TWO_RCBS_ATTN");
 		if (val & PGLUE_B_PGLUE_B_INT_STS_REG_CSSNOOP_FIFO_OVERFLOW)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: PGLUE_B_PGLUE_B_INT_STS_REG_CSSNOOP_FIFO_OVERFLOW");
 	}
 
 	if (attn & AEU_INPUTS_ATTN_BITS_ATC_HW_INTERRUPT) {
 		val = REG_RD(sc, ATC_REG_ATC_INT_STS_CLR);
-		PMD_DRV_LOG(INFO, "ERROR: ATC hw attention 0x%08x", val);
+		PMD_DRV_LOG(INFO, sc, "ERROR: ATC hw attention 0x%08x", val);
 		if (val & ATC_ATC_INT_STS_REG_ADDRESS_ERROR)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: ATC_ATC_INT_STS_REG_ADDRESS_ERROR");
 		if (val & ATC_ATC_INT_STS_REG_ATC_TCPL_TO_NOT_PEND)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: ATC_ATC_INT_STS_REG_ATC_TCPL_TO_NOT_PEND");
 		if (val & ATC_ATC_INT_STS_REG_ATC_GPA_MULTIPLE_HITS)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: ATC_ATC_INT_STS_REG_ATC_GPA_MULTIPLE_HITS");
 		if (val & ATC_ATC_INT_STS_REG_ATC_RCPL_TO_EMPTY_CNT)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: ATC_ATC_INT_STS_REG_ATC_RCPL_TO_EMPTY_CNT");
 		if (val & ATC_ATC_INT_STS_REG_ATC_TCPL_ERROR)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: ATC_ATC_INT_STS_REG_ATC_TCPL_ERROR");
 		if (val & ATC_ATC_INT_STS_REG_ATC_IREQ_LESS_THAN_STU)
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "ERROR: ATC_ATC_INT_STS_REG_ATC_IREQ_LESS_THAN_STU");
 	}
 
 	if (attn & (AEU_INPUTS_ATTN_BITS_PGLUE_PARITY_ERROR |
 		    AEU_INPUTS_ATTN_BITS_ATC_PARITY_ERROR)) {
-		PMD_DRV_LOG(INFO,
+		PMD_DRV_LOG(INFO, sc,
 			    "ERROR: FATAL parity attention set4 0x%08x",
 			    (uint32_t) (attn &
 					(AEU_INPUTS_ATTN_BITS_PGLUE_PARITY_ERROR
@@ -3598,11 +3626,11 @@ static void bnx2x_dcc_event(struct bnx2x_softc *sc, uint32_t dcc_event)
  */
 		if (sc->devinfo.
 		    mf_info.mf_config[SC_VN(sc)] & FUNC_MF_CFG_FUNC_DISABLED) {
-			PMD_DRV_LOG(DEBUG, "mf_cfg function disabled");
+			PMD_DRV_LOG(DEBUG, sc, "mf_cfg function disabled");
 			sc->flags |= BNX2X_MF_FUNC_DIS;
 			bnx2x_e1h_disable(sc);
 		} else {
-			PMD_DRV_LOG(DEBUG, "mf_cfg function enabled");
+			PMD_DRV_LOG(DEBUG, sc, "mf_cfg function enabled");
 			sc->flags &= ~BNX2X_MF_FUNC_DIS;
 			bnx2x_e1h_enable(sc);
 		}
@@ -3657,7 +3685,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 	last_idx =
 	    REG_RD8(sc, BAR_XSTRORM_INTMEM + XSTORM_ASSERT_LIST_INDEX_OFFSET);
 	if (last_idx)
-		PMD_DRV_LOG(ERR, "XSTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
+		PMD_DRV_LOG(ERR, sc, "XSTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
 
 	/* print the asserts */
 	for (i = 0; i < STORM_ASSERT_ARRAY_SIZE; i++) {
@@ -3679,7 +3707,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 			   12);
 
 		if (row0 != COMMON_ASM_INVALID_ASSERT_OPCODE) {
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "XSTORM_ASSERT_INDEX 0x%x = 0x%08x 0x%08x 0x%08x 0x%08x",
 				    i, row3, row2, row1, row0);
 			rc++;
@@ -3692,7 +3720,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 	last_idx =
 	    REG_RD8(sc, BAR_TSTRORM_INTMEM + TSTORM_ASSERT_LIST_INDEX_OFFSET);
 	if (last_idx) {
-		PMD_DRV_LOG(ERR, "TSTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
+		PMD_DRV_LOG(ERR, sc, "TSTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
 	}
 
 	/* print the asserts */
@@ -3715,7 +3743,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 			   12);
 
 		if (row0 != COMMON_ASM_INVALID_ASSERT_OPCODE) {
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "TSTORM_ASSERT_INDEX 0x%x = 0x%08x 0x%08x 0x%08x 0x%08x",
 				    i, row3, row2, row1, row0);
 			rc++;
@@ -3728,7 +3756,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 	last_idx =
 	    REG_RD8(sc, BAR_CSTRORM_INTMEM + CSTORM_ASSERT_LIST_INDEX_OFFSET);
 	if (last_idx) {
-		PMD_DRV_LOG(ERR, "CSTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
+		PMD_DRV_LOG(ERR, sc, "CSTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
 	}
 
 	/* print the asserts */
@@ -3751,7 +3779,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 			   12);
 
 		if (row0 != COMMON_ASM_INVALID_ASSERT_OPCODE) {
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "CSTORM_ASSERT_INDEX 0x%x = 0x%08x 0x%08x 0x%08x 0x%08x",
 				    i, row3, row2, row1, row0);
 			rc++;
@@ -3764,7 +3792,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 	last_idx =
 	    REG_RD8(sc, BAR_USTRORM_INTMEM + USTORM_ASSERT_LIST_INDEX_OFFSET);
 	if (last_idx) {
-		PMD_DRV_LOG(ERR, "USTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
+		PMD_DRV_LOG(ERR, sc, "USTORM_ASSERT_LIST_INDEX 0x%x", last_idx);
 	}
 
 	/* print the asserts */
@@ -3787,7 +3815,7 @@ static int bnx2x_mc_assert(struct bnx2x_softc *sc)
 			   12);
 
 		if (row0 != COMMON_ASM_INVALID_ASSERT_OPCODE) {
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "USTORM_ASSERT_INDEX 0x%x = 0x%08x 0x%08x 0x%08x 0x%08x",
 				    i, row3, row2, row1, row0);
 			rc++;
@@ -3836,8 +3864,10 @@ static void bnx2x_attn_int_deasserted3(struct bnx2x_softc *sc, uint32_t attn)
 			if (sc->link_vars.periodic_flags &
 			    ELINK_PERIODIC_FLAGS_LINK_EVENT) {
 				/* sync with link */
+				bnx2x_acquire_phy_lock(sc);
 				sc->link_vars.periodic_flags &=
 				    ~ELINK_PERIODIC_FLAGS_LINK_EVENT;
+				bnx2x_release_phy_lock(sc);
 				if (IS_MF(sc)) {
 					bnx2x_link_sync_notify(sc);
 				}
@@ -3852,7 +3882,7 @@ static void bnx2x_attn_int_deasserted3(struct bnx2x_softc *sc, uint32_t attn)
 
 		} else if (attn & BNX2X_MC_ASSERT_BITS) {
 
-			PMD_DRV_LOG(ERR, "MC assert!");
+			PMD_DRV_LOG(ERR, sc, "MC assert!");
 			bnx2x_mc_assert(sc);
 			REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_10, 0);
 			REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_9, 0);
@@ -3862,24 +3892,24 @@ static void bnx2x_attn_int_deasserted3(struct bnx2x_softc *sc, uint32_t attn)
 
 		} else if (attn & BNX2X_MCP_ASSERT) {
 
-			PMD_DRV_LOG(ERR, "MCP assert!");
+			PMD_DRV_LOG(ERR, sc, "MCP assert!");
 			REG_WR(sc, MISC_REG_AEU_GENERAL_ATTN_11, 0);
 
 		} else {
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "Unknown HW assert! (attn 0x%08x)", attn);
 		}
 	}
 
 	if (attn & EVEREST_LATCHED_ATTN_IN_USE_MASK) {
-		PMD_DRV_LOG(ERR, "LATCHED attention 0x%08x (masked)", attn);
+		PMD_DRV_LOG(ERR, sc, "LATCHED attention 0x%08x (masked)", attn);
 		if (attn & BNX2X_GRC_TIMEOUT) {
 			val = REG_RD(sc, MISC_REG_GRC_TIMEOUT_ATTN);
-			PMD_DRV_LOG(ERR, "GRC time-out 0x%08x", val);
+			PMD_DRV_LOG(ERR, sc, "GRC time-out 0x%08x", val);
 		}
 		if (attn & BNX2X_GRC_RSV) {
 			val = REG_RD(sc, MISC_REG_GRC_RSV_ATTN);
-			PMD_DRV_LOG(ERR, "GRC reserved 0x%08x", val);
+			PMD_DRV_LOG(ERR, sc, "GRC reserved 0x%08x", val);
 		}
 		REG_WR(sc, MISC_REG_AEU_CLR_LATCH_SIGNAL, 0x7ff);
 	}
@@ -3894,24 +3924,24 @@ static void bnx2x_attn_int_deasserted2(struct bnx2x_softc *sc, uint32_t attn)
 
 	if (attn & AEU_INPUTS_ATTN_BITS_CFC_HW_INTERRUPT) {
 		val = REG_RD(sc, CFC_REG_CFC_INT_STS_CLR);
-		PMD_DRV_LOG(ERR, "CFC hw attention 0x%08x", val);
+		PMD_DRV_LOG(ERR, sc, "CFC hw attention 0x%08x", val);
 /* CFC error attention */
 		if (val & 0x2) {
-			PMD_DRV_LOG(ERR, "FATAL error from CFC");
+			PMD_DRV_LOG(ERR, sc, "FATAL error from CFC");
 		}
 	}
 
 	if (attn & AEU_INPUTS_ATTN_BITS_PXP_HW_INTERRUPT) {
 		val = REG_RD(sc, PXP_REG_PXP_INT_STS_CLR_0);
-		PMD_DRV_LOG(ERR, "PXP hw attention-0 0x%08x", val);
+		PMD_DRV_LOG(ERR, sc, "PXP hw attention-0 0x%08x", val);
 /* RQ_USDMDP_FIFO_OVERFLOW */
 		if (val & 0x18000) {
-			PMD_DRV_LOG(ERR, "FATAL error from PXP");
+			PMD_DRV_LOG(ERR, sc, "FATAL error from PXP");
 		}
 
 		if (!CHIP_IS_E1x(sc)) {
 			val = REG_RD(sc, PXP_REG_PXP_INT_STS_CLR_1);
-			PMD_DRV_LOG(ERR, "PXP hw attention-1 0x%08x", val);
+			PMD_DRV_LOG(ERR, sc, "PXP hw attention-1 0x%08x", val);
 		}
 	}
 #define PXP2_EOP_ERROR_BIT  PXP2_PXP2_INT_STS_CLR_0_REG_WR_PGLUE_EOP_ERROR
@@ -3939,7 +3969,7 @@ static void bnx2x_attn_int_deasserted2(struct bnx2x_softc *sc, uint32_t attn)
 				val0 = REG_RD(sc, PXP2_REG_PXP2_INT_STS_CLR_0);
 
 			/* print the register, since no one can restore it */
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "PXP2_REG_PXP2_INT_STS_CLR_0 0x%08x", val0);
 
 			/*
@@ -3947,7 +3977,7 @@ static void bnx2x_attn_int_deasserted2(struct bnx2x_softc *sc, uint32_t attn)
 			 * then notify
 			 */
 			if (val0 & PXP2_EOP_ERROR_BIT) {
-				PMD_DRV_LOG(ERR, "PXP2_WR_PGLUE_EOP_ERROR");
+				PMD_DRV_LOG(ERR, sc, "PXP2_WR_PGLUE_EOP_ERROR");
 
 				/*
 				 * if only PXP2_PXP2_INT_STS_0_REG_WR_PGLUE_EOP_ERROR is
@@ -3968,7 +3998,7 @@ static void bnx2x_attn_int_deasserted2(struct bnx2x_softc *sc, uint32_t attn)
 		val &= ~(attn & HW_INTERRUT_ASSERT_SET_2);
 		REG_WR(sc, reg_offset, val);
 
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(ERR, sc,
 			    "FATAL HW block attention set2 0x%x",
 			    (uint32_t) (attn & HW_INTERRUT_ASSERT_SET_2));
 		rte_panic("HW block attention set2");
@@ -3983,10 +4013,10 @@ static void bnx2x_attn_int_deasserted1(struct bnx2x_softc *sc, uint32_t attn)
 
 	if (attn & AEU_INPUTS_ATTN_BITS_DOORBELLQ_HW_INTERRUPT) {
 		val = REG_RD(sc, DORQ_REG_DORQ_INT_STS_CLR);
-		PMD_DRV_LOG(ERR, "DB hw attention 0x%08x", val);
+		PMD_DRV_LOG(ERR, sc, "DB hw attention 0x%08x", val);
 /* DORQ discard attention */
 		if (val & 0x2) {
-			PMD_DRV_LOG(ERR, "FATAL error from DORQ");
+			PMD_DRV_LOG(ERR, sc, "FATAL error from DORQ");
 		}
 	}
 
@@ -3998,7 +4028,7 @@ static void bnx2x_attn_int_deasserted1(struct bnx2x_softc *sc, uint32_t attn)
 		val &= ~(attn & HW_INTERRUT_ASSERT_SET_1);
 		REG_WR(sc, reg_offset, val);
 
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(ERR, sc,
 			    "FATAL HW block attention set1 0x%08x",
 			    (uint32_t) (attn & HW_INTERRUT_ASSERT_SET_1));
 		rte_panic("HW block attention set1");
@@ -4019,7 +4049,7 @@ static void bnx2x_attn_int_deasserted0(struct bnx2x_softc *sc, uint32_t attn)
 		val &= ~AEU_INPUTS_ATTN_BITS_SPIO5;
 		REG_WR(sc, reg_offset, val);
 
-		PMD_DRV_LOG(WARNING, "SPIO5 hw attention");
+		PMD_DRV_LOG(WARNING, sc, "SPIO5 hw attention");
 
 /* Fan failure attention */
 		elink_hw_reset_phy(&sc->link_params);
@@ -4027,7 +4057,9 @@ static void bnx2x_attn_int_deasserted0(struct bnx2x_softc *sc, uint32_t attn)
 	}
 
 	if ((attn & sc->link_vars.aeu_int_mask) && sc->port.pmf) {
+		bnx2x_acquire_phy_lock(sc);
 		elink_handle_module_detect_int(&sc->link_params);
+		bnx2x_release_phy_lock(sc);
 	}
 
 	if (attn & HW_INTERRUT_ASSERT_SET_0) {
@@ -4109,14 +4141,14 @@ static void bnx2x_attn_int_deasserted(struct bnx2x_softc *sc, uint32_t deasserte
 	}
 
 	val = ~deasserted;
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "about to mask 0x%08x at %s addr 0x%08x", val,
 		    (sc->devinfo.int_block == INT_BLOCK_HC) ? "HC" : "IGU",
 		    reg_addr);
 	REG_WR(sc, reg_addr, val);
 
 	if (~sc->attn_state & deasserted) {
-		PMD_DRV_LOG(ERR, "IGU error");
+		PMD_DRV_LOG(ERR, sc, "IGU error");
 	}
 
 	reg_addr = port ? MISC_REG_AEU_MASK_ATTN_FUNC_1 :
@@ -4146,12 +4178,12 @@ static void bnx2x_attn_int(struct bnx2x_softc *sc)
 	uint32_t asserted = attn_bits & ~attn_ack & ~attn_state;
 	uint32_t deasserted = ~attn_bits & attn_ack & attn_state;
 
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "attn_bits 0x%08x attn_ack 0x%08x asserted 0x%08x deasserted 0x%08x",
 		    attn_bits, attn_ack, asserted, deasserted);
 
 	if (~(attn_bits ^ attn_ack) & (attn_bits ^ attn_state)) {
-		PMD_DRV_LOG(ERR, "BAD attention state");
+		PMD_DRV_LOG(ERR, sc, "BAD attention state");
 	}
 
 	/* handle bits that were raised */
@@ -4208,7 +4240,7 @@ static void bnx2x_handle_mcast_eqe(struct bnx2x_softc *sc)
 	if (sc->mcast_obj.check_pending(&sc->mcast_obj)) {
 		rc = ecore_config_mcast(sc, &rparam, ECORE_MCAST_CMD_CONT);
 		if (rc < 0) {
-			PMD_DRV_LOG(INFO,
+			PMD_DRV_LOG(INFO, sc,
 				    "Failed to send pending mcast commands (%d)",
 				    rc);
 		}
@@ -4228,17 +4260,17 @@ bnx2x_handle_classification_eqe(struct bnx2x_softc *sc, union event_ring_elem *e
 
 	switch (le32toh(elem->message.data.eth_event.echo) >> BNX2X_SWCID_SHIFT) {
 	case ECORE_FILTER_MAC_PENDING:
-		PMD_DRV_LOG(DEBUG, "Got SETUP_MAC completions");
+		PMD_DRV_LOG(DEBUG, sc, "Got SETUP_MAC completions");
 		vlan_mac_obj = &sc->sp_objs[cid].mac_obj;
 		break;
 
 	case ECORE_FILTER_MCAST_PENDING:
-		PMD_DRV_LOG(DEBUG, "Got SETUP_MCAST completions");
+		PMD_DRV_LOG(DEBUG, sc, "Got SETUP_MCAST completions");
 		bnx2x_handle_mcast_eqe(sc);
 		return;
 
 	default:
-		PMD_DRV_LOG(NOTICE, "Unsupported classification command: %d",
+		PMD_DRV_LOG(NOTICE, sc, "Unsupported classification command: %d",
 			    elem->message.data.eth_event.echo);
 		return;
 	}
@@ -4246,9 +4278,10 @@ bnx2x_handle_classification_eqe(struct bnx2x_softc *sc, union event_ring_elem *e
 	rc = vlan_mac_obj->complete(sc, vlan_mac_obj, elem, &ramrod_flags);
 
 	if (rc < 0) {
-		PMD_DRV_LOG(NOTICE, "Failed to schedule new commands (%d)", rc);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "Failed to schedule new commands (%d)", rc);
 	} else if (rc > 0) {
-		PMD_DRV_LOG(DEBUG, "Scheduled next pending commands...");
+		PMD_DRV_LOG(DEBUG, sc, "Scheduled next pending commands...");
 	}
 }
 
@@ -4312,7 +4345,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 /* handle eq element */
 		switch (opcode) {
 		case EVENT_RING_OPCODE_STAT_QUERY:
-			PMD_DEBUG_PERIODIC_LOG(DEBUG, "got statistics completion event %d",
+			PMD_DEBUG_PERIODIC_LOG(DEBUG, sc, "got statistics completion event %d",
 				    sc->stats_comp++);
 			/* nothing to do with stats comp */
 			goto next_spqe;
@@ -4320,7 +4353,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 		case EVENT_RING_OPCODE_CFC_DEL:
 			/* handle according to cid range */
 			/* we may want to verify here that the sc state is HALTING */
-			PMD_DRV_LOG(DEBUG, "got delete ramrod for MULTI[%d]",
+			PMD_DRV_LOG(DEBUG, sc, "got delete ramrod for MULTI[%d]",
 				    cid);
 			q_obj = bnx2x_cid_to_q_obj(sc, cid);
 			if (q_obj->complete_cmd(sc, q_obj, ECORE_Q_CMD_CFC_DEL)) {
@@ -4329,14 +4362,14 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 			goto next_spqe;
 
 		case EVENT_RING_OPCODE_STOP_TRAFFIC:
-			PMD_DRV_LOG(DEBUG, "got STOP TRAFFIC");
+			PMD_DRV_LOG(DEBUG, sc, "got STOP TRAFFIC");
 			if (f_obj->complete_cmd(sc, f_obj, ECORE_F_CMD_TX_STOP)) {
 				break;
 			}
 			goto next_spqe;
 
 		case EVENT_RING_OPCODE_START_TRAFFIC:
-			PMD_DRV_LOG(DEBUG, "got START TRAFFIC");
+			PMD_DRV_LOG(DEBUG, sc, "got START TRAFFIC");
 			if (f_obj->complete_cmd
 			    (sc, f_obj, ECORE_F_CMD_TX_START)) {
 				break;
@@ -4346,7 +4379,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 		case EVENT_RING_OPCODE_FUNCTION_UPDATE:
 			echo = elem->message.data.function_update_event.echo;
 			if (echo == SWITCH_UPDATE) {
-				PMD_DRV_LOG(DEBUG,
+				PMD_DRV_LOG(DEBUG, sc,
 					    "got FUNC_SWITCH_UPDATE ramrod");
 				if (f_obj->complete_cmd(sc, f_obj,
 							ECORE_F_CMD_SWITCH_UPDATE))
@@ -4354,7 +4387,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 					break;
 				}
 			} else {
-				PMD_DRV_LOG(DEBUG,
+				PMD_DRV_LOG(DEBUG, sc,
 					    "AFEX: ramrod completed FUNCTION_UPDATE");
 				f_obj->complete_cmd(sc, f_obj,
 						    ECORE_F_CMD_AFEX_UPDATE);
@@ -4370,14 +4403,14 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 			goto next_spqe;
 
 		case EVENT_RING_OPCODE_FUNCTION_START:
-			PMD_DRV_LOG(DEBUG, "got FUNC_START ramrod");
+			PMD_DRV_LOG(DEBUG, sc, "got FUNC_START ramrod");
 			if (f_obj->complete_cmd(sc, f_obj, ECORE_F_CMD_START)) {
 				break;
 			}
 			goto next_spqe;
 
 		case EVENT_RING_OPCODE_FUNCTION_STOP:
-			PMD_DRV_LOG(DEBUG, "got FUNC_STOP ramrod");
+			PMD_DRV_LOG(DEBUG, sc, "got FUNC_STOP ramrod");
 			if (f_obj->complete_cmd(sc, f_obj, ECORE_F_CMD_STOP)) {
 				break;
 			}
@@ -4389,7 +4422,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 		case (EVENT_RING_OPCODE_RSS_UPDATE_RULES | BNX2X_STATE_OPENING_WAITING_PORT):
 			cid =
 			    elem->message.data.eth_event.echo & BNX2X_SWCID_MASK;
-			PMD_DRV_LOG(DEBUG, "got RSS_UPDATE ramrod. CID %d",
+			PMD_DRV_LOG(DEBUG, sc, "got RSS_UPDATE ramrod. CID %d",
 				    cid);
 			rss_raw->clear_pending(rss_raw);
 			break;
@@ -4400,7 +4433,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 		case (EVENT_RING_OPCODE_CLASSIFICATION_RULES | BNX2X_STATE_OPEN):
 		case (EVENT_RING_OPCODE_CLASSIFICATION_RULES | BNX2X_STATE_DIAG):
 		case (EVENT_RING_OPCODE_CLASSIFICATION_RULES | BNX2X_STATE_CLOSING_WAITING_HALT):
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "got (un)set mac ramrod");
 			bnx2x_handle_classification_eqe(sc, elem);
 			break;
@@ -4408,7 +4441,7 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 		case (EVENT_RING_OPCODE_MULTICAST_RULES | BNX2X_STATE_OPEN):
 		case (EVENT_RING_OPCODE_MULTICAST_RULES | BNX2X_STATE_DIAG):
 		case (EVENT_RING_OPCODE_MULTICAST_RULES | BNX2X_STATE_CLOSING_WAITING_HALT):
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "got mcast ramrod");
 			bnx2x_handle_mcast_eqe(sc);
 			break;
@@ -4416,14 +4449,14 @@ static void bnx2x_eq_int(struct bnx2x_softc *sc)
 		case (EVENT_RING_OPCODE_FILTERS_RULES | BNX2X_STATE_OPEN):
 		case (EVENT_RING_OPCODE_FILTERS_RULES | BNX2X_STATE_DIAG):
 		case (EVENT_RING_OPCODE_FILTERS_RULES | BNX2X_STATE_CLOSING_WAITING_HALT):
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "got rx_mode ramrod");
 			bnx2x_handle_rx_mode_eqe(sc);
 			break;
 
 		default:
 			/* unknown event log error and continue */
-			PMD_DRV_LOG(INFO, "Unknown EQ event %d, sc->state 0x%x",
+			PMD_DRV_LOG(INFO, sc, "Unknown EQ event %d, sc->state 0x%x",
 				    elem->message.opcode, sc->state);
 		}
 
@@ -4449,12 +4482,16 @@ static int bnx2x_handle_sp_tq(struct bnx2x_softc *sc)
 	uint16_t status;
 	int rc = 0;
 
+	PMD_DRV_LOG(DEBUG, sc, "---> SP TASK <---");
+
 	/* what work needs to be performed? */
 	status = bnx2x_update_dsb_idx(sc);
 
+	PMD_DRV_LOG(DEBUG, sc, "dsb status 0x%04x", status);
+
 	/* HW attentions */
 	if (status & BNX2X_DEF_SB_ATT_IDX) {
-		PMD_DRV_LOG(DEBUG, "---> ATTN INTR <---");
+		PMD_DRV_LOG(DEBUG, sc, "---> ATTN INTR <---");
 		bnx2x_attn_int(sc);
 		status &= ~BNX2X_DEF_SB_ATT_IDX;
 		rc = 1;
@@ -4463,7 +4500,7 @@ static int bnx2x_handle_sp_tq(struct bnx2x_softc *sc)
 	/* SP events: STAT_QUERY and others */
 	if (status & BNX2X_DEF_SB_IDX) {
 /* handle EQ completions */
-		PMD_DEBUG_PERIODIC_LOG(DEBUG, "---> EQ INTR <---");
+		PMD_DRV_LOG(DEBUG, sc, "---> EQ INTR <---");
 		bnx2x_eq_int(sc);
 		bnx2x_ack_sb(sc, sc->igu_dsb_id, USTORM_ID,
 			   le16toh(sc->def_idx), IGU_INT_NOP, 1);
@@ -4472,7 +4509,7 @@ static int bnx2x_handle_sp_tq(struct bnx2x_softc *sc)
 
 	/* if status is non zero then something went wrong */
 	if (unlikely(status)) {
-		PMD_DRV_LOG(INFO,
+		PMD_DRV_LOG(INFO, sc,
 			    "Got an unknown SP interrupt! (0x%04x)", status);
 	}
 
@@ -4488,7 +4525,8 @@ static void bnx2x_handle_fp_tq(struct bnx2x_fastpath *fp, int scan_fp)
 	struct bnx2x_softc *sc = fp->sc;
 	uint8_t more_rx = FALSE;
 
-	PMD_DRV_LOG(DEBUG, "---> FP TASK QUEUE (%d) <--", fp->index);
+	PMD_DEBUG_PERIODIC_LOG(DEBUG, sc,
+			       "---> FP TASK QUEUE (%d) <--", fp->index);
 
 	/* update the fastpath index */
 	bnx2x_update_fp_sb_idx(fp);
@@ -4538,25 +4576,31 @@ int bnx2x_intr_legacy(struct bnx2x_softc *sc, int scan_fp)
 		return 0;
 	}
 
-	PMD_DEBUG_PERIODIC_LOG(DEBUG, "Interrupt status 0x%04x", status);
+	PMD_DEBUG_PERIODIC_LOG(DEBUG, sc, "Interrupt status 0x%04x", status);
 	//bnx2x_dump_status_block(sc);
 
 	FOR_EACH_ETH_QUEUE(sc, i) {
 		fp = &sc->fp[i];
 		mask = (0x2 << (fp->index + CNIC_SUPPORT(sc)));
 		if (status & mask) {
+		/* acknowledge and disable further fastpath interrupts */
+			bnx2x_ack_sb(sc, fp->igu_sb_id, USTORM_ID,
+				     0, IGU_INT_DISABLE, 0);
 			bnx2x_handle_fp_tq(fp, scan_fp);
 			status &= ~mask;
 		}
 	}
 
 	if (unlikely(status & 0x1)) {
+		/* acknowledge and disable further slowpath interrupts */
+		bnx2x_ack_sb(sc, sc->igu_dsb_id, USTORM_ID,
+			     0, IGU_INT_DISABLE, 0);
 		rc = bnx2x_handle_sp_tq(sc);
 		status &= ~0x1;
 	}
 
 	if (unlikely(status)) {
-		PMD_DRV_LOG(WARNING,
+		PMD_DRV_LOG(WARNING, sc,
 			    "Unexpected fastpath status (0x%08x)!", status);
 	}
 
@@ -4592,7 +4636,7 @@ static void bnx2x_init_func_obj(struct bnx2x_softc *sc)
 {
 	sc->dmae_ready = 0;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	ecore_init_func_obj(sc,
 			    &sc->func_obj,
@@ -4608,7 +4652,7 @@ static int bnx2x_init_hw(struct bnx2x_softc *sc, uint32_t load_code)
 	struct ecore_func_state_params func_params = { NULL };
 	int rc;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	/* prepare the parameters for function state transitions */
 	bnx2x_set_bit(RAMROD_COMP_WAIT, &func_params.ramrod_flags);
@@ -5197,7 +5241,7 @@ static void bnx2x_init_internal(struct bnx2x_softc *sc, uint32_t load_code)
 		break;
 
 	default:
-		PMD_DRV_LOG(NOTICE, "Unknown load_code (0x%x) from MCP",
+		PMD_DRV_LOG(NOTICE, sc, "Unknown load_code (0x%x) from MCP",
 			    load_code);
 		break;
 	}
@@ -5288,7 +5332,7 @@ bnx2x_extract_max_cfg(__rte_unused struct bnx2x_softc *sc, uint32_t mf_cfg)
 			    FUNC_MF_CFG_MAX_BW_SHIFT);
 
 	if (!max_cfg) {
-		PMD_DRV_LOG(DEBUG,
+		PMD_DRV_LOG(DEBUG, sc,
 			    "Max BW configured to 0 - using 100 instead");
 		max_cfg = 100;
 	}
@@ -5552,7 +5596,7 @@ static void bnx2x_igu_int_enable(struct bnx2x_softc *sc)
 
 	val |= IGU_PF_CONF_FUNC_EN;
 
-	PMD_DRV_LOG(DEBUG, "write 0x%x to IGU mode %s",
+	PMD_DRV_LOG(DEBUG, sc, "write 0x%x to IGU mode %s",
 		    val, ((msix) ? "MSI-X" : ((msi) ? "MSI" : "INTx")));
 
 	REG_WR(sc, IGU_REG_PF_CONFIGURATION, val);
@@ -5600,7 +5644,7 @@ static void bnx2x_hc_int_disable(struct bnx2x_softc *sc)
 
 	REG_WR(sc, addr, val);
 	if (REG_RD(sc, addr) != val) {
-		PMD_DRV_LOG(ERR, "proper val not read from HC IGU!");
+		PMD_DRV_LOG(ERR, sc, "proper val not read from HC IGU!");
 	}
 }
 
@@ -5611,14 +5655,14 @@ static void bnx2x_igu_int_disable(struct bnx2x_softc *sc)
 	val &= ~(IGU_PF_CONF_MSI_MSIX_EN |
 		 IGU_PF_CONF_INT_LINE_EN | IGU_PF_CONF_ATTN_BIT_EN);
 
-	PMD_DRV_LOG(DEBUG, "write %x to IGU", val);
+	PMD_DRV_LOG(DEBUG, sc, "write %x to IGU", val);
 
 	/* flush all outstanding writes */
 	mb();
 
 	REG_WR(sc, IGU_REG_PF_CONFIGURATION, val);
 	if (REG_RD(sc, IGU_REG_PF_CONFIGURATION) != val) {
-		PMD_DRV_LOG(ERR, "proper val not read from IGU!");
+		PMD_DRV_LOG(ERR, sc, "proper val not read from IGU!");
 	}
 }
 
@@ -5635,7 +5679,7 @@ static void bnx2x_nic_init(struct bnx2x_softc *sc, int load_code)
 {
 	int i;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	for (i = 0; i < sc->num_queues; i++) {
 		bnx2x_init_eth_fp(sc, i);
@@ -5765,7 +5809,7 @@ static int bnx2x_set_power_state(struct bnx2x_softc *sc, uint8_t state)
 
 	/* If there is no power capability, silently succeed */
 	if (!(sc->devinfo.pcie_cap_flags & BNX2X_PM_CAPABLE_FLAG)) {
-		PMD_DRV_LOG(WARNING, "No power capability");
+		PMD_DRV_LOG(WARNING, sc, "No power capability");
 		return 0;
 	}
 
@@ -5810,7 +5854,7 @@ static int bnx2x_set_power_state(struct bnx2x_softc *sc, uint8_t state)
 		break;
 
 	default:
-		PMD_DRV_LOG(NOTICE, "Can't support PCI power state = %d",
+		PMD_DRV_LOG(NOTICE, sc, "Can't support PCI power state = %d",
 			    state);
 		return -1;
 	}
@@ -5828,7 +5872,7 @@ static uint8_t bnx2x_trylock_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 
 	/* Validating that the resource is within range */
 	if (resource > HW_LOCK_MAX_RESOURCE_VALUE) {
-		PMD_DRV_LOG(INFO,
+		PMD_DRV_LOG(INFO, sc,
 			    "resource(0x%x) > HW_LOCK_MAX_RESOURCE_VALUE(0x%x)",
 			    resource, HW_LOCK_MAX_RESOURCE_VALUE);
 		return FALSE;
@@ -5848,7 +5892,7 @@ static uint8_t bnx2x_trylock_hw_lock(struct bnx2x_softc *sc, uint32_t resource)
 		return TRUE;
 	}
 
-	PMD_DRV_LOG(NOTICE, "Failed to get a resource lock 0x%x", resource);
+	PMD_DRV_LOG(NOTICE, sc, "Failed to get a resource lock 0x%x", resource);
 
 	return FALSE;
 }
@@ -5941,7 +5985,7 @@ static int bnx2x_er_poll_igu_vq(struct bnx2x_softc *sc)
 	} while (cnt-- > 0);
 
 	if (cnt <= 0) {
-		PMD_DRV_LOG(NOTICE, "Still pending IGU requests bits=0x%08x!",
+		PMD_DRV_LOG(NOTICE, sc, "Still pending IGU requests bits=0x%08x!",
 			    pend_bits);
 		return -1;
 	}
@@ -6022,7 +6066,7 @@ static int bnx2x_init_shmem(struct bnx2x_softc *sc)
 
 	} while (cnt++ < (MCP_TIMEOUT / MCP_ONE_TIMEOUT));
 
-	PMD_DRV_LOG(NOTICE, "BAD MCP validity signature");
+	PMD_DRV_LOG(NOTICE, sc, "BAD MCP validity signature");
 
 	return -1;
 }
@@ -6177,7 +6221,7 @@ static int bnx2x_process_kill(struct bnx2x_softc *sc, uint8_t global)
 	} while (cnt-- > 0);
 
 	if (cnt <= 0) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "ERROR: Tetris buffer didn't get empty or there "
 			    "are still outstanding read requests after 1s! "
 			    "sr_cnt=0x%08x, blk_cnt=0x%08x, port_is_idle_0=0x%08x, "
@@ -6250,14 +6294,14 @@ static int bnx2x_leader_reset(struct bnx2x_softc *sc)
 		load_code = bnx2x_fw_command(sc, DRV_MSG_CODE_LOAD_REQ,
 					   DRV_MSG_CODE_LOAD_REQ_WITH_LFA);
 		if (!load_code) {
-			PMD_DRV_LOG(NOTICE, "MCP response failure, aborting");
+			PMD_DRV_LOG(NOTICE, sc, "MCP response failure, aborting");
 			rc = -1;
 			goto exit_leader_reset;
 		}
 
 		if ((load_code != FW_MSG_CODE_DRV_LOAD_COMMON_CHIP) &&
 		    (load_code != FW_MSG_CODE_DRV_LOAD_COMMON)) {
-			PMD_DRV_LOG(NOTICE,
+			PMD_DRV_LOG(NOTICE, sc,
 				    "MCP unexpected response, aborting");
 			rc = -1;
 			goto exit_leader_reset2;
@@ -6265,7 +6309,7 @@ static int bnx2x_leader_reset(struct bnx2x_softc *sc)
 
 		load_code = bnx2x_fw_command(sc, DRV_MSG_CODE_LOAD_DONE, 0);
 		if (!load_code) {
-			PMD_DRV_LOG(NOTICE, "MCP response failure, aborting");
+			PMD_DRV_LOG(NOTICE, sc, "MCP response failure, aborting");
 			rc = -1;
 			goto exit_leader_reset2;
 		}
@@ -6273,7 +6317,7 @@ static int bnx2x_leader_reset(struct bnx2x_softc *sc)
 
 	/* try to recover after the failure */
 	if (bnx2x_process_kill(sc, global)) {
-		PMD_DRV_LOG(NOTICE, "Something bad occurred on engine %d!",
+		PMD_DRV_LOG(NOTICE, sc, "Something bad occurred on engine %d!",
 			    SC_PATH(sc));
 		rc = -1;
 		goto exit_leader_reset2;
@@ -6432,12 +6476,12 @@ bnx2x_pf_rx_q_prep(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 	/* validate rings have enough entries to cross high thresholds */
 	if (sc->dropless_fc &&
 	    pause->bd_th_hi + FW_PREFETCH_CNT > sc->rx_ring_size) {
-		PMD_DRV_LOG(WARNING, "rx bd ring threshold limit");
+		PMD_DRV_LOG(WARNING, sc, "rx bd ring threshold limit");
 	}
 
 	if (sc->dropless_fc &&
 	    pause->rcq_th_hi + FW_PREFETCH_CNT > USABLE_RCQ_ENTRIES(rxq)) {
-		PMD_DRV_LOG(WARNING, "rcq ring threshold limit");
+		PMD_DRV_LOG(WARNING, sc, "rcq ring threshold limit");
 	}
 
 	pause->pri_map = 1;
@@ -6508,7 +6552,7 @@ bnx2x_setup_queue(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp, uint8_t lea
 	struct ecore_queue_setup_params *setup_params = &q_params.params.setup;
 	int rc;
 
-	PMD_DRV_LOG(DEBUG, "setting up queue %d", fp->index);
+	PMD_DRV_LOG(DEBUG, sc, "setting up queue %d", fp->index);
 
 	bnx2x_ack_sb(sc, fp->igu_sb_id, USTORM_ID, 0, IGU_INT_ENABLE, 0);
 
@@ -6526,11 +6570,11 @@ bnx2x_setup_queue(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp, uint8_t lea
 	/* Change the state to INIT */
 	rc = ecore_queue_state_change(sc, &q_params);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Queue(%d) INIT failed", fp->index);
+		PMD_DRV_LOG(NOTICE, sc, "Queue(%d) INIT failed", fp->index);
 		return rc;
 	}
 
-	PMD_DRV_LOG(DEBUG, "init complete");
+	PMD_DRV_LOG(DEBUG, sc, "init complete");
 
 	/* now move the Queue to the SETUP state */
 	memset(setup_params, 0, sizeof(*setup_params));
@@ -6554,7 +6598,7 @@ bnx2x_setup_queue(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp, uint8_t lea
 	/* change the state to SETUP */
 	rc = ecore_queue_state_change(sc, &q_params);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Queue(%d) SETUP failed", fp->index);
+		PMD_DRV_LOG(NOTICE, sc, "Queue(%d) SETUP failed", fp->index);
 		return rc;
 	}
 
@@ -6682,11 +6726,11 @@ bnx2x_set_mac_one(struct bnx2x_softc *sc, uint8_t * mac,
 	rc = ecore_config_vlan_mac(sc, &ramrod_param);
 
 	if (rc == ECORE_EXISTS) {
-		PMD_DRV_LOG(INFO, "Failed to schedule ADD operations (EEXIST)");
+		PMD_DRV_LOG(INFO, sc, "Failed to schedule ADD operations (EEXIST)");
 /* do not treat adding same MAC as error */
 		rc = 0;
 	} else if (rc < 0) {
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(ERR, sc,
 			    "%s MAC failed (%d)", (set ? "Set" : "Delete"), rc);
 	}
 
@@ -6697,7 +6741,7 @@ static int bnx2x_set_eth_mac(struct bnx2x_softc *sc, uint8_t set)
 {
 	unsigned long ramrod_flags = 0;
 
-	PMD_DRV_LOG(DEBUG, "Adding Ethernet MAC");
+	PMD_DRV_LOG(DEBUG, sc, "Adding Ethernet MAC");
 
 	bnx2x_set_bit(RAMROD_COMP_WAIT, &ramrod_flags);
 
@@ -6853,7 +6897,7 @@ bnx2x_fill_report_data(struct bnx2x_softc *sc, struct bnx2x_link_report_data *da
 }
 
 /* report link status to OS, should be called under phy_lock */
-static void bnx2x_link_report(struct bnx2x_softc *sc)
+static void bnx2x_link_report_locked(struct bnx2x_softc *sc)
 {
 	struct bnx2x_link_report_data cur_data;
 
@@ -6874,14 +6918,19 @@ static void bnx2x_link_report(struct bnx2x_softc *sc)
 		return;
 	}
 
+	PMD_DRV_LOG(INFO, sc, "Change in link status : cur_data = %lx, last_reported_link = %lx\n",
+		    cur_data.link_report_flags,
+		    sc->last_reported_link.link_report_flags);
+
 	sc->link_cnt++;
 
+	PMD_DRV_LOG(INFO, sc, "link status change count = %x\n", sc->link_cnt);
 	/* report new link params and remember the state for the next time */
 	rte_memcpy(&sc->last_reported_link, &cur_data, sizeof(cur_data));
 
 	if (bnx2x_test_bit(BNX2X_LINK_REPORT_LINK_DOWN,
 			 &cur_data.link_report_flags)) {
-		PMD_DRV_LOG(INFO, "NIC Link is Down");
+		PMD_DRV_LOG(INFO, sc, "NIC Link is Down");
 	} else {
 		__rte_unused const char *duplex;
 		__rte_unused const char *flow;
@@ -6921,10 +6970,18 @@ static void bnx2x_link_report(struct bnx2x_softc *sc)
 			flow = "none";
 		}
 
-		PMD_DRV_LOG(INFO,
+		PMD_DRV_LOG(INFO, sc,
 			    "NIC Link is Up, %d Mbps %s duplex, Flow control: %s",
 			    cur_data.line_speed, duplex, flow);
 	}
+}
+
+static void
+bnx2x_link_report(struct bnx2x_softc *sc)
+{
+	bnx2x_acquire_phy_lock(sc);
+	bnx2x_link_report_locked(sc);
+	bnx2x_release_phy_lock(sc);
 }
 
 void bnx2x_link_status_update(struct bnx2x_softc *sc)
@@ -6992,7 +7049,7 @@ void bnx2x_link_status_update(struct bnx2x_softc *sc)
 		}
 		bnx2x_link_report(sc);
 	} else {
-		bnx2x_link_report(sc);
+		bnx2x_link_report_locked(sc);
 		bnx2x_stats_handle(sc, STATS_EVENT_LINK_UP);
 	}
 }
@@ -7004,6 +7061,8 @@ static int bnx2x_initial_phy_init(struct bnx2x_softc *sc, int load_mode)
 	struct elink_params *lp = &sc->link_params;
 
 	bnx2x_set_requested_fc(sc);
+
+	bnx2x_acquire_phy_lock(sc);
 
 	if (load_mode == LOAD_DIAG) {
 		lp->loopback_mode = ELINK_LOOPBACK_XGXS;
@@ -7023,6 +7082,8 @@ static int bnx2x_initial_phy_init(struct bnx2x_softc *sc, int load_mode)
 	}
 
 	rc = elink_phy_init(&sc->link_params, &sc->link_vars);
+
+	bnx2x_release_phy_lock(sc);
 
 	bnx2x_calc_fc_adv(sc);
 
@@ -7062,7 +7123,7 @@ void bnx2x_periodic_callout(struct bnx2x_softc *sc)
 {
 	if ((sc->state != BNX2X_STATE_OPEN) ||
 	    (atomic_load_acq_long(&sc->periodic_flags) == PERIODIC_STOP)) {
-		PMD_DRV_LOG(INFO, "periodic callout exit (state=0x%x)",
+		PMD_DRV_LOG(INFO, sc, "periodic callout exit (state=0x%x)",
 			    sc->state);
 		return;
 	}
@@ -7074,7 +7135,9 @@ void bnx2x_periodic_callout(struct bnx2x_softc *sc)
  */
 		mb();
 		if (sc->port.pmf) {
+			bnx2x_acquire_phy_lock(sc);
 			elink_period_func(&sc->link_params, &sc->link_vars);
+			bnx2x_release_phy_lock(sc);
 		}
 	}
 #ifdef BNX2X_PULSE
@@ -7099,7 +7162,7 @@ void bnx2x_periodic_callout(struct bnx2x_softc *sc)
 		if ((drv_pulse != mcp_pulse) &&
 		    (drv_pulse != ((mcp_pulse + 1) & MCP_PULSE_SEQ_MASK))) {
 			/* someone lost a heartbeat... */
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "drv_pulse (0x%x) != mcp_pulse (0x%x)",
 				    drv_pulse, mcp_pulse);
 		}
@@ -7115,7 +7178,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 	uint32_t load_code = 0;
 	int i, rc = 0;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	sc->state = BNX2X_STATE_OPENING_WAITING_LOAD;
 
@@ -7169,7 +7232,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 				goto bnx2x_nic_load_error2;
 			}
 		} else {
-			PMD_DRV_LOG(INFO, "Device has no MCP!");
+			PMD_DRV_LOG(INFO, sc, "Device has no MCP!");
 			load_code = bnx2x_nic_load_no_mcp(sc);
 		}
 
@@ -7181,7 +7244,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 
 /* Initialize HW */
 		if (bnx2x_init_hw(sc, load_code) != 0) {
-			PMD_DRV_LOG(NOTICE, "HW init failed");
+			PMD_DRV_LOG(NOTICE, sc, "HW init failed");
 			bnx2x_fw_command(sc, DRV_MSG_CODE_LOAD_DONE, 0);
 			sc->state = BNX2X_STATE_CLOSED;
 			rc = -ENXIO;
@@ -7201,7 +7264,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 		sc->state = BNX2X_STATE_OPENING_WAITING_PORT;
 		rc = bnx2x_func_start(sc);
 		if (rc) {
-			PMD_DRV_LOG(NOTICE, "Function start failed!");
+			PMD_DRV_LOG(NOTICE, sc, "Function start failed!");
 			bnx2x_fw_command(sc, DRV_MSG_CODE_LOAD_DONE, 0);
 			sc->state = BNX2X_STATE_ERROR;
 			goto bnx2x_nic_load_error3;
@@ -7212,7 +7275,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 			load_code =
 			    bnx2x_fw_command(sc, DRV_MSG_CODE_LOAD_DONE, 0);
 			if (!load_code) {
-				PMD_DRV_LOG(NOTICE,
+				PMD_DRV_LOG(NOTICE, sc,
 					    "MCP response failure, aborting");
 				sc->state = BNX2X_STATE_ERROR;
 				rc = -ENXIO;
@@ -7223,7 +7286,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 
 	rc = bnx2x_setup_leading(sc);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Setup leading failed!");
+		PMD_DRV_LOG(NOTICE, sc, "Setup leading failed!");
 		sc->state = BNX2X_STATE_ERROR;
 		goto bnx2x_nic_load_error3;
 	}
@@ -7235,7 +7298,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 			rc = bnx2x_vf_setup_queue(sc, &sc->fp[i], FALSE);
 
 		if (rc) {
-			PMD_DRV_LOG(NOTICE, "Queue(%d) setup failed", i);
+			PMD_DRV_LOG(NOTICE, sc, "Queue(%d) setup failed", i);
 			sc->state = BNX2X_STATE_ERROR;
 			goto bnx2x_nic_load_error3;
 		}
@@ -7243,7 +7306,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 
 	rc = bnx2x_init_rss_pf(sc);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "PF RSS init failed");
+		PMD_DRV_LOG(NOTICE, sc, "PF RSS init failed");
 		sc->state = BNX2X_STATE_ERROR;
 		goto bnx2x_nic_load_error3;
 	}
@@ -7259,7 +7322,7 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 	}
 
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Setting Ethernet MAC failed");
+		PMD_DRV_LOG(NOTICE, sc, "Setting Ethernet MAC failed");
 		sc->state = BNX2X_STATE_ERROR;
 		goto bnx2x_nic_load_error3;
 	}
@@ -7311,13 +7374,13 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 
 	/* wait for all pending SP commands to complete */
 	if (IS_PF(sc) && !bnx2x_wait_sp_comp(sc, ~0x0UL)) {
-		PMD_DRV_LOG(NOTICE, "Timeout waiting for all SPs to complete!");
+		PMD_DRV_LOG(NOTICE, sc, "Timeout waiting for all SPs to complete!");
 		bnx2x_periodic_stop(sc);
 		bnx2x_nic_unload(sc, UNLOAD_CLOSE, FALSE);
 		return -ENXIO;
 	}
 
-	PMD_DRV_LOG(DEBUG, "NIC successfully loaded");
+	PMD_DRV_LOG(DEBUG, sc, "NIC successfully loaded");
 
 	return 0;
 
@@ -7366,7 +7429,7 @@ int bnx2x_init(struct bnx2x_softc *sc)
 
 	/* Check if the driver is still running and bail out if it is. */
 	if (sc->state != BNX2X_STATE_CLOSED) {
-		PMD_DRV_LOG(DEBUG, "Init called while driver is running!");
+		PMD_DRV_LOG(DEBUG, sc, "Init called while driver is running!");
 		rc = 0;
 		goto bnx2x_init_done;
 	}
@@ -7404,7 +7467,7 @@ int bnx2x_init(struct bnx2x_softc *sc)
 				     && (!global ||!other_load_status))
 				    && bnx2x_trylock_leader_lock(sc)
 				    && !bnx2x_leader_reset(sc)) {
-					PMD_DRV_LOG(INFO,
+					PMD_DRV_LOG(INFO, sc,
 						    "Recovered during init");
 					break;
 				}
@@ -7414,7 +7477,7 @@ int bnx2x_init(struct bnx2x_softc *sc)
 
 				sc->recovery_state = BNX2X_RECOVERY_FAILED;
 
-				PMD_DRV_LOG(NOTICE,
+				PMD_DRV_LOG(NOTICE, sc,
 					    "Recovery flow hasn't properly "
 					    "completed yet, try again later. "
 					    "If you still see this message after a "
@@ -7433,7 +7496,7 @@ int bnx2x_init(struct bnx2x_softc *sc)
 bnx2x_init_done:
 
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "Initialization failed, "
+		PMD_DRV_LOG(NOTICE, sc, "Initialization failed, "
 			    "stack notified driver is NOT running!");
 	}
 
@@ -7465,7 +7528,7 @@ static void bnx2x_get_function_num(struct bnx2x_softc *sc)
 		sc->pfunc_abs = (sc->pfunc_rel | sc->path_id);
 	}
 
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "Relative function %d, Absolute function %d, Path %d",
 		    sc->pfunc_rel, sc->pfunc_abs, sc->path_id);
 }
@@ -7502,14 +7565,14 @@ static uint32_t bnx2x_pcie_capability_read(struct bnx2x_softc *sc, int reg)
 	/* ensure PCIe capability is enabled */
 	caps = pci_find_cap(sc, PCIY_EXPRESS, BNX2X_PCI_CAP);
 	if (NULL != caps) {
-		PMD_DRV_LOG(DEBUG, "Found PCIe capability: "
+		PMD_DRV_LOG(DEBUG, sc, "Found PCIe capability: "
 			    "id=0x%04X type=0x%04X addr=0x%08X",
 			    caps->id, caps->type, caps->addr);
 		pci_read(sc, (caps->addr + reg), &ret, 2);
 		return ret;
 	}
 
-	PMD_DRV_LOG(WARNING, "PCIe capability NOT FOUND!!!");
+	PMD_DRV_LOG(WARNING, sc, "PCIe capability NOT FOUND!!!");
 
 	return 0;
 }
@@ -7527,18 +7590,16 @@ static uint8_t bnx2x_is_pcie_pending(struct bnx2x_softc *sc)
 */
 static void bnx2x_probe_pci_caps(struct bnx2x_softc *sc)
 {
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	struct bnx2x_pci_cap *caps;
 	uint16_t link_status;
-#ifdef RTE_LIBRTE_BNX2X_DEBUG
 	int reg = 0;
-#endif
 
 	/* check if PCI Power Management is enabled */
 	caps = pci_find_cap(sc, PCIY_PMG, BNX2X_PCI_CAP);
 	if (NULL != caps) {
-		PMD_DRV_LOG(DEBUG, "Found PM capability: "
+		PMD_DRV_LOG(DEBUG, sc, "Found PM capability: "
 			    "id=0x%04X type=0x%04X addr=0x%08X",
 			    caps->id, caps->type, caps->addr);
 
@@ -7552,7 +7613,7 @@ static void bnx2x_probe_pci_caps(struct bnx2x_softc *sc)
 	sc->devinfo.pcie_link_width =
 	    ((link_status & PCIM_LINK_STA_WIDTH) >> 4);
 
-	PMD_DRV_LOG(DEBUG, "PCIe link speed=%d width=%d",
+	PMD_DRV_LOG(DEBUG, sc, "PCIe link speed=%d width=%d",
 		    sc->devinfo.pcie_link_speed, sc->devinfo.pcie_link_width);
 
 	sc->devinfo.pcie_cap_flags |= BNX2X_PCIE_CAPABLE_FLAG;
@@ -7560,7 +7621,7 @@ static void bnx2x_probe_pci_caps(struct bnx2x_softc *sc)
 	/* check if MSI capability is enabled */
 	caps = pci_find_cap(sc, PCIY_MSI, BNX2X_PCI_CAP);
 	if (NULL != caps) {
-		PMD_DRV_LOG(DEBUG, "Found MSI capability at 0x%04x", reg);
+		PMD_DRV_LOG(DEBUG, sc, "Found MSI capability at 0x%04x", reg);
 
 		sc->devinfo.pcie_cap_flags |= BNX2X_MSI_CAPABLE_FLAG;
 		sc->devinfo.pcie_msi_cap_reg = caps->addr;
@@ -7569,7 +7630,7 @@ static void bnx2x_probe_pci_caps(struct bnx2x_softc *sc)
 	/* check if MSI-X capability is enabled */
 	caps = pci_find_cap(sc, PCIY_MSIX, BNX2X_PCI_CAP);
 	if (NULL != caps) {
-		PMD_DRV_LOG(DEBUG, "Found MSI-X capability at 0x%04x", reg);
+		PMD_DRV_LOG(DEBUG, sc, "Found MSI-X capability at 0x%04x", reg);
 
 		sc->devinfo.pcie_cap_flags |= BNX2X_MSIX_CAPABLE_FLAG;
 		sc->devinfo.pcie_msix_cap_reg = caps->addr;
@@ -7589,7 +7650,7 @@ static int bnx2x_get_shmem_mf_cfg_info_sd(struct bnx2x_softc *sc)
 	mf_info->multi_vnics_mode = 1;
 
 	if (!VALID_OVLAN(mf_info->ext_id)) {
-		PMD_DRV_LOG(NOTICE, "Invalid VLAN (%d)", mf_info->ext_id);
+		PMD_DRV_LOG(NOTICE, sc, "Invalid VLAN (%d)", mf_info->ext_id);
 		return 1;
 	}
 
@@ -7713,14 +7774,14 @@ static int bnx2x_check_valid_mf_cfg(struct bnx2x_softc *sc)
 	/* various MF mode sanity checks... */
 
 	if (mf_info->mf_config[SC_VN(sc)] & FUNC_MF_CFG_FUNC_HIDE) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "Enumerated function %d is marked as hidden",
 			    SC_PORT(sc));
 		return 1;
 	}
 
 	if ((mf_info->vnics_per_port > 1) && !mf_info->multi_vnics_mode) {
-		PMD_DRV_LOG(NOTICE, "vnics_per_port=%d multi_vnics_mode=%d",
+		PMD_DRV_LOG(NOTICE, sc, "vnics_per_port=%d multi_vnics_mode=%d",
 			    mf_info->vnics_per_port, mf_info->multi_vnics_mode);
 		return 1;
 	}
@@ -7728,13 +7789,13 @@ static int bnx2x_check_valid_mf_cfg(struct bnx2x_softc *sc)
 	if (mf_info->mf_mode == MULTI_FUNCTION_SD) {
 /* vnic id > 0 must have valid ovlan in switch-dependent mode */
 		if ((SC_VN(sc) > 0) && !VALID_OVLAN(OVLAN(sc))) {
-			PMD_DRV_LOG(NOTICE, "mf_mode=SD vnic_id=%d ovlan=%d",
+			PMD_DRV_LOG(NOTICE, sc, "mf_mode=SD vnic_id=%d ovlan=%d",
 				    SC_VN(sc), OVLAN(sc));
 			return 1;
 		}
 
 		if (!VALID_OVLAN(OVLAN(sc)) && mf_info->multi_vnics_mode) {
-			PMD_DRV_LOG(NOTICE,
+			PMD_DRV_LOG(NOTICE, sc,
 				    "mf_mode=SD multi_vnics_mode=%d ovlan=%d",
 				    mf_info->multi_vnics_mode, OVLAN(sc));
 			return 1;
@@ -7753,7 +7814,7 @@ static int bnx2x_check_valid_mf_cfg(struct bnx2x_softc *sc)
 			      && !VALID_OVLAN(ovlan1))
 			     || ((!mf_info->multi_vnics_mode)
 				 && VALID_OVLAN(ovlan1)))) {
-				PMD_DRV_LOG(NOTICE,
+				PMD_DRV_LOG(NOTICE, sc,
 					    "mf_mode=SD function %d MF config "
 					    "mismatch, multi_vnics_mode=%d ovlan=%d",
 					    i, mf_info->multi_vnics_mode,
@@ -7777,7 +7838,7 @@ static int bnx2x_check_valid_mf_cfg(struct bnx2x_softc *sc)
 				    && !(mf_cfg2 & FUNC_MF_CFG_FUNC_HIDE)
 				    && VALID_OVLAN(ovlan2)
 				    && (ovlan1 == ovlan2)) {
-					PMD_DRV_LOG(NOTICE,
+					PMD_DRV_LOG(NOTICE, sc,
 						    "mf_mode=SD functions %d and %d "
 						    "have the same ovlan (%d)",
 						    i, j, ovlan1);
@@ -7807,7 +7868,7 @@ static int bnx2x_get_mf_cfg_info(struct bnx2x_softc *sc)
 	}
 
 	if (sc->devinfo.mf_cfg_base == SHMEM_MF_CFG_ADDR_NONE) {
-		PMD_DRV_LOG(NOTICE, "Invalid mf_cfg_base!");
+		PMD_DRV_LOG(NOTICE, sc, "Invalid mf_cfg_base!");
 		return 1;
 	}
 
@@ -7825,7 +7886,7 @@ static int bnx2x_get_mf_cfg_info(struct bnx2x_softc *sc)
 		if (mac_upper != FUNC_MF_CFG_UPPERMAC_DEFAULT) {
 			mf_info->mf_mode = MULTI_FUNCTION_SI;
 		} else {
-			PMD_DRV_LOG(NOTICE,
+			PMD_DRV_LOG(NOTICE, sc,
 				    "Invalid config for Switch Independent mode");
 		}
 
@@ -7841,7 +7902,7 @@ static int bnx2x_get_mf_cfg_info(struct bnx2x_softc *sc)
 		    FUNC_MF_CFG_E1HOV_TAG_DEFAULT) {
 			mf_info->mf_mode = MULTI_FUNCTION_SD;
 		} else {
-			PMD_DRV_LOG(NOTICE,
+			PMD_DRV_LOG(NOTICE, sc,
 				    "Invalid config for Switch Dependent mode");
 		}
 
@@ -7865,14 +7926,14 @@ static int bnx2x_get_mf_cfg_info(struct bnx2x_softc *sc)
 		    (mac_upper != FUNC_MF_CFG_UPPERMAC_DEFAULT)) {
 			mf_info->mf_mode = MULTI_FUNCTION_AFEX;
 		} else {
-			PMD_DRV_LOG(NOTICE, "Invalid config for AFEX mode");
+			PMD_DRV_LOG(NOTICE, sc, "Invalid config for AFEX mode");
 		}
 
 		break;
 
 	default:
 
-		PMD_DRV_LOG(NOTICE, "Unknown MF mode (0x%08x)",
+		PMD_DRV_LOG(NOTICE, sc, "Unknown MF mode (0x%08x)",
 			    (val & SHARED_FEAT_CFG_FORCE_SF_MODE_MASK));
 
 		return 1;
@@ -7904,7 +7965,7 @@ static int bnx2x_get_mf_cfg_info(struct bnx2x_softc *sc)
 	if (mf_info->mf_mode == SINGLE_FUNCTION) {
 /* invalid MF config */
 		if (SC_VN(sc) >= 1) {
-			PMD_DRV_LOG(NOTICE, "VNIC ID >= 1 in SF mode");
+			PMD_DRV_LOG(NOTICE, sc, "VNIC ID >= 1 in SF mode");
 			return 1;
 		}
 
@@ -7933,7 +7994,7 @@ static int bnx2x_get_mf_cfg_info(struct bnx2x_softc *sc)
 
 	default:
 
-		PMD_DRV_LOG(NOTICE, "Get MF config failed (mf_mode=0x%08x)",
+		PMD_DRV_LOG(NOTICE, sc, "Get MF config failed (mf_mode=0x%08x)",
 			    mf_info->mf_mode);
 		return 1;
 	}
@@ -7961,7 +8022,7 @@ static int bnx2x_get_shmem_info(struct bnx2x_softc *sc)
 	int port;
 	uint32_t mac_hi, mac_lo, val;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	port = SC_PORT(sc);
 	mac_hi = mac_lo = 0;
@@ -8035,7 +8096,7 @@ static int bnx2x_get_shmem_info(struct bnx2x_softc *sc)
 
 	if ((mac_lo == 0) && (mac_hi == 0)) {
 		*sc->mac_addr_str = 0;
-		PMD_DRV_LOG(NOTICE, "No Ethernet address programmed!");
+		PMD_DRV_LOG(NOTICE, sc, "No Ethernet address programmed!");
 	} else {
 		sc->link_params.mac_addr[0] = (uint8_t) (mac_hi >> 8);
 		sc->link_params.mac_addr[1] = (uint8_t) (mac_hi);
@@ -8051,7 +8112,8 @@ static int bnx2x_get_shmem_info(struct bnx2x_softc *sc)
 			 sc->link_params.mac_addr[3],
 			 sc->link_params.mac_addr[4],
 			 sc->link_params.mac_addr[5]);
-		PMD_DRV_LOG(DEBUG, "Ethernet address: %s", sc->mac_addr_str);
+		PMD_DRV_LOG(DEBUG, sc,
+			    "Ethernet address: %s", sc->mac_addr_str);
 	}
 
 	return 0;
@@ -8066,24 +8128,24 @@ static void bnx2x_media_detect(struct bnx2x_softc *sc)
 	case ELINK_ETH_PHY_XFP_FIBER:
 	case ELINK_ETH_PHY_KR:
 	case ELINK_ETH_PHY_CX4:
-		PMD_DRV_LOG(INFO, "Found 10GBase-CX4 media.");
+		PMD_DRV_LOG(INFO, sc, "Found 10GBase-CX4 media.");
 		sc->media = IFM_10G_CX4;
 		break;
 	case ELINK_ETH_PHY_DA_TWINAX:
-		PMD_DRV_LOG(INFO, "Found 10Gb Twinax media.");
+		PMD_DRV_LOG(INFO, sc, "Found 10Gb Twinax media.");
 		sc->media = IFM_10G_TWINAX;
 		break;
 	case ELINK_ETH_PHY_BASE_T:
-		PMD_DRV_LOG(INFO, "Found 10GBase-T media.");
+		PMD_DRV_LOG(INFO, sc, "Found 10GBase-T media.");
 		sc->media = IFM_10G_T;
 		break;
 	case ELINK_ETH_PHY_NOT_PRESENT:
-		PMD_DRV_LOG(INFO, "Media not present.");
+		PMD_DRV_LOG(INFO, sc, "Media not present.");
 		sc->media = 0;
 		break;
 	case ELINK_ETH_PHY_UNSPECIFIED:
 	default:
-		PMD_DRV_LOG(INFO, "Unknown media!");
+		PMD_DRV_LOG(INFO, sc, "Unknown media!");
 		sc->media = 0;
 		break;
 	}
@@ -8121,7 +8183,7 @@ static int bnx2x_get_igu_cam_info(struct bnx2x_softc *sc)
 			continue;
 		}
 		fid = IGU_FID(val);
-		if ((fid & IGU_FID_ENCODE_IS_PF)) {
+		if (fid & IGU_FID_ENCODE_IS_PF) {
 			if ((fid & IGU_FID_PF_NUM_MASK) != pfid) {
 				continue;
 			}
@@ -8146,7 +8208,7 @@ static int bnx2x_get_igu_cam_info(struct bnx2x_softc *sc)
 	sc->igu_sb_cnt = min(sc->igu_sb_cnt, igu_sb_cnt);
 
 	if (igu_sb_cnt == 0) {
-		PMD_DRV_LOG(ERR, "CAM configuration error");
+		PMD_DRV_LOG(ERR, sc, "CAM configuration error");
 		return -1;
 	}
 
@@ -8183,7 +8245,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 		sc->devinfo.chip_id |= 0x1;
 	}
 
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "chip_id=0x%08x (num=0x%04x rev=0x%01x metal=0x%02x bond=0x%01x)",
 		    sc->devinfo.chip_id,
 		    ((sc->devinfo.chip_id >> 16) & 0xffff),
@@ -8194,7 +8256,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 	val = (REG_RD(sc, 0x2874) & 0x55);
 	if ((sc->devinfo.chip_id & 0x1) || (CHIP_IS_E1H(sc) && (val == 0x55))) {
 		sc->flags |= BNX2X_ONE_PORT_FLAG;
-		PMD_DRV_LOG(DEBUG, "single port device");
+		PMD_DRV_LOG(DEBUG, sc, "single port device");
 	}
 
 	/* set the doorbell size */
@@ -8218,7 +8280,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 		sc->devinfo.chip_port_mode =
 		    (val) ? CHIP_4_PORT_MODE : CHIP_2_PORT_MODE;
 
-		PMD_DRV_LOG(DEBUG, "Port mode = %s", (val) ? "4" : "2");
+		PMD_DRV_LOG(DEBUG, sc, "Port mode = %s", (val) ? "4" : "2");
 	}
 
 	/* get the function and path info for the device */
@@ -8233,7 +8295,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 
 	if (!sc->devinfo.shmem_base) {
 /* this should ONLY prevent upcoming shmem reads */
-		PMD_DRV_LOG(INFO, "MCP not active");
+		PMD_DRV_LOG(INFO, sc, "MCP not active");
 		sc->flags |= BNX2X_NO_MCP_FLAG;
 		return 0;
 	}
@@ -8242,7 +8304,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 	val = SHMEM_RD(sc, validity_map[SC_PORT(sc)]);
 	if ((val & (SHR_MEM_VALIDITY_DEV_INFO | SHR_MEM_VALIDITY_MB)) !=
 	    (SHR_MEM_VALIDITY_DEV_INFO | SHR_MEM_VALIDITY_MB)) {
-		PMD_DRV_LOG(NOTICE, "Invalid SHMEM validity signature: 0x%08x",
+		PMD_DRV_LOG(NOTICE, sc, "Invalid SHMEM validity signature: 0x%08x",
 			    val);
 		return 0;
 	}
@@ -8255,7 +8317,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 		 ((sc->devinfo.bc_ver >> 24) & 0xff),
 		 ((sc->devinfo.bc_ver >> 16) & 0xff),
 		 ((sc->devinfo.bc_ver >> 8) & 0xff));
-	PMD_DRV_LOG(INFO, "Bootcode version: %s", sc->devinfo.bc_ver_str);
+	PMD_DRV_LOG(INFO, sc, "Bootcode version: %s", sc->devinfo.bc_ver_str);
 
 	/* get the bootcode shmem address */
 	sc->devinfo.mf_cfg_base = bnx2x_get_shmem_mf_cfg_base(sc);
@@ -8310,7 +8372,7 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 			}
 
 			if (REG_RD(sc, IGU_REG_RESET_MEMORIES)) {
-				PMD_DRV_LOG(NOTICE,
+				PMD_DRV_LOG(NOTICE, sc,
 					    "FORCING IGU Normal Mode failed!!!");
 				bnx2x_release_hw_lock(sc, HW_LOCK_RESOURCE_RESET);
 				return -1;
@@ -8318,10 +8380,10 @@ static int bnx2x_get_device_info(struct bnx2x_softc *sc)
 		}
 
 		if (val & IGU_BLOCK_CONFIGURATION_REG_BACKWARD_COMP_EN) {
-			PMD_DRV_LOG(DEBUG, "IGU Backward Compatible Mode");
+			PMD_DRV_LOG(DEBUG, sc, "IGU Backward Compatible Mode");
 			sc->devinfo.int_block |= INT_BLOCK_MODE_BW_COMP;
 		} else {
-			PMD_DRV_LOG(DEBUG, "IGU Normal Mode");
+			PMD_DRV_LOG(DEBUG, sc, "IGU Normal Mode");
 		}
 
 		rc = bnx2x_get_igu_cam_info(sc);
@@ -8395,7 +8457,7 @@ bnx2x_link_settings_supported(struct bnx2x_softc *sc, uint32_t switch_cfg)
 	}
 
 	if (!(sc->port.supported[0] || sc->port.supported[1])) {
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(ERR, sc,
 			    "Invalid phy config in NVRAM (PHY1=0x%08x PHY2=0x%08x)",
 			    SHMEM_RD(sc,
 				     dev_info.port_hw_config
@@ -8421,7 +8483,7 @@ bnx2x_link_settings_supported(struct bnx2x_softc *sc, uint32_t switch_cfg)
 				   NIG_REG_XGXS0_CTRL_PHY_ADDR + port * 0x18);
 			break;
 		default:
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "Invalid switch config in"
 				    "link_config=0x%08x",
 				    sc->port.link_config[0]);
@@ -8429,7 +8491,7 @@ bnx2x_link_settings_supported(struct bnx2x_softc *sc, uint32_t switch_cfg)
 		}
 	}
 
-	PMD_DRV_LOG(INFO, "PHY addr 0x%08x", sc->port.phy_addr);
+	PMD_DRV_LOG(INFO, sc, "PHY addr 0x%08x", sc->port.phy_addr);
 
 	/* mask what we support according to speed_cap_mask per configuration */
 	for (idx = 0; idx < cfg_size; idx++) {
@@ -8482,7 +8544,7 @@ bnx2x_link_settings_supported(struct bnx2x_softc *sc, uint32_t switch_cfg)
 		}
 	}
 
-	PMD_DRV_LOG(INFO, "PHY supported 0=0x%08x 1=0x%08x",
+	PMD_DRV_LOG(INFO, sc, "PHY supported 0=0x%08x 1=0x%08x",
 		    sc->port.supported[0], sc->port.supported[1]);
 }
 
@@ -8541,7 +8603,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				sc->port.advertising[idx] |=
 				    (ADVERTISED_10baseT_Full | ADVERTISED_TP);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8561,7 +8623,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				sc->port.advertising[idx] |=
 				    (ADVERTISED_10baseT_Half | ADVERTISED_TP);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8580,7 +8642,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				sc->port.advertising[idx] |=
 				    (ADVERTISED_100baseT_Full | ADVERTISED_TP);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8600,7 +8662,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				sc->port.advertising[idx] |=
 				    (ADVERTISED_100baseT_Half | ADVERTISED_TP);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8618,7 +8680,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				sc->port.advertising[idx] |=
 				    (ADVERTISED_1000baseT_Full | ADVERTISED_TP);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8636,7 +8698,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				sc->port.advertising[idx] |=
 				    (ADVERTISED_2500baseX_Full | ADVERTISED_TP);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8655,7 +8717,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 				    (ADVERTISED_10000baseT_Full |
 				     ADVERTISED_FIBRE);
 			} else {
-				PMD_DRV_LOG(ERR,
+				PMD_DRV_LOG(ERR, sc,
 					    "Invalid NVRAM config link_config=0x%08x "
 					    "speed_cap_mask=0x%08x",
 					    link_config,
@@ -8670,7 +8732,7 @@ static void bnx2x_link_settings_requested(struct bnx2x_softc *sc)
 			break;
 
 		default:
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(ERR, sc,
 				    "Invalid NVRAM config link_config=0x%08x "
 				    "speed_cap_mask=0x%08x", link_config,
 				    sc->link_params.speed_cap_mask[idx]);
@@ -8701,7 +8763,7 @@ static void bnx2x_get_phy_info(struct bnx2x_softc *sc)
 	uint8_t port = SC_PORT(sc);
 	uint32_t eee_mode;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	/* shmem data already read in bnx2x_get_shmem_info() */
 
@@ -8861,7 +8923,7 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 		snprintf(buf, sizeof(buf), "fp_%d_sb", i);
 		if (bnx2x_dma_alloc(sc, sizeof(union bnx2x_host_hc_status_block),
 				  &fp->sb_dma, buf, RTE_CACHE_LINE_SIZE) != 0) {
-			PMD_DRV_LOG(NOTICE, "Failed to alloc %s", buf);
+			PMD_DRV_LOG(NOTICE, sc, "Failed to alloc %s", buf);
 			return -1;
 		} else {
 			if (CHIP_IS_E2E3(sc)) {
@@ -8951,7 +9013,7 @@ static int bnx2x_prev_mcp_done(struct bnx2x_softc *sc)
 	uint32_t rc = bnx2x_fw_command(sc, DRV_MSG_CODE_UNLOAD_DONE,
 				     DRV_MSG_CODE_UNLOAD_SKIP_LINK_RESET);
 	if (!rc) {
-		PMD_DRV_LOG(NOTICE, "MCP response failure, aborting");
+		PMD_DRV_LOG(NOTICE, sc, "MCP response failure, aborting");
 		return -1;
 	}
 
@@ -8983,12 +9045,12 @@ static uint8_t bnx2x_prev_is_path_marked(struct bnx2x_softc *sc)
 	tmp = bnx2x_prev_path_get_entry(sc);
 	if (tmp) {
 		if (tmp->aer) {
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "Path %d/%d/%d was marked by AER",
 				    sc->pcie_bus, sc->pcie_device, SC_PATH(sc));
 		} else {
 			rc = TRUE;
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "Path %d/%d/%d was already cleaned from previous drivers",
 				    sc->pcie_bus, sc->pcie_device, SC_PATH(sc));
 		}
@@ -9009,11 +9071,11 @@ static int bnx2x_prev_mark_path(struct bnx2x_softc *sc, uint8_t after_undi)
 	tmp = bnx2x_prev_path_get_entry(sc);
 	if (tmp) {
 		if (!tmp->aer) {
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "Re-marking AER in path %d/%d/%d",
 				    sc->pcie_bus, sc->pcie_device, SC_PATH(sc));
 		} else {
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "Removing AER indication from path %d/%d/%d",
 				    sc->pcie_bus, sc->pcie_device, SC_PATH(sc));
 			tmp->aer = 0;
@@ -9029,7 +9091,7 @@ static int bnx2x_prev_mark_path(struct bnx2x_softc *sc, uint8_t after_undi)
 	tmp = rte_malloc("", sizeof(struct bnx2x_prev_list_node),
 			 RTE_CACHE_LINE_SIZE);
 	if (!tmp) {
-		PMD_DRV_LOG(NOTICE, "Failed to allocate 'bnx2x_prev_list_node'");
+		PMD_DRV_LOG(NOTICE, sc, "Failed to allocate 'bnx2x_prev_list_node'");
 		return -1;
 	}
 
@@ -9054,13 +9116,13 @@ static int bnx2x_do_flr(struct bnx2x_softc *sc)
 
 	/* only E2 and onwards support FLR */
 	if (CHIP_IS_E1x(sc)) {
-		PMD_DRV_LOG(WARNING, "FLR not supported in E1H");
+		PMD_DRV_LOG(WARNING, sc, "FLR not supported in E1H");
 		return -1;
 	}
 
 	/* only bootcode REQ_BC_VER_4_INITIATE_FLR and onwards support flr */
 	if (sc->devinfo.bc_ver < REQ_BC_VER_4_INITIATE_FLR) {
-		PMD_DRV_LOG(WARNING,
+		PMD_DRV_LOG(WARNING, sc,
 			    "FLR not supported by BC_VER: 0x%08x",
 			    sc->devinfo.bc_ver);
 		return -1;
@@ -9077,7 +9139,7 @@ static int bnx2x_do_flr(struct bnx2x_softc *sc)
 		}
 	}
 
-	PMD_DRV_LOG(NOTICE, "PCIE transaction is not cleared, "
+	PMD_DRV_LOG(NOTICE, sc, "PCIE transaction is not cleared, "
 		    "proceeding with reset anyway");
 
 clear:
@@ -9225,7 +9287,7 @@ static int bnx2x_prev_unload_common(struct bnx2x_softc *sc)
 		if (reset_reg & MISC_REGISTERS_RESET_REG_1_RST_DORQ) {
 			tmp_reg = REG_RD(sc, DORQ_REG_NORM_CID_OFST);
 			if (tmp_reg == 0x7) {
-				PMD_DRV_LOG(DEBUG, "UNDI previously loaded");
+				PMD_DRV_LOG(DEBUG, sc, "UNDI previously loaded");
 				prev_undi = TRUE;
 				/* clear the UNDI indication */
 				REG_WR(sc, DORQ_REG_NORM_CID_OFST, 0);
@@ -9244,7 +9306,7 @@ static int bnx2x_prev_unload_common(struct bnx2x_softc *sc)
 				break;
 			}
 
-			PMD_DRV_LOG(DEBUG, "BRB still has 0x%08x", tmp_reg);
+			PMD_DRV_LOG(DEBUG, sc, "BRB still has 0x%08x", tmp_reg);
 
 			/* reset timer as long as BRB actually gets emptied */
 			if (prev_brb > tmp_reg) {
@@ -9262,7 +9324,7 @@ static int bnx2x_prev_unload_common(struct bnx2x_softc *sc)
 		}
 
 		if (!timer_count) {
-			PMD_DRV_LOG(NOTICE, "Failed to empty BRB");
+			PMD_DRV_LOG(NOTICE, sc, "Failed to empty BRB");
 		}
 	}
 
@@ -9317,7 +9379,7 @@ static int bnx2x_prev_unload_uncommon(struct bnx2x_softc *sc)
 		return 0;
 	}
 
-	PMD_DRV_LOG(INFO, "Could not FLR");
+	PMD_DRV_LOG(INFO, sc, "Could not FLR");
 
 	/* Close the MCP request, return failure */
 	rc = bnx2x_prev_mcp_done(sc);
@@ -9334,6 +9396,8 @@ static int bnx2x_prev_unload(struct bnx2x_softc *sc)
 	uint32_t fw, hw_lock_reg, hw_lock_val;
 	uint32_t rc = 0;
 
+	PMD_INIT_FUNC_TRACE(sc);
+
 	/*
 	 * Clear HW from errors which may have resulted from an interrupted
 	 * DMAE transaction.
@@ -9341,22 +9405,23 @@ static int bnx2x_prev_unload(struct bnx2x_softc *sc)
 	bnx2x_prev_interrupted_dmae(sc);
 
 	/* Release previously held locks */
-	if (SC_FUNC(sc) <= 5)
-		hw_lock_reg = (MISC_REG_DRIVER_CONTROL_1 + SC_FUNC(sc) * 8);
-	else
-		hw_lock_reg =
-		    (MISC_REG_DRIVER_CONTROL_7 + (SC_FUNC(sc) - 6) * 8);
+	hw_lock_reg = (SC_FUNC(sc) <= 5) ?
+			(MISC_REG_DRIVER_CONTROL_1 + SC_FUNC(sc) * 8) :
+			(MISC_REG_DRIVER_CONTROL_7 + (SC_FUNC(sc) - 6) * 8);
 
 	hw_lock_val = (REG_RD(sc, hw_lock_reg));
 	if (hw_lock_val) {
 		if (hw_lock_val & HW_LOCK_RESOURCE_NVRAM) {
+			PMD_DRV_LOG(DEBUG, sc, "Releasing previously held NVRAM lock\n");
 			REG_WR(sc, MCP_REG_MCPR_NVM_SW_ARB,
 			       (MCPR_NVM_SW_ARB_ARB_REQ_CLR1 << SC_PORT(sc)));
 		}
+		PMD_DRV_LOG(DEBUG, sc, "Releasing previously held HW lock\n");
 		REG_WR(sc, hw_lock_reg, 0xffffffff);
 	}
 
 	if (MCPR_ACCESS_LOCK_LOCK & REG_RD(sc, MCP_REG_MCPR_ACCESS_LOCK)) {
+		PMD_DRV_LOG(DEBUG, sc, "Releasing previously held ALR\n");
 		REG_WR(sc, MCP_REG_MCPR_ACCESS_LOCK, 0);
 	}
 
@@ -9364,7 +9429,7 @@ static int bnx2x_prev_unload(struct bnx2x_softc *sc)
 		/* Lock MCP using an unload request */
 		fw = bnx2x_fw_command(sc, DRV_MSG_CODE_UNLOAD_REQ_WOL_DIS, 0);
 		if (!fw) {
-			PMD_DRV_LOG(NOTICE, "MCP response failure, aborting");
+			PMD_DRV_LOG(NOTICE, sc, "MCP response failure, aborting");
 			rc = -1;
 			break;
 		}
@@ -9384,7 +9449,7 @@ static int bnx2x_prev_unload(struct bnx2x_softc *sc)
 	} while (--time_counter);
 
 	if (!time_counter || rc) {
-		PMD_DRV_LOG(NOTICE, "Failed to unload previous driver!");
+		PMD_DRV_LOG(NOTICE, sc, "Failed to unload previous driver!");
 		rc = -1;
 	}
 
@@ -9401,7 +9466,7 @@ bnx2x_dcbx_set_state(struct bnx2x_softc *sc, uint8_t dcb_on, uint32_t dcbx_enabl
 		sc->dcb_state = FALSE;
 		sc->dcbx_enabled = BNX2X_DCBX_ENABLED_INVALID;
 	}
-	PMD_DRV_LOG(DEBUG,
+	PMD_DRV_LOG(DEBUG, sc,
 		    "DCB state [%s:%s]",
 		    dcb_on ? "ON" : "OFF",
 		    (dcbx_enabled == BNX2X_DCBX_ENABLED_OFF) ? "user-mode" :
@@ -9434,7 +9499,7 @@ static void bnx2x_init_multi_cos(struct bnx2x_softc *sc)
 		if (cos < sc->max_cos) {
 			sc->prio_to_cos[pri] = cos;
 		} else {
-			PMD_DRV_LOG(WARNING,
+			PMD_DRV_LOG(WARNING, sc,
 				    "Invalid COS %d for priority %d "
 				    "(max COS is %d), setting to 0", cos, pri,
 				    (sc->max_cos - 1));
@@ -9455,7 +9520,7 @@ static int bnx2x_pci_get_caps(struct bnx2x_softc *sc)
 	cap = sc->pci_caps = rte_zmalloc("caps", sizeof(struct bnx2x_pci_cap),
 					 RTE_CACHE_LINE_SIZE);
 	if (!cap) {
-		PMD_DRV_LOG(NOTICE, "Failed to allocate memory");
+		PMD_DRV_LOG(NOTICE, sc, "Failed to allocate memory");
 		return -ENOMEM;
 	}
 
@@ -9466,7 +9531,7 @@ static int bnx2x_pci_get_caps(struct bnx2x_softc *sc)
 	pci_read(sc, PCIR_STATUS, &status, 2);
 	if (!(status & PCIM_STATUS_CAPPRESENT)) {
 #endif
-		PMD_DRV_LOG(NOTICE, "PCIe capability reading failed");
+		PMD_DRV_LOG(NOTICE, sc, "PCIe capability reading failed");
 		return -1;
 	}
 
@@ -9486,7 +9551,7 @@ static int bnx2x_pci_get_caps(struct bnx2x_softc *sc)
 					sizeof(struct bnx2x_pci_cap),
 					RTE_CACHE_LINE_SIZE);
 		if (!cap->next) {
-			PMD_DRV_LOG(NOTICE, "Failed to allocate memory");
+			PMD_DRV_LOG(NOTICE, sc, "Failed to allocate memory");
 			return -ENOMEM;
 		}
 		cap = cap->next;
@@ -9522,25 +9587,25 @@ void bnx2x_load_firmware(struct bnx2x_softc *sc)
 		? FW_NAME_57711 : FW_NAME_57810;
 	f = open(fwname, O_RDONLY);
 	if (f < 0) {
-		PMD_DRV_LOG(NOTICE, "Can't open firmware file");
+		PMD_DRV_LOG(NOTICE, sc, "Can't open firmware file");
 		return;
 	}
 
 	if (fstat(f, &st) < 0) {
-		PMD_DRV_LOG(NOTICE, "Can't stat firmware file");
+		PMD_DRV_LOG(NOTICE, sc, "Can't stat firmware file");
 		close(f);
 		return;
 	}
 
 	sc->firmware = rte_zmalloc("bnx2x_fw", st.st_size, RTE_CACHE_LINE_SIZE);
 	if (!sc->firmware) {
-		PMD_DRV_LOG(NOTICE, "Can't allocate memory for firmware");
+		PMD_DRV_LOG(NOTICE, sc, "Can't allocate memory for firmware");
 		close(f);
 		return;
 	}
 
 	if (read(f, sc->firmware, st.st_size) != st.st_size) {
-		PMD_DRV_LOG(NOTICE, "Can't read firmware data");
+		PMD_DRV_LOG(NOTICE, sc, "Can't read firmware data");
 		close(f);
 		return;
 	}
@@ -9548,10 +9613,11 @@ void bnx2x_load_firmware(struct bnx2x_softc *sc)
 
 	sc->fw_len = st.st_size;
 	if (sc->fw_len < FW_HEADER_LEN) {
-		PMD_DRV_LOG(NOTICE, "Invalid fw size: %" PRIu64, sc->fw_len);
+		PMD_DRV_LOG(NOTICE, sc,
+			    "Invalid fw size: %" PRIu64, sc->fw_len);
 		return;
 	}
-	PMD_DRV_LOG(DEBUG, "fw_len = %" PRIu64, sc->fw_len);
+	PMD_DRV_LOG(DEBUG, sc, "fw_len = %" PRIu64, sc->fw_len);
 }
 
 static void
@@ -9618,11 +9684,11 @@ int bnx2x_attach(struct bnx2x_softc *sc)
 {
 	int rc;
 
-	PMD_DRV_LOG(DEBUG, "Starting attach...");
+	PMD_DRV_LOG(DEBUG, sc, "Starting attach...");
 
 	rc = bnx2x_pci_get_caps(sc);
 	if (rc) {
-		PMD_DRV_LOG(NOTICE, "PCIe caps reading was failed");
+		PMD_DRV_LOG(NOTICE, sc, "PCIe caps reading was failed");
 		return rc;
 	}
 
@@ -9661,7 +9727,7 @@ int bnx2x_attach(struct bnx2x_softc *sc)
 
 		/* get device info and set params */
 		if (bnx2x_get_device_info(sc) != 0) {
-			PMD_DRV_LOG(NOTICE, "getting device info");
+			PMD_DRV_LOG(NOTICE, sc, "getting device info");
 			return -ENXIO;
 		}
 
@@ -9685,6 +9751,8 @@ int bnx2x_attach(struct bnx2x_softc *sc)
 		sc->fw_seq =
 		    (SHMEM_RD(sc, func_mb[SC_FW_MB_IDX(sc)].drv_mb_header) &
 		     DRV_MSG_SEQ_NUMBER_MASK);
+		PMD_DRV_LOG(DEBUG, sc, "prev unload fw_seq 0x%04x",
+			    sc->fw_seq);
 		bnx2x_prev_unload(sc);
 	}
 
@@ -9760,7 +9828,7 @@ bnx2x_igu_clear_sb_gen(struct bnx2x_softc *sc, uint8_t func, uint8_t idu_sb_id,
 
 	mb();
 
-	PMD_DRV_LOG(DEBUG, "write 0x%08x to IGU(via GRC) addr 0x%x",
+	PMD_DRV_LOG(DEBUG, sc, "write 0x%08x to IGU(via GRC) addr 0x%x",
 		    ctl, igu_addr_ctl);
 	REG_WR(sc, igu_addr_ctl, ctl);
 
@@ -9772,7 +9840,7 @@ bnx2x_igu_clear_sb_gen(struct bnx2x_softc *sc, uint8_t func, uint8_t idu_sb_id,
 	}
 
 	if (!(REG_RD(sc, igu_addr_ack) & sb_bit)) {
-		PMD_DRV_LOG(DEBUG,
+		PMD_DRV_LOG(DEBUG, sc,
 			    "Unable to finish IGU cleanup: "
 			    "idu_sb_id %d offset %d bit %d (cnt %d)",
 			    idu_sb_id, idu_sb_id / 32, idu_sb_id % 32, cnt);
@@ -9792,7 +9860,7 @@ static void bnx2x_reset_common(struct bnx2x_softc *sc)
 {
 	uint32_t val = 0x1400;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	/* reset_common */
 	REG_WR(sc, (GRCBASE_MISC + MISC_REGISTERS_RESET_REG_1_CLEAR),
@@ -9826,8 +9894,10 @@ static void bnx2x_common_init_phy(struct bnx2x_softc *sc)
 		shmem2_base[1] = SHMEM2_RD(sc, other_shmem2_base_addr);
 	}
 
+	bnx2x_acquire_phy_lock(sc);
 	elink_common_init_phy(sc, shmem_base, shmem2_base,
 			      sc->devinfo.chip_id, 0);
+	bnx2x_release_phy_lock(sc);
 }
 
 static void bnx2x_pf_disable(struct bnx2x_softc *sc)
@@ -10001,7 +10071,8 @@ static int bnx2x_init_hw_common(struct bnx2x_softc *sc)
 	uint8_t abs_func_id;
 	uint32_t val;
 
-	PMD_DRV_LOG(DEBUG, "starting common init for func %d", SC_ABS_FUNC(sc));
+	PMD_DRV_LOG(DEBUG, sc,
+		    "starting common init for func %d", SC_ABS_FUNC(sc));
 
 	/*
 	 * take the RESET lock to protect undi_unload flow from accessing
@@ -10084,12 +10155,12 @@ static int bnx2x_init_hw_common(struct bnx2x_softc *sc)
 
 	val = REG_RD(sc, PXP2_REG_RQ_CFG_DONE);
 	if (val != 1) {
-		PMD_DRV_LOG(NOTICE, "PXP2 CFG failed");
+		PMD_DRV_LOG(NOTICE, sc, "PXP2 CFG failed");
 		return -1;
 	}
 	val = REG_RD(sc, PXP2_REG_RD_INIT_DONE);
 	if (val != 1) {
-		PMD_DRV_LOG(NOTICE, "PXP2 RD_INIT failed");
+		PMD_DRV_LOG(NOTICE, sc, "PXP2 RD_INIT failed");
 		return -1;
 	}
 
@@ -10211,7 +10282,7 @@ static int bnx2x_init_hw_common(struct bnx2x_softc *sc)
 		} while (factor-- && (val != 1));
 
 		if (val != 1) {
-			PMD_DRV_LOG(NOTICE, "ATC_INIT failed");
+			PMD_DRV_LOG(NOTICE, sc, "ATC_INIT failed");
 			return -1;
 		}
 	}
@@ -10349,7 +10420,7 @@ static int bnx2x_init_hw_common(struct bnx2x_softc *sc)
 
 	if (sizeof(union cdu_context) != 1024) {
 /* we currently assume that a context is 1024 bytes */
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "please adjust the size of cdu_context(%ld)",
 			    (long)sizeof(union cdu_context));
 	}
@@ -10411,17 +10482,17 @@ static int bnx2x_init_hw_common(struct bnx2x_softc *sc)
 	/* finish CFC init */
 	val = reg_poll(sc, CFC_REG_LL_INIT_DONE, 1, 100, 10);
 	if (val != 1) {
-		PMD_DRV_LOG(NOTICE, "CFC LL_INIT failed");
+		PMD_DRV_LOG(NOTICE, sc, "CFC LL_INIT failed");
 		return -1;
 	}
 	val = reg_poll(sc, CFC_REG_AC_INIT_DONE, 1, 100, 10);
 	if (val != 1) {
-		PMD_DRV_LOG(NOTICE, "CFC AC_INIT failed");
+		PMD_DRV_LOG(NOTICE, sc, "CFC AC_INIT failed");
 		return -1;
 	}
 	val = reg_poll(sc, CFC_REG_CAM_INIT_DONE, 1, 100, 10);
 	if (val != 1) {
-		PMD_DRV_LOG(NOTICE, "CFC CAM_INIT failed");
+		PMD_DRV_LOG(NOTICE, sc, "CFC CAM_INIT failed");
 		return -1;
 	}
 	REG_WR(sc, CFC_REG_DEBUG0, 0);
@@ -10474,7 +10545,7 @@ static int bnx2x_init_hw_port(struct bnx2x_softc *sc)
 	uint32_t low, high;
 	uint32_t val;
 
-	PMD_DRV_LOG(DEBUG, "starting port init for port %d", port);
+	PMD_DRV_LOG(DEBUG, sc, "starting port init for port %d", port);
 
 	REG_WR(sc, NIG_REG_MASK_INTERRUPT_PORT0 + port * 4, 0);
 
@@ -10701,7 +10772,7 @@ bnx2x_flr_clnup_poll_hw_counter(struct bnx2x_softc *sc, uint32_t reg,
 	uint32_t val = bnx2x_flr_clnup_reg_poll(sc, reg, 0, poll_cnt);
 
 	if (val != 0) {
-		PMD_DRV_LOG(NOTICE, "%s usage count=%d", msg, val);
+		PMD_DRV_LOG(NOTICE, sc, "%s usage count=%d", msg, val);
 		return -1;
 	}
 
@@ -10793,7 +10864,7 @@ bnx2x_send_final_clnup(struct bnx2x_softc *sc, uint8_t clnup_func,
 	int ret = 0;
 
 	if (REG_RD(sc, comp_addr)) {
-		PMD_DRV_LOG(NOTICE,
+		PMD_DRV_LOG(NOTICE, sc,
 			    "Cleanup complete was not 0 before sending");
 		return -1;
 	}
@@ -10806,8 +10877,8 @@ bnx2x_send_final_clnup(struct bnx2x_softc *sc, uint8_t clnup_func,
 	REG_WR(sc, XSDM_REG_OPERATION_GEN, op_gen_command);
 
 	if (bnx2x_flr_clnup_reg_poll(sc, comp_addr, 1, poll_cnt) != 1) {
-		PMD_DRV_LOG(NOTICE, "FW final cleanup did not succeed");
-		PMD_DRV_LOG(DEBUG, "At timeout completion address contained %x",
+		PMD_DRV_LOG(NOTICE, sc, "FW final cleanup did not succeed");
+		PMD_DRV_LOG(DEBUG, sc, "At timeout completion address contained %x",
 			    (REG_RD(sc, comp_addr)));
 		rte_panic("FLR cleanup failed");
 		return -1;
@@ -10923,28 +10994,30 @@ static void bnx2x_hw_enable_status(struct bnx2x_softc *sc)
 	__rte_unused uint32_t val;
 
 	val = REG_RD(sc, CFC_REG_WEAK_ENABLE_PF);
-	PMD_DRV_LOG(DEBUG, "CFC_REG_WEAK_ENABLE_PF is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc, "CFC_REG_WEAK_ENABLE_PF is 0x%x", val);
 
 	val = REG_RD(sc, PBF_REG_DISABLE_PF);
-	PMD_DRV_LOG(DEBUG, "PBF_REG_DISABLE_PF is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc, "PBF_REG_DISABLE_PF is 0x%x", val);
 
 	val = REG_RD(sc, IGU_REG_PCI_PF_MSI_EN);
-	PMD_DRV_LOG(DEBUG, "IGU_REG_PCI_PF_MSI_EN is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc, "IGU_REG_PCI_PF_MSI_EN is 0x%x", val);
 
 	val = REG_RD(sc, IGU_REG_PCI_PF_MSIX_EN);
-	PMD_DRV_LOG(DEBUG, "IGU_REG_PCI_PF_MSIX_EN is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc, "IGU_REG_PCI_PF_MSIX_EN is 0x%x", val);
 
 	val = REG_RD(sc, IGU_REG_PCI_PF_MSIX_FUNC_MASK);
-	PMD_DRV_LOG(DEBUG, "IGU_REG_PCI_PF_MSIX_FUNC_MASK is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc, "IGU_REG_PCI_PF_MSIX_FUNC_MASK is 0x%x", val);
 
 	val = REG_RD(sc, PGLUE_B_REG_SHADOW_BME_PF_7_0_CLR);
-	PMD_DRV_LOG(DEBUG, "PGLUE_B_REG_SHADOW_BME_PF_7_0_CLR is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc,
+		    "PGLUE_B_REG_SHADOW_BME_PF_7_0_CLR is 0x%x", val);
 
 	val = REG_RD(sc, PGLUE_B_REG_FLR_REQUEST_PF_7_0_CLR);
-	PMD_DRV_LOG(DEBUG, "PGLUE_B_REG_FLR_REQUEST_PF_7_0_CLR is 0x%x", val);
+	PMD_DRV_LOG(DEBUG, sc,
+		    "PGLUE_B_REG_FLR_REQUEST_PF_7_0_CLR is 0x%x", val);
 
 	val = REG_RD(sc, PGLUE_B_REG_INTERNAL_PFID_ENABLE_MASTER);
-	PMD_DRV_LOG(DEBUG, "PGLUE_B_REG_INTERNAL_PFID_ENABLE_MASTER is 0x%x",
+	PMD_DRV_LOG(DEBUG, sc, "PGLUE_B_REG_INTERNAL_PFID_ENABLE_MASTER is 0x%x",
 		    val);
 }
 
@@ -10988,7 +11061,7 @@ static int bnx2x_pf_flr_clnup(struct bnx2x_softc *sc)
 
 	/* Verify no pending pci transactions */
 	if (bnx2x_is_pcie_pending(sc)) {
-		PMD_DRV_LOG(NOTICE, "PCIE Transactions still pending");
+		PMD_DRV_LOG(NOTICE, sc, "PCIE Transactions still pending");
 	}
 
 	/* Debug */
@@ -11015,13 +11088,13 @@ static int bnx2x_init_hw_func(struct bnx2x_softc *sc)
 	int main_mem_width, rc;
 	uint32_t i;
 
-	PMD_DRV_LOG(DEBUG, "starting func init for func %d", func);
+	PMD_DRV_LOG(DEBUG, sc, "starting func init for func %d", func);
 
 	/* FLR cleanup */
 	if (!CHIP_IS_E1x(sc)) {
 		rc = bnx2x_pf_flr_clnup(sc);
 		if (rc) {
-			PMD_DRV_LOG(NOTICE, "FLR cleanup failed!");
+			PMD_DRV_LOG(NOTICE, sc, "FLR cleanup failed!");
 			return rc;
 		}
 	}
@@ -11268,7 +11341,7 @@ static int bnx2x_init_hw_func(struct bnx2x_softc *sc)
 
 		val = REG_RD(sc, main_mem_prty_clr);
 		if (val) {
-			PMD_DRV_LOG(DEBUG,
+			PMD_DRV_LOG(DEBUG, sc,
 				    "Parity errors in HC block during function init (0x%x)!",
 				    val);
 		}
@@ -11303,10 +11376,12 @@ static int bnx2x_init_hw_func(struct bnx2x_softc *sc)
 static void bnx2x_link_reset(struct bnx2x_softc *sc)
 {
 	if (!BNX2X_NOMCP(sc)) {
+		bnx2x_acquire_phy_lock(sc);
 		elink_lfa_reset(&sc->link_params, &sc->link_vars);
+		bnx2x_release_phy_lock(sc);
 	} else {
 		if (!CHIP_REV_IS_SLOW(sc)) {
-			PMD_DRV_LOG(WARNING,
+			PMD_DRV_LOG(WARNING, sc,
 				    "Bootcode is missing - cannot reset link");
 		}
 	}
@@ -11336,7 +11411,7 @@ static void bnx2x_reset_port(struct bnx2x_softc *sc)
 	/* Check for BRB port occupancy */
 	val = REG_RD(sc, BRB1_REG_PORT_NUM_OCC_BLOCKS_0 + port * 4);
 	if (val) {
-		PMD_DRV_LOG(DEBUG,
+		PMD_DRV_LOG(DEBUG, sc,
 			    "BRB1 is not empty, %d blocks are occupied", val);
 	}
 }
@@ -11530,10 +11605,10 @@ static int ecore_gunzip(struct bnx2x_softc *sc, const uint8_t * zbuf, int len)
 	int ret;
 	int data_begin = cut_gzip_prefix(zbuf, len);
 
-	PMD_DRV_LOG(DEBUG, "ecore_gunzip %d", len);
+	PMD_DRV_LOG(DEBUG, sc, "ecore_gunzip %d", len);
 
 	if (data_begin <= 0) {
-		PMD_DRV_LOG(NOTICE, "bad gzip prefix");
+		PMD_DRV_LOG(NOTICE, sc, "bad gzip prefix");
 		return -1;
 	}
 
@@ -11545,19 +11620,19 @@ static int ecore_gunzip(struct bnx2x_softc *sc, const uint8_t * zbuf, int len)
 
 	ret = inflateInit2(&zlib_stream, -MAX_WBITS);
 	if (ret != Z_OK) {
-		PMD_DRV_LOG(NOTICE, "zlib inflateInit2 error");
+		PMD_DRV_LOG(NOTICE, sc, "zlib inflateInit2 error");
 		return ret;
 	}
 
 	ret = inflate(&zlib_stream, Z_FINISH);
 	if ((ret != Z_STREAM_END) && (ret != Z_OK)) {
-		PMD_DRV_LOG(NOTICE, "zlib inflate error: %d %s", ret,
+		PMD_DRV_LOG(NOTICE, sc, "zlib inflate error: %d %s", ret,
 			    zlib_stream.msg);
 	}
 
 	sc->gz_outlen = zlib_stream.total_out;
 	if (sc->gz_outlen & 0x3) {
-		PMD_DRV_LOG(NOTICE, "firmware is not aligned. gz_outlen == %d",
+		PMD_DRV_LOG(NOTICE, sc, "firmware is not aligned. gz_outlen == %d",
 			    sc->gz_outlen);
 	}
 	sc->gz_outlen >>= 2;
@@ -11676,7 +11751,7 @@ void bnx2x_print_adapter_info(struct bnx2x_softc *sc)
 	int i = 0;
 	__rte_unused uint32_t ext_phy_type;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 	if (sc->link_vars.phy_flags & PHY_XGXS_FLAG)
 		ext_phy_type = ELINK_XGXS_EXT_PHY_TYPE(REG_RD(sc,
 							      sc->
@@ -11695,97 +11770,102 @@ void bnx2x_print_adapter_info(struct bnx2x_softc *sc)
 									 dev_info.port_hw_config
 									 [0].external_phy_config)));
 
-	PMD_INIT_LOG(DEBUG, "\n\n===================================\n");
+	PMD_DRV_LOG(INFO, sc, "\n\n===================================\n");
 	/* Hardware chip info. */
-	PMD_INIT_LOG(DEBUG, "%12s : %#08x", "ASIC", sc->devinfo.chip_id);
-	PMD_INIT_LOG(DEBUG, "%12s : %c%d", "Rev", (CHIP_REV(sc) >> 12) + 'A',
+	PMD_DRV_LOG(INFO, sc, "%12s : %#08x", "ASIC", sc->devinfo.chip_id);
+	PMD_DRV_LOG(INFO, sc, "%12s : %c%d", "Rev", (CHIP_REV(sc) >> 12) + 'A',
 		     (CHIP_METAL(sc) >> 4));
 
 	/* Bus info. */
-	PMD_INIT_LOG(DEBUG, "%12s : %d, ", "Bus PCIe", sc->devinfo.pcie_link_width);
+	PMD_DRV_LOG(INFO, sc,
+		    "%12s : %d, ", "Bus PCIe", sc->devinfo.pcie_link_width);
 	switch (sc->devinfo.pcie_link_speed) {
 	case 1:
-		PMD_INIT_LOG(DEBUG, "%23s", "2.5 Gbps");
+		PMD_DRV_LOG(INFO, sc, "%23s", "2.5 Gbps");
 		break;
 	case 2:
-		PMD_INIT_LOG(DEBUG, "%21s", "5 Gbps");
+		PMD_DRV_LOG(INFO, sc, "%21s", "5 Gbps");
 		break;
 	case 4:
-		PMD_INIT_LOG(DEBUG, "%21s", "8 Gbps");
+		PMD_DRV_LOG(INFO, sc, "%21s", "8 Gbps");
 		break;
 	default:
-		PMD_INIT_LOG(DEBUG, "%33s", "Unknown link speed");
+		PMD_DRV_LOG(INFO, sc, "%33s", "Unknown link speed");
 	}
 
 	/* Device features. */
-	PMD_INIT_LOG(DEBUG, "%12s : ", "Flags");
+	PMD_DRV_LOG(INFO, sc, "%12s : ", "Flags");
 
 	/* Miscellaneous flags. */
 	if (sc->devinfo.pcie_cap_flags & BNX2X_MSI_CAPABLE_FLAG) {
-		PMD_INIT_LOG(DEBUG, "%18s", "MSI");
+		PMD_DRV_LOG(INFO, sc, "%18s", "MSI");
 		i++;
 	}
 
 	if (sc->devinfo.pcie_cap_flags & BNX2X_MSIX_CAPABLE_FLAG) {
 		if (i > 0)
-			PMD_INIT_LOG(DEBUG, "|");
-		PMD_INIT_LOG(DEBUG, "%20s", "MSI-X");
+			PMD_DRV_LOG(INFO, sc, "|");
+		PMD_DRV_LOG(INFO, sc, "%20s", "MSI-X");
 		i++;
 	}
 
 	if (IS_PF(sc)) {
-		PMD_INIT_LOG(DEBUG, "%12s : ", "Queues");
+		PMD_DRV_LOG(INFO, sc, "%12s : ", "Queues");
 		switch (sc->sp->rss_rdata.rss_mode) {
 		case ETH_RSS_MODE_DISABLED:
-			PMD_INIT_LOG(DEBUG, "%19s", "None");
+			PMD_DRV_LOG(INFO, sc, "%19s", "None");
 			break;
 		case ETH_RSS_MODE_REGULAR:
-			PMD_INIT_LOG(DEBUG, "%18s : %d", "RSS", sc->num_queues);
+			PMD_DRV_LOG(INFO, sc,
+				    "%18s : %d", "RSS", sc->num_queues);
 			break;
 		default:
-			PMD_INIT_LOG(DEBUG, "%22s", "Unknown");
+			PMD_DRV_LOG(INFO, sc, "%22s", "Unknown");
 			break;
 		}
 	}
 
 	/* RTE and Driver versions */
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "DPDK",
-		     rte_version());
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "Driver",
-		     bnx2x_pmd_version());
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "DPDK",
+			rte_version());
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "Driver",
+			bnx2x_pmd_version());
 
 	/* Firmware versions and device features. */
-	PMD_INIT_LOG(DEBUG, "%12s : %d.%d.%d",
+	PMD_DRV_LOG(INFO, sc, "%12s : %d.%d.%d",
 		     "Firmware",
 		     BNX2X_5710_FW_MAJOR_VERSION,
 		     BNX2X_5710_FW_MINOR_VERSION,
 		     BNX2X_5710_FW_REVISION_VERSION);
-	PMD_INIT_LOG(DEBUG, "%12s : %s",
+	PMD_DRV_LOG(INFO, sc, "%12s : %s",
 		     "Bootcode", sc->devinfo.bc_ver_str);
 
-	PMD_INIT_LOG(DEBUG, "\n\n===================================\n");
-	PMD_INIT_LOG(DEBUG, "%12s : %u", "Bnx2x Func", sc->pcie_func);
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "Bnx2x Flags", get_bnx2x_flags(sc->flags));
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "DMAE Is",
+	PMD_DRV_LOG(INFO, sc, "\n\n===================================\n");
+	PMD_DRV_LOG(INFO, sc, "%12s : %u", "Bnx2x Func", sc->pcie_func);
+	PMD_DRV_LOG(INFO, sc,
+		    "%12s : %s", "Bnx2x Flags", get_bnx2x_flags(sc->flags));
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "DMAE Is",
 		     (sc->dmae_ready ? "Ready" : "Not Ready"));
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "OVLAN", (OVLAN(sc) ? "YES" : "NO"));
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "MF", (IS_MF(sc) ? "YES" : "NO"));
-	PMD_INIT_LOG(DEBUG, "%12s : %u", "MTU", sc->mtu);
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "PHY Type", get_ext_phy_type(ext_phy_type));
-	PMD_INIT_LOG(DEBUG, "%12s : %x:%x:%x:%x:%x:%x", "MAC Addr",
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "OVLAN", (OVLAN(sc) ? "YES" : "NO"));
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "MF", (IS_MF(sc) ? "YES" : "NO"));
+	PMD_DRV_LOG(INFO, sc, "%12s : %u", "MTU", sc->mtu);
+	PMD_DRV_LOG(INFO, sc,
+		    "%12s : %s", "PHY Type", get_ext_phy_type(ext_phy_type));
+	PMD_DRV_LOG(INFO, sc, "%12s : %x:%x:%x:%x:%x:%x", "MAC Addr",
 			sc->link_params.mac_addr[0],
 			sc->link_params.mac_addr[1],
 			sc->link_params.mac_addr[2],
 			sc->link_params.mac_addr[3],
 			sc->link_params.mac_addr[4],
 			sc->link_params.mac_addr[5]);
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "RX Mode", get_rx_mode(sc->rx_mode));
-	PMD_INIT_LOG(DEBUG, "%12s : %s", "State", get_state(sc->state));
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "RX Mode", get_rx_mode(sc->rx_mode));
+	PMD_DRV_LOG(INFO, sc, "%12s : %s", "State", get_state(sc->state));
 	if (sc->recovery_state)
-		PMD_INIT_LOG(DEBUG, "%12s : %s", "Recovery",
+		PMD_DRV_LOG(INFO, sc, "%12s : %s", "Recovery",
 			     get_recovery_state(sc->recovery_state));
-	PMD_INIT_LOG(DEBUG, "%12s : CQ = %lx,  EQ = %lx", "SPQ Left",
+	PMD_DRV_LOG(INFO, sc, "%12s : CQ = %lx,  EQ = %lx", "SPQ Left",
 		     sc->cq_spq_left, sc->eq_spq_left);
-	PMD_INIT_LOG(DEBUG, "%12s : %x", "Switch", sc->link_params.switch_cfg);
-	PMD_INIT_LOG(DEBUG, "\n\n===================================\n");
+	PMD_DRV_LOG(INFO, sc,
+		    "%12s : %x", "Switch", sc->link_params.switch_cfg);
+	PMD_DRV_LOG(INFO, sc, "\n\n===================================\n");
 }

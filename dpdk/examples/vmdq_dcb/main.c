@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdint.h>
@@ -78,8 +49,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 
 #define INVALID_PORT_ID 0xFF
 
@@ -100,10 +71,6 @@ static const struct rte_eth_conf vmdq_dcb_conf_default = {
 	.rxmode = {
 		.mq_mode        = ETH_MQ_RX_VMDQ_DCB,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_VMDQ_DCB,
@@ -228,6 +195,8 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	uint16_t q;
 	uint16_t queues_per_pool;
 	uint32_t max_nb_pools;
+	struct rte_eth_txconf txq_conf;
+	uint64_t rss_hf_tmp;
 
 	/*
 	 * The max pool number from dev_info will be used to validate the pool
@@ -277,12 +246,28 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			num_pools, queues_per_pool);
 	}
 
-	if (port >= rte_eth_dev_count())
+	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
 	retval = get_eth_conf(&port_conf);
 	if (retval < 0)
 		return retval;
+
+	rte_eth_dev_info_get(port, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	rss_hf_tmp = port_conf.rx_adv_conf.rss_conf.rss_hf;
+	port_conf.rx_adv_conf.rss_conf.rss_hf &=
+		dev_info.flow_type_rss_offloads;
+	if (port_conf.rx_adv_conf.rss_conf.rss_hf != rss_hf_tmp) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			port,
+			rss_hf_tmp,
+			port_conf.rx_adv_conf.rss_conf.rss_hf);
+	}
 
 	/*
 	 * Though in this example, all queues including pf queues are setup.
@@ -316,10 +301,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		}
 	}
 
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = port_conf.txmode.offloads;
 	for (q = 0; q < num_queues; q++) {
 		retval = rte_eth_tx_queue_setup(port, q, txRingSize,
 					rte_eth_dev_socket_id(port),
-					NULL);
+					&txq_conf);
 		if (retval < 0) {
 			printf("initialize tx queue %d failed\n", q);
 			return retval;
@@ -623,9 +610,9 @@ static unsigned check_ports_num(unsigned nb_ports)
 	}
 
 	for (portid = 0; portid < num_ports; portid++) {
-		if (ports[portid] >= nb_ports) {
-			printf("\nSpecified port ID(%u) exceeds max system port ID(%u)\n",
-				ports[portid], (nb_ports - 1));
+		if (!rte_eth_dev_is_valid_port(ports[portid])) {
+			printf("\nSpecified port ID(%u) is not valid\n",
+				ports[portid]);
 			ports[portid] = INVALID_PORT_ID;
 			valid_num_ports--;
 		}
@@ -666,7 +653,7 @@ main(int argc, char *argv[])
 				" number of cores(1-%d)\n\n", RTE_MAX_LCORE);
 	}
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 
 	/*
 	 * Update the global var NUM_PORTS and global array PORTS
@@ -686,7 +673,7 @@ main(int argc, char *argv[])
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("\nSkipping disabled port %d\n", portid);

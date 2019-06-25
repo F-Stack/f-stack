@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2007-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2007-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  *
  * Ackowledgement to Fen Systems Ltd.
  */
@@ -116,7 +92,8 @@ extern "C" {
 #define	EFX_DWORD_3_LBN 96
 #define	EFX_DWORD_3_WIDTH 32
 
-/* There are intentionally no EFX_QWORD_0 or EFX_QWORD_1 field definitions
+/*
+ * There are intentionally no EFX_QWORD_0 or EFX_QWORD_1 field definitions
  * here as the implementaion of EFX_QWORD_FIELD and EFX_OWORD_FIELD do not
  * support field widths larger than 32 bits.
  */
@@ -352,6 +329,16 @@ extern int fix_lint;
 #endif
 
 /*
+ * Saturation arithmetic subtract with minimum equal to zero.
+ *
+ * Use saturating arithmetic to ensure a non-negative result. This
+ * avoids undefined behaviour (and compiler warnings) when used as a
+ * shift count.
+ */
+#define	EFX_SSUB(_val, _sub) \
+	((_val) > (_sub) ? ((_val) - (_sub)) : 0)
+
+/*
  * Extract bit field portion [low,high) from the native-endian element
  * which contains bits [min,max).
  *
@@ -370,8 +357,8 @@ extern int fix_lint;
 	((FIX_LINT(_low > _max) || FIX_LINT(_high < _min)) ?		\
 		0U :							\
 		((_low > _min) ?					\
-			((_element) >> (_low - _min)) :			\
-			((_element) << (_min - _low))))
+			((_element) >> EFX_SSUB(_low, _min)) :		\
+			((_element) << EFX_SSUB(_min, _low))))
 
 /*
  * Extract bit field portion [low,high) from the 64-bit little-endian
@@ -560,29 +547,29 @@ extern int fix_lint;
 	(((_low > _max) || (_high < _min)) ?				\
 		0U :							\
 		((_low > _min) ?					\
-			(((uint64_t)(_value)) << (_low - _min)) :	\
-			(((uint64_t)(_value)) >> (_min - _low))))
+			(((uint64_t)(_value)) << EFX_SSUB(_low, _min)) :\
+			(((uint64_t)(_value)) >> EFX_SSUB(_min, _low))))
 
 #define	EFX_INSERT_NATIVE32(_min, _max, _low, _high, _value)		\
 	(((_low > _max) || (_high < _min)) ?				\
 		0U :							\
 		((_low > _min) ?					\
-			(((uint32_t)(_value)) << (_low - _min)) :	\
-			(((uint32_t)(_value)) >> (_min - _low))))
+			(((uint32_t)(_value)) << EFX_SSUB(_low, _min)) :\
+			(((uint32_t)(_value)) >> EFX_SSUB(_min, _low))))
 
 #define	EFX_INSERT_NATIVE16(_min, _max, _low, _high, _value)		\
 	(((_low > _max) || (_high < _min)) ?				\
 		0U :							\
 		(uint16_t)((_low > _min) ?				\
-				((_value) << (_low - _min)) :		\
-				((_value) >> (_min - _low))))
+				((_value) << EFX_SSUB(_low, _min)) :	\
+				((_value) >> EFX_SSUB(_min, _low))))
 
 #define	EFX_INSERT_NATIVE8(_min, _max, _low, _high, _value)		\
 	(((_low > _max) || (_high < _min)) ?				\
 		0U :							\
 		(uint8_t)((_low > _min) ?				\
-				((_value) << (_low - _min)) :	\
-				((_value) >> (_min - _low))))
+				((_value) << EFX_SSUB(_low, _min)) :	\
+				((_value) >> EFX_SSUB(_min, _low))))
 
 /*
  * Construct bit field portion
@@ -1311,22 +1298,22 @@ extern int fix_lint;
 
 #define	EFX_SHIFT64(_bit, _base)					\
 	(((_bit) >= (_base) && (_bit) < (_base) + 64) ?			\
-		((uint64_t)1 << ((_bit) - (_base))) :			\
+		((uint64_t)1 << EFX_SSUB((_bit), (_base))) :		\
 		0U)
 
 #define	EFX_SHIFT32(_bit, _base)					\
 	(((_bit) >= (_base) && (_bit) < (_base) + 32) ?			\
-		((uint32_t)1 << ((_bit) - (_base))) :			\
+		((uint32_t)1 << EFX_SSUB((_bit),(_base))) :		\
 		0U)
 
 #define	EFX_SHIFT16(_bit, _base)					\
 	(((_bit) >= (_base) && (_bit) < (_base) + 16) ?			\
-		(uint16_t)(1 << ((_bit) - (_base))) :			\
+		(uint16_t)(1 << EFX_SSUB((_bit), (_base))) :		\
 		0U)
 
 #define	EFX_SHIFT8(_bit, _base)						\
 	(((_bit) >= (_base) && (_bit) < (_base) + 8) ?			\
-		(uint8_t)(1 << ((_bit) - (_base))) :			\
+		(uint8_t)(1 << EFX_SSUB((_bit), (_base))) :		\
 		0U)
 
 #define	EFX_SET_OWORD_BIT64(_oword, _bit)				\

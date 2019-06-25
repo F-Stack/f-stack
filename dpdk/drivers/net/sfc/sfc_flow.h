@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017 Solarflare Communications Inc.
+ * Copyright (c) 2017-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _SFC_FLOW_H
@@ -41,7 +19,13 @@
 extern "C" {
 #endif
 
-#if EFSYS_OPT_RX_SCALE
+/*
+ * The maximum number of fully elaborated hardware filter specifications
+ * which can be produced from a template by means of multiplication, if
+ * missing match flags are needed to be taken into account
+ */
+#define SF_FLOW_SPEC_NB_FILTERS_MAX 8
+
 /* RSS configuration storage */
 struct sfc_flow_rss {
 	unsigned int	rxq_hw_index_min;
@@ -50,15 +34,22 @@ struct sfc_flow_rss {
 	uint8_t		rss_key[EFX_RSS_KEY_SIZE];
 	unsigned int	rss_tbl[EFX_RSS_TBL_SIZE];
 };
-#endif /* EFSYS_OPT_RX_SCALE */
+
+/* Filter specification storage */
+struct sfc_flow_spec {
+	/* partial specification from flow rule */
+	efx_filter_spec_t template;
+	/* fully elaborated hardware filters specifications */
+	efx_filter_spec_t filters[SF_FLOW_SPEC_NB_FILTERS_MAX];
+	/* number of complete specifications */
+	unsigned int count;
+};
 
 /* PMD-specific definition of the opaque type from rte_flow.h */
 struct rte_flow {
-	efx_filter_spec_t spec;		/* filter specification */
-#if EFSYS_OPT_RX_SCALE
+	struct sfc_flow_spec spec;	/* flow spec for hardware filter(s) */
 	boolean_t rss;			/* RSS toggle */
 	struct sfc_flow_rss rss_conf;	/* RSS configuration */
-#endif /* EFSYS_OPT_RX_SCALE */
 	TAILQ_ENTRY(rte_flow) entries;	/* flow list entries */
 };
 

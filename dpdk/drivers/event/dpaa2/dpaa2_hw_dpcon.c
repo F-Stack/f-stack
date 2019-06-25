@@ -1,33 +1,7 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP.
+ *   Copyright 2017 NXP
  *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <unistd.h>
@@ -44,12 +18,13 @@
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
 #include <rte_dev.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include <rte_fslmc.h>
 #include <mc/fsl_dpcon.h>
 #include <portal/dpaa2_hw_pvt.h>
 #include "dpaa2_eventdev.h"
+#include "dpaa2_eventdev_logs.h"
 
 TAILQ_HEAD(dpcon_dev_list, dpaa2_dpcon_dev);
 static struct dpcon_dev_list dpcon_dev_list
@@ -67,7 +42,8 @@ rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
 	/* Allocate DPAA2 dpcon handle */
 	dpcon_node = rte_malloc(NULL, sizeof(struct dpaa2_dpcon_dev), 0);
 	if (!dpcon_node) {
-		PMD_DRV_LOG(ERR, "Memory allocation failed for DPCON Device");
+		DPAA2_EVENTDEV_ERR(
+				"Memory allocation failed for dpcon device");
 		return -1;
 	}
 
@@ -76,8 +52,8 @@ rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
 	ret = dpcon_open(&dpcon_node->dpcon,
 			 CMD_PRI_LOW, dpcon_id, &dpcon_node->token);
 	if (ret) {
-		PMD_DRV_LOG(ERR, "Resource alloc failure with err code: %d",
-			    ret);
+		DPAA2_EVENTDEV_ERR("Unable to open dpcon device: err(%d)",
+				   ret);
 		rte_free(dpcon_node);
 		return -1;
 	}
@@ -86,8 +62,8 @@ rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
 	ret = dpcon_get_attributes(&dpcon_node->dpcon,
 				   CMD_PRI_LOW, dpcon_node->token, &attr);
 	if (ret != 0) {
-		PMD_DRV_LOG(ERR, "Reading device failed with err code: %d",
-			    ret);
+		DPAA2_EVENTDEV_ERR("dpcon attribute fetch failed: err(%d)",
+				   ret);
 		rte_free(dpcon_node);
 		return -1;
 	}
@@ -99,8 +75,6 @@ rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
 	rte_atomic16_init(&dpcon_node->in_use);
 
 	TAILQ_INSERT_TAIL(&dpcon_dev_list, dpcon_node, next);
-
-	RTE_LOG(DEBUG, PMD, "DPAA2: Added [dpcon.%d]\n", dpcon_id);
 
 	return 0;
 }

@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2018 Intel Corporation
  */
 
 #include <unistd.h>
@@ -74,7 +46,7 @@ struct rte_latency_stats {
 static struct rte_latency_stats *glob_stats;
 
 struct rxtx_cbs {
-	struct rte_eth_rxtx_callback *cb;
+	const struct rte_eth_rxtx_callback *cb;
 };
 
 static struct rxtx_cbs rx_cbs[RTE_MAX_ETHPORTS][RTE_MAX_QUEUES_PER_PORT];
@@ -153,8 +125,11 @@ add_time_stamps(uint16_t pid __rte_unused,
 	for (i = 0; i < nb_pkts; i++) {
 		diff_tsc = now - prev_tsc;
 		timer_tsc += diff_tsc;
-		if (timer_tsc >= samp_intvl) {
+
+		if ((pkts[i]->ol_flags & PKT_RX_TIMESTAMP) == 0
+				&& (timer_tsc >= samp_intvl)) {
 			pkts[i]->timestamp = now;
+			pkts[i]->ol_flags |= PKT_RX_TIMESTAMP;
 			timer_tsc = 0;
 		}
 		prev_tsc = now;
@@ -184,7 +159,7 @@ calc_latency(uint16_t pid __rte_unused,
 
 	now = rte_rdtsc();
 	for (i = 0; i < nb_pkts; i++) {
-		if (pkts[i]->timestamp)
+		if (pkts[i]->ol_flags & PKT_RX_TIMESTAMP)
 			latency[cnt++] = now - pkts[i]->timestamp;
 	}
 
@@ -229,7 +204,6 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	uint16_t pid;
 	uint16_t qid;
 	struct rxtx_cbs *cbs = NULL;
-	const uint16_t nb_ports = rte_eth_dev_count();
 	const char *ptr_strings[NUM_LATENCY_STATS] = {0};
 	const struct rte_memzone *mz = NULL;
 	const unsigned int flags = 0;
@@ -262,7 +236,7 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	}
 
 	/** Register Rx/Tx callbacks */
-	for (pid = 0; pid < nb_ports; pid++) {
+	RTE_ETH_FOREACH_DEV(pid) {
 		struct rte_eth_dev_info dev_info;
 		rte_eth_dev_info_get(pid, &dev_info);
 		for (qid = 0; qid < dev_info.nb_rx_queues; qid++) {
@@ -294,10 +268,10 @@ rte_latencystats_uninit(void)
 	uint16_t qid;
 	int ret = 0;
 	struct rxtx_cbs *cbs = NULL;
-	const uint16_t nb_ports = rte_eth_dev_count();
+	const struct rte_memzone *mz = NULL;
 
 	/** De register Rx/Tx callbacks */
-	for (pid = 0; pid < nb_ports; pid++) {
+	RTE_ETH_FOREACH_DEV(pid) {
 		struct rte_eth_dev_info dev_info;
 		rte_eth_dev_info_get(pid, &dev_info);
 		for (qid = 0; qid < dev_info.nb_rx_queues; qid++) {
@@ -317,6 +291,11 @@ rte_latencystats_uninit(void)
 					"qid=%d\n", pid, qid);
 		}
 	}
+
+	/* free up the memzone */
+	mz = rte_memzone_lookup(MZ_RTE_LATENCY_STATS);
+	if (mz)
+		rte_memzone_free(mz);
 
 	return 0;
 }

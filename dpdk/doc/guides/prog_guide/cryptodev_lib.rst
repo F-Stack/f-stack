@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016-2017 Intel Corporation. All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016-2017 Intel Corporation.
 
 Cryptography Device Library
 ===========================
@@ -35,7 +8,7 @@ The cryptodev library provides a Crypto device framework for management and
 provisioning of hardware and software Crypto poll mode drivers, defining generic
 APIs which support a number of different Crypto operations. The framework
 currently only supports cipher, authentication, chained cipher/authentication
-and AEAD symmetric Crypto operations.
+and AEAD symmetric and asymmetric Crypto operations.
 
 
 Design Principles
@@ -68,19 +41,27 @@ From the command line using the --vdev EAL option
 
 .. code-block:: console
 
-   --vdev  'crypto_aesni_mb0,max_nb_queue_pairs=2,max_nb_sessions=1024,socket_id=0'
+   --vdev  'crypto_aesni_mb0,max_nb_queue_pairs=2,socket_id=0'
+
+.. Note::
+
+   * If DPDK application requires multiple software crypto PMD devices then required
+     number of ``--vdev`` with appropriate libraries are to be added.
+
+   * An Application with crypto PMD instaces sharing the same library requires unique ID.
+
+   Example: ``--vdev  'crypto_aesni_mb0' --vdev  'crypto_aesni_mb1'``
 
 Our using the rte_vdev_init API within the application code.
 
 .. code-block:: c
 
    rte_vdev_init("crypto_aesni_mb",
-                     "max_nb_queue_pairs=2,max_nb_sessions=1024,socket_id=0")
+                     "max_nb_queue_pairs=2,socket_id=0")
 
 All virtual Crypto devices support the following initialization parameters:
 
 * ``max_nb_queue_pairs`` - maximum number of queue pairs supported by the device.
-* ``max_nb_sessions`` - maximum number of sessions supported by the device
 * ``socket_id`` - socket on which to allocate the device resources on.
 
 
@@ -177,8 +158,8 @@ Device Features and Capabilities
 Crypto devices define their functionality through two mechanisms, global device
 features and algorithm capabilities. Global devices features identify device
 wide level features which are applicable to the whole device such as
-the device having hardware acceleration or supporting symmetric Crypto
-operations,
+the device having hardware acceleration or supporting symmetric and/or asymmetric
+Crypto operations.
 
 The capabilities mechanism defines the individual algorithms/functions which
 the device supports, such as a specific symmetric Crypto cipher,
@@ -287,7 +268,7 @@ relevant information for the device.
     struct rte_cryptodev_info {
         const char *driver_name;
         uint8_t driver_id;
-        struct rte_pci_device *pci_dev;
+        struct rte_device *device;
 
         uint64_t feature_flags;
 
@@ -315,6 +296,33 @@ from the queue pair on the Crypto device, from physical devices this is usually
 directly from the devices processed queue, and for virtual device's from a
 ``rte_ring`` where processed operations are place after being processed on the
 enqueue call.
+
+
+Private data
+~~~~~~~~~~~~
+For session-based operations, the set and get API provides a mechanism for an
+application to store and retrieve the private user data information stored along
+with the crypto session.
+
+For example, suppose an application is submitting a crypto operation with a session
+associated and wants to indicate private user data information which is required to be
+used after completion of the crypto operation. In this case, the application can use
+the set API to set the user data and retrieve it using get API.
+
+.. code-block:: c
+
+	int rte_cryptodev_sym_session_set_user_data(
+		struct rte_cryptodev_sym_session *sess,	void *data, uint16_t size);
+
+	void * rte_cryptodev_sym_session_get_user_data(
+		struct rte_cryptodev_sym_session *sess);
+
+
+For session-less mode, the private user data information can be placed along with the
+``struct rte_crypto_op``. The ``rte_crypto_op::private_data_offset`` indicates the
+start of private data information. The offset is counted from the start of the
+rte_crypto_op including other crypto information such as the IVs (since there can
+be an IV also for authentication).
 
 
 Enqueue / Dequeue Burst APIs
@@ -437,7 +445,7 @@ Crypto workloads.
 
 .. figure:: img/cryptodev_sym_sess.*
 
-The Crypto device framework provides APIs to allocate and initizalize sessions
+The Crypto device framework provides APIs to allocate and initialize sessions
 for crypto devices, where sessions are mempool objects.
 It is the application's responsibility to create and manage the session mempools.
 This approach allows for different scenarios such as having a single session
@@ -445,12 +453,12 @@ mempool for all crypto devices (where the mempool object size is big
 enough to hold the private session of any crypto device), as well as having
 multiple session mempools of different sizes for better memory usage.
 
-An application can use ``rte_cryptodev_get_private_session_size()`` to
+An application can use ``rte_cryptodev_sym_get_private_session_size()`` to
 get the private session size of given crypto device. This function would allow
 an application to calculate the max device session size of all crypto devices
 to create a single session mempool.
 If instead an application creates multiple session mempools, the Crypto device
-framework also provides ``rte_cryptodev_get_header_session_size`` to get
+framework also provides ``rte_cryptodev_sym_get_header_session_size`` to get
 the size of an uninitialized session.
 
 Once the session mempools have been created, ``rte_cryptodev_sym_session_create()``
@@ -653,7 +661,7 @@ using one of the crypto PMDs available in DPDK.
     uint8_t cdev_id = rte_cryptodev_get_dev_id(crypto_name);
 
     /* Get private session data size. */
-    session_size = rte_cryptodev_get_private_session_size(cdev_id);
+    session_size = rte_cryptodev_sym_get_private_session_size(cdev_id);
 
     /*
      * Create session mempool, with two objects per session,
@@ -779,14 +787,260 @@ using one of the crypto PMDs available in DPDK.
                                             num_dequeued_ops);
     } while (total_num_dequeued_ops < num_enqueued_ops);
 
-
 Asymmetric Cryptography
 -----------------------
 
-Asymmetric functionality is currently not supported by the cryptodev API.
+The cryptodev library currently provides support for the following asymmetric
+Crypto operations; RSA, Modular exponentiation and inversion, Diffie-Hellman
+public and/or private key generation and shared secret compute, DSA Signature
+generation and verification.
+
+Session and Session Management
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sessions are used in asymmetric cryptographic processing to store the immutable
+data defined in asymmetric cryptographic transform which is further used in the
+operation processing. Sessions typically stores information, such as, public
+and private key information or domain params or prime modulus data i.e. immutable
+across data sets. Crypto sessions cache this immutable data in a optimal way for the
+underlying PMD and this allows further acceleration of the offload of Crypto workloads.
+
+Like symmetric, the Crypto device framework provides APIs to allocate and initialize
+asymmetric sessions for crypto devices, where sessions are mempool objects.
+It is the application's responsibility to create and manage the session mempools.
+Application using both symmetric and asymmetric sessions should allocate and maintain
+different sessions pools for each type.
+
+An application can use ``rte_cryptodev_get_asym_session_private_size()`` to
+get the private size of asymmetric session on a given crypto device. This
+function would allow an application to calculate the max device asymmetric
+session size of all crypto devices to create a single session mempool.
+If instead an application creates multiple asymmetric session mempools,
+the Crypto device framework also provides ``rte_cryptodev_asym_get_header_session_size()`` to get
+the size of an uninitialized session.
+
+Once the session mempools have been created, ``rte_cryptodev_asym_session_create()``
+is used to allocate an uninitialized asymmetric session from the given mempool.
+The session then must be initialized using ``rte_cryptodev_asym_session_init()``
+for each of the required crypto devices. An asymmetric transform chain
+is used to specify the operation and its parameters. See the section below for
+details on transforms.
+
+When a session is no longer used, user must call ``rte_cryptodev_asym_session_clear()``
+for each of the crypto devices that are using the session, to free all driver
+private asymmetric session data. Once this is done, session should be freed using
+``rte_cryptodev_asym_session_free()`` which returns them to their mempool.
+
+Asymmetric Sessionless Support
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Currently asymmetric crypto framework does not support sessionless.
+
+Transforms and Transform Chaining
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Asymmetric Crypto transforms (``rte_crypto_asym_xform``) are the mechanism used
+to specify the details of the asymmetric Crypto operation. Next pointer within
+xform allows transform to be chained together. Also it is important to note that
+the order in which the transforms are passed indicates the order of the chaining.
+
+Not all asymmetric crypto xforms are supported for chaining. Currently supported
+asymmetric crypto chaining is Diffie-Hellman private key generation followed by
+public generation. Also, currently API does not support chaining of symmetric and
+asymmetric crypto xfroms.
+
+Each xform defines specific asymmetric crypto algo. Currently supported are:
+* RSA
+* Modular operations (Exponentiation and Inverse)
+* Diffie-Hellman
+* DSA
+* None - special case where PMD may support a passthrough mode. More for diagnostic purpose
+
+See *DPDK API Reference* for details on each rte_crypto_xxx_xform struct
+
+Asymmetric Operations
+~~~~~~~~~~~~~~~~~~~~~
+
+The asymmetric Crypto operation structure contains all the mutable data relating
+to asymmetric cryptographic processing on an input data buffer. It uses either
+RSA, Modular, Diffie-Hellman or DSA operations depending upon session it is attached
+to.
+
+Every operation must carry a valid session handle which further carries information
+on xform or xform-chain to be performed on op. Every xform type defines its own set
+of operational params in their respective rte_crypto_xxx_op_param struct. Depending
+on xform information within session, PMD picks up and process respective op_param
+struct.
+Unlike symmetric, asymmetric operations do not use mbufs for input/output.
+They operate on data buffer of type ``rte_crypto_param``.
+
+See *DPDK API Reference* for details on each rte_crypto_xxx_op_param struct
+
+Asymmetric crypto Sample code
+-----------------------------
+
+There's a unit test application test_cryptodev_asym.c inside unit test framework that
+show how to setup and process asymmetric operations using cryptodev library.
+
+The following sample code shows the basic steps to compute modular exponentiation
+using 1024-bit modulus length using openssl PMD available in DPDK (performing other
+crypto operations is similar except change to respective op and xform setup).
+
+.. code-block:: c
+
+    /*
+     * Simple example to compute modular exponentiation with 1024-bit key
+     *
+     */
+    #define MAX_ASYM_SESSIONS	10
+    #define NUM_ASYM_BUFS	10
+
+    struct rte_mempool *crypto_op_pool, *asym_session_pool;
+    unsigned int asym_session_size;
+    int ret;
+
+    /* Initialize EAL. */
+    ret = rte_eal_init(argc, argv);
+    if (ret < 0)
+        rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
+
+    uint8_t socket_id = rte_socket_id();
+
+    /* Create crypto operation pool. */
+    crypto_op_pool = rte_crypto_op_pool_create(
+                                    "crypto_op_pool",
+                                    RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+                                    NUM_ASYM_BUFS, 0, 0,
+                                    socket_id);
+    if (crypto_op_pool == NULL)
+        rte_exit(EXIT_FAILURE, "Cannot create crypto op pool\n");
+
+    /* Create the virtual crypto device. */
+    char args[128];
+    const char *crypto_name = "crypto_openssl";
+    snprintf(args, sizeof(args), "socket_id=%d", socket_id);
+    ret = rte_vdev_init(crypto_name, args);
+    if (ret != 0)
+        rte_exit(EXIT_FAILURE, "Cannot create virtual device");
+
+    uint8_t cdev_id = rte_cryptodev_get_dev_id(crypto_name);
+
+    /* Get private asym session data size. */
+    asym_session_size = rte_cryptodev_get_asym_private_session_size(cdev_id);
+
+    /*
+     * Create session mempool, with two objects per session,
+     * one for the session header and another one for the
+     * private asym session data for the crypto device.
+     */
+    asym_session_pool = rte_mempool_create("asym_session_pool",
+                                    MAX_ASYM_SESSIONS * 2,
+                                    asym_session_size,
+                                    0,
+                                    0, NULL, NULL, NULL,
+                                    NULL, socket_id,
+                                    0);
+
+    /* Configure the crypto device. */
+    struct rte_cryptodev_config conf = {
+        .nb_queue_pairs = 1,
+        .socket_id = socket_id
+    };
+    struct rte_cryptodev_qp_conf qp_conf = {
+        .nb_descriptors = 2048
+    };
+
+    if (rte_cryptodev_configure(cdev_id, &conf) < 0)
+        rte_exit(EXIT_FAILURE, "Failed to configure cryptodev %u", cdev_id);
+
+    if (rte_cryptodev_queue_pair_setup(cdev_id, 0, &qp_conf,
+                            socket_id, asym_session_pool) < 0)
+        rte_exit(EXIT_FAILURE, "Failed to setup queue pair\n");
+
+    if (rte_cryptodev_start(cdev_id) < 0)
+        rte_exit(EXIT_FAILURE, "Failed to start device\n");
+
+    /* Setup crypto xform to do modular exponentiation with 1024 bit
+	 * length modulus
+	 */
+    struct rte_crypto_asym_xform modex_xform = {
+		.next = NULL,
+		.xform_type = RTE_CRYPTO_ASYM_XFORM_MODEX,
+		.modex = {
+			.modulus = {
+				.data =
+				(uint8_t *)
+				("\xb3\xa1\xaf\xb7\x13\x08\x00\x0a\x35\xdc\x2b\x20\x8d"
+				"\xa1\xb5\xce\x47\x8a\xc3\x80\xf4\x7d\x4a\xa2\x62\xfd\x61\x7f"
+				"\xb5\xa8\xde\x0a\x17\x97\xa0\xbf\xdf\x56\x5a\x3d\x51\x56\x4f"
+				"\x70\x70\x3f\x63\x6a\x44\x5b\xad\x84\x0d\x3f\x27\x6e\x3b\x34"
+				"\x91\x60\x14\xb9\xaa\x72\xfd\xa3\x64\xd2\x03\xa7\x53\x87\x9e"
+				"\x88\x0b\xc1\x14\x93\x1a\x62\xff\xb1\x5d\x74\xcd\x59\x63\x18"
+				"\x11\x3d\x4f\xba\x75\xd4\x33\x4e\x23\x6b\x7b\x57\x44\xe1\xd3"
+				"\x03\x13\xa6\xf0\x8b\x60\xb0\x9e\xee\x75\x08\x9d\x71\x63\x13"
+				"\xcb\xa6\x81\x92\x14\x03\x22\x2d\xde\x55"),
+				.length = 128
+			},
+			.exponent = {
+				.data = (uint8_t *)("\x01\x00\x01"),
+				.length = 3
+			}
+		}
+    };
+    /* Create asym crypto session and initialize it for the crypto device. */
+    struct rte_cryptodev_asym_session *asym_session;
+    asym_session = rte_cryptodev_asym_session_create(asym_session_pool);
+    if (asym_session == NULL)
+        rte_exit(EXIT_FAILURE, "Session could not be created\n");
+
+    if (rte_cryptodev_asym_session_init(cdev_id, asym_session,
+                    &modex_xform, asym_session_pool) < 0)
+        rte_exit(EXIT_FAILURE, "Session could not be initialized "
+                    "for the crypto device\n");
+
+    /* Get a burst of crypto operations. */
+    struct rte_crypto_op *crypto_ops[1];
+    if (rte_crypto_op_bulk_alloc(crypto_op_pool,
+                            RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+                            crypto_ops, 1) == 0)
+        rte_exit(EXIT_FAILURE, "Not enough crypto operations available\n");
+
+    /* Set up the crypto operations. */
+    struct rte_crypto_asym_op *asym_op = crypto_ops[0]->asym;
+
+	/* calculate mod exp of value 0xf8 */
+    static unsigned char base[] = {0xF8};
+    asym_op->modex.base.data = base;
+    asym_op->modex.base.length = sizeof(base);
+	asym_op->modex.base.iova = base;
+
+    /* Attach the asym crypto session to the operation */
+    rte_crypto_op_attach_asym_session(op, asym_session);
+
+    /* Enqueue the crypto operations in the crypto device. */
+    uint16_t num_enqueued_ops = rte_cryptodev_enqueue_burst(cdev_id, 0,
+                                            crypto_ops, 1);
+
+    /*
+     * Dequeue the crypto operations until all the operations
+     * are processed in the crypto device.
+     */
+    uint16_t num_dequeued_ops, total_num_dequeued_ops = 0;
+    do {
+        struct rte_crypto_op *dequeued_ops[1];
+        num_dequeued_ops = rte_cryptodev_dequeue_burst(cdev_id, 0,
+                                        dequeued_ops, 1);
+        total_num_dequeued_ops += num_dequeued_ops;
+
+        /* Check if operation was processed successfully */
+        if (dequeued_ops[0]->status != RTE_CRYPTO_OP_STATUS_SUCCESS)
+                rte_exit(EXIT_FAILURE,
+                        "Some operations were not processed correctly");
+
+    } while (total_num_dequeued_ops < num_enqueued_ops);
 
 
-Crypto Device API
-~~~~~~~~~~~~~~~~~
+Asymmetric Crypto Device API
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The cryptodev Library API is described in the *DPDK API Reference* document.
+The cryptodev Library API is described in the
+`DPDK API Reference <http://doc.dpdk.org/api/>`_

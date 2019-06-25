@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -59,10 +30,10 @@
 #include <rte_branch_prediction.h>
 #include <rte_debug.h>
 #include <rte_log.h>
-#include <rte_malloc.h>
 #include <rte_errno.h>
 #include <rte_spinlock.h>
 #include <rte_pause.h>
+#include <rte_vfio.h>
 
 #include "eal_private.h"
 #include "eal_vfio.h"
@@ -338,6 +309,66 @@ vfio_disable_msix(const struct rte_intr_handle *intr_handle) {
 
 	return ret;
 }
+
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+/* enable req notifier */
+static int
+vfio_enable_req(const struct rte_intr_handle *intr_handle)
+{
+	int len, ret;
+	char irq_set_buf[IRQ_SET_BUF_LEN];
+	struct vfio_irq_set *irq_set;
+	int *fd_ptr;
+
+	len = sizeof(irq_set_buf);
+
+	irq_set = (struct vfio_irq_set *) irq_set_buf;
+	irq_set->argsz = len;
+	irq_set->count = 1;
+	irq_set->flags = VFIO_IRQ_SET_DATA_EVENTFD |
+			 VFIO_IRQ_SET_ACTION_TRIGGER;
+	irq_set->index = VFIO_PCI_REQ_IRQ_INDEX;
+	irq_set->start = 0;
+	fd_ptr = (int *) &irq_set->data;
+	*fd_ptr = intr_handle->fd;
+
+	ret = ioctl(intr_handle->vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
+
+	if (ret) {
+		RTE_LOG(ERR, EAL, "Error enabling req interrupts for fd %d\n",
+						intr_handle->fd);
+		return -1;
+	}
+
+	return 0;
+}
+
+/* disable req notifier */
+static int
+vfio_disable_req(const struct rte_intr_handle *intr_handle)
+{
+	struct vfio_irq_set *irq_set;
+	char irq_set_buf[IRQ_SET_BUF_LEN];
+	int len, ret;
+
+	len = sizeof(struct vfio_irq_set);
+
+	irq_set = (struct vfio_irq_set *) irq_set_buf;
+	irq_set->argsz = len;
+	irq_set->count = 0;
+	irq_set->flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER;
+	irq_set->index = VFIO_PCI_REQ_IRQ_INDEX;
+	irq_set->start = 0;
+
+	ret = ioctl(intr_handle->vfio_dev_fd, VFIO_DEVICE_SET_IRQS, irq_set);
+
+	if (ret)
+		RTE_LOG(ERR, EAL, "Error disabling req interrupts for fd %d\n",
+			intr_handle->fd);
+
+	return ret;
+}
+#endif
 #endif
 
 static int
@@ -434,8 +465,7 @@ rte_intr_callback_register(const struct rte_intr_handle *intr_handle,
 	}
 
 	/* allocate a new interrupt callback entity */
-	callback = rte_zmalloc("interrupt callback list",
-				sizeof(*callback), 0);
+	callback = calloc(1, sizeof(*callback));
 	if (callback == NULL) {
 		RTE_LOG(ERR, EAL, "Can not allocate memory\n");
 		return -ENOMEM;
@@ -460,10 +490,10 @@ rte_intr_callback_register(const struct rte_intr_handle *intr_handle,
 
 	/* no existing callbacks for this - add new source */
 	if (src == NULL) {
-		if ((src = rte_zmalloc("interrupt source list",
-				sizeof(*src), 0)) == NULL) {
+		src = calloc(1, sizeof(*src));
+		if (src == NULL) {
 			RTE_LOG(ERR, EAL, "Can not allocate memory\n");
-			rte_free(callback);
+			free(callback);
 			ret = -ENOMEM;
 		} else {
 			src->intr_handle = *intr_handle;
@@ -530,7 +560,7 @@ rte_intr_callback_unregister(const struct rte_intr_handle *intr_handle,
 			if (cb->cb_fn == cb_fn && (cb_arg == (void *)-1 ||
 					cb->cb_arg == cb_arg)) {
 				TAILQ_REMOVE(&src->callbacks, cb, next);
-				rte_free(cb);
+				free(cb);
 				ret++;
 			}
 		}
@@ -538,7 +568,7 @@ rte_intr_callback_unregister(const struct rte_intr_handle *intr_handle,
 		/* all callbacks for that source are removed. */
 		if (TAILQ_EMPTY(&src->callbacks)) {
 			TAILQ_REMOVE(&intr_sources, src, next);
-			rte_free(src);
+			free(src);
 		}
 	}
 
@@ -587,7 +617,16 @@ rte_intr_enable(const struct rte_intr_handle *intr_handle)
 		if (vfio_enable_intx(intr_handle))
 			return -1;
 		break;
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	case RTE_INTR_HANDLE_VFIO_REQ:
+		if (vfio_enable_req(intr_handle))
+			return -1;
+		break;
 #endif
+#endif
+	/* not used at this moment */
+	case RTE_INTR_HANDLE_DEV_EVENT:
+		return -1;
 	/* unknown handle type */
 	default:
 		RTE_LOG(ERR, EAL,
@@ -634,7 +673,16 @@ rte_intr_disable(const struct rte_intr_handle *intr_handle)
 		if (vfio_disable_intx(intr_handle))
 			return -1;
 		break;
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+	case RTE_INTR_HANDLE_VFIO_REQ:
+		if (vfio_disable_req(intr_handle))
+			return -1;
+		break;
 #endif
+#endif
+	/* not used at this moment */
+	case RTE_INTR_HANDLE_DEV_EVENT:
+		return -1;
 	/* unknown handle type */
 	default:
 		RTE_LOG(ERR, EAL,
@@ -652,7 +700,7 @@ eal_intr_process_interrupts(struct epoll_event *events, int nfds)
 	bool call = false;
 	int n, bytes_read;
 	struct rte_intr_source *src;
-	struct rte_intr_callback *cb;
+	struct rte_intr_callback *cb, *next;
 	union rte_intr_read_buffer buf;
 	struct rte_intr_callback active_cb;
 
@@ -697,13 +745,22 @@ eal_intr_process_interrupts(struct epoll_event *events, int nfds)
 		case RTE_INTR_HANDLE_VFIO_LEGACY:
 			bytes_read = sizeof(buf.vfio_intr_count);
 			break;
+#ifdef HAVE_VFIO_DEV_REQ_INTERFACE
+		case RTE_INTR_HANDLE_VFIO_REQ:
+			bytes_read = 0;
+			call = true;
+			break;
+#endif
 #endif
 		case RTE_INTR_HANDLE_VDEV:
 		case RTE_INTR_HANDLE_EXT:
 			bytes_read = 0;
 			call = true;
 			break;
-
+		case RTE_INTR_HANDLE_DEV_EVENT:
+			bytes_read = 0;
+			call = true;
+			break;
 		default:
 			bytes_read = 1;
 			break;
@@ -723,6 +780,23 @@ eal_intr_process_interrupts(struct epoll_event *events, int nfds)
 					"descriptor %d: %s\n",
 					events[n].data.fd,
 					strerror(errno));
+				/*
+				 * The device is unplugged or buggy, remove
+				 * it as an interrupt source and return to
+				 * force the wait list to be rebuilt.
+				 */
+				rte_spinlock_lock(&intr_lock);
+				TAILQ_REMOVE(&intr_sources, src, next);
+				rte_spinlock_unlock(&intr_lock);
+
+				for (cb = TAILQ_FIRST(&src->callbacks); cb;
+							cb = next) {
+					next = TAILQ_NEXT(cb, next);
+					TAILQ_REMOVE(&src->callbacks, cb, next);
+					free(cb);
+				}
+				free(src);
+				return -1;
 			} else if (bytes_read == 0)
 				RTE_LOG(ERR, EAL, "Read nothing from file "
 					"descriptor %d\n", events[n].data.fd);
@@ -873,8 +947,7 @@ eal_intr_thread_main(__rte_unused void *arg)
 int
 rte_eal_intr_init(void)
 {
-	int ret = 0, ret_1 = 0;
-	char thread_name[RTE_MAX_THREAD_NAME_LEN];
+	int ret = 0;
 
 	/* init the global interrupt source head */
 	TAILQ_INIT(&intr_sources);
@@ -889,23 +962,15 @@ rte_eal_intr_init(void)
 	}
 
 	/* create the host thread to wait/handle the interrupt */
-	ret = pthread_create(&intr_thread, NULL,
+	ret = rte_ctrl_thread_create(&intr_thread, "eal-intr-thread", NULL,
 			eal_intr_thread_main, NULL);
 	if (ret != 0) {
-		rte_errno = ret;
+		rte_errno = -ret;
 		RTE_LOG(ERR, EAL,
 			"Failed to create thread for interrupt handling\n");
-	} else {
-		/* Set thread_name for aid in debugging. */
-		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN,
-			"eal-intr-thread");
-		ret_1 = rte_thread_setname(intr_thread, thread_name);
-		if (ret_1 != 0)
-			RTE_LOG(DEBUG, EAL,
-			"Failed to set thread name for interrupt handling\n");
 	}
 
-	return -ret;
+	return ret;
 }
 
 static void

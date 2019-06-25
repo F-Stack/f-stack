@@ -1,39 +1,13 @@
 #! /bin/sh
-
-# BSD LICENSE
-#
+# SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2015 6WIND S.A.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
-#
-#   * Redistributions of source code must retain the above copyright
-#     notice, this list of conditions and the following disclaimer.
-#   * Redistributions in binary form must reproduce the above copyright
-#     notice, this list of conditions and the following disclaimer in
-#     the documentation and/or other materials provided with the
-#     distribution.
-#   * Neither the name of 6WIND S.A. nor the names of its
-#     contributors may be used to endorse or promote products derived
-#     from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # Load config options:
 # - DPDK_CHECKPATCH_PATH
 # - DPDK_CHECKPATCH_LINE_LENGTH
 . $(dirname $(readlink -e $0))/load-devel-config
+
+VALIDATE_NEW_API=$(dirname $(readlink -e $0))/check-symbol-change.sh
 
 length=${DPDK_CHECKPATCH_LINE_LENGTH:-80}
 
@@ -41,12 +15,21 @@ length=${DPDK_CHECKPATCH_LINE_LENGTH:-80}
 options="--no-tree"
 options="$options --max-line-length=$length"
 options="$options --show-types"
-options="$options --ignore=LINUX_VERSION_CODE,FILE_PATH_CHANGES,\
+options="$options --ignore=LINUX_VERSION_CODE,\
+FILE_PATH_CHANGES,MAINTAINERS_STYLE,SPDX_LICENSE_TAG,\
 VOLATILE,PREFER_PACKED,PREFER_ALIGNED,PREFER_PRINTF,\
 PREFER_KERNEL_TYPES,BIT_MACRO,CONST_STRUCT,\
 SPLIT_STRING,LONG_LINE_STRING,\
 LINE_SPACING,PARENTHESIS_ALIGNMENT,NETWORKING_BLOCK_COMMENT_STYLE,\
 NEW_TYPEDEFS,COMPARISON_TO_NULL"
+
+clean_tmp_files() {
+	if echo $tmpinput | grep -q '^checkpatches\.' ; then
+		rm -f "$tmpinput"
+	fi
+}
+
+trap "clean_tmp_files" INT
 
 print_usage () {
 	cat <<- END_OF_HELP
@@ -58,6 +41,25 @@ print_usage () {
 	The patches to check can be from stdin, files specified on the command line,
 	or latest git commits limited with -n option (default limit: origin/master).
 	END_OF_HELP
+}
+
+check_forbidden_additions() { # <patch>
+	# refrain from new additions of rte_panic() and rte_exit()
+	# multiple folders and expressions are separated by spaces
+	awk -v FOLDERS="lib drivers" \
+		-v EXPRESSIONS="rte_panic\\\( rte_exit\\\(" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using rte_panic/rte_exit' \
+		-f $(dirname $(readlink -e $0))/check-forbidden-tokens.awk \
+		"$1"
+	# svg figures must be included with wildcard extension
+	# because of png conversion for pdf docs
+	awk -v FOLDERS='doc' \
+		-v EXPRESSIONS='::[[:space:]]*[^[:space:]]*\\.svg' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using explicit .svg extension instead of .*' \
+		-f $(dirname $(readlink -e $0))/check-forbidden-tokens.awk \
+		"$1"
 }
 
 number=0
@@ -74,30 +76,65 @@ while getopts hn:qv ARG ; do
 done
 shift $(($OPTIND - 1))
 
-if [ ! -x "$DPDK_CHECKPATCH_PATH" ] ; then
+if [ ! -f "$DPDK_CHECKPATCH_PATH" ] || [ ! -x "$DPDK_CHECKPATCH_PATH" ] ; then
 	print_usage >&2
 	echo
 	echo 'Cannot execute DPDK_CHECKPATCH_PATH' >&2
 	exit 1
 fi
 
+print_headline() { # <title>
+	printf '\n### %s\n\n' "$1"
+	headline_printed=true
+}
+
 total=0
 status=0
 
 check () { # <patch> <commit> <title>
+	local ret=0
+	headline_printed=false
+
 	total=$(($total + 1))
-	! $verbose || printf '\n### %s\n\n' "$3"
+	! $verbose || print_headline "$3"
 	if [ -n "$1" ] ; then
-		report=$($DPDK_CHECKPATCH_PATH $options "$1" 2>/dev/null)
+		tmpinput=$1
 	elif [ -n "$2" ] ; then
-		report=$(git format-patch --find-renames --no-stat --stdout -1 $commit |
-			$DPDK_CHECKPATCH_PATH $options - 2>/dev/null)
+		tmpinput=$(mktemp -t dpdk.checkpatches.XXXXXX)
+		git format-patch --find-renames \
+		--no-stat --stdout -1 $commit > "$tmpinput"
 	else
-		report=$($DPDK_CHECKPATCH_PATH $options - 2>/dev/null)
+		tmpinput=$(mktemp -t dpdk.checkpatches.XXXXXX)
+		cat > "$tmpinput"
 	fi
-	[ $? -ne 0 ] || return 0
-	$verbose || printf '\n### %s\n\n' "$3"
-	printf '%s\n' "$report" | sed -n '1,/^total:.*lines checked$/p'
+
+	! $verbose || printf 'Running checkpatch.pl:\n'
+	report=$($DPDK_CHECKPATCH_PATH $options "$tmpinput" 2>/dev/null)
+	if [ $? -ne 0 ] ; then
+		$headline_printed || print_headline "$3"
+		printf '%s\n' "$report" | sed -n '1,/^total:.*lines checked$/p'
+		ret=1
+	fi
+
+	! $verbose || printf '\nChecking API additions/removals:\n'
+	report=$($VALIDATE_NEW_API "$tmpinput")
+	if [ $? -ne 0 ] ; then
+		$headline_printed || print_headline "$3"
+		printf '%s\n' "$report"
+		ret=1
+	fi
+
+	! $verbose || printf '\nChecking forbidden tokens additions:\n'
+	report=$(check_forbidden_additions "$tmpinput")
+	if [ $? -ne 0 ] ; then
+		$headline_printed || print_headline "$3"
+		printf '%s\n' "$report"
+		ret=1
+	fi
+
+	clean_tmp_files
+	[ $ret -eq 0 ] && return 0
+
 	status=$(($status + 1))
 }
 

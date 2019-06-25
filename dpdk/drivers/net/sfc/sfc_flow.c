@@ -1,37 +1,16 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017 Solarflare Communications Inc.
+ * Copyright (c) 2017-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <rte_byteorder.h>
 #include <rte_tailq.h>
 #include <rte_common.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_eth_ctrl.h>
 #include <rte_ether.h>
 #include <rte_flow.h>
@@ -44,13 +23,17 @@
 #include "sfc_filter.h"
 #include "sfc_flow.h"
 #include "sfc_log.h"
+#include "sfc_dp_rx.h"
 
 /*
  * At now flow API is implemented in such a manner that each
- * flow rule is converted to a hardware filter.
+ * flow rule is converted to one or more hardware filters.
  * All elements of flow rule (attributes, pattern items, actions)
  * correspond to one or more fields in the efx_filter_spec_s structure
  * that is responsible for the hardware filter.
+ * If some required field is unset in the flow rule, then a handful
+ * of filter copies will be created to cover all possible values
+ * of such a field.
  */
 
 enum sfc_flow_item_layers {
@@ -79,6 +62,39 @@ static sfc_flow_item_parse sfc_flow_parse_ipv4;
 static sfc_flow_item_parse sfc_flow_parse_ipv6;
 static sfc_flow_item_parse sfc_flow_parse_tcp;
 static sfc_flow_item_parse sfc_flow_parse_udp;
+static sfc_flow_item_parse sfc_flow_parse_vxlan;
+static sfc_flow_item_parse sfc_flow_parse_geneve;
+static sfc_flow_item_parse sfc_flow_parse_nvgre;
+
+typedef int (sfc_flow_spec_set_vals)(struct sfc_flow_spec *spec,
+				     unsigned int filters_count_for_one_val,
+				     struct rte_flow_error *error);
+
+typedef boolean_t (sfc_flow_spec_check)(efx_filter_match_flags_t match,
+					efx_filter_spec_t *spec,
+					struct sfc_filter *filter);
+
+struct sfc_flow_copy_flag {
+	/* EFX filter specification match flag */
+	efx_filter_match_flags_t flag;
+	/* Number of values of corresponding field */
+	unsigned int vals_count;
+	/* Function to set values in specifications */
+	sfc_flow_spec_set_vals *set_vals;
+	/*
+	 * Function to check that the specification is suitable
+	 * for adding this match flag
+	 */
+	sfc_flow_spec_check *spec_check;
+};
+
+static sfc_flow_spec_set_vals sfc_flow_set_unknown_dst_flags;
+static sfc_flow_spec_check sfc_flow_check_unknown_dst_flags;
+static sfc_flow_spec_set_vals sfc_flow_set_ethertypes;
+static sfc_flow_spec_set_vals sfc_flow_set_ifrm_unknown_dst_flags;
+static sfc_flow_spec_check sfc_flow_check_ifrm_unknown_dst_flags;
+static sfc_flow_spec_set_vals sfc_flow_set_outer_vid_flag;
+static sfc_flow_spec_check sfc_flow_check_outer_vid_flag;
 
 static boolean_t
 sfc_flow_is_zero(const uint8_t *buf, unsigned int size)
@@ -136,13 +152,13 @@ sfc_flow_parse_init(const struct rte_flow_item *item,
 			return -rte_errno;
 		}
 
-		mask = (const uint8_t *)def_mask;
+		mask = def_mask;
 	} else {
-		mask = (const uint8_t *)item->mask;
+		mask = item->mask;
 	}
 
-	spec = (const uint8_t *)item->spec;
-	last = (const uint8_t *)item->last;
+	spec = item->spec;
+	last = item->last;
 
 	if (spec == NULL)
 		goto exit;
@@ -204,11 +220,11 @@ sfc_flow_parse_void(__rte_unused const struct rte_flow_item *item,
  * Convert Ethernet item to EFX filter specification.
  *
  * @param item[in]
- *   Item specification. Only source and destination addresses and
- *   Ethernet type fields are supported. In addition to full and
- *   empty masks of destination address, individual/group mask is
- *   also supported. If the mask is NULL, default mask will be used.
- *   Ranging is not supported.
+ *   Item specification. Outer frame specification may only comprise
+ *   source/destination addresses and Ethertype field.
+ *   Inner frame specification may contain destination address only.
+ *   There is support for individual/group mask as well as for empty and full.
+ *   If the mask is NULL, default mask will be used. Ranging is not supported.
  * @param efx_spec[in, out]
  *   EFX filter specification to update.
  * @param[out] error
@@ -227,15 +243,32 @@ sfc_flow_parse_eth(const struct rte_flow_item *item,
 		.src.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 		.type = 0xffff,
 	};
+	const struct rte_flow_item_eth ifrm_supp_mask = {
+		.dst.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+	};
 	const uint8_t ig_mask[EFX_MAC_ADDR_LEN] = {
 		0x01, 0x00, 0x00, 0x00, 0x00, 0x00
 	};
+	const struct rte_flow_item_eth *supp_mask_p;
+	const struct rte_flow_item_eth *def_mask_p;
+	uint8_t *loc_mac = NULL;
+	boolean_t is_ifrm = (efx_spec->efs_encap_type !=
+		EFX_TUNNEL_PROTOCOL_NONE);
+
+	if (is_ifrm) {
+		supp_mask_p = &ifrm_supp_mask;
+		def_mask_p = &ifrm_supp_mask;
+		loc_mac = efx_spec->efs_ifrm_loc_mac;
+	} else {
+		supp_mask_p = &supp_mask;
+		def_mask_p = &rte_flow_item_eth_mask;
+		loc_mac = efx_spec->efs_loc_mac;
+	}
 
 	rc = sfc_flow_parse_init(item,
 				 (const void **)&spec,
 				 (const void **)&mask,
-				 &supp_mask,
-				 &rte_flow_item_eth_mask,
+				 supp_mask_p, def_mask_p,
 				 sizeof(struct rte_flow_item_eth),
 				 error);
 	if (rc != 0)
@@ -246,21 +279,30 @@ sfc_flow_parse_eth(const struct rte_flow_item *item,
 		return 0;
 
 	if (is_same_ether_addr(&mask->dst, &supp_mask.dst)) {
-		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_LOC_MAC;
-		rte_memcpy(efx_spec->efs_loc_mac, spec->dst.addr_bytes,
+		efx_spec->efs_match_flags |= is_ifrm ?
+			EFX_FILTER_MATCH_IFRM_LOC_MAC :
+			EFX_FILTER_MATCH_LOC_MAC;
+		rte_memcpy(loc_mac, spec->dst.addr_bytes,
 			   EFX_MAC_ADDR_LEN);
 	} else if (memcmp(mask->dst.addr_bytes, ig_mask,
 			  EFX_MAC_ADDR_LEN) == 0) {
 		if (is_unicast_ether_addr(&spec->dst))
-			efx_spec->efs_match_flags |=
+			efx_spec->efs_match_flags |= is_ifrm ?
+				EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST :
 				EFX_FILTER_MATCH_UNKNOWN_UCAST_DST;
 		else
-			efx_spec->efs_match_flags |=
+			efx_spec->efs_match_flags |= is_ifrm ?
+				EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST :
 				EFX_FILTER_MATCH_UNKNOWN_MCAST_DST;
 	} else if (!is_zero_ether_addr(&mask->dst)) {
 		goto fail_bad_mask;
 	}
 
+	/*
+	 * ifrm_supp_mask ensures that the source address and
+	 * ethertype masks are equal to zero in inner frame,
+	 * so these fields are filled in only for the outer frame
+	 */
 	if (is_same_ether_addr(&mask->src, &supp_mask.src)) {
 		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_REM_MAC;
 		rte_memcpy(efx_spec->efs_rem_mac, spec->src.addr_bytes,
@@ -311,6 +353,7 @@ sfc_flow_parse_vlan(const struct rte_flow_item *item,
 	const struct rte_flow_item_vlan *mask = NULL;
 	const struct rte_flow_item_vlan supp_mask = {
 		.tci = rte_cpu_to_be_16(ETH_VLAN_ID_MAX),
+		.inner_type = RTE_BE16(0xffff),
 	};
 
 	rc = sfc_flow_parse_init(item,
@@ -351,6 +394,22 @@ sfc_flow_parse_vlan(const struct rte_flow_item *item,
 		rte_flow_error_set(error, EINVAL,
 				   RTE_FLOW_ERROR_TYPE_ITEM, item,
 				   "VLAN ID in TCI match is required");
+		return -rte_errno;
+	}
+
+	if (efx_spec->efs_match_flags & EFX_FILTER_MATCH_ETHER_TYPE) {
+		rte_flow_error_set(error, EINVAL,
+				   RTE_FLOW_ERROR_TYPE_ITEM, item,
+				   "VLAN TPID matching is not supported");
+		return -rte_errno;
+	}
+	if (mask->inner_type == supp_mask.inner_type) {
+		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ETHER_TYPE;
+		efx_spec->efs_ether_type = rte_bswap16(spec->inner_type);
+	} else if (mask->inner_type) {
+		rte_flow_error_set(error, EINVAL,
+				   RTE_FLOW_ERROR_TYPE_ITEM, item,
+				   "Bad mask for VLAN inner_type");
 		return -rte_errno;
 	}
 
@@ -717,6 +776,253 @@ fail_bad_mask:
 	return -rte_errno;
 }
 
+/*
+ * Filters for encapsulated packets match based on the EtherType and IP
+ * protocol in the outer frame.
+ */
+static int
+sfc_flow_set_match_flags_for_encap_pkts(const struct rte_flow_item *item,
+					efx_filter_spec_t *efx_spec,
+					uint8_t ip_proto,
+					struct rte_flow_error *error)
+{
+	if (!(efx_spec->efs_match_flags & EFX_FILTER_MATCH_IP_PROTO)) {
+		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_IP_PROTO;
+		efx_spec->efs_ip_proto = ip_proto;
+	} else if (efx_spec->efs_ip_proto != ip_proto) {
+		switch (ip_proto) {
+		case EFX_IPPROTO_UDP:
+			rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ITEM, item,
+				"Outer IP header protocol must be UDP "
+				"in VxLAN/GENEVE pattern");
+			return -rte_errno;
+
+		case EFX_IPPROTO_GRE:
+			rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ITEM, item,
+				"Outer IP header protocol must be GRE "
+				"in NVGRE pattern");
+			return -rte_errno;
+
+		default:
+			rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ITEM, item,
+				"Only VxLAN/GENEVE/NVGRE tunneling patterns "
+				"are supported");
+			return -rte_errno;
+		}
+	}
+
+	if (efx_spec->efs_match_flags & EFX_FILTER_MATCH_ETHER_TYPE &&
+	    efx_spec->efs_ether_type != EFX_ETHER_TYPE_IPV4 &&
+	    efx_spec->efs_ether_type != EFX_ETHER_TYPE_IPV6) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ITEM, item,
+			"Outer frame EtherType in pattern with tunneling "
+			"must be IPv4 or IPv6");
+		return -rte_errno;
+	}
+
+	return 0;
+}
+
+static int
+sfc_flow_set_efx_spec_vni_or_vsid(efx_filter_spec_t *efx_spec,
+				  const uint8_t *vni_or_vsid_val,
+				  const uint8_t *vni_or_vsid_mask,
+				  const struct rte_flow_item *item,
+				  struct rte_flow_error *error)
+{
+	const uint8_t vni_or_vsid_full_mask[EFX_VNI_OR_VSID_LEN] = {
+		0xff, 0xff, 0xff
+	};
+
+	if (memcmp(vni_or_vsid_mask, vni_or_vsid_full_mask,
+		   EFX_VNI_OR_VSID_LEN) == 0) {
+		efx_spec->efs_match_flags |= EFX_FILTER_MATCH_VNI_OR_VSID;
+		rte_memcpy(efx_spec->efs_vni_or_vsid, vni_or_vsid_val,
+			   EFX_VNI_OR_VSID_LEN);
+	} else if (!sfc_flow_is_zero(vni_or_vsid_mask, EFX_VNI_OR_VSID_LEN)) {
+		rte_flow_error_set(error, EINVAL,
+				   RTE_FLOW_ERROR_TYPE_ITEM, item,
+				   "Unsupported VNI/VSID mask");
+		return -rte_errno;
+	}
+
+	return 0;
+}
+
+/**
+ * Convert VXLAN item to EFX filter specification.
+ *
+ * @param item[in]
+ *   Item specification. Only VXLAN network identifier field is supported.
+ *   If the mask is NULL, default mask will be used.
+ *   Ranging is not supported.
+ * @param efx_spec[in, out]
+ *   EFX filter specification to update.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_parse_vxlan(const struct rte_flow_item *item,
+		     efx_filter_spec_t *efx_spec,
+		     struct rte_flow_error *error)
+{
+	int rc;
+	const struct rte_flow_item_vxlan *spec = NULL;
+	const struct rte_flow_item_vxlan *mask = NULL;
+	const struct rte_flow_item_vxlan supp_mask = {
+		.vni = { 0xff, 0xff, 0xff }
+	};
+
+	rc = sfc_flow_parse_init(item,
+				 (const void **)&spec,
+				 (const void **)&mask,
+				 &supp_mask,
+				 &rte_flow_item_vxlan_mask,
+				 sizeof(struct rte_flow_item_vxlan),
+				 error);
+	if (rc != 0)
+		return rc;
+
+	rc = sfc_flow_set_match_flags_for_encap_pkts(item, efx_spec,
+						     EFX_IPPROTO_UDP, error);
+	if (rc != 0)
+		return rc;
+
+	efx_spec->efs_encap_type = EFX_TUNNEL_PROTOCOL_VXLAN;
+	efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ENCAP_TYPE;
+
+	if (spec == NULL)
+		return 0;
+
+	rc = sfc_flow_set_efx_spec_vni_or_vsid(efx_spec, spec->vni,
+					       mask->vni, item, error);
+
+	return rc;
+}
+
+/**
+ * Convert GENEVE item to EFX filter specification.
+ *
+ * @param item[in]
+ *   Item specification. Only Virtual Network Identifier and protocol type
+ *   fields are supported. But protocol type can be only Ethernet (0x6558).
+ *   If the mask is NULL, default mask will be used.
+ *   Ranging is not supported.
+ * @param efx_spec[in, out]
+ *   EFX filter specification to update.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_parse_geneve(const struct rte_flow_item *item,
+		      efx_filter_spec_t *efx_spec,
+		      struct rte_flow_error *error)
+{
+	int rc;
+	const struct rte_flow_item_geneve *spec = NULL;
+	const struct rte_flow_item_geneve *mask = NULL;
+	const struct rte_flow_item_geneve supp_mask = {
+		.protocol = RTE_BE16(0xffff),
+		.vni = { 0xff, 0xff, 0xff }
+	};
+
+	rc = sfc_flow_parse_init(item,
+				 (const void **)&spec,
+				 (const void **)&mask,
+				 &supp_mask,
+				 &rte_flow_item_geneve_mask,
+				 sizeof(struct rte_flow_item_geneve),
+				 error);
+	if (rc != 0)
+		return rc;
+
+	rc = sfc_flow_set_match_flags_for_encap_pkts(item, efx_spec,
+						     EFX_IPPROTO_UDP, error);
+	if (rc != 0)
+		return rc;
+
+	efx_spec->efs_encap_type = EFX_TUNNEL_PROTOCOL_GENEVE;
+	efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ENCAP_TYPE;
+
+	if (spec == NULL)
+		return 0;
+
+	if (mask->protocol == supp_mask.protocol) {
+		if (spec->protocol != rte_cpu_to_be_16(ETHER_TYPE_TEB)) {
+			rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ITEM, item,
+				"GENEVE encap. protocol must be Ethernet "
+				"(0x6558) in the GENEVE pattern item");
+			return -rte_errno;
+		}
+	} else if (mask->protocol != 0) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ITEM, item,
+			"Unsupported mask for GENEVE encap. protocol");
+		return -rte_errno;
+	}
+
+	rc = sfc_flow_set_efx_spec_vni_or_vsid(efx_spec, spec->vni,
+					       mask->vni, item, error);
+
+	return rc;
+}
+
+/**
+ * Convert NVGRE item to EFX filter specification.
+ *
+ * @param item[in]
+ *   Item specification. Only virtual subnet ID field is supported.
+ *   If the mask is NULL, default mask will be used.
+ *   Ranging is not supported.
+ * @param efx_spec[in, out]
+ *   EFX filter specification to update.
+ * @param[out] error
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_parse_nvgre(const struct rte_flow_item *item,
+		     efx_filter_spec_t *efx_spec,
+		     struct rte_flow_error *error)
+{
+	int rc;
+	const struct rte_flow_item_nvgre *spec = NULL;
+	const struct rte_flow_item_nvgre *mask = NULL;
+	const struct rte_flow_item_nvgre supp_mask = {
+		.tni = { 0xff, 0xff, 0xff }
+	};
+
+	rc = sfc_flow_parse_init(item,
+				 (const void **)&spec,
+				 (const void **)&mask,
+				 &supp_mask,
+				 &rte_flow_item_nvgre_mask,
+				 sizeof(struct rte_flow_item_nvgre),
+				 error);
+	if (rc != 0)
+		return rc;
+
+	rc = sfc_flow_set_match_flags_for_encap_pkts(item, efx_spec,
+						     EFX_IPPROTO_GRE, error);
+	if (rc != 0)
+		return rc;
+
+	efx_spec->efs_encap_type = EFX_TUNNEL_PROTOCOL_NVGRE;
+	efx_spec->efs_match_flags |= EFX_FILTER_MATCH_ENCAP_TYPE;
+
+	if (spec == NULL)
+		return 0;
+
+	rc = sfc_flow_set_efx_spec_vni_or_vsid(efx_spec, spec->tni,
+					       mask->tni, item, error);
+
+	return rc;
+}
+
 static const struct sfc_flow_item sfc_flow_items[] = {
 	{
 		.type = RTE_FLOW_ITEM_TYPE_VOID,
@@ -760,6 +1066,24 @@ static const struct sfc_flow_item sfc_flow_items[] = {
 		.layer = SFC_FLOW_ITEM_L4,
 		.parse = sfc_flow_parse_udp,
 	},
+	{
+		.type = RTE_FLOW_ITEM_TYPE_VXLAN,
+		.prev_layer = SFC_FLOW_ITEM_L4,
+		.layer = SFC_FLOW_ITEM_START_LAYER,
+		.parse = sfc_flow_parse_vxlan,
+	},
+	{
+		.type = RTE_FLOW_ITEM_TYPE_GENEVE,
+		.prev_layer = SFC_FLOW_ITEM_L4,
+		.layer = SFC_FLOW_ITEM_START_LAYER,
+		.parse = sfc_flow_parse_geneve,
+	},
+	{
+		.type = RTE_FLOW_ITEM_TYPE_NVGRE,
+		.prev_layer = SFC_FLOW_ITEM_L3,
+		.layer = SFC_FLOW_ITEM_START_LAYER,
+		.parse = sfc_flow_parse_nvgre,
+	},
 };
 
 /*
@@ -794,6 +1118,12 @@ sfc_flow_parse_attr(const struct rte_flow_attr *attr,
 				   "Egress is not supported");
 		return -rte_errno;
 	}
+	if (attr->transfer != 0) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER, attr,
+				   "Transfer is not supported");
+		return -rte_errno;
+	}
 	if (attr->ingress == 0) {
 		rte_flow_error_set(error, ENOTSUP,
 				   RTE_FLOW_ERROR_TYPE_ATTR_INGRESS, attr,
@@ -801,8 +1131,8 @@ sfc_flow_parse_attr(const struct rte_flow_attr *attr,
 		return -rte_errno;
 	}
 
-	flow->spec.efs_flags |= EFX_FILTER_FLAG_RX;
-	flow->spec.efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+	flow->spec.template.efs_flags |= EFX_FILTER_FLAG_RX;
+	flow->spec.template.efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
 
 	return 0;
 }
@@ -827,6 +1157,7 @@ sfc_flow_parse_pattern(const struct rte_flow_item pattern[],
 {
 	int rc;
 	unsigned int prev_layer = SFC_FLOW_ITEM_ANY_LAYER;
+	boolean_t is_ifrm = B_FALSE;
 	const struct sfc_flow_item *item;
 
 	if (pattern == NULL) {
@@ -858,7 +1189,41 @@ sfc_flow_parse_pattern(const struct rte_flow_item pattern[],
 			return -rte_errno;
 		}
 
-		rc = item->parse(pattern, &flow->spec, error);
+		/*
+		 * Allow only VOID and ETH pattern items in the inner frame.
+		 * Also check that there is only one tunneling protocol.
+		 */
+		switch (item->type) {
+		case RTE_FLOW_ITEM_TYPE_VOID:
+		case RTE_FLOW_ITEM_TYPE_ETH:
+			break;
+
+		case RTE_FLOW_ITEM_TYPE_VXLAN:
+		case RTE_FLOW_ITEM_TYPE_GENEVE:
+		case RTE_FLOW_ITEM_TYPE_NVGRE:
+			if (is_ifrm) {
+				rte_flow_error_set(error, EINVAL,
+					RTE_FLOW_ERROR_TYPE_ITEM,
+					pattern,
+					"More than one tunneling protocol");
+				return -rte_errno;
+			}
+			is_ifrm = B_TRUE;
+			break;
+
+		default:
+			if (is_ifrm) {
+				rte_flow_error_set(error, EINVAL,
+					RTE_FLOW_ERROR_TYPE_ITEM,
+					pattern,
+					"There is an unsupported pattern item "
+					"in the inner frame");
+				return -rte_errno;
+			}
+			break;
+		}
+
+		rc = item->parse(pattern, &flow->spec.template, error);
 		if (rc != 0)
 			return rc;
 
@@ -880,28 +1245,27 @@ sfc_flow_parse_queue(struct sfc_adapter *sa,
 		return -EINVAL;
 
 	rxq = sa->rxq_info[queue->index].rxq;
-	flow->spec.efs_dmaq_id = (uint16_t)rxq->hw_index;
+	flow->spec.template.efs_dmaq_id = (uint16_t)rxq->hw_index;
 
 	return 0;
 }
 
-#if EFSYS_OPT_RX_SCALE
 static int
 sfc_flow_parse_rss(struct sfc_adapter *sa,
-		   const struct rte_flow_action_rss *rss,
+		   const struct rte_flow_action_rss *action_rss,
 		   struct rte_flow *flow)
 {
+	struct sfc_rss *rss = &sa->rss;
 	unsigned int rxq_sw_index;
 	struct sfc_rxq *rxq;
 	unsigned int rxq_hw_index_min;
 	unsigned int rxq_hw_index_max;
-	const struct rte_eth_rss_conf *rss_conf = rss->rss_conf;
-	uint64_t rss_hf;
-	uint8_t *rss_key = NULL;
+	efx_rx_hash_type_t efx_hash_types;
+	const uint8_t *rss_key;
 	struct sfc_flow_rss *sfc_rss_conf = &flow->rss_conf;
 	unsigned int i;
 
-	if (rss->num == 0)
+	if (action_rss->queue_num == 0)
 		return -EINVAL;
 
 	rxq_sw_index = sa->rxq_count - 1;
@@ -909,8 +1273,8 @@ sfc_flow_parse_rss(struct sfc_adapter *sa,
 	rxq_hw_index_min = rxq->hw_index;
 	rxq_hw_index_max = 0;
 
-	for (i = 0; i < rss->num; ++i) {
-		rxq_sw_index = rss->queue[i];
+	for (i = 0; i < action_rss->queue_num; ++i) {
+		rxq_sw_index = action_rss->queue[i];
 
 		if (rxq_sw_index >= sa->rxq_count)
 			return -EINVAL;
@@ -924,28 +1288,62 @@ sfc_flow_parse_rss(struct sfc_adapter *sa,
 			rxq_hw_index_max = rxq->hw_index;
 	}
 
-	rss_hf = (rss_conf != NULL) ? rss_conf->rss_hf : SFC_RSS_OFFLOADS;
-	if ((rss_hf & ~SFC_RSS_OFFLOADS) != 0)
+	switch (action_rss->func) {
+	case RTE_ETH_HASH_FUNCTION_DEFAULT:
+	case RTE_ETH_HASH_FUNCTION_TOEPLITZ:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (action_rss->level)
 		return -EINVAL;
 
-	if (rss_conf != NULL) {
-		if (rss_conf->rss_key_len != sizeof(sa->rss_key))
+	/*
+	 * Dummy RSS action with only one queue and no specific settings
+	 * for hash types and key does not require dedicated RSS context
+	 * and may be simplified to single queue action.
+	 */
+	if (action_rss->queue_num == 1 && action_rss->types == 0 &&
+	    action_rss->key_len == 0) {
+		flow->spec.template.efs_dmaq_id = rxq_hw_index_min;
+		return 0;
+	}
+
+	if (action_rss->types) {
+		int rc;
+
+		rc = sfc_rx_hf_rte_to_efx(sa, action_rss->types,
+					  &efx_hash_types);
+		if (rc != 0)
+			return -rc;
+	} else {
+		unsigned int i;
+
+		efx_hash_types = 0;
+		for (i = 0; i < rss->hf_map_nb_entries; ++i)
+			efx_hash_types |= rss->hf_map[i].efx;
+	}
+
+	if (action_rss->key_len) {
+		if (action_rss->key_len != sizeof(rss->key))
 			return -EINVAL;
 
-		rss_key = rss_conf->rss_key;
+		rss_key = action_rss->key;
 	} else {
-		rss_key = sa->rss_key;
+		rss_key = rss->key;
 	}
 
 	flow->rss = B_TRUE;
 
 	sfc_rss_conf->rxq_hw_index_min = rxq_hw_index_min;
 	sfc_rss_conf->rxq_hw_index_max = rxq_hw_index_max;
-	sfc_rss_conf->rss_hash_types = sfc_rte_to_efx_hash_type(rss_hf);
-	rte_memcpy(sfc_rss_conf->rss_key, rss_key, sizeof(sa->rss_key));
+	sfc_rss_conf->rss_hash_types = efx_hash_types;
+	rte_memcpy(sfc_rss_conf->rss_key, rss_key, sizeof(rss->key));
 
 	for (i = 0; i < RTE_DIM(sfc_rss_conf->rss_tbl); ++i) {
-		unsigned int rxq_sw_index = rss->queue[i % rss->num];
+		unsigned int nb_queues = action_rss->queue_num;
+		unsigned int rxq_sw_index = action_rss->queue[i % nb_queues];
 		struct sfc_rxq *rxq = sa->rxq_info[rxq_sw_index].rxq;
 
 		sfc_rss_conf->rss_tbl[i] = rxq->hw_index - rxq_hw_index_min;
@@ -953,47 +1351,101 @@ sfc_flow_parse_rss(struct sfc_adapter *sa,
 
 	return 0;
 }
-#endif /* EFSYS_OPT_RX_SCALE */
+
+static int
+sfc_flow_spec_flush(struct sfc_adapter *sa, struct sfc_flow_spec *spec,
+		    unsigned int filters_count)
+{
+	unsigned int i;
+	int ret = 0;
+
+	for (i = 0; i < filters_count; i++) {
+		int rc;
+
+		rc = efx_filter_remove(sa->nic, &spec->filters[i]);
+		if (ret == 0 && rc != 0) {
+			sfc_err(sa, "failed to remove filter specification "
+				"(rc = %d)", rc);
+			ret = rc;
+		}
+	}
+
+	return ret;
+}
+
+static int
+sfc_flow_spec_insert(struct sfc_adapter *sa, struct sfc_flow_spec *spec)
+{
+	unsigned int i;
+	int rc = 0;
+
+	for (i = 0; i < spec->count; i++) {
+		rc = efx_filter_insert(sa->nic, &spec->filters[i]);
+		if (rc != 0) {
+			sfc_flow_spec_flush(sa, spec, i);
+			break;
+		}
+	}
+
+	return rc;
+}
+
+static int
+sfc_flow_spec_remove(struct sfc_adapter *sa, struct sfc_flow_spec *spec)
+{
+	return sfc_flow_spec_flush(sa, spec, spec->count);
+}
 
 static int
 sfc_flow_filter_insert(struct sfc_adapter *sa,
 		       struct rte_flow *flow)
 {
-	efx_filter_spec_t *spec = &flow->spec;
-
-#if EFSYS_OPT_RX_SCALE
-	struct sfc_flow_rss *rss = &flow->rss_conf;
+	struct sfc_rss *rss = &sa->rss;
+	struct sfc_flow_rss *flow_rss = &flow->rss_conf;
+	uint32_t efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+	unsigned int i;
 	int rc = 0;
 
 	if (flow->rss) {
-		unsigned int rss_spread = MIN(rss->rxq_hw_index_max -
-					      rss->rxq_hw_index_min + 1,
+		unsigned int rss_spread = MIN(flow_rss->rxq_hw_index_max -
+					      flow_rss->rxq_hw_index_min + 1,
 					      EFX_MAXRSS);
 
 		rc = efx_rx_scale_context_alloc(sa->nic,
 						EFX_RX_SCALE_EXCLUSIVE,
 						rss_spread,
-						&spec->efs_rss_context);
+						&efs_rss_context);
 		if (rc != 0)
 			goto fail_scale_context_alloc;
 
-		rc = efx_rx_scale_mode_set(sa->nic, spec->efs_rss_context,
-					   EFX_RX_HASHALG_TOEPLITZ,
-					   rss->rss_hash_types, B_TRUE);
+		rc = efx_rx_scale_mode_set(sa->nic, efs_rss_context,
+					   rss->hash_alg,
+					   flow_rss->rss_hash_types, B_TRUE);
 		if (rc != 0)
 			goto fail_scale_mode_set;
 
-		rc = efx_rx_scale_key_set(sa->nic, spec->efs_rss_context,
-					  rss->rss_key,
-					  sizeof(sa->rss_key));
+		rc = efx_rx_scale_key_set(sa->nic, efs_rss_context,
+					  flow_rss->rss_key,
+					  sizeof(rss->key));
 		if (rc != 0)
 			goto fail_scale_key_set;
 
-		spec->efs_dmaq_id = rss->rxq_hw_index_min;
-		spec->efs_flags |= EFX_FILTER_FLAG_RX_RSS;
+		/*
+		 * At this point, fully elaborated filter specifications
+		 * have been produced from the template. To make sure that
+		 * RSS behaviour is consistent between them, set the same
+		 * RSS context value everywhere.
+		 */
+		for (i = 0; i < flow->spec.count; i++) {
+			efx_filter_spec_t *spec = &flow->spec.filters[i];
+
+			spec->efs_rss_context = efs_rss_context;
+			spec->efs_dmaq_id = flow_rss->rxq_hw_index_min;
+			spec->efs_flags |= EFX_FILTER_FLAG_RX_RSS;
+		}
 	}
 
-	rc = efx_filter_insert(sa->nic, spec);
+	rc = sfc_flow_spec_insert(sa, &flow->spec);
 	if (rc != 0)
 		goto fail_filter_insert;
 
@@ -1006,8 +1458,9 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 		 * the HW knows all the information needed to verify
 		 * the table entries, and the operation will succeed
 		 */
-		rc = efx_rx_scale_tbl_set(sa->nic, spec->efs_rss_context,
-					  rss->rss_tbl, RTE_DIM(rss->rss_tbl));
+		rc = efx_rx_scale_tbl_set(sa->nic, efs_rss_context,
+					  flow_rss->rss_tbl,
+					  RTE_DIM(flow_rss->rss_tbl));
 		if (rc != 0)
 			goto fail_scale_tbl_set;
 	}
@@ -1015,38 +1468,56 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 	return 0;
 
 fail_scale_tbl_set:
-	efx_filter_remove(sa->nic, spec);
+	sfc_flow_spec_remove(sa, &flow->spec);
 
 fail_filter_insert:
 fail_scale_key_set:
 fail_scale_mode_set:
-	if (flow->rss)
-		efx_rx_scale_context_free(sa->nic, spec->efs_rss_context);
+	if (efs_rss_context != EFX_RSS_CONTEXT_DEFAULT)
+		efx_rx_scale_context_free(sa->nic, efs_rss_context);
 
 fail_scale_context_alloc:
 	return rc;
-#else /* !EFSYS_OPT_RX_SCALE */
-	return efx_filter_insert(sa->nic, spec);
-#endif /* EFSYS_OPT_RX_SCALE */
 }
 
 static int
 sfc_flow_filter_remove(struct sfc_adapter *sa,
 		       struct rte_flow *flow)
 {
-	efx_filter_spec_t *spec = &flow->spec;
 	int rc = 0;
 
-	rc = efx_filter_remove(sa->nic, spec);
+	rc = sfc_flow_spec_remove(sa, &flow->spec);
 	if (rc != 0)
 		return rc;
 
-#if EFSYS_OPT_RX_SCALE
-	if (flow->rss)
+	if (flow->rss) {
+		/*
+		 * All specifications for a given flow rule have the same RSS
+		 * context, so that RSS context value is taken from the first
+		 * filter specification
+		 */
+		efx_filter_spec_t *spec = &flow->spec.filters[0];
+
 		rc = efx_rx_scale_context_free(sa->nic, spec->efs_rss_context);
-#endif /* EFSYS_OPT_RX_SCALE */
+	}
 
 	return rc;
+}
+
+static int
+sfc_flow_parse_mark(struct sfc_adapter *sa,
+		    const struct rte_flow_action_mark *mark,
+		    struct rte_flow *flow)
+{
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+
+	if (mark == NULL || mark->id > encp->enc_filter_action_mark_max)
+		return EINVAL;
+
+	flow->spec.template.efs_flags |= EFX_FILTER_FLAG_ACTION_MARK;
+	flow->spec.template.efs_mark = mark->id;
+
+	return 0;
 }
 
 static int
@@ -1056,7 +1527,13 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 		       struct rte_flow_error *error)
 {
 	int rc;
-	boolean_t is_specified = B_FALSE;
+	const unsigned int dp_rx_features = sa->dp_rx->features;
+	uint32_t actions_set = 0;
+	const uint32_t fate_actions_mask = (1UL << RTE_FLOW_ACTION_TYPE_QUEUE) |
+					   (1UL << RTE_FLOW_ACTION_TYPE_RSS) |
+					   (1UL << RTE_FLOW_ACTION_TYPE_DROP);
+	const uint32_t mark_actions_mask = (1UL << RTE_FLOW_ACTION_TYPE_MARK) |
+					   (1UL << RTE_FLOW_ACTION_TYPE_FLAG);
 
 	if (actions == NULL) {
 		rte_flow_error_set(error, EINVAL,
@@ -1065,12 +1542,22 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 		return -rte_errno;
 	}
 
+#define SFC_BUILD_SET_OVERFLOW(_action, _set) \
+	RTE_BUILD_BUG_ON(_action >= sizeof(_set) * CHAR_BIT)
+
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
 		switch (actions->type) {
 		case RTE_FLOW_ACTION_TYPE_VOID:
+			SFC_BUILD_SET_OVERFLOW(RTE_FLOW_ACTION_TYPE_VOID,
+					       actions_set);
 			break;
 
 		case RTE_FLOW_ACTION_TYPE_QUEUE:
+			SFC_BUILD_SET_OVERFLOW(RTE_FLOW_ACTION_TYPE_QUEUE,
+					       actions_set);
+			if ((actions_set & fate_actions_mask) != 0)
+				goto fail_fate_actions;
+
 			rc = sfc_flow_parse_queue(sa, actions->conf, flow);
 			if (rc != 0) {
 				rte_flow_error_set(error, EINVAL,
@@ -1078,23 +1565,71 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 					"Bad QUEUE action");
 				return -rte_errno;
 			}
-
-			is_specified = B_TRUE;
 			break;
 
-#if EFSYS_OPT_RX_SCALE
 		case RTE_FLOW_ACTION_TYPE_RSS:
+			SFC_BUILD_SET_OVERFLOW(RTE_FLOW_ACTION_TYPE_RSS,
+					       actions_set);
+			if ((actions_set & fate_actions_mask) != 0)
+				goto fail_fate_actions;
+
 			rc = sfc_flow_parse_rss(sa, actions->conf, flow);
 			if (rc != 0) {
-				rte_flow_error_set(error, rc,
+				rte_flow_error_set(error, -rc,
 					RTE_FLOW_ERROR_TYPE_ACTION, actions,
 					"Bad RSS action");
 				return -rte_errno;
 			}
-
-			is_specified = B_TRUE;
 			break;
-#endif /* EFSYS_OPT_RX_SCALE */
+
+		case RTE_FLOW_ACTION_TYPE_DROP:
+			SFC_BUILD_SET_OVERFLOW(RTE_FLOW_ACTION_TYPE_DROP,
+					       actions_set);
+			if ((actions_set & fate_actions_mask) != 0)
+				goto fail_fate_actions;
+
+			flow->spec.template.efs_dmaq_id =
+				EFX_FILTER_SPEC_RX_DMAQ_ID_DROP;
+			break;
+
+		case RTE_FLOW_ACTION_TYPE_FLAG:
+			SFC_BUILD_SET_OVERFLOW(RTE_FLOW_ACTION_TYPE_FLAG,
+					       actions_set);
+			if ((actions_set & mark_actions_mask) != 0)
+				goto fail_actions_overlap;
+
+			if ((dp_rx_features & SFC_DP_RX_FEAT_FLOW_FLAG) == 0) {
+				rte_flow_error_set(error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
+					"FLAG action is not supported on the current Rx datapath");
+				return -rte_errno;
+			}
+
+			flow->spec.template.efs_flags |=
+				EFX_FILTER_FLAG_ACTION_FLAG;
+			break;
+
+		case RTE_FLOW_ACTION_TYPE_MARK:
+			SFC_BUILD_SET_OVERFLOW(RTE_FLOW_ACTION_TYPE_MARK,
+					       actions_set);
+			if ((actions_set & mark_actions_mask) != 0)
+				goto fail_actions_overlap;
+
+			if ((dp_rx_features & SFC_DP_RX_FEAT_FLOW_MARK) == 0) {
+				rte_flow_error_set(error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION, NULL,
+					"MARK action is not supported on the current Rx datapath");
+				return -rte_errno;
+			}
+
+			rc = sfc_flow_parse_mark(sa, actions->conf, flow);
+			if (rc != 0) {
+				rte_flow_error_set(error, rc,
+					RTE_FLOW_ERROR_TYPE_ACTION, actions,
+					"Bad MARK action");
+				return -rte_errno;
+			}
+			break;
 
 		default:
 			rte_flow_error_set(error, ENOTSUP,
@@ -1102,12 +1637,607 @@ sfc_flow_parse_actions(struct sfc_adapter *sa,
 					   "Action is not supported");
 			return -rte_errno;
 		}
+
+		actions_set |= (1UL << actions->type);
+	}
+#undef SFC_BUILD_SET_OVERFLOW
+
+	/* When fate is unknown, drop traffic. */
+	if ((actions_set & fate_actions_mask) == 0) {
+		flow->spec.template.efs_dmaq_id =
+			EFX_FILTER_SPEC_RX_DMAQ_ID_DROP;
 	}
 
-	if (!is_specified) {
+	return 0;
+
+fail_fate_actions:
+	rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ACTION, actions,
+			   "Cannot combine several fate-deciding actions, "
+			   "choose between QUEUE, RSS or DROP");
+	return -rte_errno;
+
+fail_actions_overlap:
+	rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ACTION, actions,
+			   "Overlapping actions are not supported");
+	return -rte_errno;
+}
+
+/**
+ * Set the EFX_FILTER_MATCH_UNKNOWN_UCAST_DST
+ * and EFX_FILTER_MATCH_UNKNOWN_MCAST_DST match flags in the same
+ * specifications after copying.
+ *
+ * @param spec[in, out]
+ *   SFC flow specification to update.
+ * @param filters_count_for_one_val[in]
+ *   How many specifications should have the same match flag, what is the
+ *   number of specifications before copying.
+ * @param error[out]
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_set_unknown_dst_flags(struct sfc_flow_spec *spec,
+			       unsigned int filters_count_for_one_val,
+			       struct rte_flow_error *error)
+{
+	unsigned int i;
+	static const efx_filter_match_flags_t vals[] = {
+		EFX_FILTER_MATCH_UNKNOWN_UCAST_DST,
+		EFX_FILTER_MATCH_UNKNOWN_MCAST_DST
+	};
+
+	if (filters_count_for_one_val * RTE_DIM(vals) != spec->count) {
 		rte_flow_error_set(error, EINVAL,
-				   RTE_FLOW_ERROR_TYPE_ACTION_NUM, actions,
-				   "Action is unspecified");
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Number of specifications is incorrect while copying "
+			"by unknown destination flags");
+		return -rte_errno;
+	}
+
+	for (i = 0; i < spec->count; i++) {
+		/* The check above ensures that divisor can't be zero here */
+		spec->filters[i].efs_match_flags |=
+			vals[i / filters_count_for_one_val];
+	}
+
+	return 0;
+}
+
+/**
+ * Check that the following conditions are met:
+ * - the list of supported filters has a filter
+ *   with EFX_FILTER_MATCH_UNKNOWN_MCAST_DST flag instead of
+ *   EFX_FILTER_MATCH_UNKNOWN_UCAST_DST, since this filter will also
+ *   be inserted.
+ *
+ * @param match[in]
+ *   The match flags of filter.
+ * @param spec[in]
+ *   Specification to be supplemented.
+ * @param filter[in]
+ *   SFC filter with list of supported filters.
+ */
+static boolean_t
+sfc_flow_check_unknown_dst_flags(efx_filter_match_flags_t match,
+				 __rte_unused efx_filter_spec_t *spec,
+				 struct sfc_filter *filter)
+{
+	unsigned int i;
+	efx_filter_match_flags_t match_mcast_dst;
+
+	match_mcast_dst =
+		(match & ~EFX_FILTER_MATCH_UNKNOWN_UCAST_DST) |
+		EFX_FILTER_MATCH_UNKNOWN_MCAST_DST;
+	for (i = 0; i < filter->supported_match_num; i++) {
+		if (match_mcast_dst == filter->supported_match[i])
+			return B_TRUE;
+	}
+
+	return B_FALSE;
+}
+
+/**
+ * Set the EFX_FILTER_MATCH_ETHER_TYPE match flag and EFX_ETHER_TYPE_IPV4 and
+ * EFX_ETHER_TYPE_IPV6 values of the corresponding field in the same
+ * specifications after copying.
+ *
+ * @param spec[in, out]
+ *   SFC flow specification to update.
+ * @param filters_count_for_one_val[in]
+ *   How many specifications should have the same EtherType value, what is the
+ *   number of specifications before copying.
+ * @param error[out]
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_set_ethertypes(struct sfc_flow_spec *spec,
+			unsigned int filters_count_for_one_val,
+			struct rte_flow_error *error)
+{
+	unsigned int i;
+	static const uint16_t vals[] = {
+		EFX_ETHER_TYPE_IPV4, EFX_ETHER_TYPE_IPV6
+	};
+
+	if (filters_count_for_one_val * RTE_DIM(vals) != spec->count) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Number of specifications is incorrect "
+			"while copying by Ethertype");
+		return -rte_errno;
+	}
+
+	for (i = 0; i < spec->count; i++) {
+		spec->filters[i].efs_match_flags |=
+			EFX_FILTER_MATCH_ETHER_TYPE;
+
+		/*
+		 * The check above ensures that
+		 * filters_count_for_one_val is not 0
+		 */
+		spec->filters[i].efs_ether_type =
+			vals[i / filters_count_for_one_val];
+	}
+
+	return 0;
+}
+
+/**
+ * Set the EFX_FILTER_MATCH_OUTER_VID match flag with value 0
+ * in the same specifications after copying.
+ *
+ * @param spec[in, out]
+ *   SFC flow specification to update.
+ * @param filters_count_for_one_val[in]
+ *   How many specifications should have the same match flag, what is the
+ *   number of specifications before copying.
+ * @param error[out]
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_set_outer_vid_flag(struct sfc_flow_spec *spec,
+			    unsigned int filters_count_for_one_val,
+			    struct rte_flow_error *error)
+{
+	unsigned int i;
+
+	if (filters_count_for_one_val != spec->count) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Number of specifications is incorrect "
+			"while copying by outer VLAN ID");
+		return -rte_errno;
+	}
+
+	for (i = 0; i < spec->count; i++) {
+		spec->filters[i].efs_match_flags |=
+			EFX_FILTER_MATCH_OUTER_VID;
+
+		spec->filters[i].efs_outer_vid = 0;
+	}
+
+	return 0;
+}
+
+/**
+ * Set the EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST and
+ * EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST match flags in the same
+ * specifications after copying.
+ *
+ * @param spec[in, out]
+ *   SFC flow specification to update.
+ * @param filters_count_for_one_val[in]
+ *   How many specifications should have the same match flag, what is the
+ *   number of specifications before copying.
+ * @param error[out]
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_set_ifrm_unknown_dst_flags(struct sfc_flow_spec *spec,
+				    unsigned int filters_count_for_one_val,
+				    struct rte_flow_error *error)
+{
+	unsigned int i;
+	static const efx_filter_match_flags_t vals[] = {
+		EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST,
+		EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST
+	};
+
+	if (filters_count_for_one_val * RTE_DIM(vals) != spec->count) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Number of specifications is incorrect while copying "
+			"by inner frame unknown destination flags");
+		return -rte_errno;
+	}
+
+	for (i = 0; i < spec->count; i++) {
+		/* The check above ensures that divisor can't be zero here */
+		spec->filters[i].efs_match_flags |=
+			vals[i / filters_count_for_one_val];
+	}
+
+	return 0;
+}
+
+/**
+ * Check that the following conditions are met:
+ * - the specification corresponds to a filter for encapsulated traffic
+ * - the list of supported filters has a filter
+ *   with EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST flag instead of
+ *   EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST, since this filter will also
+ *   be inserted.
+ *
+ * @param match[in]
+ *   The match flags of filter.
+ * @param spec[in]
+ *   Specification to be supplemented.
+ * @param filter[in]
+ *   SFC filter with list of supported filters.
+ */
+static boolean_t
+sfc_flow_check_ifrm_unknown_dst_flags(efx_filter_match_flags_t match,
+				      efx_filter_spec_t *spec,
+				      struct sfc_filter *filter)
+{
+	unsigned int i;
+	efx_tunnel_protocol_t encap_type = spec->efs_encap_type;
+	efx_filter_match_flags_t match_mcast_dst;
+
+	if (encap_type == EFX_TUNNEL_PROTOCOL_NONE)
+		return B_FALSE;
+
+	match_mcast_dst =
+		(match & ~EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST) |
+		EFX_FILTER_MATCH_IFRM_UNKNOWN_MCAST_DST;
+	for (i = 0; i < filter->supported_match_num; i++) {
+		if (match_mcast_dst == filter->supported_match[i])
+			return B_TRUE;
+	}
+
+	return B_FALSE;
+}
+
+/**
+ * Check that the list of supported filters has a filter that differs
+ * from @p match in that it has no flag EFX_FILTER_MATCH_OUTER_VID
+ * in this case that filter will be used and the flag
+ * EFX_FILTER_MATCH_OUTER_VID is not needed.
+ *
+ * @param match[in]
+ *   The match flags of filter.
+ * @param spec[in]
+ *   Specification to be supplemented.
+ * @param filter[in]
+ *   SFC filter with list of supported filters.
+ */
+static boolean_t
+sfc_flow_check_outer_vid_flag(efx_filter_match_flags_t match,
+			      __rte_unused efx_filter_spec_t *spec,
+			      struct sfc_filter *filter)
+{
+	unsigned int i;
+	efx_filter_match_flags_t match_without_vid =
+		match & ~EFX_FILTER_MATCH_OUTER_VID;
+
+	for (i = 0; i < filter->supported_match_num; i++) {
+		if (match_without_vid == filter->supported_match[i])
+			return B_FALSE;
+	}
+
+	return B_TRUE;
+}
+
+/*
+ * Match flags that can be automatically added to filters.
+ * Selecting the last minimum when searching for the copy flag ensures that the
+ * EFX_FILTER_MATCH_UNKNOWN_UCAST_DST flag has a higher priority than
+ * EFX_FILTER_MATCH_ETHER_TYPE. This is because the filter
+ * EFX_FILTER_MATCH_UNKNOWN_UCAST_DST is at the end of the list of supported
+ * filters.
+ */
+static const struct sfc_flow_copy_flag sfc_flow_copy_flags[] = {
+	{
+		.flag = EFX_FILTER_MATCH_UNKNOWN_UCAST_DST,
+		.vals_count = 2,
+		.set_vals = sfc_flow_set_unknown_dst_flags,
+		.spec_check = sfc_flow_check_unknown_dst_flags,
+	},
+	{
+		.flag = EFX_FILTER_MATCH_ETHER_TYPE,
+		.vals_count = 2,
+		.set_vals = sfc_flow_set_ethertypes,
+		.spec_check = NULL,
+	},
+	{
+		.flag = EFX_FILTER_MATCH_IFRM_UNKNOWN_UCAST_DST,
+		.vals_count = 2,
+		.set_vals = sfc_flow_set_ifrm_unknown_dst_flags,
+		.spec_check = sfc_flow_check_ifrm_unknown_dst_flags,
+	},
+	{
+		.flag = EFX_FILTER_MATCH_OUTER_VID,
+		.vals_count = 1,
+		.set_vals = sfc_flow_set_outer_vid_flag,
+		.spec_check = sfc_flow_check_outer_vid_flag,
+	},
+};
+
+/* Get item from array sfc_flow_copy_flags */
+static const struct sfc_flow_copy_flag *
+sfc_flow_get_copy_flag(efx_filter_match_flags_t flag)
+{
+	unsigned int i;
+
+	for (i = 0; i < RTE_DIM(sfc_flow_copy_flags); i++) {
+		if (sfc_flow_copy_flags[i].flag == flag)
+			return &sfc_flow_copy_flags[i];
+	}
+
+	return NULL;
+}
+
+/**
+ * Make copies of the specifications, set match flag and values
+ * of the field that corresponds to it.
+ *
+ * @param spec[in, out]
+ *   SFC flow specification to update.
+ * @param flag[in]
+ *   The match flag to add.
+ * @param error[out]
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_spec_add_match_flag(struct sfc_flow_spec *spec,
+			     efx_filter_match_flags_t flag,
+			     struct rte_flow_error *error)
+{
+	unsigned int i;
+	unsigned int new_filters_count;
+	unsigned int filters_count_for_one_val;
+	const struct sfc_flow_copy_flag *copy_flag;
+	int rc;
+
+	copy_flag = sfc_flow_get_copy_flag(flag);
+	if (copy_flag == NULL) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "Unsupported spec field for copying");
+		return -rte_errno;
+	}
+
+	new_filters_count = spec->count * copy_flag->vals_count;
+	if (new_filters_count > SF_FLOW_SPEC_NB_FILTERS_MAX) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"Too much EFX specifications in the flow rule");
+		return -rte_errno;
+	}
+
+	/* Copy filters specifications */
+	for (i = spec->count; i < new_filters_count; i++)
+		spec->filters[i] = spec->filters[i - spec->count];
+
+	filters_count_for_one_val = spec->count;
+	spec->count = new_filters_count;
+
+	rc = copy_flag->set_vals(spec, filters_count_for_one_val, error);
+	if (rc != 0)
+		return rc;
+
+	return 0;
+}
+
+/**
+ * Check that the given set of match flags missing in the original filter spec
+ * could be covered by adding spec copies which specify the corresponding
+ * flags and packet field values to match.
+ *
+ * @param miss_flags[in]
+ *   Flags that are missing until the supported filter.
+ * @param spec[in]
+ *   Specification to be supplemented.
+ * @param filter[in]
+ *   SFC filter.
+ *
+ * @return
+ *   Number of specifications after copy or 0, if the flags can not be added.
+ */
+static unsigned int
+sfc_flow_check_missing_flags(efx_filter_match_flags_t miss_flags,
+			     efx_filter_spec_t *spec,
+			     struct sfc_filter *filter)
+{
+	unsigned int i;
+	efx_filter_match_flags_t copy_flags = 0;
+	efx_filter_match_flags_t flag;
+	efx_filter_match_flags_t match = spec->efs_match_flags | miss_flags;
+	sfc_flow_spec_check *check;
+	unsigned int multiplier = 1;
+
+	for (i = 0; i < RTE_DIM(sfc_flow_copy_flags); i++) {
+		flag = sfc_flow_copy_flags[i].flag;
+		check = sfc_flow_copy_flags[i].spec_check;
+		if ((flag & miss_flags) == flag) {
+			if (check != NULL && (!check(match, spec, filter)))
+				continue;
+
+			copy_flags |= flag;
+			multiplier *= sfc_flow_copy_flags[i].vals_count;
+		}
+	}
+
+	if (copy_flags == miss_flags)
+		return multiplier;
+
+	return 0;
+}
+
+/**
+ * Attempt to supplement the specification template to the minimally
+ * supported set of match flags. To do this, it is necessary to copy
+ * the specifications, filling them with the values of fields that
+ * correspond to the missing flags.
+ * The necessary and sufficient filter is built from the fewest number
+ * of copies which could be made to cover the minimally required set
+ * of flags.
+ *
+ * @param sa[in]
+ *   SFC adapter.
+ * @param spec[in, out]
+ *   SFC flow specification to update.
+ * @param error[out]
+ *   Perform verbose error reporting if not NULL.
+ */
+static int
+sfc_flow_spec_filters_complete(struct sfc_adapter *sa,
+			       struct sfc_flow_spec *spec,
+			       struct rte_flow_error *error)
+{
+	struct sfc_filter *filter = &sa->filter;
+	efx_filter_match_flags_t miss_flags;
+	efx_filter_match_flags_t min_miss_flags = 0;
+	efx_filter_match_flags_t match;
+	unsigned int min_multiplier = UINT_MAX;
+	unsigned int multiplier;
+	unsigned int i;
+	int rc;
+
+	match = spec->template.efs_match_flags;
+	for (i = 0; i < filter->supported_match_num; i++) {
+		if ((match & filter->supported_match[i]) == match) {
+			miss_flags = filter->supported_match[i] & (~match);
+			multiplier = sfc_flow_check_missing_flags(miss_flags,
+				&spec->template, filter);
+			if (multiplier > 0) {
+				if (multiplier <= min_multiplier) {
+					min_multiplier = multiplier;
+					min_miss_flags = miss_flags;
+				}
+			}
+		}
+	}
+
+	if (min_multiplier == UINT_MAX) {
+		rte_flow_error_set(error, ENOTSUP,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "The flow rule pattern is unsupported");
+		return -rte_errno;
+	}
+
+	for (i = 0; i < RTE_DIM(sfc_flow_copy_flags); i++) {
+		efx_filter_match_flags_t flag = sfc_flow_copy_flags[i].flag;
+
+		if ((flag & min_miss_flags) == flag) {
+			rc = sfc_flow_spec_add_match_flag(spec, flag, error);
+			if (rc != 0)
+				return rc;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * Check that set of match flags is referred to by a filter. Filter is
+ * described by match flags with the ability to add OUTER_VID and INNER_VID
+ * flags.
+ *
+ * @param match_flags[in]
+ *   Set of match flags.
+ * @param flags_pattern[in]
+ *   Pattern of filter match flags.
+ */
+static boolean_t
+sfc_flow_is_match_with_vids(efx_filter_match_flags_t match_flags,
+			    efx_filter_match_flags_t flags_pattern)
+{
+	if ((match_flags & flags_pattern) != flags_pattern)
+		return B_FALSE;
+
+	switch (match_flags & ~flags_pattern) {
+	case 0:
+	case EFX_FILTER_MATCH_OUTER_VID:
+	case EFX_FILTER_MATCH_OUTER_VID | EFX_FILTER_MATCH_INNER_VID:
+		return B_TRUE;
+	default:
+		return B_FALSE;
+	}
+}
+
+/**
+ * Check whether the spec maps to a hardware filter which is known to be
+ * ineffective despite being valid.
+ *
+ * @param filter[in]
+ *   SFC filter with list of supported filters.
+ * @param spec[in]
+ *   SFC flow specification.
+ */
+static boolean_t
+sfc_flow_is_match_flags_exception(struct sfc_filter *filter,
+				  struct sfc_flow_spec *spec)
+{
+	unsigned int i;
+	uint16_t ether_type;
+	uint8_t ip_proto;
+	efx_filter_match_flags_t match_flags;
+
+	for (i = 0; i < spec->count; i++) {
+		match_flags = spec->filters[i].efs_match_flags;
+
+		if (sfc_flow_is_match_with_vids(match_flags,
+						EFX_FILTER_MATCH_ETHER_TYPE) ||
+		    sfc_flow_is_match_with_vids(match_flags,
+						EFX_FILTER_MATCH_ETHER_TYPE |
+						EFX_FILTER_MATCH_LOC_MAC)) {
+			ether_type = spec->filters[i].efs_ether_type;
+			if (filter->supports_ip_proto_or_addr_filter &&
+			    (ether_type == EFX_ETHER_TYPE_IPV4 ||
+			     ether_type == EFX_ETHER_TYPE_IPV6))
+				return B_TRUE;
+		} else if (sfc_flow_is_match_with_vids(match_flags,
+				EFX_FILTER_MATCH_ETHER_TYPE |
+				EFX_FILTER_MATCH_IP_PROTO) ||
+			   sfc_flow_is_match_with_vids(match_flags,
+				EFX_FILTER_MATCH_ETHER_TYPE |
+				EFX_FILTER_MATCH_IP_PROTO |
+				EFX_FILTER_MATCH_LOC_MAC)) {
+			ip_proto = spec->filters[i].efs_ip_proto;
+			if (filter->supports_rem_or_local_port_filter &&
+			    (ip_proto == EFX_IPPROTO_TCP ||
+			     ip_proto == EFX_IPPROTO_UDP))
+				return B_TRUE;
+		}
+	}
+
+	return B_FALSE;
+}
+
+static int
+sfc_flow_validate_match_flags(struct sfc_adapter *sa,
+			      struct rte_flow *flow,
+			      struct rte_flow_error *error)
+{
+	efx_filter_spec_t *spec_tmpl = &flow->spec.template;
+	efx_filter_match_flags_t match_flags = spec_tmpl->efs_match_flags;
+	int rc;
+
+	/* Initialize the first filter spec with template */
+	flow->spec.filters[0] = *spec_tmpl;
+	flow->spec.count = 1;
+
+	if (!sfc_filter_is_match_supported(sa, match_flags)) {
+		rc = sfc_flow_spec_filters_complete(sa, &flow->spec, error);
+		if (rc != 0)
+			return rc;
+	}
+
+	if (sfc_flow_is_match_flags_exception(&sa->filter, &flow->spec)) {
+		rte_flow_error_set(error, ENOTSUP,
+			RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			"The flow rule pattern is unsupported");
 		return -rte_errno;
 	}
 
@@ -1137,12 +2267,11 @@ sfc_flow_parse(struct rte_eth_dev *dev,
 	if (rc != 0)
 		goto fail_bad_value;
 
-	if (!sfc_filter_is_match_supported(sa, flow->spec.efs_match_flags)) {
-		rte_flow_error_set(error, ENOTSUP,
-				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
-				   "Flow rule pattern is not supported");
-		return -rte_errno;
-	}
+	rc = sfc_flow_validate_match_flags(sa, flow, error);
+	if (rc != 0)
+		goto fail_bad_value;
+
+	return 0;
 
 fail_bad_value:
 	return rc;

@@ -1,40 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2018 Intel Corporation
  */
 
 #ifndef _VHOST_NET_CDEV_H_
 #define _VHOST_NET_CDEV_H_
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <sys/types.h>
 #include <sys/queue.h>
 #include <unistd.h>
@@ -48,11 +20,16 @@
 #include <rte_rwlock.h>
 
 #include "rte_vhost.h"
+#include "rte_vdpa.h"
 
 /* Used to indicate that the device is running on a data core */
 #define VIRTIO_DEV_RUNNING 1
 /* Used to indicate that the device is ready to operate */
 #define VIRTIO_DEV_READY 2
+/* Used to indicate that the built-in vhost net device backend is enabled */
+#define VIRTIO_DEV_BUILTIN_VIRTIO_NET 4
+/* Used to indicate that the device has its own data path and configured */
+#define VIRTIO_DEV_VDPA_CONFIGURED 8
 
 /* Backend value set by guest. */
 #define VIRTIO_DEV_STOPPED -1
@@ -66,6 +43,7 @@
  * from vring to do scatter RX.
  */
 struct buf_vector {
+	uint64_t buf_iova;
 	uint64_t buf_addr;
 	uint32_t buf_len;
 	uint32_t desc_idx;
@@ -78,6 +56,7 @@ struct buf_vector {
 struct zcopy_mbuf {
 	struct rte_mbuf *mbuf;
 	uint32_t desc_idx;
+	uint16_t desc_count;
 	uint16_t in_use;
 
 	TAILQ_ENTRY(zcopy_mbuf) next;
@@ -102,17 +81,35 @@ struct log_cache_entry {
 	unsigned long val;
 };
 
+struct vring_used_elem_packed {
+	uint16_t id;
+	uint32_t len;
+	uint32_t count;
+};
+
 /**
  * Structure contains variables relevant to RX/TX virtqueues.
  */
 struct vhost_virtqueue {
-	struct vring_desc	*desc;
-	struct vring_avail	*avail;
-	struct vring_used	*used;
+	union {
+		struct vring_desc	*desc;
+		struct vring_packed_desc   *desc_packed;
+	};
+	union {
+		struct vring_avail	*avail;
+		struct vring_packed_desc_event *driver_event;
+	};
+	union {
+		struct vring_used	*used;
+		struct vring_packed_desc_event *device_event;
+	};
 	uint32_t		size;
 
 	uint16_t		last_avail_idx;
 	uint16_t		last_used_idx;
+	/* Last used index we notify to front end. */
+	uint16_t		signalled_used;
+	bool			signalled_used_valid;
 #define VIRTIO_INVALID_EVENTFD		(-1)
 #define VIRTIO_UNINITIALIZED_EVENTFD	(-2)
 
@@ -136,12 +133,17 @@ struct vhost_virtqueue {
 	struct zcopy_mbuf	*zmbufs;
 	struct zcopy_mbuf_list	zmbuf_list;
 
-	struct vring_used_elem  *shadow_used_ring;
+	union {
+		struct vring_used_elem  *shadow_used_split;
+		struct vring_used_elem_packed *shadow_used_packed;
+	};
 	uint16_t                shadow_used_idx;
 	struct vhost_vring_addr ring_addrs;
 
 	struct batch_copy_elem	*batch_copy_elems;
 	uint16_t		batch_copy_nb_elems;
+	bool			used_wrap_counter;
+	bool			avail_wrap_counter;
 
 	struct log_cache_entry log_cache[VHOST_LOG_CACHE_NR];
 	uint16_t log_cache_nb_elem;
@@ -168,6 +170,10 @@ struct vhost_virtqueue {
 
 #ifndef VIRTIO_NET_F_MTU
  #define VIRTIO_NET_F_MTU 3
+#endif
+
+#ifndef VIRTIO_F_ANY_LAYOUT
+ #define VIRTIO_F_ANY_LAYOUT		27
 #endif
 
 /* Declare IOMMU related bits for older kernels */
@@ -208,10 +214,45 @@ struct vhost_msg {
  #define VIRTIO_F_VERSION_1 32
 #endif
 
-#define VHOST_USER_F_PROTOCOL_FEATURES	30
+/* Declare packed ring related bits for older kernels */
+#ifndef VIRTIO_F_RING_PACKED
+
+#define VIRTIO_F_RING_PACKED 34
+
+struct vring_packed_desc {
+	uint64_t addr;
+	uint32_t len;
+	uint16_t id;
+	uint16_t flags;
+};
+
+struct vring_packed_desc_event {
+	uint16_t off_wrap;
+	uint16_t flags;
+};
+#endif
+
+/*
+ * Declare below packed ring defines unconditionally
+ * as Kernel header might use different names.
+ */
+#define VRING_DESC_F_AVAIL	(1ULL << 7)
+#define VRING_DESC_F_USED	(1ULL << 15)
+
+#define VRING_EVENT_F_ENABLE 0x0
+#define VRING_EVENT_F_DISABLE 0x1
+#define VRING_EVENT_F_DESC 0x2
+
+/*
+ * Available and used descs are in same order
+ */
+#ifndef VIRTIO_F_IN_ORDER
+#define VIRTIO_F_IN_ORDER      35
+#endif
 
 /* Features supported by this builtin vhost-user net driver. */
 #define VIRTIO_NET_SUPPORTED_FEATURES ((1ULL << VIRTIO_NET_F_MRG_RXBUF) | \
+				(1ULL << VIRTIO_F_ANY_LAYOUT) | \
 				(1ULL << VIRTIO_NET_F_CTRL_VQ) | \
 				(1ULL << VIRTIO_NET_F_CTRL_RX) | \
 				(1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE) | \
@@ -219,21 +260,79 @@ struct vhost_msg {
 				(1ULL << VIRTIO_F_VERSION_1)   | \
 				(1ULL << VHOST_F_LOG_ALL)      | \
 				(1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
+				(1ULL << VIRTIO_NET_F_GSO) | \
 				(1ULL << VIRTIO_NET_F_HOST_TSO4) | \
 				(1ULL << VIRTIO_NET_F_HOST_TSO6) | \
+				(1ULL << VIRTIO_NET_F_HOST_UFO) | \
+				(1ULL << VIRTIO_NET_F_HOST_ECN) | \
 				(1ULL << VIRTIO_NET_F_CSUM)    | \
 				(1ULL << VIRTIO_NET_F_GUEST_CSUM) | \
 				(1ULL << VIRTIO_NET_F_GUEST_TSO4) | \
 				(1ULL << VIRTIO_NET_F_GUEST_TSO6) | \
+				(1ULL << VIRTIO_NET_F_GUEST_UFO) | \
+				(1ULL << VIRTIO_NET_F_GUEST_ECN) | \
 				(1ULL << VIRTIO_RING_F_INDIRECT_DESC) | \
-				(1ULL << VIRTIO_NET_F_MTU) | \
-				(1ULL << VIRTIO_F_IOMMU_PLATFORM))
+				(1ULL << VIRTIO_RING_F_EVENT_IDX) | \
+				(1ULL << VIRTIO_NET_F_MTU)  | \
+				(1ULL << VIRTIO_F_IN_ORDER) | \
+				(1ULL << VIRTIO_F_IOMMU_PLATFORM) | \
+				(1ULL << VIRTIO_F_RING_PACKED))
 
 
 struct guest_page {
 	uint64_t guest_phys_addr;
 	uint64_t host_phys_addr;
 	uint64_t size;
+};
+
+/* The possible results of a message handling function */
+enum vh_result {
+	/* Message handling failed */
+	VH_RESULT_ERR   = -1,
+	/* Message handling successful */
+	VH_RESULT_OK    =  0,
+	/* Message handling successful and reply prepared */
+	VH_RESULT_REPLY =  1,
+};
+
+/**
+ * function prototype for the vhost backend to handler specific vhost user
+ * messages prior to the master message handling
+ *
+ * @param vid
+ *  vhost device id
+ * @param msg
+ *  Message pointer.
+ * @param skip_master
+ *  If the handler requires skipping the master message handling, this variable
+ *  shall be written 1, otherwise 0.
+ * @return
+ *  VH_RESULT_OK on success, VH_RESULT_REPLY on success with reply,
+ *  VH_RESULT_ERR on failure
+ */
+typedef enum vh_result (*vhost_msg_pre_handle)(int vid, void *msg,
+		uint32_t *skip_master);
+
+/**
+ * function prototype for the vhost backend to handler specific vhost user
+ * messages after the master message handling is done
+ *
+ * @param vid
+ *  vhost device id
+ * @param msg
+ *  Message pointer.
+ * @return
+ *  VH_RESULT_OK on success, VH_RESULT_REPLY on success with reply,
+ *  VH_RESULT_ERR on failure
+ */
+typedef enum vh_result (*vhost_msg_post_handle)(int vid, void *msg);
+
+/**
+ * pre and post vhost user message handlers
+ */
+struct vhost_user_extern_ops {
+	vhost_msg_pre_handle pre_msg_handle;
+	vhost_msg_post_handle post_msg_handle;
 };
 
 /**
@@ -268,8 +367,35 @@ struct virtio_net {
 	struct guest_page       *guest_pages;
 
 	int			slave_req_fd;
+	rte_spinlock_t		slave_req_lock;
+
+	int			postcopy_ufd;
+	int			postcopy_listening;
+
+	/*
+	 * Device id to identify a specific backend device.
+	 * It's set to -1 for the default software implementation.
+	 */
+	int			vdpa_dev_id;
+
+	/* private data for virtio device */
+	void			*extern_data;
+	/* pre and post vhost user message handlers for the device */
+	struct vhost_user_extern_ops extern_ops;
 } __rte_cache_aligned;
 
+static __rte_always_inline bool
+vq_is_packed(struct virtio_net *dev)
+{
+	return dev->features & (1ull << VIRTIO_F_RING_PACKED);
+}
+
+static inline bool
+desc_is_avail(struct vring_packed_desc *desc, bool wrap_counter)
+{
+	return wrap_counter == !!(desc->flags & VRING_DESC_F_AVAIL) &&
+		wrap_counter != !!(desc->flags & VRING_DESC_F_USED);
+}
 
 #define VHOST_LOG_PAGE	4096
 
@@ -428,8 +554,8 @@ vhost_log_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 #ifdef RTE_LIBRTE_VHOST_DEBUG
 #define VHOST_MAX_PRINT_BUFF 6072
-#define LOG_LEVEL RTE_LOG_DEBUG
-#define LOG_DEBUG(log_type, fmt, args...) RTE_LOG(DEBUG, log_type, fmt, ##args)
+#define VHOST_LOG_DEBUG(log_type, fmt, args...) \
+	RTE_LOG(DEBUG, log_type, fmt, ##args)
 #define PRINT_PACKET(device, addr, size, header) do { \
 	char *pkt_addr = (char *)(addr); \
 	unsigned int index; \
@@ -445,11 +571,10 @@ vhost_log_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	} \
 	snprintf(packet + strnlen(packet, VHOST_MAX_PRINT_BUFF), VHOST_MAX_PRINT_BUFF - strnlen(packet, VHOST_MAX_PRINT_BUFF), "\n"); \
 	\
-	LOG_DEBUG(VHOST_DATA, "%s", packet); \
+	VHOST_LOG_DEBUG(VHOST_DATA, "%s", packet); \
 } while (0)
 #else
-#define LOG_LEVEL RTE_LOG_INFO
-#define LOG_DEBUG(log_type, fmt, args...) do {} while (0)
+#define VHOST_LOG_DEBUG(log_type, fmt, args...) do {} while (0)
 #define PRINT_PACKET(device, addr, size, header) do {} while (0)
 #endif
 
@@ -477,17 +602,36 @@ gpa_to_hpa(struct virtio_net *dev, uint64_t gpa, uint64_t size)
 	return 0;
 }
 
-struct virtio_net *get_device(int vid);
+static __rte_always_inline struct virtio_net *
+get_device(int vid)
+{
+	struct virtio_net *dev = vhost_devices[vid];
+
+	if (unlikely(!dev)) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"(%d) device not found.\n", vid);
+	}
+
+	return dev;
+}
 
 int vhost_new_device(void);
 void cleanup_device(struct virtio_net *dev, int destroy);
 void reset_device(struct virtio_net *dev);
 void vhost_destroy_device(int);
+void vhost_destroy_device_notify(struct virtio_net *dev);
+
+void cleanup_vq(struct vhost_virtqueue *vq, int destroy);
+void free_vq(struct virtio_net *dev, struct vhost_virtqueue *vq);
 
 int alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx);
 
+void vhost_attach_vdpa_device(int vid, int did);
+void vhost_detach_vdpa_device(int vid);
+
 void vhost_set_ifname(int, const char *if_name, unsigned int if_len);
 void vhost_enable_dequeue_zero_copy(int vid);
+void vhost_set_builtin_virtio_net(int vid, bool enable);
 
 struct vhost_device_ops const *vhost_driver_callback_get(const char *path);
 
@@ -511,6 +655,102 @@ vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		return rte_vhost_va_from_guest_pa(dev->mem, iova, len);
 
 	return __vhost_iova_to_vva(dev, vq, iova, len, perm);
+}
+
+#define vhost_avail_event(vr) \
+	(*(volatile uint16_t*)&(vr)->used->ring[(vr)->size])
+#define vhost_used_event(vr) \
+	(*(volatile uint16_t*)&(vr)->avail->ring[(vr)->size])
+
+/*
+ * The following is used with VIRTIO_RING_F_EVENT_IDX.
+ * Assuming a given event_idx value from the other size, if we have
+ * just incremented index from old to new_idx, should we trigger an
+ * event?
+ */
+static __rte_always_inline int
+vhost_need_event(uint16_t event_idx, uint16_t new_idx, uint16_t old)
+{
+	return (uint16_t)(new_idx - event_idx - 1) < (uint16_t)(new_idx - old);
+}
+
+static __rte_always_inline void
+vhost_vring_call_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+	/* Flush used->idx update before we read avail->flags. */
+	rte_smp_mb();
+
+	/* Don't kick guest if we don't reach index specified by guest. */
+	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX)) {
+		uint16_t old = vq->signalled_used;
+		uint16_t new = vq->last_used_idx;
+
+		VHOST_LOG_DEBUG(VHOST_DATA, "%s: used_event_idx=%d, old=%d, new=%d\n",
+			__func__,
+			vhost_used_event(vq),
+			old, new);
+		if (vhost_need_event(vhost_used_event(vq), new, old)
+			&& (vq->callfd >= 0)) {
+			vq->signalled_used = vq->last_used_idx;
+			eventfd_write(vq->callfd, (eventfd_t) 1);
+		}
+	} else {
+		/* Kick the guest if necessary. */
+		if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
+				&& (vq->callfd >= 0))
+			eventfd_write(vq->callfd, (eventfd_t)1);
+	}
+}
+
+static __rte_always_inline void
+vhost_vring_call_packed(struct virtio_net *dev, struct vhost_virtqueue *vq)
+{
+	uint16_t old, new, off, off_wrap;
+	bool signalled_used_valid, kick = false;
+
+	/* Flush used desc update. */
+	rte_smp_mb();
+
+	if (!(dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))) {
+		if (vq->driver_event->flags !=
+				VRING_EVENT_F_DISABLE)
+			kick = true;
+		goto kick;
+	}
+
+	old = vq->signalled_used;
+	new = vq->last_used_idx;
+	vq->signalled_used = new;
+	signalled_used_valid = vq->signalled_used_valid;
+	vq->signalled_used_valid = true;
+
+	if (vq->driver_event->flags != VRING_EVENT_F_DESC) {
+		if (vq->driver_event->flags != VRING_EVENT_F_DISABLE)
+			kick = true;
+		goto kick;
+	}
+
+	if (unlikely(!signalled_used_valid)) {
+		kick = true;
+		goto kick;
+	}
+
+	rte_smp_rmb();
+
+	off_wrap = vq->driver_event->off_wrap;
+	off = off_wrap & ~(1 << 15);
+
+	if (new <= old)
+		old -= vq->size;
+
+	if (vq->used_wrap_counter != off_wrap >> 15)
+		off -= vq->size;
+
+	if (vhost_need_event(off, new, old))
+		kick = true;
+kick:
+	if (kick)
+		eventfd_write(vq->callfd, (eventfd_t)1);
 }
 
 #endif /* _VHOST_NET_CDEV_H_ */

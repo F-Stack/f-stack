@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #ifndef _RTE_ETHTOOL_H_
@@ -181,6 +152,40 @@ int rte_ethtool_get_eeprom(uint16_t port_id, struct ethtool_eeprom *eeprom,
  */
 int rte_ethtool_set_eeprom(uint16_t port_id, struct ethtool_eeprom *eeprom,
 			      void *words);
+
+/**
+ * Retrieve the type and size of plugin module EEPROM
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param modinfo
+ *	 The pointer that provides the type and size of plugin module EEPROM.
+ * @return
+ *   - (0) if successful.
+ *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-ENODEV) if *port_id* invalid.
+ *   - others depends on the specific operations implementation.
+ */
+int rte_ethtool_get_module_info(uint16_t port_id, uint32_t *modinfo);
+
+/**
+ * Retrieve the data of plugin module EEPROM
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param eeprom
+ *	 The pointer of ethtool_eeprom that provides plugin module eeprom
+ *   offset and length
+ * @param words
+ *	 A buffer that holds data read from plugin module eeprom
+ * @return
+ *   - (0) if successful.
+ *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-ENODEV) if *port_id* invalid.
+ *   - others depends on the specific operations implementation.
+ */
+int rte_ethtool_get_module_eeprom(uint16_t port_id,
+				  struct ethtool_eeprom *eeprom, void *words);
 
 /**
  * Retrieve the Ethernet device pause frame configuration according to

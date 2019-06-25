@@ -2,7 +2,6 @@ DPDK_17.05 {
 	global:
 
 	dpaa2_affine_qbman_swp;
-	dpaa2_affine_qbman_swp_sec;
 	dpaa2_alloc_dpbp_dev;
 	dpaa2_alloc_dq_storage;
 	dpaa2_free_dpbp_dev;
@@ -28,7 +27,6 @@ DPDK_17.05 {
 	qbman_eq_desc_set_no_orp;
 	qbman_eq_desc_set_qd;
 	qbman_eq_desc_set_response;
-	qbman_get_version;
 	qbman_pull_desc_clear;
 	qbman_pull_desc_set_fq;
 	qbman_pull_desc_set_numframes;
@@ -41,7 +39,6 @@ DPDK_17.05 {
 	qbman_swp_acquire;
 	qbman_swp_pull;
 	qbman_swp_release;
-	qbman_swp_send_multiple;
 	rte_fslmc_driver_register;
 	rte_fslmc_driver_unregister;
 	rte_fslmc_vfio_dmamap;
@@ -89,3 +86,46 @@ DPDK_17.11 {
 	rte_dpaa2_intr_enable;
 
 } DPDK_17.08;
+
+DPDK_18.02 {
+	global:
+
+	dpaa2_svr_family;
+	dpaa2_virt_mode;
+	per_lcore_dpaa2_held_bufs;
+	qbman_fq_query_state;
+	qbman_fq_state_frame_count;
+	qbman_swp_dqrr_idx_consume;
+	qbman_swp_prefetch_dqrr_next;
+	rte_fslmc_get_device_count;
+
+} DPDK_17.11;
+
+DPDK_18.05 {
+	global:
+
+	dpaa2_affine_qbman_ethrx_swp;
+	dpdmai_close;
+	dpdmai_disable;
+	dpdmai_enable;
+	dpdmai_get_attributes;
+	dpdmai_get_rx_queue;
+	dpdmai_get_tx_queue;
+	dpdmai_open;
+	dpdmai_set_rx_queue;
+	rte_dpaa2_free_dpci_dev;
+	rte_dpaa2_memsegs;
+
+} DPDK_18.02;
+
+DPDK_18.11 {
+	global:
+
+	dpaa2_dqrr_size;
+	dpaa2_eqcr_size;
+	dpci_get_link_state;
+	dpci_get_opr;
+	dpci_get_peer_attributes;
+	dpci_set_opr;
+
+} DPDK_18.05;

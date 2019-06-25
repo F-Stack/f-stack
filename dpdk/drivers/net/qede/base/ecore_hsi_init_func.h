@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_HSI_INIT_FUNC__
@@ -24,10 +22,10 @@
  * BRB RAM init requirements
  */
 struct init_brb_ram_req {
-	__le32 guranteed_per_tc /* guaranteed size per TC, in bytes */;
-	__le32 headroom_per_tc /* headroom size per TC, in bytes */;
-	__le32 min_pkt_size /* min packet size, in bytes */;
-	__le32 max_ports_per_engine /* min packet size, in bytes */;
+	u32 guranteed_per_tc /* guaranteed size per TC, in bytes */;
+	u32 headroom_per_tc /* headroom size per TC, in bytes */;
+	u32 min_pkt_size /* min packet size, in bytes */;
+	u32 max_ports_per_engine /* min packet size, in bytes */;
 	u8 num_active_tcs[MAX_NUM_PORTS] /* number of active TCs per port */;
 };
 
@@ -44,15 +42,14 @@ struct init_ets_tc_req {
  * (indicated by the weight field)
  */
 	u8 use_wfq;
-/* An arbitration weight. Valid only if use_wfq is set. */
-	__le16 weight;
+	u16 weight /* An arbitration weight. Valid only if use_wfq is set. */;
 };
 
 /*
  * ETS init requirements
  */
 struct init_ets_req {
-	__le32 mtu /* Max packet size (in bytes) */;
+	u32 mtu /* Max packet size (in bytes) */;
 /* ETS initialization requirements per TC. */
 	struct init_ets_tc_req tc_req[NUM_OF_TCS];
 };
@@ -64,12 +61,12 @@ struct init_ets_req {
  */
 struct init_nig_lb_rl_req {
 /* Global MAC+LB RL rate (in Mbps). If set to 0, the RL will be disabled. */
-	__le16 lb_mac_rate;
+	u16 lb_mac_rate;
 /* Global LB RL rate (in Mbps). If set to 0, the RL will be disabled. */
-	__le16 lb_rate;
-	__le32 mtu /* Max packet size (in bytes) */;
+	u16 lb_rate;
+	u32 mtu /* Max packet size (in bytes) */;
 /* RL rate per physical TC (in Mbps). If set to 0, the RL will be disabled. */
-	__le16 tc_rate[NUM_OF_PHYS_TCS];
+	u16 tc_rate[NUM_OF_PHYS_TCS];
 };
 
 
@@ -98,10 +95,10 @@ struct init_qm_port_params {
 /* Vector of valid bits for active TCs used by this port */
 	u8 active_phys_tcs;
 /* number of PBF command lines that can be used by this port */
-	__le16 num_pbf_cmd_lines;
+	u16 num_pbf_cmd_lines;
 /* number of BTB blocks that can be used by this port */
-	__le16 num_btb_blocks;
-	__le16 reserved;
+	u16 num_btb_blocks;
+	u16 reserved;
 };
 
 
@@ -114,6 +111,9 @@ struct init_qm_pq_params {
 	u8 wrr_group /* WRR group */;
 /* Indicates if a rate limiter should be allocated for the PQ (0/1) */
 	u8 rl_valid;
+	u8 port_id /* Port ID */;
+	u8 reserved0;
+	u16 reserved1;
 };
 
 
@@ -124,13 +124,13 @@ struct init_qm_vport_params {
 /* rate limit in Mb/sec units. a value of 0 means dont configure. ignored if
  * VPORT RL is globally disabled.
  */
-	__le32 vport_rl;
+	u32 vport_rl;
 /* WFQ weight. A value of 0 means dont configure. ignored if VPORT WFQ is
  * globally disabled.
  */
-	__le16 vport_wfq;
+	u16 vport_wfq;
 /* the first Tx PQ ID associated with this VPORT for each TC. */
-	__le16 first_tx_pq_id[NUM_OF_TCS];
+	u16 first_tx_pq_id[NUM_OF_TCS];
 };
 
 #endif /* __ECORE_HSI_INIT_FUNC__ */

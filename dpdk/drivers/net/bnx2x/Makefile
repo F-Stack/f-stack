@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2014 - 2018 Cavium Inc.
+# All rights reserved.
+# www.cavium.com
 include $(RTE_SDK)/mk/rte.vars.mk
 
 #
@@ -16,10 +20,6 @@ LDLIBS += -lrte_bus_pci
 EXPORT_MAP := rte_pmd_bnx2x_version.map
 
 LIBABIVER := 1
-
-ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
-CFLAGS += -wd188 #188: enumerated type mixed with another type
-endif
 
 #
 # all source are stored in SRCS-y

@@ -1,39 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2015 6WIND S.A.
- *   Copyright 2015 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2015 6WIND S.A.
+ * Copyright 2015 Mellanox Technologies, Ltd
  */
+
 #include <unistd.h>
 
 #include <rte_ether.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_interrupts.h>
 #include <rte_alarm.h>
 
@@ -74,17 +47,10 @@ mlx5_txq_start(struct rte_eth_dev *dev)
 	int ret;
 
 	for (i = 0; i != priv->txqs_n; ++i) {
-		unsigned int idx = 0;
-		struct mlx5_mr *mr;
 		struct mlx5_txq_ctrl *txq_ctrl = mlx5_txq_get(dev, i);
 
 		if (!txq_ctrl)
 			continue;
-		LIST_FOREACH(mr, &priv->mr, next) {
-			mlx5_txq_mp2mr_reg(&txq_ctrl->txq, mr->mp, idx++);
-			if (idx == MLX5_PMD_TX_MP_CACHE)
-				break;
-		}
 		txq_alloc_elts(txq_ctrl);
 		txq_ctrl->ibv = mlx5_txq_ibv_new(dev, i);
 		if (!txq_ctrl->ibv) {
@@ -140,11 +106,26 @@ mlx5_rxq_start(struct rte_eth_dev *dev)
 	unsigned int i;
 	int ret = 0;
 
+	/* Allocate/reuse/resize mempool for Multi-Packet RQ. */
+	if (mlx5_mprq_alloc_mp(dev)) {
+		/* Should not release Rx queues but return immediately. */
+		return -rte_errno;
+	}
 	for (i = 0; i != priv->rxqs_n; ++i) {
 		struct mlx5_rxq_ctrl *rxq_ctrl = mlx5_rxq_get(dev, i);
+		struct rte_mempool *mp;
 
 		if (!rxq_ctrl)
 			continue;
+		/* Pre-register Rx mempool. */
+		mp = mlx5_rxq_mprq_enabled(&rxq_ctrl->rxq) ?
+		     rxq_ctrl->rxq.mprq_mp : rxq_ctrl->rxq.mp;
+		DRV_LOG(DEBUG,
+			"port %u Rx queue %u registering"
+			" mp %s having %u chunks",
+			dev->data->port_id, rxq_ctrl->idx,
+			mp->name, mp->nb_mem_chunks);
+		mlx5_mr_update_mp(dev, &rxq_ctrl->rxq.mr_ctrl, mp);
 		ret = rxq_alloc_elts(rxq_ctrl);
 		if (ret)
 			goto error;
@@ -177,17 +158,9 @@ int
 mlx5_dev_start(struct rte_eth_dev *dev)
 {
 	struct priv *priv = dev->data->dev_private;
-	struct mlx5_mr *mr = NULL;
 	int ret;
 
 	DRV_LOG(DEBUG, "port %u starting device", dev->data->port_id);
-	ret = mlx5_flow_create_drop_queue(dev);
-	if (ret) {
-		DRV_LOG(ERR, "port %u drop queue allocation failed: %s",
-			dev->data->port_id, strerror(rte_errno));
-		goto error;
-	}
-	rte_mempool_walk(mlx5_mp2mr_iter, priv);
 	ret = mlx5_txq_start(dev);
 	if (ret) {
 		DRV_LOG(ERR, "port %u Tx queue allocation failed: %s",
@@ -229,13 +202,10 @@ error:
 	ret = rte_errno; /* Save rte_errno before cleanup. */
 	/* Rollback. */
 	dev->data->dev_started = 0;
-	for (mr = LIST_FIRST(&priv->mr); mr; mr = LIST_FIRST(&priv->mr))
-		mlx5_mr_release(mr);
 	mlx5_flow_stop(dev, &priv->flows);
 	mlx5_traffic_disable(dev);
 	mlx5_txq_stop(dev);
 	mlx5_rxq_stop(dev);
-	mlx5_flow_delete_drop_queue(dev);
 	rte_errno = ret; /* Restore rte_errno. */
 	return -rte_errno;
 }
@@ -252,7 +222,6 @@ void
 mlx5_dev_stop(struct rte_eth_dev *dev)
 {
 	struct priv *priv = dev->data->dev_private;
-	struct mlx5_mr *mr;
 
 	dev->data->dev_started = 0;
 	/* Prevent crashes when queues are still in use. */
@@ -267,9 +236,6 @@ mlx5_dev_stop(struct rte_eth_dev *dev)
 	mlx5_dev_interrupt_handler_uninstall(dev);
 	mlx5_txq_stop(dev);
 	mlx5_rxq_stop(dev);
-	for (mr = LIST_FIRST(&priv->mr); mr; mr = LIST_FIRST(&priv->mr))
-		mlx5_mr_release(mr);
-	mlx5_flow_delete_drop_queue(dev);
 }
 
 /**

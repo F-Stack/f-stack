@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -43,9 +14,7 @@
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
 #include <rte_vfio.h>
-#include <rte_memory.h>
 
-#include "eal_private.h"
 #include "eal_filesystem.h"
 
 #include "private.h"
@@ -63,7 +32,8 @@
 extern struct rte_pci_bus rte_pci_bus;
 
 static int
-pci_get_kernel_driver_by_path(const char *filename, char *dri_name)
+pci_get_kernel_driver_by_path(const char *filename, char *dri_name,
+			      size_t len)
 {
 	int count;
 	char path[PATH_MAX];
@@ -84,7 +54,7 @@ pci_get_kernel_driver_by_path(const char *filename, char *dri_name)
 
 	name = strrchr(path, '/');
 	if (name) {
-		strncpy(dri_name, name + 1, strlen(name + 1) + 1);
+		strlcpy(dri_name, name + 1, len);
 		return 0;
 	}
 
@@ -146,23 +116,27 @@ rte_pci_unmap_device(struct rte_pci_device *dev)
 	}
 }
 
+static int
+find_max_end_va(const struct rte_memseg_list *msl, void *arg)
+{
+	size_t sz = msl->len;
+	void *end_va = RTE_PTR_ADD(msl->base_va, sz);
+	void **max_va = arg;
+
+	if (*max_va < end_va)
+		*max_va = end_va;
+	return 0;
+}
+
 void *
 pci_find_max_end_va(void)
 {
-	const struct rte_memseg *seg = rte_eal_get_physmem_layout();
-	const struct rte_memseg *last = seg;
-	unsigned i = 0;
+	void *va = NULL;
 
-	for (i = 0; i < RTE_MAX_MEMSEG; i++, seg++) {
-		if (seg->addr == NULL)
-			break;
-
-		if (seg->addr > last->addr)
-			last = seg;
-
-	}
-	return RTE_PTR_ADD(last->addr, last->len);
+	rte_memseg_list_walk(find_max_end_va, &va);
+	return va;
 }
+
 
 /* parse one line of the "resource" sysfs file (note that the 'line'
  * string is modified)
@@ -254,6 +228,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 		return -1;
 
 	memset(dev, 0, sizeof(*dev));
+	dev->device.bus = &rte_pci_bus.bus;
 	dev->addr = *addr;
 
 	/* get vendor id */
@@ -340,7 +315,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 
 	/* parse driver */
 	snprintf(filename, sizeof(filename), "%s/driver", dirname);
-	ret = pci_get_kernel_driver_by_path(filename, driver);
+	ret = pci_get_kernel_driver_by_path(filename, driver, sizeof(driver));
 	if (ret < 0) {
 		RTE_LOG(ERR, EAL, "Fail to get kernel driver\n");
 		free(dev);
@@ -374,11 +349,36 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 			if (ret < 0) {
 				rte_pci_insert_device(dev2, dev);
 			} else { /* already registered */
-				dev2->kdrv = dev->kdrv;
-				dev2->max_vfs = dev->max_vfs;
-				pci_name_set(dev2);
-				memmove(dev2->mem_resource, dev->mem_resource,
-					sizeof(dev->mem_resource));
+				if (!rte_dev_is_probed(&dev2->device)) {
+					dev2->kdrv = dev->kdrv;
+					dev2->max_vfs = dev->max_vfs;
+					pci_name_set(dev2);
+					memmove(dev2->mem_resource,
+						dev->mem_resource,
+						sizeof(dev->mem_resource));
+				} else {
+					/**
+					 * If device is plugged and driver is
+					 * probed already, (This happens when
+					 * we call rte_dev_probe which will
+					 * scan all device on the bus) we don't
+					 * need to do anything here unless...
+					 **/
+					if (dev2->kdrv != dev->kdrv ||
+						dev2->max_vfs != dev->max_vfs)
+						/*
+						 * This should not happens.
+						 * But it is still possible if
+						 * we unbind a device from
+						 * vfio or uio before hotplug
+						 * remove and rebind it with
+						 * a different configure.
+						 * So we just print out the
+						 * error as an alarm.
+						 */
+						RTE_LOG(ERR, EAL, "Unexpected device scan at %s!\n",
+							filename);
+				}
 				free(dev);
 			}
 			return 0;
@@ -583,6 +583,7 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 {
 #define VTD_CAP_MGAW_SHIFT	16
 #define VTD_CAP_MGAW_MASK	(0x3fULL << VTD_CAP_MGAW_SHIFT)
+#define X86_VA_WIDTH 47 /* From Documentation/x86/x86_64/mm.txt */
 	struct rte_pci_addr *addr = &dev->addr;
 	char filename[PATH_MAX];
 	FILE *fp;
@@ -614,11 +615,16 @@ pci_one_device_iommu_support_va(struct rte_pci_device *dev)
 
 	mgaw = ((vtd_cap_reg & VTD_CAP_MGAW_MASK) >> VTD_CAP_MGAW_SHIFT) + 1;
 
-	if (!rte_eal_check_dma_mask(mgaw))
-		return true;
-	else
-		return false;
-
+	/*
+	 * Assuming there is no limitation by now. We can not know at this point
+	 * because the memory has not been initialized yet. Setting the dma mask
+	 * will force a check once memory initialization is done. We can not do
+	 * a fallback to IOVA PA now, but if the dma check fails, the error
+	 * message should advice for using '--iova-mode pa' if IOVA VA is the
+	 * current mode.
+	 */
+	rte_mem_set_dma_mask(mgaw);
+	return true;
 }
 #elif defined(RTE_ARCH_PPC_64)
 static bool
@@ -642,17 +648,16 @@ pci_devices_iommu_support_va(void)
 {
 	struct rte_pci_device *dev = NULL;
 	struct rte_pci_driver *drv = NULL;
-	int iommu_dma_mask_check_done = 0;
 
 	FOREACH_DRIVER_ON_PCIBUS(drv) {
 		FOREACH_DEVICE_ON_PCIBUS(dev) {
 			if (!rte_pci_match(drv, dev))
 				continue;
-			if (!iommu_dma_mask_check_done) {
-				if (!pci_one_device_iommu_support_va(dev))
-					return false;
-				iommu_dma_mask_check_done  = 1;
-			}
+			/*
+			 * just one PCI device needs to be checked out because
+			 * the IOMMU hardware is the same for all of them.
+			 */
+			return pci_one_device_iommu_support_va(dev);
 		}
 	}
 	return true;
@@ -703,23 +708,22 @@ rte_pci_get_iommu_class(void)
 int rte_pci_read_config(const struct rte_pci_device *device,
 		void *buf, size_t len, off_t offset)
 {
+	char devname[RTE_DEV_NAME_MAX_LEN] = "";
 	const struct rte_intr_handle *intr_handle = &device->intr_handle;
 
-	switch (intr_handle->type) {
-	case RTE_INTR_HANDLE_UIO:
-	case RTE_INTR_HANDLE_UIO_INTX:
+	switch (device->kdrv) {
+	case RTE_KDRV_IGB_UIO:
+	case RTE_KDRV_UIO_GENERIC:
 		return pci_uio_read_config(intr_handle, buf, len, offset);
-
 #ifdef VFIO_PRESENT
-	case RTE_INTR_HANDLE_VFIO_MSIX:
-	case RTE_INTR_HANDLE_VFIO_MSI:
-	case RTE_INTR_HANDLE_VFIO_LEGACY:
+	case RTE_KDRV_VFIO:
 		return pci_vfio_read_config(intr_handle, buf, len, offset);
 #endif
 	default:
+		rte_pci_device_name(&device->addr, devname,
+				    RTE_DEV_NAME_MAX_LEN);
 		RTE_LOG(ERR, EAL,
-			"Unknown handle type of fd %d\n",
-					intr_handle->fd);
+			"Unknown driver type for %s\n", devname);
 		return -1;
 	}
 }
@@ -728,23 +732,22 @@ int rte_pci_read_config(const struct rte_pci_device *device,
 int rte_pci_write_config(const struct rte_pci_device *device,
 		const void *buf, size_t len, off_t offset)
 {
+	char devname[RTE_DEV_NAME_MAX_LEN] = "";
 	const struct rte_intr_handle *intr_handle = &device->intr_handle;
 
-	switch (intr_handle->type) {
-	case RTE_INTR_HANDLE_UIO:
-	case RTE_INTR_HANDLE_UIO_INTX:
+	switch (device->kdrv) {
+	case RTE_KDRV_IGB_UIO:
+	case RTE_KDRV_UIO_GENERIC:
 		return pci_uio_write_config(intr_handle, buf, len, offset);
-
 #ifdef VFIO_PRESENT
-	case RTE_INTR_HANDLE_VFIO_MSIX:
-	case RTE_INTR_HANDLE_VFIO_MSI:
-	case RTE_INTR_HANDLE_VFIO_LEGACY:
+	case RTE_KDRV_VFIO:
 		return pci_vfio_write_config(intr_handle, buf, len, offset);
 #endif
 	default:
+		rte_pci_device_name(&device->addr, devname,
+				    RTE_DEV_NAME_MAX_LEN);
 		RTE_LOG(ERR, EAL,
-			"Unknown handle type of fd %d\n",
-					intr_handle->fd);
+			"Unknown driver type for %s\n", devname);
 		return -1;
 	}
 }

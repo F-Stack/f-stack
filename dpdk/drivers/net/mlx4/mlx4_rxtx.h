@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #ifndef MLX4_RXTX_H_
@@ -47,12 +19,13 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
 #include "mlx4.h"
 #include "mlx4_prm.h"
+#include "mlx4_mr.h"
 
 /** Rx queue counters. */
 struct mlx4_rxq_stats {
@@ -67,7 +40,6 @@ struct mlx4_rxq_stats {
 struct rxq {
 	struct priv *priv; /**< Back pointer to private data. */
 	struct rte_mempool *mp; /**< Memory pool for allocations. */
-	struct mlx4_mr *mr; /**< Memory region. */
 	struct ibv_cq *cq; /**< Completion queue. */
 	struct ibv_wq *wq; /**< Work queue. */
 	struct ibv_comp_channel *channel; /**< Rx completion channel. */
@@ -75,11 +47,13 @@ struct rxq {
 	uint16_t port_id; /**< Port ID for incoming packets. */
 	uint16_t sges_n; /**< Number of segments per packet (log2 value). */
 	uint16_t elts_n; /**< Mbuf queue size (log2 value). */
+	struct mlx4_mr_ctrl mr_ctrl; /* MR control descriptor. */
 	struct rte_mbuf *(*elts)[]; /**< Rx elements. */
 	volatile struct mlx4_wqe_data_seg (*wqes)[]; /**< HW queue entries. */
 	volatile uint32_t *rq_db; /**< RQ doorbell record. */
 	uint32_t csum:1; /**< Enable checksum offloading. */
 	uint32_t csum_l2tun:1; /**< Same for L2 tunnels. */
+	uint32_t crc_present:1; /**< CRC must be subtracted. */
 	uint32_t l2tun_offload:1; /**< L2 tunnel offload is enabled. */
 	struct mlx4_cq mcq;  /**< Info for directly manipulating the CQ. */
 	struct mlx4_rxq_stats stats; /**< Rx queue counters. */
@@ -105,6 +79,10 @@ struct mlx4_rss {
 /** Tx element. */
 struct txq_elt {
 	struct rte_mbuf *buf; /**< Buffer. */
+	union {
+		volatile struct mlx4_wqe_ctrl_seg *wqe; /**< SQ WQE. */
+		volatile uint32_t *eocb; /**< End of completion burst. */
+	};
 };
 
 /** Tx queue counters. */
@@ -112,7 +90,7 @@ struct mlx4_txq_stats {
 	unsigned int idx; /**< Mapping index. */
 	uint64_t opackets; /**< Total of successfully sent packets. */
 	uint64_t obytes; /**< Total of successfully sent bytes. */
-	uint64_t odropped; /**< Total of packets not sent when Tx ring full. */
+	uint64_t odropped; /**< Total number of packets failed to transmit. */
 };
 
 /** Tx queue descriptor. */
@@ -121,10 +99,10 @@ struct txq {
 	struct mlx4_cq mcq; /**< Info for directly manipulating the CQ. */
 	unsigned int elts_head; /**< Current index in (*elts)[]. */
 	unsigned int elts_tail; /**< First element awaiting completion. */
-	unsigned int elts_comp; /**< Number of packets awaiting completion. */
 	int elts_comp_cd; /**< Countdown for next completion. */
 	unsigned int elts_comp_cd_init; /**< Initial value for countdown. */
 	unsigned int elts_n; /**< (*elts)[] length. */
+	struct mlx4_mr_ctrl mr_ctrl; /* MR control descriptor. */
 	struct txq_elt (*elts)[]; /**< Tx elements. */
 	struct mlx4_txq_stats stats; /**< Tx queue counters. */
 	uint32_t max_inline; /**< Max inline send size. */
@@ -133,11 +111,6 @@ struct txq {
 	uint32_t lb:1; /**< Whether packets should be looped back by eSwitch. */
 	uint8_t *bounce_buf;
 	/**< Memory used for storing the first DWORD of data TXBBs. */
-	struct {
-		const struct rte_mempool *mp; /**< Cached memory pool. */
-		struct mlx4_mr *mr; /**< Memory region (for mp). */
-		uint32_t lkey; /**< mr->lkey copy. */
-	} mp2mr[MLX4_PMD_TX_MP_CACHE]; /**< MP to MR translation table. */
 	struct priv *priv; /**< Back pointer to private data. */
 	unsigned int socket; /**< CPU socket ID for allocations. */
 	struct ibv_cq *cq; /**< Completion queue. */
@@ -151,13 +124,15 @@ uint8_t mlx4_rss_hash_key_default[MLX4_RSS_HASH_KEY_SIZE];
 int mlx4_rss_init(struct priv *priv);
 void mlx4_rss_deinit(struct priv *priv);
 struct mlx4_rss *mlx4_rss_get(struct priv *priv, uint64_t fields,
-			      uint8_t key[MLX4_RSS_HASH_KEY_SIZE],
+			      const uint8_t key[MLX4_RSS_HASH_KEY_SIZE],
 			      uint16_t queues, const uint16_t queue_id[]);
 void mlx4_rss_put(struct mlx4_rss *rss);
 int mlx4_rss_attach(struct mlx4_rss *rss);
 void mlx4_rss_detach(struct mlx4_rss *rss);
 int mlx4_rxq_attach(struct rxq *rxq);
 void mlx4_rxq_detach(struct rxq *rxq);
+uint64_t mlx4_get_rx_port_offloads(struct priv *priv);
+uint64_t mlx4_get_rx_queue_offloads(struct priv *priv);
 int mlx4_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 			uint16_t desc, unsigned int socket,
 			const struct rte_eth_rxconf *conf,
@@ -177,39 +152,95 @@ uint16_t mlx4_rx_burst_removed(void *dpdk_rxq, struct rte_mbuf **pkts,
 
 /* mlx4_txq.c */
 
+uint64_t mlx4_get_tx_port_offloads(struct priv *priv);
 int mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 			uint16_t desc, unsigned int socket,
 			const struct rte_eth_txconf *conf);
 void mlx4_tx_queue_release(void *dpdk_txq);
 
+/* mlx4_mr.c */
+
+void mlx4_mr_flush_local_cache(struct mlx4_mr_ctrl *mr_ctrl);
+uint32_t mlx4_rx_addr2mr_bh(struct rxq *rxq, uintptr_t addr);
+uint32_t mlx4_tx_mb2mr_bh(struct txq *txq, struct rte_mbuf *mb);
+uint32_t mlx4_tx_update_ext_mp(struct txq *txq, uintptr_t addr,
+			       struct rte_mempool *mp);
+
 /**
- * Get memory region (MR) <-> memory pool (MP) association from txq->mp2mr[].
- * Call mlx4_txq_add_mr() if MP is not registered yet.
+ * Get Memory Pool (MP) from mbuf. If mbuf is indirect, the pool from which the
+ * cloned mbuf is allocated is returned instead.
+ *
+ * @param buf
+ *   Pointer to mbuf.
+ *
+ * @return
+ *   Memory pool where data is located for given mbuf.
+ */
+static inline struct rte_mempool *
+mlx4_mb2mp(struct rte_mbuf *buf)
+{
+	if (unlikely(RTE_MBUF_INDIRECT(buf)))
+		return rte_mbuf_from_indirect(buf)->pool;
+	return buf->pool;
+}
+
+/**
+ * Query LKey from a packet buffer for Rx. No need to flush local caches for Rx
+ * as mempool is pre-configured and static.
+ *
+ * @param rxq
+ *   Pointer to Rx queue structure.
+ * @param addr
+ *   Address to search.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on no match.
+ */
+static __rte_always_inline uint32_t
+mlx4_rx_addr2mr(struct rxq *rxq, uintptr_t addr)
+{
+	struct mlx4_mr_ctrl *mr_ctrl = &rxq->mr_ctrl;
+	uint32_t lkey;
+
+	/* Linear search on MR cache array. */
+	lkey = mlx4_mr_lookup_cache(mr_ctrl->cache, &mr_ctrl->mru,
+				    MLX4_MR_CACHE_N, addr);
+	if (likely(lkey != UINT32_MAX))
+		return lkey;
+	/* Take slower bottom-half (Binary Search) on miss. */
+	return mlx4_rx_addr2mr_bh(rxq, addr);
+}
+
+#define mlx4_rx_mb2mr(rxq, mb) mlx4_rx_addr2mr(rxq, (uintptr_t)((mb)->buf_addr))
+
+/**
+ * Query LKey from a packet buffer for Tx. If not found, add the mempool.
  *
  * @param txq
  *   Pointer to Tx queue structure.
- * @param[in] mp
- *   Memory pool for which a memory region lkey must be returned.
+ * @param addr
+ *   Address to search.
  *
  * @return
- *   mr->lkey on success, (uint32_t)-1 on failure.
+ *   Searched LKey on success, UINT32_MAX on no match.
  */
-static inline uint32_t
-mlx4_txq_mp2mr(struct txq *txq, struct rte_mempool *mp)
+static __rte_always_inline uint32_t
+mlx4_tx_mb2mr(struct txq *txq, struct rte_mbuf *mb)
 {
-	unsigned int i;
+	struct mlx4_mr_ctrl *mr_ctrl = &txq->mr_ctrl;
+	uintptr_t addr = (uintptr_t)mb->buf_addr;
+	uint32_t lkey;
 
-	for (i = 0; (i != RTE_DIM(txq->mp2mr)); ++i) {
-		if (unlikely(txq->mp2mr[i].mp == NULL)) {
-			/* Unknown MP, add a new MR for it. */
-			break;
-		}
-		if (txq->mp2mr[i].mp == mp) {
-			/* MP found MP. */
-			return txq->mp2mr[i].lkey;
-		}
-	}
-	return mlx4_txq_add_mr(txq, mp, i);
+	/* Check generation bit to see if there's any change on existing MRs. */
+	if (unlikely(*mr_ctrl->dev_gen_ptr != mr_ctrl->cur_gen))
+		mlx4_mr_flush_local_cache(mr_ctrl);
+	/* Linear search on MR cache array. */
+	lkey = mlx4_mr_lookup_cache(mr_ctrl->cache, &mr_ctrl->mru,
+				    MLX4_MR_CACHE_N, addr);
+	if (likely(lkey != UINT32_MAX))
+		return lkey;
+	/* Take slower bottom-half on miss. */
+	return mlx4_tx_mb2mr_bh(txq, mb);
 }
 
 #endif /* MLX4_RXTX_H_ */

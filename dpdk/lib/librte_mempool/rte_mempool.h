@@ -1,35 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   Copyright(c) 2016 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
+ * Copyright(c) 2016 6WIND S.A.
  */
 
 #ifndef _RTE_MEMPOOL_H_
@@ -99,6 +70,10 @@ struct rte_mempool_debug_stats {
 	uint64_t get_success_objs; /**< Objects successfully allocated. */
 	uint64_t get_fail_bulk;    /**< Failed allocation number. */
 	uint64_t get_fail_objs;    /**< Objects that failed to be allocated. */
+	/** Successful allocation number of contiguous blocks. */
+	uint64_t get_success_blks;
+	/** Failed allocation number of contiguous blocks. */
+	uint64_t get_fail_blks;
 } __rte_cache_aligned;
 #endif
 
@@ -219,6 +194,20 @@ struct rte_mempool_memhdr {
 };
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Additional information about the mempool
+ *
+ * The structure is cache-line aligned to avoid ABI breakages in
+ * a number of cases when something small is added.
+ */
+struct rte_mempool_info {
+	/** Number of objects in the contiguous block */
+	unsigned int contig_block_size;
+} __rte_cache_aligned;
+
+/**
  * The RTE mempool structure.
  */
 struct rte_mempool {
@@ -273,25 +262,8 @@ struct rte_mempool {
 #define MEMPOOL_F_SP_PUT         0x0004 /**< Default put is "single-producer".*/
 #define MEMPOOL_F_SC_GET         0x0008 /**< Default get is "single-consumer".*/
 #define MEMPOOL_F_POOL_CREATED   0x0010 /**< Internal: pool is created. */
-#define MEMPOOL_F_NO_PHYS_CONTIG 0x0020 /**< Don't need physically contiguous objs. */
-/**
- * This capability flag is advertised by a mempool handler, if the whole
- * memory area containing the objects must be physically contiguous.
- * Note: This flag should not be passed by application.
- */
-#define MEMPOOL_F_CAPA_PHYS_CONTIG 0x0040
-/**
- * This capability flag is advertised by a mempool handler. Used for a case
- * where mempool driver wants object start address(vaddr) aligned to block
- * size(/ total element size).
- *
- * Note:
- * - This flag should not be passed by application.
- *   Flag used for mempool driver only.
- * - Mempool driver must also set MEMPOOL_F_CAPA_PHYS_CONTIG flag along with
- *   MEMPOOL_F_CAPA_BLK_ALIGNED_OBJECTS.
- */
-#define MEMPOOL_F_CAPA_BLK_ALIGNED_OBJECTS 0x0080
+#define MEMPOOL_F_NO_IOVA_CONTIG 0x0020 /**< Don't need IOVA contiguous objs. */
+#define MEMPOOL_F_NO_PHYS_CONTIG MEMPOOL_F_NO_IOVA_CONTIG /* deprecated */
 
 /**
  * @internal When debug is enabled, store some statistics.
@@ -311,8 +283,16 @@ struct rte_mempool {
 			mp->stats[__lcore_id].name##_bulk += 1;	\
 		}                                               \
 	} while(0)
+#define __MEMPOOL_CONTIG_BLOCKS_STAT_ADD(mp, name, n) do {                    \
+		unsigned int __lcore_id = rte_lcore_id();       \
+		if (__lcore_id < RTE_MAX_LCORE) {               \
+			mp->stats[__lcore_id].name##_blks += n;	\
+			mp->stats[__lcore_id].name##_bulk += 1;	\
+		}                                               \
+	} while (0)
 #else
 #define __MEMPOOL_STAT_ADD(mp, name, n) do {} while(0)
+#define __MEMPOOL_CONTIG_BLOCKS_STAT_ADD(mp, name, n) do {} while (0)
 #endif
 
 /**
@@ -380,6 +360,38 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 #define __mempool_check_cookies(mp, obj_table_const, n, free) do {} while(0)
 #endif /* RTE_LIBRTE_MEMPOOL_DEBUG */
 
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * @internal Check contiguous object blocks and update cookies or panic.
+ *
+ * @param mp
+ *   Pointer to the memory pool.
+ * @param first_obj_table_const
+ *   Pointer to a table of void * pointers (first object of the contiguous
+ *   object blocks).
+ * @param n
+ *   Number of contiguous object blocks.
+ * @param free
+ *   - 0: object is supposed to be allocated, mark it as free
+ *   - 1: object is supposed to be free, mark it as allocated
+ *   - 2: just check that cookie is valid (free or allocated)
+ */
+void rte_mempool_contig_blocks_check_cookies(const struct rte_mempool *mp,
+	void * const *first_obj_table_const, unsigned int n, int free);
+
+#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+#define __mempool_contig_blocks_check_cookies(mp, first_obj_table_const, n, \
+					      free) \
+	rte_mempool_contig_blocks_check_cookies(mp, first_obj_table_const, n, \
+						free)
+#else
+#define __mempool_contig_blocks_check_cookies(mp, first_obj_table_const, n, \
+					      free) \
+	do {} while (0)
+#endif /* RTE_LIBRTE_MEMPOOL_DEBUG */
+
 #define RTE_MEMPOOL_OPS_NAMESIZE 32 /**< Max length of ops struct name. */
 
 /**
@@ -412,21 +424,135 @@ typedef int (*rte_mempool_dequeue_t)(struct rte_mempool *mp,
 		void **obj_table, unsigned int n);
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Dequeue a number of contiquous object blocks from the external pool.
+ */
+typedef int (*rte_mempool_dequeue_contig_blocks_t)(struct rte_mempool *mp,
+		 void **first_obj_table, unsigned int n);
+
+/**
  * Return the number of available objects in the external pool.
  */
 typedef unsigned (*rte_mempool_get_count)(const struct rte_mempool *mp);
 
 /**
- * Get the mempool capabilities.
+ * Calculate memory size required to store given number of objects.
+ *
+ * If mempool objects are not required to be IOVA-contiguous
+ * (the flag MEMPOOL_F_NO_IOVA_CONTIG is set), min_chunk_size defines
+ * virtually contiguous chunk size. Otherwise, if mempool objects must
+ * be IOVA-contiguous (the flag MEMPOOL_F_NO_IOVA_CONTIG is clear),
+ * min_chunk_size defines IOVA-contiguous chunk size.
+ *
+ * @param[in] mp
+ *   Pointer to the memory pool.
+ * @param[in] obj_num
+ *   Number of objects.
+ * @param[in] pg_shift
+ *   LOG2 of the physical pages size. If set to 0, ignore page boundaries.
+ * @param[out] min_chunk_size
+ *   Location for minimum size of the memory chunk which may be used to
+ *   store memory pool objects.
+ * @param[out] align
+ *   Location for required memory chunk alignment.
+ * @return
+ *   Required memory size aligned at page boundary.
  */
-typedef int (*rte_mempool_get_capabilities_t)(const struct rte_mempool *mp,
-		unsigned int *flags);
+typedef ssize_t (*rte_mempool_calc_mem_size_t)(const struct rte_mempool *mp,
+		uint32_t obj_num,  uint32_t pg_shift,
+		size_t *min_chunk_size, size_t *align);
 
 /**
- * Notify new memory area to mempool.
+ * Default way to calculate memory size required to store given number of
+ * objects.
+ *
+ * If page boundaries may be ignored, it is just a product of total
+ * object size including header and trailer and number of objects.
+ * Otherwise, it is a number of pages required to store given number of
+ * objects without crossing page boundary.
+ *
+ * Note that if object size is bigger than page size, then it assumes
+ * that pages are grouped in subsets of physically continuous pages big
+ * enough to store at least one object.
+ *
+ * Minimum size of memory chunk is a maximum of the page size and total
+ * element size.
+ *
+ * Required memory chunk alignment is a maximum of page size and cache
+ * line size.
  */
-typedef int (*rte_mempool_ops_register_memory_area_t)
-(const struct rte_mempool *mp, char *vaddr, rte_iova_t iova, size_t len);
+ssize_t rte_mempool_op_calc_mem_size_default(const struct rte_mempool *mp,
+		uint32_t obj_num, uint32_t pg_shift,
+		size_t *min_chunk_size, size_t *align);
+
+/**
+ * Function to be called for each populated object.
+ *
+ * @param[in] mp
+ *   A pointer to the mempool structure.
+ * @param[in] opaque
+ *   An opaque pointer passed to iterator.
+ * @param[in] vaddr
+ *   Object virtual address.
+ * @param[in] iova
+ *   Input/output virtual address of the object or RTE_BAD_IOVA.
+ */
+typedef void (rte_mempool_populate_obj_cb_t)(struct rte_mempool *mp,
+		void *opaque, void *vaddr, rte_iova_t iova);
+
+/**
+ * Populate memory pool objects using provided memory chunk.
+ *
+ * Populated objects should be enqueued to the pool, e.g. using
+ * rte_mempool_ops_enqueue_bulk().
+ *
+ * If the given IO address is unknown (iova = RTE_BAD_IOVA),
+ * the chunk doesn't need to be physically contiguous (only virtually),
+ * and allocated objects may span two pages.
+ *
+ * @param[in] mp
+ *   A pointer to the mempool structure.
+ * @param[in] max_objs
+ *   Maximum number of objects to be populated.
+ * @param[in] vaddr
+ *   The virtual address of memory that should be used to store objects.
+ * @param[in] iova
+ *   The IO address
+ * @param[in] len
+ *   The length of memory in bytes.
+ * @param[in] obj_cb
+ *   Callback function to be executed for each populated object.
+ * @param[in] obj_cb_arg
+ *   An opaque pointer passed to the callback function.
+ * @return
+ *   The number of objects added on success.
+ *   On error, no objects are populated and a negative errno is returned.
+ */
+typedef int (*rte_mempool_populate_t)(struct rte_mempool *mp,
+		unsigned int max_objs,
+		void *vaddr, rte_iova_t iova, size_t len,
+		rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg);
+
+/**
+ * Default way to populate memory pool object using provided memory
+ * chunk: just slice objects one by one.
+ */
+int rte_mempool_op_populate_default(struct rte_mempool *mp,
+		unsigned int max_objs,
+		void *vaddr, rte_iova_t iova, size_t len,
+		rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Get some additional information about a mempool.
+ */
+typedef int (*rte_mempool_get_info_t)(const struct rte_mempool *mp,
+		struct rte_mempool_info *info);
+
 
 /** Structure defining mempool operations structure */
 struct rte_mempool_ops {
@@ -437,13 +563,23 @@ struct rte_mempool_ops {
 	rte_mempool_dequeue_t dequeue;   /**< Dequeue an object. */
 	rte_mempool_get_count get_count; /**< Get qty of available objs. */
 	/**
-	 * Get the mempool capabilities
+	 * Optional callback to calculate memory size required to
+	 * store specified number of objects.
 	 */
-	rte_mempool_get_capabilities_t get_capabilities;
+	rte_mempool_calc_mem_size_t calc_mem_size;
 	/**
-	 * Notify new memory area to mempool
+	 * Optional callback to populate mempool objects using
+	 * provided memory chunk.
 	 */
-	rte_mempool_ops_register_memory_area_t register_memory_area;
+	rte_mempool_populate_t populate;
+	/**
+	 * Get mempool info
+	 */
+	rte_mempool_get_info_t get_info;
+	/**
+	 * Dequeue a number of contiguous object blocks.
+	 */
+	rte_mempool_dequeue_contig_blocks_t dequeue_contig_blocks;
 } __rte_cache_aligned;
 
 #define RTE_MEMPOOL_MAX_OPS_IDX 16  /**< Max registered ops structs */
@@ -522,6 +658,30 @@ rte_mempool_ops_dequeue_bulk(struct rte_mempool *mp,
 }
 
 /**
+ * @internal Wrapper for mempool_ops dequeue_contig_blocks callback.
+ *
+ * @param[in] mp
+ *   Pointer to the memory pool.
+ * @param[out] first_obj_table
+ *   Pointer to a table of void * pointers (first objects).
+ * @param[in] n
+ *   Number of blocks to get.
+ * @return
+ *   - 0: Success; got n objects.
+ *   - <0: Error; code of dequeue function.
+ */
+static inline int
+rte_mempool_ops_dequeue_contig_blocks(struct rte_mempool *mp,
+		void **first_obj_table, unsigned int n)
+{
+	struct rte_mempool_ops *ops;
+
+	ops = rte_mempool_get_ops(mp->ops_index);
+	RTE_ASSERT(ops->dequeue_contig_blocks != NULL);
+	return ops->dequeue_contig_blocks(mp, first_obj_table, n);
+}
+
+/**
  * @internal wrapper for mempool_ops enqueue callback.
  *
  * @param mp
@@ -556,41 +716,74 @@ unsigned
 rte_mempool_ops_get_count(const struct rte_mempool *mp);
 
 /**
- * @internal wrapper for mempool_ops get_capabilities callback.
+ * @internal wrapper for mempool_ops calc_mem_size callback.
+ * API to calculate size of memory required to store specified number of
+ * object.
  *
- * @param mp [in]
+ * @param[in] mp
  *   Pointer to the memory pool.
- * @param flags [out]
- *   Pointer to the mempool flags.
+ * @param[in] obj_num
+ *   Number of objects.
+ * @param[in] pg_shift
+ *   LOG2 of the physical pages size. If set to 0, ignore page boundaries.
+ * @param[out] min_chunk_size
+ *   Location for minimum size of the memory chunk which may be used to
+ *   store memory pool objects.
+ * @param[out] align
+ *   Location for required memory chunk alignment.
  * @return
- *   - 0: Success; The mempool driver has advertised his pool capabilities in
- *   flags param.
- *   - -ENOTSUP - doesn't support get_capabilities ops (valid case).
- *   - Otherwise, pool create fails.
+ *   Required memory size aligned at page boundary.
  */
-int
-rte_mempool_ops_get_capabilities(const struct rte_mempool *mp,
-					unsigned int *flags);
+ssize_t rte_mempool_ops_calc_mem_size(const struct rte_mempool *mp,
+				      uint32_t obj_num, uint32_t pg_shift,
+				      size_t *min_chunk_size, size_t *align);
+
 /**
- * @internal wrapper for mempool_ops register_memory_area callback.
- * API to notify the mempool handler when a new memory area is added to pool.
+ * @internal wrapper for mempool_ops populate callback.
  *
- * @param mp
- *   Pointer to the memory pool.
- * @param vaddr
- *   Pointer to the buffer virtual address.
- * @param iova
- *   Pointer to the buffer IO address.
- * @param len
- *   Pool size.
+ * Populate memory pool objects using provided memory chunk.
+ *
+ * @param[in] mp
+ *   A pointer to the mempool structure.
+ * @param[in] max_objs
+ *   Maximum number of objects to be populated.
+ * @param[in] vaddr
+ *   The virtual address of memory that should be used to store objects.
+ * @param[in] iova
+ *   The IO address
+ * @param[in] len
+ *   The length of memory in bytes.
+ * @param[in] obj_cb
+ *   Callback function to be executed for each populated object.
+ * @param[in] obj_cb_arg
+ *   An opaque pointer passed to the callback function.
  * @return
- *   - 0: Success;
- *   - -ENOTSUP - doesn't support register_memory_area ops (valid error case).
- *   - Otherwise, rte_mempool_populate_phys fails thus pool create fails.
+ *   The number of objects added on success.
+ *   On error, no objects are populated and a negative errno is returned.
  */
-int
-rte_mempool_ops_register_memory_area(const struct rte_mempool *mp,
-				char *vaddr, rte_iova_t iova, size_t len);
+int rte_mempool_ops_populate(struct rte_mempool *mp, unsigned int max_objs,
+			     void *vaddr, rte_iova_t iova, size_t len,
+			     rte_mempool_populate_obj_cb_t *obj_cb,
+			     void *obj_cb_arg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Wrapper for mempool_ops get_info callback.
+ *
+ * @param[in] mp
+ *   Pointer to the memory pool.
+ * @param[out] info
+ *   Pointer to the rte_mempool_info structure
+ * @return
+ *   - 0: Success; The mempool driver supports retrieving supplementary
+ *        mempool information
+ *   - -ENOTSUP - doesn't support get_info ops (valid case).
+ */
+__rte_experimental
+int rte_mempool_ops_get_info(const struct rte_mempool *mp,
+			 struct rte_mempool_info *info);
 
 /**
  * @internal wrapper for mempool_ops free callback.
@@ -739,8 +932,8 @@ typedef void (rte_mempool_ctor_t)(struct rte_mempool *, void *);
  *   - MEMPOOL_F_SC_GET: If this flag is set, the default behavior
  *     when using rte_mempool_get() or rte_mempool_get_bulk() is
  *     "single-consumer". Otherwise, it is "multi-consumers".
- *   - MEMPOOL_F_NO_PHYS_CONTIG: If set, allocated objects won't
- *     necessarily be contiguous in physical memory.
+ *   - MEMPOOL_F_NO_IOVA_CONTIG: If set, allocated objects won't
+ *     necessarily be contiguous in IO memory.
  * @return
  *   The pointer to the new allocated mempool, on success. NULL on error
  *   with rte_errno set appropriately. Possible rte_errno values include:
@@ -757,72 +950,6 @@ rte_mempool_create(const char *name, unsigned n, unsigned elt_size,
 		   rte_mempool_ctor_t *mp_init, void *mp_init_arg,
 		   rte_mempool_obj_cb_t *obj_init, void *obj_init_arg,
 		   int socket_id, unsigned flags);
-
-/**
- * Create a new mempool named *name* in memory.
- *
- * The pool contains n elements of elt_size. Its size is set to n.
- * This function uses ``memzone_reserve()`` to allocate the mempool header
- * (and the objects if vaddr is NULL).
- * Depending on the input parameters, mempool elements can be either allocated
- * together with the mempool header, or an externally provided memory buffer
- * could be used to store mempool objects. In later case, that external
- * memory buffer can consist of set of disjoint physical pages.
- *
- * @param name
- *   The name of the mempool.
- * @param n
- *   The number of elements in the mempool. The optimum size (in terms of
- *   memory usage) for a mempool is when n is a power of two minus one:
- *   n = (2^q - 1).
- * @param elt_size
- *   The size of each element.
- * @param cache_size
- *   Size of the cache. See rte_mempool_create() for details.
- * @param private_data_size
- *   The size of the private data appended after the mempool
- *   structure. This is useful for storing some private data after the
- *   mempool structure, as is done for rte_mbuf_pool for example.
- * @param mp_init
- *   A function pointer that is called for initialization of the pool,
- *   before object initialization. The user can initialize the private
- *   data in this function if needed. This parameter can be NULL if
- *   not needed.
- * @param mp_init_arg
- *   An opaque pointer to data that can be used in the mempool
- *   constructor function.
- * @param obj_init
- *   A function called for each object at initialization of the pool.
- *   See rte_mempool_create() for details.
- * @param obj_init_arg
- *   An opaque pointer passed to the object constructor function.
- * @param socket_id
- *   The *socket_id* argument is the socket identifier in the case of
- *   NUMA. The value can be *SOCKET_ID_ANY* if there is no NUMA
- *   constraint for the reserved zone.
- * @param flags
- *   Flags controlling the behavior of the mempool. See
- *   rte_mempool_create() for details.
- * @param vaddr
- *   Virtual address of the externally allocated memory buffer.
- *   Will be used to store mempool objects.
- * @param iova
- *   Array of IO addresses of the pages that comprises given memory buffer.
- * @param pg_num
- *   Number of elements in the iova array.
- * @param pg_shift
- *   LOG2 of the physical pages size.
- * @return
- *   The pointer to the new allocated mempool, on success. NULL on error
- *   with rte_errno set appropriately. See rte_mempool_create() for details.
- */
-struct rte_mempool *
-rte_mempool_xmem_create(const char *name, unsigned n, unsigned elt_size,
-		unsigned cache_size, unsigned private_data_size,
-		rte_mempool_ctor_t *mp_init, void *mp_init_arg,
-		rte_mempool_obj_cb_t *obj_init, void *obj_init_arg,
-		int socket_id, unsigned flags, void *vaddr,
-		const rte_iova_t iova[], uint32_t pg_num, uint32_t pg_shift);
 
 /**
  * Create an empty mempool
@@ -905,46 +1032,6 @@ rte_mempool_free(struct rte_mempool *mp);
 int rte_mempool_populate_iova(struct rte_mempool *mp, char *vaddr,
 	rte_iova_t iova, size_t len, rte_mempool_memchunk_free_cb_t *free_cb,
 	void *opaque);
-
-__rte_deprecated
-int rte_mempool_populate_phys(struct rte_mempool *mp, char *vaddr,
-	phys_addr_t paddr, size_t len, rte_mempool_memchunk_free_cb_t *free_cb,
-	void *opaque);
-
-/**
- * Add physical memory for objects in the pool at init
- *
- * Add a virtually contiguous memory chunk in the pool where objects can
- * be instantiated. The IO addresses corresponding to the virtual
- * area are described in iova[], pg_num, pg_shift.
- *
- * @param mp
- *   A pointer to the mempool structure.
- * @param vaddr
- *   The virtual address of memory that should be used to store objects.
- * @param iova
- *   An array of IO addresses of each page composing the virtual area.
- * @param pg_num
- *   Number of elements in the iova array.
- * @param pg_shift
- *   LOG2 of the physical pages size.
- * @param free_cb
- *   The callback used to free this chunk when destroying the mempool.
- * @param opaque
- *   An opaque argument passed to free_cb.
- * @return
- *   The number of objects added on success.
- *   On error, the chunks are not added in the memory list of the
- *   mempool and a negative errno is returned.
- */
-int rte_mempool_populate_iova_tab(struct rte_mempool *mp, char *vaddr,
-	const rte_iova_t iova[], uint32_t pg_num, uint32_t pg_shift,
-	rte_mempool_memchunk_free_cb_t *free_cb, void *opaque);
-
-__rte_deprecated
-int rte_mempool_populate_phys_tab(struct rte_mempool *mp, char *vaddr,
-	const phys_addr_t paddr[], uint32_t pg_num, uint32_t pg_shift,
-	rte_mempool_memchunk_free_cb_t *free_cb, void *opaque);
 
 /**
  * Add virtually contiguous memory for objects in the pool at init
@@ -1078,22 +1165,6 @@ void
 rte_mempool_cache_free(struct rte_mempool_cache *cache);
 
 /**
- * Flush a user-owned mempool cache to the specified mempool.
- *
- * @param cache
- *   A pointer to the mempool cache.
- * @param mp
- *   A pointer to the mempool.
- */
-static __rte_always_inline void
-rte_mempool_cache_flush(struct rte_mempool_cache *cache,
-			struct rte_mempool *mp)
-{
-	rte_mempool_ops_enqueue_bulk(mp, cache->objs, cache->len);
-	cache->len = 0;
-}
-
-/**
  * Get a pointer to the per-lcore default mempool cache.
  *
  * @param mp
@@ -1113,6 +1184,26 @@ rte_mempool_default_cache(struct rte_mempool *mp, unsigned lcore_id)
 		return NULL;
 
 	return &mp->local_cache[lcore_id];
+}
+
+/**
+ * Flush a user-owned mempool cache to the specified mempool.
+ *
+ * @param cache
+ *   A pointer to the mempool cache.
+ * @param mp
+ *   A pointer to the mempool.
+ */
+static __rte_always_inline void
+rte_mempool_cache_flush(struct rte_mempool_cache *cache,
+			struct rte_mempool *mp)
+{
+	if (cache == NULL)
+		cache = rte_mempool_default_cache(mp, rte_lcore_id());
+	if (cache == NULL || cache->len == 0)
+		return;
+	rte_mempool_ops_enqueue_bulk(mp, cache->objs, cache->len);
+	cache->len = 0;
 }
 
 /**
@@ -1395,6 +1486,49 @@ rte_mempool_get(struct rte_mempool *mp, void **obj_p)
 }
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Get a contiguous blocks of objects from the mempool.
+ *
+ * If cache is enabled, consider to flush it first, to reuse objects
+ * as soon as possible.
+ *
+ * The application should check that the driver supports the operation
+ * by calling rte_mempool_ops_get_info() and checking that `contig_block_size`
+ * is not zero.
+ *
+ * @param mp
+ *   A pointer to the mempool structure.
+ * @param first_obj_table
+ *   A pointer to a pointer to the first object in each block.
+ * @param n
+ *   The number of blocks to get from mempool.
+ * @return
+ *   - 0: Success; blocks taken.
+ *   - -ENOBUFS: Not enough entries in the mempool; no object is retrieved.
+ *   - -EOPNOTSUPP: The mempool driver does not support block dequeue
+ */
+static __rte_always_inline int
+__rte_experimental
+rte_mempool_get_contig_blocks(struct rte_mempool *mp,
+			      void **first_obj_table, unsigned int n)
+{
+	int ret;
+
+	ret = rte_mempool_ops_dequeue_contig_blocks(mp, first_obj_table, n);
+	if (ret == 0) {
+		__MEMPOOL_CONTIG_BLOCKS_STAT_ADD(mp, get_success, n);
+		__mempool_contig_blocks_check_cookies(mp, first_obj_table, n,
+						      1);
+	} else {
+		__MEMPOOL_CONTIG_BLOCKS_STAT_ADD(mp, get_fail, n);
+	}
+
+	return ret;
+}
+
+/**
  * Return the number of entries in the mempool.
  *
  * When cache is enabled, this function has to browse the length of
@@ -1468,7 +1602,7 @@ rte_mempool_empty(const struct rte_mempool *mp)
  *   A pointer (virtual address) to the element of the pool.
  * @return
  *   The IO address of the elt element.
- *   If the mempool was created with MEMPOOL_F_NO_PHYS_CONTIG, the
+ *   If the mempool was created with MEMPOOL_F_NO_IOVA_CONTIG, the
  *   returned value is RTE_BAD_IOVA.
  */
 static inline rte_iova_t
@@ -1478,13 +1612,6 @@ rte_mempool_virt2iova(const void *elt)
 	hdr = (const struct rte_mempool_objhdr *)RTE_PTR_SUB(elt,
 		sizeof(*hdr));
 	return hdr->iova;
-}
-
-__rte_deprecated
-static inline phys_addr_t
-rte_mempool_virt2phy(__rte_unused const struct rte_mempool *mp, const void *elt)
-{
-	return rte_mempool_virt2iova(elt);
 }
 
 /**
@@ -1554,64 +1681,6 @@ struct rte_mempool *rte_mempool_lookup(const char *name);
  */
 uint32_t rte_mempool_calc_obj_size(uint32_t elt_size, uint32_t flags,
 	struct rte_mempool_objsz *sz);
-
-/**
- * Get the size of memory required to store mempool elements.
- *
- * Calculate the maximum amount of memory required to store given number
- * of objects. Assume that the memory buffer will be aligned at page
- * boundary.
- *
- * Note that if object size is bigger then page size, then it assumes
- * that pages are grouped in subsets of physically continuous pages big
- * enough to store at least one object.
- *
- * @param elt_num
- *   Number of elements.
- * @param total_elt_sz
- *   The size of each element, including header and trailer, as returned
- *   by rte_mempool_calc_obj_size().
- * @param pg_shift
- *   LOG2 of the physical pages size. If set to 0, ignore page boundaries.
- * @param flags
- *  The mempool flags.
- * @return
- *   Required memory size aligned at page boundary.
- */
-size_t rte_mempool_xmem_size(uint32_t elt_num, size_t total_elt_sz,
-	uint32_t pg_shift, unsigned int flags);
-
-/**
- * Get the size of memory required to store mempool elements.
- *
- * Calculate how much memory would be actually required with the given
- * memory footprint to store required number of objects.
- *
- * @param vaddr
- *   Virtual address of the externally allocated memory buffer.
- *   Will be used to store mempool objects.
- * @param elt_num
- *   Number of elements.
- * @param total_elt_sz
- *   The size of each element, including header and trailer, as returned
- *   by rte_mempool_calc_obj_size().
- * @param iova
- *   Array of IO addresses of the pages that comprises given memory buffer.
- * @param pg_num
- *   Number of elements in the iova array.
- * @param pg_shift
- *   LOG2 of the physical pages size.
- * @param flags
- *  The mempool flags.
- * @return
- *   On success, the number of bytes needed to store given number of
- *   objects, aligned to the given page size. If the provided memory
- *   buffer is too small, return a negative value whose absolute value
- *   is the actual number of elements that can be stored in that buffer.
- */
-ssize_t rte_mempool_xmem_usage(void *vaddr, uint32_t elt_num,
-	size_t total_elt_sz, const rte_iova_t iova[], uint32_t pg_num,
-	uint32_t pg_shift, unsigned int flags);
 
 /**
  * Walk list of all memory pools

@@ -1,42 +1,18 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _RTE_ETH_BOND_PRIVATE_H_
 #define _RTE_ETH_BOND_PRIVATE_H_
 
-#include <rte_ethdev.h>
+#include <stdint.h>
+#include <sys/queue.h>
+
+#include <rte_ethdev_driver.h>
+#include <rte_flow.h>
 #include <rte_spinlock.h>
 #include <rte_bitmap.h>
+#include <rte_flow_driver.h>
 
 #include "rte_eth_bond.h"
 #include "rte_eth_bond_8023ad_private.h"
@@ -57,14 +33,19 @@
 #define PMD_BOND_XMIT_POLICY_LAYER23_KVARG	("l23")
 #define PMD_BOND_XMIT_POLICY_LAYER34_KVARG	("l34")
 
+extern int bond_logtype;
+
 #define RTE_BOND_LOG(lvl, msg, ...)		\
-	RTE_LOG(lvl, PMD, "%s(%d) - " msg "\n", __func__, __LINE__, ##__VA_ARGS__)
+	rte_log(RTE_LOG_ ## lvl, bond_logtype, \
+		"%s(%d) - " msg "\n", __func__, __LINE__, ##__VA_ARGS__)
 
 #define BONDING_MODE_INVALID 0xFF
 
 extern const char *pmd_bond_init_valid_arguments[];
 
 extern struct rte_vdev_driver pmd_bond_drv;
+
+extern const struct rte_flow_ops bond_flow_ops;
 
 /** Port Queue Mapping Structure */
 struct bond_rx_queue {
@@ -109,8 +90,17 @@ struct bond_slave_details {
 	uint16_t reta_size;
 };
 
+struct rte_flow {
+	TAILQ_ENTRY(rte_flow) next;
+	/* Slaves flows */
+	struct rte_flow *flows[RTE_MAX_ETHPORTS];
+	/* Flow description for synchronization */
+	struct rte_flow_conv_rule rule;
+	uint8_t rule_data[];
+};
 
-typedef uint16_t (*xmit_hash_t)(const struct rte_mbuf *buf, uint8_t slave_count);
+typedef void (*burst_xmit_hash_t)(struct rte_mbuf **buf, uint16_t nb_pkts,
+		uint8_t slave_count, uint16_t *slaves);
 
 /** Link Bonding PMD device private configuration Structure */
 struct bond_dev_private {
@@ -127,7 +117,7 @@ struct bond_dev_private {
 
 	uint8_t balance_xmit_policy;
 	/**< Transmit policy - l2 / l23 / l34 for operation in balance mode */
-	xmit_hash_t xmit_hash;
+	burst_xmit_hash_t burst_xmit_hash;
 	/**< Transmit policy hash function */
 
 	uint8_t user_defined_mac;
@@ -158,11 +148,25 @@ struct bond_dev_private {
 	/**< TLB active slaves send order */
 	struct mode_alb_private mode6;
 
-	uint32_t rx_offload_capa;            /** Rx offload capability */
-	uint32_t tx_offload_capa;            /** Tx offload capability */
+	uint64_t rx_offload_capa;       /** Rx offload capability */
+	uint64_t tx_offload_capa;       /** Tx offload capability */
+	uint64_t rx_queue_offload_capa; /** per queue Rx offload capability */
+	uint64_t tx_queue_offload_capa; /** per queue Tx offload capability */
+
+	/**< List of the configured flows */
+	TAILQ_HEAD(sub_flows, rte_flow) flow_list;
+
+	/**< Flow isolation state */
+	int flow_isolated;
+	int flow_isolated_valid;
 
 	/** Bit mask of RSS offloads, the bit offset also means flow type */
 	uint64_t flow_type_rss_offloads;
+
+	struct rte_eth_rxconf default_rxconf;	/**< Default RxQ conf. */
+	struct rte_eth_txconf default_txconf;	/**< Default TxQ conf. */
+	struct rte_eth_desc_lim rx_desc_lim;	/**< Rx descriptor limits */
+	struct rte_eth_desc_lim tx_desc_lim;	/**< Tx descriptor limits */
 
 	uint16_t reta_size;
 	struct rte_eth_rss_reta_entry64 reta_conf[ETH_RSS_RETA_SIZE_512 /
@@ -235,6 +239,14 @@ int
 mac_address_slaves_update(struct rte_eth_dev *bonded_eth_dev);
 
 int
+slave_add_mac_addresses(struct rte_eth_dev *bonded_eth_dev,
+		uint16_t slave_port_id);
+
+int
+slave_remove_mac_addresses(struct rte_eth_dev *bonded_eth_dev,
+		uint16_t slave_port_id);
+
+int
 bond_ethdev_mode_set(struct rte_eth_dev *eth_dev, int mode);
 
 int
@@ -249,14 +261,18 @@ void
 slave_add(struct bond_dev_private *internals,
 		struct rte_eth_dev *slave_eth_dev);
 
-uint16_t
-xmit_l2_hash(const struct rte_mbuf *buf, uint8_t slave_count);
+void
+burst_xmit_l2_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
+		uint8_t slave_count, uint16_t *slaves);
 
-uint16_t
-xmit_l23_hash(const struct rte_mbuf *buf, uint8_t slave_count);
+void
+burst_xmit_l23_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
+		uint8_t slave_count, uint16_t *slaves);
 
-uint16_t
-xmit_l34_hash(const struct rte_mbuf *buf, uint8_t slave_count);
+void
+burst_xmit_l34_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
+		uint8_t slave_count, uint16_t *slaves);
+
 
 void
 bond_ethdev_primary_set(struct bond_dev_private *internals,

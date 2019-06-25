@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) Broadcom Limited.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Broadcom
+ * All rights reserved.
  */
 
 #ifndef _BNXT_HWRM_H_
@@ -42,6 +14,27 @@ struct bnxt_filter_info;
 struct bnxt_cp_ring_info;
 
 #define HWRM_SEQ_ID_INVALID -1U
+/* Convert Bit field location to value */
+#define ASYNC_CMPL_EVENT_ID_LINK_STATUS_CHANGE	\
+	(1 << HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE)
+#define ASYNC_CMPL_EVENT_ID_PORT_CONN_NOT_ALLOWED	\
+	(1 << HWRM_ASYNC_EVENT_CMPL_EVENT_ID_PORT_CONN_NOT_ALLOWED)
+#define ASYNC_CMPL_EVENT_ID_LINK_SPEED_CFG_CHANGE	\
+	(1 << HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_SPEED_CFG_CHANGE)
+#define ASYNC_CMPL_EVENT_ID_PF_DRVR_UNLOAD	\
+	(1 << (HWRM_ASYNC_EVENT_CMPL_EVENT_ID_PF_DRVR_UNLOAD - 32))
+#define ASYNC_CMPL_EVENT_ID_VF_CFG_CHANGE	\
+	(1 << (HWRM_ASYNC_EVENT_CMPL_EVENT_ID_VF_CFG_CHANGE - 32))
+
+#define HWRM_QUEUE_SERVICE_PROFILE_LOSSY \
+	HWRM_QUEUE_QPORTCFG_OUTPUT_QUEUE_ID0_SERVICE_PROFILE_LOSSY
+
+#define HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESV_STRATEGY_MINIMAL_STATIC \
+	HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESERVATION_STRATEGY_MINIMAL_STATIC
+
+#define HWRM_SPEC_CODE_1_8_4		0x10804
+#define HWRM_SPEC_CODE_1_9_0		0x10900
+#define HWRM_SPEC_CODE_1_9_2		0x10902
 
 int bnxt_hwrm_cfa_l2_clear_rx_mask(struct bnxt *bp,
 				   struct bnxt_vnic_info *vnic);
@@ -77,6 +70,7 @@ int bnxt_hwrm_vf_func_cfg_def_cp(struct bnxt *bp);
 
 int bnxt_hwrm_queue_qportcfg(struct bnxt *bp);
 
+int bnxt_hwrm_set_async_event_cr(struct bnxt *bp);
 int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 			 struct bnxt_ring *ring,
 			 uint32_t ring_type, uint32_t map_index,
@@ -120,10 +114,13 @@ int bnxt_set_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic);
 int bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic);
 void bnxt_free_all_hwrm_resources(struct bnxt *bp);
 void bnxt_free_hwrm_resources(struct bnxt *bp);
+void bnxt_free_hwrm_rx_ring(struct bnxt *bp, int queue_index);
 int bnxt_alloc_hwrm_resources(struct bnxt *bp);
 int bnxt_get_hwrm_link_config(struct bnxt *bp, struct rte_eth_link *link);
 int bnxt_set_hwrm_link_config(struct bnxt *bp, bool link_up);
 int bnxt_hwrm_func_qcfg(struct bnxt *bp);
+int bnxt_hwrm_func_resc_qcaps(struct bnxt *bp);
+int bnxt_hwrm_func_reserve_vf_resc(struct bnxt *bp, bool test);
 int bnxt_hwrm_allocate_pf_only(struct bnxt *bp);
 int bnxt_hwrm_allocate_vfs(struct bnxt *bp, int num_vfs);
 int bnxt_hwrm_func_vf_mac(struct bnxt *bp, uint16_t vf,
@@ -175,4 +172,11 @@ int bnxt_hwrm_flash_nvram(struct bnxt *bp, uint16_t dir_type,
 			  uint16_t dir_ordinal, uint16_t dir_ext,
 			  uint16_t dir_attr, const uint8_t *data,
 			  size_t data_len);
+int bnxt_hwrm_ptp_cfg(struct bnxt *bp);
+int bnxt_vnic_rss_configure(struct bnxt *bp,
+			    struct bnxt_vnic_info *vnic);
+int bnxt_hwrm_set_ring_coal(struct bnxt *bp,
+			struct bnxt_coal *coal, uint16_t ring_id);
+int bnxt_hwrm_check_vf_rings(struct bnxt *bp);
+int bnxt_hwrm_ext_port_qstats(struct bnxt *bp);
 #endif

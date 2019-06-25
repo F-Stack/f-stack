@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_ATOMIC_H_
@@ -46,6 +17,9 @@
 
 #ifdef __DOXYGEN__
 
+/** @name Memory Barrier
+ */
+///@{
 /**
  * General memory barrier.
  *
@@ -72,13 +46,17 @@ static inline void rte_wmb(void);
  * This function is architecture dependent.
  */
 static inline void rte_rmb(void);
+///@}
 
+/** @name SMP Memory Barrier
+ */
+///@{
 /**
  * General memory barrier between lcores
  *
  * Guarantees that the LOAD and STORE operations that precede the
  * rte_smp_mb() call are globally visible across the lcores
- * before the the LOAD and STORE operations that follows it.
+ * before the LOAD and STORE operations that follows it.
  */
 static inline void rte_smp_mb(void);
 
@@ -87,7 +65,7 @@ static inline void rte_smp_mb(void);
  *
  * Guarantees that the STORE operations that precede the
  * rte_smp_wmb() call are globally visible across the lcores
- * before the the STORE operations that follows it.
+ * before the STORE operations that follows it.
  */
 static inline void rte_smp_wmb(void);
 
@@ -96,10 +74,14 @@ static inline void rte_smp_wmb(void);
  *
  * Guarantees that the LOAD operations that precede the
  * rte_smp_rmb() call are globally visible across the lcores
- * before the the LOAD operations that follows it.
+ * before the LOAD operations that follows it.
  */
 static inline void rte_smp_rmb(void);
+///@}
 
+/** @name I/O Memory Barrier
+ */
+///@{
 /**
  * General memory barrier for I/O device
  *
@@ -126,6 +108,46 @@ static inline void rte_io_wmb(void);
  * operations that follow it.
  */
 static inline void rte_io_rmb(void);
+///@}
+
+/** @name Coherent I/O Memory Barrier
+ *
+ * Coherent I/O memory barrier is a lightweight version of I/O memory
+ * barriers which are system-wide data synchronization barriers. This
+ * is for only coherent memory domain between lcore and I/O device but
+ * it is same as the I/O memory barriers in most of architectures.
+ * However, some architecture provides even lighter barriers which are
+ * somewhere in between I/O memory barriers and SMP memory barriers.
+ * For example, in case of ARMv8, DMB(data memory barrier) instruction
+ * can have different shareability domains - inner-shareable and
+ * outer-shareable. And inner-shareable DMB fits for SMP memory
+ * barriers and outer-shareable DMB for coherent I/O memory barriers,
+ * which acts on coherent memory.
+ *
+ * In most cases, I/O memory barriers are safer but if operations are
+ * on coherent memory instead of incoherent MMIO region of a device,
+ * then coherent I/O memory barriers can be used and this could bring
+ * performance gain depending on architectures.
+ */
+///@{
+/**
+ * Write memory barrier for coherent memory between lcore and I/O device
+ *
+ * Guarantees that the STORE operations on coherent memory that
+ * precede the rte_cio_wmb() call are visible to I/O device before the
+ * STORE operations that follow it.
+ */
+static inline void rte_cio_wmb(void);
+
+/**
+ * Read memory barrier for coherent memory between lcore and I/O device
+ *
+ * Guarantees that the LOAD operations on coherent memory updated by
+ * I/O device that precede the rte_cio_rmb() call are visible to CPU
+ * before the LOAD operations that follow it.
+ */
+static inline void rte_cio_rmb(void);
+///@}
 
 #endif /* __DOXYGEN__ */
 
@@ -165,6 +187,36 @@ static inline int
 rte_atomic16_cmpset(volatile uint16_t *dst, uint16_t exp, uint16_t src)
 {
 	return __sync_bool_compare_and_swap(dst, exp, src);
+}
+#endif
+
+/**
+ * Atomic exchange.
+ *
+ * (atomic) equivalent to:
+ *   ret = *dst
+ *   *dst = val;
+ *   return ret;
+ *
+ * @param dst
+ *   The destination location into which the value will be written.
+ * @param val
+ *   The new value.
+ * @return
+ *   The original value at that location
+ */
+static inline uint16_t
+rte_atomic16_exchange(volatile uint16_t *dst, uint16_t val);
+
+#ifdef RTE_FORCE_INTRINSICS
+static inline uint16_t
+rte_atomic16_exchange(volatile uint16_t *dst, uint16_t val)
+{
+#if defined(RTE_ARCH_ARM64) && defined(RTE_TOOLCHAIN_CLANG)
+	return __atomic_exchange_n(dst, val, __ATOMIC_SEQ_CST);
+#else
+	return __atomic_exchange_2(dst, val, __ATOMIC_SEQ_CST);
+#endif
 }
 #endif
 
@@ -422,6 +474,36 @@ rte_atomic32_cmpset(volatile uint32_t *dst, uint32_t exp, uint32_t src)
 #endif
 
 /**
+ * Atomic exchange.
+ *
+ * (atomic) equivalent to:
+ *   ret = *dst
+ *   *dst = val;
+ *   return ret;
+ *
+ * @param dst
+ *   The destination location into which the value will be written.
+ * @param val
+ *   The new value.
+ * @return
+ *   The original value at that location
+ */
+static inline uint32_t
+rte_atomic32_exchange(volatile uint32_t *dst, uint32_t val);
+
+#ifdef RTE_FORCE_INTRINSICS
+static inline uint32_t
+rte_atomic32_exchange(volatile uint32_t *dst, uint32_t val)
+{
+#if defined(RTE_ARCH_ARM64) && defined(RTE_TOOLCHAIN_CLANG)
+	return __atomic_exchange_n(dst, val, __ATOMIC_SEQ_CST);
+#else
+	return __atomic_exchange_4(dst, val, __ATOMIC_SEQ_CST);
+#endif
+}
+#endif
+
+/**
  * The atomic counter structure.
  */
 typedef struct {
@@ -670,6 +752,36 @@ static inline int
 rte_atomic64_cmpset(volatile uint64_t *dst, uint64_t exp, uint64_t src)
 {
 	return __sync_bool_compare_and_swap(dst, exp, src);
+}
+#endif
+
+/**
+ * Atomic exchange.
+ *
+ * (atomic) equivalent to:
+ *   ret = *dst
+ *   *dst = val;
+ *   return ret;
+ *
+ * @param dst
+ *   The destination location into which the value will be written.
+ * @param val
+ *   The new value.
+ * @return
+ *   The original value at that location
+ */
+static inline uint64_t
+rte_atomic64_exchange(volatile uint64_t *dst, uint64_t val);
+
+#ifdef RTE_FORCE_INTRINSICS
+static inline uint64_t
+rte_atomic64_exchange(volatile uint64_t *dst, uint64_t val)
+{
+#if defined(RTE_ARCH_ARM64) && defined(RTE_TOOLCHAIN_CLANG)
+	return __atomic_exchange_n(dst, val, __ATOMIC_SEQ_CST);
+#else
+	return __atomic_exchange_8(dst, val, __ATOMIC_SEQ_CST);
+#endif
 }
 #endif
 

@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2015 Intel Corporation.
 
 Poll Mode Driver for Emulated Virtio NIC
 ========================================
@@ -74,12 +47,13 @@ In this release, the virtio PMD driver provides the basic functionality of packe
 *   The descriptor number for the Rx/Tx queue is hard-coded to be 256 by qemu 2.7 and below.
     If given a different descriptor number by the upper application,
     the virtio PMD generates a warning and fall back to the hard-coded value.
-    Rx queue size can be configureable and up to 1024 since qemu 2.8 and above. Rx queue size is 256
+    Rx queue size can be configurable and up to 1024 since qemu 2.8 and above. Rx queue size is 256
     by default. Tx queue size is still hard-coded to be 256.
 
 *   Features of mac/vlan filter are supported, negotiation with vhost/backend are needed to support them.
-    When backend can't support vlan filter, virtio app on guest should disable vlan filter to make sure
-    the virtio port is configured correctly. E.g. specify '--disable-hw-vlan' in testpmd command line.
+    When backend can't support vlan filter, virtio app on guest should not enable vlan filter in order
+    to make sure the virtio port is configured correctly. E.g. do not specify '--enable-hw-vlan' in testpmd
+    command line.
 
 *   "RTE_PKTMBUF_HEADROOM" should be defined
     no less than "sizeof(struct virtio_net_hdr_mrg_rxbuf)", which is 12 bytes when mergeable or
@@ -227,7 +201,7 @@ The packet transmission flow is:
 Virtio PMD Rx/Tx Callbacks
 --------------------------
 
-Virtio driver has 3 Rx callbacks and 2 Tx callbacks.
+Virtio driver has 4 Rx callbacks and 3 Tx callbacks.
 
 Rx callbacks:
 
@@ -241,6 +215,9 @@ Rx callbacks:
    Vector version without mergeable Rx buffer support, also fixes the available
    ring indexes and uses vector instructions to optimize performance.
 
+#. ``virtio_recv_mergeable_pkts_inorder``:
+   In-order version with mergeable Rx buffer support.
+
 Tx callbacks:
 
 #. ``virtio_xmit_pkts``:
@@ -249,6 +226,8 @@ Tx callbacks:
 #. ``virtio_xmit_pkts_simple``:
    Vector version fixes the available ring indexes to optimize performance.
 
+#. ``virtio_xmit_pkts_inorder``:
+   In-order version.
 
 By default, the non-vector callbacks are used:
 
@@ -260,7 +239,7 @@ By default, the non-vector callbacks are used:
 
 Vector callbacks will be used when:
 
-*   ``txq_flags`` is set to ``VIRTIO_SIMPLE_FLAGS`` (0xF01), which implies:
+*   ``txmode.offloads`` is set to ``0x0``, which implies:
 
     *   Single segment is specified.
 
@@ -278,8 +257,14 @@ The corresponding callbacks are:
 Example of using the vector version of the virtio poll mode driver in
 ``testpmd``::
 
-   testpmd -l 0-2 -n 4 -- -i --txqflags=0xF01 --rxq=1 --txq=1 --nb-cores=1
+   testpmd -l 0-2 -n 4 -- -i --tx-offloads=0x0 --rxq=1 --txq=1 --nb-cores=1
 
+In-order callbacks only work on simulated virtio user vdev.
+
+*   For Rx: If mergeable Rx buffers is enabled and in-order is enabled then
+    ``virtio_xmit_pkts_inorder`` is used.
+
+*   For Tx: If in-order is enabled then ``virtio_xmit_pkts_inorder`` is used.
 
 Interrupt mode
 --------------
@@ -344,3 +329,26 @@ Here we use l3fwd-power as an example to show how to get started.
 
         $ l3fwd-power -l 0-1 -- -p 1 -P --config="(0,0,1)" \
                                                --no-numa --parse-ptype
+
+
+Virtio PMD arguments
+--------------------
+
+The user can specify below argument in devargs.
+
+#.  ``vdpa``:
+
+    A virtio device could also be driven by vDPA (vhost data path acceleration)
+    driver, and works as a HW vhost backend. This argument is used to specify
+    a virtio device needs to work in vDPA mode.
+    (Default: 0 (disabled))
+
+#. ``mrg_rxbuf``:
+
+    It is used to enable virtio device mergeable Rx buffer feature.
+    (Default: 1 (enabled))
+
+#. ``in_order``:
+
+    It is used to enable virtio device in-order feature.
+    (Default: 1 (enabled))

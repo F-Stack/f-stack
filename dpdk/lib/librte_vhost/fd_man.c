@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdint.h>
@@ -44,6 +15,9 @@
 #include <rte_log.h>
 
 #include "fd_man.h"
+
+
+#define RTE_LOGTYPE_VHOST_FDMAN RTE_LOGTYPE_USER1
 
 #define FDPOLLERR (POLLERR | POLLHUP | POLLNVAL)
 
@@ -319,7 +293,7 @@ fdset_event_dispatch(void *arg)
 			 * because the fd is closed in the cb,
 			 * the old fd val could be reused by when creates new
 			 * listen fd in another thread, we couldn't call
-			 * fd_set_del.
+			 * fdset_del.
 			 */
 			if (remove1 || remove2) {
 				pfdentry->fd = -1;
@@ -332,4 +306,65 @@ fdset_event_dispatch(void *arg)
 	}
 
 	return NULL;
+}
+
+static void
+fdset_pipe_read_cb(int readfd, void *dat __rte_unused,
+		   int *remove __rte_unused)
+{
+	char charbuf[16];
+	int r = read(readfd, charbuf, sizeof(charbuf));
+	/*
+	 * Just an optimization, we don't care if read() failed
+	 * so ignore explicitly its return value to make the
+	 * compiler happy
+	 */
+	RTE_SET_USED(r);
+}
+
+void
+fdset_pipe_uninit(struct fdset *fdset)
+{
+	fdset_del(fdset, fdset->u.readfd);
+	close(fdset->u.readfd);
+	close(fdset->u.writefd);
+}
+
+int
+fdset_pipe_init(struct fdset *fdset)
+{
+	int ret;
+
+	if (pipe(fdset->u.pipefd) < 0) {
+		RTE_LOG(ERR, VHOST_FDMAN,
+			"failed to create pipe for vhost fdset\n");
+		return -1;
+	}
+
+	ret = fdset_add(fdset, fdset->u.readfd,
+			fdset_pipe_read_cb, NULL, NULL);
+
+	if (ret < 0) {
+		RTE_LOG(ERR, VHOST_FDMAN,
+			"failed to add pipe readfd %d into vhost server fdset\n",
+			fdset->u.readfd);
+
+		fdset_pipe_uninit(fdset);
+		return -1;
+	}
+
+	return 0;
+}
+
+void
+fdset_pipe_notify(struct fdset *fdset)
+{
+	int r = write(fdset->u.writefd, "1", 1);
+	/*
+	 * Just an optimization, we don't care if write() failed
+	 * so ignore explicitly its return value to make the
+	 * compiler happy
+	 */
+	RTE_SET_USED(r);
+
 }

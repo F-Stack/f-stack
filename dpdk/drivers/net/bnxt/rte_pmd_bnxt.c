@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Broadcom Limited.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017-2018 Broadcom
+ * All rights reserved.
  */
 
 #include <inttypes.h>
@@ -36,7 +8,7 @@
 #include <unistd.h>
 
 #include <rte_dev.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_cycles.h>
 #include <rte_byteorder.h>
@@ -57,7 +29,7 @@ int bnxt_rcv_msg_from_vf(struct bnxt *bp, uint16_t vf_id, void *msg)
 	ret_param.msg = msg;
 
 	_rte_eth_dev_callback_process(bp->eth_dev, RTE_ETH_EVENT_VF_MBOX,
-				      NULL, &ret_param);
+				      &ret_param);
 
 	/* Default to approve */
 	if (ret_param.retval == RTE_PMD_BNXT_MB_EVENT_PROCEED)
@@ -85,7 +57,7 @@ int rte_pmd_bnxt_set_tx_loopback(uint16_t port, uint8_t on)
 	bp = (struct bnxt *)eth_dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set Tx loopback on non-PF port %d!\n",
 			port);
 		return -ENOTSUP;
@@ -127,7 +99,7 @@ int rte_pmd_bnxt_set_all_queues_drop_en(uint16_t port, uint8_t on)
 	bp = (struct bnxt *)eth_dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set all queues drop on non-PF port!\n");
 		return -ENOTSUP;
 	}
@@ -140,7 +112,7 @@ int rte_pmd_bnxt_set_all_queues_drop_en(uint16_t port, uint8_t on)
 		bp->vnic_info[i].bd_stall = !on;
 		rc = bnxt_hwrm_vnic_cfg(bp, &bp->vnic_info[i]);
 		if (rc) {
-			RTE_LOG(ERR, PMD, "Failed to update PF VNIC %d.\n", i);
+			PMD_DRV_LOG(ERR, "Failed to update PF VNIC %d.\n", i);
 			return rc;
 		}
 	}
@@ -151,7 +123,7 @@ int rte_pmd_bnxt_set_all_queues_drop_en(uint16_t port, uint8_t on)
 				rte_pmd_bnxt_set_all_queues_drop_en_cb, &on,
 				bnxt_hwrm_vnic_cfg);
 		if (rc) {
-			RTE_LOG(ERR, PMD, "Failed to update VF VNIC %d.\n", i);
+			PMD_DRV_LOG(ERR, "Failed to update VF VNIC %d.\n", i);
 			break;
 		}
 	}
@@ -180,7 +152,7 @@ int rte_pmd_bnxt_set_vf_mac_addr(uint16_t port, uint16_t vf,
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set VF %d mac address on non-PF port %d!\n",
 			vf, port);
 		return -ENOTSUP;
@@ -224,7 +196,7 @@ int rte_pmd_bnxt_set_vf_rate_limit(uint16_t port, uint16_t vf,
 
 	/* Requested BW can't be greater than link speed */
 	if (tot_rate > eth_dev->data->dev_link.link_speed) {
-		RTE_LOG(ERR, PMD, "Rate > Link speed. Set to %d\n", tot_rate);
+		PMD_DRV_LOG(ERR, "Rate > Link speed. Set to %d\n", tot_rate);
 		return -EINVAL;
 	}
 
@@ -262,7 +234,7 @@ int rte_pmd_bnxt_set_vf_mac_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 	bp = (struct bnxt *)dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set mac spoof on non-PF port %d!\n", port);
 		return -EINVAL;
 	}
@@ -314,7 +286,7 @@ int rte_pmd_bnxt_set_vf_vlan_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 	bp = (struct bnxt *)dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set VLAN spoof on non-PF port %d!\n", port);
 		return -EINVAL;
 	}
@@ -333,7 +305,7 @@ int rte_pmd_bnxt_set_vf_vlan_anti_spoof(uint16_t port, uint16_t vf, uint8_t on)
 				rc = -1;
 		}
 	} else {
-		RTE_LOG(ERR, PMD, "Failed to update VF VNIC %d.\n", vf);
+		PMD_DRV_LOG(ERR, "Failed to update VF VNIC %d.\n", vf);
 	}
 
 	return rc;
@@ -367,7 +339,7 @@ rte_pmd_bnxt_set_vf_vlan_stripq(uint16_t port, uint16_t vf, uint8_t on)
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set VF %d stripq on non-PF port %d!\n",
 			vf, port);
 		return -ENOTSUP;
@@ -377,7 +349,7 @@ rte_pmd_bnxt_set_vf_vlan_stripq(uint16_t port, uint16_t vf, uint8_t on)
 				rte_pmd_bnxt_set_vf_vlan_stripq_cb, &on,
 				bnxt_hwrm_vnic_cfg);
 	if (rc)
-		RTE_LOG(ERR, PMD, "Failed to update VF VNIC %d.\n", vf);
+		PMD_DRV_LOG(ERR, "Failed to update VF VNIC %d.\n", vf);
 
 	return rc;
 }
@@ -407,7 +379,7 @@ int rte_pmd_bnxt_set_vf_rxmode(uint16_t port, uint16_t vf,
 		return -EINVAL;
 
 	if (rx_mask & ETH_VMDQ_ACCEPT_UNTAG) {
-		RTE_LOG(ERR, PMD, "Currently cannot toggle this setting\n");
+		PMD_DRV_LOG(ERR, "Currently cannot toggle this setting\n");
 		return -ENOTSUP;
 	}
 
@@ -430,7 +402,7 @@ int rte_pmd_bnxt_set_vf_rxmode(uint16_t port, uint16_t vf,
 					&bp->pf.vf_info[vf].l2_rx_mask,
 					bnxt_set_rx_mask_no_vlan);
 	if (rc)
-		RTE_LOG(ERR, PMD, "bnxt_hwrm_func_vf_vnic_set_rxmask failed\n");
+		PMD_DRV_LOG(ERR, "bnxt_hwrm_func_vf_vnic_set_rxmask failed\n");
 
 	return rc;
 }
@@ -442,7 +414,7 @@ static int bnxt_set_vf_table(struct bnxt *bp, uint16_t vf)
 	struct bnxt_vnic_info vnic;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set VLAN table on non-PF port!\n");
 		return -EINVAL;
 	}
@@ -455,7 +427,7 @@ static int bnxt_set_vf_table(struct bnxt *bp, uint16_t vf)
 		/* This simply indicates there's no driver loaded.
 		 * This is not an error.
 		 */
-		RTE_LOG(ERR, PMD, "Unable to get default VNIC for VF %d\n", vf);
+		PMD_DRV_LOG(ERR, "Unable to get default VNIC for VF %d\n", vf);
 	} else {
 		memset(&vnic, 0, sizeof(vnic));
 		vnic.fw_vnic_id = dflt_vnic;
@@ -518,9 +490,9 @@ int rte_pmd_bnxt_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
 				/* Now check that there's space */
 				if (cnt == getpagesize() / sizeof(struct
 				    bnxt_vlan_antispoof_table_entry)) {
-					RTE_LOG(ERR, PMD,
+					PMD_DRV_LOG(ERR,
 					     "VLAN anti-spoof table is full\n");
-					RTE_LOG(ERR, PMD,
+					PMD_DRV_LOG(ERR,
 						"VF %d cannot add VLAN %u\n",
 						i, vlan);
 					rc = -1;
@@ -585,7 +557,7 @@ int rte_pmd_bnxt_get_vf_stats(uint16_t port,
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to get VF %d stats on non-PF port %d!\n",
 			vf_id, port);
 		return -ENOTSUP;
@@ -612,7 +584,7 @@ int rte_pmd_bnxt_reset_vf_stats(uint16_t port,
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to reset VF %d stats on non-PF port %d!\n",
 			vf_id, port);
 		return -ENOTSUP;
@@ -638,7 +610,7 @@ int rte_pmd_bnxt_get_vf_rx_status(uint16_t port, uint16_t vf_id)
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to query VF %d RX stats on non-PF port %d!\n",
 			vf_id, port);
 		return -ENOTSUP;
@@ -665,7 +637,7 @@ int rte_pmd_bnxt_get_vf_tx_drop_count(uint16_t port, uint16_t vf_id,
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to query VF %d TX drops on non-PF port %d!\n",
 			vf_id, port);
 		return -ENOTSUP;
@@ -697,7 +669,7 @@ int rte_pmd_bnxt_mac_addr_add(uint16_t port, struct ether_addr *addr,
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to config VF %d MAC on non-PF port %d!\n",
 			vf_id, port);
 		return -ENOTSUP;
@@ -773,7 +745,7 @@ rte_pmd_bnxt_set_vf_vlan_insert(uint16_t port, uint16_t vf,
 		return -EINVAL;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set VF %d vlan insert on non-PF port %d!\n",
 			vf, port);
 		return -ENOTSUP;
@@ -807,7 +779,7 @@ int rte_pmd_bnxt_set_vf_persist_stats(uint16_t port, uint16_t vf, uint8_t on)
 	bp = (struct bnxt *)dev->data->dev_private;
 
 	if (!BNXT_PF(bp)) {
-		RTE_LOG(ERR, PMD,
+		PMD_DRV_LOG(ERR,
 			"Attempt to set persist stats on non-PF port %d!\n",
 			port);
 		return -EINVAL;

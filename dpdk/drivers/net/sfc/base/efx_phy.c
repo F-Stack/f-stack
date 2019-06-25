@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2007-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2007-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #include "efx.h"
@@ -39,6 +15,7 @@ static const efx_phy_ops_t	__efx_phy_siena_ops = {
 	siena_phy_reconfigure,		/* epo_reconfigure */
 	siena_phy_verify,		/* epo_verify */
 	siena_phy_oui_get,		/* epo_oui_get */
+	NULL,				/* epo_link_state_get */
 #if EFSYS_OPT_PHY_STATS
 	siena_phy_stats_update,		/* epo_stats_update */
 #endif	/* EFSYS_OPT_PHY_STATS */
@@ -51,13 +28,14 @@ static const efx_phy_ops_t	__efx_phy_siena_ops = {
 };
 #endif	/* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
 static const efx_phy_ops_t	__efx_phy_ef10_ops = {
 	ef10_phy_power,			/* epo_power */
 	NULL,				/* epo_reset */
 	ef10_phy_reconfigure,		/* epo_reconfigure */
 	ef10_phy_verify,		/* epo_verify */
 	ef10_phy_oui_get,		/* epo_oui_get */
+	ef10_phy_link_state_get,	/* epo_link_state_get */
 #if EFSYS_OPT_PHY_STATS
 	ef10_phy_stats_update,		/* epo_stats_update */
 #endif	/* EFSYS_OPT_PHY_STATS */
@@ -68,7 +46,7 @@ static const efx_phy_ops_t	__efx_phy_ef10_ops = {
 	ef10_bist_stop,			/* epo_bist_stop */
 #endif	/* EFSYS_OPT_BIST */
 };
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
 
 	__checkReturn	efx_rc_t
 efx_phy_probe(
@@ -91,16 +69,25 @@ efx_phy_probe(
 		epop = &__efx_phy_siena_ops;
 		break;
 #endif	/* EFSYS_OPT_SIENA */
+
 #if EFSYS_OPT_HUNTINGTON
 	case EFX_FAMILY_HUNTINGTON:
 		epop = &__efx_phy_ef10_ops;
 		break;
 #endif	/* EFSYS_OPT_HUNTINGTON */
+
 #if EFSYS_OPT_MEDFORD
 	case EFX_FAMILY_MEDFORD:
 		epop = &__efx_phy_ef10_ops;
 		break;
 #endif	/* EFSYS_OPT_MEDFORD */
+
+#if EFSYS_OPT_MEDFORD2
+	case EFX_FAMILY_MEDFORD2:
+		epop = &__efx_phy_ef10_ops;
+		break;
+#endif	/* EFSYS_OPT_MEDFORD2 */
+
 	default:
 		rc = ENOTSUP;
 		goto fail1;
@@ -200,6 +187,7 @@ efx_phy_adv_cap_get(
 		break;
 	default:
 		EFSYS_ASSERT(B_FALSE);
+		*maskp = 0;
 		break;
 	}
 }
@@ -296,12 +284,12 @@ efx_phy_media_type_get(
 		*typep = epp->ep_fixed_port_type;
 }
 
-	__checkReturn	efx_rc_t
+	__checkReturn		efx_rc_t
 efx_phy_module_get_info(
 	__in			efx_nic_t *enp,
 	__in			uint8_t dev_addr,
-	__in			uint8_t offset,
-	__in			uint8_t len,
+	__in			size_t offset,
+	__in			size_t len,
 	__out_bcount(len)	uint8_t *data)
 {
 	efx_rc_t rc;
@@ -309,13 +297,65 @@ efx_phy_module_get_info(
 	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
 	EFSYS_ASSERT(data != NULL);
 
-	if ((uint32_t)offset + len > 0xff) {
+	if ((offset > EFX_PHY_MEDIA_INFO_MAX_OFFSET) ||
+	    ((offset + len) > EFX_PHY_MEDIA_INFO_MAX_OFFSET)) {
 		rc = EINVAL;
 		goto fail1;
 	}
 
 	if ((rc = efx_mcdi_phy_module_get_info(enp, dev_addr,
 	    offset, len, data)) != 0)
+		goto fail2;
+
+	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn		efx_rc_t
+efx_phy_fec_type_get(
+	__in		efx_nic_t *enp,
+	__out		efx_phy_fec_type_t *typep)
+{
+	efx_rc_t rc;
+	efx_phy_link_state_t epls;
+
+	if ((rc = efx_phy_link_state_get(enp, &epls)) != 0)
+		goto fail1;
+
+	*typep = epls.epls_fec;
+
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn		efx_rc_t
+efx_phy_link_state_get(
+	__in		efx_nic_t *enp,
+	__out		efx_phy_link_state_t *eplsp)
+{
+	efx_port_t *epp = &(enp->en_port);
+	const efx_phy_ops_t *epop = epp->ep_epop;
+	efx_rc_t rc;
+
+	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
+	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_PROBE);
+
+	if (epop->epo_link_state_get == NULL) {
+		rc = ENOTSUP;
+		goto fail1;
+	}
+
+	if ((rc = epop->epo_link_state_get(enp, eplsp)) != 0)
 		goto fail2;
 
 	return (0);

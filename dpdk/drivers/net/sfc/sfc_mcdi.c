@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2017 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <rte_cycles.h>
@@ -37,7 +15,6 @@
 
 #include "sfc.h"
 #include "sfc_log.h"
-#include "sfc_kvargs.h"
 #include "sfc_ev.h"
 
 #define SFC_MCDI_POLL_INTERVAL_MIN_US	10		/* 10us in 1us units */
@@ -176,7 +153,7 @@ sfc_mcdi_exception(void *arg, efx_mcdi_exception_t eme)
 	    (eme == EFX_MCDI_EXCEPTION_MC_REBOOT) ? "REBOOT" :
 	    (eme == EFX_MCDI_EXCEPTION_MC_BADASSERT) ? "BADASSERT" : "UNKNOWN");
 
-	sfc_panic(sa, "MCDI exceptions handling is not implemented\n");
+	sfc_schedule_restart(sa);
 }
 
 #define SFC_MCDI_LOG_BUF_SIZE	128
@@ -198,7 +175,7 @@ sfc_mcdi_do_log(const struct sfc_adapter *sa,
 			 * at the end which is required by netlogdecode.
 			 */
 			buffer[position] = '\0';
-			sfc_info(sa, "%s \\", buffer);
+			sfc_log_mcdi(sa, "%s \\", buffer);
 			/* Preserve prefix for the next log message */
 			position = pfxsize;
 		}
@@ -220,10 +197,17 @@ sfc_mcdi_logger(void *arg, efx_log_msg_t type,
 	size_t pfxsize;
 	size_t start;
 
-	if (!sa->mcdi.logging)
+	/*
+	 * Unlike the other cases, MCDI logging implies more onerous work
+	 * needed to produce a message. If the dynamic log level prevents
+	 * the end result from being printed, the CPU time will be wasted.
+	 *
+	 * To avoid wasting time, the actual level is examined in advance.
+	 */
+	if (rte_log_get_level(sa->mcdi.logtype) < (int)SFC_LOG_LEVEL_MCDI)
 		return;
 
-	/* The format including prefix added by sfc_info() is the format
+	/* The format including prefix added by sfc_log_mcdi() is the format
 	 * consumed by the Solarflare netlogdecode tool.
 	 */
 	pfxsize = snprintf(buffer, sizeof(buffer), "MCDI RPC %s:",
@@ -234,7 +218,7 @@ sfc_mcdi_logger(void *arg, efx_log_msg_t type,
 	start = sfc_mcdi_do_log(sa, buffer, data, data_size, pfxsize, start);
 	if (start != pfxsize) {
 		buffer[start] = '\0';
-		sfc_info(sa, "%s", buffer);
+		sfc_log_mcdi(sa, "%s", buffer);
 	}
 }
 
@@ -272,11 +256,8 @@ sfc_mcdi_init(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_dma_alloc;
 
-	/* Convert negative error to positive used in the driver */
-	rc = sfc_kvargs_process(sa, SFC_KVARG_MCDI_LOGGING,
-				sfc_kvarg_bool_handler, &mcdi->logging);
-	if (rc != 0)
-		goto fail_kvargs_process;
+	mcdi->logtype = sfc_register_logtype(sa, SFC_LOGTYPE_MCDI_STR,
+					     RTE_LOG_NOTICE);
 
 	emtp = &mcdi->transport;
 	emtp->emt_context = sa;
@@ -296,8 +277,6 @@ sfc_mcdi_init(struct sfc_adapter *sa)
 
 fail_mcdi_init:
 	memset(emtp, 0, sizeof(*emtp));
-
-fail_kvargs_process:
 	sfc_dma_free(sa, &mcdi->mem);
 
 fail_dma_alloc:

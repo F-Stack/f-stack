@@ -43,6 +43,9 @@ INCLUDES :=-I$(SRCDIR) -I$(SRCDIR)/base/ena_defs -I$(SRCDIR)/base
 EXPORT_MAP := rte_pmd_ena_version.map
 LIBABIVER := 1
 
+# rte_fbarray is not yet part of stable API
+CFLAGS += -DALLOW_EXPERIMENTAL_API
+
 VPATH += $(SRCDIR)/base
 #
 # all source are stored in SRCS-y
@@ -55,5 +58,6 @@ CFLAGS += $(INCLUDES)
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs
 LDLIBS += -lrte_bus_pci
+LDLIBS += -lrte_timer
 
 include $(RTE_SDK)/mk/rte.lib.mk

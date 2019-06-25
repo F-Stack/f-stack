@@ -1,44 +1,12 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2016 NXP.
+ * Copyright 2016 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 #include <fsl_mc_sys.h>
 #include <fsl_mc_cmd.h>
+#include <fsl_dpopr.h>
 #include <fsl_dpseci.h>
 #include <fsl_dpseci_cmd.h>
 
@@ -149,11 +117,13 @@ int dpseci_create(struct fsl_mc_io *mc_io,
 					  cmd_flags,
 					  dprc_token);
 	cmd_params = (struct dpseci_cmd_create *)cmd.params;
-	for (i = 0; i < DPSECI_PRIO_NUM; i++)
+	for (i = 0; i < 8; i++)
 		cmd_params->priorities[i] = cfg->priorities[i];
+	for (i = 0; i < 8; i++)
+		cmd_params->priorities2[i] = cfg->priorities[8 + i];
 	cmd_params->num_tx_queues = cfg->num_tx_queues;
 	cmd_params->num_rx_queues = cfg->num_rx_queues;
-	cmd_params->options = cfg->options;
+	cmd_params->options = cpu_to_le32(cfg->options);
 
 	/* send command to mc*/
 	err = mc_send_command(mc_io, &cmd);
@@ -335,7 +305,7 @@ int dpseci_get_attributes(struct fsl_mc_io *mc_io,
 	/* retrieve response parameters */
 	rsp_params = (struct dpseci_rsp_get_attr *)cmd.params;
 	attr->id = le32_to_cpu(rsp_params->id);
-	attr->options = rsp_params->options;
+	attr->options = le32_to_cpu(rsp_params->options);
 	attr->num_tx_queues = rsp_params->num_tx_queues;
 	attr->num_rx_queues = rsp_params->num_rx_queues;
 
@@ -523,6 +493,8 @@ int dpseci_get_sec_attr(struct fsl_mc_io *mc_io,
 	attr->arc4_acc_num = rsp_params->arc4_acc_num;
 	attr->des_acc_num = rsp_params->des_acc_num;
 	attr->aes_acc_num = rsp_params->aes_acc_num;
+	attr->ccha_acc_num = rsp_params->ccha_acc_num;
+	attr->ptha_acc_num = rsp_params->ptha_acc_num;
 
 	return 0;
 }
@@ -602,6 +574,113 @@ int dpseci_get_api_version(struct fsl_mc_io *mc_io,
 	return 0;
 }
 
+/**
+ * dpseci_set_opr() - Set Order Restoration configuration.
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPSECI object
+ * @index:	The queue index
+ * @options:	Configuration mode options
+ *			can be OPR_OPT_CREATE or OPR_OPT_RETIRE
+ * @cfg:	Configuration options for the OPR
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpseci_set_opr(struct fsl_mc_io *mc_io,
+		   uint32_t cmd_flags,
+		   uint16_t token,
+		   uint8_t index,
+		   uint8_t options,
+		   struct opr_cfg *cfg)
+{
+	struct dpseci_cmd_set_opr *cmd_params;
+	struct mc_command cmd = { 0 };
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPSECI_CMDID_SET_OPR,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpseci_cmd_set_opr *)cmd.params;
+	cmd_params->index = index;
+	cmd_params->options = options;
+	cmd_params->oloe = cfg->oloe;
+	cmd_params->oeane = cfg->oeane;
+	cmd_params->olws = cfg->olws;
+	cmd_params->oa = cfg->oa;
+	cmd_params->oprrws = cfg->oprrws;
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpseci_get_opr() - Retrieve Order Restoration config and query.
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPSECI object
+ * @index:	The queue index
+ * @cfg:	Returned OPR configuration
+ * @qry:	Returned OPR query
+ *
+ * Return:     '0' on Success; Error code otherwise.
+ */
+int dpseci_get_opr(struct fsl_mc_io *mc_io,
+		   uint32_t cmd_flags,
+		   uint16_t token,
+		   uint8_t index,
+		   struct opr_cfg *cfg,
+		   struct opr_qry *qry)
+{
+	struct dpseci_rsp_get_opr *rsp_params;
+	struct dpseci_cmd_get_opr *cmd_params;
+	struct mc_command cmd = { 0 };
+	int err;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPSECI_CMDID_GET_OPR,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpseci_cmd_get_opr *)cmd.params;
+	cmd_params->index = index;
+
+	/* send command to mc*/
+	err = mc_send_command(mc_io, &cmd);
+	if (err)
+		return err;
+
+	/* retrieve response parameters */
+	rsp_params = (struct dpseci_rsp_get_opr *)cmd.params;
+	cfg->oloe = rsp_params->oloe;
+	cfg->oeane = rsp_params->oeane;
+	cfg->olws = rsp_params->olws;
+	cfg->oa = rsp_params->oa;
+	cfg->oprrws = rsp_params->oprrws;
+	qry->rip = dpseci_get_field(rsp_params->flags, RIP);
+	qry->enable = dpseci_get_field(rsp_params->flags, OPR_ENABLE);
+	qry->nesn = le16_to_cpu(rsp_params->nesn);
+	qry->ndsn = le16_to_cpu(rsp_params->ndsn);
+	qry->ea_tseq = le16_to_cpu(rsp_params->ea_tseq);
+	qry->tseq_nlis = dpseci_get_field(rsp_params->tseq_nlis, TSEQ_NLIS);
+	qry->ea_hseq = le16_to_cpu(rsp_params->ea_hseq);
+	qry->hseq_nlis = dpseci_get_field(rsp_params->hseq_nlis, HSEQ_NLIS);
+	qry->ea_hptr = le16_to_cpu(rsp_params->ea_hptr);
+	qry->ea_tptr = le16_to_cpu(rsp_params->ea_tptr);
+	qry->opr_vid = le16_to_cpu(rsp_params->opr_vid);
+	qry->opr_id = le16_to_cpu(rsp_params->opr_id);
+
+	return 0;
+}
+
+/**
+ * dpseci_set_congestion_notification() - Set congestion group
+ *	notification configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPSECI object
+ * @cfg:	congestion notification configuration
+ *
+ * Return:	'0' on success, error code otherwise
+ */
 int dpseci_set_congestion_notification(
 			struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
@@ -637,6 +716,16 @@ int dpseci_set_congestion_notification(
 	return mc_send_command(mc_io, &cmd);
 }
 
+/**
+ * dpseci_get_congestion_notification() - Get congestion group
+ *	notification configuration
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPSECI object
+ * @cfg:	congestion notification configuration
+ *
+ * Return:	'0' on success, error code otherwise
+ */
 int dpseci_get_congestion_notification(
 				struct fsl_mc_io *mc_io,
 				uint32_t cmd_flags,

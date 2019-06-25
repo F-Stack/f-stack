@@ -1,39 +1,10 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #include "rte_eth_ring.h"
 #include <rte_mbuf.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
@@ -91,6 +62,12 @@ static struct rte_eth_link pmd_link = {
 		.link_status = ETH_LINK_DOWN,
 		.link_autoneg = ETH_LINK_FIXED,
 };
+
+static int eth_ring_logtype;
+
+#define PMD_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, eth_ring_logtype, \
+		"%s(): " fmt "\n", __func__, ##args)
 
 static uint16_t
 eth_ring_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
@@ -285,17 +262,8 @@ do_eth_dev_ring_create(const char *name,
 	void **tx_queues_local = NULL;
 	unsigned i;
 
-	RTE_LOG(INFO, PMD, "Creating rings-backed ethdev on numa socket %u\n",
+	PMD_LOG(INFO, "Creating rings-backed ethdev on numa socket %u",
 			numa_node);
-
-	/* now do all data allocation - for eth_dev structure, dummy pci driver
-	 * and internal (private) data
-	 */
-	data = rte_zmalloc_socket(name, sizeof(*data), 0, numa_node);
-	if (data == NULL) {
-		rte_errno = ENOMEM;
-		goto error;
-	}
 
 	rx_queues_local = rte_zmalloc_socket(name,
 			sizeof(void *) * nb_rx_queues, 0, numa_node);
@@ -330,10 +298,8 @@ do_eth_dev_ring_create(const char *name,
 	 * - point eth_dev_data to internals
 	 * - and point eth_dev structure to new eth_dev_data structure
 	 */
-	/* NOTE: we'll replace the data element, of originally allocated eth_dev
-	 * so the rings are local per-process */
 
-	rte_memcpy(data, eth_dev->data, sizeof(*data));
+	data = eth_dev->data;
 	data->rx_queues = rx_queues_local;
 	data->tx_queues = tx_queues_local;
 
@@ -355,7 +321,6 @@ do_eth_dev_ring_create(const char *name,
 	data->dev_link = pmd_link;
 	data->mac_addrs = &internals->address;
 
-	eth_dev->data = data;
 	eth_dev->dev_ops = &ops;
 	data->kdrv = RTE_KDRV_NONE;
 	data->numa_node = numa_node;
@@ -364,6 +329,7 @@ do_eth_dev_ring_create(const char *name,
 	eth_dev->rx_pkt_burst = eth_ring_rx;
 	eth_dev->tx_pkt_burst = eth_ring_tx;
 
+	rte_eth_dev_probing_finish(eth_dev);
 	*eth_dev_p = eth_dev;
 
 	return data->port_id;
@@ -371,7 +337,6 @@ do_eth_dev_ring_create(const char *name,
 error:
 	rte_free(rx_queues_local);
 	rte_free(tx_queues_local);
-	rte_free(data);
 	rte_free(internals);
 
 	return -1;
@@ -488,13 +453,13 @@ static int parse_kvlist (const char *key __rte_unused, const char *value, void *
 	ret = -EINVAL;
 
 	if (!name) {
-		RTE_LOG(WARNING, PMD, "command line parameter is empty for ring pmd!\n");
+		PMD_LOG(WARNING, "command line parameter is empty for ring pmd!");
 		goto out;
 	}
 
 	node = strchr(name, ':');
 	if (!node) {
-		RTE_LOG(WARNING, PMD, "could not parse node value from %s\n",
+		PMD_LOG(WARNING, "could not parse node value from %s",
 			name);
 		goto out;
 	}
@@ -504,7 +469,7 @@ static int parse_kvlist (const char *key __rte_unused, const char *value, void *
 
 	action = strchr(node, ':');
 	if (!action) {
-		RTE_LOG(WARNING, PMD, "could not parse action value from %s\n",
+		PMD_LOG(WARNING, "could not parse action value from %s",
 			node);
 		goto out;
 	}
@@ -527,7 +492,8 @@ static int parse_kvlist (const char *key __rte_unused, const char *value, void *
 	info->list[info->count].node = strtol(node, &end, 10);
 
 	if ((errno != 0) || (*end != '\0')) {
-		RTE_LOG(WARNING, PMD, "node value %s is unparseable as a number\n", node);
+		PMD_LOG(WARNING,
+			"node value %s is unparseable as a number", node);
 		goto out;
 	}
 
@@ -571,14 +537,14 @@ rte_pmd_ring_probe(struct rte_vdev_device *dev)
 	name = rte_vdev_device_name(dev);
 	params = rte_vdev_device_args(dev);
 
-	RTE_LOG(INFO, PMD, "Initializing pmd_ring for %s\n", name);
+	PMD_LOG(INFO, "Initializing pmd_ring for %s", name);
 
 	if (params == NULL || params[0] == '\0') {
 		ret = eth_dev_ring_create(name, rte_socket_id(), DEV_CREATE,
 				&eth_dev);
 		if (ret == -1) {
-			RTE_LOG(INFO, PMD,
-				"Attach to pmd_ring for %s\n", name);
+			PMD_LOG(INFO,
+				"Attach to pmd_ring for %s", name);
 			ret = eth_dev_ring_create(name, rte_socket_id(),
 						  DEV_ATTACH, &eth_dev);
 		}
@@ -586,13 +552,13 @@ rte_pmd_ring_probe(struct rte_vdev_device *dev)
 		kvlist = rte_kvargs_parse(params, valid_arguments);
 
 		if (!kvlist) {
-			RTE_LOG(INFO, PMD, "Ignoring unsupported parameters when creating"
-					" rings-backed ethernet device\n");
+			PMD_LOG(INFO, "Ignoring unsupported parameters when creating"
+					" rings-backed ethernet device");
 			ret = eth_dev_ring_create(name, rte_socket_id(),
 						  DEV_CREATE, &eth_dev);
 			if (ret == -1) {
-				RTE_LOG(INFO, PMD,
-					"Attach to pmd_ring for %s\n",
+				PMD_LOG(INFO,
+					"Attach to pmd_ring for %s",
 					name);
 				ret = eth_dev_ring_create(name, rte_socket_id(),
 							  DEV_ATTACH, &eth_dev);
@@ -646,8 +612,8 @@ rte_pmd_ring_probe(struct rte_vdev_device *dev)
 							  &eth_dev);
 				if ((ret == -1) &&
 				    (info->list[info->count].action == DEV_CREATE)) {
-					RTE_LOG(INFO, PMD,
-						"Attach to pmd_ring for %s\n",
+					PMD_LOG(INFO,
+						"Attach to pmd_ring for %s",
 						name);
 					ret = eth_dev_ring_create(name,
 							info->list[info->count].node,
@@ -676,7 +642,7 @@ rte_pmd_ring_remove(struct rte_vdev_device *dev)
 	struct ring_queue *r = NULL;
 	uint16_t i;
 
-	RTE_LOG(INFO, PMD, "Un-Initializing pmd_ring for %s\n", name);
+	PMD_LOG(INFO, "Un-Initializing pmd_ring for %s", name);
 
 	if (name == NULL)
 		return -EINVAL;
@@ -700,12 +666,8 @@ rte_pmd_ring_remove(struct rte_vdev_device *dev)
 		}
 	}
 
-	rte_free(eth_dev->data->rx_queues);
-	rte_free(eth_dev->data->tx_queues);
-	rte_free(eth_dev->data->dev_private);
-
-	rte_free(eth_dev->data);
-
+	/* mac_addrs must not be freed alone because part of dev_private */
+	eth_dev->data->mac_addrs = NULL;
 	rte_eth_dev_release_port(eth_dev);
 	return 0;
 }
@@ -719,3 +681,10 @@ RTE_PMD_REGISTER_VDEV(net_ring, pmd_ring_drv);
 RTE_PMD_REGISTER_ALIAS(net_ring, eth_ring);
 RTE_PMD_REGISTER_PARAM_STRING(net_ring,
 	ETH_RING_NUMA_NODE_ACTION_ARG "=name:node:action(ATTACH|CREATE)");
+
+RTE_INIT(eth_ring_init_log)
+{
+	eth_ring_logtype = rte_log_register("pmd.net.ring");
+	if (eth_ring_logtype >= 0)
+		rte_log_set_level(eth_ring_logtype, RTE_LOG_NOTICE);
+}

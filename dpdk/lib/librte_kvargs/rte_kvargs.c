@@ -1,47 +1,18 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2013 Intel Corporation. All rights reserved.
- *   Copyright(c) 2014 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2013 Intel Corporation.
+ * Copyright(c) 2014 6WIND S.A.
  */
+
 #include <string.h>
 #include <stdlib.h>
 
-#include <rte_log.h>
 #include <rte_string_fns.h>
 
 #include "rte_kvargs.h"
 
 /*
  * Receive a string with a list of arguments following the pattern
- * key=value;key=value;... and insert them into the list.
+ * key=value,key=value,... and insert them into the list.
  * strtok() is used so the params string will be copied to be modified.
  */
 static int
@@ -56,28 +27,35 @@ rte_kvargs_tokenize(struct rte_kvargs *kvlist, const char *params)
 	 * to pass to rte_strsplit
 	 */
 	kvlist->str = strdup(params);
-	if (kvlist->str == NULL) {
-		RTE_LOG(ERR, PMD, "Cannot parse arguments: not enough memory\n");
+	if (kvlist->str == NULL)
 		return -1;
-	}
 
 	/* browse each key/value pair and add it in kvlist */
 	str = kvlist->str;
 	while ((str = strtok_r(str, RTE_KVARGS_PAIRS_DELIM, &ctx1)) != NULL) {
 
 		i = kvlist->count;
-		if (i >= RTE_KVARGS_MAX) {
-			RTE_LOG(ERR, PMD, "Cannot parse arguments: list full\n");
+		if (i >= RTE_KVARGS_MAX)
 			return -1;
-		}
 
 		kvlist->pairs[i].key = strtok_r(str, RTE_KVARGS_KV_DELIM, &ctx2);
 		kvlist->pairs[i].value = strtok_r(NULL, RTE_KVARGS_KV_DELIM, &ctx2);
-		if (kvlist->pairs[i].key == NULL || kvlist->pairs[i].value == NULL) {
-			RTE_LOG(ERR, PMD,
-				"Cannot parse arguments: wrong key or value\n"
-				"params=<%s>\n", params);
+		if (kvlist->pairs[i].key == NULL ||
+		    kvlist->pairs[i].value == NULL)
 			return -1;
+
+		/* Detect list [a,b] to skip comma delimiter in list. */
+		str = kvlist->pairs[i].value;
+		if (str[0] == '[') {
+			/* Find the end of the list. */
+			while (str[strlen(str) - 1] != ']') {
+				/* Restore the comma erased by strtok_r(). */
+				str[strlen(str)] = ',';
+				/* Parse until next comma. */
+				str = strtok_r(NULL, RTE_KVARGS_PAIRS_DELIM, &ctx1);
+				if (str == NULL)
+					return -1; /* no closing bracket */
+			}
 		}
 
 		kvlist->count++;
@@ -117,12 +95,8 @@ check_for_valid_keys(struct rte_kvargs *kvlist,
 	for (i = 0; i < kvlist->count; i++) {
 		pair = &kvlist->pairs[i];
 		ret = is_valid_key(valid, pair->key);
-		if (!ret) {
-			RTE_LOG(ERR, PMD,
-				"Error parsing device, invalid key <%s>\n",
-				pair->key);
+		if (!ret)
 			return -1;
-		}
 	}
 	return 0;
 }
@@ -160,6 +134,9 @@ rte_kvargs_process(const struct rte_kvargs *kvlist,
 	const struct rte_kvargs_pair *pair;
 	unsigned i;
 
+	if (kvlist == NULL)
+		return 0;
+
 	for (i = 0; i < kvlist->count; i++) {
 		pair = &kvlist->pairs[i];
 		if (key_match == NULL || strcmp(pair->key, key_match) == 0) {
@@ -182,7 +159,7 @@ rte_kvargs_free(struct rte_kvargs *kvlist)
 }
 
 /*
- * Parse the arguments "key=value;key=value;..." string and return
+ * Parse the arguments "key=value,key=value,..." string and return
  * an allocated structure that contains a key/value list. Also
  * check if only valid keys were used.
  */
@@ -207,4 +184,39 @@ rte_kvargs_parse(const char *args, const char * const valid_keys[])
 	}
 
 	return kvlist;
+}
+
+__rte_experimental
+struct rte_kvargs *
+rte_kvargs_parse_delim(const char *args, const char * const valid_keys[],
+		       const char *valid_ends)
+{
+	struct rte_kvargs *kvlist = NULL;
+	char *copy;
+	size_t len;
+
+	if (valid_ends == NULL)
+		return rte_kvargs_parse(args, valid_keys);
+
+	copy = strdup(args);
+	if (copy == NULL)
+		return NULL;
+
+	len = strcspn(copy, valid_ends);
+	copy[len] = '\0';
+
+	kvlist = rte_kvargs_parse(copy, valid_keys);
+
+	free(copy);
+	return kvlist;
+}
+
+__rte_experimental
+int
+rte_kvargs_strcmp(const char *key __rte_unused,
+		  const char *value, void *opaque)
+{
+	const char *str = opaque;
+
+	return -abs(strcmp(str, value));
 }

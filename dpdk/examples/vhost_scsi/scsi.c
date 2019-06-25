@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 /**
@@ -49,6 +20,7 @@
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_byteorder.h>
+#include <rte_string_fns.h>
 
 #include "vhost_scsi.h"
 #include "scsi_spec.h"
@@ -210,7 +182,8 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 			break;
 		case SPC_VPD_UNIT_SERIAL_NUMBER:
 			hlen = 4;
-			memcpy((char *)vpage->params, bdev->name, 32);
+			strlcpy((char *)vpage->params, bdev->name,
+					sizeof(vpage->params));
 			vpage->alloc_len = rte_cpu_to_be_16(32);
 			break;
 		case SPC_VPD_DEVICE_IDENTIFICATION:
@@ -244,10 +217,10 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 			desig->piv = 1;
 			desig->reserved1 = 0;
 			desig->len = 8 + 16 + 32;
-			strncpy((char *)desig->desig, "INTEL", 8);
+			strlcpy((char *)desig->desig, "INTEL", 8);
 			vhost_strcpy_pad((char *)&desig->desig[8],
 					 bdev->product_name, 16, ' ');
-			memcpy((char *)&desig->desig[24], bdev->name, 32);
+			strlcpy((char *)&desig->desig[24], bdev->name, 32);
 			len += sizeof(struct scsi_desig_desc) + 8 + 16 + 32;
 
 			buf += sizeof(struct scsi_desig_desc) + desig->len;
@@ -304,7 +277,8 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 		inqdata->flags3 = 0x2;
 
 		/* T10 VENDOR IDENTIFICATION */
-		strncpy((char *)inqdata->t10_vendor_id, "INTEL", 8);
+		strlcpy((char *)inqdata->t10_vendor_id, "INTEL",
+			sizeof(inqdata->t10_vendor_id));
 
 		/* PRODUCT IDENTIFICATION */
 		snprintf((char *)inqdata->product_id,
@@ -312,7 +286,8 @@ vhost_bdev_scsi_inquiry_command(struct vhost_block_dev *bdev,
 				bdev->product_name);
 
 		/* PRODUCT REVISION LEVEL */
-		memcpy((char *)inqdata->product_rev, "0001", 4);
+		strlcpy((char *)inqdata->product_rev, "0001",
+			sizeof(inqdata->product_rev));
 
 		/* Standard inquiry data ends here. Only populate
 		 * remaining fields if alloc_len indicates enough

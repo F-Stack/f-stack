@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2016 Intel Corporation
  */
 
 #include <signal.h>
@@ -45,8 +16,8 @@
 #include <rte_ring.h>
 #include <rte_reorder.h>
 
-#define RX_DESC_PER_QUEUE 128
-#define TX_DESC_PER_QUEUE 512
+#define RX_DESC_PER_QUEUE 1024
+#define TX_DESC_PER_QUEUE 1024
 
 #define MAX_PKTS_BURST 32
 #define REORDER_BUFFER_SIZE 8192
@@ -236,11 +207,10 @@ flush_tx_error_callback(struct rte_mbuf **unsent, uint16_t count,
 
 static inline int
 free_tx_buffers(struct rte_eth_dev_tx_buffer *tx_buffer[]) {
-	const uint8_t nb_ports = rte_eth_dev_count();
-	unsigned port_id;
+	uint16_t port_id;
 
 	/* initialize buffers for all ports */
-	for (port_id = 0; port_id < nb_ports; port_id++) {
+	RTE_ETH_FOREACH_DEV(port_id) {
 		/* skip ports that are not enabled */
 		if ((portmask & (1 << port_id)) == 0)
 			continue;
@@ -253,12 +223,11 @@ free_tx_buffers(struct rte_eth_dev_tx_buffer *tx_buffer[]) {
 static inline int
 configure_tx_buffers(struct rte_eth_dev_tx_buffer *tx_buffer[])
 {
-	const uint8_t nb_ports = rte_eth_dev_count();
-	unsigned port_id;
+	uint16_t port_id;
 	int ret;
 
 	/* initialize buffers for all ports */
-	for (port_id = 0; port_id < nb_ports; port_id++) {
+	RTE_ETH_FOREACH_DEV(port_id) {
 		/* skip ports that are not enabled */
 		if ((portmask & (1 << port_id)) == 0)
 			continue;
@@ -288,15 +257,21 @@ configure_eth_port(uint16_t port_id)
 {
 	struct ether_addr addr;
 	const uint16_t rxRings = 1, txRings = 1;
-	const uint8_t nb_ports = rte_eth_dev_count();
 	int ret;
 	uint16_t q;
 	uint16_t nb_rxd = RX_DESC_PER_QUEUE;
 	uint16_t nb_txd = TX_DESC_PER_QUEUE;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_txconf txconf;
+	struct rte_eth_conf port_conf = port_conf_default;
 
-	if (port_id > nb_ports)
+	if (!rte_eth_dev_is_valid_port(port_id))
 		return -1;
 
+	rte_eth_dev_info_get(port_id, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 	ret = rte_eth_dev_configure(port_id, rxRings, txRings, &port_conf_default);
 	if (ret != 0)
 		return ret;
@@ -313,9 +288,11 @@ configure_eth_port(uint16_t port_id)
 			return ret;
 	}
 
+	txconf = dev_info.default_txconf;
+	txconf.offloads = port_conf.txmode.offloads;
 	for (q = 0; q < txRings; q++) {
 		ret = rte_eth_tx_queue_setup(port_id, q, nb_txd,
-				rte_eth_dev_socket_id(port_id), NULL);
+				rte_eth_dev_socket_id(port_id), &txconf);
 		if (ret < 0)
 			return ret;
 	}
@@ -340,8 +317,7 @@ configure_eth_port(uint16_t port_id)
 static void
 print_stats(void)
 {
-	const uint8_t nb_ports = rte_eth_dev_count();
-	unsigned i;
+	uint16_t i;
 	struct rte_eth_stats eth_stats;
 
 	printf("\nRX thread stats:\n");
@@ -370,7 +346,7 @@ print_stats(void)
 	printf(" - Pkts tx failed w/o reorder:		%"PRIu64"\n",
 						app_stats.tx.early_pkts_tx_failed_woro);
 
-	for (i = 0; i < nb_ports; i++) {
+	RTE_ETH_FOREACH_DEV(i) {
 		rte_eth_stats_get(i, &eth_stats);
 		printf("\nPort %u stats:\n", i);
 		printf(" - Pkts in:   %"PRIu64"\n", eth_stats.ipackets);
@@ -398,7 +374,6 @@ int_handler(int sig_num)
 static int
 rx_thread(struct rte_ring *ring_out)
 {
-	const uint8_t nb_ports = rte_eth_dev_count();
 	uint32_t seqn = 0;
 	uint16_t i, ret = 0;
 	uint16_t nb_rx_pkts;
@@ -410,7 +385,7 @@ rx_thread(struct rte_ring *ring_out)
 
 	while (!quit_signal) {
 
-		for (port_id = 0; port_id < nb_ports; port_id++) {
+		RTE_ETH_FOREACH_DEV(port_id) {
 			if ((portmask & (1 << port_id)) != 0) {
 
 				/* receive packets */
@@ -450,7 +425,7 @@ rx_thread(struct rte_ring *ring_out)
 static int
 worker_thread(void *args_ptr)
 {
-	const uint8_t nb_ports = rte_eth_dev_count();
+	const uint16_t nb_ports = rte_eth_dev_count_avail();
 	uint16_t i, ret = 0;
 	uint16_t burst_size = 0;
 	struct worker_thread_args *args;
@@ -664,7 +639,7 @@ main(int argc, char **argv)
 				"1 lcore for packet TX\n"
 				"and at least 1 lcore for worker threads\n");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "Error: no ethernet ports detected\n");
 	if (nb_ports != 1 && (nb_ports & 1))
@@ -680,7 +655,7 @@ main(int argc, char **argv)
 	nb_ports_available = nb_ports;
 
 	/* initialize all ports */
-	for (port_id = 0; port_id < nb_ports; port_id++) {
+	RTE_ETH_FOREACH_DEV(port_id) {
 		/* skip ports that are not enabled */
 		if ((portmask & (1 << port_id)) == 0) {
 			printf("\nSkipping disabled port %d\n", port_id);

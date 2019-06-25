@@ -1,32 +1,6 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright 2012 6WIND S.A.
-    Copyright 2015 Mellanox
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of 6WIND S.A. nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+    Copyright 2015 Mellanox Technologies, Ltd
 
 MLX4 poll mode driver library
 =============================
@@ -86,19 +60,42 @@ These options can be modified in the ``.config`` file.
 
   Toggle compilation of librte_pmd_mlx4 itself.
 
+- ``CONFIG_RTE_LIBRTE_MLX4_DLOPEN_DEPS`` (default **n**)
+
+  Build PMD with additional code to make it loadable without hard
+  dependencies on **libibverbs** nor **libmlx4**, which may not be installed
+  on the target system.
+
+  In this mode, their presence is still required for it to run properly,
+  however their absence won't prevent a DPDK application from starting (with
+  ``CONFIG_RTE_BUILD_SHARED_LIB`` disabled) and they won't show up as
+  missing with ``ldd(1)``.
+
+  It works by moving these dependencies to a purpose-built rdma-core "glue"
+  plug-in which must either be installed in a directory whose name is based
+  on ``CONFIG_RTE_EAL_PMD_PATH`` suffixed with ``-glue`` if set, or in a
+  standard location for the dynamic linker (e.g. ``/lib``) if left to the
+  default empty string (``""``).
+
+  This option has no performance impact.
+
 - ``CONFIG_RTE_LIBRTE_MLX4_DEBUG`` (default **n**)
 
   Toggle debugging code and stricter compilation flags. Enabling this option
   adds additional run-time checks and debugging messages at the cost of
   lower performance.
 
-- ``CONFIG_RTE_LIBRTE_MLX4_TX_MP_CACHE`` (default **8**)
+Environment variables
+~~~~~~~~~~~~~~~~~~~~~
 
-  Maximum number of cached memory pools (MPs) per TX queue. Each MP from
-  which buffers are to be transmitted must be associated to memory regions
-  (MRs). This is a slow operation that must be cached.
+- ``MLX4_GLUE_PATH``
 
-  This value is always 1 for RX queues since they use a single MP.
+  A list of directories in which to search for the rdma-core "glue" plug-in,
+  separated by colons or semi-colons.
+
+  Only matters when compiled with ``CONFIG_RTE_LIBRTE_MLX4_DLOPEN_DEPS``
+  enabled and most useful when ``CONFIG_RTE_EAL_PMD_PATH`` is also set,
+  since ``LD_LIBRARY_PATH`` has no effect in this case.
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -137,6 +134,16 @@ below.
   - **-7**: configure optimized steering mode to improve performance with the
     following limitation: VLAN filtering is not supported with this mode.
     This is the recommended mode in case VLAN filter is not needed.
+
+Limitations
+-----------
+
+- CRC stripping is supported by default and always reported as "true".
+  The ability to enable/disable CRC stripping requires OFED version
+  4.3-1.5.0.0 and above  or rdma-core version v18 and above.
+
+- TSO (Transmit Segmentation Offload) is supported in OFED version
+  4.4 and above.
 
 Prerequisites
 -------------
@@ -206,7 +213,7 @@ Current RDMA core package and Linux kernel (recommended)
 Mellanox OFED as a fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- `Mellanox OFED`_ version: **4.2**.
+- `Mellanox OFED`_ version: **4.4, 4.5**.
 - firmware version: **2.42.5000** and above.
 
 .. _`Mellanox OFED`: http://www.mellanox.com/page/products_dyn?product_family=26&mtag=linux_sw_drivers
@@ -365,6 +372,12 @@ Performance tuning
 
         The XXX can be different on different systems. Make sure to configure
         according to the setpci output.
+
+6. To minimize overhead of searching Memory Regions:
+
+   - '--socket-mem' is recommended to pin memory by predictable amount.
+   - Configure per-lcore cache when creating Mempools for packet buffer.
+   - Refrain from dynamically allocating/freeing memory in run-time.
 
 Usage example
 -------------

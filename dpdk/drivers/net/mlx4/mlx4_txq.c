@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 /**
@@ -41,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <inttypes.h>
 
 /* Verbs headers do not support -pedantic. */
 #ifdef PEDANTIC
@@ -53,12 +26,13 @@
 
 #include <rte_common.h>
 #include <rte_errno.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
 #include "mlx4.h"
+#include "mlx4_glue.h"
 #include "mlx4_prm.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
@@ -75,76 +49,18 @@ mlx4_txq_free_elts(struct txq *txq)
 	unsigned int elts_head = txq->elts_head;
 	unsigned int elts_tail = txq->elts_tail;
 	struct txq_elt (*elts)[txq->elts_n] = txq->elts;
+	unsigned int elts_m = txq->elts_n - 1;
 
 	DEBUG("%p: freeing WRs", (void *)txq);
 	while (elts_tail != elts_head) {
-		struct txq_elt *elt = &(*elts)[elts_tail];
+		struct txq_elt *elt = &(*elts)[elts_tail++ & elts_m];
 
 		assert(elt->buf != NULL);
 		rte_pktmbuf_free(elt->buf);
 		elt->buf = NULL;
-		if (++elts_tail == RTE_DIM(*elts))
-			elts_tail = 0;
+		elt->wqe = NULL;
 	}
 	txq->elts_tail = txq->elts_head;
-}
-
-struct txq_mp2mr_mbuf_check_data {
-	int ret;
-};
-
-/**
- * Callback function for rte_mempool_obj_iter() to check whether a given
- * mempool object looks like a mbuf.
- *
- * @param[in] mp
- *   The mempool pointer
- * @param[in] arg
- *   Context data (struct mlx4_txq_mp2mr_mbuf_check_data). Contains the
- *   return value.
- * @param[in] obj
- *   Object address.
- * @param index
- *   Object index, unused.
- */
-static void
-mlx4_txq_mp2mr_mbuf_check(struct rte_mempool *mp, void *arg, void *obj,
-			  uint32_t index)
-{
-	struct txq_mp2mr_mbuf_check_data *data = arg;
-	struct rte_mbuf *buf = obj;
-
-	(void)index;
-	/*
-	 * Check whether mbuf structure fits element size and whether mempool
-	 * pointer is valid.
-	 */
-	if (sizeof(*buf) > mp->elt_size || buf->pool != mp)
-		data->ret = -1;
-}
-
-/**
- * Iterator function for rte_mempool_walk() to register existing mempools and
- * fill the MP to MR cache of a Tx queue.
- *
- * @param[in] mp
- *   Memory Pool to register.
- * @param *arg
- *   Pointer to Tx queue structure.
- */
-static void
-mlx4_txq_mp2mr_iter(struct rte_mempool *mp, void *arg)
-{
-	struct txq *txq = arg;
-	struct txq_mp2mr_mbuf_check_data data = {
-		.ret = 0,
-	};
-
-	/* Register mempool only if the first element looks like a mbuf. */
-	if (rte_mempool_obj_iter(mp, mlx4_txq_mp2mr_mbuf_check, &data) == 0 ||
-			data.ret == -1)
-		return;
-	mlx4_txq_mp2mr(txq, mp);
 }
 
 /**
@@ -162,24 +78,53 @@ mlx4_txq_fill_dv_obj_info(struct txq *txq, struct mlx4dv_obj *mlxdv)
 	struct mlx4_cq *cq = &txq->mcq;
 	struct mlx4dv_qp *dqp = mlxdv->qp.out;
 	struct mlx4dv_cq *dcq = mlxdv->cq.out;
-	uint32_t sq_size = (uint32_t)dqp->rq.offset - (uint32_t)dqp->sq.offset;
 
-	sq->buf = (uint8_t *)dqp->buf.buf + dqp->sq.offset;
 	/* Total length, including headroom and spare WQEs. */
-	sq->eob = sq->buf + sq_size;
-	sq->head = 0;
-	sq->tail = 0;
-	sq->txbb_cnt =
-		(dqp->sq.wqe_cnt << dqp->sq.wqe_shift) >> MLX4_TXBB_SHIFT;
-	sq->txbb_cnt_mask = sq->txbb_cnt - 1;
+	sq->size = (uint32_t)dqp->rq.offset - (uint32_t)dqp->sq.offset;
+	sq->buf = (uint8_t *)dqp->buf.buf + dqp->sq.offset;
+	sq->eob = sq->buf + sq->size;
+	uint32_t headroom_size = 2048 + (1 << dqp->sq.wqe_shift);
+	/* Continuous headroom size bytes must always stay freed. */
+	sq->remain_size = sq->size - headroom_size;
+	sq->owner_opcode = MLX4_OPCODE_SEND | (0u << MLX4_SQ_OWNER_BIT);
+	sq->stamp = rte_cpu_to_be_32(MLX4_SQ_STAMP_VAL |
+				     (0u << MLX4_SQ_OWNER_BIT));
 	sq->db = dqp->sdb;
 	sq->doorbell_qpn = dqp->doorbell_qpn;
-	sq->headroom_txbbs =
-		(2048 + (1 << dqp->sq.wqe_shift)) >> MLX4_TXBB_SHIFT;
 	cq->buf = dcq->buf.buf;
 	cq->cqe_cnt = dcq->cqe_cnt;
 	cq->set_ci_db = dcq->set_ci_db;
 	cq->cqe_64 = (dcq->cqe_size & 64) ? 1 : 0;
+}
+
+/**
+ * Returns the per-port supported offloads.
+ *
+ * @param priv
+ *   Pointer to private structure.
+ *
+ * @return
+ *   Supported Tx offloads.
+ */
+uint64_t
+mlx4_get_tx_port_offloads(struct priv *priv)
+{
+	uint64_t offloads = DEV_TX_OFFLOAD_MULTI_SEGS;
+
+	if (priv->hw_csum) {
+		offloads |= (DEV_TX_OFFLOAD_IPV4_CKSUM |
+			     DEV_TX_OFFLOAD_UDP_CKSUM |
+			     DEV_TX_OFFLOAD_TCP_CKSUM);
+	}
+	if (priv->tso)
+		offloads |= DEV_TX_OFFLOAD_TCP_TSO;
+	if (priv->hw_csum_l2tun) {
+		offloads |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
+		if (priv->tso)
+			offloads |= (DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+				     DEV_TX_OFFLOAD_GRE_TNL_TSO);
+	}
+	return offloads;
 }
 
 /**
@@ -207,7 +152,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	struct mlx4dv_obj mlxdv;
 	struct mlx4dv_qp dv_qp;
 	struct mlx4dv_cq dv_cq;
-	struct txq_elt (*elts)[desc];
+	struct txq_elt (*elts)[rte_align32pow2(desc)];
 	struct ibv_qp_init_attr qp_init_attr;
 	struct txq *txq;
 	uint8_t *bounce_buf;
@@ -229,10 +174,13 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		},
 	};
 	int ret;
+	uint64_t offloads;
 
-	(void)conf; /* Thresholds configuration (ignored). */
+	offloads = conf->offloads | dev->data->dev_conf.txmode.offloads;
+
 	DEBUG("%p: configuring queue %u for %u descriptors",
 	      (void *)dev, idx, desc);
+
 	if (idx >= dev->data->nb_tx_queues) {
 		rte_errno = EOVERFLOW;
 		ERROR("%p: queue index out of range (%u >= %u)",
@@ -251,6 +199,12 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		ERROR("%p: invalid number of Tx descriptors", (void *)dev);
 		return -rte_errno;
 	}
+	if (desc != RTE_DIM(*elts)) {
+		desc = RTE_DIM(*elts);
+		WARN("%p: increased number of descriptors in Tx queue %u"
+		     " to the next power of two (%u)",
+		     (void *)dev, idx, desc);
+	}
 	/* Allocate and initialize Tx queue. */
 	mlx4_zmallocv_socket("TXQ", vec, RTE_DIM(vec), socket);
 	if (!txq) {
@@ -268,7 +222,6 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		.elts = elts,
 		.elts_head = 0,
 		.elts_tail = 0,
-		.elts_comp = 0,
 		/*
 		 * Request send completion every MLX4_PMD_TX_PER_COMP_REQ
 		 * packets or at least 4 times per ring.
@@ -277,13 +230,18 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 			RTE_MIN(MLX4_PMD_TX_PER_COMP_REQ, desc / 4),
 		.elts_comp_cd_init =
 			RTE_MIN(MLX4_PMD_TX_PER_COMP_REQ, desc / 4),
-		.csum = priv->hw_csum,
-		.csum_l2tun = priv->hw_csum_l2tun,
+		.csum = priv->hw_csum &&
+			(offloads & (DEV_TX_OFFLOAD_IPV4_CKSUM |
+					   DEV_TX_OFFLOAD_UDP_CKSUM |
+					   DEV_TX_OFFLOAD_TCP_CKSUM)),
+		.csum_l2tun = priv->hw_csum_l2tun &&
+			      (offloads &
+			       DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM),
 		/* Enable Tx loopback for VF devices. */
 		.lb = !!priv->vf,
 		.bounce_buf = bounce_buf,
 	};
-	txq->cq = ibv_create_cq(priv->ctx, desc, NULL, NULL, 0);
+	txq->cq = mlx4_glue->create_cq(priv->ctx, desc, NULL, NULL, 0);
 	if (!txq->cq) {
 		rte_errno = ENOMEM;
 		ERROR("%p: CQ creation failure: %s",
@@ -303,7 +261,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		/* No completion events must occur by default. */
 		.sq_sig_all = 0,
 	};
-	txq->qp = ibv_create_qp(priv->pd, &qp_init_attr);
+	txq->qp = mlx4_glue->create_qp(priv->pd, &qp_init_attr);
 	if (!txq->qp) {
 		rte_errno = errno ? errno : EINVAL;
 		ERROR("%p: QP creation failure: %s",
@@ -311,7 +269,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		goto error;
 	}
 	txq->max_inline = qp_init_attr.cap.max_inline_data;
-	ret = ibv_modify_qp
+	ret = mlx4_glue->modify_qp
 		(txq->qp,
 		 &(struct ibv_qp_attr){
 			.qp_state = IBV_QPS_INIT,
@@ -324,7 +282,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		      (void *)dev, strerror(rte_errno));
 		goto error;
 	}
-	ret = ibv_modify_qp
+	ret = mlx4_glue->modify_qp
 		(txq->qp,
 		 &(struct ibv_qp_attr){
 			.qp_state = IBV_QPS_RTR,
@@ -336,7 +294,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		      (void *)dev, strerror(rte_errno));
 		goto error;
 	}
-	ret = ibv_modify_qp
+	ret = mlx4_glue->modify_qp
 		(txq->qp,
 		 &(struct ibv_qp_attr){
 			.qp_state = IBV_QPS_RTS,
@@ -353,7 +311,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	mlxdv.cq.out = &dv_cq;
 	mlxdv.qp.in = txq->qp;
 	mlxdv.qp.out = &dv_qp;
-	ret = mlx4dv_init_obj(&mlxdv, MLX4DV_OBJ_QP | MLX4DV_OBJ_CQ);
+	ret = mlx4_glue->dv_init_obj(&mlxdv, MLX4DV_OBJ_QP | MLX4DV_OBJ_CQ);
 	if (ret) {
 		rte_errno = EINVAL;
 		ERROR("%p: failed to obtain information needed for"
@@ -361,8 +319,16 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		goto error;
 	}
 	mlx4_txq_fill_dv_obj_info(txq, &mlxdv);
-	/* Pre-register known mempools. */
-	rte_mempool_walk(mlx4_txq_mp2mr_iter, txq);
+	/* Save first wqe pointer in the first element. */
+	(&(*txq->elts)[0])->wqe =
+		(volatile struct mlx4_wqe_ctrl_seg *)txq->msq.buf;
+	if (mlx4_mr_btree_init(&txq->mr_ctrl.cache_bh,
+			       MLX4_MR_BTREE_CACHE_N, socket)) {
+		/* rte_errno is already set. */
+		goto error;
+	}
+	/* Save pointer of global generation number to check memory event. */
+	txq->mr_ctrl.dev_gen_ptr = &priv->mr.dev_gen;
 	DEBUG("%p: adding Tx queue %p to list", (void *)dev, (void *)txq);
 	dev->data->tx_queues[idx] = txq;
 	return 0;
@@ -400,14 +366,9 @@ mlx4_tx_queue_release(void *dpdk_txq)
 		}
 	mlx4_txq_free_elts(txq);
 	if (txq->qp)
-		claim_zero(ibv_destroy_qp(txq->qp));
+		claim_zero(mlx4_glue->destroy_qp(txq->qp));
 	if (txq->cq)
-		claim_zero(ibv_destroy_cq(txq->cq));
-	for (i = 0; i != RTE_DIM(txq->mp2mr); ++i) {
-		if (!txq->mp2mr[i].mp)
-			break;
-		assert(txq->mp2mr[i].mr);
-		mlx4_mr_put(txq->mp2mr[i].mr);
-	}
+		claim_zero(mlx4_glue->destroy_cq(txq->cq));
+	mlx4_mr_btree_free(&txq->mr_ctrl.cache_bh);
 	rte_free(txq);
 }

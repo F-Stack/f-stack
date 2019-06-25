@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2015-2016 Intel Corporation.
 
 FM10K Poll Mode Driver
 ======================
@@ -106,14 +79,14 @@ Other features are supported using optional MACRO configuration. They include:
 
 To enable via ``RX_OLFLAGS`` use ``RTE_LIBRTE_FM10K_RX_OLFLAGS_ENABLE=y``.
 
-To guarantee the constraint, the following configuration flags in ``dev_conf.rxmode``
+To guarantee the constraint, the following capabilities in ``dev_conf.rxmode.offloads``
 will be checked:
 
-*   ``hw_vlan_extend``
+*   ``DEV_RX_OFFLOAD_VLAN_EXTEND``
 
-*   ``hw_ip_checksum``
+*   ``DEV_RX_OFFLOAD_CHECKSUM``
 
-*   ``header_split``
+*   ``DEV_RX_OFFLOAD_HEADER_SPLIT``
 
 *   ``fdir_conf->mode``
 
@@ -133,19 +106,9 @@ TX Constraint
 Features not Supported by TX Vector PMD
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-TX vPMD only works when ``txq_flags`` is set to ``FM10K_SIMPLE_TX_FLAG``.
-This means that it does not support TX multi-segment, VLAN offload or TX csum
-offload. The following MACROs are used for these three features:
+TX vPMD only works when offloads is set to 0
 
-*   ``ETH_TXQ_FLAGS_NOMULTSEGS``
-
-*   ``ETH_TXQ_FLAGS_NOVLANOFFL``
-
-*   ``ETH_TXQ_FLAGS_NOXSUMSCTP``
-
-*   ``ETH_TXQ_FLAGS_NOXSUMUDP``
-
-*   ``ETH_TXQ_FLAGS_NOXSUMTCP``
+This means that it does not support any TX offload.
 
 Limitations
 -----------
@@ -176,9 +139,7 @@ CRC striping
 ~~~~~~~~~~~~
 
 The FM10000 family of NICs strip the CRC for every packets coming into the
-host interface.  So, CRC will be stripped even when the
-``rxmode.hw_strip_crc`` member is set to 0 in ``struct rte_eth_conf``.
-
+host interface. So, keeping CRC is not supported.
 
 Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~

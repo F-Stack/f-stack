@@ -1,33 +1,5 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation
 
 #
 # Common to rte.lib.mk, rte.app.mk, rte.obj.mk
@@ -84,8 +56,11 @@ C_TO_O = $(CC) -Wp,-MD,$(call obj2dep,$(@)).tmp $(CPPFLAGS) $(CFLAGS) \
 C_TO_O_STR = $(subst ','\'',$(C_TO_O)) #'# fix syntax highlight
 C_TO_O_DISP = $(if $(V),"$(C_TO_O_STR)","  CC $(@)")
 endif
+EXPERIMENTAL_CHECK = $(RTE_SDK)/buildtools/check-experimental-syms.sh
+CHECK_EXPERIMENTAL = $(EXPERIMENTAL_CHECK) $(SRCDIR)/$(EXPORT_MAP) $@
+
 PMDINFO_GEN = $(RTE_SDK_BIN)/app/dpdk-pmdinfogen $@ $@.pmd.c
-PMDINFO_CC = $(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@.pmd.o $@.pmd.c
+PMDINFO_CC = $(CC) $(CPPFLAGS) $(CFLAGS) $(EXTRA_CFLAGS) -c -o $@.pmd.o $@.pmd.c
 PMDINFO_LD = $(CROSS)ld $(LDFLAGS) -r -o $@.o $@.pmd.o $@
 PMDINFO_TO_O = if grep -q 'RTE_PMD_REGISTER_.*(.*)' $<; then \
 	echo "$(if $V,$(PMDINFO_GEN),  PMDINFO $@.pmd.c)" && \
@@ -100,6 +75,7 @@ C_TO_O_DO = @set -e; \
 	echo $(C_TO_O_DISP); \
 	$(C_TO_O) && \
 	$(PMDINFO_TO_O) && \
+	$(CHECK_EXPERIMENTAL) && \
 	echo $(C_TO_O_CMD) > $(call obj2cmd,$(@)) && \
 	sed 's,'$@':,dep_'$@' =,' $(call obj2dep,$(@)).tmp > $(call obj2dep,$(@)) && \
 	rm -f $(call obj2dep,$(@)).tmp

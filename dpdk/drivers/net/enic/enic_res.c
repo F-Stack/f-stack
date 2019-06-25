@@ -1,39 +1,10 @@
-/*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #include "enic_compat.h"
-#include "rte_ethdev.h"
+#include "rte_ethdev_driver.h"
 #include "wq_enet_desc.h"
 #include "rq_enet_desc.h"
 #include "cq_enet_desc.h"
@@ -105,19 +76,28 @@ int enic_get_vnic_config(struct enic *enic)
 		 ? "" : "not "));
 
 	err = vnic_dev_capable_filter_mode(enic->vdev, &enic->flow_filter_mode,
-					   &enic->filter_tags);
+					   &enic->filter_actions);
 	if (err) {
 		dev_err(enic_get_dev(enic),
 			"Error getting filter modes, %d\n", err);
 		return err;
 	}
+	vnic_dev_capable_udp_rss_weak(enic->vdev, &enic->nic_cfg_chk,
+				      &enic->udp_rss_weak);
 
-	dev_info(enic, "Flow api filter mode: %s, Filter tagging %savailable\n",
+	dev_info(enic, "Flow api filter mode: %s Actions: %s%s%s%s\n",
 		((enic->flow_filter_mode == FILTER_DPDK_1) ? "DPDK" :
 		((enic->flow_filter_mode == FILTER_USNIC_IP) ? "USNIC" :
 		((enic->flow_filter_mode == FILTER_IPV4_5TUPLE) ? "5TUPLE" :
 		"NONE"))),
-		((enic->filter_tags) ? "" : "not "));
+		((enic->filter_actions & FILTER_ACTION_RQ_STEERING_FLAG) ?
+		 "steer " : ""),
+		((enic->filter_actions & FILTER_ACTION_FILTER_ID_FLAG) ?
+		 "tag " : ""),
+		((enic->filter_actions & FILTER_ACTION_DROP_FLAG) ?
+		 "drop " : ""),
+		((enic->filter_actions & FILTER_ACTION_COUNTER_FLAG) ?
+		 "count " : ""));
 
 	c->wq_desc_count =
 		min_t(u32, ENIC_MAX_WQ_DESCS,
@@ -146,7 +126,10 @@ int enic_get_vnic_config(struct enic *enic)
 		"loopback tag 0x%04x\n",
 		ENIC_SETTING(enic, TXCSUM) ? "yes" : "no",
 		ENIC_SETTING(enic, RXCSUM) ? "yes" : "no",
-		ENIC_SETTING(enic, RSS) ? "yes" : "no",
+		ENIC_SETTING(enic, RSS) ?
+			(ENIC_SETTING(enic, RSSHASH_UDPIPV4) ? "+UDP" :
+			((enic->udp_rss_weak ? "+udp" :
+			"yes"))) : "no",
 		c->intr_mode == VENET_INTR_MODE_INTX ? "INTx" :
 		c->intr_mode == VENET_INTR_MODE_MSI ? "MSI" :
 		c->intr_mode == VENET_INTR_MODE_ANY ? "any" :
@@ -156,6 +139,75 @@ int enic_get_vnic_config(struct enic *enic)
 		"unknown",
 		c->intr_timer_usec,
 		c->loop_tag);
+
+	/* RSS settings from vNIC */
+	enic->reta_size = ENIC_RSS_RETA_SIZE;
+	enic->hash_key_size = ENIC_RSS_HASH_KEY_SIZE;
+	enic->flow_type_rss_offloads = 0;
+	if (ENIC_SETTING(enic, RSSHASH_IPV4))
+		/*
+		 * IPV4 hash type handles both non-frag and frag packet types.
+		 * TCP/UDP is controlled via a separate flag below.
+		 */
+		enic->flow_type_rss_offloads |= ETH_RSS_IPV4 |
+			ETH_RSS_FRAG_IPV4 | ETH_RSS_NONFRAG_IPV4_OTHER;
+	if (ENIC_SETTING(enic, RSSHASH_TCPIPV4))
+		enic->flow_type_rss_offloads |= ETH_RSS_NONFRAG_IPV4_TCP;
+	if (ENIC_SETTING(enic, RSSHASH_IPV6))
+		/*
+		 * The VIC adapter can perform RSS on IPv6 packets with and
+		 * without extension headers. An IPv6 "fragment" is an IPv6
+		 * packet with the fragment extension header.
+		 */
+		enic->flow_type_rss_offloads |= ETH_RSS_IPV6 |
+			ETH_RSS_IPV6_EX | ETH_RSS_FRAG_IPV6 |
+			ETH_RSS_NONFRAG_IPV6_OTHER;
+	if (ENIC_SETTING(enic, RSSHASH_TCPIPV6))
+		enic->flow_type_rss_offloads |= ETH_RSS_NONFRAG_IPV6_TCP |
+			ETH_RSS_IPV6_TCP_EX;
+	if (enic->udp_rss_weak)
+		enic->flow_type_rss_offloads |=
+			ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_NONFRAG_IPV6_UDP |
+			ETH_RSS_IPV6_UDP_EX;
+	if (ENIC_SETTING(enic, RSSHASH_UDPIPV4))
+		enic->flow_type_rss_offloads |= ETH_RSS_NONFRAG_IPV4_UDP;
+	if (ENIC_SETTING(enic, RSSHASH_UDPIPV6))
+		enic->flow_type_rss_offloads |= ETH_RSS_NONFRAG_IPV6_UDP |
+			ETH_RSS_IPV6_UDP_EX;
+
+	/* Zero offloads if RSS is not enabled */
+	if (!ENIC_SETTING(enic, RSS))
+		enic->flow_type_rss_offloads = 0;
+
+	enic->vxlan = ENIC_SETTING(enic, VXLAN) &&
+		vnic_dev_capable_vxlan(enic->vdev);
+	/*
+	 * Default hardware capabilities. enic_dev_init() may add additional
+	 * flags if it enables overlay offloads.
+	 */
+	enic->tx_queue_offload_capa = 0;
+	enic->tx_offload_capa =
+		enic->tx_queue_offload_capa |
+		DEV_TX_OFFLOAD_MULTI_SEGS |
+		DEV_TX_OFFLOAD_VLAN_INSERT |
+		DEV_TX_OFFLOAD_IPV4_CKSUM |
+		DEV_TX_OFFLOAD_UDP_CKSUM |
+		DEV_TX_OFFLOAD_TCP_CKSUM |
+		DEV_TX_OFFLOAD_TCP_TSO;
+	enic->rx_offload_capa =
+		DEV_RX_OFFLOAD_SCATTER |
+		DEV_RX_OFFLOAD_JUMBO_FRAME |
+		DEV_RX_OFFLOAD_VLAN_STRIP |
+		DEV_RX_OFFLOAD_IPV4_CKSUM |
+		DEV_RX_OFFLOAD_UDP_CKSUM |
+		DEV_RX_OFFLOAD_TCP_CKSUM;
+	enic->tx_offload_mask =
+		PKT_TX_IPV6 |
+		PKT_TX_IPV4 |
+		PKT_TX_VLAN |
+		PKT_TX_IP_CKSUM |
+		PKT_TX_L4_MASK |
+		PKT_TX_TCP_SEG;
 
 	return 0;
 }
@@ -190,6 +242,7 @@ int enic_set_nic_cfg(struct enic *enic, u8 rss_default_cpu, u8 rss_hash_type,
 	u8 rss_hash_bits, u8 rss_base_cpu, u8 rss_enable, u8 tso_ipid_split_en,
 	u8 ig_vlan_strip_en)
 {
+	enum vnic_devcmd_cmd cmd;
 	u64 a0, a1;
 	u32 nic_cfg;
 	int wait = 1000;
@@ -200,8 +253,8 @@ int enic_set_nic_cfg(struct enic *enic, u8 rss_default_cpu, u8 rss_hash_type,
 
 	a0 = nic_cfg;
 	a1 = 0;
-
-	return vnic_dev_cmd(enic->vdev, CMD_NIC_CFG, &a0, &a1, wait);
+	cmd = enic->nic_cfg_chk ? CMD_NIC_CFG_CHK : CMD_NIC_CFG;
+	return vnic_dev_cmd(enic->vdev, cmd, &a0, &a1, wait);
 }
 
 int enic_set_rss_key(struct enic *enic, dma_addr_t key_pa, u64 len)
@@ -231,7 +284,8 @@ void enic_free_vnic_resources(struct enic *enic)
 			vnic_rq_free(&enic->rq[i]);
 	for (i = 0; i < enic->cq_count; i++)
 		vnic_cq_free(&enic->cq[i]);
-	vnic_intr_free(&enic->intr);
+	for (i = 0; i < enic->intr_count; i++)
+		vnic_intr_free(&enic->intr[i]);
 }
 
 void enic_get_res_counts(struct enic *enic)

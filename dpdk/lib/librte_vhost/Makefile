@@ -1,33 +1,5 @@
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -38,20 +10,29 @@ EXPORT_MAP := rte_vhost_version.map
 
 LIBABIVER := 4
 
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3 -D_FILE_OFFSET_BITS=64
 CFLAGS += -I vhost_user
+CFLAGS += -fno-strict-aliasing
 LDLIBS += -lpthread
 
 ifeq ($(CONFIG_RTE_LIBRTE_VHOST_NUMA),y)
 LDLIBS += -lnuma
 endif
-LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ethdev
+LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ethdev -lrte_net
 
 # all source are stored in SRCS-y
 SRCS-$(CONFIG_RTE_LIBRTE_VHOST) := fd_man.c iotlb.c socket.c vhost.c \
-					vhost_user.c virtio_net.c
+					vhost_user.c virtio_net.c vdpa.c
 
 # install includes
-SYMLINK-$(CONFIG_RTE_LIBRTE_VHOST)-include += rte_vhost.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_VHOST)-include += rte_vhost.h rte_vdpa.h
+
+# only compile vhost crypto when cryptodev is enabled
+ifeq ($(CONFIG_RTE_LIBRTE_CRYPTODEV),y)
+LDLIBS += -lrte_cryptodev -lrte_hash
+SRCS-$(CONFIG_RTE_LIBRTE_VHOST) += vhost_crypto.c
+SYMLINK-$(CONFIG_RTE_LIBRTE_VHOST)-include += rte_vhost_crypto.h
+endif
 
 include $(RTE_SDK)/mk/rte.lib.mk

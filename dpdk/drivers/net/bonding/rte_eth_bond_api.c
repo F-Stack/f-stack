@@ -1,41 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <string.h>
 
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_tcp.h>
 #include <rte_bus_vdev.h>
 #include <rte_kvargs.h>
@@ -223,7 +194,8 @@ slave_vlan_filter_set(uint16_t bonded_port_id, uint16_t slave_port_id)
 	uint16_t first;
 
 	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
-	if (bonded_eth_dev->data->dev_conf.rxmode.hw_vlan_filter == 0)
+	if ((bonded_eth_dev->data->dev_conf.rxmode.offloads &
+			DEV_RX_OFFLOAD_VLAN_FILTER) == 0)
 		return 0;
 
 	internals = bonded_eth_dev->data->dev_private;
@@ -255,6 +227,216 @@ slave_vlan_filter_set(uint16_t bonded_port_id, uint16_t slave_port_id)
 }
 
 static int
+slave_rte_flow_prepare(uint16_t slave_id, struct bond_dev_private *internals)
+{
+	struct rte_flow *flow;
+	struct rte_flow_error ferror;
+	uint16_t slave_port_id = internals->slaves[slave_id].port_id;
+
+	if (internals->flow_isolated_valid != 0) {
+		rte_eth_dev_stop(slave_port_id);
+		if (rte_flow_isolate(slave_port_id, internals->flow_isolated,
+		    &ferror)) {
+			RTE_BOND_LOG(ERR, "rte_flow_isolate failed for slave"
+				     " %d: %s", slave_id, ferror.message ?
+				     ferror.message : "(no stated reason)");
+			return -1;
+		}
+	}
+	TAILQ_FOREACH(flow, &internals->flow_list, next) {
+		flow->flows[slave_id] = rte_flow_create(slave_port_id,
+							flow->rule.attr,
+							flow->rule.pattern,
+							flow->rule.actions,
+							&ferror);
+		if (flow->flows[slave_id] == NULL) {
+			RTE_BOND_LOG(ERR, "Cannot create flow for slave"
+				     " %d: %s", slave_id,
+				     ferror.message ? ferror.message :
+				     "(no stated reason)");
+			/* Destroy successful bond flows from the slave */
+			TAILQ_FOREACH(flow, &internals->flow_list, next) {
+				if (flow->flows[slave_id] != NULL) {
+					rte_flow_destroy(slave_port_id,
+							 flow->flows[slave_id],
+							 &ferror);
+					flow->flows[slave_id] = NULL;
+				}
+			}
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static void
+eth_bond_slave_inherit_dev_info_rx_first(struct bond_dev_private *internals,
+					 const struct rte_eth_dev_info *di)
+{
+	struct rte_eth_rxconf *rxconf_i = &internals->default_rxconf;
+
+	internals->reta_size = di->reta_size;
+
+	/* Inherit Rx offload capabilities from the first slave device */
+	internals->rx_offload_capa = di->rx_offload_capa;
+	internals->rx_queue_offload_capa = di->rx_queue_offload_capa;
+	internals->flow_type_rss_offloads = di->flow_type_rss_offloads;
+
+	/* Inherit maximum Rx packet size from the first slave device */
+	internals->candidate_max_rx_pktlen = di->max_rx_pktlen;
+
+	/* Inherit default Rx queue settings from the first slave device */
+	memcpy(rxconf_i, &di->default_rxconf, sizeof(*rxconf_i));
+
+	/*
+	 * Turn off descriptor prefetch and writeback by default for all
+	 * slave devices. Applications may tweak this setting if need be.
+	 */
+	rxconf_i->rx_thresh.pthresh = 0;
+	rxconf_i->rx_thresh.hthresh = 0;
+	rxconf_i->rx_thresh.wthresh = 0;
+
+	/* Setting this to zero should effectively enable default values */
+	rxconf_i->rx_free_thresh = 0;
+
+	/* Disable deferred start by default for all slave devices */
+	rxconf_i->rx_deferred_start = 0;
+}
+
+static void
+eth_bond_slave_inherit_dev_info_tx_first(struct bond_dev_private *internals,
+					 const struct rte_eth_dev_info *di)
+{
+	struct rte_eth_txconf *txconf_i = &internals->default_txconf;
+
+	/* Inherit Tx offload capabilities from the first slave device */
+	internals->tx_offload_capa = di->tx_offload_capa;
+	internals->tx_queue_offload_capa = di->tx_queue_offload_capa;
+
+	/* Inherit default Tx queue settings from the first slave device */
+	memcpy(txconf_i, &di->default_txconf, sizeof(*txconf_i));
+
+	/*
+	 * Turn off descriptor prefetch and writeback by default for all
+	 * slave devices. Applications may tweak this setting if need be.
+	 */
+	txconf_i->tx_thresh.pthresh = 0;
+	txconf_i->tx_thresh.hthresh = 0;
+	txconf_i->tx_thresh.wthresh = 0;
+
+	/*
+	 * Setting these parameters to zero assumes that default
+	 * values will be configured implicitly by slave devices.
+	 */
+	txconf_i->tx_free_thresh = 0;
+	txconf_i->tx_rs_thresh = 0;
+
+	/* Disable deferred start by default for all slave devices */
+	txconf_i->tx_deferred_start = 0;
+}
+
+static void
+eth_bond_slave_inherit_dev_info_rx_next(struct bond_dev_private *internals,
+					const struct rte_eth_dev_info *di)
+{
+	struct rte_eth_rxconf *rxconf_i = &internals->default_rxconf;
+	const struct rte_eth_rxconf *rxconf = &di->default_rxconf;
+
+	internals->rx_offload_capa &= di->rx_offload_capa;
+	internals->rx_queue_offload_capa &= di->rx_queue_offload_capa;
+	internals->flow_type_rss_offloads &= di->flow_type_rss_offloads;
+
+	/*
+	 * If at least one slave device suggests enabling this
+	 * setting by default, enable it for all slave devices
+	 * since disabling it may not be necessarily supported.
+	 */
+	if (rxconf->rx_drop_en == 1)
+		rxconf_i->rx_drop_en = 1;
+
+	/*
+	 * Adding a new slave device may cause some of previously inherited
+	 * offloads to be withdrawn from the internal rx_queue_offload_capa
+	 * value. Thus, the new internal value of default Rx queue offloads
+	 * has to be masked by rx_queue_offload_capa to make sure that only
+	 * commonly supported offloads are preserved from both the previous
+	 * value and the value being inhereted from the new slave device.
+	 */
+	rxconf_i->offloads = (rxconf_i->offloads | rxconf->offloads) &
+			     internals->rx_queue_offload_capa;
+
+	/*
+	 * RETA size is GCD of all slaves RETA sizes, so, if all sizes will be
+	 * the power of 2, the lower one is GCD
+	 */
+	if (internals->reta_size > di->reta_size)
+		internals->reta_size = di->reta_size;
+
+	if (!internals->max_rx_pktlen &&
+	    di->max_rx_pktlen < internals->candidate_max_rx_pktlen)
+		internals->candidate_max_rx_pktlen = di->max_rx_pktlen;
+}
+
+static void
+eth_bond_slave_inherit_dev_info_tx_next(struct bond_dev_private *internals,
+					const struct rte_eth_dev_info *di)
+{
+	struct rte_eth_txconf *txconf_i = &internals->default_txconf;
+	const struct rte_eth_txconf *txconf = &di->default_txconf;
+
+	internals->tx_offload_capa &= di->tx_offload_capa;
+	internals->tx_queue_offload_capa &= di->tx_queue_offload_capa;
+
+	/*
+	 * Adding a new slave device may cause some of previously inherited
+	 * offloads to be withdrawn from the internal tx_queue_offload_capa
+	 * value. Thus, the new internal value of default Tx queue offloads
+	 * has to be masked by tx_queue_offload_capa to make sure that only
+	 * commonly supported offloads are preserved from both the previous
+	 * value and the value being inhereted from the new slave device.
+	 */
+	txconf_i->offloads = (txconf_i->offloads | txconf->offloads) &
+			     internals->tx_queue_offload_capa;
+}
+
+static void
+eth_bond_slave_inherit_desc_lim_first(struct rte_eth_desc_lim *bond_desc_lim,
+		const struct rte_eth_desc_lim *slave_desc_lim)
+{
+	memcpy(bond_desc_lim, slave_desc_lim, sizeof(*bond_desc_lim));
+}
+
+static int
+eth_bond_slave_inherit_desc_lim_next(struct rte_eth_desc_lim *bond_desc_lim,
+		const struct rte_eth_desc_lim *slave_desc_lim)
+{
+	bond_desc_lim->nb_max = RTE_MIN(bond_desc_lim->nb_max,
+					slave_desc_lim->nb_max);
+	bond_desc_lim->nb_min = RTE_MAX(bond_desc_lim->nb_min,
+					slave_desc_lim->nb_min);
+	bond_desc_lim->nb_align = RTE_MAX(bond_desc_lim->nb_align,
+					  slave_desc_lim->nb_align);
+
+	if (bond_desc_lim->nb_min > bond_desc_lim->nb_max ||
+	    bond_desc_lim->nb_align > bond_desc_lim->nb_max) {
+		RTE_BOND_LOG(ERR, "Failed to inherit descriptor limits");
+		return -EINVAL;
+	}
+
+	/* Treat maximum number of segments equal to 0 as unspecified */
+	if (slave_desc_lim->nb_seg_max != 0 &&
+	    (bond_desc_lim->nb_seg_max == 0 ||
+	     slave_desc_lim->nb_seg_max < bond_desc_lim->nb_seg_max))
+		bond_desc_lim->nb_seg_max = slave_desc_lim->nb_seg_max;
+	if (slave_desc_lim->nb_mtu_seg_max != 0 &&
+	    (bond_desc_lim->nb_mtu_seg_max == 0 ||
+	     slave_desc_lim->nb_mtu_seg_max < bond_desc_lim->nb_mtu_seg_max))
+		bond_desc_lim->nb_mtu_seg_max = slave_desc_lim->nb_mtu_seg_max;
+
+	return 0;
+}
+
+static int
 __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 {
 	struct rte_eth_dev *bonded_eth_dev, *slave_eth_dev;
@@ -273,9 +455,6 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 		RTE_BOND_LOG(ERR, "Slave device is already a slave of a bonded device");
 		return -1;
 	}
-
-	/* Add slave details to bonded device */
-	slave_eth_dev->data->dev_flags |= RTE_ETH_DEV_BONDED_SLAVE;
 
 	rte_eth_dev_info_get(slave_port_id, &dev_info);
 	if (dev_info.max_rx_pktlen < internals->max_rx_pktlen) {
@@ -314,56 +493,62 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 		internals->nb_rx_queues = slave_eth_dev->data->nb_rx_queues;
 		internals->nb_tx_queues = slave_eth_dev->data->nb_tx_queues;
 
-		internals->reta_size = dev_info.reta_size;
+		eth_bond_slave_inherit_dev_info_rx_first(internals, &dev_info);
+		eth_bond_slave_inherit_dev_info_tx_first(internals, &dev_info);
 
-		/* Take the first dev's offload capabilities */
-		internals->rx_offload_capa = dev_info.rx_offload_capa;
-		internals->tx_offload_capa = dev_info.tx_offload_capa;
-		internals->flow_type_rss_offloads = dev_info.flow_type_rss_offloads;
-
-		/* Inherit first slave's max rx packet size */
-		internals->candidate_max_rx_pktlen = dev_info.max_rx_pktlen;
-
+		eth_bond_slave_inherit_desc_lim_first(&internals->rx_desc_lim,
+						      &dev_info.rx_desc_lim);
+		eth_bond_slave_inherit_desc_lim_first(&internals->tx_desc_lim,
+						      &dev_info.tx_desc_lim);
 	} else {
-		internals->rx_offload_capa &= dev_info.rx_offload_capa;
-		internals->tx_offload_capa &= dev_info.tx_offload_capa;
-		internals->flow_type_rss_offloads &= dev_info.flow_type_rss_offloads;
+		int ret;
 
-		if (link_properties_valid(bonded_eth_dev,
-				&slave_eth_dev->data->dev_link) != 0) {
-			RTE_BOND_LOG(ERR, "Invalid link properties for slave %d"
-					" in bonding mode %d", slave_port_id,
-					internals->mode);
-			return -1;
-		}
+		eth_bond_slave_inherit_dev_info_rx_next(internals, &dev_info);
+		eth_bond_slave_inherit_dev_info_tx_next(internals, &dev_info);
 
-		/* RETA size is GCD of all slaves RETA sizes, so, if all sizes will be
-		 * the power of 2, the lower one is GCD
-		 */
-		if (internals->reta_size > dev_info.reta_size)
-			internals->reta_size = dev_info.reta_size;
+		ret = eth_bond_slave_inherit_desc_lim_next(
+				&internals->rx_desc_lim, &dev_info.rx_desc_lim);
+		if (ret != 0)
+			return ret;
 
-		if (!internals->max_rx_pktlen &&
-		    dev_info.max_rx_pktlen < internals->candidate_max_rx_pktlen)
-			internals->candidate_max_rx_pktlen = dev_info.max_rx_pktlen;
+		ret = eth_bond_slave_inherit_desc_lim_next(
+				&internals->tx_desc_lim, &dev_info.tx_desc_lim);
+		if (ret != 0)
+			return ret;
 	}
 
 	bonded_eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf &=
 			internals->flow_type_rss_offloads;
 
-	internals->slave_count++;
+	if (slave_rte_flow_prepare(internals->slave_count, internals) != 0) {
+		RTE_BOND_LOG(ERR, "Failed to prepare new slave flows: port=%d",
+			     slave_port_id);
+		return -1;
+	}
 
-	/* Update all slave devices MACs*/
-	mac_address_slaves_update(bonded_eth_dev);
+	/* Add additional MAC addresses to the slave */
+	if (slave_add_mac_addresses(bonded_eth_dev, slave_port_id) != 0) {
+		RTE_BOND_LOG(ERR, "Failed to add mac address(es) to slave %hu",
+				slave_port_id);
+		return -1;
+	}
+
+	internals->slave_count++;
 
 	if (bonded_eth_dev->data->dev_started) {
 		if (slave_configure(bonded_eth_dev, slave_eth_dev) != 0) {
-			slave_eth_dev->data->dev_flags &= (~RTE_ETH_DEV_BONDED_SLAVE);
+			internals->slave_count--;
 			RTE_BOND_LOG(ERR, "rte_bond_slaves_configure: port=%d",
 					slave_port_id);
 			return -1;
 		}
 	}
+
+	/* Add slave details to bonded device */
+	slave_eth_dev->data->dev_flags |= RTE_ETH_DEV_BONDED_SLAVE;
+
+	/* Update all slave devices MACs */
+	mac_address_slaves_update(bonded_eth_dev);
 
 	/* Register link status change callback with bonded device pointer as
 	 * argument*/
@@ -380,11 +565,6 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 			    !internals->user_defined_primary_port)
 				bond_ethdev_primary_set(internals,
 							slave_port_id);
-
-			if (find_slave_by_id(internals->active_slaves,
-					     internals->active_slave_count,
-					     slave_port_id) == internals->active_slave_count)
-				activate_slave(bonded_eth_dev, slave_port_id);
 		}
 	}
 
@@ -425,6 +605,8 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 	struct rte_eth_dev *bonded_eth_dev;
 	struct bond_dev_private *internals;
 	struct rte_eth_dev *slave_eth_dev;
+	struct rte_flow_error flow_error;
+	struct rte_flow *flow;
 	int i, slave_idx;
 
 	bonded_eth_dev = &rte_eth_devices[bonded_port_id];
@@ -464,6 +646,21 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 	rte_eth_dev_default_mac_addr_set(slave_port_id,
 			&(internals->slaves[slave_idx].persisted_mac_addr));
 
+	/* remove additional MAC addresses from the slave */
+	slave_remove_mac_addresses(bonded_eth_dev, slave_port_id);
+
+	/*
+	 * Remove bond device flows from slave device.
+	 * Note: don't restore flow isolate mode.
+	 */
+	TAILQ_FOREACH(flow, &internals->flow_list, next) {
+		if (flow->flows[slave_idx] != NULL) {
+			rte_flow_destroy(slave_port_id, flow->flows[slave_idx],
+					 &flow_error);
+			flow->flows[slave_idx] = NULL;
+		}
+	}
+
 	slave_eth_dev = &rte_eth_devices[slave_port_id];
 	slave_remove(internals, slave_eth_dev);
 	slave_eth_dev->data->dev_flags &= (~RTE_ETH_DEV_BONDED_SLAVE);
@@ -490,6 +687,8 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 	if (internals->slave_count == 0) {
 		internals->rx_offload_capa = 0;
 		internals->tx_offload_capa = 0;
+		internals->rx_queue_offload_capa = 0;
+		internals->tx_queue_offload_capa = 0;
 		internals->flow_type_rss_offloads = ETH_RSS_PROTO_MASK;
 		internals->reta_size = 0;
 		internals->candidate_max_rx_pktlen = 0;
@@ -714,15 +913,15 @@ rte_eth_bond_xmit_policy_set(uint16_t bonded_port_id, uint8_t policy)
 	switch (policy) {
 	case BALANCE_XMIT_POLICY_LAYER2:
 		internals->balance_xmit_policy = policy;
-		internals->xmit_hash = xmit_l2_hash;
+		internals->burst_xmit_hash = burst_xmit_l2_hash;
 		break;
 	case BALANCE_XMIT_POLICY_LAYER23:
 		internals->balance_xmit_policy = policy;
-		internals->xmit_hash = xmit_l23_hash;
+		internals->burst_xmit_hash = burst_xmit_l23_hash;
 		break;
 	case BALANCE_XMIT_POLICY_LAYER34:
 		internals->balance_xmit_policy = policy;
-		internals->xmit_hash = xmit_l34_hash;
+		internals->burst_xmit_hash = burst_xmit_l34_hash;
 		break;
 
 	default:

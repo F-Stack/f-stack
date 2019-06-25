@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2014 6WIND S.A.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A nor the names of its contributors
- *       may be used to endorse or promote products derived from this
- *       software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2014 6WIND S.A.
  */
 
 #ifndef _RTE_DEVARGS_H_
@@ -50,6 +22,7 @@ extern "C" {
 
 #include <stdio.h>
 #include <sys/queue.h>
+#include <rte_compat.h>
 #include <rte_bus.h>
 
 /**
@@ -78,47 +51,20 @@ struct rte_devargs {
 	enum rte_devtype type;
 	/** Device policy. */
 	enum rte_dev_policy policy;
-	/** Bus handle for the device. */
-	struct rte_bus *bus;
 	/** Name of the device. */
 	char name[RTE_DEV_NAME_MAX_LEN];
+	RTE_STD_C11
+	union {
 	/** Arguments string as given by user or "" for no argument. */
-	char *args;
+		char *args;
+		const char *drv_str;
+	};
+	struct rte_bus *bus; /**< bus handle. */
+	struct rte_class *cls; /**< class handle. */
+	const char *bus_str; /**< bus-related part of device string. */
+	const char *cls_str; /**< class-related part of device string. */
+	const char *data; /**< Device string storage. */
 };
-
-/** user device double-linked queue type definition */
-TAILQ_HEAD(rte_devargs_list, rte_devargs);
-
-/** Global list of user devices */
-extern struct rte_devargs_list devargs_list;
-
-/**
- * Parse a devargs string.
- *
- * For PCI devices, the format of arguments string is "PCI_ADDR" or
- * "PCI_ADDR,key=val,key2=val2,...". Examples: "08:00.1", "0000:5:00.0",
- * "04:00.0,arg=val".
- *
- * For virtual devices, the format of arguments string is "DRIVER_NAME*"
- * or "DRIVER_NAME*,key=val,key2=val2,...". Examples: "net_ring",
- * "net_ring0", "net_pmdAnything,arg=0:arg2=1".
- *
- * The function parses the arguments string to get driver name and driver
- * arguments.
- *
- * @param devargs_str
- *   The arguments as given by the user.
- * @param drvname
- *   The pointer to the string to store parsed driver name.
- * @param drvargs
- *   The pointer to the string to store parsed driver arguments.
- *
- * @return
- *   - 0 on success
- *   - A negative value on error
- */
-int rte_eal_parse_devargs_str(const char *devargs_str,
-				char **drvname, char **drvargs);
 
 /**
  * Parse a device string.
@@ -127,44 +73,93 @@ int rte_eal_parse_devargs_str(const char *devargs_str,
  * in argument. Store which bus will handle the device, its name
  * and the eventual device parameters.
  *
- * @param dev
- *   The device declaration string.
+ * The syntax is:
+ *
+ *     bus:device_identifier,arg1=val1,arg2=val2
+ *
+ * where "bus:" is the bus name followed by any character separator.
+ * The bus name is optional. If no bus name is specified, each bus
+ * will attempt to recognize the device identifier. The first one
+ * to succeed will be used.
+ *
+ * Examples:
+ *
+ *     pci:0000:05.00.0,arg=val
+ *     05.00.0,arg=val
+ *     vdev:net_ring0
+ *
  * @param da
  *   The devargs structure holding the device information.
+ *
+ * @param dev
+ *   String describing a device.
  *
  * @return
  *   - 0 on success.
  *   - Negative errno on error.
  */
+__rte_experimental
 int
-rte_eal_devargs_parse(const char *dev,
-		      struct rte_devargs *da);
+rte_devargs_parse(struct rte_devargs *da, const char *dev);
+
+/**
+ * Parse a device string.
+ *
+ * Verify that a bus is capable of handling the device passed
+ * in argument. Store which bus will handle the device, its name
+ * and the eventual device parameters.
+ *
+ * The device string is built with a printf-like syntax.
+ *
+ * The syntax is:
+ *
+ *     bus:device_identifier,arg1=val1,arg2=val2
+ *
+ * where "bus:" is the bus name followed by any character separator.
+ * The bus name is optional. If no bus name is specified, each bus
+ * will attempt to recognize the device identifier. The first one
+ * to succeed will be used.
+ *
+ * Examples:
+ *
+ *     pci:0000:05.00.0,arg=val
+ *     05.00.0,arg=val
+ *     vdev:net_ring0
+ *
+ * @param da
+ *   The devargs structure holding the device information.
+ * @param format
+ *   Format string describing a device.
+ *
+ * @return
+ *   - 0 on success.
+ *   - Negative errno on error.
+ */
+__rte_experimental
+int
+rte_devargs_parsef(struct rte_devargs *da,
+		   const char *format, ...)
+__attribute__((format(printf, 2, 0)));
 
 /**
  * Insert an rte_devargs in the global list.
  *
  * @param da
  *  The devargs structure to insert.
+ *  If a devargs for the same device is already inserted,
+ *  it will be updated and returned. It means *da pointer can change.
  *
  * @return
  *   - 0 on success
  *   - Negative on error.
  */
+__rte_experimental
 int
-rte_eal_devargs_insert(struct rte_devargs *da);
+rte_devargs_insert(struct rte_devargs **da);
 
 /**
  * Add a device to the user device list
- *
- * For PCI devices, the format of arguments string is "PCI_ADDR" or
- * "PCI_ADDR,key=val,key2=val2,...". Examples: "08:00.1", "0000:5:00.0",
- * "04:00.0,arg=val".
- *
- * For virtual devices, the format of arguments string is "DRIVER_NAME*"
- * or "DRIVER_NAME*,key=val,key2=val2,...". Examples: "net_ring",
- * "net_ring0", "net_pmdAnything,arg=0:arg2=1". The validity of the
- * driver name is not checked by this function, it is done when probing
- * the drivers.
+ * See rte_devargs_parse() for details.
  *
  * @param devtype
  *   The type of the device.
@@ -175,25 +170,24 @@ rte_eal_devargs_insert(struct rte_devargs *da);
  *   - 0 on success
  *   - A negative value on error
  */
-int rte_eal_devargs_add(enum rte_devtype devtype, const char *devargs_str);
+__rte_experimental
+int rte_devargs_add(enum rte_devtype devtype, const char *devargs_str);
 
 /**
  * Remove a device from the user device list.
  * Its resources are freed.
  * If the devargs cannot be found, nothing happens.
  *
- * @param busname
- *   bus name of the devargs to remove.
- *
- * @param devname
- *   device name of the devargs to remove.
+ * @param devargs
+ *   The instance or a copy of devargs to remove.
  *
  * @return
  *   0 on success.
  *   <0 on error.
  *   >0 if the devargs was not within the user device list.
  */
-int rte_eal_devargs_remove(const char *busname, const char *devname);
+__rte_experimental
+int rte_devargs_remove(struct rte_devargs *devargs);
 
 /**
  * Count the number of user devices of a specified type
@@ -204,8 +198,9 @@ int rte_eal_devargs_remove(const char *busname, const char *devname);
  * @return
  *   The number of devices.
  */
+__rte_experimental
 unsigned int
-rte_eal_devargs_type_count(enum rte_devtype devtype);
+rte_devargs_type_count(enum rte_devtype devtype);
 
 /**
  * This function dumps the list of user device and their arguments.
@@ -213,7 +208,36 @@ rte_eal_devargs_type_count(enum rte_devtype devtype);
  * @param f
  *   A pointer to a file for output
  */
-void rte_eal_devargs_dump(FILE *f);
+__rte_experimental
+void rte_devargs_dump(FILE *f);
+
+/**
+ * Find next rte_devargs matching the provided bus name.
+ *
+ * @param busname
+ *   Limit the iteration to devargs related to buses
+ *   matching this name.
+ *   Will return any next rte_devargs if NULL.
+ *
+ * @param start
+ *   Starting iteration point. The iteration will start at
+ *   the first rte_devargs if NULL.
+ *
+ * @return
+ *   Next rte_devargs entry matching the requested bus,
+ *   NULL if there is none.
+ */
+__rte_experimental
+struct rte_devargs *
+rte_devargs_next(const char *busname, const struct rte_devargs *start);
+
+/**
+ * Iterate over all rte_devargs for a specific bus.
+ */
+#define RTE_EAL_DEVARGS_FOREACH(busname, da) \
+	for (da = rte_devargs_next(busname, NULL); \
+	     da != NULL; \
+	     da = rte_devargs_next(busname, da)) \
 
 #ifdef __cplusplus
 }

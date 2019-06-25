@@ -1,32 +1,5 @@
-#   BSD LICENSE
-#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#   * Redistributions of source code must retain the above copyright
-#   notice, this list of conditions and the following disclaimer.
-#   * Redistributions in binary form must reproduce the above copyright
-#   notice, this list of conditions and the following disclaimer in
-#   the documentation and/or other materials provided with the
-#   distribution.
-#   * Neither the name of Intel Corporation nor the names of its
-#   contributors may be used to endorse or promote products derived
-#   from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2015 Intel Corporation
 
 from __future__ import print_function
 import subprocess
@@ -217,18 +190,23 @@ def generate_overview_table(output_filename, table_id, section, table_name, titl
     ini_files.sort()
 
     # Build up a list of the table header names from the ini filenames.
-    header_names = []
+    pmd_names = []
     for ini_filename in ini_files:
         name = ini_filename[:-4]
         name = name.replace('_vf', 'vf')
+        pmd_names.append(name)
 
-        # Pad the table header names to match the existing format.
+    # Pad the table header names.
+    max_header_len = len(max(pmd_names, key=len))
+    header_names = []
+    for name in pmd_names:
         if '_vec' in name:
             pmd, vec = name.split('_')
-            name = '{0:{fill}{align}7}vec'.format(pmd, fill='.', align='<')
+            name = '{0:{fill}{align}{width}}vec'.format(pmd,
+                    fill='.', align='<', width=max_header_len-3)
         else:
-            name = '{0:{fill}{align}10}'.format(name, fill=' ', align='<')
-
+            name = '{0:{fill}{align}{width}}'.format(name,
+                    fill=' ', align='<', width=max_header_len)
         header_names.append(name)
 
     # Create a dict of the defined features for each driver from the ini files.
@@ -280,7 +258,7 @@ def print_table_header(outfile, num_cols, header_names, title):
 
     print_table_row(outfile, title, line)
 
-    for i in range(1, 10):
+    for i in range(1, len(header_names[0])):
         line = ''
         for name in header_names:
             line += ' ' + name[i]
@@ -337,7 +315,7 @@ def print_table_css(outfile, table_id):
          text-align: center;
       }
       table#idx th {
-         font-size: 80%;
+         font-size: 72%;
          white-space: pre-wrap;
          vertical-align: top;
          padding: 0.5em 0;
@@ -410,6 +388,11 @@ def setup(app):
                             'AEAD',
                             'AEAD algorithms in crypto drivers',
                             'AEAD algorithm')
+    table_file = dirname(__file__) + '/compressdevs/overview_feature_table.txt'
+    generate_overview_table(table_file, 1,
+                            'Features',
+                            'Features availability in compression drivers',
+                            'Feature')
 
     if LooseVersion(sphinx_version) < LooseVersion('1.3.1'):
         print('Upgrade sphinx to version >= 1.3.1 for '
@@ -418,3 +401,5 @@ def setup(app):
         app.add_role('numref', numref_role)
         # Process the numref references once the doctree has been created.
         app.connect('doctree-resolved', process_numref)
+
+    app.add_stylesheet('css/custom.css')

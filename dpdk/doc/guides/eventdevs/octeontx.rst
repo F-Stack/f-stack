@@ -1,38 +1,11 @@
-..  BSD LICENSE
-    Copyright (C) Cavium, Inc. 2017.
-    All rights reserved.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Cavium, Inc
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
+OCTEON TX SSOVF Eventdev Driver
+===============================
 
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Cavium, Inc nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-OCTEONTX SSOVF Eventdev Driver
-==============================
-
-The OCTEONTX SSOVF PMD (**librte_pmd_octeontx_ssovf**) provides poll mode
-eventdev driver support for the inbuilt event device found in the **Cavium OCTEONTX**
+The OCTEON TX SSOVF PMD (**librte_pmd_octeontx_ssovf**) provides poll mode
+eventdev driver support for the inbuilt event device found in the **Cavium OCTEON TX**
 SoC family as well as their virtual functions (VF) in SR-IOV context.
 
 More information can be found at `Cavium, Inc Official Website
@@ -41,7 +14,7 @@ More information can be found at `Cavium, Inc Official Website
 Features
 --------
 
-Features of the OCTEONTX SSOVF PMD are:
+Features of the OCTEON TX SSOVF PMD are:
 
 - 64 Event queues
 - 32 Event ports
@@ -55,15 +28,18 @@ Features of the OCTEONTX SSOVF PMD are:
 - Open system with configurable amount of outstanding events
 - HW accelerated dequeue timeout support to enable power management
 - SR-IOV VF
+- HW managed event timers support through TIMVF, with high precision and
+  time granularity of 1us.
+- Up to 64 event timer adapters.
 
-Supported OCTEONTX SoCs
------------------------
+Supported OCTEON TX SoCs
+------------------------
 - CN83xx
 
 Prerequisites
 -------------
 
-See :doc: `../platform/octeontx` for setup information.
+See :doc:`../platform/octeontx` for setup information.
 
 Pre-Installation Configuration
 ------------------------------
@@ -78,14 +54,10 @@ Please note that enabling debugging options may affect system performance.
 
   Toggle compilation of the ``librte_pmd_octeontx_ssovf`` driver.
 
-- ``CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF_DEBUG`` (default ``n``)
-
-  Toggle display of generic debugging messages
-
 Driver Compilation
 ~~~~~~~~~~~~~~~~~~
 
-To compile the OCTEONTX SSOVF PMD for Linux arm64 gcc target, run the
+To compile the OCTEON TX SSOVF PMD for Linux arm64 gcc target, run the
 following ``make`` command:
 
 .. code-block:: console
@@ -97,7 +69,7 @@ following ``make`` command:
 Initialization
 --------------
 
-The octeontx eventdev is exposed as a vdev device which consists of a set
+The OCTEON TX eventdev is exposed as a vdev device which consists of a set
 of SSO group and work-slot PCIe VF devices. On EAL initialization,
 SSO PCIe VF devices will be probed and then the vdev device can be created
 from the application code, or from the EAL command line based on
@@ -114,6 +86,29 @@ Example:
 
     ./your_eventdev_application --vdev="event_octeontx"
 
+
+Selftest
+--------
+
+The functionality of OCTEON TX eventdev can be verified using this option,
+various unit and functional tests are run to verify the sanity.
+The tests are run once the vdev creation is successfully complete.
+
+.. code-block:: console
+
+    --vdev="event_octeontx,selftest=1"
+
+
+Enable TIMvf stats
+------------------
+TIMvf stats can be enabled by using this option, by default the stats are
+disabled.
+
+.. code-block:: console
+
+    --vdev="event_octeontx,timvf_stats=1"
+
+
 Limitations
 -----------
 
@@ -127,4 +122,20 @@ Rx adapter support
 ~~~~~~~~~~~~~~~~~~
 
 When eth_octeontx is used as Rx adapter event schedule type
+``RTE_SCHED_TYPE_PARALLEL`` is not supported.
+
+Event timer adapter support
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When timvf is used as Event timer adapter the clock source mapping is as
+follows:
+
+.. code-block:: console
+
+        RTE_EVENT_TIMER_ADAPTER_CPU_CLK  = TIM_CLK_SRC_SCLK
+        RTE_EVENT_TIMER_ADAPTER_EXT_CLK0 = TIM_CLK_SRC_GPIO
+        RTE_EVENT_TIMER_ADAPTER_EXT_CLK1 = TIM_CLK_SRC_GTI
+        RTE_EVENT_TIMER_ADAPTER_EXT_CLK2 = TIM_CLK_SRC_PTP
+
+When timvf is used as Event timer adapter event schedule type
 ``RTE_SCHED_TYPE_PARALLEL`` is not supported.

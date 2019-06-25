@@ -1,35 +1,6 @@
 #! /usr/bin/env python
-#
-#   BSD LICENSE
-#
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-#   All rights reserved.
-#
-#   Redistribution and use in source and binary forms, with or without
-#   modification, are permitted provided that the following conditions
-#   are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in
-#       the documentation and/or other materials provided with the
-#       distribution.
-#     * Neither the name of Intel Corporation nor the names of its
-#       contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-#   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-#   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-#   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-#   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright(c) 2010-2014 Intel Corporation
 #
 
 import sys
@@ -51,11 +22,18 @@ cavium_fpa = {'Class': '08', 'Vendor': '177d', 'Device': 'a053',
               'SVendor': None, 'SDevice': None}
 cavium_pkx = {'Class': '08', 'Vendor': '177d', 'Device': 'a0dd,a049',
               'SVendor': None, 'SDevice': None}
+cavium_tim = {'Class': '08', 'Vendor': '177d', 'Device': 'a051',
+              'SVendor': None, 'SDevice': None}
+cavium_zip = {'Class': '12', 'Vendor': '177d', 'Device': 'a037',
+              'SVendor': None, 'SDevice': None}
+avp_vnic = {'Class': '05', 'Vendor': '1af4', 'Device': '1110',
+              'SVendor': None, 'SDevice': None}
 
-network_devices = [network_class, cavium_pkx]
+network_devices = [network_class, cavium_pkx, avp_vnic]
 crypto_devices = [encryption_class, intel_processor_class]
-eventdev_devices = [cavium_sso]
+eventdev_devices = [cavium_sso, cavium_tim]
 mempool_devices = [cavium_fpa]
+compress_devices = [cavium_zip]
 
 # global dict ethernet devices present. Dictionary indexed by PCI address.
 # Each device within this is itself a dictionary of device properties
@@ -104,7 +82,7 @@ Options:
 
     --status-dev:
         Print the status of given device group. Supported device groups are:
-        "net", "crypto", "event" and "mempool"
+        "net", "crypto", "event", "mempool" and "compress"
 
     -b driver, --bind=driver:
         Select the driver to use or \"none\" to unbind the device
@@ -147,39 +125,6 @@ def check_output(args, stderr=None):
     '''Run a command and capture its output'''
     return subprocess.Popen(args, stdout=subprocess.PIPE,
                             stderr=stderr).communicate()[0]
-
-
-def find_module(mod):
-    '''find the .ko file for kernel module named mod.
-    Searches the $RTE_SDK/$RTE_TARGET directory, the kernel
-    modules directory and finally under the parent directory of
-    the script '''
-    # check $RTE_SDK/$RTE_TARGET directory
-    if 'RTE_SDK' in os.environ and 'RTE_TARGET' in os.environ:
-        path = "%s/%s/kmod/%s.ko" % (os.environ['RTE_SDK'],
-                                     os.environ['RTE_TARGET'], mod)
-        if exists(path):
-            return path
-
-    # check using depmod
-    try:
-        with open(os.devnull, "w") as fnull:
-            path = check_output(["modinfo", "-n", mod], stderr=fnull).strip()
-
-        if path and exists(path):
-            return path
-    except:  # if modinfo can't find module, it fails, so continue
-        pass
-
-    # check for a copy based off current path
-    tools_dir = dirname(abspath(sys.argv[0]))
-    if tools_dir.endswith("tools"):
-        base_dir = dirname(tools_dir)
-        find_out = check_output(["find", base_dir, "-name", mod + ".ko"])
-        if len(find_out) > 0:  # something matched
-            path = find_out.splitlines()[0]
-            if exists(path):
-                return path
 
 
 def check_modules():
@@ -601,14 +546,27 @@ def show_device_status(devices_type, device_name):
             else:
                 kernel_drv.append(devices[d])
 
+    n_devs = len(dpdk_drv) + len(kernel_drv) + len(no_drv)
+
+    # don't bother displaying anything if there are no devices
+    if n_devs == 0:
+        msg = "No '%s' devices detected" % device_name
+        print("")
+        print(msg)
+        print("".join('=' * len(msg)))
+        return
+
     # print each category separately, so we can clearly see what's used by DPDK
-    display_devices("%s devices using DPDK-compatible driver" % device_name,
-                    dpdk_drv, "drv=%(Driver_str)s unused=%(Module_str)s")
-    display_devices("%s devices using kernel driver" % device_name, kernel_drv,
-                    "if=%(Interface)s drv=%(Driver_str)s "
-                    "unused=%(Module_str)s %(Active)s")
-    display_devices("Other %s devices" % device_name, no_drv,
-                    "unused=%(Module_str)s")
+    if len(dpdk_drv) != 0:
+        display_devices("%s devices using DPDK-compatible driver" % device_name,
+                        dpdk_drv, "drv=%(Driver_str)s unused=%(Module_str)s")
+    if len(kernel_drv) != 0:
+        display_devices("%s devices using kernel driver" % device_name, kernel_drv,
+                        "if=%(Interface)s drv=%(Driver_str)s "
+                        "unused=%(Module_str)s %(Active)s")
+    if len(no_drv) != 0:
+        display_devices("Other %s devices" % device_name, no_drv,
+                        "unused=%(Module_str)s")
 
 def show_status():
     '''Function called when the script is passed the "--status" option.
@@ -626,6 +584,10 @@ def show_status():
 
     if status_dev == "mempool" or status_dev == "all":
         show_device_status(mempool_devices, "Mempool")
+
+    if status_dev == "compress" or status_dev == "all":
+        show_device_status(compress_devices , "Compress")
+
 
 def parse_args():
     '''Parses the command-line arguments given by the user and takes the
@@ -700,11 +662,19 @@ def do_arg_actions():
             get_device_details(crypto_devices)
             get_device_details(eventdev_devices)
             get_device_details(mempool_devices)
+            get_device_details(compress_devices)
         show_status()
 
 
 def main():
     '''program main function'''
+    # check if lspci is installed, suppress any output
+    with open(os.devnull, 'w') as devnull:
+        ret = subprocess.call(['which', 'lspci'],
+                              stdout=devnull, stderr=devnull)
+        if ret != 0:
+            print("'lspci' not found - please install 'pciutils'")
+            sys.exit(1)
     parse_args()
     check_modules()
     clear_data()
@@ -712,6 +682,7 @@ def main():
     get_device_details(crypto_devices)
     get_device_details(eventdev_devices)
     get_device_details(mempool_devices)
+    get_device_details(compress_devices)
     do_arg_actions()
 
 if __name__ == "__main__":
