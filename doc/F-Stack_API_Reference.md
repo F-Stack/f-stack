@@ -23,7 +23,11 @@ Initialize F-Stack，including DPDK/FreeBSD network stack, etc.
 #### ff_run
 
 	void ff_run(loop_func_t loop, void *arg);
+<<<<<<< HEAD
 loop is a callback function，the service logic is implemented by the user, and called by each poll of F-Stack .
+=======
+loop is a callbask function，the service logic is implemented by the user, and called by each poll of F-Stack .
+>>>>>>> aca62ecc5596c6283719465d643b88198182810f
 
 ### Control API
 

@@ -6,6 +6,7 @@
 *.o
 *.so
 *.swap
+*.pcap
 dpdk/x86_64-native-linuxapp-gcc/
 example/helloworld
 example/helloworld_epoll
@@ -20,3 +21,5 @@ lib/machine_include/
 lib/vnode_if.h
 lib/vnode_if_newproto.h
 lib/vnode_if_typedef.h
+app/nginx-1.11.10/objs/
+app/nginx-1.11.10/Makefile
