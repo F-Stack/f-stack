@@ -75,5 +75,9 @@ The mount point can be made permanent across reboots, by adding the following li
 	# run with start.sh
 	./start.sh -b ./redis-server -o /path/to/redis.conf
 	# or run like this:
+<<<<<<< HEAD
 	#./redis-server --conf config.ini --proc-type=primary --proc-id=0 /path/to/redis.conf
+=======
+	#./redis-server --conf=config.ini --proc-type=primary --proc-id=0 /path/to/redis.conf
+>>>>>>> aca62ecc5596c6283719465d643b88198182810f
 
