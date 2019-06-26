@@ -28,6 +28,7 @@
 #include <rte_flow.h>
 #include <rte_malloc.h>
 #include <rte_common.h>
+#include <rte_cycles.h>
 
 #include "mlx5.h"
 #include "mlx5_flow.h"
@@ -320,6 +321,11 @@ struct tc_tunnel_key {
 #define MLX5_VXLAN_PORT_MIN 30000
 #define MLX5_VXLAN_PORT_MAX 60000
 #define MLX5_VXLAN_DEVICE_PFX "vmlx_"
+/**
+ * Timeout in milliseconds to wait VXLAN UDP offloaded port
+ * registration  completed within the mlx5 driver.
+ */
+#define MLX5_VXLAN_WAIT_PORT_REG_MS 250
 
 /** Tunnel action type, used for @p type in header structure. */
 enum flow_tcf_tunact_type {
@@ -403,7 +409,8 @@ struct tcf_vtep {
 	unsigned int ifindex; /**< Own interface index. */
 	unsigned int ifouter; /**< Index of device attached to. */
 	uint16_t port;
-	uint8_t created;
+	uint32_t created:1; /**< Actually created by PMD. */
+	uint32_t waitreg:1; /**< Wait for VXLAN UDP port registration. */
 };
 
 /** Tunnel descriptor header, common for all tunnel types. */
@@ -436,7 +443,7 @@ struct flow_tcf_vxlan_encap {
 			uint8_t src[IPV6_ADDR_LEN];
 		} ipv6;
 	};
-struct {
+	struct {
 		rte_be16_t src;
 		rte_be16_t dst;
 	} udp;
@@ -463,7 +470,9 @@ static const union {
 	struct rte_flow_item_tcp tcp;
 	struct rte_flow_item_udp udp;
 	struct rte_flow_item_vxlan vxlan;
-} flow_tcf_mask_empty;
+} flow_tcf_mask_empty = {
+	{0},
+};
 
 /** Supported masks for known item types. */
 static const struct {
@@ -1279,7 +1288,7 @@ flow_tcf_validate_vxlan_encap_ipv4(const struct rte_flow_item *item,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  **/
 static int
 flow_tcf_validate_vxlan_encap_ipv6(const struct rte_flow_item *item,
@@ -1365,7 +1374,7 @@ flow_tcf_validate_vxlan_encap_ipv6(const struct rte_flow_item *item,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  **/
 static int
 flow_tcf_validate_vxlan_encap_udp(const struct rte_flow_item *item,
@@ -1433,7 +1442,7 @@ flow_tcf_validate_vxlan_encap_udp(const struct rte_flow_item *item,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  **/
 static int
 flow_tcf_validate_vxlan_encap_vni(const struct rte_flow_item *item,
@@ -1481,7 +1490,7 @@ flow_tcf_validate_vxlan_encap_vni(const struct rte_flow_item *item,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  **/
 static int
 flow_tcf_validate_vxlan_encap(const struct rte_flow_action *action,
@@ -1584,141 +1593,8 @@ flow_tcf_validate_vxlan_encap(const struct rte_flow_action *action,
 }
 
 /**
- * Validate RTE_FLOW_ITEM_TYPE_IPV4 item if VXLAN_DECAP action
- * is present in actions list.
- *
- * @param[in] ipv4
- *   Outer IPv4 address item (if any, NULL otherwise).
- * @param[out] error
- *   Pointer to the error structure.
- *
- * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
- **/
-static int
-flow_tcf_validate_vxlan_decap_ipv4(const struct rte_flow_item *ipv4,
-				   struct rte_flow_error *error)
-{
-	const struct rte_flow_item_ipv4 *spec = ipv4->spec;
-	const struct rte_flow_item_ipv4 *mask = ipv4->mask;
-
-	if (!spec) {
-		/*
-		 * Specification for IP addresses cannot be empty
-		 * because it is required as decap parameter.
-		 */
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, ipv4,
-					  "NULL outer ipv4 address"
-					  " specification for vxlan"
-					  " for vxlan decapsulation");
-	}
-	if (!mask)
-		mask = &rte_flow_item_ipv4_mask;
-	if (mask->hdr.dst_addr != RTE_BE32(0x00000000)) {
-		if (mask->hdr.dst_addr != RTE_BE32(0xffffffff))
-			return rte_flow_error_set
-					(error, ENOTSUP,
-					 RTE_FLOW_ERROR_TYPE_ITEM_MASK, mask,
-					 "no support for partial mask on"
-					 " \"ipv4.hdr.dst_addr\" field");
-		/* More IP address validations can be put here. */
-	} else {
-		/*
-		 * Kernel uses the destination IP address
-		 * to determine the ingress network interface
-		 * for traffic being decapsulated.
-		 */
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, ipv4,
-					  "outer ipv4 destination address"
-					  " must be specified for"
-					  " vxlan decapsulation");
-	}
-	/* Source IP address is optional for decap. */
-	if (mask->hdr.src_addr != RTE_BE32(0x00000000) &&
-	    mask->hdr.src_addr != RTE_BE32(0xffffffff))
-		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, mask,
-					  "no support for partial mask on"
-					  " \"ipv4.hdr.src_addr\" field");
-	return 0;
-}
-
-/**
- * Validate RTE_FLOW_ITEM_TYPE_IPV6 item if VXLAN_DECAP action
- * is present in actions list.
- *
- * @param[in] ipv6
- *   Outer IPv6 address item (if any, NULL otherwise).
- * @param[out] error
- *   Pointer to the error structure.
- *
- * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
- **/
-static int
-flow_tcf_validate_vxlan_decap_ipv6(const struct rte_flow_item *ipv6,
-				   struct rte_flow_error *error)
-{
-	const struct rte_flow_item_ipv6 *spec = ipv6->spec;
-	const struct rte_flow_item_ipv6 *mask = ipv6->mask;
-
-	if (!spec) {
-		/*
-		 * Specification for IP addresses cannot be empty
-		 * because it is required as decap parameter.
-		 */
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, ipv6,
-					  "NULL outer ipv6 address"
-					  " specification for vxlan"
-					  " decapsulation");
-	}
-	if (!mask)
-		mask = &rte_flow_item_ipv6_mask;
-	if (memcmp(&mask->hdr.dst_addr,
-		   &flow_tcf_mask_empty.ipv6.hdr.dst_addr,
-		   IPV6_ADDR_LEN)) {
-		if (memcmp(&mask->hdr.dst_addr,
-			&rte_flow_item_ipv6_mask.hdr.dst_addr,
-			IPV6_ADDR_LEN))
-			return rte_flow_error_set
-					(error, ENOTSUP,
-					 RTE_FLOW_ERROR_TYPE_ITEM_MASK, mask,
-					 "no support for partial mask on"
-					 " \"ipv6.hdr.dst_addr\" field");
-		/* More IP address validations can be put here. */
-	} else {
-		/*
-		 * Kernel uses the destination IP address
-		 * to determine the ingress network interface
-		 * for traffic being decapsulated.
-		 */
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, ipv6,
-					  "outer ipv6 destination address must be "
-					  "specified for vxlan decapsulation");
-	}
-	/* Source IP address is optional for decap. */
-	if (memcmp(&mask->hdr.src_addr,
-		   &flow_tcf_mask_empty.ipv6.hdr.src_addr,
-		   IPV6_ADDR_LEN)) {
-		if (memcmp(&mask->hdr.src_addr,
-			   &rte_flow_item_ipv6_mask.hdr.src_addr,
-			   IPV6_ADDR_LEN))
-			return rte_flow_error_set
-					(error, ENOTSUP,
-					 RTE_FLOW_ERROR_TYPE_ITEM_MASK, mask,
-					 "no support for partial mask on"
-					 " \"ipv6.hdr.src_addr\" field");
-	}
-	return 0;
-}
-
-/**
- * Validate RTE_FLOW_ITEM_TYPE_UDP item if VXLAN_DECAP action
- * is present in actions list.
+ * Validate outer RTE_FLOW_ITEM_TYPE_UDP item if tunnel item
+ * RTE_FLOW_ITEM_TYPE_VXLAN is present in item list.
  *
  * @param[in] udp
  *   Outer UDP layer item (if any, NULL otherwise).
@@ -1726,7 +1602,7 @@ flow_tcf_validate_vxlan_decap_ipv6(const struct rte_flow_item *ipv6,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  **/
 static int
 flow_tcf_validate_vxlan_decap_udp(const struct rte_flow_item *udp,
@@ -1794,7 +1670,7 @@ flow_tcf_validate_vxlan_decap_udp(const struct rte_flow_item *udp,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_tcf_validate(struct rte_eth_dev *dev,
@@ -1825,9 +1701,13 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 		const struct rte_flow_action_set_ipv4 *set_ipv4;
 		const struct rte_flow_action_set_ipv6 *set_ipv6;
 	} conf;
+	const struct rte_flow_item *outer_udp = NULL;
+	rte_be16_t inner_etype = RTE_BE16(ETH_P_ALL);
+	rte_be16_t outer_etype = RTE_BE16(ETH_P_ALL);
+	rte_be16_t vlan_etype = RTE_BE16(ETH_P_ALL);
 	uint64_t item_flags = 0;
 	uint64_t action_flags = 0;
-	uint8_t next_protocol = -1;
+	uint8_t next_protocol = 0xff;
 	unsigned int tcm_ifindex = 0;
 	uint8_t pedit_validated = 0;
 	struct flow_tcf_ptoi ptoi[PTOI_TABLE_SZ_MAX(dev)];
@@ -2011,17 +1891,16 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
 		unsigned int i;
 
-		if ((item_flags & MLX5_FLOW_LAYER_TUNNEL) &&
-		    items->type != RTE_FLOW_ITEM_TYPE_ETH)
-			return rte_flow_error_set(error, ENOTSUP,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
-						  items,
-						  "only L2 inner item"
-						  " is supported");
 		switch (items->type) {
 		case RTE_FLOW_ITEM_TYPE_VOID:
 			break;
 		case RTE_FLOW_ITEM_TYPE_PORT_ID:
+			if (item_flags & MLX5_FLOW_LAYER_TUNNEL)
+				return rte_flow_error_set
+					(error, ENOTSUP,
+					 RTE_FLOW_ERROR_TYPE_ITEM, items,
+					 "inner tunnel port id"
+					 " item is not supported");
 			mask.port_id = flow_tcf_item_mask
 				(items, &rte_flow_item_port_id_mask,
 				 &flow_tcf_mask_supported.port_id,
@@ -2072,8 +1951,8 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 			if (ret < 0)
 				return ret;
 			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
-					MLX5_FLOW_LAYER_INNER_L2 :
-					MLX5_FLOW_LAYER_OUTER_L2;
+				      MLX5_FLOW_LAYER_INNER_L2 :
+				      MLX5_FLOW_LAYER_OUTER_L2;
 			/* TODO:
 			 * Redundant check due to different supported mask.
 			 * Same for the rest of items.
@@ -2094,8 +1973,40 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 					 mask.eth,
 					 "no support for partial mask on"
 					 " \"type\" field");
+			assert(items->spec);
+			spec.eth = items->spec;
+			if (mask.eth->type &&
+			    (item_flags & MLX5_FLOW_LAYER_TUNNEL) &&
+			    inner_etype != RTE_BE16(ETH_P_ALL) &&
+			    inner_etype != spec.eth->type)
+				return rte_flow_error_set
+					(error, EINVAL,
+					 RTE_FLOW_ERROR_TYPE_ITEM,
+					 items,
+					 "inner eth_type conflict");
+			if (mask.eth->type &&
+			    !(item_flags & MLX5_FLOW_LAYER_TUNNEL) &&
+			    outer_etype != RTE_BE16(ETH_P_ALL) &&
+			    outer_etype != spec.eth->type)
+				return rte_flow_error_set
+					(error, EINVAL,
+					 RTE_FLOW_ERROR_TYPE_ITEM,
+					 items,
+					 "outer eth_type conflict");
+			if (mask.eth->type) {
+				if (item_flags & MLX5_FLOW_LAYER_TUNNEL)
+					inner_etype = spec.eth->type;
+				else
+					outer_etype = spec.eth->type;
+			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_VLAN:
+			if (item_flags & MLX5_FLOW_LAYER_TUNNEL)
+				return rte_flow_error_set
+					(error, ENOTSUP,
+					 RTE_FLOW_ERROR_TYPE_ITEM, items,
+					 "inner tunnel VLAN"
+					 " is not supported");
 			ret = mlx5_flow_validate_item_vlan(items, item_flags,
 							   error);
 			if (ret < 0)
@@ -2124,13 +2035,36 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 					 "no support for partial masks on"
 					 " \"tci\" (PCP and VID parts) and"
 					 " \"inner_type\" fields");
+			if (outer_etype != RTE_BE16(ETH_P_ALL) &&
+			    outer_etype != RTE_BE16(ETH_P_8021Q))
+				return rte_flow_error_set
+					(error, EINVAL,
+					 RTE_FLOW_ERROR_TYPE_ITEM,
+					 items,
+					 "outer eth_type conflict,"
+					 " must be 802.1Q");
+			outer_etype = RTE_BE16(ETH_P_8021Q);
+			assert(items->spec);
+			spec.vlan = items->spec;
+			if (mask.vlan->inner_type &&
+			    vlan_etype != RTE_BE16(ETH_P_ALL) &&
+			    vlan_etype != spec.vlan->inner_type)
+				return rte_flow_error_set
+					(error, EINVAL,
+					 RTE_FLOW_ERROR_TYPE_ITEM,
+					 items,
+					 "vlan eth_type conflict");
+			if (mask.vlan->inner_type)
+				vlan_etype = spec.vlan->inner_type;
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
 			ret = mlx5_flow_validate_item_ipv4(items, item_flags,
 							   error);
 			if (ret < 0)
 				return ret;
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L3_IPV4;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L3_IPV4 :
+				      MLX5_FLOW_LAYER_OUTER_L3_IPV4;
 			mask.ipv4 = flow_tcf_item_mask
 				(items, &rte_flow_item_ipv4_mask,
 				 &flow_tcf_mask_supported.ipv4,
@@ -2151,11 +2085,36 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 				next_protocol =
 					((const struct rte_flow_item_ipv4 *)
 					 (items->spec))->hdr.next_proto_id;
-			if (action_flags & MLX5_FLOW_ACTION_VXLAN_DECAP) {
-				ret = flow_tcf_validate_vxlan_decap_ipv4
-								(items, error);
-				if (ret < 0)
-					return ret;
+			if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+				if (inner_etype != RTE_BE16(ETH_P_ALL) &&
+				    inner_etype != RTE_BE16(ETH_P_IP))
+					return rte_flow_error_set
+						(error, EINVAL,
+						 RTE_FLOW_ERROR_TYPE_ITEM,
+						 items,
+						 "inner eth_type conflict,"
+						 " IPv4 is required");
+				inner_etype = RTE_BE16(ETH_P_IP);
+			} else if (item_flags & MLX5_FLOW_LAYER_OUTER_VLAN) {
+				if (vlan_etype != RTE_BE16(ETH_P_ALL) &&
+				    vlan_etype != RTE_BE16(ETH_P_IP))
+					return rte_flow_error_set
+						(error, EINVAL,
+						 RTE_FLOW_ERROR_TYPE_ITEM,
+						 items,
+						 "vlan eth_type conflict,"
+						 " IPv4 is required");
+				vlan_etype = RTE_BE16(ETH_P_IP);
+			} else {
+				if (outer_etype != RTE_BE16(ETH_P_ALL) &&
+				    outer_etype != RTE_BE16(ETH_P_IP))
+					return rte_flow_error_set
+						(error, EINVAL,
+						 RTE_FLOW_ERROR_TYPE_ITEM,
+						 items,
+						 "eth_type conflict,"
+						 " IPv4 is required");
+				outer_etype = RTE_BE16(ETH_P_IP);
 			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV6:
@@ -2163,7 +2122,9 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 							   error);
 			if (ret < 0)
 				return ret;
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L3_IPV6;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L3_IPV6 :
+				      MLX5_FLOW_LAYER_OUTER_L3_IPV6;
 			mask.ipv6 = flow_tcf_item_mask
 				(items, &rte_flow_item_ipv6_mask,
 				 &flow_tcf_mask_supported.ipv6,
@@ -2184,11 +2145,36 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 				next_protocol =
 					((const struct rte_flow_item_ipv6 *)
 					 (items->spec))->hdr.proto;
-			if (action_flags & MLX5_FLOW_ACTION_VXLAN_DECAP) {
-				ret = flow_tcf_validate_vxlan_decap_ipv6
-								(items, error);
-				if (ret < 0)
-					return ret;
+			if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+				if (inner_etype != RTE_BE16(ETH_P_ALL) &&
+				    inner_etype != RTE_BE16(ETH_P_IPV6))
+					return rte_flow_error_set
+						(error, EINVAL,
+						 RTE_FLOW_ERROR_TYPE_ITEM,
+						 items,
+						 "inner eth_type conflict,"
+						 " IPv6 is required");
+				inner_etype = RTE_BE16(ETH_P_IPV6);
+			} else if (item_flags & MLX5_FLOW_LAYER_OUTER_VLAN) {
+				if (vlan_etype != RTE_BE16(ETH_P_ALL) &&
+				    vlan_etype != RTE_BE16(ETH_P_IPV6))
+					return rte_flow_error_set
+						(error, EINVAL,
+						 RTE_FLOW_ERROR_TYPE_ITEM,
+						 items,
+						 "vlan eth_type conflict,"
+						 " IPv6 is required");
+				vlan_etype = RTE_BE16(ETH_P_IPV6);
+			} else {
+				if (outer_etype != RTE_BE16(ETH_P_ALL) &&
+				    outer_etype != RTE_BE16(ETH_P_IPV6))
+					return rte_flow_error_set
+						(error, EINVAL,
+						 RTE_FLOW_ERROR_TYPE_ITEM,
+						 items,
+						 "eth_type conflict,"
+						 " IPv6 is required");
+				outer_etype = RTE_BE16(ETH_P_IPV6);
 			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_UDP:
@@ -2196,7 +2182,9 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 							  next_protocol, error);
 			if (ret < 0)
 				return ret;
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L4_UDP;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L4_UDP :
+				      MLX5_FLOW_LAYER_OUTER_L4_UDP;
 			mask.udp = flow_tcf_item_mask
 				(items, &rte_flow_item_udp_mask,
 				 &flow_tcf_mask_supported.udp,
@@ -2205,12 +2193,12 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 				 error);
 			if (!mask.udp)
 				return -rte_errno;
-			if (action_flags & MLX5_FLOW_ACTION_VXLAN_DECAP) {
-				ret = flow_tcf_validate_vxlan_decap_udp
-								(items, error);
-				if (ret < 0)
-					return ret;
-			}
+			/*
+			 * Save the presumed outer UDP item for extra check
+			 * if the tunnel item will be found later in the list.
+			 */
+			if (!(item_flags & MLX5_FLOW_LAYER_TUNNEL))
+				outer_udp = items;
 			break;
 		case RTE_FLOW_ITEM_TYPE_TCP:
 			ret = mlx5_flow_validate_item_tcp
@@ -2220,7 +2208,9 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 					      error);
 			if (ret < 0)
 				return ret;
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L4_TCP;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L4_TCP :
+				      MLX5_FLOW_LAYER_OUTER_L4_TCP;
 			mask.tcp = flow_tcf_item_mask
 				(items, &rte_flow_item_tcp_mask,
 				 &flow_tcf_mask_supported.tcp,
@@ -2231,13 +2221,12 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 				return -rte_errno;
 			break;
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
-			if (!(action_flags & MLX5_FLOW_ACTION_VXLAN_DECAP))
+			if (item_flags & MLX5_FLOW_LAYER_OUTER_VLAN)
 				return rte_flow_error_set
 					(error, ENOTSUP,
-					 RTE_FLOW_ERROR_TYPE_ITEM,
-					 items,
-					 "vni pattern should be followed by"
-					 " vxlan decapsulation action");
+					 RTE_FLOW_ERROR_TYPE_ITEM, items,
+					 "vxlan tunnel over vlan"
+					 " is not supported");
 			ret = mlx5_flow_validate_item_vxlan(items,
 							    item_flags, error);
 			if (ret < 0)
@@ -2259,6 +2248,45 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 					 mask.vxlan,
 					 "no support for partial or "
 					 "empty mask on \"vxlan.vni\" field");
+			/*
+			 * The VNI item assumes the VXLAN tunnel, it requires
+			 * at least the outer destination UDP port must be
+			 * specified without wildcards to allow kernel select
+			 * the virtual VXLAN device by port. Also outer IPv4
+			 * or IPv6 item must be specified (wilcards or even
+			 * zero mask are allowed) to let driver know the tunnel
+			 * IP version and process UDP traffic correctly.
+			 */
+			if (!(item_flags &
+			     (MLX5_FLOW_LAYER_OUTER_L3_IPV4 |
+			      MLX5_FLOW_LAYER_OUTER_L3_IPV6)))
+				return rte_flow_error_set
+						 (error, EINVAL,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  NULL,
+						  "no outer IP pattern found"
+						  " for vxlan tunnel");
+			if (!(item_flags & MLX5_FLOW_LAYER_OUTER_L4_UDP))
+				return rte_flow_error_set
+						 (error, EINVAL,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  NULL,
+						  "no outer UDP pattern found"
+						  " for vxlan tunnel");
+			/*
+			 * All items preceding the tunnel item become outer
+			 * ones and we should do extra validation for them
+			 * due to tc limitations for tunnel outer parameters.
+			 * Currently only outer UDP item requres extra check,
+			 * use the saved pointer instead of item list rescan.
+			 */
+			assert(outer_udp);
+			ret = flow_tcf_validate_vxlan_decap_udp
+						(outer_udp, error);
+			if (ret < 0)
+				return ret;
+			/* Reset L4 protocol for inner parameters. */
+			next_protocol = 0xff;
 			break;
 		default:
 			return rte_flow_error_set(error, ENOTSUP,
@@ -2316,7 +2344,7 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 	 */
 	if ((action_flags & MLX5_FLOW_ACTION_OF_PUSH_VLAN) &&
 	    (action_flags & MLX5_FLOW_ACTION_PORT_ID) &&
-	    ((struct priv *)port_id_dev->data->dev_private)->representor)
+	    ((struct mlx5_priv *)port_id_dev->data->dev_private)->representor)
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ACTION, actions,
 					  "vlan push can only be applied"
@@ -2361,28 +2389,20 @@ flow_tcf_validate(struct rte_eth_dev *dev,
 						  "no ethernet found in"
 						  " pattern");
 	}
-	if (action_flags & MLX5_FLOW_ACTION_VXLAN_DECAP) {
-		if (!(item_flags &
-		     (MLX5_FLOW_LAYER_OUTER_L3_IPV4 |
-		      MLX5_FLOW_LAYER_OUTER_L3_IPV6)))
-			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ACTION,
-						  NULL,
-						  "no outer IP pattern found"
-						  " for vxlan decap action");
-		if (!(item_flags & MLX5_FLOW_LAYER_OUTER_L4_UDP))
-			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ACTION,
-						  NULL,
-						  "no outer UDP pattern found"
-						  " for vxlan decap action");
-		if (!(item_flags & MLX5_FLOW_LAYER_VXLAN))
-			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ACTION,
-						  NULL,
-						  "no VNI pattern found"
-						  " for vxlan decap action");
-	}
+	if ((action_flags & MLX5_FLOW_ACTION_VXLAN_DECAP) &&
+	    !(item_flags & MLX5_FLOW_LAYER_VXLAN))
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION,
+					  NULL,
+					  "no VNI pattern found"
+					  " for vxlan decap action");
+	if ((action_flags & MLX5_FLOW_ACTION_VXLAN_ENCAP) &&
+	    (item_flags & MLX5_FLOW_LAYER_TUNNEL))
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION,
+					  NULL,
+					  "vxlan encap not supported"
+					  " for tunneled traffic");
 	return 0;
 }
 
@@ -2393,17 +2413,21 @@ flow_tcf_validate(struct rte_eth_dev *dev,
  *   Pointer to the flow attributes.
  * @param[in] items
  *   Pointer to the list of items.
+ * @param[out] action_flags
+ *   Pointer to the detected actions.
  *
  * @return
  *   Maximum size of memory for items.
  */
 static int
 flow_tcf_get_items_size(const struct rte_flow_attr *attr,
-			const struct rte_flow_item items[])
+			const struct rte_flow_item items[],
+			uint64_t *action_flags)
 {
 	int size = 0;
 
 	size += SZ_NLATTR_STRZ_OF("flower") +
+		SZ_NLATTR_TYPE_OF(uint16_t) + /* Outer ether type. */
 		SZ_NLATTR_NEST + /* TCA_OPTIONS. */
 		SZ_NLATTR_TYPE_OF(uint32_t); /* TCA_CLS_FLAGS_SKIP_SW. */
 	if (attr->group > 0)
@@ -2415,26 +2439,22 @@ flow_tcf_get_items_size(const struct rte_flow_attr *attr,
 		case RTE_FLOW_ITEM_TYPE_PORT_ID:
 			break;
 		case RTE_FLOW_ITEM_TYPE_ETH:
-			size += SZ_NLATTR_TYPE_OF(uint16_t) + /* Ether type. */
-				SZ_NLATTR_DATA_OF(ETHER_ADDR_LEN) * 4;
+			size += SZ_NLATTR_DATA_OF(ETHER_ADDR_LEN) * 4;
 				/* dst/src MAC addr and mask. */
 			break;
 		case RTE_FLOW_ITEM_TYPE_VLAN:
-			size += SZ_NLATTR_TYPE_OF(uint16_t) + /* Ether type. */
-				SZ_NLATTR_TYPE_OF(uint16_t) +
+			size +=	SZ_NLATTR_TYPE_OF(uint16_t) +
 				/* VLAN Ether type. */
 				SZ_NLATTR_TYPE_OF(uint8_t) + /* VLAN prio. */
 				SZ_NLATTR_TYPE_OF(uint16_t); /* VLAN ID. */
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
-			size += SZ_NLATTR_TYPE_OF(uint16_t) + /* Ether type. */
-				SZ_NLATTR_TYPE_OF(uint8_t) + /* IP proto. */
+			size +=	SZ_NLATTR_TYPE_OF(uint8_t) + /* IP proto. */
 				SZ_NLATTR_TYPE_OF(uint32_t) * 4;
 				/* dst/src IP addr and mask. */
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV6:
-			size += SZ_NLATTR_TYPE_OF(uint16_t) + /* Ether type. */
-				SZ_NLATTR_TYPE_OF(uint8_t) + /* IP proto. */
+			size +=	SZ_NLATTR_TYPE_OF(uint8_t) + /* IP proto. */
 				SZ_NLATTR_DATA_OF(IPV6_ADDR_LEN) * 4;
 				/* dst/src IP addr and mask. */
 			break;
@@ -2450,6 +2470,16 @@ flow_tcf_get_items_size(const struct rte_flow_attr *attr,
 			break;
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
 			size += SZ_NLATTR_TYPE_OF(uint32_t);
+			/*
+			 * There might be no VXLAN decap action in the action
+			 * list, nonetheless the VXLAN tunnel flow requires
+			 * the decap structure to be correctly applied to
+			 * VXLAN device, set the flag to create the structure.
+			 * Translation routine will not put the decap action
+			 * in tne Netlink message if there is no actual action
+			 * in the list.
+			 */
+			*action_flags |= MLX5_FLOW_ACTION_VXLAN_DECAP;
 			break;
 		default:
 			DRV_LOG(WARNING,
@@ -2542,7 +2572,7 @@ flow_tcf_get_actions_and_size(const struct rte_flow_action actions[],
 			      uint64_t *action_flags)
 {
 	int size = 0;
-	uint64_t flags = 0;
+	uint64_t flags = *action_flags;
 
 	size += SZ_NLATTR_NEST; /* TCA_FLOWER_ACT. */
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
@@ -2643,27 +2673,6 @@ action_of_vlan:
 }
 
 /**
- * Brand rtnetlink buffer with unique handle.
- *
- * This handle should be unique for a given network interface to avoid
- * collisions.
- *
- * @param nlh
- *   Pointer to Netlink message.
- * @param handle
- *   Unique 32-bit handle to use.
- */
-static void
-flow_tcf_nl_brand(struct nlmsghdr *nlh, uint32_t handle)
-{
-	struct tcmsg *tcm = mnl_nlmsg_get_payload(nlh);
-
-	tcm->tcm_handle = handle;
-	DRV_LOG(DEBUG, "Netlink msg %p is branded with handle %x",
-		(void *)nlh, handle);
-}
-
-/**
  * Prepare a flow object for Linux TC flower. It calculates the maximum size of
  * memory required, allocates the memory, initializes Netlink message headers
  * and set unique TC message handle.
@@ -2679,7 +2688,7 @@ flow_tcf_nl_brand(struct nlmsghdr *nlh, uint32_t handle)
  *
  * @return
  *   Pointer to mlx5_flow object on success,
- *   otherwise NULL and rte_ernno is set.
+ *   otherwise NULL and rte_errno is set.
  */
 static struct mlx5_flow *
 flow_tcf_prepare(const struct rte_flow_attr *attr,
@@ -2698,7 +2707,7 @@ flow_tcf_prepare(const struct rte_flow_attr *attr,
 	struct tcmsg *tcm;
 	uint8_t *sp, *tun = NULL;
 
-	size += flow_tcf_get_items_size(attr, items);
+	size += flow_tcf_get_items_size(attr, items, &action_flags);
 	size += flow_tcf_get_actions_and_size(actions, &action_flags);
 	dev_flow = rte_zmalloc(__func__, size, MNL_ALIGNTO);
 	if (!dev_flow) {
@@ -2753,20 +2762,6 @@ flow_tcf_prepare(const struct rte_flow_attr *attr,
 		dev_flow->tcf.tunnel->type = FLOW_TCF_TUNACT_VXLAN_DECAP;
 	else if (action_flags & MLX5_FLOW_ACTION_VXLAN_ENCAP)
 		dev_flow->tcf.tunnel->type = FLOW_TCF_TUNACT_VXLAN_ENCAP;
-	/*
-	 * Generate a reasonably unique handle based on the address of the
-	 * target buffer.
-	 *
-	 * This is straightforward on 32-bit systems where the flow pointer can
-	 * be used directly. Otherwise, its least significant part is taken
-	 * after shifting it by the previous power of two of the pointed buffer
-	 * size.
-	 */
-	if (sizeof(dev_flow) <= 4)
-		flow_tcf_nl_brand(nlh, (uintptr_t)dev_flow);
-	else
-		flow_tcf_nl_brand(nlh, (uintptr_t)dev_flow >>
-				       rte_log2_u32(rte_align32prevpow2(size)));
 	return dev_flow;
 }
 
@@ -3054,7 +3049,7 @@ flow_tcf_vxlan_encap_parse(const struct rte_flow_action *action,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
@@ -3098,10 +3093,11 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 	struct nlmsghdr *nlh = dev_flow->tcf.nlh;
 	struct tcmsg *tcm = dev_flow->tcf.tcm;
 	uint32_t na_act_index_cur;
-	bool eth_type_set = 0;
-	bool vlan_present = 0;
-	bool vlan_eth_type_set = 0;
+	rte_be16_t inner_etype = RTE_BE16(ETH_P_ALL);
+	rte_be16_t outer_etype = RTE_BE16(ETH_P_ALL);
+	rte_be16_t vlan_etype = RTE_BE16(ETH_P_ALL);
 	bool ip_proto_set = 0;
+	bool tunnel_outer = 0;
 	struct nlattr *na_flower;
 	struct nlattr *na_flower_act;
 	struct nlattr *na_vlan_id = NULL;
@@ -3115,6 +3111,7 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 		switch (dev_flow->tcf.tunnel->type) {
 		case FLOW_TCF_TUNACT_VXLAN_DECAP:
 			decap.vxlan = dev_flow->tcf.vxlan_decap;
+			tunnel_outer = 1;
 			break;
 		case FLOW_TCF_TUNACT_VXLAN_ENCAP:
 			encap.vxlan = dev_flow->tcf.vxlan_encap;
@@ -3136,8 +3133,7 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 	 * Priority cannot be zero to prevent the kernel from picking one
 	 * automatically.
 	 */
-	tcm->tcm_info = TC_H_MAKE((attr->priority + 1) << 16,
-				  RTE_BE16(ETH_P_ALL));
+	tcm->tcm_info = TC_H_MAKE((attr->priority + 1) << 16, outer_etype);
 	if (attr->group > 0)
 		mnl_attr_put_u32(nlh, TCA_CHAIN, attr->group);
 	mnl_attr_put_strz(nlh, TCA_KIND, "flower");
@@ -3169,7 +3165,7 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			tcm->tcm_ifindex = ptoi[i].ifindex;
 			break;
 		case RTE_FLOW_ITEM_TYPE_ETH:
-			item_flags |= (item_flags & MLX5_FLOW_LAYER_VXLAN) ?
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
 				      MLX5_FLOW_LAYER_INNER_L2 :
 				      MLX5_FLOW_LAYER_OUTER_L2;
 			mask.eth = flow_tcf_item_mask
@@ -3182,18 +3178,18 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			if (mask.eth == &flow_tcf_mask_empty.eth)
 				break;
 			spec.eth = items->spec;
-			if (decap.vxlan &&
-			    !(item_flags & MLX5_FLOW_LAYER_VXLAN)) {
-				DRV_LOG(WARNING,
-					"outer L2 addresses cannot be forced"
-					" for vxlan decapsulation, parameter"
-					" ignored");
-				break;
-			}
 			if (mask.eth->type) {
-				mnl_attr_put_u16(nlh, TCA_FLOWER_KEY_ETH_TYPE,
-						 spec.eth->type);
-				eth_type_set = 1;
+				if (item_flags & MLX5_FLOW_LAYER_TUNNEL)
+					inner_etype = spec.eth->type;
+				else
+					outer_etype = spec.eth->type;
+			}
+			if (tunnel_outer) {
+				DRV_LOG(WARNING,
+					"outer L2 addresses cannot be"
+					" forced is outer ones for tunnel,"
+					" parameter is ignored");
+				break;
 			}
 			if (!is_zero_ether_addr(&mask.eth->dst)) {
 				mnl_attr_put(nlh, TCA_FLOWER_KEY_ETH_DST,
@@ -3216,6 +3212,7 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 		case RTE_FLOW_ITEM_TYPE_VLAN:
 			assert(!encap.hdr);
 			assert(!decap.hdr);
+			assert(!tunnel_outer);
 			item_flags |= MLX5_FLOW_LAYER_OUTER_VLAN;
 			mask.vlan = flow_tcf_item_mask
 				(items, &rte_flow_item_vlan_mask,
@@ -3224,20 +3221,14 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 				 sizeof(flow_tcf_mask_supported.vlan),
 				 error);
 			assert(mask.vlan);
-			if (!eth_type_set)
-				mnl_attr_put_u16(nlh, TCA_FLOWER_KEY_ETH_TYPE,
-						 RTE_BE16(ETH_P_8021Q));
-			eth_type_set = 1;
-			vlan_present = 1;
 			if (mask.vlan == &flow_tcf_mask_empty.vlan)
 				break;
 			spec.vlan = items->spec;
-			if (mask.vlan->inner_type) {
-				mnl_attr_put_u16(nlh,
-						 TCA_FLOWER_KEY_VLAN_ETH_TYPE,
-						 spec.vlan->inner_type);
-				vlan_eth_type_set = 1;
-			}
+			assert(outer_etype == RTE_BE16(ETH_P_ALL) ||
+			       outer_etype == RTE_BE16(ETH_P_8021Q));
+			outer_etype = RTE_BE16(ETH_P_8021Q);
+			if (mask.vlan->inner_type)
+				vlan_etype = spec.vlan->inner_type;
 			if (mask.vlan->tci & RTE_BE16(0xe000))
 				mnl_attr_put_u8(nlh, TCA_FLOWER_KEY_VLAN_PRIO,
 						(rte_be_to_cpu_16
@@ -3250,7 +3241,9 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L3_IPV4;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L3_IPV4 :
+				      MLX5_FLOW_LAYER_OUTER_L3_IPV4;
 			mask.ipv4 = flow_tcf_item_mask
 				(items, &rte_flow_item_ipv4_mask,
 				 &flow_tcf_mask_supported.ipv4,
@@ -3258,57 +3251,83 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 				 sizeof(flow_tcf_mask_supported.ipv4),
 				 error);
 			assert(mask.ipv4);
-			spec.ipv4 = items->spec;
-			if (!decap.vxlan) {
-				if (!eth_type_set ||
-				    (!vlan_eth_type_set && vlan_present))
-					mnl_attr_put_u16
-						(nlh,
-						 vlan_present ?
-						 TCA_FLOWER_KEY_VLAN_ETH_TYPE :
-						 TCA_FLOWER_KEY_ETH_TYPE,
-						 RTE_BE16(ETH_P_IP));
-				eth_type_set = 1;
-				vlan_eth_type_set = 1;
-				if (mask.ipv4 == &flow_tcf_mask_empty.ipv4)
-					break;
-				if (mask.ipv4->hdr.next_proto_id) {
-					mnl_attr_put_u8
-						(nlh, TCA_FLOWER_KEY_IP_PROTO,
-						 spec.ipv4->hdr.next_proto_id);
-					ip_proto_set = 1;
-				}
+			if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+				assert(inner_etype == RTE_BE16(ETH_P_ALL) ||
+				       inner_etype == RTE_BE16(ETH_P_IP));
+				inner_etype = RTE_BE16(ETH_P_IP);
+			} else if (outer_etype == RTE_BE16(ETH_P_8021Q)) {
+				assert(vlan_etype == RTE_BE16(ETH_P_ALL) ||
+				       vlan_etype == RTE_BE16(ETH_P_IP));
+				vlan_etype = RTE_BE16(ETH_P_IP);
 			} else {
-				assert(mask.ipv4 != &flow_tcf_mask_empty.ipv4);
+				assert(outer_etype == RTE_BE16(ETH_P_ALL) ||
+				       outer_etype == RTE_BE16(ETH_P_IP));
+				outer_etype = RTE_BE16(ETH_P_IP);
+			}
+			spec.ipv4 = items->spec;
+			if (!tunnel_outer && mask.ipv4->hdr.next_proto_id) {
+				/*
+				 * No way to set IP protocol for outer tunnel
+				 * layers. Usually it is fixed, for example,
+				 * to UDP for VXLAN/GPE.
+				 */
+				assert(spec.ipv4); /* Mask is not empty. */
+				mnl_attr_put_u8(nlh, TCA_FLOWER_KEY_IP_PROTO,
+						spec.ipv4->hdr.next_proto_id);
+				ip_proto_set = 1;
+			}
+			if (mask.ipv4 == &flow_tcf_mask_empty.ipv4 ||
+			     (!mask.ipv4->hdr.src_addr &&
+			      !mask.ipv4->hdr.dst_addr)) {
+				if (!tunnel_outer)
+					break;
+				/*
+				 * For tunnel outer we must set outer IP key
+				 * anyway, even if the specification/mask is
+				 * empty. There is no another way to tell
+				 * kernel about he outer layer protocol.
+				 */
+				mnl_attr_put_u32
+					(nlh, TCA_FLOWER_KEY_ENC_IPV4_SRC,
+					 mask.ipv4->hdr.src_addr);
+				mnl_attr_put_u32
+					(nlh, TCA_FLOWER_KEY_ENC_IPV4_SRC_MASK,
+					 mask.ipv4->hdr.src_addr);
+				assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
+				break;
 			}
 			if (mask.ipv4->hdr.src_addr) {
 				mnl_attr_put_u32
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_IPV4_SRC :
 					 TCA_FLOWER_KEY_IPV4_SRC,
 					 spec.ipv4->hdr.src_addr);
 				mnl_attr_put_u32
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_IPV4_SRC_MASK :
 					 TCA_FLOWER_KEY_IPV4_SRC_MASK,
 					 mask.ipv4->hdr.src_addr);
 			}
 			if (mask.ipv4->hdr.dst_addr) {
 				mnl_attr_put_u32
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_IPV4_DST :
 					 TCA_FLOWER_KEY_IPV4_DST,
 					 spec.ipv4->hdr.dst_addr);
 				mnl_attr_put_u32
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_IPV4_DST_MASK :
 					 TCA_FLOWER_KEY_IPV4_DST_MASK,
 					 mask.ipv4->hdr.dst_addr);
 			}
 			assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
 			break;
-		case RTE_FLOW_ITEM_TYPE_IPV6:
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L3_IPV6;
+		case RTE_FLOW_ITEM_TYPE_IPV6: {
+			bool ipv6_src, ipv6_dst;
+
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L3_IPV6 :
+				      MLX5_FLOW_LAYER_OUTER_L3_IPV6;
 			mask.ipv6 = flow_tcf_item_mask
 				(items, &rte_flow_item_ipv6_mask,
 				 &flow_tcf_mask_supported.ipv6,
@@ -3316,48 +3335,75 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 				 sizeof(flow_tcf_mask_supported.ipv6),
 				 error);
 			assert(mask.ipv6);
-			spec.ipv6 = items->spec;
-			if (!decap.vxlan) {
-				if (!eth_type_set ||
-				    (!vlan_eth_type_set && vlan_present))
-					mnl_attr_put_u16
-						(nlh,
-						 vlan_present ?
-						 TCA_FLOWER_KEY_VLAN_ETH_TYPE :
-						 TCA_FLOWER_KEY_ETH_TYPE,
-						 RTE_BE16(ETH_P_IPV6));
-				eth_type_set = 1;
-				vlan_eth_type_set = 1;
-				if (mask.ipv6 == &flow_tcf_mask_empty.ipv6)
-					break;
-				if (mask.ipv6->hdr.proto) {
-					mnl_attr_put_u8
-						(nlh, TCA_FLOWER_KEY_IP_PROTO,
-						 spec.ipv6->hdr.proto);
-					ip_proto_set = 1;
-				}
+			if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+				assert(inner_etype == RTE_BE16(ETH_P_ALL) ||
+				       inner_etype == RTE_BE16(ETH_P_IPV6));
+				inner_etype = RTE_BE16(ETH_P_IPV6);
+			} else if (outer_etype == RTE_BE16(ETH_P_8021Q)) {
+				assert(vlan_etype == RTE_BE16(ETH_P_ALL) ||
+				       vlan_etype == RTE_BE16(ETH_P_IPV6));
+				vlan_etype = RTE_BE16(ETH_P_IPV6);
 			} else {
-				assert(mask.ipv6 != &flow_tcf_mask_empty.ipv6);
+				assert(outer_etype == RTE_BE16(ETH_P_ALL) ||
+				       outer_etype == RTE_BE16(ETH_P_IPV6));
+				outer_etype = RTE_BE16(ETH_P_IPV6);
 			}
-			if (!IN6_IS_ADDR_UNSPECIFIED(mask.ipv6->hdr.src_addr)) {
-				mnl_attr_put(nlh, decap.vxlan ?
+			spec.ipv6 = items->spec;
+			if (!tunnel_outer && mask.ipv6->hdr.proto) {
+				/*
+				 * No way to set IP protocol for outer tunnel
+				 * layers. Usually it is fixed, for example,
+				 * to UDP for VXLAN/GPE.
+				 */
+				assert(spec.ipv6); /* Mask is not empty. */
+				mnl_attr_put_u8(nlh, TCA_FLOWER_KEY_IP_PROTO,
+						spec.ipv6->hdr.proto);
+				ip_proto_set = 1;
+			}
+			ipv6_dst = !IN6_IS_ADDR_UNSPECIFIED
+						(mask.ipv6->hdr.dst_addr);
+			ipv6_src = !IN6_IS_ADDR_UNSPECIFIED
+						(mask.ipv6->hdr.src_addr);
+			if (mask.ipv6 == &flow_tcf_mask_empty.ipv6 ||
+			     (!ipv6_dst && !ipv6_src)) {
+				if (!tunnel_outer)
+					break;
+				/*
+				 * For tunnel outer we must set outer IP key
+				 * anyway, even if the specification/mask is
+				 * empty. There is no another way to tell
+				 * kernel about he outer layer protocol.
+				 */
+				mnl_attr_put(nlh,
+					     TCA_FLOWER_KEY_ENC_IPV6_SRC,
+					     IPV6_ADDR_LEN,
+					     mask.ipv6->hdr.src_addr);
+				mnl_attr_put(nlh,
+					     TCA_FLOWER_KEY_ENC_IPV6_SRC_MASK,
+					     IPV6_ADDR_LEN,
+					     mask.ipv6->hdr.src_addr);
+				assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
+				break;
+			}
+			if (ipv6_src) {
+				mnl_attr_put(nlh, tunnel_outer ?
 					     TCA_FLOWER_KEY_ENC_IPV6_SRC :
 					     TCA_FLOWER_KEY_IPV6_SRC,
 					     IPV6_ADDR_LEN,
 					     spec.ipv6->hdr.src_addr);
-				mnl_attr_put(nlh, decap.vxlan ?
+				mnl_attr_put(nlh, tunnel_outer ?
 					     TCA_FLOWER_KEY_ENC_IPV6_SRC_MASK :
 					     TCA_FLOWER_KEY_IPV6_SRC_MASK,
 					     IPV6_ADDR_LEN,
 					     mask.ipv6->hdr.src_addr);
 			}
-			if (!IN6_IS_ADDR_UNSPECIFIED(mask.ipv6->hdr.dst_addr)) {
-				mnl_attr_put(nlh, decap.vxlan ?
+			if (ipv6_dst) {
+				mnl_attr_put(nlh, tunnel_outer ?
 					     TCA_FLOWER_KEY_ENC_IPV6_DST :
 					     TCA_FLOWER_KEY_IPV6_DST,
 					     IPV6_ADDR_LEN,
 					     spec.ipv6->hdr.dst_addr);
-				mnl_attr_put(nlh, decap.vxlan ?
+				mnl_attr_put(nlh, tunnel_outer ?
 					     TCA_FLOWER_KEY_ENC_IPV6_DST_MASK :
 					     TCA_FLOWER_KEY_IPV6_DST_MASK,
 					     IPV6_ADDR_LEN,
@@ -3365,8 +3411,11 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			}
 			assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
 			break;
+		}
 		case RTE_FLOW_ITEM_TYPE_UDP:
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L4_UDP;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L4_UDP :
+				      MLX5_FLOW_LAYER_OUTER_L4_UDP;
 			mask.udp = flow_tcf_item_mask
 				(items, &rte_flow_item_udp_mask,
 				 &flow_tcf_mask_supported.udp,
@@ -3375,7 +3424,7 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 				 error);
 			assert(mask.udp);
 			spec.udp = items->spec;
-			if (!decap.vxlan) {
+			if (!tunnel_outer) {
 				if (!ip_proto_set)
 					mnl_attr_put_u8
 						(nlh, TCA_FLOWER_KEY_IP_PROTO,
@@ -3390,24 +3439,24 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			}
 			if (mask.udp->hdr.src_port) {
 				mnl_attr_put_u16
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_UDP_SRC_PORT :
 					 TCA_FLOWER_KEY_UDP_SRC,
 					 spec.udp->hdr.src_port);
 				mnl_attr_put_u16
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_UDP_SRC_PORT_MASK :
 					 TCA_FLOWER_KEY_UDP_SRC_MASK,
 					 mask.udp->hdr.src_port);
 			}
 			if (mask.udp->hdr.dst_port) {
 				mnl_attr_put_u16
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_UDP_DST_PORT :
 					 TCA_FLOWER_KEY_UDP_DST,
 					 spec.udp->hdr.dst_port);
 				mnl_attr_put_u16
-					(nlh, decap.vxlan ?
+					(nlh, tunnel_outer ?
 					 TCA_FLOWER_KEY_ENC_UDP_DST_PORT_MASK :
 					 TCA_FLOWER_KEY_UDP_DST_MASK,
 					 mask.udp->hdr.dst_port);
@@ -3415,7 +3464,9 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
 			break;
 		case RTE_FLOW_ITEM_TYPE_TCP:
-			item_flags |= MLX5_FLOW_LAYER_OUTER_L4_TCP;
+			item_flags |= (item_flags & MLX5_FLOW_LAYER_TUNNEL) ?
+				      MLX5_FLOW_LAYER_INNER_L4_TCP :
+				      MLX5_FLOW_LAYER_OUTER_L4_TCP;
 			mask.tcp = flow_tcf_item_mask
 				(items, &rte_flow_item_tcp_mask,
 				 &flow_tcf_mask_supported.tcp,
@@ -3459,6 +3510,7 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 			break;
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
 			assert(decap.vxlan);
+			tunnel_outer = 0;
 			item_flags |= MLX5_FLOW_LAYER_VXLAN;
 			spec.vxlan = items->spec;
 			mnl_attr_put_u32(nlh,
@@ -3471,6 +3523,34 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 						  RTE_FLOW_ERROR_TYPE_ITEM,
 						  NULL, "item not supported");
 		}
+	}
+	/*
+	 * Set the ether_type flower key and tc rule protocol:
+	 * - if there is nor VLAN neither VXLAN the key is taken from
+	 *   eth item directly or deduced from L3 items.
+	 * - if there is vlan item then key is fixed to 802.1q.
+	 * - if there is vxlan item then key is set to inner tunnel type.
+	 * - simultaneous vlan and vxlan items are prohibited.
+	 */
+	if (outer_etype != RTE_BE16(ETH_P_ALL)) {
+		tcm->tcm_info = TC_H_MAKE((attr->priority + 1) << 16,
+					   outer_etype);
+		if (item_flags & MLX5_FLOW_LAYER_TUNNEL) {
+			if (inner_etype != RTE_BE16(ETH_P_ALL))
+				mnl_attr_put_u16(nlh,
+						 TCA_FLOWER_KEY_ETH_TYPE,
+						 inner_etype);
+		} else {
+			mnl_attr_put_u16(nlh,
+					 TCA_FLOWER_KEY_ETH_TYPE,
+					 outer_etype);
+			if (outer_etype == RTE_BE16(ETH_P_8021Q) &&
+			    vlan_etype != RTE_BE16(ETH_P_ALL))
+				mnl_attr_put_u16(nlh,
+						 TCA_FLOWER_KEY_VLAN_ETH_TYPE,
+						 vlan_etype);
+		}
+		assert(dev_flow->tcf.nlsize >= nlh->nlmsg_len);
 	}
 	na_flower_act = mnl_attr_nest_start(nlh, TCA_FLOWER_ACT);
 	na_act_index_cur = 1;
@@ -3505,6 +3585,10 @@ flow_tcf_translate(struct rte_eth_dev *dev, struct mlx5_flow *dev_flow,
 					mnl_attr_get_payload
 					(mnl_nlmsg_get_payload_tail
 						(nlh)))->ifindex;
+			} else if (decap.hdr) {
+				assert(dev_flow->tcf.tunnel);
+				dev_flow->tcf.tunnel->ifindex_ptr =
+					(unsigned int *)&tcm->tcm_ifindex;
 			}
 			mnl_attr_put(nlh, TCA_MIRRED_PARMS,
 				     sizeof(struct tc_mirred),
@@ -4266,8 +4350,8 @@ flow_tcf_collect_vxlan_cb(const struct nlmsghdr *nlh, void *arg)
 
 /**
  * Cleanup the outer interface. Removes all found vxlan devices
- * attached to specified index, flushes the meigh and local IP
- * datavase.
+ * attached to specified index, flushes the neigh and local IP
+ * database.
  *
  * @param[in] tcf
  *   Context object initialized by mlx5_flow_tcf_context_create().
@@ -4815,6 +4899,7 @@ flow_tcf_vtep_create(struct mlx5_flow_tcf_context *tcf,
 		 * when we do not need it anymore.
 		 */
 		vtep->created = 1;
+		vtep->waitreg = 1;
 	}
 	/* Try to get ifindex of created of pre-existing device. */
 	ret = if_nametoindex(name);
@@ -5236,10 +5321,11 @@ flow_tcf_check_inhw(struct mlx5_flow_tcf_context *tcf,
 static void
 flow_tcf_remove(struct rte_eth_dev *dev, struct rte_flow *flow)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_tcf_context *ctx = priv->tcf_context;
 	struct mlx5_flow *dev_flow;
 	struct nlmsghdr *nlh;
+	struct tcmsg *tcm;
 
 	if (!flow)
 		return;
@@ -5260,10 +5346,53 @@ flow_tcf_remove(struct rte_eth_dev *dev, struct rte_flow *flow)
 				dev_flow);
 			dev_flow->tcf.tunnel->vtep = NULL;
 		}
+		/* Cleanup the rule handle value. */
+		tcm = mnl_nlmsg_get_payload(nlh);
+		tcm->tcm_handle = 0;
 		dev_flow->tcf.applied = 0;
 	}
 }
 
+/**
+ * Fetch the applied rule handle. This is callback routine called by
+ * libmnl mnl_cb_run() in loop for every message in received packet.
+ * When the NLM_F_ECHO flag i sspecified the kernel sends the created
+ * rule descriptor back to the application and we can retrieve the
+ * actual rule handle from updated descriptor.
+ *
+ * @param[in] nlh
+ *   Pointer to reply header.
+ * @param[in, out] arg
+ *   Context pointer for this callback.
+ *
+ * @return
+ *   A positive, nonzero value on success (required by libmnl
+ *   to continue messages processing).
+ */
+static int
+flow_tcf_collect_apply_cb(const struct nlmsghdr *nlh, void *arg)
+{
+	struct nlmsghdr *nlhrq = arg;
+	struct tcmsg *tcmrq = mnl_nlmsg_get_payload(nlhrq);
+	struct tcmsg *tcm = mnl_nlmsg_get_payload(nlh);
+	struct nlattr *na;
+
+	if (nlh->nlmsg_type != RTM_NEWTFILTER ||
+	    nlh->nlmsg_seq != nlhrq->nlmsg_seq)
+		return 1;
+	mnl_attr_for_each(na, nlh, sizeof(*tcm)) {
+		switch (mnl_attr_get_type(na)) {
+		case TCA_KIND:
+			if (strcmp(mnl_attr_get_payload(na), "flower")) {
+				/* Not flower filter, drop entire message. */
+				return 1;
+			}
+			tcmrq->tcm_handle = tcm->tcm_handle;
+			return 1;
+		}
+	}
+	return 1;
+}
 /**
  * Apply flow to E-Switch by sending Netlink message.
  *
@@ -5275,16 +5404,20 @@ flow_tcf_remove(struct rte_eth_dev *dev, struct rte_flow *flow)
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_tcf_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 	       struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_tcf_context *ctx = priv->tcf_context;
 	struct mlx5_flow *dev_flow;
 	struct nlmsghdr *nlh;
+	struct tcmsg *tcm;
+	uint64_t start = 0;
+	uint64_t twait = 0;
+	int ret;
 
 	dev_flow = LIST_FIRST(&flow->dev_flows);
 	/* E-Switch flow can't be expanded. */
@@ -5293,7 +5426,11 @@ flow_tcf_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 		return 0;
 	nlh = dev_flow->tcf.nlh;
 	nlh->nlmsg_type = RTM_NEWTFILTER;
-	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE |
+			   NLM_F_EXCL | NLM_F_ECHO;
+	tcm = mnl_nlmsg_get_payload(nlh);
+	/* Allow kernel to assign handle on its own. */
+	tcm->tcm_handle = 0;
 	if (dev_flow->tcf.tunnel) {
 		/*
 		 * Replace the interface index, target for
@@ -5313,8 +5450,52 @@ flow_tcf_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 				dev_flow->tcf.tunnel->ifindex_org);
 		*dev_flow->tcf.tunnel->ifindex_ptr =
 			dev_flow->tcf.tunnel->vtep->ifindex;
+		if (dev_flow->tcf.tunnel->vtep->waitreg) {
+			/* Clear wait flag for VXLAN port registration. */
+			dev_flow->tcf.tunnel->vtep->waitreg = 0;
+			twait = rte_get_timer_hz();
+			assert(twait > MS_PER_S);
+			twait = twait * MLX5_VXLAN_WAIT_PORT_REG_MS;
+			twait = twait / MS_PER_S;
+			start = rte_get_timer_cycles();
+		}
 	}
-	if (!flow_tcf_nl_ack(ctx, nlh, NULL, NULL)) {
+	/*
+	 * Kernel creates the VXLAN devices and registers UDP ports to
+	 * be hardware offloaded within the NIC kernel drivers. The
+	 * registration process is being performed into context of
+	 * working kernel thread and the race conditions might happen.
+	 * The VXLAN device is created and success is returned to
+	 * calling application, but the UDP port registration process
+	 * is not completed yet. The next applied rule may be rejected
+	 * by the driver with ENOSUP code. We are going to wait a bit,
+	 * allowing registration process to be completed. The waiting
+	 * is performed once after device been created.
+	 */
+	do {
+		struct timespec onems;
+
+		ret = flow_tcf_nl_ack(ctx, nlh,
+				      flow_tcf_collect_apply_cb, nlh);
+		if (!ret || ret != -ENOTSUP || !twait)
+			break;
+		/* Wait one millisecond and try again till timeout. */
+		onems.tv_sec = 0;
+		onems.tv_nsec = NS_PER_S / MS_PER_S;
+		nanosleep(&onems, 0);
+		if ((rte_get_timer_cycles() - start) > twait) {
+			/* Timeout elapsed, try once more and exit. */
+			twait = 0;
+		}
+	} while (true);
+	if (!ret) {
+		if (!tcm->tcm_handle) {
+			flow_tcf_remove(dev, flow);
+			return rte_flow_error_set
+				(error, ENOENT,
+				 RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				 "netlink: rule zero handle returned");
+		}
 		dev_flow->tcf.applied = 1;
 		if (*dev_flow->tcf.ptc_flags & TCA_CLS_FLAGS_SKIP_SW)
 			return 0;
@@ -5713,7 +5894,7 @@ flow_tcf_query_count(struct rte_eth_dev *dev,
 {
 	struct flow_tcf_stats_basic sb_data;
 	struct rte_flow_query_count *qc = data;
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_tcf_context *ctx = priv->tcf_context;
 	struct mnl_socket *nl = ctx->nl;
 	struct mlx5_flow *dev_flow;

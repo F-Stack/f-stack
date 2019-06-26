@@ -125,15 +125,13 @@ ifpga_scan_one(struct rte_rawdev *rawdev,
 				     IFPGA_AFU_BTS);
 			goto end;
 		}
+		afu_pr_conf.pr_enable = 1;
 	} else {
-		IFPGA_BUS_ERR("arg %s is mandatory for ifpga bus",
-			  IFPGA_AFU_BTS);
-		goto end;
+		afu_pr_conf.pr_enable = 0;
 	}
 
 	afu_pr_conf.afu_id.uuid.uuid_low = 0;
 	afu_pr_conf.afu_id.uuid.uuid_high = 0;
-	afu_pr_conf.pr_enable = path?1:0;
 
 	if (ifpga_find_afu_dev(rawdev, &afu_pr_conf.afu_id))
 		goto end;
@@ -308,12 +306,19 @@ ifpga_probe_all_drivers(struct rte_afu_device *afu_dev)
 	}
 
 	TAILQ_FOREACH(drv, &ifpga_afu_drv_list, next) {
-		if (ifpga_probe_one_driver(drv, afu_dev)) {
-			ret = -1;
-			break;
-		}
+		ret = ifpga_probe_one_driver(drv, afu_dev);
+		if (ret < 0)
+			/* negative value is an error */
+			return ret;
+		if (ret > 0)
+			/* positive value means driver doesn't support it */
+			continue;
+		return 0;
 	}
-	return ret;
+	if ((ret > 0) && (afu_dev->driver == NULL))
+		return 0;
+	else
+		return ret;
 }
 
 /*

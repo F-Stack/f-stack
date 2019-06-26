@@ -285,7 +285,7 @@ Inner RSS
 
 Supports RX RSS hashing on Inner headers.
 
-* **[users]    rte_flow_action_rss**: ``level``.
+* **[uses]    rte_flow_action_rss**: ``level``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
 
 
@@ -495,7 +495,7 @@ Supports adding traffic mirroring rules.
 Inline crypto
 -------------
 
-Supports inline crypto processing (eg. inline IPsec). See Security library and PMD documentation for more details.
+Supports inline crypto processing (e.g. inline IPsec). See Security library and PMD documentation for more details.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_SECURITY``,
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_SECURITY``.

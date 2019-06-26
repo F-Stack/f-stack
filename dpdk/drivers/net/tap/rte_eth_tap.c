@@ -67,6 +67,8 @@
 /* IPC key for queue fds sync */
 #define TAP_MP_KEY "tap_mp_sync_queues"
 
+#define TAP_IOV_DEFAULT_MAX 1024
+
 static int tap_devices_count;
 static struct rte_vdev_driver pmd_tap_drv;
 static struct rte_vdev_driver pmd_tun_drv;
@@ -77,9 +79,6 @@ static const char *valid_arguments[] = {
 	ETH_TAP_MAC_ARG,
 	NULL
 };
-
-static unsigned int tap_unit;
-static unsigned int tun_unit;
 
 static char tuntap_name[8];
 
@@ -150,8 +149,6 @@ tun_alloc(struct pmd_internals *pmd, int is_keepalive)
 		IFF_TAP : IFF_TUN | IFF_POINTOPOINT;
 	snprintf(ifr.ifr_name, IFNAMSIZ, "%s", pmd->name);
 
-	TAP_LOG(DEBUG, "ifr_name '%s'", ifr.ifr_name);
-
 	fd = open(TUN_TAP_DEV_PATH, O_RDWR);
 	if (fd < 0) {
 		TAP_LOG(ERR, "Unable to create %s interface", tuntap_name);
@@ -184,6 +181,13 @@ tun_alloc(struct pmd_internals *pmd, int is_keepalive)
 			ifr.ifr_name, strerror(errno));
 		goto error;
 	}
+
+	/*
+	 * Name passed to kernel might be wildcard like dtun%d
+	 * and need to find the resulting device.
+	 */
+	TAP_LOG(DEBUG, "Device name is '%s'", ifr.ifr_name);
+	strlcpy(pmd->name, ifr.ifr_name, RTE_ETH_NAME_MAX_LEN);
 
 	if (is_keepalive) {
 		/*
@@ -281,13 +285,27 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 		l3_len = 4 * (iph->version_ihl & 0xf);
 		if (unlikely(l2_len + l3_len > rte_pktmbuf_data_len(mbuf)))
 			return;
+		/* check that the total length reported by header is not
+		 * greater than the total received size
+		 */
+		if (l2_len + rte_be_to_cpu_16(iph->total_length) >
+				rte_pktmbuf_data_len(mbuf))
+			return;
 
 		cksum = ~rte_raw_cksum(iph, l3_len);
 		mbuf->ol_flags |= cksum ?
 			PKT_RX_IP_CKSUM_BAD :
 			PKT_RX_IP_CKSUM_GOOD;
 	} else if (l3 == RTE_PTYPE_L3_IPV6) {
+		struct ipv6_hdr *iph = l3_hdr;
+
 		l3_len = sizeof(struct ipv6_hdr);
+		/* check that the total length reported by header is not
+		 * greater than the total received size
+		 */
+		if (l2_len + l3_len + rte_be_to_cpu_16(iph->payload_len) >
+				rte_pktmbuf_data_len(mbuf))
+			return;
 	} else {
 		/* IPv6 extensions are not supported */
 		return;
@@ -1310,6 +1328,13 @@ tap_rx_queue_setup(struct rte_eth_dev *dev,
 	struct rx_queue *rxq = &internals->rxq[rx_queue_id];
 	struct rte_mbuf **tmp = &rxq->pool;
 	long iov_max = sysconf(_SC_IOV_MAX);
+
+	if (iov_max <= 0) {
+		TAP_LOG(WARNING,
+			"_SC_IOV_MAX is not defined. Using %d as default",
+			TAP_IOV_DEFAULT_MAX);
+		iov_max = TAP_IOV_DEFAULT_MAX;
+	}
 	uint16_t nb_desc = RTE_MIN(nb_rx_desc, iov_max - 1);
 	struct iovec (*iovecs)[nb_desc + 1];
 	int data_off = RTE_PKTMBUF_HEADROOM;
@@ -1741,6 +1766,7 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, char *tap_name,
 		TAP_LOG(ERR, "Unable to create %s interface", tuntap_name);
 		goto error_exit;
 	}
+	TAP_LOG(DEBUG, "allocated %s", pmd->name);
 
 	ifr.ifr_mtu = dev->data->mtu;
 	if (tap_ioctl(pmd, SIOCSIFMTU, &ifr, 1, LOCAL_AND_REMOTE) < 0)
@@ -1878,10 +1904,10 @@ set_interface_name(const char *key __rte_unused,
 	char *name = (char *)extra_args;
 
 	if (value)
-		strlcpy(name, value, RTE_ETH_NAME_MAX_LEN - 1);
+		strlcpy(name, value, RTE_ETH_NAME_MAX_LEN);
 	else
-		snprintf(name, RTE_ETH_NAME_MAX_LEN - 1, "%s%d",
-			 DEFAULT_TAP_NAME, (tap_unit - 1));
+		/* use tap%d which causes kernel to choose next available */
+		strlcpy(name, DEFAULT_TAP_NAME "%d", RTE_ETH_NAME_MAX_LEN);
 
 	return 0;
 }
@@ -1988,8 +2014,8 @@ rte_pmd_tun_probe(struct rte_vdev_device *dev)
 		return 0;
 	}
 
-	snprintf(tun_name, sizeof(tun_name), "%s%u",
-		 DEFAULT_TUN_NAME, tun_unit++);
+	/* use tun%d which causes kernel to choose next available */
+	strlcpy(tun_name, DEFAULT_TUN_NAME "%d", RTE_ETH_NAME_MAX_LEN);
 
 	if (params && (params[0] != '\0')) {
 		TAP_LOG(DEBUG, "parameters (%s)", params);
@@ -2009,17 +2035,15 @@ rte_pmd_tun_probe(struct rte_vdev_device *dev)
 	}
 	pmd_link.link_speed = ETH_SPEED_NUM_10G;
 
-	TAP_LOG(NOTICE, "Initializing pmd_tun for %s as %s",
-		name, tun_name);
+	TAP_LOG(NOTICE, "Initializing pmd_tun for %s", name);
 
 	ret = eth_dev_tap_create(dev, tun_name, remote_iface, 0,
-		ETH_TUNTAP_TYPE_TUN);
+				 ETH_TUNTAP_TYPE_TUN);
 
 leave:
 	if (ret == -1) {
 		TAP_LOG(ERR, "Failed to create pmd for %s as %s",
 			name, tun_name);
-		tun_unit--; /* Restore the unit number */
 	}
 	rte_kvargs_free(kvlist);
 
@@ -2040,13 +2064,14 @@ tap_mp_attach_queues(const char *port_name, struct rte_eth_dev *dev)
 	int queue, fd_iterator;
 
 	/* Prepare the request */
+	memset(&request, 0, sizeof(request));
 	strlcpy(request.name, TAP_MP_KEY, sizeof(request.name));
 	strlcpy(request_param->port_name, port_name,
 		sizeof(request_param->port_name));
 	request.len_param = sizeof(*request_param);
 	/* Send request and receive reply */
 	ret = rte_mp_request_sync(&request, &replies, &timeout);
-	if (ret < 0) {
+	if (ret < 0 || replies.nb_received != 1) {
 		TAP_LOG(ERR, "Failed to request queues from primary: %d",
 			rte_errno);
 		return -1;
@@ -2056,6 +2081,11 @@ tap_mp_attach_queues(const char *port_name, struct rte_eth_dev *dev)
 	TAP_LOG(DEBUG, "Received IPC reply for %s", reply_param->port_name);
 
 	/* Attach the queues from received file descriptors */
+	if (reply_param->rxq_count + reply_param->txq_count != reply->num_fds) {
+		TAP_LOG(ERR, "Unexpected number of fds received");
+		return -1;
+	}
+
 	dev->data->nb_rx_queues = reply_param->rxq_count;
 	dev->data->nb_tx_queues = reply_param->txq_count;
 	fd_iterator = 0;
@@ -2063,7 +2093,7 @@ tap_mp_attach_queues(const char *port_name, struct rte_eth_dev *dev)
 		process_private->rxq_fds[queue] = reply->fds[fd_iterator++];
 	for (queue = 0; queue < reply_param->txq_count; queue++)
 		process_private->txq_fds[queue] = reply->fds[fd_iterator++];
-
+	free(reply);
 	return 0;
 }
 
@@ -2096,19 +2126,24 @@ tap_mp_sync_queues(const struct rte_mp_msg *request, const void *peer)
 	/* Fill file descriptors for all queues */
 	reply.num_fds = 0;
 	reply_param->rxq_count = 0;
+	if (dev->data->nb_rx_queues + dev->data->nb_tx_queues >
+			RTE_MP_MAX_FD_NUM){
+		TAP_LOG(ERR, "Number of rx/tx queues exceeds max number of fds");
+		return -1;
+	}
+
 	for (queue = 0; queue < dev->data->nb_rx_queues; queue++) {
 		reply.fds[reply.num_fds++] = process_private->rxq_fds[queue];
 		reply_param->rxq_count++;
 	}
 	RTE_ASSERT(reply_param->rxq_count == dev->data->nb_rx_queues);
-	RTE_ASSERT(reply_param->txq_count == dev->data->nb_tx_queues);
-	RTE_ASSERT(reply.num_fds <= RTE_MP_MAX_FD_NUM);
 
 	reply_param->txq_count = 0;
 	for (queue = 0; queue < dev->data->nb_tx_queues; queue++) {
 		reply.fds[reply.num_fds++] = process_private->txq_fds[queue];
 		reply_param->txq_count++;
 	}
+	RTE_ASSERT(reply_param->txq_count == dev->data->nb_tx_queues);
 
 	/* Send reply */
 	strlcpy(reply.name, request->name, sizeof(reply.name));
@@ -2175,8 +2210,9 @@ rte_pmd_tap_probe(struct rte_vdev_device *dev)
 	}
 
 	speed = ETH_SPEED_NUM_10G;
-	snprintf(tap_name, sizeof(tap_name), "%s%u",
-		 DEFAULT_TAP_NAME, tap_unit++);
+
+	/* use tap%d which causes kernel to choose next available */
+	strlcpy(tap_name, DEFAULT_TAP_NAME "%d", RTE_ETH_NAME_MAX_LEN);
 	memset(remote_iface, 0, RTE_ETH_NAME_MAX_LEN);
 
 	if (params && (params[0] != '\0')) {
@@ -2240,7 +2276,6 @@ leave:
 				rte_mp_action_unregister(TAP_MP_KEY);
 			tap_devices_count--;
 		}
-		tap_unit--;		/* Restore the unit number */
 	}
 	rte_kvargs_free(kvlist);
 

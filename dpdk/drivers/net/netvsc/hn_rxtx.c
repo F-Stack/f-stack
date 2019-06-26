@@ -123,7 +123,7 @@ hn_update_packet_stats(struct hn_stats *stats, const struct rte_mbuf *m)
 			stats->size_bins[0]++;
 		else if (s < 1519)
 			stats->size_bins[6]++;
-		else if (s >= 1519)
+		else
 			stats->size_bins[7]++;
 	}
 
@@ -197,6 +197,17 @@ hn_tx_pool_init(struct rte_eth_dev *dev)
 
 	hv->tx_pool = mp;
 	return 0;
+}
+
+void
+hn_tx_pool_uninit(struct rte_eth_dev *dev)
+{
+	struct hn_data *hv = dev->data->dev_private;
+
+	if (hv->tx_pool) {
+		rte_mempool_free(hv->tx_pool);
+		hv->tx_pool = NULL;
+	}
 }
 
 static void hn_reset_txagg(struct hn_tx_queue *txq)
@@ -1294,8 +1305,8 @@ hn_xmit_pkts(void *ptxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		return 0;
 
 	/* Transmit over VF if present and up */
-	vf_dev = hv->vf_dev;
-	rte_compiler_barrier();
+	vf_dev = hn_get_vf_dev(hv);
+
 	if (vf_dev && vf_dev->data->dev_started) {
 		void *sub_q = vf_dev->data->tx_queues[queue_id];
 
@@ -1374,6 +1385,24 @@ fail:
 	return nb_tx;
 }
 
+static uint16_t
+hn_recv_vf(uint16_t vf_port, const struct hn_rx_queue *rxq,
+	   struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
+{
+	uint16_t i, n;
+
+	if (unlikely(nb_pkts == 0))
+		return 0;
+
+	n = rte_eth_rx_burst(vf_port, rxq->queue_id, rx_pkts, nb_pkts);
+
+	/* relabel the received mbufs */
+	for (i = 0; i < n; i++)
+		rx_pkts[i]->port = rxq->port_id;
+
+	return n;
+}
+
 uint16_t
 hn_recv_pkts(void *prxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
@@ -1385,30 +1414,21 @@ hn_recv_pkts(void *prxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	if (unlikely(hv->closed))
 		return 0;
 
-	vf_dev = hv->vf_dev;
-	rte_compiler_barrier();
+	/* Receive from VF if present and up */
+	vf_dev = hn_get_vf_dev(hv);
 
-	if (vf_dev && vf_dev->data->dev_started) {
-		/* Normally, with SR-IOV the ring buffer will be empty */
+	/* Check for new completions */
+	if (likely(rte_ring_count(rxq->rx_ring) < nb_pkts))
 		hn_process_events(hv, rxq->queue_id, 0);
 
-		/* Get mbufs some bufs off of staging ring */
-		nb_rcv = rte_ring_sc_dequeue_burst(rxq->rx_ring,
-						   (void **)rx_pkts,
-						   nb_pkts / 2, NULL);
-		/* And rest off of VF */
-		nb_rcv += rte_eth_rx_burst(vf_dev->data->port_id,
-					   rxq->queue_id,
-					   rx_pkts + nb_rcv, nb_pkts - nb_rcv);
-	} else {
-		/* If receive ring is not full then get more */
-		if (rte_ring_count(rxq->rx_ring) < nb_pkts)
-			hn_process_events(hv, rxq->queue_id, 0);
+	/* Always check the vmbus path for multicast and new flows */
+	nb_rcv = rte_ring_sc_dequeue_burst(rxq->rx_ring,
+					   (void **)rx_pkts, nb_pkts, NULL);
 
-		nb_rcv = rte_ring_sc_dequeue_burst(rxq->rx_ring,
-						   (void **)rx_pkts,
-						   nb_pkts, NULL);
-	}
+	/* If VF is available, check that as well */
+	if (vf_dev && vf_dev->data->dev_started)
+		nb_rcv += hn_recv_vf(vf_dev->data->port_id, rxq,
+				     rx_pkts + nb_rcv, nb_pkts - nb_rcv);
 
 	return nb_rcv;
 }

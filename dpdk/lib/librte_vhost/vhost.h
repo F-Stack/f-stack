@@ -393,8 +393,10 @@ vq_is_packed(struct virtio_net *dev)
 static inline bool
 desc_is_avail(struct vring_packed_desc *desc, bool wrap_counter)
 {
-	return wrap_counter == !!(desc->flags & VRING_DESC_F_AVAIL) &&
-		wrap_counter != !!(desc->flags & VRING_DESC_F_USED);
+	uint16_t flags = *((volatile uint16_t *) &desc->flags);
+
+	return wrap_counter == !!(flags & VRING_DESC_F_AVAIL) &&
+		wrap_counter != !!(flags & VRING_DESC_F_USED);
 }
 
 #define VHOST_LOG_PAGE	4096
@@ -684,16 +686,20 @@ vhost_vring_call_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX)) {
 		uint16_t old = vq->signalled_used;
 		uint16_t new = vq->last_used_idx;
+		bool signalled_used_valid = vq->signalled_used_valid;
+
+		vq->signalled_used = new;
+		vq->signalled_used_valid = true;
 
 		VHOST_LOG_DEBUG(VHOST_DATA, "%s: used_event_idx=%d, old=%d, new=%d\n",
 			__func__,
 			vhost_used_event(vq),
 			old, new);
-		if (vhost_need_event(vhost_used_event(vq), new, old)
-			&& (vq->callfd >= 0)) {
-			vq->signalled_used = vq->last_used_idx;
+
+		if ((vhost_need_event(vhost_used_event(vq), new, old) &&
+					(vq->callfd >= 0)) ||
+				unlikely(!signalled_used_valid))
 			eventfd_write(vq->callfd, (eventfd_t) 1);
-		}
 	} else {
 		/* Kick the guest if necessary. */
 		if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
@@ -751,6 +757,40 @@ vhost_vring_call_packed(struct virtio_net *dev, struct vhost_virtqueue *vq)
 kick:
 	if (kick)
 		eventfd_write(vq->callfd, (eventfd_t)1);
+}
+
+static __rte_always_inline void
+restore_mbuf(struct rte_mbuf *m)
+{
+	uint32_t mbuf_size, priv_size;
+
+	while (m) {
+		priv_size = rte_pktmbuf_priv_size(m->pool);
+		mbuf_size = sizeof(struct rte_mbuf) + priv_size;
+		/* start of buffer is after mbuf structure and priv data */
+
+		m->buf_addr = (char *)m + mbuf_size;
+		m->buf_iova = rte_mempool_virt2iova(m) + mbuf_size;
+		m = m->next;
+	}
+}
+
+static __rte_always_inline bool
+mbuf_is_consumed(struct rte_mbuf *m)
+{
+	while (m) {
+		if (rte_mbuf_refcnt_read(m) > 1)
+			return false;
+		m = m->next;
+	}
+
+	return true;
+}
+
+static __rte_always_inline void
+put_zmbuf(struct zcopy_mbuf *zmbuf)
+{
+	zmbuf->in_use = 0;
 }
 
 #endif /* _VHOST_NET_CDEV_H_ */

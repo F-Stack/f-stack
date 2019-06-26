@@ -79,7 +79,7 @@ const struct supported_cipher_algo cipher_algos[] = {
 		.keyword = "aes-128-ctr",
 		.algo = RTE_CRYPTO_CIPHER_AES_CTR,
 		.iv_len = 8,
-		.block_size = 16, /* XXX AESNI MB limition, should be 4 */
+		.block_size = 4,
 		.key_len = 20
 	},
 	{
@@ -125,11 +125,11 @@ const struct supported_aead_algo aead_algos[] = {
 	}
 };
 
-struct ipsec_sa sa_out[IPSEC_SA_MAX_ENTRIES];
-uint32_t nb_sa_out;
+static struct ipsec_sa sa_out[IPSEC_SA_MAX_ENTRIES];
+static uint32_t nb_sa_out;
 
-struct ipsec_sa sa_in[IPSEC_SA_MAX_ENTRIES];
-uint32_t nb_sa_in;
+static struct ipsec_sa sa_in[IPSEC_SA_MAX_ENTRIES];
+static uint32_t nb_sa_in;
 
 static const struct supported_cipher_algo *
 find_match_cipher_algo(const char *cipher_keyword)
@@ -630,7 +630,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 	*ri = *ri + 1;
 }
 
-static inline void
+static void
 print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 {
 	uint32_t i;
@@ -687,7 +687,22 @@ print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 		}
 		break;
 	case TRANSPORT:
-		printf("Transport");
+		printf("Transport ");
+		break;
+	}
+	printf(" type:");
+	switch (sa->type) {
+	case RTE_SECURITY_ACTION_TYPE_NONE:
+		printf("no-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO:
+		printf("inline-crypto-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL:
+		printf("inline-protocol-offload ");
+		break;
+	case RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL:
+		printf("lookaside-protocol-offload ");
 		break;
 	}
 	printf("\n");
@@ -714,8 +729,8 @@ sa_create(const char *name, int32_t socket_id)
 	snprintf(s, sizeof(s), "%s_%u", name, socket_id);
 
 	/* Create SA array table */
-	printf("Creating SA context with %u maximum entries\n",
-			IPSEC_SA_MAX_ENTRIES);
+	printf("Creating SA context with %u maximum entries on socket %d\n",
+			IPSEC_SA_MAX_ENTRIES, socket_id);
 
 	mz_size = sizeof(struct sa_ctx);
 	mz = rte_memzone_reserve(s, mz_size, socket_id,
@@ -901,6 +916,31 @@ sa_in_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 	return sa_add_rules(sa_ctx, entries, nb_entries, 1);
 }
 
+/*
+ * Walk through all SA rules to find an SA with given SPI
+ */
+int
+sa_spi_present(uint32_t spi, int inbound)
+{
+	uint32_t i, num;
+	const struct ipsec_sa *sar;
+
+	if (inbound != 0) {
+		sar = sa_in;
+		num = nb_sa_in;
+	} else {
+		sar = sa_out;
+		num = nb_sa_out;
+	}
+
+	for (i = 0; i != num; i++) {
+		if (sar[i].spi == spi)
+			return i;
+	}
+
+	return -ENOENT;
+}
+
 void
 sa_init(struct socket_ctx *ctx, int32_t socket_id)
 {
@@ -947,10 +987,15 @@ int
 inbound_sa_check(struct sa_ctx *sa_ctx, struct rte_mbuf *m, uint32_t sa_idx)
 {
 	struct ipsec_mbuf_metadata *priv;
+	struct ipsec_sa *sa;
 
 	priv = get_priv(m);
+	sa = priv->sa;
+	if (sa != NULL)
+		return (sa_ctx->sa[sa_idx].spi == sa->spi);
 
-	return (sa_ctx->sa[sa_idx].spi == priv->sa->spi);
+	RTE_LOG(ERR, IPSEC, "SA not saved in private data\n");
+	return 0;
 }
 
 static inline void

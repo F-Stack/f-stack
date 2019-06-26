@@ -242,7 +242,8 @@ qat_sym_session_configure_cipher(struct rte_cryptodev *dev,
 		session->qat_mode = ICP_QAT_HW_CIPHER_ECB_MODE;
 		break;
 	case RTE_CRYPTO_CIPHER_NULL:
-		session->qat_mode = ICP_QAT_HW_CIPHER_ECB_MODE;
+		session->qat_cipher_alg = ICP_QAT_HW_CIPHER_ALGO_NULL;
+		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		break;
 	case RTE_CRYPTO_CIPHER_KASUMI_F8:
 		if (qat_sym_validate_kasumi_key(cipher_xform->key.length,
@@ -1143,8 +1144,8 @@ static int qat_sym_do_precomputes(enum icp_qat_hw_auth_algo hash_alg,
 	}
 
 	block_size = qat_hash_get_block_size(hash_alg);
-	if (block_size <= 0)
-		return -EFAULT;
+	if (block_size < 0)
+		return block_size;
 	/* init ipad and opad from key and xor with fixed values */
 	memset(ipad, 0, block_size);
 	memset(opad, 0, block_size);
@@ -1488,11 +1489,17 @@ int qat_sym_session_aead_create_cd_auth(struct qat_sym_session *cdesc,
 		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_KASUMI_F9
 		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3
 		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_AES_XCBC_MAC
+		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_AES_CBC_MAC
+		|| cdesc->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_NULL
 			)
 		hash->auth_counter.counter = 0;
-	else
-		hash->auth_counter.counter = rte_bswap32(
-				qat_hash_get_block_size(cdesc->qat_hash_alg));
+	else {
+		int block_size = qat_hash_get_block_size(cdesc->qat_hash_alg);
+
+		if (block_size < 0)
+			return block_size;
+		hash->auth_counter.counter = rte_bswap32(block_size);
+	}
 
 	cdesc->cd_cur_ptr += sizeof(struct icp_qat_hw_auth_setup);
 

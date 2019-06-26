@@ -1799,6 +1799,9 @@ process_openssl_modinv_op(struct rte_crypto_op *cop,
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	}
 
+	BN_clear(res);
+	BN_clear(base);
+
 	return 0;
 }
 
@@ -1820,16 +1823,19 @@ process_openssl_modexp_op(struct rte_crypto_op *cop,
 		return -1;
 	}
 
-	base = BN_bin2bn((const unsigned char *)op->modinv.base.data,
-			op->modinv.base.length, base);
+	base = BN_bin2bn((const unsigned char *)op->modex.base.data,
+			op->modex.base.length, base);
 
 	if (BN_mod_exp(res, base, sess->u.e.exp,
 				sess->u.e.mod, sess->u.e.ctx)) {
-		op->modinv.base.length = BN_bn2bin(res, op->modinv.base.data);
+		op->modex.base.length = BN_bn2bin(res, op->modex.base.data);
 		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 	} else {
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	}
+
+	BN_clear(res);
+	BN_clear(base);
 
 	return 0;
 }

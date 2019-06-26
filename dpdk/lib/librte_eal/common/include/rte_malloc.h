@@ -111,7 +111,7 @@ rte_calloc(const char *type, size_t num, size_t size, unsigned align);
 /**
  * Replacement function for realloc(), using huge-page memory. Reserved area
  * memory is resized, preserving contents. In NUMA systems, the new area
- * resides on the same NUMA socket as the old area.
+ * may not reside on the same NUMA node as the old one.
  *
  * @param ptr
  *   Pointer to already allocated memory
@@ -251,6 +251,9 @@ rte_malloc_validate(const void *ptr, size_t *size);
 /**
  * Get heap statistics for the specified heap.
  *
+ * @note This function is not thread-safe with respect to
+ *    ``rte_malloc_heap_create()``/``rte_malloc_heap_destroy()`` functions.
+ *
  * @param socket
  *   An unsigned integer specifying the socket to get heap statistics for
  * @param socket_stats
@@ -282,9 +285,9 @@ rte_malloc_get_socket_stats(int socket,
  * @param heap_name
  *   Name of the heap to add memory chunk to
  * @param va_addr
- *   Start of virtual area to add to the heap
+ *   Start of virtual area to add to the heap. Must be aligned by ``page_sz``.
  * @param len
- *   Length of virtual area to add to the heap
+ *   Length of virtual area to add to the heap. Must be aligned by ``page_sz``.
  * @param iova_addrs
  *   Array of page IOVA addresses corresponding to each page in this memory
  *   area. Can be NULL, in which case page IOVA addresses will be set to
@@ -461,6 +464,9 @@ rte_malloc_heap_socket_is_external(int socket_id);
  * Dump for the specified type to a file. If the type argument is
  * NULL, all memory types will be dumped.
  *
+ * @note This function is not thread-safe with respect to
+ *    ``rte_malloc_heap_create()``/``rte_malloc_heap_destroy()`` functions.
+ *
  * @param f
  *   A pointer to a file for output
  * @param type
@@ -472,6 +478,9 @@ rte_malloc_dump_stats(FILE *f, const char *type);
 
 /**
  * Dump contents of all malloc heaps to a file.
+ *
+ * @note This function is not thread-safe with respect to
+ *    ``rte_malloc_heap_create()``/``rte_malloc_heap_destroy()`` functions.
  *
  * @param f
  *   A pointer to a file for output

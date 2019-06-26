@@ -49,7 +49,7 @@ rte_vdpa_register_device(struct rte_vdpa_dev_addr *addr,
 	char device_name[MAX_VDPA_NAME_LEN];
 	int i;
 
-	if (vdpa_device_num >= MAX_VHOST_DEVICE)
+	if (vdpa_device_num >= MAX_VHOST_DEVICE || addr == NULL || ops == NULL)
 		return -1;
 
 	for (i = 0; i < MAX_VHOST_DEVICE; i++) {
@@ -66,7 +66,7 @@ rte_vdpa_register_device(struct rte_vdpa_dev_addr *addr,
 	if (i == MAX_VHOST_DEVICE)
 		return -1;
 
-	sprintf(device_name, "vdpa-dev-%d", i);
+	snprintf(device_name, sizeof(device_name), "vdpa-dev-%d", i);
 	dev = rte_zmalloc(device_name, sizeof(struct rte_vdpa_device),
 			RTE_CACHE_LINE_SIZE);
 	if (!dev)
@@ -98,6 +98,9 @@ rte_vdpa_find_device_id(struct rte_vdpa_dev_addr *addr)
 {
 	struct rte_vdpa_device *dev;
 	int i;
+
+	if (addr == NULL)
+		return -1;
 
 	for (i = 0; i < MAX_VHOST_DEVICE; ++i) {
 		dev = vdpa_devices[i];

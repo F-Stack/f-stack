@@ -2,7 +2,7 @@
 # Copyright(c) 2017 Intel Corporation
 
 project('DPDK', 'C',
-	version: '18.11.0',
+	version: '18.11.2',
 	license: 'BSD',
 	default_options: ['buildtype=release', 'default_library=static'],
 	meson_version: '>= 0.41'
@@ -69,21 +69,16 @@ configure_file(output: build_cfg,
 # them.
 dpdk_drivers = ['-Wl,--whole-archive'] + dpdk_drivers + ['-Wl,--no-whole-archive']
 
-# driver .so files often depend upon the bus drivers for their connect bus,
-# e.g. ixgbe depends on librte_bus_pci. This means that the bus drivers need
-# to be in the library path, so symlink the drivers from the main lib directory.
-meson.add_install_script('buildtools/symlink-drivers-solibs.sh',
-		driver_install_path,
-		get_option('libdir'))
-
 pkg = import('pkgconfig')
 pkg.generate(name: meson.project_name(),
 	filebase: 'lib' + meson.project_name().to_lower(),
 	version: meson.project_version(),
 	libraries: dpdk_libraries,
-	libraries_private: dpdk_drivers + dpdk_libraries +
+	libraries_private: dpdk_drivers + dpdk_static_libraries +
 			['-Wl,-Bdynamic'] + dpdk_extra_ldflags,
-	description: 'The Data Plane Development Kit (DPDK)',
+	description: '''The Data Plane Development Kit (DPDK).
+Note that CFLAGS might contain an -march flag higher than typical baseline.
+This is required for a number of static inline functions in the public headers.''',
 	subdirs: [get_option('include_subdir_arch'), '.'],
 	extra_cflags: ['-include', 'rte_config.h'] + machine_args
 )

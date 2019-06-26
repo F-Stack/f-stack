@@ -178,7 +178,7 @@ int rte_vfio_noiommu_is_enabled(void);
  * an error on BSD.
  *
  * @param vfio_group_fd
- *   VFIO Grouup FD.
+ *   VFIO Group FD.
  *
  * @return
  *   0 on success.
@@ -290,6 +290,10 @@ rte_vfio_get_group_fd(int iommu_group_num);
  * @note Any newly allocated DPDK memory will not be mapped into these
  *       containers by default, user needs to manage DMA mappings for
  *       any container created by this API.
+ *
+ * @note When creating containers using this API, the container will only be
+ *       available in the process that has created it. Sharing containers and
+ *       devices between multiple processes is not supported.
  *
  * @return
  *   the container fd if successful

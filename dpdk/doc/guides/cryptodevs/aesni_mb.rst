@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2015-2017 Intel Corporation.
+    Copyright(c) 2015-2018 Intel Corporation.
 
 AESN-NI Multi Buffer Crypto Poll Mode Driver
 ============================================
@@ -51,6 +51,8 @@ Limitations
 
 * Chained mbufs are not supported.
 * Only in-place is currently supported (destination address is the same as source address).
+* RTE_CRYPTO_AEAD_AES_GCM only works properly when the multi-buffer library is
+  0.51.0 or newer.
 
 
 Installation
@@ -59,8 +61,8 @@ Installation
 To build DPDK with the AESNI_MB_PMD the user is required to download the multi-buffer
 library from `here <https://github.com/01org/intel-ipsec-mb>`_
 and compile it on their user system before building DPDK.
-The latest version of the library supported by this PMD is v0.50, which
-can be downloaded from `<https://github.com/01org/intel-ipsec-mb/archive/v0.50.zip>`_.
+The latest version of the library supported by this PMD is v0.51, which
+can be downloaded from `<https://github.com/01org/intel-ipsec-mb/archive/v0.51.zip>`.
 
 .. code-block:: console
 
@@ -123,7 +125,7 @@ Extra notes
 For AES Counter mode (AES-CTR), the library supports two different sizes for Initialization
 Vector (IV):
 
-* 12 bytes: used mainly for IPSec, as it requires 12 bytes from the user, which internally
+* 12 bytes: used mainly for IPsec, as it requires 12 bytes from the user, which internally
   are appended the counter block (4 bytes), which is set to 1 for the first block
   (no padding required from the user)
 

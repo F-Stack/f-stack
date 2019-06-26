@@ -39,6 +39,8 @@ test_sources = files('commands.c',
 	'test_event_eth_tx_adapter.c',
 	'test_event_timer_adapter.c',
 	'test_eventdev.c',
+	'test_external_mem.c',
+	'test_fbarray.c',
 	'test_func_reentrancy.c',
 	'test_flow_classify.c',
 	'test_hash.c',
@@ -152,7 +154,6 @@ test_names = [
 	'cycles_autotest',
 	'debug_autotest',
 	'delay_us_sleep_autotest',
-	'devargs_autotest',
 	'distributor_autotest',
 	'distributor_perf_autotest',
 	'eal_flags_autotest',
@@ -170,6 +171,7 @@ test_names = [
 	'eventdev_octeontx_autotest',
 	'eventdev_sw_autotest',
 	'external_mem_autotest',
+	'fbarray_autotest',
 	'func_reentrancy_autotest',
 	'flow_classify_autotest',
 	'hash_autotest',
@@ -260,7 +262,7 @@ if cc.has_argument('-Wno-format-truncation')
 endif
 
 # specify -D_GNU_SOURCE unconditionally
-default_cflags += '-D_GNU_SOURCE'
+cflags += '-D_GNU_SOURCE'
 
 test_dep_objs = []
 compress_test_dep = dependency('zlib', required: false)

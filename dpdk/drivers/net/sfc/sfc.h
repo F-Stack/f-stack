@@ -149,6 +149,8 @@ struct sfc_port {
 	uint64_t			mac_stats_last_request_timestamp;
 
 	uint32_t		mac_stats_mask[EFX_MAC_STATS_MASK_NPAGES];
+
+	uint64_t			ipackets;
 };
 
 struct sfc_rss_hf_rte_to_efx {
@@ -251,7 +253,7 @@ struct sfc_adapter {
 
 	/*
 	 * Shared memory copy of the Tx datapath name to be used by
-	 * the secondary process to find Rx datapath to be used.
+	 * the secondary process to find Tx datapath to be used.
 	 */
 	char				*dp_tx_name;
 	const struct sfc_dp_tx		*dp_tx;
@@ -309,7 +311,7 @@ int sfc_dma_alloc(const struct sfc_adapter *sa, const char *name, uint16_t id,
 		  size_t len, int socket_id, efsys_mem_t *esmp);
 void sfc_dma_free(const struct sfc_adapter *sa, efsys_mem_t *esmp);
 
-uint32_t sfc_register_logtype(struct sfc_adapter *sa,
+uint32_t sfc_register_logtype(const struct rte_pci_addr *pci_addr,
 			      const char *lt_prefix_str,
 			      uint32_t ll_default);
 

@@ -250,52 +250,53 @@ dpaa_clean_device_list(void)
 
 int rte_dpaa_portal_init(void *arg)
 {
-	cpu_set_t cpuset;
 	pthread_t id;
-	uint32_t cpu = rte_lcore_id();
+	unsigned int cpu, lcore = rte_lcore_id();
 	int ret;
 	struct dpaa_portal *dpaa_io_portal;
 
 	BUS_INIT_FUNC_TRACE();
 
-	if ((size_t)arg == 1 || cpu == LCORE_ID_ANY)
-		cpu = rte_get_master_lcore();
-	/* if the core id is not supported */
+	if ((size_t)arg == 1 || lcore == LCORE_ID_ANY)
+		lcore = rte_get_master_lcore();
 	else
-		if (cpu >= RTE_MAX_LCORE)
+		if (lcore >= RTE_MAX_LCORE)
 			return -1;
 
-	/* Set CPU affinity for this thread */
-	CPU_ZERO(&cpuset);
-	CPU_SET(cpu, &cpuset);
+	cpu = lcore_config[lcore].core_id;
+
+	/* Set CPU affinity for this thread.*/
 	id = pthread_self();
-	ret = pthread_setaffinity_np(id, sizeof(cpu_set_t), &cpuset);
+	ret = pthread_setaffinity_np(id, sizeof(cpu_set_t),
+			&lcore_config[lcore].cpuset);
 	if (ret) {
-		DPAA_BUS_LOG(ERR, "pthread_setaffinity_np failed on "
-			"core :%d with ret: %d", cpu, ret);
+		DPAA_BUS_LOG(ERR, "pthread_setaffinity_np failed on core :%u"
+			     " (lcore=%u) with ret: %d", cpu, lcore, ret);
 		return ret;
 	}
 
 	/* Initialise bman thread portals */
 	ret = bman_thread_init();
 	if (ret) {
-		DPAA_BUS_LOG(ERR, "bman_thread_init failed on "
-			"core %d with ret: %d", cpu, ret);
+		DPAA_BUS_LOG(ERR, "bman_thread_init failed on core %u"
+			     " (lcore=%u) with ret: %d", cpu, lcore, ret);
 		return ret;
 	}
 
-	DPAA_BUS_LOG(DEBUG, "BMAN thread initialized");
+	DPAA_BUS_LOG(DEBUG, "BMAN thread initialized - CPU=%d lcore=%d",
+		     cpu, lcore);
 
 	/* Initialise qman thread portals */
 	ret = qman_thread_init();
 	if (ret) {
-		DPAA_BUS_LOG(ERR, "bman_thread_init failed on "
-			"core %d with ret: %d", cpu, ret);
+		DPAA_BUS_LOG(ERR, "qman_thread_init failed on core %u"
+			    " (lcore=%u) with ret: %d", cpu, lcore, ret);
 		bman_thread_finish();
 		return ret;
 	}
 
-	DPAA_BUS_LOG(DEBUG, "QMAN thread initialized");
+	DPAA_BUS_LOG(DEBUG, "QMAN thread initialized - CPU=%d lcore=%d",
+		     cpu, lcore);
 
 	dpaa_io_portal = rte_malloc(NULL, sizeof(struct dpaa_portal),
 				    RTE_CACHE_LINE_SIZE);
@@ -312,8 +313,8 @@ int rte_dpaa_portal_init(void *arg)
 
 	ret = pthread_setspecific(dpaa_portal_key, (void *)dpaa_io_portal);
 	if (ret) {
-		DPAA_BUS_LOG(ERR, "pthread_setspecific failed on "
-			    "core %d with ret: %d", cpu, ret);
+		DPAA_BUS_LOG(ERR, "pthread_setspecific failed on core %u"
+			     " (lcore=%u) with ret: %d", cpu, lcore, ret);
 		dpaa_portal_finish(NULL);
 
 		return ret;
@@ -542,6 +543,10 @@ rte_dpaa_bus_probe(void)
 	unsigned int svr_ver;
 	int probe_all = rte_dpaa_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST;
 
+	/* If DPAA bus is not present nothing needs to be done */
+	if (TAILQ_EMPTY(&rte_dpaa_bus.device_list))
+		return 0;
+
 	svr_file = fopen(DPAA_SOC_ID_FILE, "r");
 	if (svr_file) {
 		if (fscanf(svr_file, "svr:%x", &svr_ver) > 0)
@@ -586,8 +591,7 @@ rte_dpaa_bus_probe(void)
 	/* Register DPAA mempool ops only if any DPAA device has
 	 * been detected.
 	 */
-	if (!TAILQ_EMPTY(&rte_dpaa_bus.device_list))
-		rte_mbuf_set_platform_mempool_ops(DPAA_MEMPOOL_OPS_NAME);
+	rte_mbuf_set_platform_mempool_ops(DPAA_MEMPOOL_OPS_NAME);
 
 	return 0;
 }

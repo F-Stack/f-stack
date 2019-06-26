@@ -566,7 +566,10 @@ nfp_set_mac_addr(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 
 	/* Signal the NIC about the change */
 	update = NFP_NET_CFG_UPDATE_MACADDR;
-	ctrl = hw->ctrl | NFP_NET_CFG_CTRL_LIVE_ADDR;
+	ctrl = hw->ctrl;
+	if ((hw->ctrl & NFP_NET_CFG_CTRL_ENABLE) &&
+	    (hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR))
+		ctrl |= NFP_NET_CFG_CTRL_LIVE_ADDR;
 	if (nfp_net_reconfig(hw, ctrl, update) < 0) {
 		PMD_INIT_LOG(INFO, "MAC address update failed");
 		return -EIO;
@@ -758,7 +761,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 		return -EIO;
 
 	/*
-	 * Allocating rte mbuffs for configured rx queues.
+	 * Allocating rte mbufs for configured rx queues.
 	 * This requires queues being enabled before
 	 */
 	if (nfp_net_rx_freelist_setup(dev) < 0) {
@@ -1487,7 +1490,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	if (rxq == NULL)
 		return -ENOMEM;
 
-	/* Hw queues mapping based on firmware confifguration */
+	/* Hw queues mapping based on firmware configuration */
 	rxq->qidx = queue_idx;
 	rxq->fl_qcidx = queue_idx * hw->stride_rx;
 	rxq->rx_qcidx = rxq->fl_qcidx + (hw->stride_rx - 1);
@@ -1519,7 +1522,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 				   socket_id);
 
 	if (tz == NULL) {
-		PMD_DRV_LOG(ERR, "Error allocatig rx dma");
+		PMD_DRV_LOG(ERR, "Error allocating rx dma");
 		nfp_net_rx_queue_release(rxq);
 		return -ENOMEM;
 	}
@@ -1906,7 +1909,7 @@ nfp_net_mbuf_alloc_failed(struct nfp_net_rxq *rxq)
 /*
  * RX path design:
  *
- * There are some decissions to take:
+ * There are some decisions to take:
  * 1) How to check DD RX descriptors bit
  * 2) How and when to allocate new mbufs
  *
@@ -1976,7 +1979,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rte_rmb();
 
 		/*
-		 * We got a packet. Let's alloc a new mbuff for refilling the
+		 * We got a packet. Let's alloc a new mbuf for refilling the
 		 * free descriptor ring as soon as possible
 		 */
 		new_mb = rte_pktmbuf_alloc(rxq->mem_pool);
@@ -1991,8 +1994,8 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		nb_hold++;
 
 		/*
-		 * Grab the mbuff and refill the descriptor with the
-		 * previously allocated mbuff
+		 * Grab the mbuf and refill the descriptor with the
+		 * previously allocated mbuf
 		 */
 		mb = rxb->mbuf;
 		rxb->mbuf = new_mb;
@@ -2024,7 +2027,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			return -EINVAL;
 		}
 
-		/* Filling the received mbuff with packet info */
+		/* Filling the received mbuf with packet info */
 		if (hw->rx_offset)
 			mb->data_off = RTE_PKTMBUF_HEADROOM + hw->rx_offset;
 		else
@@ -2049,7 +2052,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		}
 
-		/* Adding the mbuff to the mbuff array passed by the app */
+		/* Adding the mbuf to the mbuf array passed by the app */
 		rx_pkts[avail++] = mb;
 
 		/* Now resetting and updating the descriptor */
@@ -2443,7 +2446,7 @@ nfp_net_reta_query(struct rte_eth_dev *dev,
 		for (j = 0; j < 4; j++) {
 			if (!(mask & (0x1 << j)))
 				continue;
-			reta_conf->reta[shift + j] =
+			reta_conf[idx].reta[shift + j] =
 				(uint8_t)((reta >> (8 * j)) & 0xF);
 		}
 	}
@@ -2789,9 +2792,9 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	case PCI_DEVICE_ID_NFP6000_PF_NIC:
 	case PCI_DEVICE_ID_NFP6000_VF_NIC:
 		start_q = nn_cfg_readl(hw, NFP_NET_CFG_START_TXQ);
-		tx_bar_off = start_q * NFP_QCP_QUEUE_ADDR_SZ;
+		tx_bar_off = (uint64_t)start_q * NFP_QCP_QUEUE_ADDR_SZ;
 		start_q = nn_cfg_readl(hw, NFP_NET_CFG_START_RXQ);
-		rx_bar_off = start_q * NFP_QCP_QUEUE_ADDR_SZ;
+		rx_bar_off = (uint64_t)start_q * NFP_QCP_QUEUE_ADDR_SZ;
 		break;
 	default:
 		PMD_DRV_LOG(ERR, "nfp_net: no device ID matching");
@@ -2954,9 +2957,9 @@ nfp_pf_create_dev(struct rte_pci_device *dev, int port, int ports,
 		return -ENOMEM;
 
 	if (ports > 1)
-		sprintf(port_name, "%s_port%d", dev->device.name, port);
+		snprintf(port_name, 100, "%s_port%d", dev->device.name, port);
 	else
-		sprintf(port_name, "%s", dev->device.name);
+		strlcat(port_name, dev->device.name, 100);
 
 	eth_dev = rte_eth_dev_allocate(port_name);
 	if (!eth_dev)
@@ -3021,28 +3024,31 @@ nfp_fw_upload(struct rte_pci_device *dev, struct nfp_nsp *nsp, char *card)
 	/* Looking for firmware file in order of priority */
 
 	/* First try to find a firmware image specific for this device */
-	sprintf(serial, "serial-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x",
+	snprintf(serial, sizeof(serial),
+			"serial-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x",
 		cpp->serial[0], cpp->serial[1], cpp->serial[2], cpp->serial[3],
 		cpp->serial[4], cpp->serial[5], cpp->interface >> 8,
 		cpp->interface & 0xff);
 
-	sprintf(fw_name, "%s/%s.nffw", DEFAULT_FW_PATH, serial);
+	snprintf(fw_name, sizeof(fw_name), "%s/%s.nffw", DEFAULT_FW_PATH,
+			serial);
 
 	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
 	fw_f = open(fw_name, O_RDONLY);
-	if (fw_f > 0)
+	if (fw_f >= 0)
 		goto read_fw;
 
 	/* Then try the PCI name */
-	sprintf(fw_name, "%s/pci-%s.nffw", DEFAULT_FW_PATH, dev->device.name);
+	snprintf(fw_name, sizeof(fw_name), "%s/pci-%s.nffw", DEFAULT_FW_PATH,
+			dev->device.name);
 
 	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
 	fw_f = open(fw_name, O_RDONLY);
-	if (fw_f > 0)
+	if (fw_f >= 0)
 		goto read_fw;
 
 	/* Finally try the card type and media */
-	sprintf(fw_name, "%s/%s", DEFAULT_FW_PATH, card);
+	snprintf(fw_name, sizeof(fw_name), "%s/%s", DEFAULT_FW_PATH, card);
 	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
 	fw_f = open(fw_name, O_RDONLY);
 	if (fw_f < 0) {
@@ -3118,8 +3124,9 @@ nfp_fw_setup(struct rte_pci_device *dev, struct nfp_cpp *cpp,
 
 	PMD_DRV_LOG(INFO, "Port speed: %u", nfp_eth_table->ports[0].speed);
 
-	sprintf(card_desc, "nic_%s_%dx%d.nffw", nfp_fw_model,
-		nfp_eth_table->count, nfp_eth_table->ports[0].speed / 1000);
+	snprintf(card_desc, sizeof(card_desc), "nic_%s_%dx%d.nffw",
+			nfp_fw_model, nfp_eth_table->count,
+			nfp_eth_table->ports[0].speed / 1000);
 
 	nsp = nfp_nsp_open(cpp);
 	if (!nsp) {

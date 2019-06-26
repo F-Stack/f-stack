@@ -7,7 +7,7 @@
 # * if a build-directory already exists we assume it was properly configured
 # Run ninja after configuration is done.
 
-srcdir=$(dirname $(readlink -m $0))/..
+srcdir=$(dirname $(readlink -f $0))/..
 MESON=${MESON:-meson}
 use_shared="--default-library=shared"
 
@@ -24,7 +24,7 @@ build () # <directory> <meson options>
 {
 	builddir=$1
 	shift
-	if [ ! -d "$builddir" ] ; then
+	if [ ! -f "$builddir/build.ninja" ] ; then
 		options="--werror -Dexamples=all $*"
 		echo "$MESON $options $srcdir $builddir"
 		$MESON $options $srcdir $builddir
@@ -36,6 +36,7 @@ build () # <directory> <meson options>
 
 # shared and static linked builds with gcc and clang
 for c in gcc clang ; do
+	command -v $c >/dev/null 2>&1 || continue
 	for s in static shared ; do
 		export CC="ccache $c"
 		build build-$c-$s --default-library=$s
@@ -43,7 +44,12 @@ for c in gcc clang ; do
 done
 
 # test compilation with minimal x86 instruction set
-build build-x86-default -Dmachine=nehalem $use_shared
+default_machine='nehalem'
+ok=$(cc -march=$default_machine -E - < /dev/null > /dev/null 2>&1 || echo false)
+if [ "$ok" = "false" ] ; then
+	default_machine='corei7'
+fi
+build build-x86-default -Dmachine=$default_machine $use_shared
 
 # enable cross compilation if gcc cross-compiler is found
 c=aarch64-linux-gnu-gcc

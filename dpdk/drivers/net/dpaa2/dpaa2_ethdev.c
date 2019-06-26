@@ -311,8 +311,7 @@ dpaa2_free_rx_tx_queues(struct rte_eth_dev *dev)
 		/* cleanup tx queue cscn */
 		for (i = 0; i < priv->nb_tx_queues; i++) {
 			dpaa2_q = (struct dpaa2_queue *)priv->tx_vq[i];
-			if (!dpaa2_q->cscn)
-				rte_free(dpaa2_q->cscn);
+			rte_free(dpaa2_q->cscn);
 		}
 		/*free memory for all queues (RX+TX) */
 		rte_free(priv->rx_vq[0]);
@@ -1919,8 +1918,15 @@ dpaa2_dev_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* For secondary processes, the primary has done all the work */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		/* In case of secondary, only burst and ops API need to be
+		 * plugged.
+		 */
+		eth_dev->dev_ops = &dpaa2_ethdev_ops;
+		eth_dev->rx_pkt_burst = dpaa2_dev_prefetch_rx;
+		eth_dev->tx_pkt_burst = dpaa2_dev_tx;
 		return 0;
+	}
 
 	dpaa2_dev = container_of(dev, struct rte_dpaa2_device, device);
 

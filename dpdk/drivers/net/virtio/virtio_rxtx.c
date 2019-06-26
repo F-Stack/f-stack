@@ -192,7 +192,7 @@ virtio_xmit_cleanup(struct virtqueue *vq, uint16_t num)
 static void
 virtio_xmit_cleanup_inorder(struct virtqueue *vq, uint16_t num)
 {
-	uint16_t i, used_idx, desc_idx = 0, last_idx;
+	uint16_t i, idx = vq->vq_used_cons_idx;
 	int16_t free_cnt = 0;
 	struct vq_desc_extra *dxp = NULL;
 
@@ -200,27 +200,16 @@ virtio_xmit_cleanup_inorder(struct virtqueue *vq, uint16_t num)
 		return;
 
 	for (i = 0; i < num; i++) {
-		struct vring_used_elem *uep;
-
-		used_idx = vq->vq_used_cons_idx & (vq->vq_nentries - 1);
-		uep = &vq->vq_ring.used->ring[used_idx];
-		desc_idx = (uint16_t)uep->id;
-
-		dxp = &vq->vq_descx[desc_idx];
-		vq->vq_used_cons_idx++;
-
+		dxp = &vq->vq_descx[idx++ & (vq->vq_nentries - 1)];
+		free_cnt += dxp->ndescs;
 		if (dxp->cookie != NULL) {
 			rte_pktmbuf_free(dxp->cookie);
 			dxp->cookie = NULL;
 		}
 	}
 
-	last_idx = desc_idx + dxp->ndescs - 1;
-	free_cnt = last_idx - vq->vq_desc_tail_idx;
-	if (free_cnt <= 0)
-		free_cnt += vq->vq_nentries;
-
-	vq_ring_free_inorder(vq, last_idx, free_cnt);
+	vq->vq_free_cnt += free_cnt;
+	vq->vq_used_cons_idx = idx;
 }
 
 static inline int
@@ -421,7 +410,7 @@ virtqueue_enqueue_xmit_inorder(struct virtnet_tx *txvq,
 
 	while (i < num) {
 		idx = idx & (vq->vq_nentries - 1);
-		dxp = &vq->vq_descx[idx];
+		dxp = &vq->vq_descx[vq->vq_avail_idx & (vq->vq_nentries - 1)];
 		dxp->cookie = (void *)cookies[i];
 		dxp->ndescs = 1;
 
@@ -472,7 +461,10 @@ virtqueue_enqueue_xmit(struct virtnet_tx *txvq, struct rte_mbuf *cookie,
 
 	head_idx = vq->vq_desc_head_idx;
 	idx = head_idx;
-	dxp = &vq->vq_descx[idx];
+	if (in_order)
+		dxp = &vq->vq_descx[vq->vq_avail_idx & (vq->vq_nentries - 1)];
+	else
+		dxp = &vq->vq_descx[idx];
 	dxp->cookie = (void *)cookie;
 	dxp->ndescs = needed;
 
@@ -788,7 +780,7 @@ virtio_update_packet_stats(struct virtnet_stats *stats, struct rte_mbuf *mbuf)
 			stats->size_bins[0]++;
 		else if (s < 1519)
 			stats->size_bins[6]++;
-		else if (s >= 1519)
+		else
 			stats->size_bins[7]++;
 	}
 
@@ -1107,6 +1099,7 @@ virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 
 		prev = rcv_pkts[nb_rx];
 		if (likely(VIRTQUEUE_NUSED(vq) >= rcv_cnt)) {
+			virtio_rmb();
 			num = virtqueue_dequeue_rx_inorder(vq, rcv_pkts, len,
 							   rcv_cnt);
 			uint16_t extra_idx = 0;
@@ -1271,6 +1264,7 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 			uint16_t  rcv_cnt =
 				RTE_MIN(seg_res, RTE_DIM(rcv_pkts));
 			if (likely(VIRTQUEUE_NUSED(vq) >= rcv_cnt)) {
+				virtio_rmb();
 				uint32_t rx_num =
 					virtqueue_dequeue_burst_rx(vq,
 					rcv_pkts, len, rcv_cnt);
@@ -1380,6 +1374,8 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				rte_pktmbuf_free(txm);
 				continue;
 			}
+			/* vlan_insert may add a header mbuf */
+			tx_pkts[nb_tx] = txm;
 		}
 
 		/* optimize ring usage */
@@ -1484,6 +1480,8 @@ virtio_xmit_pkts_inorder(void *tx_queue,
 				rte_pktmbuf_free(txm);
 				continue;
 			}
+			/* vlan_insert may add a header mbuf */
+			tx_pkts[nb_tx] = txm;
 		}
 
 		/* optimize ring usage */

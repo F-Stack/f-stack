@@ -211,16 +211,17 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 	}
 
 	/* Allocate the queue pair data structure. */
-	qp = rte_zmalloc("qat PMD qp metadata",
-			sizeof(*qp), RTE_CACHE_LINE_SIZE);
+	qp = rte_zmalloc_socket("qat PMD qp metadata",
+				sizeof(*qp), RTE_CACHE_LINE_SIZE,
+				qat_qp_conf->socket_id);
 	if (qp == NULL) {
 		QAT_LOG(ERR, "Failed to alloc mem for qp struct");
 		return -ENOMEM;
 	}
 	qp->nb_descriptors = qat_qp_conf->nb_descriptors;
-	qp->op_cookies = rte_zmalloc("qat PMD op cookie pointer",
+	qp->op_cookies = rte_zmalloc_socket("qat PMD op cookie pointer",
 			qat_qp_conf->nb_descriptors * sizeof(*qp->op_cookies),
-			RTE_CACHE_LINE_SIZE);
+			RTE_CACHE_LINE_SIZE, qat_qp_conf->socket_id);
 	if (qp->op_cookies == NULL) {
 		QAT_LOG(ERR, "Failed to alloc mem for cookie");
 		rte_free(qp);
@@ -260,7 +261,8 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 		qp->op_cookie_pool = rte_mempool_create(op_cookie_pool_name,
 				qp->nb_descriptors,
 				qat_qp_conf->cookie_size, 64, 0,
-				NULL, NULL, NULL, NULL, qat_qp_conf->socket_id,
+				NULL, NULL, NULL, NULL,
+				qat_dev->pci_dev->device.numa_node,
 				0);
 	if (!qp->op_cookie_pool) {
 		QAT_LOG(ERR, "QAT PMD Cannot create"
@@ -388,7 +390,7 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 		qp_conf->service_str, "qp_mem",
 		queue->hw_bundle_number, queue->hw_queue_number);
 	qp_mz = queue_dma_zone_reserve(queue->memz_name, queue_size_bytes,
-			qp_conf->socket_id);
+			qat_dev->pci_dev->device.numa_node);
 	if (qp_mz == NULL) {
 		QAT_LOG(ERR, "Failed to allocate ring memzone");
 		return -ENOMEM;
@@ -634,27 +636,20 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 	uint32_t head;
 	uint32_t resp_counter = 0;
 	uint8_t *resp_msg;
-	uint8_t hdr_flags;
 
 	rx_queue = &(tmp_qp->rx_q);
 	tx_queue = &(tmp_qp->tx_q);
 	head = rx_queue->head;
 	resp_msg = (uint8_t *)rx_queue->base_addr + rx_queue->head;
-	hdr_flags = ((struct icp_qat_fw_comn_resp_hdr *)resp_msg)->hdr_flags;
 
 	while (*(uint32_t *)resp_msg != ADF_RING_EMPTY_SIG &&
 			resp_counter != nb_ops) {
 
-		if (unlikely(!ICP_QAT_FW_COMN_VALID_FLAG_GET(hdr_flags))) {
-			/* Fatal firmware error */
-			QAT_LOG(ERR, "QAT Firmware returned invalid response");
-			return 0;
-		}
-
 		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC)
 			qat_sym_process_response(ops, resp_msg);
 		else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION)
-			qat_comp_process_response(ops, resp_msg);
+			qat_comp_process_response(ops, resp_msg,
+					&tmp_qp->stats.dequeue_err_count);
 
 		head = adf_modulo(head + rx_queue->msg_size,
 				  rx_queue->modulo_mask);
@@ -682,7 +677,8 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 }
 
 __rte_weak int
-qat_comp_process_response(void **op __rte_unused, uint8_t *resp __rte_unused)
+qat_comp_process_response(void **op __rte_unused, uint8_t *resp __rte_unused,
+			  uint64_t *dequeue_err_count __rte_unused)
 {
 	return  0;
 }

@@ -159,6 +159,10 @@ int sfc_rx_hf_rte_to_efx(struct sfc_adapter *sa, uint64_t rte,
 			 efx_rx_hash_type_t *efx);
 uint64_t sfc_rx_hf_efx_to_rte(struct sfc_adapter *sa,
 			      efx_rx_hash_type_t efx);
+boolean_t sfc_rx_check_scatter(size_t pdu, size_t rx_buf_size,
+			       uint32_t rx_prefix_size,
+			       boolean_t rx_scatter_enabled,
+			       const char **error);
 
 #ifdef __cplusplus
 }

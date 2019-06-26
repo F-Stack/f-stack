@@ -293,7 +293,7 @@ flow_dv_encap_decap_resource_register
 			 struct mlx5_flow *dev_flow,
 			 struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_dv_encap_decap_resource *cache_resource;
 
 	/* Lookup a matching resource from cache. */
@@ -722,7 +722,7 @@ flow_dv_validate_attributes(struct rte_eth_dev *dev,
 			    const struct rte_flow_attr *attributes,
 			    struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	uint32_t priority_max = priv->config.flow_prio - 1;
 
 	if (attributes->group)
@@ -764,7 +764,7 @@ flow_dv_validate_attributes(struct rte_eth_dev *dev,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
@@ -776,7 +776,6 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	uint64_t action_flags = 0;
 	uint64_t item_flags = 0;
 	uint64_t last_item = 0;
-	int tunnel = 0;
 	uint8_t next_protocol = 0xff;
 	int actions_n = 0;
 
@@ -786,7 +785,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	if (ret < 0)
 		return ret;
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
-		tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
+		int tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
 		switch (items->type) {
 		case RTE_FLOW_ITEM_TYPE_VOID:
 			break;
@@ -958,7 +957,8 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		case RTE_FLOW_ACTION_TYPE_RSS:
 			ret = mlx5_flow_validate_action_rss(actions,
 							    action_flags, dev,
-							    attr, error);
+							    attr, item_flags,
+							    error);
 			if (ret < 0)
 				return ret;
 			action_flags |= MLX5_FLOW_ACTION_RSS;
@@ -1043,7 +1043,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
  *
  * @return
  *   Pointer to mlx5_flow object on success,
- *   otherwise NULL and rte_ernno is set.
+ *   otherwise NULL and rte_errno is set.
  */
 static struct mlx5_flow *
 flow_dv_prepare(const struct rte_flow_attr *attr __rte_unused,
@@ -1800,7 +1800,7 @@ flow_dv_matcher_register(struct rte_eth_dev *dev,
 			 struct mlx5_flow *dev_flow,
 			 struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_dv_matcher *cache_matcher;
 	struct mlx5dv_flow_matcher_attr dv_attr = {
 		.type = IBV_FLOW_ATTR_NORMAL,
@@ -1873,7 +1873,7 @@ flow_dv_matcher_register(struct rte_eth_dev *dev,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_dv_translate(struct rte_eth_dev *dev,
@@ -1883,7 +1883,7 @@ flow_dv_translate(struct rte_eth_dev *dev,
 		  const struct rte_flow_action actions[],
 		  struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_flow *flow = dev_flow->flow;
 	uint64_t item_flags = 0;
 	uint64_t last_item = 0;

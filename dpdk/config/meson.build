@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
+# driver .so files often depend upon the bus drivers for their connect bus,
+# e.g. ixgbe depends on librte_bus_pci. This means that the bus drivers need
+# to be in the library path, so symlink the drivers from the main lib directory.
+meson.add_install_script('../buildtools/symlink-drivers-solibs.sh',
+		get_option('libdir'),
+		pmd_subdir_opt)
+
 # set the machine type and cflags for it
 if meson.is_cross_build()
 	machine = host_machine.cpu()

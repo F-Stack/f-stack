@@ -120,6 +120,12 @@ F: config/rte_config.h
 F: buildtools/gen-pmdinfo-cfile.sh
 F: buildtools/symlink-drivers-solibs.sh
 
+Public CI
+M: Aaron Conole <aconole@redhat.com>
+M: Michael Santana <msantana@redhat.com>
+F: .travis.yml
+F: .ci/
+
 ABI versioning
 M: Neil Horman <nhorman@tuxdriver.com>
 F: lib/librte_compat/
@@ -234,7 +240,7 @@ F: drivers/net/i40e/i40e_rxtx_vec_neon.c
 F: drivers/net/virtio/virtio_rxtx_simple_neon.c
 
 IBM POWER (alpha)
-M: Chao Zhu <chaozhu@linux.vnet.ibm.com>
+M: David Christensen <drc@linux.vnet.ibm.com>
 F: lib/librte_eal/common/arch/ppc_64/
 F: lib/librte_eal/common/include/arch/ppc_64/
 F: drivers/net/i40e/i40e_rxtx_vec_altivec.c

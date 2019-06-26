@@ -46,6 +46,7 @@
 #include "eal_internal_cfg.h"
 #include "eal_filesystem.h"
 #include "eal_hugepages.h"
+#include "eal_options.h"
 
 #define PFN_MASK_SIZE	8
 
@@ -110,7 +111,7 @@ rte_mem_virt2phy(const void *virtaddr)
 
 	fd = open("/proc/self/pagemap", O_RDONLY);
 	if (fd < 0) {
-		RTE_LOG(ERR, EAL, "%s(): cannot open /proc/self/pagemap: %s\n",
+		RTE_LOG(INFO, EAL, "%s(): cannot open /proc/self/pagemap: %s\n",
 			__func__, strerror(errno));
 		return RTE_BAD_IOVA;
 	}
@@ -118,7 +119,7 @@ rte_mem_virt2phy(const void *virtaddr)
 	virt_pfn = (unsigned long)virtaddr / page_size;
 	offset = sizeof(uint64_t) * virt_pfn;
 	if (lseek(fd, offset, SEEK_SET) == (off_t) -1) {
-		RTE_LOG(ERR, EAL, "%s(): seek error in /proc/self/pagemap: %s\n",
+		RTE_LOG(INFO, EAL, "%s(): seek error in /proc/self/pagemap: %s\n",
 				__func__, strerror(errno));
 		close(fd);
 		return RTE_BAD_IOVA;
@@ -127,11 +128,11 @@ rte_mem_virt2phy(const void *virtaddr)
 	retval = read(fd, &page, PFN_MASK_SIZE);
 	close(fd);
 	if (retval < 0) {
-		RTE_LOG(ERR, EAL, "%s(): cannot read /proc/self/pagemap: %s\n",
+		RTE_LOG(INFO, EAL, "%s(): cannot read /proc/self/pagemap: %s\n",
 				__func__, strerror(errno));
 		return RTE_BAD_IOVA;
 	} else if (retval != PFN_MASK_SIZE) {
-		RTE_LOG(ERR, EAL, "%s(): read %d bytes from /proc/self/pagemap "
+		RTE_LOG(INFO, EAL, "%s(): read %d bytes from /proc/self/pagemap "
 				"but expected %d:\n",
 				__func__, retval, PFN_MASK_SIZE);
 		return RTE_BAD_IOVA;
@@ -434,7 +435,7 @@ find_numasocket(struct hugepage_file *hugepg_tbl, struct hugepage_info *hpi)
 	}
 
 	snprintf(hugedir_str, sizeof(hugedir_str),
-			"%s/%s", hpi->hugedir, internal_config.hugefile_prefix);
+			"%s/%s", hpi->hugedir, eal_get_hugefile_prefix());
 
 	/* parse numa map */
 	while (fgets(buf, sizeof(buf), f) != NULL) {
@@ -536,7 +537,7 @@ create_shared_memory(const char *filename, const size_t mem_size)
 		return retval;
 	}
 
-	fd = open(filename, O_CREAT | O_RDWR, 0666);
+	fd = open(filename, O_CREAT | O_RDWR, 0600);
 	if (fd < 0)
 		return NULL;
 	if (ftruncate(fd, mem_size) < 0) {
@@ -1392,7 +1393,7 @@ eal_legacy_hugepage_init(void)
 		if (mcfg->dma_maskbits &&
 		    rte_mem_check_dma_mask_thread_unsafe(mcfg->dma_maskbits)) {
 			RTE_LOG(ERR, EAL,
-				"%s(): couldnt allocate memory due to IOVA exceeding limits of current DMA mask.\n",
+				"%s(): couldn't allocate memory due to IOVA exceeding limits of current DMA mask.\n",
 				__func__);
 			if (rte_eal_iova_mode() == RTE_IOVA_VA &&
 			    rte_eal_using_phys_addrs())
@@ -2038,7 +2039,8 @@ memseg_primary_init_32(void)
 		socket_id = rte_socket_id_by_idx(i);
 
 #ifndef RTE_EAL_NUMA_AWARE_HUGEPAGES
-		if (socket_id > 0)
+		/* we can still sort pages by socket in legacy mode */
+		if (!internal_config.legacy_mem && socket_id > 0)
 			break;
 #endif
 
@@ -2219,7 +2221,8 @@ memseg_primary_init(void)
 			int socket_id = rte_socket_id_by_idx(i);
 
 #ifndef RTE_EAL_NUMA_AWARE_HUGEPAGES
-			if (socket_id > 0)
+			/* we can still sort pages by socket in legacy mode */
+			if (!internal_config.legacy_mem && socket_id > 0)
 				break;
 #endif
 			memtypes[cur_type].page_sz = hugepage_sz;
@@ -2378,6 +2381,13 @@ rte_eal_memseg_init(void)
 	} else {
 		RTE_LOG(ERR, EAL, "Cannot get current resource limits\n");
 	}
+#ifndef RTE_EAL_NUMA_AWARE_HUGEPAGES
+	if (!internal_config.legacy_mem && rte_socket_count() > 1) {
+		RTE_LOG(WARNING, EAL, "DPDK is running on a NUMA system, but is compiled without NUMA support.\n");
+		RTE_LOG(WARNING, EAL, "This will have adverse consequences for performance and usability.\n");
+		RTE_LOG(WARNING, EAL, "Please use --"OPT_LEGACY_MEM" option, or recompile with NUMA support.\n");
+	}
+#endif
 
 	return rte_eal_process_type() == RTE_PROC_PRIMARY ?
 #ifndef RTE_ARCH_64

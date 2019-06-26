@@ -1080,9 +1080,11 @@ i40evf_enable_irq0(struct i40e_hw *hw)
 }
 
 static int
-i40evf_check_vf_reset_done(struct i40e_hw *hw)
+i40evf_check_vf_reset_done(struct rte_eth_dev *dev)
 {
 	int i, reset;
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 
 	for (i = 0; i < MAX_RESET_WAIT_CNT; i++) {
 		reset = I40E_READ_REG(hw, I40E_VFGEN_RSTAT) &
@@ -1097,12 +1099,16 @@ i40evf_check_vf_reset_done(struct i40e_hw *hw)
 	if (i >= MAX_RESET_WAIT_CNT)
 		return -1;
 
+	vf->vf_reset = false;
+	vf->pend_msg &= ~PFMSG_RESET_IMPENDING;
+
 	return 0;
 }
 static int
-i40evf_reset_vf(struct i40e_hw *hw)
+i40evf_reset_vf(struct rte_eth_dev *dev)
 {
 	int ret;
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	if (i40e_vf_reset(hw) != I40E_SUCCESS) {
 		PMD_INIT_LOG(ERR, "Reset VF NIC failed");
@@ -1119,7 +1125,7 @@ i40evf_reset_vf(struct i40e_hw *hw)
 	  */
 	rte_delay_ms(200);
 
-	ret = i40evf_check_vf_reset_done(hw);
+	ret = i40evf_check_vf_reset_done(dev);
 	if (ret) {
 		PMD_INIT_LOG(ERR, "VF is still resetting");
 		return ret;
@@ -1145,7 +1151,7 @@ i40evf_init_vf(struct rte_eth_dev *dev)
 		goto err;
 	}
 
-	err = i40evf_check_vf_reset_done(hw);
+	err = i40evf_check_vf_reset_done(dev);
 	if (err)
 		goto err;
 
@@ -1157,7 +1163,7 @@ i40evf_init_vf(struct rte_eth_dev *dev)
 	}
 
 	/* Reset VF and wait until it's complete */
-	if (i40evf_reset_vf(hw)) {
+	if (i40evf_reset_vf(dev)) {
 		PMD_INIT_LOG(ERR, "reset NIC failed");
 		goto err_aq;
 	}
@@ -1256,7 +1262,7 @@ i40evf_uninit_vf(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (hw->adapter_stopped == 0)
+	if (hw->adapter_closed == 0)
 		i40evf_dev_close(dev);
 	rte_free(vf->vf_res);
 	vf->vf_res = NULL;
@@ -1438,6 +1444,7 @@ i40evf_dev_init(struct rte_eth_dev *eth_dev)
 	hw->bus.func = pci_dev->addr.function;
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 	hw->adapter_stopped = 0;
+	hw->adapter_closed = 0;
 
 	if(i40evf_init_vf(eth_dev) != 0) {
 		PMD_INIT_LOG(ERR, "Init vf failed");
@@ -1717,9 +1724,8 @@ i40evf_rxq_init(struct rte_eth_dev *dev, struct i40e_rx_queue *rxq)
 	}
 
 	if ((dev_data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_SCATTER) ||
-	    (rxq->max_pkt_len + 2 * I40E_VLAN_TAG_SIZE) > buf_size) {
+	    rxq->max_pkt_len > buf_size)
 		dev_data->scattered_rx = 1;
-	}
 
 	return 0;
 }
@@ -2255,11 +2261,12 @@ i40evf_dev_close(struct rte_eth_dev *dev)
 	 */
 	i40evf_dev_promiscuous_disable(dev);
 	i40evf_dev_allmulticast_disable(dev);
+	rte_eal_alarm_cancel(i40evf_dev_alarm_handler, dev);
 
-	i40evf_reset_vf(hw);
+	i40evf_reset_vf(dev);
 	i40e_shutdown_adminq(hw);
 	i40evf_disable_irq0(hw);
-	rte_eal_alarm_cancel(i40evf_dev_alarm_handler, dev);
+	hw->adapter_closed = 1;
 }
 
 /*

@@ -1336,6 +1336,9 @@ eth_ixgbe_dev_uninit(struct rte_eth_dev *eth_dev)
 		rte_delay_ms(100);
 	} while (retries++ < (10 + IXGBE_LINK_UP_TIME));
 
+	/* cancel the delay handler before remove dev */
+	rte_eal_alarm_cancel(ixgbe_dev_interrupt_delayed_handler, eth_dev);
+
 	/* uninitialize PF if max_vfs not zero */
 	ixgbe_pf_host_uninit(eth_dev);
 
@@ -2790,6 +2793,8 @@ static void
 ixgbe_dev_stop(struct rte_eth_dev *dev)
 {
 	struct rte_eth_link link;
+	struct ixgbe_adapter *adapter =
+		(struct ixgbe_adapter *)dev->data->dev_private;
 	struct ixgbe_hw *hw =
 		IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_vf_info *vfinfo =
@@ -2850,6 +2855,8 @@ ixgbe_dev_stop(struct rte_eth_dev *dev)
 
 	/* reset hierarchy commit */
 	tm_conf->committed = false;
+
+	adapter->rss_reta_updated = 0;
 }
 
 /*
@@ -4779,6 +4786,8 @@ ixgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
 	uint8_t j, mask;
 	uint32_t reta, r;
 	uint16_t idx, shift;
+	struct ixgbe_adapter *adapter =
+		(struct ixgbe_adapter *)dev->data->dev_private;
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t reta_reg;
 
@@ -4820,6 +4829,7 @@ ixgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
 		}
 		IXGBE_WRITE_REG(hw, reta_reg, reta);
 	}
+	adapter->rss_reta_updated = 1;
 
 	return 0;
 }
@@ -5143,6 +5153,8 @@ static void
 ixgbevf_dev_stop(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ixgbe_adapter *adapter =
+		(struct ixgbe_adapter *)dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 
@@ -5172,6 +5184,8 @@ ixgbevf_dev_stop(struct rte_eth_dev *dev)
 		rte_free(intr_handle->intr_vec);
 		intr_handle->intr_vec = NULL;
 	}
+
+	adapter->rss_reta_updated = 0;
 }
 
 static void

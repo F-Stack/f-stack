@@ -107,7 +107,7 @@ mlx4_txq_fill_dv_obj_info(struct txq *txq, struct mlx4dv_obj *mlxdv)
  *   Supported Tx offloads.
  */
 uint64_t
-mlx4_get_tx_port_offloads(struct priv *priv)
+mlx4_get_tx_port_offloads(struct mlx4_priv *priv)
 {
 	uint64_t offloads = DEV_TX_OFFLOAD_MULTI_SEGS;
 
@@ -148,7 +148,7 @@ int
 mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		    unsigned int socket, const struct rte_eth_txconf *conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct mlx4dv_obj mlxdv;
 	struct mlx4dv_qp dv_qp;
 	struct mlx4dv_cq dv_cq;
@@ -351,17 +351,17 @@ void
 mlx4_tx_queue_release(void *dpdk_txq)
 {
 	struct txq *txq = (struct txq *)dpdk_txq;
-	struct priv *priv;
+	struct mlx4_priv *priv;
 	unsigned int i;
 
 	if (txq == NULL)
 		return;
 	priv = txq->priv;
-	for (i = 0; i != priv->dev->data->nb_tx_queues; ++i)
-		if (priv->dev->data->tx_queues[i] == txq) {
+	for (i = 0; i != ETH_DEV(priv)->data->nb_tx_queues; ++i)
+		if (ETH_DEV(priv)->data->tx_queues[i] == txq) {
 			DEBUG("%p: removing Tx queue %p from list",
-			      (void *)priv->dev, (void *)txq);
-			priv->dev->data->tx_queues[i] = NULL;
+			      (void *)ETH_DEV(priv), (void *)txq);
+			ETH_DEV(priv)->data->tx_queues[i] = NULL;
 			break;
 		}
 	mlx4_txq_free_elts(txq);

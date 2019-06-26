@@ -85,6 +85,11 @@ Limitations
 
   - Forked secondary process not supported.
   - All mempools must be initialized before rte_eth_dev_start().
+  - External memory unregistered in EAL memseg list cannot be used for DMA
+    unless such memory has been registered by ``mlx5_mr_update_ext_mp()`` in
+    primary process and remapped to the same virtual address in secondary
+    process. If the external memory is registered by primary process but has
+    different virtual address in secondary process, unexpected error may happen.
 
 - Flow pattern without any specific vlan will match for vlan packets as well:
 
@@ -148,7 +153,7 @@ Limitations
 
 - E-Switch VXLAN decapsulation Flow:
 
-  - can be appiled to PF port only.
+  - can be applied to PF port only.
   - must specify VF port action (packet redirection from PF to VF).
   - must specify tunnel outer UDP local (destination) port, wildcards not allowed.
   - must specify tunnel outer VNI, wildcards not allowed.
@@ -163,7 +168,7 @@ Limitations
   - must specify the VXLAN item with tunnel outer parameters.
   - must specify the tunnel outer VNI in the VXLAN item.
   - must specify the tunnel outer remote (destination) UDP port in the VXLAN item.
-  - must specify the tunnel outer local (source) IPv4 or IPv6 in the , this address will locally (with scope link) assigned to the outer network interace, wildcards not allowed.
+  - must specify the tunnel outer local (source) IPv4 or IPv6 in the , this address will locally (with scope link) assigned to the outer network interface, wildcards not allowed.
   - must specify the tunnel outer remote (destination) IPv4 or IPv6 in the VXLAN item, group IPs allowed.
   - must specify the tunnel outer destination MAC address in the VXLAN item, this address will be used to create neigh rule.
 
@@ -227,20 +232,6 @@ Environment variables
   enabled and most useful when ``CONFIG_RTE_EAL_PMD_PATH`` is also set,
   since ``LD_LIBRARY_PATH`` has no effect in this case.
 
-- ``MLX5_PMD_ENABLE_PADDING``
-
-  Enables HW packet padding in PCI bus transactions.
-
-  When packet size is cache aligned and CRC stripping is enabled, 4 fewer
-  bytes are written to the PCI bus. Enabling padding makes such packets
-  aligned again.
-
-  In cases where PCI bandwidth is the bottleneck, padding can improve
-  performance by 10%.
-
-  This is disabled by default since this can also decrease performance for
-  unaligned packet sizes.
-
 - ``MLX5_SHUT_UP_BF``
 
   Configures HW Tx doorbell register as IO-mapped.
@@ -295,6 +286,19 @@ Run-time configuration
 
   - CPU having 128B cacheline with ConnectX-5 and Bluefield.
 
+- ``rxq_pkt_pad_en`` parameter [int]
+
+  A nonzero value enables padding Rx packet to the size of cacheline on PCI
+  transaction. This feature would waste PCI bandwidth but could improve
+  performance by avoiding partial cacheline write which may cause costly
+  read-modify-copy in memory transaction on some architectures. Disabled by
+  default.
+
+  Supported on:
+
+  - x86_64 with ConnectX-4, ConnectX-4 LX, ConnectX-5, ConnectX-6 and Bluefield.
+  - POWER8 and ARMv8 with ConnectX-4 LX, ConnectX-5, ConnectX-6 and Bluefield.
+
 - ``mprq_en`` parameter [int]
 
   A nonzero value enables configuring Multi-Packet Rx queues. Rx queue is
@@ -307,7 +311,7 @@ Run-time configuration
   buffers per a packet, one large buffer is posted in order to receive multiple
   packets on the buffer. A MPRQ buffer consists of multiple fixed-size strides
   and each stride receives one packet. MPRQ can improve throughput for
-  small-packet tarffic.
+  small-packet traffic.
 
   When MPRQ is enabled, max_rx_pkt_len can be larger than the size of
   user-provided mbuf even if DEV_RX_OFFLOAD_SCATTER isn't enabled. PMD will
@@ -318,7 +322,7 @@ Run-time configuration
 - ``mprq_log_stride_num`` parameter [int]
 
   Log 2 of the number of strides for Multi-Packet Rx queue. Configuring more
-  strides can reduce PCIe tarffic further. If configured value is not in the
+  strides can reduce PCIe traffic further. If configured value is not in the
   range of device capability, the default value will be set with a warning
   message. The default value is 4 which is 16 strides per a buffer, valid only
   if ``mprq_en`` is set.
@@ -565,7 +569,7 @@ Either RDMA Core library with a recent enough Linux kernel release
 (recommended) or Mellanox OFED, which provides compatibility with older
 releases.
 
-RMDA Core with Linux Kernel
+RDMA Core with Linux Kernel
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 - Minimal kernel version : v4.14 or the most recent 4.14-rc (see `Linux installation documentation`_)

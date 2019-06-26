@@ -509,7 +509,7 @@ mlx5_rx_descriptor_status(void *rx_queue, uint16_t offset)
 uint32_t
 mlx5_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq;
 
 	if (dev->rx_pkt_burst != mlx5_rx_burst) {
@@ -693,7 +693,8 @@ pkt_inline:
 						   RTE_CACHE_LINE_SIZE);
 			copy_b = (addr_end > addr) ?
 				 RTE_MIN((addr_end - addr), length) : 0;
-			if (copy_b && ((end - (uintptr_t)raw) > copy_b)) {
+			if (copy_b && ((end - (uintptr_t)raw) >
+				       (copy_b + sizeof(inl)))) {
 				/*
 				 * One Dseg remains in the current WQE.  To
 				 * keep the computation positive, it is

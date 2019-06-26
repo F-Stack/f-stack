@@ -22,7 +22,7 @@ They must be separated from the EAL options, shown in the previous section, with
 
     sudo ./testpmd -l 0-3 -n 4 -- -i --portmask=0x1 --nb-cores=2
 
-The commandline options are:
+The command line options are:
 
 *   ``-i, --interactive``
 
@@ -196,13 +196,15 @@ The commandline options are:
 
 *   ``--port-topology=mode``
 
-    Set port topology, where mode is ``paired`` (the default) or ``chained``.
+    Set port topology, where mode is ``paired`` (the default), ``chained`` or ``loop``.
 
     In ``paired`` mode, the forwarding is between pairs of ports, for example: (0,1), (2,3), (4,5).
 
     In ``chained`` mode, the forwarding is to the next available port in the port mask, for example: (0,1), (1,2), (2,0).
 
     The ordering of the ports can be changed using the portlist testpmd runtime function.
+
+    In ``loop`` mode, ingress traffic is simply transmitted back on the same interface.
 
 *   ``--forward-mode=mode``
 
@@ -363,7 +365,7 @@ The commandline options are:
 
 *   ``--hot-plug``
 
-    Enable device event monitor machenism for hotplug.
+    Enable device event monitor mechanism for hotplug.
 
 *   ``--vxlan-gpe-port=N``
 
@@ -403,21 +405,21 @@ The commandline options are:
 
 *   ``--noisy-lkup-memory=N``
 
-    Set the size of the noisy neighbour simulation memory buffer in MB to N.
+    Set the size of the noisy neighbor simulation memory buffer in MB to N.
     Only available with the noisy forwarding mode. The default value is 0.
 
 
 *   ``--noisy-lkup-num-reads=N``
 
-    Set the number of reads to be done in noisy neighbour simulation memory buffer to N.
+    Set the number of reads to be done in noisy neighbor simulation memory buffer to N.
     Only available with the noisy forwarding mode. The default value is 0.
 
 *   ``--noisy-lkup-num-writes=N``
 
-    Set the number of writes to be done in noisy neighbour simulation memory buffer to N.
+    Set the number of writes to be done in noisy neighbor simulation memory buffer to N.
     Only available with the noisy forwarding mode. The default value is 0.
 
 *   ``--noisy-lkup-num-reads-writes=N``
 
-    Set the number of r/w accesses to be done in noisy neighbour simulation memory buffer to N.
+    Set the number of r/w accesses to be done in noisy neighbor simulation memory buffer to N.
     Only available with the noisy forwarding mode. The default value is 0.
