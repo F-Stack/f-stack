@@ -25,7 +25,7 @@
     modprobe uio
     modprobe hwmon
     insmod build/kmod/igb_uio.ko
-    insmod build/kmod/rte_kni.ko
+    insmod build/kmod/rte_kni.ko carrier=on
 
     # set ip address
     #redhat7.3
