@@ -202,6 +202,7 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 	char ring_path[PATH_MAX];
 	size_t file_size;
 	struct stat sb;
+	void *mapaddr;
 	int fd;
 
 	snprintf(ring_path, sizeof(ring_path),
@@ -232,16 +233,63 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 		return -EINVAL;
 	}
 
-	*ring_size = file_size / 2;
-	*ring_buf = vmbus_map_resource(vmbus_map_addr, fd,
-				       0, sb.st_size, 0);
+	mapaddr = vmbus_map_resource(vmbus_map_addr, fd,
+				     0, file_size, 0);
 	close(fd);
 
-	if (ring_buf == MAP_FAILED)
+	if (mapaddr == MAP_FAILED)
 		return -EIO;
+
+	*ring_size = file_size / 2;
+	*ring_buf = mapaddr;
 
 	vmbus_map_addr = RTE_PTR_ADD(ring_buf, file_size);
 	return 0;
+}
+
+int
+vmbus_uio_map_secondary_subchan(const struct rte_vmbus_device *dev,
+				const struct vmbus_channel *chan)
+{
+	const struct vmbus_br *br = &chan->txbr;
+	char ring_path[PATH_MAX];
+	void *mapaddr, *ring_buf;
+	uint32_t ring_size;
+	int fd;
+
+	snprintf(ring_path, sizeof(ring_path),
+		 "%s/%s/channels/%u/ring",
+		 SYSFS_VMBUS_DEVICES, dev->device.name,
+		 chan->relid);
+
+	ring_buf = br->vbr;
+	ring_size = br->dsize + sizeof(struct vmbus_bufring);
+	VMBUS_LOG(INFO, "secondary ring_buf %p size %u",
+		  ring_buf, ring_size);
+
+	fd = open(ring_path, O_RDWR);
+	if (fd < 0) {
+		VMBUS_LOG(ERR, "Cannot open %s: %s",
+			  ring_path, strerror(errno));
+		return -errno;
+	}
+
+	mapaddr = vmbus_map_resource(ring_buf, fd, 0, 2 * ring_size, 0);
+	close(fd);
+
+	if (mapaddr == ring_buf)
+		return 0;
+
+	if (mapaddr == MAP_FAILED)
+		VMBUS_LOG(ERR,
+			  "mmap subchan %u in secondary failed", chan->relid);
+	else {
+		VMBUS_LOG(ERR,
+			  "mmap subchan %u in secondary address mismatch",
+			  chan->relid);
+		vmbus_unmap_resource(mapaddr, 2 * ring_size);
+	}
+	return -1;
 }
 
 int vmbus_uio_map_rings(struct vmbus_channel *chan)
@@ -357,6 +405,12 @@ int vmbus_uio_get_subchan(struct vmbus_channel *primary,
 			continue;
 		}
 
+		if (!vmbus_isnew_subchannel(primary, relid))
+			continue;	/* Already know about you */
+
+		if (!vmbus_uio_ring_present(dev, relid))
+			continue;	/* Ring may not be ready yet */
+
 		snprintf(subchan_path, sizeof(subchan_path), "%s/%lu",
 			 chan_path, relid);
 		err = vmbus_uio_sysfs_read(subchan_path, "subchannel_id",
@@ -369,12 +423,6 @@ int vmbus_uio_get_subchan(struct vmbus_channel *primary,
 
 		if (subid == 0)
 			continue;	/* skip primary channel */
-
-		if (!vmbus_isnew_subchannel(primary, relid))
-			continue;
-
-		if (!vmbus_uio_ring_present(dev, relid))
-			continue;	/* Ring may not be ready yet */
 
 		err = vmbus_uio_sysfs_read(subchan_path, "monitor_id",
 					   &monid, UINT8_MAX);

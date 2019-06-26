@@ -336,15 +336,8 @@ struct offload_info {
 	u8 buf[0];
 } __attribute__((__packed__));
 
-struct smbus_read_request {
-	u32 offset; /* not used */
-	u32 device_id;
-	u32 address;
-	u32 length;
-} __attribute__((__packed__));
-
-struct smbus_write_request {
-	u32 offset; /* not used */
+struct smbus_request {
+	u32 msg_id; /* not used */
 	u32 device_id;
 	u32 address;
 	u32 length;
@@ -389,8 +382,6 @@ enum hal_atl_utils_fw_state_e {
 #define HAL_ATLANTIC_UTILS_FW_MSG_OFFLOAD_DEL  10U
 #define HAL_ATLANTIC_UTILS_FW_MSG_CABLE_DIAG   13U // 0xd
 
-#define SMBUS_READ_REQUEST BIT(13)
-#define SMBUS_WRITE_REQUEST BIT(14)
 #define SMBUS_DEVICE_ID 0x50
 
 enum hw_atl_fw2x_rate {
@@ -414,6 +405,9 @@ enum hw_atl_fw2x_caps_lo {
 	CAPS_LO_2P5GBASET_FD,
 	CAPS_LO_5GBASET_FD,
 	CAPS_LO_10GBASET_FD,
+	CAPS_LO_AUTONEG,
+	CAPS_LO_SMBUS_READ,
+	CAPS_LO_SMBUS_WRITE,
 };
 
 enum hw_atl_fw2x_caps_hi {

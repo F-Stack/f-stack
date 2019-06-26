@@ -69,7 +69,7 @@
 		I40E_TX_IEEE1588_TMST)
 
 #define I40E_TX_OFFLOAD_NOTSUP_MASK \
-		~(PKT_TX_OFFLOAD_MASK & I40E_TX_OFFLOAD_MASK)
+		(PKT_TX_OFFLOAD_MASK ^ I40E_TX_OFFLOAD_MASK)
 
 static inline void
 i40e_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union i40e_rx_desc *rxdp)
@@ -1718,7 +1718,7 @@ i40e_dev_rx_queue_setup_runtime(struct rte_eth_dev *dev,
 		(uint16_t)(rte_pktmbuf_data_room_size(rxq->mp) -
 			   RTE_PKTMBUF_HEADROOM);
 	int use_scattered_rx =
-		((rxq->max_pkt_len + 2 * I40E_VLAN_TAG_SIZE) > buf_size);
+		(rxq->max_pkt_len > buf_size);
 
 	if (i40e_rx_queue_init(rxq) != I40E_SUCCESS) {
 		PMD_DRV_LOG(ERR,
@@ -2423,12 +2423,12 @@ i40e_tx_queue_release_mbufs(struct i40e_tx_queue *txq)
 	struct rte_eth_dev *dev;
 	uint16_t i;
 
-	dev = &rte_eth_devices[txq->port_id];
-
 	if (!txq || !txq->sw_ring) {
-		PMD_DRV_LOG(DEBUG, "Pointer to rxq or sw_ring is NULL");
+		PMD_DRV_LOG(DEBUG, "Pointer to txq or sw_ring is NULL");
 		return;
 	}
+
+	dev = &rte_eth_devices[txq->port_id];
 
 	/**
 	 *  vPMD tx will not set sw_ring's mbuf to NULL after free,
@@ -2708,9 +2708,8 @@ i40e_rx_queue_init(struct i40e_rx_queue *rxq)
 		RTE_PKTMBUF_HEADROOM);
 
 	/* Check if scattered RX needs to be used. */
-	if ((rxq->max_pkt_len + 2 * I40E_VLAN_TAG_SIZE) > buf_size) {
+	if (rxq->max_pkt_len > buf_size)
 		dev_data->scattered_rx = 1;
-	}
 
 	/* Init the RX tail regieter. */
 	I40E_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
@@ -2753,7 +2752,6 @@ i40e_dev_free_queues(struct rte_eth_dev *dev)
 		i40e_dev_rx_queue_release(dev->data->rx_queues[i]);
 		dev->data->rx_queues[i] = NULL;
 	}
-	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		if (!dev->data->tx_queues[i])
@@ -2761,7 +2759,6 @@ i40e_dev_free_queues(struct rte_eth_dev *dev)
 		i40e_dev_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
 	}
-	dev->data->nb_tx_queues = 0;
 }
 
 #define I40E_FDIR_NUM_TX_DESC  I40E_MIN_RING_DESC
@@ -3184,7 +3181,7 @@ i40e_set_default_pctype_table(struct rte_eth_dev *dev)
 	}
 }
 
-/* Stubs needed for linkage when CONFIG_RTE_I40E_INC_VECTOR is set to 'n' */
+/* Stubs needed for linkage when CONFIG_RTE_LIBRTE_I40E_INC_VECTOR is set to 'n' */
 __rte_weak int
 i40e_rx_vec_dev_conf_condition_check(struct rte_eth_dev __rte_unused *dev)
 {

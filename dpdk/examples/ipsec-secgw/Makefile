@@ -52,7 +52,7 @@ clean:
 else
 
 ifeq ($(RTE_SDK),)
-	$(error "Please define RTE_SDK environment variable")
+$(error "Please define RTE_SDK environment variable")
 endif
 
 # Default target, can be overridden by command line or environment

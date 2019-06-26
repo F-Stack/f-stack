@@ -306,6 +306,11 @@ int hw_atl_utils_fw_downld_dwords(struct aq_hw_s *self, u32 a,
 							   HW_ATL_MIF_CMD)),
 				       1, 1000U);
 
+		if (err) {
+			err = -ETIMEDOUT;
+			goto err_exit;
+		}
+
 		*(p++) = aq_hw_read_reg(self, HW_ATL_MIF_VAL);
 		a += 4;
 	}
@@ -328,12 +333,13 @@ int hw_atl_utils_fw_upload_dwords(struct aq_hw_s *self, u32 a, u32 *p,
 		goto err_exit;
 	}
 	if (IS_CHIP_FEATURE(REVISION_B1)) {
-		u32 offset = 0;
+		u32 mbox_offset = (a - self->rpc_addr) / sizeof(u32);
+		u32 data_offset = 0;
 
-		for (; offset < cnt; ++offset) {
-			aq_hw_write_reg(self, 0x328, p[offset]);
+		for (; data_offset < cnt; ++mbox_offset, ++data_offset) {
+			aq_hw_write_reg(self, 0x328, p[data_offset]);
 			aq_hw_write_reg(self, 0x32C,
-				(0x80000000 | (0xFFFF & (offset * 4))));
+				(0x80000000 | (0xFFFF & (mbox_offset * 4))));
 			hw_atl_mcp_up_force_intr_set(self, 1);
 			/* 1000 times by 10us = 10ms */
 			AQ_HW_WAIT_FOR((aq_hw_read_reg(self,
@@ -462,8 +468,6 @@ int hw_atl_utils_fw_rpc_wait(struct aq_hw_s *self,
 				goto err_exit;
 		}
 	} while (sw.tid != fw.tid || 0xFFFFU == fw.len);
-	if (err < 0)
-		goto err_exit;
 
 	if (rpc) {
 		if (fw.len) {
@@ -875,8 +879,7 @@ static int aq_fw1x_set_wol(struct aq_hw_s *self, bool wol_enabled, u8 *mac)
 	}
 
 	err = hw_atl_utils_fw_rpc_call(self, rpc_size);
-	if (err < 0)
-		goto err_exit;
+
 err_exit:
 	return err;
 }

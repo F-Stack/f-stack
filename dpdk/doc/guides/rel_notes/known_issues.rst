@@ -676,7 +676,7 @@ igb uio legacy mode can not be used in X710/XL710/XXV710
 
 **Description**:
    X710/XL710/XXV710 NICs lack support for indicating INTx is asserted via the interrupt
-   bit in the PCI status register. Linux delected them from INTx support table. The related
+   bit in the PCI status register. Linux deleted them from INTx support table. The related
    `commit <https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/commit/drivers/pci/quirks.c?id=8bcf4525c5d43306c5fd07e132bc8650e3491aec>`_.
 
 **Implication**:
@@ -722,9 +722,9 @@ Linux kernel 4.10.0 iommu attribute read error
 **Description**:
    When VT-d is enabled (``iommu=pt intel_iommu=on``), reading IOMMU attributes from
    /sys/devices/virtual/iommu/dmarXXX/intel-iommu/cap on Linux kernel 4.10.0 error.
-   This bug is fixed in `Linux commmit a7fdb6e648fb
+   This bug is fixed in `Linux commit a7fdb6e648fb
    <https://patchwork.kernel.org/patch/9595727/>`_,
-   This bug is introduced in `Linux commmit 39ab9555c241
+   This bug is introduced in `Linux commit 39ab9555c241
    <https://patchwork.kernel.org/patch/9554403/>`_,
 
 **Implication**:
@@ -826,3 +826,38 @@ Kernel crash when hot-unplug igb_uio device while DPDK application is running
 
 **Driver/Module**:
    ``igb_uio`` module.
+
+
+AVX-512 support disabled
+------------------------
+
+**Description**:
+   ``AVX-512`` support has been disabled on some conditions.
+   This shouldn't be confused with ``CONFIG_RTE_ENABLE_AVX512`` config option which is already
+   disabled by default. This config option defines if ``AVX-512`` specific implementations of
+   some file to be used or not. What has been disabled is compiler feature to produce ``AVX-512``
+   instructions from any source code.
+
+   On DPDK v18.11 ``AVX-512`` is disabled for all ``GCC`` builds which reported to cause a performance
+   drop.
+
+   On DPDK v19.02 ``AVX-512`` disable scope is reduced to ``GCC`` and ``binutils version 2.30`` based
+   on information accrued from the GCC community defect.
+
+**Reason**:
+   Generated ``AVX-512`` code cause crash:
+   https://bugs.dpdk.org/show_bug.cgi?id=97
+   https://gcc.gnu.org/bugzilla/show_bug.cgi?id=88096
+
+**Resolution/Workaround**:
+   * Update ``binutils`` to newer version than ``2.30``.
+
+   OR
+
+   * Use different compiler, like ``clang`` for this case.
+
+**Affected Environment/Platform**:
+    ``GCC`` and ``binutils version 2.30``.
+
+**Driver/Module**:
+    ALL.

@@ -143,7 +143,7 @@ static const unsigned int xstats_n = RTE_DIM(mlx5_counters_init);
 static int
 mlx5_read_dev_counters(struct rte_eth_dev *dev, uint64_t *stats)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_xstats_ctrl *xstats_ctrl = &priv->xstats_ctrl;
 	unsigned int i;
 	struct ifreq ifr;
@@ -221,7 +221,7 @@ mlx5_ethtool_get_stats_n(struct rte_eth_dev *dev) {
 void
 mlx5_xstats_init(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_xstats_ctrl *xstats_ctrl = &priv->xstats_ctrl;
 	unsigned int i;
 	unsigned int j;
@@ -312,7 +312,7 @@ int
 mlx5_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,
 		unsigned int n)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int i;
 	uint64_t counters[n];
 	struct mlx5_xstats_ctrl *xstats_ctrl = &priv->xstats_ctrl;
@@ -353,7 +353,7 @@ mlx5_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,
 int
 mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_eth_stats tmp;
 	unsigned int i;
 	unsigned int idx;
@@ -416,7 +416,7 @@ mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 void
 mlx5_stats_reset(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int i;
 	unsigned int idx;
 
@@ -448,7 +448,7 @@ mlx5_stats_reset(struct rte_eth_dev *dev)
 void
 mlx5_xstats_reset(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_xstats_ctrl *xstats_ctrl = &priv->xstats_ctrl;
 	int stats_n;
 	unsigned int i;
@@ -492,7 +492,7 @@ mlx5_xstats_get_names(struct rte_eth_dev *dev __rte_unused,
 		      struct rte_eth_xstat_name *xstats_names, unsigned int n)
 {
 	unsigned int i;
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_xstats_ctrl *xstats_ctrl = &priv->xstats_ctrl;
 	unsigned int mlx5_xstats_n = xstats_ctrl->mlx5_stats_n;
 

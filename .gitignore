@@ -23,3 +23,5 @@ lib/vnode_if_newproto.h
 lib/vnode_if_typedef.h
 app/nginx-1.11.10/objs/
 app/nginx-1.11.10/Makefile
+dpdk/.ci/
+dpdk/.travis.yml

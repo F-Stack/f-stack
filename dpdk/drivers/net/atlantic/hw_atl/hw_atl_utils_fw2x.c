@@ -34,7 +34,6 @@
 #define HAL_ATLANTIC_WOL_FILTERS_COUNT     8
 #define HAL_ATLANTIC_UTILS_FW2X_MSG_WOL    0x0E
 
-#define HW_ATL_FW_FEATURE_EEPROM 0x03010025
 #define HW_ATL_FW_FEATURE_LED 0x03010026
 
 struct fw2x_msg_wol_pattern {
@@ -62,6 +61,7 @@ static int aq_fw2x_set_state(struct aq_hw_s *self,
 static int aq_fw2x_init(struct aq_hw_s *self)
 {
 	int err = 0;
+	struct hw_aq_atl_utils_mbox mbox;
 
 	/* check 10 times by 1ms */
 	AQ_HW_WAIT_FOR(0U != (self->mbox_addr =
@@ -70,6 +70,12 @@ static int aq_fw2x_init(struct aq_hw_s *self)
 	AQ_HW_WAIT_FOR(0U != (self->rpc_addr =
 		       aq_hw_read_reg(self, HW_ATL_FW2X_MPI_RPC_ADDR)),
 		       1000U, 100U);
+
+	/* Read caps */
+	hw_atl_utils_mpi_read_stats(self, &mbox);
+
+	self->caps_lo = mbox.info.caps_lo;
+
 	return err;
 }
 
@@ -462,7 +468,15 @@ static int aq_fw2x_get_eee_rate(struct aq_hw_s *self, u32 *rate,
 	return err;
 }
 
+static int aq_fw2x_get_flow_control(struct aq_hw_s *self, u32 *fc)
+{
+	u32 mpi_state = aq_hw_read_reg(self, HW_ATL_FW2X_MPI_CONTROL2_ADDR);
 
+	*fc = ((mpi_state & BIT(CAPS_HI_PAUSE)) ? AQ_NIC_FC_RX : 0) |
+	      ((mpi_state & BIT(CAPS_HI_ASYMMETRIC_PAUSE)) ? AQ_NIC_FC_TX : 0);
+
+	return 0;
+}
 
 static int aq_fw2x_set_flow_control(struct aq_hw_s *self)
 {
@@ -484,38 +498,42 @@ static int aq_fw2x_led_control(struct aq_hw_s *self, u32 mode)
 	return 0;
 }
 
-static int aq_fw2x_get_eeprom(struct aq_hw_s *self, u32 *data, u32 len)
+static int aq_fw2x_get_eeprom(struct aq_hw_s *self, int dev_addr,
+			      u32 *data, u32 len, u32 offset)
 {
-	int err = 0;
-	struct smbus_read_request request;
-	u32 mpi_opts;
+	u32 bytes_remains = len % sizeof(u32);
+	u32 num_dwords = len / sizeof(u32);
+	struct smbus_request request;
 	u32 result = 0;
+	u32 mpi_opts;
+	int err = 0;
 
-	if (self->fw_ver_actual < HW_ATL_FW_FEATURE_EEPROM)
+	if ((self->caps_lo & BIT(CAPS_LO_SMBUS_READ)) == 0)
 		return -EOPNOTSUPP;
 
-	request.device_id = SMBUS_DEVICE_ID;
-	request.address = 0;
+	request.msg_id = 0;
+	request.device_id = dev_addr;
+	request.address = offset;
 	request.length = len;
 
 	/* Write SMBUS request to cfg memory */
 	err = hw_atl_utils_fw_upload_dwords(self, self->rpc_addr,
 				(u32 *)(void *)&request,
-				RTE_ALIGN(sizeof(request), sizeof(u32)));
+				sizeof(request) / sizeof(u32));
 
 	if (err < 0)
 		return err;
 
-	/* Toggle 0x368.SMBUS_READ_REQUEST bit */
+	/* Toggle 0x368.CAPS_LO_SMBUS_READ bit */
 	mpi_opts = aq_hw_read_reg(self, HW_ATL_FW2X_MPI_CONTROL_ADDR);
-	mpi_opts ^= SMBUS_READ_REQUEST;
+	mpi_opts ^= BIT(CAPS_LO_SMBUS_READ);
 
 	aq_hw_write_reg(self, HW_ATL_FW2X_MPI_CONTROL_ADDR, mpi_opts);
 
 	/* Wait until REQUEST_BIT matched in 0x370 */
 
 	AQ_HW_WAIT_FOR((aq_hw_read_reg(self, HW_ATL_FW2X_MPI_STATE_ADDR) &
-		SMBUS_READ_REQUEST) == (mpi_opts & SMBUS_READ_REQUEST),
+		BIT(CAPS_LO_SMBUS_READ)) == (mpi_opts & BIT(CAPS_LO_SMBUS_READ)),
 		10U, 10000U);
 
 	if (err < 0)
@@ -523,64 +541,106 @@ static int aq_fw2x_get_eeprom(struct aq_hw_s *self, u32 *data, u32 len)
 
 	err = hw_atl_utils_fw_downld_dwords(self, self->rpc_addr + sizeof(u32),
 			&result,
-			RTE_ALIGN(sizeof(result), sizeof(u32)));
+			sizeof(result) / sizeof(u32));
 
 	if (err < 0)
 		return err;
 
-	if (result == 0) {
+	if (result)
+		return -EIO;
+
+	if (num_dwords) {
 		err = hw_atl_utils_fw_downld_dwords(self,
-				self->rpc_addr + sizeof(u32) * 2,
-				data,
-				RTE_ALIGN(len, sizeof(u32)));
+			self->rpc_addr + sizeof(u32) * 2,
+			data,
+			num_dwords);
 
 		if (err < 0)
 			return err;
+	}
+
+	if (bytes_remains) {
+		u32 val = 0;
+
+		err = hw_atl_utils_fw_downld_dwords(self,
+			self->rpc_addr + (sizeof(u32) * 2) +
+			(num_dwords * sizeof(u32)),
+			&val,
+			1);
+
+		if (err < 0)
+			return err;
+
+		rte_memcpy((u8 *)data + len - bytes_remains,
+				&val, bytes_remains);
 	}
 
 	return 0;
 }
 
 
-static int aq_fw2x_set_eeprom(struct aq_hw_s *self, u32 *data, u32 len)
+static int aq_fw2x_set_eeprom(struct aq_hw_s *self, int dev_addr,
+			      u32 *data, u32 len, u32 offset)
 {
-	struct smbus_write_request request;
+	struct smbus_request request;
 	u32 mpi_opts, result = 0;
 	int err = 0;
 
-	if (self->fw_ver_actual < HW_ATL_FW_FEATURE_EEPROM)
+	if ((self->caps_lo & BIT(CAPS_LO_SMBUS_WRITE)) == 0)
 		return -EOPNOTSUPP;
 
-	request.device_id = SMBUS_DEVICE_ID;
-	request.address = 0;
+	request.msg_id = 0;
+	request.device_id = dev_addr;
+	request.address = offset;
 	request.length = len;
 
 	/* Write SMBUS request to cfg memory */
 	err = hw_atl_utils_fw_upload_dwords(self, self->rpc_addr,
 				(u32 *)(void *)&request,
-				RTE_ALIGN(sizeof(request), sizeof(u32)));
+				sizeof(request) / sizeof(u32));
 
 	if (err < 0)
 		return err;
 
 	/* Write SMBUS data to cfg memory */
-	err = hw_atl_utils_fw_upload_dwords(self,
-				self->rpc_addr + sizeof(request),
-				(u32 *)(void *)data,
-				RTE_ALIGN(len, sizeof(u32)));
+	u32 num_dwords = len / sizeof(u32);
+	u32 bytes_remains = len % sizeof(u32);
 
-	if (err < 0)
-		return err;
+	if (num_dwords) {
+		err = hw_atl_utils_fw_upload_dwords(self,
+			self->rpc_addr + sizeof(request),
+			(u32 *)(void *)data,
+			num_dwords);
 
-	/* Toggle 0x368.SMBUS_WRITE_REQUEST bit */
+		if (err < 0)
+			return err;
+	}
+
+	if (bytes_remains) {
+		u32 val = 0;
+
+		rte_memcpy(&val, (u8 *)data + (sizeof(u32) * num_dwords),
+			   bytes_remains);
+
+		err = hw_atl_utils_fw_upload_dwords(self,
+			self->rpc_addr + sizeof(request) +
+			(num_dwords * sizeof(u32)),
+			&val,
+			1);
+
+		if (err < 0)
+			return err;
+	}
+
+	/* Toggle 0x368.CAPS_LO_SMBUS_WRITE bit */
 	mpi_opts = aq_hw_read_reg(self, HW_ATL_FW2X_MPI_CONTROL_ADDR);
-	mpi_opts ^= SMBUS_WRITE_REQUEST;
+	mpi_opts ^= BIT(CAPS_LO_SMBUS_WRITE);
 
 	aq_hw_write_reg(self, HW_ATL_FW2X_MPI_CONTROL_ADDR, mpi_opts);
 
 	/* Wait until REQUEST_BIT matched in 0x370 */
 	AQ_HW_WAIT_FOR((aq_hw_read_reg(self, HW_ATL_FW2X_MPI_STATE_ADDR) &
-		SMBUS_WRITE_REQUEST) == (mpi_opts & SMBUS_WRITE_REQUEST),
+		BIT(CAPS_LO_SMBUS_WRITE)) == (mpi_opts & BIT(CAPS_LO_SMBUS_WRITE)),
 		10U, 10000U);
 
 	if (err < 0)
@@ -589,10 +649,13 @@ static int aq_fw2x_set_eeprom(struct aq_hw_s *self, u32 *data, u32 len)
 	/* Read status of write operation */
 	err = hw_atl_utils_fw_downld_dwords(self, self->rpc_addr + sizeof(u32),
 				&result,
-				RTE_ALIGN(sizeof(result), sizeof(u32)));
+				sizeof(result) / sizeof(u32));
 
 	if (err < 0)
 		return err;
+
+	if (result)
+		return -EIO;
 
 	return 0;
 }
@@ -611,6 +674,7 @@ const struct aq_fw_ops aq_fw_2x_ops = {
 	.get_cable_len = aq_fw2x_get_cable_len,
 	.set_eee_rate = aq_fw2x_set_eee_rate,
 	.get_eee_rate = aq_fw2x_get_eee_rate,
+	.get_flow_control = aq_fw2x_get_flow_control,
 	.set_flow_control = aq_fw2x_set_flow_control,
 	.led_control = aq_fw2x_led_control,
 	.get_eeprom = aq_fw2x_get_eeprom,

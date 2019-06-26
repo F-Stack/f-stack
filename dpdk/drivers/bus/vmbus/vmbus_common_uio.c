@@ -27,6 +27,7 @@ static int
 vmbus_uio_map_secondary(struct rte_vmbus_device *dev)
 {
 	int fd, i;
+	struct vmbus_channel *chan;
 	struct mapped_vmbus_resource *uio_res;
 	struct mapped_vmbus_res_list *uio_res_list
 		= RTE_TAILQ_CAST(vmbus_tailq.head, mapped_vmbus_res_list);
@@ -47,9 +48,10 @@ vmbus_uio_map_secondary(struct rte_vmbus_device *dev)
 
 		for (i = 0; i != uio_res->nb_maps; i++) {
 			void *mapaddr;
+			off_t offset = i * PAGE_SIZE;
 
 			mapaddr = vmbus_map_resource(uio_res->maps[i].addr,
-						     fd, 0,
+						     fd, offset,
 						     uio_res->maps[i].size, 0);
 
 			if (mapaddr == uio_res->maps[i].addr)
@@ -75,6 +77,20 @@ vmbus_uio_map_secondary(struct rte_vmbus_device *dev)
 
 		/* fd is not needed in slave process, close it */
 		close(fd);
+
+		dev->primary = uio_res->primary;
+		if (!dev->primary) {
+			VMBUS_LOG(ERR, "missing primary channel");
+			return -1;
+		}
+
+		STAILQ_FOREACH(chan, &dev->primary->subchannel_list, next) {
+			if (vmbus_uio_map_secondary_subchan(dev, chan) != 0) {
+				VMBUS_LOG(ERR, "cannot map secondary subchan");
+				return -1;
+			}
+		}
+
 		return 0;
 	}
 
@@ -97,9 +113,9 @@ vmbus_uio_map_primary(struct rte_vmbus_device *dev)
 
 	/* Map the resources */
 	for (i = 0; i < VMBUS_MAX_RESOURCE; i++) {
-		/* skip empty BAR */
+		/* stop at empty BAR */
 		if (dev->resource[i].len == 0)
-			continue;
+			break;
 
 		ret = vmbus_uio_map_resource_by_index(dev, i, uio_res, 0);
 		if (ret)

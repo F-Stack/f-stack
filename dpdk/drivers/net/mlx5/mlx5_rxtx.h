@@ -58,7 +58,7 @@ struct mlx5_txq_stats {
 	uint64_t oerrors; /**< Total number of failed transmitted packets. */
 };
 
-struct priv;
+struct mlx5_priv;
 
 /* Compressed CQE context. */
 struct rxq_zip {
@@ -143,7 +143,7 @@ struct mlx5_rxq_ctrl {
 	LIST_ENTRY(mlx5_rxq_ctrl) next; /* Pointer to the next element. */
 	rte_atomic32_t refcnt; /* Reference counter. */
 	struct mlx5_rxq_ibv *ibv; /* Verbs elements. */
-	struct priv *priv; /* Back pointer to private data. */
+	struct mlx5_priv *priv; /* Back pointer to private data. */
 	struct mlx5_rxq_data rxq; /* Data path structure. */
 	unsigned int socket; /* CPU socket ID for allocations. */
 	unsigned int irq:1; /* Whether IRQ is enabled. */
@@ -228,7 +228,7 @@ struct mlx5_txq_ctrl {
 	unsigned int max_inline_data; /* Max inline data. */
 	unsigned int max_tso_header; /* Max TSO header size. */
 	struct mlx5_txq_ibv *ibv; /* Verbs queue object. */
-	struct priv *priv; /* Back pointer to private data. */
+	struct mlx5_priv *priv; /* Back pointer to private data. */
 	struct mlx5_txq_data txq; /* Data path structure. */
 	off_t uar_mmap_offset; /* UAR mmap offset for non-primary process. */
 	volatile void *bf_reg_orig; /* Blueflame register from verbs. */
@@ -491,7 +491,7 @@ check_cqe(volatile struct mlx5_cqe *cqe,
 				op_code, op_code, syndrome);
 			rte_hexdump(stderr, "MLX5 Error CQE:",
 				    (const void *)((uintptr_t)err_cqe),
-				    sizeof(*err_cqe));
+				    sizeof(*cqe));
 		}
 		return 1;
 	} else if ((op_code != MLX5_CQE_RESP_SEND) &&
@@ -568,6 +568,7 @@ mlx5_tx_complete(struct mlx5_txq_data *txq)
 	}
 #endif /* NDEBUG */
 	++cq_ci;
+	rte_cio_rmb();
 	txq->wqe_pi = rte_be_to_cpu_16(cqe->wqe_counter);
 	ctrl = (volatile struct mlx5_wqe_ctrl *)
 		tx_mlx5_wqe(txq, txq->wqe_pi);
@@ -733,10 +734,6 @@ mlx5_tx_dbrec(struct mlx5_txq_data *txq, volatile struct mlx5_wqe *wqe)
  *   Pointer to the Tx queue.
  * @param buf
  *   Pointer to the mbuf.
- * @param tso
- *   TSO offloads enabled.
- * @param vlan
- *   VLAN offloads enabled
  * @param offsets
  *   Pointer to the SWP header offsets.
  * @param swp_types

@@ -295,7 +295,8 @@ gro_vxlan_tcp4_reassemble(struct rte_mbuf *pkt,
 	struct udp_hdr *udp_hdr;
 	struct vxlan_hdr *vxlan_hdr;
 	uint32_t sent_seq;
-	uint16_t tcp_dl, frag_off, outer_ip_id, ip_id;
+	int32_t tcp_dl;
+	uint16_t frag_off, outer_ip_id, ip_id;
 	uint8_t outer_is_atomic, is_atomic;
 
 	struct vxlan_tcp4_flow_key key;
@@ -304,6 +305,13 @@ gro_vxlan_tcp4_reassemble(struct rte_mbuf *pkt,
 	int cmp;
 	uint16_t hdr_len;
 	uint8_t find;
+
+	/*
+	 * Don't process the packet whose TCP header length is greater
+	 * than 60 bytes or less than 20 bytes.
+	 */
+	if (unlikely(INVALID_TCP_HDRLEN(pkt->l4_len)))
+		return -1;
 
 	outer_eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
 	outer_ipv4_hdr = (struct ipv4_hdr *)((char *)outer_eth_hdr +

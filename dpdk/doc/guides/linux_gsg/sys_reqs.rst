@@ -70,6 +70,15 @@ Compilation of the DPDK
 
     * libnuma-dev in Debian/Ubuntu;
 
+    .. note::
+
+        On systems with NUMA support, `libnuma-dev` (aka `numactl-devel`)
+        is a recommended dependency when `--legacy-mem` switch is used,
+        and a *required* dependency if default memory mode is used.
+        While DPDK will compile and run without `libnuma`
+        even on NUMA-enabled systems,
+        both usability and performance will be degraded.
+
 *   Python, version 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
 
 
@@ -175,7 +184,7 @@ In the case of a dual-socket NUMA system,
 the number of hugepages reserved at boot time is generally divided equally between the two sockets
 (on the assumption that sufficient memory is present on both sockets).
 
-See the Documentation/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
+See the Documentation/admin-guide/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
 
 **Alternative:**
 

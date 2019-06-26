@@ -37,6 +37,7 @@ static int mp_fd = -1;
 static char mp_filter[PATH_MAX];   /* Filter for secondary process sockets */
 static char mp_dir_path[PATH_MAX]; /* The directory path for all mp sockets */
 static pthread_mutex_t mp_mutex_action = PTHREAD_MUTEX_INITIALIZER;
+static char peer_name[PATH_MAX];
 
 struct action_entry {
 	TAILQ_ENTRY(action_entry) next;
@@ -284,7 +285,15 @@ read_msg(struct mp_msg_internal *m, struct sockaddr_un *s)
 			break;
 		}
 	}
-
+	/* sanity-check the response */
+	if (m->msg.num_fds < 0 || m->msg.num_fds > RTE_MP_MAX_FD_NUM) {
+		RTE_LOG(ERR, EAL, "invalid number of fd's received\n");
+		return -1;
+	}
+	if (m->msg.len_param < 0 || m->msg.len_param > RTE_MP_MAX_PARAM_LEN) {
+		RTE_LOG(ERR, EAL, "invalid received data length\n");
+		return -1;
+	}
 	return 0;
 }
 
@@ -511,9 +520,9 @@ async_reply_handle(void *arg)
 static int
 open_socket_fd(void)
 {
-	char peer_name[PATH_MAX] = {0};
 	struct sockaddr_un un;
 
+	peer_name[0] = '\0';
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
 		snprintf(peer_name, sizeof(peer_name),
 				"%d_%"PRIx64, getpid(), rte_rdtsc());
@@ -542,27 +551,17 @@ open_socket_fd(void)
 	return mp_fd;
 }
 
-static int
-unlink_sockets(const char *filter)
+static void
+close_socket_fd(void)
 {
-	int dir_fd;
-	DIR *mp_dir;
-	struct dirent *ent;
+	char path[PATH_MAX];
 
-	mp_dir = opendir(mp_dir_path);
-	if (!mp_dir) {
-		RTE_LOG(ERR, EAL, "Unable to open directory %s\n", mp_dir_path);
-		return -1;
-	}
-	dir_fd = dirfd(mp_dir);
+	if (mp_fd < 0)
+		return;
 
-	while ((ent = readdir(mp_dir))) {
-		if (fnmatch(filter, ent->d_name, 0) == 0)
-			unlinkat(dir_fd, ent->d_name, 0);
-	}
-
-	closedir(mp_dir);
-	return 0;
+	close(mp_fd);
+	create_socket_path(peer_name, path, sizeof(path));
+	unlink(path);
 }
 
 int
@@ -603,13 +602,6 @@ rte_mp_channel_init(void)
 		return -1;
 	}
 
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
-			unlink_sockets(mp_filter)) {
-		RTE_LOG(ERR, EAL, "failed to unlink mp sockets\n");
-		close(dir_fd);
-		return -1;
-	}
-
 	if (open_socket_fd() < 0) {
 		close(dir_fd);
 		return -1;
@@ -630,6 +622,12 @@ rte_mp_channel_init(void)
 	close(dir_fd);
 
 	return 0;
+}
+
+void
+rte_mp_channel_cleanup(void)
+{
+	close_socket_fd();
 }
 
 /**
@@ -686,11 +684,6 @@ send_msg(const char *dst_path, struct rte_mp_msg *msg, int type)
 		if (errno == ECONNREFUSED &&
 				rte_eal_process_type() == RTE_PROC_PRIMARY) {
 			unlink(dst_path);
-			return 0;
-		}
-		if (errno == ENOBUFS) {
-			RTE_LOG(ERR, EAL, "Peer cannot receive message %s\n",
-				dst_path);
 			return 0;
 		}
 		RTE_LOG(ERR, EAL, "failed to send to (%s) due to %s\n",
@@ -767,6 +760,18 @@ check_input(const struct rte_mp_msg *msg)
 
 	if (validate_action_name(msg->name))
 		return false;
+
+	if (msg->len_param < 0) {
+		RTE_LOG(ERR, EAL, "Message data length is negative\n");
+		rte_errno = EINVAL;
+		return false;
+	}
+
+	if (msg->num_fds < 0) {
+		RTE_LOG(ERR, EAL, "Number of fd's is negative\n");
+		rte_errno = EINVAL;
+		return false;
+	}
 
 	if (msg->len_param > RTE_MP_MAX_PARAM_LEN) {
 		RTE_LOG(ERR, EAL, "Message data is too long\n");
@@ -929,7 +934,7 @@ int __rte_experimental
 rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 		const struct timespec *ts)
 {
-	int dir_fd, ret = 0;
+	int dir_fd, ret = -1;
 	DIR *mp_dir;
 	struct dirent *ent;
 	struct timeval now;
@@ -937,12 +942,12 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 
 	RTE_LOG(DEBUG, EAL, "request: %s\n", req->name);
 
-	if (check_input(req) == false)
-		return -1;
-
 	reply->nb_sent = 0;
 	reply->nb_received = 0;
 	reply->msgs = NULL;
+
+	if (check_input(req) == false)
+		goto end;
 
 	if (internal_config.no_shconf) {
 		RTE_LOG(DEBUG, EAL, "No shared files mode enabled, IPC is disabled\n");
@@ -952,7 +957,7 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 	if (gettimeofday(&now, NULL) < 0) {
 		RTE_LOG(ERR, EAL, "Failed to get current time\n");
 		rte_errno = errno;
-		return -1;
+		goto end;
 	}
 
 	end.tv_nsec = (now.tv_usec * 1000 + ts->tv_nsec) % 1000000000;
@@ -964,7 +969,7 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 		pthread_mutex_lock(&pending_requests.lock);
 		ret = mp_request_sync(eal_mp_socket_path(), req, reply, &end);
 		pthread_mutex_unlock(&pending_requests.lock);
-		return ret;
+		goto end;
 	}
 
 	/* for primary process, broadcast request, and collect reply 1 by 1 */
@@ -972,7 +977,7 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 	if (!mp_dir) {
 		RTE_LOG(ERR, EAL, "Unable to open directory %s\n", mp_dir_path);
 		rte_errno = errno;
-		return -1;
+		goto end;
 	}
 
 	dir_fd = dirfd(mp_dir);
@@ -980,9 +985,8 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 	if (flock(dir_fd, LOCK_SH)) {
 		RTE_LOG(ERR, EAL, "Unable to lock directory %s\n",
 			mp_dir_path);
-		closedir(mp_dir);
 		rte_errno = errno;
-		return -1;
+		goto close_end;
 	}
 
 	pthread_mutex_lock(&pending_requests.lock);
@@ -999,14 +1003,25 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 		 * locks on receive
 		 */
 		if (mp_request_sync(path, req, reply, &end))
-			ret = -1;
+			goto unlock_end;
 	}
+	ret = 0;
+
+unlock_end:
 	pthread_mutex_unlock(&pending_requests.lock);
 	/* unlock the directory */
 	flock(dir_fd, LOCK_UN);
 
+close_end:
 	/* dir_fd automatically closed on closedir */
 	closedir(mp_dir);
+
+end:
+	if (ret) {
+		free(reply->msgs);
+		reply->nb_received = 0;
+		reply->msgs = NULL;
+	}
 	return ret;
 }
 

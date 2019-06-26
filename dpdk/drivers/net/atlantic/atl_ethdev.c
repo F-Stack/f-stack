@@ -165,7 +165,8 @@ static struct rte_pci_driver rte_atl_pmd = {
 			| DEV_RX_OFFLOAD_IPV4_CKSUM \
 			| DEV_RX_OFFLOAD_UDP_CKSUM \
 			| DEV_RX_OFFLOAD_TCP_CKSUM \
-			| DEV_RX_OFFLOAD_JUMBO_FRAME)
+			| DEV_RX_OFFLOAD_JUMBO_FRAME \
+			| DEV_RX_OFFLOAD_VLAN_FILTER)
 
 #define ATL_TX_OFFLOADS (DEV_TX_OFFLOAD_VLAN_INSERT \
 			| DEV_TX_OFFLOAD_IPV4_CKSUM \
@@ -173,6 +174,8 @@ static struct rte_pci_driver rte_atl_pmd = {
 			| DEV_TX_OFFLOAD_TCP_CKSUM \
 			| DEV_TX_OFFLOAD_TCP_TSO \
 			| DEV_TX_OFFLOAD_MULTI_SEGS)
+
+#define SFP_EEPROM_SIZE 0x100
 
 static const struct rte_eth_desc_lim rx_desc_lim = {
 	.nb_max = ATL_MAX_RING_DESC,
@@ -465,8 +468,6 @@ atl_dev_start(struct rte_eth_dev *dev)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	uint32_t intr_vector = 0;
-	uint32_t *link_speeds;
-	uint32_t speed = 0;
 	int status;
 	int err;
 
@@ -543,6 +544,8 @@ atl_dev_start(struct rte_eth_dev *dev)
 		goto error;
 	}
 
+	err = atl_dev_set_link_up(dev);
+
 	err = hw->aq_fw_ops->update_link_status(hw);
 
 	if (err)
@@ -550,26 +553,6 @@ atl_dev_start(struct rte_eth_dev *dev)
 
 	dev->data->dev_link.link_status = hw->aq_link_status.mbps != 0;
 
-	link_speeds = &dev->data->dev_conf.link_speeds;
-
-	speed = 0x0;
-
-	if (*link_speeds == ETH_LINK_SPEED_AUTONEG) {
-		speed = hw->aq_nic_cfg->link_speed_msk;
-	} else {
-		if (*link_speeds & ETH_LINK_SPEED_10G)
-			speed |= AQ_NIC_RATE_10G;
-		if (*link_speeds & ETH_LINK_SPEED_5G)
-			speed |= AQ_NIC_RATE_5G;
-		if (*link_speeds & ETH_LINK_SPEED_1G)
-			speed |= AQ_NIC_RATE_1G;
-		if (*link_speeds & ETH_LINK_SPEED_2_5G)
-			speed |=  AQ_NIC_RATE_2G5;
-		if (*link_speeds & ETH_LINK_SPEED_100M)
-			speed |= AQ_NIC_RATE_100M;
-	}
-
-	err = hw->aq_fw_ops->set_link_speed(hw, speed);
 	if (err)
 		goto error;
 
@@ -657,9 +640,25 @@ static int
 atl_dev_set_link_up(struct rte_eth_dev *dev)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint32_t link_speeds = dev->data->dev_conf.link_speeds;
+	uint32_t speed_mask = 0;
 
-	return hw->aq_fw_ops->set_link_speed(hw,
-			hw->aq_nic_cfg->link_speed_msk);
+	if (link_speeds == ETH_LINK_SPEED_AUTONEG) {
+		speed_mask = hw->aq_nic_cfg->link_speed_msk;
+	} else {
+		if (link_speeds & ETH_LINK_SPEED_10G)
+			speed_mask |= AQ_NIC_RATE_10G;
+		if (link_speeds & ETH_LINK_SPEED_5G)
+			speed_mask |= AQ_NIC_RATE_5G;
+		if (link_speeds & ETH_LINK_SPEED_1G)
+			speed_mask |= AQ_NIC_RATE_1G;
+		if (link_speeds & ETH_LINK_SPEED_2_5G)
+			speed_mask |=  AQ_NIC_RATE_2G5;
+		if (link_speeds & ETH_LINK_SPEED_100M)
+			speed_mask |= AQ_NIC_RATE_100M;
+	}
+
+	return hw->aq_fw_ops->set_link_speed(hw, speed_mask);
 }
 
 /*
@@ -761,7 +760,7 @@ atl_dev_xstats_get_names(struct rte_eth_dev *dev __rte_unused,
 		snprintf(xstats_names[i].name, RTE_ETH_XSTATS_NAME_SIZE, "%s",
 			atl_xstats_tbl[i].name);
 
-	return size;
+	return i;
 }
 
 static int
@@ -781,7 +780,7 @@ atl_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,
 					atl_xstats_tbl[i].offset);
 	}
 
-	return n;
+	return i;
 }
 
 static int
@@ -879,6 +878,7 @@ atl_dev_link_update(struct rte_eth_dev *dev, int wait __rte_unused)
 	struct atl_interrupt *intr =
 		ATL_DEV_PRIVATE_TO_INTR(dev->data->dev_private);
 	struct rte_eth_link link, old;
+	u32 fc = AQ_NIC_FC_OFF;
 	int err = 0;
 
 	link.link_status = ETH_LINK_DOWN;
@@ -914,6 +914,15 @@ atl_dev_link_update(struct rte_eth_dev *dev, int wait __rte_unused)
 
 	if (link.link_status == old.link_status)
 		return -1;
+
+	/* Driver has to update flow control settings on RX block
+	 * on any link event.
+	 * We should query FW whether it negotiated FC.
+	 */
+	if (hw->aq_fw_ops->get_flow_control) {
+		hw->aq_fw_ops->get_flow_control(hw, &fc);
+		hw_atl_b0_set_fc(hw, fc, 0U);
+	}
 
 	return 0;
 }
@@ -1094,8 +1103,6 @@ atl_dev_interrupt_handler(void *param)
 	atl_dev_interrupt_action(dev, dev->intr_handle);
 }
 
-#define SFP_EEPROM_SIZE 0xff
-
 static int
 atl_dev_get_eeprom_length(struct rte_eth_dev *dev __rte_unused)
 {
@@ -1106,28 +1113,46 @@ static int
 atl_dev_get_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int dev_addr = SMBUS_DEVICE_ID;
 
 	if (hw->aq_fw_ops->get_eeprom == NULL)
 		return -ENOTSUP;
 
-	if (eeprom->length != SFP_EEPROM_SIZE || eeprom->data == NULL)
+	if (eeprom->length + eeprom->offset > SFP_EEPROM_SIZE ||
+	    eeprom->data == NULL)
 		return -EINVAL;
 
-	return hw->aq_fw_ops->get_eeprom(hw, eeprom->data, eeprom->length);
+	if (eeprom->magic > 0x7F)
+		return -EINVAL;
+
+	if (eeprom->magic)
+		dev_addr = eeprom->magic;
+
+	return hw->aq_fw_ops->get_eeprom(hw, dev_addr, eeprom->data,
+					 eeprom->length, eeprom->offset);
 }
 
 static int
 atl_dev_set_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int dev_addr = SMBUS_DEVICE_ID;
 
 	if (hw->aq_fw_ops->set_eeprom == NULL)
 		return -ENOTSUP;
 
-	if (eeprom->length != SFP_EEPROM_SIZE || eeprom->data == NULL)
+	if (eeprom->length + eeprom->offset > SFP_EEPROM_SIZE ||
+	    eeprom->data == NULL)
 		return -EINVAL;
 
-	return hw->aq_fw_ops->set_eeprom(hw, eeprom->data, eeprom->length);
+	if (eeprom->magic > 0x7F)
+		return -EINVAL;
+
+	if (eeprom->magic)
+		dev_addr = eeprom->magic;
+
+	return hw->aq_fw_ops->set_eeprom(hw, dev_addr, eeprom->data,
+					 eeprom->length, eeprom->offset);
 }
 
 static int
@@ -1160,16 +1185,21 @@ static int
 atl_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	u32 fc = AQ_NIC_FC_OFF;
 
-	if (hw->aq_nic_cfg->flow_control == AQ_NIC_FC_OFF)
+	if (hw->aq_fw_ops->get_flow_control == NULL)
+		return -ENOTSUP;
+
+	hw->aq_fw_ops->get_flow_control(hw, &fc);
+
+	if (fc == AQ_NIC_FC_OFF)
 		fc_conf->mode = RTE_FC_NONE;
-	else if (hw->aq_nic_cfg->flow_control & (AQ_NIC_FC_RX | AQ_NIC_FC_TX))
+	else if ((fc & AQ_NIC_FC_RX) && (fc & AQ_NIC_FC_TX))
 		fc_conf->mode = RTE_FC_FULL;
-	else if (hw->aq_nic_cfg->flow_control & AQ_NIC_FC_RX)
+	else if (fc & AQ_NIC_FC_RX)
 		fc_conf->mode = RTE_FC_RX_PAUSE;
-	else if (hw->aq_nic_cfg->flow_control & AQ_NIC_FC_RX)
+	else if (fc & AQ_NIC_FC_TX)
 		fc_conf->mode = RTE_FC_TX_PAUSE;
-
 	return 0;
 }
 

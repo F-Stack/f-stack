@@ -25,8 +25,8 @@ The application classifies the ports as *Protected* and *Unprotected*.
 Thus, traffic received on an Unprotected or Protected port is consider
 Inbound or Outbound respectively.
 
-The application also supports complete IPSec protocol offload to hardware
-(Look aside crypto accelarator or using ethernet device). It also support
+The application also supports complete IPsec protocol offload to hardware
+(Look aside crypto accelerator or using ethernet device). It also support
 inline ipsec processing by the supported ethernet device during transmission.
 These modes can be selected during the SA creation configuration.
 

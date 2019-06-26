@@ -19,6 +19,11 @@ EXPORT_MAP := rte_telemetry_version.map
 
 LIBABIVER := 1
 
+ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
+CFLAGS_rte_telemetry.o += -Wno-address-of-packed-member
+CFLAGS_rte_telemetry_parser.o += -Wno-address-of-packed-member
+endif
+
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_TELEMETRY) := rte_telemetry.c
 SRCS-$(CONFIG_RTE_LIBRTE_TELEMETRY) += rte_telemetry_parser.c

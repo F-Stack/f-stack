@@ -1347,6 +1347,9 @@ remove_entry(const struct rte_hash *h, struct rte_hash_bucket *bkt, unsigned i)
 			n_slots = rte_ring_mp_enqueue_burst(h->free_slots,
 						cached_free_slots->objs,
 						LCORE_CACHE_SIZE, NULL);
+			ERR_IF_TRUE((n_slots == 0),
+				"%s: could not enqueue free slots in global ring\n",
+				__func__);
 			cached_free_slots->len -= n_slots;
 		}
 		/* Put index of new free slot in cache. */
@@ -1533,14 +1536,19 @@ int __rte_experimental
 rte_hash_free_key_with_position(const struct rte_hash *h,
 				const int32_t position)
 {
-	RETURN_IF_TRUE(((h == NULL) || (position == EMPTY_SLOT)), -EINVAL);
+	/* Key index where key is stored, adding the first dummy index */
+	uint32_t key_idx = position + 1;
+
+	RETURN_IF_TRUE(((h == NULL) || (key_idx == EMPTY_SLOT)), -EINVAL);
 
 	unsigned int lcore_id, n_slots;
 	struct lcore_cache *cached_free_slots;
-	const int32_t total_entries = h->num_buckets * RTE_HASH_BUCKET_ENTRIES;
+	const uint32_t total_entries = h->use_local_cache ?
+		h->entries + (RTE_MAX_LCORE - 1) * (LCORE_CACHE_SIZE - 1) + 1
+							: h->entries + 1;
 
 	/* Out of bounds */
-	if (position >= total_entries)
+	if (key_idx >= total_entries)
 		return -EINVAL;
 
 	if (h->use_local_cache) {
@@ -1552,15 +1560,16 @@ rte_hash_free_key_with_position(const struct rte_hash *h,
 			n_slots = rte_ring_mp_enqueue_burst(h->free_slots,
 						cached_free_slots->objs,
 						LCORE_CACHE_SIZE, NULL);
+			RETURN_IF_TRUE((n_slots == 0), -EFAULT);
 			cached_free_slots->len -= n_slots;
 		}
 		/* Put index of new free slot in cache. */
 		cached_free_slots->objs[cached_free_slots->len] =
-					(void *)((uintptr_t)position);
+					(void *)((uintptr_t)key_idx);
 		cached_free_slots->len++;
 	} else {
 		rte_ring_sp_enqueue(h->free_slots,
-				(void *)((uintptr_t)position));
+				(void *)((uintptr_t)key_idx));
 	}
 
 	return 0;
@@ -2022,11 +2031,11 @@ __rte_hash_lookup_bulk(const struct rte_hash *h, const void **keys,
 			uint64_t *hit_mask, void *data[])
 {
 	if (h->readwrite_concur_lf_support)
-		return __rte_hash_lookup_bulk_lf(h, keys, num_keys,
-						positions, hit_mask, data);
+		__rte_hash_lookup_bulk_lf(h, keys, num_keys, positions,
+					  hit_mask, data);
 	else
-		return __rte_hash_lookup_bulk_l(h, keys, num_keys,
-						positions, hit_mask, data);
+		__rte_hash_lookup_bulk_l(h, keys, num_keys, positions,
+					 hit_mask, data);
 }
 
 int

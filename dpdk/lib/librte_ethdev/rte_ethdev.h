@@ -1135,7 +1135,7 @@ struct rte_eth_dev_info {
 
 /**
  * Ethernet device RX queue information structure.
- * Used to retieve information about configured queue.
+ * Used to retrieve information about configured queue.
  */
 struct rte_eth_rxq_info {
 	struct rte_mempool *mp;     /**< mempool used by that queue. */
@@ -1551,14 +1551,14 @@ const char *rte_eth_dev_tx_offload_name(uint64_t offload);
  *        Applications should set the ignore_bitfield_offloads bit on *rxmode*
  *        structure and use offloads field to set per-port offloads instead.
  *     -  Any offloading set in eth_conf->[rt]xmode.offloads must be within
- *        the [rt]x_offload_capa returned from rte_eth_dev_infos_get().
+ *        the [rt]x_offload_capa returned from rte_eth_dev_info_get().
  *        Any type of device supported offloading set in the input argument
  *        eth_conf->[rt]xmode.offloads to rte_eth_dev_configure() is enabled
  *        on all queues and it can't be disabled in rte_eth_[rt]x_queue_setup()
  *     -  the Receive Side Scaling (RSS) configuration when using multiple RX
  *        queues per port. Any RSS hash function set in eth_conf->rss_conf.rss_hf
  *        must be within the flow_type_rss_offloads provided by drivers via
- *        rte_eth_dev_infos_get() API.
+ *        rte_eth_dev_info_get() API.
  *
  *   Embedding all configuration information in a single data structure
  *   is the more flexible method that allows the addition of new features
@@ -2101,7 +2101,7 @@ rte_eth_xstats_get_names_by_id(uint16_t port_id,
  *   A pointer to an ids array passed by application. This tells which
  *   statistics values function should retrieve. This parameter
  *   can be set to NULL if size is 0. In this case function will retrieve
- *   all avalible statistics.
+ *   all available statistics.
  * @param values
  *   A pointer to a table to be filled with device statistics values.
  * @param size
@@ -2542,7 +2542,7 @@ rte_eth_tx_buffer_count_callback(struct rte_mbuf **pkts, uint16_t unsent,
 /**
  * Request the driver to free mbufs currently cached by the driver. The
  * driver will only free the mbuf if it is no longer in use. It is the
- * application's responsibity to ensure rte_eth_tx_buffer_flush(..) is
+ * application's responsibility to ensure rte_eth_tx_buffer_flush(..) is
  * called if needed.
  *
  * @param port_id
@@ -4159,9 +4159,6 @@ rte_eth_tx_burst(uint16_t port_id, uint16_t queue_id,
 }
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Process a burst of output packets on a transmit queue of an Ethernet device.
  *
  * The rte_eth_tx_prepare() function is invoked to prepare output packets to be
@@ -4225,7 +4222,7 @@ rte_eth_tx_prepare(uint16_t port_id, uint16_t queue_id,
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 	if (!rte_eth_dev_is_valid_port(port_id)) {
 		RTE_ETHDEV_LOG(ERR, "Invalid TX port_id=%u\n", port_id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
@@ -4235,7 +4232,7 @@ rte_eth_tx_prepare(uint16_t port_id, uint16_t queue_id,
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 	if (queue_id >= dev->data->nb_tx_queues) {
 		RTE_ETHDEV_LOG(ERR, "Invalid TX queue_id=%u\n", queue_id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif

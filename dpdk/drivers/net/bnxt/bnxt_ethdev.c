@@ -2649,7 +2649,7 @@ static int bnxt_map_regs(struct bnxt *bp, uint32_t *reg_arr, int count,
 			return -ERANGE;
 	}
 	win_off = BNXT_GRCPF_REG_WINDOW_BASE_OUT + (reg_win - 1) * 4;
-	rte_cpu_to_le_32(rte_write32(reg_base, (uint8_t *)bp->bar0 + win_off));
+	rte_write32(reg_base, (uint8_t *)bp->bar0 + win_off);
 	return 0;
 }
 
@@ -2680,10 +2680,10 @@ static int bnxt_map_ptp_regs(struct bnxt *bp)
 
 static void bnxt_unmap_ptp_regs(struct bnxt *bp)
 {
-	rte_cpu_to_le_32(rte_write32(0, (uint8_t *)bp->bar0 +
-			 BNXT_GRCPF_REG_WINDOW_BASE_OUT + 16));
-	rte_cpu_to_le_32(rte_write32(0, (uint8_t *)bp->bar0 +
-			 BNXT_GRCPF_REG_WINDOW_BASE_OUT + 20));
+	rte_write32(0, (uint8_t *)bp->bar0 +
+			 BNXT_GRCPF_REG_WINDOW_BASE_OUT + 16);
+	rte_write32(0, (uint8_t *)bp->bar0 +
+			 BNXT_GRCPF_REG_WINDOW_BASE_OUT + 20);
 }
 
 static uint64_t bnxt_cc_read(struct bnxt *bp)
@@ -2733,8 +2733,8 @@ static int bnxt_get_rx_ts(struct bnxt *bp, uint64_t *ts)
 		return -EAGAIN;
 
 	port_id = pf->port_id;
-	rte_cpu_to_le_32(rte_write32(1 << port_id, (uint8_t *)bp->bar0 +
-	       ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO_ADV]));
+	rte_write32(1 << port_id, (uint8_t *)bp->bar0 +
+	       ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO_ADV]);
 
 	fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
 				   ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO]));
@@ -3242,10 +3242,8 @@ skip_init:
 		memset(mz->addr, 0, mz->len);
 		mz_phys_addr = mz->iova;
 		if ((unsigned long)mz->addr == mz_phys_addr) {
-			PMD_DRV_LOG(WARNING,
-				"Memzone physical address same as virtual.\n");
-			PMD_DRV_LOG(WARNING,
-				"Using rte_mem_virt2iova()\n");
+			PMD_DRV_LOG(INFO,
+				"Memzone physical address same as virtual using rte_mem_virt2iova()\n");
 			mz_phys_addr = rte_mem_virt2iova(mz->addr);
 			if (mz_phys_addr == 0) {
 				PMD_DRV_LOG(ERR,
@@ -3548,7 +3546,7 @@ static int bnxt_pci_remove(struct rte_pci_device *pci_dev)
 static struct rte_pci_driver bnxt_rte_pmd = {
 	.id_table = bnxt_pci_id_map,
 	.drv_flags = RTE_PCI_DRV_NEED_MAPPING |
-		RTE_PCI_DRV_INTR_LSC,
+		RTE_PCI_DRV_INTR_LSC | RTE_PCI_DRV_IOVA_AS_VA,
 	.probe = bnxt_pci_probe,
 	.remove = bnxt_pci_remove,
 };

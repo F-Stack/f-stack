@@ -220,6 +220,7 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 	struct rte_eth_rxconf rxq_conf;
 	struct rte_eth_txconf txq_conf;
 	struct rte_eth_conf local_port_conf = port_conf;
+	uint16_t wait_counter = 20;
 
 	retval = rte_eth_bond_create("net_bonding0", BONDING_MODE_ALB,
 			0 /*SOCKET_ID_ANY*/);
@@ -243,6 +244,13 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 		rte_exit(EXIT_FAILURE, "port %u: rte_eth_dev_adjust_nb_rx_tx_desc "
 				"failed (res=%d)\n", BOND_PORT, retval);
 
+	for (i = 0; i < slaves_count; i++) {
+		if (rte_eth_bond_slave_add(BOND_PORT, slaves[i]) == -1)
+			rte_exit(-1, "Oooops! adding slave (%u) to bond (%u) failed!\n",
+					slaves[i], BOND_PORT);
+
+	}
+
 	/* RX setup */
 	rxq_conf = dev_info.default_rxconf;
 	rxq_conf.offloads = local_port_conf.rxmode.offloads;
@@ -263,16 +271,23 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 		rte_exit(retval, "port %u: TX queue 0 setup failed (res=%d)",
 				BOND_PORT, retval);
 
-	for (i = 0; i < slaves_count; i++) {
-		if (rte_eth_bond_slave_add(BOND_PORT, slaves[i]) == -1)
-			rte_exit(-1, "Oooops! adding slave (%u) to bond (%u) failed!\n",
-					slaves[i], BOND_PORT);
-
-	}
-
 	retval  = rte_eth_dev_start(BOND_PORT);
 	if (retval < 0)
 		rte_exit(retval, "Start port %d failed (res=%d)", BOND_PORT, retval);
+
+	printf("Waiting for slaves to become active...");
+	while (wait_counter) {
+		uint16_t act_slaves[16] = {0};
+		if (rte_eth_bond_active_slaves_get(BOND_PORT, act_slaves, 16) ==
+				slaves_count) {
+			printf("\n");
+			break;
+		}
+		sleep(1);
+		printf("...");
+		if (--wait_counter == 0)
+			rte_exit(-1, "\nFailed to activate slaves\n");
+	}
 
 	rte_eth_promiscuous_enable(BOND_PORT);
 

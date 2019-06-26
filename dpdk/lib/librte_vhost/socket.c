@@ -90,6 +90,7 @@ static struct vhost_user vhost_user = {
 	.fdset = {
 		.fd = { [0 ... MAX_FDS - 1] = {-1, NULL, NULL, NULL, 0} },
 		.fd_mutex = PTHREAD_MUTEX_INITIALIZER,
+		.fd_pooling_mutex = PTHREAD_MUTEX_INITIALIZER,
 		.num = 0
 	},
 	.vsocket_cnt = 0,
@@ -239,7 +240,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"failed to add vhost user connection with fd %d\n",
 				fd);
-			goto err;
+			goto err_cleanup;
 		}
 	}
 
@@ -256,7 +257,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 		if (vsocket->notify_ops->destroy_connection)
 			vsocket->notify_ops->destroy_connection(conn->vid);
 
-		goto err;
+		goto err_cleanup;
 	}
 
 	pthread_mutex_lock(&vsocket->conn_mutex);
@@ -266,6 +267,8 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	fdset_pipe_notify(&vhost_user.fdset);
 	return;
 
+err_cleanup:
+	vhost_destroy_device(vid);
 err:
 	free(conn);
 	close(fd);
@@ -294,12 +297,18 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 
 	ret = vhost_user_msg_handler(conn->vid, connfd);
 	if (ret < 0) {
+		struct virtio_net *dev = get_device(conn->vid);
+
 		close(connfd);
 		*remove = 1;
-		vhost_destroy_device(conn->vid);
+
+		if (dev)
+			vhost_destroy_device_notify(dev);
 
 		if (vsocket->notify_ops->destroy_connection)
 			vsocket->notify_ops->destroy_connection(conn->vid);
+
+		vhost_destroy_device(conn->vid);
 
 		pthread_mutex_lock(&vsocket->conn_mutex);
 		TAILQ_REMOVE(&vsocket->conn_list, conn, next);
@@ -546,6 +555,9 @@ find_vhost_user_socket(const char *path)
 {
 	int i;
 
+	if (path == NULL)
+		return NULL;
+
 	for (i = 0; i < vhost_user.vsocket_cnt; i++) {
 		struct vhost_user_socket *vsocket = vhost_user.vsockets[i];
 
@@ -561,7 +573,7 @@ rte_vhost_driver_attach_vdpa_device(const char *path, int did)
 {
 	struct vhost_user_socket *vsocket;
 
-	if (rte_vdpa_get_device(did) == NULL)
+	if (rte_vdpa_get_device(did) == NULL || path == NULL)
 		return -1;
 
 	pthread_mutex_lock(&vhost_user.mutex);
@@ -960,13 +972,16 @@ rte_vhost_driver_unregister(const char *path)
 	int count;
 	struct vhost_user_connection *conn, *next;
 
+	if (path == NULL)
+		return -1;
+
+again:
 	pthread_mutex_lock(&vhost_user.mutex);
 
 	for (i = 0; i < vhost_user.vsocket_cnt; i++) {
 		struct vhost_user_socket *vsocket = vhost_user.vsockets[i];
 
 		if (!strcmp(vsocket->path, path)) {
-again:
 			pthread_mutex_lock(&vsocket->conn_mutex);
 			for (conn = TAILQ_FIRST(&vsocket->conn_list);
 			     conn != NULL;
@@ -982,6 +997,7 @@ again:
 						  conn->connfd) == -1) {
 					pthread_mutex_unlock(
 							&vsocket->conn_mutex);
+					pthread_mutex_unlock(&vhost_user.mutex);
 					goto again;
 				}
 

@@ -102,9 +102,6 @@ dsw_queue_setup(struct rte_eventdev *dev, uint8_t queue_id,
 	if (RTE_EVENT_QUEUE_CFG_ALL_TYPES & conf->event_queue_cfg)
 		return -ENOTSUP;
 
-	if (conf->schedule_type == RTE_SCHED_TYPE_ORDERED)
-		return -ENOTSUP;
-
 	/* SINGLE_LINK is better off treated as TYPE_ATOMIC, since it
 	 * avoid the "fake" TYPE_PARALLEL flow_id assignment. Since
 	 * the queue will only have a single serving port, no
@@ -113,8 +110,12 @@ dsw_queue_setup(struct rte_eventdev *dev, uint8_t queue_id,
 	 */
 	if (RTE_EVENT_QUEUE_CFG_SINGLE_LINK & conf->event_queue_cfg)
 		queue->schedule_type = RTE_SCHED_TYPE_ATOMIC;
-	else /* atomic or parallel */
+	else {
+		if (conf->schedule_type == RTE_SCHED_TYPE_ORDERED)
+			return -ENOTSUP;
+		/* atomic or parallel */
 		queue->schedule_type = conf->schedule_type;
+	}
 
 	queue->num_serving_ports = 0;
 
@@ -217,7 +218,9 @@ dsw_info_get(struct rte_eventdev *dev __rte_unused,
 		.max_event_port_enqueue_depth = DSW_MAX_PORT_ENQUEUE_DEPTH,
 		.max_num_events = DSW_MAX_EVENTS,
 		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE|
-		RTE_EVENT_DEV_CAP_DISTRIBUTED_SCHED
+		RTE_EVENT_DEV_CAP_DISTRIBUTED_SCHED|
+		RTE_EVENT_DEV_CAP_NONSEQ_MODE|
+		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT
 	};
 }
 

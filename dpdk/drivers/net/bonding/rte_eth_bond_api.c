@@ -19,7 +19,10 @@ int
 check_for_bonded_ethdev(const struct rte_eth_dev *eth_dev)
 {
 	/* Check valid pointer */
-	if (eth_dev->device->driver->name == NULL)
+	if (eth_dev == NULL ||
+		eth_dev->device == NULL ||
+		eth_dev->device->driver == NULL ||
+		eth_dev->device->driver->name == NULL)
 		return -1;
 
 	/* return 0 if driver name matches */
@@ -73,7 +76,7 @@ void
 activate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id)
 {
 	struct bond_dev_private *internals = eth_dev->data->dev_private;
-	uint8_t active_count = internals->active_slave_count;
+	uint16_t active_count = internals->active_slave_count;
 
 	if (internals->mode == BONDING_MODE_8023AD)
 		bond_mode_8023ad_activate_slave(eth_dev, port_id);
@@ -125,6 +128,12 @@ deactivate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id)
 
 	RTE_ASSERT(active_count < RTE_DIM(internals->active_slaves));
 	internals->active_slave_count = active_count;
+
+	/* Resetting active_slave when reaches to max
+	 * no of slaves in active list
+	 */
+	if (internals->active_slave >= active_count)
+		internals->active_slave = 0;
 
 	if (eth_dev->data->dev_started) {
 		if (internals->mode == BONDING_MODE_8023AD) {
@@ -481,10 +490,6 @@ __eth_bond_slave_add_lock_free(uint16_t bonded_port_id, uint16_t slave_port_id)
 			}
 		}
 
-		/* Inherit eth dev link properties from first slave */
-		link_properties_set(bonded_eth_dev,
-				&(slave_eth_dev->data->dev_link));
-
 		/* Make primary slave */
 		internals->primary_port = slave_port_id;
 		internals->current_primary_port = slave_port_id;
@@ -791,7 +796,7 @@ rte_eth_bond_slaves_get(uint16_t bonded_port_id, uint16_t slaves[],
 			uint16_t len)
 {
 	struct bond_dev_private *internals;
-	uint8_t i;
+	uint16_t i;
 
 	if (valid_bonded_port_id(bonded_port_id) != 0)
 		return -1;

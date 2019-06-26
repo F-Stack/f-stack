@@ -49,11 +49,16 @@ enetc_xmit_pkts(void *tx_queue,
 		uint16_t nb_pkts)
 {
 	struct enetc_swbd *tx_swbd;
-	int i, start;
+	int i, start, bds_to_use;
 	struct enetc_tx_bd *txbd;
 	struct enetc_bdr *tx_ring = (struct enetc_bdr *)tx_queue;
 
 	i = tx_ring->next_to_use;
+
+	bds_to_use = enetc_bd_unused(tx_ring);
+	if (bds_to_use < nb_pkts)
+		nb_pkts = bds_to_use;
+
 	start = 0;
 	while (nb_pkts--) {
 		enetc_clean_tx_ring(tx_ring);
@@ -88,8 +93,9 @@ enetc_refill_rx_ring(struct enetc_bdr *rx_ring, const int buff_cnt)
 	rx_swbd = &rx_ring->q_swbd[i];
 	rxbd = ENETC_RXBD(*rx_ring, i);
 	for (j = 0; j < buff_cnt; j++) {
-		rx_swbd->buffer_addr =
-			rte_cpu_to_le_64(rte_mbuf_raw_alloc(rx_ring->mb_pool));
+		rx_swbd->buffer_addr = (void *)(uintptr_t)
+			rte_cpu_to_le_64((uint64_t)(uintptr_t)
+					rte_pktmbuf_alloc(rx_ring->mb_pool));
 		rxbd->w.addr = (uint64_t)(uintptr_t)
 			       rx_swbd->buffer_addr->buf_addr +
 			       rx_swbd->buffer_addr->data_off;

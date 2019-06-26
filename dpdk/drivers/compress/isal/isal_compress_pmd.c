@@ -372,7 +372,7 @@ process_isal_deflate(struct rte_comp_op *op, struct isal_comp_qp *qp,
 	uint8_t *temp_level_buf = qp->stream->level_buf;
 
 	/* Initialize compression stream */
-	isal_deflate_stateless_init(qp->stream);
+	isal_deflate_init(qp->stream);
 
 	qp->stream->level_buf = temp_level_buf;
 
@@ -461,8 +461,6 @@ process_isal_deflate(struct rte_comp_op *op, struct isal_comp_qp *qp,
 	}
 	op->consumed = qp->stream->total_in;
 	op->produced = qp->stream->total_out;
-	isal_deflate_reset(qp->stream);
-
 	return ret;
 }
 
@@ -538,7 +536,6 @@ process_isal_inflate(struct rte_comp_op *op, struct isal_comp_qp *qp)
 		op->consumed = op->src.length - qp->state->avail_in;
 	}
 		op->produced = qp->state->total_out;
-	isal_inflate_reset(qp->state);
 
 	return ret;
 }

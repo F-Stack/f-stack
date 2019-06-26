@@ -156,20 +156,14 @@ rte_malloc_get_socket_stats(int socket,
 		struct rte_malloc_socket_stats *socket_stats)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
-	int heap_idx, ret = -1;
-
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
+	int heap_idx;
 
 	heap_idx = malloc_socket_to_heap_id(socket);
 	if (heap_idx < 0)
-		goto unlock;
+		return -1;
 
-	ret = malloc_heap_get_stats(&mcfg->malloc_heaps[heap_idx],
+	return malloc_heap_get_stats(&mcfg->malloc_heaps[heap_idx],
 			socket_stats);
-unlock:
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
-
-	return ret;
 }
 
 /*
@@ -181,14 +175,10 @@ rte_malloc_dump_heaps(FILE *f)
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	unsigned int idx;
 
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
-
 	for (idx = 0; idx < RTE_MAX_HEAPS; idx++) {
 		fprintf(f, "Heap id: %u\n", idx);
 		malloc_heap_dump(&mcfg->malloc_heaps[idx], f);
 	}
-
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
 }
 
 int
@@ -262,8 +252,6 @@ rte_malloc_dump_stats(FILE *f, __rte_unused const char *type)
 	unsigned int heap_id;
 	struct rte_malloc_socket_stats sock_stats;
 
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
-
 	/* Iterate through all initialised heaps */
 	for (heap_id = 0; heap_id < RTE_MAX_HEAPS; heap_id++) {
 		struct malloc_heap *heap = &mcfg->malloc_heaps[heap_id];
@@ -280,7 +268,6 @@ rte_malloc_dump_stats(FILE *f, __rte_unused const char *type)
 		fprintf(f, "\tAlloc_count:%u,\n",sock_stats.alloc_count);
 		fprintf(f, "\tFree_count:%u,\n", sock_stats.free_count);
 	}
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
 	return;
 }
 
@@ -345,6 +332,9 @@ rte_malloc_heap_memory_add(const char *heap_name, void *va_addr, size_t len,
 
 	if (heap_name == NULL || va_addr == NULL ||
 			page_sz == 0 || !rte_is_power_of_2(page_sz) ||
+			RTE_ALIGN(len, page_sz) != len ||
+			!rte_is_aligned(va_addr, page_sz) ||
+			((len / page_sz) != n_pages && iova_addrs != NULL) ||
 			strnlen(heap_name, RTE_HEAP_NAME_MAX_LEN) == 0 ||
 			strnlen(heap_name, RTE_HEAP_NAME_MAX_LEN) ==
 				RTE_HEAP_NAME_MAX_LEN) {
@@ -367,11 +357,6 @@ rte_malloc_heap_memory_add(const char *heap_name, void *va_addr, size_t len,
 		goto unlock;
 	}
 	n = len / page_sz;
-	if (n != n_pages && iova_addrs != NULL) {
-		rte_errno = EINVAL;
-		ret = -1;
-		goto unlock;
-	}
 
 	rte_spinlock_lock(&heap->lock);
 	ret = malloc_heap_add_external_memory(heap, va_addr, iova_addrs, n,
@@ -517,13 +502,8 @@ sync_memory(const char *heap_name, void *va_addr, size_t len, bool attach)
 	if (wa.result < 0) {
 		rte_errno = -wa.result;
 		ret = -1;
-	} else {
-		/* notify all subscribers that a new memory area was added */
-		if (attach)
-			eal_memalloc_mem_event_notify(RTE_MEM_EVENT_ALLOC,
-					va_addr, len);
+	} else
 		ret = 0;
-	}
 unlock:
 	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
 	return ret;

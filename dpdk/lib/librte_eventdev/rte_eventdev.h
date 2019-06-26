@@ -1155,7 +1155,7 @@ rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps);
  */
 
 #define RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA   0x8
-/**< Flag indicates HW/SW suports a mechanism to store and retrieve
+/**< Flag indicates HW/SW supports a mechanism to store and retrieve
  * the private data information along with the crypto session.
  */
 
@@ -1366,7 +1366,8 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   which contain the event object enqueue operations to be processed.
  * @param nb_events
  *   The number of event objects to enqueue, typically number of
- *   rte_event_port_enqueue_depth() available for this port.
+ *   rte_event_port_attr_get(...RTE_EVENT_PORT_ATTR_ENQ_DEPTH...)
+ *   available for this port.
  *
  * @return
  *   The number of event objects actually enqueued on the event device. The
@@ -1381,7 +1382,7 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   - -ENOSPC  The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
- * @see rte_event_port_enqueue_depth()
+ * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
  */
 static inline uint16_t
 rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
@@ -1415,7 +1416,8 @@ rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   which contain the event object enqueue operations to be processed.
  * @param nb_events
  *   The number of event objects to enqueue, typically number of
- *   rte_event_port_enqueue_depth() available for this port.
+ *   rte_event_port_attr_get(...RTE_EVENT_PORT_ATTR_ENQ_DEPTH...)
+ *   available for this port.
  *
  * @return
  *   The number of event objects actually enqueued on the event device. The
@@ -1430,7 +1432,8 @@ rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   - -ENOSPC  The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
- * @see rte_event_port_enqueue_depth() rte_event_enqueue_burst()
+ * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
+ * @see rte_event_enqueue_burst()
  */
 static inline uint16_t
 rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
@@ -1464,7 +1467,8 @@ rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
  *   which contain the event object enqueue operations to be processed.
  * @param nb_events
  *   The number of event objects to enqueue, typically number of
- *   rte_event_port_enqueue_depth() available for this port.
+ *   rte_event_port_attr_get(...RTE_EVENT_PORT_ATTR_ENQ_DEPTH...)
+ *   available for this port.
  *
  * @return
  *   The number of event objects actually enqueued on the event device. The
@@ -1479,7 +1483,8 @@ rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
  *   - -ENOSPC  The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
- * @see rte_event_port_enqueue_depth() rte_event_enqueue_burst()
+ * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
+ * @see rte_event_enqueue_burst()
  */
 static inline uint16_t
 rte_event_enqueue_forward_burst(uint8_t dev_id, uint8_t port_id,
@@ -1737,7 +1742,7 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
  * @see rte_event_port_unlink() to issue unlink requests.
  *
  * @param dev_id
- *   The indentifier of the device.
+ *   The identifier of the device.
  *
  * @param port_id
  *   Event port identifier to select port to check for unlinks in progress.
@@ -1893,7 +1898,7 @@ rte_event_dev_xstats_names_get(uint8_t dev_id,
  * @param ids
  *   The id numbers of the stats to get. The ids can be got from the stat
  *   position in the stat list from rte_event_dev_get_xstats_names(), or
- *   by using rte_eventdev_get_xstats_by_name()
+ *   by using rte_event_dev_xstats_by_name_get().
  * @param[out] values
  *   The values for each stats request by ID.
  * @param n
@@ -1921,7 +1926,7 @@ rte_event_dev_xstats_get(uint8_t dev_id,
  *   The stat name to retrieve
  * @param[out] id
  *   If non-NULL, the numerical id of the stat will be returned, so that further
- *   requests for the stat can be got using rte_eventdev_xstats_get, which will
+ *   requests for the stat can be got using rte_event_dev_xstats_get, which will
  *   be faster as it doesn't need to scan a list of names for the stat.
  *   If the stat cannot be found, the id returned will be (unsigned)-1.
  * @return

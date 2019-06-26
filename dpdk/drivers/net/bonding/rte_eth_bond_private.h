@@ -100,7 +100,7 @@ struct rte_flow {
 };
 
 typedef void (*burst_xmit_hash_t)(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 /** Link Bonding PMD device private configuration Structure */
 struct bond_dev_private {
@@ -222,13 +222,6 @@ deactivate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id);
 void
 activate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id);
 
-void
-link_properties_set(struct rte_eth_dev *bonded_eth_dev,
-		struct rte_eth_link *slave_dev_link);
-int
-link_properties_valid(struct rte_eth_dev *bonded_eth_dev,
-		struct rte_eth_link *slave_dev_link);
-
 int
 mac_address_set(struct rte_eth_dev *eth_dev, struct ether_addr *new_mac_addr);
 
@@ -263,15 +256,15 @@ slave_add(struct bond_dev_private *internals,
 
 void
 burst_xmit_l2_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 void
 burst_xmit_l23_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 void
 burst_xmit_l34_hash(struct rte_mbuf **buf, uint16_t nb_pkts,
-		uint8_t slave_count, uint16_t *slaves);
+		uint16_t slave_count, uint16_t *slaves);
 
 
 void
