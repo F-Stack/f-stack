@@ -278,7 +278,7 @@ init_mem_pool(void)
     uint32_t nb_tx_queue = nb_lcores;
     uint32_t nb_rx_queue = lcore_conf.nb_rx_queue * nb_lcores;
 
-    unsigned nb_mbuf = RTE_MAX (
+    unsigned nb_mbuf = RTE_ALIGN_CEIL (
         (nb_rx_queue*RX_QUEUE_SIZE          +
         nb_ports*nb_lcores*MAX_PKT_BURST    +
         nb_ports*nb_tx_queue*TX_QUEUE_SIZE  +
@@ -327,7 +327,7 @@ init_mem_pool(void)
         }
         
 #ifdef FF_USE_PAGE_ARRAY
-        nb_mbuf = RTE_MAX (
+        nb_mbuf = RTE_ALIGN_CEIL (
             nb_ports*nb_lcores*MAX_PKT_BURST    +
             nb_ports*nb_tx_queue*TX_QUEUE_SIZE  +
             nb_lcores*MEMPOOL_CACHE_SIZE,
