@@ -79,7 +79,6 @@ struct kni_interface_stats {
 
 struct rte_ring **kni_rp;
 struct kni_interface_stats **kni_stat;
-int kni_link = ETH_LINK_DOWN;
 
 static void
 set_bitmap(uint16_t port, unsigned char *bitmap)
@@ -130,51 +129,12 @@ kni_change_mtu(uint16_t port_id, unsigned new_mtu)
     return 0;
 }
 
-static void
-log_link_state(struct rte_kni *kni, int prev, struct rte_eth_link *link)
-{
-    if (kni == NULL || link == NULL)
-        return;
-
-    if (prev == ETH_LINK_DOWN && link->link_status == ETH_LINK_UP) {
-        kni_link = ETH_LINK_UP;
-        printf("%s NIC Link is Up %d Mbps %s %s.\n",
-            rte_kni_get_name(kni),
-            link->link_speed,
-            link->link_autoneg ?  "(AutoNeg)" : "(Fixed)",
-            link->link_duplex ?  "Full Duplex" : "Half Duplex");
-    } else if (prev == ETH_LINK_UP && link->link_status == ETH_LINK_DOWN) {
-        kni_link = ETH_LINK_DOWN;
-        printf("%s NIC Link is Down.\n",
-            rte_kni_get_name(kni));
-    }
-}
-
-/*
- * Monitor the link status of all ports and update the
- * corresponding KNI interface(s)
- */
-static void *
-monitor_all_ports_link_status(uint16_t port_id)
-{
-    struct rte_eth_link link;
-    unsigned int i;
-    int prev;
-
-    memset(&link, 0, sizeof(link));
-    rte_eth_link_get_nowait(port_id, &link);
-    prev = rte_kni_update_link(kni_stat[port_id]->kni, link.link_status);
-    log_link_state(kni_stat[port_id]->kni, prev, &link);
-
-    return NULL;
-}
-
 static int
 kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 {
     int ret = 0;
 
-    if (!rte_eth_dev_is_valid_port(port_id)) {
+    if (port_id >= rte_eth_dev_count() || port_id >= RTE_MAX_ETHPORTS) {
         printf("Invalid port id %d\n", port_id);
         return -EINVAL;
     }
@@ -198,42 +158,9 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
         }
     }
 
-    if (!if_up)
-        kni_link = ETH_LINK_DOWN;
-
     if (ret < 0)
         printf("Failed to Configure network interface of %d %s\n", 
             port_id, if_up ? "up" : "down");
-
-    return ret;
-}
-
-static void
-print_ethaddr(const char *name, struct ether_addr *mac_addr)
-{
-    char buf[ETHER_ADDR_FMT_SIZE];
-    ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, mac_addr);
-    printf("\t%s%s\n", name, buf);
-}
-
-
-/* Callback for request of configuring mac address */
-static int
-kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
-{
-    int ret = 0;
-
-    if (!rte_eth_dev_is_valid_port(port_id)) {
-        printf("Invalid port id %d\n", port_id);
-        return -EINVAL;
-    }
-
-    print_ethaddr("Address:", (struct ether_addr *)mac_addr);
-
-    ret = rte_eth_dev_default_mac_addr_set(port_id,
-                       (struct ether_addr *)mac_addr);
-    if (ret < 0)
-        printf("Failed to config mac_addr for port %d\n", port_id);
 
     return ret;
 }
@@ -435,24 +362,13 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
 
         memset(&dev_info, 0, sizeof(dev_info));
         rte_eth_dev_info_get(port_id, &dev_info);
-
-        if (dev_info.device)
-            bus = rte_bus_find_by_device(dev_info.device);
-        if (bus && !strcmp(bus->name, "pci")) {
-            pci_dev = RTE_DEV_TO_PCI(dev_info.device);
-            conf.addr = pci_dev->addr;
-            conf.id = pci_dev->id;
-        }
-        
-        /* Get the interface default mac address */
-        rte_eth_macaddr_get(port_id,
-                (struct ether_addr *)&conf.mac_addr);
+        conf.addr = dev_info.pci_dev->addr;
+        conf.id = dev_info.pci_dev->id;
 
         memset(&ops, 0, sizeof(ops));
         ops.port_id = port_id;
         ops.change_mtu = kni_change_mtu;
         ops.config_network_if = kni_config_network_interface;
-        ops.config_mac_address = kni_config_mac_address;
 
         kni_stat[port_id]->kni = rte_kni_alloc(mbuf_pool, &conf, &ops);
         if (kni_stat[port_id]->kni == NULL)
@@ -486,13 +402,11 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
         rte_ring_free_count(kni_rp[port_id]));
 }
 
+
 void
 ff_kni_process(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
-    if (unlikely(kni_link == ETH_LINK_DOWN)) {
-        monitor_all_ports_link_status(port_id);
-    }
     kni_process_tx(port_id, queue_id, pkts_burst, count);
     kni_process_rx(port_id, queue_id, pkts_burst, count);
 }
