@@ -1507,8 +1507,6 @@ main_loop(void *arg)
             end_tsc = idle_sleep_tsc;
         }
 
-        // end_tsc = rte_rdtsc();
-
         if (usch_tsc == cur_tsc) {
             usr_tsc = idle_sleep_tsc - div_tsc;
         }
