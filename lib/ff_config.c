@@ -491,6 +491,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.vlan_strip = atoi(value);
     } else if (MATCH("dpdk", "idle_sleep")) {
         pconfig->dpdk.idle_sleep = atoi(value);
+    } else if (MATCH("dpdk", "pkt_tx_delay")) {
+        pconfig->dpdk.pkt_tx_delay = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "method")) {
@@ -711,6 +713,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.proc_id = -1;
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
+    cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;
