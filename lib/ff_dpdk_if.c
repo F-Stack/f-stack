@@ -74,6 +74,7 @@ static int kni_accept;
 static int numa_on;
 
 static unsigned idle_sleep;
+static unsigned pkt_tx_delay;
 
 static struct rte_timer freebsd_clock;
 
@@ -760,6 +761,8 @@ ff_dpdk_init(int argc, char **argv)
     numa_on = ff_global_cfg.dpdk.numa_on;
 
     idle_sleep = ff_global_cfg.dpdk.idle_sleep;
+    pkt_tx_delay = ff_global_cfg.dpdk.pkt_tx_delay > BURST_TX_DRAIN_US ? \
+        BURST_TX_DRAIN_US : ff_global_cfg.dpdk.pkt_tx_delay;
 
     init_lcore_conf();
 
@@ -1402,9 +1405,12 @@ main_loop(void *arg)
     int i, j, nb_rx, idle;
     uint16_t port_id, queue_id;
     struct lcore_conf *qconf;
-    const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
-        US_PER_S * BURST_TX_DRAIN_US;
+    uint64_t drain_tsc = 0;
     struct ff_dpdk_if_context *ctx;
+
+    if (pkt_tx_delay) {
+        drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * pkt_tx_delay;
+    }
 
     prev_tsc = 0;
     usch_tsc = 0;
@@ -1425,7 +1431,7 @@ main_loop(void *arg)
          * TX burst queue drain
          */
         diff_tsc = cur_tsc - prev_tsc;
-        if (unlikely(diff_tsc > drain_tsc)) {
+        if (unlikely(diff_tsc >= drain_tsc)) {
             for (i = 0; i < qconf->nb_tx_port; i++) {
                 port_id = qconf->tx_port_id[i];
                 if (qconf->tx_mbufs[port_id].len == 0)
@@ -1488,7 +1494,7 @@ main_loop(void *arg)
 
         div_tsc = rte_rdtsc();
 
-        if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc > drain_tsc))) {
+        if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc >= drain_tsc))) {
             usch_tsc = cur_tsc;
             lr->loop(lr->arg);
         }
@@ -1501,7 +1507,7 @@ main_loop(void *arg)
             end_tsc = idle_sleep_tsc;
         }
 
-        end_tsc = rte_rdtsc();
+        // end_tsc = rte_rdtsc();
 
         if (usch_tsc == cur_tsc) {
             usr_tsc = idle_sleep_tsc - div_tsc;

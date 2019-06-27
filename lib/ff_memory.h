@@ -43,9 +43,6 @@ extern "C" {
 #define RX_QUEUE_SIZE 512
 #define TX_QUEUE_SIZE 512
 
-#define MAX_PKT_BURST 32
-#define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
-
 /*
  * Try to avoid TX buffering if we have at least MAX_TX_BURST packets to send.
  */
