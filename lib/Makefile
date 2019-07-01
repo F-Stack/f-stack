@@ -14,6 +14,12 @@ S=${TOPDIR}/freebsd
 MACHINE_INCLUDES_ROOT:=${CURDIR}/machine_include
 OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
+PREFIX=/usr/local
+PREFIX_LIB=${PREFIX}/lib
+PREFIX_INCLUDE=/usr/local/include
+PREFIX_BIN=/usr/local/bin
+F-STACK_CONF=/etc/f-stack.conf
+F-STACK_VERSION=1.20
 
 HOST_OS:=$(shell uname -s)
 
@@ -589,4 +595,35 @@ vnode_if_typedef.h:
 	${AWK} -f $S/tools/vnode_if.awk $S/kern/vnode_if.src -q
 
 include ${TOPDIR}/mk/kern.mk
+
+install:
+	rm -rf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
+	rm -rf ${PREFIX_LIB}/libfstack.a
+	rm -rf ${PREFIX_INCLUDE}/ff_config.h
+	rm -rf ${PREFIX_INCLUDE}/ff_api.h
+	rm -rf ${PREFIX_INCLUDE}/ff_event.h
+	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
+	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_BIN}/ff_start
+
+	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
+	ln -sf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION} ${PREFIX_LIB}/libfstack.a
+	cp -f ff_config.h ${PREFIX_INCLUDE}/ff_config.h
+	cp -f ff_api.h ${PREFIX_INCLUDE}/ff_api.h
+	cp -f ff_event.h ${PREFIX_INCLUDE}/ff_event.h
+	cp -f ff_errno.h ${PREFIX_INCLUDE}/ff_errno.h
+	cp -f ff_epoll.h ${PREFIX_INCLUDE}/ff_epoll.h
+	cp -f ${TOPDIR}/start.sh ${PREFIX_BIN}/ff_start
+	test -f '${F-STACK_CONF}' || cp -f ${TOPDIR}/config.ini ${F-STACK_CONF}
+
+uninstall:
+	rm -rf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
+	rm -rf ${PREFIX_LIB}/libfstack.a
+	rm -rf ${PREFIX_INCLUDE}/ff_config.h
+	rm -rf ${PREFIX_INCLUDE}/ff_api.h
+	rm -rf ${PREFIX_INCLUDE}/ff_event.h
+	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
+	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_BIN}/ff_start
+	rm -rf ${F-STACK_CONF}
 
