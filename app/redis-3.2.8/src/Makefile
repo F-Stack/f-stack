@@ -13,10 +13,13 @@
 # Just use 'make dep', but this is only needed by developers.
 
 ifeq ($(FF_PATH),)
-    $(error variable FF_PATH is not set)
+    FF_PATH=/usr/local
+    $(warning FF_PATH environment variable not defined, default FF_PATH=/usr/local)
 endif
+
 ifeq ($(FF_DPDK),)
-    FF_DPDK= $(FF_PATH)/dpdk/x86_64-native-linuxapp-gcc
+    FF_DPDK=/usr/local
+    $(warning FF_DPDK environment variable not defined, default FF_DPDK=/usr/local)
 endif
 
 release_hdr := $(shell sh -c './mkreleasehdr.sh')

@@ -1,5 +1,13 @@
 # Introduction
 
+Compile ff tools
+
+    make
+
+Install ff tools, all ff tools will be installed to `/usr/local/bin/f-stack/`, and some soft link will be created in `/usr/local/bin`, such as `ff_top`,`ff_traffic`, etc.
+
+    make install
+
 Directory `compat` implements an ipc library using dpdk `rte_ring` and ports some source files compatible with FreeBSD and Linux.
 
 Directory `sbin` contains all the tools binary that compiled.

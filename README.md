@@ -66,6 +66,10 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
+    # install DPDK
+    cd ../x86_64-native-linuxapp-gcc
+    make install
+
     # On Ubuntu, use gawk instead of the default mawk.
     #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
 
@@ -74,6 +78,13 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
     cd ../../lib/
     make
+
+    # install F-STACK
+    # libfstack.a will be installed to /usr/local/lib
+    # ff_*.h will be installed to /usr/local/include
+    # start.sh will be installed to /usr/local/bin/ff_start
+    # config.ini will be installed to /etc/f-stack.conf
+    make install
 
 #### Nginx
 

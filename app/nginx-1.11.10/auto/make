@@ -19,13 +19,13 @@ ngx_use_pch=`echo $NGX_USE_PCH | sed -e "s/\//$ngx_regex_dirsep/g"`
 
 
 if [ ! $FF_PATH ]; then
-    echo "Please define FF_PATH environment variable"
-    exit 1
+    FF_PATH=/usr/local
+    echo "FF_PATH environment variable not defined, default FF_PATH=$FF_PATH"
 fi
 
 if [ ! $FF_DPDK ]; then
-    FF_DPDK=$FF_PATH/dpdk/x86_64-native-linuxapp-gcc
-    echo "FF_DPDK environment variable not defined, default:$FF_DPDK"
+    FF_DPDK=/usr/local
+    echo "FF_DPDK environment variable not defined, default FF_DPDK=$FF_DPDK"
 fi
 
 CORE_LIBS="$CORE_LIBS -L$FF_PATH/lib -Wl,--whole-archive,-lfstack,--no-whole-archive"
