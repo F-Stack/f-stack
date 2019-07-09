@@ -50,3 +50,4 @@ ff_getsockopt_freebsd
 ff_setsockopt_freebsd
 ff_dup
 ff_dup2
+ff_mbuf_set_vlan_info
