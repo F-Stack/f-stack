@@ -23,7 +23,7 @@ Initialize F-Stack，including DPDK/FreeBSD network stack, etc.
 #### ff_run
 
 	void ff_run(loop_func_t loop, void *arg);
-loop is a callbask function，the service logic is implemented by the user, and called by each poll of F-Stack .
+loop is a callback function，the service logic is implemented by the user, and called by each poll of F-Stack .
 
 ### Control API
 
@@ -220,3 +220,33 @@ However, it is  supported only before F-Stack is started.
 #### Socket API for micro threads
 
   see `micro_thread/mt_api.h`.
+
+### Dispatch API
+
+ Packet dispatch callback function, implemented by user.
+
+	typedef int (*dispatch_func_t)(void *data, uint16_t *len, uint16_t queue_id, uint16_t nb_queues);
+
+	void ff_regist_packet_dispatcher(dispatch_func_t func);
+
+  Regist a packet dispath function.
+
+#### param
+
+ - data
+   The data pointer of this packet.
+ - len
+   The length of this packet.
+ - queue_id
+   Current queue of this packet.
+ - nb_queues
+   Number of queues to be dispatched.
+
+#### return
+
+ - 0 to (nb_queues - 1)
+   The queue id that the packet will be dispatched to.
+ - FF_DISPATCH_ERROR (-1)
+   Error occurs or packet is handled by user, packet will be freed.
+ - FF_DISPATCH_RESPONSE (-2)
+   Packet is handled by user, packet will be responsed.

@@ -121,6 +121,8 @@ static dispatch_func_t packet_dispatcher;
 
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
+static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
+
 struct ff_msg_ring {
     char ring_name[2][RTE_RING_NAMESIZE];
     /* ring[0] for lcore recv msg, other send */
@@ -956,8 +958,14 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         }
 
         if (!pkts_from_ring && packet_dispatcher) {
-            int ret = (*packet_dispatcher)(data, len, queue_id, nb_queues);
-            if (ret < 0 || ret >= nb_queues) {
+            int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
+            if (ret == FF_DISPATCH_RESPONSE) {
+                rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
+                send_single_packet(rtem, port_id);
+                continue;
+            }
+            
+            if (ret == FF_DISPATCH_ERROR || ret >= nb_queues) {
                 rte_pktmbuf_free(rtem);
                 continue;
             }
