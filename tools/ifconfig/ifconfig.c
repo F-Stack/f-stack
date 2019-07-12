@@ -922,7 +922,11 @@ top:
 		int ret;
 		strlcpy(((struct ifreq *)afp->af_ridreq)->ifr_name, name,
 			sizeof ifr.ifr_name);
+#ifndef FSTACK
 		ret = ioctl(s, afp->af_difaddr, afp->af_ridreq);
+#else
+		ret = ioctl_va(s, afp->af_difaddr, afp->af_ridreq, 1, afp->af_af);
+#endif
 		if (ret < 0) {
 			if (errno == EADDRNOTAVAIL && (doalias >= 0)) {
 				/* means no previous address for interface */
@@ -940,7 +944,11 @@ top:
 	if (newaddr && (setaddr || setmask)) {
 		strlcpy(((struct ifreq *)afp->af_addreq)->ifr_name, name,
 			sizeof ifr.ifr_name);
+#ifndef FSTACK
 		if (ioctl(s, afp->af_aifaddr, afp->af_addreq) < 0)
+#else
+		if (ioctl_va(s, afp->af_aifaddr, afp->af_addreq, 1, afp->af_af) < 0)
+#endif
 			Perror("ioctl (SIOCAIFADDR)");
 	}
 

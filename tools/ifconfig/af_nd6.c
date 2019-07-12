@@ -50,6 +50,7 @@ static const char rcsid[] =
 #include <arpa/inet.h>
 #include <netdb.h>
 
+#include <netinet6/in6_var.h>
 #include <netinet6/nd6.h>
 
 #include "ifconfig.h"
