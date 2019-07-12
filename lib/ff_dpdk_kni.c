@@ -322,38 +322,111 @@ protocol_filter_udp(const void* data,uint16_t len)
     return protocol_filter_l4(hdr->dst_port, udp_port_bitmap);
 }
 
-static enum FilterReturn
-protocol_filter_ip(const void *data, uint16_t len)
+#ifdef INET6
+/*
+ * https://www.iana.org/assignments/ipv6-parameters/ipv6-parameters.xhtml
+ */
+#ifndef IPPROTO_HIP
+#define IPPROTO_HIP 139
+#endif
+
+#ifndef IPPROTO_SHIM6
+#define IPPROTO_SHIM6   140
+#endif
+static int
+get_ipv6_hdr_len(uint8_t *proto, void *data, uint16_t len)
 {
-    if(len < sizeof(struct ipv4_hdr))
+    int ext_hdr_len = 0;
+
+    switch (*proto) {
+        case IPPROTO_HOPOPTS:   case IPPROTO_ROUTING:   case IPPROTO_DSTOPTS:
+        case IPPROTO_MH:        case IPPROTO_HIP:       case IPPROTO_SHIM6:
+            ext_hdr_len = *((uint8_t *)data + 1) + 1;
+            break;
+        case IPPROTO_FRAGMENT:
+            ext_hdr_len = 8;
+            break;
+        case IPPROTO_AH:
+            ext_hdr_len = (*((uint8_t *)data + 1) + 2) * 4;
+            break;
+        case IPPROTO_NONE:
+#ifdef FF_IPSEC
+        case IPPROTO_ESP:
+            //proto = *((uint8_t *)data + len - 1 - 4);
+            //ext_hdr_len = len;
+#endif
+        default:
+            return ext_hdr_len;
+    }
+
+    if (ext_hdr_len >= len) {
+        return len;
+    }
+
+    *proto = *((uint8_t *)data);
+    ext_hdr_len += get_ipv6_hdr_len(proto, data + ext_hdr_len, len - ext_hdr_len);
+
+    return ext_hdr_len;
+}
+#endif
+
+static enum FilterReturn
+protocol_filter_ip(const void *data, uint16_t len, uint16_t eth_frame_type)
+{
+    uint8_t proto;
+    int hdr_len;
+    void *next;
+    uint16_t next_len;
+
+    if (eth_frame_type == ETHER_TYPE_IPv4) {
+        if(len < sizeof(struct ipv4_hdr))
+            return FILTER_UNKNOWN;
+
+        const struct ipv4_hdr *hdr = (struct ipv4_hdr *)data;
+        hdr_len = (hdr->version_ihl & 0x0f) << 2;
+        if (len < hdr_len)
+            return FILTER_UNKNOWN;
+
+        proto = hdr->next_proto_id;
+#ifdef INET6
+    } else if(eth_frame_type == ETHER_TYPE_IPv6) {
+        if(len < sizeof(struct ipv6_hdr))
+            return FILTER_UNKNOWN;
+
+        hdr_len = sizeof(struct ipv6_hdr);
+        proto = ((struct ipv6_hdr *)data)->proto;
+        hdr_len += get_ipv6_hdr_len(&proto, (void *)data + hdr_len, len - hdr_len);
+
+        if (len < hdr_len)
+            return FILTER_UNKNOWN;
+#endif
+    } else {
         return FILTER_UNKNOWN;
+    }
 
-    const struct ipv4_hdr *hdr;
-    hdr = (const struct ipv4_hdr *)data;
+    next = (void *)data + hdr_len;
+    next_len = len - hdr_len;
 
-    int hdr_len = (hdr->version_ihl & 0x0f) << 2;
-    if (len < hdr_len)
-        return FILTER_UNKNOWN;
-
-    void *next = (void *)data + hdr_len;
-    uint16_t next_len = len - hdr_len;
-
-    switch (hdr->next_proto_id) {
+    switch (proto) {
         case IPPROTO_TCP:
             return protocol_filter_tcp(next, next_len);
         case IPPROTO_UDP:
             return protocol_filter_udp(next, next_len);
         case IPPROTO_IPIP:
-            return protocol_filter_ip(next, next_len);
+            return protocol_filter_ip(next, next_len, ETHER_TYPE_IPv4);
+#ifdef INET6
+        case IPPROTO_IPV6:
+            return protocol_filter_ip(next, next_len, ETHER_TYPE_IPv6);
+#endif
     }
 
     return FILTER_UNKNOWN;
 }
 
 enum FilterReturn
-ff_kni_proto_filter(const void *data, uint16_t len)
+ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type)
 {
-    return protocol_filter_ip(data, len);
+    return protocol_filter_ip(data, len, eth_frame_type);
 }
 
 void

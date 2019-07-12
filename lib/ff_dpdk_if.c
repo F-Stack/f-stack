@@ -845,8 +845,9 @@ protocol_filter(const void *data, uint16_t len)
 
     const struct ether_hdr *hdr;
     hdr = (const struct ether_hdr *)data;
+    uint16_t eth_frame_type = rte_be_to_cpu_16(hdr->ether_type);
 
-    if(ntohs(hdr->ether_type) == ETHER_TYPE_ARP)
+    if(eth_frame_type == ETHER_TYPE_ARP)
         return FILTER_ARP;
 
 #ifndef FF_KNI
@@ -856,11 +857,15 @@ protocol_filter(const void *data, uint16_t len)
         return FILTER_UNKNOWN;
     }
 
-    if(ntohs(hdr->ether_type) != ETHER_TYPE_IPv4)
+    if(eth_frame_type != ETHER_TYPE_IPv4
+#ifdef INET6
+            && eth_frame_type != ETHER_TYPE_IPv6
+#endif
+            )
         return FILTER_UNKNOWN;
 
     return ff_kni_proto_filter(data + ETHER_HDR_LEN,
-        len - ETHER_HDR_LEN);
+        len - ETHER_HDR_LEN, eth_frame_type);
 #endif
 }
 
@@ -1053,7 +1058,13 @@ static inline void
 handle_ioctl_msg(struct ff_msg *msg)
 {
     int fd, ret;
-    fd = ff_socket(AF_INET, SOCK_DGRAM, 0);
+#ifdef INET6
+    if (msg->msg_type == FF_IOCTL6) {
+        fd = ff_socket(AF_INET6, SOCK_DGRAM, 0);
+    } else
+#endif
+        fd = ff_socket(AF_INET, SOCK_DGRAM, 0);
+
     if (fd < 0) {
         ret = -1;
         goto done;
@@ -1164,6 +1175,9 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             handle_sysctl_msg(msg);
             break;
         case FF_IOCTL:
+#ifdef INET6
+        case FF_IOCTL6:
+#endif
             handle_ioctl_msg(msg);
             break;
         case FF_ROUTE:

@@ -29,6 +29,7 @@ FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
 #FF_USE_PAGE_ARRAY=1
+FF_INET6=1
 
 
 include ${TOPDIR}/mk/kern.pre.mk
@@ -85,6 +86,11 @@ endif
 
 ifdef FF_USE_PAGE_ARRAY
 HOST_CFLAGS+= -DFF_USE_PAGE_ARRAY
+endif
+
+ifdef FF_INET6
+HOST_CFLAGS+= -DINET6
+CFLAGS+= -DINET6
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -165,6 +171,9 @@ endif
 VPATH+= $S/netinet
 VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
+ifdef FF_INET6
+VPATH+= $S/netinet6
+endif
 VPATH+= $S/netipsec
 ifdef FF_IPFW
 VPATH+= $S/netpfil/ipfw
@@ -442,6 +451,42 @@ NETINET_SRCS+=		\
 	alias_sctp.c    \
 	alias_util.c
 
+ifdef FF_INET6
+NETINET6_SRCS+=		\
+	dest6.c		\
+	frag6.c		\
+	icmp6.c		\
+	in6.c		\
+	in6_ifattach.c	\
+	in6_mcast.c	\
+	in6_pcb.c	\
+	in6_pcbgroup.c	\
+	in6_proto.c	\
+	in6_rmx.c	\
+	in6_src.c	\
+	ip6_forward.c	\
+	ip6_id.c	\
+	ip6_input.c	\
+	ip6_mroute.c	\
+	ip6_output.c	\
+	mld6.c		\
+	nd6.c		\
+	nd6_nbr.c	\
+	nd6_rtr.c	\
+	raw_ip6.c	\
+	route6.c	\
+	scope6.c	\
+	send.c		\
+	udp6_usrreq.c	\
+	in6_cksum.c	\
+	in6_fib.c	\
+	in6_gif.c
+	#ip6_gre.c
+	#ip6_ipsec.c
+	#sctp6_usrreq.c
+	#in6_rss.c
+endif
+
 ifdef FF_IPFW
 NETIPFW_SRCS+=             \
 	ip_fw_dynamic.c \
@@ -460,6 +505,10 @@ endif
 ifdef FF_IPSEC
 NETINET_SRCS+=		\
 	ip_ipsec.c
+ifdef FF_INET6
+NETINET6_SRCS+=		\
+	ip6_ipsec.c
+endif
 endif
 
 
@@ -479,9 +528,6 @@ endif
 
 # only if TCP_SIGNTAURE is defined
 #xform_tcp.c
-
-NETINET6_SRCS+=
-
 
 ifdef FF_IPSEC
 OPENCRYPTO_SRCS+=	\

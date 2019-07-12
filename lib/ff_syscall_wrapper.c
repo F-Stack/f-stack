@@ -404,7 +404,8 @@ linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
     /* #linux and #freebsd may point to the same address */
     freebsd->sa_family = linux->sa_family;
     freebsd->sa_len = addrlen;
-    bcopy(linux->sa_data, freebsd->sa_data, sizeof(linux->sa_data));
+
+    bcopy(linux->sa_data, freebsd->sa_data, addrlen - sizeof(linux->sa_family));
 }
 
 static void
@@ -416,7 +417,8 @@ freebsd2linux_sockaddr(struct linux_sockaddr *linux,
     }
 
     linux->sa_family = freebsd->sa_family;
-    bcopy(freebsd->sa_data, linux->sa_data, sizeof(freebsd->sa_data));
+
+    bcopy(freebsd->sa_data, linux->sa_data, freebsd->sa_len - sizeof(linux->sa_family));
 }
 
 int
@@ -700,8 +702,8 @@ ff_sendto(int s, const void *buf, size_t len, int flags,
     struct iovec aiov;
     int rc;
 
-    struct sockaddr bsdaddr;
-    struct sockaddr *pf = &bsdaddr;
+    struct sockaddr_storage bsdaddr;
+    struct sockaddr *pf = (struct sockaddr *)&bsdaddr;
 
     if (to) {
         linux2freebsd_sockaddr(to, tolen, pf);
@@ -731,12 +733,12 @@ ssize_t
 ff_sendmsg(int s, const struct msghdr *msg, int flags)
 {
     int rc;
-    struct sockaddr freebsd_sa;
+    struct sockaddr_storage freebsd_sa;
     void *linux_sa = msg->msg_name;
 
     if (linux_sa != NULL) {
         linux2freebsd_sockaddr(linux_sa,
-            sizeof(struct linux_sockaddr), &freebsd_sa);
+            sizeof(struct linux_sockaddr), (struct sockaddr *)&freebsd_sa);
         __DECONST(struct msghdr *, msg)->msg_name = &freebsd_sa;
     }
 
@@ -769,7 +771,7 @@ ff_recvfrom(int s, void *buf, size_t len, int flags,
     struct msghdr msg;
     struct iovec aiov;
     int rc;
-    struct sockaddr bsdaddr;
+    struct sockaddr_storage bsdaddr;
 
     if (fromlen != NULL)
         msg.msg_namelen = *fromlen;
@@ -790,7 +792,7 @@ ff_recvfrom(int s, void *buf, size_t len, int flags,
         *fromlen = msg.msg_namelen;
 
     if (from)
-        freebsd2linux_sockaddr(from, &bsdaddr);
+        freebsd2linux_sockaddr(from, (struct sockaddr *)&bsdaddr);
 
     return (rc);
 kern_fail:
@@ -848,7 +850,7 @@ ff_accept(int s, struct linux_sockaddr * addr,
     int rc;
     struct file *fp;
     struct sockaddr *pf = NULL;
-    socklen_t socklen = sizeof(struct sockaddr);
+    socklen_t socklen = sizeof(struct sockaddr_storage);
 
     if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
         goto kern_fail;
@@ -860,7 +862,7 @@ ff_accept(int s, struct linux_sockaddr * addr,
         freebsd2linux_sockaddr(addr, pf);
 
     if (addrlen)
-        *addrlen = socklen;
+        *addrlen = pf->sa_len;
     
     if(pf != NULL)
         free(pf, M_SONAME);
@@ -894,10 +896,10 @@ int
 ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen)
 {
     int rc;    
-    struct sockaddr bsdaddr;
-    linux2freebsd_sockaddr(addr, addrlen, &bsdaddr);
+    struct sockaddr_storage bsdaddr;
+    linux2freebsd_sockaddr(addr, addrlen, (struct sockaddr *)&bsdaddr);
 
-    if ((rc = kern_bindat(curthread, AT_FDCWD, s, &bsdaddr)))
+    if ((rc = kern_bindat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
         goto kern_fail;
 
     return (rc);
@@ -910,10 +912,10 @@ int
 ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen)
 {
     int rc;
-    struct sockaddr bsdaddr;
-    linux2freebsd_sockaddr(name, namelen, &bsdaddr);
+    struct sockaddr_storage bsdaddr;
+    linux2freebsd_sockaddr(name, namelen, (struct sockaddr *)&bsdaddr);
 
-    if ((rc = kern_connectat(curthread, AT_FDCWD, s, &bsdaddr)))
+    if ((rc = kern_connectat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
         goto kern_fail;
 
     return (rc);
@@ -1202,7 +1204,7 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     struct linux_sockaddr *netmask)
 
 {
-    struct sockaddr sa_gw, sa_dst, sa_nm;
+    struct sockaddr_storage sa_gw, sa_dst, sa_nm;
     struct sockaddr *psa_gw, *psa_dst, *psa_nm;
     int rtreq, rtflag;
     int rc;
@@ -1235,21 +1237,21 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     };
 
     if (gw != NULL) {
-        psa_gw = &sa_gw;
+        psa_gw = (struct sockaddr *)&sa_gw;
         linux2freebsd_sockaddr(gw, sizeof(*gw), psa_gw);
     } else {
         psa_gw = NULL;
     }
 
     if (dst != NULL) {
-        psa_dst = &sa_dst;
+        psa_dst = (struct sockaddr *)&sa_dst;
         linux2freebsd_sockaddr(dst, sizeof(*dst), psa_dst);
     } else {
         psa_dst = NULL;
     }
 
     if (netmask != NULL) {
-        psa_nm = &sa_nm;
+        psa_nm = (struct sockaddr *)&sa_nm;
         linux2freebsd_sockaddr(netmask, sizeof(*netmask), psa_nm);
     } else {
         psa_nm = NULL;
