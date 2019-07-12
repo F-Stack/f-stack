@@ -50,6 +50,10 @@
 #include <net/route.h>
 #include <net/route_var.h>
 #include <netinet/if_ether.h>
+#ifdef INET6
+#include <netinet6/scope6_var.h>
+#include <netinet6/ip6_var.h>
+#endif
 
 #include "ff_api.h"
 #include "ff_host_interface.h"
