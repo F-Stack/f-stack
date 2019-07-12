@@ -53,8 +53,9 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
     unsigned size;
     void *cpy_mem;
     size_t offset, clen;
+    int af = 0;
 
-    if (argc != 0 && argc != 3) {
+    if (argc != 0 && argc != 3 && argc != 1) {
         errno = EINVAL;
         return -1;
     }
@@ -65,6 +66,11 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
         offset = va_arg(ap, size_t);
         cpy_mem = va_arg(ap, void *);
         clen = va_arg(ap, size_t);
+        va_end(ap);
+    } else if (argc == 1) {
+        va_list ap;
+        va_start(ap, argc);
+        af = va_arg(ap, int);
         va_end(ap);
     }
 
@@ -92,7 +98,18 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
         return -1;
     }
 
-    msg->msg_type = FF_IOCTL;
+#ifdef INET6
+    if (af == AF_INET6) {
+        msg->msg_type = FF_IOCTL6;
+    } else
+#endif
+    if (af == AF_INET)
+        msg->msg_type = FF_IOCTL;
+    else {
+        errno = EINVAL;
+        return -1;
+    }
+
     msg->ioctl.cmd = com;
     msg->ioctl.data = msg->buf_addr;
     memcpy(msg->ioctl.data, data, size);
