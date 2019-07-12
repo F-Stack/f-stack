@@ -582,9 +582,7 @@ init_port_start(void)
         }
 
         /* Enable HW CRC stripping */
-        if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_KEEP_CRC) {
-            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_KEEP_CRC;
-        }
+        port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_KEEP_CRC;
 
         /* FIXME: Enable TCP LRO ?*/
         #if 0
