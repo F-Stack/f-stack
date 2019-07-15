@@ -146,7 +146,6 @@ Unsupported commands or features:
 -M
 -N
 -m
-ipv6
 netgraph
 ipsec
 ```
