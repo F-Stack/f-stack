@@ -38,9 +38,9 @@ enum FF_MSG_TYPE {
     FF_UNKNOWN = 0,
     FF_SYSCTL,
     FF_IOCTL,
-#ifdef INET6
+//#ifdef INET6
     FF_IOCTL6,
-#endif
+//#endif
     FF_ROUTE,
     FF_TOP,
     FF_NGCTL,
