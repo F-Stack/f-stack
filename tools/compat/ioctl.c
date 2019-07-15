@@ -53,7 +53,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
     unsigned size;
     void *cpy_mem;
     size_t offset, clen;
-    int af = 0;
+    int af = AF_INET;
 
     if (argc != 0 && argc != 3 && argc != 1) {
         errno = EINVAL;
@@ -107,6 +107,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
         msg->msg_type = FF_IOCTL;
     else {
         errno = EINVAL;
+        ff_ipc_msg_free(msg);
         return -1;
     }
 
