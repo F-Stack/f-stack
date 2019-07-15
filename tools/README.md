@@ -36,9 +36,12 @@ ifconfig -p <f-stack proc_id> [-f type:format] %sinterface address_family
     ifconfig -p <f-stack proc_id> -l [-d] [-u] [address_family]
     ifconfig -p <f-stack proc_id> %s[-d] [-m] [-u] [-v]
 ```
+We has supportted inet6, you can config ipv6 address like this:
+
+    ifconfig -p <f-stack proc_id> interface inet6 <ipv6 address> autoconf
+
 Unsupported interfaces or parameters:
 ```
-inet6
 MAC(Mandatory Access Control)
 media
 SFP/SFP+
@@ -77,6 +80,7 @@ Examples:
      Display the route for a destination network:
 
        ./sbin/route -p 0 show 172.16.10.0
+       ./sbin/route -p 0 -6 show ::/0
 
      Delete a static route from the routing table:
 
