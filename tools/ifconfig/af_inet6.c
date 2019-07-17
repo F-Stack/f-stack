@@ -104,7 +104,12 @@ setip6lifetime(const char *cmd, const char *val, int s,
 	time_t newval;
 	char *ep;
 
+#ifndef FSTACK
 	clock_gettime(CLOCK_MONOTONIC_FAST, &now);
+#else
+	clock_gettime(CLOCK_MONOTONIC, &now);
+#endif
+
 	newval = (time_t)strtoul(val, &ep, 0);
 	if (val == ep)
 		errx(1, "invalid %s", cmd);

@@ -31,10 +31,15 @@
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
+extern int enable_kni;
+
 enum FilterReturn {
     FILTER_UNKNOWN = -1,
     FILTER_ARP = 1,
     FILTER_KNI = 2,
+#ifdef INET6
+    FILTER_NDP = 3,  // Neighbor Solicitation/Advertisement, Router Solicitation/Advertisement/Redirect
+#endif
 };
 
 void ff_kni_init(uint16_t nb_ports, const char *tcp_ports,
