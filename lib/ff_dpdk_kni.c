@@ -26,6 +26,7 @@
 
 #include <stdlib.h>
 #include <arpa/inet.h>
+#include <netinet/icmp6.h>
 
 #include <rte_config.h>
 #include <rte_ether.h>
@@ -368,6 +369,21 @@ get_ipv6_hdr_len(uint8_t *proto, void *data, uint16_t len)
 
     return ext_hdr_len;
 }
+
+static enum FilterReturn
+protocol_filter_icmp6(void *data, uint16_t len)
+{
+    if (len < sizeof(struct icmp6_hdr))
+        return FILTER_UNKNOWN;
+
+    const struct icmp6_hdr *hdr;
+    hdr = (const struct icmp6_hdr *)data;
+
+    if (hdr->icmp6_type >= ND_ROUTER_SOLICIT && hdr->icmp6_type <= ND_REDIRECT)
+        return FILTER_NDP;
+
+    return FILTER_UNKNOWN;
+}
 #endif
 
 static enum FilterReturn
@@ -409,14 +425,28 @@ protocol_filter_ip(const void *data, uint16_t len, uint16_t eth_frame_type)
 
     switch (proto) {
         case IPPROTO_TCP:
+#ifdef FF_KNI
+            if (!enable_kni)
+                break;
+#else
+            break;
+#endif
             return protocol_filter_tcp(next, next_len);
         case IPPROTO_UDP:
+#ifdef FF_KNI
+            if (!enable_kni)
+                break;
+#else
+            break;
+#endif
             return protocol_filter_udp(next, next_len);
         case IPPROTO_IPIP:
             return protocol_filter_ip(next, next_len, ETHER_TYPE_IPv4);
 #ifdef INET6
         case IPPROTO_IPV6:
             return protocol_filter_ip(next, next_len, ETHER_TYPE_IPv6);
+        case IPPROTO_ICMPV6:
+            return protocol_filter_icmp6(next, next_len);
 #endif
     }
 

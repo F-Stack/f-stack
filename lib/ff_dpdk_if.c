@@ -67,7 +67,7 @@
 #define KNI_MBUF_MAX 2048
 #define KNI_QUEUE_SIZE 2048
 
-static int enable_kni;
+int enable_kni;
 static int kni_accept;
 #endif
 
@@ -848,6 +848,13 @@ protocol_filter(const void *data, uint16_t len)
     if(eth_frame_type == ETHER_TYPE_ARP)
         return FILTER_ARP;
 
+#ifdef INET6
+    if (eth_frame_type == ETHER_TYPE_IPv6) {
+        return ff_kni_proto_filter(data + ETHER_HDR_LEN,
+            len - ETHER_HDR_LEN, eth_frame_type);
+    }
+#endif
+
 #ifndef FF_KNI
     return FILTER_UNKNOWN;
 #else
@@ -855,11 +862,7 @@ protocol_filter(const void *data, uint16_t len)
         return FILTER_UNKNOWN;
     }
 
-    if(eth_frame_type != ETHER_TYPE_IPv4
-#ifdef INET6
-            && eth_frame_type != ETHER_TYPE_IPv6
-#endif
-            )
+    if(eth_frame_type != ETHER_TYPE_IPv4)
         return FILTER_UNKNOWN;
 
     return ff_kni_proto_filter(data + ETHER_HDR_LEN,
@@ -975,7 +978,11 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         }
 
         enum FilterReturn filter = protocol_filter(data, len);
+#ifdef INET6
+        if (filter == FILTER_ARP || filter == FILTER_NDP) {
+#else
         if (filter == FILTER_ARP) {
+#endif
             struct rte_mempool *mbuf_pool;
             struct rte_mbuf *mbuf_clone;
             if (!pkts_from_ring) {
