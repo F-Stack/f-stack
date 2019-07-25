@@ -99,10 +99,10 @@ static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
 
 struct ff_msg_ring {
-    char ring_name[FF_MAX][RTE_RING_NAMESIZE];
+    char ring_name[FF_MSG_NUM][RTE_RING_NAMESIZE];
     /* ring[0] for lcore recv msg, other send */
     /* ring[1] for lcore send msg, other read */
-    struct rte_ring *ring[FF_MAX];
+    struct rte_ring *ring[FF_MSG_NUM];
 } __rte_cache_aligned;
 
 static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
@@ -447,7 +447,7 @@ init_msg_ring(void)
         if (msg_ring[i].ring[0] == NULL)
             rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[0]);
 
-        for (j = FF_SYSCTL; j < FF_MAX; j++) {
+        for (j = FF_SYSCTL; j < FF_MSG_NUM; j++) {
             snprintf(msg_ring[i].ring_name[j], RTE_RING_NAMESIZE,
                 "%s%u_%u", FF_MSG_RING_OUT, i, j);
             msg_ring[i].ring[j] = create_ring(msg_ring[i].ring_name[j],
