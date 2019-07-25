@@ -139,7 +139,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
         if (retmsg != NULL) {
             ff_ipc_msg_free(retmsg);
         }
-        ret = ff_ipc_recv(&retmsg);
+        ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
             ff_ipc_msg_free(msg);

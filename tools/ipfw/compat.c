@@ -84,7 +84,7 @@ ipfw_ctl(int cmd, int level, int optname, void *optval, socklen_t *optlen)
         if (retmsg != NULL) {
             ff_ipc_msg_free(retmsg);
         }
-        ret = ff_ipc_recv(&retmsg);
+        ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
             ff_ipc_msg_free(msg);

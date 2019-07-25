@@ -99,10 +99,10 @@ static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
 
 struct ff_msg_ring {
-    char ring_name[2][RTE_RING_NAMESIZE];
+    char ring_name[FF_MAX][RTE_RING_NAMESIZE];
     /* ring[0] for lcore recv msg, other send */
     /* ring[1] for lcore send msg, other read */
-    struct rte_ring *ring[2];
+    struct rte_ring *ring[FF_MAX];
 } __rte_cache_aligned;
 
 static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
@@ -420,7 +420,7 @@ ff_msg_init(struct rte_mempool *mp,
 static int
 init_msg_ring(void)
 {
-    uint16_t i;
+    uint16_t i, j;
     uint16_t nb_procs = ff_global_cfg.dpdk.nb_procs;
     unsigned socketid = lcore_conf.socket_id;
 
@@ -442,18 +442,19 @@ init_msg_ring(void)
     for(i = 0; i < nb_procs; ++i) {
         snprintf(msg_ring[i].ring_name[0], RTE_RING_NAMESIZE,
             "%s%u", FF_MSG_RING_IN, i);
-        snprintf(msg_ring[i].ring_name[1], RTE_RING_NAMESIZE,
-            "%s%u", FF_MSG_RING_OUT, i);
-
         msg_ring[i].ring[0] = create_ring(msg_ring[i].ring_name[0],
             MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
         if (msg_ring[i].ring[0] == NULL)
             rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[0]);
 
-        msg_ring[i].ring[1] = create_ring(msg_ring[i].ring_name[1],
-            MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-        if (msg_ring[i].ring[1] == NULL)
-            rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[0]);
+        for (j = FF_SYSCTL; j < FF_MAX; j++) {
+            snprintf(msg_ring[i].ring_name[j], RTE_RING_NAMESIZE,
+                "%s%u_%u", FF_MSG_RING_OUT, i, j);
+            msg_ring[i].ring[j] = create_ring(msg_ring[i].ring_name[j],
+                MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+            if (msg_ring[i].ring[j] == NULL)
+                rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[j]);
+        }
     }
 
     return 0;
@@ -1208,7 +1209,7 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             handle_default_msg(msg);
             break;
     }
-    rte_ring_enqueue(msg_ring[proc_id].ring[1], msg);
+    rte_ring_enqueue(msg_ring[proc_id].ring[msg->msg_type], msg);
 }
 
 static inline int
