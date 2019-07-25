@@ -87,6 +87,17 @@ static uint8_t default_rsskey_40bytes[40] = {
     0xf3, 0x25, 0x3c, 0x06, 0x2a, 0xdc, 0x1f, 0xfc
 };
 
+static int use_rsskey_52bytes = 0;
+static uint8_t default_rsskey_52bytes[52] = {
+    0x44, 0x39, 0x79, 0x6b, 0xb5, 0x4c, 0x50, 0x23,
+    0xb6, 0x75, 0xea, 0x5b, 0x12, 0x4f, 0x9f, 0x30,
+    0xb8, 0xa2, 0xc0, 0x3d, 0xdf, 0xdc, 0x4d, 0x02,
+    0xa0, 0x8c, 0x9b, 0x33, 0x4a, 0xf6, 0x4a, 0x4c,
+    0x05, 0xc6, 0xfa, 0x34, 0x39, 0x58, 0xd8, 0x55,
+    0x7d, 0x99, 0x58, 0x3a, 0xe1, 0x38, 0xc9, 0x2e,
+    0x81, 0x15, 0x03, 0x66
+};
+
 struct lcore_conf lcore_conf;
 
 struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
@@ -558,8 +569,14 @@ init_port_start(void)
         uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
         port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
         port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-        port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
-        port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+        if (dev_info.hash_key_size == 52) {
+            port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_52bytes;
+            port_conf.rx_adv_conf.rss_conf.rss_key_len = 52;
+		    use_rsskey_52bytes = 1;
+        }else{
+            port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
+            port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+        }
         port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
         if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
                 ETH_RSS_PROTO_MASK) {
@@ -1634,9 +1651,13 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     bcopy(&dport, &data[datalen], sizeof(dport));
     datalen += sizeof(dport);
 
-    uint32_t hash = toeplitz_hash(sizeof(default_rsskey_40bytes),
-        default_rsskey_40bytes, datalen, data);
-
+    uint32_t hash = 0;
+	if ( !use_rsskey_52bytes )
+	    hash = toeplitz_hash(sizeof(default_rsskey_40bytes), 
+	        default_rsskey_40bytes, datalen, data);
+	else
+	    hash = toeplitz_hash(sizeof(default_rsskey_52bytes), 
+	        default_rsskey_52bytes, datalen, data);
     return ((hash & (reta_size - 1)) % nb_queues) == queueid;
 }
 
