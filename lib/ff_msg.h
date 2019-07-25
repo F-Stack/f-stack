@@ -46,9 +46,9 @@ enum FF_MSG_TYPE {
     FF_TRAFFIC,
 
     /*
-     * to add other msg type before FF_MAX
+     * to add other msg type before FF_MSG_NUM
      */
-    FF_MAX,
+    FF_MSG_NUM,
 };
 
 struct ff_sysctl_args {
