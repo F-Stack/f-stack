@@ -44,6 +44,11 @@ enum FF_MSG_TYPE {
     FF_NGCTL,
     FF_IPFW_CTL,
     FF_TRAFFIC,
+
+    /*
+     * to add other msg type before FF_MAX
+     */
+    FF_MAX,
 };
 
 struct ff_sysctl_args {
