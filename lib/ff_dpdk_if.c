@@ -97,6 +97,8 @@ static int enable_kni;
 static int kni_accept;
 #endif
 
+#define ETH_P_8021Q 0x8100
+
 static int numa_on;
 
 static unsigned idle_sleep;
@@ -867,11 +869,6 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         }
     }
 
-    /*
-     * FIXME: should we save pkt->vlan_tci
-     * if (pkt->ol_flags & PKT_RX_VLAN_PKT)
-     */
-
     void *data = rte_pktmbuf_mtod(pkt, void*);
     uint16_t len = rte_pktmbuf_data_len(pkt);
 
@@ -879,6 +876,10 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
     if (hdr == NULL) {
         rte_pktmbuf_free(pkt);
         return;
+    }
+
+    if (pkt->ol_flags & PKT_RX_VLAN_STRIPPED) {
+        ff_mbuf_set_vlan_info(hdr, pkt->vlan_tci);
     }
 
     struct rte_mbuf *pn = pkt->next;
@@ -901,15 +902,23 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 }
 
 static enum FilterReturn
-protocol_filter(const void *data, uint16_t len)
+protocol_filter(const struct rte_mbuf *mbuf, uint16_t len)
 {
     if(len < ETHER_HDR_LEN)
         return FILTER_UNKNOWN;
 
     const struct ether_hdr *hdr;
+    const struct vlan_hdr *vlanhdr;
+    void *data = rte_pktmbuf_mtod(mbuf, void*);
     hdr = (const struct ether_hdr *)data;
+    uint16_t ether_type = ntohs(hdr->ether_type);
 
-    if(ntohs(hdr->ether_type) == ETHER_TYPE_ARP)
+    if (hdr->ether_type == htons(ETH_P_8021Q) && !(mbuf->ol_flags & PKT_RX_VLAN_STRIPPED)) {
+        vlanhdr = (struct vlan_hdr *)(data + sizeof(struct ether_hdr));
+        ether_type = ntohs(vlanhdr->eth_proto);
+    }
+
+    if(ether_type == ETHER_TYPE_ARP)
         return FILTER_ARP;
 
 #ifndef FF_KNI
@@ -1034,7 +1043,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
         }
 
-        enum FilterReturn filter = protocol_filter(data, len);
+        enum FilterReturn filter = protocol_filter(rtem, len);
         if (filter == FILTER_ARP) {
             struct rte_mempool *mbuf_pool;
             struct rte_mbuf *mbuf_clone;
