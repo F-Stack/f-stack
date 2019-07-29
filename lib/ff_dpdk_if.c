@@ -97,8 +97,6 @@ static int enable_kni;
 static int kni_accept;
 #endif
 
-#define ETH_P_8021Q 0x8100
-
 static int numa_on;
 
 static unsigned idle_sleep;
@@ -902,20 +900,19 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 }
 
 static enum FilterReturn
-protocol_filter(const struct rte_mbuf *mbuf, uint16_t len)
+protocol_filter(const void *data, uint16_t len)
 {
     if(len < ETHER_HDR_LEN)
         return FILTER_UNKNOWN;
 
     const struct ether_hdr *hdr;
     const struct vlan_hdr *vlanhdr;
-    void *data = rte_pktmbuf_mtod(mbuf, void*);
     hdr = (const struct ether_hdr *)data;
-    uint16_t ether_type = ntohs(hdr->ether_type);
+    uint16_t ether_type = rte_be_to_cpu_16(hdr->ether_type);
 
-    if (hdr->ether_type == htons(ETH_P_8021Q) && !(mbuf->ol_flags & PKT_RX_VLAN_STRIPPED)) {
+    if (ether_type == ETHER_TYPE_VLAN) {
         vlanhdr = (struct vlan_hdr *)(data + sizeof(struct ether_hdr));
-        ether_type = ntohs(vlanhdr->eth_proto);
+        ether_type = rte_be_to_cpu_16(vlanhdr->eth_proto);
     }
 
     if(ether_type == ETHER_TYPE_ARP)
@@ -928,7 +925,7 @@ protocol_filter(const struct rte_mbuf *mbuf, uint16_t len)
         return FILTER_UNKNOWN;
     }
 
-    if(ntohs(hdr->ether_type) != ETHER_TYPE_IPv4)
+    if(ether_type != ETHER_TYPE_IPv4)
         return FILTER_UNKNOWN;
 
     return ff_kni_proto_filter(data + ETHER_HDR_LEN,
@@ -1043,7 +1040,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
         }
 
-        enum FilterReturn filter = protocol_filter(rtem, len);
+        enum FilterReturn filter = protocol_filter(data, len);
         if (filter == FILTER_ARP) {
             struct rte_mempool *mbuf_pool;
             struct rte_mbuf *mbuf_clone;
