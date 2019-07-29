@@ -53,3 +53,4 @@ ff_dup2
 ff_next_mbuf
 ff_mbuf_mtod
 ff_rte_frm_extcl
+ff_mbuf_set_vlan_info
