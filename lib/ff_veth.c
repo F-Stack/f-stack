@@ -205,7 +205,6 @@ ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
             CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
         m->m_pkthdr.csum_data = 0xffff;
     }
-
     return (void *)m;
 }
 
@@ -457,4 +456,11 @@ void* ff_rte_frm_extcl(void* mbuf)
         return NULL;
 }
 
+void
+ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci) {
+    struct mbuf *m = (struct mbuf *)hdr;
+    m->m_pkthdr.ether_vtag = vlan_tci;
+    m->m_flags |= M_VLANTAG;
+    return;
+}
 

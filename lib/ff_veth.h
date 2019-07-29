@@ -48,5 +48,6 @@ void ff_veth_process_packet(void *arg, void *m);
 
 void *ff_veth_softc_to_hostc(void *softc);
 
+void ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci);
 
 #endif /* ifndef _FSTACK_VETH_H */

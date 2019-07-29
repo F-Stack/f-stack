@@ -820,11 +820,6 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         }
     }
 
-    /*
-     * FIXME: should we save pkt->vlan_tci
-     * if (pkt->ol_flags & PKT_RX_VLAN_PKT)
-     */
-
     void *data = rte_pktmbuf_mtod(pkt, void*);
     uint16_t len = rte_pktmbuf_data_len(pkt);
 
@@ -832,6 +827,10 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
     if (hdr == NULL) {
         rte_pktmbuf_free(pkt);
         return;
+    }
+
+    if (pkt->ol_flags & PKT_RX_VLAN_STRIPPED) {
+        ff_mbuf_set_vlan_info(hdr, pkt->vlan_tci);
     }
 
     struct rte_mbuf *pn = pkt->next;
@@ -860,16 +859,22 @@ protocol_filter(const void *data, uint16_t len)
         return FILTER_UNKNOWN;
 
     const struct ether_hdr *hdr;
+    const struct vlan_hdr *vlanhdr;
     hdr = (const struct ether_hdr *)data;
-    uint16_t eth_frame_type = rte_be_to_cpu_16(hdr->ether_type);
+    uint16_t ether_type = rte_be_to_cpu_16(hdr->ether_type);
 
-    if(eth_frame_type == ETHER_TYPE_ARP)
+    if (ether_type == ETHER_TYPE_VLAN) {
+        vlanhdr = (struct vlan_hdr *)(data + sizeof(struct ether_hdr));
+        ether_type = rte_be_to_cpu_16(vlanhdr->eth_proto);
+    }
+
+    if(ether_type == ETHER_TYPE_ARP)
         return FILTER_ARP;
 
 #ifdef INET6
-    if (eth_frame_type == ETHER_TYPE_IPv6) {
+    if (ether_type == ETHER_TYPE_IPv6) {
         return ff_kni_proto_filter(data + ETHER_HDR_LEN,
-            len - ETHER_HDR_LEN, eth_frame_type);
+            len - ETHER_HDR_LEN, ether_type);
     }
 #endif
 
@@ -880,11 +885,11 @@ protocol_filter(const void *data, uint16_t len)
         return FILTER_UNKNOWN;
     }
 
-    if(eth_frame_type != ETHER_TYPE_IPv4)
+    if(ether_type != ETHER_TYPE_IPv4)
         return FILTER_UNKNOWN;
 
     return ff_kni_proto_filter(data + ETHER_HDR_LEN,
-        len - ETHER_HDR_LEN, eth_frame_type);
+        len - ETHER_HDR_LEN, ether_type);
 #endif
 }
 
