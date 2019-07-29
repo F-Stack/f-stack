@@ -80,7 +80,6 @@ struct kni_interface_stats {
 
 struct rte_ring **kni_rp;
 struct kni_interface_stats **kni_stat;
-int kni_link = ETH_LINK_DOWN;
 
 static void
 set_bitmap(uint16_t port, unsigned char *bitmap)
@@ -131,45 +130,6 @@ kni_change_mtu(uint16_t port_id, unsigned new_mtu)
     return 0;
 }
 
-static void
-log_link_state(struct rte_kni *kni, int prev, struct rte_eth_link *link)
-{
-    if (kni == NULL || link == NULL)
-        return;
-
-    if (prev == ETH_LINK_DOWN && link->link_status == ETH_LINK_UP) {
-        kni_link = ETH_LINK_UP;
-        printf("%s NIC Link is Up %d Mbps %s %s.\n",
-            rte_kni_get_name(kni),
-            link->link_speed,
-            link->link_autoneg ?  "(AutoNeg)" : "(Fixed)",
-            link->link_duplex ?  "Full Duplex" : "Half Duplex");
-    } else if (prev == ETH_LINK_UP && link->link_status == ETH_LINK_DOWN) {
-        kni_link = ETH_LINK_DOWN;
-        printf("%s NIC Link is Down.\n",
-            rte_kni_get_name(kni));
-    }
-}
-
-/*
- * Monitor the link status of all ports and update the
- * corresponding KNI interface(s)
- */
-static void *
-monitor_all_ports_link_status(uint16_t port_id)
-{
-    struct rte_eth_link link;
-    unsigned int i;
-    int prev;
-
-    memset(&link, 0, sizeof(link));
-    rte_eth_link_get_nowait(port_id, &link);
-    prev = rte_kni_update_link(kni_stat[port_id]->kni, link.link_status);
-    log_link_state(kni_stat[port_id]->kni, prev, &link);
-
-    return NULL;
-}
-
 static int
 kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 {
@@ -198,9 +158,6 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
             ret = 0;
         }
     }
-
-    if (!if_up)
-        kni_link = ETH_LINK_DOWN;
 
     if (ret < 0)
         printf("Failed to Configure network interface of %d %s\n", 
@@ -597,9 +554,6 @@ void
 ff_kni_process(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count)
 {
-    if (unlikely(kni_link == ETH_LINK_DOWN)) {
-        monitor_all_ports_link_status(port_id);
-    }
     kni_process_tx(port_id, queue_id, pkts_burst, count);
     kni_process_rx(port_id, queue_id, pkts_burst, count);
 }
