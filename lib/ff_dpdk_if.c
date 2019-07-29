@@ -572,7 +572,7 @@ init_port_start(void)
         if (dev_info.hash_key_size == 52) {
             port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_52bytes;
             port_conf.rx_adv_conf.rss_conf.rss_key_len = 52;
-		    use_rsskey_52bytes = 1;
+	    use_rsskey_52bytes = 1;
         }else{
             port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
             port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
@@ -1652,12 +1652,12 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     datalen += sizeof(dport);
 
     uint32_t hash = 0;
-	if ( !use_rsskey_52bytes )
-	    hash = toeplitz_hash(sizeof(default_rsskey_40bytes), 
-	        default_rsskey_40bytes, datalen, data);
-	else
-	    hash = toeplitz_hash(sizeof(default_rsskey_52bytes), 
-	        default_rsskey_52bytes, datalen, data);
+    if ( !use_rsskey_52bytes )
+        hash = toeplitz_hash(sizeof(default_rsskey_40bytes), 
+            default_rsskey_40bytes, datalen, data);
+    else
+        hash = toeplitz_hash(sizeof(default_rsskey_52bytes), 
+	  default_rsskey_52bytes, datalen, data);
     return ((hash & (reta_size - 1)) % nb_queues) == queueid;
 }
 
