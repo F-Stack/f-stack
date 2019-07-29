@@ -334,6 +334,10 @@ protocol_filter_udp(const void* data,uint16_t len)
 #ifndef IPPROTO_SHIM6
 #define IPPROTO_SHIM6   140
 #endif
+
+#ifndef IPPROTO_MH
+#define IPPROTO_MH   135
+#endif
 static int
 get_ipv6_hdr_len(uint8_t *proto, void *data, uint16_t len)
 {
