@@ -1657,7 +1657,7 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
             default_rsskey_40bytes, datalen, data);
     else
         hash = toeplitz_hash(sizeof(default_rsskey_52bytes), 
-	  default_rsskey_52bytes, datalen, data);
+	    default_rsskey_52bytes, datalen, data);
     return ((hash & (reta_size - 1)) % nb_queues) == queueid;
 }
 
