@@ -862,10 +862,14 @@ protocol_filter(const void *data, uint16_t len)
     const struct vlan_hdr *vlanhdr;
     hdr = (const struct ether_hdr *)data;
     uint16_t ether_type = rte_be_to_cpu_16(hdr->ether_type);
+    data += ETHER_HDR_LEN;
+    len -= ETHER_HDR_LEN;
 
     if (ether_type == ETHER_TYPE_VLAN) {
-        vlanhdr = (struct vlan_hdr *)(data + sizeof(struct ether_hdr));
+        vlanhdr = (struct vlan_hdr *)data;
         ether_type = rte_be_to_cpu_16(vlanhdr->eth_proto);
+        data += sizeof(struct vlan_hdr);
+        len -= sizeof(struct vlan_hdr);
     }
 
     if(ether_type == ETHER_TYPE_ARP)
@@ -873,8 +877,8 @@ protocol_filter(const void *data, uint16_t len)
 
 #ifdef INET6
     if (ether_type == ETHER_TYPE_IPv6) {
-        return ff_kni_proto_filter(data + ETHER_HDR_LEN,
-            len - ETHER_HDR_LEN, ether_type);
+        return ff_kni_proto_filter(data,
+            len, ether_type);
     }
 #endif
 
@@ -888,8 +892,8 @@ protocol_filter(const void *data, uint16_t len)
     if(ether_type != ETHER_TYPE_IPv4)
         return FILTER_UNKNOWN;
 
-    return ff_kni_proto_filter(data + ETHER_HDR_LEN,
-        len - ETHER_HDR_LEN, ether_type);
+    return ff_kni_proto_filter(data,
+        len, ether_type);
 #endif
 }
 
