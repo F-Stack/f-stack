@@ -986,10 +986,25 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
             if (ret == FF_DISPATCH_RESPONSE) {
                 rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
+
+                /*
+                 * We have not support vlan out strip
+                 */
+                if (rtem->vlan_tci) {
+                    data = rte_pktmbuf_prepend(rtem, sizeof(struct vlan_hdr));
+                    if (data != NULL) {
+                        memmove(data, data + sizeof(struct vlan_hdr), ETHER_HDR_LEN);
+                        struct ether_hdr *etherhdr = (struct ether_hdr *)data;
+                        struct vlan_hdr *vlanhdr = (struct vlan_hdr *)(data + ETHER_HDR_LEN);
+                        vlanhdr->vlan_tci = rte_cpu_to_be_16(rtem->vlan_tci);
+                        vlanhdr->eth_proto = etherhdr->ether_type;
+                        etherhdr->ether_type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+                    }
+                }
                 send_single_packet(rtem, port_id);
                 continue;
             }
-            
+
             if (ret == FF_DISPATCH_ERROR || ret >= nb_queues) {
                 rte_pktmbuf_free(rtem);
                 continue;
