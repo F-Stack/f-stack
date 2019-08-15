@@ -271,7 +271,7 @@ lagg_status(int s)
 			printf("\t\tactive ports: %d\n", ro.ro_active);
 			printf("\t\tflapping: %u\n", ro.ro_flapping);
 			if (ra.ra_proto == LAGG_PROTO_LACP) {
-				printf("\tlag id: %s\n",
+				printf("\tlagg id: %s\n",
 				    lacp_format_peer(lp, "\n\t\t "));
 			}
 		}
