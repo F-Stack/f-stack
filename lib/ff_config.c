@@ -338,6 +338,30 @@ parse_port_list(struct ff_config *cfg, const char *v_str)
 }
 
 static int
+parse_port_slave_list(struct ff_port_cfg *cfg, const char *v_str)
+{
+    int res;
+    uint16_t ports[RTE_MAX_ETHPORTS];
+    int sz = RTE_MAX_ETHPORTS;
+
+    res = __parse_config_list(ports, &sz, v_str);
+    if (! res) return res;
+
+    uint16_t *portid_list = malloc(sizeof(uint16_t)*sz);
+
+    if (portid_list == NULL) {
+        fprintf(stderr, "parse_port_slave_list malloc failed\n");
+        return 0;
+    }
+    memcpy(portid_list, ports, sz*sizeof(uint16_t));
+
+    cfg->slave_portid_list = portid_list;
+    cfg->nb_slaves = sz;
+
+    return res;
+}
+
+static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
 
@@ -397,6 +421,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->pcap = strdup(value);
     } else if (strcmp(name, "lcore_list") == 0) {
         return parse_port_lcore_list(cur, value);
+    } else if (strcmp(name, "slave_port_list") == 0) {
+        return parse_port_slave_list(cur, value);
     }
 
     return 1;
@@ -456,6 +482,65 @@ vdev_cfg_handler(struct ff_config *cfg, const char *section,
     return 1;
 }
 
+static int
+bond_cfg_handler(struct ff_config *cfg, const char *section,
+    const char *name, const char *value) {
+
+    if (cfg->dpdk.nb_bond == 0) {
+        fprintf(stderr, "bond_cfg_handler: must config dpdk.nb_bond first\n");
+        return 0;
+    }
+
+    if (cfg->dpdk.bond_cfgs == NULL) {
+        struct ff_bond_cfg *vc = calloc(RTE_MAX_ETHPORTS, sizeof(struct ff_bond_cfg));
+        if (vc == NULL) {
+            fprintf(stderr, "ff_bond_cfg malloc failed\n");
+            return 0;
+        }
+        cfg->dpdk.bond_cfgs = vc;
+    }
+
+    int bondid;
+    int ret = sscanf(section, "bond%d", &bondid);
+    if (ret != 1) {
+        fprintf(stderr, "bond_cfg_handler section[%s] error\n", section);
+        return 0;
+    }
+
+    /* just return true if bondid >= nb_vdev because it has no effect */
+    if (bondid > cfg->dpdk.nb_bond) {
+        fprintf(stderr, "bond_cfg_handler section[%s] bigger than max bond id\n", section);
+        return 1;
+    }
+
+    struct ff_bond_cfg *cur = &cfg->dpdk.bond_cfgs[bondid];
+    if (cur->name == NULL) {
+        cur->name = strdup(section);
+        cur->bond_id = bondid;
+    }
+
+    if (strcmp(name, "mode") == 0) {
+        cur->mode = atoi(value);
+    } else if (strcmp(name, "slave") == 0) {
+        cur->slave = strdup(value);
+    } else if (strcmp(name, "primary") == 0) {
+        cur->primary = strdup(value);
+    } else if (strcmp(name, "socket_id") == 0) {
+        cur->socket_id = atoi(value);
+    } else if (strcmp(name, "mac") == 0) {
+        cur->bond_mac = strdup(value);
+    } else if (strcmp(name, "xmit_policy") == 0) {
+        cur->xmit_policy = strdup(value);
+    } else if (strcmp(name, "lsc_poll_period_ms") == 0) {
+        cur->lsc_poll_period_ms = atoi(value);
+    } else if (strcmp(name, "up_delay") == 0) {
+        cur->up_delay = atoi(value);
+    } else if (strcmp(name, "down_delay") == 0) {
+        cur->down_delay = atoi(value);
+    }
+
+    return 1;
+}
 
 static int
 ini_parse_handler(void* user, const char* section, const char* name,
@@ -481,6 +566,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
         pconfig->dpdk.nb_vdev = atoi(value);
+    } else if (MATCH("dpdk", "nb_bond")) {
+        pconfig->dpdk.nb_bond = atoi(value);
     } else if (MATCH("dpdk", "promiscuous")) {
         pconfig->dpdk.promiscuous = atoi(value);
     } else if (MATCH("dpdk", "numa_on")) {
@@ -519,6 +606,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return port_cfg_handler(pconfig, section, name, value);
     } else if (strncmp(section, "vdev", 4) == 0) {
         return vdev_cfg_handler(pconfig, section, name, value);
+    } else if (strncmp(section, "bond", 4) == 0) {
+        return bond_cfg_handler(pconfig, section, name, value);
     }
 
     return 1;
@@ -584,10 +673,57 @@ dpdk_args_setup(struct ff_config *cfg)
         dpdk_argv[n++] = strdup(temp);
     }
 
+    if (cfg->dpdk.nb_bond) {
+        for (i=0; i<cfg->dpdk.nb_bond; i++) {
+            sprintf(temp, "--vdev");
+            dpdk_argv[n++] = strdup(temp);
+            sprintf(temp, "net_bonding%d,mode=%d,slave=%s",
+                cfg->dpdk.bond_cfgs[i].bond_id,
+                cfg->dpdk.bond_cfgs[i].mode,
+                cfg->dpdk.bond_cfgs[i].slave);
+
+                if (cfg->dpdk.bond_cfgs[i].primary) {
+                    sprintf(temp, "%s,primary=%s",
+                    temp, cfg->dpdk.bond_cfgs[i].primary);
+                }
+
+                if (cfg->dpdk.bond_cfgs[i].socket_id) {
+                    sprintf(temp, "%s,socket_id=%d",
+                    temp, cfg->dpdk.bond_cfgs[i].socket_id);
+                }
+
+                if (cfg->dpdk.bond_cfgs[i].bond_mac) {
+                    sprintf(temp, "%s,mac=%s",
+                    temp, cfg->dpdk.bond_cfgs[i].bond_mac);
+                }
+
+                if (cfg->dpdk.bond_cfgs[i].xmit_policy) {
+                    sprintf(temp, "%s,xmit_policy=%s",
+                    temp, cfg->dpdk.bond_cfgs[i].xmit_policy);
+                }
+
+                if (cfg->dpdk.bond_cfgs[i].lsc_poll_period_ms) {
+                    sprintf(temp, "%s,lsc_poll_period_ms=%d",
+                    temp, cfg->dpdk.bond_cfgs[i].lsc_poll_period_ms);
+                }
+
+                if (cfg->dpdk.bond_cfgs[i].up_delay) {
+                    sprintf(temp, "%s,up_delay=%d",
+                    temp, cfg->dpdk.bond_cfgs[i].up_delay);
+                }
+
+                if (cfg->dpdk.bond_cfgs[i].down_delay) {
+                    sprintf(temp, "%s,down_delay=%d",
+                    temp, cfg->dpdk.bond_cfgs[i].down_delay);
+                }
+                dpdk_argv[n++] = strdup(temp);
+        }
+    }
+
     dpdk_argc = n;
 
     for (i=0; i<n; i++)
-	    printf("%s ", dpdk_argv[i]);
+        printf("%s ", dpdk_argv[i]);
 
     return n;
 }

@@ -62,7 +62,9 @@ struct ff_port_cfg {
     char *pcap;
 
     int nb_lcores;
+    int nb_slaves;
     uint16_t lcore_list[DPDK_MAX_LCORE];
+    uint16_t *slave_portid_list;
 };
 
 struct ff_vdev_cfg {
@@ -76,7 +78,19 @@ struct ff_vdev_cfg {
     uint16_t queue_size;
 };
 
-
+struct ff_bond_cfg {
+    char *name;
+    char *slave;
+    char *primary;
+    char *bond_mac;
+    char *xmit_policy;
+    uint8_t bond_id;
+    uint8_t mode;
+    uint8_t socket_id;
+    uint8_t lsc_poll_period_ms;
+    uint16_t up_delay;
+    uint16_t down_delay;
+};
 
 struct ff_freebsd_cfg {
     char *name;
@@ -105,6 +119,7 @@ struct ff_config {
         int proc_id;
         int promiscuous;
         int nb_vdev;
+        int nb_bond;
         int numa_on;
         int tso;
         int vlan_strip;
@@ -124,6 +139,7 @@ struct ff_config {
         // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
         struct ff_vdev_cfg *vdev_cfgs;
+        struct ff_bond_cfg *bond_cfgs;
     } dpdk;
 
     struct {
