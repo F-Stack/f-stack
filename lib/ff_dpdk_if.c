@@ -568,6 +568,18 @@ init_port_start(void)
                     dev_info.max_tx_queues);
             }
 
+            struct ether_addr addr;
+            rte_eth_macaddr_get(port_id, &addr);
+            printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+                       " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+                    (unsigned)port_id,
+                    addr.addr_bytes[0], addr.addr_bytes[1],
+                    addr.addr_bytes[2], addr.addr_bytes[3],
+                    addr.addr_bytes[4], addr.addr_bytes[5]);
+
+            rte_memcpy(pconf->mac,
+                addr.addr_bytes, ETHER_ADDR_LEN);
+
             /* Set RSS mode */
             uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
             port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
@@ -695,31 +707,32 @@ init_port_start(void)
                 }
             }
 
-            struct ether_addr addr;
-            rte_eth_macaddr_get(port_id, &addr);
-            printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-                       " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-                    (unsigned)port_id,
-                    addr.addr_bytes[0], addr.addr_bytes[1],
-                    addr.addr_bytes[2], addr.addr_bytes[3],
-                    addr.addr_bytes[4], addr.addr_bytes[5]);
-
-            rte_memcpy(pconf->mac,
-                addr.addr_bytes, ETHER_ADDR_LEN);
 
             if (strncmp(dev_info.driver_name, BOND_DRIVER_NAME,
                     strlen(dev_info.driver_name)) == 0) {
+
+                rte_eth_macaddr_get(port_id, &addr);
+                printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+                           " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+                        (unsigned)port_id,
+                        addr.addr_bytes[0], addr.addr_bytes[1],
+                        addr.addr_bytes[2], addr.addr_bytes[3],
+                        addr.addr_bytes[4], addr.addr_bytes[5]);
+
+                rte_memcpy(pconf->mac,
+                    addr.addr_bytes, ETHER_ADDR_LEN);
+
                 int mode, count, x;
                 uint16_t slaves[RTE_MAX_ETHPORTS], len = RTE_MAX_ETHPORTS;
 
                 mode = rte_eth_bond_mode_get(port_id);
-                printf("Port %u, bond mode:%d\n", mode);
+                printf("Port %u, bond mode:%d\n", port_id, mode);
 
                 count = rte_eth_bond_slaves_get(port_id, slaves, len);
-                printf("Port %u, %s's slave ports count:%d\n",
+                printf("Port %u, %s's slave ports count:%d\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, count);
                 for (x=0; x<count; x++) {
-                    printf("Port %u, %s's slave port[%u]\n",
+                    printf("Port %u, %s's slave port[%u]\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, slaves[x]);
                 }
             }
