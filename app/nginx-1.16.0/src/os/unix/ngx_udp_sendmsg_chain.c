@@ -207,11 +207,11 @@ ngx_sendmsg(ngx_connection_t *c, ngx_iovec_t *vec)
 
 #if (NGX_HAVE_IP_SENDSRCADDR)
     u_char         msg_control[CMSG_SPACE(sizeof(struct in_addr))];
-#elif (NGX_HAVE_IP_PKTINFO)
+#elif (NGX_HAVE_IP_PKTINFO) && (!NGX_HAVE_FSTACK)
     u_char         msg_control[CMSG_SPACE(sizeof(struct in_pktinfo))];
 #endif
 
-#if (NGX_HAVE_INET6 && NGX_HAVE_IPV6_RECVPKTINFO)
+#if (NGX_HAVE_INET6 && NGX_HAVE_IPV6_RECVPKTINFO && !NGX_HAVE_FSTACK)
     u_char         msg_control6[CMSG_SPACE(sizeof(struct in6_pktinfo))];
 #endif
 
@@ -252,7 +252,7 @@ ngx_sendmsg(ngx_connection_t *c, ngx_iovec_t *vec)
             *addr = sin->sin_addr;
         }
 
-#elif (NGX_HAVE_IP_PKTINFO)
+#elif (NGX_HAVE_IP_PKTINFO) && (!NGX_HAVE_FSTACK)
 
         if (c->local_sockaddr->sa_family == AF_INET) {
             struct cmsghdr      *cmsg;
@@ -276,7 +276,7 @@ ngx_sendmsg(ngx_connection_t *c, ngx_iovec_t *vec)
 
 #endif
 
-#if (NGX_HAVE_INET6 && NGX_HAVE_IPV6_RECVPKTINFO)
+#if (NGX_HAVE_INET6 && NGX_HAVE_IPV6_RECVPKTINFO && !NGX_HAVE_FSTACK)
 
         if (c->local_sockaddr->sa_family == AF_INET6) {
             struct cmsghdr       *cmsg;
