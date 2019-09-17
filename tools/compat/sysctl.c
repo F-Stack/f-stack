@@ -55,25 +55,23 @@ sysctl(int *name, unsigned namelen, void *old,
     }
 
     total_len = namelen + oldlen + newlen;
-    if (total_len > msg->buf_len) {
-        extra_buf = rte_malloc(NULL, total_len, 0);
-        if (extra_buf == NULL) {
-            errno = ENOMEM;
-            ff_ipc_msg_free(msg);
-            return -1;
-        }
-        msg->buf_addr = extra_buf;
-        msg->buf_len = total_len; 
-    }
+	extra_buf = rte_malloc(NULL, total_len, 0);
+	if (extra_buf == NULL) {
+		errno = ENOMEM;
+		ff_ipc_msg_free(msg);
+		return -1;
+	}
+	msg->buf_addr = extra_buf;
+	msg->buf_len = total_len; 
 
     char *buf_addr = msg->buf_addr;
 
     msg->msg_type = FF_SYSCTL;
     msg->sysctl.name = (int *)buf_addr;
     msg->sysctl.namelen = namelen;
-    memcpy(msg->sysctl.name, name, namelen*sizeof(int));
+    memcpy(msg->sysctl.name, name, namelen * sizeof(int));
 
-    buf_addr += namelen*sizeof(int);
+    buf_addr += namelen * sizeof(int);
 
     if (new != NULL && newlen != 0) {
         msg->sysctl.new = buf_addr;
