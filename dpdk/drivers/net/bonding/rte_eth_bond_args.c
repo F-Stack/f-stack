@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <rte_devargs.h>
@@ -61,7 +32,7 @@ find_port_id_by_pci_addr(const struct rte_pci_addr *pci_addr)
 	struct rte_pci_addr *eth_pci_addr;
 	unsigned i;
 
-	for (i = 0; i < rte_eth_dev_count(); i++) {
+	RTE_ETH_FOREACH_DEV(i) {
 		pci_dev = RTE_ETH_DEV_TO_PCI(&rte_eth_devices[i]);
 		eth_pci_addr = &pci_dev->addr;
 
@@ -79,7 +50,7 @@ find_port_id_by_dev_name(const char *name)
 {
 	unsigned i;
 
-	for (i = 0; i < rte_eth_dev_count(); i++) {
+	RTE_ETH_FOREACH_DEV(i) {
 		if (rte_eth_devices[i].data == NULL)
 			continue;
 
@@ -121,7 +92,7 @@ parse_port_id(const char *port_str)
 	if (pci_bus->parse(port_str, &dev_addr) == 0) {
 		dev = pci_bus->find_device(NULL, bond_pci_addr_cmp, &dev_addr);
 		if (dev == NULL) {
-			RTE_LOG(ERR, PMD, "unable to find PCI device\n");
+			RTE_BOND_LOG(ERR, "unable to find PCI device");
 			return -1;
 		}
 		port_id = find_port_id_by_pci_addr(&dev_addr);
@@ -163,7 +134,8 @@ bond_ethdev_parse_slave_port_kvarg(const char *key,
 	if (strcmp(key, PMD_BOND_SLAVE_PORT_KVARG) == 0) {
 		int port_id = parse_port_id(value);
 		if (port_id < 0) {
-			RTE_BOND_LOG(ERR, "Invalid slave port value (%s) specified", value);
+			RTE_BOND_LOG(ERR, "Invalid slave port value (%s) specified",
+				     value);
 			return -1;
 		} else
 			slave_ports->slaves[slave_ports->slave_count++] =

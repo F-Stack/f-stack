@@ -39,6 +39,9 @@ extern "C" {
 extern int dpdk_argc;
 extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
+#define MAX_PKT_BURST 32
+#define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -109,6 +112,9 @@ struct ff_config {
         /* sleep x microseconds when no pkts incomming */
         unsigned idle_sleep;
 
+        /* TX burst queue drain nodelay dalay time */
+        unsigned pkt_tx_delay;
+
         /* list of proc-lcore */
         uint16_t *proc_lcore;
 
@@ -138,6 +144,7 @@ struct ff_config {
         long physmem;
         int hz;
         int fd_reserve;
+        int mem_size;
     } freebsd;
 };
 

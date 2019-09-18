@@ -81,6 +81,14 @@
 #define ishexnumber(x) isxdigit(x)
 #endif
 
+#define CLOCK_REALTIME_FAST     10      /* FreeBSD-specific. */
+#ifdef INET6
+#define CLOCK_MONOTONIC_FAST    12      /* FreeBSD-specific. */
+
+#define AF_INET6_LINUX    10
+#define PF_INET6_LINUX    AF_INET6
+#endif
+
 void *reallocf(void *ptr, size_t size);
 
 int feature_present(const char *feature);

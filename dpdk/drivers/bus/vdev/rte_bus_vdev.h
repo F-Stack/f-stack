@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 RehiveTech. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of RehiveTech nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 RehiveTech. All rights reserved.
  */
 
 #ifndef RTE_VDEV_H
@@ -52,6 +24,9 @@ struct rte_vdev_device {
  */
 #define RTE_DEV_TO_VDEV(ptr) \
 	container_of(ptr, struct rte_vdev_device, device)
+
+#define RTE_DEV_TO_VDEV_CONST(ptr) \
+	container_of(ptr, const struct rte_vdev_device, device)
 
 static inline const char *
 rte_vdev_device_name(const struct rte_vdev_device *dev)
@@ -111,9 +86,8 @@ void rte_vdev_register(struct rte_vdev_driver *driver);
 void rte_vdev_unregister(struct rte_vdev_driver *driver);
 
 #define RTE_PMD_REGISTER_VDEV(nm, vdrv)\
-RTE_INIT(vdrvinitfn_ ##vdrv);\
 static const char *vdrvinit_ ## nm ## _alias;\
-static void vdrvinitfn_ ##vdrv(void)\
+RTE_INIT(vdrvinitfn_ ##vdrv)\
 {\
 	(vdrv).driver.name = RTE_STR(nm);\
 	(vdrv).driver.alias = vdrvinit_ ## nm ## _alias;\
@@ -123,6 +97,41 @@ RTE_PMD_EXPORT_NAME(nm, __COUNTER__)
 
 #define RTE_PMD_REGISTER_ALIAS(nm, alias)\
 static const char *vdrvinit_ ## nm ## _alias = RTE_STR(alias)
+
+typedef void (*rte_vdev_scan_callback)(void *user_arg);
+
+/**
+ * Add a callback to be called on vdev scan
+ * before reading the devargs list.
+ *
+ * This function cannot be called in a scan callback
+ * because of deadlock.
+ *
+ * @param callback
+ *   The function to be called which can update the devargs list.
+ * @param user_arg
+ *   An opaque pointer passed to callback.
+ * @return
+ *   0 on success, negative on error
+ */
+int
+rte_vdev_add_custom_scan(rte_vdev_scan_callback callback, void *user_arg);
+
+/**
+ * Remove a registered scan callback.
+ *
+ * This function cannot be called in a scan callback
+ * because of deadlock.
+ *
+ * @param callback
+ *   The registered function to be removed.
+ * @param user_arg
+ *   The associated opaque pointer or (void*)-1 for any.
+ * @return
+ *   0 on success
+ */
+int
+rte_vdev_remove_custom_scan(rte_vdev_scan_callback callback, void *user_arg);
 
 /**
  * Initialize a driver specified by name.

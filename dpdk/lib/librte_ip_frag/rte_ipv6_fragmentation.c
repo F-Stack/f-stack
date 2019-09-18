@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stddef.h>
@@ -106,11 +77,14 @@ rte_ipv6_fragment_packet(struct rte_mbuf *pkt_in,
 	uint32_t out_pkt_pos, in_seg_data_pos;
 	uint32_t more_in_segs;
 	uint16_t fragment_offset, frag_size;
+	uint64_t frag_bytes_remaining;
 
-	frag_size = (uint16_t)(mtu_size - sizeof(struct ipv6_hdr));
-
-	/* Fragment size should be a multiple of 8. */
-	RTE_ASSERT((frag_size & ~RTE_IPV6_EHDR_FO_MASK) == 0);
+	/*
+	 * Ensure the IP payload length of all fragments (except the
+	 * the last fragment) are a multiple of 8 bytes per RFC2460.
+	 */
+	frag_size = RTE_ALIGN_FLOOR(mtu_size - sizeof(struct ipv6_hdr),
+				    RTE_IPV6_EHDR_FO_ALIGN);
 
 	/* Check that pkts_out is big enough to hold all fragments */
 	if (unlikely (frag_size * nb_pkts_out <
@@ -140,6 +114,7 @@ rte_ipv6_fragment_packet(struct rte_mbuf *pkt_in,
 		/* Reserve space for the IP header that will be built later */
 		out_pkt->data_len = sizeof(struct ipv6_hdr) + sizeof(struct ipv6_extension_fragment);
 		out_pkt->pkt_len  = sizeof(struct ipv6_hdr) + sizeof(struct ipv6_extension_fragment);
+		frag_bytes_remaining = frag_size;
 
 		out_seg_prev = out_pkt;
 		more_out_segs = 1;
@@ -159,7 +134,7 @@ rte_ipv6_fragment_packet(struct rte_mbuf *pkt_in,
 
 			/* Prepare indirect buffer */
 			rte_pktmbuf_attach(out_seg, in_seg);
-			len = mtu_size - out_pkt->pkt_len;
+			len = frag_bytes_remaining;
 			if (len > (in_seg->data_len - in_seg_data_pos)) {
 				len = in_seg->data_len - in_seg_data_pos;
 			}
@@ -169,11 +144,11 @@ rte_ipv6_fragment_packet(struct rte_mbuf *pkt_in,
 			    out_pkt->pkt_len);
 			out_pkt->nb_segs += 1;
 			in_seg_data_pos += len;
+			frag_bytes_remaining -= len;
 
 			/* Current output packet (i.e. fragment) done ? */
-			if (unlikely(out_pkt->pkt_len >= mtu_size)) {
+			if (unlikely(frag_bytes_remaining == 0))
 				more_out_segs = 0;
-			}
 
 			/* Current input segment done ? */
 			if (unlikely(in_seg_data_pos == in_seg->data_len)) {

@@ -69,12 +69,13 @@ xdigit2val(unsigned char c)
 static int
 parse_lcore_mask(struct ff_config *cfg, const char *coremask)
 {
-    int i, j, idx = 0;
+    int i, j, idx = 0, shift = 0, zero_num = 0;
     unsigned count = 0;
     char c;
     int val;
     uint16_t *proc_lcore;
     char buf[RTE_MAX_LCORE] = {0};
+    char zero[RTE_MAX_LCORE] = {0};
 
     if (coremask == NULL)
         return 0;
@@ -113,9 +114,12 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
             if ((1 << j) & val) {
                 proc_lcore[count] = idx;
                 if (cfg->dpdk.proc_id == count) {
-                    sprintf(buf, "%llx", (unsigned long long)1<<idx);
-                    cfg->dpdk.proc_mask = strdup(buf);
-                }
+		    zero_num = idx >> 2;
+                    shift = idx & 0x3;
+                    memset(zero,'0',zero_num);
+                    sprintf(buf, "%llx%s", (unsigned long long)1<<shift, zero);
+                    cfg->dpdk.proc_mask = strdup(buf);                
+		}
                 count++;
             }
         }
@@ -491,6 +495,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.vlan_strip = atoi(value);
     } else if (MATCH("dpdk", "idle_sleep")) {
         pconfig->dpdk.idle_sleep = atoi(value);
+    } else if (MATCH("dpdk", "pkt_tx_delay")) {
+        pconfig->dpdk.pkt_tx_delay = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "method")) {
@@ -506,6 +512,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             pconfig->freebsd.physmem = atol(value);
         } else if (strcmp(name, "fd_reserve") == 0) {
             pconfig->freebsd.fd_reserve = atoi(value);
+        } else if (strcmp(name, "memsz_MB") == 0) {
+            pconfig->freebsd.mem_size = atoi(value);
         } else {
             return freebsd_conf_handler(pconfig, "boot", name, value);
         }
@@ -709,10 +717,12 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.proc_id = -1;
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
+    cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
     cfg->freebsd.hz = 100;
     cfg->freebsd.physmem = 1048576*256;
     cfg->freebsd.fd_reserve = 0;
+    cfg->freebsd.mem_size = 256;
 }
 
 int

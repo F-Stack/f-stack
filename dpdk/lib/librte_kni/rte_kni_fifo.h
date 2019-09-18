@@ -1,37 +1,38 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 
+
+/**
+ * @internal when c11 memory model enabled use c11 atomic memory barrier.
+ * when under non c11 memory model use rte_smp_* memory barrier.
+ *
+ * @param src
+ *   Pointer to the source data.
+ * @param dst
+ *   Pointer to the destination data.
+ * @param value
+ *   Data value.
+ */
+#ifdef RTE_USE_C11_MEM_MODEL
+#define __KNI_LOAD_ACQUIRE(src) ({                         \
+		__atomic_load_n((src), __ATOMIC_ACQUIRE);           \
+	})
+#define __KNI_STORE_RELEASE(dst, value) do {               \
+		__atomic_store_n((dst), value, __ATOMIC_RELEASE);   \
+	} while(0)
+#else
+#define __KNI_LOAD_ACQUIRE(src) ({                         \
+		typeof (*(src)) val = *(src);                       \
+		rte_smp_rmb();                                      \
+		val;                                                \
+	})
+#define __KNI_STORE_RELEASE(dst, value) do {               \
+		*(dst) = value;                                     \
+		rte_smp_wmb();                                      \
+	} while(0)
+#endif
 
 /**
  * Initializes the kni fifo structure
@@ -57,8 +58,8 @@ kni_fifo_put(struct rte_kni_fifo *fifo, void **data, unsigned num)
 {
 	unsigned i = 0;
 	unsigned fifo_write = fifo->write;
-	unsigned fifo_read = fifo->read;
 	unsigned new_write = fifo_write;
+	unsigned fifo_read = __KNI_LOAD_ACQUIRE(&fifo->read);
 
 	for (i = 0; i < num; i++) {
 		new_write = (new_write + 1) & (fifo->len - 1);
@@ -68,7 +69,7 @@ kni_fifo_put(struct rte_kni_fifo *fifo, void **data, unsigned num)
 		fifo->buffer[fifo_write] = data[i];
 		fifo_write = new_write;
 	}
-	fifo->write = fifo_write;
+	__KNI_STORE_RELEASE(&fifo->write, fifo_write);
 	return i;
 }
 
@@ -80,7 +81,8 @@ kni_fifo_get(struct rte_kni_fifo *fifo, void **data, unsigned num)
 {
 	unsigned i = 0;
 	unsigned new_read = fifo->read;
-	unsigned fifo_write = fifo->write;
+	unsigned fifo_write = __KNI_LOAD_ACQUIRE(&fifo->write);
+
 	for (i = 0; i < num; i++) {
 		if (new_read == fifo_write)
 			break;
@@ -88,7 +90,7 @@ kni_fifo_get(struct rte_kni_fifo *fifo, void **data, unsigned num)
 		data[i] = fifo->buffer[new_read];
 		new_read = (new_read + 1) & (fifo->len - 1);
 	}
-	fifo->read = new_read;
+	__KNI_STORE_RELEASE(&fifo->read, new_read);
 	return i;
 }
 
@@ -98,5 +100,7 @@ kni_fifo_get(struct rte_kni_fifo *fifo, void **data, unsigned num)
 static inline uint32_t
 kni_fifo_count(struct rte_kni_fifo *fifo)
 {
-	return (fifo->len + fifo->write - fifo->read) & (fifo->len - 1);
+	unsigned fifo_write = __KNI_LOAD_ACQUIRE(&fifo->write);
+	unsigned fifo_read = __KNI_LOAD_ACQUIRE(&fifo->read);
+	return (fifo->len + fifo_write - fifo_read) & (fifo->len - 1);
 }

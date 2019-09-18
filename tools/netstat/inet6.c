@@ -621,7 +621,11 @@ ip6_ifstats(char *ifname)
 	}
 
 	strcpy(ifr.ifr_name, ifname);
+#ifndef FSTACK
 	if (ioctl(s, SIOCGIFSTAT_IN6, (char *)&ifr) < 0) {
+#else
+	if (ioctl_va(s, SIOCGIFSTAT_IN6, (char *)&ifr, 1, AF_INET6) < 0) {
+#endif
 		if (errno != EPFNOSUPPORT)
 			xo_warn("Warning: ioctl(SIOCGIFSTAT_IN6)");
 		goto end;
@@ -1082,7 +1086,11 @@ icmp6_ifstats(char *ifname)
 	}
 
 	strcpy(ifr.ifr_name, ifname);
+#ifndef FSTACK
 	if (ioctl(s, SIOCGIFSTAT_ICMP6, (char *)&ifr) < 0) {
+#else
+	if (ioctl_va(s, SIOCGIFSTAT_ICMP6, (char *)&ifr, 1, AF_INET6) < 0) {
+#endif
 		if (errno != EPFNOSUPPORT)
 			xo_warn("Warning: ioctl(SIOCGIFSTAT_ICMP6)");
 		goto end;
@@ -1315,6 +1323,8 @@ inet6name(struct in6_addr *in6p)
 		strcpy(line, "*");
 		return (line);
 	}
+
+#ifndef FSTACK
 	if (first && !numeric_addr) {
 		first = 0;
 		if (gethostname(domain, MAXHOSTNAMELEN) == 0 &&
@@ -1323,11 +1333,15 @@ inet6name(struct in6_addr *in6p)
 		else
 			domain[0] = 0;
 	}
+#endif
+
 	memset(&sin6, 0, sizeof(sin6));
 	memcpy(&sin6.sin6_addr, in6p, sizeof(*in6p));
 	sin6.sin6_family = AF_INET6;
 	/* XXX: in6p.s6_addr[2] can contain scopeid. */
 	in6_fillscopeid(&sin6);
+
+#ifndef FSTACK
 	flags = (numeric_addr) ? NI_NUMERICHOST : 0;
 	error = getnameinfo((struct sockaddr *)&sin6, sizeof(sin6), hbuf,
 	    sizeof(hbuf), NULL, 0, flags);
@@ -1337,10 +1351,16 @@ inet6name(struct in6_addr *in6p)
 		    !strcmp(cp + 1, domain))
 			*cp = 0;
 		strcpy(line, hbuf);
-	} else {
+	} else
+#endif
+	{
 		/* XXX: this should not happen. */
 		sprintf(line, "%s",
+#ifndef FSTACK
 			inet_ntop(AF_INET6, (void *)&sin6.sin6_addr, ntop_buf,
+#else
+			inet_ntop(AF_INET6_LINUX, (void *)&sin6.sin6_addr, ntop_buf,
+#endif
 				sizeof(ntop_buf)));
 	}
 	return (line);

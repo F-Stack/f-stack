@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium, Inc. 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #include <inttypes.h>
@@ -36,8 +8,9 @@
 #include <rte_debug.h>
 #include <rte_dev.h>
 #include <rte_eal.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_event_eth_rx_adapter.h>
+#include <rte_kvargs.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
@@ -45,6 +18,17 @@
 #include <rte_bus_vdev.h>
 
 #include "ssovf_evdev.h"
+#include "timvf_evdev.h"
+
+int otx_logtype_ssovf;
+static uint8_t timvf_enable_stats;
+
+RTE_INIT(otx_ssovf_init_log)
+{
+	otx_logtype_ssovf = rte_log_register("pmd.event.octeontx");
+	if (otx_logtype_ssovf >= 0)
+		rte_log_set_level(otx_logtype_ssovf, RTE_LOG_NOTICE);
+}
 
 /* SSOPF Mailbox messages */
 
@@ -65,7 +49,7 @@ ssovf_mbox_dev_info(struct ssovf_mbox_dev_info *info)
 	hdr.vfid = 0;
 
 	memset(info, 0, len);
-	return octeontx_ssovf_mbox_send(&hdr, NULL, 0, info, len);
+	return octeontx_mbox_send(&hdr, NULL, 0, info, len);
 }
 
 struct ssovf_mbox_getwork_wait {
@@ -85,7 +69,7 @@ ssovf_mbox_getwork_tmo_set(uint32_t timeout_ns)
 	hdr.vfid = 0;
 
 	tmo_set.wait_ns = timeout_ns;
-	ret = octeontx_ssovf_mbox_send(&hdr, &tmo_set, len, NULL, 0);
+	ret = octeontx_mbox_send(&hdr, &tmo_set, len, NULL, 0);
 	if (ret)
 		ssovf_log_err("Failed to set getwork timeout(%d)", ret);
 
@@ -115,7 +99,7 @@ ssovf_mbox_priority_set(uint8_t queue, uint8_t prio)
 	grp.affinity = 0xff;
 	grp.priority = prio / 32; /* Normalize to 0 to 7 */
 
-	ret = octeontx_ssovf_mbox_send(&hdr, &grp, len, NULL, 0);
+	ret = octeontx_mbox_send(&hdr, &grp, len, NULL, 0);
 	if (ret)
 		ssovf_log_err("Failed to set grp=%d prio=%d", queue, prio);
 
@@ -141,7 +125,7 @@ ssovf_mbox_timeout_ticks(uint64_t ns, uint64_t *tmo_ticks)
 
 	memset(&ns2iter, 0, len);
 	ns2iter.wait_ns = ns;
-	ret = octeontx_ssovf_mbox_send(&hdr, &ns2iter, len, &ns2iter, len);
+	ret = octeontx_mbox_send(&hdr, &ns2iter, len, &ns2iter, len);
 	if (ret < 0 || (ret != len)) {
 		ssovf_log_err("Failed to get tmo ticks ns=%"PRId64"", ns);
 		return -EIO;
@@ -162,6 +146,7 @@ ssovf_fastpath_fns_set(struct rte_eventdev *dev)
 	dev->enqueue_forward_burst = ssows_enq_fwd_burst;
 	dev->dequeue       = ssows_deq;
 	dev->dequeue_burst = ssows_deq_burst;
+	dev->txa_enqueue = sso_event_tx_adapter_enqueue;
 
 	if (edev->is_timeout_deq) {
 		dev->dequeue       = ssows_deq_timeout;
@@ -187,7 +172,11 @@ ssovf_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *dev_info)
 	dev_info->max_num_events =  edev->max_num_events;
 	dev_info->event_dev_cap = RTE_EVENT_DEV_CAP_QUEUE_QOS |
 					RTE_EVENT_DEV_CAP_DISTRIBUTED_SCHED |
-					RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES;
+					RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES|
+					RTE_EVENT_DEV_CAP_RUNTIME_PORT_LINK |
+					RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
+					RTE_EVENT_DEV_CAP_NONSEQ_MODE;
+
 }
 
 static int
@@ -252,6 +241,7 @@ ssovf_port_def_conf(struct rte_eventdev *dev, uint8_t port_id,
 	port_conf->new_event_threshold = edev->max_num_events;
 	port_conf->dequeue_depth = 1;
 	port_conf->enqueue_depth = 1;
+	port_conf->disable_implicit_release = 0;
 }
 
 static void
@@ -287,7 +277,7 @@ ssovf_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 		return -ENOMEM;
 	}
 
-	ws->base = octeontx_ssovf_bar(OCTEONTX_SSO_HWS, port_id, 0);
+	ws->base = ssovf_bar(OCTEONTX_SSO_HWS, port_id, 0);
 	if (ws->base == NULL) {
 		rte_free(ws);
 		ssovf_log_err("Failed to get hws base addr port=%d", port_id);
@@ -301,7 +291,7 @@ ssovf_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	ws->port = port_id;
 
 	for (q = 0; q < edev->nb_event_queues; q++) {
-		ws->grps[q] = octeontx_ssovf_bar(OCTEONTX_SSO_GROUP, q, 2);
+		ws->grps[q] = ssovf_bar(OCTEONTX_SSO_GROUP, q, 2);
 		if (ws->grps[q] == NULL) {
 			rte_free(ws);
 			ssovf_log_err("Failed to get grp%d base addr", q);
@@ -465,7 +455,6 @@ ssovf_eth_rx_adapter_queue_del(const struct rte_eventdev *dev,
 	const struct octeontx_nic *nic = eth_dev->data->dev_private;
 	pki_del_qos_t pki_qos;
 	RTE_SET_USED(dev);
-	RTE_SET_USED(rx_queue_id);
 
 	ret = strncmp(eth_dev->data->name, "eth_octeontx", 12);
 	if (ret)
@@ -477,7 +466,7 @@ ssovf_eth_rx_adapter_queue_del(const struct rte_eventdev *dev,
 	ret = octeontx_pki_port_delete_qos(nic->port_id, &pki_qos);
 	if (ret < 0)
 		ssovf_log_err("Failed to delete QOS port=%d, q=%d",
-				nic->port_id, queue_conf->ev.queue_id);
+				nic->port_id, rx_queue_id);
 	return ret;
 }
 
@@ -501,6 +490,77 @@ ssovf_eth_rx_adapter_stop(const struct rte_eventdev *dev,
 
 	return 0;
 }
+
+static int
+ssovf_eth_tx_adapter_caps_get(const struct rte_eventdev *dev,
+		const struct rte_eth_dev *eth_dev, uint32_t *caps)
+{
+	int ret;
+	RTE_SET_USED(dev);
+
+	ret = strncmp(eth_dev->data->name, "eth_octeontx", 12);
+	if (ret)
+		*caps = 0;
+	else
+		*caps = RTE_EVENT_ETH_TX_ADAPTER_CAP_INTERNAL_PORT;
+
+	return 0;
+}
+
+static int
+ssovf_eth_tx_adapter_create(uint8_t id, const struct rte_eventdev *dev)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+	return 0;
+}
+
+static int
+ssovf_eth_tx_adapter_free(uint8_t id, const struct rte_eventdev *dev)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+	return 0;
+}
+
+static int
+ssovf_eth_tx_adapter_queue_add(uint8_t id, const struct rte_eventdev *dev,
+		const struct rte_eth_dev *eth_dev, int32_t tx_queue_id)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+	RTE_SET_USED(eth_dev);
+	RTE_SET_USED(tx_queue_id);
+	return 0;
+}
+
+static int
+ssovf_eth_tx_adapter_queue_del(uint8_t id, const struct rte_eventdev *dev,
+		const struct rte_eth_dev *eth_dev, int32_t tx_queue_id)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+	RTE_SET_USED(eth_dev);
+	RTE_SET_USED(tx_queue_id);
+	return 0;
+}
+
+static int
+ssovf_eth_tx_adapter_start(uint8_t id, const struct rte_eventdev *dev)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+	return 0;
+}
+
+static int
+ssovf_eth_tx_adapter_stop(uint8_t id, const struct rte_eventdev *dev)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+	return 0;
+}
+
 
 static void
 ssovf_dump(struct rte_eventdev *dev, FILE *f)
@@ -530,15 +590,25 @@ ssovf_start(struct rte_eventdev *dev)
 
 	for (i = 0; i < edev->nb_event_queues; i++) {
 		/* Consume all the events through HWS0 */
-		ssows_flush_events(dev->data->ports[0], i);
+		ssows_flush_events(dev->data->ports[0], i, NULL, NULL);
 
-		base = octeontx_ssovf_bar(OCTEONTX_SSO_GROUP, i, 0);
+		base = ssovf_bar(OCTEONTX_SSO_GROUP, i, 0);
 		base += SSO_VHGRP_QCTL;
 		ssovf_write64(1, base); /* Enable SSO group */
 	}
 
 	ssovf_fastpath_fns_set(dev);
 	return 0;
+}
+
+static void
+ssows_handle_event(void *arg, struct rte_event event)
+{
+	struct rte_eventdev *dev = arg;
+
+	if (dev->dev_ops->dev_stop_flush != NULL)
+		dev->dev_ops->dev_stop_flush(dev->data->dev_id, event,
+					dev->data->dev_stop_flush_arg);
 }
 
 static void
@@ -558,9 +628,10 @@ ssovf_stop(struct rte_eventdev *dev)
 
 	for (i = 0; i < edev->nb_event_queues; i++) {
 		/* Consume all the events through HWS0 */
-		ssows_flush_events(dev->data->ports[0], i);
+		ssows_flush_events(dev->data->ports[0], i,
+				ssows_handle_event, dev);
 
-		base = octeontx_ssovf_bar(OCTEONTX_SSO_GROUP, i, 0);
+		base = ssovf_bar(OCTEONTX_SSO_GROUP, i, 0);
 		base += SSO_VHGRP_QCTL;
 		ssovf_write64(0, base); /* Disable SSO group */
 	}
@@ -582,8 +653,25 @@ ssovf_close(struct rte_eventdev *dev)
 	return 0;
 }
 
+static int
+ssovf_selftest(const char *key __rte_unused, const char *value,
+		void *opaque)
+{
+	int *flag = opaque;
+	*flag = !!atoi(value);
+	return 0;
+}
+
+static int
+ssovf_timvf_caps_get(const struct rte_eventdev *dev, uint64_t flags,
+		uint32_t *caps, const struct rte_event_timer_adapter_ops **ops)
+{
+	return timvf_timer_adapter_caps_get(dev, flags, caps, ops,
+			timvf_enable_stats);
+}
+
 /* Initialize and register event driver with DPDK Application */
-static const struct rte_eventdev_ops ssovf_ops = {
+static struct rte_eventdev_ops ssovf_ops = {
 	.dev_infos_get    = ssovf_info_get,
 	.dev_configure    = ssovf_configure,
 	.queue_def_conf   = ssovf_queue_def_conf,
@@ -602,6 +690,18 @@ static const struct rte_eventdev_ops ssovf_ops = {
 	.eth_rx_adapter_start = ssovf_eth_rx_adapter_start,
 	.eth_rx_adapter_stop = ssovf_eth_rx_adapter_stop,
 
+	.eth_tx_adapter_caps_get = ssovf_eth_tx_adapter_caps_get,
+	.eth_tx_adapter_create = ssovf_eth_tx_adapter_create,
+	.eth_tx_adapter_free = ssovf_eth_tx_adapter_free,
+	.eth_tx_adapter_queue_add = ssovf_eth_tx_adapter_queue_add,
+	.eth_tx_adapter_queue_del = ssovf_eth_tx_adapter_queue_del,
+	.eth_tx_adapter_start = ssovf_eth_tx_adapter_start,
+	.eth_tx_adapter_stop = ssovf_eth_tx_adapter_stop,
+
+	.timer_adapter_caps_get = ssovf_timvf_caps_get,
+
+	.dev_selftest = test_eventdev_octeontx,
+
 	.dump             = ssovf_dump,
 	.dev_start        = ssovf_start,
 	.dev_stop         = ssovf_stop,
@@ -611,19 +711,58 @@ static const struct rte_eventdev_ops ssovf_ops = {
 static int
 ssovf_vdev_probe(struct rte_vdev_device *vdev)
 {
-	struct octeontx_ssovf_info oinfo;
+	struct ssovf_info oinfo;
 	struct ssovf_mbox_dev_info info;
 	struct ssovf_evdev *edev;
 	struct rte_eventdev *eventdev;
 	static int ssovf_init_once;
 	const char *name;
+	const char *params;
 	int ret;
+	int selftest = 0;
+
+	static const char *const args[] = {
+		SSOVF_SELFTEST_ARG,
+		TIMVF_ENABLE_STATS_ARG,
+		NULL
+	};
 
 	name = rte_vdev_device_name(vdev);
 	/* More than one instance is not supported */
 	if (ssovf_init_once) {
 		ssovf_log_err("Request to create >1 %s instance", name);
 		return -EINVAL;
+	}
+
+	params = rte_vdev_device_args(vdev);
+	if (params != NULL && params[0] != '\0') {
+		struct rte_kvargs *kvlist = rte_kvargs_parse(params, args);
+
+		if (!kvlist) {
+			ssovf_log_info(
+				"Ignoring unsupported params supplied '%s'",
+				name);
+		} else {
+			int ret = rte_kvargs_process(kvlist,
+					SSOVF_SELFTEST_ARG,
+					ssovf_selftest, &selftest);
+			if (ret != 0) {
+				ssovf_log_err("%s: Error in selftest", name);
+				rte_kvargs_free(kvlist);
+				return ret;
+			}
+
+			ret = rte_kvargs_process(kvlist,
+					TIMVF_ENABLE_STATS_ARG,
+					ssovf_selftest, &timvf_enable_stats);
+			if (ret != 0) {
+				ssovf_log_err("%s: Error in timvf stats", name);
+				rte_kvargs_free(kvlist);
+				return ret;
+			}
+		}
+
+		rte_kvargs_free(kvlist);
 	}
 
 	eventdev = rte_event_pmd_vdev_init(name, sizeof(struct ssovf_evdev),
@@ -640,7 +779,7 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 		return 0;
 	}
 
-	ret = octeontx_ssovf_info(&oinfo);
+	ret = ssovf_info(&oinfo);
 	if (ret) {
 		ssovf_log_err("Failed to probe and validate ssovfs %d", ret);
 		goto error;
@@ -676,6 +815,8 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 			edev->max_event_ports);
 
 	ssovf_init_once = 1;
+	if (selftest)
+		test_eventdev_octeontx();
 	return 0;
 
 error:

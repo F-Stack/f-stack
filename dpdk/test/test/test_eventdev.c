@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Cavium, Inc. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *	 * Redistributions of source code must retain the above copyright
- *	   notice, this list of conditions and the following disclaimer.
- *	 * Redistributions in binary form must reproduce the above copyright
- *	   notice, this list of conditions and the following disclaimer in
- *	   the documentation and/or other materials provided with the
- *	   distribution.
- *	 * Neither the name of Cavium, Inc nor the names of its
- *	   contributors may be used to endorse or promote products derived
- *	   from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Cavium, Inc
  */
 
 #include <rte_common.h>
@@ -218,15 +190,18 @@ test_eventdev_configure(void)
 		 "Config negative test failed");
 	TEST_ASSERT_EQUAL(-EINVAL,
 		test_ethdev_config_run(&dev_conf, &info, max_event_queue_flows),
-		 "Config negative test failed");
-	TEST_ASSERT_EQUAL(-EINVAL,
-		test_ethdev_config_run(&dev_conf, &info,
-			max_event_port_dequeue_depth),
-			 "Config negative test failed");
-	TEST_ASSERT_EQUAL(-EINVAL,
-		test_ethdev_config_run(&dev_conf, &info,
-		max_event_port_enqueue_depth),
-		 "Config negative test failed");
+		"Config negative test failed");
+
+	if (info.event_dev_cap & RTE_EVENT_DEV_CAP_BURST_MODE) {
+		TEST_ASSERT_EQUAL(-EINVAL,
+				test_ethdev_config_run(&dev_conf, &info,
+					max_event_port_dequeue_depth),
+				"Config negative test failed");
+		TEST_ASSERT_EQUAL(-EINVAL,
+				test_ethdev_config_run(&dev_conf, &info,
+					max_event_port_enqueue_depth),
+				"Config negative test failed");
+	}
 
 	/* Positive case */
 	devconf_set_default_sane_values(&dev_conf, &info);
@@ -580,6 +555,15 @@ test_eventdev_port_setup(void)
 	pconf.enqueue_depth = info.max_event_port_enqueue_depth + 1;
 	ret = rte_event_port_setup(TEST_DEV_ID, 0, &pconf);
 	TEST_ASSERT(ret == -EINVAL, "Expected -EINVAL, %d", ret);
+
+	if (!(info.event_dev_cap &
+	      RTE_EVENT_DEV_CAP_IMPLICIT_RELEASE_DISABLE)) {
+		pconf.enqueue_depth = info.max_event_port_enqueue_depth;
+		pconf.disable_implicit_release = 1;
+		ret = rte_event_port_setup(TEST_DEV_ID, 0, &pconf);
+		TEST_ASSERT(ret == -EINVAL, "Expected -EINVAL, %d", ret);
+		pconf.disable_implicit_release = 0;
+	}
 
 	ret = rte_event_port_setup(TEST_DEV_ID, info.max_event_ports,
 					&pconf);
@@ -1009,4 +993,26 @@ test_eventdev_common(void)
 	return unit_test_suite_runner(&eventdev_common_testsuite);
 }
 
+static int
+test_eventdev_selftest_impl(const char *pmd, const char *opts)
+{
+	rte_vdev_init(pmd, opts);
+	return rte_event_dev_selftest(rte_event_dev_get_dev_id(pmd));
+}
+
+static int
+test_eventdev_selftest_sw(void)
+{
+	return test_eventdev_selftest_impl("event_sw", "");
+}
+
+static int
+test_eventdev_selftest_octeontx(void)
+{
+	return test_eventdev_selftest_impl("event_octeontx", "");
+}
+
 REGISTER_TEST_COMMAND(eventdev_common_autotest, test_eventdev_common);
+REGISTER_TEST_COMMAND(eventdev_selftest_sw, test_eventdev_selftest_sw);
+REGISTER_TEST_COMMAND(eventdev_selftest_octeontx,
+		test_eventdev_selftest_octeontx);

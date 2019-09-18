@@ -1,32 +1,10 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016 Solarflare Communications Inc.
+ * Copyright (c) 2016-2018 Solarflare Communications Inc.
  * All rights reserved.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /* EF10 native datapath implementation */
@@ -48,14 +26,11 @@
 #include "sfc_kvargs.h"
 #include "sfc_ef10.h"
 
+#define SFC_EF10_RX_EV_ENCAP_SUPPORT	1
+#include "sfc_ef10_rx_ev.h"
+
 #define sfc_ef10_rx_err(dpq, ...) \
 	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, ERR, dpq, __VA_ARGS__)
-
-/**
- * Alignment requirement for value written to RX WPTR:
- * the WPTR must be aligned to an 8 descriptor boundary.
- */
-#define SFC_EF10_RX_WPTR_ALIGN	8
 
 /**
  * Maximum number of descriptors/buffers in the Rx ring.
@@ -82,17 +57,19 @@ struct sfc_ef10_rxq {
 #define SFC_EF10_RXQ_EXCEPTION		0x4
 #define SFC_EF10_RXQ_RSS_HASH		0x8
 	unsigned int			ptr_mask;
-	unsigned int			prepared;
+	unsigned int			pending;
 	unsigned int			completed;
 	unsigned int			evq_read_ptr;
 	efx_qword_t			*evq_hw_ring;
 	struct sfc_ef10_rx_sw_desc	*sw_ring;
 	uint64_t			rearm_data;
+	struct rte_mbuf			*scatter_pkt;
 	uint16_t			prefix_size;
 
 	/* Used on refill */
 	uint16_t			buf_size;
 	unsigned int			added;
+	unsigned int			max_fill_level;
 	unsigned int			refill_threshold;
 	struct rte_mempool		*refill_mb_pool;
 	efx_qword_t			*rxq_hw_ring;
@@ -109,29 +86,6 @@ sfc_ef10_rxq_by_dp_rxq(struct sfc_dp_rxq *dp_rxq)
 }
 
 static void
-sfc_ef10_rx_qpush(struct sfc_ef10_rxq *rxq)
-{
-	efx_dword_t dword;
-
-	/* Hardware has alignment restriction for WPTR */
-	RTE_BUILD_BUG_ON(SFC_RX_REFILL_BULK % SFC_EF10_RX_WPTR_ALIGN != 0);
-	SFC_ASSERT(RTE_ALIGN(rxq->added, SFC_EF10_RX_WPTR_ALIGN) == rxq->added);
-
-	EFX_POPULATE_DWORD_1(dword, ERF_DZ_RX_DESC_WPTR,
-			     rxq->added & rxq->ptr_mask);
-
-	/* DMA sync to device is not required */
-
-	/*
-	 * rte_write32() has rte_io_wmb() which guarantees that the STORE
-	 * operations (i.e. Rx and event descriptor updates) that precede
-	 * the rte_io_wmb() call are visible to NIC before the STORE
-	 * operations that follow it (i.e. doorbell write).
-	 */
-	rte_write32(dword.ed_u32[0], rxq->doorbell);
-}
-
-static void
 sfc_ef10_rx_qrefill(struct sfc_ef10_rxq *rxq)
 {
 	const unsigned int ptr_mask = rxq->ptr_mask;
@@ -141,8 +95,9 @@ sfc_ef10_rx_qrefill(struct sfc_ef10_rxq *rxq)
 	void *objs[SFC_RX_REFILL_BULK];
 	unsigned int added = rxq->added;
 
-	free_space = SFC_EF10_RXQ_LIMIT(ptr_mask + 1) -
-		(added - rxq->completed);
+	RTE_BUILD_BUG_ON(SFC_RX_REFILL_BULK % SFC_EF10_RX_WPTR_ALIGN != 0);
+
+	free_space = rxq->max_fill_level - (added - rxq->completed);
 
 	if (free_space < rxq->refill_threshold)
 		return;
@@ -179,6 +134,8 @@ sfc_ef10_rx_qrefill(struct sfc_ef10_rxq *rxq)
 			struct sfc_ef10_rx_sw_desc *rxd;
 			rte_iova_t phys_addr;
 
+			MBUF_RAW_ALLOC_CHECK(m);
+
 			SFC_ASSERT((id & ~ptr_mask) == 0);
 			rxd = &rxq->sw_ring[id];
 			rxd->mbuf = m;
@@ -200,7 +157,7 @@ sfc_ef10_rx_qrefill(struct sfc_ef10_rxq *rxq)
 
 	SFC_ASSERT(rxq->added != added);
 	rxq->added = added;
-	sfc_ef10_rx_qpush(rxq);
+	sfc_ef10_rx_qpush(rxq->doorbell, added, ptr_mask);
 }
 
 static void
@@ -230,108 +187,26 @@ sfc_ef10_rx_prefetch_next(struct sfc_ef10_rxq *rxq, unsigned int next_id)
 	}
 }
 
-static uint16_t
-sfc_ef10_rx_prepared(struct sfc_ef10_rxq *rxq, struct rte_mbuf **rx_pkts,
-		     uint16_t nb_pkts)
+static struct rte_mbuf **
+sfc_ef10_rx_pending(struct sfc_ef10_rxq *rxq, struct rte_mbuf **rx_pkts,
+		    uint16_t nb_pkts)
 {
-	uint16_t n_rx_pkts = RTE_MIN(nb_pkts, rxq->prepared);
-	unsigned int completed = rxq->completed;
-	unsigned int i;
+	uint16_t n_rx_pkts = RTE_MIN(nb_pkts, rxq->pending - rxq->completed);
 
-	rxq->prepared -= n_rx_pkts;
-	rxq->completed = completed + n_rx_pkts;
+	SFC_ASSERT(rxq->pending == rxq->completed || rxq->scatter_pkt == NULL);
 
-	for (i = 0; i < n_rx_pkts; ++i, ++completed)
-		rx_pkts[i] = rxq->sw_ring[completed & rxq->ptr_mask].mbuf;
+	if (n_rx_pkts != 0) {
+		unsigned int completed = rxq->completed;
 
-	return n_rx_pkts;
-}
+		rxq->completed = completed + n_rx_pkts;
 
-static void
-sfc_ef10_rx_ev_to_offloads(struct sfc_ef10_rxq *rxq, const efx_qword_t rx_ev,
-			   struct rte_mbuf *m)
-{
-	uint32_t l2_ptype = 0;
-	uint32_t l3_ptype = 0;
-	uint32_t l4_ptype = 0;
-	uint64_t ol_flags = 0;
-
-	if (unlikely(EFX_TEST_QWORD_BIT(rx_ev, ESF_DZ_RX_PARSE_INCOMPLETE_LBN)))
-		goto done;
-
-	switch (EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_ETH_TAG_CLASS)) {
-	case ESE_DZ_ETH_TAG_CLASS_NONE:
-		l2_ptype = RTE_PTYPE_L2_ETHER;
-		break;
-	case ESE_DZ_ETH_TAG_CLASS_VLAN1:
-		l2_ptype = RTE_PTYPE_L2_ETHER_VLAN;
-		break;
-	case ESE_DZ_ETH_TAG_CLASS_VLAN2:
-		l2_ptype = RTE_PTYPE_L2_ETHER_QINQ;
-		break;
-	default:
-		/* Unexpected Eth tag class */
-		SFC_ASSERT(false);
+		do {
+			*rx_pkts++ =
+				rxq->sw_ring[completed++ & rxq->ptr_mask].mbuf;
+		} while (completed != rxq->completed);
 	}
 
-	switch (EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_L3_CLASS)) {
-	case ESE_DZ_L3_CLASS_IP4_FRAG:
-		l4_ptype = RTE_PTYPE_L4_FRAG;
-		/* FALLTHROUGH */
-	case ESE_DZ_L3_CLASS_IP4:
-		l3_ptype = RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
-		ol_flags |= PKT_RX_RSS_HASH |
-			((EFX_TEST_QWORD_BIT(rx_ev,
-					     ESF_DZ_RX_IPCKSUM_ERR_LBN)) ?
-			 PKT_RX_IP_CKSUM_BAD : PKT_RX_IP_CKSUM_GOOD);
-		break;
-	case ESE_DZ_L3_CLASS_IP6_FRAG:
-		l4_ptype = RTE_PTYPE_L4_FRAG;
-		/* FALLTHROUGH */
-	case ESE_DZ_L3_CLASS_IP6:
-		l3_ptype = RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
-		ol_flags |= PKT_RX_RSS_HASH;
-		break;
-	case ESE_DZ_L3_CLASS_ARP:
-		/* Override Layer 2 packet type */
-		l2_ptype = RTE_PTYPE_L2_ETHER_ARP;
-		break;
-	case ESE_DZ_L3_CLASS_UNKNOWN:
-		break;
-	default:
-		/* Unexpected Layer 3 class */
-		SFC_ASSERT(false);
-	}
-
-	switch (EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_L4_CLASS)) {
-	case ESE_DZ_L4_CLASS_TCP:
-		l4_ptype = RTE_PTYPE_L4_TCP;
-		ol_flags |=
-			(EFX_TEST_QWORD_BIT(rx_ev,
-					    ESF_DZ_RX_TCPUDP_CKSUM_ERR_LBN)) ?
-			PKT_RX_L4_CKSUM_BAD : PKT_RX_L4_CKSUM_GOOD;
-		break;
-	case ESE_DZ_L4_CLASS_UDP:
-		l4_ptype = RTE_PTYPE_L4_UDP;
-		ol_flags |=
-			(EFX_TEST_QWORD_BIT(rx_ev,
-					    ESF_DZ_RX_TCPUDP_CKSUM_ERR_LBN)) ?
-			PKT_RX_L4_CKSUM_BAD : PKT_RX_L4_CKSUM_GOOD;
-		break;
-	case ESE_DZ_L4_CLASS_UNKNOWN:
-		break;
-	default:
-		/* Unexpected Layer 4 class */
-		SFC_ASSERT(false);
-	}
-
-	/* Remove RSS hash offload flag if RSS is not enabled */
-	if (~rxq->flags & SFC_EF10_RXQ_RSS_HASH)
-		ol_flags &= ~PKT_RX_RSS_HASH;
-
-done:
-	m->ol_flags = ol_flags;
-	m->packet_type = l2_ptype | l3_ptype | l4_ptype;
+	return rx_pkts;
 }
 
 static uint16_t
@@ -346,53 +221,89 @@ sfc_ef10_rx_pseudo_hdr_get_hash(const uint8_t *pseudo_hdr)
 	return rte_le_to_cpu_32(*(const uint32_t *)pseudo_hdr);
 }
 
-static uint16_t
+static struct rte_mbuf **
 sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
-			  struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
+			  struct rte_mbuf **rx_pkts,
+			  struct rte_mbuf ** const rx_pkts_end)
 {
 	const unsigned int ptr_mask = rxq->ptr_mask;
-	unsigned int completed = rxq->completed;
+	unsigned int pending = rxq->pending;
 	unsigned int ready;
 	struct sfc_ef10_rx_sw_desc *rxd;
 	struct rte_mbuf *m;
 	struct rte_mbuf *m0;
-	uint16_t n_rx_pkts;
 	const uint8_t *pseudo_hdr;
-	uint16_t pkt_len;
+	uint16_t seg_len;
 
-	ready = (EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_DSC_PTR_LBITS) - completed) &
+	ready = (EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_DSC_PTR_LBITS) - pending) &
 		EFX_MASK32(ESF_DZ_RX_DSC_PTR_LBITS);
-	SFC_ASSERT(ready > 0);
+
+	if (ready == 0) {
+		/* Rx abort - it was no enough descriptors for Rx packet */
+		rte_pktmbuf_free(rxq->scatter_pkt);
+		rxq->scatter_pkt = NULL;
+		return rx_pkts;
+	}
+
+	rxq->pending = pending + ready;
 
 	if (rx_ev.eq_u64[0] &
 	    rte_cpu_to_le_64((1ull << ESF_DZ_RX_ECC_ERR_LBN) |
 			     (1ull << ESF_DZ_RX_ECRC_ERR_LBN))) {
-		SFC_ASSERT(rxq->prepared == 0);
-		rxq->completed += ready;
-		while (ready-- > 0) {
-			rxd = &rxq->sw_ring[completed++ & ptr_mask];
-			rte_mempool_put(rxq->refill_mb_pool, rxd->mbuf);
-		}
-		return 0;
+		SFC_ASSERT(rxq->completed == pending);
+		do {
+			rxd = &rxq->sw_ring[pending++ & ptr_mask];
+			rte_mbuf_raw_free(rxd->mbuf);
+		} while (pending != rxq->pending);
+		rxq->completed = pending;
+		return rx_pkts;
 	}
 
-	n_rx_pkts = RTE_MIN(ready, nb_pkts);
-	rxq->prepared = ready - n_rx_pkts;
-	rxq->completed += n_rx_pkts;
+	/* If scattered packet is in progress */
+	if (rxq->scatter_pkt != NULL) {
+		/* Events for scattered packet frags are not merged */
+		SFC_ASSERT(ready == 1);
+		SFC_ASSERT(rxq->completed == pending);
 
-	rxd = &rxq->sw_ring[completed++ & ptr_mask];
+		/* There is no pseudo-header in scatter segments. */
+		seg_len = EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_BYTES);
 
-	sfc_ef10_rx_prefetch_next(rxq, completed & ptr_mask);
+		rxd = &rxq->sw_ring[pending++ & ptr_mask];
+		m = rxd->mbuf;
+
+		MBUF_RAW_ALLOC_CHECK(m);
+
+		m->data_off = RTE_PKTMBUF_HEADROOM;
+		rte_pktmbuf_data_len(m) = seg_len;
+		rte_pktmbuf_pkt_len(m) = seg_len;
+
+		rxq->scatter_pkt->nb_segs++;
+		rte_pktmbuf_pkt_len(rxq->scatter_pkt) += seg_len;
+		rte_pktmbuf_lastseg(rxq->scatter_pkt)->next = m;
+
+		if (~rx_ev.eq_u64[0] &
+		    rte_cpu_to_le_64(1ull << ESF_DZ_RX_CONT_LBN)) {
+			*rx_pkts++ = rxq->scatter_pkt;
+			rxq->scatter_pkt = NULL;
+		}
+		rxq->completed = pending;
+		return rx_pkts;
+	}
+
+	rxd = &rxq->sw_ring[pending++ & ptr_mask];
+
+	sfc_ef10_rx_prefetch_next(rxq, pending & ptr_mask);
 
 	m = rxd->mbuf;
-
-	*rx_pkts++ = m;
 
 	RTE_BUILD_BUG_ON(sizeof(m->rearm_data[0]) != sizeof(rxq->rearm_data));
 	m->rearm_data[0] = rxq->rearm_data;
 
 	/* Classify packet based on Rx event */
-	sfc_ef10_rx_ev_to_offloads(rxq, rx_ev, m);
+	/* Mask RSS hash offload flag if RSS is not enabled */
+	sfc_ef10_rx_ev_to_offloads(rx_ev, m,
+				   (rxq->flags & SFC_EF10_RXQ_RSS_HASH) ?
+				   ~0ull : ~PKT_RX_RSS_HASH);
 
 	/* data_off already moved past pseudo header */
 	pseudo_hdr = (uint8_t *)m->buf_addr + RTE_PKTMBUF_HEADROOM;
@@ -405,27 +316,40 @@ sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
 	m->hash.rss = sfc_ef10_rx_pseudo_hdr_get_hash(pseudo_hdr);
 
 	if (ready == 1)
-		pkt_len = EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_BYTES) -
+		seg_len = EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_BYTES) -
 			rxq->prefix_size;
 	else
-		pkt_len = sfc_ef10_rx_pseudo_hdr_get_len(pseudo_hdr);
-	SFC_ASSERT(pkt_len > 0);
-	rte_pktmbuf_data_len(m) = pkt_len;
-	rte_pktmbuf_pkt_len(m) = pkt_len;
+		seg_len = sfc_ef10_rx_pseudo_hdr_get_len(pseudo_hdr);
+	SFC_ASSERT(seg_len > 0);
+	rte_pktmbuf_data_len(m) = seg_len;
+	rte_pktmbuf_pkt_len(m) = seg_len;
 
 	SFC_ASSERT(m->next == NULL);
 
+	if (~rx_ev.eq_u64[0] & rte_cpu_to_le_64(1ull << ESF_DZ_RX_CONT_LBN)) {
+		*rx_pkts++ = m;
+		rxq->completed = pending;
+	} else {
+		/* Events with CONT bit are not merged */
+		SFC_ASSERT(ready == 1);
+		rxq->scatter_pkt = m;
+		rxq->completed = pending;
+		return rx_pkts;
+	}
+
 	/* Remember mbuf to copy offload flags and packet type from */
 	m0 = m;
-	for (--ready; ready > 0; --ready) {
-		rxd = &rxq->sw_ring[completed++ & ptr_mask];
+	while (pending != rxq->pending) {
+		rxd = &rxq->sw_ring[pending++ & ptr_mask];
 
-		sfc_ef10_rx_prefetch_next(rxq, completed & ptr_mask);
+		sfc_ef10_rx_prefetch_next(rxq, pending & ptr_mask);
 
 		m = rxd->mbuf;
 
-		if (ready > rxq->prepared)
+		if (rx_pkts != rx_pkts_end) {
 			*rx_pkts++ = m;
+			rxq->completed = pending;
+		}
 
 		RTE_BUILD_BUG_ON(sizeof(m->rearm_data[0]) !=
 				 sizeof(rxq->rearm_data));
@@ -445,15 +369,15 @@ sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
 		 */
 		m->hash.rss = sfc_ef10_rx_pseudo_hdr_get_hash(pseudo_hdr);
 
-		pkt_len = sfc_ef10_rx_pseudo_hdr_get_len(pseudo_hdr);
-		SFC_ASSERT(pkt_len > 0);
-		rte_pktmbuf_data_len(m) = pkt_len;
-		rte_pktmbuf_pkt_len(m) = pkt_len;
+		seg_len = sfc_ef10_rx_pseudo_hdr_get_len(pseudo_hdr);
+		SFC_ASSERT(seg_len > 0);
+		rte_pktmbuf_data_len(m) = seg_len;
+		rte_pktmbuf_pkt_len(m) = seg_len;
 
 		SFC_ASSERT(m->next == NULL);
 	}
 
-	return n_rx_pkts;
+	return rx_pkts;
 }
 
 static bool
@@ -485,26 +409,25 @@ static uint16_t
 sfc_ef10_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
 	struct sfc_ef10_rxq *rxq = sfc_ef10_rxq_by_dp_rxq(rx_queue);
+	struct rte_mbuf ** const rx_pkts_end = &rx_pkts[nb_pkts];
 	unsigned int evq_old_read_ptr;
-	uint16_t n_rx_pkts;
 	efx_qword_t rx_ev;
+
+	rx_pkts = sfc_ef10_rx_pending(rxq, rx_pkts, nb_pkts);
 
 	if (unlikely(rxq->flags &
 		     (SFC_EF10_RXQ_NOT_RUNNING | SFC_EF10_RXQ_EXCEPTION)))
-		return 0;
-
-	n_rx_pkts = sfc_ef10_rx_prepared(rxq, rx_pkts, nb_pkts);
+		goto done;
 
 	evq_old_read_ptr = rxq->evq_read_ptr;
-	while (n_rx_pkts != nb_pkts && sfc_ef10_rx_get_event(rxq, &rx_ev)) {
+	while (rx_pkts != rx_pkts_end && sfc_ef10_rx_get_event(rxq, &rx_ev)) {
 		/*
 		 * DROP_EVENT is an internal to the NIC, software should
 		 * never see it and, therefore, may ignore it.
 		 */
 
-		n_rx_pkts += sfc_ef10_rx_process_event(rxq, rx_ev,
-						       rx_pkts + n_rx_pkts,
-						       nb_pkts - n_rx_pkts);
+		rx_pkts = sfc_ef10_rx_process_event(rxq, rx_ev,
+						    rx_pkts, rx_pkts_end);
 	}
 
 	sfc_ef10_ev_qclear(rxq->evq_hw_ring, rxq->ptr_mask, evq_old_read_ptr,
@@ -513,11 +436,12 @@ sfc_ef10_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	/* It is not a problem if we refill in the case of exception */
 	sfc_ef10_rx_qrefill(rxq);
 
-	return n_rx_pkts;
+done:
+	return nb_pkts - (rx_pkts_end - rx_pkts);
 }
 
-static const uint32_t *
-sfc_ef10_supported_ptypes_get(void)
+const uint32_t *
+sfc_ef10_supported_ptypes_get(uint32_t tunnel_encaps)
 {
 	static const uint32_t ef10_native_ptypes[] = {
 		RTE_PTYPE_L2_ETHER,
@@ -531,27 +455,136 @@ sfc_ef10_supported_ptypes_get(void)
 		RTE_PTYPE_L4_UDP,
 		RTE_PTYPE_UNKNOWN
 	};
+	static const uint32_t ef10_overlay_ptypes[] = {
+		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L2_ETHER_ARP,
+		RTE_PTYPE_L2_ETHER_VLAN,
+		RTE_PTYPE_L2_ETHER_QINQ,
+		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_L4_FRAG,
+		RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_TUNNEL_VXLAN,
+		RTE_PTYPE_TUNNEL_NVGRE,
+		RTE_PTYPE_INNER_L2_ETHER,
+		RTE_PTYPE_INNER_L2_ETHER_VLAN,
+		RTE_PTYPE_INNER_L2_ETHER_QINQ,
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L4_FRAG,
+		RTE_PTYPE_INNER_L4_TCP,
+		RTE_PTYPE_INNER_L4_UDP,
+		RTE_PTYPE_UNKNOWN
+	};
 
-	return ef10_native_ptypes;
+	/*
+	 * The function returns static set of supported packet types,
+	 * so we can't build it dynamically based on supported tunnel
+	 * encapsulations and should limit to known sets.
+	 */
+	switch (tunnel_encaps) {
+	case (1u << EFX_TUNNEL_PROTOCOL_VXLAN |
+	      1u << EFX_TUNNEL_PROTOCOL_GENEVE |
+	      1u << EFX_TUNNEL_PROTOCOL_NVGRE):
+		return ef10_overlay_ptypes;
+	default:
+		SFC_GENERIC_LOG(ERR,
+			"Unexpected set of supported tunnel encapsulations: %#x",
+			tunnel_encaps);
+		/* FALLTHROUGH */
+	case 0:
+		return ef10_native_ptypes;
+	}
 }
 
 static sfc_dp_rx_qdesc_npending_t sfc_ef10_rx_qdesc_npending;
 static unsigned int
-sfc_ef10_rx_qdesc_npending(__rte_unused struct sfc_dp_rxq *dp_rxq)
+sfc_ef10_rx_qdesc_npending(struct sfc_dp_rxq *dp_rxq)
 {
+	struct sfc_ef10_rxq *rxq = sfc_ef10_rxq_by_dp_rxq(dp_rxq);
+	efx_qword_t rx_ev;
+	const unsigned int evq_old_read_ptr = rxq->evq_read_ptr;
+	unsigned int pending = rxq->pending;
+	unsigned int ready;
+
+	if (unlikely(rxq->flags &
+		     (SFC_EF10_RXQ_NOT_RUNNING | SFC_EF10_RXQ_EXCEPTION)))
+		goto done;
+
+	while (sfc_ef10_rx_get_event(rxq, &rx_ev)) {
+		ready = (EFX_QWORD_FIELD(rx_ev, ESF_DZ_RX_DSC_PTR_LBITS) -
+			 pending) &
+			EFX_MASK32(ESF_DZ_RX_DSC_PTR_LBITS);
+		pending += ready;
+	}
+
 	/*
-	 * Correct implementation requires EvQ polling and events
-	 * processing (keeping all ready mbufs in prepared).
+	 * The function does not process events, so return event queue read
+	 * pointer to the original position to allow the events that were
+	 * read to be processed later
 	 */
-	return -ENOTSUP;
+	rxq->evq_read_ptr = evq_old_read_ptr;
+
+done:
+	return pending - rxq->completed;
 }
 
 static sfc_dp_rx_qdesc_status_t sfc_ef10_rx_qdesc_status;
 static int
-sfc_ef10_rx_qdesc_status(__rte_unused struct sfc_dp_rxq *dp_rxq,
-			 __rte_unused uint16_t offset)
+sfc_ef10_rx_qdesc_status(struct sfc_dp_rxq *dp_rxq, uint16_t offset)
 {
-	return -ENOTSUP;
+	struct sfc_ef10_rxq *rxq = sfc_ef10_rxq_by_dp_rxq(dp_rxq);
+	unsigned int npending = sfc_ef10_rx_qdesc_npending(dp_rxq);
+
+	if (unlikely(offset > rxq->ptr_mask))
+		return -EINVAL;
+
+	if (offset < npending)
+		return RTE_ETH_RX_DESC_DONE;
+
+	if (offset < (rxq->added - rxq->completed))
+		return RTE_ETH_RX_DESC_AVAIL;
+
+	return RTE_ETH_RX_DESC_UNAVAIL;
+}
+
+
+static sfc_dp_rx_get_dev_info_t sfc_ef10_rx_get_dev_info;
+static void
+sfc_ef10_rx_get_dev_info(struct rte_eth_dev_info *dev_info)
+{
+	/*
+	 * Number of descriptors just defines maximum number of pushed
+	 * descriptors (fill level).
+	 */
+	dev_info->rx_desc_lim.nb_min = SFC_RX_REFILL_BULK;
+	dev_info->rx_desc_lim.nb_align = SFC_RX_REFILL_BULK;
+}
+
+
+static sfc_dp_rx_qsize_up_rings_t sfc_ef10_rx_qsize_up_rings;
+static int
+sfc_ef10_rx_qsize_up_rings(uint16_t nb_rx_desc,
+			   __rte_unused struct rte_mempool *mb_pool,
+			   unsigned int *rxq_entries,
+			   unsigned int *evq_entries,
+			   unsigned int *rxq_max_fill_level)
+{
+	/*
+	 * rte_ethdev API guarantees that the number meets min, max and
+	 * alignment requirements.
+	 */
+	if (nb_rx_desc <= EFX_RXQ_MINNDESCS)
+		*rxq_entries = EFX_RXQ_MINNDESCS;
+	else
+		*rxq_entries = rte_align32pow2(nb_rx_desc);
+
+	*evq_entries = *rxq_entries;
+
+	*rxq_max_fill_level = RTE_MIN(nb_rx_desc,
+				      SFC_EF10_RXQ_LIMIT(*evq_entries));
+	return 0;
 }
 
 
@@ -608,6 +641,7 @@ sfc_ef10_rx_qcreate(uint16_t port_id, uint16_t queue_id,
 		rxq->flags |= SFC_EF10_RXQ_RSS_HASH;
 	rxq->ptr_mask = info->rxq_entries - 1;
 	rxq->evq_hw_ring = info->evq_hw_ring;
+	rxq->max_fill_level = info->max_fill_level;
 	rxq->refill_threshold = info->refill_threshold;
 	rxq->rearm_data =
 		sfc_ef10_mk_mbuf_rearm_data(port_id, info->prefix_size);
@@ -617,7 +651,7 @@ sfc_ef10_rx_qcreate(uint16_t port_id, uint16_t queue_id,
 	rxq->rxq_hw_ring = info->rxq_hw_ring;
 	rxq->doorbell = (volatile uint8_t *)info->mem_bar +
 			ER_DZ_RX_DESC_UPD_REG_OFST +
-			info->hw_index * ER_DZ_RX_DESC_UPD_REG_STEP;
+			(info->hw_index << info->vi_window_shift);
 
 	*dp_rxqp = &rxq->dp;
 	return 0;
@@ -646,8 +680,9 @@ sfc_ef10_rx_qstart(struct sfc_dp_rxq *dp_rxq, unsigned int evq_read_ptr)
 {
 	struct sfc_ef10_rxq *rxq = sfc_ef10_rxq_by_dp_rxq(dp_rxq);
 
-	rxq->prepared = 0;
-	rxq->completed = rxq->added = 0;
+	SFC_ASSERT(rxq->completed == 0);
+	SFC_ASSERT(rxq->pending == 0);
+	SFC_ASSERT(rxq->added == 0);
 
 	sfc_ef10_rx_qrefill(rxq);
 
@@ -694,11 +729,16 @@ sfc_ef10_rx_qpurge(struct sfc_dp_rxq *dp_rxq)
 	unsigned int i;
 	struct sfc_ef10_rx_sw_desc *rxd;
 
+	rte_pktmbuf_free(rxq->scatter_pkt);
+	rxq->scatter_pkt = NULL;
+
 	for (i = rxq->completed; i != rxq->added; ++i) {
 		rxd = &rxq->sw_ring[i & rxq->ptr_mask];
-		rte_mempool_put(rxq->refill_mb_pool, rxd->mbuf);
+		rte_mbuf_raw_free(rxd->mbuf);
 		rxd->mbuf = NULL;
 	}
+
+	rxq->completed = rxq->pending = rxq->added = 0;
 
 	rxq->flags &= ~SFC_EF10_RXQ_STARTED;
 }
@@ -709,7 +749,12 @@ struct sfc_dp_rx sfc_ef10_rx = {
 		.type		= SFC_DP_RX,
 		.hw_fw_caps	= SFC_DP_HW_FW_CAP_EF10,
 	},
-	.features		= SFC_DP_RX_FEAT_MULTI_PROCESS,
+	.features		= SFC_DP_RX_FEAT_SCATTER |
+				  SFC_DP_RX_FEAT_MULTI_PROCESS |
+				  SFC_DP_RX_FEAT_TUNNELS |
+				  SFC_DP_RX_FEAT_CHECKSUM,
+	.get_dev_info		= sfc_ef10_rx_get_dev_info,
+	.qsize_up_rings		= sfc_ef10_rx_qsize_up_rings,
 	.qcreate		= sfc_ef10_rx_qcreate,
 	.qdestroy		= sfc_ef10_rx_qdestroy,
 	.qstart			= sfc_ef10_rx_qstart,

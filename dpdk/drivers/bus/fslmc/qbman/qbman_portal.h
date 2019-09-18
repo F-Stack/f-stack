@@ -1,30 +1,12 @@
-/*-
- *   BSD LICENSE
+/* SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (C) 2014-2016 Freescale Semiconductor, Inc.
+ * Copyright 2018 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of Freescale Semiconductor nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY Freescale Semiconductor ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL Freescale Semiconductor BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+#ifndef _QBMAN_PORTAL_H_
+#define _QBMAN_PORTAL_H_
 
 #include "qbman_sys.h"
 #include <fsl_qbman_portal.h>
@@ -37,12 +19,13 @@ uint32_t qman_version;
 /* All QBMan command and result structures use this "valid bit" encoding */
 #define QB_VALID_BIT ((uint32_t)0x80)
 
+/* All QBMan command use this "Read trigger bit" encoding */
+#define QB_RT_BIT ((uint32_t)0x100)
+
 /* Management command result codes */
 #define QBMAN_MC_RSLT_OK      0xf0
 
 /* QBMan DQRR size is set at runtime in qbman_portal.c */
-
-#define QBMAN_EQCR_SIZE 8
 
 static inline uint8_t qm_cyc_diff(uint8_t ringsize, uint8_t first,
 				  uint8_t last)
@@ -74,6 +57,10 @@ struct qbman_swp {
 #endif
 		uint32_t valid_bit; /* 0x00 or 0x80 */
 	} mc;
+	/* Management response */
+	struct {
+		uint32_t valid_bit; /* 0x00 or 0x80 */
+	} mr;
 	/* Push dequeues */
 	uint32_t sdq;
 	/* Volatile dequeues */
@@ -110,6 +97,8 @@ struct qbman_swp {
 	struct {
 		uint32_t pi;
 		uint32_t pi_vb;
+		uint32_t pi_ring_size;
+		uint32_t pi_mask;
 		uint32_t ci;
 		int available;
 	} eqcr;
@@ -164,4 +153,16 @@ static inline void *qbman_swp_mc_complete(struct qbman_swp *swp, void *cmd,
  * an inline) is necessary to work with different descriptor types and to work
  * correctly with const and non-const inputs (and similarly-qualified outputs).
  */
-#define qb_cl(d) (&(d)->donot_manipulate_directly[0])
+#define qb_cl(d) (&(d)->dont_manipulate_directly[0])
+
+#ifdef RTE_ARCH_ARM64
+	#define clean(p) \
+			{ asm volatile("dc cvac, %0;" : : "r" (p) : "memory"); }
+	#define invalidate(p) \
+			{ asm volatile("dc ivac, %0" : : "r"(p) : "memory"); }
+#else
+	#define clean(p)
+	#define invalidate(p)
+#endif
+
+#endif

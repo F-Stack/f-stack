@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2015 6WIND S.A.
- *   Copyright 2015 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2015 6WIND S.A.
+ * Copyright 2015 Mellanox Technologies, Ltd
  */
 
 #include <stddef.h>
@@ -48,7 +20,7 @@
 #endif
 
 #include <rte_malloc.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include "mlx5.h"
 #include "mlx5_defs.h"
@@ -69,7 +41,7 @@ int
 mlx5_rss_hash_update(struct rte_eth_dev *dev,
 		     struct rte_eth_rss_conf *rss_conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int i;
 	unsigned int idx;
 
@@ -78,10 +50,11 @@ mlx5_rss_hash_update(struct rte_eth_dev *dev,
 		return -rte_errno;
 	}
 	if (rss_conf->rss_key && rss_conf->rss_key_len) {
-		if (rss_conf->rss_key_len != rss_hash_default_key_len) {
+		if (rss_conf->rss_key_len != MLX5_RSS_HASH_KEY_LEN) {
 			DRV_LOG(ERR,
-				"port %u RSS key len must be %zu Bytes long",
-				dev->data->port_id, rss_hash_default_key_len);
+				"port %u RSS key len must be %s Bytes long",
+				dev->data->port_id,
+				RTE_STR(MLX5_RSS_HASH_KEY_LEN));
 			rte_errno = EINVAL;
 			return -rte_errno;
 		}
@@ -122,7 +95,7 @@ int
 mlx5_rss_hash_conf_get(struct rte_eth_dev *dev,
 		       struct rte_eth_rss_conf *rss_conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 
 	if (!rss_conf) {
 		rte_errno = EINVAL;
@@ -152,7 +125,7 @@ mlx5_rss_hash_conf_get(struct rte_eth_dev *dev,
 int
 mlx5_rss_reta_index_resize(struct rte_eth_dev *dev, unsigned int reta_size)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	void *mem;
 	unsigned int old_size = priv->reta_idx_n;
 
@@ -192,7 +165,7 @@ mlx5_dev_rss_reta_query(struct rte_eth_dev *dev,
 			struct rte_eth_rss_reta_entry64 *reta_conf,
 			uint16_t reta_size)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int idx;
 	unsigned int i;
 
@@ -228,7 +201,7 @@ mlx5_dev_rss_reta_update(struct rte_eth_dev *dev,
 			 uint16_t reta_size)
 {
 	int ret;
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int idx;
 	unsigned int i;
 	unsigned int pos;

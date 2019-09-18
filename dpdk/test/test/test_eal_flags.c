@@ -1,36 +1,8 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   Copyright(c) 2014 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
+ * Copyright(c) 2014 6WIND S.A.
  */
+
 #include <stdio.h>
 
 #include "test.h"
@@ -45,7 +17,9 @@
 #include <sys/wait.h>
 #include <sys/file.h>
 #include <limits.h>
+#include <fcntl.h>
 
+#include <rte_per_lcore.h>
 #include <rte_debug.h>
 #include <rte_string_fns.h>
 
@@ -248,30 +222,6 @@ get_number_of_sockets(void)
 	return result;
 }
 #endif
-
-static char*
-get_current_prefix(char * prefix, int size)
-{
-	char path[PATH_MAX] = {0};
-	char buf[PATH_MAX] = {0};
-
-	/* get file for config (fd is always 3) */
-	snprintf(path, sizeof(path), "/proc/self/fd/%d", 3);
-
-	/* return NULL on error */
-	if (readlink(path, buf, sizeof(buf)) == -1)
-		return NULL;
-
-	/* get the basename */
-	snprintf(buf, sizeof(buf), "%s", basename(buf));
-
-	/* copy string all the way from second char up to start of _config */
-	snprintf(prefix, size, "%.*s",
-			(int)(strnlen(buf, sizeof(buf)) - sizeof("_config")),
-			&buf[1]);
-
-	return prefix;
-}
 
 /*
  * Test that the app doesn't run with invalid whitelist option.
@@ -529,40 +479,50 @@ test_missing_c_flag(void)
 				"-n", "3", "-l", "1," };
 	const char *argv10[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "-l", "1#2" };
+	/* core number is negative value */
+	const char * const argv11[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "-5" };
+	const char * const argv12[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "-5-7" };
+	/* core number is maximum value */
+	const char * const argv13[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", RTE_STR(RTE_MAX_LCORE) };
+	const char * const argv14[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "1-"RTE_STR(RTE_MAX_LCORE) };
 	/* sanity check test - valid corelist value */
-	const char *argv11[] = { prgname, prefix, mp_flag,
+	const char * const argv15[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "-l", "1-2,3" };
 
 	/* --lcores flag but no lcores value */
-	const char *argv12[] = { prgname, prefix, mp_flag,
+	const char * const argv16[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores" };
-	const char *argv13[] = { prgname, prefix, mp_flag,
+	const char * const argv17[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", " " };
 	/* bad lcores value */
-	const char *argv14[] = { prgname, prefix, mp_flag,
+	const char * const argv18[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "1-3-5" };
-	const char *argv15[] = { prgname, prefix, mp_flag,
+	const char * const argv19[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "0-1,,2" };
-	const char *argv16[] = { prgname, prefix, mp_flag,
+	const char * const argv20[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "0-,1" };
-	const char *argv17[] = { prgname, prefix, mp_flag,
+	const char * const argv21[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(0-,2-4)" };
-	const char *argv18[] = { prgname, prefix, mp_flag,
+	const char * const argv22[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(-1,2)" };
-	const char *argv19[] = { prgname, prefix, mp_flag,
+	const char * const argv23[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(2-4)@(2-4-6)" };
-	const char *argv20[] = { prgname, prefix, mp_flag,
+	const char * const argv24[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(a,2)" };
-	const char *argv21[] = { prgname, prefix, mp_flag,
+	const char * const argv25[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "1-3@(1,3)" };
-	const char *argv22[] = { prgname, prefix, mp_flag,
+	const char * const argv26[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "3@((1,3)" };
-	const char *argv23[] = { prgname, prefix, mp_flag,
+	const char * const argv27[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(4-7)=(1,3)" };
-	const char *argv24[] = { prgname, prefix, mp_flag,
+	const char * const argv28[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "[4-7]@(1,3)" };
 	/* sanity check of tests - valid lcores value */
-	const char *argv25[] = { prgname, prefix, mp_flag,
+	const char * const argv29[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores",
 				 "0-1,2@(5-7),(3-5)@(0,2),(0,6),7"};
 
@@ -590,31 +550,35 @@ test_missing_c_flag(void)
 			|| launch_proc(argv7) == 0
 			|| launch_proc(argv8) == 0
 			|| launch_proc(argv9) == 0
-			|| launch_proc(argv10) == 0) {
+			|| launch_proc(argv10) == 0
+			|| launch_proc(argv11) == 0
+			|| launch_proc(argv12) == 0
+			|| launch_proc(argv13) == 0
+			|| launch_proc(argv14) == 0) {
 		printf("Error - "
 		       "process ran without error with invalid -l flag\n");
 		return -1;
 	}
-	if (launch_proc(argv11) != 0) {
+	if (launch_proc(argv15) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
 		return -1;
 	}
 
 	/* start --lcores tests */
-	if (launch_proc(argv12) == 0 || launch_proc(argv13) == 0 ||
-	    launch_proc(argv14) == 0 || launch_proc(argv15) == 0 ||
-	    launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
+	if (launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
 	    launch_proc(argv18) == 0 || launch_proc(argv19) == 0 ||
 	    launch_proc(argv20) == 0 || launch_proc(argv21) == 0 ||
-	    launch_proc(argv21) == 0 || launch_proc(argv22) == 0 ||
-	    launch_proc(argv23) == 0 || launch_proc(argv24) == 0) {
+	    launch_proc(argv22) == 0 || launch_proc(argv23) == 0 ||
+	    launch_proc(argv24) == 0 || launch_proc(argv25) == 0 ||
+	    launch_proc(argv26) == 0 || launch_proc(argv27) == 0 ||
+	    launch_proc(argv28) == 0) {
 		printf("Error - "
 		       "process ran without error with invalid --lcore flag\n");
 		return -1;
 	}
 
-	if (launch_proc(argv25) != 0) {
+	if (launch_proc(argv29) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
 		return -1;
@@ -725,16 +689,18 @@ test_invalid_n_flag(void)
 static int
 test_no_hpet_flag(void)
 {
-	char prefix[PATH_MAX], tmp[PATH_MAX];
+	char prefix[PATH_MAX] = "";
 
 #ifdef RTE_EXEC_ENV_BSDAPP
 	return 0;
-#endif
+#else
+	char tmp[PATH_MAX];
 	if (get_current_prefix(tmp, sizeof(tmp)) == NULL) {
 		printf("Error - unable to get current prefix!\n");
 		return -1;
 	}
 	snprintf(prefix, sizeof(prefix), "--file-prefix=%s", tmp);
+#endif
 
 	/* With --no-hpet */
 	const char *argv1[] = {prgname, prefix, mp_flag, no_hpet, "-c", "1", "-n", "2"};
@@ -1001,33 +967,48 @@ test_file_prefix(void)
 	 * 2. try to run secondary process without a corresponding primary process
 	 * (while failing to run, it will also remove any unused hugepage files)
 	 * 3. check if current process hugefiles are still in place and are locked
-	 * 4. run a primary process with memtest1 prefix
-	 * 5. check if memtest1 hugefiles are created
-	 * 6. run a primary process with memtest2 prefix
-	 * 7. check that only memtest2 hugefiles are present in the hugedir
+	 * 4. run a primary process with memtest1 prefix in default and legacy
+	 *    mem mode
+	 * 5. check if memtest1 hugefiles are created in case of legacy mem
+	 *    mode, and deleted in case of default mem mode
+	 * 6. run a primary process with memtest2 prefix in default and legacy
+	 *    mem modes
+	 * 7. check that memtest2 hugefiles are present in the hugedir after a
+	 *    run in legacy mode, and not present at all after run in default
+	 *    mem mode
 	 */
+	char prefix[PATH_MAX] = "";
 
 #ifdef RTE_EXEC_ENV_BSDAPP
 	return 0;
+#else
+	if (get_current_prefix(prefix, sizeof(prefix)) == NULL) {
+		printf("Error - unable to get current prefix!\n");
+		return -1;
+	}
 #endif
 
 	/* this should fail unless the test itself is run with "memtest" prefix */
 	const char *argv0[] = {prgname, mp_flag, "-c", "1", "-n", "2", "-m", DEFAULT_MEM_SIZE,
 			"--file-prefix=" memtest };
 
-	/* primary process with memtest1 */
-	const char *argv1[] = {prgname, "-c", "1", "-n", "2", "-m", DEFAULT_MEM_SIZE,
-				"--file-prefix=" memtest1 };
+	/* primary process with memtest1 and default mem mode */
+	const char *argv1[] = {prgname, "-c", "1", "-n", "2", "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest1 };
 
-	/* primary process with memtest2 */
-	const char *argv2[] = {prgname, "-c", "1", "-n", "2", "-m", DEFAULT_MEM_SIZE,
-				"--file-prefix=" memtest2 };
+	/* primary process with memtest1 and legacy mem mode */
+	const char *argv2[] = {prgname, "-c", "1", "-n", "2", "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest1,
+			"--legacy-mem" };
 
-	char prefix[32];
-	if (get_current_prefix(prefix, sizeof(prefix)) == NULL) {
-		printf("Error - unable to get current prefix!\n");
-		return -1;
-	}
+	/* primary process with memtest2 and legacy mem mode */
+	const char *argv3[] = {prgname, "-c", "1", "-n", "2", "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest2,
+			"--legacy-mem" };
+
+	/* primary process with memtest2 and default mem mode */
+	const char *argv4[] = {prgname, "-c", "1", "-n", "2", "-m",
+			DEFAULT_MEM_SIZE, "--file-prefix=" memtest2 };
 
 	/* check if files for current prefix are present */
 	if (process_hugefiles(prefix, HUGEPAGE_CHECK_EXISTS) != 1) {
@@ -1074,31 +1055,78 @@ test_file_prefix(void)
 		return -1;
 	}
 
+	/* we're running this process in default memory mode, which means it
+	 * should clean up after itself on exit and leave no hugepages behind.
+	 */
 	if (launch_proc(argv1) != 0) {
-		printf("Error - failed to run with --file-prefix=%s\n", memtest);
+		printf("Error - failed to run with --file-prefix=%s\n",
+				memtest1);
+		return -1;
+	}
+
+	/* check if memtest1_map0 is present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error - hugepage files for %s were not deleted!\n",
+				memtest1);
+		return -1;
+	}
+
+	/* now, we're running a process under the same prefix, but with legacy
+	 * mem mode - this should leave behind hugepage files.
+	 */
+	if (launch_proc(argv2) != 0) {
+		printf("Error - failed to run with --file-prefix=%s\n",
+				memtest1);
 		return -1;
 	}
 
 	/* check if memtest1_map0 is present */
 	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 1) {
-		printf("Error - hugepage files for %s were not created!\n", memtest1);
+		printf("Error - hugepage files for %s were not created!\n",
+				memtest1);
 		return -1;
 	}
 
-	if (launch_proc(argv2) != 0) {
-		printf("Error - failed to run with --file-prefix=%s\n", memtest2);
+	if (launch_proc(argv3) != 0) {
+		printf("Error - failed to run with --file-prefix=%s\n",
+				memtest2);
 		return -1;
 	}
 
 	/* check if hugefiles for memtest2 are present */
 	if (process_hugefiles(memtest2, HUGEPAGE_CHECK_EXISTS) != 1) {
-		printf("Error - hugepage files for %s were not created!\n", memtest2);
+		printf("Error - hugepage files for %s were not created!\n",
+				memtest2);
 		return -1;
 	}
 
 	/* check if hugefiles for memtest1 are present */
 	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
-		printf("Error - hugepage files for %s were not deleted!\n", memtest1);
+		printf("Error - hugepage files for %s were not deleted!\n",
+				memtest1);
+		return -1;
+	}
+
+	/* this process will run in default mem mode, so it should not leave any
+	 * hugepage files behind.
+	 */
+	if (launch_proc(argv4) != 0) {
+		printf("Error - failed to run with --file-prefix=%s\n",
+				memtest2);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest2 are present */
+	if (process_hugefiles(memtest2, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error - hugepage files for %s were not deleted!\n",
+				memtest2);
+		return -1;
+	}
+
+	/* check if hugefiles for memtest1 are present */
+	if (process_hugefiles(memtest1, HUGEPAGE_CHECK_EXISTS) != 0) {
+		printf("Error - hugepage files for %s were not deleted!\n",
+				memtest1);
 		return -1;
 	}
 
@@ -1131,7 +1159,7 @@ test_memory_flags(void)
 	const char *argv1[] = {prgname, "-c", "10", "-n", "2",
 			"--file-prefix=" memtest, "-m", DEFAULT_MEM_SIZE};
 
-	/* invalid (zero) --socket-mem flag */
+	/* valid (zero) --socket-mem flag */
 	const char *argv2[] = {prgname, "-c", "10", "-n", "2",
 			"--file-prefix=" memtest, "--socket-mem=0,0,0,0"};
 
@@ -1181,11 +1209,12 @@ test_memory_flags(void)
 	/* add one extra socket */
 	for (i = 0; i < num_sockets + 1; i++) {
 		snprintf(buf, sizeof(buf), "%s%s", invalid_socket_mem, DEFAULT_MEM_SIZE);
-		snprintf(invalid_socket_mem, sizeof(invalid_socket_mem), "%s", buf);
+		strlcpy(invalid_socket_mem, buf, sizeof(invalid_socket_mem));
 
 		if (num_sockets + 1 - i > 1) {
 			snprintf(buf, sizeof(buf), "%s,", invalid_socket_mem);
-			snprintf(invalid_socket_mem, sizeof(invalid_socket_mem), "%s", buf);
+			strlcpy(invalid_socket_mem, buf,
+				sizeof(invalid_socket_mem));
 		}
 	}
 
@@ -1197,11 +1226,12 @@ test_memory_flags(void)
 	/* add one extra socket */
 	for (i = 0; i < num_sockets; i++) {
 		snprintf(buf, sizeof(buf), "%s%s", valid_socket_mem, DEFAULT_MEM_SIZE);
-		snprintf(valid_socket_mem, sizeof(valid_socket_mem), "%s", buf);
+		strlcpy(valid_socket_mem, buf, sizeof(valid_socket_mem));
 
 		if (num_sockets - i > 1) {
 			snprintf(buf, sizeof(buf), "%s,", valid_socket_mem);
-			snprintf(valid_socket_mem, sizeof(valid_socket_mem), "%s", buf);
+			strlcpy(valid_socket_mem, buf,
+				sizeof(valid_socket_mem));
 		}
 	}
 
@@ -1227,8 +1257,8 @@ test_memory_flags(void)
 		printf("Error - process failed with valid -m flag!\n");
 		return -1;
 	}
-	if (launch_proc(argv2) == 0) {
-		printf("Error - process run ok with invalid (zero) --socket-mem!\n");
+	if (launch_proc(argv2) != 0) {
+		printf("Error - process failed with valid (zero) --socket-mem!\n");
 		return -1;
 	}
 

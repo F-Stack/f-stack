@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -74,13 +45,14 @@ typedef int (*case_func_t)(void* arg);
 typedef void (*case_clean_t)(unsigned lcore_id);
 
 #define MAX_STRING_SIZE                     (256)
-#define MAX_ITER_TIMES                      (16)
-#define MAX_LPM_ITER_TIMES                  (8)
+#define MAX_ITER_MULTI                      (16)
+#define MAX_ITER_ONCE                       (4)
+#define MAX_LPM_ITER_TIMES                  (6)
 
 #define MEMPOOL_ELT_SIZE                    (sizeof(uint32_t))
 #define MEMPOOL_SIZE                        (4)
 
-#define MAX_LCORES	RTE_MAX_MEMZONE / (MAX_ITER_TIMES * 4U)
+#define MAX_LCORES	(RTE_MAX_MEMZONE / (MAX_ITER_MULTI * 4U))
 
 static rte_atomic32_t obj_count = RTE_ATOMIC32_INIT(0);
 static rte_atomic32_t synchro = RTE_ATOMIC32_INIT(0);
@@ -110,6 +82,22 @@ test_eal_init_once(__attribute__((unused)) void *arg)
 /*
  * ring create/lookup reentrancy test
  */
+static void
+ring_clean(unsigned int lcore_id)
+{
+	struct rte_ring *rp;
+	char ring_name[MAX_STRING_SIZE];
+	int i;
+
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
+		snprintf(ring_name, sizeof(ring_name),
+				"fr_test_%d_%d", lcore_id, i);
+		rp = rte_ring_lookup(ring_name);
+		if (rp != NULL)
+			rte_ring_free(rp);
+	}
+}
+
 static int
 ring_create_lookup(__attribute__((unused)) void *arg)
 {
@@ -121,25 +109,22 @@ ring_create_lookup(__attribute__((unused)) void *arg)
 	WAIT_SYNCHRO_FOR_SLAVES();
 
 	/* create the same ring simultaneously on all threads */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		rp = rte_ring_create("fr_test_once", 4096, SOCKET_ID_ANY, 0);
 		if (rp != NULL)
 			rte_atomic32_inc(&obj_count);
 	}
 
 	/* create/lookup new ring several times */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(ring_name, sizeof(ring_name), "fr_test_%d_%d", lcore_self, i);
 		rp = rte_ring_create(ring_name, 4096, SOCKET_ID_ANY, 0);
 		if (NULL == rp)
 			return -1;
 		if (rte_ring_lookup(ring_name) != rp)
 			return -1;
-	}
 
-	/* verify all ring created successful */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
-		snprintf(ring_name, sizeof(ring_name), "fr_test_%d_%d", lcore_self, i);
+		/* verify all ring created successful */
 		if (rte_ring_lookup(ring_name) == NULL)
 			return -1;
 	}
@@ -156,6 +141,23 @@ my_obj_init(struct rte_mempool *mp, __attribute__((unused)) void *arg,
 	*objnum = i;
 }
 
+static void
+mempool_clean(unsigned int lcore_id)
+{
+	struct rte_mempool *mp;
+	char mempool_name[MAX_STRING_SIZE];
+	int i;
+
+	/* verify all ring created successful */
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
+		snprintf(mempool_name, sizeof(mempool_name), "fr_test_%d_%d",
+			 lcore_id, i);
+		mp = rte_mempool_lookup(mempool_name);
+		if (mp != NULL)
+			rte_mempool_free(mp);
+	}
+}
+
 static int
 mempool_create_lookup(__attribute__((unused)) void *arg)
 {
@@ -167,7 +169,7 @@ mempool_create_lookup(__attribute__((unused)) void *arg)
 	WAIT_SYNCHRO_FOR_SLAVES();
 
 	/* create the same mempool simultaneously on all threads */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		mp = rte_mempool_create("fr_test_once",  MEMPOOL_SIZE,
 					MEMPOOL_ELT_SIZE, 0, 0,
 					NULL, NULL,
@@ -178,7 +180,7 @@ mempool_create_lookup(__attribute__((unused)) void *arg)
 	}
 
 	/* create/lookup new ring several times */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(mempool_name, sizeof(mempool_name), "fr_test_%d_%d", lcore_self, i);
 		mp = rte_mempool_create(mempool_name, MEMPOOL_SIZE,
 						MEMPOOL_ELT_SIZE, 0, 0,
@@ -189,11 +191,8 @@ mempool_create_lookup(__attribute__((unused)) void *arg)
 			return -1;
 		if (rte_mempool_lookup(mempool_name) != mp)
 			return -1;
-	}
 
-	/* verify all ring created successful */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
-		snprintf(mempool_name, sizeof(mempool_name), "fr_test_%d_%d", lcore_self, i);
+		/* verify all ring created successful */
 		if (rte_mempool_lookup(mempool_name) == NULL)
 			return -1;
 	}
@@ -209,7 +208,7 @@ hash_clean(unsigned lcore_id)
 	struct rte_hash *handle;
 	int i;
 
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(hash_name, sizeof(hash_name), "fr_test_%d_%d",  lcore_id, i);
 
 		if ((handle = rte_hash_find_existing(hash_name)) != NULL)
@@ -237,14 +236,14 @@ hash_create_free(__attribute__((unused)) void *arg)
 
 	/* create the same hash simultaneously on all threads */
 	hash_params.name = "fr_test_once";
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		handle = rte_hash_create(&hash_params);
 		if (handle != NULL)
 			rte_atomic32_inc(&obj_count);
 	}
 
 	/* create mutiple times simultaneously */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(hash_name, sizeof(hash_name), "fr_test_%d_%d", lcore_self, i);
 		hash_params.name = hash_name;
 
@@ -257,12 +256,8 @@ hash_create_free(__attribute__((unused)) void *arg)
 			return -1;
 
 		rte_hash_free(handle);
-	}
 
-	/* verify free correct */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
-		snprintf(hash_name, sizeof(hash_name), "fr_test_%d_%d",  lcore_self, i);
-
+		/* verify free correct */
 		if (NULL != rte_hash_find_existing(hash_name))
 			return -1;
 	}
@@ -277,7 +272,7 @@ fbk_clean(unsigned lcore_id)
 	struct rte_fbk_hash_table *handle;
 	int i;
 
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(fbk_name, sizeof(fbk_name), "fr_test_%d_%d",  lcore_id, i);
 
 		if ((handle = rte_fbk_hash_find_existing(fbk_name)) != NULL)
@@ -305,14 +300,14 @@ fbk_create_free(__attribute__((unused)) void *arg)
 
 	/* create the same fbk hash table simultaneously on all threads */
 	fbk_params.name = "fr_test_once";
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		handle = rte_fbk_hash_create(&fbk_params);
 		if (handle != NULL)
 			rte_atomic32_inc(&obj_count);
 	}
 
 	/* create mutiple fbk tables simultaneously */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(fbk_name, sizeof(fbk_name), "fr_test_%d_%d", lcore_self, i);
 		fbk_params.name = fbk_name;
 
@@ -325,12 +320,8 @@ fbk_create_free(__attribute__((unused)) void *arg)
 			return -1;
 
 		rte_fbk_hash_free(handle);
-	}
 
-	/* verify free correct */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
-		snprintf(fbk_name, sizeof(fbk_name), "fr_test_%d_%d",  lcore_self, i);
-
+		/* verify free correct */
 		if (NULL != rte_fbk_hash_find_existing(fbk_name))
 			return -1;
 	}
@@ -341,7 +332,7 @@ fbk_create_free(__attribute__((unused)) void *arg)
 
 #ifdef RTE_LIBRTE_LPM
 static void
-lpm_clean(unsigned lcore_id)
+lpm_clean(unsigned int lcore_id)
 {
 	char lpm_name[MAX_STRING_SIZE];
 	struct rte_lpm *lpm;
@@ -371,7 +362,7 @@ lpm_create_free(__attribute__((unused)) void *arg)
 	WAIT_SYNCHRO_FOR_SLAVES();
 
 	/* create the same lpm simultaneously on all threads */
-	for (i = 0; i < MAX_ITER_TIMES; i++) {
+	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		lpm = rte_lpm_create("fr_test_once",  SOCKET_ID_ANY, &config);
 		if (lpm != NULL)
 			rte_atomic32_inc(&obj_count);
@@ -389,11 +380,8 @@ lpm_create_free(__attribute__((unused)) void *arg)
 			return -1;
 
 		rte_lpm_free(lpm);
-	}
 
-	/* verify free correct */
-	for (i = 0; i < MAX_LPM_ITER_TIMES; i++) {
-		snprintf(lpm_name, sizeof(lpm_name), "fr_test_%d_%d",  lcore_self, i);
+		/* verify free correct */
 		if (NULL != rte_lpm_find_existing(lpm_name))
 			return -1;
 	}
@@ -412,8 +400,9 @@ struct test_case{
 /* All test cases in the test suite */
 struct test_case test_cases[] = {
 	{ test_eal_init_once,     NULL,  NULL,         "eal init once" },
-	{ ring_create_lookup,     NULL,  NULL,         "ring create/lookup" },
-	{ mempool_create_lookup,  NULL,  NULL,         "mempool create/lookup" },
+	{ ring_create_lookup,     NULL,  ring_clean,   "ring create/lookup" },
+	{ mempool_create_lookup,  NULL,  mempool_clean,
+			"mempool create/lookup" },
 #ifdef RTE_LIBRTE_HASH
 	{ hash_create_free,       NULL,  hash_clean,   "hash create/free" },
 	{ fbk_create_free,        NULL,  fbk_clean,    "fbk create/free" },

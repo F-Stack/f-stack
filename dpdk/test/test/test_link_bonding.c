@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include "unistd.h"
@@ -46,6 +17,7 @@
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_log.h>
 #include <rte_lcore.h>
 #include <rte_memory.h>
@@ -59,21 +31,18 @@
 
 #define TEST_MAX_NUMBER_OF_PORTS (6)
 
-#define RX_RING_SIZE 128
+#define RX_RING_SIZE 1024
 #define RX_FREE_THRESH 32
 #define RX_PTHRESH 8
 #define RX_HTHRESH 8
 #define RX_WTHRESH 0
 
-#define TX_RING_SIZE 512
+#define TX_RING_SIZE 1024
 #define TX_FREE_THRESH 32
 #define TX_PTHRESH 32
 #define TX_HTHRESH 0
 #define TX_WTHRESH 0
 #define TX_RSBIT_THRESH 32
-#define TX_Q_FLAGS (ETH_TXQ_FLAGS_NOMULTSEGS | ETH_TXQ_FLAGS_NOVLANOFFL |\
-	ETH_TXQ_FLAGS_NOXSUMSCTP | ETH_TXQ_FLAGS_NOXSUMUDP | \
-	ETH_TXQ_FLAGS_NOXSUMTCP)
 
 #define MBUF_CACHE_SIZE (250)
 #define BURST_SIZE (32)
@@ -163,35 +132,11 @@ static uint16_t dst_port_1 = 2024;
 
 static uint16_t vlan_id = 0x100;
 
-struct rte_eth_rxmode rx_mode = {
-	.max_rx_pkt_len = ETHER_MAX_LEN, /**< Default maximum frame length. */
-	.split_hdr_size = 0,
-	.header_split   = 0, /**< Header Split disabled. */
-	.hw_ip_checksum = 0, /**< IP checksum offload disabled. */
-	.hw_vlan_filter = 1, /**< VLAN filtering enabled. */
-	.hw_vlan_strip  = 1, /**< VLAN strip enabled. */
-	.hw_vlan_extend = 0, /**< Extended VLAN disabled. */
-	.jumbo_frame    = 0, /**< Jumbo Frame Support disabled. */
-	.hw_strip_crc   = 1, /**< CRC stripping by hardware enabled. */
-};
-
-struct rte_fdir_conf fdir_conf = {
-	.mode = RTE_FDIR_MODE_NONE,
-	.pballoc = RTE_FDIR_PBALLOC_64K,
-	.status = RTE_FDIR_REPORT_STATUS,
-	.drop_queue = 127,
-};
-
 static struct rte_eth_conf default_pmd_conf = {
 	.rxmode = {
 		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 0, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.max_rx_pkt_len = ETHER_MAX_LEN,
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
@@ -217,8 +162,6 @@ static struct rte_eth_txconf tx_conf_default = {
 	},
 	.tx_free_thresh = TX_FREE_THRESH,
 	.tx_rs_thresh = TX_RSBIT_THRESH,
-	.txq_flags = TX_Q_FLAGS
-
 };
 
 static void free_virtualpmd_tx_queue(void);
@@ -258,6 +201,7 @@ configure_ethdev(uint16_t port_id, uint8_t start, uint8_t en_isr)
 }
 
 static int slaves_initialized;
+static int mac_slaves_initialized;
 
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cvar = PTHREAD_COND_INITIALIZER;
@@ -930,10 +874,11 @@ test_set_explicit_bonded_mac(void)
 static int
 test_set_bonded_port_initialization_mac_assignment(void)
 {
-	int i, slave_count, bonded_port_id;
+	int i, slave_count;
 
 	uint16_t slaves[RTE_MAX_ETHPORTS];
-	int slave_port_ids[BONDED_INIT_MAC_ASSIGNMENT_SLAVE_COUNT];
+	static int bonded_port_id = -1;
+	static int slave_port_ids[BONDED_INIT_MAC_ASSIGNMENT_SLAVE_COUNT];
 
 	struct ether_addr slave_mac_addr, bonded_mac_addr, read_mac_addr;
 
@@ -944,29 +889,36 @@ test_set_bonded_port_initialization_mac_assignment(void)
 	/*
 	 * 1. a - Create / configure  bonded / slave ethdevs
 	 */
-	bonded_port_id = rte_eth_bond_create("net_bonding_mac_ass_test",
-			BONDING_MODE_ACTIVE_BACKUP, rte_socket_id());
-	TEST_ASSERT(bonded_port_id > 0, "failed to create bonded device");
+	if (bonded_port_id == -1) {
+		bonded_port_id = rte_eth_bond_create("net_bonding_mac_ass_test",
+				BONDING_MODE_ACTIVE_BACKUP, rte_socket_id());
+		TEST_ASSERT(bonded_port_id > 0, "failed to create bonded device");
 
-	TEST_ASSERT_SUCCESS(configure_ethdev(bonded_port_id, 0, 0),
-				"Failed to configure bonded ethdev");
+		TEST_ASSERT_SUCCESS(configure_ethdev(bonded_port_id, 0, 0),
+					"Failed to configure bonded ethdev");
+	}
 
-	for (i = 0; i < BONDED_INIT_MAC_ASSIGNMENT_SLAVE_COUNT; i++) {
-		char pmd_name[RTE_ETH_NAME_MAX_LEN];
+	if (!mac_slaves_initialized) {
+		for (i = 0; i < BONDED_INIT_MAC_ASSIGNMENT_SLAVE_COUNT; i++) {
+			char pmd_name[RTE_ETH_NAME_MAX_LEN];
 
-		slave_mac_addr.addr_bytes[ETHER_ADDR_LEN-1] = i + 100;
+			slave_mac_addr.addr_bytes[ETHER_ADDR_LEN-1] = i + 100;
 
-		snprintf(pmd_name, RTE_ETH_NAME_MAX_LEN, "eth_slave_%d", i);
+			snprintf(pmd_name, RTE_ETH_NAME_MAX_LEN,
+				"eth_slave_%d", i);
 
-		slave_port_ids[i] = virtual_ethdev_create(pmd_name,
-				&slave_mac_addr, rte_socket_id(), 1);
+			slave_port_ids[i] = virtual_ethdev_create(pmd_name,
+					&slave_mac_addr, rte_socket_id(), 1);
 
-		TEST_ASSERT(slave_port_ids[i] >= 0,
-				"Failed to create slave ethdev %s", pmd_name);
+			TEST_ASSERT(slave_port_ids[i] >= 0,
+					"Failed to create slave ethdev %s",
+					pmd_name);
 
-		TEST_ASSERT_SUCCESS(configure_ethdev(slave_port_ids[i], 1, 0),
-				"Failed to configure virtual ethdev %s",
-				pmd_name);
+			TEST_ASSERT_SUCCESS(configure_ethdev(slave_port_ids[i], 1, 0),
+					"Failed to configure virtual ethdev %s",
+					pmd_name);
+		}
+		mac_slaves_initialized = 1;
 	}
 
 

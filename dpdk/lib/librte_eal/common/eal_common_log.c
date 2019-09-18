@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -38,6 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <regex.h>
+#include <fnmatch.h>
 
 #include <rte_eal.h>
 #include <rte_log.h>
@@ -51,6 +23,23 @@ struct rte_logs rte_logs = {
 	.level = RTE_LOG_DEBUG,
 	.file = NULL,
 };
+
+struct rte_eal_opt_loglevel {
+	/** Next list entry */
+	TAILQ_ENTRY(rte_eal_opt_loglevel) next;
+	/** Compiled regular expression obtained from the option */
+	regex_t re_match;
+	/** Glob match string option */
+	char *pattern;
+	/** Log level value obtained from the option */
+	uint32_t level;
+};
+
+TAILQ_HEAD(rte_eal_opt_loglevel_list, rte_eal_opt_loglevel);
+
+/** List of valid EAL log level options */
+static struct rte_eal_opt_loglevel_list opt_loglevel_list =
+	TAILQ_HEAD_INITIALIZER(opt_loglevel_list);
 
 /* Stream to use for logging if rte_logs.file is NULL */
 static FILE *default_log_stream;
@@ -118,9 +107,9 @@ rte_log_set_level(uint32_t type, uint32_t level)
 	return 0;
 }
 
-/* set level */
+/* set log level by regular expression */
 int
-rte_log_set_level_regexp(const char *pattern, uint32_t level)
+rte_log_set_level_regexp(const char *regex, uint32_t level)
 {
 	regex_t r;
 	size_t i;
@@ -128,7 +117,7 @@ rte_log_set_level_regexp(const char *pattern, uint32_t level)
 	if (level > RTE_LOG_DEBUG)
 		return -1;
 
-	if (regcomp(&r, pattern, 0) != 0)
+	if (regcomp(&r, regex, 0) != 0)
 		return -1;
 
 	for (i = 0; i < rte_logs.dynamic_types_len; i++) {
@@ -142,6 +131,69 @@ rte_log_set_level_regexp(const char *pattern, uint32_t level)
 	regfree(&r);
 
 	return 0;
+}
+
+/*
+ * Save the type string and the loglevel for later dynamic
+ * logtypes which may register later.
+ */
+static int rte_log_save_level(int priority,
+			      const char *regex, const char *pattern)
+{
+	struct rte_eal_opt_loglevel *opt_ll = NULL;
+
+	opt_ll = malloc(sizeof(*opt_ll));
+	if (opt_ll == NULL)
+		goto fail;
+
+	opt_ll->level = priority;
+
+	if (regex) {
+		opt_ll->pattern = NULL;
+		if (regcomp(&opt_ll->re_match, regex, 0) != 0)
+			goto fail;
+	} else if (pattern) {
+		opt_ll->pattern = strdup(pattern);
+		if (opt_ll->pattern == NULL)
+			goto fail;
+	} else
+		goto fail;
+
+	TAILQ_INSERT_HEAD(&opt_loglevel_list, opt_ll, next);
+	return 0;
+fail:
+	free(opt_ll);
+	return -1;
+}
+
+int rte_log_save_regexp(const char *regex, int tmp)
+{
+	return rte_log_save_level(tmp, regex, NULL);
+}
+
+/* set log level based on glob (file match) pattern */
+int
+rte_log_set_level_pattern(const char *pattern, uint32_t level)
+{
+	size_t i;
+
+	if (level > RTE_LOG_DEBUG)
+		return -1;
+
+	for (i = 0; i < rte_logs.dynamic_types_len; i++) {
+		if (rte_logs.dynamic_types[i].name == NULL)
+			continue;
+
+		if (fnmatch(pattern, rte_logs.dynamic_types[i].name, 0) == 0)
+			rte_logs.dynamic_types[i].loglevel = level;
+	}
+
+	return 0;
+}
+
+int rte_log_save_pattern(const char *pattern, int priority)
+{
+	return rte_log_save_level(priority, NULL, pattern);
 }
 
 /* get the current loglevel for the message being processed */
@@ -183,7 +235,7 @@ __rte_log_register(const char *name, int id)
 		return -ENOMEM;
 
 	rte_logs.dynamic_types[id].name = dup_name;
-	rte_logs.dynamic_types[id].loglevel = RTE_LOG_DEBUG;
+	rte_logs.dynamic_types[id].loglevel = RTE_LOG_INFO;
 
 	return id;
 }
@@ -215,32 +267,63 @@ rte_log_register(const char *name)
 	return ret;
 }
 
+/* Register an extended log type and try to pick its level from EAL options */
+int __rte_experimental
+rte_log_register_type_and_pick_level(const char *name, uint32_t level_def)
+{
+	struct rte_eal_opt_loglevel *opt_ll;
+	uint32_t level = level_def;
+	int type;
+
+	type = rte_log_register(name);
+	if (type < 0)
+		return type;
+
+	TAILQ_FOREACH(opt_ll, &opt_loglevel_list, next) {
+		if (opt_ll->level > RTE_LOG_DEBUG)
+			continue;
+
+		if (opt_ll->pattern) {
+			if (fnmatch(opt_ll->pattern, name, 0))
+				level = opt_ll->level;
+		} else {
+			if (regexec(&opt_ll->re_match, name, 0, NULL, 0) == 0)
+				level = opt_ll->level;
+		}
+	}
+
+	rte_logs.dynamic_types[type].loglevel = level;
+
+	return type;
+}
+
 struct logtype {
 	uint32_t log_id;
 	const char *logtype;
 };
 
 static const struct logtype logtype_strings[] = {
-	{RTE_LOGTYPE_EAL,        "eal"},
-	{RTE_LOGTYPE_MALLOC,     "malloc"},
-	{RTE_LOGTYPE_RING,       "ring"},
-	{RTE_LOGTYPE_MEMPOOL,    "mempool"},
-	{RTE_LOGTYPE_TIMER,      "timer"},
+	{RTE_LOGTYPE_EAL,        "lib.eal"},
+	{RTE_LOGTYPE_MALLOC,     "lib.malloc"},
+	{RTE_LOGTYPE_RING,       "lib.ring"},
+	{RTE_LOGTYPE_MEMPOOL,    "lib.mempool"},
+	{RTE_LOGTYPE_TIMER,      "lib.timer"},
 	{RTE_LOGTYPE_PMD,        "pmd"},
-	{RTE_LOGTYPE_HASH,       "hash"},
-	{RTE_LOGTYPE_LPM,        "lpm"},
-	{RTE_LOGTYPE_KNI,        "kni"},
-	{RTE_LOGTYPE_ACL,        "acl"},
-	{RTE_LOGTYPE_POWER,      "power"},
-	{RTE_LOGTYPE_METER,      "meter"},
-	{RTE_LOGTYPE_SCHED,      "sched"},
-	{RTE_LOGTYPE_PORT,       "port"},
-	{RTE_LOGTYPE_TABLE,      "table"},
-	{RTE_LOGTYPE_PIPELINE,   "pipeline"},
-	{RTE_LOGTYPE_MBUF,       "mbuf"},
-	{RTE_LOGTYPE_CRYPTODEV,  "cryptodev"},
-	{RTE_LOGTYPE_EFD,        "efd"},
-	{RTE_LOGTYPE_EVENTDEV,   "eventdev"},
+	{RTE_LOGTYPE_HASH,       "lib.hash"},
+	{RTE_LOGTYPE_LPM,        "lib.lpm"},
+	{RTE_LOGTYPE_KNI,        "lib.kni"},
+	{RTE_LOGTYPE_ACL,        "lib.acl"},
+	{RTE_LOGTYPE_POWER,      "lib.power"},
+	{RTE_LOGTYPE_METER,      "lib.meter"},
+	{RTE_LOGTYPE_SCHED,      "lib.sched"},
+	{RTE_LOGTYPE_PORT,       "lib.port"},
+	{RTE_LOGTYPE_TABLE,      "lib.table"},
+	{RTE_LOGTYPE_PIPELINE,   "lib.pipeline"},
+	{RTE_LOGTYPE_MBUF,       "lib.mbuf"},
+	{RTE_LOGTYPE_CRYPTODEV,  "lib.cryptodev"},
+	{RTE_LOGTYPE_EFD,        "lib.efd"},
+	{RTE_LOGTYPE_EVENTDEV,   "lib.eventdev"},
+	{RTE_LOGTYPE_GSO,        "lib.gso"},
 	{RTE_LOGTYPE_USER1,      "user1"},
 	{RTE_LOGTYPE_USER2,      "user2"},
 	{RTE_LOGTYPE_USER3,      "user3"},
@@ -252,17 +335,11 @@ static const struct logtype logtype_strings[] = {
 };
 
 /* Logging should be first initializer (before drivers and bus) */
-RTE_INIT_PRIO(rte_log_init, 101);
-static void
-rte_log_init(void)
+RTE_INIT_PRIO(rte_log_init, LOG)
 {
 	uint32_t i;
 
-#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
-	rte_log_set_global_level(RTE_LOG_INFO);
-#else
-	rte_log_set_global_level(RTE_LOG_LEVEL);
-#endif
+	rte_log_set_global_level(RTE_LOG_DEBUG);
 
 	rte_logs.dynamic_types = calloc(RTE_LOGTYPE_FIRST_EXT_ID,
 		sizeof(struct rte_log_dynamic_type));

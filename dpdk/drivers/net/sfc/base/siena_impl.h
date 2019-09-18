@@ -1,31 +1,7 @@
-/*
- * Copyright (c) 2009-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2009-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #ifndef _SYS_SIENA_IMPL_H
@@ -40,7 +16,16 @@
 extern "C" {
 #endif
 
+#ifndef EFX_TXQ_DC_SIZE
+#define	EFX_TXQ_DC_SIZE 1 /* 16 descriptors */
+#endif
+#ifndef EFX_RXQ_DC_SIZE
+#define	EFX_RXQ_DC_SIZE 3 /* 64 descriptors */
+#endif
+#define	EFX_TXQ_DC_NDESCS(_dcsize)	(8 << (_dcsize))
+
 #define	SIENA_NVRAM_CHUNK 0x80
+
 
 extern	__checkReturn	efx_rc_t
 siena_nic_probe(
@@ -55,6 +40,15 @@ siena_nic_init(
 	__in		efx_nic_t *enp);
 
 #if EFSYS_OPT_DIAG
+
+extern	efx_sram_pattern_fn_t	__efx_sram_pattern_fns[];
+
+typedef struct siena_register_set_s {
+	unsigned int		address;
+	unsigned int		step;
+	unsigned int		rows;
+	efx_oword_t		mask;
+} siena_register_set_t;
 
 extern	__checkReturn	efx_rc_t
 siena_nic_register_test(
@@ -143,7 +137,8 @@ siena_nvram_partn_lock(
 extern	__checkReturn		efx_rc_t
 siena_nvram_partn_unlock(
 	__in			efx_nic_t *enp,
-	__in			uint32_t partn);
+	__in			uint32_t partn,
+	__out_opt		uint32_t *verify_resultp);
 
 extern	__checkReturn		efx_rc_t
 siena_nvram_get_dynamic_cfg(
@@ -215,7 +210,8 @@ siena_nvram_partn_write(
 extern	__checkReturn		efx_rc_t
 siena_nvram_partn_rw_finish(
 	__in			efx_nic_t *enp,
-	__in			uint32_t partn);
+	__in			uint32_t partn,
+	__out_opt		uint32_t *verify_resultp);
 
 extern	__checkReturn		efx_rc_t
 siena_nvram_partn_get_version(

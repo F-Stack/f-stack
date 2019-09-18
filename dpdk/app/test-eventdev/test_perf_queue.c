@@ -1,44 +1,18 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium, Inc 2017.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Cavium, Inc
  */
 
 #include "test_perf_common.h"
 
-/* See http://dpdk.org/doc/guides/tools/testeventdev.html for test details */
+/* See http://doc.dpdk.org/guides/tools/testeventdev.html for test details */
 
 static inline int
 perf_queue_nb_event_queues(struct evt_options *opt)
 {
 	/* nb_queues = number of producers * number of stages */
-	return evt_nr_active_lcores(opt->plcores) * opt->nb_stages;
+	uint8_t nb_prod = opt->prod_type == EVT_PROD_TYPE_ETH_RX_ADPTR ?
+		rte_eth_dev_count_avail() : evt_nr_active_lcores(opt->plcores);
+	return nb_prod * opt->nb_stages;
 }
 
 static inline __attribute__((always_inline)) void
@@ -75,7 +49,7 @@ perf_queue_worker(void *arg, const int enable_fwd_latency)
 			rte_pause();
 			continue;
 		}
-		if (enable_fwd_latency)
+		if (enable_fwd_latency && !prod_timer_type)
 		/* first q in pipeline, mark timestamp to compute fwd latency */
 			mark_fwd_latency(&ev, nb_stages);
 
@@ -114,7 +88,7 @@ perf_queue_worker_burst(void *arg, const int enable_fwd_latency)
 		}
 
 		for (i = 0; i < nb_rx; i++) {
-			if (enable_fwd_latency) {
+			if (enable_fwd_latency && !prod_timer_type) {
 				rte_prefetch0(ev[i+1].event_ptr);
 				/* first queue in pipeline.
 				 * mark time stamp to compute fwd latency
@@ -182,14 +156,33 @@ perf_queue_eventdev_setup(struct evt_test *test, struct evt_options *opt)
 	uint8_t queue;
 	int nb_stages = opt->nb_stages;
 	int ret;
+	int nb_ports;
+	int nb_queues;
+	struct rte_event_dev_info dev_info;
+
+	nb_ports = evt_nr_active_lcores(opt->wlcores);
+	nb_ports += opt->prod_type == EVT_PROD_TYPE_ETH_RX_ADPTR ||
+		 opt->prod_type == EVT_PROD_TYPE_EVENT_TIMER_ADPTR ? 0 :
+		evt_nr_active_lcores(opt->plcores);
+
+	nb_queues = perf_queue_nb_event_queues(opt);
+
+	memset(&dev_info, 0, sizeof(struct rte_event_dev_info));
+	ret = rte_event_dev_info_get(opt->dev_id, &dev_info);
+	if (ret) {
+		evt_err("failed to get eventdev info %d", opt->dev_id);
+		return ret;
+	}
 
 	const struct rte_event_dev_config config = {
-			.nb_event_queues = perf_queue_nb_event_queues(opt),
-			.nb_event_ports = perf_nb_event_ports(opt),
-			.nb_events_limit  = 4096,
+			.nb_event_queues = nb_queues,
+			.nb_event_ports = nb_ports,
+			.nb_events_limit  = dev_info.max_num_events,
 			.nb_event_queue_flows = opt->nb_flows,
-			.nb_event_port_dequeue_depth = 128,
-			.nb_event_port_enqueue_depth = 128,
+			.nb_event_port_dequeue_depth =
+				dev_info.max_event_port_dequeue_depth,
+			.nb_event_port_enqueue_depth =
+				dev_info.max_event_port_enqueue_depth,
 	};
 
 	ret = rte_event_dev_configure(opt->dev_id, &config);
@@ -204,7 +197,7 @@ perf_queue_eventdev_setup(struct evt_test *test, struct evt_options *opt)
 			.nb_atomic_order_sequences = opt->nb_flows,
 	};
 	/* queue configurations */
-	for (queue = 0; queue < perf_queue_nb_event_queues(opt); queue++) {
+	for (queue = 0; queue < nb_queues; queue++) {
 		q_conf.schedule_type =
 			(opt->sched_type_list[queue % nb_stages]);
 
@@ -227,15 +220,29 @@ perf_queue_eventdev_setup(struct evt_test *test, struct evt_options *opt)
 		}
 	}
 
+	if (opt->wkr_deq_dep > dev_info.max_event_port_dequeue_depth)
+		opt->wkr_deq_dep = dev_info.max_event_port_dequeue_depth;
+
+	/* port configuration */
+	const struct rte_event_port_conf p_conf = {
+			.dequeue_depth = opt->wkr_deq_dep,
+			.enqueue_depth = dev_info.max_event_port_dequeue_depth,
+			.new_event_threshold = dev_info.max_num_events,
+	};
+
 	ret = perf_event_dev_port_setup(test, opt, nb_stages /* stride */,
-					perf_queue_nb_event_queues(opt));
+					nb_queues, &p_conf);
 	if (ret)
 		return ret;
 
-	ret = evt_service_setup(opt->dev_id);
-	if (ret) {
-		evt_err("No service lcore found to run event dev.");
-		return ret;
+	if (!evt_has_distributed_sched(opt->dev_id)) {
+		uint32_t service_id;
+		rte_event_dev_service_id_get(opt->dev_id, &service_id);
+		ret = evt_service_setup(service_id);
+		if (ret) {
+			evt_err("No service lcore found to run event dev.");
+			return ret;
+		}
 	}
 
 	ret = rte_event_dev_start(opt->dev_id);
@@ -283,10 +290,12 @@ static const struct evt_test_ops perf_queue =  {
 	.opt_dump           = perf_queue_opt_dump,
 	.test_setup         = perf_test_setup,
 	.mempool_setup      = perf_mempool_setup,
+	.ethdev_setup	    = perf_ethdev_setup,
 	.eventdev_setup     = perf_queue_eventdev_setup,
 	.launch_lcores      = perf_queue_launch_lcores,
 	.eventdev_destroy   = perf_eventdev_destroy,
 	.mempool_destroy    = perf_mempool_destroy,
+	.ethdev_destroy	    = perf_ethdev_destroy,
 	.test_result        = perf_test_result,
 	.test_destroy       = perf_test_destroy,
 };

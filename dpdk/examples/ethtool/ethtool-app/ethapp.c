@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2015 Intel Corporation
  */
 
 #include <cmdline_parse.h>
@@ -104,6 +75,9 @@ cmdline_parse_token_num_t pcmd_int_token_port =
 /* Commands taking port id and string */
 cmdline_parse_token_string_t pcmd_eeprom_token_cmd =
 	TOKEN_STRING_INITIALIZER(struct pcmd_intstr_params, cmd, "eeprom");
+cmdline_parse_token_string_t pcmd_module_eeprom_token_cmd =
+	TOKEN_STRING_INITIALIZER(struct pcmd_intstr_params, cmd,
+				 "module-eeprom");
 cmdline_parse_token_string_t pcmd_mtu_token_cmd =
 	TOKEN_STRING_INITIALIZER(struct pcmd_intstr_params, cmd, "mtu");
 cmdline_parse_token_string_t pcmd_regs_token_cmd =
@@ -174,9 +148,9 @@ pcmd_drvinfo_callback(__rte_unused void *ptr_params,
 	__rte_unused void *ptr_data)
 {
 	struct ethtool_drvinfo info;
-	int id_port;
+	uint16_t id_port;
 
-	for (id_port = 0; id_port < rte_eth_dev_count(); id_port++) {
+	RTE_ETH_FOREACH_DEV(id_port) {
 		memset(&info, 0, sizeof(info));
 		if (rte_ethtool_get_drvinfo(id_port, &info)) {
 			printf("Error getting info for port %i\n", id_port);
@@ -196,10 +170,10 @@ pcmd_link_callback(__rte_unused void *ptr_params,
 	__rte_unused struct cmdline *ctx,
 	__rte_unused void *ptr_data)
 {
-	int num_ports = rte_eth_dev_count();
-	int id_port, stat_port;
+	uint16_t id_port;
+	int stat_port;
 
-	for (id_port = 0; id_port < num_ports; id_port++) {
+	RTE_ETH_FOREACH_DEV(id_port) {
 		if (!rte_eth_dev_is_valid_port(id_port))
 			continue;
 		stat_port = rte_ethtool_get_link(id_port);
@@ -323,6 +297,54 @@ pcmd_eeprom_callback(void *ptr_params,
 		printf("Port %i: Operation not supported\n", params->port);
 	else
 		printf("Port %i: Error getting EEPROM\n", params->port);
+}
+
+
+static void
+pcmd_module_eeprom_callback(void *ptr_params,
+	__rte_unused struct cmdline *ctx,
+	__rte_unused void *ptr_data)
+{
+	struct pcmd_intstr_params *params = ptr_params;
+	struct ethtool_eeprom info_eeprom;
+	uint32_t module_info[2];
+	int stat;
+	unsigned char bytes_eeprom[EEPROM_DUMP_CHUNKSIZE];
+	FILE *fp_eeprom;
+
+	if (!rte_eth_dev_is_valid_port(params->port)) {
+		printf("Error: Invalid port number %i\n", params->port);
+		return;
+	}
+
+	stat = rte_ethtool_get_module_info(params->port, module_info);
+	if (stat != 0) {
+		printf("Module EEPROM information read error %i\n", stat);
+		return;
+	}
+
+	info_eeprom.len = module_info[1];
+	info_eeprom.offset = 0;
+
+	stat = rte_ethtool_get_module_eeprom(params->port,
+					     &info_eeprom, bytes_eeprom);
+	if (stat != 0) {
+		printf("Module EEPROM read error %i\n", stat);
+		return;
+	}
+
+	fp_eeprom = fopen(params->opt, "wb");
+	if (fp_eeprom == NULL) {
+		printf("Error opening '%s' for writing\n", params->opt);
+		return;
+	}
+	printf("Total plugin module EEPROM length: %i bytes\n",
+	       info_eeprom.len);
+	if (fwrite(bytes_eeprom, 1, info_eeprom.len,
+		   fp_eeprom) != info_eeprom.len) {
+		printf("Error writing '%s'\n", params->opt);
+	}
+	fclose(fp_eeprom);
 }
 
 
@@ -693,6 +715,18 @@ cmdline_parse_inst_t pcmd_eeprom = {
 		NULL
 	},
 };
+cmdline_parse_inst_t pcmd_module_eeprom = {
+	.f = pcmd_module_eeprom_callback,
+	.data = NULL,
+	.help_str = "module-eeprom <port_id> <filename>\n"
+		"     Dump plugin module EEPROM to file",
+	.tokens = {
+		(void *)&pcmd_module_eeprom_token_cmd,
+		(void *)&pcmd_intstr_token_port,
+		(void *)&pcmd_intstr_token_opt,
+		NULL
+	},
+};
 cmdline_parse_inst_t pcmd_pause_noopt = {
 	.f = pcmd_pause_callback,
 	.data = (void *)0x01,
@@ -845,6 +879,7 @@ cmdline_parse_inst_t pcmd_vlan = {
 cmdline_parse_ctx_t list_prompt_commands[] = {
 	(cmdline_parse_inst_t *)&pcmd_drvinfo,
 	(cmdline_parse_inst_t *)&pcmd_eeprom,
+	(cmdline_parse_inst_t *)&pcmd_module_eeprom,
 	(cmdline_parse_inst_t *)&pcmd_link,
 	(cmdline_parse_inst_t *)&pcmd_macaddr_get,
 	(cmdline_parse_inst_t *)&pcmd_macaddr,

@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 6WIND S.A.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 6WIND S.A.
  */
 
 #include <stdint.h>
@@ -42,6 +13,7 @@
 #include <rte_udp.h>
 #include <rte_sctp.h>
 #include <rte_gre.h>
+#include <rte_mpls.h>
 #include <rte_net.h>
 
 /* get l3 packet type from ip6 next protocol */
@@ -207,8 +179,8 @@ ip4_hlen(const struct ipv4_hdr *hdr)
 }
 
 /* parse ipv6 extended headers, update offset and return next proto */
-static uint16_t
-skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
+int __rte_experimental
+rte_net_skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 	int *frag)
 {
 	struct ext_hdr {
@@ -230,7 +202,7 @@ skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 			xh = rte_pktmbuf_read(m, *off, sizeof(*xh),
 				&xh_copy);
 			if (xh == NULL)
-				return 0;
+				return -1;
 			*off += (xh->len + 1) * 8;
 			proto = xh->next_hdr;
 			break;
@@ -238,7 +210,7 @@ skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 			xh = rte_pktmbuf_read(m, *off, sizeof(*xh),
 				&xh_copy);
 			if (xh == NULL)
-				return 0;
+				return -1;
 			*off += 8;
 			proto = xh->next_hdr;
 			*frag = 1;
@@ -249,7 +221,7 @@ skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 			return proto;
 		}
 	}
-	return 0;
+	return -1;
 }
 
 /* parse mbuf data to get packet type */
@@ -262,6 +234,7 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 	uint32_t pkt_type = RTE_PTYPE_L2_ETHER;
 	uint32_t off = 0;
 	uint16_t proto;
+	int ret;
 
 	if (hdr_lens == NULL)
 		hdr_lens = &local_hdr_lens;
@@ -302,9 +275,27 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 		off += 2 * sizeof(*vh);
 		hdr_lens->l2_len += 2 * sizeof(*vh);
 		proto = vh->eth_proto;
+	} else if ((proto == rte_cpu_to_be_16(ETHER_TYPE_MPLS)) ||
+		(proto == rte_cpu_to_be_16(ETHER_TYPE_MPLSM))) {
+		unsigned int i;
+		const struct mpls_hdr *mh;
+		struct mpls_hdr mh_copy;
+
+#define MAX_MPLS_HDR 5
+		for (i = 0; i < MAX_MPLS_HDR; i++) {
+			mh = rte_pktmbuf_read(m, off + (i * sizeof(*mh)),
+				sizeof(*mh), &mh_copy);
+			if (unlikely(mh == NULL))
+				return pkt_type;
+		}
+		if (i == MAX_MPLS_HDR)
+			return pkt_type;
+		pkt_type = RTE_PTYPE_L2_ETHER_MPLS;
+		hdr_lens->l2_len += (sizeof(*mh) * i);
+		return pkt_type;
 	}
 
- l3:
+l3:
 	if ((layers & RTE_PTYPE_L3_MASK) == 0)
 		return pkt_type;
 
@@ -345,7 +336,10 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 		off += hdr_lens->l3_len;
 		pkt_type |= ptype_l3_ip6(proto);
 		if ((pkt_type & RTE_PTYPE_L3_MASK) == RTE_PTYPE_L3_IPV6_EXT) {
-			proto = skip_ip6_ext(proto, m, &off, &frag);
+			ret = rte_net_skip_ip6_ext(proto, m, &off, &frag);
+			if (ret < 0)
+				return pkt_type;
+			proto = ret;
 			hdr_lens->l3_len = off - hdr_lens->l2_len;
 		}
 		if (proto == 0)
@@ -478,7 +472,10 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 			uint32_t prev_off;
 
 			prev_off = off;
-			proto = skip_ip6_ext(proto, m, &off, &frag);
+			ret = rte_net_skip_ip6_ext(proto, m, &off, &frag);
+			if (ret < 0)
+				return pkt_type;
+			proto = ret;
 			hdr_lens->inner_l3_len += off - prev_off;
 		}
 		if (proto == 0)

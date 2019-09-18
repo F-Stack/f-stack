@@ -5,7 +5,8 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  top [-p <f-stack proc_id>] [-d <secs>] [-n num]\n");
+    printf("  top [-p <f-stack proc_id>] [-P <max proc_id>] "
+        "[-d <secs>] [-n <num>]\n");
 }
 
 int cpu_status(struct ff_top_args *top)
@@ -32,7 +33,7 @@ int cpu_status(struct ff_top_args *top)
             ff_ipc_msg_free(retmsg);
         }
 
-        ret = ff_ipc_recv(&retmsg);
+        ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
             ff_ipc_msg_free(msg);
@@ -50,17 +51,31 @@ int cpu_status(struct ff_top_args *top)
 int main(int argc, char **argv)
 {
     int ch, delay = 1, n = 0;
-    unsigned int i;
+    unsigned int i, j;
     struct ff_top_args top, otop;
+    struct ff_top_args ptop[RTE_MAX_LCORE], potop[RTE_MAX_LCORE];
+    int proc_id = 0, max_proc_id = -1;
+    float sys, usr, idle;
+    float psys, pusr, pidle;
+    unsigned long loops, ploops;
 
     ff_ipc_init();
 
 #define TOP_DIFF(member) (top.member - otop.member)
+#define TOP_DIFF_P(member) (ptop[j].member - potop[j].member)
 
-    while ((ch = getopt(argc, argv, "hp:d:n:")) != -1) {
+    while ((ch = getopt(argc, argv, "hp:P:d:n:")) != -1) {
         switch(ch) {
         case 'p':
-            ff_set_proc_id(atoi(optarg));
+            proc_id = atoi(optarg);
+            ff_set_proc_id(proc_id);
+            break;
+        case 'P':
+            max_proc_id = atoi(optarg);
+            if (max_proc_id < 0 || max_proc_id >= RTE_MAX_LCORE) {
+                usage();
+                return -1;
+            }
             break;
         case 'd':
             delay = atoi(optarg) ?: 1;
@@ -76,23 +91,73 @@ int main(int argc, char **argv)
     }
 
     for (i = 0; ; i++) {
-        if (cpu_status(&top)) {
-            printf("fstack ipc message error !\n");
-            return -1;
-        }
+        if (max_proc_id == -1) {
+            if (cpu_status(&top)) {
+                printf("fstack ipc message error !\n");
+                return -1;
+            }
 
-        if (i % 40 == 0) {
-            printf("|---------|---------|---------|---------------|\n");
-            printf("|%9s|%9s|%9s|%15s|\n", "idle", "sys", "usr", "loop");
-            printf("|---------|---------|---------|---------------|\n");
-        }
+            if (i % 40 == 0) {
+                printf("|---------|---------|---------|---------------|\n");
+                printf("|%9s|%9s|%9s|%15s|\n", "idle", "sys", "usr", "loop");
+                printf("|---------|---------|---------|---------------|\n");
+            }
 
-        if (i) {
-            float psys = TOP_DIFF(sys_tsc) / (TOP_DIFF(work_tsc) / 100.0);
-            float pusr = TOP_DIFF(usr_tsc) / (TOP_DIFF(work_tsc) / 100.0);
-            float pidle = TOP_DIFF(idle_tsc) / (TOP_DIFF(work_tsc) / 100.0);
+            if (i) {
+                sys = TOP_DIFF(sys_tsc) / (TOP_DIFF(work_tsc) / 100.0);
+                usr = TOP_DIFF(usr_tsc) / (TOP_DIFF(work_tsc) / 100.0);
+                idle = TOP_DIFF(idle_tsc) / (TOP_DIFF(work_tsc) / 100.0);
 
-            printf("|%8.2f%%|%8.2f%%|%8.2f%%|%15lu|\n", pidle, psys, pusr, TOP_DIFF(loops));
+                printf("|%8.2f%%|%8.2f%%|%8.2f%%|%15lu|\n",
+                    idle, sys, usr, TOP_DIFF(loops));
+            }
+        }else {
+            /*
+             * get and show cpu usage from proc_id to max_proc_id.
+             */
+            if (i % (40 / (max_proc_id - proc_id + 2)) == 0) {
+                printf("|---------|---------|---------|"
+                    "---------|---------------|\n");
+                printf("|%9s|%9s|%9s|%9s|%15s|\n",
+                    "proc_id", "idle", "sys", "usr", "loop");
+                printf("|---------|---------|---------|"
+                    "---------|---------------|\n");
+            }
+
+            sys = usr = idle = loops = 0;
+            for (j = proc_id; j <= max_proc_id; j++) {
+                potop[j] = ptop[j];
+
+                ff_set_proc_id(j);
+                if (cpu_status(&ptop[j])) {
+                    printf("fstack ipc message error, proc id:%d!\n", j);
+                    return -1;
+                }
+
+                if (i) {
+                    psys = TOP_DIFF_P(sys_tsc) / \
+                        (TOP_DIFF_P(work_tsc) / 100.0);
+                    pusr = TOP_DIFF_P(usr_tsc) / \
+                        (TOP_DIFF_P(work_tsc) / 100.0);
+                    pidle = TOP_DIFF_P(idle_tsc) / \
+                        (TOP_DIFF_P(work_tsc) / 100.0);
+                    ploops = TOP_DIFF_P(loops);
+                    printf("|%9d|%8.2f%%|%8.2f%%|%8.2f%%|%15lu|\n",
+                        j, pidle, psys, pusr, ploops);
+
+                    sys += psys;
+                    usr += pusr;
+                    idle += pidle;
+                    loops += ploops;
+
+                    if (j == max_proc_id) {
+                        printf("|%9s|%8.2f%%|%8.2f%%|%8.2f%%|%15lu|\n",
+                            "total", idle, sys, usr, loops);
+                        printf("|         |         |         |"
+                            "         |               |\n");
+                    }
+                }
+            }
         }
 
         if (n && i >= n) {

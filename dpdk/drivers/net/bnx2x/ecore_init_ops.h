@@ -1,16 +1,14 @@
-/*-
- * Copyright (c) 2007-2013 QLogic Corporation. All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2007-2013 Broadcom Corporation.
  *
  * Eric Davis        <edavis@broadcom.com>
  * David Christensen <davidch@broadcom.com>
  * Gary Zambrano     <zambrano@broadcom.com>
  *
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef ECORE_INIT_OPS_H
@@ -426,20 +424,20 @@ static void ecore_init_pxp_arb(struct bnx2x_softc *sc, int r_order,
 	uint32_t val, i;
 
 	if (r_order > MAX_RD_ORD) {
-		ECORE_MSG("read order of %d  order adjusted to %d",
+		ECORE_MSG(sc, "read order of %d  order adjusted to %d",
 			   r_order, MAX_RD_ORD);
 		r_order = MAX_RD_ORD;
 	}
 	if (w_order > MAX_WR_ORD) {
-		ECORE_MSG("write order of %d  order adjusted to %d",
+		ECORE_MSG(sc, "write order of %d  order adjusted to %d",
 			   w_order, MAX_WR_ORD);
 		w_order = MAX_WR_ORD;
 	}
 	if (CHIP_REV_IS_FPGA(sc)) {
-		ECORE_MSG("write order adjusted to 1 for FPGA");
+		ECORE_MSG(sc, "write order adjusted to 1 for FPGA");
 		w_order = 0;
 	}
-	ECORE_MSG("read order %d  write order %d", r_order, w_order);
+	ECORE_MSG(sc, "read order %d  write order %d", r_order, w_order);
 
 	for (i = 0; i < NUM_RD_Q-1; i++) {
 		REG_WR(sc, read_arb_addr[i].l, read_arb_data[i][r_order].l);

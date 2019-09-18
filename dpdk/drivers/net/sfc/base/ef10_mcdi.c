@@ -1,38 +1,14 @@
-/*
- * Copyright (c) 2012-2016 Solarflare Communications Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2012-2018 Solarflare Communications Inc.
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied, of the FreeBSD Project.
  */
 
 #include "efx.h"
 #include "efx_impl.h"
 
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD
+#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
 
 #if EFSYS_OPT_MCDI
 
@@ -52,7 +28,8 @@ ef10_mcdi_init(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 	EFSYS_ASSERT(enp->en_features & EFX_FEATURE_MCDI_DMA);
 
 	/*
@@ -130,7 +107,7 @@ ef10_mcdi_get_timeout(
 	case MC_CMD_NVRAM_ERASE:
 	case MC_CMD_LICENSING_V3:
 	case MC_CMD_NVRAM_UPDATE_FINISH:
-		if (encp->enc_fw_verified_nvram_update_required != B_FALSE) {
+		if (encp->enc_nvram_update_verify_result_supported != B_FALSE) {
 			/*
 			 * Potentially longer running commands, which firmware
 			 * may choose to process in a background thread.
@@ -159,7 +136,8 @@ ef10_mcdi_send_request(
 	unsigned int pos;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	/* Write the header */
 	for (pos = 0; pos < hdr_len; pos += sizeof (efx_dword_t)) {
@@ -210,13 +188,17 @@ ef10_mcdi_read_response(
 {
 	const efx_mcdi_transport_t *emtp = enp->en_mcdi.em_emtp;
 	efsys_mem_t *esmp = emtp->emt_dma_mem;
-	unsigned int pos;
+	unsigned int pos = 0;
 	efx_dword_t data;
+	size_t remaining = length;
 
-	for (pos = 0; pos < length; pos += sizeof (efx_dword_t)) {
+	while (remaining > 0) {
+		size_t chunk = MIN(remaining, sizeof (data));
+
 		EFSYS_MEM_READD(esmp, offset + pos, &data);
-		memcpy((uint8_t *)bufferp + pos, &data,
-		    MIN(sizeof (data), length - pos));
+		memcpy((uint8_t *)bufferp + pos, &data, chunk);
+		pos += chunk;
+		remaining -= chunk;
 	}
 }
 
@@ -278,7 +260,8 @@ ef10_mcdi_feature_supported(
 	efx_rc_t rc;
 
 	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		    enp->en_family == EFX_FAMILY_MEDFORD);
+	    enp->en_family == EFX_FAMILY_MEDFORD ||
+	    enp->en_family == EFX_FAMILY_MEDFORD2);
 
 	/*
 	 * Use privilege mask state at MCDI attach.
@@ -339,4 +322,4 @@ fail1:
 
 #endif	/* EFSYS_OPT_MCDI */
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD */
+#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */

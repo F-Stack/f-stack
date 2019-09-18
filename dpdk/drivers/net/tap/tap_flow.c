@@ -1,39 +1,13 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/queue.h>
+#include <sys/resource.h>
 
 #include <rte_byteorder.h>
 #include <rte_jhash.h>
@@ -42,6 +16,7 @@
 #include <tap_flow.h>
 #include <tap_autoconf.h>
 #include <tap_tcmsgs.h>
+#include <tap_rss.h>
 
 #ifndef HAVE_TC_FLOWER
 /*
@@ -81,12 +56,80 @@ enum {
 	TCA_FLOWER_KEY_VLAN_ETH_TYPE,   /* be16 */
 };
 #endif
+/*
+ * For kernels < 4.2 BPF related enums may not be defined.
+ * Runtime checks will be carried out to gracefully report on TC messages that
+ * are rejected by the kernel. Rejection reasons may be due to:
+ * 1. enum is not defined
+ * 2. enum is defined but kernel is not configured to support BPF system calls,
+ *    BPF classifications or BPF actions.
+ */
+#ifndef HAVE_TC_BPF
+enum {
+	TCA_BPF_UNSPEC,
+	TCA_BPF_ACT,
+	TCA_BPF_POLICE,
+	TCA_BPF_CLASSID,
+	TCA_BPF_OPS_LEN,
+	TCA_BPF_OPS,
+};
+#endif
+#ifndef HAVE_TC_BPF_FD
+enum {
+	TCA_BPF_FD = TCA_BPF_OPS + 1,
+	TCA_BPF_NAME,
+};
+#endif
+#ifndef HAVE_TC_ACT_BPF
+#define tc_gen \
+	__u32                 index; \
+	__u32                 capab; \
+	int                   action; \
+	int                   refcnt; \
+	int                   bindcnt
+
+struct tc_act_bpf {
+	tc_gen;
+};
+
+enum {
+	TCA_ACT_BPF_UNSPEC,
+	TCA_ACT_BPF_TM,
+	TCA_ACT_BPF_PARMS,
+	TCA_ACT_BPF_OPS_LEN,
+	TCA_ACT_BPF_OPS,
+};
+
+#endif
+#ifndef HAVE_TC_ACT_BPF_FD
+enum {
+	TCA_ACT_BPF_FD = TCA_ACT_BPF_OPS + 1,
+	TCA_ACT_BPF_NAME,
+};
+#endif
+
+/* RSS key management */
+enum bpf_rss_key_e {
+	KEY_CMD_GET = 1,
+	KEY_CMD_RELEASE,
+	KEY_CMD_INIT,
+	KEY_CMD_DEINIT,
+};
+
+enum key_status_e {
+	KEY_STAT_UNSPEC,
+	KEY_STAT_USED,
+	KEY_STAT_AVAILABLE,
+};
 
 #define ISOLATE_HANDLE 1
+#define REMOTE_PROMISCUOUS_HANDLE 2
 
 struct rte_flow {
 	LIST_ENTRY(rte_flow) next; /* Pointer to the next rte_flow structure */
 	struct rte_flow *remote_flow; /* associated remote flow */
+	int bpf_fd[SEC_MAX]; /* list of bfs fds per ELF section */
+	uint32_t key_idx; /* RSS rule key index into BPF map */
 	struct nlmsg msg;
 };
 
@@ -102,6 +145,24 @@ struct remote_rule {
 	struct rte_flow_item items[2];
 	struct rte_flow_action actions[2];
 	int mirred;
+};
+
+struct action_data {
+	char id[16];
+
+	union {
+		struct tc_gact gact;
+		struct tc_mirred mirred;
+		struct skbedit {
+			struct tc_skbedit skbedit;
+			uint16_t queue;
+		} skbedit;
+		struct bpf {
+			struct tc_act_bpf bpf;
+			int bpf_fd;
+			const char *annotation;
+		} bpf;
+	};
 };
 
 static int tap_flow_create_eth(const struct rte_flow_item *item, void *data);
@@ -124,6 +185,10 @@ tap_flow_create(struct rte_eth_dev *dev,
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error);
 
+static void
+tap_flow_free(struct pmd_internals *pmd,
+	struct rte_flow *flow);
+
 static int
 tap_flow_destroy(struct rte_eth_dev *dev,
 		 struct rte_flow *flow,
@@ -133,6 +198,14 @@ static int
 tap_flow_isolate(struct rte_eth_dev *dev,
 		 int set,
 		 struct rte_flow_error *error);
+
+static int bpf_rss_key(enum bpf_rss_key_e cmd, __u32 *key_idx);
+static int rss_enable(struct pmd_internals *pmd,
+			const struct rte_flow_attr *attr,
+			struct rte_flow_error *error);
+static int rss_add_actions(struct rte_flow *flow, struct pmd_internals *pmd,
+			const struct rte_flow_action_rss *rss,
+			struct rte_flow_error *error);
 
 static const struct rte_flow_ops tap_flow_ops = {
 	.validate = tap_flow_validate,
@@ -197,13 +270,13 @@ static const struct tap_flow_items tap_flow_items[] = {
 		.items = ITEMS(RTE_FLOW_ITEM_TYPE_IPV4,
 			       RTE_FLOW_ITEM_TYPE_IPV6),
 		.mask = &(const struct rte_flow_item_vlan){
-			.tpid = -1,
 			/* DEI matching is not supported */
 #if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 			.tci = 0xffef,
 #else
 			.tci = 0xefff,
 #endif
+			.inner_type = -1,
 		},
 		.mask_sz = sizeof(struct rte_flow_item_vlan),
 		.default_mask = &rte_flow_item_vlan_mask,
@@ -465,16 +538,16 @@ tap_flow_create_eth(const struct rte_flow_item *item, void *data)
 		return 0;
 	msg = &flow->msg;
 	if (!is_zero_ether_addr(&mask->dst)) {
-		nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST, ETHER_ADDR_LEN,
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST, ETHER_ADDR_LEN,
 			   &spec->dst.addr_bytes);
-		nlattr_add(&msg->nh,
+		tap_nlattr_add(&msg->nh,
 			   TCA_FLOWER_KEY_ETH_DST_MASK, ETHER_ADDR_LEN,
 			   &mask->dst.addr_bytes);
 	}
 	if (!is_zero_ether_addr(&mask->src)) {
-		nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC, ETHER_ADDR_LEN,
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC, ETHER_ADDR_LEN,
 			   &spec->src.addr_bytes);
-		nlattr_add(&msg->nh,
+		tap_nlattr_add(&msg->nh,
 			   TCA_FLOWER_KEY_ETH_SRC_MASK, ETHER_ADDR_LEN,
 			   &mask->src.addr_bytes);
 	}
@@ -505,13 +578,19 @@ tap_flow_create_vlan(const struct rte_flow_item *item, void *data)
 	/* use default mask if none provided */
 	if (!mask)
 		mask = tap_flow_items[RTE_FLOW_ITEM_TYPE_VLAN].default_mask;
-	/* TC does not support tpid masking. Only accept if exact match. */
-	if (mask->tpid && mask->tpid != 0xffff)
+	/* Outer TPID cannot be matched. */
+	if (info->eth_type)
 		return -1;
 	/* Double-tagging not supported. */
-	if (spec && mask->tpid && spec->tpid != htons(ETH_P_8021Q))
+	if (info->vlan)
 		return -1;
 	info->vlan = 1;
+	if (mask->inner_type) {
+		/* TC does not support partial eth_type masking */
+		if (mask->inner_type != RTE_BE16(0xffff))
+			return -1;
+		info->eth_type = spec->inner_type;
+	}
 	if (!flow)
 		return 0;
 	msg = &flow->msg;
@@ -526,9 +605,11 @@ tap_flow_create_vlan(const struct rte_flow_item *item, void *data)
 		uint8_t vid = VLAN_ID(tci);
 
 		if (prio)
-			nlattr_add8(&msg->nh, TCA_FLOWER_KEY_VLAN_PRIO, prio);
+			tap_nlattr_add8(&msg->nh,
+					TCA_FLOWER_KEY_VLAN_PRIO, prio);
 		if (vid)
-			nlattr_add16(&msg->nh, TCA_FLOWER_KEY_VLAN_ID, vid);
+			tap_nlattr_add16(&msg->nh,
+					 TCA_FLOWER_KEY_VLAN_ID, vid);
 	}
 	return 0;
 }
@@ -571,19 +652,19 @@ tap_flow_create_ipv4(const struct rte_flow_item *item, void *data)
 	if (!spec)
 		return 0;
 	if (mask->hdr.dst_addr) {
-		nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_DST,
+		tap_nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_DST,
 			     spec->hdr.dst_addr);
-		nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_DST_MASK,
+		tap_nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_DST_MASK,
 			     mask->hdr.dst_addr);
 	}
 	if (mask->hdr.src_addr) {
-		nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_SRC,
+		tap_nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_SRC,
 			     spec->hdr.src_addr);
-		nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_SRC_MASK,
+		tap_nlattr_add32(&msg->nh, TCA_FLOWER_KEY_IPV4_SRC_MASK,
 			     mask->hdr.src_addr);
 	}
 	if (spec->hdr.next_proto_id)
-		nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO,
+		tap_nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO,
 			    spec->hdr.next_proto_id);
 	return 0;
 }
@@ -627,19 +708,20 @@ tap_flow_create_ipv6(const struct rte_flow_item *item, void *data)
 	if (!spec)
 		return 0;
 	if (memcmp(mask->hdr.dst_addr, empty_addr, 16)) {
-		nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_DST,
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_DST,
 			   sizeof(spec->hdr.dst_addr), &spec->hdr.dst_addr);
-		nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_DST_MASK,
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_DST_MASK,
 			   sizeof(mask->hdr.dst_addr), &mask->hdr.dst_addr);
 	}
 	if (memcmp(mask->hdr.src_addr, empty_addr, 16)) {
-		nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_SRC,
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_SRC,
 			   sizeof(spec->hdr.src_addr), &spec->hdr.src_addr);
-		nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_SRC_MASK,
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_IPV6_SRC_MASK,
 			   sizeof(mask->hdr.src_addr), &mask->hdr.src_addr);
 	}
 	if (spec->hdr.proto)
-		nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO, spec->hdr.proto);
+		tap_nlattr_add8(&msg->nh,
+				TCA_FLOWER_KEY_IP_PROTO, spec->hdr.proto);
 	return 0;
 }
 
@@ -677,14 +759,14 @@ tap_flow_create_udp(const struct rte_flow_item *item, void *data)
 	if (!flow)
 		return 0;
 	msg = &flow->msg;
-	nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO, IPPROTO_UDP);
+	tap_nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO, IPPROTO_UDP);
 	if (!spec)
 		return 0;
 	if (mask->hdr.dst_port)
-		nlattr_add16(&msg->nh, TCA_FLOWER_KEY_UDP_DST,
+		tap_nlattr_add16(&msg->nh, TCA_FLOWER_KEY_UDP_DST,
 			     spec->hdr.dst_port);
 	if (mask->hdr.src_port)
-		nlattr_add16(&msg->nh, TCA_FLOWER_KEY_UDP_SRC,
+		tap_nlattr_add16(&msg->nh, TCA_FLOWER_KEY_UDP_SRC,
 			     spec->hdr.src_port);
 	return 0;
 }
@@ -723,14 +805,14 @@ tap_flow_create_tcp(const struct rte_flow_item *item, void *data)
 	if (!flow)
 		return 0;
 	msg = &flow->msg;
-	nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO, IPPROTO_TCP);
+	tap_nlattr_add8(&msg->nh, TCA_FLOWER_KEY_IP_PROTO, IPPROTO_TCP);
 	if (!spec)
 		return 0;
 	if (mask->hdr.dst_port)
-		nlattr_add16(&msg->nh, TCA_FLOWER_KEY_TCP_DST,
+		tap_nlattr_add16(&msg->nh, TCA_FLOWER_KEY_TCP_DST,
 			     spec->hdr.dst_port);
 	if (mask->hdr.src_port)
-		nlattr_add16(&msg->nh, TCA_FLOWER_KEY_TCP_SRC,
+		tap_nlattr_add16(&msg->nh, TCA_FLOWER_KEY_TCP_SRC,
 			     spec->hdr.src_port);
 	return 0;
 }
@@ -816,112 +898,98 @@ tap_flow_item_validate(const struct rte_flow_item *item,
 }
 
 /**
- * Transform a DROP/PASSTHRU action item in the provided flow for TC.
+ * Configure the kernel with a TC action and its configured parameters
+ * Handled actions: "gact", "mirred", "skbedit", "bpf"
  *
- * @param[in, out] flow
- *   Flow to be filled.
- * @param[in] action
- *   Appropriate action to be set in the TCA_GACT_PARMS structure.
+ * @param[in] flow
+ *   Pointer to rte flow containing the netlink message
+ *
+ * @param[in, out] act_index
+ *   Pointer to action sequence number in the TC command
+ *
+ * @param[in] adata
+ *  Pointer to struct holding the action parameters
  *
  * @return
- *   0 if checks are alright, -1 otherwise.
+ *   -1 on failure, 0 on success
  */
 static int
-add_action_gact(struct rte_flow *flow, int action)
+add_action(struct rte_flow *flow, size_t *act_index, struct action_data *adata)
 {
 	struct nlmsg *msg = &flow->msg;
-	size_t act_index = 1;
-	struct tc_gact p = {
-		.action = action
-	};
 
-	if (nlattr_nested_start(msg, TCA_FLOWER_ACT) < 0)
+	if (tap_nlattr_nested_start(msg, (*act_index)++) < 0)
 		return -1;
-	if (nlattr_nested_start(msg, act_index++) < 0)
+
+	tap_nlattr_add(&msg->nh, TCA_ACT_KIND,
+				strlen(adata->id) + 1, adata->id);
+	if (tap_nlattr_nested_start(msg, TCA_ACT_OPTIONS) < 0)
 		return -1;
-	nlattr_add(&msg->nh, TCA_ACT_KIND, sizeof("gact"), "gact");
-	if (nlattr_nested_start(msg, TCA_ACT_OPTIONS) < 0)
+	if (strcmp("gact", adata->id) == 0) {
+		tap_nlattr_add(&msg->nh, TCA_GACT_PARMS, sizeof(adata->gact),
+			   &adata->gact);
+	} else if (strcmp("mirred", adata->id) == 0) {
+		if (adata->mirred.eaction == TCA_EGRESS_MIRROR)
+			adata->mirred.action = TC_ACT_PIPE;
+		else /* REDIRECT */
+			adata->mirred.action = TC_ACT_STOLEN;
+		tap_nlattr_add(&msg->nh, TCA_MIRRED_PARMS,
+			   sizeof(adata->mirred),
+			   &adata->mirred);
+	} else if (strcmp("skbedit", adata->id) == 0) {
+		tap_nlattr_add(&msg->nh, TCA_SKBEDIT_PARMS,
+			   sizeof(adata->skbedit.skbedit),
+			   &adata->skbedit.skbedit);
+		tap_nlattr_add16(&msg->nh, TCA_SKBEDIT_QUEUE_MAPPING,
+			     adata->skbedit.queue);
+	} else if (strcmp("bpf", adata->id) == 0) {
+		tap_nlattr_add32(&msg->nh, TCA_ACT_BPF_FD, adata->bpf.bpf_fd);
+		tap_nlattr_add(&msg->nh, TCA_ACT_BPF_NAME,
+			   strlen(adata->bpf.annotation) + 1,
+			   adata->bpf.annotation);
+		tap_nlattr_add(&msg->nh, TCA_ACT_BPF_PARMS,
+			   sizeof(adata->bpf.bpf),
+			   &adata->bpf.bpf);
+	} else {
 		return -1;
-	nlattr_add(&msg->nh, TCA_GACT_PARMS, sizeof(p), &p);
-	nlattr_nested_finish(msg); /* nested TCA_ACT_OPTIONS */
-	nlattr_nested_finish(msg); /* nested act_index */
-	nlattr_nested_finish(msg); /* nested TCA_FLOWER_ACT */
+	}
+	tap_nlattr_nested_finish(msg); /* nested TCA_ACT_OPTIONS */
+	tap_nlattr_nested_finish(msg); /* nested act_index */
 	return 0;
 }
 
 /**
- * Transform a MIRRED action item in the provided flow for TC.
+ * Helper function to send a serie of TC actions to the kernel
  *
- * @param[in, out] flow
- *   Flow to be filled.
- * @param[in] ifindex
- *   Netdevice ifindex, where to mirror/redirect packet to.
- * @param[in] action_type
- *   Either TCA_EGRESS_REDIR for redirection or TCA_EGRESS_MIRROR for mirroring.
+ * @param[in] flow
+ *   Pointer to rte flow containing the netlink message
+ *
+ * @param[in] nb_actions
+ *   Number of actions in an array of action structs
+ *
+ * @param[in] data
+ *   Pointer to an array of action structs
+ *
+ * @param[in] classifier_actions
+ *   The classifier on behave of which the actions are configured
  *
  * @return
- *   0 if checks are alright, -1 otherwise.
+ *   -1 on failure, 0 on success
  */
 static int
-add_action_mirred(struct rte_flow *flow, uint16_t ifindex, uint16_t action_type)
+add_actions(struct rte_flow *flow, int nb_actions, struct action_data *data,
+	    int classifier_action)
 {
 	struct nlmsg *msg = &flow->msg;
 	size_t act_index = 1;
-	struct tc_mirred p = {
-		.eaction = action_type,
-		.ifindex = ifindex,
-	};
+	int i;
 
-	if (nlattr_nested_start(msg, TCA_FLOWER_ACT) < 0)
+	if (tap_nlattr_nested_start(msg, classifier_action) < 0)
 		return -1;
-	if (nlattr_nested_start(msg, act_index++) < 0)
-		return -1;
-	nlattr_add(&msg->nh, TCA_ACT_KIND, sizeof("mirred"), "mirred");
-	if (nlattr_nested_start(msg, TCA_ACT_OPTIONS) < 0)
-		return -1;
-	if (action_type == TCA_EGRESS_MIRROR)
-		p.action = TC_ACT_PIPE;
-	else /* REDIRECT */
-		p.action = TC_ACT_STOLEN;
-	nlattr_add(&msg->nh, TCA_MIRRED_PARMS, sizeof(p), &p);
-	nlattr_nested_finish(msg); /* nested TCA_ACT_OPTIONS */
-	nlattr_nested_finish(msg); /* nested act_index */
-	nlattr_nested_finish(msg); /* nested TCA_FLOWER_ACT */
-	return 0;
-}
-
-/**
- * Transform a QUEUE action item in the provided flow for TC.
- *
- * @param[in, out] flow
- *   Flow to be filled.
- * @param[in] queue
- *   Queue id to use.
- *
- * @return
- *   0 if checks are alright, -1 otherwise.
- */
-static int
-add_action_skbedit(struct rte_flow *flow, uint16_t queue)
-{
-	struct nlmsg *msg = &flow->msg;
-	size_t act_index = 1;
-	struct tc_skbedit p = {
-		.action = TC_ACT_PIPE
-	};
-
-	if (nlattr_nested_start(msg, TCA_FLOWER_ACT) < 0)
-		return -1;
-	if (nlattr_nested_start(msg, act_index++) < 0)
-		return -1;
-	nlattr_add(&msg->nh, TCA_ACT_KIND, sizeof("skbedit"), "skbedit");
-	if (nlattr_nested_start(msg, TCA_ACT_OPTIONS) < 0)
-		return -1;
-	nlattr_add(&msg->nh, TCA_SKBEDIT_PARMS, sizeof(p), &p);
-	nlattr_add16(&msg->nh, TCA_SKBEDIT_QUEUE_MAPPING, queue);
-	nlattr_nested_finish(msg); /* nested TCA_ACT_OPTIONS */
-	nlattr_nested_finish(msg); /* nested act_index */
-	nlattr_nested_finish(msg); /* nested TCA_FLOWER_ACT */
+	for (i = 0; i < nb_actions; i++)
+		if (add_action(flow, &act_index, data + i) < 0)
+			return -1;
+	tap_nlattr_nested_finish(msg); /* nested TCA_FLOWER_ACT */
 	return 0;
 }
 
@@ -971,6 +1039,12 @@ priv_flow_process(struct pmd_internals *pmd,
 	};
 	int action = 0; /* Only one action authorized for now */
 
+	if (attr->transfer) {
+		rte_flow_error_set(
+			error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
+			NULL, "transfer is not supported");
+		return -rte_errno;
+	}
 	if (attr->group > MAX_GROUP) {
 		rte_flow_error_set(
 			error, EINVAL, RTE_FLOW_ERROR_TYPE_ATTR_GROUP,
@@ -984,7 +1058,8 @@ priv_flow_process(struct pmd_internals *pmd,
 		return -rte_errno;
 	} else if (flow) {
 		uint16_t group = attr->group << GROUP_SHIFT;
-		uint16_t prio = group | (attr->priority + PRIORITY_OFFSET);
+		uint16_t prio = group | (attr->priority +
+				RSS_PRIORITY_OFFSET + PRIORITY_OFFSET);
 		flow->msg.t.tcm_info = TC_H_MAKE(prio << 16,
 						 flow->msg.t.tcm_info);
 	}
@@ -1004,8 +1079,8 @@ priv_flow_process(struct pmd_internals *pmd,
 				TC_H_MAKE(MULTIQ_MAJOR_HANDLE, 0);
 		}
 		/* use flower filter type */
-		nlattr_add(&flow->msg.nh, TCA_KIND, sizeof("flower"), "flower");
-		if (nlattr_nested_start(&flow->msg, TCA_OPTIONS) < 0)
+		tap_nlattr_add(&flow->msg.nh, TCA_KIND, sizeof("flower"), "flower");
+		if (tap_nlattr_nested_start(&flow->msg, TCA_OPTIONS) < 0)
 			goto exit_item_not_supported;
 	}
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; ++items) {
@@ -1041,19 +1116,24 @@ priv_flow_process(struct pmd_internals *pmd,
 	}
 	if (flow) {
 		if (data.vlan) {
-			nlattr_add16(&flow->msg.nh, TCA_FLOWER_KEY_ETH_TYPE,
+			tap_nlattr_add16(&flow->msg.nh, TCA_FLOWER_KEY_ETH_TYPE,
 				     htons(ETH_P_8021Q));
-			nlattr_add16(&flow->msg.nh,
+			tap_nlattr_add16(&flow->msg.nh,
 				     TCA_FLOWER_KEY_VLAN_ETH_TYPE,
 				     data.eth_type ?
 				     data.eth_type : htons(ETH_P_ALL));
 		} else if (data.eth_type) {
-			nlattr_add16(&flow->msg.nh, TCA_FLOWER_KEY_ETH_TYPE,
+			tap_nlattr_add16(&flow->msg.nh, TCA_FLOWER_KEY_ETH_TYPE,
 				     data.eth_type);
 		}
 	}
 	if (mirred && flow) {
-		uint16_t if_index = pmd->if_index;
+		struct action_data adata = {
+			.id = "mirred",
+			.mirred = {
+				.eaction = mirred,
+			},
+		};
 
 		/*
 		 * If attr->egress && mirred, then this is a special
@@ -1061,13 +1141,18 @@ priv_flow_process(struct pmd_internals *pmd,
 		 * redirect packets coming from the DPDK App, out
 		 * through the remote netdevice.
 		 */
-		if (attr->egress)
-			if_index = pmd->remote_if_index;
-		if (add_action_mirred(flow, if_index, mirred) < 0)
+		adata.mirred.ifindex = attr->ingress ? pmd->if_index :
+			pmd->remote_if_index;
+		if (mirred == TCA_EGRESS_MIRROR)
+			adata.mirred.action = TC_ACT_PIPE;
+		else
+			adata.mirred.action = TC_ACT_STOLEN;
+		if (add_actions(flow, 1, &adata, TCA_FLOWER_ACT) < 0)
 			goto exit_action_not_supported;
 		else
 			goto end;
 	}
+actions:
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; ++actions) {
 		int err = 0;
 
@@ -1077,14 +1162,33 @@ priv_flow_process(struct pmd_internals *pmd,
 			if (action)
 				goto exit_action_not_supported;
 			action = 1;
-			if (flow)
-				err = add_action_gact(flow, TC_ACT_SHOT);
+			if (flow) {
+				struct action_data adata = {
+					.id = "gact",
+					.gact = {
+						.action = TC_ACT_SHOT,
+					},
+				};
+
+				err = add_actions(flow, 1, &adata,
+						  TCA_FLOWER_ACT);
+			}
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_PASSTHRU) {
 			if (action)
 				goto exit_action_not_supported;
 			action = 1;
-			if (flow)
-				err = add_action_gact(flow, TC_ACT_UNSPEC);
+			if (flow) {
+				struct action_data adata = {
+					.id = "gact",
+					.gact = {
+						/* continue */
+						.action = TC_ACT_UNSPEC,
+					},
+				};
+
+				err = add_actions(flow, 1, &adata,
+						  TCA_FLOWER_ACT);
+			}
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_QUEUE) {
 			const struct rte_flow_action_queue *queue =
 				(const struct rte_flow_action_queue *)
@@ -1096,31 +1200,54 @@ priv_flow_process(struct pmd_internals *pmd,
 			if (!queue ||
 			    (queue->index > pmd->dev->data->nb_rx_queues - 1))
 				goto exit_action_not_supported;
-			if (flow)
-				err = add_action_skbedit(flow, queue->index);
+			if (flow) {
+				struct action_data adata = {
+					.id = "skbedit",
+					.skbedit = {
+						.skbedit = {
+							.action = TC_ACT_PIPE,
+						},
+						.queue = queue->index,
+					},
+				};
+
+				err = add_actions(flow, 1, &adata,
+					TCA_FLOWER_ACT);
+			}
 		} else if (actions->type == RTE_FLOW_ACTION_TYPE_RSS) {
-			/* Fake RSS support. */
 			const struct rte_flow_action_rss *rss =
 				(const struct rte_flow_action_rss *)
 				actions->conf;
 
-			if (action)
+			if (action++)
 				goto exit_action_not_supported;
-			action = 1;
-			if (!rss || rss->num < 1 ||
-			    (rss->queue[0] > pmd->dev->data->nb_rx_queues - 1))
-				goto exit_action_not_supported;
+
+			if (!pmd->rss_enabled) {
+				err = rss_enable(pmd, attr, error);
+				if (err)
+					goto exit_action_not_supported;
+			}
 			if (flow)
-				err = add_action_skbedit(flow, rss->queue[0]);
+				err = rss_add_actions(flow, pmd, rss, error);
 		} else {
 			goto exit_action_not_supported;
 		}
 		if (err)
 			goto exit_action_not_supported;
 	}
+	/* When fate is unknown, drop traffic. */
+	if (!action) {
+		static const struct rte_flow_action drop[] = {
+			{ .type = RTE_FLOW_ACTION_TYPE_DROP, },
+			{ .type = RTE_FLOW_ACTION_TYPE_END, },
+		};
+
+		actions = drop;
+		goto actions;
+	}
 end:
 	if (flow)
-		nlattr_nested_finish(&flow->msg); /* nested TCA_OPTIONS */
+		tap_nlattr_nested_finish(&flow->msg); /* nested TCA_OPTIONS */
 	return 0;
 exit_item_not_supported:
 	rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1184,6 +1311,38 @@ tap_flow_set_handle(struct rte_flow *flow)
 }
 
 /**
+ * Free the flow opened file descriptors and allocated memory
+ *
+ * @param[in] flow
+ *   Pointer to the flow to free
+ *
+ */
+static void
+tap_flow_free(struct pmd_internals *pmd, struct rte_flow *flow)
+{
+	int i;
+
+	if (!flow)
+		return;
+
+	if (pmd->rss_enabled) {
+		/* Close flow BPF file descriptors */
+		for (i = 0; i < SEC_MAX; i++)
+			if (flow->bpf_fd[i] != 0) {
+				close(flow->bpf_fd[i]);
+				flow->bpf_fd[i] = 0;
+			}
+
+		/* Release the map key for this RSS rule */
+		bpf_rss_key(KEY_CMD_RELEASE, &flow->key_idx);
+		flow->key_idx = 0;
+	}
+
+	/* Free flow allocated memory */
+	rte_free(flow);
+}
+
+/**
  * Create a flow.
  *
  * @see rte_flow_create()
@@ -1232,16 +1391,16 @@ tap_flow_create(struct rte_eth_dev *dev,
 	tap_flow_set_handle(flow);
 	if (priv_flow_process(pmd, attr, items, actions, error, flow, 0))
 		goto fail;
-	err = nl_send(pmd->nlsk_fd, &msg->nh);
+	err = tap_nl_send(pmd->nlsk_fd, &msg->nh);
 	if (err < 0) {
 		rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "couldn't send request to kernel");
 		goto fail;
 	}
-	err = nl_recv_ack(pmd->nlsk_fd);
+	err = tap_nl_recv_ack(pmd->nlsk_fd);
 	if (err < 0) {
-		RTE_LOG(ERR, PMD,
-			"Kernel refused TC filter rule creation (%d): %s\n",
+		TAP_LOG(ERR,
+			"Kernel refused TC filter rule creation (%d): %s",
 			errno, strerror(errno));
 		rte_flow_error_set(error, EEXIST, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL,
@@ -1276,17 +1435,17 @@ tap_flow_create(struct rte_eth_dev *dev,
 				NULL, "rte flow rule validation failed");
 			goto fail;
 		}
-		err = nl_send(pmd->nlsk_fd, &msg->nh);
+		err = tap_nl_send(pmd->nlsk_fd, &msg->nh);
 		if (err < 0) {
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				NULL, "Failure sending nl request");
 			goto fail;
 		}
-		err = nl_recv_ack(pmd->nlsk_fd);
+		err = tap_nl_recv_ack(pmd->nlsk_fd);
 		if (err < 0) {
-			RTE_LOG(ERR, PMD,
-				"Kernel refused TC filter rule creation (%d): %s\n",
+			TAP_LOG(ERR,
+				"Kernel refused TC filter rule creation (%d): %s",
 				errno, strerror(errno));
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
@@ -1301,7 +1460,7 @@ fail:
 	if (remote_flow)
 		rte_free(remote_flow);
 	if (flow)
-		rte_free(flow);
+		tap_flow_free(pmd, flow);
 	return NULL;
 }
 
@@ -1329,42 +1488,43 @@ tap_flow_destroy_pmd(struct pmd_internals *pmd,
 	flow->msg.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
 	flow->msg.nh.nlmsg_type = RTM_DELTFILTER;
 
-	ret = nl_send(pmd->nlsk_fd, &flow->msg.nh);
+	ret = tap_nl_send(pmd->nlsk_fd, &flow->msg.nh);
 	if (ret < 0) {
 		rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "couldn't send request to kernel");
 		goto end;
 	}
-	ret = nl_recv_ack(pmd->nlsk_fd);
+	ret = tap_nl_recv_ack(pmd->nlsk_fd);
 	/* If errno is ENOENT, the rule is already no longer in the kernel. */
 	if (ret < 0 && errno == ENOENT)
 		ret = 0;
 	if (ret < 0) {
-		RTE_LOG(ERR, PMD,
-			"Kernel refused TC filter rule deletion (%d): %s\n",
+		TAP_LOG(ERR,
+			"Kernel refused TC filter rule deletion (%d): %s",
 			errno, strerror(errno));
 		rte_flow_error_set(
 			error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 			"couldn't receive kernel ack to our request");
 		goto end;
 	}
+
 	if (remote_flow) {
 		remote_flow->msg.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
 		remote_flow->msg.nh.nlmsg_type = RTM_DELTFILTER;
 
-		ret = nl_send(pmd->nlsk_fd, &remote_flow->msg.nh);
+		ret = tap_nl_send(pmd->nlsk_fd, &remote_flow->msg.nh);
 		if (ret < 0) {
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				NULL, "Failure sending nl request");
 			goto end;
 		}
-		ret = nl_recv_ack(pmd->nlsk_fd);
+		ret = tap_nl_recv_ack(pmd->nlsk_fd);
 		if (ret < 0 && errno == ENOENT)
 			ret = 0;
 		if (ret < 0) {
-			RTE_LOG(ERR, PMD,
-				"Kernel refused TC filter rule deletion (%d): %s\n",
+			TAP_LOG(ERR,
+				"Kernel refused TC filter rule deletion (%d): %s",
 				errno, strerror(errno));
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
@@ -1375,7 +1535,7 @@ tap_flow_destroy_pmd(struct pmd_internals *pmd,
 end:
 	if (remote_flow)
 		rte_free(remote_flow);
-	rte_free(flow);
+	tap_flow_free(pmd, flow);
 	return ret;
 }
 
@@ -1407,32 +1567,37 @@ tap_flow_isolate(struct rte_eth_dev *dev,
 		 struct rte_flow_error *error __rte_unused)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	struct pmd_process_private *process_private = dev->process_private;
 
+	/* normalize 'set' variable to contain 0 or 1 values */
 	if (set)
-		pmd->flow_isolate = 1;
-	else
-		pmd->flow_isolate = 0;
+		set = 1;
+	/* if already in the right isolation mode - nothing to do */
+	if ((set ^ pmd->flow_isolate) == 0)
+		return 0;
+	/* mark the isolation mode for tap_flow_implicit_create() */
+	pmd->flow_isolate = set;
 	/*
 	 * If netdevice is there, setup appropriate flow rules immediately.
 	 * Otherwise it will be set when bringing up the netdevice (tun_alloc).
 	 */
-	if (!pmd->rxq[0].fd)
+	if (!process_private->rxq_fds[0])
 		return 0;
 	if (set) {
-		struct rte_flow *flow;
+		struct rte_flow *remote_flow;
 
 		while (1) {
-			flow = LIST_FIRST(&pmd->implicit_flows);
-			if (!flow)
+			remote_flow = LIST_FIRST(&pmd->implicit_flows);
+			if (!remote_flow)
 				break;
 			/*
 			 * Remove all implicit rules on the remote.
 			 * Keep the local rule to redirect packets on TX.
 			 * Keep also the last implicit local rule: ISOLATE.
 			 */
-			if (flow->msg.t.tcm_ifindex == pmd->if_index)
+			if (remote_flow->msg.t.tcm_ifindex == pmd->if_index)
 				break;
-			if (tap_flow_destroy_pmd(pmd, flow, NULL) < 0)
+			if (tap_flow_destroy_pmd(pmd, remote_flow, NULL) < 0)
 				goto error;
 		}
 		/* Switch the TC rule according to pmd->flow_isolate */
@@ -1528,7 +1693,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 
 	remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
 	if (!remote_flow) {
-		RTE_LOG(ERR, PMD, "Cannot allocate memory for rte_flow\n");
+		TAP_LOG(ERR, "Cannot allocate memory for rte_flow");
 		goto fail;
 	}
 	msg = &remote_flow->msg;
@@ -1556,29 +1721,39 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 	 * The ISOLATE rule is always present and must have a static handle, as
 	 * the action is changed whether the feature is enabled (DROP) or
 	 * disabled (PASSTHRU).
+	 * There is just one REMOTE_PROMISCUOUS rule in all cases. It should
+	 * have a static handle such that adding it twice will fail with EEXIST
+	 * with any kernel version. Remark: old kernels may falsely accept the
+	 * same REMOTE_PROMISCUOUS rules if they had different handles.
 	 */
 	if (idx == TAP_ISOLATE)
 		remote_flow->msg.t.tcm_handle = ISOLATE_HANDLE;
+	else if (idx == TAP_REMOTE_PROMISC)
+		remote_flow->msg.t.tcm_handle = REMOTE_PROMISCUOUS_HANDLE;
 	else
 		tap_flow_set_handle(remote_flow);
 	if (priv_flow_process(pmd, attr, items, actions, NULL,
 			      remote_flow, implicit_rte_flows[idx].mirred)) {
-		RTE_LOG(ERR, PMD, "rte flow rule validation failed\n");
+		TAP_LOG(ERR, "rte flow rule validation failed");
 		goto fail;
 	}
-	err = nl_send(pmd->nlsk_fd, &msg->nh);
+	err = tap_nl_send(pmd->nlsk_fd, &msg->nh);
 	if (err < 0) {
-		RTE_LOG(ERR, PMD, "Failure sending nl request\n");
+		TAP_LOG(ERR, "Failure sending nl request");
 		goto fail;
 	}
-	err = nl_recv_ack(pmd->nlsk_fd);
+	err = tap_nl_recv_ack(pmd->nlsk_fd);
 	if (err < 0) {
-		RTE_LOG(ERR, PMD,
-			"Kernel refused TC filter rule creation (%d): %s\n",
+		/* Silently ignore re-entering existing rule */
+		if (errno == EEXIST)
+			goto success;
+		TAP_LOG(ERR,
+			"Kernel refused TC filter rule creation (%d): %s",
 			errno, strerror(errno));
 		goto fail;
 	}
 	LIST_INSERT_HEAD(&pmd->implicit_flows, remote_flow, next);
+success:
 	return 0;
 fail:
 	if (remote_flow)
@@ -1632,6 +1807,356 @@ tap_flow_implicit_flush(struct pmd_internals *pmd, struct rte_flow_error *error)
 	return 0;
 }
 
+#define MAX_RSS_KEYS 256
+#define KEY_IDX_OFFSET (3 * MAX_RSS_KEYS)
+#define SEC_NAME_CLS_Q "cls_q"
+
+static const char *sec_name[SEC_MAX] = {
+	[SEC_L3_L4] = "l3_l4",
+};
+
+/**
+ * Enable RSS on tap: create TC rules for queuing.
+ *
+ * @param[in, out] pmd
+ *   Pointer to private structure.
+ *
+ * @param[in] attr
+ *   Pointer to rte_flow to get flow group
+ *
+ * @param[out] error
+ *   Pointer to error reporting if not NULL.
+ *
+ * @return 0 on success, negative value on failure.
+ */
+static int rss_enable(struct pmd_internals *pmd,
+			const struct rte_flow_attr *attr,
+			struct rte_flow_error *error)
+{
+	struct rte_flow *rss_flow = NULL;
+	struct nlmsg *msg = NULL;
+	/* 4096 is the maximum number of instructions for a BPF program */
+	char annotation[64];
+	int i;
+	int err = 0;
+
+	/* unlimit locked memory */
+	struct rlimit memlock_limit = {
+		.rlim_cur = RLIM_INFINITY,
+		.rlim_max = RLIM_INFINITY,
+	};
+	setrlimit(RLIMIT_MEMLOCK, &memlock_limit);
+
+	 /* Get a new map key for a new RSS rule */
+	err = bpf_rss_key(KEY_CMD_INIT, NULL);
+	if (err < 0) {
+		rte_flow_error_set(
+			error, EINVAL, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+			"Failed to initialize BPF RSS keys");
+
+		return -1;
+	}
+
+	/*
+	 *  Create BPF RSS MAP
+	 */
+	pmd->map_fd = tap_flow_bpf_rss_map_create(sizeof(__u32), /* key size */
+				sizeof(struct rss_key),
+				MAX_RSS_KEYS);
+	if (pmd->map_fd < 0) {
+		TAP_LOG(ERR,
+			"Failed to create BPF map (%d): %s",
+				errno, strerror(errno));
+		rte_flow_error_set(
+			error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+			"Kernel too old or not configured "
+			"to support BPF maps");
+
+		return -ENOTSUP;
+	}
+
+	/*
+	 * Add a rule per queue to match reclassified packets and direct them to
+	 * the correct queue.
+	 */
+	for (i = 0; i < pmd->dev->data->nb_rx_queues; i++) {
+		pmd->bpf_fd[i] = tap_flow_bpf_cls_q(i);
+		if (pmd->bpf_fd[i] < 0) {
+			TAP_LOG(ERR,
+				"Failed to load BPF section %s for queue %d",
+				SEC_NAME_CLS_Q, i);
+			rte_flow_error_set(
+				error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE,
+				NULL,
+				"Kernel too old or not configured "
+				"to support BPF programs loading");
+
+			return -ENOTSUP;
+		}
+
+		rss_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		if (!rss_flow) {
+			TAP_LOG(ERR,
+				"Cannot allocate memory for rte_flow");
+			return -1;
+		}
+		msg = &rss_flow->msg;
+		tc_init_msg(msg, pmd->if_index, RTM_NEWTFILTER, NLM_F_REQUEST |
+			    NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE);
+		msg->t.tcm_info = TC_H_MAKE(0, htons(ETH_P_ALL));
+		tap_flow_set_handle(rss_flow);
+		uint16_t group = attr->group << GROUP_SHIFT;
+		uint16_t prio = group | (i + PRIORITY_OFFSET);
+		msg->t.tcm_info = TC_H_MAKE(prio << 16, msg->t.tcm_info);
+		msg->t.tcm_parent = TC_H_MAKE(MULTIQ_MAJOR_HANDLE, 0);
+
+		tap_nlattr_add(&msg->nh, TCA_KIND, sizeof("bpf"), "bpf");
+		if (tap_nlattr_nested_start(msg, TCA_OPTIONS) < 0)
+			return -1;
+		tap_nlattr_add32(&msg->nh, TCA_BPF_FD, pmd->bpf_fd[i]);
+		snprintf(annotation, sizeof(annotation), "[%s%d]",
+			SEC_NAME_CLS_Q, i);
+		tap_nlattr_add(&msg->nh, TCA_BPF_NAME, strlen(annotation) + 1,
+			   annotation);
+		/* Actions */
+		{
+			struct action_data adata = {
+				.id = "skbedit",
+				.skbedit = {
+					.skbedit = {
+						.action = TC_ACT_PIPE,
+					},
+					.queue = i,
+				},
+			};
+			if (add_actions(rss_flow, 1, &adata, TCA_BPF_ACT) < 0)
+				return -1;
+		}
+		tap_nlattr_nested_finish(msg); /* nested TCA_OPTIONS */
+
+		/* Netlink message is now ready to be sent */
+		if (tap_nl_send(pmd->nlsk_fd, &msg->nh) < 0)
+			return -1;
+		err = tap_nl_recv_ack(pmd->nlsk_fd);
+		if (err < 0) {
+			TAP_LOG(ERR,
+				"Kernel refused TC filter rule creation (%d): %s",
+				errno, strerror(errno));
+			return err;
+		}
+		LIST_INSERT_HEAD(&pmd->rss_flows, rss_flow, next);
+	}
+
+	pmd->rss_enabled = 1;
+	return err;
+}
+
+/**
+ * Manage bpf RSS keys repository with operations: init, get, release
+ *
+ * @param[in] cmd
+ *   Command on RSS keys: init, get, release
+ *
+ * @param[in, out] key_idx
+ *   Pointer to RSS Key index (out for get command, in for release command)
+ *
+ * @return -1 if couldn't get, release or init the RSS keys, 0 otherwise.
+ */
+static int bpf_rss_key(enum bpf_rss_key_e cmd, __u32 *key_idx)
+{
+	__u32 i;
+	int err = 0;
+	static __u32 num_used_keys;
+	static __u32 rss_keys[MAX_RSS_KEYS] = {KEY_STAT_UNSPEC};
+	static __u32 rss_keys_initialized;
+	__u32 key;
+
+	switch (cmd) {
+	case KEY_CMD_GET:
+		if (!rss_keys_initialized) {
+			err = -1;
+			break;
+		}
+
+		if (num_used_keys == RTE_DIM(rss_keys)) {
+			err = -1;
+			break;
+		}
+
+		*key_idx = num_used_keys % RTE_DIM(rss_keys);
+		while (rss_keys[*key_idx] == KEY_STAT_USED)
+			*key_idx = (*key_idx + 1) % RTE_DIM(rss_keys);
+
+		rss_keys[*key_idx] = KEY_STAT_USED;
+
+		/*
+		 * Add an offset to key_idx in order to handle a case of
+		 * RSS and non RSS flows mixture.
+		 * If a non RSS flow is destroyed it has an eBPF map
+		 * index 0 (initialized on flow creation) and might
+		 * unintentionally remove RSS entry 0 from eBPF map.
+		 * To avoid this issue, add an offset to the real index
+		 * during a KEY_CMD_GET operation and subtract this offset
+		 * during a KEY_CMD_RELEASE operation in order to restore
+		 * the real index.
+		 */
+		*key_idx += KEY_IDX_OFFSET;
+		num_used_keys++;
+	break;
+
+	case KEY_CMD_RELEASE:
+		if (!rss_keys_initialized)
+			break;
+
+		/*
+		 * Subtract offest to restore real key index
+		 * If a non RSS flow is falsely trying to release map
+		 * entry 0 - the offset subtraction will calculate the real
+		 * map index as an out-of-range value and the release operation
+		 * will be silently ignored.
+		 */
+		key = *key_idx - KEY_IDX_OFFSET;
+		if (key >= RTE_DIM(rss_keys))
+			break;
+
+		if (rss_keys[key] == KEY_STAT_USED) {
+			rss_keys[key] = KEY_STAT_AVAILABLE;
+			num_used_keys--;
+		}
+	break;
+
+	case KEY_CMD_INIT:
+		for (i = 0; i < RTE_DIM(rss_keys); i++)
+			rss_keys[i] = KEY_STAT_AVAILABLE;
+
+		rss_keys_initialized = 1;
+		num_used_keys = 0;
+	break;
+
+	case KEY_CMD_DEINIT:
+		for (i = 0; i < RTE_DIM(rss_keys); i++)
+			rss_keys[i] = KEY_STAT_UNSPEC;
+
+		rss_keys_initialized = 0;
+		num_used_keys = 0;
+	break;
+
+	default:
+		break;
+	}
+
+	return err;
+}
+
+/**
+ * Add RSS hash calculations and queue selection
+ *
+ * @param[in, out] pmd
+ *   Pointer to internal structure. Used to set/get RSS map fd
+ *
+ * @param[in] rss
+ *   Pointer to RSS flow actions
+ *
+ * @param[out] error
+ *   Pointer to error reporting if not NULL.
+ *
+ * @return 0 on success, negative value on failure
+ */
+static int rss_add_actions(struct rte_flow *flow, struct pmd_internals *pmd,
+			   const struct rte_flow_action_rss *rss,
+			   struct rte_flow_error *error)
+{
+	/* 4096 is the maximum number of instructions for a BPF program */
+	unsigned int i;
+	int err;
+	struct rss_key rss_entry = { .hash_fields = 0,
+				     .key_size = 0 };
+
+	/* Check supported RSS features */
+	if (rss->func != RTE_ETH_HASH_FUNCTION_DEFAULT)
+		return rte_flow_error_set
+			(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			 "non-default RSS hash functions are not supported");
+	if (rss->level)
+		return rte_flow_error_set
+			(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+			 "a nonzero RSS encapsulation level is not supported");
+
+	/* Get a new map key for a new RSS rule */
+	err = bpf_rss_key(KEY_CMD_GET, &flow->key_idx);
+	if (err < 0) {
+		rte_flow_error_set(
+			error, EINVAL, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+			"Failed to get BPF RSS key");
+
+		return -1;
+	}
+
+	/* Update RSS map entry with queues */
+	rss_entry.nb_queues = rss->queue_num;
+	for (i = 0; i < rss->queue_num; i++)
+		rss_entry.queues[i] = rss->queue[i];
+	rss_entry.hash_fields =
+		(1 << HASH_FIELD_IPV4_L3_L4) | (1 << HASH_FIELD_IPV6_L3_L4);
+
+	/* Add this RSS entry to map */
+	err = tap_flow_bpf_update_rss_elem(pmd->map_fd,
+				&flow->key_idx, &rss_entry);
+
+	if (err) {
+		TAP_LOG(ERR,
+			"Failed to update BPF map entry #%u (%d): %s",
+			flow->key_idx, errno, strerror(errno));
+		rte_flow_error_set(
+			error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+			"Kernel too old or not configured "
+			"to support BPF maps updates");
+
+		return -ENOTSUP;
+	}
+
+
+	/*
+	 * Load bpf rules to calculate hash for this key_idx
+	 */
+
+	flow->bpf_fd[SEC_L3_L4] =
+		tap_flow_bpf_calc_l3_l4_hash(flow->key_idx, pmd->map_fd);
+	if (flow->bpf_fd[SEC_L3_L4] < 0) {
+		TAP_LOG(ERR,
+			"Failed to load BPF section %s (%d): %s",
+				sec_name[SEC_L3_L4], errno, strerror(errno));
+		rte_flow_error_set(
+			error, ENOTSUP, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+			"Kernel too old or not configured "
+			"to support BPF program loading");
+
+		return -ENOTSUP;
+	}
+
+	/* Actions */
+	{
+		struct action_data adata[] = {
+			{
+				.id = "bpf",
+				.bpf = {
+					.bpf_fd = flow->bpf_fd[SEC_L3_L4],
+					.annotation = sec_name[SEC_L3_L4],
+					.bpf = {
+						.action = TC_ACT_PIPE,
+					},
+				},
+			},
+		};
+
+		if (add_actions(flow, RTE_DIM(adata), adata,
+			TCA_FLOWER_ACT) < 0)
+			return -1;
+	}
+
+	return 0;
+}
+
 /**
  * Manage filter operations.
  *
@@ -1660,9 +2185,8 @@ tap_dev_filter_ctrl(struct rte_eth_dev *dev,
 		*(const void **)arg = &tap_flow_ops;
 		return 0;
 	default:
-		RTE_LOG(ERR, PMD, "%p: filter type (%d) not supported\n",
-			(void *)dev, filter_type);
+		TAP_LOG(ERR, "%p: filter type (%d) not supported",
+			dev, filter_type);
 	}
 	return -EINVAL;
 }
-

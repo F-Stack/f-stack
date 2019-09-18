@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -54,6 +25,7 @@
 #include <rte_mempool.h>
 #include <rte_spinlock.h>
 #include <rte_malloc.h>
+#include <rte_mbuf_pool_ops.h>
 
 #include "test.h"
 
@@ -475,34 +447,6 @@ test_mempool_same_name_twice_creation(void)
 	return 0;
 }
 
-/*
- * Basic test for mempool_xmem functions.
- */
-static int
-test_mempool_xmem_misc(void)
-{
-	uint32_t elt_num, total_size;
-	size_t sz;
-	ssize_t usz;
-
-	elt_num = MAX_KEEP;
-	total_size = rte_mempool_calc_obj_size(MEMPOOL_ELT_SIZE, 0, NULL);
-	sz = rte_mempool_xmem_size(elt_num, total_size, MEMPOOL_PG_SHIFT_MAX,
-					0);
-
-	usz = rte_mempool_xmem_usage(NULL, elt_num, total_size, 0, 1,
-		MEMPOOL_PG_SHIFT_MAX, 0);
-
-	if (sz != (size_t)usz)  {
-		printf("failure @ %s: rte_mempool_xmem_usage(%u, %u) "
-			"returns: %#zx, while expected: %#zx;\n",
-			__func__, elt_num, total_size, sz, (size_t)usz);
-		return -1;
-	}
-
-	return 0;
-}
-
 static void
 walk_cb(struct rte_mempool *mp, void *userdata __rte_unused)
 {
@@ -517,6 +461,7 @@ test_mempool(void)
 	struct rte_mempool *mp_nocache = NULL;
 	struct rte_mempool *mp_stack = NULL;
 	struct rte_mempool *default_pool = NULL;
+	const char *default_pool_ops = rte_mbuf_best_mempool_ops();
 
 	rte_atomic32_init(&synchro);
 
@@ -567,8 +512,7 @@ test_mempool(void)
 	rte_mempool_obj_iter(mp_stack, my_obj_init, NULL);
 
 	/* Create a mempool based on Default handler */
-	printf("Testing %s mempool handler\n",
-	       RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+	printf("Testing %s mempool handler\n", default_pool_ops);
 	default_pool = rte_mempool_create_empty("default_pool",
 						MEMPOOL_SIZE,
 						MEMPOOL_ELT_SIZE,
@@ -580,14 +524,12 @@ test_mempool(void)
 		goto err;
 	}
 	if (rte_mempool_set_ops_byname(default_pool,
-				RTE_MBUF_DEFAULT_MEMPOOL_OPS, NULL) < 0) {
-		printf("cannot set %s handler\n",
-			RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+				default_pool_ops, NULL) < 0) {
+		printf("cannot set %s handler\n", default_pool_ops);
 		goto err;
 	}
 	if (rte_mempool_populate_default(default_pool) < 0) {
-		printf("cannot populate %s mempool\n",
-			RTE_MBUF_DEFAULT_MEMPOOL_OPS);
+		printf("cannot populate %s mempool\n", default_pool_ops);
 		goto err;
 	}
 	rte_mempool_obj_iter(default_pool, my_obj_init, NULL);
@@ -627,9 +569,6 @@ test_mempool(void)
 		goto err;
 
 	if (test_mempool_same_name_twice_creation() < 0)
-		goto err;
-
-	if (test_mempool_xmem_misc() < 0)
 		goto err;
 
 	/* test the stack handler */

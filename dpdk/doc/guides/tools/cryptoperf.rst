@@ -1,32 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2016 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2016 Intel Corporation.
 
 dpdk-test-crypto-perf Application
 =================================
@@ -86,7 +59,7 @@ To set on the linearization options add below definition to the
 **Step 3: Build the application**
 
 Execute the ``dpdk-setup.sh`` script to build the DPDK library together with the
-``dpdk-test-crypto-perf`` applcation.
+``dpdk-test-crypto-perf`` application.
 
 Initially, the user must select a DPDK target to choose the correct target type
 and compiler options to use when building the libraries.
@@ -107,7 +80,7 @@ EAL Options
 ~~~~~~~~~~~
 
 The following are the EAL command-line options that can be used in conjunction
-with the ``dpdk-test-crypto-perf`` applcation.
+with the ``dpdk-test-crypto-perf`` application.
 See the DPDK Getting Started Guides for more information on these options.
 
 *   ``-c <COREMASK>`` or ``-l <CORELIST>``
@@ -123,10 +96,10 @@ See the DPDK Getting Started Guides for more information on these options.
 
         Add a virtual device.
 
-Appication Options
-~~~~~~~~~~~~~~~~~~
+Application Options
+~~~~~~~~~~~~~~~~~~~
 
-The following are the appication command-line options:
+The following are the application command-line options:
 
 * ``--ptest type``
 
@@ -171,6 +144,20 @@ The following are the appication command-line options:
             is the maximum size (i.e. ``--buffer-sz 16:2:32``)
           * List of values, up to 32 values, separated in commas (i.e. ``--buffer-sz 32,64,128``)
 
+* ``--imix <n>``
+
+        Set the distribution of packet sizes.
+
+        A list of weights must be passed, containing the same number of items than buffer-sz,
+        so each item in this list will be the weight of the packet size on the same position
+        in the buffer-sz parameter (a list have to be passed in that parameter).
+
+        Example:
+
+        To test a distribution of 20% packets of 64 bytes, 40% packets of 100 bytes and 40% packets
+        of 256 bytes, the command line would be: ``--buffer-sz 64,100,256 --imix 20,40,40``.
+        Note that the weights do not have to be percentages, so using ``--imix 1,2,2`` would result
+        in the same distribution
 
 * ``--segment-sz <n>``
 
@@ -194,7 +181,7 @@ The following are the appication command-line options:
            crypto_dpaa2_sec
            crypto_armv8
            crypto_scheduler
-           crypto_mrvl
+           crypto_mvsam
 
 * ``--optype <name>``
 
@@ -351,13 +338,13 @@ Test Vector File
 The test vector file is a text file contain information about test vectors.
 The file is made of the sections. The first section doesn't have header.
 It contain global information used in each test variant vectors -
-typically information about plaintext, ciphertext, cipher key, aut key,
+typically information about plaintext, ciphertext, cipher key, auth key,
 initial vector. All other sections begin header.
 The sections contain particular information typically digest.
 
 **Format of the file:**
 
-Each line beginig with sign '#' contain comment and it is ignored by parser::
+Each line beginning with sign '#' contain comment and it is ignored by parser::
 
    # <comment>
 
@@ -365,16 +352,16 @@ Header line is just name in square bracket::
 
    [<section name>]
 
-Data line contain information tocken then sign '=' and
+Data line contain information token then sign '=' and
 a string of bytes in C byte array format::
 
-   <tocken> = <C byte array>
+   <token> = <C byte array>
 
-**Tockens list:**
+**Tokens list:**
 
 * ``plaintext``
 
-        Original plaintext to be crypted.
+        Original plaintext to be encrypted.
 
 * ``ciphertext``
 

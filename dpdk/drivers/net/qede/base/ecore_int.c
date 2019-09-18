@@ -1,10 +1,10 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
+
+#include <rte_string_fns.h>
 
 #include "bcm_osal.h"
 #include "ecore.h"
@@ -289,9 +289,11 @@ out:
 #define ECORE_PGLUE_ATTENTION_ILT_VALID (1 << 23)
 
 enum _ecore_status_t ecore_pglueb_rbc_attn_handler(struct ecore_hwfn *p_hwfn,
-						   struct ecore_ptt *p_ptt)
+						   struct ecore_ptt *p_ptt,
+						   bool is_hw_init)
 {
 	u32 tmp;
+	char str[512] = {0};
 
 	tmp = ecore_rd(p_hwfn, p_ptt, PGLUE_B_REG_TX_ERR_WR_DETAILS2);
 	if (tmp & ECORE_PGLUE_ATTENTION_VALID) {
@@ -303,9 +305,8 @@ enum _ecore_status_t ecore_pglueb_rbc_attn_handler(struct ecore_hwfn *p_hwfn,
 				   PGLUE_B_REG_TX_ERR_WR_ADD_63_32);
 		details = ecore_rd(p_hwfn, p_ptt,
 				   PGLUE_B_REG_TX_ERR_WR_DETAILS);
-
-		DP_NOTICE(p_hwfn, false,
-			  "Illegal write by chip to [%08x:%08x] blocked. Details: %08x [PFID %02x, VFID %02x, VF_VALID %02x] Details2 %08x [Was_error %02x BME deassert %02x FID_enable deassert %02x]\n",
+		OSAL_SNPRINTF(str, 512,
+			 "Illegal write by chip to [%08x:%08x] blocked. Details: %08x [PFID %02x, VFID %02x, VF_VALID %02x] Details2 %08x [Was_error %02x BME deassert %02x FID_enable deassert %02x]\n",
 			  addr_hi, addr_lo, details,
 			  (u8)((details &
 				ECORE_PGLUE_ATTENTION_DETAILS_PFID_MASK) >>
@@ -322,6 +323,10 @@ enum _ecore_status_t ecore_pglueb_rbc_attn_handler(struct ecore_hwfn *p_hwfn,
 				1 : 0),
 			  (u8)((tmp & ECORE_PGLUE_ATTENTION_DETAILS2_FID_EN) ?
 				1 : 0));
+		if (is_hw_init)
+			DP_VERBOSE(p_hwfn, ECORE_MSG_INTR, "%s", str);
+		else
+			DP_NOTICE(p_hwfn, false, "%s", str);
 	}
 
 	tmp = ecore_rd(p_hwfn, p_ptt, PGLUE_B_REG_TX_ERR_RD_DETAILS2);
@@ -397,7 +402,7 @@ enum _ecore_status_t ecore_pglueb_rbc_attn_handler(struct ecore_hwfn *p_hwfn,
 
 static enum _ecore_status_t ecore_pglueb_rbc_attn_cb(struct ecore_hwfn *p_hwfn)
 {
-	return ecore_pglueb_rbc_attn_handler(p_hwfn, p_hwfn->p_dpc_ptt);
+	return ecore_pglueb_rbc_attn_handler(p_hwfn, p_hwfn->p_dpc_ptt, false);
 }
 
 static enum _ecore_status_t ecore_fw_assertion(struct ecore_hwfn *p_hwfn)
@@ -423,14 +428,13 @@ ecore_general_attention_35(struct ecore_hwfn *p_hwfn)
 #define ECORE_DORQ_ATTENTION_SIZE_MASK		(0x7f)
 #define ECORE_DORQ_ATTENTION_SIZE_SHIFT		(16)
 
-#define ECORE_DB_REC_COUNT			10
+#define ECORE_DB_REC_COUNT			1000
 #define ECORE_DB_REC_INTERVAL			100
 
-/* assumes sticky overflow indication was set for this PF */
-static enum _ecore_status_t ecore_db_rec_attn(struct ecore_hwfn *p_hwfn,
-					      struct ecore_ptt *p_ptt)
+static enum _ecore_status_t ecore_db_rec_flush_queue(struct ecore_hwfn *p_hwfn,
+						     struct ecore_ptt *p_ptt)
 {
-	u8 count = ECORE_DB_REC_COUNT;
+	u32 count = ECORE_DB_REC_COUNT;
 	u32 usage = 1;
 
 	/* wait for usage to zero or count to run out. This is necessary since
@@ -456,6 +460,28 @@ static enum _ecore_status_t ecore_db_rec_attn(struct ecore_hwfn *p_hwfn,
 		return ECORE_TIMEOUT;
 	}
 
+	return ECORE_SUCCESS;
+}
+
+enum _ecore_status_t ecore_db_rec_handler(struct ecore_hwfn *p_hwfn,
+					  struct ecore_ptt *p_ptt)
+{
+	u32 overflow;
+	enum _ecore_status_t rc;
+
+	overflow = ecore_rd(p_hwfn, p_ptt, DORQ_REG_PF_OVFL_STICKY);
+	DP_NOTICE(p_hwfn, false, "PF Overflow sticky 0x%x\n", overflow);
+	if (!overflow) {
+		ecore_db_recovery_execute(p_hwfn, DB_REC_ONCE);
+		return ECORE_SUCCESS;
+	}
+
+	if (ecore_edpm_enabled(p_hwfn)) {
+		rc = ecore_db_rec_flush_queue(p_hwfn, p_ptt);
+		if (rc != ECORE_SUCCESS)
+			return rc;
+	}
+
 	/* flush any pedning (e)dpm as they may never arrive */
 	ecore_wr(p_hwfn, p_ptt, DORQ_REG_DPM_FORCE_ABORT, 0x1);
 
@@ -472,8 +498,7 @@ static enum _ecore_status_t ecore_db_rec_attn(struct ecore_hwfn *p_hwfn,
 
 static enum _ecore_status_t ecore_dorq_attn_cb(struct ecore_hwfn *p_hwfn)
 {
-	u32 int_sts, first_drop_reason, details, address, overflow,
-		all_drops_reason;
+	u32 int_sts, first_drop_reason, details, address, all_drops_reason;
 	struct ecore_ptt *p_ptt = p_hwfn->p_dpc_ptt;
 	enum _ecore_status_t rc;
 
@@ -499,8 +524,6 @@ static enum _ecore_status_t ecore_dorq_attn_cb(struct ecore_hwfn *p_hwfn)
 				   DORQ_REG_DB_DROP_DETAILS);
 		address = ecore_rd(p_hwfn, p_ptt,
 				   DORQ_REG_DB_DROP_DETAILS_ADDRESS);
-		overflow = ecore_rd(p_hwfn, p_ptt,
-				    DORQ_REG_PF_OVFL_STICKY);
 		all_drops_reason = ecore_rd(p_hwfn, p_ptt,
 					    DORQ_REG_DB_DROP_DETAILS_REASON);
 
@@ -511,19 +534,16 @@ static enum _ecore_status_t ecore_dorq_attn_cb(struct ecore_hwfn *p_hwfn)
 			  "FID\t\t0x%04x\t\t(Opaque FID)\n"
 			  "Size\t\t0x%04x\t\t(in bytes)\n"
 			  "1st drop reason\t0x%08x\t(details on first drop since last handling)\n"
-			  "Sticky reasons\t0x%08x\t(all drop reasons since last handling)\n"
-			  "Overflow\t0x%x\t\t(a per PF indication)\n",
+			  "Sticky reasons\t0x%08x\t(all drop reasons since last handling)\n",
 			  address,
 			  GET_FIELD(details, ECORE_DORQ_ATTENTION_OPAQUE),
 			  GET_FIELD(details, ECORE_DORQ_ATTENTION_SIZE) * 4,
-			  first_drop_reason, all_drops_reason, overflow);
+			  first_drop_reason, all_drops_reason);
 
-		/* if this PF caused overflow, initiate recovery */
-		if (overflow) {
-			rc = ecore_db_rec_attn(p_hwfn, p_ptt);
-			if (rc != ECORE_SUCCESS)
-				return rc;
-		}
+		rc = ecore_db_rec_handler(p_hwfn, p_ptt);
+		OSAL_DB_REC_OCCURRED(p_hwfn);
+		if (rc != ECORE_SUCCESS)
+			return rc;
 
 		/* clear the doorbell drop details and prepare for next drop */
 		ecore_wr(p_hwfn, p_ptt, DORQ_REG_DB_DROP_DETAILS_REL, 0);
@@ -1108,9 +1128,9 @@ static enum _ecore_status_t ecore_int_deassertion(struct ecore_hwfn *p_hwfn,
 							      p_aeu->bit_name,
 							      num);
 					else
-						OSAL_STRNCPY(bit_name,
-							     p_aeu->bit_name,
-							     30);
+						strlcpy(bit_name,
+							p_aeu->bit_name,
+							sizeof(bit_name));
 
 					/* We now need to pass bitmask in its
 					 * correct position.
@@ -1204,8 +1224,9 @@ static enum _ecore_status_t ecore_int_attentions(struct ecore_hwfn *p_hwfn)
 static void ecore_sb_ack_attn(struct ecore_hwfn *p_hwfn,
 			      void OSAL_IOMEM *igu_addr, u32 ack_cons)
 {
-	struct igu_prod_cons_update igu_ack = { 0 };
+	struct igu_prod_cons_update igu_ack;
 
+	OSAL_MEMSET(&igu_ack, 0, sizeof(struct igu_prod_cons_update));
 	igu_ack.sb_id_and_flags =
 	    ((ack_cons << IGU_PROD_CONS_UPDATE_SB_INDEX_SHIFT) |
 	     (1 << IGU_PROD_CONS_UPDATE_UPDATE_FLAG_SHIFT) |
@@ -1410,8 +1431,7 @@ static enum _ecore_status_t ecore_int_sb_attn_alloc(struct ecore_hwfn *p_hwfn,
 	/* SB struct */
 	p_sb = OSAL_ALLOC(p_dev, GFP_KERNEL, sizeof(*p_sb));
 	if (!p_sb) {
-		DP_NOTICE(p_dev, true,
-			  "Failed to allocate `struct ecore_sb_attn_info'\n");
+		DP_NOTICE(p_dev, false, "Failed to allocate `struct ecore_sb_attn_info'\n");
 		return ECORE_NOMEM;
 	}
 
@@ -1419,8 +1439,7 @@ static enum _ecore_status_t ecore_int_sb_attn_alloc(struct ecore_hwfn *p_hwfn,
 	p_virt = OSAL_DMA_ALLOC_COHERENT(p_dev, &p_phys,
 					 SB_ATTN_ALIGNED_SIZE(p_hwfn));
 	if (!p_virt) {
-		DP_NOTICE(p_dev, true,
-			  "Failed to allocate status block (attentions)\n");
+		DP_NOTICE(p_dev, false, "Failed to allocate status block (attentions)\n");
 		OSAL_FREE(p_dev, p_sb);
 		return ECORE_NOMEM;
 	}
@@ -1543,11 +1562,13 @@ void ecore_int_cau_conf_sb(struct ecore_hwfn *p_hwfn,
 		ecore_dmae_host2grc(p_hwfn, p_ptt,
 				    (u64)(osal_uintptr_t)&phys_addr,
 				    CAU_REG_SB_ADDR_MEMORY +
-				    igu_sb_id * sizeof(u64), 2, 0);
+				    igu_sb_id * sizeof(u64), 2,
+				    OSAL_NULL /* default parameters */);
 		ecore_dmae_host2grc(p_hwfn, p_ptt,
 				    (u64)(osal_uintptr_t)&sb_entry,
 				    CAU_REG_SB_VAR_MEMORY +
-				    igu_sb_id * sizeof(u64), 2, 0);
+				    igu_sb_id * sizeof(u64), 2,
+				    OSAL_NULL /* default parameters */);
 	} else {
 		/* Initialize Status Block Address */
 		STORE_RT_REG_AGG(p_hwfn,
@@ -1799,8 +1820,7 @@ static enum _ecore_status_t ecore_int_sp_sb_alloc(struct ecore_hwfn *p_hwfn,
 	    OSAL_ALLOC(p_hwfn->p_dev, GFP_KERNEL,
 		       sizeof(*p_sb));
 	if (!p_sb) {
-		DP_NOTICE(p_hwfn, true,
-			  "Failed to allocate `struct ecore_sb_info'\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate `struct ecore_sb_info'\n");
 		return ECORE_NOMEM;
 	}
 
@@ -1808,7 +1828,7 @@ static enum _ecore_status_t ecore_int_sp_sb_alloc(struct ecore_hwfn *p_hwfn,
 	p_virt = OSAL_DMA_ALLOC_COHERENT(p_hwfn->p_dev,
 					 &p_phys, SB_ALIGNED_SIZE(p_hwfn));
 	if (!p_virt) {
-		DP_NOTICE(p_hwfn, true, "Failed to allocate status block\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate status block\n");
 		OSAL_FREE(p_hwfn->p_dev, p_sb);
 		return ECORE_NOMEM;
 	}
@@ -2629,7 +2649,8 @@ enum _ecore_status_t ecore_int_set_timer_res(struct ecore_hwfn *p_hwfn,
 
 	rc = ecore_dmae_grc2host(p_hwfn, p_ptt, CAU_REG_SB_VAR_MEMORY +
 				 sb_id * sizeof(u64),
-				 (u64)(osal_uintptr_t)&sb_entry, 2, 0);
+				 (u64)(osal_uintptr_t)&sb_entry, 2,
+				 OSAL_NULL /* default parameters */);
 	if (rc != ECORE_SUCCESS) {
 		DP_ERR(p_hwfn, "dmae_grc2host failed %d\n", rc);
 		return rc;
@@ -2642,8 +2663,8 @@ enum _ecore_status_t ecore_int_set_timer_res(struct ecore_hwfn *p_hwfn,
 
 	rc = ecore_dmae_host2grc(p_hwfn, p_ptt,
 				 (u64)(osal_uintptr_t)&sb_entry,
-				 CAU_REG_SB_VAR_MEMORY +
-				 sb_id * sizeof(u64), 2, 0);
+				 CAU_REG_SB_VAR_MEMORY + sb_id * sizeof(u64), 2,
+				 OSAL_NULL /* default parameters */);
 	if (rc != ECORE_SUCCESS) {
 		DP_ERR(p_hwfn, "dmae_host2grc failed %d\n", rc);
 		return rc;
@@ -2678,4 +2699,36 @@ enum _ecore_status_t ecore_int_get_sb_dbg(struct ecore_hwfn *p_hwfn,
 					      i * 4);
 
 	return ECORE_SUCCESS;
+}
+
+void ecore_pf_flr_igu_cleanup(struct ecore_hwfn *p_hwfn)
+{
+	struct ecore_ptt *p_ptt = p_hwfn->p_main_ptt;
+	struct ecore_ptt *p_dpc_ptt = ecore_get_reserved_ptt(p_hwfn,
+							     RESERVED_PTT_DPC);
+	int i;
+
+	/* Do not reorder the following cleanup sequence */
+	/* Ack all attentions */
+	ecore_wr(p_hwfn, p_ptt, IGU_REG_ATTENTION_ACK_BITS, 0xfff);
+
+	/* Clear driver attention */
+	ecore_wr(p_hwfn,  p_dpc_ptt,
+		((p_hwfn->rel_pf_id << 3) + MISC_REG_AEU_GENERAL_ATTN_0), 0);
+
+	/* Clear per-PF IGU registers to restore them as if the IGU
+	 * was reset for this PF
+	 */
+	ecore_wr(p_hwfn, p_ptt, IGU_REG_LEADING_EDGE_LATCH, 0);
+	ecore_wr(p_hwfn, p_ptt, IGU_REG_TRAILING_EDGE_LATCH, 0);
+	ecore_wr(p_hwfn, p_ptt, IGU_REG_PF_CONFIGURATION, 0);
+
+	/* Execute IGU clean up*/
+	ecore_wr(p_hwfn, p_ptt, IGU_REG_PF_FUNCTIONAL_CLEANUP, 1);
+
+	/* Clear Stats */
+	ecore_wr(p_hwfn, p_ptt, IGU_REG_STATISTIC_NUM_OF_INTA_ASSERTED, 0);
+
+	for (i = 0; i < IGU_REG_PBA_STS_PF_SIZE; i++)
+		ecore_wr(p_hwfn, p_ptt, IGU_REG_PBA_STS_PF + i * 4, 0);
 }

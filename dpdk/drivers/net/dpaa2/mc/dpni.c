@@ -1,41 +1,8 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2016 NXP.
+ * Copyright 2016 NXP
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 #include <fsl_mc_sys.h>
 #include <fsl_mc_cmd.h>
@@ -154,6 +121,7 @@ int dpni_create(struct fsl_mc_io *mc_io,
 	cmd_params->num_queues = cfg->num_queues;
 	cmd_params->num_tcs = cfg->num_tcs;
 	cmd_params->mac_filter_entries = cfg->mac_filter_entries;
+	cmd_params->num_rx_tcs = cfg->num_rx_tcs;
 	cmd_params->vlan_filter_entries =  cfg->vlan_filter_entries;
 	cmd_params->qos_entries = cfg->qos_entries;
 	cmd_params->fs_entries = cpu_to_le16(cfg->fs_entries);
@@ -697,9 +665,14 @@ int dpni_get_buffer_layout(struct fsl_mc_io *mc_io,
 
 	/* retrieve response parameters */
 	rsp_params = (struct dpni_rsp_get_buffer_layout *)cmd.params;
-	layout->pass_timestamp = dpni_get_field(rsp_params->flags, PASS_TS);
-	layout->pass_parser_result = dpni_get_field(rsp_params->flags, PASS_PR);
-	layout->pass_frame_status = dpni_get_field(rsp_params->flags, PASS_FS);
+	layout->pass_timestamp =
+				(int)dpni_get_field(rsp_params->flags, PASS_TS);
+	layout->pass_parser_result =
+				(int)dpni_get_field(rsp_params->flags, PASS_PR);
+	layout->pass_frame_status =
+				(int)dpni_get_field(rsp_params->flags, PASS_FS);
+	layout->pass_sw_opaque =
+			(int)dpni_get_field(rsp_params->flags, PASS_SWO);
 	layout->private_data_size = le16_to_cpu(rsp_params->private_data_size);
 	layout->data_align = le16_to_cpu(rsp_params->data_align);
 	layout->data_head_room = le16_to_cpu(rsp_params->head_room);
@@ -735,10 +708,11 @@ int dpni_set_buffer_layout(struct fsl_mc_io *mc_io,
 					  token);
 	cmd_params = (struct dpni_cmd_set_buffer_layout *)cmd.params;
 	cmd_params->qtype = qtype;
-	cmd_params->options = cpu_to_le16(layout->options);
+	cmd_params->options = cpu_to_le16((uint16_t)layout->options);
 	dpni_set_field(cmd_params->flags, PASS_TS, layout->pass_timestamp);
 	dpni_set_field(cmd_params->flags, PASS_PR, layout->pass_parser_result);
 	dpni_set_field(cmd_params->flags, PASS_FS, layout->pass_frame_status);
+	dpni_set_field(cmd_params->flags, PASS_SWO, layout->pass_sw_opaque);
 	cmd_params->private_data_size = cpu_to_le16(layout->private_data_size);
 	cmd_params->data_align = cpu_to_le16(layout->data_align);
 	cmd_params->head_room = cpu_to_le16(layout->data_head_room);
@@ -926,6 +900,7 @@ int dpni_set_link_cfg(struct fsl_mc_io *mc_io,
 	cmd_params = (struct dpni_cmd_set_link_cfg *)cmd.params;
 	cmd_params->rate = cpu_to_le32(cfg->rate);
 	cmd_params->options = cpu_to_le64(cfg->options);
+	cmd_params->advertising = cpu_to_le64(cfg->advertising);
 
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
@@ -962,8 +937,11 @@ int dpni_get_link_state(struct fsl_mc_io *mc_io,
 	/* retrieve response parameters */
 	rsp_params = (struct dpni_rsp_get_link_state *)cmd.params;
 	state->up = dpni_get_field(rsp_params->flags, LINK_STATE);
+	state->state_valid = dpni_get_field(rsp_params->flags, STATE_VALID);
 	state->rate = le32_to_cpu(rsp_params->rate);
 	state->options = le64_to_cpu(rsp_params->options);
+	state->supported = le64_to_cpu(rsp_params->supported);
+	state->advertising = le64_to_cpu(rsp_params->advertising);
 
 	return 0;
 }
@@ -1504,6 +1482,9 @@ int dpni_set_rx_tc_dist(struct fsl_mc_io *mc_io,
 	dpni_set_field(cmd_params->keep_hash_key,
 		       KEEP_HASH_KEY,
 		       cfg->fs_cfg.keep_hash_key);
+	dpni_set_field(cmd_params->keep_hash_key,
+		       KEEP_ENTRIES,
+		       cfg->fs_cfg.keep_entries);
 
 	/* send command to mc*/
 	return mc_send_command(mc_io, &cmd);
@@ -1797,8 +1778,8 @@ int dpni_get_queue(struct fsl_mc_io *mc_io,
  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
  * @token:	Token of DPNI object
  * @page:	Selects the statistics page to retrieve, see
- *		DPNI_GET_STATISTICS output. Pages are numbered 0 to 2.
- * @param:  Custom parameter for some pages used to select
+ *		DPNI_GET_STATISTICS output. Pages are numbered 0 to 3.
+ * @param:	Custom parameter for some pages used to select
  *		a certain statistic source, for example the TC.
  * @stat:	Structure containing the statistics
  *
@@ -1971,6 +1952,114 @@ int dpni_get_taildrop(struct fsl_mc_io *mc_io,
 	/* Fill the first 4 bits, 'oal' is a 2's complement value of 12 bits */
 	if (taildrop->oal >= 0x0800)
 		taildrop->oal |= 0xF000;
+
+	return 0;
+}
+
+/**
+ * dpni_set_opr() - Set Order Restoration configuration.
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @tc:		Traffic class, in range 0 to NUM_TCS - 1
+ * @index:	Selects the specific queue out of the set allocated
+ *			for the same TC. Value must be in range 0 to
+ *			NUM_QUEUES - 1
+ * @options:	Configuration mode options
+ *			can be OPR_OPT_CREATE or OPR_OPT_RETIRE
+ * @cfg:	Configuration options for the OPR
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpni_set_opr(struct fsl_mc_io *mc_io,
+		 uint32_t cmd_flags,
+		 uint16_t token,
+		 uint8_t tc,
+		 uint8_t index,
+		 uint8_t options,
+		 struct opr_cfg *cfg)
+{
+	struct dpni_cmd_set_opr *cmd_params;
+	struct mc_command cmd = { 0 };
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(
+			DPNI_CMDID_SET_OPR,
+			cmd_flags,
+			token);
+	cmd_params = (struct dpni_cmd_set_opr *)cmd.params;
+	cmd_params->tc_id = tc;
+	cmd_params->index = index;
+	cmd_params->options = options;
+	cmd_params->oloe = cfg->oloe;
+	cmd_params->oeane = cfg->oeane;
+	cmd_params->olws = cfg->olws;
+	cmd_params->oa = cfg->oa;
+	cmd_params->oprrws = cfg->oprrws;
+
+	/* send command to mc*/
+	return mc_send_command(mc_io, &cmd);
+}
+
+/**
+ * dpni_get_opr() - Retrieve Order Restoration config and query.
+ * @mc_io:	Pointer to MC portal's I/O object
+ * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+ * @token:	Token of DPNI object
+ * @tc:		Traffic class, in range 0 to NUM_TCS - 1
+ * @index:	Selects the specific queue out of the set allocated
+ *			for the same TC. Value must be in range 0 to
+ *			NUM_QUEUES - 1
+ * @cfg:	Returned OPR configuration
+ * @qry:	Returned OPR query
+ *
+ * Return:	'0' on Success; Error code otherwise.
+ */
+int dpni_get_opr(struct fsl_mc_io *mc_io,
+		 uint32_t cmd_flags,
+		 uint16_t token,
+		 uint8_t tc,
+		 uint8_t index,
+		 struct opr_cfg *cfg,
+		 struct opr_qry *qry)
+{
+	struct dpni_rsp_get_opr *rsp_params;
+	struct dpni_cmd_get_opr *cmd_params;
+	struct mc_command cmd = { 0 };
+	int err;
+
+	/* prepare command */
+	cmd.header = mc_encode_cmd_header(DPNI_CMDID_GET_OPR,
+					  cmd_flags,
+					  token);
+	cmd_params = (struct dpni_cmd_get_opr *)cmd.params;
+	cmd_params->index = index;
+	cmd_params->tc_id = tc;
+
+	/* send command to mc*/
+	err = mc_send_command(mc_io, &cmd);
+	if (err)
+		return err;
+
+	/* retrieve response parameters */
+	rsp_params = (struct dpni_rsp_get_opr *)cmd.params;
+	cfg->oloe = rsp_params->oloe;
+	cfg->oeane = rsp_params->oeane;
+	cfg->olws = rsp_params->olws;
+	cfg->oa = rsp_params->oa;
+	cfg->oprrws = rsp_params->oprrws;
+	qry->rip = dpni_get_field(rsp_params->flags, RIP);
+	qry->enable = dpni_get_field(rsp_params->flags, OPR_ENABLE);
+	qry->nesn = le16_to_cpu(rsp_params->nesn);
+	qry->ndsn = le16_to_cpu(rsp_params->ndsn);
+	qry->ea_tseq = le16_to_cpu(rsp_params->ea_tseq);
+	qry->tseq_nlis = dpni_get_field(rsp_params->tseq_nlis, TSEQ_NLIS);
+	qry->ea_hseq = le16_to_cpu(rsp_params->ea_hseq);
+	qry->hseq_nlis = dpni_get_field(rsp_params->hseq_nlis, HSEQ_NLIS);
+	qry->ea_hptr = le16_to_cpu(rsp_params->ea_hptr);
+	qry->ea_tptr = le16_to_cpu(rsp_params->ea_tptr);
+	qry->opr_vid = le16_to_cpu(rsp_params->opr_vid);
+	qry->opr_id = le16_to_cpu(rsp_params->opr_id);
 
 	return 0;
 }

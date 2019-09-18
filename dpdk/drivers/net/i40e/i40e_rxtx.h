@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2015 Intel Corporation
  */
 
 #ifndef _I40E_RXTX_H_
@@ -58,6 +29,8 @@
 
 #define I40E_TX_MAX_SEG     UINT8_MAX
 #define I40E_TX_MAX_MTU_SEG 8
+
+#define I40E_TX_MIN_PKT_LEN 17
 
 #undef container_of
 #define container_of(ptr, type, member) ({ \
@@ -136,6 +109,7 @@ struct i40e_rx_queue {
 	bool rx_deferred_start; /**< don't start this queue in dev start */
 	uint16_t rx_using_sse; /**<flag indicate the usage of vPMD for rx */
 	uint8_t dcb_tc;         /**< Traffic class of rx queue */
+	uint64_t offloads; /**< Rx offload flags of DEV_RX_OFFLOAD_* */
 };
 
 struct i40e_tx_entry {
@@ -170,13 +144,13 @@ struct i40e_tx_queue {
 	uint16_t port_id; /**< Device port identifier. */
 	uint16_t queue_id; /**< TX queue index. */
 	uint16_t reg_idx;
-	uint32_t txq_flags;
 	struct i40e_vsi *vsi; /**< the VSI this queue belongs to */
 	uint16_t tx_next_dd;
 	uint16_t tx_next_rs;
 	bool q_set; /**< indicate if tx queue has been configured */
 	bool tx_deferred_start; /**< don't start this queue in dev start */
 	uint8_t dcb_tc;         /**< Traffic class of tx queue */
+	uint64_t offloads; /**< Tx offload flags of DEV_RX_OFFLOAD_* */
 };
 
 /** Offload features */
@@ -256,6 +230,12 @@ void i40e_set_tx_function_flag(struct rte_eth_dev *dev,
 void i40e_set_tx_function(struct rte_eth_dev *dev);
 void i40e_set_default_ptype_table(struct rte_eth_dev *dev);
 void i40e_set_default_pctype_table(struct rte_eth_dev *dev);
+uint16_t i40e_recv_pkts_vec_avx2(void *rx_queue, struct rte_mbuf **rx_pkts,
+	uint16_t nb_pkts);
+uint16_t i40e_recv_scattered_pkts_vec_avx2(void *rx_queue,
+	struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+uint16_t i40e_xmit_pkts_vec_avx2(void *tx_queue, struct rte_mbuf **tx_pkts,
+	uint16_t nb_pkts);
 
 /* For each value it means, datasheet of hardware can tell more details
  *

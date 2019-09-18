@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <errno.h>
@@ -690,6 +661,9 @@ rte_netmap_init_port(uint16_t portid, const struct rte_netmap_port_conf *conf)
 	int32_t ret;
 	uint16_t i;
 	uint16_t rx_slots, tx_slots;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
+	struct rte_eth_dev_info dev_info;
 
 	if (conf == NULL ||
 			portid >= RTE_DIM(ports) ||
@@ -710,6 +684,10 @@ rte_netmap_init_port(uint16_t portid, const struct rte_netmap_port_conf *conf)
 		return -EINVAL;
 	}
 
+	rte_eth_dev_info_get(portid, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		conf->eth_conf->txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 	ret = rte_eth_dev_configure(portid, conf->nr_rx_rings,
 		conf->nr_tx_rings, conf->eth_conf);
 
@@ -727,9 +705,13 @@ rte_netmap_init_port(uint16_t portid, const struct rte_netmap_port_conf *conf)
 		return ret;
 	}
 
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = conf->eth_conf->rxmode.offloads;
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = conf->eth_conf->txmode.offloads;
 	for (i = 0; i < conf->nr_tx_rings; i++) {
 		ret = rte_eth_tx_queue_setup(portid, i, tx_slots,
-			conf->socket_id, NULL);
+			conf->socket_id, &txq_conf);
 
 		if (ret < 0) {
 			RTE_LOG(ERR, USER1,
@@ -739,7 +721,7 @@ rte_netmap_init_port(uint16_t portid, const struct rte_netmap_port_conf *conf)
 		}
 
 		ret = rte_eth_rx_queue_setup(portid, i, rx_slots,
-			conf->socket_id, NULL, conf->pool);
+			conf->socket_id, &rxq_conf, conf->pool);
 
 		if (ret < 0) {
 			RTE_LOG(ERR, USER1,

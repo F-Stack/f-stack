@@ -41,8 +41,22 @@ extern "C" {
 
 struct linux_sockaddr {
     short sa_family;
-    char sa_data[14];
+    char sa_data[126];
 };
+
+/* AF_INET6/PF_INET6 is 10 in linux
+ * defined 28 for FreeBSD
+ */
+#ifdef AF_INET6
+#undef AF_INET6
+#endif
+#ifdef PF_INET6
+#undef PF_INET6
+#endif
+#define AF_INET6    28
+#define PF_INET6    AF_INET6
+#define AF_INET6_LINUX    10
+#define PF_INET6_LINUX    AF_INET6_LINUX
 
 typedef int (*loop_func_t)(void *arg);
 

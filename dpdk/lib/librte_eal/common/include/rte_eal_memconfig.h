@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_EAL_MEMCONFIG_H_
@@ -41,10 +12,31 @@
 #include <rte_malloc_heap.h>
 #include <rte_rwlock.h>
 #include <rte_pause.h>
+#include <rte_fbarray.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * memseg list is a special case as we need to store a bunch of other data
+ * together with the array itself.
+ */
+struct rte_memseg_list {
+	RTE_STD_C11
+	union {
+		void *base_va;
+		/**< Base virtual address for this memseg list. */
+		uint64_t addr_64;
+		/**< Makes sure addr is always 64-bits */
+	};
+	uint64_t page_sz; /**< Page size for all memsegs in this list. */
+	int socket_id; /**< Socket ID for all memsegs in this list. */
+	volatile uint32_t version; /**< version number for multiprocess sync. */
+	size_t len; /**< Length of memory area covered by this memseg list. */
+	unsigned int external; /**< 1 if this list points to external memory */
+	struct rte_fbarray memseg_arr;
+};
 
 /**
  * the structure for the memory configuration for the RTE.
@@ -69,21 +61,34 @@ struct rte_mem_config {
 	rte_rwlock_t qlock;   /**< used for tailq operation for thread safe. */
 	rte_rwlock_t mplock;  /**< only used by mempool LIB for thread-safe. */
 
-	uint32_t memzone_cnt; /**< Number of allocated memzones */
+	rte_rwlock_t memory_hotplug_lock;
+	/**< indicates whether memory hotplug request is in progress. */
 
 	/* memory segments and zones */
-	struct rte_memseg memseg[RTE_MAX_MEMSEG];    /**< Physmem descriptors. */
-	struct rte_memzone memzone[RTE_MAX_MEMZONE]; /**< Memzone descriptors. */
+	struct rte_fbarray memzones; /**< Memzone descriptors. */
+
+	struct rte_memseg_list memsegs[RTE_MAX_MEMSEG_LISTS];
+	/**< list of dynamic arrays holding memsegs */
 
 	struct rte_tailq_head tailq_head[RTE_MAX_TAILQ]; /**< Tailqs for objects */
 
-	/* Heaps of Malloc per socket */
-	struct malloc_heap malloc_heaps[RTE_MAX_NUMA_NODES];
+	/* Heaps of Malloc */
+	struct malloc_heap malloc_heaps[RTE_MAX_HEAPS];
+
+	/* next socket ID for external malloc heap */
+	int next_socket_id;
 
 	/* address of mem_config in primary process. used to map shared config into
 	 * exact same address the primary process maps it.
 	 */
 	uint64_t mem_cfg_addr;
+
+	/* legacy mem and single file segments options are shared */
+	uint32_t legacy_mem;
+	uint32_t single_file_segments;
+
+	/* keeps the more restricted dma mask */
+	uint8_t dma_maskbits;
 } __attribute__((__packed__));
 
 

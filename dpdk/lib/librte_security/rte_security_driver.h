@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *   Copyright 2017 NXP.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 NXP.
+ * Copyright(c) 2017 Intel Corporation.
  */
 
 #ifndef _RTE_SECURITY_DRIVER_H_
@@ -36,7 +8,6 @@
 
 /**
  * @file rte_security_driver.h
- * @b EXPERIMENTAL: this API may change without prior notice
  *
  * RTE Security Common Definitions
  *
@@ -91,6 +62,18 @@ typedef int (*security_session_destroy_t)(void *device,
 typedef int (*security_session_update_t)(void *device,
 		struct rte_security_session *sess,
 		struct rte_security_session_conf *conf);
+
+/**
+ * Get the size of a security session
+ *
+ * @param	device		Crypto/eth device pointer
+ *
+ * @return
+ *  - On success returns the size of the session structure for device
+ *  - On failure returns 0
+ */
+typedef unsigned int (*security_session_get_size)(void *device);
+
 /**
  * Get stats from the PMD.
  *
@@ -122,6 +105,22 @@ typedef int (*security_set_pkt_metadata_t)(void *device,
 		void *params);
 
 /**
+ * Get application specific userdata associated with the security session.
+ * Device specific metadata provided would be used to uniquely identify
+ * the security session being referred to.
+ *
+ * @param	device		Crypto/eth device pointer
+ * @param	md		Metadata
+ * @param	userdata	Pointer to receive userdata
+ *
+ * @return
+ *  - Returns 0 if userdata is retrieved successfully.
+ *  - Returns -ve value for errors.
+ */
+typedef int (*security_get_userdata_t)(void *device,
+		uint64_t md, void **userdata);
+
+/**
  * Get security capabilities of the device.
  *
  * @param	device		crypto/eth device pointer
@@ -139,12 +138,16 @@ struct rte_security_ops {
 	/**< Configure a security session. */
 	security_session_update_t session_update;
 	/**< Update a security session. */
+	security_session_get_size session_get_size;
+	/**< Return size of security session. */
 	security_session_stats_get_t session_stats_get;
 	/**< Get security session statistics. */
 	security_session_destroy_t session_destroy;
 	/**< Clear a security sessions private data. */
 	security_set_pkt_metadata_t set_pkt_metadata;
 	/**< Update mbuf metadata. */
+	security_get_userdata_t get_userdata;
+	/**< Get userdata associated with session which processed the packet. */
 	security_capabilities_get_t capabilities_get;
 	/**< Get security capabilities. */
 };

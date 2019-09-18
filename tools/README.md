@@ -1,5 +1,13 @@
 # Introduction
 
+Compile ff tools
+
+    make
+
+Install ff tools, all ff tools will be installed to `/usr/local/bin/f-stack/`, and some soft link will be created in `/usr/local/bin`, such as `ff_top`,`ff_traffic`, etc.
+
+    make install
+
 Directory `compat` implements an ipc library using dpdk `rte_ring` and ports some source files compatible with FreeBSD and Linux.
 
 Directory `sbin` contains all the tools binary that compiled.
@@ -28,9 +36,12 @@ ifconfig -p <f-stack proc_id> [-f type:format] %sinterface address_family
     ifconfig -p <f-stack proc_id> -l [-d] [-u] [address_family]
     ifconfig -p <f-stack proc_id> %s[-d] [-m] [-u] [-v]
 ```
+We has supportted inet6, you can config ipv6 address like this:
+
+    ifconfig -p <f-stack proc_id> interface inet6 <ipv6 address> autoconf
+
 Unsupported interfaces or parameters:
 ```
-inet6
 MAC(Mandatory Access Control)
 media
 SFP/SFP+
@@ -69,6 +80,7 @@ Examples:
      Display the route for a destination network:
 
        ./sbin/route -p 0 show 172.16.10.0
+       ./sbin/route -p 0 -6 show ::/0
 
      Delete a static route from the routing table:
 
@@ -90,26 +102,32 @@ For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?route).
 # top
 Usage:
 ```
-top [-p <f-stack proc_id>] [-d <secs>] [-n num]
+top [-p <f-stack proc_id>] [-P <max proc_id>] [-d <secs>] [-n <num>]
 ```
 Examples:
 ```
-./sbin/top 
-
-|---------|---------|---------|---------------|
-|     idle|      sys|      usr|           loop|
-|---------|---------|---------|---------------|
-|   99.69%|    0.00%|    0.31%|        8214640|
-|   99.77%|    0.00%|    0.23%|        8205713|
-|    5.02%|   45.19%|   49.79%|         769435|
-|    0.00%|   19.88%|   80.12%|            393|
-|    0.00%|   20.28%|   79.72%|            395|
-|    0.00%|   15.50%|   84.50%|            403|
-|    0.00%|   31.31%|   68.69%|            427|
-|   32.07%|    8.78%|   59.15%|        2342862|
-|   99.79%|    0.00%|    0.21%|        9974439|
-|   99.81%|    0.00%|    0.19%|        7336153|
-|   99.79%|    0.00%|    0.21%|        8147676|
+./sbin/top -p 0 -P 3
+|---------|---------|---------|---------|---------------|
+|  proc_id|     idle|      sys|      usr|           loop|
+|---------|---------|---------|---------|---------------|
+|        0|   92.44%|    4.00%|    3.56%|          13427|
+|        1|   92.18%|    4.21%|    3.61%|          14035|
+|        2|   92.19%|    4.19%|    3.62%|          13929|
+|        3|   92.33%|    4.14%|    3.53%|          13938|
+|    total|  369.14%|   16.54%|   14.32%|          55329|
+|         |         |         |         |               |
+|        0|   92.27%|    4.10%|    3.63%|          13438|
+|        1|   92.03%|    4.27%|    3.70%|          13906|
+|        2|   92.08%|    4.24%|    3.68%|          13817|
+|        3|   92.28%|    4.15%|    3.57%|          13759|
+|    total|  368.65%|   16.77%|   14.58%|          54920|
+|         |         |         |         |               |
+|        0|   91.88%|    4.30%|    3.81%|          13802|
+|        1|   91.94%|    4.32%|    3.74%|          13928|
+|        2|   92.10%|    4.24%|    3.66%|          13856|
+|        3|   92.30%|    4.14%|    3.56%|          13708|
+|    total|  368.22%|   17.00%|   14.77%|          55294|
+|         |         |         |         |               |
 ```
 
 # netstat
@@ -134,7 +152,6 @@ Unsupported commands or features:
 -M
 -N
 -m
-ipv6
 netgraph
 ipsec
 ```
@@ -217,29 +234,33 @@ For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?arp).
 # traffic
 Usage:
 ```
-traffic [-p <f-stack proc_id>] [-d <secs>] [-n num]
+traffic [-p <f-stack proc_id>] [-P <max proc_id>] [-d <secs>] [-n <num>]
 ```
 Examples:
 ```
-./sbin/traffic 
+./sbin/traffic -p 0 -P 3
 
-|--------------------|--------------------|--------------------|--------------------|
-|          rx packets|            rx bytes|          tx packets|            tx bytes|
-|--------------------|--------------------|--------------------|--------------------|
-|                   0|                   0|                   0|                   0|
-|              298017|            30590860|              590912|           230712836|
-|              475808|            49008224|              951616|           372081856|
-|              474720|            48896160|              949440|           371231040|
-|              475296|            48955488|              950592|           371681472|
-|              475040|            48929120|              950080|           371481280|
-|              474368|            48859904|              948736|           370955776|
-|              475616|            48988448|              951232|           371931712|
-|              475552|            48981856|              951104|           371881664|
-|              476128|            49041184|              952256|           372332096|
-|              475680|            48995040|              951360|           371981760|
-|              475552|            48981856|              951104|           371881664|
-|              475488|            48975264|              950976|           371831616|
-|              473440|            48764320|              946880|           370230080|
+|---------|--------------------|--------------------|--------------------|--------------------|
+|  proc_id|          rx packets|            rx bytes|          tx packets|            tx bytes|
+|---------|--------------------|--------------------|--------------------|--------------------|
+|        0|               39594|             3721836|               79218|            30945013|
+|        1|               43427|             4082138|               86860|            33918830|
+|        2|               37708|             3544552|               75448|            29462444|
+|        3|               41306|             3882764|               82598|            32254519|
+|    total|              162035|            15231290|              324124|           126580806|
+|         |                    |                    |                    |                    |
+|        0|               40849|             3839831|               81686|            31898383|
+|        1|               44526|             4185444|               89056|            34776368|
+|        2|               38491|             3618154|               76974|            30058347|
+|        3|               41631|             3913314|               83244|            32506782|
+|    total|              165497|            15556743|              330960|           129239880|
+|         |                    |                    |                    |                    |
+|        0|               41136|             3866750|               82268|            32125654|
+|        1|               42184|             3965296|               84372|            32947266|
+|        2|               39182|             3683108|               78358|            30598799|
+|        3|               41458|             3897052|               82926|            32382603|
+|    total|              163960|            15412206|              327924|           128054322|
+|         |                    |                    |                    |                    |
 ```
 
 # how to implement a custom tool for communicating with F-Stack process

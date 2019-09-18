@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #ifndef _RTE_RWLOCK_H_
@@ -93,14 +64,14 @@ rte_rwlock_read_lock(rte_rwlock_t *rwl)
 	int success = 0;
 
 	while (success == 0) {
-		x = rwl->cnt;
+		x = __atomic_load_n(&rwl->cnt, __ATOMIC_RELAXED);
 		/* write lock is held */
 		if (x < 0) {
 			rte_pause();
 			continue;
 		}
-		success = rte_atomic32_cmpset((volatile uint32_t *)&rwl->cnt,
-					      x, x + 1);
+		success = __atomic_compare_exchange_n(&rwl->cnt, &x, x + 1, 1,
+					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 	}
 }
 
@@ -113,7 +84,7 @@ rte_rwlock_read_lock(rte_rwlock_t *rwl)
 static inline void
 rte_rwlock_read_unlock(rte_rwlock_t *rwl)
 {
-	rte_atomic32_dec((rte_atomic32_t *)(intptr_t)&rwl->cnt);
+	__atomic_fetch_sub(&rwl->cnt, 1, __ATOMIC_RELEASE);
 }
 
 /**
@@ -129,14 +100,14 @@ rte_rwlock_write_lock(rte_rwlock_t *rwl)
 	int success = 0;
 
 	while (success == 0) {
-		x = rwl->cnt;
+		x = __atomic_load_n(&rwl->cnt, __ATOMIC_RELAXED);
 		/* a lock is held */
 		if (x != 0) {
 			rte_pause();
 			continue;
 		}
-		success = rte_atomic32_cmpset((volatile uint32_t *)&rwl->cnt,
-					      0, -1);
+		success = __atomic_compare_exchange_n(&rwl->cnt, &x, -1, 1,
+					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 	}
 }
 
@@ -149,7 +120,7 @@ rte_rwlock_write_lock(rte_rwlock_t *rwl)
 static inline void
 rte_rwlock_write_unlock(rte_rwlock_t *rwl)
 {
-	rte_atomic32_inc((rte_atomic32_t *)(intptr_t)&rwl->cnt);
+	__atomic_store_n(&rwl->cnt, 0, __ATOMIC_RELEASE);
 }
 
 /**

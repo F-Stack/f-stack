@@ -1,45 +1,19 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #include <rte_alarm.h>
 #include <rte_malloc.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_ethdev_vdev.h>
 #include <rte_devargs.h>
 #include <rte_kvargs.h>
 #include <rte_bus_vdev.h>
 
 #include "failsafe_private.h"
+
+int failsafe_logtype;
 
 const char pmd_failsafe_driver_name[] = FAILSAFE_DRIVER_NAME;
 static const struct rte_eth_link eth_link = {
@@ -55,6 +29,7 @@ fs_sub_device_alloc(struct rte_eth_dev *dev,
 {
 	uint8_t nb_subs;
 	int ret;
+	int i;
 
 	ret = failsafe_args_count_subdevice(dev, params);
 	if (ret)
@@ -72,6 +47,10 @@ fs_sub_device_alloc(struct rte_eth_dev *dev,
 		ERROR("Could not allocate sub_devices");
 		return -ENOMEM;
 	}
+	/* Initiate static sub devices linked list. */
+	for (i = 1; i < nb_subs; i++)
+		PRIV(dev)->subs[i - 1].next = PRIV(dev)->subs + i;
+	PRIV(dev)->subs[i - 1].next = PRIV(dev)->subs;
 	return 0;
 }
 
@@ -92,7 +71,7 @@ failsafe_hotplug_alarm_install(struct rte_eth_dev *dev)
 		return -EINVAL;
 	if (PRIV(dev)->pending_alarm)
 		return 0;
-	ret = rte_eal_alarm_set(hotplug_poll * 1000,
+	ret = rte_eal_alarm_set(failsafe_hotplug_poll * 1000,
 				fs_hotplug_alarm,
 				dev);
 	if (ret) {
@@ -108,16 +87,14 @@ failsafe_hotplug_alarm_cancel(struct rte_eth_dev *dev)
 {
 	int ret = 0;
 
-	if (PRIV(dev)->pending_alarm) {
-		rte_errno = 0;
-		rte_eal_alarm_cancel(fs_hotplug_alarm, dev);
-		if (rte_errno) {
-			ERROR("rte_eal_alarm_cancel failed (errno: %s)",
-			      strerror(rte_errno));
-			ret = -rte_errno;
-		} else {
-			PRIV(dev)->pending_alarm = 0;
-		}
+	rte_errno = 0;
+	rte_eal_alarm_cancel(fs_hotplug_alarm, dev);
+	if (rte_errno) {
+		ERROR("rte_eal_alarm_cancel failed (errno: %s)",
+		      strerror(rte_errno));
+		ret = -rte_errno;
+	} else {
+		PRIV(dev)->pending_alarm = 0;
 	}
 	return ret;
 }
@@ -138,14 +115,43 @@ fs_hotplug_alarm(void *arg)
 			break;
 	/* if we have non-probed device */
 	if (i != PRIV(dev)->subs_tail) {
+		if (fs_lock(dev, 1) != 0)
+			goto reinstall;
 		ret = failsafe_eth_dev_state_sync(dev);
+		fs_unlock(dev, 1);
 		if (ret)
 			ERROR("Unable to synchronize sub_device state");
 	}
 	failsafe_dev_remove(dev);
+reinstall:
 	ret = failsafe_hotplug_alarm_install(dev);
 	if (ret)
 		ERROR("Unable to set up next alarm");
+}
+
+static int
+fs_mutex_init(struct fs_priv *priv)
+{
+	int ret;
+	pthread_mutexattr_t attr;
+
+	ret = pthread_mutexattr_init(&attr);
+	if (ret) {
+		ERROR("Cannot initiate mutex attributes - %s", strerror(ret));
+		return ret;
+	}
+	/* Allow mutex relocks for the thread holding the mutex. */
+	ret = pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+	if (ret) {
+		ERROR("Cannot set mutex type - %s", strerror(ret));
+		return ret;
+	}
+	ret = pthread_mutex_init(&priv->hotplug_mutex, &attr);
+	if (ret) {
+		ERROR("Cannot initiate mutex - %s", strerror(ret));
+		return ret;
+	}
+	return 0;
 }
 
 static int
@@ -191,16 +197,35 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 	ret = failsafe_args_parse(dev, params);
 	if (ret)
 		goto free_subs;
+	ret = rte_eth_dev_owner_new(&priv->my_owner.id);
+	if (ret) {
+		ERROR("Failed to get unique owner identifier");
+		goto free_args;
+	}
+	snprintf(priv->my_owner.name, sizeof(priv->my_owner.name),
+		 FAILSAFE_OWNER_NAME);
+	DEBUG("Failsafe port %u owner info: %s_%016"PRIX64, dev->data->port_id,
+	      priv->my_owner.name, priv->my_owner.id);
+	ret = rte_eth_dev_callback_register(RTE_ETH_ALL, RTE_ETH_EVENT_NEW,
+					    failsafe_eth_new_event_callback,
+					    dev);
+	if (ret) {
+		ERROR("Failed to register NEW callback");
+		goto free_args;
+	}
 	ret = failsafe_eal_init(dev);
 	if (ret)
-		goto free_args;
+		goto unregister_new_callback;
+	ret = fs_mutex_init(priv);
+	if (ret)
+		goto unregister_new_callback;
 	ret = failsafe_hotplug_alarm_install(dev);
 	if (ret) {
 		ERROR("Could not set up plug-in event detection");
-		goto free_args;
+		goto unregister_new_callback;
 	}
 	mac = &dev->data->mac_addrs[0];
-	if (mac_from_arg) {
+	if (failsafe_mac_from_arg) {
 		/*
 		 * If MAC address was provided as a parameter,
 		 * apply to all probed slaves.
@@ -239,15 +264,24 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		mac->addr_bytes[2], mac->addr_bytes[3],
 		mac->addr_bytes[4], mac->addr_bytes[5]);
 	dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC;
+	PRIV(dev)->intr_handle = (struct rte_intr_handle){
+		.fd = -1,
+		.type = RTE_INTR_HANDLE_EXT,
+	};
+	rte_eth_dev_probing_finish(dev);
 	return 0;
 cancel_alarm:
 	failsafe_hotplug_alarm_cancel(dev);
+unregister_new_callback:
+	rte_eth_dev_callback_unregister(RTE_ETH_ALL, RTE_ETH_EVENT_NEW,
+					failsafe_eth_new_event_callback, dev);
 free_args:
 	failsafe_args_free(dev);
 free_subs:
 	fs_sub_device_free(dev);
 free_dev:
-	rte_free(PRIV(dev));
+	/* mac_addrs must not be freed alone because part of dev_private */
+	dev->data->mac_addrs = NULL;
 	rte_eth_dev_release_port(dev);
 	return -1;
 }
@@ -261,12 +295,19 @@ fs_rte_eth_free(const char *name)
 	dev = rte_eth_dev_allocated(name);
 	if (dev == NULL)
 		return -ENODEV;
+	rte_eth_dev_callback_unregister(RTE_ETH_ALL, RTE_ETH_EVENT_NEW,
+					failsafe_eth_new_event_callback, dev);
 	ret = failsafe_eal_uninit(dev);
 	if (ret)
 		ERROR("Error while uninitializing sub-EAL");
 	failsafe_args_free(dev);
 	fs_sub_device_free(dev);
-	rte_free(PRIV(dev));
+	ret = pthread_mutex_destroy(&PRIV(dev)->hotplug_mutex);
+	if (ret)
+		ERROR("Error while destroying hotplug mutex");
+	rte_free(PRIV(dev)->mcast_addrs);
+	/* mac_addrs must not be freed alone because part of dev_private */
+	dev->data->mac_addrs = NULL;
 	rte_eth_dev_release_port(dev);
 	return ret;
 }
@@ -275,10 +316,26 @@ static int
 rte_pmd_failsafe_probe(struct rte_vdev_device *vdev)
 {
 	const char *name;
+	struct rte_eth_dev *eth_dev;
 
 	name = rte_vdev_device_name(vdev);
 	INFO("Initializing " FAILSAFE_DRIVER_NAME " for %s",
 			name);
+
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
+	    strlen(rte_vdev_device_args(vdev)) == 0) {
+		eth_dev = rte_eth_dev_attach_secondary(name);
+		if (!eth_dev) {
+			ERROR("Failed to probe %s", name);
+			return -1;
+		}
+		/* TODO: request info from primary to set up Rx and Tx */
+		eth_dev->dev_ops = &failsafe_ops;
+		eth_dev->device = &vdev->device;
+		rte_eth_dev_probing_finish(eth_dev);
+		return 0;
+	}
+
 	return fs_eth_dev_create(vdev);
 }
 
@@ -299,3 +356,10 @@ static struct rte_vdev_driver failsafe_drv = {
 
 RTE_PMD_REGISTER_VDEV(net_failsafe, failsafe_drv);
 RTE_PMD_REGISTER_PARAM_STRING(net_failsafe, PMD_FAILSAFE_PARAM_STRING);
+
+RTE_INIT(failsafe_init_log)
+{
+	failsafe_logtype = rte_log_register("pmd.net.failsafe");
+	if (failsafe_logtype >= 0)
+		rte_log_set_level(failsafe_logtype, RTE_LOG_NOTICE);
+}
