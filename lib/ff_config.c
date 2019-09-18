@@ -69,12 +69,13 @@ xdigit2val(unsigned char c)
 static int
 parse_lcore_mask(struct ff_config *cfg, const char *coremask)
 {
-    int i, j, idx = 0;
+    int i, j, idx = 0, shift = 0, zero_num = 0;
     unsigned count = 0;
     char c;
     int val;
     uint16_t *proc_lcore;
     char buf[RTE_MAX_LCORE] = {0};
+    char zero[RTE_MAX_LCORE] = {0};
 
     if (coremask == NULL)
         return 0;
@@ -113,9 +114,12 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
             if ((1 << j) & val) {
                 proc_lcore[count] = idx;
                 if (cfg->dpdk.proc_id == count) {
-                    sprintf(buf, "%llx", (unsigned long long)1<<idx);
-                    cfg->dpdk.proc_mask = strdup(buf);
-                }
+		    zero_num = idx >> 2;
+                    shift = idx & 0x3;
+                    memset(zero,'0',zero_num);
+                    sprintf(buf, "%llx%s", (unsigned long long)1<<shift, zero);
+                    cfg->dpdk.proc_mask = strdup(buf);                
+		}
                 count++;
             }
         }
