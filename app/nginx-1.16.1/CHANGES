@@ -1,4 +1,11 @@
 
+Changes with nginx 1.16.1                                        13 Aug 2019
+
+    *) Security: when using HTTP/2 a client might cause excessive memory
+       consumption and CPU usage (CVE-2019-9511, CVE-2019-9513,
+       CVE-2019-9516).
+
+
 Changes with nginx 1.16.0                                        23 Apr 2019
 
     *) 1.16.x stable branch.
