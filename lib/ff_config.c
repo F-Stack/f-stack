@@ -114,7 +114,7 @@ parse_lcore_mask(struct ff_config *cfg, const char *coremask)
             if ((1 << j) & val) {
                 proc_lcore[count] = idx;
                 if (cfg->dpdk.proc_id == count) {
-		    zero_num = idx >> 2;
+                    zero_num = idx >> 2;
                     shift = idx & 0x3;
                     memset(zero,'0',zero_num);
                     sprintf(buf, "%llx%s", (unsigned long long)1<<shift, zero);
