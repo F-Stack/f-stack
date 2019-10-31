@@ -61,7 +61,7 @@ The mount point can be made permanent across reboots, by adding the following li
 ### Compile Nginx
 
 	cd ../
-	cd app/nginx-1.11.10
+	cd app/nginx-1.16.1
 	./configure --prefix=/usr/local/nginx_fstack --with-ff_module
 	make
 	make install
