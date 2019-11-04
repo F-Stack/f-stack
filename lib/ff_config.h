@@ -122,6 +122,7 @@ struct ff_config {
         int nb_bond;
         int numa_on;
         int tso;
+        int tx_csum_offoad_skip;
         int vlan_strip;
 
         /* sleep x microseconds when no pkts incomming */
