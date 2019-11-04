@@ -74,6 +74,7 @@
 #define LINUX_SO_KEEPALIVE    9
 #define LINUX_SO_OOBINLINE    10
 #define LINUX_SO_LINGER       13
+#define LINUX_SO_REUSEPORT    15
 #define LINUX_SO_RCVLOWAT     18
 #define LINUX_SO_SNDLOWAT     19
 #define LINUX_SO_RCVTIMEO     20
@@ -311,6 +312,8 @@ so_opt_convert(int optname)
             return SO_OOBINLINE;
         case LINUX_SO_LINGER:
             return SO_LINGER;
+        case LINUX_SO_REUSEPORT:
+            return SO_REUSEPORT;
         case LINUX_SO_RCVLOWAT:
             return SO_RCVLOWAT;
         case LINUX_SO_SNDLOWAT:
