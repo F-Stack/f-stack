@@ -1,6 +1,36 @@
 # F-Stack Release Note
 
-F-Stack is an open source network framework based on DPDK.
+ F-Stack is an open source network framework based on DPDK.
+
+2019.11 F-Stack v1.13
+
+  1. F-Stack lib:
+
+  - Fix some bugs.
+  - Add interface `ff_dup`, `ff_dup2``ff_ioctl_freebsd`, `ff_getsockopt_freebsd`, `ff_setsockopt_freebsd`.
+  - Initial parameter `proc-type` can be NULL, default "auto".
+  - Add "idle_sleep" parameter to reduce CPU usage when no pkts incomming, add `base_virtaddr` parameter for some vms.
+  - Add arch arm64 compiler options.
+  - Support Container(Docker).
+  - Support vlan.
+
+  2. Nginx:
+
+  - Fix some bugs.
+  - Hook `getpeername`,`getsockname`,`shutdown`.
+  - Support "master_process off".
+
+  3. Redis:
+
+  - Reset cpu affinity when new process forked.
+
+  4. Tools:
+
+  - Add `traffic` tool.
+
+  5. DPDK:
+
+  - Upgrade to 17.11.4 LTS.
 
 2018.5 F-Stack v1.12
 
