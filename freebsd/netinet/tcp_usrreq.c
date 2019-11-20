@@ -1300,16 +1300,16 @@ tcp_connect(struct tcpcb *tp, struct sockaddr *nam, struct thread *td)
         anonport = 1;
     }
 
-	laddr = inp->inp_laddr;
-	lport = inp->inp_lport;
-	error = in_pcbconnect_setup(inp, nam, &laddr.s_addr, &lport,
-	    &inp->inp_faddr.s_addr, &inp->inp_fport, &oinp, td->td_ucred);
-	if (error && oinp == NULL)
-		goto out;
-	if (oinp) {
-		error = EADDRINUSE;
-		goto out;
-	}
+    laddr = inp->inp_laddr;
+    lport = inp->inp_lport;
+    error = in_pcbconnect_setup(inp, nam, &laddr.s_addr, &lport,
+        &inp->inp_faddr.s_addr, &inp->inp_fport, &oinp, td->td_ucred);
+    if (error && oinp == NULL)
+        goto out;
+    if (oinp) {
+        error = EADDRINUSE;
+        goto out;
+    }
 
     inp->inp_laddr = laddr;
 
@@ -1336,7 +1336,7 @@ tcp_connect(struct tcpcb *tp, struct sockaddr *nam, struct thread *td)
         // in_pcbconnect_setup() update inp->inp_faddr/inp->inp_fport, so inp should be rehashed.
         in_pcbrehash(inp);
     }
-    
+
     if (anonport) {
         inp->inp_flags |= INP_ANONPORT;
     }
