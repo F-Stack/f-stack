@@ -637,7 +637,13 @@ struct ip6_mtuinfo {
 					 * receiving IF. */
 #define	IPV6CTL_RFC6204W3	50	/* Accept defroute even when forwarding
 					   enabled */
-#define	IPV6CTL_MAXID		51
+#define	IPV6CTL_INTRQMAXLEN	51	/* max length of IPv6 netisr queue */
+#define	IPV6CTL_INTRDQMAXLEN	52	/* max length of direct IPv6 netisr
+						* queue */
+#define	IPV6CTL_MAXFRAGSPERPACKET	53 /* Max fragments per packet */
+#define	IPV6CTL_MAXFRAGBUCKETSIZE	54 /* Max reassembly queues per bucket */
+#define	IPV6CTL_MAXID	55
+
 #endif /* __BSD_VISIBLE */
 
 /*
