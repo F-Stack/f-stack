@@ -467,6 +467,7 @@ NETINET6_SRCS+=		\
 	ip6_forward.c	\
 	ip6_id.c	\
 	ip6_input.c	\
+	ip6_fastfwd.c	\
 	ip6_mroute.c	\
 	ip6_output.c	\
 	mld6.c		\
