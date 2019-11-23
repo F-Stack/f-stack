@@ -2,6 +2,42 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2019.11 F-Stack v1.20
+
+  1. F-Stack lib:
+
+  - Fix some bugs. Corresponding upstream changeset from Freebsd releng-11.0/release-11.1/release-11.2/release-11.3/release-12
+  - Fix bug of bind and connect. @jin.hao
+  - Fix F-stack compile error in Red Hat 8.0 with gcc 8.2.1.
+  - Add IPv6 supported.
+  - Add `make install`, and you can not must set `FF_DPDK` and `FF_PATH`.
+  - Add `FF_USE_PAGE_ARRAY` compile switch in `Makefile`, turn on it will not use mcopy when transmit packetes from bsd to dpdk. @jin.hao
+  - Add vlan supported. @dragonorloong
+  - Add bonding suopported. *Note: some bond driver can not work with multi processes.*
+  - Add `pkt_tx_delay` parameter in `config.ini`.
+  - Add `tx_csum_offoad_skip` parameter in `config.ini`. @JayathS
+  
+  2. Nginx:
+
+  - Upgrade to 1.16.1.
+
+  3. Redis:
+
+  - Upgrade to 5.0.5
+
+  4. Tools:
+
+  - Fix the crash bug while excute `ff_netstat -n`.
+  - IPv6 supported.
+  - Add `make install`, and you can use `ff_<tool_name>` to run F-Stack tools.
+  - `ff_traffic` support `-P <max process id>` to show traffic info of all processes.
+  - `ff_top` support `-P <max process id>` to show cpu usage of all processes.
+  - All tools can work in one time.
+
+  5. DPDK:
+
+  - Upgrade to 18.11.5 LTS.
+
 2019.11 F-Stack v1.13
 
   1. F-Stack lib:
