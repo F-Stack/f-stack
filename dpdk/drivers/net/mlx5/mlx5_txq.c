@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <inttypes.h>
 
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
@@ -359,12 +360,11 @@ mlx5_txq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_txq_ctrl *txq_ctrl =
 		container_of(txq_data, struct mlx5_txq_ctrl, txq);
 	struct mlx5_txq_ibv tmpl;
-	struct mlx5_txq_ibv *txq_ibv;
+	struct mlx5_txq_ibv *txq_ibv = NULL;
 	union {
 		struct ibv_qp_init_attr_ex init;
 		struct ibv_cq_init_attr_ex cq;
 		struct ibv_qp_attr mod;
-		struct ibv_cq_ex cq_attr;
 	} attr;
 	unsigned int cqe_n;
 	struct mlx5dv_qp qp = { .comp_mask = MLX5DV_QP_MASK_UAR_MMAP_OFFSET };
@@ -523,7 +523,7 @@ mlx5_txq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 	rte_atomic32_inc(&txq_ibv->refcnt);
 	if (qp.comp_mask & MLX5DV_QP_MASK_UAR_MMAP_OFFSET) {
 		txq_ctrl->uar_mmap_offset = qp.uar_mmap_offset;
-		DRV_LOG(DEBUG, "port %u: uar_mmap_offset 0x%lx",
+		DRV_LOG(DEBUG, "port %u: uar_mmap_offset 0x%"PRIx64,
 			dev->data->port_id, txq_ctrl->uar_mmap_offset);
 	} else {
 		DRV_LOG(ERR,
@@ -543,6 +543,8 @@ error:
 		claim_zero(mlx5_glue->destroy_cq(tmpl.cq));
 	if (tmpl.qp)
 		claim_zero(mlx5_glue->destroy_qp(tmpl.qp));
+	if (txq_ibv)
+		rte_free(txq_ibv);
 	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	rte_errno = ret; /* Restore rte_errno. */
 	return NULL;
@@ -636,7 +638,7 @@ mlx5_txq_ibv_verify(struct rte_eth_dev *dev)
 }
 
 /**
- * Calcuate the total number of WQEBB for Tx queue.
+ * Calculate the total number of WQEBB for Tx queue.
  *
  * Simplified version of calc_sq_size() in rdma-core.
  *

@@ -39,9 +39,6 @@
 #define PAGE_ROUND_UP(x) \
 	((((unsigned long)(x)) + ENIC_PAGE_SIZE-1) & (~(ENIC_PAGE_SIZE-1)))
 
-/* must be >= VNIC_COUNTER_DMA_MIN_PERIOD */
-#define VNIC_FLOW_COUNTER_UPDATE_MSECS 500
-
 #define ENICPMD_VFIO_PATH          "/dev/vfio/vfio"
 /*#define ENIC_DESC_COUNT_MAKE_ODD (x) do{if ((~(x)) & 1) { (x)--; } }while(0)*/
 
@@ -97,7 +94,6 @@ struct rte_flow {
 	LIST_ENTRY(rte_flow) next;
 	u16 enic_filter_id;
 	struct filter_v2 enic_filter;
-	int counter_idx; /* NIC allocated counter index (-1 = invalid) */
 };
 
 /* Per-instance private data structure */
@@ -175,8 +171,6 @@ struct enic {
 	rte_spinlock_t mtu_lock;
 
 	LIST_HEAD(enic_flows, rte_flow) flows;
-	int max_flow_counter;
-	rte_spinlock_t flows_lock;
 
 	/* RSS */
 	uint16_t reta_size;
@@ -250,7 +244,7 @@ static inline unsigned int enic_cq_wq(struct enic *enic, unsigned int wq)
 
 static inline struct enic *pmd_priv(struct rte_eth_dev *eth_dev)
 {
-	return (struct enic *)eth_dev->data->dev_private;
+	return eth_dev->data->dev_private;
 }
 
 static inline uint32_t

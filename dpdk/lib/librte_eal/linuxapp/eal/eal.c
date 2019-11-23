@@ -59,6 +59,7 @@
 #include "eal_hugepages.h"
 #include "eal_options.h"
 #include "eal_vfio.h"
+#include "hotplug_mp.h"
 
 #define MEMSIZE_IF_NO_HUGE_PAGE (64ULL * 1024ULL * 1024ULL)
 
@@ -1001,7 +1002,7 @@ rte_eal_init(int argc, char **argv)
 	}
 
 	if (rte_eal_alarm_init() < 0) {
-		rte_eal_init_alert("Cannot init interrupt-handling thread");
+		rte_eal_init_alert("Cannot init alarm");
 		/* rte_eal_alarm_init sets rte_errno on failure. */
 		return -1;
 	}
@@ -1018,7 +1019,7 @@ rte_eal_init(int argc, char **argv)
 	}
 
 	/* register multi-process action callbacks for hotplug */
-	if (rte_mp_dev_hotplug_init() < 0) {
+	if (eal_mp_dev_hotplug_init() < 0) {
 		rte_eal_init_alert("failed to register mp callback for hotplug");
 		return -1;
 	}

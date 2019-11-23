@@ -2015,6 +2015,8 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 	uint8_t global = FALSE;
 	uint32_t val;
 
+	PMD_INIT_FUNC_TRACE(sc);
+
 	PMD_DRV_LOG(DEBUG, sc, "Starting NIC unload...");
 
 	/* mark driver as unloaded in shmem2 */
@@ -2117,6 +2119,9 @@ bnx2x_nic_unload(struct bnx2x_softc *sc, uint32_t unload_mode, uint8_t keep_link
 	if (IS_PF(sc)) {
 		bnx2x_free_mem(sc);
 	}
+
+	/* free the host hardware/software hsi structures */
+	bnx2x_free_hsi_mem(sc);
 
 	bnx2x_free_fw_stats_mem(sc);
 
@@ -4572,6 +4577,8 @@ static void bnx2x_handle_fp_tq(struct bnx2x_fastpath *fp)
 		}
 	}
 
+	/* Assuming we have completed slow path completion, clear the flag */
+	rte_atomic32_set(&sc->scan_fp, 0);
 	bnx2x_ack_sb(sc, fp->igu_sb_id, USTORM_ID,
 		   le16toh(fp->fp_hc_idx), IGU_INT_ENABLE, 1);
 }
@@ -7228,6 +7235,14 @@ int bnx2x_nic_load(struct bnx2x_softc *sc)
 		}
 	}
 
+	/* allocate the host hardware/software hsi structures */
+	if (bnx2x_alloc_hsi_mem(sc) != 0) {
+		PMD_DRV_LOG(ERR, sc, "bnx2x_alloc_hsi_mem was failed");
+		sc->state = BNX2X_STATE_CLOSED;
+		rc = -ENOMEM;
+		goto bnx2x_nic_load_error0;
+	}
+
 	if (bnx2x_alloc_fw_stats_mem(sc) != 0) {
 		sc->state = BNX2X_STATE_CLOSED;
 		rc = -ENOMEM;
@@ -7443,6 +7458,7 @@ bnx2x_nic_load_error1:
 bnx2x_nic_load_error0:
 
 	bnx2x_free_fw_stats_mem(sc);
+	bnx2x_free_hsi_mem(sc);
 	bnx2x_free_mem(sc);
 
 	return rc;
@@ -8888,9 +8904,9 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 	uint32_t i;
 
 	if (IS_PF(sc)) {
-/************************/
-/* DEFAULT STATUS BLOCK */
-/************************/
+		/************************/
+		/* DEFAULT STATUS BLOCK */
+		/************************/
 
 		if (bnx2x_dma_alloc(sc, sizeof(struct host_sp_status_block),
 				  &sc->def_sb_dma, "def_sb",
@@ -8900,9 +8916,9 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 
 		sc->def_sb =
 		    (struct host_sp_status_block *)sc->def_sb_dma.vaddr;
-/***************/
-/* EVENT QUEUE */
-/***************/
+		/***************/
+		/* EVENT QUEUE */
+		/***************/
 
 		if (bnx2x_dma_alloc(sc, BNX2X_PAGE_SIZE,
 				  &sc->eq_dma, "ev_queue",
@@ -8913,9 +8929,9 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 
 		sc->eq = (union event_ring_elem *)sc->eq_dma.vaddr;
 
-/*************/
-/* SLOW PATH */
-/*************/
+		/*************/
+		/* SLOW PATH */
+		/*************/
 
 		if (bnx2x_dma_alloc(sc, sizeof(struct bnx2x_slowpath),
 				  &sc->sp_dma, "sp",
@@ -8927,9 +8943,9 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 
 		sc->sp = (struct bnx2x_slowpath *)sc->sp_dma.vaddr;
 
-/*******************/
-/* SLOW PATH QUEUE */
-/*******************/
+		/*******************/
+		/* SLOW PATH QUEUE */
+		/*******************/
 
 		if (bnx2x_dma_alloc(sc, BNX2X_PAGE_SIZE,
 				  &sc->spq_dma, "sp_queue",
@@ -8942,9 +8958,9 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 
 		sc->spq = (struct eth_spe *)sc->spq_dma.vaddr;
 
-/***************************/
-/* FW DECOMPRESSION BUFFER */
-/***************************/
+		/***************************/
+		/* FW DECOMPRESSION BUFFER */
+		/***************************/
 
 		if (bnx2x_dma_alloc(sc, FW_BUF_SIZE, &sc->gz_buf_dma,
 				  "fw_buf", RTE_CACHE_LINE_SIZE) != 0) {
@@ -8968,9 +8984,9 @@ int bnx2x_alloc_hsi_mem(struct bnx2x_softc *sc)
 		fp->sc = sc;
 		fp->index = i;
 
-/*******************/
-/* FP STATUS BLOCK */
-/*******************/
+		/*******************/
+		/* FP STATUS BLOCK */
+		/*******************/
 
 		snprintf(buf, sizeof(buf), "fp_%d_sb", i);
 		if (bnx2x_dma_alloc(sc, sizeof(union bnx2x_host_hc_status_block),
@@ -9001,43 +9017,50 @@ void bnx2x_free_hsi_mem(struct bnx2x_softc *sc)
 	for (i = 0; i < sc->num_queues; i++) {
 		fp = &sc->fp[i];
 
-/*******************/
-/* FP STATUS BLOCK */
-/*******************/
+		/*******************/
+		/* FP STATUS BLOCK */
+		/*******************/
 
 		memset(&fp->status_block, 0, sizeof(fp->status_block));
+		bnx2x_dma_free(&fp->sb_dma);
 	}
 
-	/***************************/
-	/* FW DECOMPRESSION BUFFER */
-	/***************************/
+	if (IS_PF(sc)) {
+		/***************************/
+		/* FW DECOMPRESSION BUFFER */
+		/***************************/
 
-	sc->gz_buf = NULL;
+		bnx2x_dma_free(&sc->gz_buf_dma);
+		sc->gz_buf = NULL;
 
-	/*******************/
-	/* SLOW PATH QUEUE */
-	/*******************/
+		/*******************/
+		/* SLOW PATH QUEUE */
+		/*******************/
 
-	sc->spq = NULL;
+		bnx2x_dma_free(&sc->spq_dma);
+		sc->spq = NULL;
 
-	/*************/
-	/* SLOW PATH */
-	/*************/
+		/*************/
+		/* SLOW PATH */
+		/*************/
 
-	sc->sp = NULL;
+		bnx2x_dma_free(&sc->sp_dma);
+		sc->sp = NULL;
 
-	/***************/
-	/* EVENT QUEUE */
-	/***************/
+		/***************/
+		/* EVENT QUEUE */
+		/***************/
 
-	sc->eq = NULL;
+		bnx2x_dma_free(&sc->eq_dma);
+		sc->eq = NULL;
 
-	/************************/
-	/* DEFAULT STATUS BLOCK */
-	/************************/
+		/************************/
+		/* DEFAULT STATUS BLOCK */
+		/************************/
 
-	sc->def_sb = NULL;
-
+		bnx2x_dma_free(&sc->def_sb_dma);
+		sc->def_sb = NULL;
+	}
 }
 
 /*

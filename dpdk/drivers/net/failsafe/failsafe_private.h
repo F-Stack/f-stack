@@ -149,7 +149,6 @@ struct fs_priv {
 	uint32_t nb_mcast_addr;
 	struct ether_addr *mcast_addrs;
 	/* current capabilities */
-	struct rte_eth_dev_info infos;
 	struct rte_eth_dev_owner my_owner; /* Unique owner. */
 	struct rte_intr_handle intr_handle; /* Port interrupt handle. */
 	/*

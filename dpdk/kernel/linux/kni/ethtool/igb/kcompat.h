@@ -218,8 +218,10 @@ struct msix_entry {
 #define node_online(node) ((node) == 0)
 #endif
 
+#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
 #ifndef num_online_cpus
 #define num_online_cpus() smp_num_cpus
+#endif
 #endif
 
 #ifndef cpu_online
@@ -2413,13 +2415,17 @@ static inline int _kc_skb_is_gso_v6(const struct sk_buff *skb)
 
 extern void _kc_pci_disable_link_state(struct pci_dev *dev, int state);
 #define pci_disable_link_state(p, s) _kc_pci_disable_link_state(p, s)
-#else /* < 2.6.26 */
+#else /* < 2.6.26 or > 5.4 */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(5,4,0) )
+#include <linux/pci.h>
+#else
 #include <linux/pci-aspm.h>
+#endif
 #define HAVE_NETDEV_VLAN_FEATURES
 #ifndef PCI_EXP_LNKCAP_ASPMS
 #define PCI_EXP_LNKCAP_ASPMS 0x00000c00 /* ASPM Support */
 #endif /* PCI_EXP_LNKCAP_ASPMS */
-#endif /* < 2.6.26 */
+#endif /* < 2.6.26 or > 5.4 */
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27) )
 static inline void _kc_ethtool_cmd_speed_set(struct ethtool_cmd *ep,
@@ -3922,7 +3928,8 @@ skb_set_hash(struct sk_buff *skb, __u32 hash, __always_unused int type)
      (SLE_VERSION_CODE && SLE_VERSION_CODE >= SLE_VERSION(12, 3, 0)) || \
      (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7, 4)))
 #define HAVE_VF_VLAN_PROTO
-#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7, 4))
+#if ((RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7, 4)) && \
+	(RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(8, 0)))
 /* In RHEL/Centos 7.4, the "new" version of ndo_set_vf_vlan
  * is in the struct net_device_ops_extended */
 #define ndo_set_vf_vlan extended.ndo_set_vf_vlan

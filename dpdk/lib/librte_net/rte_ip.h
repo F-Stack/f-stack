@@ -16,7 +16,9 @@
  */
 
 #include <stdint.h>
+#include <sys/types.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
@@ -88,6 +90,10 @@ struct ipv4_hdr {
 
 #define IS_IPV4_MCAST(x) \
 	((x) >= IPV4_MIN_MCAST && (x) <= IPV4_MAX_MCAST) /**< check if IPv4 address is multicast */
+
+/* IPv4 default fields values */
+#define IPV4_MIN_IHL    (0x5)
+#define IPV4_VHL_DEF    (IPVERSION | IPV4_MIN_IHL)
 
 /**
  * @internal Calculate a sum of all words in the buffer.
@@ -352,7 +358,7 @@ struct ipv6_hdr {
 #define IPV6_HDR_FL_SHIFT 0
 #define IPV6_HDR_TC_SHIFT 20
 #define IPV6_HDR_FL_MASK ((1u << IPV6_HDR_TC_SHIFT) - 1)
-#define IPV6_HDR_TC_MASK (0xf << IPV6_HDR_TC_SHIFT)
+#define IPV6_HDR_TC_MASK (0xff << IPV6_HDR_TC_SHIFT)
 
 /**
  * Process the pseudo-header checksum of an IPv6 header.

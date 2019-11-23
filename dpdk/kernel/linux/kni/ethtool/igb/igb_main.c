@@ -5331,7 +5331,7 @@ static void igb_tx_map(struct igb_ring *tx_ring,
 	struct sk_buff *skb = first->skb;
 	struct igb_tx_buffer *tx_buffer;
 	union e1000_adv_tx_desc *tx_desc;
-	struct skb_frag_struct *frag;
+	skb_frag_t *frag;
 	dma_addr_t dma;
 	unsigned int data_len, size;
 	u32 tx_flags = first->tx_flags;
@@ -8231,7 +8231,7 @@ static void igb_pull_tail(struct igb_ring *rx_ring,
 			  union e1000_adv_rx_desc *rx_desc,
 			  struct sk_buff *skb)
 {
-	struct skb_frag_struct *frag = &skb_shinfo(skb)->frags[0];
+	skb_frag_t *frag = &skb_shinfo(skb)->frags[0];
 	unsigned char *va;
 	unsigned int pull_len;
 
@@ -8249,7 +8249,11 @@ static void igb_pull_tail(struct igb_ring *rx_ring,
 
 		/* update pointers to remove timestamp header */
 		skb_frag_size_sub(frag, IGB_TS_HDR_LEN);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0)
 		frag->page_offset += IGB_TS_HDR_LEN;
+#else
+		frag->bv_offset += pull_len;
+#endif
 		skb->data_len -= IGB_TS_HDR_LEN;
 		skb->len -= IGB_TS_HDR_LEN;
 
@@ -8269,7 +8273,11 @@ static void igb_pull_tail(struct igb_ring *rx_ring,
 
 	/* update all of the pointers */
 	skb_frag_size_sub(frag, pull_len);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0)
 	frag->page_offset += pull_len;
+#else
+	frag->bv_offset += pull_len;
+#endif
 	skb->data_len -= pull_len;
 	skb->tail += pull_len;
 }

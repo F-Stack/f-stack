@@ -473,7 +473,7 @@ mlx5_flow_item_acceptable(const struct rte_flow_item *item,
  *   Item hash fields.
  *
  * @return
- *   The hash fileds that should be used.
+ *   The hash fields that should be used.
  */
 uint64_t
 mlx5_flow_hashfields_adjust(struct mlx5_flow *dev_flow,
@@ -1098,8 +1098,8 @@ mlx5_flow_validate_item_vlan(const struct rte_flow_item *item,
 	const struct rte_flow_item_vlan *spec = item->spec;
 	const struct rte_flow_item_vlan *mask = item->mask;
 	const struct rte_flow_item_vlan nic_mask = {
-		.tci = RTE_BE16(0x0fff),
-		.inner_type = RTE_BE16(0xffff),
+		.tci = RTE_BE16(UINT16_MAX),
+		.inner_type = RTE_BE16(UINT16_MAX),
 	};
 	uint16_t vlan_tag = 0;
 	const int tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
@@ -1670,19 +1670,20 @@ flow_null_validate(struct rte_eth_dev *dev __rte_unused,
 		   const struct rte_flow_attr *attr __rte_unused,
 		   const struct rte_flow_item items[] __rte_unused,
 		   const struct rte_flow_action actions[] __rte_unused,
-		   struct rte_flow_error *error __rte_unused)
+		   struct rte_flow_error *error)
 {
-	rte_errno = ENOTSUP;
-	return -rte_errno;
+	return rte_flow_error_set(error, ENOTSUP,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL, NULL);
 }
 
 static struct mlx5_flow *
 flow_null_prepare(const struct rte_flow_attr *attr __rte_unused,
 		  const struct rte_flow_item items[] __rte_unused,
 		  const struct rte_flow_action actions[] __rte_unused,
-		  struct rte_flow_error *error __rte_unused)
+		  struct rte_flow_error *error)
 {
-	rte_errno = ENOTSUP;
+	rte_flow_error_set(error, ENOTSUP,
+			   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL, NULL);
 	return NULL;
 }
 
@@ -1692,19 +1693,19 @@ flow_null_translate(struct rte_eth_dev *dev __rte_unused,
 		    const struct rte_flow_attr *attr __rte_unused,
 		    const struct rte_flow_item items[] __rte_unused,
 		    const struct rte_flow_action actions[] __rte_unused,
-		    struct rte_flow_error *error __rte_unused)
+		    struct rte_flow_error *error)
 {
-	rte_errno = ENOTSUP;
-	return -rte_errno;
+	return rte_flow_error_set(error, ENOTSUP,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL, NULL);
 }
 
 static int
 flow_null_apply(struct rte_eth_dev *dev __rte_unused,
 		struct rte_flow *flow __rte_unused,
-		struct rte_flow_error *error __rte_unused)
+		struct rte_flow_error *error)
 {
-	rte_errno = ENOTSUP;
-	return -rte_errno;
+	return rte_flow_error_set(error, ENOTSUP,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL, NULL);
 }
 
 static void
@@ -1724,10 +1725,10 @@ flow_null_query(struct rte_eth_dev *dev __rte_unused,
 		struct rte_flow *flow __rte_unused,
 		const struct rte_flow_action *actions __rte_unused,
 		void *data __rte_unused,
-		struct rte_flow_error *error __rte_unused)
+		struct rte_flow_error *error)
 {
-	rte_errno = ENOTSUP;
-	return -rte_errno;
+	return rte_flow_error_set(error, ENOTSUP,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL, NULL);
 }
 
 /* Void driver to protect from null pointer reference. */
@@ -2068,6 +2069,10 @@ flow_list_create(struct rte_eth_dev *dev, struct mlx5_flows *list,
 	else
 		flow_size += RTE_ALIGN_CEIL(sizeof(uint16_t), sizeof(void *));
 	flow = rte_calloc(__func__, 1, flow_size, 0);
+	if (!flow) {
+		rte_errno = ENOMEM;
+		return NULL;
+	}
 	flow->drv_type = flow_get_drv_type(dev, attr);
 	assert(flow->drv_type > MLX5_FLOW_TYPE_MIN &&
 	       flow->drv_type < MLX5_FLOW_TYPE_MAX);
@@ -2130,7 +2135,7 @@ mlx5_flow_create(struct rte_eth_dev *dev,
 		 const struct rte_flow_action actions[],
 		 struct rte_flow_error *error)
 {
-	struct mlx5_priv *priv = (struct mlx5_priv *)dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 
 	return flow_list_create(dev, &priv->flows,
 				attr, items, actions, error);

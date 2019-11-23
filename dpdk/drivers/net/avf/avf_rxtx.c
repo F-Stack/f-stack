@@ -144,7 +144,8 @@ check_rx_bulk_allow(struct avf_rx_queue *rxq)
 static inline void
 reset_rx_queue(struct avf_rx_queue *rxq)
 {
-	uint16_t len, i;
+	uint16_t len;
+	uint32_t i;
 
 	if (!rxq)
 		return;
@@ -174,7 +175,8 @@ static inline void
 reset_tx_queue(struct avf_tx_queue *txq)
 {
 	struct avf_tx_entry *txe;
-	uint16_t i, prev, size;
+	uint32_t i, size;
+	uint16_t prev;
 
 	if (!txq) {
 		PMD_DRV_LOG(DEBUG, "Pointer to txq is NULL");
@@ -1583,6 +1585,9 @@ avf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			/* Setup TX context descriptor if required */
 			uint64_t cd_type_cmd_tso_mss =
 				AVF_TX_DESC_DTYPE_CONTEXT;
+			volatile struct avf_tx_context_desc *ctx_txd =
+				(volatile struct avf_tx_context_desc *)
+							&txr[tx_id];
 
 			txn = &sw_ring[txe->next_id];
 			RTE_MBUF_PREFETCH_TO_FREE(txn->mbuf);
@@ -1595,6 +1600,9 @@ avf_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			if (ol_flags & PKT_TX_TCP_SEG)
 				cd_type_cmd_tso_mss |=
 					avf_set_tso_ctx(tx_pkt, tx_offload);
+
+			ctx_txd->type_cmd_tso_mss =
+				rte_cpu_to_le_64(cd_type_cmd_tso_mss);
 
 			AVF_DUMP_TX_DESC(txq, &txr[tx_id], tx_id);
 			txe->last_id = tx_last;
@@ -1698,31 +1706,31 @@ avf_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		/* Check condition for nb_segs > AVF_TX_MAX_MTU_SEG. */
 		if (!(ol_flags & PKT_TX_TCP_SEG)) {
 			if (m->nb_segs > AVF_TX_MAX_MTU_SEG) {
-				rte_errno = -EINVAL;
+				rte_errno = EINVAL;
 				return i;
 			}
 		} else if ((m->tso_segsz < AVF_MIN_TSO_MSS) ||
 			   (m->tso_segsz > AVF_MAX_TSO_MSS)) {
 			/* MSS outside the range are considered malicious */
-			rte_errno = -EINVAL;
+			rte_errno = EINVAL;
 			return i;
 		}
 
 		if (ol_flags & AVF_TX_OFFLOAD_NOTSUP_MASK) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}

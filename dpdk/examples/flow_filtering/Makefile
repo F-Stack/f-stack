@@ -6,8 +6,7 @@ APP = flow
 SRCS-y := main.c
 
 # Build using pkg-config variables if possible
-$(shell pkg-config --exists libdpdk)
-ifeq ($(.SHELLSTATUS),0)
+ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
 all: shared
 .PHONY: shared static
@@ -33,7 +32,7 @@ build:
 .PHONY: clean
 clean:
 	rm -f build/$(APP) build/$(APP)-static build/$(APP)-shared
-	rmdir --ignore-fail-on-non-empty build
+	test -d build && rmdir -p build || true
 
 else
 

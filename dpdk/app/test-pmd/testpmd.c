@@ -2290,7 +2290,7 @@ attach_port(char *identifier)
 		return;
 	}
 
-	if (rte_dev_probe(identifier) != 0) {
+	if (rte_dev_probe(identifier) < 0) {
 		TESTPMD_LOG(ERR, "Failed to attach port %s\n", identifier);
 		return;
 	}
@@ -2360,7 +2360,7 @@ detach_port_device(portid_t port_id)
 			port_flow_flush(port_id);
 	}
 
-	if (rte_dev_remove(dev) != 0) {
+	if (rte_dev_remove(dev) < 0) {
 		TESTPMD_LOG(ERR, "Failed to detach device %s\n", dev->name);
 		return;
 	}
@@ -2735,9 +2735,13 @@ static void
 rxtx_port_config(struct rte_port *port)
 {
 	uint16_t qid;
+	uint64_t offloads;
 
 	for (qid = 0; qid < nb_rxq; qid++) {
+		offloads = port->rx_conf[qid].offloads;
 		port->rx_conf[qid] = port->dev_info.default_rxconf;
+		if (offloads != 0)
+			port->rx_conf[qid].offloads = offloads;
 
 		/* Check if any Rx parameters have been passed */
 		if (rx_pthresh != RTE_PMD_PARAM_UNSET)
@@ -2759,7 +2763,10 @@ rxtx_port_config(struct rte_port *port)
 	}
 
 	for (qid = 0; qid < nb_txq; qid++) {
+		offloads = port->tx_conf[qid].offloads;
 		port->tx_conf[qid] = port->dev_info.default_txconf;
+		if (offloads != 0)
+			port->tx_conf[qid].offloads = offloads;
 
 		/* Check if any Tx parameters have been passed */
 		if (tx_pthresh != RTE_PMD_PARAM_UNSET)
@@ -3071,7 +3078,8 @@ signal_handler(int signum)
 		rte_pdump_uninit();
 #endif
 #ifdef RTE_LIBRTE_LATENCY_STATS
-		rte_latencystats_uninit();
+		if (latencystats_enabled != 0)
+			rte_latencystats_uninit();
 #endif
 		force_quit();
 		/* Set flag to indicate the force termination. */

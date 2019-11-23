@@ -23,7 +23,7 @@ set_ipsec_conf(struct ipsec_sa *sa, struct rte_security_ipsec_xform *ipsec)
 	if (ipsec->mode == RTE_SECURITY_IPSEC_SA_MODE_TUNNEL) {
 		struct rte_security_ipsec_tunnel_param *tunnel =
 				&ipsec->tunnel;
-		if (sa->flags == IP4_TUNNEL) {
+		if (IS_IP4_TUNNEL(sa->flags)) {
 			tunnel->type =
 				RTE_SECURITY_IPSEC_TUNNEL_IPV4;
 			tunnel->ipv4.ttl = IPDEFTTL;
@@ -83,8 +83,7 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 				.options = { 0 },
 				.direction = sa->direction,
 				.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
-				.mode = (sa->flags == IP4_TUNNEL ||
-						sa->flags == IP6_TUNNEL) ?
+				.mode = (IS_TUNNEL(sa->flags)) ?
 					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL :
 					RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT,
 			} },
@@ -134,7 +133,7 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 				    sec_cap->protocol ==
 					RTE_SECURITY_PROTOCOL_IPSEC &&
 				    sec_cap->ipsec.mode ==
-					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL &&
+					sess_conf.ipsec.mode &&
 				    sec_cap->ipsec.direction == sa->direction)
 					break;
 				sec_cap++;
@@ -150,16 +149,20 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 			sa->security_ctx = ctx;
 			sa->pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
 
-			sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
-			sa->pattern[1].mask = &rte_flow_item_ipv4_mask;
-			if (sa->flags & IP6_TUNNEL) {
+			if (IS_IP6(sa->flags)) {
+				sa->pattern[1].mask = &rte_flow_item_ipv6_mask;
+				sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV6;
 				sa->pattern[1].spec = &sa->ipv6_spec;
+
 				memcpy(sa->ipv6_spec.hdr.dst_addr,
 					sa->dst.ip.ip6.ip6_b, 16);
 				memcpy(sa->ipv6_spec.hdr.src_addr,
 				       sa->src.ip.ip6.ip6_b, 16);
-			} else {
+			} else if (IS_IP4(sa->flags)) {
+				sa->pattern[1].mask = &rte_flow_item_ipv4_mask;
+				sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
 				sa->pattern[1].spec = &sa->ipv4_spec;
+
 				sa->ipv4_spec.hdr.dst_addr = sa->dst.ip.ip4;
 				sa->ipv4_spec.hdr.src_addr = sa->src.ip.ip4;
 			}
@@ -186,23 +189,22 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 					.rss_key = rss_key,
 					.rss_key_len = 40,
 				};
-				struct rte_eth_dev *eth_dev;
+				struct rte_eth_dev_info dev_info;
 				uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
 				struct rte_flow_action_rss action_rss;
 				unsigned int i;
 				unsigned int j;
 
+				rte_eth_dev_info_get(sa->portid, &dev_info);
 				sa->action[2].type = RTE_FLOW_ACTION_TYPE_END;
 				/* Try RSS. */
 				sa->action[1].type = RTE_FLOW_ACTION_TYPE_RSS;
 				sa->action[1].conf = &action_rss;
-				eth_dev = ctx->device;
 				rte_eth_dev_rss_hash_conf_get(sa->portid,
 							      &rss_conf);
 				for (i = 0, j = 0;
-				     i < eth_dev->data->nb_rx_queues; ++i)
-					if (eth_dev->data->rx_queues[i])
-						queue[j++] = i;
+				     i < dev_info.nb_rx_queues; ++i)
+					queue[j++] = i;
 				action_rss = (struct rte_flow_action_rss){
 					.types = rss_conf.rss_hf,
 					.key_len = rss_conf.rss_key_len,
@@ -303,7 +305,7 @@ flow_create_failure:
 				    sec_cap->protocol ==
 					RTE_SECURITY_PROTOCOL_IPSEC &&
 				    sec_cap->ipsec.mode ==
-					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL &&
+					sess_conf.ipsec.mode &&
 				    sec_cap->ipsec.direction == sa->direction)
 					break;
 				sec_cap++;

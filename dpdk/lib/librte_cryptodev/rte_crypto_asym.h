@@ -366,7 +366,7 @@ struct rte_cryptodev_asym_session;
  */
 struct rte_crypto_rsa_op_param {
 	enum rte_crypto_asym_op_type op_type;
-	/**< Type of RSA operation for transform */;
+	/**< Type of RSA operation for transform */
 
 	rte_crypto_param message;
 	/**<

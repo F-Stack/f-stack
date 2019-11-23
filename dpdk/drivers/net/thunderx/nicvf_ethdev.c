@@ -2083,6 +2083,16 @@ kvlist_free:
 	return ret;
 }
 static int
+nicvf_eth_dev_uninit(struct rte_eth_dev *dev)
+{
+	PMD_INIT_FUNC_TRACE();
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		nicvf_dev_close(dev);
+
+	return 0;
+}
+static int
 nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 {
 	int ret;
@@ -2205,6 +2215,7 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 malloc_fail:
 	rte_free(eth_dev->data->mac_addrs);
+	eth_dev->data->mac_addrs = NULL;
 alarm_fail:
 	nicvf_periodic_alarm_stop(nicvf_interrupt, eth_dev);
 fail:
@@ -2254,7 +2265,7 @@ static int nicvf_eth_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 static int nicvf_eth_pci_remove(struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+	return rte_eth_dev_pci_generic_remove(pci_dev, nicvf_eth_dev_uninit);
 }
 
 static struct rte_pci_driver rte_nicvf_pmd = {
