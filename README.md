@@ -99,7 +99,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
 
 #### Redis
 
-    cd app/redis-3.2.8/
+    cd app/redis-5.0.5/
     make
     make install
 

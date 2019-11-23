@@ -30,7 +30,7 @@ $ make
 $ make install
 
 # Compile Redis
-$ cd ../redis-3.2.8
+$ cd ../redis-5.0.5
 $ make
 
 # Compile f-stack tools
