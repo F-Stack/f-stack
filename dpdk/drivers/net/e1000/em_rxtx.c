@@ -616,20 +616,20 @@ eth_em_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		m = tx_pkts[i];
 
 		if (m->ol_flags & E1000_TX_OFFLOAD_NOTSUP_MASK) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}
@@ -1963,6 +1963,22 @@ eth_em_tx_init(struct rte_eth_dev *dev)
 	tctl &= ~E1000_TCTL_CT;
 	tctl |= (E1000_TCTL_PSP | E1000_TCTL_RTLC | E1000_TCTL_EN |
 		 (E1000_COLLISION_THRESHOLD << E1000_CT_SHIFT));
+
+	/* SPT and CNP Si errata workaround to avoid data corruption */
+	if (hw->mac.type == e1000_pch_spt) {
+		uint32_t reg_val;
+		reg_val = E1000_READ_REG(hw, E1000_IOSFPC);
+		reg_val |= E1000_RCTL_RDMTS_HEX;
+		E1000_WRITE_REG(hw, E1000_IOSFPC, reg_val);
+
+		/* Dropping the number of outstanding requests from
+		 * 3 to 2 in order to avoid a buffer overrun.
+		 */
+		reg_val = E1000_READ_REG(hw, E1000_TARC(0));
+		reg_val &= ~E1000_TARC0_CB_MULTIQ_3_REQ;
+		reg_val |= E1000_TARC0_CB_MULTIQ_2_REQ;
+		E1000_WRITE_REG(hw, E1000_TARC(0), reg_val);
+	}
 
 	/* This write will effectively turn on the transmit unit. */
 	E1000_WRITE_REG(hw, E1000_TCTL, tctl);

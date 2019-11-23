@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Intel Corporation
 
-if host_machine.system() != 'linux'
+if host_machine.system() != 'linux' or not dpdk_conf.get('RTE_ARCH_64')
         build = false
 endif
 sources = files('nfpcore/nfp_cpp_pcie_ops.c',

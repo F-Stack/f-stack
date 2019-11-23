@@ -3,7 +3,6 @@
  * Copyright(c) 2013 6WIND S.A.
  */
 
-#define _FILE_OFFSET_BITS 64
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -1085,6 +1084,7 @@ remap_needed_hugepages(struct hugepage_file *hugepages, int n_pages)
 	return 0;
 }
 
+__rte_unused /* function is unused on 32-bit builds */
 static inline uint64_t
 get_socket_mem_size(int socket)
 {

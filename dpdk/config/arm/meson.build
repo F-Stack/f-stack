@@ -9,7 +9,7 @@ arm_force_native_march = false
 arm_force_default_march = (machine == 'default')
 
 machine_args_generic = [
-	['default', ['-march=armv8-a+crc+crypto']],
+	['default', ['-march=armv8-a+crc']],
 	['native', ['-march=native']],
 	['0xd03', ['-mcpu=cortex-a53']],
 	['0xd04', ['-mcpu=cortex-a35']],
@@ -90,7 +90,7 @@ impl_dpaa2 = ['NXP DPAA2', flags_dpaa2, machine_args_generic]
 
 dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
 
-if cc.sizeof('void *') != 8
+if not dpdk_conf.get('RTE_ARCH_64')
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 64)
 	dpdk_conf.set('RTE_ARCH_ARM', 1)
 	dpdk_conf.set('RTE_ARCH_ARMv7', 1)
@@ -100,7 +100,6 @@ if cc.sizeof('void *') != 8
 else
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 128)
 	dpdk_conf.set('RTE_ARCH_ARM64', 1)
-	dpdk_conf.set('RTE_ARCH_64', 1)
 
 	machine = []
 	cmd_generic = ['generic', '', '', 'default', '']

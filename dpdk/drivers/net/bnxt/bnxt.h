@@ -332,6 +332,7 @@ struct bnxt {
 	uint16_t		max_tx_rings;
 	uint16_t		max_rx_rings;
 	uint16_t		max_l2_ctx;
+	uint16_t		max_rx_em_flows;
 	uint16_t		max_vnics;
 	uint16_t		max_stat_ctx;
 	uint16_t		vlan;

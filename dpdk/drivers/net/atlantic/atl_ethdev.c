@@ -322,8 +322,7 @@ atl_disable_intr(struct aq_hw_s *hw)
 static int
 eth_atl_dev_init(struct rte_eth_dev *eth_dev)
 {
-	struct atl_adapter *adapter =
-		(struct atl_adapter *)eth_dev->data->dev_private;
+	struct atl_adapter *adapter = eth_dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);

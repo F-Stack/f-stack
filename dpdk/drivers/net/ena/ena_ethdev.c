@@ -39,7 +39,6 @@
 #include <rte_dev.h>
 #include <rte_errno.h>
 #include <rte_version.h>
-#include <rte_eal_memconfig.h>
 #include <rte_net.h>
 
 #include "ena_ethdev.h"
@@ -281,22 +280,6 @@ static const struct eth_dev_ops ena_dev_ops = {
 	.reta_query           = ena_rss_reta_query,
 };
 
-#define NUMA_NO_NODE	SOCKET_ID_ANY
-
-static inline int ena_cpu_to_node(int cpu)
-{
-	struct rte_config *config = rte_eal_get_configuration();
-	struct rte_fbarray *arr = &config->mem_config->memzones;
-	const struct rte_memzone *mz;
-
-	if (unlikely(cpu >= RTE_MAX_MEMZONE))
-		return NUMA_NO_NODE;
-
-	mz = rte_fbarray_get(arr, cpu);
-
-	return mz->socket_id;
-}
-
 static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 				       struct ena_com_rx_ctx *ena_rx_ctx)
 {
@@ -356,12 +339,13 @@ static inline void ena_tx_mbuf_prepare(struct rte_mbuf *mbuf,
 		}
 
 		/* check if L4 checksum is needed */
-		if ((mbuf->ol_flags & PKT_TX_TCP_CKSUM) &&
+		if (((mbuf->ol_flags & PKT_TX_L4_MASK) == PKT_TX_TCP_CKSUM) &&
 		    (queue_offloads & DEV_TX_OFFLOAD_TCP_CKSUM)) {
 			ena_tx_ctx->l4_proto = ENA_ETH_IO_L4_PROTO_TCP;
 			ena_tx_ctx->l4_csum_enable = true;
-		} else if ((mbuf->ol_flags & PKT_TX_UDP_CKSUM) &&
-			   (queue_offloads & DEV_TX_OFFLOAD_UDP_CKSUM)) {
+		} else if (((mbuf->ol_flags & PKT_TX_L4_MASK) ==
+				PKT_TX_UDP_CKSUM) &&
+				(queue_offloads & DEV_TX_OFFLOAD_UDP_CKSUM)) {
 			ena_tx_ctx->l4_proto = ENA_ETH_IO_L4_PROTO_UDP;
 			ena_tx_ctx->l4_csum_enable = true;
 		} else {
@@ -517,8 +501,7 @@ static void ena_close(struct rte_eth_dev *dev)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 
 	if (adapter->state == ENA_ADAPTER_STATE_RUNNING)
 		ena_stop(dev);
@@ -559,8 +542,7 @@ static int ena_rss_reta_update(struct rte_eth_dev *dev,
 			       struct rte_eth_rss_reta_entry64 *reta_conf,
 			       uint16_t reta_size)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	int rc, i;
 	u16 entry_value;
@@ -615,8 +597,7 @@ static int ena_rss_reta_query(struct rte_eth_dev *dev,
 			      struct rte_eth_rss_reta_entry64 *reta_conf,
 			      uint16_t reta_size)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	int rc;
 	int i;
@@ -788,9 +769,7 @@ static int ena_link_update(struct rte_eth_dev *dev,
 			   __rte_unused int wait_to_complete)
 {
 	struct rte_eth_link *link = &dev->data->dev_link;
-	struct ena_adapter *adapter;
-
-	adapter = (struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 
 	link->link_status = adapter->link_status ? ETH_LINK_UP : ETH_LINK_DOWN;
 	link->link_speed = ETH_SPEED_NUM_NONE;
@@ -802,8 +781,7 @@ static int ena_link_update(struct rte_eth_dev *dev,
 static int ena_queue_start_all(struct rte_eth_dev *dev,
 			       enum ena_ring_type ring_type)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_ring *queues = NULL;
 	int nb_queues;
 	int i = 0;
@@ -908,8 +886,7 @@ ena_calc_queue_size(struct ena_com_dev *ena_dev,
 
 static void ena_stats_restart(struct rte_eth_dev *dev)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 
 	rte_atomic64_init(&adapter->drv_stats->ierrors);
 	rte_atomic64_init(&adapter->drv_stats->oerrors);
@@ -920,8 +897,7 @@ static int ena_stats_get(struct rte_eth_dev *dev,
 			  struct rte_eth_stats *stats)
 {
 	struct ena_admin_basic_stats ena_stats;
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	int rc;
 
@@ -962,7 +938,7 @@ static int ena_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 
 	ena_assert_msg(dev->data != NULL, "Uninitialized device");
 	ena_assert_msg(dev->data->dev_private != NULL, "Uninitialized device");
-	adapter = (struct ena_adapter *)(dev->data->dev_private);
+	adapter = dev->data->dev_private;
 
 	ena_dev = &adapter->ena_dev;
 	ena_assert_msg(ena_dev != NULL, "Uninitialized device");
@@ -986,8 +962,7 @@ static int ena_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 
 static int ena_start(struct rte_eth_dev *dev)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	uint64_t ticks;
 	int rc = 0;
 
@@ -1032,8 +1007,7 @@ err_start_tx:
 
 static void ena_stop(struct rte_eth_dev *dev)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	int rc;
 
@@ -1081,7 +1055,7 @@ static int ena_create_io_queue(struct ena_ring *ring)
 	}
 	ctx.qid = ena_qid;
 	ctx.msix_vector = -1; /* interrupts not used */
-	ctx.numa_node = ena_cpu_to_node(ring->id);
+	ctx.numa_node = ring->numa_socket_id;
 
 	rc = ena_com_create_io_queue(ena_dev, &ctx);
 	if (rc) {
@@ -1124,8 +1098,7 @@ static void ena_queue_stop(struct ena_ring *ring)
 static void ena_queue_stop_all(struct rte_eth_dev *dev,
 			      enum ena_ring_type ring_type)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_ring *queues = NULL;
 	uint16_t nb_queues, i;
 
@@ -1176,12 +1149,11 @@ static int ena_queue_start(struct ena_ring *ring)
 static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 			      uint16_t queue_idx,
 			      uint16_t nb_desc,
-			      __rte_unused unsigned int socket_id,
+			      unsigned int socket_id,
 			      const struct rte_eth_txconf *tx_conf)
 {
 	struct ena_ring *txq = NULL;
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	unsigned int i;
 
 	txq = &adapter->tx_ring[queue_idx];
@@ -1211,6 +1183,7 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->next_to_clean = 0;
 	txq->next_to_use = 0;
 	txq->ring_size = nb_desc;
+	txq->numa_socket_id = socket_id;
 
 	txq->tx_buffer_info = rte_zmalloc("txq->tx_buffer_info",
 					  sizeof(struct ena_tx_buffer) *
@@ -1248,12 +1221,11 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 static int ena_rx_queue_setup(struct rte_eth_dev *dev,
 			      uint16_t queue_idx,
 			      uint16_t nb_desc,
-			      __rte_unused unsigned int socket_id,
+			      unsigned int socket_id,
 			      __rte_unused const struct rte_eth_rxconf *rx_conf,
 			      struct rte_mempool *mp)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 	struct ena_ring *rxq = NULL;
 	int i;
 
@@ -1283,6 +1255,7 @@ static int ena_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->next_to_clean = 0;
 	rxq->next_to_use = 0;
 	rxq->ring_size = nb_desc;
+	rxq->numa_socket_id = socket_id;
 	rxq->mb_pool = mp;
 
 	rxq->rx_buffer_info = rte_zmalloc("rxq->buffer_info",
@@ -1492,7 +1465,7 @@ err_mmio_read_less:
 
 static void ena_interrupt_handler_rte(void *cb_arg)
 {
-	struct ena_adapter *adapter = (struct ena_adapter *)cb_arg;
+	struct ena_adapter *adapter = cb_arg;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 
 	ena_com_admin_q_comp_intr_handler(ena_dev);
@@ -1529,7 +1502,7 @@ static void check_for_admin_com_state(struct ena_adapter *adapter)
 static void ena_timer_wd_callback(__rte_unused struct rte_timer *timer,
 				  void *arg)
 {
-	struct ena_adapter *adapter = (struct ena_adapter *)arg;
+	struct ena_adapter *adapter = arg;
 	struct rte_eth_dev *dev = adapter->rte_dev;
 
 	check_for_missing_keep_alive(adapter);
@@ -1564,8 +1537,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 {
 	struct rte_pci_device *pci_dev;
 	struct rte_intr_handle *intr_handle;
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(eth_dev->data->dev_private);
+	struct ena_adapter *adapter = eth_dev->data->dev_private;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	struct ena_com_dev_get_features_ctx get_feat_ctx;
 	int queue_size, rc;
@@ -1700,8 +1672,7 @@ err:
 
 static void ena_destroy_device(struct rte_eth_dev *eth_dev)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(eth_dev->data->dev_private);
+	struct ena_adapter *adapter = eth_dev->data->dev_private;
 	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 
 	if (adapter->state == ENA_ADAPTER_STATE_FREE)
@@ -1740,8 +1711,7 @@ static int eth_ena_dev_uninit(struct rte_eth_dev *eth_dev)
 
 static int ena_dev_configure(struct rte_eth_dev *dev)
 {
-	struct ena_adapter *adapter =
-		(struct ena_adapter *)(dev->data->dev_private);
+	struct ena_adapter *adapter = dev->data->dev_private;
 
 	adapter->state = ENA_ADAPTER_STATE_CONFIG;
 
@@ -1787,7 +1757,7 @@ static void ena_infos_get(struct rte_eth_dev *dev,
 
 	ena_assert_msg(dev->data != NULL, "Uninitialized device");
 	ena_assert_msg(dev->data->dev_private != NULL, "Uninitialized device");
-	adapter = (struct ena_adapter *)(dev->data->dev_private);
+	adapter = dev->data->dev_private;
 
 	ena_dev = &adapter->ena_dev;
 	ena_assert_msg(ena_dev != NULL, "Uninitialized device");
@@ -1947,6 +1917,12 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		/* fill mbuf attributes if any */
 		ena_rx_mbuf_prepare(mbuf_head, &ena_rx_ctx);
+
+		if (unlikely(mbuf_head->ol_flags &
+				(PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD)))
+			rte_atomic64_inc(&rx_ring->adapter->drv_stats->ierrors);
+
+
 		mbuf_head->hash.rss = ena_rx_ctx.hash;
 
 		/* pass to DPDK application head mbuf */
@@ -2138,10 +2114,6 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		/* Set TX offloads flags, if applicable */
 		ena_tx_mbuf_prepare(mbuf, &ena_tx_ctx, tx_ring->offloads);
 
-		if (unlikely(mbuf->ol_flags &
-			     (PKT_RX_L4_CKSUM_BAD | PKT_RX_IP_CKSUM_BAD)))
-			rte_atomic64_inc(&tx_ring->adapter->drv_stats->ierrors);
-
 		rte_prefetch0(tx_pkts[(sent_idx + 4) & ring_mask]);
 
 		/* Process first segment taking into
@@ -2267,7 +2239,7 @@ static void ena_update_on_link_change(void *adapter_data,
 	struct ena_admin_aenq_link_change_desc *aenq_link_desc;
 	uint32_t status;
 
-	adapter = (struct ena_adapter *)adapter_data;
+	adapter = adapter_data;
 	aenq_link_desc = (struct ena_admin_aenq_link_change_desc *)aenq_e;
 	eth_dev = adapter->rte_dev;
 
@@ -2281,7 +2253,7 @@ static void ena_update_on_link_change(void *adapter_data,
 static void ena_notification(void *data,
 			     struct ena_admin_aenq_entry *aenq_e)
 {
-	struct ena_adapter *adapter = (struct ena_adapter *)data;
+	struct ena_adapter *adapter = data;
 	struct ena_admin_ena_hw_hints *hints;
 
 	if (aenq_e->aenq_common_desc.group != ENA_ADMIN_NOTIFICATION)
@@ -2304,7 +2276,7 @@ static void ena_notification(void *data,
 static void ena_keep_alive(void *adapter_data,
 			   __rte_unused struct ena_admin_aenq_entry *aenq_e)
 {
-	struct ena_adapter *adapter = (struct ena_adapter *)adapter_data;
+	struct ena_adapter *adapter = adapter_data;
 
 	adapter->timestamp_wd = rte_get_timer_cycles();
 }

@@ -234,8 +234,8 @@ static void hn_dev_info_get(struct rte_eth_dev *dev,
 	dev_info->max_mac_addrs  = 1;
 
 	dev_info->hash_key_size = NDIS_HASH_KEYSIZE_TOEPLITZ;
-	dev_info->flow_type_rss_offloads =
-		ETH_RSS_IPV4 | ETH_RSS_IPV6 | ETH_RSS_TCP | ETH_RSS_UDP;
+	dev_info->flow_type_rss_offloads = hv->rss_offloads;
+	dev_info->reta_size = ETH_RSS_RETA_SIZE_128;
 
 	dev_info->max_rx_queues = hv->max_queues;
 	dev_info->max_tx_queues = hv->max_queues;
@@ -572,9 +572,11 @@ hn_dev_xstats_get(struct rte_eth_dev *dev,
 			continue;
 
 		stats = (const char *)&txq->stats;
-		for (t = 0; t < RTE_DIM(hn_stat_strings); t++)
-			xstats[count++].value = *(const uint64_t *)
+		for (t = 0; t < RTE_DIM(hn_stat_strings); t++, count++) {
+			xstats[count].id = count;
+			xstats[count].value = *(const uint64_t *)
 				(stats + hn_stat_strings[t].offset);
+		}
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -584,12 +586,14 @@ hn_dev_xstats_get(struct rte_eth_dev *dev,
 			continue;
 
 		stats = (const char *)&rxq->stats;
-		for (t = 0; t < RTE_DIM(hn_stat_strings); t++)
-			xstats[count++].value = *(const uint64_t *)
+		for (t = 0; t < RTE_DIM(hn_stat_strings); t++, count++) {
+			xstats[count].id = count;
+			xstats[count].value = *(const uint64_t *)
 				(stats + hn_stat_strings[t].offset);
+		}
 	}
 
-	ret = hn_vf_xstats_get(dev, xstats + count, n - count);
+	ret = hn_vf_xstats_get(dev, xstats, count, n);
 	if (ret < 0)
 		return ret;
 
@@ -733,6 +737,7 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	hv->port_id = eth_dev->data->port_id;
 	hv->latency = HN_CHAN_LATENCY_NS;
 	hv->max_queues = 1;
+	rte_spinlock_init(&hv->vf_lock);
 	hv->vf_port = HN_INVALID_PORT;
 
 	err = hn_parse_args(eth_dev);

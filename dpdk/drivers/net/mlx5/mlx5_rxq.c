@@ -611,11 +611,12 @@ mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev)
 			continue;
 		/**
 		 * Need to access directly the queue to release the reference
-		 * kept in priv_rx_intr_vec_enable().
+		 * kept in mlx5_rx_intr_vec_enable().
 		 */
 		rxq_data = (*priv->rxqs)[i];
 		rxq_ctrl = container_of(rxq_data, struct mlx5_rxq_ctrl, rxq);
-		mlx5_rxq_ibv_release(rxq_ctrl->ibv);
+		if (rxq_ctrl->ibv)
+			mlx5_rxq_ibv_release(rxq_ctrl->ibv);
 	}
 free:
 	rte_intr_free_epoll_fd(intr_handle);
@@ -772,11 +773,10 @@ mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 			struct mlx5dv_wq_init_attr mlx5;
 #endif
 		} wq;
-		struct ibv_cq_ex cq_attr;
 	} attr;
 	unsigned int cqe_n;
 	unsigned int wqe_n = 1 << rxq_data->elts_n;
-	struct mlx5_rxq_ibv *tmpl;
+	struct mlx5_rxq_ibv *tmpl = NULL;
 	struct mlx5dv_cq cq_info;
 	struct mlx5dv_rwq rwq;
 	unsigned int i;
@@ -1017,15 +1017,19 @@ mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	return tmpl;
 error:
-	ret = rte_errno; /* Save rte_errno before cleanup. */
-	if (tmpl->wq)
-		claim_zero(mlx5_glue->destroy_wq(tmpl->wq));
-	if (tmpl->cq)
-		claim_zero(mlx5_glue->destroy_cq(tmpl->cq));
-	if (tmpl->channel)
-		claim_zero(mlx5_glue->destroy_comp_channel(tmpl->channel));
+	if (tmpl) {
+		ret = rte_errno; /* Save rte_errno before cleanup. */
+		if (tmpl->wq)
+			claim_zero(mlx5_glue->destroy_wq(tmpl->wq));
+		if (tmpl->cq)
+			claim_zero(mlx5_glue->destroy_cq(tmpl->cq));
+		if (tmpl->channel)
+			claim_zero(mlx5_glue->destroy_comp_channel
+							(tmpl->channel));
+		rte_free(tmpl);
+		rte_errno = ret; /* Restore rte_errno. */
+	}
 	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
-	rte_errno = ret; /* Restore rte_errno. */
 	return NULL;
 }
 
@@ -1160,7 +1164,7 @@ mlx5_mprq_free_mp(struct rte_eth_dev *dev)
 		dev->data->port_id, mp->name);
 	/*
 	 * If a buffer in the pool has been externally attached to a mbuf and it
-	 * is still in use by application, destroying the Rx qeueue can spoil
+	 * is still in use by application, destroying the Rx queue can spoil
 	 * the packet. It is unlikely to happen but if application dynamically
 	 * creates and destroys with holding Rx packets, this can happen.
 	 *
@@ -1558,8 +1562,9 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
  *   RX queue index.
  *
  * @return
- *   1 if the queue can be released, negative errno otherwise and rte_errno is
- *   set.
+ *   1 if the queue can be released
+ *   0 if the queue can not be released, there are references to it.
+ *   Negative errno and rte_errno is set if queue doesn't exist.
  */
 int
 mlx5_rxq_releasable(struct rte_eth_dev *dev, uint16_t idx)

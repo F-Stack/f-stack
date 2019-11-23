@@ -238,10 +238,6 @@ static int i40e_dev_xstats_get_names(struct rte_eth_dev *dev,
 				     struct rte_eth_xstat_name *xstats_names,
 				     unsigned limit);
 static void i40e_dev_stats_reset(struct rte_eth_dev *dev);
-static int i40e_dev_queue_stats_mapping_set(struct rte_eth_dev *dev,
-					    uint16_t queue_id,
-					    uint8_t stat_idx,
-					    uint8_t is_rx);
 static int i40e_fw_version_get(struct rte_eth_dev *dev,
 				char *fw_version, size_t fw_size);
 static void i40e_dev_info_get(struct rte_eth_dev *dev,
@@ -455,7 +451,6 @@ static const struct eth_dev_ops i40e_eth_dev_ops = {
 	.xstats_get_names             = i40e_dev_xstats_get_names,
 	.stats_reset                  = i40e_dev_stats_reset,
 	.xstats_reset                 = i40e_dev_stats_reset,
-	.queue_stats_mapping_set      = i40e_dev_queue_stats_mapping_set,
 	.fw_version_get               = i40e_fw_version_get,
 	.dev_infos_get                = i40e_dev_info_get,
 	.dev_supported_ptypes_get     = i40e_dev_supported_ptypes_get,
@@ -524,13 +519,13 @@ static const struct rte_i40e_xstats_name_off rte_i40e_stats_strings[] = {
 	{"rx_unicast_packets", offsetof(struct i40e_eth_stats, rx_unicast)},
 	{"rx_multicast_packets", offsetof(struct i40e_eth_stats, rx_multicast)},
 	{"rx_broadcast_packets", offsetof(struct i40e_eth_stats, rx_broadcast)},
-	{"rx_dropped", offsetof(struct i40e_eth_stats, rx_discards)},
+	{"rx_dropped_packets", offsetof(struct i40e_eth_stats, rx_discards)},
 	{"rx_unknown_protocol_packets", offsetof(struct i40e_eth_stats,
 		rx_unknown_protocol)},
 	{"tx_unicast_packets", offsetof(struct i40e_eth_stats, tx_unicast)},
 	{"tx_multicast_packets", offsetof(struct i40e_eth_stats, tx_multicast)},
 	{"tx_broadcast_packets", offsetof(struct i40e_eth_stats, tx_broadcast)},
-	{"tx_dropped", offsetof(struct i40e_eth_stats, tx_discards)},
+	{"tx_dropped_packets", offsetof(struct i40e_eth_stats, tx_discards)},
 };
 
 #define I40E_NB_ETH_XSTATS (sizeof(rte_i40e_stats_strings) / \
@@ -1209,10 +1204,8 @@ i40e_parse_latest_vec_handler(__rte_unused const char *key,
 				const char *value,
 				void *opaque)
 {
-	struct i40e_adapter *ad;
+	struct i40e_adapter *ad = opaque;
 	int use_latest_vec;
-
-	ad = (struct i40e_adapter *)opaque;
 
 	use_latest_vec = atoi(value);
 
@@ -1363,6 +1356,10 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 		PMD_INIT_LOG(ERR, "Failed to init adminq: %d", ret);
 		return -EIO;
 	}
+	/* Firmware of SFP x722 does not support adminq option */
+	if (hw->device_id == I40E_DEV_ID_SFP_X722)
+		hw->flags &= ~I40E_HW_FLAG_802_1AD_CAPABLE;
+
 	PMD_INIT_LOG(INFO, "FW %d.%d API %d.%d NVM %02d.%02d.%02d eetrack %04x",
 		     hw->aq.fw_maj_ver, hw->aq.fw_min_ver,
 		     hw->aq.api_maj_ver, hw->aq.api_min_ver,
@@ -1600,6 +1597,7 @@ err_init_tunnel_filter_list:
 	rte_free(pf->ethertype.hash_map);
 err_init_ethtype_filter_list:
 	rte_free(dev->data->mac_addrs);
+	dev->data->mac_addrs = NULL;
 err_mac_alloc:
 	i40e_vsi_release(pf->main_vsi);
 err_setup_pf_switch:
@@ -3428,17 +3426,6 @@ i40e_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	}
 
 	return count;
-}
-
-static int
-i40e_dev_queue_stats_mapping_set(__rte_unused struct rte_eth_dev *dev,
-				 __rte_unused uint16_t queue_id,
-				 __rte_unused uint8_t stat_idx,
-				 __rte_unused uint8_t is_rx)
-{
-	PMD_INIT_FUNC_TRACE();
-
-	return -ENOSYS;
 }
 
 static int
@@ -10827,8 +10814,7 @@ static void
 i40e_start_timecounters(struct rte_eth_dev *dev)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 	struct rte_eth_link link;
 	uint32_t tsync_inc_l;
 	uint32_t tsync_inc_h;
@@ -10880,8 +10866,7 @@ i40e_start_timecounters(struct rte_eth_dev *dev)
 static int
 i40e_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta)
 {
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 
 	adapter->systime_tc.nsec += delta;
 	adapter->rx_tstamp_tc.nsec += delta;
@@ -10894,8 +10879,7 @@ static int
 i40e_timesync_write_time(struct rte_eth_dev *dev, const struct timespec *ts)
 {
 	uint64_t ns;
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 
 	ns = rte_timespec_to_ns(ts);
 
@@ -10911,8 +10895,7 @@ static int
 i40e_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 {
 	uint64_t ns, systime_cycles;
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 
 	systime_cycles = i40e_read_systime_cyclecounter(dev);
 	ns = rte_timecounter_update(&adapter->systime_tc, systime_cycles);
@@ -10988,9 +10971,7 @@ i40e_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 				struct timespec *timestamp, uint32_t flags)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_adapter *adapter =
-		(struct i40e_adapter *)dev->data->dev_private;
-
+	struct i40e_adapter *adapter = dev->data->dev_private;
 	uint32_t sync_status;
 	uint32_t index = flags & 0x03;
 	uint64_t rx_tstamp_cycles;
@@ -11012,9 +10993,7 @@ i40e_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 				struct timespec *timestamp)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_adapter *adapter =
-		(struct i40e_adapter *)dev->data->dev_private;
-
+	struct i40e_adapter *adapter = dev->data->dev_private;
 	uint32_t sync_status;
 	uint64_t tx_tstamp_cycles;
 	uint64_t ns;

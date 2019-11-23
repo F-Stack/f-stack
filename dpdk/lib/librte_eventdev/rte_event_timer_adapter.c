@@ -192,17 +192,17 @@ rte_event_timer_adapter_create_ext(
 						   &adapter->data->caps,
 						   &adapter->ops);
 	if (ret < 0) {
-		rte_errno = ret;
+		rte_errno = -ret;
 		goto free_memzone;
 	}
 
 	if (!(adapter->data->caps &
 	      RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT)) {
-		FUNC_PTR_OR_NULL_RET_WITH_ERRNO(conf_cb, -EINVAL);
+		FUNC_PTR_OR_NULL_RET_WITH_ERRNO(conf_cb, EINVAL);
 		ret = conf_cb(adapter->data->id, adapter->data->event_dev_id,
 			      &adapter->data->event_port_id, conf_arg);
 		if (ret < 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			goto free_memzone;
 		}
 	}
@@ -214,10 +214,10 @@ rte_event_timer_adapter_create_ext(
 		adapter->ops = &sw_event_adapter_timer_ops;
 
 	/* Allow driver to do some setup */
-	FUNC_PTR_OR_NULL_RET_WITH_ERRNO(adapter->ops->init, -ENOTSUP);
+	FUNC_PTR_OR_NULL_RET_WITH_ERRNO(adapter->ops->init, ENOTSUP);
 	ret = adapter->ops->init(adapter);
 	if (ret < 0) {
-		rte_errno = ret;
+		rte_errno = -ret;
 		goto free_memzone;
 	}
 
@@ -493,7 +493,7 @@ event_buffer_flush(struct event_buffer *bufp, uint8_t dev_id, uint8_t port_id,
 	*nb_events_inv = 0;
 	*nb_events_flushed = rte_event_enqueue_burst(dev_id, port_id,
 						     &events[tail_idx], n);
-	if (*nb_events_flushed != n && rte_errno == -EINVAL) {
+	if (*nb_events_flushed != n && rte_errno == EINVAL) {
 		EVTIM_LOG_ERR("failed to enqueue invalid event - dropping it");
 		(*nb_events_inv)++;
 	}

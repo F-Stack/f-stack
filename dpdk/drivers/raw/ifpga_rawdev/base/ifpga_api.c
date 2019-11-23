@@ -76,6 +76,7 @@ static int ifpga_acc_get_region_info(struct opae_accelerator *acc,
 	info->flags = ACC_REGION_READ | ACC_REGION_WRITE | ACC_REGION_MMIO;
 	info->len = afu_info->region[info->index].len;
 	info->addr = afu_info->region[info->index].addr;
+	info->phys_addr = afu_info->region[info->index].phys_addr;
 
 	return 0;
 }
@@ -183,7 +184,7 @@ struct opae_bridge_ops ifpga_br_ops = {
 };
 
 /* Manager APIs */
-static int ifpga_mgr_flash(struct opae_manager *mgr, int id, void *buf,
+static int ifpga_mgr_flash(struct opae_manager *mgr, int id, const char *buf,
 			   u32 size, u64 *status)
 {
 	struct ifpga_fme_hw *fme = mgr->data;
@@ -230,7 +231,7 @@ struct opae_adapter_ops ifpga_adapter_ops = {
  *   - 0: Success, partial reconfiguration finished.
  *   - <0: Error code returned in partial reconfiguration.
  **/
-int ifpga_pr(struct ifpga_hw *hw, u32 port_id, void *buffer, u32 size,
+int ifpga_pr(struct ifpga_hw *hw, u32 port_id, const char *buffer, u32 size,
 	     u64 *status)
 {
 	if (!is_valid_port_id(hw, port_id))

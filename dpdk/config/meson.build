@@ -50,6 +50,8 @@ toolchain = cc.get_id()
 dpdk_conf.set_quoted('RTE_TOOLCHAIN', toolchain)
 dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
 
+dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
+
 add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
 dpdk_extra_ldflags += '-Wl,--no-as-needed'
 
@@ -97,7 +99,7 @@ warning_flags = [
 	'-Wcast-qual',
 	'-Wno-address-of-packed-member'
 ]
-if cc.sizeof('void *') == 4
+if not dpdk_conf.get('RTE_ARCH_64')
 # for 32-bit, don't warn about casting a 32-bit pointer to 64-bit int - it's fine!!
 	warning_flags += '-Wno-pointer-to-int-cast'
 endif
@@ -117,6 +119,7 @@ dpdk_conf.set('RTE_MAX_VFIO_GROUPS', 64)
 dpdk_conf.set('RTE_DRIVER_MEMPOOL_BUCKET_SIZE_KB', 64)
 dpdk_conf.set('RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', true)
 
+
 compile_time_cpuflags = []
 if host_machine.cpu_family().startswith('x86')
 	arch_subdir = 'x86'
@@ -135,3 +138,11 @@ install_headers('rte_config.h', subdir: get_option('include_subdir_arch'))
 
 # enable VFIO only if it is linux OS
 dpdk_conf.set('RTE_EAL_VFIO', host_machine.system() == 'linux')
+
+# specify -D_GNU_SOURCE unconditionally
+add_project_arguments('-D_GNU_SOURCE', language: 'c')
+
+# specify -D__BSD_VISIBLE for FreeBSD
+if host_machine.system() == 'freebsd'
+	add_project_arguments('-D__BSD_VISIBLE', language: 'c')
+endif

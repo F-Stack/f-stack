@@ -2042,6 +2042,7 @@ cmd_config_rx_mode_flag_parsed(void *parsed_result,
 {
 	struct cmd_config_rx_mode_flag *res = parsed_result;
 	portid_t pid;
+	int k;
 
 	if (!all_ports_stopped()) {
 		printf("Please stop all ports first\n");
@@ -2142,6 +2143,10 @@ cmd_config_rx_mode_flag_parsed(void *parsed_result,
 			return;
 		}
 		port->dev_conf.rxmode.offloads = rx_offloads;
+		/* Apply Rx offloads configuration */
+		for (k = 0; k < port->dev_info.max_rx_queues; k++)
+			port->rx_conf[k].offloads =
+				port->dev_conf.rxmode.offloads;
 	}
 
 	init_port_config();
@@ -4355,6 +4360,17 @@ csum_show(int port_id)
 }
 
 static void
+cmd_config_queue_tx_offloads(struct rte_port *port)
+{
+	int k;
+
+	/* Apply queue tx offloads configuration */
+	for (k = 0; k < port->dev_info.max_rx_queues; k++)
+		port->tx_conf[k].offloads =
+			port->dev_conf.txmode.offloads;
+}
+
+static void
 cmd_csum_parsed(void *parsed_result,
 		       __attribute__((unused)) struct cmdline *cl,
 		       __attribute__((unused)) void *data)
@@ -4438,6 +4454,7 @@ cmd_csum_parsed(void *parsed_result,
 			ports[res->port_id].dev_conf.txmode.offloads &=
 							(~csum_offloads);
 		}
+		cmd_config_queue_tx_offloads(&ports[res->port_id]);
 	}
 	csum_show(res->port_id);
 
@@ -4589,6 +4606,7 @@ cmd_tso_set_parsed(void *parsed_result,
 		printf("TSO segment size for non-tunneled packets is %d\n",
 			ports[res->port_id].tso_segsz);
 	}
+	cmd_config_queue_tx_offloads(&ports[res->port_id]);
 
 	/* display warnings if configuration is not supported by the NIC */
 	rte_eth_dev_info_get(res->port_id, &dev_info);
@@ -4744,6 +4762,7 @@ cmd_tunnel_tso_set_parsed(void *parsed_result,
 				"if outer L3 is IPv4; not necessary for IPv6\n");
 	}
 
+	cmd_config_queue_tx_offloads(&ports[res->port_id]);
 	cmd_reconfig_device_queue(res->port_id, 1, 1);
 }
 
@@ -8348,19 +8367,19 @@ cmd_set_vf_rxmode_parsed(void *parsed_result,
 		       __attribute__((unused)) void *data)
 {
 	int ret = -ENOTSUP;
-	uint16_t rx_mode = 0;
+	uint16_t vf_rxmode = 0;
 	struct cmd_set_vf_rxmode *res = parsed_result;
 
 	int is_on = (strcmp(res->on, "on") == 0) ? 1 : 0;
 	if (!strcmp(res->what,"rxmode")) {
 		if (!strcmp(res->mode, "AUPE"))
-			rx_mode |= ETH_VMDQ_ACCEPT_UNTAG;
+			vf_rxmode |= ETH_VMDQ_ACCEPT_UNTAG;
 		else if (!strcmp(res->mode, "ROPE"))
-			rx_mode |= ETH_VMDQ_ACCEPT_HASH_UC;
+			vf_rxmode |= ETH_VMDQ_ACCEPT_HASH_UC;
 		else if (!strcmp(res->mode, "BAM"))
-			rx_mode |= ETH_VMDQ_ACCEPT_BROADCAST;
+			vf_rxmode |= ETH_VMDQ_ACCEPT_BROADCAST;
 		else if (!strncmp(res->mode, "MPE",3))
-			rx_mode |= ETH_VMDQ_ACCEPT_MULTICAST;
+			vf_rxmode |= ETH_VMDQ_ACCEPT_MULTICAST;
 	}
 
 	RTE_SET_USED(is_on);
@@ -8368,12 +8387,12 @@ cmd_set_vf_rxmode_parsed(void *parsed_result,
 #ifdef RTE_LIBRTE_IXGBE_PMD
 	if (ret == -ENOTSUP)
 		ret = rte_pmd_ixgbe_set_vf_rxmode(res->port_id, res->vf_id,
-						  rx_mode, (uint8_t)is_on);
+						  vf_rxmode, (uint8_t)is_on);
 #endif
 #ifdef RTE_LIBRTE_BNXT_PMD
 	if (ret == -ENOTSUP)
 		ret = rte_pmd_bnxt_set_vf_rxmode(res->port_id, res->vf_id,
-						 rx_mode, (uint8_t)is_on);
+						 vf_rxmode, (uint8_t)is_on);
 #endif
 	if (ret < 0)
 		printf("bad VF receive mode parameter, return code = %d \n",

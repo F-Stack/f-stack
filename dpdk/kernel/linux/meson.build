@@ -20,11 +20,11 @@ else
 	if kernel_dir == ''
 		# use default path for native builds
 		kernel_version = run_command('uname', '-r').stdout().strip()
-		kernel_dir = '/lib/modules/' + kernel_version + '/build'
+		kernel_dir = '/lib/modules/' + kernel_version
 	endif
 
 	# test running make in kernel directory, using "make kernelversion"
-	make_returncode = run_command('make', '-sC', kernel_dir,
+	make_returncode = run_command('make', '-sC', kernel_dir + '/build',
 			'kernelversion').returncode()
 	if make_returncode != 0
 		if meson.version().version_compare('>=0.44')

@@ -18,7 +18,6 @@
 #include "rte_telemetry.h"
 #include "rte_telemetry_internal.h"
 #include "rte_telemetry_parser.h"
-#include "rte_telemetry_parser_test.h"
 #include "rte_telemetry_socket_tests.h"
 
 #define BUF_SIZE 1024
@@ -32,13 +31,13 @@
 static telemetry_impl *static_telemetry;
 
 struct telemetry_message_test {
-	char *test_name;
+	const char *test_name;
 	int (*test_func_ptr)(struct telemetry_impl *telemetry, int fd);
 };
 
 struct json_data {
 	char *status_code;
-	char *data;
+	const char *data;
 	int port;
 	char *stat_name;
 	int stat_value;
@@ -137,7 +136,7 @@ rte_telemetry_update_metrics_ethdev(struct telemetry_impl *telemetry,
 	return 0;
 }
 
-int32_t
+static int32_t
 rte_telemetry_write_to_socket(struct telemetry_impl *telemetry,
 	const char *json_string)
 {
@@ -318,13 +317,13 @@ eperm_fail:
 static int32_t
 rte_telemetry_json_format_port(struct telemetry_impl *telemetry,
 	uint32_t port_id, json_t *ports, uint32_t *metric_ids,
-	uint32_t num_metric_ids)
+	int num_metric_ids)
 {
 	struct rte_metric_value *metrics = 0;
 	struct rte_metric_name *names = 0;
 	int num_metrics, ret, err_ret;
 	json_t *port, *stats;
-	uint32_t i;
+	int i;
 
 	num_metrics = rte_metrics_get_names(NULL, 0);
 	if (num_metrics < 0) {
@@ -449,12 +448,12 @@ einval_fail:
 
 static int32_t
 rte_telemetry_encode_json_format(struct telemetry_impl *telemetry,
-	uint32_t *port_ids, uint32_t num_port_ids, uint32_t *metric_ids,
-	uint32_t num_metric_ids, char **json_buffer)
+	uint32_t *port_ids, int num_port_ids, uint32_t *metric_ids,
+	int num_metric_ids, char **json_buffer)
 {
 	int ret;
 	json_t *root, *ports;
-	uint32_t i;
+	int i;
 
 	if (num_port_ids <= 0 || num_metric_ids <= 0) {
 		TELEMETRY_LOG_ERR("Please provide port and metric ids to query");
@@ -661,7 +660,7 @@ rte_telemetry_initial_accept(struct telemetry_impl *telemetry)
 	struct driver_index {
 		const void *dev_ops;
 		int reg_index;
-	} drv_idx[RTE_MAX_ETHPORTS];
+	} drv_idx[RTE_MAX_ETHPORTS] = { {0} };
 	int nb_drv_idx = 0;
 	uint16_t pid;
 	int ret;
@@ -911,7 +910,7 @@ close_socket:
 }
 
 int32_t __rte_experimental
-rte_telemetry_init()
+rte_telemetry_init(void)
 {
 	int ret;
 	pthread_attr_t attr;
@@ -1196,7 +1195,7 @@ fail:
 	return -1;
 }
 
-int32_t
+static int32_t
 rte_telemetry_dummy_client_socket(const char *valid_client_path)
 {
 	int sockfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
@@ -1671,8 +1670,8 @@ rte_telemetry_json_contents_test(struct telemetry_impl *telemetry, int fd)
 	int ret;
 	char buf[BUF_SIZE];
 	int fail_count = 0;
-	char *status = "Status Error: Invalid Argument 404";
-	char *data = "null";
+	const char *status = "Status Error: Invalid Argument 404";
+	const char *data = "null";
 	struct json_data *data_struct;
 	const char *invalid_contents = "{\"action\":0,\"command\":"
 	"\"ports_stats_values_by_name\",\"data\":{\"ports\""
@@ -1728,7 +1727,7 @@ rte_telemetry_json_empty_test(struct telemetry_impl *telemetry, int fd)
 	char buf[BUF_SIZE];
 	int fail_count = 0;
 	const char *status = "Status Error: Invalid Argument 404";
-	char *data = "null";
+	const char *data = "null";
 	struct json_data *data_struct;
 	const char *empty_json  = "{}";
 	int buffer_read = 0;

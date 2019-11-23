@@ -375,7 +375,6 @@ virtqueue_xmit_offload(struct virtio_net_hdr *hdr,
 
 		/* TCP Segmentation Offload */
 		if (cookie->ol_flags & PKT_TX_TCP_SEG) {
-			virtio_tso_fix_cksum(cookie);
 			hdr->gso_type = (cookie->ol_flags & PKT_TX_IPV6) ?
 				VIRTIO_NET_HDR_GSO_TCPV6 :
 				VIRTIO_NET_HDR_GSO_TCPV4;
@@ -573,11 +572,6 @@ virtio_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxvq = &vq->rxq;
 	rxvq->queue_id = queue_idx;
 	rxvq->mpool = mp;
-	if (rxvq->mpool == NULL) {
-		rte_exit(EXIT_FAILURE,
-			"Cannot allocate mbufs for rx virtqueue");
-	}
-
 	dev->data->rx_queues[queue_idx] = rxvq;
 
 	return 0;
@@ -989,7 +983,7 @@ virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 	struct virtqueue *vq = rxvq->vq;
 	struct virtio_hw *hw = vq->hw;
 	struct rte_mbuf *rxm;
-	struct rte_mbuf *prev;
+	struct rte_mbuf *prev = NULL;
 	uint16_t nb_used, num, nb_rx;
 	uint32_t len[VIRTIO_MBUF_BURST_SZ];
 	struct rte_mbuf *rcv_pkts[VIRTIO_MBUF_BURST_SZ];
@@ -1077,7 +1071,6 @@ virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 			rxm->data_len = (uint16_t)(len[i]);
 
 			rx_pkts[nb_rx]->pkt_len += (uint32_t)(len[i]);
-			rx_pkts[nb_rx]->data_len += (uint16_t)(len[i]);
 
 			if (prev)
 				prev->next = rxm;
@@ -1097,7 +1090,6 @@ virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 		uint16_t rcv_cnt = RTE_MIN((uint16_t)seg_res,
 					VIRTIO_MBUF_BURST_SZ);
 
-		prev = rcv_pkts[nb_rx];
 		if (likely(VIRTQUEUE_NUSED(vq) >= rcv_cnt)) {
 			virtio_rmb();
 			num = virtqueue_dequeue_rx_inorder(vq, rcv_pkts, len,
@@ -1114,7 +1106,6 @@ virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 				prev->next = rxm;
 				prev = rxm;
 				rx_pkts[nb_rx]->pkt_len += len[extra_idx];
-				rx_pkts[nb_rx]->data_len += len[extra_idx];
 				extra_idx += 1;
 			};
 			seg_res -= rcv_cnt;
@@ -1126,7 +1117,7 @@ virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 		} else {
 			PMD_RX_LOG(ERR,
 					"No enough segments for packet.");
-			virtio_discard_rxbuf_inorder(vq, prev);
+			rte_pktmbuf_free(rx_pkts[nb_rx]);
 			rxvq->stats.errors++;
 			break;
 		}
@@ -1341,6 +1332,51 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 }
 
 uint16_t
+virtio_xmit_pkts_prepare(void *tx_queue __rte_unused, struct rte_mbuf **tx_pkts,
+			uint16_t nb_pkts)
+{
+	uint16_t nb_tx;
+	int error;
+
+	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
+		struct rte_mbuf *m = tx_pkts[nb_tx];
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		error = rte_validate_tx_offload(m);
+		if (unlikely(error)) {
+			rte_errno = -error;
+			break;
+		}
+#endif
+
+		/* Do VLAN tag insertion */
+		if (unlikely(m->ol_flags & PKT_TX_VLAN_PKT)) {
+			error = rte_vlan_insert(&m);
+			/* rte_vlan_insert() may change pointer
+			 * even in the case of failure
+			 */
+			tx_pkts[nb_tx] = m;
+
+			if (unlikely(error)) {
+				rte_errno = -error;
+				break;
+			}
+		}
+
+		error = rte_net_intel_cksum_prepare(m);
+		if (unlikely(error)) {
+			rte_errno = -error;
+			break;
+		}
+
+		if (m->ol_flags & PKT_TX_TCP_SEG)
+			virtio_tso_fix_cksum(m);
+	}
+
+	return nb_tx;
+}
+
+uint16_t
 virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
 	struct virtnet_tx *txvq = tx_queue;
@@ -1348,7 +1384,6 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct virtio_hw *hw = vq->hw;
 	uint16_t hdr_size = hw->vtnet_hdr_size;
 	uint16_t nb_used, nb_tx = 0;
-	int error;
 
 	if (unlikely(hw->started == 0 && tx_pkts != hw->inject_pkts))
 		return nb_tx;
@@ -1366,17 +1401,6 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
 		struct rte_mbuf *txm = tx_pkts[nb_tx];
 		int can_push = 0, use_indirect = 0, slots, need;
-
-		/* Do VLAN tag insertion */
-		if (unlikely(txm->ol_flags & PKT_TX_VLAN_PKT)) {
-			error = rte_vlan_insert(&txm);
-			if (unlikely(error)) {
-				rte_pktmbuf_free(txm);
-				continue;
-			}
-			/* vlan_insert may add a header mbuf */
-			tx_pkts[nb_tx] = txm;
-		}
 
 		/* optimize ring usage */
 		if ((vtpci_with_feature(hw, VIRTIO_F_ANY_LAYOUT) ||
@@ -1448,7 +1472,6 @@ virtio_xmit_pkts_inorder(void *tx_queue,
 	uint16_t hdr_size = hw->vtnet_hdr_size;
 	uint16_t nb_used, nb_avail, nb_tx = 0, nb_inorder_pkts = 0;
 	struct rte_mbuf *inorder_pkts[nb_pkts];
-	int error;
 
 	if (unlikely(hw->started == 0 && tx_pkts != hw->inject_pkts))
 		return nb_tx;
@@ -1472,17 +1495,6 @@ virtio_xmit_pkts_inorder(void *tx_queue,
 	for (nb_tx = 0; nb_tx < nb_avail; nb_tx++) {
 		struct rte_mbuf *txm = tx_pkts[nb_tx];
 		int slots, need;
-
-		/* Do VLAN tag insertion */
-		if (unlikely(txm->ol_flags & PKT_TX_VLAN_PKT)) {
-			error = rte_vlan_insert(&txm);
-			if (unlikely(error)) {
-				rte_pktmbuf_free(txm);
-				continue;
-			}
-			/* vlan_insert may add a header mbuf */
-			tx_pkts[nb_tx] = txm;
-		}
 
 		/* optimize ring usage */
 		if ((vtpci_with_feature(hw, VIRTIO_F_ANY_LAYOUT) ||

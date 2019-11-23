@@ -139,14 +139,11 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 	}
 
 	if (i >= HWRM_CMD_TIMEOUT) {
-		PMD_DRV_LOG(ERR, "Error sending msg 0x%04x\n",
-			req->req_type);
-		goto err_ret;
+		PMD_DRV_LOG(ERR, "Error(timeout) sending msg 0x%04x\n",
+			    req->req_type);
+		return -ETIMEDOUT;
 	}
 	return 0;
-
-err_ret:
-	return -1;
 }
 
 /*
@@ -576,7 +573,9 @@ static int __bnxt_hwrm_func_qcaps(struct bnxt *bp)
 	bp->max_cp_rings = rte_le_to_cpu_16(resp->max_cmpl_rings);
 	bp->max_tx_rings = rte_le_to_cpu_16(resp->max_tx_rings);
 	bp->max_rx_rings = rte_le_to_cpu_16(resp->max_rx_rings);
-	bp->max_l2_ctx = rte_le_to_cpu_16(resp->max_l2_ctxs);
+	bp->max_rx_em_flows = rte_le_to_cpu_16(resp->max_rx_em_flows);
+	bp->max_l2_ctx =
+		rte_le_to_cpu_16(resp->max_l2_ctxs) + bp->max_rx_em_flows;
 	/* TODO: For now, do not support VMDq/RFS on VFs. */
 	if (BNXT_PF(bp)) {
 		if (bp->pf.max_vfs)
@@ -770,7 +769,12 @@ int bnxt_hwrm_func_resc_qcaps(struct bnxt *bp)
 		bp->max_tx_rings = rte_le_to_cpu_16(resp->max_tx_rings);
 		bp->max_rx_rings = rte_le_to_cpu_16(resp->max_rx_rings);
 		bp->max_ring_grps = rte_le_to_cpu_32(resp->max_hw_ring_grps);
-		bp->max_l2_ctx = rte_le_to_cpu_16(resp->max_l2_ctxs);
+		/* func_resource_qcaps does not return max_rx_em_flows.
+		 * So use the value provided by func_qcaps.
+		 */
+		bp->max_l2_ctx =
+			rte_le_to_cpu_16(resp->max_l2_ctxs) +
+			bp->max_rx_em_flows;
 		bp->max_vnics = rte_le_to_cpu_16(resp->max_vnics);
 		bp->max_stat_ctx = rte_le_to_cpu_16(resp->max_stat_ctx);
 	}
@@ -850,7 +854,7 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 		rte_mem_lock_page(bp->hwrm_cmd_resp_addr);
 		bp->hwrm_cmd_resp_dma_addr =
 			rte_mem_virt2iova(bp->hwrm_cmd_resp_addr);
-		if (bp->hwrm_cmd_resp_dma_addr == 0) {
+		if (bp->hwrm_cmd_resp_dma_addr == RTE_BAD_IOVA) {
 			PMD_DRV_LOG(ERR,
 			"Unable to map response buffer to physical memory.\n");
 			rc = -ENOMEM;
@@ -876,7 +880,7 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 		rte_mem_lock_page(bp->hwrm_short_cmd_req_addr);
 		bp->hwrm_short_cmd_req_dma_addr =
 			rte_mem_virt2iova(bp->hwrm_short_cmd_req_addr);
-		if (bp->hwrm_short_cmd_req_dma_addr == 0) {
+		if (bp->hwrm_short_cmd_req_dma_addr == RTE_BAD_IOVA) {
 			rte_free(bp->hwrm_short_cmd_req_addr);
 			PMD_DRV_LOG(ERR,
 				"Unable to map buffer to physical memory.\n");
@@ -1109,7 +1113,7 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 	case HWRM_RING_ALLOC_INPUT_RING_TYPE_RX:
 		req.ring_type = ring_type;
 		req.cmpl_ring_id = rte_cpu_to_le_16(cmpl_ring_id);
-		req.stat_ctx_id = rte_cpu_to_le_16(stats_ctx_id);
+		req.stat_ctx_id = rte_cpu_to_le_32(stats_ctx_id);
 		if (stats_ctx_id != INVALID_STATS_CTX_ID)
 			enables |=
 			HWRM_RING_ALLOC_INPUT_ENABLES_STAT_CTX_ID_VALID;
@@ -1126,7 +1130,7 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 		PMD_DRV_LOG(ERR, "hwrm alloc invalid ring type %d\n",
 			ring_type);
 		HWRM_UNLOCK();
-		return -1;
+		return -EINVAL;
 	}
 	req.enables = rte_cpu_to_le_32(enables);
 
@@ -1136,17 +1140,17 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 		if (rc == 0 && resp->error_code)
 			rc = rte_le_to_cpu_16(resp->error_code);
 		switch (ring_type) {
-		case HWRM_RING_FREE_INPUT_RING_TYPE_L2_CMPL:
+		case HWRM_RING_ALLOC_INPUT_RING_TYPE_L2_CMPL:
 			PMD_DRV_LOG(ERR,
 				"hwrm_ring_alloc cp failed. rc:%d\n", rc);
 			HWRM_UNLOCK();
 			return rc;
-		case HWRM_RING_FREE_INPUT_RING_TYPE_RX:
+		case HWRM_RING_ALLOC_INPUT_RING_TYPE_RX:
 			PMD_DRV_LOG(ERR,
 				"hwrm_ring_alloc rx failed. rc:%d\n", rc);
 			HWRM_UNLOCK();
 			return rc;
-		case HWRM_RING_FREE_INPUT_RING_TYPE_TX:
+		case HWRM_RING_ALLOC_INPUT_RING_TYPE_TX:
 			PMD_DRV_LOG(ERR,
 				"hwrm_ring_alloc tx failed. rc:%d\n", rc);
 			HWRM_UNLOCK();
@@ -1259,7 +1263,7 @@ int bnxt_hwrm_stat_clear(struct bnxt *bp, struct bnxt_cp_ring_info *cpr)
 
 	HWRM_PREP(req, STAT_CTX_CLR_STATS, BNXT_USE_CHIMP_MB);
 
-	req.stat_ctx_id = rte_cpu_to_le_16(cpr->hw_stats_ctx_id);
+	req.stat_ctx_id = rte_cpu_to_le_32(cpr->hw_stats_ctx_id);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
@@ -1287,7 +1291,7 @@ int bnxt_hwrm_stat_ctx_alloc(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 
 	HWRM_CHECK_RESULT();
 
-	cpr->hw_stats_ctx_id = rte_le_to_cpu_16(resp->stat_ctx_id);
+	cpr->hw_stats_ctx_id = rte_le_to_cpu_32(resp->stat_ctx_id);
 
 	HWRM_UNLOCK();
 
@@ -1303,7 +1307,7 @@ int bnxt_hwrm_stat_ctx_free(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 
 	HWRM_PREP(req, STAT_CTX_FREE, BNXT_USE_CHIMP_MB);
 
-	req.stat_ctx_id = rte_cpu_to_le_16(cpr->hw_stats_ctx_id);
+	req.stat_ctx_id = rte_cpu_to_le_32(cpr->hw_stats_ctx_id);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
@@ -1382,6 +1386,11 @@ static int bnxt_hwrm_vnic_plcmodes_cfg(struct bnxt *bp,
 	struct hwrm_vnic_plcmodes_cfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_plcmodes_cfg_output *resp = bp->hwrm_cmd_resp_addr;
 
+	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
+		PMD_DRV_LOG(DEBUG, "VNIC ID %x\n", vnic->fw_vnic_id);
+		return rc;
+	}
+
 	HWRM_PREP(req, VNIC_PLCMODES_CFG, BNXT_USE_CHIMP_MB);
 
 	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
@@ -1408,8 +1417,8 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	int rc = 0;
 	struct hwrm_vnic_cfg_input req = {.req_type = 0 };
 	struct hwrm_vnic_cfg_output *resp = bp->hwrm_cmd_resp_addr;
+	struct bnxt_plcmodes_cfg pmodes = { 0 };
 	uint32_t ctx_enable_flag = 0;
-	struct bnxt_plcmodes_cfg pmodes;
 
 	if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
 		PMD_DRV_LOG(DEBUG, "VNIC ID %x\n", vnic->fw_vnic_id);
@@ -1607,6 +1616,7 @@ int bnxt_hwrm_vnic_rss_cfg(struct bnxt *bp,
 	req.hash_key_tbl_addr =
 	    rte_cpu_to_le_64(vnic->rss_hash_key_dma_addr);
 	req.rss_ctx_idx = rte_cpu_to_le_16(vnic->rss_rule);
+	req.vnic_id = rte_cpu_to_le_16(vnic->fw_vnic_id);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
@@ -1896,6 +1906,7 @@ static void bnxt_free_cp_ring(struct bnxt *bp, struct bnxt_cp_ring_info *cpr)
 	memset(cpr->cp_desc_ring, 0, cpr->cp_ring_struct->ring_size *
 			sizeof(*cpr->cp_desc_ring));
 	cpr->cp_raw_cons = 0;
+	cpr->valid = 0;
 }
 
 void bnxt_free_hwrm_rx_ring(struct bnxt *bp, int queue_index)
@@ -2008,7 +2019,7 @@ int bnxt_alloc_hwrm_resources(struct bnxt *bp)
 		return -ENOMEM;
 	bp->hwrm_cmd_resp_dma_addr =
 		rte_mem_virt2iova(bp->hwrm_cmd_resp_addr);
-	if (bp->hwrm_cmd_resp_dma_addr == 0) {
+	if (bp->hwrm_cmd_resp_dma_addr == RTE_BAD_IOVA) {
 		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
@@ -2046,7 +2057,7 @@ bnxt_clear_hwrm_vnic_flows(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 
 	STAILQ_FOREACH(flow, &vnic->flow_list, next) {
 		filter = flow->filter;
-		PMD_DRV_LOG(ERR, "filter type %d\n", filter->filter_type);
+		PMD_DRV_LOG(DEBUG, "filter type %d\n", filter->filter_type);
 		if (filter->filter_type == HWRM_CFA_EM_FILTER)
 			rc = bnxt_hwrm_clear_em_filter(bp, filter);
 		else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
@@ -2108,6 +2119,11 @@ void bnxt_free_all_hwrm_resources(struct bnxt *bp)
 	 */
 	for (i = bp->nr_vnics - 1; i >= 0; i--) {
 		struct bnxt_vnic_info *vnic = &bp->vnic_info[i];
+
+		if (vnic->fw_vnic_id == INVALID_HW_RING_ID) {
+			PMD_DRV_LOG(DEBUG, "Invalid vNIC ID\n");
+			return;
+		}
 
 		bnxt_clear_hwrm_vnic_flows(bp, vnic);
 
@@ -2641,14 +2657,7 @@ int bnxt_hwrm_func_qcfg_current_vf_vlan(struct bnxt *bp, int vf)
 	HWRM_PREP(req, FUNC_QCFG, BNXT_USE_CHIMP_MB);
 	req.fid = rte_cpu_to_le_16(bp->pf.vf_info[vf].fid);
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
-	if (rc) {
-		PMD_DRV_LOG(ERR, "hwrm_func_qcfg failed rc:%d\n", rc);
-		return -1;
-	} else if (resp->error_code) {
-		rc = rte_le_to_cpu_16(resp->error_code);
-		PMD_DRV_LOG(ERR, "hwrm_func_qcfg error %d\n", rc);
-		return -1;
-	}
+	HWRM_CHECK_RESULT();
 	rc = rte_le_to_cpu_16(resp->vlan);
 
 	HWRM_UNLOCK();
@@ -2683,7 +2692,7 @@ int bnxt_hwrm_allocate_pf_only(struct bnxt *bp)
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR, "Attempt to allcoate VFs on a VF!\n");
-		return -1;
+		return -EINVAL;
 	}
 
 	rc = bnxt_hwrm_func_qcaps(bp);
@@ -2710,7 +2719,7 @@ int bnxt_hwrm_allocate_vfs(struct bnxt *bp, int num_vfs)
 
 	if (!BNXT_PF(bp)) {
 		PMD_DRV_LOG(ERR, "Attempt to allcoate VFs on a VF!\n");
-		return -1;
+		return -EINVAL;
 	}
 
 	rc = bnxt_hwrm_func_qcaps(bp);
@@ -2929,7 +2938,7 @@ int bnxt_hwrm_func_buf_rgtr(struct bnxt *bp)
 	req.req_buf_len = rte_cpu_to_le_16(HWRM_MAX_REQ_LEN);
 	req.req_buf_page_addr0 =
 		rte_cpu_to_le_64(rte_mem_virt2iova(bp->pf.vf_req_buf));
-	if (req.req_buf_page_addr0 == 0) {
+	if (req.req_buf_page_addr0 == RTE_BAD_IOVA) {
 		PMD_DRV_LOG(ERR,
 			"unable to map buffer address to physical memory\n");
 		return -ENOMEM;
@@ -2948,6 +2957,9 @@ int bnxt_hwrm_func_buf_unrgtr(struct bnxt *bp)
 	int rc = 0;
 	struct hwrm_func_buf_unrgtr_input req = {.req_type = 0 };
 	struct hwrm_func_buf_unrgtr_output *resp = bp->hwrm_cmd_resp_addr;
+
+	if (!(BNXT_PF(bp) && bp->pdev->max_vfs))
+		return 0;
 
 	HWRM_PREP(req, FUNC_BUF_UNRGTR, BNXT_USE_CHIMP_MB);
 
@@ -3327,12 +3339,11 @@ int bnxt_hwrm_nvm_get_dir_info(struct bnxt *bp, uint32_t *entries,
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
 	HWRM_CHECK_RESULT();
-	HWRM_UNLOCK();
 
-	if (!rc) {
-		*entries = rte_le_to_cpu_32(resp->entries);
-		*length = rte_le_to_cpu_32(resp->entry_length);
-	}
+	*entries = rte_le_to_cpu_32(resp->entries);
+	*length = rte_le_to_cpu_32(resp->entry_length);
+
+	HWRM_UNLOCK();
 	return rc;
 }
 
@@ -3362,7 +3373,7 @@ int bnxt_get_nvram_directory(struct bnxt *bp, uint32_t len, uint8_t *data)
 	if (buf == NULL)
 		return -ENOMEM;
 	dma_handle = rte_mem_virt2iova(buf);
-	if (dma_handle == 0) {
+	if (dma_handle == RTE_BAD_IOVA) {
 		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
@@ -3397,7 +3408,7 @@ int bnxt_hwrm_get_nvram_item(struct bnxt *bp, uint32_t index,
 		return -ENOMEM;
 
 	dma_handle = rte_mem_virt2iova(buf);
-	if (dma_handle == 0) {
+	if (dma_handle == RTE_BAD_IOVA) {
 		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
@@ -3451,7 +3462,7 @@ int bnxt_hwrm_flash_nvram(struct bnxt *bp, uint16_t dir_type,
 		return -ENOMEM;
 
 	dma_handle = rte_mem_virt2iova(buf);
-	if (dma_handle == 0) {
+	if (dma_handle == RTE_BAD_IOVA) {
 		PMD_DRV_LOG(ERR,
 			"unable to map response address to physical memory\n");
 		return -ENOMEM;
@@ -3515,7 +3526,7 @@ static int bnxt_hwrm_func_vf_vnic_query(struct bnxt *bp, uint16_t vf,
 	req.max_vnic_id_cnt = rte_cpu_to_le_32(bp->pf.total_vnics);
 	req.vnic_id_tbl_addr = rte_cpu_to_le_64(rte_mem_virt2iova(vnic_ids));
 
-	if (req.vnic_id_tbl_addr == 0) {
+	if (req.vnic_id_tbl_addr == RTE_BAD_IOVA) {
 		HWRM_UNLOCK();
 		PMD_DRV_LOG(ERR,
 		"unable to map VNIC ID table address to physical memory\n");
@@ -3559,10 +3570,9 @@ int bnxt_hwrm_func_vf_vnic_query_and_config(struct bnxt *bp, uint16_t vf,
 	vnic_id_sz = bp->pf.total_vnics * sizeof(*vnic_ids);
 	vnic_ids = rte_malloc("bnxt_hwrm_vf_vnic_ids_query", vnic_id_sz,
 			RTE_CACHE_LINE_SIZE);
-	if (vnic_ids == NULL) {
-		rc = -ENOMEM;
-		return rc;
-	}
+	if (vnic_ids == NULL)
+		return -ENOMEM;
+
 	for (sz = 0; sz < vnic_id_sz; sz += getpagesize())
 		rte_mem_lock_page(((char *)vnic_ids) + sz);
 
@@ -3629,10 +3639,8 @@ int bnxt_hwrm_func_qcfg_vf_dflt_vnic_id(struct bnxt *bp, int vf)
 	vnic_id_sz = bp->pf.total_vnics * sizeof(*vnic_ids);
 	vnic_ids = rte_malloc("bnxt_hwrm_vf_vnic_ids_query", vnic_id_sz,
 			RTE_CACHE_LINE_SIZE);
-	if (vnic_ids == NULL) {
-		rc = -ENOMEM;
-		return rc;
-	}
+	if (vnic_ids == NULL)
+		return -ENOMEM;
 
 	for (sz = 0; sz < vnic_id_sz; sz += getpagesize())
 		rte_mem_lock_page(((char *)vnic_ids) + sz);
@@ -3663,7 +3671,7 @@ int bnxt_hwrm_func_qcfg_vf_dflt_vnic_id(struct bnxt *bp, int vf)
 	PMD_DRV_LOG(ERR, "No default VNIC\n");
 exit:
 	rte_free(vnic_ids);
-	return -1;
+	return rc;
 }
 
 int bnxt_hwrm_set_em_filter(struct bnxt *bp,

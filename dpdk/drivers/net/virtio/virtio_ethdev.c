@@ -1341,6 +1341,7 @@ set_rxtx_funcs(struct rte_eth_dev *eth_dev)
 {
 	struct virtio_hw *hw = eth_dev->data->dev_private;
 
+	eth_dev->tx_pkt_prepare = virtio_xmit_pkts_prepare;
 	if (hw->use_simple_rx) {
 		PMD_INIT_LOG(INFO, "virtio: using simple Rx path on port %u",
 			eth_dev->data->port_id);
@@ -1593,6 +1594,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	if (eth_dev->data->dev_conf.intr_conf.rxq) {
 		if (virtio_configure_intr(eth_dev) < 0) {
 			PMD_INIT_LOG(ERR, "failed to configure interrupt");
+			virtio_free_queues(hw);
 			return -1;
 		}
 	}
@@ -1663,7 +1665,14 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 	struct virtio_hw *hw = eth_dev->data->dev_private;
 	int ret;
 
-	RTE_BUILD_BUG_ON(RTE_PKTMBUF_HEADROOM < sizeof(struct virtio_net_hdr_mrg_rxbuf));
+	if (sizeof(struct virtio_net_hdr_mrg_rxbuf) > RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR,
+			"Not sufficient headroom required = %d, avail = %d",
+			(int)sizeof(struct virtio_net_hdr_mrg_rxbuf),
+			RTE_PKTMBUF_HEADROOM);
+
+		return -1;
+	}
 
 	eth_dev->dev_ops = &virtio_eth_dev_ops;
 
@@ -1696,17 +1705,23 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 	if (!hw->virtio_user_dev) {
 		ret = vtpci_init(RTE_ETH_DEV_TO_PCI(eth_dev), hw);
 		if (ret)
-			goto out;
+			goto err_vtpci_init;
 	}
 
 	/* reset device and negotiate default features */
 	ret = virtio_init_device(eth_dev, VIRTIO_PMD_DEFAULT_GUEST_FEATURES);
 	if (ret < 0)
-		goto out;
+		goto err_virtio_init;
 
 	return 0;
 
-out:
+err_virtio_init:
+	if (!hw->virtio_user_dev) {
+		rte_pci_unmap_device(RTE_ETH_DEV_TO_PCI(eth_dev));
+		if (!hw->modern)
+			rte_pci_ioport_unmap(VTPCI_IO(hw));
+	}
+err_vtpci_init:
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;
 	return ret;
@@ -1715,6 +1730,8 @@ out:
 static int
 eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 {
+	struct virtio_hw *hw = eth_dev->data->dev_private;
+
 	PMD_INIT_FUNC_TRACE();
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
@@ -1727,8 +1744,11 @@ eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 	eth_dev->tx_pkt_burst = NULL;
 	eth_dev->rx_pkt_burst = NULL;
 
-	if (eth_dev->device)
+	if (eth_dev->device) {
 		rte_pci_unmap_device(RTE_ETH_DEV_TO_PCI(eth_dev));
+		if (!hw->modern)
+			rte_pci_ioport_unmap(VTPCI_IO(hw));
+	}
 
 	PMD_INIT_LOG(DEBUG, "dev_uninit completed");
 

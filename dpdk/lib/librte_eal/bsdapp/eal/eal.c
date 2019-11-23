@@ -253,6 +253,11 @@ rte_eal_config_create(void)
 	}
 	memcpy(rte_mem_cfg_addr, &early_mem_config, sizeof(early_mem_config));
 	rte_config.mem_config = rte_mem_cfg_addr;
+
+	/* store address of the config in the config itself so that secondary
+	 * processes could later map the config into this exact location
+	 */
+	rte_config.mem_config->mem_cfg_addr = (uintptr_t) rte_mem_cfg_addr;
 }
 
 /* attach to an existing shared memory config */
@@ -566,6 +571,8 @@ rte_eal_mcfg_complete(void)
 	/* ALL shared mem_config related INIT DONE */
 	if (rte_config.process_type == RTE_PROC_PRIMARY)
 		rte_config.mem_config->magic = RTE_MAGIC;
+
+	internal_config.init_complete = 1;
 }
 
 /* return non-zero if hugepages are enabled. */
@@ -663,7 +670,7 @@ rte_eal_init(int argc, char **argv)
 	}
 
 	if (rte_eal_alarm_init() < 0) {
-		rte_eal_init_alert("Cannot init interrupt-handling thread");
+		rte_eal_init_alert("Cannot init alarm");
 		/* rte_eal_alarm_init sets rte_errno on failure. */
 		return -1;
 	}
