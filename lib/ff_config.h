@@ -31,6 +31,8 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 // dpdk argc, argv, max argc: 16, member of dpdk_config
 #define DPDK_CONFIG_NUM 16
 #define DPDK_CONFIG_MAXLEN 256
