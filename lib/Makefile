@@ -73,6 +73,8 @@ ifdef FF_KNI
 HOST_CFLAGS+= -DFF_KNI
 endif
 
+CONF_CFLAGS+=-fPIC
+
 HOST_CFLAGS+= ${DPDK_CFLAGS}
 HOST_CFLAGS+= ${CONF_CFLAGS}
 
@@ -595,7 +597,7 @@ libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} $
 	rm $*_localize_list.tmp
 	objcopy --globalize-symbols=ff_api.symlist $*.ro
 	rm -f $@
-	ar -cqs $@ $*.ro ${HOST_OBJS}
+	${CC} -shared -o libfstack.so $*.ro -fPIC ${HOST_OBJS}
 	rm -f $*.ro
 
 ${HOST_OBJS}: %.o: %.c
