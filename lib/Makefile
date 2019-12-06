@@ -61,6 +61,8 @@ INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}
 INCLUDES+= -I./machine_include
 INCLUDES+= -I./opt
 
+LIBS=-ldpdk
+
 # Include search path for files that only include host OS headers
 HOST_INCLUDES= -I.
 ifndef DEBUG
@@ -597,7 +599,7 @@ libfstack.a: machine_includes ff_api.symlist ${MHEADERS} ${MSRCS} ${HOST_OBJS} $
 	rm $*_localize_list.tmp
 	objcopy --globalize-symbols=ff_api.symlist $*.ro
 	rm -f $@
-	${CC} -shared -o libfstack.so $*.ro -fPIC ${HOST_OBJS}
+	${CC} -shared -o libfstack.so $*.ro -fPIC ${HOST_OBJS} ${LIBS}
 	rm -f $*.ro
 
 ${HOST_OBJS}: %.o: %.c
@@ -650,8 +652,7 @@ vnode_if_typedef.h:
 include ${TOPDIR}/mk/kern.mk
 
 install:
-	rm -rf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
-	rm -rf ${PREFIX_LIB}/libfstack.a
+	rm -rf ${PREFIX_LIB}/libfstack.so
 	rm -rf ${PREFIX_INCLUDE}/ff_config.h
 	rm -rf ${PREFIX_INCLUDE}/ff_api.h
 	rm -rf ${PREFIX_INCLUDE}/ff_event.h
@@ -659,8 +660,7 @@ install:
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
 	rm -rf ${PREFIX_BIN}/ff_start
 
-	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
-	ln -sf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION} ${PREFIX_LIB}/libfstack.a
+	cp -f libfstack.so ${PREFIX_LIB}/libfstack.so
 	cp -f ff_config.h ${PREFIX_INCLUDE}/ff_config.h
 	cp -f ff_api.h ${PREFIX_INCLUDE}/ff_api.h
 	cp -f ff_event.h ${PREFIX_INCLUDE}/ff_event.h
