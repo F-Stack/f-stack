@@ -169,10 +169,10 @@ struct ff_config {
     } freebsd;
 
     struct {
-		uint16_t enable;
-		uint16_t snap_len;
-		uint32_t save_len;
-		char*	 save_path;
+        uint16_t enable;
+        uint16_t snap_len;
+        uint32_t save_len;
+        char*	 save_path;
     } pcap;
 };
 
