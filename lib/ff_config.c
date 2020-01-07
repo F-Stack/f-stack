@@ -815,9 +815,9 @@ ff_check_config(struct ff_config *cfg)
     }
 
     if ( cfg->pcap.save_len < PCAP_SAVE_MINLEN )
-    	cfg->pcap.save_len = PCAP_SAVE_MINLEN;
-	if (cfg->pcap.snap_len < PCAP_SNAP_MINLEN)
-    	cfg->pcap.snap_len = PCAP_SNAP_MINLEN;
+        cfg->pcap.save_len = PCAP_SAVE_MINLEN;
+    if (cfg->pcap.snap_len < PCAP_SNAP_MINLEN)
+        cfg->pcap.snap_len = PCAP_SNAP_MINLEN;
     if ( cfg->pcap.save_path==NULL || strlen(cfg->pcap.save_path) ==0)
         cfg->pcap.save_path = strdup(".");
 
