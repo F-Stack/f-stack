@@ -623,7 +623,7 @@ ini_parse_handler(void* user, const char* section, const char* name,
         } else if (strcmp(name, "enable") == 0) {
             pconfig->pcap.enable = (uint16_t)atoi(value);
         } else if (strcmp(name, "savepath") == 0) {
-        	pconfig->pcap.save_path = strdup(value);
+            pconfig->pcap.save_path = strdup(value);
         }
     }
 
