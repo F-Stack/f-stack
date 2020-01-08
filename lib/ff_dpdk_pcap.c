@@ -106,7 +106,8 @@ ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, 
     while(pkt != NULL && out_len <= snap_len) {
         wr_len = snap_len - out_len;
         wr_len = wr_len > pkt->data_len ? pkt->data_len : wr_len ;
-        out_len += wr_len * fwrite(rte_pktmbuf_mtod(pkt, char*), wr_len, 1, g_pcap_fp);//pkt->data_len, 1, fp);
+        fwrite(rte_pktmbuf_mtod(pkt, char*), wr_len, 1, g_pcap_fp);
+        out_len += wr_len;
         pkt = pkt->next;
     }
     g_flen += out_len;
