@@ -30,8 +30,8 @@
 #include <rte_config.h>
 #include <rte_mbuf.h>
 
-int ff_enable_pcap(const char* dump_path);
-int ff_dump_packets(const char* dump_path, struct rte_mbuf *pkt);
+int ff_enable_pcap(const char* dump_path, uint16_t snap_len);
+int ff_dump_packets(const char* dump_path, struct rte_mbuf *pkt, uint16_t snap_len, uint32_t f_maxlen);
 
 
 #endif /* ifndef _FSTACK_DPDK_PCAP_H */

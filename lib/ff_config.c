@@ -615,6 +615,16 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return vdev_cfg_handler(pconfig, section, name, value);
     } else if (strncmp(section, "bond", 4) == 0) {
         return bond_cfg_handler(pconfig, section, name, value);
+    } else if (strcmp(section, "pcap") == 0) {
+        if (strcmp(name, "snaplen") == 0) {
+            pconfig->pcap.snap_len = (uint16_t)atoi(value);            
+        } else if (strcmp(name, "savelen") == 0) {
+            pconfig->pcap.save_len = (uint32_t)atoi(value);            
+        } else if (strcmp(name, "enable") == 0) {
+            pconfig->pcap.enable = (uint16_t)atoi(value);
+        } else if (strcmp(name, "savepath") == 0) {
+        	pconfig->pcap.save_path = strdup(value);
+        }
     }
 
     return 1;
@@ -803,6 +813,13 @@ ff_check_config(struct ff_config *cfg)
             return -1;
         }
     }
+
+    if ( cfg->pcap.save_len < PCAP_SAVE_MINLEN )
+    	cfg->pcap.save_len = PCAP_SAVE_MINLEN;
+	if (cfg->pcap.snap_len < PCAP_SNAP_MINLEN)
+    	cfg->pcap.snap_len = PCAP_SNAP_MINLEN;
+    if ( cfg->pcap.save_path==NULL || strlen(cfg->pcap.save_path) ==0)
+        cfg->pcap.save_path = strdup(".");
 
     #define CHECK_VALID(n) \
         do { \
