@@ -276,7 +276,7 @@ init_lcore_conf(void)
 
         /* Enable pcap dump */
         if (ff_global_cfg.pcap.enable) {
-        	ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len);
+            ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len);
         }
 
         lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
@@ -1328,7 +1328,8 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     if (unlikely(ff_global_cfg.pcap.enable)) {
         uint16_t i;
         for (i = 0; i < n; i++) {
-           ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i], ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len);
+            ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i], 
+               ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len);
         }
     }
     
