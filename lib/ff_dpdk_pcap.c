@@ -26,8 +26,11 @@
 
 #include <sys/time.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "ff_dpdk_pcap.h"
+#define FILE_PATH_LEN 64
+#define PCAP_FILE_NUM 10
 
 struct pcap_file_header {
     uint32_t magic;
@@ -46,14 +49,21 @@ struct pcap_pkthdr {
     uint32_t len;            /* length this packet (off wire) */
 };
 
-int
-ff_enable_pcap(const char* dump_path)
+static __thread FILE* g_pcap_fp = NULL;
+static __thread uint32_t seq = 0;
+static __thread uint32_t g_flen = 0;
+
+int ff_enable_pcap(const char* dump_path, uint16_t snap_len)
 {
-    FILE* fp = fopen(dump_path, "w");
-    if (fp == NULL) { 
-        rte_exit(EXIT_FAILURE, "Cannot open pcap dump path: %s\n", dump_path);
+    char pcap_f_path[FILE_PATH_LEN] = {0};
+
+    snprintf(pcap_f_path, FILE_PATH_LEN,  "%s/cpu%d_%d.pcap", dump_path==NULL?".":dump_path, rte_lcore_id(), seq);
+    g_pcap_fp = fopen(pcap_f_path, "w+");
+    if (g_pcap_fp == NULL) { 
+        rte_exit(EXIT_FAILURE, "Cannot open pcap dump path: %s, errno %d.\n", pcap_f_path, errno);
         return -1;
     }
+    g_flen = 0;
 
     struct pcap_file_header pcap_file_hdr;
     void* file_hdr = &pcap_file_hdr;
@@ -63,40 +73,51 @@ ff_enable_pcap(const char* dump_path)
     pcap_file_hdr.version_minor = 0x0004;
     pcap_file_hdr.thiszone = 0x00000000;
     pcap_file_hdr.sigfigs = 0x00000000;
-    pcap_file_hdr.snaplen = 0x0000FFFF;  //65535
+    pcap_file_hdr.snaplen = snap_len;   //0x0000FFFF;  //65535
     pcap_file_hdr.linktype = 0x00000001; //DLT_EN10MB, Ethernet (10Mb)
 
-    fwrite(file_hdr, sizeof(struct pcap_file_header), 1, fp);
-    fclose(fp);
+    fwrite(file_hdr, sizeof(struct pcap_file_header), 1, g_pcap_fp);
+    g_flen += sizeof(struct pcap_file_header);
 
     return 0;
 }
 
 int
-ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt)
+ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, uint32_t f_maxlen)
 {
-    FILE* fp = fopen(dump_path, "a");
-    if (fp == NULL) {
-        return -1;
-    }
-
+    unsigned int out_len = 0, wr_len = 0;
     struct pcap_pkthdr pcap_hdr;
     void* hdr = &pcap_hdr;
-
     struct timeval ts;
+    char pcap_f_path[FILE_PATH_LEN] = {0};
+
+    if (g_pcap_fp == NULL) {
+        return -1;
+    }
+    snap_len = pkt->pkt_len < snap_len ? pkt->pkt_len : snap_len;
     gettimeofday(&ts, NULL);
     pcap_hdr.sec = ts.tv_sec;
     pcap_hdr.usec = ts.tv_usec;
-    pcap_hdr.caplen = pkt->pkt_len;
+    pcap_hdr.caplen = snap_len;
     pcap_hdr.len = pkt->pkt_len;
-    fwrite(hdr, sizeof(struct pcap_pkthdr), 1, fp);
+    fwrite(hdr, sizeof(struct pcap_pkthdr), 1, g_pcap_fp);
+    g_flen += sizeof(struct pcap_pkthdr);
 
-    while(pkt != NULL) {
-        fwrite(rte_pktmbuf_mtod(pkt, char*), pkt->data_len, 1, fp);
+    while(pkt != NULL && out_len <= snap_len) {
+        wr_len = snap_len - out_len;
+        wr_len = wr_len > pkt->data_len ? pkt->data_len : wr_len ;
+        out_len += wr_len * fwrite(rte_pktmbuf_mtod(pkt, char*), wr_len, 1, g_pcap_fp);//pkt->data_len, 1, fp);
         pkt = pkt->next;
     }
+    g_flen += out_len;
 
-    fclose(fp);
+    if ( g_flen >= f_maxlen ){
+        fclose(g_pcap_fp);
+        if ( ++seq >= PCAP_FILE_NUM )
+            seq = 0;
+        
+        ff_enable_pcap(dump_path, snap_len);
+    }
 
     return 0;
 }
