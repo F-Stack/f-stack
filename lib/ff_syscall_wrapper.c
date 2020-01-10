@@ -354,7 +354,7 @@ ip_opt_convert(int optname)
         case LINUX_IP_DROP_MEMBERSHIP:
             return IP_DROP_MEMBERSHIP;
         default:
-            return -1;
+            return optname;
     }
 }
 
