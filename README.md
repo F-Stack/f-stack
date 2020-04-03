@@ -33,7 +33,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # clone F-Stack
     mkdir -p /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
-    
+
     # Install libnuma-dev
     yum install numactl-devel          # on Centos
     #sudo apt-get install libnuma-dev  # on Ubuntu
