@@ -33,13 +33,13 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # clone F-Stack
     mkdir -p /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
-
-    # install libnuma-dev
+    
+    # Install libnuma-dev
     yum install numactl-devel          # on Centos
     #sudo apt-get install libnuma-dev  # on Ubuntu
 
     cd f-stack
-    # compile DPDK
+    # Compile DPDK
     cd dpdk/usertools
     ./dpdk-setup.sh # compile with x86_64-native-linuxapp-gcc
 
@@ -55,10 +55,13 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     mkdir /mnt/huge
     mount -t hugetlbfs nodev /mnt/huge
 
-    # close ASLR; it is necessary in multiple process
+    # Close ASLR; it is necessary in multiple process
     echo 0 > /proc/sys/kernel/randomize_va_space
 
-    # offload NIC
+    # Install python for running DPDK python scripts
+    sudo apt install python # On ubuntu
+    
+    # Offload NIC
     modprobe uio
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
@@ -66,20 +69,23 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
-    # install DPDK
+    # Install DPDK
     cd ../x86_64-native-linuxapp-gcc
     make install
 
     # On Ubuntu, use gawk instead of the default mawk.
     #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
 
+    # Install dependencies for F-Stack
+    sudo apt install gcc make libssl-dev # On ubuntu
+ 
     # Compile F-Stack
     export FF_PATH=/data/f-stack
     export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
     cd ../../lib/
     make
 
-    # install F-STACK
+    # Install F-STACK
     # libfstack.a will be installed to /usr/local/lib
     # ff_*.h will be installed to /usr/local/include
     # start.sh will be installed to /usr/local/bin/ff_start
