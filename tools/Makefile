@@ -1,4 +1,4 @@
-SUBDIRS=compat libutil libmemstat libxo libnetgraph sysctl ifconfig route top netstat ngctl ipfw arp traffic
+SUBDIRS=compat libutil libmemstat libxo libnetgraph sysctl ifconfig route top netstat ngctl ipfw arp traffic knictl
 PREFIX_BIN=/usr/local/bin
 
 all:
@@ -20,6 +20,7 @@ install:
 	ln -sf ${PREFIX_BIN}/f-stack/sysctl ${PREFIX_BIN}/ff_sysctl
 	ln -sf ${PREFIX_BIN}/f-stack/top ${PREFIX_BIN}/ff_top
 	ln -sf ${PREFIX_BIN}/f-stack/traffic ${PREFIX_BIN}/ff_traffic
+	ln -sf ${PREFIX_BIN}/f-stack/knictl ${PREFIX_BIN}/knictl
 
 uninstall:
 	rm -rf ${PREFIX_BIN}/f-stack
