@@ -589,6 +589,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.pkt_tx_delay = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
+    } else if (MATCH("kni", "kni_action")) {
+        pconfig->kni.kni_action= strdup(value);
     } else if (MATCH("kni", "method")) {
         pconfig->kni.method= strdup(value);
     } else if (MATCH("kni", "tcp_port")) {
@@ -801,6 +803,16 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "conf kni.method[accept|reject] is error(%s)\n",
                 cfg->kni.method);
             return -1;
+        }
+    }
+
+    if(cfg->kni.kni_action) {
+        if (strcasecmp(cfg->kni.kni_action,"alltokni") &&
+            strcasecmp(cfg->kni.kni_action,"alltoff") &&
+            strcasecmp(cfg->kni.kni_action,"default")){
+                fprintf(stderr, "conf kni.kni_action[alltokni|alltoff|default] is error(%s)\n",
+                cfg->kni.kni_action);
+                return -1;
         }
     }
 
