@@ -70,6 +70,7 @@
 
 int enable_kni;
 static int kni_accept;
+static int knictl_action = FF_KNICTL_ACTION_DEFAULT;
 #endif
 
 static int numa_on;
@@ -476,6 +477,21 @@ init_msg_ring(void)
 }
 
 #ifdef FF_KNI
+
+static enum FF_KNICTL_CMD get_kni_action(const char *c){
+    if (!c)
+        return FF_KNICTL_ACTION_DEFAULT;
+    if (0 == strcasecmp(c, "alltokni")){
+        return FF_KNICTL_ACTION_ALL_TO_KNI;
+    } else  if (0 == strcasecmp(c, "alltoff")){
+        return FF_KNICTL_ACTION_ALL_TO_FF;
+    } else if (0 == strcasecmp(c, "default")){
+        return FF_KNICTL_ACTION_DEFAULT;
+    } else {
+        return FF_KNICTL_ACTION_DEFAULT;
+    }
+}
+
 static int
 init_kni(void)
 {
@@ -483,6 +499,8 @@ init_kni(void)
     kni_accept = 0;
     if(strcasecmp(ff_global_cfg.kni.method, "accept") == 0)
         kni_accept = 1;
+
+    knictl_action = get_kni_action(ff_global_cfg.kni.kni_action);
 
     ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
@@ -1109,10 +1127,22 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 #endif
             ff_veth_input(ctx, rtem);
 #ifdef FF_KNI
-        } else if (enable_kni &&
-            ((filter == FILTER_KNI && kni_accept) ||
-            (filter == FILTER_UNKNOWN && !kni_accept)) ) {
-            ff_kni_enqueue(port_id, rtem);
+        } else if (enable_kni) {
+            if (knictl_action == FF_KNICTL_ACTION_ALL_TO_KNI){
+                ff_kni_enqueue(port_id, rtem);
+            } else if (knictl_action == FF_KNICTL_ACTION_ALL_TO_FF){
+                ff_veth_input(ctx, rtem);
+            } else if (knictl_action == FF_KNICTL_ACTION_DEFAULT){
+                if (enable_kni &&
+                        ((filter == FILTER_KNI && kni_accept) ||
+                        (filter == FILTER_UNKNOWN && !kni_accept)) ) {
+                        ff_kni_enqueue(port_id, rtem);
+                } else {
+                    ff_veth_input(ctx, rtem);
+                }
+            } else {
+                ff_veth_input(ctx, rtem);
+            }
 #endif
         } else {
             ff_veth_input(ctx, rtem);
@@ -1257,6 +1287,26 @@ handle_traffic_msg(struct ff_msg *msg)
     msg->result = 0;
 }
 
+#ifdef FF_KNI
+static inline void
+handle_knictl_msg(struct ff_msg *msg)
+{
+    if (msg->knictl.kni_cmd == FF_KNICTL_CMD_SET){
+        switch (msg->knictl.kni_action){
+            case FF_KNICTL_ACTION_ALL_TO_FF: knictl_action = FF_KNICTL_ACTION_ALL_TO_FF; msg->result = 0; printf("new kni action: alltoff\n"); break;
+            case FF_KNICTL_ACTION_ALL_TO_KNI: knictl_action = FF_KNICTL_ACTION_ALL_TO_KNI; msg->result = 0; printf("new kni action: alltokni\n"); break;
+            case FF_KNICTL_ACTION_DEFAULT: knictl_action = FF_KNICTL_ACTION_DEFAULT; msg->result = 0; printf("new kni action: default\n"); break;
+            default: msg->result = -1;
+        }
+    }
+    else if (msg->knictl.kni_cmd == FF_KNICTL_CMD_GET){
+        msg->knictl.kni_action = knictl_action;
+    } else {
+        msg->result = -2;
+    }
+}
+#endif
+
 static inline void
 handle_default_msg(struct ff_msg *msg)
 {
@@ -1295,6 +1345,11 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
         case FF_TRAFFIC:
             handle_traffic_msg(msg);
             break;
+#ifdef FF_KNI
+        case FF_KNICTL:
+            handle_knictl_msg(msg);
+            break;
+#endif
         default:
             handle_default_msg(msg);
             break;

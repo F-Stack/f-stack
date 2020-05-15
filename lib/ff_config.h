@@ -145,6 +145,7 @@ struct ff_config {
 
     struct {
         int enable;
+        char *kni_action;
         char *method;
         char *tcp_port;
         char *udp_port;
