@@ -58,6 +58,7 @@ static const char rcsid[] =
 #include <unistd.h>
 #include <err.h>
 #include <errno.h>
+#include <rte_malloc.h>
 
 #include "ifconfig.h"
 
@@ -166,7 +167,11 @@ bridge_interfaces(int s, const char *prefix)
 	}
 
 	for (;;) {
+#ifndef FSTACK
 		ninbuf = realloc(inbuf, len);
+#else
+		ninbuf = rte_malloc(NULL, len, 0);
+#endif
 		if (ninbuf == NULL)
 			err(1, "unable to allocate interface buffer");
 		bifc.ifbic_len = len;
@@ -212,7 +217,11 @@ bridge_interfaces(int s, const char *prefix)
 		printf("\n");
 	}
 
+#ifndef FSTACK
 	free(inbuf);
+#else
+	rte_free(inbuf);
+#endif
 }
 
 static void
