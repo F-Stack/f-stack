@@ -20,7 +20,7 @@ install:
 	ln -sf ${PREFIX_BIN}/f-stack/sysctl ${PREFIX_BIN}/ff_sysctl
 	ln -sf ${PREFIX_BIN}/f-stack/top ${PREFIX_BIN}/ff_top
 	ln -sf ${PREFIX_BIN}/f-stack/traffic ${PREFIX_BIN}/ff_traffic
-	ln -sf ${PREFIX_BIN}/f-stack/knictl ${PREFIX_BIN}/knictl
+	ln -sf ${PREFIX_BIN}/f-stack/knictl ${PREFIX_BIN}/ff_knictl
 
 uninstall:
 	rm -rf ${PREFIX_BIN}/f-stack
