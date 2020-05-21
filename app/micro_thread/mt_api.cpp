@@ -645,6 +645,26 @@ void* mt_start_thread(void* entry, void* args)
     return MtFrame::Instance()->CreateThread((ThreadStart)entry, args, true);
 }
 
+void* mt_active_thread()
+{
+    return MtFrame::Instance()->GetActiveThread();
+}
+
+void mt_thread_wait(int ms)
+{
+    MtFrame::Instance()->WaitNotify(ms);
+}
+
+void mt_thread_wakeup_wait(void * thread_p)
+{
+    MtFrame::Instance()->NotifyThread((MicroThread *) thread_p);
+}
+
+void mt_swap_thread()
+{
+    return MtFrame::Instance()->SwapDaemonThread();
+}
+
 #define BUF_ALIGNMENT_SIZE 4096
 #define BUF_ALIGN_SIZE(x) (((x)+BUF_ALIGNMENT_SIZE-1)&~(BUF_ALIGNMENT_SIZE-1))
 #define BUF_DEFAULT_SIZE 4096

@@ -89,7 +89,7 @@ struct lcore_conf {
     uint16_t tx_port_id[RTE_MAX_ETHPORTS];
     uint16_t tx_queue_id[RTE_MAX_ETHPORTS];
     struct mbuf_table tx_mbufs[RTE_MAX_ETHPORTS];
-    char *pcap[RTE_MAX_ETHPORTS];
+    //char *pcap[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
 #ifdef FF_USE_PAGE_ARRAY

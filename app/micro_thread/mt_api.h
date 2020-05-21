@@ -134,6 +134,14 @@ int mt_wait_events(int fd, int events, int timeout);
 
 void* mt_start_thread(void* entry, void* args);
 
+void* mt_active_thread();
+
+void mt_thread_wait(int ms);
+
+void mt_thread_wakeup_wait(void * thread_p);
+
+void mt_swap_thread();
+
 }
 
 #endif
