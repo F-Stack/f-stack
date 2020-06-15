@@ -18,6 +18,10 @@ SRCS+=  altq.c
 CFLAGS+=-DPF
 endif
 
+ifneq (${MK_INET6_SUPPORT},"no")
+CFLAGS+= -DINET6
+endif
+
 LIBADD=	util
 MAN=	ipfw.8
 
