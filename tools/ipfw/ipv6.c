@@ -42,6 +42,8 @@
 #include <netinet/ip_fw.h>
 #include <arpa/inet.h>
 
+#include "compat.h"
+
 #define	CHECK_LENGTH(v, len) do {			\
 	if ((v) < (len))				\
 		errx(EX_DATAERR, "Rule too long");	\
@@ -115,18 +117,18 @@ print_ip6(struct buf_pr *bp, ipfw_insn_ip6 *cmd, char const *s)
 	       128 : contigmask((uint8_t *)&(a[1]), 128);
 
 	   if (mb == 128 && co.do_resolv)
-	       he = gethostbyaddr((char *)a, sizeof(*a), AF_INET6);
+	       he = gethostbyaddr((char *)a, sizeof(*a), AF_INET6_LINUX);
 	   if (he != NULL)	     /* resolved to name */
 	       bprintf(bp, "%s", he->h_name);
 	   else if (mb == 0)	   /* any */
 	       bprintf(bp, "any");
 	   else {	  /* numeric IP followed by some kind of mask */
-	       if (inet_ntop(AF_INET6,  a, trad, sizeof( trad ) ) == NULL)
+	       if (inet_ntop(AF_INET6_LINUX,  a, trad, sizeof( trad ) ) == NULL)
 		   bprintf(bp, "Error ntop in print_ip6\n");
 	       bprintf(bp, "%s",  trad );
 	       if (mb < 0)     /* XXX not really legal... */
 		   bprintf(bp, ":%s",
-		       inet_ntop(AF_INET6, &a[1], trad, sizeof(trad)));
+		       inet_ntop(AF_INET6_LINUX, &a[1], trad, sizeof(trad)));
 	       else if (mb < 128)
 		   bprintf(bp, "/%d", mb);
 	   }
@@ -309,8 +311,8 @@ lookup_host6 (char *host, struct in6_addr *ip6addr)
 {
 	struct hostent *he;
 
-	if (!inet_pton(AF_INET6, host, ip6addr)) {
-		if ((he = gethostbyname2(host, AF_INET6)) == NULL)
+	if (!inet_pton(AF_INET6_LINUX, host, ip6addr)) {
+		if ((he = gethostbyname2(host, AF_INET6_LINUX)) == NULL)
 			return(-1);
 		memcpy(ip6addr, he->h_addr_list[0], sizeof( struct in6_addr));
 	}

@@ -33,6 +33,8 @@
 
 #ifdef FSTACK
 #include <stdint.h>
+#include "compat.h"
+
 #include "ff_ipc.h"
 #endif
 
@@ -84,6 +86,9 @@ help(void)
 "	setup | {tcpack|tcpseq|tcpwin} NN | tcpflags SPEC | tcpoptions SPEC |\n"
 "	tcpdatalen LIST | verrevpath | versrcreach | antispoof\n"
 );
+#ifdef FSTACK
+			ff_ipc_exit();
+#endif
 
 	exit(0);
 }
@@ -661,5 +666,8 @@ main(int ac, char *av[])
 			    "do \"ipfw -h\" or \"man ipfw\" for details");
 		}
 	}
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	return EX_OK;
 }
