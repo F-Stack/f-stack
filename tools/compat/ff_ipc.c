@@ -80,6 +80,13 @@ ff_ipc_init(void)
     return 0;
 }
 
+void
+ff_ipc_exit(void)
+{
+	rte_eal_cleanup();
+	return;
+}
+
 struct ff_msg *
 ff_ipc_msg_alloc(void)
 {

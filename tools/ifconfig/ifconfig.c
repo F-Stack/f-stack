@@ -212,6 +212,10 @@ usage(void)
 	"       ifconfig -p <f-stack proc_id> %s[-d] [-m] [-u] [-v]\n",
 #endif
 		options, options, options);
+
+#ifdef FSTACK
+			ff_ipc_exit();
+#endif
 	exit(1);
 }
 
@@ -555,6 +559,9 @@ main(int argc, char *argv[])
 					errx(1, "%s: cloning name too long",
 					    ifname);
 				ifconfig(argc, argv, 1, NULL);
+#ifdef FSTACK
+				ff_ipc_exit();
+#endif
 				exit(0);
 			}
 #ifdef JAIL
@@ -569,6 +576,9 @@ main(int argc, char *argv[])
 					errx(1, "%s: interface name too long",
 					    ifname);
 				ifconfig(argc, argv, 0, NULL);
+#ifdef FSTACK
+				ff_ipc_exit();
+#endif
 				exit(0);
 			}
 #endif
@@ -667,6 +677,10 @@ main(int argc, char *argv[])
 	freeifaddrs(ifap);
 
 	freeformat();
+	
+#ifdef FSTACK
+			ff_ipc_exit();
+#endif
 	exit(0);
 }
 
@@ -1103,6 +1117,9 @@ setifflags(const char *vname, int value, int s, const struct afswtch *afp)
 
  	if (ioctl(s, SIOCGIFFLAGS, (caddr_t)&my_ifr) < 0) {
  		Perror("ioctl (SIOCGIFFLAGS)");
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
  		exit(1);
  	}
 	flags = (my_ifr.ifr_flags & 0xffff) | (my_ifr.ifr_flagshigh << 16);
@@ -1125,6 +1142,9 @@ setifcap(const char *vname, int value, int s, const struct afswtch *afp)
 
  	if (ioctl(s, SIOCGIFCAP, (caddr_t)&ifr) < 0) {
  		Perror("ioctl (SIOCGIFCAP)");
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
  		exit(1);
  	}
 	flags = ifr.ifr_curcap;
