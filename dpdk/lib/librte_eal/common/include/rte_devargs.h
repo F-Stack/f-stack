@@ -98,7 +98,6 @@ struct rte_devargs {
  *   - 0 on success.
  *   - Negative errno on error.
  */
-__rte_experimental
 int
 rte_devargs_parse(struct rte_devargs *da, const char *dev);
 
@@ -135,7 +134,6 @@ rte_devargs_parse(struct rte_devargs *da, const char *dev);
  *   - 0 on success.
  *   - Negative errno on error.
  */
-__rte_experimental
 int
 rte_devargs_parsef(struct rte_devargs *da,
 		   const char *format, ...)
@@ -153,7 +151,6 @@ __attribute__((format(printf, 2, 0)));
  *   - 0 on success
  *   - Negative on error.
  */
-__rte_experimental
 int
 rte_devargs_insert(struct rte_devargs **da);
 
@@ -170,7 +167,6 @@ rte_devargs_insert(struct rte_devargs **da);
  *   - 0 on success
  *   - A negative value on error
  */
-__rte_experimental
 int rte_devargs_add(enum rte_devtype devtype, const char *devargs_str);
 
 /**
@@ -186,7 +182,6 @@ int rte_devargs_add(enum rte_devtype devtype, const char *devargs_str);
  *   <0 on error.
  *   >0 if the devargs was not within the user device list.
  */
-__rte_experimental
 int rte_devargs_remove(struct rte_devargs *devargs);
 
 /**
@@ -198,7 +193,6 @@ int rte_devargs_remove(struct rte_devargs *devargs);
  * @return
  *   The number of devices.
  */
-__rte_experimental
 unsigned int
 rte_devargs_type_count(enum rte_devtype devtype);
 
@@ -208,7 +202,6 @@ rte_devargs_type_count(enum rte_devtype devtype);
  * @param f
  *   A pointer to a file for output
  */
-__rte_experimental
 void rte_devargs_dump(FILE *f);
 
 /**
@@ -227,7 +220,6 @@ void rte_devargs_dump(FILE *f);
  *   Next rte_devargs entry matching the requested bus,
  *   NULL if there is none.
  */
-__rte_experimental
 struct rte_devargs *
 rte_devargs_next(const char *busname, const struct rte_devargs *start);
 

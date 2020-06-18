@@ -5,7 +5,7 @@
 #ifndef _CXGBE_L2T_H_
 #define _CXGBE_L2T_H_
 
-#include "t4_msg.h"
+#include "base/t4_msg.h"
 
 enum {
 	L2T_SIZE = 4096       /* # of L2T entries */
@@ -28,7 +28,7 @@ struct l2t_entry {
 	u16 idx;                    /* entry index within in-memory table */
 	u16 vlan;                   /* VLAN TCI (id: bits 0-11, prio: 13-15 */
 	u8  lport;                  /* destination port */
-	u8  dmac[ETHER_ADDR_LEN];   /* destination MAC address */
+	u8  dmac[RTE_ETHER_ADDR_LEN];   /* destination MAC address */
 	rte_spinlock_t lock;        /* entry lock */
 	rte_atomic32_t refcnt;      /* entry reference count */
 };
@@ -53,5 +53,6 @@ void t4_cleanup_l2t(struct adapter *adap);
 struct l2t_entry *cxgbe_l2t_alloc_switching(struct rte_eth_dev *dev, u16 vlan,
 					    u8 port, u8 *dmac);
 void cxgbe_l2t_release(struct l2t_entry *e);
-void do_l2t_write_rpl(struct adapter *p, const struct cpl_l2t_write_rpl *rpl);
+void cxgbe_do_l2t_write_rpl(struct adapter *p,
+			    const struct cpl_l2t_write_rpl *rpl);
 #endif /* _CXGBE_L2T_H_ */

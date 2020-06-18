@@ -333,7 +333,14 @@ set_pdump_rxtx_cbs(const struct pdump_request *p)
 	if (queue == RTE_PDUMP_ALL_QUEUES) {
 		struct rte_eth_dev_info dev_info;
 
-		rte_eth_dev_info_get(port, &dev_info);
+		ret = rte_eth_dev_info_get(port, &dev_info);
+		if (ret != 0) {
+			RTE_LOG(ERR, PDUMP,
+				"Error during getting device (port %u) info: %s\n",
+				port, strerror(-ret));
+			return ret;
+		}
+
 		nb_rx_q = dev_info.nb_rx_queues;
 		nb_tx_q = dev_info.nb_tx_queues;
 		if (nb_rx_q == 0 && flags & RTE_PDUMP_FLAG_RX) {
@@ -406,9 +413,12 @@ pdump_server(const struct rte_mp_msg *mp_msg, const void *peer)
 }
 
 int
-rte_pdump_init(const char *path __rte_unused)
+rte_pdump_init(void)
 {
-	return rte_mp_action_register(PDUMP_MP, pdump_server);
+	int ret = rte_mp_action_register(PDUMP_MP, pdump_server);
+	if (ret && rte_errno != ENOTSUP)
+		return -1;
+	return 0;
 }
 
 int
@@ -501,15 +511,15 @@ pdump_prepare_client_request(char *device, uint16_t queue,
 	req->flags = flags;
 	req->op = operation;
 	if ((operation & ENABLE) != 0) {
-		snprintf(req->data.en_v1.device,
-			 sizeof(req->data.en_v1.device), "%s", device);
+		strlcpy(req->data.en_v1.device, device,
+			sizeof(req->data.en_v1.device));
 		req->data.en_v1.queue = queue;
 		req->data.en_v1.ring = ring;
 		req->data.en_v1.mp = mp;
 		req->data.en_v1.filter = filter;
 	} else {
-		snprintf(req->data.dis_v1.device,
-			 sizeof(req->data.dis_v1.device), "%s", device);
+		strlcpy(req->data.dis_v1.device, device,
+			sizeof(req->data.dis_v1.device));
 		req->data.dis_v1.queue = queue;
 		req->data.dis_v1.ring = NULL;
 		req->data.dis_v1.mp = NULL;
@@ -615,11 +625,4 @@ rte_pdump_disable_by_deviceid(char *device_id, uint16_t queue,
 						DISABLE, NULL, NULL, NULL);
 
 	return ret;
-}
-
-int
-rte_pdump_set_socket_dir(const char *path __rte_unused,
-			 enum rte_pdump_socktype type __rte_unused)
-{
-	return 0;
 }

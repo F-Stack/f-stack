@@ -13,6 +13,7 @@ SRCS-y += sp4.c
 SRCS-y += sp6.c
 SRCS-y += sa.c
 SRCS-y += rt.c
+SRCS-y += ipsec_process.c
 SRCS-y += ipsec-secgw.c
 
 CFLAGS += -gdwarf-2
@@ -27,10 +28,12 @@ shared: build/$(APP)-shared
 static: build/$(APP)-static
 	ln -sf $(APP)-static build/$(APP)
 
-PC_FILE := $(shell pkg-config --path libdpdk)
-CFLAGS += -O3 $(shell pkg-config --cflags libdpdk)
-LDFLAGS_SHARED = $(shell pkg-config --libs libdpdk)
-LDFLAGS_STATIC = -Wl,-Bstatic $(shell pkg-config --static --libs libdpdk)
+PKGCONF ?= pkg-config
+
+PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
+CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
+LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
+LDFLAGS_STATIC = -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 
@@ -54,14 +57,14 @@ ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
 
-# Default target, can be overridden by command line or environment
-RTE_TARGET ?= x86_64-native-linuxapp-gcc
+# Default target, detect a build directory, by looking for a path with a .config
+RTE_TARGET ?= $(notdir $(abspath $(dir $(firstword $(wildcard $(RTE_SDK)/*/.config)))))
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
 ifneq ($(MAKECMDGOALS),clean)
-ifneq ($(CONFIG_RTE_LIBRTE_SECURITY),y)
-$(error "RTE_LIBRTE_SECURITY is required to build ipsec-secgw")
+ifneq ($(CONFIG_RTE_LIBRTE_IPSEC),y)
+$(error "RTE_LIBRTE_IPSEC is required to build ipsec-secgw")
 endif
 endif
 

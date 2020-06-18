@@ -10,8 +10,10 @@ Contributor's Guidelines
 
     coding_style
     design
-    versioning
+    abi_policy
+    abi_versioning
     documentation
     patches
+    vulnerability
     stable
     cheatsheet

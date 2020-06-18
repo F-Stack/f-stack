@@ -3,8 +3,8 @@
  * Copyright 2017 Mellanox Technologies, Ltd
  */
 
-#ifndef _RTE_ETH_FAILSAFE_PRIVATE_H_
-#define _RTE_ETH_FAILSAFE_PRIVATE_H_
+#ifndef _ETH_FAILSAFE_PRIVATE_H_
+#define _ETH_FAILSAFE_PRIVATE_H_
 
 #include <stdint.h>
 #include <sys/queue.h>
@@ -100,13 +100,15 @@ struct fs_stats {
 	uint64_t timestamp;
 };
 
+/*
+ * Allocated in shared memory.
+ */
 struct sub_device {
 	/* Exhaustive DPDK device description */
 	struct sub_device *next;
 	struct rte_devargs devargs;
-	struct rte_bus *bus;
-	struct rte_device *dev;
-	struct rte_eth_dev *edev;
+	struct rte_bus *bus; /* for primary process only. */
+	struct rte_device *dev; /* for primary process only. */
 	uint8_t sid;
 	/* Device state machine */
 	enum dev_state state;
@@ -117,7 +119,9 @@ struct sub_device {
 	/* Others are retrieved through a file descriptor */
 	char *fd_str;
 	/* fail-safe device backreference */
-	struct rte_eth_dev *fs_dev;
+	uint16_t fs_port_id; /* shared between processes */
+	/* sub device port id*/
+	uint16_t sdev_port_id; /* shared between processes */
 	/* flag calling for recollection */
 	volatile unsigned int remove:1;
 	/* flow isolation state */
@@ -128,14 +132,18 @@ struct sub_device {
 	unsigned int lsc_callback:1;
 };
 
+/*
+ * This is referenced by eth_dev->data->dev_private
+ * This is shared between processes.
+ */
 struct fs_priv {
-	struct rte_eth_dev *dev;
+	struct rte_eth_dev_data *data; /* backreference to shared data. */
 	/*
 	 * Set of sub_devices.
 	 * subs[0] is the preferred device
 	 * any other is just another slave
 	 */
-	struct sub_device *subs;
+	struct sub_device *subs;  /* shared between processes */
 	uint8_t subs_head; /* if head == tail, no subs */
 	uint8_t subs_tail; /* first invalid */
 	uint8_t subs_tx; /* current emitting device */
@@ -144,10 +152,10 @@ struct fs_priv {
 	TAILQ_HEAD(sub_flows, rte_flow) flow_list;
 	/* current number of mac_addr slots allocated. */
 	uint32_t nb_mac_addr;
-	struct ether_addr mac_addrs[FAILSAFE_MAX_ETHADDR];
+	struct rte_ether_addr mac_addrs[FAILSAFE_MAX_ETHADDR];
 	uint32_t mac_addr_pool[FAILSAFE_MAX_ETHADDR];
 	uint32_t nb_mcast_addr;
-	struct ether_addr *mcast_addrs;
+	struct rte_ether_addr *mcast_addrs;
 	/* current capabilities */
 	struct rte_eth_dev_owner my_owner; /* Unique owner. */
 	struct rte_intr_handle intr_handle; /* Port interrupt handle. */
@@ -249,11 +257,12 @@ extern int failsafe_mac_from_arg;
 
 /* sdev: (struct sub_device *) */
 #define ETH(sdev) \
-	((sdev)->edev)
+	((sdev)->sdev_port_id == RTE_MAX_ETHPORTS ? \
+	NULL : &rte_eth_devices[(sdev)->sdev_port_id])
 
 /* sdev: (struct sub_device *) */
 #define PORT_ID(sdev) \
-	(ETH(sdev)->data->port_id)
+	((sdev)->sdev_port_id)
 
 /* sdev: (struct sub_device *) */
 #define SUB_ID(sdev) \
@@ -319,18 +328,18 @@ extern int failsafe_mac_from_arg;
  */
 #define FS_ATOMIC_RX(s, i) \
 	rte_atomic64_read( \
-	 &((struct rxq *)((s)->fs_dev->data->rx_queues[i]))->refcnt[(s)->sid] \
-	)
+	 &((struct rxq *) \
+	 (fs_dev(s)->data->rx_queues[i]))->refcnt[(s)->sid])
 /**
  * s: (struct sub_device *)
  * i: uint16_t qid
  */
 #define FS_ATOMIC_TX(s, i) \
 	rte_atomic64_read( \
-	 &((struct txq *)((s)->fs_dev->data->tx_queues[i]))->refcnt[(s)->sid] \
-	)
+	 &((struct txq *) \
+	 (fs_dev(s)->data->tx_queues[i]))->refcnt[(s)->sid])
 
-#ifdef RTE_EXEC_ENV_BSDAPP
+#ifdef RTE_EXEC_ENV_FREEBSD
 #define FS_THREADID_TYPE void*
 #define FS_THREADID_FMT  "p"
 #else
@@ -374,6 +383,11 @@ fs_find_next(struct rte_eth_dev *dev,
 	return &subs[sid];
 }
 
+static inline struct rte_eth_dev *
+fs_dev(struct sub_device *sdev) {
+	return &rte_eth_devices[sdev->fs_port_id];
+}
+
 /*
  * Lock hot-plug mutex.
  * is_alarm means that the caller is, for sure, the hot-plug alarm mechanism.
@@ -398,9 +412,6 @@ fs_lock(struct rte_eth_dev *dev, unsigned int is_alarm)
 			return ret;
 		}
 	}
-	DEBUG("Hot-plug mutex was locked by thread %" FS_THREADID_FMT "%s",
-	      (FS_THREADID_TYPE)pthread_self(),
-	      PRIV(dev)->alarm_lock ? " by the hot-plug alarm" : "");
 	return ret;
 }
 
@@ -412,7 +423,6 @@ static inline void
 fs_unlock(struct rte_eth_dev *dev, unsigned int is_alarm)
 {
 	int ret;
-	unsigned int prev_alarm_lock = PRIV(dev)->alarm_lock;
 
 	if (is_alarm) {
 		RTE_ASSERT(PRIV(dev)->alarm_lock == 1);
@@ -421,10 +431,6 @@ fs_unlock(struct rte_eth_dev *dev, unsigned int is_alarm)
 	ret = pthread_mutex_unlock(&PRIV(dev)->hotplug_mutex);
 	if (ret)
 		ERROR("Cannot unlock hot-plug mutex(%s)", strerror(ret));
-	else
-		DEBUG("Hot-plug mutex was unlocked by thread %" FS_THREADID_FMT "%s",
-		      (FS_THREADID_TYPE)pthread_self(),
-		      prev_alarm_lock ? " by the hot-plug alarm" : "");
 }
 
 /*
@@ -487,4 +493,4 @@ fs_err(struct sub_device *sdev, int err)
 		return rte_errno = 0;
 	return err;
 }
-#endif /* _RTE_ETH_FAILSAFE_PRIVATE_H_ */
+#endif /* _ETH_FAILSAFE_PRIVATE_H_ */

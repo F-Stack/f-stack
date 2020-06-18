@@ -28,7 +28,7 @@ export BUILDING_RTE_SDK
 
 #
 # We can specify the configuration template when doing the "make
-# config". For instance: make config T=x86_64-native-linuxapp-gcc
+# config". For instance: make config T=x86_64-native-linux-gcc
 #
 RTE_CONFIG_TEMPLATE :=
 ifdef T
@@ -57,8 +57,8 @@ export BUILDDIR
 
 export ROOTDIRS-y ROOTDIRS- ROOTDIRS-n
 
-.PHONY: default
-default: all
+.PHONY: default test-build
+default test-build: all
 
 .PHONY: config defconfig showconfigs showversion showversionum
 config defconfig showconfigs showversion showversionum:
@@ -71,8 +71,6 @@ cscope gtags tags etags:
 .PHONY: test test-fast test-perf coverage test-drivers test-dump
 test test-fast test-perf coverage test-drivers test-dump:
 	$(Q)$(MAKE) -f $(RTE_SDK)/mk/rte.sdktest.mk $@
-
-test: test-build
 
 .PHONY: install
 install:

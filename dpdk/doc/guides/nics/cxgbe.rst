@@ -70,7 +70,7 @@ in :ref:`t5-nics` and :ref:`t6-nics`.
 Prerequisites
 -------------
 
-- Requires firmware version **1.17.14.0** and higher. Visit
+- Requires firmware version **1.23.4.0** and higher. Visit
   `Chelsio Download Center <http://service.chelsio.com>`_ to get latest firmware
   bundled with the latest Chelsio Unified Wire package.
 
@@ -104,30 +104,6 @@ enabling debugging options may affect system performance.
 
      This controls compilation of both CXGBE and CXGBEVF PMD.
 
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG`` (default **n**)
-
-  Toggle display of generic debugging messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_REG`` (default **n**)
-
-  Toggle display of registers related run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_MBOX`` (default **n**)
-
-  Toggle display of firmware mailbox related run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_TX`` (default **n**)
-
-  Toggle display of transmission data path run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_DEBUG_RX`` (default **n**)
-
-  Toggle display of receiving data path run-time check messages.
-
-- ``CONFIG_RTE_LIBRTE_CXGBE_TPUT`` (default **y**)
-
-  Toggle behavior to prefer Throughput or Latency.
-
 Runtime Options
 ~~~~~~~~~~~~~~~
 
@@ -138,11 +114,26 @@ be passed as part of EAL arguments. For example,
 
    testpmd -w 02:00.4,keep_ovlan=1 -- -i
 
+Common Runtime Options
+^^^^^^^^^^^^^^^^^^^^^^
+
 - ``keep_ovlan`` (default **0**)
 
   Toggle behavior to keep/strip outer VLAN in Q-in-Q packets. If
   enabled, the outer VLAN tag is preserved in Q-in-Q packets. Otherwise,
   the outer VLAN tag is stripped in Q-in-Q packets.
+
+- ``tx_mode_latency`` (default **0**)
+
+  When set to 1, Tx doesn't wait for max number of packets to get
+  coalesced and sends the packets immediately at the end of the
+  current Tx burst. When set to 0, Tx waits across multiple Tx bursts
+  until the max number of packets have been coalesced. In this case,
+  Tx only sends the coalesced packets to hardware once the max
+  coalesce limit has been reached.
+
+CXGBE VF Only Runtime Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 - ``force_link_up`` (default **0**)
 
@@ -224,7 +215,7 @@ Unified Wire package for Linux operating system are as follows:
 
    .. code-block:: console
 
-      firmware-version: 1.17.14.0, TP 0.1.4.9
+      firmware-version: 1.23.4.0, TP 0.1.23.2
 
 Running testpmd
 ~~~~~~~~~~~~~~~
@@ -282,7 +273,7 @@ devices managed by librte_pmd_cxgbe in Linux operating system.
       EAL:   PCI memory mapped at 0x7fd7c0200000
       EAL:   PCI memory mapped at 0x7fd77cdfd000
       EAL:   PCI memory mapped at 0x7fd7c10b7000
-      PMD: rte_cxgbe_pmd: fw: 1.17.14.0, TP: 0.1.4.9
+      PMD: rte_cxgbe_pmd: fw: 1.23.4.0, TP: 0.1.23.2
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)
@@ -388,16 +379,16 @@ virtual functions.
       [...]
       EAL: PCI device 0000:02:01.0 on NUMA socket 0
       EAL:   probe driver: 1425:5803 net_cxgbevf
-      PMD: rte_cxgbe_pmd: Firmware version: 1.17.14.0
-      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.4.9
+      PMD: rte_cxgbe_pmd: Firmware version: 1.23.4.0
+      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.23.2
       PMD: rte_cxgbe_pmd: Chelsio rev 0
       PMD: rte_cxgbe_pmd: No bootstrap loaded
       PMD: rte_cxgbe_pmd: No Expansion ROM loaded
       PMD: rte_cxgbe_pmd:  0000:02:01.0 Chelsio rev 0 1G/10GBASE-SFP
       EAL: PCI device 0000:02:01.1 on NUMA socket 0
       EAL:   probe driver: 1425:5803 net_cxgbevf
-      PMD: rte_cxgbe_pmd: Firmware version: 1.17.14.0
-      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.4.9
+      PMD: rte_cxgbe_pmd: Firmware version: 1.23.4.0
+      PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.23.2
       PMD: rte_cxgbe_pmd: Chelsio rev 0
       PMD: rte_cxgbe_pmd: No bootstrap loaded
       PMD: rte_cxgbe_pmd: No Expansion ROM loaded
@@ -474,7 +465,7 @@ Unified Wire package for FreeBSD operating system are as follows:
 
    .. code-block:: console
 
-      dev.t5nex.0.firmware_version: 1.17.14.0
+      dev.t5nex.0.firmware_version: 1.23.4.0
 
 Running testpmd
 ~~~~~~~~~~~~~~~
@@ -493,7 +484,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. code-block:: console
 
-      cp x86_64-native-bsdapp-clang/kmod/contigmem.ko /boot/kernel/
+      cp x86_64-native-freebsd-clang/kmod/contigmem.ko /boot/kernel/
 
 #. Add the following lines to /boot/loader.conf:
 
@@ -574,13 +565,13 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
 
    .. code-block:: console
 
-      kldload ./x86_64-native-bsdapp-clang/kmod/nic_uio.ko
+      kldload ./x86_64-native-freebsd-clang/kmod/nic_uio.ko
 
 #. Start testpmd with basic parameters:
 
    .. code-block:: console
 
-      ./x86_64-native-bsdapp-clang/app/testpmd -l 0-3 -n 4 -w 0000:02:00.4 -- -i
+      ./x86_64-native-freebsd-clang/app/testpmd -l 0-3 -n 4 -w 0000:02:00.4 -- -i
 
    Example output:
 
@@ -592,7 +583,7 @@ devices managed by librte_pmd_cxgbe in FreeBSD operating system.
       EAL:   PCI memory mapped at 0x8007ec000
       EAL:   PCI memory mapped at 0x842800000
       EAL:   PCI memory mapped at 0x80086c000
-      PMD: rte_cxgbe_pmd: fw: 1.17.14.0, TP: 0.1.4.9
+      PMD: rte_cxgbe_pmd: fw: 1.23.4.0, TP: 0.1.23.2
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)

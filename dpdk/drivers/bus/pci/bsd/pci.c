@@ -33,7 +33,6 @@
 #include <rte_launch.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_eal_memconfig.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
@@ -145,7 +144,7 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 		goto error;
 	}
 
-	snprintf((*uio_res)->path, sizeof((*uio_res)->path), "%s", devname);
+	strlcpy((*uio_res)->path, devname, sizeof((*uio_res)->path));
 	memcpy(&(*uio_res)->pci_addr, &dev->addr, sizeof((*uio_res)->pci_addr));
 
 	return 0;
@@ -376,13 +375,20 @@ error:
 	return -1;
 }
 
-/*
- * Get iommu class of PCI devices on the bus.
- */
+bool
+pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
+{
+	return false;
+}
+
 enum rte_iova_mode
-rte_pci_get_iommu_class(void)
+pci_device_iova_mode(const struct rte_pci_driver *pdrv __rte_unused,
+		     const struct rte_pci_device *pdev)
 {
 	/* Supports only RTE_KDRV_NIC_UIO */
+	if (pdev->kdrv != RTE_KDRV_NIC_UIO)
+		RTE_LOG(DEBUG, EAL, "Unsupported kernel driver? Defaulting to IOVA as 'PA'\n");
+
 	return RTE_IOVA_PA;
 }
 
@@ -533,6 +539,11 @@ rte_pci_ioport_map(struct rte_pci_device *dev, int bar,
 	switch (dev->kdrv) {
 #if defined(RTE_ARCH_X86)
 	case RTE_KDRV_NIC_UIO:
+		if (rte_eal_iopl_init() != 0) {
+			RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
+				__func__, dev->name);
+			return -1;
+		}
 		if ((uintptr_t) dev->mem_resource[bar].addr <= UINT16_MAX) {
 			p->base = (uintptr_t)dev->mem_resource[bar].addr;
 			ret = 0;

@@ -52,7 +52,7 @@ extern "C" {
  *	    multiple connections of same traffic class belonging to
  *	    the same user;
  *           - Weighted Round Robin (WRR) is used to service the
- *	    queues within same pipe traffic class.
+ *	    queues within same pipe lowest priority traffic class (best-effort).
  *
  */
 
@@ -66,25 +66,33 @@ extern "C" {
 #include "rte_red.h"
 #endif
 
+/** Maximum number of queues per pipe.
+ * Note that the multiple queues (power of 2) can only be assigned to
+ * lowest priority (best-effort) traffic class. Other higher priority traffic
+ * classes can only have one queue.
+ * Can not change.
+ *
+ * @see struct rte_sched_port_params
+ */
+#define RTE_SCHED_QUEUES_PER_PIPE    16
+
+/** Number of WRR queues for best-effort traffic class per pipe.
+ *
+ * @see struct rte_sched_pipe_params
+ */
+#define RTE_SCHED_BE_QUEUES_PER_PIPE    4
+
 /** Number of traffic classes per pipe (as well as subport).
- * Cannot be changed.
+ * @see struct rte_sched_subport_params
+ * @see struct rte_sched_pipe_params
  */
-#define RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE    4
+#define RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE    \
+(RTE_SCHED_QUEUES_PER_PIPE - RTE_SCHED_BE_QUEUES_PER_PIPE + 1)
 
-/** Number of queues per pipe traffic class. Cannot be changed. */
-#define RTE_SCHED_QUEUES_PER_TRAFFIC_CLASS    4
-
-/** Number of queues per pipe. */
-#define RTE_SCHED_QUEUES_PER_PIPE             \
-	(RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE *     \
-	RTE_SCHED_QUEUES_PER_TRAFFIC_CLASS)
-
-/** Maximum number of pipe profiles that can be defined per port.
- * Compile-time configurable.
+/** Best-effort traffic class ID
+ * Can not change.
  */
-#ifndef RTE_SCHED_PIPE_PROFILES_PER_PORT
-#define RTE_SCHED_PIPE_PROFILES_PER_PORT      256
-#endif
+#define RTE_SCHED_TRAFFIC_CLASS_BE    (RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE - 1)
 
 /*
  * Ethernet framing overhead. Overhead fields per Ethernet frame:
@@ -95,51 +103,12 @@ extern "C" {
  *
  * The FCS is considered overhead only if not included in the packet
  * length (field pkt_len of struct rte_mbuf).
+ *
+ * @see struct rte_sched_port_params
  */
 #ifndef RTE_SCHED_FRAME_OVERHEAD_DEFAULT
 #define RTE_SCHED_FRAME_OVERHEAD_DEFAULT      24
 #endif
-
-/*
- * Subport configuration parameters. The period and credits_per_period
- * parameters are measured in bytes, with one byte meaning the time
- * duration associated with the transmission of one byte on the
- * physical medium of the output port, with pipe or pipe traffic class
- * rate (measured as percentage of output port rate) determined as
- * credits_per_period divided by period. One credit represents one
- * byte.
- */
-struct rte_sched_subport_params {
-	/* Subport token bucket */
-	uint32_t tb_rate;                /**< Rate (measured in bytes per second) */
-	uint32_t tb_size;                /**< Size (measured in credits) */
-
-	/* Subport traffic classes */
-	uint32_t tc_rate[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Traffic class rates (measured in bytes per second) */
-	uint32_t tc_period;
-	/**< Enforcement period for rates (measured in milliseconds) */
-};
-
-/** Subport statistics */
-struct rte_sched_subport_stats {
-	/* Packets */
-	uint32_t n_pkts_tc[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Number of packets successfully written */
-	uint32_t n_pkts_tc_dropped[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Number of packets dropped */
-
-	/* Bytes */
-	uint32_t n_bytes_tc[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Number of bytes successfully written for each traffic class */
-	uint32_t n_bytes_tc_dropped[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Number of bytes dropped for each traffic class */
-
-#ifdef RTE_SCHED_RED
-	uint32_t n_pkts_red_dropped[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Number of packets dropped by red */
-#endif
-};
 
 /*
  * Pipe configuration parameters. The period and credits_per_period
@@ -151,62 +120,146 @@ struct rte_sched_subport_stats {
  * byte.
  */
 struct rte_sched_pipe_params {
-	/* Pipe token bucket */
-	uint32_t tb_rate;                /**< Rate (measured in bytes per second) */
-	uint32_t tb_size;                /**< Size (measured in credits) */
+	/** Token bucket rate (measured in bytes per second) */
+	uint64_t tb_rate;
 
-	/* Pipe traffic classes */
-	uint32_t tc_rate[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Traffic class rates (measured in bytes per second) */
-	uint32_t tc_period;
-	/**< Enforcement period (measured in milliseconds) */
-#ifdef RTE_SCHED_SUBPORT_TC_OV
-	uint8_t tc_ov_weight;		 /**< Weight Traffic class 3 oversubscription */
+	/** Token bucket size (measured in credits) */
+	uint64_t tb_size;
+
+	/** Traffic class rates (measured in bytes per second) */
+	uint64_t tc_rate[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Enforcement period (measured in milliseconds) */
+	uint64_t tc_period;
+
+	/** Best-effort traffic class oversubscription weight */
+	uint8_t tc_ov_weight;
+
+	/** WRR weights of best-effort traffic class queues */
+	uint8_t wrr_weights[RTE_SCHED_BE_QUEUES_PER_PIPE];
+};
+
+/*
+ * Subport configuration parameters. The period and credits_per_period
+ * parameters are measured in bytes, with one byte meaning the time
+ * duration associated with the transmission of one byte on the
+ * physical medium of the output port, with pipe or pipe traffic class
+ * rate (measured as percentage of output port rate) determined as
+ * credits_per_period divided by period. One credit represents one
+ * byte.
+ */
+struct rte_sched_subport_params {
+	/** Token bucket rate (measured in bytes per second) */
+	uint64_t tb_rate;
+
+	/** Token bucket size (measured in credits) */
+	uint64_t tb_size;
+
+	/** Traffic class rates (measured in bytes per second) */
+	uint64_t tc_rate[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Enforcement period for rates (measured in milliseconds) */
+	uint64_t tc_period;
+
+	/** Number of subport pipes.
+	 * The subport can enable/allocate fewer pipes than the maximum
+	 * number set through struct port_params::n_max_pipes_per_subport,
+	 * as needed, to avoid memory allocation for the queues of the
+	 * pipes that are not really needed.
+	 */
+	uint32_t n_pipes_per_subport_enabled;
+
+	/** Packet queue size for each traffic class.
+	 * All the pipes within the same subport share the similar
+	 * configuration for the queues.
+	 */
+	uint16_t qsize[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Pipe profile table.
+	 * Every pipe is configured using one of the profiles from this table.
+	 */
+	struct rte_sched_pipe_params *pipe_profiles;
+
+	/** Profiles in the pipe profile table */
+	uint32_t n_pipe_profiles;
+
+	/** Max allowed profiles in the pipe profile table */
+	uint32_t n_max_pipe_profiles;
+
+#ifdef RTE_SCHED_RED
+	/** RED parameters */
+	struct rte_red_params red_params[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][RTE_COLORS];
 #endif
+};
 
-	/* Pipe queues */
-	uint8_t  wrr_weights[RTE_SCHED_QUEUES_PER_PIPE]; /**< WRR weights */
+/** Subport statistics */
+struct rte_sched_subport_stats {
+	/** Number of packets successfully written */
+	uint64_t n_pkts_tc[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Number of packets dropped */
+	uint64_t n_pkts_tc_dropped[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Number of bytes successfully written for each traffic class */
+	uint64_t n_bytes_tc[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Number of bytes dropped for each traffic class */
+	uint64_t n_bytes_tc_dropped[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+#ifdef RTE_SCHED_RED
+	/** Number of packets dropped by red */
+	uint64_t n_pkts_red_dropped[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+#endif
 };
 
 /** Queue statistics */
 struct rte_sched_queue_stats {
-	/* Packets */
-	uint32_t n_pkts;                 /**< Packets successfully written */
-	uint32_t n_pkts_dropped;         /**< Packets dropped */
+	/** Packets successfully written */
+	uint64_t n_pkts;
+
+	/** Packets dropped */
+	uint64_t n_pkts_dropped;
+
 #ifdef RTE_SCHED_RED
-	uint32_t n_pkts_red_dropped;	 /**< Packets dropped by RED */
+	/** Packets dropped by RED */
+	uint64_t n_pkts_red_dropped;
 #endif
 
-	/* Bytes */
-	uint32_t n_bytes;                /**< Bytes successfully written */
-	uint32_t n_bytes_dropped;        /**< Bytes dropped */
+	/** Bytes successfully written */
+	uint64_t n_bytes;
+
+	/** Bytes dropped */
+	uint64_t n_bytes_dropped;
 };
 
 /** Port configuration parameters. */
 struct rte_sched_port_params {
-	const char *name;                /**< String to be associated */
-	int socket;                      /**< CPU socket ID */
-	uint32_t rate;                   /**< Output port rate
-					  * (measured in bytes per second) */
-	uint32_t mtu;                    /**< Maximum Ethernet frame size
-					  * (measured in bytes).
-					  * Should not include the framing overhead. */
-	uint32_t frame_overhead;         /**< Framing overhead per packet
-					  * (measured in bytes) */
-	uint32_t n_subports_per_port;    /**< Number of subports */
-	uint32_t n_pipes_per_subport;    /**< Number of pipes per subport */
-	uint16_t qsize[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-	/**< Packet queue size for each traffic class.
-	 * All queues within the same pipe traffic class have the same
-	 * size. Queues from different pipes serving the same traffic
-	 * class have the same size. */
-	struct rte_sched_pipe_params *pipe_profiles;
-	/**< Pipe profile table.
-	 * Every pipe is configured using one of the profiles from this table. */
-	uint32_t n_pipe_profiles;        /**< Profiles in the pipe profile table */
-#ifdef RTE_SCHED_RED
-	struct rte_red_params red_params[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][e_RTE_METER_COLORS]; /**< RED parameters */
-#endif
+	/** Name of the port to be associated */
+	const char *name;
+
+	/** CPU socket ID */
+	int socket;
+
+	/** Output port rate (measured in bytes per second) */
+	uint64_t rate;
+
+	/** Maximum Ethernet frame size (measured in bytes).
+	 * Should not include the framing overhead.
+	 */
+	uint32_t mtu;
+
+	/** Framing overhead per packet (measured in bytes) */
+	uint32_t frame_overhead;
+
+	/** Number of subports */
+	uint32_t n_subports_per_port;
+
+	/** Maximum number of subport pipes.
+	 * This parameter is used to reserve a fixed number of bits
+	 * in struct rte_mbuf::sched.queue_id for the pipe_id for all
+	 * the subports of the same port.
+	 */
+	uint32_t n_pipes_per_subport;
 };
 
 /*
@@ -242,6 +295,8 @@ rte_sched_port_free(struct rte_sched_port *port);
  *
  * @param port
  *   Handle to port scheduler instance
+ * @param subport_id
+ *   Subport ID
  * @param params
  *   Pipe profile parameters
  * @param pipe_profile_id
@@ -249,8 +304,10 @@ rte_sched_port_free(struct rte_sched_port *port);
  * @return
  *   0 upon success, error code otherwise
  */
-int __rte_experimental
-rte_sched_port_pipe_profile_add(struct rte_sched_port *port,
+__rte_experimental
+int
+rte_sched_subport_pipe_profile_add(struct rte_sched_port *port,
+	uint32_t subport_id,
 	struct rte_sched_pipe_params *params,
 	uint32_t *pipe_profile_id);
 
@@ -281,7 +338,7 @@ rte_sched_subport_config(struct rte_sched_port *port,
  * @param pipe_id
  *   Pipe ID within subport
  * @param pipe_profile
- *   ID of port-level pre-configured pipe profile
+ *   ID of subport-level pre-configured pipe profile
  * @return
  *   0 upon success, error code otherwise
  */
@@ -294,14 +351,16 @@ rte_sched_pipe_config(struct rte_sched_port *port,
 /**
  * Hierarchical scheduler memory footprint size per port
  *
- * @param params
+ * @param port_params
  *   Port scheduler configuration parameter structure
+ * @param subport_params
+ *   Array of subport parameter structures
  * @return
  *   Memory footprint size in bytes upon success, 0 otherwise
  */
 uint32_t
-rte_sched_port_get_memory_footprint(struct rte_sched_port_params *params);
-
+rte_sched_port_get_memory_footprint(struct rte_sched_port_params *port_params,
+	struct rte_sched_subport_params **subport_params);
 /*
  * Statistics
  *
@@ -318,8 +377,9 @@ rte_sched_port_get_memory_footprint(struct rte_sched_port_params *params);
  *   Pointer to pre-allocated subport statistics structure where the statistics
  *   counters should be stored
  * @param tc_ov
- *   Pointer to pre-allocated 4-entry array where the oversubscription status for
- *   each of the 4 subport traffic classes should be stored.
+ *   Pointer to pre-allocated RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE-entry array
+ *   where the oversubscription status for each of the subport traffic classes
+ *   should be stored.
  * @return
  *   0 upon success, error code otherwise
  */
@@ -355,6 +415,8 @@ rte_sched_queue_read_stats(struct rte_sched_port *port,
  * Scheduler hierarchy path write to packet descriptor. Typically
  * called by the packet classification stage.
  *
+ * @param port
+ *   Handle to port scheduler instance
  * @param pkt
  *   Packet descriptor handle
  * @param subport
@@ -362,16 +424,18 @@ rte_sched_queue_read_stats(struct rte_sched_port *port,
  * @param pipe
  *   Pipe ID within subport
  * @param traffic_class
- *   Traffic class ID within pipe (0 .. 3)
+ *   Traffic class ID within pipe (0 .. RTE_SCHED_TRAFFIC_CLASS_BE)
  * @param queue
- *   Queue ID within pipe traffic class (0 .. 3)
+ *   Queue ID within pipe traffic class, 0 for high priority TCs, and
+ *   0 .. (RTE_SCHED_BE_QUEUES_PER_PIPE - 1) for best-effort TC
  * @param color
  *   Packet color set
  */
 void
-rte_sched_port_pkt_write(struct rte_mbuf *pkt,
+rte_sched_port_pkt_write(struct rte_sched_port *port,
+			 struct rte_mbuf *pkt,
 			 uint32_t subport, uint32_t pipe, uint32_t traffic_class,
-			 uint32_t queue, enum rte_meter_color color);
+			 uint32_t queue, enum rte_color color);
 
 /**
  * Scheduler hierarchy path read from packet descriptor (struct
@@ -379,6 +443,8 @@ rte_sched_port_pkt_write(struct rte_mbuf *pkt,
  * enqueue operation. The subport, pipe, traffic class and queue
  * parameters need to be pre-allocated by the caller.
  *
+ * @param port
+ *   Handle to port scheduler instance
  * @param pkt
  *   Packet descriptor handle
  * @param subport
@@ -386,17 +452,18 @@ rte_sched_port_pkt_write(struct rte_mbuf *pkt,
  * @param pipe
  *   Pipe ID within subport
  * @param traffic_class
- *   Traffic class ID within pipe (0 .. 3)
+ *   Traffic class ID within pipe (0 .. RTE_SCHED_TRAFFIC_CLASS_BE)
  * @param queue
- *   Queue ID within pipe traffic class (0 .. 3)
- *
+ *   Queue ID within pipe traffic class, 0 for high priority TCs, and
+ *   0 .. (RTE_SCHED_BE_QUEUES_PER_PIPE - 1) for best-effort TC
  */
 void
-rte_sched_port_pkt_read_tree_path(const struct rte_mbuf *pkt,
+rte_sched_port_pkt_read_tree_path(struct rte_sched_port *port,
+				  const struct rte_mbuf *pkt,
 				  uint32_t *subport, uint32_t *pipe,
 				  uint32_t *traffic_class, uint32_t *queue);
 
-enum rte_meter_color
+enum rte_color
 rte_sched_port_pkt_read_color(const struct rte_mbuf *pkt);
 
 /**

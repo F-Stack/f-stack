@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2019 NXP
  */
 
 #ifndef _ENETC_H_
@@ -23,6 +23,11 @@
 #define MIN_BD_COUNT   32
 /* BD ALIGN */
 #define BD_ALIGN       8
+
+/* minimum frame size supported */
+#define ENETC_MAC_MINFRM_SIZE	68
+/* maximum frame size supported */
+#define ENETC_MAC_MAXFRM_SIZE	9600
 
 /*
  * upper_32_bits - return bits 32-63 of a number
@@ -64,6 +69,7 @@ struct enetc_bdr {
 		void *tcisr; /* Tx */
 		int next_to_alloc; /* Rx */
 	};
+	uint8_t	crc_len; /* 0 if CRC stripped, 4 otherwise */
 };
 
 /*
@@ -85,11 +91,6 @@ struct enetc_eth_adapter {
 
 #define ENETC_DEV_PRIVATE_TO_INTR(adapter) \
 	(&((struct enetc_eth_adapter *)adapter)->intr)
-
-#define ENETC_GET_HW_ADDR(reg, addr) ((void *)(((size_t)reg) + (addr)))
-#define ENETC_REG_READ(addr) (*(uint32_t *)addr)
-#define ENETC_REG_WRITE(addr, val) (*(uint32_t *)addr = val)
-#define ENETC_REG_WRITE_RELAXED(addr, val) (*(uint32_t *)addr = val)
 
 /*
  * RX/TX ENETC function prototypes

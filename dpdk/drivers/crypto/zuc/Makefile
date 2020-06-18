@@ -15,9 +15,7 @@ LIB = librte_pmd_zuc.a
 # build flags
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
-
-# library version
-LIBABIVER := 1
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 # versioning export map
 EXPORT_MAP := rte_pmd_zuc_version.map

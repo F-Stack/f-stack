@@ -11,11 +11,13 @@ deps += ['kvargs', 'bus_pci']
 
 if arch_subdir == 'x86'
 	sources += files('virtio_rxtx_simple_sse.c')
+elif arch_subdir == 'ppc_64'
+	sources += files('virtio_rxtx_simple_altivec.c')
 elif arch_subdir == 'arm' and host_machine.cpu_family().startswith('aarch64')
 	sources += files('virtio_rxtx_simple_neon.c')
 endif
 
-if host_machine.system() == 'linux'
+if is_linux
 	dpdk_conf.set('RTE_VIRTIO_USER', 1)
 
 	sources += files('virtio_user_ethdev.c',

@@ -8,10 +8,8 @@ LIB = librte_pmd_aesni_gcm.a
 
 # build flags
 CFLAGS += -O3
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS)
-
-# library version
-LIBABIVER := 1
 
 # versioning export map
 EXPORT_MAP := rte_pmd_aesni_gcm_version.map
@@ -22,11 +20,24 @@ LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_cryptodev
 LDLIBS += -lrte_bus_vdev
 
+IMB_HDR = $(shell echo '\#include <intel-ipsec-mb.h>' | \
+	$(CC) -E $(EXTRA_CFLAGS) - | grep 'intel-ipsec-mb.h' | \
+	head -n1 | cut -d'"' -f2)
+
+# Detect library version
+IMB_VERSION = $(shell grep -e "IMB_VERSION_STR" $(IMB_HDR) | cut -d'"' -f2)
+IMB_VERSION_NUM = $(shell grep -e "IMB_VERSION_NUM" $(IMB_HDR) | cut -d' ' -f3)
+
+ifeq ($(IMB_VERSION),)
+$(error "IPSec_MB version >= 0.52 is required")
+endif
+
+ifeq ($(shell expr $(IMB_VERSION_NUM) \< 0x3400), 1)
+$(error "IPSec_MB version >= 0.52 is required")
+endif
+
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += aesni_gcm_pmd.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM) += aesni_gcm_pmd_ops.c
-
-# export include files
-SYMLINK-y-include +=
 
 include $(RTE_SDK)/mk/rte.lib.mk

@@ -3,27 +3,16 @@
 
 .PHONY: showversion
 showversion:
-	@set -- \
-		$$(sed -rne 's,^#define RTE_VER_[A-Z_]*[[:space:]]+([0-9]+).*,\1,p' \
-			-e 's,^#define RTE_VER_SUFFIX[[:space:]]+"(.*)",\1,p' \
-			$(RTE_SRCDIR)/lib/librte_eal/common/include/rte_version.h) ;\
-		printf '%d.%02d.%d' "$$1" "$$2" "$$3"; \
-		if [ -z "$$5" ]; then echo; \
-		else printf '%s' "$$4"; \
-			if [ $$5 -lt 16 ] ; then echo $$5; \
-			else echo $$(($$5 - 16)); fi; \
-		fi
+	@cat $(RTE_SRCDIR)/VERSION
 
 .PHONY: showversionum
 showversionum:
-	@set -- \
-		$$(sed -rne 's,^#define RTE_VER_[A-Z_]*[[:space:]]+([0-9]+).*,\1,p' \
-			$(RTE_SRCDIR)/lib/librte_eal/common/include/rte_version.h); \
-		printf '%02d%02d\n' "$$1" "$$2"
+	@cat $(RTE_SRCDIR)/VERSION | awk -F '.' '{print $$1$$2}'
 
-INSTALL_CONFIGS := $(sort $(filter-out %~,\
+INSTALL_CONFIGS := $(sort $(filter-out %app-icc,$(filter-out %app-clang,\
+	$(filter-out %app-gcc,$(filter-out %~,\
 	$(patsubst $(RTE_SRCDIR)/config/defconfig_%,%,\
-	$(wildcard $(RTE_SRCDIR)/config/defconfig_*))))
+	$(wildcard $(RTE_SRCDIR)/config/defconfig_*)))))))
 INSTALL_TARGETS := $(addsuffix _install,$(INSTALL_CONFIGS))
 
 .PHONY: showconfigs
@@ -53,9 +42,9 @@ defconfig:
 		)-$(shell \
                 uname | awk '{ \
                 if ($$0 == "Linux") { \
-                        print "linuxapp"} \
+                        print "linux"} \
                 else { \
-                        print "bsdapp"} }' \
+                        print "freebsd"} }' \
 		)-$(shell \
 		${CC} --version | grep -o 'cc\|gcc\|icc\|clang' | awk \
 		'{ \
@@ -85,9 +74,16 @@ else
 # To do so the temp config is checked for duplicate keys with cut/sort/uniq
 # Then for each of those identified duplicates as long as there are more than
 # just one left the last match is removed.
+# Part of the config includes the version information taken from "VERSION"
+# in the repo. This needs to be split into the various parts using sed and awk.
+# To ensure correct version comparison, we append ".99" to the version number
+# so that the version of a release is higher than that of its rc's.
 $(RTE_OUTPUT)/.config: $(RTE_CONFIG_TEMPLATE) FORCE | $(RTE_OUTPUT)
 	$(Q)if [ "$(RTE_CONFIG_TEMPLATE)" != "" -a -f "$(RTE_CONFIG_TEMPLATE)" ]; then \
 		$(CPP) -undef -P -x assembler-with-cpp \
+		`cat $(RTE_SRCDIR)/VERSION | \
+		sed -e 's/-rc/.-rc./' -e 's/$$/..99/' | \
+		awk -F '.' '{print "-D__YEAR="int($$1), "-D__MONTH="int($$2), "-D__MINOR="int($$3), "-D__SUFFIX=\""$$4"\"", "-D__RELEASE="int($$5)}'` \
 		-ffreestanding \
 		-o $(RTE_OUTPUT)/.config_tmp $(RTE_CONFIG_TEMPLATE) ; \
 		config=$$(cat $(RTE_OUTPUT)/.config_tmp) ; \

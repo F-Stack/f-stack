@@ -9,20 +9,20 @@ static __rte_always_inline void
 l3fwd_em_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		struct lcore_conf *qconf)
 {
-	struct ether_hdr *eth_hdr;
-	struct ipv4_hdr *ipv4_hdr;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
 	uint16_t dst_port;
 	uint32_t tcp_or_udp;
 	uint32_t l3_ptypes;
 
-	eth_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 	tcp_or_udp = m->packet_type & (RTE_PTYPE_L4_TCP | RTE_PTYPE_L4_UDP);
 	l3_ptypes = m->packet_type & RTE_PTYPE_L3_MASK;
 
 	if (tcp_or_udp && (l3_ptypes == RTE_PTYPE_L3_IPV4)) {
 		/* Handle IPv4 headers.*/
-		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
-						   sizeof(struct ether_hdr));
+		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
+						sizeof(struct rte_ether_hdr));
 
 #ifdef DO_RFC_1812_CHECKS
 		/* Check to make sure the packet is valid (RFC1812) */
@@ -47,15 +47,16 @@ l3fwd_em_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[dst_port];
 
 		/* src addr */
-		ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->s_addr);
+		rte_ether_addr_copy(&ports_eth_addr[dst_port],
+				&eth_hdr->s_addr);
 
 		send_single_packet(qconf, m, dst_port);
 	} else if (tcp_or_udp && (l3_ptypes == RTE_PTYPE_L3_IPV6)) {
 		/* Handle IPv6 headers.*/
-		struct ipv6_hdr *ipv6_hdr;
+		struct rte_ipv6_hdr *ipv6_hdr;
 
-		ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct ipv6_hdr *,
-						   sizeof(struct ether_hdr));
+		ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv6_hdr *,
+						sizeof(struct rte_ether_hdr));
 
 		dst_port = em_get_ipv6_dst_port(ipv6_hdr, portid,
 					qconf->ipv6_lookup_struct);
@@ -68,7 +69,8 @@ l3fwd_em_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[dst_port];
 
 		/* src addr */
-		ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->s_addr);
+		rte_ether_addr_copy(&ports_eth_addr[dst_port],
+				&eth_hdr->s_addr);
 
 		send_single_packet(qconf, m, dst_port);
 	} else {

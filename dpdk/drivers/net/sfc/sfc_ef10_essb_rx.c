@@ -487,6 +487,7 @@ sfc_ef10_essb_rx_pool_ops_supported(const char *pool)
 static sfc_dp_rx_qsize_up_rings_t sfc_ef10_essb_rx_qsize_up_rings;
 static int
 sfc_ef10_essb_rx_qsize_up_rings(uint16_t nb_rx_desc,
+				struct sfc_dp_rx_hw_limits *limits,
 				struct rte_mempool *mb_pool,
 				unsigned int *rxq_entries,
 				unsigned int *evq_entries,
@@ -513,11 +514,11 @@ sfc_ef10_essb_rx_qsize_up_rings(uint16_t nb_rx_desc,
 	nb_hw_rx_desc = RTE_MAX(SFC_DIV_ROUND_UP(nb_rx_desc,
 						 mp_info.contig_block_size),
 				SFC_EF10_RX_WPTR_ALIGN + 1);
-	if (nb_hw_rx_desc <= EFX_RXQ_MINNDESCS) {
-		*rxq_entries = EFX_RXQ_MINNDESCS;
+	if (nb_hw_rx_desc <= limits->rxq_min_entries) {
+		*rxq_entries = limits->rxq_min_entries;
 	} else {
 		*rxq_entries = rte_align32pow2(nb_hw_rx_desc);
-		if (*rxq_entries > EFX_RXQ_MAXNDESCS)
+		if (*rxq_entries > limits->rxq_max_entries)
 			return EINVAL;
 	}
 
@@ -527,8 +528,8 @@ sfc_ef10_essb_rx_qsize_up_rings(uint16_t nb_rx_desc,
 		1 /* Rx error */ + 1 /* flush */ + 1 /* head-tail space */;
 
 	*evq_entries = rte_align32pow2(max_events);
-	*evq_entries = RTE_MAX(*evq_entries, (unsigned int)EFX_EVQ_MINNEVS);
-	*evq_entries = RTE_MIN(*evq_entries, (unsigned int)EFX_EVQ_MAXNEVS);
+	*evq_entries = RTE_MAX(*evq_entries, limits->evq_min_entries);
+	*evq_entries = RTE_MIN(*evq_entries, limits->evq_max_entries);
 
 	/*
 	 * May be even maximum event queue size is insufficient to handle
@@ -713,8 +714,10 @@ struct sfc_dp_rx sfc_ef10_essb_rx = {
 				  SFC_DP_HW_FW_CAP_RX_ES_SUPER_BUFFER,
 	},
 	.features		= SFC_DP_RX_FEAT_FLOW_FLAG |
-				  SFC_DP_RX_FEAT_FLOW_MARK |
-				  SFC_DP_RX_FEAT_CHECKSUM,
+				  SFC_DP_RX_FEAT_FLOW_MARK,
+	.dev_offload_capa	= DEV_RX_OFFLOAD_CHECKSUM |
+				  DEV_RX_OFFLOAD_RSS_HASH,
+	.queue_offload_capa	= 0,
 	.get_dev_info		= sfc_ef10_essb_rx_get_dev_info,
 	.pool_ops_supported	= sfc_ef10_essb_rx_pool_ops_supported,
 	.qsize_up_rings		= sfc_ef10_essb_rx_qsize_up_rings,

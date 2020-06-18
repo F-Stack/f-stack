@@ -11,6 +11,39 @@
 extern "C" {
 #endif
 
+#define	EF10_EVQ_MAXNEVS	32768
+#define	EF10_EVQ_MINNEVS	512
+
+#define	EF10_RXQ_MAXNDESCS	4096
+#define	EF10_RXQ_MINNDESCS	512
+
+#define	EF10_TXQ_MINNDESCS	512
+
+#define	EF10_EVQ_DESC_SIZE	(sizeof (efx_qword_t))
+#define	EF10_RXQ_DESC_SIZE	(sizeof (efx_qword_t))
+#define	EF10_TXQ_DESC_SIZE	(sizeof (efx_qword_t))
+
+/* Number of hardware EVQ buffers (for compile-time resource dimensions) */
+#define	EF10_EVQ_MAXNBUFS	(64)
+
+/* Maximum independent of EFX_BUG35388_WORKAROUND. */
+#define	EF10_TXQ_MAXNBUFS	8
+
+#if EFSYS_OPT_HUNTINGTON
+# if (EF10_EVQ_MAXNBUFS < HUNT_EVQ_MAXNBUFS)
+#  error "EF10_EVQ_MAXNBUFS too small"
+# endif
+#endif /* EFSYS_OPT_HUNTINGTON */
+#if EFSYS_OPT_MEDFORD
+# if (EF10_EVQ_MAXNBUFS < MEDFORD_EVQ_MAXNBUFS)
+#  error "EF10_EVQ_MAXNBUFS too small"
+# endif
+#endif /* EFSYS_OPT_MEDFORD */
+#if EFSYS_OPT_MEDFORD2
+# if (EF10_EVQ_MAXNBUFS < MEDFORD2_EVQ_MAXNBUFS)
+#  error "EF10_EVQ_MAXNBUFS too small"
+# endif
+#endif /* EFSYS_OPT_MEDFORD2 */
 
 /* Number of hardware PIO buffers (for compile-time resource dimensions) */
 #define	EF10_MAX_PIOBUF_NBUFS	(16)
@@ -160,6 +193,16 @@ ef10_intr_fini(
 	__in		efx_nic_t *enp);
 
 /* NIC */
+
+extern	__checkReturn	efx_rc_t
+efx_mcdi_vadaptor_alloc(
+	__in		efx_nic_t *enp,
+	__in		uint32_t port_id);
+
+extern	__checkReturn	efx_rc_t
+efx_mcdi_vadaptor_free(
+	__in		efx_nic_t *enp,
+	__in		uint32_t port_id);
 
 extern	__checkReturn	efx_rc_t
 ef10_nic_probe(
@@ -417,6 +460,12 @@ ef10_nvram_partn_size(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__out			size_t *sizep);
+
+extern	__checkReturn		efx_rc_t
+ef10_nvram_partn_info(
+	__in			efx_nic_t *enp,
+	__in			uint32_t partn,
+	__out			efx_nvram_info_t * enip);
 
 extern	__checkReturn		efx_rc_t
 ef10_nvram_partn_rw_start(
@@ -1012,7 +1061,7 @@ ef10_rx_qcreate(
 	__in		unsigned int index,
 	__in		unsigned int label,
 	__in		efx_rxq_type_t type,
-	__in		const union efx_rxq_type_data_u *type_data,
+	__in_opt	const union efx_rxq_type_data_u *type_data,
 	__in		efsys_mem_t *esmp,
 	__in		size_t ndescs,
 	__in		uint32_t id,
@@ -1223,6 +1272,153 @@ efx_mcdi_set_nic_global(
 
 #endif	/* EFSYS_OPT_FW_SUBVARIANT_AWARE */
 
+#if EFSYS_OPT_EVB
+extern	__checkReturn	efx_rc_t
+ef10_evb_init(
+	__in		efx_nic_t *enp);
+
+extern			void
+ef10_evb_fini(
+	__in		efx_nic_t *enp);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vswitch_alloc(
+	__in		efx_nic_t *enp,
+	__out		efx_vswitch_id_t *vswitch_idp);
+
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vswitch_free(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vport_alloc(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_type_t vport_type,
+	__in		uint16_t vid,
+	__in		boolean_t vlan_restrict,
+	__out		efx_vport_id_t *vport_idp);
+
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vport_free(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vport_mac_addr_add(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id,
+	__in_ecount(6)	uint8_t *addrp);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vport_mac_addr_del(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id,
+	__in_ecount(6)	uint8_t *addrp);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vadaptor_alloc(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id);
+
+
+extern __checkReturn	efx_rc_t
+ef10_evb_vadaptor_free(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vport_assign(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id,
+	__in		uint32_t vf_index);
+
+extern	__checkReturn				efx_rc_t
+ef10_evb_vport_reconfigure(
+	__in					efx_nic_t *enp,
+	__in					efx_vswitch_id_t vswitch_id,
+	__in					efx_vport_id_t vport_id,
+	__in_opt				uint16_t *vidp,
+	__in_bcount_opt(EFX_MAC_ADDR_LEN)	uint8_t *addrp,
+	__out_opt				boolean_t *fn_resetp);
+
+extern	__checkReturn	efx_rc_t
+ef10_evb_vport_stats(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_id_t vswitch_id,
+	__in		efx_vport_id_t vport_id,
+	__out		efsys_mem_t *esmp);
+
+#endif  /* EFSYS_OPT_EVB */
+
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+extern	__checkReturn	efx_rc_t
+ef10_proxy_auth_init(
+	__in		efx_nic_t *enp);
+
+extern			void
+ef10_proxy_auth_fini(
+	__in		efx_nic_t *enp);
+
+extern	__checkReturn		efx_rc_t
+ef10_proxy_auth_mc_config(
+	__in			efx_nic_t *enp,
+	__in			efsys_mem_t *request_bufferp,
+	__in			efsys_mem_t *response_bufferp,
+	__in			efsys_mem_t *status_bufferp,
+	__in			uint32_t block_cnt,
+	__in_ecount(op_count)	uint32_t *op_listp,
+	__in			size_t op_count);
+
+extern	__checkReturn	efx_rc_t
+ef10_proxy_auth_disable(
+	__in		efx_nic_t *enp);
+
+extern	__checkReturn	efx_rc_t
+ef10_proxy_auth_privilege_modify(
+	__in		efx_nic_t *enp,
+	__in		uint32_t fn_group,
+	__in		uint32_t pf_index,
+	__in		uint32_t vf_index,
+	__in		uint32_t add_privileges_mask,
+	__in		uint32_t remove_privileges_mask);
+
+	__checkReturn	efx_rc_t
+ef10_proxy_auth_set_privilege_mask(
+	__in		efx_nic_t *enp,
+	__in		uint32_t vf_index,
+	__in		uint32_t mask,
+	__in		uint32_t value);
+
+	__checkReturn	efx_rc_t
+ef10_proxy_auth_complete_request(
+	__in		efx_nic_t *enp,
+	__in		uint32_t fn_index,
+	__in		uint32_t proxy_result,
+	__in		uint32_t handle);
+
+	__checkReturn	efx_rc_t
+ef10_proxy_auth_exec_cmd(
+	__in		efx_nic_t *enp,
+	__inout		efx_proxy_cmd_params_t *paramsp);
+
+	__checkReturn	efx_rc_t
+ef10_proxy_auth_get_privilege_mask(
+	__in		efx_nic_t *enp,
+	__in		uint32_t pf_index,
+	__in		uint32_t vf_index,
+	__out		uint32_t *maskp);
+
+#endif  /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 
 #if EFSYS_OPT_RX_PACKED_STREAM
 

@@ -2,8 +2,8 @@
  * Copyright(c) 2016-2017 Intel Corporation
  */
 
-#ifndef _RTE_AESNI_GCM_PMD_PRIVATE_H_
-#define _RTE_AESNI_GCM_PMD_PRIVATE_H_
+#ifndef _AESNI_GCM_PMD_PRIVATE_H_
+#define _AESNI_GCM_PMD_PRIVATE_H_
 
 #include "aesni_gcm_ops.h"
 
@@ -35,11 +35,15 @@ struct aesni_gcm_private {
 	/**< Vector mode */
 	unsigned max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
+	MB_MGR *mb_mgr;
+	/**< Multi-buffer instance */
+	struct aesni_gcm_ops ops[GCM_KEY_NUM];
+	/**< Function pointer table of the gcm APIs */
 };
 
 struct aesni_gcm_qp {
 	const struct aesni_gcm_ops *ops;
-	/**< Architecture dependent function pointer table of the gcm APIs */
+	/**< Function pointer table of the gcm APIs */
 	struct rte_ring *processed_pkts;
 	/**< Ring for placing process packets */
 	struct gcm_context_data gdata_ctx; /* (16 * 5) + 8 = 88 B */
@@ -48,6 +52,8 @@ struct aesni_gcm_qp {
 	/**< Queue pair statistics */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
+	/**< Session Private Data Mempool */
 	uint16_t id;
 	/**< Queue Pair Identifier */
 	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
@@ -109,4 +115,4 @@ aesni_gcm_set_session_parameters(const struct aesni_gcm_ops *ops,
 extern struct rte_cryptodev_ops *rte_aesni_gcm_pmd_ops;
 
 
-#endif /* _RTE_AESNI_GCM_PMD_PRIVATE_H_ */
+#endif /* _AESNI_GCM_PMD_PRIVATE_H_ */

@@ -12,8 +12,10 @@ sources = [
 ]
 
 error_cflags = ['-Wno-sign-compare', '-Wno-unused-value',
-		'-Wno-format', '-Wno-error=format-security',
-		'-Wno-strict-aliasing', '-Wno-unused-but-set-variable'
+		'-Wno-format', '-Wno-format-security',
+		'-Wno-format-nonliteral',
+		'-Wno-strict-aliasing', '-Wno-unused-but-set-variable',
+		'-Wno-unused-parameter',
 ]
 c_args = cflags
 if allow_experimental_apis

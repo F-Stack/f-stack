@@ -151,15 +151,28 @@ hunt_board_cfg(
 	/* Checksums for TSO sends can be incorrect on Huntington. */
 	encp->enc_bug61297_workaround = B_TRUE;
 
+	encp->enc_ev_desc_size = EF10_EVQ_DESC_SIZE;
+	encp->enc_rx_desc_size = EF10_RXQ_DESC_SIZE;
+	encp->enc_tx_desc_size = EF10_TXQ_DESC_SIZE;
+
 	/* Alignment for receive packet DMA buffers */
 	encp->enc_rx_buf_align_start = 1;
 	encp->enc_rx_buf_align_end = 64; /* RX DMA end padding */
+
+	encp->enc_evq_max_nevs = EF10_EVQ_MAXNEVS;
+	encp->enc_evq_min_nevs = EF10_EVQ_MINNEVS;
+
+	encp->enc_rxq_max_ndescs = EF10_RXQ_MAXNDESCS;
+	encp->enc_rxq_min_ndescs = EF10_RXQ_MINNDESCS;
 
 	/*
 	 * The workaround for bug35388 uses the top bit of transmit queue
 	 * descriptor writes, preventing the use of 4096 descriptor TXQs.
 	 */
-	encp->enc_txq_max_ndescs = encp->enc_bug35388_workaround ? 2048 : 4096;
+	encp->enc_txq_max_ndescs = encp->enc_bug35388_workaround ?
+	    HUNT_TXQ_MAXNDESCS_BUG35388_WORKAROUND :
+	    HUNT_TXQ_MAXNDESCS;
+	encp->enc_txq_min_ndescs = EF10_TXQ_MINNDESCS;
 
 	EFX_STATIC_ASSERT(HUNT_PIOBUF_NBUFS <= EF10_MAX_PIOBUF_NBUFS);
 	encp->enc_piobuf_limit = HUNT_PIOBUF_NBUFS;

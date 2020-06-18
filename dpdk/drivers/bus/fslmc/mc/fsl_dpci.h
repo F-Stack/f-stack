@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
+ * Copyright 2017-2019 NXP
  *
  */
 #ifndef __FSL_DPCI_H
@@ -107,27 +108,6 @@ int dpci_get_attributes(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,
 			struct dpci_attr *attr);
-
-/**
- * struct dpci_peer_attr - Structure representing the peer DPCI attributes
- * @peer_id:		DPCI peer id; if no peer is connected returns (-1)
- * @num_of_priorities:	The pper's number of receive priorities; determines the
- *			number of transmit priorities for the local DPCI object
- */
-struct dpci_peer_attr {
-	int peer_id;
-	uint8_t num_of_priorities;
-};
-
-int dpci_get_peer_attributes(struct fsl_mc_io *mc_io,
-			     uint32_t cmd_flags,
-			     uint16_t token,
-			     struct dpci_peer_attr *attr);
-
-int dpci_get_link_state(struct fsl_mc_io *mc_io,
-			uint32_t cmd_flags,
-			uint16_t token,
-			int *up);
 
 /**
  * enum dpci_dest - DPCI destination types

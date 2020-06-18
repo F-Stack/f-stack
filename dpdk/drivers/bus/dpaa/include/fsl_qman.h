@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2008-2012 Freescale Semiconductor, Inc.
+ * Copyright 2019 NXP
  *
  */
 
@@ -1214,9 +1215,13 @@ struct qman_fq {
 	struct qman_fq_cb cb;
 
 	u32 fqid_le;
+	u32 fqid;
+
+	int q_fd;
 	u16 ch_id;
 	u8 cgr_groupid;
-	u8 is_static;
+	u8 is_static:4;
+	u8 qp_initialized:4;
 
 	/* DPDK Interface */
 	void *dpaa_intf;
@@ -1224,15 +1229,16 @@ struct qman_fq {
 	struct rte_event ev;
 	/* affined portal in case of static queue */
 	struct qman_portal *qp;
+	struct dpaa_bp_info *bp_array;
 
 	volatile unsigned long flags;
 
 	enum qman_fq_state state;
-	u32 fqid;
 	spinlock_t fqlock;
 
 	struct rb_node node;
 #ifdef CONFIG_FSL_QMAN_FQ_LOOKUP
+	void **qman_fq_lookup_table;
 	u32 key;
 #endif
 };
@@ -1307,6 +1313,10 @@ struct qman_cgr {
 #define QMAN_CGR_FLAG_USE_INIT       0x00000001
 #define QMAN_CGR_MODE_FRAME          0x00000001
 
+#ifdef CONFIG_FSL_QMAN_FQ_LOOKUP
+void qman_set_fq_lookup_table(void **table);
+#endif
+
 /**
  * qman_get_portal_index - get portal configuration index
  */
@@ -1326,6 +1336,13 @@ u32 qman_portal_dequeue(struct rte_event ev[], unsigned int poll_limit,
 int qman_irqsource_add(u32 bits);
 
 /**
+ * qman_fq_portal_irqsource_add - samilar to qman_irqsource_add, but it
+ * takes portal (fq specific) as input rather than using the thread affined
+ * portal.
+ */
+int qman_fq_portal_irqsource_add(struct qman_portal *p, u32 bits);
+
+/**
  * qman_irqsource_remove - remove processing sources from being interrupt-driven
  * @bits: bitmask of QM_PIRQ_**I processing sources
  *
@@ -1334,6 +1351,13 @@ int qman_irqsource_add(u32 bits);
  * or -EINVAL if the current CPU is sharing a portal hosted on another CPU.
  */
 int qman_irqsource_remove(u32 bits);
+
+/**
+ * qman_fq_portal_irqsource_remove - similar to qman_irqsource_remove, but it
+ * takes portal (fq specific) as input rather than using the thread affined
+ * portal.
+ */
+int qman_fq_portal_irqsource_remove(struct qman_portal *p, u32 bits);
 
 /**
  * qman_affine_channel - return the channel ID of an portal
@@ -1766,7 +1790,7 @@ int qman_enqueue_multi(struct qman_fq *fq, const struct qm_fd *fd, u32 *flags,
  */
 int
 qman_enqueue_multi_fq(struct qman_fq *fq[], const struct qm_fd *fd,
-		      int frames_to_send);
+		      u32 *flags, int frames_to_send);
 
 typedef int (*qman_cb_precommit) (void *arg);
 

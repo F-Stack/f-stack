@@ -39,6 +39,7 @@
 #include <stddef.h>
 #include <rte_common.h>
 #include <rte_config.h>
+#include <rte_spinlock.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -132,12 +133,63 @@ struct rte_timer
 #endif
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Allocate a timer data instance in shared memory to track a set of pending
+ * timer lists.
+ *
+ * @param id_ptr
+ *   Pointer to variable into which to write the identifier of the allocated
+ *   timer data instance.
+ *
+ * @return
+ *   - 0: Success
+ *   - -ENOSPC: maximum number of timer data instances already allocated
+ */
+__rte_experimental
+int rte_timer_data_alloc(uint32_t *id_ptr);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Deallocate a timer data instance.
+ *
+ * @param id
+ *   Identifier of the timer data instance to deallocate.
+ *
+ * @return
+ *   - 0: Success
+ *   - -EINVAL: invalid timer data instance identifier
+ */
+__rte_experimental
+int rte_timer_data_dealloc(uint32_t id);
+
+/**
  * Initialize the timer library.
  *
  * Initializes internal variables (list, locks and so on) for the RTE
  * timer library.
+ *
+ * @note
+ *   This function must be called in every process before using the library.
+ *
+ * @return
+ *   - 0: Success
+ *   - -ENOMEM: Unable to allocate memory needed to initialize timer
+ *      subsystem
  */
-void rte_timer_subsystem_init(void);
+int rte_timer_subsystem_init(void);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Free timer subsystem resources.
+ */
+__rte_experimental
+void rte_timer_subsystem_finalize(void);
 
 /**
  * Initialize a timer handle.
@@ -197,7 +249,6 @@ int rte_timer_reset(struct rte_timer *tim, uint64_t ticks,
 		    enum rte_timer_type type, unsigned tim_lcore,
 		    rte_timer_cb_t fct, void *arg);
 
-
 /**
  * Loop until rte_timer_reset() succeeds.
  *
@@ -254,7 +305,6 @@ rte_timer_reset_sync(struct rte_timer *tim, uint64_t ticks,
  */
 int rte_timer_stop(struct rte_timer *tim);
 
-
 /**
  * Loop until rte_timer_stop() succeeds.
  *
@@ -291,16 +341,184 @@ int rte_timer_pending(struct rte_timer *tim);
  * The precision of the timer depends on the call frequency of this
  * function. However, the more often the function is called, the more
  * CPU resources it will use.
+ *
+ * @return
+ *   - 0: Success
+ *   - -EINVAL: timer subsystem not yet initialized
  */
-void rte_timer_manage(void);
+int rte_timer_manage(void);
 
 /**
  * Dump statistics about timers.
  *
  * @param f
  *   A pointer to a file for output
+ * @return
+ *   - 0: Success
+ *   - -EINVAL: timer subsystem not yet initialized
  */
-void rte_timer_dump_stats(FILE *f);
+int rte_timer_dump_stats(FILE *f);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * This function is the same as rte_timer_reset(), except that it allows a
+ * caller to specify the rte_timer_data instance containing the list to which
+ * the timer should be added.
+ *
+ * @see rte_timer_reset()
+ *
+ * @param timer_data_id
+ *   An identifier indicating which instance of timer data should be used for
+ *   this operation.
+ * @param tim
+ *   The timer handle.
+ * @param ticks
+ *   The number of cycles (see rte_get_hpet_hz()) before the callback
+ *   function is called.
+ * @param type
+ *   The type can be either:
+ *   - PERIODICAL: The timer is automatically reloaded after execution
+ *     (returns to the PENDING state)
+ *   - SINGLE: The timer is one-shot, that is, the timer goes to a
+ *     STOPPED state after execution.
+ * @param tim_lcore
+ *   The ID of the lcore where the timer callback function has to be
+ *   executed. If tim_lcore is LCORE_ID_ANY, the timer library will
+ *   launch it on a different core for each call (round-robin).
+ * @param fct
+ *   The callback function of the timer. This parameter can be NULL if (and
+ *   only if) rte_timer_alt_manage() will be used to manage this timer.
+ * @param arg
+ *   The user argument of the callback function.
+ * @return
+ *   - 0: Success; the timer is scheduled.
+ *   - (-1): Timer is in the RUNNING or CONFIG state.
+ *   - -EINVAL: invalid timer_data_id
+ */
+__rte_experimental
+int
+rte_timer_alt_reset(uint32_t timer_data_id, struct rte_timer *tim,
+		    uint64_t ticks, enum rte_timer_type type,
+		    unsigned int tim_lcore, rte_timer_cb_t fct, void *arg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * This function is the same as rte_timer_stop(), except that it allows a
+ * caller to specify the rte_timer_data instance containing the list from which
+ * this timer should be removed.
+ *
+ * @see rte_timer_stop()
+ *
+ * @param timer_data_id
+ *   An identifier indicating which instance of timer data should be used for
+ *   this operation.
+ * @param tim
+ *   The timer handle.
+ * @return
+ *   - 0: Success; the timer is stopped.
+ *   - (-1): The timer is in the RUNNING or CONFIG state.
+ *   - -EINVAL: invalid timer_data_id
+ */
+__rte_experimental
+int
+rte_timer_alt_stop(uint32_t timer_data_id, struct rte_timer *tim);
+
+/**
+ * Callback function type for rte_timer_alt_manage().
+ */
+typedef void (*rte_timer_alt_manage_cb_t)(struct rte_timer *tim);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Manage a set of timer lists and execute the specified callback function for
+ * all expired timers. This function is similar to rte_timer_manage(), except
+ * that it allows a caller to specify the timer_data instance that should
+ * be operated on, as well as a set of lcore IDs identifying which timer lists
+ * should be processed.  Callback functions of individual timers are ignored.
+ *
+ * @see rte_timer_manage()
+ *
+ * @param timer_data_id
+ *   An identifier indicating which instance of timer data should be used for
+ *   this operation.
+ * @param poll_lcores
+ *   An array of lcore ids identifying the timer lists that should be processed.
+ *   NULL is allowed - if NULL, the timer list corresponding to the lcore
+ *   calling this routine is processed (same as rte_timer_manage()).
+ * @param n_poll_lcores
+ *   The size of the poll_lcores array. If 'poll_lcores' is NULL, this parameter
+ *   is ignored.
+ * @param f
+ *   The callback function which should be called for all expired timers.
+ * @return
+ *   - 0: success
+ *   - -EINVAL: invalid timer_data_id
+ */
+__rte_experimental
+int
+rte_timer_alt_manage(uint32_t timer_data_id, unsigned int *poll_lcores,
+		     int n_poll_lcores, rte_timer_alt_manage_cb_t f);
+
+/**
+ * Callback function type for rte_timer_stop_all().
+ */
+typedef void (*rte_timer_stop_all_cb_t)(struct rte_timer *tim, void *arg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Walk the pending timer lists for the specified lcore IDs, and for each timer
+ * that is encountered, stop it and call the specified callback function to
+ * process it further.
+ *
+ * @param timer_data_id
+ *   An identifier indicating which instance of timer data should be used for
+ *   this operation.
+ * @param walk_lcores
+ *   An array of lcore ids identifying the timer lists that should be processed.
+ * @param nb_walk_lcores
+ *   The size of the walk_lcores array.
+ * @param f
+ *   The callback function which should be called for each timers. Can be NULL.
+ * @param f_arg
+ *   An arbitrary argument that will be passed to f, if it is called.
+ * @return
+ *   - 0: success
+ *   - EINVAL: invalid timer_data_id
+ */
+__rte_experimental
+int
+rte_timer_stop_all(uint32_t timer_data_id, unsigned int *walk_lcores,
+		   int nb_walk_lcores, rte_timer_stop_all_cb_t f, void *f_arg);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * This function is the same as rte_timer_dump_stats(), except that it allows
+ * the caller to specify the rte_timer_data instance that should be used.
+ *
+ * @see rte_timer_dump_stats()
+ *
+ * @param timer_data_id
+ *   An identifier indicating which instance of timer data should be used for
+ *   this operation.
+ * @param f
+ *   A pointer to a file for output
+ * @return
+ *   - 0: success
+ *   - -EINVAL: invalid timer_data_id
+ */
+__rte_experimental
+int
+rte_timer_alt_dump_stats(uint32_t timer_data_id, FILE *f);
 
 #ifdef __cplusplus
 }

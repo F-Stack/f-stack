@@ -20,6 +20,8 @@ CFLAGS += -Wno-implicit-fallthrough
 endif
 endif
 
+CFLAGS += -I$(RTE_SDK)/drivers/common/dpaax
+CFLAGS += -I$(RTE_SDK)/drivers/common/dpaax/caamflib
 CFLAGS += -I$(RTE_SDK)/drivers/crypto/dpaa2_sec/
 CFLAGS += -I$(RTE_SDK)/drivers/crypto/dpaa2_sec/mc
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/
@@ -27,13 +29,9 @@ CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/qbman/include
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/mc
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/portal
 CFLAGS += -I$(RTE_SDK)/drivers/mempool/dpaa2/
-CFLAGS += -I$(RTE_SDK)/lib/librte_eal/linuxapp/eal
 
 # versioning export map
 EXPORT_MAP := rte_pmd_dpaa2_sec_version.map
-
-# library version
-LIBABIVER := 2
 
 # library source files
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_DPAA2_SEC) += dpaa2_sec_dpseci.c

@@ -3,9 +3,10 @@
  * All rights reserved.
  */
 #include <rte_net.h>
-#include "common.h"
-#include "t4_tcb.h"
-#include "t4_regs.h"
+
+#include "base/common.h"
+#include "base/t4_tcb.h"
+#include "base/t4_regs.h"
 #include "cxgbe_filter.h"
 #include "clip_tbl.h"
 #include "l2t.h"
@@ -13,7 +14,7 @@
 /**
  * Initialize Hash Filters
  */
-int init_hash_filter(struct adapter *adap)
+int cxgbe_init_hash_filter(struct adapter *adap)
 {
 	unsigned int n_user_filters;
 	unsigned int user_filter_perc;
@@ -52,7 +53,8 @@ int init_hash_filter(struct adapter *adap)
  * Validate if the requested filter specification can be set by checking
  * if the requested features have been enabled
  */
-int validate_filter(struct adapter *adapter, struct ch_filter_specification *fs)
+int cxgbe_validate_filter(struct adapter *adapter,
+			  struct ch_filter_specification *fs)
 {
 	u32 fconf;
 
@@ -67,7 +69,8 @@ int validate_filter(struct adapter *adapter, struct ch_filter_specification *fs)
 	(!(fconf & (_mask)) && S(_field))
 
 	if (U(F_PORT, iport) || U(F_ETHERTYPE, ethtype) ||
-	    U(F_PROTOCOL, proto) || U(F_MACMATCH, macidx))
+	    U(F_PROTOCOL, proto) || U(F_MACMATCH, macidx) ||
+	    U(F_VLAN, ivlan_vld))
 		return -EOPNOTSUPP;
 
 #undef S
@@ -132,7 +135,7 @@ static unsigned int get_filter_steerq(struct rte_eth_dev *dev,
 }
 
 /* Return an error number if the indicated filter isn't writable ... */
-int writable_filter(struct filter_entry *f)
+static int writable_filter(struct filter_entry *f)
 {
 	if (f->locked)
 		return -EPERM;
@@ -211,20 +214,32 @@ static inline void mk_set_tcb_field_ulp(struct filter_entry *f,
 }
 
 /**
- * Check if entry already filled.
+ * IPv6 requires 2 slots on T6 and 4 slots for cards below T6.
+ * IPv4 requires only 1 slot on all cards.
  */
-bool is_filter_set(struct tid_info *t, int fidx, int family)
+u8 cxgbe_filter_slots(struct adapter *adap, u8 family)
+{
+	if (family == FILTER_TYPE_IPV6) {
+		if (CHELSIO_CHIP_VERSION(adap->params.chip) < CHELSIO_T6)
+			return 4;
+
+		return 2;
+	}
+
+	return 1;
+}
+
+/**
+ * Check if entries are already filled.
+ */
+bool cxgbe_is_filter_set(struct tid_info *t, u32 fidx, u8 nentries)
 {
 	bool result = FALSE;
-	int i, max;
+	u32 i;
 
-	/* IPv6 requires four slots and IPv4 requires only 1 slot.
-	 * Ensure, there's enough slots available.
-	 */
-	max = family == FILTER_TYPE_IPV6 ? fidx + 3 : fidx;
-
+	/* Ensure there's enough slots available. */
 	t4_os_lock(&t->ftid_lock);
-	for (i = fidx; i <= max; i++) {
+	for (i = fidx; i < fidx + nentries; i++) {
 		if (rte_bitmap_get(t->ftid_bmap, i)) {
 			result = TRUE;
 			break;
@@ -235,17 +250,18 @@ bool is_filter_set(struct tid_info *t, int fidx, int family)
 }
 
 /**
- * Allocate a available free entry
+ * Allocate available free entries.
  */
-int cxgbe_alloc_ftid(struct adapter *adap, unsigned int family)
+int cxgbe_alloc_ftid(struct adapter *adap, u8 nentries)
 {
 	struct tid_info *t = &adap->tids;
 	int pos;
 	int size = t->nftids;
 
 	t4_os_lock(&t->ftid_lock);
-	if (family == FILTER_TYPE_IPV6)
-		pos = cxgbe_bitmap_find_free_region(t->ftid_bmap, size, 4);
+	if (nentries > 1)
+		pos = cxgbe_bitmap_find_free_region(t->ftid_bmap, size,
+						    nentries);
 	else
 		pos = cxgbe_find_first_zero_bit(t->ftid_bmap, size);
 	t4_os_unlock(&t->ftid_lock);
@@ -277,6 +293,9 @@ static u64 hash_filter_ntuple(const struct filter_entry *f)
 		ntuple |= (u64)(f->fs.val.ethtype) << tp->ethertype_shift;
 	if (tp->macmatch_shift >= 0 && f->fs.mask.macidx)
 		ntuple |= (u64)(f->fs.val.macidx) << tp->macmatch_shift;
+	if (tp->vlan_shift >= 0 && f->fs.mask.ivlan)
+		ntuple |= (u64)(F_FT_VLAN_VLD | f->fs.val.ivlan) <<
+			  tp->vlan_shift;
 
 	return ntuple;
 }
@@ -526,7 +545,7 @@ static int cxgbe_set_hash_filter(struct rte_eth_dev *dev,
 	int atid, size;
 	int ret = 0;
 
-	ret = validate_filter(adapter, fs);
+	ret = cxgbe_validate_filter(adapter, fs);
 	if (ret)
 		return ret;
 
@@ -563,7 +582,7 @@ static int cxgbe_set_hash_filter(struct rte_eth_dev *dev,
 	if (atid < 0)
 		goto out_err;
 
-	if (f->fs.type) {
+	if (f->fs.type == FILTER_TYPE_IPV6) {
 		/* IPv6 hash filter */
 		f->clipt = cxgbe_clip_alloc(f->dev, (u32 *)&f->fs.val.lip);
 		if (!f->clipt)
@@ -617,7 +636,7 @@ out_err:
  * Clear a filter and release any of its resources that we own.  This also
  * clears the filter's "pending" status.
  */
-void clear_filter(struct filter_entry *f)
+static void clear_filter(struct filter_entry *f)
 {
 	if (f->clipt)
 		cxgbe_clip_release(f->dev, f->clipt);
@@ -689,7 +708,7 @@ static int del_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 	return 0;
 }
 
-int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
+static int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 {
 	struct adapter *adapter = ethdev2adap(dev);
 	struct filter_entry *f = &adapter->tids.ftid_tab[fidx];
@@ -754,6 +773,9 @@ int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 			    V_FW_FILTER_WR_L2TIX(f->l2t ? f->l2t->idx : 0));
 	fwr->ethtype = cpu_to_be16(f->fs.val.ethtype);
 	fwr->ethtypem = cpu_to_be16(f->fs.mask.ethtype);
+	fwr->frag_to_ovlan_vldm =
+		(V_FW_FILTER_WR_IVLAN_VLD(f->fs.val.ivlan_vld) |
+		 V_FW_FILTER_WR_IVLAN_VLDM(f->fs.mask.ivlan_vld));
 	fwr->smac_sel = 0;
 	fwr->rx_chan_rx_rpl_iq =
 		cpu_to_be16(V_FW_FILTER_WR_RX_CHAN(0) |
@@ -766,6 +788,8 @@ int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 			    V_FW_FILTER_WR_PORTM(f->fs.mask.iport));
 	fwr->ptcl = f->fs.val.proto;
 	fwr->ptclm = f->fs.mask.proto;
+	fwr->ivlan = cpu_to_be16(f->fs.val.ivlan);
+	fwr->ivlanm = cpu_to_be16(f->fs.mask.ivlan);
 	rte_memcpy(fwr->lip, f->fs.val.lip, sizeof(fwr->lip));
 	rte_memcpy(fwr->lipm, f->fs.mask.lip, sizeof(fwr->lipm));
 	rte_memcpy(fwr->fip, f->fs.val.fip, sizeof(fwr->fip));
@@ -802,44 +826,34 @@ out:
 }
 
 /**
- * Set the corresponding entry in the bitmap. 4 slots are
- * marked for IPv6, whereas only 1 slot is marked for IPv4.
+ * Set the corresponding entries in the bitmap.
  */
-static int cxgbe_set_ftid(struct tid_info *t, int fidx, int family)
+static int cxgbe_set_ftid(struct tid_info *t, u32 fidx, u8 nentries)
 {
+	u32 i;
+
 	t4_os_lock(&t->ftid_lock);
 	if (rte_bitmap_get(t->ftid_bmap, fidx)) {
 		t4_os_unlock(&t->ftid_lock);
 		return -EBUSY;
 	}
 
-	if (family == FILTER_TYPE_IPV4) {
-		rte_bitmap_set(t->ftid_bmap, fidx);
-	} else {
-		rte_bitmap_set(t->ftid_bmap, fidx);
-		rte_bitmap_set(t->ftid_bmap, fidx + 1);
-		rte_bitmap_set(t->ftid_bmap, fidx + 2);
-		rte_bitmap_set(t->ftid_bmap, fidx + 3);
-	}
+	for (i = fidx; i < fidx + nentries; i++)
+		rte_bitmap_set(t->ftid_bmap, i);
 	t4_os_unlock(&t->ftid_lock);
 	return 0;
 }
 
 /**
- * Clear the corresponding entry in the bitmap. 4 slots are
- * cleared for IPv6, whereas only 1 slot is cleared for IPv4.
+ * Clear the corresponding entries in the bitmap.
  */
-static void cxgbe_clear_ftid(struct tid_info *t, int fidx, int family)
+static void cxgbe_clear_ftid(struct tid_info *t, u32 fidx, u8 nentries)
 {
+	u32 i;
+
 	t4_os_lock(&t->ftid_lock);
-	if (family == FILTER_TYPE_IPV4) {
-		rte_bitmap_clear(t->ftid_bmap, fidx);
-	} else {
-		rte_bitmap_clear(t->ftid_bmap, fidx);
-		rte_bitmap_clear(t->ftid_bmap, fidx + 1);
-		rte_bitmap_clear(t->ftid_bmap, fidx + 2);
-		rte_bitmap_clear(t->ftid_bmap, fidx + 3);
-	}
+	for (i = fidx; i < fidx + nentries; i++)
+		rte_bitmap_clear(t->ftid_bmap, i);
 	t4_os_unlock(&t->ftid_lock);
 }
 
@@ -857,6 +871,7 @@ int cxgbe_del_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	struct adapter *adapter = pi->adapter;
 	struct filter_entry *f;
 	unsigned int chip_ver;
+	u8 nentries;
 	int ret;
 
 	if (is_hashfilter(adapter) && fs->cap)
@@ -867,22 +882,23 @@ int cxgbe_del_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 
 	chip_ver = CHELSIO_CHIP_VERSION(adapter->params.chip);
 
-	ret = is_filter_set(&adapter->tids, filter_id, fs->type);
-	if (!ret) {
-		dev_warn(adap, "%s: could not find filter entry: %u\n",
-			 __func__, filter_id);
-		return -EINVAL;
-	}
-
 	/*
-	 * Ensure filter id is aligned on the 2 slot boundary for T6,
+	 * Ensure IPv6 filter id is aligned on the 2 slot boundary for T6,
 	 * and 4 slot boundary for cards below T6.
 	 */
-	if (fs->type) {
+	if (fs->type == FILTER_TYPE_IPV6) {
 		if (chip_ver < CHELSIO_T6)
 			filter_id &= ~(0x3);
 		else
 			filter_id &= ~(0x1);
+	}
+
+	nentries = cxgbe_filter_slots(adapter, fs->type);
+	ret = cxgbe_is_filter_set(&adapter->tids, filter_id, nentries);
+	if (!ret) {
+		dev_warn(adap, "%s: could not find filter entry: %u\n",
+			 __func__, filter_id);
+		return -EINVAL;
 	}
 
 	f = &adapter->tids.ftid_tab[filter_id];
@@ -894,8 +910,7 @@ int cxgbe_del_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 		f->ctx = ctx;
 		cxgbe_clear_ftid(&adapter->tids,
 				 f->tid - adapter->tids.ftid_base,
-				 f->fs.type ? FILTER_TYPE_IPV6 :
-					      FILTER_TYPE_IPV4);
+				 nentries);
 		return del_filter_wr(dev, filter_id);
 	}
 
@@ -925,10 +940,10 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 {
 	struct port_info *pi = ethdev2pinfo(dev);
 	struct adapter *adapter = pi->adapter;
-	unsigned int fidx, iq, fid_bit = 0;
+	unsigned int fidx, iq;
 	struct filter_entry *f;
 	unsigned int chip_ver;
-	uint8_t bitoff[16] = {0};
+	u8 nentries, bitoff[16] = {0};
 	int ret;
 
 	if (is_hashfilter(adapter) && fs->cap)
@@ -939,22 +954,9 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 
 	chip_ver = CHELSIO_CHIP_VERSION(adapter->params.chip);
 
-	ret = validate_filter(adapter, fs);
+	ret = cxgbe_validate_filter(adapter, fs);
 	if (ret)
 		return ret;
-
-	/*
-	 * Ensure filter id is aligned on the 4 slot boundary for IPv6
-	 * maskfull filters.
-	 */
-	if (fs->type)
-		filter_id &= ~(0x3);
-
-	ret = is_filter_set(&adapter->tids, filter_id, fs->type);
-	if (ret)
-		return -EBUSY;
-
-	iq = get_filter_steerq(dev, fs);
 
 	/*
 	 * IPv6 filters occupy four slots and must be aligned on four-slot
@@ -962,61 +964,25 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	 * must be aligned on two-slot boundaries.
 	 *
 	 * IPv4 filters only occupy a single slot and have no alignment
-	 * requirements but writing a new IPv4 filter into the middle
-	 * of an existing IPv6 filter requires clearing the old IPv6
-	 * filter.
+	 * requirements.
 	 */
-	if (fs->type == FILTER_TYPE_IPV4) { /* IPv4 */
-		/*
-		 * For T6, If our IPv4 filter isn't being written to a
-		 * multiple of two filter index and there's an IPv6
-		 * filter at the multiple of 2 base slot, then we need
-		 * to delete that IPv6 filter ...
-		 * For adapters below T6, IPv6 filter occupies 4 entries.
-		 */
+	fidx = filter_id;
+	if (fs->type == FILTER_TYPE_IPV6) {
 		if (chip_ver < CHELSIO_T6)
-			fidx = filter_id & ~0x3;
+			fidx &= ~(0x3);
 		else
-			fidx = filter_id & ~0x1;
-
-		if (fidx != filter_id && adapter->tids.ftid_tab[fidx].fs.type) {
-			f = &adapter->tids.ftid_tab[fidx];
-			if (f->valid)
-				return -EBUSY;
-		}
-	} else { /* IPv6 */
-		unsigned int max_filter_id;
-
-		if (chip_ver < CHELSIO_T6) {
-			/*
-			 * Ensure that the IPv6 filter is aligned on a
-			 * multiple of 4 boundary.
-			 */
-			if (filter_id & 0x3)
-				return -EINVAL;
-
-			max_filter_id = filter_id + 4;
-		} else {
-			/*
-			 * For T6, CLIP being enabled, IPv6 filter would occupy
-			 * 2 entries.
-			 */
-			if (filter_id & 0x1)
-				return -EINVAL;
-
-			max_filter_id = filter_id + 2;
-		}
-
-		/*
-		 * Check all except the base overlapping IPv4 filter
-		 * slots.
-		 */
-		for (fidx = filter_id + 1; fidx < max_filter_id; fidx++) {
-			f = &adapter->tids.ftid_tab[fidx];
-			if (f->valid)
-				return -EBUSY;
-		}
+			fidx &= ~(0x1);
 	}
+
+	if (fidx != filter_id)
+		return -EINVAL;
+
+	nentries = cxgbe_filter_slots(adapter, fs->type);
+	ret = cxgbe_is_filter_set(&adapter->tids, filter_id, nentries);
+	if (ret)
+		return -EBUSY;
+
+	iq = get_filter_steerq(dev, fs);
 
 	/*
 	 * Check to make sure that provided filter index is not
@@ -1027,9 +993,7 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 		return -EBUSY;
 
 	fidx = adapter->tids.ftid_base + filter_id;
-	fid_bit = filter_id;
-	ret = cxgbe_set_ftid(&adapter->tids, fid_bit,
-			     fs->type ? FILTER_TYPE_IPV6 : FILTER_TYPE_IPV4);
+	ret = cxgbe_set_ftid(&adapter->tids, filter_id, nentries);
 	if (ret)
 		return ret;
 
@@ -1039,9 +1003,7 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	ret = writable_filter(f);
 	if (ret) {
 		/* Clear the bits we have set above */
-		cxgbe_clear_ftid(&adapter->tids, fid_bit,
-				 fs->type ? FILTER_TYPE_IPV6 :
-					    FILTER_TYPE_IPV4);
+		cxgbe_clear_ftid(&adapter->tids, filter_id, nentries);
 		return ret;
 	}
 
@@ -1050,7 +1012,7 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	 */
 	if (chip_ver > CHELSIO_T5 && fs->type &&
 	    memcmp(fs->val.lip, bitoff, sizeof(bitoff))) {
-		f->clipt = cxgbe_clip_alloc(f->dev, (u32 *)&f->fs.val.lip);
+		f->clipt = cxgbe_clip_alloc(dev, (u32 *)&fs->val.lip);
 		if (!f->clipt)
 			goto free_tid;
 	}
@@ -1072,17 +1034,13 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	f->ctx = ctx;
 	f->tid = fidx; /* Save the actual tid */
 	ret = set_filter_wr(dev, filter_id);
-	if (ret) {
-		fid_bit = f->tid - adapter->tids.ftid_base;
+	if (ret)
 		goto free_tid;
-	}
 
 	return ret;
 
 free_tid:
-	cxgbe_clear_ftid(&adapter->tids, fid_bit,
-			 fs->type ? FILTER_TYPE_IPV6 :
-				    FILTER_TYPE_IPV4);
+	cxgbe_clear_ftid(&adapter->tids, filter_id, nentries);
 	clear_filter(f);
 	return ret;
 }
@@ -1090,7 +1048,8 @@ free_tid:
 /**
  * Handle a Hash filter write reply.
  */
-void hash_filter_rpl(struct adapter *adap, const struct cpl_act_open_rpl *rpl)
+void cxgbe_hash_filter_rpl(struct adapter *adap,
+			   const struct cpl_act_open_rpl *rpl)
 {
 	struct tid_info *t = &adap->tids;
 	struct filter_entry *f;
@@ -1158,7 +1117,7 @@ void hash_filter_rpl(struct adapter *adap, const struct cpl_act_open_rpl *rpl)
 /**
  * Handle a LE-TCAM filter write/deletion reply.
  */
-void filter_rpl(struct adapter *adap, const struct cpl_set_tcb_rpl *rpl)
+void cxgbe_filter_rpl(struct adapter *adap, const struct cpl_set_tcb_rpl *rpl)
 {
 	struct filter_entry *f = NULL;
 	unsigned int tid = GET_TID(rpl);
@@ -1304,11 +1263,60 @@ get_count:
 	return 0;
 }
 
+/*
+ * Clear the packet count for the specified filter.
+ */
+int cxgbe_clear_filter_count(struct adapter *adapter, unsigned int fidx,
+			     int hash, bool clear_byte)
+{
+	u64 tcb_mask = 0, tcb_val = 0;
+	struct filter_entry *f = NULL;
+	u16 tcb_word = 0;
+
+	if (is_hashfilter(adapter) && hash) {
+		if (fidx >= adapter->tids.ntids)
+			return -ERANGE;
+
+		/* No hitcounts supported for T5 hashfilters */
+		if (is_t5(adapter->params.chip))
+			return 0;
+
+		f = adapter->tids.tid_tab[fidx];
+	} else {
+		if (fidx >= adapter->tids.nftids)
+			return -ERANGE;
+
+		f = &adapter->tids.ftid_tab[fidx];
+	}
+
+	if (!f || !f->valid)
+		return -EINVAL;
+
+	tcb_word = W_TCB_TIMESTAMP;
+	tcb_mask = V_TCB_TIMESTAMP(M_TCB_TIMESTAMP);
+	tcb_val = V_TCB_TIMESTAMP(0ULL);
+
+	set_tcb_field(adapter, f->tid, tcb_word, tcb_mask, tcb_val, 1);
+
+	if (clear_byte) {
+		tcb_word = W_TCB_T_RTT_TS_RECENT_AGE;
+		tcb_mask =
+			V_TCB_T_RTT_TS_RECENT_AGE(M_TCB_T_RTT_TS_RECENT_AGE) |
+			V_TCB_T_RTSEQ_RECENT(M_TCB_T_RTSEQ_RECENT);
+		tcb_val = V_TCB_T_RTT_TS_RECENT_AGE(0ULL) |
+			  V_TCB_T_RTSEQ_RECENT(0ULL);
+
+		set_tcb_field(adapter, f->tid, tcb_word, tcb_mask, tcb_val, 1);
+	}
+
+	return 0;
+}
+
 /**
  * Handle a Hash filter delete reply.
  */
-void hash_del_filter_rpl(struct adapter *adap,
-			 const struct cpl_abort_rpl_rss *rpl)
+void cxgbe_hash_del_filter_rpl(struct adapter *adap,
+			       const struct cpl_abort_rpl_rss *rpl)
 {
 	struct tid_info *t = &adap->tids;
 	struct filter_entry *f;

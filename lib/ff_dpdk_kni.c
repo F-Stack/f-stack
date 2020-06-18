@@ -167,10 +167,10 @@ kni_config_network_interface(uint16_t port_id, uint8_t if_up)
 }
 
 static void
-print_ethaddr(const char *name, struct ether_addr *mac_addr)
+print_ethaddr(const char *name, struct rte_ether_addr *mac_addr)
 {
-    char buf[ETHER_ADDR_FMT_SIZE];
-    ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, mac_addr);
+    char buf[RTE_ETHER_ADDR_FMT_SIZE];
+    rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, mac_addr);
     printf("\t%s%s\n", name, buf);
 }
 
@@ -186,10 +186,10 @@ kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
         return -EINVAL;
     }
 
-    print_ethaddr("Address:", (struct ether_addr *)mac_addr);
+    print_ethaddr("Address:", (struct rte_ether_addr *)mac_addr);
 
     ret = rte_eth_dev_default_mac_addr_set(port_id,
-                       (struct ether_addr *)mac_addr);
+                       (struct rte_ether_addr *)mac_addr);
     if (ret < 0)
         printf("Failed to config mac_addr for port %d\n", port_id);
 
@@ -259,11 +259,11 @@ protocol_filter_l4(uint16_t port, unsigned char *bitmap)
 static enum FilterReturn
 protocol_filter_tcp(const void *data, uint16_t len)
 {
-    if (len < sizeof(struct tcp_hdr))
+    if (len < sizeof(struct rte_tcp_hdr))
         return FILTER_UNKNOWN;
 
-    const struct tcp_hdr *hdr;
-    hdr = (const struct tcp_hdr *)data;
+    const struct rte_tcp_hdr *hdr;
+    hdr = (const struct rte_tcp_hdr *)data;
 
     return protocol_filter_l4(hdr->dst_port, tcp_port_bitmap);
 }
@@ -271,11 +271,11 @@ protocol_filter_tcp(const void *data, uint16_t len)
 static enum FilterReturn
 protocol_filter_udp(const void* data,uint16_t len)
 {
-    if (len < sizeof(struct udp_hdr))
+    if (len < sizeof(struct rte_udp_hdr))
         return FILTER_UNKNOWN;
 
-    const struct udp_hdr *hdr;
-    hdr = (const struct udp_hdr *)data;
+    const struct rte_udp_hdr *hdr;
+    hdr = (const struct rte_udp_hdr *)data;
 
     return protocol_filter_l4(hdr->dst_port, udp_port_bitmap);
 }
@@ -355,23 +355,23 @@ protocol_filter_ip(const void *data, uint16_t len, uint16_t eth_frame_type)
     void *next;
     uint16_t next_len;
 
-    if (eth_frame_type == ETHER_TYPE_IPv4) {
-        if(len < sizeof(struct ipv4_hdr))
+    if (eth_frame_type == RTE_ETHER_TYPE_IPV4) {
+        if(len < sizeof(struct rte_ipv4_hdr))
             return FILTER_UNKNOWN;
 
-        const struct ipv4_hdr *hdr = (struct ipv4_hdr *)data;
+        const struct rte_ipv4_hdr *hdr = (struct rte_ipv4_hdr *)data;
         hdr_len = (hdr->version_ihl & 0x0f) << 2;
         if (len < hdr_len)
             return FILTER_UNKNOWN;
 
         proto = hdr->next_proto_id;
 #ifdef INET6
-    } else if(eth_frame_type == ETHER_TYPE_IPv6) {
-        if(len < sizeof(struct ipv6_hdr))
+    } else if(eth_frame_type == RTE_ETHER_TYPE_IPV6) {
+        if(len < sizeof(struct rte_ipv6_hdr))
             return FILTER_UNKNOWN;
 
-        hdr_len = sizeof(struct ipv6_hdr);
-        proto = ((struct ipv6_hdr *)data)->proto;
+        hdr_len = sizeof(struct rte_ipv6_hdr);
+        proto = ((struct rte_ipv6_hdr *)data)->proto;
         hdr_len += get_ipv6_hdr_len(&proto, (void *)data + hdr_len, len - hdr_len);
 
         if (len < hdr_len)
@@ -402,10 +402,10 @@ protocol_filter_ip(const void *data, uint16_t len, uint16_t eth_frame_type)
 #endif
             return protocol_filter_udp(next, next_len);
         case IPPROTO_IPIP:
-            return protocol_filter_ip(next, next_len, ETHER_TYPE_IPv4);
+            return protocol_filter_ip(next, next_len, RTE_ETHER_TYPE_IPV4);
 #ifdef INET6
         case IPPROTO_IPV6:
-            return protocol_filter_ip(next, next_len, ETHER_TYPE_IPv6);
+            return protocol_filter_ip(next, next_len, RTE_ETHER_TYPE_IPV6);
         case IPPROTO_ICMPV6:
             return protocol_filter_icmp6(next, next_len);
 #endif
@@ -510,7 +510,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id,
         
         /* Get the interface default mac address */
         rte_eth_macaddr_get(port_id,
-                (struct ether_addr *)&conf.mac_addr);
+                (struct rte_ether_addr *)&conf.mac_addr);
 
         memset(&ops, 0, sizeof(ops));
         ops.port_id = port_id;

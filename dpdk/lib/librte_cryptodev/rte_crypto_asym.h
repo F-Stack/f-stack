@@ -25,6 +25,8 @@ extern "C" {
 #include <rte_mempool.h>
 #include <rte_common.h>
 
+#include "rte_crypto_sym.h"
+
 typedef struct rte_crypto_param_t {
 	uint8_t *data;
 	/**< pointer to buffer holding data */
@@ -72,8 +74,8 @@ enum rte_crypto_asym_xform_type {
 	 * Refer to rte_crypto_asym_op_type
 	 */
 	RTE_CRYPTO_ASYM_XFORM_MODINV,
-	/**< Modular Inverse
-	 * Perform Modulus inverse b^(-1) mod n
+	/**< Modular Multiplicative Inverse
+	 * Perform Modular Multiplicative Inverse b^(-1) mod n
 	 */
 	RTE_CRYPTO_ASYM_XFORM_MODEX,
 	/**< Modular Exponentiation
@@ -110,17 +112,9 @@ enum rte_crypto_asym_op_type {
 enum rte_crypto_rsa_padding_type {
 	RTE_CRYPTO_RSA_PADDING_NONE = 0,
 	/**< RSA no padding scheme */
-	RTE_CRYPTO_RSA_PKCS1_V1_5_BT0,
-	/**< RSA PKCS#1 V1.5 Block Type 0 padding scheme
-	 * as described in rfc2313
-	 */
-	RTE_CRYPTO_RSA_PKCS1_V1_5_BT1,
-	/**< RSA PKCS#1 V1.5 Block Type 01 padding scheme
-	 * as described in rfc2313
-	 */
-	RTE_CRYPTO_RSA_PKCS1_V1_5_BT2,
-	/**< RSA PKCS#1 V1.5 Block Type 02 padding scheme
-	 * as described in rfc2313
+	RTE_CRYPTO_RSA_PADDING_PKCS1_5,
+	/**< RSA PKCS#1 PKCS1-v1_5 padding scheme. For signatures block type 01,
+	 * for encryption block type 02 are used.
 	 */
 	RTE_CRYPTO_RSA_PADDING_OAEP,
 	/**< RSA PKCS#1 OAEP padding scheme */
@@ -197,8 +191,8 @@ struct rte_crypto_rsa_priv_key_qt {
  */
 struct rte_crypto_rsa_xform {
 	rte_crypto_param n;
-	/**< n - Prime modulus
-	 * Prime modulus data of RSA operation in Octet-string network
+	/**< n - Modulus
+	 * Modulus data of RSA operation in Octet-string network
 	 * byte order format.
 	 */
 
@@ -233,29 +227,38 @@ struct rte_crypto_rsa_xform {
 struct rte_crypto_modex_xform {
 	rte_crypto_param modulus;
 	/**< modulus
-	 * Prime modulus of the modexp transform operation in octet-string
-	 * network byte order format.
+	 * Pointer to the modulus data for modexp transform operation
+	 * in octet-string network byte order format
+	 *
+	 * In case this number is equal to zero the driver shall set
+	 * the crypto op status field to RTE_CRYPTO_OP_STATUS_ERROR
 	 */
 
 	rte_crypto_param exponent;
 	/**< exponent
-	 * Private exponent of the modexp transform operation in
-	 * octet-string network byte order format.
+	 * Exponent of the modexp transform operation in
+	 * octet-string network byte order format
 	 */
 };
 
 /**
- * Asymmetric modular inverse transform operation
+ * Asymmetric modular multiplicative inverse transform operation
  *
- * Structure describing modulus inverse xform params
+ * Structure describing modular multiplicative inverse transform
  *
  */
 struct rte_crypto_modinv_xform {
 	rte_crypto_param modulus;
 	/**<
-	 * Pointer to the prime modulus data for modular
-	 * inverse operation in octet-string network byte
-	 * order format.
+	 * Pointer to the modulus data for modular multiplicative inverse
+	 * operation in octet-string network byte order format
+	 *
+	 * In case this number is equal to zero the driver shall set
+	 * the crypto op status field to RTE_CRYPTO_OP_STATUS_ERROR
+	 *
+	 * This number shall be relatively prime to base
+	 * in corresponding Modular Multiplicative Inverse
+	 * rte_crypto_mod_op_param
 	 */
 };
 
@@ -317,14 +320,28 @@ struct rte_crypto_dsa_xform {
 
 /**
  * Operations params for modular operations:
- * exponentiation and invert
+ * exponentiation and multiplicative inverse
  *
  */
 struct rte_crypto_mod_op_param {
 	rte_crypto_param base;
 	/**<
-	 * Pointer to base of modular exponentiation/inversion data in
-	 * Octet-string network byte order format.
+	 * Pointer to base of modular exponentiation/multiplicative
+	 * inverse data in octet-string network byte order format
+	 *
+	 * In case Multiplicative Inverse is used this number shall
+	 * be relatively prime to modulus in corresponding Modular
+	 * Multiplicative Inverse rte_crypto_modinv_xform
+	 */
+
+	rte_crypto_param result;
+	/**<
+	 * Pointer to the result of modular exponentiation/multiplicative inverse
+	 * data in octet-string network byte order format.
+	 *
+	 * This field shall be big enough to hold the result of Modular
+	 * Exponentiation or Modular Multiplicative Inverse
+	 * (bigger or equal to length of modulus)
 	 */
 };
 
@@ -348,7 +365,7 @@ struct rte_crypto_asym_xform {
 		/**< Modular Exponentiation xform parameters */
 
 		struct rte_crypto_modinv_xform modinv;
-		/**< Modulus Inverse xform parameters */
+		/**< Modular Multiplicative Inverse xform parameters */
 
 		struct rte_crypto_dh_xform dh;
 		/**< DH xform parameters */
@@ -370,21 +387,50 @@ struct rte_crypto_rsa_op_param {
 
 	rte_crypto_param message;
 	/**<
-	 * Pointer to data
+	 * Pointer to input data
 	 * - to be encrypted for RSA public encrypt.
-	 * - to be decrypted for RSA private decrypt.
 	 * - to be signed for RSA sign generation.
 	 * - to be authenticated for RSA sign verification.
+	 *
+	 * Pointer to output data
+	 * - for RSA private decrypt.
+	 * In this case the underlying array should have been
+	 * allocated with enough memory to hold plaintext output
+	 * (i.e. must be at least RSA key size). The message.length
+	 * field should be 0 and will be overwritten by the PMD
+	 * with the decrypted length.
+	 *
+	 * All data is in Octet-string network byte order format.
+	 */
+
+	rte_crypto_param cipher;
+	/**<
+	 * Pointer to input data
+	 * - to be decrypted for RSA private decrypt.
+	 *
+	 * Pointer to output data
+	 * - for RSA public encrypt.
+	 * In this case the underlying array should have been allocated
+	 * with enough memory to hold ciphertext output (i.e. must be
+	 * at least RSA key size). The cipher.length field should
+	 * be 0 and will be overwritten by the PMD with the encrypted length.
+	 *
+	 * All data is in Octet-string network byte order format.
 	 */
 
 	rte_crypto_param sign;
 	/**<
-	 * Pointer to RSA signature data. If operation is RSA
-	 * sign @ref RTE_CRYPTO_ASYM_OP_SIGN, buffer will be
-	 * over-written with generated signature.
+	 * Pointer to input data
+	 * - to be verified for RSA public decrypt.
 	 *
-	 * Length of the signature data will be equal to the
-	 * RSA prime modulus length.
+	 * Pointer to output data
+	 * - for RSA private encrypt.
+	 * In this case the underlying array should have been allocated
+	 * with enough memory to hold signature output (i.e. must be
+	 * at least RSA key size). The sign.length field should
+	 * be 0 and will be overwritten by the PMD with the signature length.
+	 *
+	 * All data is in Octet-string network byte order format.
 	 */
 
 	enum rte_crypto_rsa_padding_type pad;
@@ -476,8 +522,13 @@ struct rte_crypto_dsa_op_param {
  *
  */
 struct rte_crypto_asym_op {
-	struct rte_cryptodev_asym_session *session;
-	/**< Handle for the initialised session context */
+	RTE_STD_C11
+	union {
+		struct rte_cryptodev_asym_session *session;
+		/**< Handle for the initialised session context */
+		struct rte_crypto_asym_xform *xform;
+		/**< Session-less API crypto operation parameters */
+	};
 
 	__extension__
 	union {
@@ -487,7 +538,7 @@ struct rte_crypto_asym_op {
 		struct rte_crypto_dh_op_param dh;
 		struct rte_crypto_dsa_op_param dsa;
 	};
-} __rte_cache_aligned;
+};
 
 #ifdef __cplusplus
 }

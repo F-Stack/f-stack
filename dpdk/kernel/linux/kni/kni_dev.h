@@ -11,6 +11,8 @@
 #endif
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#define KNI_VERSION	"1.0"
+
 #include "compat.h"
 
 #include <linux/if.h>
@@ -24,13 +26,13 @@
 #include <linux/spinlock.h>
 #include <linux/list.h>
 
-#include <exec-env/rte_kni_common.h>
+#include <rte_kni_common.h>
 #define KNI_KTHREAD_RESCHEDULE_INTERVAL 5 /* us */
 
 #define MBUF_BURST_SZ 32
 
 /* Default carrier state for created KNI network interfaces */
-extern uint32_t dflt_carrier;
+extern uint32_t kni_dflt_carrier;
 
 /**
  * A structure describing the private information for a kni device.
@@ -39,9 +41,8 @@ struct kni_dev {
 	/* kni list */
 	struct list_head list;
 
-	struct net_device_stats stats;
-	int status;
-	uint16_t group_id;           /* Group ID of a group of KNI devices */
+	uint8_t iova_mode;
+
 	uint32_t core_id;            /* Core ID to bind */
 	char name[RTE_KNI_NAMESIZE]; /* Network device name */
 	struct task_struct *pthread;
@@ -50,31 +51,26 @@ struct kni_dev {
 	wait_queue_head_t wq;
 	struct mutex sync_lock;
 
-	/* PCI device id */
-	uint16_t device_id;
-
 	/* kni device */
 	struct net_device *net_dev;
-	struct net_device *lad_dev;
-	struct pci_dev *pci_dev;
 
 	/* queue for packets to be sent out */
-	void *tx_q;
+	struct rte_kni_fifo *tx_q;
 
 	/* queue for the packets received */
-	void *rx_q;
+	struct rte_kni_fifo *rx_q;
 
 	/* queue for the allocated mbufs those can be used to save sk buffs */
-	void *alloc_q;
+	struct rte_kni_fifo *alloc_q;
 
 	/* free queue for the mbufs to be freed */
-	void *free_q;
+	struct rte_kni_fifo *free_q;
 
 	/* request queue */
-	void *req_q;
+	struct rte_kni_fifo *req_q;
 
 	/* response queue */
-	void *resp_q;
+	struct rte_kni_fifo *resp_q;
 
 	void *sync_kva;
 	void *sync_va;
@@ -85,26 +81,47 @@ struct kni_dev {
 	/* mbuf size */
 	uint32_t mbuf_size;
 
-	/* synchro for request processing */
-	unsigned long synchro;
-
 	/* buffers */
 	void *pa[MBUF_BURST_SZ];
 	void *va[MBUF_BURST_SZ];
 	void *alloc_pa[MBUF_BURST_SZ];
 	void *alloc_va[MBUF_BURST_SZ];
+
+	struct task_struct *usr_tsk;
 };
+
+#ifdef HAVE_IOVA_TO_KVA_MAPPING_SUPPORT
+static inline phys_addr_t iova_to_phys(struct task_struct *tsk,
+				       unsigned long iova)
+{
+	phys_addr_t offset, phys_addr;
+	struct page *page = NULL;
+	long ret;
+
+	offset = iova & (PAGE_SIZE - 1);
+
+	/* Read one page struct info */
+	ret = get_user_pages_remote(tsk, tsk->mm, iova, 1,
+				    FOLL_TOUCH, &page, NULL, NULL);
+	if (ret < 0)
+		return 0;
+
+	phys_addr = page_to_phys(page) | offset;
+	put_page(page);
+
+	return phys_addr;
+}
+
+static inline void *iova_to_kva(struct task_struct *tsk, unsigned long iova)
+{
+	return phys_to_virt(iova_to_phys(tsk, iova));
+}
+#endif
 
 void kni_net_release_fifo_phy(struct kni_dev *kni);
 void kni_net_rx(struct kni_dev *kni);
 void kni_net_init(struct net_device *dev);
 void kni_net_config_lo_mode(char *lo_str);
 void kni_net_poll_resp(struct kni_dev *kni);
-void kni_set_ethtool_ops(struct net_device *netdev);
-
-int ixgbe_kni_probe(struct pci_dev *pdev, struct net_device **lad_dev);
-void ixgbe_kni_remove(struct pci_dev *pdev);
-int igb_kni_probe(struct pci_dev *pdev, struct net_device **lad_dev);
-void igb_kni_remove(struct pci_dev *pdev);
 
 #endif

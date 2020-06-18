@@ -28,7 +28,6 @@
 
 #include <rte_byteorder.h>
 #include <rte_errno.h>
-#include <rte_eth_ctrl.h>
 #include <rte_ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_flow.h>
@@ -205,9 +204,7 @@ mlx4_flow_merge_eth(struct rte_flow *flow,
 	const char *msg;
 	unsigned int i;
 
-	if (!mask) {
-		flow->promisc = 1;
-	} else {
+	if (mask) {
 		uint32_t sum_dst = 0;
 		uint32_t sum_src = 0;
 
@@ -227,7 +224,7 @@ mlx4_flow_merge_eth(struct rte_flow *flow,
 				goto error;
 			}
 			flow->allmulti = 1;
-		} else if (sum_dst != (UINT8_C(0xff) * ETHER_ADDR_LEN)) {
+		} else if (sum_dst != (UINT8_C(0xff) * RTE_ETHER_ADDR_LEN)) {
 			msg = "mlx4 does not support matching partial"
 				" Ethernet fields";
 			goto error;
@@ -249,12 +246,18 @@ mlx4_flow_merge_eth(struct rte_flow *flow,
 		.type = IBV_FLOW_SPEC_ETH,
 		.size = sizeof(*eth),
 	};
-	memcpy(eth->val.dst_mac, spec->dst.addr_bytes, ETHER_ADDR_LEN);
-	memcpy(eth->mask.dst_mac, mask->dst.addr_bytes, ETHER_ADDR_LEN);
-	/* Remove unwanted bits from values. */
-	for (i = 0; i < ETHER_ADDR_LEN; ++i) {
-		eth->val.dst_mac[i] &= eth->mask.dst_mac[i];
+	if (!mask) {
+		eth->val.dst_mac[0] = 0xff;
+		flow->ibv_attr->type = IBV_FLOW_ATTR_ALL_DEFAULT;
+		flow->promisc = 1;
+		return 0;
 	}
+	memcpy(eth->val.dst_mac, spec->dst.addr_bytes, RTE_ETHER_ADDR_LEN);
+	memcpy(eth->mask.dst_mac, mask->dst.addr_bytes, RTE_ETHER_ADDR_LEN);
+	/* Remove unwanted bits from values. */
+	for (i = 0; i < RTE_ETHER_ADDR_LEN; ++i)
+		eth->val.dst_mac[i] &= eth->mask.dst_mac[i];
+
 	return 0;
 error:
 	return rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
@@ -311,6 +314,8 @@ mlx4_flow_merge_vlan(struct rte_flow *flow,
 	eth->val.vlan_tag = spec->tci;
 	eth->mask.vlan_tag = mask->tci;
 	eth->val.vlan_tag &= eth->mask.vlan_tag;
+	if (flow->ibv_attr->type == IBV_FLOW_ATTR_ALL_DEFAULT)
+		flow->ibv_attr->type = IBV_FLOW_ATTR_NORMAL;
 	return 0;
 error:
 	return rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1349,7 +1354,7 @@ mlx4_flow_internal(struct mlx4_priv *priv, struct rte_flow_error *error)
 			.type = RTE_FLOW_ACTION_TYPE_END,
 		},
 	};
-	struct ether_addr *rule_mac = &eth_spec.dst;
+	struct rte_ether_addr *rule_mac = &eth_spec.dst;
 	rte_be16_t *rule_vlan =
 		(ETH_DEV(priv)->data->dev_conf.rxmode.offloads &
 		 DEV_RX_OFFLOAD_VLAN_FILTER) &&
@@ -1386,14 +1391,14 @@ next_vlan:
 		}
 	}
 	for (i = 0; i != RTE_DIM(priv->mac) + 1; ++i) {
-		const struct ether_addr *mac;
+		const struct rte_ether_addr *mac;
 
 		/* Broadcasts are handled by an extra iteration. */
 		if (i < RTE_DIM(priv->mac))
 			mac = &priv->mac[i];
 		else
 			mac = &eth_mask.dst;
-		if (is_zero_ether_addr(mac))
+		if (rte_is_zero_ether_addr(mac))
 			continue;
 		/* Check if MAC flow rule is already present. */
 		for (flow = LIST_FIRST(&priv->flows);

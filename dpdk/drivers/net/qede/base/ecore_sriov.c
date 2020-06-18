@@ -61,6 +61,39 @@ const char *qede_ecore_channel_tlvs_string[] = {
 	"CHANNEL_TLV_COALESCE_READ",
 	"CHANNEL_TLV_BULLETIN_UPDATE_MAC",
 	"CHANNEL_TLV_UPDATE_MTU",
+	"CHANNEL_TLV_RDMA_ACQUIRE",
+	"CHANNEL_TLV_RDMA_START",
+	"CHANNEL_TLV_RDMA_STOP",
+	"CHANNEL_TLV_RDMA_ADD_USER",
+	"CHANNEL_TLV_RDMA_REMOVE_USER",
+	"CHANNEL_TLV_RDMA_QUERY_COUNTERS",
+	"CHANNEL_TLV_RDMA_ALLOC_TID",
+	"CHANNEL_TLV_RDMA_REGISTER_TID",
+	"CHANNEL_TLV_RDMA_DEREGISTER_TID",
+	"CHANNEL_TLV_RDMA_FREE_TID",
+	"CHANNEL_TLV_RDMA_CREATE_CQ",
+	"CHANNEL_TLV_RDMA_RESIZE_CQ",
+	"CHANNEL_TLV_RDMA_DESTROY_CQ",
+	"CHANNEL_TLV_RDMA_CREATE_QP",
+	"CHANNEL_TLV_RDMA_MODIFY_QP",
+	"CHANNEL_TLV_RDMA_QUERY_QP",
+	"CHANNEL_TLV_RDMA_DESTROY_QP",
+	"CHANNEL_TLV_RDMA_CREATE_SRQ",
+	"CHANNEL_TLV_RDMA_MODIFY_SRQ",
+	"CHANNEL_TLV_RDMA_DESTROY_SRQ",
+	"CHANNEL_TLV_RDMA_QUERY_PORT",
+	"CHANNEL_TLV_RDMA_QUERY_DEVICE",
+	"CHANNEL_TLV_RDMA_IWARP_CONNECT",
+	"CHANNEL_TLV_RDMA_IWARP_ACCEPT",
+	"CHANNEL_TLV_RDMA_IWARP_CREATE_LISTEN",
+	"CHANNEL_TLV_RDMA_IWARP_DESTROY_LISTEN",
+	"CHANNEL_TLV_RDMA_IWARP_PAUSE_LISTEN",
+	"CHANNEL_TLV_RDMA_IWARP_REJECT",
+	"CHANNEL_TLV_RDMA_IWARP_SEND_RTR",
+	"CHANNEL_TLV_ESTABLISH_LL2_CONN",
+	"CHANNEL_TLV_TERMINATE_LL2_CONN",
+	"CHANNEL_TLV_ASYNC_EVENT",
+	"CHANNEL_TLV_SOFT_FLR",
 	"CHANNEL_TLV_MAX"
 };
 
@@ -347,7 +380,7 @@ enum _ecore_status_t ecore_iov_post_vf_bulletin(struct ecore_hwfn *p_hwfn,
 {
 	struct ecore_bulletin_content *p_bulletin;
 	int crc_size = sizeof(p_bulletin->crc);
-	struct ecore_dmae_params params;
+	struct dmae_params params;
 	struct ecore_vf_info *p_vf;
 
 	p_vf = ecore_iov_get_vf_info(p_hwfn, (u16)vfid, true);
@@ -371,8 +404,8 @@ enum _ecore_status_t ecore_iov_post_vf_bulletin(struct ecore_hwfn *p_hwfn,
 
 	/* propagate bulletin board via dmae to vm memory */
 	OSAL_MEMSET(&params, 0, sizeof(params));
-	params.flags = ECORE_DMAE_FLAG_VF_DST;
-	params.dst_vfid = p_vf->abs_vf_id;
+	SET_FIELD(params.flags, DMAE_PARAMS_DST_VF_VALID, 0x1);
+	params.dst_vf_id = p_vf->abs_vf_id;
 	return ecore_dmae_host2host(p_hwfn, p_ptt, p_vf->bulletin.phys,
 				    p_vf->vf_bulletin, p_vf->bulletin.size / 4,
 				    &params);
@@ -906,7 +939,7 @@ ecore_iov_enable_vf_access(struct ecore_hwfn *p_hwfn,
  *
  * @brief ecore_iov_config_perm_table - configure the permission
  *      zone table.
- *      In E4, queue zone permission table size is 320x9. There
+ *      The queue zone permission table size is 320x9. There
  *      are 320 VF queues for single engine device (256 for dual
  *      engine device), and each entry has the following format:
  *      {Valid, VF[7:0]}
@@ -967,6 +1000,9 @@ static u8 ecore_iov_alloc_vf_igu_sbs(struct ecore_hwfn *p_hwfn,
 
 	for (qid = 0; qid < num_rx_queues; qid++) {
 		p_block = ecore_get_igu_free_sb(p_hwfn, false);
+		if (!p_block)
+			continue;
+
 		vf->igu_sbs[qid] = p_block->igu_sb_id;
 		p_block->status &= ~ECORE_IGU_STATUS_FREE;
 		SET_FIELD(val, IGU_MAPPING_LINE_VECTOR_NUMBER, qid);
@@ -1063,6 +1099,15 @@ void ecore_iov_set_link(struct ecore_hwfn *p_hwfn,
 
 	p_bulletin->capability_speed = p_caps->speed_capabilities;
 }
+
+#ifndef ASIC_ONLY
+static void ecore_emul_iov_init_hw_for_vf(struct ecore_hwfn *p_hwfn,
+					  struct ecore_ptt *p_ptt)
+{
+	/* Increase the maximum number of DORQ FIFO entries used by child VFs */
+	ecore_wr(p_hwfn, p_ptt, DORQ_REG_VF_USAGE_CNT_LIM, 0x3ec);
+}
+#endif
 
 enum _ecore_status_t
 ecore_iov_init_hw_for_vf(struct ecore_hwfn *p_hwfn,
@@ -1188,18 +1233,39 @@ ecore_iov_init_hw_for_vf(struct ecore_hwfn *p_hwfn,
 			   &link_params, &link_state, &link_caps);
 
 	rc = ecore_iov_enable_vf_access(p_hwfn, p_ptt, vf);
+	if (rc != ECORE_SUCCESS)
+		return rc;
 
-	if (rc == ECORE_SUCCESS) {
-		vf->b_init = true;
-		p_hwfn->pf_iov_info->active_vfs[vf->relative_vf_id / 64] |=
+	vf->b_init = true;
+#ifndef REMOVE_DBG
+	p_hwfn->pf_iov_info->active_vfs[vf->relative_vf_id / 64] |=
 			(1ULL << (vf->relative_vf_id % 64));
+#endif
 
-		if (IS_LEAD_HWFN(p_hwfn))
-			p_hwfn->p_dev->p_iov_info->num_vfs++;
+	if (IS_LEAD_HWFN(p_hwfn))
+		p_hwfn->p_dev->p_iov_info->num_vfs++;
+
+#ifndef ASIC_ONLY
+	if (CHIP_REV_IS_EMUL(p_hwfn->p_dev))
+		ecore_emul_iov_init_hw_for_vf(p_hwfn, p_ptt);
+#endif
+
+	return ECORE_SUCCESS;
 	}
 
-	return rc;
+#ifndef ASIC_ONLY
+static void ecore_emul_iov_release_hw_for_vf(struct ecore_hwfn *p_hwfn,
+					  struct ecore_ptt *p_ptt)
+{
+	if (!ecore_mcp_is_init(p_hwfn)) {
+		u32 sriov_dis = ecore_rd(p_hwfn, p_ptt,
+					 PGLUE_B_REG_SR_IOV_DISABLED_REQUEST);
+
+		ecore_wr(p_hwfn, p_ptt, PGLUE_B_REG_SR_IOV_DISABLED_REQUEST_CLR,
+			 sriov_dis);
 }
+}
+#endif
 
 enum _ecore_status_t ecore_iov_release_hw_for_vf(struct ecore_hwfn *p_hwfn,
 						 struct ecore_ptt *p_ptt,
@@ -1256,6 +1322,11 @@ enum _ecore_status_t ecore_iov_release_hw_for_vf(struct ecore_hwfn *p_hwfn,
 		if (IS_LEAD_HWFN(p_hwfn))
 			p_hwfn->p_dev->p_iov_info->num_vfs--;
 	}
+
+#ifndef ASIC_ONLY
+	if (CHIP_REV_IS_EMUL(p_hwfn->p_dev))
+		ecore_emul_iov_release_hw_for_vf(p_hwfn, p_ptt);
+#endif
 
 	return ECORE_SUCCESS;
 }
@@ -1374,7 +1445,7 @@ static void ecore_iov_send_response(struct ecore_hwfn *p_hwfn,
 				    u8 status)
 {
 	struct ecore_iov_vf_mbx *mbx = &p_vf->vf_mbx;
-	struct ecore_dmae_params params;
+	struct dmae_params params;
 	u8 eng_vf_id;
 
 	mbx->reply_virt->default_resp.hdr.status = status;
@@ -1391,9 +1462,9 @@ static void ecore_iov_send_response(struct ecore_hwfn *p_hwfn,
 
 	eng_vf_id = p_vf->abs_vf_id;
 
-	OSAL_MEMSET(&params, 0, sizeof(struct ecore_dmae_params));
-	params.flags = ECORE_DMAE_FLAG_VF_DST;
-	params.dst_vfid = eng_vf_id;
+	OSAL_MEMSET(&params, 0, sizeof(params));
+	SET_FIELD(params.flags, DMAE_PARAMS_DST_VF_VALID, 0x1);
+	params.dst_vf_id = eng_vf_id;
 
 	ecore_dmae_host2host(p_hwfn, p_ptt, mbx->reply_phys + sizeof(u64),
 			     mbx->req_virt->first_tlv.reply_address +
@@ -1787,7 +1858,7 @@ static void ecore_iov_vf_mbx_acquire(struct ecore_hwfn       *p_hwfn,
 	/* fill in pfdev info */
 	pfdev_info->chip_num = p_hwfn->p_dev->chip_num;
 	pfdev_info->db_size = 0;	/* @@@ TBD MichalK Vf Doorbells */
-	pfdev_info->indices_per_sb = PIS_PER_SB_E4;
+	pfdev_info->indices_per_sb = PIS_PER_SB;
 
 	pfdev_info->capabilities = PFVF_ACQUIRE_CAP_DEFAULT_UNTAGGED |
 				   PFVF_ACQUIRE_CAP_POST_FW_OVERRIDE;
@@ -2247,10 +2318,14 @@ static void ecore_iov_vf_mbx_start_rxq_resp(struct ecore_hwfn *p_hwfn,
 	ecore_add_tlv(&mbx->offset, CHANNEL_TLV_LIST_END,
 		      sizeof(struct channel_list_end_tlv));
 
-	/* Update the TLV with the response */
+	/* Update the TLV with the response.
+	 * The VF Rx producers are located in the vf zone.
+	 */
 	if ((status == PFVF_STATUS_SUCCESS) && !b_legacy) {
 		req = &mbx->req_virt->start_rxq;
-		p_tlv->offset = PXP_VF_BAR0_START_MSDM_ZONE_B +
+
+		p_tlv->offset =
+			PXP_VF_BAR0_START_MSDM_ZONE_B +
 				OFFSETOF(struct mstorm_vf_zone,
 					 non_trigger.eth_rx_queue_producers) +
 				sizeof(struct eth_rx_prod_data) * req->rx_qid;
@@ -2350,13 +2425,15 @@ static void ecore_iov_vf_mbx_start_rxq(struct ecore_hwfn *p_hwfn,
 	if (p_cid == OSAL_NULL)
 		goto out;
 
-	/* Legacy VFs have their Producers in a different location, which they
-	 * calculate on their own and clean the producer prior to this.
+	/* The VF Rx producers are located in the vf zone.
+	 * Legacy VFs have their producers in the queue zone, but they
+	 * calculate the location by their own and clean them prior to this.
 	 */
 	if (!(vf_legacy & ECORE_QCID_LEGACY_VF_RX_PROD))
 		REG_WR(p_hwfn,
 		       GTT_BAR0_MAP_REG_MSDM_RAM +
-		       MSTORM_ETH_VF_PRODS_OFFSET(vf->abs_vf_id, req->rx_qid),
+		       MSTORM_ETH_VF_PRODS_OFFSET(vf->abs_vf_id,
+						  req->rx_qid),
 		       0);
 
 	rc = ecore_eth_rxq_start_ramrod(p_hwfn, p_cid,
@@ -3855,48 +3932,70 @@ ecore_iov_vf_flr_poll_dorq(struct ecore_hwfn *p_hwfn,
 	return ECORE_SUCCESS;
 }
 
+#define MAX_NUM_EXT_VOQS	(MAX_NUM_PORTS * NUM_OF_TCS)
+
 static enum _ecore_status_t
 ecore_iov_vf_flr_poll_pbf(struct ecore_hwfn *p_hwfn,
 			  struct ecore_vf_info *p_vf, struct ecore_ptt *p_ptt)
 {
-	u32 cons[MAX_NUM_VOQS_E4], distance[MAX_NUM_VOQS_E4];
-	int i, cnt;
+	u32 prod, cons[MAX_NUM_EXT_VOQS], distance[MAX_NUM_EXT_VOQS], tmp;
+	u8 max_phys_tcs_per_port = p_hwfn->qm_info.max_phys_tcs_per_port;
+	u8 max_ports_per_engine = p_hwfn->p_dev->num_ports_in_engine;
+	u32 prod_voq0_addr = PBF_REG_NUM_BLOCKS_ALLOCATED_PROD_VOQ0;
+	u32 cons_voq0_addr = PBF_REG_NUM_BLOCKS_ALLOCATED_CONS_VOQ0;
+	u8 port_id, tc, tc_id = 0, voq = 0;
+	int cnt;
 
 	/* Read initial consumers & producers */
-	for (i = 0; i < MAX_NUM_VOQS_E4; i++) {
-		u32 prod;
-
-		cons[i] = ecore_rd(p_hwfn, p_ptt,
-				   PBF_REG_NUM_BLOCKS_ALLOCATED_CONS_VOQ0 +
-				   i * 0x40);
+	for (port_id = 0; port_id < max_ports_per_engine; port_id++) {
+		/* "max_phys_tcs_per_port" active TCs + 1 pure LB TC */
+		for (tc = 0; tc < max_phys_tcs_per_port + 1; tc++) {
+			tc_id = (tc < max_phys_tcs_per_port) ?
+				tc :
+				PURE_LB_TC;
+			voq = VOQ(port_id, tc_id, max_phys_tcs_per_port);
+			cons[voq] = ecore_rd(p_hwfn, p_ptt,
+					     cons_voq0_addr + voq * 0x40);
 		prod = ecore_rd(p_hwfn, p_ptt,
-				PBF_REG_NUM_BLOCKS_ALLOCATED_PROD_VOQ0 +
-				i * 0x40);
-		distance[i] = prod - cons[i];
+					prod_voq0_addr + voq * 0x40);
+			distance[voq] = prod - cons[voq];
+		}
 	}
 
 	/* Wait for consumers to pass the producers */
-	i = 0;
+	port_id = 0;
+	tc = 0;
 	for (cnt = 0; cnt < 50; cnt++) {
-		for (; i < MAX_NUM_VOQS_E4; i++) {
-			u32 tmp;
-
+		for (; port_id < max_ports_per_engine; port_id++) {
+			/* "max_phys_tcs_per_port" active TCs + 1 pure LB TC */
+			for (; tc < max_phys_tcs_per_port + 1; tc++) {
+				tc_id = (tc < max_phys_tcs_per_port) ?
+					tc :
+					PURE_LB_TC;
+				voq = VOQ(port_id, tc_id,
+					  max_phys_tcs_per_port);
 			tmp = ecore_rd(p_hwfn, p_ptt,
-				       PBF_REG_NUM_BLOCKS_ALLOCATED_CONS_VOQ0 +
-				       i * 0x40);
-			if (distance[i] > tmp - cons[i])
+					       cons_voq0_addr + voq * 0x40);
+			if (distance[voq] > tmp - cons[voq])
 				break;
 		}
 
-		if (i == MAX_NUM_VOQS_E4)
+			if (tc == max_phys_tcs_per_port + 1)
+				tc = 0;
+			else
+				break;
+		}
+
+		if (port_id == max_ports_per_engine)
 			break;
 
 		OSAL_MSLEEP(20);
 	}
 
 	if (cnt == 50) {
-		DP_ERR(p_hwfn, "VF[%d] - pbf polling failed on VOQ %d\n",
-		       p_vf->abs_vf_id, i);
+		DP_ERR(p_hwfn,
+		       "VF[%d] - pbf polling failed on VOQ %d [port_id %d, tc_id %d]\n",
+		       p_vf->abs_vf_id, voq, port_id, tc_id);
 		return ECORE_TIMEOUT;
 	}
 
@@ -3996,11 +4095,11 @@ cleanup:
 enum _ecore_status_t ecore_iov_vf_flr_cleanup(struct ecore_hwfn *p_hwfn,
 					      struct ecore_ptt *p_ptt)
 {
-	u32 ack_vfs[VF_MAX_STATIC / 32];
+	u32 ack_vfs[EXT_VF_BITMAP_SIZE_IN_DWORDS];
 	enum _ecore_status_t rc = ECORE_SUCCESS;
 	u16 i;
 
-	OSAL_MEMSET(ack_vfs, 0, sizeof(u32) * (VF_MAX_STATIC / 32));
+	OSAL_MEM_ZERO(ack_vfs, EXT_VF_BITMAP_SIZE_IN_BYTES);
 
 	/* Since BRB <-> PRS interface can't be tested as part of the flr
 	 * polling due to HW limitations, simply sleep a bit. And since
@@ -4019,10 +4118,10 @@ enum _ecore_status_t
 ecore_iov_single_vf_flr_cleanup(struct ecore_hwfn *p_hwfn,
 				struct ecore_ptt *p_ptt, u16 rel_vf_id)
 {
-	u32 ack_vfs[VF_MAX_STATIC / 32];
+	u32 ack_vfs[EXT_VF_BITMAP_SIZE_IN_DWORDS];
 	enum _ecore_status_t rc = ECORE_SUCCESS;
 
-	OSAL_MEMSET(ack_vfs, 0, sizeof(u32) * (VF_MAX_STATIC / 32));
+	OSAL_MEM_ZERO(ack_vfs, EXT_VF_BITMAP_SIZE_IN_BYTES);
 
 	/* Wait instead of polling the BRB <-> PRS interface */
 	OSAL_MSLEEP(100);
@@ -4039,7 +4138,8 @@ bool ecore_iov_mark_vf_flr(struct ecore_hwfn *p_hwfn, u32 *p_disabled_vfs)
 	u16 i;
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_IOV, "Marking FLR-ed VFs\n");
-	for (i = 0; i < (VF_MAX_STATIC / 32); i++)
+
+	for (i = 0; i < VF_BITMAP_SIZE_IN_DWORDS; i++)
 		DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 			   "[%08x,...,%08x]: %08x\n",
 			   i * 32, (i + 1) * 32 - 1, p_disabled_vfs[i]);
@@ -4383,22 +4483,23 @@ u16 ecore_iov_get_next_active_vf(struct ecore_hwfn *p_hwfn, u16 rel_vf_id)
 			return i;
 
 out:
-	return MAX_NUM_VFS_E4;
+	return MAX_NUM_VFS_K2;
 }
 
 enum _ecore_status_t ecore_iov_copy_vf_msg(struct ecore_hwfn *p_hwfn,
 					   struct ecore_ptt *ptt, int vfid)
 {
-	struct ecore_dmae_params params;
+	struct dmae_params params;
 	struct ecore_vf_info *vf_info;
 
 	vf_info = ecore_iov_get_vf_info(p_hwfn, (u16)vfid, true);
 	if (!vf_info)
 		return ECORE_INVAL;
 
-	OSAL_MEMSET(&params, 0, sizeof(struct ecore_dmae_params));
-	params.flags = ECORE_DMAE_FLAG_VF_SRC | ECORE_DMAE_FLAG_COMPLETION_DST;
-	params.src_vfid = vf_info->abs_vf_id;
+	OSAL_MEMSET(&params, 0, sizeof(params));
+	SET_FIELD(params.flags, DMAE_PARAMS_SRC_VF_VALID, 0x1);
+	SET_FIELD(params.flags, DMAE_PARAMS_COMPLETION_DST, 0x1);
+	params.src_vf_id = vf_info->abs_vf_id;
 
 	if (ecore_dmae_host2host(p_hwfn, ptt,
 				 vf_info->vf_mbx.pending_req,
@@ -4784,9 +4885,9 @@ enum _ecore_status_t ecore_iov_configure_tx_rate(struct ecore_hwfn *p_hwfn,
 						 struct ecore_ptt *p_ptt,
 						 int vfid, int val)
 {
-	struct ecore_mcp_link_state *p_link;
 	struct ecore_vf_info *vf;
 	u8 abs_vp_id = 0;
+	u16 rl_id;
 	enum _ecore_status_t rc;
 
 	vf = ecore_iov_get_vf_info(p_hwfn, (u16)vfid, true);
@@ -4798,10 +4899,8 @@ enum _ecore_status_t ecore_iov_configure_tx_rate(struct ecore_hwfn *p_hwfn,
 	if (rc != ECORE_SUCCESS)
 		return rc;
 
-	p_link = &ECORE_LEADING_HWFN(p_hwfn->p_dev)->mcp_info->link_output;
-
-	return ecore_init_vport_rl(p_hwfn, p_ptt, abs_vp_id, (u32)val,
-				   p_link->speed);
+	rl_id = abs_vp_id; /* The "rl_id" is set as the "vport_id" */
+	return ecore_init_global_rl(p_hwfn, p_ptt, rl_id, (u32)val);
 }
 
 enum _ecore_status_t ecore_iov_configure_min_tx_rate(struct ecore_dev *p_dev,

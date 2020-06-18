@@ -11,8 +11,8 @@ LIB = librte_pmd_enic.a
 
 EXPORT_MAP := rte_pmd_enic_version.map
 
-LIBABIVER := 1
-
+# Experimental APIs used: rte_intr_ack
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -I$(SRCDIR)/base/
 CFLAGS += -I$(SRCDIR)
 CFLAGS += -O3
@@ -32,12 +32,12 @@ SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += enic_rxtx.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += enic_clsf.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += enic_res.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += enic_flow.c
+SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += enic_fm_flow.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += base/vnic_cq.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += base/vnic_wq.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += base/vnic_dev.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += base/vnic_intr.c
 SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += base/vnic_rq.c
-SRCS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += base/vnic_rss.c
 
 # The current implementation assumes 64-bit pointers
 CC_AVX2_SUPPORT=0

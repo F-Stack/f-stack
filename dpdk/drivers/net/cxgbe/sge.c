@@ -33,9 +33,9 @@
 #include <rte_random.h>
 #include <rte_dev.h>
 
-#include "common.h"
-#include "t4_regs.h"
-#include "t4_msg.h"
+#include "base/common.h"
+#include "base/t4_regs.h"
+#include "base/t4_msg.h"
 #include "cxgbe.h"
 
 static inline void ship_tx_pkt_coalesce_wr(struct adapter *adap,
@@ -73,7 +73,7 @@ static inline unsigned int fl_mtu_bufsize(struct adapter *adapter,
 {
 	struct sge *s = &adapter->sge;
 
-	return CXGBE_ALIGN(s->pktshift + ETHER_HDR_LEN + VLAN_HLEN + mtu,
+	return CXGBE_ALIGN(s->pktshift + RTE_ETHER_HDR_LEN + VLAN_HLEN + mtu,
 			   s->fl_align);
 }
 
@@ -397,7 +397,8 @@ static unsigned int refill_fl_usembufs(struct adapter *adap, struct sge_fl *q,
 
 		rte_mbuf_refcnt_set(mbuf, 1);
 		mbuf->data_off =
-			(uint16_t)(RTE_PTR_ALIGN((char *)mbuf->buf_addr +
+			(uint16_t)((char *)
+				   RTE_PTR_ALIGN((char *)mbuf->buf_addr +
 						 RTE_PKTMBUF_HEADROOM,
 						 adap->sge.fl_align) -
 				   (char *)mbuf->buf_addr);
@@ -1003,12 +1004,6 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 	struct cpl_tx_pkt_core *cpl;
 	struct tx_sw_desc *sd;
 	unsigned int idx = q->coalesce.idx, len = mbuf->pkt_len;
-	unsigned int max_coal_pkt_num = is_pf4(adap) ? ETH_COALESCE_PKT_NUM :
-						       ETH_COALESCE_VF_PKT_NUM;
-
-#ifdef RTE_LIBRTE_CXGBE_TPUT
-	RTE_SET_USED(nb_pkts);
-#endif
 
 	if (q->coalesce.type == 0) {
 		mc = (struct ulp_txpkt *)q->coalesce.ptr;
@@ -1081,13 +1076,15 @@ static inline int tx_do_packet_coalesce(struct sge_eth_txq *txq,
 	sd->coalesce.sgl[idx & 1] = (struct ulptx_sgl *)(cpl + 1);
 	sd->coalesce.idx = (idx & 1) + 1;
 
-	/* send the coaelsced work request if max reached */
-	if (++q->coalesce.idx == max_coal_pkt_num
-#ifndef RTE_LIBRTE_CXGBE_TPUT
-	    || q->coalesce.idx >= nb_pkts
-#endif
-	    )
+	/* Send the coalesced work request, only if max reached. However,
+	 * if lower latency is preferred over throughput, then don't wait
+	 * for coalescing the next Tx burst and send the packets now.
+	 */
+	q->coalesce.idx++;
+	if (q->coalesce.idx == adap->params.max_tx_coalesce_num ||
+	    (adap->devargs.tx_mode_latency && q->coalesce.idx >= nb_pkts))
 		ship_tx_pkt_coalesce_wr(adap, txq);
+
 	return 0;
 }
 
@@ -1127,7 +1124,7 @@ int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
 	 * The chip min packet length is 10 octets but play safe and reject
 	 * anything shorter than an Ethernet header.
 	 */
-	if (unlikely(m->pkt_len < ETHER_HDR_LEN)) {
+	if (unlikely(m->pkt_len < RTE_ETHER_HDR_LEN)) {
 out_free:
 		rte_pktmbuf_free(m);
 		return 0;
@@ -1144,7 +1141,8 @@ out_free:
 	/* align the end of coalesce WR to a 512 byte boundary */
 	txq->q.coalesce.max = (8 - (txq->q.pidx & 7)) * 8;
 
-	if (!((m->ol_flags & PKT_TX_TCP_SEG) || (m->pkt_len > ETHER_MAX_LEN))) {
+	if (!((m->ol_flags & PKT_TX_TCP_SEG) ||
+			m->pkt_len > RTE_ETHER_MAX_LEN)) {
 		if (should_tx_packet_coalesce(txq, mbuf, &cflits, adap)) {
 			if (unlikely(map_mbuf(mbuf, addr) < 0)) {
 				dev_warn(adap, "%s: mapping err for coalesce\n",
@@ -1152,7 +1150,6 @@ out_free:
 				txq->stats.mapping_err++;
 				goto out_free;
 			}
-			rte_prefetch0((volatile void *)addr);
 			return tx_do_packet_coalesce(txq, mbuf, cflits, adap,
 						     pi, addr, nb_pkts);
 		} else {
@@ -1229,7 +1226,7 @@ out_free:
 		v6 = (m->ol_flags & PKT_TX_IPV6) != 0;
 		l3hdr_len = m->l3_len;
 		l4hdr_len = m->l4_len;
-		eth_xtra_len = m->l2_len - ETHER_HDR_LEN;
+		eth_xtra_len = m->l2_len - RTE_ETHER_HDR_LEN;
 		len += sizeof(*lso);
 		wr->op_immdlen = htonl(V_FW_WR_OP(is_pf4(adap) ?
 						  FW_ETH_TX_PKT_WR :
@@ -1492,98 +1489,6 @@ alloc_sw_ring:
 
 	*phys = (uint64_t)tz->iova;
 	return tz->addr;
-}
-
-/**
- * t4_pktgl_to_mbuf_usembufs - build an mbuf from a packet gather list
- * @gl: the gather list
- *
- * Builds an mbuf from the given packet gather list.  Returns the mbuf or
- * %NULL if mbuf allocation failed.
- */
-static struct rte_mbuf *t4_pktgl_to_mbuf_usembufs(const struct pkt_gl *gl)
-{
-	/*
-	 * If there's only one mbuf fragment, just return that.
-	 */
-	if (likely(gl->nfrags == 1))
-		return gl->mbufs[0];
-
-	return NULL;
-}
-
-/**
- * t4_pktgl_to_mbuf - build an mbuf from a packet gather list
- * @gl: the gather list
- *
- * Builds an mbuf from the given packet gather list.  Returns the mbuf or
- * %NULL if mbuf allocation failed.
- */
-static struct rte_mbuf *t4_pktgl_to_mbuf(const struct pkt_gl *gl)
-{
-	return t4_pktgl_to_mbuf_usembufs(gl);
-}
-
-/**
- * t4_ethrx_handler - process an ingress ethernet packet
- * @q: the response queue that received the packet
- * @rsp: the response queue descriptor holding the RX_PKT message
- * @si: the gather list of packet fragments
- *
- * Process an ingress ethernet packet and deliver it to the stack.
- */
-int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
-		     const struct pkt_gl *si)
-{
-	struct rte_mbuf *mbuf;
-	const struct cpl_rx_pkt *pkt;
-	const struct rss_header *rss_hdr;
-	bool csum_ok;
-	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
-	u16 err_vec;
-
-	rss_hdr = (const void *)rsp;
-	pkt = (const void *)&rsp[1];
-	/* Compressed error vector is enabled for T6 only */
-	if (q->adapter->params.tp.rx_pkt_encap)
-		err_vec = G_T6_COMPR_RXERR_VEC(ntohs(pkt->err_vec));
-	else
-		err_vec = ntohs(pkt->err_vec);
-	csum_ok = pkt->csum_calc && !err_vec;
-
-	mbuf = t4_pktgl_to_mbuf(si);
-	if (unlikely(!mbuf)) {
-		rxq->stats.rx_drops++;
-		return 0;
-	}
-
-	mbuf->port = pkt->iff;
-	if (pkt->l2info & htonl(F_RXF_IP)) {
-		mbuf->packet_type = RTE_PTYPE_L3_IPV4;
-		if (unlikely(!csum_ok))
-			mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
-
-		if ((pkt->l2info & htonl(F_RXF_UDP | F_RXF_TCP)) && !csum_ok)
-			mbuf->ol_flags |= PKT_RX_L4_CKSUM_BAD;
-	} else if (pkt->l2info & htonl(F_RXF_IP6)) {
-		mbuf->packet_type = RTE_PTYPE_L3_IPV6;
-	}
-
-	mbuf->port = pkt->iff;
-
-	if (!rss_hdr->filter_tid && rss_hdr->hash_type) {
-		mbuf->ol_flags |= PKT_RX_RSS_HASH;
-		mbuf->hash.rss = ntohl(rss_hdr->hash_val);
-	}
-
-	if (pkt->vlan_ex) {
-		mbuf->ol_flags |= PKT_RX_VLAN;
-		mbuf->vlan_tci = ntohs(pkt->vlan);
-	}
-	rxq->stats.pkts++;
-	rxq->stats.rx_bytes += mbuf->pkt_len;
-
-	return 0;
 }
 
 #define CXGB4_MSG_AN ((void *)1)

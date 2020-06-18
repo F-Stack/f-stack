@@ -4,7 +4,6 @@
 
 #include <string.h>
 
-#include <cmdline_parse_etheraddr.h>
 #include <rte_class.h>
 #include <rte_compat.h>
 #include <rte_errno.h>
@@ -43,25 +42,19 @@ static int
 eth_mac_cmp(const char *key __rte_unused,
 		const char *value, void *opaque)
 {
-	int ret;
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 	const struct rte_eth_dev_data *data = opaque;
 	struct rte_eth_dev_info dev_info;
 	uint32_t index;
 
 	/* Parse devargs MAC address. */
-	/*
-	 * cannot use ether_aton_r(value, &mac)
-	 * because of include conflict with rte_ether.h
-	 */
-	ret = cmdline_parse_etheraddr(NULL, value, &mac, sizeof(mac));
-	if (ret < 0)
+	if (rte_ether_unformat_addr(value, &mac) < 0)
 		return -1; /* invalid devargs value */
 
 	/* Return 0 if devargs MAC is matching one of the device MACs. */
 	rte_eth_dev_info_get(data->port_id, &dev_info);
 	for (index = 0; index < dev_info.max_mac_addrs; index++)
-		if (is_same_ether_addr(&mac, &data->mac_addrs[index]))
+		if (rte_is_same_ether_addr(&mac, &data->mac_addrs[index]))
 			return 0;
 	return -1; /* no match */
 }

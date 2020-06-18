@@ -18,16 +18,17 @@ siena_nvram_partn_size(
 	__out			size_t *sizep)
 {
 	efx_rc_t rc;
+	efx_nvram_info_t eni = { 0 };
 
 	if ((1 << partn) & ~enp->en_u.siena.enu_partn_mask) {
 		rc = ENOTSUP;
 		goto fail1;
 	}
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, sizep,
-	    NULL, NULL, NULL)) != 0) {
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail2;
-	}
+
+	*sizep = eni.eni_partn_size;
 
 	return (0);
 
@@ -38,6 +39,29 @@ fail1:
 
 	return (rc);
 }
+
+	__checkReturn		efx_rc_t
+siena_nvram_partn_info(
+	__in			efx_nic_t *enp,
+	__in			uint32_t partn,
+	__out			efx_nvram_info_t * enip)
+{
+	efx_rc_t rc;
+
+	if ((rc = efx_mcdi_nvram_info(enp, partn, enip)) != 0)
+		goto fail1;
+
+	if (enip->eni_write_size == 0)
+		enip->eni_write_size = SIENA_NVRAM_CHUNK;
+
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
 
 	__checkReturn		efx_rc_t
 siena_nvram_partn_lock(
@@ -150,6 +174,7 @@ siena_nvram_partn_unlock(
 	__out_opt		uint32_t *verify_resultp)
 {
 	boolean_t reboot;
+	uint32_t flags = 0;
 	efx_rc_t rc;
 
 	/*
@@ -160,7 +185,8 @@ siena_nvram_partn_unlock(
 		    partn == MC_CMD_NVRAM_TYPE_PHY_PORT1 ||
 		    partn == MC_CMD_NVRAM_TYPE_DISABLED_CALLISTO);
 
-	rc = efx_mcdi_nvram_update_finish(enp, partn, reboot, verify_resultp);
+	rc = efx_mcdi_nvram_update_finish(enp, partn, reboot, flags,
+		    verify_resultp);
 	if (rc != 0)
 		goto fail1;
 

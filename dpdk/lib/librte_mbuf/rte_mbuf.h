@@ -40,367 +40,13 @@
 #include <rte_atomic.h>
 #include <rte_prefetch.h>
 #include <rte_branch_prediction.h>
+#include <rte_byteorder.h>
 #include <rte_mbuf_ptype.h>
+#include <rte_mbuf_core.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/*
- * Packet Offload Features Flags. It also carry packet type information.
- * Critical resources. Both rx/tx shared these bits. Be cautious on any change
- *
- * - RX flags start at bit position zero, and get added to the left of previous
- *   flags.
- * - The most-significant 3 bits are reserved for generic mbuf flags
- * - TX flags therefore start at bit position 60 (i.e. 63-3), and new flags get
- *   added to the right of the previously defined flags i.e. they should count
- *   downwards, not upwards.
- *
- * Keep these flags synchronized with rte_get_rx_ol_flag_name() and
- * rte_get_tx_ol_flag_name().
- */
-
-/**
- * The RX packet is a 802.1q VLAN packet, and the tci has been
- * saved in in mbuf->vlan_tci.
- * If the flag PKT_RX_VLAN_STRIPPED is also present, the VLAN
- * header has been stripped from mbuf data, else it is still
- * present.
- */
-#define PKT_RX_VLAN          (1ULL << 0)
-
-#define PKT_RX_RSS_HASH      (1ULL << 1)  /**< RX packet with RSS hash result. */
-#define PKT_RX_FDIR          (1ULL << 2)  /**< RX packet with FDIR match indicate. */
-
-/**
- * Deprecated.
- * Checking this flag alone is deprecated: check the 2 bits of
- * PKT_RX_L4_CKSUM_MASK.
- * This flag was set when the L4 checksum of a packet was detected as
- * wrong by the hardware.
- */
-#define PKT_RX_L4_CKSUM_BAD  (1ULL << 3)
-
-/**
- * Deprecated.
- * Checking this flag alone is deprecated: check the 2 bits of
- * PKT_RX_IP_CKSUM_MASK.
- * This flag was set when the IP checksum of a packet was detected as
- * wrong by the hardware.
- */
-#define PKT_RX_IP_CKSUM_BAD  (1ULL << 4)
-
-#define PKT_RX_EIP_CKSUM_BAD (1ULL << 5)  /**< External IP header checksum error. */
-
-/**
- * A vlan has been stripped by the hardware and its tci is saved in
- * mbuf->vlan_tci. This can only happen if vlan stripping is enabled
- * in the RX configuration of the PMD.
- * When PKT_RX_VLAN_STRIPPED is set, PKT_RX_VLAN must also be set.
- */
-#define PKT_RX_VLAN_STRIPPED (1ULL << 6)
-
-/**
- * Mask of bits used to determine the status of RX IP checksum.
- * - PKT_RX_IP_CKSUM_UNKNOWN: no information about the RX IP checksum
- * - PKT_RX_IP_CKSUM_BAD: the IP checksum in the packet is wrong
- * - PKT_RX_IP_CKSUM_GOOD: the IP checksum in the packet is valid
- * - PKT_RX_IP_CKSUM_NONE: the IP checksum is not correct in the packet
- *   data, but the integrity of the IP header is verified.
- */
-#define PKT_RX_IP_CKSUM_MASK ((1ULL << 4) | (1ULL << 7))
-
-#define PKT_RX_IP_CKSUM_UNKNOWN 0
-#define PKT_RX_IP_CKSUM_BAD     (1ULL << 4)
-#define PKT_RX_IP_CKSUM_GOOD    (1ULL << 7)
-#define PKT_RX_IP_CKSUM_NONE    ((1ULL << 4) | (1ULL << 7))
-
-/**
- * Mask of bits used to determine the status of RX L4 checksum.
- * - PKT_RX_L4_CKSUM_UNKNOWN: no information about the RX L4 checksum
- * - PKT_RX_L4_CKSUM_BAD: the L4 checksum in the packet is wrong
- * - PKT_RX_L4_CKSUM_GOOD: the L4 checksum in the packet is valid
- * - PKT_RX_L4_CKSUM_NONE: the L4 checksum is not correct in the packet
- *   data, but the integrity of the L4 data is verified.
- */
-#define PKT_RX_L4_CKSUM_MASK ((1ULL << 3) | (1ULL << 8))
-
-#define PKT_RX_L4_CKSUM_UNKNOWN 0
-#define PKT_RX_L4_CKSUM_BAD     (1ULL << 3)
-#define PKT_RX_L4_CKSUM_GOOD    (1ULL << 8)
-#define PKT_RX_L4_CKSUM_NONE    ((1ULL << 3) | (1ULL << 8))
-
-#define PKT_RX_IEEE1588_PTP  (1ULL << 9)  /**< RX IEEE1588 L2 Ethernet PT Packet. */
-#define PKT_RX_IEEE1588_TMST (1ULL << 10) /**< RX IEEE1588 L2/L4 timestamped packet.*/
-#define PKT_RX_FDIR_ID       (1ULL << 13) /**< FD id reported if FDIR match. */
-#define PKT_RX_FDIR_FLX      (1ULL << 14) /**< Flexible bytes reported if FDIR match. */
-
-/**
- * The 2 vlans have been stripped by the hardware and their tci are
- * saved in mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
- * This can only happen if vlan stripping is enabled in the RX
- * configuration of the PMD.
- * When PKT_RX_QINQ_STRIPPED is set, the flags (PKT_RX_VLAN |
- * PKT_RX_VLAN_STRIPPED | PKT_RX_QINQ) must also be set.
- */
-#define PKT_RX_QINQ_STRIPPED (1ULL << 15)
-
-/**
- * When packets are coalesced by a hardware or virtual driver, this flag
- * can be set in the RX mbuf, meaning that the m->tso_segsz field is
- * valid and is set to the segment size of original packets.
- */
-#define PKT_RX_LRO           (1ULL << 16)
-
-/**
- * Indicate that the timestamp field in the mbuf is valid.
- */
-#define PKT_RX_TIMESTAMP     (1ULL << 17)
-
-/**
- * Indicate that security offload processing was applied on the RX packet.
- */
-#define PKT_RX_SEC_OFFLOAD		(1ULL << 18)
-
-/**
- * Indicate that security offload processing failed on the RX packet.
- */
-#define PKT_RX_SEC_OFFLOAD_FAILED  	(1ULL << 19)
-
-/**
- * The RX packet is a double VLAN, and the outer tci has been
- * saved in in mbuf->vlan_tci_outer. If PKT_RX_QINQ set, PKT_RX_VLAN
- * also should be set and inner tci should be saved to mbuf->vlan_tci.
- * If the flag PKT_RX_QINQ_STRIPPED is also present, both VLANs
- * headers have been stripped from mbuf data, else they are still
- * present.
- */
-#define PKT_RX_QINQ          (1ULL << 20)
-
-/**
- * Mask of bits used to determine the status of outer RX L4 checksum.
- * - PKT_RX_OUTER_L4_CKSUM_UNKNOWN: no info about the outer RX L4 checksum
- * - PKT_RX_OUTER_L4_CKSUM_BAD: the outer L4 checksum in the packet is wrong
- * - PKT_RX_OUTER_L4_CKSUM_GOOD: the outer L4 checksum in the packet is valid
- * - PKT_RX_OUTER_L4_CKSUM_INVALID: invalid outer L4 checksum state.
- *
- * The detection of PKT_RX_OUTER_L4_CKSUM_GOOD shall be based on the given
- * HW capability, At minimum, the PMD should support
- * PKT_RX_OUTER_L4_CKSUM_UNKNOWN and PKT_RX_OUTER_L4_CKSUM_BAD states
- * if the DEV_RX_OFFLOAD_OUTER_UDP_CKSUM offload is available.
- */
-#define PKT_RX_OUTER_L4_CKSUM_MASK	((1ULL << 21) | (1ULL << 22))
-
-#define PKT_RX_OUTER_L4_CKSUM_UNKNOWN	0
-#define PKT_RX_OUTER_L4_CKSUM_BAD	(1ULL << 21)
-#define PKT_RX_OUTER_L4_CKSUM_GOOD	(1ULL << 22)
-#define PKT_RX_OUTER_L4_CKSUM_INVALID	((1ULL << 21) | (1ULL << 22))
-
-/* add new RX flags here */
-
-/* add new TX flags here */
-
-/**
- * Indicate that the metadata field in the mbuf is in use.
- */
-#define PKT_TX_METADATA	(1ULL << 40)
-
-/**
- * Outer UDP checksum offload flag. This flag is used for enabling
- * outer UDP checksum in PMD. To use outer UDP checksum, the user needs to
- * 1) Enable the following in mbuf,
- * a) Fill outer_l2_len and outer_l3_len in mbuf.
- * b) Set the PKT_TX_OUTER_UDP_CKSUM flag.
- * c) Set the PKT_TX_OUTER_IPV4 or PKT_TX_OUTER_IPV6 flag.
- * 2) Configure DEV_TX_OFFLOAD_OUTER_UDP_CKSUM offload flag.
- */
-#define PKT_TX_OUTER_UDP_CKSUM     (1ULL << 41)
-
-/**
- * UDP Fragmentation Offload flag. This flag is used for enabling UDP
- * fragmentation in SW or in HW. When use UFO, mbuf->tso_segsz is used
- * to store the MSS of UDP fragments.
- */
-#define PKT_TX_UDP_SEG	(1ULL << 42)
-
-/**
- * Request security offload processing on the TX packet.
- */
-#define PKT_TX_SEC_OFFLOAD 		(1ULL << 43)
-
-/**
- * Offload the MACsec. This flag must be set by the application to enable
- * this offload feature for a packet to be transmitted.
- */
-#define PKT_TX_MACSEC        (1ULL << 44)
-
-/**
- * Bits 45:48 used for the tunnel type.
- * The tunnel type must be specified for TSO or checksum on the inner part
- * of tunnel packets.
- * These flags can be used with PKT_TX_TCP_SEG for TSO, or PKT_TX_xxx_CKSUM.
- * The mbuf fields for inner and outer header lengths are required:
- * outer_l2_len, outer_l3_len, l2_len, l3_len, l4_len and tso_segsz for TSO.
- */
-#define PKT_TX_TUNNEL_VXLAN   (0x1ULL << 45)
-#define PKT_TX_TUNNEL_GRE     (0x2ULL << 45)
-#define PKT_TX_TUNNEL_IPIP    (0x3ULL << 45)
-#define PKT_TX_TUNNEL_GENEVE  (0x4ULL << 45)
-/** TX packet with MPLS-in-UDP RFC 7510 header. */
-#define PKT_TX_TUNNEL_MPLSINUDP (0x5ULL << 45)
-#define PKT_TX_TUNNEL_VXLAN_GPE (0x6ULL << 45)
-/**
- * Generic IP encapsulated tunnel type, used for TSO and checksum offload.
- * It can be used for tunnels which are not standards or listed above.
- * It is preferred to use specific tunnel flags like PKT_TX_TUNNEL_GRE
- * or PKT_TX_TUNNEL_IPIP if possible.
- * The ethdev must be configured with DEV_TX_OFFLOAD_IP_TNL_TSO.
- * Outer and inner checksums are done according to the existing flags like
- * PKT_TX_xxx_CKSUM.
- * Specific tunnel headers that contain payload length, sequence id
- * or checksum are not expected to be updated.
- */
-#define PKT_TX_TUNNEL_IP (0xDULL << 45)
-/**
- * Generic UDP encapsulated tunnel type, used for TSO and checksum offload.
- * UDP tunnel type implies outer IP layer.
- * It can be used for tunnels which are not standards or listed above.
- * It is preferred to use specific tunnel flags like PKT_TX_TUNNEL_VXLAN
- * if possible.
- * The ethdev must be configured with DEV_TX_OFFLOAD_UDP_TNL_TSO.
- * Outer and inner checksums are done according to the existing flags like
- * PKT_TX_xxx_CKSUM.
- * Specific tunnel headers that contain payload length, sequence id
- * or checksum are not expected to be updated.
- */
-#define PKT_TX_TUNNEL_UDP (0xEULL << 45)
-/* add new TX TUNNEL type here */
-#define PKT_TX_TUNNEL_MASK    (0xFULL << 45)
-
-/**
- * Double VLAN insertion (QinQ) request to driver, driver may offload the
- * insertion based on device capability.
- * mbuf 'vlan_tci' & 'vlan_tci_outer' must be valid when this flag is set.
- */
-#define PKT_TX_QINQ        (1ULL << 49)
-/* this old name is deprecated */
-#define PKT_TX_QINQ_PKT    PKT_TX_QINQ
-
-/**
- * TCP segmentation offload. To enable this offload feature for a
- * packet to be transmitted on hardware supporting TSO:
- *  - set the PKT_TX_TCP_SEG flag in mbuf->ol_flags (this flag implies
- *    PKT_TX_TCP_CKSUM)
- *  - set the flag PKT_TX_IPV4 or PKT_TX_IPV6
- *  - if it's IPv4, set the PKT_TX_IP_CKSUM flag
- *  - fill the mbuf offload information: l2_len, l3_len, l4_len, tso_segsz
- */
-#define PKT_TX_TCP_SEG       (1ULL << 50)
-
-#define PKT_TX_IEEE1588_TMST (1ULL << 51) /**< TX IEEE1588 packet to timestamp. */
-
-/**
- * Bits 52+53 used for L4 packet type with checksum enabled: 00: Reserved,
- * 01: TCP checksum, 10: SCTP checksum, 11: UDP checksum. To use hardware
- * L4 checksum offload, the user needs to:
- *  - fill l2_len and l3_len in mbuf
- *  - set the flags PKT_TX_TCP_CKSUM, PKT_TX_SCTP_CKSUM or PKT_TX_UDP_CKSUM
- *  - set the flag PKT_TX_IPV4 or PKT_TX_IPV6
- */
-#define PKT_TX_L4_NO_CKSUM   (0ULL << 52) /**< Disable L4 cksum of TX pkt. */
-#define PKT_TX_TCP_CKSUM     (1ULL << 52) /**< TCP cksum of TX pkt. computed by NIC. */
-#define PKT_TX_SCTP_CKSUM    (2ULL << 52) /**< SCTP cksum of TX pkt. computed by NIC. */
-#define PKT_TX_UDP_CKSUM     (3ULL << 52) /**< UDP cksum of TX pkt. computed by NIC. */
-#define PKT_TX_L4_MASK       (3ULL << 52) /**< Mask for L4 cksum offload request. */
-
-/**
- * Offload the IP checksum in the hardware. The flag PKT_TX_IPV4 should
- * also be set by the application, although a PMD will only check
- * PKT_TX_IP_CKSUM.
- *  - fill the mbuf offload information: l2_len, l3_len
- */
-#define PKT_TX_IP_CKSUM      (1ULL << 54)
-
-/**
- * Packet is IPv4. This flag must be set when using any offload feature
- * (TSO, L3 or L4 checksum) to tell the NIC that the packet is an IPv4
- * packet. If the packet is a tunneled packet, this flag is related to
- * the inner headers.
- */
-#define PKT_TX_IPV4          (1ULL << 55)
-
-/**
- * Packet is IPv6. This flag must be set when using an offload feature
- * (TSO or L4 checksum) to tell the NIC that the packet is an IPv6
- * packet. If the packet is a tunneled packet, this flag is related to
- * the inner headers.
- */
-#define PKT_TX_IPV6          (1ULL << 56)
-
-/**
- * VLAN tag insertion request to driver, driver may offload the insertion
- * based on the device capability.
- * mbuf 'vlan_tci' field must be valid when this flag is set.
- */
-#define PKT_TX_VLAN          (1ULL << 57)
-/* this old name is deprecated */
-#define PKT_TX_VLAN_PKT      PKT_TX_VLAN
-
-/**
- * Offload the IP checksum of an external header in the hardware. The
- * flag PKT_TX_OUTER_IPV4 should also be set by the application, although
- * a PMD will only check PKT_TX_OUTER_IP_CKSUM.
- *  - fill the mbuf offload information: outer_l2_len, outer_l3_len
- */
-#define PKT_TX_OUTER_IP_CKSUM   (1ULL << 58)
-
-/**
- * Packet outer header is IPv4. This flag must be set when using any
- * outer offload feature (L3 or L4 checksum) to tell the NIC that the
- * outer header of the tunneled packet is an IPv4 packet.
- */
-#define PKT_TX_OUTER_IPV4   (1ULL << 59)
-
-/**
- * Packet outer header is IPv6. This flag must be set when using any
- * outer offload feature (L4 checksum) to tell the NIC that the outer
- * header of the tunneled packet is an IPv6 packet.
- */
-#define PKT_TX_OUTER_IPV6    (1ULL << 60)
-
-/**
- * Bitmask of all supported packet Tx offload features flags,
- * which can be set for packet.
- */
-#define PKT_TX_OFFLOAD_MASK (    \
-		PKT_TX_OUTER_IPV6 |	 \
-		PKT_TX_OUTER_IPV4 |	 \
-		PKT_TX_OUTER_IP_CKSUM |  \
-		PKT_TX_VLAN_PKT |        \
-		PKT_TX_IPV6 |		 \
-		PKT_TX_IPV4 |		 \
-		PKT_TX_IP_CKSUM |        \
-		PKT_TX_L4_MASK |         \
-		PKT_TX_IEEE1588_TMST |	 \
-		PKT_TX_TCP_SEG |         \
-		PKT_TX_QINQ_PKT |        \
-		PKT_TX_TUNNEL_MASK |	 \
-		PKT_TX_MACSEC |		 \
-		PKT_TX_SEC_OFFLOAD |	 \
-		PKT_TX_UDP_SEG |	 \
-		PKT_TX_OUTER_UDP_CKSUM | \
-		PKT_TX_METADATA)
-
-/**
- * Mbuf having an external buffer attached. shinfo in mbuf must be filled.
- */
-#define EXT_ATTACHED_MBUF    (1ULL << 61)
-
-#define IND_ATTACHED_MBUF    (1ULL << 62) /**< Indirect attached mbuf */
-
-/** Alignment constraint of mbuf private area. */
-#define RTE_MBUF_PRIV_ALIGN 8
 
 /**
  * Get the name of a RX offload flag
@@ -451,234 +97,6 @@ const char *rte_get_tx_ol_flag_name(uint64_t mask);
  *   0 on success, (-1) on error.
  */
 int rte_get_tx_ol_flag_list(uint64_t mask, char *buf, size_t buflen);
-
-/**
- * Some NICs need at least 2KB buffer to RX standard Ethernet frame without
- * splitting it into multiple segments.
- * So, for mbufs that planned to be involved into RX/TX, the recommended
- * minimal buffer length is 2KB + RTE_PKTMBUF_HEADROOM.
- */
-#define	RTE_MBUF_DEFAULT_DATAROOM	2048
-#define	RTE_MBUF_DEFAULT_BUF_SIZE	\
-	(RTE_MBUF_DEFAULT_DATAROOM + RTE_PKTMBUF_HEADROOM)
-
-/* define a set of marker types that can be used to refer to set points in the
- * mbuf */
-__extension__
-typedef void    *MARKER[0];   /**< generic marker for a point in a structure */
-__extension__
-typedef uint8_t  MARKER8[0];  /**< generic marker with 1B alignment */
-__extension__
-typedef uint64_t MARKER64[0]; /**< marker that allows us to overwrite 8 bytes
-                               * with a single assignment */
-
-/**
- * The generic rte_mbuf, containing a packet mbuf.
- */
-struct rte_mbuf {
-	MARKER cacheline0;
-
-	void *buf_addr;           /**< Virtual address of segment buffer. */
-	/**
-	 * Physical address of segment buffer.
-	 * Force alignment to 8-bytes, so as to ensure we have the exact
-	 * same mbuf cacheline0 layout for 32-bit and 64-bit. This makes
-	 * working on vector drivers easier.
-	 */
-	RTE_STD_C11
-	union {
-		rte_iova_t buf_iova;
-		rte_iova_t buf_physaddr; /**< deprecated */
-	} __rte_aligned(sizeof(rte_iova_t));
-
-	/* next 8 bytes are initialised on RX descriptor rearm */
-	MARKER64 rearm_data;
-	uint16_t data_off;
-
-	/**
-	 * Reference counter. Its size should at least equal to the size
-	 * of port field (16 bits), to support zero-copy broadcast.
-	 * It should only be accessed using the following functions:
-	 * rte_mbuf_refcnt_update(), rte_mbuf_refcnt_read(), and
-	 * rte_mbuf_refcnt_set(). The functionality of these functions (atomic,
-	 * or non-atomic) is controlled by the CONFIG_RTE_MBUF_REFCNT_ATOMIC
-	 * config option.
-	 */
-	RTE_STD_C11
-	union {
-		rte_atomic16_t refcnt_atomic; /**< Atomically accessed refcnt */
-		uint16_t refcnt;              /**< Non-atomically accessed refcnt */
-	};
-	uint16_t nb_segs;         /**< Number of segments. */
-
-	/** Input port (16 bits to support more than 256 virtual ports).
-	 * The event eth Tx adapter uses this field to specify the output port.
-	 */
-	uint16_t port;
-
-	uint64_t ol_flags;        /**< Offload features. */
-
-	/* remaining bytes are set on RX when pulling packet from descriptor */
-	MARKER rx_descriptor_fields1;
-
-	/*
-	 * The packet type, which is the combination of outer/inner L2, L3, L4
-	 * and tunnel types. The packet_type is about data really present in the
-	 * mbuf. Example: if vlan stripping is enabled, a received vlan packet
-	 * would have RTE_PTYPE_L2_ETHER and not RTE_PTYPE_L2_VLAN because the
-	 * vlan is stripped from the data.
-	 */
-	RTE_STD_C11
-	union {
-		uint32_t packet_type; /**< L2/L3/L4 and tunnel information. */
-		struct {
-			uint32_t l2_type:4; /**< (Outer) L2 type. */
-			uint32_t l3_type:4; /**< (Outer) L3 type. */
-			uint32_t l4_type:4; /**< (Outer) L4 type. */
-			uint32_t tun_type:4; /**< Tunnel type. */
-			RTE_STD_C11
-			union {
-				uint8_t inner_esp_next_proto;
-				/**< ESP next protocol type, valid if
-				 * RTE_PTYPE_TUNNEL_ESP tunnel type is set
-				 * on both Tx and Rx.
-				 */
-				__extension__
-				struct {
-					uint8_t inner_l2_type:4;
-					/**< Inner L2 type. */
-					uint8_t inner_l3_type:4;
-					/**< Inner L3 type. */
-				};
-			};
-			uint32_t inner_l4_type:4; /**< Inner L4 type. */
-		};
-	};
-
-	uint32_t pkt_len;         /**< Total pkt len: sum of all segments. */
-	uint16_t data_len;        /**< Amount of data in segment buffer. */
-	/** VLAN TCI (CPU order), valid if PKT_RX_VLAN is set. */
-	uint16_t vlan_tci;
-
-	RTE_STD_C11
-	union {
-		union {
-			uint32_t rss;     /**< RSS hash result if RSS enabled */
-			struct {
-				union {
-					struct {
-						uint16_t hash;
-						uint16_t id;
-					};
-					uint32_t lo;
-					/**< Second 4 flexible bytes */
-				};
-				uint32_t hi;
-				/**< First 4 flexible bytes or FD ID, dependent
-				 * on PKT_RX_FDIR_* flag in ol_flags.
-				 */
-			} fdir;	/**< Filter identifier if FDIR enabled */
-			struct {
-				uint32_t lo;
-				uint32_t hi;
-				/**< The event eth Tx adapter uses this field
-				 * to store Tx queue id.
-				 * @see rte_event_eth_tx_adapter_txq_set()
-				 */
-			} sched;          /**< Hierarchical scheduler */
-			/**< User defined tags. See rte_distributor_process() */
-			uint32_t usr;
-		} hash;                   /**< hash information */
-		struct {
-			/**
-			 * Application specific metadata value
-			 * for egress flow rule match.
-			 * Valid if PKT_TX_METADATA is set.
-			 * Located here to allow conjunct use
-			 * with hash.sched.hi.
-			 */
-			uint32_t tx_metadata;
-			uint32_t reserved;
-		};
-	};
-
-	/** Outer VLAN TCI (CPU order), valid if PKT_RX_QINQ is set. */
-	uint16_t vlan_tci_outer;
-
-	uint16_t buf_len;         /**< Length of segment buffer. */
-
-	/** Valid if PKT_RX_TIMESTAMP is set. The unit and time reference
-	 * are not normalized but are always the same for a given port.
-	 */
-	uint64_t timestamp;
-
-	/* second cache line - fields only used in slow path or on TX */
-	MARKER cacheline1 __rte_cache_min_aligned;
-
-	RTE_STD_C11
-	union {
-		void *userdata;   /**< Can be used for external metadata */
-		uint64_t udata64; /**< Allow 8-byte userdata on 32-bit */
-	};
-
-	struct rte_mempool *pool; /**< Pool from which mbuf was allocated. */
-	struct rte_mbuf *next;    /**< Next segment of scattered packet. */
-
-	/* fields to support TX offloads */
-	RTE_STD_C11
-	union {
-		uint64_t tx_offload;       /**< combined for easy fetch */
-		__extension__
-		struct {
-			uint64_t l2_len:7;
-			/**< L2 (MAC) Header Length for non-tunneling pkt.
-			 * Outer_L4_len + ... + Inner_L2_len for tunneling pkt.
-			 */
-			uint64_t l3_len:9; /**< L3 (IP) Header Length. */
-			uint64_t l4_len:8; /**< L4 (TCP/UDP) Header Length. */
-			uint64_t tso_segsz:16; /**< TCP TSO segment size */
-
-			/* fields for TX offloading of tunnels */
-			uint64_t outer_l3_len:9; /**< Outer L3 (IP) Hdr Length. */
-			uint64_t outer_l2_len:7; /**< Outer L2 (MAC) Hdr Length. */
-
-			/* uint64_t unused:8; */
-		};
-	};
-
-	/** Size of the application private data. In case of an indirect
-	 * mbuf, it stores the direct mbuf private data size. */
-	uint16_t priv_size;
-
-	/** Timesync flags for use with IEEE1588. */
-	uint16_t timesync;
-
-	/** Sequence number. See also rte_reorder_insert(). */
-	uint32_t seqn;
-
-	/** Shared data for external buffer attached to mbuf. See
-	 * rte_pktmbuf_attach_extbuf().
-	 */
-	struct rte_mbuf_ext_shared_info *shinfo;
-
-} __rte_cache_aligned;
-
-/**
- * Function typedef of callback to free externally attached buffer.
- */
-typedef void (*rte_mbuf_extbuf_free_callback_t)(void *addr, void *opaque);
-
-/**
- * Shared data at the end of an external buffer.
- */
-struct rte_mbuf_ext_shared_info {
-	rte_mbuf_extbuf_free_callback_t free_cb; /**< Free callback function */
-	void *fcb_opaque;                        /**< Free callback argument */
-	rte_atomic16_t refcnt_atomic;        /**< Atomically accessed refcnt */
-};
-
-/**< Maximum number of nb_segs allowed. */
-#define RTE_MBUF_MAX_NB_SEGS	UINT16_MAX
 
 /**
  * Prefetch the first part of the mbuf
@@ -781,7 +199,64 @@ rte_mbuf_from_indirect(struct rte_mbuf *mi)
 }
 
 /**
- * Return the buffer address embedded in the given mbuf.
+ * Return address of buffer embedded in the given mbuf.
+ *
+ * The return value shall be same as mb->buf_addr if the mbuf is already
+ * initialized and direct. However, this API is useful if mempool of the
+ * mbuf is already known because it doesn't need to access mbuf contents in
+ * order to get the mempool pointer.
+ *
+ * @warning
+ * @b EXPERIMENTAL: This API may change without prior notice.
+ * This will be used by rte_mbuf_to_baddr() which has redundant code once
+ * experimental tag is removed.
+ *
+ * @param mb
+ *   The pointer to the mbuf.
+ * @param mp
+ *   The pointer to the mempool of the mbuf.
+ * @return
+ *   The pointer of the mbuf buffer.
+ */
+__rte_experimental
+static inline char *
+rte_mbuf_buf_addr(struct rte_mbuf *mb, struct rte_mempool *mp)
+{
+	return (char *)mb + sizeof(*mb) + rte_pktmbuf_priv_size(mp);
+}
+
+/**
+ * Return the default address of the beginning of the mbuf data.
+ *
+ * @warning
+ * @b EXPERIMENTAL: This API may change without prior notice.
+ *
+ * @param mb
+ *   The pointer to the mbuf.
+ * @return
+ *   The pointer of the beginning of the mbuf data.
+ */
+__rte_experimental
+static inline char *
+rte_mbuf_data_addr_default(__rte_unused struct rte_mbuf *mb)
+{
+	/* gcc complains about calling this experimental function even
+	 * when not using it. Hide it with ALLOW_EXPERIMENTAL_API.
+	 */
+#ifdef ALLOW_EXPERIMENTAL_API
+	return rte_mbuf_buf_addr(mb, mb->pool) + RTE_PKTMBUF_HEADROOM;
+#else
+	return NULL;
+#endif
+}
+
+/**
+ * Return address of buffer embedded in the given mbuf.
+ *
+ * @note: Accessing mempool pointer of a mbuf is expensive because the
+ * pointer is stored in the 2nd cache line of mbuf. If mempool is known, it
+ * is better not to reference the mempool pointer in mbuf but calling
+ * rte_mbuf_buf_addr() would be more efficient.
  *
  * @param md
  *   The pointer to the mbuf.
@@ -791,9 +266,13 @@ rte_mbuf_from_indirect(struct rte_mbuf *mi)
 static inline char *
 rte_mbuf_to_baddr(struct rte_mbuf *md)
 {
+#ifdef ALLOW_EXPERIMENTAL_API
+	return rte_mbuf_buf_addr(md, md->pool);
+#else
 	char *buffer_addr;
 	buffer_addr = (char *)md + sizeof(*md) + rte_pktmbuf_priv_size(md->pool);
 	return buffer_addr;
+#endif
 }
 
 /**
@@ -808,42 +287,12 @@ rte_mbuf_to_baddr(struct rte_mbuf *md)
  * @return
  *   The starting address of the private data area of the given mbuf.
  */
-static inline void * __rte_experimental
+__rte_experimental
+static inline void *
 rte_mbuf_to_priv(struct rte_mbuf *m)
 {
 	return RTE_PTR_ADD(m, sizeof(struct rte_mbuf));
 }
-
-/**
- * Returns TRUE if given mbuf is cloned by mbuf indirection, or FALSE
- * otherwise.
- *
- * If a mbuf has its data in another mbuf and references it by mbuf
- * indirection, this mbuf can be defined as a cloned mbuf.
- */
-#define RTE_MBUF_CLONED(mb)     ((mb)->ol_flags & IND_ATTACHED_MBUF)
-
-/**
- * Deprecated.
- * Use RTE_MBUF_CLONED().
- */
-#define RTE_MBUF_INDIRECT(mb)   RTE_MBUF_CLONED(mb)
-
-/**
- * Returns TRUE if given mbuf has an external buffer, or FALSE otherwise.
- *
- * External buffer is a user-provided anonymous buffer.
- */
-#define RTE_MBUF_HAS_EXTBUF(mb) ((mb)->ol_flags & EXT_ATTACHED_MBUF)
-
-/**
- * Returns TRUE if given mbuf is direct, or FALSE otherwise.
- *
- * If a mbuf embeds its own data after the rte_mbuf structure, this mbuf
- * can be defined as a direct mbuf.
- */
-#define RTE_MBUF_DIRECT(mb) \
-	(!((mb)->ol_flags & (IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF)))
 
 /**
  * Private data in case of pktmbuf pool.
@@ -854,6 +303,7 @@ rte_mbuf_to_priv(struct rte_mbuf *m)
 struct rte_pktmbuf_pool_private {
 	uint16_t mbuf_data_room_size; /**< Size of data space in each mbuf. */
 	uint16_t mbuf_priv_size;      /**< Size of private area in each mbuf. */
+	uint32_t flags; /**< reserved for future use. */
 };
 
 #ifdef RTE_LIBRTE_MBUF_DEBUG
@@ -1044,6 +494,29 @@ rte_mbuf_ext_refcnt_update(struct rte_mbuf_ext_shared_info *shinfo,
  */
 void
 rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header);
+
+/**
+ * Sanity checks on a mbuf.
+ *
+ * Almost like rte_mbuf_sanity_check(), but this function gives the reason
+ * if corruption is detected rather than panic.
+ *
+ * @param m
+ *   The mbuf to be checked.
+ * @param is_header
+ *   True if the mbuf is a packet header, false if it is a sub-segment
+ *   of a packet (in this case, some fields like nb_segs are not checked)
+ * @param reason
+ *   A reference to a string pointer where to store the reason why a mbuf is
+ *   considered invalid.
+ * @return
+ *   - 0 if no issue has been found, reason is left untouched.
+ *   - -1 if a problem is detected, reason then points to a string describing
+ *     the reason why the mbuf is deemed invalid.
+ */
+__rte_experimental
+int rte_mbuf_check(const struct rte_mbuf *m, int is_header,
+		   const char **reason);
 
 #define MBUF_RAW_ALLOC_CHECK(m) do {				\
 	RTE_ASSERT(rte_mbuf_refcnt_read(m) == 1);		\
@@ -1488,13 +961,6 @@ rte_pktmbuf_ext_shinfo_init_helper(void *buf_addr, uint16_t *buf_len,
  *   attached with appropriate free callback and its IO address.
  * - Smaller metadata is required to maintain shared data such as refcnt.
  *
- * @warning
- * @b EXPERIMENTAL: This API may change without prior notice.
- * Once external buffer is enabled by allowing experimental API,
- * ``RTE_MBUF_DIRECT()`` and ``RTE_MBUF_INDIRECT()`` are no longer
- * exclusive. A mbuf can be considered direct if it is neither indirect nor
- * having external buffer.
- *
  * @param m
  *   The pointer to the mbuf.
  * @param buf_addr
@@ -1506,7 +972,7 @@ rte_pktmbuf_ext_shinfo_init_helper(void *buf_addr, uint16_t *buf_len,
  * @param shinfo
  *   User-provided memory for shared data of the external buffer.
  */
-static inline void __rte_experimental
+static inline void
 rte_pktmbuf_attach_extbuf(struct rte_mbuf *m, void *buf_addr,
 	rte_iova_t buf_iova, uint16_t buf_len,
 	struct rte_mbuf_ext_shared_info *shinfo)
@@ -1534,6 +1000,34 @@ rte_pktmbuf_attach_extbuf(struct rte_mbuf *m, void *buf_addr,
  *   The mbuf having external buffer.
  */
 #define rte_pktmbuf_detach_extbuf(m) rte_pktmbuf_detach(m)
+
+/**
+ * Copy dynamic fields from msrc to mdst.
+ *
+ * @param mdst
+ *   The destination mbuf.
+ * @param msrc
+ *   The source mbuf.
+ */
+static inline void
+rte_mbuf_dynfield_copy(struct rte_mbuf *mdst, const struct rte_mbuf *msrc)
+{
+	memcpy(&mdst->dynfield1, msrc->dynfield1, sizeof(mdst->dynfield1));
+}
+
+/* internal */
+static inline void
+__rte_pktmbuf_copy_hdr(struct rte_mbuf *mdst, const struct rte_mbuf *msrc)
+{
+	mdst->port = msrc->port;
+	mdst->vlan_tci = msrc->vlan_tci;
+	mdst->vlan_tci_outer = msrc->vlan_tci_outer;
+	mdst->tx_offload = msrc->tx_offload;
+	mdst->hash = msrc->hash;
+	mdst->packet_type = msrc->packet_type;
+	mdst->timestamp = msrc->timestamp;
+	rte_mbuf_dynfield_copy(mdst, msrc);
+}
 
 /**
  * Attach packet mbuf to another packet mbuf.
@@ -1572,23 +1066,17 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
 		mi->ol_flags = m->ol_flags | IND_ATTACHED_MBUF;
 	}
 
+	__rte_pktmbuf_copy_hdr(mi, m);
+
+	mi->data_off = m->data_off;
+	mi->data_len = m->data_len;
 	mi->buf_iova = m->buf_iova;
 	mi->buf_addr = m->buf_addr;
 	mi->buf_len = m->buf_len;
 
-	mi->data_off = m->data_off;
-	mi->data_len = m->data_len;
-	mi->port = m->port;
-	mi->vlan_tci = m->vlan_tci;
-	mi->vlan_tci_outer = m->vlan_tci_outer;
-	mi->tx_offload = m->tx_offload;
-	mi->hash = m->hash;
-
 	mi->next = NULL;
 	mi->pkt_len = mi->data_len;
 	mi->nb_segs = 1;
-	mi->packet_type = m->packet_type;
-	mi->timestamp = m->timestamp;
 
 	__rte_mbuf_sanity_check(mi, 1);
 	__rte_mbuf_sanity_check(m, 0);
@@ -1622,7 +1110,7 @@ __rte_pktmbuf_free_direct(struct rte_mbuf *m)
 {
 	struct rte_mbuf *md;
 
-	RTE_ASSERT(RTE_MBUF_INDIRECT(m));
+	RTE_ASSERT(RTE_MBUF_CLONED(m));
 
 	md = rte_mbuf_from_indirect(m);
 
@@ -1759,7 +1247,22 @@ static inline void rte_pktmbuf_free(struct rte_mbuf *m)
 }
 
 /**
- * Creates a "clone" of the given packet mbuf.
+ * Free a bulk of packet mbufs back into their original mempools.
+ *
+ * Free a bulk of mbufs, and all their segments in case of chained buffers.
+ * Each segment is added back into its original mempool.
+ *
+ *  @param mbufs
+ *    Array of pointers to packet mbufs.
+ *    The array may contain NULL pointers.
+ *  @param count
+ *    Array size.
+ */
+__rte_experimental
+void rte_pktmbuf_free_bulk(struct rte_mbuf **mbufs, unsigned int count);
+
+/**
+ * Create a "clone" of the given packet mbuf.
  *
  * Walks through all segments of the given packet mbuf, and for each of them:
  *  - Creates a new packet mbuf from the given pool.
@@ -1775,42 +1278,34 @@ static inline void rte_pktmbuf_free(struct rte_mbuf *m)
  *   - The pointer to the new "clone" mbuf on success.
  *   - NULL if allocation fails.
  */
-static inline struct rte_mbuf *rte_pktmbuf_clone(struct rte_mbuf *md,
-		struct rte_mempool *mp)
-{
-	struct rte_mbuf *mc, *mi, **prev;
-	uint32_t pktlen;
-	uint16_t nseg;
+struct rte_mbuf *
+rte_pktmbuf_clone(struct rte_mbuf *md, struct rte_mempool *mp);
 
-	if (unlikely ((mc = rte_pktmbuf_alloc(mp)) == NULL))
-		return NULL;
-
-	mi = mc;
-	prev = &mi->next;
-	pktlen = md->pkt_len;
-	nseg = 0;
-
-	do {
-		nseg++;
-		rte_pktmbuf_attach(mi, md);
-		*prev = mi;
-		prev = &mi->next;
-	} while ((md = md->next) != NULL &&
-	    (mi = rte_pktmbuf_alloc(mp)) != NULL);
-
-	*prev = NULL;
-	mc->nb_segs = nseg;
-	mc->pkt_len = pktlen;
-
-	/* Allocation of new indirect segment failed */
-	if (unlikely (mi == NULL)) {
-		rte_pktmbuf_free(mc);
-		return NULL;
-	}
-
-	__rte_mbuf_sanity_check(mc, 1);
-	return mc;
-}
+/**
+ * Create a full copy of a given packet mbuf.
+ *
+ * Copies all the data from a given packet mbuf to a newly allocated
+ * set of mbufs. The private data are is not copied.
+ *
+ * @param m
+ *   The packet mbuf to be copiedd.
+ * @param mp
+ *   The mempool from which the "clone" mbufs are allocated.
+ * @param offset
+ *   The number of bytes to skip before copying.
+ *   If the mbuf does not have that many bytes, it is an error
+ *   and NULL is returned.
+ * @param length
+ *   The upper limit on bytes to copy.  Passing UINT32_MAX
+ *   means all data (after offset).
+ * @return
+ *   - The pointer to the new "clone" mbuf on success.
+ *   - NULL if allocation fails.
+ */
+__rte_experimental
+struct rte_mbuf *
+rte_pktmbuf_copy(const struct rte_mbuf *m, struct rte_mempool *mp,
+		 uint32_t offset, uint32_t length);
 
 /**
  * Adds given value to the refcnt of all packet mbuf segments.
@@ -1877,61 +1372,9 @@ static inline struct rte_mbuf *rte_pktmbuf_lastseg(struct rte_mbuf *m)
 	return m;
 }
 
-/**
- * A macro that points to an offset into the data in the mbuf.
- *
- * The returned pointer is cast to type t. Before using this
- * function, the user must ensure that the first segment is large
- * enough to accommodate its data.
- *
- * @param m
- *   The packet mbuf.
- * @param o
- *   The offset into the mbuf data.
- * @param t
- *   The type to cast the result into.
- */
-#define rte_pktmbuf_mtod_offset(m, t, o)	\
-	((t)((char *)(m)->buf_addr + (m)->data_off + (o)))
-
-/**
- * A macro that points to the start of the data in the mbuf.
- *
- * The returned pointer is cast to type t. Before using this
- * function, the user must ensure that the first segment is large
- * enough to accommodate its data.
- *
- * @param m
- *   The packet mbuf.
- * @param t
- *   The type to cast the result into.
- */
-#define rte_pktmbuf_mtod(m, t) rte_pktmbuf_mtod_offset(m, t, 0)
-
-/**
- * A macro that returns the IO address that points to an offset of the
- * start of the data in the mbuf
- *
- * @param m
- *   The packet mbuf.
- * @param o
- *   The offset into the data to calculate address from.
- */
-#define rte_pktmbuf_iova_offset(m, o) \
-	(rte_iova_t)((m)->buf_iova + (m)->data_off + (o))
-
 /* deprecated */
 #define rte_pktmbuf_mtophys_offset(m, o) \
 	rte_pktmbuf_iova_offset(m, o)
-
-/**
- * A macro that returns the IO address that points to the start of the
- * data in the mbuf
- *
- * @param m
- *   The packet mbuf.
- */
-#define rte_pktmbuf_iova(m) rte_pktmbuf_iova_offset(m, 0)
 
 /* deprecated */
 #define rte_pktmbuf_mtophys(m) rte_pktmbuf_iova(m)
@@ -2092,7 +1535,7 @@ static inline int rte_pktmbuf_trim(struct rte_mbuf *m, uint16_t len)
 static inline int rte_pktmbuf_is_contiguous(const struct rte_mbuf *m)
 {
 	__rte_mbuf_sanity_check(m, 1);
-	return !!(m->nb_segs == 1);
+	return m->nb_segs == 1;
 }
 
 /**
@@ -2171,6 +1614,43 @@ static inline int rte_pktmbuf_chain(struct rte_mbuf *head, struct rte_mbuf *tail
 	return 0;
 }
 
+/*
+ * @warning
+ * @b EXPERIMENTAL: This API may change without prior notice.
+ *
+ * For given input values generate raw tx_offload value.
+ * Note that it is caller responsibility to make sure that input parameters
+ * don't exceed maximum bit-field values.
+ * @param il2
+ *   l2_len value.
+ * @param il3
+ *   l3_len value.
+ * @param il4
+ *   l4_len value.
+ * @param tso
+ *   tso_segsz value.
+ * @param ol3
+ *   outer_l3_len value.
+ * @param ol2
+ *   outer_l2_len value.
+ * @param unused
+ *   unused value.
+ * @return
+ *   raw tx_offload value.
+ */
+static __rte_always_inline uint64_t
+rte_mbuf_tx_offload(uint64_t il2, uint64_t il3, uint64_t il4, uint64_t tso,
+	uint64_t ol3, uint64_t ol2, uint64_t unused)
+{
+	return il2 << RTE_MBUF_L2_LEN_OFS |
+		il3 << RTE_MBUF_L3_LEN_OFS |
+		il4 << RTE_MBUF_L4_LEN_OFS |
+		tso << RTE_MBUF_TSO_SEGSZ_OFS |
+		ol3 << RTE_MBUF_OUTL3_LEN_OFS |
+		ol2 << RTE_MBUF_OUTL2_LEN_OFS |
+		unused << RTE_MBUF_TXOFLD_UNUSED_OFS;
+}
+
 /**
  * Validate general requirements for Tx offload in mbuf.
  *
@@ -2185,22 +1665,10 @@ static inline int
 rte_validate_tx_offload(const struct rte_mbuf *m)
 {
 	uint64_t ol_flags = m->ol_flags;
-	uint64_t inner_l3_offset = m->l2_len;
 
 	/* Does packet set any of available offloads? */
 	if (!(ol_flags & PKT_TX_OFFLOAD_MASK))
 		return 0;
-
-	if (ol_flags & PKT_TX_OUTER_IP_CKSUM)
-		/* NB: elaborating the addition like this instead of using
-		 *     += gives the result uint64_t type instead of int,
-		 *     avoiding compiler warnings on gcc 8.1 at least */
-		inner_l3_offset = inner_l3_offset + m->outer_l2_len +
-				  m->outer_l3_len;
-
-	/* Headers are fragmented */
-	if (rte_pktmbuf_data_len(m) < inner_l3_offset + m->l3_len + m->l4_len)
-		return -ENOTSUP;
 
 	/* IP checksum can be counted only for IPv4 packet */
 	if ((ol_flags & PKT_TX_IP_CKSUM) && (ol_flags & PKT_TX_IPV6))
@@ -2227,6 +1695,11 @@ rte_validate_tx_offload(const struct rte_mbuf *m)
 }
 
 /**
+ * @internal used by rte_pktmbuf_linearize().
+ */
+int __rte_pktmbuf_linearize(struct rte_mbuf *mbuf);
+
+/**
  * Linearize data in mbuf.
  *
  * This function moves the mbuf data in the first segment if there is enough
@@ -2241,40 +1714,9 @@ rte_validate_tx_offload(const struct rte_mbuf *m)
 static inline int
 rte_pktmbuf_linearize(struct rte_mbuf *mbuf)
 {
-	size_t seg_len, copy_len;
-	struct rte_mbuf *m;
-	struct rte_mbuf *m_next;
-	char *buffer;
-
 	if (rte_pktmbuf_is_contiguous(mbuf))
 		return 0;
-
-	/* Extend first segment to the total packet length */
-	copy_len = rte_pktmbuf_pkt_len(mbuf) - rte_pktmbuf_data_len(mbuf);
-
-	if (unlikely(copy_len > rte_pktmbuf_tailroom(mbuf)))
-		return -1;
-
-	buffer = rte_pktmbuf_mtod_offset(mbuf, char *, mbuf->data_len);
-	mbuf->data_len = (uint16_t)(mbuf->pkt_len);
-
-	/* Append data from next segments to the first one */
-	m = mbuf->next;
-	while (m != NULL) {
-		m_next = m->next;
-
-		seg_len = rte_pktmbuf_data_len(m);
-		rte_memcpy(buffer, rte_pktmbuf_mtod(m, char *), seg_len);
-		buffer += seg_len;
-
-		rte_pktmbuf_free_seg(m);
-		m = m_next;
-	}
-
-	mbuf->next = NULL;
-	mbuf->nb_segs = 1;
-
-	return 0;
+	return __rte_pktmbuf_linearize(mbuf);
 }
 
 /**
@@ -2292,6 +1734,109 @@ rte_pktmbuf_linearize(struct rte_mbuf *mbuf)
  *   the packet.
  */
 void rte_pktmbuf_dump(FILE *f, const struct rte_mbuf *m, unsigned dump_len);
+
+/**
+ * Get the value of mbuf sched queue_id field.
+ */
+static inline uint32_t
+rte_mbuf_sched_queue_get(const struct rte_mbuf *m)
+{
+	return m->hash.sched.queue_id;
+}
+
+/**
+ * Get the value of mbuf sched traffic_class field.
+ */
+static inline uint8_t
+rte_mbuf_sched_traffic_class_get(const struct rte_mbuf *m)
+{
+	return m->hash.sched.traffic_class;
+}
+
+/**
+ * Get the value of mbuf sched color field.
+ */
+static inline uint8_t
+rte_mbuf_sched_color_get(const struct rte_mbuf *m)
+{
+	return m->hash.sched.color;
+}
+
+/**
+ * Get the values of mbuf sched queue_id, traffic_class and color.
+ *
+ * @param m
+ *   Mbuf to read
+ * @param queue_id
+ *  Returns the queue id
+ * @param traffic_class
+ *  Returns the traffic class id
+ * @param color
+ *  Returns the colour id
+ */
+static inline void
+rte_mbuf_sched_get(const struct rte_mbuf *m, uint32_t *queue_id,
+			uint8_t *traffic_class,
+			uint8_t *color)
+{
+	struct rte_mbuf_sched sched = m->hash.sched;
+
+	*queue_id = sched.queue_id;
+	*traffic_class = sched.traffic_class;
+	*color = sched.color;
+}
+
+/**
+ * Set the mbuf sched queue_id to the defined value.
+ */
+static inline void
+rte_mbuf_sched_queue_set(struct rte_mbuf *m, uint32_t queue_id)
+{
+	m->hash.sched.queue_id = queue_id;
+}
+
+/**
+ * Set the mbuf sched traffic_class id to the defined value.
+ */
+static inline void
+rte_mbuf_sched_traffic_class_set(struct rte_mbuf *m, uint8_t traffic_class)
+{
+	m->hash.sched.traffic_class = traffic_class;
+}
+
+/**
+ * Set the mbuf sched color id to the defined value.
+ */
+static inline void
+rte_mbuf_sched_color_set(struct rte_mbuf *m, uint8_t color)
+{
+	m->hash.sched.color = color;
+}
+
+/**
+ * Set the mbuf sched queue_id, traffic_class and color.
+ *
+ * @param m
+ *   Mbuf to set
+ * @param queue_id
+ *  Queue id value to be set
+ * @param traffic_class
+ *  Traffic class id value to be set
+ * @param color
+ *  Color id to be set
+ */
+static inline void
+rte_mbuf_sched_set(struct rte_mbuf *m, uint32_t queue_id,
+			uint8_t traffic_class,
+			uint8_t color)
+{
+	m->hash.sched = (struct rte_mbuf_sched){
+				.queue_id = queue_id,
+				.traffic_class = traffic_class,
+				.color = color,
+				.reserved = 0,
+			};
+}
 
 #ifdef __cplusplus
 }

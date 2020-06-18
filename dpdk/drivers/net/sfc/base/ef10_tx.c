@@ -8,7 +8,7 @@
 #include "efx_impl.h"
 
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 #if EFSYS_OPT_QSTATS
 #define	EFX_TX_QSTAT_INCR(_etp, _stat)					\
@@ -31,7 +31,8 @@ efx_mcdi_init_txq(
 	__in		efsys_mem_t *esmp)
 {
 	efx_mcdi_req_t req;
-	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_INIT_TXQ_IN_LEN(EFX_TXQ_MAX_BUFS),
+	EFX_MCDI_DECLARE_BUF(payload,
+		MC_CMD_INIT_TXQ_IN_LEN(EF10_TXQ_MAXNBUFS),
 		MC_CMD_INIT_TXQ_OUT_LEN);
 	efx_qword_t *dma_addr;
 	uint64_t addr;
@@ -39,15 +40,16 @@ efx_mcdi_init_txq(
 	int i;
 	efx_rc_t rc;
 
-	EFSYS_ASSERT(EFX_TXQ_MAX_BUFS >=
-	    EFX_TXQ_NBUFS(enp->en_nic_cfg.enc_txq_max_ndescs));
+	EFSYS_ASSERT(EF10_TXQ_MAXNBUFS >=
+	    efx_txq_nbufs(enp, enp->en_nic_cfg.enc_txq_max_ndescs));
 
-	if ((esmp == NULL) || (EFSYS_MEM_SIZE(esmp) < EFX_TXQ_SIZE(ndescs))) {
+	if ((esmp == NULL) ||
+	    (EFSYS_MEM_SIZE(esmp) < efx_txq_size(enp, ndescs))) {
 		rc = EINVAL;
 		goto fail1;
 	}
 
-	npages = EFX_TXQ_NBUFS(ndescs);
+	npages = efx_txq_nbufs(enp, ndescs);
 	if (MC_CMD_INIT_TXQ_IN_LEN(npages) > sizeof (payload)) {
 		rc = EINVAL;
 		goto fail2;
@@ -80,7 +82,7 @@ efx_mcdi_init_txq(
 	    INIT_TXQ_IN_FLAG_TIMESTAMP, 0);
 
 	MCDI_IN_SET_DWORD(req, INIT_TXQ_IN_OWNER_ID, 0);
-	MCDI_IN_SET_DWORD(req, INIT_TXQ_IN_PORT_ID, EVB_PORT_ID_ASSIGNED);
+	MCDI_IN_SET_DWORD(req, INIT_TXQ_IN_PORT_ID, enp->en_vport_id);
 
 	dma_addr = MCDI_IN2(req, efx_qword_t, INIT_TXQ_IN_DMA_ADDR);
 	addr = EFSYS_MEM_ADDR(esmp);
@@ -767,4 +769,4 @@ ef10_tx_qstats_update(
 
 #endif /* EFSYS_OPT_QSTATS */
 
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */

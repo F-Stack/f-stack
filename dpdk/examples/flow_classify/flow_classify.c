@@ -61,7 +61,7 @@ const char cb_port_delim[] = ":";
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 	},
 };
 
@@ -98,8 +98,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint8_t),
 		.field_index = PROTO_FIELD_IPV4,
 		.input_index = PROTO_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 	/* next input field (IPv4 source address) - 4 consecutive bytes. */
 	{
@@ -108,8 +108,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = SRC_FIELD_IPV4,
 		.input_index = SRC_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, src_addr),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, src_addr),
 	},
 	/* next input field (IPv4 destination address) - 4 consecutive bytes. */
 	{
@@ -118,8 +118,8 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = DST_FIELD_IPV4,
 		.input_index = DST_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			offsetof(struct ipv4_hdr, dst_addr),
+		.offset = sizeof(struct rte_ether_hdr) +
+			offsetof(struct rte_ipv4_hdr, dst_addr),
 	},
 	/*
 	 * Next 2 fields (src & dst ports) form 4 consecutive bytes.
@@ -131,9 +131,9 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint16_t),
 		.field_index = SRCP_FIELD_IPV4,
 		.input_index = SRCP_DESTP_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, src_port),
+		.offset = sizeof(struct rte_ether_hdr) +
+			sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, src_port),
 	},
 	{
 		/* rte_flow uses a bit mask for protocol ports */
@@ -141,9 +141,9 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint16_t),
 		.field_index = DSTP_FIELD_IPV4,
 		.input_index = SRCP_DESTP_INPUT_IPV4,
-		.offset = sizeof(struct ether_hdr) +
-			sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, dst_port),
+		.offset = sizeof(struct rte_ether_hdr) +
+			sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, dst_port),
 	},
 };
 
@@ -192,7 +192,7 @@ static inline int
 port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf = port_conf_default;
-	struct ether_addr addr;
+	struct rte_ether_addr addr;
 	const uint16_t rx_rings = 1, tx_rings = 1;
 	int retval;
 	uint16_t q;
@@ -202,7 +202,13 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+		return retval;
+	}
+
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -236,7 +242,10 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 
 	/* Display the port MAC address. */
-	rte_eth_macaddr_get(port, &addr);
+	retval = rte_eth_macaddr_get(port, &addr);
+	if (retval != 0)
+		return retval;
+
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
 			port,
@@ -245,7 +254,9 @@ port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 			addr.addr_bytes[4], addr.addr_bytes[5]);
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
+	retval = rte_eth_promiscuous_enable(port);
+	if (retval != 0)
+		return retval;
 
 	return 0;
 }
@@ -379,7 +390,7 @@ parse_ipv4_net(char *in, uint32_t *addr, uint32_t *mask_len)
 	if (get_cb_field(&in, &m, 0, sizeof(uint32_t) * CHAR_BIT, 0))
 		return -EINVAL;
 
-	addr[0] = IPv4(a, b, c, d);
+	addr[0] = RTE_IPV4(a, b, c, d);
 	mask_len[0] = m;
 	return 0;
 }

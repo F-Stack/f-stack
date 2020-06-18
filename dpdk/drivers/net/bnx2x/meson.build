@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Intel Corporation
 
-dep = cc.find_library('z', required: false)
+dep = dependency('zlib', required: false)
 build = dep.found()
+reason = 'missing dependency, "zlib"'
 ext_deps += dep
+allow_experimental_apis = true
 cflags += '-DZLIB_CONST'
 sources = files('bnx2x.c',
 	'bnx2x_ethdev.c',

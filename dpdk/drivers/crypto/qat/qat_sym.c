@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2018 Intel Corporation
+ * Copyright(c) 2015-2019 Intel Corporation
  */
 
 #include <openssl/evp.h>
@@ -11,6 +11,7 @@
 #include <rte_byteorder.h>
 
 #include "qat_sym.h"
+
 
 /** Decrypt a single partial block
  *  Depends on openssl libcrypto
@@ -156,8 +157,10 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	uint32_t auth_len = 0, auth_ofs = 0;
 	uint32_t min_ofs = 0;
 	uint64_t src_buf_start = 0, dst_buf_start = 0;
+	uint64_t auth_data_end = 0;
 	uint8_t do_sgl = 0;
-	uint8_t wireless_auth = 0, in_place = 1;
+	uint8_t in_place = 1;
+	int alignment_adjustment = 0;
 	struct rte_crypto_op *op = (struct rte_crypto_op *)in_op;
 	struct qat_sym_op_cookie *cookie =
 				(struct qat_sym_op_cookie *)op_cookie;
@@ -193,7 +196,8 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	rte_mov128((uint8_t *)qat_req, (const uint8_t *)&(ctx->fw_req));
 	qat_req->comn_mid.opaque_data = (uint64_t)(uintptr_t)op;
 	cipher_param = (void *)&qat_req->serv_specif_rqpars;
-	auth_param = (void *)((uint8_t *)cipher_param + sizeof(*cipher_param));
+	auth_param = (void *)((uint8_t *)cipher_param +
+			ICP_QAT_FW_HASH_REQUEST_PARAMETERS_OFFSET);
 
 	if (ctx->qat_cmd == ICP_QAT_FW_LA_CMD_HASH_CIPHER ||
 			ctx->qat_cmd == ICP_QAT_FW_LA_CMD_CIPHER_HASH) {
@@ -270,7 +274,6 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			}
 			auth_ofs = op->sym->auth.data.offset >> 3;
 			auth_len = op->sym->auth.data.length >> 3;
-			wireless_auth = 1;
 
 			auth_param->u1.aad_adr =
 					rte_crypto_op_ctophys_offset(op,
@@ -306,9 +309,8 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		}
 		min_ofs = auth_ofs;
 
-		if (likely(ctx->qat_hash_alg != ICP_QAT_HW_AUTH_ALGO_NULL))
-			auth_param->auth_res_addr =
-					op->sym->auth.digest.phys_addr;
+		auth_param->auth_res_addr =
+			op->sym->auth.digest.phys_addr;
 
 	}
 
@@ -465,6 +467,10 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 								min_ofs);
 		}
 		dst_buf_start = src_buf_start;
+
+		/* remember any adjustment for later, note, can be +/- */
+		alignment_adjustment = src_buf_start -
+			rte_pktmbuf_iova_offset(op->sym->m_src, min_ofs);
 	}
 
 	if (do_cipher || do_aead) {
@@ -492,6 +498,57 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 		> (auth_param->auth_off + auth_param->auth_len) ?
 		(cipher_param->cipher_offset + cipher_param->cipher_length)
 		: (auth_param->auth_off + auth_param->auth_len);
+
+	if (do_auth && do_cipher) {
+		/* Handle digest-encrypted cases, i.e.
+		 * auth-gen-then-cipher-encrypt and
+		 * cipher-decrypt-then-auth-verify
+		 */
+		 /* First find the end of the data */
+		if (do_sgl) {
+			uint32_t remaining_off = auth_param->auth_off +
+				auth_param->auth_len + alignment_adjustment;
+			struct rte_mbuf *sgl_buf =
+				(in_place ?
+					op->sym->m_src : op->sym->m_dst);
+
+			while (remaining_off >= rte_pktmbuf_data_len(sgl_buf)
+					&& sgl_buf->next != NULL) {
+				remaining_off -= rte_pktmbuf_data_len(sgl_buf);
+				sgl_buf = sgl_buf->next;
+			}
+
+			auth_data_end = (uint64_t)rte_pktmbuf_iova_offset(
+				sgl_buf, remaining_off);
+		} else {
+			auth_data_end = (in_place ?
+				src_buf_start : dst_buf_start) +
+				auth_param->auth_off + auth_param->auth_len;
+		}
+		/* Then check if digest-encrypted conditions are met */
+		if ((auth_param->auth_off + auth_param->auth_len <
+					cipher_param->cipher_offset +
+					cipher_param->cipher_length) &&
+				(op->sym->auth.digest.phys_addr ==
+					auth_data_end)) {
+			/* Handle partial digest encryption */
+			if (cipher_param->cipher_offset +
+					cipher_param->cipher_length <
+					auth_param->auth_off +
+					auth_param->auth_len +
+					ctx->digest_length)
+				qat_req->comn_mid.dst_length =
+					qat_req->comn_mid.src_length =
+					auth_param->auth_off +
+					auth_param->auth_len +
+					ctx->digest_length;
+			struct icp_qat_fw_comn_req_hdr *header =
+				&qat_req->comn_hdr;
+			ICP_QAT_FW_LA_DIGEST_IN_BUFFER_SET(
+				header->serv_specif_flags,
+				ICP_QAT_FW_LA_DIGEST_IN_BUFFER);
+		}
+	}
 
 	if (do_sgl) {
 
@@ -535,18 +592,13 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	} else {
 		qat_req->comn_mid.src_data_addr = src_buf_start;
 		qat_req->comn_mid.dest_data_addr = dst_buf_start;
-		/* handle case of auth-gen-then-cipher with digest encrypted */
-		if (wireless_auth && in_place &&
-		    (op->sym->auth.digest.phys_addr ==
-				src_buf_start + auth_ofs + auth_len) &&
-		    (auth_ofs + auth_len + ctx->digest_length <=
-				cipher_ofs + cipher_len)) {
-			struct icp_qat_fw_comn_req_hdr *header =
-						&qat_req->comn_hdr;
-			ICP_QAT_FW_LA_DIGEST_IN_BUFFER_SET(
-				header->serv_specif_flags,
-				ICP_QAT_FW_LA_DIGEST_IN_BUFFER);
-		}
+	}
+
+	/* Handle Single-Pass GCM */
+	if (ctx->is_single_pass) {
+		cipher_param->spc_aad_addr = op->sym->aead.aad.phys_addr;
+		cipher_param->spc_auth_res_addr =
+				op->sym->aead.digest.phys_addr;
 	}
 
 #if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG

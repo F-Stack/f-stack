@@ -15,8 +15,10 @@
 #include <rte_log.h>
 #include <rte_cycles.h>
 #include <rte_pause.h>
+#include <rte_eal.h>
 
 #include "eal_private.h"
+#include "eal_memcfg.h"
 
 /* The frequency of the RDTSC timer resolution */
 static uint64_t eal_tsc_resolution_hz;
@@ -33,7 +35,7 @@ rte_delay_us_block(unsigned int us)
 		rte_pause();
 }
 
-void __rte_experimental
+void
 rte_delay_us_sleep(unsigned int us)
 {
 	struct timespec wait[2];
@@ -64,18 +66,32 @@ rte_get_tsc_hz(void)
 static uint64_t
 estimate_tsc_freq(void)
 {
+#define CYC_PER_10MHZ 1E7
 	RTE_LOG(WARNING, EAL, "WARNING: TSC frequency estimated roughly"
 		" - clock timings may be less accurate.\n");
 	/* assume that the sleep(1) will sleep for 1 second */
 	uint64_t start = rte_rdtsc();
 	sleep(1);
-	return rte_rdtsc() - start;
+	/* Round up to 10Mhz. 1E7 ~ 10Mhz */
+	return RTE_ALIGN_MUL_NEAR(rte_rdtsc() - start, CYC_PER_10MHZ);
 }
 
 void
 set_tsc_freq(void)
 {
+	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	uint64_t freq;
+
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		/*
+		 * Just use the primary process calculated TSC rate in any
+		 * secondary process.  It avoids any unnecessary overhead on
+		 * systems where arch-specific frequency detection is not
+		 * available.
+		 */
+		eal_tsc_resolution_hz = mcfg->tsc_hz;
+		return;
+	}
 
 	freq = get_tsc_freq_arch();
 	if (!freq)
@@ -85,6 +101,7 @@ set_tsc_freq(void)
 
 	RTE_LOG(DEBUG, EAL, "TSC frequency is ~%" PRIu64 " KHz\n", freq / 1000);
 	eal_tsc_resolution_hz = freq;
+	mcfg->tsc_hz = freq;
 }
 
 void rte_delay_us_callback_register(void (*userfunc)(unsigned int))

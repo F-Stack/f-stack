@@ -62,11 +62,7 @@ latex_documents = [
 
 # Latex directives to be included directly in the latex/pdf docs.
 custom_latex_preamble = r"""
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
 \usepackage{textalpha}
-\usepackage{helvet}
-\renewcommand{\familydefault}{\sfdefault}
 \RecustomVerbatimEnvironment{Verbatim}{Verbatim}{xleftmargin=5mm}
 \usepackage{etoolbox}
 \robustify\(
@@ -241,7 +237,7 @@ def generate_overview_table(output_filename, table_id, section, table_name, titl
                                                                 ini_filename))
                 continue
 
-            if value is not '':
+            if value:
                 # Get the first letter only.
                 ini_data[ini_filename][name] = value[0]
 

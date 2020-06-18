@@ -6,7 +6,8 @@ dpdk-procinfo Application
 
 The dpdk-procinfo application is a Data Plane Development Kit (DPDK) application
 that runs as a DPDK secondary process and is capable of retrieving port
-statistics, resetting port statistics and printing DPDK memory information.
+statistics, resetting port statistics, printing DPDK memory information and
+displaying debug information for port.
 This application extends the original functionality that was supported by
 dump_cfg.
 
@@ -17,7 +18,8 @@ The application has a number of command line options:
 .. code-block:: console
 
    ./$(RTE_TARGET)/app/dpdk-procinfo -- -m | [-p PORTMASK] [--stats | --xstats |
-   --stats-reset | --xstats-reset]
+   --stats-reset | --xstats-reset] [ --show-port | --show-tm | --show-crypto |
+   --show-ring[=name] | --show-mempool[=name] | --iter-mempool=name ]
 
 Parameters
 ~~~~~~~~~~
@@ -40,6 +42,32 @@ The xstats-reset parameter controls the resetting of extended port statistics.
 If no port mask is specified xstats are reset for all DPDK ports.
 
 **-m**: Print DPDK memory information.
+
+**--show-port**
+The show-port parameter displays port level various configuration information
+associated to RX port queue pair.
+
+**--show-tm**
+The show-tm parameter displays per port traffic manager settings, current
+configurations and statistics.
+
+**--show-crypto**
+The show-crypto parameter displays available cryptodev configurations,
+settings and stats per node.
+
+**--show-ring[=name]**
+The show-ring parameter display current allocation of all ring with
+debug information. Specifying the name allows to display details for specific
+ring. For invalid or no ring name, whole list is dump.
+
+**--show-mempool[=name]**
+The show-mempool parameter display current allocation of all mempool
+debug information. Specifying the name allows to display details for specific
+mempool. For invalid or no mempool name, whole list is dump.
+
+**--iter-mempool=name**
+The iter-mempool parameter iterates and displays mempool elements specified
+by name. For invalid or no mempool name no elements are displayed.
 
 Limitations
 -----------

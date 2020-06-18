@@ -132,7 +132,9 @@ init_port(uint16_t port_num)
 		if (retval < 0) return retval;
 	}
 
-	rte_eth_promiscuous_enable(port_num);
+	retval = rte_eth_promiscuous_enable(port_num);
+	if (retval < 0)
+		return retval;
 
 	retval  = rte_eth_dev_start(port_num);
 	if (retval < 0) return retval;
@@ -182,6 +184,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -191,7 +194,14 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 			if ((port_mask & (1 << ports->id[portid])) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(ports->id[portid], &link);
+			ret = rte_eth_link_get_nowait(ports->id[portid], &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -238,7 +248,7 @@ init(int argc, char *argv[])
 {
 	int retval;
 	const struct rte_memzone *mz;
-	uint16_t i, total_ports;
+	uint16_t i;
 
 	/* init EAL, parsing EAL args */
 	retval = rte_eal_init(argc, argv);
@@ -246,9 +256,6 @@ init(int argc, char *argv[])
 		return -1;
 	argc -= retval;
 	argv += retval;
-
-	/* get total number of ports */
-	total_ports = rte_eth_dev_count_total();
 
 	/* set up array for port data */
 	mz = rte_memzone_reserve(MZ_PORT_INFO, sizeof(*ports),
@@ -259,7 +266,7 @@ init(int argc, char *argv[])
 	ports = mz->addr;
 
 	/* parse additional, application arguments */
-	retval = parse_app_args(total_ports, argc, argv);
+	retval = parse_app_args(argc, argv);
 	if (retval != 0)
 		return -1;
 

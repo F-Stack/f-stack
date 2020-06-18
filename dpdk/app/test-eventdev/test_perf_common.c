@@ -28,6 +28,7 @@ perf_test_result(struct evt_test *test, struct evt_options *opt)
 static inline int
 perf_producer(void *arg)
 {
+	int i;
 	struct prod_data *p  = arg;
 	struct test_perf *t = p->t;
 	struct evt_options *opt = t->opt;
@@ -38,7 +39,7 @@ perf_producer(void *arg)
 	const uint32_t nb_flows = t->nb_flows;
 	uint32_t flow_counter = 0;
 	uint64_t count = 0;
-	struct perf_elt *m;
+	struct perf_elt *m[BURST_SIZE + 1] = {NULL};
 	struct rte_event ev;
 
 	if (opt->verbose_level > 1)
@@ -54,19 +55,21 @@ perf_producer(void *arg)
 	ev.sub_event_type = 0; /* stage 0 */
 
 	while (count < nb_pkts && t->done == false) {
-		if (rte_mempool_get(pool, (void **)&m) < 0)
+		if (rte_mempool_get_bulk(pool, (void **)m, BURST_SIZE) < 0)
 			continue;
-
-		ev.flow_id = flow_counter++ % nb_flows;
-		ev.event_ptr = m;
-		m->timestamp = rte_get_timer_cycles();
-		while (rte_event_enqueue_burst(dev_id, port, &ev, 1) != 1) {
-			if (t->done)
-				break;
-			rte_pause();
-			m->timestamp = rte_get_timer_cycles();
+		for (i = 0; i < BURST_SIZE; i++) {
+			ev.flow_id = flow_counter++ % nb_flows;
+			ev.event_ptr = m[i];
+			m[i]->timestamp = rte_get_timer_cycles();
+			while (rte_event_enqueue_burst(dev_id,
+						       port, &ev, 1) != 1) {
+				if (t->done)
+					break;
+				rte_pause();
+				m[i]->timestamp = rte_get_timer_cycles();
+			}
 		}
-		count++;
+		count += BURST_SIZE;
 	}
 
 	return 0;
@@ -75,6 +78,7 @@ perf_producer(void *arg)
 static inline int
 perf_event_timer_producer(void *arg)
 {
+	int i;
 	struct prod_data *p  = arg;
 	struct test_perf *t = p->t;
 	struct evt_options *opt = t->opt;
@@ -85,7 +89,7 @@ perf_event_timer_producer(void *arg)
 	const uint32_t nb_flows = t->nb_flows;
 	const uint64_t nb_timers = opt->nb_timers;
 	struct rte_mempool *pool = t->pool;
-	struct perf_elt *m;
+	struct perf_elt *m[BURST_SIZE + 1] = {NULL};
 	struct rte_event_timer_adapter **adptr = t->timer_adptr;
 	struct rte_event_timer tim;
 	uint64_t timeout_ticks = opt->expiry_nsec / opt->timer_tick_nsec;
@@ -107,29 +111,31 @@ perf_event_timer_producer(void *arg)
 		printf("%s(): lcore %d\n", __func__, rte_lcore_id());
 
 	while (count < nb_timers && t->done == false) {
-		if (rte_mempool_get(pool, (void **)&m) < 0)
+		if (rte_mempool_get_bulk(pool, (void **)m, BURST_SIZE) < 0)
 			continue;
-
-		m->tim = tim;
-		m->tim.ev.flow_id = flow_counter++ % nb_flows;
-		m->tim.ev.event_ptr = m;
-		m->timestamp = rte_get_timer_cycles();
-		while (rte_event_timer_arm_burst(
-				adptr[flow_counter % nb_timer_adptrs],
-				(struct rte_event_timer **)&m, 1) != 1) {
-			if (t->done)
-				break;
-			rte_pause();
-			m->timestamp = rte_get_timer_cycles();
+		for (i = 0; i < BURST_SIZE; i++) {
+			rte_prefetch0(m[i + 1]);
+			m[i]->tim = tim;
+			m[i]->tim.ev.flow_id = flow_counter++ % nb_flows;
+			m[i]->tim.ev.event_ptr = m[i];
+			m[i]->timestamp = rte_get_timer_cycles();
+			while (rte_event_timer_arm_burst(
+			       adptr[flow_counter % nb_timer_adptrs],
+			       (struct rte_event_timer **)&m[i], 1) != 1) {
+				if (t->done)
+					break;
+				m[i]->timestamp = rte_get_timer_cycles();
+			}
+			arm_latency += rte_get_timer_cycles() - m[i]->timestamp;
 		}
-		arm_latency += rte_get_timer_cycles() - m->timestamp;
-		count++;
+		count += BURST_SIZE;
 	}
 	fflush(stdout);
 	rte_delay_ms(1000);
 	printf("%s(): lcore %d Average event timer arm latency = %.3f us\n",
-			__func__, rte_lcore_id(), (float)(arm_latency / count) /
-			(rte_get_timer_hz() / 1000000));
+			__func__, rte_lcore_id(),
+			count ? (float)(arm_latency / count) /
+			(rte_get_timer_hz() / 1000000) : 0);
 	return 0;
 }
 
@@ -189,8 +195,9 @@ perf_event_timer_producer_burst(void *arg)
 	fflush(stdout);
 	rte_delay_ms(1000);
 	printf("%s(): lcore %d Average event timer arm latency = %.3f us\n",
-			__func__, rte_lcore_id(), (float)(arm_latency / count) /
-			(rte_get_timer_hz() / 1000000));
+			__func__, rte_lcore_id(),
+			count ? (float)(arm_latency / count) /
+			(rte_get_timer_hz() / 1000000) : 0);
 	return 0;
 }
 
@@ -393,21 +400,6 @@ perf_event_rx_adapter_setup(struct evt_options *opt, uint8_t stride,
 				return ret;
 			}
 		}
-
-		ret = rte_eth_dev_start(prod);
-		if (ret) {
-			evt_err("Ethernet dev [%d] failed to start."
-					" Using synthetic producer", prod);
-			return ret;
-		}
-
-		ret = rte_event_eth_rx_adapter_start(prod);
-		if (ret) {
-			evt_err("Rx adapter[%d] start failed", prod);
-			return ret;
-		}
-		printf("%s: Port[%d] using Rx adapter[%d] started\n", __func__,
-				prod, prod);
 	}
 
 	return ret;
@@ -432,7 +424,7 @@ perf_event_timer_adapter_setup(struct test_perf *t)
 			.timer_adapter_id = i,
 			.timer_tick_ns = t->opt->timer_tick_nsec,
 			.max_tmo_ns = t->opt->max_tmo_nsec,
-			.nb_timers = 2 * 1024 * 1024,
+			.nb_timers = t->opt->pool_sz,
 			.flags = flags,
 		};
 
@@ -449,7 +441,7 @@ perf_event_timer_adapter_setup(struct test_perf *t)
 
 		if (!(adapter_info.caps &
 				RTE_EVENT_TIMER_ADAPTER_CAP_INTERNAL_PORT)) {
-			uint32_t service_id;
+			uint32_t service_id = -1U;
 
 			rte_event_timer_adapter_service_id_get(wl,
 					&service_id);
@@ -460,12 +452,6 @@ perf_event_timer_adapter_setup(struct test_perf *t)
 				return ret;
 			}
 			rte_service_runstate_set(service_id, 1);
-		}
-
-		ret = rte_event_timer_adapter_start(wl);
-		if (ret) {
-			evt_err("failed to Start event timer adapter %d", i);
-			return ret;
 		}
 		t->timer_adptr[i] = wl;
 	}
@@ -676,11 +662,12 @@ int
 perf_ethdev_setup(struct evt_test *test, struct evt_options *opt)
 {
 	uint16_t i;
+	int ret;
 	struct test_perf *t = evt_test_priv(test);
 	struct rte_eth_conf port_conf = {
 		.rxmode = {
 			.mq_mode = ETH_MQ_RX_RSS,
-			.max_rx_pkt_len = ETHER_MAX_LEN,
+			.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 			.split_hdr_size = 0,
 		},
 		.rx_adv_conf = {
@@ -704,7 +691,12 @@ perf_ethdev_setup(struct evt_test *test, struct evt_options *opt)
 		struct rte_eth_dev_info dev_info;
 		struct rte_eth_conf local_port_conf = port_conf;
 
-		rte_eth_dev_info_get(i, &dev_info);
+		ret = rte_eth_dev_info_get(i, &dev_info);
+		if (ret != 0) {
+			evt_err("Error during getting device (port %u) info: %s\n",
+					i, strerror(-ret));
+			return ret;
+		}
 
 		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 			dev_info.flow_type_rss_offloads;
@@ -736,7 +728,12 @@ perf_ethdev_setup(struct evt_test *test, struct evt_options *opt)
 			return -EINVAL;
 		}
 
-		rte_eth_promiscuous_enable(i);
+		ret = rte_eth_promiscuous_enable(i);
+		if (ret != 0) {
+			evt_err("Failed to enable promiscuous mode for eth port [%d]: %s",
+				i, rte_strerror(-ret));
+			return ret;
+		}
 	}
 
 	return 0;

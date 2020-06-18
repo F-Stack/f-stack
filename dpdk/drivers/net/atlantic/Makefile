@@ -10,10 +10,9 @@ LIB = librte_pmd_atlantic.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 EXPORT_MAP := rte_pmd_atlantic_version.map
-
-LIBABIVER := 1
 
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net
@@ -31,5 +30,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_ATLANTIC_PMD) += hw_atl_utils.c
 SRCS-$(CONFIG_RTE_LIBRTE_ATLANTIC_PMD) += hw_atl_llh.c
 SRCS-$(CONFIG_RTE_LIBRTE_ATLANTIC_PMD) += hw_atl_utils_fw2x.c
 SRCS-$(CONFIG_RTE_LIBRTE_ATLANTIC_PMD) += hw_atl_b0.c
+SRCS-$(CONFIG_RTE_LIBRTE_ATLANTIC_PMD) += rte_pmd_atlantic.c
 
 include $(RTE_SDK)/mk/rte.lib.mk

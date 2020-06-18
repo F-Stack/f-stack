@@ -13,11 +13,12 @@
 #include <linux/version.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h> /* eth_type_trans */
+#include <linux/ethtool.h>
 #include <linux/skbuff.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
 
-#include <exec-env/rte_kni_common.h>
+#include <rte_kni_common.h>
 #include <kni_fifo.h>
 
 #include "compat.h"
@@ -34,6 +35,22 @@ static void kni_net_rx_normal(struct kni_dev *kni);
 
 /* kni rx function pointer, with default to normal rx */
 static kni_net_rx_t kni_net_rx_func = kni_net_rx_normal;
+
+#ifdef HAVE_IOVA_TO_KVA_MAPPING_SUPPORT
+/* iova to kernel virtual address */
+static inline void *
+iova2kva(struct kni_dev *kni, void *iova)
+{
+	return phys_to_virt(iova_to_phys(kni->usr_tsk, (unsigned long)iova));
+}
+
+static inline void *
+iova2data_kva(struct kni_dev *kni, struct rte_kni_mbuf *m)
+{
+	return phys_to_virt(iova_to_phys(kni->usr_tsk, m->buf_physaddr) +
+			    m->data_off);
+}
+#endif
 
 /* physical address to kernel virtual address */
 static void *
@@ -59,6 +76,26 @@ static void *
 kva2data_kva(struct rte_kni_mbuf *m)
 {
 	return phys_to_virt(m->buf_physaddr + m->data_off);
+}
+
+static inline void *
+get_kva(struct kni_dev *kni, void *pa)
+{
+#ifdef HAVE_IOVA_TO_KVA_MAPPING_SUPPORT
+	if (kni->iova_mode == 1)
+		return iova2kva(kni, pa);
+#endif
+	return pa2kva(pa);
+}
+
+static inline void *
+get_data_kva(struct kni_dev *kni, void *pkt_kva)
+{
+#ifdef HAVE_IOVA_TO_KVA_MAPPING_SUPPORT
+	if (kni->iova_mode == 1)
+		return iova2data_kva(kni, pkt_kva);
+#endif
+	return kva2data_kva(pkt_kva);
 }
 
 /*
@@ -121,7 +158,7 @@ kni_net_open(struct net_device *dev)
 	struct kni_dev *kni = netdev_priv(dev);
 
 	netif_start_queue(dev);
-	if (dflt_carrier == 1)
+	if (kni_dflt_carrier == 1)
 		netif_carrier_on(dev);
 	else
 		netif_carrier_off(dev);
@@ -177,7 +214,7 @@ kni_fifo_trans_pa2va(struct kni_dev *kni,
 			return;
 
 		for (i = 0; i < num_rx; i++) {
-			kva = pa2kva(kni->pa[i]);
+			kva = get_kva(kni, kni->pa[i]);
 			kni->va[i] = pa2va(kni->pa[i], kva);
 
 			kva_nb_segs = kva->nb_segs;
@@ -265,8 +302,8 @@ kni_net_tx(struct sk_buff *skb, struct net_device *dev)
 	if (likely(ret == 1)) {
 		void *data_kva;
 
-		pkt_kva = pa2kva(pkt_pa);
-		data_kva = kva2data_kva(pkt_kva);
+		pkt_kva = get_kva(kni, pkt_pa);
+		data_kva = get_data_kva(kni, pkt_kva);
 		pkt_va = pa2va(pkt_pa, pkt_kva);
 
 		len = skb->len;
@@ -293,15 +330,15 @@ kni_net_tx(struct sk_buff *skb, struct net_device *dev)
 
 	/* Free skb and update statistics */
 	dev_kfree_skb(skb);
-	kni->stats.tx_bytes += len;
-	kni->stats.tx_packets++;
+	dev->stats.tx_bytes += len;
+	dev->stats.tx_packets++;
 
 	return NETDEV_TX_OK;
 
 drop:
 	/* Free skb and update statistics */
 	dev_kfree_skb(skb);
-	kni->stats.tx_dropped++;
+	dev->stats.tx_dropped++;
 
 	return NETDEV_TX_OK;
 }
@@ -337,20 +374,17 @@ kni_net_rx_normal(struct kni_dev *kni)
 
 	/* Transfer received packets to netif */
 	for (i = 0; i < num_rx; i++) {
-		kva = pa2kva(kni->pa[i]);
+		kva = get_kva(kni, kni->pa[i]);
 		len = kva->pkt_len;
-		data_kva = kva2data_kva(kva);
+		data_kva = get_data_kva(kni, kva);
 		kni->va[i] = pa2va(kni->pa[i], kva);
 
-		skb = dev_alloc_skb(len + 2);
+		skb = netdev_alloc_skb(dev, len);
 		if (!skb) {
 			/* Update statistics */
-			kni->stats.rx_dropped++;
+			dev->stats.rx_dropped++;
 			continue;
 		}
-
-		/* Align IP on 16B boundary */
-		skb_reserve(skb, 2);
 
 		if (kva->nb_segs == 1) {
 			memcpy(skb_put(skb, len), data_kva, len);
@@ -373,7 +407,6 @@ kni_net_rx_normal(struct kni_dev *kni)
 			}
 		}
 
-		skb->dev = dev;
 		skb->protocol = eth_type_trans(skb, dev);
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 
@@ -381,8 +414,8 @@ kni_net_rx_normal(struct kni_dev *kni)
 		netif_rx_ni(skb);
 
 		/* Update statistics */
-		kni->stats.rx_bytes += len;
-		kni->stats.rx_packets++;
+		dev->stats.rx_bytes += len;
+		dev->stats.rx_packets++;
 	}
 
 	/* Burst enqueue mbufs into free_q */
@@ -405,6 +438,7 @@ kni_net_rx_lo_fifo(struct kni_dev *kni)
 	void *data_kva;
 	struct rte_kni_mbuf *alloc_kva;
 	void *alloc_data_kva;
+	struct net_device *dev = kni->net_dev;
 
 	/* Get the number of entries in rx_q */
 	num_rq = kni_fifo_count(kni->rx_q);
@@ -439,9 +473,9 @@ kni_net_rx_lo_fifo(struct kni_dev *kni)
 		num = ret;
 		/* Copy mbufs */
 		for (i = 0; i < num; i++) {
-			kva = pa2kva(kni->pa[i]);
+			kva = get_kva(kni, kni->pa[i]);
 			len = kva->data_len;
-			data_kva = kva2data_kva(kva);
+			data_kva = get_data_kva(kni, kva);
 			kni->va[i] = pa2va(kni->pa[i], kva);
 
 			while (kva->next) {
@@ -451,16 +485,16 @@ kni_net_rx_lo_fifo(struct kni_dev *kni)
 				kva = next_kva;
 			}
 
-			alloc_kva = pa2kva(kni->alloc_pa[i]);
-			alloc_data_kva = kva2data_kva(alloc_kva);
+			alloc_kva = get_kva(kni, kni->alloc_pa[i]);
+			alloc_data_kva = get_data_kva(kni, alloc_kva);
 			kni->alloc_va[i] = pa2va(kni->alloc_pa[i], alloc_kva);
 
 			memcpy(alloc_data_kva, data_kva, len);
 			alloc_kva->pkt_len = len;
 			alloc_kva->data_len = len;
 
-			kni->stats.tx_bytes += len;
-			kni->stats.rx_bytes += len;
+			dev->stats.tx_bytes += len;
+			dev->stats.rx_bytes += len;
 		}
 
 		/* Burst enqueue mbufs into tx_q */
@@ -480,8 +514,8 @@ kni_net_rx_lo_fifo(struct kni_dev *kni)
 	 * Update statistic, and enqueue/dequeue failure is impossible,
 	 * as all queues are checked at first.
 	 */
-	kni->stats.tx_packets += num;
-	kni->stats.rx_packets += num;
+	dev->stats.tx_packets += num;
+	dev->stats.rx_packets += num;
 }
 
 /*
@@ -519,30 +553,24 @@ kni_net_rx_lo_fifo_skb(struct kni_dev *kni)
 
 	/* Copy mbufs to sk buffer and then call tx interface */
 	for (i = 0; i < num; i++) {
-		kva = pa2kva(kni->pa[i]);
+		kva = get_kva(kni, kni->pa[i]);
 		len = kva->pkt_len;
-		data_kva = kva2data_kva(kva);
+		data_kva = get_data_kva(kni, kva);
 		kni->va[i] = pa2va(kni->pa[i], kva);
 
-		skb = dev_alloc_skb(len + 2);
+		skb = netdev_alloc_skb(dev, len);
 		if (skb) {
-			/* Align IP on 16B boundary */
-			skb_reserve(skb, 2);
 			memcpy(skb_put(skb, len), data_kva, len);
-			skb->dev = dev;
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 			dev_kfree_skb(skb);
 		}
 
 		/* Simulate real usage, allocate/copy skb twice */
-		skb = dev_alloc_skb(len + 2);
+		skb = netdev_alloc_skb(dev, len);
 		if (skb == NULL) {
-			kni->stats.rx_dropped++;
+			dev->stats.rx_dropped++;
 			continue;
 		}
-
-		/* Align IP on 16B boundary */
-		skb_reserve(skb, 2);
 
 		if (kva->nb_segs == 1) {
 			memcpy(skb_put(skb, len), data_kva, len);
@@ -558,18 +586,17 @@ kni_net_rx_lo_fifo_skb(struct kni_dev *kni)
 					break;
 
 				prev_kva = kva;
-				kva = pa2kva(kva->next);
-				data_kva = kva2data_kva(kva);
+				kva = get_kva(kni, kva->next);
+				data_kva = get_data_kva(kni, kva);
 				/* Convert physical address to virtual address */
 				prev_kva->next = pa2va(prev_kva->next, kva);
 			}
 		}
 
-		skb->dev = dev;
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 
-		kni->stats.rx_bytes += len;
-		kni->stats.rx_packets++;
+		dev->stats.rx_bytes += len;
+		dev->stats.rx_packets++;
 
 		/* call tx interface */
 		kni_net_tx(skb, dev);
@@ -596,33 +623,19 @@ kni_net_rx(struct kni_dev *kni)
 /*
  * Deal with a transmit timeout.
  */
+#ifdef HAVE_TX_TIMEOUT_TXQUEUE
+static void
+kni_net_tx_timeout(struct net_device *dev, unsigned int txqueue)
+#else
 static void
 kni_net_tx_timeout(struct net_device *dev)
+#endif
 {
-	struct kni_dev *kni = netdev_priv(dev);
-
 	pr_debug("Transmit timeout at %ld, latency %ld\n", jiffies,
 			jiffies - dev_trans_start(dev));
 
-	kni->stats.tx_errors++;
+	dev->stats.tx_errors++;
 	netif_wake_queue(dev);
-}
-
-/*
- * Ioctl commands
- */
-static int
-kni_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
-{
-	pr_debug("kni_net_ioctl group:%d cmd:%d\n",
-		((struct kni_dev *)netdev_priv(dev))->group_id, cmd);
-
-	return -EOPNOTSUPP;
-}
-
-static void
-kni_net_set_rx_mode(struct net_device *dev)
-{
 }
 
 static int
@@ -645,18 +658,31 @@ kni_net_change_mtu(struct net_device *dev, int new_mtu)
 }
 
 static void
-kni_net_set_promiscusity(struct net_device *netdev, int flags)
+kni_net_change_rx_flags(struct net_device *netdev, int flags)
 {
 	struct rte_kni_request req;
 	struct kni_dev *kni = netdev_priv(netdev);
 
 	memset(&req, 0, sizeof(req));
-	req.req_id = RTE_KNI_REQ_CHANGE_PROMISC;
 
-	if (netdev->flags & IFF_PROMISC)
-		req.promiscusity = 1;
-	else
-		req.promiscusity = 0;
+	if (flags & IFF_ALLMULTI) {
+		req.req_id = RTE_KNI_REQ_CHANGE_ALLMULTI;
+
+		if (netdev->flags & IFF_ALLMULTI)
+			req.allmulti = 1;
+		else
+			req.allmulti = 0;
+	}
+
+	if (flags & IFF_PROMISC) {
+		req.req_id = RTE_KNI_REQ_CHANGE_PROMISC;
+
+		if (netdev->flags & IFF_PROMISC)
+			req.promiscusity = 1;
+		else
+			req.promiscusity = 0;
+	}
+
 	kni_net_process_request(kni, &req);
 }
 
@@ -668,17 +694,6 @@ kni_net_poll_resp(struct kni_dev *kni)
 {
 	if (kni_fifo_count(kni->resp_q))
 		wake_up_interruptible(&kni->wq);
-}
-
-/*
- * Return statistics to the caller
- */
-static struct net_device_stats *
-kni_net_stats(struct net_device *dev)
-{
-	struct kni_dev *kni = netdev_priv(dev);
-
-	return &kni->stats;
 }
 
 /*
@@ -759,6 +774,7 @@ kni_net_change_carrier(struct net_device *dev, bool new_carrier)
 
 static const struct header_ops kni_net_header_ops = {
 	.create  = kni_net_header,
+	.parse   = eth_header_parse,
 #ifdef HAVE_REBUILD_HEADER
 	.rebuild = kni_net_rebuild_header,
 #endif /* < 4.1.0  */
@@ -769,17 +785,26 @@ static const struct net_device_ops kni_net_netdev_ops = {
 	.ndo_open = kni_net_open,
 	.ndo_stop = kni_net_release,
 	.ndo_set_config = kni_net_config,
-	.ndo_change_rx_flags = kni_net_set_promiscusity,
+	.ndo_change_rx_flags = kni_net_change_rx_flags,
 	.ndo_start_xmit = kni_net_tx,
 	.ndo_change_mtu = kni_net_change_mtu,
-	.ndo_do_ioctl = kni_net_ioctl,
-	.ndo_set_rx_mode = kni_net_set_rx_mode,
-	.ndo_get_stats = kni_net_stats,
 	.ndo_tx_timeout = kni_net_tx_timeout,
 	.ndo_set_mac_address = kni_net_set_mac,
 #ifdef HAVE_CHANGE_CARRIER_CB
 	.ndo_change_carrier = kni_net_change_carrier,
 #endif
+};
+
+static void kni_get_drvinfo(struct net_device *dev,
+			    struct ethtool_drvinfo *info)
+{
+	strlcpy(info->version, KNI_VERSION, sizeof(info->version));
+	strlcpy(info->driver, "kni", sizeof(info->driver));
+}
+
+static const struct ethtool_ops kni_net_ethtool_ops = {
+	.get_drvinfo	= kni_get_drvinfo,
+	.get_link	= ethtool_op_get_link,
 };
 
 void
@@ -793,6 +818,7 @@ kni_net_init(struct net_device *dev)
 	ether_setup(dev); /* assign some of the fields */
 	dev->netdev_ops      = &kni_net_netdev_ops;
 	dev->header_ops      = &kni_net_header_ops;
+	dev->ethtool_ops     = &kni_net_ethtool_ops;
 	dev->watchdog_timeo = WD_TIMEOUT;
 }
 

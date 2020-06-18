@@ -152,7 +152,7 @@ uint16_t ports[RTE_MAX_ETHPORTS];
 static unsigned nb_ports; /**< The number of ports specified in command line */
 
 /* ethernet addresses of ports */
-struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
+struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* heads for the main used and free linked lists for the data path. */
 static struct virtio_net_data_ll *ll_root_used;
@@ -186,7 +186,7 @@ us_vhost_parse_basename(const char *q_arg)
 	if (strlen(q_arg) >= MAX_BASENAME_SZ)
 		return -1;
 	else
-		snprintf((char *)&dev_basename, MAX_BASENAME_SZ, "%s", q_arg);
+		strlcpy((char *)&dev_basename, q_arg, MAX_BASENAME_SZ);
 
 	return 0;
 }

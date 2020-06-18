@@ -45,14 +45,28 @@
 /** Rx queue descriptors alignment in B */
 #define MRVL_NETA_RXD_ALIGN 32
 
-#define MRVL_NETA_VLAN_TAG_LEN		4
-#define MRVL_NETA_ETH_HDRS_LEN		(ETHER_HDR_LEN + ETHER_CRC_LEN + \
-					MRVL_NETA_VLAN_TAG_LEN)
+#define MRVL_NETA_VLAN_TAG_LEN	4
+#define MRVL_NETA_ETH_HDRS_LEN	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
+				MRVL_NETA_VLAN_TAG_LEN)
 
 #define MRVL_NETA_HDRS_LEN		(MV_MH_SIZE + MRVL_NETA_ETH_HDRS_LEN)
 #define MRVL_NETA_MTU_TO_MRU(mtu)	((mtu) + MRVL_NETA_HDRS_LEN)
 #define MRVL_NETA_MRU_TO_MTU(mru)	((mru) - MRVL_NETA_HDRS_LEN)
 
+/** Rx offloads capabilities */
+#define MVNETA_RX_OFFLOADS (DEV_RX_OFFLOAD_JUMBO_FRAME | \
+			    DEV_RX_OFFLOAD_CHECKSUM)
+
+/** Tx offloads capabilities */
+#define MVNETA_TX_OFFLOAD_CHECKSUM (DEV_TX_OFFLOAD_IPV4_CKSUM | \
+				    DEV_TX_OFFLOAD_UDP_CKSUM  | \
+				    DEV_TX_OFFLOAD_TCP_CKSUM)
+#define MVNETA_TX_OFFLOADS (MVNETA_TX_OFFLOAD_CHECKSUM | \
+			    DEV_TX_OFFLOAD_MULTI_SEGS)
+
+#define MVNETA_TX_PKT_OFFLOADS (PKT_TX_IP_CKSUM | \
+				PKT_TX_TCP_CKSUM | \
+				PKT_TX_UDP_CKSUM)
 
 struct mvneta_priv {
 	/* Hot fields, used in fast path. */

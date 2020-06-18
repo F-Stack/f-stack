@@ -744,9 +744,9 @@ cons_parse_ethertype_filter(const struct rte_flow_attr *attr,
 	 * Mask bits of destination MAC address must be full
 	 * of 1 or full of 0.
 	 */
-	if (!is_zero_ether_addr(&eth_mask->src) ||
-	    (!is_zero_ether_addr(&eth_mask->dst) &&
-	     !is_broadcast_ether_addr(&eth_mask->dst))) {
+	if (!rte_is_zero_ether_addr(&eth_mask->src) ||
+	    (!rte_is_zero_ether_addr(&eth_mask->dst) &&
+	     !rte_is_broadcast_ether_addr(&eth_mask->dst))) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Invalid ether address mask");
@@ -763,7 +763,7 @@ cons_parse_ethertype_filter(const struct rte_flow_attr *attr,
 	/* If mask bits of destination MAC address
 	 * are full of 1, set RTE_ETHTYPE_FLAGS_MAC.
 	 */
-	if (is_broadcast_ether_addr(&eth_mask->dst)) {
+	if (rte_is_broadcast_ether_addr(&eth_mask->dst)) {
 		filter->mac_addr = eth_spec->dst;
 		filter->flags |= RTE_ETHTYPE_FLAGS_MAC;
 	} else {
@@ -887,8 +887,8 @@ ixgbe_parse_ethertype_filter(struct rte_eth_dev *dev,
 		return -rte_errno;
 	}
 
-	if (filter->ether_type == ETHER_TYPE_IPv4 ||
-		filter->ether_type == ETHER_TYPE_IPv6) {
+	if (filter->ether_type == RTE_ETHER_TYPE_IPV4 ||
+		filter->ether_type == RTE_ETHER_TYPE_IPV6) {
 		memset(filter, 0, sizeof(struct rte_eth_ethertype_filter));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1048,13 +1048,13 @@ cons_parse_syn_filter(const struct rte_flow_attr *attr,
 
 	tcp_spec = item->spec;
 	tcp_mask = item->mask;
-	if (!(tcp_spec->hdr.tcp_flags & TCP_SYN_FLAG) ||
+	if (!(tcp_spec->hdr.tcp_flags & RTE_TCP_SYN_FLAG) ||
 	    tcp_mask->hdr.src_port ||
 	    tcp_mask->hdr.dst_port ||
 	    tcp_mask->hdr.sent_seq ||
 	    tcp_mask->hdr.recv_ack ||
 	    tcp_mask->hdr.data_off ||
-	    tcp_mask->hdr.tcp_flags != TCP_SYN_FLAG ||
+	    tcp_mask->hdr.tcp_flags != RTE_TCP_SYN_FLAG ||
 	    tcp_mask->hdr.rx_win ||
 	    tcp_mask->hdr.cksum ||
 	    tcp_mask->hdr.tcp_urp) {
@@ -1705,7 +1705,7 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			eth_spec = item->spec;
 
 			/* Get the dst MAC. */
-			for (j = 0; j < ETHER_ADDR_LEN; j++) {
+			for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 				rule->ixgbe_fdir.formatted.inner_mac[j] =
 					eth_spec->dst.addr_bytes[j];
 			}
@@ -1734,7 +1734,7 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			 * src MAC address must be masked,
 			 * and don't support dst MAC address mask.
 			 */
-			for (j = 0; j < ETHER_ADDR_LEN; j++) {
+			for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 				if (eth_mask->src.addr_bytes[j] ||
 					eth_mask->dst.addr_bytes[j] != 0xFF) {
 					memset(rule, 0,
@@ -2660,7 +2660,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 	}
 
 	/* src MAC address should be masked. */
-	for (j = 0; j < ETHER_ADDR_LEN; j++) {
+	for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 		if (eth_mask->src.addr_bytes[j]) {
 			memset(rule, 0,
 			       sizeof(struct ixgbe_fdir_rule));
@@ -2671,7 +2671,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 		}
 	}
 	rule->mask.mac_addr_byte_mask = 0;
-	for (j = 0; j < ETHER_ADDR_LEN; j++) {
+	for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 		/* It's a per byte mask. */
 		if (eth_mask->dst.addr_bytes[j] == 0xFF) {
 			rule->mask.mac_addr_byte_mask |= 0x1 << j;
@@ -2692,7 +2692,7 @@ ixgbe_parse_fdir_filter_tunnel(const struct rte_flow_attr *attr,
 		eth_spec = item->spec;
 
 		/* Get the dst MAC. */
-		for (j = 0; j < ETHER_ADDR_LEN; j++) {
+		for (j = 0; j < RTE_ETHER_ADDR_LEN; j++) {
 			rule->ixgbe_fdir.formatted.inner_mac[j] =
 				eth_spec->dst.addr_bytes[j];
 		}
@@ -2874,7 +2874,7 @@ ixgbe_parse_rss_filter(struct rte_eth_dev *dev,
 	/* check if the next not void item is END */
 	act = next_no_void_action(actions, act);
 	if (act->type != RTE_FLOW_ACTION_TYPE_END) {
-		memset(rss_conf, 0, sizeof(struct rte_eth_rss_conf));
+		memset(rss_conf, 0, sizeof(struct ixgbe_rte_flow_rss_conf));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ACTION,
 			act, "Not supported action.");

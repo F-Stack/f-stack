@@ -11,7 +11,7 @@
 
 int
 rte_pmd_ixgbe_set_vf_mac_addr(uint16_t port, uint16_t vf,
-			      struct ether_addr *mac_addr)
+			      struct rte_ether_addr *mac_addr)
 {
 	struct ixgbe_hw *hw;
 	struct ixgbe_vf_info *vfinfo;
@@ -35,9 +35,10 @@ rte_pmd_ixgbe_set_vf_mac_addr(uint16_t port, uint16_t vf,
 	vfinfo = *(IXGBE_DEV_PRIVATE_TO_P_VFDATA(dev->data->dev_private));
 	rar_entry = hw->mac.num_rar_entries - (vf + 1);
 
-	if (is_valid_assigned_ether_addr((struct ether_addr *)new_mac)) {
+	if (rte_is_valid_assigned_ether_addr(
+			(struct rte_ether_addr *)new_mac)) {
 		rte_memcpy(vfinfo[vf].vf_mac_addresses, new_mac,
-			   ETHER_ADDR_LEN);
+			   RTE_ETHER_ADDR_LEN);
 		return hw->mac.ops.set_rar(hw, rar_entry, new_mac, vf,
 					   IXGBE_RAH_AV);
 	}
@@ -154,7 +155,7 @@ rte_pmd_ixgbe_set_vf_vlan_insert(uint16_t port, uint16_t vf, uint16_t vlan_id)
 	if (vf >= pci_dev->max_vfs)
 		return -EINVAL;
 
-	if (vlan_id > ETHER_MAX_VLAN_ID)
+	if (vlan_id > RTE_ETHER_MAX_VLAN_ID)
 		return -EINVAL;
 
 	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -476,7 +477,7 @@ rte_pmd_ixgbe_set_vf_vlan_filter(uint16_t port, uint16_t vlan,
 	if (!is_ixgbe_supported(dev))
 		return -ENOTSUP;
 
-	if ((vlan > ETHER_MAX_VLAN_ID) || (vf_mask == 0))
+	if (vlan > RTE_ETHER_MAX_VLAN_ID || vf_mask == 0)
 		return -EINVAL;
 
 	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -514,82 +515,20 @@ rte_pmd_ixgbe_set_vf_rate_limit(uint16_t port, uint16_t vf,
 int
 rte_pmd_ixgbe_macsec_enable(uint16_t port, uint8_t en, uint8_t rp)
 {
-	struct ixgbe_hw *hw;
 	struct rte_eth_dev *dev;
-	uint32_t ctrl;
+	struct ixgbe_macsec_setting macsec_setting;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
 
 	dev = &rte_eth_devices[port];
 
-	if (!is_ixgbe_supported(dev))
-		return -ENOTSUP;
+	macsec_setting.offload_en = 1;
+	macsec_setting.encrypt_en = en;
+	macsec_setting.replayprotect_en = rp;
 
-	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	ixgbe_dev_macsec_setting_save(dev, &macsec_setting);
 
-	/* Stop the data paths */
-	if (ixgbe_disable_sec_rx_path(hw) != IXGBE_SUCCESS)
-		return -ENOTSUP;
-	/**
-	 * Workaround:
-	 * As no ixgbe_disable_sec_rx_path equivalent is
-	 * implemented for tx in the base code, and we are
-	 * not allowed to modify the base code in DPDK, so
-	 * just call the hand-written one directly for now.
-	 * The hardware support has been checked by
-	 * ixgbe_disable_sec_rx_path().
-	 */
-	ixgbe_disable_sec_tx_path_generic(hw);
-
-	/* Enable Ethernet CRC (required by MACsec offload) */
-	ctrl = IXGBE_READ_REG(hw, IXGBE_HLREG0);
-	ctrl |= IXGBE_HLREG0_TXCRCEN | IXGBE_HLREG0_RXCRCSTRP;
-	IXGBE_WRITE_REG(hw, IXGBE_HLREG0, ctrl);
-
-	/* Enable the TX and RX crypto engines */
-	ctrl = IXGBE_READ_REG(hw, IXGBE_SECTXCTRL);
-	ctrl &= ~IXGBE_SECTXCTRL_SECTX_DIS;
-	IXGBE_WRITE_REG(hw, IXGBE_SECTXCTRL, ctrl);
-
-	ctrl = IXGBE_READ_REG(hw, IXGBE_SECRXCTRL);
-	ctrl &= ~IXGBE_SECRXCTRL_SECRX_DIS;
-	IXGBE_WRITE_REG(hw, IXGBE_SECRXCTRL, ctrl);
-
-	ctrl = IXGBE_READ_REG(hw, IXGBE_SECTXMINIFG);
-	ctrl &= ~IXGBE_SECTX_MINSECIFG_MASK;
-	ctrl |= 0x3;
-	IXGBE_WRITE_REG(hw, IXGBE_SECTXMINIFG, ctrl);
-
-	/* Enable SA lookup */
-	ctrl = IXGBE_READ_REG(hw, IXGBE_LSECTXCTRL);
-	ctrl &= ~IXGBE_LSECTXCTRL_EN_MASK;
-	ctrl |= en ? IXGBE_LSECTXCTRL_AUTH_ENCRYPT :
-		     IXGBE_LSECTXCTRL_AUTH;
-	ctrl |= IXGBE_LSECTXCTRL_AISCI;
-	ctrl &= ~IXGBE_LSECTXCTRL_PNTHRSH_MASK;
-	ctrl |= IXGBE_MACSEC_PNTHRSH & IXGBE_LSECTXCTRL_PNTHRSH_MASK;
-	IXGBE_WRITE_REG(hw, IXGBE_LSECTXCTRL, ctrl);
-
-	ctrl = IXGBE_READ_REG(hw, IXGBE_LSECRXCTRL);
-	ctrl &= ~IXGBE_LSECRXCTRL_EN_MASK;
-	ctrl |= IXGBE_LSECRXCTRL_STRICT << IXGBE_LSECRXCTRL_EN_SHIFT;
-	ctrl &= ~IXGBE_LSECRXCTRL_PLSH;
-	if (rp)
-		ctrl |= IXGBE_LSECRXCTRL_RP;
-	else
-		ctrl &= ~IXGBE_LSECRXCTRL_RP;
-	IXGBE_WRITE_REG(hw, IXGBE_LSECRXCTRL, ctrl);
-
-	/* Start the data paths */
-	ixgbe_enable_sec_rx_path(hw);
-	/**
-	 * Workaround:
-	 * As no ixgbe_enable_sec_rx_path equivalent is
-	 * implemented for tx in the base code, and we are
-	 * not allowed to modify the base code in DPDK, so
-	 * just call the hand-written one directly for now.
-	 */
-	ixgbe_enable_sec_tx_path_generic(hw);
+	ixgbe_dev_macsec_register_enable(dev, &macsec_setting);
 
 	return 0;
 }
@@ -597,63 +536,15 @@ rte_pmd_ixgbe_macsec_enable(uint16_t port, uint8_t en, uint8_t rp)
 int
 rte_pmd_ixgbe_macsec_disable(uint16_t port)
 {
-	struct ixgbe_hw *hw;
 	struct rte_eth_dev *dev;
-	uint32_t ctrl;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
 
 	dev = &rte_eth_devices[port];
 
-	if (!is_ixgbe_supported(dev))
-		return -ENOTSUP;
+	ixgbe_dev_macsec_setting_reset(dev);
 
-	hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-
-	/* Stop the data paths */
-	if (ixgbe_disable_sec_rx_path(hw) != IXGBE_SUCCESS)
-		return -ENOTSUP;
-	/**
-	 * Workaround:
-	 * As no ixgbe_disable_sec_rx_path equivalent is
-	 * implemented for tx in the base code, and we are
-	 * not allowed to modify the base code in DPDK, so
-	 * just call the hand-written one directly for now.
-	 * The hardware support has been checked by
-	 * ixgbe_disable_sec_rx_path().
-	 */
-	ixgbe_disable_sec_tx_path_generic(hw);
-
-	/* Disable the TX and RX crypto engines */
-	ctrl = IXGBE_READ_REG(hw, IXGBE_SECTXCTRL);
-	ctrl |= IXGBE_SECTXCTRL_SECTX_DIS;
-	IXGBE_WRITE_REG(hw, IXGBE_SECTXCTRL, ctrl);
-
-	ctrl = IXGBE_READ_REG(hw, IXGBE_SECRXCTRL);
-	ctrl |= IXGBE_SECRXCTRL_SECRX_DIS;
-	IXGBE_WRITE_REG(hw, IXGBE_SECRXCTRL, ctrl);
-
-	/* Disable SA lookup */
-	ctrl = IXGBE_READ_REG(hw, IXGBE_LSECTXCTRL);
-	ctrl &= ~IXGBE_LSECTXCTRL_EN_MASK;
-	ctrl |= IXGBE_LSECTXCTRL_DISABLE;
-	IXGBE_WRITE_REG(hw, IXGBE_LSECTXCTRL, ctrl);
-
-	ctrl = IXGBE_READ_REG(hw, IXGBE_LSECRXCTRL);
-	ctrl &= ~IXGBE_LSECRXCTRL_EN_MASK;
-	ctrl |= IXGBE_LSECRXCTRL_DISABLE << IXGBE_LSECRXCTRL_EN_SHIFT;
-	IXGBE_WRITE_REG(hw, IXGBE_LSECRXCTRL, ctrl);
-
-	/* Start the data paths */
-	ixgbe_enable_sec_rx_path(hw);
-	/**
-	 * Workaround:
-	 * As no ixgbe_enable_sec_rx_path equivalent is
-	 * implemented for tx in the base code, and we are
-	 * not allowed to modify the base code in DPDK, so
-	 * just call the hand-written one directly for now.
-	 */
-	ixgbe_enable_sec_tx_path_generic(hw);
+	ixgbe_dev_macsec_register_disable(dev);
 
 	return 0;
 }
@@ -881,7 +772,7 @@ rte_pmd_ixgbe_set_tc_bw_alloc(uint16_t port,
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_pmd_ixgbe_upd_fctrl_sbp(uint16_t port, int enable)
 {
 	struct ixgbe_hw *hw;
@@ -1095,7 +986,7 @@ STATIC void rte_pmd_ixgbe_release_swfw(struct ixgbe_hw *hw, u32 mask)
 	ixgbe_release_swfw_semaphore(hw, mask);
 }
 
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_lock(uint16_t port)
 {
 	struct ixgbe_hw *hw;
@@ -1122,7 +1013,7 @@ rte_pmd_ixgbe_mdio_lock(uint16_t port)
 	return IXGBE_SUCCESS;
 }
 
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_unlock(uint16_t port)
 {
 	struct rte_eth_dev *dev;
@@ -1149,7 +1040,7 @@ rte_pmd_ixgbe_mdio_unlock(uint16_t port)
 	return IXGBE_SUCCESS;
 }
 
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_unlocked_read(uint16_t port, uint32_t reg_addr,
 				 uint32_t dev_type, uint16_t *phy_data)
 {
@@ -1196,7 +1087,7 @@ rte_pmd_ixgbe_mdio_unlocked_read(uint16_t port, uint32_t reg_addr,
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_pmd_ixgbe_mdio_unlocked_write(uint16_t port, uint32_t reg_addr,
 				  uint32_t dev_type, uint16_t phy_data)
 {

@@ -9,7 +9,6 @@
 #include <rte_malloc.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_ring.h"
 #include "bnxt_txq.h"
 #include "bnxt_txr.h"
@@ -103,27 +102,13 @@ int bnxt_init_tx_ring_struct(struct bnxt_tx_queue *txq, unsigned int socket_id)
 	return 0;
 }
 
-static inline uint32_t bnxt_tx_bds_in_hw(struct bnxt_tx_queue *txq)
-{
-	return ((txq->tx_ring->tx_prod - txq->tx_ring->tx_cons) &
-		txq->tx_ring->tx_ring_struct->ring_mask);
-}
-
-static inline uint32_t bnxt_tx_avail(struct bnxt_tx_queue *txq)
-{
-	/* Tell compiler to fetch tx indices from memory. */
-	rte_compiler_barrier();
-
-	return ((txq->tx_ring->tx_ring_struct->ring_size -
-		 bnxt_tx_bds_in_hw(txq)) - 1);
-}
-
 static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				struct bnxt_tx_queue *txq,
 				uint16_t *coal_pkts,
 				struct tx_bd_long **last_txbd)
 {
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
+	uint32_t outer_tpid_bd = 0;
 	struct tx_bd_long *txbd;
 	struct tx_bd_long_hi *txbd1 = NULL;
 	uint32_t vlan_tag_flags, cfa_action;
@@ -138,11 +123,15 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		TX_BD_LONG_FLAGS_LHINT_LT2K
 	};
 
+	if (unlikely(is_bnxt_in_error(txq->bp)))
+		return -EIO;
+
 	if (tx_pkt->ol_flags & (PKT_TX_TCP_SEG | PKT_TX_TCP_CKSUM |
 				PKT_TX_UDP_CKSUM | PKT_TX_IP_CKSUM |
 				PKT_TX_VLAN_PKT | PKT_TX_OUTER_IP_CKSUM |
 				PKT_TX_TUNNEL_GRE | PKT_TX_TUNNEL_VXLAN |
-				PKT_TX_TUNNEL_GENEVE))
+				PKT_TX_TUNNEL_GENEVE | PKT_TX_IEEE1588_TMST |
+				PKT_TX_QINQ_PKT))
 		long_bd = true;
 
 	nr_bds = long_bd + tx_pkt->nb_segs;
@@ -196,7 +185,14 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		txbd->flags_type |= TX_BD_LONG_TYPE_TX_BD_LONG;
 		vlan_tag_flags = 0;
 		cfa_action = 0;
-		if (tx_buf->mbuf->ol_flags & PKT_TX_VLAN_PKT) {
+		/* HW can accelerate only outer vlan in QinQ mode */
+		if (tx_buf->mbuf->ol_flags & PKT_TX_QINQ_PKT) {
+			vlan_tag_flags = TX_BD_LONG_CFA_META_KEY_VLAN_TAG |
+				tx_buf->mbuf->vlan_tci_outer;
+			outer_tpid_bd = txq->bp->outer_tpid_bd &
+				BNXT_OUTER_TPID_BD_MASK;
+			vlan_tag_flags |= outer_tpid_bd;
+		} else if (tx_buf->mbuf->ol_flags & PKT_TX_VLAN_PKT) {
 			/* shurd: Should this mask at
 			 * TX_BD_LONG_CFA_META_VLAN_VID_MASK?
 			 */
@@ -222,10 +218,13 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 			uint16_t hdr_size;
 
 			/* TSO */
-			txbd1->lflags |= TX_BD_LONG_LFLAGS_LSO;
+			txbd1->lflags |= TX_BD_LONG_LFLAGS_LSO |
+					 TX_BD_LONG_LFLAGS_T_IPID;
 			hdr_size = tx_pkt->l2_len + tx_pkt->l3_len +
-					tx_pkt->l4_len + tx_pkt->outer_l2_len +
-					tx_pkt->outer_l3_len;
+					tx_pkt->l4_len;
+			hdr_size += (tx_pkt->ol_flags & PKT_TX_TUNNEL_MASK) ?
+				    tx_pkt->outer_l2_len +
+				    tx_pkt->outer_l3_len : 0;
 			/* The hdr_size is multiple of 16bit units not 8bit.
 			 * Hence divide by 2.
 			 */
@@ -308,6 +307,11 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 			/* IP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_T_IP_CHKSUM;
 			txbd1->mss = 0;
+		} else if ((tx_pkt->ol_flags & PKT_TX_IEEE1588_TMST) ==
+			   PKT_TX_IEEE1588_TMST) {
+			/* PTP */
+			txbd1->lflags |= TX_BD_LONG_LFLAGS_STAMP;
+			txbd1->mss = 0;
 		}
 	} else {
 		txbd->flags_type |= TX_BD_SHORT_TYPE_TX_BD_SHORT;
@@ -319,6 +323,7 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		RTE_VERIFY(m_seg->data_len);
 		txr->tx_prod = RING_NEXT(txr->tx_ring_struct, txr->tx_prod);
 		tx_buf = &txr->tx_buf_ring[txr->tx_prod];
+		tx_buf->mbuf = m_seg;
 
 		txbd = &txr->tx_desc_ring[txr->tx_prod];
 		txbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova(m_seg));
@@ -338,24 +343,53 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
 {
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
+	struct rte_mempool *pool = NULL;
+	struct rte_mbuf **free = txq->free;
 	uint16_t cons = txr->tx_cons;
+	unsigned int blk = 0;
 	int i, j;
 
 	for (i = 0; i < nr_pkts; i++) {
-		struct bnxt_sw_tx_bd *tx_buf;
 		struct rte_mbuf *mbuf;
+		struct bnxt_sw_tx_bd *tx_buf = &txr->tx_buf_ring[cons];
+		unsigned short nr_bds = tx_buf->nr_bds;
 
-		tx_buf = &txr->tx_buf_ring[cons];
-		cons = RING_NEXT(txr->tx_ring_struct, cons);
-		mbuf = tx_buf->mbuf;
-		tx_buf->mbuf = NULL;
-
-		/* EW - no need to unmap DMA memory? */
-
-		for (j = 1; j < tx_buf->nr_bds; j++)
+		for (j = 0; j < nr_bds; j++) {
+			mbuf = tx_buf->mbuf;
+			tx_buf->mbuf = NULL;
 			cons = RING_NEXT(txr->tx_ring_struct, cons);
-		rte_pktmbuf_free(mbuf);
+			tx_buf = &txr->tx_buf_ring[cons];
+			if (!mbuf)	/* long_bd's tx_buf ? */
+				continue;
+
+			mbuf = rte_pktmbuf_prefree_seg(mbuf);
+			if (unlikely(!mbuf))
+				continue;
+
+			/* EW - no need to unmap DMA memory? */
+
+			if (likely(mbuf->pool == pool)) {
+				/* Add mbuf to the bulk free array */
+				free[blk++] = mbuf;
+			} else {
+				/* Found an mbuf from a different pool. Free
+				 * mbufs accumulated so far to the previous
+				 * pool
+				 */
+				if (likely(pool != NULL))
+					rte_mempool_put_bulk(pool,
+							     (void *)free,
+							     blk);
+
+				/* Start accumulating mbufs in a new pool */
+				free[0] = mbuf;
+				pool = mbuf->pool;
+				blk = 1;
+			}
+		}
 	}
+	if (blk)
+		rte_mempool_put_bulk(pool, (void *)free, blk);
 
 	txr->tx_cons = cons;
 }
@@ -399,7 +433,7 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 	if (nb_tx_pkts) {
 		bnxt_tx_cmp(txq, nb_tx_pkts);
 		cpr->cp_raw_cons = raw_cons;
-		B_CP_DB(cpr, cpr->cp_raw_cons, ring_mask);
+		bnxt_db_cq(cpr);
 	}
 
 	return nb_tx_pkts;
@@ -418,7 +452,7 @@ uint16_t bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	bnxt_handle_tx_cp(txq);
 
 	/* Tx queue was stopped; wait for it to be restarted */
-	if (txq->tx_deferred_start) {
+	if (unlikely(!txq->tx_started)) {
 		PMD_DRV_LOG(DEBUG, "Tx q stopped;return\n");
 		return 0;
 	}
@@ -436,19 +470,38 @@ uint16_t bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	if (likely(nb_tx_pkts)) {
 		/* Request a completion on the last packet */
 		last_txbd->flags_type &= ~TX_BD_LONG_FLAGS_NO_CMPL;
-		B_TX_DB(txq->tx_ring->tx_doorbell, txq->tx_ring->tx_prod);
+		bnxt_db_write(&txq->tx_ring->tx_db, txq->tx_ring->tx_prod);
 	}
 
 	return nb_tx_pkts;
+}
+
+/*
+ * Dummy DPDK callback for TX.
+ *
+ * This function is used to temporarily replace the real callback during
+ * unsafe control operations on the queue, or in case of error.
+ */
+uint16_t
+bnxt_dummy_xmit_pkts(void *tx_queue __rte_unused,
+		     struct rte_mbuf **tx_pkts __rte_unused,
+		     uint16_t nb_pkts __rte_unused)
+{
+	return 0;
 }
 
 int bnxt_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 {
 	struct bnxt *bp = dev->data->dev_private;
 	struct bnxt_tx_queue *txq = bp->tx_queues[tx_queue_id];
+	int rc = 0;
+
+	rc = is_bnxt_in_error(bp);
+	if (rc)
+		return rc;
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
-	txq->tx_deferred_start = false;
+	txq->tx_started = true;
 	PMD_DRV_LOG(DEBUG, "Tx queue started\n");
 
 	return 0;
@@ -458,12 +511,17 @@ int bnxt_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 {
 	struct bnxt *bp = dev->data->dev_private;
 	struct bnxt_tx_queue *txq = bp->tx_queues[tx_queue_id];
+	int rc = 0;
+
+	rc = is_bnxt_in_error(bp);
+	if (rc)
+		return rc;
 
 	/* Handle TX completions */
 	bnxt_handle_tx_cp(txq);
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
-	txq->tx_deferred_start = true;
+	txq->tx_started = false;
 	PMD_DRV_LOG(DEBUG, "Tx queue stopped\n");
 
 	return 0;

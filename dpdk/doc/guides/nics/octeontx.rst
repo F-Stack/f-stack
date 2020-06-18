@@ -71,7 +71,7 @@ following ``make`` command:
 .. code-block:: console
 
    cd <DPDK-source-directory>
-   make config T=arm64-thunderx-linuxapp-gcc install
+   make config T=arm64-thunderx-linux-gcc install
 
 #. Running testpmd:
 
@@ -83,7 +83,7 @@ following ``make`` command:
 
    .. code-block:: console
 
-      ./arm64-thunderx-linuxapp-gcc/app/testpmd -c 700 \
+      ./arm64-thunderx-linux-gcc/app/testpmd -c 700 \
                 --base-virtaddr=0x100000000000 \
                 --mbuf-pool-ops-name="octeontx_fpavf" \
                 --vdev='event_octeontx' \
@@ -161,8 +161,8 @@ This driver will only work with ``octeontx_fpavf`` external mempool handler
 as it is the most performance effective way for packet allocation and Tx buffer
 recycling on OCTEON TX SoC platform.
 
-CRC striping
-~~~~~~~~~~~~
+CRC stripping
+~~~~~~~~~~~~~
 
 The OCTEON TX SoC family NICs strip the CRC for every packets coming into the
 host interface irrespective of the offload configuration.
@@ -174,3 +174,10 @@ The OCTEON TX SoC family NICs support a maximum of a 32K jumbo frame. The value
 is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
 member of ``struct rte_eth_conf`` is set to a value lower than 32k, frames
 up to 32k bytes can still reach the host interface.
+
+Maximum mempool size
+~~~~~~~~~~~~~~~~~~~~
+
+The maximum mempool size supplied to Rx queue setup should be less than 128K.
+When running testpmd on OCTEON TX the application can limit the number of mbufs
+by using the option ``--total-num-mbufs=131072``.

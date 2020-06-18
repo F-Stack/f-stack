@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2018 NXP
+ *   Copyright 2016-2019 NXP
  *
  */
 #include <unistd.h>
@@ -229,7 +229,7 @@ dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int lcoreid)
 	return 0;
 }
 
-struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(int lcoreid)
+static struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(int lcoreid)
 {
 	struct dpaa2_dpio_dev *dpio_dev = NULL;
 	int ret;
@@ -366,7 +366,9 @@ dpaa2_check_lcore_cpuset(void)
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 		for (i = 0; i < RTE_MAX_LCORE; i++) {
-			if (CPU_ISSET(i, &lcore_config[lcore_id].cpuset)) {
+			rte_cpuset_t cpuset = rte_lcore_cpuset(lcore_id);
+
+			if (CPU_ISSET(i, &cpuset)) {
 				RTE_LOG(DEBUG, EAL, "lcore id = %u cpu=%u\n",
 					lcore_id, i);
 				if (dpaa2_cpu[lcore_id] != 0xffffffff) {
@@ -418,9 +420,8 @@ dpaa2_create_dpio_device(int vdev_fd,
 			goto err;
 	}
 
-	dpio_dev->dpio = malloc(sizeof(struct fsl_mc_io));
-	memset(dpio_dev->dpio, 0, sizeof(struct fsl_mc_io));
-
+	dpio_dev->dpio = rte_zmalloc(NULL, sizeof(struct fsl_mc_io),
+				     RTE_CACHE_LINE_SIZE);
 	if (!dpio_dev->dpio) {
 		DPAA2_BUS_ERR("Memory allocation failure");
 		goto err;
@@ -509,6 +510,8 @@ dpaa2_create_dpio_device(int vdev_fd,
 	p_des.cinh_bar = (void *)(dpio_dev->qbman_portal_ci_paddr);
 	p_des.irq = -1;
 	p_des.qman_version = attr.qbman_version;
+	p_des.eqcr_mode = qman_eqcr_vb_ring;
+	p_des.cena_access_mode = qman_cena_fastest_access;
 
 	dpio_dev->sw_portal = qbman_swp_init(&p_des);
 	if (dpio_dev->sw_portal == NULL) {
@@ -525,6 +528,18 @@ dpaa2_create_dpio_device(int vdev_fd,
 		goto err;
 	}
 
+	dpio_dev->eqresp = rte_zmalloc(NULL, MAX_EQ_RESP_ENTRIES *
+				     (sizeof(struct qbman_result) +
+				     sizeof(struct eqresp_metadata)),
+				     RTE_CACHE_LINE_SIZE);
+	if (!dpio_dev->eqresp) {
+		DPAA2_BUS_ERR("Memory allocation failed for eqresp");
+		goto err;
+	}
+	dpio_dev->eqresp_meta = (struct eqresp_metadata *)(dpio_dev->eqresp +
+				MAX_EQ_RESP_ENTRIES);
+
+
 	TAILQ_INSERT_TAIL(&dpio_dev_list, dpio_dev, next);
 
 	return 0;
@@ -533,9 +548,26 @@ err:
 	if (dpio_dev->dpio) {
 		dpio_disable(dpio_dev->dpio, CMD_PRI_LOW, dpio_dev->token);
 		dpio_close(dpio_dev->dpio, CMD_PRI_LOW,  dpio_dev->token);
-		free(dpio_dev->dpio);
+		rte_free(dpio_dev->dpio);
 	}
+
 	rte_free(dpio_dev);
+
+	/* For each element in the list, cleanup */
+	TAILQ_FOREACH(dpio_dev, &dpio_dev_list, next) {
+		if (dpio_dev->dpio) {
+			dpio_disable(dpio_dev->dpio, CMD_PRI_LOW,
+				dpio_dev->token);
+			dpio_close(dpio_dev->dpio, CMD_PRI_LOW,
+				dpio_dev->token);
+			rte_free(dpio_dev->dpio);
+		}
+		rte_free(dpio_dev);
+	}
+
+	/* Preventing re-use of the list with old entries */
+	TAILQ_INIT(&dpio_dev_list);
+
 	return -1;
 }
 
@@ -568,6 +600,41 @@ fail:
 		rte_free(q_storage->dq_storage[i]);
 
 	return -1;
+}
+
+uint32_t
+dpaa2_free_eq_descriptors(void)
+{
+	struct dpaa2_dpio_dev *dpio_dev = DPAA2_PER_LCORE_DPIO;
+	struct qbman_result *eqresp;
+	struct eqresp_metadata *eqresp_meta;
+	struct dpaa2_queue *txq;
+
+	while (dpio_dev->eqresp_ci != dpio_dev->eqresp_pi) {
+		eqresp = &dpio_dev->eqresp[dpio_dev->eqresp_ci];
+		eqresp_meta = &dpio_dev->eqresp_meta[dpio_dev->eqresp_ci];
+
+		if (!qbman_result_eqresp_rspid(eqresp))
+			break;
+
+		if (qbman_result_eqresp_rc(eqresp)) {
+			txq = eqresp_meta->dpaa2_q;
+			txq->cb_eqresp_free(dpio_dev->eqresp_ci);
+		}
+		qbman_result_eqresp_set_rspid(eqresp, 0);
+
+		dpio_dev->eqresp_ci + 1 < MAX_EQ_RESP_ENTRIES ?
+			dpio_dev->eqresp_ci++ : (dpio_dev->eqresp_ci = 0);
+	}
+
+	/* Return 1 less entry so that PI and CI are never same in a
+	 * case there all the EQ responses are in use.
+	 */
+	if (dpio_dev->eqresp_ci > dpio_dev->eqresp_pi)
+		return dpio_dev->eqresp_ci - dpio_dev->eqresp_pi - 1;
+	else
+		return dpio_dev->eqresp_ci - dpio_dev->eqresp_pi +
+			MAX_EQ_RESP_ENTRIES - 1;
 }
 
 static struct rte_dpaa2_object rte_dpaa2_dpio_obj = {

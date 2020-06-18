@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
+#include <poll.h>
 
 
 #include <rte_log.h>
@@ -19,7 +20,10 @@
 
 #define RTE_LOGTYPE_GUEST_CHANNEL RTE_LOGTYPE_USER1
 
-static int global_fds[RTE_MAX_LCORE];
+/* Timeout for incoming message in milliseconds. */
+#define TIMEOUT 10
+
+static int global_fds[RTE_MAX_LCORE] = { [0 ... RTE_MAX_LCORE-1] = -1 };
 
 int
 guest_channel_host_connect(const char *path, unsigned int lcore_id)
@@ -35,7 +39,7 @@ guest_channel_host_connect(const char *path, unsigned int lcore_id)
 		return -1;
 	}
 	/* check if path is already open */
-	if (global_fds[lcore_id] != 0) {
+	if (global_fds[lcore_id] != -1) {
 		RTE_LOG(ERR, GUEST_CHANNEL, "Channel(%u) is already open with fd %d\n",
 				lcore_id, global_fds[lcore_id]);
 		return -1;
@@ -84,7 +88,7 @@ guest_channel_host_connect(const char *path, unsigned int lcore_id)
 	return 0;
 error:
 	close(fd);
-	global_fds[lcore_id] = 0;
+	global_fds[lcore_id] = -1;
 	return -1;
 }
 
@@ -100,7 +104,7 @@ guest_channel_send_msg(struct channel_packet *pkt, unsigned int lcore_id)
 		return -1;
 	}
 
-	if (global_fds[lcore_id] == 0) {
+	if (global_fds[lcore_id] < 0) {
 		RTE_LOG(ERR, GUEST_CHANNEL, "Channel is not connected\n");
 		return -1;
 	}
@@ -125,6 +129,67 @@ int rte_power_guest_channel_send_msg(struct channel_packet *pkt,
 	return guest_channel_send_msg(pkt, lcore_id);
 }
 
+int power_guest_channel_read_msg(void *pkt,
+		size_t pkt_len,
+		unsigned int lcore_id)
+{
+	int ret;
+	struct pollfd fds;
+
+	if (pkt_len == 0 || pkt == NULL)
+		return -1;
+
+	fds.fd = global_fds[lcore_id];
+	fds.events = POLLIN;
+
+	ret = poll(&fds, 1, TIMEOUT);
+	if (ret == 0) {
+		RTE_LOG(DEBUG, GUEST_CHANNEL, "Timeout occurred during poll function.\n");
+		return -1;
+	} else if (ret < 0) {
+		RTE_LOG(ERR, GUEST_CHANNEL, "Error occurred during poll function: %s\n",
+				strerror(errno));
+		return -1;
+	}
+
+	if (lcore_id >= RTE_MAX_LCORE) {
+		RTE_LOG(ERR, GUEST_CHANNEL, "Channel(%u) is out of range 0...%d\n",
+				lcore_id, RTE_MAX_LCORE-1);
+		return -1;
+	}
+
+	if (global_fds[lcore_id] < 0) {
+		RTE_LOG(ERR, GUEST_CHANNEL, "Channel is not connected\n");
+		return -1;
+	}
+
+	while (pkt_len > 0) {
+		ret = read(global_fds[lcore_id],
+				pkt, pkt_len);
+
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+
+		if (ret == 0) {
+			RTE_LOG(ERR, GUEST_CHANNEL, "Expected more data, but connection has been closed.\n");
+			return -1;
+		}
+		pkt = (char *)pkt + ret;
+		pkt_len -= ret;
+	}
+
+	return 0;
+}
+
+int rte_power_guest_channel_receive_msg(void *pkt,
+		size_t pkt_len,
+		unsigned int lcore_id)
+{
+	return power_guest_channel_read_msg(pkt, pkt_len, lcore_id);
+}
 
 void
 guest_channel_host_disconnect(unsigned int lcore_id)
@@ -134,8 +199,8 @@ guest_channel_host_disconnect(unsigned int lcore_id)
 				lcore_id, RTE_MAX_LCORE-1);
 		return;
 	}
-	if (global_fds[lcore_id] == 0)
+	if (global_fds[lcore_id] < 0)
 		return;
 	close(global_fds[lcore_id]);
-	global_fds[lcore_id] = 0;
+	global_fds[lcore_id] = -1;
 }

@@ -25,7 +25,7 @@ ixgbe_vf_representor_link_update(struct rte_eth_dev *ethdev,
 
 static int
 ixgbe_vf_representor_mac_addr_set(struct rte_eth_dev *ethdev,
-	struct ether_addr *mac_addr)
+	struct rte_ether_addr *mac_addr)
 {
 	struct ixgbe_vf_representor *representor = ethdev->data->dev_private;
 
@@ -34,7 +34,7 @@ ixgbe_vf_representor_mac_addr_set(struct rte_eth_dev *ethdev,
 		representor->vf_id, mac_addr);
 }
 
-static void
+static int
 ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 	struct rte_eth_dev_info *dev_info)
 {
@@ -76,6 +76,8 @@ ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 		representor->pf_ethdev->device->name;
 	dev_info->switch_info.domain_id = representor->switch_domain_id;
 	dev_info->switch_info.port_id = representor->vf_id;
+
+	return 0;
 }
 
 static int ixgbe_vf_representor_dev_configure(
@@ -211,7 +213,7 @@ ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params)
 	vf_data = *IXGBE_DEV_PRIVATE_TO_P_VFDATA(
 		representor->pf_ethdev->data->dev_private);
 
-	ethdev->data->mac_addrs = (struct ether_addr *)
+	ethdev->data->mac_addrs = (struct rte_ether_addr *)
 		vf_data[representor->vf_id].vf_mac_addresses;
 
 	/* Link state. Inherited from PF */

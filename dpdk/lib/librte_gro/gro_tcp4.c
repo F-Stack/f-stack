@@ -160,8 +160,8 @@ insert_new_flow(struct gro_tcp4_tbl *tbl,
 
 	dst = &(tbl->flows[flow_idx].key);
 
-	ether_addr_copy(&(src->eth_saddr), &(dst->eth_saddr));
-	ether_addr_copy(&(src->eth_daddr), &(dst->eth_daddr));
+	rte_ether_addr_copy(&(src->eth_saddr), &(dst->eth_saddr));
+	rte_ether_addr_copy(&(src->eth_daddr), &(dst->eth_daddr));
 	dst->ip_src_addr = src->ip_src_addr;
 	dst->ip_dst_addr = src->ip_dst_addr;
 	dst->recv_ack = src->recv_ack;
@@ -180,10 +180,10 @@ insert_new_flow(struct gro_tcp4_tbl *tbl,
 static inline void
 update_header(struct gro_tcp4_item *item)
 {
-	struct ipv4_hdr *ipv4_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
 	struct rte_mbuf *pkt = item->firstseg;
 
-	ipv4_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(pkt, char *) +
+	ipv4_hdr = (struct rte_ipv4_hdr *)(rte_pktmbuf_mtod(pkt, char *) +
 			pkt->l2_len);
 	ipv4_hdr->total_length = rte_cpu_to_be_16(pkt->pkt_len -
 			pkt->l2_len);
@@ -194,9 +194,9 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 		struct gro_tcp4_tbl *tbl,
 		uint64_t start_time)
 {
-	struct ether_hdr *eth_hdr;
-	struct ipv4_hdr *ipv4_hdr;
-	struct tcp_hdr *tcp_hdr;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
 	uint32_t sent_seq;
 	int32_t tcp_dl;
 	uint16_t ip_id, hdr_len, frag_off;
@@ -215,16 +215,16 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 	if (unlikely(INVALID_TCP_HDRLEN(pkt->l4_len)))
 		return -1;
 
-	eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-	ipv4_hdr = (struct ipv4_hdr *)((char *)eth_hdr + pkt->l2_len);
-	tcp_hdr = (struct tcp_hdr *)((char *)ipv4_hdr + pkt->l3_len);
+	eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+	ipv4_hdr = (struct rte_ipv4_hdr *)((char *)eth_hdr + pkt->l2_len);
+	tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv4_hdr + pkt->l3_len);
 	hdr_len = pkt->l2_len + pkt->l3_len + pkt->l4_len;
 
 	/*
 	 * Don't process the packet which has FIN, SYN, RST, PSH, URG, ECE
 	 * or CWR set.
 	 */
-	if (tcp_hdr->tcp_flags != TCP_ACK_FLAG)
+	if (tcp_hdr->tcp_flags != RTE_TCP_ACK_FLAG)
 		return -1;
 	/*
 	 * Don't process the packet whose payload length is less than or
@@ -239,12 +239,12 @@ gro_tcp4_reassemble(struct rte_mbuf *pkt,
 	 * whose DF bit is 1, IPv4 ID is ignored.
 	 */
 	frag_off = rte_be_to_cpu_16(ipv4_hdr->fragment_offset);
-	is_atomic = (frag_off & IPV4_HDR_DF_FLAG) == IPV4_HDR_DF_FLAG;
+	is_atomic = (frag_off & RTE_IPV4_HDR_DF_FLAG) == RTE_IPV4_HDR_DF_FLAG;
 	ip_id = is_atomic ? 0 : rte_be_to_cpu_16(ipv4_hdr->packet_id);
 	sent_seq = rte_be_to_cpu_32(tcp_hdr->sent_seq);
 
-	ether_addr_copy(&(eth_hdr->s_addr), &(key.eth_saddr));
-	ether_addr_copy(&(eth_hdr->d_addr), &(key.eth_daddr));
+	rte_ether_addr_copy(&(eth_hdr->s_addr), &(key.eth_saddr));
+	rte_ether_addr_copy(&(eth_hdr->d_addr), &(key.eth_daddr));
 	key.ip_src_addr = ipv4_hdr->src_addr;
 	key.ip_dst_addr = ipv4_hdr->dst_addr;
 	key.src_port = tcp_hdr->src_port;

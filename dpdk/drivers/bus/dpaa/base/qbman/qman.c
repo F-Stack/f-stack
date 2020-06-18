@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2008-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017,2019 NXP
  *
  */
 
@@ -10,6 +10,8 @@
 #include <rte_dpaa_bus.h>
 #include <rte_eventdev.h>
 #include <rte_byteorder.h>
+
+#include <dpaa_bits.h>
 
 /* Compilation constants */
 #define DQRR_MAXFILL	15
@@ -165,6 +167,11 @@ int qman_setup_fq_lookup_table(size_t num_entries)
 		qman_fq_lookup_table,
 			(unsigned long)qman_fq_lookup_table_size);
 	return 0;
+}
+
+void qman_set_fq_lookup_table(void **fq_table)
+{
+	qman_fq_lookup_table = fq_table;
 }
 
 /* global structure that maintains fq object mapping */
@@ -493,11 +500,10 @@ static inline void qm_mr_pvb_update(struct qm_portal *portal)
 	dcbit_ro(res);
 }
 
-static inline
-struct qman_portal *qman_create_portal(
-			struct qman_portal *portal,
-			      const struct qm_portal_config *c,
-			      const struct qman_cgrs *cgrs)
+struct qman_portal *
+qman_init_portal(struct qman_portal *portal,
+		   const struct qm_portal_config *c,
+		   const struct qman_cgrs *cgrs)
 {
 	struct qm_portal *p;
 	char buf[16];
@@ -505,6 +511,9 @@ struct qman_portal *qman_create_portal(
 	u32 isdr;
 
 	p = &portal->p;
+
+	if (!c)
+		c = portal->config;
 
 	if (dpaa_svr_family == SVR_LS1043A_FAMILY)
 		portal->use_eqcr_ci_stashing = 3;
@@ -627,21 +636,23 @@ fail_eqcr:
 static struct qman_portal global_portals[MAX_GLOBAL_PORTALS];
 static rte_atomic16_t global_portals_used[MAX_GLOBAL_PORTALS];
 
-static struct qman_portal *
-qman_alloc_global_portal(void)
+struct qman_portal *
+qman_alloc_global_portal(struct qm_portal_config *q_pcfg)
 {
 	unsigned int i;
 
 	for (i = 0; i < MAX_GLOBAL_PORTALS; i++) {
-		if (rte_atomic16_test_and_set(&global_portals_used[i]))
+		if (rte_atomic16_test_and_set(&global_portals_used[i])) {
+			global_portals[i].config = q_pcfg;
 			return &global_portals[i];
+		}
 	}
 	pr_err("No portal available (%x)\n", MAX_GLOBAL_PORTALS);
 
 	return NULL;
 }
 
-static int
+int
 qman_free_global_portal(struct qman_portal *portal)
 {
 	unsigned int i;
@@ -655,23 +666,22 @@ qman_free_global_portal(struct qman_portal *portal)
 	return -1;
 }
 
+void
+qman_portal_uninhibit_isr(struct qman_portal *portal)
+{
+	qm_isr_uninhibit(&portal->p);
+}
+
 struct qman_portal *qman_create_affine_portal(const struct qm_portal_config *c,
-					      const struct qman_cgrs *cgrs,
-					      int alloc)
+					      const struct qman_cgrs *cgrs)
 {
 	struct qman_portal *res;
-	struct qman_portal *portal;
-
-	if (alloc)
-		portal = qman_alloc_global_portal();
-	else
-		portal = get_affine_portal();
+	struct qman_portal *portal = get_affine_portal();
 
 	/* A criteria for calling this function (from qman_driver.c) is that
 	 * we're already affine to the cpu and won't schedule onto another cpu.
 	 */
-
-	res = qman_create_portal(portal, c, cgrs);
+	res = qman_init_portal(portal, c, cgrs);
 	if (res) {
 		spin_lock(&affine_mask_lock);
 		CPU_SET(c->cpu, &affine_mask);
@@ -1051,6 +1061,20 @@ int qman_irqsource_add(u32 bits)
 	dpaa_set_bits(bits, &p->irq_sources);
 	qm_isr_enable_write(&p->p, p->irq_sources);
 
+	return 0;
+}
+
+int qman_fq_portal_irqsource_add(struct qman_portal *p, u32 bits)
+{
+	bits = bits & QM_PIRQ_VISIBLE;
+
+	/* Clear any previously remaining interrupt conditions in
+	 * QCSP_ISR. This prevents raising a false interrupt when
+	 * interrupt conditions are enabled in QCSP_IER.
+	 */
+	qm_isr_status_clear(&p->p, bits);
+	dpaa_set_bits(bits, &p->irq_sources);
+	qm_isr_enable_write(&p->p, p->irq_sources);
 
 	return 0;
 }
@@ -1058,6 +1082,31 @@ int qman_irqsource_add(u32 bits)
 int qman_irqsource_remove(u32 bits)
 {
 	struct qman_portal *p = get_affine_portal();
+	u32 ier;
+
+	/* Our interrupt handler only processes+clears status register bits that
+	 * are in p->irq_sources. As we're trimming that mask, if one of them
+	 * were to assert in the status register just before we remove it from
+	 * the enable register, there would be an interrupt-storm when we
+	 * release the IRQ lock. So we wait for the enable register update to
+	 * take effect in h/w (by reading it back) and then clear all other bits
+	 * in the status register. Ie. we clear them from ISR once it's certain
+	 * IER won't allow them to reassert.
+	 */
+
+	bits &= QM_PIRQ_VISIBLE;
+	dpaa_clear_bits(bits, &p->irq_sources);
+	qm_isr_enable_write(&p->p, p->irq_sources);
+	ier = qm_isr_enable_read(&p->p);
+	/* Using "~ier" (rather than "bits" or "~p->irq_sources") creates a
+	 * data-dependency, ie. to protect against re-ordering.
+	 */
+	qm_isr_status_clear(&p->p, ~ier);
+	return 0;
+}
+
+int qman_fq_portal_irqsource_remove(struct qman_portal *p, u32 bits)
+{
 	u32 ier;
 
 	/* Our interrupt handler only processes+clears status register bits that
@@ -1408,6 +1457,7 @@ int qman_create_fq(u32 fqid, u32 flags, struct qman_fq *fq)
 		pr_info("Find empty table entry failed\n");
 		return -ENOMEM;
 	}
+	fq->qman_fq_lookup_table = qman_fq_lookup_table;
 #endif
 	if (!(flags & QMAN_FQ_FLAG_AS_IS) || (flags & QMAN_FQ_FLAG_NO_MODIFY))
 		return 0;
@@ -2280,7 +2330,7 @@ int qman_enqueue_multi(struct qman_fq *fq,
 
 int
 qman_enqueue_multi_fq(struct qman_fq *fq[], const struct qm_fd *fd,
-		      int frames_to_send)
+		      u32 *flags, int frames_to_send)
 {
 	struct qman_portal *p = get_affine_portal();
 	struct qm_portal *portal = &p->p;
@@ -2288,7 +2338,7 @@ qman_enqueue_multi_fq(struct qman_fq *fq[], const struct qm_fd *fd,
 	register struct qm_eqcr *eqcr = &portal->eqcr;
 	struct qm_eqcr_entry *eq = eqcr->cursor, *prev_eq;
 
-	u8 i, diff, old_ci, sent = 0;
+	u8 i = 0, diff, old_ci, sent = 0;
 
 	/* Update the available entries if no entry is free */
 	if (!eqcr->available) {
@@ -2307,6 +2357,11 @@ qman_enqueue_multi_fq(struct qman_fq *fq[], const struct qm_fd *fd,
 		eq->fd.addr = cpu_to_be40(fd->addr);
 		eq->fd.status = cpu_to_be32(fd->status);
 		eq->fd.opaque = cpu_to_be32(fd->opaque);
+		if (flags && (flags[i] & QMAN_ENQUEUE_FLAG_DCA)) {
+			eq->dca = QM_EQCR_DCA_ENABLE |
+				((flags[i] >> 8) & QM_EQCR_DCA_IDXMASK);
+		}
+		i++;
 
 		eq = (void *)((unsigned long)(eq + 1) &
 			(~(unsigned long)(QM_EQCR_SIZE << 6)));

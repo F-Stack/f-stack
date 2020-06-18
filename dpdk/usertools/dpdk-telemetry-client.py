@@ -1,5 +1,9 @@
-# SPDK-License-Identifier: BSD-3-Clause
+#! /usr/bin/env python
+# SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Intel Corporation
+
+from __future__ import print_function
+from __future__ import unicode_literals
 
 import socket
 import os
@@ -11,12 +15,13 @@ BUFFER_SIZE = 200000
 METRICS_REQ = "{\"action\":0,\"command\":\"ports_all_stat_values\",\"data\":null}"
 API_REG = "{\"action\":1,\"command\":\"clients\",\"data\":{\"client_path\":\""
 API_UNREG = "{\"action\":2,\"command\":\"clients\",\"data\":{\"client_path\":\""
+GLOBAL_METRICS_REQ = "{\"action\":0,\"command\":\"global_stat_values\",\"data\":null}"
 DEFAULT_FP = "/var/run/dpdk/default_client"
 
 try:
-	raw_input  # Python 2
+    raw_input  # Python 2
 except NameError:
-	raw_input = input  # Python 3
+    raw_input = input  # Python 3
 
 class Socket:
 
@@ -61,18 +66,19 @@ class Client:
         self.socket.recv_fd.settimeout(2)
         self.socket.send_fd.connect("/var/run/dpdk/rte/telemetry")
         JSON = (API_REG + self.file_path + "\"}}")
-        self.socket.send_fd.sendall(JSON)
+        self.socket.send_fd.sendall(JSON.encode())
+
         self.socket.recv_fd.listen(1)
         self.socket.client_fd = self.socket.recv_fd.accept()[0]
 
     def unregister(self): # Unregister a given client
-        self.socket.client_fd.send(API_UNREG + self.file_path + "\"}}")
+        self.socket.client_fd.send((API_UNREG + self.file_path + "\"}}").encode())
         self.socket.client_fd.close()
 
     def requestMetrics(self): # Requests metrics for given client
-        self.socket.client_fd.send(METRICS_REQ)
-        data = self.socket.client_fd.recv(BUFFER_SIZE)
-        print "\nResponse: \n", str(data)
+        self.socket.client_fd.send(METRICS_REQ.encode())
+        data = self.socket.client_fd.recv(BUFFER_SIZE).decode()
+        print("\nResponse: \n", data)
 
     def repeatedlyRequestMetrics(self, sleep_time): # Recursively requests metrics for given client
         print("\nPlease enter the number of times you'd like to continuously request Metrics:")
@@ -83,12 +89,18 @@ class Client:
             self.requestMetrics()
             time.sleep(sleep_time)
 
+    def requestGlobalMetrics(self): #Requests global metrics for given client
+        self.socket.client_fd.send(GLOBAL_METRICS_REQ.encode())
+        data = self.socket.client_fd.recv(BUFFER_SIZE).decode()
+        print("\nResponse: \n", data)
+
     def interactiveMenu(self, sleep_time): # Creates Interactive menu within the script
-        while self.choice != 3:
+        while self.choice != 4:
             print("\nOptions Menu")
             print("[1] Send for Metrics for all ports")
             print("[2] Send for Metrics for all ports recursively")
-            print("[3] Unregister client")
+            print("[3] Send for global Metrics")
+            print("[4] Unregister client")
 
             try:
                 self.choice = int(raw_input("\n:"))
@@ -99,6 +111,8 @@ class Client:
                 elif self.choice == 2:
                     self.repeatedlyRequestMetrics(sleep_time)
                 elif self.choice == 3:
+                    self.requestGlobalMetrics()
+                elif self.choice == 4:
                     self.unregister()
                     self.unregistered = 1
                 else:
@@ -111,10 +125,10 @@ if __name__ == "__main__":
     sleep_time = 1
     file_path = ""
     if (len(sys.argv) == 2):
-	file_path = sys.argv[1]
+        file_path = sys.argv[1]
     else:
         print("Warning - No filepath passed, using default (" + DEFAULT_FP + ").")
-	file_path = DEFAULT_FP
+        file_path = DEFAULT_FP
     client = Client()
     client.getFilepath(file_path)
     client.register()

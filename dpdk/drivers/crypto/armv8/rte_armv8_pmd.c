@@ -14,7 +14,7 @@
 
 #include "armv8_crypto_defs.h"
 
-#include "rte_armv8_pmd_private.h"
+#include "armv8_pmd_private.h"
 
 static uint8_t cryptodev_driver_id;
 
@@ -84,12 +84,12 @@ crypto_op_ca_encrypt = {
 
 static const crypto_func_tbl_t
 crypto_op_ca_decrypt = {
-	NULL
+	{ {NULL} }
 };
 
 static const crypto_func_tbl_t
 crypto_op_ac_encrypt = {
-	NULL
+	{ {NULL} }
 };
 
 static const crypto_func_tbl_t
@@ -369,7 +369,16 @@ armv8_crypto_set_session_chained_parameters(struct armv8_crypto_session *sess,
 	/* Select cipher key */
 	sess->cipher.key.length = cipher_xform->cipher.key.length;
 	/* Set cipher direction */
-	cop = sess->cipher.direction;
+	switch (sess->cipher.direction) {
+	case RTE_CRYPTO_CIPHER_OP_ENCRYPT:
+		cop = ARMV8_CRYPTO_CIPHER_OP_ENCRYPT;
+		break;
+	case RTE_CRYPTO_CIPHER_OP_DECRYPT:
+		cop = ARMV8_CRYPTO_CIPHER_OP_DECRYPT;
+		break;
+	default:
+		return -ENOTSUP;
+	}
 	/* Set cipher algorithm */
 	calg = cipher_xform->cipher.algo;
 
@@ -514,7 +523,8 @@ get_session(struct armv8_crypto_qp *qp, struct rte_crypto_op *op)
 		if (rte_mempool_get(qp->sess_mp, (void **)&_sess))
 			return NULL;
 
-		if (rte_mempool_get(qp->sess_mp, (void **)&_sess_private_data))
+		if (rte_mempool_get(qp->sess_mp_priv,
+				(void **)&_sess_private_data))
 			return NULL;
 
 		sess = (struct armv8_crypto_session *)_sess_private_data;
@@ -522,7 +532,7 @@ get_session(struct armv8_crypto_qp *qp, struct rte_crypto_op *op)
 		if (unlikely(armv8_crypto_set_session_parameters(sess,
 				op->sym->xform) != 0)) {
 			rte_mempool_put(qp->sess_mp, _sess);
-			rte_mempool_put(qp->sess_mp, _sess_private_data);
+			rte_mempool_put(qp->sess_mp_priv, _sess_private_data);
 			sess = NULL;
 		}
 		op->sym->session = (struct rte_cryptodev_sym_session *)_sess;
@@ -654,9 +664,10 @@ process_op(struct armv8_crypto_qp *qp, struct rte_crypto_op *op,
 	if (op->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
 		memset(sess, 0, sizeof(struct armv8_crypto_session));
 		memset(op->sym->session, 0,
-				rte_cryptodev_sym_get_header_session_size());
+			rte_cryptodev_sym_get_existing_header_session_size(
+				op->sym->session));
 		rte_mempool_put(qp->sess_mp, sess);
-		rte_mempool_put(qp->sess_mp, op->sym->session);
+		rte_mempool_put(qp->sess_mp_priv, op->sym->session);
 		op->sym->session = NULL;
 	}
 
@@ -775,7 +786,6 @@ cryptodev_armv8_crypto_create(const char *name,
 			RTE_CRYPTODEV_FF_CPU_NEON |
 			RTE_CRYPTODEV_FF_CPU_ARM_CE;
 
-	/* Set vector instructions mode supported */
 	internals = dev->data->dev_private;
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;

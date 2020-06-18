@@ -59,7 +59,7 @@
 #define CMD_Q_RUN			0x1
 #define CMD_Q_SIZE			0x1F
 #define CMD_Q_SHIFT			3
-#define COMMANDS_PER_QUEUE		2048
+#define COMMANDS_PER_QUEUE		8192
 
 #define QUEUE_SIZE_VAL                  ((ffs(COMMANDS_PER_QUEUE) - 2) & \
 					 CMD_Q_SIZE)
@@ -220,7 +220,7 @@ struct ccp_queue {
 	/**< lsb assigned for sha ctx */
 	uint32_t sb_hmac;
 	/**< lsb assigned for hmac ctx */
-} ____cacheline_aligned;
+} __rte_cache_aligned;
 
 /**
  * A structure describing a CCP device.

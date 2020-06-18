@@ -16,11 +16,12 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 
-#include <exec-env/rte_kni_common.h>
+#include <rte_kni_common.h>
 
 #include "compat.h"
 #include "kni_dev.h"
 
+MODULE_VERSION(KNI_VERSION);
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Intel Corporation");
 MODULE_DESCRIPTION("Kernel Module for managing kni devices");
@@ -28,9 +29,6 @@ MODULE_DESCRIPTION("Kernel Module for managing kni devices");
 #define KNI_RX_LOOP_NUM 1000
 
 #define KNI_MAX_DEVICES 32
-
-extern const struct pci_device_id ixgbe_pci_tbl[];
-extern const struct pci_device_id igb_pci_tbl[];
 
 /* loopback mode */
 static char *lo_mode;
@@ -41,7 +39,7 @@ static uint32_t multiple_kthread_on;
 
 /* Default carrier state for created KNI network interfaces */
 static char *carrier;
-uint32_t dflt_carrier;
+uint32_t kni_dflt_carrier;
 
 #define KNI_DEV_IN_USE_BIT_NUM 0 /* Bit number for device in use */
 
@@ -182,15 +180,6 @@ kni_dev_remove(struct kni_dev *dev)
 	if (!dev)
 		return -ENODEV;
 
-#ifdef RTE_KNI_KMOD_ETHTOOL
-	if (dev->pci_dev) {
-		if (pci_match_id(ixgbe_pci_tbl, dev->pci_dev))
-			ixgbe_kni_remove(dev->pci_dev);
-		else if (pci_match_id(igb_pci_tbl, dev->pci_dev))
-			igb_kni_remove(dev->pci_dev);
-	}
-#endif
-
 	if (dev->net_dev) {
 		unregister_netdev(dev->net_dev);
 		free_netdev(dev->net_dev);
@@ -306,11 +295,6 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 	struct rte_kni_device_info dev_info;
 	struct net_device *net_dev = NULL;
 	struct kni_dev *kni, *dev, *n;
-#ifdef RTE_KNI_KMOD_ETHTOOL
-	struct pci_dev *found_pci = NULL;
-	struct net_device *lad_dev = NULL;
-	struct pci_dev *pci = NULL;
-#endif
 
 	pr_info("Creating kni...\n");
 	/* Check the buffer size, to avoid warning */
@@ -360,20 +344,40 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 	kni = netdev_priv(net_dev);
 
 	kni->net_dev = net_dev;
-	kni->group_id = dev_info.group_id;
 	kni->core_id = dev_info.core_id;
 	strncpy(kni->name, dev_info.name, RTE_KNI_NAMESIZE);
 
 	/* Translate user space info into kernel space info */
-	kni->tx_q = phys_to_virt(dev_info.tx_phys);
-	kni->rx_q = phys_to_virt(dev_info.rx_phys);
-	kni->alloc_q = phys_to_virt(dev_info.alloc_phys);
-	kni->free_q = phys_to_virt(dev_info.free_phys);
+	if (dev_info.iova_mode) {
+#ifdef HAVE_IOVA_TO_KVA_MAPPING_SUPPORT
+		kni->tx_q = iova_to_kva(current, dev_info.tx_phys);
+		kni->rx_q = iova_to_kva(current, dev_info.rx_phys);
+		kni->alloc_q = iova_to_kva(current, dev_info.alloc_phys);
+		kni->free_q = iova_to_kva(current, dev_info.free_phys);
 
-	kni->req_q = phys_to_virt(dev_info.req_phys);
-	kni->resp_q = phys_to_virt(dev_info.resp_phys);
-	kni->sync_va = dev_info.sync_va;
-	kni->sync_kva = phys_to_virt(dev_info.sync_phys);
+		kni->req_q = iova_to_kva(current, dev_info.req_phys);
+		kni->resp_q = iova_to_kva(current, dev_info.resp_phys);
+		kni->sync_va = dev_info.sync_va;
+		kni->sync_kva = iova_to_kva(current, dev_info.sync_phys);
+		kni->usr_tsk = current;
+		kni->iova_mode = 1;
+#else
+		pr_err("KNI module does not support IOVA to VA translation\n");
+		return -EINVAL;
+#endif
+	} else {
+
+		kni->tx_q = phys_to_virt(dev_info.tx_phys);
+		kni->rx_q = phys_to_virt(dev_info.rx_phys);
+		kni->alloc_q = phys_to_virt(dev_info.alloc_phys);
+		kni->free_q = phys_to_virt(dev_info.free_phys);
+
+		kni->req_q = phys_to_virt(dev_info.req_phys);
+		kni->resp_q = phys_to_virt(dev_info.resp_phys);
+		kni->sync_va = dev_info.sync_va;
+		kni->sync_kva = phys_to_virt(dev_info.sync_phys);
+		kni->iova_mode = 0;
+	}
 
 	kni->mbuf_size = dev_info.mbuf_size;
 
@@ -391,71 +395,27 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 		(unsigned long long) dev_info.resp_phys, kni->resp_q);
 	pr_debug("mbuf_size:    %u\n", kni->mbuf_size);
 
-	pr_debug("PCI: %02x:%02x.%02x %04x:%04x\n",
-					dev_info.bus,
-					dev_info.devid,
-					dev_info.function,
-					dev_info.vendor_id,
-					dev_info.device_id);
-#ifdef RTE_KNI_KMOD_ETHTOOL
-	pci = pci_get_device(dev_info.vendor_id, dev_info.device_id, NULL);
-
-	/* Support Ethtool */
-	while (pci) {
-		pr_debug("pci_bus: %02x:%02x:%02x\n",
-					pci->bus->number,
-					PCI_SLOT(pci->devfn),
-					PCI_FUNC(pci->devfn));
-
-		if ((pci->bus->number == dev_info.bus) &&
-			(PCI_SLOT(pci->devfn) == dev_info.devid) &&
-			(PCI_FUNC(pci->devfn) == dev_info.function)) {
-			found_pci = pci;
-
-			if (pci_match_id(ixgbe_pci_tbl, found_pci))
-				ret = ixgbe_kni_probe(found_pci, &lad_dev);
-			else if (pci_match_id(igb_pci_tbl, found_pci))
-				ret = igb_kni_probe(found_pci, &lad_dev);
-			else
-				ret = -1;
-
-			pr_debug("PCI found: pci=0x%p, lad_dev=0x%p\n",
-							pci, lad_dev);
-			if (ret == 0) {
-				kni->lad_dev = lad_dev;
-				kni_set_ethtool_ops(kni->net_dev);
-			} else {
-				pr_err("Device not supported by ethtool");
-				kni->lad_dev = NULL;
-			}
-
-			kni->pci_dev = found_pci;
-			kni->device_id = dev_info.device_id;
-			break;
-		}
-		pci = pci_get_device(dev_info.vendor_id,
-				dev_info.device_id, pci);
-	}
-	if (pci)
-		pci_dev_put(pci);
-#endif
-
-	if (kni->lad_dev)
-		ether_addr_copy(net_dev->dev_addr, kni->lad_dev->dev_addr);
-	else {
-		/* if user has provided a valid mac address */
-		if (is_valid_ether_addr(dev_info.mac_addr))
-			memcpy(net_dev->dev_addr, dev_info.mac_addr, ETH_ALEN);
-		else
-			/*
-			 * Generate random mac address. eth_random_addr() is the
-			 * newer version of generating mac address in kernel.
-			 */
-			random_ether_addr(net_dev->dev_addr);
-	}
+	/* if user has provided a valid mac address */
+	if (is_valid_ether_addr(dev_info.mac_addr))
+		memcpy(net_dev->dev_addr, dev_info.mac_addr, ETH_ALEN);
+	else
+		/*
+		 * Generate random mac address. eth_random_addr() is the
+		 * newer version of generating mac address in kernel.
+		 */
+		random_ether_addr(net_dev->dev_addr);
 
 	if (dev_info.mtu)
 		net_dev->mtu = dev_info.mtu;
+#ifdef HAVE_MAX_MTU_PARAM
+	net_dev->max_mtu = net_dev->mtu;
+
+	if (dev_info.min_mtu)
+		net_dev->min_mtu = dev_info.min_mtu;
+
+	if (dev_info.max_mtu)
+		net_dev->max_mtu = dev_info.max_mtu;
+#endif
 
 	ret = register_netdev(net_dev);
 	if (ret) {
@@ -594,14 +554,14 @@ static int __init
 kni_parse_carrier_state(void)
 {
 	if (!carrier) {
-		dflt_carrier = 0;
+		kni_dflt_carrier = 0;
 		return 0;
 	}
 
 	if (strcmp(carrier, "off") == 0)
-		dflt_carrier = 0;
+		kni_dflt_carrier = 0;
 	else if (strcmp(carrier, "on") == 0)
-		dflt_carrier = 1;
+		kni_dflt_carrier = 1;
 	else
 		return -1;
 
@@ -628,7 +588,7 @@ kni_init(void)
 		return -EINVAL;
 	}
 
-	if (dflt_carrier == 0)
+	if (kni_dflt_carrier == 0)
 		pr_debug("Default carrier state set to off.\n");
 	else
 		pr_debug("Default carrier state set to on.\n");

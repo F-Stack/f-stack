@@ -2,7 +2,11 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include <rte_eal_memconfig.h>
+#include <rte_string_fns.h>
 #include <rte_acl.h>
+#include <rte_tailq.h>
+
 #include "acl.h"
 
 TAILQ_HEAD(rte_acl_list, rte_tailq_entry);
@@ -12,11 +16,13 @@ static struct rte_tailq_elem rte_acl_tailq = {
 };
 EAL_REGISTER_TAILQ(rte_acl_tailq)
 
+#ifndef RTE_ARCH_X86
+#ifndef CC_AVX2_SUPPORT
 /*
  * If the compiler doesn't support AVX2 instructions,
  * then the dummy one would be used instead for AVX2 classify method.
  */
-__rte_weak int
+int
 rte_acl_classify_avx2(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -25,8 +31,9 @@ rte_acl_classify_avx2(__rte_unused const struct rte_acl_ctx *ctx,
 {
 	return -ENOTSUP;
 }
+#endif
 
-__rte_weak int
+int
 rte_acl_classify_sse(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -35,8 +42,11 @@ rte_acl_classify_sse(__rte_unused const struct rte_acl_ctx *ctx,
 {
 	return -ENOTSUP;
 }
+#endif
 
-__rte_weak int
+#ifndef RTE_ARCH_ARM
+#ifndef RTE_ARCH_ARM64
+int
 rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -45,8 +55,11 @@ rte_acl_classify_neon(__rte_unused const struct rte_acl_ctx *ctx,
 {
 	return -ENOTSUP;
 }
+#endif
+#endif
 
-__rte_weak int
+#ifndef RTE_ARCH_PPC_64
+int
 rte_acl_classify_altivec(__rte_unused const struct rte_acl_ctx *ctx,
 	__rte_unused const uint8_t **data,
 	__rte_unused uint32_t *results,
@@ -55,6 +68,7 @@ rte_acl_classify_altivec(__rte_unused const struct rte_acl_ctx *ctx,
 {
 	return -ENOTSUP;
 }
+#endif
 
 static const rte_acl_classify_t classify_fns[] = {
 	[RTE_ACL_CLASSIFY_DEFAULT] = rte_acl_classify_scalar,
@@ -145,13 +159,13 @@ rte_acl_find_existing(const char *name)
 
 	acl_list = RTE_TAILQ_CAST(rte_acl_tailq.head, rte_acl_list);
 
-	rte_rwlock_read_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_lock();
 	TAILQ_FOREACH(te, acl_list, next) {
 		ctx = (struct rte_acl_ctx *) te->data;
 		if (strncmp(name, ctx->name, sizeof(ctx->name)) == 0)
 			break;
 	}
-	rte_rwlock_read_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_unlock();
 
 	if (te == NULL) {
 		rte_errno = ENOENT;
@@ -171,7 +185,7 @@ rte_acl_free(struct rte_acl_ctx *ctx)
 
 	acl_list = RTE_TAILQ_CAST(rte_acl_tailq.head, rte_acl_list);
 
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 
 	/* find our tailq entry */
 	TAILQ_FOREACH(te, acl_list, next) {
@@ -179,13 +193,13 @@ rte_acl_free(struct rte_acl_ctx *ctx)
 			break;
 	}
 	if (te == NULL) {
-		rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+		rte_mcfg_tailq_write_unlock();
 		return;
 	}
 
 	TAILQ_REMOVE(acl_list, te, next);
 
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	rte_free(ctx->mem);
 	rte_free(ctx);
@@ -215,7 +229,7 @@ rte_acl_create(const struct rte_acl_param *param)
 	sz = sizeof(*ctx) + param->max_rule_num * param->rule_size;
 
 	/* get EAL TAILQ lock. */
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 
 	/* if we already have one with that name */
 	TAILQ_FOREACH(te, acl_list, next) {
@@ -249,7 +263,7 @@ rte_acl_create(const struct rte_acl_param *param)
 		ctx->rule_sz = param->rule_size;
 		ctx->socket_id = param->socket_id;
 		ctx->alg = rte_acl_default_classify;
-		snprintf(ctx->name, sizeof(ctx->name), "%s", param->name);
+		strlcpy(ctx->name, param->name, sizeof(ctx->name));
 
 		te->data = (void *) ctx;
 
@@ -257,7 +271,7 @@ rte_acl_create(const struct rte_acl_param *param)
 	}
 
 exit:
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 	return ctx;
 }
 
@@ -366,10 +380,10 @@ rte_acl_list_dump(void)
 
 	acl_list = RTE_TAILQ_CAST(rte_acl_tailq.head, rte_acl_list);
 
-	rte_rwlock_read_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_lock();
 	TAILQ_FOREACH(te, acl_list, next) {
 		ctx = (struct rte_acl_ctx *) te->data;
 		rte_acl_dump(ctx);
 	}
-	rte_rwlock_read_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_unlock();
 }

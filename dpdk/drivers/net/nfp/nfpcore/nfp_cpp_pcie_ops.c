@@ -114,6 +114,7 @@ struct nfp_pcie_user {
 
 	int device;
 	int lock;
+	int secondary_lock;
 	char busdev[BUSDEV_SZ];
 	int barsz;
 	char *cfg;
@@ -292,14 +293,32 @@ nfp_reconfigure_bar(struct nfp_pcie_user *nfp, struct nfp_bar *bar, int tgt,
  * already mapped.
  *
  * BAR0.0: Reserved for General Mapping (for MSI-X access to PCIe SRAM)
+ *
+ *         Halving PCItoCPPBars for primary and secondary processes.
+ *         NFP PMD just requires two fixed slots, one for configuration BAR,
+ *         and another for accessing the hw queues. Another slot is needed
+ *         for setting the link up or down. Secondary processes do not need
+ *         to map the first two slots again, but it requires one slot for
+ *         accessing the link, even if it is not likely the secondary process
+ *         starting the port. This implies a limit of secondary processes
+ *         supported. Due to this requirement and future extensions requiring
+ *         new slots per process, only one secondary process is supported by
+ *         now.
  */
 static int
 nfp_enable_bars(struct nfp_pcie_user *nfp)
 {
 	struct nfp_bar *bar;
-	int x;
+	int x, start, end;
 
-	for (x = ARRAY_SIZE(nfp->bar); x > 0; x--) {
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		start = 4;
+		end = 1;
+	} else {
+		start = 7;
+		end = 4;
+	}
+	for (x = start; x > end; x--) {
 		bar = &nfp->bar[x - 1];
 		bar->barcfg = 0;
 		bar->nfp = nfp;
@@ -322,9 +341,16 @@ static struct nfp_bar *
 nfp_alloc_bar(struct nfp_pcie_user *nfp)
 {
 	struct nfp_bar *bar;
-	int x;
+	int x, start, end;
 
-	for (x = ARRAY_SIZE(nfp->bar); x > 0; x--) {
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		start = 4;
+		end = 1;
+	} else {
+		start = 7;
+		end = 4;
+	}
+	for (x = start; x > end; x--) {
 		bar = &nfp->bar[x - 1];
 		if (!bar->lock) {
 			bar->lock = 1;
@@ -338,9 +364,17 @@ static void
 nfp_disable_bars(struct nfp_pcie_user *nfp)
 {
 	struct nfp_bar *bar;
-	int x;
+	int x, start, end;
 
-	for (x = ARRAY_SIZE(nfp->bar); x > 0; x--) {
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		start = 4;
+		end = 1;
+	} else {
+		start = 7;
+		end = 4;
+	}
+
+	for (x = start; x > end; x--) {
 		bar = &nfp->bar[x - 1];
 		if (bar->iomem) {
 			bar->iomem = NULL;
@@ -636,6 +670,52 @@ nfp_acquire_process_lock(struct nfp_pcie_user *desc)
 }
 
 static int
+nfp_acquire_secondary_process_lock(struct nfp_pcie_user *desc)
+{
+	int rc;
+	struct flock lock;
+	const char *lockname = "/.lock_nfp_secondary";
+	char *home_path;
+	char *lockfile;
+
+	memset(&lock, 0, sizeof(lock));
+
+	/*
+	 * Using user's home directory. Note this can be called in a DPDK app
+	 * being executed as non-root. This is not the case for the previous
+	 * function nfp_acquire_process_lock which is invoked only when UIO
+	 * driver is used because that implies root user.
+	 */
+	home_path = getenv("HOME");
+	lockfile = calloc(strlen(home_path) + strlen(lockname) + 1,
+			  sizeof(char));
+
+	if (!lockfile)
+		return -ENOMEM;
+
+	strcat(lockfile, home_path);
+	strcat(lockfile, "/.lock_nfp_secondary");
+	desc->secondary_lock = open(lockfile, O_RDWR | O_CREAT | O_NONBLOCK,
+				    0666);
+	if (desc->secondary_lock < 0) {
+		RTE_LOG(ERR, PMD, "NFP lock for secondary process failed\n");
+		free(lockfile);
+		return desc->secondary_lock;
+	}
+
+	lock.l_type = F_WRLCK;
+	lock.l_whence = SEEK_SET;
+	rc = fcntl(desc->secondary_lock, F_SETLK, &lock);
+	if (rc < 0) {
+		RTE_LOG(ERR, PMD, "NFP lock for secondary process failed\n");
+		close(desc->secondary_lock);
+	}
+
+	free(lockfile);
+	return rc;
+}
+
+static int
 nfp6000_set_model(struct rte_pci_device *dev, struct nfp_cpp *cpp)
 {
 	uint32_t model;
@@ -776,7 +856,6 @@ static int
 nfp6000_init(struct nfp_cpp *cpp, struct rte_pci_device *dev)
 {
 	int ret = 0;
-	uint32_t model;
 	struct nfp_pcie_user *desc;
 
 	desc = malloc(sizeof(*desc));
@@ -787,8 +866,16 @@ nfp6000_init(struct nfp_cpp *cpp, struct rte_pci_device *dev)
 	memset(desc->busdev, 0, BUSDEV_SZ);
 	strlcpy(desc->busdev, dev->device.name, sizeof(desc->busdev));
 
-	if (cpp->driver_lock_needed) {
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
+	    cpp->driver_lock_needed) {
 		ret = nfp_acquire_process_lock(desc);
+		if (ret)
+			goto error;
+	}
+
+	/* Just support for one secondary process */
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		ret = nfp_acquire_secondary_process_lock(desc);
 		if (ret)
 			goto error;
 	}
@@ -808,9 +895,6 @@ nfp6000_init(struct nfp_cpp *cpp, struct rte_pci_device *dev)
 
 	nfp_cpp_priv_set(cpp, desc);
 
-	model = __nfp_cpp_model_autodetect(cpp);
-	nfp_cpp_model_set(cpp, model);
-
 	return 0;
 
 error:
@@ -826,6 +910,8 @@ nfp6000_free(struct nfp_cpp *cpp)
 	nfp_disable_bars(desc);
 	if (cpp->driver_lock_needed)
 		close(desc->lock);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		close(desc->secondary_lock);
 	close(desc->device);
 	free(desc);
 }

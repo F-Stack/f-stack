@@ -16,7 +16,7 @@ static const efx_nvram_ops_t	__efx_nvram_siena_ops = {
 	siena_nvram_test,		/* envo_test */
 #endif	/* EFSYS_OPT_DIAG */
 	siena_nvram_type_to_partn,	/* envo_type_to_partn */
-	siena_nvram_partn_size,		/* envo_partn_size */
+	siena_nvram_partn_info,		/* envo_partn_info */
 	siena_nvram_partn_rw_start,	/* envo_partn_rw_start */
 	siena_nvram_partn_read,		/* envo_partn_read */
 	siena_nvram_partn_read,		/* envo_partn_read_backup */
@@ -30,14 +30,14 @@ static const efx_nvram_ops_t	__efx_nvram_siena_ops = {
 
 #endif	/* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 static const efx_nvram_ops_t	__efx_nvram_ef10_ops = {
 #if EFSYS_OPT_DIAG
 	ef10_nvram_test,		/* envo_test */
 #endif	/* EFSYS_OPT_DIAG */
 	ef10_nvram_type_to_partn,	/* envo_type_to_partn */
-	ef10_nvram_partn_size,		/* envo_partn_size */
+	ef10_nvram_partn_info,		/* envo_partn_info */
 	ef10_nvram_partn_rw_start,	/* envo_partn_rw_start */
 	ef10_nvram_partn_read,		/* envo_partn_read */
 	ef10_nvram_partn_read_backup,	/* envo_partn_read_backup */
@@ -49,7 +49,7 @@ static const efx_nvram_ops_t	__efx_nvram_ef10_ops = {
 	ef10_nvram_buffer_validate,	/* envo_buffer_validate */
 };
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */
 
 	__checkReturn	efx_rc_t
 efx_nvram_init(
@@ -138,6 +138,7 @@ efx_nvram_size(
 	__out			size_t *sizep)
 {
 	const efx_nvram_ops_t *envop = enp->en_envop;
+	efx_nvram_info_t eni = { 0 };
 	uint32_t partn;
 	efx_rc_t rc;
 
@@ -147,8 +148,10 @@ efx_nvram_size(
 	if ((rc = envop->envo_type_to_partn(enp, type, &partn)) != 0)
 		goto fail1;
 
-	if ((rc = envop->envo_partn_size(enp, partn, sizep)) != 0)
+	if ((rc = envop->envo_partn_info(enp, partn, &eni)) != 0)
 		goto fail2;
+
+	*sizep = eni.eni_partn_size;
 
 	return (0);
 
@@ -160,6 +163,36 @@ fail1:
 
 	return (rc);
 }
+
+extern	__checkReturn		efx_rc_t
+efx_nvram_info(
+	__in			efx_nic_t *enp,
+	__in			efx_nvram_type_t type,
+	__out			efx_nvram_info_t *enip)
+{
+	const efx_nvram_ops_t *envop = enp->en_envop;
+	uint32_t partn;
+	efx_rc_t rc;
+
+	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
+	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_NVRAM);
+
+	if ((rc = envop->envo_type_to_partn(enp, type, &partn)) != 0)
+		goto fail1;
+
+	if ((rc = envop->envo_partn_info(enp, partn, enip)) != 0)
+		goto fail2;
+
+	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
 
 	__checkReturn		efx_rc_t
 efx_nvram_get_version(
@@ -305,7 +338,7 @@ efx_nvram_erase(
 {
 	const efx_nvram_ops_t *envop = enp->en_envop;
 	unsigned int offset = 0;
-	size_t size = 0;
+	efx_nvram_info_t eni = { 0 };
 	uint32_t partn;
 	efx_rc_t rc;
 
@@ -317,10 +350,11 @@ efx_nvram_erase(
 
 	EFSYS_ASSERT3U(enp->en_nvram_partn_locked, ==, partn);
 
-	if ((rc = envop->envo_partn_size(enp, partn, &size)) != 0)
+	if ((rc = envop->envo_partn_info(enp, partn, &eni)) != 0)
 		goto fail2;
 
-	if ((rc = envop->envo_partn_erase(enp, partn, offset, size)) != 0)
+	if ((rc = envop->envo_partn_erase(enp, partn, offset,
+		    eni.eni_partn_size)) != 0)
 		goto fail3;
 
 	return (0);
@@ -660,10 +694,7 @@ fail1:
 efx_mcdi_nvram_info(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
-	__out_opt		size_t *sizep,
-	__out_opt		uint32_t *addressp,
-	__out_opt		uint32_t *erase_sizep,
-	__out_opt		uint32_t *write_sizep)
+	__out			efx_nvram_info_t *enip)
 {
 	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_NVRAM_INFO_IN_LEN,
 		MC_CMD_NVRAM_INFO_V2_OUT_LEN);
@@ -690,21 +721,26 @@ efx_mcdi_nvram_info(
 		goto fail2;
 	}
 
-	if (sizep)
-		*sizep = MCDI_OUT_DWORD(req, NVRAM_INFO_OUT_SIZE);
+	enip->eni_partn_size = MCDI_OUT_DWORD(req, NVRAM_INFO_OUT_SIZE);
 
-	if (addressp)
-		*addressp = MCDI_OUT_DWORD(req, NVRAM_INFO_OUT_PHYSADDR);
+	enip->eni_address = MCDI_OUT_DWORD(req, NVRAM_INFO_OUT_PHYSADDR);
 
-	if (erase_sizep)
-		*erase_sizep = MCDI_OUT_DWORD(req, NVRAM_INFO_OUT_ERASESIZE);
+	enip->eni_erase_size = MCDI_OUT_DWORD(req, NVRAM_INFO_OUT_ERASESIZE);
 
-	if (write_sizep) {
-		*write_sizep =
+	enip->eni_write_size =
 			(req.emr_out_length_used <
 			    MC_CMD_NVRAM_INFO_V2_OUT_LEN) ?
 			0 : MCDI_OUT_DWORD(req, NVRAM_INFO_V2_OUT_WRITESIZE);
-	}
+
+	enip->eni_flags = 0;
+
+	if (MCDI_OUT_DWORD_FIELD(req, NVRAM_INFO_OUT_FLAGS,
+		NVRAM_INFO_OUT_PROTECTED))
+		enip->eni_flags |= EFX_NVRAM_FLAG_READ_ONLY;
+
+	if (MCDI_OUT_DWORD_FIELD(req, NVRAM_INFO_OUT_FLAGS,
+		NVRAM_INFO_OUT_READ_ONLY))
+		enip->eni_flags |= EFX_NVRAM_FLAG_READ_ONLY;
 
 	return (0);
 
@@ -929,6 +965,7 @@ efx_mcdi_nvram_update_finish(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in			boolean_t reboot,
+	__in			uint32_t flags,
 	__out_opt		uint32_t *verify_resultp)
 {
 	const efx_nic_cfg_t *encp = &enp->en_nic_cfg;
@@ -936,7 +973,7 @@ efx_mcdi_nvram_update_finish(
 	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_NVRAM_UPDATE_FINISH_V2_IN_LEN,
 		MC_CMD_NVRAM_UPDATE_FINISH_V2_OUT_LEN);
 	uint32_t verify_result = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
-	efx_rc_t rc;
+	efx_rc_t rc = 0;
 
 	req.emr_cmd = MC_CMD_NVRAM_UPDATE_FINISH;
 	req.emr_in_buf = payload;
@@ -947,8 +984,19 @@ efx_mcdi_nvram_update_finish(
 	MCDI_IN_SET_DWORD(req, NVRAM_UPDATE_FINISH_V2_IN_TYPE, partn);
 	MCDI_IN_SET_DWORD(req, NVRAM_UPDATE_FINISH_V2_IN_REBOOT, reboot);
 
-	MCDI_IN_POPULATE_DWORD_1(req, NVRAM_UPDATE_FINISH_V2_IN_FLAGS,
-	    NVRAM_UPDATE_FINISH_V2_IN_FLAG_REPORT_VERIFY_RESULT, 1);
+	if (!encp->enc_nvram_update_poll_verify_result_supported) {
+		flags &= ~EFX_NVRAM_UPDATE_FLAGS_BACKGROUND;
+		flags &= ~EFX_NVRAM_UPDATE_FLAGS_POLL;
+	}
+
+	MCDI_IN_POPULATE_DWORD_3(req, NVRAM_UPDATE_FINISH_V2_IN_FLAGS,
+	    NVRAM_UPDATE_FINISH_V2_IN_FLAG_REPORT_VERIFY_RESULT,
+	    1,
+	    NVRAM_UPDATE_FINISH_V2_IN_FLAG_RUN_IN_BACKGROUND,
+	    (flags & EFX_NVRAM_UPDATE_FLAGS_BACKGROUND) ? 1 : 0,
+	    NVRAM_UPDATE_FINISH_V2_IN_FLAG_POLL_VERIFY_RESULT,
+	    (flags & EFX_NVRAM_UPDATE_FLAGS_POLL) ? 1 : 0
+	    );
 
 	efx_mcdi_execute(enp, &req);
 
@@ -969,11 +1017,13 @@ efx_mcdi_nvram_update_finish(
 		    MCDI_OUT_DWORD(req, NVRAM_UPDATE_FINISH_V2_OUT_RESULT_CODE);
 	}
 
-	if ((encp->enc_nvram_update_verify_result_supported) &&
-	    (verify_result != MC_CMD_NVRAM_VERIFY_RC_SUCCESS)) {
-		/* Update verification failed */
-		rc = EINVAL;
-		goto fail3;
+	if (encp->enc_nvram_update_verify_result_supported) {
+		if ((verify_result != MC_CMD_NVRAM_VERIFY_RC_SUCCESS) &&
+		    (verify_result != MC_CMD_NVRAM_VERIFY_RC_PENDING)) {
+			/* Update verification failed */
+			rc = EINVAL;
+			goto fail3;
+		}
 	}
 
 	if (verify_resultp != NULL)

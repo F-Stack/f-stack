@@ -193,10 +193,12 @@ LRO
 Supports Large Receive Offload.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_TCP_LRO``.
+  ``dev_conf.rxmode.max_lro_pkt_size``.
 * **[implements] datapath**: ``LRO functionality``.
 * **[implements] rte_eth_dev_data**: ``lro``.
 * **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_LRO``, ``mbuf.tso_segsz``.
 * **[provides]   rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_TCP_LRO``.
+* **[provides]   rte_eth_dev_info**: ``max_lro_pkt_size``.
 
 
 .. _nic_features_tso:
@@ -274,6 +276,7 @@ Supports RSS hashing on RX.
 
 * **[uses]     user config**: ``dev_conf.rxmode.mq_mode`` = ``ETH_MQ_RX_RSS_FLAG``.
 * **[uses]     user config**: ``dev_conf.rx_adv_conf.rss_conf``.
+* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_RSS_HASH``.
 * **[provides] rte_eth_dev_info**: ``flow_type_rss_offloads``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
 
@@ -286,6 +289,7 @@ Inner RSS
 Supports RX RSS hashing on Inner headers.
 
 * **[uses]    rte_flow_action_rss**: ``level``.
+* **[uses]    rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_RSS_HASH``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
 
 
@@ -364,84 +368,6 @@ Supports filtering of a VLAN Tag identifier.
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_VLAN_FILTER``.
 * **[implements] eth_dev_ops**: ``vlan_filter_set``.
 * **[related]    API**: ``rte_eth_dev_vlan_filter()``.
-
-
-.. _nic_features_ethertype_filter:
-
-Ethertype filter
-----------------
-
-Supports filtering on Ethernet type.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_ETHERTYPE``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-.. _nic_features_ntuple_filter:
-
-N-tuple filter
---------------
-
-Supports filtering on N-tuple values.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_NTUPLE``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_syn_filter:
-
-SYN filter
-----------
-
-Supports TCP syn filtering.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_SYN``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_tunnel_filter:
-
-Tunnel filter
--------------
-
-Supports tunnel filtering.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_TUNNEL``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_flexible_filter:
-
-Flexible filter
----------------
-
-Supports a flexible (non-tuple or Ethertype) filter.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_FLEXIBLE``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_hash_filter:
-
-Hash filter
------------
-
-Supports Hash filtering.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_HASH``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_flow_director:
-
-Flow director
--------------
-
-Supports Flow Director style filtering to queues.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_FDIR``.
-* **[provides]   mbuf**: ``mbuf.ol_flags:`` ``PKT_RX_FDIR``, ``PKT_RX_FDIR_ID``,
-  ``PKT_RX_FDIR_FLX``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
 
 
 .. _nic_features_flow_control:
@@ -602,6 +528,7 @@ Supports Timestamp.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_TIMESTAMP``.
 * **[provides] mbuf**: ``mbuf.timestamp``.
 * **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa: DEV_RX_OFFLOAD_TIMESTAMP``.
+* **[related] eth_dev_ops**: ``read_clock``.
 
 .. _nic_features_macsec_offload:
 
@@ -660,9 +587,12 @@ Packet type parsing
 -------------------
 
 Supports packet type parsing and returns a list of supported types.
+Allows application to set ptypes it is interested in.
 
-* **[implements] eth_dev_ops**: ``dev_supported_ptypes_get``.
-* **[related]    API**: ``rte_eth_dev_get_supported_ptypes()``.
+* **[implements] eth_dev_ops**: ``dev_supported_ptypes_get``,
+* **[related]    API**: ``rte_eth_dev_get_supported_ptypes()``,
+  ``rte_eth_dev_set_ptypes()``, ``dev_ptypes_set``.
+* **[provides]   mbuf**: ``mbuf.packet_type``.
 
 
 .. _nic_features_timesync:
@@ -947,6 +877,16 @@ Supports Tx queue setup after device started.
 
 * **[provides] rte_eth_dev_info**: ``dev_capa:RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP``.
 * **[related]  API**: ``rte_eth_dev_info_get()``.
+
+.. _nic_features_burst_mode_info:
+
+Burst mode info
+---------------
+
+Supports to get Rx/Tx packet burst mode information.
+
+* **[implements] eth_dev_ops**: ``rx_burst_mode_get``, ``tx_burst_mode_get``.
+* **[related] API**: ``rte_eth_rx_burst_mode_get()``, ``rte_eth_tx_burst_mode_get()``.
 
 .. _nic_features_other:
 

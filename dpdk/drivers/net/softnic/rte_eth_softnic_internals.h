@@ -38,6 +38,7 @@ struct pmd_params {
 	const char *firmware;
 	uint16_t conn_port;
 	uint32_t cpu_id;
+	int sc; /**< Service cores. */
 
 	/** Traffic Management (TM) */
 	struct {
@@ -160,13 +161,15 @@ TAILQ_HEAD(softnic_link_list, softnic_link);
 #define TM_MAX_PIPES_PER_SUBPORT			4096
 #endif
 
+#ifndef TM_MAX_PIPE_PROFILE
+#define TM_MAX_PIPE_PROFILE				256
+#endif
 struct tm_params {
 	struct rte_sched_port_params port_params;
 
 	struct rte_sched_subport_params subport_params[TM_MAX_SUBPORTS];
 
-	struct rte_sched_pipe_params
-		pipe_profiles[RTE_SCHED_PIPE_PROFILES_PER_PORT];
+	struct rte_sched_pipe_params pipe_profiles[TM_MAX_PIPE_PROFILE];
 	uint32_t n_pipe_profiles;
 	uint32_t pipe_to_profile[TM_MAX_SUBPORTS * TM_MAX_PIPES_PER_SUBPORT];
 };
@@ -286,6 +289,7 @@ struct softnic_cryptodev_params {
 	uint32_t dev_id; /**< Valid only when *dev_name* is NULL. */
 	uint32_t n_queues;
 	uint32_t queue_size;
+	uint32_t session_pool_size;
 };
 
 struct softnic_cryptodev {
@@ -293,6 +297,8 @@ struct softnic_cryptodev {
 	char name[NAME_SIZE];
 	uint16_t dev_id;
 	uint32_t n_queues;
+	struct rte_mempool *mp_create;
+	struct rte_mempool *mp_init;
 };
 
 TAILQ_HEAD(softnic_cryptodev_list, softnic_cryptodev);
@@ -547,7 +553,7 @@ struct softnic_thread {
 	struct rte_ring *msgq_req;
 	struct rte_ring *msgq_rsp;
 
-	uint32_t enabled;
+	uint32_t service_id;
 };
 
 /**
@@ -843,6 +849,9 @@ softnic_pipeline_free(struct pmd_internals *p);
 void
 softnic_pipeline_disable_all(struct pmd_internals *p);
 
+uint32_t
+softnic_pipeline_thread_count(struct pmd_internals *p, uint32_t thread_id);
+
 struct pipeline *
 softnic_pipeline_find(struct pmd_internals *p, const char *name);
 
@@ -941,6 +950,9 @@ struct softnic_table_rule_match {
 	} match;
 };
 
+#ifndef SYM_CRYPTO_MAX_KEY_SIZE
+#define SYM_CRYPTO_MAX_KEY_SIZE		(256)
+#endif
 struct softnic_table_rule_action {
 	uint64_t action_mask;
 	struct rte_table_action_fwd_params fwd;
@@ -955,6 +967,7 @@ struct softnic_table_rule_action {
 	struct rte_table_action_tag_params tag;
 	struct rte_table_action_decap_params decap;
 	struct rte_table_action_sym_crypto_params sym_crypto;
+	uint8_t sym_crypto_key[SYM_CRYPTO_MAX_KEY_SIZE];
 };
 
 struct rte_flow {

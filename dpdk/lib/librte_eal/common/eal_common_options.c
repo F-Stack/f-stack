@@ -16,9 +16,11 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
+#include <rte_string_fns.h>
 #include <rte_eal.h>
 #include <rte_log.h>
 #include <rte_lcore.h>
+#include <rte_memory.h>
 #include <rte_tailq.h>
 #include <rte_version.h>
 #include <rte_devargs.h>
@@ -79,6 +81,7 @@ eal_long_options[] = {
 	{OPT_VMWARE_TSC_MAP,    0, NULL, OPT_VMWARE_TSC_MAP_NUM   },
 	{OPT_LEGACY_MEM,        0, NULL, OPT_LEGACY_MEM_NUM       },
 	{OPT_SINGLE_FILE_SEGMENTS, 0, NULL, OPT_SINGLE_FILE_SEGMENTS_NUM},
+	{OPT_MATCH_ALLOCATIONS, 0, NULL, OPT_MATCH_ALLOCATIONS_NUM},
 	{0,                     0, NULL, 0                        }
 };
 
@@ -138,7 +141,7 @@ eal_option_device_add(enum rte_devtype type, const char *optarg)
 	}
 
 	devopt->type = type;
-	ret = snprintf(devopt->arg, optlen, "%s", optarg);
+	ret = strlcpy(devopt->arg, optarg, optlen);
 	if (ret < 0) {
 		RTE_LOG(ERR, EAL, "Unable to copy device option\n");
 		free(devopt);
@@ -1093,6 +1096,36 @@ eal_parse_iova_mode(const char *name)
 	return 0;
 }
 
+static int
+eal_parse_base_virtaddr(const char *arg)
+{
+	char *end;
+	uint64_t addr;
+
+	errno = 0;
+	addr = strtoull(arg, &end, 16);
+
+	/* check for errors */
+	if ((errno != 0) || (arg[0] == '\0') || end == NULL || (*end != '\0'))
+		return -1;
+
+	/* make sure we don't exceed 32-bit boundary on 32-bit target */
+#ifndef RTE_ARCH_64
+	if (addr >= UINTPTR_MAX)
+		return -1;
+#endif
+
+	/* align the addr on 16M boundary, 16MB is the minimum huge page
+	 * size on IBM Power architecture. If the addr is aligned to 16MB,
+	 * it can align to 2MB for x86. So this alignment can also be used
+	 * on x86 and other architectures.
+	 */
+	internal_config.base_virtaddr =
+		RTE_PTR_ALIGN_CEIL((uintptr_t)addr, (size_t)RTE_PGSIZE_16M);
+
+	return 0;
+}
+
 /* caller is responsible for freeing the returned string */
 static char *
 available_cores(void)
@@ -1406,6 +1439,13 @@ eal_parse_common_option(int opt, const char *optarg,
 			return -1;
 		}
 		break;
+	case OPT_BASE_VIRTADDR_NUM:
+		if (eal_parse_base_virtaddr(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid parameter for --"
+					OPT_BASE_VIRTADDR "\n");
+			return -1;
+		}
+		break;
 
 	/* don't know what to do, leave this to caller */
 	default:
@@ -1579,6 +1619,21 @@ eal_check_common_options(struct internal_config *internal_cfg)
 				"with --"OPT_IN_MEMORY"\n");
 		return -1;
 	}
+	if (internal_cfg->legacy_mem && internal_cfg->match_allocations) {
+		RTE_LOG(ERR, EAL, "Option --"OPT_LEGACY_MEM" is not compatible "
+				"with --"OPT_MATCH_ALLOCATIONS"\n");
+		return -1;
+	}
+	if (internal_cfg->no_hugetlbfs && internal_cfg->match_allocations) {
+		RTE_LOG(ERR, EAL, "Option --"OPT_NO_HUGE" is not compatible "
+				"with --"OPT_MATCH_ALLOCATIONS"\n");
+		return -1;
+	}
+	if (internal_cfg->legacy_mem && internal_cfg->memory == 0) {
+		RTE_LOG(NOTICE, EAL, "Static memory layout is selected, "
+			"amount of reserved memory can be adjusted with "
+			"-m or --"OPT_SOCKET_MEM"\n");
+	}
 
 	return 0;
 }
@@ -1631,6 +1686,7 @@ eal_common_usage(void)
 	       "  -h, --help          This help\n"
 	       "  --"OPT_IN_MEMORY"   Operate entirely in memory. This will\n"
 	       "                      disable secondary process support\n"
+	       "  --"OPT_BASE_VIRTADDR"     Base virtual address\n"
 	       "\nEAL options for DEBUG use only:\n"
 	       "  --"OPT_HUGE_UNLINK"       Unlink hugepage files after init\n"
 	       "  --"OPT_NO_HUGE"           Use malloc instead of hugetlbfs\n"
@@ -1638,4 +1694,5 @@ eal_common_usage(void)
 	       "  --"OPT_NO_HPET"           Disable HPET\n"
 	       "  --"OPT_NO_SHCONF"         No shared config (mmap'd files)\n"
 	       "\n", RTE_MAX_LCORE);
+	rte_option_usage();
 }

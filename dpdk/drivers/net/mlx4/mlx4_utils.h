@@ -15,6 +15,18 @@
 
 #include "mlx4.h"
 
+/*
+ * Compilation workaround for PPC64 when AltiVec is fully enabled, e.g. std=c11.
+ * Otherwise there would be a type conflict between stdbool and altivec.
+ */
+#if defined(__PPC64__) && !defined(__APPLE_ALTIVEC__)
+#undef bool
+/* redefine as in stdbool.h */
+#define bool _Bool
+#endif
+
+extern int mlx4_logtype;
+
 #ifndef NDEBUG
 
 /*
@@ -35,7 +47,7 @@ pmd_drv_log_basename(const char *s)
 }
 
 #define PMD_DRV_LOG(level, ...) \
-	RTE_LOG(level, PMD, \
+	rte_log(RTE_LOG_ ## level, mlx4_logtype, \
 		RTE_FMT("%s:%u: %s(): " RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
 			pmd_drv_log_basename(__FILE__), \
 			__LINE__, \
@@ -52,7 +64,7 @@ pmd_drv_log_basename(const char *s)
  */
 
 #define PMD_DRV_LOG(level, ...) \
-	RTE_LOG(level, PMD, \
+	rte_log(RTE_LOG_ ## level, mlx4_logtype, \
 		RTE_FMT(MLX4_DRIVER_NAME ": " \
 			RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
 		RTE_FMT_TAIL(__VA_ARGS__,)))
@@ -67,9 +79,10 @@ pmd_drv_log_basename(const char *s)
 
 /** Allocate a buffer on the stack and fill it with a printf format string. */
 #define MKSTR(name, ...) \
-	char name[snprintf(NULL, 0, __VA_ARGS__) + 1]; \
+	int mkstr_size_##name = snprintf(NULL, 0, "" __VA_ARGS__); \
+	char name[mkstr_size_##name + 1]; \
 	\
-	snprintf(name, sizeof(name), __VA_ARGS__)
+	snprintf(name, sizeof(name), "" __VA_ARGS__)
 
 /** Generate a string out of the provided arguments. */
 #define MLX4_STR(...) # __VA_ARGS__

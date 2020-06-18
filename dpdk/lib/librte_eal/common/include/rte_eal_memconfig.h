@@ -5,100 +5,122 @@
 #ifndef _RTE_EAL_MEMCONFIG_H_
 #define _RTE_EAL_MEMCONFIG_H_
 
-#include <rte_config.h>
-#include <rte_tailq.h>
-#include <rte_memory.h>
-#include <rte_memzone.h>
-#include <rte_malloc_heap.h>
-#include <rte_rwlock.h>
-#include <rte_pause.h>
-#include <rte_fbarray.h>
+#include <stdbool.h>
+
+#include <rte_compat.h>
+
+/**
+ * @file
+ *
+ * This API allows access to EAL shared memory configuration through an API.
+ */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * memseg list is a special case as we need to store a bunch of other data
- * together with the array itself.
+ * Lock the internal EAL shared memory configuration for shared access.
  */
-struct rte_memseg_list {
-	RTE_STD_C11
-	union {
-		void *base_va;
-		/**< Base virtual address for this memseg list. */
-		uint64_t addr_64;
-		/**< Makes sure addr is always 64-bits */
-	};
-	uint64_t page_sz; /**< Page size for all memsegs in this list. */
-	int socket_id; /**< Socket ID for all memsegs in this list. */
-	volatile uint32_t version; /**< version number for multiprocess sync. */
-	size_t len; /**< Length of memory area covered by this memseg list. */
-	unsigned int external; /**< 1 if this list points to external memory */
-	struct rte_fbarray memseg_arr;
-};
+void
+rte_mcfg_mem_read_lock(void);
 
 /**
- * the structure for the memory configuration for the RTE.
- * Used by the rte_config structure. It is separated out, as for multi-process
- * support, the memory details should be shared across instances
+ * Unlock the internal EAL shared memory configuration for shared access.
  */
-struct rte_mem_config {
-	volatile uint32_t magic;   /**< Magic number - Sanity check. */
+void
+rte_mcfg_mem_read_unlock(void);
 
-	/* memory topology */
-	uint32_t nchannel;    /**< Number of channels (0 if unknown). */
-	uint32_t nrank;       /**< Number of ranks (0 if unknown). */
+/**
+ * Lock the internal EAL shared memory configuration for exclusive access.
+ */
+void
+rte_mcfg_mem_write_lock(void);
 
-	/**
-	 * current lock nest order
-	 *  - qlock->mlock (ring/hash/lpm)
-	 *  - mplock->qlock->mlock (mempool)
-	 * Notice:
-	 *  *ALWAYS* obtain qlock first if having to obtain both qlock and mlock
-	 */
-	rte_rwlock_t mlock;   /**< only used by memzone LIB for thread-safe. */
-	rte_rwlock_t qlock;   /**< used for tailq operation for thread safe. */
-	rte_rwlock_t mplock;  /**< only used by mempool LIB for thread-safe. */
+/**
+ * Unlock the internal EAL shared memory configuration for exclusive access.
+ */
+void
+rte_mcfg_mem_write_unlock(void);
 
-	rte_rwlock_t memory_hotplug_lock;
-	/**< indicates whether memory hotplug request is in progress. */
+/**
+ * Lock the internal EAL TAILQ list for shared access.
+ */
+void
+rte_mcfg_tailq_read_lock(void);
 
-	/* memory segments and zones */
-	struct rte_fbarray memzones; /**< Memzone descriptors. */
+/**
+ * Unlock the internal EAL TAILQ list for shared access.
+ */
+void
+rte_mcfg_tailq_read_unlock(void);
 
-	struct rte_memseg_list memsegs[RTE_MAX_MEMSEG_LISTS];
-	/**< list of dynamic arrays holding memsegs */
+/**
+ * Lock the internal EAL TAILQ list for exclusive access.
+ */
+void
+rte_mcfg_tailq_write_lock(void);
 
-	struct rte_tailq_head tailq_head[RTE_MAX_TAILQ]; /**< Tailqs for objects */
+/**
+ * Unlock the internal EAL TAILQ list for exclusive access.
+ */
+void
+rte_mcfg_tailq_write_unlock(void);
 
-	/* Heaps of Malloc */
-	struct malloc_heap malloc_heaps[RTE_MAX_HEAPS];
+/**
+ * Lock the internal EAL Mempool list for shared access.
+ */
+void
+rte_mcfg_mempool_read_lock(void);
 
-	/* next socket ID for external malloc heap */
-	int next_socket_id;
+/**
+ * Unlock the internal EAL Mempool list for shared access.
+ */
+void
+rte_mcfg_mempool_read_unlock(void);
 
-	/* address of mem_config in primary process. used to map shared config into
-	 * exact same address the primary process maps it.
-	 */
-	uint64_t mem_cfg_addr;
+/**
+ * Lock the internal EAL Mempool list for exclusive access.
+ */
+void
+rte_mcfg_mempool_write_lock(void);
 
-	/* legacy mem and single file segments options are shared */
-	uint32_t legacy_mem;
-	uint32_t single_file_segments;
+/**
+ * Unlock the internal EAL Mempool list for exclusive access.
+ */
+void
+rte_mcfg_mempool_write_unlock(void);
 
-	/* keeps the more restricted dma mask */
-	uint8_t dma_maskbits;
-} __attribute__((__packed__));
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Lock the internal EAL Timer Library lock for exclusive access.
+ */
+__rte_experimental
+void
+rte_mcfg_timer_lock(void);
 
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Unlock the internal EAL Timer Library lock for exclusive access.
+ */
+__rte_experimental
+void
+rte_mcfg_timer_unlock(void);
 
-inline static void
-rte_eal_mcfg_wait_complete(struct rte_mem_config* mcfg)
-{
-	/* wait until shared mem_config finish initialising */
-	while(mcfg->magic != RTE_MAGIC)
-		rte_pause();
-}
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * If true, pages are put in single files (per memseg list),
+ * as opposed to creating a file per page.
+ */
+__rte_experimental
+bool
+rte_mcfg_get_single_file_segments(void);
 
 #ifdef __cplusplus
 }

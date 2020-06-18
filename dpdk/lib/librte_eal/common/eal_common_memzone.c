@@ -15,7 +15,6 @@
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_eal.h>
-#include <rte_eal_memconfig.h>
 #include <rte_per_lcore.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
@@ -24,6 +23,7 @@
 #include "malloc_heap.h"
 #include "malloc_elem.h"
 #include "eal_private.h"
+#include "eal_memcfg.h"
 
 static inline const struct rte_memzone *
 memzone_lookup_thread_unsafe(const char *name)
@@ -171,7 +171,7 @@ memzone_reserve_aligned_thread_unsafe(const char *name, size_t len,
 		return NULL;
 	}
 
-	snprintf(mz->name, sizeof(mz->name), "%s", name);
+	strlcpy(mz->name, name, sizeof(mz->name));
 	mz->iova = rte_malloc_virt2iova(mz_addr);
 	mz->addr = mz_addr;
 	mz->len = requested_len == 0 ?

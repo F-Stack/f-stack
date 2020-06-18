@@ -13,6 +13,8 @@
 #include <errno.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -39,26 +41,28 @@ struct ipv6_l3fwd_lpm_route {
 	uint8_t  if_out;
 };
 
+/* 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735). */
 static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
-	{IPv4(1, 1, 1, 0), 24, 0},
-	{IPv4(2, 1, 1, 0), 24, 1},
-	{IPv4(3, 1, 1, 0), 24, 2},
-	{IPv4(4, 1, 1, 0), 24, 3},
-	{IPv4(5, 1, 1, 0), 24, 4},
-	{IPv4(6, 1, 1, 0), 24, 5},
-	{IPv4(7, 1, 1, 0), 24, 6},
-	{IPv4(8, 1, 1, 0), 24, 7},
+	{RTE_IPV4(198, 18, 0, 0), 24, 0},
+	{RTE_IPV4(198, 18, 1, 0), 24, 1},
+	{RTE_IPV4(198, 18, 2, 0), 24, 2},
+	{RTE_IPV4(198, 18, 3, 0), 24, 3},
+	{RTE_IPV4(198, 18, 4, 0), 24, 4},
+	{RTE_IPV4(198, 18, 5, 0), 24, 5},
+	{RTE_IPV4(198, 18, 6, 0), 24, 6},
+	{RTE_IPV4(198, 18, 7, 0), 24, 7},
 };
 
+/* 2001:0200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180) */
 static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
-	{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 0},
-	{{2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 1},
-	{{3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 2},
-	{{4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 3},
-	{{5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 4},
-	{{6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 5},
-	{{7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 6},
-	{{8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, 48, 7},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 48, 0},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}, 48, 1},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0}, 48, 2},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0}, 48, 3},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0}, 48, 4},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0}, 48, 5},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0}, 48, 6},
+	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0}, 48, 7},
 };
 
 #define IPV4_L3FWD_LPM_NUM_ROUTES \
@@ -82,7 +86,7 @@ lpm_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
 		(struct rte_lpm *)lookup_struct;
 
 	return (uint16_t) ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct,
-		rte_be_to_cpu_32(((struct ipv4_hdr *)ipv4_hdr)->dst_addr),
+		rte_be_to_cpu_32(((struct rte_ipv4_hdr *)ipv4_hdr)->dst_addr),
 		&next_hop) == 0) ? next_hop : portid);
 }
 
@@ -94,7 +98,7 @@ lpm_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
 		(struct rte_lpm6 *)lookup_struct;
 
 	return (uint16_t) ((rte_lpm6_lookup(ipv6_l3fwd_lookup_struct,
-			((struct ipv6_hdr *)ipv6_hdr)->dst_addr,
+			((struct rte_ipv6_hdr *)ipv6_hdr)->dst_addr,
 			&next_hop) == 0) ?  next_hop : portid);
 }
 
@@ -102,21 +106,21 @@ static __rte_always_inline uint16_t
 lpm_get_dst_port(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 		uint16_t portid)
 {
-	struct ipv6_hdr *ipv6_hdr;
-	struct ipv4_hdr *ipv4_hdr;
-	struct ether_hdr *eth_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_ether_hdr *eth_hdr;
 
 	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
 
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ipv4_hdr = (struct ipv4_hdr *)(eth_hdr + 1);
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+		ipv4_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
 
 		return lpm_get_ipv4_dst_port(ipv4_hdr, portid,
 					     qconf->ipv4_lookup_struct);
 	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
 
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+		ipv6_hdr = (struct rte_ipv6_hdr *)(eth_hdr + 1);
 
 		return lpm_get_ipv6_dst_port(ipv6_hdr, portid,
 					     qconf->ipv6_lookup_struct);
@@ -135,8 +139,8 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 	uint32_t dst_ipv4, uint16_t portid)
 {
 	uint32_t next_hop;
-	struct ipv6_hdr *ipv6_hdr;
-	struct ether_hdr *eth_hdr;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_ether_hdr *eth_hdr;
 
 	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
 		return (uint16_t) ((rte_lpm_lookup(qconf->ipv4_lookup_struct,
@@ -145,8 +149,8 @@ lpm_get_dst_port_with_ipv4(const struct lcore_conf *qconf, struct rte_mbuf *pkt,
 
 	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
 
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ipv6_hdr = (struct ipv6_hdr *)(eth_hdr + 1);
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+		ipv6_hdr = (struct rte_ipv6_hdr *)(eth_hdr + 1);
 
 		return (uint16_t) ((rte_lpm6_lookup(qconf->ipv6_lookup_struct,
 				ipv6_hdr->dst_addr, &next_hop) == 0)
@@ -258,6 +262,7 @@ setup_lpm(const int socketid)
 	unsigned i;
 	int ret;
 	char s[64];
+	char abuf[INET6_ADDRSTRLEN];
 
 	/* create the LPM table */
 	config_ipv4.max_rules = IPV4_L3FWD_LPM_MAX_RULES;
@@ -273,6 +278,7 @@ setup_lpm(const int socketid)
 
 	/* populate the LPM table */
 	for (i = 0; i < IPV4_L3FWD_LPM_NUM_ROUTES; i++) {
+		struct in_addr in;
 
 		/* skip unused ports */
 		if ((1 << ipv4_l3fwd_lpm_route_array[i].if_out &
@@ -290,8 +296,9 @@ setup_lpm(const int socketid)
 				i, socketid);
 		}
 
-		printf("LPM: Adding route 0x%08x / %d (%d)\n",
-			(unsigned)ipv4_l3fwd_lpm_route_array[i].ip,
+		in.s_addr = htonl(ipv4_l3fwd_lpm_route_array[i].ip);
+		printf("LPM: Adding route %s / %d (%d)\n",
+		       inet_ntop(AF_INET, &in, abuf, sizeof(abuf)),
 			ipv4_l3fwd_lpm_route_array[i].depth,
 			ipv4_l3fwd_lpm_route_array[i].if_out);
 	}
@@ -329,9 +336,10 @@ setup_lpm(const int socketid)
 		}
 
 		printf("LPM: Adding route %s / %d (%d)\n",
-			"IPV6",
-			ipv6_l3fwd_lpm_route_array[i].depth,
-			ipv6_l3fwd_lpm_route_array[i].if_out);
+		       inet_ntop(AF_INET6, ipv6_l3fwd_lpm_route_array[i].ip,
+				 abuf, sizeof(abuf)),
+		       ipv6_l3fwd_lpm_route_array[i].depth,
+		       ipv6_l3fwd_lpm_route_array[i].if_out);
 	}
 }
 
@@ -372,15 +380,15 @@ lpm_check_ptype(int portid)
 static inline void
 lpm_parse_ptype(struct rte_mbuf *m)
 {
-	struct ether_hdr *eth_hdr;
+	struct rte_ether_hdr *eth_hdr;
 	uint32_t packet_type = RTE_PTYPE_UNKNOWN;
 	uint16_t ether_type;
 
-	eth_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 	ether_type = eth_hdr->ether_type;
-	if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4))
+	if (ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
 		packet_type |= RTE_PTYPE_L3_IPV4_EXT_UNKNOWN;
-	else if (ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6))
+	else if (ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
 		packet_type |= RTE_PTYPE_L3_IPV6_EXT_UNKNOWN;
 
 	m->packet_type = packet_type;
@@ -392,10 +400,17 @@ lpm_cb_parse_ptype(uint16_t port __rte_unused, uint16_t queue __rte_unused,
 		   uint16_t max_pkts __rte_unused,
 		   void *user_param __rte_unused)
 {
-	unsigned i;
+	unsigned int i;
 
-	for (i = 0; i < nb_pkts; ++i)
+	if (unlikely(nb_pkts == 0))
+		return nb_pkts;
+	rte_prefetch0(rte_pktmbuf_mtod(pkts[0], struct ether_hdr *));
+	for (i = 0; i < (unsigned int) (nb_pkts - 1); ++i) {
+		rte_prefetch0(rte_pktmbuf_mtod(pkts[i+1],
+			struct ether_hdr *));
 		lpm_parse_ptype(pkts[i]);
+	}
+	lpm_parse_ptype(pkts[i]);
 
 	return nb_pkts;
 }

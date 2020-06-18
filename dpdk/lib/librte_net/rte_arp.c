@@ -7,12 +7,12 @@
 #include <rte_arp.h>
 
 #define RARP_PKT_SIZE	64
-struct rte_mbuf * __rte_experimental
+struct rte_mbuf *
 rte_net_make_rarp_packet(struct rte_mempool *mpool,
-		const struct ether_addr *mac)
+		const struct rte_ether_addr *mac)
 {
-	struct ether_hdr *eth_hdr;
-	struct arp_hdr *rarp;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_arp_hdr *rarp;
 	struct rte_mbuf *mbuf;
 
 	if (mpool == NULL)
@@ -22,27 +22,28 @@ rte_net_make_rarp_packet(struct rte_mempool *mpool,
 	if (mbuf == NULL)
 		return NULL;
 
-	eth_hdr = (struct ether_hdr *)rte_pktmbuf_append(mbuf, RARP_PKT_SIZE);
+	eth_hdr = (struct rte_ether_hdr *)
+		rte_pktmbuf_append(mbuf, RARP_PKT_SIZE);
 	if (eth_hdr == NULL) {
 		rte_pktmbuf_free(mbuf);
 		return NULL;
 	}
 
 	/* Ethernet header. */
-	memset(eth_hdr->d_addr.addr_bytes, 0xff, ETHER_ADDR_LEN);
-	ether_addr_copy(mac, &eth_hdr->s_addr);
-	eth_hdr->ether_type = htons(ETHER_TYPE_RARP);
+	memset(eth_hdr->d_addr.addr_bytes, 0xff, RTE_ETHER_ADDR_LEN);
+	rte_ether_addr_copy(mac, &eth_hdr->s_addr);
+	eth_hdr->ether_type = htons(RTE_ETHER_TYPE_RARP);
 
 	/* RARP header. */
-	rarp = (struct arp_hdr *)(eth_hdr + 1);
-	rarp->arp_hrd = htons(ARP_HRD_ETHER);
-	rarp->arp_pro = htons(ETHER_TYPE_IPv4);
-	rarp->arp_hln = ETHER_ADDR_LEN;
-	rarp->arp_pln = 4;
-	rarp->arp_op  = htons(ARP_OP_REVREQUEST);
+	rarp = (struct rte_arp_hdr *)(eth_hdr + 1);
+	rarp->arp_hardware = htons(RTE_ARP_HRD_ETHER);
+	rarp->arp_protocol = htons(RTE_ETHER_TYPE_IPV4);
+	rarp->arp_hlen = RTE_ETHER_ADDR_LEN;
+	rarp->arp_plen = 4;
+	rarp->arp_opcode  = htons(RTE_ARP_OP_REVREQUEST);
 
-	ether_addr_copy(mac, &rarp->arp_data.arp_sha);
-	ether_addr_copy(mac, &rarp->arp_data.arp_tha);
+	rte_ether_addr_copy(mac, &rarp->arp_data.arp_sha);
+	rte_ether_addr_copy(mac, &rarp->arp_data.arp_tha);
 	memset(&rarp->arp_data.arp_sip, 0x00, 4);
 	memset(&rarp->arp_data.arp_tip, 0x00, 4);
 

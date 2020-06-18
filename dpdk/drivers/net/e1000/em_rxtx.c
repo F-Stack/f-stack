@@ -18,6 +18,7 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
+#include <rte_bus_pci.h>
 #include <rte_memory.h>
 #include <rte_memcpy.h>
 #include <rte_memzone.h>
@@ -58,6 +59,11 @@
 
 #define E1000_TX_OFFLOAD_NOTSUP_MASK \
 		(PKT_TX_OFFLOAD_MASK ^ E1000_TX_OFFLOAD_MASK)
+
+/* PCI offset for querying configuration status register */
+#define PCI_CFG_STATUS_REG                 0x06
+#define FLUSH_DESC_REQUIRED               0x100
+
 
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
@@ -222,7 +228,7 @@ em_set_xmit_ctx(struct em_tx_queue* txq,
 	/* setup IPCS* fields */
 	ctx.lower_setup.ip_fields.ipcss = (uint8_t)l2len;
 	ctx.lower_setup.ip_fields.ipcso = (uint8_t)(l2len +
-			offsetof(struct ipv4_hdr, hdr_checksum));
+			offsetof(struct rte_ipv4_hdr, hdr_checksum));
 
 	/*
 	 * When doing checksum or TCP segmentation with IPv6 headers,
@@ -244,12 +250,12 @@ em_set_xmit_ctx(struct em_tx_queue* txq,
 	switch (flags & PKT_TX_L4_MASK) {
 	case PKT_TX_UDP_CKSUM:
 		ctx.upper_setup.tcp_fields.tucso = (uint8_t)(ipcse +
-				offsetof(struct udp_hdr, dgram_cksum));
+				offsetof(struct rte_udp_hdr, dgram_cksum));
 		cmp_mask |= TX_MACIP_LEN_CMP_MASK;
 		break;
 	case PKT_TX_TCP_CKSUM:
 		ctx.upper_setup.tcp_fields.tucso = (uint8_t)(ipcse +
-				offsetof(struct tcp_hdr, cksum));
+				offsetof(struct rte_tcp_hdr, cksum));
 		cmd_len |= E1000_TXD_CMD_TCP;
 		cmp_mask |= TX_MACIP_LEN_CMP_MASK;
 		break;
@@ -1005,17 +1011,17 @@ eth_em_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 */
 		rxm->next = NULL;
 		if (unlikely(rxq->crc_len > 0)) {
-			first_seg->pkt_len -= ETHER_CRC_LEN;
-			if (data_len <= ETHER_CRC_LEN) {
+			first_seg->pkt_len -= RTE_ETHER_CRC_LEN;
+			if (data_len <= RTE_ETHER_CRC_LEN) {
 				rte_pktmbuf_free_seg(rxm);
 				first_seg->nb_segs--;
 				last_seg->data_len = (uint16_t)
 					(last_seg->data_len -
-					 (ETHER_CRC_LEN - data_len));
+					 (RTE_ETHER_CRC_LEN - data_len));
 				last_seg->next = NULL;
 			} else
-				rxm->data_len =
-					(uint16_t) (data_len - ETHER_CRC_LEN);
+				rxm->data_len = (uint16_t)
+					(data_len - RTE_ETHER_CRC_LEN);
 		}
 
 		/*
@@ -1368,7 +1374,7 @@ em_get_rx_port_offloads_capa(struct rte_eth_dev *dev)
 		DEV_RX_OFFLOAD_TCP_CKSUM   |
 		DEV_RX_OFFLOAD_KEEP_CRC    |
 		DEV_RX_OFFLOAD_SCATTER;
-	if (max_rx_pktlen > ETHER_MAX_LEN)
+	if (max_rx_pktlen > RTE_ETHER_MAX_LEN)
 		rx_offload_capa |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 
 	return rx_offload_capa;
@@ -1463,7 +1469,7 @@ eth_em_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->queue_id = queue_idx;
 	rxq->port_id = dev->data->port_id;
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
-		rxq->crc_len = ETHER_CRC_LEN;
+		rxq->crc_len = RTE_ETHER_CRC_LEN;
 	else
 		rxq->crc_len = 0;
 
@@ -1799,7 +1805,7 @@ eth_em_rx_init(struct rte_eth_dev *dev)
 		 *  call to configure
 		 */
 		if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
-			rxq->crc_len = ETHER_CRC_LEN;
+			rxq->crc_len = RTE_ETHER_CRC_LEN;
 		else
 			rxq->crc_len = 0;
 
@@ -1832,7 +1838,7 @@ eth_em_rx_init(struct rte_eth_dev *dev)
 		 * one buffer.
 		 */
 		if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME ||
-				rctl_bsize < ETHER_MAX_LEN) {
+				rctl_bsize < RTE_ETHER_MAX_LEN) {
 			if (!dev->data->scattered_rx)
 				PMD_INIT_LOG(DEBUG, "forcing scatter mode");
 			dev->rx_pkt_burst =
@@ -2015,4 +2021,120 @@ em_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	qinfo->conf.tx_free_thresh = txq->tx_free_thresh;
 	qinfo->conf.tx_rs_thresh = txq->tx_rs_thresh;
 	qinfo->conf.offloads = txq->offloads;
+}
+
+static void
+e1000_flush_tx_ring(struct rte_eth_dev *dev)
+{
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	volatile struct e1000_data_desc *tx_desc;
+	volatile uint32_t *tdt_reg_addr;
+	uint32_t tdt, tctl, txd_lower = E1000_TXD_CMD_IFCS;
+	uint16_t size = 512;
+	struct em_tx_queue *txq;
+	int i;
+
+	if (dev->data->tx_queues == NULL)
+		return;
+	tctl = E1000_READ_REG(hw, E1000_TCTL);
+	E1000_WRITE_REG(hw, E1000_TCTL, tctl | E1000_TCTL_EN);
+	for (i = 0; i < dev->data->nb_tx_queues &&
+		i < E1000_I219_MAX_TX_QUEUE_NUM; i++) {
+		txq = dev->data->tx_queues[i];
+		tdt = E1000_READ_REG(hw, E1000_TDT(i));
+		if (tdt != txq->tx_tail)
+			return;
+		tx_desc = &txq->tx_ring[txq->tx_tail];
+		tx_desc->buffer_addr = rte_cpu_to_le_64(txq->tx_ring_phys_addr);
+		tx_desc->lower.data = rte_cpu_to_le_32(txd_lower | size);
+		tx_desc->upper.data = 0;
+
+		rte_cio_wmb();
+		txq->tx_tail++;
+		if (txq->tx_tail == txq->nb_tx_desc)
+			txq->tx_tail = 0;
+		tdt_reg_addr = E1000_PCI_REG_ADDR(hw, E1000_TDT(i));
+		E1000_PCI_REG_WRITE(tdt_reg_addr, txq->tx_tail);
+		usec_delay(250);
+	}
+}
+
+static void
+e1000_flush_rx_ring(struct rte_eth_dev *dev)
+{
+	uint32_t rctl, rxdctl;
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int i;
+
+	rctl = E1000_READ_REG(hw, E1000_RCTL);
+	E1000_WRITE_REG(hw, E1000_RCTL, rctl & ~E1000_RCTL_EN);
+	E1000_WRITE_FLUSH(hw);
+	usec_delay(150);
+
+	for (i = 0; i < dev->data->nb_rx_queues &&
+		i < E1000_I219_MAX_RX_QUEUE_NUM; i++) {
+		rxdctl = E1000_READ_REG(hw, E1000_RXDCTL(i));
+		/* zero the lower 14 bits (prefetch and host thresholds) */
+		rxdctl &= 0xffffc000;
+
+		/* update thresholds: prefetch threshold to 31,
+		 * host threshold to 1 and make sure the granularity
+		 * is "descriptors" and not "cache lines"
+		 */
+		rxdctl |= (0x1F | (1UL << 8) | E1000_RXDCTL_THRESH_UNIT_DESC);
+
+		E1000_WRITE_REG(hw, E1000_RXDCTL(i), rxdctl);
+	}
+	/* momentarily enable the RX ring for the changes to take effect */
+	E1000_WRITE_REG(hw, E1000_RCTL, rctl | E1000_RCTL_EN);
+	E1000_WRITE_FLUSH(hw);
+	usec_delay(150);
+	E1000_WRITE_REG(hw, E1000_RCTL, rctl & ~E1000_RCTL_EN);
+}
+
+/**
+ * em_flush_desc_rings - remove all descriptors from the descriptor rings
+ *
+ * In i219, the descriptor rings must be emptied before resetting/closing the
+ * HW. Failure to do this will cause the HW to enter a unit hang state which
+ * can only be released by PCI reset on the device
+ *
+ */
+
+void
+em_flush_desc_rings(struct rte_eth_dev *dev)
+{
+	uint32_t fextnvm11, tdlen;
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+	uint16_t pci_cfg_status = 0;
+	int ret;
+
+	fextnvm11 = E1000_READ_REG(hw, E1000_FEXTNVM11);
+	E1000_WRITE_REG(hw, E1000_FEXTNVM11,
+			fextnvm11 | E1000_FEXTNVM11_DISABLE_MULR_FIX);
+	tdlen = E1000_READ_REG(hw, E1000_TDLEN(0));
+	ret = rte_pci_read_config(pci_dev, &pci_cfg_status,
+		   sizeof(pci_cfg_status), PCI_CFG_STATUS_REG);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "Failed to read PCI offset 0x%x",
+			    PCI_CFG_STATUS_REG);
+		return;
+	}
+
+	/* do nothing if we're not in faulty state, or if the queue is empty */
+	if ((pci_cfg_status & FLUSH_DESC_REQUIRED) && tdlen) {
+		/* flush desc ring */
+		e1000_flush_tx_ring(dev);
+		ret = rte_pci_read_config(pci_dev, &pci_cfg_status,
+				sizeof(pci_cfg_status), PCI_CFG_STATUS_REG);
+		if (ret < 0) {
+			PMD_DRV_LOG(ERR, "Failed to read PCI offset 0x%x",
+					PCI_CFG_STATUS_REG);
+			return;
+		}
+
+		if (pci_cfg_status & FLUSH_DESC_REQUIRED)
+			e1000_flush_rx_ring(dev);
+	}
 }

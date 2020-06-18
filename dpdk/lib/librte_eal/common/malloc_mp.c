@@ -10,6 +10,7 @@
 #include <rte_string_fns.h>
 
 #include "eal_memalloc.h"
+#include "eal_memcfg.h"
 
 #include "malloc_elem.h"
 #include "malloc_mp.h"
@@ -573,7 +574,7 @@ request_sync(void)
 	struct rte_mp_reply reply;
 	struct malloc_mp_req *req = (struct malloc_mp_req *)msg.param;
 	struct timespec ts;
-	int i, ret;
+	int i, ret = -1;
 
 	memset(&msg, 0, sizeof(msg));
 	memset(&reply, 0, sizeof(reply));
@@ -596,14 +597,16 @@ request_sync(void)
 		ret = rte_mp_request_sync(&msg, &reply, &ts);
 	} while (ret != 0 && rte_errno == EEXIST);
 	if (ret != 0) {
-		RTE_LOG(ERR, EAL, "Could not send sync request to secondary process\n");
-		ret = -1;
+		/* if IPC is unsupported, behave as if the call succeeded */
+		if (rte_errno != ENOTSUP)
+			RTE_LOG(ERR, EAL, "Could not send sync request to secondary process\n");
+		else
+			ret = 0;
 		goto out;
 	}
 
 	if (reply.nb_received != reply.nb_sent) {
 		RTE_LOG(ERR, EAL, "Not all secondaries have responded\n");
-		ret = -1;
 		goto out;
 	}
 
@@ -612,17 +615,14 @@ request_sync(void)
 				(struct malloc_mp_req *)reply.msgs[i].param;
 		if (resp->t != REQ_TYPE_SYNC) {
 			RTE_LOG(ERR, EAL, "Unexpected response from secondary\n");
-			ret = -1;
 			goto out;
 		}
 		if (resp->id != req->id) {
 			RTE_LOG(ERR, EAL, "Wrong request ID\n");
-			ret = -1;
 			goto out;
 		}
 		if (resp->result != REQ_RESULT_SUCCESS) {
 			RTE_LOG(ERR, EAL, "Secondary process failed to synchronize\n");
-			ret = -1;
 			goto out;
 		}
 	}
@@ -722,7 +722,9 @@ int
 register_mp_requests(void)
 {
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-		if (rte_mp_action_register(MP_ACTION_REQUEST, handle_request)) {
+		/* it's OK for primary to not support IPC */
+		if (rte_mp_action_register(MP_ACTION_REQUEST, handle_request) &&
+				rte_errno != ENOTSUP) {
 			RTE_LOG(ERR, EAL, "Couldn't register '%s' action\n",
 				MP_ACTION_REQUEST);
 			return -1;

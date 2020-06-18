@@ -91,7 +91,7 @@ where,
 
 *   l: Use locale thousands separator when formatting big numbers.
 
-To run the application in linuxapp environment with 4 lcores, 16 ports, 8 RX queues per lcore and
+To run the application in linux environment with 4 lcores, 16 ports, 8 RX queues per lcore and
 thousands  separator printing, issue the command:
 
 .. code-block:: console
@@ -451,13 +451,13 @@ Naturally, the number of ports in the portmask must be even, otherwise, the appl
     static void
     l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
     {
-        struct ether_hdr *eth;
+        struct rte_ether_hdr *eth;
         void *tmp;
         unsigned dst_port;
 
         dst_port = l2fwd_dst_ports[portid];
 
-        eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+        eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
         /* 02:00:00:00:00:xx */
 
@@ -467,7 +467,7 @@ Naturally, the number of ports in the portmask must be even, otherwise, the appl
 
         /* src addr */
 
-        ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
+        rte_ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
 
         l2fwd_send_packet(m, (uint8_t) dst_port);
     }

@@ -181,10 +181,10 @@ struct rte_table_action_lb_params {
  * RTE_TABLE_ACTION_MTR
  */
 /** Max number of traffic classes (TCs). */
-#define RTE_TABLE_ACTION_TC_MAX                                  4
+#define RTE_TABLE_ACTION_TC_MAX                                  16
 
 /** Max number of queues per traffic class. */
-#define RTE_TABLE_ACTION_TC_QUEUE_MAX                            4
+#define RTE_TABLE_ACTION_TC_QUEUE_MAX                            16
 
 /** Differentiated Services Code Point (DSCP) translation table entry. */
 struct rte_table_action_dscp_table_entry {
@@ -202,7 +202,7 @@ struct rte_table_action_dscp_table_entry {
 	/** Packet color. Used by the meter action as the packet input color
 	 * for the color aware mode of the traffic metering algorithm.
 	 */
-	enum rte_meter_color color;
+	enum rte_color color;
 };
 
 /** DSCP translation table. */
@@ -259,7 +259,7 @@ struct rte_table_action_mtr_tc_params {
 	uint32_t meter_profile_id;
 
 	/** Policer actions. */
-	enum rte_table_action_policer policer[e_RTE_METER_COLORS];
+	enum rte_table_action_policer policer[RTE_COLORS];
 };
 
 /** Meter action statistics counters per traffic class. */
@@ -268,13 +268,13 @@ struct rte_table_action_mtr_counters_tc {
 	 * and before the policer actions are executed. Only valid when
 	 * *n_packets_valid* is non-zero.
 	 */
-	uint64_t n_packets[e_RTE_METER_COLORS];
+	uint64_t n_packets[RTE_COLORS];
 
 	/** Number of packet bytes per color at the output of the traffic
 	 * metering and before the policer actions are executed. Only valid when
 	 * *n_bytes_valid* is non-zero.
 	 */
-	uint64_t n_bytes[e_RTE_METER_COLORS];
+	uint64_t n_bytes[RTE_COLORS];
 
 	/** When non-zero, the *n_packets* field is valid. */
 	int n_packets_valid;
@@ -380,12 +380,15 @@ enum rte_table_action_encap_type {
 	 * Ether -> { Ether | VLAN | IP | UDP | VXLAN | Ether }
 	 */
 	RTE_TABLE_ACTION_ENCAP_VXLAN,
+
+	/** IP -> { Ether | S-VLAN | C-VLAN | PPPoE | PPP | IP } */
+	RTE_TABLE_ACTION_ENCAP_QINQ_PPPOE,
 };
 
 /** Pre-computed Ethernet header fields for encapsulation action. */
 struct rte_table_action_ether_hdr {
-	struct ether_addr da; /**< Destination address. */
-	struct ether_addr sa; /**< Source address. */
+	struct rte_ether_addr da; /**< Destination address. */
+	struct rte_ether_addr sa; /**< Source address. */
 };
 
 /** Pre-computed VLAN header fields for encapsulation action. */
@@ -529,6 +532,16 @@ struct rte_table_action_encap_config {
 	};
 };
 
+/** QinQ_PPPoE encap parameters. */
+struct rte_table_encap_ether_qinq_pppoe {
+
+	/** Only valid when *type* is set to QinQ. */
+	struct rte_table_action_ether_hdr ether;
+	struct rte_table_action_vlan_hdr svlan; /**< Service VLAN header. */
+	struct rte_table_action_vlan_hdr cvlan; /**< Customer VLAN header. */
+	struct rte_table_action_pppoe_hdr pppoe; /**< PPPoE/PPP headers. */
+};
+
 /** Encap action parameters (per table rule). */
 struct rte_table_action_encap_params {
 	/** Encapsulation type. */
@@ -553,6 +566,9 @@ struct rte_table_action_encap_params {
 
 		/** Only valid when *type* is set to VXLAN. */
 		struct rte_table_action_encap_vxlan_params vxlan;
+
+		/** Only valid when *type* is set to QinQ_PPPoE. */
+		struct rte_table_encap_ether_qinq_pppoe qinq_pppoe;
 	};
 };
 
@@ -807,7 +823,8 @@ struct rte_table_action_profile;
  * @return
  *   Table action profile handle on success, NULL otherwise.
  */
-struct rte_table_action_profile * __rte_experimental
+__rte_experimental
+struct rte_table_action_profile *
 rte_table_action_profile_create(struct rte_table_action_common_config *common);
 
 /**
@@ -818,7 +835,8 @@ rte_table_action_profile_create(struct rte_table_action_common_config *common);
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_profile_free(struct rte_table_action_profile *profile);
 
 /**
@@ -836,7 +854,8 @@ rte_table_action_profile_free(struct rte_table_action_profile *profile);
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_profile_action_register(struct rte_table_action_profile *profile,
 	enum rte_table_action_type type,
 	void *action_config);
@@ -856,7 +875,8 @@ rte_table_action_profile_action_register(struct rte_table_action_profile *profil
  *
  * @see rte_table_action_create()
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_profile_freeze(struct rte_table_action_profile *profile);
 
 /**
@@ -879,7 +899,8 @@ struct rte_table_action;
  *
  * @see rte_table_action_create()
  */
-struct rte_table_action * __rte_experimental
+__rte_experimental
+struct rte_table_action *
 rte_table_action_create(struct rte_table_action_profile *profile,
 	uint32_t socket_id);
 
@@ -891,7 +912,8 @@ rte_table_action_create(struct rte_table_action_profile *profile,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_free(struct rte_table_action *action);
 
 /**
@@ -904,7 +926,8 @@ rte_table_action_free(struct rte_table_action *action);
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_table_params_get(struct rte_table_action *action,
 	struct rte_pipeline_table_params *params);
 
@@ -926,7 +949,8 @@ rte_table_action_table_params_get(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_apply(struct rte_table_action *action,
 	void *data,
 	enum rte_table_action_type type,
@@ -945,7 +969,8 @@ rte_table_action_apply(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_dscp_table_update(struct rte_table_action *action,
 	uint64_t dscp_mask,
 	struct rte_table_action_dscp_table *table);
@@ -964,7 +989,8 @@ rte_table_action_dscp_table_update(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_meter_profile_add(struct rte_table_action *action,
 	uint32_t meter_profile_id,
 	struct rte_table_action_meter_profile *profile);
@@ -980,7 +1006,8 @@ rte_table_action_meter_profile_add(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_meter_profile_delete(struct rte_table_action *action,
 	uint32_t meter_profile_id);
 
@@ -1011,7 +1038,8 @@ rte_table_action_meter_profile_delete(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_meter_read(struct rte_table_action *action,
 	void *data,
 	uint32_t tc_mask,
@@ -1037,7 +1065,8 @@ rte_table_action_meter_read(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_ttl_read(struct rte_table_action *action,
 	void *data,
 	struct rte_table_action_ttl_counters *stats,
@@ -1062,7 +1091,8 @@ rte_table_action_ttl_read(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_stats_read(struct rte_table_action *action,
 	void *data,
 	struct rte_table_action_stats_counters *stats,
@@ -1082,7 +1112,8 @@ rte_table_action_stats_read(struct rte_table_action *action,
  * @return
  *   Zero on success, non-zero error code otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_table_action_time_read(struct rte_table_action *action,
 	void *data,
 	uint64_t *timestamp);
@@ -1097,7 +1128,8 @@ rte_table_action_time_read(struct rte_table_action *action,
  * @return
  *   The pointer to the session on success, NULL otherwise.
  */
-struct rte_cryptodev_sym_session *__rte_experimental
+__rte_experimental
+struct rte_cryptodev_sym_session *
 rte_table_action_crypto_sym_session_get(struct rte_table_action *action,
 	void *data);
 

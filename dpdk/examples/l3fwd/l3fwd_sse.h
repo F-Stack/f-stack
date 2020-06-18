@@ -48,14 +48,18 @@ processx4_step3(struct rte_mbuf *pkt[FWDSTEP], uint16_t dst_port[FWDSTEP])
 	_mm_storeu_si128(p[2], te[2]);
 	_mm_storeu_si128(p[3], te[3]);
 
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[0] + 1),
-		&dst_port[0], pkt[0]->packet_type);
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[1] + 1),
-		&dst_port[1], pkt[1]->packet_type);
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[2] + 1),
-		&dst_port[2], pkt[2]->packet_type);
-	rfc1812_process((struct ipv4_hdr *)((struct ether_hdr *)p[3] + 1),
-		&dst_port[3], pkt[3]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[0] + 1),
+			&dst_port[0], pkt[0]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[1] + 1),
+			&dst_port[1], pkt[1]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[2] + 1),
+			&dst_port[2], pkt[2]->packet_type);
+	rfc1812_process((struct rte_ipv4_hdr *)
+			((struct rte_ether_hdr *)p[3] + 1),
+			&dst_port[3], pkt[3]->packet_type);
 }
 
 /*
@@ -101,15 +105,15 @@ port_groupx4(uint16_t pn[FWDSTEP + 1], uint16_t *lp, __m128i dp1, __m128i dp2)
 static inline void
 process_packet(struct rte_mbuf *pkt, uint16_t *dst_port)
 {
-	struct ether_hdr *eth_hdr;
+	struct rte_ether_hdr *eth_hdr;
 	__m128i te, ve;
 
-	eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
 
 	te = _mm_loadu_si128((__m128i *)eth_hdr);
 	ve = val_eth[dst_port[0]];
 
-	rfc1812_process((struct ipv4_hdr *)(eth_hdr + 1), dst_port,
+	rfc1812_process((struct rte_ipv4_hdr *)(eth_hdr + 1), dst_port,
 			pkt->packet_type);
 
 	te =  _mm_blend_epi16(te, ve, MASK_ETH);

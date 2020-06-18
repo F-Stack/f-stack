@@ -421,8 +421,8 @@ See :doc:`../platform/dpaa2` for setup information
 
 Currently supported by DPDK:
 
-- NXP SDK **18.09+**.
-- MC Firmware version **10.10.0** and higher.
+- NXP LSDK **19.08+**.
+- MC Firmware version **10.18.0** and higher.
 - Supported architectures:  **arm64 LE**.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
@@ -441,21 +441,19 @@ Config File Options
 The following options can be modified in the ``config`` file.
 Please note that enabling debugging options may affect system performance.
 
-- ``CONFIG_RTE_LIBRTE_FSLMC_BUS`` (default ``n``)
+- ``CONFIG_RTE_LIBRTE_FSLMC_BUS`` (default ``y``)
 
-  By default it is enabled only for defconfig_arm64-dpaa2-* config.
   Toggle compilation of the ``librte_bus_fslmc`` driver.
 
-- ``CONFIG_RTE_LIBRTE_DPAA2_PMD`` (default ``n``)
+- ``CONFIG_RTE_LIBRTE_DPAA2_PMD`` (default ``y``)
 
-  By default it is enabled only for defconfig_arm64-dpaa2-* config.
   Toggle compilation of the ``librte_pmd_dpaa2`` driver.
 
 - ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_DRIVER`` (default ``n``)
 
   Toggle display of debugging messages/logic
 
-- ``CONFIG_RTE_LIBRTE_DPAA2_USE_PHYS_IOVA`` (default ``y``)
+- ``CONFIG_RTE_LIBRTE_DPAA2_USE_PHYS_IOVA`` (default ``n``)
 
   Toggle to use physical address vs virtual address for hardware accelerators.
 
@@ -498,6 +496,15 @@ for details.
       Port 1 Link Up - speed 10000 Mbps - full-duplex
       Done
       testpmd>
+
+
+* Use dev arg option ``drv_loopback=1`` to loopback packets at
+  driver level. Any packet received will be reflected back by the
+  driver on same port. e.g. ``fslmc:dpni.1,drv_loopback=1``
+
+* Use dev arg option ``drv_no_prefetch=1`` to disable prefetching
+  of the packet pull command which is issued  in the previous cycle.
+  e.g. ``fslmc:dpni.1,drv_no_prefetch=1``
 
 Enabling logs
 -------------
@@ -552,4 +559,3 @@ Other Limitations
 
 - RSS hash key cannot be modified.
 - RSS RETA cannot be configured.
-- Secondary process packet I/O is not supported.

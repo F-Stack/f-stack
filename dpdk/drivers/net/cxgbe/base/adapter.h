@@ -14,9 +14,9 @@
 #include <rte_rwlock.h>
 #include <rte_ethdev.h>
 
-#include "cxgbe_compat.h"
+#include "../cxgbe_compat.h"
+#include "../cxgbe_ofld.h"
 #include "t4_regs_values.h"
-#include "cxgbe_ofld.h"
 
 enum {
 	MAX_ETH_QSETS = 64,           /* # of Ethernet Tx/Rx queue sets */
@@ -299,6 +299,12 @@ struct mbox_entry {
 
 TAILQ_HEAD(mbox_list, mbox_entry);
 
+struct adapter_devargs {
+	bool keep_ovlan;
+	bool force_link_up;
+	bool tx_mode_latency;
+};
+
 struct adapter {
 	struct rte_pci_device *pdev;       /* associated rte pci device */
 	struct rte_eth_dev *eth_dev;       /* first port's rte eth device */
@@ -322,6 +328,8 @@ struct adapter {
 	int use_unpacked_mode; /* unpacked rx mode state */
 	rte_spinlock_t win0_lock;
 
+	rte_spinlock_t flow_lock; /* Serialize access for rte_flow ops */
+
 	unsigned int clipt_start; /* CLIP table start */
 	unsigned int clipt_end;   /* CLIP table end */
 	unsigned int l2t_start;   /* Layer 2 table start */
@@ -331,6 +339,8 @@ struct adapter {
 	struct mpstcam_table *mpstcam;
 
 	struct tid_info tids;     /* Info used to access TID related tables */
+
+	struct adapter_devargs devargs;
 };
 
 /**
@@ -450,11 +460,7 @@ static inline uint64_t cxgbe_write_addr64(volatile void *addr, uint64_t val)
  */
 static inline u32 t4_read_reg(struct adapter *adapter, u32 reg_addr)
 {
-	u32 val = CXGBE_READ_REG(adapter, reg_addr);
-
-	CXGBE_DEBUG_REG(adapter, "read register 0x%x value 0x%x\n", reg_addr,
-			val);
-	return val;
+	return CXGBE_READ_REG(adapter, reg_addr);
 }
 
 /**
@@ -467,8 +473,6 @@ static inline u32 t4_read_reg(struct adapter *adapter, u32 reg_addr)
  */
 static inline void t4_write_reg(struct adapter *adapter, u32 reg_addr, u32 val)
 {
-	CXGBE_DEBUG_REG(adapter, "setting register 0x%x to 0x%x\n", reg_addr,
-			val);
 	CXGBE_WRITE_REG(adapter, reg_addr, val);
 }
 
@@ -483,8 +487,6 @@ static inline void t4_write_reg(struct adapter *adapter, u32 reg_addr, u32 val)
 static inline void t4_write_reg_relaxed(struct adapter *adapter, u32 reg_addr,
 					u32 val)
 {
-	CXGBE_DEBUG_REG(adapter, "setting register 0x%x to 0x%x\n", reg_addr,
-			val);
 	CXGBE_WRITE_REG_RELAXED(adapter, reg_addr, val);
 }
 
@@ -497,11 +499,7 @@ static inline void t4_write_reg_relaxed(struct adapter *adapter, u32 reg_addr,
  */
 static inline u64 t4_read_reg64(struct adapter *adapter, u32 reg_addr)
 {
-	u64 val = CXGBE_READ_REG64(adapter, reg_addr);
-
-	CXGBE_DEBUG_REG(adapter, "64-bit read register %#x value %#llx\n",
-			reg_addr, (unsigned long long)val);
-	return val;
+	return CXGBE_READ_REG64(adapter, reg_addr);
 }
 
 /**
@@ -515,9 +513,6 @@ static inline u64 t4_read_reg64(struct adapter *adapter, u32 reg_addr)
 static inline void t4_write_reg64(struct adapter *adapter, u32 reg_addr,
 				  u64 val)
 {
-	CXGBE_DEBUG_REG(adapter, "setting register %#x to %#llx\n", reg_addr,
-			(unsigned long long)val);
-
 	CXGBE_WRITE_REG64(adapter, reg_addr, val);
 }
 
@@ -671,7 +666,7 @@ static inline void t4_os_set_hw_addr(struct adapter *adapter, int port_idx,
 {
 	struct port_info *pi = adap2pinfo(adapter, port_idx);
 
-	ether_addr_copy((struct ether_addr *)hw_addr,
+	rte_ether_addr_copy((struct rte_ether_addr *)hw_addr,
 			&pi->eth_dev->data->mac_addrs[0]);
 }
 
@@ -801,8 +796,6 @@ void t4_sge_tx_monitor_stop(struct adapter *adap);
 int t4_eth_xmit(struct sge_eth_txq *txq, struct rte_mbuf *mbuf,
 		uint16_t nb_pkts);
 int t4_mgmt_tx(struct sge_ctrl_txq *txq, struct rte_mbuf *mbuf);
-int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
-		     const struct pkt_gl *gl);
 int t4_sge_init(struct adapter *adap);
 int t4vf_sge_init(struct adapter *adap);
 int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,

@@ -2,7 +2,9 @@
  * Copyright(c) 2018 Aquantia Corporation
  */
 
+#include <rte_string_fns.h>
 #include <rte_ethdev_pci.h>
+#include <rte_alarm.h>
 
 #include "atl_ethdev.h"
 #include "atl_common.h"
@@ -22,10 +24,10 @@ static int  atl_dev_set_link_up(struct rte_eth_dev *dev);
 static int  atl_dev_set_link_down(struct rte_eth_dev *dev);
 static void atl_dev_close(struct rte_eth_dev *dev);
 static int  atl_dev_reset(struct rte_eth_dev *dev);
-static void atl_dev_promiscuous_enable(struct rte_eth_dev *dev);
-static void atl_dev_promiscuous_disable(struct rte_eth_dev *dev);
-static void atl_dev_allmulticast_enable(struct rte_eth_dev *dev);
-static void atl_dev_allmulticast_disable(struct rte_eth_dev *dev);
+static int  atl_dev_promiscuous_enable(struct rte_eth_dev *dev);
+static int  atl_dev_promiscuous_disable(struct rte_eth_dev *dev);
+static int atl_dev_allmulticast_enable(struct rte_eth_dev *dev);
+static int atl_dev_allmulticast_disable(struct rte_eth_dev *dev);
 static int  atl_dev_link_update(struct rte_eth_dev *dev, int wait);
 
 static int atl_dev_xstats_get_names(struct rte_eth_dev *dev __rte_unused,
@@ -38,13 +40,10 @@ static int atl_dev_stats_get(struct rte_eth_dev *dev,
 static int atl_dev_xstats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_xstat *stats, unsigned int n);
 
-static void atl_dev_stats_reset(struct rte_eth_dev *dev);
+static int atl_dev_stats_reset(struct rte_eth_dev *dev);
 
 static int atl_fw_version_get(struct rte_eth_dev *dev, char *fw_version,
 			      size_t fw_size);
-
-static void atl_dev_info_get(struct rte_eth_dev *dev,
-			       struct rte_eth_dev_info *dev_info);
 
 static const uint32_t *atl_dev_supported_ptypes_get(struct rte_eth_dev *dev);
 
@@ -91,14 +90,14 @@ static void atl_dev_interrupt_handler(void *param);
 
 
 static int atl_add_mac_addr(struct rte_eth_dev *dev,
-			    struct ether_addr *mac_addr,
+			    struct rte_ether_addr *mac_addr,
 			    uint32_t index, uint32_t pool);
 static void atl_remove_mac_addr(struct rte_eth_dev *dev, uint32_t index);
 static int atl_set_default_mac_addr(struct rte_eth_dev *dev,
-					   struct ether_addr *mac_addr);
+					   struct rte_ether_addr *mac_addr);
 
 static int atl_dev_set_mc_addr_list(struct rte_eth_dev *dev,
-				    struct ether_addr *mc_addr_set,
+				    struct rte_ether_addr *mc_addr_set,
 				    uint32_t nb_mc_addr);
 
 /* RSS */
@@ -118,7 +117,7 @@ static int eth_atl_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct rte_pci_device *pci_dev);
 static int eth_atl_pci_remove(struct rte_pci_device *pci_dev);
 
-static void atl_dev_info_get(struct rte_eth_dev *dev,
+static int atl_dev_info_get(struct rte_eth_dev *dev,
 				struct rte_eth_dev_info *dev_info);
 
 int atl_logtype_init;
@@ -155,8 +154,7 @@ static const struct rte_pci_id pci_id_atl_map[] = {
 
 static struct rte_pci_driver rte_atl_pmd = {
 	.id_table = pci_id_atl_map,
-	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
-		     RTE_PCI_DRV_IOVA_AS_VA,
+	.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
 	.probe = eth_atl_pci_probe,
 	.remove = eth_atl_pci_remove,
 };
@@ -166,6 +164,7 @@ static struct rte_pci_driver rte_atl_pmd = {
 			| DEV_RX_OFFLOAD_UDP_CKSUM \
 			| DEV_RX_OFFLOAD_TCP_CKSUM \
 			| DEV_RX_OFFLOAD_JUMBO_FRAME \
+			| DEV_RX_OFFLOAD_MACSEC_STRIP \
 			| DEV_RX_OFFLOAD_VLAN_FILTER)
 
 #define ATL_TX_OFFLOADS (DEV_TX_OFFLOAD_VLAN_INSERT \
@@ -173,6 +172,7 @@ static struct rte_pci_driver rte_atl_pmd = {
 			| DEV_TX_OFFLOAD_UDP_CKSUM \
 			| DEV_TX_OFFLOAD_TCP_CKSUM \
 			| DEV_TX_OFFLOAD_TCP_TSO \
+			| DEV_TX_OFFLOAD_MACSEC_INSERT \
 			| DEV_TX_OFFLOAD_MULTI_SEGS)
 
 #define SFP_EEPROM_SIZE 0x100
@@ -191,14 +191,27 @@ static const struct rte_eth_desc_lim tx_desc_lim = {
 	.nb_mtu_seg_max = ATL_TX_MAX_SEG,
 };
 
+enum atl_xstats_type {
+	XSTATS_TYPE_MSM = 0,
+	XSTATS_TYPE_MACSEC,
+};
+
 #define ATL_XSTATS_FIELD(name) { \
 	#name, \
-	offsetof(struct aq_stats_s, name) \
+	offsetof(struct aq_stats_s, name), \
+	XSTATS_TYPE_MSM \
+}
+
+#define ATL_MACSEC_XSTATS_FIELD(name) { \
+	#name, \
+	offsetof(struct macsec_stats, name), \
+	XSTATS_TYPE_MACSEC \
 }
 
 struct atl_xstats_tbl_s {
 	const char *name;
 	unsigned int offset;
+	enum atl_xstats_type type;
 };
 
 static struct atl_xstats_tbl_s atl_xstats_tbl[] = {
@@ -216,6 +229,38 @@ static struct atl_xstats_tbl_s atl_xstats_tbl[] = {
 	ATL_XSTATS_FIELD(mbtc),
 	ATL_XSTATS_FIELD(bbrc),
 	ATL_XSTATS_FIELD(bbtc),
+	/* Ingress Common Counters */
+	ATL_MACSEC_XSTATS_FIELD(in_ctl_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_tagged_miss_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_untagged_miss_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_notag_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_untagged_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_bad_tag_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_no_sci_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_unknown_sci_pkts),
+	/* Ingress SA Counters */
+	ATL_MACSEC_XSTATS_FIELD(in_untagged_hit_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_not_using_sa),
+	ATL_MACSEC_XSTATS_FIELD(in_unused_sa),
+	ATL_MACSEC_XSTATS_FIELD(in_not_valid_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_invalid_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_ok_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_unchecked_pkts),
+	ATL_MACSEC_XSTATS_FIELD(in_validated_octets),
+	ATL_MACSEC_XSTATS_FIELD(in_decrypted_octets),
+	/* Egress Common Counters */
+	ATL_MACSEC_XSTATS_FIELD(out_ctl_pkts),
+	ATL_MACSEC_XSTATS_FIELD(out_unknown_sa_pkts),
+	ATL_MACSEC_XSTATS_FIELD(out_untagged_pkts),
+	ATL_MACSEC_XSTATS_FIELD(out_too_long),
+	/* Egress SC Counters */
+	ATL_MACSEC_XSTATS_FIELD(out_sc_protected_pkts),
+	ATL_MACSEC_XSTATS_FIELD(out_sc_encrypted_pkts),
+	/* Egress SA Counters */
+	ATL_MACSEC_XSTATS_FIELD(out_sa_hit_drop_redirect),
+	ATL_MACSEC_XSTATS_FIELD(out_sa_protected2_pkts),
+	ATL_MACSEC_XSTATS_FIELD(out_sa_protected_pkts),
+	ATL_MACSEC_XSTATS_FIELD(out_sa_encrypted_pkts),
 };
 
 static const struct eth_dev_ops atl_eth_dev_ops = {
@@ -362,11 +407,14 @@ eth_atl_dev_init(struct rte_eth_dev *eth_dev)
 
 	hw->aq_nic_cfg = &adapter->hw_cfg;
 
+	pthread_mutex_init(&hw->mbox_mutex, NULL);
+
 	/* disable interrupt */
 	atl_disable_intr(hw);
 
 	/* Allocate memory for storing MAC addresses */
-	eth_dev->data->mac_addrs = rte_zmalloc("atlantic", ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc("atlantic",
+					RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
 		PMD_INIT_LOG(ERR, "MAC Malloc failed");
 		return -ENOMEM;
@@ -424,6 +472,8 @@ eth_atl_dev_uninit(struct rte_eth_dev *eth_dev)
 
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;
+
+	pthread_mutex_destroy(&hw->mbox_mutex);
 
 	return 0;
 }
@@ -551,9 +601,6 @@ atl_dev_start(struct rte_eth_dev *dev)
 		goto error;
 
 	dev->data->dev_link.link_status = hw->aq_link_status.mbps != 0;
-
-	if (err)
-		goto error;
 
 	if (rte_intr_allow_others(intr_handle)) {
 		/* check if lsc interrupt is enabled */
@@ -698,6 +745,207 @@ atl_dev_reset(struct rte_eth_dev *dev)
 	return ret;
 }
 
+static int
+atl_dev_configure_macsec(struct rte_eth_dev *dev)
+{
+	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct aq_hw_cfg_s *cf = ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+	struct aq_macsec_config *aqcfg = &cf->aq_macsec;
+	struct macsec_msg_fw_request msg_macsec;
+	struct macsec_msg_fw_response response;
+
+	if (!aqcfg->common.macsec_enabled ||
+	    hw->aq_fw_ops->send_macsec_req == NULL)
+		return 0;
+
+	memset(&msg_macsec, 0, sizeof(msg_macsec));
+
+	/* Creating set of sc/sa structures from parameters provided by DPDK */
+
+	/* Configure macsec */
+	msg_macsec.msg_type = macsec_cfg_msg;
+	msg_macsec.cfg.enabled = aqcfg->common.macsec_enabled;
+	msg_macsec.cfg.interrupts_enabled = 1;
+
+	hw->aq_fw_ops->send_macsec_req(hw, &msg_macsec, &response);
+
+	if (response.result)
+		return -1;
+
+	memset(&msg_macsec, 0, sizeof(msg_macsec));
+
+	/* Configure TX SC */
+
+	msg_macsec.msg_type = macsec_add_tx_sc_msg;
+	msg_macsec.txsc.index = 0; /* TXSC always one (??) */
+	msg_macsec.txsc.protect = aqcfg->common.encryption_enabled;
+
+	/* MAC addr for TX */
+	msg_macsec.txsc.mac_sa[0] = rte_bswap32(aqcfg->txsc.mac[1]);
+	msg_macsec.txsc.mac_sa[1] = rte_bswap32(aqcfg->txsc.mac[0]);
+	msg_macsec.txsc.sa_mask = 0x3f;
+
+	msg_macsec.txsc.da_mask = 0;
+	msg_macsec.txsc.tci = 0x0B;
+	msg_macsec.txsc.curr_an = 0; /* SA index which currently used */
+
+	/*
+	 * Creating SCI (Secure Channel Identifier).
+	 * SCI constructed from Source MAC and Port identifier
+	 */
+	uint32_t sci_hi_part = (msg_macsec.txsc.mac_sa[1] << 16) |
+			       (msg_macsec.txsc.mac_sa[0] >> 16);
+	uint32_t sci_low_part = (msg_macsec.txsc.mac_sa[0] << 16);
+
+	uint32_t port_identifier = 1;
+
+	msg_macsec.txsc.sci[1] = sci_hi_part;
+	msg_macsec.txsc.sci[0] = sci_low_part | port_identifier;
+
+	hw->aq_fw_ops->send_macsec_req(hw, &msg_macsec, &response);
+
+	if (response.result)
+		return -1;
+
+	memset(&msg_macsec, 0, sizeof(msg_macsec));
+
+	/* Configure RX SC */
+
+	msg_macsec.msg_type = macsec_add_rx_sc_msg;
+	msg_macsec.rxsc.index = aqcfg->rxsc.pi;
+	msg_macsec.rxsc.replay_protect =
+		aqcfg->common.replay_protection_enabled;
+	msg_macsec.rxsc.anti_replay_window = 0;
+
+	/* MAC addr for RX */
+	msg_macsec.rxsc.mac_da[0] = rte_bswap32(aqcfg->rxsc.mac[1]);
+	msg_macsec.rxsc.mac_da[1] = rte_bswap32(aqcfg->rxsc.mac[0]);
+	msg_macsec.rxsc.da_mask = 0;//0x3f;
+
+	msg_macsec.rxsc.sa_mask = 0;
+
+	hw->aq_fw_ops->send_macsec_req(hw, &msg_macsec, &response);
+
+	if (response.result)
+		return -1;
+
+	memset(&msg_macsec, 0, sizeof(msg_macsec));
+
+	/* Configure RX SC */
+
+	msg_macsec.msg_type = macsec_add_tx_sa_msg;
+	msg_macsec.txsa.index = aqcfg->txsa.idx;
+	msg_macsec.txsa.next_pn = aqcfg->txsa.pn;
+
+	msg_macsec.txsa.key[0] = rte_bswap32(aqcfg->txsa.key[3]);
+	msg_macsec.txsa.key[1] = rte_bswap32(aqcfg->txsa.key[2]);
+	msg_macsec.txsa.key[2] = rte_bswap32(aqcfg->txsa.key[1]);
+	msg_macsec.txsa.key[3] = rte_bswap32(aqcfg->txsa.key[0]);
+
+	hw->aq_fw_ops->send_macsec_req(hw, &msg_macsec, &response);
+
+	if (response.result)
+		return -1;
+
+	memset(&msg_macsec, 0, sizeof(msg_macsec));
+
+	/* Configure RX SA */
+
+	msg_macsec.msg_type = macsec_add_rx_sa_msg;
+	msg_macsec.rxsa.index = aqcfg->rxsa.idx;
+	msg_macsec.rxsa.next_pn = aqcfg->rxsa.pn;
+
+	msg_macsec.rxsa.key[0] = rte_bswap32(aqcfg->rxsa.key[3]);
+	msg_macsec.rxsa.key[1] = rte_bswap32(aqcfg->rxsa.key[2]);
+	msg_macsec.rxsa.key[2] = rte_bswap32(aqcfg->rxsa.key[1]);
+	msg_macsec.rxsa.key[3] = rte_bswap32(aqcfg->rxsa.key[0]);
+
+	hw->aq_fw_ops->send_macsec_req(hw, &msg_macsec, &response);
+
+	if (response.result)
+		return -1;
+
+	return 0;
+}
+
+int atl_macsec_enable(struct rte_eth_dev *dev,
+		      uint8_t encr, uint8_t repl_prot)
+{
+	struct aq_hw_cfg_s *cfg =
+		ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+
+	cfg->aq_macsec.common.macsec_enabled = 1;
+	cfg->aq_macsec.common.encryption_enabled = encr;
+	cfg->aq_macsec.common.replay_protection_enabled = repl_prot;
+
+	return 0;
+}
+
+int atl_macsec_disable(struct rte_eth_dev *dev)
+{
+	struct aq_hw_cfg_s *cfg =
+		ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+
+	cfg->aq_macsec.common.macsec_enabled = 0;
+
+	return 0;
+}
+
+int atl_macsec_config_txsc(struct rte_eth_dev *dev, uint8_t *mac)
+{
+	struct aq_hw_cfg_s *cfg =
+		ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+
+	memset(&cfg->aq_macsec.txsc.mac, 0, sizeof(cfg->aq_macsec.txsc.mac));
+	memcpy((uint8_t *)&cfg->aq_macsec.txsc.mac + 2, mac,
+		RTE_ETHER_ADDR_LEN);
+
+	return 0;
+}
+
+int atl_macsec_config_rxsc(struct rte_eth_dev *dev,
+			   uint8_t *mac, uint16_t pi)
+{
+	struct aq_hw_cfg_s *cfg =
+		ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+
+	memset(&cfg->aq_macsec.rxsc.mac, 0, sizeof(cfg->aq_macsec.rxsc.mac));
+	memcpy((uint8_t *)&cfg->aq_macsec.rxsc.mac + 2, mac,
+		RTE_ETHER_ADDR_LEN);
+	cfg->aq_macsec.rxsc.pi = pi;
+
+	return 0;
+}
+
+int atl_macsec_select_txsa(struct rte_eth_dev *dev,
+			   uint8_t idx, uint8_t an,
+			   uint32_t pn, uint8_t *key)
+{
+	struct aq_hw_cfg_s *cfg =
+		ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+
+	cfg->aq_macsec.txsa.idx = idx;
+	cfg->aq_macsec.txsa.pn = pn;
+	cfg->aq_macsec.txsa.an = an;
+
+	memcpy(&cfg->aq_macsec.txsa.key, key, 16);
+	return 0;
+}
+
+int atl_macsec_select_rxsa(struct rte_eth_dev *dev,
+			   uint8_t idx, uint8_t an,
+			   uint32_t pn, uint8_t *key)
+{
+	struct aq_hw_cfg_s *cfg =
+		ATL_DEV_PRIVATE_TO_CFG(dev->data->dev_private);
+
+	cfg->aq_macsec.rxsa.idx = idx;
+	cfg->aq_macsec.rxsa.pn = pn;
+	cfg->aq_macsec.rxsa.an = an;
+
+	memcpy(&cfg->aq_macsec.rxsa.key, key, 16);
+	return 0;
+}
 
 static int
 atl_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
@@ -731,7 +979,7 @@ atl_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	return 0;
 }
 
-static void
+static int
 atl_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct atl_adapter *adapter = ATL_DEV_TO_ADAPTER(dev);
@@ -743,6 +991,28 @@ atl_dev_stats_reset(struct rte_eth_dev *dev)
 	memset(&hw->curr_stats, 0, sizeof(hw->curr_stats));
 
 	memset(&adapter->sw_stats, 0, sizeof(adapter->sw_stats));
+
+	return 0;
+}
+
+static int
+atl_dev_xstats_get_count(struct rte_eth_dev *dev)
+{
+	struct atl_adapter *adapter =
+		(struct atl_adapter *)dev->data->dev_private;
+
+	struct aq_hw_s *hw = &adapter->hw;
+	unsigned int i, count = 0;
+
+	for (i = 0; i < RTE_DIM(atl_xstats_tbl); i++) {
+		if (atl_xstats_tbl[i].type == XSTATS_TYPE_MACSEC &&
+			((hw->caps_lo & BIT(CAPS_LO_MACSEC)) == 0))
+			continue;
+
+		count++;
+	}
+
+	return count;
 }
 
 static int
@@ -751,32 +1021,62 @@ atl_dev_xstats_get_names(struct rte_eth_dev *dev __rte_unused,
 			 unsigned int size)
 {
 	unsigned int i;
+	unsigned int count = atl_dev_xstats_get_count(dev);
 
-	if (!xstats_names)
-		return RTE_DIM(atl_xstats_tbl);
+	if (xstats_names) {
+		for (i = 0; i < size && i < count; i++) {
+			snprintf(xstats_names[i].name,
+				RTE_ETH_XSTATS_NAME_SIZE, "%s",
+				atl_xstats_tbl[i].name);
+		}
+	}
 
-	for (i = 0; i < size && i < RTE_DIM(atl_xstats_tbl); i++)
-		snprintf(xstats_names[i].name, RTE_ETH_XSTATS_NAME_SIZE, "%s",
-			atl_xstats_tbl[i].name);
-
-	return i;
+	return count;
 }
 
 static int
 atl_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,
 		   unsigned int n)
 {
-	struct atl_adapter *adapter = ATL_DEV_TO_ADAPTER(dev);
+	struct atl_adapter *adapter = dev->data->dev_private;
 	struct aq_hw_s *hw = &adapter->hw;
+	struct get_stats req = { 0 };
+	struct macsec_msg_fw_request msg = { 0 };
+	struct macsec_msg_fw_response resp = { 0 };
+	int err = -1;
 	unsigned int i;
+	unsigned int count = atl_dev_xstats_get_count(dev);
 
 	if (!stats)
-		return 0;
+		return count;
 
-	for (i = 0; i < n && i < RTE_DIM(atl_xstats_tbl); i++) {
+	if (hw->aq_fw_ops->send_macsec_req != NULL) {
+		req.ingress_sa_index = 0xff;
+		req.egress_sc_index = 0xff;
+		req.egress_sa_index = 0xff;
+
+		msg.msg_type = macsec_get_stats_msg;
+		msg.stats = req;
+
+		err = hw->aq_fw_ops->send_macsec_req(hw, &msg, &resp);
+	}
+
+	for (i = 0; i < n && i < count; i++) {
 		stats[i].id = i;
-		stats[i].value = *(u64 *)((uint8_t *)&hw->curr_stats +
+
+		switch (atl_xstats_tbl[i].type) {
+		case XSTATS_TYPE_MSM:
+			stats[i].value = *(u64 *)((uint8_t *)&hw->curr_stats +
+					 atl_xstats_tbl[i].offset);
+			break;
+		case XSTATS_TYPE_MACSEC:
+			if (!err) {
+				stats[i].value =
+					*(u64 *)((uint8_t *)&resp.stats +
 					atl_xstats_tbl[i].offset);
+			}
+			break;
+		}
 	}
 
 	return i;
@@ -804,7 +1104,7 @@ atl_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 	return 0;
 }
 
-static void
+static int
 atl_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
@@ -845,6 +1145,8 @@ atl_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->speed_capa |= ETH_LINK_SPEED_100M;
 	dev_info->speed_capa |= ETH_LINK_SPEED_2_5G;
 	dev_info->speed_capa |= ETH_LINK_SPEED_5G;
+
+	return 0;
 }
 
 static const uint32_t *
@@ -869,13 +1171,20 @@ atl_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	return NULL;
 }
 
+static void
+atl_dev_delayed_handler(void *param)
+{
+	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
+
+	atl_dev_configure_macsec(dev);
+}
+
+
 /* return 0 means link status changed, -1 means not changed */
 static int
 atl_dev_link_update(struct rte_eth_dev *dev, int wait __rte_unused)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct atl_interrupt *intr =
-		ATL_DEV_PRIVATE_TO_INTR(dev->data->dev_private);
 	struct rte_eth_link link, old;
 	u32 fc = AQ_NIC_FC_OFF;
 	int err = 0;
@@ -903,8 +1212,6 @@ atl_dev_link_update(struct rte_eth_dev *dev, int wait __rte_unused)
 		return 0;
 	}
 
-	intr->flags &= ~ATL_FLAG_NEED_LINK_CONFIG;
-
 	link.link_status = ETH_LINK_UP;
 	link.link_duplex = ETH_LINK_FULL_DUPLEX;
 	link.link_speed = hw->aq_link_status.mbps;
@@ -923,42 +1230,54 @@ atl_dev_link_update(struct rte_eth_dev *dev, int wait __rte_unused)
 		hw_atl_b0_set_fc(hw, fc, 0U);
 	}
 
+	if (rte_eal_alarm_set(1000 * 1000,
+			      atl_dev_delayed_handler, (void *)dev) < 0)
+		PMD_DRV_LOG(ERR, "rte_eal_alarm_set fail");
+
 	return 0;
 }
 
-static void
+static int
 atl_dev_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	hw_atl_rpfl2promiscuous_mode_en_set(hw, true);
+
+	return 0;
 }
 
-static void
+static int
 atl_dev_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	hw_atl_rpfl2promiscuous_mode_en_set(hw, false);
+
+	return 0;
 }
 
-static void
+static int
 atl_dev_allmulticast_enable(struct rte_eth_dev *dev)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	hw_atl_rpfl2_accept_all_mc_packets_set(hw, true);
+
+	return 0;
 }
 
-static void
+static int
 atl_dev_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	if (dev->data->promiscuous == 1)
-		return; /* must remain in all_multicast mode */
+		return 0; /* must remain in all_multicast mode */
 
 	hw_atl_rpfl2_accept_all_mc_packets_set(hw, false);
+
+	return 0;
 }
 
 /**
@@ -1000,8 +1319,9 @@ atl_dev_interrupt_get_status(struct rte_eth_dev *dev)
 	hw_atl_b0_hw_irq_read(hw, &cause);
 
 	atl_disable_intr(hw);
-	intr->flags = cause & BIT(ATL_IRQ_CAUSE_LINK) ?
-			ATL_FLAG_NEED_LINK_UPDATE : 0;
+
+	if (cause & BIT(ATL_IRQ_CAUSE_LINK))
+		intr->flags |= ATL_FLAG_NEED_LINK_UPDATE;
 
 	return 0;
 }
@@ -1066,17 +1386,51 @@ atl_dev_interrupt_action(struct rte_eth_dev *dev,
 {
 	struct atl_interrupt *intr =
 		ATL_DEV_PRIVATE_TO_INTR(dev->data->dev_private);
+	struct atl_adapter *adapter = dev->data->dev_private;
+	struct aq_hw_s *hw = &adapter->hw;
 
-	if (intr->flags & ATL_FLAG_NEED_LINK_UPDATE) {
-		atl_dev_link_update(dev, 0);
-		intr->flags &= ~ATL_FLAG_NEED_LINK_UPDATE;
+	if (!(intr->flags & ATL_FLAG_NEED_LINK_UPDATE))
+		goto done;
+
+	intr->flags &= ~ATL_FLAG_NEED_LINK_UPDATE;
+
+	/* Notify userapp if link status changed */
+	if (!atl_dev_link_update(dev, 0)) {
 		atl_dev_link_status_print(dev);
 		_rte_eth_dev_callback_process(dev,
 			RTE_ETH_EVENT_INTR_LSC, NULL);
-	}
+	} else {
+		if (hw->aq_fw_ops->send_macsec_req == NULL)
+			goto done;
 
+		/* Check macsec Keys expired */
+		struct get_stats req = { 0 };
+		struct macsec_msg_fw_request msg = { 0 };
+		struct macsec_msg_fw_response resp = { 0 };
+
+		req.ingress_sa_index = 0x0;
+		req.egress_sc_index = 0x0;
+		req.egress_sa_index = 0x0;
+		msg.msg_type = macsec_get_stats_msg;
+		msg.stats = req;
+
+		int err = hw->aq_fw_ops->send_macsec_req(hw, &msg, &resp);
+		if (err) {
+			PMD_DRV_LOG(ERR, "send_macsec_req fail");
+			goto done;
+		}
+		if (resp.stats.egress_threshold_expired ||
+		    resp.stats.ingress_threshold_expired ||
+		    resp.stats.egress_expired ||
+		    resp.stats.ingress_expired) {
+			PMD_DRV_LOG(INFO, "RTE_ETH_EVENT_MACSEC");
+			_rte_eth_dev_callback_process(dev,
+				RTE_ETH_EVENT_MACSEC, NULL);
+		}
+	}
+done:
 	atl_enable_intr(dev);
-	rte_intr_enable(intr_handle);
+	rte_intr_ack(intr_handle);
 
 	return 0;
 }
@@ -1102,17 +1456,18 @@ atl_dev_interrupt_handler(void *param)
 	atl_dev_interrupt_action(dev, dev->intr_handle);
 }
 
+
 static int
 atl_dev_get_eeprom_length(struct rte_eth_dev *dev __rte_unused)
 {
 	return SFP_EEPROM_SIZE;
 }
 
-static int
-atl_dev_get_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom)
+int atl_dev_get_eeprom(struct rte_eth_dev *dev,
+		       struct rte_dev_eeprom_info *eeprom)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	int dev_addr = SMBUS_DEVICE_ID;
+	uint32_t dev_addr = SMBUS_DEVICE_ID;
 
 	if (hw->aq_fw_ops->get_eeprom == NULL)
 		return -ENOTSUP;
@@ -1131,11 +1486,11 @@ atl_dev_get_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom)
 					 eeprom->length, eeprom->offset);
 }
 
-static int
-atl_dev_set_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom)
+int atl_dev_set_eeprom(struct rte_eth_dev *dev,
+		       struct rte_dev_eeprom_info *eeprom)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	int dev_addr = SMBUS_DEVICE_ID;
+	uint32_t dev_addr = SMBUS_DEVICE_ID;
 
 	if (hw->aq_fw_ops->set_eeprom == NULL)
 		return -ENOTSUP;
@@ -1199,6 +1554,7 @@ atl_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		fc_conf->mode = RTE_FC_RX_PAUSE;
 	else if (fc & AQ_NIC_FC_TX)
 		fc_conf->mode = RTE_FC_TX_PAUSE;
+
 	return 0;
 }
 
@@ -1255,10 +1611,10 @@ atl_update_mac_addr(struct rte_eth_dev *dev, uint32_t index,
 }
 
 static int
-atl_add_mac_addr(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
+atl_add_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr,
 			uint32_t index __rte_unused, uint32_t pool __rte_unused)
 {
-	if (is_zero_ether_addr(mac_addr)) {
+	if (rte_is_zero_ether_addr(mac_addr)) {
 		PMD_DRV_LOG(ERR, "Invalid Ethernet Address");
 		return -EINVAL;
 	}
@@ -1273,7 +1629,7 @@ atl_remove_mac_addr(struct rte_eth_dev *dev, uint32_t index)
 }
 
 static int
-atl_set_default_mac_addr(struct rte_eth_dev *dev, struct ether_addr *addr)
+atl_set_default_mac_addr(struct rte_eth_dev *dev, struct rte_ether_addr *addr)
 {
 	atl_remove_mac_addr(dev, 0);
 	atl_add_mac_addr(dev, addr, 0, 0);
@@ -1284,11 +1640,14 @@ static int
 atl_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 {
 	struct rte_eth_dev_info dev_info;
-	uint32_t frame_size = mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
+	int ret;
+	uint32_t frame_size = mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
-	atl_dev_info_get(dev, &dev_info);
+	ret = atl_dev_info_get(dev, &dev_info);
+	if (ret != 0)
+		return ret;
 
-	if ((mtu < ETHER_MIN_MTU) || (frame_size > dev_info.max_rx_pktlen))
+	if (mtu < RTE_ETHER_MIN_MTU || frame_size > dev_info.max_rx_pktlen)
 		return -EINVAL;
 
 	/* update max frame size */
@@ -1440,7 +1799,7 @@ atl_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue_id, int on)
 
 static int
 atl_dev_set_mc_addr_list(struct rte_eth_dev *dev,
-			  struct ether_addr *mc_addr_set,
+			  struct rte_ether_addr *mc_addr_set,
 			  uint32_t nb_mc_addr)
 {
 	struct aq_hw_s *hw = ATL_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -1552,6 +1911,21 @@ atl_rss_hash_conf_get(struct rte_eth_dev *dev,
 	return 0;
 }
 
+static bool
+is_device_supported(struct rte_eth_dev *dev, struct rte_pci_driver *drv)
+{
+	if (strcmp(dev->device->driver->name, drv->driver.name))
+		return false;
+
+	return true;
+}
+
+bool
+is_atlantic_supported(struct rte_eth_dev *dev)
+{
+	return is_device_supported(dev, &rte_atl_pmd);
+}
+
 RTE_PMD_REGISTER_PCI(net_atlantic, rte_atl_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_atlantic, pci_id_atl_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_atlantic, "* igb_uio | uio_pci_generic");
@@ -1565,4 +1939,3 @@ RTE_INIT(atl_init_log)
 	if (atl_logtype_driver >= 0)
 		rte_log_set_level(atl_logtype_driver, RTE_LOG_NOTICE);
 }
-

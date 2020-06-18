@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2008-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017,2019 NXP
  *
  */
 
@@ -32,31 +32,9 @@ static __thread struct dpaa_ioctl_portal_map map = {
 
 static int fsl_qman_portal_init(uint32_t index, int is_shared)
 {
-	cpu_set_t cpuset;
 	struct qman_portal *portal;
-	int loop, ret;
 	struct dpaa_ioctl_irq_map irq_map;
-
-	/* Verify the thread's cpu-affinity */
-	ret = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t),
-				     &cpuset);
-	if (ret) {
-		error(0, ret, "pthread_getaffinity_np()");
-		return ret;
-	}
-	qpcfg.cpu = -1;
-	for (loop = 0; loop < CPU_SETSIZE; loop++)
-		if (CPU_ISSET(loop, &cpuset)) {
-			if (qpcfg.cpu != -1) {
-				pr_err("Thread is not affine to 1 cpu\n");
-				return -EINVAL;
-			}
-			qpcfg.cpu = loop;
-		}
-	if (qpcfg.cpu == -1) {
-		pr_err("Bug in getaffinity handling!\n");
-		return -EINVAL;
-	}
+	int ret;
 
 	/* Allocate and map a qman portal */
 	map.index = index;
@@ -84,7 +62,7 @@ static int fsl_qman_portal_init(uint32_t index, int is_shared)
 	qpcfg.node = NULL;
 	qpcfg.irq = qmfd;
 
-	portal = qman_create_affine_portal(&qpcfg, NULL, 0);
+	portal = qman_create_affine_portal(&qpcfg, NULL);
 	if (!portal) {
 		pr_err("Qman portal initialisation failed (%d)\n",
 		       qpcfg.cpu);
@@ -143,45 +121,22 @@ void qman_thread_irq(void)
 	out_be32(qpcfg.addr_virt[DPAA_PORTAL_CI] + 0x36C0, 0);
 }
 
-struct qman_portal *fsl_qman_portal_create(void)
+void qman_fq_portal_thread_irq(struct qman_portal *qp)
 {
-	cpu_set_t cpuset;
-	struct qman_portal *res;
+	qman_portal_uninhibit_isr(qp);
+}
 
+struct qman_portal *fsl_qman_fq_portal_create(int *fd)
+{
+	struct qman_portal *portal = NULL;
 	struct qm_portal_config *q_pcfg;
-	int loop, ret;
 	struct dpaa_ioctl_irq_map irq_map;
 	struct dpaa_ioctl_portal_map q_map = {0};
-	int q_fd;
+	int q_fd = 0, ret;
 
 	q_pcfg = kzalloc((sizeof(struct qm_portal_config)), 0);
 	if (!q_pcfg) {
 		error(0, -1, "q_pcfg kzalloc failed");
-		return NULL;
-	}
-
-	/* Verify the thread's cpu-affinity */
-	ret = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t),
-				     &cpuset);
-	if (ret) {
-		error(0, ret, "pthread_getaffinity_np()");
-		kfree(q_pcfg);
-		return NULL;
-	}
-
-	q_pcfg->cpu = -1;
-	for (loop = 0; loop < CPU_SETSIZE; loop++)
-		if (CPU_ISSET(loop, &cpuset)) {
-			if (q_pcfg->cpu != -1) {
-				pr_err("Thread is not affine to 1 cpu\n");
-				kfree(q_pcfg);
-				return NULL;
-			}
-			q_pcfg->cpu = loop;
-		}
-	if (q_pcfg->cpu == -1) {
-		pr_err("Bug in getaffinity handling!\n");
-		kfree(q_pcfg);
 		return NULL;
 	}
 
@@ -205,38 +160,59 @@ struct qman_portal *fsl_qman_portal_create(void)
 	q_fd = open(QMAN_PORTAL_IRQ_PATH, O_RDONLY);
 	if (q_fd == -1) {
 		pr_err("QMan irq init failed\n");
-		goto err1;
+		goto err;
 	}
 
 	q_pcfg->irq = q_fd;
 
-	res = qman_create_affine_portal(q_pcfg, NULL, true);
-	if (!res) {
+	portal = qman_alloc_global_portal(q_pcfg);
+	if (!portal) {
 		pr_err("Qman portal initialisation failed (%d)\n",
 		       q_pcfg->cpu);
-		goto err2;
+		goto err;
 	}
 
 	irq_map.type = dpaa_portal_qman;
 	irq_map.portal_cinh = q_map.addr.cinh;
 	process_portal_irq_map(q_fd, &irq_map);
 
-	return res;
-err2:
-	close(q_fd);
-err1:
+	*fd = q_fd;
+	return portal;
+err:
+	if (portal)
+		qman_free_global_portal(portal);
+	if (q_fd)
+		close(q_fd);
 	process_portal_unmap(&q_map.addr);
 	kfree(q_pcfg);
 	return NULL;
 }
 
-int fsl_qman_portal_destroy(struct qman_portal *qp)
+int fsl_qman_fq_portal_init(struct qman_portal *qp)
+{
+	struct qman_portal *res;
+
+	res = qman_init_portal(qp, NULL, NULL);
+	if (!res) {
+		pr_err("Qman portal initialisation failed\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+int fsl_qman_fq_portal_destroy(struct qman_portal *qp)
 {
 	const struct qm_portal_config *cfg;
 	struct dpaa_portal_map addr;
 	int ret;
 
 	cfg = qman_destroy_affine_portal(qp);
+
+	ret = qman_free_global_portal(qp);
+	if (ret)
+		pr_err("qman_free_global_portal() (%d)\n", ret);
+
 	kfree(qp);
 
 	process_portal_irq_unmap(cfg->irq);

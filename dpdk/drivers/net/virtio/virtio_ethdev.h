@@ -34,7 +34,9 @@
 	 1u << VIRTIO_RING_F_INDIRECT_DESC |    \
 	 1ULL << VIRTIO_F_VERSION_1       |	\
 	 1ULL << VIRTIO_F_IN_ORDER        |	\
-	 1ULL << VIRTIO_F_IOMMU_PLATFORM)
+	 1ULL << VIRTIO_F_RING_PACKED	  |	\
+	 1ULL << VIRTIO_F_IOMMU_PLATFORM  |	\
+	 1ULL << VIRTIO_F_ORDER_PLATFORM)
 
 #define VIRTIO_PMD_SUPPORTED_GUEST_FEATURES	\
 	(VIRTIO_PMD_DEFAULT_GUEST_FEATURES |	\
@@ -75,11 +77,16 @@ int virtio_dev_tx_queue_setup_finish(struct rte_eth_dev *dev,
 
 uint16_t virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
+uint16_t virtio_recv_pkts_packed(void *rx_queue, struct rte_mbuf **rx_pkts,
+		uint16_t nb_pkts);
 
 uint16_t virtio_recv_mergeable_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
 
-uint16_t virtio_recv_mergeable_pkts_inorder(void *rx_queue,
+uint16_t virtio_recv_mergeable_pkts_packed(void *rx_queue,
+		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+
+uint16_t virtio_recv_pkts_inorder(void *rx_queue,
 		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
 
 uint16_t virtio_xmit_pkts_prepare(void *tx_queue, struct rte_mbuf **tx_pkts,
@@ -87,14 +94,13 @@ uint16_t virtio_xmit_pkts_prepare(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 uint16_t virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
+uint16_t virtio_xmit_pkts_packed(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts);
 
 uint16_t virtio_xmit_pkts_inorder(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
 
 uint16_t virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-		uint16_t nb_pkts);
-
-uint16_t virtio_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
 
 int eth_virtio_dev_init(struct rte_eth_dev *eth_dev);

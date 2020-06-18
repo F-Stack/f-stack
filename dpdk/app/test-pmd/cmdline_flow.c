@@ -13,13 +13,16 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
+#include <rte_string_fns.h>
 #include <rte_common.h>
-#include <rte_eth_ctrl.h>
 #include <rte_ethdev.h>
 #include <rte_byteorder.h>
 #include <cmdline_parse.h>
 #include <cmdline_parse_etheraddr.h>
+#include <cmdline_parse_string.h>
+#include <cmdline_parse_num.h>
 #include <rte_flow.h>
+#include <rte_hexdump.h>
 
 #include "testpmd.h"
 
@@ -28,6 +31,8 @@ enum index {
 	/* Special tokens. */
 	ZERO = 0,
 	END,
+	START_SET,
+	END_SET,
 
 	/* Common tokens. */
 	INTEGER,
@@ -45,8 +50,14 @@ enum index {
 	PRIORITY_LEVEL,
 
 	/* Top-level command. */
-	FLOW,
+	SET,
+	/* Sub-leve commands. */
+	SET_RAW_ENCAP,
+	SET_RAW_DECAP,
+	SET_RAW_INDEX,
 
+	/* Top-level command. */
+	FLOW,
 	/* Sub-level commands. */
 	VALIDATE,
 	CREATE,
@@ -146,8 +157,14 @@ enum index {
 	ITEM_NVGRE_TNI,
 	ITEM_MPLS,
 	ITEM_MPLS_LABEL,
+	ITEM_MPLS_TC,
+	ITEM_MPLS_S,
 	ITEM_GRE,
 	ITEM_GRE_PROTO,
+	ITEM_GRE_C_RSVD0_VER,
+	ITEM_GRE_C_BIT,
+	ITEM_GRE_K_BIT,
+	ITEM_GRE_S_BIT,
 	ITEM_FUZZY,
 	ITEM_FUZZY_THRESH,
 	ITEM_GTP,
@@ -181,6 +198,21 @@ enum index {
 	ITEM_ICMP6_ND_OPT_TLA_ETH_TLA,
 	ITEM_META,
 	ITEM_META_DATA,
+	ITEM_GRE_KEY,
+	ITEM_GRE_KEY_VALUE,
+	ITEM_GTP_PSC,
+	ITEM_GTP_PSC_QFI,
+	ITEM_GTP_PSC_PDU_T,
+	ITEM_PPPOES,
+	ITEM_PPPOED,
+	ITEM_PPPOE_SEID,
+	ITEM_PPPOE_PROTO_ID,
+	ITEM_HIGIG2,
+	ITEM_HIGIG2_CLASSIFICATION,
+	ITEM_HIGIG2_VID,
+	ITEM_TAG,
+	ITEM_TAG_DATA,
+	ITEM_TAG_INDEX,
 
 	/* Validate/create actions. */
 	ACTIONS,
@@ -205,6 +237,7 @@ enum index {
 	ACTION_RSS_FUNC_DEFAULT,
 	ACTION_RSS_FUNC_TOEPLITZ,
 	ACTION_RSS_FUNC_SIMPLE_XOR,
+	ACTION_RSS_FUNC_SYMMETRIC_TOEPLITZ,
 	ACTION_RSS_TYPES,
 	ACTION_RSS_TYPE,
 	ACTION_RSS_KEY,
@@ -272,6 +305,27 @@ enum index {
 	ACTION_SET_MAC_SRC_MAC_SRC,
 	ACTION_SET_MAC_DST,
 	ACTION_SET_MAC_DST_MAC_DST,
+	ACTION_INC_TCP_SEQ,
+	ACTION_INC_TCP_SEQ_VALUE,
+	ACTION_DEC_TCP_SEQ,
+	ACTION_DEC_TCP_SEQ_VALUE,
+	ACTION_INC_TCP_ACK,
+	ACTION_INC_TCP_ACK_VALUE,
+	ACTION_DEC_TCP_ACK,
+	ACTION_DEC_TCP_ACK_VALUE,
+	ACTION_RAW_ENCAP,
+	ACTION_RAW_DECAP,
+	ACTION_RAW_ENCAP_INDEX,
+	ACTION_RAW_ENCAP_INDEX_VALUE,
+	ACTION_RAW_DECAP_INDEX,
+	ACTION_RAW_DECAP_INDEX_VALUE,
+	ACTION_SET_TAG,
+	ACTION_SET_TAG_DATA,
+	ACTION_SET_TAG_INDEX,
+	ACTION_SET_TAG_MASK,
+	ACTION_SET_META,
+	ACTION_SET_META_DATA,
+	ACTION_SET_META_MASK,
 };
 
 /** Maximum size for pattern in struct rte_flow_item_raw. */
@@ -282,13 +336,69 @@ enum index {
 	(sizeof(struct rte_flow_item_raw) + ITEM_RAW_PATTERN_SIZE)
 
 /** Maximum number of queue indices in struct rte_flow_action_rss. */
-#define ACTION_RSS_QUEUE_NUM 32
+#define ACTION_RSS_QUEUE_NUM 128
 
 /** Storage for struct rte_flow_action_rss including external data. */
 struct action_rss_data {
 	struct rte_flow_action_rss conf;
 	uint8_t key[RSS_HASH_KEY_LENGTH];
 	uint16_t queue[ACTION_RSS_QUEUE_NUM];
+};
+
+/** Maximum data size in struct rte_flow_action_raw_encap. */
+#define ACTION_RAW_ENCAP_MAX_DATA 128
+#define RAW_ENCAP_CONFS_MAX_NUM 8
+
+/** Storage for struct rte_flow_action_raw_encap. */
+struct raw_encap_conf {
+	uint8_t data[ACTION_RAW_ENCAP_MAX_DATA];
+	uint8_t preserve[ACTION_RAW_ENCAP_MAX_DATA];
+	size_t size;
+};
+
+struct raw_encap_conf raw_encap_confs[RAW_ENCAP_CONFS_MAX_NUM];
+
+/** Storage for struct rte_flow_action_raw_encap including external data. */
+struct action_raw_encap_data {
+	struct rte_flow_action_raw_encap conf;
+	uint8_t data[ACTION_RAW_ENCAP_MAX_DATA];
+	uint8_t preserve[ACTION_RAW_ENCAP_MAX_DATA];
+	uint16_t idx;
+};
+
+/** Storage for struct rte_flow_action_raw_decap. */
+struct raw_decap_conf {
+	uint8_t data[ACTION_RAW_ENCAP_MAX_DATA];
+	size_t size;
+};
+
+struct raw_decap_conf raw_decap_confs[RAW_ENCAP_CONFS_MAX_NUM];
+
+/** Storage for struct rte_flow_action_raw_decap including external data. */
+struct action_raw_decap_data {
+	struct rte_flow_action_raw_decap conf;
+	uint8_t data[ACTION_RAW_ENCAP_MAX_DATA];
+	uint16_t idx;
+};
+
+struct vxlan_encap_conf vxlan_encap_conf = {
+	.select_ipv4 = 1,
+	.select_vlan = 0,
+	.select_tos_ttl = 0,
+	.vni = "\x00\x00\x00",
+	.udp_src = 0,
+	.udp_dst = RTE_BE16(4789),
+	.ipv4_src = RTE_IPV4(127, 0, 0, 1),
+	.ipv4_dst = RTE_IPV4(255, 255, 255, 255),
+	.ipv6_src = "\x00\x00\x00\x00\x00\x00\x00\x00"
+		"\x00\x00\x00\x00\x00\x00\x00\x01",
+	.ipv6_dst = "\x00\x00\x00\x00\x00\x00\x00\x00"
+		"\x00\x00\x00\x00\x00\x00\x11\x11",
+	.vlan_tci = 0,
+	.ip_tos = 0,
+	.ip_ttl = 255,
+	.eth_src = "\x00\x00\x00\x00\x00\x00",
+	.eth_dst = "\xff\xff\xff\xff\xff\xff",
 };
 
 /** Maximum number of items in struct rte_flow_action_vxlan_encap. */
@@ -308,6 +418,21 @@ struct action_vxlan_encap_data {
 	struct rte_flow_item_vxlan item_vxlan;
 };
 
+struct nvgre_encap_conf nvgre_encap_conf = {
+	.select_ipv4 = 1,
+	.select_vlan = 0,
+	.tni = "\x00\x00\x00",
+	.ipv4_src = RTE_IPV4(127, 0, 0, 1),
+	.ipv4_dst = RTE_IPV4(255, 255, 255, 255),
+	.ipv6_src = "\x00\x00\x00\x00\x00\x00\x00\x00"
+		"\x00\x00\x00\x00\x00\x00\x00\x01",
+	.ipv6_dst = "\x00\x00\x00\x00\x00\x00\x00\x00"
+		"\x00\x00\x00\x00\x00\x00\x11\x11",
+	.vlan_tci = 0,
+	.eth_src = "\x00\x00\x00\x00\x00\x00",
+	.eth_dst = "\xff\xff\xff\xff\xff\xff",
+};
+
 /** Maximum number of items in struct rte_flow_action_nvgre_encap. */
 #define ACTION_NVGRE_ENCAP_ITEMS_NUM 5
 
@@ -324,21 +449,17 @@ struct action_nvgre_encap_data {
 	struct rte_flow_item_nvgre item_nvgre;
 };
 
-/** Maximum data size in struct rte_flow_action_raw_encap. */
-#define ACTION_RAW_ENCAP_MAX_DATA 128
+struct l2_encap_conf l2_encap_conf;
 
-/** Storage for struct rte_flow_action_raw_encap including external data. */
-struct action_raw_encap_data {
-	struct rte_flow_action_raw_encap conf;
-	uint8_t data[ACTION_RAW_ENCAP_MAX_DATA];
-	uint8_t preserve[ACTION_RAW_ENCAP_MAX_DATA];
-};
+struct l2_decap_conf l2_decap_conf;
 
-/** Storage for struct rte_flow_action_raw_decap including external data. */
-struct action_raw_decap_data {
-	struct rte_flow_action_raw_decap conf;
-	uint8_t data[ACTION_RAW_ENCAP_MAX_DATA];
-};
+struct mplsogre_encap_conf mplsogre_encap_conf;
+
+struct mplsogre_decap_conf mplsogre_decap_conf;
+
+struct mplsoudp_encap_conf mplsoudp_encap_conf;
+
+struct mplsoudp_decap_conf mplsoudp_decap_conf;
 
 /** Maximum number of subsequent tokens and arguments on the stack. */
 #define CTX_STACK_SIZE 16
@@ -485,6 +606,14 @@ struct token {
 		.size = sizeof(((s *)0)->f), \
 	})
 
+/** Same as ARGS_ENTRY_HTON() for a single argument, without structure. */
+#define ARG_ENTRY_HTON(s) \
+	(&(const struct arg){ \
+		.hton = 1, \
+		.offset = 0, \
+		.size = sizeof(s), \
+	})
+
 /** Parser output buffer layout expected by cmd_flow_parsed(). */
 struct buffer {
 	enum index command; /**< Flow command. */
@@ -610,6 +739,14 @@ static const enum index next_item[] = {
 	ITEM_ICMP6_ND_OPT_SLA_ETH,
 	ITEM_ICMP6_ND_OPT_TLA_ETH,
 	ITEM_META,
+	ITEM_GRE_KEY,
+	ITEM_GTP_PSC,
+	ITEM_PPPOES,
+	ITEM_PPPOED,
+	ITEM_PPPOE_PROTO_ID,
+	ITEM_HIGIG2,
+	ITEM_TAG,
+	END_SET,
 	ZERO,
 };
 
@@ -749,12 +886,24 @@ static const enum index item_nvgre[] = {
 
 static const enum index item_mpls[] = {
 	ITEM_MPLS_LABEL,
+	ITEM_MPLS_TC,
+	ITEM_MPLS_S,
 	ITEM_NEXT,
 	ZERO,
 };
 
 static const enum index item_gre[] = {
 	ITEM_GRE_PROTO,
+	ITEM_GRE_C_RSVD0_VER,
+	ITEM_GRE_C_BIT,
+	ITEM_GRE_K_BIT,
+	ITEM_GRE_S_BIT,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_gre_key[] = {
+	ITEM_GRE_KEY_VALUE,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -836,6 +985,51 @@ static const enum index item_meta[] = {
 	ZERO,
 };
 
+static const enum index item_gtp_psc[] = {
+	ITEM_GTP_PSC_QFI,
+	ITEM_GTP_PSC_PDU_T,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_pppoed[] = {
+	ITEM_PPPOE_SEID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_pppoes[] = {
+	ITEM_PPPOE_SEID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_pppoe_proto_id[] = {
+	ITEM_PPPOE_PROTO_ID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_higig2[] = {
+	ITEM_HIGIG2_CLASSIFICATION,
+	ITEM_HIGIG2_VID,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index next_set_raw[] = {
+	SET_RAW_INDEX,
+	ITEM_ETH,
+	ZERO,
+};
+
+static const enum index item_tag[] = {
+	ITEM_TAG_DATA,
+	ITEM_TAG_INDEX,
+	ITEM_NEXT,
+	ZERO,
+};
+
 static const enum index next_action[] = {
 	ACTION_END,
 	ACTION_VOID,
@@ -885,6 +1079,14 @@ static const enum index next_action[] = {
 	ACTION_SET_TTL,
 	ACTION_SET_MAC_SRC,
 	ACTION_SET_MAC_DST,
+	ACTION_INC_TCP_SEQ,
+	ACTION_DEC_TCP_SEQ,
+	ACTION_INC_TCP_ACK,
+	ACTION_DEC_TCP_ACK,
+	ACTION_RAW_ENCAP,
+	ACTION_RAW_DECAP,
+	ACTION_SET_TAG,
+	ACTION_SET_META,
 	ZERO,
 };
 
@@ -1047,6 +1249,63 @@ static const enum index action_set_mac_dst[] = {
 	ZERO,
 };
 
+static const enum index action_inc_tcp_seq[] = {
+	ACTION_INC_TCP_SEQ_VALUE,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_dec_tcp_seq[] = {
+	ACTION_DEC_TCP_SEQ_VALUE,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_inc_tcp_ack[] = {
+	ACTION_INC_TCP_ACK_VALUE,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_dec_tcp_ack[] = {
+	ACTION_DEC_TCP_ACK_VALUE,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_raw_encap[] = {
+	ACTION_RAW_ENCAP_INDEX,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_raw_decap[] = {
+	ACTION_RAW_DECAP_INDEX,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_set_tag[] = {
+	ACTION_SET_TAG_DATA,
+	ACTION_SET_TAG_INDEX,
+	ACTION_SET_TAG_MASK,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_set_meta[] = {
+	ACTION_SET_META_DATA,
+	ACTION_SET_META_MASK,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static int parse_set_raw_encap_decap(struct context *, const struct token *,
+				     const char *, unsigned int,
+				     void *, unsigned int);
+static int parse_set_init(struct context *, const struct token *,
+			  const char *, unsigned int,
+			  void *, unsigned int);
 static int parse_init(struct context *, const struct token *,
 		      const char *, unsigned int,
 		      void *, unsigned int);
@@ -1093,6 +1352,22 @@ static int parse_vc_action_mplsoudp_encap(struct context *,
 static int parse_vc_action_mplsoudp_decap(struct context *,
 					  const struct token *, const char *,
 					  unsigned int, void *, unsigned int);
+static int parse_vc_action_raw_encap(struct context *,
+				     const struct token *, const char *,
+				     unsigned int, void *, unsigned int);
+static int parse_vc_action_raw_decap(struct context *,
+				     const struct token *, const char *,
+				     unsigned int, void *, unsigned int);
+static int parse_vc_action_raw_encap_index(struct context *,
+					   const struct token *, const char *,
+					   unsigned int, void *, unsigned int);
+static int parse_vc_action_raw_decap_index(struct context *,
+					   const struct token *, const char *,
+					   unsigned int, void *, unsigned int);
+static int parse_vc_action_set_meta(struct context *ctx,
+				    const struct token *token, const char *str,
+				    unsigned int len, void *buf,
+				    unsigned int size);
 static int parse_destroy(struct context *, const struct token *,
 			 const char *, unsigned int,
 			 void *, unsigned int);
@@ -1152,6 +1427,8 @@ static int comp_vc_action_rss_type(struct context *, const struct token *,
 				   unsigned int, char *, unsigned int);
 static int comp_vc_action_rss_queue(struct context *, const struct token *,
 				    unsigned int, char *, unsigned int);
+static int comp_set_raw_index(struct context *, const struct token *,
+			      unsigned int, char *, unsigned int);
 
 /** Token definitions. */
 static const struct token token_list[] = {
@@ -1165,6 +1442,16 @@ static const struct token token_list[] = {
 		.name = "",
 		.type = "RETURN",
 		.help = "command may end here",
+	},
+	[START_SET] = {
+		.name = "START_SET",
+		.help = "null entry, abused as the entry point for set",
+		.next = NEXT(NEXT_ENTRY(SET)),
+	},
+	[END_SET] = {
+		.name = "end_set",
+		.type = "RETURN",
+		.help = "set command may end here",
 	},
 	/* Common tokens. */
 	[INTEGER] = {
@@ -1884,6 +2171,22 @@ static const struct token token_list[] = {
 						  label_tc_s,
 						  "\xff\xff\xf0")),
 	},
+	[ITEM_MPLS_TC] = {
+		.name = "tc",
+		.help = "MPLS Traffic Class",
+		.next = NEXT(item_mpls, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_mpls,
+						  label_tc_s,
+						  "\x00\x00\x0e")),
+	},
+	[ITEM_MPLS_S] = {
+		.name = "s",
+		.help = "MPLS Bottom-of-Stack",
+		.next = NEXT(item_mpls, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_mpls,
+						  label_tc_s,
+						  "\x00\x00\x01")),
+	},
 	[ITEM_GRE] = {
 		.name = "gre",
 		.help = "match GRE header",
@@ -1897,6 +2200,40 @@ static const struct token token_list[] = {
 		.next = NEXT(item_gre, NEXT_ENTRY(UNSIGNED), item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gre,
 					     protocol)),
+	},
+	[ITEM_GRE_C_RSVD0_VER] = {
+		.name = "c_rsvd0_ver",
+		.help =
+			"checksum (1b), undefined (1b), key bit (1b),"
+			" sequence number (1b), reserved 0 (9b),"
+			" version (3b)",
+		.next = NEXT(item_gre, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gre,
+					     c_rsvd0_ver)),
+	},
+	[ITEM_GRE_C_BIT] = {
+		.name = "c_bit",
+		.help = "checksum bit (C)",
+		.next = NEXT(item_gre, NEXT_ENTRY(BOOLEAN), item_param),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_gre,
+						  c_rsvd0_ver,
+						  "\x80\x00\x00\x00")),
+	},
+	[ITEM_GRE_S_BIT] = {
+		.name = "s_bit",
+		.help = "sequence number bit (S)",
+		.next = NEXT(item_gre, NEXT_ENTRY(BOOLEAN), item_param),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_gre,
+						  c_rsvd0_ver,
+						  "\x10\x00\x00\x00")),
+	},
+	[ITEM_GRE_K_BIT] = {
+		.name = "k_bit",
+		.help = "key bit (K)",
+		.next = NEXT(item_gre, NEXT_ENTRY(BOOLEAN), item_param),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_gre,
+						  c_rsvd0_ver,
+						  "\x20\x00\x00\x00")),
 	},
 	[ITEM_FUZZY] = {
 		.name = "fuzzy",
@@ -2147,10 +2484,115 @@ static const struct token token_list[] = {
 		.name = "data",
 		.help = "metadata value",
 		.next = NEXT(item_meta, NEXT_ENTRY(UNSIGNED), item_param),
-		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_meta,
-						  data, "\xff\xff\xff\xff")),
+		.args = ARGS(ARGS_ENTRY_MASK(struct rte_flow_item_meta,
+					     data, "\xff\xff\xff\xff")),
 	},
-
+	[ITEM_GRE_KEY] = {
+		.name = "gre_key",
+		.help = "match GRE key",
+		.priv = PRIV_ITEM(GRE_KEY, sizeof(rte_be32_t)),
+		.next = NEXT(item_gre_key),
+		.call = parse_vc,
+	},
+	[ITEM_GRE_KEY_VALUE] = {
+		.name = "value",
+		.help = "key value",
+		.next = NEXT(item_gre_key, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARG_ENTRY_HTON(rte_be32_t)),
+	},
+	[ITEM_GTP_PSC] = {
+		.name = "gtp_psc",
+		.help = "match GTP extension header with type 0x85",
+		.priv = PRIV_ITEM(GTP_PSC,
+				sizeof(struct rte_flow_item_gtp_psc)),
+		.next = NEXT(item_gtp_psc),
+		.call = parse_vc,
+	},
+	[ITEM_GTP_PSC_QFI] = {
+		.name = "qfi",
+		.help = "QoS flow identifier",
+		.next = NEXT(item_gtp_psc, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gtp_psc,
+					qfi)),
+	},
+	[ITEM_GTP_PSC_PDU_T] = {
+		.name = "pdu_t",
+		.help = "PDU type",
+		.next = NEXT(item_gtp_psc, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_gtp_psc,
+					pdu_type)),
+	},
+	[ITEM_PPPOES] = {
+		.name = "pppoes",
+		.help = "match PPPoE session header",
+		.priv = PRIV_ITEM(PPPOES, sizeof(struct rte_flow_item_pppoe)),
+		.next = NEXT(item_pppoes),
+		.call = parse_vc,
+	},
+	[ITEM_PPPOED] = {
+		.name = "pppoed",
+		.help = "match PPPoE discovery header",
+		.priv = PRIV_ITEM(PPPOED, sizeof(struct rte_flow_item_pppoe)),
+		.next = NEXT(item_pppoed),
+		.call = parse_vc,
+	},
+	[ITEM_PPPOE_SEID] = {
+		.name = "seid",
+		.help = "session identifier",
+		.next = NEXT(item_pppoes, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_pppoe,
+					session_id)),
+	},
+	[ITEM_PPPOE_PROTO_ID] = {
+		.name = "proto_id",
+		.help = "match PPPoE session protocol identifier",
+		.priv = PRIV_ITEM(PPPOE_PROTO_ID,
+				sizeof(struct rte_flow_item_pppoe_proto_id)),
+		.next = NEXT(item_pppoe_proto_id),
+		.call = parse_vc,
+	},
+	[ITEM_HIGIG2] = {
+		.name = "higig2",
+		.help = "matches higig2 header",
+		.priv = PRIV_ITEM(HIGIG2,
+				sizeof(struct rte_flow_item_higig2_hdr)),
+		.next = NEXT(item_higig2),
+		.call = parse_vc,
+	},
+	[ITEM_HIGIG2_CLASSIFICATION] = {
+		.name = "classification",
+		.help = "matches classification of higig2 header",
+		.next = NEXT(item_higig2, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_higig2_hdr,
+					hdr.ppt1.classification)),
+	},
+	[ITEM_HIGIG2_VID] = {
+		.name = "vid",
+		.help = "matches vid of higig2 header",
+		.next = NEXT(item_higig2, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_higig2_hdr,
+					hdr.ppt1.vid)),
+	},
+	[ITEM_TAG] = {
+		.name = "tag",
+		.help = "match tag value",
+		.priv = PRIV_ITEM(TAG, sizeof(struct rte_flow_item_tag)),
+		.next = NEXT(item_tag),
+		.call = parse_vc,
+	},
+	[ITEM_TAG_DATA] = {
+		.name = "data",
+		.help = "tag value to match",
+		.next = NEXT(item_tag, NEXT_ENTRY(UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_tag, data)),
+	},
+	[ITEM_TAG_INDEX] = {
+		.name = "index",
+		.help = "index of tag array to match",
+		.next = NEXT(item_tag, NEXT_ENTRY(UNSIGNED),
+			     NEXT_ENTRY(ITEM_PARAM_IS)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_tag, index)),
+	},
 	/* Validate/create actions. */
 	[ACTIONS] = {
 		.name = "actions",
@@ -2276,7 +2718,8 @@ static const struct token token_list[] = {
 		.next = NEXT(action_rss,
 			     NEXT_ENTRY(ACTION_RSS_FUNC_DEFAULT,
 					ACTION_RSS_FUNC_TOEPLITZ,
-					ACTION_RSS_FUNC_SIMPLE_XOR)),
+					ACTION_RSS_FUNC_SIMPLE_XOR,
+					ACTION_RSS_FUNC_SYMMETRIC_TOEPLITZ)),
 	},
 	[ACTION_RSS_FUNC_DEFAULT] = {
 		.name = "default",
@@ -2291,6 +2734,11 @@ static const struct token token_list[] = {
 	[ACTION_RSS_FUNC_SIMPLE_XOR] = {
 		.name = "simple_xor",
 		.help = "simple XOR hash function",
+		.call = parse_vc_action_rss_func,
+	},
+	[ACTION_RSS_FUNC_SYMMETRIC_TOEPLITZ] = {
+		.name = "symmetric_toeplitz",
+		.help = "Symmetric Toeplitz hash function",
 		.call = parse_vc_action_rss_func,
 	},
 	[ACTION_RSS_LEVEL] = {
@@ -2854,6 +3302,197 @@ static const struct token token_list[] = {
 			     (struct rte_flow_action_set_mac, mac_addr)),
 		.call = parse_vc_conf,
 	},
+	[ACTION_INC_TCP_SEQ] = {
+		.name = "inc_tcp_seq",
+		.help = "increase TCP sequence number",
+		.priv = PRIV_ACTION(INC_TCP_SEQ, sizeof(rte_be32_t)),
+		.next = NEXT(action_inc_tcp_seq),
+		.call = parse_vc,
+	},
+	[ACTION_INC_TCP_SEQ_VALUE] = {
+		.name = "value",
+		.help = "the value to increase TCP sequence number by",
+		.next = NEXT(action_inc_tcp_seq, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARG_ENTRY_HTON(rte_be32_t)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_DEC_TCP_SEQ] = {
+		.name = "dec_tcp_seq",
+		.help = "decrease TCP sequence number",
+		.priv = PRIV_ACTION(DEC_TCP_SEQ, sizeof(rte_be32_t)),
+		.next = NEXT(action_dec_tcp_seq),
+		.call = parse_vc,
+	},
+	[ACTION_DEC_TCP_SEQ_VALUE] = {
+		.name = "value",
+		.help = "the value to decrease TCP sequence number by",
+		.next = NEXT(action_dec_tcp_seq, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARG_ENTRY_HTON(rte_be32_t)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_INC_TCP_ACK] = {
+		.name = "inc_tcp_ack",
+		.help = "increase TCP acknowledgment number",
+		.priv = PRIV_ACTION(INC_TCP_ACK, sizeof(rte_be32_t)),
+		.next = NEXT(action_inc_tcp_ack),
+		.call = parse_vc,
+	},
+	[ACTION_INC_TCP_ACK_VALUE] = {
+		.name = "value",
+		.help = "the value to increase TCP acknowledgment number by",
+		.next = NEXT(action_inc_tcp_ack, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARG_ENTRY_HTON(rte_be32_t)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_DEC_TCP_ACK] = {
+		.name = "dec_tcp_ack",
+		.help = "decrease TCP acknowledgment number",
+		.priv = PRIV_ACTION(DEC_TCP_ACK, sizeof(rte_be32_t)),
+		.next = NEXT(action_dec_tcp_ack),
+		.call = parse_vc,
+	},
+	[ACTION_DEC_TCP_ACK_VALUE] = {
+		.name = "value",
+		.help = "the value to decrease TCP acknowledgment number by",
+		.next = NEXT(action_dec_tcp_ack, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARG_ENTRY_HTON(rte_be32_t)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_RAW_ENCAP] = {
+		.name = "raw_encap",
+		.help = "encapsulation data, defined by set raw_encap",
+		.priv = PRIV_ACTION(RAW_ENCAP,
+			sizeof(struct action_raw_encap_data)),
+		.next = NEXT(action_raw_encap),
+		.call = parse_vc_action_raw_encap,
+	},
+	[ACTION_RAW_ENCAP_INDEX] = {
+		.name = "index",
+		.help = "the index of raw_encap_confs",
+		.next = NEXT(NEXT_ENTRY(ACTION_RAW_ENCAP_INDEX_VALUE)),
+	},
+	[ACTION_RAW_ENCAP_INDEX_VALUE] = {
+		.name = "{index}",
+		.type = "UNSIGNED",
+		.help = "unsigned integer value",
+		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
+		.call = parse_vc_action_raw_encap_index,
+		.comp = comp_set_raw_index,
+	},
+	[ACTION_RAW_DECAP] = {
+		.name = "raw_decap",
+		.help = "decapsulation data, defined by set raw_encap",
+		.priv = PRIV_ACTION(RAW_DECAP,
+			sizeof(struct action_raw_decap_data)),
+		.next = NEXT(action_raw_decap),
+		.call = parse_vc_action_raw_decap,
+	},
+	[ACTION_RAW_DECAP_INDEX] = {
+		.name = "index",
+		.help = "the index of raw_encap_confs",
+		.next = NEXT(NEXT_ENTRY(ACTION_RAW_DECAP_INDEX_VALUE)),
+	},
+	[ACTION_RAW_DECAP_INDEX_VALUE] = {
+		.name = "{index}",
+		.type = "UNSIGNED",
+		.help = "unsigned integer value",
+		.next = NEXT(NEXT_ENTRY(ACTION_NEXT)),
+		.call = parse_vc_action_raw_decap_index,
+		.comp = comp_set_raw_index,
+	},
+	/* Top level command. */
+	[SET] = {
+		.name = "set",
+		.help = "set raw encap/decap data",
+		.type = "set raw_encap|raw_decap <index> <pattern>",
+		.next = NEXT(NEXT_ENTRY
+			     (SET_RAW_ENCAP,
+			      SET_RAW_DECAP)),
+		.call = parse_set_init,
+	},
+	/* Sub-level commands. */
+	[SET_RAW_ENCAP] = {
+		.name = "raw_encap",
+		.help = "set raw encap data",
+		.next = NEXT(next_set_raw),
+		.args = ARGS(ARGS_ENTRY_ARB_BOUNDED
+				(offsetof(struct buffer, port),
+				 sizeof(((struct buffer *)0)->port),
+				 0, RAW_ENCAP_CONFS_MAX_NUM - 1)),
+		.call = parse_set_raw_encap_decap,
+	},
+	[SET_RAW_DECAP] = {
+		.name = "raw_decap",
+		.help = "set raw decap data",
+		.next = NEXT(next_set_raw),
+		.args = ARGS(ARGS_ENTRY_ARB_BOUNDED
+				(offsetof(struct buffer, port),
+				 sizeof(((struct buffer *)0)->port),
+				 0, RAW_ENCAP_CONFS_MAX_NUM - 1)),
+		.call = parse_set_raw_encap_decap,
+	},
+	[SET_RAW_INDEX] = {
+		.name = "{index}",
+		.type = "UNSIGNED",
+		.help = "index of raw_encap/raw_decap data",
+		.next = NEXT(next_item),
+		.call = parse_port,
+	},
+	[ACTION_SET_TAG] = {
+		.name = "set_tag",
+		.help = "set tag",
+		.priv = PRIV_ACTION(SET_TAG,
+			sizeof(struct rte_flow_action_set_tag)),
+		.next = NEXT(action_set_tag),
+		.call = parse_vc,
+	},
+	[ACTION_SET_TAG_INDEX] = {
+		.name = "index",
+		.help = "index of tag array",
+		.next = NEXT(action_set_tag, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_set_tag, index)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_SET_TAG_DATA] = {
+		.name = "data",
+		.help = "tag value",
+		.next = NEXT(action_set_tag, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY
+			     (struct rte_flow_action_set_tag, data)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_SET_TAG_MASK] = {
+		.name = "mask",
+		.help = "mask for tag value",
+		.next = NEXT(action_set_tag, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY
+			     (struct rte_flow_action_set_tag, mask)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_SET_META] = {
+		.name = "set_meta",
+		.help = "set metadata",
+		.priv = PRIV_ACTION(SET_META,
+			sizeof(struct rte_flow_action_set_meta)),
+		.next = NEXT(action_set_meta),
+		.call = parse_vc_action_set_meta,
+	},
+	[ACTION_SET_META_DATA] = {
+		.name = "data",
+		.help = "metadata value",
+		.next = NEXT(action_set_meta, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY
+			     (struct rte_flow_action_set_meta, data)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_SET_META_MASK] = {
+		.name = "mask",
+		.help = "mask for metadata value",
+		.next = NEXT(action_set_meta, NEXT_ENTRY(UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY
+			     (struct rte_flow_action_set_meta, mask)),
+		.call = parse_vc_conf,
+	},
 };
 
 /** Remove and return last entry from argument stack. */
@@ -3273,8 +3912,12 @@ parse_vc_action_rss(struct context *ctx, const struct token *token,
 	if (!port_id_is_invalid(ctx->port, DISABLED_WARN) &&
 	    ctx->port != (portid_t)RTE_PORT_ALL) {
 		struct rte_eth_dev_info info;
+		int ret2;
 
-		rte_eth_dev_info_get(ctx->port, &info);
+		ret2 = rte_eth_dev_info_get(ctx->port, &info);
+		if (ret2 != 0)
+			return ret2;
+
 		action_rss_data->conf.key_len =
 			RTE_MIN(sizeof(action_rss_data->key),
 				info.hash_key_size);
@@ -3311,6 +3954,9 @@ parse_vc_action_rss_func(struct context *ctx, const struct token *token,
 		break;
 	case ACTION_RSS_FUNC_SIMPLE_XOR:
 		func = RTE_ETH_HASH_FUNCTION_SIMPLE_XOR;
+		break;
+	case ACTION_RSS_FUNC_SYMMETRIC_TOEPLITZ:
+		func = RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ;
 		break;
 	default:
 		return -1;
@@ -3494,9 +4140,9 @@ parse_vc_action_vxlan_encap(struct context *ctx, const struct token *token,
 		.item_vxlan.flags = 0,
 	};
 	memcpy(action_vxlan_encap_data->item_eth.dst.addr_bytes,
-	       vxlan_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       vxlan_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(action_vxlan_encap_data->item_eth.src.addr_bytes,
-	       vxlan_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       vxlan_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	if (!vxlan_encap_conf.select_ipv4) {
 		memcpy(&action_vxlan_encap_data->item_ipv6.hdr.src_addr,
 		       &vxlan_encap_conf.ipv6_src,
@@ -3513,6 +4159,38 @@ parse_vc_action_vxlan_encap(struct context *ctx, const struct token *token,
 	if (!vxlan_encap_conf.select_vlan)
 		action_vxlan_encap_data->items[1].type =
 			RTE_FLOW_ITEM_TYPE_VOID;
+	if (vxlan_encap_conf.select_tos_ttl) {
+		if (vxlan_encap_conf.select_ipv4) {
+			static struct rte_flow_item_ipv4 ipv4_mask_tos;
+
+			memcpy(&ipv4_mask_tos, &rte_flow_item_ipv4_mask,
+			       sizeof(ipv4_mask_tos));
+			ipv4_mask_tos.hdr.type_of_service = 0xff;
+			ipv4_mask_tos.hdr.time_to_live = 0xff;
+			action_vxlan_encap_data->item_ipv4.hdr.type_of_service =
+					vxlan_encap_conf.ip_tos;
+			action_vxlan_encap_data->item_ipv4.hdr.time_to_live =
+					vxlan_encap_conf.ip_ttl;
+			action_vxlan_encap_data->items[2].mask =
+							&ipv4_mask_tos;
+		} else {
+			static struct rte_flow_item_ipv6 ipv6_mask_tos;
+
+			memcpy(&ipv6_mask_tos, &rte_flow_item_ipv6_mask,
+			       sizeof(ipv6_mask_tos));
+			ipv6_mask_tos.hdr.vtc_flow |=
+				RTE_BE32(0xfful << RTE_IPV6_HDR_TC_SHIFT);
+			ipv6_mask_tos.hdr.hop_limits = 0xff;
+			action_vxlan_encap_data->item_ipv6.hdr.vtc_flow |=
+				rte_cpu_to_be_32
+					((uint32_t)vxlan_encap_conf.ip_tos <<
+					 RTE_IPV6_HDR_TC_SHIFT);
+			action_vxlan_encap_data->item_ipv6.hdr.hop_limits =
+					vxlan_encap_conf.ip_ttl;
+			action_vxlan_encap_data->items[2].mask =
+							&ipv6_mask_tos;
+		}
+	}
 	memcpy(action_vxlan_encap_data->item_vxlan.vni, vxlan_encap_conf.vni,
 	       RTE_DIM(vxlan_encap_conf.vni));
 	action->conf = &action_vxlan_encap_data->conf;
@@ -3585,9 +4263,9 @@ parse_vc_action_nvgre_encap(struct context *ctx, const struct token *token,
 		.item_nvgre.flow_id = 0,
 	};
 	memcpy(action_nvgre_encap_data->item_eth.dst.addr_bytes,
-	       nvgre_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       nvgre_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(action_nvgre_encap_data->item_eth.src.addr_bytes,
-	       nvgre_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       nvgre_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	if (!nvgre_encap_conf.select_ipv4) {
 		memcpy(&action_nvgre_encap_data->item_ipv6.hdr.src_addr,
 		       &nvgre_encap_conf.ipv6_src,
@@ -3649,22 +4327,22 @@ parse_vc_action_l2_encap(struct context *ctx, const struct token *token,
 	};
 	header = action_encap_data->data;
 	if (l2_encap_conf.select_vlan)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 	else if (l2_encap_conf.select_ipv4)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	else
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	memcpy(eth.dst.addr_bytes,
-	       l2_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       l2_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
-	       l2_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       l2_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	memcpy(header, &eth, sizeof(eth));
 	header += sizeof(eth);
 	if (l2_encap_conf.select_vlan) {
 		if (l2_encap_conf.select_ipv4)
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 		memcpy(header, &vlan, sizeof(vlan));
 		header += sizeof(vlan);
 	}
@@ -3713,7 +4391,7 @@ parse_vc_action_l2_decap(struct context *ctx, const struct token *token,
 	};
 	header = action_decap_data->data;
 	if (l2_decap_conf.select_vlan)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 	memcpy(header, &eth, sizeof(eth));
 	header += sizeof(eth);
 	if (l2_decap_conf.select_vlan) {
@@ -3747,13 +4425,14 @@ parse_vc_action_mplsogre_encap(struct context *ctx, const struct token *token,
 			.src_addr = mplsogre_encap_conf.ipv4_src,
 			.dst_addr = mplsogre_encap_conf.ipv4_dst,
 			.next_proto_id = IPPROTO_GRE,
-			.version_ihl = IPV4_VHL_DEF,
+			.version_ihl = RTE_IPV4_VHL_DEF,
 			.time_to_live = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_ipv6 ipv6 = {
 		.hdr =  {
 			.proto = IPPROTO_GRE,
+			.hop_limits = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_gre gre = {
@@ -3786,22 +4465,22 @@ parse_vc_action_mplsogre_encap(struct context *ctx, const struct token *token,
 	};
 	header = action_encap_data->data;
 	if (mplsogre_encap_conf.select_vlan)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 	else if (mplsogre_encap_conf.select_ipv4)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	else
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	memcpy(eth.dst.addr_bytes,
-	       mplsogre_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       mplsogre_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
-	       mplsogre_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       mplsogre_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	memcpy(header, &eth, sizeof(eth));
 	header += sizeof(eth);
 	if (mplsogre_encap_conf.select_vlan) {
 		if (mplsogre_encap_conf.select_ipv4)
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 		memcpy(header, &vlan, sizeof(vlan));
 		header += sizeof(vlan);
 	}
@@ -3850,13 +4529,14 @@ parse_vc_action_mplsogre_decap(struct context *ctx, const struct token *token,
 	struct rte_flow_item_ipv6 ipv6 = {
 		.hdr =  {
 			.proto = IPPROTO_GRE,
-			.hop_limits = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_gre gre = {
 		.protocol = rte_cpu_to_be_16(ETHER_TYPE_MPLS_UNICAST),
 	};
-	struct rte_flow_item_mpls mpls;
+	struct rte_flow_item_mpls mpls = {
+		.ttl = 0,
+	};
 	uint8_t *header;
 	int ret;
 
@@ -3882,22 +4562,22 @@ parse_vc_action_mplsogre_decap(struct context *ctx, const struct token *token,
 	};
 	header = action_decap_data->data;
 	if (mplsogre_decap_conf.select_vlan)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 	else if (mplsogre_encap_conf.select_ipv4)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	else
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	memcpy(eth.dst.addr_bytes,
-	       mplsogre_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       mplsogre_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
-	       mplsogre_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       mplsogre_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	memcpy(header, &eth, sizeof(eth));
 	header += sizeof(eth);
 	if (mplsogre_encap_conf.select_vlan) {
 		if (mplsogre_encap_conf.select_ipv4)
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 		memcpy(header, &vlan, sizeof(vlan));
 		header += sizeof(vlan);
 	}
@@ -3938,13 +4618,14 @@ parse_vc_action_mplsoudp_encap(struct context *ctx, const struct token *token,
 			.src_addr = mplsoudp_encap_conf.ipv4_src,
 			.dst_addr = mplsoudp_encap_conf.ipv4_dst,
 			.next_proto_id = IPPROTO_UDP,
-			.version_ihl = IPV4_VHL_DEF,
+			.version_ihl = RTE_IPV4_VHL_DEF,
 			.time_to_live = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_ipv6 ipv6 = {
 		.hdr =  {
 			.proto = IPPROTO_UDP,
+			.hop_limits = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_udp udp = {
@@ -3980,22 +4661,22 @@ parse_vc_action_mplsoudp_encap(struct context *ctx, const struct token *token,
 	};
 	header = action_encap_data->data;
 	if (mplsoudp_encap_conf.select_vlan)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 	else if (mplsoudp_encap_conf.select_ipv4)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	else
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	memcpy(eth.dst.addr_bytes,
-	       mplsoudp_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       mplsoudp_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
-	       mplsoudp_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       mplsoudp_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	memcpy(header, &eth, sizeof(eth));
 	header += sizeof(eth);
 	if (mplsoudp_encap_conf.select_vlan) {
 		if (mplsoudp_encap_conf.select_ipv4)
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 		memcpy(header, &vlan, sizeof(vlan));
 		header += sizeof(vlan);
 	}
@@ -4044,7 +4725,6 @@ parse_vc_action_mplsoudp_decap(struct context *ctx, const struct token *token,
 	struct rte_flow_item_ipv6 ipv6 = {
 		.hdr =  {
 			.proto = IPPROTO_UDP,
-			.hop_limits = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_udp udp = {
@@ -4078,22 +4758,22 @@ parse_vc_action_mplsoudp_decap(struct context *ctx, const struct token *token,
 	};
 	header = action_decap_data->data;
 	if (mplsoudp_decap_conf.select_vlan)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 	else if (mplsoudp_encap_conf.select_ipv4)
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 	else
-		eth.type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		eth.type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 	memcpy(eth.dst.addr_bytes,
-	       mplsoudp_encap_conf.eth_dst, ETHER_ADDR_LEN);
+	       mplsoudp_encap_conf.eth_dst, RTE_ETHER_ADDR_LEN);
 	memcpy(eth.src.addr_bytes,
-	       mplsoudp_encap_conf.eth_src, ETHER_ADDR_LEN);
+	       mplsoudp_encap_conf.eth_src, RTE_ETHER_ADDR_LEN);
 	memcpy(header, &eth, sizeof(eth));
 	header += sizeof(eth);
 	if (mplsoudp_encap_conf.select_vlan) {
 		if (mplsoudp_encap_conf.select_ipv4)
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		else
-			vlan.inner_type = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+			vlan.inner_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 		memcpy(header, &vlan, sizeof(vlan));
 		header += sizeof(vlan);
 	}
@@ -4113,6 +4793,161 @@ parse_vc_action_mplsoudp_decap(struct context *ctx, const struct token *token,
 		action_decap_data->data;
 	action->conf = &action_decap_data->conf;
 	return ret;
+}
+
+static int
+parse_vc_action_raw_decap_index(struct context *ctx, const struct token *token,
+				const char *str, unsigned int len, void *buf,
+				unsigned int size)
+{
+	struct action_raw_decap_data *action_raw_decap_data;
+	struct rte_flow_action *action;
+	const struct arg *arg;
+	struct buffer *out = buf;
+	int ret;
+	uint16_t idx;
+
+	RTE_SET_USED(token);
+	RTE_SET_USED(buf);
+	RTE_SET_USED(size);
+	arg = ARGS_ENTRY_ARB_BOUNDED
+		(offsetof(struct action_raw_decap_data, idx),
+		 sizeof(((struct action_raw_decap_data *)0)->idx),
+		 0, RAW_ENCAP_CONFS_MAX_NUM - 1);
+	if (push_args(ctx, arg))
+		return -1;
+	ret = parse_int(ctx, token, str, len, NULL, 0);
+	if (ret < 0) {
+		pop_args(ctx);
+		return -1;
+	}
+	if (!ctx->object)
+		return len;
+	action = &out->args.vc.actions[out->args.vc.actions_n - 1];
+	action_raw_decap_data = ctx->object;
+	idx = action_raw_decap_data->idx;
+	action_raw_decap_data->conf.data = raw_decap_confs[idx].data;
+	action_raw_decap_data->conf.size = raw_decap_confs[idx].size;
+	action->conf = &action_raw_decap_data->conf;
+	return len;
+}
+
+
+static int
+parse_vc_action_raw_encap_index(struct context *ctx, const struct token *token,
+				const char *str, unsigned int len, void *buf,
+				unsigned int size)
+{
+	struct action_raw_encap_data *action_raw_encap_data;
+	struct rte_flow_action *action;
+	const struct arg *arg;
+	struct buffer *out = buf;
+	int ret;
+	uint16_t idx;
+
+	RTE_SET_USED(token);
+	RTE_SET_USED(buf);
+	RTE_SET_USED(size);
+	if (ctx->curr != ACTION_RAW_ENCAP_INDEX_VALUE)
+		return -1;
+	arg = ARGS_ENTRY_ARB_BOUNDED
+		(offsetof(struct action_raw_encap_data, idx),
+		 sizeof(((struct action_raw_encap_data *)0)->idx),
+		 0, RAW_ENCAP_CONFS_MAX_NUM - 1);
+	if (push_args(ctx, arg))
+		return -1;
+	ret = parse_int(ctx, token, str, len, NULL, 0);
+	if (ret < 0) {
+		pop_args(ctx);
+		return -1;
+	}
+	if (!ctx->object)
+		return len;
+	action = &out->args.vc.actions[out->args.vc.actions_n - 1];
+	action_raw_encap_data = ctx->object;
+	idx = action_raw_encap_data->idx;
+	action_raw_encap_data->conf.data = raw_encap_confs[idx].data;
+	action_raw_encap_data->conf.size = raw_encap_confs[idx].size;
+	action_raw_encap_data->conf.preserve = NULL;
+	action->conf = &action_raw_encap_data->conf;
+	return len;
+}
+
+static int
+parse_vc_action_raw_encap(struct context *ctx, const struct token *token,
+			  const char *str, unsigned int len, void *buf,
+			  unsigned int size)
+{
+	struct buffer *out = buf;
+	struct rte_flow_action *action;
+	struct action_raw_encap_data *action_raw_encap_data = NULL;
+	int ret;
+
+	ret = parse_vc(ctx, token, str, len, buf, size);
+	if (ret < 0)
+		return ret;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return ret;
+	if (!out->args.vc.actions_n)
+		return -1;
+	action = &out->args.vc.actions[out->args.vc.actions_n - 1];
+	/* Point to selected object. */
+	ctx->object = out->args.vc.data;
+	ctx->objmask = NULL;
+	/* Copy the headers to the buffer. */
+	action_raw_encap_data = ctx->object;
+	action_raw_encap_data->conf.data = raw_encap_confs[0].data;
+	action_raw_encap_data->conf.preserve = NULL;
+	action_raw_encap_data->conf.size = raw_encap_confs[0].size;
+	action->conf = &action_raw_encap_data->conf;
+	return ret;
+}
+
+static int
+parse_vc_action_raw_decap(struct context *ctx, const struct token *token,
+			  const char *str, unsigned int len, void *buf,
+			  unsigned int size)
+{
+	struct buffer *out = buf;
+	struct rte_flow_action *action;
+	struct action_raw_decap_data *action_raw_decap_data = NULL;
+	int ret;
+
+	ret = parse_vc(ctx, token, str, len, buf, size);
+	if (ret < 0)
+		return ret;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return ret;
+	if (!out->args.vc.actions_n)
+		return -1;
+	action = &out->args.vc.actions[out->args.vc.actions_n - 1];
+	/* Point to selected object. */
+	ctx->object = out->args.vc.data;
+	ctx->objmask = NULL;
+	/* Copy the headers to the buffer. */
+	action_raw_decap_data = ctx->object;
+	action_raw_decap_data->conf.data = raw_decap_confs[0].data;
+	action_raw_decap_data->conf.size = raw_decap_confs[0].size;
+	action->conf = &action_raw_decap_data->conf;
+	return ret;
+}
+
+static int
+parse_vc_action_set_meta(struct context *ctx, const struct token *token,
+			 const char *str, unsigned int len, void *buf,
+			 unsigned int size)
+{
+	int ret;
+
+	ret = parse_vc(ctx, token, str, len, buf, size);
+	if (ret < 0)
+		return ret;
+	ret = rte_flow_dynf_metadata_register();
+	if (ret < 0)
+		return -1;
+	return len;
 }
 
 /** Parse tokens for destroy command. */
@@ -4345,6 +5180,8 @@ parse_int(struct context *ctx, const struct token *token,
 	}
 	buf = (uint8_t *)ctx->object + arg->offset;
 	size = arg->size;
+	if (u > RTE_LEN2MASK(size * CHAR_BIT, uint64_t))
+		return -1;
 objmask:
 	switch (size) {
 	case sizeof(uint8_t):
@@ -4586,7 +5423,7 @@ parse_mac_addr(struct context *ctx, const struct token *token,
 	       void *buf, unsigned int size)
 {
 	const struct arg *arg = pop_args(ctx);
-	struct ether_addr tmp;
+	struct rte_ether_addr tmp;
 	int ret;
 
 	(void)token;
@@ -4769,6 +5606,74 @@ parse_port(struct context *ctx, const struct token *token,
 	return ret;
 }
 
+/** Parse set command, initialize output buffer for subsequent tokens. */
+static int
+parse_set_raw_encap_decap(struct context *ctx, const struct token *token,
+			  const char *str, unsigned int len,
+			  void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	/* Make sure buffer is large enough. */
+	if (size < sizeof(*out))
+		return -1;
+	ctx->objdata = 0;
+	ctx->objmask = NULL;
+	ctx->object = out;
+	if (!out->command)
+		return -1;
+	out->command = ctx->curr;
+	return len;
+}
+
+/**
+ * Parse set raw_encap/raw_decap command,
+ * initialize output buffer for subsequent tokens.
+ */
+static int
+parse_set_init(struct context *ctx, const struct token *token,
+	       const char *str, unsigned int len,
+	       void *buf, unsigned int size)
+{
+	struct buffer *out = buf;
+
+	/* Token name must match. */
+	if (parse_default(ctx, token, str, len, NULL, 0) < 0)
+		return -1;
+	/* Nothing else to do if there is no buffer. */
+	if (!out)
+		return len;
+	/* Make sure buffer is large enough. */
+	if (size < sizeof(*out))
+		return -1;
+	/* Initialize buffer. */
+	memset(out, 0x00, sizeof(*out));
+	memset((uint8_t *)out + sizeof(*out), 0x22, size - sizeof(*out));
+	ctx->objdata = 0;
+	ctx->object = out;
+	ctx->objmask = NULL;
+	if (!out->command) {
+		if (ctx->curr != SET)
+			return -1;
+		if (sizeof(*out) > size)
+			return -1;
+		out->command = ctx->curr;
+		out->args.vc.data = (uint8_t *)out + size;
+		/* All we need is pattern */
+		out->args.vc.pattern =
+			(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+					       sizeof(double));
+		ctx->object = out->args.vc.pattern;
+	}
+	return len;
+}
+
 /** No completion. */
 static int
 comp_none(struct context *ctx, const struct token *token,
@@ -4793,7 +5698,7 @@ comp_boolean(struct context *ctx, const struct token *token,
 	(void)token;
 	for (i = 0; boolean_name[i]; ++i)
 		if (buf && i == ent)
-			return snprintf(buf, size, "%s", boolean_name[i]);
+			return strlcpy(buf, boolean_name[i], size);
 	if (buf)
 		return -1;
 	return i;
@@ -4810,8 +5715,8 @@ comp_action(struct context *ctx, const struct token *token,
 	(void)token;
 	for (i = 0; next_action[i]; ++i)
 		if (buf && i == ent)
-			return snprintf(buf, size, "%s",
-					token_list[next_action[i]].name);
+			return strlcpy(buf, token_list[next_action[i]].name,
+				       size);
 	if (buf)
 		return -1;
 	return i;
@@ -4875,7 +5780,7 @@ comp_vc_action_rss_type(struct context *ctx, const struct token *token,
 	if (!buf)
 		return i + 1;
 	if (ent < i)
-		return snprintf(buf, size, "%s", rss_type_table[ent].str);
+		return strlcpy(buf, rss_type_table[ent].str, size);
 	if (ent == i)
 		return snprintf(buf, size, "end");
 	return -1;
@@ -4897,11 +5802,30 @@ comp_vc_action_rss_queue(struct context *ctx, const struct token *token,
 	return -1;
 }
 
+/** Complete index number for set raw_encap/raw_decap commands. */
+static int
+comp_set_raw_index(struct context *ctx, const struct token *token,
+		   unsigned int ent, char *buf, unsigned int size)
+{
+	uint16_t idx = 0;
+	uint16_t nb = 0;
+
+	RTE_SET_USED(ctx);
+	RTE_SET_USED(token);
+	for (idx = 0; idx < RAW_ENCAP_CONFS_MAX_NUM; ++idx) {
+		if (buf && idx == ent)
+			return snprintf(buf, size, "%u", idx);
+		++nb;
+	}
+	return nb;
+}
+
 /** Internal context. */
 static struct context cmd_flow_context;
 
 /** Global parser instance (cmdline API). */
 cmdline_parse_inst_t cmd_flow;
+cmdline_parse_inst_t cmd_set_raw;
 
 /** Initialize context. */
 static void
@@ -5060,7 +5984,7 @@ cmd_flow_complete_get_elt(cmdline_parse_token_hdr_t *hdr, int index,
 	if (index >= i)
 		return -1;
 	token = &token_list[list[index]];
-	snprintf(dst, size, "%s", token->name);
+	strlcpy(dst, token->name, size);
 	/* Save index for cmd_flow_get_help(). */
 	ctx->prev = list[index];
 	return 0;
@@ -5077,7 +6001,7 @@ cmd_flow_get_help(cmdline_parse_token_hdr_t *hdr, char *dst, unsigned int size)
 	if (!size)
 		return -1;
 	/* Set token type and update global help with details. */
-	snprintf(dst, size, "%s", (token->type ? token->type : "TOKEN"));
+	strlcpy(dst, (token->type ? token->type : "TOKEN"), size);
 	if (token->help)
 		cmd_flow.help_str = token->help;
 	else
@@ -5180,4 +6104,409 @@ cmdline_parse_inst_t cmd_flow = {
 	.tokens = {
 		NULL,
 	}, /**< Tokens are returned by cmd_flow_tok(). */
+};
+
+/** set cmd facility. Reuse cmd flow's infrastructure as much as possible. */
+
+static void
+update_fields(uint8_t *buf, struct rte_flow_item *item, uint16_t next_proto)
+{
+	struct rte_flow_item_ipv4 *ipv4;
+	struct rte_flow_item_eth *eth;
+	struct rte_flow_item_ipv6 *ipv6;
+	struct rte_flow_item_vxlan *vxlan;
+	struct rte_flow_item_vxlan_gpe *gpe;
+	struct rte_flow_item_nvgre *nvgre;
+	uint32_t ipv6_vtc_flow;
+
+	switch (item->type) {
+	case RTE_FLOW_ITEM_TYPE_ETH:
+		eth = (struct rte_flow_item_eth *)buf;
+		if (next_proto)
+			eth->type = rte_cpu_to_be_16(next_proto);
+		break;
+	case RTE_FLOW_ITEM_TYPE_IPV4:
+		ipv4 = (struct rte_flow_item_ipv4 *)buf;
+		ipv4->hdr.version_ihl = 0x45;
+		if (next_proto && ipv4->hdr.next_proto_id == 0)
+			ipv4->hdr.next_proto_id = (uint8_t)next_proto;
+		break;
+	case RTE_FLOW_ITEM_TYPE_IPV6:
+		ipv6 = (struct rte_flow_item_ipv6 *)buf;
+		if (next_proto && ipv6->hdr.proto == 0)
+			ipv6->hdr.proto = (uint8_t)next_proto;
+		ipv6_vtc_flow = rte_be_to_cpu_32(ipv6->hdr.vtc_flow);
+		ipv6_vtc_flow &= 0x0FFFFFFF; /*< reset version bits. */
+		ipv6_vtc_flow |= 0x60000000; /*< set ipv6 version. */
+		ipv6->hdr.vtc_flow = rte_cpu_to_be_32(ipv6_vtc_flow);
+		break;
+	case RTE_FLOW_ITEM_TYPE_VXLAN:
+		vxlan = (struct rte_flow_item_vxlan *)buf;
+		vxlan->flags = 0x08;
+		break;
+	case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
+		gpe = (struct rte_flow_item_vxlan_gpe *)buf;
+		gpe->flags = 0x0C;
+		break;
+	case RTE_FLOW_ITEM_TYPE_NVGRE:
+		nvgre = (struct rte_flow_item_nvgre *)buf;
+		nvgre->protocol = rte_cpu_to_be_16(0x6558);
+		nvgre->c_k_s_rsvd0_ver = rte_cpu_to_be_16(0x2000);
+		break;
+	default:
+		break;
+	}
+}
+
+/** Helper of get item's default mask. */
+static const void *
+flow_item_default_mask(const struct rte_flow_item *item)
+{
+	const void *mask = NULL;
+	static rte_be32_t gre_key_default_mask = RTE_BE32(UINT32_MAX);
+
+	switch (item->type) {
+	case RTE_FLOW_ITEM_TYPE_ANY:
+		mask = &rte_flow_item_any_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_VF:
+		mask = &rte_flow_item_vf_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_PORT_ID:
+		mask = &rte_flow_item_port_id_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_RAW:
+		mask = &rte_flow_item_raw_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_ETH:
+		mask = &rte_flow_item_eth_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_VLAN:
+		mask = &rte_flow_item_vlan_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_IPV4:
+		mask = &rte_flow_item_ipv4_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_IPV6:
+		mask = &rte_flow_item_ipv6_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_ICMP:
+		mask = &rte_flow_item_icmp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_UDP:
+		mask = &rte_flow_item_udp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_TCP:
+		mask = &rte_flow_item_tcp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_SCTP:
+		mask = &rte_flow_item_sctp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_VXLAN:
+		mask = &rte_flow_item_vxlan_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
+		mask = &rte_flow_item_vxlan_gpe_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_E_TAG:
+		mask = &rte_flow_item_e_tag_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_NVGRE:
+		mask = &rte_flow_item_nvgre_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_MPLS:
+		mask = &rte_flow_item_mpls_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_GRE:
+		mask = &rte_flow_item_gre_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_GRE_KEY:
+		mask = &gre_key_default_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_META:
+		mask = &rte_flow_item_meta_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_FUZZY:
+		mask = &rte_flow_item_fuzzy_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_GTP:
+		mask = &rte_flow_item_gtp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_ESP:
+		mask = &rte_flow_item_esp_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_GTP_PSC:
+		mask = &rte_flow_item_gtp_psc_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_GENEVE:
+		mask = &rte_flow_item_geneve_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID:
+		mask = &rte_flow_item_pppoe_proto_id_mask;
+	default:
+		break;
+	}
+	return mask;
+}
+
+
+
+/** Dispatch parsed buffer to function calls. */
+static void
+cmd_set_raw_parsed(const struct buffer *in)
+{
+	uint32_t n = in->args.vc.pattern_n;
+	int i = 0;
+	struct rte_flow_item *item = NULL;
+	size_t size = 0;
+	uint8_t *data = NULL;
+	uint8_t *data_tail = NULL;
+	size_t *total_size = NULL;
+	uint16_t upper_layer = 0;
+	uint16_t proto = 0;
+	uint16_t idx = in->port; /* We borrow port field as index */
+
+	RTE_ASSERT(in->command == SET_RAW_ENCAP ||
+		   in->command == SET_RAW_DECAP);
+	if (in->command == SET_RAW_ENCAP) {
+		total_size = &raw_encap_confs[idx].size;
+		data = (uint8_t *)&raw_encap_confs[idx].data;
+	} else {
+		total_size = &raw_decap_confs[idx].size;
+		data = (uint8_t *)&raw_decap_confs[idx].data;
+	}
+	*total_size = 0;
+	memset(data, 0x00, ACTION_RAW_ENCAP_MAX_DATA);
+	/* process hdr from upper layer to low layer (L3/L4 -> L2). */
+	data_tail = data + ACTION_RAW_ENCAP_MAX_DATA;
+	for (i = n - 1 ; i >= 0; --i) {
+		item = in->args.vc.pattern + i;
+		if (item->spec == NULL)
+			item->spec = flow_item_default_mask(item);
+		switch (item->type) {
+		case RTE_FLOW_ITEM_TYPE_ETH:
+			size = sizeof(struct rte_flow_item_eth);
+			break;
+		case RTE_FLOW_ITEM_TYPE_VLAN:
+			size = sizeof(struct rte_flow_item_vlan);
+			proto = RTE_ETHER_TYPE_VLAN;
+			break;
+		case RTE_FLOW_ITEM_TYPE_IPV4:
+			size = sizeof(struct rte_flow_item_ipv4);
+			proto = RTE_ETHER_TYPE_IPV4;
+			break;
+		case RTE_FLOW_ITEM_TYPE_IPV6:
+			size = sizeof(struct rte_flow_item_ipv6);
+			proto = RTE_ETHER_TYPE_IPV6;
+			break;
+		case RTE_FLOW_ITEM_TYPE_UDP:
+			size = sizeof(struct rte_flow_item_udp);
+			proto = 0x11;
+			break;
+		case RTE_FLOW_ITEM_TYPE_TCP:
+			size = sizeof(struct rte_flow_item_tcp);
+			proto = 0x06;
+			break;
+		case RTE_FLOW_ITEM_TYPE_VXLAN:
+			size = sizeof(struct rte_flow_item_vxlan);
+			break;
+		case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
+			size = sizeof(struct rte_flow_item_vxlan_gpe);
+			break;
+		case RTE_FLOW_ITEM_TYPE_GRE:
+			size = sizeof(struct rte_flow_item_gre);
+			proto = 0x2F;
+			break;
+		case RTE_FLOW_ITEM_TYPE_GRE_KEY:
+			size = sizeof(rte_be32_t);
+			proto = 0x0;
+			break;
+		case RTE_FLOW_ITEM_TYPE_MPLS:
+			size = sizeof(struct rte_flow_item_mpls);
+			proto = 0x0;
+			break;
+		case RTE_FLOW_ITEM_TYPE_NVGRE:
+			size = sizeof(struct rte_flow_item_nvgre);
+			proto = 0x2F;
+			break;
+		case RTE_FLOW_ITEM_TYPE_GENEVE:
+			size = sizeof(struct rte_flow_item_geneve);
+			break;
+		default:
+			printf("Error - Not supported item\n");
+			*total_size = 0;
+			memset(data, 0x00, ACTION_RAW_ENCAP_MAX_DATA);
+			return;
+		}
+		*total_size += size;
+		rte_memcpy(data_tail - (*total_size), item->spec, size);
+		/* update some fields which cannot be set by cmdline */
+		update_fields((data_tail - (*total_size)), item,
+			      upper_layer);
+		upper_layer = proto;
+	}
+	if (verbose_level & 0x1)
+		printf("total data size is %zu\n", (*total_size));
+	RTE_ASSERT((*total_size) <= ACTION_RAW_ENCAP_MAX_DATA);
+	memmove(data, (data_tail - (*total_size)), *total_size);
+}
+
+/** Populate help strings for current token (cmdline API). */
+static int
+cmd_set_raw_get_help(cmdline_parse_token_hdr_t *hdr, char *dst,
+		     unsigned int size)
+{
+	struct context *ctx = &cmd_flow_context;
+	const struct token *token = &token_list[ctx->prev];
+
+	(void)hdr;
+	if (!size)
+		return -1;
+	/* Set token type and update global help with details. */
+	snprintf(dst, size, "%s", (token->type ? token->type : "TOKEN"));
+	if (token->help)
+		cmd_set_raw.help_str = token->help;
+	else
+		cmd_set_raw.help_str = token->name;
+	return 0;
+}
+
+/** Token definition template (cmdline API). */
+static struct cmdline_token_hdr cmd_set_raw_token_hdr = {
+	.ops = &(struct cmdline_token_ops){
+		.parse = cmd_flow_parse,
+		.complete_get_nb = cmd_flow_complete_get_nb,
+		.complete_get_elt = cmd_flow_complete_get_elt,
+		.get_help = cmd_set_raw_get_help,
+	},
+	.offset = 0,
+};
+
+/** Populate the next dynamic token. */
+static void
+cmd_set_raw_tok(cmdline_parse_token_hdr_t **hdr,
+	     cmdline_parse_token_hdr_t **hdr_inst)
+{
+	struct context *ctx = &cmd_flow_context;
+
+	/* Always reinitialize context before requesting the first token. */
+	if (!(hdr_inst - cmd_set_raw.tokens)) {
+		cmd_flow_context_init(ctx);
+		ctx->curr = START_SET;
+	}
+	/* Return NULL when no more tokens are expected. */
+	if (!ctx->next_num && (ctx->curr != START_SET)) {
+		*hdr = NULL;
+		return;
+	}
+	/* Determine if command should end here. */
+	if (ctx->eol && ctx->last && ctx->next_num) {
+		const enum index *list = ctx->next[ctx->next_num - 1];
+		int i;
+
+		for (i = 0; list[i]; ++i) {
+			if (list[i] != END)
+				continue;
+			*hdr = NULL;
+			return;
+		}
+	}
+	*hdr = &cmd_set_raw_token_hdr;
+}
+
+/** Token generator and output processing callback (cmdline API). */
+static void
+cmd_set_raw_cb(void *arg0, struct cmdline *cl, void *arg2)
+{
+	if (cl == NULL)
+		cmd_set_raw_tok(arg0, arg2);
+	else
+		cmd_set_raw_parsed(arg0);
+}
+
+/** Global parser instance (cmdline API). */
+cmdline_parse_inst_t cmd_set_raw = {
+	.f = cmd_set_raw_cb,
+	.data = NULL, /**< Unused. */
+	.help_str = NULL, /**< Updated by cmd_flow_get_help(). */
+	.tokens = {
+		NULL,
+	}, /**< Tokens are returned by cmd_flow_tok(). */
+};
+
+/* *** display raw_encap/raw_decap buf */
+struct cmd_show_set_raw_result {
+	cmdline_fixed_string_t cmd_show;
+	cmdline_fixed_string_t cmd_what;
+	cmdline_fixed_string_t cmd_all;
+	uint16_t cmd_index;
+};
+
+static void
+cmd_show_set_raw_parsed(void *parsed_result, struct cmdline *cl, void *data)
+{
+	struct cmd_show_set_raw_result *res = parsed_result;
+	uint16_t index = res->cmd_index;
+	uint8_t all = 0;
+	uint8_t *raw_data = NULL;
+	size_t raw_size = 0;
+	char title[16] = {0};
+
+	RTE_SET_USED(cl);
+	RTE_SET_USED(data);
+	if (!strcmp(res->cmd_all, "all")) {
+		all = 1;
+		index = 0;
+	} else if (index >= RAW_ENCAP_CONFS_MAX_NUM) {
+		printf("index should be 0-%u\n", RAW_ENCAP_CONFS_MAX_NUM - 1);
+		return;
+	}
+	do {
+		if (!strcmp(res->cmd_what, "raw_encap")) {
+			raw_data = (uint8_t *)&raw_encap_confs[index].data;
+			raw_size = raw_encap_confs[index].size;
+			snprintf(title, 16, "\nindex: %u", index);
+			rte_hexdump(stdout, title, raw_data, raw_size);
+		} else {
+			raw_data = (uint8_t *)&raw_decap_confs[index].data;
+			raw_size = raw_decap_confs[index].size;
+			snprintf(title, 16, "\nindex: %u", index);
+			rte_hexdump(stdout, title, raw_data, raw_size);
+		}
+	} while (all && ++index < RAW_ENCAP_CONFS_MAX_NUM);
+}
+
+cmdline_parse_token_string_t cmd_show_set_raw_cmd_show =
+	TOKEN_STRING_INITIALIZER(struct cmd_show_set_raw_result,
+			cmd_show, "show");
+cmdline_parse_token_string_t cmd_show_set_raw_cmd_what =
+	TOKEN_STRING_INITIALIZER(struct cmd_show_set_raw_result,
+			cmd_what, "raw_encap#raw_decap");
+cmdline_parse_token_num_t cmd_show_set_raw_cmd_index =
+	TOKEN_NUM_INITIALIZER(struct cmd_show_set_raw_result,
+			cmd_index, UINT16);
+cmdline_parse_token_string_t cmd_show_set_raw_cmd_all =
+	TOKEN_STRING_INITIALIZER(struct cmd_show_set_raw_result,
+			cmd_all, "all");
+cmdline_parse_inst_t cmd_show_set_raw = {
+	.f = cmd_show_set_raw_parsed,
+	.data = NULL,
+	.help_str = "show <raw_encap|raw_decap> <index>",
+	.tokens = {
+		(void *)&cmd_show_set_raw_cmd_show,
+		(void *)&cmd_show_set_raw_cmd_what,
+		(void *)&cmd_show_set_raw_cmd_index,
+		NULL,
+	},
+};
+cmdline_parse_inst_t cmd_show_set_raw_all = {
+	.f = cmd_show_set_raw_parsed,
+	.data = NULL,
+	.help_str = "show <raw_encap|raw_decap> all",
+	.tokens = {
+		(void *)&cmd_show_set_raw_cmd_show,
+		(void *)&cmd_show_set_raw_cmd_what,
+		(void *)&cmd_show_set_raw_cmd_all,
+		NULL,
+	},
 };

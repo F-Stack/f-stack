@@ -259,8 +259,9 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 	int ret, num_metrics, i, p;
 	struct rte_metric_value *values;
 	uint64_t num_port_ids = 0;
-	uint32_t port_ids[RTE_MAX_ETHPORTS];
+	struct telemetry_encode_param ep;
 
+	memset(&ep, 0, sizeof(ep));
 	if (telemetry == NULL) {
 		TELEMETRY_LOG_ERR("Invalid telemetry argument");
 		return -1;
@@ -311,10 +312,8 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		return -1;
 	}
 
-	uint32_t stat_ids[num_metrics];
-
 	RTE_ETH_FOREACH_DEV(p) {
-		port_ids[num_port_ids] = p;
+		ep.pp.port_ids[num_port_ids] = p;
 		num_port_ids++;
 	}
 
@@ -328,18 +327,111 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		goto fail;
 	}
 
-	ret = rte_metrics_get_values(port_ids[0], values, num_metrics);
+	ret = rte_metrics_get_values(ep.pp.port_ids[0], values, num_metrics);
 	if (ret < 0) {
 		TELEMETRY_LOG_ERR("Could not get stat values");
+		ret = rte_telemetry_send_error_response(telemetry, -EINVAL);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
 		goto fail;
 	}
 	for (i = 0; i < num_metrics; i++)
-		stat_ids[i] = values[i].key;
+		ep.pp.metric_ids[i] = values[i].key;
 
-	ret = rte_telemetry_send_ports_stats_values(stat_ids, num_metrics,
-		port_ids, num_port_ids, telemetry);
+	ep.pp.num_port_ids = num_port_ids;
+	ep.pp.num_metric_ids = num_metrics;
+	ep.type = PORT_STATS;
+
+	ret = rte_telemetry_send_ports_stats_values(&ep, telemetry);
 	if (ret < 0) {
 		TELEMETRY_LOG_ERR("Sending ports stats values failed");
+		goto fail;
+	}
+
+	free(values);
+	return 0;
+
+fail:
+	free(values);
+	return -1;
+}
+
+static int32_t
+rte_telemetry_command_global_stat_values(struct telemetry_impl *telemetry,
+	 int action, json_t *data)
+{
+	int ret, num_metrics, i;
+	struct rte_metric_value *values;
+	struct telemetry_encode_param ep;
+
+	memset(&ep, 0, sizeof(ep));
+	if (telemetry == NULL) {
+		TELEMETRY_LOG_ERR("Invalid telemetry argument");
+		return -1;
+	}
+
+	if (action != ACTION_GET) {
+		TELEMETRY_LOG_WARN("Invalid action for this command");
+		ret = rte_telemetry_send_error_response(telemetry, -EINVAL);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
+		return -1;
+	}
+
+	if (json_is_object(data)) {
+		TELEMETRY_LOG_WARN("Invalid data provided for this command");
+		ret = rte_telemetry_send_error_response(telemetry, -EINVAL);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
+		return -1;
+	}
+
+	num_metrics = rte_metrics_get_values(RTE_METRICS_GLOBAL, NULL, 0);
+	if (num_metrics < 0) {
+		TELEMETRY_LOG_ERR("Cannot get metrics count");
+
+		ret = rte_telemetry_send_error_response(telemetry, -EINVAL);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
+
+		return -1;
+	} else if (num_metrics == 0) {
+		TELEMETRY_LOG_ERR("No metrics to display (none have been registered)");
+
+		ret = rte_telemetry_send_error_response(telemetry, -EPERM);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
+
+		return -1;
+	}
+
+	values = malloc(sizeof(struct rte_metric_value) * num_metrics);
+	if (values == NULL) {
+		TELEMETRY_LOG_ERR("Cannot allocate memory");
+		ret = rte_telemetry_send_error_response(telemetry,
+			 -ENOMEM);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
+		return -1;
+	}
+
+	ret = rte_metrics_get_values(RTE_METRICS_GLOBAL, values, num_metrics);
+	if (ret < 0) {
+		TELEMETRY_LOG_ERR("Could not get stat values");
+		ret = rte_telemetry_send_error_response(telemetry, -EINVAL);
+		if (ret < 0)
+			TELEMETRY_LOG_ERR("Could not send error");
+		goto fail;
+	}
+	for (i = 0; i < num_metrics; i++)
+		ep.gp.metric_ids[i] = values[i].key;
+
+	ep.gp.num_metric_ids = num_metrics;
+	ep.type = GLOBAL_STATS;
+
+	ret = rte_telemetry_send_global_stats_values(&ep, telemetry);
+	if (ret < 0) {
+		TELEMETRY_LOG_ERR("Sending global stats values failed");
 		goto fail;
 	}
 
@@ -358,13 +450,15 @@ rte_telemetry_command_ports_stats_values_by_name(struct telemetry_impl
 	int ret;
 	json_t *port_ids_json = json_object_get(data, "ports");
 	json_t *stat_names_json = json_object_get(data, "stats");
-	uint64_t num_port_ids = json_array_size(port_ids_json);
 	uint64_t num_stat_names = json_array_size(stat_names_json);
 	const char *stat_names[num_stat_names];
-	uint32_t port_ids[num_port_ids], stat_ids[num_stat_names];
+	struct telemetry_encode_param ep;
 	size_t index;
 	json_t *value;
 
+	ep.pp.num_port_ids = json_array_size(port_ids_json);
+	ep.pp.num_metric_ids = num_stat_names;
+	memset(&ep, 0, sizeof(ep));
 	if (telemetry == NULL) {
 		TELEMETRY_LOG_ERR("Invalid telemetry argument");
 		return -1;
@@ -404,8 +498,8 @@ rte_telemetry_command_ports_stats_values_by_name(struct telemetry_impl
 				TELEMETRY_LOG_ERR("Could not send error");
 			return -1;
 		}
-		port_ids[index] = json_integer_value(value);
-		ret = rte_telemetry_is_port_active(port_ids[index]);
+		ep.pp.port_ids[index] = json_integer_value(value);
+		ret = rte_telemetry_is_port_active(ep.pp.port_ids[index]);
 		if (ret < 1) {
 			ret = rte_telemetry_send_error_response(telemetry,
 				-EINVAL);
@@ -429,15 +523,15 @@ rte_telemetry_command_ports_stats_values_by_name(struct telemetry_impl
 		stat_names[index] = json_string_value(value);
 	}
 
-	ret = rte_telemetry_stat_names_to_ids(telemetry, stat_names, stat_ids,
-		num_stat_names);
+	ret = rte_telemetry_stat_names_to_ids(telemetry, stat_names,
+		ep.pp.metric_ids, num_stat_names);
 	if (ret < 0) {
 		TELEMETRY_LOG_ERR("Could not convert stat names to IDs");
 		return -1;
 	}
 
-	ret = rte_telemetry_send_ports_stats_values(stat_ids, num_stat_names,
-		port_ids, num_port_ids, telemetry);
+	ep.type = PORT_STATS;
+	ret = rte_telemetry_send_ports_stats_values(&ep, telemetry);
 	if (ret < 0) {
 		TELEMETRY_LOG_ERR("Sending ports stats values failed");
 		return -1;
@@ -482,6 +576,10 @@ rte_telemetry_parse_command(struct telemetry_impl *telemetry, int action,
 		{
 			.text = "ports_all_stat_values",
 			.fn = &rte_telemetry_command_ports_all_stat_values
+		},
+		{
+			.text = "global_stat_values",
+			.fn = &rte_telemetry_command_global_stat_values
 		}
 	};
 
@@ -508,7 +606,7 @@ rte_telemetry_parse_command(struct telemetry_impl *telemetry, int action,
 	return -1;
 }
 
-int32_t __rte_experimental
+int32_t
 rte_telemetry_parse(struct telemetry_impl *telemetry, char *socket_rx_data)
 {
 	int ret, action_int;

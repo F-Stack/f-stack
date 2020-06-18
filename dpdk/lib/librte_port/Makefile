@@ -11,7 +11,7 @@ ifeq ($(CONFIG_RTE_PORT_PCAP),y)
 LDLIBS += -lpcap
 endif
 LDLIBS += -lrte_eal -lrte_mempool -lrte_mbuf -lrte_ethdev
-LDLIBS += -lrte_ip_frag -lrte_sched -lrte_cryptodev
+LDLIBS += -lrte_ip_frag -lrte_sched -lrte_cryptodev -lrte_eventdev
 ifeq ($(CONFIG_RTE_LIBRTE_KNI),y)
 LDLIBS += -lrte_kni
 endif
@@ -20,8 +20,6 @@ CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
 EXPORT_MAP := rte_port_version.map
-
-LIBABIVER := 3
 
 #
 # all source are stored in SRCS-y
@@ -39,6 +37,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_kni.c
 endif
 SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_source_sink.c
 SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_sym_crypto.c
+SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_eventdev.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port.h
@@ -55,5 +54,6 @@ SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_kni.h
 endif
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_source_sink.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_sym_crypto.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_eventdev.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

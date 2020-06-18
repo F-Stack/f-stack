@@ -79,8 +79,8 @@ typedef void (*I40E_ADMINQ_CALLBACK)(struct i40e_hw *, struct i40e_aq_desc *);
 #define I40E_HI_BYTE(x)		((u8)(((x) >> 8) & 0xFF))
 #define I40E_LO_BYTE(x)		((u8)((x) & 0xFF))
 
-/* Number of Transmit Descriptors must be a multiple of 8. */
-#define I40E_REQ_TX_DESCRIPTOR_MULTIPLE	8
+/* Number of Transmit Descriptors must be a multiple of 32. */
+#define I40E_REQ_TX_DESCRIPTOR_MULTIPLE	32
 /* Number of Receive Descriptors must be a multiple of 32 if
  * the number of descriptors is greater than 32.
  */
@@ -329,14 +329,12 @@ struct i40e_phy_info {
 					     I40E_PHY_TYPE_OFFSET)
 #define I40E_CAP_PHY_TYPE_25GBASE_ACC BIT_ULL(I40E_PHY_TYPE_25GBASE_ACC + \
 					     I40E_PHY_TYPE_OFFSET)
-#ifdef CARLSVILLE_HW
 /* Offset for 2.5G/5G PHY Types value to bit number conversion */
 #define I40E_PHY_TYPE_OFFSET2 (-10)
 #define I40E_CAP_PHY_TYPE_2_5GBASE_T BIT_ULL(I40E_PHY_TYPE_2_5GBASE_T + \
 					     I40E_PHY_TYPE_OFFSET2)
 #define I40E_CAP_PHY_TYPE_5GBASE_T BIT_ULL(I40E_PHY_TYPE_5GBASE_T + \
 					     I40E_PHY_TYPE_OFFSET2)
-#endif
 #define I40E_HW_CAP_MAX_GPIO			30
 #define I40E_HW_CAP_MDIO_PORT_MODE_MDIO		0
 #define I40E_HW_CAP_MDIO_PORT_MODE_I2C		1
@@ -661,6 +659,9 @@ struct i40e_hw {
 	struct i40e_bus_info bus;
 	struct i40e_nvm_info nvm;
 	struct i40e_fc_info fc;
+
+	/* switch device is used to get link status when i40e is in ipn3ke */
+	struct rte_eth_dev *switch_dev;
 
 	/* pci info */
 	u16 device_id;

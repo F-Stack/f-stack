@@ -46,6 +46,13 @@ ENETC Features
 
 - Link Status
 - Packet type information
+- Basic stats
+- Promiscuous
+- Multicast
+- Jumbo packets
+- Queue Start/Stop
+- Deferred Queue Start
+- CRC offload
 
 NIC Driver (PMD)
 ~~~~~~~~~~~~~~~~

@@ -69,17 +69,19 @@ static int promiscuous_on;
 static int l3fwd_lpm_on;
 static int l3fwd_em_on;
 
+/* Global variables. */
+
 static int numa_on = 1; /**< NUMA is enabled by default. */
 static int parse_ptype; /**< Parse packet type using rx callback, and */
 			/**< disabled by default */
-
-/* Global variables. */
+static int per_port_pool; /**< Use separate buffer pools per port; disabled */
+			  /**< by default */
 
 volatile bool force_quit;
 
 /* ethernet addresses of ports */
 uint64_t dest_eth_addr[RTE_MAX_ETHPORTS];
-struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
+struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 xmm_t val_eth[RTE_MAX_ETHPORTS];
 
@@ -118,7 +120,7 @@ static uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
@@ -133,7 +135,8 @@ static struct rte_eth_conf port_conf = {
 	},
 };
 
-static struct rte_mempool * pktmbuf_pool[NB_SOCKETS];
+static struct rte_mempool *pktmbuf_pool[RTE_MAX_ETHPORTS][NB_SOCKETS];
+static uint8_t lkp_per_socket[NB_SOCKETS];
 
 struct l3fwd_lkp_mode {
 	void  (*setup)(int);
@@ -285,7 +288,8 @@ print_usage(const char *prgname)
 		" [--no-numa]"
 		" [--hash-entry-num]"
 		" [--ipv6]"
-		" [--parse-ptype]\n\n"
+		" [--parse-ptype]"
+		" [--per-port-pool]\n\n"
 
 		"  -p PORTMASK: Hexadecimal bitmask of ports to configure\n"
 		"  -P : Enable promiscuous mode\n"
@@ -299,7 +303,8 @@ print_usage(const char *prgname)
 		"  --no-numa: Disable numa awareness\n"
 		"  --hash-entry-num: Specify the hash entry number in hexadecimal to be setup\n"
 		"  --ipv6: Set if running ipv6 packets\n"
-		"  --parse-ptype: Set to use software to analyze packet type\n\n",
+		"  --parse-ptype: Set to use software to analyze packet type\n"
+		"  --per-port-pool: Use separate buffer pool per port\n\n",
 		prgname);
 }
 
@@ -452,6 +457,7 @@ static const char short_options[] =
 #define CMD_LINE_OPT_ENABLE_JUMBO "enable-jumbo"
 #define CMD_LINE_OPT_HASH_ENTRY_NUM "hash-entry-num"
 #define CMD_LINE_OPT_PARSE_PTYPE "parse-ptype"
+#define CMD_LINE_OPT_PER_PORT_POOL "per-port-pool"
 enum {
 	/* long options mapped to a short option */
 
@@ -465,6 +471,7 @@ enum {
 	CMD_LINE_OPT_ENABLE_JUMBO_NUM,
 	CMD_LINE_OPT_HASH_ENTRY_NUM_NUM,
 	CMD_LINE_OPT_PARSE_PTYPE_NUM,
+	CMD_LINE_OPT_PARSE_PER_PORT_POOL,
 };
 
 static const struct option lgopts[] = {
@@ -475,6 +482,7 @@ static const struct option lgopts[] = {
 	{CMD_LINE_OPT_ENABLE_JUMBO, 0, 0, CMD_LINE_OPT_ENABLE_JUMBO_NUM},
 	{CMD_LINE_OPT_HASH_ENTRY_NUM, 1, 0, CMD_LINE_OPT_HASH_ENTRY_NUM_NUM},
 	{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, CMD_LINE_OPT_PARSE_PTYPE_NUM},
+	{CMD_LINE_OPT_PER_PORT_POOL, 0, 0, CMD_LINE_OPT_PARSE_PER_PORT_POOL},
 	{NULL, 0, 0, 0}
 };
 
@@ -485,10 +493,10 @@ static const struct option lgopts[] = {
  * RTE_MAX is used to ensure that NB_MBUF never goes below a minimum
  * value of 8192
  */
-#define NB_MBUF RTE_MAX(	\
-	(nb_ports*nb_rx_queue*nb_rxd +		\
-	nb_ports*nb_lcores*MAX_PKT_BURST +	\
-	nb_ports*n_tx_queue*nb_txd +		\
+#define NB_MBUF(nports) RTE_MAX(	\
+	(nports*nb_rx_queue*nb_rxd +		\
+	nports*nb_lcores*MAX_PKT_BURST +	\
+	nports*n_tx_queue*nb_txd +		\
 	nb_lcores*MEMPOOL_CACHE_SIZE),		\
 	(unsigned)8192)
 
@@ -562,7 +570,7 @@ parse_args(int argc, char **argv)
 
 			/*
 			 * if no max-pkt-len set, use the default
-			 * value ETHER_MAX_LEN.
+			 * value RTE_ETHER_MAX_LEN.
 			 */
 			if (getopt_long(argc, argvopt, "",
 					&lenopts, &option_index) == 0) {
@@ -592,6 +600,11 @@ parse_args(int argc, char **argv)
 		case CMD_LINE_OPT_PARSE_PTYPE_NUM:
 			printf("soft parse-ptype is enabled\n");
 			parse_ptype = 1;
+			break;
+
+		case CMD_LINE_OPT_PARSE_PER_PORT_POOL:
+			printf("per port buffer pool is enabled\n");
+			per_port_pool = 1;
 			break;
 
 		default:
@@ -634,15 +647,15 @@ parse_args(int argc, char **argv)
 }
 
 static void
-print_ethaddr(const char *name, const struct ether_addr *eth_addr)
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, eth_addr);
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", name, buf);
 }
 
 static int
-init_mem(unsigned nb_mbuf)
+init_mem(uint16_t portid, unsigned int nb_mbuf)
 {
 	struct lcore_conf *qconf;
 	int socketid;
@@ -664,13 +677,14 @@ init_mem(unsigned nb_mbuf)
 				socketid, lcore_id, NB_SOCKETS);
 		}
 
-		if (pktmbuf_pool[socketid] == NULL) {
-			snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
-			pktmbuf_pool[socketid] =
+		if (pktmbuf_pool[portid][socketid] == NULL) {
+			snprintf(s, sizeof(s), "mbuf_pool_%d:%d",
+				 portid, socketid);
+			pktmbuf_pool[portid][socketid] =
 				rte_pktmbuf_pool_create(s, nb_mbuf,
 					MEMPOOL_CACHE_SIZE, 0,
 					RTE_MBUF_DEFAULT_BUF_SIZE, socketid);
-			if (pktmbuf_pool[socketid] == NULL)
+			if (pktmbuf_pool[portid][socketid] == NULL)
 				rte_exit(EXIT_FAILURE,
 					"Cannot init mbuf pool on socket %d\n",
 					socketid);
@@ -678,8 +692,13 @@ init_mem(unsigned nb_mbuf)
 				printf("Allocated mbuf pool on socket %d\n",
 					socketid);
 
-			/* Setup either LPM or EM(f.e Hash).  */
-			l3fwd_lkp.setup(socketid);
+			/* Setup either LPM or EM(f.e Hash). But, only once per
+			 * available socket.
+			 */
+			if (!lkp_per_socket[socketid]) {
+				l3fwd_lkp.setup(socketid);
+				lkp_per_socket[socketid] = 1;
+			}
 		}
 		qconf = &lcore_conf[lcore_id];
 		qconf->ipv4_lookup_struct =
@@ -699,6 +718,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -712,7 +732,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -808,7 +835,7 @@ main(int argc, char **argv)
 	/* pre-init dst MACs for all ports to 02:00:00:00:00:xx */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
 		dest_eth_addr[portid] =
-			ETHER_LOCAL_ADMIN_ADDR + ((uint64_t)portid << 40);
+			RTE_ETHER_LOCAL_ADMIN_ADDR + ((uint64_t)portid << 40);
 		*(uint64_t *)(val_eth + portid) = dest_eth_addr[portid];
 	}
 
@@ -855,7 +882,12 @@ main(int argc, char **argv)
 		printf("Creating queues: nb_rxq=%d nb_txq=%u... ",
 			nb_rx_queue, (unsigned)n_tx_queue );
 
-		rte_eth_dev_info_get(portid, &dev_info);
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
 				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -885,21 +917,33 @@ main(int argc, char **argv)
 				 "Cannot adjust number of descriptors: err=%d, "
 				 "port=%d\n", ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot get MAC address: err=%d, port=%d\n",
+				 ret, portid);
+
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
 		print_ethaddr("Destination:",
-			(const struct ether_addr *)&dest_eth_addr[portid]);
+			(const struct rte_ether_addr *)&dest_eth_addr[portid]);
 		printf(", ");
 
 		/*
 		 * prepare src MACs for each port.
 		 */
-		ether_addr_copy(&ports_eth_addr[portid],
-			(struct ether_addr *)(val_eth + portid) + 1);
+		rte_ether_addr_copy(&ports_eth_addr[portid],
+			(struct rte_ether_addr *)(val_eth + portid) + 1);
 
 		/* init memory */
-		ret = init_mem(NB_MBUF);
+		if (!per_port_pool) {
+			/* portid = 0; this is *not* signifying the first port,
+			 * rather, it signifies that portid is ignored.
+			 */
+			ret = init_mem(0, NB_MBUF(nb_ports));
+		} else {
+			ret = init_mem(portid, NB_MBUF(1));
+		}
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "init_mem failed\n");
 
@@ -959,13 +1003,24 @@ main(int argc, char **argv)
 			printf("rxq=%d,%d,%d ", portid, queueid, socketid);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
+			ret = rte_eth_dev_info_get(portid, &dev_info);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"Error during getting device (port %u) info: %s\n",
+					portid, strerror(-ret));
+
 			rxq_conf = dev_info.default_rxconf;
 			rxq_conf.offloads = port_conf.rxmode.offloads;
-			ret = rte_eth_rx_queue_setup(portid, queueid, nb_rxd,
-					socketid,
-					&rxq_conf,
-					pktmbuf_pool[socketid]);
+			if (!per_port_pool)
+				ret = rte_eth_rx_queue_setup(portid, queueid,
+						nb_rxd, socketid,
+						&rxq_conf,
+						pktmbuf_pool[0][socketid]);
+			else
+				ret = rte_eth_rx_queue_setup(portid, queueid,
+						nb_rxd, socketid,
+						&rxq_conf,
+						pktmbuf_pool[portid][socketid]);
 			if (ret < 0)
 				rte_exit(EXIT_FAILURE,
 				"rte_eth_rx_queue_setup: err=%d, port=%d\n",
@@ -993,8 +1048,13 @@ main(int argc, char **argv)
 		 * to itself through 2 cross-connected  ports of the
 		 * target machine.
 		 */
-		if (promiscuous_on)
-			rte_eth_promiscuous_enable(portid);
+		if (promiscuous_on) {
+			ret = rte_eth_promiscuous_enable(portid);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"rte_eth_promiscuous_enable: err=%s, port=%u\n",
+					rte_strerror(-ret), portid);
+		}
 	}
 
 	printf("\n");

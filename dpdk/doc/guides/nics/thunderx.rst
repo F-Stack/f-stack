@@ -70,7 +70,7 @@ Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and
 for details.
 
 To compile the ThunderX NICVF PMD for Linux arm64 gcc,
-use arm64-thunderx-linuxapp-gcc as target.
+use arm64-thunderx-linux-gcc as target.
 
 Linux
 -----
@@ -177,7 +177,7 @@ This section provides instructions to configure SR-IOV with Linux OS.
 
    .. code-block:: console
 
-      ./arm64-thunderx-linuxapp-gcc/app/testpmd -l 0-3 -n 4 -w 0002:01:00.2 \
+      ./arm64-thunderx-linux-gcc/app/testpmd -l 0-3 -n 4 -w 0002:01:00.2 \
         -- -i --no-flush-rx \
         --port-topology=loop
 
@@ -331,8 +331,8 @@ Example:
 Limitations
 -----------
 
-CRC striping
-~~~~~~~~~~~~
+CRC stripping
+~~~~~~~~~~~~~
 
 The ThunderX SoC family NICs strip the CRC for every packets coming into the
 host interface irrespective of the offload configuration.

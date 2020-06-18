@@ -68,7 +68,7 @@ struct vdev_netvsc_ctx {
 	char devargs[256];		   /**< Fail-safe device arguments. */
 	char if_name[IF_NAMESIZE];	   /**< NetVSC netdevice name. */
 	unsigned int if_index;		   /**< NetVSC netdevice index. */
-	struct ether_addr if_addr;	   /**< NetVSC MAC address. */
+	struct rte_ether_addr if_addr;	   /**< NetVSC MAC address. */
 	int pipe[2];			   /**< Fail-safe communication pipe. */
 	char yield[256];		   /**< PCI sub-device arguments. */
 };
@@ -157,7 +157,7 @@ vdev_netvsc_iface_is_netvsc(const struct if_nameindex *iface)
  */
 static int
 vdev_netvsc_foreach_iface(int (*func)(const struct if_nameindex *iface,
-				      const struct ether_addr *eth_addr,
+				      const struct rte_ether_addr *eth_addr,
 				      va_list ap), int is_netvsc, ...)
 {
 	struct if_nameindex *iface = if_nameindex();
@@ -178,7 +178,7 @@ vdev_netvsc_foreach_iface(int (*func)(const struct if_nameindex *iface,
 	for (i = 0; iface[i].if_name; ++i) {
 		int is_netvsc_ret;
 		struct ifreq req;
-		struct ether_addr eth_addr;
+		struct rte_ether_addr eth_addr;
 		va_list ap;
 
 		is_netvsc_ret = vdev_netvsc_iface_is_netvsc(&iface[i]) ? 1 : 0;
@@ -191,11 +191,8 @@ vdev_netvsc_foreach_iface(int (*func)(const struct if_nameindex *iface,
 					 req.ifr_name, rte_strerror(errno));
 			continue;
 		}
-		if (req.ifr_hwaddr.sa_family != ARPHRD_ETHER) {
-			DRV_LOG(DEBUG, "interface %s is non-ethernet device",
-				req.ifr_name);
+		if (req.ifr_hwaddr.sa_family != ARPHRD_ETHER)
 			continue;
-		}
 		memcpy(eth_addr.addr_bytes, req.ifr_hwaddr.sa_data,
 		       RTE_DIM(eth_addr.addr_bytes));
 		va_start(ap, is_netvsc);
@@ -371,7 +368,7 @@ vdev_netvsc_sysfs_readlink(char *buf, size_t size, const char *if_name,
  */
 static int
 vdev_netvsc_device_probe(const struct if_nameindex *iface,
-		    const struct ether_addr *eth_addr,
+		    const struct rte_ether_addr *eth_addr,
 		    va_list ap)
 {
 	struct vdev_netvsc_ctx *ctx = va_arg(ap, struct vdev_netvsc_ctx *);
@@ -390,7 +387,7 @@ vdev_netvsc_device_probe(const struct if_nameindex *iface,
 		strlcpy(ctx->if_name, iface->if_name, sizeof(ctx->if_name));
 		return 0;
 	}
-	if (!is_same_ether_addr(eth_addr, &ctx->if_addr))
+	if (!rte_is_same_ether_addr(eth_addr, &ctx->if_addr))
 		return 0;
 	/* Look for associated PCI device. */
 	ret = vdev_netvsc_sysfs_readlink(buf, sizeof(buf), iface->if_name,
@@ -510,7 +507,7 @@ vdev_netvsc_alarm(__rte_unused void *arg)
  */
 static int
 vdev_netvsc_netvsc_probe(const struct if_nameindex *iface,
-			 const struct ether_addr *eth_addr,
+			 const struct rte_ether_addr *eth_addr,
 			 va_list ap)
 {
 	const char *name = va_arg(ap, const char *);
@@ -530,24 +527,16 @@ vdev_netvsc_netvsc_probe(const struct if_nameindex *iface,
 				if (!strcmp(pair->value, iface->if_name))
 					break;
 			} else if (!strcmp(pair->key, VDEV_NETVSC_ARG_MAC)) {
-				struct ether_addr tmp;
+				struct rte_ether_addr tmp;
 
-				if (sscanf(pair->value,
-					   "%" SCNx8 ":%" SCNx8 ":%" SCNx8 ":"
-					   "%" SCNx8 ":%" SCNx8 ":%" SCNx8,
-					   &tmp.addr_bytes[0],
-					   &tmp.addr_bytes[1],
-					   &tmp.addr_bytes[2],
-					   &tmp.addr_bytes[3],
-					   &tmp.addr_bytes[4],
-					   &tmp.addr_bytes[5]) != 6) {
+				if (rte_ether_unformat_addr(pair->value, &tmp) != 0) {
 					DRV_LOG(ERR,
 						"invalid MAC address format"
 						" \"%s\"",
 						pair->value);
 					return -EINVAL;
 				}
-				if (is_same_ether_addr(eth_addr, &tmp))
+				if (rte_is_same_ether_addr(eth_addr, &tmp))
 					break;
 			}
 		}
