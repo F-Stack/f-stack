@@ -75,6 +75,7 @@ int main(int argc, char **argv)
             max_proc_id = atoi(optarg);
             if (max_proc_id < 0 || max_proc_id >= RTE_MAX_LCORE) {
                 usage();
+                ff_ipc_exit();
                 return -1;
             }
             break;
@@ -90,6 +91,7 @@ int main(int argc, char **argv)
         case 'h':
         default:
             usage();
+            ff_ipc_exit();
             return -1;
         }
     }
@@ -98,6 +100,7 @@ int main(int argc, char **argv)
         if (max_proc_id == -1) {
             if (traffic_status(&traffic)) {
                 printf("fstack ipc message error !\n");
+                ff_ipc_exit();
                 return -1;
             }
 
@@ -108,6 +111,7 @@ int main(int argc, char **argv)
                 ff_set_proc_id(j);
                 if (traffic_status(&ptraffic[j])) {
                     printf("fstack ipc message error, proc id:%d!\n", j);
+                    ff_ipc_exit();
                     return -1;
                 }
 
@@ -125,6 +129,7 @@ int main(int argc, char **argv)
                 "total", traffic.rx_packets, traffic.rx_bytes,
                 traffic.tx_packets, traffic.tx_bytes);
         }
+        ff_ipc_exit();
         return 0;
     }
 
@@ -132,6 +137,7 @@ int main(int argc, char **argv)
         if (max_proc_id == -1) {
             if (traffic_status(&traffic)) {
                 printf("fstack ipc message error !\n");
+                ff_ipc_exit();
                 return -1;
             }
 
@@ -173,6 +179,7 @@ int main(int argc, char **argv)
                 ff_set_proc_id(j);
                 if (traffic_status(&ptraffic[j])) {
                     printf("fstack ipc message error, proc id:%d!\n", j);
+                    ff_ipc_exit();
                     return -1;
                 }
 
@@ -208,5 +215,6 @@ int main(int argc, char **argv)
         sleep(delay);
     }
 
+    ff_ipc_exit();
     return 0;
 }

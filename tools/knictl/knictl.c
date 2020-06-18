@@ -102,12 +102,14 @@ int main(int argc, char **argv)
             max_proc_id = atoi(optarg);
             if (max_proc_id < 0 || max_proc_id >= RTE_MAX_LCORE) {
                 usage();
+                ff_ipc_exit();
                 return -1;
             }
             break;
         case 'a':
             if (has_action){
                 usage();
+                ff_ipc_exit();
                 return -1;
             }
             has_action = 1;
@@ -115,12 +117,14 @@ int main(int argc, char **argv)
             knictl.kni_action = get_action(optarg);
             if (knictl.kni_action < FF_KNICTL_ACTION_DEFAULT || knictl.kni_action >= FF_KNICTL_ACTION_MAX){
                 usage();
+                ff_ipc_exit();
                 return -1;
             }
             break;
         case 'n':
             if (has_action){
                 usage();
+                ff_ipc_exit();
                 return -1;
             }
             has_action = 1;
@@ -129,6 +133,7 @@ int main(int argc, char **argv)
         case 'h':
         default:
             usage();
+            ff_ipc_exit();
             return -1;
         }
     }
@@ -146,4 +151,6 @@ int main(int argc, char **argv)
             printf("  %s to %s knictl type: %s, proc_id: %d\n", ret ? "fail": "success", pknictl[proc_id].kni_cmd == FF_KNICTL_CMD_GET ? "get" : "set", get_action_str(pknictl[proc_id].kni_action), proc_id);
         }
     }
+
+    ff_ipc_exit();
 }
