@@ -231,6 +231,7 @@ usage(void)
 	(void)fprintf(stderr, "%s\n%s\n",
 		"usage: sysctl -p <f-stack proc_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
 		"       sysctl -p <f-stack proc_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
+	ff_ipc_exit();
 #endif
 	exit(1);
 }
@@ -329,8 +330,13 @@ main(int argc, char **argv)
 
 	if (Nflag && nflag)
 		usage();
-	if (aflag && argc == 0)
-		exit(sysctl_all(0, 0));
+	if (aflag && argc == 0) {
+		int ret = sysctl_all(0, 0);
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
+		exit(ret);
+	}
 	if (argc == 0 && conffile == NULL)
 		usage();
 
@@ -340,6 +346,10 @@ main(int argc, char **argv)
 
 	while (argc-- > 0)
 		warncount += parse(*argv++, 0);
+
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 
 	return (warncount);
 }
@@ -429,8 +439,12 @@ parse(const char *string, int lineno)
 		warn("couldn't find format of oid '%s'%s", bufp, line);
 		if (iflag)
 			return (1);
-		else
+		else {
+#ifdef FSTACK
+			ff_ipc_exit();
+#endif
 			exit(1);
+		}
 	}
 
 	if (newvalstr == NULL || dflag) {

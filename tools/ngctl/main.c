@@ -235,6 +235,9 @@ main(int ac, char *av[])
 		rtn = EX_OSERR;
 		break;
 	}
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	return (rtn);
 }
 
@@ -720,6 +723,7 @@ Usage(const char *msg)
 		"usage: ngctl [-d] [-f file] [-n name] [command ...]\n");
 #else
 		"usage: ngctl -p <f-stack proc_id>  [-d] [-f file] [-n name] [command ...]\n");
+		ff_ipc_exit();
 #endif
 	exit(EX_USAGE);
 }
