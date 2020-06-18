@@ -33,6 +33,7 @@
 void ff_set_proc_id(int pid);
 
 int ff_ipc_init(void);
+void ff_ipc_exit(void);
 struct ff_msg *ff_ipc_msg_alloc(void);
 int ff_ipc_msg_free(struct ff_msg *msg);
 
