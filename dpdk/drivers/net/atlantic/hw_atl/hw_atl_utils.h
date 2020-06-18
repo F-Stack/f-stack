@@ -8,6 +8,7 @@
 #ifndef HW_ATL_UTILS_H
 #define HW_ATL_UTILS_H
 
+#define BIT(x)  (1UL << (x))
 #define HW_ATL_FLUSH() { (void)aq_hw_read_reg(self, 0x10); }
 
 /* Hardware tx descriptor */
@@ -343,6 +344,154 @@ struct smbus_request {
 	u32 length;
 } __attribute__((__packed__));
 
+enum macsec_msg_type {
+	macsec_cfg_msg = 0,
+	macsec_add_rx_sc_msg,
+	macsec_add_tx_sc_msg,
+	macsec_add_rx_sa_msg,
+	macsec_add_tx_sa_msg,
+	macsec_get_stats_msg,
+};
+
+struct macsec_cfg {
+	uint32_t enabled;
+	uint32_t egress_threshold;
+	uint32_t ingress_threshold;
+	uint32_t interrupts_enabled;
+} __attribute__((__packed__));
+
+struct add_rx_sc {
+	uint32_t index;
+	uint32_t pi; /* Port identifier */
+	uint32_t sci[2]; /* Secure Channel identifier */
+	uint32_t sci_mask; /* 1: enable comparison of SCI, 0: don't care */
+	uint32_t tci;
+	uint32_t tci_mask;
+	uint32_t mac_sa[2];
+	uint32_t sa_mask; /* 0: ignore mac_sa */
+	uint32_t mac_da[2];
+	uint32_t da_mask; /* 0: ignore mac_da */
+	uint32_t validate_frames; /* 0: strict, 1:check, 2:disabled */
+	uint32_t replay_protect; /* 1: enabled, 0:disabled */
+	uint32_t anti_replay_window; /* default 0 */
+	/* 1: auto_rollover enabled (when SA next_pn is saturated */
+	uint32_t an_rol;
+} __attribute__((__packed__));
+
+struct add_tx_sc {
+	uint32_t index;
+	uint32_t pi; /* Port identifier */
+	uint32_t sci[2]; /* Secure Channel identifier */
+	uint32_t sci_mask; /* 1: enable comparison of SCI, 0: don't care */
+	uint32_t tci; /* TCI value, used if packet is not explicitly tagged */
+	uint32_t tci_mask;
+	uint32_t mac_sa[2];
+	uint32_t sa_mask; /* 0: ignore mac_sa */
+	uint32_t mac_da[2];
+	uint32_t da_mask; /* 0: ignore mac_da */
+	uint32_t protect;
+	uint32_t curr_an; /* SA index which currently used */
+} __attribute__((__packed__));
+
+struct add_rx_sa {
+	uint32_t index;
+	uint32_t next_pn;
+	uint32_t key[4]; /* 128 bit key */
+} __attribute__((__packed__));
+
+struct add_tx_sa {
+	uint32_t index;
+	uint32_t next_pn;
+	uint32_t key[4]; /* 128 bit key */
+} __attribute__((__packed__));
+
+struct get_stats {
+	uint32_t version_only;
+	uint32_t ingress_sa_index;
+	uint32_t egress_sa_index;
+	uint32_t egress_sc_index;
+} __attribute__((__packed__));
+
+struct macsec_stats {
+	uint32_t api_version;
+	/* Ingress Common Counters */
+	uint64_t in_ctl_pkts;
+	uint64_t in_tagged_miss_pkts;
+	uint64_t in_untagged_miss_pkts;
+	uint64_t in_notag_pkts;
+	uint64_t in_untagged_pkts;
+	uint64_t in_bad_tag_pkts;
+	uint64_t in_no_sci_pkts;
+	uint64_t in_unknown_sci_pkts;
+	uint64_t in_ctrl_prt_pass_pkts;
+	uint64_t in_unctrl_prt_pass_pkts;
+	uint64_t in_ctrl_prt_fail_pkts;
+	uint64_t in_unctrl_prt_fail_pkts;
+	uint64_t in_too_long_pkts;
+	uint64_t in_igpoc_ctl_pkts;
+	uint64_t in_ecc_error_pkts;
+	uint64_t in_unctrl_hit_drop_redir;
+
+	/* Egress Common Counters */
+	uint64_t out_ctl_pkts;
+	uint64_t out_unknown_sa_pkts;
+	uint64_t out_untagged_pkts;
+	uint64_t out_too_long;
+	uint64_t out_ecc_error_pkts;
+	uint64_t out_unctrl_hit_drop_redir;
+
+	/* Ingress SA Counters */
+	uint64_t in_untagged_hit_pkts;
+	uint64_t in_ctrl_hit_drop_redir_pkts;
+	uint64_t in_not_using_sa;
+	uint64_t in_unused_sa;
+	uint64_t in_not_valid_pkts;
+	uint64_t in_invalid_pkts;
+	uint64_t in_ok_pkts;
+	uint64_t in_late_pkts;
+	uint64_t in_delayed_pkts;
+	uint64_t in_unchecked_pkts;
+	uint64_t in_validated_octets;
+	uint64_t in_decrypted_octets;
+
+	/* Egress SA Counters */
+	uint64_t out_sa_hit_drop_redirect;
+	uint64_t out_sa_protected2_pkts;
+	uint64_t out_sa_protected_pkts;
+	uint64_t out_sa_encrypted_pkts;
+
+	/* Egress SC Counters */
+	uint64_t out_sc_protected_pkts;
+	uint64_t out_sc_encrypted_pkts;
+	uint64_t out_sc_protected_octets;
+	uint64_t out_sc_encrypted_octets;
+
+	/* SA Counters expiration info */
+	uint32_t egress_threshold_expired;
+	uint32_t ingress_threshold_expired;
+	uint32_t egress_expired;
+	uint32_t ingress_expired;
+} __attribute__((__packed__));
+
+struct macsec_msg_fw_request {
+	uint32_t offset; /* not used */
+	uint32_t msg_type;
+
+	union {
+		struct macsec_cfg cfg;
+		struct add_rx_sc rxsc;
+		struct add_tx_sc txsc;
+		struct add_rx_sa rxsa;
+		struct add_tx_sa txsa;
+		struct get_stats stats;
+	};
+} __attribute__((__packed__));
+
+struct macsec_msg_fw_response {
+	uint32_t result;
+	struct macsec_stats stats;
+} __attribute__((__packed__));
+
 #define HAL_ATLANTIC_UTILS_CHIP_MIPS         0x00000001U
 #define HAL_ATLANTIC_UTILS_CHIP_TPO2         0x00000002U
 #define HAL_ATLANTIC_UTILS_CHIP_RPF2         0x00000004U
@@ -384,14 +533,6 @@ enum hal_atl_utils_fw_state_e {
 
 #define SMBUS_DEVICE_ID 0x50
 
-enum hw_atl_fw2x_rate {
-	FW2X_RATE_100M    = 0x20,
-	FW2X_RATE_1G      = 0x100,
-	FW2X_RATE_2G5     = 0x200,
-	FW2X_RATE_5G      = 0x400,
-	FW2X_RATE_10G     = 0x800,
-};
-
 enum hw_atl_fw2x_caps_lo {
 	CAPS_LO_10BASET_HD = 0x00,
 	CAPS_LO_10BASET_FD,
@@ -408,6 +549,7 @@ enum hw_atl_fw2x_caps_lo {
 	CAPS_LO_AUTONEG,
 	CAPS_LO_SMBUS_READ,
 	CAPS_LO_SMBUS_WRITE,
+	CAPS_LO_MACSEC
 };
 
 enum hw_atl_fw2x_caps_hi {
@@ -443,6 +585,14 @@ enum hw_atl_fw2x_caps_hi {
 	CAPS_HI_WOL_TIMER,
 	CAPS_HI_STATISTICS,
 	CAPS_HI_TRANSACTION_ID,
+};
+
+enum hw_atl_fw2x_rate {
+	FW2X_RATE_100M    = BIT(CAPS_LO_100BASETX_FD),
+	FW2X_RATE_1G      = BIT(CAPS_LO_1000BASET_FD),
+	FW2X_RATE_2G5     = BIT(CAPS_LO_2P5GBASET_FD),
+	FW2X_RATE_5G      = BIT(CAPS_LO_5GBASET_FD),
+	FW2X_RATE_10G     = BIT(CAPS_LO_10GBASET_FD),
 };
 
 struct aq_hw_s;

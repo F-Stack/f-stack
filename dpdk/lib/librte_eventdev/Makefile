@@ -7,14 +7,11 @@ include $(RTE_SDK)/mk/rte.vars.mk
 # library name
 LIB = librte_eventdev.a
 
-# library version
-LIBABIVER := 6
-
 # build flags
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
-ifeq ($(CONFIG_RTE_EXEC_ENV_LINUXAPP),y)
+ifeq ($(CONFIG_RTE_EXEC_ENV_LINUX),y)
 CFLAGS += -DLINUX
 else
 CFLAGS += -DBSD

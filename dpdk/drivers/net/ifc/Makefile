@@ -10,6 +10,7 @@ LIB = librte_pmd_ifc.a
 
 LDLIBS += -lpthread
 LDLIBS += -lrte_eal -lrte_pci -lrte_vhost -lrte_bus_pci
+LDLIBS += -lrte_kvargs
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
@@ -23,8 +24,6 @@ BASE_DRIVER_OBJS=$(sort $(patsubst %.c,%.o,$(notdir $(wildcard $(SRCDIR)/base/*.
 VPATH += $(SRCDIR)/base
 
 EXPORT_MAP := rte_pmd_ifc_version.map
-
-LIBABIVER := 1
 
 #
 # all source are stored in SRCS-y

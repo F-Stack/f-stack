@@ -28,7 +28,7 @@
 /*
  *... and the PCI ID Table itself ...
  */
-#include "t4_pci_id_tbl.h"
+#include "base/t4_pci_id_tbl.h"
 
 /*
  * Get port statistics.
@@ -69,7 +69,6 @@ static int cxgbevf_dev_stats_get(struct rte_eth_dev *eth_dev,
 
 		eth_stats->q_opackets[i] = txq->stats.pkts;
 		eth_stats->q_obytes[i] = txq->stats.tx_bytes;
-		eth_stats->q_errors[i] = txq->stats.mapping_err;
 	}
 	return 0;
 }
@@ -163,6 +162,9 @@ static int eth_cxgbevf_dev_init(struct rte_eth_dev *eth_dev)
 	adapter->pdev = pci_dev;
 	adapter->eth_dev = eth_dev;
 	pi->adapter = adapter;
+
+	cxgbe_process_devargs(adapter);
+
 	err = cxgbevf_probe(adapter);
 	if (err) {
 		dev_err(adapter, "%s: cxgbevf probe failed with err %d\n",
@@ -209,3 +211,7 @@ static struct rte_pci_driver rte_cxgbevf_pmd = {
 RTE_PMD_REGISTER_PCI(net_cxgbevf, rte_cxgbevf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_cxgbevf, cxgb4vf_pci_tbl);
 RTE_PMD_REGISTER_KMOD_DEP(net_cxgbevf, "* igb_uio | vfio-pci");
+RTE_PMD_REGISTER_PARAM_STRING(net_cxgbevf,
+			      CXGBE_DEVARG_CMN_KEEP_OVLAN "=<0|1> "
+			      CXGBE_DEVARG_CMN_TX_MODE_LATENCY "=<0|1> "
+			      CXGBE_DEVARG_VF_FORCE_LINK_UP "=<0|1> ");

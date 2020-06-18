@@ -16,7 +16,7 @@
 
 int rte_bpf_logtype;
 
-__rte_experimental void
+void
 rte_bpf_destroy(struct rte_bpf *bpf)
 {
 	if (bpf != NULL) {
@@ -26,7 +26,7 @@ rte_bpf_destroy(struct rte_bpf *bpf)
 	}
 }
 
-__rte_experimental int
+int
 rte_bpf_get_jit(const struct rte_bpf *bpf, struct rte_bpf_jit *jit)
 {
 	if (bpf == NULL || jit == NULL)
@@ -41,8 +41,10 @@ bpf_jit(struct rte_bpf *bpf)
 {
 	int32_t rc;
 
-#ifdef RTE_ARCH_X86_64
+#if defined(RTE_ARCH_X86_64)
 	rc = bpf_jit_x86(bpf);
+#elif defined(RTE_ARCH_ARM64)
+	rc = bpf_jit_arm64(bpf);
 #else
 	rc = -ENOTSUP;
 #endif

@@ -107,7 +107,7 @@ siena_rx_qcreate(
 	__in		unsigned int index,
 	__in		unsigned int label,
 	__in		efx_rxq_type_t type,
-	__in		const efx_rxq_type_data_t *type_data,
+	__in_opt	const efx_rxq_type_data_t *type_data,
 	__in		efsys_mem_t *esmp,
 	__in		size_t ndescs,
 	__in		uint32_t id,
@@ -151,7 +151,7 @@ static const efx_rx_ops_t __efx_rx_siena_ops = {
 };
 #endif	/* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 static const efx_rx_ops_t __efx_rx_ef10_ops = {
 	ef10_rx_init,				/* erxo_init */
 	ef10_rx_fini,				/* erxo_fini */
@@ -178,7 +178,7 @@ static const efx_rx_ops_t __efx_rx_ef10_ops = {
 	ef10_rx_qcreate,			/* erxo_qcreate */
 	ef10_rx_qdestroy,			/* erxo_qdestroy */
 };
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */
 
 
 	__checkReturn	efx_rc_t
@@ -693,6 +693,7 @@ efx_rx_qpost(
 	const efx_rx_ops_t *erxop = enp->en_erxop;
 
 	EFSYS_ASSERT3U(erp->er_magic, ==, EFX_RXQ_MAGIC);
+	EFSYS_ASSERT(erp->er_buf_size == 0 || size == erp->er_buf_size);
 
 	erxop->erxo_qpost(erp, addrp, size, ndescs, completed, added);
 }
@@ -766,6 +767,24 @@ fail1:
 	return (rc);
 }
 
+	__checkReturn	size_t
+efx_rxq_size(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs)
+{
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
+
+	return (ndescs * encp->enc_rx_desc_size);
+}
+
+	__checkReturn	unsigned int
+efx_rxq_nbufs(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs)
+{
+	return (EFX_DIV_ROUND_UP(efx_rxq_size(enp, ndescs), EFX_BUF_SIZE));
+}
+
 			void
 efx_rx_qenable(
 	__in		efx_rxq_t *erp)
@@ -784,7 +803,7 @@ efx_rx_qcreate_internal(
 	__in		unsigned int index,
 	__in		unsigned int label,
 	__in		efx_rxq_type_t type,
-	__in		const efx_rxq_type_data_t *type_data,
+	__in_opt	const efx_rxq_type_data_t *type_data,
 	__in		efsys_mem_t *esmp,
 	__in		size_t ndescs,
 	__in		uint32_t id,
@@ -794,17 +813,28 @@ efx_rx_qcreate_internal(
 {
 	const efx_rx_ops_t *erxop = enp->en_erxop;
 	efx_rxq_t *erp;
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
 	efx_rc_t rc;
 
 	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
 	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_RX);
+
+	EFSYS_ASSERT(ISP2(encp->enc_rxq_max_ndescs));
+	EFSYS_ASSERT(ISP2(encp->enc_rxq_min_ndescs));
+
+	if (!ISP2(ndescs) ||
+	    ndescs < encp->enc_rxq_min_ndescs ||
+	    ndescs > encp->enc_rxq_max_ndescs) {
+		rc = EINVAL;
+		goto fail1;
+	}
 
 	/* Allocate an RXQ object */
 	EFSYS_KMEM_ALLOC(enp->en_esip, sizeof (efx_rxq_t), erp);
 
 	if (erp == NULL) {
 		rc = ENOMEM;
-		goto fail1;
+		goto fail2;
 	}
 
 	erp->er_magic = EFX_RXQ_MAGIC;
@@ -815,17 +845,19 @@ efx_rx_qcreate_internal(
 
 	if ((rc = erxop->erxo_qcreate(enp, index, label, type, type_data, esmp,
 	    ndescs, id, flags, eep, erp)) != 0)
-		goto fail2;
+		goto fail3;
 
 	enp->en_rx_qcount++;
 	*erpp = erp;
 
 	return (0);
 
-fail2:
-	EFSYS_PROBE(fail2);
+fail3:
+	EFSYS_PROBE(fail3);
 
 	EFSYS_KMEM_FREE(enp->en_esip, sizeof (efx_rxq_t), erp);
+fail2:
+	EFSYS_PROBE(fail2);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 
@@ -838,6 +870,7 @@ efx_rx_qcreate(
 	__in		unsigned int index,
 	__in		unsigned int label,
 	__in		efx_rxq_type_t type,
+	__in		size_t buf_size,
 	__in		efsys_mem_t *esmp,
 	__in		size_t ndescs,
 	__in		uint32_t id,
@@ -845,7 +878,13 @@ efx_rx_qcreate(
 	__in		efx_evq_t *eep,
 	__deref_out	efx_rxq_t **erpp)
 {
-	return efx_rx_qcreate_internal(enp, index, label, type, NULL,
+	efx_rxq_type_data_t type_data;
+
+	memset(&type_data, 0, sizeof (type_data));
+
+	type_data.ertd_default.ed_buf_size = buf_size;
+
+	return efx_rx_qcreate_internal(enp, index, label, type, &type_data,
 	    esmp, ndescs, id, flags, eep, erpp);
 }
 
@@ -1568,7 +1607,7 @@ siena_rx_qcreate(
 	__in		unsigned int index,
 	__in		unsigned int label,
 	__in		efx_rxq_type_t type,
-	__in		const efx_rxq_type_data_t *type_data,
+	__in_opt	const efx_rxq_type_data_t *type_data,
 	__in		efsys_mem_t *esmp,
 	__in		size_t ndescs,
 	__in		uint32_t id,
@@ -1583,41 +1622,34 @@ siena_rx_qcreate(
 	efx_rc_t rc;
 
 	_NOTE(ARGUNUSED(esmp))
-	_NOTE(ARGUNUSED(type_data))
 
 	EFX_STATIC_ASSERT(EFX_EV_RX_NLABELS ==
 	    (1 << FRF_AZ_RX_DESCQ_LABEL_WIDTH));
 	EFSYS_ASSERT3U(label, <, EFX_EV_RX_NLABELS);
 	EFSYS_ASSERT3U(enp->en_rx_qcount + 1, <, encp->enc_rxq_limit);
 
-	EFX_STATIC_ASSERT(ISP2(EFX_RXQ_MAXNDESCS));
-	EFX_STATIC_ASSERT(ISP2(EFX_RXQ_MINNDESCS));
-
-	if (!ISP2(ndescs) ||
-	    (ndescs < EFX_RXQ_MINNDESCS) || (ndescs > EFX_RXQ_MAXNDESCS)) {
+	if (index >= encp->enc_rxq_limit) {
 		rc = EINVAL;
 		goto fail1;
 	}
-	if (index >= encp->enc_rxq_limit) {
-		rc = EINVAL;
-		goto fail2;
-	}
-	for (size = 0; (1 << size) <= (EFX_RXQ_MAXNDESCS / EFX_RXQ_MINNDESCS);
+	for (size = 0;
+	    (1U << size) <= encp->enc_rxq_max_ndescs / encp->enc_rxq_min_ndescs;
 	    size++)
-		if ((1 << size) == (int)(ndescs / EFX_RXQ_MINNDESCS))
+		if ((1U << size) == (uint32_t)ndescs / encp->enc_rxq_min_ndescs)
 			break;
 	if (id + (1 << size) >= encp->enc_buftbl_limit) {
 		rc = EINVAL;
-		goto fail3;
+		goto fail2;
 	}
 
 	switch (type) {
 	case EFX_RXQ_TYPE_DEFAULT:
+		erp->er_buf_size = type_data->ertd_default.ed_buf_size;
 		break;
 
 	default:
 		rc = EINVAL;
-		goto fail4;
+		goto fail3;
 	}
 
 	if (flags & EFX_RXQ_FLAG_SCATTER) {
@@ -1625,7 +1657,7 @@ siena_rx_qcreate(
 		jumbo = B_TRUE;
 #else
 		rc = EINVAL;
-		goto fail5;
+		goto fail4;
 #endif	/* EFSYS_OPT_RX_SCATTER */
 	}
 
@@ -1645,11 +1677,9 @@ siena_rx_qcreate(
 	return (0);
 
 #if !EFSYS_OPT_RX_SCATTER
-fail5:
-	EFSYS_PROBE(fail5);
-#endif
 fail4:
 	EFSYS_PROBE(fail4);
+#endif
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:

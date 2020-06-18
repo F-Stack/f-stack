@@ -30,7 +30,7 @@ sfc_dma_alloc(const struct sfc_adapter *sa, const char *name, uint16_t id,
 {
 	const struct rte_memzone *mz;
 
-	sfc_log_init(sa, "name=%s id=%u len=%lu socket_id=%d",
+	sfc_log_init(sa, "name=%s id=%u len=%zu socket_id=%d",
 		     name, id, len, socket_id);
 
 	mz = rte_eth_dma_zone_reserve(sa->eth_dev, name, id, len,
@@ -148,7 +148,8 @@ sfc_check_conf(struct sfc_adapter *sa)
 		rc = EINVAL;
 	}
 
-	if (conf->intr_conf.rxq != 0) {
+	if (conf->intr_conf.rxq != 0 &&
+	    (sa->priv.dp_rx->features & SFC_DP_RX_FEAT_INTR) == 0) {
 		sfc_err(sa, "Receive queue interrupt not supported");
 		rc = EINVAL;
 	}
@@ -265,6 +266,7 @@ sfc_set_drv_limits(struct sfc_adapter *sa)
 static int
 sfc_set_fw_subvariant(struct sfc_adapter *sa)
 {
+	struct sfc_adapter_shared *sas = sfc_sa2shared(sa);
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
 	uint64_t tx_offloads = sa->eth_dev->data->dev_conf.txmode.offloads;
 	unsigned int txq_index;
@@ -277,11 +279,11 @@ sfc_set_fw_subvariant(struct sfc_adapter *sa)
 		return 0;
 	}
 
-	for (txq_index = 0; txq_index < sa->txq_count; ++txq_index) {
-		struct sfc_txq_info *txq_info = &sa->txq_info[txq_index];
+	for (txq_index = 0; txq_index < sas->txq_count; ++txq_index) {
+		struct sfc_txq_info *txq_info = &sas->txq_info[txq_index];
 
-		if (txq_info->txq != NULL)
-			tx_offloads |= txq_info->txq->offloads;
+		if (txq_info->state & SFC_TXQ_INITIALIZED)
+			tx_offloads |= txq_info->offloads;
 	}
 
 	if (tx_offloads & (DEV_TX_OFFLOAD_IPV4_CKSUM |
@@ -341,6 +343,15 @@ sfc_try_start(struct sfc_adapter *sa)
 		goto fail_nic_init;
 
 	encp = efx_nic_cfg_get(sa->nic);
+
+	/*
+	 * Refresh (since it may change on NIC reset/restart) a copy of
+	 * supported tunnel encapsulations in shared memory to be used
+	 * on supported Rx packet type classes get.
+	 */
+	sa->priv.shared->tunnel_encaps =
+		encp->enc_tunnel_encapsulations_supported;
+
 	if (encp->enc_tunnel_encapsulations_supported != 0) {
 		sfc_log_init(sa, "apply tunnel config");
 		rc = efx_tunnel_reconfigure(sa->nic);
@@ -641,7 +652,7 @@ static const uint8_t default_rss_key[EFX_RSS_KEY_SIZE] = {
 static int
 sfc_rss_attach(struct sfc_adapter *sa)
 {
-	struct sfc_rss *rss = &sa->rss;
+	struct sfc_rss *rss = &sfc_sa2shared(sa)->rss;
 	int rc;
 
 	rc = efx_intr_init(sa->nic, sa->intr.type, NULL);
@@ -727,11 +738,26 @@ sfc_attach(struct sfc_adapter *sa)
 
 	encp = efx_nic_cfg_get(sa->nic);
 
-	if (sa->dp_tx->features & SFC_DP_TX_FEAT_TSO) {
+	/*
+	 * Make a copy of supported tunnel encapsulations in shared
+	 * memory to be used on supported Rx packet type classes get.
+	 */
+	sa->priv.shared->tunnel_encaps =
+		encp->enc_tunnel_encapsulations_supported;
+
+	if (sfc_dp_tx_offload_capa(sa->priv.dp_tx) & DEV_TX_OFFLOAD_TCP_TSO) {
 		sa->tso = encp->enc_fw_assisted_tso_v2_enabled;
 		if (!sa->tso)
-			sfc_warn(sa,
-				 "TSO support isn't available on this adapter");
+			sfc_info(sa, "TSO support isn't available on this adapter");
+	}
+
+	if (sa->tso &&
+	    (sfc_dp_tx_offload_capa(sa->priv.dp_tx) &
+	     (DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+	      DEV_TX_OFFLOAD_GENEVE_TNL_TSO)) != 0) {
+		sa->tso_encap = encp->enc_fw_assisted_tso_v2_encap_enabled;
+		if (!sa->tso_encap)
+			sfc_info(sa, "Encapsulated TSO support isn't available on this adapter");
 	}
 
 	sfc_log_init(sa, "estimate resource limits");
@@ -739,8 +765,23 @@ sfc_attach(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_estimate_rsrc_limits;
 
+	sa->evq_max_entries = encp->enc_evq_max_nevs;
+	SFC_ASSERT(rte_is_power_of_2(sa->evq_max_entries));
+
+	sa->evq_min_entries = encp->enc_evq_min_nevs;
+	SFC_ASSERT(rte_is_power_of_2(sa->evq_min_entries));
+
+	sa->rxq_max_entries = encp->enc_rxq_max_ndescs;
+	SFC_ASSERT(rte_is_power_of_2(sa->rxq_max_entries));
+
+	sa->rxq_min_entries = encp->enc_rxq_min_ndescs;
+	SFC_ASSERT(rte_is_power_of_2(sa->rxq_min_entries));
+
 	sa->txq_max_entries = encp->enc_txq_max_ndescs;
 	SFC_ASSERT(rte_is_power_of_2(sa->txq_max_entries));
+
+	sa->txq_min_entries = encp->enc_txq_min_ndescs;
+	SFC_ASSERT(rte_is_power_of_2(sa->txq_min_entries));
 
 	rc = sfc_intr_attach(sa);
 	if (rc != 0)
@@ -1083,12 +1124,12 @@ sfc_register_logtype(const struct rte_pci_addr *pci_addr,
 		++lt_prefix_str_size; /* Reserve space for prefix separator */
 		lt_str_size_max = lt_prefix_str_size + PCI_PRI_STR_SIZE + 1;
 	} else {
-		return RTE_LOGTYPE_PMD;
+		return sfc_logtype_driver;
 	}
 
 	lt_str = rte_zmalloc("logtype_str", lt_str_size_max, 0);
 	if (lt_str == NULL)
-		return RTE_LOGTYPE_PMD;
+		return sfc_logtype_driver;
 
 	strncpy(lt_str, lt_prefix_str, lt_prefix_str_size);
 	lt_str[lt_prefix_str_size - 1] = '.';
@@ -1099,5 +1140,8 @@ sfc_register_logtype(const struct rte_pci_addr *pci_addr,
 	ret = rte_log_register_type_and_pick_level(lt_str, ll_default);
 	rte_free(lt_str);
 
-	return (ret < 0) ? RTE_LOGTYPE_PMD : ret;
+	if (ret < 0)
+		return sfc_logtype_driver;
+
+	return ret;
 }

@@ -42,20 +42,27 @@
 #define qede_stringify(x...)		qede_stringify1(x)
 
 /* Driver versions */
+#define QEDE_PMD_DRV_VER_STR_SIZE NAME_SIZE /* 128 */
 #define QEDE_PMD_VER_PREFIX		"QEDE PMD"
 #define QEDE_PMD_VERSION_MAJOR		2
-#define QEDE_PMD_VERSION_MINOR	        10
-#define QEDE_PMD_VERSION_REVISION       0
+#define QEDE_PMD_VERSION_MINOR	        11
+#define QEDE_PMD_VERSION_REVISION       3
 #define QEDE_PMD_VERSION_PATCH	        1
 
-#define QEDE_PMD_VERSION qede_stringify(QEDE_PMD_VERSION_MAJOR) "."     \
-			 qede_stringify(QEDE_PMD_VERSION_MINOR) "."     \
-			 qede_stringify(QEDE_PMD_VERSION_REVISION) "."  \
-			 qede_stringify(QEDE_PMD_VERSION_PATCH)
+#define QEDE_PMD_DRV_VERSION qede_stringify(QEDE_PMD_VERSION_MAJOR) "."     \
+			     qede_stringify(QEDE_PMD_VERSION_MINOR) "."     \
+			     qede_stringify(QEDE_PMD_VERSION_REVISION) "."  \
+			     qede_stringify(QEDE_PMD_VERSION_PATCH)
 
-#define QEDE_PMD_DRV_VER_STR_SIZE NAME_SIZE
-#define QEDE_PMD_VER_PREFIX "QEDE PMD"
+#define QEDE_PMD_BASE_VERSION qede_stringify(ECORE_MAJOR_VERSION) "."       \
+			      qede_stringify(ECORE_MINOR_VERSION) "."       \
+			      qede_stringify(ECORE_REVISION_VERSION) "."    \
+			      qede_stringify(ECORE_ENGINEERING_VERSION)
 
+#define QEDE_PMD_FW_VERSION qede_stringify(FW_MAJOR_VERSION) "."            \
+			    qede_stringify(FW_MINOR_VERSION) "."            \
+			    qede_stringify(FW_REVISION_VERSION) "."         \
+			    qede_stringify(FW_ENGINEERING_VERSION)
 
 #define QEDE_RSS_INDIR_INITED     (1 << 0)
 #define QEDE_RSS_KEY_INITED       (1 << 1)
@@ -66,8 +73,8 @@
 					(edev)->dev_info.num_tc)
 
 #define QEDE_QUEUE_CNT(qdev) ((qdev)->num_queues)
-#define QEDE_RSS_COUNT(qdev) ((qdev)->num_rx_queues)
-#define QEDE_TSS_COUNT(qdev) ((qdev)->num_tx_queues)
+#define QEDE_RSS_COUNT(dev) ((dev)->data->nb_rx_queues)
+#define QEDE_TSS_COUNT(dev) ((dev)->data->nb_tx_queues)
 
 #define QEDE_DUPLEX_FULL	1
 #define QEDE_DUPLEX_HALF	2
@@ -140,12 +147,12 @@ struct qede_vlan_entry {
 };
 
 struct qede_mcast_entry {
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 	SLIST_ENTRY(qede_mcast_entry) list;
 };
 
 struct qede_ucast_entry {
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 	uint16_t vlan;
 	uint16_t vni;
 	SLIST_ENTRY(qede_ucast_entry) list;
@@ -179,6 +186,7 @@ struct qede_arfs_entry {
 	uint32_t soft_id; /* unused for now */
 	uint16_t pkt_len; /* actual packet length to match */
 	uint16_t rx_queue; /* queue to be steered to */
+	bool is_drop; /* drop action */
 	const struct rte_memzone *mz; /* mz used to hold L2 frame */
 	struct qede_arfs_tuple tuple;
 	SLIST_ENTRY(qede_arfs_entry) list;
@@ -215,7 +223,9 @@ struct qede_dev {
 	struct qed_dev_eth_info dev_info;
 	struct ecore_sb_info *sb_array;
 	struct qede_fastpath *fp_array;
+	struct qede_fastpath_cmt *fp_array_cmt;
 	uint16_t mtu;
+	uint16_t new_mtu;
 	bool enable_tx_switching;
 	bool rss_enable;
 	struct rte_eth_rss_conf rss_conf;
@@ -228,7 +238,7 @@ struct qede_dev {
 	SLIST_HEAD(vlan_list_head, qede_vlan_entry)vlan_list_head;
 	uint16_t configured_vlans;
 	bool accept_any_vlan;
-	struct ether_addr primary_mac;
+	struct rte_ether_addr primary_mac;
 	SLIST_HEAD(mc_list_head, qede_mcast_entry) mc_list_head;
 	uint16_t num_mc_addr;
 	SLIST_HEAD(uc_list_head, qede_ucast_entry) uc_list_head;

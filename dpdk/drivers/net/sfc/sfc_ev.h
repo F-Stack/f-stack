@@ -20,9 +20,6 @@
 extern "C" {
 #endif
 
-/* Number of entries in the management event queue */
-#define SFC_MGMT_EVQ_ENTRIES	(EFX_EVQ_MINNEVS)
-
 struct sfc_adapter;
 struct sfc_dp_rxq;
 struct sfc_dp_txq;
@@ -49,6 +46,7 @@ struct sfc_evq {
 	efx_evq_t			*common;
 	const efx_ev_callbacks_t	*callbacks;
 	unsigned int			read_ptr;
+	unsigned int			read_ptr_primed;
 	boolean_t			exception;
 	efsys_mem_t			mem;
 	struct sfc_dp_rxq		*dp_rxq;

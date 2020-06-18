@@ -18,7 +18,7 @@
 struct bnxt_tx_ring_info {
 	uint16_t		tx_prod;
 	uint16_t		tx_cons;
-	void			*tx_doorbell;
+	struct bnxt_db_info     tx_db;
 
 	struct tx_bd_long	*tx_desc_ring;
 	struct bnxt_sw_tx_bd	*tx_buf_ring;
@@ -37,11 +37,33 @@ struct bnxt_sw_tx_bd {
 	unsigned short		nr_bds;
 };
 
+static inline uint32_t bnxt_tx_bds_in_hw(struct bnxt_tx_queue *txq)
+{
+	return ((txq->tx_ring->tx_prod - txq->tx_ring->tx_cons) &
+		txq->tx_ring->tx_ring_struct->ring_mask);
+}
+
+static inline uint32_t bnxt_tx_avail(struct bnxt_tx_queue *txq)
+{
+	/* Tell compiler to fetch tx indices from memory. */
+	rte_compiler_barrier();
+
+	return ((txq->tx_ring->tx_ring_struct->ring_size -
+		 bnxt_tx_bds_in_hw(txq)) - 1);
+}
+
 void bnxt_free_tx_rings(struct bnxt *bp);
 int bnxt_init_one_tx_ring(struct bnxt_tx_queue *txq);
 int bnxt_init_tx_ring_struct(struct bnxt_tx_queue *txq, unsigned int socket_id);
 uint16_t bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			       uint16_t nb_pkts);
+uint16_t bnxt_dummy_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+			      uint16_t nb_pkts);
+#ifdef RTE_ARCH_X86
+uint16_t bnxt_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+			    uint16_t nb_pkts);
+#endif
+
 int bnxt_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 int bnxt_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 

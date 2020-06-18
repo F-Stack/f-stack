@@ -53,6 +53,8 @@
 
 #define IXGBE_TX_MAX_SEG                    40
 
+#define IXGBE_TX_MIN_PKT_LEN		     14
+
 #define IXGBE_PACKET_TYPE_MASK_82599        0X7F
 #define IXGBE_PACKET_TYPE_MASK_X550         0X10FF
 #define IXGBE_PACKET_TYPE_MASK_TUNNEL       0XFF
@@ -276,6 +278,7 @@ void ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ixgbe_tx_queue *txq);
  */
 void ixgbe_set_rx_function(struct rte_eth_dev *dev);
 
+int ixgbe_check_supported_loopback_mode(struct rte_eth_dev *dev);
 uint16_t ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
 uint16_t ixgbe_recv_scattered_pkts_vec(void *rx_queue,

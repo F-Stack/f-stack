@@ -20,6 +20,7 @@
 #define DEFAULT_BURST 32U
 #define DEFAULT_OPS 64U
 
+
 #define TEST_ASSERT(cond, msg, ...) do {  \
 		if (!(cond)) {  \
 			printf("TestCase %s() line %d failed: " \
@@ -116,5 +117,7 @@ unsigned int get_num_ops(void);
 unsigned int get_burst_sz(void);
 
 unsigned int get_num_lcores(void);
+
+bool get_init_device(void);
 
 #endif

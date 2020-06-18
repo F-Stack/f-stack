@@ -806,12 +806,11 @@ enic_noscatter_vec_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 }
 
 bool
-enic_use_vector_rx_handler(struct enic *enic)
+enic_use_vector_rx_handler(struct rte_eth_dev *eth_dev)
 {
-	struct rte_eth_dev *eth_dev;
+	struct enic *enic = pmd_priv(eth_dev);
 	struct rte_fdir_conf *fconf;
 
-	eth_dev = enic->rte_dev;
 	/* User needs to request for the avx2 handler */
 	if (!enic->enable_avx2_rx)
 		return false;
@@ -823,7 +822,7 @@ enic_use_vector_rx_handler(struct enic *enic)
 	if (fconf->mode != RTE_FDIR_MODE_NONE)
 		return false;
 	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2)) {
-		PMD_INIT_LOG(DEBUG, " use the non-scatter avx2 Rx handler");
+		ENICPMD_LOG(DEBUG, " use the non-scatter avx2 Rx handler");
 		eth_dev->rx_pkt_burst = &enic_noscatter_vec_recv_pkts;
 		return true;
 	}

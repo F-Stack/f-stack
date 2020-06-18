@@ -10,11 +10,15 @@
 #include "efx.h"
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
-#include "efx_mcdi.h"
 
 #ifdef	__cplusplus
 extern "C" {
 #endif
+
+#define	HUNT_TXQ_MAXNDESCS			4096
+#define	HUNT_TXQ_MAXNDESCS_BUG35388_WORKAROUND	2048
+
+#define	HUNT_EVQ_MAXNBUFS	(64)
 
 /* Missing register definitions */
 #ifndef	ER_DZ_TX_PIOBUF_OFST

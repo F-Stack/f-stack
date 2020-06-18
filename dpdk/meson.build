@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2017 Intel Corporation
+# Copyright(c) 2017-2019 Intel Corporation
 
 project('DPDK', 'C',
-	version: '18.11.5',
+	# Get version number from file.
+	# Fallback to "more" for Windows compatibility.
+	version: run_command(find_program('cat', 'more'),
+		files('VERSION')).stdout().strip(),
 	license: 'BSD',
 	default_options: ['buildtype=release', 'default_library=static'],
-	meson_version: '>= 0.41'
+	meson_version: '>= 0.47.1'
 )
 
 # set up some global vars for compiler, platform, configuration, etc.
@@ -13,45 +16,38 @@ cc = meson.get_compiler('c')
 dpdk_conf = configuration_data()
 dpdk_libraries = []
 dpdk_static_libraries = []
+dpdk_driver_classes = []
 dpdk_drivers = []
 dpdk_extra_ldflags = []
 dpdk_app_link_libraries = []
-
-# set the major version, which might be used by drivers and libraries
-# depending on the configuration options
-pver = meson.project_version().split('.')
-major_version = '@0@.@1@'.format(pver.get(0), pver.get(1))
-
-pmd_subdir_opt = get_option('drivers_install_subdir')
-if pmd_subdir_opt.contains('<VERSION>')
-	pmd_subdir_opt = major_version.join(pmd_subdir_opt.split('<VERSION>'))
-endif
-driver_install_path = join_paths(get_option('libdir'), pmd_subdir_opt)
-eal_pmd_path = join_paths(get_option('prefix'), driver_install_path)
+dpdk_libs_disabled = []
+dpdk_drvs_disabled = []
+abi_version_file = files('ABI_VERSION')
 
 # configure the build, and make sure configs here and in config folder are
 # able to be included in any file. We also store a global array of include dirs
 # for passing to pmdinfogen scripts
-global_inc = include_directories('.', 'config')
+global_inc = include_directories('.', 'config',
+	'lib/librte_eal/common/include',
+	'lib/librte_eal/@0@/eal/include'.format(host_machine.system()),
+)
 subdir('config')
 
 # build libs and drivers
-subdir('lib')
 subdir('buildtools')
+subdir('lib')
 subdir('drivers')
 
 # build binaries and installable tools
 subdir('usertools')
 subdir('app')
-subdir('test')
 
 # build docs
 subdir('doc')
 
-# build any examples explicitly requested - useful for developers
-if get_option('examples') != ''
-	subdir('examples')
-endif
+# build any examples explicitly requested - useful for developers - and
+# install any example code into the appropriate install path
+subdir('examples')
 
 # build kernel modules if enabled
 if get_option('enable_kmods')
@@ -71,7 +67,7 @@ dpdk_drivers = ['-Wl,--whole-archive'] + dpdk_drivers + ['-Wl,--no-whole-archive
 
 pkg = import('pkgconfig')
 pkg_extra_cflags = ['-include', 'rte_config.h'] + machine_args
-if host_machine.system() == 'freebsd'
+if is_freebsd
 	pkg_extra_cflags += ['-D__BSD_VISIBLE']
 endif
 pkg.generate(name: meson.project_name(),
@@ -80,6 +76,8 @@ pkg.generate(name: meson.project_name(),
 	libraries: dpdk_libraries,
 	libraries_private: dpdk_drivers + dpdk_static_libraries +
 			['-Wl,-Bdynamic'] + dpdk_extra_ldflags,
+	requires: libbsd, # apps using rte_string_fns.h may need this if enabled
+	                  # if libbsd is not enabled, then this is blank
 	description: '''The Data Plane Development Kit (DPDK).
 Note that CFLAGS might contain an -march flag higher than typical baseline.
 This is required for a number of static inline functions in the public headers.''',
@@ -102,23 +100,31 @@ foreach lib:enabled_libs
 endforeach
 message(output_message + '\n')
 
-
-# prior to 0.47 set_variable didn't work with arrays, so we can't
-# track driver lists easily
-if meson.version().version_compare('>=0.47')
-	output_message = '\n===============\nDrivers Enabled\n===============\n'
-	foreach class:driver_classes
-		class_drivers = get_variable(class + '_drivers')
-		output_message += '\n' + class + ':\n\t'
-		output_count = 0
-		foreach drv:class_drivers
-			output_message += drv + ', '
-			output_count += 1
-			if output_count == 8
-				output_message += '\n\t'
-				output_count = 0
-			endif
-		endforeach
+output_message = '\n===============\nDrivers Enabled\n===============\n'
+foreach class:dpdk_driver_classes
+	class_drivers = get_variable(class + '_drivers')
+	output_message += '\n' + class + ':\n\t'
+	output_count = 0
+	foreach drv:class_drivers
+		output_message += drv + ', '
+		output_count += 1
+		if output_count == 8
+			output_message += '\n\t'
+			output_count = 0
+		endif
 	endforeach
-	message(output_message + '\n')
-endif
+endforeach
+message(output_message + '\n')
+
+output_message = '\n=================\nContent Skipped\n=================\n'
+output_message += '\nlibs:\n\t'
+foreach lib:dpdk_libs_disabled
+	reason = get_variable(lib.underscorify() + '_disable_reason')
+	output_message += lib + ':\t' + reason + '\n\t'
+endforeach
+output_message += '\ndrivers:\n\t'
+foreach drv:dpdk_drvs_disabled
+	reason = get_variable(drv.underscorify() + '_disable_reason')
+	output_message += drv + ':\t' + reason + '\n\t'
+endforeach
+message(output_message + '\n')

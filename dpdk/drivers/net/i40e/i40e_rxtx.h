@@ -32,6 +32,13 @@
 
 #define I40E_TX_MIN_PKT_LEN 17
 
+/* Shared FDIR masks between scalar / vector drivers */
+#define I40E_RX_DESC_EXT_STATUS_FLEXBH_MASK   0x03
+#define I40E_RX_DESC_EXT_STATUS_FLEXBH_FD_ID  0x01
+#define I40E_RX_DESC_EXT_STATUS_FLEXBH_FLEX   0x02
+#define I40E_RX_DESC_EXT_STATUS_FLEXBL_MASK   0x03
+#define I40E_RX_DESC_EXT_STATUS_FLEXBL_FLEX   0x01
+
 #undef container_of
 #define container_of(ptr, type, member) ({ \
 		typeof(((type *)0)->member)(*__mptr) = (ptr); \
@@ -96,6 +103,7 @@ struct i40e_rx_queue {
 
 	uint16_t port_id; /**< device port ID */
 	uint8_t crc_len; /**< 0 if CRC stripped, 4 otherwise */
+	uint8_t fdir_enabled; /**< 0 if FDIR disabled, 1 when enabled */
 	uint16_t queue_id; /**< RX queue index */
 	uint16_t reg_idx; /**< RX queue register index */
 	uint8_t drop_en; /**< if not 0, set register bit */

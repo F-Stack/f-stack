@@ -87,11 +87,6 @@
 #define rte_ixgbe_prefetch(p)   do {} while (0)
 #endif
 
-#ifdef RTE_IXGBE_INC_VECTOR
-uint16_t ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
-				    uint16_t nb_pkts);
-#endif
-
 /*********************************************************************
  *
  *  TX functions
@@ -422,21 +417,24 @@ ixgbe_set_xmit_ctx(struct ixgbe_tx_queue *txq,
 		case PKT_TX_UDP_CKSUM:
 			type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_L4T_UDP |
 				IXGBE_ADVTXD_DTYP_CTXT | IXGBE_ADVTXD_DCMD_DEXT;
-			mss_l4len_idx |= sizeof(struct udp_hdr) << IXGBE_ADVTXD_L4LEN_SHIFT;
+			mss_l4len_idx |= sizeof(struct rte_udp_hdr)
+				<< IXGBE_ADVTXD_L4LEN_SHIFT;
 			tx_offload_mask.l2_len |= ~0;
 			tx_offload_mask.l3_len |= ~0;
 			break;
 		case PKT_TX_TCP_CKSUM:
 			type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_L4T_TCP |
 				IXGBE_ADVTXD_DTYP_CTXT | IXGBE_ADVTXD_DCMD_DEXT;
-			mss_l4len_idx |= sizeof(struct tcp_hdr) << IXGBE_ADVTXD_L4LEN_SHIFT;
+			mss_l4len_idx |= sizeof(struct rte_tcp_hdr)
+				<< IXGBE_ADVTXD_L4LEN_SHIFT;
 			tx_offload_mask.l2_len |= ~0;
 			tx_offload_mask.l3_len |= ~0;
 			break;
 		case PKT_TX_SCTP_CKSUM:
 			type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_L4T_SCTP |
 				IXGBE_ADVTXD_DTYP_CTXT | IXGBE_ADVTXD_DCMD_DEXT;
-			mss_l4len_idx |= sizeof(struct sctp_hdr) << IXGBE_ADVTXD_L4LEN_SHIFT;
+			mss_l4len_idx |= sizeof(struct rte_sctp_hdr)
+				<< IXGBE_ADVTXD_L4LEN_SHIFT;
 			tx_offload_mask.l2_len |= ~0;
 			tx_offload_mask.l3_len |= ~0;
 			break;
@@ -987,6 +985,12 @@ ixgbe_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		if (ol_flags & IXGBE_TX_OFFLOAD_NOTSUP_MASK) {
 			rte_errno = ENOTSUP;
+			return i;
+		}
+
+		/* check the size of packet */
+		if (m->pkt_len < IXGBE_TX_MIN_PKT_LEN) {
+			rte_errno = EINVAL;
 			return i;
 		}
 
@@ -2869,7 +2873,8 @@ ixgbe_get_rx_port_offloads(struct rte_eth_dev *dev)
 		   DEV_RX_OFFLOAD_KEEP_CRC    |
 		   DEV_RX_OFFLOAD_JUMBO_FRAME |
 		   DEV_RX_OFFLOAD_VLAN_FILTER |
-		   DEV_RX_OFFLOAD_SCATTER;
+		   DEV_RX_OFFLOAD_SCATTER |
+		   DEV_RX_OFFLOAD_RSS_HASH;
 
 	if (hw->mac.type == ixgbe_mac_82598EB)
 		offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
@@ -2954,7 +2959,7 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 		queue_idx : RTE_ETH_DEV_SRIOV(dev).def_pool_q_idx + queue_idx);
 	rxq->port_id = dev->data->port_id;
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
-		rxq->crc_len = ETHER_CRC_LEN;
+		rxq->crc_len = RTE_ETHER_CRC_LEN;
 	else
 		rxq->crc_len = 0;
 	rxq->drop_en = rx_conf->rx_drop_en;
@@ -3182,11 +3187,43 @@ ixgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset)
 	return RTE_ETH_TX_DESC_FULL;
 }
 
+/*
+ * Set up link loopback for X540/X550 mode Tx->Rx.
+ */
+static inline void __attribute__((cold))
+ixgbe_setup_loopback_link_x540_x550(struct ixgbe_hw *hw, bool enable)
+{
+	uint32_t macc;
+	PMD_INIT_FUNC_TRACE();
+
+	u16 autoneg_reg = IXGBE_MII_AUTONEG_REG;
+
+	hw->phy.ops.read_reg(hw, IXGBE_MDIO_AUTO_NEG_CONTROL,
+			     IXGBE_MDIO_AUTO_NEG_DEV_TYPE, &autoneg_reg);
+	macc = IXGBE_READ_REG(hw, IXGBE_MACC);
+
+	if (enable) {
+		/* datasheet 15.2.1: disable AUTONEG (PHY Bit 7.0.C) */
+		autoneg_reg |= IXGBE_MII_AUTONEG_ENABLE;
+		/* datasheet 15.2.1: MACC.FLU = 1 (force link up) */
+		macc |= IXGBE_MACC_FLU;
+	} else {
+		autoneg_reg &= ~IXGBE_MII_AUTONEG_ENABLE;
+		macc &= ~IXGBE_MACC_FLU;
+	}
+
+	hw->phy.ops.write_reg(hw, IXGBE_MDIO_AUTO_NEG_CONTROL,
+			      IXGBE_MDIO_AUTO_NEG_DEV_TYPE, autoneg_reg);
+
+	IXGBE_WRITE_REG(hw, IXGBE_MACC, macc);
+}
+
 void __attribute__((cold))
 ixgbe_dev_clear_queues(struct rte_eth_dev *dev)
 {
 	unsigned i;
 	struct ixgbe_adapter *adapter = dev->data->dev_private;
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -3206,6 +3243,14 @@ ixgbe_dev_clear_queues(struct rte_eth_dev *dev)
 			ixgbe_rx_queue_release_mbufs(rxq);
 			ixgbe_reset_rx_queue(adapter, rxq);
 		}
+	}
+	/* If loopback mode was enabled, reconfigure the link accordingly */
+	if (dev->data->dev_conf.lpbk_mode != 0) {
+		if (hw->mac.type == ixgbe_mac_X540 ||
+		     hw->mac.type == ixgbe_mac_X550 ||
+		     hw->mac.type == ixgbe_mac_X550EM_x ||
+		     hw->mac.type == ixgbe_mac_X550EM_a)
+			ixgbe_setup_loopback_link_x540_x550(hw, false);
 	}
 }
 
@@ -3938,7 +3983,8 @@ ixgbe_dcb_hw_configure(struct rte_eth_dev *dev,
 	uint16_t max[IXGBE_DCB_MAX_TRAFFIC_CLASS] = {0};
 	uint8_t map[IXGBE_DCB_MAX_TRAFFIC_CLASS] = {0};
 	struct ixgbe_dcb_tc_config *tc;
-	uint32_t max_frame = dev->data->mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
+	uint32_t max_frame = dev->data->mtu + RTE_ETHER_HDR_LEN +
+		RTE_ETHER_CRC_LEN;
 	struct ixgbe_hw *hw =
 			IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_bw_conf *bw_conf =
@@ -4510,7 +4556,7 @@ ixgbe_get_rscctl_maxdesc(struct rte_mempool *pool)
 
 	/* MAXDESC * SRRCTL.BSIZEPKT must not exceed 64 KB minus one */
 	uint16_t maxdesc =
-		IPV4_MAX_PKT_LEN /
+		RTE_IPV4_MAX_PKT_LEN /
 			(mp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM);
 
 	if (maxdesc >= 16)
@@ -4891,13 +4937,18 @@ ixgbe_dev_rx_init(struct rte_eth_dev *dev)
 		hlreg0 &= ~IXGBE_HLREG0_JUMBOEN;
 
 	/*
-	 * If loopback mode is configured for 82599, set LPBK bit.
+	 * If loopback mode is configured, set LPBK bit.
 	 */
-	if (hw->mac.type == ixgbe_mac_82599EB &&
-			dev->data->dev_conf.lpbk_mode == IXGBE_LPBK_82599_TX_RX)
+	if (dev->data->dev_conf.lpbk_mode != 0) {
+		rc = ixgbe_check_supported_loopback_mode(dev);
+		if (rc < 0) {
+			PMD_INIT_LOG(ERR, "Unsupported loopback mode");
+			return rc;
+		}
 		hlreg0 |= IXGBE_HLREG0_LPBK;
-	else
+	} else {
 		hlreg0 &= ~IXGBE_HLREG0_LPBK;
+	}
 
 	IXGBE_WRITE_REG(hw, IXGBE_HLREG0, hlreg0);
 
@@ -4915,7 +4966,7 @@ ixgbe_dev_rx_init(struct rte_eth_dev *dev)
 		 * call to configure.
 		 */
 		if (rx_conf->offloads & DEV_RX_OFFLOAD_KEEP_CRC)
-			rxq->crc_len = ETHER_CRC_LEN;
+			rxq->crc_len = RTE_ETHER_CRC_LEN;
 		else
 			rxq->crc_len = 0;
 
@@ -5074,6 +5125,25 @@ ixgbe_dev_tx_init(struct rte_eth_dev *dev)
 }
 
 /*
+ * Check if requested loopback mode is supported
+ */
+int
+ixgbe_check_supported_loopback_mode(struct rte_eth_dev *dev)
+{
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	if (dev->data->dev_conf.lpbk_mode == IXGBE_LPBK_TX_RX)
+		if (hw->mac.type == ixgbe_mac_82599EB ||
+		     hw->mac.type == ixgbe_mac_X540 ||
+		     hw->mac.type == ixgbe_mac_X550 ||
+		     hw->mac.type == ixgbe_mac_X550EM_x ||
+		     hw->mac.type == ixgbe_mac_X550EM_a)
+			return 0;
+
+	return -ENOTSUP;
+}
+
+/*
  * Set up link for 82599 loopback mode Tx->Rx.
  */
 static inline void __attribute__((cold))
@@ -5160,10 +5230,16 @@ ixgbe_dev_rxtx_start(struct rte_eth_dev *dev)
 	rxctrl |= IXGBE_RXCTRL_RXEN;
 	hw->mac.ops.enable_rx_dma(hw, rxctrl);
 
-	/* If loopback mode is enabled for 82599, set up the link accordingly */
-	if (hw->mac.type == ixgbe_mac_82599EB &&
-			dev->data->dev_conf.lpbk_mode == IXGBE_LPBK_82599_TX_RX)
-		ixgbe_setup_loopback_link_82599(hw);
+	/* If loopback mode is enabled, set up the link accordingly */
+	if (dev->data->dev_conf.lpbk_mode != 0) {
+		if (hw->mac.type == ixgbe_mac_82599EB)
+			ixgbe_setup_loopback_link_82599(hw);
+		else if (hw->mac.type == ixgbe_mac_X540 ||
+		     hw->mac.type == ixgbe_mac_X550 ||
+		     hw->mac.type == ixgbe_mac_X550EM_x ||
+		     hw->mac.type == ixgbe_mac_X550EM_a)
+			ixgbe_setup_loopback_link_x540_x550(hw, true);
+	}
 
 #ifdef RTE_LIBRTE_SECURITY
 	if ((dev->data->dev_conf.rxmode.offloads &

@@ -201,14 +201,12 @@ Config File Options
 The following options can be modified in the ``config`` file.
 Please note that enabling debugging options may affect system performance.
 
-- ``CONFIG_RTE_LIBRTE_DPAA_BUS`` (default ``n``)
+- ``CONFIG_RTE_LIBRTE_DPAA_BUS`` (default ``y``)
 
-  By default it is enabled only for defconfig_arm64-dpaa-* config.
   Toggle compilation of the ``librte_bus_dpaa`` driver.
 
-- ``CONFIG_RTE_LIBRTE_DPAA_PMD`` (default ``n``)
+- ``CONFIG_RTE_LIBRTE_DPAA_PMD`` (default ``y``)
 
-  By default it is enabled only for defconfig_arm64-dpaa-* config.
   Toggle compilation of the ``librte_pmd_dpaa`` driver.
 
 - ``CONFIG_RTE_LIBRTE_DPAA_DEBUG_DRIVER`` (default ``n``)
@@ -222,12 +220,6 @@ Please note that enabling debugging options may affect system performance.
   Enables debugging of the Queue and Buffer Manager layer which interacts
   with the DPAA hardware.
 
-- ``CONFIG_RTE_MBUF_DEFAULT_MEMPOOL_OPS`` (default ``dpaa``)
-
-  This is not a DPAA specific configuration - it is a generic RTE config.
-  For optimal performance and hardware utilization, it is expected that DPAA
-  Mempool driver is used for mempools. For that, this configuration needs to
-  enabled.
 
 Environment Variables
 ~~~~~~~~~~~~~~~~~~~~~
@@ -253,6 +245,7 @@ state during application initialization:
   choose to change their number if HW portals are limited.
   The valid values are from '0' to '4'. The values shall be set to '0' if the
   application want to use eventdev with DPAA device.
+  Currently these queues are not used for LS1023/LS1043 platform by default.
 
 
 Driver compilation and testing
@@ -271,7 +264,7 @@ for details.
 
    .. code-block:: console
 
-      ./arm64-dpaa-linuxapp-gcc/testpmd -c 0xff -n 1 \
+      ./arm64-dpaa-linux-gcc/testpmd -c 0xff -n 1 \
         -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
 
       .....

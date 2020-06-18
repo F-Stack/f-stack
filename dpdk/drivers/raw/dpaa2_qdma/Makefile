@@ -6,27 +6,26 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 # library name
 #
-LIB = librte_pmd_dpaa2_qdma.a
+LIB = librte_rawdev_dpaa2_qdma.a
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
-CFLAGS += -I$(RTE_SDK)/lib/librte_eal/linuxapp/eal
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/qbman/include
+CFLAGS += -I$(RTE_SDK)/drivers/common/dpaax
 
 LDLIBS += -lrte_bus_fslmc
 LDLIBS += -lrte_eal
 LDLIBS += -lrte_mempool
 LDLIBS += -lrte_mempool_dpaa2
 LDLIBS += -lrte_rawdev
+LDLIBS += -lrte_kvargs
 LDLIBS += -lrte_ring
 LDLIBS += -lrte_common_dpaax
 
-EXPORT_MAP := rte_pmd_dpaa2_qdma_version.map
-
-LIBABIVER := 2
+EXPORT_MAP := rte_rawdev_dpaa2_qdma_version.map
 
 #
 # all source are stored in SRCS-y

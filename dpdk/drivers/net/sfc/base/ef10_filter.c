@@ -7,7 +7,7 @@
 #include "efx.h"
 #include "efx_impl.h"
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 #if EFSYS_OPT_FILTER
 
@@ -94,9 +94,7 @@ ef10_filter_init(
 	efx_rc_t rc;
 	ef10_filter_table_t *eftp;
 
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-	    enp->en_family == EFX_FAMILY_MEDFORD ||
-	    enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 #define	MATCH_MASK(match) (EFX_MASK32(match) << EFX_LOW_BIT(match))
 	EFX_STATIC_ASSERT(EFX_FILTER_MATCH_REM_HOST ==
@@ -154,9 +152,7 @@ fail1:
 ef10_filter_fini(
 	__in		efx_nic_t *enp)
 {
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-	    enp->en_family == EFX_FAMILY_MEDFORD ||
-	    enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 	if (enp->en_filter.ef_ef10_filter_table != NULL) {
 		EFSYS_KMEM_FREE(enp->en_esip, sizeof (ef10_filter_table_t),
@@ -206,8 +202,7 @@ efx_mcdi_filter_op_add(
 		goto fail1;
 	}
 
-	MCDI_IN_SET_DWORD(req, FILTER_OP_EXT_IN_PORT_ID,
-	    EVB_PORT_ID_ASSIGNED);
+	MCDI_IN_SET_DWORD(req, FILTER_OP_EXT_IN_PORT_ID, enp->en_vport_id);
 	MCDI_IN_SET_DWORD(req, FILTER_OP_EXT_IN_MATCH_FIELDS,
 	    match_flags);
 	if (spec->efs_dmaq_id == EFX_FILTER_SPEC_RX_DMAQ_ID_DROP) {
@@ -545,9 +540,7 @@ ef10_filter_restore(
 	efsys_lock_state_t state;
 	efx_rc_t rc;
 
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-	    enp->en_family == EFX_FAMILY_MEDFORD ||
-	    enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 	for (tbl_id = 0; tbl_id < EFX_EF10_FILTER_TBL_ROWS; tbl_id++) {
 
@@ -621,9 +614,7 @@ ef10_filter_add_internal(
 	efsys_lock_state_t state;
 	boolean_t locked = B_FALSE;
 
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-	    enp->en_family == EFX_FAMILY_MEDFORD ||
-	    enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 	hash = ef10_filter_hash(spec);
 
@@ -894,9 +885,7 @@ ef10_filter_delete(
 	efsys_lock_state_t state;
 	boolean_t locked = B_FALSE;
 
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-	    enp->en_family == EFX_FAMILY_MEDFORD ||
-	    enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 	hash = ef10_filter_hash(spec);
 
@@ -1773,4 +1762,4 @@ ef10_filter_default_rxq_clear(
 
 #endif /* EFSYS_OPT_FILTER */
 
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */

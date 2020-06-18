@@ -13,8 +13,6 @@ LIB = librte_pmd_bnxt.a
 
 EXPORT_MAP := rte_pmd_bnxt_version.map
 
-LIBABIVER := 2
-
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
@@ -41,6 +39,9 @@ SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_vnic.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_irq.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_util.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += rte_pmd_bnxt.c
+ifeq ($(CONFIG_RTE_ARCH_X86), y)
+SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_rxtx_vec_sse.c
+endif
 
 #
 # Export include files

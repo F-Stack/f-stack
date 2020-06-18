@@ -15,6 +15,7 @@
 #include "qat_device.h"
 #include "qat_qp.h"
 #include "qat_sym.h"
+#include "qat_asym.h"
 #include "qat_comp.h"
 #include "adf_transport_access_macros.h"
 
@@ -275,6 +276,7 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 			QAT_LOG(ERR, "QAT PMD Cannot get op_cookie");
 			goto create_err;
 		}
+		memset(qp->op_cookies[i], 0, qat_qp_conf->cookie_size);
 	}
 
 	qp->qat_dev_gen = qat_dev->qat_dev_gen;
@@ -649,7 +651,14 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 			qat_sym_process_response(ops, resp_msg);
 		else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION)
 			qat_comp_process_response(ops, resp_msg,
-					&tmp_qp->stats.dequeue_err_count);
+				tmp_qp->op_cookies[head / rx_queue->msg_size],
+				&tmp_qp->stats.dequeue_err_count);
+		else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC) {
+#ifdef BUILD_QAT_ASYM
+			qat_asym_process_response(ops, resp_msg,
+				tmp_qp->op_cookies[head / rx_queue->msg_size]);
+#endif
+		}
 
 		head = adf_modulo(head + rx_queue->msg_size,
 				  rx_queue->modulo_mask);
@@ -678,6 +687,7 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 
 __rte_weak int
 qat_comp_process_response(void **op __rte_unused, uint8_t *resp __rte_unused,
+			  void *op_cookie __rte_unused,
 			  uint64_t *dequeue_err_count __rte_unused)
 {
 	return  0;

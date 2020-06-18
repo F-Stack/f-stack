@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2014 Intel Corporation
+ * Copyright(c) 2010-2019 Intel Corporation
  */
 
 /**
@@ -17,6 +17,8 @@ extern "C" {
 
 #include <stdio.h>
 #include <string.h>
+
+#include <rte_common.h>
 
 /**
  * Takes string "string" parameter and splits it at character "delim"
@@ -74,7 +76,7 @@ rte_strlcat(char *dst, const char *src, size_t size)
 }
 
 /* pull in a strlcpy function */
-#ifdef RTE_EXEC_ENV_BSDAPP
+#ifdef RTE_EXEC_ENV_FREEBSD
 #ifndef __BSD_VISIBLE /* non-standard functions are hidden */
 #define strlcpy(dst, src, size) rte_strlcpy(dst, src, size)
 #define strlcat(dst, src, size) rte_strlcat(dst, src, size)
@@ -89,7 +91,7 @@ rte_strlcat(char *dst, const char *src, size_t size)
 #define strlcat(dst, src, size) rte_strlcat(dst, src, size)
 
 #endif /* RTE_USE_LIBBSD */
-#endif /* BSDAPP */
+#endif /* FREEBSD */
 
 /**
  * Copy string src to buffer dst of size dsize.

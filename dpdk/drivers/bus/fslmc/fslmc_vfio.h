@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2015-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP
+ *   Copyright 2016,2019 NXP
  *
  */
 
@@ -10,6 +10,8 @@
 
 #include <rte_vfio.h>
 
+/* Pathname of FSL-MC devices directory. */
+#define SYSFS_FSL_MC_DEVICES	"/sys/bus/fsl-mc/devices"
 #define DPAA2_MC_DPNI_DEVID	7
 #define DPAA2_MC_DPSECI_DEVID	3
 #define DPAA2_MC_DPCON_DEVID	5
@@ -38,6 +40,7 @@ typedef struct fslmc_vfio_container {
 	struct fslmc_vfio_group *group;
 } fslmc_vfio_container;
 
+extern char *fslmc_container;
 int rte_dpaa2_intr_enable(struct rte_intr_handle *intr_handle, int index);
 int rte_dpaa2_intr_disable(struct rte_intr_handle *intr_handle, int index);
 
@@ -50,5 +53,7 @@ int fslmc_vfio_process_group(void);
 char *fslmc_get_container(void);
 int fslmc_get_container_group(int *gropuid);
 int rte_fslmc_vfio_dmamap(void);
+__rte_experimental
+int rte_fslmc_vfio_mem_dmamap(uint64_t vaddr, uint64_t iova, uint64_t size);
 
 #endif /* _FSLMC_VFIO_H_ */

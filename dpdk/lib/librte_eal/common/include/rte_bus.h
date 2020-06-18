@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 NXP
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 NXP
  */
 
 #ifndef _RTE_BUS_H_
@@ -168,6 +140,48 @@ typedef int (*rte_bus_unplug_t)(struct rte_device *dev);
 typedef int (*rte_bus_parse_t)(const char *name, void *addr);
 
 /**
+ * Device level DMA map function.
+ * After a successful call, the memory segment will be mapped to the
+ * given device.
+ *
+ * @param dev
+ *	Device pointer.
+ * @param addr
+ *	Virtual address to map.
+ * @param iova
+ *	IOVA address to map.
+ * @param len
+ *	Length of the memory segment being mapped.
+ *
+ * @return
+ *	0 if mapping was successful.
+ *	Negative value and rte_errno is set otherwise.
+ */
+typedef int (*rte_dev_dma_map_t)(struct rte_device *dev, void *addr,
+				  uint64_t iova, size_t len);
+
+/**
+ * Device level DMA unmap function.
+ * After a successful call, the memory segment will no longer be
+ * accessible by the given device.
+ *
+ * @param dev
+ *	Device pointer.
+ * @param addr
+ *	Virtual address to unmap.
+ * @param iova
+ *	IOVA address to unmap.
+ * @param len
+ *	Length of the memory segment being mapped.
+ *
+ * @return
+ *	0 if un-mapping was successful.
+ *	Negative value and rte_errno is set otherwise.
+ */
+typedef int (*rte_dev_dma_unmap_t)(struct rte_device *dev, void *addr,
+				   uint64_t iova, size_t len);
+
+/**
  * Implement a specific hot-unplug handler, which is responsible for
  * handle the failure when device be hot-unplugged. When the event of
  * hot-unplug be detected, it could call this function to handle
@@ -238,6 +252,8 @@ struct rte_bus {
 	rte_bus_plug_t plug;         /**< Probe single device for drivers */
 	rte_bus_unplug_t unplug;     /**< Remove single device from driver */
 	rte_bus_parse_t parse;       /**< Parse a device name */
+	rte_dev_dma_map_t dma_map;   /**< DMA map for device in the bus */
+	rte_dev_dma_unmap_t dma_unmap; /**< DMA unmap for device in the bus */
 	struct rte_bus_conf conf;    /**< Bus configuration */
 	rte_bus_get_iommu_class_t get_iommu_class; /**< Get iommu class */
 	rte_dev_iterate_t dev_iterate; /**< Device iterator. */
@@ -348,7 +364,7 @@ struct rte_bus *rte_bus_find_by_name(const char *busname);
 
 /**
  * Get the common iommu class of devices bound on to buses available in the
- * system. The default mode is PA.
+ * system. RTE_IOVA_DC means that no preference has been expressed.
  *
  * @return
  *     enum rte_iova_mode value.

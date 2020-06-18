@@ -6,17 +6,27 @@
 #ifndef _CXGBE_PFVF_H_
 #define _CXGBE_PFVF_H_
 
+#define CXGBE_FW_PARAM_DEV(param) \
+	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) | \
+	 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_##param))
+
+#define CXGBE_FW_PARAM_PFVF(param) \
+	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_PFVF) | \
+	 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_PFVF_##param) |  \
+	 V_FW_PARAMS_PARAM_Y(0) | \
+	 V_FW_PARAMS_PARAM_Z(0))
+
 void cxgbe_dev_rx_queue_release(void *q);
 void cxgbe_dev_tx_queue_release(void *q);
 void cxgbe_dev_stop(struct rte_eth_dev *eth_dev);
 void cxgbe_dev_close(struct rte_eth_dev *eth_dev);
-void cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
-			struct rte_eth_dev_info *device_info);
-void cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev);
-void cxgbe_dev_promiscuous_disable(struct rte_eth_dev *eth_dev);
-void cxgbe_dev_allmulticast_enable(struct rte_eth_dev *eth_dev);
-void cxgbe_dev_allmulticast_disable(struct rte_eth_dev *eth_dev);
-int cxgbe_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *addr);
+int cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
+		       struct rte_eth_dev_info *device_info);
+int cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev);
+int cxgbe_dev_promiscuous_disable(struct rte_eth_dev *eth_dev);
+int cxgbe_dev_allmulticast_enable(struct rte_eth_dev *eth_dev);
+int cxgbe_dev_allmulticast_disable(struct rte_eth_dev *eth_dev);
+int cxgbe_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *addr);
 int cxgbe_dev_configure(struct rte_eth_dev *eth_dev);
 int cxgbe_dev_tx_queue_setup(struct rte_eth_dev *eth_dev, uint16_t queue_idx,
 			     uint16_t nb_desc, unsigned int socket_id,

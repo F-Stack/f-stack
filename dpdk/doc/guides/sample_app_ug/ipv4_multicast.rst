@@ -146,7 +146,7 @@ Firstly, the Ethernet* header is removed from the packet and the IPv4 address is
 
     /* Remove the Ethernet header from the input packet */
 
-    iphdr = (struct ipv4_hdr *)rte_pktmbuf_adj(m, sizeof(struct ether_hdr));
+    iphdr = (struct rte_ipv4_hdr *)rte_pktmbuf_adj(m, sizeof(struct rte_ether_hdr));
     RTE_ASSERT(iphdr != NULL);
     dest_addr = rte_be_to_cpu_32(iphdr->dst_addr);
 
@@ -155,7 +155,7 @@ if the routing table has any ports assigned to the destination address:
 
 .. code-block:: c
 
-    if (!IS_IPV4_MCAST(dest_addr) ||
+    if (!RTE_IS_IPV4_MCAST(dest_addr) ||
        (hash = rte_fbk_hash_lookup(mcast_hash, dest_addr)) <= 0 ||
        (port_mask = hash & enabled_port_mask) == 0) {
            rte_pktmbuf_free(m);
@@ -216,20 +216,20 @@ The actual packet transmission is done in the mcast_send_pkt() function:
 
 .. code-block:: c
 
-    static inline void mcast_send_pkt(struct rte_mbuf *pkt, struct ether_addr *dest_addr, struct lcore_queue_conf *qconf, uint16_t port)
+    static inline void mcast_send_pkt(struct rte_mbuf *pkt, struct rte_ether_addr *dest_addr, struct lcore_queue_conf *qconf, uint16_t port)
     {
-        struct ether_hdr *ethdr;
+        struct rte_ether_hdr *ethdr;
         uint16_t len;
 
         /* Construct Ethernet header. */
 
-        ethdr = (struct ether_hdr *)rte_pktmbuf_prepend(pkt, (uint16_t) sizeof(*ethdr));
+        ethdr = (struct rte_ether_hdr *)rte_pktmbuf_prepend(pkt, (uint16_t) sizeof(*ethdr));
 
         RTE_ASSERT(ethdr != NULL);
 
-        ether_addr_copy(dest_addr, &ethdr->d_addr);
-        ether_addr_copy(&ports_eth_addr[port], &ethdr->s_addr);
-        ethdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv4);
+        rte_ether_addr_copy(dest_addr, &ethdr->d_addr);
+        rte_ether_addr_copy(&ports_eth_addr[port], &ethdr->s_addr);
+        ethdr->ether_type = rte_be_to_cpu_16(RTE_ETHER_TYPE_IPV4);
 
         /* Put new packet into the output queue */
 

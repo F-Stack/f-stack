@@ -2,37 +2,63 @@
 # Copyright 2018 6WIND S.A.
 # Copyright 2018 Mellanox Technologies, Ltd
 
-pmd_dlopen = get_option('enable_driver_mlx_glue')
+if not is_linux
+	build = false
+	reason = 'only supported on Linux'
+	subdir_done()
+endif
+build = true
+
+static_ibverbs = (get_option('ibverbs_link') == 'static')
+dlopen_ibverbs = (get_option('ibverbs_link') == 'dlopen')
 LIB_GLUE_BASE = 'librte_pmd_mlx5_glue.so'
-LIB_GLUE_VERSION = '18.11.0'
+LIB_GLUE_VERSION = '19.08.0'
 LIB_GLUE = LIB_GLUE_BASE + '.' + LIB_GLUE_VERSION
-if pmd_dlopen
-	dpdk_conf.set('RTE_LIBRTE_MLX5_DLOPEN_DEPS', 1)
+if dlopen_ibverbs
+	dpdk_conf.set('RTE_IBVERBS_LINK_DLOPEN', 1)
 	cflags += [
 		'-DMLX5_GLUE="@0@"'.format(LIB_GLUE),
 		'-DMLX5_GLUE_VERSION="@0@"'.format(LIB_GLUE_VERSION),
 	]
 endif
-libs = [
-	cc.find_library('mnl', required:false),
-	cc.find_library('mlx5', required:false),
-	cc.find_library('ibverbs', required:false),
-]
-build = true
-foreach lib:libs
-	if not lib.found()
+
+libnames = [ 'mlx5', 'ibverbs' ]
+libs = []
+foreach libname:libnames
+	lib = dependency('lib' + libname, static:static_ibverbs, required:false)
+	if not lib.found() and not static_ibverbs
+		lib = cc.find_library(libname, required:false)
+	endif
+	if lib.found()
+		libs += [ lib ]
+		if not static_ibverbs
+			ext_deps += lib
+		endif
+	else
 		build = false
+		reason = 'missing dependency, "' + libname + '"'
 	endif
 endforeach
+
 if build
+	if static_ibverbs or dlopen_ibverbs
+		# Build without adding shared libs to Requires.private
+		ibv_cflags = run_command(pkgconf, '--cflags', 'libibverbs').stdout()
+		ext_deps += declare_dependency(compile_args: ibv_cflags.split())
+	endif
+	if static_ibverbs
+		# Add static deps ldflags to internal apps and Libs.private
+		ibv_ldflags = run_command(ldflags_ibverbs_static, check:true).stdout()
+		ext_deps += declare_dependency(link_args:ibv_ldflags.split())
+	endif
 	allow_experimental_apis = true
-	ext_deps += libs
+	deps += ['hash']
 	sources = files(
 		'mlx5.c',
 		'mlx5_ethdev.c',
 		'mlx5_flow.c',
+		'mlx5_flow_meter.c',
 		'mlx5_flow_dv.c',
-		'mlx5_flow_tcf.c',
 		'mlx5_flow_verbs.c',
 		'mlx5_mac.c',
 		'mlx5_mr.c',
@@ -41,20 +67,23 @@ if build
 		'mlx5_rxmode.c',
 		'mlx5_rxq.c',
 		'mlx5_rxtx.c',
-		'mlx5_socket.c',
+		'mlx5_mp.c',
 		'mlx5_stats.c',
 		'mlx5_trigger.c',
 		'mlx5_txq.c',
 		'mlx5_vlan.c',
+		'mlx5_devx_cmds.c',
+		'mlx5_utils.c',
 	)
-	if dpdk_conf.has('RTE_ARCH_X86_64') or dpdk_conf.has('RTE_ARCH_ARM64')
+	if (dpdk_conf.has('RTE_ARCH_X86_64')
+		or dpdk_conf.has('RTE_ARCH_ARM64')
+		or dpdk_conf.has('RTE_ARCH_PPC_64'))
 		sources += files('mlx5_rxtx_vec.c')
 	endif
-	if not pmd_dlopen
+	if not dlopen_ibverbs
 		sources += files('mlx5_glue.c')
 	endif
 	cflags_options = [
-		'-Wextra',
 		'-std=c11',
 		'-Wno-strict-prototypes',
 		'-D_BSD_SOURCE',
@@ -106,6 +135,26 @@ if build
 		'IBV_WQ_FLAGS_PCI_WRITE_END_PADDING' ],
 		[ 'HAVE_IBV_WQ_FLAG_RX_END_PADDING', 'infiniband/verbs.h',
 		'IBV_WQ_FLAG_RX_END_PADDING' ],
+		[ 'HAVE_MLX5DV_DR_DEVX_PORT', 'infiniband/mlx5dv.h',
+		'mlx5dv_query_devx_port' ],
+		[ 'HAVE_IBV_DEVX_OBJ', 'infiniband/mlx5dv.h',
+		'mlx5dv_devx_obj_create' ],
+		[ 'HAVE_IBV_FLOW_DEVX_COUNTERS', 'infiniband/mlx5dv.h',
+		'MLX5DV_FLOW_ACTION_COUNTERS_DEVX' ],
+		[ 'HAVE_IBV_DEVX_ASYNC', 'infiniband/mlx5dv.h',
+		'mlx5dv_devx_obj_query_async' ],
+		[ 'HAVE_MLX5DV_DR_ACTION_DEST_DEVX_TIR', 'infiniband/mlx5dv.h',
+		'mlx5dv_dr_action_create_dest_devx_tir' ],
+		[ 'HAVE_MLX5_DR_CREATE_ACTION_FLOW_METER', 'infiniband/mlx5dv.h',
+		'mlx5dv_dr_action_create_flow_meter' ],
+		[ 'HAVE_MLX5DV_MMAP_GET_NC_PAGES_CMD', 'infiniband/mlx5dv.h',
+		'MLX5_MMAP_GET_NC_PAGES_CMD' ],
+		[ 'HAVE_MLX5DV_DR', 'infiniband/mlx5dv.h',
+		'MLX5DV_DR_DOMAIN_TYPE_NIC_RX' ],
+		[ 'HAVE_MLX5DV_DR_ESWITCH', 'infiniband/mlx5dv.h',
+		'MLX5DV_DR_DOMAIN_TYPE_FDB' ],
+		[ 'HAVE_MLX5DV_DR_VLAN', 'infiniband/mlx5dv.h',
+		'mlx5dv_dr_action_create_push_vlan' ],
 		[ 'HAVE_SUPPORTED_40000baseKR4_Full', 'linux/ethtool.h',
 		'SUPPORTED_40000baseKR4_Full' ],
 		[ 'HAVE_SUPPORTED_40000baseCR4_Full', 'linux/ethtool.h',
@@ -128,110 +177,14 @@ if build
 		'ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT' ],
 		[ 'HAVE_ETHTOOL_LINK_MODE_100G', 'linux/ethtool.h',
 		'ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT' ],
+		[ 'HAVE_IFLA_NUM_VF', 'linux/if_link.h',
+		'IFLA_NUM_VF' ],
+		[ 'HAVE_IFLA_EXT_MASK', 'linux/if_link.h',
+		'IFLA_EXT_MASK' ],
 		[ 'HAVE_IFLA_PHYS_SWITCH_ID', 'linux/if_link.h',
 		'IFLA_PHYS_SWITCH_ID' ],
 		[ 'HAVE_IFLA_PHYS_PORT_NAME', 'linux/if_link.h',
 		'IFLA_PHYS_PORT_NAME' ],
-		[ 'HAVE_IFLA_VXLAN_COLLECT_METADATA', 'linux/if_link.h',
-		'IFLA_VXLAN_COLLECT_METADATA' ],
-		[ 'HAVE_TCA_CHAIN', 'linux/rtnetlink.h',
-		'TCA_CHAIN' ],
-		[ 'HAVE_TCA_FLOWER_ACT', 'linux/pkt_cls.h',
-		'TCA_FLOWER_ACT' ],
-		[ 'HAVE_TCA_FLOWER_FLAGS', 'linux/pkt_cls.h',
-		'TCA_FLOWER_FLAGS' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ETH_TYPE', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ETH_TYPE' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ETH_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ETH_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ETH_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ETH_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ETH_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ETH_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ETH_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ETH_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IP_PROTO', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IP_PROTO' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV4_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV4_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV4_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV4_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV4_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV4_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV4_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV4_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV6_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV6_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV6_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV6_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV6_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV6_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_IPV6_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_IPV6_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_TCP_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_TCP_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_TCP_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_TCP_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_TCP_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_TCP_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_TCP_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_TCP_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_UDP_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_UDP_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_UDP_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_UDP_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_UDP_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_UDP_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_UDP_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_UDP_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_VLAN_ID', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_VLAN_ID' ],
-		[ 'HAVE_TCA_FLOWER_KEY_VLAN_PRIO', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_VLAN_PRIO' ],
-		[ 'HAVE_TCA_FLOWER_KEY_VLAN_ETH_TYPE', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_VLAN_ETH_TYPE' ],
-		[ 'HAVE_TCA_FLOWER_KEY_TCP_FLAGS', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_TCP_FLAGS' ],
-		[ 'HAVE_TCA_FLOWER_KEY_TCP_FLAGS_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_TCP_FLAGS_MASK' ],
-		[ 'HAVE_TC_ACT_GOTO_CHAIN', 'linux/pkt_cls.h',
-		'TC_ACT_GOTO_CHAIN' ],
-		[ 'HAVE_TC_ACT_VLAN', 'linux/tc_act/tc_vlan.h',
-		'TCA_VLAN_PUSH_VLAN_PRIORITY' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_KEY_ID', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_KEY_ID' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV4_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV4_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV4_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV4_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV4_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV4_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV4_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV4_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV6_SRC', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV6_SRC' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV6_SRC_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV6_SRC_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV6_DST', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV6_DST' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_IPV6_DST_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_IPV6_DST_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_UDP_SRC_PORT', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_UDP_SRC_PORT' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_UDP_SRC_PORT_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_UDP_SRC_PORT_MASK' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_UDP_DST_PORT', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_UDP_DST_PORT' ],
-		[ 'HAVE_TCA_FLOWER_KEY_ENC_UDP_DST_PORT_MASK', 'linux/pkt_cls.h',
-		'TCA_FLOWER_KEY_ENC_UDP_DST_PORT_MASK' ],
-		[ 'HAVE_TC_ACT_TUNNEL_KEY', 'linux/tc_act/tc_tunnel_key.h',
-		'TCA_ACT_TUNNEL_KEY' ],
-		[ 'HAVE_TCA_TUNNEL_KEY_ENC_DST_PORT', 'linux/tc_act/tc_tunnel_key.h',
-		'TCA_TUNNEL_KEY_ENC_DST_PORT' ],
-		[ 'HAVE_TCA_TUNNEL_KEY_NO_CSUM', 'linux/tc_act/tc_tunnel_key.h',
-		'TCA_TUNNEL_KEY_NO_CSUM' ],
-		[ 'HAVE_TC_ACT_PEDIT', 'linux/tc_act/tc_pedit.h',
-		'TCA_PEDIT_KEY_EX_HDR_TYPE_UDP' ],
 		[ 'HAVE_RDMA_NL_NLDEV', 'rdma/rdma_netlink.h',
 		'RDMA_NL_NLDEV' ],
 		[ 'HAVE_RDMA_NLDEV_CMD_GET', 'rdma/rdma_netlink.h',
@@ -249,26 +202,31 @@ if build
 	]
 	config = configuration_data()
 	foreach arg:has_sym_args
-		config.set(arg[0], cc.has_header_symbol(arg[1], arg[2]))
+		config.set(arg[0], cc.has_header_symbol(arg[1], arg[2],
+			dependencies: libs))
 	endforeach
 	foreach arg:has_member_args
-		file_prefix = '#include<' + arg[1] + '>'
+		file_prefix = '#include <' + arg[1] + '>'
 		config.set(arg[0], cc.has_member(arg[2], arg[3],
-			prefix : file_prefix))
+			prefix : file_prefix, dependencies: libs))
 	endforeach
 	configure_file(output : 'mlx5_autoconf.h', configuration : config)
 endif
 # Build Glue Library
-if pmd_dlopen and build
+if dlopen_ibverbs and build
 	dlopen_name = 'mlx5_glue'
 	dlopen_lib_name = driver_name_fmt.format(dlopen_name)
 	dlopen_so_version = LIB_GLUE_VERSION
 	dlopen_sources = files('mlx5_glue.c')
 	dlopen_install_dir = [ eal_pmd_path + '-glue' ]
+	dlopen_includes = [global_inc]
+	dlopen_includes += include_directories(
+		'../../../lib/librte_eal/common/include/generic',
+	)
 	shared_lib = shared_library(
 		dlopen_lib_name,
 		dlopen_sources,
-		include_directories: global_inc,
+		include_directories: dlopen_includes,
 		c_args: cflags,
 		dependencies: libs,
 		link_args: [

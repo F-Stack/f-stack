@@ -12,12 +12,8 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <termios.h>
-#ifndef __linux__
-	#ifdef __FreeBSD__
-		#include <sys/socket.h>
-	#else
-		#include <net/socket.h>
-	#endif
+#ifdef RTE_EXEC_ENV_FREEBSD
+#include <sys/socket.h>
 #endif
 
 #include <cmdline_rdline.h>
@@ -145,7 +141,7 @@ static void cmd_obj_add_parsed(void *parsed_result,
 		cmdline_printf(cl, "mem error\n");
 		return;
 	}
-	snprintf(o->name, sizeof(o->name), "%s", res->name);
+	strlcpy(o->name, res->name, sizeof(o->name));
 	o->ip = res->ip;
 	SLIST_INSERT_HEAD(&global_obj_list, o, next);
 

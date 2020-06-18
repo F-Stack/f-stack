@@ -6,7 +6,10 @@
 # To build this example as a standalone application with an already-installed
 # DPDK instance, use 'make'
 
-deps += 'distributor'
+# require the power library
+build = dpdk_conf.has('RTE_LIBRTE_POWER')
+
+deps += ['distributor', 'power']
 sources = files(
 	'main.c'
 )

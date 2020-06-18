@@ -58,11 +58,12 @@ struct octeontx_nic {
 	uint8_t mcast_mode;
 	uint16_t num_tx_queues;
 	uint64_t hwcap;
+	uint8_t pko_vfid;
 	uint8_t link_up;
 	uint8_t	duplex;
 	uint8_t speed;
 	uint16_t mtu;
-	uint8_t mac_addr[ETHER_ADDR_LEN];
+	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 	/* Rx port parameters */
 	struct {
 		bool classifier_enable;

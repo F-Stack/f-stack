@@ -38,10 +38,10 @@ shift $(($OPTIND - 1))
 #ignore version control files
 ignore="( -name .svn -o -name CVS -o -name .hg -o -name .git ) -prune -o"
 
-source_dirs="test app buildtools drivers examples lib"
+source_dirs="app buildtools drivers examples lib"
 
-skip_bsd="( -name bsdapp ) -prune -o"
-skip_linux="( -name linuxapp ) -prune -o"
+skip_bsd="( -name freebsd ) -prune -o"
+skip_linux="( -name linux ) -prune -o"
 skip_arch="( -name arch ) -prune -o"
 skip_sse="( -name *_sse*.[chS] ) -prune -o"
 skip_avx="( -name *_avx*.[chS] ) -prune -o"
@@ -67,13 +67,13 @@ common_sources()
 
 linux_sources()
 {
-	find_sources "lib/librte_eal/linuxapp" '*.[chS]'
+	find_sources "lib/librte_eal/linux" '*.[chS]'
 	find_sources "kernel/linux" '*.[chS]'
 }
 
 bsd_sources()
 {
-	find_sources "lib/librte_eal/bsdapp" '*.[chS]'
+	find_sources "lib/librte_eal/freebsd" '*.[chS]'
 	find_sources "kernel/freebsd" '*.[chS]'
 }
 
@@ -131,14 +131,7 @@ ppc_64_sources()
 
 check_valid_target()
 {
-	cfgfound=false
-	allconfigs=$(make showconfigs)
-	for cfg in $allconfigs ; do
-		if [ "$cfg" = "$1" ] ; then
-			cfgfound=true
-		fi
-	done
-	if ! $cfgfound ; then
+	if [ ! -f "config/defconfig_$1" ] ; then
 		echo "Invalid config: $1"
 		print_usage
 		exit 0
@@ -148,8 +141,8 @@ check_valid_target()
 if [ -n "$2" ]; then
 	check_valid_target $2
 
-	echo $2 | grep -q "linuxapp-" || linux=false
-	echo $2 | grep -q "bsdapp-" || bsd=false
+	echo $2 | grep -q "linux" || linux=false
+	echo $2 | grep -q "bsd" || bsd=false
 	echo $2 | grep -q "x86_64-" || x86_64=false
 	echo $2 | grep -q "arm-" || arm_32=false
 	echo $2 | grep -q "arm64-" || arm_64=false

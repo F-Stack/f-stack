@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (C) 2014 Freescale Semiconductor, Inc.
+ * Copyright 2017-2019 NXP
  *
  */
 #ifndef _FSL_QBMAN_BASE_H
@@ -33,7 +34,12 @@ struct qbman_block_desc {
 
 enum qbman_eqcr_mode {
 	qman_eqcr_vb_ring = 2, /* Valid bit, with eqcr in ring mode */
-	qman_eqcr_vb_array, /* Valid bit, with eqcr in array mode */
+	qman_eqcr_vb_array,    /* Valid bit, with eqcr in array mode */
+};
+
+enum qbman_cena_access_mode {
+	qman_cena_fastest_access = 0, /* Use memory backed node if available */
+	qman_cena_direct_access,      /* Use direct access to the CENA region */
 };
 
 /**
@@ -46,6 +52,8 @@ enum qbman_eqcr_mode {
  * @qman_version: the qman version.
  * @eqcr_mode: Select the eqcr mode, currently only valid bit ring mode and
  * valid bit array mode are supported.
+ * @cena_access_mode: Mode used to access the CENA region, direct
+ *                    or memory backed.
  *
  * Descriptor for a QBMan software portal, expressed in terms that make sense to
  * the user context. Ie. on MC, this information is likely to be true-physical,
@@ -62,6 +70,7 @@ struct qbman_swp_desc {
 	int idx;
 	uint32_t qman_version;
 	enum qbman_eqcr_mode eqcr_mode;
+	enum qbman_cena_access_mode cena_access_mode;
 };
 
 /* Driver object for managing a QBMan portal */
@@ -126,6 +135,90 @@ struct qbman_fd {
 			uint32_t flc_lo;
 			uint32_t flc_hi;
 		} simple;
+
+		struct qbman_fd_us_pci_simple {
+			uint32_t saddr_lo;
+			uint32_t saddr_hi;
+
+			uint32_t len_sl:18;
+			uint32_t rsv1:14;
+
+			uint32_t sportid:4;
+			uint32_t rsv2:22;
+			uint32_t bmt:1;
+			uint32_t rsv3:1;
+			uint32_t fmt:2;
+			uint32_t sl:1;
+			uint32_t rsv4:1;
+
+			uint32_t acc_err:4;
+			uint32_t rsv5:4;
+			uint32_t ser:1;
+			uint32_t rsv6:3;
+			uint32_t wrttype:4;
+			uint32_t dqos:3;
+			uint32_t drbp:1;
+			uint32_t dlwc:2;
+			uint32_t rsv7:2;
+			uint32_t rdttype:4;
+			uint32_t sqos:3;
+			uint32_t srbp:1;
+
+			uint32_t error:8;
+			uint32_t dportid:4;
+			uint32_t rsv8:5;
+			uint32_t dca:1;
+			uint32_t dat:2;
+			uint32_t dattr:3;
+			uint32_t dvfa:1;
+			uint32_t dtc:3;
+			uint32_t so:1;
+			uint32_t dd:4;
+
+			uint32_t daddr_lo;
+			uint32_t daddr_hi;
+		} simple_pci;
+		struct qbman_fd_us_ddr_simple {
+			uint32_t saddr_lo;
+
+			uint32_t saddr_hi:17;
+			uint32_t rsv1:15;
+
+			uint32_t len;
+
+			uint32_t rsv2:15;
+			uint32_t bmt:1;
+			uint32_t rsv3:12;
+			uint32_t fmt:2;
+			uint32_t sl:1;
+			uint32_t rsv4:1;
+
+			uint32_t acc_err:4;
+			uint32_t rsv5:4;
+			uint32_t ser:1;
+			uint32_t rsv6:2;
+			uint32_t wns:1;
+			uint32_t wrttype:4;
+			uint32_t dqos:3;
+			uint32_t rsv12:1;
+			uint32_t dlwc:2;
+			uint32_t rsv7:1;
+			uint32_t rns:1;
+			uint32_t rdttype:4;
+			uint32_t sqos:3;
+			uint32_t rsv11:1;
+
+			uint32_t error:8;
+			uint32_t rsv8:6;
+			uint32_t va:1;
+			uint32_t rsv9:13;
+			uint32_t dd:4;
+
+			uint32_t daddr_lo;
+
+			uint32_t daddr_hi:17;
+			uint32_t rsv10:15;
+		} simple_ddr;
 	};
 };
 

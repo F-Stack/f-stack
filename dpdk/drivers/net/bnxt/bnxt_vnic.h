@@ -9,6 +9,8 @@
 #include <sys/queue.h>
 #include <stdbool.h>
 
+#define INVALID_VNIC_ID		((uint16_t)-1)
+
 struct bnxt_vnic_info {
 	STAILQ_ENTRY(bnxt_vnic_info)	next;
 	uint8_t		ff_pool_idx;
@@ -18,6 +20,7 @@ struct bnxt_vnic_info {
 	uint16_t	start_grp_id;
 	uint16_t	end_grp_id;
 	uint16_t	*fw_grp_ids;
+	uint16_t	num_lb_ctxts;
 	uint16_t	dflt_ring_grp;
 	uint16_t	mru;
 	uint16_t	hash_type;
@@ -41,6 +44,8 @@ struct bnxt_vnic_info {
 
 	uint16_t	cos_rule;
 	uint16_t	lb_rule;
+	uint16_t	rx_queue_cnt;
+	uint16_t	cos_queue_id;
 	bool		vlan_strip;
 	bool		func_default;
 	bool		bd_stall;
@@ -53,7 +58,6 @@ struct bnxt_vnic_info {
 };
 
 struct bnxt;
-void bnxt_init_vnics(struct bnxt *bp);
 int bnxt_free_vnic(struct bnxt *bp, struct bnxt_vnic_info *vnic,
 			  int pool);
 struct bnxt_vnic_info *bnxt_alloc_vnic(struct bnxt *bp);
@@ -62,4 +66,7 @@ void bnxt_free_vnic_attributes(struct bnxt *bp);
 int bnxt_alloc_vnic_attributes(struct bnxt *bp);
 void bnxt_free_vnic_mem(struct bnxt *bp);
 int bnxt_alloc_vnic_mem(struct bnxt *bp);
+int bnxt_vnic_grp_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic);
+void prandom_bytes(void *dest_ptr, size_t len);
+uint16_t bnxt_rte_to_hwrm_hash_types(uint64_t rte_type);
 #endif

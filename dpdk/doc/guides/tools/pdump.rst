@@ -26,6 +26,9 @@ a DPDK secondary process and is capable of enabling packet capture on dpdk ports
         Once the libpcap development files are installed, the libpcap based PMD
         can be enabled by setting CONFIG_RTE_LIBRTE_PMD_PCAP=y and recompiling the DPDK.
 
+      * The ``dpdk-pdump`` tool runs as a DPDK secondary process. It exits when
+        the primary application exits.
+
 
 Running the Application
 -----------------------
@@ -35,6 +38,7 @@ The tool has a number of command line options:
 .. code-block:: console
 
    ./build/app/dpdk-pdump --
+                          [--multi]
                           --pdump '(port=<port id> | device_id=<pci id or vdev name>),
                                    (queue=<queue_id>),
                                    (rx-dev=<iface or pcap file> |
@@ -42,6 +46,10 @@ The tool has a number of command line options:
                                    [ring-size=<ring size>],
                                    [mbuf-size=<mbuf data size>],
                                    [total-num-mbufs=<number of mbufs>]'
+
+The ``--multi`` command line option is optional argument. If passed, capture
+will be running on unique cores for all ``--pdump`` options. If ignored,
+capture will be running on single core for all ``--pdump`` options.
 
 The ``--pdump`` command line option is mandatory and it takes various sub arguments which are described in
 below section.
@@ -112,4 +120,5 @@ Example
 
 .. code-block:: console
 
-   $ sudo ./build/app/dpdk-pdump -- --pdump 'port=0,queue=*,rx-dev=/tmp/rx.pcap'
+   $ sudo ./build/app/dpdk-pdump -l 3 -- --pdump 'port=0,queue=*,rx-dev=/tmp/rx.pcap'
+   $ sudo ./build/app/dpdk-pdump -l 3,4,5 -- --multi --pdump 'port=0,queue=*,rx-dev=/tmp/rx-1.pcap' --pdump 'port=1,queue=*,rx-dev=/tmp/rx-2.pcap'

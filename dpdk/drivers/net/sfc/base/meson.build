@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2016-2018 Solarflare Communications Inc.
 # All rights reserved.
 #
@@ -8,6 +9,7 @@ sources = [
 	'efx_bootcfg.c',
 	'efx_crc32.c',
 	'efx_ev.c',
+	'efx_evb.c',
 	'efx_filter.c',
 	'efx_hash.c',
 	'efx_intr.c',
@@ -19,6 +21,7 @@ sources = [
 	'efx_nvram.c',
 	'efx_phy.c',
 	'efx_port.c',
+	'efx_proxy.c',
 	'efx_rx.c',
 	'efx_sram.c',
 	'efx_tunnel.c',
@@ -33,6 +36,7 @@ sources = [
 	'siena_sram.c',
 	'siena_vpd.c',
 	'ef10_ev.c',
+	'ef10_evb.c',
 	'ef10_filter.c',
 	'ef10_image.c',
 	'ef10_intr.c',
@@ -41,6 +45,7 @@ sources = [
 	'ef10_nic.c',
 	'ef10_nvram.c',
 	'ef10_phy.c',
+	'ef10_proxy.c',
 	'ef10_rx.c',
 	'ef10_tx.c',
 	'ef10_vpd.c',

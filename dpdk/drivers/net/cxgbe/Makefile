@@ -9,14 +9,10 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_cxgbe.a
 
-CFLAGS += -I$(SRCDIR)/base/
-CFLAGS += -I$(SRCDIR)
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
 EXPORT_MAP := rte_pmd_cxgbe_version.map
-
-LIBABIVER := 1
 
 #
 # CFLAGS for gcc/clang

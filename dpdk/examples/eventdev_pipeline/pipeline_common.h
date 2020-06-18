@@ -99,13 +99,13 @@ struct config_data cdata;
 static __rte_always_inline void
 exchange_mac(struct rte_mbuf *m)
 {
-	struct ether_hdr *eth;
-	struct ether_addr addr;
+	struct rte_ether_hdr *eth;
+	struct rte_ether_addr addr;
 
 	/* change mac addresses on packet (to use mbuf data) */
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
-	ether_addr_copy(&eth->d_addr, &addr);
-	ether_addr_copy(&addr, &eth->d_addr);
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	rte_ether_addr_copy(&eth->d_addr, &addr);
+	rte_ether_addr_copy(&addr, &eth->d_addr);
 }
 
 static __rte_always_inline void

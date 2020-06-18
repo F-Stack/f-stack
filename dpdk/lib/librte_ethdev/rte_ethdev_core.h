@@ -52,17 +52,105 @@ typedef int (*eth_dev_reset_t)(struct rte_eth_dev *dev);
 typedef int (*eth_is_removed_t)(struct rte_eth_dev *dev);
 /**< @internal Function used to detect an Ethernet device removal. */
 
-typedef void (*eth_promiscuous_enable_t)(struct rte_eth_dev *dev);
-/**< @internal Function used to enable the RX promiscuous mode of an Ethernet device. */
+/**
+ * @internal
+ * Function used to enable the Rx promiscuous mode of an Ethernet device.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, promiscuous mode is enabled.
+ * @retval -ENOTSUP
+ *   Promiscuous mode is not supported.
+ * @retval -ENODEV
+ *   Device is gone.
+ * @retval -E_RTE_SECONDARY
+ *   Function was called from a secondary process instance and not supported.
+ * @retval -ETIMEDOUT
+ *   Attempt to enable promiscuos mode failed because of timeout.
+ * @retval -EAGAIN
+ *   Failed to enable promiscuous mode.
+ */
+typedef int (*eth_promiscuous_enable_t)(struct rte_eth_dev *dev);
 
-typedef void (*eth_promiscuous_disable_t)(struct rte_eth_dev *dev);
-/**< @internal Function used to disable the RX promiscuous mode of an Ethernet device. */
+/**
+ * @internal
+ * Function used to disable the Rx promiscuous mode of an Ethernet device.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, promiscuous mode is disabled.
+ * @retval -ENOTSUP
+ *   Promiscuous mode disabling is not supported.
+ * @retval -ENODEV
+ *   Device is gone.
+ * @retval -E_RTE_SECONDARY
+ *   Function was called from a secondary process instance and not supported.
+ * @retval -ETIMEDOUT
+ *   Attempt to disable promiscuos mode failed because of timeout.
+ * @retval -EAGAIN
+ *   Failed to disable promiscuous mode.
+ */
+typedef int (*eth_promiscuous_disable_t)(struct rte_eth_dev *dev);
 
-typedef void (*eth_allmulticast_enable_t)(struct rte_eth_dev *dev);
-/**< @internal Enable the receipt of all multicast packets by an Ethernet device. */
+/**
+ * @internal
+ * Enable the receipt of all multicast packets by an Ethernet device.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, all-multicast mode is enabled.
+ * @retval -ENOTSUP
+ *   All-multicast mode is not supported.
+ * @retval -ENODEV
+ *   Device is gone.
+ * @retval -E_RTE_SECONDARY
+ *   Function was called from a secondary process instance and not supported.
+ * @retval -ETIMEDOUT
+ *   Attempt to enable all-multicast mode failed because of timeout.
+ * @retval -EAGAIN
+ *   Failed to enable all-multicast mode.
+ */
+typedef int (*eth_allmulticast_enable_t)(struct rte_eth_dev *dev);
 
-typedef void (*eth_allmulticast_disable_t)(struct rte_eth_dev *dev);
-/**< @internal Disable the receipt of all multicast packets by an Ethernet device. */
+/**
+ * @internal
+ * Disable the receipt of all multicast packets by an Ethernet device.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, all-multicast mode is disabled.
+ * @retval -ENOTSUP
+ *   All-multicast mode disabling is not supported.
+ * @retval -ENODEV
+ *   Device is gone.
+ * @retval -E_RTE_SECONDARY
+ *   Function was called from a secondary process instance and not supported.
+ * @retval -ETIMEDOUT
+ *   Attempt to disable all-multicast mode failed because of timeout.
+ * @retval -EAGAIN
+ *   Failed to disable all-multicast mode.
+ */
+typedef int (*eth_allmulticast_disable_t)(struct rte_eth_dev *dev);
 
 typedef int (*eth_link_update_t)(struct rte_eth_dev *dev,
 				int wait_to_complete);
@@ -72,8 +160,26 @@ typedef int (*eth_stats_get_t)(struct rte_eth_dev *dev,
 				struct rte_eth_stats *igb_stats);
 /**< @internal Get global I/O statistics of an Ethernet device. */
 
-typedef void (*eth_stats_reset_t)(struct rte_eth_dev *dev);
-/**< @internal Reset global I/O statistics of an Ethernet device to 0. */
+/**
+ * @internal
+ * Reset global I/O statistics of an Ethernet device to 0.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, statistics has been reset.
+ * @retval -ENOTSUP
+ *   Resetting statistics is not supported.
+ * @retval -EINVAL
+ *   Resetting statistics is not valid.
+ * @retval -ENOMEM
+ *   Not enough memory to get the stats.
+ */
+typedef int (*eth_stats_reset_t)(struct rte_eth_dev *dev);
 
 typedef int (*eth_xstats_get_t)(struct rte_eth_dev *dev,
 	struct rte_eth_xstat *stats, unsigned n);
@@ -85,8 +191,26 @@ typedef int (*eth_xstats_get_by_id_t)(struct rte_eth_dev *dev,
 				      unsigned int n);
 /**< @internal Get extended stats of an Ethernet device. */
 
-typedef void (*eth_xstats_reset_t)(struct rte_eth_dev *dev);
-/**< @internal Reset extended stats of an Ethernet device. */
+/**
+ * @internal
+ * Reset extended stats of an Ethernet device.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, statistics has been reset.
+ * @retval -ENOTSUP
+ *   Resetting statistics is not supported.
+ * @retval -EINVAL
+ *   Resetting statistics is not valid.
+ * @retval -ENOMEM
+ *   Not enough memory to get the stats.
+ */
+typedef int (*eth_xstats_reset_t)(struct rte_eth_dev *dev);
 
 typedef int (*eth_xstats_get_names_t)(struct rte_eth_dev *dev,
 	struct rte_eth_xstat_name *xstats_names, unsigned size);
@@ -103,12 +227,27 @@ typedef int (*eth_queue_stats_mapping_set_t)(struct rte_eth_dev *dev,
 					     uint8_t is_rx);
 /**< @internal Set a queue statistics mapping for a tx/rx queue of an Ethernet device. */
 
-typedef void (*eth_dev_infos_get_t)(struct rte_eth_dev *dev,
-				    struct rte_eth_dev_info *dev_info);
+typedef int (*eth_dev_infos_get_t)(struct rte_eth_dev *dev,
+				   struct rte_eth_dev_info *dev_info);
 /**< @internal Get specific information of an Ethernet device. */
 
 typedef const uint32_t *(*eth_dev_supported_ptypes_get_t)(struct rte_eth_dev *dev);
 /**< @internal Get supported ptypes of an Ethernet device. */
+
+/**
+ * @internal
+ * Inform Ethernet device about reduced range of packet types to handle.
+ *
+ * @param dev
+ *   The Ethernet device identifier.
+ * @param ptype_mask
+ *   The ptype family that application is interested in should be bitwise OR of
+ *   RTE_PTYPE_*_MASK or 0.
+ * @return
+ *   - (0) if Success.
+ */
+typedef int (*eth_dev_ptypes_set_t)(struct rte_eth_dev *dev,
+				     uint32_t ptype_mask);
 
 typedef int (*eth_queue_start_t)(struct rte_eth_dev *dev,
 				    uint16_t queue_id);
@@ -169,6 +308,9 @@ typedef void (*eth_rxq_info_get_t)(struct rte_eth_dev *dev,
 
 typedef void (*eth_txq_info_get_t)(struct rte_eth_dev *dev,
 	uint16_t tx_queue_id, struct rte_eth_txq_info *qinfo);
+
+typedef int (*eth_burst_mode_get_t)(struct rte_eth_dev *dev,
+	uint16_t queue_id, struct rte_eth_burst_mode *mode);
 
 typedef int (*mtu_set_t)(struct rte_eth_dev *dev, uint16_t mtu);
 /**< @internal Set MTU. */
@@ -250,17 +392,17 @@ typedef void (*eth_mac_addr_remove_t)(struct rte_eth_dev *dev, uint32_t index);
 /**< @internal Remove MAC address from receive address register */
 
 typedef int (*eth_mac_addr_add_t)(struct rte_eth_dev *dev,
-				  struct ether_addr *mac_addr,
+				  struct rte_ether_addr *mac_addr,
 				  uint32_t index,
 				  uint32_t vmdq);
 /**< @internal Set a MAC address into Receive Address Address Register */
 
 typedef int (*eth_mac_addr_set_t)(struct rte_eth_dev *dev,
-				  struct ether_addr *mac_addr);
+				  struct rte_ether_addr *mac_addr);
 /**< @internal Set a MAC address into Receive Address Address Register */
 
 typedef int (*eth_uc_hash_table_set_t)(struct rte_eth_dev *dev,
-				  struct ether_addr *mac_addr,
+				  struct rte_ether_addr *mac_addr,
 				  uint8_t on);
 /**< @internal Set a Unicast Hash bitmap */
 
@@ -292,7 +434,7 @@ typedef int (*eth_udp_tunnel_port_del_t)(struct rte_eth_dev *dev,
 /**< @internal Delete tunneling UDP port */
 
 typedef int (*eth_set_mc_addr_list_t)(struct rte_eth_dev *dev,
-				      struct ether_addr *mc_addr_set,
+				      struct rte_ether_addr *mc_addr_set,
 				      uint32_t nb_mc_addr);
 /**< @internal set the list of multicast addresses on an Ethernet device */
 
@@ -321,6 +463,10 @@ typedef int (*eth_timesync_read_time)(struct rte_eth_dev *dev,
 typedef int (*eth_timesync_write_time)(struct rte_eth_dev *dev,
 				       const struct timespec *timestamp);
 /**< @internal Function used to get time from the device clock */
+
+typedef int (*eth_read_clock)(struct rte_eth_dev *dev,
+				      uint64_t *timestamp);
+/**< @internal Function used to get the current value of the device clock. */
 
 typedef int (*eth_get_reg_t)(struct rte_eth_dev *dev,
 				struct rte_dev_reg_info *info);
@@ -378,6 +524,86 @@ typedef int (*eth_pool_ops_supported_t)(struct rte_eth_dev *dev,
 /**< @internal Test if a port supports specific mempool ops */
 
 /**
+ * @internal
+ * Get the hairpin capabilities.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ * @param cap
+ *   returns the hairpin capabilities from the device.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, hairpin is supported.
+ * @retval -ENOTSUP
+ *   Hairpin is not supported.
+ */
+typedef int (*eth_hairpin_cap_get_t)(struct rte_eth_dev *dev,
+				     struct rte_eth_hairpin_cap *cap);
+
+/**
+ * @internal
+ * Setup RX hairpin queue.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ * @param rx_queue_id
+ *   the selected RX queue index.
+ * @param nb_rx_desc
+ *   the requested number of descriptors for this queue. 0 - use PMD default.
+ * @param conf
+ *   the RX hairpin configuration structure.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, hairpin is supported.
+ * @retval -ENOTSUP
+ *   Hairpin is not supported.
+ * @retval -EINVAL
+ *   One of the parameters is invalid.
+ * @retval -ENOMEM
+ *   Unable to allocate resources.
+ */
+typedef int (*eth_rx_hairpin_queue_setup_t)
+	(struct rte_eth_dev *dev, uint16_t rx_queue_id,
+	 uint16_t nb_rx_desc,
+	 const struct rte_eth_hairpin_conf *conf);
+
+/**
+ * @internal
+ * Setup TX hairpin queue.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ * @param tx_queue_id
+ *   the selected TX queue index.
+ * @param nb_tx_desc
+ *   the requested number of descriptors for this queue. 0 - use PMD default.
+ * @param conf
+ *   the TX hairpin configuration structure.
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, hairpin is supported.
+ * @retval -ENOTSUP
+ *   Hairpin is not supported.
+ * @retval -EINVAL
+ *   One of the parameters is invalid.
+ * @retval -ENOMEM
+ *   Unable to allocate resources.
+ */
+typedef int (*eth_tx_hairpin_queue_setup_t)
+	(struct rte_eth_dev *dev, uint16_t tx_queue_id,
+	 uint16_t nb_tx_desc,
+	 const struct rte_eth_hairpin_conf *hairpin_conf);
+
+/**
  * @internal A structure containing the functions exported by an Ethernet driver.
  */
 struct eth_dev_ops {
@@ -414,9 +640,13 @@ struct eth_dev_ops {
 	eth_dev_infos_get_t        dev_infos_get; /**< Get device info. */
 	eth_rxq_info_get_t         rxq_info_get; /**< retrieve RX queue information. */
 	eth_txq_info_get_t         txq_info_get; /**< retrieve TX queue information. */
+	eth_burst_mode_get_t       rx_burst_mode_get; /**< Get RX burst mode */
+	eth_burst_mode_get_t       tx_burst_mode_get; /**< Get TX burst mode */
 	eth_fw_version_get_t       fw_version_get; /**< Get firmware version. */
 	eth_dev_supported_ptypes_get_t dev_supported_ptypes_get;
 	/**< Get packet types supported and identified by device. */
+	eth_dev_ptypes_set_t dev_ptypes_set;
+	/**< Inform Ethernet device about reduced range of packet types to handle. */
 
 	vlan_filter_set_t          vlan_filter_set; /**< Filter VLAN Setup. */
 	vlan_tpid_set_t            vlan_tpid_set; /**< Outer/Inner VLAN TPID Setup. */
@@ -496,6 +726,8 @@ struct eth_dev_ops {
 	eth_timesync_read_time     timesync_read_time; /** Get the device clock time. */
 	eth_timesync_write_time    timesync_write_time; /** Set the device clock time. */
 
+	eth_read_clock             read_clock;
+
 	eth_xstats_get_by_id_t     xstats_get_by_id;
 	/**< Get extended device statistic values by ID. */
 	eth_xstats_get_names_by_id_t xstats_get_names_by_id;
@@ -509,6 +741,13 @@ struct eth_dev_ops {
 
 	eth_pool_ops_supported_t pool_ops_supported;
 	/**< Test if a port supports specific mempool ops */
+
+	eth_hairpin_cap_get_t hairpin_cap_get;
+	/**< Returns the hairpin capabilities. */
+	eth_rx_hairpin_queue_setup_t rx_hairpin_queue_setup;
+	/**< Set up device RX hairpin queue. */
+	eth_tx_hairpin_queue_setup_t tx_hairpin_queue_setup;
+	/**< Set up device TX hairpin queue. */
 };
 
 /**
@@ -563,6 +802,9 @@ struct rte_eth_dev {
 	struct rte_eth_rxtx_callback *pre_tx_burst_cbs[RTE_MAX_QUEUES_PER_PORT];
 	enum rte_eth_dev_state state; /**< Flag indicating the port state */
 	void *security_ctx; /**< Context for security ops */
+
+	uint64_t reserved_64s[4]; /**< Reserved for future fields */
+	void *reserved_ptrs[4];   /**< Reserved for future fields */
 } __rte_cache_aligned;
 
 struct rte_eth_dev_sriov;
@@ -597,13 +839,13 @@ struct rte_eth_dev_data {
 			/**< Common RX buffer size handled by all queues. */
 
 	uint64_t rx_mbuf_alloc_failed; /**< RX ring mbuf allocation failures. */
-	struct ether_addr *mac_addrs;
+	struct rte_ether_addr *mac_addrs;
 			/**< Device Ethernet link address.
 			 *   @see rte_eth_dev_release_port()
 			 */
 	uint64_t mac_pool_sel[ETH_NUM_RECEIVE_MAC_ADDR];
 			/**< Bitmap associating MAC addresses to pools. */
-	struct ether_addr *hash_mac_addrs;
+	struct rte_ether_addr *hash_mac_addrs;
 			/**< Device Ethernet MAC addresses of hash filtering.
 			 *   @see rte_eth_dev_release_port()
 			 */
@@ -616,9 +858,9 @@ struct rte_eth_dev_data {
 		dev_started : 1,   /**< Device state: STARTED(1) / STOPPED(0). */
 		lro         : 1;   /**< RX LRO is ON(1) / OFF(0) */
 	uint8_t rx_queue_state[RTE_MAX_QUEUES_PER_PORT];
-			/**< Queues state: STARTED(1) / STOPPED(0). */
+		/**< Queues state: HAIRPIN(2) / STARTED(1) / STOPPED(0). */
 	uint8_t tx_queue_state[RTE_MAX_QUEUES_PER_PORT];
-			/**< Queues state: STARTED(1) / STOPPED(0). */
+		/**< Queues state: HAIRPIN(2) / STARTED(1) / STOPPED(0). */
 	uint32_t dev_flags;             /**< Capabilities. */
 	enum rte_kernel_driver kdrv;    /**< Kernel driver passthrough. */
 	int numa_node;                  /**< NUMA node connection. */
@@ -629,6 +871,9 @@ struct rte_eth_dev_data {
 			/**< Switch-specific identifier.
 			 *   Valid if RTE_ETH_DEV_REPRESENTOR in dev_flags.
 			 */
+
+	uint64_t reserved_64s[4]; /**< Reserved for future fields */
+	void *reserved_ptrs[4];   /**< Reserved for future fields */
 } __rte_cache_aligned;
 
 /**

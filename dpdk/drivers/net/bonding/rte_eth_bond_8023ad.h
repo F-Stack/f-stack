@@ -58,14 +58,14 @@ struct slow_protocol {
 
 /** Generic slow protocol frame type structure */
 struct slow_protocol_frame {
-	struct ether_hdr eth_hdr;
+	struct rte_ether_hdr eth_hdr;
 	struct slow_protocol slow_protocol;
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 struct port_params {
 	uint16_t system_priority;
 	/**< System priority (unused in current implementation) */
-	struct ether_addr system;
+	struct rte_ether_addr system;
 	/**< System ID - Slave MAC address, same as bonding MAC address */
 	uint16_t key;
 	/**< Speed information (implementation dependednt) and duplex. */
@@ -73,7 +73,7 @@ struct port_params {
 	/**< Priority of this (unused in current implementation) */
 	uint16_t port_number;
 	/**< Port number. It corresponds to slave port id. */
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 struct lacpdu_actor_partner_params {
 	uint8_t tlv_type_info;
@@ -81,7 +81,7 @@ struct lacpdu_actor_partner_params {
 	struct port_params port_params;
 	uint8_t state;
 	uint8_t reserved_3[3];
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 /** LACPDU structure (5.4.2 in 802.1AX documentation). */
 struct lacpdu {
@@ -99,13 +99,13 @@ struct lacpdu {
 	uint8_t tlv_type_terminator;
 	uint8_t terminator_length;
 	uint8_t reserved_50[50];
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 /** LACPDU frame: Contains ethernet header and LACPDU. */
 struct lacpdu_header {
-	struct ether_hdr eth_hdr;
+	struct rte_ether_hdr eth_hdr;
 	struct lacpdu lacpdu;
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 struct marker {
 	uint8_t subtype;
@@ -114,19 +114,19 @@ struct marker {
 	uint8_t tlv_type_marker;
 	uint8_t info_length;
 	uint16_t requester_port;
-	struct ether_addr requester_system;
+	struct rte_ether_addr requester_system;
 	uint32_t requester_transaction_id;
 	uint8_t reserved_2[2];
 
 	uint8_t tlv_type_terminator;
 	uint8_t terminator_length;
 	uint8_t reserved_90[90];
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 struct marker_header {
-	struct ether_hdr eth_hdr;
+	struct rte_ether_hdr eth_hdr;
 	struct marker marker;
-} __attribute__((__packed__));
+} __attribute__((__packed__)) __attribute__((aligned(2)));
 
 struct rte_eth_bond_8023ad_conf {
 	uint32_t fast_periodic_ms;

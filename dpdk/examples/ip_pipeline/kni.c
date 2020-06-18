@@ -86,7 +86,7 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 	if (!rte_eth_dev_is_valid_port(port_id))
 		return -EINVAL;
 
-	if (new_mtu > ETHER_MAX_LEN)
+	if (new_mtu > RTE_ETHER_MAX_LEN)
 		return -EINVAL;
 
 	/* Set new MTU */
@@ -109,6 +109,7 @@ kni_create(const char *name, struct kni_params *params)
 	struct rte_kni *k;
 	const struct rte_pci_device *pci_dev;
 	const struct rte_bus *bus = NULL;
+	int ret;
 
 	/* Check input params */
 	if ((name == NULL) ||
@@ -123,10 +124,12 @@ kni_create(const char *name, struct kni_params *params)
 		return NULL;
 
 	/* Resource create */
-	rte_eth_dev_info_get(link->port_id, &dev_info);
+	ret = rte_eth_dev_info_get(link->port_id, &dev_info);
+	if (ret != 0)
+		return NULL;
 
 	memset(&kni_conf, 0, sizeof(kni_conf));
-	snprintf(kni_conf.name, RTE_KNI_NAMESIZE, "%s", name);
+	strlcpy(kni_conf.name, name, RTE_KNI_NAMESIZE);
 	kni_conf.force_bind = params->force_bind;
 	kni_conf.core_id = params->thread_id;
 	kni_conf.group_id = link->port_id;

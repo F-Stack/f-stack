@@ -142,7 +142,8 @@ octeontx_port_open(struct octeontx_nic *nic)
 	nic->mcast_mode = bgx_port_conf.mcast_mode;
 	nic->speed	= bgx_port_conf.mode;
 
-	memcpy(&nic->mac_addr[0], &bgx_port_conf.macaddr[0], ETHER_ADDR_LEN);
+	memcpy(&nic->mac_addr[0], &bgx_port_conf.macaddr[0],
+		RTE_ETHER_ADDR_LEN);
 
 	octeontx_log_dbg("port opened %d", nic->port_id);
 	return res;
@@ -173,7 +174,7 @@ octeontx_port_stop(struct octeontx_nic *nic)
 	return octeontx_bgx_port_stop(nic->port_id);
 }
 
-static void
+static int
 octeontx_port_promisc_set(struct octeontx_nic *nic, int en)
 {
 	struct rte_eth_dev *dev;
@@ -184,15 +185,19 @@ octeontx_port_promisc_set(struct octeontx_nic *nic, int en)
 	dev = nic->dev;
 
 	res = octeontx_bgx_port_promisc_set(nic->port_id, en);
-	if (res < 0)
+	if (res < 0) {
 		octeontx_log_err("failed to set promiscuous mode %d",
 				nic->port_id);
+		return res;
+	}
 
 	/* Set proper flag for the mode */
 	dev->data->promiscuous = (en != 0) ? 1 : 0;
 
 	octeontx_log_dbg("port %d : promiscuous mode %s",
 			nic->port_id, en ? "set" : "unset");
+
+	return 0;
 }
 
 static int
@@ -223,12 +228,12 @@ octeontx_port_stats(struct octeontx_nic *nic, struct rte_eth_stats *stats)
 	return 0;
 }
 
-static void
+static int
 octeontx_port_stats_clr(struct octeontx_nic *nic)
 {
 	PMD_INIT_FUNC_TRACE();
 
-	octeontx_bgx_port_stats_clr(nic->port_id);
+	return octeontx_bgx_port_stats_clr(nic->port_id);
 }
 
 static inline void
@@ -303,7 +308,7 @@ octeontx_dev_configure(struct rte_eth_dev *dev)
 
 	nic->num_tx_queues = dev->data->nb_tx_queues;
 
-	ret = octeontx_pko_channel_open(nic->port_id * PKO_VF_NUM_DQ,
+	ret = octeontx_pko_channel_open(nic->pko_vfid * PKO_VF_NUM_DQ,
 					nic->num_tx_queues,
 					nic->base_ochan);
 	if (ret) {
@@ -345,6 +350,10 @@ octeontx_dev_close(struct rte_eth_dev *dev)
 
 		rte_free(txq);
 	}
+
+	/* Free MAC address table */
+	rte_free(dev->data->mac_addrs);
+	dev->data->mac_addrs = NULL;
 
 	dev->tx_pkt_burst = NULL;
 	dev->rx_pkt_burst = NULL;
@@ -443,22 +452,22 @@ octeontx_dev_stop(struct rte_eth_dev *dev)
 	}
 }
 
-static void
+static int
 octeontx_dev_promisc_enable(struct rte_eth_dev *dev)
 {
 	struct octeontx_nic *nic = octeontx_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
-	octeontx_port_promisc_set(nic, 1);
+	return octeontx_port_promisc_set(nic, 1);
 }
 
-static void
+static int
 octeontx_dev_promisc_disable(struct rte_eth_dev *dev)
 {
 	struct octeontx_nic *nic = octeontx_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
-	octeontx_port_promisc_set(nic, 0);
+	return octeontx_port_promisc_set(nic, 0);
 }
 
 static int
@@ -544,18 +553,18 @@ octeontx_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	return octeontx_port_stats(nic, stats);
 }
 
-static void
+static int
 octeontx_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct octeontx_nic *nic = octeontx_pmd_priv(dev);
 
 	PMD_INIT_FUNC_TRACE();
-	octeontx_port_stats_clr(nic);
+	return octeontx_port_stats_clr(nic);
 }
 
 static int
 octeontx_dev_default_mac_addr_set(struct rte_eth_dev *dev,
-					struct ether_addr *addr)
+					struct rte_ether_addr *addr)
 {
 	struct octeontx_nic *nic = octeontx_pmd_priv(dev);
 	int ret;
@@ -568,7 +577,7 @@ octeontx_dev_default_mac_addr_set(struct rte_eth_dev *dev,
 	return ret;
 }
 
-static void
+static int
 octeontx_dev_info(struct rte_eth_dev *dev,
 		struct rte_eth_dev_info *dev_info)
 {
@@ -599,6 +608,10 @@ octeontx_dev_info(struct rte_eth_dev *dev,
 
 	dev_info->rx_offload_capa = OCTEONTX_RX_OFFLOADS;
 	dev_info->tx_offload_capa = OCTEONTX_TX_OFFLOADS;
+	dev_info->rx_queue_offload_capa = OCTEONTX_RX_OFFLOADS;
+	dev_info->tx_queue_offload_capa = OCTEONTX_TX_OFFLOADS;
+
+	return 0;
 }
 
 static void
@@ -712,7 +725,7 @@ octeontx_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	RTE_SET_USED(nb_desc);
 	RTE_SET_USED(socket_id);
 
-	dq_num = (nic->port_id * PKO_VF_NUM_DQ) + qidx;
+	dq_num = (nic->pko_vfid * PKO_VF_NUM_DQ) + qidx;
 
 	/* Socket id check */
 	if (socket_id != (unsigned int)SOCKET_ID_ANY &&
@@ -994,6 +1007,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 			int socket_id)
 {
 	int res;
+	size_t pko_vfid;
 	char octtx_name[OCTEONTX_MAX_NAME_LEN];
 	struct octeontx_nic *nic = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
@@ -1032,7 +1046,15 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 		goto err;
 	}
 	data->dev_private = nic;
+	pko_vfid = octeontx_pko_get_vfid();
 
+	if (pko_vfid == SIZE_MAX) {
+		octeontx_log_err("failed to get pko vfid");
+		res = -ENODEV;
+		goto err;
+	}
+
+	nic->pko_vfid = pko_vfid;
 	nic->port_id = port;
 	nic->evdev = evdev;
 
@@ -1064,7 +1086,7 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	data->all_multicast = 0;
 	data->scattered_rx = 0;
 
-	data->mac_addrs = rte_zmalloc_socket(octtx_name, ETHER_ADDR_LEN, 0,
+	data->mac_addrs = rte_zmalloc_socket(octtx_name, RTE_ETHER_ADDR_LEN, 0,
 							socket_id);
 	if (data->mac_addrs == NULL) {
 		octeontx_log_err("failed to allocate memory for mac_addrs");
@@ -1081,11 +1103,11 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 		octeontx_log_err("eth_dev->port_id (%d) is diff to orig (%d)",
 				data->port_id, nic->port_id);
 		res = -EINVAL;
-		goto err;
+		goto free_mac_addrs;
 	}
 
 	/* Update port_id mac to eth_dev */
-	memcpy(data->mac_addrs, nic->mac_addr, ETHER_ADDR_LEN);
+	memcpy(data->mac_addrs, nic->mac_addr, RTE_ETHER_ADDR_LEN);
 
 	PMD_INIT_LOG(DEBUG, "ethdev info: ");
 	PMD_INIT_LOG(DEBUG, "port %d, port_ena %d ochan %d num_ochan %d tx_q %d",
@@ -1100,6 +1122,8 @@ octeontx_create(struct rte_vdev_device *dev, int port, uint8_t evdev,
 	rte_eth_dev_probing_finish(eth_dev);
 	return data->port_id;
 
+free_mac_addrs:
+	rte_free(data->mac_addrs);
 err:
 	if (nic)
 		octeontx_port_close(nic);
@@ -1174,7 +1198,7 @@ octeontx_probe(struct rte_vdev_device *dev)
 	    strlen(rte_vdev_device_args(dev)) == 0) {
 		eth_dev = rte_eth_dev_attach_secondary(dev_name);
 		if (!eth_dev) {
-			RTE_LOG(ERR, PMD, "Failed to probe %s\n", dev_name);
+			PMD_INIT_LOG(ERR, "Failed to probe %s", dev_name);
 			return -1;
 		}
 		/* TODO: request info from primary to set up Rx and Tx */

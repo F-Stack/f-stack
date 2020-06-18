@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright (C) IGEL Co.,Ltd.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of IGEL Co.,Ltd. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (C) IGEL Co.,Ltd.
+ *  All rights reserved.
  */
 
 #include <rte_mbuf.h>
@@ -62,7 +34,6 @@ struct null_queue {
 
 	rte_atomic64_t rx_pkts;
 	rte_atomic64_t tx_pkts;
-	rte_atomic64_t err_pkts;
 };
 
 struct pmd_internals {
@@ -73,7 +44,7 @@ struct pmd_internals {
 	struct null_queue rx_null_queues[RTE_MAX_QUEUES_PER_PORT];
 	struct null_queue tx_null_queues[RTE_MAX_QUEUES_PER_PORT];
 
-	struct ether_addr eth_addr;
+	struct rte_ether_addr eth_addr;
 	/** Bit mask of RSS offloads, the bit offset also means flow type */
 	uint64_t flow_type_rss_offloads;
 
@@ -288,14 +259,14 @@ eth_mtu_set(struct rte_eth_dev *dev __rte_unused, uint16_t mtu __rte_unused)
 	return 0;
 }
 
-static void
+static int
 eth_dev_info(struct rte_eth_dev *dev,
 		struct rte_eth_dev_info *dev_info)
 {
 	struct pmd_internals *internals;
 
 	if ((dev == NULL) || (dev_info == NULL))
-		return;
+		return -EINVAL;
 
 	internals = dev->data->dev_private;
 	dev_info->max_mac_addrs = 1;
@@ -305,13 +276,15 @@ eth_dev_info(struct rte_eth_dev *dev,
 	dev_info->min_rx_bufsize = 0;
 	dev_info->reta_size = internals->reta_size;
 	dev_info->flow_type_rss_offloads = internals->flow_type_rss_offloads;
+
+	return 0;
 }
 
 static int
 eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *igb_stats)
 {
 	unsigned i, num_stats;
-	unsigned long rx_total = 0, tx_total = 0, tx_err_total = 0;
+	unsigned long rx_total = 0, tx_total = 0;
 	const struct pmd_internals *internal;
 
 	if ((dev == NULL) || (igb_stats == NULL))
@@ -333,35 +306,31 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *igb_stats)
 	for (i = 0; i < num_stats; i++) {
 		igb_stats->q_opackets[i] =
 			internal->tx_null_queues[i].tx_pkts.cnt;
-		igb_stats->q_errors[i] =
-			internal->tx_null_queues[i].err_pkts.cnt;
 		tx_total += igb_stats->q_opackets[i];
-		tx_err_total += igb_stats->q_errors[i];
 	}
 
 	igb_stats->ipackets = rx_total;
 	igb_stats->opackets = tx_total;
-	igb_stats->oerrors = tx_err_total;
 
 	return 0;
 }
 
-static void
+static int
 eth_stats_reset(struct rte_eth_dev *dev)
 {
 	unsigned i;
 	struct pmd_internals *internal;
 
 	if (dev == NULL)
-		return;
+		return -EINVAL;
 
 	internal = dev->data->dev_private;
 	for (i = 0; i < RTE_DIM(internal->rx_null_queues); i++)
 		internal->rx_null_queues[i].rx_pkts.cnt = 0;
-	for (i = 0; i < RTE_DIM(internal->tx_null_queues); i++) {
+	for (i = 0; i < RTE_DIM(internal->tx_null_queues); i++)
 		internal->tx_null_queues[i].tx_pkts.cnt = 0;
-		internal->tx_null_queues[i].err_pkts.cnt = 0;
-	}
+
+	return 0;
 }
 
 static void
@@ -467,7 +436,7 @@ eth_rss_hash_conf_get(struct rte_eth_dev *dev,
 
 static int
 eth_mac_address_set(__rte_unused struct rte_eth_dev *dev,
-		    __rte_unused struct ether_addr *addr)
+		    __rte_unused struct rte_ether_addr *addr)
 {
 	return 0;
 }
@@ -533,7 +502,7 @@ eth_dev_null_create(struct rte_vdev_device *dev,
 	internals->packet_size = packet_size;
 	internals->packet_copy = packet_copy;
 	internals->port_id = eth_dev->data->port_id;
-	eth_random_addr(internals->eth_addr.addr_bytes);
+	rte_eth_random_addr(internals->eth_addr.addr_bytes);
 
 	internals->flow_type_rss_offloads =  ETH_RSS_PROTO_MASK;
 	internals->reta_size = RTE_DIM(internals->reta_conf) * RTE_RETA_GROUP_SIZE;
@@ -545,6 +514,8 @@ eth_dev_null_create(struct rte_vdev_device *dev,
 	data->nb_tx_queues = (uint16_t)nb_tx_queues;
 	data->dev_link = pmd_link;
 	data->mac_addrs = &internals->eth_addr;
+	data->promiscuous = 1;
+	data->all_multicast = 1;
 
 	eth_dev->dev_ops = &ops;
 
@@ -621,6 +592,13 @@ rte_pmd_null_probe(struct rte_vdev_device *dev)
 		/* TODO: request info from primary to set up Rx and Tx */
 		eth_dev->dev_ops = &ops;
 		eth_dev->device = &dev->device;
+		if (packet_copy) {
+			eth_dev->rx_pkt_burst = eth_null_copy_rx;
+			eth_dev->tx_pkt_burst = eth_null_copy_tx;
+		} else {
+			eth_dev->rx_pkt_burst = eth_null_rx;
+			eth_dev->tx_pkt_burst = eth_null_tx;
+		}
 		rte_eth_dev_probing_finish(eth_dev);
 		return 0;
 	}

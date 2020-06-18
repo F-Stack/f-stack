@@ -47,9 +47,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 20,                     \
+					 .min = 1,                      \
 					 .max = 20,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -89,9 +89,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 28,                     \
+					 .min = 1,                     \
 					 .max = 28,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -173,9 +173,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 32,                     \
+					 .min = 1,                     \
 					 .max = 32,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -257,9 +257,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 48,                     \
+					 .min = 1,                     \
 					 .max = 48,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -341,9 +341,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 64,                     \
+					 .min = 1,                     \
 					 .max = 64,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			 }, }                                           \
@@ -383,9 +383,9 @@
 					 .increment = 1                 \
 				 },                                     \
 				 .digest_size = {                       \
-					 .min = 64,                     \
+					 .min = 1,                     \
 					 .max = 64,                     \
-					 .increment = 0                 \
+					 .increment = 1                 \
 				 },                                     \
 				 .aad_size = { 0 }                      \
 			}, }                                            \
@@ -536,9 +536,9 @@
 					 .increment = 1			\
 				 },					\
 				 .digest_size = {			\
-					 .min = 16,			\
+					 .min = 1,			\
 					 .max = 16,			\
-					 .increment = 0			\
+					 .increment = 1			\
 				 },					\
 				 .aad_size = { 0 }			\
 			}, }						\
@@ -685,7 +685,7 @@ ccp_pmd_qp_create_batch_info_ring(struct ccp_qp *qp,
 static int
 ccp_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		 const struct rte_cryptodev_qp_conf *qp_conf,
-		 int socket_id, struct rte_mempool *session_pool)
+		 int socket_id)
 {
 	struct ccp_private *internals = dev->data->dev_private;
 	struct ccp_qp *qp;
@@ -726,7 +726,8 @@ ccp_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		goto qp_setup_cleanup;
 	}
 
-	qp->sess_mp = session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	/* mempool for batch info */
 	qp->batch_mp = rte_mempool_create(

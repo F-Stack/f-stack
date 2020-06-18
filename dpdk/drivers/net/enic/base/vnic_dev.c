@@ -12,6 +12,7 @@
 #include "vnic_devcmd.h"
 #include "vnic_nic.h"
 #include "vnic_stats.h"
+#include "vnic_flowman.h"
 
 
 enum vnic_proxy_type {
@@ -47,6 +48,8 @@ struct vnic_dev {
 	dma_addr_t stats_pa;
 	struct vnic_devcmd_fw_info *fw_info;
 	dma_addr_t fw_info_pa;
+	struct fm_info *flowman_info;
+	dma_addr_t flowman_info_pa;
 	enum vnic_proxy_type proxy;
 	u32 proxy_index;
 	u64 args[VNIC_DEVCMD_NARGS];
@@ -325,7 +328,9 @@ static int _vnic_dev_cmd(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd,
 		if (!(status & STAT_BUSY)) {
 			if (status & STAT_ERROR) {
 				err = -(int)readq(&devcmd->args[0]);
-				if (cmd != CMD_CAPABILITY)
+				if (cmd != CMD_CAPABILITY &&
+				    cmd != CMD_OVERLAY_OFFLOAD_CTRL &&
+				    cmd != CMD_GET_SUPP_FEATURE_VER)
 					pr_err("Devcmd %d failed " \
 						"with error code %d\n",
 						_CMD_N(cmd), err);
@@ -453,6 +458,32 @@ int vnic_dev_cmd_args(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd,
 	}
 }
 
+int vnic_dev_fw_info(struct vnic_dev *vdev,
+		     struct vnic_devcmd_fw_info **fw_info)
+{
+	char name[NAME_MAX];
+	u64 a0, a1 = 0;
+	int wait = 1000;
+	int err = 0;
+	static u32 instance;
+
+	if (!vdev->fw_info) {
+		snprintf((char *)name, sizeof(name), "vnic_fw_info-%u",
+			 instance++);
+		vdev->fw_info = vdev->alloc_consistent(vdev->priv,
+			sizeof(struct vnic_devcmd_fw_info),
+			&vdev->fw_info_pa, (u8 *)name);
+		if (!vdev->fw_info)
+			return -ENOMEM;
+		a0 = vdev->fw_info_pa;
+		a1 = sizeof(struct vnic_devcmd_fw_info);
+		err = vnic_dev_cmd(vdev, CMD_MCPU_FW_INFO,
+				   &a0, &a1, wait);
+	}
+	*fw_info = vdev->fw_info;
+	return err;
+}
+
 static int vnic_dev_advanced_filters_cap(struct vnic_dev *vdev, u64 *args,
 		int nargs)
 {
@@ -474,8 +505,74 @@ int vnic_dev_capable_adv_filters(struct vnic_dev *vdev)
 	return (a1 >= (u32)FILTER_DPDK_1);
 }
 
-/*  Determine the "best" filtering mode VIC is capaible of. Returns one of 3
+int vnic_dev_flowman_cmd(struct vnic_dev *vdev, u64 *args, int nargs)
+{
+	int wait = 1000;
+
+	return vnic_dev_cmd_args(vdev, CMD_FLOW_MANAGER_OP, args, nargs, wait);
+}
+
+static int vnic_dev_flowman_enable(struct vnic_dev *vdev, u32 *mode,
+				   u8 *filter_actions)
+{
+	char name[NAME_MAX];
+	u64 args[3];
+	u64 ops;
+	static u32 instance;
+
+	/* flowman devcmd available? */
+	if (!vnic_dev_capable(vdev, CMD_FLOW_MANAGER_OP))
+		return 0;
+	/* Have the version we are using? */
+	args[0] = FM_API_VERSION_QUERY;
+	if (vnic_dev_flowman_cmd(vdev, args, 1))
+		return 0;
+	if ((args[0] & (1ULL << FM_VERSION)) == 0)
+		return 0;
+	/* Select the version */
+	args[0] = FM_API_VERSION_SELECT;
+	args[1] = FM_VERSION;
+	if (vnic_dev_flowman_cmd(vdev, args, 2))
+		return 0;
+	/* Can we get fm_info? */
+	if (!vdev->flowman_info) {
+		snprintf((char *)name, sizeof(name), "vnic_flowman_info-%u",
+			 instance++);
+		vdev->flowman_info = vdev->alloc_consistent(vdev->priv,
+			sizeof(struct fm_info),
+			&vdev->flowman_info_pa, (u8 *)name);
+		if (!vdev->flowman_info)
+			return 0;
+	}
+	args[0] = FM_INFO_QUERY;
+	args[1] = vdev->flowman_info_pa;
+	args[2] = sizeof(struct fm_info);
+	if (vnic_dev_flowman_cmd(vdev, args, 3))
+		return 0;
+	/* Have required operations? */
+	ops = (1ULL << FMOP_END) |
+		(1ULL << FMOP_DROP) |
+		(1ULL << FMOP_RQ_STEER) |
+		(1ULL << FMOP_EXACT_MATCH) |
+		(1ULL << FMOP_MARK) |
+		(1ULL << FMOP_TAG) |
+		(1ULL << FMOP_EG_HAIRPIN) |
+		(1ULL << FMOP_ENCAP) |
+		(1ULL << FMOP_DECAP_NOSTRIP);
+	if ((vdev->flowman_info->fm_op_mask & ops) != ops)
+		return 0;
+	/* Good to use flowman now */
+	*mode = FILTER_FLOWMAN;
+	*filter_actions = FILTER_ACTION_RQ_STEERING_FLAG |
+		FILTER_ACTION_FILTER_ID_FLAG |
+		FILTER_ACTION_COUNTER_FLAG |
+		FILTER_ACTION_DROP_FLAG;
+	return 1;
+}
+
+/*  Determine the "best" filtering mode VIC is capaible of. Returns one of 4
  *  value or 0 on error:
+ *	FILTER_FLOWMAN- flowman api capable
  *	FILTER_DPDK_1- advanced filters availabile
  *	FILTER_USNIC_IP_FLAG - advanced filters but with the restriction that
  *		the IP layer must explicitly specified. I.e. cannot have a UDP
@@ -490,6 +587,10 @@ int vnic_dev_capable_filter_mode(struct vnic_dev *vdev, u32 *mode,
 	u64 args[4];
 	int err;
 	u32 max_level = 0;
+
+	/* If flowman is available, use it as it is the most capable API */
+	if (vnic_dev_flowman_enable(vdev, mode, filter_actions))
+		return 0;
 
 	err = vnic_dev_advanced_filters_cap(vdev, args, 4);
 
@@ -951,6 +1052,10 @@ void vnic_dev_unregister(struct vnic_dev *vdev)
 			vdev->free_consistent(vdev->priv,
 				sizeof(struct vnic_stats),
 				vdev->stats, vdev->stats_pa);
+		if (vdev->flowman_info)
+			vdev->free_consistent(vdev->priv,
+				sizeof(struct fm_info),
+				vdev->flowman_info, vdev->flowman_info_pa);
 		if (vdev->fw_info)
 			vdev->free_consistent(vdev->priv,
 				sizeof(struct vnic_devcmd_fw_info),
@@ -1093,4 +1198,15 @@ int vnic_dev_capable_vxlan(struct vnic_dev *vdev)
 	return ret == 0 &&
 		(a1 & (FEATURE_VXLAN_IPV6 | FEATURE_VXLAN_MULTI_WQ)) ==
 		(FEATURE_VXLAN_IPV6 | FEATURE_VXLAN_MULTI_WQ);
+}
+
+int vnic_dev_capable_geneve(struct vnic_dev *vdev)
+{
+	u64 a0 = VIC_FEATURE_GENEVE;
+	u64 a1 = 0;
+	int wait = 1000;
+	int ret;
+
+	ret = vnic_dev_cmd(vdev, CMD_GET_SUPP_FEATURE_VER, &a0, &a1, wait);
+	return ret == 0 && (a1 & FEATURE_GENEVE_OPTIONS);
 }

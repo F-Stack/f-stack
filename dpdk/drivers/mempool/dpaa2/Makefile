@@ -12,14 +12,11 @@ LIB = librte_mempool_dpaa2.a
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc
+CFLAGS += -I$(RTE_SDK)/drivers/common/dpaax
 CFLAGS += -I$(RTE_SDK)/drivers/bus/fslmc/qbman/include
-CFLAGS += -I$(RTE_SDK)/lib/librte_eal/linuxapp/eal
 
 # versioning export map
 EXPORT_MAP := rte_mempool_dpaa2_version.map
-
-# Lbrary version
-LIBABIVER := 2
 
 # depends on fslmc bus which uses experimental API
 CFLAGS += -DALLOW_EXPERIMENTAL_API

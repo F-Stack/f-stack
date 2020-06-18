@@ -41,6 +41,7 @@
  *        2: firmware internal use
  *        3: license partition
  *        4: tsa configuration
+ *        5: bundle update
  *
  *   -  TTT is a type, which is just a unique value.  The same type value
  *      might appear in both locations, indicating a relationship between
@@ -85,6 +86,30 @@
 #define TLV_TAG_SKIP                    (0x00000000)
 #define TLV_TAG_INVALID                 (0xFFFFFFFF)
 
+
+/* TLV start.
+ *
+ * Marks the start of a TLV layout within a partition that may/may-not be
+ * a TLV partition. i.e. if a portion of data (at any offset) within a
+ * partition is expected to be in TLV format, then the first tag in this
+ * layout is expected to be TLV_TAG_START.
+ *
+ * This tag is not used in TLV layouts where the entire partition is TLV.
+ * Please continue using TLV_TAG_PARTITION_HEADER to indicate the start
+ * of TLV layout in such cases.
+ */
+
+#define TLV_TAG_START                   (0xEF10BA5E)
+
+struct tlv_start {
+  uint32_t tag;
+  uint32_t length;
+  /* Length of the TLV structure following this tag - includes length of all tags
+   * within the TLV layout starting with this TLV_TAG_START.
+   * Includes TLV_TAG_END. Does not include TLV_TAG_START
+   */
+  uint32_t tlv_layout_len;
+};
 
 /* TLV partition header.
  *
@@ -511,6 +536,16 @@ struct tlv_pcie_tx_amp_config {
   uint8_t lane_amp[16];
 };
 
+/* Enum to select an OEM and enable additional functionality related to this OEM
+ * (e.g. vendor extensions to VPD, NC-SI etc.) */
+#define TLV_TAG_OEM  (0x00230000)
+struct tlv_oem {
+  uint32_t tag;
+  uint32_t length;
+  uint8_t oem;
+};
+#define TLV_OEM_NONE 0
+#define TLV_OEM_DELL 1
 
 /* Global PCIe configuration, second revision. This represents the visible PFs
  * by a bitmap rather than having the number of the highest visible one. As such
@@ -1006,6 +1041,23 @@ struct tlv_l3xudp_ports {
   uint32_t length;
   uint16_t ports[];
 #define TLV_TAG_L3XUDP_PORTS_MAX_NUM_PORTS 16
+};
+
+/* Wake on LAN setting
+ *
+ * Enables the Wake On Lan (WoL) functionality on the given port. This will be
+ * a persistent setting for manageability firmware. Drivers have direct access
+ * to WoL using MCDI.
+ */
+#define TLV_TAG_WAKE_ON_LAN(port)       (0x102b0000 + (port))
+struct tlv_wake_on_lan {
+  uint32_t tag;
+  uint32_t length;
+  uint8_t  mode;
+  uint8_t  bytes[];
+#define TLV_WAKE_ON_LAN_MODE_DISABLED      0
+#define TLV_WAKE_ON_LAN_MODE_MAGIC_PACKET  1
+#define TLV_WAKE_ON_LAN_MAX_NUM_BYTES    255
 };
 
 #endif /* CI_MGMT_TLV_LAYOUT_H */

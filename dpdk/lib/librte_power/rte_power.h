@@ -20,12 +20,14 @@ extern "C" {
 #endif
 
 /* Power Management Environment State */
-enum power_management_env {PM_ENV_NOT_SET, PM_ENV_ACPI_CPUFREQ, PM_ENV_KVM_VM};
+enum power_management_env {PM_ENV_NOT_SET, PM_ENV_ACPI_CPUFREQ, PM_ENV_KVM_VM,
+		PM_ENV_PSTATE_CPUFREQ};
 
 /**
  * Set the default power management implementation. If this is not called prior
  * to rte_power_init(), then auto-detect of the environment will take place.
- * It is thread safe.
+ * It is thread safe. New env can be set only in uninitialized state
+ * (thus rte_power_unset_env must be called if different env was already set).
  *
  * @param env
  *  env. The environment in which to initialise Power Management for.
@@ -257,6 +259,7 @@ struct rte_power_core_capabilities {
 		RTE_STD_C11
 		struct {
 			uint64_t turbo:1;	/**< Turbo can be enabled. */
+			uint64_t priority:1;	/**< SST-BF high freq core */
 		};
 	};
 };

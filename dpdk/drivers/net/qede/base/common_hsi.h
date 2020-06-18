@@ -13,12 +13,12 @@
 /* Temporarily here should be added to HSI automatically by resource allocation
  * tool.
  */
-#define T_TEST_AGG_INT_TEMP    6
-#define	M_TEST_AGG_INT_TEMP    8
-#define	U_TEST_AGG_INT_TEMP    6
-#define	X_TEST_AGG_INT_TEMP    14
-#define	Y_TEST_AGG_INT_TEMP    4
-#define	P_TEST_AGG_INT_TEMP    4
+#define T_TEST_AGG_INT_TEMP  6
+#define M_TEST_AGG_INT_TEMP  8
+#define U_TEST_AGG_INT_TEMP  6
+#define X_TEST_AGG_INT_TEMP  14
+#define Y_TEST_AGG_INT_TEMP  4
+#define P_TEST_AGG_INT_TEMP  4
 
 #define X_FINAL_CLEANUP_AGG_INT  1
 
@@ -30,21 +30,20 @@
 #define ISCSI_CDU_TASK_SEG_TYPE       0
 #define FCOE_CDU_TASK_SEG_TYPE        0
 #define RDMA_CDU_TASK_SEG_TYPE        1
+#define ETH_CDU_TASK_SEG_TYPE         2
 
 #define FW_ASSERT_GENERAL_ATTN_IDX    32
-
-#define MAX_PINNED_CCFC			32
 
 #define EAGLE_ENG1_WORKAROUND_NIG_FLOWCTRL_MODE	3
 
 /* Queue Zone sizes in bytes */
-#define TSTORM_QZONE_SIZE    8	 /*tstorm_scsi_queue_zone*/
-#define MSTORM_QZONE_SIZE    16  /*mstorm_eth_queue_zone. Used only for RX
-				  *producer of VFs in backward compatibility
-				  *mode.
-				  */
-#define USTORM_QZONE_SIZE    8	 /*ustorm_eth_queue_zone*/
-#define XSTORM_QZONE_SIZE    8	 /*xstorm_eth_queue_zone*/
+#define TSTORM_QZONE_SIZE    8   /*tstorm_queue_zone*/
+/*mstorm_eth_queue_zone. Used only for RX producer of VFs in backward
+ * compatibility mode.
+ */
+#define MSTORM_QZONE_SIZE    16
+#define USTORM_QZONE_SIZE    8   /*ustorm_queue_zone*/
+#define XSTORM_QZONE_SIZE    8   /*xstorm_eth_queue_zone*/
 #define YSTORM_QZONE_SIZE    0
 #define PSTORM_QZONE_SIZE    0
 
@@ -61,7 +60,8 @@
  */
 #define ETH_MAX_NUM_RX_QUEUES_PER_VF_QUAD     112
 
-
+#define ETH_RGSRC_CTX_SIZE                6 /*Size in QREGS*/
+#define ETH_TGSRC_CTX_SIZE                6 /*Size in QREGS*/
 /********************************/
 /* CORE (LIGHT L2) FW CONSTANTS */
 /********************************/
@@ -76,15 +76,13 @@
 
 #define CORE_SPQE_PAGE_SIZE_BYTES                       4096
 
-/*
- * Usually LL2 queues are opened in pairs TX-RX.
- * There is a hard restriction on number of RX queues (limited by Tstorm RAM)
- * and TX counters (Pstorm RAM).
- * Number of TX queues is almost unlimited.
- * The constants are different so as to allow asymmetric LL2 connections
- */
+/* Number of LL2 RAM based (RX producers and statistics) queues */
+#define MAX_NUM_LL2_RX_RAM_QUEUES               32
+/* Number of LL2 context based (RX producers and statistics) queues */
+#define MAX_NUM_LL2_RX_CTX_QUEUES               208
+#define MAX_NUM_LL2_RX_QUEUES (MAX_NUM_LL2_RX_RAM_QUEUES + \
+			       MAX_NUM_LL2_RX_CTX_QUEUES)
 
-#define MAX_NUM_LL2_RX_QUEUES					48
 #define MAX_NUM_LL2_TX_STATS_COUNTERS			48
 
 
@@ -94,10 +92,10 @@
 /****************************************************************************/
 
 
-#define FW_MAJOR_VERSION        8
-#define FW_MINOR_VERSION        37
-#define FW_REVISION_VERSION     7
-#define FW_ENGINEERING_VERSION  0
+#define FW_MAJOR_VERSION		8
+#define FW_MINOR_VERSION		40
+#define FW_REVISION_VERSION		33
+#define FW_ENGINEERING_VERSION	0
 
 /***********************/
 /* COMMON HW CONSTANTS */
@@ -106,62 +104,47 @@
 /* PCI functions */
 #define MAX_NUM_PORTS_BB        (2)
 #define MAX_NUM_PORTS_K2        (4)
-#define MAX_NUM_PORTS_E5        (4)
-#define MAX_NUM_PORTS           (MAX_NUM_PORTS_E5)
+#define MAX_NUM_PORTS           (MAX_NUM_PORTS_K2)
 
 #define MAX_NUM_PFS_BB          (8)
 #define MAX_NUM_PFS_K2          (16)
-#define MAX_NUM_PFS_E5          (16)
-#define MAX_NUM_PFS             (MAX_NUM_PFS_E5)
+#define MAX_NUM_PFS             (MAX_NUM_PFS_K2)
 #define MAX_NUM_OF_PFS_IN_CHIP  (16) /* On both engines */
 
 #define MAX_NUM_VFS_BB          (120)
 #define MAX_NUM_VFS_K2          (192)
-#define MAX_NUM_VFS_E4          (MAX_NUM_VFS_K2)
-#define MAX_NUM_VFS_E5          (240)
-#define COMMON_MAX_NUM_VFS      (MAX_NUM_VFS_E5)
+#define COMMON_MAX_NUM_VFS      (MAX_NUM_VFS_K2)
 
 #define MAX_NUM_FUNCTIONS_BB    (MAX_NUM_PFS_BB + MAX_NUM_VFS_BB)
 #define MAX_NUM_FUNCTIONS_K2    (MAX_NUM_PFS_K2 + MAX_NUM_VFS_K2)
-#define MAX_NUM_FUNCTIONS       (MAX_NUM_PFS + MAX_NUM_VFS_E4)
 
 /* in both BB and K2, the VF number starts from 16. so for arrays containing all
  * possible PFs and VFs - we need a constant for this size
  */
 #define MAX_FUNCTION_NUMBER_BB      (MAX_NUM_PFS + MAX_NUM_VFS_BB)
 #define MAX_FUNCTION_NUMBER_K2      (MAX_NUM_PFS + MAX_NUM_VFS_K2)
-#define MAX_FUNCTION_NUMBER_E4      (MAX_NUM_PFS + MAX_NUM_VFS_E4)
-#define MAX_FUNCTION_NUMBER_E5      (MAX_NUM_PFS + MAX_NUM_VFS_E5)
-#define COMMON_MAX_FUNCTION_NUMBER  (MAX_NUM_PFS + MAX_NUM_VFS_E5)
+#define COMMON_MAX_FUNCTION_NUMBER  (MAX_NUM_PFS + MAX_NUM_VFS_K2)
 
 #define MAX_NUM_VPORTS_K2       (208)
 #define MAX_NUM_VPORTS_BB       (160)
-#define MAX_NUM_VPORTS_E4       (MAX_NUM_VPORTS_K2)
-#define MAX_NUM_VPORTS_E5       (256)
-#define COMMON_MAX_NUM_VPORTS   (MAX_NUM_VPORTS_E5)
+#define COMMON_MAX_NUM_VPORTS   (MAX_NUM_VPORTS_K2)
 
 #define MAX_NUM_L2_QUEUES_BB	(256)
 #define MAX_NUM_L2_QUEUES_K2    (320)
-#define MAX_NUM_L2_QUEUES_E5    (320) /* TODO_E5_VITALY - fix to 512 */
-#define MAX_NUM_L2_QUEUES		(MAX_NUM_L2_QUEUES_E5)
+
+#define FW_LOWEST_CONSUMEDDMAE_CHANNEL   (26)
 
 /* Traffic classes in network-facing blocks (PBF, BTB, NIG, BRB, PRS and QM) */
 #define NUM_PHYS_TCS_4PORT_K2     4
-#define NUM_PHYS_TCS_4PORT_TX_E5  6
-#define NUM_PHYS_TCS_4PORT_RX_E5  4
 #define NUM_OF_PHYS_TCS           8
 #define PURE_LB_TC                NUM_OF_PHYS_TCS
 #define NUM_TCS_4PORT_K2          (NUM_PHYS_TCS_4PORT_K2 + 1)
-#define NUM_TCS_4PORT_TX_E5       (NUM_PHYS_TCS_4PORT_TX_E5 + 1)
-#define NUM_TCS_4PORT_RX_E5       (NUM_PHYS_TCS_4PORT_RX_E5 + 1)
 #define NUM_OF_TCS                (NUM_OF_PHYS_TCS + 1)
 
 /* CIDs */
-#define NUM_OF_CONNECTION_TYPES_E4 (8)
-#define NUM_OF_CONNECTION_TYPES_E5 (16)
+#define NUM_OF_CONNECTION_TYPES (8)
 #define NUM_OF_TASK_TYPES       (8)
 #define NUM_OF_LCIDS            (320)
-#define NUM_OF_LTIDS            (320)
 
 /* Global PXP windows (GTT) */
 #define NUM_OF_GTT          19
@@ -188,6 +171,8 @@
 #define	CDU_CONTEXT_VALIDATION_CFG_USE_CID				(4)
 #define	CDU_CONTEXT_VALIDATION_CFG_USE_ACTIVE				(5)
 
+/*enabled, type A, use all */
+#define	CDU_CONTEXT_VALIDATION_DEFAULT_CFG				(0x3D)
 
 /*****************/
 /* DQ CONSTANTS  */
@@ -234,6 +219,7 @@
 #define DQ_XCM_TOE_TX_BD_PROD_CMD           DQ_XCM_AGG_VAL_SEL_WORD4
 #define DQ_XCM_TOE_MORE_TO_SEND_SEQ_CMD     DQ_XCM_AGG_VAL_SEL_REG3
 #define DQ_XCM_TOE_LOCAL_ADV_WND_SEQ_CMD    DQ_XCM_AGG_VAL_SEL_REG4
+#define DQ_XCM_ROCE_ACK_EDPM_DORQ_SEQ_CMD   DQ_XCM_AGG_VAL_SEL_WORD5
 
 /* UCM agg val selection (HW) */
 #define DQ_UCM_AGG_VAL_SEL_WORD0  0
@@ -308,6 +294,7 @@
 #define DQ_UCM_AGG_FLG_SHIFT_RULE1EN   7
 
 /* UCM agg counter flag selection (FW) */
+#define DQ_UCM_NVMF_NEW_CQE_CF_CMD          (1 << DQ_UCM_AGG_FLG_SHIFT_CF1)
 #define DQ_UCM_ETH_PMD_TX_ARM_CMD           (1 << DQ_UCM_AGG_FLG_SHIFT_CF4)
 #define DQ_UCM_ETH_PMD_RX_ARM_CMD           (1 << DQ_UCM_AGG_FLG_SHIFT_CF5)
 #define DQ_UCM_ROCE_CQ_ARM_SE_CF_CMD        (1 << DQ_UCM_AGG_FLG_SHIFT_CF4)
@@ -339,6 +326,9 @@
 /* PWM address mapping */
 #define DQ_PWM_OFFSET_DPM_BASE				0x0
 #define DQ_PWM_OFFSET_DPM_END				0x27
+#define DQ_PWM_OFFSET_XCM32_24ICID_BASE		0x28
+#define DQ_PWM_OFFSET_UCM32_24ICID_BASE		0x30
+#define DQ_PWM_OFFSET_TCM32_24ICID_BASE		0x38
 #define DQ_PWM_OFFSET_XCM16_BASE			0x40
 #define DQ_PWM_OFFSET_XCM32_BASE			0x44
 #define DQ_PWM_OFFSET_UCM16_BASE			0x48
@@ -357,6 +347,13 @@
 #define DQ_PWM_OFFSET_UCM_RDMA_ARM_FLAGS	(DQ_PWM_OFFSET_UCM_FLAGS)
 #define DQ_PWM_OFFSET_TCM_ROCE_RQ_PROD		(DQ_PWM_OFFSET_TCM16_BASE + 1)
 #define DQ_PWM_OFFSET_TCM_IWARP_RQ_PROD		(DQ_PWM_OFFSET_TCM16_BASE + 3)
+
+#define DQ_PWM_OFFSET_XCM_RDMA_24B_ICID_SQ_PROD \
+	(DQ_PWM_OFFSET_XCM32_24ICID_BASE + 2)
+#define DQ_PWM_OFFSET_UCM_RDMA_24B_ICID_CQ_CONS_32BIT \
+	(DQ_PWM_OFFSET_UCM32_24ICID_BASE + 4)
+#define DQ_PWM_OFFSET_TCM_ROCE_24B_ICID_RQ_PROD	\
+	(DQ_PWM_OFFSET_TCM32_24ICID_BASE + 1)
 
 #define DQ_REGION_SHIFT				        (12)
 
@@ -394,6 +391,10 @@
 /* number of global Vport/QCN rate limiters */
 #define MAX_QM_GLOBAL_RLS			256
 
+/* number of global rate limiters */
+#define MAX_QM_GLOBAL_RLS		256
+#define COMMON_MAX_QM_GLOBAL_RLS	(MAX_QM_GLOBAL_RLS)
+
 /* QM registers data */
 #define QM_LINE_CRD_REG_WIDTH		16
 #define QM_LINE_CRD_REG_SIGN_BIT	(1 << (QM_LINE_CRD_REG_WIDTH - 1))
@@ -412,9 +413,8 @@
 #define CAU_FSM_ETH_TX  1
 
 /* Number of Protocol Indices per Status Block */
-#define PIS_PER_SB_E4    12
-#define PIS_PER_SB_E5    8
-#define MAX_PIS_PER_SB_E4	 OSAL_MAX_T(PIS_PER_SB_E4, PIS_PER_SB_E5)
+#define PIS_PER_SB    12
+#define MAX_PIS_PER_SB	 PIS_PER_SB
 
 /* fsm is stopped or not valid for this sb */
 #define CAU_HC_STOPPED_STATE		3
@@ -430,8 +430,7 @@
 
 #define MAX_SB_PER_PATH_K2			(368)
 #define MAX_SB_PER_PATH_BB			(288)
-#define MAX_SB_PER_PATH_E5			(512)
-#define MAX_TOT_SB_PER_PATH			MAX_SB_PER_PATH_E5
+#define MAX_TOT_SB_PER_PATH			MAX_SB_PER_PATH_K2
 
 #define MAX_SB_PER_PF_MIMD			129
 #define MAX_SB_PER_PF_SIMD			64
@@ -449,9 +448,6 @@
 #define IGU_MEM_PBA_MSIX_RESERVED_UPPER		0x03ff
 
 #define IGU_CMD_INT_ACK_BASE			0x0400
-#define IGU_CMD_INT_ACK_UPPER			(IGU_CMD_INT_ACK_BASE + \
-						 MAX_TOT_SB_PER_PATH - \
-						 1)
 #define IGU_CMD_INT_ACK_RESERVED_UPPER		0x05ff
 
 #define IGU_CMD_ATTN_BIT_UPD_UPPER		0x05f0
@@ -464,9 +460,6 @@
 #define IGU_REG_SISR_MDPC_WOMASK_UPPER		0x05f6
 
 #define IGU_CMD_PROD_UPD_BASE			0x0600
-#define IGU_CMD_PROD_UPD_UPPER			(IGU_CMD_PROD_UPD_BASE + \
-						 MAX_TOT_SB_PER_PATH  - \
-						 1)
 #define IGU_CMD_PROD_UPD_RESERVED_UPPER		0x07ff
 
 /*****************/
@@ -639,12 +632,8 @@
 #define MAX_NUM_ILT_RECORDS \
 	OSAL_MAX_T(PXP_NUM_ILT_RECORDS_BB, PXP_NUM_ILT_RECORDS_K2)
 
-#define PXP_NUM_ILT_RECORDS_E5 13664
-
-
 // Host Interface
-#define PXP_QUEUES_ZONE_MAX_NUM_E4	320
-#define PXP_QUEUES_ZONE_MAX_NUM_E5	512
+#define PXP_QUEUES_ZONE_MAX_NUM	320
 
 
 /*****************/
@@ -691,11 +680,12 @@
 /* PBF CONSTANTS  */
 /******************/
 
-/* Number of PBF command queue lines. Each line is 32B. */
-#define PBF_MAX_CMD_LINES_E4 3328
-#define PBF_MAX_CMD_LINES_E5 5280
+/* Number of PBF command queue lines. */
+#define PBF_MAX_CMD_LINES 3328 /* Each line is 256b */
 
 /* Number of BTB blocks. Each block is 256B. */
+#define BTB_MAX_BLOCKS_BB 1440 /* 2880 blocks of 128B */
+#define BTB_MAX_BLOCKS_K2 1840 /* 3680 blocks of 128B */
 #define BTB_MAX_BLOCKS 1440
 
 /*****************/
@@ -721,6 +711,12 @@ struct common_queue_zone {
 	__le16 ring_drv_data_consumer;
 	__le16 reserved;
 };
+
+struct nvmf_eqe_data {
+	__le16 icid /* The connection ID for which the EQE is written. */;
+	u8 reserved0[6] /* Alignment to line */;
+};
+
 
 /*
  * ETH Rx producers data
@@ -791,6 +787,8 @@ enum protocol_type {
 	PROTOCOLID_PREROCE /* Pre (tapeout) RoCE */,
 	PROTOCOLID_COMMON /* ProtocolCommon */,
 	PROTOCOLID_TCP /* TCP */,
+	PROTOCOLID_RDMA /* RDMA */,
+	PROTOCOLID_SCSI /* SCSI */,
 	MAX_PROTOCOL_TYPE
 };
 
@@ -800,6 +798,36 @@ struct regpair {
 	__le32 hi /* high word for reg-pair */;
 };
 
+/*
+ * RoCE Destroy Event Data
+ */
+struct rdma_eqe_destroy_qp {
+	__le32 cid /* Dedicated field RoCE destroy QP event */;
+	u8 reserved[4];
+};
+
+/*
+ * RoCE Suspend Event Data
+ */
+struct rdma_eqe_suspend_qp {
+	__le32 cid /* Dedicated field RoCE Suspend QP event */;
+	u8 reserved[4];
+};
+
+/*
+ * RDMA Event Data Union
+ */
+union rdma_eqe_data {
+	struct regpair async_handle /* Host handle for the Async Completions */;
+	/* RoCE Destroy Event Data */
+	struct rdma_eqe_destroy_qp rdma_destroy_qp_data;
+	/* RoCE Suspend QP Event Data */
+	struct rdma_eqe_suspend_qp rdma_suspend_qp_data;
+};
+
+struct tstorm_queue_zone {
+	__le32 reserved[2];
+};
 
 
 /*
@@ -1015,6 +1043,18 @@ struct db_pwm_addr {
 };
 
 /*
+ * Structure for doorbell address, in legacy mode, without DEMS
+ */
+struct db_legacy_wo_dems_addr {
+	__le32 addr;
+#define DB_LEGACY_WO_DEMS_ADDR_RESERVED0_MASK  0x3
+#define DB_LEGACY_WO_DEMS_ADDR_RESERVED0_SHIFT 0
+#define DB_LEGACY_WO_DEMS_ADDR_ICID_MASK       0x3FFFFFFF /* internal CID */
+#define DB_LEGACY_WO_DEMS_ADDR_ICID_SHIFT      2
+};
+
+
+/*
  * Parameters to RDMA firmware, passed in EDPM doorbell
  */
 struct db_rdma_dpm_params {
@@ -1045,6 +1085,43 @@ struct db_rdma_dpm_params {
 #define DB_RDMA_DPM_PARAMS_CONN_TYPE_IS_IWARP_MASK  0x1
 #define DB_RDMA_DPM_PARAMS_CONN_TYPE_IS_IWARP_SHIFT 31
 };
+
+/*
+ * Parameters to RDMA firmware, passed in EDPM doorbell
+ */
+struct db_rdma_24b_icid_dpm_params {
+	__le32 params;
+/* Size in QWORD-s of the DPM burst */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_SIZE_MASK                0x3F
+#define DB_RDMA_24B_ICID_DPM_PARAMS_SIZE_SHIFT               0
+/* Type of DPM transacation (DPM_RDMA) (use enum db_dpm_type) */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_DPM_TYPE_MASK            0x3
+#define DB_RDMA_24B_ICID_DPM_PARAMS_DPM_TYPE_SHIFT           6
+/* opcode for RDMA operation */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_OPCODE_MASK              0xFF
+#define DB_RDMA_24B_ICID_DPM_PARAMS_OPCODE_SHIFT             8
+/* ICID extension */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_ICID_EXT_MASK            0xFF
+#define DB_RDMA_24B_ICID_DPM_PARAMS_ICID_EXT_SHIFT           16
+/* Number of invalid bytes in last QWROD of the DPM transaction */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_INV_BYTE_CNT_MASK        0x7
+#define DB_RDMA_24B_ICID_DPM_PARAMS_INV_BYTE_CNT_SHIFT       24
+/* Flag indicating 24b icid mode is enabled */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_EXT_ICID_MODE_EN_MASK    0x1
+#define DB_RDMA_24B_ICID_DPM_PARAMS_EXT_ICID_MODE_EN_SHIFT   27
+/* RoCE completion flag */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_COMPLETION_FLG_MASK      0x1
+#define DB_RDMA_24B_ICID_DPM_PARAMS_COMPLETION_FLG_SHIFT     28
+/* RoCE S flag */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_S_FLG_MASK               0x1
+#define DB_RDMA_24B_ICID_DPM_PARAMS_S_FLG_SHIFT              29
+#define DB_RDMA_24B_ICID_DPM_PARAMS_RESERVED1_MASK           0x1
+#define DB_RDMA_24B_ICID_DPM_PARAMS_RESERVED1_SHIFT          30
+/* Connection type is iWARP */
+#define DB_RDMA_24B_ICID_DPM_PARAMS_CONN_TYPE_IS_IWARP_MASK  0x1
+#define DB_RDMA_24B_ICID_DPM_PARAMS_CONN_TYPE_IS_IWARP_SHIFT 31
+};
+
 
 /*
  * Structure for doorbell data, in RDMA DPM mode, for the first doorbell in a
@@ -1435,40 +1512,20 @@ enum rss_hash_type {
 /*
  * status block structure
  */
-struct status_block_e4 {
-	__le16 pi_array[PIS_PER_SB_E4];
+struct status_block {
+	__le16 pi_array[PIS_PER_SB];
 	__le32 sb_num;
-#define STATUS_BLOCK_E4_SB_NUM_MASK      0x1FF
-#define STATUS_BLOCK_E4_SB_NUM_SHIFT     0
-#define STATUS_BLOCK_E4_ZERO_PAD_MASK    0x7F
-#define STATUS_BLOCK_E4_ZERO_PAD_SHIFT   9
-#define STATUS_BLOCK_E4_ZERO_PAD2_MASK   0xFFFF
-#define STATUS_BLOCK_E4_ZERO_PAD2_SHIFT  16
+#define STATUS_BLOCK_SB_NUM_MASK      0x1FF
+#define STATUS_BLOCK_SB_NUM_SHIFT     0
+#define STATUS_BLOCK_ZERO_PAD_MASK    0x7F
+#define STATUS_BLOCK_ZERO_PAD_SHIFT   9
+#define STATUS_BLOCK_ZERO_PAD2_MASK   0xFFFF
+#define STATUS_BLOCK_ZERO_PAD2_SHIFT  16
 	__le32 prod_index;
-#define STATUS_BLOCK_E4_PROD_INDEX_MASK  0xFFFFFF
-#define STATUS_BLOCK_E4_PROD_INDEX_SHIFT 0
-#define STATUS_BLOCK_E4_ZERO_PAD3_MASK   0xFF
-#define STATUS_BLOCK_E4_ZERO_PAD3_SHIFT  24
-};
-
-
-/*
- * status block structure
- */
-struct status_block_e5 {
-	__le16 pi_array[PIS_PER_SB_E5];
-	__le32 sb_num;
-#define STATUS_BLOCK_E5_SB_NUM_MASK      0x1FF
-#define STATUS_BLOCK_E5_SB_NUM_SHIFT     0
-#define STATUS_BLOCK_E5_ZERO_PAD_MASK    0x7F
-#define STATUS_BLOCK_E5_ZERO_PAD_SHIFT   9
-#define STATUS_BLOCK_E5_ZERO_PAD2_MASK   0xFFFF
-#define STATUS_BLOCK_E5_ZERO_PAD2_SHIFT  16
-	__le32 prod_index;
-#define STATUS_BLOCK_E5_PROD_INDEX_MASK  0xFFFFFF
-#define STATUS_BLOCK_E5_PROD_INDEX_SHIFT 0
-#define STATUS_BLOCK_E5_ZERO_PAD3_MASK   0xFF
-#define STATUS_BLOCK_E5_ZERO_PAD3_SHIFT  24
+#define STATUS_BLOCK_PROD_INDEX_MASK  0xFFFFFF
+#define STATUS_BLOCK_PROD_INDEX_SHIFT 0
+#define STATUS_BLOCK_ZERO_PAD3_MASK   0xFF
+#define STATUS_BLOCK_ZERO_PAD3_SHIFT  24
 };
 
 

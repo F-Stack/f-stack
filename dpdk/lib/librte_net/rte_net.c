@@ -140,8 +140,8 @@ ptype_tunnel(uint16_t *proto, const struct rte_mbuf *m,
 			[0xa] = 12,
 			[0xb] = 16,
 		};
-		const struct gre_hdr *gh;
-		struct gre_hdr gh_copy;
+		const struct rte_gre_hdr *gh;
+		struct rte_gre_hdr gh_copy;
 		uint16_t flags;
 
 		gh = rte_pktmbuf_read(m, *off, sizeof(*gh), &gh_copy);
@@ -155,16 +155,16 @@ ptype_tunnel(uint16_t *proto, const struct rte_mbuf *m,
 
 		*off += opt_len[flags];
 		*proto = gh->proto;
-		if (*proto == rte_cpu_to_be_16(ETHER_TYPE_TEB))
+		if (*proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_TEB))
 			return RTE_PTYPE_TUNNEL_NVGRE;
 		else
 			return RTE_PTYPE_TUNNEL_GRE;
 	}
 	case IPPROTO_IPIP:
-		*proto = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		*proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		return RTE_PTYPE_TUNNEL_IP;
 	case IPPROTO_IPV6:
-		*proto = rte_cpu_to_be_16(ETHER_TYPE_IPv6);
+		*proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6);
 		return RTE_PTYPE_TUNNEL_IP; /* IP is also valid for IPv6 */
 	default:
 		return 0;
@@ -173,13 +173,13 @@ ptype_tunnel(uint16_t *proto, const struct rte_mbuf *m,
 
 /* get the ipv4 header length */
 static uint8_t
-ip4_hlen(const struct ipv4_hdr *hdr)
+ip4_hlen(const struct rte_ipv4_hdr *hdr)
 {
 	return (hdr->version_ihl & 0xf) * 4;
 }
 
 /* parse ipv6 extended headers, update offset and return next proto */
-int __rte_experimental
+int
 rte_net_skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 	int *frag)
 {
@@ -229,8 +229,8 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 	struct rte_net_hdr_lens *hdr_lens, uint32_t layers)
 {
 	struct rte_net_hdr_lens local_hdr_lens;
-	const struct ether_hdr *eh;
-	struct ether_hdr eh_copy;
+	const struct rte_ether_hdr *eh;
+	struct rte_ether_hdr eh_copy;
 	uint32_t pkt_type = RTE_PTYPE_L2_ETHER;
 	uint32_t off = 0;
 	uint16_t proto;
@@ -249,12 +249,12 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 	if ((layers & RTE_PTYPE_L2_MASK) == 0)
 		return 0;
 
-	if (proto == rte_cpu_to_be_16(ETHER_TYPE_IPv4))
+	if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
 		goto l3; /* fast path if packet is IPv4 */
 
-	if (proto == rte_cpu_to_be_16(ETHER_TYPE_VLAN)) {
-		const struct vlan_hdr *vh;
-		struct vlan_hdr vh_copy;
+	if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+		const struct rte_vlan_hdr *vh;
+		struct rte_vlan_hdr vh_copy;
 
 		pkt_type = RTE_PTYPE_L2_ETHER_VLAN;
 		vh = rte_pktmbuf_read(m, off, sizeof(*vh), &vh_copy);
@@ -263,9 +263,9 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 		off += sizeof(*vh);
 		hdr_lens->l2_len += sizeof(*vh);
 		proto = vh->eth_proto;
-	} else if (proto == rte_cpu_to_be_16(ETHER_TYPE_QINQ)) {
-		const struct vlan_hdr *vh;
-		struct vlan_hdr vh_copy;
+	} else if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
+		const struct rte_vlan_hdr *vh;
+		struct rte_vlan_hdr vh_copy;
 
 		pkt_type = RTE_PTYPE_L2_ETHER_QINQ;
 		vh = rte_pktmbuf_read(m, off + sizeof(*vh), sizeof(*vh),
@@ -275,11 +275,11 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 		off += 2 * sizeof(*vh);
 		hdr_lens->l2_len += 2 * sizeof(*vh);
 		proto = vh->eth_proto;
-	} else if ((proto == rte_cpu_to_be_16(ETHER_TYPE_MPLS)) ||
-		(proto == rte_cpu_to_be_16(ETHER_TYPE_MPLSM))) {
+	} else if ((proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_MPLS)) ||
+		(proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_MPLSM))) {
 		unsigned int i;
-		const struct mpls_hdr *mh;
-		struct mpls_hdr mh_copy;
+		const struct rte_mpls_hdr *mh;
+		struct rte_mpls_hdr mh_copy;
 
 #define MAX_MPLS_HDR 5
 		for (i = 0; i < MAX_MPLS_HDR; i++) {
@@ -299,9 +299,9 @@ l3:
 	if ((layers & RTE_PTYPE_L3_MASK) == 0)
 		return pkt_type;
 
-	if (proto == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {
-		const struct ipv4_hdr *ip4h;
-		struct ipv4_hdr ip4h_copy;
+	if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+		const struct rte_ipv4_hdr *ip4h;
+		struct rte_ipv4_hdr ip4h_copy;
 
 		ip4h = rte_pktmbuf_read(m, off, sizeof(*ip4h), &ip4h_copy);
 		if (unlikely(ip4h == NULL))
@@ -315,16 +315,16 @@ l3:
 			return pkt_type;
 
 		if (ip4h->fragment_offset & rte_cpu_to_be_16(
-				IPV4_HDR_OFFSET_MASK | IPV4_HDR_MF_FLAG)) {
+				RTE_IPV4_HDR_OFFSET_MASK | RTE_IPV4_HDR_MF_FLAG)) {
 			pkt_type |= RTE_PTYPE_L4_FRAG;
 			hdr_lens->l4_len = 0;
 			return pkt_type;
 		}
 		proto = ip4h->next_proto_id;
 		pkt_type |= ptype_l4(proto);
-	} else if (proto == rte_cpu_to_be_16(ETHER_TYPE_IPv6)) {
-		const struct ipv6_hdr *ip6h;
-		struct ipv6_hdr ip6h_copy;
+	} else if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+		const struct rte_ipv6_hdr *ip6h;
+		struct rte_ipv6_hdr ip6h_copy;
 		int frag = 0;
 
 		ip6h = rte_pktmbuf_read(m, off, sizeof(*ip6h), &ip6h_copy);
@@ -357,11 +357,11 @@ l3:
 	}
 
 	if ((pkt_type & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_UDP) {
-		hdr_lens->l4_len = sizeof(struct udp_hdr);
+		hdr_lens->l4_len = sizeof(struct rte_udp_hdr);
 		return pkt_type;
 	} else if ((pkt_type & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_TCP) {
-		const struct tcp_hdr *th;
-		struct tcp_hdr th_copy;
+		const struct rte_tcp_hdr *th;
+		struct rte_tcp_hdr th_copy;
 
 		th = rte_pktmbuf_read(m, off, sizeof(*th), &th_copy);
 		if (unlikely(th == NULL))
@@ -370,7 +370,7 @@ l3:
 		hdr_lens->l4_len = (th->data_off & 0xf0) >> 2;
 		return pkt_type;
 	} else if ((pkt_type & RTE_PTYPE_L4_MASK) == RTE_PTYPE_L4_SCTP) {
-		hdr_lens->l4_len = sizeof(struct sctp_hdr);
+		hdr_lens->l4_len = sizeof(struct rte_sctp_hdr);
 		return pkt_type;
 	} else {
 		uint32_t prev_off = off;
@@ -391,7 +391,7 @@ l3:
 		return pkt_type;
 
 	hdr_lens->inner_l2_len = 0;
-	if (proto == rte_cpu_to_be_16(ETHER_TYPE_TEB)) {
+	if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_TEB)) {
 		eh = rte_pktmbuf_read(m, off, sizeof(*eh), &eh_copy);
 		if (unlikely(eh == NULL))
 			return pkt_type;
@@ -401,9 +401,9 @@ l3:
 		hdr_lens->inner_l2_len = sizeof(*eh);
 	}
 
-	if (proto == rte_cpu_to_be_16(ETHER_TYPE_VLAN)) {
-		const struct vlan_hdr *vh;
-		struct vlan_hdr vh_copy;
+	if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+		const struct rte_vlan_hdr *vh;
+		struct rte_vlan_hdr vh_copy;
 
 		pkt_type &= ~RTE_PTYPE_INNER_L2_MASK;
 		pkt_type |= RTE_PTYPE_INNER_L2_ETHER_VLAN;
@@ -413,9 +413,9 @@ l3:
 		off += sizeof(*vh);
 		hdr_lens->inner_l2_len += sizeof(*vh);
 		proto = vh->eth_proto;
-	} else if (proto == rte_cpu_to_be_16(ETHER_TYPE_QINQ)) {
-		const struct vlan_hdr *vh;
-		struct vlan_hdr vh_copy;
+	} else if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
+		const struct rte_vlan_hdr *vh;
+		struct rte_vlan_hdr vh_copy;
 
 		pkt_type &= ~RTE_PTYPE_INNER_L2_MASK;
 		pkt_type |= RTE_PTYPE_INNER_L2_ETHER_QINQ;
@@ -431,9 +431,9 @@ l3:
 	if ((layers & RTE_PTYPE_INNER_L3_MASK) == 0)
 		return pkt_type;
 
-	if (proto == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {
-		const struct ipv4_hdr *ip4h;
-		struct ipv4_hdr ip4h_copy;
+	if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+		const struct rte_ipv4_hdr *ip4h;
+		struct rte_ipv4_hdr ip4h_copy;
 
 		ip4h = rte_pktmbuf_read(m, off, sizeof(*ip4h), &ip4h_copy);
 		if (unlikely(ip4h == NULL))
@@ -446,17 +446,17 @@ l3:
 		if ((layers & RTE_PTYPE_INNER_L4_MASK) == 0)
 			return pkt_type;
 		if (ip4h->fragment_offset &
-				rte_cpu_to_be_16(IPV4_HDR_OFFSET_MASK |
-					IPV4_HDR_MF_FLAG)) {
+				rte_cpu_to_be_16(RTE_IPV4_HDR_OFFSET_MASK |
+					RTE_IPV4_HDR_MF_FLAG)) {
 			pkt_type |= RTE_PTYPE_INNER_L4_FRAG;
 			hdr_lens->inner_l4_len = 0;
 			return pkt_type;
 		}
 		proto = ip4h->next_proto_id;
 		pkt_type |= ptype_inner_l4(proto);
-	} else if (proto == rte_cpu_to_be_16(ETHER_TYPE_IPv6)) {
-		const struct ipv6_hdr *ip6h;
-		struct ipv6_hdr ip6h_copy;
+	} else if (proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
+		const struct rte_ipv6_hdr *ip6h;
+		struct rte_ipv6_hdr ip6h_copy;
 		int frag = 0;
 
 		ip6h = rte_pktmbuf_read(m, off, sizeof(*ip6h), &ip6h_copy);
@@ -493,11 +493,11 @@ l3:
 	}
 
 	if ((pkt_type & RTE_PTYPE_INNER_L4_MASK) == RTE_PTYPE_INNER_L4_UDP) {
-		hdr_lens->inner_l4_len = sizeof(struct udp_hdr);
+		hdr_lens->inner_l4_len = sizeof(struct rte_udp_hdr);
 	} else if ((pkt_type & RTE_PTYPE_INNER_L4_MASK) ==
 			RTE_PTYPE_INNER_L4_TCP) {
-		const struct tcp_hdr *th;
-		struct tcp_hdr th_copy;
+		const struct rte_tcp_hdr *th;
+		struct rte_tcp_hdr th_copy;
 
 		th = rte_pktmbuf_read(m, off, sizeof(*th), &th_copy);
 		if (unlikely(th == NULL))
@@ -506,7 +506,7 @@ l3:
 		hdr_lens->inner_l4_len = (th->data_off & 0xf0) >> 2;
 	} else if ((pkt_type & RTE_PTYPE_INNER_L4_MASK) ==
 			RTE_PTYPE_INNER_L4_SCTP) {
-		hdr_lens->inner_l4_len = sizeof(struct sctp_hdr);
+		hdr_lens->inner_l4_len = sizeof(struct rte_sctp_hdr);
 	} else {
 		hdr_lens->inner_l4_len = 0;
 	}

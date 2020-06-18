@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2019 NXP
  */
 
 #ifndef _ENETC_HW_H_
@@ -11,6 +11,9 @@
 /* ENETC device IDs */
 #define ENETC_DEV_ID_VF		0xef00
 #define ENETC_DEV_ID		0xe100
+
+/* BD RING ALIGNMENT */
+#define ENETC_BD_RING_ALIGN	128
 
 /* ENETC register block BAR */
 #define ENETC_BAR_REGS			0x0
@@ -78,12 +81,17 @@ enum enetc_bdr_type {TX, RX};
 #define ENETC_PSR			0x00004 /* RO */
 #define ENETC_PSIPMR			0x00018
 #define ENETC_PSIPMR_SET_UP(n)		(0x1 << (n)) /* n = SI index */
-#define ENETC_PSIPMR_SET_MP(n)		(0x1 << ((n) + 8))
-#define ENETC_PSIPMR_SET_VLAN_MP(n)	(0x1 << ((n) + 16))
+#define ENETC_PSIPMR_SET_MP(n)		(0x1 << ((n) + 16))
 #define ENETC_PSIPMAR0(n)		(0x00100 + (n) * 0x20)
 #define ENETC_PSIPMAR1(n)		(0x00104 + (n) * 0x20)
 #define ENETC_PCAPR0			0x00900
 #define ENETC_PCAPR1			0x00904
+#define ENETC_PM0_IF_MODE		0x8300
+#define ENETC_PM1_IF_MODE		0x9300
+#define ENETC_PMO_IFM_RG		BIT(2)
+#define ENETC_PM0_IFM_RLP		(BIT(5) | BIT(11))
+#define ENETC_PM0_IFM_RGAUTO		(BIT(15) | ENETC_PMO_IFM_RG | BIT(1))
+#define ENETC_PM0_IFM_XGMII		BIT(12)
 
 #define ENETC_PV0CFGR(n)		(0x00920 + (n) * 0x10)
 #define ENETC_PVCFGR_SET_TXBDR(val)	((val) & 0xff)
@@ -92,9 +100,18 @@ enum enetc_bdr_type {TX, RX};
 #define ENETC_PM0_CMD_CFG		0x08008
 #define ENETC_PM0_TX_EN			BIT(0)
 #define ENETC_PM0_RX_EN			BIT(1)
+#define ENETC_PM0_CRC			BIT(6)
+
+#define ENETC_PAR_PORT_CFG		0x03050
+#define L3_CKSUM			BIT(0)
+#define L4_CKSUM			BIT(1)
 
 #define ENETC_PM0_MAXFRM		0x08014
-#define ENETC_SET_MAXFRM(val)		((val) << 16)
+#define ENETC_SET_TX_MTU(val)		((val) << 16)
+#define ENETC_SET_MAXFRM(val)		((val) & 0xffff)
+#define ENETC_PTXMBAR			0x0608
+/* n = TC index [0..7] */
+#define ENETC_PTCMSDUR(n)		(0x2020 + (n) * 4)
 
 #define ENETC_PM0_STATUS		0x08304
 #define ENETC_LINK_MODE			0x0000000000080000ULL
@@ -108,6 +125,36 @@ enum enetc_bdr_type {TX, RX};
 #define ENETC_GLOBAL_BASE		0x20000
 #define ENETC_G_EIPBRR0			0x00bf8
 #define ENETC_G_EIPBRR1			0x00bfc
+
+/* MAC Counters */
+/* Config register to reset counters*/
+#define ENETC_PM0_STAT_CONFIG		0x080E0
+/* Receive frames counter without error */
+#define ENETC_PM0_RFRM			0x08120
+/* Receive packets counter, good + bad */
+#define ENETC_PM0_RPKT			0x08160
+/* Received octets, good + bad */
+#define ENETC_PM0_REOCT			0x08120
+/* Transmit octets, good + bad */
+#define ENETC_PM0_TEOCT			0x08200
+/* Transmit frames counter without error */
+#define ENETC_PM0_TFRM			0x08220
+/* Transmit packets counter, good + bad */
+#define ENETC_PM0_TPKT			0x08260
+/* Dropped not Truncated packets counter */
+#define ENETC_PM0_RDRNTP		0x081C8
+/* Dropped + trucated packets counter */
+#define ENETC_PM0_RDRP			0x08158
+/* Receive packets error counter */
+#define ENETC_PM0_RERR			0x08138
+/* Transmit packets error counter */
+#define ENETC_PM0_TERR			0x08238
+
+/* Stats Reset Bit*/
+#define ENETC_CLEAR_STATS		BIT(2)
+
+#define ENETC_G_EPFBLPR(n)		(0xd00 + 4 * (n))
+#define ENETC_G_EPFBLPR1_XGMII		0x80000000
 
 /* general register accessors */
 #define enetc_rd_reg(reg)	rte_read32((void *)(reg))
@@ -142,6 +189,7 @@ enum enetc_bdr_type {TX, RX};
 #define ENETC_TXBD_FLAGS_F		BIT(15)
 
 /* ENETC Parsed values (Little Endian) */
+#define ENETC_PARSE_ERROR		0x8000
 #define ENETC_PKT_TYPE_ETHER            0x0060
 #define ENETC_PKT_TYPE_IPV4             0x0000
 #define ENETC_PKT_TYPE_IPV6             0x0020
@@ -170,8 +218,8 @@ struct enetc_hw {
 };
 
 struct enetc_eth_mac_info {
-	uint8_t addr[ETHER_ADDR_LEN];
-	uint8_t perm_addr[ETHER_ADDR_LEN];
+	uint8_t addr[RTE_ETHER_ADDR_LEN];
+	uint8_t perm_addr[RTE_ETHER_ADDR_LEN];
 	uint8_t get_link_status;
 };
 

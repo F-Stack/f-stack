@@ -20,8 +20,6 @@ endif
 
 EXPORT_MAP := rte_pmd_virtio_version.map
 
-LIBABIVER := 1
-
 #
 # all source are stored in SRCS-y
 #
@@ -33,6 +31,8 @@ SRCS-$(CONFIG_RTE_LIBRTE_VIRTIO_PMD) += virtio_rxtx_simple.c
 
 ifeq ($(CONFIG_RTE_ARCH_X86),y)
 SRCS-$(CONFIG_RTE_LIBRTE_VIRTIO_PMD) += virtio_rxtx_simple_sse.c
+else ifeq ($(CONFIG_RTE_ARCH_PPC_64),y)
+SRCS-$(CONFIG_RTE_LIBRTE_VIRTIO_PMD) += virtio_rxtx_simple_altivec.c
 else ifneq ($(filter y,$(CONFIG_RTE_ARCH_ARM) $(CONFIG_RTE_ARCH_ARM64)),)
 SRCS-$(CONFIG_RTE_LIBRTE_VIRTIO_PMD) += virtio_rxtx_simple_neon.c
 endif

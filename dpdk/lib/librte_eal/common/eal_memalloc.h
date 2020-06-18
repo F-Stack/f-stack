@@ -8,7 +8,6 @@
 #include <stdbool.h>
 
 #include <rte_memory.h>
-#include <rte_eal_memconfig.h>
 
 /*
  * Allocate segment of specified page size.
@@ -83,6 +82,10 @@ eal_memalloc_get_seg_fd(int list_idx, int seg_idx);
 /* returns 0 or -errno */
 int
 eal_memalloc_set_seg_fd(int list_idx, int seg_idx, int fd);
+
+/* returns 0 or -errno */
+int
+eal_memalloc_set_seg_list_fd(int list_idx, int fd);
 
 int
 eal_memalloc_get_seg_fd_offset(int list_idx, int seg_idx, size_t *offset);

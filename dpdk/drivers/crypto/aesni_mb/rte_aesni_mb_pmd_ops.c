@@ -4,11 +4,12 @@
 
 #include <string.h>
 
+#include <rte_string_fns.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_cryptodev_pmd.h>
 
-#include "rte_aesni_mb_pmd_private.h"
+#include "aesni_mb_pmd_private.h"
 
 
 static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
@@ -25,15 +26,9 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.min = 1,
 					.max = 16,
 					.increment = 1
-#else
-					.min = 12,
-					.max = 12,
-					.increment = 0
-#endif
 				},
 				.iv_size = { 0 }
 			}, }
@@ -48,23 +43,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 64,
 				.key_size = {
 					.min = 1,
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.max = 65535,
-#else
-					.max = 64,
-#endif
 					.increment = 1
 				},
 				.digest_size = {
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.min = 1,
 					.max = 20,
 					.increment = 1
-#else
-					.min = 12,
-					.max = 12,
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA1 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA1,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
-#endif
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 20,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -79,23 +85,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 64,
 				.key_size = {
 					.min = 1,
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.max = 65535,
-#else
-					.max = 64,
-#endif
 					.increment = 1
 				},
 				.digest_size = {
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.min = 1,
 					.max = 28,
 					.increment = 1
-#else
-					.min = 14,
-					.max = 14,
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA224 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA224,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
-#endif
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 28,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -110,23 +127,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 64,
 				.key_size = {
 					.min = 1,
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.max = 65535,
-#else
-					.max = 64,
-#endif
 					.increment = 1
 				},
 				.digest_size = {
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.min = 1,
 					.max = 32,
 					.increment = 1
-#else
-					.min = 16,
-					.max = 16,
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA256 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA256,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
-#endif
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 32,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -141,23 +169,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 128,
 				.key_size = {
 					.min = 1,
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.max = 65535,
-#else
-					.max = 128,
-#endif
 					.increment = 1
 				},
 				.digest_size = {
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.min = 1,
 					.max = 48,
 					.increment = 1
-#else
-					.min = 24,
-					.max = 24,
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA384 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA384,
+				.block_size = 128,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
-#endif
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 48,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -172,23 +211,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 128,
 				.key_size = {
 					.min = 1,
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.max = 65535,
-#else
-					.max = 128,
-#endif
 					.increment = 1
 				},
 				.digest_size = {
-#if IMB_VERSION_NUM >= IMB_VERSION(0, 50, 0)
 					.min = 1,
 					.max = 64,
 					.increment = 1
-#else
-					.min = 32,
-					.max = 32,
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA512  */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA512,
+				.block_size = 128,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
-#endif
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 64,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -416,6 +466,31 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* AES GMAC (AUTH) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_AES_GMAC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.digest_size = {
+					.min = 8,
+					.max = 16,
+					.increment = 4
+				},
+				.iv_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
 
@@ -540,7 +615,7 @@ aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
 	struct rte_ring *r;
 	char ring_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 
-	unsigned int n = snprintf(ring_name, sizeof(ring_name), "%s", qp->name);
+	unsigned int n = strlcpy(ring_name, qp->name, sizeof(ring_name));
 
 	if (n >= sizeof(ring_name))
 		return NULL;
@@ -566,7 +641,7 @@ aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
 static int
 aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id, struct rte_mempool *session_pool)
+		int socket_id)
 {
 	struct aesni_mb_qp *qp = NULL;
 	struct aesni_mb_private *internals = dev->data->dev_private;
@@ -595,7 +670,28 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		goto qp_setup_cleanup;
 	}
 
-	qp->op_fns = &job_ops[internals->vector_mode];
+	switch (internals->vector_mode) {
+	case RTE_AESNI_MB_SSE:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_SSE;
+		init_mb_mgr_sse(qp->mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX;
+		init_mb_mgr_avx(qp->mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX2:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX2;
+		init_mb_mgr_avx2(qp->mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX512:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX512;
+		init_mb_mgr_avx512(qp->mb_mgr);
+		break;
+	default:
+		AESNI_MB_LOG(ERR, "Unsupported vector mode %u\n",
+				internals->vector_mode);
+		goto qp_setup_cleanup;
+	}
 
 	qp->ingress_queue = aesni_mb_pmd_qp_create_processed_ops_ring(qp,
 			qp_conf->nb_descriptors, socket_id);
@@ -604,7 +700,8 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		goto qp_setup_cleanup;
 	}
 
-	qp->sess_mp = session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	memset(&qp->stats, 0, sizeof(qp->stats));
 
@@ -612,14 +709,11 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 
 	snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
 				"digest_mp_%u_%u", dev->data->dev_id, qp_id);
-
-	/* Initialise multi-buffer manager */
-	(*qp->op_fns->job.init_mgr)(qp->mb_mgr);
 	return 0;
 
 qp_setup_cleanup:
 	if (qp) {
-		if (qp->mb_mgr == NULL)
+		if (qp->mb_mgr)
 			free_mb_mgr(qp->mb_mgr);
 		rte_free(qp);
 	}
@@ -663,7 +757,7 @@ aesni_mb_pmd_sym_session_configure(struct rte_cryptodev *dev,
 		return -ENOMEM;
 	}
 
-	ret = aesni_mb_set_session_parameters(&job_ops[internals->vector_mode],
+	ret = aesni_mb_set_session_parameters(internals->mb_mgr,
 			sess_private_data, xform);
 	if (ret != 0) {
 		AESNI_MB_LOG(ERR, "failed configure session parameters");

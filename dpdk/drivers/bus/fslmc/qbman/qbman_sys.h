@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (C) 2014-2016 Freescale Semiconductor, Inc.
- *
+ * Copyright 2019 NXP
  */
 /* qbman_sys_decl.h and qbman_sys.h are the two platform-specific files in the
  * driver. They are only included via qbman_private.h, which is itself a
@@ -381,22 +381,37 @@ static inline uint32_t qbman_set_swp_cfg(uint8_t max_fill, uint8_t wn,
 #define QMAN_REV_5000	0x05000000
 #define QMAN_REV_MASK	0xffff0000
 
+#define SVR_LS1080A	0x87030000
+#define SVR_LS2080A	0x87010000
+#define SVR_LS2088A	0x87090000
+#define SVR_LX2160A	0x87360000
+
+/* Variable to store DPAA2 platform type */
+extern uint32_t dpaa2_svr_family;
+
 static inline int qbman_swp_sys_init(struct qbman_swp_sys *s,
 				     const struct qbman_swp_desc *d,
 				     uint8_t dqrr_size)
 {
 	uint32_t reg;
 	int i;
+	int cena_region_size = 4*1024;
+	uint8_t est = 1;
 #ifdef RTE_ARCH_64
 	uint8_t wn = CENA_WRITE_ENABLE;
 #else
 	uint8_t wn = CINH_WRITE_ENABLE;
 #endif
 
+
+	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000
+			&& (d->cena_access_mode == qman_cena_fastest_access))
+		cena_region_size = 64*1024;
 	s->addr_cena = d->cena_bar;
 	s->addr_cinh = d->cinh_bar;
 	s->idx = (uint32_t)d->idx;
-	s->cena = malloc(64*1024);
+	s->cena = malloc(cena_region_size);
+
 	if (!s->cena) {
 		pr_err("Could not allocate page for cena shadow\n");
 		return -1;
@@ -411,33 +426,38 @@ static inline int qbman_swp_sys_init(struct qbman_swp_sys *s,
 	reg = qbman_cinh_read(s, QBMAN_CINH_SWP_CFG);
 	QBMAN_BUG_ON(reg);
 #endif
-	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000)
-		memset(s->addr_cena, 0, 64*1024);
+	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000
+			&& (d->cena_access_mode == qman_cena_fastest_access))
+		memset(s->addr_cena, 0, cena_region_size);
 	else {
 		/* Invalidate the portal memory.
 		 * This ensures no stale cache lines
 		 */
-		for (i = 0; i < 0x1000; i += 64)
+		for (i = 0; i < cena_region_size; i += 64)
 			dccivac(s->addr_cena + i);
 	}
 
-	if (s->eqcr_mode == qman_eqcr_vb_array)
+	if (dpaa2_svr_family == SVR_LS1080A)
+		est = 0;
+
+	if (s->eqcr_mode == qman_eqcr_vb_array) {
 		reg = qbman_set_swp_cfg(dqrr_size, wn,
 					0, 3, 2, 3, 1, 1, 1, 1, 1, 1);
-	else {
-		if ((d->qman_version & QMAN_REV_MASK) < QMAN_REV_5000)
-			reg = qbman_set_swp_cfg(dqrr_size, wn,
-						1, 3, 2, 2, 1, 1, 1, 1, 1, 1);
-		else
+	} else {
+		if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000 &&
+			    (d->cena_access_mode == qman_cena_fastest_access))
 			reg = qbman_set_swp_cfg(dqrr_size, wn,
 						1, 3, 2, 0, 1, 1, 1, 1, 1, 1);
+		else
+			reg = qbman_set_swp_cfg(dqrr_size, wn,
+						est, 3, 2, 2, 1, 1, 1, 1, 1, 1);
 	}
 
-	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000) {
+	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000
+			&& (d->cena_access_mode == qman_cena_fastest_access))
 		reg |= 1 << SWP_CFG_CPBS_SHIFT | /* memory-backed mode */
 		       1 << SWP_CFG_VPM_SHIFT |  /* VDQCR read triggered mode */
 		       1 << SWP_CFG_CPM_SHIFT;   /* CR read triggered mode */
-	}
 
 	qbman_cinh_write(s, QBMAN_CINH_SWP_CFG, reg);
 	reg = qbman_cinh_read(s, QBMAN_CINH_SWP_CFG);
@@ -447,7 +467,8 @@ static inline int qbman_swp_sys_init(struct qbman_swp_sys *s,
 		return -1;
 	}
 
-	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000) {
+	if ((d->qman_version & QMAN_REV_MASK) >= QMAN_REV_5000
+			&& (d->cena_access_mode == qman_cena_fastest_access)) {
 		qbman_cinh_write(s, QBMAN_CINH_SWP_EQCR_PI, QMAN_RT_MODE);
 		qbman_cinh_write(s, QBMAN_CINH_SWP_RCR_PI, QMAN_RT_MODE);
 	}

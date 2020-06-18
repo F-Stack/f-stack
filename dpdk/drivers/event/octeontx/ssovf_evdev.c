@@ -77,6 +77,7 @@ ssovf_mbox_getwork_tmo_set(uint32_t timeout_ns)
 }
 
 struct ssovf_mbox_grp_pri {
+	uint8_t vhgrp_id;
 	uint8_t wgt_left; /* Read only */
 	uint8_t weight;
 	uint8_t affinity;
@@ -95,6 +96,7 @@ ssovf_mbox_priority_set(uint8_t queue, uint8_t prio)
 	hdr.msg = SSO_GRP_SET_PRIORITY;
 	hdr.vfid = queue;
 
+	grp.vhgrp_id = queue;
 	grp.weight = 0xff;
 	grp.affinity = 0xff;
 	grp.priority = prio / 32; /* Normalize to 0 to 7 */
@@ -147,6 +149,7 @@ ssovf_fastpath_fns_set(struct rte_eventdev *dev)
 	dev->dequeue       = ssows_deq;
 	dev->dequeue_burst = ssows_deq_burst;
 	dev->txa_enqueue = sso_event_tx_adapter_enqueue;
+	dev->txa_enqueue_same_dest = dev->txa_enqueue;
 
 	if (edev->is_timeout_deq) {
 		dev->dequeue       = ssows_deq_timeout;
@@ -432,7 +435,7 @@ ssovf_eth_rx_adapter_queue_add(const struct rte_eventdev *dev,
 	pki_qos.mmask.f_grptag_ok = 1;
 	pki_qos.mmask.f_grptag_bad = 1;
 
-	pki_qos.tag_type = queue_conf->ev.sched_type;
+	pki_qos.qos_entry.tag_type = queue_conf->ev.sched_type;
 	pki_qos.qos_entry.port_add = 0;
 	pki_qos.qos_entry.ggrp_ok = queue_conf->ev.queue_id;
 	pki_qos.qos_entry.ggrp_bad = queue_conf->ev.queue_id;
@@ -779,6 +782,7 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 		return 0;
 	}
 
+	octeontx_mbox_init();
 	ret = ssovf_info(&oinfo);
 	if (ret) {
 		ssovf_log_err("Failed to probe and validate ssovfs %d", ret);

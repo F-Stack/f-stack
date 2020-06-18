@@ -34,43 +34,38 @@
  */
 #define SFC_TX_QFLUSH_POLL_ATTEMPTS	(2000)
 
+static uint64_t
+sfc_tx_get_offload_mask(struct sfc_adapter *sa)
+{
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
+	uint64_t no_caps = 0;
+
+	if (!encp->enc_hw_tx_insert_vlan_enabled)
+		no_caps |= DEV_TX_OFFLOAD_VLAN_INSERT;
+
+	if (!encp->enc_tunnel_encapsulations_supported)
+		no_caps |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
+
+	if (!sa->tso)
+		no_caps |= DEV_TX_OFFLOAD_TCP_TSO;
+
+	if (!sa->tso_encap)
+		no_caps |= (DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+			    DEV_TX_OFFLOAD_GENEVE_TNL_TSO);
+
+	return ~no_caps;
+}
+
 uint64_t
 sfc_tx_get_dev_offload_caps(struct sfc_adapter *sa)
 {
-	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
-	uint64_t caps = 0;
-
-	if ((sa->dp_tx->features & SFC_DP_TX_FEAT_VLAN_INSERT) &&
-	    encp->enc_hw_tx_insert_vlan_enabled)
-		caps |= DEV_TX_OFFLOAD_VLAN_INSERT;
-
-	if (sa->dp_tx->features & SFC_DP_TX_FEAT_MULTI_SEG)
-		caps |= DEV_TX_OFFLOAD_MULTI_SEGS;
-
-	if ((~sa->dp_tx->features & SFC_DP_TX_FEAT_MULTI_POOL) &&
-	    (~sa->dp_tx->features & SFC_DP_TX_FEAT_REFCNT))
-		caps |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
-
-	return caps;
+	return sa->priv.dp_tx->dev_offload_capa & sfc_tx_get_offload_mask(sa);
 }
 
 uint64_t
 sfc_tx_get_queue_offload_caps(struct sfc_adapter *sa)
 {
-	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
-	uint64_t caps = 0;
-
-	caps |= DEV_TX_OFFLOAD_IPV4_CKSUM;
-	caps |= DEV_TX_OFFLOAD_UDP_CKSUM;
-	caps |= DEV_TX_OFFLOAD_TCP_CKSUM;
-
-	if (encp->enc_tunnel_encapsulations_supported)
-		caps |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
-
-	if (sa->tso)
-		caps |= DEV_TX_OFFLOAD_TCP_TSO;
-
-	return caps;
+	return sa->priv.dp_tx->queue_offload_capa & sfc_tx_get_offload_mask(sa);
 }
 
 static int
@@ -110,10 +105,10 @@ sfc_tx_qcheck_conf(struct sfc_adapter *sa, unsigned int txq_max_fill_level,
 }
 
 void
-sfc_tx_qflush_done(struct sfc_txq *txq)
+sfc_tx_qflush_done(struct sfc_txq_info *txq_info)
 {
-	txq->state |= SFC_TXQ_FLUSHED;
-	txq->state &= ~SFC_TXQ_FLUSHING;
+	txq_info->state |= SFC_TXQ_FLUSHED;
+	txq_info->state &= ~SFC_TXQ_FLUSHING;
 }
 
 int
@@ -131,14 +126,20 @@ sfc_tx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	int rc = 0;
 	struct sfc_dp_tx_qcreate_info info;
 	uint64_t offloads;
+	struct sfc_dp_tx_hw_limits hw_limits;
 
 	sfc_log_init(sa, "TxQ = %u", sw_index);
 
-	rc = sa->dp_tx->qsize_up_rings(nb_tx_desc, &txq_entries, &evq_entries,
-				       &txq_max_fill_level);
+	memset(&hw_limits, 0, sizeof(hw_limits));
+	hw_limits.txq_max_entries = sa->txq_max_entries;
+	hw_limits.txq_min_entries = sa->txq_min_entries;
+
+	rc = sa->priv.dp_tx->qsize_up_rings(nb_tx_desc, &hw_limits,
+					    &txq_entries, &evq_entries,
+					    &txq_max_fill_level);
 	if (rc != 0)
 		goto fail_size_up_rings;
-	SFC_ASSERT(txq_entries >= EFX_TXQ_MINNDESCS);
+	SFC_ASSERT(txq_entries >= sa->txq_min_entries);
 	SFC_ASSERT(txq_entries <= sa->txq_max_entries);
 	SFC_ASSERT(txq_entries >= nb_tx_desc);
 	SFC_ASSERT(txq_max_fill_level <= nb_tx_desc);
@@ -149,8 +150,8 @@ sfc_tx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	if (rc != 0)
 		goto fail_bad_conf;
 
-	SFC_ASSERT(sw_index < sa->txq_count);
-	txq_info = &sa->txq_info[sw_index];
+	SFC_ASSERT(sw_index < sfc_sa2shared(sa)->txq_count);
+	txq_info = &sfc_sa2shared(sa)->txq_info[sw_index];
 
 	txq_info->entries = txq_entries;
 
@@ -159,28 +160,23 @@ sfc_tx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	if (rc != 0)
 		goto fail_ev_qinit;
 
-	rc = ENOMEM;
-	txq = rte_zmalloc_socket("sfc-txq", sizeof(*txq), 0, socket_id);
-	if (txq == NULL)
-		goto fail_txq_alloc;
-
-	txq_info->txq = txq;
-
+	txq = &sa->txq_ctrl[sw_index];
 	txq->hw_index = sw_index;
 	txq->evq = evq;
-	txq->free_thresh =
+	txq_info->free_thresh =
 		(tx_conf->tx_free_thresh) ? tx_conf->tx_free_thresh :
 		SFC_TX_DEFAULT_FREE_THRESH;
-	txq->offloads = offloads;
+	txq_info->offloads = offloads;
 
-	rc = sfc_dma_alloc(sa, "txq", sw_index, EFX_TXQ_SIZE(txq_info->entries),
+	rc = sfc_dma_alloc(sa, "txq", sw_index,
+			   efx_txq_size(sa->nic, txq_info->entries),
 			   socket_id, &txq->mem);
 	if (rc != 0)
 		goto fail_dma_alloc;
 
 	memset(&info, 0, sizeof(info));
 	info.max_fill_level = txq_max_fill_level;
-	info.free_thresh = txq->free_thresh;
+	info.free_thresh = txq_info->free_thresh;
 	info.offloads = offloads;
 	info.txq_entries = txq_info->entries;
 	info.dma_desc_size_max = encp->enc_tx_dma_desc_size_max;
@@ -193,15 +189,15 @@ sfc_tx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	info.tso_tcp_header_offset_limit =
 		encp->enc_tx_tso_tcp_header_offset_limit;
 
-	rc = sa->dp_tx->qcreate(sa->eth_dev->data->port_id, sw_index,
-				&RTE_ETH_DEV_TO_PCI(sa->eth_dev)->addr,
-				socket_id, &info, &txq->dp);
+	rc = sa->priv.dp_tx->qcreate(sa->eth_dev->data->port_id, sw_index,
+				     &RTE_ETH_DEV_TO_PCI(sa->eth_dev)->addr,
+				     socket_id, &info, &txq_info->dp);
 	if (rc != 0)
 		goto fail_dp_tx_qinit;
 
-	evq->dp_txq = txq->dp;
+	evq->dp_txq = txq_info->dp;
 
-	txq->state = SFC_TXQ_INITIALIZED;
+	txq_info->state = SFC_TXQ_INITIALIZED;
 
 	txq_info->deferred_start = (tx_conf->tx_deferred_start != 0);
 
@@ -211,10 +207,6 @@ fail_dp_tx_qinit:
 	sfc_dma_free(sa, &txq->mem);
 
 fail_dma_alloc:
-	txq_info->txq = NULL;
-	rte_free(txq);
-
-fail_txq_alloc:
 	sfc_ev_qfini(evq);
 
 fail_ev_qinit:
@@ -234,27 +226,25 @@ sfc_tx_qfini(struct sfc_adapter *sa, unsigned int sw_index)
 
 	sfc_log_init(sa, "TxQ = %u", sw_index);
 
-	SFC_ASSERT(sw_index < sa->txq_count);
+	SFC_ASSERT(sw_index < sfc_sa2shared(sa)->txq_count);
 	sa->eth_dev->data->tx_queues[sw_index] = NULL;
 
-	txq_info = &sa->txq_info[sw_index];
+	txq_info = &sfc_sa2shared(sa)->txq_info[sw_index];
 
-	txq = txq_info->txq;
-	SFC_ASSERT(txq != NULL);
-	SFC_ASSERT(txq->state == SFC_TXQ_INITIALIZED);
+	SFC_ASSERT(txq_info->state == SFC_TXQ_INITIALIZED);
 
-	sa->dp_tx->qdestroy(txq->dp);
-	txq->dp = NULL;
+	sa->priv.dp_tx->qdestroy(txq_info->dp);
+	txq_info->dp = NULL;
 
-	txq_info->txq = NULL;
+	txq_info->state &= ~SFC_TXQ_INITIALIZED;
 	txq_info->entries = 0;
+
+	txq = &sa->txq_ctrl[sw_index];
 
 	sfc_dma_free(sa, &txq->mem);
 
 	sfc_ev_qfini(txq->evq);
 	txq->evq = NULL;
-
-	rte_free(txq);
 }
 
 static int
@@ -308,29 +298,31 @@ sfc_tx_check_mode(struct sfc_adapter *sa, const struct rte_eth_txmode *txmode)
 static void
 sfc_tx_fini_queues(struct sfc_adapter *sa, unsigned int nb_tx_queues)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
 	int sw_index;
 
-	SFC_ASSERT(nb_tx_queues <= sa->txq_count);
+	SFC_ASSERT(nb_tx_queues <= sas->txq_count);
 
-	sw_index = sa->txq_count;
+	sw_index = sas->txq_count;
 	while (--sw_index >= (int)nb_tx_queues) {
-		if (sa->txq_info[sw_index].txq != NULL)
+		if (sas->txq_info[sw_index].state & SFC_TXQ_INITIALIZED)
 			sfc_tx_qfini(sa, sw_index);
 	}
 
-	sa->txq_count = nb_tx_queues;
+	sas->txq_count = nb_tx_queues;
 }
 
 int
 sfc_tx_configure(struct sfc_adapter *sa)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
 	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
 	const struct rte_eth_conf *dev_conf = &sa->eth_dev->data->dev_conf;
 	const unsigned int nb_tx_queues = sa->eth_dev->data->nb_tx_queues;
 	int rc = 0;
 
 	sfc_log_init(sa, "nb_tx_queues=%u (old %u)",
-		     nb_tx_queues, sa->txq_count);
+		     nb_tx_queues, sas->txq_count);
 
 	/*
 	 * The datapath implementation assumes absence of boundary
@@ -346,47 +338,69 @@ sfc_tx_configure(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_check_mode;
 
-	if (nb_tx_queues == sa->txq_count)
+	if (nb_tx_queues == sas->txq_count)
 		goto done;
 
-	if (sa->txq_info == NULL) {
-		sa->txq_info = rte_calloc_socket("sfc-txqs", nb_tx_queues,
-						 sizeof(sa->txq_info[0]), 0,
-						 sa->socket_id);
-		if (sa->txq_info == NULL)
+	if (sas->txq_info == NULL) {
+		sas->txq_info = rte_calloc_socket("sfc-txqs", nb_tx_queues,
+						  sizeof(sas->txq_info[0]), 0,
+						  sa->socket_id);
+		if (sas->txq_info == NULL)
 			goto fail_txqs_alloc;
+
+		/*
+		 * Allocate primary process only TxQ control from heap
+		 * since it should not be shared.
+		 */
+		rc = ENOMEM;
+		sa->txq_ctrl = calloc(nb_tx_queues, sizeof(sa->txq_ctrl[0]));
+		if (sa->txq_ctrl == NULL)
+			goto fail_txqs_ctrl_alloc;
 	} else {
 		struct sfc_txq_info *new_txq_info;
+		struct sfc_txq *new_txq_ctrl;
 
-		if (nb_tx_queues < sa->txq_count)
+		if (nb_tx_queues < sas->txq_count)
 			sfc_tx_fini_queues(sa, nb_tx_queues);
 
 		new_txq_info =
-			rte_realloc(sa->txq_info,
-				    nb_tx_queues * sizeof(sa->txq_info[0]), 0);
+			rte_realloc(sas->txq_info,
+				    nb_tx_queues * sizeof(sas->txq_info[0]), 0);
 		if (new_txq_info == NULL && nb_tx_queues > 0)
 			goto fail_txqs_realloc;
 
-		sa->txq_info = new_txq_info;
-		if (nb_tx_queues > sa->txq_count)
-			memset(&sa->txq_info[sa->txq_count], 0,
-			       (nb_tx_queues - sa->txq_count) *
-			       sizeof(sa->txq_info[0]));
+		new_txq_ctrl = realloc(sa->txq_ctrl,
+				       nb_tx_queues * sizeof(sa->txq_ctrl[0]));
+		if (new_txq_ctrl == NULL && nb_tx_queues > 0)
+			goto fail_txqs_ctrl_realloc;
+
+		sas->txq_info = new_txq_info;
+		sa->txq_ctrl = new_txq_ctrl;
+		if (nb_tx_queues > sas->txq_count) {
+			memset(&sas->txq_info[sas->txq_count], 0,
+			       (nb_tx_queues - sas->txq_count) *
+			       sizeof(sas->txq_info[0]));
+			memset(&sa->txq_ctrl[sas->txq_count], 0,
+			       (nb_tx_queues - sas->txq_count) *
+			       sizeof(sa->txq_ctrl[0]));
+		}
 	}
 
-	while (sa->txq_count < nb_tx_queues) {
-		rc = sfc_tx_qinit_info(sa, sa->txq_count);
+	while (sas->txq_count < nb_tx_queues) {
+		rc = sfc_tx_qinit_info(sa, sas->txq_count);
 		if (rc != 0)
 			goto fail_tx_qinit_info;
 
-		sa->txq_count++;
+		sas->txq_count++;
 	}
 
 done:
 	return 0;
 
 fail_tx_qinit_info:
+fail_txqs_ctrl_realloc:
 fail_txqs_realloc:
+fail_txqs_ctrl_alloc:
 fail_txqs_alloc:
 	sfc_tx_close(sa);
 
@@ -401,13 +415,17 @@ sfc_tx_close(struct sfc_adapter *sa)
 {
 	sfc_tx_fini_queues(sa, 0);
 
-	rte_free(sa->txq_info);
-	sa->txq_info = NULL;
+	free(sa->txq_ctrl);
+	sa->txq_ctrl = NULL;
+
+	rte_free(sfc_sa2shared(sa)->txq_info);
+	sfc_sa2shared(sa)->txq_info = NULL;
 }
 
 int
 sfc_tx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
 	uint64_t offloads_supported = sfc_tx_get_dev_offload_caps(sa) |
 				      sfc_tx_get_queue_offload_caps(sa);
 	struct rte_eth_dev_data *dev_data;
@@ -420,35 +438,35 @@ sfc_tx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 
 	sfc_log_init(sa, "TxQ = %u", sw_index);
 
-	SFC_ASSERT(sw_index < sa->txq_count);
-	txq_info = &sa->txq_info[sw_index];
+	SFC_ASSERT(sw_index < sas->txq_count);
+	txq_info = &sas->txq_info[sw_index];
 
-	txq = txq_info->txq;
+	SFC_ASSERT(txq_info->state == SFC_TXQ_INITIALIZED);
 
-	SFC_ASSERT(txq != NULL);
-	SFC_ASSERT(txq->state == SFC_TXQ_INITIALIZED);
-
+	txq = &sa->txq_ctrl[sw_index];
 	evq = txq->evq;
 
 	rc = sfc_ev_qstart(evq, sfc_evq_index_by_txq_sw_index(sa, sw_index));
 	if (rc != 0)
 		goto fail_ev_qstart;
 
-	if (txq->offloads & DEV_TX_OFFLOAD_IPV4_CKSUM)
+	if (txq_info->offloads & DEV_TX_OFFLOAD_IPV4_CKSUM)
 		flags |= EFX_TXQ_CKSUM_IPV4;
 
-	if (txq->offloads & DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM)
+	if (txq_info->offloads & DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM)
 		flags |= EFX_TXQ_CKSUM_INNER_IPV4;
 
-	if ((txq->offloads & DEV_TX_OFFLOAD_TCP_CKSUM) ||
-	    (txq->offloads & DEV_TX_OFFLOAD_UDP_CKSUM)) {
+	if ((txq_info->offloads & DEV_TX_OFFLOAD_TCP_CKSUM) ||
+	    (txq_info->offloads & DEV_TX_OFFLOAD_UDP_CKSUM)) {
 		flags |= EFX_TXQ_CKSUM_TCPUDP;
 
 		if (offloads_supported & DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM)
 			flags |= EFX_TXQ_CKSUM_INNER_TCPUDP;
 	}
 
-	if (txq->offloads & DEV_TX_OFFLOAD_TCP_TSO)
+	if (txq_info->offloads & (DEV_TX_OFFLOAD_TCP_TSO |
+				  DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+				  DEV_TX_OFFLOAD_GENEVE_TNL_TSO))
 		flags |= EFX_TXQ_FATSOV2;
 
 	rc = efx_tx_qcreate(sa->nic, txq->hw_index, 0, &txq->mem,
@@ -464,9 +482,9 @@ sfc_tx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 
 	efx_tx_qenable(txq->common);
 
-	txq->state |= SFC_TXQ_STARTED;
+	txq_info->state |= SFC_TXQ_STARTED;
 
-	rc = sa->dp_tx->qstart(txq->dp, evq->read_ptr, desc_index);
+	rc = sa->priv.dp_tx->qstart(txq_info->dp, evq->read_ptr, desc_index);
 	if (rc != 0)
 		goto fail_dp_qstart;
 
@@ -479,7 +497,7 @@ sfc_tx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 	return 0;
 
 fail_dp_qstart:
-	txq->state = SFC_TXQ_INITIALIZED;
+	txq_info->state = SFC_TXQ_INITIALIZED;
 	efx_tx_qdestroy(txq->common);
 
 fail_tx_qcreate:
@@ -492,6 +510,7 @@ fail_ev_qstart:
 void
 sfc_tx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
 	struct rte_eth_dev_data *dev_data;
 	struct sfc_txq_info *txq_info;
 	struct sfc_txq *txq;
@@ -501,29 +520,28 @@ sfc_tx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 
 	sfc_log_init(sa, "TxQ = %u", sw_index);
 
-	SFC_ASSERT(sw_index < sa->txq_count);
-	txq_info = &sa->txq_info[sw_index];
+	SFC_ASSERT(sw_index < sas->txq_count);
+	txq_info = &sas->txq_info[sw_index];
 
-	txq = txq_info->txq;
-
-	if (txq == NULL || txq->state == SFC_TXQ_INITIALIZED)
+	if (txq_info->state == SFC_TXQ_INITIALIZED)
 		return;
 
-	SFC_ASSERT(txq->state & SFC_TXQ_STARTED);
+	SFC_ASSERT(txq_info->state & SFC_TXQ_STARTED);
 
-	sa->dp_tx->qstop(txq->dp, &txq->evq->read_ptr);
+	txq = &sa->txq_ctrl[sw_index];
+	sa->priv.dp_tx->qstop(txq_info->dp, &txq->evq->read_ptr);
 
 	/*
 	 * Retry TX queue flushing in case of flush failed or
 	 * timeout; in the worst case it can delay for 6 seconds
 	 */
 	for (retry_count = 0;
-	     ((txq->state & SFC_TXQ_FLUSHED) == 0) &&
+	     ((txq_info->state & SFC_TXQ_FLUSHED) == 0) &&
 	     (retry_count < SFC_TX_QFLUSH_ATTEMPTS);
 	     ++retry_count) {
 		rc = efx_tx_qflush(txq->common);
 		if (rc != 0) {
-			txq->state |= (rc == EALREADY) ?
+			txq_info->state |= (rc == EALREADY) ?
 				SFC_TXQ_FLUSHED : SFC_TXQ_FLUSH_FAILED;
 			break;
 		}
@@ -538,19 +556,19 @@ sfc_tx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 		do {
 			rte_delay_ms(SFC_TX_QFLUSH_POLL_WAIT_MS);
 			sfc_ev_qpoll(txq->evq);
-		} while ((txq->state & SFC_TXQ_FLUSHING) &&
+		} while ((txq_info->state & SFC_TXQ_FLUSHING) &&
 			 wait_count++ < SFC_TX_QFLUSH_POLL_ATTEMPTS);
 
-		if (txq->state & SFC_TXQ_FLUSHING)
+		if (txq_info->state & SFC_TXQ_FLUSHING)
 			sfc_err(sa, "TxQ %u flush timed out", sw_index);
 
-		if (txq->state & SFC_TXQ_FLUSHED)
+		if (txq_info->state & SFC_TXQ_FLUSHED)
 			sfc_notice(sa, "TxQ %u flushed", sw_index);
 	}
 
-	sa->dp_tx->qreap(txq->dp);
+	sa->priv.dp_tx->qreap(txq_info->dp);
 
-	txq->state = SFC_TXQ_INITIALIZED;
+	txq_info->state = SFC_TXQ_INITIALIZED;
 
 	efx_tx_qdestroy(txq->common);
 
@@ -566,26 +584,34 @@ sfc_tx_qstop(struct sfc_adapter *sa, unsigned int sw_index)
 int
 sfc_tx_start(struct sfc_adapter *sa)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(sa->nic);
 	unsigned int sw_index;
 	int rc = 0;
 
-	sfc_log_init(sa, "txq_count = %u", sa->txq_count);
+	sfc_log_init(sa, "txq_count = %u", sas->txq_count);
 
 	if (sa->tso) {
-		if (!efx_nic_cfg_get(sa->nic)->enc_fw_assisted_tso_v2_enabled) {
+		if (!encp->enc_fw_assisted_tso_v2_enabled) {
 			sfc_warn(sa, "TSO support was unable to be restored");
 			sa->tso = B_FALSE;
+			sa->tso_encap = B_FALSE;
 		}
+	}
+
+	if (sa->tso_encap && !encp->enc_fw_assisted_tso_v2_encap_enabled) {
+		sfc_warn(sa, "Encapsulated TSO support was unable to be restored");
+		sa->tso_encap = B_FALSE;
 	}
 
 	rc = efx_tx_init(sa->nic);
 	if (rc != 0)
 		goto fail_efx_tx_init;
 
-	for (sw_index = 0; sw_index < sa->txq_count; ++sw_index) {
-		if (sa->txq_info[sw_index].txq != NULL &&
-		    (!(sa->txq_info[sw_index].deferred_start) ||
-		     sa->txq_info[sw_index].deferred_started)) {
+	for (sw_index = 0; sw_index < sas->txq_count; ++sw_index) {
+		if (sas->txq_info[sw_index].state == SFC_TXQ_INITIALIZED &&
+		    (!(sas->txq_info[sw_index].deferred_start) ||
+		     sas->txq_info[sw_index].deferred_started)) {
 			rc = sfc_tx_qstart(sa, sw_index);
 			if (rc != 0)
 				goto fail_tx_qstart;
@@ -608,13 +634,14 @@ fail_efx_tx_init:
 void
 sfc_tx_stop(struct sfc_adapter *sa)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
 	unsigned int sw_index;
 
-	sfc_log_init(sa, "txq_count = %u", sa->txq_count);
+	sfc_log_init(sa, "txq_count = %u", sas->txq_count);
 
-	sw_index = sa->txq_count;
+	sw_index = sas->txq_count;
 	while (sw_index-- > 0) {
-		if (sa->txq_info[sw_index].txq != NULL)
+		if (sas->txq_info[sw_index].state & SFC_TXQ_STARTED)
 			sfc_tx_qstop(sa, sw_index);
 	}
 
@@ -672,6 +699,36 @@ sfc_efx_tx_maybe_insert_tag(struct sfc_efx_txq *txq, struct rte_mbuf *m,
 	txq->hw_vlan_tci = this_tag;
 
 	return 1;
+}
+
+static uint16_t
+sfc_efx_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+		     uint16_t nb_pkts)
+{
+	struct sfc_dp_txq *dp_txq = tx_queue;
+	struct sfc_efx_txq *txq = sfc_efx_txq_by_dp_txq(dp_txq);
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(txq->evq->sa->nic);
+	uint16_t i;
+
+	for (i = 0; i < nb_pkts; i++) {
+		int ret;
+
+		/*
+		 * EFX Tx datapath may require extra VLAN descriptor if VLAN
+		 * insertion offload is requested regardless the offload
+		 * requested/supported.
+		 */
+		ret = sfc_dp_tx_prepare_pkt(tx_pkts[i],
+				encp->enc_tx_tso_tcp_header_offset_limit,
+				txq->max_fill_level, EFX_TX_FATSOV2_OPT_NDESCS,
+				1);
+		if (unlikely(ret != 0)) {
+			rte_errno = ret;
+			break;
+		}
+	}
+
+	return i;
 }
 
 static uint16_t
@@ -734,14 +791,10 @@ sfc_efx_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 */
 			if (sfc_efx_tso_do(txq, added, &m_seg, &in_off, &pend,
 					   &pkt_descs, &pkt_len) != 0) {
-				/* We may have reached this place for
-				 * one of the following reasons:
-				 *
-				 * 1) Packet header linearization is needed
-				 *    and the header length is greater
-				 *    than SFC_TSOH_STD_LEN
-				 * 2) TCP header starts at more then
-				 *    208 bytes into the frame
+				/* We may have reached this place if packet
+				 * header linearization is needed but the
+				 * header length is greater than
+				 * SFC_TSOH_STD_LEN
 				 *
 				 * We will deceive RTE saying that we have sent
 				 * the packet, but we will actually drop it.
@@ -855,29 +908,57 @@ done:
 	return pkts_sent;
 }
 
+const struct sfc_dp_tx *
+sfc_dp_tx_by_dp_txq(const struct sfc_dp_txq *dp_txq)
+{
+	const struct sfc_dp_queue *dpq = &dp_txq->dpq;
+	struct rte_eth_dev *eth_dev;
+	struct sfc_adapter_priv *sap;
+
+	SFC_ASSERT(rte_eth_dev_is_valid_port(dpq->port_id));
+	eth_dev = &rte_eth_devices[dpq->port_id];
+
+	sap = sfc_adapter_priv_by_eth_dev(eth_dev);
+
+	return sap->dp_tx;
+}
+
+struct sfc_txq_info *
+sfc_txq_info_by_dp_txq(const struct sfc_dp_txq *dp_txq)
+{
+	const struct sfc_dp_queue *dpq = &dp_txq->dpq;
+	struct rte_eth_dev *eth_dev;
+	struct sfc_adapter_shared *sas;
+
+	SFC_ASSERT(rte_eth_dev_is_valid_port(dpq->port_id));
+	eth_dev = &rte_eth_devices[dpq->port_id];
+
+	sas = sfc_adapter_shared_by_eth_dev(eth_dev);
+
+	SFC_ASSERT(dpq->queue_id < sas->txq_count);
+	return &sas->txq_info[dpq->queue_id];
+}
+
 struct sfc_txq *
 sfc_txq_by_dp_txq(const struct sfc_dp_txq *dp_txq)
 {
 	const struct sfc_dp_queue *dpq = &dp_txq->dpq;
 	struct rte_eth_dev *eth_dev;
 	struct sfc_adapter *sa;
-	struct sfc_txq *txq;
 
 	SFC_ASSERT(rte_eth_dev_is_valid_port(dpq->port_id));
 	eth_dev = &rte_eth_devices[dpq->port_id];
 
-	sa = eth_dev->data->dev_private;
+	sa = sfc_adapter_by_eth_dev(eth_dev);
 
-	SFC_ASSERT(dpq->queue_id < sa->txq_count);
-	txq = sa->txq_info[dpq->queue_id].txq;
-
-	SFC_ASSERT(txq != NULL);
-	return txq;
+	SFC_ASSERT(dpq->queue_id < sfc_sa2shared(sa)->txq_count);
+	return &sa->txq_ctrl[dpq->queue_id];
 }
 
 static sfc_dp_tx_qsize_up_rings_t sfc_efx_tx_qsize_up_rings;
 static int
 sfc_efx_tx_qsize_up_rings(uint16_t nb_tx_desc,
+			  __rte_unused struct sfc_dp_tx_hw_limits *limits,
 			  unsigned int *txq_entries,
 			  unsigned int *evq_entries,
 			  unsigned int *txq_max_fill_level)
@@ -1059,11 +1140,14 @@ struct sfc_dp_tx sfc_efx_tx = {
 		.type		= SFC_DP_TX,
 		.hw_fw_caps	= 0,
 	},
-	.features		= SFC_DP_TX_FEAT_VLAN_INSERT |
-				  SFC_DP_TX_FEAT_TSO |
-				  SFC_DP_TX_FEAT_MULTI_POOL |
-				  SFC_DP_TX_FEAT_REFCNT |
-				  SFC_DP_TX_FEAT_MULTI_SEG,
+	.features		= 0,
+	.dev_offload_capa	= DEV_TX_OFFLOAD_VLAN_INSERT |
+				  DEV_TX_OFFLOAD_MULTI_SEGS,
+	.queue_offload_capa	= DEV_TX_OFFLOAD_IPV4_CKSUM |
+				  DEV_TX_OFFLOAD_UDP_CKSUM |
+				  DEV_TX_OFFLOAD_TCP_CKSUM |
+				  DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+				  DEV_TX_OFFLOAD_TCP_TSO,
 	.qsize_up_rings		= sfc_efx_tx_qsize_up_rings,
 	.qcreate		= sfc_efx_tx_qcreate,
 	.qdestroy		= sfc_efx_tx_qdestroy,
@@ -1071,5 +1155,6 @@ struct sfc_dp_tx sfc_efx_tx = {
 	.qstop			= sfc_efx_tx_qstop,
 	.qreap			= sfc_efx_tx_qreap,
 	.qdesc_status		= sfc_efx_tx_qdesc_status,
+	.pkt_prepare		= sfc_efx_prepare_pkts,
 	.pkt_burst		= sfc_efx_xmit_pkts,
 };

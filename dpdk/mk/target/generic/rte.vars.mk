@@ -8,6 +8,17 @@
 #
 
 #
+# toolchain:
+#
+#   - define CC, LD, AR, AS, ...
+#   - define TOOLCHAIN_CFLAGS variable (overridden by cmdline value)
+#   - define TOOLCHAIN_LDFLAGS variable (overridden by cmdline value)
+#   - define TOOLCHAIN_ASFLAGS variable (overridden by cmdline value)
+#   - may override any previously defined variable
+#
+include $(RTE_SDK)/mk/toolchain/$(RTE_TOOLCHAIN)/rte.vars.mk
+
+#
 # machine:
 #
 #   - can define ARCH variable (overridden by cmdline value)
@@ -46,17 +57,6 @@ endif
 include $(RTE_SDK)/mk/arch/$(RTE_ARCH)/rte.vars.mk
 
 #
-# toolchain:
-#
-#   - define CC, LD, AR, AS, ...
-#   - define TOOLCHAIN_CFLAGS variable (overridden by cmdline value)
-#   - define TOOLCHAIN_LDFLAGS variable (overridden by cmdline value)
-#   - define TOOLCHAIN_ASFLAGS variable (overridden by cmdline value)
-#   - may override any previously defined variable
-#
-include $(RTE_SDK)/mk/toolchain/$(RTE_TOOLCHAIN)/rte.vars.mk
-
-#
 # exec-env:
 #
 #   - define EXECENV_CFLAGS variable (overridden by cmdline)
@@ -90,6 +90,14 @@ ASFLAGS += $(TARGET_ASFLAGS)
 CFLAGS += -I$(RTE_OUTPUT)/include
 LDFLAGS += -L$(RTE_OUTPUT)/lib
 
+# add in flag for supporting function versioning. The define is used in meson
+# builds to ensure that the user has properly flagged the unit in question as
+# using function versioning so it can be built twice - once for static lib and
+# then a second time for the shared lib. Since make only builds one library
+# type at a time, such precautions aren't necessary, so we can globally define
+# the flag
+CFLAGS += -DRTE_USE_FUNCTION_VERSIONING
+
 # always include rte_config.h: the one in $(RTE_OUTPUT)/include is
 # the configuration of SDK when $(BUILDING_RTE_SDK) is true, or the
 # configuration of the application if $(BUILDING_RTE_SDK) is not
@@ -112,7 +120,7 @@ endif
 CFLAGS += -D_GNU_SOURCE
 
 # define __BSD_VISIBLE when building for FreeBSD
-ifeq ($(CONFIG_RTE_EXEC_ENV_BSDAPP),y)
+ifeq ($(CONFIG_RTE_EXEC_ENV_FREEBSD),y)
 CFLAGS += -D__BSD_VISIBLE
 endif
 

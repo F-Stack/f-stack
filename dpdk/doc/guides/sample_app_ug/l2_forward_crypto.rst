@@ -158,7 +158,7 @@ the specified crypto operation are available on application initialization.
 This means that HW crypto device/s must be bound to a DPDK driver or
 a SW crypto device/s (virtual crypto PMD) must be created (using --vdev).
 
-To run the application in linuxapp environment with 2 lcores, 2 ports and 2 crypto devices, issue the command:
+To run the application in linux environment with 2 lcores, 2 ports and 2 crypto devices, issue the command:
 
 .. code-block:: console
 
@@ -204,7 +204,7 @@ Crypto operation specification
 All the packets received in all the ports get transformed by the crypto device/s
 (ciphering and/or authentication).
 The crypto operation to be performed on the packet is parsed from the command line
-(go to "Running the Application section for all the options).
+(go to "Running the Application" section for all the options).
 
 If no parameter is passed, the default crypto operation is:
 

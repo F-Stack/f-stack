@@ -9,6 +9,7 @@
  */
 
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -1048,7 +1049,7 @@ mlx4_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	/* Make sure that descriptors are written before doorbell record. */
 	rte_wmb();
 	/* Ring QP doorbell. */
-	rte_write32(txq->msq.doorbell_qpn, txq->msq.db);
+	rte_write32(txq->msq.doorbell_qpn, MLX4_TX_BFREG(txq));
 	txq->elts_head += i;
 	return i;
 }
@@ -1281,7 +1282,7 @@ mlx4_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 			pkt->ol_flags = PKT_RX_RSS_HASH;
 			pkt->hash.rss = cqe->immed_rss_invalid;
 			if (rxq->crc_present)
-				len -= ETHER_CRC_LEN;
+				len -= RTE_ETHER_CRC_LEN;
 			pkt->pkt_len = len;
 			if (rxq->csum | rxq->csum_l2tun) {
 				uint32_t flags =
@@ -1365,6 +1366,7 @@ mlx4_tx_burst_removed(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	(void)dpdk_txq;
 	(void)pkts;
 	(void)pkts_n;
+	rte_mb();
 	return 0;
 }
 
@@ -1390,5 +1392,6 @@ mlx4_rx_burst_removed(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	(void)dpdk_rxq;
 	(void)pkts;
 	(void)pkts_n;
+	rte_mb();
 	return 0;
 }

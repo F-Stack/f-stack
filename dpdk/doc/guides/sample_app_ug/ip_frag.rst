@@ -61,7 +61,7 @@ where:
 
 *   -q NQ is the number of queue (=ports) per lcore (the default is 1)
 
-To run the example in linuxapp environment with 2 lcores (2,4) over 2 ports(0,2) with 1 RX queue per lcore:
+To run the example in linux environment with 2 lcores (2,4) over 2 ports(0,2) with 1 RX queue per lcore:
 
 .. code-block:: console
 
@@ -90,7 +90,7 @@ To run the example in linuxapp environment with 2 lcores (2,4) over 2 ports(0,2)
     IP_FRAG: entering main loop on lcore 2
     IP_FRAG: -- lcoreid=2 portid=0
 
-To run the example in linuxapp environment with 1 lcore (4) over 2 ports(0,2) with 2 RX queues per lcore:
+To run the example in linux environment with 1 lcore (4) over 2 ports(0,2) with 2 RX queues per lcore:
 
 .. code-block:: console
 
@@ -104,14 +104,14 @@ The default l3fwd_ipv4_route_array table is:
 .. code-block:: c
 
     struct l3fwd_ipv4_route l3fwd_ipv4_route_array[] = {
-        {IPv4(100, 10, 0, 0), 16, 0},
-        {IPv4(100, 20, 0, 0), 16, 1},
-        {IPv4(100, 30, 0, 0), 16, 2},
-        {IPv4(100, 40, 0, 0), 16, 3},
-        {IPv4(100, 50, 0, 0), 16, 4},
-        {IPv4(100, 60, 0, 0), 16, 5},
-        {IPv4(100, 70, 0, 0), 16, 6},
-        {IPv4(100, 80, 0, 0), 16, 7},
+        {RTE_IPV4(100, 10, 0, 0), 16, 0},
+        {RTE_IPV4(100, 20, 0, 0), 16, 1},
+        {RTE_IPV4(100, 30, 0, 0), 16, 2},
+        {RTE_IPV4(100, 40, 0, 0), 16, 3},
+        {RTE_IPV4(100, 50, 0, 0), 16, 4},
+        {RTE_IPV4(100, 60, 0, 0), 16, 5},
+        {RTE_IPV4(100, 70, 0, 0), 16, 6},
+        {RTE_IPV4(100, 80, 0, 0), 16, 7},
     };
 
 The default l3fwd_ipv6_route_array table is:

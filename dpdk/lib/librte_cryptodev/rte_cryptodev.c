@@ -50,8 +50,7 @@ struct rte_cryptodev *rte_cryptodevs = rte_crypto_devices;
 static struct rte_cryptodev_global cryptodev_globals = {
 		.devs			= rte_crypto_devices,
 		.data			= { NULL },
-		.nb_devs		= 0,
-		.max_devs		= RTE_CRYPTO_MAX_DEVS
+		.nb_devs		= 0
 };
 
 /* spinlock for crypto device callbacks */
@@ -189,6 +188,16 @@ const char *rte_crypto_asym_op_strings[] = {
 	[RTE_CRYPTO_ASYM_OP_SHARED_SECRET_COMPUTE] = "sharedsecret_compute",
 };
 
+/**
+ * The private data structure stored in the session mempool private data.
+ */
+struct rte_cryptodev_sym_session_pool_private_data {
+	uint16_t nb_drivers;
+	/**< number of elements in sess_data array */
+	uint16_t user_data_sz;
+	/**< session user data will be placed after sess_data */
+};
+
 int
 rte_cryptodev_get_cipher_algo_enum(enum rte_crypto_cipher_algorithm *algo_enum,
 		const char *algo_string)
@@ -240,7 +249,7 @@ rte_cryptodev_get_aead_algo_enum(enum rte_crypto_aead_algorithm *algo_enum,
 	return -1;
 }
 
-int __rte_experimental
+int
 rte_cryptodev_asym_get_xform_enum(enum rte_crypto_asym_xform_type *xform_enum,
 		const char *xform_string)
 {
@@ -328,7 +337,7 @@ param_range_check(uint16_t size, const struct rte_crypto_param_range *range)
 	return -1;
 }
 
-const struct rte_cryptodev_asymmetric_xform_capability * __rte_experimental
+const struct rte_cryptodev_asymmetric_xform_capability *
 rte_cryptodev_asym_capability_get(uint8_t dev_id,
 		const struct rte_cryptodev_asym_capability_idx *idx)
 {
@@ -401,7 +410,7 @@ rte_cryptodev_sym_capability_check_aead(
 
 	return 0;
 }
-int __rte_experimental
+int
 rte_cryptodev_asym_xform_capability_check_optype(
 	const struct rte_cryptodev_asymmetric_xform_capability *capability,
 	enum rte_crypto_asym_op_type op_type)
@@ -412,7 +421,7 @@ rte_cryptodev_asym_xform_capability_check_optype(
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_cryptodev_asym_xform_capability_check_modlen(
 	const struct rte_cryptodev_asymmetric_xform_capability *capability,
 	uint16_t modlen)
@@ -476,6 +485,12 @@ rte_cryptodev_get_feature_name(uint64_t flag)
 		return "CPU_ARM_CE";
 	case RTE_CRYPTODEV_FF_SECURITY:
 		return "SECURITY_PROTOCOL";
+	case RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_EXP:
+		return "RSA_PRIV_OP_KEY_EXP";
+	case RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT:
+		return "RSA_PRIV_OP_KEY_QT";
+	case RTE_CRYPTODEV_FF_DIGEST_ENCRYPTED:
+		return "DIGEST_ENCRYPTED";
 	default:
 		return NULL;
 	}
@@ -496,7 +511,7 @@ rte_cryptodev_pmd_get_named_dev(const char *name)
 	if (name == NULL)
 		return NULL;
 
-	for (i = 0; i < cryptodev_globals.max_devs; i++) {
+	for (i = 0; i < RTE_CRYPTO_MAX_DEVS; i++) {
 		dev = &cryptodev_globals.devs[i];
 
 		if ((dev->attached == RTE_CRYPTODEV_ATTACHED) &&
@@ -507,12 +522,21 @@ rte_cryptodev_pmd_get_named_dev(const char *name)
 	return NULL;
 }
 
+static inline uint8_t
+rte_cryptodev_is_valid_device_data(uint8_t dev_id)
+{
+	if (rte_crypto_devices[dev_id].data == NULL)
+		return 0;
+
+	return 1;
+}
+
 unsigned int
 rte_cryptodev_pmd_is_valid_dev(uint8_t dev_id)
 {
 	struct rte_cryptodev *dev = NULL;
 
-	if (dev_id >= cryptodev_globals.nb_devs)
+	if (!rte_cryptodev_is_valid_device_data(dev_id))
 		return 0;
 
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
@@ -531,12 +555,15 @@ rte_cryptodev_get_dev_id(const char *name)
 	if (name == NULL)
 		return -1;
 
-	for (i = 0; i < cryptodev_globals.nb_devs; i++)
+	for (i = 0; i < RTE_CRYPTO_MAX_DEVS; i++) {
+		if (!rte_cryptodev_is_valid_device_data(i))
+			continue;
 		if ((strcmp(cryptodev_globals.devs[i].data->name, name)
 				== 0) &&
 				(cryptodev_globals.devs[i].attached ==
 						RTE_CRYPTODEV_ATTACHED))
 			return i;
+	}
 
 	return -1;
 }
@@ -552,7 +579,7 @@ rte_cryptodev_device_count_by_driver(uint8_t driver_id)
 {
 	uint8_t i, dev_count = 0;
 
-	for (i = 0; i < cryptodev_globals.max_devs; i++)
+	for (i = 0; i < RTE_CRYPTO_MAX_DEVS; i++)
 		if (cryptodev_globals.devs[i].driver_id == driver_id &&
 			cryptodev_globals.devs[i].attached ==
 					RTE_CRYPTODEV_ATTACHED)
@@ -567,9 +594,10 @@ rte_cryptodev_devices_get(const char *driver_name, uint8_t *devices,
 {
 	uint8_t i, count = 0;
 	struct rte_cryptodev *devs = cryptodev_globals.devs;
-	uint8_t max_devs = cryptodev_globals.max_devs;
 
-	for (i = 0; i < max_devs && count < nb_devices;	i++) {
+	for (i = 0; i < RTE_CRYPTO_MAX_DEVS && count < nb_devices; i++) {
+		if (!rte_cryptodev_is_valid_device_data(i))
+			continue;
 
 		if (devs[i].attached == RTE_CRYPTODEV_ATTACHED) {
 			int cmp;
@@ -613,7 +641,7 @@ static inline int
 rte_cryptodev_data_alloc(uint8_t dev_id, struct rte_cryptodev_data **data,
 		int socket_id)
 {
-	char mz_name[RTE_CRYPTODEV_NAME_MAX_LEN];
+	char mz_name[RTE_MEMZONE_NAMESIZE];
 	const struct rte_memzone *mz;
 	int n;
 
@@ -635,6 +663,31 @@ rte_cryptodev_data_alloc(uint8_t dev_id, struct rte_cryptodev_data **data,
 	*data = mz->addr;
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
 		memset(*data, 0, sizeof(struct rte_cryptodev_data));
+
+	return 0;
+}
+
+static inline int
+rte_cryptodev_data_free(uint8_t dev_id, struct rte_cryptodev_data **data)
+{
+	char mz_name[RTE_MEMZONE_NAMESIZE];
+	const struct rte_memzone *mz;
+	int n;
+
+	/* generate memzone name */
+	n = snprintf(mz_name, sizeof(mz_name), "rte_cryptodev_data_%u", dev_id);
+	if (n >= (int)sizeof(mz_name))
+		return -EINVAL;
+
+	mz = rte_memzone_lookup(mz_name);
+	if (mz == NULL)
+		return -ENOMEM;
+
+	RTE_ASSERT(*data == mz->addr);
+	*data = NULL;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		return rte_memzone_free(mz);
 
 	return 0;
 }
@@ -673,23 +726,25 @@ rte_cryptodev_pmd_allocate(const char *name, int socket_id)
 	cryptodev = rte_cryptodev_pmd_get_dev(dev_id);
 
 	if (cryptodev->data == NULL) {
-		struct rte_cryptodev_data *cryptodev_data =
-				cryptodev_globals.data[dev_id];
+		struct rte_cryptodev_data **cryptodev_data =
+				&cryptodev_globals.data[dev_id];
 
-		int retval = rte_cryptodev_data_alloc(dev_id, &cryptodev_data,
+		int retval = rte_cryptodev_data_alloc(dev_id, cryptodev_data,
 				socket_id);
 
-		if (retval < 0 || cryptodev_data == NULL)
+		if (retval < 0 || *cryptodev_data == NULL)
 			return NULL;
 
-		cryptodev->data = cryptodev_data;
+		cryptodev->data = *cryptodev_data;
 
-		snprintf(cryptodev->data->name, RTE_CRYPTODEV_NAME_MAX_LEN,
-				"%s", name);
+		if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+			strlcpy(cryptodev->data->name, name,
+				RTE_CRYPTODEV_NAME_MAX_LEN);
 
-		cryptodev->data->dev_id = dev_id;
-		cryptodev->data->socket_id = socket_id;
-		cryptodev->data->dev_started = 0;
+			cryptodev->data->dev_id = dev_id;
+			cryptodev->data->socket_id = socket_id;
+			cryptodev->data->dev_started = 0;
+		}
 
 		/* init user callbacks */
 		TAILQ_INIT(&(cryptodev->link_intr_cbs));
@@ -706,16 +761,23 @@ int
 rte_cryptodev_pmd_release_device(struct rte_cryptodev *cryptodev)
 {
 	int ret;
+	uint8_t dev_id;
 
 	if (cryptodev == NULL)
 		return -EINVAL;
 
+	dev_id = cryptodev->data->dev_id;
+
 	/* Close device only if device operations have been set */
 	if (cryptodev->dev_ops) {
-		ret = rte_cryptodev_close(cryptodev->data->dev_id);
+		ret = rte_cryptodev_close(dev_id);
 		if (ret < 0)
 			return ret;
 	}
+
+	ret = rte_cryptodev_data_free(dev_id, &cryptodev_globals.data[dev_id]);
+	if (ret < 0)
+		return ret;
 
 	cryptodev->attached = RTE_CRYPTODEV_DETACHED;
 	cryptodev_globals.nb_devs--;
@@ -941,8 +1003,7 @@ rte_cryptodev_close(uint8_t dev_id)
 
 int
 rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
-		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id,
-		struct rte_mempool *session_pool)
+		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id)
 
 {
 	struct rte_cryptodev *dev;
@@ -958,6 +1019,42 @@ rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
 		return -EINVAL;
 	}
 
+	if (!qp_conf) {
+		CDEV_LOG_ERR("qp_conf cannot be NULL\n");
+		return -EINVAL;
+	}
+
+	if ((qp_conf->mp_session && !qp_conf->mp_session_private) ||
+			(!qp_conf->mp_session && qp_conf->mp_session_private)) {
+		CDEV_LOG_ERR("Invalid mempools\n");
+		return -EINVAL;
+	}
+
+	if (qp_conf->mp_session) {
+		struct rte_cryptodev_sym_session_pool_private_data *pool_priv;
+		uint32_t obj_size = qp_conf->mp_session->elt_size;
+		uint32_t obj_priv_size = qp_conf->mp_session_private->elt_size;
+		struct rte_cryptodev_sym_session s = {0};
+
+		pool_priv = rte_mempool_get_priv(qp_conf->mp_session);
+		if (!pool_priv || qp_conf->mp_session->private_data_size <
+				sizeof(*pool_priv)) {
+			CDEV_LOG_ERR("Invalid mempool\n");
+			return -EINVAL;
+		}
+
+		s.nb_drivers = pool_priv->nb_drivers;
+		s.user_data_sz = pool_priv->user_data_sz;
+
+		if ((rte_cryptodev_sym_get_existing_header_session_size(&s) >
+			obj_size) || (s.nb_drivers <= dev->driver_id) ||
+			rte_cryptodev_sym_get_private_session_size(dev_id) >
+				obj_priv_size) {
+			CDEV_LOG_ERR("Invalid mempool\n");
+			return -EINVAL;
+		}
+	}
+
 	if (dev->data->dev_started) {
 		CDEV_LOG_ERR(
 		    "device %d must be stopped to allow configuration", dev_id);
@@ -967,7 +1064,7 @@ rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->queue_pair_setup, -ENOTSUP);
 
 	return (*dev->dev_ops->queue_pair_setup)(dev, queue_pair_id, qp_conf,
-			socket_id, session_pool);
+			socket_id);
 }
 
 
@@ -1016,7 +1113,7 @@ rte_cryptodev_info_get(uint8_t dev_id, struct rte_cryptodev_info *dev_info)
 {
 	struct rte_cryptodev *dev;
 
-	if (dev_id >= cryptodev_globals.nb_devs) {
+	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%d", dev_id);
 		return;
 	}
@@ -1152,6 +1249,8 @@ rte_cryptodev_sym_session_init(uint8_t dev_id,
 		struct rte_mempool *mp)
 {
 	struct rte_cryptodev *dev;
+	uint32_t sess_priv_sz = rte_cryptodev_sym_get_private_session_size(
+			dev_id);
 	uint8_t index;
 	int ret;
 
@@ -1160,11 +1259,16 @@ rte_cryptodev_sym_session_init(uint8_t dev_id,
 	if (sess == NULL || xforms == NULL || dev == NULL)
 		return -EINVAL;
 
+	if (mp->elt_size < sess_priv_sz)
+		return -EINVAL;
+
 	index = dev->driver_id;
+	if (index >= sess->nb_drivers)
+		return -EINVAL;
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->sym_session_configure, -ENOTSUP);
 
-	if (sess->sess_private_data[index] == NULL) {
+	if (sess->sess_data[index].refcnt == 0) {
 		ret = dev->dev_ops->sym_session_configure(dev, xforms,
 							sess, mp);
 		if (ret < 0) {
@@ -1175,10 +1279,11 @@ rte_cryptodev_sym_session_init(uint8_t dev_id,
 		}
 	}
 
+	sess->sess_data[index].refcnt++;
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_cryptodev_asym_session_init(uint8_t dev_id,
 		struct rte_cryptodev_asym_session *sess,
 		struct rte_crypto_asym_xform *xforms,
@@ -1213,10 +1318,70 @@ rte_cryptodev_asym_session_init(uint8_t dev_id,
 	return 0;
 }
 
+struct rte_mempool *
+rte_cryptodev_sym_session_pool_create(const char *name, uint32_t nb_elts,
+	uint32_t elt_size, uint32_t cache_size, uint16_t user_data_size,
+	int socket_id)
+{
+	struct rte_mempool *mp;
+	struct rte_cryptodev_sym_session_pool_private_data *pool_priv;
+	uint32_t obj_sz;
+
+	obj_sz = rte_cryptodev_sym_get_header_session_size() + user_data_size;
+	if (obj_sz > elt_size)
+		CDEV_LOG_INFO("elt_size %u is expanded to %u\n", elt_size,
+				obj_sz);
+	else
+		obj_sz = elt_size;
+
+	mp = rte_mempool_create(name, nb_elts, obj_sz, cache_size,
+			(uint32_t)(sizeof(*pool_priv)),
+			NULL, NULL, NULL, NULL,
+			socket_id, 0);
+	if (mp == NULL) {
+		CDEV_LOG_ERR("%s(name=%s) failed, rte_errno=%d\n",
+			__func__, name, rte_errno);
+		return NULL;
+	}
+
+	pool_priv = rte_mempool_get_priv(mp);
+	if (!pool_priv) {
+		CDEV_LOG_ERR("%s(name=%s) failed to get private data\n",
+			__func__, name);
+		rte_mempool_free(mp);
+		return NULL;
+	}
+
+	pool_priv->nb_drivers = nb_drivers;
+	pool_priv->user_data_sz = user_data_size;
+
+	return mp;
+}
+
+static unsigned int
+rte_cryptodev_sym_session_data_size(struct rte_cryptodev_sym_session *sess)
+{
+	return (sizeof(sess->sess_data[0]) * sess->nb_drivers) +
+			sess->user_data_sz;
+}
+
 struct rte_cryptodev_sym_session *
 rte_cryptodev_sym_session_create(struct rte_mempool *mp)
 {
 	struct rte_cryptodev_sym_session *sess;
+	struct rte_cryptodev_sym_session_pool_private_data *pool_priv;
+
+	if (!mp) {
+		CDEV_LOG_ERR("Invalid mempool\n");
+		return NULL;
+	}
+
+	pool_priv = rte_mempool_get_priv(mp);
+
+	if (!pool_priv || mp->private_data_size < sizeof(*pool_priv)) {
+		CDEV_LOG_ERR("Invalid mempool\n");
+		return NULL;
+	}
 
 	/* Allocate a session structure from the session pool */
 	if (rte_mempool_get(mp, (void **)&sess)) {
@@ -1224,15 +1389,20 @@ rte_cryptodev_sym_session_create(struct rte_mempool *mp)
 		return NULL;
 	}
 
+	sess->nb_drivers = pool_priv->nb_drivers;
+	sess->user_data_sz = pool_priv->user_data_sz;
+	sess->opaque_data = 0;
+
 	/* Clear device session pointer.
 	 * Include the flag indicating presence of user data
 	 */
-	memset(sess, 0, (sizeof(void *) * nb_drivers) + sizeof(uint8_t));
+	memset(sess->sess_data, 0,
+			rte_cryptodev_sym_session_data_size(sess));
 
 	return sess;
 }
 
-struct rte_cryptodev_asym_session * __rte_experimental
+struct rte_cryptodev_asym_session *
 rte_cryptodev_asym_session_create(struct rte_mempool *mp)
 {
 	struct rte_cryptodev_asym_session *sess;
@@ -1256,11 +1426,18 @@ rte_cryptodev_sym_session_clear(uint8_t dev_id,
 		struct rte_cryptodev_sym_session *sess)
 {
 	struct rte_cryptodev *dev;
+	uint8_t driver_id;
 
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
 
 	if (dev == NULL || sess == NULL)
 		return -EINVAL;
+
+	driver_id = dev->driver_id;
+	if (sess->sess_data[driver_id].refcnt == 0)
+		return 0;
+	if (--sess->sess_data[driver_id].refcnt != 0)
+		return -EBUSY;
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->sym_session_clear, -ENOTSUP);
 
@@ -1269,7 +1446,7 @@ rte_cryptodev_sym_session_clear(uint8_t dev_id,
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_cryptodev_asym_session_clear(uint8_t dev_id,
 		struct rte_cryptodev_asym_session *sess)
 {
@@ -1291,16 +1468,14 @@ int
 rte_cryptodev_sym_session_free(struct rte_cryptodev_sym_session *sess)
 {
 	uint8_t i;
-	void *sess_priv;
 	struct rte_mempool *sess_mp;
 
 	if (sess == NULL)
 		return -EINVAL;
 
 	/* Check that all device private data has been freed */
-	for (i = 0; i < nb_drivers; i++) {
-		sess_priv = get_sym_session_private_data(sess, i);
-		if (sess_priv != NULL)
+	for (i = 0; i < sess->nb_drivers; i++) {
+		if (sess->sess_data[i].refcnt != 0)
 			return -EBUSY;
 	}
 
@@ -1311,7 +1486,7 @@ rte_cryptodev_sym_session_free(struct rte_cryptodev_sym_session *sess)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_cryptodev_asym_session_free(struct rte_cryptodev_asym_session *sess)
 {
 	uint8_t i;
@@ -1335,19 +1510,34 @@ rte_cryptodev_asym_session_free(struct rte_cryptodev_asym_session *sess)
 	return 0;
 }
 
-
 unsigned int
 rte_cryptodev_sym_get_header_session_size(void)
 {
 	/*
-	 * Header contains pointers to the private data
-	 * of all registered drivers, and a flag which
-	 * indicates presence of user data
+	 * Header contains pointers to the private data of all registered
+	 * drivers and all necessary information to ensure safely clear
+	 * or free al session.
 	 */
-	return ((sizeof(void *) * nb_drivers) + sizeof(uint8_t));
+	struct rte_cryptodev_sym_session s = {0};
+
+	s.nb_drivers = nb_drivers;
+
+	return (unsigned int)(sizeof(s) +
+			rte_cryptodev_sym_session_data_size(&s));
 }
 
-unsigned int __rte_experimental
+unsigned int
+rte_cryptodev_sym_get_existing_header_session_size(
+		struct rte_cryptodev_sym_session *sess)
+{
+	if (!sess)
+		return 0;
+	else
+		return (unsigned int)(sizeof(*sess) +
+				rte_cryptodev_sym_session_data_size(sess));
+}
+
+unsigned int
 rte_cryptodev_asym_get_header_session_size(void)
 {
 	/*
@@ -1362,7 +1552,6 @@ unsigned int
 rte_cryptodev_sym_get_private_session_size(uint8_t dev_id)
 {
 	struct rte_cryptodev *dev;
-	unsigned int header_size = sizeof(void *) * nb_drivers;
 	unsigned int priv_sess_size;
 
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id))
@@ -1375,19 +1564,10 @@ rte_cryptodev_sym_get_private_session_size(uint8_t dev_id)
 
 	priv_sess_size = (*dev->dev_ops->sym_session_get_size)(dev);
 
-	/*
-	 * If size is less than session header size,
-	 * return the latter, as this guarantees that
-	 * sessionless operations will work
-	 */
-	if (priv_sess_size < header_size)
-		return header_size;
-
 	return priv_sess_size;
-
 }
 
-unsigned int __rte_experimental
+unsigned int
 rte_cryptodev_asym_get_private_session_size(uint8_t dev_id)
 {
 	struct rte_cryptodev *dev;
@@ -1410,36 +1590,30 @@ rte_cryptodev_asym_get_private_session_size(uint8_t dev_id)
 
 }
 
-int __rte_experimental
+int
 rte_cryptodev_sym_session_set_user_data(
 					struct rte_cryptodev_sym_session *sess,
 					void *data,
 					uint16_t size)
 {
-	uint16_t off_set = sizeof(void *) * nb_drivers;
-	uint8_t *user_data_present = (uint8_t *)sess + off_set;
-
 	if (sess == NULL)
 		return -EINVAL;
 
-	*user_data_present = 1;
-	off_set += sizeof(uint8_t);
-	rte_memcpy((uint8_t *)sess + off_set, data, size);
+	if (sess->user_data_sz < size)
+		return -ENOMEM;
+
+	rte_memcpy(sess->sess_data + sess->nb_drivers, data, size);
 	return 0;
 }
 
-void * __rte_experimental
+void *
 rte_cryptodev_sym_session_get_user_data(
 					struct rte_cryptodev_sym_session *sess)
 {
-	uint16_t off_set = sizeof(void *) * nb_drivers;
-	uint8_t *user_data_present = (uint8_t *)sess + off_set;
-
-	if (sess == NULL || !*user_data_present)
+	if (sess == NULL || sess->user_data_sz == 0)
 		return NULL;
 
-	off_set += sizeof(uint8_t);
-	return (uint8_t *)sess + off_set;
+	return (void *)(sess->sess_data + sess->nb_drivers);
 }
 
 /** Initialise rte_crypto_op mempool element */

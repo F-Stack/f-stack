@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018 NXP
+ * Copyright 2018-2019 NXP
  */
 
 #include <stdio.h>
@@ -62,9 +62,8 @@ dpaa2_cmdif_enqueue_bufs(struct rte_rawdev *dev,
 	struct qbman_fd fd;
 	struct qbman_eq_desc eqdesc;
 	struct qbman_swp *swp;
+	uint32_t retry_count = 0;
 	int ret;
-
-	DPAA2_CMDIF_FUNC_TRACE();
 
 	RTE_SET_USED(count);
 
@@ -102,11 +101,15 @@ dpaa2_cmdif_enqueue_bufs(struct rte_rawdev *dev,
 		ret = qbman_swp_enqueue_multiple(swp, &eqdesc, &fd, NULL, 1);
 		if (ret < 0 && ret != -EBUSY)
 			DPAA2_CMDIF_ERR("Transmit failure with err: %d\n", ret);
-	} while (ret == -EBUSY);
+		retry_count++;
+	} while ((ret == -EBUSY) && (retry_count < DPAA2_MAX_TX_RETRY_COUNT));
+
+	if (ret < 0)
+		return ret;
 
 	DPAA2_CMDIF_DP_DEBUG("Successfully transmitted a packet\n");
 
-	return 0;
+	return 1;
 }
 
 static int
@@ -124,8 +127,6 @@ dpaa2_cmdif_dequeue_bufs(struct rte_rawdev *dev,
 	struct qbman_pull_desc pulldesc;
 	uint8_t status;
 	int ret;
-
-	DPAA2_CMDIF_FUNC_TRACE();
 
 	RTE_SET_USED(count);
 
@@ -208,7 +209,6 @@ dpaa2_cmdif_create(const char *name,
 
 	rawdev->dev_ops = &dpaa2_cmdif_ops;
 	rawdev->device = &vdev->device;
-	rawdev->driver_name = vdev->device.driver->name;
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)

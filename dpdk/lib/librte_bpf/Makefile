@@ -18,8 +18,6 @@ endif
 
 EXPORT_MAP := rte_bpf_version.map
 
-LIBABIVER := 1
-
 # all source are stored in SRCS-y
 SRCS-$(CONFIG_RTE_LIBRTE_BPF) += bpf.c
 SRCS-$(CONFIG_RTE_LIBRTE_BPF) += bpf_exec.c
@@ -31,6 +29,8 @@ SRCS-$(CONFIG_RTE_LIBRTE_BPF) += bpf_load_elf.c
 endif
 ifeq ($(CONFIG_RTE_ARCH_X86_64),y)
 SRCS-$(CONFIG_RTE_LIBRTE_BPF) += bpf_jit_x86.c
+else ifeq ($(CONFIG_RTE_ARCH_ARM64),y)
+SRCS-$(CONFIG_RTE_LIBRTE_BPF) += bpf_jit_arm64.c
 endif
 
 # install header files

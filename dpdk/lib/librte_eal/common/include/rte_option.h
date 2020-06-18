@@ -29,12 +29,17 @@ extern "C" {
 
 typedef int (*rte_option_cb)(void);
 
-/*
- * Structure describing the EAL command line option being registered.
+/**
+ * Structure describing an EAL command line option dynamically registered.
+ *
+ * Common EAL options are mostly statically defined.
+ * Some libraries need additional options to be dynamically added.
+ * This structure describes such options.
  */
 struct rte_option {
 	TAILQ_ENTRY(rte_option) next; /**< Next entry in the list. */
-	const char *opt_str;          /**< The option name. */
+	const char *name; /**< The option name. */
+	const char *usage; /**< Option summary string. */
 	rte_option_cb cb;          /**< Function called when option is used. */
 	int enabled;               /**< Set when the option is used. */
 };
@@ -52,8 +57,12 @@ struct rte_option {
  *
  * @param opt
  *  Structure describing the option to parse.
+ *
+ * @return
+ *  0 on success, <0 otherwise.
  */
-void __rte_experimental
+__rte_experimental
+int
 rte_option_register(struct rte_option *opt);
 
 #ifdef __cplusplus

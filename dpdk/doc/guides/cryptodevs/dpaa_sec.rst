@@ -58,6 +58,8 @@ Cipher algorithms:
 * ``RTE_CRYPTO_CIPHER_AES128_CTR``
 * ``RTE_CRYPTO_CIPHER_AES192_CTR``
 * ``RTE_CRYPTO_CIPHER_AES256_CTR``
+* ``RTE_CRYPTO_CIPHER_SNOW3G_UEA2``
+* ``RTE_CRYPTO_CIPHER_ZUC_EEA3``
 
 Hash algorithms:
 
@@ -66,7 +68,9 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA256_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
+* ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 * ``RTE_CRYPTO_AUTH_MD5_HMAC``
+* ``RTE_CRYPTO_AUTH_ZUC_EIA3``
 
 AEAD algorithms:
 
@@ -85,11 +89,11 @@ For blacklisting a DPAA device, following commands can be used.
 
  .. code-block:: console
 
-    <dpdk app> <EAL args> -b "dpaa_bus:dpaa-secX" -- ...
-    e.g. "dpaa_bus:dpaa-sec0"
+    <dpdk app> <EAL args> -b "dpaa:dpaa_sec-X" -- ...
+    e.g. "dpaa:dpaa_sec-1"
 
     or to disable all 4 SEC devices
-    -b "dpaa_sec:dpaa-sec0"  -b "dpaa_sec:dpaa-sec1" -b "dpaa_sec:dpaa-sec2" -b "dpaa_sec:dpaa-sec3"
+    -b "dpaa:dpaa_sec-1"  -b "dpaa:dpaa_sec-2" -b "dpaa:dpaa_sec-3" -b "dpaa:dpaa_sec-4"
 
 Limitations
 -----------
@@ -131,7 +135,7 @@ following ``make`` command:
 .. code-block:: console
 
    cd <DPDK-source-directory>
-   make config T=arm64-dpaa-linuxapp-gcc install
+   make config T=arm64-dpaa-linux-gcc install
 
 Enabling logs
 -------------

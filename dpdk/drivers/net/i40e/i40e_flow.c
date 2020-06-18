@@ -15,7 +15,6 @@
 #include <rte_ethdev_driver.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
-#include <rte_eth_ctrl.h>
 #include <rte_tailq.h>
 #include <rte_flow_driver.h>
 
@@ -2007,9 +2006,9 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 			 * Mask bits of destination MAC address must be full
 			 * of 1 or full of 0.
 			 */
-			if (!is_zero_ether_addr(&eth_mask->src) ||
-			    (!is_zero_ether_addr(&eth_mask->dst) &&
-			     !is_broadcast_ether_addr(&eth_mask->dst))) {
+			if (!rte_is_zero_ether_addr(&eth_mask->src) ||
+			    (!rte_is_zero_ether_addr(&eth_mask->dst) &&
+			     !rte_is_broadcast_ether_addr(&eth_mask->dst))) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
 						   item,
@@ -2028,7 +2027,7 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 			/* If mask bits of destination MAC address
 			 * are full of 1, set RTE_ETHTYPE_FLAGS_MAC.
 			 */
-			if (is_broadcast_ether_addr(&eth_mask->dst)) {
+			if (rte_is_broadcast_ether_addr(&eth_mask->dst)) {
 				filter->mac_addr = eth_spec->dst;
 				filter->flags |= RTE_ETHTYPE_FLAGS_MAC;
 			} else {
@@ -2036,9 +2035,9 @@ i40e_flow_parse_ethertype_pattern(struct rte_eth_dev *dev,
 			}
 			filter->ether_type = rte_be_to_cpu_16(eth_spec->type);
 
-			if (filter->ether_type == ETHER_TYPE_IPv4 ||
-			    filter->ether_type == ETHER_TYPE_IPv6 ||
-			    filter->ether_type == ETHER_TYPE_LLDP ||
+			if (filter->ether_type == RTE_ETHER_TYPE_IPV4 ||
+			    filter->ether_type == RTE_ETHER_TYPE_IPV6 ||
+			    filter->ether_type == RTE_ETHER_TYPE_LLDP ||
 			    filter->ether_type == outer_tpid) {
 				rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2350,6 +2349,37 @@ i40e_flow_set_fdir_inset(struct i40e_pf *pf,
 	if (num < 0)
 		return -EINVAL;
 
+	if (pf->support_multi_driver) {
+		for (i = 0; i < num; i++)
+			if (i40e_read_rx_ctl(hw,
+					I40E_GLQF_FD_MSK(i, pctype)) !=
+					mask_reg[i]) {
+				PMD_DRV_LOG(ERR, "Input set setting is not"
+						" supported with"
+						" `support-multi-driver`"
+						" enabled!");
+				return -EPERM;
+			}
+		for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
+			if (i40e_read_rx_ctl(hw,
+					I40E_GLQF_FD_MSK(i, pctype)) != 0) {
+				PMD_DRV_LOG(ERR, "Input set setting is not"
+						" supported with"
+						" `support-multi-driver`"
+						" enabled!");
+				return -EPERM;
+			}
+
+	} else {
+		for (i = 0; i < num; i++)
+			i40e_check_write_reg(hw, I40E_GLQF_FD_MSK(i, pctype),
+				mask_reg[i]);
+		/*clear unused mask registers of the pctype */
+		for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
+			i40e_check_write_reg(hw,
+					I40E_GLQF_FD_MSK(i, pctype), 0);
+	}
+
 	inset_reg |= i40e_translate_input_set_reg(hw->mac.type, input_set);
 
 	i40e_check_write_reg(hw, I40E_PRTQF_FD_INSET(pctype, 0),
@@ -2358,13 +2388,6 @@ i40e_flow_set_fdir_inset(struct i40e_pf *pf,
 			     (uint32_t)((inset_reg >>
 					 I40E_32_BIT_WIDTH) & UINT32_MAX));
 
-	for (i = 0; i < num; i++)
-		i40e_check_write_reg(hw, I40E_GLQF_FD_MSK(i, pctype),
-				     mask_reg[i]);
-
-	/*clear unused mask registers of the pctype */
-	for (i = num; i < I40E_INSET_MASK_NUM_REG; i++)
-		i40e_check_write_reg(hw, I40E_GLQF_FD_MSK(i, pctype), 0);
 	I40E_WRITE_FLUSH(hw);
 
 	pf->fdir.input_set[pctype] = input_set;
@@ -2496,8 +2519,8 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 			}
 
 			if (eth_spec && eth_mask) {
-				if (!is_zero_ether_addr(&eth_mask->src) ||
-				    !is_zero_ether_addr(&eth_mask->dst)) {
+				if (!rte_is_zero_ether_addr(&eth_mask->src) ||
+				    !rte_is_zero_ether_addr(&eth_mask->dst)) {
 					rte_flow_error_set(error, EINVAL,
 						      RTE_FLOW_ERROR_TYPE_ITEM,
 						      item,
@@ -2517,9 +2540,9 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				ether_type = rte_be_to_cpu_16(eth_spec->type);
 
 				if (next_type == RTE_FLOW_ITEM_TYPE_VLAN ||
-				    ether_type == ETHER_TYPE_IPv4 ||
-				    ether_type == ETHER_TYPE_IPv6 ||
-				    ether_type == ETHER_TYPE_ARP ||
+				    ether_type == RTE_ETHER_TYPE_IPV4 ||
+				    ether_type == RTE_ETHER_TYPE_IPV6 ||
+				    ether_type == RTE_ETHER_TYPE_ARP ||
 				    ether_type == outer_tpid) {
 					rte_flow_error_set(error, EINVAL,
 						     RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2562,9 +2585,9 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				ether_type =
 					rte_be_to_cpu_16(vlan_spec->inner_type);
 
-				if (ether_type == ETHER_TYPE_IPv4 ||
-				    ether_type == ETHER_TYPE_IPv6 ||
-				    ether_type == ETHER_TYPE_ARP ||
+				if (ether_type == RTE_ETHER_TYPE_IPV4 ||
+				    ether_type == RTE_ETHER_TYPE_IPV6 ||
+				    ether_type == RTE_ETHER_TYPE_ARP ||
 				    ether_type == outer_tpid) {
 					rte_flow_error_set(error, EINVAL,
 						     RTE_FLOW_ERROR_TYPE_ITEM,
@@ -2616,8 +2639,8 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 				/* Check if it is fragment. */
 				frag_off = ipv4_spec->hdr.fragment_offset;
 				frag_off = rte_be_to_cpu_16(frag_off);
-				if (frag_off & IPV4_HDR_OFFSET_MASK ||
-				    frag_off & IPV4_HDR_MF_FLAG)
+				if (frag_off & RTE_IPV4_HDR_OFFSET_MASK ||
+				    frag_off & RTE_IPV4_HDR_MF_FLAG)
 					pctype = I40E_FILTER_PCTYPE_FRAG_IPV4;
 
 				/* Get the filter info */
@@ -3062,7 +3085,7 @@ i40e_flow_parse_fdir_action(struct rte_eth_dev *dev,
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	const struct rte_flow_action *act;
 	const struct rte_flow_action_queue *act_q;
-	const struct rte_flow_action_mark *mark_spec;
+	const struct rte_flow_action_mark *mark_spec = NULL;
 	uint32_t index = 0;
 
 	/* Check if the first non-void action is QUEUE or DROP or PASSTHRU. */
@@ -3088,6 +3111,12 @@ i40e_flow_parse_fdir_action(struct rte_eth_dev *dev,
 	case RTE_FLOW_ACTION_TYPE_PASSTHRU:
 		filter->action.behavior = I40E_FDIR_PASSTHRU;
 		break;
+	case RTE_FLOW_ACTION_TYPE_MARK:
+		filter->action.behavior = I40E_FDIR_PASSTHRU;
+		mark_spec = act->conf;
+		filter->action.report_status = I40E_FDIR_REPORT_ID;
+		filter->soft_id = mark_spec->id;
+	break;
 	default:
 		rte_flow_error_set(error, EINVAL,
 				   RTE_FLOW_ERROR_TYPE_ACTION, act,
@@ -3100,12 +3129,35 @@ i40e_flow_parse_fdir_action(struct rte_eth_dev *dev,
 	NEXT_ITEM_OF_ACTION(act, actions, index);
 	switch (act->type) {
 	case RTE_FLOW_ACTION_TYPE_MARK:
+		if (mark_spec) {
+			/* Double MARK actions requested */
+			rte_flow_error_set(error, EINVAL,
+			   RTE_FLOW_ERROR_TYPE_ACTION, act,
+			   "Invalid action.");
+			return -rte_errno;
+		}
 		mark_spec = act->conf;
 		filter->action.report_status = I40E_FDIR_REPORT_ID;
 		filter->soft_id = mark_spec->id;
 		break;
 	case RTE_FLOW_ACTION_TYPE_FLAG:
+		if (mark_spec) {
+			/* MARK + FLAG not supported */
+			rte_flow_error_set(error, EINVAL,
+					   RTE_FLOW_ERROR_TYPE_ACTION, act,
+					   "Invalid action.");
+			return -rte_errno;
+		}
 		filter->action.report_status = I40E_FDIR_NO_REPORT_STATUS;
+		break;
+	case RTE_FLOW_ACTION_TYPE_RSS:
+		if (filter->action.behavior != I40E_FDIR_PASSTHRU) {
+			/* RSS filter won't be next if FDIR did not pass thru */
+			rte_flow_error_set(error, EINVAL,
+					   RTE_FLOW_ERROR_TYPE_ACTION, act,
+					   "Invalid action.");
+			return -rte_errno;
+		}
 		break;
 	case RTE_FLOW_ACTION_TYPE_END:
 		return 0;
@@ -3335,8 +3387,8 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 				/* DST address of inner MAC shouldn't be masked.
 				 * SRC address of Inner MAC should be masked.
 				 */
-				if (!is_broadcast_ether_addr(&eth_mask->dst) ||
-				    !is_zero_ether_addr(&eth_mask->src) ||
+				if (!rte_is_broadcast_ether_addr(&eth_mask->dst) ||
+				    !rte_is_zero_ether_addr(&eth_mask->src) ||
 				    eth_mask->type) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
@@ -3348,12 +3400,12 @@ i40e_flow_parse_vxlan_pattern(__rte_unused struct rte_eth_dev *dev,
 				if (!vxlan_flag) {
 					rte_memcpy(&filter->outer_mac,
 						   &eth_spec->dst,
-						   ETHER_ADDR_LEN);
+						   RTE_ETHER_ADDR_LEN);
 					filter_type |= ETH_TUNNEL_FILTER_OMAC;
 				} else {
 					rte_memcpy(&filter->inner_mac,
 						   &eth_spec->dst,
-						   ETHER_ADDR_LEN);
+						   RTE_ETHER_ADDR_LEN);
 					filter_type |= ETH_TUNNEL_FILTER_IMAC;
 				}
 			}
@@ -3565,8 +3617,8 @@ i40e_flow_parse_nvgre_pattern(__rte_unused struct rte_eth_dev *dev,
 				/* DST address of inner MAC shouldn't be masked.
 				 * SRC address of Inner MAC should be masked.
 				 */
-				if (!is_broadcast_ether_addr(&eth_mask->dst) ||
-				    !is_zero_ether_addr(&eth_mask->src) ||
+				if (!rte_is_broadcast_ether_addr(&eth_mask->dst) ||
+				    !rte_is_zero_ether_addr(&eth_mask->src) ||
 				    eth_mask->type) {
 					rte_flow_error_set(error, EINVAL,
 						   RTE_FLOW_ERROR_TYPE_ITEM,
@@ -3578,12 +3630,12 @@ i40e_flow_parse_nvgre_pattern(__rte_unused struct rte_eth_dev *dev,
 				if (!nvgre_flag) {
 					rte_memcpy(&filter->outer_mac,
 						   &eth_spec->dst,
-						   ETHER_ADDR_LEN);
+						   RTE_ETHER_ADDR_LEN);
 					filter_type |= ETH_TUNNEL_FILTER_OMAC;
 				} else {
 					rte_memcpy(&filter->inner_mac,
 						   &eth_spec->dst,
-						   ETHER_ADDR_LEN);
+						   RTE_ETHER_ADDR_LEN);
 					filter_type |= ETH_TUNNEL_FILTER_IMAC;
 				}
 			}
@@ -4747,6 +4799,7 @@ i40e_flow_destroy(struct rte_eth_dev *dev,
 			i40e_fdir_teardown(pf);
 			dev->data->dev_conf.fdir_conf.mode =
 				   RTE_FDIR_MODE_NONE;
+			i40e_fdir_rx_proc_enable(dev, 0);
 		}
 		break;
 	case RTE_ETH_FILTER_HASH:
@@ -4820,10 +4873,10 @@ i40e_flow_destroy_tunnel_filter(struct i40e_pf *pf,
 	int ret = 0;
 
 	memset(&cld_filter, 0, sizeof(cld_filter));
-	ether_addr_copy((struct ether_addr *)&filter->input.outer_mac,
-			(struct ether_addr *)&cld_filter.element.outer_mac);
-	ether_addr_copy((struct ether_addr *)&filter->input.inner_mac,
-			(struct ether_addr *)&cld_filter.element.inner_mac);
+	rte_ether_addr_copy((struct rte_ether_addr *)&filter->input.outer_mac,
+			(struct rte_ether_addr *)&cld_filter.element.outer_mac);
+	rte_ether_addr_copy((struct rte_ether_addr *)&filter->input.inner_mac,
+			(struct rte_ether_addr *)&cld_filter.element.inner_mac);
 	cld_filter.element.inner_vlan = filter->input.inner_vlan;
 	cld_filter.element.flags = filter->input.flags;
 	cld_filter.element.tenant_id = filter->input.tenant_id;
@@ -4902,6 +4955,9 @@ i40e_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 				   "Failed to flush rss flows.");
 		return -rte_errno;
 	}
+
+	/* Disable FDIR processing as all FDIR rules are now flushed */
+	i40e_fdir_rx_proc_enable(dev, 0);
 
 	return ret;
 }

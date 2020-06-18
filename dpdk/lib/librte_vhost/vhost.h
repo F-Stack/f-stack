@@ -18,6 +18,7 @@
 #include <rte_log.h>
 #include <rte_ether.h>
 #include <rte_rwlock.h>
+#include <rte_malloc.h>
 
 #include "rte_vhost.h"
 #include "rte_vdpa.h"
@@ -37,6 +38,38 @@
 #define BUF_VECTOR_MAX 256
 
 #define VHOST_LOG_CACHE_NR 32
+
+#define PACKED_DESC_ENQUEUE_USED_FLAG(w)	\
+	((w) ? (VRING_DESC_F_AVAIL | VRING_DESC_F_USED | VRING_DESC_F_WRITE) : \
+		VRING_DESC_F_WRITE)
+#define PACKED_DESC_DEQUEUE_USED_FLAG(w)	\
+	((w) ? (VRING_DESC_F_AVAIL | VRING_DESC_F_USED) : 0x0)
+#define PACKED_DESC_SINGLE_DEQUEUE_FLAG (VRING_DESC_F_NEXT | \
+					 VRING_DESC_F_INDIRECT)
+
+#define PACKED_BATCH_SIZE (RTE_CACHE_LINE_SIZE / \
+			    sizeof(struct vring_packed_desc))
+#define PACKED_BATCH_MASK (PACKED_BATCH_SIZE - 1)
+
+#ifdef VHOST_GCC_UNROLL_PRAGMA
+#define vhost_for_each_try_unroll(iter, val, size) _Pragma("GCC unroll 4") \
+	for (iter = val; iter < size; iter++)
+#endif
+
+#ifdef VHOST_CLANG_UNROLL_PRAGMA
+#define vhost_for_each_try_unroll(iter, val, size) _Pragma("unroll 4") \
+	for (iter = val; iter < size; iter++)
+#endif
+
+#ifdef VHOST_ICC_UNROLL_PRAGMA
+#define vhost_for_each_try_unroll(iter, val, size) _Pragma("unroll (4)") \
+	for (iter = val; iter < size; iter++)
+#endif
+
+#ifndef vhost_for_each_try_unroll
+#define vhost_for_each_try_unroll(iter, val, num) \
+	for (iter = val; iter < num; iter++)
+#endif
 
 /**
  * Structure contains buffer address, length and descriptor index
@@ -83,6 +116,7 @@ struct log_cache_entry {
 
 struct vring_used_elem_packed {
 	uint16_t id;
+	uint16_t flags;
 	uint32_t len;
 	uint32_t count;
 };
@@ -127,6 +161,14 @@ struct vhost_virtqueue {
 	/* Physical address of used ring, for logging */
 	uint64_t		log_guest_addr;
 
+	/* inflight share memory info */
+	union {
+		struct rte_vhost_inflight_info_split *inflight_split;
+		struct rte_vhost_inflight_info_packed *inflight_packed;
+	};
+	struct rte_vhost_resubmit_info *resubmit_inflight;
+	uint64_t		global_counter;
+
 	uint16_t		nr_zmbuf;
 	uint16_t		zmbuf_size;
 	uint16_t		last_zmbuf_idx;
@@ -138,6 +180,10 @@ struct vhost_virtqueue {
 		struct vring_used_elem_packed *shadow_used_packed;
 	};
 	uint16_t                shadow_used_idx;
+	/* Record packed ring enqueue latest desc cache aligned index */
+	uint16_t		shadow_aligned_idx;
+	/* Record packed ring first dequeue desc index */
+	uint16_t		shadow_last_used_idx;
 	struct vhost_vring_addr ring_addrs;
 
 	struct batch_copy_elem	*batch_copy_elems;
@@ -285,54 +331,10 @@ struct guest_page {
 	uint64_t size;
 };
 
-/* The possible results of a message handling function */
-enum vh_result {
-	/* Message handling failed */
-	VH_RESULT_ERR   = -1,
-	/* Message handling successful */
-	VH_RESULT_OK    =  0,
-	/* Message handling successful and reply prepared */
-	VH_RESULT_REPLY =  1,
-};
-
-/**
- * function prototype for the vhost backend to handler specific vhost user
- * messages prior to the master message handling
- *
- * @param vid
- *  vhost device id
- * @param msg
- *  Message pointer.
- * @param skip_master
- *  If the handler requires skipping the master message handling, this variable
- *  shall be written 1, otherwise 0.
- * @return
- *  VH_RESULT_OK on success, VH_RESULT_REPLY on success with reply,
- *  VH_RESULT_ERR on failure
- */
-typedef enum vh_result (*vhost_msg_pre_handle)(int vid, void *msg,
-		uint32_t *skip_master);
-
-/**
- * function prototype for the vhost backend to handler specific vhost user
- * messages after the master message handling is done
- *
- * @param vid
- *  vhost device id
- * @param msg
- *  Message pointer.
- * @return
- *  VH_RESULT_OK on success, VH_RESULT_REPLY on success with reply,
- *  VH_RESULT_ERR on failure
- */
-typedef enum vh_result (*vhost_msg_post_handle)(int vid, void *msg);
-
-/**
- * pre and post vhost user message handlers
- */
-struct vhost_user_extern_ops {
-	vhost_msg_pre_handle pre_msg_handle;
-	vhost_msg_post_handle post_msg_handle;
+struct inflight_mem_info {
+	int		fd;
+	void		*addr;
+	uint64_t	size;
 };
 
 /**
@@ -351,13 +353,16 @@ struct virtio_net {
 	rte_atomic16_t		broadcast_rarp;
 	uint32_t		nr_vring;
 	int			dequeue_zero_copy;
+	int			extbuf;
+	int			linearbuf;
 	struct vhost_virtqueue	*virtqueue[VHOST_MAX_QUEUE_PAIRS * 2];
+	struct inflight_mem_info *inflight_info;
 #define IF_NAME_SZ (PATH_MAX > IFNAMSIZ ? PATH_MAX : IFNAMSIZ)
 	char			ifname[IF_NAME_SZ];
 	uint64_t		log_size;
 	uint64_t		log_base;
 	uint64_t		log_addr;
-	struct ether_addr	mac;
+	struct rte_ether_addr	mac;
 	uint16_t		mtu;
 
 	struct vhost_device_ops const *notify_ops;
@@ -378,10 +383,10 @@ struct virtio_net {
 	 */
 	int			vdpa_dev_id;
 
-	/* private data for virtio device */
+	/* context data for the external message handlers */
 	void			*extern_data;
 	/* pre and post vhost user message handlers for the device */
-	struct vhost_user_extern_ops extern_ops;
+	struct rte_vhost_user_extern_ops extern_ops;
 } __rte_cache_aligned;
 
 static __rte_always_inline bool
@@ -393,161 +398,113 @@ vq_is_packed(struct virtio_net *dev)
 static inline bool
 desc_is_avail(struct vring_packed_desc *desc, bool wrap_counter)
 {
-	uint16_t flags = *((volatile uint16_t *) &desc->flags);
+	uint16_t flags = __atomic_load_n(&desc->flags, __ATOMIC_ACQUIRE);
 
 	return wrap_counter == !!(flags & VRING_DESC_F_AVAIL) &&
 		wrap_counter != !!(flags & VRING_DESC_F_USED);
 }
 
-#define VHOST_LOG_PAGE	4096
-
-/*
- * Atomically set a bit in memory.
- */
-static __rte_always_inline void
-vhost_set_bit(unsigned int nr, volatile uint8_t *addr)
+static inline void
+vq_inc_last_used_packed(struct vhost_virtqueue *vq, uint16_t num)
 {
-#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION < 70100)
-	/*
-	 * __sync_ built-ins are deprecated, but __atomic_ ones
-	 * are sub-optimized in older GCC versions.
-	 */
-	__sync_fetch_and_or_1(addr, (1U << nr));
-#else
-	__atomic_fetch_or(addr, (1U << nr), __ATOMIC_RELAXED);
-#endif
+	vq->last_used_idx += num;
+	if (vq->last_used_idx >= vq->size) {
+		vq->used_wrap_counter ^= 1;
+		vq->last_used_idx -= vq->size;
+	}
 }
 
-static __rte_always_inline void
-vhost_log_page(uint8_t *log_base, uint64_t page)
+static inline void
+vq_inc_last_avail_packed(struct vhost_virtqueue *vq, uint16_t num)
 {
-	vhost_set_bit(page % 8, &log_base[page / 8]);
+	vq->last_avail_idx += num;
+	if (vq->last_avail_idx >= vq->size) {
+		vq->avail_wrap_counter ^= 1;
+		vq->last_avail_idx -= vq->size;
+	}
 }
+
+void __vhost_log_cache_write(struct virtio_net *dev,
+		struct vhost_virtqueue *vq,
+		uint64_t addr, uint64_t len);
+void __vhost_log_cache_write_iova(struct virtio_net *dev,
+		struct vhost_virtqueue *vq,
+		uint64_t iova, uint64_t len);
+void __vhost_log_cache_sync(struct virtio_net *dev,
+		struct vhost_virtqueue *vq);
+void __vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len);
+void __vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			    uint64_t iova, uint64_t len);
 
 static __rte_always_inline void
 vhost_log_write(struct virtio_net *dev, uint64_t addr, uint64_t len)
 {
-	uint64_t page;
-
-	if (likely(((dev->features & (1ULL << VHOST_F_LOG_ALL)) == 0) ||
-		   !dev->log_base || !len))
-		return;
-
-	if (unlikely(dev->log_size <= ((addr + len - 1) / VHOST_LOG_PAGE / 8)))
-		return;
-
-	/* To make sure guest memory updates are committed before logging */
-	rte_smp_wmb();
-
-	page = addr / VHOST_LOG_PAGE;
-	while (page * VHOST_LOG_PAGE < addr + len) {
-		vhost_log_page((uint8_t *)(uintptr_t)dev->log_base, page);
-		page += 1;
-	}
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL)))
+		__vhost_log_write(dev, addr, len);
 }
 
 static __rte_always_inline void
 vhost_log_cache_sync(struct virtio_net *dev, struct vhost_virtqueue *vq)
 {
-	unsigned long *log_base;
-	int i;
-
-	if (likely(((dev->features & (1ULL << VHOST_F_LOG_ALL)) == 0) ||
-		   !dev->log_base))
-		return;
-
-	log_base = (unsigned long *)(uintptr_t)dev->log_base;
-
-	/*
-	 * It is expected a write memory barrier has been issued
-	 * before this function is called.
-	 */
-
-	for (i = 0; i < vq->log_cache_nb_elem; i++) {
-		struct log_cache_entry *elem = vq->log_cache + i;
-
-#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION < 70100)
-		/*
-		 * '__sync' builtins are deprecated, but '__atomic' ones
-		 * are sub-optimized in older GCC versions.
-		 */
-		__sync_fetch_and_or(log_base + elem->offset, elem->val);
-#else
-		__atomic_fetch_or(log_base + elem->offset, elem->val,
-				__ATOMIC_RELAXED);
-#endif
-	}
-
-	rte_smp_wmb();
-
-	vq->log_cache_nb_elem = 0;
-}
-
-static __rte_always_inline void
-vhost_log_cache_page(struct virtio_net *dev, struct vhost_virtqueue *vq,
-			uint64_t page)
-{
-	uint32_t bit_nr = page % (sizeof(unsigned long) << 3);
-	uint32_t offset = page / (sizeof(unsigned long) << 3);
-	int i;
-
-	for (i = 0; i < vq->log_cache_nb_elem; i++) {
-		struct log_cache_entry *elem = vq->log_cache + i;
-
-		if (elem->offset == offset) {
-			elem->val |= (1UL << bit_nr);
-			return;
-		}
-	}
-
-	if (unlikely(i >= VHOST_LOG_CACHE_NR)) {
-		/*
-		 * No more room for a new log cache entry,
-		 * so write the dirty log map directly.
-		 */
-		rte_smp_wmb();
-		vhost_log_page((uint8_t *)(uintptr_t)dev->log_base, page);
-
-		return;
-	}
-
-	vq->log_cache[i].offset = offset;
-	vq->log_cache[i].val = (1UL << bit_nr);
-	vq->log_cache_nb_elem++;
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL)))
+		__vhost_log_cache_sync(dev, vq);
 }
 
 static __rte_always_inline void
 vhost_log_cache_write(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			uint64_t addr, uint64_t len)
 {
-	uint64_t page;
-
-	if (likely(((dev->features & (1ULL << VHOST_F_LOG_ALL)) == 0) ||
-		   !dev->log_base || !len))
-		return;
-
-	if (unlikely(dev->log_size <= ((addr + len - 1) / VHOST_LOG_PAGE / 8)))
-		return;
-
-	page = addr / VHOST_LOG_PAGE;
-	while (page * VHOST_LOG_PAGE < addr + len) {
-		vhost_log_cache_page(dev, vq, page);
-		page += 1;
-	}
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL)))
+		__vhost_log_cache_write(dev, vq, addr, len);
 }
 
 static __rte_always_inline void
 vhost_log_cache_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			uint64_t offset, uint64_t len)
 {
-	vhost_log_cache_write(dev, vq, vq->log_guest_addr + offset, len);
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL))) {
+		if (unlikely(vq->log_guest_addr == 0))
+			return;
+		__vhost_log_cache_write(dev, vq, vq->log_guest_addr + offset,
+					len);
+	}
 }
 
 static __rte_always_inline void
 vhost_log_used_vring(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		     uint64_t offset, uint64_t len)
 {
-	vhost_log_write(dev, vq->log_guest_addr + offset, len);
+	if (unlikely(dev->features & (1ULL << VHOST_F_LOG_ALL))) {
+		if (unlikely(vq->log_guest_addr == 0))
+			return;
+		__vhost_log_write(dev, vq->log_guest_addr + offset, len);
+	}
+}
+
+static __rte_always_inline void
+vhost_log_cache_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			   uint64_t iova, uint64_t len)
+{
+	if (likely(!(dev->features & (1ULL << VHOST_F_LOG_ALL))))
+		return;
+
+	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
+		__vhost_log_cache_write_iova(dev, vq, iova, len);
+	else
+		__vhost_log_cache_write(dev, vq, iova, len);
+}
+
+static __rte_always_inline void
+vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
+			   uint64_t iova, uint64_t len)
+{
+	if (likely(!(dev->features & (1ULL << VHOST_F_LOG_ALL))))
+		return;
+
+	if (dev->features & (1ULL << VIRTIO_F_IOMMU_PLATFORM))
+		__vhost_log_write_iova(dev, vq, iova, len);
+	else
+		__vhost_log_write(dev, iova, len);
 }
 
 /* Macros for printing using RTE_LOG */
@@ -604,6 +561,26 @@ gpa_to_hpa(struct virtio_net *dev, uint64_t gpa, uint64_t size)
 	return 0;
 }
 
+static __rte_always_inline uint64_t
+hva_to_gpa(struct virtio_net *dev, uint64_t vva, uint64_t len)
+{
+	struct rte_vhost_mem_region *r;
+	uint32_t i;
+
+	if (unlikely(!dev || !dev->mem))
+		return 0;
+
+	for (i = 0; i < dev->mem->nregions; i++) {
+		r = &dev->mem->regions[i];
+
+		if (vva >= r->host_user_addr &&
+		    vva + len <  r->host_user_addr + r->size) {
+			return r->guest_phys_addr + vva - r->host_user_addr;
+		}
+	}
+	return 0;
+}
+
 static __rte_always_inline struct virtio_net *
 get_device(int vid)
 {
@@ -624,16 +601,18 @@ void vhost_destroy_device(int);
 void vhost_destroy_device_notify(struct virtio_net *dev);
 
 void cleanup_vq(struct vhost_virtqueue *vq, int destroy);
+void cleanup_vq_inflight(struct virtio_net *dev, struct vhost_virtqueue *vq);
 void free_vq(struct virtio_net *dev, struct vhost_virtqueue *vq);
 
 int alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx);
 
 void vhost_attach_vdpa_device(int vid, int did);
-void vhost_detach_vdpa_device(int vid);
 
 void vhost_set_ifname(int, const char *if_name, unsigned int if_len);
 void vhost_enable_dequeue_zero_copy(int vid);
 void vhost_set_builtin_virtio_net(int vid, bool enable);
+void vhost_enable_extbuf(int vid);
+void vhost_enable_linearbuf(int vid);
 
 struct vhost_device_ops const *vhost_driver_callback_get(const char *path);
 
@@ -646,7 +625,12 @@ void vhost_backend_cleanup(struct virtio_net *dev);
 
 uint64_t __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			uint64_t iova, uint64_t *len, uint8_t perm);
+void *vhost_alloc_copy_ind_table(struct virtio_net *dev,
+			struct vhost_virtqueue *vq,
+			uint64_t desc_addr, uint64_t desc_len);
 int vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq);
+uint64_t translate_log_addr(struct virtio_net *dev, struct vhost_virtqueue *vq,
+		uint64_t log_addr);
 void vring_invalidate(struct virtio_net *dev, struct vhost_virtqueue *vq);
 
 static __rte_always_inline uint64_t
@@ -698,13 +682,19 @@ vhost_vring_call_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 
 		if ((vhost_need_event(vhost_used_event(vq), new, old) &&
 					(vq->callfd >= 0)) ||
-				unlikely(!signalled_used_valid))
+				unlikely(!signalled_used_valid)) {
 			eventfd_write(vq->callfd, (eventfd_t) 1);
+			if (dev->notify_ops->guest_notified)
+				dev->notify_ops->guest_notified(dev->vid);
+		}
 	} else {
 		/* Kick the guest if necessary. */
 		if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
-				&& (vq->callfd >= 0))
+				&& (vq->callfd >= 0)) {
 			eventfd_write(vq->callfd, (eventfd_t)1);
+			if (dev->notify_ops->guest_notified)
+				dev->notify_ops->guest_notified(dev->vid);
+		}
 	}
 }
 
@@ -755,8 +745,17 @@ vhost_vring_call_packed(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	if (vhost_need_event(off, new, old))
 		kick = true;
 kick:
-	if (kick)
+	if (kick) {
 		eventfd_write(vq->callfd, (eventfd_t)1);
+		if (dev->notify_ops->guest_notified)
+			dev->notify_ops->guest_notified(dev->vid);
+	}
+}
+
+static __rte_always_inline void
+free_ind_table(void *idesc)
+{
+	rte_free(idesc);
 }
 
 static __rte_always_inline void

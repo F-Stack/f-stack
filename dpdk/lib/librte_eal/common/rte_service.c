@@ -7,7 +7,6 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <string.h>
-#include <dirent.h>
 
 #include <rte_compat.h>
 #include <rte_service.h>
@@ -21,6 +20,8 @@
 #include <rte_atomic.h>
 #include <rte_memory.h>
 #include <rte_malloc.h>
+
+#include "eal_private.h"
 
 #define RTE_SERVICE_NUM_MAX 64
 
@@ -52,7 +53,6 @@ struct rte_service_spec_impl {
 	rte_atomic32_t num_mapped_cores;
 	uint64_t calls;
 	uint64_t cycles_spent;
-	uint8_t active_on_lcore[RTE_MAX_LCORE];
 } __rte_cache_aligned;
 
 /* the internal values of a service core */
@@ -61,7 +61,7 @@ struct core_state {
 	uint64_t service_mask;
 	uint8_t runstate; /* running or stopped */
 	uint8_t is_service_core; /* set if core is currently a service core */
-
+	uint8_t service_active_on_lcore[RTE_SERVICE_NUM_MAX];
 	uint64_t loops;
 	uint64_t calls_per_service[RTE_SERVICE_NUM_MAX];
 } __rte_cache_aligned;
@@ -71,10 +71,12 @@ static struct rte_service_spec_impl *rte_services;
 static struct core_state *lcore_states;
 static uint32_t rte_service_library_initialized;
 
-int32_t rte_service_init(void)
+int32_t
+rte_service_init(void)
 {
 	if (rte_service_library_initialized) {
-		printf("service library init() called, init flag %d\n",
+		RTE_LOG(NOTICE, EAL,
+			"service library init() called, init flag %d\n",
 			rte_service_library_initialized);
 		return -EALREADY;
 	}
@@ -83,14 +85,14 @@ int32_t rte_service_init(void)
 			sizeof(struct rte_service_spec_impl),
 			RTE_CACHE_LINE_SIZE);
 	if (!rte_services) {
-		printf("error allocating rte services array\n");
+		RTE_LOG(ERR, EAL, "error allocating rte services array\n");
 		goto fail_mem;
 	}
 
 	lcore_states = rte_calloc("rte_service_core_states", RTE_MAX_LCORE,
 			sizeof(struct core_state), RTE_CACHE_LINE_SIZE);
 	if (!lcore_states) {
-		printf("error allocating core states array\n");
+		RTE_LOG(ERR, EAL, "error allocating core states array\n");
 		goto fail_mem;
 	}
 
@@ -109,10 +111,8 @@ int32_t rte_service_init(void)
 	rte_service_library_initialized = 1;
 	return 0;
 fail_mem:
-	if (rte_services)
-		rte_free(rte_services);
-	if (lcore_states)
-		rte_free(lcore_states);
+	rte_free(rte_services);
+	rte_free(lcore_states);
 	return -ENOMEM;
 }
 
@@ -122,11 +122,8 @@ rte_service_finalize(void)
 	if (!rte_service_library_initialized)
 		return;
 
-	if (rte_services)
-		rte_free(rte_services);
-
-	if (lcore_states)
-		rte_free(lcore_states);
+	rte_free(rte_services);
+	rte_free(lcore_states);
 
 	rte_service_library_initialized = 0;
 }
@@ -138,6 +135,12 @@ static inline int
 service_valid(uint32_t id)
 {
 	return !!(rte_services[id].internal_flags & SERVICE_F_REGISTERED);
+}
+
+static struct rte_service_spec_impl *
+service_get(uint32_t id)
+{
+	return &rte_services[id];
 }
 
 /* validate ID and retrieve service pointer, or return error value */
@@ -347,20 +350,22 @@ rte_service_runner_do_callback(struct rte_service_spec_impl *s,
 }
 
 
-static inline int32_t
-service_run(uint32_t i, int lcore, struct core_state *cs, uint64_t service_mask)
+/* Expects the service 's' is valid. */
+static int32_t
+service_run(uint32_t i, struct core_state *cs, uint64_t service_mask,
+	    struct rte_service_spec_impl *s)
 {
-	if (!service_valid(i))
+	if (!s)
 		return -EINVAL;
-	struct rte_service_spec_impl *s = &rte_services[i];
+
 	if (s->comp_runstate != RUNSTATE_RUNNING ||
 			s->app_runstate != RUNSTATE_RUNNING ||
 			!(service_mask & (UINT64_C(1) << i))) {
-		s->active_on_lcore[lcore] = 0;
+		cs->service_active_on_lcore[i] = 0;
 		return -ENOEXEC;
 	}
 
-	s->active_on_lcore[lcore] = 1;
+	cs->service_active_on_lcore[i] = 1;
 
 	/* check do we need cmpset, if MT safe or <= 1 core
 	 * mapped, atomic ops are not required.
@@ -379,34 +384,31 @@ service_run(uint32_t i, int lcore, struct core_state *cs, uint64_t service_mask)
 	return 0;
 }
 
-int32_t __rte_experimental
+int32_t
 rte_service_may_be_active(uint32_t id)
 {
 	uint32_t ids[RTE_MAX_LCORE] = {0};
-	struct rte_service_spec_impl *s = &rte_services[id];
 	int32_t lcore_count = rte_service_lcore_list(ids, RTE_MAX_LCORE);
 	int i;
 
-	if (!service_valid(id))
+	if (id >= RTE_SERVICE_NUM_MAX || !service_valid(id))
 		return -EINVAL;
 
 	for (i = 0; i < lcore_count; i++) {
-		if (s->active_on_lcore[ids[i]])
+		if (lcore_states[i].service_active_on_lcore[id])
 			return 1;
 	}
 
 	return 0;
 }
 
-int32_t rte_service_run_iter_on_app_lcore(uint32_t id,
-		uint32_t serialize_mt_unsafe)
+int32_t
+rte_service_run_iter_on_app_lcore(uint32_t id, uint32_t serialize_mt_unsafe)
 {
-	/* run service on calling core, using all-ones as the service mask */
-	if (!service_valid(id))
-		return -EINVAL;
-
 	struct core_state *cs = &lcore_states[rte_lcore_id()];
-	struct rte_service_spec_impl *s = &rte_services[id];
+	struct rte_service_spec_impl *s;
+
+	SERVICE_VALID_GET_OR_ERR_RET(id, s, -EINVAL);
 
 	/* Atomically add this core to the mapped cores first, then examine if
 	 * we can run the service. This avoids a race condition between
@@ -422,7 +424,7 @@ int32_t rte_service_run_iter_on_app_lcore(uint32_t id,
 		return -EBUSY;
 	}
 
-	int ret = service_run(id, rte_lcore_id(), cs, UINT64_MAX);
+	int ret = service_run(id, cs, UINT64_MAX, s);
 
 	if (serialize_mt_unsafe)
 		rte_atomic32_dec(&s->num_mapped_cores);
@@ -442,8 +444,10 @@ rte_service_runner_func(void *arg)
 		const uint64_t service_mask = cs->service_mask;
 
 		for (i = 0; i < RTE_SERVICE_NUM_MAX; i++) {
+			if (!service_valid(i))
+				continue;
 			/* return value ignored as no change to code flow */
-			service_run(i, lcore, cs, service_mask);
+			service_run(i, cs, service_mask, service_get(i));
 		}
 
 		cs->loops++;
@@ -735,7 +739,7 @@ rte_service_lcore_stop(uint32_t lcore)
 }
 
 int32_t
-rte_service_attr_get(uint32_t id, uint32_t attr_id, uint32_t *attr_value)
+rte_service_attr_get(uint32_t id, uint32_t attr_id, uint64_t *attr_value)
 {
 	struct rte_service_spec_impl *s;
 	SERVICE_VALID_GET_OR_ERR_RET(id, s, -EINVAL);
@@ -755,7 +759,7 @@ rte_service_attr_get(uint32_t id, uint32_t attr_id, uint32_t *attr_value)
 	}
 }
 
-int32_t __rte_experimental
+int32_t
 rte_service_lcore_attr_get(uint32_t lcore, uint32_t attr_id,
 			   uint64_t *attr_value)
 {
@@ -815,7 +819,7 @@ rte_service_attr_reset_all(uint32_t id)
 	return 0;
 }
 
-int32_t __rte_experimental
+int32_t
 rte_service_lcore_attr_reset_all(uint32_t lcore)
 {
 	struct core_state *cs;

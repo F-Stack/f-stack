@@ -65,9 +65,10 @@
 #define IXGBE_QUEUE_ITR_INTERVAL_DEFAULT	500 /* 500us */
 
 /* Loopback operation modes */
-/* 82599 specific loopback operation types */
-#define IXGBE_LPBK_82599_NONE   0x0 /* Default value. Loopback is disabled. */
-#define IXGBE_LPBK_82599_TX_RX  0x1 /* Tx->Rx loopback operation is enabled. */
+#define IXGBE_LPBK_NONE   0x0 /* Default value. Loopback is disabled. */
+#define IXGBE_LPBK_TX_RX  0x1 /* Tx->Rx loopback operation is enabled. */
+/* X540-X550 specific loopback operations */
+#define IXGBE_MII_AUTONEG_ENABLE        0x1000 /* Auto-negociation enable (default = 1) */
 
 #define IXGBE_MAX_JUMBO_FRAME_SIZE      0x2600 /* Maximum Jumbo frame size. */
 
@@ -99,6 +100,9 @@
 #define IXGBE_L34T_IMIR_QUEUE_SHIFT     21
 #define IXGBE_5TUPLE_MAX_PRI            7
 #define IXGBE_5TUPLE_MIN_PRI            1
+
+/* The overhead from MTU to max frame size. */
+#define IXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
 
 /* bit of VXLAN tunnel type | 7 bits of zeros  | 8 bits of zeros*/
 #define IXGBE_FDIR_VXLAN_TUNNEL_TYPE    0x8000
@@ -254,7 +258,7 @@ struct ixgbe_mirror_info {
 };
 
 struct ixgbe_vf_info {
-	uint8_t vf_mac_addresses[ETHER_ADDR_LEN];
+	uint8_t vf_mac_addresses[RTE_ETHER_ADDR_LEN];
 	uint16_t vf_mc_hashes[IXGBE_MAX_VF_MC_ENTRIES];
 	uint16_t num_vf_mc_hashes;
 	uint16_t default_vf_vlan_id;
@@ -265,6 +269,7 @@ struct ixgbe_vf_info {
 	uint8_t spoofchk_enabled;
 	uint8_t api_version;
 	uint16_t switch_domain_id;
+	uint16_t xcast_mode;
 };
 
 /*
@@ -358,6 +363,12 @@ struct ixgbe_l2_tn_info {
 struct rte_flow {
 	enum rte_filter_type filter_type;
 	void *rule;
+};
+
+struct ixgbe_macsec_setting {
+	uint8_t offload_en;
+	uint8_t encrypt_en;
+	uint8_t replayprotect_en;
 };
 
 /*
@@ -466,6 +477,7 @@ struct ixgbe_adapter {
 	struct ixgbe_hw             hw;
 	struct ixgbe_hw_stats       stats;
 	struct ixgbe_macsec_stats   macsec_stats;
+	struct ixgbe_macsec_setting	macsec_setting;
 	struct ixgbe_hw_fdir_info   fdir;
 	struct ixgbe_interrupt      intr;
 	struct ixgbe_stat_mapping_registers stat_mappings;
@@ -498,6 +510,9 @@ struct ixgbe_adapter {
 	 * mailbox status) link status.
 	 */
 	uint8_t pflink_fullchk;
+	uint8_t mac_ctrl_frame_fwd;
+	rte_atomic32_t link_thread_running;
+	pthread_t link_thread_tid;
 };
 
 struct ixgbe_vf_representor {
@@ -517,6 +532,9 @@ int ixgbe_vf_representor_uninit(struct rte_eth_dev *ethdev);
 
 #define IXGBE_DEV_PRIVATE_TO_MACSEC_STATS(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->macsec_stats)
+
+#define IXGBE_DEV_PRIVATE_TO_MACSEC_SETTING(adapter) \
+	(&((struct ixgbe_adapter *)adapter)->macsec_setting)
 
 #define IXGBE_DEV_PRIVATE_TO_INTR(adapter) \
 	(&((struct ixgbe_adapter *)adapter)->intr)
@@ -735,6 +753,16 @@ int ixgbe_action_rss_same(const struct rte_flow_action_rss *comp,
 			  const struct rte_flow_action_rss *with);
 int ixgbe_config_rss_filter(struct rte_eth_dev *dev,
 		struct ixgbe_rte_flow_rss_conf *conf, bool add);
+
+void ixgbe_dev_macsec_register_enable(struct rte_eth_dev *dev,
+		struct ixgbe_macsec_setting *macsec_setting);
+
+void ixgbe_dev_macsec_register_disable(struct rte_eth_dev *dev);
+
+void ixgbe_dev_macsec_setting_save(struct rte_eth_dev *dev,
+		struct ixgbe_macsec_setting *macsec_setting);
+
+void ixgbe_dev_macsec_setting_reset(struct rte_eth_dev *dev);
 
 static inline int
 ixgbe_ethertype_filter_lookup(struct ixgbe_filter_info *filter_info,

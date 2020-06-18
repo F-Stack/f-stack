@@ -51,8 +51,6 @@ extern "C" {
 
 /** Flag to support lock free reader writer concurrency. Both single writer
  * and multi writer use cases are supported.
- * Currently, extendable bucket table feature is not supported with
- * this feature.
  */
 #define RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF 0x20
 
@@ -366,7 +364,8 @@ rte_hash_get_key_with_position(const struct rte_hash *h, const int32_t position,
  *   - 0 if freed successfully
  *   - -EINVAL if the parameters are invalid.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_hash_free_key_with_position(const struct rte_hash *h,
 				const int32_t position);
 

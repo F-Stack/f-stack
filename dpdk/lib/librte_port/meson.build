@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
-version = 3
 sources = files(
 	'rte_port_ethdev.c',
 	'rte_port_fd.c',
@@ -10,7 +9,8 @@ sources = files(
 	'rte_port_ring.c',
 	'rte_port_sched.c',
 	'rte_port_source_sink.c',
-	'rte_port_sym_crypto.c')
+	'rte_port_sym_crypto.c',
+	'rte_port_eventdev.c')
 headers = files(
 	'rte_port_ethdev.h',
 	'rte_port_fd.h',
@@ -20,8 +20,13 @@ headers = files(
 	'rte_port_ring.h',
 	'rte_port_sched.h',
 	'rte_port_source_sink.h',
-	'rte_port_sym_crypto.h')
-deps += ['ethdev', 'sched', 'ip_frag', 'cryptodev']
+	'rte_port_sym_crypto.h',
+	'rte_port_eventdev.h')
+deps += ['ethdev', 'sched', 'ip_frag', 'cryptodev', 'eventdev']
+
+if dpdk_conf.has('RTE_PORT_PCAP')
+	ext_deps += pcap_dep # dependency provided in config/meson.build
+endif
 
 if dpdk_conf.has('RTE_LIBRTE_KNI')
 	sources += files('rte_port_kni.c')

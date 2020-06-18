@@ -19,8 +19,6 @@ LDLIBS += -lrte_bus_pci
 
 EXPORT_MAP := rte_pmd_i40e_version.map
 
-LIBABIVER := 2
-
 #
 # Add extra flags for base driver files (also known as shared code)
 # to disable warnings
@@ -89,6 +87,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += rte_pmd_i40e.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_tm.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_vf_representor.c
 
+ifeq ($(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR),y)
 ifeq ($(findstring RTE_MACHINE_CPUFLAG_AVX2,$(CFLAGS)),RTE_MACHINE_CPUFLAG_AVX2)
 	CC_AVX2_SUPPORT=1
 else
@@ -103,9 +102,11 @@ else
 		endif
 	endif
 endif
+endif
 
 ifeq ($(CC_AVX2_SUPPORT), 1)
 	SRCS-$(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR) += i40e_rxtx_vec_avx2.c
+	CFLAGS_i40e_rxtx.o += -DCC_AVX2_SUPPORT
 endif
 
 # install this header file

@@ -10,7 +10,7 @@
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
 
-#include "rte_snow3g_pmd_private.h"
+#include "snow3g_pmd_private.h"
 
 #define SNOW3G_IV_LENGTH 16
 #define SNOW3G_MAX_BURST 8
@@ -84,6 +84,8 @@ snow3g_set_session_parameters(struct snow3g_session *sess,
 	}
 
 	if (cipher_xform) {
+		uint8_t cipher_key[SNOW3G_MAX_KEY_SIZE];
+
 		/* Only SNOW 3G UEA2 supported */
 		if (cipher_xform->cipher.algo != RTE_CRYPTO_CIPHER_SNOW3G_UEA2)
 			return -ENOTSUP;
@@ -92,14 +94,22 @@ snow3g_set_session_parameters(struct snow3g_session *sess,
 			SNOW3G_LOG(ERR, "Wrong IV length");
 			return -EINVAL;
 		}
+		if (cipher_xform->cipher.key.length > SNOW3G_MAX_KEY_SIZE) {
+			SNOW3G_LOG(ERR, "Not enough memory to store the key");
+			return -ENOMEM;
+		}
+
 		sess->cipher_iv_offset = cipher_xform->cipher.iv.offset;
 
 		/* Initialize key */
-		sso_snow3g_init_key_sched(cipher_xform->cipher.key.data,
-				&sess->pKeySched_cipher);
+		memcpy(cipher_key, cipher_xform->cipher.key.data,
+				cipher_xform->cipher.key.length);
+		sso_snow3g_init_key_sched(cipher_key, &sess->pKeySched_cipher);
 	}
 
 	if (auth_xform) {
+		uint8_t auth_key[SNOW3G_MAX_KEY_SIZE];
+
 		/* Only SNOW 3G UIA2 supported */
 		if (auth_xform->auth.algo != RTE_CRYPTO_AUTH_SNOW3G_UIA2)
 			return -ENOTSUP;
@@ -107,6 +117,10 @@ snow3g_set_session_parameters(struct snow3g_session *sess,
 		if (auth_xform->auth.digest_length != SNOW3G_DIGEST_LENGTH) {
 			SNOW3G_LOG(ERR, "Wrong digest length");
 			return -EINVAL;
+		}
+		if (auth_xform->auth.key.length > SNOW3G_MAX_KEY_SIZE) {
+			SNOW3G_LOG(ERR, "Not enough memory to store the key");
+			return -ENOMEM;
 		}
 
 		sess->auth_op = auth_xform->auth.op;
@@ -118,8 +132,9 @@ snow3g_set_session_parameters(struct snow3g_session *sess,
 		sess->auth_iv_offset = auth_xform->auth.iv.offset;
 
 		/* Initialize key */
-		sso_snow3g_init_key_sched(auth_xform->auth.key.data,
-				&sess->pKeySched_hash);
+		memcpy(auth_key, auth_xform->auth.key.data,
+				auth_xform->auth.key.length);
+		sso_snow3g_init_key_sched(auth_key, &sess->pKeySched_hash);
 	}
 
 
@@ -147,7 +162,8 @@ snow3g_get_session(struct snow3g_qp *qp, struct rte_crypto_op *op)
 		if (rte_mempool_get(qp->sess_mp, (void **)&_sess))
 			return NULL;
 
-		if (rte_mempool_get(qp->sess_mp, (void **)&_sess_private_data))
+		if (rte_mempool_get(qp->sess_mp_priv,
+				(void **)&_sess_private_data))
 			return NULL;
 
 		sess = (struct snow3g_session *)_sess_private_data;
@@ -155,7 +171,7 @@ snow3g_get_session(struct snow3g_qp *qp, struct rte_crypto_op *op)
 		if (unlikely(snow3g_set_session_parameters(sess,
 				op->sym->xform) != 0)) {
 			rte_mempool_put(qp->sess_mp, _sess);
-			rte_mempool_put(qp->sess_mp, _sess_private_data);
+			rte_mempool_put(qp->sess_mp_priv, _sess_private_data);
 			sess = NULL;
 		}
 		op->sym->session = (struct rte_cryptodev_sym_session *)_sess;
@@ -339,8 +355,9 @@ process_ops(struct rte_crypto_op **ops, struct snow3g_session *session,
 		if (ops[i]->sess_type == RTE_CRYPTO_OP_SESSIONLESS) {
 			memset(session, 0, sizeof(struct snow3g_session));
 			memset(ops[i]->sym->session, 0,
-					rte_cryptodev_sym_get_header_session_size());
-			rte_mempool_put(qp->sess_mp, session);
+			rte_cryptodev_sym_get_existing_header_session_size(
+					ops[i]->sym->session));
+			rte_mempool_put(qp->sess_mp_priv, session);
 			rte_mempool_put(qp->sess_mp, ops[i]->sym->session);
 			ops[i]->sym->session = NULL;
 		}

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <rte_string_fns.h>
 #include <rte_mempool.h>
 #include <rte_errno.h>
 #include <rte_dev.h>
@@ -51,7 +52,7 @@ rte_mempool_register_ops(const struct rte_mempool_ops *h)
 
 	ops_index = rte_mempool_ops_table.num_ops++;
 	ops = &rte_mempool_ops_table.ops[ops_index];
-	snprintf(ops->name, sizeof(ops->name), "%s", h->name);
+	strlcpy(ops->name, h->name, sizeof(ops->name));
 	ops->alloc = h->alloc;
 	ops->free = h->free;
 	ops->enqueue = h->enqueue;
@@ -99,7 +100,9 @@ rte_mempool_ops_get_count(const struct rte_mempool *mp)
 	return ops->get_count(mp);
 }
 
-/* wrapper to notify new memory area to external mempool */
+/* wrapper to calculate the memory size required to store given number
+ * of objects
+ */
 ssize_t
 rte_mempool_ops_calc_mem_size(const struct rte_mempool *mp,
 				uint32_t obj_num, uint32_t pg_shift,

@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- *
- *   Copyright 2017 NXP
- *
+ * Copyright 2017,2019 NXP
  */
 
 #include <assert.h>
@@ -29,15 +27,14 @@
 #include <rte_ethdev_driver.h>
 #include <rte_cryptodev.h>
 #include <rte_event_eth_rx_adapter.h>
+#include <rte_event_eth_tx_adapter.h>
 
 #include <fslmc_vfio.h>
 #include <dpaa2_hw_pvt.h>
 #include <dpaa2_hw_mempool.h>
 #include <dpaa2_hw_dpio.h>
 #include <dpaa2_ethdev.h>
-#ifdef RTE_LIBRTE_SECURITY
 #include <dpaa2_sec_event.h>
-#endif
 #include "dpaa2_eventdev.h"
 #include "dpaa2_eventdev_logs.h"
 #include <portal/dpaa2_hw_pvt.h>
@@ -53,6 +50,7 @@
 
 /* Dynamic logging identified for mempool */
 int dpaa2_logtype_event;
+#define DPAA2_EV_TX_RETRY_COUNT 10000
 
 static uint16_t
 dpaa2_eventdev_enqueue_burst(void *port, const struct rte_event ev[],
@@ -63,7 +61,7 @@ dpaa2_eventdev_enqueue_burst(void *port, const struct rte_event ev[],
 	struct dpaa2_dpio_dev *dpio_dev;
 	uint32_t queue_id = ev[0].queue_id;
 	struct dpaa2_eventq *evq_info;
-	uint32_t fqid;
+	uint32_t fqid, retry_count;
 	struct qbman_swp *swp;
 	struct qbman_fd fd_arr[MAX_TX_RING_SLOTS];
 	uint32_t loop, frames_to_send;
@@ -166,13 +164,25 @@ skip_linking:
 		}
 send_partial:
 		loop = 0;
+		retry_count = 0;
 		while (loop < frames_to_send) {
-			loop += qbman_swp_enqueue_multiple_desc(swp,
+			ret = qbman_swp_enqueue_multiple_desc(swp,
 					&eqdesc[loop], &fd_arr[loop],
 					frames_to_send - loop);
+			if (unlikely(ret < 0)) {
+				retry_count++;
+				if (retry_count > DPAA2_EV_TX_RETRY_COUNT) {
+					num_tx += loop;
+					nb_events -= loop;
+					return num_tx + loop;
+				}
+			} else {
+				loop += ret;
+				retry_count = 0;
+			}
 		}
-		num_tx += frames_to_send;
-		nb_events -= frames_to_send;
+		num_tx += loop;
+		nb_events -= loop;
 	}
 
 	return num_tx;
@@ -467,11 +477,11 @@ dpaa2_eventdev_queue_def_conf(struct rte_eventdev *dev, uint8_t queue_id,
 
 	RTE_SET_USED(dev);
 	RTE_SET_USED(queue_id);
-	RTE_SET_USED(queue_conf);
 
 	queue_conf->nb_atomic_flows = DPAA2_EVENT_QUEUE_ATOMIC_FLOWS;
-	queue_conf->schedule_type = RTE_SCHED_TYPE_ATOMIC |
-				      RTE_SCHED_TYPE_PARALLEL;
+	queue_conf->nb_atomic_order_sequences =
+				DPAA2_EVENT_QUEUE_ORDER_SEQUENCES;
+	queue_conf->schedule_type = RTE_SCHED_TYPE_PARALLEL;
 	queue_conf->priority = RTE_EVENT_DEV_PRIORITY_NORMAL;
 }
 
@@ -487,8 +497,9 @@ dpaa2_eventdev_queue_setup(struct rte_eventdev *dev, uint8_t queue_id,
 	switch (queue_conf->schedule_type) {
 	case RTE_SCHED_TYPE_PARALLEL:
 	case RTE_SCHED_TYPE_ATOMIC:
-		break;
 	case RTE_SCHED_TYPE_ORDERED:
+		break;
+	default:
 		DPAA2_EVENTDEV_ERR("Schedule type is not supported.");
 		return -1;
 	}
@@ -680,14 +691,14 @@ dpaa2_eventdev_eth_queue_add_all(const struct rte_eventdev *dev,
 {
 	struct dpaa2_eventdev *priv = dev->data->dev_private;
 	uint8_t ev_qid = queue_conf->ev.queue_id;
-	uint16_t dpcon_id = priv->evq_info[ev_qid].dpcon->dpcon_id;
+	struct dpaa2_dpcon_dev *dpcon = priv->evq_info[ev_qid].dpcon;
 	int i, ret;
 
 	EVENTDEV_INIT_FUNC_TRACE();
 
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
 		ret = dpaa2_eth_eventq_attach(eth_dev, i,
-				dpcon_id, queue_conf);
+					      dpcon, queue_conf);
 		if (ret) {
 			DPAA2_EVENTDEV_ERR(
 				"Event queue attach failed: err(%d)", ret);
@@ -710,7 +721,7 @@ dpaa2_eventdev_eth_queue_add(const struct rte_eventdev *dev,
 {
 	struct dpaa2_eventdev *priv = dev->data->dev_private;
 	uint8_t ev_qid = queue_conf->ev.queue_id;
-	uint16_t dpcon_id = priv->evq_info[ev_qid].dpcon->dpcon_id;
+	struct dpaa2_dpcon_dev *dpcon = priv->evq_info[ev_qid].dpcon;
 	int ret;
 
 	EVENTDEV_INIT_FUNC_TRACE();
@@ -720,7 +731,7 @@ dpaa2_eventdev_eth_queue_add(const struct rte_eventdev *dev,
 				eth_dev, queue_conf);
 
 	ret = dpaa2_eth_eventq_attach(eth_dev, rx_queue_id,
-			dpcon_id, queue_conf);
+				      dpcon, queue_conf);
 	if (ret) {
 		DPAA2_EVENTDEV_ERR(
 			"Event queue attach failed: err(%d)", ret);
@@ -797,7 +808,6 @@ dpaa2_eventdev_eth_stop(const struct rte_eventdev *dev,
 	return 0;
 }
 
-#ifdef RTE_LIBRTE_SECURITY
 static int
 dpaa2_eventdev_crypto_caps_get(const struct rte_eventdev *dev,
 			    const struct rte_cryptodev *cdev,
@@ -824,14 +834,13 @@ dpaa2_eventdev_crypto_queue_add_all(const struct rte_eventdev *dev,
 {
 	struct dpaa2_eventdev *priv = dev->data->dev_private;
 	uint8_t ev_qid = ev->queue_id;
-	uint16_t dpcon_id = priv->evq_info[ev_qid].dpcon->dpcon_id;
+	struct dpaa2_dpcon_dev *dpcon = priv->evq_info[ev_qid].dpcon;
 	int i, ret;
 
 	EVENTDEV_INIT_FUNC_TRACE();
 
 	for (i = 0; i < cryptodev->data->nb_queue_pairs; i++) {
-		ret = dpaa2_sec_eventq_attach(cryptodev, i,
-				dpcon_id, ev);
+		ret = dpaa2_sec_eventq_attach(cryptodev, i, dpcon, ev);
 		if (ret) {
 			DPAA2_EVENTDEV_ERR("dpaa2_sec_eventq_attach failed: ret %d\n",
 				    ret);
@@ -854,7 +863,7 @@ dpaa2_eventdev_crypto_queue_add(const struct rte_eventdev *dev,
 {
 	struct dpaa2_eventdev *priv = dev->data->dev_private;
 	uint8_t ev_qid = ev->queue_id;
-	uint16_t dpcon_id = priv->evq_info[ev_qid].dpcon->dpcon_id;
+	struct dpaa2_dpcon_dev *dpcon = priv->evq_info[ev_qid].dpcon;
 	int ret;
 
 	EVENTDEV_INIT_FUNC_TRACE();
@@ -864,7 +873,7 @@ dpaa2_eventdev_crypto_queue_add(const struct rte_eventdev *dev,
 				cryptodev, ev);
 
 	ret = dpaa2_sec_eventq_attach(cryptodev, rx_queue_id,
-			dpcon_id, ev);
+				      dpcon, ev);
 	if (ret) {
 		DPAA2_EVENTDEV_ERR(
 			"dpaa2_sec_eventq_attach failed: ret: %d\n", ret);
@@ -940,7 +949,66 @@ dpaa2_eventdev_crypto_stop(const struct rte_eventdev *dev,
 
 	return 0;
 }
-#endif
+
+static int
+dpaa2_eventdev_tx_adapter_create(uint8_t id,
+				 const struct rte_eventdev *dev)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(dev);
+
+	/* Nothing to do. Simply return. */
+	return 0;
+}
+
+static int
+dpaa2_eventdev_tx_adapter_caps(const struct rte_eventdev *dev,
+			       const struct rte_eth_dev *eth_dev,
+			       uint32_t *caps)
+{
+	RTE_SET_USED(dev);
+	RTE_SET_USED(eth_dev);
+
+	*caps = RTE_EVENT_ETH_TX_ADAPTER_CAP_INTERNAL_PORT;
+	return 0;
+}
+
+static uint16_t
+dpaa2_eventdev_txa_enqueue_same_dest(void *port,
+				     struct rte_event ev[],
+				     uint16_t nb_events)
+{
+	struct rte_mbuf *m[DPAA2_EVENT_MAX_PORT_ENQUEUE_DEPTH], *m0;
+	uint8_t qid, i;
+
+	RTE_SET_USED(port);
+
+	m0 = (struct rte_mbuf *)ev[0].mbuf;
+	qid = rte_event_eth_tx_adapter_txq_get(m0);
+
+	for (i = 0; i < nb_events; i++)
+		m[i] = (struct rte_mbuf *)ev[i].mbuf;
+
+	return rte_eth_tx_burst(m0->port, qid, m, nb_events);
+}
+
+static uint16_t
+dpaa2_eventdev_txa_enqueue(void *port,
+			   struct rte_event ev[],
+			   uint16_t nb_events)
+{
+	struct rte_mbuf *m = (struct rte_mbuf *)ev[0].mbuf;
+	uint8_t qid, i;
+
+	RTE_SET_USED(port);
+
+	for (i = 0; i < nb_events; i++) {
+		qid = rte_event_eth_tx_adapter_txq_get(m);
+		rte_eth_tx_burst(m->port, qid, &m, 1);
+	}
+
+	return nb_events;
+}
 
 static struct rte_eventdev_ops dpaa2_eventdev_ops = {
 	.dev_infos_get    = dpaa2_eventdev_info_get,
@@ -958,18 +1026,19 @@ static struct rte_eventdev_ops dpaa2_eventdev_ops = {
 	.port_unlink      = dpaa2_eventdev_port_unlink,
 	.timeout_ticks    = dpaa2_eventdev_timeout_ticks,
 	.dump             = dpaa2_eventdev_dump,
-	.eth_rx_adapter_caps_get = dpaa2_eventdev_eth_caps_get,
-	.eth_rx_adapter_queue_add = dpaa2_eventdev_eth_queue_add,
-	.eth_rx_adapter_queue_del = dpaa2_eventdev_eth_queue_del,
-	.eth_rx_adapter_start = dpaa2_eventdev_eth_start,
-	.eth_rx_adapter_stop = dpaa2_eventdev_eth_stop,
-#ifdef RTE_LIBRTE_SECURITY
+	.dev_selftest     = test_eventdev_dpaa2,
+	.eth_rx_adapter_caps_get	= dpaa2_eventdev_eth_caps_get,
+	.eth_rx_adapter_queue_add	= dpaa2_eventdev_eth_queue_add,
+	.eth_rx_adapter_queue_del	= dpaa2_eventdev_eth_queue_del,
+	.eth_rx_adapter_start		= dpaa2_eventdev_eth_start,
+	.eth_rx_adapter_stop		= dpaa2_eventdev_eth_stop,
+	.eth_tx_adapter_caps_get	= dpaa2_eventdev_tx_adapter_caps,
+	.eth_tx_adapter_create		= dpaa2_eventdev_tx_adapter_create,
 	.crypto_adapter_caps_get	= dpaa2_eventdev_crypto_caps_get,
 	.crypto_adapter_queue_pair_add	= dpaa2_eventdev_crypto_queue_add,
 	.crypto_adapter_queue_pair_del	= dpaa2_eventdev_crypto_queue_del,
 	.crypto_adapter_start		= dpaa2_eventdev_crypto_start,
 	.crypto_adapter_stop		= dpaa2_eventdev_crypto_stop,
-#endif
 };
 
 static int
@@ -1031,6 +1100,8 @@ dpaa2_eventdev_create(const char *name)
 	eventdev->enqueue_forward_burst = dpaa2_eventdev_enqueue_burst;
 	eventdev->dequeue       = dpaa2_eventdev_dequeue;
 	eventdev->dequeue_burst = dpaa2_eventdev_dequeue_burst;
+	eventdev->txa_enqueue	= dpaa2_eventdev_txa_enqueue;
+	eventdev->txa_enqueue_same_dest	= dpaa2_eventdev_txa_enqueue_same_dest;
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
@@ -1069,6 +1140,39 @@ fail:
 }
 
 static int
+dpaa2_eventdev_destroy(const char *name)
+{
+	struct rte_eventdev *eventdev;
+	struct dpaa2_eventdev *priv;
+	int i;
+
+	eventdev = rte_event_pmd_get_named_dev(name);
+	if (eventdev == NULL) {
+		RTE_EDEV_LOG_ERR("eventdev with name %s not allocated", name);
+		return -1;
+	}
+
+	/* For secondary processes, the primary has done all the work */
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	priv = eventdev->data->dev_private;
+	for (i = 0; i < priv->max_event_queues; i++) {
+		if (priv->evq_info[i].dpcon)
+			rte_dpaa2_free_dpcon_dev(priv->evq_info[i].dpcon);
+
+		if (priv->evq_info[i].dpci)
+			rte_dpaa2_free_dpci_dev(priv->evq_info[i].dpci);
+
+	}
+	priv->max_event_queues = 0;
+
+	RTE_LOG(INFO, PMD, "%s eventdev cleaned\n", name);
+	return 0;
+}
+
+
+static int
 dpaa2_eventdev_probe(struct rte_vdev_device *vdev)
 {
 	const char *name;
@@ -1085,6 +1189,8 @@ dpaa2_eventdev_remove(struct rte_vdev_device *vdev)
 
 	name = rte_vdev_device_name(vdev);
 	DPAA2_EVENTDEV_INFO("Closing %s", name);
+
+	dpaa2_eventdev_destroy(name);
 
 	return rte_event_pmd_vdev_uninit(name);
 }

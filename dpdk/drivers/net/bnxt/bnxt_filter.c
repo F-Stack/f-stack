@@ -26,21 +26,20 @@ struct bnxt_filter_info *bnxt_alloc_filter(struct bnxt *bp)
 {
 	struct bnxt_filter_info *filter;
 
-	/* Find the 1st unused filter from the free_filter_list pool*/
-	filter = STAILQ_FIRST(&bp->free_filter_list);
+	filter = bnxt_get_unused_filter(bp);
 	if (!filter) {
 		PMD_DRV_LOG(ERR, "No more free filter resources\n");
 		return NULL;
 	}
-	STAILQ_REMOVE_HEAD(&bp->free_filter_list, next);
 
+	filter->mac_index = INVALID_MAC_INDEX;
 	/* Default to L2 MAC Addr filter */
 	filter->flags = HWRM_CFA_L2_FILTER_ALLOC_INPUT_FLAGS_PATH_RX;
 	filter->enables = HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_ADDR |
 			HWRM_CFA_L2_FILTER_ALLOC_INPUT_ENABLES_L2_ADDR_MASK;
-	memcpy(filter->l2_addr, bp->eth_dev->data->mac_addrs->addr_bytes,
-	       ETHER_ADDR_LEN);
-	memset(filter->l2_addr_mask, 0xff, ETHER_ADDR_LEN);
+	memcpy(filter->l2_addr, bp->mac_addr, RTE_ETHER_ADDR_LEN);
+	memset(filter->l2_addr_mask, 0xff, RTE_ETHER_ADDR_LEN);
+
 	return filter;
 }
 
@@ -60,7 +59,7 @@ struct bnxt_filter_info *bnxt_alloc_vf_filter(struct bnxt *bp, uint16_t vf)
 	return filter;
 }
 
-void bnxt_init_filters(struct bnxt *bp)
+static void bnxt_init_filters(struct bnxt *bp)
 {
 	struct bnxt_filter_info *filter;
 	int i, max_filters;
@@ -82,7 +81,6 @@ void bnxt_free_all_filters(struct bnxt *bp)
 	struct bnxt_filter_info *filter, *temp_filter;
 	unsigned int i;
 
-//	for (i = 0; i < MAX_FF_POOLS; i++) {
 	for (i = 0; i < bp->nr_vnics; i++) {
 		vnic = &bp->vnic_info[i];
 		filter = STAILQ_FIRST(&vnic->filter);
@@ -117,9 +115,20 @@ void bnxt_free_filter_mem(struct bnxt *bp)
 	max_filters = bp->max_l2_ctx;
 	for (i = 0; i < max_filters; i++) {
 		filter = &bp->filter_info[i];
+		if (filter->fw_ntuple_filter_id != ((uint64_t)-1) &&
+		    filter->filter_type == HWRM_CFA_NTUPLE_FILTER) {
+			/* Call HWRM to try to free filter again */
+			rc = bnxt_hwrm_clear_ntuple_filter(bp, filter);
+			if (rc)
+				PMD_DRV_LOG(ERR,
+					    "Cannot free ntuple filter: %d\n",
+					    rc);
+		}
+		filter->fw_ntuple_filter_id = UINT64_MAX;
+
 		if (filter->fw_l2_filter_id != ((uint64_t)-1) &&
 		    filter->filter_type == HWRM_CFA_L2_FILTER) {
-			PMD_DRV_LOG(ERR, "L2 filter is not free\n");
+			PMD_DRV_LOG(DEBUG, "L2 filter is not free\n");
 			/* Call HWRM to try to free filter again */
 			rc = bnxt_hwrm_clear_l2_filter(bp, filter);
 			if (rc)
@@ -129,17 +138,6 @@ void bnxt_free_filter_mem(struct bnxt *bp)
 		}
 		filter->fw_l2_filter_id = UINT64_MAX;
 
-		if (filter->fw_ntuple_filter_id != ((uint64_t)-1) &&
-		    filter->filter_type == HWRM_CFA_NTUPLE_FILTER) {
-			PMD_DRV_LOG(ERR, "NTUPLE filter is not free\n");
-			/* Call HWRM to try to free filter again */
-			rc = bnxt_hwrm_clear_ntuple_filter(bp, filter);
-			if (rc)
-				PMD_DRV_LOG(ERR,
-					    "Cannot free NTUPLE filter: %d\n",
-					    rc);
-		}
-		filter->fw_ntuple_filter_id = UINT64_MAX;
 	}
 	STAILQ_INIT(&bp->free_filter_list);
 
@@ -171,6 +169,7 @@ int bnxt_alloc_filter_mem(struct bnxt *bp)
 		return -ENOMEM;
 	}
 	bp->filter_info = filter_mem;
+	bnxt_init_filters(bp);
 	return 0;
 }
 

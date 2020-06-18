@@ -6,7 +6,7 @@
 #ifndef _CXGBE_FILTER_H_
 #define _CXGBE_FILTER_H_
 
-#include "t4_msg.h"
+#include "base/t4_msg.h"
 /*
  * Defined bit width of user definable filter tuples
  */
@@ -102,7 +102,7 @@ struct ch_filter_specification {
 	uint32_t eport:2;	/* egress port to switch packet out */
 	uint32_t swapmac:1;     /* swap SMAC/DMAC for loopback packet */
 	uint32_t newvlan:2;     /* rewrite VLAN Tag */
-	uint8_t dmac[ETHER_ADDR_LEN];   /* new destination MAC address */
+	uint8_t dmac[RTE_ETHER_ADDR_LEN];   /* new destination MAC address */
 	uint16_t vlan;          /* VLAN Tag to insert */
 
 	/*
@@ -248,23 +248,25 @@ cxgbe_bitmap_find_free_region(struct rte_bitmap *bmap, unsigned int size,
 	return idx;
 }
 
-bool is_filter_set(struct tid_info *, int fidx, int family);
-void filter_rpl(struct adapter *adap, const struct cpl_set_tcb_rpl *rpl);
-void clear_filter(struct filter_entry *f);
-int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx);
-int writable_filter(struct filter_entry *f);
+u8 cxgbe_filter_slots(struct adapter *adap, u8 family);
+bool cxgbe_is_filter_set(struct tid_info *t, u32 fidx, u8 nentries);
+void cxgbe_filter_rpl(struct adapter *adap, const struct cpl_set_tcb_rpl *rpl);
 int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 		     struct ch_filter_specification *fs,
 		     struct filter_ctx *ctx);
 int cxgbe_del_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 		     struct ch_filter_specification *fs,
 		     struct filter_ctx *ctx);
-int cxgbe_alloc_ftid(struct adapter *adap, unsigned int family);
-int init_hash_filter(struct adapter *adap);
-void hash_filter_rpl(struct adapter *adap, const struct cpl_act_open_rpl *rpl);
-void hash_del_filter_rpl(struct adapter *adap,
-			 const struct cpl_abort_rpl_rss *rpl);
-int validate_filter(struct adapter *adap, struct ch_filter_specification *fs);
+int cxgbe_alloc_ftid(struct adapter *adap, u8 nentries);
+int cxgbe_init_hash_filter(struct adapter *adap);
+void cxgbe_hash_filter_rpl(struct adapter *adap,
+			   const struct cpl_act_open_rpl *rpl);
+void cxgbe_hash_del_filter_rpl(struct adapter *adap,
+			       const struct cpl_abort_rpl_rss *rpl);
+int cxgbe_validate_filter(struct adapter *adap,
+			  struct ch_filter_specification *fs);
 int cxgbe_get_filter_count(struct adapter *adapter, unsigned int fidx,
 			   u64 *c, int hash, bool get_byte);
+int cxgbe_clear_filter_count(struct adapter *adapter, unsigned int fidx,
+			     int hash, bool clear_byte);
 #endif /* _CXGBE_FILTER_H_ */

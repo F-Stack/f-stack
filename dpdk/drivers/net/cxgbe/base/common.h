@@ -6,7 +6,7 @@
 #ifndef __CHELSIO_COMMON_H
 #define __CHELSIO_COMMON_H
 
-#include "cxgbe_compat.h"
+#include "../cxgbe_compat.h"
 #include "t4_hw.h"
 #include "t4vf_hw.h"
 #include "t4_chip_type.h"
@@ -272,6 +272,7 @@ struct adapter_params {
 	bool ulptx_memwrite_dsgl;          /* use of T5 DSGL allowed */
 	u8 fw_caps_support;		  /* 32-bit Port Capabilities */
 	u8 filter2_wr_support;            /* FW support for FILTER2_WR */
+	u32 max_tx_coalesce_num; /* Max # of Tx packets that can be coalesced */
 };
 
 /* Firmware Port Capabilities types.
@@ -522,7 +523,7 @@ void t4_read_rss_key(struct adapter *adap, u32 *key);
 
 enum t4_bar2_qtype { T4_BAR2_QTYPE_EGRESS, T4_BAR2_QTYPE_INGRESS };
 int t4_bar2_sge_qregs(struct adapter *adapter, unsigned int qid,
-		      unsigned int qtype, u64 *pbar2_qoffset,
+		      enum t4_bar2_qtype qtype, u64 *pbar2_qoffset,
 		      unsigned int *pbar2_qid);
 
 int t4_init_sge_params(struct adapter *adapter);

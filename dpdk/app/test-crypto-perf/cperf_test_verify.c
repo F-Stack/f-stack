@@ -51,6 +51,7 @@ cperf_verify_test_free(struct cperf_verify_ctx *ctx)
 
 void *
 cperf_verify_test_constructor(struct rte_mempool *sess_mp,
+		struct rte_mempool *sess_priv_mp,
 		uint8_t dev_id, uint16_t qp_id,
 		const struct cperf_options *options,
 		const struct cperf_test_vector *test_vector,
@@ -73,8 +74,8 @@ cperf_verify_test_constructor(struct rte_mempool *sess_mp,
 	uint16_t iv_offset = sizeof(struct rte_crypto_op) +
 		sizeof(struct rte_crypto_sym_op);
 
-	ctx->sess = op_fns->sess_create(sess_mp, dev_id, options, test_vector,
-			iv_offset);
+	ctx->sess = op_fns->sess_create(sess_mp, sess_priv_mp, dev_id, options,
+			test_vector, iv_offset);
 	if (ctx->sess == NULL)
 		goto err;
 
@@ -202,11 +203,19 @@ cperf_mbuf_set(struct rte_mbuf *mbuf,
 {
 	uint32_t segment_sz = options->segment_sz;
 	uint8_t *mbuf_data;
-	uint8_t *test_data =
-			(options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) ?
+	uint8_t *test_data;
+	uint32_t remaining_bytes = options->max_buffer_size;
+
+	if (options->op_type == CPERF_AEAD) {
+		test_data = (options->aead_op == RTE_CRYPTO_AEAD_OP_ENCRYPT) ?
 					test_vector->plaintext.data :
 					test_vector->ciphertext.data;
-	uint32_t remaining_bytes = options->max_buffer_size;
+	} else {
+		test_data =
+			(options->cipher_op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) ?
+				test_vector->plaintext.data :
+				test_vector->ciphertext.data;
+	}
 
 	while (remaining_bytes) {
 		mbuf_data = rte_pktmbuf_mtod(mbuf, uint8_t *);

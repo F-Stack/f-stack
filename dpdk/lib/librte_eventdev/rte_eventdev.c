@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/queue.h>
 
+#include <rte_string_fns.h>
 #include <rte_byteorder.h>
 #include <rte_log.h>
 #include <rte_debug.h>
@@ -128,7 +129,7 @@ rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
 				: 0;
 }
 
-int __rte_experimental
+int
 rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps)
 {
 	struct rte_eventdev *dev;
@@ -150,7 +151,7 @@ rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps)
 				: 0;
 }
 
-int __rte_experimental
+int
 rte_event_crypto_adapter_caps_get(uint8_t dev_id, uint8_t cdev_id,
 				  uint32_t *caps)
 {
@@ -173,7 +174,7 @@ rte_event_crypto_adapter_caps_get(uint8_t dev_id, uint8_t cdev_id,
 		(dev, cdev, caps) : -ENOTSUP;
 }
 
-int __rte_experimental
+int
 rte_event_eth_tx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
 				uint32_t *caps)
 {
@@ -892,7 +893,7 @@ rte_event_port_link(uint8_t dev_id, uint8_t port_id,
 	dev = &rte_eventdevs[dev_id];
 
 	if (*dev->dev_ops->port_link == NULL) {
-		RTE_PMD_DEBUG_TRACE("Function not supported\n");
+		RTE_EDEV_LOG_ERR("Function not supported\n");
 		rte_errno = ENOTSUP;
 		return 0;
 	}
@@ -951,7 +952,7 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 	dev = &rte_eventdevs[dev_id];
 
 	if (*dev->dev_ops->port_unlink == NULL) {
-		RTE_PMD_DEBUG_TRACE("Function not supported\n");
+		RTE_EDEV_LOG_ERR("Function not supported");
 		rte_errno = ENOTSUP;
 		return 0;
 	}
@@ -1003,7 +1004,7 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 	return diag;
 }
 
-int __rte_experimental
+int
 rte_event_port_unlinks_in_progress(uint8_t dev_id, uint8_t port_id)
 {
 	struct rte_eventdev *dev;
@@ -1350,6 +1351,7 @@ rte_event_pmd_allocate(const char *name, int socket_id)
 	eventdev = &rte_eventdevs[dev_id];
 
 	eventdev->txa_enqueue = rte_event_tx_adapter_enqueue;
+	eventdev->txa_enqueue_same_dest = rte_event_tx_adapter_enqueue;
 
 	if (eventdev->data == NULL) {
 		struct rte_eventdev_data *eventdev_data = NULL;
@@ -1362,8 +1364,7 @@ rte_event_pmd_allocate(const char *name, int socket_id)
 
 		eventdev->data = eventdev_data;
 
-		snprintf(eventdev->data->name, RTE_EVENTDEV_NAME_MAX_LEN,
-				"%s", name);
+		strlcpy(eventdev->data->name, name, RTE_EVENTDEV_NAME_MAX_LEN);
 
 		eventdev->data->dev_id = dev_id;
 		eventdev->data->socket_id = socket_id;

@@ -15,7 +15,7 @@
 
 #define AXGBE_TX_MAX_BUF_SIZE		(0x3fff & ~(64 - 1))
 #define AXGBE_RX_MAX_BUF_SIZE		(0x3fff & ~(64 - 1))
-#define AXGBE_RX_MIN_BUF_SIZE		(ETHER_MAX_LEN + VLAN_HLEN)
+#define AXGBE_RX_MIN_BUF_SIZE		(RTE_ETHER_MAX_LEN + VLAN_HLEN)
 #define AXGBE_MAX_MAC_ADDRS		1
 
 #define AXGBE_RX_BUF_ALIGN		64
@@ -539,7 +539,7 @@ struct axgbe_port {
 	/* Hardware features of the device */
 	struct axgbe_hw_features hw_feat;
 
-	struct ether_addr mac_addr;
+	struct rte_ether_addr mac_addr;
 
 	/* Software Tx/Rx structure pointers*/
 	void **rx_queues;

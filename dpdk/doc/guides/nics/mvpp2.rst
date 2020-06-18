@@ -1,33 +1,6 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2017 Marvell International Ltd.
     Copyright(c) 2017 Semihalf.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-      * Redistributions of source code must retain the above copyright
-        notice, this list of conditions and the following disclaimer.
-      * Redistributions in binary form must reproduce the above copyright
-        notice, this list of conditions and the following disclaimer in
-        the documentation and/or other materials provided with the
-        distribution.
-      * Neither the name of the copyright holder nor the names of its
-        contributors may be used to endorse or promote products derived
-        from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 .. _mvpp2_poll_mode_driver:
 
@@ -180,9 +153,9 @@ For additional instructions regarding DPDK cross compilation please refer to :do
    export LIBMUSDK_PATH=<musdk>/usr/local
    export CROSS=<toolchain>/bin/aarch64-linux-gnu-
    export RTE_KERNELDIR=<kernel-dir>
-   export RTE_TARGET=arm64-armv8a-linuxapp-gcc
+   export RTE_TARGET=arm64-armv8a-linux-gcc
 
-   make config T=arm64-armv8a-linuxapp-gcc
+   make config T=arm64-armv8a-linux-gcc
    sed -i "s/MVNETA_PMD=y/MVNETA_PMD=n/" build/.config
    sed -i "s/MVPP2_PMD=n/MVPP2_PMD=y/" build/.config
    make
@@ -410,7 +383,10 @@ Flow API
 
 PPv2 offers packet classification capabilities via classifier engine which
 can be configured via generic flow API offered by DPDK.
-For an additional description please refer to DPDK :ref:`Generic flow API <Generic_flow_API>`.
+
+The :ref:`flow_isolated_mode` is supported.
+
+For an additional description please refer to DPDK :doc:`../prog_guide/rte_flow`.
 
 Supported flow actions
 ~~~~~~~~~~~~~~~~~~~~~~

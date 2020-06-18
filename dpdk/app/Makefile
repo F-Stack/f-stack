@@ -3,12 +3,21 @@
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
+DIRS-$(CONFIG_RTE_APP_TEST) += test
 DIRS-$(CONFIG_RTE_TEST_PMD) += test-pmd
 DIRS-$(CONFIG_RTE_PROC_INFO) += proc-info
 DIRS-$(CONFIG_RTE_LIBRTE_PDUMP) += pdump
+DIRS-$(CONFIG_RTE_LIBRTE_ACL) += test-acl
+DIRS-$(CONFIG_RTE_LIBRTE_CMDLINE) += test-cmdline
+DIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += test-pipeline
+DIRS-$(CONFIG_RTE_LIBRTE_IPSEC) += test-sad
 
 ifeq ($(CONFIG_RTE_LIBRTE_BBDEV),y)
 DIRS-$(CONFIG_RTE_TEST_BBDEV) += test-bbdev
+endif
+
+ifeq ($(CONFIG_RTE_LIBRTE_COMPRESSDEV),y)
+DIRS-$(CONFIG_RTE_APP_COMPRESS_PERF) += test-compress-perf
 endif
 
 ifeq ($(CONFIG_RTE_LIBRTE_CRYPTODEV),y)

@@ -95,25 +95,16 @@ sfc_efx_tso_do(struct sfc_efx_txq *txq, unsigned int idx,
 	       unsigned int *pkt_descs, size_t *pkt_len)
 {
 	uint8_t *tsoh;
-	const struct tcp_hdr *th;
+	const struct rte_tcp_hdr *th;
 	efsys_dma_addr_t header_paddr;
-	uint16_t packet_id;
+	uint16_t packet_id = 0;
 	uint32_t sent_seq;
 	struct rte_mbuf *m = *in_seg;
 	size_t nh_off = m->l2_len; /* IP header offset */
 	size_t tcph_off = m->l2_len + m->l3_len; /* TCP header offset */
 	size_t header_len = m->l2_len + m->l3_len + m->l4_len;
-	const efx_nic_cfg_t *encp = efx_nic_cfg_get(txq->evq->sa->nic);
 
-	idx += SFC_TSO_OPT_DESCS_NUM;
-
-	/*
-	 * The TCP header must start at most 208 bytes into the frame.
-	 * If it starts later than this then the NIC won't realise
-	 * it's a TCP packet and TSO edits won't be applied
-	 */
-	if (unlikely(tcph_off > encp->enc_tx_tso_tcp_header_offset_limit))
-		return EMSGSIZE;
+	idx += SFC_EF10_TSO_OPT_DESCS_NUM;
 
 	header_paddr = rte_pktmbuf_iova(m);
 
@@ -128,6 +119,8 @@ sfc_efx_tso_do(struct sfc_efx_txq *txq, unsigned int idx,
 		/*
 		 * Discard a packet if header linearization is needed but
 		 * the header is too big.
+		 * Duplicate Tx prepare check here to avoid spoil of
+		 * memory if Tx prepare is skipped.
 		 */
 		if (unlikely(header_len > SFC_TSOH_STD_LEN))
 			return EMSGSIZE;
@@ -147,21 +140,17 @@ sfc_efx_tso_do(struct sfc_efx_txq *txq, unsigned int idx,
 		tsoh = rte_pktmbuf_mtod(m, uint8_t *);
 	}
 
-	/* Handle IP header */
-	if (m->ol_flags & PKT_TX_IPV4) {
-		const struct ipv4_hdr *iphe4;
-
-		iphe4 = (const struct ipv4_hdr *)(tsoh + nh_off);
-		rte_memcpy(&packet_id, &iphe4->packet_id, sizeof(uint16_t));
-		packet_id = rte_be_to_cpu_16(packet_id);
-	} else if (m->ol_flags & PKT_TX_IPV6) {
-		packet_id = 0;
-	} else {
-		return EINVAL;
-	}
+	/*
+	 * Handle IP header. Tx prepare has debug-only checks that offload flags
+	 * are correctly filled in in TSO mbuf. Use zero IPID if there is no
+	 * IPv4 flag. If the packet is still IPv4, HW will simply start from
+	 * zero IPID.
+	 */
+	if (m->ol_flags & PKT_TX_IPV4)
+		packet_id = sfc_tso_ip4_get_ipid(tsoh, nh_off);
 
 	/* Handle TCP header */
-	th = (const struct tcp_hdr *)(tsoh + tcph_off);
+	th = (const struct rte_tcp_hdr *)(tsoh + tcph_off);
 
 	rte_memcpy(&sent_seq, &th->sent_seq, sizeof(uint32_t));
 	sent_seq = rte_be_to_cpu_32(sent_seq);

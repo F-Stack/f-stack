@@ -31,9 +31,9 @@
 #endif
 
 /**< Maximum queue pairs supported by CCP PMD */
-#define CCP_PMD_MAX_QUEUE_PAIRS	1
+#define CCP_PMD_MAX_QUEUE_PAIRS	8
 #define CCP_NB_MAX_DESCRIPTORS 1024
-#define CCP_MAX_BURST 64
+#define CCP_MAX_BURST 256
 
 #include "ccp_dev.h"
 
@@ -50,8 +50,10 @@ struct ccp_batch_info {
 	struct rte_crypto_op *op[CCP_MAX_BURST];
 	/**< optable populated at enque time from app*/
 	int op_idx;
+	uint16_t b_idx;
 	struct ccp_queue *cmd_q;
 	uint16_t opcnt;
+	uint16_t total_nb_ops;
 	/**< no. of crypto ops in batch*/
 	int desccnt;
 	/**< no. of ccp queue descriptors*/
@@ -76,6 +78,8 @@ struct ccp_qp {
 	/**< Ring for placing process packets */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
+	/**< Session Private Data Mempool */
 	struct rte_mempool *batch_mp;
 	/**< Session Mempool for batch info */
 	struct rte_cryptodev_stats qp_stats;

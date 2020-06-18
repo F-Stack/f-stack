@@ -68,7 +68,7 @@ following ``make`` command:
    .. code-block:: console
 
       cd <DPDK-source-directory>
-      make config T=arm64-thunderx-linuxapp-gcc install
+      make config T=arm64-thunderx-linux-gcc install
 
 
 Initialization
@@ -97,9 +97,9 @@ probed. To use the PMD in an application, user must:
 
       reserve enough huge pages
       cd to the top-level DPDK directory
-      export RTE_TARGET=arm64-thunderx-linuxapp-gcc
+      export RTE_TARGET=arm64-thunderx-linux-gcc
       export RTE_SDK=`pwd`
-      cd to test/test
+      cd to app/test
       type the command "make" to compile
       run the tests with "./test"
       type the command "compressdev_autotest" to test

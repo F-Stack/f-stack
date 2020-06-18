@@ -29,288 +29,6 @@
 #endif
 
 /**
- * Fill in buffer descriptors in a multi-packet send descriptor.
- *
- * @param txq
- *   Pointer to TX queue structure.
- * @param dseg
- *   Pointer to buffer descriptor to be written.
- * @param pkts
- *   Pointer to array of packets to be sent.
- * @param n
- *   Number of packets to be filled.
- */
-static inline void
-txq_wr_dseg_v(struct mlx5_txq_data *txq, __m128i *dseg,
-	      struct rte_mbuf **pkts, unsigned int n)
-{
-	unsigned int pos;
-	uintptr_t addr;
-	const __m128i shuf_mask_dseg =
-		_mm_set_epi8(8,  9, 10, 11, /* addr, bswap64 */
-			    12, 13, 14, 15,
-			     7,  6,  5,  4, /* lkey */
-			     0,  1,  2,  3  /* length, bswap32 */);
-#ifdef MLX5_PMD_SOFT_COUNTERS
-	uint32_t tx_byte = 0;
-#endif
-
-	for (pos = 0; pos < n; ++pos, ++dseg) {
-		__m128i desc;
-		struct rte_mbuf *pkt = pkts[pos];
-
-		addr = rte_pktmbuf_mtod(pkt, uintptr_t);
-		desc = _mm_set_epi32(addr >> 32,
-				     addr,
-				     mlx5_tx_mb2mr(txq, pkt),
-				     DATA_LEN(pkt));
-		desc = _mm_shuffle_epi8(desc, shuf_mask_dseg);
-		_mm_store_si128(dseg, desc);
-#ifdef MLX5_PMD_SOFT_COUNTERS
-		tx_byte += DATA_LEN(pkt);
-#endif
-	}
-#ifdef MLX5_PMD_SOFT_COUNTERS
-	txq->stats.obytes += tx_byte;
-#endif
-}
-
-/**
- * Send multi-segmented packets until it encounters a single segment packet in
- * the pkts list.
- *
- * @param txq
- *   Pointer to TX queue structure.
- * @param pkts
- *   Pointer to array of packets to be sent.
- * @param pkts_n
- *   Number of packets to be sent.
- *
- * @return
- *   Number of packets successfully transmitted (<= pkts_n).
- */
-static uint16_t
-txq_scatter_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts,
-	      uint16_t pkts_n)
-{
-	uint16_t elts_head = txq->elts_head;
-	const uint16_t elts_n = 1 << txq->elts_n;
-	const uint16_t elts_m = elts_n - 1;
-	const uint16_t wq_n = 1 << txq->wqe_n;
-	const uint16_t wq_mask = wq_n - 1;
-	const unsigned int nb_dword_per_wqebb =
-		MLX5_WQE_SIZE / MLX5_WQE_DWORD_SIZE;
-	const unsigned int nb_dword_in_hdr =
-		sizeof(struct mlx5_wqe) / MLX5_WQE_DWORD_SIZE;
-	unsigned int n;
-	volatile struct mlx5_wqe *wqe = NULL;
-	bool metadata_ol =
-		txq->offloads & DEV_TX_OFFLOAD_MATCH_METADATA ? true : false;
-
-	assert(elts_n > pkts_n);
-	mlx5_tx_complete(txq);
-	if (unlikely(!pkts_n))
-		return 0;
-	for (n = 0; n < pkts_n; ++n) {
-		struct rte_mbuf *buf = pkts[n];
-		unsigned int segs_n = buf->nb_segs;
-		unsigned int ds = nb_dword_in_hdr;
-		unsigned int len = PKT_LEN(buf);
-		uint16_t wqe_ci = txq->wqe_ci;
-		const __m128i shuf_mask_ctrl =
-			_mm_set_epi8(15, 14, 13, 12,
-				      8,  9, 10, 11, /* bswap32 */
-				      4,  5,  6,  7, /* bswap32 */
-				      0,  1,  2,  3  /* bswap32 */);
-		uint8_t cs_flags;
-		uint16_t max_elts;
-		uint16_t max_wqe;
-		__m128i *t_wqe, *dseg;
-		__m128i ctrl;
-		rte_be32_t metadata =
-			metadata_ol && (buf->ol_flags & PKT_TX_METADATA) ?
-			buf->tx_metadata : 0;
-
-		assert(segs_n);
-		max_elts = elts_n - (elts_head - txq->elts_tail);
-		max_wqe = wq_n - (txq->wqe_ci - txq->wqe_pi);
-		/*
-		 * A MPW session consumes 2 WQEs at most to
-		 * include MLX5_MPW_DSEG_MAX pointers.
-		 */
-		if (segs_n == 1 ||
-		    max_elts < segs_n || max_wqe < 2)
-			break;
-		if (segs_n > MLX5_MPW_DSEG_MAX) {
-			txq->stats.oerrors++;
-			break;
-		}
-		wqe = &((volatile struct mlx5_wqe64 *)
-			 txq->wqes)[wqe_ci & wq_mask].hdr;
-		cs_flags = txq_ol_cksum_to_cs(buf);
-		/* Title WQEBB pointer. */
-		t_wqe = (__m128i *)wqe;
-		dseg = (__m128i *)(wqe + 1);
-		do {
-			if (!(ds++ % nb_dword_per_wqebb)) {
-				dseg = (__m128i *)
-					&((volatile struct mlx5_wqe64 *)
-					   txq->wqes)[++wqe_ci & wq_mask];
-			}
-			txq_wr_dseg_v(txq, dseg++, &buf, 1);
-			(*txq->elts)[elts_head++ & elts_m] = buf;
-			buf = buf->next;
-		} while (--segs_n);
-		++wqe_ci;
-		/* Fill CTRL in the header. */
-		ctrl = _mm_set_epi32(0, 0, txq->qp_num_8s | ds,
-				     MLX5_OPC_MOD_MPW << 24 |
-				     txq->wqe_ci << 8 | MLX5_OPCODE_TSO);
-		ctrl = _mm_shuffle_epi8(ctrl, shuf_mask_ctrl);
-		_mm_store_si128(t_wqe, ctrl);
-		/* Fill ESEG in the header. */
-		_mm_store_si128(t_wqe + 1,
-				_mm_set_epi32(0, metadata,
-					      (rte_cpu_to_be_16(len) << 16) |
-					      cs_flags, 0));
-		txq->wqe_ci = wqe_ci;
-	}
-	if (!n)
-		return 0;
-	txq->elts_comp += (uint16_t)(elts_head - txq->elts_head);
-	txq->elts_head = elts_head;
-	if (txq->elts_comp >= MLX5_TX_COMP_THRESH) {
-		/* A CQE slot must always be available. */
-		assert((1u << txq->cqe_n) - (txq->cq_pi++ - txq->cq_ci));
-		wqe->ctrl[2] = rte_cpu_to_be_32(8);
-		wqe->ctrl[3] = txq->elts_head;
-		txq->elts_comp = 0;
-	}
-#ifdef MLX5_PMD_SOFT_COUNTERS
-	txq->stats.opackets += n;
-#endif
-	mlx5_tx_dbrec(txq, wqe);
-	return n;
-}
-
-/**
- * Send burst of packets with Enhanced MPW. If it encounters a multi-seg packet,
- * it returns to make it processed by txq_scatter_v(). All the packets in
- * the pkts list should be single segment packets having same offload flags.
- * This must be checked by txq_count_contig_single_seg() and txq_calc_offload().
- *
- * @param txq
- *   Pointer to TX queue structure.
- * @param pkts
- *   Pointer to array of packets to be sent.
- * @param pkts_n
- *   Number of packets to be sent (<= MLX5_VPMD_TX_MAX_BURST).
- * @param cs_flags
- *   Checksum offload flags to be written in the descriptor.
- * @param metadata
- *   Metadata value to be written in the descriptor.
- *
- * @return
- *   Number of packets successfully transmitted (<= pkts_n).
- */
-static inline uint16_t
-txq_burst_v(struct mlx5_txq_data *txq, struct rte_mbuf **pkts, uint16_t pkts_n,
-	    uint8_t cs_flags, rte_be32_t metadata)
-{
-	struct rte_mbuf **elts;
-	uint16_t elts_head = txq->elts_head;
-	const uint16_t elts_n = 1 << txq->elts_n;
-	const uint16_t elts_m = elts_n - 1;
-	const unsigned int nb_dword_per_wqebb =
-		MLX5_WQE_SIZE / MLX5_WQE_DWORD_SIZE;
-	const unsigned int nb_dword_in_hdr =
-		sizeof(struct mlx5_wqe) / MLX5_WQE_DWORD_SIZE;
-	unsigned int n = 0;
-	unsigned int pos;
-	uint16_t max_elts;
-	uint16_t max_wqe;
-	uint32_t comp_req = 0;
-	const uint16_t wq_n = 1 << txq->wqe_n;
-	const uint16_t wq_mask = wq_n - 1;
-	uint16_t wq_idx = txq->wqe_ci & wq_mask;
-	volatile struct mlx5_wqe64 *wq =
-		&((volatile struct mlx5_wqe64 *)txq->wqes)[wq_idx];
-	volatile struct mlx5_wqe *wqe = (volatile struct mlx5_wqe *)wq;
-	const __m128i shuf_mask_ctrl =
-		_mm_set_epi8(15, 14, 13, 12,
-			      8,  9, 10, 11, /* bswap32 */
-			      4,  5,  6,  7, /* bswap32 */
-			      0,  1,  2,  3  /* bswap32 */);
-	__m128i *t_wqe, *dseg;
-	__m128i ctrl;
-
-	/* Make sure all packets can fit into a single WQE. */
-	assert(elts_n > pkts_n);
-	mlx5_tx_complete(txq);
-	max_elts = (elts_n - (elts_head - txq->elts_tail));
-	max_wqe = (1u << txq->wqe_n) - (txq->wqe_ci - txq->wqe_pi);
-	pkts_n = RTE_MIN((unsigned int)RTE_MIN(pkts_n, max_wqe), max_elts);
-	assert(pkts_n <= MLX5_DSEG_MAX - nb_dword_in_hdr);
-	if (unlikely(!pkts_n))
-		return 0;
-	elts = &(*txq->elts)[elts_head & elts_m];
-	/* Loop for available tailroom first. */
-	n = RTE_MIN(elts_n - (elts_head & elts_m), pkts_n);
-	for (pos = 0; pos < (n & -2); pos += 2)
-		_mm_storeu_si128((__m128i *)&elts[pos],
-				 _mm_loadu_si128((__m128i *)&pkts[pos]));
-	if (n & 1)
-		elts[pos] = pkts[pos];
-	/* Check if it crosses the end of the queue. */
-	if (unlikely(n < pkts_n)) {
-		elts = &(*txq->elts)[0];
-		for (pos = 0; pos < pkts_n - n; ++pos)
-			elts[pos] = pkts[n + pos];
-	}
-	txq->elts_head += pkts_n;
-	/* Save title WQEBB pointer. */
-	t_wqe = (__m128i *)wqe;
-	dseg = (__m128i *)(wqe + 1);
-	/* Calculate the number of entries to the end. */
-	n = RTE_MIN(
-		(wq_n - wq_idx) * nb_dword_per_wqebb - nb_dword_in_hdr,
-		pkts_n);
-	/* Fill DSEGs. */
-	txq_wr_dseg_v(txq, dseg, pkts, n);
-	/* Check if it crosses the end of the queue. */
-	if (n < pkts_n) {
-		dseg = (__m128i *)txq->wqes;
-		txq_wr_dseg_v(txq, dseg, &pkts[n], pkts_n - n);
-	}
-	if (txq->elts_comp + pkts_n < MLX5_TX_COMP_THRESH) {
-		txq->elts_comp += pkts_n;
-	} else {
-		/* A CQE slot must always be available. */
-		assert((1u << txq->cqe_n) - (txq->cq_pi++ - txq->cq_ci));
-		/* Request a completion. */
-		txq->elts_comp = 0;
-		comp_req = 8;
-	}
-	/* Fill CTRL in the header. */
-	ctrl = _mm_set_epi32(txq->elts_head, comp_req,
-			     txq->qp_num_8s | (pkts_n + 2),
-			     MLX5_OPC_MOD_ENHANCED_MPSW << 24 |
-				txq->wqe_ci << 8 | MLX5_OPCODE_ENHANCED_MPSW);
-	ctrl = _mm_shuffle_epi8(ctrl, shuf_mask_ctrl);
-	_mm_store_si128(t_wqe, ctrl);
-	/* Fill ESEG in the header. */
-	_mm_store_si128(t_wqe + 1, _mm_set_epi32(0, metadata, cs_flags, 0));
-#ifdef MLX5_PMD_SOFT_COUNTERS
-	txq->stats.opackets += pkts_n;
-#endif
-	txq->wqe_ci += (nb_dword_in_hdr + pkts_n + (nb_dword_per_wqebb - 1)) /
-		       nb_dword_per_wqebb;
-	/* Ring QP doorbell. */
-	mlx5_tx_dbrec_cond_wmb(txq, wqe, pkts_n < MLX5_VPMD_TX_MAX_BURST);
-	return pkts_n;
-}
-
-/**
  * Store free buffers to RX SW ring.
  *
  * @param rxq
@@ -349,8 +67,11 @@ rxq_copy_mbuf_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t n)
  * @param elts
  *   Pointer to SW ring to be filled. The first mbuf has to be pre-built from
  *   the title completion descriptor to be copied to the rest of mbufs.
+ *
+ * @return
+ *   Number of mini-CQEs successfully decompressed.
  */
-static inline void
+static inline uint16_t
 rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		    struct rte_mbuf **elts)
 {
@@ -374,16 +95,16 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 			    -1, -1, -1, -1  /* skip packet_type */);
 	/* Restore the compressed count. Must be 16 bits. */
 	const uint16_t mcqe_n = t_pkt->data_len +
-				(rxq->crc_present * ETHER_CRC_LEN);
+				(rxq->crc_present * RTE_ETHER_CRC_LEN);
 	const __m128i rearm =
 		_mm_loadu_si128((__m128i *)&t_pkt->rearm_data);
 	const __m128i rxdf =
 		_mm_loadu_si128((__m128i *)&t_pkt->rx_descriptor_fields1);
 	const __m128i crc_adj =
 		_mm_set_epi16(0, 0, 0,
-			      rxq->crc_present * ETHER_CRC_LEN,
+			      rxq->crc_present * RTE_ETHER_CRC_LEN,
 			      0,
-			      rxq->crc_present * ETHER_CRC_LEN,
+			      rxq->crc_present * RTE_ETHER_CRC_LEN,
 			      0, 0);
 	const uint32_t flow_tag = t_pkt->hash.fdir.hi;
 #ifdef MLX5_PMD_SOFT_COUNTERS
@@ -486,6 +207,7 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 	rxq->stats.ibytes += rcvd_byte;
 #endif
 	rxq->cq_ci += mcqe_n;
+	return mcqe_n;
 }
 
 /**
@@ -699,9 +421,9 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	const __m128i ones = _mm_cmpeq_epi32(zero, zero);
 	const __m128i crc_adj =
 		_mm_set_epi16(0, 0, 0, 0, 0,
-			      rxq->crc_present * ETHER_CRC_LEN,
+			      rxq->crc_present * RTE_ETHER_CRC_LEN,
 			      0,
-			      rxq->crc_present * ETHER_CRC_LEN);
+			      rxq->crc_present * RTE_ETHER_CRC_LEN);
 	const __m128i flow_mark_adj = _mm_set_epi32(rxq->mark * (-1), 0, 0, 0);
 
 	assert(rxq->sges_n == 0);
@@ -712,23 +434,16 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	rte_prefetch0(cq + 2);
 	rte_prefetch0(cq + 3);
 	pkts_n = RTE_MIN(pkts_n, MLX5_VPMD_RX_MAX_BURST);
-	/*
-	 * Order of indexes:
-	 *   rq_ci >= cq_ci >= rq_pi
-	 * Definition of indexes:
-	 *   rq_ci - cq_ci := # of buffers owned by HW (posted).
-	 *   cq_ci - rq_pi := # of buffers not returned to app (decompressed).
-	 *   N - (rq_ci - rq_pi) := # of buffers consumed (to be replenished).
-	 */
 	repl_n = q_n - (rxq->rq_ci - rxq->rq_pi);
 	if (repl_n >= rxq->rq_repl_thresh)
 		mlx5_rx_replenish_bulk_mbuf(rxq, repl_n);
 	/* See if there're unreturned mbufs from compressed CQE. */
-	rcvd_pkt = rxq->cq_ci - rxq->rq_pi;
+	rcvd_pkt = rxq->decompressed;
 	if (rcvd_pkt > 0) {
 		rcvd_pkt = RTE_MIN(rcvd_pkt, pkts_n);
 		rxq_copy_mbuf_v(rxq, pkts, rcvd_pkt);
 		rxq->rq_pi += rcvd_pkt;
+		rxq->decompressed -= rcvd_pkt;
 		pkts += rcvd_pkt;
 	}
 	elts_idx = rxq->rq_pi & q_mask;
@@ -737,10 +452,11 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	pkts_n = RTE_ALIGN_FLOOR(pkts_n - rcvd_pkt, MLX5_VPMD_DESCS_PER_LOOP);
 	/* Not to cross queue end. */
 	pkts_n = RTE_MIN(pkts_n, q_n - elts_idx);
+	pkts_n = RTE_MIN(pkts_n, q_n - cq_idx);
 	if (!pkts_n)
 		return rcvd_pkt;
 	/* At this point, there shouldn't be any remained packets. */
-	assert(rxq->rq_pi == rxq->cq_ci);
+	assert(rxq->decompressed == 0);
 	/*
 	 * A. load first Qword (8bytes) in one loop.
 	 * B. copy 4 mbuf pointers from elts ring to returing pkts.
@@ -817,12 +533,12 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		cqe_tmp1 = _mm_load_si128((__m128i *)&cq[pos + p2]);
 		cqes[3] = _mm_blendv_epi8(cqes[3], cqe_tmp2, blend_mask);
 		cqes[2] = _mm_blendv_epi8(cqes[2], cqe_tmp1, blend_mask);
-		cqe_tmp2 = _mm_loadu_si128((__m128i *)&cq[pos + p3].rsvd1[3]);
-		cqe_tmp1 = _mm_loadu_si128((__m128i *)&cq[pos + p2].rsvd1[3]);
+		cqe_tmp2 = _mm_loadu_si128((__m128i *)&cq[pos + p3].csum);
+		cqe_tmp1 = _mm_loadu_si128((__m128i *)&cq[pos + p2].csum);
 		cqes[3] = _mm_blend_epi16(cqes[3], cqe_tmp2, 0x30);
 		cqes[2] = _mm_blend_epi16(cqes[2], cqe_tmp1, 0x30);
-		cqe_tmp2 = _mm_loadl_epi64((__m128i *)&cq[pos + p3].rsvd2[10]);
-		cqe_tmp1 = _mm_loadl_epi64((__m128i *)&cq[pos + p2].rsvd2[10]);
+		cqe_tmp2 = _mm_loadl_epi64((__m128i *)&cq[pos + p3].rsvd4[2]);
+		cqe_tmp1 = _mm_loadl_epi64((__m128i *)&cq[pos + p2].rsvd4[2]);
 		cqes[3] = _mm_blend_epi16(cqes[3], cqe_tmp2, 0x04);
 		cqes[2] = _mm_blend_epi16(cqes[2], cqe_tmp1, 0x04);
 		/* C.2 generate final structure for mbuf with swapping bytes. */
@@ -844,12 +560,12 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 		cqe_tmp1 = _mm_load_si128((__m128i *)&cq[pos]);
 		cqes[1] = _mm_blendv_epi8(cqes[1], cqe_tmp2, blend_mask);
 		cqes[0] = _mm_blendv_epi8(cqes[0], cqe_tmp1, blend_mask);
-		cqe_tmp2 = _mm_loadu_si128((__m128i *)&cq[pos + p1].rsvd1[3]);
-		cqe_tmp1 = _mm_loadu_si128((__m128i *)&cq[pos].rsvd1[3]);
+		cqe_tmp2 = _mm_loadu_si128((__m128i *)&cq[pos + p1].csum);
+		cqe_tmp1 = _mm_loadu_si128((__m128i *)&cq[pos].csum);
 		cqes[1] = _mm_blend_epi16(cqes[1], cqe_tmp2, 0x30);
 		cqes[0] = _mm_blend_epi16(cqes[0], cqe_tmp1, 0x30);
-		cqe_tmp2 = _mm_loadl_epi64((__m128i *)&cq[pos + p1].rsvd2[10]);
-		cqe_tmp1 = _mm_loadl_epi64((__m128i *)&cq[pos].rsvd2[10]);
+		cqe_tmp2 = _mm_loadl_epi64((__m128i *)&cq[pos + p1].rsvd4[2]);
+		cqe_tmp1 = _mm_loadl_epi64((__m128i *)&cq[pos].rsvd4[2]);
 		cqes[1] = _mm_blend_epi16(cqes[1], cqe_tmp2, 0x04);
 		cqes[0] = _mm_blend_epi16(cqes[0], cqe_tmp1, 0x04);
 		/* C.2 generate final structure for mbuf with swapping bytes. */
@@ -924,6 +640,25 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 			pkts[pos + 3]->timestamp =
 				rte_be_to_cpu_64(cq[pos + p3].timestamp);
 		}
+		if (rte_flow_dynf_metadata_avail()) {
+			/* This code is subject for futher optimization. */
+			*RTE_FLOW_DYNF_METADATA(pkts[pos]) =
+				cq[pos].flow_table_metadata;
+			*RTE_FLOW_DYNF_METADATA(pkts[pos + 1]) =
+				cq[pos + p1].flow_table_metadata;
+			*RTE_FLOW_DYNF_METADATA(pkts[pos + 2]) =
+				cq[pos + p2].flow_table_metadata;
+			*RTE_FLOW_DYNF_METADATA(pkts[pos + 3]) =
+				cq[pos + p3].flow_table_metadata;
+			if (*RTE_FLOW_DYNF_METADATA(pkts[pos]))
+				pkts[pos]->ol_flags |= PKT_RX_DYNF_METADATA;
+			if (*RTE_FLOW_DYNF_METADATA(pkts[pos + 1]))
+				pkts[pos + 1]->ol_flags |= PKT_RX_DYNF_METADATA;
+			if (*RTE_FLOW_DYNF_METADATA(pkts[pos + 2]))
+				pkts[pos + 2]->ol_flags |= PKT_RX_DYNF_METADATA;
+			if (*RTE_FLOW_DYNF_METADATA(pkts[pos + 3]))
+				pkts[pos + 3]->ol_flags |= PKT_RX_DYNF_METADATA;
+		}
 #ifdef MLX5_PMD_SOFT_COUNTERS
 		/* Add up received bytes count. */
 		byte_cnt = _mm_shuffle_epi8(op_own, len_shuf_mask);
@@ -953,15 +688,17 @@ rxq_burst_v(struct mlx5_rxq_data *rxq, struct rte_mbuf **pkts, uint16_t pkts_n,
 	/* Decompress the last CQE if compressed. */
 	if (comp_idx < MLX5_VPMD_DESCS_PER_LOOP && comp_idx == n) {
 		assert(comp_idx == (nocmp_n % MLX5_VPMD_DESCS_PER_LOOP));
-		rxq_cq_decompress_v(rxq, &cq[nocmp_n], &elts[nocmp_n]);
+		rxq->decompressed = rxq_cq_decompress_v(rxq, &cq[nocmp_n],
+							&elts[nocmp_n]);
 		/* Return more packets if needed. */
 		if (nocmp_n < pkts_n) {
-			uint16_t n = rxq->cq_ci - rxq->rq_pi;
+			uint16_t n = rxq->decompressed;
 
 			n = RTE_MIN(n, pkts_n - nocmp_n);
 			rxq_copy_mbuf_v(rxq, &pkts[nocmp_n], n);
 			rxq->rq_pi += n;
 			rcvd_pkt += n;
+			rxq->decompressed -= n;
 		}
 	}
 	rte_compiler_barrier();

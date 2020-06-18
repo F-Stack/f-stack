@@ -32,19 +32,19 @@ extern uint32_t sfc_logtype_driver;
 #define SFC_LOG_LEVEL_MCDI	RTE_LOG_INFO
 
 /* Log PMD message, automatically add prefix and \n */
-#define SFC_LOG(sa, level, type, ...) \
+#define SFC_LOG(sas, level, type, ...) \
 	do {								\
-		const struct sfc_adapter *__sa = (sa);			\
+		const struct sfc_adapter_shared *_sas = (sas);		\
 									\
 		rte_log(level, type,					\
 			RTE_FMT("PMD: sfc_efx "				\
 				PCI_PRI_FMT " #%" PRIu16		\
 				": " RTE_FMT_HEAD(__VA_ARGS__ ,) "\n",	\
-				__sa->pci_addr.domain,			\
-				__sa->pci_addr.bus,			\
-				__sa->pci_addr.devid,			\
-				__sa->pci_addr.function,		\
-				__sa->port_id,				\
+				_sas->pci_addr.domain,			\
+				_sas->pci_addr.bus,			\
+				_sas->pci_addr.devid,			\
+				_sas->pci_addr.function,		\
+				_sas->port_id,				\
 				RTE_FMT_TAIL(__VA_ARGS__,)));		\
 	} while (0)
 
@@ -52,39 +52,40 @@ extern uint32_t sfc_logtype_driver;
 	do {								\
 		const struct sfc_adapter *_sa = (sa);			\
 									\
-		SFC_LOG(_sa, RTE_LOG_ERR, _sa->logtype_main,		\
-			__VA_ARGS__);					\
+		SFC_LOG(_sa->priv.shared, RTE_LOG_ERR,			\
+			_sa->priv.logtype_main, __VA_ARGS__);		\
 	} while (0)
 
 #define sfc_warn(sa, ...) \
 	do {								\
 		const struct sfc_adapter *_sa = (sa);			\
 									\
-		SFC_LOG(_sa, RTE_LOG_WARNING, _sa->logtype_main,	\
-			__VA_ARGS__);					\
+		SFC_LOG(_sa->priv.shared, RTE_LOG_WARNING,		\
+			_sa->priv.logtype_main, __VA_ARGS__);		\
 	} while (0)
 
 #define sfc_notice(sa, ...) \
 	do {								\
 		const struct sfc_adapter *_sa = (sa);			\
 									\
-		SFC_LOG(_sa, RTE_LOG_NOTICE, _sa->logtype_main,		\
-			__VA_ARGS__);					\
+		SFC_LOG(_sa->priv.shared, RTE_LOG_NOTICE,		\
+			_sa->priv.logtype_main, __VA_ARGS__);		\
 	} while (0)
 
 #define sfc_info(sa, ...) \
 	do {								\
 		const struct sfc_adapter *_sa = (sa);			\
 									\
-		SFC_LOG(_sa, RTE_LOG_INFO, _sa->logtype_main,		\
-			__VA_ARGS__);					\
+		SFC_LOG(_sa->priv.shared, RTE_LOG_INFO,			\
+			_sa->priv.logtype_main, __VA_ARGS__);		\
 	} while (0)
 
 #define sfc_log_init(sa, ...) \
 	do {								\
 		const struct sfc_adapter *_sa = (sa);			\
 									\
-		SFC_LOG(_sa, RTE_LOG_INFO, _sa->logtype_main,		\
+		SFC_LOG(_sa->priv.shared, RTE_LOG_INFO,			\
+			_sa->priv.logtype_main,				\
 			RTE_FMT("%s(): "				\
 				RTE_FMT_HEAD(__VA_ARGS__ ,),		\
 				__func__,				\
@@ -95,8 +96,8 @@ extern uint32_t sfc_logtype_driver;
 	do {								\
 		const struct sfc_adapter *_sa = (sa);			\
 									\
-		SFC_LOG(_sa, SFC_LOG_LEVEL_MCDI, _sa->mcdi.logtype,	\
-			__VA_ARGS__);					\
+		SFC_LOG(_sa->priv.shared, SFC_LOG_LEVEL_MCDI,		\
+			_sa->mcdi.logtype, __VA_ARGS__);		\
 	} while (0)
 
 

@@ -20,7 +20,6 @@
 #include <rte_arp.h>
 #include <rte_common.h>
 #include <rte_ether.h>
-#include <rte_eth_ctrl.h>
 #include <rte_icmp.h>
 #include <rte_ip.h>
 #include <rte_sctp.h>
@@ -28,6 +27,9 @@
 #include <rte_udp.h>
 #include <rte_byteorder.h>
 #include <rte_esp.h>
+#include <rte_higig.h>
+#include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -418,11 +420,119 @@ enum rte_flow_item_type {
 	/**
 	 * [META]
 	 *
-	 * Matches a metadata value specified in mbuf metadata field.
+	 * Matches a metadata value.
+	 *
 	 * See struct rte_flow_item_meta.
 	 */
 	RTE_FLOW_ITEM_TYPE_META,
+
+	/**
+	 * Matches a GRE optional key field.
+	 *
+	 * The value should a big-endian 32bit integer.
+	 *
+	 * When this item present the K bit is implicitly matched as "1"
+	 * in the default mask.
+	 *
+	 * @p spec/mask type:
+	 * @code rte_be32_t * @endcode
+	 */
+	RTE_FLOW_ITEM_TYPE_GRE_KEY,
+
+	/**
+	 * Matches a GTP extension header: PDU session container.
+	 *
+	 * Configure flow for GTP packets with extension header type 0x85.
+	 *
+	 * See struct rte_flow_item_gtp_psc.
+	 */
+	RTE_FLOW_ITEM_TYPE_GTP_PSC,
+
+	/**
+	 * Matches a PPPoE header.
+	 *
+	 * Configure flow for PPPoE session packets.
+	 *
+	 * See struct rte_flow_item_pppoe.
+	 */
+	RTE_FLOW_ITEM_TYPE_PPPOES,
+
+	/**
+	 * Matches a PPPoE header.
+	 *
+	 * Configure flow for PPPoE discovery packets.
+	 *
+	 * See struct rte_flow_item_pppoe.
+	 */
+	RTE_FLOW_ITEM_TYPE_PPPOED,
+
+	/**
+	 * Matches a PPPoE optional proto_id field.
+	 *
+	 * It only applies to PPPoE session packets.
+	 *
+	 * See struct rte_flow_item_pppoe_proto_id.
+	 */
+	RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID,
+
+	/**
+	 * Matches Network service header (NSH).
+	 * See struct rte_flow_item_nsh.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_NSH,
+
+	/**
+	 * Matches Internet Group Management Protocol (IGMP).
+	 * See struct rte_flow_item_igmp.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_IGMP,
+
+	/**
+	 * Matches IP Authentication Header (AH).
+	 * See struct rte_flow_item_ah.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_AH,
+
+	/**
+	 * Matches a HIGIG header.
+	 * see struct rte_flow_item_higig2_hdr.
+	 */
+	RTE_FLOW_ITEM_TYPE_HIGIG2,
+
+	/**
+	 * [META]
+	 *
+	 * Matches a tag value.
+	 *
+	 * See struct rte_flow_item_tag.
+	 */
+	RTE_FLOW_ITEM_TYPE_TAG,
 };
+
+/**
+ *
+ * RTE_FLOW_ITEM_TYPE_HIGIG2
+ * Matches higig2 header
+ */
+RTE_STD_C11
+struct rte_flow_item_higig2_hdr {
+	struct rte_higig2_hdr hdr;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_HIGIG2. */
+#ifndef __cplusplus
+static const struct rte_flow_item_higig2_hdr rte_flow_item_higig2_hdr_mask = {
+	.hdr = {
+		.ppt1 = {
+			.classification = 0xffff,
+			.vid = 0xfff,
+		},
+	},
+};
+#endif
 
 /**
  * RTE_FLOW_ITEM_TYPE_ANY
@@ -585,8 +695,8 @@ static const struct rte_flow_item_raw rte_flow_item_raw_mask = {
  * same order as on the wire.
  */
 struct rte_flow_item_eth {
-	struct ether_addr dst; /**< Destination MAC. */
-	struct ether_addr src; /**< Source MAC. */
+	struct rte_ether_addr dst; /**< Destination MAC. */
+	struct rte_ether_addr src; /**< Source MAC. */
 	rte_be16_t type; /**< EtherType or TPID. */
 };
 
@@ -605,8 +715,8 @@ static const struct rte_flow_item_eth rte_flow_item_eth_mask = {
  * Matches an 802.1Q/ad VLAN tag.
  *
  * The corresponding standard outer EtherType (TPID) values are
- * ETHER_TYPE_VLAN or ETHER_TYPE_QINQ. It can be overridden by the preceding
- * pattern item.
+ * RTE_ETHER_TYPE_VLAN or RTE_ETHER_TYPE_QINQ. It can be overridden by
+ * the preceding pattern item.
  */
 struct rte_flow_item_vlan {
 	rte_be16_t tci; /**< Tag control information. */
@@ -629,7 +739,7 @@ static const struct rte_flow_item_vlan rte_flow_item_vlan_mask = {
  * Note: IPv4 options are handled by dedicated pattern items.
  */
 struct rte_flow_item_ipv4 {
-	struct ipv4_hdr hdr; /**< IPv4 header definition. */
+	struct rte_ipv4_hdr hdr; /**< IPv4 header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_IPV4. */
@@ -651,7 +761,7 @@ static const struct rte_flow_item_ipv4 rte_flow_item_ipv4_mask = {
  * RTE_FLOW_ITEM_TYPE_IPV6_EXT.
  */
 struct rte_flow_item_ipv6 {
-	struct ipv6_hdr hdr; /**< IPv6 header definition. */
+	struct rte_ipv6_hdr hdr; /**< IPv6 header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_IPV6. */
@@ -674,7 +784,7 @@ static const struct rte_flow_item_ipv6 rte_flow_item_ipv6_mask = {
  * Matches an ICMP header.
  */
 struct rte_flow_item_icmp {
-	struct icmp_hdr hdr; /**< ICMP header definition. */
+	struct rte_icmp_hdr hdr; /**< ICMP header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_ICMP. */
@@ -693,7 +803,7 @@ static const struct rte_flow_item_icmp rte_flow_item_icmp_mask = {
  * Matches a UDP header.
  */
 struct rte_flow_item_udp {
-	struct udp_hdr hdr; /**< UDP header definition. */
+	struct rte_udp_hdr hdr; /**< UDP header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_UDP. */
@@ -712,7 +822,7 @@ static const struct rte_flow_item_udp rte_flow_item_udp_mask = {
  * Matches a TCP header.
  */
 struct rte_flow_item_tcp {
-	struct tcp_hdr hdr; /**< TCP header definition. */
+	struct rte_tcp_hdr hdr; /**< TCP header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_TCP. */
@@ -731,7 +841,7 @@ static const struct rte_flow_item_tcp rte_flow_item_tcp_mask = {
  * Matches a SCTP header.
  */
 struct rte_flow_item_sctp {
-	struct sctp_hdr hdr; /**< SCTP header definition. */
+	struct rte_sctp_hdr hdr; /**< SCTP header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_SCTP. */
@@ -769,7 +879,7 @@ static const struct rte_flow_item_vxlan rte_flow_item_vxlan_mask = {
  * Matches a E-tag header.
  *
  * The corresponding standard outer EtherType (TPID) value is
- * ETHER_TYPE_ETAG. It can be overridden by the preceding pattern item.
+ * RTE_ETHER_TYPE_ETAG. It can be overridden by the preceding pattern item.
  */
 struct rte_flow_item_e_tag {
 	/**
@@ -916,7 +1026,7 @@ static const struct rte_flow_item_gtp rte_flow_item_gtp_mask = {
  * Matches an ESP header.
  */
 struct rte_flow_item_esp {
-	struct esp_hdr hdr; /**< ESP header definition. */
+	struct rte_esp_hdr hdr; /**< ESP header definition. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_ESP. */
@@ -982,9 +1092,9 @@ struct rte_flow_item_arp_eth_ipv4 {
 	uint8_t hln; /**< Hardware address length, normally 6. */
 	uint8_t pln; /**< Protocol address length, normally 4. */
 	rte_be16_t op; /**< Opcode (1 for request, 2 for reply). */
-	struct ether_addr sha; /**< Sender hardware address. */
+	struct rte_ether_addr sha; /**< Sender hardware address. */
 	rte_be32_t spa; /**< Sender IPv4 address. */
-	struct ether_addr tha; /**< Target hardware address. */
+	struct rte_ether_addr tha; /**< Target hardware address. */
 	rte_be32_t tpa; /**< Target IPv4 address. */
 };
 
@@ -1128,7 +1238,7 @@ rte_flow_item_icmp6_nd_opt_mask = {
 struct rte_flow_item_icmp6_nd_opt_sla_eth {
 	uint8_t type; /**< ND option type, normally 1. */
 	uint8_t length; /**< ND option length, normally 1. */
-	struct ether_addr sla; /**< Source Ethernet LLA. */
+	struct rte_ether_addr sla; /**< Source Ethernet LLA. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_ICMP6_ND_OPT_SLA_ETH. */
@@ -1153,7 +1263,7 @@ rte_flow_item_icmp6_nd_opt_sla_eth_mask = {
 struct rte_flow_item_icmp6_nd_opt_tla_eth {
 	uint8_t type; /**< ND option type, normally 2. */
 	uint8_t length; /**< ND option length, normally 1. */
-	struct ether_addr tla; /**< Target Ethernet LLA. */
+	struct rte_ether_addr tla; /**< Target Ethernet LLA. */
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_ICMP6_ND_OPT_TLA_ETH. */
@@ -1165,18 +1275,101 @@ rte_flow_item_icmp6_nd_opt_tla_eth_mask = {
 #endif
 
 /**
- * RTE_FLOW_ITEM_TYPE_META.
+ * RTE_FLOW_ITEM_TYPE_META
  *
- * Matches a specified metadata value.
+ * Matches a specified metadata value. On egress, metadata can be set
+ * either by mbuf dynamic metadata field with PKT_TX_DYNF_METADATA flag or
+ * RTE_FLOW_ACTION_TYPE_SET_META. On ingress, RTE_FLOW_ACTION_TYPE_SET_META
+ * sets metadata for a packet and the metadata will be reported via mbuf
+ * metadata dynamic field with PKT_RX_DYNF_METADATA flag. The dynamic mbuf
+ * field must be registered in advance by rte_flow_dynf_metadata_register().
  */
 struct rte_flow_item_meta {
-	rte_be32_t data;
+	uint32_t data;
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_META. */
 #ifndef __cplusplus
 static const struct rte_flow_item_meta rte_flow_item_meta_mask = {
-	.data = RTE_BE32(UINT32_MAX),
+	.data = UINT32_MAX,
+};
+#endif
+
+/**
+ * RTE_FLOW_ITEM_TYPE_GTP_PSC.
+ *
+ * Matches a GTP PDU extension header with type 0x85.
+ */
+struct rte_flow_item_gtp_psc {
+	uint8_t pdu_type; /**< PDU type. */
+	uint8_t qfi; /**< QoS flow identifier. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_GTP_PSC. */
+#ifndef __cplusplus
+static const struct rte_flow_item_gtp_psc
+rte_flow_item_gtp_psc_mask = {
+	.qfi = 0x3f,
+};
+#endif
+
+/**
+ * RTE_FLOW_ITEM_TYPE_PPPOE.
+ *
+ * Matches a PPPoE header.
+ */
+struct rte_flow_item_pppoe {
+	/**
+	 * Version (4b), type (4b).
+	 */
+	uint8_t version_type;
+	uint8_t code; /**< Message type. */
+	rte_be16_t session_id; /**< Session identifier. */
+	rte_be16_t length; /**< Payload length. */
+};
+
+/**
+ * RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID.
+ *
+ * Matches a PPPoE optional proto_id field.
+ *
+ * It only applies to PPPoE session packets.
+ *
+ * Normally preceded by any of:
+ *
+ * - RTE_FLOW_ITEM_TYPE_PPPOE
+ * - RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID
+ */
+struct rte_flow_item_pppoe_proto_id {
+	rte_be16_t proto_id; /**< PPP protocol identifier. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID. */
+#ifndef __cplusplus
+static const struct rte_flow_item_pppoe_proto_id
+rte_flow_item_pppoe_proto_id_mask = {
+	.proto_id = RTE_BE16(0xffff),
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_TAG
+ *
+ * Matches a specified tag value at the specified index.
+ */
+struct rte_flow_item_tag {
+	uint32_t data;
+	uint8_t index;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_TAG. */
+#ifndef __cplusplus
+static const struct rte_flow_item_tag rte_flow_item_tag_mask = {
+	.data = 0xffffffff,
+	.index = 0xff,
 };
 #endif
 
@@ -1201,6 +1394,92 @@ static const struct rte_flow_item_meta rte_flow_item_meta_mask = {
 struct rte_flow_item_mark {
 	uint32_t id; /**< Integer value to match against. */
 };
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_MARK. */
+#ifndef __cplusplus
+static const struct rte_flow_item_mark rte_flow_item_mark_mask = {
+	.id = 0xffffffff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_NSH
+ *
+ * Match network service header (NSH), RFC 8300
+ *
+ */
+struct rte_flow_item_nsh {
+	uint32_t version:2;
+	uint32_t oam_pkt:1;
+	uint32_t reserved:1;
+	uint32_t ttl:6;
+	uint32_t length:6;
+	uint32_t reserved1:4;
+	uint32_t mdtype:4;
+	uint32_t next_proto:8;
+	uint32_t spi:24;
+	uint32_t sindex:8;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_NSH. */
+#ifndef __cplusplus
+static const struct rte_flow_item_nsh rte_flow_item_nsh_mask = {
+	.mdtype = 0xf,
+	.next_proto = 0xff,
+	.spi = 0xffffff,
+	.sindex = 0xff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_IGMP
+ *
+ * Match Internet Group Management Protocol (IGMP), RFC 2236
+ *
+ */
+struct rte_flow_item_igmp {
+	uint32_t type:8;
+	uint32_t max_resp_time:8;
+	uint32_t checksum:16;
+	uint32_t group_addr;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_IGMP. */
+#ifndef __cplusplus
+static const struct rte_flow_item_igmp rte_flow_item_igmp_mask = {
+	.group_addr = 0xffffffff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_AH
+ *
+ * Match IP Authentication Header (AH), RFC 4302
+ *
+ */
+struct rte_flow_item_ah {
+	uint32_t next_hdr:8;
+	uint32_t payload_len:8;
+	uint32_t reserved:16;
+	uint32_t spi;
+	uint32_t seq_num;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_AH. */
+#ifndef __cplusplus
+static const struct rte_flow_item_ah rte_flow_item_ah_mask = {
+	.spi = 0xffffffff,
+};
+#endif
 
 /**
  * Matching pattern item definition.
@@ -1245,9 +1524,10 @@ struct rte_flow_item {
 /**
  * Action types.
  *
- * Each possible action is represented by a type. Some have associated
- * configuration structures. Several actions combined in a list can be
- * assigned to a flow rule and are performed in order.
+ * Each possible action is represented by a type.
+ * An action can have an associated configuration object.
+ * Several actions combined in a list can be assigned
+ * to a flow rule and are performed in order.
  *
  * They fall in three categories:
  *
@@ -1651,6 +1931,79 @@ enum rte_flow_action_type {
 	 * See struct rte_flow_action_set_mac.
 	 */
 	RTE_FLOW_ACTION_TYPE_SET_MAC_DST,
+
+	/**
+	 * Increase sequence number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to increase
+	 * TCP sequence number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+	 *
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_INC_TCP_SEQ,
+
+	/**
+	 * Decrease sequence number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to decrease
+	 * TCP sequence number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+	 *
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_DEC_TCP_SEQ,
+
+	/**
+	 * Increase acknowledgment number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to increase
+	 * TCP acknowledgment number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_INC_TCP_ACK,
+
+	/**
+	 * Decrease acknowledgment number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to decrease
+	 * TCP acknowledgment number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+	 *
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_DEC_TCP_ACK,
+
+	/**
+	 * Set Tag.
+	 *
+	 * Tag is for internal flow usage only and
+	 * is not delivered to the application.
+	 *
+	 * See struct rte_flow_action_set_tag.
+	 */
+	RTE_FLOW_ACTION_TYPE_SET_TAG,
+
+	/**
+	 * Set metadata on ingress or egress path.
+	 *
+	 * See struct rte_flow_action_set_meta.
+	 */
+	RTE_FLOW_ACTION_TYPE_SET_META,
 };
 
 /**
@@ -1736,6 +2089,22 @@ struct rte_flow_query_count {
 	uint32_t reserved:29; /**< Reserved, must be zero [in, out]. */
 	uint64_t hits; /**< Number of hits for this rule [out]. */
 	uint64_t bytes; /**< Number of bytes through this rule [out]. */
+};
+
+/**
+ * Hash function types.
+ */
+enum rte_eth_hash_function {
+	RTE_ETH_HASH_FUNCTION_DEFAULT = 0,
+	RTE_ETH_HASH_FUNCTION_TOEPLITZ, /**< Toeplitz */
+	RTE_ETH_HASH_FUNCTION_SIMPLE_XOR, /**< Simple XOR */
+	/**
+	 * Symmetric Toeplitz: src, dst will be replaced by
+	 * xor(src, dst). For the case with src/dst only,
+	 * src or dst address will xor with zero pair.
+	 */
+	RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ,
+	RTE_ETH_HASH_FUNCTION_MAX,
 };
 
 /**
@@ -2119,19 +2488,86 @@ struct rte_flow_action_set_ttl {
  * Set MAC address from the matched flow
  */
 struct rte_flow_action_set_mac {
-	uint8_t mac_addr[ETHER_ADDR_LEN];
+	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 };
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ACTION_TYPE_SET_TAG
+ *
+ * Set a tag which is a transient data used during flow matching. This is not
+ * delivered to application. Multiple tags are supported by specifying index.
+ */
+struct rte_flow_action_set_tag {
+	uint32_t data;
+	uint32_t mask;
+	uint8_t index;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ACTION_TYPE_SET_META
+ *
+ * Set metadata. Metadata set by mbuf metadata dynamic field with
+ * PKT_TX_DYNF_DATA flag on egress will be overridden by this action. On
+ * ingress, the metadata will be carried by mbuf metadata dynamic field
+ * with PKT_RX_DYNF_METADATA flag if set.  The dynamic mbuf field must be
+ * registered in advance by rte_flow_dynf_metadata_register().
+ *
+ * Altering partial bits is supported with mask. For bits which have never
+ * been set, unpredictable value will be seen depending on driver
+ * implementation. For loopback/hairpin packet, metadata set on Rx/Tx may
+ * or may not be propagated to the other path depending on HW capability.
+ *
+ * RTE_FLOW_ITEM_TYPE_META matches metadata.
+ */
+struct rte_flow_action_set_meta {
+	uint32_t data;
+	uint32_t mask;
+};
+
+/* Mbuf dynamic field offset for metadata. */
+extern int rte_flow_dynf_metadata_offs;
+
+/* Mbuf dynamic field flag mask for metadata. */
+extern uint64_t rte_flow_dynf_metadata_mask;
+
+/* Mbuf dynamic field pointer for metadata. */
+#define RTE_FLOW_DYNF_METADATA(m) \
+	RTE_MBUF_DYNFIELD((m), rte_flow_dynf_metadata_offs, uint32_t *)
+
+/* Mbuf dynamic flags for metadata. */
+#define PKT_RX_DYNF_METADATA (rte_flow_dynf_metadata_mask)
+#define PKT_TX_DYNF_METADATA (rte_flow_dynf_metadata_mask)
+
+__rte_experimental
+static inline uint32_t
+rte_flow_dynf_metadata_get(struct rte_mbuf *m)
+{
+	return *RTE_FLOW_DYNF_METADATA(m);
+}
+
+__rte_experimental
+static inline void
+rte_flow_dynf_metadata_set(struct rte_mbuf *m, uint32_t v)
+{
+	*RTE_FLOW_DYNF_METADATA(m) = v;
+}
 
 /*
  * Definition of a single action.
  *
  * A list of actions is terminated by a END action.
  *
- * For simple actions without a configuration structure, conf remains NULL.
+ * For simple actions without a configuration object, conf remains NULL.
  */
 struct rte_flow_action {
 	enum rte_flow_action_type type; /**< Action type. */
-	const void *conf; /**< Pointer to action configuration structure. */
+	const void *conf; /**< Pointer to action configuration object. */
 };
 
 /**
@@ -2353,6 +2789,33 @@ enum rte_flow_conv_op {
 	 */
 	RTE_FLOW_CONV_OP_ACTION_NAME_PTR,
 };
+
+/**
+ * Check if mbuf dynamic field for metadata is registered.
+ *
+ * @return
+ *   True if registered, false otherwise.
+ */
+__rte_experimental
+static inline int
+rte_flow_dynf_metadata_avail(void)
+{
+	return !!rte_flow_dynf_metadata_mask;
+}
+
+/**
+ * Register mbuf dynamic field and flag for metadata.
+ *
+ * This function must be called prior to use SET_META action in order to
+ * register the dynamic mbuf field. Otherwise, the data cannot be delivered to
+ * application.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_dynf_metadata_register(void);
 
 /**
  * Check whether a flow rule can be created on a given port.

@@ -16,6 +16,8 @@
 
 #include <stdint.h>
 
+#include <rte_byteorder.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,11 +25,11 @@ extern "C" {
 /**
  * UDP Header
  */
-struct udp_hdr {
-	uint16_t src_port;    /**< UDP source port. */
-	uint16_t dst_port;    /**< UDP destination port. */
-	uint16_t dgram_len;   /**< UDP datagram length */
-	uint16_t dgram_cksum; /**< UDP datagram checksum */
+struct rte_udp_hdr {
+	rte_be16_t src_port;    /**< UDP source port. */
+	rte_be16_t dst_port;    /**< UDP destination port. */
+	rte_be16_t dgram_len;   /**< UDP datagram length */
+	rte_be16_t dgram_cksum; /**< UDP datagram checksum */
 } __attribute__((__packed__));
 
 #ifdef __cplusplus

@@ -191,7 +191,7 @@ nicvf_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 		(frame_size + 2 * VLAN_TAG_SIZE > buffsz * NIC_HW_MAX_SEGS))
 		return -EINVAL;
 
-	if (frame_size > ETHER_MAX_LEN)
+	if (frame_size > RTE_ETHER_MAX_LEN)
 		rxmode->offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	else
 		rxmode->offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
@@ -200,7 +200,7 @@ nicvf_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 		return -EINVAL;
 
 	/* Update max_rx_pkt_len */
-	rxmode->max_rx_pkt_len = mtu + ETHER_HDR_LEN;
+	rxmode->max_rx_pkt_len = mtu + RTE_ETHER_HDR_LEN;
 	nic->mtu = mtu;
 
 	for (i = 0; i < nic->sqs_count; i++)
@@ -362,7 +362,7 @@ nicvf_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	return ptypes;
 }
 
-static void
+static int
 nicvf_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	int i;
@@ -370,6 +370,7 @@ nicvf_dev_stats_reset(struct rte_eth_dev *dev)
 	struct nicvf *nic = nicvf_pmd_priv(dev);
 	uint16_t rx_start, rx_end;
 	uint16_t tx_start, tx_end;
+	int ret;
 
 	/* Reset all primary nic counters */
 	nicvf_rx_range(dev, nic, &rx_start, &rx_end);
@@ -380,7 +381,9 @@ nicvf_dev_stats_reset(struct rte_eth_dev *dev)
 	for (i = tx_start; i <= tx_end; i++)
 		txqs |= (0x3 << (i * 2));
 
-	nicvf_mbox_reset_stat_counters(nic, 0x3FFF, 0x1F, rxqs, txqs);
+	ret = nicvf_mbox_reset_stat_counters(nic, 0x3FFF, 0x1F, rxqs, txqs);
+	if (ret != 0)
+		return ret;
 
 	/* Reset secondary nic queue counters */
 	for (i = 0; i < nic->sqs_count; i++) {
@@ -396,14 +399,19 @@ nicvf_dev_stats_reset(struct rte_eth_dev *dev)
 		for (i = tx_start; i <= tx_end; i++)
 			txqs |= (0x3 << ((i % MAX_SND_QUEUES_PER_QS) * 2));
 
-		nicvf_mbox_reset_stat_counters(snic, 0, 0, rxqs, txqs);
+		ret = nicvf_mbox_reset_stat_counters(snic, 0, 0, rxqs, txqs);
+		if (ret != 0)
+			return ret;
 	}
+
+	return 0;
 }
 
 /* Promiscuous mode enabled by default in LMAC to VF 1:1 map configuration */
-static void
+static int
 nicvf_dev_promisc_enable(struct rte_eth_dev *dev __rte_unused)
 {
+	return 0;
 }
 
 static inline uint64_t
@@ -1393,7 +1401,7 @@ nicvf_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qidx,
 	return 0;
 }
 
-static void
+static int
 nicvf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct nicvf *nic = nicvf_pmd_priv(dev);
@@ -1408,8 +1416,8 @@ nicvf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	if (nicvf_hw_version(nic) != PCI_SUB_DEVICE_ID_CN81XX_NICVF)
 		dev_info->speed_capa |= ETH_LINK_SPEED_40G;
 
-	dev_info->min_rx_bufsize = ETHER_MIN_MTU;
-	dev_info->max_rx_pktlen = NIC_HW_MAX_MTU + ETHER_HDR_LEN;
+	dev_info->min_rx_bufsize = RTE_ETHER_MIN_MTU;
+	dev_info->max_rx_pktlen = NIC_HW_MAX_MTU + RTE_ETHER_HDR_LEN;
 	dev_info->max_rx_queues =
 			(uint16_t)MAX_RCV_QUEUES_PER_QS * (MAX_SQS_PER_VF + 1);
 	dev_info->max_tx_queues =
@@ -1440,6 +1448,8 @@ nicvf_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 			DEV_TX_OFFLOAD_UDP_CKSUM          |
 			DEV_TX_OFFLOAD_TCP_CKSUM,
 	};
+
+	return 0;
 }
 
 static nicvf_iova_addr_t
@@ -1736,7 +1746,7 @@ nicvf_dev_start(struct rte_eth_dev *dev)
 	/* Setup MTU based on max_rx_pkt_len or default */
 	mtu = dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_JUMBO_FRAME ?
 		dev->data->dev_conf.rxmode.max_rx_pkt_len
-			-  ETHER_HDR_LEN : ETHER_MTU;
+			-  RTE_ETHER_HDR_LEN : RTE_ETHER_MTU;
 
 	if (nicvf_dev_set_mtu(dev, mtu)) {
 		PMD_INIT_LOG(ERR, "Failed to set default mtu size");
@@ -1909,6 +1919,9 @@ nicvf_dev_configure(struct rte_eth_dev *dev)
 	uint8_t cqcount;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (rxmode->mq_mode & ETH_MQ_RX_RSS_FLAG)
+		rxmode->offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	if (!rte_eal_has_hugepages()) {
 		PMD_INIT_LOG(INFO, "Huge page is not configured");
@@ -2183,16 +2196,17 @@ nicvf_eth_dev_init(struct rte_eth_dev *eth_dev)
 		return ENOTSUP;
 	}
 
-	eth_dev->data->mac_addrs = rte_zmalloc("mac_addr", ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc("mac_addr",
+					RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
 		PMD_INIT_LOG(ERR, "Failed to allocate memory for mac addr");
 		ret = -ENOMEM;
 		goto alarm_fail;
 	}
-	if (is_zero_ether_addr((struct ether_addr *)nic->mac_addr))
-		eth_random_addr(&nic->mac_addr[0]);
+	if (rte_is_zero_ether_addr((struct rte_ether_addr *)nic->mac_addr))
+		rte_eth_random_addr(&nic->mac_addr[0]);
 
-	ether_addr_copy((struct ether_addr *)nic->mac_addr,
+	rte_ether_addr_copy((struct rte_ether_addr *)nic->mac_addr,
 			&eth_dev->data->mac_addrs[0]);
 
 	ret = nicvf_mbox_set_mac_addr(nic, nic->mac_addr);

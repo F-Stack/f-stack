@@ -158,8 +158,8 @@ sfc_ev_dp_rx(void *arg, __rte_unused uint32_t label, uint32_t id,
 	dp_rxq = evq->dp_rxq;
 	SFC_ASSERT(dp_rxq != NULL);
 
-	SFC_ASSERT(evq->sa->dp_rx->qrx_ev != NULL);
-	return evq->sa->dp_rx->qrx_ev(dp_rxq, id);
+	SFC_ASSERT(evq->sa->priv.dp_rx->qrx_ev != NULL);
+	return evq->sa->priv.dp_rx->qrx_ev(dp_rxq, id);
 }
 
 static boolean_t
@@ -185,8 +185,8 @@ sfc_ev_dp_rx_ps(void *arg, __rte_unused uint32_t label, uint32_t id,
 	dp_rxq = evq->dp_rxq;
 	SFC_ASSERT(dp_rxq != NULL);
 
-	if (evq->sa->dp_rx->qrx_ps_ev != NULL)
-		return evq->sa->dp_rx->qrx_ps_ev(dp_rxq, id);
+	if (evq->sa->priv.dp_rx->qrx_ps_ev != NULL)
+		return evq->sa->priv.dp_rx->qrx_ps_ev(dp_rxq, id);
 	else
 		return B_FALSE;
 }
@@ -239,8 +239,8 @@ sfc_ev_dp_tx(void *arg, __rte_unused uint32_t label, uint32_t id)
 	dp_txq = evq->dp_txq;
 	SFC_ASSERT(dp_txq != NULL);
 
-	SFC_ASSERT(evq->sa->dp_tx->qtx_ev != NULL);
-	return evq->sa->dp_tx->qtx_ev(dp_txq, id);
+	SFC_ASSERT(evq->sa->priv.dp_tx->qtx_ev != NULL);
+	return evq->sa->priv.dp_tx->qtx_ev(dp_txq, id);
 }
 
 static boolean_t
@@ -293,7 +293,9 @@ sfc_ev_rxq_flush_done(void *arg, __rte_unused uint32_t rxq_hw_index)
 	SFC_ASSERT(rxq != NULL);
 	SFC_ASSERT(rxq->hw_index == rxq_hw_index);
 	SFC_ASSERT(rxq->evq == evq);
-	sfc_rx_qflush_done(rxq);
+	RTE_SET_USED(rxq);
+
+	sfc_rx_qflush_done(sfc_rxq_info_by_dp_rxq(dp_rxq));
 
 	return B_FALSE;
 }
@@ -322,7 +324,9 @@ sfc_ev_rxq_flush_failed(void *arg, __rte_unused uint32_t rxq_hw_index)
 	SFC_ASSERT(rxq != NULL);
 	SFC_ASSERT(rxq->hw_index == rxq_hw_index);
 	SFC_ASSERT(rxq->evq == evq);
-	sfc_rx_qflush_failed(rxq);
+	RTE_SET_USED(rxq);
+
+	sfc_rx_qflush_failed(sfc_rxq_info_by_dp_rxq(dp_rxq));
 
 	return B_FALSE;
 }
@@ -351,7 +355,9 @@ sfc_ev_txq_flush_done(void *arg, __rte_unused uint32_t txq_hw_index)
 	SFC_ASSERT(txq != NULL);
 	SFC_ASSERT(txq->hw_index == txq_hw_index);
 	SFC_ASSERT(txq->evq == evq);
-	sfc_tx_qflush_done(txq);
+	RTE_SET_USED(txq);
+
+	sfc_tx_qflush_done(sfc_txq_info_by_dp_txq(dp_txq));
 
 	return B_FALSE;
 }
@@ -414,7 +420,7 @@ sfc_ev_link_change(void *arg, efx_link_mode_t link_mode)
 	struct rte_eth_link new_link;
 
 	sfc_port_link_mode_to_info(link_mode, &new_link);
-	if (rte_eth_linkstatus_set(sa->eth_dev, &new_link))
+	if (rte_eth_linkstatus_set(sa->eth_dev, &new_link) == 0)
 		evq->sa->port.lsc_seq++;
 
 	return B_FALSE;
@@ -593,9 +599,11 @@ sfc_ev_qstart(struct sfc_evq *evq, unsigned int hw_index)
 	evq->evq_index = hw_index;
 
 	/* Clear all events */
-	(void)memset((void *)esmp->esm_base, 0xff, EFX_EVQ_SIZE(evq->entries));
+	(void)memset((void *)esmp->esm_base, 0xff,
+		     efx_evq_size(sa->nic, evq->entries));
 
-	if (sa->intr.lsc_intr && hw_index == sa->mgmt_evq_index)
+	if ((sa->intr.lsc_intr && hw_index == sa->mgmt_evq_index) ||
+	    (sa->intr.rxq_intr && evq->dp_rxq != NULL))
 		evq_flags |= EFX_EVQ_FLAGS_NOTIFY_INTERRUPT;
 	else
 		evq_flags |= EFX_EVQ_FLAGS_NOTIFY_DISABLED;
@@ -609,12 +617,14 @@ sfc_ev_qstart(struct sfc_evq *evq, unsigned int hw_index)
 
 	SFC_ASSERT(evq->dp_rxq == NULL || evq->dp_txq == NULL);
 	if (evq->dp_rxq != 0) {
-		if (strcmp(sa->dp_rx->dp.name, SFC_KVARG_DATAPATH_EFX) == 0)
+		if (strcmp(sa->priv.dp_rx->dp.name,
+			   SFC_KVARG_DATAPATH_EFX) == 0)
 			evq->callbacks = &sfc_ev_callbacks_efx_rx;
 		else
 			evq->callbacks = &sfc_ev_callbacks_dp_rx;
 	} else if (evq->dp_txq != 0) {
-		if (strcmp(sa->dp_tx->dp.name, SFC_KVARG_DATAPATH_EFX) == 0)
+		if (strcmp(sa->priv.dp_tx->dp.name,
+			   SFC_KVARG_DATAPATH_EFX) == 0)
 			evq->callbacks = &sfc_ev_callbacks_efx_tx;
 		else
 			evq->callbacks = &sfc_ev_callbacks_dp_tx;
@@ -815,7 +825,8 @@ sfc_ev_qinit(struct sfc_adapter *sa,
 
 	/* Allocate DMA space */
 	rc = sfc_dma_alloc(sa, sfc_evq_type2str(type), type_index,
-			   EFX_EVQ_SIZE(evq->entries), socket_id, &evq->mem);
+			   efx_evq_size(sa->nic, evq->entries), socket_id,
+			   &evq->mem);
 	if (rc != 0)
 		goto fail_dma_alloc;
 
@@ -889,7 +900,7 @@ sfc_ev_attach(struct sfc_adapter *sa)
 	sa->mgmt_evq_index = 0;
 	rte_spinlock_init(&sa->mgmt_evq_lock);
 
-	rc = sfc_ev_qinit(sa, SFC_EVQ_TYPE_MGMT, 0, SFC_MGMT_EVQ_ENTRIES,
+	rc = sfc_ev_qinit(sa, SFC_EVQ_TYPE_MGMT, 0, sa->evq_min_entries,
 			  sa->socket_id, &sa->mgmt_evq);
 	if (rc != 0)
 		goto fail_mgmt_evq_init;

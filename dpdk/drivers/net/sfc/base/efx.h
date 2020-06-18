@@ -9,6 +9,7 @@
 
 #include "efx_annote.h"
 #include "efsys.h"
+#include "efx_types.h"
 #include "efx_check.h"
 #include "efx_phy_ids.h"
 
@@ -221,8 +222,8 @@ efx_nic_check_pcie_link_speed(
 
 #if EFSYS_OPT_MCDI
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
-/* Huntington and Medford require MCDIv2 commands */
+#if EFX_OPTS_EF10()
+/* EF10 architecture NICs require MCDIv2 commands */
 #define	WITH_MCDI_V2 1
 #endif
 
@@ -254,6 +255,9 @@ typedef struct efx_mcdi_transport_s {
 #if EFSYS_OPT_MCDI_PROXY_AUTH
 	void		(*emt_ev_proxy_response)(void *, uint32_t, efx_rc_t);
 #endif /* EFSYS_OPT_MCDI_PROXY_AUTH */
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	void		(*emt_ev_proxy_request)(void *, uint32_t);
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 } efx_mcdi_transport_t;
 
 extern	__checkReturn	efx_rc_t
@@ -312,7 +316,7 @@ extern	__checkReturn	efx_rc_t
 efx_intr_init(
 	__in		efx_nic_t *enp,
 	__in		efx_intr_type_t type,
-	__in		efsys_mem_t *esmp);
+	__in_opt	efsys_mem_t *esmp);
 
 extern			void
 efx_intr_enable(
@@ -1246,6 +1250,7 @@ efx_bist_stop(
 #define	EFX_FEATURE_FW_ASSISTED_TSO	0x00001000
 #define	EFX_FEATURE_FW_ASSISTED_TSO_V2	0x00002000
 #define	EFX_FEATURE_PACKED_STREAM	0x00004000
+#define	EFX_FEATURE_TXQ_CKSUM_OP_DESC	0x00008000
 
 typedef enum efx_tunnel_protocol_e {
 	EFX_TUNNEL_PROTOCOL_NONE = 0,
@@ -1283,7 +1288,12 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_evq_limit;
 	uint32_t		enc_txq_limit;
 	uint32_t		enc_rxq_limit;
+	uint32_t		enc_evq_max_nevs;
+	uint32_t		enc_evq_min_nevs;
+	uint32_t		enc_rxq_max_ndescs;
+	uint32_t		enc_rxq_min_ndescs;
 	uint32_t		enc_txq_max_ndescs;
+	uint32_t		enc_txq_min_ndescs;
 	uint32_t		enc_buftbl_limit;
 	uint32_t		enc_piobuf_limit;
 	uint32_t		enc_piobuf_size;
@@ -1291,6 +1301,9 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_evq_timer_quantum_ns;
 	uint32_t		enc_evq_timer_max_us;
 	uint32_t		enc_clk_mult;
+	uint32_t		enc_ev_desc_size;
+	uint32_t		enc_rx_desc_size;
+	uint32_t		enc_tx_desc_size;
 	uint32_t		enc_rx_prefix_size;
 	uint32_t		enc_rx_buf_align_start;
 	uint32_t		enc_rx_buf_align_end;
@@ -1333,11 +1346,11 @@ typedef struct efx_nic_cfg_s {
 #if EFSYS_OPT_BIST
 	uint32_t		enc_bist_mask;
 #endif	/* EFSYS_OPT_BIST */
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 	uint32_t		enc_pf;
 	uint32_t		enc_vf;
 	uint32_t		enc_privilege_mask;
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 	boolean_t		enc_bug26807_workaround;
 	boolean_t		enc_bug35388_workaround;
 	boolean_t		enc_bug41750_workaround;
@@ -1370,10 +1383,14 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_hw_pf_count;
 	/* Datapath firmware vadapter/vport/vswitch support */
 	boolean_t		enc_datapath_cap_evb;
+	/* Datapath firmware vport reconfigure support */
+	boolean_t		enc_vport_reconfigure_supported;
 	boolean_t		enc_rx_disable_scatter_supported;
 	boolean_t		enc_allow_set_mac_with_installed_filters;
 	boolean_t		enc_enhanced_set_mac_supported;
 	boolean_t		enc_init_evq_v2_supported;
+	boolean_t		enc_no_cont_ev_mode_supported;
+	boolean_t		enc_init_rxq_with_buffer_size;
 	boolean_t		enc_rx_packed_stream_supported;
 	boolean_t		enc_rx_var_packed_stream_supported;
 	boolean_t		enc_rx_es_super_buffer_supported;
@@ -1395,7 +1412,11 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_required_pcie_bandwidth_mbps;
 	uint32_t		enc_max_pcie_link_gen;
 	/* Firmware verifies integrity of NVRAM updates */
-	uint32_t		enc_nvram_update_verify_result_supported;
+	boolean_t		enc_nvram_update_verify_result_supported;
+	/* Firmware supports polled NVRAM updates on select partitions */
+	boolean_t		enc_nvram_update_poll_verify_result_supported;
+	/* Firmware accepts updates via the BUNDLE partition */
+	boolean_t		enc_nvram_bundle_update_supported;
 	/* Firmware support for extended MAC_STATS buffer */
 	uint32_t		enc_mac_stats_nstats;
 	boolean_t		enc_fec_counters;
@@ -1404,7 +1425,12 @@ typedef struct efx_nic_cfg_s {
 	boolean_t		enc_filter_action_flag_supported;
 	boolean_t		enc_filter_action_mark_supported;
 	uint32_t		enc_filter_action_mark_max;
+	/* Port assigned to this PCI function */
+	uint32_t		enc_assigned_port;
 } efx_nic_cfg_t;
+
+#define	EFX_VPORT_PCI_FUNCTION_IS_PF(configp) \
+	((configp)->evc_function == 0xffff)
 
 #define	EFX_PCI_FUNCTION_IS_PF(_encp)	((_encp)->enc_vf == 0xffff)
 #define	EFX_PCI_FUNCTION_IS_VF(_encp)	((_encp)->enc_vf != 0xffff)
@@ -1416,7 +1442,7 @@ typedef struct efx_nic_cfg_s {
 
 extern			const efx_nic_cfg_t *
 efx_nic_cfg_get(
-	__in		efx_nic_t *enp);
+	__in		const efx_nic_t *enp);
 
 /* RxDPCPU firmware id values by which FW variant can be identified */
 #define	EFX_RXDP_FULL_FEATURED_FW_ID	0x0
@@ -1463,6 +1489,19 @@ extern	__checkReturn	efx_rc_t
 efx_nic_set_drv_limits(
 	__inout		efx_nic_t *enp,
 	__in		efx_drv_limits_t *edlp);
+
+/*
+ * Register the OS driver version string for management agents
+ * (e.g. via NC-SI). The content length is provided (i.e. no
+ * NUL terminator). Use length 0 to indicate no version string
+ * should be advertised. It is valid to set the version string
+ * only before efx_nic_probe() is called.
+ */
+extern	__checkReturn	efx_rc_t
+efx_nic_set_drv_version(
+	__inout			efx_nic_t *enp,
+	__in_ecount(length)	char const *verp,
+	__in			size_t length);
 
 typedef enum efx_nic_region_e {
 	EFX_REGION_VI,			/* Memory BAR UC mapping */
@@ -1588,8 +1627,20 @@ typedef enum efx_nvram_type_e {
 	EFX_NVRAM_MUM_FIRMWARE,
 	EFX_NVRAM_DYNCONFIG_DEFAULTS,
 	EFX_NVRAM_ROMCONFIG_DEFAULTS,
+	EFX_NVRAM_BUNDLE,
+	EFX_NVRAM_BUNDLE_METADATA,
 	EFX_NVRAM_NTYPES,
 } efx_nvram_type_t;
+
+typedef struct efx_nvram_info_s {
+	uint32_t eni_flags;
+	uint32_t eni_partn_size;
+	uint32_t eni_address;
+	uint32_t eni_erase_size;
+	uint32_t eni_write_size;
+} efx_nvram_info_t;
+
+#define	EFX_NVRAM_FLAG_READ_ONLY	(1 << 0)
 
 extern	__checkReturn		efx_rc_t
 efx_nvram_init(
@@ -1608,6 +1659,12 @@ efx_nvram_size(
 	__in			efx_nic_t *enp,
 	__in			efx_nvram_type_t type,
 	__out			size_t *sizep);
+
+extern	__checkReturn		efx_rc_t
+efx_nvram_info(
+	__in			efx_nic_t *enp,
+	__in			efx_nvram_type_t type,
+	__out			efx_nvram_info_t *enip);
 
 extern	__checkReturn		efx_rc_t
 efx_nvram_rw_start(
@@ -1858,6 +1915,7 @@ typedef enum efx_image_format_e {
 	EFX_IMAGE_FORMAT_INVALID,
 	EFX_IMAGE_FORMAT_UNSIGNED,
 	EFX_IMAGE_FORMAT_SIGNED,
+	EFX_IMAGE_FORMAT_SIGNED_PACKAGE
 } efx_image_format_t;
 
 typedef struct efx_image_info_s {
@@ -1931,7 +1989,7 @@ typedef struct efx_evq_s	efx_evq_t;
 
 #if EFSYS_OPT_QSTATS
 
-/* START MKCONFIG GENERATED EfxHeaderEventQueueBlock 6f3843f5fe7cc843 */
+/* START MKCONFIG GENERATED EfxHeaderEventQueueBlock 0a147ace40844969 */
 typedef enum efx_ev_qstat_e {
 	EV_ALL,
 	EV_RX,
@@ -1970,6 +2028,7 @@ typedef enum efx_ev_qstat_e {
 	EV_DRIVER_TX_DSC_ERROR,
 	EV_DRV_GEN,
 	EV_MCDI_RESPONSE,
+	EV_RX_PARSE_INCOMPLETE,
 	EV_NQSTATS
 } efx_ev_qstat_t;
 
@@ -1985,11 +2044,15 @@ extern		void
 efx_ev_fini(
 	__in		efx_nic_t *enp);
 
-#define	EFX_EVQ_MAXNEVS		32768
-#define	EFX_EVQ_MINNEVS		512
+extern	__checkReturn	size_t
+efx_evq_size(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs);
 
-#define	EFX_EVQ_SIZE(_nevs)	((_nevs) * sizeof (efx_qword_t))
-#define	EFX_EVQ_NBUFS(_nevs)	(EFX_EVQ_SIZE(_nevs) / EFX_BUF_SIZE)
+extern	__checkReturn	unsigned int
+efx_evq_nbufs(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs);
 
 #define	EFX_EVQ_FLAGS_TYPE_MASK		(0x3)
 #define	EFX_EVQ_FLAGS_TYPE_AUTO		(0x0)
@@ -1999,6 +2062,16 @@ efx_ev_fini(
 #define	EFX_EVQ_FLAGS_NOTIFY_MASK	(0xC)
 #define	EFX_EVQ_FLAGS_NOTIFY_INTERRUPT	(0x0)	/* Interrupting (default) */
 #define	EFX_EVQ_FLAGS_NOTIFY_DISABLED	(0x4)	/* Non-interrupting */
+
+/*
+ * Use the NO_CONT_EV RX event format, which allows the firmware to operate more
+ * efficiently at high data rates. See SF-109306-TC 5.11 "Events for RXQs in
+ * NO_CONT_EV mode".
+ *
+ * NO_CONT_EV requires EVQ_RX_MERGE and RXQ_FORCED_EV_MERGING to both be set,
+ * which is the case when an event queue is set to THROUGHPUT mode.
+ */
+#define	EFX_EVQ_FLAGS_NO_CONT_EV	(0x10)
 
 extern	__checkReturn	efx_rc_t
 efx_ev_qcreate(
@@ -2473,13 +2546,17 @@ efx_pseudo_hdr_pkt_length_get(
 	__in		uint8_t *buffer,
 	__out		uint16_t *pkt_lengthp);
 
-#define	EFX_RXQ_MAXNDESCS		4096
-#define	EFX_RXQ_MINNDESCS		512
+extern	__checkReturn	size_t
+efx_rxq_size(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs);
 
-#define	EFX_RXQ_SIZE(_ndescs)		((_ndescs) * sizeof (efx_qword_t))
-#define	EFX_RXQ_NBUFS(_ndescs)		(EFX_RXQ_SIZE(_ndescs) / EFX_BUF_SIZE)
+extern	__checkReturn	unsigned int
+efx_rxq_nbufs(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs);
+
 #define	EFX_RXQ_LIMIT(_ndescs)		((_ndescs) - 16)
-#define	EFX_RXQ_DC_NDESCS(_dcsize)	(8 << _dcsize)
 
 typedef enum efx_rxq_type_e {
 	EFX_RXQ_TYPE_DEFAULT,
@@ -2510,6 +2587,7 @@ efx_rx_qcreate(
 	__in		unsigned int index,
 	__in		unsigned int label,
 	__in		efx_rxq_type_t type,
+	__in		size_t buf_size,
 	__in		efsys_mem_t *esmp,
 	__in		size_t ndescs,
 	__in		uint32_t id,
@@ -2639,13 +2717,17 @@ extern		void
 efx_tx_fini(
 	__in	efx_nic_t *enp);
 
-#define	EFX_TXQ_MINNDESCS		512
+extern	__checkReturn	size_t
+efx_txq_size(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs);
 
-#define	EFX_TXQ_SIZE(_ndescs)		((_ndescs) * sizeof (efx_qword_t))
-#define	EFX_TXQ_NBUFS(_ndescs)		(EFX_TXQ_SIZE(_ndescs) / EFX_BUF_SIZE)
+extern	__checkReturn	unsigned int
+efx_txq_nbufs(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs);
+
 #define	EFX_TXQ_LIMIT(_ndescs)		((_ndescs) - 16)
-
-#define	EFX_TXQ_MAX_BUFS 8 /* Maximum independent of EFX_BUG35388_WORKAROUND. */
 
 #define	EFX_TXQ_CKSUM_IPV4		0x0001
 #define	EFX_TXQ_CKSUM_TCPUDP		0x0002
@@ -3285,6 +3367,181 @@ efx_phy_link_state_get(
 	__in		efx_nic_t *enp,
 	__out		efx_phy_link_state_t  *eplsp);
 
+
+#if EFSYS_OPT_EVB
+
+typedef uint32_t efx_vswitch_id_t;
+typedef uint32_t efx_vport_id_t;
+
+typedef enum efx_vswitch_type_e {
+	EFX_VSWITCH_TYPE_VLAN = 1,
+	EFX_VSWITCH_TYPE_VEB,
+	/* VSWITCH_TYPE_VEPA: obsolete */
+	EFX_VSWITCH_TYPE_MUX = 4,
+} efx_vswitch_type_t;
+
+typedef enum efx_vport_type_e {
+	EFX_VPORT_TYPE_NORMAL = 4,
+	EFX_VPORT_TYPE_EXPANSION,
+	EFX_VPORT_TYPE_TEST,
+} efx_vport_type_t;
+
+/* Unspecified VLAN ID to support disabling of VLAN filtering */
+#define	EFX_FILTER_VID_UNSPEC	0xffff
+#define	EFX_DEFAULT_VSWITCH_ID	1
+
+/* Default VF VLAN ID on creation */
+#define		EFX_VF_VID_DEFAULT	EFX_FILTER_VID_UNSPEC
+#define		EFX_VPORT_ID_INVALID	0
+
+typedef struct efx_vport_config_s {
+	/* Either VF index or 0xffff for PF */
+	uint16_t	evc_function;
+	/* VLAN ID of the associated function */
+	uint16_t	evc_vid;
+	/* vport id shared with client driver */
+	efx_vport_id_t	evc_vport_id;
+	/* MAC address of the associated function */
+	uint8_t		evc_mac_addr[EFX_MAC_ADDR_LEN];
+	/*
+	 * vports created with this flag set may only transfer traffic on the
+	 * VLANs permitted by the vport. Also, an attempt to install filter with
+	 * VLAN will be refused unless requesting function has VLAN privilege.
+	 */
+	boolean_t	evc_vlan_restrict;
+	/* Whether this function is assigned or not */
+	boolean_t	evc_vport_assigned;
+} efx_vport_config_t;
+
+typedef	struct	efx_vswitch_s	efx_vswitch_t;
+
+extern	__checkReturn	efx_rc_t
+efx_evb_init(
+	__in		efx_nic_t *enp);
+
+extern			void
+efx_evb_fini(
+	__in		efx_nic_t *enp);
+
+extern	__checkReturn	efx_rc_t
+efx_evb_vswitch_create(
+	__in				efx_nic_t *enp,
+	__in				uint32_t num_vports,
+	__inout_ecount(num_vports)	efx_vport_config_t *vport_configp,
+	__deref_out			efx_vswitch_t **evpp);
+
+extern	__checkReturn	efx_rc_t
+efx_evb_vswitch_destroy(
+	__in				efx_nic_t *enp,
+	__in				efx_vswitch_t *evp);
+
+extern	__checkReturn			efx_rc_t
+efx_evb_vport_mac_set(
+	__in				efx_nic_t *enp,
+	__in				efx_vswitch_t *evp,
+	__in				efx_vport_id_t vport_id,
+	__in_bcount(EFX_MAC_ADDR_LEN)	uint8_t *addrp);
+
+extern	__checkReturn	efx_rc_t
+efx_evb_vport_vlan_set(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_t *evp,
+	__in		efx_vport_id_t vport_id,
+	__in		uint16_t vid);
+
+extern	__checkReturn			efx_rc_t
+efx_evb_vport_reset(
+	__in				efx_nic_t *enp,
+	__in				efx_vswitch_t *evp,
+	__in				efx_vport_id_t vport_id,
+	__in_bcount(EFX_MAC_ADDR_LEN)	uint8_t *addrp,
+	__in				uint16_t vid,
+	__out				boolean_t *is_fn_resetp);
+
+extern	__checkReturn	efx_rc_t
+efx_evb_vport_stats(
+	__in		efx_nic_t *enp,
+	__in		efx_vswitch_t *evp,
+	__in		efx_vport_id_t vport_id,
+	__out		efsys_mem_t *stats_bufferp);
+
+#endif /* EFSYS_OPT_EVB */
+
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+
+typedef struct efx_proxy_auth_config_s {
+	efsys_mem_t	*request_bufferp;
+	efsys_mem_t	*response_bufferp;
+	efsys_mem_t	*status_bufferp;
+	uint32_t	block_cnt;
+	uint32_t	*op_listp;
+	size_t		op_count;
+	uint32_t	handled_privileges;
+} efx_proxy_auth_config_t;
+
+typedef struct efx_proxy_cmd_params_s {
+	uint32_t	pf_index;
+	uint32_t	vf_index;
+	uint8_t		*request_bufferp;
+	size_t		request_size;
+	uint8_t		*response_bufferp;
+	size_t		response_size;
+	size_t		*response_size_actualp;
+} efx_proxy_cmd_params_t;
+
+extern	__checkReturn	efx_rc_t
+efx_proxy_auth_init(
+	__in		efx_nic_t *enp);
+
+extern			void
+efx_proxy_auth_fini(
+	__in		efx_nic_t *enp);
+
+extern	__checkReturn	efx_rc_t
+efx_proxy_auth_configure(
+	__in		efx_nic_t *enp,
+	__in		efx_proxy_auth_config_t *configp);
+
+	__checkReturn	efx_rc_t
+efx_proxy_auth_destroy(
+	__in		efx_nic_t *enp,
+	__in		uint32_t handled_privileges);
+
+	__checkReturn	efx_rc_t
+efx_proxy_auth_complete_request(
+	__in		efx_nic_t *enp,
+	__in		uint32_t fn_index,
+	__in		uint32_t proxy_result,
+	__in		uint32_t handle);
+
+	__checkReturn	efx_rc_t
+efx_proxy_auth_exec_cmd(
+	__in		efx_nic_t *enp,
+	__inout		efx_proxy_cmd_params_t *paramsp);
+
+	__checkReturn	efx_rc_t
+efx_proxy_auth_set_privilege_mask(
+	__in		efx_nic_t *enp,
+	__in		uint32_t vf_index,
+	__in		uint32_t mask,
+	__in		uint32_t value);
+
+	__checkReturn	efx_rc_t
+efx_proxy_auth_privilege_mask_get(
+	__in		efx_nic_t *enp,
+	__in		uint32_t pf_index,
+	__in		uint32_t vf_index,
+	__out		uint32_t *maskp);
+
+	__checkReturn	efx_rc_t
+efx_proxy_auth_privilege_modify(
+	__in		efx_nic_t *enp,
+	__in		uint32_t pf_index,
+	__in		uint32_t vf_index,
+	__in		uint32_t add_privileges_mask,
+	__in		uint32_t remove_privileges_mask);
+
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 
 #ifdef	__cplusplus
 }

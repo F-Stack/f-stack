@@ -2,8 +2,6 @@
     Copyright 2016 6WIND S.A.
     Copyright 2016 Mellanox Technologies, Ltd
 
-.. _Generic_flow_API:
-
 Generic flow API (rte_flow)
 ===========================
 
@@ -660,6 +658,60 @@ the physical device, with virtual groups in the PMD or not at all.
    | ``mask`` | ``id``   | zeroed to match any value |
    +----------+----------+---------------------------+
 
+Item: ``TAG``
+^^^^^^^^^^^^^
+
+Matches tag item set by other flows. Multiple tags are supported by specifying
+``index``.
+
+- Default ``mask`` matches the specified tag value and index.
+
+.. _table_rte_flow_item_tag:
+
+.. table:: TAG
+
+   +----------+----------+----------------------------------------+
+   | Field    | Subfield  | Value                                 |
+   +==========+===========+=======================================+
+   | ``spec`` | ``data``  | 32 bit flow tag value                 |
+   |          +-----------+---------------------------------------+
+   |          | ``index`` | index of flow tag                     |
+   +----------+-----------+---------------------------------------+
+   | ``last`` | ``data``  | upper range value                     |
+   |          +-----------+---------------------------------------+
+   |          | ``index`` | field is ignored                      |
+   +----------+-----------+---------------------------------------+
+   | ``mask`` | ``data``  | bit-mask applies to "spec" and "last" |
+   |          +-----------+---------------------------------------+
+   |          | ``index`` | field is ignored                      |
+   +----------+-----------+---------------------------------------+
+
+Item: ``META``
+^^^^^^^^^^^^^^^^^
+
+Matches 32 bit metadata item set.
+
+On egress, metadata can be set either by mbuf metadata field with
+PKT_TX_DYNF_METADATA flag or ``SET_META`` action. On ingress, ``SET_META``
+action sets metadata for a packet and the metadata will be reported via
+``metadata`` dynamic field of ``rte_mbuf`` with PKT_RX_DYNF_METADATA flag.
+
+- Default ``mask`` matches the specified Rx metadata value.
+
+.. _table_rte_flow_item_meta:
+
+.. table:: META
+
+   +----------+----------+---------------------------------------+
+   | Field    | Subfield | Value                                 |
+   +==========+==========+=======================================+
+   | ``spec`` | ``data`` | 32 bit metadata value                 |
+   +----------+----------+---------------------------------------+
+   | ``last`` | ``data`` | upper range value                     |
+   +----------+----------+---------------------------------------+
+   | ``mask`` | ``data`` | bit-mask applies to "spec" and "last" |
+   +----------+----------+---------------------------------------+
+
 Data matching item types
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -865,7 +917,7 @@ Item: ``VLAN``
 Matches an 802.1Q/ad VLAN tag.
 
 The corresponding standard outer EtherType (TPID) values are
-``ETHER_TYPE_VLAN`` or ``ETHER_TYPE_QINQ``. It can be overridden by the
+``RTE_ETHER_TYPE_VLAN`` or ``RTE_ETHER_TYPE_QINQ``. It can be overridden by the
 preceding pattern item.
 
 - ``tci``: tag control information.
@@ -942,7 +994,7 @@ Item: ``E_TAG``
 Matches an IEEE 802.1BR E-Tag header.
 
 The corresponding standard outer EtherType (TPID) value is
-``ETHER_TYPE_ETAG``. It can be overridden by the preceding pattern item.
+``RTE_ETHER_TYPE_ETAG``. It can be overridden by the preceding pattern item.
 
 - ``epcp_edei_in_ecid_b``: E-Tag control information (E-TCI), E-PCP (3b),
   E-DEI (1b), ingress E-CID base (12b).
@@ -981,6 +1033,15 @@ Matches a GRE header.
 - ``c_rsvd0_ver``: checksum, reserved 0 and version.
 - ``protocol``: protocol type.
 - Default ``mask`` matches protocol only.
+
+Item: ``GRE_KEY``
+^^^^^^^^^^^^^^^^^
+
+Matches a GRE key field.
+This should be preceded by item ``GRE``.
+
+- Value to be matched is a big-endian 32 bit integer.
+- When this item present it implicitly match K bit in default mask as "1"
 
 Item: ``FUZZY``
 ^^^^^^^^^^^^^^^
@@ -1198,25 +1259,90 @@ Matches an application specific 32 bit metadata item.
 
 - Default ``mask`` matches the specified metadata value.
 
-.. _table_rte_flow_item_meta:
+Item: ``GTP_PSC``
+^^^^^^^^^^^^^^^^^
 
-.. table:: META
+Matches a GTP PDU extension header with type 0x85.
 
-   +----------+----------+---------------------------------------+
-   | Field    | Subfield | Value                                 |
-   +==========+==========+=======================================+
-   | ``spec`` | ``data`` | 32 bit metadata value                 |
-   +----------+--------------------------------------------------+
-   | ``last`` | ``data`` | upper range value                     |
-   +----------+----------+---------------------------------------+
-   | ``mask`` | ``data`` | bit-mask applies to "spec" and "last" |
-   +----------+----------+---------------------------------------+
+- ``pdu_type``: PDU type.
+- ``qfi``: QoS flow identifier.
+- Default ``mask`` matches QFI only.
+
+Item: ``PPPOES``, ``PPPOED``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Matches a PPPoE header.
+
+- ``version_type``: version (4b), type (4b).
+- ``code``: message type.
+- ``session_id``: session identifier.
+- ``length``: payload length.
+
+Item: ``PPPOE_PROTO_ID``
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Matches a PPPoE session protocol identifier.
+
+- ``proto_id``: PPP protocol identifier.
+- Default ``mask`` matches proto_id only.
+
+Item: ``NSH``
+^^^^^^^^^^^^^
+
+Matches a network service header (RFC 8300).
+
+- ``version``: normally 0x0 (2 bits).
+- ``oam_pkt``: indicate oam packet (1 bit).
+- ``reserved``: reserved bit (1 bit).
+- ``ttl``: maximum SFF hopes (6 bits).
+- ``length``: total length in 4 bytes words (6 bits).
+- ``reserved1``: reserved1 bits (4 bits).
+- ``mdtype``: ndicates format of NSH header (4 bits).
+- ``next_proto``: indicates protocol type of encap data (8 bits).
+- ``spi``: service path identifier (3 bytes).
+- ``sindex``: service index (1 byte).
+- Default ``mask`` matches mdtype, next_proto, spi, sindex.
+
+
+Item: ``IGMP``
+^^^^^^^^^^^^^^
+
+Matches a Internet Group Management Protocol (RFC 2236).
+
+- ``type``: IGMP message type (Query/Report).
+- ``max_resp_time``: max time allowed before sending report.
+- ``checksum``: checksum, 1s complement of whole IGMP message.
+- ``group_addr``: group address, for Query value will be 0.
+- Default ``mask`` matches group_addr.
+
+
+Item: ``AH``
+^^^^^^^^^^^^
+
+Matches a IP Authentication Header (RFC 4302).
+
+- ``next_hdr``: next payload after AH.
+- ``payload_len``: total length of AH in 4B words.
+- ``reserved``: reserved bits.
+- ``spi``: security parameters index.
+- ``seq_num``: counter value increased by 1 on each packet sent.
+- Default ``mask`` matches spi.
+
+Item: ``HIGIG2``
+^^^^^^^^^^^^^^^^^
+
+Matches a HIGIG2 header field. It is layer 2.5 protocol and used in
+Broadcom switches.
+
+- Default ``mask`` matches classification and vlan.
+
 
 Actions
 ~~~~~~~
 
-Each possible action is represented by a type. Some have associated
-configuration structures. Several actions combined in a list can be assigned
+Each possible action is represented by a type.
+An action can have an associated configuration object.
+Several actions combined in a list can be assigned
 to a flow rule and are performed in order.
 
 They fall in three categories:
@@ -1524,7 +1650,7 @@ Counters can be retrieved and reset through ``rte_flow_query()``, see
 The shared flag indicates whether the counter is unique to the flow rule the
 action is specified with, or whether it is a shared counter.
 
-For a count action with the shared flag set, then then a global device
+For a count action with the shared flag set, then a global device
 namespace is assumed for the counter id, so that any matched flow rules using
 a count action with the same counter id on the same port will contribute to
 that counter.
@@ -2347,6 +2473,91 @@ Otherwise, RTE_FLOW_ERROR_TYPE_ACTION error will be returned.
    | ``mac_addr`` | MAC address   |
    +--------------+---------------+
 
+Action: ``INC_TCP_SEQ``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Increase sequence number in the outermost TCP header.
+Value to increase TCP sequence number by is a big-endian 32 bit integer.
+
+Using this action on non-matching traffic will result in undefined behavior.
+
+Action: ``DEC_TCP_SEQ``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Decrease sequence number in the outermost TCP header.
+Value to decrease TCP sequence number by is a big-endian 32 bit integer.
+
+Using this action on non-matching traffic will result in undefined behavior.
+
+Action: ``INC_TCP_ACK``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Increase acknowledgment number in the outermost TCP header.
+Value to increase TCP acknowledgment number by is a big-endian 32 bit integer.
+
+Using this action on non-matching traffic will result in undefined behavior.
+
+Action: ``DEC_TCP_ACK``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Decrease acknowledgment number in the outermost TCP header.
+Value to decrease TCP acknowledgment number by is a big-endian 32 bit integer.
+
+Using this action on non-matching traffic will result in undefined behavior.
+
+Action: ``SET_TAG``
+^^^^^^^^^^^^^^^^^^^
+
+Set Tag.
+
+Tag is a transient data used during flow matching. This is not delivered to
+application. Multiple tags are supported by specifying index.
+
+.. _table_rte_flow_action_set_tag:
+
+.. table:: SET_TAG
+
+   +-----------+----------------------------+
+   | Field     | Value                      |
+   +===========+============================+
+   | ``data``  | 32 bit tag value           |
+   +-----------+----------------------------+
+   | ``mask``  | bit-mask applies to "data" |
+   +-----------+----------------------------+
+   | ``index`` | index of tag to set        |
+   +-----------+----------------------------+
+
+Action: ``SET_META``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Set metadata. Item ``META`` matches metadata.
+
+Metadata set by mbuf metadata field with PKT_TX_DYNF_METADATA flag on egress
+will be overridden by this action. On ingress, the metadata will be carried by
+``metadata`` dynamic field of ``rte_mbuf`` which can be accessed by
+``RTE_FLOW_DYNF_METADATA()``. PKT_RX_DYNF_METADATA flag will be set along
+with the data.
+
+The mbuf dynamic field must be registered by calling
+``rte_flow_dynf_metadata_register()`` prior to use ``SET_META`` action.
+
+Altering partial bits is supported with ``mask``. For bits which have never been
+set, unpredictable value will be seen depending on driver implementation. For
+loopback/hairpin packet, metadata set on Rx/Tx may or may not be propagated to
+the other path depending on HW capability.
+
+.. _table_rte_flow_action_set_meta:
+
+.. table:: SET_META
+
+   +----------+----------------------------+
+   | Field    | Value                      |
+   +==========+============================+
+   | ``data`` | 32 bit metadata value      |
+   +----------+----------------------------+
+   | ``mask`` | bit-mask applies to "data" |
+   +----------+----------------------------+
+
 Negative types
 ~~~~~~~~~~~~~~
 
@@ -2559,8 +2770,10 @@ Return values:
 
 - 0 on success, a negative errno value otherwise and ``rte_errno`` is set.
 
-Isolated mode
--------------
+.. _flow_isolated_mode:
+
+Flow isolated mode
+------------------
 
 The general expectation for ingress traffic is that flow rules process it
 first; the remaining unmatched or pass-through traffic usually ends up in a

@@ -8,12 +8,24 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define FREQ_WINDOW_SIZE 32
+
+enum {
+	FREQ_UNKNOWN,
+	FREQ_MIN,
+	FREQ_MAX
+};
+
 struct core_details {
 	uint64_t last_branches;
 	uint64_t last_branch_misses;
 	uint16_t global_enabled_cpus;
 	uint16_t oob_enabled;
 	int msr_fd;
+	uint16_t freq_directions[FREQ_WINDOW_SIZE];
+	uint16_t freq_window_idx;
+	uint16_t freq_state;
 };
 
 struct core_info {
@@ -32,8 +44,6 @@ core_info_init(void);
 
 #define RTE_LOGTYPE_POWER_MANAGER RTE_LOGTYPE_USER1
 
-/* Maximum number of CPUS to manage */
-#define POWER_MGR_MAX_CPUS 64
 /**
  * Initialize power management.
  * Initializes resources and verifies the number of CPUs on the system.

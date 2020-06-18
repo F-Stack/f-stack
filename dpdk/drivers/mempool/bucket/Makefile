@@ -15,12 +15,11 @@ LIB = librte_mempool_bucket.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 LDLIBS += -lrte_eal -lrte_mempool -lrte_ring
 
 EXPORT_MAP := rte_mempool_bucket_version.map
-
-LIBABIVER := 1
 
 SRCS-$(CONFIG_RTE_DRIVER_MEMPOOL_BUCKET) += rte_mempool_bucket.c
 

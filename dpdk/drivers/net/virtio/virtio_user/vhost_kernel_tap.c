@@ -18,7 +18,7 @@
 #include "../virtio_logs.h"
 #include "../virtio_pci.h"
 
-static int
+int
 vhost_kernel_tap_set_offload(int fd, uint64_t features)
 {
 	unsigned int offload = 0;
@@ -37,24 +37,32 @@ vhost_kernel_tap_set_offload(int fd, uint64_t features)
 			offload |= TUN_F_UFO;
 	}
 
-	if (offload != 0) {
-		/* Check if our kernel supports TUNSETOFFLOAD */
-		if (ioctl(fd, TUNSETOFFLOAD, 0) != 0 && errno == EINVAL) {
-			PMD_DRV_LOG(ERR, "Kernel does't support TUNSETOFFLOAD\n");
-			return -ENOTSUP;
-		}
+	/* Check if our kernel supports TUNSETOFFLOAD */
+	if (ioctl(fd, TUNSETOFFLOAD, 0) != 0 && errno == EINVAL) {
+		PMD_DRV_LOG(ERR, "Kernel does't support TUNSETOFFLOAD\n");
+		return -ENOTSUP;
+	}
 
+	if (ioctl(fd, TUNSETOFFLOAD, offload) != 0) {
+		offload &= ~TUN_F_UFO;
 		if (ioctl(fd, TUNSETOFFLOAD, offload) != 0) {
-			offload &= ~TUN_F_UFO;
-			if (ioctl(fd, TUNSETOFFLOAD, offload) != 0) {
-				PMD_DRV_LOG(ERR, "TUNSETOFFLOAD ioctl() failed: %s\n",
-					strerror(errno));
-				return -1;
-			}
+			PMD_DRV_LOG(ERR, "TUNSETOFFLOAD ioctl() failed: %s\n",
+				strerror(errno));
+			return -1;
 		}
 	}
 
 	return 0;
+}
+
+int
+vhost_kernel_tap_set_queue(int fd, bool attach)
+{
+	struct ifreq ifr = {
+		.ifr_flags = attach ? IFF_ATTACH_QUEUE : IFF_DETACH_QUEUE,
+	};
+
+	return ioctl(fd, TUNSETQUEUE, &ifr);
 }
 
 int
@@ -66,6 +74,7 @@ vhost_kernel_open_tap(char **p_ifname, int hdr_size, int req_mq,
 	int sndbuf = INT_MAX;
 	struct ifreq ifr;
 	int tapfd;
+	int ret;
 
 	/* TODO:
 	 * 1. verify we can get/set vnet_hdr_len, tap_probe_vnet_hdr_len
@@ -131,11 +140,13 @@ vhost_kernel_open_tap(char **p_ifname, int hdr_size, int req_mq,
 		goto error;
 	}
 
-	vhost_kernel_tap_set_offload(tapfd, features);
+	ret = vhost_kernel_tap_set_offload(tapfd, features);
+	if (ret < 0 && ret != -ENOTSUP)
+		goto error;
 
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
-	memcpy(ifr.ifr_hwaddr.sa_data, mac, ETHER_ADDR_LEN);
+	memcpy(ifr.ifr_hwaddr.sa_data, mac, RTE_ETHER_ADDR_LEN);
 	if (ioctl(tapfd, SIOCSIFHWADDR, (void *)&ifr) == -1) {
 		PMD_DRV_LOG(ERR, "SIOCSIFHWADDR failed: %s", strerror(errno));
 		goto error;

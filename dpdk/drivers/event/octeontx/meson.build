@@ -10,7 +10,6 @@ sources = files('ssovf_worker.c',
 		'timvf_probe.c'
 )
 
-allow_experimental_apis = true
 deps += ['common_octeontx', 'mempool_octeontx', 'bus_vdev', 'pmd_octeontx']
 
 # for clang 32-bit compiles we need libatomic for 64-bit atomic ops

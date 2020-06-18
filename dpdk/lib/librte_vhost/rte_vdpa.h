@@ -11,6 +11,8 @@
  * Device specific vhost lib
  */
 
+#include <stdbool.h>
+
 #include <rte_pci.h>
 #include "rte_vhost.h"
 
@@ -98,7 +100,8 @@ struct rte_vdpa_device {
  * @return
  *  device id on success, -1 on failure
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_vdpa_register_device(struct rte_vdpa_dev_addr *addr,
 		struct rte_vdpa_dev_ops *ops);
 
@@ -113,7 +116,8 @@ rte_vdpa_register_device(struct rte_vdpa_dev_addr *addr,
  * @return
  *  device id on success, -1 on failure
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_vdpa_unregister_device(int did);
 
 /**
@@ -127,7 +131,8 @@ rte_vdpa_unregister_device(int did);
  * @return
  *  device id on success, -1 on failure
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_vdpa_find_device_id(struct rte_vdpa_dev_addr *addr);
 
 /**
@@ -141,7 +146,8 @@ rte_vdpa_find_device_id(struct rte_vdpa_dev_addr *addr);
  * @return
  *  rte_vdpa_device on success, NULL on failure
  */
-struct rte_vdpa_device * __rte_experimental
+__rte_experimental
+struct rte_vdpa_device *
 rte_vdpa_get_device(int did);
 
 /**
@@ -153,6 +159,45 @@ rte_vdpa_get_device(int did);
  * @return
  *  available vdpa device number
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_vdpa_get_device_num(void);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Enable/Disable host notifier mapping for a vdpa port.
+ *
+ * @param vid
+ *  vhost device id
+ * @param enable
+ *  true for host notifier map, false for host notifier unmap
+ * @return
+ *  0 on success, -1 on failure
+ */
+__rte_experimental
+int
+rte_vhost_host_notifier_ctrl(int vid, bool enable);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Synchronize the used ring from mediated ring to guest, log dirty
+ * page for each writeable buffer, caller should handle the used
+ * ring logging before device stop.
+ *
+ * @param vid
+ *  vhost device id
+ * @param qid
+ *  vhost queue id
+ * @param vring_m
+ *  mediated virtio ring pointer
+ * @return
+ *  number of synced used entries on success, -1 on failure
+ */
+__rte_experimental
+int
+rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m);
 #endif /* _RTE_VDPA_H_ */
