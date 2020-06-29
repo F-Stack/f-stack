@@ -486,7 +486,7 @@ NETINET6_SRCS+=		\
 	#ip6_ipsec.c
 	#sctp6_usrreq.c
 	#in6_rss.c
-ifndef FF_KNI
+ifdef FF_KNI
 FF_HOST_SRCS+=         \
         ff_dpdk_kni.c
 endif
