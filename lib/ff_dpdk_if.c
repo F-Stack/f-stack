@@ -89,7 +89,6 @@ static uint8_t default_rsskey_40bytes[40] = {
     0xf3, 0x25, 0x3c, 0x06, 0x2a, 0xdc, 0x1f, 0xfc
 };
 
-static int use_rsskey_52bytes = 0;
 static uint8_t default_rsskey_52bytes[52] = {
     0x44, 0x39, 0x79, 0x6b, 0xb5, 0x4c, 0x50, 0x23,
     0xb6, 0x75, 0xea, 0x5b, 0x12, 0x4f, 0x9f, 0x30,
@@ -99,6 +98,19 @@ static uint8_t default_rsskey_52bytes[52] = {
     0x7d, 0x99, 0x58, 0x3a, 0xe1, 0x38, 0xc9, 0x2e,
     0x81, 0x15, 0x03, 0x66
 };
+
+static uint8_t symmetric_rsskey[52] = {
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a
+};
+
+static int rsskey_len = sizeof(default_rsskey_40bytes);
+static uint8_t *rsskey = default_rsskey_40bytes;
 
 struct lcore_conf lcore_conf;
 
@@ -607,13 +619,15 @@ init_port_start(void)
             port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
             port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
             if (dev_info.hash_key_size == 52) {
-                port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_52bytes;
-                port_conf.rx_adv_conf.rss_conf.rss_key_len = 52;
-                use_rsskey_52bytes = 1;
-            } else {
-                port_conf.rx_adv_conf.rss_conf.rss_key = default_rsskey_40bytes;
-                port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+                rsskey = default_rsskey_52bytes;
+                rsskey_len = 52;
             }
+            if (ff_global_cfg.dpdk.symmetric_rss) {
+                printf("Use symmetric Receive-side Scaling(RSS) key\n");
+                rsskey = symmetric_rsskey;
+            }
+            port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
+            port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
             port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
             if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
                     ETH_RSS_PROTO_MASK) {
@@ -1780,12 +1794,8 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     datalen += sizeof(dport);
 
     uint32_t hash = 0;
-    if ( !use_rsskey_52bytes )
-        hash = toeplitz_hash(sizeof(default_rsskey_40bytes), 
-            default_rsskey_40bytes, datalen, data);
-    else
-        hash = toeplitz_hash(sizeof(default_rsskey_52bytes), 
-	    default_rsskey_52bytes, datalen, data);
+    hash = toeplitz_hash(rsskey_len, rsskey, datalen, data);
+
     return ((hash & (reta_size - 1)) % nb_queues) == queueid;
 }
 
