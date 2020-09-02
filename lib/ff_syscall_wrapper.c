@@ -168,6 +168,11 @@
 
 /* ioctl define end */
 
+/* af define start */
+
+#define LINUX_AF_INET6        10
+
+/* af define end */
 
 extern int sendit(struct thread *td, int s, struct msghdr *mp, int flags);
 
@@ -405,7 +410,7 @@ linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
     }
 
     /* #linux and #freebsd may point to the same address */
-    freebsd->sa_family = linux->sa_family;
+    freebsd->sa_family = linux->sa_family == LINUX_AF_INET6 ? AF_INET6 : linux->sa_family;
     freebsd->sa_len = addrlen;
 
     bcopy(linux->sa_data, freebsd->sa_data, addrlen - sizeof(linux->sa_family));
@@ -419,7 +424,7 @@ freebsd2linux_sockaddr(struct linux_sockaddr *linux,
         return;
     }
 
-    linux->sa_family = freebsd->sa_family;
+    linux->sa_family = freebsd->sa_family == AF_INET6 ? LINUX_AF_INET6 : freebsd->sa_family;
 
     bcopy(freebsd->sa_data, linux->sa_data, freebsd->sa_len - sizeof(linux->sa_family));
 }
@@ -429,7 +434,7 @@ ff_socket(int domain, int type, int protocol)
 {
     int rc;
     struct socket_args sa;
-    sa.domain = domain;
+    sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
     sa.type = type;
     sa.protocol = protocol;
     if ((rc = sys_socket(curthread, &sa)))
