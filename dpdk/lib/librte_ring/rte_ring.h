@@ -57,7 +57,7 @@ enum rte_ring_queue_behavior {
 };
 
 #define RTE_RING_MZ_PREFIX "RG_"
-/**< The maximum length of a ring name. */
+/** The maximum length of a ring name. */
 #define RTE_RING_NAMESIZE (RTE_MEMZONE_NAMESIZE - \
 			   sizeof(RTE_RING_MZ_PREFIX) + 1)
 
@@ -302,7 +302,7 @@ void rte_ring_dump(FILE *f, const struct rte_ring *r);
  * (powerpc/arm).
  * There are 2 choices for the users
  * 1.use rmb() memory barrier
- * 2.use one-direcion load_acquire/store_release barrier,defined by
+ * 2.use one-direction load_acquire/store_release barrier,defined by
  * CONFIG_RTE_USE_C11_MEM_MODEL=y
  * It depends on performance test results.
  * By default, move common functions to rte_ring_generic.h

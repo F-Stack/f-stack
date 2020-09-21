@@ -39,6 +39,8 @@ static inline void dump_rxd(union fm10k_rx_desc *rxd)
 
 #define FM10K_TX_OFFLOAD_MASK (  \
 		PKT_TX_VLAN_PKT |        \
+		PKT_TX_IPV6 |            \
+		PKT_TX_IPV4 |            \
 		PKT_TX_IP_CKSUM |        \
 		PKT_TX_L4_MASK |         \
 		PKT_TX_TCP_SEG)
@@ -132,7 +134,7 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * So, always PKT_RX_VLAN flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		mbuf->ol_flags |= PKT_RX_VLAN;
+		mbuf->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		mbuf->vlan_tci = desc.w.vlan;
 		/**
 		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
@@ -293,7 +295,7 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * So, always PKT_RX_VLAN flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		first_seg->ol_flags |= PKT_RX_VLAN;
+		first_seg->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		first_seg->vlan_tci = desc.w.vlan;
 		/**
 		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
@@ -669,25 +671,25 @@ fm10k_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 
 		if ((m->ol_flags & PKT_TX_TCP_SEG) &&
 				(m->tso_segsz < FM10K_TSO_MINMSS)) {
-			rte_errno = -EINVAL;
+			rte_errno = EINVAL;
 			return i;
 		}
 
 		if (m->ol_flags & FM10K_TX_OFFLOAD_NOTSUP_MASK) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}

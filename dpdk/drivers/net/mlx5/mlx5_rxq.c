@@ -68,7 +68,7 @@ static_assert(MLX5_RSS_HASH_KEY_LEN ==
 inline int
 mlx5_check_mprq_support(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 
 	if (priv->config.mprq.enabled &&
 	    priv->rxqs_n >= priv->config.mprq.min_rxqs_num)
@@ -103,7 +103,7 @@ mlx5_rxq_mprq_enabled(struct mlx5_rxq_data *rxq)
 inline int
 mlx5_mprq_enabled(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	uint16_t i;
 	uint16_t n = 0;
 
@@ -382,7 +382,7 @@ mlx5_rxq_cleanup(struct mlx5_rxq_ctrl *rxq_ctrl)
 uint64_t
 mlx5_get_rx_queue_offloads(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_dev_config *config = &priv->config;
 	uint64_t offloads = (DEV_RX_OFFLOAD_SCATTER |
 			     DEV_RX_OFFLOAD_TIMESTAMP |
@@ -438,7 +438,7 @@ mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		    unsigned int socket, const struct rte_eth_rxconf *conf,
 		    struct rte_mempool *mp)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq = (*priv->rxqs)[idx];
 	struct mlx5_rxq_ctrl *rxq_ctrl =
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
@@ -489,7 +489,7 @@ mlx5_rx_queue_release(void *dpdk_rxq)
 {
 	struct mlx5_rxq_data *rxq = (struct mlx5_rxq_data *)dpdk_rxq;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
-	struct priv *priv;
+	struct mlx5_priv *priv;
 
 	if (rxq == NULL)
 		return;
@@ -514,7 +514,7 @@ mlx5_rx_queue_release(void *dpdk_rxq)
 int
 mlx5_rx_intr_vec_enable(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int i;
 	unsigned int rxqs_n = priv->rxqs_n;
 	unsigned int n = RTE_MIN(rxqs_n, (uint32_t)RTE_MAX_RXTX_INTR_VEC_ID);
@@ -592,7 +592,7 @@ mlx5_rx_intr_vec_enable(struct rte_eth_dev *dev)
 void
 mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_intr_handle *intr_handle = dev->intr_handle;
 	unsigned int i;
 	unsigned int rxqs_n = priv->rxqs_n;
@@ -611,11 +611,12 @@ mlx5_rx_intr_vec_disable(struct rte_eth_dev *dev)
 			continue;
 		/**
 		 * Need to access directly the queue to release the reference
-		 * kept in priv_rx_intr_vec_enable().
+		 * kept in mlx5_rx_intr_vec_enable().
 		 */
 		rxq_data = (*priv->rxqs)[i];
 		rxq_ctrl = container_of(rxq_data, struct mlx5_rxq_ctrl, rxq);
-		mlx5_rxq_ibv_release(rxq_ctrl->ibv);
+		if (rxq_ctrl->ibv)
+			mlx5_rxq_ibv_release(rxq_ctrl->ibv);
 	}
 free:
 	rte_intr_free_epoll_fd(intr_handle);
@@ -664,7 +665,7 @@ mlx5_arm_cq(struct mlx5_rxq_data *rxq, int sq_n_rxq)
 int
 mlx5_rx_intr_enable(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq_data;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 
@@ -702,7 +703,7 @@ mlx5_rx_intr_enable(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 int
 mlx5_rx_intr_disable(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq_data;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 	struct mlx5_rxq_ibv *rxq_ibv = NULL;
@@ -730,6 +731,7 @@ mlx5_rx_intr_disable(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	}
 	rxq_data->cq_arm_sn++;
 	mlx5_glue->ack_cq_events(rxq_ibv->cq, 1);
+	mlx5_rxq_ibv_release(rxq_ibv);
 	return 0;
 exit:
 	ret = rte_errno; /* Save rte_errno before cleanup. */
@@ -755,7 +757,7 @@ exit:
 struct mlx5_rxq_ibv *
 mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq_data = (*priv->rxqs)[idx];
 	struct mlx5_rxq_ctrl *rxq_ctrl =
 		container_of(rxq_data, struct mlx5_rxq_ctrl, rxq);
@@ -771,11 +773,10 @@ mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 			struct mlx5dv_wq_init_attr mlx5;
 #endif
 		} wq;
-		struct ibv_cq_ex cq_attr;
 	} attr;
 	unsigned int cqe_n;
 	unsigned int wqe_n = 1 << rxq_data->elts_n;
-	struct mlx5_rxq_ibv *tmpl;
+	struct mlx5_rxq_ibv *tmpl = NULL;
 	struct mlx5dv_cq cq_info;
 	struct mlx5dv_rwq rwq;
 	unsigned int i;
@@ -881,12 +882,15 @@ mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 		attr.wq.ibv.create_flags |= IBV_WQ_FLAGS_SCATTER_FCS;
 		attr.wq.ibv.comp_mask |= IBV_WQ_INIT_ATTR_FLAGS;
 	}
-#ifdef HAVE_IBV_WQ_FLAG_RX_END_PADDING
 	if (config->hw_padding) {
+#if defined(HAVE_IBV_WQ_FLAG_RX_END_PADDING)
 		attr.wq.ibv.create_flags |= IBV_WQ_FLAG_RX_END_PADDING;
 		attr.wq.ibv.comp_mask |= IBV_WQ_INIT_ATTR_FLAGS;
-	}
+#elif defined(HAVE_IBV_WQ_FLAGS_PCI_WRITE_END_PADDING)
+		attr.wq.ibv.create_flags |= IBV_WQ_FLAGS_PCI_WRITE_END_PADDING;
+		attr.wq.ibv.comp_mask |= IBV_WQ_INIT_ATTR_FLAGS;
 #endif
+	}
 #ifdef HAVE_IBV_DEVICE_STRIDING_RQ_SUPPORT
 	attr.wq.mlx5 = (struct mlx5dv_wq_init_attr){
 		.comp_mask = 0,
@@ -1013,15 +1017,19 @@ mlx5_rxq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	return tmpl;
 error:
-	ret = rte_errno; /* Save rte_errno before cleanup. */
-	if (tmpl->wq)
-		claim_zero(mlx5_glue->destroy_wq(tmpl->wq));
-	if (tmpl->cq)
-		claim_zero(mlx5_glue->destroy_cq(tmpl->cq));
-	if (tmpl->channel)
-		claim_zero(mlx5_glue->destroy_comp_channel(tmpl->channel));
+	if (tmpl) {
+		ret = rte_errno; /* Save rte_errno before cleanup. */
+		if (tmpl->wq)
+			claim_zero(mlx5_glue->destroy_wq(tmpl->wq));
+		if (tmpl->cq)
+			claim_zero(mlx5_glue->destroy_cq(tmpl->cq));
+		if (tmpl->channel)
+			claim_zero(mlx5_glue->destroy_comp_channel
+							(tmpl->channel));
+		rte_free(tmpl);
+		rte_errno = ret; /* Restore rte_errno. */
+	}
 	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
-	rte_errno = ret; /* Restore rte_errno. */
 	return NULL;
 }
 
@@ -1039,7 +1047,7 @@ error:
 struct mlx5_rxq_ibv *
 mlx5_rxq_ibv_get(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_data *rxq_data = (*priv->rxqs)[idx];
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 
@@ -1095,7 +1103,7 @@ mlx5_rxq_ibv_release(struct mlx5_rxq_ibv *rxq_ibv)
 int
 mlx5_rxq_ibv_verify(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	int ret = 0;
 	struct mlx5_rxq_ibv *rxq_ibv;
 
@@ -1146,7 +1154,7 @@ mlx5_mprq_buf_init(struct rte_mempool *mp, void *opaque_arg __rte_unused,
 int
 mlx5_mprq_free_mp(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_mempool *mp = priv->mprq_mp;
 	unsigned int i;
 
@@ -1156,7 +1164,7 @@ mlx5_mprq_free_mp(struct rte_eth_dev *dev)
 		dev->data->port_id, mp->name);
 	/*
 	 * If a buffer in the pool has been externally attached to a mbuf and it
-	 * is still in use by application, destroying the Rx qeueue can spoil
+	 * is still in use by application, destroying the Rx queue can spoil
 	 * the packet. It is unlikely to happen but if application dynamically
 	 * creates and destroys with holding Rx packets, this can happen.
 	 *
@@ -1179,6 +1187,7 @@ mlx5_mprq_free_mp(struct rte_eth_dev *dev)
 			continue;
 		rxq->mprq_mp = NULL;
 	}
+	priv->mprq_mp = NULL;
 	return 0;
 }
 
@@ -1196,7 +1205,7 @@ mlx5_mprq_free_mp(struct rte_eth_dev *dev)
 int
 mlx5_mprq_alloc_mp(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_mempool *mp = priv->mprq_mp;
 	char name[RTE_MEMPOOL_NAMESIZE];
 	unsigned int desc = 0;
@@ -1268,7 +1277,7 @@ mlx5_mprq_alloc_mp(struct rte_eth_dev *dev)
 				return -rte_errno;
 		}
 	}
-	snprintf(name, sizeof(name), "%s-mprq", dev->device->name);
+	snprintf(name, sizeof(name), "port-%u-mprq", dev->data->port_id);
 	mp = rte_mempool_create(name, obj_num, obj_size, MLX5_MPRQ_MP_CACHE_SZ,
 				0, NULL, NULL, mlx5_mprq_buf_init, NULL,
 				dev->device->numa_node, 0);
@@ -1315,7 +1324,7 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	     unsigned int socket, const struct rte_eth_rxconf *conf,
 	     struct rte_mempool *mp)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *tmpl;
 	unsigned int mb_len = rte_pktmbuf_data_room_size(mp);
 	unsigned int mprq_stride_size;
@@ -1490,7 +1499,7 @@ error:
  * @param dev
  *   Pointer to Ethernet device.
  * @param idx
- *   TX queue index.
+ *   RX queue index.
  *
  * @return
  *   A pointer to the queue if it exists, NULL otherwise.
@@ -1498,7 +1507,7 @@ error:
 struct mlx5_rxq_ctrl *
 mlx5_rxq_get(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *rxq_ctrl = NULL;
 
 	if ((*priv->rxqs)[idx]) {
@@ -1517,7 +1526,7 @@ mlx5_rxq_get(struct rte_eth_dev *dev, uint16_t idx)
  * @param dev
  *   Pointer to Ethernet device.
  * @param idx
- *   TX queue index.
+ *   RX queue index.
  *
  * @return
  *   1 while a reference on it exists, 0 when freed.
@@ -1525,7 +1534,7 @@ mlx5_rxq_get(struct rte_eth_dev *dev, uint16_t idx)
 int
 mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 
 	if (!(*priv->rxqs)[idx])
@@ -1550,16 +1559,17 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
  * @param dev
  *   Pointer to Ethernet device.
  * @param idx
- *   TX queue index.
+ *   RX queue index.
  *
  * @return
- *   1 if the queue can be released, negative errno otherwise and rte_errno is
- *   set.
+ *   1 if the queue can be released
+ *   0 if the queue can not be released, there are references to it.
+ *   Negative errno and rte_errno is set if queue doesn't exist.
  */
 int
 mlx5_rxq_releasable(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 
 	if (!(*priv->rxqs)[idx]) {
@@ -1582,7 +1592,7 @@ mlx5_rxq_releasable(struct rte_eth_dev *dev, uint16_t idx)
 int
 mlx5_rxq_verify(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *rxq_ctrl;
 	int ret = 0;
 
@@ -1611,7 +1621,7 @@ struct mlx5_ind_table_ibv *
 mlx5_ind_table_ibv_new(struct rte_eth_dev *dev, const uint16_t *queues,
 		       uint32_t queues_n)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_ind_table_ibv *ind_tbl;
 	const unsigned int wq_n = rte_is_power_of_2(queues_n) ?
 		log2above(queues_n) :
@@ -1675,7 +1685,7 @@ struct mlx5_ind_table_ibv *
 mlx5_ind_table_ibv_get(struct rte_eth_dev *dev, const uint16_t *queues,
 		       uint32_t queues_n)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_ind_table_ibv *ind_tbl;
 
 	LIST_FOREACH(ind_tbl, &priv->ind_tbls, next) {
@@ -1737,7 +1747,7 @@ mlx5_ind_table_ibv_release(struct rte_eth_dev *dev,
 int
 mlx5_ind_table_ibv_verify(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_ind_table_ibv *ind_tbl;
 	int ret = 0;
 
@@ -1779,7 +1789,7 @@ mlx5_hrxq_new(struct rte_eth_dev *dev,
 	      const uint16_t *queues, uint32_t queues_n,
 	      int tunnel __rte_unused)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq *hrxq;
 	struct mlx5_ind_table_ibv *ind_tbl;
 	struct ibv_qp *qp;
@@ -1895,7 +1905,7 @@ mlx5_hrxq_get(struct rte_eth_dev *dev,
 	      uint64_t hash_fields,
 	      const uint16_t *queues, uint32_t queues_n)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq *hrxq;
 
 	queues_n = hash_fields ? queues_n : 1;
@@ -1958,7 +1968,7 @@ mlx5_hrxq_release(struct rte_eth_dev *dev, struct mlx5_hrxq *hrxq)
 int
 mlx5_hrxq_ibv_verify(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq *hrxq;
 	int ret = 0;
 
@@ -1983,7 +1993,7 @@ mlx5_hrxq_ibv_verify(struct rte_eth_dev *dev)
 struct mlx5_rxq_ibv *
 mlx5_rxq_ibv_drop_new(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct ibv_cq *cq;
 	struct ibv_wq *wq = NULL;
 	struct mlx5_rxq_ibv *rxq;
@@ -2042,7 +2052,7 @@ error:
 void
 mlx5_rxq_ibv_drop_release(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ibv *rxq = priv->drop_queue.rxq;
 
 	if (rxq->wq)
@@ -2065,7 +2075,7 @@ mlx5_rxq_ibv_drop_release(struct rte_eth_dev *dev)
 struct mlx5_ind_table_ibv *
 mlx5_ind_table_ibv_drop_new(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_ind_table_ibv *ind_tbl;
 	struct mlx5_rxq_ibv *rxq;
 	struct mlx5_ind_table_ibv tmpl;
@@ -2108,7 +2118,7 @@ error:
 void
 mlx5_ind_table_ibv_drop_release(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_ind_table_ibv *ind_tbl = priv->drop_queue.hrxq->ind_table;
 
 	claim_zero(mlx5_glue->destroy_rwq_ind_table(ind_tbl->ind_table));
@@ -2129,7 +2139,7 @@ mlx5_ind_table_ibv_drop_release(struct rte_eth_dev *dev)
 struct mlx5_hrxq *
 mlx5_hrxq_drop_new(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_ind_table_ibv *ind_tbl;
 	struct ibv_qp *qp;
 	struct mlx5_hrxq *hrxq;
@@ -2192,7 +2202,7 @@ error:
 void
 mlx5_hrxq_drop_release(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hrxq *hrxq = priv->drop_queue.hrxq;
 
 	if (rte_atomic32_dec_and_test(&hrxq->refcnt)) {

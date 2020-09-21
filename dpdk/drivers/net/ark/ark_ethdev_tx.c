@@ -207,13 +207,11 @@ eth_ark_tx_queue_setup(struct rte_eth_dev *dev,
 		       unsigned int socket_id,
 		       const struct rte_eth_txconf *tx_conf __rte_unused)
 {
-	struct ark_adapter *ark = (struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	struct ark_tx_queue *queue;
 	int status;
 
-	/* Future: divide the Q's evenly with multi-ports */
-	int port = dev->data->port_id;
-	int qidx = port + queue_idx;
+	int qidx = queue_idx;
 
 	if (!rte_is_power_of_2(nb_desc)) {
 		PMD_DRV_LOG(ERR,

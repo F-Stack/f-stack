@@ -181,9 +181,8 @@
  * The *dequeue* operation gets one or more events from the event ports.
  * The application process the events and send to downstream event queue through
  * rte_event_enqueue_burst() if it is an intermediate stage of event processing,
- * on the final stage, the application may send to different subsystem like
- * ethdev to send the packet/event on the wire using ethdev
- * rte_eth_tx_burst() API.
+ * on the final stage, the application may use Tx adapter API for maintaining
+ * the ingress order and then send the packet/event on the wire.
  *
  * The point at which events are scheduled to ports depends on the device.
  * For hardware devices, scheduling occurs asynchronously without any software
@@ -1155,7 +1154,7 @@ rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps);
  */
 
 #define RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA   0x8
-/**< Flag indicates HW/SW suports a mechanism to store and retrieve
+/**< Flag indicates HW/SW supports a mechanism to store and retrieve
  * the private data information along with the crypto session.
  */
 
@@ -1322,12 +1321,12 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 	if (dev_id >= RTE_EVENT_MAX_DEVS || !rte_eventdevs[dev_id].attached) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
 	if (port_id >= dev->data->nb_ports) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
@@ -1366,7 +1365,8 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   which contain the event object enqueue operations to be processed.
  * @param nb_events
  *   The number of event objects to enqueue, typically number of
- *   rte_event_port_enqueue_depth() available for this port.
+ *   rte_event_port_attr_get(...RTE_EVENT_PORT_ATTR_ENQ_DEPTH...)
+ *   available for this port.
  *
  * @return
  *   The number of event objects actually enqueued on the event device. The
@@ -1375,13 +1375,13 @@ __rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   *rte_event*. If the return value is less than *nb_events*, the remaining
  *   events at the end of ev[] are not consumed and the caller has to take care
  *   of them, and rte_errno is set accordingly. Possible errno values include:
- *   - -EINVAL  The port ID is invalid, device ID is invalid, an event's queue
+ *   - EINVAL   The port ID is invalid, device ID is invalid, an event's queue
  *              ID is invalid, or an event's sched type doesn't match the
  *              capabilities of the destination queue.
- *   - -ENOSPC  The event port was backpressured and unable to enqueue
+ *   - ENOSPC   The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
- * @see rte_event_port_enqueue_depth()
+ * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
  */
 static inline uint16_t
 rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
@@ -1415,7 +1415,8 @@ rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   which contain the event object enqueue operations to be processed.
  * @param nb_events
  *   The number of event objects to enqueue, typically number of
- *   rte_event_port_enqueue_depth() available for this port.
+ *   rte_event_port_attr_get(...RTE_EVENT_PORT_ATTR_ENQ_DEPTH...)
+ *   available for this port.
  *
  * @return
  *   The number of event objects actually enqueued on the event device. The
@@ -1424,13 +1425,14 @@ rte_event_enqueue_burst(uint8_t dev_id, uint8_t port_id,
  *   *rte_event*. If the return value is less than *nb_events*, the remaining
  *   events at the end of ev[] are not consumed and the caller has to take care
  *   of them, and rte_errno is set accordingly. Possible errno values include:
- *   - -EINVAL  The port ID is invalid, device ID is invalid, an event's queue
+ *   - EINVAL   The port ID is invalid, device ID is invalid, an event's queue
  *              ID is invalid, or an event's sched type doesn't match the
  *              capabilities of the destination queue.
- *   - -ENOSPC  The event port was backpressured and unable to enqueue
+ *   - ENOSPC   The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
- * @see rte_event_port_enqueue_depth() rte_event_enqueue_burst()
+ * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
+ * @see rte_event_enqueue_burst()
  */
 static inline uint16_t
 rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
@@ -1464,7 +1466,8 @@ rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
  *   which contain the event object enqueue operations to be processed.
  * @param nb_events
  *   The number of event objects to enqueue, typically number of
- *   rte_event_port_enqueue_depth() available for this port.
+ *   rte_event_port_attr_get(...RTE_EVENT_PORT_ATTR_ENQ_DEPTH...)
+ *   available for this port.
  *
  * @return
  *   The number of event objects actually enqueued on the event device. The
@@ -1473,13 +1476,14 @@ rte_event_enqueue_new_burst(uint8_t dev_id, uint8_t port_id,
  *   *rte_event*. If the return value is less than *nb_events*, the remaining
  *   events at the end of ev[] are not consumed and the caller has to take care
  *   of them, and rte_errno is set accordingly. Possible errno values include:
- *   - -EINVAL  The port ID is invalid, device ID is invalid, an event's queue
+ *   - EINVAL   The port ID is invalid, device ID is invalid, an event's queue
  *              ID is invalid, or an event's sched type doesn't match the
  *              capabilities of the destination queue.
- *   - -ENOSPC  The event port was backpressured and unable to enqueue
+ *   - ENOSPC   The event port was backpressured and unable to enqueue
  *              one or more events. This error code is only applicable to
  *              closed systems.
- * @see rte_event_port_enqueue_depth() rte_event_enqueue_burst()
+ * @see rte_event_port_attr_get(), RTE_EVENT_PORT_ATTR_ENQ_DEPTH
+ * @see rte_event_enqueue_burst()
  */
 static inline uint16_t
 rte_event_enqueue_forward_burst(uint8_t dev_id, uint8_t port_id,
@@ -1594,12 +1598,12 @@ rte_event_dequeue_burst(uint8_t dev_id, uint8_t port_id, struct rte_event ev[],
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 	if (dev_id >= RTE_EVENT_MAX_DEVS || !rte_eventdevs[dev_id].attached) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
 	if (port_id >= dev->data->nb_ports) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 #endif
@@ -1672,9 +1676,9 @@ rte_event_dequeue_burst(uint8_t dev_id, uint8_t port_id, struct rte_event ev[],
  * of link[] are not established, and the caller has to take care of them.
  * If return value is less than *nb_links* then implementation shall update the
  * rte_errno accordingly, Possible rte_errno values are
- * (-EDQUOT) Quota exceeded(Application tried to link the queue configured with
+ * (EDQUOT) Quota exceeded(Application tried to link the queue configured with
  *  RTE_EVENT_QUEUE_CFG_SINGLE_LINK to more than one event ports)
- * (-EINVAL) Invalid parameter
+ * (EINVAL) Invalid parameter
  *
  */
 int
@@ -1719,7 +1723,7 @@ rte_event_port_link(uint8_t dev_id, uint8_t port_id,
  * end of queues[] are not unlinked, and the caller has to take care of them.
  * If return value is less than *nb_unlinks* then implementation shall update
  * the rte_errno accordingly, Possible rte_errno values are
- * (-EINVAL) Invalid parameter
+ * (EINVAL) Invalid parameter
  */
 int
 rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
@@ -1737,7 +1741,7 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
  * @see rte_event_port_unlink() to issue unlink requests.
  *
  * @param dev_id
- *   The indentifier of the device.
+ *   The identifier of the device.
  *
  * @param port_id
  *   Event port identifier to select port to check for unlinks in progress.
@@ -1893,7 +1897,7 @@ rte_event_dev_xstats_names_get(uint8_t dev_id,
  * @param ids
  *   The id numbers of the stats to get. The ids can be got from the stat
  *   position in the stat list from rte_event_dev_get_xstats_names(), or
- *   by using rte_eventdev_get_xstats_by_name()
+ *   by using rte_event_dev_xstats_by_name_get().
  * @param[out] values
  *   The values for each stats request by ID.
  * @param n
@@ -1921,7 +1925,7 @@ rte_event_dev_xstats_get(uint8_t dev_id,
  *   The stat name to retrieve
  * @param[out] id
  *   If non-NULL, the numerical id of the stat will be returned, so that further
- *   requests for the stat can be got using rte_eventdev_xstats_get, which will
+ *   requests for the stat can be got using rte_event_dev_xstats_get, which will
  *   be faster as it doesn't need to scan a list of names for the stat.
  *   If the stat cannot be found, the id returned will be (unsigned)-1.
  * @return

@@ -263,7 +263,7 @@ struct bnxt {
 #define BNXT_FLAG_TRUSTED_VF_EN	(1 << 11)
 #define BNXT_FLAG_DFLT_VNIC_SET	(1 << 12)
 #define BNXT_FLAG_NEW_RM	(1 << 30)
-#define BNXT_FLAG_INIT_DONE	(1 << 31)
+#define BNXT_FLAG_INIT_DONE	(1U << 31)
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
 #define BNXT_NPAR(bp)		((bp)->port_partition_type)
@@ -332,6 +332,7 @@ struct bnxt {
 	uint16_t		max_tx_rings;
 	uint16_t		max_rx_rings;
 	uint16_t		max_l2_ctx;
+	uint16_t		max_rx_em_flows;
 	uint16_t		max_vnics;
 	uint16_t		max_stat_ctx;
 	uint16_t		vlan;

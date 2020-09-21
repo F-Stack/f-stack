@@ -71,7 +71,6 @@ static void virtio_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index);
 static int virtio_mac_addr_set(struct rte_eth_dev *dev,
 				struct ether_addr *mac_addr);
 
-static int virtio_intr_enable(struct rte_eth_dev *dev);
 static int virtio_intr_disable(struct rte_eth_dev *dev);
 
 static int virtio_dev_queue_stats_mapping_set(
@@ -729,6 +728,7 @@ virtio_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
 	struct virtqueue *vq = rxvq->vq;
 
 	virtqueue_enable_intr(vq);
+	virtio_mb();
 	return 0;
 }
 
@@ -776,6 +776,21 @@ static const struct eth_dev_ops virtio_eth_dev_ops = {
 	.mac_addr_add            = virtio_mac_addr_add,
 	.mac_addr_remove         = virtio_mac_addr_remove,
 	.mac_addr_set            = virtio_mac_addr_set,
+};
+
+/*
+ * dev_ops for virtio-user in secondary processes, as we just have
+ * some limited supports currently.
+ */
+const struct eth_dev_ops virtio_user_secondary_eth_dev_ops = {
+	.dev_infos_get           = virtio_dev_info_get,
+	.stats_get               = virtio_dev_stats_get,
+	.xstats_get              = virtio_dev_xstats_get,
+	.xstats_get_names        = virtio_dev_xstats_get_names,
+	.stats_reset             = virtio_dev_stats_reset,
+	.xstats_reset            = virtio_dev_stats_reset,
+	/* collect stats per queue */
+	.queue_stats_mapping_set = virtio_dev_queue_stats_mapping_set,
 };
 
 static void
@@ -1326,6 +1341,7 @@ set_rxtx_funcs(struct rte_eth_dev *eth_dev)
 {
 	struct virtio_hw *hw = eth_dev->data->dev_private;
 
+	eth_dev->tx_pkt_prepare = virtio_xmit_pkts_prepare;
 	if (hw->use_simple_rx) {
 		PMD_INIT_LOG(INFO, "virtio: using simple Rx path on port %u",
 			eth_dev->data->port_id);
@@ -1578,6 +1594,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 	if (eth_dev->data->dev_conf.intr_conf.rxq) {
 		if (virtio_configure_intr(eth_dev) < 0) {
 			PMD_INIT_LOG(ERR, "failed to configure interrupt");
+			virtio_free_queues(hw);
 			return -1;
 		}
 	}
@@ -1648,7 +1665,14 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 	struct virtio_hw *hw = eth_dev->data->dev_private;
 	int ret;
 
-	RTE_BUILD_BUG_ON(RTE_PKTMBUF_HEADROOM < sizeof(struct virtio_net_hdr_mrg_rxbuf));
+	if (sizeof(struct virtio_net_hdr_mrg_rxbuf) > RTE_PKTMBUF_HEADROOM) {
+		PMD_INIT_LOG(ERR,
+			"Not sufficient headroom required = %d, avail = %d",
+			(int)sizeof(struct virtio_net_hdr_mrg_rxbuf),
+			RTE_PKTMBUF_HEADROOM);
+
+		return -1;
+	}
 
 	eth_dev->dev_ops = &virtio_eth_dev_ops;
 
@@ -1681,24 +1705,33 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 	if (!hw->virtio_user_dev) {
 		ret = vtpci_init(RTE_ETH_DEV_TO_PCI(eth_dev), hw);
 		if (ret)
-			goto out;
+			goto err_vtpci_init;
 	}
 
 	/* reset device and negotiate default features */
 	ret = virtio_init_device(eth_dev, VIRTIO_PMD_DEFAULT_GUEST_FEATURES);
 	if (ret < 0)
-		goto out;
+		goto err_virtio_init;
 
 	return 0;
 
-out:
+err_virtio_init:
+	if (!hw->virtio_user_dev) {
+		rte_pci_unmap_device(RTE_ETH_DEV_TO_PCI(eth_dev));
+		if (!hw->modern)
+			rte_pci_ioport_unmap(VTPCI_IO(hw));
+	}
+err_vtpci_init:
 	rte_free(eth_dev->data->mac_addrs);
+	eth_dev->data->mac_addrs = NULL;
 	return ret;
 }
 
 static int
 eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 {
+	struct virtio_hw *hw = eth_dev->data->dev_private;
+
 	PMD_INIT_FUNC_TRACE();
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
@@ -1711,8 +1744,11 @@ eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 	eth_dev->tx_pkt_burst = NULL;
 	eth_dev->rx_pkt_burst = NULL;
 
-	if (eth_dev->device)
+	if (eth_dev->device) {
 		rte_pci_unmap_device(RTE_ETH_DEV_TO_PCI(eth_dev));
+		if (!hw->modern)
+			rte_pci_ioport_unmap(VTPCI_IO(hw));
+	}
 
 	PMD_INIT_LOG(DEBUG, "dev_uninit completed");
 
@@ -1820,6 +1856,8 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 	const struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	const struct rte_eth_txmode *txmode = &dev->data->dev_conf.txmode;
 	struct virtio_hw *hw = dev->data->dev_private;
+	uint32_t ether_hdr_len = ETHER_HDR_LEN + VLAN_TAG_LEN +
+		hw->vtnet_hdr_size;
 	uint64_t rx_offloads = rxmode->offloads;
 	uint64_t tx_offloads = txmode->offloads;
 	uint64_t req_features;
@@ -1833,6 +1871,9 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 		if (ret < 0)
 			return ret;
 	}
+
+	if (rxmode->max_rx_pkt_len > hw->max_mtu + ether_hdr_len)
+		req_features &= ~(1ULL << VIRTIO_NET_F_MTU);
 
 	if (rx_offloads & (DEV_RX_OFFLOAD_UDP_CKSUM |
 			   DEV_RX_OFFLOAD_TCP_CKSUM))
@@ -2185,6 +2226,7 @@ virtio_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	host_features = VTPCI_OPS(hw)->get_features(hw);
 	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP;
+	dev_info->rx_offload_capa |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	if (host_features & (1ULL << VIRTIO_NET_F_GUEST_CSUM)) {
 		dev_info->rx_offload_capa |=
 			DEV_RX_OFFLOAD_TCP_CKSUM |

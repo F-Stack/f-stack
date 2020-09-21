@@ -59,7 +59,7 @@
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 int
-mlx4_get_ifname(const struct priv *priv, char (*ifname)[IF_NAMESIZE])
+mlx4_get_ifname(const struct mlx4_priv *priv, char (*ifname)[IF_NAMESIZE])
 {
 	DIR *dir;
 	struct dirent *dent;
@@ -146,7 +146,7 @@ try_dev_id:
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx4_ifreq(const struct priv *priv, int req, struct ifreq *ifr)
+mlx4_ifreq(const struct mlx4_priv *priv, int req, struct ifreq *ifr)
 {
 	int sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
 	int ret;
@@ -176,7 +176,7 @@ mlx4_ifreq(const struct priv *priv, int req, struct ifreq *ifr)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 int
-mlx4_get_mac(struct priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN])
+mlx4_get_mac(struct mlx4_priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN])
 {
 	struct ifreq request;
 	int ret = mlx4_ifreq(priv, SIOCGIFHWADDR, &request);
@@ -199,7 +199,7 @@ mlx4_get_mac(struct priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN])
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 int
-mlx4_mtu_get(struct priv *priv, uint16_t *mtu)
+mlx4_mtu_get(struct mlx4_priv *priv, uint16_t *mtu)
 {
 	struct ifreq request;
 	int ret = mlx4_ifreq(priv, SIOCGIFMTU, &request);
@@ -224,7 +224,7 @@ mlx4_mtu_get(struct priv *priv, uint16_t *mtu)
 int
 mlx4_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct ifreq request = { .ifr_mtu = mtu, };
 	int ret = mlx4_ifreq(priv, SIOCSIFMTU, &request);
 
@@ -248,7 +248,7 @@ mlx4_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx4_set_flags(struct priv *priv, unsigned int keep, unsigned int flags)
+mlx4_set_flags(struct mlx4_priv *priv, unsigned int keep, unsigned int flags)
 {
 	struct ifreq request;
 	int ret = mlx4_ifreq(priv, SIOCGIFFLAGS, &request);
@@ -272,7 +272,7 @@ mlx4_set_flags(struct priv *priv, unsigned int keep, unsigned int flags)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx4_dev_set_link(struct priv *priv, int up)
+mlx4_dev_set_link(struct mlx4_priv *priv, int up)
 {
 	int err;
 
@@ -300,7 +300,7 @@ mlx4_dev_set_link(struct priv *priv, int up)
 int
 mlx4_dev_set_link_down(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 
 	return mlx4_dev_set_link(priv, 0);
 }
@@ -317,7 +317,7 @@ mlx4_dev_set_link_down(struct rte_eth_dev *dev)
 int
 mlx4_dev_set_link_up(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 
 	return mlx4_dev_set_link(priv, 1);
 }
@@ -345,7 +345,7 @@ enum rxmode_toggle {
 static void
 mlx4_rxmode_toggle(struct rte_eth_dev *dev, enum rxmode_toggle toggle)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	const char *mode;
 	struct rte_flow_error error;
 
@@ -430,7 +430,7 @@ mlx4_allmulticast_disable(struct rte_eth_dev *dev)
 void
 mlx4_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
 
 	if (index >= RTE_DIM(priv->mac)) {
@@ -466,7 +466,7 @@ int
 mlx4_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
 		  uint32_t index, uint32_t vmdq)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
 	int ret;
 
@@ -503,7 +503,7 @@ mlx4_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
 int
 mlx4_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
 	unsigned int vidx = vlan_id / 64;
 	unsigned int vbit = vlan_id % 64;
@@ -557,9 +557,8 @@ mlx4_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 void
 mlx4_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	unsigned int max;
-	char ifname[IF_NAMESIZE];
 
 	/* FIXME: we should ask the device for these values. */
 	info->min_rx_bufsize = 32;
@@ -580,8 +579,7 @@ mlx4_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->rx_queue_offload_capa = mlx4_get_rx_queue_offloads(priv);
 	info->rx_offload_capa = (mlx4_get_rx_port_offloads(priv) |
 				 info->rx_queue_offload_capa);
-	if (mlx4_get_ifname(priv, &ifname) == 0)
-		info->if_index = if_nametoindex(ifname);
+	info->if_index = priv->if_index;
 	info->hash_key_size = MLX4_RSS_HASH_KEY_SIZE;
 	info->speed_capa =
 			ETH_LINK_SPEED_1G |
@@ -688,7 +686,7 @@ mlx4_stats_reset(struct rte_eth_dev *dev)
 int
 mlx4_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 {
-	const struct priv *priv = dev->data->dev_private;
+	const struct mlx4_priv *priv = dev->data->dev_private;
 	struct ethtool_cmd edata = {
 		.cmd = ETHTOOL_GSET,
 	};
@@ -741,7 +739,7 @@ mlx4_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 int
 mlx4_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct ifreq ifr;
 	struct ethtool_pauseparam ethpause = {
 		.cmd = ETHTOOL_GPAUSEPARAM,
@@ -785,7 +783,7 @@ out:
 int
 mlx4_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct ifreq ifr;
 	struct ethtool_pauseparam ethpause = {
 		.cmd = ETHTOOL_SPAUSEPARAM,
@@ -853,7 +851,7 @@ mlx4_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
 		RTE_PTYPE_UNKNOWN
 	};
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 
 	if (dev->rx_pkt_burst == mlx4_rx_burst) {
 		if (priv->hw_csum_l2tun)
@@ -877,7 +875,7 @@ int
 mlx4_is_removed(struct rte_eth_dev *dev)
 {
 	struct ibv_device_attr device_attr;
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 
 	if (mlx4_glue->query_device(priv->ctx, &device_attr) == EIO)
 		return 1;

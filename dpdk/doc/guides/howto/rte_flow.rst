@@ -23,7 +23,7 @@ In this example we will create a simple rule that drops packets whose IPv4
 destination equals 192.168.3.2. This code is equivalent to the following
 testpmd command (wrapped for clarity)::
 
-  tpmd> flow create 0 ingress pattern eth / vlan /
+  testpmd> flow create 0 ingress pattern eth / vlan /
                     ipv4 dst is 192.168.3.2 / end actions drop / end
 
 Code
@@ -45,7 +45,7 @@ Code
   pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
   pattern[0].spec = &eth;
 
-  /* set the vlan to pas all packets */
+  /* set the vlan to pass all packets */
   pattern[1] = RTE_FLOW_ITEM_TYPE_VLAN;
   pattern[1].spec = &vlan;
 
@@ -118,7 +118,7 @@ a mask.
 This code is equivalent to the following testpmd command (wrapped for
 clarity)::
 
-  tpmd> flow create 0 ingress pattern eth / vlan /
+  testpmd> flow create 0 ingress pattern eth / vlan /
                     ipv4 dst spec 192.168.3.0 dst mask 255.255.255.0 /
                     end actions drop / end
 
@@ -141,7 +141,7 @@ Code
   pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
   pattern[0].spec = &eth;
 
-  /* set the vlan to pas all packets */
+  /* set the vlan to pass all packets */
   pattern[1] = RTE_FLOW_ITEM_TYPE_VLAN;
   pattern[1].spec = &vlan;
 
@@ -219,7 +219,7 @@ In this example we will create a rule that routes all vlan id 123 to queue 3.
 This code is equivalent to the following testpmd command (wrapped for
 clarity)::
 
-  tpmd> flow create 0 ingress pattern eth / vlan vid spec 123 /
+  testpmd> flow create 0 ingress pattern eth / vlan vid spec 123 /
                     end actions queue index 3 / end
 
 Code

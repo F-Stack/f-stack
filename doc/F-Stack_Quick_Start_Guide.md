@@ -45,7 +45,7 @@ The mount point can be made permanent across reboots, by adding the following li
 
     modprobe uio
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
+    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
@@ -61,7 +61,7 @@ The mount point can be made permanent across reboots, by adding the following li
 ### Compile Nginx
 
 	cd ../
-	cd app/nginx-1.11.10
+	cd app/nginx-1.16.1
 	./configure --prefix=/usr/local/nginx_fstack --with-ff_module
 	make
 	make install
@@ -70,10 +70,10 @@ The mount point can be made permanent across reboots, by adding the following li
 
 ### Compile Redis
 
-	cd app/redis-3.2.8/
+	cd app/redis-5.0.5/
 	make
 	# run with start.sh
 	./start.sh -b ./redis-server -o /path/to/redis.conf
 	# or run like this:
-	#./redis-server --conf=config.ini --proc-type=primary --proc-id=0 /path/to/redis.conf
+	#./redis-server --conf config.ini --proc-type=primary --proc-id=0 /path/to/redis.conf
 

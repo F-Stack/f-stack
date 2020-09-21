@@ -1000,7 +1000,6 @@ eth_dev_close(struct rte_eth_dev *dev)
 		for (i = 0; i < dev->data->nb_tx_queues; i++)
 			rte_free(dev->data->tx_queues[i]);
 
-	rte_free(dev->data->mac_addrs);
 	free(internal->dev_name);
 	free(internal->iface_name);
 	rte_free(internal);
@@ -1196,8 +1195,6 @@ static const struct eth_dev_ops ops = {
 	.rx_queue_intr_enable = eth_rxq_intr_enable,
 	.rx_queue_intr_disable = eth_rxq_intr_disable,
 };
-
-static struct rte_vdev_driver pmd_vhost_drv;
 
 static int
 eth_dev_vhost_create(struct rte_vdev_device *dev, char *iface_name,

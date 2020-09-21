@@ -335,13 +335,22 @@ fill_vec_buf_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	uint16_t vec_id = *vec_idx;
 	uint32_t len    = 0;
 	uint64_t dlen;
+	uint32_t nr_descs = vq->size;
+	uint32_t cnt    = 0;
 	struct vring_desc *descs = vq->desc;
 	struct vring_desc *idesc = NULL;
+
+	if (unlikely(idx >= vq->size))
+		return -1;
 
 	*desc_chain_head = idx;
 
 	if (vq->desc[idx].flags & VRING_DESC_F_INDIRECT) {
 		dlen = vq->desc[idx].len;
+		nr_descs = dlen / sizeof(struct vring_desc);
+		if (unlikely(nr_descs > vq->size))
+			return -1;
+
 		descs = (struct vring_desc *)(uintptr_t)
 			vhost_iova_to_vva(dev, vq, vq->desc[idx].addr,
 						&dlen,
@@ -366,7 +375,7 @@ fill_vec_buf_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	}
 
 	while (1) {
-		if (unlikely(idx >= vq->size)) {
+		if (unlikely(idx >= nr_descs || cnt++ >= nr_descs)) {
 			free_ind_table(idesc);
 			return -1;
 		}
@@ -520,11 +529,20 @@ fill_vec_buf_packed(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	if (unlikely(!desc_is_avail(&descs[avail_idx], wrap_counter)))
 		return -1;
 
+	/*
+	 * The ordering between desc flags and desc
+	 * content reads need to be enforced.
+	 */
+	rte_smp_rmb();
+
 	*desc_count = 0;
 	*len = 0;
 
 	while (1) {
 		if (unlikely(vec_id >= BUF_VECTOR_MAX))
+			return -1;
+
+		if (unlikely(*desc_count >= vq->size))
 			return -1;
 
 		*desc_count += 1;
@@ -790,6 +808,12 @@ virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 	avail_head = *((volatile uint16_t *)&vq->avail->idx);
+
+	/*
+	 * The ordering between avail index and
+	 * desc reads needs to be enforced.
+	 */
+	rte_smp_rmb();
 
 	for (pkt_idx = 0; pkt_idx < count; pkt_idx++) {
 		uint32_t pkt_len = pkts[pkt_idx]->pkt_len + dev->vhost_hlen;
@@ -1064,12 +1088,6 @@ vhost_dequeue_offload(struct virtio_net_hdr *hdr, struct rte_mbuf *m)
 	}
 }
 
-static __rte_always_inline void
-put_zmbuf(struct zcopy_mbuf *zmbuf)
-{
-	zmbuf->in_use = 0;
-}
-
 static __rte_always_inline int
 copy_desc_to_mbuf(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		  struct buf_vector *buf_vec, uint16_t nr_vec,
@@ -1307,34 +1325,6 @@ again:
 	return NULL;
 }
 
-static __rte_always_inline bool
-mbuf_is_consumed(struct rte_mbuf *m)
-{
-	while (m) {
-		if (rte_mbuf_refcnt_read(m) > 1)
-			return false;
-		m = m->next;
-	}
-
-	return true;
-}
-
-static __rte_always_inline void
-restore_mbuf(struct rte_mbuf *m)
-{
-	uint32_t mbuf_size, priv_size;
-
-	while (m) {
-		priv_size = rte_pktmbuf_priv_size(m->pool);
-		mbuf_size = sizeof(struct rte_mbuf) + priv_size;
-		/* start of buffer is after mbuf structure and priv data */
-
-		m->buf_addr = (char *)m + mbuf_size;
-		m->buf_iova = rte_mempool_virt2iova(m) + mbuf_size;
-		m = m->next;
-	}
-}
-
 static __rte_always_inline uint16_t
 virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count)
@@ -1372,6 +1362,12 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 			vq->last_avail_idx;
 	if (free_entries == 0)
 		return 0;
+
+	/*
+	 * The ordering between avail index and
+	 * desc reads needs to be enforced.
+	 */
+	rte_smp_rmb();
 
 	VHOST_LOG_DEBUG(VHOST_DATA, "(%d) %s\n", dev->vid, __func__);
 

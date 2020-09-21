@@ -8,7 +8,6 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
-#include <libgen.h>
 
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
@@ -1681,8 +1680,6 @@ static int enic_dev_init(struct enic *enic)
 	vnic_dev_set_reset_flag(enic->vdev, 0);
 
 	LIST_INIT(&enic->flows);
-	rte_spinlock_init(&enic->flows_lock);
-	enic->max_flow_counter = -1;
 
 	/* set up link status checking */
 	vnic_dev_notify_set(enic->vdev, -1); /* No Intr for notify */
@@ -1716,8 +1713,15 @@ static int enic_dev_init(struct enic *enic)
 			PKT_TX_OUTER_IP_CKSUM |
 			PKT_TX_TUNNEL_MASK;
 		enic->overlay_offload = true;
-		enic->vxlan_port = ENIC_DEFAULT_VXLAN_PORT;
 		dev_info(enic, "Overlay offload is enabled\n");
+	}
+	/*
+	 * Reset the vxlan port if HW vxlan parsing is available. It
+	 * is always enabled regardless of overlay offload
+	 * enable/disable.
+	 */
+	if (enic->vxlan) {
+		enic->vxlan_port = ENIC_DEFAULT_VXLAN_PORT;
 		/*
 		 * Reset the vxlan port to the default, as the NIC firmware
 		 * does not reset it automatically and keeps the old setting.
@@ -1763,20 +1767,14 @@ int enic_probe(struct enic *enic)
 		enic_free_consistent);
 
 	/*
-	 * Allocate the consistent memory for stats and counters upfront so
-	 * both primary and secondary processes can access them.
+	 * Allocate the consistent memory for stats upfront so both primary and
+	 * secondary processes can dump stats.
 	 */
 	err = vnic_dev_alloc_stats_mem(enic->vdev);
 	if (err) {
 		dev_err(enic, "Failed to allocate cmd memory, aborting\n");
 		goto err_out_unregister;
 	}
-	err = vnic_dev_alloc_counter_mem(enic->vdev);
-	if (err) {
-		dev_err(enic, "Failed to allocate counter memory, aborting\n");
-		goto err_out_unregister;
-	}
-
 	/* Issue device open to get device in known state */
 	err = enic_dev_open(enic);
 	if (err) {

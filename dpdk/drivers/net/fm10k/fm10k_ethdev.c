@@ -1389,6 +1389,15 @@ fm10k_dev_infos_get(struct rte_eth_dev *dev,
 
 	dev_info->hash_key_size = FM10K_RSSRK_SIZE * sizeof(uint32_t);
 	dev_info->reta_size = FM10K_MAX_RSS_INDICES;
+	dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
+					ETH_RSS_IPV6 |
+					ETH_RSS_IPV6_EX |
+					ETH_RSS_NONFRAG_IPV4_TCP |
+					ETH_RSS_NONFRAG_IPV6_TCP |
+					ETH_RSS_IPV6_TCP_EX |
+					ETH_RSS_NONFRAG_IPV4_UDP |
+					ETH_RSS_NONFRAG_IPV6_UDP |
+					ETH_RSS_IPV6_UDP_EX;
 
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
 		.rx_thresh = {
@@ -3003,6 +3012,7 @@ fm10k_params_init(struct rte_eth_dev *dev)
 	hw->bus.payload = fm10k_bus_payload_256;
 
 	info->rx_vec_allowed = true;
+	info->sm_down = false;
 }
 
 static int

@@ -92,12 +92,14 @@ plock_lock(struct plock *l, uint32_t self)
 	other = self ^ 1;
 
 	l->flag[self] = 1;
+	rte_smp_wmb();
 	l->victim = self;
 
 	store_load_barrier(l->utype);
 
 	while (l->flag[other] == 1 && l->victim == self)
 		rte_pause();
+	rte_smp_rmb();
 }
 
 static void
@@ -202,7 +204,7 @@ plock_test(uint32_t iter, enum plock_use_type utype)
 	printf("%s(iter=%u, utype=%u) started on %u lcores\n",
 		__func__, iter, utype, n);
 
-	if (pt == NULL || lpt == NULL) {
+	if (pt == NULL || lpt == NULL || sum == NULL) {
 		printf("%s: failed to allocate memory for %u lcores\n",
 			__func__, n);
 		free(pt);
@@ -252,7 +254,7 @@ plock_test(uint32_t iter, enum plock_use_type utype)
 
 		/* race condition occurred, lock doesn't work properly */
 		if (sum[i] != pt[i].val || 2 * iter != pt[i].iter) {
-			printf("error: local and shared sums don't much\n");
+			printf("error: local and shared sums don't match\n");
 			rc = -1;
 		}
 	}

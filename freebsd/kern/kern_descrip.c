@@ -2499,7 +2499,7 @@ fget_unlocked(struct filedesc *fdp, int fd, cap_rights_t *needrightsp,
 			 */
 			#pragma GCC diagnostic ignored "-Wcast-qual"
 			fdt = *(struct fdescenttbl * volatile *)&(fdp->fd_files);
-            #pragma GCC diagnostic error "-Wcast-qual"
+			#pragma GCC diagnostic error "-Wcast-qual"
 			continue;
 		}
 		/*

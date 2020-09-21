@@ -141,7 +141,7 @@ ff_ipc_send(const struct ff_msg *msg)
 }
 
 int
-ff_ipc_recv(struct ff_msg **msg)
+ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type)
 {
     int ret, i;
     if (inited == 0) {
@@ -150,8 +150,8 @@ ff_ipc_recv(struct ff_msg **msg)
     }
 
     char name[RTE_RING_NAMESIZE];
-    snprintf(name, RTE_RING_NAMESIZE, "%s%u",
-        FF_MSG_RING_OUT, ff_proc_id);
+    snprintf(name, RTE_RING_NAMESIZE, "%s%u_%u",
+        FF_MSG_RING_OUT, ff_proc_id, msg_type);
     struct rte_ring *ring = rte_ring_lookup(name);
     if (ring == NULL) {
         printf("lookup message ring:%s failed!\n", name);

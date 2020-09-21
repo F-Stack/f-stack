@@ -147,14 +147,13 @@ A default validator callback is provided by EAL, which can be enabled with a
 ``--socket-limit`` command-line option, for a simple way to limit maximum amount
 of memory that can be used by DPDK application.
 
-.. note::
-
-    In multiprocess scenario, all related processes (i.e. primary process, and
-    secondary processes running with the same prefix) must be in the same memory
-    modes. That is, if primary process is run in dynamic memory mode, all of its
-    secondary processes must be run in the same mode. The same is applicable to
-    ``--single-file-segments`` command-line option - both primary and secondary
-    processes must shared this mode.
+.. warning::
+    Memory subsystem uses DPDK IPC internally, so memory allocations/callbacks
+    and IPC must not be mixed: it is not safe to allocate/free memory inside
+    memory-related or IPC callbacks, and it is not safe to use IPC inside
+    memory-related callbacks. See chapter
+    :ref:`Multi-process Support <Multi-process_Support>` for more details about
+    DPDK IPC.
 
 + Legacy memory mode
 
@@ -450,6 +449,28 @@ Those TLS include *_cpuset* and *_socket_id*:
 *	*_socket_id* stores the NUMA node of the CPU set. If the CPUs in CPU set belong to different NUMA node, the *_socket_id* will be set to SOCKET_ID_ANY.
 
 
+Control Thread API
+~~~~~~~~~~~~~~~~~~
+
+It is possible to create Control Threads using the public API
+``rte_ctrl_thread_create()``.
+Those threads can be used for management/infrastructure tasks and are used
+internally by DPDK for multi process support and interrupt handling.
+
+Those threads will be scheduled on CPUs part of the original process CPU
+affinity from which the dataplane and service lcores are excluded.
+
+For example, on a 8 CPUs system, starting a dpdk application with -l 2,3
+(dataplane cores), then depending on the affinity configuration which can be
+controlled with tools like taskset (Linux) or cpuset (FreeBSD),
+
+- with no affinity configuration, the Control Threads will end up on
+  0-1,4-7 CPUs.
+- with affinity restricted to 2-4, the Control Threads will end up on
+  CPU 4.
+- with affinity restricted to 2-3, the Control Threads will end up on
+  CPU 2 (master lcore, which is the default when no CPU is available).
+
 .. _known_issue_label:
 
 Known Issues
@@ -635,7 +656,7 @@ The most important fields in the structure and how they are used are described b
 
 Malloc heap is a doubly-linked list, where each element keeps track of its
 previous and next elements. Due to the fact that hugepage memory can come and
-go, neighbouring malloc elements may not necessarily be adjacent in memory.
+go, neighboring malloc elements may not necessarily be adjacent in memory.
 Also, since a malloc element may span multiple pages, its contents may not
 necessarily be IOVA-contiguous either - each malloc element is only guaranteed
 to be virtually contiguous.

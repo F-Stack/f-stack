@@ -549,6 +549,65 @@ next:
 	}
 }
 
+static int
+vfio_sync_default_container(void)
+{
+	struct rte_mp_msg mp_req, *mp_rep;
+	struct rte_mp_reply mp_reply;
+	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
+	struct vfio_mp_param *p = (struct vfio_mp_param *)mp_req.param;
+	int iommu_type_id;
+	unsigned int i;
+
+	/* cannot be called from primary */
+	if (rte_eal_process_type() != RTE_PROC_SECONDARY)
+		return -1;
+
+	/* default container fd should have been opened in rte_vfio_enable() */
+	if (!default_vfio_cfg->vfio_enabled ||
+			default_vfio_cfg->vfio_container_fd < 0) {
+		RTE_LOG(ERR, EAL, "VFIO support is not initialized\n");
+		return -1;
+	}
+
+	/* find default container's IOMMU type */
+	p->req = SOCKET_REQ_IOMMU_TYPE;
+	strcpy(mp_req.name, EAL_VFIO_MP);
+	mp_req.len_param = sizeof(*p);
+	mp_req.num_fds = 0;
+
+	iommu_type_id = -1;
+	if (rte_mp_request_sync(&mp_req, &mp_reply, &ts) == 0 &&
+			mp_reply.nb_received == 1) {
+		mp_rep = &mp_reply.msgs[0];
+		p = (struct vfio_mp_param *)mp_rep->param;
+		if (p->result == SOCKET_OK)
+			iommu_type_id = p->iommu_type_id;
+		free(mp_reply.msgs);
+	}
+	if (iommu_type_id < 0) {
+		RTE_LOG(ERR, EAL, "Could not get IOMMU type for default container\n");
+		return -1;
+	}
+
+	/* we now have an fd for default container, as well as its IOMMU type.
+	 * now, set up default VFIO container config to match.
+	 */
+	for (i = 0; i < RTE_DIM(iommu_types); i++) {
+		const struct vfio_iommu_type *t = &iommu_types[i];
+		if (t->type_id != iommu_type_id)
+			continue;
+
+		/* we found our IOMMU type */
+		default_vfio_cfg->vfio_iommu_type = t;
+
+		return 0;
+	}
+	RTE_LOG(ERR, EAL, "Could not find IOMMU type id (%i)\n",
+			iommu_type_id);
+	return -1;
+}
+
 int
 rte_vfio_clear_group(int vfio_group_fd)
 {
@@ -745,6 +804,26 @@ rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 			else
 				RTE_LOG(DEBUG, EAL, "Installed memory event callback for VFIO\n");
 		}
+	} else if (rte_eal_process_type() != RTE_PROC_PRIMARY &&
+			vfio_cfg == default_vfio_cfg &&
+			vfio_cfg->vfio_iommu_type == NULL) {
+		/* if we're not a primary process, we do not set up the VFIO
+		 * container because it's already been set up by the primary
+		 * process. instead, we simply ask the primary about VFIO type
+		 * we are using, and set the VFIO config up appropriately.
+		 */
+		ret = vfio_sync_default_container();
+		if (ret < 0) {
+			RTE_LOG(ERR, EAL, "Could not sync default VFIO container\n");
+			close(vfio_group_fd);
+			rte_vfio_clear_group(vfio_group_fd);
+			return -1;
+		}
+		/* we have successfully initialized VFIO, notify user */
+		const struct vfio_iommu_type *t =
+				default_vfio_cfg->vfio_iommu_type;
+		RTE_LOG(NOTICE, EAL, "  using IOMMU type %d (%s)\n",
+				t->type_id, t->name);
 	}
 
 	/* get a file descriptor for the device */
@@ -857,7 +936,8 @@ rte_vfio_release_device(const char *sysfs_base, const char *dev_addr,
 	/* if there are no active device groups, unregister the callback to
 	 * avoid spurious attempts to map/unmap memory from VFIO.
 	 */
-	if (vfio_cfg == default_vfio_cfg && vfio_cfg->vfio_active_groups == 0)
+	if (vfio_cfg == default_vfio_cfg && vfio_cfg->vfio_active_groups == 0 &&
+			rte_eal_process_type() != RTE_PROC_SECONDARY)
 		rte_mem_event_callback_unregister(VFIO_MEM_EVENT_CLB_NAME,
 				NULL);
 
@@ -975,6 +1055,15 @@ vfio_get_default_container_fd(void)
 
 	RTE_LOG(ERR, EAL, "  cannot request default container fd\n");
 	return -1;
+}
+
+int
+vfio_get_iommu_type(void)
+{
+	if (default_vfio_cfg->vfio_iommu_type == NULL)
+		return -1;
+
+	return default_vfio_cfg->vfio_iommu_type->type_id;
 }
 
 const struct vfio_iommu_type *
@@ -1144,6 +1233,19 @@ rte_vfio_get_group_num(const char *sysfs_base,
 }
 
 static int
+type1_map_contig(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
+		size_t len, void *arg)
+{
+	int *vfio_container_fd = arg;
+
+	if (msl->external)
+		return 0;
+
+	return vfio_type1_dma_mem_map(*vfio_container_fd, ms->addr_64, ms->iova,
+			len, 1);
+}
+
+static int
 type1_map(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
 		void *arg)
 {
@@ -1200,6 +1302,13 @@ vfio_type1_dma_mem_map(int vfio_container_fd, uint64_t vaddr, uint64_t iova,
 static int
 vfio_type1_dma_map(int vfio_container_fd)
 {
+	if (rte_eal_iova_mode() == RTE_IOVA_VA) {
+		/* with IOVA as VA mode, we can get away with mapping contiguous
+		 * chunks rather than going page-by-page.
+		 */
+		return rte_memseg_contig_walk(type1_map_contig,
+				&vfio_container_fd);
+	}
 	return rte_memseg_walk(type1_map, &vfio_container_fd);
 }
 
@@ -1719,7 +1828,7 @@ rte_vfio_container_create(void)
 	return vfio_cfgs[i].vfio_container_fd;
 }
 
-int __rte_experimental
+int
 rte_vfio_container_destroy(int container_fd)
 {
 	struct vfio_config *vfio_cfg;

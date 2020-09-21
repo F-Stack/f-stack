@@ -352,12 +352,6 @@ static const struct vhost_device_ops virtio_crypto_device_ops = {
 	.destroy_device = destroy_device,
 };
 
-__attribute__((unused))
-static void clrscr(void)
-{
-	system("@cls||clear");
-}
-
 static int
 vhost_crypto_worker(void *arg)
 {
@@ -503,11 +497,12 @@ main(int argc, char *argv[])
 			if (strstr(dev_info.driver_name,
 				RTE_STR(VHOST_CRYPTO_CDEV_NAME_AESNI_MB_PMD)) ||
 				strstr(dev_info.driver_name,
-				RTE_STR(VHOST_CRYPTO_CDEV_NAME_AESNI_GCM_PMD)))
-			RTE_LOG(ERR, USER1, "Cannot enable zero-copy in %s\n",
+				RTE_STR(VHOST_CRYPTO_CDEV_NAME_AESNI_GCM_PMD))) {
+				RTE_LOG(ERR, USER1, "Cannot enable zero-copy in %s\n",
 					dev_info.driver_name);
-			ret = -EPERM;
-			goto error_exit;
+				ret = -EPERM;
+				goto error_exit;
+			}
 		}
 
 		if (dev_info.max_nb_queue_pairs < info->qid + 1) {

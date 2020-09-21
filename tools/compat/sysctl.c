@@ -35,8 +35,8 @@ sysctl(int *name, unsigned namelen, void *old,
     size_t *oldlenp, const void *new, size_t newlen)
 {
     struct ff_msg *msg, *retmsg = NULL;
-    char *extra_buf = NULL;
-    size_t total_len;
+    char *extra_buf = NULL, *original_buf = NULL;
+    size_t total_len, original_buf_len;
 
     if (old != NULL && oldlenp == NULL) {
         errno = EINVAL;
@@ -62,6 +62,8 @@ sysctl(int *name, unsigned namelen, void *old,
             ff_ipc_msg_free(msg);
             return -1;
         }
+        original_buf = msg->buf_addr;
+        original_buf_len = msg->buf_len;
         msg->buf_addr = extra_buf;
         msg->buf_len = total_len; 
     }
@@ -71,9 +73,9 @@ sysctl(int *name, unsigned namelen, void *old,
     msg->msg_type = FF_SYSCTL;
     msg->sysctl.name = (int *)buf_addr;
     msg->sysctl.namelen = namelen;
-    memcpy(msg->sysctl.name, name, namelen*sizeof(int));
+    memcpy(msg->sysctl.name, name, namelen * sizeof(int));
 
-    buf_addr += namelen*sizeof(int);
+    buf_addr += namelen * sizeof(int);
 
     if (new != NULL && newlen != 0) {
         msg->sysctl.new = buf_addr;
@@ -106,25 +108,17 @@ sysctl(int *name, unsigned namelen, void *old,
     int ret = ff_ipc_send(msg);
     if (ret < 0) {
         errno = EPIPE;
-        ff_ipc_msg_free(msg);
-        if (extra_buf) {
-            rte_free(extra_buf);
-        }
-        return -1;
+        goto error;
     }
 
     do {
         if (retmsg != NULL) {
             ff_ipc_msg_free(retmsg);
         }
-        ret = ff_ipc_recv(&retmsg);
+        ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
-            ff_ipc_msg_free(msg);
-            if (extra_buf) {
-                rte_free(extra_buf);
-            }
-            return -1;
+            goto error;
         }
     } while (msg != retmsg);
 
@@ -142,6 +136,11 @@ sysctl(int *name, unsigned namelen, void *old,
         errno = retmsg->result;
     }
 
+error:
+    if (original_buf) {
+        msg->buf_addr = original_buf;
+        msg->buf_len = original_buf_len;
+    }
     ff_ipc_msg_free(msg);
     if (extra_buf) {
         rte_free(extra_buf);

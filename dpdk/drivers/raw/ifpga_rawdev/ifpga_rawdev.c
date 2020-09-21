@@ -177,7 +177,7 @@ ifpga_rawdev_reset(struct rte_rawdev *dev)
 }
 
 static int
-fpga_pr(struct rte_rawdev *raw_dev, u32 port_id, u64 *buffer, u32 size,
+fpga_pr(struct rte_rawdev *raw_dev, u32 port_id, const char *buffer, u32 size,
 			u64 *status)
 {
 
@@ -244,9 +244,15 @@ rte_fpga_do_pr(struct rte_rawdev *rawdev, int port_id,
 	if (ret) {
 		IFPGA_RAWDEV_PMD_ERR("stat on bitstream file failed: %s\n",
 				file_name);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto close_fd;
 	}
 	buffer_size = file_stat.st_size;
+	if (buffer_size <= 0) {
+		ret = -EINVAL;
+		goto close_fd;
+	}
+
 	IFPGA_RAWDEV_PMD_INFO("bitstream file size: %zu\n", buffer_size);
 	buffer = rte_malloc(NULL, buffer_size, 0);
 	if (!buffer) {
@@ -409,9 +415,10 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 	data->device_id = pci_dev->id.device_id;
 	data->vendor_id = pci_dev->id.vendor_id;
 
+	adapter = rawdev->dev_private;
 	/* create a opae_adapter based on above device data */
-	adapter = opae_adapter_alloc(pci_dev->device.name, data);
-	if (!adapter) {
+	ret = opae_adapter_init(adapter, pci_dev->device.name, data);
+	if (ret) {
 		ret = -ENOMEM;
 		goto free_adapter_data;
 	}
@@ -420,12 +427,10 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 	rawdev->device = &pci_dev->device;
 	rawdev->driver_name = pci_dev->device.driver->name;
 
-	rawdev->dev_private = adapter;
-
 	/* must enumerate the adapter before use it */
 	ret = opae_adapter_enumerate(adapter);
 	if (ret)
-		goto free_adapter;
+		goto free_adapter_data;
 
 	/* get opae_manager to rawdev */
 	mgr = opae_adapter_get_mgr(adapter);
@@ -436,9 +441,6 @@ ifpga_rawdev_create(struct rte_pci_device *pci_dev,
 
 	return ret;
 
-free_adapter:
-	if (adapter)
-		opae_adapter_free(adapter);
 free_adapter_data:
 	if (data)
 		opae_adapter_data_free(data);

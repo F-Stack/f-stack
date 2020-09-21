@@ -36,7 +36,7 @@ typedef struct telemetry_impl {
 	pthread_t thread_id;
 	int thread_status;
 	uint32_t socket_id;
-	int reg_index;
+	int reg_index[RTE_MAX_ETHPORTS];
 	int metrics_register_done;
 	TAILQ_HEAD(, telemetry_client) client_list_head;
 	struct telemetry_client *request_client;
@@ -77,5 +77,8 @@ rte_telemetry_send_ports_stats_values(uint32_t *metric_ids, int num_metric_ids,
 
 int32_t
 rte_telemetry_socket_messaging_testing(int index, int socket);
+
+int32_t
+rte_telemetry_parser_test(struct telemetry_impl *telemetry);
 
 #endif

@@ -6,9 +6,10 @@
 march_opt = '-march=@0@'.format(machine)
 
 arm_force_native_march = false
+arm_force_default_march = (machine == 'default')
 
 machine_args_generic = [
-	['default', ['-march=armv8-a+crc+crypto']],
+	['default', ['-march=armv8-a+crc']],
 	['native', ['-march=native']],
 	['0xd03', ['-mcpu=cortex-a53']],
 	['0xd04', ['-mcpu=cortex-a35']],
@@ -47,6 +48,7 @@ flags_common_default = [
 flags_generic = [
 	['RTE_MACHINE', '"armv8a"'],
 	['RTE_MAX_LCORE', 256],
+	['RTE_USE_C11_MEM_MODEL', true],
 	['RTE_CACHE_LINE_SIZE', 128]]
 flags_cavium = [
 	['RTE_MACHINE', '"thunderx"'],
@@ -57,11 +59,13 @@ flags_cavium = [
 	['RTE_USE_C11_MEM_MODEL', false]]
 flags_dpaa = [
 	['RTE_MACHINE', '"dpaa"'],
+	['RTE_USE_C11_MEM_MODEL', true],
 	['RTE_CACHE_LINE_SIZE', 64],
 	['RTE_MAX_NUMA_NODES', 1],
 	['RTE_MAX_LCORE', 16]]
 flags_dpaa2 = [
 	['RTE_MACHINE', '"dpaa2"'],
+	['RTE_USE_C11_MEM_MODEL', true],
 	['RTE_CACHE_LINE_SIZE', 64],
 	['RTE_MAX_NUMA_NODES', 1],
 	['RTE_MAX_LCORE', 16],
@@ -86,7 +90,7 @@ impl_dpaa2 = ['NXP DPAA2', flags_dpaa2, machine_args_generic]
 
 dpdk_conf.set('RTE_FORCE_INTRINSICS', 1)
 
-if cc.sizeof('void *') != 8
+if not dpdk_conf.get('RTE_ARCH_64')
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 64)
 	dpdk_conf.set('RTE_ARCH_ARM', 1)
 	dpdk_conf.set('RTE_ARCH_ARMv7', 1)
@@ -96,13 +100,15 @@ if cc.sizeof('void *') != 8
 else
 	dpdk_conf.set('RTE_CACHE_LINE_SIZE', 128)
 	dpdk_conf.set('RTE_ARCH_ARM64', 1)
-	dpdk_conf.set('RTE_ARCH_64', 1)
 
 	machine = []
 	cmd_generic = ['generic', '', '', 'default', '']
 	cmd_output = cmd_generic # Set generic by default
 	machine_args = [] # Clear previous machine args
-	if not meson.is_cross_build()
+	if arm_force_default_march and not meson.is_cross_build()
+		machine = impl_generic
+		impl_pn = 'default'
+	elif not meson.is_cross_build()
 		# The script returns ['Implementer', 'Variant', 'Architecture',
 		# 'Primary Part number', 'Revision']
 		detect_vendor = find_program(join_paths(
@@ -112,8 +118,8 @@ else
 			cmd_output = cmd.stdout().to_lower().strip().split(' ')
 		endif
 		# Set to generic if variable is not found
-		machine = get_variable('impl_' + cmd_output[0], 'generic')
-		if machine == 'generic'
+		machine = get_variable('impl_' + cmd_output[0], ['generic'])
+		if machine[0] == 'generic'
 			machine = impl_generic
 			cmd_output = cmd_generic
 		endif

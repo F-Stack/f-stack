@@ -188,6 +188,8 @@ struct fwd_engine * fwd_engines[] = {
 	NULL,
 };
 
+struct rte_mempool *mempools[RTE_MAX_NUMA_NODES];
+
 struct fwd_config cur_fwd_config;
 struct fwd_engine *cur_fwd_eng = &io_fwd_engine; /**< IO mode by default. */
 uint32_t retry_enabled;
@@ -844,7 +846,7 @@ setup_extmem(uint32_t nb_mbufs, uint32_t mbuf_sz, bool huge)
 /*
  * Configuration initialisation done once at init time.
  */
-static void
+static struct rte_mempool *
 mbuf_pool_create(uint16_t mbuf_seg_size, unsigned nb_mbuf,
 		 unsigned int socket_id)
 {
@@ -922,6 +924,7 @@ err:
 	} else if (verbose_level > 0) {
 		rte_mempool_dump(stdout, rte_mp);
 	}
+	return rte_mp;
 }
 
 /*
@@ -1139,14 +1142,18 @@ init_config(void)
 		uint8_t i;
 
 		for (i = 0; i < num_sockets; i++)
-			mbuf_pool_create(mbuf_data_size, nb_mbuf_per_pool,
-					 socket_ids[i]);
+			mempools[i] = mbuf_pool_create(mbuf_data_size,
+						       nb_mbuf_per_pool,
+						       socket_ids[i]);
 	} else {
 		if (socket_num == UMA_NO_CONFIG)
-			mbuf_pool_create(mbuf_data_size, nb_mbuf_per_pool, 0);
+			mempools[0] = mbuf_pool_create(mbuf_data_size,
+						       nb_mbuf_per_pool, 0);
 		else
-			mbuf_pool_create(mbuf_data_size, nb_mbuf_per_pool,
-						 socket_num);
+			mempools[socket_num] = mbuf_pool_create
+							(mbuf_data_size,
+							 nb_mbuf_per_pool,
+							 socket_num);
 	}
 
 	init_port_config();
@@ -1388,7 +1395,7 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		printf("  RX-packets: %-14"PRIu64" RX-dropped: %-14"PRIu64"RX-total: "
 		       "%-"PRIu64"\n",
 		       stats->ipackets, stats->imissed,
-		       (uint64_t) (stats->ipackets + stats->imissed));
+		       stats->ipackets + stats->imissed);
 
 		if (cur_fwd_eng == &csum_fwd_engine)
 			printf("  Bad-ipcsum: %-14"PRIu64" Bad-l4csum: %-14"PRIu64"Bad-outer-l4csum: %-14"PRIu64"\n",
@@ -1402,13 +1409,13 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		printf("  TX-packets: %-14"PRIu64" TX-dropped: %-14"PRIu64"TX-total: "
 		       "%-"PRIu64"\n",
 		       stats->opackets, port->tx_dropped,
-		       (uint64_t) (stats->opackets + port->tx_dropped));
+		       stats->opackets + port->tx_dropped);
 	}
 	else {
 		printf("  RX-packets:             %14"PRIu64"    RX-dropped:%14"PRIu64"    RX-total:"
 		       "%14"PRIu64"\n",
 		       stats->ipackets, stats->imissed,
-		       (uint64_t) (stats->ipackets + stats->imissed));
+		       stats->ipackets + stats->imissed);
 
 		if (cur_fwd_eng == &csum_fwd_engine)
 			printf("  Bad-ipcsum:%14"PRIu64"    Bad-l4csum:%14"PRIu64"    Bad-outer-l4csum: %-14"PRIu64"\n",
@@ -1423,7 +1430,7 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		printf("  TX-packets:             %14"PRIu64"    TX-dropped:%14"PRIu64"    TX-total:"
 		       "%14"PRIu64"\n",
 		       stats->opackets, port->tx_dropped,
-		       (uint64_t) (stats->opackets + port->tx_dropped));
+		       stats->opackets + port->tx_dropped);
 	}
 
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
@@ -1471,15 +1478,19 @@ fwd_stream_stats_display(streamid_t stream_id)
 	       "TX Port=%2d/Queue=%2d %s\n",
 	       fwd_top_stats_border, fs->rx_port, fs->rx_queue,
 	       fs->tx_port, fs->tx_queue, fwd_top_stats_border);
-	printf("  RX-packets: %-14u TX-packets: %-14u TX-dropped: %-14u",
+	printf("  RX-packets: %-14"PRIu64" TX-packets: %-14"PRIu64
+	       " TX-dropped: %-14"PRIu64,
 	       fs->rx_packets, fs->tx_packets, fs->fwd_dropped);
 
 	/* if checksum mode */
 	if (cur_fwd_eng == &csum_fwd_engine) {
-	       printf("  RX- bad IP checksum: %-14u  Rx- bad L4 checksum: "
-			"%-14u Rx- bad outer L4 checksum: %-14u\n",
+		printf("  RX- bad IP checksum: %-14"PRIu64
+		       "  Rx- bad L4 checksum: %-14"PRIu64
+		       " Rx- bad outer L4 checksum: %-14"PRIu64"\n",
 			fs->rx_bad_ip_csum, fs->rx_bad_l4_csum,
 			fs->rx_bad_outer_l4_csum);
+	} else {
+		printf("\n");
 	}
 
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
@@ -1755,9 +1766,6 @@ stop_packet_forwarding(void)
 	uint64_t total_rx_dropped;
 	uint64_t total_tx_dropped;
 	uint64_t total_rx_nombuf;
-	uint64_t tx_dropped;
-	uint64_t rx_bad_ip_csum;
-	uint64_t rx_bad_l4_csum;
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t fwd_cycles;
 #endif
@@ -1784,38 +1792,22 @@ stop_packet_forwarding(void)
 	fwd_cycles = 0;
 #endif
 	for (sm_id = 0; sm_id < cur_fwd_config.nb_fwd_streams; sm_id++) {
+		struct fwd_stream *fs = fwd_streams[sm_id];
+
 		if (cur_fwd_config.nb_fwd_streams >
 		    cur_fwd_config.nb_fwd_ports) {
 			fwd_stream_stats_display(sm_id);
-			ports[fwd_streams[sm_id]->tx_port].tx_stream = NULL;
-			ports[fwd_streams[sm_id]->rx_port].rx_stream = NULL;
+			ports[fs->tx_port].tx_stream = NULL;
+			ports[fs->rx_port].rx_stream = NULL;
 		} else {
-			ports[fwd_streams[sm_id]->tx_port].tx_stream =
-				fwd_streams[sm_id];
-			ports[fwd_streams[sm_id]->rx_port].rx_stream =
-				fwd_streams[sm_id];
+			ports[fs->tx_port].tx_stream = fs;
+			ports[fs->rx_port].rx_stream = fs;
 		}
-		tx_dropped = ports[fwd_streams[sm_id]->tx_port].tx_dropped;
-		tx_dropped = (uint64_t) (tx_dropped +
-					 fwd_streams[sm_id]->fwd_dropped);
-		ports[fwd_streams[sm_id]->tx_port].tx_dropped = tx_dropped;
-
-		rx_bad_ip_csum =
-			ports[fwd_streams[sm_id]->rx_port].rx_bad_ip_csum;
-		rx_bad_ip_csum = (uint64_t) (rx_bad_ip_csum +
-					 fwd_streams[sm_id]->rx_bad_ip_csum);
-		ports[fwd_streams[sm_id]->rx_port].rx_bad_ip_csum =
-							rx_bad_ip_csum;
-
-		rx_bad_l4_csum =
-			ports[fwd_streams[sm_id]->rx_port].rx_bad_l4_csum;
-		rx_bad_l4_csum = (uint64_t) (rx_bad_l4_csum +
-					 fwd_streams[sm_id]->rx_bad_l4_csum);
-		ports[fwd_streams[sm_id]->rx_port].rx_bad_l4_csum =
-							rx_bad_l4_csum;
-
-		ports[fwd_streams[sm_id]->rx_port].rx_bad_outer_l4_csum +=
-				fwd_streams[sm_id]->rx_bad_outer_l4_csum;
+		ports[fs->tx_port].tx_dropped += fs->fwd_dropped;
+		ports[fs->rx_port].rx_bad_ip_csum += fs->rx_bad_ip_csum;
+		ports[fs->rx_port].rx_bad_l4_csum += fs->rx_bad_l4_csum;
+		ports[fs->rx_port].rx_bad_outer_l4_csum +=
+				fs->rx_bad_outer_l4_csum;
 
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 		fwd_cycles = (uint64_t) (fwd_cycles +
@@ -2298,7 +2290,7 @@ attach_port(char *identifier)
 		return;
 	}
 
-	if (rte_dev_probe(identifier) != 0) {
+	if (rte_dev_probe(identifier) < 0) {
 		TESTPMD_LOG(ERR, "Failed to attach port %s\n", identifier);
 		return;
 	}
@@ -2368,7 +2360,7 @@ detach_port_device(portid_t port_id)
 			port_flow_flush(port_id);
 	}
 
-	if (rte_dev_remove(dev) != 0) {
+	if (rte_dev_remove(dev) < 0) {
 		TESTPMD_LOG(ERR, "Failed to detach device %s\n", dev->name);
 		return;
 	}
@@ -2399,6 +2391,7 @@ pmd_test_exit(void)
 	struct rte_device *device;
 	portid_t pt_id;
 	int ret;
+	int i;
 
 	if (test_done == 0)
 		stop_packet_forwarding();
@@ -2406,9 +2399,13 @@ pmd_test_exit(void)
 	if (ports != NULL) {
 		no_link_check = 1;
 		RTE_ETH_FOREACH_DEV(pt_id) {
-			printf("\nShutting down port %d...\n", pt_id);
+			printf("\nStopping port %d...\n", pt_id);
 			fflush(stdout);
 			stop_port(pt_id);
+		}
+		RTE_ETH_FOREACH_DEV(pt_id) {
+			printf("\nShutting down port %d...\n", pt_id);
+			fflush(stdout);
 			close_port(pt_id);
 
 			/*
@@ -2447,6 +2444,10 @@ pmd_test_exit(void)
 				"fail to disable hotplug handling.\n");
 			return;
 		}
+	}
+	for (i = 0 ; i < RTE_MAX_NUMA_NODES ; i++) {
+		if (mempools[i])
+			rte_mempool_free(mempools[i]);
 	}
 
 	printf("\nBye...\n");
@@ -2734,9 +2735,13 @@ static void
 rxtx_port_config(struct rte_port *port)
 {
 	uint16_t qid;
+	uint64_t offloads;
 
 	for (qid = 0; qid < nb_rxq; qid++) {
+		offloads = port->rx_conf[qid].offloads;
 		port->rx_conf[qid] = port->dev_info.default_rxconf;
+		if (offloads != 0)
+			port->rx_conf[qid].offloads = offloads;
 
 		/* Check if any Rx parameters have been passed */
 		if (rx_pthresh != RTE_PMD_PARAM_UNSET)
@@ -2758,7 +2763,10 @@ rxtx_port_config(struct rte_port *port)
 	}
 
 	for (qid = 0; qid < nb_txq; qid++) {
+		offloads = port->tx_conf[qid].offloads;
 		port->tx_conf[qid] = port->dev_info.default_txconf;
+		if (offloads != 0)
+			port->tx_conf[qid].offloads = offloads;
 
 		/* Check if any Tx parameters have been passed */
 		if (tx_pthresh != RTE_PMD_PARAM_UNSET)
@@ -2961,8 +2969,9 @@ init_port_dcb_config(portid_t pid,
 	port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_FILTER;
 
 	/* re-configure the device . */
-	rte_eth_dev_configure(pid, nb_rxq, nb_rxq, &port_conf);
-
+	retval = rte_eth_dev_configure(pid, nb_rxq, nb_rxq, &port_conf);
+	if (retval < 0)
+		return retval;
 	rte_eth_dev_info_get(pid, &rte_port->dev_info);
 
 	/* If dev_info.vmdq_pool_base is greater than 0,
@@ -3054,6 +3063,8 @@ print_stats(void)
 	printf("\nPort statistics ====================================");
 	for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++)
 		nic_stats_display(fwd_ports_ids[i]);
+
+	fflush(stdout);
 }
 
 static void
@@ -3067,7 +3078,8 @@ signal_handler(int signum)
 		rte_pdump_uninit();
 #endif
 #ifdef RTE_LIBRTE_LATENCY_STATS
-		rte_latencystats_uninit();
+		if (latencystats_enabled != 0)
+			rte_latencystats_uninit();
 #endif
 		force_quit();
 		/* Set flag to indicate the force termination. */

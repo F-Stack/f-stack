@@ -119,6 +119,8 @@ int bnx2x_ilog2(int x)
 #define ilog2(x) bnx2x_ilog2(x)
 #endif
 
+#define BNX2X_BC_VER		0x040200
+
 #include "ecore_sp.h"
 
 struct bnx2x_device_type {
@@ -153,13 +155,14 @@ struct bnx2x_device_type {
  * Transmit Buffer Descriptor (tx_bd) definitions*
  */
 /* NUM_TX_PAGES must be a power of 2. */
+#define NUM_TX_PAGES		 16
 #define TOTAL_TX_BD_PER_PAGE     (BNX2X_PAGE_SIZE / sizeof(union eth_tx_bd_types)) /*  256 */
 #define USABLE_TX_BD_PER_PAGE    (TOTAL_TX_BD_PER_PAGE - 1)                      /*  255 */
 
 #define TOTAL_TX_BD(q)           (TOTAL_TX_BD_PER_PAGE * q->nb_tx_pages)         /*  512 */
 #define USABLE_TX_BD(q)          (USABLE_TX_BD_PER_PAGE * q->nb_tx_pages)        /*  510 */
 #define MAX_TX_BD(q)             (TOTAL_TX_BD(q) - 1)                            /*  511 */
-
+#define MAX_TX_AVAIL		 (USABLE_TX_BD_PER_PAGE * NUM_TX_PAGES - 2)
 #define NEXT_TX_BD(x)                                                   \
 	((((x) & USABLE_TX_BD_PER_PAGE) ==                              \
 	  (USABLE_TX_BD_PER_PAGE - 1)) ? (x) + 2 : (x) + 1)
@@ -180,13 +183,14 @@ struct bnx2x_device_type {
 /*
  * Receive Buffer Descriptor (rx_bd) definitions*
  */
-//#define NUM_RX_PAGES            1
+#define MAX_RX_PAGES            8
 #define TOTAL_RX_BD_PER_PAGE    (BNX2X_PAGE_SIZE / sizeof(struct eth_rx_bd))      /*  512 */
 #define USABLE_RX_BD_PER_PAGE   (TOTAL_RX_BD_PER_PAGE - 2)                      /*  510 */
 #define RX_BD_PER_PAGE_MASK     (TOTAL_RX_BD_PER_PAGE - 1)                      /*  511 */
 #define TOTAL_RX_BD(q)          (TOTAL_RX_BD_PER_PAGE * q->nb_rx_pages)         /*  512 */
 #define USABLE_RX_BD(q)         (USABLE_RX_BD_PER_PAGE * q->nb_rx_pages)        /*  510 */
 #define MAX_RX_BD(q)            (TOTAL_RX_BD(q) - 1)                            /*  511 */
+#define MAX_RX_AVAIL		(USABLE_RX_BD_PER_PAGE * MAX_RX_PAGES - 2)
 #define RX_BD_NEXT_PAGE_DESC_CNT 2
 
 #define NEXT_RX_BD(x)                                                   \
@@ -241,6 +245,10 @@ struct bnx2x_device_type {
 	(BD_TH_LO(sc) + DROPLESS_FC_HEADROOM)
 #define MIN_RX_AVAIL(sc)				\
 	((sc)->dropless_fc ? BD_TH_HI(sc) + 128 : 128)
+
+#define MIN_RX_SIZE_NONTPA_HW	ETH_MIN_RX_CQES_WITHOUT_TPA
+#define MIN_RX_SIZE_NONTPA	(RTE_MAX((uint32_t)MIN_RX_SIZE_NONTPA_HW,\
+					(uint32_t)MIN_RX_AVAIL(sc)))
 
 /*
  * dropless fc calculations for RCQs
@@ -319,6 +327,7 @@ struct bnx2x_dma {
 	rte_iova_t              paddr;
 	void                    *vaddr;
 	int                     nseg;
+	const void		*mzone;
 	char                    msg[RTE_MEMZONE_NAMESIZE - 6];
 };
 
@@ -1089,7 +1098,7 @@ struct bnx2x_softc {
 #define PERIODIC_STOP 0
 #define PERIODIC_GO   1
 	volatile unsigned long periodic_flags;
-
+	rte_atomic32_t	scan_fp;
 	struct bnx2x_fastpath fp[MAX_RSS_CHAINS];
 	struct bnx2x_sp_objs  sp_objs[MAX_RSS_CHAINS];
 
@@ -1753,7 +1762,7 @@ int  bnx2x_cmpxchg(volatile int *addr, int old, int new);
 
 int bnx2x_dma_alloc(struct bnx2x_softc *sc, size_t size,
 		struct bnx2x_dma *dma, const char *msg, uint32_t align);
-
+void bnx2x_dma_free(struct bnx2x_dma *dma);
 uint32_t bnx2x_dmae_opcode_add_comp(uint32_t opcode, uint8_t comp_type);
 uint32_t bnx2x_dmae_opcode_clr_src_reset(uint32_t opcode);
 uint32_t bnx2x_dmae_opcode(struct bnx2x_softc *sc, uint8_t src_type,
@@ -1937,7 +1946,8 @@ void bnx2x_dump_tx_chain(struct bnx2x_fastpath * fp, int bd_prod, int count);
 int bnx2x_tx_encap(struct bnx2x_tx_queue *txq, struct rte_mbuf *m0);
 uint8_t bnx2x_txeof(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp);
 void bnx2x_print_adapter_info(struct bnx2x_softc *sc);
-int bnx2x_intr_legacy(struct bnx2x_softc *sc, int scan_fp);
+void bnx2x_print_device_info(struct bnx2x_softc *sc);
+int bnx2x_intr_legacy(struct bnx2x_softc *sc);
 void bnx2x_link_status_update(struct bnx2x_softc *sc);
 int bnx2x_complete_sp(struct bnx2x_softc *sc);
 int bnx2x_set_storm_rx_mode(struct bnx2x_softc *sc);
@@ -1984,7 +1994,7 @@ bnx2x_set_rx_mode(struct bnx2x_softc *sc)
 			bnx2x_vf_set_rx_mode(sc);
 		}
 	} else {
-		PMD_DRV_LOG(NOTICE, sc, "Card is not ready to change mode");
+		PMD_DRV_LOG(INFO, sc, "Card is not ready to change mode");
 	}
 }
 

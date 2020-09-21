@@ -34,9 +34,6 @@ endif
 
 enabled_libs = [] # used to print summary at the end
 
-# -D_GNU_SOURCE unconditionally
-default_cflags += '-D_GNU_SOURCE'
-
 foreach l:libraries
 	build = true
 	name = l
@@ -79,7 +76,7 @@ foreach l:libraries
 			foreach d:deps
 				if not is_variable('shared_rte_' + d)
 					error('Missing dependency ' + d +
-						' for library ' + lib_name)
+						' for library ' + libname)
 				endif
 				shared_deps += [get_variable('shared_rte_' + d)]
 				static_deps += [get_variable('static_rte_' + d)]

@@ -100,7 +100,8 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 		}
 	}
 	nb_q_per_grp = bp->rx_cp_nr_rings / pools;
-	PMD_DRV_LOG(ERR, "pools = %u nb_q_per_grp = %u\n", pools, nb_q_per_grp);
+	PMD_DRV_LOG(DEBUG, "pools = %u nb_q_per_grp = %u\n",
+		    pools, nb_q_per_grp);
 	start_grp_id = 0;
 	end_grp_id = nb_q_per_grp;
 
@@ -287,7 +288,7 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 			       const struct rte_eth_rxconf *rx_conf,
 			       struct rte_mempool *mp)
 {
-	struct bnxt *bp = (struct bnxt *)eth_dev->data->dev_private;
+	struct bnxt *bp = eth_dev->data->dev_private;
 	uint64_t rx_offloads = eth_dev->data->dev_conf.rxmode.offloads;
 	struct bnxt_rx_queue *rxq;
 	int rc = 0;
@@ -372,7 +373,7 @@ bnxt_rx_queue_intr_enable_op(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 			return rc;
 		}
 		cpr = rxq->cp_ring;
-		B_CP_DB_ARM(cpr);
+		B_CP_DB_REARM(cpr, cpr->cp_raw_cons);
 	}
 	return rc;
 }
@@ -398,7 +399,7 @@ bnxt_rx_queue_intr_disable_op(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 
 int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct bnxt *bp = (struct bnxt *)dev->data->dev_private;
+	struct bnxt *bp = dev->data->dev_private;
 	struct rte_eth_conf *dev_conf = &bp->eth_dev->data->dev_conf;
 	struct bnxt_rx_queue *rxq = bp->rx_queues[rx_queue_id];
 	struct bnxt_vnic_info *vnic = NULL;
@@ -438,7 +439,7 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 
 int bnxt_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 {
-	struct bnxt *bp = (struct bnxt *)dev->data->dev_private;
+	struct bnxt *bp = dev->data->dev_private;
 	struct rte_eth_conf *dev_conf = &bp->eth_dev->data->dev_conf;
 	struct bnxt_vnic_info *vnic = NULL;
 	struct bnxt_rx_queue *rxq = NULL;

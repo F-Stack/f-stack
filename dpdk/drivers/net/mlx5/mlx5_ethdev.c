@@ -131,7 +131,7 @@ static int
 mlx5_get_master_ifname(const struct rte_eth_dev *dev,
 		       char (*ifname)[IF_NAMESIZE])
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	DIR *dir;
 	struct dirent *dent;
 	unsigned int dev_type = 0;
@@ -219,7 +219,7 @@ try_dev_id:
 int
 mlx5_get_ifname(const struct rte_eth_dev *dev, char (*ifname)[IF_NAMESIZE])
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int ifindex =
 		priv->nl_socket_rdma >= 0 ?
 		mlx5_nl_ifindex(priv->nl_socket_rdma, priv->ibdev_name) : 0;
@@ -377,7 +377,7 @@ mlx5_set_flags(struct rte_eth_dev *dev, unsigned int keep, unsigned int flags)
 int
 mlx5_dev_configure(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int rxqs_n = dev->data->nb_rx_queues;
 	unsigned int txqs_n = dev->data->nb_tx_queues;
 	unsigned int i;
@@ -460,7 +460,7 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 static void
 mlx5_set_default_params(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 
 	/* Minimum CPU utilization. */
 	info->default_rxportconf.ring_size = 256;
@@ -499,7 +499,7 @@ mlx5_set_default_params(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 void
 mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_dev_config *config = &priv->config;
 	unsigned int max;
 	char ifname[IF_NAMESIZE];
@@ -540,7 +540,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 
 		i = RTE_MIN(mlx5_dev_to_port_id(dev->device, port_id, i), i);
 		while (i--) {
-			struct priv *opriv =
+			struct mlx5_priv *opriv =
 				rte_eth_devices[port_id[i]].data->dev_private;
 
 			if (!opriv ||
@@ -609,7 +609,7 @@ static int
 mlx5_link_update_unlocked_gset(struct rte_eth_dev *dev,
 			       struct rte_eth_link *link)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct ethtool_cmd edata = {
 		.cmd = ETHTOOL_GSET /* Deprecated since Linux v4.5. */
 	};
@@ -685,7 +685,7 @@ mlx5_link_update_unlocked_gs(struct rte_eth_dev *dev,
 			     struct rte_eth_link *link)
 
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct ethtool_link_settings gcmd = { .cmd = ETHTOOL_GLINKSETTINGS };
 	struct ifreq ifr;
 	struct rte_eth_link dev_link;
@@ -730,7 +730,8 @@ mlx5_link_update_unlocked_gs(struct rte_eth_dev *dev,
 			dev->data->port_id, strerror(rte_errno));
 		return ret;
 	}
-	dev_link.link_speed = ecmd->speed;
+	dev_link.link_speed = (ecmd->speed == UINT32_MAX) ? ETH_SPEED_NUM_NONE :
+							    ecmd->speed;
 	sc = ecmd->link_mode_masks[0] |
 		((uint64_t)ecmd->link_mode_masks[1] << 32);
 	priv->link_speed_capa = 0;
@@ -802,7 +803,7 @@ mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 
 	do {
 		ret = mlx5_link_update_unlocked_gs(dev, &dev_link);
-		if (ret)
+		if (ret == -ENOTSUP)
 			ret = mlx5_link_update_unlocked_gset(dev, &dev_link);
 		if (ret == 0)
 			break;
@@ -840,7 +841,7 @@ mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 int
 mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	uint16_t kern_mtu = 0;
 	int ret;
 
@@ -1015,7 +1016,7 @@ mlx5_ibv_device_to_pci_addr(const struct ibv_device *device,
 static uint32_t
 mlx5_dev_status_handler(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct ibv_async_event event;
 	uint32_t ret = 0;
 
@@ -1087,7 +1088,7 @@ mlx5_dev_handler_socket(void *cb_arg)
 void
 mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 
 	if (dev->data->dev_conf.intr_conf.lsc ||
 	    dev->data->dev_conf.intr_conf.rmv)
@@ -1111,7 +1112,7 @@ mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev)
 void
 mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	int ret;
 	int flags;
 
@@ -1187,7 +1188,7 @@ mlx5_set_link_up(struct rte_eth_dev *dev)
 eth_tx_burst_t
 mlx5_select_tx_function(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	eth_tx_burst_t tx_pkt_burst = mlx5_tx_burst;
 	struct mlx5_dev_config *config = &priv->config;
 	uint64_t tx_offloads = dev->data->dev_conf.txmode.offloads;
@@ -1271,7 +1272,7 @@ int
 mlx5_is_removed(struct rte_eth_dev *dev)
 {
 	struct ibv_device_attr device_attr;
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 
 	if (mlx5_glue->query_device(priv->ctx, &device_attr) == EIO)
 		return 1;

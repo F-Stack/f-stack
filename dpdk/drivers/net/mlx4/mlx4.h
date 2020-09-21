@@ -72,17 +72,19 @@ struct rxq;
 struct txq;
 struct rte_flow;
 
-LIST_HEAD(mlx4_dev_list, priv);
+LIST_HEAD(mlx4_dev_list, mlx4_priv);
 LIST_HEAD(mlx4_mr_list, mlx4_mr);
 
 /** Private data structure. */
-struct priv {
-	LIST_ENTRY(priv) mem_event_cb; /* Called by memory event callback. */
-	struct rte_eth_dev *dev; /**< Ethernet device. */
+struct mlx4_priv {
+	LIST_ENTRY(mlx4_priv) mem_event_cb;
+	/**< Called by memory event callback. */
+	struct rte_eth_dev_data *dev_data;  /* Pointer to device data. */
 	struct ibv_context *ctx; /**< Verbs context. */
 	struct ibv_device_attr device_attr; /**< Device properties. */
 	struct ibv_pd *pd; /**< Protection Domain. */
 	/* Device properties. */
+	unsigned int if_index;	/**< Associated network device index */
 	uint16_t mtu; /**< Configured MTU. */
 	uint8_t port; /**< Physical port number. */
 	uint32_t started:1; /**< Device started, flows enabled. */
@@ -112,11 +114,14 @@ struct priv {
 	/**< Configured MAC addresses. Unused entries are zeroed. */
 };
 
+#define PORT_ID(priv) ((priv)->dev_data->port_id)
+#define ETH_DEV(priv) (&rte_eth_devices[PORT_ID(priv)])
+
 /* mlx4_ethdev.c */
 
-int mlx4_get_ifname(const struct priv *priv, char (*ifname)[IF_NAMESIZE]);
-int mlx4_get_mac(struct priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN]);
-int mlx4_mtu_get(struct priv *priv, uint16_t *mtu);
+int mlx4_get_ifname(const struct mlx4_priv *priv, char (*ifname)[IF_NAMESIZE]);
+int mlx4_get_mac(struct mlx4_priv *priv, uint8_t (*mac)[ETHER_ADDR_LEN]);
+int mlx4_mtu_get(struct mlx4_priv *priv, uint16_t *mtu);
 int mlx4_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 int mlx4_dev_set_link_down(struct rte_eth_dev *dev);
 int mlx4_dev_set_link_up(struct rte_eth_dev *dev);
@@ -143,10 +148,10 @@ int mlx4_is_removed(struct rte_eth_dev *dev);
 
 /* mlx4_intr.c */
 
-int mlx4_intr_uninstall(struct priv *priv);
-int mlx4_intr_install(struct priv *priv);
-int mlx4_rxq_intr_enable(struct priv *priv);
-void mlx4_rxq_intr_disable(struct priv *priv);
+int mlx4_intr_uninstall(struct mlx4_priv *priv);
+int mlx4_intr_install(struct mlx4_priv *priv);
+int mlx4_rxq_intr_enable(struct mlx4_priv *priv);
+void mlx4_rxq_intr_disable(struct mlx4_priv *priv);
 int mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx);
 int mlx4_rx_intr_enable(struct rte_eth_dev *dev, uint16_t idx);
 

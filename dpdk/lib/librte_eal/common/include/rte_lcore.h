@@ -23,10 +23,47 @@ extern "C" {
 #define LCORE_ID_ANY     UINT32_MAX       /**< Any lcore. */
 
 #if defined(__linux__)
-	typedef	cpu_set_t rte_cpuset_t;
+typedef	cpu_set_t rte_cpuset_t;
+#define RTE_CPU_AND(dst, src1, src2) CPU_AND(dst, src1, src2)
+#define RTE_CPU_OR(dst, src1, src2) CPU_OR(dst, src1, src2)
+#define RTE_CPU_FILL(set) do \
+{ \
+	unsigned int i; \
+	CPU_ZERO(set); \
+	for (i = 0; i < CPU_SETSIZE; i++) \
+		CPU_SET(i, set); \
+} while (0)
+#define RTE_CPU_NOT(dst, src) do \
+{ \
+	cpu_set_t tmp; \
+	RTE_CPU_FILL(&tmp); \
+	CPU_XOR(dst, &tmp, src); \
+} while (0)
 #elif defined(__FreeBSD__)
 #include <pthread_np.h>
-	typedef cpuset_t rte_cpuset_t;
+typedef cpuset_t rte_cpuset_t;
+#define RTE_CPU_AND(dst, src1, src2) do \
+{ \
+	cpuset_t tmp; \
+	CPU_COPY(src1, &tmp); \
+	CPU_AND(&tmp, src2); \
+	CPU_COPY(&tmp, dst); \
+} while (0)
+#define RTE_CPU_OR(dst, src1, src2) do \
+{ \
+	cpuset_t tmp; \
+	CPU_COPY(src1, &tmp); \
+	CPU_OR(&tmp, src2); \
+	CPU_COPY(&tmp, dst); \
+} while (0)
+#define RTE_CPU_FILL(set) CPU_FILL(set)
+#define RTE_CPU_NOT(dst, src) do \
+{ \
+	cpuset_t tmp; \
+	CPU_FILL(&tmp); \
+	CPU_NAND(&tmp, src); \
+	CPU_COPY(&tmp, dst); \
+} while (0)
 #endif
 
 /**
@@ -280,8 +317,9 @@ int rte_thread_setname(pthread_t id, const char *name);
  * Create a control thread.
  *
  * Wrapper to pthread_create(), pthread_setname_np() and
- * pthread_setaffinity_np(). The dataplane and service lcores are
- * excluded from the affinity of the new thread.
+ * pthread_setaffinity_np(). The affinity of the new thread is based
+ * on the CPU affinity retrieved at the time rte_eal_init() was called,
+ * the dataplane and service lcores are then excluded.
  *
  * @param thread
  *   Filled with the thread id of the new created thread.

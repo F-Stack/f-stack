@@ -17,7 +17,9 @@
 #include <sys/wait.h>
 #include <sys/file.h>
 #include <limits.h>
+#include <fcntl.h>
 
+#include <rte_per_lcore.h>
 #include <rte_debug.h>
 #include <rte_string_fns.h>
 
@@ -477,40 +479,50 @@ test_missing_c_flag(void)
 				"-n", "3", "-l", "1," };
 	const char *argv10[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "-l", "1#2" };
+	/* core number is negative value */
+	const char * const argv11[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "-5" };
+	const char * const argv12[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "-5-7" };
+	/* core number is maximum value */
+	const char * const argv13[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", RTE_STR(RTE_MAX_LCORE) };
+	const char * const argv14[] = { prgname, prefix, mp_flag,
+				"-n", "3", "-l", "1-"RTE_STR(RTE_MAX_LCORE) };
 	/* sanity check test - valid corelist value */
-	const char *argv11[] = { prgname, prefix, mp_flag,
+	const char * const argv15[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "-l", "1-2,3" };
 
 	/* --lcores flag but no lcores value */
-	const char *argv12[] = { prgname, prefix, mp_flag,
+	const char * const argv16[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores" };
-	const char *argv13[] = { prgname, prefix, mp_flag,
+	const char * const argv17[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", " " };
 	/* bad lcores value */
-	const char *argv14[] = { prgname, prefix, mp_flag,
+	const char * const argv18[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "1-3-5" };
-	const char *argv15[] = { prgname, prefix, mp_flag,
+	const char * const argv19[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "0-1,,2" };
-	const char *argv16[] = { prgname, prefix, mp_flag,
+	const char * const argv20[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "0-,1" };
-	const char *argv17[] = { prgname, prefix, mp_flag,
+	const char * const argv21[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(0-,2-4)" };
-	const char *argv18[] = { prgname, prefix, mp_flag,
+	const char * const argv22[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(-1,2)" };
-	const char *argv19[] = { prgname, prefix, mp_flag,
+	const char * const argv23[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(2-4)@(2-4-6)" };
-	const char *argv20[] = { prgname, prefix, mp_flag,
+	const char * const argv24[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(a,2)" };
-	const char *argv21[] = { prgname, prefix, mp_flag,
+	const char * const argv25[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "1-3@(1,3)" };
-	const char *argv22[] = { prgname, prefix, mp_flag,
+	const char * const argv26[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "3@((1,3)" };
-	const char *argv23[] = { prgname, prefix, mp_flag,
+	const char * const argv27[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "(4-7)=(1,3)" };
-	const char *argv24[] = { prgname, prefix, mp_flag,
+	const char * const argv28[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores", "[4-7]@(1,3)" };
 	/* sanity check of tests - valid lcores value */
-	const char *argv25[] = { prgname, prefix, mp_flag,
+	const char * const argv29[] = { prgname, prefix, mp_flag,
 				 "-n", "3", "--lcores",
 				 "0-1,2@(5-7),(3-5)@(0,2),(0,6),7"};
 
@@ -538,31 +550,35 @@ test_missing_c_flag(void)
 			|| launch_proc(argv7) == 0
 			|| launch_proc(argv8) == 0
 			|| launch_proc(argv9) == 0
-			|| launch_proc(argv10) == 0) {
+			|| launch_proc(argv10) == 0
+			|| launch_proc(argv11) == 0
+			|| launch_proc(argv12) == 0
+			|| launch_proc(argv13) == 0
+			|| launch_proc(argv14) == 0) {
 		printf("Error - "
 		       "process ran without error with invalid -l flag\n");
 		return -1;
 	}
-	if (launch_proc(argv11) != 0) {
+	if (launch_proc(argv15) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
 		return -1;
 	}
 
 	/* start --lcores tests */
-	if (launch_proc(argv12) == 0 || launch_proc(argv13) == 0 ||
-	    launch_proc(argv14) == 0 || launch_proc(argv15) == 0 ||
-	    launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
+	if (launch_proc(argv16) == 0 || launch_proc(argv17) == 0 ||
 	    launch_proc(argv18) == 0 || launch_proc(argv19) == 0 ||
 	    launch_proc(argv20) == 0 || launch_proc(argv21) == 0 ||
-	    launch_proc(argv21) == 0 || launch_proc(argv22) == 0 ||
-	    launch_proc(argv23) == 0 || launch_proc(argv24) == 0) {
+	    launch_proc(argv22) == 0 || launch_proc(argv23) == 0 ||
+	    launch_proc(argv24) == 0 || launch_proc(argv25) == 0 ||
+	    launch_proc(argv26) == 0 || launch_proc(argv27) == 0 ||
+	    launch_proc(argv28) == 0) {
 		printf("Error - "
 		       "process ran without error with invalid --lcore flag\n");
 		return -1;
 	}
 
-	if (launch_proc(argv25) != 0) {
+	if (launch_proc(argv29) != 0) {
 		printf("Error - "
 		       "process did not run ok with valid corelist value\n");
 		return -1;
@@ -1117,6 +1133,40 @@ test_file_prefix(void)
 	return 0;
 }
 
+/* This function writes in passed buf pointer a valid --socket-mem= option
+ * for num_sockets then concatenates the provided suffix string.
+ *
+ * Example for num_sockets 4, mem "2", suffix "plop"
+ * --socket-mem=2,2,2,2plop
+ */
+static void
+populate_socket_mem_param(int num_sockets, const char *mem,
+		const char *suffix, char *buf, size_t buf_size)
+{
+	unsigned int offset = 0;
+	int written;
+	int i;
+
+	written = snprintf(&buf[offset], buf_size - offset, "--socket-mem=");
+	if (written < 0 || written + offset >= buf_size)
+		return;
+	offset += written;
+
+	for (i = 0; i < num_sockets - 1; i++) {
+		written = snprintf(&buf[offset], buf_size - offset,
+			"%s,", mem);
+		if (written < 0 || written + offset >= buf_size)
+			return;
+		offset += written;
+	}
+
+	written = snprintf(&buf[offset], buf_size - offset, "%s%s", mem,
+		suffix);
+	if (written < 0 || written + offset >= buf_size)
+		return;
+	offset += written;
+}
+
 /*
  * Tests for correct handling of -m and --socket-mem flags
  */
@@ -1143,43 +1193,45 @@ test_memory_flags(void)
 	const char *argv1[] = {prgname, "-c", "10", "-n", "2",
 			"--file-prefix=" memtest, "-m", DEFAULT_MEM_SIZE};
 
-	/* invalid (zero) --socket-mem flag */
+	/* valid (zero) --socket-mem flag */
+	char arg2_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv2[] = {prgname, "-c", "10", "-n", "2",
-			"--file-prefix=" memtest, "--socket-mem=0,0,0,0"};
+			"--file-prefix=" memtest, arg2_socket_mem};
 
 	/* invalid (incomplete) --socket-mem flag */
+	char arg3_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv3[] = {prgname, "-c", "10", "-n", "2",
-			"--file-prefix=" memtest, "--socket-mem=2,2,"};
+			"--file-prefix=" memtest, arg3_socket_mem};
 
 	/* invalid (mixed with invalid data) --socket-mem flag */
+	char arg4_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv4[] = {prgname, "-c", "10", "-n", "2",
-			"--file-prefix=" memtest, "--socket-mem=2,2,Fred"};
+			"--file-prefix=" memtest, arg4_socket_mem};
 
 	/* invalid (with numeric value as last character) --socket-mem flag */
+	char arg5_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv5[] = {prgname, "-c", "10", "-n", "2",
-			"--file-prefix=" memtest, "--socket-mem=2,2,Fred0"};
+			"--file-prefix=" memtest, arg5_socket_mem};
 
 	/* invalid (with empty socket) --socket-mem flag */
+	char arg6_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv6[] = {prgname, "-c", "10", "-n", "2",
-			"--file-prefix=" memtest, "--socket-mem=2,,2"};
+			"--file-prefix=" memtest, arg6_socket_mem};
 
 	/* invalid (null) --socket-mem flag */
 	const char *argv7[] = {prgname, "-c", "10", "-n", "2",
 			"--file-prefix=" memtest, "--socket-mem="};
 
 	/* valid --socket-mem specified together with -m flag */
+	char arg8_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv8[] = {prgname, "-c", "10", "-n", "2",
-			"--file-prefix=" memtest, "-m", DEFAULT_MEM_SIZE, "--socket-mem=2,2"};
-
-	/* construct an invalid socket mask with 2 megs on each socket plus
-	 * extra 2 megs on socket that doesn't exist on current system */
-	char invalid_socket_mem[SOCKET_MEM_STRLEN];
-	char buf[SOCKET_MEM_STRLEN];	/* to avoid copying string onto itself */
+			"--file-prefix=" memtest, "-m", DEFAULT_MEM_SIZE,
+			arg8_socket_mem};
 
 #ifdef RTE_EXEC_ENV_BSDAPP
-	int i, num_sockets = 1;
+	int num_sockets = 1;
 #else
-	int i, num_sockets = RTE_MIN(get_number_of_sockets(),
+	int num_sockets = RTE_MIN(get_number_of_sockets(),
 			RTE_MAX_NUMA_NODES);
 #endif
 
@@ -1188,42 +1240,13 @@ test_memory_flags(void)
 		return -1;
 	}
 
-	snprintf(invalid_socket_mem, sizeof(invalid_socket_mem), "--socket-mem=");
-
-	/* add one extra socket */
-	for (i = 0; i < num_sockets + 1; i++) {
-		snprintf(buf, sizeof(buf), "%s%s", invalid_socket_mem, DEFAULT_MEM_SIZE);
-		strlcpy(invalid_socket_mem, buf, sizeof(invalid_socket_mem));
-
-		if (num_sockets + 1 - i > 1) {
-			snprintf(buf, sizeof(buf), "%s,", invalid_socket_mem);
-			strlcpy(invalid_socket_mem, buf,
-				sizeof(invalid_socket_mem));
-		}
-	}
-
-	/* construct a valid socket mask with 2 megs on each existing socket */
-	char valid_socket_mem[SOCKET_MEM_STRLEN];
-
-	snprintf(valid_socket_mem, sizeof(valid_socket_mem), "--socket-mem=");
-
-	/* add one extra socket */
-	for (i = 0; i < num_sockets; i++) {
-		snprintf(buf, sizeof(buf), "%s%s", valid_socket_mem, DEFAULT_MEM_SIZE);
-		strlcpy(valid_socket_mem, buf, sizeof(valid_socket_mem));
-
-		if (num_sockets - i > 1) {
-			snprintf(buf, sizeof(buf), "%s,", valid_socket_mem);
-			strlcpy(valid_socket_mem, buf,
-				sizeof(valid_socket_mem));
-		}
-	}
-
 	/* invalid --socket-mem flag (with extra socket) */
+	char invalid_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv9[] = {prgname, "-c", "10", "-n", "2",
 			"--file-prefix=" memtest, invalid_socket_mem};
 
 	/* valid --socket-mem flag */
+	char valid_socket_mem[SOCKET_MEM_STRLEN];
 	const char *argv10[] = {prgname, "-c", "10", "-n", "2",
 			"--file-prefix=" memtest, valid_socket_mem};
 
@@ -1241,34 +1264,49 @@ test_memory_flags(void)
 		printf("Error - process failed with valid -m flag!\n");
 		return -1;
 	}
-	if (launch_proc(argv2) == 0) {
-		printf("Error - process run ok with invalid (zero) --socket-mem!\n");
+
+	populate_socket_mem_param(num_sockets, "0", "",
+		arg2_socket_mem, sizeof(arg2_socket_mem));
+	if (launch_proc(argv2) != 0) {
+		printf("Error - process failed with valid (zero) --socket-mem!\n");
 		return -1;
 	}
 
-	if (launch_proc(argv3) == 0) {
-		printf("Error - process run ok with invalid "
+	if (num_sockets > 1) {
+		populate_socket_mem_param(num_sockets - 1, "2", ",",
+			arg3_socket_mem, sizeof(arg3_socket_mem));
+		if (launch_proc(argv3) == 0) {
+			printf("Error - process run ok with invalid "
 				"(incomplete) --socket-mem!\n");
-		return -1;
-	}
+			return -1;
+		}
 
-	if (launch_proc(argv4) == 0) {
-		printf("Error - process run ok with invalid "
+		populate_socket_mem_param(num_sockets - 1, "2", ",Fred",
+			arg4_socket_mem, sizeof(arg4_socket_mem));
+		if (launch_proc(argv4) == 0) {
+			printf("Error - process run ok with invalid "
 				"(mixed with invalid input) --socket-mem!\n");
-		return -1;
-	}
+			return -1;
+		}
 
-	if (launch_proc(argv5) == 0) {
-		printf("Error - process run ok with invalid "
+		populate_socket_mem_param(num_sockets - 1, "2", ",Fred0",
+			arg5_socket_mem, sizeof(arg5_socket_mem));
+		if (launch_proc(argv5) == 0) {
+			printf("Error - process run ok with invalid "
 				"(mixed with invalid input with a numeric value as "
 				"last character) --socket-mem!\n");
-		return -1;
+			return -1;
+		}
 	}
 
-	if (launch_proc(argv6) == 0) {
-		printf("Error - process run ok with invalid "
+	if (num_sockets > 2) {
+		populate_socket_mem_param(num_sockets - 2, "2", ",,2",
+			arg6_socket_mem, sizeof(arg6_socket_mem));
+		if (launch_proc(argv6) == 0) {
+			printf("Error - process run ok with invalid "
 				"(with empty socket) --socket-mem!\n");
-		return -1;
+			return -1;
+		}
 	}
 
 	if (launch_proc(argv7) == 0) {
@@ -1276,16 +1314,22 @@ test_memory_flags(void)
 		return -1;
 	}
 
+	populate_socket_mem_param(num_sockets, "2", "",
+		arg8_socket_mem, sizeof(arg8_socket_mem));
 	if (launch_proc(argv8) == 0) {
 		printf("Error - process run ok with --socket-mem and -m specified!\n");
 		return -1;
 	}
 
+	populate_socket_mem_param(num_sockets + 1, "2", "",
+		invalid_socket_mem, sizeof(invalid_socket_mem));
 	if (launch_proc(argv9) == 0) {
 		printf("Error - process run ok with extra socket in --socket-mem!\n");
 		return -1;
 	}
 
+	populate_socket_mem_param(num_sockets, "2", "",
+		valid_socket_mem, sizeof(valid_socket_mem));
 	if (launch_proc(argv10) != 0) {
 		printf("Error - process failed with valid --socket-mem!\n");
 		return -1;

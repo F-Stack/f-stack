@@ -21,6 +21,8 @@
 
 #define ATL_TX_OFFLOAD_MASK (				 \
 	PKT_TX_VLAN |					 \
+	PKT_TX_IPV6 |					 \
+	PKT_TX_IPV4 |					 \
 	PKT_TX_IP_CKSUM |				 \
 	PKT_TX_L4_MASK |				 \
 	PKT_TX_TCP_SEG)
@@ -810,25 +812,25 @@ atl_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		ol_flags = m->ol_flags;
 
 		if (m->nb_segs > AQ_HW_MAX_SEGS_SIZE) {
-			rte_errno = -EINVAL;
+			rte_errno = EINVAL;
 			return i;
 		}
 
 		if (ol_flags & ATL_TX_OFFLOAD_NOTSUP_MASK) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}
@@ -944,7 +946,7 @@ atl_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			break;
 		}
 
-		PMD_RX_LOG(ERR, "port_id=%u queue_id=%u tail=%u "
+		PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u tail=%u "
 			   "eop=0x%x pkt_len=%u hash=0x%x hash_type=0x%x",
 			   (unsigned int)rxq->port_id,
 			   (unsigned int)rxq->queue_id,
@@ -979,7 +981,7 @@ atl_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		while (true) {
 			new_mbuf = rte_mbuf_raw_alloc(rxq->mb_pool);
 			if (new_mbuf == NULL) {
-				PMD_RX_LOG(ERR,
+				PMD_RX_LOG(DEBUG,
 				   "RX mbuf alloc failed port_id=%u "
 				   "queue_id=%u", (unsigned int)rxq->port_id,
 				   (unsigned int)rxq->queue_id);
@@ -1082,7 +1084,7 @@ atl_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		adapter->sw_stats.q_ibytes[rxq->queue_id] +=
 			rx_mbuf_first->pkt_len;
 
-		PMD_RX_LOG(ERR, "add mbuf segs=%d pkt_len=%d",
+		PMD_RX_LOG(DEBUG, "add mbuf segs=%d pkt_len=%d",
 			rx_mbuf_first->nb_segs,
 			rx_mbuf_first->pkt_len);
 	}
@@ -1102,7 +1104,7 @@ err_stop:
 	 */
 	nb_hold = (uint16_t)(nb_hold + rxq->nb_rx_hold);
 	if (nb_hold > rxq->rx_free_thresh) {
-		PMD_RX_LOG(ERR, "port_id=%u queue_id=%u rx_tail=%u "
+		PMD_RX_LOG(DEBUG, "port_id=%u queue_id=%u rx_tail=%u "
 			"nb_hold=%u nb_rx=%u",
 			(unsigned int)rxq->port_id, (unsigned int)rxq->queue_id,
 			(unsigned int)tail, (unsigned int)nb_hold,
@@ -1126,8 +1128,6 @@ atl_xmit_cleanup(struct atl_tx_queue *txq)
 	struct atl_tx_entry *sw_ring;
 	struct hw_atl_txd_s *txd;
 	int to_clean = 0;
-
-	PMD_INIT_FUNC_TRACE();
 
 	if (txq != NULL) {
 		sw_ring = txq->sw_ring;
@@ -1179,11 +1179,7 @@ atl_tso_setup(struct rte_mbuf *tx_pkt, union hw_atl_txc_s *txc)
 	uint32_t tx_cmd = 0;
 	uint64_t ol_flags = tx_pkt->ol_flags;
 
-	PMD_INIT_FUNC_TRACE();
-
 	if (ol_flags & PKT_TX_TCP_SEG) {
-		PMD_DRV_LOG(DEBUG, "xmit TSO pkt");
-
 		tx_cmd |= tx_desc_cmd_lso | tx_desc_cmd_l4cs;
 
 		txc->cmd = 0x4;
@@ -1237,8 +1233,6 @@ atl_xmit_pkt(struct aq_hw_s *hw, struct atl_tx_queue *txq,
 	struct hw_atl_txd_s *txd = NULL;
 	u32 tx_cmd = 0U;
 	int desc_count = 0;
-
-	PMD_INIT_FUNC_TRACE();
 
 	tail = txq->tx_tail;
 
@@ -1354,4 +1348,3 @@ atl_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 	return nb_tx;
 }
-

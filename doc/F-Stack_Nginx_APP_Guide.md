@@ -4,7 +4,7 @@ F-Stack is an open source network framework based on DPDK. F-Stack supports stan
 
 ## How does Nginx use F-Stack?
 
-  Nginx APP is in `app/nginx-1.11.10` directory.
+  Nginx APP is in `app/nginx-1.16.1` directory.
 
 ```
 

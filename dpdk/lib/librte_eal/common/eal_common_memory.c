@@ -55,6 +55,7 @@ static uint64_t system_page_sz;
 static uint64_t baseaddr = 0x100000000;
 #endif
 
+#define MAX_MMAP_WITH_DEFINED_ADDR_TRIES 5
 void *
 eal_get_virtual_area(void *requested_addr, size_t *size,
 		size_t page_sz, int flags, int mmap_flags)
@@ -62,6 +63,7 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 	bool addr_is_hint, allow_shrink, unmap, no_align;
 	uint64_t map_sz;
 	void *mapped_addr, *aligned_addr;
+	uint8_t try = 0;
 
 	if (system_page_sz == 0)
 		system_page_sz = sysconf(_SC_PAGESIZE);
@@ -117,11 +119,14 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 
 		if (mapped_addr != MAP_FAILED && addr_is_hint &&
 		    mapped_addr != requested_addr) {
-			/* hint was not used. Try with another offset */
-			munmap(mapped_addr, map_sz);
-			mapped_addr = MAP_FAILED;
+			try++;
 			next_baseaddr = RTE_PTR_ADD(next_baseaddr, page_sz);
-			requested_addr = next_baseaddr;
+			if (try <= MAX_MMAP_WITH_DEFINED_ADDR_TRIES) {
+				/* hint was not used. Try with another offset */
+				munmap(mapped_addr, map_sz);
+				mapped_addr = MAP_FAILED;
+				requested_addr = next_baseaddr;
+			}
 		}
 	} while ((allow_shrink || addr_is_hint) &&
 		 mapped_addr == MAP_FAILED && *size > 0);
@@ -442,7 +447,7 @@ check_iova(const struct rte_memseg_list *msl __rte_unused,
 #define MAX_DMA_MASK_BITS 63
 
 /* check memseg iovas are within the required range based on dma mask */
-static int __rte_experimental
+static int
 check_dma_mask(uint8_t maskbits, bool thread_unsafe)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
@@ -704,6 +709,12 @@ rte_memseg_get_fd_thread_unsafe(const struct rte_memseg *ms)
 		return -1;
 	}
 
+	/* segment fd API is not supported for external segments */
+	if (msl->external) {
+		rte_errno = ENOTSUP;
+		return -1;
+	}
+
 	ret = eal_memalloc_get_seg_fd(msl_idx, seg_idx);
 	if (ret < 0) {
 		rte_errno = -ret;
@@ -751,6 +762,12 @@ rte_memseg_get_fd_offset_thread_unsafe(const struct rte_memseg *ms,
 
 	if (!rte_fbarray_is_used(arr, seg_idx)) {
 		rte_errno = ENOENT;
+		return -1;
+	}
+
+	/* segment fd API is not supported for external segments */
+	if (msl->external) {
+		rte_errno = ENOTSUP;
 		return -1;
 	}
 

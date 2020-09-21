@@ -61,10 +61,9 @@ int enic_get_vnic_config(struct enic *enic)
 	 * and will be 0 for legacy firmware and VICs
 	 */
 	if (c->max_pkt_size > ENIC_DEFAULT_RX_MAX_PKT_SIZE)
-		enic->max_mtu = c->max_pkt_size - (ETHER_HDR_LEN + 4);
+		enic->max_mtu = c->max_pkt_size - ETHER_HDR_LEN;
 	else
-		enic->max_mtu = ENIC_DEFAULT_RX_MAX_PKT_SIZE
-				- (ETHER_HDR_LEN + 4);
+		enic->max_mtu = ENIC_DEFAULT_RX_MAX_PKT_SIZE - ETHER_HDR_LEN;
 	if (c->mtu == 0)
 		c->mtu = 1500;
 
@@ -85,7 +84,7 @@ int enic_get_vnic_config(struct enic *enic)
 	vnic_dev_capable_udp_rss_weak(enic->vdev, &enic->nic_cfg_chk,
 				      &enic->udp_rss_weak);
 
-	dev_info(enic, "Flow api filter mode: %s Actions: %s%s%s%s\n",
+	dev_info(enic, "Flow api filter mode: %s Actions: %s%s%s\n",
 		((enic->flow_filter_mode == FILTER_DPDK_1) ? "DPDK" :
 		((enic->flow_filter_mode == FILTER_USNIC_IP) ? "USNIC" :
 		((enic->flow_filter_mode == FILTER_IPV4_5TUPLE) ? "5TUPLE" :
@@ -95,9 +94,7 @@ int enic_get_vnic_config(struct enic *enic)
 		((enic->filter_actions & FILTER_ACTION_FILTER_ID_FLAG) ?
 		 "tag " : ""),
 		((enic->filter_actions & FILTER_ACTION_DROP_FLAG) ?
-		 "drop " : ""),
-		((enic->filter_actions & FILTER_ACTION_COUNTER_FLAG) ?
-		 "count " : ""));
+		 "drop " : ""));
 
 	c->wq_desc_count =
 		min_t(u32, ENIC_MAX_WQ_DESCS,

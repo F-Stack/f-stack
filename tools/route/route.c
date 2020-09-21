@@ -84,8 +84,6 @@ __FBSDID("$FreeBSD$");
 
 #define write(a, b, c) rtioctl((b), (c), (0))
 
-#define CLOCK_REALTIME_FAST CLOCK_REALTIME
-
 #endif
 
 struct fibl {
@@ -629,9 +627,16 @@ routename(struct sockaddr *sa)
 			rt_line, sizeof(rt_line), NULL, 0,
 			(nflag == 0) ? 0 : NI_NUMERICHOST);
 #else
+		const char *dst = NULL;
 		error = 0;
 		struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
-		const char *dst = inet_ntop(AF_INET, &sin->sin_addr, rt_line, sizeof(rt_line));
+#ifdef INET6
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+		if (sa->sa_family == AF_INET6)
+			dst = inet_ntop(AF_INET6_LINUX, &sin6->sin6_addr, rt_line, sizeof(rt_line));
+		else
+#endif
+			dst = inet_ntop(AF_INET, &sin->sin_addr, rt_line, sizeof(rt_line));
 		if (dst == NULL) {
 			error = EAI_NONAME;
 		}
@@ -723,6 +728,7 @@ netname(struct sockaddr *sa)
 				cp = np->n_name;
 		}
 #endif
+
 #define C(x)	(unsigned)((x) & 0xff)
 		if (cp != NULL)
 			strncpy(net_line, cp, sizeof(net_line));
@@ -738,6 +744,7 @@ netname(struct sockaddr *sa)
 			(void)sprintf(net_line, "%u.%u.%u.%u", C(in.s_addr >> 24),
 				C(in.s_addr >> 16), C(in.s_addr >> 8),
 				C(in.s_addr));
+
 #undef C
 		break;
 	}
@@ -752,10 +759,15 @@ netname(struct sockaddr *sa)
 		memcpy(&sin6, sa, sa->sa_len);
 		sin6.sin6_len = sizeof(sin6);
 		sin6.sin6_family = AF_INET6;
+#ifndef FSTACK
 		if (nflag)
 			niflags |= NI_NUMERICHOST;
 		if (getnameinfo((struct sockaddr *)&sin6, sin6.sin6_len,
 			net_line, sizeof(net_line), NULL, 0, niflags) != 0)
+#else
+		if (inet_ntop(AF_INET6_LINUX, &sin6.sin6_addr, net_line, sizeof(net_line)) == NULL)
+
+#endif
 			strncpy(net_line, "invalid", sizeof(net_line));
 
 		return(net_line);
@@ -1314,12 +1326,15 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 #ifdef INET6
 	case AF_INET6:
 	{
+#ifndef FSTACK
 		struct addrinfo hints, *res;
 		int ecode;
+#endif
 
 		q = NULL;
 		if (idx == RTAX_DST && (q = strchr(str, '/')) != NULL)
 			*q = '\0';
+#ifndef FSTACK
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_family = sa->sa_family;
 		hints.ai_socktype = SOCK_DGRAM;
@@ -1329,6 +1344,10 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 			errx(EX_OSERR, "%s: %s", str, gai_strerror(ecode));
 		memcpy(sa, res->ai_addr, res->ai_addrlen);
 		freeaddrinfo(res);
+#else
+		if (inet_pton(AF_INET6_LINUX, str, &((struct sockaddr_in6 *)sa)->sin6_addr) == -1)
+			errx(EX_OSERR, "%s: %d, %s", str, errno, strerror(errno));
+#endif
 		if (q != NULL)
 			*q++ = '/';
 		if (idx == RTAX_DST)
@@ -1961,7 +1980,11 @@ sodump(struct sockaddr *sa, const char *which)
 #endif
 #ifdef INET6
 	case AF_INET6:
+#ifdef FSTACK
+		(void)printf("%s: inet6 %s; ", which, inet_ntop(AF_INET6_LINUX,
+#else
 		(void)printf("%s: inet6 %s; ", which, inet_ntop(sa->sa_family,
+#endif
 			&((struct sockaddr_in6 *)(void *)sa)->sin6_addr, nbuf,
 			sizeof(nbuf)));
 		break;

@@ -34,7 +34,7 @@ typedef int (*rte_option_cb)(void);
  */
 struct rte_option {
 	TAILQ_ENTRY(rte_option) next; /**< Next entry in the list. */
-	char *opt_str;             /**< The option name. */
+	const char *opt_str;          /**< The option name. */
 	rte_option_cb cb;          /**< Function called when option is used. */
 	int enabled;               /**< Set when the option is used. */
 };

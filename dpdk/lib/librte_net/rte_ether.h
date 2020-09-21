@@ -408,7 +408,12 @@ static inline int rte_vlan_insert(struct rte_mbuf **m)
 	vh = (struct vlan_hdr *) (nh + 1);
 	vh->vlan_tci = rte_cpu_to_be_16((*m)->vlan_tci);
 
-	(*m)->ol_flags &= ~PKT_RX_VLAN_STRIPPED;
+	(*m)->ol_flags &= ~(PKT_RX_VLAN_STRIPPED | PKT_TX_VLAN);
+
+	if ((*m)->ol_flags & PKT_TX_TUNNEL_MASK)
+		(*m)->outer_l2_len += sizeof(struct vlan_hdr);
+	else
+		(*m)->l2_len += sizeof(struct vlan_hdr);
 
 	return 0;
 }

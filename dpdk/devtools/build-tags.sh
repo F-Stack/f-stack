@@ -68,11 +68,13 @@ common_sources()
 linux_sources()
 {
 	find_sources "lib/librte_eal/linuxapp" '*.[chS]'
+	find_sources "kernel/linux" '*.[chS]'
 }
 
 bsd_sources()
 {
 	find_sources "lib/librte_eal/bsdapp" '*.[chS]'
+	find_sources "kernel/freebsd" '*.[chS]'
 }
 
 arm_common()

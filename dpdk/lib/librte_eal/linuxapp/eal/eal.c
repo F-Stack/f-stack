@@ -13,7 +13,9 @@
 #include <syslog.h>
 #include <getopt.h>
 #include <sys/file.h>
+#include <dirent.h>
 #include <fcntl.h>
+#include <fnmatch.h>
 #include <stddef.h>
 #include <errno.h>
 #include <limits.h>
@@ -57,6 +59,7 @@
 #include "eal_hugepages.h"
 #include "eal_options.h"
 #include "eal_vfio.h"
+#include "hotplug_mp.h"
 
 #define MEMSIZE_IF_NO_HUGE_PAGE (64ULL * 1024ULL * 1024ULL)
 
@@ -123,7 +126,7 @@ eal_create_runtime_dir(void)
 
 	/* create prefix-specific subdirectory under DPDK runtime dir */
 	ret = snprintf(runtime_dir, sizeof(runtime_dir), "%s/%s",
-			tmp, internal_config.hugefile_prefix);
+			tmp, eal_get_hugefile_prefix());
 	if (ret < 0 || ret == sizeof(runtime_dir)) {
 		RTE_LOG(ERR, EAL, "Error creating prefix-specific runtime path name\n");
 		return -1;
@@ -147,6 +150,91 @@ eal_create_runtime_dir(void)
 	}
 
 	return 0;
+}
+
+int
+eal_clean_runtime_dir(void)
+{
+	DIR *dir;
+	struct dirent *dirent;
+	int dir_fd, fd, lck_result;
+	static const char * const filters[] = {
+		"fbarray_*",
+		"mp_socket_*"
+	};
+
+	/* open directory */
+	dir = opendir(runtime_dir);
+	if (!dir) {
+		RTE_LOG(ERR, EAL, "Unable to open runtime directory %s\n",
+				runtime_dir);
+		goto error;
+	}
+	dir_fd = dirfd(dir);
+
+	/* lock the directory before doing anything, to avoid races */
+	if (flock(dir_fd, LOCK_EX) < 0) {
+		RTE_LOG(ERR, EAL, "Unable to lock runtime directory %s\n",
+			runtime_dir);
+		goto error;
+	}
+
+	dirent = readdir(dir);
+	if (!dirent) {
+		RTE_LOG(ERR, EAL, "Unable to read runtime directory %s\n",
+				runtime_dir);
+		goto error;
+	}
+
+	while (dirent != NULL) {
+		unsigned int f_idx;
+		bool skip = true;
+
+		/* skip files that don't match the patterns */
+		for (f_idx = 0; f_idx < RTE_DIM(filters); f_idx++) {
+			const char *filter = filters[f_idx];
+
+			if (fnmatch(filter, dirent->d_name, 0) == 0) {
+				skip = false;
+				break;
+			}
+		}
+		if (skip) {
+			dirent = readdir(dir);
+			continue;
+		}
+
+		/* try and lock the file */
+		fd = openat(dir_fd, dirent->d_name, O_RDONLY);
+
+		/* skip to next file */
+		if (fd == -1) {
+			dirent = readdir(dir);
+			continue;
+		}
+
+		/* non-blocking lock */
+		lck_result = flock(fd, LOCK_EX | LOCK_NB);
+
+		/* if lock succeeds, remove the file */
+		if (lck_result != -1)
+			unlinkat(dir_fd, dirent->d_name, 0);
+		close(fd);
+		dirent = readdir(dir);
+	}
+
+	/* closedir closes dir_fd and drops the lock */
+	closedir(dir);
+	return 0;
+
+error:
+	if (dir)
+		closedir(dir);
+
+	RTE_LOG(ERR, EAL, "Error while clearing runtime dir: %s\n",
+		strerror(errno));
+
+	return -1;
 }
 
 const char *
@@ -233,7 +321,7 @@ rte_eal_config_create(void)
 		rte_mem_cfg_addr = NULL;
 
 	if (mem_cfg_fd < 0){
-		mem_cfg_fd = open(pathname, O_RDWR | O_CREAT, 0660);
+		mem_cfg_fd = open(pathname, O_RDWR | O_CREAT, 0600);
 		if (mem_cfg_fd < 0)
 			rte_panic("Cannot open '%s' for rte_mem_config\n", pathname);
 	}
@@ -494,10 +582,6 @@ eal_parse_socket_arg(char *strval, volatile uint64_t *socket_arg)
 		socket_arg[i] = val;
 	}
 
-	/* check if we have a positive amount of total memory */
-	if (total_mem == 0)
-		return -1;
-
 	return 0;
 }
 
@@ -639,13 +723,31 @@ eal_parse_args(int argc, char **argv)
 			exit(EXIT_SUCCESS);
 
 		case OPT_HUGE_DIR_NUM:
-			internal_config.hugepage_dir = strdup(optarg);
+		{
+			char *hdir = strdup(optarg);
+			if (hdir == NULL)
+				RTE_LOG(ERR, EAL, "Could not store hugepage directory\n");
+			else {
+				/* free old hugepage dir */
+				if (internal_config.hugepage_dir != NULL)
+					free(internal_config.hugepage_dir);
+				internal_config.hugepage_dir = hdir;
+			}
 			break;
-
+		}
 		case OPT_FILE_PREFIX_NUM:
-			internal_config.hugefile_prefix = strdup(optarg);
+		{
+			char *prefix = strdup(optarg);
+			if (prefix == NULL)
+				RTE_LOG(ERR, EAL, "Could not store file prefix\n");
+			else {
+				/* free old prefix */
+				if (internal_config.hugefile_prefix != NULL)
+					free(internal_config.hugefile_prefix);
+				internal_config.hugefile_prefix = prefix;
+			}
 			break;
-
+		}
 		case OPT_SOCKET_MEM_NUM:
 			if (eal_parse_socket_arg(optarg,
 					internal_config.socket_mem) < 0) {
@@ -695,10 +797,21 @@ eal_parse_args(int argc, char **argv)
 			break;
 
 		case OPT_MBUF_POOL_OPS_NAME_NUM:
-			internal_config.user_mbuf_pool_ops_name =
-			    strdup(optarg);
-			break;
+		{
+			char *ops_name = strdup(optarg);
+			if (ops_name == NULL)
+				RTE_LOG(ERR, EAL, "Could not store mbuf pool ops name\n");
+			else {
+				/* free old ops name */
+				if (internal_config.user_mbuf_pool_ops_name !=
+						NULL)
+					free(internal_config.user_mbuf_pool_ops_name);
 
+				internal_config.user_mbuf_pool_ops_name =
+						ops_name;
+			}
+			break;
+		}
 		default:
 			if (opt < OPT_LONG_MIN_NUM && isprint(opt)) {
 				RTE_LOG(ERR, EAL, "Option %c is not supported "
@@ -888,6 +1001,12 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	if (rte_eal_alarm_init() < 0) {
+		rte_eal_init_alert("Cannot init alarm");
+		/* rte_eal_alarm_init sets rte_errno on failure. */
+		return -1;
+	}
+
 	/* Put mp channel init before bus scan so that we can init the vdev
 	 * bus through mp channel in the secondary process before the bus scan.
 	 */
@@ -900,7 +1019,7 @@ rte_eal_init(int argc, char **argv)
 	}
 
 	/* register multi-process action callbacks for hotplug */
-	if (rte_mp_dev_hotplug_init() < 0) {
+	if (eal_mp_dev_hotplug_init() < 0) {
 		rte_eal_init_alert("failed to register mp callback for hotplug");
 		return -1;
 	}
@@ -1008,12 +1127,6 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
-	if (rte_eal_alarm_init() < 0) {
-		rte_eal_init_alert("Cannot init interrupt-handling thread");
-		/* rte_eal_alarm_init sets rte_errno on failure. */
-		return -1;
-	}
-
 	if (rte_eal_timer_init() < 0) {
 		rte_eal_init_alert("Cannot init HPET or TSC timers");
 		rte_errno = ENOTSUP;
@@ -1096,6 +1209,21 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	/*
+	 * Clean up unused files in runtime directory. We do this at the end of
+	 * init and not at the beginning because we want to clean stuff up
+	 * whether we are primary or secondary process, but we cannot remove
+	 * primary process' files because secondary should be able to run even
+	 * if primary process is dead.
+	 *
+	 * In no_shconf mode, no runtime directory is created in the first
+	 * place, so no cleanup needed.
+	 */
+	if (!internal_config.no_shconf && eal_clean_runtime_dir() < 0) {
+		rte_eal_init_alert("Cannot clear runtime directory\n");
+		return -1;
+	}
+
 	rte_eal_mcfg_complete();
 
 	/* Call each registered callback, if enabled */
@@ -1130,6 +1258,8 @@ rte_eal_cleanup(void)
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
 		rte_memseg_walk(mark_freeable, NULL);
 	rte_service_finalize();
+	rte_mp_channel_cleanup();
+	eal_cleanup_config(&internal_config);
 	return 0;
 }
 

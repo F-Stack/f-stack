@@ -87,7 +87,6 @@ bnx2x_link_update(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE(sc);
 
-	bnx2x_link_status_update(sc);
 	memset(&link, 0, sizeof(link));
 	mb();
 	link.link_speed = sc->link_vars.line_speed;
@@ -107,14 +106,15 @@ bnx2x_link_update(struct rte_eth_dev *dev)
 }
 
 static void
-bnx2x_interrupt_action(struct rte_eth_dev *dev)
+bnx2x_interrupt_action(struct rte_eth_dev *dev, int intr_cxt)
 {
 	struct bnx2x_softc *sc = dev->data->dev_private;
 	uint32_t link_status;
 
-	bnx2x_intr_legacy(sc, 0);
+	bnx2x_intr_legacy(sc);
 
-	if (sc->periodic_flags & PERIODIC_GO)
+	if ((atomic_load_acq_long(&sc->periodic_flags) == PERIODIC_GO) &&
+	    !intr_cxt)
 		bnx2x_periodic_callout(sc);
 	link_status = REG_RD(sc, sc->link_params.shmem_base +
 			offsetof(struct shmem_region,
@@ -131,9 +131,7 @@ bnx2x_interrupt_handler(void *param)
 
 	PMD_DEBUG_PERIODIC_LOG(INFO, sc, "Interrupt handled");
 
-	atomic_store_rel_long(&sc->periodic_flags, PERIODIC_STOP);
-	bnx2x_interrupt_action(dev);
-	atomic_store_rel_long(&sc->periodic_flags, PERIODIC_GO);
+	bnx2x_interrupt_action(dev, 1);
 	rte_intr_enable(&sc->pci_dev->intr_handle);
 }
 
@@ -144,14 +142,13 @@ static void bnx2x_periodic_start(void *param)
 	int ret = 0;
 
 	atomic_store_rel_long(&sc->periodic_flags, PERIODIC_GO);
-	bnx2x_interrupt_action(dev);
+	bnx2x_interrupt_action(dev, 0);
 	if (IS_PF(sc)) {
 		ret = rte_eal_alarm_set(BNX2X_SP_TIMER_PERIOD,
 					bnx2x_periodic_start, (void *)dev);
 		if (ret) {
 			PMD_DRV_LOG(ERR, sc, "Unable to start periodic"
 					     " timer rc %d", ret);
-			assert(false && "Unable to start periodic timer");
 		}
 	}
 }
@@ -164,6 +161,8 @@ void bnx2x_periodic_stop(void *param)
 	atomic_store_rel_long(&sc->periodic_flags, PERIODIC_STOP);
 
 	rte_eal_alarm_cancel(bnx2x_periodic_start, (void *)dev);
+
+	PMD_DRV_LOG(DEBUG, sc, "Periodic poll stopped");
 }
 
 /*
@@ -180,8 +179,10 @@ bnx2x_dev_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE(sc);
 
-	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
+	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
 		sc->mtu = dev->data->dev_conf.rxmode.max_rx_pkt_len;
+		dev->data->mtu = sc->mtu;
+	}
 
 	if (dev->data->nb_tx_queues > dev->data->nb_rx_queues) {
 		PMD_DRV_LOG(ERR, sc, "The number of TX queues is greater than number of RX queues");
@@ -203,13 +204,7 @@ bnx2x_dev_configure(struct rte_eth_dev *dev)
 		return -ENXIO;
 	}
 
-	/* allocate the host hardware/software hsi structures */
-	if (bnx2x_alloc_hsi_mem(sc) != 0) {
-		PMD_DRV_LOG(ERR, sc, "bnx2x_alloc_hsi_mem was failed");
-		bnx2x_free_ilt_mem(sc);
-		return -ENXIO;
-	}
-
+	bnx2x_dev_rxtx_init_dummy(dev);
 	return 0;
 }
 
@@ -222,8 +217,13 @@ bnx2x_dev_start(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE(sc);
 
 	/* start the periodic callout */
-	if (sc->periodic_flags & PERIODIC_STOP)
-		bnx2x_periodic_start(dev);
+	if (IS_PF(sc)) {
+		if (atomic_load_acq_long(&sc->periodic_flags) ==
+		    PERIODIC_STOP) {
+			bnx2x_periodic_start(dev);
+			PMD_DRV_LOG(DEBUG, sc, "Periodic poll re-started");
+		}
+	}
 
 	ret = bnx2x_init(sc);
 	if (ret) {
@@ -239,14 +239,9 @@ bnx2x_dev_start(struct rte_eth_dev *dev)
 			PMD_DRV_LOG(ERR, sc, "rte_intr_enable failed");
 	}
 
-	ret = bnx2x_dev_rx_init(dev);
-	if (ret != 0) {
-		PMD_DRV_LOG(DEBUG, sc, "bnx2x_dev_rx_init returned error code");
-		return -3;
-	}
+	bnx2x_dev_rxtx_init(dev);
 
-	/* Print important adapter info for the user. */
-	bnx2x_print_adapter_info(sc);
+	bnx2x_print_device_info(sc);
 
 	return ret;
 }
@@ -259,14 +254,16 @@ bnx2x_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE(sc);
 
+	bnx2x_dev_rxtx_init_dummy(dev);
+
 	if (IS_PF(sc)) {
 		rte_intr_disable(&sc->pci_dev->intr_handle);
 		rte_intr_callback_unregister(&sc->pci_dev->intr_handle,
 				bnx2x_interrupt_handler, (void *)dev);
-	}
 
-	/* stop the periodic callout */
-	bnx2x_periodic_stop(dev);
+		/* stop the periodic callout */
+		bnx2x_periodic_stop(dev);
+	}
 
 	ret = bnx2x_nic_unload(sc, UNLOAD_NORMAL, FALSE);
 	if (ret) {
@@ -289,9 +286,6 @@ bnx2x_dev_close(struct rte_eth_dev *dev)
 
 	bnx2x_dev_clear_queues(dev);
 	memset(&(dev->data->dev_link), 0 , sizeof(struct rte_eth_link));
-
-	/* free the host hardware/software hsi structures */
-	bnx2x_free_hsi_mem(sc);
 
 	/* free ilt */
 	bnx2x_free_ilt_mem(sc);
@@ -488,6 +482,7 @@ static void
 bnx2x_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct bnx2x_softc *sc = dev->data->dev_private;
+
 	dev_info->max_rx_queues  = sc->max_rx_queues;
 	dev_info->max_tx_queues  = sc->max_tx_queues;
 	dev_info->min_rx_bufsize = BNX2X_MIN_RX_BUF_SIZE;
@@ -495,6 +490,10 @@ bnx2x_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_mac_addrs  = BNX2X_MAX_MAC_ADDRS;
 	dev_info->speed_capa = ETH_LINK_SPEED_10G | ETH_LINK_SPEED_20G;
 	dev_info->rx_offload_capa = DEV_RX_OFFLOAD_JUMBO_FRAME;
+
+	dev_info->rx_desc_lim.nb_max = MAX_RX_AVAIL;
+	dev_info->rx_desc_lim.nb_min = MIN_RX_SIZE_NONTPA;
+	dev_info->tx_desc_lim.nb_max = MAX_TX_AVAIL;
 }
 
 static int
@@ -574,6 +573,7 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 	struct rte_pci_device *pci_dev;
 	struct rte_pci_addr pci_addr;
 	struct bnx2x_softc *sc;
+	static bool adapter_info = true;
 
 	/* Extract key data structures */
 	sc = eth_dev->data->dev_private;
@@ -632,8 +632,15 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 		return ret;
 	}
 
+	/* Print important adapter info for the user. */
+	if (adapter_info) {
+		bnx2x_print_adapter_info(sc);
+		adapter_info = false;
+	}
+
 	/* schedule periodic poll for slowpath link events */
 	if (IS_PF(sc)) {
+		PMD_DRV_LOG(DEBUG, sc, "Scheduling periodic poll for slowpath link events");
 		ret = rte_eal_alarm_set(BNX2X_SP_TIMER_PERIOD,
 					bnx2x_periodic_start, (void *)eth_dev);
 		if (ret) {
@@ -644,15 +651,6 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 	}
 
 	eth_dev->data->mac_addrs = (struct ether_addr *)sc->link_params.mac_addr;
-
-	PMD_DRV_LOG(INFO, sc, "pcie_bus=%d, pcie_device=%d",
-			sc->pcie_bus, sc->pcie_device);
-	PMD_DRV_LOG(INFO, sc, "bar0.addr=%p, bar1.addr=%p",
-			sc->bar[BAR0].base_addr, sc->bar[BAR1].base_addr);
-	PMD_DRV_LOG(INFO, sc, "port=%d, path=%d, vnic=%d, func=%d",
-			PORT_ID(sc), PATH_ID(sc), VNIC_ID(sc), FUNC_ID(sc));
-	PMD_DRV_LOG(INFO, sc, "portID=%d vendorID=0x%x deviceID=0x%x",
-			eth_dev->data->port_id, pci_dev->id.vendor_id, pci_dev->id.device_id);
 
 	if (IS_VF(sc)) {
 		rte_spinlock_init(&sc->vf2pf_lock);
@@ -684,7 +682,9 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 	return 0;
 
 out:
-	bnx2x_periodic_stop(eth_dev);
+	if (IS_PF(sc))
+		bnx2x_periodic_stop(eth_dev);
+
 	return ret;
 }
 
@@ -702,6 +702,13 @@ eth_bnx2xvf_dev_init(struct rte_eth_dev *eth_dev)
 	struct bnx2x_softc *sc = eth_dev->data->dev_private;
 	PMD_INIT_FUNC_TRACE(sc);
 	return bnx2x_common_dev_init(eth_dev, 1);
+}
+
+static int eth_bnx2x_dev_uninit(struct rte_eth_dev *eth_dev)
+{
+	/* mac_addrs must not be freed alone because part of dev_private */
+	eth_dev->data->mac_addrs = NULL;
+	return 0;
 }
 
 static struct rte_pci_driver rte_bnx2x_pmd;
@@ -722,7 +729,7 @@ static int eth_bnx2x_pci_probe(struct rte_pci_driver *pci_drv,
 
 static int eth_bnx2x_pci_remove(struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_remove(pci_dev, NULL);
+	return rte_eth_dev_pci_generic_remove(pci_dev, eth_bnx2x_dev_uninit);
 }
 
 static struct rte_pci_driver rte_bnx2x_pmd = {

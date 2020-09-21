@@ -433,8 +433,7 @@ eth_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	int ret;
 	int s;
 	unsigned int data_size = internals->req.tp_frame_size -
-				 TPACKET2_HDRLEN -
-				 sizeof(struct sockaddr_ll);
+				 TPACKET2_HDRLEN;
 
 	if (mtu > data_size)
 		return -EINVAL;
@@ -527,8 +526,6 @@ open_packet_iface(const char *key __rte_unused,
 
 	return 0;
 }
-
-static struct rte_vdev_driver pmd_af_packet_drv;
 
 static int
 rte_pmd_init_internals(struct rte_vdev_device *dev,

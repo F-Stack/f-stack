@@ -40,6 +40,8 @@
 #include <netinet/in_var.h>
 #include <netinet/ip_carp.h>
 
+#include <netinet6/in6_var.h>
+
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>

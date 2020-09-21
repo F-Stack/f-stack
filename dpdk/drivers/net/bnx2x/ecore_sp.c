@@ -294,22 +294,26 @@ static int ecore_state_wait(struct bnx2x_softc *sc, int state,
 
 	ECORE_MIGHT_SLEEP();
 	while (cnt--) {
-		bnx2x_intr_legacy(sc, 1);
+		bnx2x_intr_legacy(sc);
 		if (!ECORE_TEST_BIT(state, pstate)) {
 #ifdef ECORE_STOP_ON_ERROR
 			ECORE_MSG(sc, "exit  (cnt %d)", 5000 - cnt);
 #endif
+			rte_atomic32_set(&sc->scan_fp, 0);
 			return ECORE_SUCCESS;
 		}
 
 		ECORE_WAIT(sc, delay_us);
 
-		if (sc->panic)
+		if (sc->panic) {
+			rte_atomic32_set(&sc->scan_fp, 0);
 			return ECORE_IO;
+		}
 	}
 
 	/* timeout! */
 	PMD_DRV_LOG(ERR, sc, "timeout waiting for state %d", state);
+	rte_atomic32_set(&sc->scan_fp, 0);
 #ifdef ECORE_STOP_ON_ERROR
 	ecore_panic();
 #endif
@@ -530,17 +534,15 @@ static void __ecore_vlan_mac_h_read_unlock(struct bnx2x_softc *sc,
 #endif
 	} else {
 		o->head_reader--;
-		PMD_DRV_LOG(INFO, sc,
-			    "vlan_mac_lock - decreased readers to %d",
-			    o->head_reader);
+		ECORE_MSG(sc, "vlan_mac_lock - decreased readers to %d",
+			  o->head_reader);
 	}
 
 	/* It's possible a new pending execution was added, and that this reader
 	 * was last - if so we need to execute the command.
 	 */
 	if (!o->head_reader && o->head_exe_request) {
-		PMD_DRV_LOG(INFO, sc,
-			    "vlan_mac_lock - reader release encountered a pending request");
+		ECORE_MSG(sc, "vlan_mac_lock - reader release encountered a pending request");
 
 		/* Writer release will do the trick */
 		__ecore_vlan_mac_h_write_unlock(sc, o);

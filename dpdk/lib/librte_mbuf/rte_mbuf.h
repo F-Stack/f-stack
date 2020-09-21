@@ -209,7 +209,7 @@ extern "C" {
 /**
  * Outer UDP checksum offload flag. This flag is used for enabling
  * outer UDP checksum in PMD. To use outer UDP checksum, the user needs to
- * 1) Enable the following in mbuff,
+ * 1) Enable the following in mbuf,
  * a) Fill outer_l2_len and outer_l3_len in mbuf.
  * b) Set the PKT_TX_OUTER_UDP_CKSUM flag.
  * c) Set the PKT_TX_OUTER_IPV4 or PKT_TX_OUTER_IPV6 flag.
@@ -279,9 +279,11 @@ extern "C" {
 #define PKT_TX_TUNNEL_MASK    (0xFULL << 45)
 
 /**
- * Second VLAN insertion (QinQ) flag.
+ * Double VLAN insertion (QinQ) request to driver, driver may offload the
+ * insertion based on device capability.
+ * mbuf 'vlan_tci' & 'vlan_tci_outer' must be valid when this flag is set.
  */
-#define PKT_TX_QINQ        (1ULL << 49)   /**< TX packet with double VLAN inserted. */
+#define PKT_TX_QINQ        (1ULL << 49)
 /* this old name is deprecated */
 #define PKT_TX_QINQ_PKT    PKT_TX_QINQ
 
@@ -337,7 +339,9 @@ extern "C" {
 #define PKT_TX_IPV6          (1ULL << 56)
 
 /**
- * TX packet is a 802.1q VLAN packet.
+ * VLAN tag insertion request to driver, driver may offload the insertion
+ * based on the device capability.
+ * mbuf 'vlan_tci' field must be valid when this flag is set.
  */
 #define PKT_TX_VLAN          (1ULL << 57)
 /* this old name is deprecated */
@@ -913,7 +917,7 @@ rte_mbuf_refcnt_update(struct rte_mbuf *m, int16_t value)
 {
 	/*
 	 * The atomic_add is an expensive operation, so we don't want to
-	 * call it in the case where we know we are the uniq holder of
+	 * call it in the case where we know we are the unique holder of
 	 * this mbuf (i.e. ref_cnt == 1). Otherwise, an atomic
 	 * operation has to be used because concurrent accesses on the
 	 * reference counter can occur.
@@ -1286,7 +1290,7 @@ static inline void rte_pktmbuf_reset_headroom(struct rte_mbuf *m)
  * The given mbuf must have only one segment.
  *
  * @param m
- *   The packet mbuf to be resetted.
+ *   The packet mbuf to be reset.
  */
 #define MBUF_INVALID_PORT UINT16_MAX
 
@@ -1459,7 +1463,7 @@ rte_pktmbuf_ext_shinfo_init_helper(void *buf_addr, uint16_t *buf_len,
  * ``rte_pktmbuf_detach()``.
  *
  * Memory for shared data must be provided and user must initialize all of
- * the content properly, escpecially free callback and refcnt. The pointer
+ * the content properly, especially free callback and refcnt. The pointer
  * of shared data will be stored in m->shinfo.
  * ``rte_pktmbuf_ext_shinfo_init_helper`` can help to simply spare a few
  * bytes at the end of buffer for the shared data, store free callback and

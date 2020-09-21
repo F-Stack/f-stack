@@ -208,6 +208,8 @@ handle_secondary_request(const struct rte_mp_msg *msg, const void *peer)
 	ret = rte_eal_alarm_set(1, __handle_secondary_request, bundle);
 	if (ret != 0) {
 		RTE_LOG(ERR, EAL, "failed to add mp task\n");
+		free(bundle->peer);
+		free(bundle);
 		return send_response_to_secondary(req, ret, peer);
 	}
 	return 0;
@@ -332,6 +334,8 @@ handle_primary_request(const struct rte_mp_msg *msg, const void *peer)
 	 */
 	ret = rte_eal_alarm_set(1, __handle_primary_request, bundle);
 	if (ret != 0) {
+		free(bundle->peer);
+		free(bundle);
 		resp->result = ret;
 		ret = rte_mp_reply(&mp_resp, peer);
 		if  (ret != 0) {
@@ -357,7 +361,7 @@ int eal_dev_hotplug_request_to_primary(struct eal_dev_mp_req *req)
 
 	ret = rte_mp_request_sync(&mp_req, &mp_reply, &ts);
 	if (ret || mp_reply.nb_received != 1) {
-		RTE_LOG(ERR, EAL, "cannot send request to primary");
+		RTE_LOG(ERR, EAL, "Cannot send request to primary\n");
 		if (!ret)
 			return -1;
 		return ret;
@@ -414,7 +418,7 @@ int eal_dev_hotplug_request_to_secondary(struct eal_dev_mp_req *req)
 	return 0;
 }
 
-int rte_mp_dev_hotplug_init(void)
+int eal_mp_dev_hotplug_init(void)
 {
 	int ret;
 

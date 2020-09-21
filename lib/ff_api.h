@@ -41,8 +41,22 @@ extern "C" {
 
 struct linux_sockaddr {
     short sa_family;
-    char sa_data[14];
+    char sa_data[126];
 };
+
+/* AF_INET6/PF_INET6 is 10 in linux
+ * defined 28 for FreeBSD
+ */
+#ifdef AF_INET6
+#undef AF_INET6
+#endif
+#ifdef PF_INET6
+#undef PF_INET6
+#endif
+#define AF_INET6    28
+#define PF_INET6    AF_INET6
+#define AF_INET6_LINUX    10
+#define PF_INET6_LINUX    AF_INET6_LINUX
 
 typedef int (*loop_func_t)(void *arg);
 
@@ -144,6 +158,8 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
 
 
 /* dispatch api begin */
+#define FF_DISPATCH_ERROR (-1)
+#define FF_DISPATCH_RESPONSE (-2)
 
 /*
  * Packet dispatch callback function.
@@ -160,11 +176,13 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  *
  * @return 0 to (nb_queues - 1)
  *   The queue id that the packet will be dispatched to.
- * @return -1
+ * @return FF_DISPATCH_ERROR (-1)
  *   Error occurs or packet is handled by user, packet will be freed.
+* @return FF_DISPATCH_RESPONSE (-2)
+ *   Packet is handled by user, packet will be responsed.
  *
  */
-typedef int (*dispatch_func_t)(void *data, uint16_t len,
+typedef int (*dispatch_func_t)(void *data, uint16_t *len,
     uint16_t queue_id, uint16_t nb_queues);
 
 /* regist a packet dispath function */

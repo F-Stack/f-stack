@@ -46,6 +46,8 @@
 #include "ff_errno.h"
 
 static struct timespec current_ts;
+extern void* ff_mem_get_page();
+extern int ff_mem_free_addr(void* p);
 
 void *
 ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)
@@ -53,6 +55,14 @@ ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)
     //return rte_malloc("", len, 4096);
     int host_prot;
     int host_flags;
+
+#ifdef FF_USE_PAGE_ARRAY
+        if( len == 4096 ){
+            return ff_mem_get_page();
+        }
+        else
+#endif
+        {
 
     assert(ff_PROT_NONE == PROT_NONE);
     host_prot = 0;
@@ -71,11 +81,17 @@ ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)
         exit(1);
     }
     return ret;
+    }
 }
 
 int
 ff_munmap(void *addr, uint64_t len)
 {
+#ifdef FF_USE_PAGE_ARRAY
+        if ( len == 4096 ){
+            return ff_mem_free_addr(addr);
+        }
+#endif
     //rte_free(addr);
     //return 0;
     return (munmap(addr, len));

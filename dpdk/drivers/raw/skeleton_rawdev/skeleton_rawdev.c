@@ -37,9 +37,6 @@ static uint16_t skeldev_init_once;
 /**< Rawdev Skeleton dummy driver name */
 #define SKELETON_PMD_RAWDEV_NAME rawdev_skeleton
 
-/**< Skeleton rawdev driver object */
-static struct rte_vdev_driver skeleton_pmd_drv;
-
 struct queue_buffers {
 	void *bufs[SKELETON_QUEUE_MAX_DEPTH];
 };
@@ -705,6 +702,9 @@ skeleton_rawdev_probe(struct rte_vdev_device *vdev)
 
 
 	name = rte_vdev_device_name(vdev);
+	if (name == NULL)
+		return -EINVAL;
+
 	/* More than one instance is not supported */
 	if (skeldev_init_once) {
 		SKELETON_PMD_ERR("Multiple instance not supported for %s",
@@ -740,6 +740,8 @@ skeleton_rawdev_remove(struct rte_vdev_device *vdev)
 	int ret;
 
 	name = rte_vdev_device_name(vdev);
+	if (name == NULL)
+		return -1;
 
 	SKELETON_PMD_INFO("Closing %s on NUMA node %d", name, rte_socket_id());
 

@@ -46,116 +46,107 @@
 	((t)(uintptr_t)vhost_iova_to_vva(r->dev, r->vq, a, l, p))
 
 static int
-cipher_algo_transform(uint32_t virtio_cipher_algo)
+cipher_algo_transform(uint32_t virtio_cipher_algo,
+		enum rte_crypto_cipher_algorithm *algo)
 {
-	int ret;
-
 	switch (virtio_cipher_algo) {
 	case VIRTIO_CRYPTO_CIPHER_AES_CBC:
-		ret = RTE_CRYPTO_CIPHER_AES_CBC;
+		*algo = RTE_CRYPTO_CIPHER_AES_CBC;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_AES_CTR:
-		ret = RTE_CRYPTO_CIPHER_AES_CTR;
+		*algo = RTE_CRYPTO_CIPHER_AES_CTR;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_DES_ECB:
-		ret = -VIRTIO_CRYPTO_NOTSUPP;
+		*algo = -VIRTIO_CRYPTO_NOTSUPP;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_DES_CBC:
-		ret = RTE_CRYPTO_CIPHER_DES_CBC;
+		*algo = RTE_CRYPTO_CIPHER_DES_CBC;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_3DES_ECB:
-		ret = RTE_CRYPTO_CIPHER_3DES_ECB;
+		*algo = RTE_CRYPTO_CIPHER_3DES_ECB;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_3DES_CBC:
-		ret = RTE_CRYPTO_CIPHER_3DES_CBC;
+		*algo = RTE_CRYPTO_CIPHER_3DES_CBC;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_3DES_CTR:
-		ret = RTE_CRYPTO_CIPHER_3DES_CTR;
+		*algo = RTE_CRYPTO_CIPHER_3DES_CTR;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_KASUMI_F8:
-		ret = RTE_CRYPTO_CIPHER_KASUMI_F8;
+		*algo = RTE_CRYPTO_CIPHER_KASUMI_F8;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_SNOW3G_UEA2:
-		ret = RTE_CRYPTO_CIPHER_SNOW3G_UEA2;
+		*algo = RTE_CRYPTO_CIPHER_SNOW3G_UEA2;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_AES_F8:
-		ret = RTE_CRYPTO_CIPHER_AES_F8;
+		*algo = RTE_CRYPTO_CIPHER_AES_F8;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_AES_XTS:
-		ret = RTE_CRYPTO_CIPHER_AES_XTS;
+		*algo = RTE_CRYPTO_CIPHER_AES_XTS;
 		break;
 	case VIRTIO_CRYPTO_CIPHER_ZUC_EEA3:
-		ret = RTE_CRYPTO_CIPHER_ZUC_EEA3;
+		*algo = RTE_CRYPTO_CIPHER_ZUC_EEA3;
 		break;
 	default:
-		ret = -VIRTIO_CRYPTO_BADMSG;
+		return -VIRTIO_CRYPTO_BADMSG;
 		break;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int
-auth_algo_transform(uint32_t virtio_auth_algo)
+auth_algo_transform(uint32_t virtio_auth_algo,
+		enum rte_crypto_auth_algorithm *algo)
 {
-	int ret;
-
 	switch (virtio_auth_algo) {
-
 	case VIRTIO_CRYPTO_NO_MAC:
-		ret = RTE_CRYPTO_AUTH_NULL;
+		*algo = RTE_CRYPTO_AUTH_NULL;
 		break;
 	case VIRTIO_CRYPTO_MAC_HMAC_MD5:
-		ret = RTE_CRYPTO_AUTH_MD5_HMAC;
+		*algo = RTE_CRYPTO_AUTH_MD5_HMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_HMAC_SHA1:
-		ret = RTE_CRYPTO_AUTH_SHA1_HMAC;
+		*algo = RTE_CRYPTO_AUTH_SHA1_HMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_HMAC_SHA_224:
-		ret = RTE_CRYPTO_AUTH_SHA224_HMAC;
+		*algo = RTE_CRYPTO_AUTH_SHA224_HMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_HMAC_SHA_256:
-		ret = RTE_CRYPTO_AUTH_SHA256_HMAC;
+		*algo = RTE_CRYPTO_AUTH_SHA256_HMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_HMAC_SHA_384:
-		ret = RTE_CRYPTO_AUTH_SHA384_HMAC;
+		*algo = RTE_CRYPTO_AUTH_SHA384_HMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_HMAC_SHA_512:
-		ret = RTE_CRYPTO_AUTH_SHA512_HMAC;
-		break;
-	case VIRTIO_CRYPTO_MAC_CMAC_3DES:
-		ret = -VIRTIO_CRYPTO_NOTSUPP;
+		*algo = RTE_CRYPTO_AUTH_SHA512_HMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_CMAC_AES:
-		ret = RTE_CRYPTO_AUTH_AES_CMAC;
+		*algo = RTE_CRYPTO_AUTH_AES_CMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_KASUMI_F9:
-		ret = RTE_CRYPTO_AUTH_KASUMI_F9;
+		*algo = RTE_CRYPTO_AUTH_KASUMI_F9;
 		break;
 	case VIRTIO_CRYPTO_MAC_SNOW3G_UIA2:
-		ret = RTE_CRYPTO_AUTH_SNOW3G_UIA2;
+		*algo = RTE_CRYPTO_AUTH_SNOW3G_UIA2;
 		break;
 	case VIRTIO_CRYPTO_MAC_GMAC_AES:
-		ret = RTE_CRYPTO_AUTH_AES_GMAC;
-		break;
-	case VIRTIO_CRYPTO_MAC_GMAC_TWOFISH:
-		ret = -VIRTIO_CRYPTO_NOTSUPP;
+		*algo = RTE_CRYPTO_AUTH_AES_GMAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_CBCMAC_AES:
-		ret = RTE_CRYPTO_AUTH_AES_CBC_MAC;
-		break;
-	case VIRTIO_CRYPTO_MAC_CBCMAC_KASUMI_F9:
-		ret = -VIRTIO_CRYPTO_NOTSUPP;
+		*algo = RTE_CRYPTO_AUTH_AES_CBC_MAC;
 		break;
 	case VIRTIO_CRYPTO_MAC_XCBC_AES:
-		ret = RTE_CRYPTO_AUTH_AES_XCBC_MAC;
+		*algo = RTE_CRYPTO_AUTH_AES_XCBC_MAC;
 		break;
+	case VIRTIO_CRYPTO_MAC_CMAC_3DES:
+	case VIRTIO_CRYPTO_MAC_GMAC_TWOFISH:
+	case VIRTIO_CRYPTO_MAC_CBCMAC_KASUMI_F9:
+		return -VIRTIO_CRYPTO_NOTSUPP;
 	default:
-		ret = -VIRTIO_CRYPTO_BADMSG;
-		break;
+		return -VIRTIO_CRYPTO_BADMSG;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int get_iv_len(enum rte_crypto_cipher_algorithm algo)
@@ -241,12 +232,11 @@ transform_cipher_param(struct rte_crypto_sym_xform *xform,
 {
 	int ret;
 
-	ret = cipher_algo_transform(param->cipher_algo);
+	ret = cipher_algo_transform(param->cipher_algo, &xform->cipher.algo);
 	if (unlikely(ret < 0))
 		return ret;
 
 	xform->type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	xform->cipher.algo = (enum rte_crypto_cipher_algorithm)ret;
 	xform->cipher.key.length = param->cipher_key_len;
 	if (xform->cipher.key.length > 0)
 		xform->cipher.key.data = param->cipher_key_buf;
@@ -292,11 +282,11 @@ transform_chain_param(struct rte_crypto_sym_xform *xforms,
 	}
 
 	/* cipher */
-	ret = cipher_algo_transform(param->cipher_algo);
+	ret = cipher_algo_transform(param->cipher_algo,
+			&xform_cipher->cipher.algo);
 	if (unlikely(ret < 0))
 		return ret;
 	xform_cipher->type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	xform_cipher->cipher.algo = (enum rte_crypto_cipher_algorithm)ret;
 	xform_cipher->cipher.key.length = param->cipher_key_len;
 	xform_cipher->cipher.key.data = param->cipher_key_buf;
 	ret = get_iv_len(xform_cipher->cipher.algo);
@@ -307,10 +297,9 @@ transform_chain_param(struct rte_crypto_sym_xform *xforms,
 
 	/* auth */
 	xform_auth->type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	ret = auth_algo_transform(param->hash_algo);
+	ret = auth_algo_transform(param->hash_algo, &xform_auth->auth.algo);
 	if (unlikely(ret < 0))
 		return ret;
-	xform_auth->auth.algo = (enum rte_crypto_auth_algorithm)ret;
 	xform_auth->auth.digest_length = param->digest_len;
 	xform_auth->auth.key.length = param->auth_key_len;
 	xform_auth->auth.key.data = param->auth_key_buf;
@@ -466,12 +455,17 @@ vhost_crypto_msg_post_handler(int vid, void *msg)
 }
 
 static __rte_always_inline struct vring_desc *
-find_write_desc(struct vring_desc *head, struct vring_desc *desc)
+find_write_desc(struct vring_desc *head, struct vring_desc *desc,
+		uint32_t *nb_descs, uint32_t vq_size)
 {
 	if (desc->flags & VRING_DESC_F_WRITE)
 		return desc;
 
 	while (desc->flags & VRING_DESC_F_NEXT) {
+		if (unlikely(*nb_descs == 0 || desc->next >= vq_size))
+			return NULL;
+		(*nb_descs)--;
+
 		desc = &head[desc->next];
 		if (desc->flags & VRING_DESC_F_WRITE)
 			return desc;
@@ -481,13 +475,18 @@ find_write_desc(struct vring_desc *head, struct vring_desc *desc)
 }
 
 static struct virtio_crypto_inhdr *
-reach_inhdr(struct vhost_crypto_data_req *vc_req, struct vring_desc *desc)
+reach_inhdr(struct vhost_crypto_data_req *vc_req, struct vring_desc *desc,
+		uint32_t *nb_descs, uint32_t vq_size)
 {
 	uint64_t dlen;
 	struct virtio_crypto_inhdr *inhdr;
 
-	while (desc->flags & VRING_DESC_F_NEXT)
+	while (desc->flags & VRING_DESC_F_NEXT) {
+		if (unlikely(*nb_descs == 0 || desc->next >= vq_size))
+			return NULL;
+		(*nb_descs)--;
 		desc = &vc_req->head[desc->next];
+	}
 
 	dlen = desc->len;
 	inhdr = IOVA_TO_VVA(struct virtio_crypto_inhdr *, vc_req, desc->addr,
@@ -500,15 +499,16 @@ reach_inhdr(struct vhost_crypto_data_req *vc_req, struct vring_desc *desc)
 
 static __rte_always_inline int
 move_desc(struct vring_desc *head, struct vring_desc **cur_desc,
-		uint32_t size)
+		uint32_t size, uint32_t *nb_descs, uint32_t vq_size)
 {
 	struct vring_desc *desc = *cur_desc;
-	int left = size;
-
-	rte_prefetch0(&head[desc->next]);
-	left -= desc->len;
+	int left = size - desc->len;
 
 	while ((desc->flags & VRING_DESC_F_NEXT) && left > 0) {
+		(*nb_descs)--;
+		if (unlikely(*nb_descs == 0 || desc->next >= vq_size))
+			return -1;
+
 		desc = &head[desc->next];
 		rte_prefetch0(&head[desc->next]);
 		left -= desc->len;
@@ -517,7 +517,14 @@ move_desc(struct vring_desc *head, struct vring_desc **cur_desc,
 	if (unlikely(left > 0))
 		return -1;
 
-	*cur_desc = &head[desc->next];
+	if (unlikely(*nb_descs == 0))
+		*cur_desc = NULL;
+	else {
+		if (unlikely(desc->next >= vq_size))
+			return -1;
+		*cur_desc = &head[desc->next];
+	}
+
 	return 0;
 }
 
@@ -539,7 +546,8 @@ get_data_ptr(struct vhost_crypto_data_req *vc_req, struct vring_desc *cur_desc,
 
 static int
 copy_data(void *dst_data, struct vhost_crypto_data_req *vc_req,
-		struct vring_desc **cur_desc, uint32_t size)
+		struct vring_desc **cur_desc, uint32_t size,
+		uint32_t *nb_descs, uint32_t vq_size)
 {
 	struct vring_desc *desc = *cur_desc;
 	uint64_t remain, addr, dlen, len;
@@ -548,7 +556,6 @@ copy_data(void *dst_data, struct vhost_crypto_data_req *vc_req,
 	uint8_t *src;
 	int left = size;
 
-	rte_prefetch0(&vc_req->head[desc->next]);
 	to_copy = RTE_MIN(desc->len, (uint32_t)left);
 	dlen = to_copy;
 	src = IOVA_TO_VVA(uint8_t *, vc_req, desc->addr, &dlen,
@@ -582,6 +589,12 @@ copy_data(void *dst_data, struct vhost_crypto_data_req *vc_req,
 	left -= to_copy;
 
 	while ((desc->flags & VRING_DESC_F_NEXT) && left > 0) {
+		if (unlikely(*nb_descs == 0 || desc->next >= vq_size)) {
+			VC_LOG_ERR("Invalid descriptors");
+			return -1;
+		}
+		(*nb_descs)--;
+
 		desc = &vc_req->head[desc->next];
 		rte_prefetch0(&vc_req->head[desc->next]);
 		to_copy = RTE_MIN(desc->len, (uint32_t)left);
@@ -624,7 +637,13 @@ copy_data(void *dst_data, struct vhost_crypto_data_req *vc_req,
 		return -1;
 	}
 
-	*cur_desc = &vc_req->head[desc->next];
+	if (unlikely(*nb_descs == 0))
+		*cur_desc = NULL;
+	else {
+		if (unlikely(desc->next >= vq_size))
+			return -1;
+		*cur_desc = &vc_req->head[desc->next];
+	}
 
 	return 0;
 }
@@ -635,7 +654,6 @@ write_back_data(struct vhost_crypto_data_req *vc_req)
 	struct vhost_crypto_writeback_data *wb_data = vc_req->wb, *wb_last;
 
 	while (wb_data) {
-		rte_prefetch0(wb_data->next);
 		rte_memcpy(wb_data->dst, wb_data->src, wb_data->len);
 		wb_last = wb_data;
 		wb_data = wb_data->next;
@@ -684,7 +702,8 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 		struct vhost_crypto_writeback_data **end_wb_data,
 		uint8_t *src,
 		uint32_t offset,
-		uint64_t write_back_len)
+		uint64_t write_back_len,
+		uint32_t *nb_descs, uint32_t vq_size)
 {
 	struct vhost_crypto_writeback_data *wb_data, *head;
 	struct vring_desc *desc = *cur_desc;
@@ -731,6 +750,12 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 		offset -= desc->len;
 
 	while (write_back_len) {
+		if (unlikely(*nb_descs == 0 || desc->next >= vq_size)) {
+			VC_LOG_ERR("Invalid descriptors");
+			goto error_exit;
+		}
+		(*nb_descs)--;
+
 		desc = &vc_req->head[desc->next];
 		if (unlikely(!(desc->flags & VRING_DESC_F_WRITE))) {
 			VC_LOG_ERR("incorrect descriptor");
@@ -770,7 +795,13 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 			wb_data->next = NULL;
 	}
 
-	*cur_desc = &vc_req->head[desc->next];
+	if (unlikely(*nb_descs == 0))
+		*cur_desc = NULL;
+	else {
+		if (unlikely(desc->next >= vq_size))
+			goto error_exit;
+		*cur_desc = &vc_req->head[desc->next];
+	}
 
 	*end_wb_data = wb_data;
 
@@ -787,7 +818,8 @@ static uint8_t
 prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		struct vhost_crypto_data_req *vc_req,
 		struct virtio_crypto_cipher_data_req *cipher,
-		struct vring_desc *cur_desc)
+		struct vring_desc *cur_desc,
+		uint32_t *nb_descs, uint32_t vq_size)
 {
 	struct vring_desc *desc = cur_desc;
 	struct vhost_crypto_writeback_data *ewb = NULL;
@@ -797,8 +829,8 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 
 	/* prepare */
 	/* iv */
-	if (unlikely(copy_data(iv_data, vc_req, &desc,
-			cipher->para.iv_len) < 0)) {
+	if (unlikely(copy_data(iv_data, vc_req, &desc, cipher->para.iv_len,
+			nb_descs, vq_size) < 0)) {
 		ret = VIRTIO_CRYPTO_BADMSG;
 		goto error_exit;
 	}
@@ -818,7 +850,8 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		}
 
 		if (unlikely(move_desc(vc_req->head, &desc,
-				cipher->para.src_data_len) < 0)) {
+				cipher->para.src_data_len, nb_descs,
+				vq_size) < 0)) {
 			VC_LOG_ERR("Incorrect descriptor");
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -835,8 +868,8 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 			goto error_exit;
 		}
 		if (unlikely(copy_data(rte_pktmbuf_mtod(m_src, uint8_t *),
-				vc_req, &desc, cipher->para.src_data_len)
-				< 0)) {
+				vc_req, &desc, cipher->para.src_data_len,
+				nb_descs, vq_size) < 0)) {
 			ret = VIRTIO_CRYPTO_BADMSG;
 			goto error_exit;
 		}
@@ -847,7 +880,7 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 	}
 
 	/* dst */
-	desc = find_write_desc(vc_req->head, desc);
+	desc = find_write_desc(vc_req->head, desc, nb_descs, vq_size);
 	if (unlikely(!desc)) {
 		VC_LOG_ERR("Cannot find write location");
 		ret = VIRTIO_CRYPTO_BADMSG;
@@ -866,7 +899,8 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		}
 
 		if (unlikely(move_desc(vc_req->head, &desc,
-				cipher->para.dst_data_len) < 0)) {
+				cipher->para.dst_data_len,
+				nb_descs, vq_size) < 0)) {
 			VC_LOG_ERR("Incorrect descriptor");
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -877,7 +911,7 @@ prepare_sym_cipher_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 	case RTE_VHOST_CRYPTO_ZERO_COPY_DISABLE:
 		vc_req->wb = prepare_write_back_data(vc_req, &desc, &ewb,
 				rte_pktmbuf_mtod(m_src, uint8_t *), 0,
-				cipher->para.dst_data_len);
+				cipher->para.dst_data_len, nb_descs, vq_size);
 		if (unlikely(vc_req->wb == NULL)) {
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -919,7 +953,8 @@ static uint8_t
 prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		struct vhost_crypto_data_req *vc_req,
 		struct virtio_crypto_alg_chain_data_req *chain,
-		struct vring_desc *cur_desc)
+		struct vring_desc *cur_desc,
+		uint32_t *nb_descs, uint32_t vq_size)
 {
 	struct vring_desc *desc = cur_desc, *digest_desc;
 	struct vhost_crypto_writeback_data *ewb = NULL, *ewb2 = NULL;
@@ -932,7 +967,7 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 	/* prepare */
 	/* iv */
 	if (unlikely(copy_data(iv_data, vc_req, &desc,
-			chain->para.iv_len) < 0)) {
+			chain->para.iv_len, nb_descs, vq_size) < 0)) {
 		ret = VIRTIO_CRYPTO_BADMSG;
 		goto error_exit;
 	}
@@ -953,7 +988,8 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		}
 
 		if (unlikely(move_desc(vc_req->head, &desc,
-				chain->para.src_data_len) < 0)) {
+				chain->para.src_data_len,
+				nb_descs, vq_size) < 0)) {
 			VC_LOG_ERR("Incorrect descriptor");
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -969,7 +1005,8 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 			goto error_exit;
 		}
 		if (unlikely(copy_data(rte_pktmbuf_mtod(m_src, uint8_t *),
-				vc_req, &desc, chain->para.src_data_len)) < 0) {
+				vc_req, &desc, chain->para.src_data_len,
+				nb_descs, vq_size) < 0)) {
 			ret = VIRTIO_CRYPTO_BADMSG;
 			goto error_exit;
 		}
@@ -981,7 +1018,7 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 	}
 
 	/* dst */
-	desc = find_write_desc(vc_req->head, desc);
+	desc = find_write_desc(vc_req->head, desc, nb_descs, vq_size);
 	if (unlikely(!desc)) {
 		VC_LOG_ERR("Cannot find write location");
 		ret = VIRTIO_CRYPTO_BADMSG;
@@ -1000,7 +1037,8 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		}
 
 		if (unlikely(move_desc(vc_req->head, &desc,
-				chain->para.dst_data_len) < 0)) {
+				chain->para.dst_data_len,
+				nb_descs, vq_size) < 0)) {
 			VC_LOG_ERR("Incorrect descriptor");
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -1017,7 +1055,8 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 		}
 
 		if (unlikely(move_desc(vc_req->head, &desc,
-				chain->para.hash_result_len) < 0)) {
+				chain->para.hash_result_len,
+				nb_descs, vq_size) < 0)) {
 			VC_LOG_ERR("Incorrect descriptor");
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -1029,7 +1068,8 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 				rte_pktmbuf_mtod(m_src, uint8_t *),
 				chain->para.cipher_start_src_offset,
 				chain->para.dst_data_len -
-				chain->para.cipher_start_src_offset);
+				chain->para.cipher_start_src_offset,
+				nb_descs, vq_size);
 		if (unlikely(vc_req->wb == NULL)) {
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
@@ -1042,14 +1082,16 @@ prepare_sym_chain_op(struct vhost_crypto *vcrypto, struct rte_crypto_op *op,
 
 		/** create a wb_data for digest */
 		ewb->next = prepare_write_back_data(vc_req, &desc, &ewb2,
-				digest_addr, 0, chain->para.hash_result_len);
+				digest_addr, 0, chain->para.hash_result_len,
+				nb_descs, vq_size);
 		if (unlikely(ewb->next == NULL)) {
 			ret = VIRTIO_CRYPTO_ERR;
 			goto error_exit;
 		}
 
 		if (unlikely(copy_data(digest_addr, vc_req, &digest_desc,
-				chain->para.hash_result_len)) < 0) {
+				chain->para.hash_result_len,
+				nb_descs, vq_size) < 0)) {
 			ret = VIRTIO_CRYPTO_BADMSG;
 			goto error_exit;
 		}
@@ -1108,6 +1150,7 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 	struct vring_desc *desc = NULL;
 	uint64_t session_id;
 	uint64_t dlen;
+	uint32_t nb_descs = vq->size;
 	int err = 0;
 
 	vc_req->desc_idx = desc_idx;
@@ -1116,6 +1159,10 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 
 	if (likely(head->flags & VRING_DESC_F_INDIRECT)) {
 		dlen = head->len;
+		nb_descs = dlen / sizeof(struct vring_desc);
+		/* drop invalid descriptors */
+		if (unlikely(nb_descs > vq->size))
+			return -1;
 		desc = IOVA_TO_VVA(struct vring_desc *, vc_req, head->addr,
 				&dlen, VHOST_ACCESS_RO);
 		if (unlikely(!desc || dlen != head->len))
@@ -1138,8 +1185,8 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 			goto error_exit;
 		case RTE_VHOST_CRYPTO_ZERO_COPY_DISABLE:
 			req = &tmp_req;
-			if (unlikely(copy_data(req, vc_req, &desc, sizeof(*req))
-					< 0)) {
+			if (unlikely(copy_data(req, vc_req, &desc, sizeof(*req),
+					&nb_descs, vq->size) < 0)) {
 				err = VIRTIO_CRYPTO_BADMSG;
 				VC_LOG_ERR("Invalid descriptor");
 				goto error_exit;
@@ -1152,7 +1199,7 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 		}
 	} else {
 		if (unlikely(move_desc(vc_req->head, &desc,
-				sizeof(*req)) < 0)) {
+				sizeof(*req), &nb_descs, vq->size) < 0)) {
 			VC_LOG_ERR("Incorrect descriptor");
 			goto error_exit;
 		}
@@ -1193,11 +1240,13 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 			break;
 		case VIRTIO_CRYPTO_SYM_OP_CIPHER:
 			err = prepare_sym_cipher_op(vcrypto, op, vc_req,
-					&req->u.sym_req.u.cipher, desc);
+					&req->u.sym_req.u.cipher, desc,
+					&nb_descs, vq->size);
 			break;
 		case VIRTIO_CRYPTO_SYM_OP_ALGORITHM_CHAINING:
 			err = prepare_sym_chain_op(vcrypto, op, vc_req,
-					&req->u.sym_req.u.chain, desc);
+					&req->u.sym_req.u.chain, desc,
+					&nb_descs, vq->size);
 			break;
 		}
 		if (unlikely(err != 0)) {
@@ -1215,7 +1264,7 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 
 error_exit:
 
-	inhdr = reach_inhdr(vc_req, desc);
+	inhdr = reach_inhdr(vc_req, desc, &nb_descs, vq->size);
 	if (likely(inhdr != NULL))
 		inhdr->status = (uint8_t)err;
 
@@ -1528,7 +1577,7 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 			op->sym->m_dst->data_off = 0;
 
 			if (unlikely(vhost_crypto_process_one_req(vcrypto, vq,
-					op, head, desc_idx)) < 0)
+					op, head, desc_idx) < 0))
 				break;
 		}
 
@@ -1557,7 +1606,7 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 			op->sym->m_src->data_off = 0;
 
 			if (unlikely(vhost_crypto_process_one_req(vcrypto, vq,
-					op, head, desc_idx)) < 0)
+					op, head, desc_idx) < 0))
 				break;
 		}
 

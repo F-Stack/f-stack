@@ -580,6 +580,7 @@ rte_pmd_i40e_remove_vf_mac_addr(uint16_t port, uint16_t vf_id,
 	struct i40e_pf_vf *vf;
 	struct i40e_vsi *vsi;
 	struct i40e_pf *pf;
+	int ret;
 
 	if (i40e_validate_mac_addr((u8 *)mac_addr) != I40E_SUCCESS)
 		return -EINVAL;
@@ -608,8 +609,9 @@ rte_pmd_i40e_remove_vf_mac_addr(uint16_t port, uint16_t vf_id,
 		ether_addr_copy(&null_mac_addr, &vf->mac_addr);
 
 	/* Remove the mac */
-	i40e_vsi_delete_mac(vsi, mac_addr);
-
+	ret = i40e_vsi_delete_mac(vsi, mac_addr);
+	if (ret != I40E_SUCCESS)
+		return ret;
 	return 0;
 }
 
@@ -2818,12 +2820,22 @@ i40e_queue_region_dcb_configure(struct i40e_hw *hw,
 	struct i40e_dcbx_config *old_cfg = &hw->local_dcbx_config;
 	int32_t ret = -EINVAL;
 	uint16_t i, j, prio_index, region_index;
-	uint8_t tc_map, tc_bw, bw_lf;
+	uint8_t tc_map, tc_bw, bw_lf, dcb_flag = 0;
 
 	if (!info->queue_region_number) {
 		PMD_DRV_LOG(ERR, "No queue region been set before");
 		return ret;
 	}
+
+	for (i = 0; i < info->queue_region_number; i++) {
+		if (info->region[i].user_priority_num) {
+			dcb_flag = 1;
+			break;
+		}
+	}
+
+	if (dcb_flag == 0)
+		return 0;
 
 	dcb_cfg = &dcb_cfg_local;
 	memset(dcb_cfg, 0, sizeof(struct i40e_dcbx_config));

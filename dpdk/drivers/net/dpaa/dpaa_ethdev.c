@@ -1223,8 +1223,12 @@ dpaa_dev_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* For secondary processes, the primary has done all the work */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		eth_dev->dev_ops = &dpaa_devops;
+		/* Plugging of UCODE burst API not supported in Secondary */
+		eth_dev->rx_pkt_burst = dpaa_eth_queue_rx;
 		return 0;
+	}
 
 	dpaa_device = DEV_TO_DPAA_DEVICE(eth_dev->device);
 	dev_id = dpaa_device->id.dev_id;
@@ -1455,6 +1459,16 @@ rte_dpaa_probe(struct rte_dpaa_driver *dpaa_drv __rte_unused,
 	struct rte_eth_dev *eth_dev;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if ((DPAA_MBUF_HW_ANNOTATION + DPAA_FD_PTA_SIZE) >
+		RTE_PKTMBUF_HEADROOM) {
+		DPAA_PMD_ERR(
+		"RTE_PKTMBUF_HEADROOM(%d) shall be > DPAA Annotation req(%d)",
+		RTE_PKTMBUF_HEADROOM,
+		DPAA_MBUF_HW_ANNOTATION + DPAA_FD_PTA_SIZE);
+
+		return -1;
+	}
 
 	/* In case of secondary process, the device is already configured
 	 * and no further action is required, except portal initialization

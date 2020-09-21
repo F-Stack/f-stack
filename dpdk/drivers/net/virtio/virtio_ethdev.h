@@ -45,6 +45,8 @@
 	 1u << VIRTIO_NET_F_HOST_TSO4      |	\
 	 1u << VIRTIO_NET_F_HOST_TSO6)
 
+extern const struct eth_dev_ops virtio_user_secondary_eth_dev_ops;
+
 /*
  * CQ function prototype
  */
@@ -79,6 +81,9 @@ uint16_t virtio_recv_mergeable_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 uint16_t virtio_recv_mergeable_pkts_inorder(void *rx_queue,
 		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+
+uint16_t virtio_xmit_pkts_prepare(void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts);
 
 uint16_t virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);

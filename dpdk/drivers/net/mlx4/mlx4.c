@@ -81,7 +81,7 @@ static void mlx4_dev_stop(struct rte_eth_dev *dev);
 static int
 mlx4_dev_configure(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
 	int ret;
 
@@ -117,7 +117,7 @@ exit:
 static int
 mlx4_dev_start(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
 	int ret;
 
@@ -169,7 +169,7 @@ err:
 static void
 mlx4_dev_stop(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 
 	if (!priv->started)
 		return;
@@ -194,7 +194,7 @@ mlx4_dev_stop(struct rte_eth_dev *dev)
 static void
 mlx4_dev_close(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx4_priv *priv = dev->data->dev_private;
 	unsigned int i;
 
 	DEBUG("%p: closing device \"%s\"",
@@ -520,6 +520,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	};
 	unsigned int vf;
 	int i;
+	char ifname[IF_NAMESIZE];
 
 	(void)pci_drv;
 	assert(pci_drv == &mlx4_driver);
@@ -599,7 +600,7 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		struct ibv_context *ctx = NULL;
 		struct ibv_port_attr port_attr;
 		struct ibv_pd *pd = NULL;
-		struct priv *priv = NULL;
+		struct mlx4_priv *priv = NULL;
 		struct rte_eth_dev *eth_dev = NULL;
 		struct ether_addr mac;
 
@@ -703,17 +704,15 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		     mac.addr_bytes[4], mac.addr_bytes[5]);
 		/* Register MAC address. */
 		priv->mac[0] = mac;
-#ifndef NDEBUG
-		{
-			char ifname[IF_NAMESIZE];
 
-			if (mlx4_get_ifname(priv, &ifname) == 0)
-				DEBUG("port %u ifname is \"%s\"",
-				      priv->port, ifname);
-			else
-				DEBUG("port %u ifname is unknown", priv->port);
+		if (mlx4_get_ifname(priv, &ifname) == 0) {
+			DEBUG("port %u ifname is \"%s\"",
+			      priv->port, ifname);
+			priv->if_index = if_nametoindex(ifname);
+		} else {
+			DEBUG("port %u ifname is unknown", priv->port);
 		}
-#endif
+
 		/* Get actual MTU if possible. */
 		mlx4_mtu_get(priv, &priv->mtu);
 		DEBUG("port %u MTU is %u", priv->port, priv->mtu);
@@ -752,11 +751,11 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		 * handled by rte_intr_rx_ctl().
 		 */
 		eth_dev->intr_handle = &priv->intr_handle;
-		priv->dev = eth_dev;
+		priv->dev_data = eth_dev->data;
 		eth_dev->dev_ops = &mlx4_dev_ops;
 		/* Bring Ethernet device up. */
 		DEBUG("forcing Ethernet interface up");
-		mlx4_dev_set_link_up(priv->dev);
+		mlx4_dev_set_link_up(eth_dev);
 		/* Update link status once if waiting for LSC. */
 		if (eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
 			mlx4_link_update(eth_dev, 0);

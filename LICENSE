@@ -1,5 +1,5 @@
 Main code of F-Stack is BSD 2-Clause licensed.
-Copyright (C) 2017 THL A29 Limited, a Tencent company.
+Copyright (C) 2019 THL A29 Limited, a Tencent company.
 All rights reserved.
 
 Other Dependencies:
@@ -38,12 +38,13 @@ BSD 3-Clause, Copyright (c) 2009, Ben Hoyt.All rights reserved.
 
 6.Nginx
 
-BSD 2-Clause, Copyright (C) 2002-2017 Igor Sysoev.
-Copyright (C) 2011-2017 Nginx, Inc.All rights reserved.
+BSD 2-Clause, Copyright (C) 2002-2019 Igor Sysoev
+Copyright (C) 2011-2019 Nginx, Inc.
+All rights reserved.
 
 7.Redis
 
-BSD 2-Clause, Copyright (c) 2006-2015, Salvatore Sanfilippo.All rights reserved.
+BSD 3-Clause, Copyright (c) 2006-2015, Salvatore Sanfilippo.All rights reserved.
 
 8.Microthread framework
 

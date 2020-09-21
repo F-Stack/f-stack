@@ -234,8 +234,8 @@ static void hn_dev_info_get(struct rte_eth_dev *dev,
 	dev_info->max_mac_addrs  = 1;
 
 	dev_info->hash_key_size = NDIS_HASH_KEYSIZE_TOEPLITZ;
-	dev_info->flow_type_rss_offloads =
-		ETH_RSS_IPV4 | ETH_RSS_IPV6 | ETH_RSS_TCP | ETH_RSS_UDP;
+	dev_info->flow_type_rss_offloads = hv->rss_offloads;
+	dev_info->reta_size = ETH_RSS_RETA_SIZE_128;
 
 	dev_info->max_rx_queues = hv->max_queues;
 	dev_info->max_tx_queues = hv->max_queues;
@@ -572,9 +572,11 @@ hn_dev_xstats_get(struct rte_eth_dev *dev,
 			continue;
 
 		stats = (const char *)&txq->stats;
-		for (t = 0; t < RTE_DIM(hn_stat_strings); t++)
-			xstats[count++].value = *(const uint64_t *)
+		for (t = 0; t < RTE_DIM(hn_stat_strings); t++, count++) {
+			xstats[count].id = count;
+			xstats[count].value = *(const uint64_t *)
 				(stats + hn_stat_strings[t].offset);
+		}
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -584,12 +586,14 @@ hn_dev_xstats_get(struct rte_eth_dev *dev,
 			continue;
 
 		stats = (const char *)&rxq->stats;
-		for (t = 0; t < RTE_DIM(hn_stat_strings); t++)
-			xstats[count++].value = *(const uint64_t *)
+		for (t = 0; t < RTE_DIM(hn_stat_strings); t++, count++) {
+			xstats[count].id = count;
+			xstats[count].value = *(const uint64_t *)
 				(stats + hn_stat_strings[t].offset);
+		}
 	}
 
-	ret = hn_vf_xstats_get(dev, xstats + count, n - count);
+	ret = hn_vf_xstats_get(dev, xstats, count, n);
 	if (ret < 0)
 		return ret;
 
@@ -732,6 +736,9 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	hv->chim_res  = &vmbus->resource[HV_SEND_BUF_MAP];
 	hv->port_id = eth_dev->data->port_id;
 	hv->latency = HN_CHAN_LATENCY_NS;
+	hv->max_queues = 1;
+	rte_spinlock_init(&hv->vf_lock);
+	hv->vf_port = HN_INVALID_PORT;
 
 	err = hn_parse_args(eth_dev);
 	if (err)
@@ -770,6 +777,10 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	if (err)
 		goto failed;
 
+	/* Multi queue requires later versions of windows server */
+	if (hv->nvs_ver < NVS_VERSION_5)
+		return 0;
+
 	max_chan = rte_vmbus_max_channels(vmbus);
 	PMD_INIT_LOG(DEBUG, "VMBus max channels %d", max_chan);
 	if (max_chan <= 0)
@@ -781,12 +792,12 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	hv->max_queues = RTE_MIN(rxr_cnt, (unsigned int)max_chan);
 
 	/* If VF was reported but not added, do it now */
-	if (hv->vf_present && !hv->vf_dev) {
+	if (hv->vf_present && !hn_vf_attached(hv)) {
 		PMD_INIT_LOG(DEBUG, "Adding VF device");
 
 		err = hn_vf_add(eth_dev, hv);
 		if (err)
-			goto failed;
+			hv->vf_present = 0;
 	}
 
 	return 0;
@@ -794,6 +805,7 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 failed:
 	PMD_INIT_LOG(NOTICE, "device init failed");
 
+	hn_tx_pool_uninit(eth_dev);
 	hn_detach(hv);
 	return err;
 }
@@ -816,6 +828,7 @@ eth_hn_dev_uninit(struct rte_eth_dev *eth_dev)
 	eth_dev->rx_pkt_burst = NULL;
 
 	hn_detach(hv);
+	hn_tx_pool_uninit(eth_dev);
 	rte_vmbus_chan_close(hv->primary->chan);
 	rte_free(hv->primary);
 	rte_eth_dev_owner_delete(hv->owner.id);

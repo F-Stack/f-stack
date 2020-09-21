@@ -70,7 +70,7 @@ static inline void
 caam_jr_op_ending(struct caam_jr_op_ctx *ctx)
 {
 	PMD_INIT_FUNC_TRACE();
-	/* report op status to sym->op and then free the ctx memeory  */
+	/* report op status to sym->op and then free the ctx memory  */
 	rte_mempool_put(ctx->ctx_pool, (void *)ctx);
 }
 
@@ -311,7 +311,7 @@ caam_jr_prep_cdb(struct caam_jr_session *ses)
 	int32_t shared_desc_len = 0;
 	struct sec_cdb *cdb;
 	int err;
-#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
+#if CAAM_BYTE_ORDER == CORE_BYTE_ORDER
 	int swap = false;
 #else
 	int swap = true;
@@ -798,7 +798,7 @@ build_auth_only_sg(struct rte_crypto_op *op, struct caam_jr_session *ses)
 		sg->len = cpu_to_caam32(ses->digest_length);
 		length += ses->digest_length;
 	} else {
-		length -= ses->digest_length;
+		sg->len -= ses->digest_length;
 	}
 
 	/* last element*/
@@ -2012,7 +2012,7 @@ caam_jr_dev_configure(struct rte_cryptodev *dev,
 	PMD_INIT_FUNC_TRACE();
 
 	internals = dev->data->dev_private;
-	sprintf(str, "ctx_pool_%d", dev->data->dev_id);
+	snprintf(str, sizeof(str), "ctx_pool_%d", dev->data->dev_id);
 	if (!internals->ctx_pool) {
 		internals->ctx_pool = rte_mempool_create((const char *)str,
 						CTX_POOL_NUM_BUFS,

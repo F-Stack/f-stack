@@ -23,7 +23,7 @@ set_ipsec_conf(struct ipsec_sa *sa, struct rte_security_ipsec_xform *ipsec)
 	if (ipsec->mode == RTE_SECURITY_IPSEC_SA_MODE_TUNNEL) {
 		struct rte_security_ipsec_tunnel_param *tunnel =
 				&ipsec->tunnel;
-		if (sa->flags == IP4_TUNNEL) {
+		if (IS_IP4_TUNNEL(sa->flags)) {
 			tunnel->type =
 				RTE_SECURITY_IPSEC_TUNNEL_IPV4;
 			tunnel->ipv4.ttl = IPDEFTTL;
@@ -83,8 +83,7 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 				.options = { 0 },
 				.direction = sa->direction,
 				.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP,
-				.mode = (sa->flags == IP4_TUNNEL ||
-						sa->flags == IP6_TUNNEL) ?
+				.mode = (IS_TUNNEL(sa->flags)) ?
 					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL :
 					RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT,
 			} },
@@ -134,7 +133,7 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 				    sec_cap->protocol ==
 					RTE_SECURITY_PROTOCOL_IPSEC &&
 				    sec_cap->ipsec.mode ==
-					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL &&
+					sess_conf.ipsec.mode &&
 				    sec_cap->ipsec.direction == sa->direction)
 					break;
 				sec_cap++;
@@ -150,16 +149,20 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 			sa->security_ctx = ctx;
 			sa->pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
 
-			sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
-			sa->pattern[1].mask = &rte_flow_item_ipv4_mask;
-			if (sa->flags & IP6_TUNNEL) {
+			if (IS_IP6(sa->flags)) {
+				sa->pattern[1].mask = &rte_flow_item_ipv6_mask;
+				sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV6;
 				sa->pattern[1].spec = &sa->ipv6_spec;
+
 				memcpy(sa->ipv6_spec.hdr.dst_addr,
 					sa->dst.ip.ip6.ip6_b, 16);
 				memcpy(sa->ipv6_spec.hdr.src_addr,
 				       sa->src.ip.ip6.ip6_b, 16);
-			} else {
+			} else if (IS_IP4(sa->flags)) {
+				sa->pattern[1].mask = &rte_flow_item_ipv4_mask;
+				sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
 				sa->pattern[1].spec = &sa->ipv4_spec;
+
 				sa->ipv4_spec.hdr.dst_addr = sa->dst.ip.ip4;
 				sa->ipv4_spec.hdr.src_addr = sa->src.ip.ip4;
 			}
@@ -186,23 +189,22 @@ create_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa)
 					.rss_key = rss_key,
 					.rss_key_len = 40,
 				};
-				struct rte_eth_dev *eth_dev;
+				struct rte_eth_dev_info dev_info;
 				uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
 				struct rte_flow_action_rss action_rss;
 				unsigned int i;
 				unsigned int j;
 
+				rte_eth_dev_info_get(sa->portid, &dev_info);
 				sa->action[2].type = RTE_FLOW_ACTION_TYPE_END;
 				/* Try RSS. */
 				sa->action[1].type = RTE_FLOW_ACTION_TYPE_RSS;
 				sa->action[1].conf = &action_rss;
-				eth_dev = ctx->device;
 				rte_eth_dev_rss_hash_conf_get(sa->portid,
 							      &rss_conf);
 				for (i = 0, j = 0;
-				     i < eth_dev->data->nb_rx_queues; ++i)
-					if (eth_dev->data->rx_queues[i])
-						queue[j++] = i;
+				     i < dev_info.nb_rx_queues; ++i)
+					queue[j++] = i;
 				action_rss = (struct rte_flow_action_rss){
 					.types = rss_conf.rss_hf,
 					.key_len = rss_conf.rss_key_len,
@@ -303,7 +305,7 @@ flow_create_failure:
 				    sec_cap->protocol ==
 					RTE_SECURITY_PROTOCOL_IPSEC &&
 				    sec_cap->ipsec.mode ==
-					RTE_SECURITY_IPSEC_SA_MODE_TUNNEL &&
+					sess_conf.ipsec.mode &&
 				    sec_cap->ipsec.direction == sa->direction)
 					break;
 				sec_cap++;
@@ -333,33 +335,35 @@ flow_create_failure:
 	return 0;
 }
 
+/*
+ * queue crypto-ops into PMD queue.
+ */
+void
+enqueue_cop_burst(struct cdev_qp *cqp)
+{
+	uint32_t i, len, ret;
+
+	len = cqp->len;
+	ret = rte_cryptodev_enqueue_burst(cqp->id, cqp->qp, cqp->buf, len);
+	if (ret < len) {
+		RTE_LOG_DP(DEBUG, IPSEC, "Cryptodev %u queue %u:"
+			" enqueued %u crypto ops out of %u\n",
+			cqp->id, cqp->qp, ret, len);
+			/* drop packets that we fail to enqueue */
+			for (i = ret; i < len; i++)
+				rte_pktmbuf_free(cqp->buf[i]->sym->m_src);
+	}
+	cqp->in_flight += ret;
+	cqp->len = 0;
+}
+
 static inline void
 enqueue_cop(struct cdev_qp *cqp, struct rte_crypto_op *cop)
 {
-	int32_t ret = 0, i;
-
 	cqp->buf[cqp->len++] = cop;
 
-	if (cqp->len == MAX_PKT_BURST) {
-		int enq_size = cqp->len;
-		if ((cqp->in_flight + enq_size) > MAX_INFLIGHT)
-			enq_size -=
-			    (int)((cqp->in_flight + enq_size) - MAX_INFLIGHT);
-
-		if (enq_size > 0)
-			ret = rte_cryptodev_enqueue_burst(cqp->id, cqp->qp,
-					cqp->buf, enq_size);
-		if (ret < cqp->len) {
-			RTE_LOG_DP(DEBUG, IPSEC, "Cryptodev %u queue %u:"
-					" enqueued %u crypto ops out of %u\n",
-					 cqp->id, cqp->qp,
-					 ret, cqp->len);
-			for (i = ret; i < cqp->len; i++)
-				rte_pktmbuf_free(cqp->buf[i]->sym->m_src);
-		}
-		cqp->in_flight += ret;
-		cqp->len = 0;
-	}
+	if (cqp->len == MAX_PKT_BURST)
+		enqueue_cop_burst(cqp);
 }
 
 static inline void
@@ -473,6 +477,32 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 	}
 }
 
+static inline int32_t
+ipsec_inline_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
+	      struct rte_mbuf *pkts[], uint16_t max_pkts)
+{
+	int32_t nb_pkts, ret;
+	struct ipsec_mbuf_metadata *priv;
+	struct ipsec_sa *sa;
+	struct rte_mbuf *pkt;
+
+	nb_pkts = 0;
+	while (ipsec_ctx->ol_pkts_cnt > 0 && nb_pkts < max_pkts) {
+		pkt = ipsec_ctx->ol_pkts[--ipsec_ctx->ol_pkts_cnt];
+		rte_prefetch0(pkt);
+		priv = get_priv(pkt);
+		sa = priv->sa;
+		ret = xform_func(pkt, sa, &priv->cop);
+		if (unlikely(ret)) {
+			rte_pktmbuf_free(pkt);
+			continue;
+		}
+		pkts[nb_pkts++] = pkt;
+	}
+
+	return nb_pkts;
+}
+
 static inline int
 ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 	      struct rte_mbuf *pkts[], uint16_t max_pkts)
@@ -489,19 +519,6 @@ ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 		cqp = &ipsec_ctx->tbl[ipsec_ctx->last_qp++];
 		if (ipsec_ctx->last_qp == ipsec_ctx->nb_qps)
 			ipsec_ctx->last_qp %= ipsec_ctx->nb_qps;
-
-		while (ipsec_ctx->ol_pkts_cnt > 0 && nb_pkts < max_pkts) {
-			pkt = ipsec_ctx->ol_pkts[--ipsec_ctx->ol_pkts_cnt];
-			rte_prefetch0(pkt);
-			priv = get_priv(pkt);
-			sa = priv->sa;
-			ret = xform_func(pkt, sa, &priv->cop);
-			if (unlikely(ret)) {
-				rte_pktmbuf_free(pkt);
-				continue;
-			}
-			pkts[nb_pkts++] = pkt;
-		}
 
 		if (cqp->in_flight == 0)
 			continue;
@@ -545,6 +562,13 @@ ipsec_inbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 
 	ipsec_enqueue(esp_inbound, ctx, pkts, sas, nb_pkts);
 
+	return ipsec_inline_dequeue(esp_inbound_post, ctx, pkts, len);
+}
+
+uint16_t
+ipsec_inbound_cqp_dequeue(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
+		uint16_t len)
+{
 	return ipsec_dequeue(esp_inbound_post, ctx, pkts, len);
 }
 
@@ -558,5 +582,12 @@ ipsec_outbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 
 	ipsec_enqueue(esp_outbound, ctx, pkts, sas, nb_pkts);
 
+	return ipsec_inline_dequeue(esp_outbound_post, ctx, pkts, len);
+}
+
+uint16_t
+ipsec_outbound_cqp_dequeue(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
+		uint16_t len)
+{
 	return ipsec_dequeue(esp_outbound_post, ctx, pkts, len);
 }

@@ -44,7 +44,7 @@ From the command line using the --vdev EAL option
 
    --vdev 'baseband_turbo_sw,max_nb_queues=8,socket_id=0'
 
-Our using the rte_vdev_init API within the application code.
+Or using the rte_vdev_init API within the application code.
 
 .. code-block:: c
 
@@ -78,7 +78,7 @@ From the application point of view, each instance of a bbdev device consists of
 one or more queues identified by queue IDs. While different devices may have
 different capabilities (e.g. support different operation types), all queues on
 a device support identical configuration possibilities. A queue is configured
-for only one type of operation and is configured at initializations time.
+for only one type of operation and is configured at initialization time.
 When an operation is enqueued to a specific queue ID, the result is dequeued
 from the same queue ID.
 
@@ -284,7 +284,7 @@ baseband operations is usually completed during the enqueue call to the bbdev
 device. The dequeue burst API will retrieve any processed operations available
 from the queue on the bbdev device, from physical devices this is usually
 directly from the device's processed queue, and for virtual device's from a
-``rte_ring`` where processed operations are place after being processed on the
+``rte_ring`` where processed operations are placed after being processed on the
 enqueue call.
 
 
@@ -678,7 +678,7 @@ bbdev framework, by giving a sample code performing a loop-back operation with a
 baseband processor capable of transceiving data packets.
 
 The following sample C-like pseudo-code shows the basic steps to encode several
-buffers using (**sw_trubo**) bbdev PMD.
+buffers using (**sw_turbo**) bbdev PMD.
 
 .. code-block:: c
 

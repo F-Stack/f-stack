@@ -62,7 +62,7 @@ struct mlx5_switch_info {
 	uint64_t switch_id; /**< Switch identifier. */
 };
 
-LIST_HEAD(mlx5_dev_list, priv);
+LIST_HEAD(mlx5_dev_list, mlx5_priv);
 
 /* Shared memory between primary and secondary processes. */
 struct mlx5_shared_data {
@@ -89,6 +89,11 @@ struct mlx5_xstats_ctrl {
 	uint16_t dev_table_idx[MLX5_MAX_XSTATS];
 	uint64_t base[MLX5_MAX_XSTATS];
 	struct mlx5_counter_ctrl info[MLX5_MAX_XSTATS];
+};
+
+struct mlx5_stats_ctrl {
+	/* Base for imissed counter. */
+	uint64_t imissed_base;
 };
 
 /* Flow list . */
@@ -145,7 +150,7 @@ struct mlx5_dev_config {
 };
 
 /**
- * Type of objet being allocated.
+ * Type of object being allocated.
  */
 enum mlx5_verbs_alloc_type {
 	MLX5_VERBS_ALLOC_TYPE_NONE,
@@ -172,8 +177,9 @@ struct mlx5_drop {
 
 struct mlx5_flow_tcf_context;
 
-struct priv {
-	LIST_ENTRY(priv) mem_event_cb; /* Called by memory event callback. */
+struct mlx5_priv {
+	LIST_ENTRY(mlx5_priv) mem_event_cb;
+	/**< Called by memory event callback. */
 	struct rte_eth_dev_data *dev_data;  /* Pointer to device data. */
 	struct ibv_context *ctx; /* Verbs context. */
 	struct ibv_device_attr_ex device_attr; /* Device properties. */
@@ -224,6 +230,7 @@ struct priv {
 	LIST_HEAD(encap_decap, mlx5_flow_dv_encap_decap_resource) encaps_decaps;
 	uint32_t link_speed_capa; /* Link speed capabilities. */
 	struct mlx5_xstats_ctrl xstats_ctrl; /* Extended stats control. */
+	struct mlx5_stats_ctrl stats_ctrl; /* Stats control. */
 	int primary_socket; /* Unix socket for primary process. */
 	void *uar_base; /* Reserved address space for UAR mapping */
 	struct rte_intr_handle intr_handle_socket; /* Interrupt handler. */
@@ -316,7 +323,7 @@ void mlx5_allmulticast_disable(struct rte_eth_dev *dev);
 
 /* mlx5_stats.c */
 
-void mlx5_xstats_init(struct rte_eth_dev *dev);
+void mlx5_stats_init(struct rte_eth_dev *dev);
 int mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
 void mlx5_stats_reset(struct rte_eth_dev *dev);
 int mlx5_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,

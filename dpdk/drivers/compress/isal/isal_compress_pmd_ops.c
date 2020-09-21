@@ -133,10 +133,18 @@ isal_comp_pmd_info_get(struct rte_compressdev *dev __rte_unused,
 {
 	if (dev_info != NULL) {
 		dev_info->capabilities = isal_pmd_capabilities;
-		dev_info->feature_flags = RTE_COMPDEV_FF_CPU_AVX512 |
-				RTE_COMPDEV_FF_CPU_AVX2 |
-				RTE_COMPDEV_FF_CPU_AVX |
-				RTE_COMPDEV_FF_CPU_SSE;
+
+		/* Check CPU for supported vector instruction and set
+		 * feature_flags
+		 */
+		if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX512F))
+			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_AVX512;
+		else if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2))
+			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_AVX2;
+		else if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX))
+			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_AVX;
+		else
+			dev_info->feature_flags |= RTE_COMPDEV_FF_CPU_SSE;
 	}
 }
 
@@ -161,18 +169,12 @@ isal_comp_pmd_qp_release(struct rte_compressdev *dev, uint16_t qp_id)
 	if (qp == NULL)
 		return -EINVAL;
 
-	if (qp->stream != NULL)
-		rte_free(qp->stream);
-
-	if (qp->stream->level_buf != NULL)
+	if (qp->stream)
 		rte_free(qp->stream->level_buf);
 
-	if (qp->state != NULL)
-		rte_free(qp->state);
-
-	if (qp->processed_pkts != NULL)
-		rte_ring_free(qp->processed_pkts);
-
+	rte_free(qp->state);
+	rte_ring_free(qp->processed_pkts);
+	rte_free(qp->stream);
 	rte_free(qp);
 	dev->data->queue_pairs[qp_id] = NULL;
 

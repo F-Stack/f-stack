@@ -235,8 +235,10 @@ struct msix_entry {
 #define node_online(node) ((node) == 0)
 #endif
 
+#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
 #ifndef num_online_cpus
 #define num_online_cpus() smp_num_cpus
+#endif
 #endif
 
 #ifndef cpu_online
@@ -2221,10 +2223,14 @@ static inline int _kc_skb_is_gso_v6(const struct sk_buff *skb)
 
 extern void _kc_pci_disable_link_state(struct pci_dev *dev, int state);
 #define pci_disable_link_state(p, s) _kc_pci_disable_link_state(p, s)
-#else /* < 2.6.26 */
+#else /* < 2.6.26 or > 5.4 */
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(5,4,0) )
+#include <linux/pci.h>
+#else
 #include <linux/pci-aspm.h>
+#endif
 #define HAVE_NETDEV_VLAN_FEATURES
-#endif /* < 2.6.26 */
+#endif /* < 2.6.26 or > 5.4 */
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27) )
 static inline void _kc_ethtool_cmd_speed_set(struct ethtool_cmd *ep,
@@ -3124,6 +3130,10 @@ static inline int __kc_pci_vfs_assigned(struct pci_dev *dev)
 #if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0) )
 #define SET_ETHTOOL_OPS(netdev, ops) ((netdev)->ethtool_ops = (ops))
 #endif /* >= 3.16.0 */
+
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0) )
+#define dev_open(x) dev_open(x, NULL)
+#endif /* >= 5.0.0 */
 
 /*
  * vlan_tx_tag_* macros renamed to skb_vlan_tag_* (Linux commit: df8a39defad4)

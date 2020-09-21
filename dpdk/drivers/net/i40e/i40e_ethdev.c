@@ -238,10 +238,6 @@ static int i40e_dev_xstats_get_names(struct rte_eth_dev *dev,
 				     struct rte_eth_xstat_name *xstats_names,
 				     unsigned limit);
 static void i40e_dev_stats_reset(struct rte_eth_dev *dev);
-static int i40e_dev_queue_stats_mapping_set(struct rte_eth_dev *dev,
-					    uint16_t queue_id,
-					    uint8_t stat_idx,
-					    uint8_t is_rx);
 static int i40e_fw_version_get(struct rte_eth_dev *dev,
 				char *fw_version, size_t fw_size);
 static void i40e_dev_info_get(struct rte_eth_dev *dev,
@@ -455,7 +451,6 @@ static const struct eth_dev_ops i40e_eth_dev_ops = {
 	.xstats_get_names             = i40e_dev_xstats_get_names,
 	.stats_reset                  = i40e_dev_stats_reset,
 	.xstats_reset                 = i40e_dev_stats_reset,
-	.queue_stats_mapping_set      = i40e_dev_queue_stats_mapping_set,
 	.fw_version_get               = i40e_fw_version_get,
 	.dev_infos_get                = i40e_dev_info_get,
 	.dev_supported_ptypes_get     = i40e_dev_supported_ptypes_get,
@@ -524,13 +519,13 @@ static const struct rte_i40e_xstats_name_off rte_i40e_stats_strings[] = {
 	{"rx_unicast_packets", offsetof(struct i40e_eth_stats, rx_unicast)},
 	{"rx_multicast_packets", offsetof(struct i40e_eth_stats, rx_multicast)},
 	{"rx_broadcast_packets", offsetof(struct i40e_eth_stats, rx_broadcast)},
-	{"rx_dropped", offsetof(struct i40e_eth_stats, rx_discards)},
+	{"rx_dropped_packets", offsetof(struct i40e_eth_stats, rx_discards)},
 	{"rx_unknown_protocol_packets", offsetof(struct i40e_eth_stats,
 		rx_unknown_protocol)},
 	{"tx_unicast_packets", offsetof(struct i40e_eth_stats, tx_unicast)},
 	{"tx_multicast_packets", offsetof(struct i40e_eth_stats, tx_multicast)},
 	{"tx_broadcast_packets", offsetof(struct i40e_eth_stats, tx_broadcast)},
-	{"tx_dropped", offsetof(struct i40e_eth_stats, tx_discards)},
+	{"tx_dropped_packets", offsetof(struct i40e_eth_stats, tx_discards)},
 };
 
 #define I40E_NB_ETH_XSTATS (sizeof(rte_i40e_stats_strings) / \
@@ -1209,10 +1204,8 @@ i40e_parse_latest_vec_handler(__rte_unused const char *key,
 				const char *value,
 				void *opaque)
 {
-	struct i40e_adapter *ad;
+	struct i40e_adapter *ad = opaque;
 	int use_latest_vec;
-
-	ad = (struct i40e_adapter *)opaque;
 
 	use_latest_vec = atoi(value);
 
@@ -1273,7 +1266,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct i40e_vsi *vsi;
 	int ret;
-	uint32_t len;
+	uint32_t len, val;
 	uint8_t aq_fail = 0;
 
 	PMD_INIT_FUNC_TRACE();
@@ -1316,6 +1309,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	hw->bus.device = pci_dev->addr.devid;
 	hw->bus.func = pci_dev->addr.function;
 	hw->adapter_stopped = 0;
+	hw->adapter_closed = 0;
 
 	/*
 	 * Switch Tag value should not be identical to either the First Tag
@@ -1323,6 +1317,15 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	 * for internal switching.
 	 */
 	hw->switch_tag = 0xffff;
+
+	val = I40E_READ_REG(hw, I40E_GL_FWSTS);
+	if (val & I40E_GL_FWSTS_FWS1B_MASK) {
+		PMD_INIT_LOG(ERR, "\nERROR: "
+			"Firmware recovery mode detected. Limiting functionality.\n"
+			"Refer to the Intel(R) Ethernet Adapters and Devices "
+			"User Guide for details on firmware recovery mode.");
+		return -EIO;
+	}
 
 	/* Check if need to support multi-driver */
 	i40e_support_multi_driver(dev);
@@ -1353,6 +1356,10 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 		PMD_INIT_LOG(ERR, "Failed to init adminq: %d", ret);
 		return -EIO;
 	}
+	/* Firmware of SFP x722 does not support adminq option */
+	if (hw->device_id == I40E_DEV_ID_SFP_X722)
+		hw->flags &= ~I40E_HW_FLAG_802_1AD_CAPABLE;
+
 	PMD_INIT_LOG(INFO, "FW %d.%d API %d.%d NVM %02d.%02d.%02d eetrack %04x",
 		     hw->aq.fw_maj_ver, hw->aq.fw_min_ver,
 		     hw->aq.api_maj_ver, hw->aq.api_min_ver,
@@ -1483,9 +1490,6 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 		goto err_setup_pf_switch;
 	}
 
-	/* reset all stats of the device, including pf and main vsi */
-	i40e_dev_stats_reset(dev);
-
 	vsi = pf->main_vsi;
 
 	/* Disable double vlan by default */
@@ -1580,6 +1584,9 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	memset(&pf->rss_info, 0,
 		sizeof(struct i40e_rte_flow_rss_conf));
 
+	/* reset all stats of the device, including pf and main vsi */
+	i40e_dev_stats_reset(dev);
+
 	return 0;
 
 err_init_fdir_filter_list:
@@ -1590,6 +1597,7 @@ err_init_tunnel_filter_list:
 	rte_free(pf->ethertype.hash_map);
 err_init_ethtype_filter_list:
 	rte_free(dev->data->mac_addrs);
+	dev->data->mac_addrs = NULL;
 err_mac_alloc:
 	i40e_vsi_release(pf->main_vsi);
 err_setup_pf_switch:
@@ -1704,7 +1712,7 @@ eth_i40e_dev_uninit(struct rte_eth_dev *dev)
 	if (ret)
 		PMD_INIT_LOG(WARNING, "failed to free switch domain: %d", ret);
 
-	if (hw->adapter_stopped == 0)
+	if (hw->adapter_closed == 0)
 		i40e_dev_close(dev);
 
 	dev->dev_ops = NULL;
@@ -2444,6 +2452,8 @@ i40e_dev_stop(struct rte_eth_dev *dev)
 	pf->tm_conf.committed = false;
 
 	hw->adapter_stopped = 1;
+
+	pf->adapter->rss_reta_updated = 0;
 }
 
 static void
@@ -2523,6 +2533,8 @@ i40e_dev_close(struct rte_eth_dev *dev)
 	I40E_WRITE_REG(hw, I40E_PFGEN_CTRL,
 			(reg | I40E_PFGEN_CTRL_PFSWR_MASK));
 	I40E_WRITE_FLUSH(hw);
+
+	hw->adapter_closed = 1;
 }
 
 /*
@@ -2657,11 +2669,11 @@ update_link_reg(struct i40e_hw *hw, struct rte_eth_link *link)
 #define I40E_PRTMAC_MACC		0x001E24E0
 #define I40E_REG_MACC_25GB		0x00020000
 #define I40E_REG_SPEED_MASK		0x38000000
-#define I40E_REG_SPEED_100MB		0x00000000
-#define I40E_REG_SPEED_1GB		0x08000000
-#define I40E_REG_SPEED_10GB		0x10000000
-#define I40E_REG_SPEED_20GB		0x20000000
-#define I40E_REG_SPEED_25_40GB		0x18000000
+#define I40E_REG_SPEED_0		0x00000000
+#define I40E_REG_SPEED_1		0x08000000
+#define I40E_REG_SPEED_2		0x10000000
+#define I40E_REG_SPEED_3		0x18000000
+#define I40E_REG_SPEED_4		0x20000000
 	uint32_t link_speed;
 	uint32_t reg_val;
 
@@ -2675,26 +2687,35 @@ update_link_reg(struct i40e_hw *hw, struct rte_eth_link *link)
 
 	/* Parse the link status */
 	switch (link_speed) {
-	case I40E_REG_SPEED_100MB:
+	case I40E_REG_SPEED_0:
 		link->link_speed = ETH_SPEED_NUM_100M;
 		break;
-	case I40E_REG_SPEED_1GB:
+	case I40E_REG_SPEED_1:
 		link->link_speed = ETH_SPEED_NUM_1G;
 		break;
-	case I40E_REG_SPEED_10GB:
-		link->link_speed = ETH_SPEED_NUM_10G;
-		break;
-	case I40E_REG_SPEED_20GB:
-		link->link_speed = ETH_SPEED_NUM_20G;
-		break;
-	case I40E_REG_SPEED_25_40GB:
-		reg_val = I40E_READ_REG(hw, I40E_PRTMAC_MACC);
-
-		if (reg_val & I40E_REG_MACC_25GB)
-			link->link_speed = ETH_SPEED_NUM_25G;
+	case I40E_REG_SPEED_2:
+		if (hw->mac.type == I40E_MAC_X722)
+			link->link_speed = ETH_SPEED_NUM_2_5G;
 		else
-			link->link_speed = ETH_SPEED_NUM_40G;
+			link->link_speed = ETH_SPEED_NUM_10G;
+		break;
+	case I40E_REG_SPEED_3:
+		if (hw->mac.type == I40E_MAC_X722) {
+			link->link_speed = ETH_SPEED_NUM_5G;
+		} else {
+			reg_val = I40E_READ_REG(hw, I40E_PRTMAC_MACC);
 
+			if (reg_val & I40E_REG_MACC_25GB)
+				link->link_speed = ETH_SPEED_NUM_25G;
+			else
+				link->link_speed = ETH_SPEED_NUM_40G;
+		}
+		break;
+	case I40E_REG_SPEED_4:
+		if (hw->mac.type == I40E_MAC_X722)
+			link->link_speed = ETH_SPEED_NUM_10G;
+		else
+			link->link_speed = ETH_SPEED_NUM_20G;
 		break;
 	default:
 		PMD_DRV_LOG(ERR, "Unknown link speed info %u", link_speed);
@@ -3160,20 +3181,20 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct i40e_hw_port_stats *ns = &pf->stats; /* new stats */
+	struct i40e_vsi *vsi;
 	unsigned i;
 
 	/* call read registers - updates values, now write them to struct */
 	i40e_read_stats_registers(pf, hw);
 
-	stats->ipackets = ns->eth.rx_unicast +
-			ns->eth.rx_multicast +
-			ns->eth.rx_broadcast -
-			ns->eth.rx_discards -
+	stats->ipackets = pf->main_vsi->eth_stats.rx_unicast +
+			pf->main_vsi->eth_stats.rx_multicast +
+			pf->main_vsi->eth_stats.rx_broadcast -
 			pf->main_vsi->eth_stats.rx_discards;
 	stats->opackets = ns->eth.tx_unicast +
 			ns->eth.tx_multicast +
 			ns->eth.tx_broadcast;
-	stats->ibytes   = ns->eth.rx_bytes;
+	stats->ibytes   = pf->main_vsi->eth_stats.rx_bytes;
 	stats->obytes   = ns->eth.tx_bytes;
 	stats->oerrors  = ns->eth.tx_errors +
 			pf->main_vsi->eth_stats.tx_errors;
@@ -3184,6 +3205,21 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->ierrors  = ns->crc_errors +
 			ns->rx_length_errors + ns->rx_undersize +
 			ns->rx_oversize + ns->rx_fragments + ns->rx_jabber;
+
+	if (pf->vfs) {
+		for (i = 0; i < pf->vf_num; i++) {
+			vsi = pf->vfs[i].vsi;
+			i40e_update_vsi_stats(vsi);
+
+			stats->ipackets += (vsi->eth_stats.rx_unicast +
+					vsi->eth_stats.rx_multicast +
+					vsi->eth_stats.rx_broadcast -
+					vsi->eth_stats.rx_discards);
+			stats->ibytes   += vsi->eth_stats.rx_bytes;
+			stats->oerrors  += vsi->eth_stats.tx_errors;
+			stats->imissed  += vsi->eth_stats.rx_discards;
+		}
+	}
 
 	PMD_DRV_LOG(DEBUG, "***************** PF stats start *******************");
 	PMD_DRV_LOG(DEBUG, "rx_bytes:            %"PRIu64"", ns->eth.rx_bytes);
@@ -3393,17 +3429,6 @@ i40e_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 }
 
 static int
-i40e_dev_queue_stats_mapping_set(__rte_unused struct rte_eth_dev *dev,
-				 __rte_unused uint16_t queue_id,
-				 __rte_unused uint8_t stat_idx,
-				 __rte_unused uint8_t is_rx)
-{
-	PMD_INIT_FUNC_TRACE();
-
-	return -ENOSYS;
-}
-
-static int
 i40e_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -3429,6 +3454,31 @@ i40e_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 		return ret;
 	else
 		return 0;
+}
+
+/*
+ * When using NVM 6.01(for X710 XL710 XXV710)/3.33(for X722) or later,
+ * the Rx data path does not hang if the FW LLDP is stopped.
+ * return true if lldp need to stop
+ * return false if we cannot disable the LLDP to avoid Rx data path blocking.
+ */
+static bool
+i40e_need_stop_lldp(struct rte_eth_dev *dev)
+{
+	double nvm_ver;
+	char ver_str[64] = {0};
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	i40e_fw_version_get(dev, ver_str, 64);
+	nvm_ver = atof(ver_str);
+	if ((hw->mac.type == I40E_MAC_X722 ||
+	     hw->mac.type == I40E_MAC_X722_VF) &&
+	     ((uint32_t)(nvm_ver * 1000) >= (uint32_t)(3.33 * 1000)))
+		return true;
+	else if ((uint32_t)(nvm_ver * 1000) >= (uint32_t)(6.01 * 1000))
+		return true;
+
+	return false;
 }
 
 static void
@@ -4154,7 +4204,8 @@ i40e_get_rss_lut(struct i40e_vsi *vsi, uint8_t *lut, uint16_t lut_size)
 		return -EINVAL;
 
 	if (pf->flags & I40E_FLAG_RSS_AQ_CAPABLE) {
-		ret = i40e_aq_get_rss_lut(hw, vsi->vsi_id, TRUE,
+		ret = i40e_aq_get_rss_lut(hw, vsi->vsi_id,
+					  vsi->type != I40E_VSI_SRIOV,
 					  lut, lut_size);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Failed to get RSS lookup table");
@@ -4193,7 +4244,8 @@ i40e_set_rss_lut(struct i40e_vsi *vsi, uint8_t *lut, uint16_t lut_size)
 	hw = I40E_VSI_TO_HW(vsi);
 
 	if (pf->flags & I40E_FLAG_RSS_AQ_CAPABLE) {
-		ret = i40e_aq_set_rss_lut(hw, vsi->vsi_id, TRUE,
+		ret = i40e_aq_set_rss_lut(hw, vsi->vsi_id,
+					  vsi->type != I40E_VSI_SRIOV,
 					  lut, lut_size);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Failed to set RSS lookup table");
@@ -4254,6 +4306,8 @@ i40e_dev_rss_reta_update(struct rte_eth_dev *dev,
 			lut[i] = reta_conf[idx].reta[shift];
 	}
 	ret = i40e_set_rss_lut(pf->main_vsi, lut, reta_size);
+
+	pf->adapter->rss_reta_updated = 1;
 
 out:
 	rte_free(lut);
@@ -7376,7 +7430,7 @@ i40e_get_rss_key(struct i40e_vsi *vsi, uint8_t *key, uint8_t *key_len)
 	int ret;
 
 	if (!key || !key_len)
-		return -EINVAL;
+		return 0;
 
 	if (pf->flags & I40E_FLAG_RSS_AQ_CAPABLE) {
 		ret = i40e_aq_get_rss_key(hw, vsi->vsi_id,
@@ -7459,9 +7513,15 @@ i40e_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint64_t hena;
+	int ret;
 
-	i40e_get_rss_key(pf->main_vsi, rss_conf->rss_key,
+	if (!rss_conf)
+		return -EINVAL;
+
+	ret = i40e_get_rss_key(pf->main_vsi, rss_conf->rss_key,
 			 &rss_conf->rss_key_len);
+	if (ret)
+		return ret;
 
 	hena = (uint64_t)i40e_read_rx_ctl(hw, I40E_PFQF_HENA(0));
 	hena |= ((uint64_t)i40e_read_rx_ctl(hw, I40E_PFQF_HENA(1))) << 32;
@@ -8489,13 +8549,16 @@ i40e_pf_config_rss(struct i40e_pf *pf)
 		return -ENOTSUP;
 	}
 
-	for (i = 0, j = 0; i < hw->func_caps.rss_table_size; i++, j++) {
-		if (j == num)
-			j = 0;
-		lut = (lut << 8) | (j & ((0x1 <<
-			hw->func_caps.rss_table_entry_width) - 1));
-		if ((i & 3) == 3)
-			I40E_WRITE_REG(hw, I40E_PFQF_HLUT(i >> 2), lut);
+	if (pf->adapter->rss_reta_updated == 0) {
+		for (i = 0, j = 0; i < hw->func_caps.rss_table_size; i++, j++) {
+			if (j == num)
+				j = 0;
+			lut = (lut << 8) | (j & ((0x1 <<
+				hw->func_caps.rss_table_entry_width) - 1));
+			if ((i & 3) == 3)
+				I40E_WRITE_REG(hw, I40E_PFQF_HLUT(i >> 2),
+					       rte_bswap32(lut));
+		}
 	}
 
 	rss_conf = pf->dev_data->dev_conf.rx_adv_conf.rss_conf;
@@ -10751,8 +10814,7 @@ static void
 i40e_start_timecounters(struct rte_eth_dev *dev)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 	struct rte_eth_link link;
 	uint32_t tsync_inc_l;
 	uint32_t tsync_inc_h;
@@ -10763,6 +10825,7 @@ i40e_start_timecounters(struct rte_eth_dev *dev)
 
 	switch (link.link_speed) {
 	case ETH_SPEED_NUM_40G:
+	case ETH_SPEED_NUM_25G:
 		tsync_inc_l = I40E_PTP_40GB_INCVAL & 0xFFFFFFFF;
 		tsync_inc_h = I40E_PTP_40GB_INCVAL >> 32;
 		break;
@@ -10803,8 +10866,7 @@ i40e_start_timecounters(struct rte_eth_dev *dev)
 static int
 i40e_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta)
 {
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 
 	adapter->systime_tc.nsec += delta;
 	adapter->rx_tstamp_tc.nsec += delta;
@@ -10817,8 +10879,7 @@ static int
 i40e_timesync_write_time(struct rte_eth_dev *dev, const struct timespec *ts)
 {
 	uint64_t ns;
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 
 	ns = rte_timespec_to_ns(ts);
 
@@ -10834,8 +10895,7 @@ static int
 i40e_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 {
 	uint64_t ns, systime_cycles;
-	struct i40e_adapter *adapter =
-			(struct i40e_adapter *)dev->data->dev_private;
+	struct i40e_adapter *adapter = dev->data->dev_private;
 
 	systime_cycles = i40e_read_systime_cyclecounter(dev);
 	ns = rte_timecounter_update(&adapter->systime_tc, systime_cycles);
@@ -10911,9 +10971,7 @@ i40e_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 				struct timespec *timestamp, uint32_t flags)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_adapter *adapter =
-		(struct i40e_adapter *)dev->data->dev_private;
-
+	struct i40e_adapter *adapter = dev->data->dev_private;
 	uint32_t sync_status;
 	uint32_t index = flags & 0x03;
 	uint64_t rx_tstamp_cycles;
@@ -10935,9 +10993,7 @@ i40e_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 				struct timespec *timestamp)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct i40e_adapter *adapter =
-		(struct i40e_adapter *)dev->data->dev_private;
-
+	struct i40e_adapter *adapter = dev->data->dev_private;
 	uint32_t sync_status;
 	uint64_t tx_tstamp_cycles;
 	uint64_t ns;
@@ -11385,11 +11441,7 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 	 * LLDP MIB change event.
 	 */
 	if (sw_dcb == TRUE) {
-		/* When using NVM 6.01 or later, the RX data path does
-		 * not hang if the FW LLDP is stopped.
-		 */
-		if (((hw->nvm.version >> 12) & 0xf) >= 6 &&
-		    ((hw->nvm.version >> 4) & 0xff) >= 1) {
+		if (i40e_need_stop_lldp(dev)) {
 			ret = i40e_aq_stop_lldp(hw, TRUE, NULL);
 			if (ret != I40E_SUCCESS)
 				PMD_INIT_LOG(DEBUG, "Failed to stop lldp");
@@ -11827,16 +11879,17 @@ static int i40e_get_module_eeprom(struct rte_eth_dev *dev,
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	bool is_sfp = false;
 	i40e_status status;
-	uint8_t *data = info->data;
+	uint8_t *data;
 	uint32_t value = 0;
 	uint32_t i;
 
-	if (!info || !info->length || !data)
+	if (!info || !info->length || !info->data)
 		return -EINVAL;
 
 	if (hw->phy.link_info.module_type[0] == I40E_MODULE_TYPE_SFP)
 		is_sfp = true;
 
+	data = info->data;
 	for (i = 0; i < info->length; i++) {
 		u32 offset = i + info->offset;
 		u32 addr = is_sfp ? I40E_I2C_EEPROM_DEV_ADDR : 0;
@@ -12138,8 +12191,8 @@ i40e_update_customized_pctype(struct rte_eth_dev *dev, uint8_t *pkg,
 			for (n = 0; n < proto_num; n++) {
 				if (proto[n].proto_id != proto_id)
 					continue;
-				strcat(name, proto[n].name);
-				strcat(name, "_");
+				strlcat(name, proto[n].name, sizeof(name));
+				strlcat(name, "_", sizeof(name));
 				break;
 			}
 		}
@@ -12636,9 +12689,6 @@ i40e_config_rss_filter(struct i40e_pf *pf,
 		return -EINVAL;
 	}
 
-	if (rss_info->conf.queue_num)
-		return -EINVAL;
-
 	/* If both VMDQ and RSS enabled, not all of PF queues are configured.
 	 * It's necessary to calculate the actual PF queues that are configured.
 	 */
@@ -12681,6 +12731,8 @@ i40e_config_rss_filter(struct i40e_pf *pf,
 		rss_conf.rss_key = (uint8_t *)rss_key_default;
 		rss_conf.rss_key_len = (I40E_PFQF_HKEY_MAX_INDEX + 1) *
 							sizeof(uint32_t);
+		PMD_DRV_LOG(INFO,
+			"No valid RSS key config for i40e, using default\n");
 	}
 
 	i40e_hw_rss_hash_set(pf, &rss_conf);

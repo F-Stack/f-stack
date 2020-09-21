@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <inttypes.h>
 
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
@@ -102,7 +103,7 @@ txq_free_elts(struct mlx5_txq_ctrl *txq_ctrl)
 uint64_t
 mlx5_get_tx_port_offloads(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	uint64_t offloads = (DEV_TX_OFFLOAD_MULTI_SEGS |
 			     DEV_TX_OFFLOAD_VLAN_INSERT);
 	struct mlx5_dev_config *config = &priv->config;
@@ -155,7 +156,7 @@ int
 mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		    unsigned int socket, const struct rte_eth_txconf *conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_data *txq = (*priv->txqs)[idx];
 	struct mlx5_txq_ctrl *txq_ctrl =
 		container_of(txq, struct mlx5_txq_ctrl, txq);
@@ -213,7 +214,7 @@ mlx5_tx_queue_release(void *dpdk_txq)
 {
 	struct mlx5_txq_data *txq = (struct mlx5_txq_data *)dpdk_txq;
 	struct mlx5_txq_ctrl *txq_ctrl;
-	struct priv *priv;
+	struct mlx5_priv *priv;
 	unsigned int i;
 
 	if (txq == NULL)
@@ -246,7 +247,7 @@ mlx5_tx_queue_release(void *dpdk_txq)
 int
 mlx5_tx_uar_remap(struct rte_eth_dev *dev, int fd)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int i, j;
 	uintptr_t pages[priv->txqs_n];
 	unsigned int pages_n = 0;
@@ -346,7 +347,7 @@ is_empw_burst_func(eth_tx_burst_t tx_pkt_burst)
  * @param dev
  *   Pointer to Ethernet device.
  * @param idx
- *   Queue index in DPDK Rx queue array
+ *   Queue index in DPDK Tx queue array.
  *
  * @return
  *   The Verbs object initialised, NULL otherwise and rte_errno is set.
@@ -354,17 +355,16 @@ is_empw_burst_func(eth_tx_burst_t tx_pkt_burst)
 struct mlx5_txq_ibv *
 mlx5_txq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_data *txq_data = (*priv->txqs)[idx];
 	struct mlx5_txq_ctrl *txq_ctrl =
 		container_of(txq_data, struct mlx5_txq_ctrl, txq);
 	struct mlx5_txq_ibv tmpl;
-	struct mlx5_txq_ibv *txq_ibv;
+	struct mlx5_txq_ibv *txq_ibv = NULL;
 	union {
 		struct ibv_qp_init_attr_ex init;
 		struct ibv_cq_init_attr_ex cq;
 		struct ibv_qp_attr mod;
-		struct ibv_cq_ex cq_attr;
 	} attr;
 	unsigned int cqe_n;
 	struct mlx5dv_qp qp = { .comp_mask = MLX5DV_QP_MASK_UAR_MMAP_OFFSET };
@@ -523,7 +523,7 @@ mlx5_txq_ibv_new(struct rte_eth_dev *dev, uint16_t idx)
 	rte_atomic32_inc(&txq_ibv->refcnt);
 	if (qp.comp_mask & MLX5DV_QP_MASK_UAR_MMAP_OFFSET) {
 		txq_ctrl->uar_mmap_offset = qp.uar_mmap_offset;
-		DRV_LOG(DEBUG, "port %u: uar_mmap_offset 0x%lx",
+		DRV_LOG(DEBUG, "port %u: uar_mmap_offset 0x%"PRIx64,
 			dev->data->port_id, txq_ctrl->uar_mmap_offset);
 	} else {
 		DRV_LOG(ERR,
@@ -543,6 +543,8 @@ error:
 		claim_zero(mlx5_glue->destroy_cq(tmpl.cq));
 	if (tmpl.qp)
 		claim_zero(mlx5_glue->destroy_qp(tmpl.qp));
+	if (txq_ibv)
+		rte_free(txq_ibv);
 	priv->verbs_alloc_ctx.type = MLX5_VERBS_ALLOC_TYPE_NONE;
 	rte_errno = ret; /* Restore rte_errno. */
 	return NULL;
@@ -554,7 +556,7 @@ error:
  * @param dev
  *   Pointer to Ethernet device.
  * @param idx
- *   Queue index in DPDK Rx queue array
+ *   Queue index in DPDK Tx queue array.
  *
  * @return
  *   The Verbs object if it exists.
@@ -562,7 +564,7 @@ error:
 struct mlx5_txq_ibv *
 mlx5_txq_ibv_get(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *txq_ctrl;
 
 	if (idx >= priv->txqs_n)
@@ -623,7 +625,7 @@ mlx5_txq_ibv_releasable(struct mlx5_txq_ibv *txq_ibv)
 int
 mlx5_txq_ibv_verify(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	int ret = 0;
 	struct mlx5_txq_ibv *txq_ibv;
 
@@ -636,6 +638,27 @@ mlx5_txq_ibv_verify(struct rte_eth_dev *dev)
 }
 
 /**
+ * Calculate the total number of WQEBB for Tx queue.
+ *
+ * Simplified version of calc_sq_size() in rdma-core.
+ *
+ * @param txq_ctrl
+ *   Pointer to Tx queue control structure.
+ *
+ * @return
+ *   The number of WQEBB.
+ */
+static int
+txq_calc_wqebb_cnt(struct mlx5_txq_ctrl *txq_ctrl)
+{
+	unsigned int wqe_size;
+	const unsigned int desc = 1 << txq_ctrl->txq.elts_n;
+
+	wqe_size = MLX5_WQE_SIZE + txq_ctrl->max_inline_data;
+	return rte_align32pow2(wqe_size * desc) / MLX5_WQE_SIZE;
+}
+
+/**
  * Set Tx queue parameters from device configuration.
  *
  * @param txq_ctrl
@@ -644,7 +667,7 @@ mlx5_txq_ibv_verify(struct rte_eth_dev *dev)
 static void
 txq_set_params(struct mlx5_txq_ctrl *txq_ctrl)
 {
-	struct priv *priv = txq_ctrl->priv;
+	struct mlx5_priv *priv = txq_ctrl->priv;
 	struct mlx5_dev_config *config = &priv->config;
 	const unsigned int max_tso_inline =
 		((MLX5_MAX_TSO_HEADER + (RTE_CACHE_LINE_SIZE - 1)) /
@@ -754,7 +777,7 @@ struct mlx5_txq_ctrl *
 mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	     unsigned int socket, const struct rte_eth_txconf *conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *tmpl;
 
 	tmpl = rte_calloc_socket("TXQ", 1,
@@ -780,10 +803,16 @@ mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	tmpl->txq.elts_n = log2above(desc);
 	tmpl->idx = idx;
 	txq_set_params(tmpl);
-	DRV_LOG(DEBUG, "port %u priv->device_attr.max_qp_wr is %d",
-		dev->data->port_id, priv->device_attr.orig_attr.max_qp_wr);
-	DRV_LOG(DEBUG, "port %u priv->device_attr.max_sge is %d",
-		dev->data->port_id, priv->device_attr.orig_attr.max_sge);
+	if (txq_calc_wqebb_cnt(tmpl) >
+	    priv->device_attr.orig_attr.max_qp_wr) {
+		DRV_LOG(ERR,
+			"port %u Tx WQEBB count (%d) exceeds the limit (%d),"
+			" try smaller queue size",
+			dev->data->port_id, txq_calc_wqebb_cnt(tmpl),
+			priv->device_attr.orig_attr.max_qp_wr);
+		rte_errno = ENOMEM;
+		goto error;
+	}
 	tmpl->txq.elts =
 		(struct rte_mbuf *(*)[1 << tmpl->txq.elts_n])(tmpl + 1);
 	tmpl->txq.stats.idx = idx;
@@ -809,7 +838,7 @@ error:
 struct mlx5_txq_ctrl *
 mlx5_txq_get(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *ctrl = NULL;
 
 	if ((*priv->txqs)[idx]) {
@@ -835,7 +864,7 @@ mlx5_txq_get(struct rte_eth_dev *dev, uint16_t idx)
 int
 mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *txq;
 	size_t page_size = sysconf(_SC_PAGESIZE);
 
@@ -872,7 +901,7 @@ mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx)
 int
 mlx5_txq_releasable(struct rte_eth_dev *dev, uint16_t idx)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *txq;
 
 	if (!(*priv->txqs)[idx])
@@ -893,7 +922,7 @@ mlx5_txq_releasable(struct rte_eth_dev *dev, uint16_t idx)
 int
 mlx5_txq_verify(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_txq_ctrl *txq;
 	int ret = 0;
 

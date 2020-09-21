@@ -8,7 +8,7 @@ Contributing Code to DPDK
 
 This document outlines the guidelines for submitting code to DPDK.
 
-The DPDK development process is modelled (loosely) on the Linux Kernel development model so it is worth reading the
+The DPDK development process is modeled (loosely) on the Linux Kernel development model so it is worth reading the
 Linux kernel guide on submitting patches:
 `How to Get Your Change Into the Linux Kernel <https://www.kernel.org/doc/html/latest/process/submitting-patches.html>`_.
 The rationale for many of the DPDK guidelines is explained in greater detail in the kernel guidelines.
@@ -31,6 +31,10 @@ The DPDK development process has the following features:
 The mailing list for DPDK development is `dev@dpdk.org <http://mails.dpdk.org/archives/dev/>`_.
 Contributors will need to `register for the mailing list <http://mails.dpdk.org/listinfo/dev>`_ in order to submit patches.
 It is also worth registering for the DPDK `Patchwork <http://patches.dpdk.org/project/dpdk/list/>`_
+
+If you are using the GitHub service, you can link your repository to
+the ``travis-ci.org`` build service.  When you push patches to your GitHub
+repository, the travis service will automatically build your changes.
 
 The development process requires some familiarity with the ``git`` version control system.
 Refer to the `Pro Git Book <http://www.git-scm.com/book/>`_ for further information.
@@ -633,12 +637,3 @@ patch accepted. The general cycle for patch review and acceptance is:
      than rework of the original.
    * Trivial patches may be merged sooner than described above at the tree committer's
      discretion.
-
-DPDK Maintainers
-----------------
-
-The following are the DPDK maintainers as listed in the ``MAINTAINERS`` file
-in the DPDK root directory.
-
-.. literalinclude:: ../../../MAINTAINERS
-   :lines: 3-

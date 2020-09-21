@@ -35,6 +35,7 @@ enum index {
 	PREFIX,
 	BOOLEAN,
 	STRING,
+	HEX,
 	MAC_ADDR,
 	IPV4_ADDR,
 	IPV6_ADDR,
@@ -1122,6 +1123,9 @@ static int parse_boolean(struct context *, const struct token *,
 static int parse_string(struct context *, const struct token *,
 			const char *, unsigned int,
 			void *, unsigned int);
+static int parse_hex(struct context *ctx, const struct token *token,
+			const char *str, unsigned int len,
+			void *buf, unsigned int size);
 static int parse_mac_addr(struct context *, const struct token *,
 			  const char *, unsigned int,
 			  void *, unsigned int);
@@ -1196,6 +1200,13 @@ static const struct token token_list[] = {
 		.type = "STRING",
 		.help = "fixed string",
 		.call = parse_string,
+		.comp = comp_none,
+	},
+	[HEX] = {
+		.name = "{hex}",
+		.type = "HEX",
+		.help = "fixed string",
+		.call = parse_hex,
 		.comp = comp_none,
 	},
 	[MAC_ADDR] = {
@@ -2306,7 +2317,7 @@ static const struct token token_list[] = {
 	[ACTION_RSS_KEY] = {
 		.name = "key",
 		.help = "RSS hash key",
-		.next = NEXT(action_rss, NEXT_ENTRY(STRING)),
+		.next = NEXT(action_rss, NEXT_ENTRY(HEX)),
 		.args = ARGS(ARGS_ENTRY_ARB(0, 0),
 			     ARGS_ENTRY_ARB
 			     (offsetof(struct action_rss_data, conf) +
@@ -3367,6 +3378,7 @@ parse_vc_action_rss_queue(struct context *ctx, const struct token *token,
 {
 	static const enum index next[] = NEXT_ENTRY(ACTION_RSS_QUEUE);
 	struct action_rss_data *action_rss_data;
+	const struct arg *arg;
 	int ret;
 	int i;
 
@@ -3382,10 +3394,10 @@ parse_vc_action_rss_queue(struct context *ctx, const struct token *token,
 	}
 	if (i >= ACTION_RSS_QUEUE_NUM)
 		return -1;
-	if (push_args(ctx,
-		      ARGS_ENTRY_ARB(offsetof(struct action_rss_data, queue) +
-				     i * sizeof(action_rss_data->queue[i]),
-				     sizeof(action_rss_data->queue[i]))))
+	arg = ARGS_ENTRY_ARB(offsetof(struct action_rss_data, queue) +
+			     i * sizeof(action_rss_data->queue[i]),
+			     sizeof(action_rss_data->queue[i]));
+	if (push_args(ctx, arg))
 		return -1;
 	ret = parse_int(ctx, token, str, len, NULL, 0);
 	if (ret < 0) {
@@ -3735,6 +3747,8 @@ parse_vc_action_mplsogre_encap(struct context *ctx, const struct token *token,
 			.src_addr = mplsogre_encap_conf.ipv4_src,
 			.dst_addr = mplsogre_encap_conf.ipv4_dst,
 			.next_proto_id = IPPROTO_GRE,
+			.version_ihl = IPV4_VHL_DEF,
+			.time_to_live = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_ipv6 ipv6 = {
@@ -3808,6 +3822,7 @@ parse_vc_action_mplsogre_encap(struct context *ctx, const struct token *token,
 	header += sizeof(gre);
 	memcpy(mpls.label_tc_s, mplsogre_encap_conf.label,
 	       RTE_DIM(mplsogre_encap_conf.label));
+	mpls.label_tc_s[2] |= 0x1;
 	memcpy(header, &mpls, sizeof(mpls));
 	header += sizeof(mpls);
 	action_encap_data->conf.size = header -
@@ -3835,6 +3850,7 @@ parse_vc_action_mplsogre_decap(struct context *ctx, const struct token *token,
 	struct rte_flow_item_ipv6 ipv6 = {
 		.hdr =  {
 			.proto = IPPROTO_GRE,
+			.hop_limits = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_gre gre = {
@@ -3922,6 +3938,8 @@ parse_vc_action_mplsoudp_encap(struct context *ctx, const struct token *token,
 			.src_addr = mplsoudp_encap_conf.ipv4_src,
 			.dst_addr = mplsoudp_encap_conf.ipv4_dst,
 			.next_proto_id = IPPROTO_UDP,
+			.version_ihl = IPV4_VHL_DEF,
+			.time_to_live = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_ipv6 ipv6 = {
@@ -3998,6 +4016,7 @@ parse_vc_action_mplsoudp_encap(struct context *ctx, const struct token *token,
 	header += sizeof(udp);
 	memcpy(mpls.label_tc_s, mplsoudp_encap_conf.label,
 	       RTE_DIM(mplsoudp_encap_conf.label));
+	mpls.label_tc_s[2] |= 0x1;
 	memcpy(header, &mpls, sizeof(mpls));
 	header += sizeof(mpls);
 	action_encap_data->conf.size = header -
@@ -4025,6 +4044,7 @@ parse_vc_action_mplsoudp_decap(struct context *ctx, const struct token *token,
 	struct rte_flow_item_ipv6 ipv6 = {
 		.hdr =  {
 			.proto = IPPROTO_UDP,
+			.hop_limits = IPDEFTTL,
 		},
 	};
 	struct rte_flow_item_udp udp = {
@@ -4437,6 +4457,121 @@ error:
 	push_args(ctx, arg_len);
 	push_args(ctx, arg_data);
 	return -1;
+}
+
+static int
+parse_hex_string(const char *src, uint8_t *dst, uint32_t *size)
+{
+	char *c = NULL;
+	uint32_t i, len;
+	char tmp[3];
+
+	/* Check input parameters */
+	if ((src == NULL) ||
+		(dst == NULL) ||
+		(size == NULL) ||
+		(*size == 0))
+		return -1;
+
+	/* Convert chars to bytes */
+	for (i = 0, len = 0; i < *size; i += 2) {
+		snprintf(tmp, 3, "%s", src + i);
+		dst[len++] = strtoul(tmp, &c, 16);
+		if (*c != 0) {
+			len--;
+			dst[len] = 0;
+			*size = len;
+			return -1;
+		}
+	}
+	dst[len] = 0;
+	*size = len;
+
+	return 0;
+}
+
+static int
+parse_hex(struct context *ctx, const struct token *token,
+		const char *str, unsigned int len,
+		void *buf, unsigned int size)
+{
+	const struct arg *arg_data = pop_args(ctx);
+	const struct arg *arg_len = pop_args(ctx);
+	const struct arg *arg_addr = pop_args(ctx);
+	char tmp[16]; /* Ought to be enough. */
+	int ret;
+	unsigned int hexlen = len;
+	unsigned int length = 256;
+	uint8_t hex_tmp[length];
+
+	/* Arguments are expected. */
+	if (!arg_data)
+		return -1;
+	if (!arg_len) {
+		push_args(ctx, arg_data);
+		return -1;
+	}
+	if (!arg_addr) {
+		push_args(ctx, arg_len);
+		push_args(ctx, arg_data);
+		return -1;
+	}
+	size = arg_data->size;
+	/* Bit-mask fill is not supported. */
+	if (arg_data->mask)
+		goto error;
+	if (!ctx->object)
+		return len;
+
+	/* translate bytes string to array. */
+	if (str[0] == '0' && ((str[1] == 'x') ||
+			(str[1] == 'X'))) {
+		str += 2;
+		hexlen -= 2;
+	}
+	if (hexlen > length)
+		return -1;
+	ret = parse_hex_string(str, hex_tmp, &hexlen);
+	if (ret < 0)
+		goto error;
+	/* Let parse_int() fill length information first. */
+	ret = snprintf(tmp, sizeof(tmp), "%u", hexlen);
+	if (ret < 0)
+		goto error;
+	push_args(ctx, arg_len);
+	ret = parse_int(ctx, token, tmp, ret, NULL, 0);
+	if (ret < 0) {
+		pop_args(ctx);
+		goto error;
+	}
+	buf = (uint8_t *)ctx->object + arg_data->offset;
+	/* Output buffer is not necessarily NUL-terminated. */
+	memcpy(buf, hex_tmp, hexlen);
+	memset((uint8_t *)buf + hexlen, 0x00, size - hexlen);
+	if (ctx->objmask)
+		memset((uint8_t *)ctx->objmask + arg_data->offset,
+					0xff, hexlen);
+	/* Save address if requested. */
+	if (arg_addr->size) {
+		memcpy((uint8_t *)ctx->object + arg_addr->offset,
+		       (void *[]){
+			(uint8_t *)ctx->object + arg_data->offset
+		       },
+		       arg_addr->size);
+		if (ctx->objmask)
+			memcpy((uint8_t *)ctx->objmask + arg_addr->offset,
+			       (void *[]){
+				(uint8_t *)ctx->objmask + arg_data->offset
+			       },
+			       arg_addr->size);
+	}
+	return len;
+error:
+	push_args(ctx, arg_addr);
+	push_args(ctx, arg_len);
+	push_args(ctx, arg_data);
+	return -1;
+
 }
 
 /**

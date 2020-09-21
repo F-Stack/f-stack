@@ -13,11 +13,12 @@
 #include <rte_ethdev.h>
 
 #include "rte_telemetry_internal.h"
+#include "rte_telemetry_parser.h"
 
 typedef int (*command_func)(struct telemetry_impl *, int, json_t *);
 
 struct rte_telemetry_command {
-	char *text;
+	const char *text;
 	command_func fn;
 } command;
 
@@ -251,12 +252,12 @@ eperm_fail:
 	return -1;
 }
 
-int32_t
+static int32_t
 rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 	 int action, json_t *data)
 {
 	int ret, num_metrics, i, p;
-	struct rte_metric_name *names;
+	struct rte_metric_value *values;
 	uint64_t num_port_ids = 0;
 	uint32_t port_ids[RTE_MAX_ETHPORTS];
 
@@ -281,7 +282,7 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		return -1;
 	}
 
-	num_metrics = rte_metrics_get_names(NULL, 0);
+	num_metrics = rte_metrics_get_values(0, NULL, 0);
 	if (num_metrics < 0) {
 		TELEMETRY_LOG_ERR("Cannot get metrics count");
 
@@ -300,8 +301,8 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		return -1;
 	}
 
-	names = malloc(sizeof(struct rte_metric_name) * num_metrics);
-	if (names == NULL) {
+	values = malloc(sizeof(struct rte_metric_value) * num_metrics);
+	if (values == NULL) {
 		TELEMETRY_LOG_ERR("Cannot allocate memory");
 		ret = rte_telemetry_send_error_response(telemetry,
 			 -ENOMEM);
@@ -310,7 +311,6 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		return -1;
 	}
 
-	const char *stat_names[num_metrics];
 	uint32_t stat_ids[num_metrics];
 
 	RTE_ETH_FOREACH_DEV(p) {
@@ -328,16 +328,13 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		goto fail;
 	}
 
-	ret = rte_metrics_get_names(names, num_metrics);
-	for (i = 0; i < num_metrics; i++)
-		stat_names[i] = names[i].name;
-
-	ret = rte_telemetry_stat_names_to_ids(telemetry, stat_names, stat_ids,
-		num_metrics);
+	ret = rte_metrics_get_values(port_ids[0], values, num_metrics);
 	if (ret < 0) {
-		TELEMETRY_LOG_ERR("Could not convert stat names to IDs");
+		TELEMETRY_LOG_ERR("Could not get stat values");
 		goto fail;
 	}
+	for (i = 0; i < num_metrics; i++)
+		stat_ids[i] = values[i].key;
 
 	ret = rte_telemetry_send_ports_stats_values(stat_ids, num_metrics,
 		port_ids, num_port_ids, telemetry);
@@ -346,14 +343,15 @@ rte_telemetry_command_ports_all_stat_values(struct telemetry_impl *telemetry,
 		goto fail;
 	}
 
+	free(values);
 	return 0;
 
 fail:
-	free(names);
+	free(values);
 	return -1;
 }
 
-int32_t
+static int32_t
 rte_telemetry_command_ports_stats_values_by_name(struct telemetry_impl
 	*telemetry, int action, json_t *data)
 {

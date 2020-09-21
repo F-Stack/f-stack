@@ -228,6 +228,13 @@ struct rte_mp_reply {
  *
  * As we create  socket channel for primary/secondary communication, use
  * this function typedef to register action for coming messages.
+ *
+ * @note When handling IPC request callbacks, the reply must be sent even in
+ *   cases of error handling. Simply returning success or failure will *not*
+ *   send a response to the requestor.
+ *   Implementation of error signalling mechanism is up to the application.
+ *
+ * @note No memory allocations should take place inside the callback.
  */
 typedef int (*rte_mp_t)(const struct rte_mp_msg *msg, const void *peer);
 
@@ -237,6 +244,13 @@ typedef int (*rte_mp_t)(const struct rte_mp_msg *msg, const void *peer);
  * As we create socket channel for primary/secondary communication, use
  * this function typedef to register action for coming responses to asynchronous
  * requests.
+ *
+ * @note When handling IPC request callbacks, the reply must be sent even in
+ *   cases of error handling. Simply returning success or failure will *not*
+ *   send a response to the requestor.
+ *   Implementation of error signalling mechanism is up to the application.
+ *
+ * @note No memory allocations should take place inside the callback.
  */
 typedef int (*rte_mp_async_reply_t)(const struct rte_mp_msg *request,
 		const struct rte_mp_reply *reply);
@@ -287,7 +301,7 @@ rte_mp_action_unregister(const char *name);
  *
  * Send a message to the peer process.
  *
- * This function will send a message which will be responsed by the action
+ * This function will send a message which will be responded by the action
  * identified by name in the peer process.
  *
  * @param msg
@@ -310,6 +324,9 @@ rte_mp_sendmsg(struct rte_mp_msg *msg);
  * block until receiving reply message from the peer process.
  *
  * @note The caller is responsible to free reply->replies.
+ *
+ * @note This API must not be used inside memory-related or IPC callbacks, and
+ *   no memory allocations should take place inside such callback.
  *
  * @param req
  *   The req argument contains the customized request message.
@@ -364,6 +381,11 @@ rte_mp_request_async(struct rte_mp_msg *req, const struct timespec *ts,
  * This function will send a reply message in response to a request message
  * received previously.
  *
+ * @note When handling IPC request callbacks, the reply must be sent even in
+ *   cases of error handling. Simply returning success or failure will *not*
+ *   send a response to the requestor.
+ *   Implementation of error signalling mechanism is up to the application.
+ *
  * @param msg
  *   The msg argument contains the customized message.
  *
@@ -376,15 +398,6 @@ rte_mp_request_async(struct rte_mp_msg *req, const struct timespec *ts,
  */
 int __rte_experimental
 rte_mp_reply(struct rte_mp_msg *msg, const char *peer);
-
-/**
- * Register all mp action callbacks for hotplug.
- *
- * @return
- *   0 on success, negative on error.
- */
-int __rte_experimental
-rte_mp_dev_hotplug_init(void);
 
 /**
  * Usage function typedef used by the application usage function.
@@ -424,7 +437,7 @@ rte_set_application_usage_hook(rte_usage_hook_t usage_func);
 #define RTE_EAL_TAILQ_RWLOCK         (&rte_eal_get_configuration()->mem_config->qlock)
 
 /**
- * macro to get the multiple lock of mempool shared by mutiple-instance
+ * macro to get the multiple lock of mempool shared by multiple-instance
  */
 #define RTE_EAL_MEMPOOL_RWLOCK            (&rte_eal_get_configuration()->mem_config->mplock)
 

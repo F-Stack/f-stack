@@ -48,7 +48,7 @@ Limitations
 
 * When running ``dpdk-procinfo`` with shared library mode, it is required to
   pass the same NIC PMD libraries as used for the primary application. Any
-  mismatch in PMD library arguments can lead to undefined behaviour and results
+  mismatch in PMD library arguments can lead to undefined behavior and results
   affecting primary application too.
 
 * Stats retrieval using ``dpdk-procinfo`` is not supported for virtual devices like PCAP and TAP.

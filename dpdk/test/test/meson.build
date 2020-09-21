@@ -39,6 +39,8 @@ test_sources = files('commands.c',
 	'test_event_eth_tx_adapter.c',
 	'test_event_timer_adapter.c',
 	'test_eventdev.c',
+	'test_external_mem.c',
+	'test_fbarray.c',
 	'test_func_reentrancy.c',
 	'test_flow_classify.c',
 	'test_hash.c',
@@ -77,6 +79,7 @@ test_sources = files('commands.c',
 	'test_power.c',
 	'test_power_acpi_cpufreq.c',
 	'test_power_kvm_vm.c',
+	'test_rawdev.c',
 	'test_prefetch.c',
 	'test_reciprocal_division.c',
 	'test_reciprocal_division_perf.c',
@@ -120,6 +123,7 @@ test_deps = ['acl',
 	'metrics',
 	'pipeline',
 	'port',
+	'rawdev',
 	'reorder',
 	'ring',
 	'timer'
@@ -152,7 +156,6 @@ test_names = [
 	'cycles_autotest',
 	'debug_autotest',
 	'delay_us_sleep_autotest',
-	'devargs_autotest',
 	'distributor_autotest',
 	'distributor_perf_autotest',
 	'eal_flags_autotest',
@@ -170,6 +173,7 @@ test_names = [
 	'eventdev_octeontx_autotest',
 	'eventdev_sw_autotest',
 	'external_mem_autotest',
+	'fbarray_autotest',
 	'func_reentrancy_autotest',
 	'flow_classify_autotest',
 	'hash_autotest',
@@ -207,6 +211,7 @@ test_names = [
 	'power_autotest',
 	'power_kvm_vm_autotest',
 	'prefetch_autotest',
+	'rawdev_autotest',
 	'reciprocal_division',
 	'reciprocal_division_perf',
 	'red_all',
@@ -235,12 +240,6 @@ test_names = [
 if dpdk_conf.has('RTE_LIBRTE_PDUMP')
 	test_deps += 'pdump'
 endif
-if dpdk_conf.has('RTE_LIBRTE_I40E_PMD')
-	test_deps += 'pmd_i40e'
-endif
-if dpdk_conf.has('RTE_LIBRTE_IXGBE_PMD')
-	test_deps += 'pmd_ixgbe'
-endif
 if dpdk_conf.has('RTE_LIBRTE_BOND_PMD')
 	test_deps += 'pmd_bond'
 endif
@@ -260,7 +259,7 @@ if cc.has_argument('-Wno-format-truncation')
 endif
 
 # specify -D_GNU_SOURCE unconditionally
-default_cflags += '-D_GNU_SOURCE'
+cflags += '-D_GNU_SOURCE'
 
 test_dep_objs = []
 compress_test_dep = dependency('zlib', required: false)
@@ -289,7 +288,7 @@ if get_option('tests')
 		dependencies: test_dep_objs,
 		c_args: [cflags, '-DALLOW_EXPERIMENTAL_API'],
 		install_rpath: driver_install_path,
-		install: false)
+		install: true)
 
 	# some perf tests (eg: memcpy perf autotest)take very long
 	# to complete, so timeout to 10 minutes

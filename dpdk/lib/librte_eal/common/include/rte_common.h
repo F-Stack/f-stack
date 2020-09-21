@@ -340,7 +340,7 @@ rte_is_power_of_2(uint32_t n)
  * Aligns input parameter to the next power of 2
  *
  * @param x
- *   The integer value to algin
+ *   The integer value to align
  *
  * @return
  *   Input parameter aligned to the next power of 2
@@ -358,7 +358,7 @@ rte_align32pow2(uint32_t x)
  * Aligns input parameter to the previous power of 2
  *
  * @param x
- *   The integer value to algin
+ *   The integer value to align
  *
  * @return
  *   Input parameter aligned to the previous power of 2

@@ -340,9 +340,7 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 	struct rte_mbuf *m_seg_to_free_up_to = first_m_seg;
 	bool eop;
 
-	/* Both checks may be done, so use bit OR to have only one branching */
-	if (unlikely((header_len > SFC_TSOH_STD_LEN) |
-		     (tcph_off > txq->tso_tcp_header_offset_limit)))
+	if (unlikely(tcph_off > txq->tso_tcp_header_offset_limit))
 		return EMSGSIZE;
 
 	/*
@@ -381,6 +379,9 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		hdr_addr = rte_pktmbuf_mtod(m_seg, uint8_t *);
 		hdr_iova = rte_mbuf_data_iova(m_seg);
 		if (rte_pktmbuf_data_len(m_seg) == header_len) {
+			/* Cannot send a packet that consists only of header */
+			if (unlikely(m_seg->next == NULL))
+				return EMSGSIZE;
 			/*
 			 * Associate header mbuf with header descriptor
 			 * which is located after TSO descriptors.
@@ -404,10 +405,21 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		unsigned int hdr_addr_off = (*added & txq->ptr_mask) *
 				SFC_TSOH_STD_LEN;
 
+		/*
+		 * Discard a packet if header linearization is needed but
+		 * the header is too big.
+		 */
+		if (unlikely(header_len > SFC_TSOH_STD_LEN))
+			return EMSGSIZE;
+
 		hdr_addr = txq->tsoh + hdr_addr_off;
 		hdr_iova = txq->tsoh_iova + hdr_addr_off;
 		copied_segs = sfc_tso_prepare_header(hdr_addr, header_len,
 						     &m_seg, &in_off);
+
+		/* Cannot send a packet that consists only of header */
+		if (unlikely(m_seg == NULL))
+			return EMSGSIZE;
 
 		m_seg_to_free_up_to = m_seg;
 		/*

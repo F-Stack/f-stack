@@ -40,7 +40,7 @@ struct opae_manager {
 
 /* FIXME: add more management ops, e.g power/thermal and etc */
 struct opae_manager_ops {
-	int (*flash)(struct opae_manager *mgr, int id, void *buffer,
+	int (*flash)(struct opae_manager *mgr, int id, const char *buffer,
 		     u32 size, u64 *status);
 };
 
@@ -48,7 +48,7 @@ struct opae_manager_ops {
 struct opae_manager *
 opae_manager_alloc(const char *name, struct opae_manager_ops *ops, void *data);
 #define opae_manager_free(mgr) opae_free(mgr)
-int opae_manager_flash(struct opae_manager *mgr, int acc_id, void *buf,
+int opae_manager_flash(struct opae_manager *mgr, int acc_id, const char *buf,
 		       u32 size, u64 *status);
 
 /* OPAE Bridge Data Structure */
@@ -225,7 +225,8 @@ struct opae_adapter {
 void *opae_adapter_data_alloc(enum opae_adapter_type type);
 #define opae_adapter_data_free(data) opae_free(data)
 
-struct opae_adapter *opae_adapter_alloc(const char *name, void *data);
+int opae_adapter_init(struct opae_adapter *adapter,
+		const char *name, void *data);
 #define opae_adapter_free(adapter) opae_free(adapter)
 
 int opae_adapter_enumerate(struct opae_adapter *adapter);

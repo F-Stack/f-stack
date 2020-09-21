@@ -318,11 +318,8 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 		return -EINVAL;
 
 	/* Copy kni info from user space */
-	ret = copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info));
-	if (ret) {
-		pr_err("copy_from_user in kni_ioctl_create");
-		return -EIO;
-	}
+	if (copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info)))
+		return -EFAULT;
 
 	/* Check if name is zero-ended */
 	if (strnlen(dev_info.name, sizeof(dev_info.name)) == sizeof(dev_info.name)) {
@@ -447,7 +444,7 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 		ether_addr_copy(net_dev->dev_addr, kni->lad_dev->dev_addr);
 	else {
 		/* if user has provided a valid mac address */
-		if (is_valid_ether_addr((unsigned char *)(dev_info.mac_addr)))
+		if (is_valid_ether_addr(dev_info.mac_addr))
 			memcpy(net_dev->dev_addr, dev_info.mac_addr, ETH_ALEN);
 		else
 			/*
@@ -495,15 +492,12 @@ kni_ioctl_release(struct net *net, uint32_t ioctl_num,
 	if (_IOC_SIZE(ioctl_num) > sizeof(dev_info))
 		return -EINVAL;
 
-	ret = copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info));
-	if (ret) {
-		pr_err("copy_from_user in kni_ioctl_release");
-		return -EIO;
-	}
+	if (copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info)))
+		return -EFAULT;
 
 	/* Release the network device according to its name */
 	if (strlen(dev_info.name) == 0)
-		return ret;
+		return -EINVAL;
 
 	down_write(&knet->kni_list_lock);
 	list_for_each_entry_safe(dev, n, &knet->kni_list_head, list) {

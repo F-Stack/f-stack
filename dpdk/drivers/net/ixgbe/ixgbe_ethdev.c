@@ -22,6 +22,7 @@
 #include <rte_bus_pci.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
+#include <rte_kvargs.h>
 #include <rte_eal.h>
 #include <rte_alarm.h>
 #include <rte_ether.h>
@@ -125,6 +126,13 @@
 
 #define IXGBE_EXVET_VET_EXT_SHIFT              16
 #define IXGBE_DMATXCTL_VT_MASK                 0xFFFF0000
+
+#define IXGBEVF_DEVARG_PFLINK_FULLCHK		"pflink_fullchk"
+
+static const char * const ixgbevf_valid_arguments[] = {
+	IXGBEVF_DEVARG_PFLINK_FULLCHK,
+	NULL
+};
 
 static int eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params);
 static int eth_ixgbe_dev_uninit(struct rte_eth_dev *eth_dev);
@@ -1336,6 +1344,12 @@ eth_ixgbe_dev_uninit(struct rte_eth_dev *eth_dev)
 		rte_delay_ms(100);
 	} while (retries++ < (10 + IXGBE_LINK_UP_TIME));
 
+	/* cancel the delay handler before remove dev */
+	rte_eal_alarm_cancel(ixgbe_dev_interrupt_delayed_handler, eth_dev);
+
+	/* cancel the link handler before remove dev */
+	rte_eal_alarm_cancel(ixgbe_dev_setup_link_alarm_handler, eth_dev);
+
 	/* uninitialize PF if max_vfs not zero */
 	ixgbe_pf_host_uninit(eth_dev);
 
@@ -1536,6 +1550,45 @@ generate_random_mac_addr(struct ether_addr *mac_addr)
 	memcpy(&mac_addr->addr_bytes[3], &random, 3);
 }
 
+static int
+devarg_handle_int(__rte_unused const char *key, const char *value,
+		  void *extra_args)
+{
+	uint16_t *n = extra_args;
+
+	if (value == NULL || extra_args == NULL)
+		return -EINVAL;
+
+	*n = (uint16_t)strtoul(value, NULL, 0);
+	if (*n == USHRT_MAX && errno == ERANGE)
+		return -1;
+
+	return 0;
+}
+
+static void
+ixgbevf_parse_devargs(struct ixgbe_adapter *adapter,
+		      struct rte_devargs *devargs)
+{
+	struct rte_kvargs *kvlist;
+	uint16_t pflink_fullchk;
+
+	if (devargs == NULL)
+		return;
+
+	kvlist = rte_kvargs_parse(devargs->args, ixgbevf_valid_arguments);
+	if (kvlist == NULL)
+		return;
+
+	if (rte_kvargs_count(kvlist, IXGBEVF_DEVARG_PFLINK_FULLCHK) == 1 &&
+	    rte_kvargs_process(kvlist, IXGBEVF_DEVARG_PFLINK_FULLCHK,
+			       devarg_handle_int, &pflink_fullchk) == 0 &&
+	    pflink_fullchk == 1)
+		adapter->pflink_fullchk = 1;
+
+	rte_kvargs_free(kvlist);
+}
+
 /*
  * Virtual Function device init
  */
@@ -1582,6 +1635,9 @@ eth_ixgbevf_dev_init(struct rte_eth_dev *eth_dev)
 
 		return 0;
 	}
+
+	ixgbevf_parse_devargs(eth_dev->data->dev_private,
+			      pci_dev->device.devargs);
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
@@ -2393,8 +2449,7 @@ ixgbe_dev_configure(struct rte_eth_dev *dev)
 {
 	struct ixgbe_interrupt *intr =
 		IXGBE_DEV_PRIVATE_TO_INTR(dev->data->dev_private);
-	struct ixgbe_adapter *adapter =
-		(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
@@ -2790,6 +2845,7 @@ static void
 ixgbe_dev_stop(struct rte_eth_dev *dev)
 {
 	struct rte_eth_link link;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	struct ixgbe_hw *hw =
 		IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_vf_info *vfinfo =
@@ -2850,6 +2906,8 @@ ixgbe_dev_stop(struct rte_eth_dev *dev)
 
 	/* reset hierarchy commit */
 	tm_conf->committed = false;
+
+	adapter->rss_reta_updated = 0;
 }
 
 /*
@@ -3849,6 +3907,8 @@ ixgbevf_dev_info_get(struct rte_eth_dev *dev,
 				     dev_info->rx_queue_offload_capa);
 	dev_info->tx_queue_offload_capa = ixgbe_get_tx_queue_offloads(dev);
 	dev_info->tx_offload_capa = ixgbe_get_tx_port_offloads(dev);
+	dev_info->hash_key_size = IXGBE_HKEY_MAX_INDEX * sizeof(uint32_t);
+	dev_info->reta_size = ixgbe_reta_size_get(hw->mac.type);
 
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
 		.rx_thresh = {
@@ -3880,6 +3940,8 @@ static int
 ixgbevf_check_link(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 		   int *link_up, int wait_to_complete)
 {
+	struct ixgbe_adapter *adapter = container_of(hw,
+						     struct ixgbe_adapter, hw);
 	struct ixgbe_mbx_info *mbx = &hw->mbx;
 	struct ixgbe_mac_info *mac = &hw->mac;
 	uint32_t links_reg, in_msg;
@@ -3938,6 +4000,15 @@ ixgbevf_check_link(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 		break;
 	default:
 		*speed = IXGBE_LINK_SPEED_UNKNOWN;
+	}
+
+	if (wait_to_complete == 0 && adapter->pflink_fullchk == 0) {
+		if (*speed == IXGBE_LINK_SPEED_UNKNOWN)
+			mac->get_link_status = true;
+		else
+			mac->get_link_status = false;
+
+		goto out;
 	}
 
 	/* if the read failed it could just be a mailbox collision, best wait
@@ -4779,6 +4850,7 @@ ixgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
 	uint8_t j, mask;
 	uint32_t reta, r;
 	uint16_t idx, shift;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t reta_reg;
 
@@ -4820,6 +4892,7 @@ ixgbe_dev_rss_reta_update(struct rte_eth_dev *dev,
 		}
 		IXGBE_WRITE_REG(hw, reta_reg, reta);
 	}
+	adapter->rss_reta_updated = 1;
 
 	return 0;
 }
@@ -5010,8 +5083,7 @@ static int
 ixgbevf_dev_configure(struct rte_eth_dev *dev)
 {
 	struct rte_eth_conf *conf = &dev->data->dev_conf;
-	struct ixgbe_adapter *adapter =
-			(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 
 	PMD_INIT_LOG(DEBUG, "Configured Virtual Function port id: %d",
 		     dev->data->port_id);
@@ -5143,6 +5215,7 @@ static void
 ixgbevf_dev_stop(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 
@@ -5172,6 +5245,8 @@ ixgbevf_dev_stop(struct rte_eth_dev *dev)
 		rte_free(intr_handle->intr_vec);
 		intr_handle->intr_vec = NULL;
 	}
+
+	adapter->rss_reta_updated = 0;
 }
 
 static void
@@ -6895,8 +6970,7 @@ static void
 ixgbe_start_timecounters(struct rte_eth_dev *dev)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct ixgbe_adapter *adapter =
-		(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	struct rte_eth_link link;
 	uint32_t incval = 0;
 	uint32_t shift = 0;
@@ -6964,8 +7038,7 @@ ixgbe_start_timecounters(struct rte_eth_dev *dev)
 static int
 ixgbe_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta)
 {
-	struct ixgbe_adapter *adapter =
-			(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 
 	adapter->systime_tc.nsec += delta;
 	adapter->rx_tstamp_tc.nsec += delta;
@@ -6978,8 +7051,7 @@ static int
 ixgbe_timesync_write_time(struct rte_eth_dev *dev, const struct timespec *ts)
 {
 	uint64_t ns;
-	struct ixgbe_adapter *adapter =
-			(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 
 	ns = rte_timespec_to_ns(ts);
 	/* Set the timecounters to a new value. */
@@ -6994,8 +7066,7 @@ static int
 ixgbe_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 {
 	uint64_t ns, systime_cycles;
-	struct ixgbe_adapter *adapter =
-			(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 
 	systime_cycles = ixgbe_read_systime_cyclecounter(dev);
 	ns = rte_timecounter_update(&adapter->systime_tc, systime_cycles);
@@ -7076,8 +7147,7 @@ ixgbe_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 				 uint32_t flags __rte_unused)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct ixgbe_adapter *adapter =
-		(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	uint32_t tsync_rxctl;
 	uint64_t rx_tstamp_cycles;
 	uint64_t ns;
@@ -7098,8 +7168,7 @@ ixgbe_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 				 struct timespec *timestamp)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct ixgbe_adapter *adapter =
-		(struct ixgbe_adapter *)dev->data->dev_private;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	uint32_t tsync_txctl;
 	uint64_t tx_tstamp_cycles;
 	uint64_t ns;
@@ -7338,6 +7407,9 @@ ixgbe_reta_size_get(enum ixgbe_mac_type mac_type) {
 	case ixgbe_mac_X550EM_x_vf:
 	case ixgbe_mac_X550EM_a_vf:
 		return ETH_RSS_RETA_SIZE_64;
+	case ixgbe_mac_X540_vf:
+	case ixgbe_mac_82599_vf:
+		return 0;
 	default:
 		return ETH_RSS_RETA_SIZE_128;
 	}
@@ -8605,6 +8677,8 @@ RTE_PMD_REGISTER_KMOD_DEP(net_ixgbe, "* igb_uio | uio_pci_generic | vfio-pci");
 RTE_PMD_REGISTER_PCI(net_ixgbe_vf, rte_ixgbevf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_ixgbe_vf, pci_id_ixgbevf_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_ixgbe_vf, "* igb_uio | vfio-pci");
+RTE_PMD_REGISTER_PARAM_STRING(net_ixgbe_vf,
+			      IXGBEVF_DEVARG_PFLINK_FULLCHK "=<0|1>");
 
 RTE_INIT(ixgbe_init_log)
 {

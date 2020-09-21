@@ -52,6 +52,7 @@
 
 #define VMXNET3_RX_OFFLOAD_CAP		\
 	(DEV_RX_OFFLOAD_VLAN_STRIP |	\
+	 DEV_RX_OFFLOAD_VLAN_FILTER |   \
 	 DEV_RX_OFFLOAD_SCATTER |	\
 	 DEV_RX_OFFLOAD_IPV4_CKSUM |	\
 	 DEV_RX_OFFLOAD_UDP_CKSUM |	\
@@ -1118,8 +1119,8 @@ vmxnet3_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	unsigned int i;
 	struct vmxnet3_hw *hw = dev->data->dev_private;
-	struct UPT1_TxStats txStats;
-	struct UPT1_RxStats rxStats;
+	struct UPT1_TxStats txStats = {0};
+	struct UPT1_RxStats rxStats = {0};
 
 	VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD, VMXNET3_CMD_GET_STATS);
 

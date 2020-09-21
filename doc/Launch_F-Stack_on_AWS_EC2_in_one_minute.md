@@ -3,7 +3,7 @@
   If you have a Redhat7.3 EC2 instance，and then execute the following cmds, you will get the F-Stack server in one minute 
 
     sudo -i
-    yum install -y git gcc openssl-devel kernel-devel-$(uname -r) bc numactl-devel mkdir make net-tools vim pciutils iproute
+    yum install -y git gcc openssl-devel kernel-devel-$(uname -r) bc numactl-devel mkdir make net-tools vim pciutils iproute pcre-devel zlib-devel elfutils-libelf-devel vim
 
     mkdir /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
@@ -25,7 +25,7 @@
     modprobe uio
     modprobe hwmon
     insmod build/kmod/igb_uio.ko
-    insmod build/kmod/rte_kni.ko
+    insmod build/kmod/rte_kni.ko carrier=on
 
     # set ip address
     #redhat7.3
@@ -60,7 +60,7 @@
     make
 
     # Compile Nginx
-    cd ../app/nginx-1.11.10
+    cd ../app/nginx-1.16.1
     ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
     make
     make install
@@ -79,3 +79,4 @@
     sleep 10
     ifconfig veth0 ${myaddr}  netmask ${mymask}  broadcast ${mybc} hw ether ${myhw}
     route add -net 0.0.0.0 gw ${mygw} dev veth0
+    echo 1 > /sys/class/net/veth0/carrier # if `carrier=on` not set while `insmod rte_kni.ko`.

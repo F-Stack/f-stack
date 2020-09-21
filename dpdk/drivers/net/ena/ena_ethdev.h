@@ -105,6 +105,7 @@ struct ena_ring {
 	struct ena_adapter *adapter;
 	uint64_t offloads;
 	u16 sgl_size;
+	unsigned int numa_socket_id;
 } __rte_cache_aligned;
 
 enum ena_adapter_state {

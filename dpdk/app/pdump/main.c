@@ -494,6 +494,7 @@ cleanup_pdump_resources(void)
 {
 	int i;
 	struct pdump_tuples *pt;
+	char name[RTE_ETH_NAME_MAX_LEN];
 
 	/* disable pdump and free the pdump_tuple resources */
 	for (i = 0; i < num_tuples; i++) {
@@ -510,6 +511,21 @@ cleanup_pdump_resources(void)
 			free_ring_data(pt->rx_ring, pt->rx_vdev_id, &pt->stats);
 		if (pt->dir & RTE_PDUMP_FLAG_TX)
 			free_ring_data(pt->tx_ring, pt->tx_vdev_id, &pt->stats);
+
+		/* Remove the vdev(s) created */
+		if (pt->dir & RTE_PDUMP_FLAG_RX) {
+			rte_eth_dev_get_name_by_port(pt->rx_vdev_id, name);
+			rte_eal_hotplug_remove("vdev", name);
+		}
+
+		if (pt->single_pdump_dev)
+			continue;
+
+		if (pt->dir & RTE_PDUMP_FLAG_TX) {
+			rte_eth_dev_get_name_by_port(pt->tx_vdev_id, name);
+			rte_eal_hotplug_remove("vdev", name);
+		}
+
 	}
 	cleanup_rings();
 }

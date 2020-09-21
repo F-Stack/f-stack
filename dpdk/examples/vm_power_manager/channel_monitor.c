@@ -158,7 +158,8 @@ parse_json_to_pkt(json_t *element, struct channel_packet *pkt)
 			if (ret)
 				return ret;
 		} else if (!strcmp(key, "name")) {
-			strcpy(pkt->vm_name, json_string_value(value));
+			strlcpy(pkt->vm_name, json_string_value(value),
+					sizeof(pkt->vm_name));
 		} else if (!strcmp(key, "command")) {
 			char command[32];
 			snprintf(command, 32, "%s", json_string_value(value));
@@ -835,18 +836,13 @@ read_json_packet(struct channel_info *chan_info)
 				indent--;
 			if ((indent > 0) || (idx > 0))
 				idx++;
-			if (indent == 0)
+			if (indent <= 0)
 				json_data[idx] = 0;
 			if (idx >= MAX_JSON_STRING_LEN-1)
 				break;
 		} while (indent > 0);
 
-		if (indent > 0)
-			/*
-			 * We've broken out of the read loop without getting
-			 * a closing brace, so throw away the data
-			 */
-			json_data[idx] = 0;
+		json_data[idx] = '\0';
 
 		if (strlen(json_data) == 0)
 			continue;

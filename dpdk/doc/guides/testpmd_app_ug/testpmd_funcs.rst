@@ -302,9 +302,9 @@ The available information categories are:
   This is the default mode.
 
 * ``mac``: Changes the source and the destination Ethernet addresses of packets before forwarding them.
-  Default application behaviour is to set source Ethernet address to that of the transmitting interface, and destination
+  Default application behavior is to set source Ethernet address to that of the transmitting interface, and destination
   address to a dummy value (set during init). The user may specify a target destination Ethernet address via the 'eth-peer' or
-  'eth-peer-configfile' command-line options. It is not currently possible to specify a specific source Ethernet address.
+  'eth-peers-configfile' command-line options. It is not currently possible to specify a specific source Ethernet address.
 
 * ``macswap``: MAC swap forwarding mode.
   Swaps the source and the destination Ethernet addresses of packets before forwarding them.
@@ -318,14 +318,14 @@ The available information categories are:
 
 * ``csum``: Changes the checksum field with hardware or software methods depending on the offload flags on the packet.
 
-* ``icmpecho``: Receives a burst of packets, lookup for IMCP echo requests and, if any, send back ICMP echo replies.
+* ``icmpecho``: Receives a burst of packets, lookup for ICMP echo requests and, if any, send back ICMP echo replies.
 
 * ``ieee1588``: Demonstrate L2 IEEE1588 V2 PTP timestamping for RX and TX. Requires ``CONFIG_RTE_LIBRTE_IEEE1588=y``.
 
 * ``softnic``: Demonstrates the softnic forwarding operation. In this mode, packet forwarding is
   similar to I/O mode except for the fact that packets are loopback to the softnic ports only. Therefore, portmask parameter should be set to softnic port only. The various software based custom NIC pipelines specified through the softnic firmware (DPDK packet framework script) can be tested in this mode. Furthermore, it allows to build 5-level hierarchical QoS scheduler as a default option that can be enabled through CLI once testpmd application is initialised. The user can modify the default scheduler hierarchy or can specify the new QoS Scheduler hierarchy through CLI. Requires ``CONFIG_RTE_LIBRTE_PMD_SOFTNIC=y``.
 
-* ``noisy``: Noisy neighbour simulation.
+* ``noisy``: Noisy neighbor simulation.
   Simulate more realistic behavior of a guest machine engaged in receiving
   and sending packets performing Virtual Network Function (VNF).
 
@@ -430,6 +430,56 @@ Show Tx metadata value set for a specific port::
 
    testpmd> show port (port_id) tx_metadata
 
+dump physmem
+~~~~~~~~~~~~
+
+Dumps all physical memory segment layouts::
+
+   testpmd> dump_physmem
+
+dump memzone
+~~~~~~~~~~~~
+
+Dumps the layout of all memory zones::
+
+   testpmd> dump_memzone
+
+
+dump struct size
+~~~~~~~~~~~~~~~~
+
+Dumps the size of all memory structures::
+
+   testpmd> dump_struct_sizes
+
+dump ring
+~~~~~~~~~
+
+Dumps the status of all or specific element in DPDK rings::
+
+   testpmd> dump_ring [ring_name]
+
+dump mempool
+~~~~~~~~~~~~
+
+Dumps the statistics of all or specific memory pool::
+
+   testpmd> dump_mempool [mempool_name]
+
+dump devargs
+~~~~~~~~~~~~
+
+Dumps the user device list::
+
+   testpmd> dump_devargs
+
+dump log types
+~~~~~~~~~~~~~~
+
+Dumps the log level for all the dpdk modules::
+
+   testpmd> dump_log_types
+
 Configuration Functions
 -----------------------
 
@@ -476,9 +526,11 @@ Where:
 * ``level`` is the log level.
 
 For example, to change the global log level::
+
 	testpmd> set log global (level)
 
 Regexes can also be used for type. To change log level of user1, user2 and user3::
+
 	testpmd> set log user[1-3] (level)
 
 set nbport
@@ -930,11 +982,12 @@ Flush all queue region related configuration on a port::
 
 where:
 
-* "on"is just an enable function which server for other configuration,
+* ``on``: is just an enable function which server for other configuration,
   it is for all configuration about queue region from up layer,
-  at first will only keep in DPDK softwarestored in driver,
+  at first will only keep in DPDK software stored in driver,
   only after "flush on", it commit all configuration to HW.
-  "off" is just clean all configuration about queue region just now,
+
+* ``off``: is just clean all configuration about queue region just now,
   and restore all to DPDK i40e driver default config when start up.
 
 Show all queue region related configuration info on a port::
@@ -1001,6 +1054,20 @@ tso show
 Display the status of TCP Segmentation Offload::
 
    testpmd> tso show (port_id)
+
+tunnel tso set
+~~~~~~~~~~~~~~
+
+Set tso segment size of tunneled packets for a port in csum engine::
+
+   testpmd> tunnel_tso set (tso_segsz) (port_id)
+
+tunnel tso show
+~~~~~~~~~~~~~~~
+
+Display the status of tunneled TCP Segmentation Offload for a port::
+
+   testpmd> tunnel_tso show (port_id)
 
 set port - gro
 ~~~~~~~~~~~~~~
@@ -1123,6 +1190,22 @@ Remove a MAC address from a port::
 
    testpmd> mac_addr remove (port_id) (XX:XX:XX:XX:XX:XX)
 
+mcast_addr add
+~~~~~~~~~~~~~~
+
+To add the multicast MAC address to/from the set of multicast addresses
+filtered by port::
+
+   testpmd> mcast_addr add (port_id) (mcast_addr)
+
+mcast_addr remove
+~~~~~~~~~~~~~~~~~
+
+To remove the multicast MAC address to/from the set of multicast addresses
+filtered by port::
+
+   testpmd> mcast_addr remove (port_id) (mcast_addr)
+
 mac_addr add (for VF)
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -1149,7 +1232,7 @@ set eth-peer
 
 Set the forwarding peer address for certain port::
 
-   testpmd> set eth-peer (port_id) (perr_addr)
+   testpmd> set eth-peer (port_id) (peer_addr)
 
 This is equivalent to the ``--eth-peer`` command-line option.
 
@@ -1583,7 +1666,7 @@ Configure the outer layer to encapsulate a packet inside a VXLAN tunnel::
  udp-dst (udp-dst) ip-src (ip-src) ip-dst (ip-dst) vlan-tci (vlan-tci) \
  eth-src (eth-src) eth-dst (eth-dst)
 
-Those command will set an internal configuration inside testpmd, any following
+These commands will set an internal configuration inside testpmd, any following
 flow rule using the action vxlan_encap will use the last configuration set.
 To have a different encapsulation header, one of those commands must be called
 before the flow rule creation.
@@ -1598,7 +1681,7 @@ Configure the outer layer to encapsulate a packet inside a NVGRE tunnel::
  set nvgre-with-vlan ip-version (ipv4|ipv6) tni (tni) ip-src (ip-src) \
         ip-dst (ip-dst) vlan-tci (vlan-tci) eth-src (eth-src) eth-dst (eth-dst)
 
-Those command will set an internal configuration inside testpmd, any following
+These commands will set an internal configuration inside testpmd, any following
 flow rule using the action nvgre_encap will use the last configuration set.
 To have a different encapsulation header, one of those commands must be called
 before the flow rule creation.
@@ -1641,7 +1724,7 @@ Configure the outer layer to encapsulate a packet inside a MPLSoGRE tunnel::
         ip-src (ip-src) ip-dst (ip-dst) vlan-tci (vlan-tci) \
         eth-src (eth-src) eth-dst (eth-dst)
 
-Those command will set an internal configuration inside testpmd, any following
+These commands will set an internal configuration inside testpmd, any following
 flow rule using the action mplsogre_encap will use the last configuration set.
 To have a different encapsulation header, one of those commands must be called
 before the flow rule creation.
@@ -1654,7 +1737,7 @@ Configure the outer layer to decapsulate MPLSoGRE packet::
  set mplsogre_decap ip-version (ipv4|ipv6)
  set mplsogre_decap-with-vlan ip-version (ipv4|ipv6)
 
-Those command will set an internal configuration inside testpmd, any following
+These commands will set an internal configuration inside testpmd, any following
 flow rule using the action mplsogre_decap will use the last configuration set.
 To have a different decapsulation header, one of those commands must be called
 before the flow rule creation.
@@ -1671,7 +1754,7 @@ Configure the outer layer to encapsulate a packet inside a MPLSoUDP tunnel::
         udp-src (udp-src) udp-dst (udp-dst) ip-src (ip-src) ip-dst (ip-dst) \
         vlan-tci (vlan-tci) eth-src (eth-src) eth-dst (eth-dst)
 
-Those command will set an internal configuration inside testpmd, any following
+These commands will set an internal configuration inside testpmd, any following
 flow rule using the action mplsoudp_encap will use the last configuration set.
 To have a different encapsulation header, one of those commands must be called
 before the flow rule creation.
@@ -1684,7 +1767,7 @@ Configure the outer layer to decapsulate MPLSoUDP packet::
  set mplsoudp_decap ip-version (ipv4|ipv6)
  set mplsoudp_decap-with-vlan ip-version (ipv4|ipv6)
 
-Those command will set an internal configuration inside testpmd, any following
+These commands will set an internal configuration inside testpmd, any following
 flow rule using the action mplsoudp_decap will use the last configuration set.
 To have a different decapsulation header, one of those commands must be called
 before the flow rule creation.
@@ -2113,11 +2196,13 @@ port config input set
 ~~~~~~~~~~~~~~~~~~~~~
 
 Config RSS/FDIR/FDIR flexible payload input set for some pctype::
+
    testpmd> port config (port_id) pctype (pctype_id) \
             (hash_inset|fdir_inset|fdir_flx_inset) \
 	    (get|set|clear) field (field_idx)
 
 Clear RSS/FDIR/FDIR flexible payload input set for some pctype::
+
    testpmd> port config (port_id) pctype (pctype_id) \
             (hash_inset|fdir_inset|fdir_flx_inset) clear all
 
@@ -2130,6 +2215,7 @@ port config udp_tunnel_port
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Add/remove UDP tunnel port for VXLAN/GENEVE tunneling protocols::
+
     testpmd> port config (port_id) udp_tunnel_port add|rm vxlan|geneve (udp_port)
 
 port config tx_metadata
@@ -2139,6 +2225,26 @@ Set Tx metadata value per port.
 testpmd will add this value to any Tx packet sent from this port::
 
    testpmd> port config (port_id) tx_metadata (value)
+
+port config mtu
+~~~~~~~~~~~~~~~
+
+To configure MTU(Maximum Transmission Unit) on devices using testpmd::
+
+   testpmd> port config mtu (port_id) (value)
+
+port config rss hash key
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+To configure the RSS hash key used to compute the RSS
+hash of input [IP] packets received on port::
+
+   testpmd> port config <port_id> rss-hash-key (ipv4|ipv4-frag|\
+                     ipv4-tcp|ipv4-udp|ipv4-sctp|ipv4-other|\
+                     ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|\
+                     ipv6-other|l2-payload|ipv6-ex|ipv6-tcp-ex|\
+                     ipv6-udp-ex <string of hex digits \
+                     (variable length, NIC dependent)>)
 
 Link Bonding Functions
 ----------------------
@@ -2246,7 +2352,7 @@ set bonding lacp dedicated_queue
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Enable dedicated tx/rx queues on bonding devices slaves to handle LACP control plane traffic
-when in mode 4 (link-aggregration-802.3ad)::
+when in mode 4 (link-aggregation-802.3ad)::
 
    testpmd> set bonding lacp dedicated_queues (port_id) (enable|disable)
 
@@ -2254,7 +2360,7 @@ when in mode 4 (link-aggregration-802.3ad)::
 set bonding agg_mode
 ~~~~~~~~~~~~~~~~~~~~
 
-Enable one of the specific aggregators mode when in mode 4 (link-aggregration-802.3ad)::
+Enable one of the specific aggregators mode when in mode 4 (link-aggregation-802.3ad)::
 
    testpmd> set bonding agg_mode (port_id) (bandwidth|count|stable)
 
@@ -2648,8 +2754,8 @@ where:
 
 * ``shared_shaper_id``: Shared shaper ID to be deleted.
 
-Set port traffic management hiearchy node private shaper
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Set port traffic management hierarchy node private shaper
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 set the port traffic management hierarchy node private shaper::
 
@@ -2700,7 +2806,7 @@ Delete the WRED profile::
 Add port traffic management hierarchy nonleaf node
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Add nonleaf node to port traffic management hiearchy::
+Add nonleaf node to port traffic management hierarchy::
 
    testpmd> add port tm nonleaf node (port_id) (node_id) (parent_node_id) \
    (priority) (weight) (level_id) (shaper_profile_id) \
@@ -2715,7 +2821,7 @@ where:
 * ``weight``: Node weight (lowest weight is one). The node weight is relative
   to the weight sum of all siblings that have the same priority. It is used by
   the WFQ algorithm running on the parent node for scheduling this node.
-* ``level_id``: Hiearchy level of the node.
+* ``level_id``: Hierarchy level of the node.
 * ``shaper_profile_id``: Shaper profile ID of the private shaper to be used by
   the node.
 * ``n_sp_priorities``: Number of strict priorities.
@@ -2726,7 +2832,7 @@ where:
 Add port traffic management hierarchy leaf node
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Add leaf node to port traffic management hiearchy::
+Add leaf node to port traffic management hierarchy::
 
    testpmd> add port tm leaf node (port_id) (node_id) (parent_node_id) \
    (priority) (weight) (level_id) (shaper_profile_id) \
@@ -2741,7 +2847,7 @@ where:
 * ``weight``: Node weight (lowest weight is one). The node weight is relative
   to the weight sum of all siblings that have the same priority. It is used by
   the WFQ algorithm running on the parent node for scheduling this node.
-* ``level_id``: Hiearchy level of the node.
+* ``level_id``: Hierarchy level of the node.
 * ``shaper_profile_id``: Shaper profile ID of the private shaper to be used by
   the node.
 * ``cman_mode``: Congestion management mode to be enabled for this node.
@@ -2753,7 +2859,7 @@ where:
 Delete port traffic management hierarchy node
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Delete node from port traffic management hiearchy::
+Delete node from port traffic management hierarchy::
 
    testpmd> del port tm node (port_id) (node_id)
 
@@ -3705,7 +3811,7 @@ This section lists supported pattern items and their attributes, if any.
 
   - ``sla {MAC-48}``: source Ethernet LLA.
 
-- ``icmp6_nd_opt_sla_eth``: match ICMPv6 neighbor discovery target Ethernet
+- ``icmp6_nd_opt_tla_eth``: match ICMPv6 neighbor discovery target Ethernet
   link-layer address option.
 
   - ``tla {MAC-48}``: target Ethernet LLA.
@@ -3931,12 +4037,12 @@ This section lists supported actions and their attributes, if any.
 
   - ``ipv6_addr``: New IPv6 destination address.
 
-- ``of_set_tp_src``: Set a new source port number in the outermost TCP/UDP
+- ``set_tp_src``: Set a new source port number in the outermost TCP/UDP
   header.
 
   - ``port``: New TCP/UDP source port number.
 
-- ``of_set_tp_dst``: Set a new destination port number in the outermost TCP/UDP
+- ``set_tp_dst``: Set a new destination port number in the outermost TCP/UDP
   header.
 
   - ``port``: New TCP/UDP destination port number.
@@ -3946,7 +4052,7 @@ This section lists supported actions and their attributes, if any.
 
 - ``dec_ttl``: Performs a decrease TTL value action
 
-- ``set_ttl``: Set TTL value with specificed value
+- ``set_ttl``: Set TTL value with specified value
   - ``ttl_value {unsigned}``: The new TTL value to be set
 
 - ``set_mac_src``: set source MAC address
@@ -4467,7 +4573,7 @@ The following sections show functions to load/unload eBPF based filters.
 bpf-load
 ~~~~~~~~
 
-Load an eBPF program as a callback for partciular RX/TX queue::
+Load an eBPF program as a callback for particular RX/TX queue::
 
    testpmd> bpf-load rx|tx (portid) (queueid) (load-flags) (bpf-prog-filename)
 
@@ -4490,13 +4596,13 @@ For example:
    cd test/bpf
    clang -O2 -target bpf -c t1.c
 
-Then to load (and JIT compile) t1.o at RX queue 0, port 1::
+Then to load (and JIT compile) t1.o at RX queue 0, port 1:
 
 .. code-block:: console
 
    testpmd> bpf-load rx 1 0 J ./dpdk.org/test/bpf/t1.o
 
-To load (not JITed) t1.o at TX queue 0, port 0::
+To load (not JITed) t1.o at TX queue 0, port 0:
 
 .. code-block:: console
 
@@ -4505,7 +4611,7 @@ To load (not JITed) t1.o at TX queue 0, port 0::
 bpf-unload
 ~~~~~~~~~~
 
-Unload previously loaded eBPF program for partciular RX/TX queue::
+Unload previously loaded eBPF program for particular RX/TX queue::
 
    testpmd> bpf-unload rx|tx (portid) (queueid)
 

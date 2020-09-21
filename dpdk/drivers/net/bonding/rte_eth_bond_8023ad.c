@@ -664,7 +664,7 @@ max_index(uint64_t *a, int n)
  * @param port_pos			Port to assign.
  */
 static void
-selection_logic(struct bond_dev_private *internals, uint8_t slave_id)
+selection_logic(struct bond_dev_private *internals, uint16_t slave_id)
 {
 	struct port *agg, *port;
 	uint16_t slaves_count, new_agg_id, i, j = 0;
@@ -781,16 +781,23 @@ link_speed_key(uint16_t speed) {
 }
 
 static void
-rx_machine_update(struct bond_dev_private *internals, uint8_t slave_id,
+rx_machine_update(struct bond_dev_private *internals, uint16_t slave_id,
 		struct rte_mbuf *lacp_pkt) {
 	struct lacpdu_header *lacp;
+	struct lacpdu_actor_partner_params *partner;
 
 	if (lacp_pkt != NULL) {
 		lacp = rte_pktmbuf_mtod(lacp_pkt, struct lacpdu_header *);
 		RTE_ASSERT(lacp->lacpdu.subtype == SLOW_SUBTYPE_LACP);
 
-		/* This is LACP frame so pass it to rx_machine */
-		rx_machine(internals, slave_id, &lacp->lacpdu);
+		partner = &lacp->lacpdu.partner;
+		if (is_same_ether_addr(&partner->port_params.system,
+			&internals->mode4.mac_addr)) {
+			/* This LACP frame is sending to the bonding port
+			 * so pass it to rx_machine.
+			 */
+			rx_machine(internals, slave_id, &lacp->lacpdu);
+		}
 		rte_pktmbuf_free(lacp_pkt);
 	} else
 		rx_machine(internals, slave_id, NULL);
@@ -805,8 +812,8 @@ bond_mode_8023ad_periodic_cb(void *arg)
 	struct rte_eth_link link_info;
 	struct ether_addr slave_addr;
 	struct rte_mbuf *lacp_pkt = NULL;
-
-	uint8_t i, slave_id;
+	uint16_t slave_id;
+	uint16_t i;
 
 
 	/* Update link status on each port */
@@ -1149,7 +1156,7 @@ int
 bond_mode_8023ad_enable(struct rte_eth_dev *bond_dev)
 {
 	struct bond_dev_private *internals = bond_dev->data->dev_private;
-	uint8_t i;
+	uint16_t i;
 
 	for (i = 0; i < internals->active_slave_count; i++)
 		bond_mode_8023ad_activate_slave(bond_dev,
@@ -1165,6 +1172,7 @@ bond_mode_8023ad_start(struct rte_eth_dev *bond_dev)
 	struct mode8023ad_private *mode4 = &internals->mode4;
 	static const uint64_t us = BOND_MODE_8023AX_UPDATE_TIMEOUT_MS * 1000;
 
+	rte_eth_macaddr_get(internals->port_id, &mode4->mac_addr);
 	if (mode4->slowrx_cb)
 		return rte_eal_alarm_set(us, &bond_mode_8023ad_ext_periodic_cb,
 					 bond_dev);

@@ -460,7 +460,7 @@ rte_vhost_get_mtu(int vid, uint16_t *mtu)
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL || mtu == NULL)
 		return -ENODEV;
 
 	if (!(dev->flags & VIRTIO_DEV_READY))
@@ -528,7 +528,7 @@ rte_vhost_get_ifname(int vid, char *buf, size_t len)
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (dev == NULL)
+	if (dev == NULL || buf == NULL)
 		return -1;
 
 	len = RTE_MIN(len, sizeof(dev->ifname));
@@ -545,7 +545,7 @@ rte_vhost_get_negotiated_features(int vid, uint64_t *features)
 	struct virtio_net *dev;
 
 	dev = get_device(vid);
-	if (!dev)
+	if (dev == NULL || features == NULL)
 		return -1;
 
 	*features = dev->features;
@@ -560,7 +560,7 @@ rte_vhost_get_mem_table(int vid, struct rte_vhost_memory **mem)
 	size_t size;
 
 	dev = get_device(vid);
-	if (!dev)
+	if (dev == NULL || mem == NULL)
 		return -1;
 
 	size = dev->mem->nregions * sizeof(struct rte_vhost_mem_region);
@@ -583,7 +583,7 @@ rte_vhost_get_vhost_vring(int vid, uint16_t vring_idx,
 	struct vhost_virtqueue *vq;
 
 	dev = get_device(vid);
-	if (!dev)
+	if (dev == NULL || vring == NULL)
 		return -1;
 
 	if (vring_idx >= VHOST_MAX_VRING)
@@ -776,7 +776,7 @@ int rte_vhost_get_log_base(int vid, uint64_t *log_base,
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL || log_base == NULL || log_size == NULL)
 		return -1;
 
 	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
@@ -797,7 +797,7 @@ int rte_vhost_get_vring_base(int vid, uint16_t queue_id,
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL || last_avail_idx == NULL || last_used_idx == NULL)
 		return -1;
 
 	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {
@@ -818,7 +818,7 @@ int rte_vhost_set_vring_base(int vid, uint16_t queue_id,
 {
 	struct virtio_net *dev = get_device(vid);
 
-	if (!dev)
+	if (dev == NULL)
 		return -1;
 
 	if (unlikely(!(dev->flags & VIRTIO_DEV_BUILTIN_VIRTIO_NET))) {

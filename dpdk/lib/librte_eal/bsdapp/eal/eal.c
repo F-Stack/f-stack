@@ -115,7 +115,7 @@ eal_create_runtime_dir(void)
 
 	/* create prefix-specific subdirectory under DPDK runtime dir */
 	ret = snprintf(runtime_dir, sizeof(runtime_dir), "%s/%s",
-			tmp, internal_config.hugefile_prefix);
+			tmp, eal_get_hugefile_prefix());
 	if (ret < 0 || ret == sizeof(runtime_dir)) {
 		RTE_LOG(ERR, EAL, "Error creating prefix-specific runtime path name\n");
 		return -1;
@@ -140,6 +140,16 @@ eal_create_runtime_dir(void)
 
 	return 0;
 }
+
+int
+eal_clean_runtime_dir(void)
+{
+	/* FreeBSD doesn't need this implemented for now, because, unlike Linux,
+	 * FreeBSD doesn't create per-process files, so no need to clean up.
+	 */
+	return 0;
+}
+
 
 const char *
 rte_eal_get_runtime_dir(void)
@@ -217,7 +227,7 @@ rte_eal_config_create(void)
 		return;
 
 	if (mem_cfg_fd < 0){
-		mem_cfg_fd = open(pathname, O_RDWR | O_CREAT, 0660);
+		mem_cfg_fd = open(pathname, O_RDWR | O_CREAT, 0600);
 		if (mem_cfg_fd < 0)
 			rte_panic("Cannot open '%s' for rte_mem_config\n", pathname);
 	}
@@ -243,6 +253,11 @@ rte_eal_config_create(void)
 	}
 	memcpy(rte_mem_cfg_addr, &early_mem_config, sizeof(early_mem_config));
 	rte_config.mem_config = rte_mem_cfg_addr;
+
+	/* store address of the config in the config itself so that secondary
+	 * processes could later map the config into this exact location
+	 */
+	rte_config.mem_config->mem_cfg_addr = (uintptr_t) rte_mem_cfg_addr;
 }
 
 /* attach to an existing shared memory config */
@@ -447,9 +462,21 @@ eal_parse_args(int argc, char **argv)
 
 		switch (opt) {
 		case OPT_MBUF_POOL_OPS_NAME_NUM:
-			internal_config.user_mbuf_pool_ops_name =
-			    strdup(optarg);
+		{
+			char *ops_name = strdup(optarg);
+			if (ops_name == NULL)
+				RTE_LOG(ERR, EAL, "Could not store mbuf pool ops name\n");
+			else {
+				/* free old ops name */
+				if (internal_config.user_mbuf_pool_ops_name !=
+						NULL)
+					free(internal_config.user_mbuf_pool_ops_name);
+
+				internal_config.user_mbuf_pool_ops_name =
+						ops_name;
+			}
 			break;
+		}
 		case 'h':
 			eal_usage(prgname);
 			exit(EXIT_SUCCESS);
@@ -544,6 +571,8 @@ rte_eal_mcfg_complete(void)
 	/* ALL shared mem_config related INIT DONE */
 	if (rte_config.process_type == RTE_PROC_PRIMARY)
 		rte_config.mem_config->magic = RTE_MAGIC;
+
+	internal_config.init_complete = 1;
 }
 
 /* return non-zero if hugepages are enabled. */
@@ -640,6 +669,12 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	if (rte_eal_alarm_init() < 0) {
+		rte_eal_init_alert("Cannot init alarm");
+		/* rte_eal_alarm_init sets rte_errno on failure. */
+		return -1;
+	}
+
 	/* Put mp channel init before bus scan so that we can init the vdev
 	 * bus through mp channel in the secondary process before the bus scan.
 	 */
@@ -729,12 +764,6 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
-	if (rte_eal_alarm_init() < 0) {
-		rte_eal_init_alert("Cannot init interrupt-handling thread");
-		/* rte_eal_alarm_init sets rte_errno on failure. */
-		return -1;
-	}
-
 	if (rte_eal_timer_init() < 0) {
 		rte_eal_init_alert("Cannot init HPET or TSC timers");
 		rte_errno = ENOTSUP;
@@ -807,6 +836,18 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
+	/*
+	 * Clean up unused files in runtime directory. We do this at the end of
+	 * init and not at the beginning because we want to clean stuff up
+	 * whether we are primary or secondary process, but we cannot remove
+	 * primary process' files because secondary should be able to run even
+	 * if primary process is dead.
+	 */
+	if (eal_clean_runtime_dir() < 0) {
+		rte_eal_init_alert("Cannot clear runtime directory\n");
+		return -1;
+	}
+
 	rte_eal_mcfg_complete();
 
 	/* Call each registered callback, if enabled */
@@ -819,6 +860,8 @@ int __rte_experimental
 rte_eal_cleanup(void)
 {
 	rte_service_finalize();
+	rte_mp_channel_cleanup();
+	eal_cleanup_config(&internal_config);
 	return 0;
 }
 

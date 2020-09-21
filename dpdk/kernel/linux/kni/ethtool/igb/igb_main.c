@@ -2112,7 +2112,13 @@ static int igb_ndo_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 #ifdef HAVE_NDO_FDB_ADD_VID
 			   u16 vid,
 #endif
+#ifdef HAVE_NDO_FDB_ADD_EXTACK
+			   u16 flags,
+			   struct netlink_ext_ack *extack)
+#else
 			   u16 flags)
+#endif
+
 #else
 static int igb_ndo_fdb_add(struct ndmsg *ndm,
 			   struct net_device *dev,
@@ -2207,7 +2213,12 @@ static int igb_ndo_fdb_dump(struct sk_buff *skb,
 #ifdef HAVE_NDO_BRIDGE_SET_DEL_LINK_FLAGS
 static int igb_ndo_bridge_setlink(struct net_device *dev,
 				  struct nlmsghdr *nlh,
+#ifdef HAVE_NDO_BRIDGE_SETLINK_EXTACK
+				  u16 flags, struct netlink_ext_ack *extack)
+#else
 				  u16 flags)
+#endif
+
 #else
 static int igb_ndo_bridge_setlink(struct net_device *dev,
 				  struct nlmsghdr *nlh)
@@ -5320,7 +5331,7 @@ static void igb_tx_map(struct igb_ring *tx_ring,
 	struct sk_buff *skb = first->skb;
 	struct igb_tx_buffer *tx_buffer;
 	union e1000_adv_tx_desc *tx_desc;
-	struct skb_frag_struct *frag;
+	skb_frag_t *frag;
 	dma_addr_t dma;
 	unsigned int data_len, size;
 	u32 tx_flags = first->tx_flags;
@@ -8220,7 +8231,7 @@ static void igb_pull_tail(struct igb_ring *rx_ring,
 			  union e1000_adv_rx_desc *rx_desc,
 			  struct sk_buff *skb)
 {
-	struct skb_frag_struct *frag = &skb_shinfo(skb)->frags[0];
+	skb_frag_t *frag = &skb_shinfo(skb)->frags[0];
 	unsigned char *va;
 	unsigned int pull_len;
 
@@ -8238,7 +8249,11 @@ static void igb_pull_tail(struct igb_ring *rx_ring,
 
 		/* update pointers to remove timestamp header */
 		skb_frag_size_sub(frag, IGB_TS_HDR_LEN);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0)
 		frag->page_offset += IGB_TS_HDR_LEN;
+#else
+		frag->bv_offset += pull_len;
+#endif
 		skb->data_len -= IGB_TS_HDR_LEN;
 		skb->len -= IGB_TS_HDR_LEN;
 
@@ -8258,7 +8273,11 @@ static void igb_pull_tail(struct igb_ring *rx_ring,
 
 	/* update all of the pointers */
 	skb_frag_size_sub(frag, pull_len);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0)
 	frag->page_offset += pull_len;
+#else
+	frag->bv_offset += pull_len;
+#endif
 	skb->data_len -= pull_len;
 	skb->tail += pull_len;
 }

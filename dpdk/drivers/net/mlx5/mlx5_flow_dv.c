@@ -196,6 +196,8 @@ flow_dv_validate_action_raw_encap(uint64_t action_flags,
 				  const struct rte_flow_attr *attr,
 				  struct rte_flow_error *error)
 {
+	const struct rte_flow_action_raw_encap *raw_encap =
+		(const struct rte_flow_action_raw_encap *)action->conf;
 	if (!(action->conf))
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ACTION, action,
@@ -216,6 +218,10 @@ flow_dv_validate_action_raw_encap(uint64_t action_flags,
 					  NULL,
 					  "encap action not supported for "
 					  "ingress");
+	if (!raw_encap->size || !raw_encap->data)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION, action,
+					  "raw encap data cannot be empty");
 	return 0;
 }
 
@@ -293,7 +299,7 @@ flow_dv_encap_decap_resource_register
 			 struct mlx5_flow *dev_flow,
 			 struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_dv_encap_decap_resource *cache_resource;
 
 	/* Lookup a matching resource from cache. */
@@ -722,7 +728,7 @@ flow_dv_validate_attributes(struct rte_eth_dev *dev,
 			    const struct rte_flow_attr *attributes,
 			    struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	uint32_t priority_max = priv->config.flow_prio - 1;
 
 	if (attributes->group)
@@ -764,7 +770,7 @@ flow_dv_validate_attributes(struct rte_eth_dev *dev,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
@@ -776,7 +782,6 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	uint64_t action_flags = 0;
 	uint64_t item_flags = 0;
 	uint64_t last_item = 0;
-	int tunnel = 0;
 	uint8_t next_protocol = 0xff;
 	int actions_n = 0;
 
@@ -786,7 +791,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	if (ret < 0)
 		return ret;
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
-		tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
+		int tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
 		switch (items->type) {
 		case RTE_FLOW_ITEM_TYPE_VOID:
 			break;
@@ -958,7 +963,8 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		case RTE_FLOW_ACTION_TYPE_RSS:
 			ret = mlx5_flow_validate_action_rss(actions,
 							    action_flags, dev,
-							    attr, error);
+							    attr, item_flags,
+							    error);
 			if (ret < 0)
 				return ret;
 			action_flags |= MLX5_FLOW_ACTION_RSS;
@@ -1043,7 +1049,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
  *
  * @return
  *   Pointer to mlx5_flow object on success,
- *   otherwise NULL and rte_ernno is set.
+ *   otherwise NULL and rte_errno is set.
  */
 static struct mlx5_flow *
 flow_dv_prepare(const struct rte_flow_attr *attr __rte_unused,
@@ -1176,10 +1182,6 @@ flow_dv_translate_item_vlan(void *matcher, void *key,
 {
 	const struct rte_flow_item_vlan *vlan_m = item->mask;
 	const struct rte_flow_item_vlan *vlan_v = item->spec;
-	const struct rte_flow_item_vlan nic_mask = {
-		.tci = RTE_BE16(0x0fff),
-		.inner_type = RTE_BE16(0xffff),
-	};
 	void *headers_m;
 	void *headers_v;
 	uint16_t tci_m;
@@ -1188,7 +1190,7 @@ flow_dv_translate_item_vlan(void *matcher, void *key,
 	if (!vlan_v)
 		return;
 	if (!vlan_m)
-		vlan_m = &nic_mask;
+		vlan_m = &rte_flow_item_vlan_mask;
 	if (inner) {
 		headers_m = MLX5_ADDR_OF(fte_match_param, matcher,
 					 inner_headers);
@@ -1208,6 +1210,10 @@ flow_dv_translate_item_vlan(void *matcher, void *key,
 	MLX5_SET(fte_match_set_lyr_2_4, headers_v, first_cfi, tci_v >> 12);
 	MLX5_SET(fte_match_set_lyr_2_4, headers_m, first_prio, tci_m >> 13);
 	MLX5_SET(fte_match_set_lyr_2_4, headers_v, first_prio, tci_v >> 13);
+	MLX5_SET(fte_match_set_lyr_2_4, headers_m, ethertype,
+		 rte_be_to_cpu_16(vlan_m->inner_type));
+	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ethertype,
+		 rte_be_to_cpu_16(vlan_m->inner_type & vlan_v->inner_type));
 }
 
 /**
@@ -1800,7 +1806,7 @@ flow_dv_matcher_register(struct rte_eth_dev *dev,
 			 struct mlx5_flow *dev_flow,
 			 struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_dv_matcher *cache_matcher;
 	struct mlx5dv_flow_matcher_attr dv_attr = {
 		.type = IBV_FLOW_ATTR_NORMAL,
@@ -1873,7 +1879,7 @@ flow_dv_matcher_register(struct rte_eth_dev *dev,
  *   Pointer to the error structure.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_ernno is set.
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
 flow_dv_translate(struct rte_eth_dev *dev,
@@ -1883,7 +1889,7 @@ flow_dv_translate(struct rte_eth_dev *dev,
 		  const struct rte_flow_action actions[],
 		  struct rte_flow_error *error)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_flow *flow = dev_flow->flow;
 	uint64_t item_flags = 0;
 	uint64_t last_item = 0;

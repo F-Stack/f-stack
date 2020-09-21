@@ -13,7 +13,13 @@
 #include <rte_eal.h>
 #include <rte_pci_dev_feature_defs.h>
 
+#include "eal_thread.h"
+
+#if defined(RTE_ARCH_ARM) || defined(RTE_ARCH_ARM64)
+#define MAX_HUGEPAGE_SIZES 4  /**< support up to 4 page sizes */
+#else
 #define MAX_HUGEPAGE_SIZES 3  /**< support up to 3 page sizes */
+#endif
 
 /*
  * internal configuration structure for the number, size and
@@ -64,13 +70,14 @@ struct internal_config {
 	volatile int syslog_facility;	  /**< facility passed to openlog() */
 	/** default interrupt mode for VFIO */
 	volatile enum rte_intr_mode vfio_intr_mode;
-	const char *hugefile_prefix;      /**< the base filename of hugetlbfs files */
-	const char *hugepage_dir;         /**< specific hugetlbfs directory to use */
-	const char *user_mbuf_pool_ops_name;
+	char *hugefile_prefix;      /**< the base filename of hugetlbfs files */
+	char *hugepage_dir;         /**< specific hugetlbfs directory to use */
+	char *user_mbuf_pool_ops_name;
 			/**< user defined mbuf pool ops name */
 	unsigned num_hugepage_sizes;      /**< how many sizes on this system */
 	struct hugepage_info hugepage_info[MAX_HUGEPAGE_SIZES];
 	enum rte_iova_mode iova_mode ;    /**< Set IOVA mode on this system  */
+	rte_cpuset_t ctrl_cpuset;         /**< cpuset for ctrl threads */
 	volatile unsigned int init_complete;
 	/**< indicates whether EAL has completed initialization */
 };

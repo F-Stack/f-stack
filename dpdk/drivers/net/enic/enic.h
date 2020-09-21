@@ -39,9 +39,6 @@
 #define PAGE_ROUND_UP(x) \
 	((((unsigned long)(x)) + ENIC_PAGE_SIZE-1) & (~(ENIC_PAGE_SIZE-1)))
 
-/* must be >= VNIC_COUNTER_DMA_MIN_PERIOD */
-#define VNIC_FLOW_COUNTER_UPDATE_MSECS 500
-
 #define ENICPMD_VFIO_PATH          "/dev/vfio/vfio"
 /*#define ENIC_DESC_COUNT_MAKE_ODD (x) do{if ((~(x)) & 1) { (x)--; } }while(0)*/
 
@@ -78,8 +75,8 @@ struct enic_fdir {
 	u32 modes;
 	u32 types_mask;
 	void (*copy_fltr_fn)(struct filter_v2 *filt,
-			     struct rte_eth_fdir_input *input,
-			     struct rte_eth_fdir_masks *masks);
+			     const struct rte_eth_fdir_input *input,
+			     const struct rte_eth_fdir_masks *masks);
 };
 
 struct enic_soft_stats {
@@ -97,7 +94,6 @@ struct rte_flow {
 	LIST_ENTRY(rte_flow) next;
 	u16 enic_filter_id;
 	struct filter_v2 enic_filter;
-	int counter_idx; /* NIC allocated counter index (-1 = invalid) */
 };
 
 /* Per-instance private data structure */
@@ -175,8 +171,6 @@ struct enic {
 	rte_spinlock_t mtu_lock;
 
 	LIST_HEAD(enic_flows, rte_flow) flows;
-	int max_flow_counter;
-	rte_spinlock_t flows_lock;
 
 	/* RSS */
 	uint16_t reta_size;
@@ -201,8 +195,8 @@ struct enic {
 /* Compute ethdev's max packet size from MTU */
 static inline uint32_t enic_mtu_to_max_rx_pktlen(uint32_t mtu)
 {
-	/* ethdev max size includes eth and crc whereas NIC MTU does not */
-	return mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
+	/* ethdev max size includes eth whereas NIC MTU does not */
+	return mtu + ETHER_HDR_LEN;
 }
 
 /* Get the CQ index from a Start of Packet(SOP) RQ index */
@@ -250,7 +244,7 @@ static inline unsigned int enic_cq_wq(struct enic *enic, unsigned int wq)
 
 static inline struct enic *pmd_priv(struct rte_eth_dev *eth_dev)
 {
-	return (struct enic *)eth_dev->data->dev_private;
+	return eth_dev->data->dev_private;
 }
 
 static inline uint32_t
@@ -340,9 +334,5 @@ int enic_link_update(struct enic *enic);
 bool enic_use_vector_rx_handler(struct enic *enic);
 void enic_fdir_info(struct enic *enic);
 void enic_fdir_info_get(struct enic *enic, struct rte_eth_fdir_info *stats);
-void copy_fltr_v1(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
-		  struct rte_eth_fdir_masks *masks);
-void copy_fltr_v2(struct filter_v2 *fltr, struct rte_eth_fdir_input *input,
-		  struct rte_eth_fdir_masks *masks);
 extern const struct rte_flow_ops enic_flow_ops;
 #endif /* _ENIC_H_ */

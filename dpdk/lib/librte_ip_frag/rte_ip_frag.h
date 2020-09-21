@@ -115,6 +115,7 @@ struct rte_ip_frag_tbl {
 #define	RTE_IPV6_EHDR_MF_MASK			1
 #define	RTE_IPV6_EHDR_FO_SHIFT			3
 #define	RTE_IPV6_EHDR_FO_MASK			(~((1 << RTE_IPV6_EHDR_FO_SHIFT) - 1))
+#define	RTE_IPV6_EHDR_FO_ALIGN			(1 << RTE_IPV6_EHDR_FO_SHIFT)
 
 #define RTE_IPV6_FRAG_USED_MASK			\
 	(RTE_IPV6_EHDR_MF_MASK | RTE_IPV6_EHDR_FO_MASK)
@@ -273,7 +274,7 @@ int32_t rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 
 /**
  * This function implements reassembly of fragmented IPv4 packets.
- * Incoming mbufs should have its l2_len/l3_len fields setup correclty.
+ * Incoming mbufs should have its l2_len/l3_len fields setup correctly.
  *
  * @param tbl
  *   Table where to lookup/add the fragmented packet.

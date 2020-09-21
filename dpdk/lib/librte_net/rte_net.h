@@ -112,14 +112,14 @@ uint32_t rte_net_get_ptype(const struct rte_mbuf *m,
 static inline int
 rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 {
-	struct ipv4_hdr *ipv4_hdr;
+	/* Initialise ipv4_hdr to avoid false positive compiler warnings. */
+	struct ipv4_hdr *ipv4_hdr = NULL;
 	struct ipv6_hdr *ipv6_hdr;
 	struct tcp_hdr *tcp_hdr;
 	struct udp_hdr *udp_hdr;
 	uint64_t inner_l3_offset = m->l2_len;
 
-	if ((ol_flags & PKT_TX_OUTER_IP_CKSUM) ||
-		(ol_flags & PKT_TX_OUTER_IPV6))
+	if (ol_flags & (PKT_TX_OUTER_IPV4 | PKT_TX_OUTER_IPV6))
 		inner_l3_offset += m->outer_l2_len + m->outer_l3_len;
 
 	if (ol_flags & PKT_TX_IPV4) {
@@ -130,7 +130,7 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 			ipv4_hdr->hdr_checksum = 0;
 	}
 
-	if ((ol_flags & PKT_TX_UDP_CKSUM) == PKT_TX_UDP_CKSUM) {
+	if ((ol_flags & PKT_TX_L4_MASK) == PKT_TX_UDP_CKSUM) {
 		if (ol_flags & PKT_TX_IPV4) {
 			udp_hdr = (struct udp_hdr *)((char *)ipv4_hdr +
 					m->l3_len);
@@ -145,7 +145,7 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 			udp_hdr->dgram_cksum = rte_ipv6_phdr_cksum(ipv6_hdr,
 					ol_flags);
 		}
-	} else if ((ol_flags & PKT_TX_TCP_CKSUM) ||
+	} else if ((ol_flags & PKT_TX_L4_MASK) == PKT_TX_TCP_CKSUM ||
 			(ol_flags & PKT_TX_TCP_SEG)) {
 		if (ol_flags & PKT_TX_IPV4) {
 			/* non-TSO tcp or TSO */

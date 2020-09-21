@@ -24,7 +24,7 @@ export prefix ?=
 kerneldir   ?= $(prefix)/kmod
 else
 ifeq ($(RTE_EXEC_ENV),linuxapp)
-kerneldir   ?= /lib/modules/$(shell uname -r)/extra/dpdk
+kerneldir   ?= $(RTE_KERNELDIR:/build=/extra/dpdk)
 else
 kerneldir   ?= /boot/modules
 endif
@@ -99,8 +99,9 @@ install-runtime:
 		--exclude 'app/cmdline*' --exclude app/test \
 		--exclude app/testacl --exclude app/testpipeline app | \
 	    tar -xf -      -C $(DESTDIR)$(bindir) $(TAR_X_FLAGS)
-	$(Q)$(call rte_mkdir,      $(DESTDIR)$(datadir))
-	$(Q)cp $(CP_FLAGS) $(RTE_SDK)/usertools $(DESTDIR)$(datadir)
+	$(Q)$(call rte_mkdir,      $(DESTDIR)$(datadir)/usertools)
+	$(Q)tar -cf -      -C $(RTE_SDK) --exclude meson.build usertools | \
+	    tar -xf -      -C $(DESTDIR)$(datadir)/usertools $(TAR_X_FLAGS)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(sbindir))
 	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/usertools/dpdk-devbind.py, \
 	                           $(DESTDIR)$(sbindir)/dpdk-devbind)

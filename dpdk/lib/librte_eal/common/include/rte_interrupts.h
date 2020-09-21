@@ -28,7 +28,7 @@ typedef void (*rte_intr_callback_fn)(void *cb_arg);
 
 /**
  * It registers the callback for the specific interrupt. Multiple
- * callbacks cal be registered at the same time.
+ * callbacks can be registered at the same time.
  * @param intr_handle
  *  Pointer to the interrupt handle.
  * @param cb

@@ -37,6 +37,6 @@ struct ff_msg *ff_ipc_msg_alloc(void);
 int ff_ipc_msg_free(struct ff_msg *msg);
 
 int ff_ipc_send(const struct ff_msg *msg);
-int ff_ipc_recv(struct ff_msg **msg);
+int ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type);
 
 #endif

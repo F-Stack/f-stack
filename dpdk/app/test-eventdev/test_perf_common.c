@@ -327,7 +327,8 @@ perf_launch_lcores(struct evt_test *test, struct evt_options *opt,
 		}
 
 		if (new_cycles - dead_lock_cycles > dead_lock_sample &&
-				opt->prod_type == EVT_PROD_TYPE_SYNT) {
+		    (opt->prod_type == EVT_PROD_TYPE_SYNT ||
+		     opt->prod_type == EVT_PROD_TYPE_EVENT_TIMER_ADPTR)) {
 			remaining = t->outstand_pkts - processed_pkts(t);
 			if (dead_lock_remaining == remaining) {
 				rte_event_dev_dump(opt->dev_id, stdout);
@@ -582,7 +583,8 @@ perf_opt_check(struct evt_options *opt, uint64_t nb_queues)
 		return -1;
 	}
 
-	if (opt->prod_type == EVT_PROD_TYPE_SYNT) {
+	if (opt->prod_type == EVT_PROD_TYPE_SYNT ||
+			opt->prod_type == EVT_PROD_TYPE_EVENT_TIMER_ADPTR) {
 		/* Validate producer lcores */
 		if (evt_lcores_has_overlap(opt->plcores,
 					rte_get_master_lcore())) {

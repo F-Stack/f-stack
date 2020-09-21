@@ -1528,7 +1528,7 @@ process_openssl_auth_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 	}
 
 	if (sess->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY) {
-		if (memcmp(dst, op->sym->auth.digest.data,
+		if (CRYPTO_memcmp(dst, op->sym->auth.digest.data,
 				sess->auth.digest_length) != 0) {
 			op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
 		}
@@ -1605,12 +1605,9 @@ process_openssl_dsa_verify_op(struct rte_crypto_op *cop,
 			op->y.length,
 			pub_key);
 	if (!r || !s || !pub_key) {
-		if (r)
-			BN_free(r);
-		if (s)
-			BN_free(s);
-		if (pub_key)
-			BN_free(pub_key);
+		BN_free(r);
+		BN_free(s);
+		BN_free(pub_key);
 
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
@@ -1781,10 +1778,8 @@ process_openssl_modinv_op(struct rte_crypto_op *cop,
 	BIGNUM *res = BN_CTX_get(sess->u.m.ctx);
 
 	if (unlikely(base == NULL || res == NULL)) {
-		if (base)
-			BN_free(base);
-		if (res)
-			BN_free(res);
+		BN_free(base);
+		BN_free(res);
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
 	}
@@ -1799,6 +1794,9 @@ process_openssl_modinv_op(struct rte_crypto_op *cop,
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	}
 
+	BN_clear(res);
+	BN_clear(base);
+
 	return 0;
 }
 
@@ -1812,24 +1810,25 @@ process_openssl_modexp_op(struct rte_crypto_op *cop,
 	BIGNUM *res = BN_CTX_get(sess->u.e.ctx);
 
 	if (unlikely(base == NULL || res == NULL)) {
-		if (base)
-			BN_free(base);
-		if (res)
-			BN_free(res);
+		BN_free(base);
+		BN_free(res);
 		cop->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 		return -1;
 	}
 
-	base = BN_bin2bn((const unsigned char *)op->modinv.base.data,
-			op->modinv.base.length, base);
+	base = BN_bin2bn((const unsigned char *)op->modex.base.data,
+			op->modex.base.length, base);
 
 	if (BN_mod_exp(res, base, sess->u.e.exp,
 				sess->u.e.mod, sess->u.e.ctx)) {
-		op->modinv.base.length = BN_bn2bin(res, op->modinv.base.data);
+		op->modex.base.length = BN_bn2bin(res, op->modex.base.data);
 		cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 	} else {
 		cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
 	}
+
+	BN_clear(res);
+	BN_clear(base);
 
 	return 0;
 }
@@ -1914,7 +1913,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 				"Length of public_decrypt %d "
 				"length of message %zd\n",
 				ret, op->rsa.message.length);
-		if ((ret <= 0) || (memcmp(tmp, op->rsa.message.data,
+		if ((ret <= 0) || (CRYPTO_memcmp(tmp, op->rsa.message.data,
 				op->rsa.message.length))) {
 			OPENSSL_LOG(ERR, "RSA sign Verification failed");
 			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
