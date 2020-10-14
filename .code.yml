@@ -1,0 +1,37 @@
+branch:
+  trunk_name: "master"
+  branch_type_B:
+    personal_feature:
+      pattern: "feature/*"
+    bugfix:
+      pattern: "bugfix/${userID}_${bugID}"
+    single_release:
+      pattern: "release"
+    multiple_release:
+      pattern: "release/[${versionname}][_${releasetype}[_${description}]]"
+      releasetype: [rc,release]
+    hotfix_release:
+      pattern: "hotfix/[${versionname}][_${description}]"
+    tag:
+      pattern: "*"
+      versionnumber: "*"
+
+artifact:
+  - path: "/"
+    artifact_name: "f-stack"
+    artifact_type: "lib"
+    
+source:
+  test_source:
+    filepath_regex: ["/example/.*"]
+
+  auto_generate_source:
+    filepath_regex: ["/mk/.*"]
+
+  third_party_source:
+    filepath_regex: ["/freebsd/.*", "/app/.*", "/example/.*"]
+
+file :
+  - path: "/.*"
+    owners :  ["patrickzeng", "fengbojiang"]
+    owner_rule: 0
