@@ -35,7 +35,7 @@ CWARNEXTRA?=	-Wno-error-tautological-compare -Wno-error-empty-body \
 endif
 
 ifeq (${COMPILER_TYPE},gcc)
-CWARNEXTRA?=	-Wno-unused-but-set-variable
+CWARNEXTRA?=	-Wno-unused-but-set-variable -Wno-address-of-packed-member
 endif
 
 #
