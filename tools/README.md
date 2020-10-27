@@ -263,6 +263,20 @@ Examples:
 |         |                    |                    |                    |                    |
 ```
 
+# ndp
+Usage:
+```
+ndp -C <f-stack proc_id> [-nt] hostname
+ndp -C <f-stack proc_id> [-nt] -a | -c | -p | -r | -H | -P | -R
+ndp -C <f-stack proc_id> [-nt] -A wait
+ndp -C <f-stack proc_id> [-nt] -d hostname
+ndp -C <f-stack proc_id> [-nt] -f filename
+ndp -C <f-stack proc_id> [-nt] -i interface [flags...]
+ndp -C <f-stack proc_id> [-nt] -I [interface|delete]
+ndp -C <f-stack proc_id> [-nt] -s nodename etheraddr [temp] [proxy]
+```
+For more details, see [Manual page](https://www.freebsd.org/cgi/man.cgi?ndp).
+
 # how to implement a custom tool for communicating with F-Stack process
 
 Add a new FF_MSG_TYPE in ff_msg.h:
