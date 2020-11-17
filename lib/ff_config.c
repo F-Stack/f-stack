@@ -669,7 +669,7 @@ dpdk_args_setup(struct ff_config *cfg)
         dpdk_argv[n++] = strdup(temp);
     }
     if (cfg->dpdk.file_prefix) {
-        sprintf(temp, "--file-prefix=container%s", cfg->dpdk.file_prefix);
+        sprintf(temp, "--file-prefix=container-%s", cfg->dpdk.file_prefix);
         dpdk_argv[n++] = strdup(temp);
     }
     if (cfg->dpdk.pci_whitelist) {
