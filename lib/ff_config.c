@@ -567,6 +567,10 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
     } else if (MATCH("dpdk", "base_virtaddr")) {
         pconfig->dpdk.base_virtaddr= strdup(value);
+    } else if (MATCH("dpdk", "file_prefix")) {
+        pconfig->dpdk.file_prefix = strdup(value);
+    } else if (MATCH("dpdk", "pci_whitelist")) {
+        pconfig->dpdk.pci_whitelist = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -664,6 +668,14 @@ dpdk_args_setup(struct ff_config *cfg)
         sprintf(temp, "--base-virtaddr=%s", cfg->dpdk.base_virtaddr);
         dpdk_argv[n++] = strdup(temp);
     }
+    if (cfg->dpdk.file_prefix) {
+        sprintf(temp, "--file-prefix=container-%s", cfg->dpdk.file_prefix);
+        dpdk_argv[n++] = strdup(temp);
+    }
+    if (cfg->dpdk.pci_whitelist) {
+        sprintf(temp, "--pci-whitelist=%s", cfg->dpdk.pci_whitelist);
+        dpdk_argv[n++] = strdup(temp);
+    }
 
     if (cfg->dpdk.nb_vdev) {
         for (i=0; i<cfg->dpdk.nb_vdev; i++) {
@@ -694,8 +706,10 @@ dpdk_args_setup(struct ff_config *cfg)
         }
         sprintf(temp, "--no-pci");
         dpdk_argv[n++] = strdup(temp);
-        sprintf(temp, "--file-prefix=container");
-        dpdk_argv[n++] = strdup(temp);
+        if (!cfg->dpdk.file_prefix) {
+            sprintf(temp, "--file-prefix=container");
+            dpdk_argv[n++] = strdup(temp);
+        }
     }
 
     if (cfg->dpdk.nb_bond) {

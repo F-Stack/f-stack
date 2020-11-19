@@ -116,6 +116,12 @@ struct ff_config {
         /* specify base virtual address to map. */
         char *base_virtaddr;
 
+        /* allow processes that do not want to co-operate to have different memory regions */
+        char *file_prefix;
+
+        /* load an external driver */
+        char *pci_whitelist;
+
         int nb_channel;
         int memory;
         int no_huge;
