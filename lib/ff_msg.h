@@ -137,6 +137,8 @@ struct ff_msg {
     size_t buf_len;
     /* Address of segment buffer. */
     char *buf_addr;
+    char *original_buf;
+    size_t original_buf_len;
 
     union {
         struct ff_sysctl_args sysctl;
