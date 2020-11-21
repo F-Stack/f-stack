@@ -443,6 +443,8 @@ ff_msg_init(struct rte_mempool *mp,
     msg->msg_type = FF_UNKNOWN;
     msg->buf_addr = (char *)msg + sizeof(struct ff_msg);
     msg->buf_len = mp->elt_size - sizeof(struct ff_msg);
+    msg->original_buf = NULL;
+    msg->original_buf_len = 0;
 }
 
 static int
