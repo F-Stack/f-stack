@@ -941,9 +941,9 @@ ff_dpdk_init(int argc, char **argv)
     ff_mmap_init();
 #endif
     
-#ifdef FF_FLOW_ISOLATE
-    static rte_atomic32_t flow_run_once = RTE_ATOMIC32_INIT(0);
-    if (rte_atomic32_test_and_set(&flow_run_once)){
+#ifdef FF_FLOW_ISOLATE 
+    // run once in primary process
+    if (0 == lcore_conf.tx_queue_id[0]){
         ret = port_flow_isolate(0, 1);
         if (ret < 0)
             rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
