@@ -835,6 +835,64 @@ init_clock(void)
     return 0;
 }
 
+#ifdef FF_FLOW_ISOLATE
+/** Print a message out of a flow error. */
+static int
+port_flow_complain(struct rte_flow_error *error)
+{
+    static const char *const errstrlist[] = {
+        [RTE_FLOW_ERROR_TYPE_NONE] = "no error",
+        [RTE_FLOW_ERROR_TYPE_UNSPECIFIED] = "cause unspecified",
+        [RTE_FLOW_ERROR_TYPE_HANDLE] = "flow rule (handle)",
+        [RTE_FLOW_ERROR_TYPE_ATTR_GROUP] = "group field",
+        [RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY] = "priority field",
+        [RTE_FLOW_ERROR_TYPE_ATTR_INGRESS] = "ingress field",
+        [RTE_FLOW_ERROR_TYPE_ATTR_EGRESS] = "egress field",
+        [RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER] = "transfer field",
+        [RTE_FLOW_ERROR_TYPE_ATTR] = "attributes structure",
+        [RTE_FLOW_ERROR_TYPE_ITEM_NUM] = "pattern length",
+        [RTE_FLOW_ERROR_TYPE_ITEM_SPEC] = "item specification",
+        [RTE_FLOW_ERROR_TYPE_ITEM_LAST] = "item specification range",
+        [RTE_FLOW_ERROR_TYPE_ITEM_MASK] = "item specification mask",
+        [RTE_FLOW_ERROR_TYPE_ITEM] = "specific pattern item",
+        [RTE_FLOW_ERROR_TYPE_ACTION_NUM] = "number of actions",
+        [RTE_FLOW_ERROR_TYPE_ACTION_CONF] = "action configuration",
+        [RTE_FLOW_ERROR_TYPE_ACTION] = "specific action",
+    };
+    const char *errstr;
+    char buf[32];
+    int err = rte_errno;
+    
+    if ((unsigned int)error->type >= RTE_DIM(errstrlist) ||
+        !errstrlist[error->type])
+        errstr = "unknown type";
+    else
+        errstr = errstrlist[error->type];
+    printf("Caught error type %d (%s): %s%s: %s\n",
+           error->type, errstr,
+           error->cause ? (snprintf(buf, sizeof(buf), "cause: %p, ",
+                                    error->cause), buf) : "",
+           error->message ? error->message : "(no stated reason)",
+           rte_strerror(err));
+    return -err;
+}
+
+int
+port_flow_isolate(uint16_t port_id, int set)
+{
+    struct rte_flow_error error;
+    
+    /* Poisoning to make sure PMDs update it in case of error. */
+    memset(&error, 0x66, sizeof(error));
+    if (rte_flow_isolate(port_id, set, &error))
+        return port_flow_complain(&error);
+    printf("Ingress traffic on port %u is %s to the defined flow rules\n",
+           port_id,
+           set ? "now restricted" : "not restricted anymore");
+    return 0;
+}
+#endif
+
 int
 ff_dpdk_init(int argc, char **argv)
 {
@@ -877,7 +935,16 @@ ff_dpdk_init(int argc, char **argv)
 #ifdef FF_USE_PAGE_ARRAY
     ff_mmap_init();
 #endif
-
+    
+#ifdef FF_FLOW_ISOLATE
+    static rte_atomic32_t flow_run_once = RTE_ATOMIC32_INIT(0);
+    if (rte_atomic32_test_and_set(&flow_run_once)){
+        ret = port_flow_isolate(0, 1);
+        if (ret < 0)
+            rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
+    }
+#endif
+    
     ret = init_port_start();
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_start failed\n");
