@@ -531,6 +531,7 @@ init_kni(void)
 }
 #endif
 
+#ifndef FF_FLOW_ISOLATE
 static void
 set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 {
@@ -555,6 +556,7 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
             port_id);
     }
 }
+#endif
 
 static int
 init_port_start(void)
@@ -878,7 +880,7 @@ port_flow_complain(struct rte_flow_error *error)
     return -err;
 }
 
-int
+static int
 port_flow_isolate(uint16_t port_id, int set)
 {
     struct rte_flow_error error;
