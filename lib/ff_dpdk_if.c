@@ -531,6 +531,7 @@ init_kni(void)
 }
 #endif
 
+//RSS reta update will failed when enable flow isolate
 #ifndef FF_FLOW_ISOLATE
 static void
 set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
