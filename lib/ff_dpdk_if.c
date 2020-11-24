@@ -781,7 +781,7 @@ init_port_start(void)
             if (ret < 0) {
                 return ret;
             }
-
+#ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
                 /* set HW rss hash function to Toeplitz. */
                 if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
@@ -798,6 +798,7 @@ init_port_start(void)
 
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
+#endif
 
             /* Enable RX in promiscuous mode for the Ethernet device. */
             if (ff_global_cfg.dpdk.promiscuous) {
