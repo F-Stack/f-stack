@@ -543,7 +543,7 @@ do {                                                                           \
        register NS_MICRO_THREAD::MtFrame *fm = NS_MICRO_THREAD::MtFrame::Instance(); \
        if (fm && fm->GetLogAdpt() && fm->GetLogAdpt()->CheckDebug())           \
        {                                                                       \
-          fm->GetLogAdpt()->LogDebug((char*)"[%-10s][%-4d][%-10s]"fmt,         \
+          fm->GetLogAdpt()->LogDebug((char*)"[%-10s][%-4d][%-10s]" fmt,        \
                 __FILE__, __LINE__, __FUNCTION__, ##args);                     \
        }                                                                       \
 } while (0)
@@ -553,7 +553,7 @@ do {                                                                           \
        register NS_MICRO_THREAD::MtFrame *fm = NS_MICRO_THREAD::MtFrame::Instance(); \
        if (fm && fm->GetLogAdpt() && fm->GetLogAdpt()->CheckTrace())           \
        {                                                                       \
-          fm->GetLogAdpt()->LogTrace((char*)"[%-10s][%-4d][%-10s]"fmt,         \
+          fm->GetLogAdpt()->LogTrace((char*)"[%-10s][%-4d][%-10s]" fmt,        \
                 __FILE__, __LINE__, __FUNCTION__, ##args);                     \
        }                                                                       \
 } while (0)
@@ -563,7 +563,7 @@ do {                                                                           \
        register NS_MICRO_THREAD::MtFrame *fm = NS_MICRO_THREAD::MtFrame::Instance(); \
        if (fm && fm->GetLogAdpt() && fm->GetLogAdpt()->CheckError())           \
        {                                                                       \
-          fm->GetLogAdpt()->LogError((char*)"[%-10s][%-4d][%-10s]"fmt,         \
+          fm->GetLogAdpt()->LogError((char*)"[%-10s][%-4d][%-10s]" fmt,        \
                 __FILE__, __LINE__, __FUNCTION__, ##args);                     \
        }                                                                       \
 } while (0)
