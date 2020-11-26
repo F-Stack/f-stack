@@ -898,6 +898,158 @@ port_flow_isolate(uint16_t port_id, int set)
            set ? "now restricted" : "not restricted anymore");
     return 0;
 }
+
+static int
+create_tcp_flow(int port_id, uint16_t tcp_port) {
+  struct rte_flow_attr attr = {.ingress = 1};
+  struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+  int nb_queues = pconf->nb_lcores;
+  uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
+  int i = 0, j = 0;
+  for (i = 0, j = 0; i < nb_queues; ++i)
+   queue[j++] = i;
+  struct rte_flow_action_rss rss = {
+   .types = ETH_RSS_NONFRAG_IPV4_TCP,
+   .key_len = rsskey_len,
+   .key = rsskey,
+   .queue_num = j,
+   .queue = queue,
+  };
+
+  struct rte_eth_dev_info dev_info;
+  int ret = rte_eth_dev_info_get(port_id, &dev_info);
+  if (ret != 0)
+    rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n", port_id, strerror(-ret));
+
+  struct rte_flow_item pattern[3];
+  struct rte_flow_action action[2];
+  struct rte_flow_item_tcp tcp_spec;
+  struct rte_flow_item_tcp tcp_mask = {
+          .hdr = {
+                  .src_port = RTE_BE16(0x0000),
+                  .dst_port = RTE_BE16(0xffff),
+          },
+  };
+  struct rte_flow_error error;
+
+  memset(pattern, 0, sizeof(pattern));
+  memset(action, 0, sizeof(action));
+
+  /* set the dst ipv4 packet to the required value */
+  pattern[0].type = RTE_FLOW_ITEM_TYPE_IPV4;
+
+  memset(&tcp_spec, 0, sizeof(struct rte_flow_item_tcp));
+  tcp_spec.hdr.dst_port = rte_cpu_to_be_16(tcp_port);
+  pattern[1].type = RTE_FLOW_ITEM_TYPE_TCP;
+  pattern[1].spec = &tcp_spec;
+  pattern[1].mask = &tcp_mask;
+
+  /* end the pattern array */
+  pattern[2].type = RTE_FLOW_ITEM_TYPE_END;
+
+  /* create the action */
+  action[0].type = RTE_FLOW_ACTION_TYPE_RSS;
+  action[0].conf = &rss;
+  action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+  struct rte_flow *flow;
+  /* validate and create the flow rule */
+  if (!rte_flow_validate(port_id, &attr, pattern, action, &error)) {
+      flow = rte_flow_create(port_id, &attr, pattern, action, &error);
+      if (!flow) {
+          return port_flow_complain(&error);
+      }
+  }
+
+  memset(pattern, 0, sizeof(pattern));
+
+  /* set the dst ipv4 packet to the required value */
+  pattern[0].type = RTE_FLOW_ITEM_TYPE_IPV4;
+
+  struct rte_flow_item_tcp tcp_src_mask = {
+          .hdr = {
+                  .src_port = RTE_BE16(0xffff),
+                  .dst_port = RTE_BE16(0x0000),
+          },
+  };
+
+  memset(&tcp_spec, 0, sizeof(struct rte_flow_item_tcp));
+  tcp_spec.hdr.src_port = rte_cpu_to_be_16(tcp_port);
+  pattern[1].type = RTE_FLOW_ITEM_TYPE_TCP;
+  pattern[1].spec = &tcp_spec;
+  pattern[1].mask = &tcp_src_mask;
+
+  /* end the pattern array */
+  pattern[2].type = RTE_FLOW_ITEM_TYPE_END;
+
+  /* validate and create the flow rule */
+  if (!rte_flow_validate(port_id, &attr, pattern, action, &error)) {
+      flow = rte_flow_create(port_id, &attr, pattern, action, &error);
+      if (!flow) {
+          return port_flow_complain(&error);
+      }
+  }
+
+  return 1;
+}
+
+static int
+init_flow(void) {
+  // struct ff_flow_cfg fcfg = ff_global_cfg.dpdk.flow_cfgs[0];
+
+  // int i;
+  // for (i = 0; i < fcfg.nb_port; i++) {
+  //     if(!create_tcp_flow(fcfg.port_id, fcfg.tcp_ports[i])) {
+  //         return 0;
+  //     }
+  // }
+  int port_id = 0;
+  uint16_t tcp_port = 80;
+  int set = 1;
+
+  if(!create_tcp_flow(port_id, tcp_port)) {
+      rte_exit(EXIT_FAILURE, "create tcp flow failed\n");
+      return -1;
+  }
+
+  /*  ARP rule */
+  struct rte_flow_attr attr = {.ingress = 1};
+  struct rte_flow_action_queue queue = {.index = 0};
+
+  struct rte_flow_item pattern_[2];
+  struct rte_flow_action action[2];
+  struct rte_flow_item_eth eth_type = {.type = RTE_BE16(0x0806)};
+  struct rte_flow_item_eth eth_mask = {
+          .type = RTE_BE16(0xffff)
+  };
+
+  memset(pattern_, 0, sizeof(pattern_));
+  memset(action, 0, sizeof(action));
+
+  pattern_[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+  pattern_[0].spec = &eth_type;
+  pattern_[0].mask = &eth_mask;
+
+  pattern_[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+  /* create the action */
+  action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+  action[0].conf = &queue;
+  action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+  struct rte_flow *flow;
+  struct rte_flow_error error;
+  /* validate and create the flow rule */
+  if (!rte_flow_validate(port_id, &attr, pattern_, action, &error)) {
+      flow = rte_flow_create(port_id, &attr, pattern_, action, &error);
+      if (!flow) {
+          return port_flow_complain(&error);
+      }
+  }
+
+  return 1;
+}
+
 #endif
 
 int
@@ -958,7 +1110,12 @@ ff_dpdk_init(int argc, char **argv)
     }
 
     init_clock();
-
+#ifdef FF_FLOW_ISOLATE
+    ret = init_flow();
+    if (ret < 0) {
+        rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
+    }
+#endif
     return 0;
 }
 
