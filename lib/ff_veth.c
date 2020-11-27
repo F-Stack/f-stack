@@ -209,16 +209,16 @@ ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
 }
 
 void *
-ff_mbuf_get(void *m, void *data, uint16_t len)
+ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
 {
-    struct mbuf *prev = (struct mbuf *)m;
+    struct mbuf *prev = (struct mbuf *)p;
     struct mbuf *mb = m_get(M_NOWAIT, MT_DATA);
 
     if (mb == NULL) {
         return NULL; 
     }
 
-    m_extadd(mb, data, len, NULL, NULL, NULL, 0, 0);
+    m_extadd(mb, data, len, ff_mbuf_ext_free, m, NULL, 0, EXT_DISPOSABLE);
 
     mb->m_next = NULL;
     mb->m_nextpkt = NULL;
