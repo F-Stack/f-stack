@@ -1108,7 +1108,7 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    //TODO: using config options replace magic number
+    //Recommend: using config options replace magic number
     ret = init_flow(0, 80);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
