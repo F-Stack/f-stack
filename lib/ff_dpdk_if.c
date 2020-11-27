@@ -900,7 +900,7 @@ port_flow_isolate(uint16_t port_id, int set)
 }
 
 static int
-create_tcp_flow(int port_id, uint16_t tcp_port) {
+create_tcp_flow(uint16_t port_id, uint16_t tcp_port) {
   struct rte_flow_attr attr = {.ingress = 1};
   struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
   int nb_queues = pconf->nb_lcores;
