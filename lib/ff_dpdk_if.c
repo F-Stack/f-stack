@@ -1108,7 +1108,10 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    //Recommend: using config options replace magic number
+    //Only give a example using port_id=0, tcp_port= 80. 
+    //Recommend: 
+    //1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
+    //2. using config options `tcp_port` replace magic number of 80
     ret = init_flow(0, 80);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
