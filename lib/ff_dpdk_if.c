@@ -994,7 +994,7 @@ create_tcp_flow(int port_id, uint16_t tcp_port) {
 }
 
 static int
-init_flow(void) {
+init_flow(uint16_t port_id, uint16_t tcp_port) {
   // struct ff_flow_cfg fcfg = ff_global_cfg.dpdk.flow_cfgs[0];
 
   // int i;
@@ -1003,9 +1003,6 @@ init_flow(void) {
   //         return 0;
   //     }
   // }
-  int port_id = 0;
-  uint16_t tcp_port = 80;
-  int set = 1;
 
   if(!create_tcp_flow(port_id, tcp_port)) {
       rte_exit(EXIT_FAILURE, "create tcp flow failed\n");
@@ -1111,7 +1108,8 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    ret = init_flow();
+    //TODO: using config options replace magic number
+    ret = init_flow(0, 80);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
     }
