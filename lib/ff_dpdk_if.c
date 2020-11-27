@@ -1150,7 +1150,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         data = rte_pktmbuf_mtod(pn, void*);
         len = rte_pktmbuf_data_len(pn);
 
-        void *mb = ff_mbuf_get(prev, data, len);
+        void *mb = ff_mbuf_get(prev, pn, data, len);
         if (mb == NULL) {
             ff_mbuf_free(hdr);
             rte_pktmbuf_free(pkt);
@@ -1967,7 +1967,7 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
 void
 ff_dpdk_pktmbuf_free(void *m)
 {
-    rte_pktmbuf_free((struct rte_mbuf *)m);
+    rte_pktmbuf_free_seg((struct rte_mbuf *)m);
 }
 
 static uint32_t
