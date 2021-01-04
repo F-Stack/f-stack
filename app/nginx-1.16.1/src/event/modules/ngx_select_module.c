@@ -320,22 +320,14 @@ ngx_select_process_events(ngx_cycle_t *cycle, ngx_msec_t timer,
         found = 0;
 
         if (ev->write) {
-#if (NGX_HAVE_FSTACK)
-            if (FD_ISSET(CLR_FD_BIT(c->fd), &work_write_fd_set)) {
-#else
             if (FD_ISSET(c->fd, &work_write_fd_set)) {
-#endif
                 found = 1;
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "select write %d", c->fd);
             }
 
         } else {
-#if (NGX_HAVE_FSTACK)
-            if (FD_ISSET(CLR_FD_BIT(c->fd), &work_read_fd_set)) {
-#else
             if (FD_ISSET(c->fd, &work_read_fd_set)) {
-#endif
                 found = 1;
                 ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                                "select read %d", c->fd);
