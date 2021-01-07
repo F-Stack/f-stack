@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2014-2017 Chelsio Communications.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Chelsio Communications nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Chelsio Communications.
+ * All rights reserved.
  */
 
 #define MYPF_BASE 0x1b000
@@ -73,10 +45,19 @@
 #define MPS_T5_CLS_SRAM_H(idx) (A_MPS_T5_CLS_SRAM_H + (idx) * 8)
 #define NUM_MPS_T5_CLS_SRAM_H_INSTANCES 512
 
+#define S_DATAPORTNUM    12
+#define M_DATAPORTNUM    0xfU
+#define V_DATAPORTNUM(x) ((x) << S_DATAPORTNUM)
+
+#define S_DATALKPTYPE    10
+#define M_DATALKPTYPE    0x3U
+#define V_DATALKPTYPE(x) ((x) << S_DATALKPTYPE)
+
 /* registers for module SGE */
 #define SGE_BASE_ADDR 0x1000
 
 #define A_SGE_PF_KDOORBELL 0x0
+#define A_SGE_VF_KDOORBELL 0x0
 
 #define S_QID    15
 #define M_QID    0x1ffffU
@@ -102,6 +83,9 @@
 #define G_PIDX_T5(x) (((x) >> S_PIDX_T5) & M_PIDX_T5)
 
 #define A_SGE_PF_GTS 0x4
+
+#define T4VF_SGE_BASE_ADDR 0x0000
+#define A_SGE_VF_GTS 0x4
 
 #define S_INGRESSQID    16
 #define M_INGRESSQID    0xffffU
@@ -191,6 +175,8 @@
 #define V_QUEUESPERPAGEPF0(x) ((x) << S_QUEUESPERPAGEPF0)
 #define G_QUEUESPERPAGEPF0(x) (((x) >> S_QUEUESPERPAGEPF0) & M_QUEUESPERPAGEPF0)
 
+#define A_SGE_EGRESS_QUEUES_PER_PAGE_VF 0x1014
+
 #define S_ERR_CPL_EXCEED_IQE_SIZE    22
 #define V_ERR_CPL_EXCEED_IQE_SIZE(x) ((x) << S_ERR_CPL_EXCEED_IQE_SIZE)
 #define F_ERR_CPL_EXCEED_IQE_SIZE    V_ERR_CPL_EXCEED_IQE_SIZE(1U)
@@ -279,6 +265,11 @@
 #define G_CREDITCNTPACKING(x) (((x) >> S_CREDITCNTPACKING) & M_CREDITCNTPACKING)
 
 #define A_SGE_CONM_CTRL 0x1094
+
+#define S_T6_EGRTHRESHOLDPACKING    16
+#define M_T6_EGRTHRESHOLDPACKING    0xffU
+#define G_T6_EGRTHRESHOLDPACKING(x) (((x) >> S_T6_EGRTHRESHOLDPACKING) & \
+				     M_T6_EGRTHRESHOLDPACKING)
 
 #define S_EGRTHRESHOLD    8
 #define M_EGRTHRESHOLD    0x3fU
@@ -370,6 +361,7 @@
 #define G_STATSOURCE_T5(x) (((x) >> S_STATSOURCE_T5) & M_STATSOURCE_T5)
 
 #define A_SGE_INGRESS_QUEUES_PER_PAGE_PF 0x10f4
+#define A_SGE_INGRESS_QUEUES_PER_PAGE_VF 0x10f8
 
 #define A_SGE_CONTROL2 0x1124
 
@@ -443,6 +435,8 @@
 /* registers for module CIM */
 #define CIM_BASE_ADDR 0x7b00
 
+#define A_CIM_VF_EXT_MAILBOX_CTRL 0x0
+
 #define A_CIM_PF_MAILBOX_DATA 0x240
 #define A_CIM_PF_MAILBOX_CTRL 0x280
 
@@ -462,6 +456,8 @@
 #define V_UPCRST(x) ((x) << S_UPCRST)
 #define F_UPCRST    V_UPCRST(1U)
 
+#define NUM_CIM_PF_MAILBOX_DATA_INSTANCES 16
+
 /* registers for module TP */
 #define A_TP_OUT_CONFIG 0x7d04
 
@@ -470,6 +466,7 @@
 #define F_CRXPKTENC    V_CRXPKTENC(1U)
 
 #define TP_BASE_ADDR 0x7d00
+#define A_TP_CMM_TCB_BASE 0x7d10
 
 #define A_TP_TIMER_RESOLUTION 0x7d90
 
@@ -503,8 +500,33 @@
 #define V_MTUVALUE(x) ((x) << S_MTUVALUE)
 #define G_MTUVALUE(x) (((x) >> S_MTUVALUE) & M_MTUVALUE)
 
+#define A_TP_RSS_CONFIG_VRT 0x7e00
+
+#define S_KEYMODE    6
+#define M_KEYMODE    0x3U
+#define G_KEYMODE(x) (((x) >> S_KEYMODE) & M_KEYMODE)
+
+#define S_KEYWRADDR    0
+#define V_KEYWRADDR(x) ((x) << S_KEYWRADDR)
+
+#define S_KEYWREN    4
+#define V_KEYWREN(x) ((x) << S_KEYWREN)
+#define F_KEYWREN    V_KEYWREN(1U)
+
+#define S_KEYWRADDRX    30
+#define V_KEYWRADDRX(x) ((x) << S_KEYWRADDRX)
+
+#define S_KEYEXTEND    26
+#define V_KEYEXTEND(x) ((x) << S_KEYEXTEND)
+#define F_KEYEXTEND    V_KEYEXTEND(1U)
+
+#define S_T6_VFWRADDR    8
+#define V_T6_VFWRADDR(x) ((x) << S_T6_VFWRADDR)
+
 #define A_TP_PIO_ADDR 0x7e40
 #define A_TP_PIO_DATA 0x7e44
+
+#define A_TP_RSS_SECRET_KEY0 0x40
 
 #define A_TP_VLAN_PRI_MAP 0x140
 
@@ -558,8 +580,27 @@
 #define V_CSUM_HAS_PSEUDO_HDR(x) ((x) << S_CSUM_HAS_PSEUDO_HDR)
 #define F_CSUM_HAS_PSEUDO_HDR    V_CSUM_HAS_PSEUDO_HDR(1U)
 
+#define S_RM_OVLAN	9
+#define V_RM_OVLAN(x)	((x) << S_RM_OVLAN)
+
+/* registers for module MA */
+#define A_MA_EDRAM0_BAR 0x77c0
+
+#define S_EDRAM0_SIZE    0
+#define M_EDRAM0_SIZE    0xfffU
+#define V_EDRAM0_SIZE(x) ((x) << S_EDRAM0_SIZE)
+#define G_EDRAM0_SIZE(x) (((x) >> S_EDRAM0_SIZE) & M_EDRAM0_SIZE)
+
+#define A_MA_EXT_MEMORY0_BAR 0x77c8
+
+#define S_EXT_MEM0_SIZE    0
+#define M_EXT_MEM0_SIZE    0xfffU
+#define V_EXT_MEM0_SIZE(x) ((x) << S_EXT_MEM0_SIZE)
+#define G_EXT_MEM0_SIZE(x) (((x) >> S_EXT_MEM0_SIZE) & M_EXT_MEM0_SIZE)
+
 /* registers for module MPS */
 #define MPS_BASE_ADDR 0x9000
+#define T4VF_MPS_BASE_ADDR 0x0100
 
 #define S_REPLICATE    11
 #define V_REPLICATE(x) ((x) << S_REPLICATE)
@@ -766,6 +807,69 @@
 #define A_MPS_STAT_RX_BG_3_LB_TRUNC_FRAME_L 0x96b8
 #define A_MPS_STAT_RX_BG_3_LB_TRUNC_FRAME_H 0x96bc
 
+#define A_MPS_VF_STAT_TX_VF_BCAST_BYTES_L 0x80
+#define A_MPS_VF_STAT_TX_VF_BCAST_FRAMES_L 0x88
+#define A_MPS_VF_STAT_TX_VF_MCAST_BYTES_L 0x90
+#define A_MPS_VF_STAT_TX_VF_MCAST_FRAMES_L 0x98
+#define A_MPS_VF_STAT_TX_VF_UCAST_BYTES_L 0xa0
+#define A_MPS_VF_STAT_TX_VF_UCAST_FRAMES_L 0xa8
+#define A_MPS_VF_STAT_TX_VF_DROP_FRAMES_L 0xb0
+#define A_MPS_VF_STAT_RX_VF_BCAST_FRAMES_L 0xd0
+#define A_MPS_VF_STAT_RX_VF_MCAST_FRAMES_L 0xe0
+#define A_MPS_VF_STAT_RX_VF_UCAST_FRAMES_L 0xf0
+#define A_MPS_VF_STAT_RX_VF_ERR_FRAMES_L 0xf8
+
+#define A_MPS_PORT0_RX_IVLAN	0x3011c
+
+#define S_IVLAN_ETYPE		0
+#define M_IVLAN_ETYPE		0xffffU
+#define V_IVLAN_ETYPE(x)	((x) << S_IVLAN_ETYPE)
+
+#define MPS_PORT_RX_IVLAN_STRIDE	0x4000
+#define MPS_PORT_RX_IVLAN(idx)		\
+	(A_MPS_PORT0_RX_IVLAN + (idx) * MPS_PORT_RX_IVLAN_STRIDE)
+
+#define A_MPS_PORT0_RX_OVLAN0	0x30120
+
+#define S_OVLAN_MASK	16
+#define M_OVLAN_MASK	0xffffU
+#define V_OVLAN_MASK(x)	((x) << S_OVLAN_MASK)
+
+#define S_OVLAN_ETYPE		0
+#define M_OVLAN_ETYPE		0xffffU
+#define V_OVLAN_ETYPE(x)	((x) << S_OVLAN_ETYPE)
+
+#define MPS_PORT_RX_OVLAN_STRIDE	0x4000
+#define MPS_PORT_RX_OVLAN_BASE(idx)	\
+(A_MPS_PORT0_RX_OVLAN0 + (idx) * MPS_PORT_RX_OVLAN_STRIDE)
+#define MPS_PORT_RX_OVLAN_REG(idx, reg)	(MPS_PORT_RX_OVLAN_BASE(idx) + (reg))
+
+#define A_RX_OVLAN0	0x0
+#define A_RX_OVLAN1	0x4
+#define A_RX_OVLAN2	0x8
+
+#define A_MPS_PORT0_RX_CTL	0x30100
+
+#define S_OVLAN_EN0	0
+#define V_OVLAN_EN0(x)	((x) << S_OVLAN_EN0)
+#define F_OVLAN_EN0	V_OVLAN_EN0(1)
+
+#define S_OVLAN_EN1	1
+#define V_OVLAN_EN1(x)	((x) << S_OVLAN_EN1)
+#define F_OVLAN_EN1	V_OVLAN_EN1(1)
+
+#define S_OVLAN_EN2	2
+#define V_OVLAN_EN2(x)	((x) << S_OVLAN_EN2)
+#define F_OVLAN_EN2	V_OVLAN_EN2(1)
+
+#define S_IVLAN_EN	4
+#define V_IVLAN_EN(x)	((x) << S_IVLAN_EN)
+#define F_IVLAN_EN	V_IVLAN_EN(1)
+
+#define MPS_PORT_RX_CTL_STRIDE	0x4000
+#define MPS_PORT_RX_CTL(idx)	\
+	(A_MPS_PORT0_RX_CTL + (idx) * MPS_PORT_RX_CTL_STRIDE)
+
 /* registers for module ULP_RX */
 #define ULP_RX_BASE_ADDR 0x19150
 
@@ -823,6 +927,7 @@
 #define F_PFCIM    V_PFCIM(1U)
 
 #define A_PL_WHOAMI 0x19400
+#define A_PL_VF_WHOAMI 0x0
 
 #define A_PL_RST 0x19428
 
@@ -837,8 +942,21 @@
 #define F_PIORSTMODE    V_PIORSTMODE(1U)
 
 #define A_PL_REV 0x1943c
+#define A_PL_VF_REV 0x4
 
 #define S_REV    0
 #define M_REV    0xfU
 #define V_REV(x) ((x) << S_REV)
 #define G_REV(x) (((x) >> S_REV) & M_REV)
+
+/* registers for module LE */
+#define A_LE_DB_CONFIG 0x19c04
+
+#define S_HASHEN    20
+#define V_HASHEN(x) ((x) << S_HASHEN)
+#define F_HASHEN    V_HASHEN(1U)
+
+#define A_LE_DB_TID_HASHBASE 0x19df8
+
+#define LE_3_DB_HASH_MASK_GEN_IPV4_T6_A 0x19eac
+#define LE_4_DB_HASH_MASK_GEN_IPV4_T6_A 0x19eb0

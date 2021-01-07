@@ -1,35 +1,6 @@
-/*
- * Copyright 2008-2014 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #include <rte_memzone.h>
@@ -39,6 +10,7 @@
 #include "vnic_dev.h"
 #include "vnic_resource.h"
 #include "vnic_devcmd.h"
+#include "vnic_nic.h"
 #include "vnic_stats.h"
 
 
@@ -78,7 +50,6 @@ struct vnic_dev {
 	enum vnic_proxy_type proxy;
 	u32 proxy_index;
 	u64 args[VNIC_DEVCMD_NARGS];
-	u16 split_hdr_size;
 	int in_reset;
 	struct vnic_intr_coal_timer_info intr_coal_timer_info;
 	void *(*alloc_consistent)(void *priv, size_t size,
@@ -249,16 +220,6 @@ unsigned int vnic_dev_desc_ring_size(struct vnic_dev_ring *ring,
 	ring->size_unaligned = ring->size + ring->base_align;
 
 	return ring->size_unaligned;
-}
-
-void vnic_set_hdr_split_size(struct vnic_dev *vdev, u16 size)
-{
-	vdev->split_hdr_size = size;
-}
-
-u16 vnic_get_hdr_split_size(struct vnic_dev *vdev)
-{
-	return vdev->split_hdr_size;
 }
 
 void vnic_dev_clear_desc_ring(struct vnic_dev_ring *ring)
@@ -524,7 +485,7 @@ int vnic_dev_capable_adv_filters(struct vnic_dev *vdev)
  *   Retrun true in filter_tags if supported
  */
 int vnic_dev_capable_filter_mode(struct vnic_dev *vdev, u32 *mode,
-				 u8 *filter_tags)
+				 u8 *filter_actions)
 {
 	u64 args[4];
 	int err;
@@ -532,14 +493,10 @@ int vnic_dev_capable_filter_mode(struct vnic_dev *vdev, u32 *mode,
 
 	err = vnic_dev_advanced_filters_cap(vdev, args, 4);
 
-	/* determine if filter tags are available */
-	if (err)
-		*filter_tags = 0;
-	if ((args[2] == FILTER_CAP_MODE_V1) &&
-	    (args[3] & FILTER_ACTION_FILTER_ID_FLAG))
-		*filter_tags = 1;
-	else
-		*filter_tags = 0;
+	/* determine supported filter actions */
+	*filter_actions = FILTER_ACTION_RQ_STEERING_FLAG; /* always available */
+	if (args[2] == FILTER_CAP_MODE_V1)
+		*filter_actions = args[3];
 
 	if (err || ((args[0] == 1) && (args[1] == 0))) {
 		/* Adv filter Command not supported or adv filters available but
@@ -569,6 +526,22 @@ parse_max_level:
 	else
 		*mode = FILTER_IPV4_5TUPLE;
 	return 0;
+}
+
+void vnic_dev_capable_udp_rss_weak(struct vnic_dev *vdev, bool *cfg_chk,
+				   bool *weak)
+{
+	u64 a0 = CMD_NIC_CFG, a1 = 0;
+	int wait = 1000;
+	int err;
+
+	*cfg_chk = false;
+	*weak = false;
+	err = vnic_dev_cmd(vdev, CMD_CAPABILITY, &a0, &a1, wait);
+	if (err == 0 && a0 != 0 && a1 != 0) {
+		*cfg_chk = true;
+		*weak = !!((a1 >> 32) & CMD_NIC_CFG_CAPF_UDP_WEAK);
+	}
 }
 
 int vnic_dev_capable(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd)
@@ -1087,4 +1060,37 @@ int vnic_dev_classifier(struct vnic_dev *vdev, u8 cmd, u16 *entry,
 	}
 
 	return ret;
+}
+
+int vnic_dev_overlay_offload_ctrl(struct vnic_dev *vdev, u8 overlay, u8 config)
+{
+	u64 a0 = overlay;
+	u64 a1 = config;
+	int wait = 1000;
+
+	return vnic_dev_cmd(vdev, CMD_OVERLAY_OFFLOAD_CTRL, &a0, &a1, wait);
+}
+
+int vnic_dev_overlay_offload_cfg(struct vnic_dev *vdev, u8 overlay,
+				 u16 vxlan_udp_port_number)
+{
+	u64 a1 = vxlan_udp_port_number;
+	u64 a0 = overlay;
+	int wait = 1000;
+
+	return vnic_dev_cmd(vdev, CMD_OVERLAY_OFFLOAD_CFG, &a0, &a1, wait);
+}
+
+int vnic_dev_capable_vxlan(struct vnic_dev *vdev)
+{
+	u64 a0 = VIC_FEATURE_VXLAN;
+	u64 a1 = 0;
+	int wait = 1000;
+	int ret;
+
+	ret = vnic_dev_cmd(vdev, CMD_GET_SUPP_FEATURE_VER, &a0, &a1, wait);
+	/* 1 if the NIC can do VXLAN for both IPv4 and IPv6 with multiple WQs */
+	return ret == 0 &&
+		(a1 & (FEATURE_VXLAN_IPV6 | FEATURE_VXLAN_MULTI_WQ)) ==
+		(FEATURE_VXLAN_IPV6 | FEATURE_VXLAN_MULTI_WQ);
 }

@@ -39,6 +39,9 @@ extern "C" {
 extern int dpdk_argc;
 extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
+#define MAX_PKT_BURST 32
+#define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -59,7 +62,9 @@ struct ff_port_cfg {
     char *pcap;
 
     int nb_lcores;
+    int nb_slaves;
     uint16_t lcore_list[DPDK_MAX_LCORE];
+    uint16_t *slave_portid_list;
 };
 
 struct ff_vdev_cfg {
@@ -73,7 +78,19 @@ struct ff_vdev_cfg {
     uint16_t queue_size;
 };
 
-
+struct ff_bond_cfg {
+    char *name;
+    char *slave;
+    char *primary;
+    char *bond_mac;
+    char *xmit_policy;
+    uint8_t bond_id;
+    uint8_t mode;
+    uint8_t socket_id;
+    uint8_t lsc_poll_period_ms;
+    uint16_t up_delay;
+    uint16_t down_delay;
+};
 
 struct ff_freebsd_cfg {
     char *name;
@@ -102,12 +119,17 @@ struct ff_config {
         int proc_id;
         int promiscuous;
         int nb_vdev;
+        int nb_bond;
         int numa_on;
         int tso;
+        int tx_csum_offoad_skip;
         int vlan_strip;
 
         /* sleep x microseconds when no pkts incomming */
         unsigned idle_sleep;
+
+        /* TX burst queue drain nodelay dalay time */
+        unsigned pkt_tx_delay;
 
         /* list of proc-lcore */
         uint16_t *proc_lcore;
@@ -118,6 +140,7 @@ struct ff_config {
         // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
         struct ff_vdev_cfg *vdev_cfgs;
+        struct ff_bond_cfg *bond_cfgs;
     } dpdk;
 
     struct {
@@ -138,6 +161,7 @@ struct ff_config {
         long physmem;
         int hz;
         int fd_reserve;
+        int mem_size;
     } freebsd;
 };
 

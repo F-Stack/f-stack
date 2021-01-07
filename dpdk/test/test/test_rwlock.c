@@ -1,40 +1,13 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <sys/queue.h>
+#include <string.h>
 
 #include <rte_common.h>
 #include <rte_memory.h>
@@ -73,6 +46,7 @@
 
 static rte_rwlock_t sl;
 static rte_rwlock_t sl_tab[RTE_MAX_LCORE];
+static rte_atomic32_t synchro;
 
 static int
 test_rwlock_per_core(__attribute__((unused)) void *arg)
@@ -90,6 +64,79 @@ test_rwlock_per_core(__attribute__((unused)) void *arg)
 	rte_delay_ms(100);
 	printf("Release global read lock on core %u\n", rte_lcore_id());
 	rte_rwlock_read_unlock(&sl);
+
+	return 0;
+}
+
+static rte_rwlock_t lk = RTE_RWLOCK_INITIALIZER;
+static volatile uint64_t rwlock_data;
+static uint64_t time_count[RTE_MAX_LCORE] = {0};
+
+#define MAX_LOOP 10000
+#define TEST_RWLOCK_DEBUG 0
+
+static int
+load_loop_fn(__attribute__((unused)) void *arg)
+{
+	uint64_t time_diff = 0, begin;
+	uint64_t hz = rte_get_timer_hz();
+	uint64_t lcount = 0;
+	const unsigned int lcore = rte_lcore_id();
+
+	/* wait synchro for slaves */
+	if (lcore != rte_get_master_lcore())
+		while (rte_atomic32_read(&synchro) == 0)
+			;
+
+	begin = rte_rdtsc_precise();
+	while (lcount < MAX_LOOP) {
+		rte_rwlock_write_lock(&lk);
+		++rwlock_data;
+		rte_rwlock_write_unlock(&lk);
+
+		rte_rwlock_read_lock(&lk);
+		if (TEST_RWLOCK_DEBUG && !(lcount % 100))
+			printf("Core [%u] rwlock_data = %"PRIu64"\n",
+				 lcore, rwlock_data);
+		rte_rwlock_read_unlock(&lk);
+
+		lcount++;
+		/* delay to make lock duty cycle slightly realistic */
+		rte_pause();
+	}
+
+	time_diff = rte_rdtsc_precise() - begin;
+	time_count[lcore] = time_diff * 1000000 / hz;
+	return 0;
+}
+
+static int
+test_rwlock_perf(void)
+{
+	unsigned int i;
+	uint64_t total = 0;
+
+	printf("\nRwlock Perf Test on %u cores...\n", rte_lcore_count());
+
+	/* clear synchro and start slaves */
+	rte_atomic32_set(&synchro, 0);
+	if (rte_eal_mp_remote_launch(load_loop_fn, NULL, SKIP_MASTER) < 0)
+		return -1;
+
+	/* start synchro and launch test on master */
+	rte_atomic32_set(&synchro, 1);
+	load_loop_fn(NULL);
+
+	rte_eal_mp_wait_lcore();
+
+	RTE_LCORE_FOREACH(i) {
+		printf("Core [%u] cost time = %"PRIu64" us\n",
+		       i, time_count[i]);
+		total += time_count[i];
+	}
+
+	printf("Total cost time = %"PRIu64" us\n", total);
+	memset(time_count, 0, sizeof(time_count));
 
 	return 0;
 }
@@ -123,6 +170,9 @@ test_rwlock(void)
 	rte_rwlock_write_unlock(&sl);
 
 	rte_eal_mp_wait_lcore();
+
+	if (test_rwlock_perf() < 0)
+		return -1;
 
 	return 0;
 }

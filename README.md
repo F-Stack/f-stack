@@ -31,7 +31,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 ## Quick Start
 
     # clone F-Stack
-    mkdir /data/f-stack
+    mkdir -p /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
     # install libnuma-dev
@@ -61,10 +61,14 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # offload NIC
     modprobe uio
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko
+    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
+
+    # install DPDK
+    cd ../x86_64-native-linuxapp-gcc
+    make install
 
     # On Ubuntu, use gawk instead of the default mawk.
     #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
@@ -75,9 +79,16 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     cd ../../lib/
     make
 
+    # install F-STACK
+    # libfstack.a will be installed to /usr/local/lib
+    # ff_*.h will be installed to /usr/local/include
+    # start.sh will be installed to /usr/local/bin/ff_start
+    # config.ini will be installed to /etc/f-stack.conf
+    make install
+
 #### Nginx
 
-    cd app/nginx-1.11.10
+    cd app/nginx-1.16.1
     bash ./configure --prefix=/usr/local/nginx_fstack --with-ff_module
     make
     make install
@@ -88,7 +99,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
 
 #### Redis
 
-    cd app/redis-3.2.8/
+    cd app/redis-5.0.5/
     make
     make install
 
@@ -100,6 +111,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     sleep 10
     ifconfig veth0 <ipaddr>  netmask <netmask>  broadcast <broadcast> hw ether <mac addr>
     route add -net 0.0.0.0 gw <gateway> dev veth0
+    echo 1 > /sys/class/net/veth0/carrier # if `carrier=on` not set while `insmod rte_kni.ko` 
     # route add -net ...  # other route rules
 
 ## Binary Release

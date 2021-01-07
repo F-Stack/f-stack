@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright 2018 The DPDK contributors
+
 .. stable_lts_releases:
 
 DPDK Stable Releases and Long Term Support
@@ -57,7 +60,25 @@ that a tagged release has been tested.
 What changes should be backported
 ---------------------------------
 
-Backporting should be limited to bug fixes.
+Backporting should be limited to bug fixes. All patches accepted on the master
+branch with a Fixes: tag should be backported to the relevant stable/LTS
+branches, unless the submitter indicates otherwise. If there are exceptions,
+they will be discussed on the mailing lists.
+
+Fixes suitable for backport should have a ``Cc: stable@dpdk.org`` tag in the
+commit message body as follows::
+
+     doc: fix some parameter description
+
+     Update the docs, fixing description of some parameter.
+
+     Fixes: abcdefgh1234 ("doc: add some parameter")
+     Cc: stable@dpdk.org
+
+     Signed-off-by: Alex Smith <alex.smith@example.com>
+
+
+Fixes not suitable for backport should not include the ``Cc: stable@dpdk.org`` tag.
 
 Features should not be backported to stable releases. It may be acceptable, in
 limited cases, to back port features for the LTS release where:
@@ -75,7 +96,7 @@ The Stable and LTS release are coordinated on the stable@dpdk.org mailing
 list.
 
 All fix patches to the master branch that are candidates for backporting
-should also be CCed to the `stable@dpdk.org <http://dpdk.org/ml/listinfo/stable>`_
+should also be CCed to the `stable@dpdk.org <http://mails.dpdk.org/listinfo/stable>`_
 mailing list.
 
 
@@ -86,10 +107,10 @@ A Stable Release will be released by:
 
 * Tagging the release with YY.MM.n (year, month, number).
 * Uploading a tarball of the release to dpdk.org.
-* Sending an announcement to the `announce@dpdk.org <http://dpdk.org/ml/listinfo/announce>`_
+* Sending an announcement to the `announce@dpdk.org <http://mails.dpdk.org/listinfo/announce>`_
   list.
 
-Stable releases are available on the `dpdk.org download page <http://dpdk.org/download>`_.
+Stable releases are available on the `dpdk.org download page <http://core.dpdk.org/download/>`_.
 
 
 ABI

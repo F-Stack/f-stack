@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #include "bcm_osal.h"
@@ -33,7 +31,7 @@ static enum _ecore_status_t ecore_sriov_eqe_event(struct ecore_hwfn *p_hwfn,
 						  union event_ring_data *data,
 						  u8 fw_return_code);
 
-const char *ecore_channel_tlvs_string[] = {
+const char *qede_ecore_channel_tlvs_string[] = {
 	"CHANNEL_TLV_NONE",	/* ends tlv sequence */
 	"CHANNEL_TLV_ACQUIRE",
 	"CHANNEL_TLV_VPORT_START",
@@ -220,7 +218,7 @@ struct ecore_vf_info *ecore_iov_get_vf_info(struct ecore_hwfn *p_hwfn,
 static struct ecore_queue_cid *
 ecore_iov_get_vf_rx_queue_cid(struct ecore_vf_queue *p_queue)
 {
-	int i;
+	u32 i;
 
 	for (i = 0; i < MAX_QUEUES_PER_QZONE; i++) {
 		if (p_queue->cids[i].p_cid &&
@@ -242,7 +240,7 @@ static bool ecore_iov_validate_queue_mode(struct ecore_vf_info *p_vf,
 					  enum ecore_iov_validate_q_mode mode,
 					  bool b_is_tx)
 {
-	int i;
+	u32 i;
 
 	if (mode == ECORE_IOV_VALIDATE_Q_NA)
 		return true;
@@ -592,8 +590,7 @@ enum _ecore_status_t ecore_iov_alloc(struct ecore_hwfn *p_hwfn)
 
 	p_sriov = OSAL_ZALLOC(p_hwfn->p_dev, GFP_KERNEL, sizeof(*p_sriov));
 	if (!p_sriov) {
-		DP_NOTICE(p_hwfn, true,
-			  "Failed to allocate `struct ecore_sriov'\n");
+		DP_NOTICE(p_hwfn, false, "Failed to allocate `struct ecore_sriov'\n");
 		return ECORE_NOMEM;
 	}
 
@@ -650,7 +647,7 @@ enum _ecore_status_t ecore_iov_hw_info(struct ecore_hwfn *p_hwfn)
 	p_dev->p_iov_info = OSAL_ZALLOC(p_dev, GFP_KERNEL,
 					sizeof(*p_dev->p_iov_info));
 	if (!p_dev->p_iov_info) {
-		DP_NOTICE(p_hwfn, true,
+		DP_NOTICE(p_hwfn, false,
 			  "Can't support IOV due to lack of memory\n");
 		return ECORE_NOMEM;
 	}
@@ -982,10 +979,12 @@ static u8 ecore_iov_alloc_vf_igu_sbs(struct ecore_hwfn *p_hwfn,
 		ecore_init_cau_sb_entry(p_hwfn, &sb_entry,
 					p_hwfn->rel_pf_id,
 					vf->abs_vf_id, 1);
+
 		ecore_dmae_host2grc(p_hwfn, p_ptt,
 				    (u64)(osal_uintptr_t)&sb_entry,
 				    CAU_REG_SB_VAR_MEMORY +
-				    p_block->igu_sb_id * sizeof(u64), 2, 0);
+				    p_block->igu_sb_id * sizeof(u64), 2,
+				    OSAL_NULL /* default parameters */);
 	}
 
 	vf->num_sbs = (u8)num_rx_queues;
@@ -1281,7 +1280,7 @@ static void ecore_iov_lock_vf_pf_channel(struct ecore_hwfn *p_hwfn,
 			   ECORE_MSG_IOV,
 			   "VF[%d]: vf pf channel locked by %s\n",
 			   vf->abs_vf_id,
-			   ecore_channel_tlvs_string[tlv]);
+			   qede_ecore_channel_tlvs_string[tlv]);
 	else
 		DP_VERBOSE(p_hwfn,
 			   ECORE_MSG_IOV,
@@ -1299,7 +1298,7 @@ static void ecore_iov_unlock_vf_pf_channel(struct ecore_hwfn *p_hwfn,
 			   ECORE_MSG_IOV,
 			   "VF[%d]: vf pf channel unlocked by %s\n",
 			   vf->abs_vf_id,
-			   ecore_channel_tlvs_string[expected_tlv]);
+			   qede_ecore_channel_tlvs_string[expected_tlv]);
 	else
 		DP_VERBOSE(p_hwfn,
 			   ECORE_MSG_IOV,
@@ -1339,7 +1338,7 @@ void ecore_dp_tlv_list(struct ecore_hwfn *p_hwfn, void *tlvs_list)
 		if (ecore_iov_tlv_supported(tlv->type))
 			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 				   "TLV number %d: type %s, length %d\n",
-				   i, ecore_channel_tlvs_string[tlv->type],
+				   i, qede_ecore_channel_tlvs_string[tlv->type],
 				   tlv->length);
 		else
 			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
@@ -1970,7 +1969,9 @@ ecore_iov_configure_vport_forced(struct ecore_hwfn *p_hwfn,
 	if (!p_vf->vport_instance)
 		return ECORE_INVAL;
 
-	if (events & (1 << MAC_ADDR_FORCED)) {
+	if ((events & (1 << MAC_ADDR_FORCED)) ||
+	    p_hwfn->pf_params.eth_pf_params.allow_vf_mac_change ||
+	    p_vf->p_vf_info.is_trusted_configured) {
 		/* Since there's no way [currently] of removing the MAC,
 		 * we can always assume this means we need to force it.
 		 */
@@ -1991,7 +1992,12 @@ ecore_iov_configure_vport_forced(struct ecore_hwfn *p_hwfn,
 			return rc;
 		}
 
-		p_vf->configured_features |= 1 << MAC_ADDR_FORCED;
+		if (p_hwfn->pf_params.eth_pf_params.allow_vf_mac_change ||
+		    p_vf->p_vf_info.is_trusted_configured)
+			p_vf->configured_features |=
+				1 << VFPF_BULLETIN_MAC_ADDR;
+		else
+			p_vf->configured_features |= 1 << MAC_ADDR_FORCED;
 	}
 
 	if (events & (1 << VLAN_ADDR_FORCED)) {
@@ -2083,8 +2089,8 @@ static void ecore_iov_vf_mbx_start_vport(struct ecore_hwfn *p_hwfn,
 					 struct ecore_ptt *p_ptt,
 					 struct ecore_vf_info *vf)
 {
-	struct ecore_sp_vport_start_params params = { 0 };
 	struct ecore_iov_vf_mbx *mbx = &vf->vf_mbx;
+	struct ecore_sp_vport_start_params params;
 	struct vfpf_vport_start_tlv *start;
 	u8 status = PFVF_STATUS_SUCCESS;
 	struct ecore_vf_info *vf_info;
@@ -2135,6 +2141,7 @@ static void ecore_iov_vf_mbx_start_vport(struct ecore_hwfn *p_hwfn,
 		*p_bitmap |= 1 << VFPF_BULLETIN_UNTAGGED_DEFAULT;
 	}
 
+	OSAL_MEMSET(&params, 0, sizeof(struct ecore_sp_vport_start_params));
 	params.tpa_mode = start->tpa_mode;
 	params.remove_inner_vlan = start->inner_vlan_removal;
 	params.tx_switching = true;
@@ -2154,7 +2161,9 @@ static void ecore_iov_vf_mbx_start_vport(struct ecore_hwfn *p_hwfn,
 	params.vport_id = vf->vport_id;
 	params.max_buffers_per_cqe = start->max_buffers_per_cqe;
 	params.mtu = vf->mtu;
-	params.check_mac = true;
+
+	/* Non trusted VFs should enable control frame filtering */
+	params.check_mac = !vf->p_vf_info.is_trusted_configured;
 
 	rc = ecore_sp_eth_vport_start(p_hwfn, &params);
 	if (rc != ECORE_SUCCESS) {
@@ -2910,7 +2919,7 @@ void *ecore_iov_search_list_tlvs(struct ecore_hwfn *p_hwfn,
 		if (p_tlv->type == req_type) {
 			DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
 				   "Extended tlv type %s, length %d found\n",
-				   ecore_channel_tlvs_string[p_tlv->type],
+				   qede_ecore_channel_tlvs_string[p_tlv->type],
 				   p_tlv->length);
 			return p_tlv;
 		}
@@ -3349,6 +3358,15 @@ ecore_iov_vf_update_mac_shadow(struct ecore_hwfn *p_hwfn,
 	if (p_vf->bulletin.p_virt->valid_bitmap & (1 << MAC_ADDR_FORCED))
 		return ECORE_SUCCESS;
 
+	/* Since we don't have the implementation of the logic for removing
+	 * a forced MAC and restoring shadow MAC, let's not worry about
+	 * processing shadow copies of MAC as long as VF trust mode is ON,
+	 * to keep things simple.
+	 */
+	if (p_hwfn->pf_params.eth_pf_params.allow_vf_mac_change ||
+	    p_vf->p_vf_info.is_trusted_configured)
+		return ECORE_SUCCESS;
+
 	/* First remove entries and then add new ones */
 	if (p_params->opcode == ECORE_FILTER_REMOVE) {
 		for (i = 0; i < ECORE_ETH_VF_NUM_MAC_FILTERS; i++) {
@@ -3651,7 +3669,7 @@ static void ecore_iov_vf_pf_set_coalesce(struct ecore_hwfn *p_hwfn,
 	struct ecore_queue_cid *p_cid;
 	u16 rx_coal, tx_coal;
 	u16 qid;
-	int i;
+	u32 i;
 
 	req = &mbx->req_virt->update_coalesce;
 
@@ -3731,7 +3749,8 @@ ecore_iov_pf_configure_vf_queue_coalesce(struct ecore_hwfn *p_hwfn,
 	struct ecore_queue_cid *p_cid;
 	struct ecore_vf_info *vf;
 	struct ecore_ptt *p_ptt;
-	int i, rc = 0;
+	int rc = 0;
+	u32 i;
 
 	if (!ecore_iov_is_valid_vfid(p_hwfn, vf_id, true, true)) {
 		DP_NOTICE(p_hwfn, true,
@@ -4413,13 +4432,23 @@ void ecore_iov_bulletin_set_forced_mac(struct ecore_hwfn *p_hwfn,
 		return;
 	}
 
-	feature = 1 << MAC_ADDR_FORCED;
-	OSAL_MEMCPY(vf_info->bulletin.p_virt->mac, mac, ETH_ALEN);
+	if (p_hwfn->pf_params.eth_pf_params.allow_vf_mac_change ||
+	    vf_info->p_vf_info.is_trusted_configured) {
+		feature = 1 << VFPF_BULLETIN_MAC_ADDR;
+		/* Trust mode will disable Forced MAC */
+		vf_info->bulletin.p_virt->valid_bitmap &=
+			~(1 << MAC_ADDR_FORCED);
+	} else {
+		feature = 1 << MAC_ADDR_FORCED;
+		/* Forced MAC will disable MAC_ADDR */
+		vf_info->bulletin.p_virt->valid_bitmap &=
+			~(1 << VFPF_BULLETIN_MAC_ADDR);
+	}
+
+	OSAL_MEMCPY(vf_info->bulletin.p_virt->mac,
+		    mac, ETH_ALEN);
 
 	vf_info->bulletin.p_virt->valid_bitmap |= feature;
-	/* Forced MAC will disable MAC_ADDR */
-	vf_info->bulletin.p_virt->valid_bitmap &=
-	    ~(1 << VFPF_BULLETIN_MAC_ADDR);
 
 	ecore_iov_configure_vport_forced(p_hwfn, vf_info, feature);
 }
@@ -4454,9 +4483,14 @@ enum _ecore_status_t ecore_iov_bulletin_set_mac(struct ecore_hwfn *p_hwfn,
 
 	vf_info->bulletin.p_virt->valid_bitmap |= feature;
 
+	if (p_hwfn->pf_params.eth_pf_params.allow_vf_mac_change ||
+	    vf_info->p_vf_info.is_trusted_configured)
+		ecore_iov_configure_vport_forced(p_hwfn, vf_info, feature);
+
 	return ECORE_SUCCESS;
 }
 
+#ifndef LINUX_REMOVE
 enum _ecore_status_t
 ecore_iov_bulletin_set_forced_untagged_default(struct ecore_hwfn *p_hwfn,
 					       bool b_untagged_only, int vfid)
@@ -4513,6 +4547,7 @@ void ecore_iov_get_vfs_opaque_fid(struct ecore_hwfn *p_hwfn, int vfid,
 
 	*opaque_fid = vf_info->opaque_fid;
 }
+#endif
 
 void ecore_iov_bulletin_set_forced_vlan(struct ecore_hwfn *p_hwfn,
 					u16 pvid, int vfid)
@@ -4700,6 +4735,22 @@ u32 ecore_iov_pfvf_msg_length(void)
 	return sizeof(union pfvf_tlvs);
 }
 
+u8 *ecore_iov_bulletin_get_mac(struct ecore_hwfn *p_hwfn,
+				      u16 rel_vf_id)
+{
+	struct ecore_vf_info *p_vf;
+
+	p_vf = ecore_iov_get_vf_info(p_hwfn, rel_vf_id, true);
+	if (!p_vf || !p_vf->bulletin.p_virt)
+		return OSAL_NULL;
+
+	if (!(p_vf->bulletin.p_virt->valid_bitmap &
+		(1 << VFPF_BULLETIN_MAC_ADDR)))
+		return OSAL_NULL;
+
+	return p_vf->bulletin.p_virt->mac;
+}
+
 u8 *ecore_iov_bulletin_get_forced_mac(struct ecore_hwfn *p_hwfn, u16 rel_vf_id)
 {
 	struct ecore_vf_info *p_vf;
@@ -4751,6 +4802,32 @@ enum _ecore_status_t ecore_iov_configure_tx_rate(struct ecore_hwfn *p_hwfn,
 
 	return ecore_init_vport_rl(p_hwfn, p_ptt, abs_vp_id, (u32)val,
 				   p_link->speed);
+}
+
+enum _ecore_status_t ecore_iov_configure_min_tx_rate(struct ecore_dev *p_dev,
+						     int vfid, u32 rate)
+{
+	struct ecore_vf_info *vf;
+	int i;
+
+	for_each_hwfn(p_dev, i) {
+		struct ecore_hwfn *p_hwfn = &p_dev->hwfns[i];
+
+		if (!ecore_iov_pf_sanity_check(p_hwfn, vfid)) {
+			DP_NOTICE(p_hwfn, true,
+				  "SR-IOV sanity check failed, can't set min rate\n");
+			return ECORE_INVAL;
+		}
+	}
+
+	vf = ecore_iov_get_vf_info(ECORE_LEADING_HWFN(p_dev), (u16)vfid, true);
+	if (!vf) {
+		DP_NOTICE(p_dev, true,
+			  "Getting vf info failed, can't set min rate\n");
+		return ECORE_INVAL;
+	}
+
+	return ecore_configure_vport_wfq(p_dev, vf->vport_id, rate);
 }
 
 enum _ecore_status_t ecore_iov_get_vf_stats(struct ecore_hwfn *p_hwfn,
@@ -4863,7 +4940,7 @@ bool ecore_iov_is_vf_started(struct ecore_hwfn *p_hwfn,
 	return (p_vf->state != VF_FREE && p_vf->state != VF_STOPPED);
 }
 
-enum _ecore_status_t
+int
 ecore_iov_get_vf_min_rate(struct ecore_hwfn *p_hwfn, int vfid)
 {
 	struct ecore_wfq_data *vf_vp_wfq;

@@ -1,45 +1,43 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2014-2017 Chelsio Communications.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Chelsio Communications nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Chelsio Communications.
+ * All rights reserved.
  */
 
 #ifndef T4_MSG_H
 #define T4_MSG_H
 
 enum {
+	CPL_ACT_OPEN_REQ      = 0x3,
+	CPL_SET_TCB_FIELD     = 0x5,
+	CPL_ABORT_REQ         = 0xA,
+	CPL_ABORT_RPL         = 0xB,
+	CPL_L2T_WRITE_REQ     = 0x12,
+	CPL_TID_RELEASE       = 0x1A,
+	CPL_L2T_WRITE_RPL     = 0x23,
+	CPL_ACT_OPEN_RPL      = 0x25,
+	CPL_ABORT_RPL_RSS     = 0x2D,
+	CPL_SET_TCB_RPL       = 0x3A,
+	CPL_ACT_OPEN_REQ6     = 0x83,
 	CPL_SGE_EGR_UPDATE    = 0xA5,
 	CPL_FW4_MSG           = 0xC0,
 	CPL_FW6_MSG           = 0xE0,
 	CPL_TX_PKT_LSO        = 0xED,
 	CPL_TX_PKT_XT         = 0xEE,
+};
+
+enum CPL_error {
+	CPL_ERR_NONE               = 0,
+	CPL_ERR_TCAM_FULL          = 3,
+};
+
+enum {
+	ULP_MODE_NONE          = 0,
+	ULP_MODE_TCPDDP        = 5,
+};
+
+enum {
+	CPL_ABORT_SEND_RST = 0,
+	CPL_ABORT_NO_RST,
 };
 
 enum {                     /* TX_PKT_XT checksum types */
@@ -52,6 +50,27 @@ union opcode_tid {
 	__be32 opcode_tid;
 	__u8 opcode;
 };
+
+#define S_CPL_OPCODE    24
+#define V_CPL_OPCODE(x) ((x) << S_CPL_OPCODE)
+
+#define G_TID(x)    ((x) & 0xFFFFFF)
+
+/* tid is assumed to be 24-bits */
+#define MK_OPCODE_TID(opcode, tid) (V_CPL_OPCODE(opcode) | (tid))
+
+#define OPCODE_TID(cmd) ((cmd)->ot.opcode_tid)
+
+/* extract the TID from a CPL command */
+#define GET_TID(cmd) (G_TID(be32_to_cpu(OPCODE_TID(cmd))))
+
+/* partitioning of TID fields that also carry a queue id */
+#define S_TID_TID    0
+#define M_TID_TID    0x3fff
+#define G_TID_TID(x) (((x) >> S_TID_TID) & M_TID_TID)
+
+#define S_TID_QID    14
+#define V_TID_QID(x) ((x) << S_TID_QID)
 
 struct rss_header {
 	__u8 opcode;
@@ -93,6 +112,178 @@ struct work_request_hdr {
 #define WR_HDR
 #define WR_HDR_SIZE 0
 #endif
+
+#define S_COOKIE    5
+#define M_COOKIE    0x7
+#define V_COOKIE(x) ((x) << S_COOKIE)
+#define G_COOKIE(x) (((x) >> S_COOKIE) & M_COOKIE)
+
+/* option 0 fields */
+#define S_TX_CHAN    2
+#define V_TX_CHAN(x) ((x) << S_TX_CHAN)
+
+#define S_DELACK    5
+#define V_DELACK(x) ((x) << S_DELACK)
+
+#define S_NON_OFFLOAD    7
+#define V_NON_OFFLOAD(x) ((x) << S_NON_OFFLOAD)
+#define F_NON_OFFLOAD    V_NON_OFFLOAD(1U)
+
+#define S_ULP_MODE    8
+#define V_ULP_MODE(x) ((x) << S_ULP_MODE)
+
+#define S_SMAC_SEL    28
+#define V_SMAC_SEL(x) ((__u64)(x) << S_SMAC_SEL)
+
+#define S_TCAM_BYPASS    48
+#define V_TCAM_BYPASS(x) ((__u64)(x) << S_TCAM_BYPASS)
+#define F_TCAM_BYPASS    V_TCAM_BYPASS(1ULL)
+
+#define S_L2T_IDX    36
+#define V_L2T_IDX(x) ((__u64)(x) << S_L2T_IDX)
+
+#define S_NAGLE    49
+#define V_NAGLE(x) ((__u64)(x) << S_NAGLE)
+
+/* option 2 fields */
+#define S_RSS_QUEUE    0
+#define V_RSS_QUEUE(x) ((x) << S_RSS_QUEUE)
+
+#define S_RSS_QUEUE_VALID    10
+#define V_RSS_QUEUE_VALID(x) ((x) << S_RSS_QUEUE_VALID)
+#define F_RSS_QUEUE_VALID    V_RSS_QUEUE_VALID(1U)
+
+#define S_CONG_CNTRL    14
+#define V_CONG_CNTRL(x) ((x) << S_CONG_CNTRL)
+
+#define S_RX_CHANNEL    26
+#define V_RX_CHANNEL(x) ((x) << S_RX_CHANNEL)
+#define F_RX_CHANNEL    V_RX_CHANNEL(1U)
+
+#define S_CCTRL_ECN    27
+#define V_CCTRL_ECN(x) ((x) << S_CCTRL_ECN)
+
+#define S_SACK_EN    30
+#define V_SACK_EN(x) ((x) << S_SACK_EN)
+
+#define S_T5_OPT_2_VALID    31
+#define V_T5_OPT_2_VALID(x) ((x) << S_T5_OPT_2_VALID)
+#define F_T5_OPT_2_VALID    V_T5_OPT_2_VALID(1U)
+
+struct cpl_t6_act_open_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 local_port;
+	__be16 peer_port;
+	__be32 local_ip;
+	__be32 peer_ip;
+	__be64 opt0;
+	__be32 rsvd;
+	__be32 opt2;
+	__be64 params;
+	__be32 rsvd2;
+	__be32 opt3;
+};
+
+struct cpl_t6_act_open_req6 {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 local_port;
+	__be16 peer_port;
+	__be64 local_ip_hi;
+	__be64 local_ip_lo;
+	__be64 peer_ip_hi;
+	__be64 peer_ip_lo;
+	__be64 opt0;
+	__be32 rsvd;
+	__be32 opt2;
+	__be64 params;
+	__be32 rsvd2;
+	__be32 opt3;
+};
+
+#define S_FILTER_TUPLE	24
+#define V_FILTER_TUPLE(x) ((x) << S_FILTER_TUPLE)
+
+struct cpl_act_open_rpl {
+	RSS_HDR
+	union opcode_tid ot;
+	__be32 atid_status;
+};
+
+/* cpl_act_open_rpl.atid_status fields */
+#define S_AOPEN_STATUS    0
+#define M_AOPEN_STATUS    0xFF
+#define G_AOPEN_STATUS(x) (((x) >> S_AOPEN_STATUS) & M_AOPEN_STATUS)
+
+#define S_AOPEN_ATID    8
+#define M_AOPEN_ATID    0xFFFFFF
+#define G_AOPEN_ATID(x) (((x) >> S_AOPEN_ATID) & M_AOPEN_ATID)
+
+struct cpl_set_tcb_field {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 reply_ctrl;
+	__be16 word_cookie;
+	__be64 mask;
+	__be64 val;
+};
+
+/* cpl_set_tcb_field.word_cookie fields */
+#define S_WORD    0
+#define V_WORD(x) ((x) << S_WORD)
+
+/* cpl_get_tcb.reply_ctrl fields */
+#define S_QUEUENO    0
+#define V_QUEUENO(x) ((x) << S_QUEUENO)
+
+#define S_REPLY_CHAN    14
+#define V_REPLY_CHAN(x) ((x) << S_REPLY_CHAN)
+
+#define S_NO_REPLY    15
+#define V_NO_REPLY(x) ((x) << S_NO_REPLY)
+
+struct cpl_set_tcb_rpl {
+	RSS_HDR
+	union opcode_tid ot;
+	__be16 rsvd;
+	__u8   cookie;
+	__u8   status;
+	__be64 oldval;
+};
+
+/* cpl_abort_req status command code
+ */
+struct cpl_abort_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be32 rsvd0;
+	__u8  rsvd1;
+	__u8  cmd;
+	__u8  rsvd2[6];
+};
+
+struct cpl_abort_rpl_rss {
+	RSS_HDR
+	union opcode_tid ot;
+	__u8  rsvd[3];
+	__u8  status;
+};
+
+struct cpl_abort_rpl {
+	WR_HDR;
+	union opcode_tid ot;
+	__be32 rsvd0;
+	__u8  rsvd1;
+	__u8  cmd;
+	__u8  rsvd2[6];
+};
+
+struct cpl_tid_release {
+	WR_HDR;
+	union opcode_tid ot;
+	__be32 rsvd;
+};
 
 struct cpl_tx_data {
 	union opcode_tid ot;
@@ -245,6 +436,35 @@ struct cpl_rx_pkt {
 	__be16 err_vec;
 };
 
+struct cpl_l2t_write_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 params;
+	__be16 l2t_idx;
+	__be16 vlan;
+	__u8   dst_mac[6];
+};
+
+/* cpl_l2t_write_req.params fields */
+#define S_L2T_W_PORT    8
+#define V_L2T_W_PORT(x) ((x) << S_L2T_W_PORT)
+
+#define S_L2T_W_LPBK    10
+#define V_L2T_W_LPBK(x) ((x) << S_L2T_W_LPBK)
+
+#define S_L2T_W_ARPMISS         11
+#define V_L2T_W_ARPMISS(x)      ((x) << S_L2T_W_ARPMISS)
+
+#define S_L2T_W_NOREPLY    15
+#define V_L2T_W_NOREPLY(x) ((x) << S_L2T_W_NOREPLY)
+
+struct cpl_l2t_write_rpl {
+	RSS_HDR
+	union opcode_tid ot;
+	__u8 status;
+	__u8 rsvd[3];
+};
+
 /* rx_pkt.l2info fields */
 #define S_RXF_UDP    22
 #define V_RXF_UDP(x) ((x) << S_RXF_UDP)
@@ -299,7 +519,13 @@ struct cpl_fw6_msg {
 	__be64 data[4];
 };
 
+/* ULP_TX opcodes */
 enum {
+	ULP_TX_PKT = 4
+};
+
+enum {
+	ULP_TX_SC_NOOP = 0x80,
 	ULP_TX_SC_IMM  = 0x81,
 	ULP_TX_SC_DSGL = 0x82,
 	ULP_TX_SC_ISGL = 0x83

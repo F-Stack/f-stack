@@ -37,6 +37,9 @@ void *ff_mbuf_get(void *m, void *data, uint16_t len);
 void ff_mbuf_free(void *m);
 
 int ff_mbuf_copydata(void *m, void *data, int off, int len);
+int ff_next_mbuf(void **mbuf_bsd, void **data, unsigned *len);
+void* ff_mbuf_mtod(void* bsd_mbuf);
+void* ff_rte_frm_extcl(void* mbuf);
 
 struct ff_tx_offload;
 void ff_mbuf_tx_offload(void *m, struct ff_tx_offload *offload);
@@ -45,5 +48,6 @@ void ff_veth_process_packet(void *arg, void *m);
 
 void *ff_veth_softc_to_hostc(void *softc);
 
+void ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci);
 
 #endif /* ifndef _FSTACK_VETH_H */

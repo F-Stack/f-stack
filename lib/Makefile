@@ -14,6 +14,12 @@ S=${TOPDIR}/freebsd
 MACHINE_INCLUDES_ROOT:=${CURDIR}/machine_include
 OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
+PREFIX=/usr/local
+PREFIX_LIB=${PREFIX}/lib
+PREFIX_INCLUDE=/usr/local/include
+PREFIX_BIN=/usr/local/bin
+F-STACK_CONF=/etc/f-stack.conf
+F-STACK_VERSION=1.20
 
 HOST_OS:=$(shell uname -s)
 
@@ -22,6 +28,9 @@ HOST_OS:=$(shell uname -s)
 FF_KNI=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
+#FF_USE_PAGE_ARRAY=1
+FF_INET6=1
+
 
 include ${TOPDIR}/mk/kern.pre.mk
 
@@ -41,7 +50,7 @@ else
 endif
 endif
 
-DPDK_CFLAGS= -Wall -Werror -include ${FF_DPDK}/include/rte_config.h
+DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror -include ${FF_DPDK}/include/rte_config.h
 DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3
 DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
 DPDK_CFLAGS+= -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2
@@ -73,6 +82,15 @@ endif
 
 ifdef FF_IPFW
 HOST_CFLAGS+= -DFF_IPFW
+endif
+
+ifdef FF_USE_PAGE_ARRAY
+HOST_CFLAGS+= -DFF_USE_PAGE_ARRAY
+endif
+
+ifdef FF_INET6
+HOST_CFLAGS+= -DINET6
+CFLAGS+= -DINET6
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -153,6 +171,9 @@ endif
 VPATH+= $S/netinet
 VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
+ifdef FF_INET6
+VPATH+= $S/netinet6
+endif
 VPATH+= $S/netipsec
 ifdef FF_IPFW
 VPATH+= $S/netpfil/ipfw
@@ -193,11 +214,16 @@ FF_HOST_SRCS+=              \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
-	ff_init.c
+	ff_init.c	
 
 ifdef FF_KNI
 FF_HOST_SRCS+=              \
 	ff_dpdk_kni.c
+endif
+
+ifdef FF_USE_PAGE_ARRAY
+FF_HOST_SRCS+=              \
+  ff_memory.c
 endif
 
 ifdef FF_IPSEC
@@ -425,6 +451,47 @@ NETINET_SRCS+=		\
 	alias_sctp.c    \
 	alias_util.c
 
+ifdef FF_INET6
+NETINET6_SRCS+=		\
+	dest6.c		\
+	frag6.c		\
+	icmp6.c		\
+	in6.c		\
+	in6_ifattach.c	\
+	in6_mcast.c	\
+	in6_pcb.c	\
+	in6_pcbgroup.c	\
+	in6_proto.c	\
+	in6_rmx.c	\
+	in6_src.c	\
+	ip6_forward.c	\
+	ip6_id.c	\
+	ip6_input.c	\
+	ip6_fastfwd.c	\
+	ip6_mroute.c	\
+	ip6_output.c	\
+	mld6.c		\
+	nd6.c		\
+	nd6_nbr.c	\
+	nd6_rtr.c	\
+	raw_ip6.c	\
+	route6.c	\
+	scope6.c	\
+	send.c		\
+	udp6_usrreq.c	\
+	in6_cksum.c	\
+	in6_fib.c	\
+	in6_gif.c
+	#ip6_gre.c
+	#ip6_ipsec.c
+	#sctp6_usrreq.c
+	#in6_rss.c
+ifndef FF_KNI
+FF_HOST_SRCS+=         \
+        ff_dpdk_kni.c
+endif
+endif
+
 ifdef FF_IPFW
 NETIPFW_SRCS+=             \
 	ip_fw_dynamic.c \
@@ -443,6 +510,10 @@ endif
 ifdef FF_IPSEC
 NETINET_SRCS+=		\
 	ip_ipsec.c
+ifdef FF_INET6
+NETINET6_SRCS+=		\
+	ip6_ipsec.c
+endif
 endif
 
 
@@ -462,9 +533,6 @@ endif
 
 # only if TCP_SIGNTAURE is defined
 #xform_tcp.c
-
-NETINET6_SRCS+=
-
 
 ifdef FF_IPSEC
 OPENCRYPTO_SRCS+=	\
@@ -578,4 +646,35 @@ vnode_if_typedef.h:
 	${AWK} -f $S/tools/vnode_if.awk $S/kern/vnode_if.src -q
 
 include ${TOPDIR}/mk/kern.mk
+
+install:
+	rm -rf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
+	rm -rf ${PREFIX_LIB}/libfstack.a
+	rm -rf ${PREFIX_INCLUDE}/ff_config.h
+	rm -rf ${PREFIX_INCLUDE}/ff_api.h
+	rm -rf ${PREFIX_INCLUDE}/ff_event.h
+	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
+	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_BIN}/ff_start
+
+	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
+	ln -sf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION} ${PREFIX_LIB}/libfstack.a
+	cp -f ff_config.h ${PREFIX_INCLUDE}/ff_config.h
+	cp -f ff_api.h ${PREFIX_INCLUDE}/ff_api.h
+	cp -f ff_event.h ${PREFIX_INCLUDE}/ff_event.h
+	cp -f ff_errno.h ${PREFIX_INCLUDE}/ff_errno.h
+	cp -f ff_epoll.h ${PREFIX_INCLUDE}/ff_epoll.h
+	cp -f ${TOPDIR}/start.sh ${PREFIX_BIN}/ff_start
+	test -f '${F-STACK_CONF}' || cp -f ${TOPDIR}/config.ini ${F-STACK_CONF}
+
+uninstall:
+	rm -rf ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
+	rm -rf ${PREFIX_LIB}/libfstack.a
+	rm -rf ${PREFIX_INCLUDE}/ff_config.h
+	rm -rf ${PREFIX_INCLUDE}/ff_api.h
+	rm -rf ${PREFIX_INCLUDE}/ff_event.h
+	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
+	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
+	rm -rf ${PREFIX_BIN}/ff_start
+	rm -rf ${F-STACK_CONF}
 

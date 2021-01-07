@@ -1,33 +1,5 @@
-/*
- *   BSD LICENSE
- *
- *   Copyright (C) Cavium, Inc. 2016.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Cavium, Inc nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Cavium, Inc
  */
 
 #ifndef _THUNDERX_NICVF_STRUCT_H
@@ -39,7 +11,7 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_memory.h>
 
 struct nicvf_rbdr {
@@ -67,7 +39,7 @@ struct nicvf_txq {
 	uint32_t tail;
 	int32_t xmit_bufs;
 	uint32_t qlen_mask;
-	uint32_t txq_flags;
+	uint64_t offloads;
 	uint16_t queue_id;
 	uint16_t tx_free_thresh;
 } __rte_cache_aligned;
@@ -83,25 +55,27 @@ union mbuf_initializer {
 };
 
 struct nicvf_rxq {
+	MARKER rxq_fastpath_data_start;
+	uint8_t  rbptr_offset;
+	uint16_t rx_free_thresh;
+	uint32_t head;
+	uint32_t qlen_mask;
+	int32_t recv_buffers;
+	int32_t available_space;
 	uint64_t mbuf_phys_off;
 	uintptr_t cq_status;
 	uintptr_t cq_door;
-	union mbuf_initializer mbuf_initializer;
-	nicvf_iova_addr_t phys;
-	union cq_entry_t *desc;
 	struct nicvf_rbdr *shared_rbdr;
-	struct nicvf *nic;
 	struct rte_mempool *pool;
-	uint32_t head;
-	uint32_t qlen_mask;
-	int32_t available_space;
-	int32_t recv_buffers;
-	uint16_t rx_free_thresh;
-	uint16_t queue_id;
-	uint16_t precharge_cnt;
+	union cq_entry_t *desc;
+	union mbuf_initializer mbuf_initializer;
+	MARKER rxq_fastpath_data_end;
 	uint8_t rx_drop_en;
+	uint16_t precharge_cnt;
 	uint16_t port_id;
-	uint8_t  rbptr_offset;
+	uint16_t queue_id;
+	struct nicvf *nic;
+	nicvf_iova_addr_t phys;
 } __rte_cache_aligned;
 
 struct nicvf {
@@ -113,6 +87,8 @@ struct nicvf {
 	bool loopback_supported;
 	bool pf_acked:1;
 	bool pf_nacked:1;
+	bool offload_cksum:1;
+	bool vlan_strip:1;
 	uint64_t hwcap;
 	uint8_t link_up;
 	uint8_t	duplex;
@@ -127,6 +103,7 @@ struct nicvf {
 	struct rte_intr_handle intr_handle;
 	uint8_t cpi_alg;
 	uint16_t mtu;
+	int skip_bytes;
 	bool vlan_filter_en;
 	uint8_t mac_addr[ETHER_ADDR_LEN];
 	/* secondary queue set support */

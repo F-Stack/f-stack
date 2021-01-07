@@ -1,40 +1,12 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #include <rte_atomic.h>
 #include <rte_debug.h>
 #include <rte_mbuf.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 
 #include "failsafe_private.h"
 
@@ -57,7 +29,7 @@ fs_tx_unsafe(struct sub_device *sdev)
 }
 
 void
-set_burst_fn(struct rte_eth_dev *dev, int force_safe)
+failsafe_set_burst_fn(struct rte_eth_dev *dev, int force_safe)
 {
 	struct sub_device *sdev;
 	uint8_t i;
@@ -94,36 +66,28 @@ failsafe_rx_burst(void *queue,
 		  struct rte_mbuf **rx_pkts,
 		  uint16_t nb_pkts)
 {
-	struct fs_priv *priv;
 	struct sub_device *sdev;
 	struct rxq *rxq;
 	void *sub_rxq;
 	uint16_t nb_rx;
-	uint8_t nb_polled, nb_subs;
-	uint8_t i;
 
 	rxq = queue;
-	priv = rxq->priv;
-	nb_subs = priv->subs_tail - priv->subs_head;
-	nb_polled = 0;
-	for (i = rxq->last_polled; nb_polled < nb_subs; nb_polled++) {
-		i++;
-		if (i == priv->subs_tail)
-			i = priv->subs_head;
-		sdev = &priv->subs[i];
-		if (fs_rx_unsafe(sdev))
+	sdev = rxq->sdev;
+	do {
+		if (fs_rx_unsafe(sdev)) {
+			nb_rx = 0;
+			sdev = sdev->next;
 			continue;
+		}
 		sub_rxq = ETH(sdev)->data->rx_queues[rxq->qid];
 		FS_ATOMIC_P(rxq->refcnt[sdev->sid]);
 		nb_rx = ETH(sdev)->
 			rx_pkt_burst(sub_rxq, rx_pkts, nb_pkts);
 		FS_ATOMIC_V(rxq->refcnt[sdev->sid]);
-		if (nb_rx) {
-			rxq->last_polled = i;
-			return nb_rx;
-		}
-	}
-	return 0;
+		sdev = sdev->next;
+	} while (nb_rx == 0 && sdev != rxq->sdev);
+	rxq->sdev = sdev;
+	return nb_rx;
 }
 
 uint16_t
@@ -131,35 +95,24 @@ failsafe_rx_burst_fast(void *queue,
 			 struct rte_mbuf **rx_pkts,
 			 uint16_t nb_pkts)
 {
-	struct fs_priv *priv;
 	struct sub_device *sdev;
 	struct rxq *rxq;
 	void *sub_rxq;
 	uint16_t nb_rx;
-	uint8_t nb_polled, nb_subs;
-	uint8_t i;
 
 	rxq = queue;
-	priv = rxq->priv;
-	nb_subs = priv->subs_tail - priv->subs_head;
-	nb_polled = 0;
-	for (i = rxq->last_polled; nb_polled < nb_subs; nb_polled++) {
-		i++;
-		if (i == priv->subs_tail)
-			i = priv->subs_head;
-		sdev = &priv->subs[i];
+	sdev = rxq->sdev;
+	do {
 		RTE_ASSERT(!fs_rx_unsafe(sdev));
 		sub_rxq = ETH(sdev)->data->rx_queues[rxq->qid];
 		FS_ATOMIC_P(rxq->refcnt[sdev->sid]);
 		nb_rx = ETH(sdev)->
 			rx_pkt_burst(sub_rxq, rx_pkts, nb_pkts);
 		FS_ATOMIC_V(rxq->refcnt[sdev->sid]);
-		if (nb_rx) {
-			rxq->last_polled = i;
-			return nb_rx;
-		}
-	}
-	return 0;
+		sdev = sdev->next;
+	} while (nb_rx == 0 && sdev != rxq->sdev);
+	rxq->sdev = sdev;
+	return nb_rx;
 }
 
 uint16_t

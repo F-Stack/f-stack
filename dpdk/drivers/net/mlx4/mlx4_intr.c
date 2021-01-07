@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 /**
@@ -52,15 +24,16 @@
 
 #include <rte_alarm.h>
 #include <rte_errno.h>
-#include <rte_ethdev.h>
+#include <rte_ethdev_driver.h>
 #include <rte_io.h>
 #include <rte_interrupts.h>
 
 #include "mlx4.h"
+#include "mlx4_glue.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
 
-static int mlx4_link_status_check(struct priv *priv);
+static int mlx4_link_status_check(struct mlx4_priv *priv);
 
 /**
  * Clean up Rx interrupts handler.
@@ -69,7 +42,7 @@ static int mlx4_link_status_check(struct priv *priv);
  *   Pointer to private structure.
  */
 static void
-mlx4_rx_intr_vec_disable(struct priv *priv)
+mlx4_rx_intr_vec_disable(struct mlx4_priv *priv)
 {
 	struct rte_intr_handle *intr_handle = &priv->intr_handle;
 
@@ -89,10 +62,10 @@ mlx4_rx_intr_vec_disable(struct priv *priv)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx4_rx_intr_vec_enable(struct priv *priv)
+mlx4_rx_intr_vec_enable(struct mlx4_priv *priv)
 {
 	unsigned int i;
-	unsigned int rxqs_n = priv->dev->data->nb_rx_queues;
+	unsigned int rxqs_n = ETH_DEV(priv)->data->nb_rx_queues;
 	unsigned int n = RTE_MIN(rxqs_n, (uint32_t)RTE_MAX_RXTX_INTR_VEC_ID);
 	unsigned int count = 0;
 	struct rte_intr_handle *intr_handle = &priv->intr_handle;
@@ -106,7 +79,7 @@ mlx4_rx_intr_vec_enable(struct priv *priv)
 		return -rte_errno;
 	}
 	for (i = 0; i != n; ++i) {
-		struct rxq *rxq = priv->dev->data->rx_queues[i];
+		struct rxq *rxq = ETH_DEV(priv)->data->rx_queues[i];
 
 		/* Skip queues that cannot request interrupts. */
 		if (!rxq || !rxq->channel) {
@@ -144,17 +117,17 @@ mlx4_rx_intr_vec_enable(struct priv *priv)
  *   Pointer to private structure.
  */
 static void
-mlx4_link_status_alarm(struct priv *priv)
+mlx4_link_status_alarm(struct mlx4_priv *priv)
 {
 	const struct rte_intr_conf *const intr_conf =
-		&priv->dev->data->dev_conf.intr_conf;
+		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 
 	assert(priv->intr_alarm == 1);
 	priv->intr_alarm = 0;
 	if (intr_conf->lsc && !mlx4_link_status_check(priv))
-		_rte_eth_dev_callback_process(priv->dev,
+		_rte_eth_dev_callback_process(ETH_DEV(priv),
 					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL, NULL);
+					      NULL);
 }
 
 /**
@@ -170,10 +143,10 @@ mlx4_link_status_alarm(struct priv *priv)
  *   otherwise and rte_errno is set.
  */
 static int
-mlx4_link_status_check(struct priv *priv)
+mlx4_link_status_check(struct mlx4_priv *priv)
 {
-	struct rte_eth_link *link = &priv->dev->data->dev_link;
-	int ret = mlx4_link_update(priv->dev, 0);
+	struct rte_eth_link *link = &ETH_DEV(priv)->data->dev_link;
+	int ret = mlx4_link_update(ETH_DEV(priv), 0);
 
 	if (ret)
 		return ret;
@@ -202,7 +175,7 @@ mlx4_link_status_check(struct priv *priv)
  *   Pointer to private structure.
  */
 static void
-mlx4_interrupt_handler(struct priv *priv)
+mlx4_interrupt_handler(struct mlx4_priv *priv)
 {
 	enum { LSC, RMV, };
 	static const enum rte_eth_event_type type[] = {
@@ -212,11 +185,11 @@ mlx4_interrupt_handler(struct priv *priv)
 	uint32_t caught[RTE_DIM(type)] = { 0 };
 	struct ibv_async_event event;
 	const struct rte_intr_conf *const intr_conf =
-		&priv->dev->data->dev_conf.intr_conf;
+		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 	unsigned int i;
 
 	/* Read all message and acknowledge them. */
-	while (!ibv_get_async_event(priv->ctx, &event)) {
+	while (!mlx4_glue->get_async_event(priv->ctx, &event)) {
 		switch (event.event_type) {
 		case IBV_EVENT_PORT_ACTIVE:
 		case IBV_EVENT_PORT_ERR:
@@ -231,12 +204,12 @@ mlx4_interrupt_handler(struct priv *priv)
 			DEBUG("event type %d on physical port %d not handled",
 			      event.event_type, event.element.port_num);
 		}
-		ibv_ack_async_event(&event);
+		mlx4_glue->ack_async_event(&event);
 	}
 	for (i = 0; i != RTE_DIM(caught); ++i)
 		if (caught[i])
-			_rte_eth_dev_callback_process(priv->dev, type[i],
-						      NULL, NULL);
+			_rte_eth_dev_callback_process(ETH_DEV(priv), type[i],
+						      NULL);
 }
 
 /**
@@ -278,7 +251,7 @@ mlx4_arm_cq(struct rxq *rxq, int solicited)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 int
-mlx4_intr_uninstall(struct priv *priv)
+mlx4_intr_uninstall(struct mlx4_priv *priv)
 {
 	int err = rte_errno; /* Make sure rte_errno remains unchanged. */
 
@@ -306,10 +279,10 @@ mlx4_intr_uninstall(struct priv *priv)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 int
-mlx4_intr_install(struct priv *priv)
+mlx4_intr_install(struct mlx4_priv *priv)
 {
 	const struct rte_intr_conf *const intr_conf =
-		&priv->dev->data->dev_conf.intr_conf;
+		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 	int rc;
 
 	mlx4_intr_uninstall(priv);
@@ -352,7 +325,8 @@ mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx)
 	if (!rxq || !rxq->channel) {
 		ret = EINVAL;
 	} else {
-		ret = ibv_get_cq_event(rxq->cq->channel, &ev_cq, &ev_ctx);
+		ret = mlx4_glue->get_cq_event(rxq->cq->channel, &ev_cq,
+					      &ev_ctx);
 		if (ret || ev_cq != rxq->cq)
 			ret = EINVAL;
 	}
@@ -362,7 +336,7 @@ mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx)
 		     idx);
 	} else {
 		rxq->mcq.arm_sn++;
-		ibv_ack_cq_events(rxq->cq, 1);
+		mlx4_glue->ack_cq_events(rxq->cq, 1);
 	}
 	return -ret;
 }
@@ -404,10 +378,10 @@ mlx4_rx_intr_enable(struct rte_eth_dev *dev, uint16_t idx)
  *   0 on success, negative errno value otherwise and rte_errno is set.
  */
 int
-mlx4_rxq_intr_enable(struct priv *priv)
+mlx4_rxq_intr_enable(struct mlx4_priv *priv)
 {
 	const struct rte_intr_conf *const intr_conf =
-		&priv->dev->data->dev_conf.intr_conf;
+		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 
 	if (intr_conf->rxq && mlx4_rx_intr_vec_enable(priv) < 0)
 		goto error;
@@ -423,7 +397,7 @@ error:
  *   Pointer to private structure.
  */
 void
-mlx4_rxq_intr_disable(struct priv *priv)
+mlx4_rxq_intr_disable(struct mlx4_priv *priv)
 {
 	int err = rte_errno; /* Make sure rte_errno remains unchanged. */
 

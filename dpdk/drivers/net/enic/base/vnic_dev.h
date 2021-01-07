@@ -1,39 +1,12 @@
-/*
- * Copyright 2008-2010 Cisco Systems, Inc.  All rights reserved.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2008-2017 Cisco Systems, Inc.  All rights reserved.
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
- *
- * Copyright (c) 2014, Cisco Systems, Inc.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #ifndef _VNIC_DEV_H_
 #define _VNIC_DEV_H_
+
+#include <stdbool.h>
 
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
@@ -120,8 +93,6 @@ unsigned long vnic_dev_get_res_type_len(struct vnic_dev *vdev,
 unsigned int vnic_dev_desc_ring_size(struct vnic_dev_ring *ring,
 	unsigned int desc_count, unsigned int desc_size);
 void vnic_dev_clear_desc_ring(struct vnic_dev_ring *ring);
-void vnic_set_hdr_split_size(struct vnic_dev *vdev, u16 size);
-u16 vnic_get_hdr_split_size(struct vnic_dev *vdev);
 int vnic_dev_alloc_desc_ring(struct vnic_dev *vdev, struct vnic_dev_ring *ring,
 	unsigned int desc_count, unsigned int desc_size, unsigned int socket_id,
 	char *z_name);
@@ -139,7 +110,9 @@ int vnic_dev_fw_info(struct vnic_dev *vdev,
 int vnic_dev_capable_adv_filters(struct vnic_dev *vdev);
 int vnic_dev_capable(struct vnic_dev *vdev, enum vnic_devcmd_cmd cmd);
 int vnic_dev_capable_filter_mode(struct vnic_dev *vdev, u32 *mode,
-				 u8 *filter_tags);
+				 u8 *filter_actions);
+void vnic_dev_capable_udp_rss_weak(struct vnic_dev *vdev, bool *cfg_chk,
+				   bool *weak);
 int vnic_dev_asic_info(struct vnic_dev *vdev, u16 *asic_type, u16 *asic_rev);
 int vnic_dev_spec(struct vnic_dev *vdev, unsigned int offset, size_t size,
 	void *value);
@@ -209,10 +182,9 @@ int vnic_dev_deinit_done(struct vnic_dev *vdev, int *status);
 int vnic_dev_set_mac_addr(struct vnic_dev *vdev, u8 *mac_addr);
 int vnic_dev_classifier(struct vnic_dev *vdev, u8 cmd, u16 *entry,
 	struct filter_v2 *data, struct filter_action_v2 *action_v2);
-#ifdef ENIC_VXLAN
-int vnic_dev_overlay_offload_enable_disable(struct vnic_dev *vdev,
+int vnic_dev_overlay_offload_ctrl(struct vnic_dev *vdev,
 	u8 overlay, u8 config);
 int vnic_dev_overlay_offload_cfg(struct vnic_dev *vdev, u8 overlay,
 	u16 vxlan_udp_port_number);
-#endif
+int vnic_dev_capable_vxlan(struct vnic_dev *vdev);
 #endif /* _VNIC_DEV_H_ */

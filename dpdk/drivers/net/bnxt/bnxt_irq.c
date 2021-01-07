@@ -1,38 +1,11 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2014-2015 Broadcom Corporation.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Broadcom Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2014-2018 Broadcom
+ * All rights reserved.
  */
 
 #include <inttypes.h>
 
+#include <rte_cycles.h>
 #include <rte_malloc.h>
 
 #include "bnxt.h"
@@ -48,7 +21,7 @@
 static void bnxt_int_handler(void *param)
 {
 	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)param;
-	struct bnxt *bp = (struct bnxt *)eth_dev->data->dev_private;
+	struct bnxt *bp = eth_dev->data->dev_private;
 	struct bnxt_cp_ring_info *cpr = bp->def_cp_ring;
 	struct cmpl_base *cmp;
 	uint32_t raw_cons;
@@ -59,7 +32,7 @@ static void bnxt_int_handler(void *param)
 
 	raw_cons = cpr->cp_raw_cons;
 	while (1) {
-		if (!cpr || !cpr->cp_ring_struct)
+		if (!cpr || !cpr->cp_ring_struct || !cpr->cp_doorbell)
 			return;
 
 		cons = RING_CMP(cpr->cp_ring_struct, raw_cons);
@@ -68,50 +41,53 @@ static void bnxt_int_handler(void *param)
 		if (!CMP_VALID(cmp, raw_cons, cpr->cp_ring_struct))
 			break;
 
-		switch (CMP_TYPE(cmp)) {
-		case CMPL_BASE_TYPE_HWRM_ASYNC_EVENT:
-			/* Handle any async event */
-			bnxt_handle_async_event(bp, cmp);
-			break;
-		case CMPL_BASE_TYPE_HWRM_FWD_REQ:
-			/* Handle HWRM forwarded responses */
-			bnxt_handle_fwd_req(bp, cmp);
-			break;
-		default:
-			/* Ignore any other events */
-			if (cmp->type & rte_cpu_to_le_16(0x01)) {
-				if (!CMP_VALID(cmp, raw_cons,
-					       cpr->cp_ring_struct))
-					goto no_more;
-			}
-			RTE_LOG(INFO, PMD,
-				"Ignoring %02x completion\n", CMP_TYPE(cmp));
-			break;
-		}
+		bnxt_event_hwrm_resp_handler(bp, cmp);
 		raw_cons = NEXT_RAW_CMP(raw_cons);
-
 	};
-no_more:
+
 	cpr->cp_raw_cons = raw_cons;
 	B_CP_DB_REARM(cpr, cpr->cp_raw_cons);
 }
 
-void bnxt_free_int(struct bnxt *bp)
+int bnxt_free_int(struct bnxt *bp)
 {
-	struct bnxt_irq *irq;
+	struct rte_intr_handle *intr_handle = &bp->pdev->intr_handle;
+	struct bnxt_irq *irq = bp->irq_tbl;
+	int rc = 0;
 
-	irq = bp->irq_tbl;
-	if (irq) {
-		if (irq->requested) {
-			rte_intr_disable(&bp->pdev->intr_handle);
-			rte_intr_callback_unregister(&bp->pdev->intr_handle,
-						     irq->handler,
-						     (void *)bp->eth_dev);
-			irq->requested = 0;
+	if (!irq)
+		return 0;
+
+	if (irq->requested) {
+		int count = 0;
+
+		/*
+		 * Callback deregistration will fail with rc -EAGAIN if the
+		 * callback is currently active. Retry every 50 ms until
+		 * successful or 500 ms has elapsed.
+		 */
+		do {
+			rc = rte_intr_callback_unregister(intr_handle,
+							  irq->handler,
+							  bp->eth_dev);
+			if (rc >= 0) {
+				irq->requested = 0;
+				break;
+			}
+			rte_delay_ms(50);
+		} while (count++ < 10);
+
+		if (rc < 0) {
+			PMD_DRV_LOG(ERR, "irq cb unregister failed rc: %d\n",
+				    rc);
+			return rc;
 		}
-		rte_free((void *)bp->irq_tbl);
-		bp->irq_tbl = NULL;
 	}
+
+	rte_free(bp->irq_tbl);
+	bp->irq_tbl = NULL;
+
+	return 0;
 }
 
 void bnxt_disable_int(struct bnxt *bp)
@@ -127,7 +103,9 @@ void bnxt_enable_int(struct bnxt *bp)
 {
 	struct bnxt_cp_ring_info *cpr = bp->def_cp_ring;
 
-	B_CP_DB_ARM(cpr);
+	/* Only the default completion ring */
+	if (cpr != NULL && cpr->cp_doorbell != NULL)
+		B_CP_DB_ARM(cpr);
 }
 
 int bnxt_setup_int(struct bnxt *bp)
@@ -154,20 +132,26 @@ int bnxt_setup_int(struct bnxt *bp)
 	return 0;
 
 setup_exit:
-	RTE_LOG(ERR, PMD, "bnxt_irq_tbl setup failed\n");
+	PMD_DRV_LOG(ERR, "bnxt_irq_tbl setup failed\n");
 	return rc;
 }
 
 int bnxt_request_int(struct bnxt *bp)
 {
+	struct rte_intr_handle *intr_handle = &bp->pdev->intr_handle;
+	struct bnxt_irq *irq = bp->irq_tbl;
 	int rc = 0;
 
-	struct bnxt_irq *irq = bp->irq_tbl;
+	if (!irq)
+		return 0;
 
-	rte_intr_callback_register(&bp->pdev->intr_handle, irq->handler,
-				   (void *)bp->eth_dev);
-	rte_intr_enable(&bp->pdev->intr_handle);
+	if (!irq->requested) {
+		rc = rte_intr_callback_register(intr_handle,
+						irq->handler,
+						bp->eth_dev);
+		if (!rc)
+			irq->requested = 1;
+	}
 
-	irq->requested = 1;
 	return rc;
 }

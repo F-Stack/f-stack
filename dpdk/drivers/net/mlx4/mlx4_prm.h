@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2017 6WIND S.A.
- *   Copyright 2017 Mellanox
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of 6WIND S.A. nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 6WIND S.A.
+ * Copyright 2017 Mellanox Technologies, Ltd
  */
 
 #ifndef MLX4_PRM_H_
@@ -47,28 +19,29 @@
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
+#include "mlx4_autoconf.h"
 
 /* ConnectX-3 Tx queue basic block. */
 #define MLX4_TXBB_SHIFT 6
 #define MLX4_TXBB_SIZE (1 << MLX4_TXBB_SHIFT)
 
 /* Typical TSO descriptor with 16 gather entries is 352 bytes. */
-#define MLX4_MAX_WQE_SIZE 512
-#define MLX4_MAX_WQE_TXBBS (MLX4_MAX_WQE_SIZE / MLX4_TXBB_SIZE)
+#define MLX4_MAX_SGE 32
+#define MLX4_MAX_WQE_SIZE \
+	(MLX4_MAX_SGE * sizeof(struct mlx4_wqe_data_seg) + \
+	 sizeof(struct mlx4_wqe_ctrl_seg))
+#define MLX4_SEG_SHIFT 4
 
 /* Send queue stamping/invalidating information. */
 #define MLX4_SQ_STAMP_STRIDE 64
 #define MLX4_SQ_STAMP_DWORDS (MLX4_SQ_STAMP_STRIDE / 4)
-#define MLX4_SQ_STAMP_SHIFT 31
+#define MLX4_SQ_OWNER_BIT 31
 #define MLX4_SQ_STAMP_VAL 0x7fffffff
 
 /* Work queue element (WQE) flags. */
-#define MLX4_BIT_WQE_OWN 0x80000000
 #define MLX4_WQE_CTRL_IIP_HDR_CSUM (1 << 28)
 #define MLX4_WQE_CTRL_IL4_HDR_CSUM (1 << 27)
-
-#define MLX4_SIZE_TO_TXBBS(size) \
-	(RTE_ALIGN((size), (MLX4_TXBB_SIZE)) >> (MLX4_TXBB_SHIFT))
+#define MLX4_WQE_CTRL_RR (1 << 6)
 
 /* CQE checksum flags. */
 enum {
@@ -80,6 +53,7 @@ enum {
 };
 
 /* CQE status flags. */
+#define MLX4_CQE_STATUS_IPV6F (1 << 12)
 #define MLX4_CQE_STATUS_IPV4 (1 << 22)
 #define MLX4_CQE_STATUS_IPV4F (1 << 23)
 #define MLX4_CQE_STATUS_IPV6 (1 << 24)
@@ -98,16 +72,14 @@ enum {
 struct mlx4_sq {
 	volatile uint8_t *buf; /**< SQ buffer. */
 	volatile uint8_t *eob; /**< End of SQ buffer */
-	uint32_t head; /**< SQ head counter in units of TXBBS. */
-	uint32_t tail; /**< SQ tail counter in units of TXBBS. */
-	uint32_t txbb_cnt; /**< Num of WQEBB in the Q (should be ^2). */
-	uint32_t txbb_cnt_mask; /**< txbbs_cnt mask (txbb_cnt is ^2). */
-	uint32_t headroom_txbbs; /**< Num of txbbs that should be kept free. */
+	uint32_t size; /**< SQ size includes headroom. */
+	uint32_t remain_size; /**< Remaining WQE room in SQ (bytes). */
+	uint32_t owner_opcode;
+	/**< Default owner opcode with HW valid owner bit. */
+	uint32_t stamp; /**< Stamp value with an invalid HW owner bit. */
 	volatile uint32_t *db; /**< Pointer to the doorbell. */
 	uint32_t doorbell_qpn; /**< qp number to write to the doorbell. */
 };
-
-#define mlx4_get_send_wqe(sq, n) ((sq)->buf + ((n) * (MLX4_TXBB_SIZE)))
 
 /* Completion queue events, numbers and masks. */
 #define MLX4_CQ_DB_GEQ_N_MASK 0x3
@@ -127,6 +99,19 @@ struct mlx4_cq {
 	uint32_t cqn; /**< CQ number. */
 	int arm_sn; /**< Rx event counter. */
 };
+
+#ifndef HAVE_IBV_MLX4_WQE_LSO_SEG
+/*
+ * WQE LSO segment structure.
+ * Defined here as backward compatibility for rdma-core v17 and below.
+ * Similar definition is found in infiniband/mlx4dv.h in rdma-core v18
+ * and above.
+ */
+struct mlx4_wqe_lso_seg {
+	rte_be32_t mss_hdr_size;
+	rte_be32_t header[];
+};
+#endif
 
 /**
  * Retrieve a CQE entry from a CQ.

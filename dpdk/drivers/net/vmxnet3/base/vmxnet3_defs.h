@@ -1,29 +1,6 @@
-/*********************************************************
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (C) 2007 VMware, Inc. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
- *
- *********************************************************/
+ */
 
 /*
  * vmxnet3_defs.h --
@@ -347,7 +324,32 @@ struct Vmxnet3_RxCompDescExt {
    uint8  segCnt;       /* Number of aggregated packets */
    uint8  dupAckCnt;    /* Number of duplicate Acks */
    __le16 tsDelta;      /* TCP timestamp difference */
-   __le32 dword2[2];
+	__le32 dword2;
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32 gen : 1;     /* generation bit */
+	uint32 type : 7;    /* completion type */
+	uint32 fcs : 1;     /* Frame CRC correct */
+	uint32 frg : 1;     /* IP Fragment */
+	uint32 v4 : 1;      /* IPv4 */
+	uint32 v6 : 1;      /* IPv6 */
+	uint32 ipc : 1;     /* IP Checksum Correct */
+	uint32 tcp : 1;     /* TCP packet */
+	uint32 udp : 1;     /* UDP packet */
+	uint32 tuc : 1;     /* TCP/UDP Checksum Correct */
+	uint32 mss : 16;
+#else
+	uint32 mss : 16;
+	uint32 tuc : 1;     /* TCP/UDP Checksum Correct */
+	uint32 udp : 1;     /* UDP packet */
+	uint32 tcp : 1;     /* TCP packet */
+	uint32 ipc : 1;     /* IP Checksum Correct */
+	uint32 v6 : 1;      /* IPv6 */
+	uint32 v4 : 1;      /* IPv4 */
+	uint32 frg : 1;     /* IP Fragment */
+	uint32 fcs : 1;     /* Frame CRC correct */
+	uint32 type : 7;    /* completion type */
+	uint32 gen : 1;     /* generation bit */
+#endif  /* __BIG_ENDIAN_BITFIELD */
 }
 #include "vmware_pack_end.h"
 Vmxnet3_RxCompDescExt;

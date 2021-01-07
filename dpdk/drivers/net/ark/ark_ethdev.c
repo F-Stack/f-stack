@@ -1,34 +1,5 @@
-/*-
- * BSD LICENSE
- *
- * Copyright (c) 2015-2017 Atomic Rules LLC
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in
- * the documentation and/or other materials provided with the
- * distribution.
- * * Neither the name of copyright holder nor the names of its
- * contributors may be used to endorse or promote products derived
- * from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2015-2018 Atomic Rules LLC
  */
 
 #include <unistd.h>
@@ -69,7 +40,7 @@ static int eth_ark_dev_set_link_down(struct rte_eth_dev *dev);
 static int eth_ark_dev_stats_get(struct rte_eth_dev *dev,
 				  struct rte_eth_stats *stats);
 static void eth_ark_dev_stats_reset(struct rte_eth_dev *dev);
-static void eth_ark_set_default_mac_addr(struct rte_eth_dev *dev,
+static int eth_ark_set_default_mac_addr(struct rte_eth_dev *dev,
 					 struct ether_addr *mac_addr);
 static int eth_ark_macaddr_add(struct rte_eth_dev *dev,
 			       struct ether_addr *mac_addr,
@@ -270,8 +241,7 @@ check_for_ext(struct ark_adapter *ark)
 static int
 eth_ark_dev_init(struct rte_eth_dev *dev)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	struct rte_pci_device *pci_dev;
 	int ret;
 	int port_count = 1;
@@ -342,6 +312,9 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 
 	/* We are a single function multi-port device. */
 	ret = ark_config_device(dev);
+	if (ret)
+		return -1;
+
 	dev->dev_ops = &ark_eth_dev_ops;
 
 	dev->data->mac_addrs = rte_zmalloc("ark", ETHER_ADDR_LEN, 0);
@@ -390,6 +363,7 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 		if (p == 0) {
 			/* First port is already allocated by DPDK */
 			eth_dev = ark->eth_dev;
+			rte_eth_dev_probing_finish(eth_dev);
 			continue;
 		}
 
@@ -422,13 +396,15 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 			ark->user_data[eth_dev->data->port_id] =
 				ark->user_ext.dev_init(dev, ark->a_bar, p);
 		}
+
+		rte_eth_dev_probing_finish(eth_dev);
 	}
 
 	return ret;
 
- error:
-	if (dev->data->mac_addrs)
-		rte_free(dev->data->mac_addrs);
+error:
+	rte_free(dev->data->mac_addrs);
+	dev->data->mac_addrs = NULL;
 	return -1;
 }
 
@@ -440,8 +416,7 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 static int
 ark_config_device(struct rte_eth_dev *dev)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	uint16_t num_q, i;
 	struct ark_mpu_t *mpu;
 
@@ -516,8 +491,7 @@ ark_config_device(struct rte_eth_dev *dev)
 static int
 eth_ark_dev_uninit(struct rte_eth_dev *dev)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
@@ -532,7 +506,6 @@ eth_ark_dev_uninit(struct rte_eth_dev *dev)
 	dev->dev_ops = NULL;
 	dev->rx_pkt_burst = NULL;
 	dev->tx_pkt_burst = NULL;
-	rte_free(dev->data->mac_addrs);
 	return 0;
 }
 
@@ -540,8 +513,7 @@ static int
 eth_ark_dev_configure(struct rte_eth_dev *dev)
 {
 	PMD_FUNC_LOG(DEBUG, "\n");
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	eth_ark_dev_set_link_up(dev);
 	if (ark->user_ext.dev_configure)
@@ -567,8 +539,7 @@ delay_pg_start(void *arg)
 static int
 eth_ark_dev_start(struct rte_eth_dev *dev)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	int i;
 
 	PMD_FUNC_LOG(DEBUG, "\n");
@@ -620,8 +591,7 @@ eth_ark_dev_stop(struct rte_eth_dev *dev)
 {
 	uint16_t i;
 	int status;
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	struct ark_mpu_t *mpu;
 
 	PMD_FUNC_LOG(DEBUG, "\n");
@@ -711,8 +681,7 @@ eth_ark_dev_stop(struct rte_eth_dev *dev)
 static void
 eth_ark_dev_close(struct rte_eth_dev *dev)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	uint16_t i;
 
 	if (ark->user_ext.dev_close)
@@ -742,8 +711,7 @@ static void
 eth_ark_dev_info_get(struct rte_eth_dev *dev,
 		     struct rte_eth_dev_info *dev_info)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 	struct ark_mpu_t *tx_mpu = RTE_PTR_ADD(ark->bar0, ARK_MPU_TX_BASE);
 	struct ark_mpu_t *rx_mpu = RTE_PTR_ADD(ark->bar0, ARK_MPU_RX_BASE);
 	uint16_t ports = ark->num_ports;
@@ -771,7 +739,6 @@ eth_ark_dev_info_get(struct rte_eth_dev *dev,
 				ETH_LINK_SPEED_40G |
 				ETH_LINK_SPEED_50G |
 				ETH_LINK_SPEED_100G);
-	dev_info->pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 }
 
 static int
@@ -779,8 +746,7 @@ eth_ark_dev_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 {
 	PMD_DEBUG_LOG(DEBUG, "link status = %d\n",
 			dev->data->dev_link.link_status);
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (ark->user_ext.link_update) {
 		return ark->user_ext.link_update
@@ -794,8 +760,7 @@ static int
 eth_ark_dev_set_link_up(struct rte_eth_dev *dev)
 {
 	dev->data->dev_link.link_status = 1;
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (ark->user_ext.dev_set_link_up)
 		return ark->user_ext.dev_set_link_up(dev,
@@ -807,8 +772,7 @@ static int
 eth_ark_dev_set_link_down(struct rte_eth_dev *dev)
 {
 	dev->data->dev_link.link_status = 0;
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (ark->user_ext.dev_set_link_down)
 		return ark->user_ext.dev_set_link_down(dev,
@@ -820,8 +784,7 @@ static int
 eth_ark_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	uint16_t i;
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	stats->ipackets = 0;
 	stats->ibytes = 0;
@@ -844,8 +807,7 @@ static void
 eth_ark_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	uint16_t i;
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++)
 		eth_tx_queue_stats_reset(dev->data->tx_queues[i]);
@@ -862,8 +824,7 @@ eth_ark_macaddr_add(struct rte_eth_dev *dev,
 		    uint32_t index,
 		    uint32_t pool)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (ark->user_ext.mac_addr_add) {
 		ark->user_ext.mac_addr_add(dev,
@@ -879,31 +840,31 @@ eth_ark_macaddr_add(struct rte_eth_dev *dev,
 static void
 eth_ark_macaddr_remove(struct rte_eth_dev *dev, uint32_t index)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (ark->user_ext.mac_addr_remove)
 		ark->user_ext.mac_addr_remove(dev, index,
 			      ark->user_data[dev->data->port_id]);
 }
 
-static void
+static int
 eth_ark_set_default_mac_addr(struct rte_eth_dev *dev,
 			     struct ether_addr *mac_addr)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
-	if (ark->user_ext.mac_addr_set)
+	if (ark->user_ext.mac_addr_set) {
 		ark->user_ext.mac_addr_set(dev, mac_addr,
 			   ark->user_data[dev->data->port_id]);
+		return 0;
+	}
+	return -ENOTSUP;
 }
 
 static int
 eth_ark_set_mtu(struct rte_eth_dev *dev, uint16_t  size)
 {
-	struct ark_adapter *ark =
-		(struct ark_adapter *)dev->data->dev_private;
+	struct ark_adapter *ark = dev->data->dev_private;
 
 	if (ark->user_ext.set_mtu)
 		return ark->user_ext.set_mtu(dev, size,

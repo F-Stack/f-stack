@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <fcntl.h>
@@ -50,14 +21,9 @@
 #include "../include/conf.h"
 
 
-static const struct rte_eth_conf port_conf = {
+static struct rte_eth_conf port_conf = {
 		.rxmode = {
 			.split_hdr_size = 0,
-			.header_split   = 0, /**< Header Split disabled */
-			.hw_ip_checksum = 0, /**< IP csum offload disabled */
-			.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-			.jumbo_frame    = 0, /**< Jumbo Frame disabled */
-			.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 		},
 		.txmode = {
 			.mq_mode = ETH_DCB_NONE,
@@ -78,10 +44,18 @@ void configure_eth_port(uint16_t port_id)
 	int ret;
 	uint16_t nb_rxd = RX_DESC_PER_QUEUE;
 	uint16_t nb_txd = TX_DESC_PER_QUEUE;
+	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
+	struct rte_eth_dev_info dev_info;
+	struct rte_eth_conf local_port_conf = port_conf;
 
 	rte_eth_dev_stop(port_id);
 
-	ret = rte_eth_dev_configure(port_id, 1, 1, &port_conf);
+	rte_eth_dev_info_get(port_id, &dev_info);
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		local_port_conf.txmode.offloads |=
+			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+	ret = rte_eth_dev_configure(port_id, 1, 1, &local_port_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Cannot configure port %u (error %d)\n",
 				(unsigned int) port_id, ret);
@@ -93,9 +67,11 @@ void configure_eth_port(uint16_t port_id)
 				(unsigned int) port_id, ret);
 
 	/* Initialize the port's RX queue */
+	rxq_conf = dev_info.default_rxconf;
+	rxq_conf.offloads = local_port_conf.rxmode.offloads;
 	ret = rte_eth_rx_queue_setup(port_id, 0, nb_rxd,
 			rte_eth_dev_socket_id(port_id),
-			NULL,
+			&rxq_conf,
 			mbuf_pool);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE,
@@ -103,9 +79,11 @@ void configure_eth_port(uint16_t port_id)
 				(unsigned int) port_id, ret);
 
 	/* Initialize the port's TX queue */
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = local_port_conf.txmode.offloads;
 	ret = rte_eth_tx_queue_setup(port_id, 0, nb_txd,
 			rte_eth_dev_socket_id(port_id),
-			NULL);
+			&txq_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE,
 				"Failed to setup TX queue on port %u (error %d)\n",
@@ -131,7 +109,7 @@ void configure_eth_port(uint16_t port_id)
 void
 init_dpdk(void)
 {
-	if (rte_eth_dev_count() < 2)
+	if (rte_eth_dev_count_avail() < 2)
 		rte_exit(EXIT_FAILURE, "Not enough ethernet port available\n");
 }
 

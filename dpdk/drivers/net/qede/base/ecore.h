@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_H
@@ -21,6 +19,7 @@
 #include <zlib.h>
 #endif
 
+#include "ecore_status.h"
 #include "ecore_hsi_common.h"
 #include "ecore_hsi_debug_tools.h"
 #include "ecore_hsi_init_func.h"
@@ -29,8 +28,8 @@
 #include "mcp_public.h"
 
 #define ECORE_MAJOR_VERSION		8
-#define ECORE_MINOR_VERSION		30
-#define ECORE_REVISION_VERSION		8
+#define ECORE_MINOR_VERSION		37
+#define ECORE_REVISION_VERSION		20
 #define ECORE_ENGINEERING_VERSION	0
 
 #define ECORE_VERSION							\
@@ -40,6 +39,9 @@
 #define STORM_FW_VERSION						\
 	((FW_MAJOR_VERSION << 24) | (FW_MINOR_VERSION << 16) |	\
 	 (FW_REVISION_VERSION << 8) | FW_ENGINEERING_VERSION)
+
+#define IS_ECORE_PACING(p_hwfn)	\
+	(!!(p_hwfn->b_en_pacing))
 
 #define MAX_HWFNS_PER_DEVICE	2
 #define NAME_SIZE 128 /* @DPDK */
@@ -206,6 +208,7 @@ struct ecore_l2_info;
 struct ecore_igu_info;
 struct ecore_mcp_info;
 struct ecore_dcbx_info;
+struct ecore_llh_info;
 
 struct ecore_rt_data {
 	u32	*init_val;
@@ -432,8 +435,10 @@ struct ecore_hw_info {
 #define DMAE_MAX_RW_SIZE	0x2000
 
 struct ecore_dmae_info {
-	/* Mutex for synchronizing access to functions */
-	osal_mutex_t	mutex;
+	/* Spinlock for synchronizing access to functions */
+	osal_spinlock_t lock;
+
+	bool b_mem_ready;
 
 	u8 channel;
 
@@ -540,6 +545,9 @@ enum ecore_mf_mode_bit {
 
 	/* Use stag for steering */
 	ECORE_MF_8021AD_TAGGING,
+
+	/* Allow FIP discovery fallback */
+	ECORE_MF_FIP_SPECIAL,
 };
 
 enum ecore_ufp_mode {
@@ -657,6 +665,7 @@ struct ecore_hwfn {
 #endif
 
 	struct dbg_tools_data		dbg_info;
+	void				*dbg_user_info;
 
 	struct z_stream_s		*stream;
 
@@ -677,6 +686,13 @@ struct ecore_hwfn {
 
 	/* Mechanism for recovering from doorbell drop */
 	struct ecore_db_recovery_info	db_recovery_info;
+
+	/* Enable/disable pacing, if request to enable then
+	 * IOV and mcos configuration will be skipped.
+	 * this actually reflects the value requested in
+	 * struct ecore_hw_prepare_params by ecore client.
+	 */
+	bool b_en_pacing;
 
 	/* @DPDK */
 	struct ecore_ptt		*p_arfs_ptt;
@@ -729,6 +745,7 @@ struct ecore_dev {
 #endif
 #define ECORE_IS_AH(dev)	((dev)->type == ECORE_DEV_TYPE_AH)
 #define ECORE_IS_K2(dev)	ECORE_IS_AH(dev)
+#define ECORE_IS_E4(dev)	(ECORE_IS_BB(dev) || ECORE_IS_AH(dev))
 
 	u16 vendor_id;
 	u16 device_id;
@@ -823,7 +840,25 @@ struct ecore_dev {
 	/* HW functions */
 	u8				num_hwfns;
 	struct ecore_hwfn		hwfns[MAX_HWFNS_PER_DEVICE];
+#define ECORE_LEADING_HWFN(dev)		(&dev->hwfns[0])
 #define ECORE_IS_CMT(dev)		((dev)->num_hwfns > 1)
+
+	/* Engine affinity */
+	u8				l2_affin_hint;
+	u8				fir_affin;
+	u8				iwarp_affin;
+	/* Macro for getting the engine-affinitized hwfn for FCoE/iSCSI/RoCE */
+#define ECORE_FIR_AFFIN_HWFN(dev)	(&dev->hwfns[dev->fir_affin])
+	/* Macro for getting the engine-affinitized hwfn for iWARP */
+#define ECORE_IWARP_AFFIN_HWFN(dev)	(&dev->hwfns[dev->iwarp_affin])
+	/* Generic macro for getting the engine-affinitized hwfn */
+#define ECORE_AFFIN_HWFN(dev) \
+	(ECORE_IS_IWARP_PERSONALITY(ECORE_LEADING_HWFN(dev)) ? \
+	 ECORE_IWARP_AFFIN_HWFN(dev) : \
+	 ECORE_FIR_AFFIN_HWFN(dev))
+	/* Macro for getting the index (0/1) of the engine-affinitized hwfn */
+#define ECORE_AFFIN_HWFN_IDX(dev) \
+	(IS_LEAD_HWFN(ECORE_AFFIN_HWFN(dev)) ? 0 : 1)
 
 	/* SRIOV */
 	struct ecore_hw_sriov_info	*p_iov_info;
@@ -859,6 +894,12 @@ struct ecore_dev {
 #ifndef ASIC_ONLY
 	bool				b_is_emul_full;
 #endif
+	/* LLH info */
+	u8				ppfid_bitmap;
+	struct ecore_llh_info		*p_llh_info;
+
+	/* Indicates whether this PF serves a storage target */
+	bool				b_is_target;
 
 #ifdef CONFIG_ECORE_BINARY_FW /* @DPDK */
 	void				*firmware;
@@ -930,12 +971,16 @@ void ecore_set_fw_mac_addr(__le16 *fw_msb, __le16 *fw_mid, __le16 *fw_lsb,
 #define PQ_FLAGS_ACK	(1 << 4)
 #define PQ_FLAGS_OFLD	(1 << 5)
 #define PQ_FLAGS_VFS	(1 << 6)
+#define PQ_FLAGS_LLT	(1 << 7)
 
 /* physical queue index for cm context intialization */
 u16 ecore_get_cm_pq_idx(struct ecore_hwfn *p_hwfn, u32 pq_flags);
 u16 ecore_get_cm_pq_idx_mcos(struct ecore_hwfn *p_hwfn, u8 tc);
 u16 ecore_get_cm_pq_idx_vf(struct ecore_hwfn *p_hwfn, u16 vf);
-u16 ecore_get_cm_pq_idx_rl(struct ecore_hwfn *p_hwfn, u8 qpid);
+u16 ecore_get_cm_pq_idx_rl(struct ecore_hwfn *p_hwfn, u16 rl);
+
+/* qm vport for rate limit configuration */
+u16 ecore_get_qm_vport_idx_rl(struct ecore_hwfn *p_hwfn, u16 rl);
 
 const char *ecore_hw_get_resc_name(enum ecore_resources res_id);
 
@@ -944,6 +989,8 @@ void ecore_db_recovery_dp(struct ecore_hwfn *p_hwfn);
 void ecore_db_recovery_execute(struct ecore_hwfn *p_hwfn,
 			       enum ecore_db_rec_exec);
 
+bool ecore_edpm_enabled(struct ecore_hwfn *p_hwfn);
+
 /* amount of resources used in qm init */
 u8 ecore_init_qm_get_num_tcs(struct ecore_hwfn *p_hwfn);
 u16 ecore_init_qm_get_num_vfs(struct ecore_hwfn *p_hwfn);
@@ -951,6 +998,29 @@ u16 ecore_init_qm_get_num_pf_rls(struct ecore_hwfn *p_hwfn);
 u16 ecore_init_qm_get_num_vports(struct ecore_hwfn *p_hwfn);
 u16 ecore_init_qm_get_num_pqs(struct ecore_hwfn *p_hwfn);
 
-#define ECORE_LEADING_HWFN(dev)	(&dev->hwfns[0])
+#define MFW_PORT(_p_hwfn)	((_p_hwfn)->abs_pf_id % \
+				 ecore_device_num_ports((_p_hwfn)->p_dev))
+
+/* The PFID<->PPFID calculation is based on the relative index of a PF on its
+ * port. In BB there is a bug in the LLH in which the PPFID is actually engine
+ * based, and thus it equals the PFID.
+ */
+#define ECORE_PFID_BY_PPFID(_p_hwfn, abs_ppfid) \
+	(ECORE_IS_BB((_p_hwfn)->p_dev) ? \
+	 (abs_ppfid) : \
+	 (abs_ppfid) * (_p_hwfn)->p_dev->num_ports_in_engine + \
+	 MFW_PORT(_p_hwfn))
+#define ECORE_PPFID_BY_PFID(_p_hwfn) \
+	(ECORE_IS_BB((_p_hwfn)->p_dev) ? \
+	 (_p_hwfn)->rel_pf_id : \
+	 (_p_hwfn)->rel_pf_id / (_p_hwfn)->p_dev->num_ports_in_engine)
+
+enum _ecore_status_t ecore_all_ppfids_wr(struct ecore_hwfn *p_hwfn,
+					 struct ecore_ptt *p_ptt, u32 addr,
+					 u32 val);
+
+/* Utility functions for dumping the content of the NIG LLH filters */
+enum _ecore_status_t ecore_llh_dump_ppfid(struct ecore_dev *p_dev, u8 ppfid);
+enum _ecore_status_t ecore_llh_dump_all(struct ecore_dev *p_dev);
 
 #endif /* __ECORE_H */

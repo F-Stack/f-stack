@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef __INCLUDE_RTE_TABLE_HASH_H__
@@ -58,7 +29,7 @@ extern "C" {
  *        be picked and dropped, the most likely candidate for drop, i.e. the
  *        current LRU key, is always picked. The LRU logic requires maintaining
  *        specific data structures per each bucket. Use-cases: flow cache, etc.
- *     b. Extendible bucket (ext): The bucket is extended with space for 4 more
+ *     b. Extendable bucket (ext): The bucket is extended with space for 4 more
  *        keys. This is done by allocating additional memory at table init time,
  *        which is used to create a pool of free keys (the size of this pool is
  *        configurable and always a multiple of 4). On key add operation, the
@@ -70,7 +41,7 @@ extern "C" {
  *        current bucket is in extended state and a match is not found in the
  *        first group of 4 keys, the search continues beyond the first group of
  *        4 keys, potentially until all keys in this bucket are examined. The
- *        extendible bucket logic requires maintaining specific data structures
+ *        extendable bucket logic requires maintaining specific data structures
  *        per table and per each bucket. Use-cases: flow table, etc.
  * 2. Key size:
  *     a. Configurable key size
@@ -115,7 +86,7 @@ struct rte_table_hash_params {
 	uint64_t seed;
 };
 
-/** Extendible bucket hash table operations */
+/** Extendable bucket hash table operations */
 extern struct rte_table_ops rte_table_hash_ext_ops;
 extern struct rte_table_ops rte_table_hash_key8_ext_ops;
 extern struct rte_table_ops rte_table_hash_key16_ext_ops;
@@ -127,9 +98,6 @@ extern struct rte_table_ops rte_table_hash_lru_ops;
 extern struct rte_table_ops rte_table_hash_key8_lru_ops;
 extern struct rte_table_ops rte_table_hash_key16_lru_ops;
 extern struct rte_table_ops rte_table_hash_key32_lru_ops;
-
-/** Cuckoo hash table operations */
-extern struct rte_table_ops rte_table_hash_cuckoo_ops;
 
 #ifdef __cplusplus
 }

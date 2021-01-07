@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -106,8 +77,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RTE_TEST_RX_DESC_DEFAULT 1024
+#define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -169,14 +140,13 @@ static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.max_rx_pkt_len = JUMBO_FRAME_MAX_SIZE,
 		.split_hdr_size = 0,
-		.header_split   = 0, /**< Header Split disabled */
-		.hw_ip_checksum = 1, /**< IP checksum offload enabled */
-		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
-		.jumbo_frame    = 1, /**< Jumbo Frame Support enabled */
-		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.offloads = (DEV_RX_OFFLOAD_CHECKSUM |
+			     DEV_RX_OFFLOAD_JUMBO_FRAME),
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
+		.offloads = (DEV_TX_OFFLOAD_IPV4_CKSUM |
+			     DEV_TX_OFFLOAD_MULTI_SEGS),
 	},
 };
 
@@ -263,15 +233,18 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 {
 	struct rx_queue *rxq;
 	uint32_t i, len, next_hop;
-	uint8_t ipv6;
-	uint16_t port_out;
+	uint16_t port_out, ether_type;
 	int32_t len2;
+	const struct ether_hdr *eth;
 
-	ipv6 = 0;
 	rxq = &qconf->rx_queue_list[queueid];
 
 	/* by default, send everything back to the source port */
 	port_out = port_in;
+
+	/* save ether type of the incoming packet */
+	eth = rte_pktmbuf_mtod(m, const struct ether_hdr *);
+	ether_type = eth->ether_type;
 
 	/* Remove the Ethernet header and trailer from the input packet */
 	rte_pktmbuf_adj(m, (uint16_t)sizeof(struct ether_hdr));
@@ -317,8 +290,6 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
 		/* if this is an IPv6 packet */
 		struct ipv6_hdr *ip_hdr;
-
-		ipv6 = 1;
 
 		/* Read the lookup key (i.e. ip_dst) from the input packet */
 		ip_hdr = rte_pktmbuf_mtod(m, struct ipv6_hdr *);
@@ -376,10 +347,7 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 
 		/* src addr */
 		ether_addr_copy(&ports_eth_addr[port_out], &eth_hdr->s_addr);
-		if (ipv6)
-			eth_hdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv6);
-		else
-			eth_hdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv4);
+		eth_hdr->ether_type = ether_type;
 	}
 
 	len += len2;
@@ -599,7 +567,7 @@ print_ethaddr(const char *name, struct ether_addr *eth_addr)
 
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
-check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
+check_all_ports_link_status(uint32_t port_mask)
 {
 #define CHECK_INTERVAL 100 /* 100ms */
 #define MAX_CHECK_TIME 90 /* 9s (90 * 100ms) in total */
@@ -611,7 +579,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 	fflush(stdout);
 	for (count = 0; count <= MAX_CHECK_TIME; count++) {
 		all_ports_up = 1;
-		for (portid = 0; portid < port_num; portid++) {
+		RTE_ETH_FOREACH_DEV(portid) {
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
@@ -871,7 +839,7 @@ main(int argc, char **argv)
 	struct rte_eth_txconf *txconf;
 	struct rx_queue *rxq;
 	int socket, ret;
-	unsigned nb_ports;
+	uint16_t nb_ports;
 	uint16_t queueid = 0;
 	unsigned lcore_id = 0, rx_lcore_id = 0;
 	uint32_t n_tx_queue, nb_lcores;
@@ -889,7 +857,7 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid arguments");
 
-	nb_ports = rte_eth_dev_count();
+	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No ports found!\n");
 
@@ -904,7 +872,10 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Non-existent ports in portmask!\n");
 
 	/* initialize all ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
+		struct rte_eth_conf local_port_conf = port_conf;
+		struct rte_eth_rxconf rxq_conf;
+
 		/* skip ports that are not enabled */
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			printf("Skipping disabled port %d\n", portid);
@@ -915,8 +886,9 @@ main(int argc, char **argv)
 
 		/* limit the frame size to the maximum supported by NIC */
 		rte_eth_dev_info_get(portid, &dev_info);
-		port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
-		    dev_info.max_rx_pktlen, port_conf.rxmode.max_rx_pkt_len);
+		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
+		    dev_info.max_rx_pktlen,
+		    local_port_conf.rxmode.max_rx_pkt_len);
 
 		/* get the lcore_id for this port */
 		while (rte_lcore_is_enabled(rx_lcore_id) == 0 ||
@@ -950,7 +922,7 @@ main(int argc, char **argv)
 		if (n_tx_queue > MAX_TX_QUEUE_PER_PORT)
 			n_tx_queue = MAX_TX_QUEUE_PER_PORT;
 		ret = rte_eth_dev_configure(portid, 1, (uint16_t)n_tx_queue,
-					    &port_conf);
+					    &local_port_conf);
 		if (ret < 0) {
 			printf("\n");
 			rte_exit(EXIT_FAILURE, "Cannot configure device: "
@@ -967,8 +939,10 @@ main(int argc, char **argv)
 		}
 
 		/* init one RX queue */
+		rxq_conf = dev_info.default_rxconf;
+		rxq_conf.offloads = local_port_conf.rxmode.offloads;
 		ret = rte_eth_rx_queue_setup(portid, 0, nb_rxd,
-					     socket, NULL,
+					     socket, &rxq_conf,
 					     socket_direct_pool[socket]);
 		if (ret < 0) {
 			printf("\n");
@@ -982,17 +956,21 @@ main(int argc, char **argv)
 		printf("\n");
 
 		/* init one TX queue per couple (lcore,port) */
+		rte_eth_dev_info_get(portid, &dev_info);
 		queueid = 0;
 		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 			if (rte_lcore_is_enabled(lcore_id) == 0)
 				continue;
+
+			if (queueid >= dev_info.nb_tx_queues)
+				break;
 
 			socket = (int) rte_lcore_to_socket_id(lcore_id);
 			printf("txq=%u,%d ", lcore_id, queueid);
 			fflush(stdout);
 
 			txconf = &dev_info.default_txconf;
-			txconf->txq_flags = 0;
+			txconf->offloads = local_port_conf.txmode.offloads;
 			ret = rte_eth_tx_queue_setup(portid, queueid, nb_txd,
 						     socket, txconf);
 			if (ret < 0) {
@@ -1012,7 +990,7 @@ main(int argc, char **argv)
 	printf("\n");
 
 	/* start ports */
-	for (portid = 0; portid < nb_ports; portid++) {
+	RTE_ETH_FOREACH_DEV(portid) {
 		if ((enabled_port_mask & (1 << portid)) == 0) {
 			continue;
 		}
@@ -1034,7 +1012,7 @@ main(int argc, char **argv)
 	if (init_routing_table() < 0)
 		rte_exit(EXIT_FAILURE, "Cannot init routing table\n");
 
-	check_all_ports_link_status(nb_ports, enabled_port_mask);
+	check_all_ports_link_status(enabled_port_mask);
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);

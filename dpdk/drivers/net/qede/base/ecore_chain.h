@@ -1,9 +1,7 @@
-/*
- * Copyright (c) 2016 QLogic Corporation.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2016 - 2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.qede_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef __ECORE_CHAIN_H__
@@ -128,7 +126,7 @@ struct ecore_chain {
 	} pbl_sp;
 
 	/* Address of first page of the chain  - the address is required
-	 * for fastpath operation [consume/produce] but only for the the SINGLE
+	 * for fastpath operation [consume/produce] but only for the SINGLE
 	 * flavour which isn't considered fastpath [== SPQ].
 	 */
 	void				*p_virt_addr;
@@ -526,7 +524,7 @@ static OSAL_INLINE void ecore_chain_reset(struct ecore_chain *p_chain)
 	p_chain->p_prod_elem = p_chain->p_virt_addr;
 
 	if (p_chain->mode == ECORE_CHAIN_MODE_PBL) {
-		/* Use (page_cnt - 1) as a reset value for the prod/cons page's
+		/* Use "page_cnt-1" as a reset value for the prod/cons page's
 		 * indices, to avoid unnecessary page advancing on the first
 		 * call to ecore_chain_produce/consume. Instead, the indices
 		 * will be advanced to page_cnt and then will be wrapped to 0.
@@ -726,11 +724,58 @@ out:
 static OSAL_INLINE void ecore_chain_set_prod(struct ecore_chain *p_chain,
 					     u32 prod_idx, void *p_prod_elem)
 {
+	if (p_chain->mode == ECORE_CHAIN_MODE_PBL) {
+		/* Use "prod_idx-1" since ecore_chain_produce() advances the
+		 * page index before the producer index when getting to
+		 * "next_page_mask".
+		 */
+		u32 elem_idx =
+			(prod_idx - 1 + p_chain->capacity) % p_chain->capacity;
+		u32 page_idx = elem_idx / p_chain->elem_per_page;
+
+		if (is_chain_u16(p_chain))
+			p_chain->pbl.c.u16.prod_page_idx = (u16)page_idx;
+		else
+			p_chain->pbl.c.u32.prod_page_idx = page_idx;
+	}
+
 	if (is_chain_u16(p_chain))
 		p_chain->u.chain16.prod_idx = (u16)prod_idx;
 	else
 		p_chain->u.chain32.prod_idx = prod_idx;
 	p_chain->p_prod_elem = p_prod_elem;
+}
+
+/**
+ * @brief ecore_chain_set_cons - sets the cons to the given value
+ *
+ * @param cons_idx
+ * @param p_cons_elem
+ */
+static OSAL_INLINE void ecore_chain_set_cons(struct ecore_chain *p_chain,
+					     u32 cons_idx, void *p_cons_elem)
+{
+	if (p_chain->mode == ECORE_CHAIN_MODE_PBL) {
+		/* Use "cons_idx-1" since ecore_chain_consume() advances the
+		 * page index before the consumer index when getting to
+		 * "next_page_mask".
+		 */
+		u32 elem_idx =
+			(cons_idx - 1 + p_chain->capacity) % p_chain->capacity;
+		u32 page_idx = elem_idx / p_chain->elem_per_page;
+
+		if (is_chain_u16(p_chain))
+			p_chain->pbl.c.u16.cons_page_idx = (u16)page_idx;
+		else
+			p_chain->pbl.c.u32.cons_page_idx = page_idx;
+	}
+
+	if (is_chain_u16(p_chain))
+		p_chain->u.chain16.cons_idx = (u16)cons_idx;
+	else
+		p_chain->u.chain32.cons_idx = cons_idx;
+
+	p_chain->p_cons_elem = p_cons_elem;
 }
 
 /**

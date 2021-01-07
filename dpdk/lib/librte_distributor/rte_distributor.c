@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation. All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation
  */
 
 #include <stdio.h>
@@ -382,7 +354,7 @@ rte_distributor_process_v1705(struct rte_distributor *d,
 	if (unlikely(num_mbufs == 0)) {
 		/* Flush out all non-full cache-lines to workers. */
 		for (wid = 0 ; wid < d->num_workers; wid++) {
-			if ((d->bufs[wid].bufptr64[0] & RTE_DISTRIB_GET_BUF)) {
+			if (d->bufs[wid].bufptr64[0] & RTE_DISTRIB_GET_BUF) {
 				release(d, wid);
 				handle_returns(d, wid);
 			}
@@ -569,6 +541,9 @@ rte_distributor_flush_v1705(struct rte_distributor *d)
 	while (total_outstanding(d) > 0)
 		rte_distributor_process(d, NULL, 0);
 
+	/* wait 10ms to allow all worker drain the pkts */
+	rte_delay_us(10000);
+
 	/*
 	 * Send empty burst to all workers to allow them to exit
 	 * gracefully, should they need to.
@@ -623,6 +598,12 @@ rte_distributor_create_v1705(const char *name,
 	RTE_BUILD_BUG_ON((sizeof(*d) & RTE_CACHE_LINE_MASK) != 0);
 	RTE_BUILD_BUG_ON((RTE_DISTRIB_MAX_WORKERS & 7) != 0);
 
+	if (name == NULL || num_workers >=
+		(unsigned int)RTE_MIN(RTE_DISTRIB_MAX_WORKERS, RTE_MAX_LCORE)) {
+		rte_errno = EINVAL;
+		return NULL;
+	}
+
 	if (alg_type == RTE_DIST_ALG_SINGLE) {
 		d = malloc(sizeof(struct rte_distributor));
 		if (d == NULL) {
@@ -638,11 +619,6 @@ rte_distributor_create_v1705(const char *name,
 		}
 		d->alg_type = alg_type;
 		return d;
-	}
-
-	if (name == NULL || num_workers >= RTE_DISTRIB_MAX_WORKERS) {
-		rte_errno = EINVAL;
-		return NULL;
 	}
 
 	snprintf(mz_name, sizeof(mz_name), RTE_DISTRIB_PREFIX"%s", name);

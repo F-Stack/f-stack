@@ -5,7 +5,8 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  top [-p <f-stack proc_id>] [-d <secs>] [-n num] [-s]\n");
+    printf("  top [-p <f-stack proc_id>] [-P <max proc_id>] "
+        "[-d <secs>] [-n num] [-s]\n");
 }
 
 int traffic_status(struct ff_traffic_args *traffic)
@@ -32,7 +33,7 @@ int traffic_status(struct ff_traffic_args *traffic)
             ff_ipc_msg_free(retmsg);
         }
 
-        ret = ff_ipc_recv(&retmsg);
+        ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
             ff_ipc_msg_free(msg);
@@ -51,15 +52,31 @@ int main(int argc, char **argv)
 {
     int ch, delay = 1, n = 0;
     int single = 0;
-    unsigned int i;
-    struct ff_traffic_args traffic, otr;
+    unsigned int i, j;
+    struct ff_traffic_args traffic = {0, 0, 0, 0}, otr;
+    struct ff_traffic_args ptraffic[RTE_MAX_LCORE], potr[RTE_MAX_LCORE];
+    int proc_id = 0, max_proc_id = -1;
+    uint64_t rxp, rxb, txp, txb;
+    uint64_t prxp, prxb, ptxp, ptxb;
 
     ff_ipc_init();
 
-    while ((ch = getopt(argc, argv, "hp:d:n:s")) != -1) {
+#define DIFF(member) (traffic.member - otr.member)
+#define DIFF_P(member) (ptraffic[j].member - potr[j].member)
+#define ADD_S(member) (traffic.member += ptraffic[j].member)
+
+    while ((ch = getopt(argc, argv, "hp:P:d:n:s")) != -1) {
         switch(ch) {
         case 'p':
-            ff_set_proc_id(atoi(optarg));
+            proc_id = atoi(optarg);
+            ff_set_proc_id(proc_id);
+            break;
+        case 'P':
+            max_proc_id = atoi(optarg);
+            if (max_proc_id < 0 || max_proc_id >= RTE_MAX_LCORE) {
+                usage();
+                return -1;
+            }
             break;
         case 'd':
             delay = atoi(optarg) ?: 1;
@@ -78,40 +95,109 @@ int main(int argc, char **argv)
     }
 
     if (single) {
-        if (traffic_status(&traffic)) {
-            printf("fstack ipc message error !\n");
-            return -1;
-        }
+        if (max_proc_id == -1) {
+            if (traffic_status(&traffic)) {
+                printf("fstack ipc message error !\n");
+                return -1;
+            }
 
-        printf("%lu,%lu,%lu,%lu\n", traffic.rx_packets, traffic.rx_bytes,
-            traffic.tx_packets, traffic.tx_bytes);
+            printf("%lu,%lu,%lu,%lu\n", traffic.rx_packets, traffic.rx_bytes,
+                traffic.tx_packets, traffic.tx_bytes);
+        } else {
+            for (j = proc_id; j <= max_proc_id; j++) {
+                ff_set_proc_id(j);
+                if (traffic_status(&ptraffic[j])) {
+                    printf("fstack ipc message error, proc id:%d!\n", j);
+                    return -1;
+                }
+
+                printf("%9d,%20lu,%20lu,%20lu,%20lu,\n",
+                    j, ptraffic[j].rx_packets, ptraffic[j].rx_bytes,
+                    ptraffic[j].tx_packets, ptraffic[j].tx_bytes);
+
+                ADD_S(rx_packets);
+                ADD_S(rx_bytes);
+                ADD_S(tx_packets);
+                ADD_S(tx_bytes);
+            }
+
+            printf("%9s,%20lu,%20lu,%20lu,%20lu,\n",
+                "total", traffic.rx_packets, traffic.rx_bytes,
+                traffic.tx_packets, traffic.tx_bytes);
+        }
         return 0;
     }
 
-    #define DIFF(member) (traffic.member - otr.member)
-
     for (i = 0; ; i++) {
-        if (traffic_status(&traffic)) {
-            printf("fstack ipc message error !\n");
-            return -1;
-        }
+        if (max_proc_id == -1) {
+            if (traffic_status(&traffic)) {
+                printf("fstack ipc message error !\n");
+                return -1;
+            }
 
-        if (i % 40 == 0) {
-            printf("|--------------------|--------------------|");
-            printf("--------------------|--------------------|\n");
-            printf("|%20s|%20s|%20s|%20s|\n", "rx packets", "rx bytes",
-                "tx packets", "tx bytes");
-            printf("|--------------------|--------------------|");
-            printf("--------------------|--------------------|\n");
-        }
+            if (i % 40 == 0) {
+                printf("|--------------------|--------------------|");
+                printf("--------------------|--------------------|\n");
+                printf("|%20s|%20s|%20s|%20s|\n", "rx packets", "rx bytes",
+                    "tx packets", "tx bytes");
+                printf("|--------------------|--------------------|");
+                printf("--------------------|--------------------|\n");
+            }
 
-        if (i) {
-            uint64_t rxp = DIFF(rx_packets);
-            uint64_t rxb = DIFF(rx_bytes);
-            uint64_t txp = DIFF(tx_packets);
-            uint64_t txb = DIFF(tx_bytes);
+            if (i) {
+                rxp = DIFF(rx_packets);
+                rxb = DIFF(rx_bytes);
+                txp = DIFF(tx_packets);
+                txb = DIFF(tx_bytes);
 
-            printf("|%20lu|%20lu|%20lu|%20lu|\n", rxp, rxb, txp, txb);
+                printf("|%20lu|%20lu|%20lu|%20lu|\n", rxp, rxb, txp, txb);
+            }
+        } else {
+            /*
+             * get and show traffic from proc_id to max_proc_id.
+             */
+            if (i % (40 / (max_proc_id - proc_id + 2)) == 0) {
+                printf("|---------|--------------------|--------------------|"
+                    "--------------------|--------------------|\n");
+                printf("|%9s|%20s|%20s|%20s|%20s|\n",
+                    "proc_id", "rx packets", "rx bytes",
+                    "tx packets", "tx bytes");
+                printf("|---------|--------------------|--------------------|"
+                    "--------------------|--------------------|\n");
+            }
+
+            rxp = rxb = txp = txb = 0;
+            for (j = proc_id; j <= max_proc_id; j++) {
+                potr[j] = ptraffic[j];
+
+                ff_set_proc_id(j);
+                if (traffic_status(&ptraffic[j])) {
+                    printf("fstack ipc message error, proc id:%d!\n", j);
+                    return -1;
+                }
+
+                if (i) {
+                    prxp = DIFF_P(rx_packets);
+                    prxb = DIFF_P(rx_bytes);
+                    ptxp = DIFF_P(tx_packets);
+                    ptxb = DIFF_P(tx_bytes);
+                    printf("|%9d|%20lu|%20lu|%20lu|%20lu|\n",
+                        j, prxp, prxb, ptxp, ptxb);
+
+                    rxp += prxp;
+                    rxb += prxb;
+                    txp += ptxp;
+                    txb += ptxb;
+
+                    if (j == max_proc_id) {
+                        printf("|%9s|%20lu|%20lu|%20lu|%20lu|\n",
+                            "total", rxp, rxb, txp, txb);
+                        printf("|         |                    |"
+                            "                    |                    |"
+                            "                    |\n");
+                    }
+                }
+            }
         }
 
         if (n && i >= n) {

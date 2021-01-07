@@ -1,38 +1,11 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2015 Intel Corporation.
 
 Libpcap and Ring Based Poll Mode Drivers
 ========================================
 
 In addition to Poll Mode Drivers (PMDs) for physical and virtual hardware,
-the DPDK also includes two pure-software PMDs. These two drivers are:
+the DPDK also includes pure-software PMDs, two of these drivers are:
 
 *   A libpcap -based PMD (librte_pmd_pcap) that reads and writes packets using libpcap,
     - both from files on disk, as well as from physical NIC devices using standard Linux kernel drivers.
@@ -98,10 +71,18 @@ The different stream types are:
         tx_pcap=/path/to/file.pcap
 
 *   rx_iface: Defines a reception stream based on a network interface name.
-    The driver reads packets coming from the given interface using the Linux kernel driver for that interface.
+    The driver reads packets from the given interface using the Linux kernel driver for that interface.
+    The driver captures both the incoming and outgoing packets on that interface.
     The value is an interface name.
 
         rx_iface=eth0
+
+*   rx_iface_in: Defines a reception stream based on a network interface name.
+    The driver reads packets from the given interface using the Linux kernel driver for that interface.
+    The driver captures only the incoming packets on that interface.
+    The value is an interface name.
+
+        rx_iface_in=eth0
 
 *   tx_iface: Defines a transmission stream based on a network interface name.
     The driver sends packets to the given interface using the Linux kernel driver for that interface.
@@ -114,6 +95,16 @@ The different stream types are:
     The value is an interface name.
 
         iface=eth0
+
+Runtime Config Options
+^^^^^^^^^^^^^^^^^^^^^^
+
+- Use PCAP interface physical MAC
+
+ In case ``iface=`` configuration is set, user may want to use the selected interface's physical MAC
+ address. This can be done with a ``devarg`` ``phy_mac``, for example::
+
+   --vdev 'net_pcap0,iface=eth0,phy_mac=1'
 
 Examples of Usage
 ^^^^^^^^^^^^^^^^^
@@ -149,6 +140,21 @@ Forward packets through two network interfaces:
     $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,iface=eth0' --vdev='net_pcap1;iface=eth1'
 
+Enable 2 tx queues on a network interface:
+
+.. code-block:: console
+
+    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+        --vdev 'net_pcap0,rx_iface=eth1,tx_iface=eth1,tx_iface=eth1' \
+        -- --txq 2
+
+Read only incoming packets from a network interface and write them back to the same network interface:
+
+.. code-block:: console
+
+    $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
+        --vdev 'net_pcap0,rx_iface_in=eth1,tx_iface=eth1'
+
 Using libpcap-based PMD with the testpmd Application
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -174,6 +180,12 @@ Otherwise, the first 512 packets from the input pcap file will be discarded by t
     $RTE_TARGET/app/testpmd -l 0-3 -n 4 \
         --vdev 'net_pcap0,rx_pcap=file_rx.pcap,tx_pcap=file_tx.pcap' \
         -- --port-topology=chained --no-flush-rx
+
+.. note::
+
+   The network interface provided to the PMD should be up. The PMD will return
+   an error if interface is down, and the PMD itself won't change the status
+   of the external network interface.
 
 
 Rings-based PMD

@@ -1,61 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation.
  * Copyright (c) 2009, Olivier MATZ <zer0@droids-corp.org>
  * All rights reserved.
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of the University of California, Berkeley nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND ANY
- * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE REGENTS AND CONTRIBUTORS BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <stdio.h>
@@ -262,9 +208,6 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 	int err = CMDLINE_PARSE_NOMATCH;
 	int tok;
 	cmdline_parse_ctx_t *ctx;
-#ifdef RTE_LIBRTE_CMDLINE_DEBUG
-	char debug_buf[BUFSIZ];
-#endif
 	char *result_buf = result.buf;
 
 	if (!cl || !buf)
@@ -304,10 +247,8 @@ cmdline_parse(struct cmdline *cl, const char * buf)
 		return linelen;
 	}
 
-#ifdef RTE_LIBRTE_CMDLINE_DEBUG
-	snprintf(debug_buf, (linelen>64 ? 64 : linelen), "%s", buf);
-	debug_printf("Parse line : len=%d, <%s>\n", linelen, debug_buf);
-#endif
+	debug_printf("Parse line : len=%d, <%.*s>\n",
+		     linelen, linelen > 64 ? 64 : linelen, buf);
 
 	/* parse it !! */
 	inst = ctx[inst_num];
@@ -490,7 +431,7 @@ cmdline_complete(struct cmdline *cl, const char *buf, int *state,
 				if ((unsigned)(comp_len + 1) > size)
 					return 0;
 
-				snprintf(dst, size, "%s", comp_buf);
+				strlcpy(dst, comp_buf, size);
 				dst[comp_len] = 0;
 				return 2;
 			}
@@ -567,7 +508,7 @@ cmdline_complete(struct cmdline *cl, const char *buf, int *state,
 					continue;
 				}
 				(*state)++;
-				l=snprintf(dst, size, "%s", tmpbuf);
+				l=strlcpy(dst, tmpbuf, size);
 				if (l>=0 && token_hdr.ops->get_help) {
 					token_hdr.ops->get_help(token_p, tmpbuf,
 								sizeof(tmpbuf));

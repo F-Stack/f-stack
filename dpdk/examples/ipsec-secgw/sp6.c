@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2016 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2016 Intel Corporation
  */
 
 /*
@@ -45,6 +16,36 @@
 #include "parser.h"
 
 #define MAX_ACL_RULE_NUM	1024
+
+#define IPV6_FROM_SP(acr, fidx_low, fidx_high) \
+		(((uint64_t)(acr).field[(fidx_high)].value.u32 << 32) | \
+		(acr).field[(fidx_low)].value.u32)
+
+#define IPV6_DST_FROM_SP(addr, acr) do {\
+		(addr).ip.ip6.ip6[0] = rte_cpu_to_be_64(IPV6_FROM_SP((acr), \
+						IP6_DST1, IP6_DST0));\
+		(addr).ip.ip6.ip6[1] = rte_cpu_to_be_64(IPV6_FROM_SP((acr), \
+						IP6_DST3, IP6_DST2));\
+		} while (0)
+
+#define IPV6_SRC_FROM_SP(addr, acr) do {\
+		(addr).ip.ip6.ip6[0] = rte_cpu_to_be_64(IPV6_FROM_SP((acr), \
+							IP6_SRC1, IP6_SRC0));\
+		(addr).ip.ip6.ip6[1] = rte_cpu_to_be_64(IPV6_FROM_SP((acr), \
+							IP6_SRC3, IP6_SRC2));\
+		} while (0)
+
+#define IPV6_DST_MASK_FROM_SP(mask, acr) \
+		((mask) = (acr).field[IP6_DST0].mask_range.u32 + \
+			(acr).field[IP6_DST1].mask_range.u32 + \
+			(acr).field[IP6_DST2].mask_range.u32 + \
+			(acr).field[IP6_DST3].mask_range.u32)
+
+#define IPV6_SRC_MASK_FROM_SP(mask, acr) \
+		((mask) = (acr).field[IP6_SRC0].mask_range.u32 + \
+			(acr).field[IP6_SRC1].mask_range.u32 + \
+			(acr).field[IP6_SRC2].mask_range.u32 + \
+			(acr).field[IP6_SRC3].mask_range.u32)
 
 enum {
 	IP6_PROTO,
@@ -63,7 +64,7 @@ enum {
 
 #define IP6_ADDR_SIZE 16
 
-struct rte_acl_field_def ip6_defs[IP6_NUM] = {
+static struct rte_acl_field_def ip6_defs[IP6_NUM] = {
 	{
 	.type = RTE_ACL_FIELD_TYPE_BITMASK,
 	.size = sizeof(uint8_t),
@@ -145,11 +146,11 @@ struct rte_acl_field_def ip6_defs[IP6_NUM] = {
 
 RTE_ACL_RULE_DEF(acl6_rules, RTE_DIM(ip6_defs));
 
-struct acl6_rules acl6_rules_out[MAX_ACL_RULE_NUM];
-uint32_t nb_acl6_rules_out;
+static struct acl6_rules acl6_rules_out[MAX_ACL_RULE_NUM];
+static uint32_t nb_acl6_rules_out;
 
-struct acl6_rules acl6_rules_in[MAX_ACL_RULE_NUM];
-uint32_t nb_acl6_rules_in;
+static struct acl6_rules acl6_rules_in[MAX_ACL_RULE_NUM];
+static uint32_t nb_acl6_rules_in;
 
 void
 parse_sp6_tokens(char **tokens, uint32_t n_tokens,
@@ -159,6 +160,7 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 
 	uint32_t *ri = NULL; /* rule index */
 	uint32_t ti = 0; /* token index */
+	uint32_t tv;
 
 	uint32_t esp_p = 0;
 	uint32_t protect_p = 0;
@@ -231,8 +233,12 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 			if (status->status < 0)
 				return;
 
-			rule_ipv6->data.userdata =
-				PROTECT(atoi(tokens[ti]));
+			tv = atoi(tokens[ti]);
+			APP_CHECK(tv != DISCARD && tv != BYPASS, status,
+				"invalid SPI: %s", tokens[ti]);
+			if (status->status < 0)
+				return;
+			rule_ipv6->data.userdata = tv;
 
 			protect_p = 1;
 			continue;
@@ -615,6 +621,36 @@ acl6_init(const char *name, int32_t socketid, const struct acl6_rules *rules,
 	return ctx;
 }
 
+/*
+ * check that for each rule it's SPI has a correspondent entry in SAD
+ */
+static int
+check_spi_value(int inbound)
+{
+	uint32_t i, num, spi;
+	const struct acl6_rules *acr;
+
+	if (inbound != 0) {
+		acr = acl6_rules_in;
+		num = nb_acl6_rules_in;
+	} else {
+		acr = acl6_rules_out;
+		num = nb_acl6_rules_out;
+	}
+
+	for (i = 0; i != num; i++) {
+		spi = acr[i].data.userdata;
+		if (spi != DISCARD && spi != BYPASS &&
+				sa_spi_present(spi, inbound) < 0) {
+			RTE_LOG(ERR, IPSEC, "SPI %u is not present in SAD\n",
+				spi);
+			return -ENOENT;
+		}
+	}
+
+	return 0;
+}
+
 void
 sp6_init(struct socket_ctx *ctx, int32_t socket_id)
 {
@@ -631,6 +667,14 @@ sp6_init(struct socket_ctx *ctx, int32_t socket_id)
 		rte_exit(EXIT_FAILURE, "Outbound IPv6 SP DB for socket %u "
 				"already initialized\n", socket_id);
 
+	if (check_spi_value(1) < 0)
+		rte_exit(EXIT_FAILURE,
+			"Inbound IPv6 SP DB has unmatched in SAD SPIs\n");
+
+	if (check_spi_value(0) < 0)
+		rte_exit(EXIT_FAILURE,
+			"Outbound IPv6 SP DB has unmatched in SAD SPIs\n");
+
 	if (nb_acl6_rules_in > 0) {
 		name = "sp_ip6_in";
 		ctx->sp_ip6_in = (struct sp_ctx *)acl6_init(name,
@@ -646,4 +690,37 @@ sp6_init(struct socket_ctx *ctx, int32_t socket_id)
 	} else
 		RTE_LOG(WARNING, IPSEC, "No IPv6 SP Outbound rule "
 			"specified\n");
+}
+
+/*
+ * Search though SP rules for given SPI.
+ */
+int
+sp6_spi_present(uint32_t spi, int inbound, struct ip_addr ip_addr[2],
+			uint32_t mask[2])
+{
+	uint32_t i, num;
+	const struct acl6_rules *acr;
+
+	if (inbound != 0) {
+		acr = acl6_rules_in;
+		num = nb_acl6_rules_in;
+	} else {
+		acr = acl6_rules_out;
+		num = nb_acl6_rules_out;
+	}
+
+	for (i = 0; i != num; i++) {
+		if (acr[i].data.userdata == spi) {
+			if (NULL != ip_addr && NULL != mask) {
+				IPV6_SRC_FROM_SP(ip_addr[0], acr[i]);
+				IPV6_DST_FROM_SP(ip_addr[1], acr[i]);
+				IPV6_SRC_MASK_FROM_SP(mask[0], acr[i]);
+				IPV6_DST_MASK_FROM_SP(mask[1], acr[i]);
+			}
+			return i;
+		}
+	}
+
+	return -ENOENT;
 }

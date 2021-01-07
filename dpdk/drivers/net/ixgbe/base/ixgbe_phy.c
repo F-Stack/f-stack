@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2001-2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2018
+ */
 
 #include "ixgbe_api.h"
 #include "ixgbe_common.h"
@@ -86,8 +57,8 @@ STATIC s32 ixgbe_in_i2c_byte_ack(struct ixgbe_hw *hw, u8 *byte)
 
 /**
  * ixgbe_ones_comp_byte_add - Perform one's complement addition
- * @add1 - addend 1
- * @add2 - addend 2
+ * @add1: addend 1
+ * @add2: addend 2
  *
  * Returns one's complement 8-bit sum.
  */
@@ -398,6 +369,7 @@ s32 ixgbe_check_reset_blocked(struct ixgbe_hw *hw)
 /**
  *  ixgbe_validate_phy_addr - Determines phy address is valid
  *  @hw: pointer to hardware structure
+ *  @phy_addr: PHY address
  *
  **/
 bool ixgbe_validate_phy_addr(struct ixgbe_hw *hw, u32 phy_addr)
@@ -575,6 +547,7 @@ out:
  *  the SWFW lock
  *  @hw: pointer to hardware structure
  *  @reg_addr: 32 bit address of PHY register to read
+ *  @device_type: 5 bit device type
  *  @phy_data: Pointer to read data from PHY register
  **/
 s32 ixgbe_read_phy_reg_mdi(struct ixgbe_hw *hw, u32 reg_addr, u32 device_type,
@@ -656,6 +629,7 @@ s32 ixgbe_read_phy_reg_mdi(struct ixgbe_hw *hw, u32 reg_addr, u32 device_type,
  *  using the SWFW lock - this function is needed in most cases
  *  @hw: pointer to hardware structure
  *  @reg_addr: 32 bit address of PHY register to read
+ *  @device_type: 5 bit device type
  *  @phy_data: Pointer to read data from PHY register
  **/
 s32 ixgbe_read_phy_reg_generic(struct ixgbe_hw *hw, u32 reg_addr,
@@ -872,6 +846,7 @@ s32 ixgbe_setup_phy_link_generic(struct ixgbe_hw *hw)
  *  ixgbe_setup_phy_link_speed_generic - Sets the auto advertised capabilities
  *  @hw: pointer to hardware structure
  *  @speed: new link speed
+ *  @autoneg_wait_to_complete: unused
  **/
 s32 ixgbe_setup_phy_link_speed_generic(struct ixgbe_hw *hw,
 				       ixgbe_link_speed speed,
@@ -977,6 +952,8 @@ s32 ixgbe_get_copper_link_capabilities_generic(struct ixgbe_hw *hw,
 /**
  *  ixgbe_check_phy_link_tnx - Determine link and speed status
  *  @hw: pointer to hardware structure
+ *  @speed: current link speed
+ *  @link_up: true is link is up, false otherwise
  *
  *  Reads the VS1 register to determine if link is up and the current speed for
  *  the PHY.
@@ -1425,6 +1402,13 @@ s32 ixgbe_identify_sfp_module_generic(struct ixgbe_hw *hw)
 				else
 					hw->phy.sfp_type =
 						ixgbe_sfp_type_1g_lx_core1;
+			} else if (comp_codes_1g & IXGBE_SFF_1GBASELHA_CAPABLE) {
+				if (hw->bus.lan_id == 0)
+					hw->phy.sfp_type =
+						ixgbe_sfp_type_1g_lha_core0;
+				else
+					hw->phy.sfp_type =
+						ixgbe_sfp_type_1g_lha_core1;
 			} else {
 				hw->phy.sfp_type = ixgbe_sfp_type_unknown;
 			}
@@ -1512,6 +1496,8 @@ s32 ixgbe_identify_sfp_module_generic(struct ixgbe_hw *hw)
 		if (comp_codes_10g == 0 &&
 		    !(hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core1 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core0 ||
+		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lha_core0 ||
+		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lha_core1 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lx_core0 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lx_core1 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_sx_core0 ||
@@ -1531,6 +1517,8 @@ s32 ixgbe_identify_sfp_module_generic(struct ixgbe_hw *hw)
 		if (!(enforce_sfp & IXGBE_DEVICE_CAPS_ALLOW_ANY_SFP) &&
 		    !(hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core0 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core1 ||
+		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lha_core0 ||
+		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lha_core1 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lx_core0 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_lx_core1 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_sx_core0 ||
@@ -1858,11 +1846,13 @@ s32 ixgbe_get_sfp_init_sequence_offsets(struct ixgbe_hw *hw,
 	 */
 	if (sfp_type == ixgbe_sfp_type_da_act_lmt_core0 ||
 	    sfp_type == ixgbe_sfp_type_1g_lx_core0 ||
+	    sfp_type == ixgbe_sfp_type_1g_lha_core0 ||
 	    sfp_type == ixgbe_sfp_type_1g_cu_core0 ||
 	    sfp_type == ixgbe_sfp_type_1g_sx_core0)
 		sfp_type = ixgbe_sfp_type_srlr_core0;
 	else if (sfp_type == ixgbe_sfp_type_da_act_lmt_core1 ||
 		 sfp_type == ixgbe_sfp_type_1g_lx_core1 ||
+		 sfp_type == ixgbe_sfp_type_1g_lha_core1 ||
 		 sfp_type == ixgbe_sfp_type_1g_cu_core1 ||
 		 sfp_type == ixgbe_sfp_type_1g_sx_core1)
 		sfp_type = ixgbe_sfp_type_srlr_core1;
@@ -1941,7 +1931,7 @@ s32 ixgbe_read_i2c_eeprom_generic(struct ixgbe_hw *hw, u8 byte_offset,
  *  ixgbe_read_i2c_sff8472_generic - Reads 8 bit word over I2C interface
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset at address 0xA2
- *  @eeprom_data: value read
+ *  @sff8472_data: value read
  *
  *  Performs byte read operation to SFP module's SFF-8472 data over I2C
  **/
@@ -1990,6 +1980,7 @@ STATIC bool ixgbe_is_sfp_probe(struct ixgbe_hw *hw, u8 offset, u8 addr)
  *  ixgbe_read_i2c_byte_generic_int - Reads 8 bit word over I2C
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset to read
+ *  @dev_addr: address to read from
  *  @data: value read
  *  @lock: true if to take and release semaphore
  *
@@ -2081,6 +2072,7 @@ fail:
  *  ixgbe_read_i2c_byte_generic - Reads 8 bit word over I2C
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset to read
+ *  @dev_addr: address to read from
  *  @data: value read
  *
  *  Performs byte read operation to SFP module's EEPROM over I2C interface at
@@ -2097,6 +2089,7 @@ s32 ixgbe_read_i2c_byte_generic(struct ixgbe_hw *hw, u8 byte_offset,
  *  ixgbe_read_i2c_byte_generic_unlocked - Reads 8 bit word over I2C
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset to read
+ *  @dev_addr: address to read from
  *  @data: value read
  *
  *  Performs byte read operation to SFP module's EEPROM over I2C interface at
@@ -2113,6 +2106,7 @@ s32 ixgbe_read_i2c_byte_generic_unlocked(struct ixgbe_hw *hw, u8 byte_offset,
  *  ixgbe_write_i2c_byte_generic_int - Writes 8 bit word over I2C
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset to write
+ *  @dev_addr: address to write to
  *  @data: value to write
  *  @lock: true if to take and release semaphore
  *
@@ -2184,6 +2178,7 @@ fail:
  *  ixgbe_write_i2c_byte_generic - Writes 8 bit word over I2C
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset to write
+ *  @dev_addr: address to write to
  *  @data: value to write
  *
  *  Performs byte write operation to SFP module's EEPROM over I2C interface at
@@ -2200,6 +2195,7 @@ s32 ixgbe_write_i2c_byte_generic(struct ixgbe_hw *hw, u8 byte_offset,
  *  ixgbe_write_i2c_byte_generic_unlocked - Writes 8 bit word over I2C
  *  @hw: pointer to hardware structure
  *  @byte_offset: byte offset to write
+ *  @dev_addr: address to write to
  *  @data: value to write
  *
  *  Performs byte write operation to SFP module's EEPROM over I2C interface at

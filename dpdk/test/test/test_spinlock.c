@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <stdio.h>
@@ -125,16 +96,16 @@ test_spinlock_recursive_per_core(__attribute__((unused)) void *arg)
 }
 
 static rte_spinlock_t lk = RTE_SPINLOCK_INITIALIZER;
-static uint64_t lock_count[RTE_MAX_LCORE] = {0};
+static uint64_t time_count[RTE_MAX_LCORE] = {0};
 
-#define TIME_MS 100
+#define MAX_LOOP 10000
 
 static int
 load_loop_fn(void *func_param)
 {
 	uint64_t time_diff = 0, begin;
 	uint64_t hz = rte_get_timer_hz();
-	uint64_t lcount = 0;
+	volatile uint64_t lcount = 0;
 	const int use_lock = *(int*)func_param;
 	const unsigned lcore = rte_lcore_id();
 
@@ -143,17 +114,15 @@ load_loop_fn(void *func_param)
 		while (rte_atomic32_read(&synchro) == 0);
 
 	begin = rte_get_timer_cycles();
-	while (time_diff < hz * TIME_MS / 1000) {
+	while (lcount < MAX_LOOP) {
 		if (use_lock)
 			rte_spinlock_lock(&lk);
 		lcount++;
 		if (use_lock)
 			rte_spinlock_unlock(&lk);
-		/* delay to make lock duty cycle slighlty realistic */
-		rte_delay_us(1);
-		time_diff = rte_get_timer_cycles() - begin;
 	}
-	lock_count[lcore] = lcount;
+	time_diff = rte_get_timer_cycles() - begin;
+	time_count[lcore] = time_diff * 1000000 / hz;
 	return 0;
 }
 
@@ -167,14 +136,16 @@ test_spinlock_perf(void)
 
 	printf("\nTest with no lock on single core...\n");
 	load_loop_fn(&lock);
-	printf("Core [%u] count = %"PRIu64"\n", lcore, lock_count[lcore]);
-	memset(lock_count, 0, sizeof(lock_count));
+	printf("Core [%u] Cost Time = %"PRIu64" us\n", lcore,
+						time_count[lcore]);
+	memset(time_count, 0, sizeof(time_count));
 
 	printf("\nTest with lock on single core...\n");
 	lock = 1;
 	load_loop_fn(&lock);
-	printf("Core [%u] count = %"PRIu64"\n", lcore, lock_count[lcore]);
-	memset(lock_count, 0, sizeof(lock_count));
+	printf("Core [%u] Cost Time = %"PRIu64" us\n", lcore,
+						time_count[lcore]);
+	memset(time_count, 0, sizeof(time_count));
 
 	printf("\nTest with lock on %u cores...\n", rte_lcore_count());
 
@@ -189,11 +160,12 @@ test_spinlock_perf(void)
 	rte_eal_mp_wait_lcore();
 
 	RTE_LCORE_FOREACH(i) {
-		printf("Core [%u] count = %"PRIu64"\n", i, lock_count[i]);
-		total += lock_count[i];
+		printf("Core [%u] Cost Time = %"PRIu64" us\n", i,
+						time_count[i]);
+		total += time_count[i];
 	}
 
-	printf("Total count = %"PRIu64"\n", total);
+	printf("Total Cost Time = %"PRIu64" us\n", total);
 
 	return 0;
 }

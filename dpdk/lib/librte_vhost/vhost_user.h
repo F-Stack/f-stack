@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2018 Intel Corporation
  */
 
 #ifndef _VHOST_NET_USER_H
@@ -43,19 +14,16 @@
 
 #define VHOST_MEMORY_MAX_NREGIONS 8
 
-#define VHOST_USER_PROTOCOL_F_MQ	0
-#define VHOST_USER_PROTOCOL_F_LOG_SHMFD	1
-#define VHOST_USER_PROTOCOL_F_RARP	2
-#define VHOST_USER_PROTOCOL_F_REPLY_ACK	3
-#define VHOST_USER_PROTOCOL_F_NET_MTU 4
-#define VHOST_USER_PROTOCOL_F_SLAVE_REQ 5
-
 #define VHOST_USER_PROTOCOL_FEATURES	((1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) |\
 					 (1ULL << VHOST_USER_PROTOCOL_F_RARP) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_NET_MTU) | \
-					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ))
+					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_SESSION) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT))
 
 typedef enum VhostUserRequest {
 	VHOST_USER_NONE = 0,
@@ -81,12 +49,18 @@ typedef enum VhostUserRequest {
 	VHOST_USER_NET_SET_MTU = 20,
 	VHOST_USER_SET_SLAVE_REQ_FD = 21,
 	VHOST_USER_IOTLB_MSG = 22,
-	VHOST_USER_MAX
+	VHOST_USER_CRYPTO_CREATE_SESS = 26,
+	VHOST_USER_CRYPTO_CLOSE_SESS = 27,
+	VHOST_USER_POSTCOPY_ADVISE = 28,
+	VHOST_USER_POSTCOPY_LISTEN = 29,
+	VHOST_USER_POSTCOPY_END = 30,
+	VHOST_USER_MAX = 31
 } VhostUserRequest;
 
 typedef enum VhostUserSlaveRequest {
 	VHOST_USER_SLAVE_NONE = 0,
 	VHOST_USER_SLAVE_IOTLB_MSG = 1,
+	VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG = 3,
 	VHOST_USER_SLAVE_MAX
 } VhostUserSlaveRequest;
 
@@ -108,10 +82,40 @@ typedef struct VhostUserLog {
 	uint64_t mmap_offset;
 } VhostUserLog;
 
+/* Comply with Cryptodev-Linux */
+#define VHOST_USER_CRYPTO_MAX_HMAC_KEY_LENGTH	512
+#define VHOST_USER_CRYPTO_MAX_CIPHER_KEY_LENGTH	64
+
+/* Same structure as vhost-user backend session info */
+typedef struct VhostUserCryptoSessionParam {
+	int64_t session_id;
+	uint32_t op_code;
+	uint32_t cipher_algo;
+	uint32_t cipher_key_len;
+	uint32_t hash_algo;
+	uint32_t digest_len;
+	uint32_t auth_key_len;
+	uint32_t aad_len;
+	uint8_t op_type;
+	uint8_t dir;
+	uint8_t hash_mode;
+	uint8_t chaining_dir;
+	uint8_t *ciphe_key;
+	uint8_t *auth_key;
+	uint8_t cipher_key_buf[VHOST_USER_CRYPTO_MAX_CIPHER_KEY_LENGTH];
+	uint8_t auth_key_buf[VHOST_USER_CRYPTO_MAX_HMAC_KEY_LENGTH];
+} VhostUserCryptoSessionParam;
+
+typedef struct VhostUserVringArea {
+	uint64_t u64;
+	uint64_t size;
+	uint64_t offset;
+} VhostUserVringArea;
+
 typedef struct VhostUserMsg {
 	union {
-		VhostUserRequest master;
-		VhostUserSlaveRequest slave;
+		uint32_t master; /* a VhostUserRequest value */
+		uint32_t slave;  /* a VhostUserSlaveRequest value*/
 	} request;
 
 #define VHOST_USER_VERSION_MASK     0x3
@@ -128,8 +132,11 @@ typedef struct VhostUserMsg {
 		VhostUserMemory memory;
 		VhostUserLog    log;
 		struct vhost_iotlb_msg iotlb;
+		VhostUserCryptoSessionParam crypto_session;
+		VhostUserVringArea area;
 	} payload;
 	int fds[VHOST_MEMORY_MAX_NREGIONS];
+	int fd_num;
 } __attribute((packed)) VhostUserMsg;
 
 #define VHOST_USER_HDR_SIZE offsetof(VhostUserMsg, payload.u64)
@@ -141,9 +148,11 @@ typedef struct VhostUserMsg {
 /* vhost_user.c */
 int vhost_user_msg_handler(int vid, int fd);
 int vhost_user_iotlb_miss(struct virtio_net *dev, uint64_t iova, uint8_t perm);
+int vhost_user_host_notifier_ctrl(int vid, bool enable);
 
 /* socket.c */
-int read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
+int read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
+		int *fd_num);
 int send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
 
 #endif

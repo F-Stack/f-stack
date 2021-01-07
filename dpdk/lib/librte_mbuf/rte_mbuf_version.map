@@ -1,7 +1,6 @@
 DPDK_2.0 {
 	global:
 
-	rte_ctrlmbuf_init;
 	rte_get_rx_ol_flag_name;
 	rte_get_tx_ol_flag_name;
 	rte_mbuf_sanity_check;
@@ -35,3 +34,14 @@ DPDK_16.11 {
 	rte_get_tx_ol_flag_list;
 
 } DPDK_2.1;
+
+DPDK_18.08 {
+	global:
+
+	rte_mbuf_best_mempool_ops;
+	rte_mbuf_platform_mempool_ops;
+	rte_mbuf_set_platform_mempool_ops;
+	rte_mbuf_set_user_mempool_ops;
+	rte_mbuf_user_mempool_ops;
+	rte_pktmbuf_pool_create_by_ops;
+} DPDK_16.11;

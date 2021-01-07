@@ -4888,7 +4888,7 @@ STATIC s32 e1000_id_led_init_pchlan(struct e1000_hw *hw)
  *  @hw: pointer to the HW structure
  *
  *  ICH8 use the PCI Express bus, but does not contain a PCI Express Capability
- *  register, so the the bus width is hard coded.
+ *  register, so the bus width is hard coded.
  **/
 STATIC s32 e1000_get_bus_info_ich8lan(struct e1000_hw *hw)
 {
@@ -5166,7 +5166,7 @@ STATIC void e1000_initialize_hw_bits_ich8lan(struct e1000_hw *hw)
 	/* Device Status */
 	if (hw->mac.type == e1000_ich8lan) {
 		reg = E1000_READ_REG(hw, E1000_STATUS);
-		reg &= ~(1 << 31);
+		reg &= ~(1U << 31);
 		E1000_WRITE_REG(hw, E1000_STATUS, reg);
 	}
 

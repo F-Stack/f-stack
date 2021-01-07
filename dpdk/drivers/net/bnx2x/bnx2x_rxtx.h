@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2013-2015 Brocade Communications Systems, Inc.
- *
- * Copyright (c) 2015 QLogic Corporation.
+ * Copyright (c) 2015-2018 Cavium Inc.
  * All rights reserved.
- * www.qlogic.com
- *
- * See LICENSE.bnx2x_pmd for copyright and licensing details.
+ * www.cavium.com
  */
 
 #ifndef _BNX2X_RXTX_H_
@@ -77,7 +74,8 @@ int bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 
 void bnx2x_dev_rx_queue_release(void *rxq);
 void bnx2x_dev_tx_queue_release(void *txq);
-int bnx2x_dev_rx_init(struct rte_eth_dev *dev);
+void bnx2x_dev_rxtx_init(struct rte_eth_dev *dev);
+void bnx2x_dev_rxtx_init_dummy(struct rte_eth_dev *dev);
 void bnx2x_dev_clear_queues(struct rte_eth_dev *dev);
 
 #endif /* _BNX2X_RXTX_H_ */

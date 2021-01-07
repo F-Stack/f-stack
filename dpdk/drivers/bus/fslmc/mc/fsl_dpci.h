@@ -1,43 +1,12 @@
-/*-
- * This file is provided under a dual BSD/GPLv2 license. When using or
- * redistributing this file, you may do so under either license.
- *
- *   BSD LICENSE
+/* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- * * Redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution.
- * * Neither the name of the above-listed copyright holders nor the
- * names of any contributors may be used to endorse or promote products
- * derived from this software without specific prior written permission.
- *
- *   GPL LICENSE SUMMARY
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 #ifndef __FSL_DPCI_H
 #define __FSL_DPCI_H
+
+#include <fsl_dpopr.h>
 
 /* Data Path Communication Interface API
  * Contains initialization APIs and runtime control APIs for DPCI
@@ -50,7 +19,7 @@ struct fsl_mc_io;
 /**
  * Maximum number of Tx/Rx priorities per DPCI object
  */
-#define DPCI_PRIO_NUM		2
+#define DPCI_PRIO_NUM		4
 
 /**
  * Indicates an invalid frame queue
@@ -140,6 +109,27 @@ int dpci_get_attributes(struct fsl_mc_io *mc_io,
 			struct dpci_attr *attr);
 
 /**
+ * struct dpci_peer_attr - Structure representing the peer DPCI attributes
+ * @peer_id:		DPCI peer id; if no peer is connected returns (-1)
+ * @num_of_priorities:	The pper's number of receive priorities; determines the
+ *			number of transmit priorities for the local DPCI object
+ */
+struct dpci_peer_attr {
+	int peer_id;
+	uint8_t num_of_priorities;
+};
+
+int dpci_get_peer_attributes(struct fsl_mc_io *mc_io,
+			     uint32_t cmd_flags,
+			     uint16_t token,
+			     struct dpci_peer_attr *attr);
+
+int dpci_get_link_state(struct fsl_mc_io *mc_io,
+			uint32_t cmd_flags,
+			uint16_t token,
+			int *up);
+
+/**
  * enum dpci_dest - DPCI destination types
  * @DPCI_DEST_NONE:	Unassigned destination; The queue is set in parked mode
  *			and does not generate FQDAN notifications; user is
@@ -187,6 +177,11 @@ struct dpci_dest_cfg {
 #define DPCI_QUEUE_OPT_DEST		0x00000002
 
 /**
+ * Set the queue to hold active mode.
+ */
+#define DPCI_QUEUE_OPT_HOLD_ACTIVE	0x00000004
+
+/**
  * struct dpci_rx_queue_cfg - Structure representing RX queue configuration
  * @options:	Flags representing the suggested modifications to the queue;
  *		Use any combination of 'DPCI_QUEUE_OPT_<X>' flags
@@ -196,11 +191,14 @@ struct dpci_dest_cfg {
  *		'options'
  * @dest_cfg:	Queue destination parameters;
  *		valid only if 'DPCI_QUEUE_OPT_DEST' is contained in 'options'
+ * @order_preservation_en: order preservation configuration for the rx queue
+ * valid only if 'DPCI_QUEUE_OPT_HOLD_ACTIVE' is contained in 'options'
  */
 struct dpci_rx_queue_cfg {
 	uint32_t options;
 	uint64_t user_ctx;
 	struct dpci_dest_cfg dest_cfg;
+	int order_preservation_en;
 };
 
 int dpci_set_rx_queue(struct fsl_mc_io *mc_io,
@@ -249,5 +247,19 @@ int dpci_get_api_version(struct fsl_mc_io *mc_io,
 			 uint32_t cmd_flags,
 			 uint16_t *major_ver,
 			 uint16_t *minor_ver);
+
+int dpci_set_opr(struct fsl_mc_io *mc_io,
+		 uint32_t cmd_flags,
+		 uint16_t token,
+		 uint8_t index,
+		 uint8_t options,
+		 struct opr_cfg *cfg);
+
+int dpci_get_opr(struct fsl_mc_io *mc_io,
+		 uint32_t cmd_flags,
+		 uint16_t token,
+		 uint8_t index,
+		 struct opr_cfg *cfg,
+		 struct opr_qry *qry);
 
 #endif /* __FSL_DPCI_H */

@@ -1126,10 +1126,10 @@ if (lport == 0)
     ifp_sin.sin_len = sizeof(ifp_sin);
     ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
     if (ifa == NULL) {
-    	ifp_sin.sin_addr.s_addr = faddr.s_addr;
-    	ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
-    	if ( ifa == NULL )
-        	return (EADDRNOTAVAIL);
+        ifp_sin.sin_addr.s_addr = faddr.s_addr;
+        ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin, 0, RT_ALL_FIBS);
+        if ( ifa == NULL )
+            return (EADDRNOTAVAIL);
     }
     ifp = ifa->ifa_ifp;
     while (lport == 0) {

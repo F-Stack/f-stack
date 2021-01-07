@@ -38,11 +38,17 @@ enum FF_MSG_TYPE {
     FF_UNKNOWN = 0,
     FF_SYSCTL,
     FF_IOCTL,
+    FF_IOCTL6,
     FF_ROUTE,
     FF_TOP,
     FF_NGCTL,
     FF_IPFW_CTL,
     FF_TRAFFIC,
+
+    /*
+     * to add other msg type before FF_MSG_NUM
+     */
+    FF_MSG_NUM,
 };
 
 struct ff_sysctl_args {

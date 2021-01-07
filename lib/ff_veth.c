@@ -205,7 +205,6 @@ ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
             CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
         m->m_pkthdr.csum_data = 0xffff;
     }
-
     return (void *)m;
 }
 
@@ -418,5 +417,50 @@ ff_veth_softc_to_hostc(void *softc)
 {
     struct ff_veth_softc *sc = (struct ff_veth_softc *)softc;
     return (void *)sc->host_ctx;
+}
+
+/********************
+*  get next mbuf's addr, current mbuf's data and datalen.
+*  
+********************/
+int ff_next_mbuf(void **mbuf_bsd, void **data, unsigned *len)
+{
+    struct mbuf *mb = *(struct mbuf **)mbuf_bsd;
+
+    *len = mb->m_len;
+    *data = mb->m_data;
+
+    if (mb->m_next)
+        *mbuf_bsd = mb->m_next;
+    else
+        *mbuf_bsd = NULL;
+    return 0;
+}
+
+void * ff_mbuf_mtod(void* bsd_mbuf)
+{
+    if ( !bsd_mbuf )
+        return NULL;
+    return (void*)((struct mbuf *)bsd_mbuf)->m_data;
+}
+
+// get source rte_mbuf from ext cluster, which carry rte_mbuf while recving pkt, such as arp.
+void* ff_rte_frm_extcl(void* mbuf)
+{
+    struct mbuf *bsd_mbuf = mbuf;
+    
+    if ( bsd_mbuf->m_ext.ext_type==EXT_DISPOSABLE && bsd_mbuf->m_ext.ext_free==ff_mbuf_ext_free ){
+        return bsd_mbuf->m_ext.ext_arg1;
+    }
+    else 
+        return NULL;
+}
+
+void
+ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci) {
+    struct mbuf *m = (struct mbuf *)hdr;
+    m->m_pkthdr.ether_vtag = vlan_tci;
+    m->m_flags |= M_VLANTAG;
+    return;
 }
 

@@ -1,35 +1,8 @@
-..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
-    All rights reserved.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2010-2014 Intel Corporation.
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-I40E/IXGBE/IGB Virtual Function Driver
-======================================
+Intel Virtual Function Driver
+=============================
 
 Supported Intel® Ethernet Controllers (see the *DPDK Release Notes* for details)
 support the following modes of operation in a virtualized environment:
@@ -92,6 +65,28 @@ For global resource access, a Virtual Function has to send a request to the Phys
 and the Physical Function operates on the global resources on behalf of the Virtual Function.
 For this out-of-band communication, an SR-IOV enabled NIC provides a memory buffer for each Virtual Function,
 which is called a "Mailbox".
+
+Intel® Ethernet Adaptive Virtual Function
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Adaptive Virtual Function (AVF) is a SR-IOV Virtual Function with the same device id (8086:1889) on different Intel Ethernet Controller.
+AVF Driver is VF driver which supports for all future Intel devices without requiring a VM update. And since this happens to be an adaptive VF driver,
+every new drop of the VF driver would add more and more advanced features that can be turned on in the VM if the underlying HW device supports those
+advanced features based on a device agnostic way without ever compromising on the base functionality. AVF provides generic hardware interface and
+interface between AVF driver and a compliant PF driver is specified.
+
+Intel products starting Ethernet Controller 700 Series to support Adaptive Virtual Function.
+
+The way to generate Virtual Function is like normal, and the resource of VF assignment depends on the NIC Infrastructure.
+
+For more detail on SR-IOV, please refer to the following documents:
+
+*   `Intel® AVF HAS <https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/ethernet-adaptive-virtual-function-hardware-spec.pdf>`_
+
+.. note::
+
+    To use DPDK AVF PMD on Intel® 700 Series Ethernet Controller, the device id (0x1889) need to specified during device
+    assignment in hypervisor. Take qemu for example, the device assignment should carry the AVF device id (0x1889) like
+    ``-device vfio-pci,x-pci-device-id=0x1889,host=03:0a.0``.
 
 The PCIE host-interface of Intel Ethernet Switch FM10000 Series VF infrastructure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -508,6 +503,19 @@ The setup procedure is as follows:
             (to use the same cpu_model equivalent to the host cpu)
 
         For more information, please refer to: `http://wiki.qemu.org/Features/CPUModels <http://wiki.qemu.org/Features/CPUModels>`_.
+
+#.  If use vfio-pci to pass through device instead of pci-assign, steps 8 and 9 need to be updated to bind device to vfio-pci and
+    replace pci-assign with vfio-pci when start virtual machine.
+
+    .. code-block:: console
+
+        sudo /sbin/modprobe vfio-pci
+
+        echo "8086 10ed" > /sys/bus/pci/drivers/vfio-pci/new_id
+        echo 0000:08:10.0 > /sys/bus/pci/devices/0000:08:10.0/driver/unbind
+        echo 0000:08:10.0 > /sys/bus/pci/drivers/vfio-pci/bind
+
+        /usr/local/kvm/bin/qemu-system-x86_64 -m 4096 -smp 4 -boot c -hda lucid.qcow2 -device vfio-pci,host=08:10.0
 
 #.  Install and run DPDK host app to take  over the Physical Function. Eg.
 

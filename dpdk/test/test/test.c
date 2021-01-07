@@ -1,34 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2010-2014 Intel Corporation
  */
 
 #include <string.h>
@@ -102,31 +73,74 @@ do_recursive_call(void)
 	return -1;
 }
 
+int last_test_result;
+
+#define MAX_EXTRA_ARGS 32
+
 int
 main(int argc, char **argv)
 {
 #ifdef RTE_LIBRTE_CMDLINE
 	struct cmdline *cl;
 #endif
+	char *extra_args;
 	int ret;
 
-	ret = rte_eal_init(argc, argv);
-	if (ret < 0)
-		return -1;
+	extra_args = getenv("DPDK_TEST_PARAMS");
+	if (extra_args != NULL && strlen(extra_args) > 0) {
+		char **all_argv;
+		char *eargv[MAX_EXTRA_ARGS];
+		int all_argc;
+		int eargc;
+		int i;
+
+		RTE_LOG(INFO, APP, "Using additional DPDK_TEST_PARAMS: '%s'\n",
+				extra_args);
+		eargc = rte_strsplit(extra_args, strlen(extra_args),
+				eargv, MAX_EXTRA_ARGS, ' ');
+
+		/* merge argc/argv and the environment args */
+		all_argc = argc + eargc;
+		all_argv = malloc(sizeof(*all_argv) * (all_argc + 1));
+		if (all_argv == NULL) {
+			ret = -1;
+			goto out;
+		}
+
+		for (i = 0; i < argc; i++)
+			all_argv[i] = argv[i];
+		for (i = 0; i < eargc; i++)
+			all_argv[argc + i] = eargv[i];
+		all_argv[all_argc] = NULL;
+
+		/* call eal_init with combined args */
+		ret = rte_eal_init(all_argc, all_argv);
+		free(all_argv);
+	} else
+		ret = rte_eal_init(argc, argv);
+	if (ret < 0) {
+		ret = -1;
+		goto out;
+	}
 
 #ifdef RTE_LIBRTE_TIMER
 	rte_timer_subsystem_init();
 #endif
 
-	if (commands_init() < 0)
-		return -1;
+	if (commands_init() < 0) {
+		ret = -1;
+		goto out;
+	}
 
 	argv += ret;
 
 	prgname = argv[0];
 
-	if ((recursive_call = getenv(RECURSIVE_ENV_VAR)) != NULL)
-		return do_recursive_call();
+	recursive_call = getenv(RECURSIVE_ENV_VAR);
+	if (recursive_call != NULL) {
+		ret = do_recursive_call();
+		goto out;
+	}
 
 #ifdef RTE_LIBEAL_USE_HPET
 	if (rte_eal_hpet_init(1) < 0)
@@ -138,13 +152,33 @@ main(int argc, char **argv)
 #ifdef RTE_LIBRTE_CMDLINE
 	cl = cmdline_stdin_new(main_ctx, "RTE>>");
 	if (cl == NULL) {
-		return -1;
+		ret = -1;
+		goto out;
 	}
+
+	char *dpdk_test = getenv("DPDK_TEST");
+	if (dpdk_test && strlen(dpdk_test)) {
+		char buf[1024];
+		snprintf(buf, sizeof(buf), "%s\n", dpdk_test);
+		if (cmdline_in(cl, buf, strlen(buf)) < 0) {
+			printf("error on cmdline input\n");
+			ret = -1;
+			goto out;
+		}
+
+		cmdline_stdin_exit(cl);
+		ret = last_test_result;
+		goto out;
+	}
+	/* if no DPDK_TEST env variable, go interactive */
 	cmdline_interact(cl);
 	cmdline_stdin_exit(cl);
 #endif
+	ret = 0;
 
-	return 0;
+out:
+	rte_eal_cleanup();
+	return ret;
 }
 
 
@@ -242,6 +276,8 @@ suite_summary:
 	printf(" + Tests Passed :      %2d\n", succeeded);
 	printf(" + Tests Failed :      %2d\n", failed);
 	printf(" + ------------------------------------------------------- +\n");
+
+	last_test_result = failed;
 
 	if (failed)
 		return -1;
