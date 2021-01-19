@@ -174,6 +174,26 @@
 
 /* af define end */
 
+/* msghdr define start */
+
+struct linux_msghdr {
+    void *msg_name;             /* Address to send to/receive from.  */
+    socklen_t msg_namelen;      /* Length of address data.  */
+
+    struct iovec *msg_iov;      /* Vector of data to send/receive into.  */
+    size_t msg_iovlen;          /* Number of elements in the vector.  */
+
+    void *msg_control;          /* Ancillary data (eg BSD filedesc passing). */
+    size_t msg_controllen;      /* Ancillary data buffer length.
+                                   !! The type should be socklen_t but the
+                                   definition of the kernel is incompatible
+                                   with this.  */
+
+    int msg_flags;              /* Flags on received message.  */
+};
+
+/* msghdr define end */
+
 extern int sendit(struct thread *td, int s, struct msghdr *mp, int flags);
 
 static long
@@ -808,21 +828,27 @@ kern_fail:
     return (-1);
 }
 
+/*
+ * It is considered here that the upper 4 bytes of
+ * msg->iovlen and msg->msg_controllen in linux_msghdr are 0.
+ */
 ssize_t
 ff_recvmsg(int s, struct msghdr *msg, int flags)
 {
-    int rc, oldflags;
+    int rc;
+    struct linux_msghdr *linux_msg = (struct linux_msghdr *)msg;
 
-    oldflags = msg->msg_flags;
     msg->msg_flags = flags;
 
     if ((rc = kern_recvit(curthread, s, msg, UIO_SYSSPACE, NULL))) {
-        msg->msg_flags = oldflags;
+        msg->msg_flags = 0;
         goto kern_fail;
     }
     rc = curthread->td_retval[0];
 
-    freebsd2linux_sockaddr(msg->msg_name, msg->msg_name);
+    freebsd2linux_sockaddr(linux_msg->msg_name, msg->msg_name);
+    linux_msg->msg_flags = msg->msg_flags;
+    msg->msg_flags = 0;
 
     return (rc);
 kern_fail:
