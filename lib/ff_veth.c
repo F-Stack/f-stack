@@ -51,6 +51,7 @@
 
 #include <netinet/in.h>
 #include <netinet/in_var.h>
+#include <netinet6/nd6.h>
 
 #include <machine/atomic.h>
 
@@ -68,6 +69,12 @@ struct ff_veth_softc {
     in_addr_t broadcast;
     in_addr_t gateway;
 
+#ifdef INET6
+    struct in6_addr ip6;
+    struct in6_addr gateway6;
+    uint8_t prefix_length;
+#endif /* INET6 */
+
     struct ff_dpdk_if_context *host_ctx;
 };
 
@@ -79,6 +86,24 @@ ff_veth_config(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     inet_pton(AF_INET, cfg->netmask, &sc->netmask);
     inet_pton(AF_INET, cfg->broadcast, &sc->broadcast);
     inet_pton(AF_INET, cfg->gateway, &sc->gateway);
+
+#ifdef INET6
+    if (cfg->addr6_str) {
+        inet_pton(AF_INET6_LINUX, cfg->addr6_str, &sc->ip6);
+        printf("%s: Addr6: %s\n", sc->host_ifname, cfg->addr6_str);
+
+        if (cfg->gateway6_str) {
+            inet_pton(AF_INET6_LINUX, cfg->gateway6_str, &sc->gateway6);
+            printf("%s: Gateway6: %s\n", sc->host_ifname, cfg->gateway6_str);
+        } else {
+            printf("%s: No gateway6 config found.\n", sc->host_ifname);
+        }
+
+        sc->prefix_length = cfg->prefix_len == 0 ? 64 : cfg->prefix_len;
+    } else {
+        printf("%s: No addr6 config found.\n", sc->host_ifname);
+    }
+#endif /* INET6 */
 
     return 0;
 }
@@ -309,6 +334,57 @@ ff_veth_set_gateway(struct ff_veth_softc *sc)
         (struct sockaddr *)&nm, RTF_GATEWAY, NULL, RT_DEFAULT_FIB);
 }
 
+#ifdef INET6
+static int
+ff_veth_setaddr6(struct ff_veth_softc *sc)
+{
+    struct in6_aliasreq ifr6;
+    bzero(&ifr6, sizeof(ifr6));
+    strcpy(ifr6.ifra_name, sc->ifp->if_dname);
+
+    ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
+    ifr6.ifra_addr.sin6_family = AF_INET6;
+    ifr6.ifra_addr.sin6_addr = sc->ip6;
+
+    ifr6.ifra_prefixmask.sin6_len = sizeof ifr6.ifra_prefixmask;
+    memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, sc->prefix_length / 8);
+    uint8_t mask_size_mod = sc->prefix_length % 8;
+    if (mask_size_mod)
+    {
+        ifr6.ifra_prefixmask.sin6_addr.__u6_addr.__u6_addr8[sc->prefix_length / 8] = ((1 << mask_size_mod) - 1) << (8 - mask_size_mod);
+    }
+
+    ifr6.ifra_lifetime.ia6t_pltime = ifr6.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
+
+    struct socket *so = NULL;
+    socreate(AF_INET6, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
+    int ret = ifioctl(so, SIOCAIFADDR_IN6, (caddr_t)&ifr6, curthread);
+
+    sofree(so);
+
+    return ret;
+}
+
+static int
+ff_veth_set_gateway6(struct ff_veth_softc *sc)
+{
+    struct sockaddr_in6 gw, dst, nm;
+
+    bzero(&gw, sizeof(gw));
+    bzero(&dst, sizeof(dst));
+    bzero(&nm, sizeof(nm));
+
+    gw.sin6_len = dst.sin6_len = nm.sin6_len = sizeof(struct sockaddr_in6);
+    gw.sin6_family = dst.sin6_family = AF_INET6;
+
+    gw.sin6_addr = sc->gateway6;
+    //dst.sin6_addr = nm.sin6_addr = 0;
+
+    return rtrequest_fib(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
+        (struct sockaddr *)&nm, RTF_GATEWAY, NULL, RT_DEFAULT_FIB);
+}
+#endif /* INET6 */
+
 static int
 ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
 {
@@ -359,6 +435,23 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (ret != 0) {
         printf("ff_veth_set_gateway failed\n");
     }
+
+#ifdef INET6
+    // Set IPv6
+    if (cfg->addr6_str) {
+        ret = ff_veth_setaddr6(sc);
+        if (ret != 0) {
+            printf("ff_veth_setaddr6 failed\n");
+        }
+
+        if (cfg->gateway6_str) {
+            ret = ff_veth_set_gateway6(sc);
+            if (ret != 0) {
+                printf("ff_veth_set_gateway6 failed\n");
+            }
+        }
+    }
+#endif /* INET6 */
 
     return (0);
 }
