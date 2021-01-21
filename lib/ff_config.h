@@ -61,6 +61,13 @@ struct ff_port_cfg {
     char *netmask;
     char *broadcast;
     char *gateway;
+
+#ifdef INET6
+        char *addr6_str;
+        char *gateway6_str;
+        uint8_t prefix_len;
+#endif
+
     char *pcap;
     uint16_t snaplen;
     uint32_t savelen;
