@@ -430,6 +430,21 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         return parse_port_slave_list(cur, value);
     }
 
+#ifdef INET6
+    else if (0 == strcmp(name, "addr6"))
+    {
+        cur->addr6_str = strdup(value);
+    }
+    else if (0 == strcmp(name, "prefix_len"))
+    {
+        cur->prefix_len = atoi(value);
+    }
+    else if (0 == strcmp(name, "gateway6"))
+    {
+        cur->gateway6_str = strdup(value);
+    }
+#endif
+
     return 1;
 }
 
