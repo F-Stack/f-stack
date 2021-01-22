@@ -1064,6 +1064,11 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 			IN_IFADDR_RUNLOCK(&in_ifa_tracker);
 		}
 	}
+#ifdef FSTACK
+    if (laddr.s_addr == INADDR_ANY) {
+        ff_in_pcbladdr(AF_INET, &faddr, fport, &laddr);
+    }
+#endif
 	if (laddr.s_addr == INADDR_ANY) {
 		error = in_pcbladdr(inp, &faddr, &laddr, cred);
 		/*
