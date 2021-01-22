@@ -116,6 +116,8 @@ struct lcore_conf lcore_conf;
 
 struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
+static pcblddr_func_t pcblddr_fun;
+
 static struct rte_ring **dispatch_ring[RTE_MAX_ETHPORTS];
 static dispatch_func_t packet_dispatcher;
 
@@ -1991,6 +1993,33 @@ toeplitz_hash(unsigned keylen, const uint8_t *key,
         }
     }
     return (hash);
+}
+
+int
+ff_in_pcbladdr(uint16_t family, void *faddr, uint16_t fport, void *laddr)
+{
+    int ret = 0;
+    uint16_t fa;
+
+    if (!pcblddr_fun)
+        return ret;
+
+    if (family == AF_INET)
+        fa = AF_INET;
+    else if (family == AF_INET6_FREEBSD)
+        fa = AF_INET6_LINUX;
+    else
+        return EADDRNOTAVAIL;
+
+    ret = (*pcblddr_fun)(fa, faddr, fport, laddr);
+
+    return ret;
+}
+
+void
+ff_regist_pcblddr_fun(pcblddr_func_t func)
+{
+    pcblddr_fun = func;
 }
 
 int
