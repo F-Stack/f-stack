@@ -57,6 +57,7 @@ int main(int argc, char **argv)
     int proc_id = 0, max_proc_id = -1;
     uint64_t rxp, rxb, txp, txb;
     uint64_t prxp, prxb, ptxp, ptxb;
+    int title_line = 40;
 
     ff_ipc_init();
 
@@ -77,6 +78,8 @@ int main(int argc, char **argv)
                 ff_ipc_exit();
                 return -1;
             }
+            if (max_proc_id > title_line - 2)
+                title_line = max_proc_id + 2;
             break;
         case 'd':
             delay = atoi(optarg) ?: 1;
@@ -140,7 +143,7 @@ int main(int argc, char **argv)
                 return -1;
             }
 
-            if (i % 40 == 0) {
+            if (i % title_line == 0) {
                 printf("|--------------------|--------------------|");
                 printf("--------------------|--------------------|\n");
                 printf("|%20s|%20s|%20s|%20s|\n", "rx packets", "rx bytes",
@@ -161,7 +164,7 @@ int main(int argc, char **argv)
             /*
              * get and show traffic from proc_id to max_proc_id.
              */
-            if (i % (40 / (max_proc_id - proc_id + 2)) == 0) {
+            if (i % (title_line / (max_proc_id - proc_id + 2)) == 0) {
                 printf("|---------|--------------------|--------------------|"
                     "--------------------|--------------------|\n");
                 printf("|%9s|%20s|%20s|%20s|%20s|\n",
