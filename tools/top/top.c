@@ -36,7 +36,6 @@ int cpu_status(struct ff_top_args *top)
         ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
-            ff_ipc_msg_free(msg);
             return -1;
         }
     } while (msg != retmsg);
