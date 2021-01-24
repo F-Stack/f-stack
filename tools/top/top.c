@@ -57,6 +57,7 @@ int main(int argc, char **argv)
     float sys, usr, idle;
     float psys, pusr, pidle;
     unsigned long loops, ploops;
+    int title_line = 40;
 
     ff_ipc_init();
 
@@ -76,6 +77,8 @@ int main(int argc, char **argv)
                 ff_ipc_exit();
                 return -1;
             }
+            if (max_proc_id > title_line - 2)
+                title_line = max_proc_id + 2;
             break;
         case 'd':
             delay = atoi(optarg) ?: 1;
@@ -99,7 +102,7 @@ int main(int argc, char **argv)
                 return -1;
             }
 
-            if (i % 40 == 0) {
+            if (i % title_line == 0) {
                 printf("|---------|---------|---------|---------------|\n");
                 printf("|%9s|%9s|%9s|%15s|\n", "idle", "sys", "usr", "loop");
                 printf("|---------|---------|---------|---------------|\n");
@@ -117,7 +120,7 @@ int main(int argc, char **argv)
             /*
              * get and show cpu usage from proc_id to max_proc_id.
              */
-            if (i % (40 / (max_proc_id - proc_id + 2)) == 0) {
+            if (i % (title_line / (max_proc_id - proc_id + 2)) == 0) {
                 printf("|---------|---------|---------|"
                     "---------|---------------|\n");
                 printf("|%9s|%9s|%9s|%9s|%15s|\n",
