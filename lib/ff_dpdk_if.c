@@ -1600,17 +1600,33 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             handle_default_msg(msg);
             break;
     }
-    rte_ring_enqueue(msg_ring[proc_id].ring[msg->msg_type], msg);
+    if (rte_ring_enqueue(msg_ring[proc_id].ring[msg->msg_type], msg) < 0) {
+        if (msg->original_buf) {
+            rte_free(msg->buf_addr);
+            msg->buf_addr = msg->original_buf;
+            msg->buf_len = msg->original_buf_len;
+            msg->original_buf = NULL;
+        }
+
+        rte_mempool_put(message_pool, msg);
+    }
 }
 
 static inline int
-process_msg_ring(uint16_t proc_id)
+process_msg_ring(uint16_t proc_id, struct rte_mbuf **pkts_burst)
 {
-    void *msg;
-    int ret = rte_ring_dequeue(msg_ring[proc_id].ring[0], &msg);
+    /* read msg from ring buf and to process */
+    uint16_t nb_rb;
+    int i;
 
-    if (unlikely(ret == 0)) {
-        handle_msg((struct ff_msg *)msg, proc_id);
+    nb_rb = rte_ring_dequeue_burst(msg_ring[proc_id].ring[0],
+        (void **)pkts_burst, MAX_PKT_BURST, NULL);
+
+    if (likely(nb_rb == 0))
+        return 0;
+
+    for (i = 0; i < nb_rb; ++i) {
+        handle_msg((struct ff_msg *)pkts_burst[i], proc_id);
     }
 
     return 0;
@@ -1902,7 +1918,7 @@ main_loop(void *arg)
             }
         }
 
-        process_msg_ring(qconf->proc_id);
+        process_msg_ring(qconf->proc_id, pkts_burst);
 
         div_tsc = rte_rdtsc();
 
