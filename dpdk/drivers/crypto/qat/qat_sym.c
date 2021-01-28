@@ -179,7 +179,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 	}
 
 	ctx = (struct qat_sym_session *)get_sym_session_private_data(
-			op->sym->session, cryptodev_qat_driver_id);
+				op->sym->session, qat_sym_driver_id);
 
 	if (unlikely(ctx == NULL)) {
 		QAT_DP_LOG(ERR, "Session was not created for this device");

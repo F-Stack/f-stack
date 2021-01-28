@@ -14,6 +14,8 @@
 
 #include "aesni_mb_pmd_private.h"
 
+int aesni_mb_logtype_driver;
+
 #define AES_CCM_DIGEST_MIN_LEN 4
 #define AES_CCM_DIGEST_MAX_LEN 16
 #define HMAC_MAX_BLOCK_SIZE 128
@@ -201,19 +203,11 @@ aesni_mb_set_session_auth_parameters(const MB_MGR *mb_mgr,
 			sess->cipher.direction = DECRYPT;
 
 		sess->auth.algo = AES_GMAC;
-		/*
-		 * Multi-buffer lib supports 8, 12 and 16 bytes of digest.
-		 * If size requested is different, generate the full digest
-		 * (16 bytes) in a temporary location and then memcpy
-		 * the requested number of bytes.
-		 */
-		if (sess->auth.req_digest_len != 16 &&
-				sess->auth.req_digest_len != 12 &&
-				sess->auth.req_digest_len != 8) {
-			sess->auth.gen_digest_len = 16;
-		} else {
-			sess->auth.gen_digest_len = sess->auth.req_digest_len;
+		if (sess->auth.req_digest_len > get_digest_byte_length(AES_GMAC)) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
 		}
+		sess->auth.gen_digest_len = sess->auth.req_digest_len;
 		sess->iv.length = xform->auth.iv.length;
 		sess->iv.offset = xform->auth.iv.offset;
 
@@ -535,6 +529,14 @@ aesni_mb_set_session_aead_parameters(const MB_MGR *mb_mgr,
 		return -EINVAL;
 	}
 
+	/* Set IV parameters */
+	sess->iv.offset = xform->aead.iv.offset;
+	sess->iv.length = xform->aead.iv.length;
+
+	/* Set digest sizes */
+	sess->auth.req_digest_len = xform->aead.digest_length;
+	sess->auth.gen_digest_len = sess->auth.req_digest_len;
+
 	switch (xform->aead.algo) {
 	case RTE_CRYPTO_AEAD_AES_CCM:
 		sess->cipher.mode = CCM;
@@ -553,6 +555,13 @@ aesni_mb_set_session_aead_parameters(const MB_MGR *mb_mgr,
 			return -EINVAL;
 		}
 
+		/* CCM digests must be between 4 and 16 and an even number */
+		if (sess->auth.req_digest_len < AES_CCM_DIGEST_MIN_LEN ||
+				sess->auth.req_digest_len > AES_CCM_DIGEST_MAX_LEN ||
+				(sess->auth.req_digest_len & 1) == 1) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
+		}
 		break;
 
 	case RTE_CRYPTO_AEAD_AES_GCM:
@@ -580,26 +589,18 @@ aesni_mb_set_session_aead_parameters(const MB_MGR *mb_mgr,
 			return -EINVAL;
 		}
 
+		/* GCM digest size must be between 1 and 16 */
+		if (sess->auth.req_digest_len == 0 ||
+				sess->auth.req_digest_len > 16) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
+		}
 		break;
 
 	default:
 		AESNI_MB_LOG(ERR, "Unsupported aead mode parameter");
 		return -ENOTSUP;
 	}
-
-	/* Set IV parameters */
-	sess->iv.offset = xform->aead.iv.offset;
-	sess->iv.length = xform->aead.iv.length;
-
-	sess->auth.req_digest_len = xform->aead.digest_length;
-	/* CCM digests must be between 4 and 16 and an even number */
-	if (sess->auth.req_digest_len < AES_CCM_DIGEST_MIN_LEN ||
-			sess->auth.req_digest_len > AES_CCM_DIGEST_MAX_LEN ||
-			(sess->auth.req_digest_len & 1) == 1) {
-		AESNI_MB_LOG(ERR, "Invalid digest size\n");
-		return -EINVAL;
-	}
-	sess->auth.gen_digest_len = sess->auth.req_digest_len;
 
 	return 0;
 }

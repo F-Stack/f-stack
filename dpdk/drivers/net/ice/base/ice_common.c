@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -461,6 +461,7 @@ static enum ice_status ice_init_fltr_mgmt_struct(struct ice_hw *hw)
 		return ICE_ERR_NO_MEMORY;
 
 	INIT_LIST_HEAD(&sw->vsi_list_map_head);
+	sw->prof_res_bm_init = 0;
 
 	return ice_init_def_sw_recp(hw);
 }
@@ -674,6 +675,7 @@ enum ice_status ice_init_hw(struct ice_hw *hw)
 			  "Failed to get scheduler allocated resources\n");
 		goto err_unroll_alloc;
 	}
+	ice_sched_get_psm_clk_freq(hw);
 
 	/* Initialize port_info struct with scheduler data */
 	status = ice_sched_init_port(hw->port_info);
@@ -2120,10 +2122,7 @@ ice_aq_manage_mac_write(struct ice_hw *hw, const u8 *mac_addr, u8 flags,
 	ice_fill_dflt_direct_cmd_desc(&desc, ice_aqc_opc_manage_mac_write);
 
 	cmd->flags = flags;
-
-	/* Prep values for flags, sah, sal */
-	cmd->sah = HTONS(*((const u16 *)mac_addr));
-	cmd->sal = HTONL(*((const u32 *)(mac_addr + 2)));
+	ice_memcpy(cmd->mac_addr, mac_addr, ETH_ALEN, ICE_NONDMA_TO_DMA);
 
 	return ice_aq_send_cmd(hw, &desc, NULL, 0, cd);
 }

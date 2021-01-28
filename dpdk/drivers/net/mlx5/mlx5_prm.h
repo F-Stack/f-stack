@@ -18,6 +18,8 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
+#include <unistd.h>
+
 #include <rte_vect.h>
 #include "mlx5_autoconf.h"
 
@@ -251,7 +253,7 @@
 #define MLX5_MAX_LOG_RQ_SEGS 5u
 
 /* The alignment needed for WQ buffer. */
-#define MLX5_WQE_BUF_ALIGNMENT 512
+#define MLX5_WQE_BUF_ALIGNMENT sysconf(_SC_PAGESIZE)
 
 /* Completion mode. */
 enum mlx5_completion_mode {
@@ -722,6 +724,9 @@ enum {
 enum {
 	MLX5_MKC_ACCESS_MODE_MTT   = 0x1,
 };
+
+/* The counter batch query requires ID align with 4. */
+#define MLX5_CNT_BATCH_QUERY_ID_ALIGNMENT 4
 
 /* Flow counters. */
 struct mlx5_ifc_alloc_flow_counter_out_bits {

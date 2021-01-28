@@ -308,8 +308,9 @@ vhost_user_iotlb_init(struct virtio_net *dev, int vq_index)
 	TAILQ_INIT(&vq->iotlb_list);
 	TAILQ_INIT(&vq->iotlb_pending_list);
 
-	snprintf(pool_name, sizeof(pool_name), "iotlb_cache_%d_%d",
-			dev->vid, vq_index);
+	snprintf(pool_name, sizeof(pool_name), "iotlb_%u_%d_%d",
+			getpid(), dev->vid, vq_index);
+	RTE_LOG(DEBUG, VHOST_CONFIG, "IOTLB cache name: %s\n", pool_name);
 
 	/* If already created, free it and recreate */
 	vq->iotlb_pool = rte_mempool_lookup(pool_name);
@@ -320,8 +321,7 @@ vhost_user_iotlb_init(struct virtio_net *dev, int vq_index)
 			IOTLB_CACHE_SIZE, sizeof(struct vhost_iotlb_entry), 0,
 			0, 0, NULL, NULL, NULL, socket,
 			MEMPOOL_F_NO_CACHE_ALIGN |
-			MEMPOOL_F_SP_PUT |
-			MEMPOOL_F_SC_GET);
+			MEMPOOL_F_SP_PUT);
 	if (!vq->iotlb_pool) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 				"Failed to create IOTLB cache pool (%s)\n",

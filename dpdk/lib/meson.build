@@ -127,7 +127,7 @@ foreach l:libraries
 					dependencies: static_deps,
 					include_directories: includes,
 					install: true)
-			static_dep = declare_dependency(link_with: static_lib,
+			static_dep = declare_dependency(
 					include_directories: includes,
 					dependencies: static_deps)
 
@@ -148,12 +148,18 @@ foreach l:libraries
 				command: [map_to_def_cmd, '@INPUT@', '@OUTPUT@'],
 				input: version_map,
 				output: 'rte_@0@_exports.def'.format(name))
-			lk_deps = [version_map, def_file]
-			if is_windows
-				lk_args = ['-Wl,/def:' + def_file.full_path(),
-					'-Wl,/implib:lib\\' + implib]
+
+			if is_ms_linker
+				lk_args = ['-Wl,/def:' + def_file.full_path()]
+				if meson.version().version_compare('<0.54.0')
+					lk_args += ['-Wl,/implib:lib\\' + implib]
+				endif
 			else
 				lk_args = ['-Wl,--version-script=' + version_map]
+			endif
+
+			lk_deps = [version_map, def_file]
+			if not is_windows
 				# on unix systems check the output of the
 				# experimental syms script, using it as a
 				# dependency of the .so build

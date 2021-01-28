@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "ice_sched.h"
@@ -1369,6 +1369,46 @@ sched_query_out:
 }
 
 /**
+ * ice_sched_get_psm_clk_freq - determine the PSM clock frequency
+ * @hw: pointer to the HW struct
+ *
+ * Determine the PSM clock frequency and store in HW struct
+ */
+void ice_sched_get_psm_clk_freq(struct ice_hw *hw)
+{
+	u32 val, clk_src;
+
+	val = rd32(hw, GLGEN_CLKSTAT_SRC);
+	clk_src = (val & GLGEN_CLKSTAT_SRC_PSM_CLK_SRC_M) >>
+		GLGEN_CLKSTAT_SRC_PSM_CLK_SRC_S;
+
+#define PSM_CLK_SRC_367_MHZ 0x0
+#define PSM_CLK_SRC_416_MHZ 0x1
+#define PSM_CLK_SRC_446_MHZ 0x2
+#define PSM_CLK_SRC_390_MHZ 0x3
+
+	switch (clk_src) {
+	case PSM_CLK_SRC_367_MHZ:
+		hw->psm_clk_freq = ICE_PSM_CLK_367MHZ_IN_HZ;
+		break;
+	case PSM_CLK_SRC_416_MHZ:
+		hw->psm_clk_freq = ICE_PSM_CLK_416MHZ_IN_HZ;
+		break;
+	case PSM_CLK_SRC_446_MHZ:
+		hw->psm_clk_freq = ICE_PSM_CLK_446MHZ_IN_HZ;
+		break;
+	case PSM_CLK_SRC_390_MHZ:
+		hw->psm_clk_freq = ICE_PSM_CLK_390MHZ_IN_HZ;
+		break;
+	default:
+		ice_debug(hw, ICE_DBG_SCHED, "PSM clk_src unexpected %u\n",
+			  clk_src);
+		/* fall back to a safe default */
+		hw->psm_clk_freq = ICE_PSM_CLK_446MHZ_IN_HZ;
+	}
+}
+
+/**
  * ice_sched_find_node_in_subtree - Find node in part of base node subtree
  * @hw: pointer to the HW struct
  * @base: pointer to the base node
@@ -2188,7 +2228,7 @@ ice_sched_move_nodes(struct ice_port_info *pi, struct ice_sched_node *parent,
 		return ICE_ERR_PARAM;
 
 	/* Does parent have enough space */
-	if (parent->num_children + num_items >=
+	if (parent->num_children + num_items >
 	    hw->max_children[parent->tx_sched_layer])
 		return ICE_ERR_AQ_FULL;
 
@@ -2255,6 +2295,10 @@ ice_sched_move_vsi_to_agg(struct ice_port_info *pi, u16 vsi_handle, u32 agg_id,
 	vsi_node = ice_sched_get_vsi_node(pi, tc_node, vsi_handle);
 	if (!vsi_node)
 		return ICE_ERR_DOES_NOT_EXIST;
+
+	/* Is this VSI already part of given aggregator? */
+	if (ice_sched_find_node_in_subtree(pi->hw, agg_node, vsi_node))
+		return ICE_SUCCESS;
 
 	aggl = ice_sched_get_agg_layer(pi->hw);
 	vsil = ice_sched_get_vsi_layer(pi->hw);
@@ -2867,7 +2911,7 @@ ice_sched_update_elem(struct ice_hw *hw, struct ice_sched_node *node,
  */
 static enum ice_status
 ice_sched_cfg_node_bw_alloc(struct ice_hw *hw, struct ice_sched_node *node,
-			    enum ice_rl_type rl_type, u8 bw_alloc)
+			    enum ice_rl_type rl_type, u16 bw_alloc)
 {
 	struct ice_aqc_txsched_elem_data buf;
 	struct ice_aqc_txsched_elem *data;
@@ -3671,11 +3715,12 @@ exit_cfg_agg_bw_alloc:
 
 /**
  * ice_sched_calc_wakeup - calculate RL profile wakeup parameter
+ * @hw: pointer to the HW struct
  * @bw: bandwidth in Kbps
  *
  * This function calculates the wakeup parameter of RL profile.
  */
-static u16 ice_sched_calc_wakeup(s32 bw)
+static u16 ice_sched_calc_wakeup(struct ice_hw *hw, s32 bw)
 {
 	s64 bytes_per_sec, wakeup_int, wakeup_a, wakeup_b, wakeup_f;
 	s32 wakeup_f_int;
@@ -3683,7 +3728,7 @@ static u16 ice_sched_calc_wakeup(s32 bw)
 
 	/* Get the wakeup integer value */
 	bytes_per_sec = DIV_64BIT(((s64)bw * 1000), BITS_PER_BYTE);
-	wakeup_int = DIV_64BIT(ICE_RL_PROF_FREQUENCY, bytes_per_sec);
+	wakeup_int = DIV_64BIT(hw->psm_clk_freq, bytes_per_sec);
 	if (wakeup_int > 63) {
 		wakeup = (u16)((1 << 15) | wakeup_int);
 	} else {
@@ -3692,7 +3737,7 @@ static u16 ice_sched_calc_wakeup(s32 bw)
 		 */
 		wakeup_b = (s64)ICE_RL_PROF_MULTIPLIER * wakeup_int;
 		wakeup_a = DIV_64BIT((s64)ICE_RL_PROF_MULTIPLIER *
-				     ICE_RL_PROF_FREQUENCY, bytes_per_sec);
+				     hw->psm_clk_freq, bytes_per_sec);
 
 		/* Get Fraction value */
 		wakeup_f = wakeup_a - wakeup_b;
@@ -3712,13 +3757,15 @@ static u16 ice_sched_calc_wakeup(s32 bw)
 
 /**
  * ice_sched_bw_to_rl_profile - convert BW to profile parameters
+ * @hw: pointer to the HW struct
  * @bw: bandwidth in Kbps
  * @profile: profile parameters to return
  *
  * This function converts the BW to profile structure format.
  */
 static enum ice_status
-ice_sched_bw_to_rl_profile(u32 bw, struct ice_aqc_rl_profile_elem *profile)
+ice_sched_bw_to_rl_profile(struct ice_hw *hw, u32 bw,
+			   struct ice_aqc_rl_profile_elem *profile)
 {
 	enum ice_status status = ICE_ERR_PARAM;
 	s64 bytes_per_sec, ts_rate, mv_tmp;
@@ -3738,7 +3785,7 @@ ice_sched_bw_to_rl_profile(u32 bw, struct ice_aqc_rl_profile_elem *profile)
 	for (i = 0; i < 64; i++) {
 		u64 pow_result = BIT_ULL(i);
 
-		ts_rate = DIV_64BIT((s64)ICE_RL_PROF_FREQUENCY,
+		ts_rate = DIV_64BIT((s64)hw->psm_clk_freq,
 				    pow_result * ICE_RL_PROF_TS_MULTIPLIER);
 		if (ts_rate <= 0)
 			continue;
@@ -3762,7 +3809,7 @@ ice_sched_bw_to_rl_profile(u32 bw, struct ice_aqc_rl_profile_elem *profile)
 	if (found) {
 		u16 wm;
 
-		wm = ice_sched_calc_wakeup(bw);
+		wm = ice_sched_calc_wakeup(hw, bw);
 		profile->rl_multiply = CPU_TO_LE16(mv);
 		profile->wake_up_calc = CPU_TO_LE16(wm);
 		profile->rl_encode = CPU_TO_LE16(encode);
@@ -3831,7 +3878,7 @@ ice_sched_add_rl_profile(struct ice_port_info *pi,
 	if (!rl_prof_elem)
 		return NULL;
 
-	status = ice_sched_bw_to_rl_profile(bw, &rl_prof_elem->profile);
+	status = ice_sched_bw_to_rl_profile(hw, bw, &rl_prof_elem->profile);
 	if (status != ICE_SUCCESS)
 		goto exit_add_rl_prof;
 

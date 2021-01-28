@@ -123,6 +123,24 @@ Limitations
 
   Will match any ipv4 packet (VLAN included).
 
+- When using DV flow engine (``dv_flow_en`` = 1), flow pattern without VLAN item
+  will match untagged packets only.
+  The flow rule::
+
+        flow create 0 ingress pattern eth / ipv4 / end ...
+
+  Will match untagged packets only.
+  The flow rule::
+
+        flow create 0 ingress pattern eth / vlan / ipv4 / end ...
+
+  Will match tagged packets only, with any VLAN ID value.
+  The flow rule::
+
+        flow create 0 ingress pattern eth / vlan vid is 3 / ipv4 / end ...
+
+  Will only match tagged packets with VLAN ID 3.
+
 - VLAN pop offload command:
 
   - Flow rules having a VLAN pop offload command as one of their actions and
@@ -360,8 +378,7 @@ Run-time configuration
 
   A nonzero value enables configuring Multi-Packet Rx queues. Rx queue is
   configured as Multi-Packet RQ if the total number of Rx queues is
-  ``rxqs_min_mprq`` or more and Rx scatter isn't configured. Disabled by
-  default.
+  ``rxqs_min_mprq`` or more. Disabled by default.
 
   Multi-Packet Rx Queue (MPRQ a.k.a Striding RQ) can further save PCIe bandwidth
   by posting a single large buffer for multiple packets. Instead of posting a
@@ -385,6 +402,20 @@ Run-time configuration
   if ``mprq_en`` is set.
 
   The size of Rx queue should be bigger than the number of strides.
+
+- ``mprq_log_stride_size`` parameter [int]
+
+  Log 2 of the size of a stride for Multi-Packet Rx queue. Configuring a smaller
+  stride size can save some memory and reduce probability of a depletion of all
+  available strides due to unreleased packets by an application. If configured
+  value is not in the range of device capability, the default value will be set
+  with a warning message. The default value is 11 which is 2048 bytes per a
+  stride, valid only if ``mprq_en`` is set. With ``mprq_log_stride_size`` set
+  it is possible for a packet to span across multiple strides. This mode allows
+  support of jumbo frames (9K) with MPRQ. The memcopy of some packets (or part
+  of a packet if Rx scatter is configured) may be required in case there is no
+  space left for a head room at the end of a stride which incurs some
+  performance penalty.
 
 - ``mprq_max_memcpy_len`` parameter [int]
 
@@ -1213,6 +1244,19 @@ Supported hardware offloads
    |                       | |  rdma-core 26 | | rdma-core 26  |
    |                       | |  ConnectX-5   | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
+
+Notes for metadata
+------------------
+
+MARK and META items are interrelated with datapath - they might move from/to
+the applications in mbuf fields. Hence, zero value for these items has the
+special meaning - it means "no metadata are provided", not zero values are
+treated by applications and PMD as valid ones.
+
+Moreover in the flow engine domain the value zero is acceptable to match and
+set, and we should allow to specify zero values as rte_flow parameters for the
+META and MARK items and actions. In the same time zero mask has no meaning and
+should be rejected on validation stage.
 
 Notes for testpmd
 -----------------

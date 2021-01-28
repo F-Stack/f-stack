@@ -11,7 +11,6 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
-#include <arpa/inet.h>
 
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
@@ -200,8 +199,11 @@ mlx5_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 	uint16_t port_id;
 	struct mlx5_priv *priv = dev->data->dev_private;
 
-	/* Configuring the VF instead of its representor. */
-	if (priv->representor) {
+	/*
+	 * Configuring the VF instead of its representor,
+	 * need to skip the special case of HPF on Bluefield.
+	 */
+	if (priv->representor && priv->representor_id >= 0) {
 		DRV_LOG(DEBUG, "VF represented by port %u setting primary MAC address",
 			dev->data->port_id);
 		RTE_ETH_FOREACH_DEV_SIBLING(port_id, dev->data->port_id) {

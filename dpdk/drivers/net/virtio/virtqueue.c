@@ -174,6 +174,7 @@ virtqueue_rxvq_reset_packed(struct virtqueue *vq)
 
 	vring_desc_init_packed(vq, size);
 
+	virtqueue_disable_intr(vq);
 	return 0;
 }
 
@@ -210,5 +211,6 @@ virtqueue_txvq_reset_packed(struct virtqueue *vq)
 
 	vring_desc_init_packed(vq, size);
 
+	virtqueue_disable_intr(vq);
 	return 0;
 }

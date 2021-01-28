@@ -178,13 +178,6 @@ struct bnxt_led_cfg {
 #define BNXT_LED_DFLT_ENABLES(x)                        \
 	rte_cpu_to_le_32(BNXT_LED_DFLT_ENA << (BNXT_LED_DFLT_ENA_SHIFT * (x)))
 
-enum bnxt_hw_context {
-	HW_CONTEXT_NONE     = 0,
-	HW_CONTEXT_IS_RSS   = 1,
-	HW_CONTEXT_IS_COS   = 2,
-	HW_CONTEXT_IS_LB    = 3,
-};
-
 struct bnxt_vlan_table_entry {
 	uint16_t		tpid;
 	uint16_t		vid;
@@ -240,8 +233,8 @@ struct bnxt_pf_info {
 };
 
 /* Max wait time for link up is 10s and link down is 500ms */
-#define BNXT_LINK_UP_WAIT_CNT	200
-#define BNXT_LINK_DOWN_WAIT_CNT	10
+#define BNXT_MAX_LINK_WAIT_CNT	200
+#define BNXT_MIN_LINK_WAIT_CNT	10
 #define BNXT_LINK_WAIT_INTERVAL	50
 struct bnxt_link_info {
 	uint32_t		phy_flags;
@@ -470,6 +463,11 @@ struct bnxt_error_recovery_info {
 	uint32_t        last_reset_counter;
 };
 
+/* Frequency for the FUNC_DRV_IF_CHANGE retry in milliseconds */
+#define BNXT_IF_CHANGE_RETRY_INTERVAL	50
+/* Maximum retry count for FUNC_DRV_IF_CHANGE */
+#define BNXT_IF_CHANGE_RETRY_COUNT	40
+
 /* address space location of register */
 #define BNXT_FW_STATUS_REG_TYPE_MASK	3
 /* register is located in PCIe config space */
@@ -494,7 +492,6 @@ struct bnxt {
 	void				*bar0;
 
 	struct rte_eth_dev		*eth_dev;
-	struct rte_eth_rss_conf		rss_conf;
 	struct rte_pci_device		*pdev;
 	void				*doorbell_base;
 
@@ -523,6 +520,7 @@ struct bnxt {
 #define BNXT_FLAG_FW_CAP_ONE_STEP_TX_TS		BIT(22)
 #define BNXT_FLAG_ADV_FLOW_MGMT			BIT(23)
 #define BNXT_FLAG_NPAR_PF                      BIT(24)
+#define BNXT_FLAG_DFLT_MAC_SET			BIT(26)
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
 #define BNXT_NPAR(bp)		((bp)->flags & BNXT_FLAG_NPAR_PF)
@@ -535,6 +533,7 @@ struct bnxt {
 #define BNXT_STINGRAY(bp)	((bp)->flags & BNXT_FLAG_STINGRAY)
 #define BNXT_HAS_NQ(bp)		BNXT_CHIP_THOR(bp)
 #define BNXT_HAS_RING_GRPS(bp)	(!BNXT_CHIP_THOR(bp))
+#define BNXT_HAS_DFLT_MAC_SET(bp)      ((bp)->flags & BNXT_FLAG_DFLT_MAC_SET)
 
 	uint32_t		fw_cap;
 #define BNXT_FW_CAP_HOT_RESET		BIT(0)
@@ -542,8 +541,6 @@ struct bnxt {
 #define BNXT_FW_CAP_ERROR_RECOVERY	BIT(2)
 #define BNXT_FW_CAP_ERR_RECOVER_RELOAD	BIT(3)
 
-	uint32_t		flow_flags;
-#define BNXT_FLOW_FLAG_L2_HDR_SRC_FILTER_EN	BIT(0)
 	pthread_mutex_t         flow_lock;
 
 	uint32_t		vnic_cap_flags;
@@ -596,6 +593,7 @@ struct bnxt {
 	rte_iova_t			hwrm_short_cmd_req_dma_addr;
 	rte_spinlock_t			hwrm_lock;
 	pthread_mutex_t			def_cp_lock;
+	pthread_mutex_t			health_check_lock;
 	uint16_t			max_req_len;
 	uint16_t			max_resp_len;
 	uint16_t                        hwrm_max_ext_req_len;
@@ -617,7 +615,6 @@ struct bnxt {
 	uint8_t                 max_q;
 
 	uint16_t		fw_fid;
-	uint8_t			dflt_mac_addr[RTE_ETHER_ADDR_LEN];
 	uint16_t		max_rsscos_ctx;
 	uint16_t		max_cp_rings;
 	uint16_t		max_tx_rings;
@@ -625,10 +622,10 @@ struct bnxt {
 #define MAX_STINGRAY_RINGS		128U
 /* For sake of symmetry, max Tx rings == max Rx rings, one stat ctx for each */
 #define BNXT_MAX_RX_RINGS(bp) \
-	(BNXT_STINGRAY(bp) ? RTE_MIN(RTE_MIN(bp->max_rx_rings, \
+	(BNXT_STINGRAY(bp) ? RTE_MIN(RTE_MIN(bp->max_rx_rings / 2U, \
 					     MAX_STINGRAY_RINGS), \
 				     bp->max_stat_ctx / 2U) : \
-				RTE_MIN(bp->max_rx_rings, \
+				RTE_MIN(bp->max_rx_rings / 2U, \
 					bp->max_stat_ctx / 2U))
 #define BNXT_MAX_TX_RINGS(bp) \
 	(RTE_MIN((bp)->max_tx_rings, BNXT_MAX_RX_RINGS(bp)))
@@ -684,6 +681,13 @@ void bnxt_schedule_fw_health_check(struct bnxt *bp);
 
 bool is_bnxt_supported(struct rte_eth_dev *dev);
 bool bnxt_stratus_device(struct bnxt *bp);
+int bnxt_link_update_op(struct rte_eth_dev *eth_dev,
+			int wait_to_complete);
+uint16_t bnxt_dummy_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
+			      uint16_t nb_pkts);
+uint16_t bnxt_dummy_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+			      uint16_t nb_pkts);
+
 extern const struct rte_flow_ops bnxt_flow_ops;
 #define bnxt_acquire_flow_lock(bp) \
 	pthread_mutex_lock(&(bp)->flow_lock)

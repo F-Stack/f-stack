@@ -263,7 +263,7 @@ check_all_ports_link_status(struct l2fwd_resources *rsrc,
 					"Port%d Link Up. Speed %u Mbps - %s\n",
 						port_id, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n", port_id);
 				continue;
@@ -385,6 +385,8 @@ print_stats(struct l2fwd_resources *rsrc)
 		   total_packets_rx,
 		   total_packets_dropped);
 	printf("\n====================================================\n");
+
+	fflush(stdout);
 }
 
 static void

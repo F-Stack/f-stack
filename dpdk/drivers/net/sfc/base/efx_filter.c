@@ -28,7 +28,7 @@ static	__checkReturn	efx_rc_t
 siena_filter_add(
 	__in		efx_nic_t *enp,
 	__inout		efx_filter_spec_t *spec,
-	__in		boolean_t may_replace);
+	__in		efx_filter_replacement_policy_t policy);
 
 static	__checkReturn	efx_rc_t
 siena_filter_delete(
@@ -93,8 +93,16 @@ efx_filter_insert(
 		goto fail2;
 	}
 
-	return (efop->efo_add(enp, spec, B_FALSE));
+	if (spec->efs_priority == EFX_FILTER_PRI_AUTO) {
+		rc = EINVAL;
+		goto fail3;
+	}
 
+	return (efop->efo_add(enp, spec,
+	    EFX_FILTER_REPLACEMENT_HIGHER_PRIORITY));
+
+fail3:
+	EFSYS_PROBE(fail3);
 fail2:
 	EFSYS_PROBE(fail2);
 fail1:
@@ -314,7 +322,7 @@ efx_filter_spec_init_tx(
 	EFSYS_ASSERT3P(etp, !=, NULL);
 
 	memset(spec, 0, sizeof (*spec));
-	spec->efs_priority = EFX_FILTER_PRI_REQUIRED;
+	spec->efs_priority = EFX_FILTER_PRI_MANUAL;
 	spec->efs_flags = EFX_FILTER_FLAG_TX;
 	spec->efs_dmaq_id = (uint16_t)etp->et_index;
 }
@@ -1437,7 +1445,7 @@ static	 __checkReturn	efx_rc_t
 siena_filter_add(
 	__in		efx_nic_t *enp,
 	__inout		efx_filter_spec_t *spec,
-	__in		boolean_t may_replace)
+	__in		efx_filter_replacement_policy_t policy)
 {
 	efx_rc_t rc;
 	siena_filter_spec_t sf_spec;
@@ -1478,9 +1486,17 @@ siena_filter_add(
 	saved_sf_spec = &sftp->sft_spec[filter_idx];
 
 	if (siena_filter_test_used(sftp, filter_idx)) {
-		if (may_replace == B_FALSE) {
+		/* All Siena filter are considered the same priority */
+		switch (policy) {
+		case EFX_FILTER_REPLACEMENT_NEVER:
+		case EFX_FILTER_REPLACEMENT_HIGHER_PRIORITY:
 			rc = EEXIST;
 			goto fail4;
+		case EFX_FILTER_REPLACEMENT_HIGHER_OR_EQUAL_PRIORITY:
+			break;
+		default:
+			EFSYS_ASSERT(0);
+			break;
 		}
 	}
 	siena_filter_set_used(sftp, filter_idx);

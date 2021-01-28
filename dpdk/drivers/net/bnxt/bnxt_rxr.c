@@ -145,6 +145,7 @@ static void bnxt_tpa_start(struct bnxt_rx_queue *rxq,
 	tpa_info->mbuf = mbuf;
 	tpa_info->len = rte_le_to_cpu_32(tpa_start->len);
 
+	mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 	mbuf->nb_segs = 1;
 	mbuf->next = NULL;
 	mbuf->pkt_len = rte_le_to_cpu_32(tpa_start->len);
@@ -300,7 +301,6 @@ static inline struct rte_mbuf *bnxt_tpa_end(
 	mbuf = tpa_info->mbuf;
 	RTE_ASSERT(mbuf != NULL);
 
-	rte_prefetch0(mbuf);
 	if (agg_bufs) {
 		bnxt_rx_pages(rxq, mbuf, raw_cp_cons, agg_bufs, tpa_info);
 	}
@@ -474,8 +474,6 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	if (mbuf == NULL)
 		return -EBUSY;
 
-	rte_prefetch0(mbuf);
-
 	mbuf->data_off = RTE_PKTMBUF_HEADROOM;
 	mbuf->nb_segs = 1;
 	mbuf->next = NULL;
@@ -618,14 +616,12 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		return 0;
 
 	/* If Rx Q was stopped return */
-	if (unlikely(!rxq->rx_started ||
-		     !rte_spinlock_trylock(&rxq->lock)))
+	if (unlikely(!rxq->rx_started))
 		return 0;
 
 	/* Handle RX burst request */
 	while (1) {
 		cons = RING_CMP(cpr->cp_ring_struct, raw_cons);
-		rte_prefetch0(&cpr->cp_desc_ring[cons]);
 		rxcmp = (struct rx_pkt_cmpl *)&cpr->cp_desc_ring[cons];
 
 		if (!CMP_VALID(rxcmp, raw_cons, cpr->cp_ring_struct))
@@ -701,8 +697,6 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	}
 
 done:
-	rte_spinlock_unlock(&rxq->lock);
-
 	return nb_rx_pkts;
 }
 
@@ -779,6 +773,7 @@ int bnxt_init_rx_ring_struct(struct bnxt_rx_queue *rxq, unsigned int socket_id)
 	ring->bd_dma = rxr->rx_desc_mapping;
 	ring->vmem_size = ring->ring_size * sizeof(struct bnxt_sw_rx_bd);
 	ring->vmem = (void **)&rxr->rx_buf_ring;
+	ring->fw_ring_id = INVALID_HW_RING_ID;
 
 	cpr = rte_zmalloc_socket("bnxt_rx_ring",
 				 sizeof(struct bnxt_cp_ring_info),
@@ -800,6 +795,7 @@ int bnxt_init_rx_ring_struct(struct bnxt_rx_queue *rxq, unsigned int socket_id)
 	ring->bd_dma = cpr->cp_desc_mapping;
 	ring->vmem_size = 0;
 	ring->vmem = NULL;
+	ring->fw_ring_id = INVALID_HW_RING_ID;
 
 	/* Allocate Aggregator rings */
 	ring = rte_zmalloc_socket("bnxt_rx_ring_struct",
@@ -815,6 +811,7 @@ int bnxt_init_rx_ring_struct(struct bnxt_rx_queue *rxq, unsigned int socket_id)
 	ring->bd_dma = rxr->ag_desc_mapping;
 	ring->vmem_size = ring->ring_size * sizeof(struct bnxt_sw_rx_bd);
 	ring->vmem = (void **)&rxr->ag_buf_ring;
+	ring->fw_ring_id = INVALID_HW_RING_ID;
 
 	return 0;
 }
@@ -853,11 +850,13 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 
 	prod = rxr->rx_prod;
 	for (i = 0; i < ring->ring_size; i++) {
-		if (bnxt_alloc_rx_data(rxq, rxr, prod) != 0) {
-			PMD_DRV_LOG(WARNING,
-				"init'ed rx ring %d with %d/%d mbufs only\n",
-				rxq->queue_id, i, ring->ring_size);
-			break;
+		if (unlikely(!rxr->rx_buf_ring[i].mbuf)) {
+			if (bnxt_alloc_rx_data(rxq, rxr, prod) != 0) {
+				PMD_DRV_LOG(WARNING,
+					    "init'ed rx ring %d with %d/%d mbufs only\n",
+					    rxq->queue_id, i, ring->ring_size);
+				break;
+			}
 		}
 		rxr->rx_prod = prod;
 		prod = RING_NEXT(rxr->rx_ring_struct, prod);
@@ -869,11 +868,13 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 	prod = rxr->ag_prod;
 
 	for (i = 0; i < ring->ring_size; i++) {
-		if (bnxt_alloc_ag_data(rxq, rxr, prod) != 0) {
-			PMD_DRV_LOG(WARNING,
-			"init'ed AG ring %d with %d/%d mbufs only\n",
-			rxq->queue_id, i, ring->ring_size);
-			break;
+		if (unlikely(!rxr->ag_buf_ring[i].mbuf)) {
+			if (bnxt_alloc_ag_data(rxq, rxr, prod) != 0) {
+				PMD_DRV_LOG(WARNING,
+					    "init'ed AG ring %d with %d/%d mbufs only\n",
+					    rxq->queue_id, i, ring->ring_size);
+				break;
+			}
 		}
 		rxr->ag_prod = prod;
 		prod = RING_NEXT(rxr->ag_ring_struct, prod);
@@ -884,11 +885,13 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 		unsigned int max_aggs = BNXT_TPA_MAX_AGGS(rxq->bp);
 
 		for (i = 0; i < max_aggs; i++) {
-			rxr->tpa_info[i].mbuf =
-				__bnxt_alloc_rx_data(rxq->mb_pool);
-			if (!rxr->tpa_info[i].mbuf) {
-				rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
-				return -ENOMEM;
+			if (unlikely(!rxr->tpa_info[i].mbuf)) {
+				rxr->tpa_info[i].mbuf =
+					__bnxt_alloc_rx_data(rxq->mb_pool);
+				if (!rxr->tpa_info[i].mbuf) {
+					rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
+					return -ENOMEM;
+				}
 			}
 		}
 	}

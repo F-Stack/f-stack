@@ -658,6 +658,9 @@ dsw_port_consider_migration(struct dsw_evdev *dsw,
 	if (dsw->num_ports == 1)
 		return;
 
+	if (seen_events_len < DSW_MAX_EVENTS_RECORDED)
+		return;
+
 	DSW_LOG_DP_PORT(DEBUG, source_port->id, "Considering migration.\n");
 
 	/* Randomize interval to avoid having all threads considering
@@ -930,11 +933,6 @@ dsw_port_ctl_process(struct dsw_evdev *dsw, struct dsw_port *port)
 {
 	struct dsw_ctl_msg msg;
 
-	/* So any table loads happens before the ring dequeue, in the
-	 * case of a 'paus' message.
-	 */
-	rte_smp_rmb();
-
 	if (dsw_port_ctl_dequeue(port, &msg) == 0) {
 		switch (msg.type) {
 		case DSW_CTL_PAUS_REQ:
@@ -1099,7 +1097,7 @@ dsw_event_enqueue_burst_generic(struct dsw_port *source_port,
 	DSW_LOG_DP_PORT(DEBUG, source_port->id, "%d non-release events "
 			"accepted.\n", num_non_release);
 
-	return num_non_release;
+	return (num_non_release + num_release);
 }
 
 uint16_t
@@ -1194,11 +1192,6 @@ static uint16_t
 dsw_port_dequeue_burst(struct dsw_port *port, struct rte_event *events,
 		       uint16_t num)
 {
-	struct dsw_port *source_port = port;
-	struct dsw_evdev *dsw = source_port->dsw;
-
-	dsw_port_ctl_process(dsw, source_port);
-
 	if (unlikely(port->in_buffer_len > 0)) {
 		uint16_t dequeued = RTE_MIN(num, port->in_buffer_len);
 

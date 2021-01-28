@@ -312,8 +312,8 @@ enic_fm_copy_item_eth(struct copy_item_args *arg)
 	fm_mask = &entry->ftm_mask.fk_hdrset[lvl];
 	fm_data->fk_header_select |= FKH_ETHER;
 	fm_mask->fk_header_select |= FKH_ETHER;
-	memcpy(&fm_data->l2.eth, spec, sizeof(*spec));
-	memcpy(&fm_mask->l2.eth, mask, sizeof(*mask));
+	memcpy(&fm_data->l2.eth, spec, sizeof(struct rte_ether_hdr));
+	memcpy(&fm_mask->l2.eth, mask, sizeof(struct rte_ether_hdr));
 	return 0;
 }
 
@@ -349,8 +349,11 @@ enic_fm_copy_item_vlan(struct copy_item_args *arg)
 	eth_mask = (void *)&fm_mask->l2.eth;
 	eth_val = (void *)&fm_data->l2.eth;
 
-	/* Outer TPID cannot be matched */
-	if (eth_mask->ether_type)
+	/*
+	 * Outer TPID cannot be matched. If inner_type is 0, use what is
+	 * in the eth header.
+	 */
+	if (eth_mask->ether_type && mask->inner_type)
 		return -ENOTSUP;
 
 	/*
@@ -358,8 +361,10 @@ enic_fm_copy_item_vlan(struct copy_item_args *arg)
 	 * L2, regardless of vlan stripping settings. So, the inner type
 	 * from vlan becomes the ether type of the eth header.
 	 */
-	eth_mask->ether_type = mask->inner_type;
-	eth_val->ether_type = spec->inner_type;
+	if (mask->inner_type) {
+		eth_mask->ether_type = mask->inner_type;
+		eth_val->ether_type = spec->inner_type;
+	}
 	fm_data->fk_header_select |= FKH_ETHER | FKH_QTAG;
 	fm_mask->fk_header_select |= FKH_ETHER | FKH_QTAG;
 	fm_data->fk_vlan = rte_be_to_cpu_16(spec->tci);
@@ -418,8 +423,8 @@ enic_fm_copy_item_ipv6(struct copy_item_args *arg)
 
 	fm_data->fk_header_select |= FKH_IPV6;
 	fm_mask->fk_header_select |= FKH_IPV6;
-	memcpy(&fm_data->l3.ip6, spec, sizeof(*spec));
-	memcpy(&fm_mask->l3.ip6, mask, sizeof(*mask));
+	memcpy(&fm_data->l3.ip6, spec, sizeof(struct rte_ipv6_hdr));
+	memcpy(&fm_mask->l3.ip6, mask, sizeof(struct rte_ipv6_hdr));
 	return 0;
 }
 
@@ -869,46 +874,36 @@ enic_fm_append_action_op(struct enic_flowman *fm,
 	return 0;
 }
 
-/* Steer operations need to appear before other ops */
+/* NIC requires that 1st steer appear before decap.
+ * Correct example: steer, decap, steer, steer, ...
+ */
 static void
 enic_fm_reorder_action_op(struct enic_flowman *fm)
 {
-	struct fm_action_op *dst, *dst_head, *src, *src_head;
+	struct fm_action_op *op, *steer, *decap;
+	struct fm_action_op tmp_op;
 
 	ENICPMD_FUNC_TRACE();
-	/* Move steer ops to the front. */
-	src = fm->action.fma_action_ops;
-	src_head = src;
-	dst = fm->action_tmp.fma_action_ops;
-	dst_head = dst;
-	/* Copy steer ops to tmp */
-	while (src->fa_op != FMOP_END) {
-		if (src->fa_op == FMOP_RQ_STEER) {
-			ENICPMD_LOG(DEBUG, "move op: %ld -> dst %ld",
-				    (long)(src - src_head),
-				    (long)(dst - dst_head));
-			*dst = *src;
-			dst++;
-		}
-		src++;
+	/* Find 1st steer and decap */
+	op = fm->action.fma_action_ops;
+	steer = NULL;
+	decap = NULL;
+	while (op->fa_op != FMOP_END) {
+		if (!decap && op->fa_op == FMOP_DECAP_NOSTRIP)
+			decap = op;
+		else if (!steer && op->fa_op == FMOP_RQ_STEER)
+			steer = op;
+		op++;
 	}
-	/* Then append non-steer ops */
-	src = src_head;
-	while (src->fa_op != FMOP_END) {
-		if (src->fa_op != FMOP_RQ_STEER) {
-			ENICPMD_LOG(DEBUG, "move op: %ld -> dst %ld",
-				    (long)(src - src_head),
-				    (long)(dst - dst_head));
-			*dst = *src;
-			dst++;
-		}
-		src++;
+	/* If decap is before steer, swap */
+	if (steer && decap && decap < steer) {
+		op = fm->action.fma_action_ops;
+		ENICPMD_LOG(DEBUG, "swap decap %ld <-> steer %ld",
+			    (long)(decap - op), (long)(steer - op));
+		tmp_op = *decap;
+		*decap = *steer;
+		*steer = tmp_op;
 	}
-	/* Copy END */
-	*dst = *src;
-	/* Finally replace the original action with the reordered one */
-	memcpy(fm->action.fma_action_ops, fm->action_tmp.fma_action_ops,
-	       sizeof(fm->action.fma_action_ops));
 }
 
 /* VXLAN decap is done via flowman compound action */
@@ -934,6 +929,17 @@ enic_fm_copy_vxlan_decap(struct enic_flowman *fm,
 	return enic_fm_append_action_op(fm, &fm_op, error);
 }
 
+/* Generate a reasonable source port number */
+static uint16_t
+gen_src_port(void)
+{
+	/* Min/max below are the default values in OVS-DPDK and Linux */
+	uint16_t p = rte_rand();
+	p = RTE_MAX(p, 32768);
+	p = RTE_MIN(p, 61000);
+	return rte_cpu_to_be_16(p);
+}
+
 /* VXLAN encap is done via flowman compound action */
 static int
 enic_fm_copy_vxlan_encap(struct enic_flowman *fm,
@@ -942,6 +948,7 @@ enic_fm_copy_vxlan_encap(struct enic_flowman *fm,
 {
 	struct fm_action_op fm_op;
 	struct rte_ether_hdr *eth;
+	struct rte_udp_hdr *udp;
 	uint16_t *ethertype;
 	void *template;
 	uint8_t off;
@@ -963,7 +970,7 @@ enic_fm_copy_vxlan_encap(struct enic_flowman *fm,
 	eth = (struct rte_ether_hdr *)template;
 	ethertype = &eth->ether_type;
 	append_template(&template, &off, item->spec,
-			sizeof(struct rte_flow_item_eth));
+			sizeof(struct rte_ether_hdr));
 	item++;
 	flow_item_skip_void(&item);
 	/* Optional VLAN */
@@ -1040,8 +1047,17 @@ enic_fm_copy_vxlan_encap(struct enic_flowman *fm,
 		off + offsetof(struct rte_udp_hdr, dgram_len);
 	fm_op.encap.len2_delta =
 		sizeof(struct rte_udp_hdr) + sizeof(struct rte_vxlan_hdr);
+	udp = (struct rte_udp_hdr *)template;
 	append_template(&template, &off, item->spec,
 			sizeof(struct rte_udp_hdr));
+	/*
+	 * Firmware does not hash/fill source port yet. Generate a
+	 * random port, as there is *usually* one rte_flow for the
+	 * given inner packet stream (i.e. a single stream has one
+	 * random port).
+	 */
+	if (udp->src_port == 0)
+		udp->src_port = gen_src_port();
 	item++;
 	flow_item_skip_void(&item);
 
@@ -1099,6 +1115,7 @@ enic_fm_copy_action(struct enic_flowman *fm,
 		PASSTHRU = 1 << 2,
 		COUNT = 1 << 3,
 		ENCAP = 1 << 4,
+		DECAP = 1 << 5,
 	};
 	struct fm_tcam_match_entry *fmt;
 	struct fm_action_op fm_op;
@@ -1281,6 +1298,10 @@ enic_fm_copy_action(struct enic_flowman *fm,
 			break;
 		}
 		case RTE_FLOW_ACTION_TYPE_VXLAN_DECAP: {
+			if (overlap & DECAP)
+				goto unsupported;
+			overlap |= DECAP;
+
 			ret = enic_fm_copy_vxlan_decap(fm, fmt, actions,
 				error);
 			if (ret != 0)

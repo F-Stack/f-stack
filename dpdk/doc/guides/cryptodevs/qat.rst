@@ -52,10 +52,15 @@ Cipher algorithms:
 
 Hash algorithms:
 
+* ``RTE_CRYPTO_AUTH_SHA1``
 * ``RTE_CRYPTO_AUTH_SHA1_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA224``
 * ``RTE_CRYPTO_AUTH_SHA224_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA256``
 * ``RTE_CRYPTO_AUTH_SHA256_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA384``
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
+* ``RTE_CRYPTO_AUTH_SHA512``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
 * ``RTE_CRYPTO_AUTH_AES_XCBC_MAC``
 * ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
@@ -72,6 +77,29 @@ Supported AEAD algorithms:
 * ``RTE_CRYPTO_AEAD_AES_CCM``
 
 
+Supported Chains
+~~~~~~~~~~~~~~~~
+
+All the usual chains are supported and also some mixed chains:
+
+.. table:: Supported hash-cipher chains for wireless digest-encrypted cases
+
+   +------------------+-----------+-------------+----------+----------+
+   | Cipher algorithm | NULL AUTH | SNOW3G UIA2 | ZUC EIA3 | AES CMAC |
+   +==================+===========+=============+==========+==========+
+   | NULL CIPHER      | Y         | 2&3         | 2&3      | Y        |
+   +------------------+-----------+-------------+----------+----------+
+   | SNOW3G UEA2      | 2&3       | Y           | 2&3      | 2&3      |
+   +------------------+-----------+-------------+----------+----------+
+   | ZUC EEA3         | 2&3       | 2&3         | 2&3      | 2&3      |
+   +------------------+-----------+-------------+----------+----------+
+   | AES CTR          | Y         | 2&3         | 2&3      | Y        |
+   +------------------+-----------+-------------+----------+----------+
+
+* The combinations marked as "Y" are supported on all QAT hardware versions.
+* The combinations marked as "2&3" are supported on GEN2/GEN3 QAT hardware only.
+
+
 Limitations
 ~~~~~~~~~~~
 
@@ -81,7 +109,10 @@ Limitations
 * No BSD support as BSD QAT kernel driver not available.
 * ZUC EEA3/EIA3 is not supported by dh895xcc devices
 * Maximum additional authenticated data (AAD) for GCM is 240 bytes long and must be passed to the device in a buffer rounded up to the nearest block-size multiple (x16) and padded with zeros.
-* Queue pairs are not thread-safe (that is, within a single queue pair, RX and TX from different lcores is not supported).
+* Queue-pairs are thread-safe on Intel CPUs but Queues are not (that is, within a single
+  queue-pair all enqueues to the TX queue must be done from one thread and all dequeues
+  from the RX queue must be done from one thread, but enqueues and dequeues may be done
+  in different threads.)
 * A GCM limitation exists, but only in the case where there are multiple
   generations of QAT devices on a single platform.
   To optimise performance, the GCM crypto session should be initialised for the
@@ -93,6 +124,8 @@ Limitations
   enqueued to the device and will be marked as failed. The simplest way to
   mitigate this is to use the bdf whitelist to avoid mixing devices of different
   generations in the same process if planning to use for GCM.
+* The mixed algo feature on GEN2 is not supported by all kernel drivers. Check
+  the notes under the Available Kernel Drivers table below for specific details.
 
 Extra notes on KASUMI F9
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -133,7 +166,10 @@ Limitations
 ~~~~~~~~~~~
 
 * Big integers longer than 4096 bits are not supported.
-* Queue pairs are not thread-safe (that is, within a single queue pair, RX and TX from different lcores is not supported).
+* Queue-pairs are thread-safe on Intel CPUs but Queues are not (that is, within a single
+  queue-pair all enqueues to the TX queue must be done from one thread and all dequeues
+  from the RX queue must be done from one thread, but enqueues and dequeues may be done
+  in different threads.)
 * RSA-2560, RSA-3584 are not supported
 
 .. _building_qat:
@@ -237,6 +273,27 @@ allocated while for GEN1 devices, 12 buffers are allocated, plus 1472 bytes over
 	larger than the input size).
 
 
+Running QAT PMD with minimum threshold for burst size
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If only a small number or packets can be enqueued. Each enqueue causes an expensive MMIO write.
+These MMIO write occurrences can be optimised by setting any of the following parameters
+- qat_sym_enq_threshold
+- qat_asym_enq_threshold
+- qat_comp_enq_threshold
+When any of these parameters is set rte_cryptodev_enqueue_burst function will
+return 0 (thereby avoiding an MMIO) if the device is congested and number of packets
+possible to enqueue is smaller.
+
+To use this feature the user must set the parameter on process start as a device additional parameter::
+
+      example: -w 03:01.1,qat_sym_enq_threshold=32,qat_comp_enq_threshold=16
+
+All parameters can be used with the same device regardless of order. Parameters are separated
+by comma. When the same parameter is used more than once first occurrence of the parameter
+is used.
+Maximum threshold that can be set is 32.
+
 Device and driver naming
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -325,6 +382,8 @@ to see the full table)
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
    | Yes | No  | No  | 3   | C4xxx    | p             | qat_c4xxx     | c4xxx      | 18a0   | 1    | 18a1   | 128    |
    +-----+-----+-----+-----+----------+---------------+---------------+------------+--------+------+--------+--------+
+
+* Note: Symmetric mixed crypto algorithms feature on Gen 2 works only with 01.org driver version 4.9.0+
 
 The first 3 columns indicate the service:
 

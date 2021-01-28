@@ -43,6 +43,8 @@ struct sfc_flow_spec {
 	efx_filter_spec_t filters[SF_FLOW_SPEC_NB_FILTERS_MAX];
 	/* number of complete specifications */
 	unsigned int count;
+	/* RSS hash toggle */
+	boolean_t rss_hash_required;
 };
 
 /* PMD-specific definition of the opaque type from rte_flow.h */

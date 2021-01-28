@@ -47,6 +47,8 @@
 #define ETH_I40E_VF_MSG_CFG		"vf_msg_cfg"
 
 #define I40E_CLEAR_PXE_WAIT_MS     200
+#define I40E_VSI_TSR_QINQ_STRIP		0x4010
+#define I40E_VSI_TSR(_i)	(0x00050800 + ((_i) * 4))
 
 /* Maximun number of capability elements */
 #define I40E_MAX_CAP_ELE_NUM       128
@@ -2005,7 +2007,7 @@ __vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t msix_vect,
 	I40E_WRITE_FLUSH(hw);
 }
 
-void
+int
 i40e_vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t itr_idx)
 {
 	struct rte_eth_dev *dev = vsi->adapter->eth_dev;
@@ -2025,10 +2027,14 @@ i40e_vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t itr_idx)
 
 	/* VF bind interrupt */
 	if (vsi->type == I40E_VSI_SRIOV) {
+		if (vsi->nb_msix == 0) {
+			PMD_DRV_LOG(ERR, "No msix resource");
+			return -EINVAL;
+		}
 		__vsi_queues_bind_intr(vsi, msix_vect,
 				       vsi->base_queue, vsi->nb_qps,
 				       itr_idx);
-		return;
+		return 0;
 	}
 
 	/* PF & VMDq bind interrupt */
@@ -2045,7 +2051,10 @@ i40e_vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t itr_idx)
 	}
 
 	for (i = 0; i < vsi->nb_used_qps; i++) {
-		if (nb_msix <= 1) {
+		if (vsi->nb_msix == 0) {
+			PMD_DRV_LOG(ERR, "No msix resource");
+			return -EINVAL;
+		} else if (nb_msix <= 1) {
 			if (!rte_intr_allow_others(intr_handle))
 				/* allow to share MISC_VEC_ID */
 				msix_vect = I40E_MISC_VEC_ID;
@@ -2070,9 +2079,11 @@ i40e_vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t itr_idx)
 		msix_vect++;
 		nb_msix--;
 	}
+
+	return 0;
 }
 
-static void
+void
 i40e_vsi_enable_queues_intr(struct i40e_vsi *vsi)
 {
 	struct rte_eth_dev *dev = vsi->adapter->eth_dev;
@@ -2099,7 +2110,7 @@ i40e_vsi_enable_queues_intr(struct i40e_vsi *vsi)
 	I40E_WRITE_FLUSH(hw);
 }
 
-static void
+void
 i40e_vsi_disable_queues_intr(struct i40e_vsi *vsi)
 {
 	struct rte_eth_dev *dev = vsi->adapter->eth_dev;
@@ -2272,6 +2283,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	uint32_t intr_vector = 0;
 	struct i40e_vsi *vsi;
+	uint16_t nb_rxq, nb_txq;
 
 	hw->adapter_stopped = 0;
 
@@ -2303,35 +2315,38 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	ret = i40e_dev_rxtx_init(pf);
 	if (ret != I40E_SUCCESS) {
 		PMD_DRV_LOG(ERR, "Failed to init rx/tx queues");
-		goto err_up;
+		return ret;
 	}
 
 	/* Map queues with MSIX interrupt */
 	main_vsi->nb_used_qps = dev->data->nb_rx_queues -
 		pf->nb_cfg_vmdq_vsi * RTE_LIBRTE_I40E_QUEUE_NUM_PER_VM;
-	i40e_vsi_queues_bind_intr(main_vsi, I40E_ITR_INDEX_DEFAULT);
+	ret = i40e_vsi_queues_bind_intr(main_vsi, I40E_ITR_INDEX_DEFAULT);
+	if (ret < 0)
+		return ret;
 	i40e_vsi_enable_queues_intr(main_vsi);
 
 	/* Map VMDQ VSI queues with MSIX interrupt */
 	for (i = 0; i < pf->nb_cfg_vmdq_vsi; i++) {
 		pf->vmdq[i].vsi->nb_used_qps = RTE_LIBRTE_I40E_QUEUE_NUM_PER_VM;
-		i40e_vsi_queues_bind_intr(pf->vmdq[i].vsi,
-					  I40E_ITR_INDEX_DEFAULT);
+		ret = i40e_vsi_queues_bind_intr(pf->vmdq[i].vsi,
+						I40E_ITR_INDEX_DEFAULT);
+		if (ret < 0)
+			return ret;
 		i40e_vsi_enable_queues_intr(pf->vmdq[i].vsi);
 	}
 
-	/* enable FDIR MSIX interrupt */
-	if (pf->fdir.fdir_vsi) {
-		i40e_vsi_queues_bind_intr(pf->fdir.fdir_vsi,
-					  I40E_ITR_INDEX_NONE);
-		i40e_vsi_enable_queues_intr(pf->fdir.fdir_vsi);
+	/* Enable all queues which have been configured */
+	for (nb_rxq = 0; nb_rxq < dev->data->nb_rx_queues; nb_rxq++) {
+		ret = i40e_dev_rx_queue_start(dev, nb_rxq);
+		if (ret)
+			goto rx_err;
 	}
 
-	/* Enable all queues which have been configured */
-	ret = i40e_dev_switch_queues(pf, TRUE);
-	if (ret != I40E_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to enable VSI");
-		goto err_up;
+	for (nb_txq = 0; nb_txq < dev->data->nb_tx_queues; nb_txq++) {
+		ret = i40e_dev_tx_queue_start(dev, nb_txq);
+		if (ret)
+			goto tx_err;
 	}
 
 	/* Enable receiving broadcast packets */
@@ -2361,7 +2376,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 		ret = i40e_aq_set_lb_modes(hw, dev->data->dev_conf.lpbk_mode, NULL);
 		if (ret != I40E_SUCCESS) {
 			PMD_DRV_LOG(ERR, "fail to set loopback link");
-			goto err_up;
+			goto tx_err;
 		}
 	}
 
@@ -2369,7 +2384,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	ret = i40e_apply_link_speed(dev);
 	if (I40E_SUCCESS != ret) {
 		PMD_DRV_LOG(ERR, "Fail to apply link setting");
-		goto err_up;
+		goto tx_err;
 	}
 
 	if (!rte_intr_allow_others(intr_handle)) {
@@ -2412,9 +2427,12 @@ i40e_dev_start(struct rte_eth_dev *dev)
 
 	return I40E_SUCCESS;
 
-err_up:
-	i40e_dev_switch_queues(pf, FALSE);
-	i40e_dev_clear_queues(dev);
+tx_err:
+	for (i = 0; i < nb_txq; i++)
+		i40e_dev_tx_queue_stop(dev, i);
+rx_err:
+	for (i = 0; i < nb_rxq; i++)
+		i40e_dev_rx_queue_stop(dev, i);
 
 	return ret;
 }
@@ -2438,7 +2456,11 @@ i40e_dev_stop(struct rte_eth_dev *dev)
 	}
 
 	/* Disable all queues */
-	i40e_dev_switch_queues(pf, FALSE);
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		i40e_dev_tx_queue_stop(dev, i);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		i40e_dev_rx_queue_stop(dev, i);
 
 	/* un-map queues with interrupt registers */
 	i40e_vsi_disable_queues_intr(main_vsi);
@@ -2449,10 +2471,6 @@ i40e_dev_stop(struct rte_eth_dev *dev)
 		i40e_vsi_queues_unbind_intr(pf->vmdq[i].vsi);
 	}
 
-	if (pf->fdir.fdir_vsi) {
-		i40e_vsi_queues_unbind_intr(pf->fdir.fdir_vsi);
-		i40e_vsi_disable_queues_intr(pf->fdir.fdir_vsi);
-	}
 	/* Clear all queues and release memory */
 	i40e_dev_clear_queues(dev);
 
@@ -2916,6 +2934,21 @@ i40e_dev_link_update(struct rte_eth_dev *dev,
 	return ret;
 }
 
+static void
+i40e_stat_update_48_in_64(struct i40e_hw *hw, uint32_t hireg,
+			  uint32_t loreg, bool offset_loaded, uint64_t *offset,
+			  uint64_t *stat, uint64_t *prev_stat)
+{
+	i40e_stat_update_48(hw, hireg, loreg, offset_loaded, offset, stat);
+	/* enlarge the limitation when statistics counters overflowed */
+	if (offset_loaded) {
+		if (I40E_RXTX_BYTES_L_48_BIT(*prev_stat) > *stat)
+			*stat += (uint64_t)1 << I40E_48_BIT_WIDTH;
+		*stat += I40E_RXTX_BYTES_H_16_BIT(*prev_stat);
+	}
+	*prev_stat = *stat;
+}
+
 /* Get all the statistics of a VSI */
 void
 i40e_update_vsi_stats(struct i40e_vsi *vsi)
@@ -2925,9 +2958,9 @@ i40e_update_vsi_stats(struct i40e_vsi *vsi)
 	struct i40e_hw *hw = I40E_VSI_TO_HW(vsi);
 	int idx = rte_le_to_cpu_16(vsi->info.stat_counter_idx);
 
-	i40e_stat_update_48(hw, I40E_GLV_GORCH(idx), I40E_GLV_GORCL(idx),
-			    vsi->offset_loaded, &oes->rx_bytes,
-			    &nes->rx_bytes);
+	i40e_stat_update_48_in_64(hw, I40E_GLV_GORCH(idx), I40E_GLV_GORCL(idx),
+				  vsi->offset_loaded, &oes->rx_bytes,
+				  &nes->rx_bytes, &vsi->prev_rx_bytes);
 	i40e_stat_update_48(hw, I40E_GLV_UPRCH(idx), I40E_GLV_UPRCL(idx),
 			    vsi->offset_loaded, &oes->rx_unicast,
 			    &nes->rx_unicast);
@@ -2948,9 +2981,9 @@ i40e_update_vsi_stats(struct i40e_vsi *vsi)
 	i40e_stat_update_32(hw, I40E_GLV_RUPP(idx), vsi->offset_loaded,
 			    &oes->rx_unknown_protocol,
 			    &nes->rx_unknown_protocol);
-	i40e_stat_update_48(hw, I40E_GLV_GOTCH(idx), I40E_GLV_GOTCL(idx),
-			    vsi->offset_loaded, &oes->tx_bytes,
-			    &nes->tx_bytes);
+	i40e_stat_update_48_in_64(hw, I40E_GLV_GOTCH(idx), I40E_GLV_GOTCL(idx),
+				  vsi->offset_loaded, &oes->tx_bytes,
+				  &nes->tx_bytes, &vsi->prev_tx_bytes);
 	i40e_stat_update_48(hw, I40E_GLV_UPTCH(idx), I40E_GLV_UPTCL(idx),
 			    vsi->offset_loaded, &oes->tx_unicast,
 			    &nes->tx_unicast);
@@ -2992,17 +3025,18 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 	struct i40e_hw_port_stats *os = &pf->stats_offset; /* old stats */
 
 	/* Get rx/tx bytes of internal transfer packets */
-	i40e_stat_update_48(hw, I40E_GLV_GORCH(hw->port),
-			I40E_GLV_GORCL(hw->port),
-			pf->offset_loaded,
-			&pf->internal_stats_offset.rx_bytes,
-			&pf->internal_stats.rx_bytes);
-
-	i40e_stat_update_48(hw, I40E_GLV_GOTCH(hw->port),
-			I40E_GLV_GOTCL(hw->port),
-			pf->offset_loaded,
-			&pf->internal_stats_offset.tx_bytes,
-			&pf->internal_stats.tx_bytes);
+	i40e_stat_update_48_in_64(hw, I40E_GLV_GORCH(hw->port),
+				  I40E_GLV_GORCL(hw->port),
+				  pf->offset_loaded,
+				  &pf->internal_stats_offset.rx_bytes,
+				  &pf->internal_stats.rx_bytes,
+				  &pf->internal_prev_rx_bytes);
+	i40e_stat_update_48_in_64(hw, I40E_GLV_GOTCH(hw->port),
+				  I40E_GLV_GOTCL(hw->port),
+				  pf->offset_loaded,
+				  &pf->internal_stats_offset.tx_bytes,
+				  &pf->internal_stats.tx_bytes,
+				  &pf->internal_prev_tx_bytes);
 	/* Get total internal rx packet count */
 	i40e_stat_update_48(hw, I40E_GLV_UPRCH(hw->port),
 			    I40E_GLV_UPRCL(hw->port),
@@ -3042,10 +3076,10 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 		pf->internal_stats.rx_broadcast) * RTE_ETHER_CRC_LEN;
 
 	/* Get statistics of struct i40e_eth_stats */
-	i40e_stat_update_48(hw, I40E_GLPRT_GORCH(hw->port),
-			    I40E_GLPRT_GORCL(hw->port),
-			    pf->offset_loaded, &os->eth.rx_bytes,
-			    &ns->eth.rx_bytes);
+	i40e_stat_update_48_in_64(hw, I40E_GLPRT_GORCH(hw->port),
+				  I40E_GLPRT_GORCL(hw->port),
+				  pf->offset_loaded, &os->eth.rx_bytes,
+				  &ns->eth.rx_bytes, &pf->prev_rx_bytes);
 	i40e_stat_update_48(hw, I40E_GLPRT_UPRCH(hw->port),
 			    I40E_GLPRT_UPRCL(hw->port),
 			    pf->offset_loaded, &os->eth.rx_unicast,
@@ -3100,10 +3134,10 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 			    pf->offset_loaded,
 			    &os->eth.rx_unknown_protocol,
 			    &ns->eth.rx_unknown_protocol);
-	i40e_stat_update_48(hw, I40E_GLPRT_GOTCH(hw->port),
-			    I40E_GLPRT_GOTCL(hw->port),
-			    pf->offset_loaded, &os->eth.tx_bytes,
-			    &ns->eth.tx_bytes);
+	i40e_stat_update_48_in_64(hw, I40E_GLPRT_GOTCH(hw->port),
+				  I40E_GLPRT_GOTCL(hw->port),
+				  pf->offset_loaded, &os->eth.tx_bytes,
+				  &ns->eth.tx_bytes, &pf->prev_tx_bytes);
 	i40e_stat_update_48(hw, I40E_GLPRT_UPTCH(hw->port),
 			    I40E_GLPRT_UPTCL(hw->port),
 			    pf->offset_loaded, &os->eth.tx_unicast,
@@ -3848,17 +3882,45 @@ i40e_vlan_tpid_set(struct rte_eth_dev *dev,
 	return ret;
 }
 
+/* Configure outer vlan stripping on or off in QinQ mode */
+static int
+i40e_vsi_config_outer_vlan_stripping(struct i40e_vsi *vsi, bool on)
+{
+	struct i40e_hw *hw = I40E_VSI_TO_HW(vsi);
+	int ret = I40E_SUCCESS;
+	uint32_t reg;
+
+	if (vsi->vsi_id >= I40E_MAX_NUM_VSIS) {
+		PMD_DRV_LOG(ERR, "VSI ID exceeds the maximum");
+		return -EINVAL;
+	}
+
+	/* Configure for outer VLAN RX stripping */
+	reg = I40E_READ_REG(hw, I40E_VSI_TSR(vsi->vsi_id));
+
+	if (on)
+		reg |= I40E_VSI_TSR_QINQ_STRIP;
+	else
+		reg &= ~I40E_VSI_TSR_QINQ_STRIP;
+
+	ret = i40e_aq_debug_write_register(hw,
+						   I40E_VSI_TSR(vsi->vsi_id),
+						   reg, NULL);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "Failed to update VSI_TSR[%d]",
+				    vsi->vsi_id);
+		return I40E_ERR_CONFIG;
+	}
+
+	return ret;
+}
+
 static int
 i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_vsi *vsi = pf->main_vsi;
 	struct rte_eth_rxmode *rxmode;
-
-	if (mask & ETH_QINQ_STRIP_MASK) {
-		PMD_DRV_LOG(ERR, "Strip qinq is not supported.");
-		return -ENOTSUP;
-	}
 
 	rxmode = &dev->data->dev_conf.rxmode;
 	if (mask & ETH_VLAN_FILTER_MASK) {
@@ -3887,6 +3949,14 @@ i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 		}
 		else
 			i40e_vsi_config_double_vlan(vsi, FALSE);
+	}
+
+	if (mask & ETH_QINQ_STRIP_MASK) {
+		/* Enable or disable outer VLAN stripping */
+		if (rxmode->offloads & DEV_RX_OFFLOAD_QINQ_STRIP)
+			i40e_vsi_config_outer_vlan_stripping(vsi, TRUE);
+		else
+			i40e_vsi_config_outer_vlan_stripping(vsi, FALSE);
 	}
 
 	return 0;
@@ -4927,6 +4997,7 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 {
 	struct pool_entry *entry, *next, *prev, *valid_entry = NULL;
 	uint32_t pool_offset;
+	uint16_t len;
 	int insert;
 
 	if (pool == NULL) {
@@ -4965,12 +5036,13 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 	}
 
 	insert = 0;
+	len = valid_entry->len;
 	/* Try to merge with next one*/
 	if (next != NULL) {
 		/* Merge with next one */
-		if (valid_entry->base + valid_entry->len == next->base) {
+		if (valid_entry->base + len == next->base) {
 			next->base = valid_entry->base;
-			next->len += valid_entry->len;
+			next->len += len;
 			rte_free(valid_entry);
 			valid_entry = next;
 			insert = 1;
@@ -4980,13 +5052,15 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 	if (prev != NULL) {
 		/* Merge with previous one */
 		if (prev->base + prev->len == valid_entry->base) {
-			prev->len += valid_entry->len;
+			prev->len += len;
 			/* If it merge with next one, remove next node */
 			if (insert == 1) {
 				LIST_REMOVE(valid_entry, next);
 				rte_free(valid_entry);
+				valid_entry = NULL;
 			} else {
 				rte_free(valid_entry);
+				valid_entry = NULL;
 				insert = 1;
 			}
 		}
@@ -5002,8 +5076,8 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 			LIST_INSERT_HEAD(&pool->free_list, valid_entry, next);
 	}
 
-	pool->num_free += valid_entry->len;
-	pool->num_alloc -= valid_entry->len;
+	pool->num_free += len;
+	pool->num_alloc -= len;
 
 	return 0;
 }
@@ -5707,10 +5781,14 @@ i40e_vsi_setup(struct i40e_pf *pf,
 		ret = i40e_res_pool_alloc(&pf->msix_pool, 1);
 		if (ret < 0) {
 			PMD_DRV_LOG(ERR, "VSI %d get heap failed %d", vsi->seid, ret);
-			goto fail_queue_alloc;
+			if (type != I40E_VSI_FDIR)
+				goto fail_queue_alloc;
+			vsi->msix_intr = 0;
+			vsi->nb_msix = 0;
+		} else {
+			vsi->msix_intr = ret;
+			vsi->nb_msix = 1;
 		}
-		vsi->msix_intr = ret;
-		vsi->nb_msix = 1;
 	} else {
 		vsi->msix_intr = 0;
 		vsi->nb_msix = 0;
@@ -6059,6 +6137,7 @@ i40e_dev_init_vlan(struct rte_eth_dev *dev)
 
 	/* Apply vlan offload setting */
 	mask = ETH_VLAN_STRIP_MASK |
+	       ETH_QINQ_STRIP_MASK |
 	       ETH_VLAN_FILTER_MASK |
 	       ETH_VLAN_EXTEND_MASK;
 	ret = i40e_vlan_offload_set(dev, mask);
@@ -6274,33 +6353,6 @@ i40e_switch_tx_queue(struct i40e_hw *hw, uint16_t q_idx, bool on)
 	return I40E_SUCCESS;
 }
 
-/* Swith on or off the tx queues */
-static int
-i40e_dev_switch_tx_queues(struct i40e_pf *pf, bool on)
-{
-	struct rte_eth_dev_data *dev_data = pf->dev_data;
-	struct i40e_tx_queue *txq;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
-	uint16_t i;
-	int ret;
-
-	for (i = 0; i < dev_data->nb_tx_queues; i++) {
-		txq = dev_data->tx_queues[i];
-		/* Don't operate the queue if not configured or
-		 * if starting only per queue */
-		if (!txq || !txq->q_set || (on && txq->tx_deferred_start))
-			continue;
-		if (on)
-			ret = i40e_dev_tx_queue_start(dev, i);
-		else
-			ret = i40e_dev_tx_queue_stop(dev, i);
-		if ( ret != I40E_SUCCESS)
-			return ret;
-	}
-
-	return I40E_SUCCESS;
-}
-
 int
 i40e_switch_rx_queue(struct i40e_hw *hw, uint16_t q_idx, bool on)
 {
@@ -6351,59 +6403,6 @@ i40e_switch_rx_queue(struct i40e_hw *hw, uint16_t q_idx, bool on)
 	}
 
 	return I40E_SUCCESS;
-}
-/* Switch on or off the rx queues */
-static int
-i40e_dev_switch_rx_queues(struct i40e_pf *pf, bool on)
-{
-	struct rte_eth_dev_data *dev_data = pf->dev_data;
-	struct i40e_rx_queue *rxq;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
-	uint16_t i;
-	int ret;
-
-	for (i = 0; i < dev_data->nb_rx_queues; i++) {
-		rxq = dev_data->rx_queues[i];
-		/* Don't operate the queue if not configured or
-		 * if starting only per queue */
-		if (!rxq || !rxq->q_set || (on && rxq->rx_deferred_start))
-			continue;
-		if (on)
-			ret = i40e_dev_rx_queue_start(dev, i);
-		else
-			ret = i40e_dev_rx_queue_stop(dev, i);
-		if (ret != I40E_SUCCESS)
-			return ret;
-	}
-
-	return I40E_SUCCESS;
-}
-
-/* Switch on or off all the rx/tx queues */
-int
-i40e_dev_switch_queues(struct i40e_pf *pf, bool on)
-{
-	int ret;
-
-	if (on) {
-		/* enable rx queues before enabling tx queues */
-		ret = i40e_dev_switch_rx_queues(pf, on);
-		if (ret) {
-			PMD_DRV_LOG(ERR, "Failed to switch rx queues");
-			return ret;
-		}
-		ret = i40e_dev_switch_tx_queues(pf, on);
-	} else {
-		/* Stop tx queues before stopping rx queues */
-		ret = i40e_dev_switch_tx_queues(pf, on);
-		if (ret) {
-			PMD_DRV_LOG(ERR, "Failed to switch tx queues");
-			return ret;
-		}
-		ret = i40e_dev_switch_rx_queues(pf, on);
-	}
-
-	return ret;
 }
 
 /* Initialize VSI for TX */
@@ -10408,6 +10407,7 @@ i40e_get_swr_pm_cfg(struct i40e_hw *hw, uint32_t *value)
 		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_KX_C) },
 		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_10G_BASE_T) },
 		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_10G_BASE_T4) },
+		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_SFP_X722) },
 
 		{ I40E_GL_SWR_PM_SF_DEVICE(I40E_DEV_ID_KX_B) },
 		{ I40E_GL_SWR_PM_SF_DEVICE(I40E_DEV_ID_QSFP_A) },
@@ -10539,7 +10539,6 @@ i40e_configure_registers(struct i40e_hw *hw)
 	}
 }
 
-#define I40E_VSI_TSR(_i)            (0x00050800 + ((_i) * 4))
 #define I40E_VSI_TSR_QINQ_CONFIG    0xc030
 #define I40E_VSI_L2TAGSTXVALID(_i)  (0x00042800 + ((_i) * 4))
 #define I40E_VSI_L2TAGSTXVALID_QINQ 0xab
@@ -12041,7 +12040,7 @@ static int i40e_get_module_eeprom(struct rte_eth_dev *dev,
 		}
 		status = i40e_aq_get_phy_register(hw,
 				I40E_AQ_PHY_REG_ACCESS_EXTERNAL_MODULE,
-				addr, offset, 1, &value, NULL);
+				addr, 1, offset, &value, NULL);
 		if (status)
 			return -EIO;
 		data[i] = (uint8_t)value;

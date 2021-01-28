@@ -491,6 +491,8 @@ rte_cryptodev_get_feature_name(uint64_t flag)
 		return "RSA_PRIV_OP_KEY_QT";
 	case RTE_CRYPTODEV_FF_DIGEST_ENCRYPTED:
 		return "DIGEST_ENCRYPTED";
+	case RTE_CRYPTODEV_FF_ASYM_SESSIONLESS:
+		return "ASYM_SESSIONLESS";
 	default:
 		return NULL;
 	}
@@ -525,7 +527,8 @@ rte_cryptodev_pmd_get_named_dev(const char *name)
 static inline uint8_t
 rte_cryptodev_is_valid_device_data(uint8_t dev_id)
 {
-	if (rte_crypto_devices[dev_id].data == NULL)
+	if (dev_id >= RTE_CRYPTO_MAX_DEVS ||
+			rte_crypto_devices[dev_id].data == NULL)
 		return 0;
 
 	return 1;
@@ -617,8 +620,9 @@ rte_cryptodev_devices_get(const char *driver_name, uint8_t *devices,
 void *
 rte_cryptodev_get_sec_ctx(uint8_t dev_id)
 {
-	if (rte_crypto_devices[dev_id].feature_flags &
-			RTE_CRYPTODEV_FF_SECURITY)
+	if (dev_id < RTE_CRYPTO_MAX_DEVS &&
+			(rte_crypto_devices[dev_id].feature_flags &
+			RTE_CRYPTODEV_FF_SECURITY))
 		return rte_crypto_devices[dev_id].security_ctx;
 
 	return NULL;
@@ -788,6 +792,11 @@ uint16_t
 rte_cryptodev_queue_pair_count(uint8_t dev_id)
 {
 	struct rte_cryptodev *dev;
+
+	if (!rte_cryptodev_is_valid_device_data(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return 0;
+	}
 
 	dev = &rte_crypto_devices[dev_id];
 	return dev->data->nb_queue_pairs;
@@ -1254,6 +1263,11 @@ rte_cryptodev_sym_session_init(uint8_t dev_id,
 	uint8_t index;
 	int ret;
 
+	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
+
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
 
 	if (sess == NULL || xforms == NULL || dev == NULL)
@@ -1292,6 +1306,11 @@ rte_cryptodev_asym_session_init(uint8_t dev_id,
 	struct rte_cryptodev *dev;
 	uint8_t index;
 	int ret;
+
+	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
 
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
 
@@ -1428,6 +1447,11 @@ rte_cryptodev_sym_session_clear(uint8_t dev_id,
 	struct rte_cryptodev *dev;
 	uint8_t driver_id;
 
+	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
+
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
 
 	if (dev == NULL || sess == NULL)
@@ -1451,6 +1475,11 @@ rte_cryptodev_asym_session_clear(uint8_t dev_id,
 		struct rte_cryptodev_asym_session *sess)
 {
 	struct rte_cryptodev *dev;
+
+	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
 
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
 
@@ -1754,8 +1783,14 @@ rte_cryptodev_driver_id_get(const char *name)
 const char *
 rte_cryptodev_name_get(uint8_t dev_id)
 {
-	struct rte_cryptodev *dev = rte_cryptodev_pmd_get_dev(dev_id);
+	struct rte_cryptodev *dev;
 
+	if (!rte_cryptodev_is_valid_device_data(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return NULL;
+	}
+
+	dev = rte_cryptodev_pmd_get_dev(dev_id);
 	if (dev == NULL)
 		return NULL;
 

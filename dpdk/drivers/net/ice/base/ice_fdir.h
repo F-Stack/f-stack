@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_FDIR_H_
@@ -151,9 +151,9 @@ struct ice_fdir_v6 {
 struct ice_fdir_udp_gtp {
 	u8 flags;
 	u8 msg_type;
-	u16 rsrvd_len;
-	u32 teid;
-	u16 rsrvd_seq_nbr;
+	__be16 rsrvd_len;
+	__be32 teid;
+	__be16 rsrvd_seq_nbr;
 	u8 rsrvd_n_pdu_nbr;
 	u8 rsrvd_next_ext_type;
 	u8 rsvrd_ext_len;

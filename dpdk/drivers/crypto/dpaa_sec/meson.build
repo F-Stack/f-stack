@@ -11,6 +11,11 @@ sources = files('dpaa_sec.c')
 
 allow_experimental_apis = true
 
+# FIXME: temporary solution for Bugzilla 469
+if (toolchain == 'gcc' and cc.version().version_compare('>=10.0.0'))
+	cflags += '-fcommon'
+endif
+
 includes += include_directories('../../bus/dpaa/include')
 includes += include_directories('../../common/dpaax')
 includes += include_directories('../../common/dpaax/caamflib/')

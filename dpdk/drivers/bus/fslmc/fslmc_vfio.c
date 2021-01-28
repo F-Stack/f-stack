@@ -448,11 +448,14 @@ fslmc_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 
 	/* get the actual group fd */
 	vfio_group_fd = rte_vfio_get_group_fd(iommu_group_no);
-	if (vfio_group_fd < 0)
+	if (vfio_group_fd < 0 && vfio_group_fd != -ENOENT)
 		return -1;
 
-	/* if group_fd == 0, that means the device isn't managed by VFIO */
-	if (vfio_group_fd == 0) {
+	/*
+	 * if vfio_group_fd == -ENOENT, that means the device
+	 * isn't managed by VFIO
+	 */
+	if (vfio_group_fd == -ENOENT) {
 		RTE_LOG(WARNING, EAL, " %s not managed by VFIO driver, skipping\n",
 				dev_addr);
 		return 1;
@@ -730,20 +733,12 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 {
 	int ret;
 	intptr_t v_addr;
-	char *dev_name = NULL;
 	struct fsl_mc_io dpmng  = {0};
 	struct mc_version mc_ver_info = {0};
 
 	rte_mcp_ptr_list = malloc(sizeof(void *) * 1);
 	if (!rte_mcp_ptr_list) {
 		DPAA2_BUS_ERR("Unable to allocate MC portal memory");
-		ret = -ENOMEM;
-		goto cleanup;
-	}
-
-	dev_name = strdup(dev->device.name);
-	if (!dev_name) {
-		DPAA2_BUS_ERR("Unable to allocate MC device name memory");
 		ret = -ENOMEM;
 		goto cleanup;
 	}
@@ -784,13 +779,9 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 	}
 	rte_mcp_ptr_list[0] = (void *)v_addr;
 
-	free(dev_name);
 	return 0;
 
 cleanup:
-	if (dev_name)
-		free(dev_name);
-
 	if (rte_mcp_ptr_list) {
 		free(rte_mcp_ptr_list);
 		rte_mcp_ptr_list = NULL;

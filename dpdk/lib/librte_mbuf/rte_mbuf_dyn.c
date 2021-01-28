@@ -19,7 +19,6 @@
 #define RTE_MBUF_DYN_MZNAME "rte_mbuf_dyn"
 
 struct mbuf_dynfield_elt {
-	TAILQ_ENTRY(mbuf_dynfield_elt) next;
 	struct rte_mbuf_dynfield params;
 	size_t offset;
 };
@@ -31,7 +30,6 @@ static struct rte_tailq_elem mbuf_dynfield_tailq = {
 EAL_REGISTER_TAILQ(mbuf_dynfield_tailq);
 
 struct mbuf_dynflag_elt {
-	TAILQ_ENTRY(mbuf_dynflag_elt) next;
 	struct rte_mbuf_dynflag params;
 	unsigned int bitnum;
 };
@@ -69,12 +67,16 @@ process_score(void)
 			shm->free_space[i] = 1;
 	}
 
-	for (off = 0; off < sizeof(struct rte_mbuf); off++) {
+	off = 0;
+	while (off < sizeof(struct rte_mbuf)) {
 		/* get the size of the free zone */
-		for (size = 0; shm->free_space[off + size]; size++)
+		for (size = 0; (off + size) < sizeof(struct rte_mbuf) &&
+			     shm->free_space[off + size]; size++)
 			;
-		if (size == 0)
+		if (size == 0) {
+			off++;
 			continue;
+		}
 
 		/* get the alignment of biggest object that can fit in
 		 * the zone at this offset.
@@ -85,8 +87,10 @@ process_score(void)
 			;
 
 		/* save it in free_space[] */
-		for (i = off; i < off + size; i++)
+		for (i = off; i < off + align; i++)
 			shm->free_space[i] = RTE_MAX(align, shm->free_space[i]);
+
+		off += align;
 	}
 }
 
@@ -168,7 +172,7 @@ __mbuf_dynfield_lookup(const char *name)
 			break;
 	}
 
-	if (te == NULL) {
+	if (te == NULL || mbuf_dynfield == NULL) {
 		rte_errno = ENOENT;
 		return NULL;
 	}
@@ -181,19 +185,15 @@ rte_mbuf_dynfield_lookup(const char *name, struct rte_mbuf_dynfield *params)
 {
 	struct mbuf_dynfield_elt *mbuf_dynfield;
 
-	if (shm == NULL) {
-		rte_errno = ENOENT;
-		return -1;
-	}
-
 	rte_mcfg_tailq_read_lock();
-	mbuf_dynfield = __mbuf_dynfield_lookup(name);
+	if (shm == NULL && init_shared_mem() < 0)
+		mbuf_dynfield = NULL;
+	else
+		mbuf_dynfield = __mbuf_dynfield_lookup(name);
 	rte_mcfg_tailq_read_unlock();
 
-	if (mbuf_dynfield == NULL) {
-		rte_errno = ENOENT;
+	if (mbuf_dynfield == NULL)
 		return -1;
-	}
 
 	if (params != NULL)
 		memcpy(params, &mbuf_dynfield->params, sizeof(*params));
@@ -279,12 +279,15 @@ __rte_mbuf_dynfield_register_offset(const struct rte_mbuf_dynfield *params,
 		mbuf_dynfield_tailq.head, mbuf_dynfield_list);
 
 	te = rte_zmalloc("MBUF_DYNFIELD_TAILQ_ENTRY", sizeof(*te), 0);
-	if (te == NULL)
+	if (te == NULL) {
+		rte_errno = ENOMEM;
 		return -1;
+	}
 
 	mbuf_dynfield = rte_zmalloc("mbuf_dynfield", sizeof(*mbuf_dynfield), 0);
 	if (mbuf_dynfield == NULL) {
 		rte_free(te);
+		rte_errno = ENOMEM;
 		return -1;
 	}
 
@@ -377,19 +380,15 @@ rte_mbuf_dynflag_lookup(const char *name,
 {
 	struct mbuf_dynflag_elt *mbuf_dynflag;
 
-	if (shm == NULL) {
-		rte_errno = ENOENT;
-		return -1;
-	}
-
 	rte_mcfg_tailq_read_lock();
-	mbuf_dynflag = __mbuf_dynflag_lookup(name);
+	if (shm == NULL && init_shared_mem() < 0)
+		mbuf_dynflag = NULL;
+	else
+		mbuf_dynflag = __mbuf_dynflag_lookup(name);
 	rte_mcfg_tailq_read_unlock();
 
-	if (mbuf_dynflag == NULL) {
-		rte_errno = ENOENT;
+	if (mbuf_dynflag == NULL)
 		return -1;
-	}
 
 	if (params != NULL)
 		memcpy(params, &mbuf_dynflag->params, sizeof(*params));
@@ -457,12 +456,15 @@ __rte_mbuf_dynflag_register_bitnum(const struct rte_mbuf_dynflag *params,
 		mbuf_dynflag_tailq.head, mbuf_dynflag_list);
 
 	te = rte_zmalloc("MBUF_DYNFLAG_TAILQ_ENTRY", sizeof(*te), 0);
-	if (te == NULL)
+	if (te == NULL) {
+		rte_errno = ENOMEM;
 		return -1;
+	}
 
 	mbuf_dynflag = rte_zmalloc("mbuf_dynflag", sizeof(*mbuf_dynflag), 0);
 	if (mbuf_dynflag == NULL) {
 		rte_free(te);
+		rte_errno = ENOMEM;
 		return -1;
 	}
 
@@ -542,7 +544,7 @@ void rte_mbuf_dyn_dump(FILE *out)
 			dynflag->params.name, dynflag->bitnum,
 			dynflag->params.flags);
 	}
-	fprintf(out, "Free space in mbuf (0 = free, value = zone alignment):\n");
+	fprintf(out, "Free space in mbuf (0 = occupied, value = free zone alignment):\n");
 	for (i = 0; i < sizeof(struct rte_mbuf); i++) {
 		if ((i % 8) == 0)
 			fprintf(out, "  %4.4zx: ", i);

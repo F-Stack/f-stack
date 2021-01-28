@@ -325,6 +325,21 @@ get_seg_fd(char *path, int buflen, struct hugepage_info *hi,
 		fd = fd_list[list_idx].fds[seg_idx];
 
 		if (fd < 0) {
+			/* A primary process is the only one creating these
+			 * files. If there is a leftover that was not cleaned
+			 * by clear_hugedir(), we must *now* make sure to drop
+			 * the file or we will remap old stuff while the rest
+			 * of the code is built on the assumption that a new
+			 * page is clean.
+			 */
+			if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
+					unlink(path) == -1 &&
+					errno != ENOENT) {
+				RTE_LOG(DEBUG, EAL, "%s(): could not remove '%s': %s\n",
+					__func__, path, strerror(errno));
+				return -1;
+			}
+
 			fd = open(path, O_CREAT | O_RDWR, 0600);
 			if (fd < 0) {
 				RTE_LOG(DEBUG, EAL, "%s(): open failed: %s\n",
@@ -599,17 +614,25 @@ alloc_seg(struct rte_memseg *ms, void *addr, int socket_id,
 	}
 
 #ifdef RTE_EAL_NUMA_AWARE_HUGEPAGES
-	ret = get_mempolicy(&cur_socket_id, NULL, 0, addr,
-			    MPOL_F_NODE | MPOL_F_ADDR);
-	if (ret < 0) {
-		RTE_LOG(DEBUG, EAL, "%s(): get_mempolicy: %s\n",
-			__func__, strerror(errno));
-		goto mapped;
-	} else if (cur_socket_id != socket_id) {
-		RTE_LOG(DEBUG, EAL,
-				"%s(): allocation happened on wrong socket (wanted %d, got %d)\n",
-			__func__, socket_id, cur_socket_id);
-		goto mapped;
+	/*
+	 * If the kernel has been built without NUMA support, get_mempolicy()
+	 * will return an error. If check_numa() returns false, memory
+	 * allocation is not NUMA aware and the socket_id should not be
+	 * checked.
+	 */
+	if (check_numa()) {
+		ret = get_mempolicy(&cur_socket_id, NULL, 0, addr,
+					MPOL_F_NODE | MPOL_F_ADDR);
+		if (ret < 0) {
+			RTE_LOG(DEBUG, EAL, "%s(): get_mempolicy: %s\n",
+				__func__, strerror(errno));
+			goto mapped;
+		} else if (cur_socket_id != socket_id) {
+			RTE_LOG(DEBUG, EAL,
+					"%s(): allocation happened on wrong socket (wanted %d, got %d)\n",
+				__func__, socket_id, cur_socket_id);
+			goto mapped;
+		}
 	}
 #else
 	if (rte_socket_count() > 1)
@@ -680,7 +703,7 @@ free_seg(struct rte_memseg *ms, struct hugepage_info *hi,
 	/* erase page data */
 	memset(ms->addr, 0, ms->len);
 
-	if (mmap(ms->addr, ms->len, PROT_READ,
+	if (mmap(ms->addr, ms->len, PROT_NONE,
 			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
 				MAP_FAILED) {
 		RTE_LOG(DEBUG, EAL, "couldn't unmap page\n");

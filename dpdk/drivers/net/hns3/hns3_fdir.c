@@ -619,7 +619,7 @@ static void hns3_fd_convert_meta_data(struct hns3_fd_key_cfg *cfg,
 				      uint8_t *key_x, uint8_t *key_y)
 {
 	uint16_t meta_data = 0;
-	uint16_t port_number;
+	uint32_t port_number;
 	uint8_t cur_pos = 0;
 	uint8_t tuple_size;
 	uint8_t shift_bits;
@@ -637,7 +637,7 @@ static void hns3_fd_convert_meta_data(struct hns3_fd_key_cfg *cfg,
 				     rule->key_conf.spec.tunnel_type ? 1 : 0);
 			cur_pos += tuple_size;
 		} else if (i == VLAN_NUMBER) {
-			uint8_t vlan_tag;
+			uint32_t vlan_tag;
 			uint8_t vlan_num;
 			if (rule->key_conf.spec.tunnel_type == 0)
 				vlan_num = rule->key_conf.vlan_num;
@@ -772,6 +772,20 @@ static int hns3_config_action(struct hns3_hw *hw, struct hns3_fdir_rule *rule)
 	return hns3_fd_ad_config(hw, ad_data.ad_id, &ad_data);
 }
 
+static int hns3_fd_clear_all_rules(struct hns3_hw *hw, uint32_t rule_num)
+{
+	uint32_t i;
+	int ret;
+
+	for (i = 0; i < rule_num; i++) {
+		ret = hns3_fd_tcam_config(hw, true, i, NULL, false);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 int hns3_fdir_filter_init(struct hns3_adapter *hns)
 {
 	struct hns3_pf *pf = &hns->pf;
@@ -785,6 +799,13 @@ int hns3_fdir_filter_init(struct hns3_adapter *hns)
 		.hash_func = rte_hash_crc,
 		.hash_func_init_val = 0,
 	};
+	int ret;
+
+	ret = hns3_fd_clear_all_rules(&hns->hw, rule_num);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "Clear all fd rules fail! ret = %d", ret);
+		return ret;
+	}
 
 	fdir_hash_params.socket_id = rte_socket_id();
 	TAILQ_INIT(&fdir_info->fdir_list);
@@ -872,7 +893,7 @@ static int hns3_insert_fdir_filter(struct hns3_hw *hw,
 	if (ret < 0) {
 		rte_spinlock_unlock(&fdir_info->flows_lock);
 		hns3_err(hw, "Hash table full? err:%d(%s)!", ret,
-			 strerror(ret));
+			 strerror(-ret));
 		return ret;
 	}
 

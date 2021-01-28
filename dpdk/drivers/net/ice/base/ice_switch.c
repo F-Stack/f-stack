@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "ice_switch.h"
@@ -611,7 +611,7 @@ ice_get_recp_frm_fw(struct ice_hw *hw, struct ice_sw_recipe *recps, u8 rid,
 	/* Complete initialization of the root recipe entry */
 	lkup_exts->n_val_words = fv_word_idx;
 	recps[rid].big_recp = (num_recps > 1);
-	recps[rid].n_grp_count = num_recps;
+	recps[rid].n_grp_count = (u8)num_recps;
 	recps[rid].root_buf = (struct ice_aqc_recipe_data_elem *)
 		ice_memdup(hw, tmp, recps[rid].n_grp_count *
 			   sizeof(*recps[rid].root_buf), ICE_NONDMA_TO_NONDMA);
@@ -5995,9 +5995,12 @@ ice_adv_add_update_vsi_list(struct ice_hw *hw,
 		if (status)
 			return status;
 
+		ice_memset(&tmp_fltr, 0, sizeof(tmp_fltr), ICE_NONDMA_MEM);
 		tmp_fltr.fltr_rule_id = cur_fltr->fltr_rule_id;
 		tmp_fltr.fltr_act = ICE_FWD_TO_VSI_LIST;
 		tmp_fltr.fwd_id.vsi_list_id = vsi_list_id;
+		tmp_fltr.lkup_type = ICE_SW_LKUP_LAST;
+
 		/* Update the previous switch rule of "forward to VSI" to
 		 * "fwd to VSI list"
 		 */
@@ -6238,23 +6241,8 @@ ice_add_adv_rule(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	sw->recp_list[rid].adv_rule = true;
 	rule_head = &sw->recp_list[rid].filt_rules;
 
-	if (rinfo->sw_act.fltr_act == ICE_FWD_TO_VSI) {
-		struct ice_fltr_info tmp_fltr;
-
-		tmp_fltr.fltr_rule_id =
-			LE16_TO_CPU(s_rule->pdata.lkup_tx_rx.index);
-		tmp_fltr.fltr_act = ICE_FWD_TO_VSI;
-		tmp_fltr.fwd_id.hw_vsi_id =
-			ice_get_hw_vsi_num(hw, vsi_handle);
-		tmp_fltr.vsi_handle = vsi_handle;
-		/* Update the previous switch rule of "forward to VSI" to
-		 * "fwd to VSI list"
-		 */
-		status = ice_update_pkt_fwd_rule(hw, &tmp_fltr);
-		if (status)
-			goto err_ice_add_adv_rule;
+	if (rinfo->sw_act.fltr_act == ICE_FWD_TO_VSI)
 		adv_fltr->vsi_count = 1;
-	}
 
 	/* Add rule entry to book keeping list */
 	LIST_ADD(&adv_fltr->list_entry, rule_head);
@@ -6325,6 +6313,8 @@ ice_adv_rem_update_vsi_list(struct ice_hw *hw, u16 vsi_handle,
 						  lkup_type);
 		if (status)
 			return status;
+
+		ice_memset(&tmp_fltr, 0, sizeof(tmp_fltr), ICE_NONDMA_MEM);
 		tmp_fltr.fltr_rule_id = fm_list->rule_info.fltr_rule_id;
 		fm_list->rule_info.sw_act.fltr_act = ICE_FWD_TO_VSI;
 		tmp_fltr.fltr_act = ICE_FWD_TO_VSI;
@@ -6343,6 +6333,7 @@ ice_adv_rem_update_vsi_list(struct ice_hw *hw, u16 vsi_handle,
 				  tmp_fltr.fwd_id.hw_vsi_id, status);
 			return status;
 		}
+		fm_list->vsi_list_info->ref_cnt--;
 
 		/* Remove the VSI list since it is no longer used */
 		status = ice_remove_vsi_list_rule(hw, vsi_list_id, lkup_type);
@@ -6421,7 +6412,6 @@ ice_rem_adv_rule(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	if (list_elem->rule_info.sw_act.fltr_act != ICE_FWD_TO_VSI_LIST) {
 		remove_rule = true;
 	} else if (list_elem->vsi_count > 1) {
-		list_elem->vsi_list_info->ref_cnt--;
 		remove_rule = false;
 		vsi_handle = rinfo->sw_act.vsi_handle;
 		status = ice_adv_rem_update_vsi_list(hw, vsi_handle, list_elem);
@@ -6497,7 +6487,8 @@ ice_rem_adv_rule_by_id(struct ice_hw *hw,
 						list_itr->lkups_cnt, &rinfo);
 		}
 	}
-	return ICE_ERR_PARAM;
+	/* either list is empty or unable to find rule */
+	return ICE_ERR_DOES_NOT_EXIST;
 }
 
 /**

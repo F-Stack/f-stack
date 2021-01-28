@@ -28,6 +28,18 @@ deps += ['ethdev', 'gro', 'gso', 'cmdline', 'metrics', 'meter', 'bus_pci']
 if dpdk_conf.has('RTE_LIBRTE_PDUMP')
 	deps += 'pdump'
 endif
+if dpdk_conf.has('RTE_LIBRTE_BITRATESTATS')
+	deps += 'bitratestats'
+endif
+if dpdk_conf.has('RTE_LIBRTE_LATENCYSTATS')
+	deps += 'latencystats'
+endif
+if dpdk_conf.has('RTE_LIBRTE_PMD_CRYPTO_SCHEDULER')
+	deps += 'pmd_crypto_scheduler'
+endif
+if dpdk_conf.has('RTE_LIBRTE_BOND_PMD')
+	deps += 'pmd_bond'
+endif
 if dpdk_conf.has('RTE_LIBRTE_BNXT_PMD')
 	deps += 'pmd_bnxt'
 endif

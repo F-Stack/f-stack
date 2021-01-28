@@ -140,7 +140,7 @@ ice_rx_desc_to_olflags_v(struct ice_rx_queue *rxq, __m128i descs[4],
 	flags = _mm_unpackhi_epi32(descs[0], descs[1]);
 	tmp_desc = _mm_unpackhi_epi32(descs[2], descs[3]);
 	tmp_desc = _mm_unpacklo_epi64(flags, tmp_desc);
-	tmp_desc = _mm_and_si128(flags, desc_mask);
+	tmp_desc = _mm_and_si128(tmp_desc, desc_mask);
 
 	/* checksum flags */
 	tmp_desc = _mm_srli_epi32(tmp_desc, 4);
@@ -188,10 +188,10 @@ static inline void
 ice_rx_desc_to_ptype_v(__m128i descs[4], struct rte_mbuf **rx_pkts,
 		       uint32_t *ptype_tbl)
 {
-	const __m128i ptype_mask = _mm_set_epi16(0, ICE_RX_FLEX_DESC_PTYPE_M,
-						 0, ICE_RX_FLEX_DESC_PTYPE_M,
-						 0, ICE_RX_FLEX_DESC_PTYPE_M,
-						 0, ICE_RX_FLEX_DESC_PTYPE_M);
+	const __m128i ptype_mask = _mm_set_epi16(ICE_RX_FLEX_DESC_PTYPE_M, 0,
+						 ICE_RX_FLEX_DESC_PTYPE_M, 0,
+						 ICE_RX_FLEX_DESC_PTYPE_M, 0,
+						 ICE_RX_FLEX_DESC_PTYPE_M, 0);
 	__m128i ptype_01 = _mm_unpacklo_epi32(descs[0], descs[1]);
 	__m128i ptype_23 = _mm_unpacklo_epi32(descs[2], descs[3]);
 	__m128i ptype_all = _mm_unpacklo_epi64(ptype_01, ptype_23);
@@ -205,10 +205,11 @@ ice_rx_desc_to_ptype_v(__m128i descs[4], struct rte_mbuf **rx_pkts,
 }
 
 /**
+ * vPMD raw receive routine, only accept(nb_pkts >= ICE_DESCS_PER_LOOP)
+ *
  * Notice:
  * - nb_pkts < ICE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > ICE_VPMD_RX_BURST, only scan ICE_VPMD_RX_BURST
- *   numbers of DD bits
+ * - floor align nb_pkts to a ICE_DESCS_PER_LOOP power-of-two
  */
 static inline uint16_t
 _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
@@ -263,9 +264,6 @@ _ice_recv_raw_pkts_vec(struct ice_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	/* 4 packets EOP mask */
 	const __m128i eop_check = _mm_set_epi64x(0x0000000200000002LL,
 						 0x0000000200000002LL);
-
-	/* nb_pkts shall be less equal than ICE_MAX_RX_BURST */
-	nb_pkts = RTE_MIN(nb_pkts, ICE_MAX_RX_BURST);
 
 	/* nb_pkts has to be floor-aligned to ICE_DESCS_PER_LOOP */
 	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, ICE_DESCS_PER_LOOP);
@@ -454,15 +452,15 @@ ice_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return _ice_recv_raw_pkts_vec(rx_queue, rx_pkts, nb_pkts, NULL);
 }
 
-/* vPMD receive routine that reassembles scattered packets
+/**
+ * vPMD receive routine that reassembles single burst of 32 scattered packets
+ *
  * Notice:
  * - nb_pkts < ICE_DESCS_PER_LOOP, just return no packet
- * - nb_pkts > ICE_VPMD_RX_BURST, only scan ICE_VPMD_RX_BURST
- *   numbers of DD bits
  */
-uint16_t
-ice_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-			    uint16_t nb_pkts)
+static uint16_t
+ice_recv_scattered_burst_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+			     uint16_t nb_pkts)
 {
 	struct ice_rx_queue *rxq = rx_queue;
 	uint8_t split_flags[ICE_VPMD_RX_BURST] = {0};
@@ -494,6 +492,32 @@ ice_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	}
 	return i + ice_rx_reassemble_packets(rxq, &rx_pkts[i], nb_bufs - i,
 					     &split_flags[i]);
+}
+
+/**
+ * vPMD receive routine that reassembles scattered packets.
+ */
+uint16_t
+ice_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+			    uint16_t nb_pkts)
+{
+	uint16_t retval = 0;
+
+	while (nb_pkts > ICE_VPMD_RX_BURST) {
+		uint16_t burst;
+
+		burst = ice_recv_scattered_burst_vec(rx_queue,
+						     rx_pkts + retval,
+						     ICE_VPMD_RX_BURST);
+		retval += burst;
+		nb_pkts -= burst;
+		if (burst < ICE_VPMD_RX_BURST)
+			return retval;
+	}
+
+	return retval + ice_recv_scattered_burst_vec(rx_queue,
+						     rx_pkts + retval,
+						     nb_pkts);
 }
 
 static inline void

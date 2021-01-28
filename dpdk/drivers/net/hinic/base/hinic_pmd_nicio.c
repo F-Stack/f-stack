@@ -471,6 +471,8 @@ static int
 hinic_set_root_ctxt(void *hwdev, u16 rq_depth, u16 sq_depth, int rx_buf_sz)
 {
 	struct hinic_root_ctxt root_ctxt;
+	u16 out_size = sizeof(root_ctxt);
+	int err;
 
 	memset(&root_ctxt, 0, sizeof(root_ctxt));
 	root_ctxt.mgmt_msg_head.resp_aeq_num = HINIC_AEQ1;
@@ -483,10 +485,18 @@ hinic_set_root_ctxt(void *hwdev, u16 rq_depth, u16 sq_depth, int rx_buf_sz)
 	root_ctxt.rx_buf_sz = get_hw_rx_buf_size(rx_buf_sz);
 	root_ctxt.sq_depth  = (u16)ilog2(sq_depth);
 
-	return hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
-				      HINIC_MGMT_CMD_VAT_SET,
-				      &root_ctxt, sizeof(root_ctxt),
-				      NULL, NULL, 0);
+	err = hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
+				     HINIC_MGMT_CMD_VAT_SET,
+				     &root_ctxt, sizeof(root_ctxt),
+				     &root_ctxt, &out_size, 0);
+	if (err || !out_size || root_ctxt.mgmt_msg_head.status) {
+		PMD_DRV_LOG(ERR,
+			"Set root context failed, err: %d, status: 0x%x, out_size: 0x%x",
+			err, root_ctxt.mgmt_msg_head.status, out_size);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 /**
@@ -499,6 +509,8 @@ hinic_set_root_ctxt(void *hwdev, u16 rq_depth, u16 sq_depth, int rx_buf_sz)
 static int hinic_clean_root_ctxt(void *hwdev)
 {
 	struct hinic_root_ctxt root_ctxt;
+	u16 out_size = sizeof(root_ctxt);
+	int err;
 
 	memset(&root_ctxt, 0, sizeof(root_ctxt));
 	root_ctxt.mgmt_msg_head.resp_aeq_num = HINIC_AEQ1;
@@ -511,10 +523,18 @@ static int hinic_clean_root_ctxt(void *hwdev)
 	root_ctxt.rx_buf_sz = 0;
 	root_ctxt.sq_depth  = 0;
 
-	return hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
-				      HINIC_MGMT_CMD_VAT_SET,
-				      &root_ctxt, sizeof(root_ctxt),
-				      NULL, NULL, 0);
+	err = hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
+				     HINIC_MGMT_CMD_VAT_SET,
+				     &root_ctxt, sizeof(root_ctxt),
+				     &root_ctxt, &out_size, 0);
+	if (err || !out_size || root_ctxt.mgmt_msg_head.status) {
+		PMD_DRV_LOG(ERR,
+			"Clean root context failed, err: %d, status: 0x%x, out_size: 0x%x",
+			err, root_ctxt.mgmt_msg_head.status, out_size);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 /* init qps ctxt and set sq ci attr and arm all sq and set vat page_size */
@@ -531,6 +551,15 @@ int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev)
 		PMD_DRV_LOG(ERR, "Set vat page size: %d failed, rc: %d",
 			HINIC_PAGE_SIZE_DPDK, err);
 		return err;
+	}
+
+	if (hwdev->cmdqs->status & HINIC_CMDQ_SET_FAIL) {
+		err = hinic_reinit_cmdq_ctxts(hwdev);
+		if (err) {
+			PMD_DRV_LOG(ERR, "Reinit cmdq context failed when dev start, err: %d",
+				err);
+			return err;
+		}
 	}
 
 	err = init_qp_ctxts(nic_io);
@@ -728,16 +757,12 @@ void hinic_update_rq_local_ci(struct hinic_hwdev *hwdev, u16 q_id, int wqe_cnt)
 
 static int hinic_alloc_nicio(struct hinic_hwdev *hwdev)
 {
-	int err;
-	u16 max_qps, num_qp;
 	struct hinic_nic_io *nic_io = hwdev->nic_io;
+	struct rte_pci_device *pdev = hwdev->pcidev_hdl;
+	u16 max_qps, num_qp;
+	int err;
 
 	max_qps = hinic_func_max_qnum(hwdev);
-	if ((max_qps & (max_qps - 1))) {
-		PMD_DRV_LOG(ERR, "wrong number of max_qps: %d",
-			max_qps);
-		return -EINVAL;
-	}
 
 	nic_io->max_qps = max_qps;
 	nic_io->num_qps = max_qps;
@@ -751,10 +776,10 @@ static int hinic_alloc_nicio(struct hinic_hwdev *hwdev)
 		goto alloc_qps_err;
 	}
 
-	nic_io->ci_vaddr_base =
-		dma_zalloc_coherent(hwdev,
+	nic_io->ci_vaddr_base = dma_zalloc_coherent(hwdev,
 				    CI_TABLE_SIZE(num_qp, HINIC_PAGE_SIZE),
-				    &nic_io->ci_dma_base, GFP_KERNEL);
+				    &nic_io->ci_dma_base,
+				    pdev->device.numa_node);
 	if (!nic_io->ci_vaddr_base) {
 		PMD_DRV_LOG(ERR, "Failed to allocate ci area");
 		err = -ENOMEM;

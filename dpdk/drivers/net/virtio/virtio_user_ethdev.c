@@ -89,7 +89,8 @@ virtio_user_server_reconnect(struct virtio_user_dev *dev)
 	dev->features &= dev->device_features;
 
 	/* For packed ring, resetting queues is required in reconnection. */
-	if (vtpci_packed_queue(hw)) {
+	if (vtpci_packed_queue(hw) &&
+	   (vtpci_get_status(hw) & VIRTIO_CONFIG_STATUS_DRIVER_OK)) {
 		PMD_INIT_LOG(NOTICE, "Packets on the fly will be dropped"
 				" when packed ring reconnecting.");
 		virtio_user_reset_queues_packed(eth_dev);
@@ -184,7 +185,7 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 			}
 			r = recv(dev->vhostfd, buf, 128, MSG_PEEK);
 			if (r == 0 || (r < 0 && errno != EAGAIN)) {
-				dev->status &= (~VIRTIO_NET_S_LINK_UP);
+				dev->net_status &= (~VIRTIO_NET_S_LINK_UP);
 				PMD_DRV_LOG(ERR, "virtio-user port %u is down",
 					    hw->port_id);
 
@@ -196,7 +197,7 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 						  virtio_user_delayed_handler,
 						  (void *)hw);
 			} else {
-				dev->status |= VIRTIO_NET_S_LINK_UP;
+				dev->net_status |= VIRTIO_NET_S_LINK_UP;
 			}
 			if (fcntl(dev->vhostfd, F_SETFL,
 					flags & ~O_NONBLOCK) == -1) {
@@ -204,12 +205,12 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 				return;
 			}
 		} else if (dev->is_server) {
-			dev->status &= (~VIRTIO_NET_S_LINK_UP);
+			dev->net_status &= (~VIRTIO_NET_S_LINK_UP);
 			if (virtio_user_server_reconnect(dev) >= 0)
-				dev->status |= VIRTIO_NET_S_LINK_UP;
+				dev->net_status |= VIRTIO_NET_S_LINK_UP;
 		}
 
-		*(uint16_t *)dst = dev->status;
+		*(uint16_t *)dst = dev->net_status;
 	}
 
 	if (offset == offsetof(struct virtio_net_config, max_virtqueue_pairs))
@@ -477,12 +478,17 @@ static int
 get_integer_arg(const char *key __rte_unused,
 		const char *value, void *extra_args)
 {
+	uint64_t integer = 0;
 	if (!value || !extra_args)
 		return -EINVAL;
-
-	*(uint64_t *)extra_args = strtoull(value, NULL, 0);
-
-	return 0;
+	errno = 0;
+	integer = strtoull(value, NULL, 0);
+	/* extra_args keeps default value, it should be replaced
+	 * only in case of successful parsing of the 'value' arg
+	 */
+	if (errno == 0)
+		*(uint64_t *)extra_args = integer;
+	return -errno;
 }
 
 static struct rte_eth_dev *
@@ -561,7 +567,7 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		const char *name = rte_vdev_device_name(dev);
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (!eth_dev) {
-			RTE_LOG(ERR, PMD, "Failed to probe %s\n", name);
+			PMD_INIT_LOG(ERR, "Failed to probe %s", name);
 			return -1;
 		}
 
@@ -713,7 +719,7 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		goto end;
 	}
 
-	/* previously called by rte_pci_probe() for physical dev */
+	/* previously called by pci probing for physical dev */
 	if (eth_virtio_dev_init(eth_dev) < 0) {
 		PMD_INIT_LOG(ERR, "eth_virtio_dev_init fails");
 		virtio_user_eth_dev_free(eth_dev);

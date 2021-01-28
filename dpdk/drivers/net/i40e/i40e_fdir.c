@@ -222,6 +222,11 @@ i40e_fdir_setup(struct i40e_pf *pf)
 		goto fail_mem;
 	}
 
+	/* enable FDIR MSIX interrupt */
+	vsi->nb_used_qps = 1;
+	i40e_vsi_queues_bind_intr(vsi, I40E_ITR_INDEX_NONE);
+	i40e_vsi_enable_queues_intr(vsi);
+
 	/* reserve memory for the fdir programming packet */
 	snprintf(z_name, sizeof(z_name), "%s_%s_%d",
 			eth_dev->device->driver->name,
@@ -267,12 +272,18 @@ i40e_fdir_teardown(struct i40e_pf *pf)
 	vsi = pf->fdir.fdir_vsi;
 	if (!vsi)
 		return;
+
+	/* disable FDIR MSIX interrupt */
+	i40e_vsi_queues_unbind_intr(vsi);
+	i40e_vsi_disable_queues_intr(vsi);
+
 	int err = i40e_switch_tx_queue(hw, vsi->base_queue, FALSE);
 	if (err)
 		PMD_DRV_LOG(DEBUG, "Failed to do FDIR TX switch off");
 	err = i40e_switch_rx_queue(hw, vsi->base_queue, FALSE);
 	if (err)
 		PMD_DRV_LOG(DEBUG, "Failed to do FDIR RX switch off");
+
 	i40e_dev_rx_queue_release(pf->fdir.rxq);
 	pf->fdir.rxq = NULL;
 	i40e_dev_tx_queue_release(pf->fdir.txq);
@@ -1539,6 +1550,153 @@ i40e_add_del_fdir_filter(struct rte_eth_dev *dev,
 	return ret;
 }
 
+static int
+i40e_flow_store_flex_pit(struct i40e_pf *pf,
+			 struct i40e_fdir_flex_pit *flex_pit,
+			 enum i40e_flxpld_layer_idx layer_idx,
+			 uint8_t raw_id)
+{
+	uint8_t field_idx;
+
+	field_idx = layer_idx * I40E_MAX_FLXPLD_FIED + raw_id;
+	/* Check if the configuration is conflicted */
+	if (pf->fdir.flex_pit_flag[layer_idx] &&
+	    (pf->fdir.flex_set[field_idx].src_offset != flex_pit->src_offset ||
+	     pf->fdir.flex_set[field_idx].size != flex_pit->size ||
+	     pf->fdir.flex_set[field_idx].dst_offset != flex_pit->dst_offset))
+		return -1;
+
+	/* Check if the configuration exists. */
+	if (pf->fdir.flex_pit_flag[layer_idx] &&
+	    (pf->fdir.flex_set[field_idx].src_offset == flex_pit->src_offset &&
+	     pf->fdir.flex_set[field_idx].size == flex_pit->size &&
+	     pf->fdir.flex_set[field_idx].dst_offset == flex_pit->dst_offset))
+		return 1;
+
+	pf->fdir.flex_set[field_idx].src_offset =
+		flex_pit->src_offset;
+	pf->fdir.flex_set[field_idx].size =
+		flex_pit->size;
+	pf->fdir.flex_set[field_idx].dst_offset =
+		flex_pit->dst_offset;
+
+	return 0;
+}
+
+static void
+i40e_flow_set_fdir_flex_pit(struct i40e_pf *pf,
+			    enum i40e_flxpld_layer_idx layer_idx,
+			    uint8_t raw_id)
+{
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	uint32_t flx_pit, flx_ort;
+	uint16_t min_next_off = 0;
+	uint8_t field_idx;
+	uint8_t i;
+
+	if (raw_id) {
+		flx_ort = (1 << I40E_GLQF_ORT_FLX_PAYLOAD_SHIFT) |
+			  (raw_id << I40E_GLQF_ORT_FIELD_CNT_SHIFT) |
+			  (layer_idx * I40E_MAX_FLXPLD_FIED);
+		I40E_WRITE_GLB_REG(hw, I40E_GLQF_ORT(33 + layer_idx), flx_ort);
+	}
+
+	/* Set flex pit */
+	for (i = 0; i < raw_id; i++) {
+		field_idx = layer_idx * I40E_MAX_FLXPLD_FIED + i;
+		flx_pit = MK_FLX_PIT(pf->fdir.flex_set[field_idx].src_offset,
+				     pf->fdir.flex_set[field_idx].size,
+				     pf->fdir.flex_set[field_idx].dst_offset);
+
+		I40E_WRITE_REG(hw, I40E_PRTQF_FLX_PIT(field_idx), flx_pit);
+		min_next_off = pf->fdir.flex_set[field_idx].src_offset +
+			pf->fdir.flex_set[field_idx].size;
+	}
+
+	for (; i < I40E_MAX_FLXPLD_FIED; i++) {
+		/* set the non-used register obeying register's constrain */
+		field_idx = layer_idx * I40E_MAX_FLXPLD_FIED + i;
+		flx_pit = MK_FLX_PIT(min_next_off, NONUSE_FLX_PIT_FSIZE,
+				     NONUSE_FLX_PIT_DEST_OFF);
+		I40E_WRITE_REG(hw, I40E_PRTQF_FLX_PIT(field_idx), flx_pit);
+		min_next_off++;
+	}
+
+	pf->fdir.flex_pit_flag[layer_idx] = 1;
+}
+
+static int
+i40e_flow_store_flex_mask(struct i40e_pf *pf,
+			  enum i40e_filter_pctype pctype,
+			  uint8_t *mask)
+{
+	struct i40e_fdir_flex_mask flex_mask;
+	uint8_t nb_bitmask = 0;
+	uint16_t mask_tmp;
+	uint8_t i;
+
+	memset(&flex_mask, 0, sizeof(struct i40e_fdir_flex_mask));
+	for (i = 0; i < I40E_FDIR_MAX_FLEX_LEN; i += sizeof(uint16_t)) {
+		mask_tmp = I40E_WORD(mask[i], mask[i + 1]);
+		if (mask_tmp) {
+			flex_mask.word_mask |=
+				I40E_FLEX_WORD_MASK(i / sizeof(uint16_t));
+			if (mask_tmp != UINT16_MAX) {
+				flex_mask.bitmask[nb_bitmask].mask = ~mask_tmp;
+				flex_mask.bitmask[nb_bitmask].offset =
+					i / sizeof(uint16_t);
+				nb_bitmask++;
+				if (nb_bitmask > I40E_FDIR_BITMASK_NUM_WORD)
+					return -1;
+			}
+		}
+	}
+	flex_mask.nb_bitmask = nb_bitmask;
+
+	if (pf->fdir.flex_mask_flag[pctype] &&
+	    (memcmp(&flex_mask, &pf->fdir.flex_mask[pctype],
+		    sizeof(struct i40e_fdir_flex_mask))))
+		return -2;
+	else if (pf->fdir.flex_mask_flag[pctype] &&
+		 !(memcmp(&flex_mask, &pf->fdir.flex_mask[pctype],
+			  sizeof(struct i40e_fdir_flex_mask))))
+		return 1;
+
+	memcpy(&pf->fdir.flex_mask[pctype], &flex_mask,
+	       sizeof(struct i40e_fdir_flex_mask));
+	return 0;
+}
+
+static void
+i40e_flow_set_fdir_flex_msk(struct i40e_pf *pf,
+			    enum i40e_filter_pctype pctype)
+{
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	struct i40e_fdir_flex_mask *flex_mask;
+	uint32_t flxinset, fd_mask;
+	uint8_t i;
+
+	/* Set flex mask */
+	flex_mask = &pf->fdir.flex_mask[pctype];
+	flxinset = (flex_mask->word_mask <<
+		    I40E_PRTQF_FD_FLXINSET_INSET_SHIFT) &
+		I40E_PRTQF_FD_FLXINSET_INSET_MASK;
+	i40e_write_rx_ctl(hw, I40E_PRTQF_FD_FLXINSET(pctype), flxinset);
+
+	for (i = 0; i < flex_mask->nb_bitmask; i++) {
+		fd_mask = (flex_mask->bitmask[i].mask <<
+			   I40E_PRTQF_FD_MSK_MASK_SHIFT) &
+			   I40E_PRTQF_FD_MSK_MASK_MASK;
+		fd_mask |= ((flex_mask->bitmask[i].offset +
+			     I40E_FLX_OFFSET_IN_FIELD_VECTOR) <<
+			    I40E_PRTQF_FD_MSK_OFFSET_SHIFT) &
+				I40E_PRTQF_FD_MSK_OFFSET_MASK;
+		i40e_write_rx_ctl(hw, I40E_PRTQF_FD_MSK(pctype, i), fd_mask);
+	}
+
+	pf->fdir.flex_mask_flag[pctype] = 1;
+}
+
 /**
  * i40e_flow_add_del_fdir_filter - add or remove a flow director filter.
  * @pf: board private structure
@@ -1552,15 +1710,21 @@ i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	enum i40e_flxpld_layer_idx layer_idx = I40E_FLXPLD_L2_IDX;
 	unsigned char *pkt = (unsigned char *)pf->fdir.prg_pkt;
-	enum i40e_filter_pctype pctype;
 	struct i40e_fdir_info *fdir_info = &pf->fdir;
 	struct i40e_fdir_filter *fdir_filter, *node;
+	uint8_t flex_mask[I40E_FDIR_MAX_FLEX_LEN];
 	struct i40e_fdir_filter check_filter; /* Check if the filter exists */
+	struct i40e_fdir_flex_pit flex_pit;
+	enum i40e_filter_pctype pctype;
+	bool cfg_flex_pit = true;
+	uint8_t field_idx;
 	int ret = 0;
+	int i;
 
-	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_PERFECT) {
-		PMD_DRV_LOG(ERR, "FDIR is not enabled, please check the mode in fdir_conf.");
+	if (pf->fdir.fdir_vsi == NULL) {
+		PMD_DRV_LOG(ERR, "FDIR is not enabled");
 		return -ENOTSUP;
 	}
 
@@ -1623,6 +1787,47 @@ i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
 	}
 
 	if (add) {
+		if (!filter->input.flow_ext.customized_pctype) {
+			for (i = 0; i < filter->input.flow_ext.raw_id; i++) {
+				layer_idx = filter->input.flow_ext.layer_idx;
+				field_idx = layer_idx * I40E_MAX_FLXPLD_FIED + i;
+				flex_pit = filter->input.flow_ext.flex_pit[field_idx];
+
+				/* Store flex pit to SW */
+				ret = i40e_flow_store_flex_pit(pf, &flex_pit,
+							       layer_idx, i);
+				if (ret < 0) {
+					PMD_DRV_LOG(ERR, "Conflict with the"
+						    " first flexible rule.");
+					return -EINVAL;
+				} else if (ret > 0) {
+					cfg_flex_pit = false;
+				}
+			}
+
+			if (cfg_flex_pit)
+				i40e_flow_set_fdir_flex_pit(pf, layer_idx,
+						filter->input.flow_ext.raw_id);
+
+			/* Store flex mask to SW */
+			for (i = 0; i < I40E_FDIR_MAX_FLEX_LEN; i++)
+				flex_mask[i] =
+					filter->input.flow_ext.flex_mask[i];
+
+			ret = i40e_flow_store_flex_mask(pf, pctype, flex_mask);
+			if (ret == -1) {
+				PMD_DRV_LOG(ERR, "Exceed maximal"
+					    " number of bitmasks");
+				return -EINVAL;
+			} else if (ret == -2) {
+				PMD_DRV_LOG(ERR, "Conflict with the"
+					    " first flexible rule");
+				return -EINVAL;
+			} else if (ret == 0) {
+				i40e_flow_set_fdir_flex_msk(pf, pctype);
+			}
+		}
+
 		fdir_filter = rte_zmalloc("fdir_filter",
 					  sizeof(*fdir_filter), 0);
 		if (fdir_filter == NULL) {
@@ -1636,6 +1841,8 @@ i40e_flow_add_del_fdir_filter(struct rte_eth_dev *dev,
 			rte_free(fdir_filter);
 	} else {
 		ret = i40e_sw_fdir_filter_del(pf, &node->fdir.input);
+		if (ret >= 0)
+			pf->fdir.flex_mask_flag[pctype] = 0;
 	}
 
 	return ret;

@@ -3,6 +3,7 @@
  */
 
 #include <rte_common.h>
+#include <rte_cycles.h>
 #include <rte_dev.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
@@ -19,6 +20,7 @@
 #include "qat_comp.h"
 #include "adf_transport_access_macros.h"
 
+#define QAT_CQ_MAX_DEQ_RETRIES 10
 
 #define ADF_MAX_DESC				4096
 #define ADF_MIN_DESC				128
@@ -191,7 +193,8 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 
 {
 	struct qat_qp *qp;
-	struct rte_pci_device *pci_dev = qat_dev->pci_dev;
+	struct rte_pci_device *pci_dev =
+			qat_pci_devs[qat_dev->qat_dev_id].pci_dev;
 	char op_cookie_pool_name[RTE_RING_NAMESIZE];
 	uint32_t i;
 
@@ -230,12 +233,21 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 	}
 
 	qp->mmap_bar_addr = pci_dev->mem_resource[0].addr;
-	qp->inflights16 = 0;
+	qp->enqueued = qp->dequeued = 0;
 
 	if (qat_queue_create(qat_dev, &(qp->tx_q), qat_qp_conf,
 					ADF_RING_DIR_TX) != 0) {
 		QAT_LOG(ERR, "Tx queue create failed "
 				"queue_pair_id=%u", queue_pair_id);
+		goto create_err;
+	}
+
+	qp->max_inflights = ADF_MAX_INFLIGHTS(qp->tx_q.queue_size,
+				ADF_BYTES_TO_MSG_SIZE(qp->tx_q.msg_size));
+
+	if (qp->max_inflights < 2) {
+		QAT_LOG(ERR, "Invalid num inflights");
+		qat_queue_delete(&(qp->tx_q));
 		goto create_err;
 	}
 
@@ -263,7 +275,7 @@ int qat_qp_setup(struct qat_pci_device *qat_dev,
 				qp->nb_descriptors,
 				qat_qp_conf->cookie_size, 64, 0,
 				NULL, NULL, NULL, NULL,
-				qat_dev->pci_dev->device.numa_node,
+				pci_dev->device.numa_node,
 				0);
 	if (!qp->op_cookie_pool) {
 		QAT_LOG(ERR, "QAT PMD Cannot create"
@@ -312,7 +324,7 @@ int qat_qp_release(struct qat_qp **qp_addr)
 				qp->qat_dev->qat_dev_id);
 
 	/* Don't free memory if there are still responses to be processed */
-	if (qp->inflights16 == 0) {
+	if ((qp->enqueued - qp->dequeued) == 0) {
 		qat_queue_delete(&(qp->tx_q));
 		qat_queue_delete(&(qp->rx_q));
 	} else {
@@ -368,7 +380,8 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 	uint64_t queue_base;
 	void *io_addr;
 	const struct rte_memzone *qp_mz;
-	struct rte_pci_device *pci_dev = qat_dev->pci_dev;
+	struct rte_pci_device *pci_dev =
+			qat_pci_devs[qat_dev->qat_dev_id].pci_dev;
 	int ret = 0;
 	uint16_t desc_size = (dir == ADF_RING_DIR_TX ?
 			qp_conf->hw->tx_msg_size : qp_conf->hw->rx_msg_size);
@@ -392,7 +405,7 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 		qp_conf->service_str, "qp_mem",
 		queue->hw_bundle_number, queue->hw_queue_number);
 	qp_mz = queue_dma_zone_reserve(queue->memz_name, queue_size_bytes,
-			qat_dev->pci_dev->device.numa_node);
+			pci_dev->device.numa_node);
 	if (qp_mz == NULL) {
 		QAT_LOG(ERR, "Failed to allocate ring memzone");
 		return -ENOMEM;
@@ -416,15 +429,7 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 		goto queue_create_err;
 	}
 
-	queue->max_inflights = ADF_MAX_INFLIGHTS(queue->queue_size,
-					ADF_BYTES_TO_MSG_SIZE(desc_size));
 	queue->modulo_mask = (1 << ADF_RING_SIZE_MODULO(queue->queue_size)) - 1;
-
-	if (queue->max_inflights < 2) {
-		QAT_LOG(ERR, "Invalid num inflights");
-		ret = -EINVAL;
-		goto queue_create_err;
-	}
 	queue->head = 0;
 	queue->tail = 0;
 	queue->msg_size = desc_size;
@@ -443,11 +448,11 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 			queue->hw_queue_number, queue_base);
 
 	QAT_LOG(DEBUG, "RING: Name:%s, size in CSR: %u, in bytes %u,"
-		" nb msgs %u, msg_size %u, max_inflights %u modulo mask %u",
+		" nb msgs %u, msg_size %u, modulo mask %u",
 			queue->memz_name,
 			queue->queue_size, queue_size_bytes,
 			qp_conf->nb_descriptors, desc_size,
-			queue->max_inflights, queue->modulo_mask);
+			queue->modulo_mask);
 
 	return 0;
 
@@ -538,7 +543,6 @@ static inline void
 txq_write_tail(struct qat_qp *qp, struct qat_queue *q) {
 	WRITE_CSR_RING_TAIL(qp->mmap_bar_addr, q->hw_bundle_number,
 			q->hw_queue_number, q->tail);
-	q->nb_pending_requests = 0;
 	q->csr_tail = q->tail;
 }
 
@@ -575,11 +579,10 @@ qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 	register struct qat_queue *queue;
 	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
 	register uint32_t nb_ops_sent = 0;
-	register int ret;
+	register int ret = -1;
 	uint16_t nb_ops_possible = nb_ops;
 	register uint8_t *base_addr;
 	register uint32_t tail;
-	int overflow;
 
 	if (unlikely(nb_ops == 0))
 		return 0;
@@ -590,26 +593,59 @@ qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 	tail = queue->tail;
 
 	/* Find how many can actually fit on the ring */
-	tmp_qp->inflights16 += nb_ops;
-	overflow = tmp_qp->inflights16 - queue->max_inflights;
-	if (overflow > 0) {
-		tmp_qp->inflights16 -= overflow;
-		nb_ops_possible = nb_ops - overflow;
-		if (nb_ops_possible == 0)
+	{
+		/* dequeued can only be written by one thread, but it may not
+		 * be this thread. As it's 4-byte aligned it will be read
+		 * atomically here by any Intel CPU.
+		 * enqueued can wrap before dequeued, but cannot
+		 * lap it as var size of enq/deq (uint32_t) > var size of
+		 * max_inflights (uint16_t). In reality inflights is never
+		 * even as big as max uint16_t, as it's <= ADF_MAX_DESC.
+		 * On wrapping, the calculation still returns the correct
+		 * positive value as all three vars are unsigned.
+		 */
+		uint32_t inflights =
+			tmp_qp->enqueued - tmp_qp->dequeued;
+
+		if ((inflights + nb_ops) > tmp_qp->max_inflights) {
+			nb_ops_possible = tmp_qp->max_inflights - inflights;
+			if (nb_ops_possible == 0)
+				return 0;
+		}
+		/* QAT has plenty of work queued already, so don't waste cycles
+		 * enqueueing, wait til the application has gathered a bigger
+		 * burst or some completed ops have been dequeued
+		 */
+		if (tmp_qp->min_enq_burst_threshold && inflights >
+				QAT_QP_MIN_INFL_THRESHOLD && nb_ops_possible <
+				tmp_qp->min_enq_burst_threshold) {
+			tmp_qp->stats.threshold_hit_count++;
 			return 0;
+		}
 	}
 
 	while (nb_ops_sent != nb_ops_possible) {
-		ret = tmp_qp->build_request(*ops, base_addr + tail,
+		if (tmp_qp->service_type == QAT_SERVICE_SYMMETRIC) {
+#ifdef BUILD_QAT_SYM
+			ret = qat_sym_build_request(*ops, base_addr + tail,
 				tmp_qp->op_cookies[tail / queue->msg_size],
 				tmp_qp->qat_dev_gen);
+#endif
+		} else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION) {
+			ret = qat_comp_build_request(*ops, base_addr + tail,
+				tmp_qp->op_cookies[tail / queue->msg_size],
+				tmp_qp->qat_dev_gen);
+		} else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC) {
+#ifdef BUILD_QAT_ASYM
+			ret = qat_asym_build_request(*ops, base_addr + tail,
+				tmp_qp->op_cookies[tail / queue->msg_size],
+				tmp_qp->qat_dev_gen);
+#endif
+		}
+
 		if (ret != 0) {
 			tmp_qp->stats.enqueue_err_count++;
-			/*
-			 * This message cannot be enqueued,
-			 * decrease number of ops that wasn't sent
-			 */
-			tmp_qp->inflights16 -= nb_ops_possible - nb_ops_sent;
+			/* This message cannot be enqueued */
 			if (nb_ops_sent == 0)
 				return 0;
 			goto kick_tail;
@@ -621,26 +657,22 @@ qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 	}
 kick_tail:
 	queue->tail = tail;
+	tmp_qp->enqueued += nb_ops_sent;
 	tmp_qp->stats.enqueued_count += nb_ops_sent;
-	queue->nb_pending_requests += nb_ops_sent;
-	if (tmp_qp->inflights16 < QAT_CSR_TAIL_FORCE_WRITE_THRESH ||
-		    queue->nb_pending_requests > QAT_CSR_TAIL_WRITE_THRESH) {
-		txq_write_tail(tmp_qp, queue);
-	}
+	txq_write_tail(tmp_qp, queue);
 	return nb_ops_sent;
 }
 
 uint16_t
 qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 {
-	struct qat_queue *rx_queue, *tx_queue;
+	struct qat_queue *rx_queue;
 	struct qat_qp *tmp_qp = (struct qat_qp *)qp;
 	uint32_t head;
 	uint32_t resp_counter = 0;
 	uint8_t *resp_msg;
 
 	rx_queue = &(tmp_qp->rx_q);
-	tx_queue = &(tmp_qp->tx_q);
 	head = rx_queue->head;
 	resp_msg = (uint8_t *)rx_queue->base_addr + rx_queue->head;
 
@@ -669,20 +701,107 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 	}
 	if (resp_counter > 0) {
 		rx_queue->head = head;
+		tmp_qp->dequeued += resp_counter;
 		tmp_qp->stats.dequeued_count += resp_counter;
 		rx_queue->nb_processed_responses += resp_counter;
-		tmp_qp->inflights16 -= resp_counter;
 
 		if (rx_queue->nb_processed_responses >
 						QAT_CSR_HEAD_WRITE_THRESH)
 			rxq_free_desc(tmp_qp, rx_queue);
 	}
-	/* also check if tail needs to be advanced */
-	if (tmp_qp->inflights16 <= QAT_CSR_TAIL_FORCE_WRITE_THRESH &&
-		tx_queue->tail != tx_queue->csr_tail) {
-		txq_write_tail(tmp_qp, tx_queue);
-	}
+
 	return resp_counter;
+}
+
+/* This is almost same as dequeue_op_burst, without the atomic, without stats
+ * and without the op. Dequeues one response.
+ */
+static uint8_t
+qat_cq_dequeue_response(struct qat_qp *qp, void *out_data)
+{
+	uint8_t result = 0;
+	uint8_t retries = 0;
+	struct qat_queue *queue = &(qp->rx_q);
+	struct icp_qat_fw_comn_resp *resp_msg = (struct icp_qat_fw_comn_resp *)
+			((uint8_t *)queue->base_addr + queue->head);
+
+	while (retries++ < QAT_CQ_MAX_DEQ_RETRIES &&
+			*(uint32_t *)resp_msg == ADF_RING_EMPTY_SIG) {
+		/* loop waiting for response until we reach the timeout */
+		rte_delay_ms(20);
+	}
+
+	if (*(uint32_t *)resp_msg != ADF_RING_EMPTY_SIG) {
+		/* response received */
+		result = 1;
+
+		/* check status flag */
+		if (ICP_QAT_FW_COMN_RESP_CRYPTO_STAT_GET(
+				resp_msg->comn_hdr.comn_status) ==
+				ICP_QAT_FW_COMN_STATUS_FLAG_OK) {
+			/* success */
+			memcpy(out_data, resp_msg, queue->msg_size);
+		} else {
+			memset(out_data, 0, queue->msg_size);
+		}
+
+		queue->head = adf_modulo(queue->head + queue->msg_size,
+				queue->modulo_mask);
+		rxq_free_desc(qp, queue);
+	}
+
+	return result;
+}
+
+/* Sends a NULL message and extracts QAT fw version from the response.
+ * Used to determine detailed capabilities based on the fw version number.
+ * This assumes that there are no inflight messages, i.e. assumes there's space
+ * on the qp, one message is sent and only one response collected.
+ * Returns fw version number or 0 for unknown version or a negative error code.
+ */
+int
+qat_cq_get_fw_version(struct qat_qp *qp)
+{
+	struct qat_queue *queue = &(qp->tx_q);
+	uint8_t *base_addr = (uint8_t *)queue->base_addr;
+	struct icp_qat_fw_comn_req null_msg;
+	struct icp_qat_fw_comn_resp response;
+
+	/* prepare the NULL request */
+	memset(&null_msg, 0, sizeof(null_msg));
+	null_msg.comn_hdr.hdr_flags =
+		ICP_QAT_FW_COMN_HDR_FLAGS_BUILD(ICP_QAT_FW_COMN_REQ_FLAG_SET);
+	null_msg.comn_hdr.service_type = ICP_QAT_FW_COMN_REQ_NULL;
+	null_msg.comn_hdr.service_cmd_id = ICP_QAT_FW_NULL_REQ_SERV_ID;
+
+#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
+	QAT_DP_HEXDUMP_LOG(DEBUG, "NULL request", &null_msg, sizeof(null_msg));
+#endif
+
+	/* send the NULL request */
+	memcpy(base_addr + queue->tail, &null_msg, sizeof(null_msg));
+	queue->tail = adf_modulo(queue->tail + queue->msg_size,
+			queue->modulo_mask);
+	txq_write_tail(qp, queue);
+
+	/* receive a response */
+	if (qat_cq_dequeue_response(qp, &response)) {
+
+#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
+		QAT_DP_HEXDUMP_LOG(DEBUG, "NULL response:", &response,
+				sizeof(response));
+#endif
+		/* if LW0 bit 24 is set - then the fw version was returned */
+		if (QAT_FIELD_GET(response.comn_hdr.hdr_flags,
+				ICP_QAT_FW_COMN_NULL_VERSION_FLAG_BITPOS,
+				ICP_QAT_FW_COMN_NULL_VERSION_FLAG_MASK))
+			return response.resrvd[0]; /* return LW4 */
+		else
+			return 0; /* not set - we don't know fw version */
+	}
+
+	QAT_LOG(ERR, "No response received");
+	return -EINVAL;
 }
 
 __rte_weak int
