@@ -89,6 +89,7 @@ int bnxt_hwrm_func_buf_rgtr(struct bnxt *bp);
 int bnxt_hwrm_func_buf_unrgtr(struct bnxt *bp);
 int bnxt_hwrm_func_driver_register(struct bnxt *bp);
 int bnxt_hwrm_func_qcaps(struct bnxt *bp);
+void bnxt_hwrm_free_vf_info(struct bnxt *bp);
 int bnxt_hwrm_func_reset(struct bnxt *bp);
 int bnxt_hwrm_func_driver_unregister(struct bnxt *bp, uint32_t flags);
 int bnxt_hwrm_func_qstats(struct bnxt *bp, uint16_t fid,
@@ -229,5 +230,6 @@ int bnxt_hwrm_error_recovery_qcfg(struct bnxt *bp);
 int bnxt_hwrm_fw_reset(struct bnxt *bp);
 int bnxt_hwrm_port_ts_query(struct bnxt *bp, uint8_t path,
 			    uint64_t *timestamp);
-int bnxt_hwrm_cfa_adv_flow_mgmt_qcaps(struct bnxt *bp);
+int bnxt_clear_one_vnic_filter(struct bnxt *bp,
+			       struct bnxt_filter_info *filter);
 #endif

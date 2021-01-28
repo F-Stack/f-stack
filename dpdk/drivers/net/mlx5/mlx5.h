@@ -57,7 +57,7 @@ enum {
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6 = 0x101b,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6VF = 0x101c,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6DX = 0x101d,
-	PCI_DEVICE_ID_MELLANOX_CONNECTX6DXVF = 0x101e,
+	PCI_DEVICE_ID_MELLANOX_CONNECTXVF = 0x101e,
 };
 
 /* Request types for IPC. */
@@ -148,12 +148,15 @@ struct mlx5_xstats_ctrl {
 	/* Index in the device counters table. */
 	uint16_t dev_table_idx[MLX5_MAX_XSTATS];
 	uint64_t base[MLX5_MAX_XSTATS];
+	uint64_t xstats[MLX5_MAX_XSTATS];
+	uint64_t hw_stats[MLX5_MAX_XSTATS];
 	struct mlx5_counter_ctrl info[MLX5_MAX_XSTATS];
 };
 
 struct mlx5_stats_ctrl {
 	/* Base for imissed counter. */
 	uint64_t imissed_base;
+	uint64_t imissed;
 };
 
 /* devX creation object */
@@ -264,6 +267,7 @@ struct mlx5_dev_config {
 	struct {
 		unsigned int enabled:1; /* Whether MPRQ is enabled. */
 		unsigned int stride_num_n; /* Number of strides. */
+		unsigned int stride_size_n; /* Size of a stride. */
 		unsigned int min_stride_size_n; /* Min size of a stride. */
 		unsigned int max_stride_size_n; /* Max size of a stride. */
 		unsigned int max_memcpy_len;
@@ -366,7 +370,7 @@ struct mlx5_devx_tir_attr {
 	uint32_t rx_hash_fn:4;
 	uint32_t self_lb_block:2;
 	uint32_t transport_domain:24;
-	uint32_t rx_hash_toeplitz_key[10];
+	uint8_t rx_hash_toeplitz_key[MLX5_RSS_HASH_KEY_LEN];
 	struct mlx5_rx_hash_field_select rx_hash_field_selector_outer;
 	struct mlx5_rx_hash_field_select rx_hash_field_selector_inner;
 };
@@ -482,7 +486,8 @@ struct mlx5_flow_counter {
 	uint32_t shared:1; /**< Share counter ID with other flow rules. */
 	uint32_t batch: 1;
 	/**< Whether the counter was allocated by batch command. */
-	uint32_t ref_cnt:30; /**< Reference counter. */
+	uint32_t ref_cnt:29; /**< Reference counter. */
+	uint32_t skipped:1; /* This counter is skipped or not. */
 	uint32_t id; /**< Counter ID. */
 	union {  /**< Holds the counters for the rule. */
 #if defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42)
@@ -514,6 +519,7 @@ struct mlx5_flow_counter_pool {
 	/* The devx object of the minimum counter ID. */
 	rte_atomic64_t query_gen;
 	uint32_t n_counters: 16; /* Number of devx allocated counters. */
+	uint32_t skip_cnt:1; /* Pool contains skipped counter. */
 	rte_spinlock_t sl; /* The pool lock. */
 	struct mlx5_counter_stats_raw *raw;
 	struct mlx5_counter_stats_raw *raw_hw; /* The raw on HW working. */
@@ -596,20 +602,22 @@ struct mlx5_flow_tbl_resource {
 };
 
 #define MLX5_MAX_TABLES UINT16_MAX
-#define MLX5_FLOW_TABLE_LEVEL_METER (UINT16_MAX - 3)
-#define MLX5_FLOW_TABLE_LEVEL_SUFFIX (UINT16_MAX - 2)
 #define MLX5_HAIRPIN_TX_TABLE (UINT16_MAX - 1)
 /* Reserve the last two tables for metadata register copy. */
 #define MLX5_FLOW_MREG_ACT_TABLE_GROUP (MLX5_MAX_TABLES - 1)
 #define MLX5_FLOW_MREG_CP_TABLE_GROUP (MLX5_MAX_TABLES - 2)
 /* Tables for metering splits should be added here. */
-#define MLX5_MAX_TABLES_EXTERNAL (MLX5_MAX_TABLES - 3)
+#define MLX5_FLOW_TABLE_LEVEL_SUFFIX (MLX5_MAX_TABLES - 3)
+#define MLX5_FLOW_TABLE_LEVEL_METER (MLX5_MAX_TABLES - 4)
+#define MLX5_MAX_TABLES_EXTERNAL MLX5_FLOW_TABLE_LEVEL_METER
 #define MLX5_MAX_TABLES_FDB UINT16_MAX
 
-#define MLX5_DBR_PAGE_SIZE 4096 /* Must be >= 512. */
-#define MLX5_DBR_SIZE 8
-#define MLX5_DBR_PER_PAGE (MLX5_DBR_PAGE_SIZE / MLX5_DBR_SIZE)
-#define MLX5_DBR_BITMAP_SIZE (MLX5_DBR_PER_PAGE / 64)
+#define MLX5_DBR_SIZE RTE_CACHE_LINE_SIZE
+#define MLX5_DBR_PER_PAGE 64
+/* Must be >= CHAR_BIT * sizeof(uint64_t) */
+#define MLX5_DBR_PAGE_SIZE (MLX5_DBR_PER_PAGE * MLX5_DBR_SIZE)
+/* Page size must be >= 512. */
+#define MLX5_DBR_BITMAP_SIZE (MLX5_DBR_PER_PAGE / (CHAR_BIT * sizeof(uint64_t)))
 
 struct mlx5_devx_dbr_page {
 	/* Door-bell records, must be first member in structure. */
@@ -661,16 +669,14 @@ struct mlx5_ibv_shared {
 	uint32_t dv_meta_mask; /* flow META metadata supported mask. */
 	uint32_t dv_mark_mask; /* flow MARK metadata supported mask. */
 	uint32_t dv_regc0_mask; /* available bits of metatada reg_c[0]. */
-	uint32_t dv_refcnt; /* DV/DR data reference counter. */
 	void *fdb_domain; /* FDB Direct Rules name space handle. */
-	struct mlx5_flow_tbl_resource *fdb_mtr_sfx_tbl;
-	/* FDB meter suffix rules table. */
 	void *rx_domain; /* RX Direct Rules name space handle. */
-	struct mlx5_flow_tbl_resource *rx_mtr_sfx_tbl;
-	/* RX meter suffix rules table. */
 	void *tx_domain; /* TX Direct Rules name space handle. */
-	struct mlx5_flow_tbl_resource *tx_mtr_sfx_tbl;
-	/* TX meter suffix rules table. */
+#ifndef RTE_ARCH_64
+	rte_spinlock_t uar_lock_cq; /* CQs share a common distinct UAR */
+	rte_spinlock_t uar_lock[MLX5_UAR_PAGE_NUM_MAX];
+	/* UAR same-page access control required in 32bit implementations. */
+#endif
 	struct mlx5_hlist *flow_tbls;
 	/* Direct Rules tables for FDB, NIC TX+RX */
 	void *esw_drop_action; /* Pointer to DR E-Switch drop action. */
@@ -684,10 +690,7 @@ struct mlx5_ibv_shared {
 		push_vlan_action_list; /* List of push VLAN actions. */
 	struct mlx5_flow_counter_mng cmng; /* Counters management structure. */
 	/* Shared interrupt handler section. */
-	pthread_mutex_t intr_mutex; /* Interrupt config mutex. */
-	uint32_t intr_cnt; /* Interrupt handler reference counter. */
 	struct rte_intr_handle intr_handle; /* Interrupt handler for device. */
-	uint32_t devx_intr_cnt; /* Devx interrupt handler reference counter. */
 	struct rte_intr_handle intr_handle_devx; /* DEVX interrupt handler. */
 	struct mlx5dv_devx_cmd_comp *devx_comp; /* DEVX async comp obj. */
 	struct mlx5_devx_obj *tis; /* TIS object. */
@@ -727,7 +730,6 @@ struct mlx5_priv {
 	unsigned int isolated:1; /* Whether isolated mode is enabled. */
 	unsigned int representor:1; /* Device is a port representor. */
 	unsigned int master:1; /* Device is a E-Switch master. */
-	unsigned int dr_shared:1; /* DV/DR data is shared. */
 	unsigned int counter_fallback:1; /* Use counter fallback management. */
 	unsigned int mtr_en:1; /* Whether support meter. */
 	unsigned int mtr_reg_share:1; /* Whether support meter REG_C share. */
@@ -782,11 +784,6 @@ struct mlx5_priv {
 	uint8_t mtr_color_reg; /* Meter color match REG_C. */
 	struct mlx5_mtr_profiles flow_meter_profiles; /* MTR profile list. */
 	struct mlx5_flow_meters flow_meters; /* MTR list. */
-#ifndef RTE_ARCH_64
-	rte_spinlock_t uar_lock_cq; /* CQs share a common distinct UAR */
-	rte_spinlock_t uar_lock[MLX5_UAR_PAGE_NUM_MAX];
-	/* UAR same-page access control required in 32bit implementations. */
-#endif
 	uint8_t skip_default_rss_reta; /* Skip configuration of default reta. */
 	uint8_t fdb_def_rule; /* Whether fdb jump to table 1 is configured. */
 };
@@ -840,8 +837,6 @@ void mlx5_dev_interrupt_handler(void *arg);
 void mlx5_dev_interrupt_handler_devx(void *arg);
 void mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev);
 void mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev);
-void mlx5_dev_interrupt_handler_devx_uninstall(struct rte_eth_dev *dev);
-void mlx5_dev_interrupt_handler_devx_install(struct rte_eth_dev *dev);
 int mlx5_set_link_down(struct rte_eth_dev *dev);
 int mlx5_set_link_up(struct rte_eth_dev *dev);
 int mlx5_is_removed(struct rte_eth_dev *dev);
@@ -977,6 +972,7 @@ struct mlx5_flow_counter *mlx5_counter_alloc(struct rte_eth_dev *dev);
 void mlx5_counter_free(struct rte_eth_dev *dev, struct mlx5_flow_counter *cnt);
 int mlx5_counter_query(struct rte_eth_dev *dev, struct mlx5_flow_counter *cnt,
 		       bool clear, uint64_t *pkts, uint64_t *bytes);
+void mlx5_flow_rxq_dynf_metadata_set(struct rte_eth_dev *dev);
 
 /* mlx5_mp.c */
 void mlx5_mp_req_start_rxtx(struct rte_eth_dev *dev);

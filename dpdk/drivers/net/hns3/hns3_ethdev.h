@@ -145,7 +145,7 @@ enum hns3_media_type {
 
 struct hns3_mac {
 	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
-	bool default_addr_setted; /* whether default addr(mac_addr) is setted */
+	bool default_addr_setted; /* whether default addr(mac_addr) is set */
 	uint8_t media_type;
 	uint8_t phy_addr;
 	uint8_t link_duplex  : 1; /* ETH_LINK_[HALF/FULL]_DUPLEX */
@@ -154,6 +154,19 @@ struct hns3_mac {
 	uint32_t link_speed;      /* ETH_SPEED_NUM_ */
 };
 
+struct hns3_fake_queue_data {
+	void **rx_queues; /* Array of pointers to fake RX queues. */
+	void **tx_queues; /* Array of pointers to fake TX queues. */
+	uint16_t nb_fake_rx_queues; /* Number of fake RX queues. */
+	uint16_t nb_fake_tx_queues; /* Number of fake TX queues. */
+};
+
+#define HNS3_PORT_BASE_VLAN_DISABLE	0
+#define HNS3_PORT_BASE_VLAN_ENABLE	1
+struct hns3_port_base_vlan_config {
+	uint16_t state;
+	uint16_t pvid;
+};
 
 /* Primary process maintains driver state in main thread.
  *
@@ -243,6 +256,13 @@ enum hns3_reset_level {
 	 * Kernel PF driver use mailbox to inform DPDK VF to do reset, the value
 	 * of the reset level and the one defined in kernel driver should be
 	 * same.
+	 *
+	 * According to the protocol of PCIe, FLR to a PF resets the PF state as
+	 * well as the SR-IOV extended capability including VF Enable which
+	 * means that VFs no longer exist.
+	 *
+	 * In PF FLR, the register state of VF is not reliable, VF's driver
+	 * should not access the registers of the VF device.
 	 */
 	HNS3_VF_FULL_RESET = 3,
 	HNS3_FLR_RESET,     /* A VF perform FLR reset */
@@ -348,8 +368,8 @@ struct hns3_hw {
 	uint16_t num_msi;
 	uint16_t total_tqps_num;    /* total task queue pairs of this PF */
 	uint16_t tqps_num;          /* num task queue pairs of this function */
+	uint16_t intr_tqps_num;     /* num queue pairs mapping interrupt */
 	uint16_t rss_size_max;      /* HW defined max RSS task queue */
-	uint16_t rx_buf_len;
 	uint16_t num_tx_desc;       /* desc num of per tx queue */
 	uint16_t num_rx_desc;       /* desc num of per rx queue */
 
@@ -358,6 +378,7 @@ struct hns3_hw {
 
 	/* The configuration info of RSS */
 	struct hns3_rss_conf rss_info;
+	bool rss_dis_flag; /* disable rss flag. true: disable, false: enable */
 
 	uint8_t num_tc;             /* Total number of enabled TCs */
 	uint8_t hw_tc_map;
@@ -366,10 +387,18 @@ struct hns3_hw {
 	struct hns3_dcb_info dcb_info;
 	enum hns3_fc_status current_fc_status; /* current flow control status */
 	struct hns3_tc_queue_info tc_queue[HNS3_MAX_TC_NUM];
-	uint16_t alloc_tqps;
-	uint16_t alloc_rss_size;    /* Queue number per TC */
+	uint16_t used_rx_queues;
+	uint16_t used_tx_queues;
+
+	/* Config max queue numbers between rx and tx queues from user */
+	uint16_t cfg_max_queues;
+	struct hns3_fake_queue_data fkq_data;     /* fake queue data */
+	uint16_t alloc_rss_size;    /* RX queue number per TC */
+	uint16_t tx_qnum_per_tc;    /* TX queue number per TC */
 
 	uint32_t flag;
+
+	struct hns3_port_base_vlan_config port_base_vlan_cfg;
 	/*
 	 * PMD setup and configuration is not thread safe. Since it is not
 	 * performance sensitive, it is better to guarantee thread-safety
@@ -397,11 +426,6 @@ struct hns3_user_vlan_table {
 	LIST_ENTRY(hns3_user_vlan_table) next;
 	bool hd_tbl_status;
 	uint16_t vlan_id;
-};
-
-struct hns3_port_base_vlan_config {
-	uint16_t state;
-	uint16_t pvid;
 };
 
 /* Vlan tag configuration for RX direction */
@@ -479,7 +503,6 @@ struct hns3_pf {
 	bool support_sfp_query;
 
 	struct hns3_vtag_cfg vtag_config;
-	struct hns3_port_base_vlan_config port_base_vlan_cfg;
 	LIST_HEAD(vlan_tbl, hns3_user_vlan_table) vlan_list;
 
 	struct hns3_fdir_info fdir; /* flow director info */
@@ -529,6 +552,8 @@ struct hns3_adapter {
 #define hns3_get_bit(origin, shift) \
 	hns3_get_field((origin), (0x1UL << (shift)), (shift))
 
+#define hns3_gen_field_val(mask, shift, val) (((val) << (shift)) & (mask))
+
 /*
  * upper_32_bits - return bits 32-63 of a number
  * A basic shift-right of a 64- or 32-bit quantity. Use this to suppress
@@ -556,14 +581,39 @@ struct hns3_adapter {
 	type __max2 = (y);                      \
 	__max1 > __max2 ? __max1 : __max2; })
 
+/*
+ * Because hardware always access register in little-endian mode based on hns3
+ * network engine, so driver should also call rte_cpu_to_le_32 to convert data
+ * in little-endian mode before writing register and call rte_le_to_cpu_32 to
+ * convert data after reading from register.
+ *
+ * Here the driver encapsulates the data conversion operation in the register
+ * read/write operation function as below:
+ *   hns3_write_reg
+ *   hns3_write_reg_opt
+ *   hns3_read_reg
+ * Therefore, when calling these functions, conversion is not required again.
+ */
 static inline void hns3_write_reg(void *base, uint32_t reg, uint32_t value)
 {
-	rte_write32(value, (volatile void *)((char *)base + reg));
+	rte_write32(rte_cpu_to_le_32(value),
+		    (volatile void *)((char *)base + reg));
+}
+
+/*
+ * The optimized function for writing registers used in the '.rx_pkt_burst' and
+ * '.tx_pkt_burst' ops implementation function.
+ */
+static inline void hns3_write_reg_opt(volatile void *addr, uint32_t value)
+{
+	rte_io_wmb();
+	rte_write32_relaxed(rte_cpu_to_le_32(value), addr);
 }
 
 static inline uint32_t hns3_read_reg(void *base, uint32_t reg)
 {
-	return rte_read32((volatile void *)((char *)base + reg));
+	uint32_t read_val = rte_read32((volatile void *)((char *)base + reg));
+	return rte_le_to_cpu_32(read_val);
 }
 
 #define hns3_write_dev(a, reg, value) \
@@ -632,6 +682,7 @@ int hns3_dev_filter_ctrl(struct rte_eth_dev *dev,
 			 enum rte_filter_op filter_op, void *arg);
 bool hns3_is_reset_pending(struct hns3_adapter *hns);
 bool hns3vf_is_reset_pending(struct hns3_adapter *hns);
+void hns3_update_link_status(struct hns3_hw *hw);
 
 static inline bool
 is_reset_pending(struct hns3_adapter *hns)

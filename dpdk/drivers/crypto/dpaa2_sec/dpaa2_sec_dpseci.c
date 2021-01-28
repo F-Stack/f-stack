@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ *   Copyright 2016-2020 NXP
  *
  */
 
@@ -168,7 +168,8 @@ build_proto_compound_sg_fd(dpaa2_sec_session *sess,
 	 * mbuf priv after sym_op.
 	 */
 	if (sess->ctxt_type == DPAA2_SEC_PDCP && sess->pdcp.hfn_ovd) {
-		uint32_t hfn_ovd = *((uint8_t *)op + sess->pdcp.hfn_ovd_offset);
+		uint32_t hfn_ovd = *(uint32_t *)((uint8_t *)op +
+					sess->pdcp.hfn_ovd_offset);
 		/*enable HFN override override */
 		DPAA2_SET_FLE_INTERNAL_JD(ip_fle, hfn_ovd);
 		DPAA2_SET_FLE_INTERNAL_JD(op_fle, hfn_ovd);
@@ -243,7 +244,8 @@ build_proto_compound_fd(dpaa2_sec_session *sess,
 	 * mbuf priv after sym_op.
 	 */
 	if (sess->ctxt_type == DPAA2_SEC_PDCP && sess->pdcp.hfn_ovd) {
-		uint32_t hfn_ovd = *((uint8_t *)op + sess->pdcp.hfn_ovd_offset);
+		uint32_t hfn_ovd = *(uint32_t *)((uint8_t *)op +
+					sess->pdcp.hfn_ovd_offset);
 		/*enable HFN override override */
 		DPAA2_SET_FLE_INTERNAL_JD(ip_fle, hfn_ovd);
 		DPAA2_SET_FLE_INTERNAL_JD(op_fle, hfn_ovd);
@@ -2192,7 +2194,7 @@ dpaa2_sec_aead_init(struct rte_cryptodev *dev,
 
 	priv->flc_desc[0].desc[0] = aeaddata.keylen;
 	err = rta_inline_query(IPSEC_AUTH_VAR_AES_DEC_BASE_DESC_LEN,
-			       MIN_JOB_DESC_SIZE,
+			       DESC_JOB_IO_LEN,
 			       (unsigned int *)priv->flc_desc[0].desc,
 			       &priv->flc_desc[0].desc[1], 1);
 
@@ -2410,7 +2412,7 @@ dpaa2_sec_aead_chain_init(struct rte_cryptodev *dev,
 	priv->flc_desc[0].desc[0] = cipherdata.keylen;
 	priv->flc_desc[0].desc[1] = authdata.keylen;
 	err = rta_inline_query(IPSEC_AUTH_VAR_AES_DEC_BASE_DESC_LEN,
-			       MIN_JOB_DESC_SIZE,
+			       DESC_JOB_IO_LEN,
 			       (unsigned int *)priv->flc_desc[0].desc,
 			       &priv->flc_desc[0].desc[2], 2);
 
@@ -2743,12 +2745,6 @@ dpaa2_sec_ipsec_proto_init(struct rte_crypto_cipher_xform *cipher_xform,
 
 	return 0;
 }
-
-#ifdef RTE_LIBRTE_SECURITY_TEST
-static uint8_t aes_cbc_iv[] = {
-	0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-	0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
-#endif
 
 static int
 dpaa2_sec_set_ipsec_session(struct rte_cryptodev *dev,
@@ -3145,6 +3141,14 @@ dpaa2_sec_set_pdcp_session(struct rte_cryptodev *dev,
 		goto out;
 	}
 
+	if (rta_inline_pdcp_query(authdata.algtype,
+				cipherdata.algtype,
+				session->pdcp.sn_size,
+				session->pdcp.hfn_ovd)) {
+		cipherdata.key = DPAA2_VADDR_TO_IOVA(cipherdata.key);
+		cipherdata.key_type = RTA_DATA_PTR;
+	}
+
 	if (pdcp_xform->domain == RTE_SECURITY_PDCP_MODE_CONTROL) {
 		if (session->dir == DIR_ENC)
 			bufsize = cnstr_shdsc_pdcp_c_plane_encap(
@@ -3482,7 +3486,7 @@ void dpaa2_sec_stats_get(struct rte_cryptodev *dev,
 		return;
 	}
 	for (i = 0; i < dev->data->nb_queue_pairs; i++) {
-		if (qp[i] == NULL) {
+		if (qp == NULL || qp[i] == NULL) {
 			DPAA2_SEC_DEBUG("Uninitialised queue pair");
 			continue;
 		}

@@ -391,7 +391,7 @@ dpaa2_eventdev_info_get(struct rte_eventdev *dev,
 	dev_info->max_event_priority_levels =
 		DPAA2_EVENT_MAX_EVENT_PRIORITY_LEVELS;
 	dev_info->max_event_ports = rte_fslmc_get_device_count(DPAA2_IO);
-	/* we only support dpio upto number of cores*/
+	/* we only support dpio up to number of cores */
 	if (dev_info->max_event_ports > rte_lcore_count())
 		dev_info->max_event_ports = rte_lcore_count();
 	dev_info->max_event_port_dequeue_depth =
@@ -403,7 +403,8 @@ dpaa2_eventdev_info_get(struct rte_eventdev *dev,
 		RTE_EVENT_DEV_CAP_BURST_MODE|
 		RTE_EVENT_DEV_CAP_RUNTIME_PORT_LINK |
 		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
-		RTE_EVENT_DEV_CAP_NONSEQ_MODE;
+		RTE_EVENT_DEV_CAP_NONSEQ_MODE |
+		RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES;
 
 }
 
@@ -566,14 +567,14 @@ dpaa2_eventdev_port_release(void *port)
 
 	EVENTDEV_INIT_FUNC_TRACE();
 
+	if (portal == NULL)
+		return;
+
 	/* TODO: Cleanup is required when ports are in linked state. */
 	if (portal->is_port_linked)
 		DPAA2_EVENTDEV_WARN("Event port must be unlinked before release");
 
-	if (portal)
-		rte_free(portal);
-
-	portal = NULL;
+	rte_free(portal);
 }
 
 static int

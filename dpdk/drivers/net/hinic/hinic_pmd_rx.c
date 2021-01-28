@@ -209,7 +209,8 @@ void hinic_get_func_rx_buf_size(struct hinic_nic_dev *nic_dev)
 	nic_dev->hwdev->nic_io->rq_buf_size = buf_size;
 }
 
-int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id, u16 rq_depth)
+int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id,
+			u16 rq_depth, unsigned int socket_id)
 {
 	int err;
 	struct hinic_nic_io *nic_io = hwdev->nic_io;
@@ -223,17 +224,15 @@ int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id, u16 rq_depth)
 	nic_io->rq_depth = rq_depth;
 
 	err = hinic_wq_allocate(hwdev, &nic_io->rq_wq[q_id],
-				HINIC_RQ_WQEBB_SHIFT, nic_io->rq_depth);
+			HINIC_RQ_WQEBB_SHIFT, nic_io->rq_depth, socket_id);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Failed to allocate WQ for RQ");
 		return err;
 	}
 	rq->wq = &nic_io->rq_wq[q_id];
 
-	rq->pi_virt_addr =
-		(volatile u16 *)dma_zalloc_coherent(hwdev, HINIC_PAGE_SIZE,
-						    &rq->pi_dma_addr,
-						    GFP_KERNEL);
+	rq->pi_virt_addr = (volatile u16 *)dma_zalloc_coherent(hwdev,
+			HINIC_PAGE_SIZE, &rq->pi_dma_addr, socket_id);
 	if (!rq->pi_virt_addr) {
 		PMD_DRV_LOG(ERR, "Failed to allocate rq pi virt addr");
 		err = -ENOMEM;
@@ -305,15 +304,13 @@ void hinic_rxq_stats_reset(struct hinic_rxq *rxq)
 	memset(rxq_stats, 0, sizeof(*rxq_stats));
 }
 
-static int hinic_rx_alloc_cqe(struct hinic_rxq *rxq)
+static int hinic_rx_alloc_cqe(struct hinic_rxq *rxq, unsigned int socket_id)
 {
 	size_t cqe_mem_size;
 
 	cqe_mem_size = sizeof(struct hinic_rq_cqe) * rxq->q_depth;
-	rxq->cqe_start_vaddr =
-		dma_zalloc_coherent(rxq->nic_dev->hwdev,
-				    cqe_mem_size, &rxq->cqe_start_paddr,
-				    GFP_KERNEL);
+	rxq->cqe_start_vaddr = dma_zalloc_coherent(rxq->nic_dev->hwdev,
+				cqe_mem_size, &rxq->cqe_start_paddr, socket_id);
 	if (!rxq->cqe_start_vaddr) {
 		PMD_DRV_LOG(ERR, "Allocate cqe dma memory failed");
 		return -ENOMEM;
@@ -369,11 +366,12 @@ int hinic_setup_rx_resources(struct hinic_rxq *rxq)
 	int err, pkts;
 
 	rx_info_sz = rxq->q_depth * sizeof(*rxq->rx_info);
-	rxq->rx_info = kzalloc_aligned(rx_info_sz, GFP_KERNEL);
+	rxq->rx_info = rte_zmalloc_socket("rx_info", rx_info_sz,
+				RTE_CACHE_LINE_SIZE, rxq->socket_id);
 	if (!rxq->rx_info)
 		return -ENOMEM;
 
-	err = hinic_rx_alloc_cqe(rxq);
+	err = hinic_rx_alloc_cqe(rxq, rxq->socket_id);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Allocate rx cqe failed");
 		goto rx_cqe_err;
@@ -392,7 +390,7 @@ rx_fill_err:
 	hinic_rx_free_cqe(rxq);
 
 rx_cqe_err:
-	kfree(rxq->rx_info);
+	rte_free(rxq->rx_info);
 	rxq->rx_info = NULL;
 
 	return err;
@@ -404,7 +402,7 @@ void hinic_free_rx_resources(struct hinic_rxq *rxq)
 		return;
 
 	hinic_rx_free_cqe(rxq);
-	kfree(rxq->rx_info);
+	rte_free(rxq->rx_info);
 	rxq->rx_info = NULL;
 }
 
@@ -415,7 +413,8 @@ void hinic_free_all_rx_resources(struct rte_eth_dev *eth_dev)
 				HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(eth_dev);
 
 	for (q_id = 0; q_id < nic_dev->num_rq; q_id++) {
-		eth_dev->data->rx_queues[q_id] = NULL;
+		if (eth_dev->data->rx_queues != NULL)
+			eth_dev->data->rx_queues[q_id] = NULL;
 
 		if (nic_dev->rxqs[q_id] == NULL)
 			continue;
@@ -658,6 +657,10 @@ int hinic_rx_configure(struct rte_eth_dev *dev)
 	struct rte_eth_rss_conf rss_conf =
 		dev->data->dev_conf.rx_adv_conf.rss_conf;
 	int err;
+	bool lro_en;
+	int max_lro_size;
+	int lro_wqe_num;
+	int buf_size;
 
 	if (nic_dev->flags & ETH_MQ_RX_RSS_FLAG) {
 		if (rss_conf.rss_hf == 0) {
@@ -683,13 +686,40 @@ int hinic_rx_configure(struct rte_eth_dev *dev)
 	if (err)
 		goto rx_csum_ofl_err;
 
+	/* config lro */
+	lro_en = dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_TCP_LRO ?
+			true : false;
+	max_lro_size = dev->data->dev_conf.rxmode.max_lro_pkt_size;
+	buf_size = nic_dev->hwdev->nic_io->rq_buf_size;
+	lro_wqe_num = max_lro_size / buf_size ? (max_lro_size / buf_size) : 1;
+
+	err = hinic_set_rx_lro(nic_dev->hwdev, lro_en, lro_en, lro_wqe_num);
+	if (err) {
+		PMD_DRV_LOG(ERR, "%s %s lro failed, err: %d, max_lro_size: %d",
+				dev->data->name, lro_en ? "Enable" : "Disable",
+				err, max_lro_size);
+		goto set_rx_lro_err;
+	}
+
 	return 0;
 
+set_rx_lro_err:
 rx_csum_ofl_err:
 rss_config_err:
+
 	hinic_destroy_num_qps(nic_dev);
 
 	return HINIC_ERROR;
+}
+
+static void hinic_rx_remove_lro(struct hinic_nic_dev *nic_dev)
+{
+	int err;
+
+	err = hinic_set_rx_lro(nic_dev->hwdev, false, false, 0);
+	if (err)
+		PMD_DRV_LOG(ERR, "%s disable LRO failed",
+			    nic_dev->proc_dev_name);
 }
 
 void hinic_rx_remove_configure(struct rte_eth_dev *dev)
@@ -700,6 +730,8 @@ void hinic_rx_remove_configure(struct rte_eth_dev *dev)
 		hinic_rss_deinit(nic_dev);
 		hinic_destroy_num_qps(nic_dev);
 	}
+
+	hinic_rx_remove_lro(nic_dev);
 }
 
 void hinic_free_all_rx_mbufs(struct hinic_rxq *rxq)
@@ -958,7 +990,7 @@ u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts)
 	volatile struct hinic_rq_cqe *rx_cqe;
 	u16 rx_buf_len, pkts = 0;
 	u16 sw_ci, ci_mask, wqebb_cnt = 0;
-	u32 pkt_len, status, vlan_len;
+	u32 pkt_len, status, vlan_len, lro_num;
 	u64 rx_bytes = 0;
 	struct hinic_rq_cqe cqe;
 	u32 offload_type, rss_hash;
@@ -1025,6 +1057,13 @@ u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts)
 		rss_hash = cqe.rss_hash;
 		rxm->ol_flags |= hinic_rx_rss_hash(offload_type, rss_hash,
 						   &rxm->hash.rss);
+
+		/* lro offload */
+		lro_num = HINIC_GET_RX_NUM_LRO(cqe.status);
+		if (unlikely(lro_num != 0)) {
+			rxm->ol_flags |= PKT_RX_LRO;
+			rxm->tso_segsz = pkt_len / lro_num;
+		}
 
 		/* 6. clear done bit */
 		rx_cqe->status = 0;

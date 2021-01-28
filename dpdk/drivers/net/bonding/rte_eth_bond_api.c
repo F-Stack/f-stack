@@ -129,12 +129,6 @@ deactivate_slave(struct rte_eth_dev *eth_dev, uint16_t port_id)
 	RTE_ASSERT(active_count < RTE_DIM(internals->active_slaves));
 	internals->active_slave_count = active_count;
 
-	/* Resetting active_slave when reaches to max
-	 * no of slaves in active list
-	 */
-	if (internals->active_slave >= active_count)
-		internals->active_slave = 0;
-
 	if (eth_dev->data->dev_started) {
 		if (internals->mode == BONDING_MODE_8023AD) {
 			bond_mode_8023ad_start(eth_dev);
@@ -167,7 +161,7 @@ rte_eth_bond_create(const char *name, uint8_t mode, uint8_t socket_id)
 
 	ret = rte_vdev_init(name, devargs);
 	if (ret)
-		return -ENOMEM;
+		return ret;
 
 	ret = rte_eth_dev_get_port_by_name(name, &port_id);
 	RTE_ASSERT(!ret);
@@ -698,6 +692,7 @@ __eth_bond_slave_remove_lock_free(uint16_t bonded_port_id,
 			internals->current_primary_port = internals->slaves[0].port_id;
 		else
 			internals->primary_port = 0;
+		mac_address_slaves_update(bonded_eth_dev);
 	}
 
 	if (internals->active_slave_count < 1) {

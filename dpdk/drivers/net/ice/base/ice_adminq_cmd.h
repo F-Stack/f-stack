@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_ADMINQ_CMD_H_
@@ -158,13 +158,11 @@ struct ice_aqc_manage_mac_write {
 #define ICE_AQC_MAN_MAC_WR_MC_MAG_EN		BIT(0)
 #define ICE_AQC_MAN_MAC_WR_WOL_LAA_PFR_KEEP	BIT(1)
 #define ICE_AQC_MAN_MAC_WR_S		6
-#define ICE_AQC_MAN_MAC_WR_M		(3 << ICE_AQC_MAN_MAC_WR_S)
+#define ICE_AQC_MAN_MAC_WR_M		MAKEMASK(3, ICE_AQC_MAN_MAC_WR_S)
 #define ICE_AQC_MAN_MAC_UPDATE_LAA	0
-#define ICE_AQC_MAN_MAC_UPDATE_LAA_WOL	(BIT(0) << ICE_AQC_MAN_MAC_WR_S)
-	/* High 16 bits of MAC address in big endian order */
-	__be16 sah;
-	/* Low 32 bits of MAC address in big endian order */
-	__be32 sal;
+#define ICE_AQC_MAN_MAC_UPDATE_LAA_WOL	BIT(ICE_AQC_MAN_MAC_WR_S)
+	/* byte stream in network order */
+	u8 mac_addr[ETH_ALEN];
 	__le32 addr_high;
 	__le32 addr_low;
 };
@@ -1937,7 +1935,7 @@ struct ice_aqc_get_set_rss_keys {
 struct ice_aqc_get_set_rss_lut {
 #define ICE_AQC_GSET_RSS_LUT_VSI_VALID	BIT(15)
 #define ICE_AQC_GSET_RSS_LUT_VSI_ID_S	0
-#define ICE_AQC_GSET_RSS_LUT_VSI_ID_M	(0x1FF << ICE_AQC_GSET_RSS_LUT_VSI_ID_S)
+#define ICE_AQC_GSET_RSS_LUT_VSI_ID_M	(0x3FF << ICE_AQC_GSET_RSS_LUT_VSI_ID_S)
 	__le16 vsi_id;
 #define ICE_AQC_GSET_RSS_LUT_TABLE_TYPE_S	0
 #define ICE_AQC_GSET_RSS_LUT_TABLE_TYPE_M	\
@@ -2166,8 +2164,8 @@ struct ice_aqc_event_lan_overflow {
  * @opcode: AQ command opcode
  * @datalen: length in bytes of indirect/external data buffer
  * @retval: return value from firmware
- * @cookie_h: opaque data high-half
- * @cookie_l: opaque data low-half
+ * @cookie_high: opaque data high-half
+ * @cookie_low: opaque data low-half
  * @params: command-specific parameters
  *
  * Descriptor format for commands the driver posts on the Admin Transmit Queue

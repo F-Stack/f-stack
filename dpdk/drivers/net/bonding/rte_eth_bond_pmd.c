@@ -69,7 +69,7 @@ bond_ethdev_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	struct bond_rx_queue *bd_rx_q = (struct bond_rx_queue *)queue;
 	internals = bd_rx_q->dev_private;
 	slave_count = internals->active_slave_count;
-	active_slave = internals->active_slave;
+	active_slave = bd_rx_q->active_slave;
 
 	for (i = 0; i < slave_count && nb_pkts; i++) {
 		uint16_t num_rx_slave;
@@ -86,8 +86,8 @@ bond_ethdev_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 			active_slave = 0;
 	}
 
-	if (++internals->active_slave >= slave_count)
-		internals->active_slave = 0;
+	if (++bd_rx_q->active_slave >= slave_count)
+		bd_rx_q->active_slave = 0;
 	return num_rx_total;
 }
 
@@ -303,9 +303,9 @@ rx_burst_8023ad(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts,
 	memcpy(slaves, internals->active_slaves,
 			sizeof(internals->active_slaves[0]) * slave_count);
 
-	idx = internals->active_slave;
+	idx = bd_rx_q->active_slave;
 	if (idx >= slave_count) {
-		internals->active_slave = 0;
+		bd_rx_q->active_slave = 0;
 		idx = 0;
 	}
 	for (i = 0; i < slave_count && num_rx_total < nb_pkts; i++) {
@@ -367,8 +367,8 @@ rx_burst_8023ad(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts,
 			idx = 0;
 	}
 
-	if (++internals->active_slave >= slave_count)
-		internals->active_slave = 0;
+	if (++bd_rx_q->active_slave >= slave_count)
+		bd_rx_q->active_slave = 0;
 
 	return num_rx_total;
 }
@@ -534,8 +534,8 @@ mode6_debug(const char __attribute__((unused)) *info,
 static uint16_t
 bond_ethdev_rx_burst_alb(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 {
-	struct bond_tx_queue *bd_tx_q = (struct bond_tx_queue *)queue;
-	struct bond_dev_private *internals = bd_tx_q->dev_private;
+	struct bond_rx_queue *bd_rx_q = (struct bond_rx_queue *)queue;
+	struct bond_dev_private *internals = bd_rx_q->dev_private;
 	struct rte_ether_hdr *eth_h;
 	uint16_t ether_type, offset;
 	uint16_t nb_recv_pkts;
@@ -1502,6 +1502,7 @@ int
 mac_address_slaves_update(struct rte_eth_dev *bonded_eth_dev)
 {
 	struct bond_dev_private *internals = bonded_eth_dev->data->dev_private;
+	bool set;
 	int i;
 
 	/* Update slave devices MAC addresses */
@@ -1529,15 +1530,16 @@ mac_address_slaves_update(struct rte_eth_dev *bonded_eth_dev)
 	case BONDING_MODE_TLB:
 	case BONDING_MODE_ALB:
 	default:
+		set = true;
 		for (i = 0; i < internals->slave_count; i++) {
 			if (internals->slaves[i].port_id ==
 					internals->current_primary_port) {
 				if (rte_eth_dev_default_mac_addr_set(
-						internals->primary_port,
+						internals->current_primary_port,
 						bonded_eth_dev->data->mac_addrs)) {
 					RTE_BOND_LOG(ERR, "Failed to update port Id %d MAC address",
 							internals->current_primary_port);
-					return -1;
+					set = false;
 				}
 			} else {
 				if (rte_eth_dev_default_mac_addr_set(
@@ -1545,10 +1547,11 @@ mac_address_slaves_update(struct rte_eth_dev *bonded_eth_dev)
 						&internals->slaves[i].persisted_mac_addr)) {
 					RTE_BOND_LOG(ERR, "Failed to update port Id %d MAC address",
 							internals->slaves[i].port_id);
-					return -1;
 				}
 			}
 		}
+		if (!set)
+			return -1;
 	}
 
 	return 0;
@@ -2873,6 +2876,7 @@ bond_ethdev_lsc_event_callback(uint16_t port_id, enum rte_eth_event_type type,
 						internals->active_slaves[0]);
 			else
 				internals->current_primary_port = internals->primary_port;
+			mac_address_slaves_update(bonded_eth_dev);
 		}
 	}
 
@@ -2931,7 +2935,8 @@ bond_ethdev_rss_reta_update(struct rte_eth_dev *dev,
 		return -EINVAL;
 
 	 /* Copy RETA table */
-	reta_count = reta_size / RTE_RETA_GROUP_SIZE;
+	reta_count = (reta_size + RTE_RETA_GROUP_SIZE - 1) /
+			RTE_RETA_GROUP_SIZE;
 
 	for (i = 0; i < reta_count; i++) {
 		internals->reta_conf[i].mask = reta_conf[i].mask;

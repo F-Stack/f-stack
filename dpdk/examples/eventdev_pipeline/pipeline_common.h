@@ -51,10 +51,10 @@ struct fastpath_data {
 	bool rx_single;
 	bool tx_single;
 	bool sched_single;
-	unsigned int rx_core[MAX_NUM_CORE];
-	unsigned int tx_core[MAX_NUM_CORE];
-	unsigned int sched_core[MAX_NUM_CORE];
-	unsigned int worker_core[MAX_NUM_CORE];
+	uint64_t rx_core[MAX_NUM_CORE];
+	uint64_t tx_core[MAX_NUM_CORE];
+	uint64_t sched_core[MAX_NUM_CORE];
+	uint64_t worker_core[MAX_NUM_CORE];
 	struct setup_data cap;
 } __rte_cache_aligned;
 
@@ -93,8 +93,8 @@ struct port_link {
 	uint8_t priority;
 };
 
-struct fastpath_data *fdata;
-struct config_data cdata;
+extern struct fastpath_data *fdata;
+extern struct config_data cdata;
 
 static __rte_always_inline void
 exchange_mac(struct rte_mbuf *m)

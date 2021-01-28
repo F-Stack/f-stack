@@ -64,9 +64,9 @@ struct bnxt_db_info;
 				(cons));				\
 } while (0)
 #define B_CP_DIS_DB(cpr, raw_cons)					\
-	rte_write32((DB_CP_FLAGS |					\
-		    RING_CMP(((cpr)->cp_ring_struct), raw_cons)),	\
-		    ((cpr)->cp_db.doorbell))
+	rte_write32_relaxed((DB_CP_FLAGS |				\
+			    RING_CMP(((cpr)->cp_ring_struct), raw_cons)), \
+			    ((cpr)->cp_db.doorbell))
 
 #define B_CP_DB(cpr, raw_cons, ring_mask)				\
 	rte_write32((DB_CP_FLAGS |					\
@@ -126,4 +126,5 @@ void bnxt_wait_for_device_shutdown(struct bnxt *bp);
 bool bnxt_is_recovery_enabled(struct bnxt *bp);
 bool bnxt_is_master_func(struct bnxt *bp);
 
+void bnxt_stop_rxtx(struct bnxt *bp);
 #endif

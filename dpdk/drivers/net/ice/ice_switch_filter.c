@@ -25,7 +25,8 @@
 #include "ice_generic_flow.h"
 
 
-#define MAX_QGRP_NUM_TYPE 7
+#define MAX_QGRP_NUM_TYPE	7
+#define MAX_INPUT_SET_BYTE	32
 
 #define ICE_SW_INSET_ETHER ( \
 	ICE_INSET_DMAC | ICE_INSET_SMAC | ICE_INSET_ETHERTYPE)
@@ -97,12 +98,47 @@ struct sw_meta {
 
 static struct ice_flow_parser ice_switch_dist_parser_os;
 static struct ice_flow_parser ice_switch_dist_parser_comms;
-static struct ice_flow_parser ice_switch_perm_parser;
+static struct ice_flow_parser ice_switch_perm_parser_os;
+static struct ice_flow_parser ice_switch_perm_parser_comms;
+
+static struct
+ice_pattern_match_item ice_switch_pattern_dist_os[] = {
+	{pattern_ethertype,
+			ICE_SW_INSET_ETHER, ICE_INSET_NONE},
+	{pattern_eth_arp,
+			ICE_INSET_NONE, ICE_INSET_NONE},
+	{pattern_eth_ipv4,
+			ICE_SW_INSET_MAC_IPV4, ICE_INSET_NONE},
+	{pattern_eth_ipv4_udp,
+			ICE_SW_INSET_MAC_IPV4_UDP, ICE_INSET_NONE},
+	{pattern_eth_ipv4_tcp,
+			ICE_SW_INSET_MAC_IPV4_TCP, ICE_INSET_NONE},
+	{pattern_eth_ipv6,
+			ICE_SW_INSET_MAC_IPV6, ICE_INSET_NONE},
+	{pattern_eth_ipv6_udp,
+			ICE_SW_INSET_MAC_IPV6_UDP, ICE_INSET_NONE},
+	{pattern_eth_ipv6_tcp,
+			ICE_SW_INSET_MAC_IPV6_TCP, ICE_INSET_NONE},
+	{pattern_eth_ipv4_udp_vxlan_eth_ipv4,
+			ICE_SW_INSET_DIST_VXLAN_IPV4, ICE_INSET_NONE},
+	{pattern_eth_ipv4_udp_vxlan_eth_ipv4_udp,
+			ICE_SW_INSET_DIST_VXLAN_IPV4_UDP, ICE_INSET_NONE},
+	{pattern_eth_ipv4_udp_vxlan_eth_ipv4_tcp,
+			ICE_SW_INSET_DIST_VXLAN_IPV4_TCP, ICE_INSET_NONE},
+	{pattern_eth_ipv4_nvgre_eth_ipv4,
+			ICE_SW_INSET_DIST_NVGRE_IPV4, ICE_INSET_NONE},
+	{pattern_eth_ipv4_nvgre_eth_ipv4_udp,
+			ICE_SW_INSET_DIST_NVGRE_IPV4_UDP, ICE_INSET_NONE},
+	{pattern_eth_ipv4_nvgre_eth_ipv4_tcp,
+			ICE_SW_INSET_DIST_NVGRE_IPV4_TCP, ICE_INSET_NONE},
+};
 
 static struct
 ice_pattern_match_item ice_switch_pattern_dist_comms[] = {
 	{pattern_ethertype,
 			ICE_SW_INSET_ETHER, ICE_INSET_NONE},
+	{pattern_eth_arp,
+			ICE_INSET_NONE, ICE_INSET_NONE},
 	{pattern_eth_ipv4,
 			ICE_SW_INSET_MAC_IPV4, ICE_INSET_NONE},
 	{pattern_eth_ipv4_udp,
@@ -138,7 +174,7 @@ ice_pattern_match_item ice_switch_pattern_dist_comms[] = {
 };
 
 static struct
-ice_pattern_match_item ice_switch_pattern_dist_os[] = {
+ice_pattern_match_item ice_switch_pattern_perm_os[] = {
 	{pattern_ethertype,
 			ICE_SW_INSET_ETHER, ICE_INSET_NONE},
 	{pattern_eth_arp,
@@ -156,21 +192,25 @@ ice_pattern_match_item ice_switch_pattern_dist_os[] = {
 	{pattern_eth_ipv6_tcp,
 			ICE_SW_INSET_MAC_IPV6_TCP, ICE_INSET_NONE},
 	{pattern_eth_ipv4_udp_vxlan_eth_ipv4,
-			ICE_SW_INSET_DIST_VXLAN_IPV4, ICE_INSET_NONE},
+			ICE_SW_INSET_PERM_TUNNEL_IPV4, ICE_INSET_NONE},
 	{pattern_eth_ipv4_udp_vxlan_eth_ipv4_udp,
-			ICE_SW_INSET_DIST_VXLAN_IPV4_UDP, ICE_INSET_NONE},
+			ICE_SW_INSET_PERM_TUNNEL_IPV4_UDP, ICE_INSET_NONE},
 	{pattern_eth_ipv4_udp_vxlan_eth_ipv4_tcp,
-			ICE_SW_INSET_DIST_VXLAN_IPV4_TCP, ICE_INSET_NONE},
+			ICE_SW_INSET_PERM_TUNNEL_IPV4_TCP, ICE_INSET_NONE},
 	{pattern_eth_ipv4_nvgre_eth_ipv4,
-			ICE_SW_INSET_DIST_NVGRE_IPV4, ICE_INSET_NONE},
+			ICE_SW_INSET_PERM_TUNNEL_IPV4, ICE_INSET_NONE},
 	{pattern_eth_ipv4_nvgre_eth_ipv4_udp,
-			ICE_SW_INSET_DIST_NVGRE_IPV4_UDP, ICE_INSET_NONE},
+			ICE_SW_INSET_PERM_TUNNEL_IPV4_UDP, ICE_INSET_NONE},
 	{pattern_eth_ipv4_nvgre_eth_ipv4_tcp,
-			ICE_SW_INSET_DIST_NVGRE_IPV4_TCP, ICE_INSET_NONE},
+			ICE_SW_INSET_PERM_TUNNEL_IPV4_TCP, ICE_INSET_NONE},
 };
 
 static struct
-ice_pattern_match_item ice_switch_pattern_perm[] = {
+ice_pattern_match_item ice_switch_pattern_perm_comms[] = {
+	{pattern_ethertype,
+			ICE_SW_INSET_ETHER, ICE_INSET_NONE},
+	{pattern_eth_arp,
+		ICE_INSET_NONE, ICE_INSET_NONE},
 	{pattern_eth_ipv4,
 			ICE_SW_INSET_MAC_IPV4, ICE_INSET_NONE},
 	{pattern_eth_ipv4_udp,
@@ -320,6 +360,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 	uint64_t input_set = ICE_INSET_NONE;
+	uint16_t input_set_byte = 0;
 	uint16_t j, t = 0;
 	uint16_t tunnel_valid = 0;
 
@@ -369,6 +410,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						m->src_addr[j] =
 						eth_mask->src.addr_bytes[j];
 						i = 1;
+						input_set_byte++;
 					}
 					if (eth_mask->dst.addr_bytes[j] ==
 								UINT8_MAX) {
@@ -377,6 +419,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						m->dst_addr[j] =
 						eth_mask->dst.addr_bytes[j];
 						i = 1;
+						input_set_byte++;
 					}
 				}
 				if (i)
@@ -387,6 +430,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						eth_spec->type;
 					list[t].m_u.ethertype.ethtype_id =
 						UINT16_MAX;
+					input_set_byte += 2;
 					t++;
 				}
 			} else if (!eth_spec && !eth_mask) {
@@ -458,30 +502,35 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						ipv4_spec->hdr.src_addr;
 					list[t].m_u.ipv4_hdr.src_addr =
 						UINT32_MAX;
+					input_set_byte += 2;
 				}
 				if (ipv4_mask->hdr.dst_addr == UINT32_MAX) {
 					list[t].h_u.ipv4_hdr.dst_addr =
 						ipv4_spec->hdr.dst_addr;
 					list[t].m_u.ipv4_hdr.dst_addr =
 						UINT32_MAX;
+					input_set_byte += 2;
 				}
 				if (ipv4_mask->hdr.time_to_live == UINT8_MAX) {
 					list[t].h_u.ipv4_hdr.time_to_live =
 						ipv4_spec->hdr.time_to_live;
 					list[t].m_u.ipv4_hdr.time_to_live =
 						UINT8_MAX;
+					input_set_byte++;
 				}
 				if (ipv4_mask->hdr.next_proto_id == UINT8_MAX) {
 					list[t].h_u.ipv4_hdr.protocol =
 						ipv4_spec->hdr.next_proto_id;
 					list[t].m_u.ipv4_hdr.protocol =
 						UINT8_MAX;
+					input_set_byte++;
 				}
 				if (ipv4_mask->hdr.type_of_service ==
 						UINT8_MAX) {
 					list[t].h_u.ipv4_hdr.tos =
 						ipv4_spec->hdr.type_of_service;
 					list[t].m_u.ipv4_hdr.tos = UINT8_MAX;
+					input_set_byte++;
 				}
 				t++;
 			} else if (!ipv4_spec && !ipv4_mask) {
@@ -563,6 +612,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						ipv6_spec->hdr.src_addr[j];
 						s->src_addr[j] =
 						ipv6_mask->hdr.src_addr[j];
+						input_set_byte++;
 					}
 					if (ipv6_mask->hdr.dst_addr[j] ==
 								UINT8_MAX) {
@@ -570,17 +620,20 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						ipv6_spec->hdr.dst_addr[j];
 						s->dst_addr[j] =
 						ipv6_mask->hdr.dst_addr[j];
+						input_set_byte++;
 					}
 				}
 				if (ipv6_mask->hdr.proto == UINT8_MAX) {
 					f->next_hdr =
 						ipv6_spec->hdr.proto;
 					s->next_hdr = UINT8_MAX;
+					input_set_byte++;
 				}
 				if (ipv6_mask->hdr.hop_limits == UINT8_MAX) {
 					f->hop_limit =
 						ipv6_spec->hdr.hop_limits;
 					s->hop_limit = UINT8_MAX;
+					input_set_byte++;
 				}
 				if ((ipv6_mask->hdr.vtc_flow &
 						rte_cpu_to_be_32
@@ -597,6 +650,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 					f->be_ver_tc_flow = CPU_TO_BE32(vtf.u.val);
 					vtf.u.fld.tc = UINT8_MAX;
 					s->be_ver_tc_flow = CPU_TO_BE32(vtf.u.val);
+					input_set_byte += 4;
 				}
 				t++;
 			} else if (!ipv6_spec && !ipv6_mask) {
@@ -648,14 +702,16 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						udp_spec->hdr.src_port;
 					list[t].m_u.l4_hdr.src_port =
 						udp_mask->hdr.src_port;
+					input_set_byte += 2;
 				}
 				if (udp_mask->hdr.dst_port == UINT16_MAX) {
 					list[t].h_u.l4_hdr.dst_port =
 						udp_spec->hdr.dst_port;
 					list[t].m_u.l4_hdr.dst_port =
 						udp_mask->hdr.dst_port;
+					input_set_byte += 2;
 				}
-						t++;
+				t++;
 			} else if (!udp_spec && !udp_mask) {
 				list[t].type = ICE_UDP_ILOS;
 			}
@@ -705,12 +761,14 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						tcp_spec->hdr.src_port;
 					list[t].m_u.l4_hdr.src_port =
 						tcp_mask->hdr.src_port;
+					input_set_byte += 2;
 				}
 				if (tcp_mask->hdr.dst_port == UINT16_MAX) {
 					list[t].h_u.l4_hdr.dst_port =
 						tcp_spec->hdr.dst_port;
 					list[t].m_u.l4_hdr.dst_port =
 						tcp_mask->hdr.dst_port;
+					input_set_byte += 2;
 				}
 				t++;
 			} else if (!tcp_spec && !tcp_mask) {
@@ -756,12 +814,14 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						sctp_spec->hdr.src_port;
 					list[t].m_u.sctp_hdr.src_port =
 						sctp_mask->hdr.src_port;
+					input_set_byte += 2;
 				}
 				if (sctp_mask->hdr.dst_port == UINT16_MAX) {
 					list[t].h_u.sctp_hdr.dst_port =
 						sctp_spec->hdr.dst_port;
 					list[t].m_u.sctp_hdr.dst_port =
 						sctp_mask->hdr.dst_port;
+					input_set_byte += 2;
 				}
 				t++;
 			} else if (!sctp_spec && !sctp_mask) {
@@ -799,6 +859,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						UINT32_MAX;
 					input_set |=
 						ICE_INSET_TUN_VXLAN_VNI;
+					input_set_byte += 2;
 				}
 				t++;
 			} else if (!vxlan_spec && !vxlan_mask) {
@@ -835,6 +896,7 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 						UINT32_MAX;
 					input_set |=
 						ICE_INSET_TUN_NVGRE_TNI;
+					input_set_byte += 2;
 				}
 				t++;
 			} else if (!nvgre_spec && !nvgre_mask) {
@@ -865,13 +927,15 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 					list[t].m_u.vlan_hdr.vlan =
 						UINT16_MAX;
 					input_set |= ICE_INSET_VLAN_OUTER;
+					input_set_byte += 2;
 				}
 				if (vlan_mask->inner_type == UINT16_MAX) {
 					list[t].h_u.vlan_hdr.type =
 						vlan_spec->inner_type;
 					list[t].m_u.vlan_hdr.type =
 						UINT16_MAX;
-					input_set |= ICE_INSET_VLAN_OUTER;
+					input_set |= ICE_INSET_ETHERTYPE;
+					input_set_byte += 2;
 				}
 				t++;
 			} else if (!vlan_spec && !vlan_mask) {
@@ -906,6 +970,14 @@ ice_switch_inset_get(const struct rte_flow_item pattern[],
 		}
 	}
 
+	if (input_set_byte > MAX_INPUT_SET_BYTE) {
+		rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ITEM,
+			item,
+			"too much input set");
+		return -ENOTSUP;
+	}
+
 	*lkups_num = t;
 
 	return input_set;
@@ -937,6 +1009,8 @@ ice_switch_parse_action(struct ice_pf *pf,
 		switch (action_type) {
 		case RTE_FLOW_ACTION_TYPE_RSS:
 			act_qgrop = action->conf;
+			if (act_qgrop->queue_num <= 1)
+				goto error;
 			rule_info->sw_act.fltr_act =
 				ICE_FWD_TO_QGRP;
 			rule_info->sw_act.fwd_id.q_id =
@@ -998,6 +1072,46 @@ error:
 }
 
 static int
+ice_switch_check_action(const struct rte_flow_action *actions,
+			    struct rte_flow_error *error)
+{
+	const struct rte_flow_action *action;
+	enum rte_flow_action_type action_type;
+	uint16_t actions_num = 0;
+
+	for (action = actions; action->type !=
+				RTE_FLOW_ACTION_TYPE_END; action++) {
+		action_type = action->type;
+		switch (action_type) {
+		case RTE_FLOW_ACTION_TYPE_VF:
+		case RTE_FLOW_ACTION_TYPE_RSS:
+		case RTE_FLOW_ACTION_TYPE_QUEUE:
+		case RTE_FLOW_ACTION_TYPE_DROP:
+			actions_num++;
+			break;
+		case RTE_FLOW_ACTION_TYPE_VOID:
+			continue;
+		default:
+			rte_flow_error_set(error,
+					   EINVAL, RTE_FLOW_ERROR_TYPE_ACTION,
+					   actions,
+					   "Invalid action type");
+			return -rte_errno;
+		}
+	}
+
+	if (actions_num != 1) {
+		rte_flow_error_set(error,
+				   EINVAL, RTE_FLOW_ERROR_TYPE_ACTION,
+				   actions,
+				   "Invalid action number");
+		return -rte_errno;
+	}
+
+	return 0;
+}
+
+static int
 ice_switch_parse_pattern_action(struct ice_adapter *ad,
 		struct ice_pattern_match_item *array,
 		uint32_t array_len,
@@ -1015,7 +1129,8 @@ ice_switch_parse_pattern_action(struct ice_adapter *ad,
 	uint16_t lkups_num = 0;
 	const struct rte_flow_item *item = pattern;
 	uint16_t item_num = 0;
-	enum ice_sw_tunnel_type tun_type = ICE_NON_TUN;
+	enum ice_sw_tunnel_type tun_type =
+		ICE_SW_TUN_AND_NON_TUN;
 	struct ice_pattern_match_item *pattern_match_item = NULL;
 
 	for (; item->type != RTE_FLOW_ITEM_TYPE_END; item++) {
@@ -1051,6 +1166,7 @@ ice_switch_parse_pattern_action(struct ice_adapter *ad,
 		return -rte_errno;
 	}
 
+	memset(&rule_info, 0, sizeof(rule_info));
 	rule_info.tun_type = tun_type;
 
 	sw_meta_ptr =
@@ -1081,6 +1197,14 @@ ice_switch_parse_pattern_action(struct ice_adapter *ad,
 		goto error;
 	}
 
+	ret = ice_switch_check_action(actions, error);
+	if (ret) {
+		rte_flow_error_set(error, EINVAL,
+				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+				   "Invalid input action number");
+		goto error;
+	}
+
 	ret = ice_switch_parse_action(pf, actions, error, &rule_info);
 	if (ret) {
 		rte_flow_error_set(error, EINVAL,
@@ -1088,10 +1212,17 @@ ice_switch_parse_pattern_action(struct ice_adapter *ad,
 				   "Invalid input action");
 		goto error;
 	}
-	*meta = sw_meta_ptr;
-	((struct sw_meta *)*meta)->list = list;
-	((struct sw_meta *)*meta)->lkups_num = lkups_num;
-	((struct sw_meta *)*meta)->rule_info = rule_info;
+
+	if (meta) {
+		*meta = sw_meta_ptr;
+		((struct sw_meta *)*meta)->list = list;
+		((struct sw_meta *)*meta)->lkups_num = lkups_num;
+		((struct sw_meta *)*meta)->rule_info = rule_info;
+	} else {
+		rte_free(list);
+		rte_free(sw_meta_ptr);
+	}
+
 	rte_free(pattern_match_item);
 
 	return 0;
@@ -1123,7 +1254,7 @@ ice_switch_init(struct ice_adapter *ad)
 {
 	int ret = 0;
 	struct ice_flow_parser *dist_parser;
-	struct ice_flow_parser *perm_parser = &ice_switch_perm_parser;
+	struct ice_flow_parser *perm_parser;
 
 	if (ad->active_pkg_type == ICE_PKG_TYPE_COMMS)
 		dist_parser = &ice_switch_dist_parser_comms;
@@ -1132,10 +1263,16 @@ ice_switch_init(struct ice_adapter *ad)
 	else
 		return -EINVAL;
 
-	if (ad->devargs.pipe_mode_support)
+	if (ad->devargs.pipe_mode_support) {
+		if (ad->active_pkg_type == ICE_PKG_TYPE_COMMS)
+			perm_parser = &ice_switch_perm_parser_comms;
+		else
+			perm_parser = &ice_switch_perm_parser_os;
+
 		ret = ice_register_parser(perm_parser, ad);
-	else
+	} else {
 		ret = ice_register_parser(dist_parser, ad);
+	}
 	return ret;
 }
 
@@ -1143,17 +1280,25 @@ static void
 ice_switch_uninit(struct ice_adapter *ad)
 {
 	struct ice_flow_parser *dist_parser;
-	struct ice_flow_parser *perm_parser = &ice_switch_perm_parser;
+	struct ice_flow_parser *perm_parser;
 
 	if (ad->active_pkg_type == ICE_PKG_TYPE_COMMS)
 		dist_parser = &ice_switch_dist_parser_comms;
-	else
+	else if (ad->active_pkg_type == ICE_PKG_TYPE_OS_DEFAULT)
 		dist_parser = &ice_switch_dist_parser_os;
-
-	if (ad->devargs.pipe_mode_support)
-		ice_unregister_parser(perm_parser, ad);
 	else
+		return;
+
+	if (ad->devargs.pipe_mode_support) {
+		if (ad->active_pkg_type == ICE_PKG_TYPE_COMMS)
+			perm_parser = &ice_switch_perm_parser_comms;
+		else
+			perm_parser = &ice_switch_perm_parser_os;
+
+		ice_unregister_parser(perm_parser, ad);
+	} else {
 		ice_unregister_parser(dist_parser, ad);
+	}
 }
 
 static struct
@@ -1186,10 +1331,19 @@ ice_flow_parser ice_switch_dist_parser_comms = {
 };
 
 static struct
-ice_flow_parser ice_switch_perm_parser = {
+ice_flow_parser ice_switch_perm_parser_os = {
 	.engine = &ice_switch_engine,
-	.array = ice_switch_pattern_perm,
-	.array_len = RTE_DIM(ice_switch_pattern_perm),
+	.array = ice_switch_pattern_perm_os,
+	.array_len = RTE_DIM(ice_switch_pattern_perm_os),
+	.parse_pattern_action = ice_switch_parse_pattern_action,
+	.stage = ICE_FLOW_STAGE_PERMISSION,
+};
+
+static struct
+ice_flow_parser ice_switch_perm_parser_comms = {
+	.engine = &ice_switch_engine,
+	.array = ice_switch_pattern_perm_comms,
+	.array_len = RTE_DIM(ice_switch_pattern_perm_comms),
 	.parse_pattern_action = ice_switch_parse_pattern_action,
 	.stage = ICE_FLOW_STAGE_PERMISSION,
 };

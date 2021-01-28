@@ -950,13 +950,17 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 			RTE_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_BODY);
 
-			if (rxm->data_len) {
+			if (likely(start && rxm->data_len > 0)) {
 				start->pkt_len += rxm->data_len;
 				start->nb_segs++;
 
 				rxq->last_seg->next = rxm;
 				rxq->last_seg = rxm;
 			} else {
+				PMD_RX_LOG(ERR, "Error received empty or out of order frame.");
+				rxq->stats.drop_total++;
+				rxq->stats.drop_err++;
+
 				rte_pktmbuf_free_seg(rxm);
 			}
 		}
@@ -1311,6 +1315,14 @@ vmxnet3_v4_rss_configure(struct rte_eth_dev *dev)
 
 	cmdInfo->setRSSFields = 0;
 	port_rss_conf = &dev->data->dev_conf.rx_adv_conf.rss_conf;
+
+	if ((port_rss_conf->rss_hf & VMXNET3_MANDATORY_V4_RSS) !=
+	    VMXNET3_MANDATORY_V4_RSS) {
+		PMD_INIT_LOG(WARNING, "RSS: IPv4/6 TCP is required for vmxnet3 v4 RSS,"
+			     "automatically setting it");
+		port_rss_conf->rss_hf |= VMXNET3_MANDATORY_V4_RSS;
+	}
+
 	rss_hf = port_rss_conf->rss_hf &
 		(VMXNET3_V4_RSS_MASK | VMXNET3_RSS_OFFLOAD_ALL);
 

@@ -94,6 +94,8 @@ add_specific(struct rte_ipsec_sad *sad, const void *key,
 
 	/* Update a counter for a given SPI */
 	ret = rte_hash_lookup(sad->hash[RTE_IPSEC_SAD_SPI_ONLY], key);
+	if (ret < 0)
+		return ret;
 	if (key_type == RTE_IPSEC_SAD_SPI_DIP)
 		sad->cnt_arr[ret].cnt_dip += notexist;
 	else

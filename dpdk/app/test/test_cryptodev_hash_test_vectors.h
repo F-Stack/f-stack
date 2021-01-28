@@ -460,6 +460,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha1_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -473,6 +474,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha1_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -540,6 +542,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha224_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -553,6 +556,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha224_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -596,6 +600,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha256_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -609,6 +614,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha256_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -654,6 +660,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha384_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -667,6 +674,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha384_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -712,6 +720,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha512_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_GEN,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)
@@ -724,6 +733,7 @@ static const struct blockcipher_test_case hash_test_cases[] = {
 		.test_data = &sha512_test_vector,
 		.op_mask = BLOCKCIPHER_TEST_OP_AUTH_VERIFY,
 		.pmd_mask = BLOCKCIPHER_TEST_TARGET_PMD_OPENSSL |
+			    BLOCKCIPHER_TEST_TARGET_PMD_QAT |
 			    BLOCKCIPHER_TEST_TARGET_PMD_CCP |
 			    BLOCKCIPHER_TEST_TARGET_PMD_MVSAM |
 #if IMB_VERSION_NUM >= IMB_VERSION(0, 52, 0)

@@ -401,19 +401,21 @@ static int ena_com_init_io_cq(struct ena_com_dev *ena_dev,
 	size = io_cq->cdesc_entry_size_in_bytes * io_cq->q_depth;
 	io_cq->bus = ena_dev->bus;
 
-	ENA_MEM_ALLOC_COHERENT_NODE(ena_dev->dmadev,
-			size,
-			io_cq->cdesc_addr.virt_addr,
-			io_cq->cdesc_addr.phys_addr,
-			io_cq->cdesc_addr.mem_handle,
-			ctx->numa_node,
-			prev_node);
+	ENA_MEM_ALLOC_COHERENT_NODE_ALIGNED(ena_dev->dmadev,
+					    size,
+					    io_cq->cdesc_addr.virt_addr,
+					    io_cq->cdesc_addr.phys_addr,
+					    io_cq->cdesc_addr.mem_handle,
+					    ctx->numa_node,
+					    prev_node,
+					    ENA_CDESC_RING_SIZE_ALIGNMENT);
 	if (!io_cq->cdesc_addr.virt_addr) {
-		ENA_MEM_ALLOC_COHERENT(ena_dev->dmadev,
-				       size,
-				       io_cq->cdesc_addr.virt_addr,
-				       io_cq->cdesc_addr.phys_addr,
-				       io_cq->cdesc_addr.mem_handle);
+		ENA_MEM_ALLOC_COHERENT_ALIGNED(ena_dev->dmadev,
+					       size,
+					       io_cq->cdesc_addr.virt_addr,
+					       io_cq->cdesc_addr.phys_addr,
+					       io_cq->cdesc_addr.mem_handle,
+					       ENA_CDESC_RING_SIZE_ALIGNMENT);
 	}
 
 	if (!io_cq->cdesc_addr.virt_addr) {
@@ -525,11 +527,11 @@ static int ena_com_wait_and_process_admin_cq_polling(struct ena_comp_ctx *comp_c
 	timeout = ENA_GET_SYSTEM_TIMEOUT(admin_queue->completion_timeout);
 
 	while (1) {
-                ENA_SPINLOCK_LOCK(admin_queue->q_lock, flags);
-                ena_com_handle_admin_completion(admin_queue);
-                ENA_SPINLOCK_UNLOCK(admin_queue->q_lock, flags);
+		ENA_SPINLOCK_LOCK(admin_queue->q_lock, flags);
+		ena_com_handle_admin_completion(admin_queue);
+		ENA_SPINLOCK_UNLOCK(admin_queue->q_lock, flags);
 
-                if (comp_ctx->status != ENA_CMD_SUBMITTED)
+		if (comp_ctx->status != ENA_CMD_SUBMITTED)
 			break;
 
 		if (ENA_TIME_EXPIRE(timeout)) {
@@ -1634,9 +1636,11 @@ void ena_com_admin_destroy(struct ena_com_dev *ena_dev)
 	struct ena_com_aenq *aenq = &ena_dev->aenq;
 	u16 size;
 
-	ENA_WAIT_EVENT_DESTROY(admin_queue->comp_ctx->wait_event);
-	if (admin_queue->comp_ctx)
+	if (admin_queue->comp_ctx) {
+		ENA_WAIT_EVENT_DESTROY(admin_queue->comp_ctx->wait_event);
 		ENA_MEM_FREE(ena_dev->dmadev, admin_queue->comp_ctx);
+	}
+
 	admin_queue->comp_ctx = NULL;
 	size = ADMIN_SQ_SIZE(admin_queue->q_depth);
 	if (sq->entries)
@@ -2313,7 +2317,7 @@ int ena_com_set_hash_function(struct ena_com_dev *ena_dev)
 	if (unlikely(ret))
 		return ret;
 
-	if (get_resp.u.flow_hash_func.supported_func & (1 << rss->hash_func)) {
+	if (get_resp.u.flow_hash_func.supported_func & BIT(rss->hash_func)) {
 		ena_trc_err("Func hash %d isn't supported by device, abort\n",
 			    rss->hash_func);
 		return ENA_COM_UNSUPPORTED;
@@ -2356,11 +2360,13 @@ int ena_com_fill_hash_function(struct ena_com_dev *ena_dev,
 			       enum ena_admin_hash_functions func,
 			       const u8 *key, u16 key_len, u32 init_val)
 {
-	struct ena_rss *rss = &ena_dev->rss;
+	struct ena_admin_feature_rss_flow_hash_control *hash_key;
 	struct ena_admin_get_feat_resp get_resp;
-	struct ena_admin_feature_rss_flow_hash_control *hash_key =
-		rss->hash_key;
+	enum ena_admin_hash_functions old_func;
+	struct ena_rss *rss = &ena_dev->rss;
 	int rc;
+
+	hash_key = rss->hash_key;
 
 	/* Make sure size is a mult of DWs */
 	if (unlikely(key_len & 0x3))
@@ -2373,7 +2379,7 @@ int ena_com_fill_hash_function(struct ena_com_dev *ena_dev,
 	if (unlikely(rc))
 		return rc;
 
-	if (!((1 << func) & get_resp.u.flow_hash_func.supported_func)) {
+	if (!(BIT(func) & get_resp.u.flow_hash_func.supported_func)) {
 		ena_trc_err("Flow hash function %d isn't supported\n", func);
 		return ENA_COM_UNSUPPORTED;
 	}
@@ -2398,11 +2404,13 @@ int ena_com_fill_hash_function(struct ena_com_dev *ena_dev,
 		return ENA_COM_INVAL;
 	}
 
+	old_func = rss->hash_func;
+	rss->hash_func = func;
 	rc = ena_com_set_hash_function(ena_dev);
 
 	/* Restore the old function */
 	if (unlikely(rc))
-		ena_com_get_hash_function(ena_dev, NULL, NULL);
+		rss->hash_func = old_func;
 
 	return rc;
 }
@@ -2424,7 +2432,11 @@ int ena_com_get_hash_function(struct ena_com_dev *ena_dev,
 	if (unlikely(rc))
 		return rc;
 
-	rss->hash_func = get_resp.u.flow_hash_func.selected_func;
+	/* ENA_FFS returns 1 in case the lsb is set */
+	rss->hash_func = ENA_FFS(get_resp.u.flow_hash_func.selected_func);
+	if (rss->hash_func)
+		rss->hash_func--;
+
 	if (func)
 		*func = rss->hash_func;
 

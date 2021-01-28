@@ -97,8 +97,15 @@ close_msg_fds(struct VhostUserMsg *msg)
 {
 	int i;
 
-	for (i = 0; i < msg->fd_num; i++)
-		close(msg->fds[i]);
+	for (i = 0; i < msg->fd_num; i++) {
+		int fd = msg->fds[i];
+
+		if (fd == -1)
+			continue;
+
+		msg->fds[i] = -1;
+		close(fd);
+	}
 }
 
 /*
@@ -350,7 +357,9 @@ vhost_user_set_features(struct virtio_net **pdev, struct VhostUserMsg *msg,
 
 	dev->features = features;
 	if (dev->features &
-		((1 << VIRTIO_NET_F_MRG_RXBUF) | (1ULL << VIRTIO_F_VERSION_1))) {
+		((1ULL << VIRTIO_NET_F_MRG_RXBUF) |
+		 (1ULL << VIRTIO_F_VERSION_1) |
+		 (1ULL << VIRTIO_F_RING_PACKED))) {
 		dev->vhost_hlen = sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	} else {
 		dev->vhost_hlen = sizeof(struct virtio_net_hdr);
@@ -1030,7 +1039,6 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	uint64_t alignment;
 	uint32_t i;
 	int populate;
-	int fd;
 
 	if (validate_msg_fds(msg, memory->nregions) != 0)
 		return RTE_VHOST_MSG_RESULT_ERR;
@@ -1038,7 +1046,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	if (memory->nregions > VHOST_MEMORY_MAX_NREGIONS) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"too many memory regions (%u)\n", memory->nregions);
-		return RTE_VHOST_MSG_RESULT_ERR;
+		goto close_msg_fds;
 	}
 
 	if (dev->mem && !vhost_memory_changed(memory, dev->mem)) {
@@ -1071,7 +1079,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 				"(%d) failed to allocate memory "
 				"for dev->guest_pages\n",
 				dev->vid);
-			return RTE_VHOST_MSG_RESULT_ERR;
+			goto close_msg_fds;
 		}
 	}
 
@@ -1081,18 +1089,23 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"(%d) failed to allocate memory for dev->mem\n",
 			dev->vid);
-		return RTE_VHOST_MSG_RESULT_ERR;
+		goto free_guest_pages;
 	}
 	dev->mem->nregions = memory->nregions;
 
 	for (i = 0; i < memory->nregions; i++) {
-		fd  = msg->fds[i];
 		reg = &dev->mem->regions[i];
 
 		reg->guest_phys_addr = memory->regions[i].guest_phys_addr;
 		reg->guest_user_addr = memory->regions[i].userspace_addr;
 		reg->size            = memory->regions[i].memory_size;
-		reg->fd              = fd;
+		reg->fd              = msg->fds[i];
+
+		/*
+		 * Assign invalid file descriptor value to avoid double
+		 * closing on error path.
+		 */
+		msg->fds[i] = -1;
 
 		mmap_offset = memory->regions[i].mmap_offset;
 
@@ -1102,7 +1115,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 				"mmap_offset (%#"PRIx64") and memory_size "
 				"(%#"PRIx64") overflow\n",
 				mmap_offset, reg->size);
-			goto err_mmap;
+			goto free_mem_table;
 		}
 
 		mmap_size = reg->size + mmap_offset;
@@ -1115,11 +1128,11 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		 * to avoid failure, make sure in caller to keep length
 		 * aligned.
 		 */
-		alignment = get_blk_size(fd);
+		alignment = get_blk_size(reg->fd);
 		if (alignment == (uint64_t)-1) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"couldn't get hugepage size through fstat\n");
-			goto err_mmap;
+			goto free_mem_table;
 		}
 		mmap_size = RTE_ALIGN_CEIL(mmap_size, alignment);
 		if (mmap_size == 0) {
@@ -1135,17 +1148,17 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			RTE_LOG(ERR, VHOST_CONFIG, "mmap size (0x%" PRIx64 ") "
 					"or alignment (0x%" PRIx64 ") is invalid\n",
 					reg->size + mmap_offset, alignment);
-			goto err_mmap;
+			goto free_mem_table;
 		}
 
 		populate = (dev->dequeue_zero_copy) ? MAP_POPULATE : 0;
 		mmap_addr = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE,
-				 MAP_SHARED | populate, fd, 0);
+				 MAP_SHARED | populate, reg->fd, 0);
 
 		if (mmap_addr == MAP_FAILED) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"mmap region %u failed.\n", i);
-			goto err_mmap;
+			goto free_mem_table;
 		}
 
 		reg->mmap_addr = mmap_addr;
@@ -1158,7 +1171,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 				RTE_LOG(ERR, VHOST_CONFIG,
 					"adding guest pages to region %u failed.\n",
 					i);
-				goto err_mmap;
+				goto free_mem_table;
 			}
 
 		RTE_LOG(INFO, VHOST_CONFIG,
@@ -1201,17 +1214,17 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		if (read_vhost_message(main_fd, &ack_msg) <= 0) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"Failed to read qemu ack on postcopy set-mem-table\n");
-			goto err_mmap;
+			goto free_mem_table;
 		}
 
 		if (validate_msg_fds(&ack_msg, 0) != 0)
-			goto err_mmap;
+			goto free_mem_table;
 
 		if (ack_msg.request.master != VHOST_USER_SET_MEM_TABLE) {
 			RTE_LOG(ERR, VHOST_CONFIG,
 				"Bad qemu ack on postcopy set-mem-table (%d)\n",
 				ack_msg.request.master);
-			goto err_mmap;
+			goto free_mem_table;
 		}
 
 		/* Now userfault register and we can use the memory */
@@ -1235,7 +1248,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 					"Failed to register ufd for region %d: (ufd = %d) %s\n",
 					i, dev->postcopy_ufd,
 					strerror(errno));
-				goto err_mmap;
+				goto free_mem_table;
 			}
 			RTE_LOG(INFO, VHOST_CONFIG,
 				"\t userfaultfd registered for range : "
@@ -1244,7 +1257,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 				(uint64_t)reg_struct.range.start +
 				(uint64_t)reg_struct.range.len - 1);
 #else
-			goto err_mmap;
+			goto free_mem_table;
 #endif
 		}
 	}
@@ -1263,7 +1276,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			dev = translate_ring_addresses(dev, i);
 			if (!dev) {
 				dev = *pdev;
-				goto err_mmap;
+				goto free_mem_table;
 			}
 
 			*pdev = dev;
@@ -1274,10 +1287,15 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 
 	return RTE_VHOST_MSG_RESULT_OK;
 
-err_mmap:
+free_mem_table:
 	free_mem_region(dev);
 	rte_free(dev->mem);
 	dev->mem = NULL;
+free_guest_pages:
+	rte_free(dev->guest_pages);
+	dev->guest_pages = NULL;
+close_msg_fds:
+	close_msg_fds(msg);
 	return RTE_VHOST_MSG_RESULT_ERR;
 }
 
@@ -1826,8 +1844,12 @@ vhost_user_set_vring_kick(struct virtio_net **pdev, struct VhostUserMsg *msg,
 
 	/* Interpret ring addresses only when ring is started. */
 	dev = translate_ring_addresses(dev, file.index);
-	if (!dev)
+	if (!dev) {
+		if (file.fd != VIRTIO_INVALID_EVENTFD)
+			close(file.fd);
+
 		return RTE_VHOST_MSG_RESULT_ERR;
+	}
 
 	*pdev = dev;
 
@@ -1872,6 +1894,7 @@ free_zmbufs(struct vhost_virtqueue *vq)
 	drain_zmbuf_list(vq);
 
 	rte_free(vq->zmbufs);
+	vq->zmbufs = NULL;
 }
 
 /*
@@ -2069,7 +2092,7 @@ vhost_user_set_log_base(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"invalid log base msg size: %"PRId32" != %d\n",
 			msg->size, (int)sizeof(VhostUserLog));
-		return RTE_VHOST_MSG_RESULT_ERR;
+		goto close_msg_fds;
 	}
 
 	size = msg->payload.log.mmap_size;
@@ -2080,7 +2103,7 @@ vhost_user_set_log_base(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"log offset %#"PRIx64" and log size %#"PRIx64" overflow\n",
 			off, size);
-		return RTE_VHOST_MSG_RESULT_ERR;
+		goto close_msg_fds;
 	}
 
 	RTE_LOG(INFO, VHOST_CONFIG,
@@ -2117,6 +2140,10 @@ vhost_user_set_log_base(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	msg->fd_num = 0;
 
 	return RTE_VHOST_MSG_RESULT_REPLY;
+
+close_msg_fds:
+	close_msg_fds(msg);
+	return RTE_VHOST_MSG_RESULT_ERR;
 }
 
 static int vhost_user_set_log_fd(struct virtio_net **pdev __rte_unused,
@@ -2792,7 +2819,7 @@ skip_to_post_handle:
 		return -1;
 	}
 
-	if (!(dev->flags & VIRTIO_DEV_RUNNING) && virtio_is_ready(dev)) {
+	if (!(dev->flags & VIRTIO_DEV_READY) && virtio_is_ready(dev)) {
 		dev->flags |= VIRTIO_DEV_READY;
 
 		if (!(dev->flags & VIRTIO_DEV_RUNNING)) {
@@ -2828,11 +2855,19 @@ static int process_slave_message_reply(struct virtio_net *dev,
 	if ((msg->flags & VHOST_USER_NEED_REPLY) == 0)
 		return 0;
 
-	if (read_vhost_message(dev->slave_req_fd, &msg_reply) < 0) {
+	ret = read_vhost_message(dev->slave_req_fd, &msg_reply);
+	if (ret <= 0) {
+		if (ret < 0)
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"vhost read slave message reply failed\n");
+		else
+			RTE_LOG(INFO, VHOST_CONFIG,
+				"vhost peer closed\n");
 		ret = -1;
 		goto out;
 	}
 
+	ret = 0;
 	if (msg_reply.request.slave != msg->request.slave) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"Received unexpected msg type (%u), expected %u\n",

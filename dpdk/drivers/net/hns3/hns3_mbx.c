@@ -219,6 +219,7 @@ hns3_mbx_handler(struct hns3_hw *hw)
 	struct hns3_mac *mac = &hw->mac;
 	enum hns3_reset_level reset_level;
 	uint16_t *msg_q;
+	uint8_t opcode;
 	uint32_t tail;
 
 	tail = hw->arq.tail;
@@ -227,7 +228,8 @@ hns3_mbx_handler(struct hns3_hw *hw)
 	while (tail != hw->arq.head) {
 		msg_q = hw->arq.msg_q[hw->arq.head];
 
-		switch (msg_q[0]) {
+		opcode = msg_q[0] & 0xff;
+		switch (opcode) {
 		case HNS3_MBX_LINK_STAT_CHANGE:
 			memcpy(&mac->link_speed, &msg_q[2],
 				   sizeof(mac->link_speed));
@@ -249,7 +251,7 @@ hns3_mbx_handler(struct hns3_hw *hw)
 			break;
 		default:
 			hns3_err(hw, "Fetched unsupported(%d) message from arq",
-				 msg_q[0]);
+				 opcode);
 			break;
 		}
 
@@ -290,6 +292,40 @@ hns3_update_resp_position(struct hns3_hw *hw, uint32_t resp_msg)
 	resp->tail = tail;
 }
 
+static void
+hns3_link_fail_parse(struct hns3_hw *hw, uint8_t link_fail_code)
+{
+	switch (link_fail_code) {
+	case HNS3_MBX_LF_NORMAL:
+		break;
+	case HNS3_MBX_LF_REF_CLOCK_LOST:
+		hns3_warn(hw, "Reference clock lost!");
+		break;
+	case HNS3_MBX_LF_XSFP_TX_DISABLE:
+		hns3_warn(hw, "SFP tx is disabled!");
+		break;
+	case HNS3_MBX_LF_XSFP_ABSENT:
+		hns3_warn(hw, "SFP is absent!");
+		break;
+	default:
+		hns3_warn(hw, "Unknown fail code:%u!", link_fail_code);
+		break;
+	}
+}
+
+static void
+hns3_handle_link_change_event(struct hns3_hw *hw,
+			      struct hns3_mbx_pf_to_vf_cmd *req)
+{
+#define LINK_STATUS_OFFSET     1
+#define LINK_FAIL_CODE_OFFSET  2
+
+	if (!req->msg[LINK_STATUS_OFFSET])
+		hns3_link_fail_parse(hw, req->msg[LINK_FAIL_CODE_OFFSET]);
+
+	hns3_update_link_status(hw);
+}
+
 void
 hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 {
@@ -299,6 +335,7 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 	struct hns3_cmd_desc *desc;
 	uint32_t msg_data;
 	uint16_t *msg_q;
+	uint8_t opcode;
 	uint16_t flag;
 	uint8_t *temp;
 	int i;
@@ -309,12 +346,13 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 
 		desc = &crq->desc[crq->next_to_use];
 		req = (struct hns3_mbx_pf_to_vf_cmd *)desc->data;
+		opcode = req->msg[0] & 0xff;
 
 		flag = rte_le_to_cpu_16(crq->desc[crq->next_to_use].flag);
 		if (unlikely(!hns3_get_bit(flag, HNS3_CMDQ_RX_OUTVLD_B))) {
 			hns3_warn(hw,
 				  "dropped invalid mailbox message, code = %d",
-				  req->msg[0]);
+				  opcode);
 
 			/* dropping/not processing this invalid message */
 			crq->desc[crq->next_to_use].flag = 0;
@@ -322,7 +360,7 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 			continue;
 		}
 
-		switch (req->msg[0]) {
+		switch (opcode) {
 		case HNS3_MBX_PF_VF_RESP:
 			resp->resp_status = hns3_resp_to_errno(req->msg[3]);
 
@@ -342,6 +380,9 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 			hns3_mbx_tail_ptr_move_arq(hw->arq);
 
 			hns3_mbx_handler(hw);
+			break;
+		case HNS3_MBX_PUSH_LINK_STATUS:
+			hns3_handle_link_change_event(hw, req);
 			break;
 		default:
 			hns3_err(hw,

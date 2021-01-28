@@ -171,7 +171,6 @@ test_op_forward_mode(uint8_t session_less)
 	struct rte_event ev;
 	uint32_t cap;
 	int ret;
-	uint8_t cipher_key[17];
 
 	memset(&m_data, 0, sizeof(m_data));
 
@@ -183,14 +182,7 @@ test_op_forward_mode(uint8_t session_less)
 	/* Setup Cipher Parameters */
 	cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
 	cipher_xform.next = NULL;
-
-	cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
-	cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
-
-	cipher_xform.cipher.key.data = cipher_key;
-	cipher_xform.cipher.key.length = 16;
-	cipher_xform.cipher.iv.offset = IV_OFFSET;
-	cipher_xform.cipher.iv.length = 16;
+	cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
 
 	op = rte_crypto_op_alloc(params.op_mpool,
 			RTE_CRYPTO_OP_TYPE_SYMMETRIC);
@@ -209,8 +201,8 @@ test_op_forward_mode(uint8_t session_less)
 				&cipher_xform, params.session_priv_mpool);
 		TEST_ASSERT_SUCCESS(ret, "Failed to init session\n");
 
-		ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID,
-							evdev, &cap);
+		ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID,
+							&cap);
 		TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 		if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA) {
@@ -296,7 +288,7 @@ test_sessionless_with_op_forward_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
@@ -321,7 +313,7 @@ test_session_with_op_forward_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
@@ -378,7 +370,6 @@ test_op_new_mode(uint8_t session_less)
 	struct rte_mbuf *m;
 	uint32_t cap;
 	int ret;
-	uint8_t cipher_key[17];
 
 	memset(&m_data, 0, sizeof(m_data));
 
@@ -390,14 +381,7 @@ test_op_new_mode(uint8_t session_less)
 	/* Setup Cipher Parameters */
 	cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
 	cipher_xform.next = NULL;
-
-	cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
-	cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
-
-	cipher_xform.cipher.key.data = cipher_key;
-	cipher_xform.cipher.key.length = 16;
-	cipher_xform.cipher.iv.offset = IV_OFFSET;
-	cipher_xform.cipher.iv.length = 16;
+	cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
 
 	op = rte_crypto_op_alloc(params.op_mpool,
 			RTE_CRYPTO_OP_TYPE_SYMMETRIC);
@@ -410,8 +394,8 @@ test_op_new_mode(uint8_t session_less)
 				params.session_mpool);
 		TEST_ASSERT_NOT_NULL(sess, "Session creation failed\n");
 
-		ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID,
-							evdev, &cap);
+		ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID,
+							&cap);
 		TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 		if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA) {
@@ -460,7 +444,7 @@ test_sessionless_with_op_new_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
@@ -486,7 +470,7 @@ test_session_with_op_new_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
@@ -564,7 +548,9 @@ configure_cryptodev(void)
 
 	params.session_mpool = rte_cryptodev_sym_session_pool_create(
 			"CRYPTO_ADAPTER_SESSION_MP",
-			MAX_NB_SESSIONS, 0, 0, 0, SOCKET_ID_ANY);
+			MAX_NB_SESSIONS, 0, 0,
+			sizeof(union rte_event_crypto_metadata),
+			SOCKET_ID_ANY);
 	TEST_ASSERT_NOT_NULL(params.session_mpool,
 			"session mempool allocation failed\n");
 
@@ -706,7 +692,7 @@ test_crypto_adapter_create(void)
 
 	/* Create adapter with default port creation callback */
 	ret = rte_event_crypto_adapter_create(TEST_ADAPTER_ID,
-					      TEST_CDEV_ID,
+					      evdev,
 					      &conf, 0);
 	TEST_ASSERT_SUCCESS(ret, "Failed to create event crypto adapter\n");
 
@@ -719,7 +705,7 @@ test_crypto_adapter_qp_add_del(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) {

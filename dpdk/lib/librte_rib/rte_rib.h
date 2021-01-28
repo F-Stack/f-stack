@@ -8,10 +8,21 @@
 
 /**
  * @file
+ *
+ * RTE RIB library.
+ *
+ * @warning
+ * @b EXPERIMENTAL:
+ * All functions in this file may be changed or removed without prior notice.
+ *
  * Level compressed tree implementation for IPv4 Longest Prefix Match
  */
 
 #include <rte_compat.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * rte_rib_get_nxt() flags
@@ -273,5 +284,9 @@ rte_rib_find_existing(const char *name);
 __rte_experimental
 void
 rte_rib_free(struct rte_rib *rib);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_RIB_H_ */

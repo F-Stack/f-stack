@@ -329,6 +329,9 @@ show_stats_cb(__rte_unused void *param)
 	}
 
 	printf("\n====================================================\n");
+
+	fflush(stdout);
+
 	rte_eal_alarm_set(timer_period * US_PER_S, show_stats_cb, NULL);
 }
 
@@ -710,7 +713,7 @@ check_all_ports_link_status(uint32_t port_mask)
 					"Port%d Link Up. Speed %u Mbps - %s\n",
 						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n", portid);
 				continue;

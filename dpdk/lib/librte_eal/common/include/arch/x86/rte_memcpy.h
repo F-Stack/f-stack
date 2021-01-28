@@ -22,6 +22,11 @@
 extern "C" {
 #endif
 
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 100000)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
+
 /**
  * Copy bytes from one location to another. The locations must not overlap.
  *
@@ -40,7 +45,7 @@ extern "C" {
 static __rte_always_inline void *
 rte_memcpy(void *dst, const void *src, size_t n);
 
-#ifdef RTE_MACHINE_CPUFLAG_AVX512F
+#if defined RTE_MACHINE_CPUFLAG_AVX512F && defined RTE_MEMCPY_AVX512
 
 #define ALIGNMENT_MASK 0x3F
 
@@ -868,6 +873,10 @@ rte_memcpy(void *dst, const void *src, size_t n)
 	else
 		return rte_memcpy_generic(dst, src, n);
 }
+
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 100000)
+#pragma GCC diagnostic pop
+#endif
 
 #ifdef __cplusplus
 }

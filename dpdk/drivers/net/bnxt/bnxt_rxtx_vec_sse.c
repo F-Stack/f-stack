@@ -233,8 +233,13 @@ bnxt_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	/* Return no more than RTE_BNXT_MAX_RX_BURST per call. */
 	nb_pkts = RTE_MIN(nb_pkts, RTE_BNXT_MAX_RX_BURST);
 
-	/* Make nb_pkts an integer multiple of RTE_BNXT_DESCS_PER_LOOP */
+	/*
+	 * Make nb_pkts an integer multiple of RTE_BNXT_DESCS_PER_LOOP.
+	 * nb_pkts < RTE_BNXT_DESCS_PER_LOOP, just return no packet
+	 */
 	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_BNXT_DESCS_PER_LOOP);
+	if (!nb_pkts)
+		return 0;
 
 	/* Handle RX burst request */
 	while (1) {
@@ -333,6 +338,8 @@ bnxt_tx_cmp_vec(struct bnxt_tx_queue *txq, int nr_pkts)
 		tx_buf = &txr->tx_buf_ring[cons];
 		cons = RING_NEXT(txr->tx_ring_struct, cons);
 		mbuf = rte_pktmbuf_prefree_seg(tx_buf->mbuf);
+		if (unlikely(mbuf == NULL))
+			continue;
 		tx_buf->mbuf = NULL;
 
 		if (blk && mbuf->pool != free[0]->pool) {

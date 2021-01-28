@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_FLOW_H_
@@ -118,6 +118,7 @@ enum ice_flow_seg_hdr {
  * ICE_FLOW_SEG_HDR_GTPU_UP           1              1
  */
 #define ICE_FLOW_SEG_HDR_GTPU (ICE_FLOW_SEG_HDR_GTPU_IP | \
+			       ICE_FLOW_SEG_HDR_GTPU_EH | \
 			       ICE_FLOW_SEG_HDR_GTPU_DWN | \
 			       ICE_FLOW_SEG_HDR_GTPU_UP)
 
@@ -187,6 +188,7 @@ enum ice_flow_avf_hdr_field {
 	ICE_AVF_FLOW_FIELD_IPV4_SCTP,
 	ICE_AVF_FLOW_FIELD_IPV4_OTHER,
 	ICE_AVF_FLOW_FIELD_FRAG_IPV4,
+	/* Values 37-38 are reserved */
 	ICE_AVF_FLOW_FIELD_UNICAST_IPV6_UDP	= 39,
 	ICE_AVF_FLOW_FIELD_MULTICAST_IPV6_UDP,
 	ICE_AVF_FLOW_FIELD_IPV6_UDP,

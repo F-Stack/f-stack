@@ -19,7 +19,7 @@ enum aesni_mb_vector_mode {
 /**< AES-NI Multi buffer PMD device name */
 
 /** AESNI_MB PMD LOGTYPE DRIVER */
-int aesni_mb_logtype_driver;
+extern int aesni_mb_logtype_driver;
 
 #define AESNI_MB_LOG(level, fmt, ...)  \
 	rte_log(RTE_LOG_ ## level, aesni_mb_logtype_driver,  \
@@ -74,7 +74,7 @@ static const unsigned auth_truncated_digest_byte_lengths[] = {
 		[AES_CMAC]	= 12,
 		[AES_CCM]	= 8,
 		[NULL_HASH]	= 0,
-		[AES_GMAC]	= 16,
+		[AES_GMAC]	= 12,
 		[PLAIN_SHA1]	= 20,
 		[PLAIN_SHA_224]	= 28,
 		[PLAIN_SHA_256]	= 32,
@@ -105,7 +105,7 @@ static const unsigned auth_digest_byte_lengths[] = {
 		[AES_XCBC]	= 16,
 		[AES_CMAC]	= 16,
 		[AES_CCM]	= 16,
-		[AES_GMAC]	= 12,
+		[AES_GMAC]	= 16,
 		[NULL_HASH]	= 0,
 		[PLAIN_SHA1]	= 20,
 		[PLAIN_SHA_224]	= 28,

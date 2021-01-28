@@ -593,11 +593,13 @@ qede_alloc_mem_sb(struct qede_dev *qdev, struct ecore_sb_info *sb_info,
 
 int qede_alloc_fp_resc(struct qede_dev *qdev)
 {
-	struct ecore_dev *edev = &qdev->edev;
+	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
 	struct qede_fastpath *fp;
 	uint32_t num_sbs;
 	uint16_t sb_idx;
 	int i;
+
+	PMD_INIT_FUNC_TRACE(edev);
 
 	if (IS_VF(edev))
 		ecore_vf_get_num_sbs(ECORE_LEADING_HWFN(edev), &num_sbs);
@@ -645,8 +647,6 @@ int qede_alloc_fp_resc(struct qede_dev *qdev)
 
 	for (sb_idx = 0; sb_idx < QEDE_RXTX_MAX(qdev); sb_idx++) {
 		fp = &qdev->fp_array[sb_idx];
-		if (!fp)
-			continue;
 		fp->sb_info = rte_calloc("sb", 1, sizeof(struct ecore_sb_info),
 				RTE_CACHE_LINE_SIZE);
 		if (!fp->sb_info) {
@@ -676,11 +676,9 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 
 	for (sb_idx = 0; sb_idx < QEDE_RXTX_MAX(qdev); sb_idx++) {
 		fp = &qdev->fp_array[sb_idx];
-		if (!fp)
-			continue;
-		DP_INFO(edev, "Free sb_info index 0x%x\n",
-				fp->sb_info->igu_sb_id);
 		if (fp->sb_info) {
+			DP_INFO(edev, "Free sb_info index 0x%x\n",
+					fp->sb_info->igu_sb_id);
 			OSAL_DMA_FREE_COHERENT(edev, fp->sb_info->sb_virt,
 				fp->sb_info->sb_phys,
 				sizeof(struct status_block));

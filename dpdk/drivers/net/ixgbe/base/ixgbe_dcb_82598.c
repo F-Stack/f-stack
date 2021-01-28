@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 
@@ -36,14 +36,6 @@ s32 ixgbe_dcb_get_tc_stats_82598(struct ixgbe_hw *hw,
 		stats->qprc[tc] += IXGBE_READ_REG(hw, IXGBE_QPRC(tc));
 		/* Received Bytes */
 		stats->qbrc[tc] += IXGBE_READ_REG(hw, IXGBE_QBRC(tc));
-
-#if 0
-		/* Can we get rid of these??  Consequently, getting rid
-		 * of the tc_stats structure.
-		 */
-		tc_stats_array[up]->in_overflow_discards = 0;
-		tc_stats_array[up]->out_overflow_discards = 0;
-#endif
 	}
 
 	return IXGBE_SUCCESS;

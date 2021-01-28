@@ -18,8 +18,8 @@
 #include <rte_string_fns.h>
 #include <rte_ethdev.h>
 #include <rte_errno.h>
+#include <rte_cycles.h>
 
-#include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -339,6 +339,23 @@ tap_rx_offload_get_queue_capa(void)
 	       DEV_RX_OFFLOAD_TCP_CKSUM;
 }
 
+static void
+tap_rxq_pool_free(struct rte_mbuf *pool)
+{
+	struct rte_mbuf *mbuf = pool;
+	uint16_t nb_segs = 1;
+
+	if (mbuf == NULL)
+		return;
+
+	while (mbuf->next) {
+		mbuf = mbuf->next;
+		nb_segs++;
+	}
+	pool->nb_segs = nb_segs;
+	rte_pktmbuf_free(pool);
+}
+
 /* Callback to handle the rx burst of packets to the correct interface and
  * file descriptor(s) in a multi-queue setup.
  */
@@ -389,7 +406,7 @@ pmd_rx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 					goto end;
 
 				seg->next = NULL;
-				rte_pktmbuf_free(mbuf);
+				tap_rxq_pool_free(mbuf);
 
 				goto end;
 			}
@@ -521,7 +538,7 @@ tap_tx_l3_cksum(char *packet, uint64_t ol_flags, unsigned int l2_len,
 	}
 }
 
-static inline void
+static inline int
 tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 			struct rte_mbuf **pmbufs,
 			uint16_t *num_packets, unsigned long *num_tx_bytes)
@@ -588,7 +605,7 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 			seg_len = rte_pktmbuf_data_len(mbuf);
 			l234_hlen = mbuf->l2_len + mbuf->l3_len + mbuf->l4_len;
 			if (seg_len < l234_hlen)
-				break;
+				return -1;
 
 			/* To change checksums, work on a * copy of l2, l3
 			 * headers + l4 pseudo header
@@ -634,10 +651,12 @@ tap_write_mbufs(struct tx_queue *txq, uint16_t num_mbufs,
 		/* copy the tx frame data */
 		n = writev(process_private->txq_fds[txq->queue_id], iovecs, j);
 		if (n <= 0)
-			break;
+			return -1;
+
 		(*num_packets)++;
 		(*num_tx_bytes) += rte_pktmbuf_pkt_len(mbuf);
 	}
+	return 0;
 }
 
 /* Callback to handle sending packets from the tap interface
@@ -663,15 +682,13 @@ pmd_tx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		uint16_t num_mbufs = 0;
 		uint16_t tso_segsz = 0;
 		int ret;
+		int num_tso_mbufs;
 		uint16_t hdrs_len;
-		int j;
 		uint64_t tso;
 
 		tso = mbuf_in->ol_flags & PKT_TX_TCP_SEG;
 		if (tso) {
 			struct rte_gso_ctx *gso_ctx = &txq->gso_ctx;
-
-			assert(gso_ctx != NULL);
 
 			/* TCP segmentation implies TCP checksum offload */
 			mbuf_in->ol_flags |= PKT_TX_TCP_CKSUM;
@@ -686,43 +703,51 @@ pmd_tx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 				break;
 			}
 			gso_ctx->gso_size = tso_segsz;
-			ret = rte_gso_segment(mbuf_in, /* packet to segment */
+			/* 'mbuf_in' packet to segment */
+			num_tso_mbufs = rte_gso_segment(mbuf_in,
 				gso_ctx, /* gso control block */
 				(struct rte_mbuf **)&gso_mbufs, /* out mbufs */
 				RTE_DIM(gso_mbufs)); /* max tso mbufs */
 
 			/* ret contains the number of new created mbufs */
-			if (ret < 0)
+			if (num_tso_mbufs < 0)
 				break;
 
 			mbuf = gso_mbufs;
-			num_mbufs = ret;
+			num_mbufs = num_tso_mbufs;
 		} else {
 			/* stats.errs will be incremented */
 			if (rte_pktmbuf_pkt_len(mbuf_in) > max_size)
 				break;
 
 			/* ret 0 indicates no new mbufs were created */
-			ret = 0;
+			num_tso_mbufs = 0;
 			mbuf = &mbuf_in;
 			num_mbufs = 1;
 		}
 
-		tap_write_mbufs(txq, num_mbufs, mbuf,
+		ret = tap_write_mbufs(txq, num_mbufs, mbuf,
 				&num_packets, &num_tx_bytes);
+		if (ret == -1) {
+			txq->stats.errs++;
+			/* free tso mbufs */
+			if (num_tso_mbufs > 0)
+				rte_pktmbuf_free_bulk(mbuf, num_tso_mbufs);
+			break;
+		}
 		num_tx++;
 		/* free original mbuf */
 		rte_pktmbuf_free(mbuf_in);
 		/* free tso mbufs */
-		for (j = 0; j < ret; j++)
-			rte_pktmbuf_free(mbuf[j]);
+		if (num_tso_mbufs > 0)
+			rte_pktmbuf_free_bulk(mbuf, num_tso_mbufs);
 	}
 
 	txq->stats.opackets += num_packets;
 	txq->stats.errs += nb_pkts - num_tx;
 	txq->stats.obytes += num_tx_bytes;
 
-	return num_packets;
+	return num_tx;
 }
 
 static const char *
@@ -778,7 +803,7 @@ apply:
 	case SIOCSIFMTU:
 		break;
 	default:
-		RTE_LOG(WARNING, PMD, "%s: ioctl() called with wrong arg\n",
+		TAP_LOG(WARNING, "%s: ioctl() called with wrong arg",
 			pmd->name);
 		return -EINVAL;
 	}
@@ -1013,15 +1038,25 @@ tap_dev_close(struct rte_eth_dev *dev)
 	int i;
 	struct pmd_internals *internals = dev->data->dev_private;
 	struct pmd_process_private *process_private = dev->process_private;
+	struct rx_queue *rxq;
 
 	tap_link_set_down(dev);
-	tap_flow_flush(dev, NULL);
-	tap_flow_implicit_flush(internals, NULL);
+	if (internals->nlsk_fd != -1) {
+		tap_flow_flush(dev, NULL);
+		tap_flow_implicit_flush(internals, NULL);
+		tap_nl_final(internals->nlsk_fd);
+		internals->nlsk_fd = -1;
+	}
 
 	for (i = 0; i < RTE_PMD_TAP_MAX_QUEUES; i++) {
 		if (process_private->rxq_fds[i] != -1) {
+			rxq = &internals->rxq[i];
 			close(process_private->rxq_fds[i]);
 			process_private->rxq_fds[i] = -1;
+			tap_rxq_pool_free(rxq->pool);
+			rte_free(rxq->iovecs);
+			rxq->pool = NULL;
+			rxq->iovecs = NULL;
 		}
 		if (process_private->txq_fds[i] != -1) {
 			close(process_private->txq_fds[i]);
@@ -1034,6 +1069,9 @@ tap_dev_close(struct rte_eth_dev *dev)
 		ioctl(internals->ioctl_sock, SIOCSIFFLAGS,
 				&internals->remote_initial_flags);
 	}
+
+	rte_mempool_free(internals->gso_ctx_mp);
+	internals->gso_ctx_mp = NULL;
 
 	if (internals->ka_fd != -1) {
 		close(internals->ka_fd);
@@ -1054,10 +1092,10 @@ tap_rx_queue_release(void *queue)
 	if (!rxq)
 		return;
 	process_private = rte_eth_devices[rxq->in_port].process_private;
-	if (process_private->rxq_fds[rxq->queue_id] > 0) {
+	if (process_private->rxq_fds[rxq->queue_id] != -1) {
 		close(process_private->rxq_fds[rxq->queue_id]);
 		process_private->rxq_fds[rxq->queue_id] = -1;
-		rte_pktmbuf_free(rxq->pool);
+		tap_rxq_pool_free(rxq->pool);
 		rte_free(rxq->iovecs);
 		rxq->pool = NULL;
 		rxq->iovecs = NULL;
@@ -1074,7 +1112,7 @@ tap_tx_queue_release(void *queue)
 		return;
 	process_private = rte_eth_devices[txq->out_port].process_private;
 
-	if (process_private->txq_fds[txq->queue_id] > 0) {
+	if (process_private->txq_fds[txq->queue_id] != -1) {
 		close(process_private->txq_fds[txq->queue_id]);
 		process_private->txq_fds[txq->queue_id] = -1;
 	}
@@ -1282,33 +1320,40 @@ tap_gso_ctx_setup(struct rte_gso_ctx *gso_ctx, struct rte_eth_dev *dev)
 {
 	uint32_t gso_types;
 	char pool_name[64];
-
-	/*
-	 * Create private mbuf pool with TAP_GSO_MBUF_SEG_SIZE bytes
-	 * size per mbuf use this pool for both direct and indirect mbufs
-	 */
-
-	struct rte_mempool *mp;      /* Mempool for GSO packets */
+	struct pmd_internals *pmd = dev->data->dev_private;
+	int ret;
 
 	/* initialize GSO context */
 	gso_types = DEV_TX_OFFLOAD_TCP_TSO;
-	snprintf(pool_name, sizeof(pool_name), "mp_%s", dev->device->name);
-	mp = rte_mempool_lookup((const char *)pool_name);
-	if (!mp) {
-		mp = rte_pktmbuf_pool_create(pool_name, TAP_GSO_MBUFS_NUM,
-			TAP_GSO_MBUF_CACHE_SIZE, 0,
+	if (!pmd->gso_ctx_mp) {
+		/*
+		 * Create private mbuf pool with TAP_GSO_MBUF_SEG_SIZE
+		 * bytes size per mbuf use this pool for both direct and
+		 * indirect mbufs
+		 */
+		ret = snprintf(pool_name, sizeof(pool_name), "mp_%s",
+				dev->device->name);
+		if (ret < 0 || ret >= (int)sizeof(pool_name)) {
+			TAP_LOG(ERR,
+				"%s: failed to create mbuf pool name for device %s,"
+				"device name too long or output error, ret: %d\n",
+				pmd->name, dev->device->name, ret);
+			return -ENAMETOOLONG;
+		}
+		pmd->gso_ctx_mp = rte_pktmbuf_pool_create(pool_name,
+			TAP_GSO_MBUFS_NUM, TAP_GSO_MBUF_CACHE_SIZE, 0,
 			RTE_PKTMBUF_HEADROOM + TAP_GSO_MBUF_SEG_SIZE,
 			SOCKET_ID_ANY);
-		if (!mp) {
-			struct pmd_internals *pmd = dev->data->dev_private;
-			RTE_LOG(DEBUG, PMD, "%s: failed to create mbuf pool for device %s\n",
+		if (!pmd->gso_ctx_mp) {
+			TAP_LOG(ERR,
+				"%s: failed to create mbuf pool for device %s\n",
 				pmd->name, dev->device->name);
 			return -1;
 		}
 	}
 
-	gso_ctx->direct_pool = mp;
-	gso_ctx->indirect_pool = mp;
+	gso_ctx->direct_pool = pmd->gso_ctx_mp;
+	gso_ctx->indirect_pool = pmd->gso_ctx_mp;
 	gso_ctx->gso_types = gso_types;
 	gso_ctx->gso_size = 0; /* gso_size is set in tx_burst() per packet */
 	gso_ctx->flag = 0;
@@ -1465,7 +1510,7 @@ tap_rx_queue_setup(struct rte_eth_dev *dev,
 	return 0;
 
 error:
-	rte_pktmbuf_free(rxq->pool);
+	tap_rxq_pool_free(rxq->pool);
 	rxq->pool = NULL;
 	rte_free(rxq->iovecs);
 	rxq->iovecs = NULL;
@@ -1563,13 +1608,12 @@ static int
 tap_lsc_intr_handle_set(struct rte_eth_dev *dev, int set)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	int ret;
 
 	/* In any case, disable interrupt if the conf is no longer there. */
 	if (!dev->data->dev_conf.intr_conf.lsc) {
 		if (pmd->intr_handle.fd != -1) {
-			tap_nl_final(pmd->intr_handle.fd);
-			rte_intr_callback_unregister(&pmd->intr_handle,
-				tap_dev_intr_handler, dev);
+			goto clean;
 		}
 		return 0;
 	}
@@ -1580,9 +1624,26 @@ tap_lsc_intr_handle_set(struct rte_eth_dev *dev, int set)
 		return rte_intr_callback_register(
 			&pmd->intr_handle, tap_dev_intr_handler, dev);
 	}
+
+clean:
+	do {
+		ret = rte_intr_callback_unregister(&pmd->intr_handle,
+			tap_dev_intr_handler, dev);
+		if (ret >= 0) {
+			break;
+		} else if (ret == -EAGAIN) {
+			rte_delay_ms(100);
+		} else {
+			TAP_LOG(ERR, "intr callback unregister failed: %d",
+				     ret);
+			break;
+		}
+	} while (true);
+
 	tap_nl_final(pmd->intr_handle.fd);
-	return rte_intr_callback_unregister(&pmd->intr_handle,
-					    tap_dev_intr_handler, dev);
+	pmd->intr_handle.fd = -1;
+
+	return 0;
 }
 
 static int
@@ -1787,6 +1848,9 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 	pmd->dev = dev;
 	strlcpy(pmd->name, tap_name, sizeof(pmd->name));
 	pmd->type = type;
+	pmd->ka_fd = -1;
+	pmd->nlsk_fd = -1;
+	pmd->gso_ctx_mp = NULL;
 
 	pmd->ioctl_sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (pmd->ioctl_sock == -1) {
@@ -1817,7 +1881,6 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 	dev->intr_handle = &pmd->intr_handle;
 
 	/* Presetup the fds to -1 as being not valid */
-	pmd->ka_fd = -1;
 	for (i = 0; i < RTE_PMD_TAP_MAX_QUEUES; i++) {
 		process_private->rxq_fds[i] = -1;
 		process_private->txq_fds[i] = -1;
@@ -1957,7 +2020,11 @@ error_remote:
 	tap_flow_implicit_flush(pmd, NULL);
 
 error_exit:
-	if (pmd->ioctl_sock > 0)
+	if (pmd->nlsk_fd != -1)
+		close(pmd->nlsk_fd);
+	if (pmd->ka_fd != -1)
+		close(pmd->ka_fd);
+	if (pmd->ioctl_sock != -1)
 		close(pmd->ioctl_sock);
 	/* mac_addrs must not be freed alone because part of dev_private */
 	dev->data->mac_addrs = NULL;
@@ -2389,8 +2456,6 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 {
 	struct rte_eth_dev *eth_dev = NULL;
 	struct pmd_internals *internals;
-	struct pmd_process_private *process_private;
-	int i;
 
 	/* find the ethdev entry */
 	eth_dev = rte_eth_dev_allocated(rte_vdev_device_name(dev));
@@ -2403,27 +2468,11 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return rte_eth_dev_release_port(eth_dev);
 
-	internals = eth_dev->data->dev_private;
-	process_private = eth_dev->process_private;
+	tap_dev_close(eth_dev);
 
+	internals = eth_dev->data->dev_private;
 	TAP_LOG(DEBUG, "Closing %s Ethernet device on numa %u",
 		tuntap_types[internals->type], rte_socket_id());
-
-	if (internals->nlsk_fd) {
-		tap_flow_flush(eth_dev, NULL);
-		tap_flow_implicit_flush(internals, NULL);
-		tap_nl_final(internals->nlsk_fd);
-	}
-	for (i = 0; i < RTE_PMD_TAP_MAX_QUEUES; i++) {
-		if (process_private->rxq_fds[i] != -1) {
-			close(process_private->rxq_fds[i]);
-			process_private->rxq_fds[i] = -1;
-		}
-		if (process_private->txq_fds[i] != -1) {
-			close(process_private->txq_fds[i]);
-			process_private->txq_fds[i] = -1;
-		}
-	}
 
 	close(internals->ioctl_sock);
 	rte_free(eth_dev->process_private);
@@ -2432,10 +2481,6 @@ rte_pmd_tap_remove(struct rte_vdev_device *dev)
 	tap_devices_count--;
 	rte_eth_dev_release_port(eth_dev);
 
-	if (internals->ka_fd != -1) {
-		close(internals->ka_fd);
-		internals->ka_fd = -1;
-	}
 	return 0;
 }
 

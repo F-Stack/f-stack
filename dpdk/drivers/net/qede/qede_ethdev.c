@@ -551,17 +551,16 @@ qed_configure_filter_rx_mode(struct rte_eth_dev *eth_dev,
 		ECORE_ACCEPT_BCAST;
 
 	if (type == QED_FILTER_RX_MODE_TYPE_PROMISC) {
-		flags.rx_accept_filter |= ECORE_ACCEPT_UCAST_UNMATCHED;
+		flags.rx_accept_filter |= (ECORE_ACCEPT_UCAST_UNMATCHED |
+					   ECORE_ACCEPT_MCAST_UNMATCHED);
 		if (IS_VF(edev)) {
-			flags.tx_accept_filter |= ECORE_ACCEPT_UCAST_UNMATCHED;
-			DP_INFO(edev, "Enabling Tx unmatched flag for VF\n");
+			flags.tx_accept_filter |=
+						(ECORE_ACCEPT_UCAST_UNMATCHED |
+						 ECORE_ACCEPT_MCAST_UNMATCHED);
+			DP_INFO(edev, "Enabling Tx unmatched flags for VF\n");
 		}
 	} else if (type == QED_FILTER_RX_MODE_TYPE_MULTI_PROMISC) {
 		flags.rx_accept_filter |= ECORE_ACCEPT_MCAST_UNMATCHED;
-	} else if (type == (QED_FILTER_RX_MODE_TYPE_MULTI_PROMISC |
-				QED_FILTER_RX_MODE_TYPE_PROMISC)) {
-		flags.rx_accept_filter |= ECORE_ACCEPT_UCAST_UNMATCHED |
-			ECORE_ACCEPT_MCAST_UNMATCHED;
 	}
 
 	return ecore_filter_accept_cmd(edev, 0, flags, false, false,
@@ -962,9 +961,6 @@ static int qede_vlan_offload_set(struct rte_eth_dev *eth_dev, int mask)
 		}
 	}
 
-	if (mask & ETH_VLAN_EXTEND_MASK)
-		DP_ERR(edev, "Extend VLAN not supported\n");
-
 	qdev->vlan_offload_mask = mask;
 
 	DP_INFO(edev, "VLAN offload mask %d\n", mask);
@@ -1064,7 +1060,7 @@ static int qede_dev_start(struct rte_eth_dev *eth_dev)
 		qede_reset_queue_stats(qdev, true);
 
 	/* Newer SR-IOV PF driver expects RX/TX queues to be started before
-	 * enabling RSS. Hence RSS configuration is deferred upto this point.
+	 * enabling RSS. Hence RSS configuration is deferred up to this point.
 	 * Also, we would like to retain similar behavior in PF case, so we
 	 * don't do PF/VF specific check here.
 	 */
@@ -1075,6 +1071,9 @@ static int qede_dev_start(struct rte_eth_dev *eth_dev)
 	/* Enable vport*/
 	if (qede_activate_vport(eth_dev, true))
 		goto err;
+
+	/* Bring-up the link */
+	qede_dev_set_link_state(eth_dev, true);
 
 	/* Update link status */
 	qede_link_update(eth_dev, 0);
@@ -1096,6 +1095,12 @@ static void qede_dev_stop(struct rte_eth_dev *eth_dev)
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
 
 	PMD_INIT_FUNC_TRACE(edev);
+
+	/* Bring the link down */
+	qede_dev_set_link_state(eth_dev, false);
+
+	/* Update link status */
+	qede_link_update(eth_dev, 0);
 
 	/* Disable vport */
 	if (qede_activate_vport(eth_dev, false))
@@ -1182,6 +1187,8 @@ static int qede_dev_configure(struct rte_eth_dev *eth_dev)
 	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
 	struct rte_eth_rxmode *rxmode = &eth_dev->data->dev_conf.rxmode;
+	uint8_t num_rxqs;
+	uint8_t num_txqs;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE(edev);
@@ -1214,12 +1221,17 @@ static int qede_dev_configure(struct rte_eth_dev *eth_dev)
 	if (qede_check_fdir_support(eth_dev))
 		return -ENOTSUP;
 
-	qede_dealloc_fp_resc(eth_dev);
-	qdev->num_tx_queues = eth_dev->data->nb_tx_queues * edev->num_hwfns;
-	qdev->num_rx_queues = eth_dev->data->nb_rx_queues * edev->num_hwfns;
-
-	if (qede_alloc_fp_resc(qdev))
-		return -ENOMEM;
+	/* Allocate/reallocate fastpath resources only for new queue config */
+	num_txqs = eth_dev->data->nb_tx_queues * edev->num_hwfns;
+	num_rxqs = eth_dev->data->nb_rx_queues * edev->num_hwfns;
+	if (qdev->num_tx_queues != num_txqs ||
+	    qdev->num_rx_queues != num_rxqs) {
+		qede_dealloc_fp_resc(eth_dev);
+		qdev->num_tx_queues = num_txqs;
+		qdev->num_rx_queues = num_rxqs;
+		if (qede_alloc_fp_resc(qdev))
+			return -ENOMEM;
+	}
 
 	/* If jumbo enabled adjust MTU */
 	if (rxmode->offloads & DEV_RX_OFFLOAD_JUMBO_FRAME)
@@ -1404,15 +1416,12 @@ qede_link_update(struct rte_eth_dev *eth_dev, __rte_unused int wait_to_complete)
 
 static int qede_promiscuous_enable(struct rte_eth_dev *eth_dev)
 {
-	struct qede_dev *qdev = eth_dev->data->dev_private;
-	struct ecore_dev *edev = &qdev->edev;
-	enum qed_filter_rx_mode_type type = QED_FILTER_RX_MODE_TYPE_PROMISC;
 	enum _ecore_status_t ecore_status;
+	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
+	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
+	enum qed_filter_rx_mode_type type = QED_FILTER_RX_MODE_TYPE_PROMISC;
 
 	PMD_INIT_FUNC_TRACE(edev);
-
-	if (rte_eth_allmulticast_get(eth_dev->data->port_id) == 1)
-		type |= QED_FILTER_RX_MODE_TYPE_MULTI_PROMISC;
 
 	ecore_status = qed_configure_filter_rx_mode(eth_dev, type);
 
@@ -1481,8 +1490,6 @@ static void qede_dev_close(struct rte_eth_dev *eth_dev)
 	eth_dev->data->nb_rx_queues = 0;
 	eth_dev->data->nb_tx_queues = 0;
 
-	/* Bring the link down */
-	qede_dev_set_link_state(eth_dev, false);
 	qdev->ops->common->slowpath_stop(edev);
 	qdev->ops->common->remove(edev);
 	rte_intr_disable(&pci_dev->intr_handle);
@@ -1788,9 +1795,6 @@ static int qede_allmulticast_enable(struct rte_eth_dev *eth_dev)
 	enum qed_filter_rx_mode_type type =
 	    QED_FILTER_RX_MODE_TYPE_MULTI_PROMISC;
 	enum _ecore_status_t ecore_status;
-
-	if (rte_eth_promiscuous_get(eth_dev->data->port_id) == 1)
-		type |= QED_FILTER_RX_MODE_TYPE_PROMISC;
 
 	ecore_status = qed_configure_filter_rx_mode(eth_dev, type);
 
@@ -2604,9 +2608,6 @@ static int qede_common_dev_init(struct rte_eth_dev *eth_dev, bool is_vf)
 	}
 
 	eth_dev->dev_ops = (is_vf) ? &qede_eth_vf_dev_ops : &qede_eth_dev_ops;
-
-	/* Bring-up the link */
-	qede_dev_set_link_state(eth_dev, true);
 
 	adapter->num_tx_queues = 0;
 	adapter->num_rx_queues = 0;

@@ -196,8 +196,12 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += -ldl
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += -ldl
 else ifeq ($(CONFIG_RTE_IBVERBS_LINK_STATIC),y)
 LIBS_IBVERBS_STATIC = $(shell $(RTE_SDK)/buildtools/options-ibverbs-static.sh)
+_LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += --no-whole-archive
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += $(LIBS_IBVERBS_STATIC)
+_LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += --whole-archive
+_LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += --no-whole-archive
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += $(LIBS_IBVERBS_STATIC)
+_LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += --whole-archive
 else
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += -libverbs -lmlx4
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += -libverbs -lmlx5

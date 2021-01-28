@@ -405,9 +405,6 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 		return -rte_errno;
 	}
 
-	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
-		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
-
 	memcpy(priv->rss_conf.rss_key,
 	       use_app_rss_key ?
 	       dev->data->dev_conf.rx_adv_conf.rss_conf.rss_key :
@@ -649,14 +646,22 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 			 * representors (more than 4K) or PFs (more than 15)
 			 * this approach must be reconsidered.
 			 */
-			if ((info->switch_info.port_id >>
-				MLX5_PORT_ID_BONDING_PF_SHIFT) ||
+			/* Switch port ID for VF representors: 0 - 0xFFE */
+			if ((info->switch_info.port_id != 0xffff &&
+				info->switch_info.port_id >=
+				((1 << MLX5_PORT_ID_BONDING_PF_SHIFT) - 1)) ||
 			    priv->pf_bond > MLX5_PORT_ID_BONDING_PF_MASK) {
 				DRV_LOG(ERR, "can't update switch port ID"
 					     " for bonding device");
 				assert(false);
 				return -ENODEV;
 			}
+			/*
+			 * Switch port ID for Host PF representor
+			 * (representor_id is -1) , set to 0xFFF
+			 */
+			if (info->switch_info.port_id == 0xffff)
+				info->switch_info.port_id = 0xfff;
 			info->switch_info.port_id |=
 				priv->pf_bond << MLX5_PORT_ID_BONDING_PF_SHIFT;
 		}
@@ -1226,6 +1231,7 @@ mlx5_dev_to_pci_addr(const char *dev_path,
 {
 	FILE *file;
 	char line[32];
+	int rc = -ENOENT;
 	MKSTR(path, "%s/device/uevent", dev_path);
 
 	file = fopen(path, "rb");
@@ -1235,16 +1241,18 @@ mlx5_dev_to_pci_addr(const char *dev_path,
 	}
 	while (fgets(line, sizeof(line), file) == line) {
 		size_t len = strlen(line);
-		int ret;
 
 		/* Truncate long lines. */
-		if (len == (sizeof(line) - 1))
+		if (len == (sizeof(line) - 1)) {
 			while (line[(len - 1)] != '\n') {
-				ret = fgetc(file);
+				int ret = fgetc(file);
 				if (ret == EOF)
-					break;
+					goto exit;
 				line[(len - 1)] = ret;
 			}
+			/* No match for long lines. */
+			continue;
+		}
 		/* Extract information. */
 		if (sscanf(line,
 			   "PCI_SLOT_NAME="
@@ -1253,12 +1261,15 @@ mlx5_dev_to_pci_addr(const char *dev_path,
 			   &pci_addr->bus,
 			   &pci_addr->devid,
 			   &pci_addr->function) == 4) {
-			ret = 0;
+			rc = 0;
 			break;
 		}
 	}
+exit:
 	fclose(file);
-	return 0;
+	if (rc)
+		rte_errno = -rc;
+	return rc;
 }
 
 /**
@@ -1473,249 +1484,6 @@ mlx5_dev_interrupt_handler_devx(void *cb_arg)
 			(sh, (uint64_t)out.cmd_resp.wr_id,
 			 mlx5_devx_get_out_command_status(buf));
 #endif /* HAVE_IBV_DEVX_ASYNC */
-}
-
-/**
- * Uninstall shared asynchronous device events handler.
- * This function is implemented to support event sharing
- * between multiple ports of single IB device.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-static void
-mlx5_dev_shared_handler_uninstall(struct rte_eth_dev *dev)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_ibv_shared *sh = priv->sh;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
-	pthread_mutex_lock(&sh->intr_mutex);
-	assert(priv->ibv_port);
-	assert(priv->ibv_port <= sh->max_port);
-	assert(dev->data->port_id < RTE_MAX_ETHPORTS);
-	if (sh->port[priv->ibv_port - 1].ih_port_id >= RTE_MAX_ETHPORTS)
-		goto exit;
-	assert(sh->port[priv->ibv_port - 1].ih_port_id ==
-					(uint32_t)dev->data->port_id);
-	assert(sh->intr_cnt);
-	sh->port[priv->ibv_port - 1].ih_port_id = RTE_MAX_ETHPORTS;
-	if (!sh->intr_cnt || --sh->intr_cnt)
-		goto exit;
-	mlx5_intr_callback_unregister(&sh->intr_handle,
-				     mlx5_dev_interrupt_handler, sh);
-	sh->intr_handle.fd = 0;
-	sh->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
-exit:
-	pthread_mutex_unlock(&sh->intr_mutex);
-}
-
-/**
- * Uninstall devx shared asynchronous device events handler.
- * This function is implemeted to support event sharing
- * between multiple ports of single IB device.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-static void
-mlx5_dev_shared_handler_devx_uninstall(struct rte_eth_dev *dev)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_ibv_shared *sh = priv->sh;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
-	pthread_mutex_lock(&sh->intr_mutex);
-	assert(priv->ibv_port);
-	assert(priv->ibv_port <= sh->max_port);
-	assert(dev->data->port_id < RTE_MAX_ETHPORTS);
-	if (sh->port[priv->ibv_port - 1].devx_ih_port_id >= RTE_MAX_ETHPORTS)
-		goto exit;
-	assert(sh->port[priv->ibv_port - 1].devx_ih_port_id ==
-					(uint32_t)dev->data->port_id);
-	sh->port[priv->ibv_port - 1].devx_ih_port_id = RTE_MAX_ETHPORTS;
-	if (!sh->devx_intr_cnt || --sh->devx_intr_cnt)
-		goto exit;
-	if (sh->intr_handle_devx.fd) {
-		rte_intr_callback_unregister(&sh->intr_handle_devx,
-					     mlx5_dev_interrupt_handler_devx,
-					     sh);
-		sh->intr_handle_devx.fd = 0;
-		sh->intr_handle_devx.type = RTE_INTR_HANDLE_UNKNOWN;
-	}
-	if (sh->devx_comp) {
-		mlx5_glue->devx_destroy_cmd_comp(sh->devx_comp);
-		sh->devx_comp = NULL;
-	}
-exit:
-	pthread_mutex_unlock(&sh->intr_mutex);
-}
-
-/**
- * Install shared asynchronous device events handler.
- * This function is implemented to support event sharing
- * between multiple ports of single IB device.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-static void
-mlx5_dev_shared_handler_install(struct rte_eth_dev *dev)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_ibv_shared *sh = priv->sh;
-	int ret;
-	int flags;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
-	pthread_mutex_lock(&sh->intr_mutex);
-	assert(priv->ibv_port);
-	assert(priv->ibv_port <= sh->max_port);
-	assert(dev->data->port_id < RTE_MAX_ETHPORTS);
-	if (sh->port[priv->ibv_port - 1].ih_port_id < RTE_MAX_ETHPORTS) {
-		/* The handler is already installed for this port. */
-		assert(sh->intr_cnt);
-		goto exit;
-	}
-	if (sh->intr_cnt) {
-		sh->port[priv->ibv_port - 1].ih_port_id =
-						(uint32_t)dev->data->port_id;
-		sh->intr_cnt++;
-		goto exit;
-	}
-	/* No shared handler installed. */
-	assert(sh->ctx->async_fd > 0);
-	flags = fcntl(sh->ctx->async_fd, F_GETFL);
-	ret = fcntl(sh->ctx->async_fd, F_SETFL, flags | O_NONBLOCK);
-	if (ret) {
-		DRV_LOG(INFO, "failed to change file descriptor async event"
-			" queue");
-		/* Indicate there will be no interrupts. */
-		dev->data->dev_conf.intr_conf.lsc = 0;
-		dev->data->dev_conf.intr_conf.rmv = 0;
-	} else {
-		sh->intr_handle.fd = sh->ctx->async_fd;
-		sh->intr_handle.type = RTE_INTR_HANDLE_EXT;
-		rte_intr_callback_register(&sh->intr_handle,
-					   mlx5_dev_interrupt_handler, sh);
-		sh->intr_cnt++;
-		sh->port[priv->ibv_port - 1].ih_port_id =
-						(uint32_t)dev->data->port_id;
-	}
-exit:
-	pthread_mutex_unlock(&sh->intr_mutex);
-}
-
-/**
- * Install devx shared asyncronous device events handler.
- * This function is implemeted to support event sharing
- * between multiple ports of single IB device.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-static void
-mlx5_dev_shared_handler_devx_install(struct rte_eth_dev *dev)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_ibv_shared *sh = priv->sh;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
-	pthread_mutex_lock(&sh->intr_mutex);
-	assert(priv->ibv_port);
-	assert(priv->ibv_port <= sh->max_port);
-	assert(dev->data->port_id < RTE_MAX_ETHPORTS);
-	if (sh->port[priv->ibv_port - 1].devx_ih_port_id < RTE_MAX_ETHPORTS) {
-		/* The handler is already installed for this port. */
-		assert(sh->devx_intr_cnt);
-		goto exit;
-	}
-	if (sh->devx_intr_cnt) {
-		sh->devx_intr_cnt++;
-		sh->port[priv->ibv_port - 1].devx_ih_port_id =
-					(uint32_t)dev->data->port_id;
-		goto exit;
-	}
-	if (priv->config.devx) {
-#ifndef HAVE_IBV_DEVX_ASYNC
-		goto exit;
-#else
-		sh->devx_comp = mlx5_glue->devx_create_cmd_comp(sh->ctx);
-		if (sh->devx_comp) {
-			int flags = fcntl(sh->devx_comp->fd, F_GETFL);
-			int ret = fcntl(sh->devx_comp->fd, F_SETFL,
-				    flags | O_NONBLOCK);
-
-			if (ret) {
-				DRV_LOG(INFO, "failed to change file descriptor"
-					" devx async event queue");
-			} else {
-				sh->intr_handle_devx.fd = sh->devx_comp->fd;
-				sh->intr_handle_devx.type = RTE_INTR_HANDLE_EXT;
-				rte_intr_callback_register
-					(&sh->intr_handle_devx,
-					 mlx5_dev_interrupt_handler_devx, sh);
-				sh->devx_intr_cnt++;
-				sh->port[priv->ibv_port - 1].devx_ih_port_id =
-						(uint32_t)dev->data->port_id;
-			}
-		}
-#endif /* HAVE_IBV_DEVX_ASYNC */
-	}
-exit:
-	pthread_mutex_unlock(&sh->intr_mutex);
-}
-
-/**
- * Uninstall interrupt handler.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-void
-mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev)
-{
-	mlx5_dev_shared_handler_uninstall(dev);
-}
-
-/**
- * Install interrupt handler.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-void
-mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev)
-{
-	mlx5_dev_shared_handler_install(dev);
-}
-
-/**
- * Devx uninstall interrupt handler.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-void
-mlx5_dev_interrupt_handler_devx_uninstall(struct rte_eth_dev *dev)
-{
-	mlx5_dev_shared_handler_devx_uninstall(dev);
-}
-
-/**
- * Devx install interrupt handler.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-void
-mlx5_dev_interrupt_handler_devx_install(struct rte_eth_dev *dev)
-{
-	mlx5_dev_shared_handler_devx_install(dev);
 }
 
 /**
@@ -2189,12 +1957,13 @@ int mlx5_get_module_eeprom(struct rte_eth_dev *dev,
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-int mlx5_hairpin_cap_get(struct rte_eth_dev *dev,
-			 struct rte_eth_hairpin_cap *cap)
+int
+mlx5_hairpin_cap_get(struct rte_eth_dev *dev, struct rte_eth_hairpin_cap *cap)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_dev_config *config = &priv->config;
 
-	if (priv->sh->devx == 0) {
+	if (!priv->sh->devx || !config->dest_tir || !config->dv_flow_en) {
 		rte_errno = ENOTSUP;
 		return -rte_errno;
 	}

@@ -147,27 +147,27 @@ mlx5_get_tx_port_offloads(struct rte_eth_dev *dev)
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx5_tx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc)
+mlx5_tx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t *desc)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
-	if (desc <= MLX5_TX_COMP_THRESH) {
+	if (*desc <= MLX5_TX_COMP_THRESH) {
 		DRV_LOG(WARNING,
 			"port %u number of descriptors requested for Tx queue"
 			" %u must be higher than MLX5_TX_COMP_THRESH, using %u"
-			" instead of %u",
-			dev->data->port_id, idx, MLX5_TX_COMP_THRESH + 1, desc);
-		desc = MLX5_TX_COMP_THRESH + 1;
+			" instead of %u", dev->data->port_id, idx,
+			MLX5_TX_COMP_THRESH + 1, *desc);
+		*desc = MLX5_TX_COMP_THRESH + 1;
 	}
-	if (!rte_is_power_of_2(desc)) {
-		desc = 1 << log2above(desc);
+	if (!rte_is_power_of_2(*desc)) {
+		*desc = 1 << log2above(*desc);
 		DRV_LOG(WARNING,
 			"port %u increased number of descriptors in Tx queue"
 			" %u to the next power of two (%d)",
-			dev->data->port_id, idx, desc);
+			dev->data->port_id, idx, *desc);
 	}
 	DRV_LOG(DEBUG, "port %u configuring queue %u for %u descriptors",
-		dev->data->port_id, idx, desc);
+		dev->data->port_id, idx, *desc);
 	if (idx >= priv->txqs_n) {
 		DRV_LOG(ERR, "port %u Tx queue index out of range (%u >= %u)",
 			dev->data->port_id, idx, priv->txqs_n);
@@ -210,7 +210,7 @@ mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		container_of(txq, struct mlx5_txq_ctrl, txq);
 	int res;
 
-	res = mlx5_tx_queue_pre_setup(dev, idx, desc);
+	res = mlx5_tx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
 	txq_ctrl = mlx5_txq_new(dev, idx, desc, socket, conf);
@@ -251,7 +251,7 @@ mlx5_tx_hairpin_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 		container_of(txq, struct mlx5_txq_ctrl, txq);
 	int res;
 
-	res = mlx5_tx_queue_pre_setup(dev, idx, desc);
+	res = mlx5_tx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
 	if (hairpin_conf->peer_count != 1 ||
@@ -295,9 +295,9 @@ mlx5_tx_queue_release(void *dpdk_txq)
 	priv = txq_ctrl->priv;
 	for (i = 0; (i != priv->txqs_n); ++i)
 		if ((*priv->txqs)[i] == txq) {
-			mlx5_txq_release(ETH_DEV(priv), i);
 			DRV_LOG(DEBUG, "port %u removing Tx queue %u from list",
 				PORT_ID(priv), txq->idx);
+			mlx5_txq_release(ETH_DEV(priv), i);
 			break;
 		}
 }
@@ -352,7 +352,7 @@ txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl)
 	/* Assign an UAR lock according to UAR page number */
 	lock_idx = (txq_ctrl->uar_mmap_offset / page_size) &
 		   MLX5_UAR_PAGE_NUM_MASK;
-	txq_ctrl->txq.uar_lock = &priv->uar_lock[lock_idx];
+	txq_ctrl->txq.uar_lock = &priv->sh->uar_lock[lock_idx];
 #endif
 }
 
@@ -425,6 +425,30 @@ txq_uar_uninit_secondary(struct mlx5_txq_ctrl *txq_ctrl)
 }
 
 /**
+ * Deinitialize Tx UAR registers for secondary process.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_tx_uar_uninit_secondary(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_txq_data *txq;
+	struct mlx5_txq_ctrl *txq_ctrl;
+	unsigned int i;
+
+	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	for (i = 0; i != priv->txqs_n; ++i) {
+		if (!(*priv->txqs)[i])
+			continue;
+		txq = (*priv->txqs)[i];
+		txq_ctrl = container_of(txq, struct mlx5_txq_ctrl, txq);
+		txq_uar_uninit_secondary(txq_ctrl);
+	}
+}
+
+/**
  * Initialize Tx UAR registers for secondary process.
  *
  * @param dev
@@ -490,7 +514,6 @@ mlx5_txq_obj_hairpin_new(struct rte_eth_dev *dev, uint16_t idx)
 		container_of(txq_data, struct mlx5_txq_ctrl, txq);
 	struct mlx5_devx_create_sq_attr attr = { 0 };
 	struct mlx5_txq_obj *tmpl = NULL;
-	int ret = 0;
 	uint32_t max_wq_data;
 
 	assert(txq_data);
@@ -502,7 +525,7 @@ mlx5_txq_obj_hairpin_new(struct rte_eth_dev *dev, uint16_t idx)
 			"port %u Tx queue %u cannot allocate memory resources",
 			dev->data->port_id, txq_data->idx);
 		rte_errno = ENOMEM;
-		goto error;
+		return NULL;
 	}
 	tmpl->type = MLX5_TXQ_OBJ_TYPE_DEVX_HAIRPIN;
 	tmpl->txq_ctrl = txq_ctrl;
@@ -523,22 +546,15 @@ mlx5_txq_obj_hairpin_new(struct rte_eth_dev *dev, uint16_t idx)
 		DRV_LOG(ERR,
 			"port %u tx hairpin queue %u can't create sq object",
 			dev->data->port_id, idx);
+		rte_free(tmpl);
 		rte_errno = errno;
-		goto error;
+		return NULL;
 	}
 	DRV_LOG(DEBUG, "port %u sxq %u updated with %p", dev->data->port_id,
 		idx, (void *)&tmpl);
 	rte_atomic32_inc(&tmpl->refcnt);
 	LIST_INSERT_HEAD(&priv->txqsobj, tmpl, next);
 	return tmpl;
-error:
-	ret = rte_errno; /* Save rte_errno before cleanup. */
-	if (tmpl->tis)
-		mlx5_devx_cmd_destroy(tmpl->tis);
-	if (tmpl->sq)
-		mlx5_devx_cmd_destroy(tmpl->sq);
-	rte_errno = ret; /* Restore rte_errno. */
-	return NULL;
 }
 
 /**
@@ -566,7 +582,6 @@ mlx5_txq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 	struct mlx5_txq_obj *txq_obj = NULL;
 	union {
 		struct ibv_qp_init_attr_ex init;
-		struct ibv_cq_init_attr_ex cq;
 		struct ibv_qp_attr mod;
 	} attr;
 	unsigned int cqe_n;
@@ -594,9 +609,6 @@ mlx5_txq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 		return NULL;
 	}
 	memset(&tmpl, 0, sizeof(struct mlx5_txq_obj));
-	attr.cq = (struct ibv_cq_init_attr_ex){
-		.comp_mask = 0,
-	};
 	cqe_n = desc / MLX5_TX_COMP_THRESH +
 		1 + MLX5_TX_COMP_THRESH_INLINE_DIV;
 	tmpl.cq = mlx5_glue->create_cq(priv->sh->ctx, cqe_n, NULL, NULL, 0);
@@ -786,7 +798,7 @@ error:
 		claim_zero(mlx5_glue->destroy_cq(tmpl.cq));
 	if (tmpl.qp)
 		claim_zero(mlx5_glue->destroy_qp(tmpl.qp));
-	if (txq_data && txq_data->fcqs)
+	if (txq_data->fcqs)
 		rte_free(txq_data->fcqs);
 	if (txq_obj)
 		rte_free(txq_obj);
