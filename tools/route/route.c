@@ -281,10 +281,16 @@ main(int argc, char **argv)
 
 		case K_FLUSH:
 			flushroutes(argc, argv);
+#ifdef FSTACK
+			ff_ipc_exit();
+#endif
 			exit(0);
 			/* NOTREACHED */
 		}
 	usage(*argv);
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	/* NOTREACHED */
 }
 
@@ -1072,8 +1078,12 @@ newroute(int argc, char **argv)
 			fl->fl_errno = errno;
 		error += fl->fl_error;
 	}
-	if (*cmd == 'g' || *cmd == 's')
+	if (*cmd == 'g' || *cmd == 's'){
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(error);
+	}
 
 	error = 0;
 	if (!qflag) {
@@ -1147,6 +1157,9 @@ newroute(int argc, char **argv)
 			}
 		}
 	}
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	exit(error);
 }
 
@@ -1553,6 +1566,9 @@ monitor(int argc, char *argv[])
 	verbose = 1;
 	if (debugonly) {
 		interfaces();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 	for (;;) {

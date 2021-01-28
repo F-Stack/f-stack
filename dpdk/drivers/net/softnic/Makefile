@@ -19,8 +19,6 @@ LDLIBS += -lrte_bus_vdev
 
 EXPORT_MAP := rte_pmd_softnic_version.map
 
-LIBABIVER := 1
-
 #
 # all source are stored in SRCS-y
 #
@@ -45,8 +43,8 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += conn.c
 #
 SYMLINK-y-include += rte_eth_softnic.h
 
-ifneq ($(CONFIG_RTE_EXEC_ENV),"linuxapp")
-$(info Softnic PMD can only operate in a linuxapp environment, \
+ifneq ($(CONFIG_RTE_EXEC_ENV_LINUX),y)
+$(info Softnic PMD can only operate in a linux environment, \
 please change the definition of the RTE_TARGET environment variable)
 all:
 clean:

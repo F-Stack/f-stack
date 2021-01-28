@@ -1130,7 +1130,7 @@ rte_event_eth_rx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
  *   - 0: Success, driver provided event timer adapter capabilities.
  *   - <0: Error code returned by the driver function.
  */
-int __rte_experimental
+int
 rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps);
 
 /* Crypto adapter capability bitmap flag */
@@ -1159,9 +1159,6 @@ rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps);
  */
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Retrieve the event device's crypto adapter capabilities for the
  * specified cryptodev device
  *
@@ -1181,7 +1178,7 @@ rte_event_timer_adapter_caps_get(uint8_t dev_id, uint32_t *caps);
  *   - <0: Error code returned by the driver function.
  *
  */
-int __rte_experimental
+int
 rte_event_crypto_adapter_caps_get(uint8_t dev_id, uint8_t cdev_id,
 				  uint32_t *caps);
 
@@ -1207,7 +1204,7 @@ rte_event_crypto_adapter_caps_get(uint8_t dev_id, uint8_t cdev_id,
  *   - <0: Error code returned by the driver function.
  *
  */
-int __rte_experimental
+int
 rte_event_eth_tx_adapter_caps_get(uint8_t dev_id, uint16_t eth_port_id,
 				uint32_t *caps);
 
@@ -1232,6 +1229,12 @@ typedef uint16_t (*event_dequeue_burst_t)(void *port, struct rte_event ev[],
 typedef uint16_t (*event_tx_adapter_enqueue)(void *port,
 				struct rte_event ev[], uint16_t nb_events);
 /**< @internal Enqueue burst of events on port of a device */
+
+typedef uint16_t (*event_tx_adapter_enqueue_same_dest)(void *port,
+		struct rte_event ev[], uint16_t nb_events);
+/**< @internal Enqueue burst of events on port of a device supporting
+ * burst having same destination Ethernet port & Tx queue.
+ */
 
 #define RTE_EVENTDEV_NAME_MAX_LEN	(64)
 /**< @internal Max length of name of event PMD */
@@ -1279,6 +1282,9 @@ struct rte_eventdev_data {
 
 	char name[RTE_EVENTDEV_NAME_MAX_LEN];
 	/**< Unique identifier name */
+
+	uint64_t reserved_64s[4]; /**< Reserved for future fields */
+	void *reserved_ptrs[4];   /**< Reserved for future fields */
 } __rte_cache_aligned;
 
 /** @internal The data structure associated with each event device. */
@@ -1295,6 +1301,10 @@ struct rte_eventdev {
 	/**< Pointer to PMD dequeue function. */
 	event_dequeue_burst_t dequeue_burst;
 	/**< Pointer to PMD dequeue burst function. */
+	event_tx_adapter_enqueue_same_dest txa_enqueue_same_dest;
+	/**< Pointer to PMD eth Tx adapter burst enqueue function with
+	 * events destined to same Eth port & Tx queue.
+	 */
 	event_tx_adapter_enqueue txa_enqueue;
 	/**< Pointer to PMD eth Tx adapter enqueue function. */
 	struct rte_eventdev_data *data;
@@ -1307,6 +1317,9 @@ struct rte_eventdev {
 	RTE_STD_C11
 	uint8_t attached : 1;
 	/**< Flag indicating the device is attached */
+
+	uint64_t reserved_64s[4]; /**< Reserved for future fields */
+	void *reserved_ptrs[4];   /**< Reserved for future fields */
 } __rte_cache_aligned;
 
 extern struct rte_eventdev *rte_eventdevs;
@@ -1730,9 +1743,6 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
 		      uint8_t queues[], uint16_t nb_unlinks);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Returns the number of unlinks in progress.
  *
  * This function provides the application with a method to detect when an
@@ -1753,7 +1763,7 @@ rte_event_port_unlink(uint8_t dev_id, uint8_t port_id,
  * A negative return value indicates an error, -EINVAL indicates an invalid
  * parameter passed for *dev_id* or *port_id*.
  */
-int __rte_experimental
+int
 rte_event_port_unlinks_in_progress(uint8_t dev_id, uint8_t port_id);
 
 /**

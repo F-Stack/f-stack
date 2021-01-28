@@ -7,7 +7,6 @@ Poll Mode Driver for Emulated Virtio NIC
 Virtio is a para-virtualization framework initiated by IBM, and supported by KVM hypervisor.
 In the Data Plane Development Kit (DPDK),
 we provide a virtio Poll Mode Driver (PMD) as a software solution, comparing to SRIOV hardware solution,
-
 for fast guest VM to guest VM communication and guest VM to host communication.
 
 Vhost is a kernel acceleration module for virtio qemu backend.
@@ -24,15 +23,19 @@ standard qemu vhost back end and vhost kni back end.
 Virtio Implementation in DPDK
 -----------------------------
 
-For details about the virtio spec, refer to Virtio PCI Card Specification written by Rusty Russell.
+For details about the virtio spec, refer to the latest
+`VIRTIO (Virtual I/O) Device Specification
+<https://www.oasis-open.org/committees/tc_home.php?wg_abbrev=virtio>`_.
 
-As a PMD, virtio provides packet reception and transmission callbacks virtio_recv_pkts and virtio_xmit_pkts.
+As a PMD, virtio provides packet reception and transmission callbacks.
 
-In virtio_recv_pkts, index in range [vq->vq_used_cons_idx , vq->vq_ring.used->idx) in vring is available for virtio to burst out.
+In Rx, packets described by the used descriptors in vring are available
+for virtio to burst out.
 
-In virtio_xmit_pkts, same index range in vring is available for virtio to clean.
-Virtio will enqueue to be transmitted packets into vring, advance the vq->vq_ring.avail->idx,
-and then notify the host back end if necessary.
+In Tx, packets described by the used descriptors in vring are available
+for virtio to clean. Virtio will enqueue to be transmitted packets into
+vring, make them available to the device, and then notify the host back
+end if necessary.
 
 Features and Limitations of virtio PMD
 --------------------------------------
@@ -53,7 +56,7 @@ In this release, the virtio PMD driver provides the basic functionality of packe
 *   Features of mac/vlan filter are supported, negotiation with vhost/backend are needed to support them.
     When backend can't support vlan filter, virtio app on guest should not enable vlan filter in order
     to make sure the virtio port is configured correctly. E.g. do not specify '--enable-hw-vlan' in testpmd
-    command line.
+    command line. Note that, mac/vlan filter is best effort: unwanted packets could still arrive.
 
 *   "RTE_PKTMBUF_HEADROOM" should be defined
     no less than "sizeof(struct virtio_net_hdr_mrg_rxbuf)", which is 12 bytes when mergeable or
@@ -201,49 +204,55 @@ The packet transmission flow is:
 Virtio PMD Rx/Tx Callbacks
 --------------------------
 
-Virtio driver has 4 Rx callbacks and 3 Tx callbacks.
+Virtio driver has 6 Rx callbacks and 3 Tx callbacks.
 
 Rx callbacks:
 
 #. ``virtio_recv_pkts``:
-   Regular version without mergeable Rx buffer support.
+   Regular version without mergeable Rx buffer support for split virtqueue.
 
 #. ``virtio_recv_mergeable_pkts``:
-   Regular version with mergeable Rx buffer support.
+   Regular version with mergeable Rx buffer support for split virtqueue.
 
 #. ``virtio_recv_pkts_vec``:
    Vector version without mergeable Rx buffer support, also fixes the available
-   ring indexes and uses vector instructions to optimize performance.
+   ring indexes and uses vector instructions to optimize performance for split
+   virtqueue.
 
-#. ``virtio_recv_mergeable_pkts_inorder``:
-   In-order version with mergeable Rx buffer support.
+#. ``virtio_recv_pkts_inorder``:
+   In-order version with mergeable and non-mergeable Rx buffer support
+   for split virtqueue.
+
+#. ``virtio_recv_pkts_packed``:
+   Regular and in-order version without mergeable Rx buffer support for
+   packed virtqueue.
+
+#. ``virtio_recv_mergeable_pkts_packed``:
+   Regular and in-order version with mergeable Rx buffer support for packed
+   virtqueue.
 
 Tx callbacks:
 
 #. ``virtio_xmit_pkts``:
-   Regular version.
-
-#. ``virtio_xmit_pkts_simple``:
-   Vector version fixes the available ring indexes to optimize performance.
+   Regular version for split virtqueue.
 
 #. ``virtio_xmit_pkts_inorder``:
-   In-order version.
+   In-order version for split virtqueue.
+
+#. ``virtio_xmit_pkts_packed``:
+   Regular and in-order version for packed virtqueue.
 
 By default, the non-vector callbacks are used:
 
-*   For Rx: If mergeable Rx buffers is disabled then ``virtio_recv_pkts`` is
-    used; otherwise ``virtio_recv_mergeable_pkts``.
+*   For Rx: If mergeable Rx buffers is disabled then ``virtio_recv_pkts``
+    or ``virtio_recv_pkts_packed`` will be used, otherwise
+    ``virtio_recv_mergeable_pkts`` or ``virtio_recv_mergeable_pkts_packed``
+    will be used.
 
-*   For Tx: ``virtio_xmit_pkts``.
+*   For Tx: ``virtio_xmit_pkts`` or ``virtio_xmit_pkts_packed`` will be used.
 
 
 Vector callbacks will be used when:
-
-*   ``txmode.offloads`` is set to ``0x0``, which implies:
-
-    *   Single segment is specified.
-
-    *   No offload support is needed.
 
 *   Mergeable Rx buffers is disabled.
 
@@ -251,20 +260,24 @@ The corresponding callbacks are:
 
 *   For Rx: ``virtio_recv_pkts_vec``.
 
-*   For Tx: ``virtio_xmit_pkts_simple``.
+There is no vector callbacks for packed virtqueue for now.
 
 
 Example of using the vector version of the virtio poll mode driver in
 ``testpmd``::
 
-   testpmd -l 0-2 -n 4 -- -i --tx-offloads=0x0 --rxq=1 --txq=1 --nb-cores=1
+   testpmd -l 0-2 -n 4 -- -i --rxq=1 --txq=1 --nb-cores=1
 
 In-order callbacks only work on simulated virtio user vdev.
 
-*   For Rx: If mergeable Rx buffers is enabled and in-order is enabled then
-    ``virtio_xmit_pkts_inorder`` is used.
+For split virtqueue:
+
+*   For Rx: If in-order is enabled then ``virtio_recv_pkts_inorder`` is used.
 
 *   For Tx: If in-order is enabled then ``virtio_xmit_pkts_inorder`` is used.
+
+For packed virtqueue, the default callbacks already support the
+in-order feature.
 
 Interrupt mode
 --------------
@@ -334,7 +347,7 @@ Here we use l3fwd-power as an example to show how to get started.
 Virtio PMD arguments
 --------------------
 
-The user can specify below argument in devargs.
+Below devargs are supported by the PCI virtio driver:
 
 #.  ``vdpa``:
 
@@ -343,12 +356,173 @@ The user can specify below argument in devargs.
     a virtio device needs to work in vDPA mode.
     (Default: 0 (disabled))
 
-#. ``mrg_rxbuf``:
+Below devargs are supported by the virtio-user vdev:
+
+#.  ``path``:
+
+    It is used to specify a path to connect to vhost backend.
+
+#.  ``mac``:
+
+    It is used to specify the MAC address.
+
+#.  ``cq``:
+
+    It is used to enable the control queue. (Default: 0 (disabled))
+
+#.  ``queue_size``:
+
+    It is used to specify the queue size. (Default: 256)
+
+#.  ``queues``:
+
+    It is used to specify the queue number. (Default: 1)
+
+#.  ``iface``:
+
+    It is used to specify the host interface name for vhost-kernel
+    backend.
+
+#.  ``server``:
+
+    It is used to enable the server mode when using vhost-user backend.
+    (Default: 0 (disabled))
+
+#.  ``mrg_rxbuf``:
 
     It is used to enable virtio device mergeable Rx buffer feature.
     (Default: 1 (enabled))
 
-#. ``in_order``:
+#.  ``in_order``:
 
     It is used to enable virtio device in-order feature.
     (Default: 1 (enabled))
+
+#.  ``packed_vq``:
+
+    It is used to enable virtio device packed virtqueue feature.
+    (Default: 0 (disabled))
+
+Virtio paths Selection and Usage
+--------------------------------
+
+Logically virtio-PMD has 9 paths based on the combination of virtio features
+(Rx mergeable, In-order, Packed virtqueue), below is an introduction of these
+features:
+
+*   `Rx mergeable <https://docs.oasis-open.org/virtio/virtio/v1.1/cs01/
+    virtio-v1.1-cs01.html#x1-2140004>`_: With this feature negotiated, device
+    can receive large packets by combining individual descriptors.
+*   `In-order <https://docs.oasis-open.org/virtio/virtio/v1.1/cs01/
+    virtio-v1.1-cs01.html#x1-690008>`_: Some devices always use descriptors
+    in the same order in which they have been made available, these
+    devices can offer the VIRTIO_F_IN_ORDER feature. With this feature negotiated,
+    driver will use descriptors in order.
+*   `Packed virtqueue <https://docs.oasis-open.org/virtio/virtio/v1.1/cs01/
+    virtio-v1.1-cs01.html#x1-610007>`_: The structure of packed virtqueue is
+    different from split virtqueue, split virtqueue is composed of available ring,
+    used ring and descriptor table, while packed virtqueue is composed of descriptor
+    ring, driver event suppression and device event suppression. The idea behind
+    this is to improve performance by avoiding cache misses and make it easier
+    for hardware to implement.
+
+Virtio paths Selection
+~~~~~~~~~~~~~~~~~~~~~~
+
+If packed virtqueue is not negotiated, below split virtqueue paths will be selected
+according to below configuration:
+
+#. Split virtqueue mergeable path: If Rx mergeable is negotiated, in-order feature is
+   not negotiated, this path will be selected.
+#. Split virtqueue non-mergeable path: If Rx mergeable and in-order feature are not
+   negotiated, also Rx offload(s) are requested, this path will be selected.
+#. Split virtqueue in-order mergeable path: If Rx mergeable and in-order feature are
+   both negotiated, this path will be selected.
+#. Split virtqueue in-order non-mergeable path: If in-order feature is negotiated and
+   Rx mergeable is not negotiated, this path will be selected.
+#. Split virtqueue vectorized Rx path: If Rx mergeable is disabled and no Rx offload
+   requested, this path will be selected.
+
+If packed virtqueue is negotiated, below packed virtqueue paths will be selected
+according to below configuration:
+
+#. Packed virtqueue mergeable path: If Rx mergeable is negotiated, in-order feature
+   is not negotiated, this path will be selected.
+#. Packed virtqueue non-mergeable path: If Rx mergeable and in-order feature are not
+   negotiated, this path will be selected.
+#. Packed virtqueue in-order mergeable path: If in-order and Rx mergeable feature are
+   both negotiated, this path will be selected.
+#. Packed virtqueue in-order non-mergeable path: If in-order feature is negotiated and
+   Rx mergeable is not negotiated, this path will be selected.
+
+Rx/Tx callbacks of each Virtio path
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Refer to above description, virtio path and corresponding Rx/Tx callbacks will
+be selected automatically. Rx callbacks and Tx callbacks for each virtio path
+are shown in below table:
+
+.. table:: Virtio Paths and Callbacks
+
+   ============================================ ================================= ========================
+                 Virtio paths                            Rx callbacks                   Tx callbacks
+   ============================================ ================================= ========================
+   Split virtqueue mergeable path               virtio_recv_mergeable_pkts        virtio_xmit_pkts
+   Split virtqueue non-mergeable path           virtio_recv_pkts                  virtio_xmit_pkts
+   Split virtqueue in-order mergeable path      virtio_recv_pkts_inorder          virtio_xmit_pkts_inorder
+   Split virtqueue in-order non-mergeable path  virtio_recv_pkts_inorder          virtio_xmit_pkts_inorder
+   Split virtqueue vectorized Rx path           virtio_recv_pkts_vec              virtio_xmit_pkts
+   Packed virtqueue mergeable path              virtio_recv_mergeable_pkts_packed virtio_xmit_pkts_packed
+   Packed virtqueue non-meregable path          virtio_recv_pkts_packed           virtio_xmit_pkts_packed
+   Packed virtqueue in-order mergeable path     virtio_recv_mergeable_pkts_packed virtio_xmit_pkts_packed
+   Packed virtqueue in-order non-mergeable path virtio_recv_pkts_packed           virtio_xmit_pkts_packed
+   ============================================ ================================= ========================
+
+Virtio paths Support Status from Release to Release
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Virtio feature implementation:
+
+*   In-order feature is supported since DPDK 18.08 by adding new Rx/Tx callbacks
+    ``virtio_recv_pkts_inorder`` and ``virtio_xmit_pkts_inorder``.
+*   Packed virtqueue is supported since DPDK 19.02 by adding new Rx/Tx callbacks
+    ``virtio_recv_pkts_packed`` , ``virtio_recv_mergeable_pkts_packed`` and
+    ``virtio_xmit_pkts_packed``.
+
+All virtio paths support status are shown in below table:
+
+.. table:: Virtio Paths and Releases
+
+   ============================================ ============= ============= =============
+                  Virtio paths                  16.11 ~ 18.05 18.08 ~ 18.11 19.02 ~ 19.11
+   ============================================ ============= ============= =============
+   Split virtqueue mergeable path                     Y             Y             Y
+   Split virtqueue non-mergeable path                 Y             Y             Y
+   Split virtqueue vectorized Rx path                 Y             Y             Y
+   Split virtqueue simple Tx path                     Y             N             N
+   Split virtqueue in-order mergeable path                          Y             Y
+   Split virtqueue in-order non-mergeable path                      Y             Y
+   Packed virtqueue mergeable path                                                Y
+   Packed virtqueue non-mergeable path                                            Y
+   Packed virtqueue in-order mergeable path                                       Y
+   Packed virtqueue in-order non-mergeable path                                   Y
+   ============================================ ============= ============= =============
+
+QEMU Support Status
+~~~~~~~~~~~~~~~~~~~
+
+*   Qemu now supports three paths of split virtqueue: Split virtqueue mergeable path,
+    Split virtqueue non-mergeable path, Split virtqueue vectorized Rx path.
+*   Since qemu 4.2.0, Packed virtqueue mergeable path and Packed virtqueue non-mergeable
+    path can be supported.
+
+How to Debug
+~~~~~~~~~~~~
+
+If you meet performance drop or some other issues after upgrading the driver
+or configuration, below steps can help you identify which path you selected and
+root cause faster.
+
+#. Run vhost/virtio test case;
+#. Run "perf top" and check virtio Rx/Tx callback names;
+#. Identify which virtio path is selected refer to above table.

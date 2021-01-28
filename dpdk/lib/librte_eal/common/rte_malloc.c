@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2014 Intel Corporation
+ * Copyright(c) 2010-2019 Intel Corporation
  */
 
 #include <stdint.h>
@@ -25,6 +25,8 @@
 #include "malloc_elem.h"
 #include "malloc_heap.h"
 #include "eal_memalloc.h"
+#include "eal_memcfg.h"
+#include "eal_private.h"
 
 
 /* Free the memory space back to heap */
@@ -74,7 +76,18 @@ rte_malloc(const char *type, size_t size, unsigned align)
 void *
 rte_zmalloc_socket(const char *type, size_t size, unsigned align, int socket)
 {
-	return rte_malloc_socket(type, size, align, socket);
+	void *ptr = rte_malloc_socket(type, size, align, socket);
+
+#ifdef RTE_MALLOC_DEBUG
+	/*
+	 * If DEBUG is enabled, then freed memory is marked with poison
+	 * value and set to zero on allocation.
+	 * If DEBUG is not enabled then  memory is already zeroed.
+	 */
+	if (ptr != NULL)
+		memset(ptr, 0, size);
+#endif
+	return ptr;
 }
 
 /*
@@ -105,13 +118,13 @@ rte_calloc(const char *type, size_t num, size_t size, unsigned align)
 }
 
 /*
- * Resize allocated memory.
+ * Resize allocated memory on specified heap.
  */
 void *
-rte_realloc(void *ptr, size_t size, unsigned align)
+rte_realloc_socket(void *ptr, size_t size, unsigned int align, int socket)
 {
 	if (ptr == NULL)
-		return rte_malloc(NULL, size, align);
+		return rte_malloc_socket(NULL, size, align, socket);
 
 	struct malloc_elem *elem = malloc_elem_from_data(ptr);
 	if (elem == NULL) {
@@ -120,21 +133,38 @@ rte_realloc(void *ptr, size_t size, unsigned align)
 	}
 
 	size = RTE_CACHE_LINE_ROUNDUP(size), align = RTE_CACHE_LINE_ROUNDUP(align);
-	/* check alignment matches first, and if ok, see if we can resize block */
-	if (RTE_PTR_ALIGN(ptr,align) == ptr &&
+
+	/* check requested socket id and alignment matches first, and if ok,
+	 * see if we can resize block
+	 */
+	if ((socket == SOCKET_ID_ANY ||
+	     (unsigned int)socket == elem->heap->socket_id) &&
+			RTE_PTR_ALIGN(ptr, align) == ptr &&
 			malloc_heap_resize(elem, size) == 0)
 		return ptr;
 
-	/* either alignment is off, or we have no room to expand,
-	 * so move data. */
-	void *new_ptr = rte_malloc(NULL, size, align);
+	/* either requested socket id doesn't match, alignment is off
+	 * or we have no room to expand,
+	 * so move the data.
+	 */
+	void *new_ptr = rte_malloc_socket(NULL, size, align, socket);
 	if (new_ptr == NULL)
 		return NULL;
-	const unsigned old_size = elem->size - MALLOC_ELEM_OVERHEAD;
+	/* elem: |pad|data_elem|data|trailer| */
+	const size_t old_size = elem->size - elem->pad - MALLOC_ELEM_OVERHEAD;
 	rte_memcpy(new_ptr, ptr, old_size < size ? old_size : size);
 	rte_free(ptr);
 
 	return new_ptr;
+}
+
+/*
+ * Resize allocated memory.
+ */
+void *
+rte_realloc(void *ptr, size_t size, unsigned int align)
+{
+	return rte_realloc_socket(ptr, size, align, SOCKET_ID_ANY);
 }
 
 int
@@ -169,7 +199,7 @@ rte_malloc_get_socket_stats(int socket,
 /*
  * Function to dump contents of all heaps
  */
-void __rte_experimental
+void
 rte_malloc_dump_heaps(FILE *f)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
@@ -196,7 +226,7 @@ rte_malloc_heap_get_socket(const char *name)
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_lock();
 	for (idx = 0; idx < RTE_MAX_HEAPS; idx++) {
 		struct malloc_heap *tmp = &mcfg->malloc_heaps[idx];
 
@@ -212,7 +242,7 @@ rte_malloc_heap_get_socket(const char *name)
 		rte_errno = ENOENT;
 		ret = -1;
 	}
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_unlock();
 
 	return ret;
 }
@@ -227,7 +257,7 @@ rte_malloc_heap_socket_is_external(int socket_id)
 	if (socket_id == SOCKET_ID_ANY)
 		return 0;
 
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_lock();
 	for (idx = 0; idx < RTE_MAX_HEAPS; idx++) {
 		struct malloc_heap *tmp = &mcfg->malloc_heaps[idx];
 
@@ -237,7 +267,7 @@ rte_malloc_heap_socket_is_external(int socket_id)
 			break;
 		}
 	}
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_unlock();
 
 	return ret;
 }
@@ -325,8 +355,8 @@ int
 rte_malloc_heap_memory_add(const char *heap_name, void *va_addr, size_t len,
 		rte_iova_t iova_addrs[], unsigned int n_pages, size_t page_sz)
 {
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	struct malloc_heap *heap = NULL;
+	struct rte_memseg_list *msl;
 	unsigned int n;
 	int ret;
 
@@ -341,7 +371,7 @@ rte_malloc_heap_memory_add(const char *heap_name, void *va_addr, size_t len,
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_rwlock_write_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_lock();
 
 	/* find our heap */
 	heap = find_named_heap(heap_name);
@@ -358,13 +388,20 @@ rte_malloc_heap_memory_add(const char *heap_name, void *va_addr, size_t len,
 	}
 	n = len / page_sz;
 
+	msl = malloc_heap_create_external_seg(va_addr, iova_addrs, n, page_sz,
+			heap_name, heap->socket_id);
+	if (msl == NULL) {
+		ret = -1;
+		goto unlock;
+	}
+
 	rte_spinlock_lock(&heap->lock);
-	ret = malloc_heap_add_external_memory(heap, va_addr, iova_addrs, n,
-			page_sz);
+	ret = malloc_heap_add_external_memory(heap, msl);
+	msl->heap = 1; /* mark it as heap segment */
 	rte_spinlock_unlock(&heap->lock);
 
 unlock:
-	rte_rwlock_write_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_unlock();
 
 	return ret;
 }
@@ -372,8 +409,8 @@ unlock:
 int
 rte_malloc_heap_memory_remove(const char *heap_name, void *va_addr, size_t len)
 {
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	struct malloc_heap *heap = NULL;
+	struct rte_memseg_list *msl;
 	int ret;
 
 	if (heap_name == NULL || va_addr == NULL || len == 0 ||
@@ -383,7 +420,7 @@ rte_malloc_heap_memory_remove(const char *heap_name, void *va_addr, size_t len)
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_rwlock_write_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_lock();
 	/* find our heap */
 	heap = find_named_heap(heap_name);
 	if (heap == NULL) {
@@ -398,73 +435,31 @@ rte_malloc_heap_memory_remove(const char *heap_name, void *va_addr, size_t len)
 		goto unlock;
 	}
 
+	msl = malloc_heap_find_external_seg(va_addr, len);
+	if (msl == NULL) {
+		ret = -1;
+		goto unlock;
+	}
+
 	rte_spinlock_lock(&heap->lock);
 	ret = malloc_heap_remove_external_memory(heap, va_addr, len);
 	rte_spinlock_unlock(&heap->lock);
+	if (ret != 0)
+		goto unlock;
+
+	ret = malloc_heap_destroy_external_seg(msl);
 
 unlock:
-	rte_rwlock_write_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_unlock();
 
 	return ret;
-}
-
-struct sync_mem_walk_arg {
-	void *va_addr;
-	size_t len;
-	int result;
-	bool attach;
-};
-
-static int
-sync_mem_walk(const struct rte_memseg_list *msl, void *arg)
-{
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
-	struct sync_mem_walk_arg *wa = arg;
-	size_t len = msl->page_sz * msl->memseg_arr.len;
-
-	if (msl->base_va == wa->va_addr &&
-			len == wa->len) {
-		struct rte_memseg_list *found_msl;
-		int msl_idx, ret;
-
-		/* msl is const */
-		msl_idx = msl - mcfg->memsegs;
-		found_msl = &mcfg->memsegs[msl_idx];
-
-		if (wa->attach) {
-			ret = rte_fbarray_attach(&found_msl->memseg_arr);
-		} else {
-			/* notify all subscribers that a memory area is about to
-			 * be removed
-			 */
-			eal_memalloc_mem_event_notify(RTE_MEM_EVENT_FREE,
-					msl->base_va, msl->len);
-			ret = rte_fbarray_detach(&found_msl->memseg_arr);
-		}
-
-		if (ret < 0) {
-			wa->result = -rte_errno;
-		} else {
-			/* notify all subscribers that a new memory area was
-			 * added
-			 */
-			if (wa->attach)
-				eal_memalloc_mem_event_notify(
-						RTE_MEM_EVENT_ALLOC,
-						msl->base_va, msl->len);
-			wa->result = 0;
-		}
-		return 1;
-	}
-	return 0;
 }
 
 static int
 sync_memory(const char *heap_name, void *va_addr, size_t len, bool attach)
 {
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	struct malloc_heap *heap = NULL;
-	struct sync_mem_walk_arg wa;
+	struct rte_memseg_list *msl;
 	int ret;
 
 	if (heap_name == NULL || va_addr == NULL || len == 0 ||
@@ -474,7 +469,7 @@ sync_memory(const char *heap_name, void *va_addr, size_t len, bool attach)
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_lock();
 
 	/* find our heap */
 	heap = find_named_heap(heap_name);
@@ -491,21 +486,38 @@ sync_memory(const char *heap_name, void *va_addr, size_t len, bool attach)
 	}
 
 	/* find corresponding memseg list to sync to */
-	wa.va_addr = va_addr;
-	wa.len = len;
-	wa.result = -ENOENT; /* fail unless explicitly told to succeed */
-	wa.attach = attach;
-
-	/* we're already holding a read lock */
-	rte_memseg_list_walk_thread_unsafe(sync_mem_walk, &wa);
-
-	if (wa.result < 0) {
-		rte_errno = -wa.result;
+	msl = malloc_heap_find_external_seg(va_addr, len);
+	if (msl == NULL) {
 		ret = -1;
-	} else
-		ret = 0;
+		goto unlock;
+	}
+
+	if (attach) {
+		ret = rte_fbarray_attach(&msl->memseg_arr);
+		if (ret == 0) {
+			/* notify all subscribers that a new memory area was
+			 * added.
+			 */
+			eal_memalloc_mem_event_notify(RTE_MEM_EVENT_ALLOC,
+					va_addr, len);
+		} else {
+			ret = -1;
+			goto unlock;
+		}
+	} else {
+		/* notify all subscribers that a memory area is about to
+		 * be removed.
+		 */
+		eal_memalloc_mem_event_notify(RTE_MEM_EVENT_FREE,
+				msl->base_va, msl->len);
+		ret = rte_fbarray_detach(&msl->memseg_arr);
+		if (ret < 0) {
+			ret = -1;
+			goto unlock;
+		}
+	}
 unlock:
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_unlock();
 	return ret;
 }
 
@@ -538,7 +550,7 @@ rte_malloc_heap_create(const char *heap_name)
 	/* check if there is space in the heap list, or if heap with this name
 	 * already exists.
 	 */
-	rte_rwlock_write_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_lock();
 
 	for (i = 0; i < RTE_MAX_HEAPS; i++) {
 		struct malloc_heap *tmp = &mcfg->malloc_heaps[i];
@@ -567,7 +579,7 @@ rte_malloc_heap_create(const char *heap_name)
 	/* we're sure that we can create a new heap, so do it */
 	ret = malloc_heap_create(heap, heap_name);
 unlock:
-	rte_rwlock_write_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_unlock();
 
 	return ret;
 }
@@ -575,7 +587,6 @@ unlock:
 int
 rte_malloc_heap_destroy(const char *heap_name)
 {
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	struct malloc_heap *heap = NULL;
 	int ret;
 
@@ -586,7 +597,7 @@ rte_malloc_heap_destroy(const char *heap_name)
 		rte_errno = EINVAL;
 		return -1;
 	}
-	rte_rwlock_write_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_lock();
 
 	/* start from non-socket heaps */
 	heap = find_named_heap(heap_name);
@@ -610,7 +621,7 @@ rte_malloc_heap_destroy(const char *heap_name)
 	if (ret < 0)
 		rte_spinlock_unlock(&heap->lock);
 unlock:
-	rte_rwlock_write_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_write_unlock();
 
 	return ret;
 }

@@ -24,6 +24,7 @@ extern "C" {
 
 #include <rte_common.h>
 #include <rte_config.h>
+#include <rte_compat.h>
 
 struct rte_log_dynamic_type;
 
@@ -99,6 +100,19 @@ extern struct rte_logs rte_logs;
  *   - Negative on error.
  */
 int rte_openlog_stream(FILE *f);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Retrieve the stream used by the logging system (see rte_openlog_stream()
+ * to change it).
+ *
+ * @return
+ *   Pointer to the stream.
+ */
+__rte_experimental
+FILE *rte_log_get_stream(void);
 
 /**
  * Set the global log level.
@@ -226,6 +240,7 @@ int rte_log_register(const char *name);
  *    - >=0: the newly registered log type
  *    - <0: rte_log_register() error value
  */
+__rte_experimental
 int rte_log_register_type_and_pick_level(const char *name, uint32_t level_def);
 
 /**

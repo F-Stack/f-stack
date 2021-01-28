@@ -7,10 +7,13 @@
 #include <stdbool.h>
 
 #include <rte_branch_prediction.h>
+#include <rte_cryptodev.h>
 #include <rte_cycles.h>
 #include <rte_io.h>
 #include <rte_memory.h>
 #include <rte_prefetch.h>
+
+#include "otx_cryptodev.h"
 
 #include "cpt_common.h"
 #include "cpt_hw_types.h"
@@ -39,6 +42,9 @@
 struct cpt_instance {
 	uint32_t queue_id;
 	uintptr_t rsvd;
+	struct rte_mempool *sess_mp;
+	struct rte_mempool *sess_mp_priv;
+	struct cpt_qp_meta_info meta_info;
 };
 
 struct command_chunk {
@@ -74,8 +80,6 @@ struct cpt_vf {
 	struct command_queue cqueue;
 	/** Pending queue information */
 	struct pending_queue pqueue;
-	/** Meta information per vf */
-	struct cptvf_meta_info meta_info;
 
 	/** Below fields are accessed only in control path */
 
@@ -154,7 +158,8 @@ int
 otx_cpt_deinit_device(void *dev);
 
 int
-otx_cpt_get_resource(void *dev, uint8_t group, struct cpt_instance **instance);
+otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
+		     struct cpt_instance **instance, uint16_t qp_id);
 
 int
 otx_cpt_put_resource(struct cpt_instance *instance);

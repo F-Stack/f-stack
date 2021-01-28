@@ -3,6 +3,7 @@
 # Copyright(c) 2010-2014 Intel Corporation
 #
 
+from __future__ import print_function
 import sys
 import os
 import getopt
@@ -11,6 +12,10 @@ from os.path import exists, abspath, dirname, basename
 
 # The PCI base class for all devices
 network_class = {'Class': '02', 'Vendor': None, 'Device': None,
+                    'SVendor': None, 'SDevice': None}
+acceleration_class = {'Class': '12', 'Vendor': None, 'Device': None,
+                      'SVendor': None, 'SDevice': None}
+ifpga_class = {'Class': '12', 'Vendor': '8086', 'Device': '0b30',
                     'SVendor': None, 'SDevice': None}
 encryption_class = {'Class': '10', 'Vendor': None, 'Device': None,
                    'SVendor': None, 'SDevice': None}
@@ -29,17 +34,35 @@ cavium_zip = {'Class': '12', 'Vendor': '177d', 'Device': 'a037',
 avp_vnic = {'Class': '05', 'Vendor': '1af4', 'Device': '1110',
               'SVendor': None, 'SDevice': None}
 
-network_devices = [network_class, cavium_pkx, avp_vnic]
+octeontx2_sso = {'Class': '08', 'Vendor': '177d', 'Device': 'a0f9,a0fa',
+              'SVendor': None, 'SDevice': None}
+octeontx2_npa = {'Class': '08', 'Vendor': '177d', 'Device': 'a0fb,a0fc',
+              'SVendor': None, 'SDevice': None}
+octeontx2_dma = {'Class': '08', 'Vendor': '177d', 'Device': 'a081',
+              'SVendor': None, 'SDevice': None}
+
+intel_ioat_bdw = {'Class': '08', 'Vendor': '8086', 'Device': '6f20,6f21,6f22,6f23,6f24,6f25,6f26,6f27,6f2e,6f2f',
+              'SVendor': None, 'SDevice': None}
+intel_ioat_skx = {'Class': '08', 'Vendor': '8086', 'Device': '2021',
+              'SVendor': None, 'SDevice': None}
+intel_ntb_skx = {'Class': '06', 'Vendor': '8086', 'Device': '201c',
+              'SVendor': None, 'SDevice': None}
+
+network_devices = [network_class, cavium_pkx, avp_vnic, ifpga_class]
+baseband_devices = [acceleration_class]
 crypto_devices = [encryption_class, intel_processor_class]
-eventdev_devices = [cavium_sso, cavium_tim]
-mempool_devices = [cavium_fpa]
+eventdev_devices = [cavium_sso, cavium_tim, octeontx2_sso]
+mempool_devices = [cavium_fpa, octeontx2_npa]
 compress_devices = [cavium_zip]
+misc_devices = [intel_ioat_bdw, intel_ioat_skx, intel_ntb_skx, octeontx2_dma]
 
 # global dict ethernet devices present. Dictionary indexed by PCI address.
 # Each device within this is itself a dictionary of device properties
 devices = {}
 # list of supported DPDK drivers
 dpdk_drivers = ["igb_uio", "vfio-pci", "uio_pci_generic"]
+# list of currently loaded kernel modules
+loaded_modules = None
 
 # command-line arg flags
 b_flag = None
@@ -82,7 +105,7 @@ Options:
 
     --status-dev:
         Print the status of given device group. Supported device groups are:
-        "net", "crypto", "event", "mempool" and "compress"
+        "net", "baseband", "crypto", "event", "mempool" and "compress"
 
     -b driver, --bind=driver:
         Select the driver to use or \"none\" to unbind the device
@@ -126,6 +149,31 @@ def check_output(args, stderr=None):
     return subprocess.Popen(args, stdout=subprocess.PIPE,
                             stderr=stderr).communicate()[0]
 
+# check if a specific kernel module is loaded
+def module_is_loaded(module):
+    global loaded_modules
+
+    if module == 'vfio_pci':
+        module = 'vfio-pci'
+
+    if loaded_modules:
+        return module in loaded_modules
+
+    # Get list of sysfs modules (both built-in and dynamically loaded)
+    sysfs_path = '/sys/module/'
+
+    # Get the list of directories in sysfs_path
+    sysfs_mods = [m for m in os.listdir(sysfs_path)
+                  if os.path.isdir(os.path.join(sysfs_path, m))]
+
+    # special case for vfio_pci (module is named vfio-pci,
+    # but its .ko is named vfio_pci)
+    sysfs_mods = [a if a != 'vfio_pci' else 'vfio-pci' for a in sysfs_mods]
+
+    loaded_modules = sysfs_mods
+
+    return module in sysfs_mods
+
 
 def check_modules():
     '''Checks that igb_uio is loaded'''
@@ -135,35 +183,13 @@ def check_modules():
     mods = [{"Name": driver, "Found": False} for driver in dpdk_drivers]
 
     # first check if module is loaded
-    try:
-        # Get list of sysfs modules (both built-in and dynamically loaded)
-        sysfs_path = '/sys/module/'
-
-        # Get the list of directories in sysfs_path
-        sysfs_mods = [os.path.join(sysfs_path, o) for o
-                      in os.listdir(sysfs_path)
-                      if os.path.isdir(os.path.join(sysfs_path, o))]
-
-        # Extract the last element of '/sys/module/abc' in the array
-        sysfs_mods = [a.split('/')[-1] for a in sysfs_mods]
-
-        # special case for vfio_pci (module is named vfio-pci,
-        # but its .ko is named vfio_pci)
-        sysfs_mods = [a if a != 'vfio_pci' else 'vfio-pci' for a in sysfs_mods]
-
-        for mod in mods:
-            if mod["Name"] in sysfs_mods:
-                mod["Found"] = True
-    except:
-        pass
+    for mod in mods:
+        if module_is_loaded(mod["Name"]):
+            mod["Found"] = True
 
     # check if we have at least one loaded module
     if True not in [mod["Found"] for mod in mods] and b_flag is not None:
-        if b_flag in dpdk_drivers:
-            print("Error - no supported modules(DPDK driver) are loaded")
-            sys.exit(1)
-        else:
-            print("Warning - no supported modules(DPDK driver) are loaded")
+        print("Warning: no supported DPDK kernel modules are loaded", file=sys.stderr)
 
     # change DPDK driver list to only contain drivers that are loaded
     dpdk_drivers = [mod["Name"] for mod in mods if mod["Found"]]
@@ -322,23 +348,22 @@ def dev_id_from_dev_name(dev_name):
             if dev_name in devices[d]["Interface"].split(","):
                 return devices[d]["Slot"]
     # if nothing else matches - error
-    print("Unknown device: %s. "
-          "Please specify device in \"bus:slot.func\" format" % dev_name)
-    sys.exit(1)
+    raise ValueError("Unknown device: %s. "
+                     "Please specify device in \"bus:slot.func\" format" % dev_name)
 
 
 def unbind_one(dev_id, force):
     '''Unbind the device identified by "dev_id" from its current driver'''
     dev = devices[dev_id]
     if not has_driver(dev_id):
-        print("%s %s %s is not currently managed by any driver\n" %
-              (dev["Slot"], dev["Device_str"], dev["Interface"]))
+        print("Notice: %s %s %s is not currently managed by any driver" %
+              (dev["Slot"], dev["Device_str"], dev["Interface"]), file=sys.stderr)
         return
 
     # prevent us disconnecting ourselves
     if dev["Ssh_if"] and not force:
-        print("Routing table indicates that interface %s is active. "
-              "Skipping unbind" % (dev_id))
+        print("Warning: routing table indicates that interface %s is active. "
+              "Skipping unbind" % dev_id, file=sys.stderr)
         return
 
     # write to /sys to unbind
@@ -346,9 +371,8 @@ def unbind_one(dev_id, force):
     try:
         f = open(filename, "a")
     except:
-        print("Error: unbind failed for %s - Cannot open %s"
-              % (dev_id, filename))
-        sys.exit(1)
+        sys.exit("Error: unbind failed for %s - Cannot open %s" %
+                 (dev_id, filename))
     f.write(dev_id)
     f.close()
 
@@ -361,15 +385,15 @@ def bind_one(dev_id, driver, force):
 
     # prevent disconnection of our ssh session
     if dev["Ssh_if"] and not force:
-        print("Routing table indicates that interface %s is active. "
-              "Not modifying" % (dev_id))
+        print("Warning: routing table indicates that interface %s is active. "
+              "Not modifying" % dev_id, file=sys.stderr)
         return
 
     # unbind any existing drivers we don't want
     if has_driver(dev_id):
         if dev["Driver_str"] == driver:
-            print("%s already bound to driver %s, skipping\n"
-                  % (dev_id, driver))
+            print("Notice: %s already bound to driver %s, skipping" %
+                  (dev_id, driver), file=sys.stderr)
             return
         else:
             saved_driver = dev["Driver_str"]
@@ -389,14 +413,14 @@ def bind_one(dev_id, driver, force):
                 f = open(filename, "w")
             except:
                 print("Error: bind failed for %s - Cannot open %s"
-                      % (dev_id, filename))
+                      % (dev_id, filename), file=sys.stderr)
                 return
             try:
                 f.write("%s" % driver)
                 f.close()
             except:
                 print("Error: bind failed for %s - Cannot write driver %s to "
-                      "PCI ID " % (dev_id, driver))
+                      "PCI ID " % (dev_id, driver), file=sys.stderr)
                 return
         # For kernels < 3.15 use new_id to add PCI id's to the driver
         else:
@@ -405,7 +429,7 @@ def bind_one(dev_id, driver, force):
                 f = open(filename, "w")
             except:
                 print("Error: bind failed for %s - Cannot open %s"
-                      % (dev_id, filename))
+                      % (dev_id, filename), file=sys.stderr)
                 return
             try:
                 # Convert Device and Vendor Id to int to write to new_id
@@ -414,7 +438,7 @@ def bind_one(dev_id, driver, force):
                 f.close()
             except:
                 print("Error: bind failed for %s - Cannot write new PCI ID to "
-                      "driver %s" % (dev_id, driver))
+                      "driver %s" % (dev_id, driver), file=sys.stderr)
                 return
 
     # do the bind by writing to /sys
@@ -423,7 +447,7 @@ def bind_one(dev_id, driver, force):
         f = open(filename, "a")
     except:
         print("Error: bind failed for %s - Cannot open %s"
-              % (dev_id, filename))
+              % (dev_id, filename), file=sys.stderr)
         if saved_driver is not None:  # restore any previous driver
             bind_one(dev_id, saved_driver, force)
         return
@@ -438,7 +462,7 @@ def bind_one(dev_id, driver, force):
         if "Driver_str" in tmp and tmp["Driver_str"] == driver:
             return
         print("Error: bind failed for %s - Cannot bind to driver %s"
-              % (dev_id, driver))
+              % (dev_id, driver), file=sys.stderr)
         if saved_driver is not None:  # restore any previous driver
             bind_one(dev_id, saved_driver, force)
         return
@@ -451,16 +475,14 @@ def bind_one(dev_id, driver, force):
         try:
             f = open(filename, "w")
         except:
-            print("Error: unbind failed for %s - Cannot open %s"
+            sys.exit("Error: unbind failed for %s - Cannot open %s"
                   % (dev_id, filename))
-            sys.exit(1)
         try:
             f.write("\00")
             f.close()
         except:
-            print("Error: unbind failed for %s - Cannot open %s"
+            sys.exit("Error: unbind failed for %s - Cannot open %s"
                   % (dev_id, filename))
-            sys.exit(1)
 
 
 def unbind_all(dev_list, force=False):
@@ -473,7 +495,12 @@ def unbind_all(dev_list, force=False):
                     unbind_one(devices[d]["Slot"], force)
         return
 
-    dev_list = map(dev_id_from_dev_name, dev_list)
+    try:
+        dev_list = map(dev_id_from_dev_name, dev_list)
+    except ValueError as ex:
+        print(ex)
+        sys.exit(1)
+
     for d in dev_list:
         unbind_one(d, force)
 
@@ -482,7 +509,27 @@ def bind_all(dev_list, driver, force=False):
     """Bind method, takes a list of device locations"""
     global devices
 
-    dev_list = map(dev_id_from_dev_name, dev_list)
+    # a common user error is to forget to specify the driver the devices need to
+    # be bound to. check if the driver is a valid device, and if it is, show
+    # a meaningful error.
+    try:
+        dev_id_from_dev_name(driver)
+        # if we've made it this far, this means that the "driver" was a valid
+        # device string, so it's probably not a valid driver name.
+        sys.exit("Error: Driver '%s' does not look like a valid driver. " \
+                 "Did you forget to specify the driver to bind devices to?" % driver)
+    except ValueError:
+        # driver generated error - it's not a valid device ID, so all is well
+        pass
+
+    # check if we're attempting to bind to a driver that isn't loaded
+    if not module_is_loaded(driver.replace('-','_')):
+        sys.exit("Error: Driver '%s' is not loaded." % driver)
+
+    try:
+        dev_list = map(dev_id_from_dev_name, dev_list)
+    except ValueError as ex:
+        sys.exit(ex)
 
     for d in dev_list:
         bind_one(d, driver, force)
@@ -577,6 +624,9 @@ def show_status():
     if status_dev == "net" or status_dev == "all":
         show_device_status(network_devices, "Network")
 
+    if status_dev == "baseband" or status_dev == "all":
+        show_device_status(baseband_devices, "Baseband")
+
     if status_dev == "crypto" or status_dev == "all":
         show_device_status(crypto_devices, "Crypto")
 
@@ -589,6 +639,8 @@ def show_status():
     if status_dev == "compress" or status_dev == "all":
         show_device_status(compress_devices , "Compress")
 
+    if status_dev == "misc" or status_dev == "all":
+        show_device_status(misc_devices, "Misc (rawdev)")
 
 def parse_args():
     '''Parses the command-line arguments given by the user and takes the
@@ -625,8 +677,7 @@ def parse_args():
             force_flag = True
         if opt == "-b" or opt == "-u" or opt == "--bind" or opt == "--unbind":
             if b_flag is not None:
-                print("Error - Only one bind or unbind may be specified\n")
-                sys.exit(1)
+                sys.exit("Error: binding and unbinding are mutually exclusive")
             if opt == "-u" or opt == "--unbind":
                 b_flag = "none"
             else:
@@ -641,14 +692,14 @@ def do_arg_actions():
     global args
 
     if b_flag is None and not status_flag:
-        print("Error: No action specified for devices."
-              "Please give a -b or -u option")
-        print("Run '%s --usage' for further information" % sys.argv[0])
+        print("Error: No action specified for devices. "
+              "Please give a -b or -u option", file=sys.stderr)
+        usage()
         sys.exit(1)
 
     if b_flag is not None and len(args) == 0:
-        print("Error: No devices specified.")
-        print("Run '%s --usage' for further information" % sys.argv[0])
+        print("Error: No devices specified.", file=sys.stderr)
+        usage()
         sys.exit(1)
 
     if b_flag == "none" or b_flag == "None":
@@ -660,10 +711,12 @@ def do_arg_actions():
             clear_data()
             # refresh if we have changed anything
             get_device_details(network_devices)
+            get_device_details(baseband_devices)
             get_device_details(crypto_devices)
             get_device_details(eventdev_devices)
             get_device_details(mempool_devices)
             get_device_details(compress_devices)
+            get_device_details(misc_devices)
         show_status()
 
 
@@ -674,16 +727,17 @@ def main():
         ret = subprocess.call(['which', 'lspci'],
                               stdout=devnull, stderr=devnull)
         if ret != 0:
-            print("'lspci' not found - please install 'pciutils'")
-            sys.exit(1)
+            sys.exit("'lspci' not found - please install 'pciutils'")
     parse_args()
     check_modules()
     clear_data()
     get_device_details(network_devices)
+    get_device_details(baseband_devices)
     get_device_details(crypto_devices)
     get_device_details(eventdev_devices)
     get_device_details(mempool_devices)
     get_device_details(compress_devices)
+    get_device_details(misc_devices)
     do_arg_actions()
 
 if __name__ == "__main__":

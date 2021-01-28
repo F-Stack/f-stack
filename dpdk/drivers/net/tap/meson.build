@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2018 Luca Boccassi <bluca@debian.org>
 
-if host_machine.system() != 'linux'
-        build = false
+if not is_linux
+	build = false
+	reason = 'only supported on linux'
 endif
 sources = files(
 	'rte_eth_tap.c',

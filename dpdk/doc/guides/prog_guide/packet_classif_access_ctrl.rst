@@ -154,7 +154,7 @@ To define classification for the IPv6 2-tuple: <protocol, IPv6 source address> o
 
 .. code-block:: c
 
-    struct struct ipv6_hdr {
+    struct rte_ipv6_hdr {
         uint32_t vtc_flow;     /* IP version, traffic class & flow label. */
         uint16_t payload_len;  /* IP packet length - includes sizeof(ip_header). */
         uint8_t proto;         /* Protocol, next header. */
@@ -167,13 +167,13 @@ The following array of field definitions can be used:
 
 .. code-block:: c
 
-    struct struct rte_acl_field_def ipv6_2tuple_defs[5] = {
+    struct rte_acl_field_def ipv6_2tuple_defs[5] = {
         {
             .type = RTE_ACL_FIELD_TYPE_BITMASK,
             .size = sizeof (uint8_t),
             .field_index = 0,
             .input_index = 0,
-            .offset = offsetof (struct ipv6_hdr, proto),
+            .offset = offsetof (struct rte_ipv6_hdr, proto),
         },
 
         {
@@ -181,7 +181,7 @@ The following array of field definitions can be used:
             .size = sizeof (uint32_t),
             .field_index = 1,
             .input_index = 1,
-            .offset = offsetof (struct ipv6_hdr, src_addr[0]),
+            .offset = offsetof (struct rte_ipv6_hdr, src_addr[0]),
         },
 
         {
@@ -189,7 +189,7 @@ The following array of field definitions can be used:
             .size = sizeof (uint32_t),
             .field_index = 2,
             .input_index = 2,
-            .offset = offsetof (struct ipv6_hdr, src_addr[4]),
+            .offset = offsetof (struct rte_ipv6_hdr, src_addr[4]),
         },
 
         {
@@ -197,7 +197,7 @@ The following array of field definitions can be used:
             .size = sizeof (uint32_t),
             .field_index = 3,
             .input_index = 3,
-           .offset = offsetof (struct ipv6_hdr, src_addr[8]),
+           .offset = offsetof (struct rte_ipv6_hdr, src_addr[8]),
         },
 
         {
@@ -205,7 +205,7 @@ The following array of field definitions can be used:
            .size = sizeof (uint32_t),
            .field_index = 4,
            .input_index = 4,
-           .offset = offsetof (struct ipv6_hdr, src_addr[12]),
+           .offset = offsetof (struct rte_ipv6_hdr, src_addr[12]),
         },
     };
 
@@ -419,7 +419,7 @@ Classify with Multiple Categories
             .data = {.userdata = 1, .category_mask = 3, .priority = 1},
 
             /* destination IPv4 */
-            .field[2] = {.value.u32 = IPv4(192,168,0,0),. mask_range.u32 = 16,},
+            .field[2] = {.value.u32 = RTE_IPV4(192,168,0,0),. mask_range.u32 = 16,},
 
             /* source port */
             .field[3] = {.value.u16 = 0, .mask_range.u16 = 0xffff,},
@@ -433,7 +433,7 @@ Classify with Multiple Categories
             .data = {.userdata = 2, .category_mask = 1, .priority = 2},
 
             /* destination IPv4 */
-            .field[2] = {.value.u32 = IPv4(192,168,1,0),. mask_range.u32 = 24,},
+            .field[2] = {.value.u32 = RTE_IPV4(192,168,1,0),. mask_range.u32 = 24,},
 
             /* source port */
             .field[3] = {.value.u16 = 0, .mask_range.u16 = 0xffff,},
@@ -447,7 +447,7 @@ Classify with Multiple Categories
             .data = {.userdata = 3, .category_mask = 2, .priority = 3},
 
             /* source IPv4 */
-            .field[1] = {.value.u32 = IPv4(10,1,1,1),. mask_range.u32 = 32,},
+            .field[1] = {.value.u32 = RTE_IPV4(10,1,1,1),. mask_range.u32 = 32,},
 
             /* source port */
             .field[3] = {.value.u16 = 0, .mask_range.u16 = 0xffff,},

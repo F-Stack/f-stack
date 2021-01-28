@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016 NXP
+ *   Copyright 2016,2019 NXP
  *
  */
 
@@ -253,11 +253,33 @@ struct dpaa2_annot_hdr {
 #define PARSE_ERROR_CODE(var)		((uint64_t)(var) & 0xFF00000000000000)
 #define SOFT_PARSING_CONTEXT(var)	((uint64_t)(var) & 0x00FFFFFFFFFFFFFF)
 
+/*FAEAD offset in anmotation area*/
+#define DPAA2_FD_HW_ANNOT_FAEAD_OFFSET	0x58
+
+struct dpaa2_faead {
+	uint32_t fqid;
+	uint32_t ctrl;
+};
+
+/*FAEAD bits */
+/*A2 OMB contains valid data*/
+#define DPAA2_ANNOT_FAEAD_A2V		0x20000000
+/*egress confirmation FQID in FAEAD contains valid data*/
+#define DPAA2_ANNOT_FAEAD_A4V		0x08000000
+/*UPD is valid*/
+#define DPAA2_ANNOT_FAEAD_UPDV		0x00001000
+/*EBDD is valid*/
+#define DPAA2_ANNOT_FAEAD_EBDDV		0x00002000
+/*EBDD (External Buffer Deallocation Disable) */
+#define DPAA2_ANNOT_FAEAD_EBDD		0x00000020
+/*UPD (Update prepended data)*/
+#define DPAA2_ANNOT_FAEAD_UPD		0x00000010
+
 /* Debug frame, otherwise supposed to be discarded */
 #define DPAA2_ETH_FAS_DISC	      0x80000000
 /* MACSEC frame */
 #define DPAA2_ETH_FAS_MS		0x40000000
-#define DPAA2_ETH_FAS_PTP	       0x08000000
+#define DPAA2_ETH_FAS_PTP	       BIT_POS(59)
 /* Ethernet multicast frame */
 #define DPAA2_ETH_FAS_MC		0x04000000
 /* Ethernet broadcast frame */

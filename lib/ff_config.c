@@ -430,6 +430,21 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         return parse_port_slave_list(cur, value);
     }
 
+#ifdef INET6
+    else if (0 == strcmp(name, "addr6"))
+    {
+        cur->addr6_str = strdup(value);
+    }
+    else if (0 == strcmp(name, "prefix_len"))
+    {
+        cur->prefix_len = atoi(value);
+    }
+    else if (0 == strcmp(name, "gateway6"))
+    {
+        cur->gateway6_str = strdup(value);
+    }
+#endif
+
     return 1;
 }
 
@@ -567,6 +582,10 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
     } else if (MATCH("dpdk", "base_virtaddr")) {
         pconfig->dpdk.base_virtaddr= strdup(value);
+    } else if (MATCH("dpdk", "file_prefix")) {
+        pconfig->dpdk.file_prefix = strdup(value);
+    } else if (MATCH("dpdk", "pci_whitelist")) {
+        pconfig->dpdk.pci_whitelist = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -587,8 +606,12 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.idle_sleep = atoi(value);
     } else if (MATCH("dpdk", "pkt_tx_delay")) {
         pconfig->dpdk.pkt_tx_delay = atoi(value);
+    } else if (MATCH("dpdk", "symmetric_rss")) {
+        pconfig->dpdk.symmetric_rss = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
+    } else if (MATCH("kni", "kni_action")) {
+        pconfig->kni.kni_action= strdup(value);
     } else if (MATCH("kni", "method")) {
         pconfig->kni.method= strdup(value);
     } else if (MATCH("kni", "tcp_port")) {
@@ -615,6 +638,16 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return vdev_cfg_handler(pconfig, section, name, value);
     } else if (strncmp(section, "bond", 4) == 0) {
         return bond_cfg_handler(pconfig, section, name, value);
+    } else if (strcmp(section, "pcap") == 0) {
+        if (strcmp(name, "snaplen") == 0) {
+            pconfig->pcap.snap_len = (uint16_t)atoi(value);            
+        } else if (strcmp(name, "savelen") == 0) {
+            pconfig->pcap.save_len = (uint32_t)atoi(value);            
+        } else if (strcmp(name, "enable") == 0) {
+            pconfig->pcap.enable = (uint16_t)atoi(value);
+        } else if (strcmp(name, "savepath") == 0) {
+            pconfig->pcap.save_path = strdup(value);
+        }
     }
 
     return 1;
@@ -650,6 +683,14 @@ dpdk_args_setup(struct ff_config *cfg)
         sprintf(temp, "--base-virtaddr=%s", cfg->dpdk.base_virtaddr);
         dpdk_argv[n++] = strdup(temp);
     }
+    if (cfg->dpdk.file_prefix) {
+        sprintf(temp, "--file-prefix=container-%s", cfg->dpdk.file_prefix);
+        dpdk_argv[n++] = strdup(temp);
+    }
+    if (cfg->dpdk.pci_whitelist) {
+        sprintf(temp, "--pci-whitelist=%s", cfg->dpdk.pci_whitelist);
+        dpdk_argv[n++] = strdup(temp);
+    }
 
     if (cfg->dpdk.nb_vdev) {
         for (i=0; i<cfg->dpdk.nb_vdev; i++) {
@@ -680,8 +721,10 @@ dpdk_args_setup(struct ff_config *cfg)
         }
         sprintf(temp, "--no-pci");
         dpdk_argv[n++] = strdup(temp);
-        sprintf(temp, "--file-prefix=container");
-        dpdk_argv[n++] = strdup(temp);
+        if (!cfg->dpdk.file_prefix) {
+            sprintf(temp, "--file-prefix=container");
+            dpdk_argv[n++] = strdup(temp);
+        }
     }
 
     if (cfg->dpdk.nb_bond) {
@@ -803,6 +846,23 @@ ff_check_config(struct ff_config *cfg)
             return -1;
         }
     }
+
+    if(cfg->kni.kni_action) {
+        if (strcasecmp(cfg->kni.kni_action,"alltokni") &&
+            strcasecmp(cfg->kni.kni_action,"alltoff") &&
+            strcasecmp(cfg->kni.kni_action,"default")){
+                fprintf(stderr, "conf kni.kni_action[alltokni|alltoff|default] is error(%s)\n",
+                cfg->kni.kni_action);
+                return -1;
+        }
+    }
+
+    if (cfg->pcap.save_len < PCAP_SAVE_MINLEN)
+        cfg->pcap.save_len = PCAP_SAVE_MINLEN;
+    if (cfg->pcap.snap_len < PCAP_SNAP_MINLEN)
+        cfg->pcap.snap_len = PCAP_SNAP_MINLEN;
+    if (cfg->pcap.save_path==NULL || strlen(cfg->pcap.save_path) ==0)
+        cfg->pcap.save_path = strdup(".");
 
     #define CHECK_VALID(n) \
         do { \

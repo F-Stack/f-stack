@@ -10,17 +10,7 @@
 #include "mcdi_mon.h"
 #endif
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
-
-#if EFSYS_OPT_QSTATS
-#define	EFX_EV_QSTAT_INCR(_eep, _stat)					\
-	do {								\
-		(_eep)->ee_stat[_stat]++;				\
-	_NOTE(CONSTANTCONDITION)					\
-	} while (B_FALSE)
-#else
-#define	EFX_EV_QSTAT_INCR(_eep, _stat)
-#endif
+#if EFX_OPTS_EF10()
 
 /*
  * Non-interrupting event queue requires interrrupting event queue to
@@ -123,7 +113,7 @@ efx_mcdi_init_evq(
 {
 	efx_mcdi_req_t req;
 	EFX_MCDI_DECLARE_BUF(payload,
-		MC_CMD_INIT_EVQ_IN_LEN(EFX_EVQ_NBUFS(EFX_EVQ_MAXNEVS)),
+		MC_CMD_INIT_EVQ_IN_LEN(EF10_EVQ_MAXNBUFS),
 		MC_CMD_INIT_EVQ_OUT_LEN);
 	efx_qword_t *dma_addr;
 	uint64_t addr;
@@ -133,8 +123,8 @@ efx_mcdi_init_evq(
 	int ev_cut_through;
 	efx_rc_t rc;
 
-	npages = EFX_EVQ_NBUFS(nevs);
-	if (MC_CMD_INIT_EVQ_IN_LEN(npages) > MC_CMD_INIT_EVQ_IN_LENMAX) {
+	npages = efx_evq_nbufs(enp, nevs);
+	if (npages > EF10_EVQ_MAXNBUFS) {
 		rc = EINVAL;
 		goto fail1;
 	}
@@ -259,7 +249,7 @@ efx_mcdi_init_evq_v2(
 {
 	efx_mcdi_req_t req;
 	EFX_MCDI_DECLARE_BUF(payload,
-		MC_CMD_INIT_EVQ_V2_IN_LEN(EFX_EVQ_NBUFS(EFX_EVQ_MAXNEVS)),
+		MC_CMD_INIT_EVQ_V2_IN_LEN(EF10_EVQ_MAXNBUFS),
 		MC_CMD_INIT_EVQ_V2_OUT_LEN);
 	boolean_t interrupting;
 	unsigned int evq_type;
@@ -269,8 +259,8 @@ efx_mcdi_init_evq_v2(
 	int i;
 	efx_rc_t rc;
 
-	npages = EFX_EVQ_NBUFS(nevs);
-	if (MC_CMD_INIT_EVQ_V2_IN_LEN(npages) > MC_CMD_INIT_EVQ_V2_IN_LENMAX) {
+	npages = efx_evq_nbufs(enp, nevs);
+	if (npages > EF10_EVQ_MAXNBUFS) {
 		rc = EINVAL;
 		goto fail1;
 	}
@@ -446,23 +436,32 @@ ef10_ev_qcreate(
 	efx_rc_t rc;
 
 	_NOTE(ARGUNUSED(id))	/* buftbl id managed by MC */
-	EFX_STATIC_ASSERT(ISP2(EFX_EVQ_MAXNEVS));
-	EFX_STATIC_ASSERT(ISP2(EFX_EVQ_MINNEVS));
 
-	if (!ISP2(ndescs) ||
-	    (ndescs < EFX_EVQ_MINNEVS) || (ndescs > EFX_EVQ_MAXNEVS)) {
+	if (index >= encp->enc_evq_limit) {
 		rc = EINVAL;
 		goto fail1;
 	}
 
-	if (index >= encp->enc_evq_limit) {
+	if (us > encp->enc_evq_timer_max_us) {
 		rc = EINVAL;
 		goto fail2;
 	}
 
-	if (us > encp->enc_evq_timer_max_us) {
-		rc = EINVAL;
-		goto fail3;
+	/*
+	 * NO_CONT_EV mode is only requested from the firmware when creating
+	 * receive queues, but here it needs to be specified at event queue
+	 * creation, as the event handler needs to know which format is in use.
+	 *
+	 * If EFX_EVQ_FLAGS_NO_CONT_EV is specified, all receive queues for this
+	 * event queue will be created in NO_CONT_EV mode.
+	 *
+	 * See SF-109306-TC 5.11 "Events for RXQs in NO_CONT_EV mode".
+	 */
+	if (flags & EFX_EVQ_FLAGS_NO_CONT_EV) {
+		if (enp->en_nic_cfg.enc_no_cont_ev_mode_supported == B_FALSE) {
+			rc = EINVAL;
+			goto fail3;
+		}
 	}
 
 	/* Set up the handler table */
@@ -544,9 +543,7 @@ ef10_ev_qdestroy(
 {
 	efx_nic_t *enp = eep->ee_enp;
 
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-	    enp->en_family == EFX_FAMILY_MEDFORD ||
-	    enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 	(void) efx_mcdi_fini_evq(enp, eep->ee_index);
 }
@@ -563,9 +560,9 @@ ef10_ev_qprime(
 	rptr = count & eep->ee_mask;
 
 	if (enp->en_nic_cfg.enc_bug35388_workaround) {
-		EFX_STATIC_ASSERT(EFX_EVQ_MINNEVS >
+		EFX_STATIC_ASSERT(EF10_EVQ_MINNEVS >
 		    (1 << ERF_DD_EVQ_IND_RPTR_WIDTH));
-		EFX_STATIC_ASSERT(EFX_EVQ_MAXNEVS <
+		EFX_STATIC_ASSERT(EF10_EVQ_MAXNEVS <
 		    (1 << 2 * ERF_DD_EVQ_IND_RPTR_WIDTH));
 
 		EFX_POPULATE_DWORD_2(dword,
@@ -815,6 +812,7 @@ ef10_ev_rx_packed_stream(
 	}
 
 	if (EFX_QWORD_FIELD(*eqp, ESF_DZ_RX_PARSE_INCOMPLETE)) {
+		EFX_EV_QSTAT_INCR(eep, EV_RX_PARSE_INCOMPLETE);
 		flags |= EFX_PKT_PACKED_STREAM_PARSE_INCOMPLETE;
 		goto deliver;
 	}
@@ -922,22 +920,46 @@ ef10_ev_rx(
 	if (mac_class == ESE_DZ_MAC_CLASS_UCAST)
 		flags |= EFX_PKT_UNICAST;
 
-	/* Increment the count of descriptors read */
+	/*
+	 * Increment the count of descriptors read.
+	 *
+	 * In NO_CONT_EV mode, RX_DSC_PTR_LBITS is actually a packet count, but
+	 * when scatter is disabled, there is only one descriptor per packet and
+	 * so it can be treated the same.
+	 *
+	 * TODO: Support scatter in NO_CONT_EV mode.
+	 */
 	desc_count = (next_read_lbits - eersp->eers_rx_read_ptr) &
 	    EFX_MASK32(ESF_DZ_RX_DSC_PTR_LBITS);
 	eersp->eers_rx_read_ptr += desc_count;
 
-	/*
-	 * FIXME: add error checking to make sure this a batched event.
-	 * This could also be an aborted scatter, see Bug36629.
-	 */
-	if (desc_count > 1) {
+	/* Calculate the index of the last descriptor consumed */
+	last_used_id = (eersp->eers_rx_read_ptr - 1) & eersp->eers_rx_mask;
+
+	if (eep->ee_flags & EFX_EVQ_FLAGS_NO_CONT_EV) {
+		if (desc_count > 1)
+			EFX_EV_QSTAT_INCR(eep, EV_RX_BATCH);
+
+		/* Always read the length from the prefix in NO_CONT_EV mode. */
+		flags |= EFX_PKT_PREFIX_LEN;
+
+		/*
+		 * Check for an aborted scatter, signalled by the ABORT bit in
+		 * NO_CONT_EV mode. The ABORT bit was not used before NO_CONT_EV
+		 * mode was added as it was broken in Huntington silicon.
+		 */
+		if (EFX_QWORD_FIELD(*eqp, ESF_EZ_RX_ABORT) != 0) {
+			flags |= EFX_DISCARD;
+			goto deliver;
+		}
+	} else if (desc_count > 1) {
+		/*
+		 * FIXME: add error checking to make sure this a batched event.
+		 * This could also be an aborted scatter, see Bug36629.
+		 */
 		EFX_EV_QSTAT_INCR(eep, EV_RX_BATCH);
 		flags |= EFX_PKT_PREFIX_LEN;
 	}
-
-	/* Calculate the index of the last descriptor consumed */
-	last_used_id = (eersp->eers_rx_read_ptr - 1) & eersp->eers_rx_mask;
 
 	/* Check for errors that invalidate checksum and L3/L4 fields */
 	if (EFX_QWORD_FIELD(*eqp, ESF_DZ_RX_TRUNC_ERR) != 0) {
@@ -958,7 +980,7 @@ ef10_ev_rx(
 		 * or headers that are too long for the parser.
 		 * Headers and checksums must be validated by the host.
 		 */
-		/* TODO: EFX_EV_QSTAT_INCR(eep, EV_RX_PARSE_INCOMPLETE); */
+		EFX_EV_QSTAT_INCR(eep, EV_RX_PARSE_INCOMPLETE);
 		goto deliver;
 	}
 
@@ -1205,6 +1227,13 @@ ef10_ev_mcdi(
 		break;
 #endif /* EFSYS_OPT_MCDI_PROXY_AUTH */
 
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	case MCDI_EVENT_CODE_PROXY_REQUEST:
+		efx_mcdi_ev_proxy_request(enp,
+			MCDI_EV_FIELD(eqp, PROXY_REQUEST_BUFF_INDEX));
+		break;
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
+
 	case MCDI_EVENT_CODE_LINKCHANGE: {
 		efx_link_mode_t link_mode;
 
@@ -1444,4 +1473,4 @@ ef10_ev_rxlabel_fini(
 #endif
 }
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */

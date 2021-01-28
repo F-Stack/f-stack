@@ -285,7 +285,6 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* Read desc statuses backwards to avoid race condition */
 		/* A.1 load 4 pkts desc */
 		descs[3] =  vld1q_u64((uint64_t *)(rxdp + 3));
-		rte_rmb();
 
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		vst1q_u64((uint64_t *)&rx_pkts[pos], mbp1);
@@ -307,9 +306,6 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			rte_mbuf_prefetch_part2(rx_pkts[pos + 2]);
 			rte_mbuf_prefetch_part2(rx_pkts[pos + 3]);
 		}
-
-		/* avoid compiler reorder optimization */
-		rte_compiler_barrier();
 
 		/* pkt 3,4 shift the pktlen field to be 16-bit aligned*/
 		uint32x4_t len3 = vshlq_u32(vreinterpretq_u32_u64(descs[3]),
@@ -478,6 +474,7 @@ i40e_recv_scattered_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 			i++;
 		if (i == nb_bufs)
 			return nb_bufs;
+		rxq->pkt_first_seg = rx_pkts[i];
 	}
 	return i + reassemble_packets(rxq, &rx_pkts[i], nb_bufs - i,
 		&split_flags[i]);

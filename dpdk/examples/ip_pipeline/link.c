@@ -129,7 +129,8 @@ link_create(const char *name, struct link_params *params)
 		if (!rte_eth_dev_is_valid_port(port_id))
 			return NULL;
 
-	rte_eth_dev_info_get(port_id, &port_info);
+	if (rte_eth_dev_info_get(port_id, &port_info) != 0)
+		return NULL;
 
 	mempool = mempool_find(params->rx.mempool_name);
 	if (mempool == NULL)
@@ -175,8 +176,11 @@ link_create(const char *name, struct link_params *params)
 	if (status < 0)
 		return NULL;
 
-	if (params->promiscuous)
-		rte_eth_promiscuous_enable(port_id);
+	if (params->promiscuous) {
+		status = rte_eth_promiscuous_enable(port_id);
+		if (status != 0)
+			return NULL;
+	}
 
 	/* Port RX */
 	for (i = 0; i < params->rx.n_queues; i++) {
@@ -260,7 +264,8 @@ link_is_up(const char *name)
 		return 0;
 
 	/* Resource */
-	rte_eth_link_get(link->port_id, &link_params);
+	if (rte_eth_link_get(link->port_id, &link_params) < 0)
+		return 0;
 
 	return (link_params.link_status == ETH_LINK_DOWN) ? 0 : 1;
 }

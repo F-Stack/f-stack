@@ -23,25 +23,28 @@ extern "C" {
 #include <rte_mbuf.h>
 #include <rte_byteorder.h>
 
-#define ETHER_ADDR_LEN  6 /**< Length of Ethernet address. */
-#define ETHER_TYPE_LEN  2 /**< Length of Ethernet type field. */
-#define ETHER_CRC_LEN   4 /**< Length of Ethernet CRC. */
-#define ETHER_HDR_LEN   \
-	(ETHER_ADDR_LEN * 2 + ETHER_TYPE_LEN) /**< Length of Ethernet header. */
-#define ETHER_MIN_LEN   64    /**< Minimum frame len, including CRC. */
-#define ETHER_MAX_LEN   1518  /**< Maximum frame len, including CRC. */
-#define ETHER_MTU       \
-	(ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN) /**< Ethernet MTU. */
+#define RTE_ETHER_ADDR_LEN  6 /**< Length of Ethernet address. */
+#define RTE_ETHER_TYPE_LEN  2 /**< Length of Ethernet type field. */
+#define RTE_ETHER_CRC_LEN   4 /**< Length of Ethernet CRC. */
+#define RTE_ETHER_HDR_LEN   \
+	(RTE_ETHER_ADDR_LEN * 2 + \
+		RTE_ETHER_TYPE_LEN) /**< Length of Ethernet header. */
+#define RTE_ETHER_MIN_LEN   64    /**< Minimum frame len, including CRC. */
+#define RTE_ETHER_MAX_LEN   1518  /**< Maximum frame len, including CRC. */
+#define RTE_ETHER_MTU       \
+	(RTE_ETHER_MAX_LEN - RTE_ETHER_HDR_LEN - \
+		RTE_ETHER_CRC_LEN) /**< Ethernet MTU. */
 
-#define ETHER_MAX_VLAN_FRAME_LEN \
-	(ETHER_MAX_LEN + 4) /**< Maximum VLAN frame length, including CRC. */
+#define RTE_ETHER_MAX_VLAN_FRAME_LEN \
+	(RTE_ETHER_MAX_LEN + 4)
+	/**< Maximum VLAN frame length, including CRC. */
 
-#define ETHER_MAX_JUMBO_FRAME_LEN \
+#define RTE_ETHER_MAX_JUMBO_FRAME_LEN \
 	0x3F00 /**< Maximum Jumbo frame length, including CRC. */
 
-#define ETHER_MAX_VLAN_ID  4095 /**< Maximum VLAN ID. */
+#define RTE_ETHER_MAX_VLAN_ID  4095 /**< Maximum VLAN ID. */
 
-#define ETHER_MIN_MTU 68 /**< Minimum MTU for IPv4 packets, see RFC 791. */
+#define RTE_ETHER_MIN_MTU 68 /**< Minimum MTU for IPv4 packets, see RFC 791. */
 
 /**
  * Ethernet address:
@@ -54,12 +57,12 @@ extern "C" {
  * administrator and does not contain OUIs.
  * See http://standards.ieee.org/regauth/groupmac/tutorial.html
  */
-struct ether_addr {
-	uint8_t addr_bytes[ETHER_ADDR_LEN]; /**< Addr bytes in tx order */
-} __attribute__((__packed__));
+struct rte_ether_addr {
+	uint8_t addr_bytes[RTE_ETHER_ADDR_LEN]; /**< Addr bytes in tx order */
+} __attribute__((aligned(2)));
 
-#define ETHER_LOCAL_ADMIN_ADDR 0x02 /**< Locally assigned Eth. address. */
-#define ETHER_GROUP_ADDR       0x01 /**< Multicast or broadcast Eth. address. */
+#define RTE_ETHER_LOCAL_ADMIN_ADDR 0x02 /**< Locally assigned Eth. address. */
+#define RTE_ETHER_GROUP_ADDR  0x01 /**< Multicast or broadcast Eth. address. */
 
 /**
  * Check if two Ethernet addresses are the same.
@@ -75,14 +78,13 @@ struct ether_addr {
  *  True  (1) if the given two ethernet address are the same;
  *  False (0) otherwise.
  */
-static inline int is_same_ether_addr(const struct ether_addr *ea1,
-				     const struct ether_addr *ea2)
+static inline int rte_is_same_ether_addr(const struct rte_ether_addr *ea1,
+				     const struct rte_ether_addr *ea2)
 {
-	int i;
-	for (i = 0; i < ETHER_ADDR_LEN; i++)
-		if (ea1->addr_bytes[i] != ea2->addr_bytes[i])
-			return 0;
-	return 1;
+	const uint16_t *w1 = (const uint16_t *)ea1;
+	const uint16_t *w2 = (const uint16_t *)ea2;
+
+	return ((w1[0] ^ w2[0]) | (w1[1] ^ w2[1]) | (w1[2] ^ w2[2])) == 0;
 }
 
 /**
@@ -95,13 +97,11 @@ static inline int is_same_ether_addr(const struct ether_addr *ea1,
  *   True  (1) if the given ethernet address is filled with zeros;
  *   false (0) otherwise.
  */
-static inline int is_zero_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_zero_ether_addr(const struct rte_ether_addr *ea)
 {
-	int i;
-	for (i = 0; i < ETHER_ADDR_LEN; i++)
-		if (ea->addr_bytes[i] != 0x00)
-			return 0;
-	return 1;
+	const uint16_t *w = (const uint16_t *)ea;
+
+	return (w[0] | w[1] | w[2]) == 0;
 }
 
 /**
@@ -114,9 +114,9 @@ static inline int is_zero_ether_addr(const struct ether_addr *ea)
  *   True  (1) if the given ethernet address is a unicast address;
  *   false (0) otherwise.
  */
-static inline int is_unicast_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_unicast_ether_addr(const struct rte_ether_addr *ea)
 {
-	return (ea->addr_bytes[0] & ETHER_GROUP_ADDR) == 0;
+	return (ea->addr_bytes[0] & RTE_ETHER_GROUP_ADDR) == 0;
 }
 
 /**
@@ -129,9 +129,9 @@ static inline int is_unicast_ether_addr(const struct ether_addr *ea)
  *   True  (1) if the given ethernet address is a multicast address;
  *   false (0) otherwise.
  */
-static inline int is_multicast_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_multicast_ether_addr(const struct rte_ether_addr *ea)
 {
-	return ea->addr_bytes[0] & ETHER_GROUP_ADDR;
+	return ea->addr_bytes[0] & RTE_ETHER_GROUP_ADDR;
 }
 
 /**
@@ -144,9 +144,9 @@ static inline int is_multicast_ether_addr(const struct ether_addr *ea)
  *   True  (1) if the given ethernet address is a broadcast address;
  *   false (0) otherwise.
  */
-static inline int is_broadcast_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_broadcast_ether_addr(const struct rte_ether_addr *ea)
 {
-	const unaligned_uint16_t *ea_words = (const unaligned_uint16_t *)ea;
+	const uint16_t *ea_words = (const uint16_t *)ea;
 
 	return (ea_words[0] == 0xFFFF && ea_words[1] == 0xFFFF &&
 		ea_words[2] == 0xFFFF);
@@ -162,9 +162,9 @@ static inline int is_broadcast_ether_addr(const struct ether_addr *ea)
  *   True  (1) if the given ethernet address is a universally assigned address;
  *   false (0) otherwise.
  */
-static inline int is_universal_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_universal_ether_addr(const struct rte_ether_addr *ea)
 {
-	return (ea->addr_bytes[0] & ETHER_LOCAL_ADMIN_ADDR) == 0;
+	return (ea->addr_bytes[0] & RTE_ETHER_LOCAL_ADMIN_ADDR) == 0;
 }
 
 /**
@@ -177,9 +177,9 @@ static inline int is_universal_ether_addr(const struct ether_addr *ea)
  *   True  (1) if the given ethernet address is a locally assigned address;
  *   false (0) otherwise.
  */
-static inline int is_local_admin_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_local_admin_ether_addr(const struct rte_ether_addr *ea)
 {
-	return (ea->addr_bytes[0] & ETHER_LOCAL_ADMIN_ADDR) != 0;
+	return (ea->addr_bytes[0] & RTE_ETHER_LOCAL_ADMIN_ADDR) != 0;
 }
 
 /**
@@ -193,9 +193,9 @@ static inline int is_local_admin_ether_addr(const struct ether_addr *ea)
  *   True  (1) if the given ethernet address is valid;
  *   false (0) otherwise.
  */
-static inline int is_valid_assigned_ether_addr(const struct ether_addr *ea)
+static inline int rte_is_valid_assigned_ether_addr(const struct rte_ether_addr *ea)
 {
-	return is_unicast_ether_addr(ea) && (!is_zero_ether_addr(ea));
+	return rte_is_unicast_ether_addr(ea) && (!rte_is_zero_ether_addr(ea));
 }
 
 /**
@@ -204,15 +204,8 @@ static inline int is_valid_assigned_ether_addr(const struct ether_addr *ea)
  * @param addr
  *   A pointer to Ethernet address.
  */
-static inline void eth_random_addr(uint8_t *addr)
-{
-	uint64_t rand = rte_rand();
-	uint8_t *p = (uint8_t *)&rand;
-
-	rte_memcpy(addr, p, ETHER_ADDR_LEN);
-	addr[0] &= (uint8_t)~ETHER_GROUP_ADDR;       /* clear multicast bit */
-	addr[0] |= ETHER_LOCAL_ADMIN_ADDR;  /* set local assignment bit */
-}
+void
+rte_eth_random_addr(uint8_t *addr);
 
 /**
  * Fast copy an Ethernet address.
@@ -222,8 +215,8 @@ static inline void eth_random_addr(uint8_t *addr)
  * @param ea_to
  *   A pointer to a ether_addr structure where to copy the Ethernet address.
  */
-static inline void ether_addr_copy(const struct ether_addr *ea_from,
-				   struct ether_addr *ea_to)
+static inline void rte_ether_addr_copy(const struct rte_ether_addr *ea_from,
+				   struct rte_ether_addr *ea_to)
 {
 #ifdef __INTEL_COMPILER
 	uint16_t *from_words = (uint16_t *)(ea_from->addr_bytes);
@@ -240,7 +233,7 @@ static inline void ether_addr_copy(const struct ether_addr *ea_from,
 #endif
 }
 
-#define ETHER_ADDR_FMT_SIZE         18
+#define RTE_ETHER_ADDR_FMT_SIZE         18
 /**
  * Format 48bits Ethernet address in pattern xx:xx:xx:xx:xx:xx.
  *
@@ -251,91 +244,66 @@ static inline void ether_addr_copy(const struct ether_addr *ea_from,
  * @param eth_addr
  *   A pointer to a ether_addr structure.
  */
-static inline void
-ether_format_addr(char *buf, uint16_t size,
-		  const struct ether_addr *eth_addr)
-{
-	snprintf(buf, size, "%02X:%02X:%02X:%02X:%02X:%02X",
-		 eth_addr->addr_bytes[0],
-		 eth_addr->addr_bytes[1],
-		 eth_addr->addr_bytes[2],
-		 eth_addr->addr_bytes[3],
-		 eth_addr->addr_bytes[4],
-		 eth_addr->addr_bytes[5]);
-}
+void
+rte_ether_format_addr(char *buf, uint16_t size,
+		      const struct rte_ether_addr *eth_addr);
+/**
+ * Convert string with Ethernet address to an ether_addr.
+ *
+ * @param str
+ *   A pointer to buffer contains the formatted MAC address.
+ *   The supported formats are:
+ *     XX:XX:XX:XX:XX:XX or XXXX:XXXX:XXXX
+ *   where XX is a hex digit: 0-9, a-f, or A-F.
+ * @param eth_addr
+ *   A pointer to a ether_addr structure.
+ * @return
+ *   0 if successful
+ *   -1 and sets rte_errno if invalid string
+ */
+__rte_experimental
+int
+rte_ether_unformat_addr(const char *str, struct rte_ether_addr *eth_addr);
 
 /**
  * Ethernet header: Contains the destination address, source address
  * and frame type.
  */
-struct ether_hdr {
-	struct ether_addr d_addr; /**< Destination address. */
-	struct ether_addr s_addr; /**< Source address. */
+struct rte_ether_hdr {
+	struct rte_ether_addr d_addr; /**< Destination address. */
+	struct rte_ether_addr s_addr; /**< Source address. */
 	uint16_t ether_type;      /**< Frame type. */
-} __attribute__((__packed__));
+} __attribute__((aligned(2)));
 
 /**
  * Ethernet VLAN Header.
  * Contains the 16-bit VLAN Tag Control Identifier and the Ethernet type
  * of the encapsulated frame.
  */
-struct vlan_hdr {
+struct rte_vlan_hdr {
 	uint16_t vlan_tci; /**< Priority (3) + CFI (1) + Identifier Code (12) */
 	uint16_t eth_proto;/**< Ethernet type of encapsulated frame. */
 } __attribute__((__packed__));
 
-/**
- * VXLAN protocol header.
- * Contains the 8-bit flag, 24-bit VXLAN Network Identifier and
- * Reserved fields (24 bits and 8 bits)
- */
-struct vxlan_hdr {
-	uint32_t vx_flags; /**< flag (8) + Reserved (24). */
-	uint32_t vx_vni;   /**< VNI (24) + Reserved (8). */
-} __attribute__((__packed__));
+
 
 /* Ethernet frame types */
-#define ETHER_TYPE_IPv4 0x0800 /**< IPv4 Protocol. */
-#define ETHER_TYPE_IPv6 0x86DD /**< IPv6 Protocol. */
-#define ETHER_TYPE_ARP  0x0806 /**< Arp Protocol. */
-#define ETHER_TYPE_RARP 0x8035 /**< Reverse Arp Protocol. */
-#define ETHER_TYPE_VLAN 0x8100 /**< IEEE 802.1Q VLAN tagging. */
-#define ETHER_TYPE_QINQ 0x88A8 /**< IEEE 802.1ad QinQ tagging. */
-#define ETHER_TYPE_ETAG 0x893F /**< IEEE 802.1BR E-Tag. */
-#define ETHER_TYPE_1588 0x88F7 /**< IEEE 802.1AS 1588 Precise Time Protocol. */
-#define ETHER_TYPE_SLOW 0x8809 /**< Slow protocols (LACP and Marker). */
-#define ETHER_TYPE_TEB  0x6558 /**< Transparent Ethernet Bridging. */
-#define ETHER_TYPE_LLDP 0x88CC /**< LLDP Protocol. */
-#define ETHER_TYPE_MPLS 0x8847 /**< MPLS ethertype. */
-#define ETHER_TYPE_MPLSM 0x8848 /**< MPLS multicast ethertype. */
-
-#define ETHER_VXLAN_HLEN (sizeof(struct udp_hdr) + sizeof(struct vxlan_hdr))
-/**< VXLAN tunnel header length. */
-
-/**
- * VXLAN-GPE protocol header (draft-ietf-nvo3-vxlan-gpe-05).
- * Contains the 8-bit flag, 8-bit next-protocol, 24-bit VXLAN Network
- * Identifier and Reserved fields (16 bits and 8 bits).
- */
-struct vxlan_gpe_hdr {
-	uint8_t vx_flags;    /**< flag (8). */
-	uint8_t reserved[2]; /**< Reserved (16). */
-	uint8_t proto;       /**< next-protocol (8). */
-	uint32_t vx_vni;     /**< VNI (24) + Reserved (8). */
-} __attribute__((__packed__));
-
-/* VXLAN-GPE next protocol types */
-#define VXLAN_GPE_TYPE_IPV4 1 /**< IPv4 Protocol. */
-#define VXLAN_GPE_TYPE_IPV6 2 /**< IPv6 Protocol. */
-#define VXLAN_GPE_TYPE_ETH  3 /**< Ethernet Protocol. */
-#define VXLAN_GPE_TYPE_NSH  4 /**< NSH Protocol. */
-#define VXLAN_GPE_TYPE_MPLS 5 /**< MPLS Protocol. */
-#define VXLAN_GPE_TYPE_GBP  6 /**< GBP Protocol. */
-#define VXLAN_GPE_TYPE_VBNG 7 /**< vBNG Protocol. */
-
-#define ETHER_VXLAN_GPE_HLEN (sizeof(struct udp_hdr) + \
-			      sizeof(struct vxlan_gpe_hdr))
-/**< VXLAN-GPE tunnel header length. */
+#define RTE_ETHER_TYPE_IPV4 0x0800 /**< IPv4 Protocol. */
+#define RTE_ETHER_TYPE_IPV6 0x86DD /**< IPv6 Protocol. */
+#define RTE_ETHER_TYPE_ARP  0x0806 /**< Arp Protocol. */
+#define RTE_ETHER_TYPE_RARP 0x8035 /**< Reverse Arp Protocol. */
+#define RTE_ETHER_TYPE_VLAN 0x8100 /**< IEEE 802.1Q VLAN tagging. */
+#define RTE_ETHER_TYPE_QINQ 0x88A8 /**< IEEE 802.1ad QinQ tagging. */
+#define RTE_ETHER_TYPE_PPPOE_DISCOVERY 0x8863 /**< PPPoE Discovery Stage. */
+#define RTE_ETHER_TYPE_PPPOE_SESSION 0x8864 /**< PPPoE Session Stage. */
+#define RTE_ETHER_TYPE_ETAG 0x893F /**< IEEE 802.1BR E-Tag. */
+#define RTE_ETHER_TYPE_1588 0x88F7
+	/**< IEEE 802.1AS 1588 Precise Time Protocol. */
+#define RTE_ETHER_TYPE_SLOW 0x8809 /**< Slow protocols (LACP and Marker). */
+#define RTE_ETHER_TYPE_TEB  0x6558 /**< Transparent Ethernet Bridging. */
+#define RTE_ETHER_TYPE_LLDP 0x88CC /**< LLDP Protocol. */
+#define RTE_ETHER_TYPE_MPLS 0x8847 /**< MPLS ethertype. */
+#define RTE_ETHER_TYPE_MPLSM 0x8848 /**< MPLS multicast ethertype. */
 
 /**
  * Extract VLAN tag information into mbuf
@@ -350,20 +318,20 @@ struct vxlan_gpe_hdr {
  */
 static inline int rte_vlan_strip(struct rte_mbuf *m)
 {
-	struct ether_hdr *eh
-		 = rte_pktmbuf_mtod(m, struct ether_hdr *);
-	struct vlan_hdr *vh;
+	struct rte_ether_hdr *eh
+		 = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	struct rte_vlan_hdr *vh;
 
-	if (eh->ether_type != rte_cpu_to_be_16(ETHER_TYPE_VLAN))
+	if (eh->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
 		return -1;
 
-	vh = (struct vlan_hdr *)(eh + 1);
+	vh = (struct rte_vlan_hdr *)(eh + 1);
 	m->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 	m->vlan_tci = rte_be_to_cpu_16(vh->vlan_tci);
 
 	/* Copy ether header over rather than moving whole packet */
-	memmove(rte_pktmbuf_adj(m, sizeof(struct vlan_hdr)),
-		eh, 2 * ETHER_ADDR_LEN);
+	memmove(rte_pktmbuf_adj(m, sizeof(struct rte_vlan_hdr)),
+		eh, 2 * RTE_ETHER_ADDR_LEN);
 
 	return 0;
 }
@@ -382,38 +350,31 @@ static inline int rte_vlan_strip(struct rte_mbuf *m)
  */
 static inline int rte_vlan_insert(struct rte_mbuf **m)
 {
-	struct ether_hdr *oh, *nh;
-	struct vlan_hdr *vh;
+	struct rte_ether_hdr *oh, *nh;
+	struct rte_vlan_hdr *vh;
 
 	/* Can't insert header if mbuf is shared */
-	if (rte_mbuf_refcnt_read(*m) > 1) {
-		struct rte_mbuf *copy;
+	if (!RTE_MBUF_DIRECT(*m) || rte_mbuf_refcnt_read(*m) > 1)
+		return -EINVAL;
 
-		copy = rte_pktmbuf_clone(*m, (*m)->pool);
-		if (unlikely(copy == NULL))
-			return -ENOMEM;
-		rte_pktmbuf_free(*m);
-		*m = copy;
-	}
-
-	oh = rte_pktmbuf_mtod(*m, struct ether_hdr *);
-	nh = (struct ether_hdr *)
-		rte_pktmbuf_prepend(*m, sizeof(struct vlan_hdr));
+	oh = rte_pktmbuf_mtod(*m, struct rte_ether_hdr *);
+	nh = (struct rte_ether_hdr *)
+		rte_pktmbuf_prepend(*m, sizeof(struct rte_vlan_hdr));
 	if (nh == NULL)
 		return -ENOSPC;
 
-	memmove(nh, oh, 2 * ETHER_ADDR_LEN);
-	nh->ether_type = rte_cpu_to_be_16(ETHER_TYPE_VLAN);
+	memmove(nh, oh, 2 * RTE_ETHER_ADDR_LEN);
+	nh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 
-	vh = (struct vlan_hdr *) (nh + 1);
+	vh = (struct rte_vlan_hdr *) (nh + 1);
 	vh->vlan_tci = rte_cpu_to_be_16((*m)->vlan_tci);
 
 	(*m)->ol_flags &= ~(PKT_RX_VLAN_STRIPPED | PKT_TX_VLAN);
 
 	if ((*m)->ol_flags & PKT_TX_TUNNEL_MASK)
-		(*m)->outer_l2_len += sizeof(struct vlan_hdr);
+		(*m)->outer_l2_len += sizeof(struct rte_vlan_hdr);
 	else
-		(*m)->l2_len += sizeof(struct vlan_hdr);
+		(*m)->l2_len += sizeof(struct rte_vlan_hdr);
 
 	return 0;
 }

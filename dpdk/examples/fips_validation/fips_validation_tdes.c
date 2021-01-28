@@ -12,6 +12,7 @@
 
 #define NEW_LINE_STR	"#"
 #define TEST_TYPE_KEY	" for CBC"
+#define TEST_TYPE_ECB_KEY	" for ECB"
 #define TEST_CBCI_KEY	" for CBCI"
 
 #define ENC_STR		"[ENCRYPT]"
@@ -212,6 +213,8 @@ writeback_tdes_hex_str(const char *key, char *dst, struct fips_val *val)
 		tmp_val.val = val->val + 8;
 	else if (strstr(key, KEY3_STR))
 		tmp_val.val = val->val + 16;
+	else
+		return -EINVAL;
 
 	return writeback_hex_str(key, dst, &tmp_val);
 }
@@ -250,6 +253,12 @@ parse_test_tdes_init(void)
 			if (strstr(line, test_types[j].desc)) {
 				info.interim_info.tdes_data.test_type =
 						test_types[j].type;
+				if (strstr(line, TEST_TYPE_ECB_KEY))
+					info.interim_info.tdes_data.test_mode =
+						TDES_MODE_ECB;
+				else
+					info.interim_info.tdes_data.test_mode =
+						TDES_MODE_CBC;
 				break;
 			}
 	}

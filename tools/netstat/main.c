@@ -254,8 +254,12 @@ main(int argc, char *argv[])
 	af = AF_UNSPEC;
 
 	argc = xo_parse_args(argc, argv);
-	if (argc < 0)
+	if (argc < 0) {
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(EXIT_FAILURE);
+	}
 
 #ifndef FSTACK
 	while ((ch = getopt(argc, argv, "46AaBbdF:f:ghI:iLlM:mN:np:Qq:RrSTsuWw:xz"))
@@ -459,6 +463,9 @@ main(int argc, char *argv[])
 			usage();
 		bpf_stats(interface);
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 	if (mflag) {
@@ -470,6 +477,9 @@ main(int argc, char *argv[])
 		} else
 			mbpr(NULL, 0);
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 	if (Qflag) {
@@ -481,6 +491,9 @@ main(int argc, char *argv[])
 		} else
 			netisr_stats();
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 
@@ -503,6 +516,9 @@ main(int argc, char *argv[])
 		intpr(NULL, af);
 		xo_close_container("statistics");
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 	if (rflag) {
@@ -514,6 +530,9 @@ main(int argc, char *argv[])
 			routepr(fib, af);
 		xo_close_container("statistics");
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 
@@ -536,6 +555,9 @@ main(int argc, char *argv[])
 		}
 		xo_close_container("statistics");
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 
@@ -551,6 +573,9 @@ main(int argc, char *argv[])
 			xo_close_list("socket");
 		xo_close_container("statistics");
 		xo_finish();
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
 		exit(0);
 	}
 
@@ -582,6 +607,11 @@ main(int argc, char *argv[])
 		xo_close_list("socket");
 	xo_close_container("statistics");
 	xo_finish();
+
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
+
 	exit(0);
 }
 
@@ -947,5 +977,8 @@ usage(void)
 
 #endif
 	xo_finish();
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	exit(1);
 }

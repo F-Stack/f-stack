@@ -130,6 +130,12 @@ check_for_rule_violations()
 				fi
 			fi
 
+			# This symbol is moving inside a section, nothing to do
+			if [ "$oldsecname" = "$secname" ]
+			then
+				continue
+			fi
+
 			# This symbol is moving between two sections (the
 			# original section is not experimental).
 			# This can be legit, just warn.

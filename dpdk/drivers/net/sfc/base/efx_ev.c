@@ -10,16 +10,6 @@
 #include "mcdi_mon.h"
 #endif
 
-#if EFSYS_OPT_QSTATS
-#define	EFX_EV_QSTAT_INCR(_eep, _stat)					\
-	do {								\
-		(_eep)->ee_stat[_stat]++;				\
-	_NOTE(CONSTANTCONDITION)					\
-	} while (B_FALSE)
-#else
-#define	EFX_EV_QSTAT_INCR(_eep, _stat)
-#endif
-
 #define	EFX_EV_PRESENT(_qword)						\
 	(EFX_QWORD_FIELD((_qword), EFX_DWORD_0) != 0xffffffff &&	\
 	EFX_QWORD_FIELD((_qword), EFX_DWORD_1) != 0xffffffff)
@@ -91,7 +81,7 @@ static const efx_ev_ops_t	__efx_ev_siena_ops = {
 };
 #endif /* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 static const efx_ev_ops_t	__efx_ev_ef10_ops = {
 	ef10_ev_init,				/* eevo_init */
 	ef10_ev_fini,				/* eevo_fini */
@@ -104,7 +94,7 @@ static const efx_ev_ops_t	__efx_ev_ef10_ops = {
 	ef10_ev_qstats_update,			/* eevo_qstats_update */
 #endif
 };
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 
 
 	__checkReturn	efx_rc_t
@@ -173,6 +163,24 @@ fail1:
 	return (rc);
 }
 
+	__checkReturn	size_t
+efx_evq_size(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs)
+{
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
+
+	return (ndescs * encp->enc_ev_desc_size);
+}
+
+	__checkReturn	unsigned int
+efx_evq_nbufs(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs)
+{
+	return (EFX_DIV_ROUND_UP(efx_evq_size(enp, ndescs), EFX_BUF_SIZE));
+}
+
 		void
 efx_ev_fini(
 	__in	efx_nic_t *enp)
@@ -206,6 +214,7 @@ efx_ev_qcreate(
 {
 	const efx_ev_ops_t *eevop = enp->en_eevop;
 	efx_evq_t *eep;
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
 	efx_rc_t rc;
 
 	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
@@ -228,11 +237,21 @@ efx_ev_qcreate(
 		goto fail2;
 	}
 
+	EFSYS_ASSERT(ISP2(encp->enc_evq_max_nevs));
+	EFSYS_ASSERT(ISP2(encp->enc_evq_min_nevs));
+
+	if (!ISP2(ndescs) ||
+	    ndescs < encp->enc_evq_min_nevs ||
+	    ndescs > encp->enc_evq_max_nevs) {
+		rc = EINVAL;
+		goto fail3;
+	}
+
 	/* Allocate an EVQ object */
 	EFSYS_KMEM_ALLOC(enp->en_esip, sizeof (efx_evq_t), eep);
 	if (eep == NULL) {
 		rc = ENOMEM;
-		goto fail3;
+		goto fail4;
 	}
 
 	eep->ee_magic = EFX_EVQ_MAGIC;
@@ -255,16 +274,18 @@ efx_ev_qcreate(
 
 	if ((rc = eevop->eevo_qcreate(enp, index, esmp, ndescs, id, us, flags,
 	    eep)) != 0)
-		goto fail4;
+		goto fail5;
 
 	return (0);
 
-fail4:
-	EFSYS_PROBE(fail4);
+fail5:
+	EFSYS_PROBE(fail5);
 
 	*eepp = NULL;
 	enp->en_ev_qcount--;
 	EFSYS_KMEM_FREE(enp->en_esip, sizeof (efx_evq_t), eep);
+fail4:
+	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:
@@ -480,6 +501,14 @@ efx_ev_qpoll(
 			if (should_abort) {
 				/* Ignore subsequent events */
 				total = index + 1;
+
+				/*
+				 * Poison batch to ensure the outer
+				 * loop is broken out of.
+				 */
+				EFSYS_ASSERT(batch <= EFX_EV_BATCH);
+				batch += (EFX_EV_BATCH << 1);
+				EFSYS_ASSERT(total != batch);
 				break;
 			}
 		}
@@ -527,6 +556,12 @@ efx_ev_usecs_to_ticks(
 {
 	efx_nic_cfg_t *encp = &(enp->en_nic_cfg);
 	unsigned int ticks;
+	efx_rc_t rc;
+
+	if (encp->enc_evq_timer_quantum_ns == 0) {
+		rc = ENOTSUP;
+		goto fail1;
+	}
 
 	/* Convert microseconds to a timer tick count */
 	if (us == 0)
@@ -538,6 +573,10 @@ efx_ev_usecs_to_ticks(
 
 	*ticksp = ticks;
 	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+	return (rc);
 }
 
 	__checkReturn	efx_rc_t
@@ -1277,32 +1316,25 @@ siena_ev_qcreate(
 
 	_NOTE(ARGUNUSED(esmp))
 
-	EFX_STATIC_ASSERT(ISP2(EFX_EVQ_MAXNEVS));
-	EFX_STATIC_ASSERT(ISP2(EFX_EVQ_MINNEVS));
-
-	if (!ISP2(ndescs) ||
-	    (ndescs < EFX_EVQ_MINNEVS) || (ndescs > EFX_EVQ_MAXNEVS)) {
-		rc = EINVAL;
-		goto fail1;
-	}
 	if (index >= encp->enc_evq_limit) {
 		rc = EINVAL;
-		goto fail2;
+		goto fail1;
 	}
 #if EFSYS_OPT_RX_SCALE
 	if (enp->en_intr.ei_type == EFX_INTR_LINE &&
 	    index >= EFX_MAXRSS_LEGACY) {
 		rc = EINVAL;
-		goto fail3;
+		goto fail2;
 	}
 #endif
-	for (size = 0; (1 << size) <= (EFX_EVQ_MAXNEVS / EFX_EVQ_MINNEVS);
+	for (size = 0;
+	    (1U << size) <= encp->enc_evq_max_nevs / encp->enc_evq_min_nevs;
 	    size++)
-		if ((1 << size) == (int)(ndescs / EFX_EVQ_MINNEVS))
+		if ((1U << size) == (uint32_t)ndescs / encp->enc_evq_min_nevs)
 			break;
 	if (id + (1 << size) >= encp->enc_buftbl_limit) {
 		rc = EINVAL;
-		goto fail4;
+		goto fail3;
 	}
 
 	/* Set up the handler table */
@@ -1334,14 +1366,12 @@ siena_ev_qcreate(
 
 	return (0);
 
-fail4:
-	EFSYS_PROBE(fail4);
-#if EFSYS_OPT_RX_SCALE
 fail3:
 	EFSYS_PROBE(fail3);
-#endif
+#if EFSYS_OPT_RX_SCALE
 fail2:
 	EFSYS_PROBE(fail2);
+#endif
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 
@@ -1352,7 +1382,7 @@ fail1:
 
 #if EFSYS_OPT_QSTATS
 #if EFSYS_OPT_NAMES
-/* START MKCONFIG GENERATED EfxEventQueueStatNamesBlock c0f3bc5083b40532 */
+/* START MKCONFIG GENERATED EfxEventQueueStatNamesBlock ac223f7134058b4f */
 static const char * const __efx_ev_qstat_name[] = {
 	"all",
 	"rx",
@@ -1391,6 +1421,7 @@ static const char * const __efx_ev_qstat_name[] = {
 	"driver_tx_dsc_error",
 	"drv_gen",
 	"mcdi_response",
+	"rx_parse_incomplete",
 };
 /* END MKCONFIG GENERATED EfxEventQueueStatNamesBlock */
 

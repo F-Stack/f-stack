@@ -305,7 +305,6 @@ int hw_atl_utils_fw_downld_dwords(struct aq_hw_s *self, u32 a,
 			AQ_HW_WAIT_FOR(!(0x100 & aq_hw_read_reg(self,
 							   HW_ATL_MIF_CMD)),
 				       1, 1000U);
-
 		if (err) {
 			err = -ETIMEDOUT;
 			goto err_exit;
@@ -658,8 +657,8 @@ static int hw_atl_utils_get_mac_permanent(struct aq_hw_s *self,
 		mac_addr[1] = rte_constant_bswap32(mac_addr[1]);
 	}
 
-	ether_addr_copy((struct ether_addr *)mac_addr,
-			(struct ether_addr *)mac);
+	rte_ether_addr_copy((struct rte_ether_addr *)mac_addr,
+			(struct rte_ether_addr *)mac);
 
 	if ((mac[0] & 0x01U) || ((mac[0] | mac[1] | mac[2]) == 0x00U)) {
 		/* chip revision */
@@ -869,8 +868,8 @@ static int aq_fw1x_set_wol(struct aq_hw_s *self, bool wol_enabled, u8 *mac)
 		prpc->msg_wol.pattern_id = 1U;
 		prpc->msg_wol.wol_packet_type = 2U; /* Magic Packet */
 
-		ether_addr_copy((struct ether_addr *)mac,
-			(struct ether_addr *)&prpc->msg_wol.wol_pattern);
+		rte_ether_addr_copy((struct rte_ether_addr *)mac,
+			(struct rte_ether_addr *)&prpc->msg_wol.wol_pattern);
 	} else {
 		rpc_size = sizeof(prpc->msg_id) + sizeof(prpc->msg_del_id);
 

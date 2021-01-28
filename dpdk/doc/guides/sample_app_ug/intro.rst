@@ -15,57 +15,15 @@ Running Sample Applications
 
 Some sample applications may have their own command-line parameters described in
 their respective guides, however all of them also share the same EAL parameters.
-Please refer to  :doc:`../linux_gsg/linux_eal_parameters` or
-:doc:`../freebsd_gsg/freebsd_eal_parameters` for a list of available EAL
-command-line options.
+Please refer to :doc:`EAL parameters (Linux) <../linux_gsg/linux_eal_parameters>`
+or :doc:`EAL parameters (FreeBSD) <../freebsd_gsg/freebsd_eal_parameters>` for
+a list of available EAL command-line options.
 
 
 The DPDK Sample Applications
 ----------------------------
 
-Table :numref:`table_sample_apps` shows a list of some of the main sample
-applications that are available in the examples directory of DPDK:
-
- .. _table_sample_apps:
-
- .. table:: **Some of the DPDK Sample applications**
-
-    +---------------------------------------+--------------------------------------+
-    | Bonding                               | Netmap Compatibility                 |
-    +---------------------------------------+--------------------------------------+
-    | Command Line                          | Packet Ordering                      |
-    +---------------------------------------+--------------------------------------+
-    | Distributor                           | Performance Thread                   |
-    +---------------------------------------+--------------------------------------+
-    | Ethtool                               | Precision Time Protocol (PTP) Client |
-    +---------------------------------------+--------------------------------------+
-    | Exception Path                        | Quality of Service (QoS) Metering    |
-    +---------------------------------------+--------------------------------------+
-    | Hello World                           | QoS Scheduler                        |
-    +---------------------------------------+--------------------------------------+
-    | Internet Protocol (IP) Fragmentation  | Quota and Watermark                  |
-    +---------------------------------------+--------------------------------------+
-    | IP Pipeline                           | RX/TX Callbacks                      |
-    +---------------------------------------+--------------------------------------+
-    | IP Reassembly                         | Server node EFD                      |
-    +---------------------------------------+--------------------------------------+
-    | IPsec Security Gateway                | Basic Forwarding/Skeleton App        |
-    +---------------------------------------+--------------------------------------+
-    | IPv4 multicast                        | Tunnel End Point (TEP) termination   |
-    +---------------------------------------+--------------------------------------+
-    | Kernel NIC Interface                  | Timer                                |
-    +---------------------------------------+--------------------------------------+
-    | Network Layer 2 Forwarding + variants | Vhost                                |
-    +---------------------------------------+--------------------------------------+
-    | Network Layer 3 Forwarding + variants | Vhost Xen                            |
-    +---------------------------------------+--------------------------------------+
-    | Link Status Interrupt                 | VMDQ Forwarding                      |
-    +---------------------------------------+--------------------------------------+
-    | Load Balancer                         | VMDQ and DCB Forwarding              |
-    +---------------------------------------+--------------------------------------+
-    | Multi-process                         | VM Power Management                  |
-    +---------------------------------------+--------------------------------------+
-
+There are many sample applications available in the examples directory of DPDK.
 These examples range from simple to reasonably complex but most are designed
 to demonstrate one particular feature of DPDK. Some of the more interesting
 examples are highlighted below.
@@ -87,9 +45,18 @@ examples are highlighted below.
   forwarding, or ``l2fwd`` application does forwarding based on Ethernet MAC
   addresses like a simple switch.
 
+* :doc:`Network Layer 2 forwarding<l2_forward_event>`: The Network Layer 2
+  forwarding, or ``l2fwd-event`` application does forwarding based on Ethernet MAC
+  addresses like a simple switch. It demonstrates usage of poll and event mode
+  IO mechanism under a single application.
+
 * :doc:`Network Layer 3 forwarding<l3_forward>`: The Network Layer3
   forwarding, or ``l3fwd`` application does forwarding based on Internet
   Protocol, IPv4 or IPv6 like a simple router.
+
+* :doc:`Hardware packet copying<ioat>`: The Hardware packet copying,
+  or ``ioatfwd`` application demonstrates how to use IOAT rawdev driver for
+  copying packets between two threads.
 
 * :doc:`Packet Distributor<dist_app>`: The Packet Distributor
   demonstrates how to distribute packets arriving on an Rx port to different

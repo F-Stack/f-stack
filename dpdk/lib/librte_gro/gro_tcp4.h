@@ -7,6 +7,7 @@
 
 #include <rte_ip.h>
 #include <rte_tcp.h>
+#include <rte_vxlan.h>
 
 #define INVALID_ARRAY_INDEX 0xffffffffUL
 #define GRO_TCP4_TBL_MAX_ITEM_NUM (1024UL * 1024UL)
@@ -20,12 +21,12 @@
 /* The maximum TCP header length */
 #define MAX_TCP_HLEN 60
 #define INVALID_TCP_HDRLEN(len) \
-	(((len) < sizeof(struct tcp_hdr)) || ((len) > MAX_TCP_HLEN))
+	(((len) < sizeof(struct rte_tcp_hdr)) || ((len) > MAX_TCP_HLEN))
 
 /* Header fields representing a TCP/IPv4 flow */
 struct tcp4_flow_key {
-	struct ether_addr eth_saddr;
-	struct ether_addr eth_daddr;
+	struct rte_ether_addr eth_saddr;
+	struct rte_ether_addr eth_daddr;
 	uint32_t ip_src_addr;
 	uint32_t ip_dst_addr;
 
@@ -187,8 +188,8 @@ uint32_t gro_tcp4_tbl_pkt_count(void *tbl);
 static inline int
 is_same_tcp4_flow(struct tcp4_flow_key k1, struct tcp4_flow_key k2)
 {
-	return (is_same_ether_addr(&k1.eth_saddr, &k2.eth_saddr) &&
-			is_same_ether_addr(&k1.eth_daddr, &k2.eth_daddr) &&
+	return (rte_is_same_ether_addr(&k1.eth_saddr, &k2.eth_saddr) &&
+			rte_is_same_ether_addr(&k1.eth_daddr, &k2.eth_daddr) &&
 			(k1.ip_src_addr == k2.ip_src_addr) &&
 			(k1.ip_dst_addr == k2.ip_dst_addr) &&
 			(k1.recv_ack == k2.recv_ack) &&
@@ -260,7 +261,7 @@ merge_two_tcp4_packets(struct gro_tcp4_item *item,
  */
 static inline int
 check_seq_option(struct gro_tcp4_item *item,
-		struct tcp_hdr *tcph,
+		struct rte_tcp_hdr *tcph,
 		uint32_t sent_seq,
 		uint16_t ip_id,
 		uint16_t tcp_hl,
@@ -269,17 +270,17 @@ check_seq_option(struct gro_tcp4_item *item,
 		uint8_t is_atomic)
 {
 	struct rte_mbuf *pkt_orig = item->firstseg;
-	struct ipv4_hdr *iph_orig;
-	struct tcp_hdr *tcph_orig;
+	struct rte_ipv4_hdr *iph_orig;
+	struct rte_tcp_hdr *tcph_orig;
 	uint16_t len, tcp_hl_orig;
 
-	iph_orig = (struct ipv4_hdr *)(rte_pktmbuf_mtod(pkt_orig, char *) +
+	iph_orig = (struct rte_ipv4_hdr *)(rte_pktmbuf_mtod(pkt_orig, char *) +
 			l2_offset + pkt_orig->l2_len);
-	tcph_orig = (struct tcp_hdr *)((char *)iph_orig + pkt_orig->l3_len);
+	tcph_orig = (struct rte_tcp_hdr *)((char *)iph_orig + pkt_orig->l3_len);
 	tcp_hl_orig = pkt_orig->l4_len;
 
 	/* Check if TCP option fields equal */
-	len = RTE_MAX(tcp_hl, tcp_hl_orig) - sizeof(struct tcp_hdr);
+	len = RTE_MAX(tcp_hl, tcp_hl_orig) - sizeof(struct rte_tcp_hdr);
 	if ((tcp_hl != tcp_hl_orig) || ((len > 0) &&
 				(memcmp(tcph + 1, tcph_orig + 1,
 					len) != 0)))

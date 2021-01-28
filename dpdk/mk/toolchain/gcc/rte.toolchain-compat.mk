@@ -88,6 +88,10 @@ else
 		MACHINE_CFLAGS := $(filter-out -march% -mtune% -msse%,$(MACHINE_CFLAGS))
 	endif
 
+	ifeq ($(shell test $(GCC_VERSION) -lt 74 && echo 1), 1)
+		CONFIG_RTE_ENABLE_LTO=n
+	endif
+
 	# Disable thunderx PMD for gcc < 4.7
 	ifeq ($(shell test $(GCC_VERSION) -lt 47 && echo 1), 1)
 		CONFIG_RTE_LIBRTE_THUNDERX_NICVF_PMD=d
@@ -99,11 +103,16 @@ else
 	endif
 
 	# Disable octeontx event PMD for gcc < 4.8.6 & ARCH=arm64
-	ifeq ($(CONFIG_RTE_ARCH), arm64)
+	ifeq ($(RTE_ARCH), arm64)
 	ifeq ($(shell test $(GCC_VERSION)$(GCC_PATCHLEVEL) -lt 486 && echo 1), 1)
 		CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF=d
 		CONFIG_RTE_LIBRTE_OCTEONTX_MEMPOOL=d
 		CONFIG_RTE_LIBRTE_OCTEONTX_PMD=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_DMA_RAWDEV=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_EVENTDEV=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_CRYPTO=d
+		CONFIG_RTE_LIBRTE_OCTEONTX2_MEMPOOL=d
+		CONFIG_RTE_LIBRTE_OCTEONTX2_PMD=d
 	endif
 	endif
 

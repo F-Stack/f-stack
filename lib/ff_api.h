@@ -44,19 +44,10 @@ struct linux_sockaddr {
     char sa_data[126];
 };
 
-/* AF_INET6/PF_INET6 is 10 in linux
- * defined 28 for FreeBSD
- */
-#ifdef AF_INET6
-#undef AF_INET6
-#endif
-#ifdef PF_INET6
-#undef PF_INET6
-#endif
-#define AF_INET6    28
-#define PF_INET6    AF_INET6
 #define AF_INET6_LINUX    10
 #define PF_INET6_LINUX    AF_INET6_LINUX
+#define AF_INET6_FREEBSD    28
+#define PF_INET6_FREEBSD    AF_INET6_FREEBSD
 
 typedef int (*loop_func_t)(void *arg);
 
@@ -190,6 +181,34 @@ void ff_regist_packet_dispatcher(dispatch_func_t func);
 
 /* dispatch api end */
 
+/* pcb lddr api begin */
+/*
+ * pcb lddr callback function.
+ * Implemented by user.
+ *
+ * @param family
+ *   The remote server addr, should be AF_INET or AF_INET6.
+ * @param dst_addr
+ *   The remote server addr, should be (in_addr *) or (in6_addr *).
+ * @param dst_port
+ *   The remote server port.
+ * @param src_addr
+ *   Return parameter.
+ *   The local addr, should be (in_addr *) or (in6_addr *).
+ *   If set (INADDR_ANY) or (in6addr_any), the app then will
+ *   call `in_pcbladdr()` to get laddr.
+ *
+ * @return error_no
+ *   0 means success.
+ *
+ */
+typedef int (*pcblddr_func_t)(uint16_t family, void *dst_addr,
+    uint16_t dst_port, void *src_addr);
+
+/* regist a pcb lddr function */
+void ff_regist_pcblddr_fun(pcblddr_func_t func);
+
+/* pcb lddr api end */
 
 /* internal api begin */
 

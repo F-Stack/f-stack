@@ -55,7 +55,8 @@ enum rte_bbdev_state {
  * @return
  *   The total number of usable devices.
  */
-uint16_t __rte_experimental
+__rte_experimental
+uint16_t
 rte_bbdev_count(void);
 
 /**
@@ -67,7 +68,8 @@ rte_bbdev_count(void);
  * @return
  *   true if device ID is valid and device is attached, false otherwise.
  */
-bool __rte_experimental
+__rte_experimental
+bool
 rte_bbdev_is_valid(uint16_t dev_id);
 
 /**
@@ -80,7 +82,8 @@ rte_bbdev_is_valid(uint16_t dev_id);
  *   - The next device, or
  *   - RTE_BBDEV_MAX_DEVS if none found
  */
-uint16_t __rte_experimental
+__rte_experimental
+uint16_t
 rte_bbdev_find_next(uint16_t dev_id);
 
 /** Iterate through all enabled devices */
@@ -109,7 +112,8 @@ rte_bbdev_find_next(uint16_t dev_id);
  *   - -EBUSY if the identified device has already started
  *   - -ENOMEM if unable to allocate memory
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_setup_queues(uint16_t dev_id, uint16_t num_queues, int socket_id);
 
 /**
@@ -126,7 +130,8 @@ rte_bbdev_setup_queues(uint16_t dev_id, uint16_t num_queues, int socket_id);
  *   - -EBUSY if the identified device has already started
  *   - -ENOTSUP if the interrupts are not supported by the device
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_intr_enable(uint16_t dev_id);
 
 /** Device queue configuration structure */
@@ -155,13 +160,14 @@ struct rte_bbdev_queue_conf {
  *   - EINVAL if the identified queue size or priority are invalid
  *   - EBUSY if the identified queue or its device have already started
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_configure(uint16_t dev_id, uint16_t queue_id,
 		const struct rte_bbdev_queue_conf *conf);
 
 /**
  * Start a device.
- * This is the last step needed before enqueuing operations is possible.
+ * This is the last step needed before enqueueing operations is possible.
  *
  * @param dev_id
  *   The identifier of the device.
@@ -170,7 +176,8 @@ rte_bbdev_queue_configure(uint16_t dev_id, uint16_t queue_id,
  *   - 0 on success
  *   - negative value on failure - as returned from PMD driver
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_start(uint16_t dev_id);
 
 /**
@@ -183,7 +190,8 @@ rte_bbdev_start(uint16_t dev_id);
  * @return
  *   - 0 on success
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_stop(uint16_t dev_id);
 
 /**
@@ -196,7 +204,8 @@ rte_bbdev_stop(uint16_t dev_id);
  * @return
  *   - 0 on success
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_close(uint16_t dev_id);
 
 /**
@@ -213,7 +222,8 @@ rte_bbdev_close(uint16_t dev_id);
  *   - 0 on success
  *   - negative value on failure - as returned from PMD driver
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_start(uint16_t dev_id, uint16_t queue_id);
 
 /**
@@ -228,7 +238,8 @@ rte_bbdev_queue_start(uint16_t dev_id, uint16_t queue_id);
  *   - 0 on success
  *   - negative value on failure - as returned from PMD driver
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_stop(uint16_t dev_id, uint16_t queue_id);
 
 /** Device statistics. */
@@ -239,8 +250,13 @@ struct rte_bbdev_stats {
 	uint64_t enqueue_err_count;
 	/** Total error count on operations dequeued */
 	uint64_t dequeue_err_count;
-	/** Offload time */
-	uint64_t offload_time;
+	/** CPU cycles consumed by the (HW/SW) accelerator device to offload
+	 *  the enqueue request to its internal queues.
+	 *  - For a HW device this is the cycles consumed in MMIO write
+	 *  - For a SW (vdev) device, this is the processing time of the
+	 *     bbdev operation
+	 */
+	uint64_t acc_offload_cycles;
 };
 
 /**
@@ -256,7 +272,8 @@ struct rte_bbdev_stats {
  *   - 0 on success
  *   - EINVAL if invalid parameter pointer is provided
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_stats_get(uint16_t dev_id, struct rte_bbdev_stats *stats);
 
 /**
@@ -267,7 +284,8 @@ rte_bbdev_stats_get(uint16_t dev_id, struct rte_bbdev_stats *stats);
  * @return
  *   - 0 on success
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_stats_reset(uint16_t dev_id);
 
 /** Device information supplied by the device's driver */
@@ -308,7 +326,7 @@ struct rte_bbdev_driver_info {
 struct rte_bbdev_info {
 	int socket_id;  /**< NUMA socket that device is on */
 	const char *dev_name;  /**< Unique device name */
-	const struct rte_bus *bus;  /**< Bus information */
+	const struct rte_device *device; /**< Device Information */
 	uint16_t num_queues;  /**< Number of queues currently configured */
 	bool started;  /**< Set if device is currently started */
 	struct rte_bbdev_driver_info drv;  /**< Info from device driver */
@@ -327,7 +345,8 @@ struct rte_bbdev_info {
  *   - 0 on success
  *   - EINVAL if invalid parameter pointer is provided
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_info_get(uint16_t dev_id, struct rte_bbdev_info *dev_info);
 
 /** Queue information */
@@ -353,7 +372,8 @@ struct rte_bbdev_queue_info {
  *   - 0 on success
  *   - EINVAL if invalid parameter pointer is provided
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_info_get(uint16_t dev_id, uint16_t queue_id,
 		struct rte_bbdev_queue_info *queue_info);
 
@@ -428,6 +448,14 @@ struct __rte_cache_aligned rte_bbdev {
 	rte_bbdev_dequeue_enc_ops_t dequeue_enc_ops;
 	/**< Dequeue decode function */
 	rte_bbdev_dequeue_dec_ops_t dequeue_dec_ops;
+	/**< Enqueue encode function */
+	rte_bbdev_enqueue_enc_ops_t enqueue_ldpc_enc_ops;
+	/**< Enqueue decode function */
+	rte_bbdev_enqueue_dec_ops_t enqueue_ldpc_dec_ops;
+	/**< Dequeue encode function */
+	rte_bbdev_dequeue_enc_ops_t dequeue_ldpc_enc_ops;
+	/**< Dequeue decode function */
+	rte_bbdev_dequeue_dec_ops_t dequeue_ldpc_dec_ops;
 	const struct rte_bbdev_ops *dev_ops;  /**< Functions exported by PMD */
 	struct rte_bbdev_data *data;  /**< Pointer to device data */
 	enum rte_bbdev_state state;  /**< If device is currently used or not */
@@ -461,6 +489,7 @@ extern struct rte_bbdev rte_bbdev_devices[];
  *   The number of operations actually enqueued (this is the number of processed
  *   entries in the @p ops array).
  */
+__rte_experimental
 static inline uint16_t
 rte_bbdev_enqueue_enc_ops(uint16_t dev_id, uint16_t queue_id,
 		struct rte_bbdev_enc_op **ops, uint16_t num_ops)
@@ -491,6 +520,7 @@ rte_bbdev_enqueue_enc_ops(uint16_t dev_id, uint16_t queue_id,
  *   The number of operations actually enqueued (this is the number of processed
  *   entries in the @p ops array).
  */
+__rte_experimental
 static inline uint16_t
 rte_bbdev_enqueue_dec_ops(uint16_t dev_id, uint16_t queue_id,
 		struct rte_bbdev_dec_op **ops, uint16_t num_ops)
@@ -499,6 +529,69 @@ rte_bbdev_enqueue_dec_ops(uint16_t dev_id, uint16_t queue_id,
 	struct rte_bbdev_queue_data *q_data = &dev->data->queues[queue_id];
 	return dev->enqueue_dec_ops(q_data, ops, num_ops);
 }
+
+/**
+ * Enqueue a burst of processed encode operations to a queue of the device.
+ * This functions only enqueues as many operations as currently possible and
+ * does not block until @p num_ops entries in the queue are available.
+ * This function does not provide any error notification to avoid the
+ * corresponding overhead.
+ *
+ * @param dev_id
+ *   The identifier of the device.
+ * @param queue_id
+ *   The index of the queue.
+ * @param ops
+ *   Pointer array containing operations to be enqueued Must have at least
+ *   @p num_ops entries
+ * @param num_ops
+ *   The maximum number of operations to enqueue.
+ *
+ * @return
+ *   The number of operations actually enqueued (this is the number of processed
+ *   entries in the @p ops array).
+ */
+__rte_experimental
+static inline uint16_t
+rte_bbdev_enqueue_ldpc_enc_ops(uint16_t dev_id, uint16_t queue_id,
+		struct rte_bbdev_enc_op **ops, uint16_t num_ops)
+{
+	struct rte_bbdev *dev = &rte_bbdev_devices[dev_id];
+	struct rte_bbdev_queue_data *q_data = &dev->data->queues[queue_id];
+	return dev->enqueue_ldpc_enc_ops(q_data, ops, num_ops);
+}
+
+/**
+ * Enqueue a burst of processed decode operations to a queue of the device.
+ * This functions only enqueues as many operations as currently possible and
+ * does not block until @p num_ops entries in the queue are available.
+ * This function does not provide any error notification to avoid the
+ * corresponding overhead.
+ *
+ * @param dev_id
+ *   The identifier of the device.
+ * @param queue_id
+ *   The index of the queue.
+ * @param ops
+ *   Pointer array containing operations to be enqueued Must have at least
+ *   @p num_ops entries
+ * @param num_ops
+ *   The maximum number of operations to enqueue.
+ *
+ * @return
+ *   The number of operations actually enqueued (this is the number of processed
+ *   entries in the @p ops array).
+ */
+__rte_experimental
+static inline uint16_t
+rte_bbdev_enqueue_ldpc_dec_ops(uint16_t dev_id, uint16_t queue_id,
+		struct rte_bbdev_dec_op **ops, uint16_t num_ops)
+{
+	struct rte_bbdev *dev = &rte_bbdev_devices[dev_id];
+	struct rte_bbdev_queue_data *q_data = &dev->data->queues[queue_id];
+	return dev->enqueue_ldpc_dec_ops(q_data, ops, num_ops);
+}
+
 
 /**
  * Dequeue a burst of processed encode operations from a queue of the device.
@@ -521,6 +614,7 @@ rte_bbdev_enqueue_dec_ops(uint16_t dev_id, uint16_t queue_id,
  *   The number of operations actually dequeued (this is the number of entries
  *   copied into the @p ops array).
  */
+__rte_experimental
 static inline uint16_t
 rte_bbdev_dequeue_enc_ops(uint16_t dev_id, uint16_t queue_id,
 		struct rte_bbdev_enc_op **ops, uint16_t num_ops)
@@ -552,6 +646,7 @@ rte_bbdev_dequeue_enc_ops(uint16_t dev_id, uint16_t queue_id,
  *   copied into the @p ops array).
  */
 
+__rte_experimental
 static inline uint16_t
 rte_bbdev_dequeue_dec_ops(uint16_t dev_id, uint16_t queue_id,
 		struct rte_bbdev_dec_op **ops, uint16_t num_ops)
@@ -559,6 +654,69 @@ rte_bbdev_dequeue_dec_ops(uint16_t dev_id, uint16_t queue_id,
 	struct rte_bbdev *dev = &rte_bbdev_devices[dev_id];
 	struct rte_bbdev_queue_data *q_data = &dev->data->queues[queue_id];
 	return dev->dequeue_dec_ops(q_data, ops, num_ops);
+}
+
+
+/**
+ * Dequeue a burst of processed encode operations from a queue of the device.
+ * This functions returns only the current contents of the queue, and does not
+ * block until @ num_ops is available.
+ * This function does not provide any error notification to avoid the
+ * corresponding overhead.
+ *
+ * @param dev_id
+ *   The identifier of the device.
+ * @param queue_id
+ *   The index of the queue.
+ * @param ops
+ *   Pointer array where operations will be dequeued to. Must have at least
+ *   @p num_ops entries
+ * @param num_ops
+ *   The maximum number of operations to dequeue.
+ *
+ * @return
+ *   The number of operations actually dequeued (this is the number of entries
+ *   copied into the @p ops array).
+ */
+__rte_experimental
+static inline uint16_t
+rte_bbdev_dequeue_ldpc_enc_ops(uint16_t dev_id, uint16_t queue_id,
+		struct rte_bbdev_enc_op **ops, uint16_t num_ops)
+{
+	struct rte_bbdev *dev = &rte_bbdev_devices[dev_id];
+	struct rte_bbdev_queue_data *q_data = &dev->data->queues[queue_id];
+	return dev->dequeue_ldpc_enc_ops(q_data, ops, num_ops);
+}
+
+/**
+ * Dequeue a burst of processed decode operations from a queue of the device.
+ * This functions returns only the current contents of the queue, and does not
+ * block until @ num_ops is available.
+ * This function does not provide any error notification to avoid the
+ * corresponding overhead.
+ *
+ * @param dev_id
+ *   The identifier of the device.
+ * @param queue_id
+ *   The index of the queue.
+ * @param ops
+ *   Pointer array where operations will be dequeued to. Must have at least
+ *   @p num_ops entries
+ * @param num_ops
+ *   The maximum number of operations to dequeue.
+ *
+ * @return
+ *   The number of operations actually dequeued (this is the number of entries
+ *   copied into the @p ops array).
+ */
+__rte_experimental
+static inline uint16_t
+rte_bbdev_dequeue_ldpc_dec_ops(uint16_t dev_id, uint16_t queue_id,
+		struct rte_bbdev_dec_op **ops, uint16_t num_ops)
+{
+	struct rte_bbdev *dev = &rte_bbdev_devices[dev_id];
+	struct rte_bbdev_queue_data *q_data = &dev->data->queues[queue_id];
+	return dev->dequeue_ldpc_dec_ops(q_data, ops, num_ops);
 }
 
 /** Definitions of device event types */
@@ -603,7 +761,8 @@ typedef void (*rte_bbdev_cb_fn)(uint16_t dev_id,
  * @return
  *   Zero on success, negative value on failure.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_callback_register(uint16_t dev_id, enum rte_bbdev_event_type event,
 		rte_bbdev_cb_fn cb_fn, void *cb_arg);
 
@@ -626,7 +785,8 @@ rte_bbdev_callback_register(uint16_t dev_id, enum rte_bbdev_event_type event,
  *   - EINVAL if invalid parameter pointer is provided
  *   - EAGAIN if the provided callback pointer does not exist
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_callback_unregister(uint16_t dev_id, enum rte_bbdev_event_type event,
 		rte_bbdev_cb_fn cb_fn, void *cb_arg);
 
@@ -646,7 +806,8 @@ rte_bbdev_callback_unregister(uint16_t dev_id, enum rte_bbdev_event_type event,
  *   - 0 on success
  *   - negative value on failure - as returned from PMD driver
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_intr_enable(uint16_t dev_id, uint16_t queue_id);
 
 /**
@@ -662,7 +823,8 @@ rte_bbdev_queue_intr_enable(uint16_t dev_id, uint16_t queue_id);
  *   - 0 on success
  *   - negative value on failure - as returned from PMD driver
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_intr_disable(uint16_t dev_id, uint16_t queue_id);
 
 /**
@@ -689,7 +851,8 @@ rte_bbdev_queue_intr_disable(uint16_t dev_id, uint16_t queue_id);
  *   - ENOTSUP if interrupts are not supported by the identified device
  *   - negative value on failure - as returned from PMD driver
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_bbdev_queue_intr_ctl(uint16_t dev_id, uint16_t queue_id, int epfd, int op,
 		void *data);
 

@@ -1,4 +1,4 @@
-DPDK_2.0 {
+DPDK_20.0 {
 	global:
 
 	rte_timer_dump_stats;
@@ -12,4 +12,17 @@ DPDK_2.0 {
 	rte_timer_subsystem_init;
 
 	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	rte_timer_alt_dump_stats;
+	rte_timer_alt_manage;
+	rte_timer_alt_reset;
+	rte_timer_alt_stop;
+	rte_timer_data_alloc;
+	rte_timer_data_dealloc;
+	rte_timer_stop_all;
+	rte_timer_subsystem_finalize;
 };

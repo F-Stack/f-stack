@@ -21,7 +21,6 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
-#include <rte_eal_memconfig.h>
 #include <rte_ethdev.h>
 #include <rte_rwlock.h>
 #include <rte_bitmap.h>
@@ -62,6 +61,7 @@ struct mlx5_mr_ctrl {
 	struct mlx5_mr_btree cache_bh; /* Cache for bottom-half. */
 } __rte_packed;
 
+struct mlx5_ibv_shared;
 extern struct mlx5_dev_list  mlx5_mem_event_cb_list;
 extern rte_rwlock_t mlx5_mem_event_rwlock;
 
@@ -70,15 +70,17 @@ extern rte_rwlock_t mlx5_mem_event_rwlock;
 
 int mlx5_mr_btree_init(struct mlx5_mr_btree *bt, int n, int socket);
 void mlx5_mr_btree_free(struct mlx5_mr_btree *bt);
+uint32_t mlx5_mr_create_primary(struct rte_eth_dev *dev,
+				struct mlx5_mr_cache *entry, uintptr_t addr);
 void mlx5_mr_mem_event_cb(enum rte_mem_event event_type, const void *addr,
 			  size_t len, void *arg);
 int mlx5_mr_update_mp(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
 		      struct rte_mempool *mp);
-void mlx5_mr_release(struct rte_eth_dev *dev);
+void mlx5_mr_release(struct mlx5_ibv_shared *sh);
 
 /* Debug purpose functions. */
 void mlx5_mr_btree_dump(struct mlx5_mr_btree *bt);
-void mlx5_mr_dump_dev(struct rte_eth_dev *dev);
+void mlx5_mr_dump_dev(struct mlx5_ibv_shared *sh);
 
 /**
  * Look up LKey from given lookup table by linear search. Firstly look up the

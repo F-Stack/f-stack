@@ -104,6 +104,10 @@ siena_board_cfg(
 	encp->enc_evq_timer_max_us = (encp->enc_evq_timer_quantum_ns <<
 		FRF_CZ_TC_TIMER_VAL_WIDTH) / 1000;
 
+	encp->enc_ev_desc_size = SIENA_EVQ_DESC_SIZE;
+	encp->enc_rx_desc_size = SIENA_RXQ_DESC_SIZE;
+	encp->enc_tx_desc_size = SIENA_TXQ_DESC_SIZE;
+
 	/* When hash header insertion is enabled, Siena inserts 16 bytes */
 	encp->enc_rx_prefix_size = 16;
 
@@ -149,7 +153,14 @@ siena_board_cfg(
 	encp->enc_rxq_limit = MIN(EFX_RXQ_LIMIT_TARGET, nrxq);
 	encp->enc_txq_limit = MIN(EFX_TXQ_LIMIT_TARGET, ntxq);
 
-	encp->enc_txq_max_ndescs = 4096;
+	encp->enc_evq_max_nevs = SIENA_EVQ_MAXNEVS;
+	encp->enc_evq_min_nevs = SIENA_EVQ_MINNEVS;
+
+	encp->enc_rxq_max_ndescs = EF10_RXQ_MAXNDESCS;
+	encp->enc_rxq_min_ndescs = EF10_RXQ_MINNDESCS;
+
+	encp->enc_txq_max_ndescs = SIENA_TXQ_MAXNDESCS;
+	encp->enc_txq_min_ndescs = SIENA_TXQ_MINNDESCS;
 
 	encp->enc_buftbl_limit = SIENA_SRAM_ROWS -
 	    (encp->enc_txq_limit * EFX_TXQ_DC_NDESCS(EFX_TXQ_DC_SIZE)) -

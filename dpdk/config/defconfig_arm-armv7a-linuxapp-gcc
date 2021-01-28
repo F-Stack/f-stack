@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (C) 2015 RehiveTech. All right reserved.
 
-#include "common_linuxapp"
+#include "common_linux"
 
 CONFIG_RTE_MACHINE="armv7a"
 
@@ -53,3 +53,7 @@ CONFIG_RTE_LIBRTE_BNX2X_PMD=n
 CONFIG_RTE_LIBRTE_QEDE_PMD=n
 CONFIG_RTE_LIBRTE_SFC_EFX_PMD=n
 CONFIG_RTE_LIBRTE_AVP_PMD=n
+CONFIG_RTE_LIBRTE_NFP_PMD=n
+CONFIG_RTE_LIBRTE_HINIC_PMD=n
+CONFIG_RTE_LIBRTE_HNS3_PMD=n
+CONFIG_RTE_LIBRTE_PMD_IOAT_RAWDEV=n

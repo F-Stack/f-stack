@@ -196,7 +196,7 @@ cmdline_parse_num(cmdline_parse_token_hdr_t *tk, const char *srcbuf, void *res,
 
 		case HEX:
 			st = HEX_OK;
-			/* fall-through no break */
+			/* fall-through */
 		case HEX_OK:
 			if (c >= '0' && c <= '9') {
 				if (add_to_res(c - '0', &res1, 16) < 0)
@@ -340,7 +340,7 @@ cmdline_get_help_num(cmdline_parse_token_hdr_t *tk, char *dstbuf, unsigned int s
 	/* if (nd.type >= (sizeof(num_help)/sizeof(const char *))) */
 	/* return -1; */
 
-	ret = snprintf(dstbuf, size, "%s", num_help[nd.type]);
+	ret = strlcpy(dstbuf, num_help[nd.type], size);
 	if (ret < 0)
 		return -1;
 	dstbuf[size-1] = '\0';

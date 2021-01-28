@@ -3,40 +3,28 @@
 
 subdirs = ['igb_uio', 'kni']
 
-WARN_CROSS_COMPILE='Need "kernel_dir" option for kmod compilation when cross-compiling'
-WARN_NO_HEADERS='Cannot compile kernel modules as requested - are kernel headers installed?'
-
 # if we are cross-compiling we need kernel_dir specified
-# NOTE: warning() function only available from version 0.44 onwards
 if get_option('kernel_dir') == '' and meson.is_cross_build()
-	if meson.version().version_compare('>=0.44')
-		warning(WARN_CROSS_COMPILE)
-	else
-		message('WARNING: ' + WARN_CROSS_COMPILE)
-	endif
-else
+	warning('Need "kernel_dir" option for kmod compilation when cross-compiling')
+	subdir_done()
+endif
 
-	kernel_dir = get_option('kernel_dir')
-	if kernel_dir == ''
-		# use default path for native builds
-		kernel_version = run_command('uname', '-r').stdout().strip()
-		kernel_dir = '/lib/modules/' + kernel_version
-	endif
+kernel_dir = get_option('kernel_dir')
+if kernel_dir == ''
+	# use default path for native builds
+	kernel_version = run_command('uname', '-r').stdout().strip()
+	kernel_dir = '/lib/modules/' + kernel_version
+endif
 
-	# test running make in kernel directory, using "make kernelversion"
-	make_returncode = run_command('make', '-sC', kernel_dir + '/build',
-			'kernelversion').returncode()
-	if make_returncode != 0
-		if meson.version().version_compare('>=0.44')
-			warning(WARN_NO_HEADERS)
-		else
-			message('WARNING: ' + WARN_NO_HEADERS)
-		endif
-	else # returncode == 0
+# test running make in kernel directory, using "make kernelversion"
+make_returncode = run_command('make', '-sC', kernel_dir + '/build',
+		'kernelversion').returncode()
+if make_returncode != 0
+	warning('Cannot compile kernel modules as requested - are kernel headers installed?')
+	subdir_done()
+endif
 
 # DO ACTUAL MODULE BUILDING
-		foreach d:subdirs
-			subdir(d)
-		endforeach
-	endif
-endif
+foreach d:subdirs
+	subdir(d)
+endforeach

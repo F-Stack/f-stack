@@ -2181,9 +2181,9 @@ show_dyn_state(struct cmdline_opts *co, struct format_opts *fo,
 		a.s_addr = htonl(d->id.dst_ip);
 		bprintf(bp, " <-> %s %d", inet_ntoa(a), d->id.dst_port);
 	} else if (d->id.addr_type == 6) {
-		bprintf(bp, " %s %d", inet_ntop(AF_INET6, &d->id.src_ip6, buf,
+		bprintf(bp, " %s %d", inet_ntop(AF_INET6_LINUX, &d->id.src_ip6, buf,
 		    sizeof(buf)), d->id.src_port);
-		bprintf(bp, " <-> %s %d", inet_ntop(AF_INET6, &d->id.dst_ip6,
+		bprintf(bp, " <-> %s %d", inet_ntop(AF_INET6_LINUX, &d->id.dst_ip6,
 		    buf, sizeof(buf)), d->id.dst_port);
 	} else
 		bprintf(bp, " UNKNOWN <-> UNKNOWN\n");
@@ -3559,11 +3559,11 @@ add_src(ipfw_insn *cmd, char *av, u_char proto, int cblen, struct tidx *tstate)
 		host = av;
 
 	if (proto == IPPROTO_IPV6  || strcmp(av, "me6") == 0 ||
-	    inet_pton(AF_INET6, host, &a) == 1)
+	    inet_pton(AF_INET6_LINUX, host, &a) == 1)
 		ret = add_srcip6(cmd, av, cblen);
 	/* XXX: should check for IPv4, not !IPv6 */
 	if (ret == NULL && (proto == IPPROTO_IP || strcmp(av, "me") == 0 ||
-	    inet_pton(AF_INET6, host, &a) != 1))
+	    inet_pton(AF_INET6_LINUX, host, &a) != 1))
 		ret = add_srcip(cmd, av, cblen, tstate);
 	if (ret == NULL && strcmp(av, "any") != 0)
 		ret = cmd;
@@ -3590,11 +3590,11 @@ add_dst(ipfw_insn *cmd, char *av, u_char proto, int cblen, struct tidx *tstate)
 		host = av;
 
 	if (proto == IPPROTO_IPV6  || strcmp(av, "me6") == 0 ||
-	    inet_pton(AF_INET6, host, &a) == 1)
+	    inet_pton(AF_INET6_LINUX, host, &a) == 1)
 		ret = add_dstip6(cmd, av, cblen);
 	/* XXX: should check for IPv4, not !IPv6 */
 	if (ret == NULL && (proto == IPPROTO_IP || strcmp(av, "me") == 0 ||
-	    inet_pton(AF_INET6, host, &a) != 1))
+	    inet_pton(AF_INET6_LINUX, host, &a) != 1))
 		ret = add_dstip(cmd, av, cblen, tstate);
 	if (ret == NULL && strcmp(av, "any") != 0)
 		ret = cmd;
@@ -3884,7 +3884,7 @@ chkarg:
 			CHECK_ACTLEN;
 
 			p->sa.sin6_len = sizeof(struct sockaddr_in6);
-			p->sa.sin6_family = AF_INET6;
+			p->sa.sin6_family = AF_INET6_LINUX;
 			p->sa.sin6_port = port_number;
 			p->sa.sin6_flowinfo = 0;
 			p->sa.sin6_scope_id =

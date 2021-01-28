@@ -10,16 +10,19 @@ sources = files('bpf.c',
 
 if arch_subdir == 'x86' and dpdk_conf.get('RTE_ARCH_64')
 	sources += files('bpf_jit_x86.c')
+elif dpdk_conf.has('RTE_ARCH_ARM64')
+	sources += files('bpf_jit_arm64.c')
 endif
 
-install_headers = files('bpf_def.h',
+install_headers('bpf_def.h',
 			'rte_bpf.h',
 			'rte_bpf_ethdev.h')
 
 deps += ['mbuf', 'net', 'ethdev']
 
-dep = cc.find_library('elf', required: false)
-if dep.found() == true and cc.has_header('libelf.h', dependencies: dep)
+dep = dependency('libelf', required: false)
+if dep.found()
+	dpdk_conf.set('RTE_LIBRTE_BPF_ELF', 1)
 	sources += files('bpf_load_elf.c')
 	ext_deps += dep
 endif

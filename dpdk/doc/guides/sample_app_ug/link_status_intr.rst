@@ -49,7 +49,7 @@ where,
 
 *   -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to disable, 10 default)
 
-To run the application in a linuxapp environment with 4 lcores, 4 memory channels, 16 ports and 8 RX queues per lcore,
+To run the application in a linux environment with 4 lcores, 4 memory channels, 16 ports and 8 RX queues per lcore,
 issue the command:
 
 .. code-block:: console
@@ -164,6 +164,7 @@ An example callback function that has been written as indicated below.
     lsi_event_callback(uint16_t port_id, enum rte_eth_event_type type, void *param)
     {
         struct rte_eth_link link;
+        int ret;
 
         RTE_SET_USED(param);
 
@@ -171,9 +172,11 @@ An example callback function that has been written as indicated below.
 
         printf("Event type: %s\n", type == RTE_ETH_EVENT_INTR_LSC ? "LSC interrupt" : "unknown event");
 
-        rte_eth_link_get_nowait(port_id, &link);
-
-        if (link.link_status) {
+        ret = rte_eth_link_get_nowait(port_id, &link);
+        if (ret < 0) {
+            printf("Failed to get port %d link status: %s\n\n",
+                   port_id, rte_strerror(-ret));
+        } else if (link.link_status) {
             printf("Port %d Link Up - speed %u Mbps - %s\n\n", port_id, (unsigned)link.link_speed,
                   (link.link_duplex == ETH_LINK_FULL_DUPLEX) ? ("full-duplex") : ("half-duplex"));
         } else
@@ -311,11 +314,11 @@ The processing is very simple: processes the TX port from the RX port and then r
     static void
     lsi_simple_forward(struct rte_mbuf *m, unsigned portid)
     {
-        struct ether_hdr *eth;
+        struct rte_ether_hdr *eth;
         void *tmp;
         unsigned dst_port = lsi_dst_ports[portid];
 
-        eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+        eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
         /* 02:00:00:00:00:xx */
 
@@ -324,7 +327,7 @@ The processing is very simple: processes the TX port from the RX port and then r
         *((uint64_t *)tmp) = 0x000000000002 + (dst_port << 40);
 
         /* src addr */
-        ether_addr_copy(&lsi_ports_eth_addr[dst_port], &eth->s_addr);
+        rte_ether_addr_copy(&lsi_ports_eth_addr[dst_port], &eth->s_addr);
 
         lsi_send_packet(m, dst_port);
     }

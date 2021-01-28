@@ -631,10 +631,10 @@ In the DPDK environment, use the logging interface provided:
 
  /* log in debug level */
  rte_log_set_global_level(RTE_LOG_DEBUG);
- RTE_LOG(DEBUG, my_logtype1, "this is is a debug level message\n");
- RTE_LOG(INFO, my_logtype1, "this is is a info level message\n");
- RTE_LOG(WARNING, my_logtype1, "this is is a warning level message\n");
- RTE_LOG(WARNING, my_logtype2, "this is is a debug level message (not displayed)\n");
+ RTE_LOG(DEBUG, my_logtype1, "this is a debug level message\n");
+ RTE_LOG(INFO, my_logtype1, "this is a info level message\n");
+ RTE_LOG(WARNING, my_logtype1, "this is a warning level message\n");
+ RTE_LOG(WARNING, my_logtype2, "this is a debug level message (not displayed)\n");
 
  /* log in info level */
  rte_log_set_global_level(RTE_LOG_INFO);
@@ -803,9 +803,8 @@ lpm, etc. For drivers, the same format of Makefile is used.
 	CFLAGS += -O3
 	CFLAGS += $(WERROR_FLAGS)
 
-	# the symbol version information for the library, and .so version
+	# the symbol version information for the library
 	EXPORT_MAP := rte_<name>_version.map
-	LIBABIVER := 1
 
 	# all source filenames are stored in SRCS-y
 	SRCS-$(CONFIG_RTE_LIBRTE_<NAME>) += rte_<name>.c
@@ -852,12 +851,15 @@ allow_experimental_apis
 build
 	**Default Value = true**
 	Used to optionally compile a library, based on its dependencies or
-	environment. A simple example of use would be:
+	environment. When set to "false" the ``reason`` value, explained below, should
+	also be set to explain to the user why the component is not being built.
+	A simple example of use would be:
 
 .. code-block:: python
 
-	if host_machine.system() != 'linux'
+	if not is_linux
 	        build = false
+	        reason = 'only supported on Linux'
 	endif
 
 
@@ -938,10 +940,19 @@ objs
 	objects that were compiled up as part of another target given in the
 	included library ``meson.build`` file.
 
-version
-	**Default Value = 1**.
-	Specifies the ABI version of the library, and is used as the major
-	version number of the resulting ``.so`` library.
+reason
+	**Default Value = '<unknown reason>'**.
+	This variable should be used when a library is not to be built i.e. when
+	``build`` is set to "false", to specify the reason why a library will not be
+	built. For missing dependencies this should be of the form
+	``'missing dependency, "libname"'``.
+
+use_function_versioning
+	**Default Value = false**.
+	Specifies if the library in question has ABI versioned functions. If it
+	has, this value should be set to ensure that the C files are compiled
+	twice with suitable parameters for each of shared or static library
+	builds.
 
 Meson Build File Contents - Drivers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -990,6 +1001,9 @@ pkgconfig_extra_libs
 	libraries that may need to be linked into the build - especially when
 	using static libraries. Anything added here will be appended to the end
 	of the ``pkgconfig --libs`` output.
+
+reason
+	As above.
 
 sources [mandatory]
 	As above

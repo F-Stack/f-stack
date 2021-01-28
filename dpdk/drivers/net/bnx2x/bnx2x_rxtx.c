@@ -321,12 +321,14 @@ static inline void
 bnx2x_upd_rx_prod_fast(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 		uint16_t rx_bd_prod, uint16_t rx_cq_prod)
 {
-	union ustorm_eth_rx_producers rx_prods;
+	struct ustorm_eth_rx_producers rx_prods = { 0 };
+	uint32_t *val = NULL;
 
-	rx_prods.prod.bd_prod  = rx_bd_prod;
-	rx_prods.prod.cqe_prod = rx_cq_prod;
+	rx_prods.bd_prod  = rx_bd_prod;
+	rx_prods.cqe_prod = rx_cq_prod;
 
-	REG_WR(sc, fp->ustorm_rx_prods_offset, rx_prods.raw_data[0]);
+	val = (uint32_t *)&rx_prods;
+	REG_WR(sc, fp->ustorm_rx_prods_offset, val[0]);
 }
 
 static uint16_t
@@ -344,6 +346,8 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	uint16_t len, pad;
 	struct rte_mbuf *rx_mb = NULL;
 
+	rte_spinlock_lock(&(fp)->rx_mtx);
+
 	hw_cq_cons = le16toh(*fp->rx_cq_cons_sb);
 	if ((hw_cq_cons & USABLE_RCQ_ENTRIES_PER_PAGE) ==
 			USABLE_RCQ_ENTRIES_PER_PAGE) {
@@ -355,8 +359,10 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	sw_cq_cons = rxq->rx_cq_head;
 	sw_cq_prod = rxq->rx_cq_tail;
 
-	if (sw_cq_cons == hw_cq_cons)
+	if (sw_cq_cons == hw_cq_cons) {
+		rte_spinlock_unlock(&(fp)->rx_mtx);
 		return 0;
+	}
 
 	while (nb_rx < nb_pkts && sw_cq_cons != hw_cq_cons) {
 
@@ -412,7 +418,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 */
 		if (cqe_fp->pars_flags.flags & PARSING_FLAGS_VLAN) {
 			rx_mb->vlan_tci = cqe_fp->vlan_tag;
-			rx_mb->ol_flags |= PKT_RX_VLAN;
+			rx_mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		}
 
 		rx_pkts[nb_rx] = rx_mb;
@@ -436,6 +442,8 @@ next_rx:
 	rxq->rx_cq_tail = sw_cq_prod;
 
 	bnx2x_upd_rx_prod_fast(sc, fp, bd_prod, sw_cq_prod);
+
+	rte_spinlock_unlock(&(fp)->rx_mtx);
 
 	return nb_rx;
 }

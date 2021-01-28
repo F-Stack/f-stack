@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2018 NXP
 
-if host_machine.system() != 'linux'
-        build = false
+if not is_linux
+	build = false
+	reason = 'only supported on linux'
 endif
 
 deps += ['bus_dpaa']

@@ -24,7 +24,7 @@ The application is located in the ``flow_classify`` sub-directory.
 Running the Application
 -----------------------
 
-To run the example in a ``linuxapp`` environment:
+To run the example in a ``linux`` environment:
 
 .. code-block:: console
 
@@ -91,8 +91,8 @@ initialisation of the ``Flow Classify`` application..
             .size = sizeof(uint8_t),
             .field_index = PROTO_FIELD_IPV4,
             .input_index = PROTO_INPUT_IPV4,
-            .offset = sizeof(struct ether_hdr) +
-                offsetof(struct ipv4_hdr, next_proto_id),
+            .offset = sizeof(struct rte_ether_hdr) +
+                offsetof(struct rte_ipv4_hdr, next_proto_id),
         },
         /* next input field (IPv4 source address) - 4 consecutive bytes. */
         {
@@ -101,8 +101,8 @@ initialisation of the ``Flow Classify`` application..
             .size = sizeof(uint32_t),
             .field_index = SRC_FIELD_IPV4,
             .input_index = SRC_INPUT_IPV4,
-            .offset = sizeof(struct ether_hdr) +
-                offsetof(struct ipv4_hdr, src_addr),
+            .offset = sizeof(struct rte_ether_hdr) +
+                offsetof(struct rte_ipv4_hdr, src_addr),
         },
         /* next input field (IPv4 destination address) - 4 consecutive bytes. */
         {
@@ -111,8 +111,8 @@ initialisation of the ``Flow Classify`` application..
             .size = sizeof(uint32_t),
             .field_index = DST_FIELD_IPV4,
             .input_index = DST_INPUT_IPV4,
-            .offset = sizeof(struct ether_hdr) +
-                offsetof(struct ipv4_hdr, dst_addr),
+            .offset = sizeof(struct rte_ether_hdr) +
+                offsetof(struct rte_ipv4_hdr, dst_addr),
         },
         /*
          * Next 2 fields (src & dst ports) form 4 consecutive bytes.
@@ -124,9 +124,9 @@ initialisation of the ``Flow Classify`` application..
             .size = sizeof(uint16_t),
             .field_index = SRCP_FIELD_IPV4,
             .input_index = SRCP_DESTP_INPUT_IPV4,
-            .offset = sizeof(struct ether_hdr) +
-                sizeof(struct ipv4_hdr) +
-                offsetof(struct tcp_hdr, src_port),
+            .offset = sizeof(struct rte_ether_hdr) +
+                sizeof(struct rte_ipv4_hdr) +
+                offsetof(struct rte_tcp_hdr, src_port),
         },
         {
              /* rte_flow uses a bit mask for protocol ports */
@@ -134,9 +134,9 @@ initialisation of the ``Flow Classify`` application..
              .size = sizeof(uint16_t),
              .field_index = DSTP_FIELD_IPV4,
              .input_index = SRCP_DESTP_INPUT_IPV4,
-             .offset = sizeof(struct ether_hdr) +
-                 sizeof(struct ipv4_hdr) +
-                 offsetof(struct tcp_hdr, dst_port),
+             .offset = sizeof(struct rte_ether_hdr) +
+                 sizeof(struct rte_ipv4_hdr) +
+                 offsetof(struct rte_tcp_hdr, dst_port),
         },
     };
 
@@ -275,7 +275,7 @@ Forwarding application is shown below:
     {
         struct rte_eth_conf port_conf = port_conf_default;
         const uint16_t rx_rings = 1, tx_rings = 1;
-        struct ether_addr addr;
+        struct rte_ether_addr addr;
         int retval;
         uint16_t q;
 
@@ -306,7 +306,9 @@ Forwarding application is shown below:
             return retval;
 
         /* Display the port MAC address. */
-        rte_eth_macaddr_get(port, &addr);
+        retval = rte_eth_macaddr_get(port, &addr);
+        if (retval < 0)
+            return retval;
         printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
                " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
                port,
@@ -315,7 +317,9 @@ Forwarding application is shown below:
                addr.addr_bytes[4], addr.addr_bytes[5]);
 
         /* Enable RX in promiscuous mode for the Ethernet device. */
-        rte_eth_promiscuous_enable(port);
+        retval = rte_eth_promiscuous_enable(port);
+        if (retval != 0)
+                return retval;
 
         return 0;
     }
@@ -326,7 +330,7 @@ The Ethernet ports are configured with default settings using the
 .. code-block:: c
 
     static const struct rte_eth_conf port_conf_default = {
-        .rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN }
+        .rxmode = { .max_rx_pkt_len = RTE_ETHER_MAX_LEN }
     };
 
 For this example the ports are set up with 1 RX and 1 TX queue using the
@@ -343,7 +347,7 @@ Finally the RX port is set in promiscuous mode:
 
 .. code-block:: c
 
-    rte_eth_promiscuous_enable(port);
+    retval = rte_eth_promiscuous_enable(port);
 
 The Add Rules function
 ~~~~~~~~~~~~~~~~~~~~~~

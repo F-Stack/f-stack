@@ -2,7 +2,7 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
-#ifndef RTE_EXEC_ENV_LINUXAPP
+#ifndef RTE_EXEC_ENV_LINUX
 #error "KNI is not supported"
 #endif
 
@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <linux/version.h>
 
 #include <rte_spinlock.h>
 #include <rte_string_fns.h>
@@ -21,7 +22,7 @@
 #include <rte_tailq.h>
 #include <rte_rwlock.h>
 #include <rte_eal_memconfig.h>
-#include <exec-env/rte_kni_common.h>
+#include <rte_kni_common.h>
 #include "rte_kni_fifo.h"
 
 #define MAX_MBUF_BURST_NUM            32
@@ -97,10 +98,12 @@ static volatile int kni_fd = -1;
 int
 rte_kni_init(unsigned int max_kni_ifaces __rte_unused)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 	if (rte_eal_iova_mode() != RTE_IOVA_PA) {
 		RTE_LOG(ERR, KNI, "KNI requires IOVA as PA\n");
 		return -1;
 	}
+#endif
 
 	/* Check FD and open */
 	if (kni_fd < 0) {
@@ -142,31 +145,38 @@ kni_reserve_mz(struct rte_kni *kni)
 	char mz_name[RTE_MEMZONE_NAMESIZE];
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_TX_Q_MZ_NAME_FMT, kni->name);
-	kni->m_tx_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_tx_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_tx_q == NULL, tx_q_fail);
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_RX_Q_MZ_NAME_FMT, kni->name);
-	kni->m_rx_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_rx_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_rx_q == NULL, rx_q_fail);
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_ALLOC_Q_MZ_NAME_FMT, kni->name);
-	kni->m_alloc_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_alloc_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_alloc_q == NULL, alloc_q_fail);
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_FREE_Q_MZ_NAME_FMT, kni->name);
-	kni->m_free_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_free_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_free_q == NULL, free_q_fail);
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_REQ_Q_MZ_NAME_FMT, kni->name);
-	kni->m_req_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_req_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_req_q == NULL, req_q_fail);
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_RESP_Q_MZ_NAME_FMT, kni->name);
-	kni->m_resp_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_resp_q = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_resp_q == NULL, resp_q_fail);
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE, KNI_SYNC_ADDR_MZ_NAME_FMT, kni->name);
-	kni->m_sync_addr = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY, 0);
+	kni->m_sync_addr = rte_memzone_reserve(mz_name, KNI_FIFO_SIZE, SOCKET_ID_ANY,
+			RTE_MEMZONE_IOVA_CONTIG);
 	KNI_MEM_CHECK(kni->m_sync_addr == NULL, sync_addr_fail);
 
 	return 0;
@@ -219,7 +229,7 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 		return NULL;
 	}
 
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 
 	kni = __rte_kni_get(conf->name);
 	if (kni != NULL) {
@@ -239,7 +249,7 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 		goto kni_fail;
 	}
 
-	snprintf(kni->name, RTE_KNI_NAMESIZE, "%s", conf->name);
+	strlcpy(kni->name, conf->name, RTE_KNI_NAMESIZE);
 
 	if (ops)
 		memcpy(&kni->ops, ops, sizeof(struct rte_kni_ops));
@@ -247,24 +257,17 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 		kni->ops.port_id = UINT16_MAX;
 
 	memset(&dev_info, 0, sizeof(dev_info));
-	dev_info.bus = conf->addr.bus;
-	dev_info.devid = conf->addr.devid;
-	dev_info.function = conf->addr.function;
-	dev_info.vendor_id = conf->id.vendor_id;
-	dev_info.device_id = conf->id.device_id;
 	dev_info.core_id = conf->core_id;
 	dev_info.force_bind = conf->force_bind;
 	dev_info.group_id = conf->group_id;
 	dev_info.mbuf_size = conf->mbuf_size;
 	dev_info.mtu = conf->mtu;
+	dev_info.min_mtu = conf->min_mtu;
+	dev_info.max_mtu = conf->max_mtu;
 
-	memcpy(dev_info.mac_addr, conf->mac_addr, ETHER_ADDR_LEN);
+	memcpy(dev_info.mac_addr, conf->mac_addr, RTE_ETHER_ADDR_LEN);
 
-	snprintf(dev_info.name, RTE_KNI_NAMESIZE, "%s", conf->name);
-
-	RTE_LOG(INFO, KNI, "pci: %02x:%02x:%02x \t %02x:%02x\n",
-		dev_info.bus, dev_info.devid, dev_info.function,
-			dev_info.vendor_id, dev_info.device_id);
+	strlcpy(dev_info.name, conf->name, RTE_KNI_NAMESIZE);
 
 	ret = kni_reserve_mz(kni);
 	if (ret < 0)
@@ -309,6 +312,8 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 	kni->group_id = conf->group_id;
 	kni->mbuf_size = conf->mbuf_size;
 
+	dev_info.iova_mode = (rte_eal_iova_mode() == RTE_IOVA_VA) ? 1 : 0;
+
 	ret = ioctl(kni_fd, RTE_KNI_IOCTL_CREATE, &dev_info);
 	if (ret < 0)
 		goto ioctl_fail;
@@ -318,7 +323,7 @@ rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 	kni_list = RTE_TAILQ_CAST(rte_kni_tailq.head, rte_kni_list);
 	TAILQ_INSERT_TAIL(kni_list, te, next);
 
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	/* Allocate mbufs and then put them into alloc_q */
 	kni_allocate_mbufs(kni);
@@ -332,7 +337,7 @@ mz_fail:
 kni_fail:
 	rte_free(te);
 unlock:
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	return NULL;
 }
@@ -408,7 +413,7 @@ rte_kni_release(struct rte_kni *kni)
 
 	kni_list = RTE_TAILQ_CAST(rte_kni_tailq.head, rte_kni_list);
 
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 
 	TAILQ_FOREACH(te, kni_list, next) {
 		if (te->data == kni)
@@ -418,7 +423,7 @@ rte_kni_release(struct rte_kni *kni)
 	if (te == NULL)
 		goto unlock;
 
-	snprintf(dev_info.name, sizeof(dev_info.name), "%s", kni->name);
+	strlcpy(dev_info.name, kni->name, sizeof(dev_info.name));
 	if (ioctl(kni_fd, RTE_KNI_IOCTL_RELEASE, &dev_info) < 0) {
 		RTE_LOG(ERR, KNI, "Fail to release kni device\n");
 		goto unlock;
@@ -426,7 +431,7 @@ rte_kni_release(struct rte_kni *kni)
 
 	TAILQ_REMOVE(kni_list, te, next);
 
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	/* mbufs in all fifo should be released, except request/response */
 
@@ -450,7 +455,7 @@ rte_kni_release(struct rte_kni *kni)
 	return 0;
 
 unlock:
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	return -1;
 }
@@ -469,7 +474,7 @@ kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
 	RTE_LOG(INFO, KNI, "Configure mac address of %d", port_id);
 
 	ret = rte_eth_dev_default_mac_addr_set(port_id,
-					       (struct ether_addr *)mac_addr);
+					(struct rte_ether_addr *)mac_addr);
 	if (ret < 0)
 		RTE_LOG(ERR, KNI, "Failed to config mac_addr for port %d\n",
 			port_id);
@@ -481,6 +486,8 @@ kni_config_mac_address(uint16_t port_id, uint8_t mac_addr[])
 static int
 kni_config_promiscusity(uint16_t port_id, uint8_t to_on)
 {
+	int ret;
+
 	if (!rte_eth_dev_is_valid_port(port_id)) {
 		RTE_LOG(ERR, KNI, "Invalid port id %d\n", port_id);
 		return -EINVAL;
@@ -490,9 +497,35 @@ kni_config_promiscusity(uint16_t port_id, uint8_t to_on)
 		port_id, to_on);
 
 	if (to_on)
-		rte_eth_promiscuous_enable(port_id);
+		ret = rte_eth_promiscuous_enable(port_id);
 	else
-		rte_eth_promiscuous_disable(port_id);
+		ret = rte_eth_promiscuous_disable(port_id);
+
+	if (ret != 0)
+		RTE_LOG(ERR, KNI,
+			"Failed to %s promiscuous mode for port %u: %s\n",
+			to_on ? "enable" : "disable", port_id,
+			rte_strerror(-ret));
+
+	return ret;
+}
+
+/* default callback for request of configuring allmulticast mode */
+static int
+kni_config_allmulticast(uint16_t port_id, uint8_t to_on)
+{
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		RTE_LOG(ERR, KNI, "Invalid port id %d\n", port_id);
+		return -EINVAL;
+	}
+
+	RTE_LOG(INFO, KNI, "Configure allmulticast mode of %d to %d\n",
+		port_id, to_on);
+
+	if (to_on)
+		rte_eth_allmulticast_enable(port_id);
+	else
+		rte_eth_allmulticast_disable(port_id);
 
 	return 0;
 }
@@ -543,6 +576,14 @@ rte_kni_handle_request(struct rte_kni *kni)
 		else if (kni->ops.port_id != UINT16_MAX)
 			req->result = kni_config_promiscusity(
 					kni->ops.port_id, req->promiscusity);
+		break;
+	case RTE_KNI_REQ_CHANGE_ALLMULTI: /* Change ALLMULTICAST MODE */
+		if (kni->ops.config_allmulticast)
+			req->result = kni->ops.config_allmulticast(
+					kni->ops.port_id, req->allmulti);
+		else if (kni->ops.port_id != UINT16_MAX)
+			req->result = kni_config_allmulticast(
+					kni->ops.port_id, req->allmulti);
 		break;
 	default:
 		RTE_LOG(ERR, KNI, "Unknown request id %u\n", req->req_id);
@@ -668,11 +709,11 @@ rte_kni_get(const char *name)
 	if (name == NULL || name[0] == '\0')
 		return NULL;
 
-	rte_rwlock_read_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_lock();
 
 	kni = __rte_kni_get(name);
 
-	rte_rwlock_read_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_unlock();
 
 	return kni;
 }
@@ -693,7 +734,8 @@ kni_check_request_register(struct rte_kni_ops *ops)
 	if (ops->change_mtu == NULL
 	    && ops->config_network_if == NULL
 	    && ops->config_mac_address == NULL
-	    && ops->config_promiscusity == NULL)
+	    && ops->config_promiscusity == NULL
+	    && ops->config_allmulticast == NULL)
 		return KNI_REQ_NO_REGISTER;
 
 	return KNI_REQ_REGISTERED;
@@ -737,7 +779,7 @@ rte_kni_unregister_handlers(struct rte_kni *kni)
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_kni_update_link(struct rte_kni *kni, unsigned int linkup)
 {
 	char path[64];

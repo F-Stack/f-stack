@@ -95,10 +95,12 @@ bad=$(echo "$headlines" | grep -E --color=always \
 	-e ':.*\<(Armv7|ARMv7|ArmV7|armV7|ARMV7)\>' \
 	-e ':.*\<(Armv8|ARMv8|ArmV8|armV8|ARMV8)\>' \
 	-e ':.*\<crc\>' \
+	-e ':.*\<dcb\>' \
 	-e ':.*\<dma\>' \
 	-e ':.*\<eeprom\>' \
 	-e ':.*\<freebsd\>' \
 	-e ':.*\<iova\>' \
+	-e ':.*\<lacp\>' \
 	-e ':.*\<linux\>' \
 	-e ':.*\<lro\>' \
 	-e ':.*\<lsc\>' \
@@ -111,9 +113,13 @@ bad=$(echo "$headlines" | grep -E --color=always \
 	-e ':.*\<pci\>' \
 	-e ':.*\<phy\>' \
 	-e ':.*\<pmd\>' \
+	-e ':.*\<reta\>' \
 	-e ':.*\<rss\>' \
 	-e ':.*\<sctp\>' \
+	-e ':.*\<tos\>' \
+	-e ':.*\<tpid\>' \
 	-e ':.*\<tso\>' \
+	-e ':.*\<ttl\>' \
 	-e ':.*\<udp\>' \
 	-e ':.*\<[Vv]lan\>' \
 	-e ':.*\<vdpa\>' \
@@ -154,6 +160,24 @@ bad=$(echo "$tags" |
 	grep -v '^Fixes: [0-9a-f]\{7\}[0-9a-f]* (".*")$' |
 	sed 's,^.,\t&,')
 [ -z "$bad" ] || printf "Wrong tag:\n$bad\n"
+
+# check missing Coverity issue: tag
+bad=$(for commit in $commits; do
+	body=$(git log --format='%b' -1 $commit)
+	echo "$body" | grep -qi coverity || continue
+	echo "$body" | grep -q '^Coverity issue:' && continue
+	git log --format='\t%s' -1 $commit
+done)
+[ -z "$bad" ] || printf "Missing 'Coverity issue:' tag:\n$bad\n"
+
+# check missing Bugzilla ID: tag
+bad=$(for commit in $commits; do
+	body=$(git log --format='%b' -1 $commit)
+	echo "$body" | grep -qi bugzilla || continue
+	echo "$body" | grep -q '^Bugzilla ID:' && continue
+	git log --format='\t%s' -1 $commit
+done)
+[ -z "$bad" ] || printf "Missing 'Bugzilla ID:' tag:\n$bad\n"
 
 # check missing Fixes: tag
 bad=$(for fix in $fixes ; do

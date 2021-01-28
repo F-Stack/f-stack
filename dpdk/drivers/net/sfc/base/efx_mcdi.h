@@ -11,7 +11,7 @@
 #include "efx_regs_mcdi.h"
 
 #if EFSYS_OPT_NAMES
-#include "mc_driver_pcol_strs.h"
+#include "efx_regs_mcdi_strs.h"
 #endif /* EFSYS_OPT_NAMES */
 
 #ifdef	__cplusplus
@@ -31,7 +31,7 @@ struct efx_mcdi_req_s {
 	unsigned int	emr_cmd;
 	uint8_t		*emr_in_buf;
 	size_t		emr_in_length;
-	/* Outputs: retcode, buffer, length, and length used */
+	/* Outputs: retcode, buffer, length and length used */
 	efx_rc_t	emr_rc;
 	uint8_t		*emr_out_buf;
 	size_t		emr_out_length;
@@ -86,6 +86,13 @@ efx_mcdi_ev_proxy_response(
 	__in		unsigned int handle,
 	__in		unsigned int status);
 #endif
+
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+extern			void
+efx_mcdi_ev_proxy_request(
+	__in		efx_nic_t *enp,
+	__in		unsigned int index);
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 
 extern			void
 efx_mcdi_ev_death(
@@ -170,11 +177,11 @@ efx_mcdi_mac_spoofing_supported(
 
 
 #if EFSYS_OPT_BIST
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 extern	__checkReturn		efx_rc_t
 efx_mcdi_bist_enable_offline(
 	__in			efx_nic_t *enp);
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 extern	__checkReturn		efx_rc_t
 efx_mcdi_bist_start(
 	__in			efx_nic_t *enp,

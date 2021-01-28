@@ -7,7 +7,7 @@
 #include "efx.h"
 #include "efx_impl.h"
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 #if EFSYS_OPT_VPD || EFSYS_OPT_NVRAM
 
@@ -1947,10 +1947,12 @@ ef10_nvram_partn_size(
 	__out			size_t *sizep)
 {
 	efx_rc_t rc;
+	efx_nvram_info_t eni = { 0 };
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, sizep,
-	    NULL, NULL, NULL)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail1;
+
+	*sizep = eni.eni_partn_size;
 
 	return (0);
 
@@ -1959,6 +1961,29 @@ fail1:
 
 	return (rc);
 }
+
+	__checkReturn		efx_rc_t
+ef10_nvram_partn_info(
+	__in			efx_nic_t *enp,
+	__in			uint32_t partn,
+	__out			efx_nvram_info_t *enip)
+{
+	efx_rc_t rc;
+
+	if ((rc = efx_mcdi_nvram_info(enp, partn, enip)) != 0)
+		goto fail1;
+
+	if (enip->eni_write_size == 0)
+		enip->eni_write_size = EF10_NVRAM_CHUNK;
+
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
 
 	__checkReturn		efx_rc_t
 ef10_nvram_partn_lock(
@@ -2058,11 +2083,13 @@ ef10_nvram_partn_erase(
 	__in			size_t size)
 {
 	efx_rc_t rc;
+	efx_nvram_info_t eni = { 0 };
 	uint32_t erase_size;
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, NULL, NULL,
-	    &erase_size, NULL)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail1;
+
+	erase_size = eni.eni_erase_size;
 
 	if (erase_size == 0) {
 		if ((rc = efx_mcdi_nvram_erase(enp, partn, offset, size)) != 0)
@@ -2104,12 +2131,14 @@ ef10_nvram_partn_write(
 	__in			size_t size)
 {
 	size_t chunk;
+	efx_nvram_info_t eni = { 0 };
 	uint32_t write_size;
 	efx_rc_t rc;
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, NULL, NULL,
-	    NULL, &write_size)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail1;
+
+	write_size = eni.eni_write_size;
 
 	if (write_size != 0) {
 		/*
@@ -2149,6 +2178,10 @@ fail1:
 	return (rc);
 }
 
+#define	EF10_NVRAM_INITIAL_POLL_DELAY_US 10000
+#define	EF10_NVRAM_MAX_POLL_DELAY_US     1000000
+#define	EF10_NVRAM_POLL_RETRIES          100
+
 	__checkReturn		efx_rc_t
 ef10_nvram_partn_unlock(
 	__in			efx_nic_t *enp,
@@ -2156,17 +2189,58 @@ ef10_nvram_partn_unlock(
 	__out_opt		uint32_t *verify_resultp)
 {
 	boolean_t reboot = B_FALSE;
+	uint32_t poll_delay_us = EF10_NVRAM_INITIAL_POLL_DELAY_US;
+	uint32_t poll_retry = 0;
+	uint32_t verify_result = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
 	efx_rc_t rc;
 
-	if (verify_resultp != NULL)
-		*verify_resultp = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
+	rc = efx_mcdi_nvram_update_finish(enp, partn, reboot,
+	    EFX_NVRAM_UPDATE_FLAGS_BACKGROUND, &verify_result);
 
-	rc = efx_mcdi_nvram_update_finish(enp, partn, reboot, verify_resultp);
-	if (rc != 0)
-		goto fail1;
+	/*
+	 * NVRAM updates can take a long time (e.g. up to 1 minute for bundle
+	 * images). Polling for NVRAM update completion ensures that other MCDI
+	 * commands can be issued before the background NVRAM update completes.
+	 *
+	 * Without polling, other MCDI commands can only be issued before the
+	 * NVRAM update completes if the MCDI transport and the firmware
+	 * support the Asynchronous MCDI protocol extensions in SF-116575-PS.
+	 *
+	 * The initial call either completes the update synchronously, or
+	 * returns RC_PENDING to indicate processing is continuing. In the
+	 * latter case, we poll for at least 1 minute, at increasing intervals
+	 * (10ms, 100ms, 1s).
+	 */
+	while (verify_result == MC_CMD_NVRAM_VERIFY_RC_PENDING) {
+
+		if (poll_retry > EF10_NVRAM_POLL_RETRIES) {
+			rc = ETIMEDOUT;
+			goto fail1;
+		}
+		poll_retry++;
+
+		EFSYS_SLEEP(poll_delay_us);
+		if (poll_delay_us < EF10_NVRAM_MAX_POLL_DELAY_US)
+			poll_delay_us *= 10;
+
+		/* Poll for completion of background NVRAM update. */
+		verify_result = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
+
+		rc = efx_mcdi_nvram_update_finish(enp, partn, reboot,
+		    EFX_NVRAM_UPDATE_FLAGS_POLL, &verify_result);
+		if (rc != 0) {
+			/* Poll failed, so assume NVRAM update failed. */
+			goto fail2;
+		}
+	}
+
+	if (verify_resultp != NULL)
+		*verify_resultp = verify_result;
 
 	return (0);
 
+fail2:
+	EFSYS_PROBE(fail2);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 
@@ -2270,6 +2344,8 @@ static ef10_parttbl_entry_t medford2_parttbl[] = {
 	PARTN_MAP_ENTRY(MUM_FIRMWARE,		ALL,	MUM_FIRMWARE),
 	PARTN_MAP_ENTRY(DYNCONFIG_DEFAULTS,	ALL,	DYNCONFIG_DEFAULTS),
 	PARTN_MAP_ENTRY(ROMCONFIG_DEFAULTS,	ALL,	ROMCONFIG_DEFAULTS),
+	PARTN_MAP_ENTRY(BUNDLE,			ALL,	BUNDLE),
+	PARTN_MAP_ENTRY(BUNDLE_METADATA,	ALL,	BUNDLE_METADATA),
 };
 
 static	__checkReturn		efx_rc_t
@@ -2439,22 +2515,17 @@ ef10_nvram_partn_rw_start(
 	__in			uint32_t partn,
 	__out			size_t *chunk_sizep)
 {
-	uint32_t write_size = 0;
+	efx_nvram_info_t eni = { 0 };
 	efx_rc_t rc;
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, NULL, NULL,
-	    NULL, &write_size)) != 0)
+	if ((rc = ef10_nvram_partn_info(enp, partn, &eni)) != 0)
 		goto fail1;
 
 	if ((rc = ef10_nvram_partn_lock(enp, partn)) != 0)
 		goto fail2;
 
-	if (chunk_sizep != NULL) {
-		if (write_size == 0)
-			*chunk_sizep = EF10_NVRAM_CHUNK;
-		else
-			*chunk_sizep = write_size;
-	}
+	if (chunk_sizep != NULL)
+		*chunk_sizep = eni.eni_write_size;
 
 	return (0);
 
@@ -2487,4 +2558,4 @@ fail1:
 
 #endif	/* EFSYS_OPT_NVRAM */
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */

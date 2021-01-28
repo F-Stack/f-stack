@@ -14,6 +14,7 @@
 #include <rte_flow.h>
 #include <rte_cycles.h>
 #include <rte_ethdev.h>
+#include <rte_string_fns.h>
 
 #include "failsafe_private.h"
 
@@ -377,7 +378,7 @@ fs_rx_queue_release(void *queue)
 	if (queue == NULL)
 		return;
 	rxq = queue;
-	dev = rxq->priv->dev;
+	dev = &rte_eth_devices[rxq->priv->data->port_id];
 	fs_lock(dev, 0);
 	if (rxq->event_fd > 0)
 		close(rxq->event_fd);
@@ -561,7 +562,7 @@ fs_tx_queue_release(void *queue)
 	if (queue == NULL)
 		return;
 	txq = queue;
-	dev = txq->priv->dev;
+	dev = &rte_eth_devices[txq->priv->data->port_id];
 	fs_lock(dev, 0);
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
 		if (ETH(sdev)->data->tx_queues != NULL &&
@@ -654,52 +655,132 @@ fs_dev_free_queues(struct rte_eth_dev *dev)
 	dev->data->nb_tx_queues = 0;
 }
 
-static void
+static int
 fs_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct sub_device *sdev;
 	uint8_t i;
+	int ret = 0;
 
 	fs_lock(dev, 0);
-	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
-		rte_eth_promiscuous_enable(PORT_ID(sdev));
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		ret = rte_eth_promiscuous_enable(PORT_ID(sdev));
+		ret = fs_err(sdev, ret);
+		if (ret != 0) {
+			ERROR("Promiscuous mode enable failed for subdevice %d",
+				PORT_ID(sdev));
+			break;
+		}
+	}
+	if (ret != 0) {
+		/* Rollback in the case of failure */
+		FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+			ret = rte_eth_promiscuous_disable(PORT_ID(sdev));
+			ret = fs_err(sdev, ret);
+			if (ret != 0)
+				ERROR("Promiscuous mode disable during rollback failed for subdevice %d",
+					PORT_ID(sdev));
+		}
+	}
 	fs_unlock(dev, 0);
+
+	return ret;
 }
 
-static void
+static int
 fs_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct sub_device *sdev;
 	uint8_t i;
+	int ret = 0;
 
 	fs_lock(dev, 0);
-	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
-		rte_eth_promiscuous_disable(PORT_ID(sdev));
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		ret = rte_eth_promiscuous_disable(PORT_ID(sdev));
+		ret = fs_err(sdev, ret);
+		if (ret != 0) {
+			ERROR("Promiscuous mode disable failed for subdevice %d",
+				PORT_ID(sdev));
+			break;
+		}
+	}
+	if (ret != 0) {
+		/* Rollback in the case of failure */
+		FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+			ret = rte_eth_promiscuous_enable(PORT_ID(sdev));
+			ret = fs_err(sdev, ret);
+			if (ret != 0)
+				ERROR("Promiscuous mode enable during rollback failed for subdevice %d",
+					PORT_ID(sdev));
+		}
+	}
 	fs_unlock(dev, 0);
+
+	return ret;
 }
 
-static void
+static int
 fs_allmulticast_enable(struct rte_eth_dev *dev)
 {
 	struct sub_device *sdev;
 	uint8_t i;
+	int ret = 0;
 
 	fs_lock(dev, 0);
-	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
-		rte_eth_allmulticast_enable(PORT_ID(sdev));
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		ret = rte_eth_allmulticast_enable(PORT_ID(sdev));
+		ret = fs_err(sdev, ret);
+		if (ret != 0) {
+			ERROR("All-multicast mode enable failed for subdevice %d",
+				PORT_ID(sdev));
+			break;
+		}
+	}
+	if (ret != 0) {
+		/* Rollback in the case of failure */
+		FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+			ret = rte_eth_allmulticast_disable(PORT_ID(sdev));
+			ret = fs_err(sdev, ret);
+			if (ret != 0)
+				ERROR("All-multicast mode disable during rollback failed for subdevice %d",
+					PORT_ID(sdev));
+		}
+	}
 	fs_unlock(dev, 0);
+
+	return ret;
 }
 
-static void
+static int
 fs_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct sub_device *sdev;
 	uint8_t i;
+	int ret = 0;
 
 	fs_lock(dev, 0);
-	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
-		rte_eth_allmulticast_disable(PORT_ID(sdev));
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		ret = rte_eth_allmulticast_disable(PORT_ID(sdev));
+		ret = fs_err(sdev, ret);
+		if (ret != 0) {
+			ERROR("All-multicast mode disable failed for subdevice %d",
+				PORT_ID(sdev));
+			break;
+		}
+	}
+	if (ret != 0) {
+		/* Rollback in the case of failure */
+		FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+			ret = rte_eth_allmulticast_enable(PORT_ID(sdev));
+			ret = fs_err(sdev, ret);
+			if (ret != 0)
+				ERROR("All-multicast mode enable during rollback failed for subdevice %d",
+					PORT_ID(sdev));
+		}
+	}
 	fs_unlock(dev, 0);
+
+	return ret;
 }
 
 static int
@@ -774,19 +855,179 @@ inc:
 	return 0;
 }
 
-static void
+static int
 fs_stats_reset(struct rte_eth_dev *dev)
 {
 	struct sub_device *sdev;
 	uint8_t i;
+	int ret;
 
 	fs_lock(dev, 0);
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
-		rte_eth_stats_reset(PORT_ID(sdev));
+		ret = rte_eth_stats_reset(PORT_ID(sdev));
+		if (ret) {
+			if (!fs_err(sdev, ret))
+				continue;
+
+			ERROR("Operation rte_eth_stats_reset failed for sub_device %d with error %d",
+			      i, ret);
+			fs_unlock(dev, 0);
+			return ret;
+		}
 		memset(&sdev->stats_snapshot, 0, sizeof(struct rte_eth_stats));
 	}
 	memset(&PRIV(dev)->stats_accumulator, 0, sizeof(struct rte_eth_stats));
 	fs_unlock(dev, 0);
+
+	return 0;
+}
+
+static int
+__fs_xstats_count(struct rte_eth_dev *dev)
+{
+	struct sub_device *sdev;
+	int count = 0;
+	uint8_t i;
+	int ret;
+
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		ret = rte_eth_xstats_get_names(PORT_ID(sdev), NULL, 0);
+		if (ret < 0)
+			return ret;
+		count += ret;
+	}
+
+	return count;
+}
+
+static int
+__fs_xstats_get_names(struct rte_eth_dev *dev,
+		    struct rte_eth_xstat_name *xstats_names,
+		    unsigned int limit)
+{
+	struct sub_device *sdev;
+	unsigned int count = 0;
+	uint8_t i;
+
+	/* Caller only cares about count */
+	if (!xstats_names)
+		return  __fs_xstats_count(dev);
+
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		struct rte_eth_xstat_name *sub_names = xstats_names + count;
+		int j, r;
+
+		if (count >= limit)
+			break;
+
+		r = rte_eth_xstats_get_names(PORT_ID(sdev),
+					     sub_names, limit - count);
+		if (r < 0)
+			return r;
+
+		/* add subN_ prefix to names */
+		for (j = 0; j < r; j++) {
+			char *xname = sub_names[j].name;
+			char tmp[RTE_ETH_XSTATS_NAME_SIZE];
+
+			if ((xname[0] == 't' || xname[0] == 'r') &&
+			    xname[1] == 'x' && xname[2] == '_')
+				snprintf(tmp, sizeof(tmp), "%.3ssub%u_%s",
+					 xname, i, xname + 3);
+			else
+				snprintf(tmp, sizeof(tmp), "sub%u_%s",
+					 i, xname);
+
+			strlcpy(xname, tmp, RTE_ETH_XSTATS_NAME_SIZE);
+		}
+		count += r;
+	}
+	return count;
+}
+
+static int
+fs_xstats_get_names(struct rte_eth_dev *dev,
+		    struct rte_eth_xstat_name *xstats_names,
+		    unsigned int limit)
+{
+	int ret;
+
+	fs_lock(dev, 0);
+	ret = __fs_xstats_get_names(dev, xstats_names, limit);
+	fs_unlock(dev, 0);
+	return ret;
+}
+
+static int
+__fs_xstats_get(struct rte_eth_dev *dev,
+	      struct rte_eth_xstat *xstats,
+	      unsigned int n)
+{
+	unsigned int count = 0;
+	struct sub_device *sdev;
+	uint8_t i;
+	int j, ret;
+
+	ret = __fs_xstats_count(dev);
+	/*
+	 * if error
+	 * or caller did not give enough space
+	 * or just querying
+	 */
+	if (ret < 0 || ret > (int)n || xstats == NULL)
+		return ret;
+
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		ret = rte_eth_xstats_get(PORT_ID(sdev), xstats, n);
+		if (ret < 0)
+			return ret;
+
+		if (ret > (int)n)
+			return n + count;
+
+		/* add offset to id's from sub-device */
+		for (j = 0; j < ret; j++)
+			xstats[j].id += count;
+
+		xstats += ret;
+		n -= ret;
+		count += ret;
+	}
+
+	return count;
+}
+
+static int
+fs_xstats_get(struct rte_eth_dev *dev,
+	      struct rte_eth_xstat *xstats,
+	      unsigned int n)
+{
+	int ret;
+
+	fs_lock(dev, 0);
+	ret = __fs_xstats_get(dev, xstats, n);
+	fs_unlock(dev, 0);
+
+	return ret;
+}
+
+
+static int
+fs_xstats_reset(struct rte_eth_dev *dev)
+{
+	struct sub_device *sdev;
+	uint8_t i;
+	int r = 0;
+
+	fs_lock(dev, 0);
+	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
+		r = rte_eth_xstats_reset(PORT_ID(sdev));
+		if (r < 0)
+			break;
+	}
+	fs_unlock(dev, 0);
+
+	return r;
 }
 
 static void
@@ -827,6 +1068,8 @@ fs_dev_merge_info(struct rte_eth_dev_info *info,
 	info->rx_queue_offload_capa &= sinfo->rx_queue_offload_capa;
 	info->tx_queue_offload_capa &= sinfo->tx_queue_offload_capa;
 	info->flow_type_rss_offloads &= sinfo->flow_type_rss_offloads;
+	info->hash_key_size = RTE_MIN(info->hash_key_size,
+				      sinfo->hash_key_size);
 }
 
 /**
@@ -860,12 +1103,13 @@ fs_dev_merge_info(struct rte_eth_dev_info *info,
  *      all sub_devices and the default capabilities.
  *
  */
-static void
+static int
 fs_dev_infos_get(struct rte_eth_dev *dev,
 		  struct rte_eth_dev_info *infos)
 {
 	struct sub_device *sdev;
 	uint8_t i;
+	int ret;
 
 	/* Use maximum upper bounds by default */
 	infos->max_rx_pktlen = UINT32_MAX;
@@ -875,6 +1119,7 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 	infos->max_hash_mac_addrs = UINT32_MAX;
 	infos->max_vfs = UINT16_MAX;
 	infos->max_vmdq_pools = UINT16_MAX;
+	infos->hash_key_size = UINT8_MAX;
 
 	/*
 	 * Set of capabilities that can be verified upon
@@ -933,10 +1178,15 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_PROBED) {
 		struct rte_eth_dev_info sub_info;
 
-		rte_eth_dev_info_get(PORT_ID(sdev), &sub_info);
+		ret = rte_eth_dev_info_get(PORT_ID(sdev), &sub_info);
+		ret = fs_err(sdev, ret);
+		if (ret != 0)
+			return ret;
 
 		fs_dev_merge_info(infos, &sub_info);
 	}
+
+	return 0;
 }
 
 static const uint32_t *
@@ -1080,7 +1330,7 @@ fs_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
 
 static int
 fs_mac_addr_add(struct rte_eth_dev *dev,
-		struct ether_addr *mac_addr,
+		struct rte_ether_addr *mac_addr,
 		uint32_t index,
 		uint32_t vmdq)
 {
@@ -1109,7 +1359,7 @@ fs_mac_addr_add(struct rte_eth_dev *dev,
 }
 
 static int
-fs_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
+fs_mac_addr_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 {
 	struct sub_device *sdev;
 	uint8_t i;
@@ -1133,7 +1383,7 @@ fs_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
 
 static int
 fs_set_mc_addr_list(struct rte_eth_dev *dev,
-		    struct ether_addr *mc_addr_set, uint32_t nb_mc_addr)
+		    struct rte_ether_addr *mc_addr_set, uint32_t nb_mc_addr)
 {
 	struct sub_device *sdev;
 	uint8_t i;
@@ -1206,33 +1456,17 @@ fs_rss_hash_update(struct rte_eth_dev *dev,
 }
 
 static int
-fs_filter_ctrl(struct rte_eth_dev *dev,
+fs_filter_ctrl(struct rte_eth_dev *dev __rte_unused,
 		enum rte_filter_type type,
 		enum rte_filter_op op,
 		void *arg)
 {
-	struct sub_device *sdev;
-	uint8_t i;
-	int ret;
-
 	if (type == RTE_ETH_FILTER_GENERIC &&
 	    op == RTE_ETH_FILTER_GET) {
 		*(const void **)arg = &fs_flow_ops;
 		return 0;
 	}
-	fs_lock(dev, 0);
-	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE) {
-		DEBUG("Calling rte_eth_dev_filter_ctrl on sub_device %d", i);
-		ret = rte_eth_dev_filter_ctrl(PORT_ID(sdev), type, op, arg);
-		if ((ret = fs_err(sdev, ret))) {
-			ERROR("Operation rte_eth_dev_filter_ctrl failed for sub_device %d"
-			      " with error %d", i, ret);
-			fs_unlock(dev, 0);
-			return ret;
-		}
-	}
-	fs_unlock(dev, 0);
-	return 0;
+	return -ENOTSUP;
 }
 
 const struct eth_dev_ops failsafe_ops = {
@@ -1249,6 +1483,9 @@ const struct eth_dev_ops failsafe_ops = {
 	.link_update = fs_link_update,
 	.stats_get = fs_stats_get,
 	.stats_reset = fs_stats_reset,
+	.xstats_get = fs_xstats_get,
+	.xstats_get_names = fs_xstats_get_names,
+	.xstats_reset = fs_xstats_reset,
 	.dev_infos_get = fs_dev_infos_get,
 	.dev_supported_ptypes_get = fs_dev_supported_ptypes_get,
 	.mtu_set = fs_mtu_set,

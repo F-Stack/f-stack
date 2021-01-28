@@ -168,6 +168,31 @@
 
 /* ioctl define end */
 
+/* af define start */
+
+#define LINUX_AF_INET6        10
+
+/* af define end */
+
+/* msghdr define start */
+
+struct linux_msghdr {
+    void *msg_name;             /* Address to send to/receive from.  */
+    socklen_t msg_namelen;      /* Length of address data.  */
+
+    struct iovec *msg_iov;      /* Vector of data to send/receive into.  */
+    size_t msg_iovlen;          /* Number of elements in the vector.  */
+
+    void *msg_control;          /* Ancillary data (eg BSD filedesc passing). */
+    size_t msg_controllen;      /* Ancillary data buffer length.
+                                   !! The type should be socklen_t but the
+                                   definition of the kernel is incompatible
+                                   with this.  */
+
+    int msg_flags;              /* Flags on received message.  */
+};
+
+/* msghdr define end */
 
 extern int sendit(struct thread *td, int s, struct msghdr *mp, int flags);
 
@@ -354,7 +379,7 @@ ip_opt_convert(int optname)
         case LINUX_IP_DROP_MEMBERSHIP:
             return IP_DROP_MEMBERSHIP;
         default:
-            return -1;
+            return optname;
     }
 }
 
@@ -405,7 +430,7 @@ linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
     }
 
     /* #linux and #freebsd may point to the same address */
-    freebsd->sa_family = linux->sa_family;
+    freebsd->sa_family = linux->sa_family == LINUX_AF_INET6 ? AF_INET6 : linux->sa_family;
     freebsd->sa_len = addrlen;
 
     bcopy(linux->sa_data, freebsd->sa_data, addrlen - sizeof(linux->sa_family));
@@ -419,7 +444,7 @@ freebsd2linux_sockaddr(struct linux_sockaddr *linux,
         return;
     }
 
-    linux->sa_family = freebsd->sa_family;
+    linux->sa_family = freebsd->sa_family == AF_INET6 ? LINUX_AF_INET6 : freebsd->sa_family;
 
     bcopy(freebsd->sa_data, linux->sa_data, freebsd->sa_len - sizeof(linux->sa_family));
 }
@@ -429,7 +454,7 @@ ff_socket(int domain, int type, int protocol)
 {
     int rc;
     struct socket_args sa;
-    sa.domain = domain;
+    sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
     sa.type = type;
     sa.protocol = protocol;
     if ((rc = sys_socket(curthread, &sa)))
@@ -803,21 +828,27 @@ kern_fail:
     return (-1);
 }
 
+/*
+ * It is considered here that the upper 4 bytes of
+ * msg->iovlen and msg->msg_controllen in linux_msghdr are 0.
+ */
 ssize_t
 ff_recvmsg(int s, struct msghdr *msg, int flags)
 {
-    int rc, oldflags;
+    int rc;
+    struct linux_msghdr *linux_msg = (struct linux_msghdr *)msg;
 
-    oldflags = msg->msg_flags;
     msg->msg_flags = flags;
 
     if ((rc = kern_recvit(curthread, s, msg, UIO_SYSSPACE, NULL))) {
-        msg->msg_flags = oldflags;
+        msg->msg_flags = 0;
         goto kern_fail;
     }
     rc = curthread->td_retval[0];
 
-    freebsd2linux_sockaddr(msg->msg_name, msg->msg_name);
+    freebsd2linux_sockaddr(linux_msg->msg_name, msg->msg_name);
+    linux_msg->msg_flags = msg->msg_flags;
+    msg->msg_flags = 0;
 
     return (rc);
 kern_fail:

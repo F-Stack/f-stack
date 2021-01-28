@@ -19,13 +19,14 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.20
+F-STACK_VERSION=1.21
 
 HOST_OS:=$(shell uname -s)
 
 #DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 FF_KNI=1
+#FF_FLOW_ISOLATE=1
 #FF_NETGRAPH=1
 #FF_IPFW=1
 #FF_USE_PAGE_ARRAY=1
@@ -75,6 +76,10 @@ endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}
 HOST_CFLAGS+= ${CONF_CFLAGS}
+
+ifdef FF_FLOW_ISOLATE
+HOST_CFLAGS+= -DFF_FLOW_ISOLATE
+endif
 
 ifdef FF_NETGRAPH
 HOST_CFLAGS+= -DFF_NETGRAPH

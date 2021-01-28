@@ -106,12 +106,12 @@ const uint16_t num_vlans = RTE_DIM(vlan_tags);
 static uint16_t num_pf_queues,  num_vmdq_queues;
 static uint16_t vmdq_pool_base, vmdq_queue_base;
 /* pool mac addr template, pool mac addr is like: 52 54 00 12 port# pool# */
-static struct ether_addr pool_addr_template = {
+static struct rte_ether_addr pool_addr_template = {
 	.addr_bytes = {0x52, 0x54, 0x00, 0x12, 0x00, 0x00}
 };
 
 /* ethernet addresses of ports */
-static struct ether_addr vmdq_ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr vmdq_ports_eth_addr[RTE_MAX_ETHPORTS];
 
 #define MAX_QUEUE_NUM_10G 128
 #define MAX_QUEUE_NUM_1G 8
@@ -169,7 +169,13 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	 * The max pool number from dev_info will be used to validate the pool
 	 * number specified in cmd line
 	 */
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+		return retval;
+	}
+
 	max_nb_pools = (uint32_t)dev_info.max_vmdq_pools;
 	/*
 	 * We allow to process part of VMDQ pools specified by num_pools in
@@ -214,7 +220,13 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	rxRings = (uint16_t)dev_info.max_rx_queues;
 	txRings = (uint16_t)dev_info.max_tx_queues;
 
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+		return retval;
+	}
+
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -264,7 +276,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	rte_eth_macaddr_get(port, &vmdq_ports_eth_addr[port]);
+	retval = rte_eth_macaddr_get(port, &vmdq_ports_eth_addr[port]);
+	if (retval < 0) {
+		printf("port %d MAC address get failed: %s\n", port,
+		       rte_strerror(-retval));
+		return retval;
+	}
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
 			(unsigned)port,
@@ -281,7 +298,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	 * Removes this after i40e fixes this issue.
 	 */
 	for (q = 0; q < num_pools; q++) {
-		struct ether_addr mac;
+		struct rte_ether_addr mac;
 		mac = pool_addr_template;
 		mac.addr_bytes[4] = port;
 		mac.addr_bytes[5] = q;
@@ -407,17 +424,17 @@ vmdq_parse_args(int argc, char **argv)
 static void
 update_mac_address(struct rte_mbuf *m, unsigned dst_port)
 {
-	struct ether_hdr *eth;
+	struct rte_ether_hdr *eth;
 	void *tmp;
 
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
 	/* 02:00:00:00:00:xx */
 	tmp = &eth->d_addr.addr_bytes[0];
 	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
 
 	/* src addr */
-	ether_addr_copy(&vmdq_ports_eth_addr[dst_port], &eth->s_addr);
+	rte_ether_addr_copy(&vmdq_ports_eth_addr[dst_port], &eth->s_addr);
 }
 
 /* When we receive a HUP signal, print out our stats */

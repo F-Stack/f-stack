@@ -15,7 +15,6 @@
 
 #include "ecore_iro_values.h"
 #include "ecore_sriov.h"
-#include "ecore_gtt_values.h"
 #include "reg_addr.h"
 #include "ecore_init_ops.h"
 
@@ -24,7 +23,7 @@
 
 void ecore_init_iro_array(struct ecore_dev *p_dev)
 {
-	p_dev->iro_arr = iro_arr;
+	p_dev->iro_arr = iro_arr + E4_IRO_ARR_OFFSET;
 }
 
 /* Runtime configuration helpers */
@@ -179,12 +178,12 @@ static enum _ecore_status_t ecore_init_fill_dmae(struct ecore_hwfn *p_hwfn,
 						 u32 addr, u32 fill_count)
 {
 	static u32 zero_buffer[DMAE_MAX_RW_SIZE];
-	struct ecore_dmae_params params;
+	struct dmae_params params;
 
 	OSAL_MEMSET(zero_buffer, 0, sizeof(u32) * DMAE_MAX_RW_SIZE);
 
 	OSAL_MEMSET(&params, 0, sizeof(params));
-	params.flags = ECORE_DMAE_FLAG_RW_REPL_SRC;
+	SET_FIELD(params.flags, DMAE_PARAMS_RW_REPL_SRC, 0x1);
 	return ecore_dmae_host2grc(p_hwfn, p_ptt,
 				   (osal_uintptr_t)&zero_buffer[0],
 				   addr, fill_count, &params);
@@ -473,9 +472,9 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 				    int phase, int phase_id, int modes)
 {
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
+	bool b_dmae = (phase != PHASE_ENGINE);
 	u32 cmd_num, num_init_ops;
 	union init_op *init;
-	bool b_dmae = false;
 	enum _ecore_status_t rc = ECORE_SUCCESS;
 
 	num_init_ops = p_dev->fw_data->init_ops_size;
@@ -511,7 +510,6 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 		case INIT_OP_IF_PHASE:
 			cmd_num += ecore_init_cmd_phase(&cmd->if_phase, phase,
 							phase_id);
-			b_dmae = GET_FIELD(data, INIT_IF_PHASE_OP_DMAE_ENABLE);
 			break;
 		case INIT_OP_DELAY:
 			/* ecore_init_run is always invoked from
@@ -522,6 +520,9 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 
 		case INIT_OP_CALLBACK:
 			rc = ecore_init_cmd_cb(p_hwfn, p_ptt, &cmd->callback);
+			if (phase == PHASE_ENGINE &&
+			    cmd->callback.callback_id == DMAE_READY_CB)
+				b_dmae = true;
 			break;
 		}
 
@@ -532,53 +533,6 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 	OSAL_FREE(p_hwfn->p_dev, p_hwfn->unzip_buf);
 #endif
 	return rc;
-}
-
-void ecore_gtt_init(struct ecore_hwfn *p_hwfn,
-		    struct ecore_ptt *p_ptt)
-{
-	u32 gtt_base;
-	u32 i;
-
-#ifndef ASIC_ONLY
-	if (CHIP_REV_IS_SLOW(p_hwfn->p_dev)) {
-		/* This is done by MFW on ASIC; regardless, this should only
-		 * be done once per chip [i.e., common]. Implementation is
-		 * not too bright, but it should work on the simple FPGA/EMUL
-		 * scenarios.
-		 */
-		static bool initialized;
-		int poll_cnt = 500;
-		u32 val;
-
-		/* initialize PTT/GTT (poll for completion) */
-		if (!initialized) {
-			ecore_wr(p_hwfn, p_ptt,
-				 PGLUE_B_REG_START_INIT_PTT_GTT, 1);
-			initialized = true;
-		}
-
-		do {
-			/* ptt might be overrided by HW until this is done */
-			OSAL_UDELAY(10);
-			ecore_ptt_invalidate(p_hwfn);
-			val = ecore_rd(p_hwfn, p_ptt,
-				       PGLUE_B_REG_INIT_DONE_PTT_GTT);
-		} while ((val != 1) && --poll_cnt);
-
-		if (!poll_cnt)
-			DP_ERR(p_hwfn,
-			       "PGLUE_B_REG_INIT_DONE didn't complete\n");
-	}
-#endif
-
-	/* Set the global windows */
-	gtt_base = PXP_PF_WINDOW_ADMIN_START + PXP_PF_WINDOW_ADMIN_GLOBAL_START;
-
-	for (i = 0; i < OSAL_ARRAY_SIZE(pxp_global_win); i++)
-		if (pxp_global_win[i])
-			REG_WR(p_hwfn, gtt_base + i * PXP_GLOBAL_ENTRY_SIZE,
-			       pxp_global_win[i]);
 }
 
 enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
@@ -614,11 +568,17 @@ enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
 	fw->modes_tree_buf = (u8 *)((uintptr_t)(fw_data + offset));
 	len = buf_hdr[BIN_BUF_INIT_CMD].length;
 	fw->init_ops_size = len / sizeof(struct init_raw_op);
+	offset = buf_hdr[BIN_BUF_INIT_OVERLAYS].offset;
+	fw->fw_overlays = (u32 *)(fw_data + offset);
+	len = buf_hdr[BIN_BUF_INIT_OVERLAYS].length;
+	fw->fw_overlays_len = len;
 #else
 	fw->init_ops = (union init_op *)init_ops;
 	fw->arr_data = (u32 *)init_val;
 	fw->modes_tree_buf = (u8 *)modes_tree_buf;
 	fw->init_ops_size = init_ops_size;
+	fw->fw_overlays = fw_overlays;
+	fw->fw_overlays_len = sizeof(fw_overlays);
 #endif
 
 	return ECORE_SUCCESS;

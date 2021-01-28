@@ -125,3 +125,105 @@ rte_vdpa_get_device_num(void)
 {
 	return vdpa_device_num;
 }
+
+int
+rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
+{
+	struct virtio_net *dev = get_device(vid);
+	uint16_t idx, idx_m, desc_id;
+	struct vhost_virtqueue *vq;
+	struct vring_desc desc;
+	struct vring_desc *desc_ring;
+	struct vring_desc *idesc = NULL;
+	struct vring *s_vring;
+	uint64_t dlen;
+	uint32_t nr_descs;
+	int ret;
+
+	if (!dev || !vring_m)
+		return -1;
+
+	if (qid >= dev->nr_vring)
+		return -1;
+
+	if (vq_is_packed(dev))
+		return -1;
+
+	s_vring = (struct vring *)vring_m;
+	vq = dev->virtqueue[qid];
+	idx = vq->used->idx;
+	idx_m = s_vring->used->idx;
+	ret = (uint16_t)(idx_m - idx);
+
+	while (idx != idx_m) {
+		/* copy used entry, used ring logging is not covered here */
+		vq->used->ring[idx & (vq->size - 1)] =
+			s_vring->used->ring[idx & (vq->size - 1)];
+
+		desc_id = vq->used->ring[idx & (vq->size - 1)].id;
+		desc_ring = vq->desc;
+		nr_descs = vq->size;
+
+		if (unlikely(desc_id >= vq->size))
+			return -1;
+
+		if (vq->desc[desc_id].flags & VRING_DESC_F_INDIRECT) {
+			dlen = vq->desc[desc_id].len;
+			nr_descs = dlen / sizeof(struct vring_desc);
+			if (unlikely(nr_descs > vq->size))
+				return -1;
+
+			desc_ring = (struct vring_desc *)(uintptr_t)
+				vhost_iova_to_vva(dev, vq,
+						vq->desc[desc_id].addr, &dlen,
+						VHOST_ACCESS_RO);
+			if (unlikely(!desc_ring))
+				return -1;
+
+			if (unlikely(dlen < vq->desc[desc_id].len)) {
+				idesc = vhost_alloc_copy_ind_table(dev, vq,
+						vq->desc[desc_id].addr,
+						vq->desc[desc_id].len);
+				if (unlikely(!idesc))
+					return -1;
+
+				desc_ring = idesc;
+			}
+
+			desc_id = 0;
+		}
+
+		/* dirty page logging for DMA writeable buffer */
+		do {
+			if (unlikely(desc_id >= vq->size))
+				goto fail;
+			if (unlikely(nr_descs-- == 0))
+				goto fail;
+			desc = desc_ring[desc_id];
+			if (desc.flags & VRING_DESC_F_WRITE)
+				vhost_log_write_iova(dev, vq, desc.addr,
+						     desc.len);
+			desc_id = desc.next;
+		} while (desc.flags & VRING_DESC_F_NEXT);
+
+		if (unlikely(idesc)) {
+			free_ind_table(idesc);
+			idesc = NULL;
+		}
+
+		idx++;
+	}
+
+	rte_smp_wmb();
+	vq->used->idx = idx_m;
+
+	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))
+		vring_used_event(s_vring) = idx_m;
+
+	return ret;
+
+fail:
+	if (unlikely(idesc))
+		free_ind_table(idesc);
+	return -1;
+}

@@ -297,6 +297,24 @@ efx_tx_fini(
 	enp->en_mod_flags &= ~EFX_MOD_TX;
 }
 
+	__checkReturn	size_t
+efx_txq_size(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs)
+{
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
+
+	return (ndescs * encp->enc_tx_desc_size);
+}
+
+	__checkReturn	unsigned int
+efx_txq_nbufs(
+	__in	const efx_nic_t *enp,
+	__in	unsigned int ndescs)
+{
+	return (EFX_DIV_ROUND_UP(efx_txq_size(enp, ndescs), EFX_BUF_SIZE));
+}
+
 	__checkReturn	efx_rc_t
 efx_tx_qcreate(
 	__in		efx_nic_t *enp,
@@ -312,6 +330,7 @@ efx_tx_qcreate(
 {
 	const efx_tx_ops_t *etxop = enp->en_etxop;
 	efx_txq_t *etp;
+	const efx_nic_cfg_t *encp = efx_nic_cfg_get(enp);
 	efx_rc_t rc;
 
 	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
@@ -320,12 +339,22 @@ efx_tx_qcreate(
 	EFSYS_ASSERT3U(enp->en_tx_qcount + 1, <,
 	    enp->en_nic_cfg.enc_txq_limit);
 
+	EFSYS_ASSERT(ISP2(encp->enc_txq_max_ndescs));
+	EFSYS_ASSERT(ISP2(encp->enc_txq_min_ndescs));
+
+	if (!ISP2(ndescs) ||
+	    ndescs < encp->enc_txq_min_ndescs ||
+	    ndescs > encp->enc_txq_max_ndescs) {
+		rc = EINVAL;
+		goto fail1;
+	}
+
 	/* Allocate an TXQ object */
 	EFSYS_KMEM_ALLOC(enp->en_esip, sizeof (efx_txq_t), etp);
 
 	if (etp == NULL) {
 		rc = ENOMEM;
-		goto fail1;
+		goto fail2;
 	}
 
 	etp->et_magic = EFX_TXQ_MAGIC;
@@ -339,16 +368,18 @@ efx_tx_qcreate(
 
 	if ((rc = etxop->etxo_qcreate(enp, index, label, esmp,
 	    ndescs, id, flags, eep, etp, addedp)) != 0)
-		goto fail2;
+		goto fail3;
 
 	enp->en_tx_qcount++;
 	*etpp = etp;
 
 	return (0);
 
+fail3:
+	EFSYS_PROBE(fail3);
+	EFSYS_KMEM_FREE(enp->en_esip, sizeof (efx_txq_t), etp);
 fail2:
 	EFSYS_PROBE(fail2);
-	EFSYS_KMEM_FREE(enp->en_esip, sizeof (efx_txq_t), etp);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 	return (rc);
@@ -922,33 +953,24 @@ siena_tx_qcreate(
 	    (1 << FRF_AZ_TX_DESCQ_LABEL_WIDTH));
 	EFSYS_ASSERT3U(label, <, EFX_EV_TX_NLABELS);
 
-	EFSYS_ASSERT(ISP2(encp->enc_txq_max_ndescs));
-	EFX_STATIC_ASSERT(ISP2(EFX_TXQ_MINNDESCS));
-
-	if (!ISP2(ndescs) ||
-	    (ndescs < EFX_TXQ_MINNDESCS) ||
-	    (ndescs > encp->enc_txq_max_ndescs)) {
+	if (index >= encp->enc_txq_limit) {
 		rc = EINVAL;
 		goto fail1;
 	}
-	if (index >= encp->enc_txq_limit) {
-		rc = EINVAL;
-		goto fail2;
-	}
 	for (size = 0;
-	    (1 << size) <= (int)(encp->enc_txq_max_ndescs / EFX_TXQ_MINNDESCS);
+	    (1U << size) <= encp->enc_txq_max_ndescs / encp->enc_txq_min_ndescs;
 	    size++)
-		if ((1 << size) == (int)(ndescs / EFX_TXQ_MINNDESCS))
+		if ((1U << size) == (uint32_t)ndescs / encp->enc_txq_min_ndescs)
 			break;
 	if (id + (1 << size) >= encp->enc_buftbl_limit) {
 		rc = EINVAL;
-		goto fail3;
+		goto fail2;
 	}
 
 	inner_csum = EFX_TXQ_CKSUM_INNER_IPV4 | EFX_TXQ_CKSUM_INNER_TCPUDP;
 	if ((flags & inner_csum) != 0) {
 		rc = EINVAL;
-		goto fail4;
+		goto fail3;
 	}
 
 	/* Set up the new descriptor queue */
@@ -973,8 +995,6 @@ siena_tx_qcreate(
 
 	return (0);
 
-fail4:
-	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:

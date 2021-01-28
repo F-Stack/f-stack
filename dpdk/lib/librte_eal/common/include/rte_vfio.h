@@ -80,6 +80,8 @@ struct vfio_device_info;
 
 #endif /* VFIO_PRESENT */
 
+#define RTE_VFIO_DEFAULT_CONTAINER_FD (-1)
+
 /**
  * Setup vfio_cfg for the device identified by its address.
  * It discovers the configured I/O MMU groups or sets a new one for the device.
@@ -187,50 +189,6 @@ int rte_vfio_noiommu_is_enabled(void);
 int
 rte_vfio_clear_group(int vfio_group_fd);
 
-/**
- * Map memory region for use with VFIO.
- *
- * @note Require at least one device to be attached at the time of
- *       mapping. DMA maps done via this API will only apply to default
- *       container and will not apply to any of the containers created
- *       via rte_vfio_container_create().
- *
- * @param vaddr
- *   Starting virtual address of memory to be mapped.
- *
- * @param iova
- *   Starting IOVA address of memory to be mapped.
- *
- * @param len
- *   Length of memory segment being mapped.
- *
- * @return
- *   0 if success.
- *   -1 on error.
- */
-int
-rte_vfio_dma_map(uint64_t vaddr, uint64_t iova, uint64_t len);
-
-
-/**
- * Unmap memory region from VFIO.
- *
- * @param vaddr
- *   Starting virtual address of memory to be unmapped.
- *
- * @param iova
- *   Starting IOVA address of memory to be unmapped.
- *
- * @param len
- *   Length of memory segment being unmapped.
- *
- * @return
- *   0 if success.
- *   -1 on error.
- */
-
-int
-rte_vfio_dma_unmap(uint64_t vaddr, uint64_t iova, uint64_t len);
 /**
  * Parse IOMMU group number for a device
  *
@@ -351,7 +309,8 @@ rte_vfio_container_group_unbind(int container_fd, int iommu_group_num);
  * Perform DMA mapping for devices in a container.
  *
  * @param container_fd
- *   the specified container fd
+ *   the specified container fd. Use RTE_VFIO_DEFAULT_CONTAINER_FD to
+ *   use the default container.
  *
  * @param vaddr
  *   Starting virtual address of memory to be mapped.
@@ -374,7 +333,8 @@ rte_vfio_container_dma_map(int container_fd, uint64_t vaddr,
  * Perform DMA unmapping for devices in a container.
  *
  * @param container_fd
- *   the specified container fd
+ *   the specified container fd. Use RTE_VFIO_DEFAULT_CONTAINER_FD to
+ *   use the default container.
  *
  * @param vaddr
  *   Starting virtual address of memory to be unmapped.

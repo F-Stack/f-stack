@@ -14,6 +14,7 @@
 #define MAX_NB_TESTS		10240
 #define MAX_BUF_SIZE		2048
 #define MAX_STRING_SIZE		64
+#define MAX_DIGEST_SIZE		64
 
 #define POSITIVE_TEST		0
 #define NEGATIVE_TEST		-1
@@ -29,6 +30,7 @@ enum fips_test_algorithms {
 		FIPS_TEST_ALGO_AES_CCM,
 		FIPS_TEST_ALGO_HMAC,
 		FIPS_TEST_ALGO_TDES,
+		FIPS_TEST_ALGO_SHA,
 		FIPS_TEST_ALGO_MAX
 };
 
@@ -103,12 +105,22 @@ enum fips_tdes_test_types {
 	TDES_MMT /* Multi block Message Test */
 };
 
+enum fips_tdes_test_mode {
+	TDES_MODE_CBC = 0,
+	TDES_MODE_ECB
+};
+
 enum fips_ccm_test_types {
 	CCM_VADT	= 1, /* Variable Associated Data Test */
 	CCM_VPT,		 /* Variable Payload Test */
 	CCM_VNT,		 /* Variable Nonce Test */
 	CCM_VTT,		 /* Variable Tag Test */
 	CCM_DVPT,	 /*  Decryption-Verification Process Test */
+};
+
+enum fips_sha_test_types {
+	SHA_KAT = 0,
+	SHA_MCT
 };
 
 struct aesavs_interim_data {
@@ -123,6 +135,7 @@ struct hmac_interim_data {
 
 struct tdes_interim_data {
 	enum fips_tdes_test_types test_type;
+	enum fips_tdes_test_mode test_mode;
 	uint32_t nb_keys;
 };
 
@@ -135,6 +148,11 @@ struct ccm_interim_data {
 	uint32_t iv_len;
 };
 
+struct sha_interim_data {
+	enum fips_sha_test_types test_type;
+	enum rte_crypto_auth_algorithm algo;
+};
+
 struct fips_test_interim_info {
 	FILE *fp_rd;
 	FILE *fp_wr;
@@ -144,13 +162,14 @@ struct fips_test_interim_info {
 	char *vec[MAX_LINE_PER_VECTOR];
 	uint32_t nb_vec_lines;
 	char device_name[MAX_STRING_SIZE];
+	char file_name[MAX_STRING_SIZE];
 
 	union {
 		struct aesavs_interim_data aes_data;
 		struct hmac_interim_data hmac_data;
 		struct tdes_interim_data tdes_data;
 		struct ccm_interim_data ccm_data;
-
+		struct sha_interim_data sha_data;
 	} interim_info;
 
 	enum fips_test_op op;
@@ -199,6 +218,9 @@ parse_test_cmac_init(void);
 
 int
 parse_test_ccm_init(void);
+
+int
+parse_test_sha_init(void);
 
 int
 parser_read_uint8_hex(uint8_t *value, const char *p);

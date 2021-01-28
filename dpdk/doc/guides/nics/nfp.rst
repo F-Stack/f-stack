@@ -1,32 +1,6 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2015-2017 Netronome Systems, Inc. All rights reserved.
     All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-    * Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in
-    the documentation and/or other materials provided with the
-    distribution.
-    * Neither the name of Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 NFP poll mode driver library
 ============================
@@ -75,7 +49,7 @@ compile it along with other DPDK PMDs even if no BSP was installed previously.
 Of course, a DPDK app will require such a BSP installed for using the
 NFP PMD, along with a specific NFP firmware application.
 
-Default PMD configuration is at the **common_linuxapp configuration** file:
+Default PMD configuration is at the **common_linux configuration** file:
 
 - **CONFIG_RTE_LIBRTE_NFP_PMD=y**
 
@@ -143,6 +117,18 @@ Because the unusual relationship between a single PCI device and several DPDK
 ports, there are some limitations when using more than one PF DPDK port: there
 is no support for RX interrupts and it is not possible either to use those PF
 ports with the device hotplug functionality.
+
+
+PF multiprocess support
+-----------------------
+
+Due to how the driver needs to access the NFP through a CPP interface, which implies
+to use specific registers inside the chip, the number of secondary processes with PF
+ports is limited to only one.
+
+This limitation will be solved in future versions but having basic multiprocess support
+is important for allowing development and debugging through the PF using a secondary
+process which will create a CPP bridge for user space tools accessing the NFP.
 
 
 System configuration

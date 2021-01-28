@@ -36,7 +36,6 @@ int cpu_status(struct ff_top_args *top)
         ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
-            ff_ipc_msg_free(msg);
             return -1;
         }
     } while (msg != retmsg);
@@ -58,6 +57,7 @@ int main(int argc, char **argv)
     float sys, usr, idle;
     float psys, pusr, pidle;
     unsigned long loops, ploops;
+    int title_line = 40;
 
     ff_ipc_init();
 
@@ -74,8 +74,11 @@ int main(int argc, char **argv)
             max_proc_id = atoi(optarg);
             if (max_proc_id < 0 || max_proc_id >= RTE_MAX_LCORE) {
                 usage();
+                ff_ipc_exit();
                 return -1;
             }
+            if (max_proc_id > title_line - 2)
+                title_line = max_proc_id + 2;
             break;
         case 'd':
             delay = atoi(optarg) ?: 1;
@@ -86,6 +89,7 @@ int main(int argc, char **argv)
         case 'h':
         default:
             usage();
+            ff_ipc_exit();
             return -1;
         }
     }
@@ -94,10 +98,11 @@ int main(int argc, char **argv)
         if (max_proc_id == -1) {
             if (cpu_status(&top)) {
                 printf("fstack ipc message error !\n");
+                ff_ipc_exit();
                 return -1;
             }
 
-            if (i % 40 == 0) {
+            if (i % title_line == 0) {
                 printf("|---------|---------|---------|---------------|\n");
                 printf("|%9s|%9s|%9s|%15s|\n", "idle", "sys", "usr", "loop");
                 printf("|---------|---------|---------|---------------|\n");
@@ -115,7 +120,7 @@ int main(int argc, char **argv)
             /*
              * get and show cpu usage from proc_id to max_proc_id.
              */
-            if (i % (40 / (max_proc_id - proc_id + 2)) == 0) {
+            if (i % (title_line / (max_proc_id - proc_id + 2)) == 0) {
                 printf("|---------|---------|---------|"
                     "---------|---------------|\n");
                 printf("|%9s|%9s|%9s|%9s|%15s|\n",
@@ -131,6 +136,7 @@ int main(int argc, char **argv)
                 ff_set_proc_id(j);
                 if (cpu_status(&ptop[j])) {
                     printf("fstack ipc message error, proc id:%d!\n", j);
+                    ff_ipc_exit();
                     return -1;
                 }
 
@@ -167,6 +173,8 @@ int main(int argc, char **argv)
         otop = top;
         sleep(delay);
     }
+
+    ff_ipc_exit();
 
     return 0;
 }

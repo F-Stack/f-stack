@@ -13,7 +13,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 /* Verbs headers do not support -pedantic. */
 #ifdef PEDANTIC
@@ -36,6 +38,137 @@
 #include "mlx4_prm.h"
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
+
+/**
+ * Initialize Tx UAR registers for primary process.
+ *
+ * @param txq
+ *   Pointer to Tx queue structure.
+ */
+static void
+txq_uar_init(struct txq *txq)
+{
+	struct mlx4_priv *priv = txq->priv;
+	struct mlx4_proc_priv *ppriv = MLX4_PROC_PRIV(PORT_ID(priv));
+
+	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	assert(ppriv);
+	ppriv->uar_table[txq->stats.idx] = txq->msq.db;
+}
+
+#ifdef HAVE_IBV_MLX4_UAR_MMAP_OFFSET
+/**
+ * Remap UAR register of a Tx queue for secondary process.
+ *
+ * Remapped address is stored at the table in the process private structure of
+ * the device, indexed by queue index.
+ *
+ * @param txq
+ *   Pointer to Tx queue structure.
+ * @param fd
+ *   Verbs file descriptor to map UAR pages.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+static int
+txq_uar_init_secondary(struct txq *txq, int fd)
+{
+	struct mlx4_priv *priv = txq->priv;
+	struct mlx4_proc_priv *ppriv = MLX4_PROC_PRIV(PORT_ID(priv));
+	void *addr;
+	uintptr_t uar_va;
+	uintptr_t offset;
+	const size_t page_size = sysconf(_SC_PAGESIZE);
+
+	assert(ppriv);
+	/*
+	 * As rdma-core, UARs are mapped in size of OS page
+	 * size. Ref to libmlx4 function: mlx4_init_context()
+	 */
+	uar_va = (uintptr_t)txq->msq.db;
+	offset = uar_va & (page_size - 1); /* Offset in page. */
+	addr = mmap(NULL, page_size, PROT_WRITE, MAP_SHARED, fd,
+			txq->msq.uar_mmap_offset);
+	if (addr == MAP_FAILED) {
+		ERROR("port %u mmap failed for BF reg of txq %u",
+		      txq->port_id, txq->stats.idx);
+		rte_errno = ENXIO;
+		return -rte_errno;
+	}
+	addr = RTE_PTR_ADD(addr, offset);
+	ppriv->uar_table[txq->stats.idx] = addr;
+	return 0;
+}
+
+/**
+ * Unmap UAR register of a Tx queue for secondary process.
+ *
+ * @param txq
+ *   Pointer to Tx queue structure.
+ */
+static void
+txq_uar_uninit_secondary(struct txq *txq)
+{
+	struct mlx4_proc_priv *ppriv = MLX4_PROC_PRIV(PORT_ID(txq->priv));
+	const size_t page_size = sysconf(_SC_PAGESIZE);
+	void *addr;
+
+	addr = ppriv->uar_table[txq->stats.idx];
+	munmap(RTE_PTR_ALIGN_FLOOR(addr, page_size), page_size);
+}
+
+/**
+ * Initialize Tx UAR registers for secondary process.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param fd
+ *   Verbs file descriptor to map UAR pages.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx4_tx_uar_init_secondary(struct rte_eth_dev *dev, int fd)
+{
+	const unsigned int txqs_n = dev->data->nb_tx_queues;
+	struct txq *txq;
+	unsigned int i;
+	int ret;
+
+	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	for (i = 0; i != txqs_n; ++i) {
+		txq = dev->data->tx_queues[i];
+		if (!txq)
+			continue;
+		assert(txq->stats.idx == (uint16_t)i);
+		ret = txq_uar_init_secondary(txq, fd);
+		if (ret)
+			goto error;
+	}
+	return 0;
+error:
+	/* Rollback. */
+	do {
+		txq = dev->data->tx_queues[i];
+		if (!txq)
+			continue;
+		txq_uar_uninit_secondary(txq);
+	} while (i--);
+	return -rte_errno;
+}
+#else
+int
+mlx4_tx_uar_init_secondary(struct rte_eth_dev *dev __rte_unused,
+			   int fd __rte_unused)
+{
+	assert(rte_eal_process_type() == RTE_PROC_SECONDARY);
+	ERROR("UAR remap is not supported");
+	rte_errno = ENOTSUP;
+	return -rte_errno;
+}
+#endif
 
 /**
  * Free Tx queue elements.
@@ -89,6 +222,11 @@ mlx4_txq_fill_dv_obj_info(struct txq *txq, struct mlx4dv_obj *mlxdv)
 	sq->owner_opcode = MLX4_OPCODE_SEND | (0u << MLX4_SQ_OWNER_BIT);
 	sq->stamp = rte_cpu_to_be_32(MLX4_SQ_STAMP_VAL |
 				     (0u << MLX4_SQ_OWNER_BIT));
+#ifdef HAVE_IBV_MLX4_UAR_MMAP_OFFSET
+	sq->uar_mmap_offset = dqp->uar_mmap_offset;
+#else
+	sq->uar_mmap_offset = -1; /* Make mmap() fail. */
+#endif
 	sq->db = dqp->sdb;
 	sq->doorbell_qpn = dqp->doorbell_qpn;
 	cq->buf = dcq->buf.buf;
@@ -177,10 +315,8 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	uint64_t offloads;
 
 	offloads = conf->offloads | dev->data->dev_conf.txmode.offloads;
-
 	DEBUG("%p: configuring queue %u for %u descriptors",
 	      (void *)dev, idx, desc);
-
 	if (idx >= dev->data->nb_tx_queues) {
 		rte_errno = EOVERFLOW;
 		ERROR("%p: queue index out of range (%u >= %u)",
@@ -214,6 +350,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	}
 	*txq = (struct txq){
 		.priv = priv,
+		.port_id = dev->data->port_id,
 		.stats = {
 			.idx = idx,
 		},
@@ -241,6 +378,8 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		.lb = !!priv->vf,
 		.bounce_buf = bounce_buf,
 	};
+	priv->verbs_alloc_ctx.type = MLX4_VERBS_ALLOC_TYPE_TX_QUEUE;
+	priv->verbs_alloc_ctx.obj = txq;
 	txq->cq = mlx4_glue->create_cq(priv->ctx, desc, NULL, NULL, 0);
 	if (!txq->cq) {
 		rte_errno = ENOMEM;
@@ -307,6 +446,11 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		goto error;
 	}
 	/* Retrieve device queue information. */
+#ifdef HAVE_IBV_MLX4_UAR_MMAP_OFFSET
+	dv_qp = (struct mlx4dv_qp){
+		.comp_mask = MLX4DV_QP_MASK_UAR_MMAP_OFFSET,
+	};
+#endif
 	mlxdv.cq.in = txq->cq;
 	mlxdv.cq.out = &dv_cq;
 	mlxdv.qp.in = txq->qp;
@@ -318,7 +462,14 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		      " accessing the device queues", (void *)dev);
 		goto error;
 	}
+#ifdef HAVE_IBV_MLX4_UAR_MMAP_OFFSET
+	if (!(dv_qp.comp_mask & MLX4DV_QP_MASK_UAR_MMAP_OFFSET)) {
+		WARN("%p: failed to obtain UAR mmap offset", (void *)dev);
+		dv_qp.uar_mmap_offset = -1; /* Make mmap() fail. */
+	}
+#endif
 	mlx4_txq_fill_dv_obj_info(txq, &mlxdv);
+	txq_uar_init(txq);
 	/* Save first wqe pointer in the first element. */
 	(&(*txq->elts)[0])->wqe =
 		(volatile struct mlx4_wqe_ctrl_seg *)txq->msq.buf;
@@ -331,6 +482,7 @@ mlx4_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	txq->mr_ctrl.dev_gen_ptr = &priv->mr.dev_gen;
 	DEBUG("%p: adding Tx queue %p to list", (void *)dev, (void *)txq);
 	dev->data->tx_queues[idx] = txq;
+	priv->verbs_alloc_ctx.type = MLX4_VERBS_ALLOC_TYPE_NONE;
 	return 0;
 error:
 	dev->data->tx_queues[idx] = NULL;
@@ -338,6 +490,7 @@ error:
 	mlx4_tx_queue_release(txq);
 	rte_errno = ret;
 	assert(rte_errno > 0);
+	priv->verbs_alloc_ctx.type = MLX4_VERBS_ALLOC_TYPE_NONE;
 	return -rte_errno;
 }
 

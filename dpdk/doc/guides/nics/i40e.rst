@@ -69,6 +69,18 @@ to chapter Tested Platforms/Tested NICs in release notes.
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    19.11     |         2.9.21        |       7.00       |
+   +--------------+-----------------------+------------------+
+   |    19.08     |         2.8.43        |       7.00       |
+   +--------------+-----------------------+------------------+
+   |    19.05     |         2.7.29        |       6.80       |
+   +--------------+-----------------------+------------------+
+   |    19.02     |         2.7.26        |       6.80       |
+   +--------------+-----------------------+------------------+
+   |    18.11     |         2.4.6         |       6.01       |
+   +--------------+-----------------------+------------------+
+   |    18.08     |         2.4.6         |       6.01       |
+   +--------------+-----------------------+------------------+
    |    18.05     |         2.4.6         |       6.01       |
    +--------------+-----------------------+------------------+
    |    18.02     |         2.4.3         |       6.01       |
@@ -129,13 +141,16 @@ Please note that enabling debugging options may affect system performance.
 Runtime Config Options
 ~~~~~~~~~~~~~~~~~~~~~~
 
-- ``Number of Queues per VF`` (default ``4``)
+- ``Reserved number of Queues per VF`` (default ``4``)
 
-  The number of queue per VF is determined by its host PF. If the PCI address
-  of an i40e PF is aaaa:bb.cc, the number of queues per VF can be configured
-  with EAL parameter like -w aaaa:bb.cc,queue-num-per-vf=n. The value n can be
-  1, 2, 4, 8 or 16. If no such parameter is configured, the number of queues
-  per VF is 4 by default.
+  The number of reserved queue per VF is determined by its host PF. If the
+  PCI address of an i40e PF is aaaa:bb.cc, the number of reserved queues per
+  VF can be configured with EAL parameter like -w aaaa:bb.cc,queue-num-per-vf=n.
+  The value n can be 1, 2, 4, 8 or 16. If no such parameter is configured, the
+  number of reserved queues per VF is 4 by default. If VF request more than
+  reserved queues per VF, PF will able to allocate max to 16 queues after a VF
+  reset.
+
 
 - ``Support multiple driver`` (default ``disable``)
 
@@ -171,6 +186,16 @@ Runtime Config Options
   ``use-latest-supported-vec`` is introduced, for example::
 
   -w 84:00.0,use-latest-supported-vec=1
+
+- ``Enable validation for VF message`` (default ``not enabled``)
+
+  The PF counts messages from each VF. If in any period of seconds the message
+  statistic from a VF exceeds maximal limitation, the PF will ignore any new message
+  from that VF for some seconds.
+  Format -- "maximal-message@period-seconds:ignore-seconds"
+  For example::
+
+  -w 84:00.0,vf_msg_cfg=80@120:180
 
 Vector RX Pre-conditions
 ~~~~~~~~~~~~~~~~~~~~~~~~

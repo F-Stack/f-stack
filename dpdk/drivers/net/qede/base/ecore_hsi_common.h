@@ -57,7 +57,7 @@ struct ystorm_core_conn_st_ctx {
  * The core storm context for the Pstorm
  */
 struct pstorm_core_conn_st_ctx {
-	__le32 reserved[4];
+	__le32 reserved[20];
 };
 
 /*
@@ -73,306 +73,219 @@ struct xstorm_core_conn_st_ctx {
 	__le32 reserved0[55] /* Pad to 15 cycles */;
 };
 
-struct e4_xstorm_core_conn_ag_ctx {
+struct xstorm_core_conn_ag_ctx {
 	u8 reserved0 /* cdu_validation */;
-	u8 core_state /* state */;
+	u8 state /* state */;
 	u8 flags0;
-/* exist_in_qm0 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM0_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM0_SHIFT        0
-/* exist_in_qm1 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED1_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED1_SHIFT           1
-/* exist_in_qm2 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED2_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED2_SHIFT           2
-/* exist_in_qm3 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM3_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM3_SHIFT        3
-/* bit4 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED3_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED3_SHIFT           4
+#define XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM0_MASK         0x1 /* exist_in_qm0 */
+#define XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM0_SHIFT        0
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED1_MASK            0x1 /* exist_in_qm1 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED1_SHIFT           1
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED2_MASK            0x1 /* exist_in_qm2 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED2_SHIFT           2
+#define XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM3_MASK         0x1 /* exist_in_qm3 */
+#define XSTORM_CORE_CONN_AG_CTX_EXIST_IN_QM3_SHIFT        3
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED3_MASK            0x1 /* bit4 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED3_SHIFT           4
 /* cf_array_active */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED4_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED4_SHIFT           5
-/* bit6 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED5_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED5_SHIFT           6
-/* bit7 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED6_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED6_SHIFT           7
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED4_MASK            0x1
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED4_SHIFT           5
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED5_MASK            0x1 /* bit6 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED5_SHIFT           6
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED6_MASK            0x1 /* bit7 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED6_SHIFT           7
 	u8 flags1;
-/* bit8 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED7_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED7_SHIFT           0
-/* bit9 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED8_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED8_SHIFT           1
-/* bit10 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED9_MASK            0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED9_SHIFT           2
-/* bit11 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT11_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT11_SHIFT               3
-/* bit12 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT12_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT12_SHIFT               4
-/* bit13 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT13_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT13_SHIFT               5
-/* bit14 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_TX_RULE_ACTIVE_MASK       0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_TX_RULE_ACTIVE_SHIFT      6
-/* bit15 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_DQ_CF_ACTIVE_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_DQ_CF_ACTIVE_SHIFT        7
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED7_MASK            0x1 /* bit8 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED7_SHIFT           0
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED8_MASK            0x1 /* bit9 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED8_SHIFT           1
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED9_MASK            0x1 /* bit10 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED9_SHIFT           2
+#define XSTORM_CORE_CONN_AG_CTX_BIT11_MASK                0x1 /* bit11 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT11_SHIFT               3
+#define XSTORM_CORE_CONN_AG_CTX_BIT12_MASK                0x1 /* bit12 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT12_SHIFT               4
+#define XSTORM_CORE_CONN_AG_CTX_BIT13_MASK                0x1 /* bit13 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT13_SHIFT               5
+#define XSTORM_CORE_CONN_AG_CTX_TX_RULE_ACTIVE_MASK       0x1 /* bit14 */
+#define XSTORM_CORE_CONN_AG_CTX_TX_RULE_ACTIVE_SHIFT      6
+#define XSTORM_CORE_CONN_AG_CTX_DQ_CF_ACTIVE_MASK         0x1 /* bit15 */
+#define XSTORM_CORE_CONN_AG_CTX_DQ_CF_ACTIVE_SHIFT        7
 	u8 flags2;
-/* timer0cf */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF0_MASK                  0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF0_SHIFT                 0
-/* timer1cf */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF1_MASK                  0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF1_SHIFT                 2
-/* timer2cf */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF2_MASK                  0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF2_SHIFT                 4
+#define XSTORM_CORE_CONN_AG_CTX_CF0_MASK                  0x3 /* timer0cf */
+#define XSTORM_CORE_CONN_AG_CTX_CF0_SHIFT                 0
+#define XSTORM_CORE_CONN_AG_CTX_CF1_MASK                  0x3 /* timer1cf */
+#define XSTORM_CORE_CONN_AG_CTX_CF1_SHIFT                 2
+#define XSTORM_CORE_CONN_AG_CTX_CF2_MASK                  0x3 /* timer2cf */
+#define XSTORM_CORE_CONN_AG_CTX_CF2_SHIFT                 4
 /* timer_stop_all */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF3_MASK                  0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF3_SHIFT                 6
+#define XSTORM_CORE_CONN_AG_CTX_CF3_MASK                  0x3
+#define XSTORM_CORE_CONN_AG_CTX_CF3_SHIFT                 6
 	u8 flags3;
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF4_MASK                  0x3 /* cf4 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF4_SHIFT                 0
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF5_MASK                  0x3 /* cf5 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF5_SHIFT                 2
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF6_MASK                  0x3 /* cf6 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF6_SHIFT                 4
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF7_MASK                  0x3 /* cf7 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF7_SHIFT                 6
+#define XSTORM_CORE_CONN_AG_CTX_CF4_MASK                  0x3 /* cf4 */
+#define XSTORM_CORE_CONN_AG_CTX_CF4_SHIFT                 0
+#define XSTORM_CORE_CONN_AG_CTX_CF5_MASK                  0x3 /* cf5 */
+#define XSTORM_CORE_CONN_AG_CTX_CF5_SHIFT                 2
+#define XSTORM_CORE_CONN_AG_CTX_CF6_MASK                  0x3 /* cf6 */
+#define XSTORM_CORE_CONN_AG_CTX_CF6_SHIFT                 4
+#define XSTORM_CORE_CONN_AG_CTX_CF7_MASK                  0x3 /* cf7 */
+#define XSTORM_CORE_CONN_AG_CTX_CF7_SHIFT                 6
 	u8 flags4;
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF8_MASK                  0x3 /* cf8 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF8_SHIFT                 0
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF9_MASK                  0x3 /* cf9 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF9_SHIFT                 2
-/* cf10 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF10_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF10_SHIFT                4
-/* cf11 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF11_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF11_SHIFT                6
+#define XSTORM_CORE_CONN_AG_CTX_CF8_MASK                  0x3 /* cf8 */
+#define XSTORM_CORE_CONN_AG_CTX_CF8_SHIFT                 0
+#define XSTORM_CORE_CONN_AG_CTX_CF9_MASK                  0x3 /* cf9 */
+#define XSTORM_CORE_CONN_AG_CTX_CF9_SHIFT                 2
+#define XSTORM_CORE_CONN_AG_CTX_CF10_MASK                 0x3 /* cf10 */
+#define XSTORM_CORE_CONN_AG_CTX_CF10_SHIFT                4
+#define XSTORM_CORE_CONN_AG_CTX_CF11_MASK                 0x3 /* cf11 */
+#define XSTORM_CORE_CONN_AG_CTX_CF11_SHIFT                6
 	u8 flags5;
-/* cf12 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF12_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF12_SHIFT                0
-/* cf13 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF13_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF13_SHIFT                2
-/* cf14 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF14_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF14_SHIFT                4
-/* cf15 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF15_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF15_SHIFT                6
+#define XSTORM_CORE_CONN_AG_CTX_CF12_MASK                 0x3 /* cf12 */
+#define XSTORM_CORE_CONN_AG_CTX_CF12_SHIFT                0
+#define XSTORM_CORE_CONN_AG_CTX_CF13_MASK                 0x3 /* cf13 */
+#define XSTORM_CORE_CONN_AG_CTX_CF13_SHIFT                2
+#define XSTORM_CORE_CONN_AG_CTX_CF14_MASK                 0x3 /* cf14 */
+#define XSTORM_CORE_CONN_AG_CTX_CF14_SHIFT                4
+#define XSTORM_CORE_CONN_AG_CTX_CF15_MASK                 0x3 /* cf15 */
+#define XSTORM_CORE_CONN_AG_CTX_CF15_SHIFT                6
 	u8 flags6;
-/* cf16 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_MASK     0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_SHIFT    0
-/* cf_array_cf */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF17_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF17_SHIFT                2
-/* cf18 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_DQ_CF_MASK                0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_DQ_CF_SHIFT               4
-/* cf19 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_MASK         0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_SHIFT        6
+#define XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_MASK     0x3 /* cf16 */
+#define XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_SHIFT    0
+#define XSTORM_CORE_CONN_AG_CTX_CF17_MASK                 0x3 /* cf_array_cf */
+#define XSTORM_CORE_CONN_AG_CTX_CF17_SHIFT                2
+#define XSTORM_CORE_CONN_AG_CTX_DQ_CF_MASK                0x3 /* cf18 */
+#define XSTORM_CORE_CONN_AG_CTX_DQ_CF_SHIFT               4
+#define XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_MASK         0x3 /* cf19 */
+#define XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_SHIFT        6
 	u8 flags7;
-/* cf20 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_MASK             0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_SHIFT            0
-/* cf21 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED10_MASK           0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED10_SHIFT          2
-/* cf22 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_MASK            0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_SHIFT           4
-/* cf0en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF0EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT               6
-/* cf1en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF1EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT               7
+#define XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_MASK             0x3 /* cf20 */
+#define XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_SHIFT            0
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED10_MASK           0x3 /* cf21 */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED10_SHIFT          2
+#define XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_MASK            0x3 /* cf22 */
+#define XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_SHIFT           4
+#define XSTORM_CORE_CONN_AG_CTX_CF0EN_MASK                0x1 /* cf0en */
+#define XSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT               6
+#define XSTORM_CORE_CONN_AG_CTX_CF1EN_MASK                0x1 /* cf1en */
+#define XSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT               7
 	u8 flags8;
-/* cf2en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF2EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT               0
-/* cf3en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF3EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF3EN_SHIFT               1
-/* cf4en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF4EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF4EN_SHIFT               2
-/* cf5en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF5EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF5EN_SHIFT               3
-/* cf6en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF6EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF6EN_SHIFT               4
-/* cf7en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF7EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF7EN_SHIFT               5
-/* cf8en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF8EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF8EN_SHIFT               6
-/* cf9en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF9EN_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF9EN_SHIFT               7
+#define XSTORM_CORE_CONN_AG_CTX_CF2EN_MASK                0x1 /* cf2en */
+#define XSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT               0
+#define XSTORM_CORE_CONN_AG_CTX_CF3EN_MASK                0x1 /* cf3en */
+#define XSTORM_CORE_CONN_AG_CTX_CF3EN_SHIFT               1
+#define XSTORM_CORE_CONN_AG_CTX_CF4EN_MASK                0x1 /* cf4en */
+#define XSTORM_CORE_CONN_AG_CTX_CF4EN_SHIFT               2
+#define XSTORM_CORE_CONN_AG_CTX_CF5EN_MASK                0x1 /* cf5en */
+#define XSTORM_CORE_CONN_AG_CTX_CF5EN_SHIFT               3
+#define XSTORM_CORE_CONN_AG_CTX_CF6EN_MASK                0x1 /* cf6en */
+#define XSTORM_CORE_CONN_AG_CTX_CF6EN_SHIFT               4
+#define XSTORM_CORE_CONN_AG_CTX_CF7EN_MASK                0x1 /* cf7en */
+#define XSTORM_CORE_CONN_AG_CTX_CF7EN_SHIFT               5
+#define XSTORM_CORE_CONN_AG_CTX_CF8EN_MASK                0x1 /* cf8en */
+#define XSTORM_CORE_CONN_AG_CTX_CF8EN_SHIFT               6
+#define XSTORM_CORE_CONN_AG_CTX_CF9EN_MASK                0x1 /* cf9en */
+#define XSTORM_CORE_CONN_AG_CTX_CF9EN_SHIFT               7
 	u8 flags9;
-/* cf10en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF10EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF10EN_SHIFT              0
-/* cf11en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF11EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF11EN_SHIFT              1
-/* cf12en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF12EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF12EN_SHIFT              2
-/* cf13en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF13EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF13EN_SHIFT              3
-/* cf14en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF14EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF14EN_SHIFT              4
-/* cf15en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF15EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF15EN_SHIFT              5
-/* cf16en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_EN_MASK  0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_EN_SHIFT 6
+#define XSTORM_CORE_CONN_AG_CTX_CF10EN_MASK               0x1 /* cf10en */
+#define XSTORM_CORE_CONN_AG_CTX_CF10EN_SHIFT              0
+#define XSTORM_CORE_CONN_AG_CTX_CF11EN_MASK               0x1 /* cf11en */
+#define XSTORM_CORE_CONN_AG_CTX_CF11EN_SHIFT              1
+#define XSTORM_CORE_CONN_AG_CTX_CF12EN_MASK               0x1 /* cf12en */
+#define XSTORM_CORE_CONN_AG_CTX_CF12EN_SHIFT              2
+#define XSTORM_CORE_CONN_AG_CTX_CF13EN_MASK               0x1 /* cf13en */
+#define XSTORM_CORE_CONN_AG_CTX_CF13EN_SHIFT              3
+#define XSTORM_CORE_CONN_AG_CTX_CF14EN_MASK               0x1 /* cf14en */
+#define XSTORM_CORE_CONN_AG_CTX_CF14EN_SHIFT              4
+#define XSTORM_CORE_CONN_AG_CTX_CF15EN_MASK               0x1 /* cf15en */
+#define XSTORM_CORE_CONN_AG_CTX_CF15EN_SHIFT              5
+#define XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_EN_MASK  0x1 /* cf16en */
+#define XSTORM_CORE_CONN_AG_CTX_CONSOLID_PROD_CF_EN_SHIFT 6
 /* cf_array_cf_en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF17EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF17EN_SHIFT              7
+#define XSTORM_CORE_CONN_AG_CTX_CF17EN_MASK               0x1
+#define XSTORM_CORE_CONN_AG_CTX_CF17EN_SHIFT              7
 	u8 flags10;
-/* cf18en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_DQ_CF_EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_DQ_CF_EN_SHIFT            0
-/* cf19en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_EN_MASK      0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_EN_SHIFT     1
-/* cf20en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_EN_MASK          0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_EN_SHIFT         2
-/* cf21en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED11_MASK           0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED11_SHIFT          3
-/* cf22en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_EN_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_EN_SHIFT        4
-/* cf23en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF23EN_MASK               0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF23EN_SHIFT              5
-/* rule0en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED12_MASK           0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED12_SHIFT          6
-/* rule1en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED13_MASK           0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED13_SHIFT          7
+#define XSTORM_CORE_CONN_AG_CTX_DQ_CF_EN_MASK             0x1 /* cf18en */
+#define XSTORM_CORE_CONN_AG_CTX_DQ_CF_EN_SHIFT            0
+#define XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_EN_MASK      0x1 /* cf19en */
+#define XSTORM_CORE_CONN_AG_CTX_TERMINATE_CF_EN_SHIFT     1
+#define XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_EN_MASK          0x1 /* cf20en */
+#define XSTORM_CORE_CONN_AG_CTX_FLUSH_Q0_EN_SHIFT         2
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED11_MASK           0x1 /* cf21en */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED11_SHIFT          3
+#define XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_EN_MASK         0x1 /* cf22en */
+#define XSTORM_CORE_CONN_AG_CTX_SLOW_PATH_EN_SHIFT        4
+#define XSTORM_CORE_CONN_AG_CTX_CF23EN_MASK               0x1 /* cf23en */
+#define XSTORM_CORE_CONN_AG_CTX_CF23EN_SHIFT              5
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED12_MASK           0x1 /* rule0en */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED12_SHIFT          6
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED13_MASK           0x1 /* rule1en */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED13_SHIFT          7
 	u8 flags11;
-/* rule2en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED14_MASK           0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED14_SHIFT          0
-/* rule3en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED15_MASK           0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RESERVED15_SHIFT          1
-/* rule4en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_TX_DEC_RULE_EN_MASK       0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_TX_DEC_RULE_EN_SHIFT      2
-/* rule5en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE5EN_MASK              0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE5EN_SHIFT             3
-/* rule6en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE6EN_MASK              0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE6EN_SHIFT             4
-/* rule7en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE7EN_MASK              0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE7EN_SHIFT             5
-/* rule8en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED1_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED1_SHIFT        6
-/* rule9en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE9EN_MASK              0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE9EN_SHIFT             7
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED14_MASK           0x1 /* rule2en */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED14_SHIFT          0
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED15_MASK           0x1 /* rule3en */
+#define XSTORM_CORE_CONN_AG_CTX_RESERVED15_SHIFT          1
+#define XSTORM_CORE_CONN_AG_CTX_TX_DEC_RULE_EN_MASK       0x1 /* rule4en */
+#define XSTORM_CORE_CONN_AG_CTX_TX_DEC_RULE_EN_SHIFT      2
+#define XSTORM_CORE_CONN_AG_CTX_RULE5EN_MASK              0x1 /* rule5en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE5EN_SHIFT             3
+#define XSTORM_CORE_CONN_AG_CTX_RULE6EN_MASK              0x1 /* rule6en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE6EN_SHIFT             4
+#define XSTORM_CORE_CONN_AG_CTX_RULE7EN_MASK              0x1 /* rule7en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE7EN_SHIFT             5
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED1_MASK         0x1 /* rule8en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED1_SHIFT        6
+#define XSTORM_CORE_CONN_AG_CTX_RULE9EN_MASK              0x1 /* rule9en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE9EN_SHIFT             7
 	u8 flags12;
-/* rule10en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE10EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE10EN_SHIFT            0
-/* rule11en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE11EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE11EN_SHIFT            1
-/* rule12en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED2_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED2_SHIFT        2
-/* rule13en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED3_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED3_SHIFT        3
-/* rule14en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE14EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE14EN_SHIFT            4
-/* rule15en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE15EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE15EN_SHIFT            5
-/* rule16en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE16EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE16EN_SHIFT            6
-/* rule17en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE17EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE17EN_SHIFT            7
+#define XSTORM_CORE_CONN_AG_CTX_RULE10EN_MASK             0x1 /* rule10en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE10EN_SHIFT            0
+#define XSTORM_CORE_CONN_AG_CTX_RULE11EN_MASK             0x1 /* rule11en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE11EN_SHIFT            1
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED2_MASK         0x1 /* rule12en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED2_SHIFT        2
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED3_MASK         0x1 /* rule13en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED3_SHIFT        3
+#define XSTORM_CORE_CONN_AG_CTX_RULE14EN_MASK             0x1 /* rule14en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE14EN_SHIFT            4
+#define XSTORM_CORE_CONN_AG_CTX_RULE15EN_MASK             0x1 /* rule15en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE15EN_SHIFT            5
+#define XSTORM_CORE_CONN_AG_CTX_RULE16EN_MASK             0x1 /* rule16en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE16EN_SHIFT            6
+#define XSTORM_CORE_CONN_AG_CTX_RULE17EN_MASK             0x1 /* rule17en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE17EN_SHIFT            7
 	u8 flags13;
-/* rule18en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE18EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE18EN_SHIFT            0
-/* rule19en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE19EN_MASK             0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_RULE19EN_SHIFT            1
-/* rule20en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED4_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED4_SHIFT        2
-/* rule21en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED5_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED5_SHIFT        3
-/* rule22en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED6_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED6_SHIFT        4
-/* rule23en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED7_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED7_SHIFT        5
-/* rule24en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED8_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED8_SHIFT        6
-/* rule25en */
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED9_MASK         0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_A0_RESERVED9_SHIFT        7
+#define XSTORM_CORE_CONN_AG_CTX_RULE18EN_MASK             0x1 /* rule18en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE18EN_SHIFT            0
+#define XSTORM_CORE_CONN_AG_CTX_RULE19EN_MASK             0x1 /* rule19en */
+#define XSTORM_CORE_CONN_AG_CTX_RULE19EN_SHIFT            1
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED4_MASK         0x1 /* rule20en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED4_SHIFT        2
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED5_MASK         0x1 /* rule21en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED5_SHIFT        3
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED6_MASK         0x1 /* rule22en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED6_SHIFT        4
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED7_MASK         0x1 /* rule23en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED7_SHIFT        5
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED8_MASK         0x1 /* rule24en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED8_SHIFT        6
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED9_MASK         0x1 /* rule25en */
+#define XSTORM_CORE_CONN_AG_CTX_A0_RESERVED9_SHIFT        7
 	u8 flags14;
-/* bit16 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT16_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT16_SHIFT               0
-/* bit17 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT17_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT17_SHIFT               1
-/* bit18 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT18_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT18_SHIFT               2
-/* bit19 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT19_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT19_SHIFT               3
-/* bit20 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT20_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT20_SHIFT               4
-/* bit21 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT21_MASK                0x1
-#define E4_XSTORM_CORE_CONN_AG_CTX_BIT21_SHIFT               5
-/* cf23 */
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF23_MASK                 0x3
-#define E4_XSTORM_CORE_CONN_AG_CTX_CF23_SHIFT                6
+#define XSTORM_CORE_CONN_AG_CTX_BIT16_MASK                0x1 /* bit16 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT16_SHIFT               0
+#define XSTORM_CORE_CONN_AG_CTX_BIT17_MASK                0x1 /* bit17 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT17_SHIFT               1
+#define XSTORM_CORE_CONN_AG_CTX_BIT18_MASK                0x1 /* bit18 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT18_SHIFT               2
+#define XSTORM_CORE_CONN_AG_CTX_BIT19_MASK                0x1 /* bit19 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT19_SHIFT               3
+#define XSTORM_CORE_CONN_AG_CTX_BIT20_MASK                0x1 /* bit20 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT20_SHIFT               4
+#define XSTORM_CORE_CONN_AG_CTX_BIT21_MASK                0x1 /* bit21 */
+#define XSTORM_CORE_CONN_AG_CTX_BIT21_SHIFT               5
+#define XSTORM_CORE_CONN_AG_CTX_CF23_MASK                 0x3 /* cf23 */
+#define XSTORM_CORE_CONN_AG_CTX_CF23_SHIFT                6
 	u8 byte2 /* byte2 */;
 	__le16 physical_q0 /* physical_q0 */;
 	__le16 consolid_prod /* physical_q1 */;
@@ -426,89 +339,89 @@ struct e4_xstorm_core_conn_ag_ctx {
 	__le16 word15 /* word15 */;
 };
 
-struct e4_tstorm_core_conn_ag_ctx {
+struct tstorm_core_conn_ag_ctx {
 	u8 byte0 /* cdu_validation */;
 	u8 byte1 /* state */;
 	u8 flags0;
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT2_MASK     0x1 /* bit2 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT2_SHIFT    2
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT3_MASK     0x1 /* bit3 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT3_SHIFT    3
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT4_MASK     0x1 /* bit4 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT4_SHIFT    4
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT5_MASK     0x1 /* bit5 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_BIT5_SHIFT    5
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* timer0cf */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF0_SHIFT     6
+#define TSTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
+#define TSTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
+#define TSTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
+#define TSTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
+#define TSTORM_CORE_CONN_AG_CTX_BIT2_MASK     0x1 /* bit2 */
+#define TSTORM_CORE_CONN_AG_CTX_BIT2_SHIFT    2
+#define TSTORM_CORE_CONN_AG_CTX_BIT3_MASK     0x1 /* bit3 */
+#define TSTORM_CORE_CONN_AG_CTX_BIT3_SHIFT    3
+#define TSTORM_CORE_CONN_AG_CTX_BIT4_MASK     0x1 /* bit4 */
+#define TSTORM_CORE_CONN_AG_CTX_BIT4_SHIFT    4
+#define TSTORM_CORE_CONN_AG_CTX_BIT5_MASK     0x1 /* bit5 */
+#define TSTORM_CORE_CONN_AG_CTX_BIT5_SHIFT    5
+#define TSTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* timer0cf */
+#define TSTORM_CORE_CONN_AG_CTX_CF0_SHIFT     6
 	u8 flags1;
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* timer1cf */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF1_SHIFT     0
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* timer2cf */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF2_SHIFT     2
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF3_MASK      0x3 /* timer_stop_all */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF3_SHIFT     4
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF4_MASK      0x3 /* cf4 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF4_SHIFT     6
+#define TSTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* timer1cf */
+#define TSTORM_CORE_CONN_AG_CTX_CF1_SHIFT     0
+#define TSTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* timer2cf */
+#define TSTORM_CORE_CONN_AG_CTX_CF2_SHIFT     2
+#define TSTORM_CORE_CONN_AG_CTX_CF3_MASK      0x3 /* timer_stop_all */
+#define TSTORM_CORE_CONN_AG_CTX_CF3_SHIFT     4
+#define TSTORM_CORE_CONN_AG_CTX_CF4_MASK      0x3 /* cf4 */
+#define TSTORM_CORE_CONN_AG_CTX_CF4_SHIFT     6
 	u8 flags2;
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF5_MASK      0x3 /* cf5 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF5_SHIFT     0
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF6_MASK      0x3 /* cf6 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF6_SHIFT     2
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF7_MASK      0x3 /* cf7 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF7_SHIFT     4
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF8_MASK      0x3 /* cf8 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF8_SHIFT     6
+#define TSTORM_CORE_CONN_AG_CTX_CF5_MASK      0x3 /* cf5 */
+#define TSTORM_CORE_CONN_AG_CTX_CF5_SHIFT     0
+#define TSTORM_CORE_CONN_AG_CTX_CF6_MASK      0x3 /* cf6 */
+#define TSTORM_CORE_CONN_AG_CTX_CF6_SHIFT     2
+#define TSTORM_CORE_CONN_AG_CTX_CF7_MASK      0x3 /* cf7 */
+#define TSTORM_CORE_CONN_AG_CTX_CF7_SHIFT     4
+#define TSTORM_CORE_CONN_AG_CTX_CF8_MASK      0x3 /* cf8 */
+#define TSTORM_CORE_CONN_AG_CTX_CF8_SHIFT     6
 	u8 flags3;
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF9_MASK      0x3 /* cf9 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF9_SHIFT     0
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF10_MASK     0x3 /* cf10 */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF10_SHIFT    2
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   4
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   5
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   6
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF3EN_MASK    0x1 /* cf3en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF3EN_SHIFT   7
+#define TSTORM_CORE_CONN_AG_CTX_CF9_MASK      0x3 /* cf9 */
+#define TSTORM_CORE_CONN_AG_CTX_CF9_SHIFT     0
+#define TSTORM_CORE_CONN_AG_CTX_CF10_MASK     0x3 /* cf10 */
+#define TSTORM_CORE_CONN_AG_CTX_CF10_SHIFT    2
+#define TSTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
+#define TSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   4
+#define TSTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
+#define TSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   5
+#define TSTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
+#define TSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   6
+#define TSTORM_CORE_CONN_AG_CTX_CF3EN_MASK    0x1 /* cf3en */
+#define TSTORM_CORE_CONN_AG_CTX_CF3EN_SHIFT   7
 	u8 flags4;
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF4EN_MASK    0x1 /* cf4en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF4EN_SHIFT   0
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF5EN_MASK    0x1 /* cf5en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF5EN_SHIFT   1
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF6EN_MASK    0x1 /* cf6en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF6EN_SHIFT   2
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF7EN_MASK    0x1 /* cf7en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF7EN_SHIFT   3
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF8EN_MASK    0x1 /* cf8en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF8EN_SHIFT   4
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF9EN_MASK    0x1 /* cf9en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF9EN_SHIFT   5
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF10EN_MASK   0x1 /* cf10en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_CF10EN_SHIFT  6
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 7
+#define TSTORM_CORE_CONN_AG_CTX_CF4EN_MASK    0x1 /* cf4en */
+#define TSTORM_CORE_CONN_AG_CTX_CF4EN_SHIFT   0
+#define TSTORM_CORE_CONN_AG_CTX_CF5EN_MASK    0x1 /* cf5en */
+#define TSTORM_CORE_CONN_AG_CTX_CF5EN_SHIFT   1
+#define TSTORM_CORE_CONN_AG_CTX_CF6EN_MASK    0x1 /* cf6en */
+#define TSTORM_CORE_CONN_AG_CTX_CF6EN_SHIFT   2
+#define TSTORM_CORE_CONN_AG_CTX_CF7EN_MASK    0x1 /* cf7en */
+#define TSTORM_CORE_CONN_AG_CTX_CF7EN_SHIFT   3
+#define TSTORM_CORE_CONN_AG_CTX_CF8EN_MASK    0x1 /* cf8en */
+#define TSTORM_CORE_CONN_AG_CTX_CF8EN_SHIFT   4
+#define TSTORM_CORE_CONN_AG_CTX_CF9EN_MASK    0x1 /* cf9en */
+#define TSTORM_CORE_CONN_AG_CTX_CF9EN_SHIFT   5
+#define TSTORM_CORE_CONN_AG_CTX_CF10EN_MASK   0x1 /* cf10en */
+#define TSTORM_CORE_CONN_AG_CTX_CF10EN_SHIFT  6
+#define TSTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 7
 	u8 flags5;
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 0
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 1
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 2
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 3
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE5EN_MASK  0x1 /* rule5en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE5EN_SHIFT 4
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE6EN_MASK  0x1 /* rule6en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE6EN_SHIFT 5
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE7EN_MASK  0x1 /* rule7en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE7EN_SHIFT 6
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE8EN_MASK  0x1 /* rule8en */
-#define E4_TSTORM_CORE_CONN_AG_CTX_RULE8EN_SHIFT 7
+#define TSTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 0
+#define TSTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 1
+#define TSTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 2
+#define TSTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 3
+#define TSTORM_CORE_CONN_AG_CTX_RULE5EN_MASK  0x1 /* rule5en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE5EN_SHIFT 4
+#define TSTORM_CORE_CONN_AG_CTX_RULE6EN_MASK  0x1 /* rule6en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE6EN_SHIFT 5
+#define TSTORM_CORE_CONN_AG_CTX_RULE7EN_MASK  0x1 /* rule7en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE7EN_SHIFT 6
+#define TSTORM_CORE_CONN_AG_CTX_RULE8EN_MASK  0x1 /* rule8en */
+#define TSTORM_CORE_CONN_AG_CTX_RULE8EN_SHIFT 7
 	__le32 reg0 /* reg0 */;
 	__le32 reg1 /* reg1 */;
 	__le32 reg2 /* reg2 */;
@@ -530,63 +443,63 @@ struct e4_tstorm_core_conn_ag_ctx {
 	__le32 reg10 /* reg10 */;
 };
 
-struct e4_ustorm_core_conn_ag_ctx {
+struct ustorm_core_conn_ag_ctx {
 	u8 reserved /* cdu_validation */;
 	u8 byte1 /* state */;
 	u8 flags0;
-#define E4_USTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
-#define E4_USTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
-#define E4_USTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
-#define E4_USTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
-#define E4_USTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* timer0cf */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF0_SHIFT     2
-#define E4_USTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* timer1cf */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF1_SHIFT     4
-#define E4_USTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* timer2cf */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF2_SHIFT     6
+#define USTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
+#define USTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
+#define USTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
+#define USTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
+#define USTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* timer0cf */
+#define USTORM_CORE_CONN_AG_CTX_CF0_SHIFT     2
+#define USTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* timer1cf */
+#define USTORM_CORE_CONN_AG_CTX_CF1_SHIFT     4
+#define USTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* timer2cf */
+#define USTORM_CORE_CONN_AG_CTX_CF2_SHIFT     6
 	u8 flags1;
-#define E4_USTORM_CORE_CONN_AG_CTX_CF3_MASK      0x3 /* timer_stop_all */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF3_SHIFT     0
-#define E4_USTORM_CORE_CONN_AG_CTX_CF4_MASK      0x3 /* cf4 */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF4_SHIFT     2
-#define E4_USTORM_CORE_CONN_AG_CTX_CF5_MASK      0x3 /* cf5 */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF5_SHIFT     4
-#define E4_USTORM_CORE_CONN_AG_CTX_CF6_MASK      0x3 /* cf6 */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF6_SHIFT     6
+#define USTORM_CORE_CONN_AG_CTX_CF3_MASK      0x3 /* timer_stop_all */
+#define USTORM_CORE_CONN_AG_CTX_CF3_SHIFT     0
+#define USTORM_CORE_CONN_AG_CTX_CF4_MASK      0x3 /* cf4 */
+#define USTORM_CORE_CONN_AG_CTX_CF4_SHIFT     2
+#define USTORM_CORE_CONN_AG_CTX_CF5_MASK      0x3 /* cf5 */
+#define USTORM_CORE_CONN_AG_CTX_CF5_SHIFT     4
+#define USTORM_CORE_CONN_AG_CTX_CF6_MASK      0x3 /* cf6 */
+#define USTORM_CORE_CONN_AG_CTX_CF6_SHIFT     6
 	u8 flags2;
-#define E4_USTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   0
-#define E4_USTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   1
-#define E4_USTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   2
-#define E4_USTORM_CORE_CONN_AG_CTX_CF3EN_MASK    0x1 /* cf3en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF3EN_SHIFT   3
-#define E4_USTORM_CORE_CONN_AG_CTX_CF4EN_MASK    0x1 /* cf4en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF4EN_SHIFT   4
-#define E4_USTORM_CORE_CONN_AG_CTX_CF5EN_MASK    0x1 /* cf5en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF5EN_SHIFT   5
-#define E4_USTORM_CORE_CONN_AG_CTX_CF6EN_MASK    0x1 /* cf6en */
-#define E4_USTORM_CORE_CONN_AG_CTX_CF6EN_SHIFT   6
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 7
+#define USTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
+#define USTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   0
+#define USTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
+#define USTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   1
+#define USTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
+#define USTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   2
+#define USTORM_CORE_CONN_AG_CTX_CF3EN_MASK    0x1 /* cf3en */
+#define USTORM_CORE_CONN_AG_CTX_CF3EN_SHIFT   3
+#define USTORM_CORE_CONN_AG_CTX_CF4EN_MASK    0x1 /* cf4en */
+#define USTORM_CORE_CONN_AG_CTX_CF4EN_SHIFT   4
+#define USTORM_CORE_CONN_AG_CTX_CF5EN_MASK    0x1 /* cf5en */
+#define USTORM_CORE_CONN_AG_CTX_CF5EN_SHIFT   5
+#define USTORM_CORE_CONN_AG_CTX_CF6EN_MASK    0x1 /* cf6en */
+#define USTORM_CORE_CONN_AG_CTX_CF6EN_SHIFT   6
+#define USTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
+#define USTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 7
 	u8 flags3;
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 0
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 1
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 2
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 3
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE5EN_MASK  0x1 /* rule5en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE5EN_SHIFT 4
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE6EN_MASK  0x1 /* rule6en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE6EN_SHIFT 5
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE7EN_MASK  0x1 /* rule7en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE7EN_SHIFT 6
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE8EN_MASK  0x1 /* rule8en */
-#define E4_USTORM_CORE_CONN_AG_CTX_RULE8EN_SHIFT 7
+#define USTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
+#define USTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 0
+#define USTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
+#define USTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 1
+#define USTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
+#define USTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 2
+#define USTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
+#define USTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 3
+#define USTORM_CORE_CONN_AG_CTX_RULE5EN_MASK  0x1 /* rule5en */
+#define USTORM_CORE_CONN_AG_CTX_RULE5EN_SHIFT 4
+#define USTORM_CORE_CONN_AG_CTX_RULE6EN_MASK  0x1 /* rule6en */
+#define USTORM_CORE_CONN_AG_CTX_RULE6EN_SHIFT 5
+#define USTORM_CORE_CONN_AG_CTX_RULE7EN_MASK  0x1 /* rule7en */
+#define USTORM_CORE_CONN_AG_CTX_RULE7EN_SHIFT 6
+#define USTORM_CORE_CONN_AG_CTX_RULE8EN_MASK  0x1 /* rule8en */
+#define USTORM_CORE_CONN_AG_CTX_RULE8EN_SHIFT 7
 	u8 byte2 /* byte2 */;
 	u8 byte3 /* byte3 */;
 	__le16 word0 /* conn_dpi */;
@@ -603,20 +516,27 @@ struct e4_ustorm_core_conn_ag_ctx {
  * The core storm context for the Mstorm
  */
 struct mstorm_core_conn_st_ctx {
-	__le32 reserved[24];
+	__le32 reserved[40];
 };
 
 /*
  * The core storm context for the Ustorm
  */
 struct ustorm_core_conn_st_ctx {
+	__le32 reserved[20];
+};
+
+/*
+ * The core storm context for the Tstorm
+ */
+struct tstorm_core_conn_st_ctx {
 	__le32 reserved[4];
 };
 
 /*
  * core connection context
  */
-struct e4_core_conn_context {
+struct core_conn_context {
 /* ystorm storm context */
 	struct ystorm_core_conn_st_ctx ystorm_st_context;
 	struct regpair ystorm_st_padding[2] /* padding */;
@@ -626,16 +546,19 @@ struct e4_core_conn_context {
 /* xstorm storm context */
 	struct xstorm_core_conn_st_ctx xstorm_st_context;
 /* xstorm aggregative context */
-	struct e4_xstorm_core_conn_ag_ctx xstorm_ag_context;
+	struct xstorm_core_conn_ag_ctx xstorm_ag_context;
 /* tstorm aggregative context */
-	struct e4_tstorm_core_conn_ag_ctx tstorm_ag_context;
+	struct tstorm_core_conn_ag_ctx tstorm_ag_context;
 /* ustorm aggregative context */
-	struct e4_ustorm_core_conn_ag_ctx ustorm_ag_context;
+	struct ustorm_core_conn_ag_ctx ustorm_ag_context;
 /* mstorm storm context */
 	struct mstorm_core_conn_st_ctx mstorm_st_context;
 /* ustorm storm context */
 	struct ustorm_core_conn_st_ctx ustorm_st_context;
 	struct regpair ustorm_st_padding[2] /* padding */;
+/* tstorm storm context */
+	struct tstorm_core_conn_st_ctx tstorm_st_context;
+	struct regpair tstorm_st_padding[2] /* padding */;
 };
 
 
@@ -660,6 +583,7 @@ enum core_event_opcode {
 	CORE_EVENT_RX_QUEUE_STOP,
 	CORE_EVENT_RX_QUEUE_FLUSH,
 	CORE_EVENT_TX_QUEUE_UPDATE,
+	CORE_EVENT_QUEUE_STATS_QUERY,
 	MAX_CORE_EVENT_OPCODE
 };
 
@@ -688,7 +612,7 @@ struct core_ll2_port_stats {
 
 
 /*
- * Ethernet TX Per Queue Stats
+ * LL2 TX Per Queue Stats
  */
 struct core_ll2_pstorm_per_queue_stat {
 /* number of total bytes sent without errors */
@@ -703,16 +627,8 @@ struct core_ll2_pstorm_per_queue_stat {
 	struct regpair sent_mcast_pkts;
 /* number of total packets sent without errors */
 	struct regpair sent_bcast_pkts;
-};
-
-
-/*
- * Light-L2 RX Producers in Tstorm RAM
- */
-struct core_ll2_rx_prod {
-	__le16 bd_prod /* BD Producer */;
-	__le16 cqe_prod /* CQE Producer */;
-	__le32 reserved;
+/* number of total packets dropped due to errors */
+	struct regpair error_drop_pkts;
 };
 
 
@@ -723,7 +639,6 @@ struct core_ll2_tstorm_per_queue_stat {
 	struct regpair no_buff_discard;
 };
 
-
 struct core_ll2_ustorm_per_queue_stat {
 	struct regpair rcv_ucast_bytes;
 	struct regpair rcv_mcast_bytes;
@@ -731,6 +646,59 @@ struct core_ll2_ustorm_per_queue_stat {
 	struct regpair rcv_ucast_pkts;
 	struct regpair rcv_mcast_pkts;
 	struct regpair rcv_bcast_pkts;
+};
+
+
+/*
+ * Light-L2 RX Producers
+ */
+struct core_ll2_rx_prod {
+	__le16 bd_prod /* BD Producer */;
+	__le16 cqe_prod /* CQE Producer */;
+};
+
+
+
+struct core_ll2_tx_per_queue_stat {
+/* PSTORM per queue statistics */
+	struct core_ll2_pstorm_per_queue_stat pstorm_stat;
+};
+
+
+
+/*
+ * Structure for doorbell data, in PWM mode, for RX producers update.
+ */
+struct core_pwm_prod_update_data {
+	__le16 icid /* internal CID */;
+	u8 reserved0;
+	u8 params;
+/* aggregative command. Set DB_AGG_CMD_SET for producer update
+ * (use enum db_agg_cmd_sel)
+ */
+#define CORE_PWM_PROD_UPDATE_DATA_AGG_CMD_MASK    0x3
+#define CORE_PWM_PROD_UPDATE_DATA_AGG_CMD_SHIFT   0
+#define CORE_PWM_PROD_UPDATE_DATA_RESERVED1_MASK  0x3F /* Set 0. */
+#define CORE_PWM_PROD_UPDATE_DATA_RESERVED1_SHIFT 2
+	struct core_ll2_rx_prod prod /* Producers. */;
+};
+
+
+/*
+ * Ramrod data for rx/tx queue statistics query ramrod
+ */
+struct core_queue_stats_query_ramrod_data {
+	u8 rx_stat /* If set, collect RX queue statistics. */;
+	u8 tx_stat /* If set, collect TX queue statistics. */;
+	__le16 reserved[3];
+/* Address of RX statistic buffer. core_ll2_rx_per_queue_stat struct will be
+ * write to this address.
+ */
+	struct regpair rx_stat_addr;
+/* Address of TX statistic buffer. core_ll2_tx_per_queue_stat struct will be
+ * write to this address.
+ */
+	struct regpair tx_stat_addr;
 };
 
 
@@ -745,6 +713,7 @@ enum core_ramrod_cmd_id {
 	CORE_RAMROD_TX_QUEUE_STOP /* TX Queue Stop Ramrod */,
 	CORE_RAMROD_RX_QUEUE_FLUSH /* RX Flush queue Ramrod */,
 	CORE_RAMROD_TX_QUEUE_UPDATE /* TX Queue Update Ramrod */,
+	CORE_RAMROD_QUEUE_STATS_QUERY /* Queue Statist Query Ramrod */,
 	MAX_CORE_RAMROD_CMD_ID
 };
 
@@ -859,7 +828,8 @@ struct core_rx_gsi_offload_cqe {
 /* These are the lower 16 bit of QP id in RoCE BTH header */
 	__le16 qp_id;
 	__le32 src_qp /* Source QP from DETH header */;
-	__le32 reserved[3];
+	struct core_rx_cqe_opaque_data opaque_data /* Opaque Data */;
+	__le32 reserved;
 };
 
 /*
@@ -890,24 +860,21 @@ union core_rx_cqe_union {
  * Ramrod data for rx queue start ramrod
  */
 struct core_rx_start_ramrod_data {
-	struct regpair bd_base /* bd address of the first bd page */;
+	struct regpair bd_base /* Address of the first BD page */;
 	struct regpair cqe_pbl_addr /* Base address on host of CQE PBL */;
-	__le16 mtu /* Maximum transmission unit */;
+	__le16 mtu /* MTU */;
 	__le16 sb_id /* Status block ID */;
-	u8 sb_index /* index of the protocol index */;
-	u8 complete_cqe_flg /* post completion to the CQE ring if set */;
-	u8 complete_event_flg /* post completion to the event ring if set */;
-	u8 drop_ttl0_flg /* drop packet with ttl0 if set */;
-	__le16 num_of_pbl_pages /* Num of pages in CQE PBL */;
-/* if set, 802.1q tags will be removed and copied to CQE */
-/* if set, 802.1q tags will be removed and copied to CQE */
+	u8 sb_index /* Status block index */;
+	u8 complete_cqe_flg /* if set - post completion to the CQE ring */;
+	u8 complete_event_flg /* if set - post completion to the event ring */;
+	u8 drop_ttl0_flg /* if set - drop packet with ttl=0 */;
+	__le16 num_of_pbl_pages /* Number of pages in CQE PBL */;
+/* if set - 802.1q tag will be removed and copied to CQE */
 	u8 inner_vlan_stripping_en;
-/* if set and inner vlan does not exist, the outer vlan will copied to CQE as
- * inner vlan. should be used in MF_OVLAN mode only.
- */
-	u8 report_outer_vlan;
+/* if set - outer tag wont be stripped, valid only in MF OVLAN mode. */
+	u8 outer_vlan_stripping_dis;
 	u8 queue_id /* Light L2 RX Queue ID */;
-	u8 main_func_queue /* Is this the main queue for the PF */;
+	u8 main_func_queue /* Set if this is the main PFs LL2 queue */;
 /* Duplicate broadcast packets to LL2 main queue in mf_si mode. Valid if
  * main_func_queue is set.
  */
@@ -916,17 +883,21 @@ struct core_rx_start_ramrod_data {
  * main_func_queue is set.
  */
 	u8 mf_si_mcast_accept_all;
-/* Specifies how ll2 should deal with packets errors: packet_too_big and
- * no_buff
+/* If set, the inner vlan (802.1q tag) priority that is written to cqe will be
+ * zero out, used for TenantDcb
  */
+/* Specifies how ll2 should deal with RX packets errors */
 	struct core_rx_action_on_error action_on_error;
-/* set when in GSI offload mode on ROCE connection */
-	u8 gsi_offload_flag;
+	u8 gsi_offload_flag /* set for GSI offload mode */;
+/* If set, queue is subject for RX VFC classification. */
+	u8 vport_id_valid;
+	u8 vport_id /* Queue VPORT for RX VFC classification. */;
+	u8 zero_prod_flg /* If set, zero RX producers. */;
 /* If set, the inner vlan (802.1q tag) priority that is written to cqe will be
  * zero out, used for TenantDcb
  */
 	u8 wipe_inner_vlan_pri_en;
-	u8 reserved[5];
+	u8 reserved[2];
 };
 
 
@@ -1046,13 +1017,14 @@ struct core_tx_start_ramrod_data {
 	u8 conn_type /* connection type that loaded ll2 */;
 	__le16 pbl_size /* Number of BD pages pointed by PBL */;
 	__le16 qm_pq_id /* QM PQ ID */;
-/* set when in GSI offload mode on ROCE connection */
-	u8 gsi_offload_flag;
+	u8 gsi_offload_flag /* set for GSI offload mode */;
+	u8 ctx_stats_en /* Context statistics enable */;
+/* If set, queue is part of VPORT and subject for TX switching. */
+	u8 vport_id_valid;
 /* vport id of the current connection, used to access non_rdma_in_to_in_pri_map
  * which is per vport
  */
 	u8 vport_id;
-	u8 resrved[2];
 };
 
 
@@ -1135,12 +1107,23 @@ struct eth_pstorm_per_pf_stat {
 	struct regpair sent_gre_bytes /* Sent GRE bytes */;
 	struct regpair sent_vxlan_bytes /* Sent VXLAN bytes */;
 	struct regpair sent_geneve_bytes /* Sent GENEVE bytes */;
-	struct regpair sent_gre_pkts /* Sent GRE packets */;
+	struct regpair sent_mpls_bytes /* Sent MPLS bytes */;
+	struct regpair sent_gre_mpls_bytes /* Sent GRE MPLS bytes (E5 Only) */;
+	struct regpair sent_udp_mpls_bytes /* Sent GRE MPLS bytes (E5 Only) */;
+	struct regpair sent_gre_pkts /* Sent GRE packets (E5 Only) */;
 	struct regpair sent_vxlan_pkts /* Sent VXLAN packets */;
 	struct regpair sent_geneve_pkts /* Sent GENEVE packets */;
+	struct regpair sent_mpls_pkts /* Sent MPLS packets (E5 Only) */;
+	struct regpair sent_gre_mpls_pkts /* Sent GRE MPLS packets (E5 Only) */;
+	struct regpair sent_udp_mpls_pkts /* Sent UDP MPLS packets (E5 Only) */;
 	struct regpair gre_drop_pkts /* Dropped GRE TX packets */;
 	struct regpair vxlan_drop_pkts /* Dropped VXLAN TX packets */;
 	struct regpair geneve_drop_pkts /* Dropped GENEVE TX packets */;
+	struct regpair mpls_drop_pkts /* Dropped MPLS TX packets (E5 Only) */;
+/* Dropped GRE MPLS TX packets (E5 Only) */
+	struct regpair gre_mpls_drop_pkts;
+/* Dropped UDP MPLS TX packets (E5 Only) */
+	struct regpair udp_mpls_drop_pkts;
 };
 
 
@@ -1263,6 +1246,8 @@ union event_ring_data {
 	struct iscsi_eqe_data iscsi_info /* Dedicated fields to iscsi data */;
 /* Dedicated fields to iscsi connect done results */
 	struct iscsi_connect_done_results iscsi_conn_done_info;
+	union rdma_eqe_data rdma_data /* Dedicated field for RDMA data */;
+	struct nvmf_eqe_data nvmf_data /* Dedicated field for NVMf data */;
 	struct malicious_vf_eqe_data malicious_vf /* Malicious VF data */;
 /* VF Initial Cleanup data */
 	struct initial_cleanup_eqe_data vf_init_cleanup;
@@ -1274,10 +1259,14 @@ union event_ring_data {
  */
 struct event_ring_entry {
 	u8 protocol_id /* Event Protocol ID (use enum protocol_type) */;
-	u8 opcode /* Event Opcode */;
-	__le16 reserved0 /* Reserved */;
+	u8 opcode /* Event Opcode (Per Protocol Type) */;
+	u8 reserved0 /* Reserved */;
+	u8 vfId /* vfId for this event, 0xFF if this is a PF event */;
 	__le16 echo /* Echo value from ramrod data on the host */;
-	u8 fw_return_code /* FW return code for SP ramrods */;
+/* FW return code for SP ramrods. Use (according to protocol) eth_return_code,
+ * or rdma_fw_return_code, or fcoe_completion_status
+ */
+	u8 fw_return_code;
 	u8 flags;
 /* 0: synchronous EQE - a completion of SP message. 1: asynchronous EQE */
 #define EVENT_RING_ENTRY_ASYNC_MASK      0x1
@@ -1407,6 +1396,22 @@ enum malicious_vf_error_id {
 	ETH_TUNN_IPV6_EXT_NBD_ERR,
 	ETH_CONTROL_PACKET_VIOLATION /* VF sent control frame such as PFC */,
 	ETH_ANTI_SPOOFING_ERR /* Anti-Spoofing verification failure */,
+/* packet scanned is too large (can be 9700 at most) */
+	ETH_PACKET_SIZE_TOO_LARGE,
+/* Tx packet with marked as insert VLAN when its illegal */
+	CORE_ILLEGAL_VLAN_MODE,
+/* indicated number of BDs for the packet is illegal */
+	CORE_ILLEGAL_NBDS,
+	CORE_FIRST_BD_WO_SOP /* 1st BD must have start_bd flag set */,
+/* There are not enough BDs for transmission of even one packet */
+	CORE_INSUFFICIENT_BDS,
+/* TX packet is shorter then reported on BDs or from minimal size */
+	CORE_PACKET_TOO_SMALL,
+	CORE_ILLEGAL_INBAND_TAGS /* TX packet has illegal inband tags marked */,
+	CORE_VLAN_INSERT_AND_INBAND_VLAN /* Vlan cant be added to inband tag */,
+	CORE_MTU_VIOLATION /* TX packet is greater then MTU */,
+	CORE_CONTROL_PACKET_VIOLATION /* VF sent control frame such as PFC */,
+	CORE_ANTI_SPOOFING_ERR /* Anti-Spoofing verification failure */,
 	MAX_MALICIOUS_VF_ERROR_ID
 };
 
@@ -1924,6 +1929,23 @@ enum vf_zone_size_mode {
 
 
 
+/*
+ * Xstorm non-triggering VF zone
+ */
+struct xstorm_non_trigger_vf_zone {
+	struct regpair non_edpm_ack_pkts /* RoCE received statistics */;
+};
+
+
+/*
+ * Tstorm VF zone
+ */
+struct xstorm_vf_zone {
+/* non-interrupt-triggering zone */
+	struct xstorm_non_trigger_vf_zone non_trigger;
+};
+
+
 
 /*
  * Attentions status block
@@ -2040,7 +2062,11 @@ struct dmae_cmd {
 	__le16 crc16 /* crc16 result */;
 	__le16 crc16_c /* crc16_c result */;
 	__le16 crc10 /* crc_t10 result */;
-	__le16 reserved;
+	__le16 error_bit_reserved;
+#define DMAE_CMD_ERROR_BIT_MASK        0x1 /* Error bit */
+#define DMAE_CMD_ERROR_BIT_SHIFT       0
+#define DMAE_CMD_RESERVED_MASK         0x7FFF
+#define DMAE_CMD_RESERVED_SHIFT        1
 	__le16 xsum16 /* checksum16 result  */;
 	__le16 xsum8 /* checksum8 result  */;
 };
@@ -2104,89 +2130,57 @@ enum dmae_cmd_src_enum {
 };
 
 
-struct e4_mstorm_core_conn_ag_ctx {
-	u8 byte0 /* cdu_validation */;
-	u8 byte1 /* state */;
-	u8 flags0;
-#define E4_MSTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
-#define E4_MSTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
-#define E4_MSTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
-#define E4_MSTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* cf0 */
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF0_SHIFT     2
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* cf1 */
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF1_SHIFT     4
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* cf2 */
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF2_SHIFT     6
-	u8 flags1;
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   0
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   1
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   2
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 3
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 4
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 5
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 6
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
-#define E4_MSTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 7
-	__le16 word0 /* word0 */;
-	__le16 word1 /* word1 */;
-	__le32 reg0 /* reg0 */;
-	__le32 reg1 /* reg1 */;
-};
-
-
-
-
-
-struct e4_ystorm_core_conn_ag_ctx {
-	u8 byte0 /* cdu_validation */;
-	u8 byte1 /* state */;
-	u8 flags0;
-#define E4_YSTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
-#define E4_YSTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
-#define E4_YSTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
-#define E4_YSTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* cf0 */
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF0_SHIFT     2
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* cf1 */
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF1_SHIFT     4
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* cf2 */
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF2_SHIFT     6
-	u8 flags1;
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   0
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   1
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   2
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 3
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 4
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 5
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 6
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
-#define E4_YSTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 7
-	u8 byte2 /* byte2 */;
-	u8 byte3 /* byte3 */;
-	__le16 word0 /* word0 */;
-	__le32 reg0 /* reg0 */;
-	__le32 reg1 /* reg1 */;
-	__le16 word1 /* word1 */;
-	__le16 word2 /* word2 */;
-	__le16 word3 /* word3 */;
-	__le16 word4 /* word4 */;
-	__le32 reg2 /* reg2 */;
-	__le32 reg3 /* reg3 */;
+/*
+ * DMAE parameters
+ */
+struct dmae_params {
+	__le32 flags;
+/* If set and the source is a block of length DMAE_MAX_RW_SIZE and the
+ * destination is larger, the source block will be duplicated as many
+ * times as required to fill the destination block. This is used mostly
+ * to write a zeroed buffer to destination address using DMA
+ */
+#define DMAE_PARAMS_RW_REPL_SRC_MASK     0x1
+#define DMAE_PARAMS_RW_REPL_SRC_SHIFT    0
+/* If set, the source is a VF, and the source VF ID is taken from the
+ * src_vf_id parameter.
+ */
+#define DMAE_PARAMS_SRC_VF_VALID_MASK    0x1
+#define DMAE_PARAMS_SRC_VF_VALID_SHIFT   1
+/* If set, the destination is a VF, and the destination VF ID is taken
+ * from the dst_vf_id parameter.
+ */
+#define DMAE_PARAMS_DST_VF_VALID_MASK    0x1
+#define DMAE_PARAMS_DST_VF_VALID_SHIFT   2
+/* If set, a completion is sent to the destination function.
+ * Otherwise its sent to the source function.
+ */
+#define DMAE_PARAMS_COMPLETION_DST_MASK  0x1
+#define DMAE_PARAMS_COMPLETION_DST_SHIFT 3
+/* If set, the port ID is taken from the port_id parameter.
+ * Otherwise, the current port ID is used.
+ */
+#define DMAE_PARAMS_PORT_VALID_MASK      0x1
+#define DMAE_PARAMS_PORT_VALID_SHIFT     4
+/* If set, the source PF ID is taken from the src_pf_id parameter.
+ * Otherwise, the current PF ID is used.
+ */
+#define DMAE_PARAMS_SRC_PF_VALID_MASK    0x1
+#define DMAE_PARAMS_SRC_PF_VALID_SHIFT   5
+/* If set, the destination PF ID is taken from the dst_pf_id parameter.
+ * Otherwise, the current PF ID is used
+ */
+#define DMAE_PARAMS_DST_PF_VALID_MASK    0x1
+#define DMAE_PARAMS_DST_PF_VALID_SHIFT   6
+#define DMAE_PARAMS_RESERVED_MASK        0x1FFFFFF
+#define DMAE_PARAMS_RESERVED_SHIFT       7
+	u8 src_vf_id /* Source VF ID, valid only if src_vf_valid is set */;
+	u8 dst_vf_id /* Destination VF ID, valid only if dst_vf_valid is set */;
+	u8 port_id /* Port ID, valid only if port_valid is set */;
+	u8 src_pf_id /* Source PF ID, valid only if src_pf_valid is set */;
+	u8 dst_pf_id /* Destination PF ID, valid only if dst_pf_valid is set */;
+	u8 reserved1;
+	__le16 reserved2;
 };
 
 
@@ -2320,6 +2314,44 @@ struct igu_msix_vector {
 };
 
 
+struct mstorm_core_conn_ag_ctx {
+	u8 byte0 /* cdu_validation */;
+	u8 byte1 /* state */;
+	u8 flags0;
+#define MSTORM_CORE_CONN_AG_CTX_BIT0_MASK     0x1 /* exist_in_qm0 */
+#define MSTORM_CORE_CONN_AG_CTX_BIT0_SHIFT    0
+#define MSTORM_CORE_CONN_AG_CTX_BIT1_MASK     0x1 /* exist_in_qm1 */
+#define MSTORM_CORE_CONN_AG_CTX_BIT1_SHIFT    1
+#define MSTORM_CORE_CONN_AG_CTX_CF0_MASK      0x3 /* cf0 */
+#define MSTORM_CORE_CONN_AG_CTX_CF0_SHIFT     2
+#define MSTORM_CORE_CONN_AG_CTX_CF1_MASK      0x3 /* cf1 */
+#define MSTORM_CORE_CONN_AG_CTX_CF1_SHIFT     4
+#define MSTORM_CORE_CONN_AG_CTX_CF2_MASK      0x3 /* cf2 */
+#define MSTORM_CORE_CONN_AG_CTX_CF2_SHIFT     6
+	u8 flags1;
+#define MSTORM_CORE_CONN_AG_CTX_CF0EN_MASK    0x1 /* cf0en */
+#define MSTORM_CORE_CONN_AG_CTX_CF0EN_SHIFT   0
+#define MSTORM_CORE_CONN_AG_CTX_CF1EN_MASK    0x1 /* cf1en */
+#define MSTORM_CORE_CONN_AG_CTX_CF1EN_SHIFT   1
+#define MSTORM_CORE_CONN_AG_CTX_CF2EN_MASK    0x1 /* cf2en */
+#define MSTORM_CORE_CONN_AG_CTX_CF2EN_SHIFT   2
+#define MSTORM_CORE_CONN_AG_CTX_RULE0EN_MASK  0x1 /* rule0en */
+#define MSTORM_CORE_CONN_AG_CTX_RULE0EN_SHIFT 3
+#define MSTORM_CORE_CONN_AG_CTX_RULE1EN_MASK  0x1 /* rule1en */
+#define MSTORM_CORE_CONN_AG_CTX_RULE1EN_SHIFT 4
+#define MSTORM_CORE_CONN_AG_CTX_RULE2EN_MASK  0x1 /* rule2en */
+#define MSTORM_CORE_CONN_AG_CTX_RULE2EN_SHIFT 5
+#define MSTORM_CORE_CONN_AG_CTX_RULE3EN_MASK  0x1 /* rule3en */
+#define MSTORM_CORE_CONN_AG_CTX_RULE3EN_SHIFT 6
+#define MSTORM_CORE_CONN_AG_CTX_RULE4EN_MASK  0x1 /* rule4en */
+#define MSTORM_CORE_CONN_AG_CTX_RULE4EN_SHIFT 7
+	__le16 word0 /* word0 */;
+	__le16 word1 /* word1 */;
+	__le32 reg0 /* reg0 */;
+	__le32 reg1 /* reg1 */;
+};
+
+
 /*
  * per encapsulation type enabling flags
  */
@@ -2416,23 +2448,23 @@ struct qm_rf_opportunistic_mask {
 /*
  * QM hardware structure of QM map memory
  */
-struct qm_rf_pq_map_e4 {
+struct qm_rf_pq_map {
 	__le32 reg;
-#define QM_RF_PQ_MAP_E4_PQ_VALID_MASK          0x1 /* PQ active */
-#define QM_RF_PQ_MAP_E4_PQ_VALID_SHIFT         0
-#define QM_RF_PQ_MAP_E4_RL_ID_MASK             0xFF /* RL ID */
-#define QM_RF_PQ_MAP_E4_RL_ID_SHIFT            1
+#define QM_RF_PQ_MAP_PQ_VALID_MASK          0x1 /* PQ active */
+#define QM_RF_PQ_MAP_PQ_VALID_SHIFT         0
+#define QM_RF_PQ_MAP_RL_ID_MASK             0xFF /* RL ID */
+#define QM_RF_PQ_MAP_RL_ID_SHIFT            1
 /* the first PQ associated with the VPORT and VOQ of this PQ */
-#define QM_RF_PQ_MAP_E4_VP_PQ_ID_MASK          0x1FF
-#define QM_RF_PQ_MAP_E4_VP_PQ_ID_SHIFT         9
-#define QM_RF_PQ_MAP_E4_VOQ_MASK               0x1F /* VOQ */
-#define QM_RF_PQ_MAP_E4_VOQ_SHIFT              18
-#define QM_RF_PQ_MAP_E4_WRR_WEIGHT_GROUP_MASK  0x3 /* WRR weight */
-#define QM_RF_PQ_MAP_E4_WRR_WEIGHT_GROUP_SHIFT 23
-#define QM_RF_PQ_MAP_E4_RL_VALID_MASK          0x1 /* RL active */
-#define QM_RF_PQ_MAP_E4_RL_VALID_SHIFT         25
-#define QM_RF_PQ_MAP_E4_RESERVED_MASK          0x3F
-#define QM_RF_PQ_MAP_E4_RESERVED_SHIFT         26
+#define QM_RF_PQ_MAP_VP_PQ_ID_MASK          0x1FF
+#define QM_RF_PQ_MAP_VP_PQ_ID_SHIFT         9
+#define QM_RF_PQ_MAP_VOQ_MASK               0x1F /* VOQ */
+#define QM_RF_PQ_MAP_VOQ_SHIFT              18
+#define QM_RF_PQ_MAP_WRR_WEIGHT_GROUP_MASK  0x3 /* WRR weight */
+#define QM_RF_PQ_MAP_WRR_WEIGHT_GROUP_SHIFT 23
+#define QM_RF_PQ_MAP_RL_VALID_MASK          0x1 /* RL active */
+#define QM_RF_PQ_MAP_RL_VALID_SHIFT         25
+#define QM_RF_PQ_MAP_RESERVED_MASK          0x3F
+#define QM_RF_PQ_MAP_RESERVED_SHIFT         26
 };
 
 

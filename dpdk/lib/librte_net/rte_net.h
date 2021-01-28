@@ -51,7 +51,8 @@ struct rte_net_hdr_lens {
  *   Protocol that follows IPv6 header.
  *   -1 if an error occurs during mbuf parsing.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_net_skip_ip6_ext(uint16_t proto, const struct rte_mbuf *m, uint32_t *off,
 	int *frag);
 
@@ -113,17 +114,38 @@ static inline int
 rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 {
 	/* Initialise ipv4_hdr to avoid false positive compiler warnings. */
-	struct ipv4_hdr *ipv4_hdr = NULL;
-	struct ipv6_hdr *ipv6_hdr;
-	struct tcp_hdr *tcp_hdr;
-	struct udp_hdr *udp_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr = NULL;
+	struct rte_ipv6_hdr *ipv6_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
+	struct rte_udp_hdr *udp_hdr;
 	uint64_t inner_l3_offset = m->l2_len;
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+	/*
+	 * Does packet set any of available offloads?
+	 * Mainly it is required to avoid fragmented headers check if
+	 * no offloads are requested.
+	 */
+	if (!(ol_flags & PKT_TX_OFFLOAD_MASK))
+		return 0;
+#endif
 
 	if (ol_flags & (PKT_TX_OUTER_IPV4 | PKT_TX_OUTER_IPV6))
 		inner_l3_offset += m->outer_l2_len + m->outer_l3_len;
 
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+	/*
+	 * Check if headers are fragmented.
+	 * The check could be less strict depending on which offloads are
+	 * requested and headers to be used, but let's keep it simple.
+	 */
+	if (unlikely(rte_pktmbuf_data_len(m) <
+		     inner_l3_offset + m->l3_len + m->l4_len))
+		return -ENOTSUP;
+#endif
+
 	if (ol_flags & PKT_TX_IPV4) {
-		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
+		ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
 				inner_l3_offset);
 
 		if (ol_flags & PKT_TX_IP_CKSUM)
@@ -132,15 +154,16 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 
 	if ((ol_flags & PKT_TX_L4_MASK) == PKT_TX_UDP_CKSUM) {
 		if (ol_flags & PKT_TX_IPV4) {
-			udp_hdr = (struct udp_hdr *)((char *)ipv4_hdr +
+			udp_hdr = (struct rte_udp_hdr *)((char *)ipv4_hdr +
 					m->l3_len);
 			udp_hdr->dgram_cksum = rte_ipv4_phdr_cksum(ipv4_hdr,
 					ol_flags);
 		} else {
-			ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct ipv6_hdr *,
-					inner_l3_offset);
+			ipv6_hdr = rte_pktmbuf_mtod_offset(m,
+				struct rte_ipv6_hdr *, inner_l3_offset);
 			/* non-TSO udp */
-			udp_hdr = rte_pktmbuf_mtod_offset(m, struct udp_hdr *,
+			udp_hdr = rte_pktmbuf_mtod_offset(m,
+					struct rte_udp_hdr *,
 					inner_l3_offset + m->l3_len);
 			udp_hdr->dgram_cksum = rte_ipv6_phdr_cksum(ipv6_hdr,
 					ol_flags);
@@ -149,15 +172,16 @@ rte_net_intel_cksum_flags_prepare(struct rte_mbuf *m, uint64_t ol_flags)
 			(ol_flags & PKT_TX_TCP_SEG)) {
 		if (ol_flags & PKT_TX_IPV4) {
 			/* non-TSO tcp or TSO */
-			tcp_hdr = (struct tcp_hdr *)((char *)ipv4_hdr +
+			tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv4_hdr +
 					m->l3_len);
 			tcp_hdr->cksum = rte_ipv4_phdr_cksum(ipv4_hdr,
 					ol_flags);
 		} else {
-			ipv6_hdr = rte_pktmbuf_mtod_offset(m, struct ipv6_hdr *,
-					inner_l3_offset);
+			ipv6_hdr = rte_pktmbuf_mtod_offset(m,
+				struct rte_ipv6_hdr *, inner_l3_offset);
 			/* non-TSO tcp or TSO */
-			tcp_hdr = rte_pktmbuf_mtod_offset(m, struct tcp_hdr *,
+			tcp_hdr = rte_pktmbuf_mtod_offset(m,
+					struct rte_tcp_hdr *,
 					inner_l3_offset + m->l3_len);
 			tcp_hdr->cksum = rte_ipv6_phdr_cksum(ipv6_hdr,
 					ol_flags);

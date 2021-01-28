@@ -231,20 +231,14 @@ socket(int domain, int type, int protocol)
 {
     int sock;
     if (unlikely(inited == 0)) {
-        if (AF_INET6 == domain)
-            domain = AF_INET6_LINUX;
         return SYSCALL(socket)(domain, type, protocol);
     }
 
     if (unlikely(fstack_territory(domain, type, protocol) == 0)) {
-        if (AF_INET6 == domain)
-            domain = AF_INET6_LINUX;
         return SYSCALL(socket)(domain, type, protocol);
     }
 
     if (unlikely((type & SOCK_FSTACK) == 0)) {
-        if (AF_INET6 == domain)
-            domain = AF_INET6_LINUX;
         return SYSCALL(socket)(domain, type, protocol);
     }
 

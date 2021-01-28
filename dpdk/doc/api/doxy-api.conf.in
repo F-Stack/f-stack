@@ -4,12 +4,15 @@
 PROJECT_NAME            = DPDK
 PROJECT_NUMBER          = @VERSION@
 INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
+                          @TOPDIR@/drivers/bus/vdev \
                           @TOPDIR@/drivers/crypto/scheduler \
                           @TOPDIR@/drivers/mempool/dpaa2 \
                           @TOPDIR@/drivers/net/bnxt \
                           @TOPDIR@/drivers/net/bonding \
                           @TOPDIR@/drivers/net/dpaa \
+                          @TOPDIR@/drivers/net/dpaa2 \
                           @TOPDIR@/drivers/net/i40e \
+                          @TOPDIR@/drivers/net/ice \
                           @TOPDIR@/drivers/net/ixgbe \
                           @TOPDIR@/drivers/net/softnic \
                           @TOPDIR@/drivers/raw/dpaa2_cmdif \
@@ -22,18 +25,19 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/librte_bpf \
                           @TOPDIR@/lib/librte_cfgfile \
                           @TOPDIR@/lib/librte_cmdline \
-                          @TOPDIR@/lib/librte_compat \
                           @TOPDIR@/lib/librte_compressdev \
                           @TOPDIR@/lib/librte_cryptodev \
                           @TOPDIR@/lib/librte_distributor \
                           @TOPDIR@/lib/librte_efd \
                           @TOPDIR@/lib/librte_ethdev \
                           @TOPDIR@/lib/librte_eventdev \
+                          @TOPDIR@/lib/librte_fib \
                           @TOPDIR@/lib/librte_flow_classify \
                           @TOPDIR@/lib/librte_gro \
                           @TOPDIR@/lib/librte_gso \
                           @TOPDIR@/lib/librte_hash \
                           @TOPDIR@/lib/librte_ip_frag \
+                          @TOPDIR@/lib/librte_ipsec \
                           @TOPDIR@/lib/librte_jobstats \
                           @TOPDIR@/lib/librte_kni \
                           @TOPDIR@/lib/librte_kvargs \
@@ -51,10 +55,13 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/librte_port \
                           @TOPDIR@/lib/librte_power \
                           @TOPDIR@/lib/librte_rawdev \
+                          @TOPDIR@/lib/librte_rcu \
                           @TOPDIR@/lib/librte_reorder \
+                          @TOPDIR@/lib/librte_rib \
                           @TOPDIR@/lib/librte_ring \
                           @TOPDIR@/lib/librte_sched \
                           @TOPDIR@/lib/librte_security \
+                          @TOPDIR@/lib/librte_stack \
                           @TOPDIR@/lib/librte_table \
                           @TOPDIR@/lib/librte_telemetry \
                           @TOPDIR@/lib/librte_timer \
@@ -81,7 +88,7 @@ ALPHABETICAL_INDEX      = NO
 
 HTML_TIMESTAMP          = NO
 HTML_DYNAMIC_SECTIONS   = YES
-SEARCHENGINE            = NO
+SEARCHENGINE            = YES
 SORT_MEMBER_DOCS        = NO
 SOURCE_BROWSER          = YES
 
@@ -95,3 +102,5 @@ GENERATE_HTML           = YES
 HTML_OUTPUT             = @HTML_OUTPUT@
 GENERATE_LATEX          = NO
 GENERATE_MAN            = NO
+
+HAVE_DOT                = NO

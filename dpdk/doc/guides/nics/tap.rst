@@ -76,7 +76,7 @@ Please change the IP addresses as you see fit.
 
 If routing is enabled on the host you can also communicate with the DPDK App
 over the internet via a standard socket layer application as long as you
-account for the protocol handing in the application.
+account for the protocol handling in the application.
 
 If you have a Network Stack in your DPDK application or something like it you
 can utilize that stack to handle the network protocols. Plus you would be able
@@ -132,9 +132,9 @@ As rules are translated to TC, it is possible to show them with something like::
 Examples of testpmd flow rules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Drop packets for destination IP 192.168.0.1::
+Drop packets for destination IP 192.0.2.1::
 
-   testpmd> flow create 0 priority 1 ingress pattern eth / ipv4 dst is 1.1.1.1 \
+   testpmd> flow create 0 priority 1 ingress pattern eth / ipv4 dst is 192.0.2.1 \
             / end actions drop / end
 
 Ensure packets from a given MAC address are received on a queue 2::
@@ -181,7 +181,7 @@ used to build the dpdk you pulled down.
 Run pktgen from the pktgen directory in a terminal with a commandline like the
 following::
 
-    sudo ./app/app/x86_64-native-linuxapp-gcc/app/pktgen -l 1-5 -n 4        \
+    sudo ./app/app/x86_64-native-linux-gcc/app/pktgen -l 1-5 -n 4        \
      --proc-type auto --log-level debug --socket-mem 512,512 --file-prefix pg   \
      --vdev=net_tap0 --vdev=net_tap1 -b 05:00.0 -b 05:00.1                  \
      -b 04:00.0 -b 04:00.1 -b 04:00.2 -b 04:00.3                            \
@@ -298,4 +298,3 @@ Systems supporting flow API
 | Azure Ubuntu 16.04,| No limitation         |
 | kernel 4.13        |                       |
 +--------------------+-----------------------+
-

@@ -319,18 +319,63 @@ sfc_ef10_try_reap(struct sfc_ef10_txq * const txq, unsigned int added,
 	return (needed_desc <= *dma_desc_space);
 }
 
+static uint16_t
+sfc_ef10_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+		      uint16_t nb_pkts)
+{
+	struct sfc_ef10_txq * const txq = sfc_ef10_txq_by_dp_txq(tx_queue);
+	uint16_t i;
+
+	for (i = 0; i < nb_pkts; i++) {
+		struct rte_mbuf *m = tx_pkts[i];
+		int ret;
+
+#ifdef RTE_LIBRTE_SFC_EFX_DEBUG
+		/*
+		 * In non-TSO case, check that a packet segments do not exceed
+		 * the size limit. Perform the check in debug mode since MTU
+		 * more than 9k is not supported, but the limit here is 16k-1.
+		 */
+		if (!(m->ol_flags & PKT_TX_TCP_SEG)) {
+			struct rte_mbuf *m_seg;
+
+			for (m_seg = m; m_seg != NULL; m_seg = m_seg->next) {
+				if (m_seg->data_len >
+				    SFC_EF10_TX_DMA_DESC_LEN_MAX) {
+					rte_errno = EINVAL;
+					break;
+				}
+			}
+		}
+#endif
+		ret = sfc_dp_tx_prepare_pkt(m,
+				txq->tso_tcp_header_offset_limit,
+				txq->max_fill_level,
+				SFC_EF10_TSO_OPT_DESCS_NUM, 0);
+		if (unlikely(ret != 0)) {
+			rte_errno = ret;
+			break;
+		}
+	}
+
+	return i;
+}
+
 static int
 sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		      unsigned int *added, unsigned int *dma_desc_space,
 		      bool *reap_done)
 {
-	size_t iph_off = m_seg->l2_len;
-	size_t tcph_off = m_seg->l2_len + m_seg->l3_len;
-	size_t header_len = m_seg->l2_len + m_seg->l3_len + m_seg->l4_len;
+	size_t iph_off = ((m_seg->ol_flags & PKT_TX_TUNNEL_MASK) ?
+			  m_seg->outer_l2_len + m_seg->outer_l3_len : 0) +
+			 m_seg->l2_len;
+	size_t tcph_off = iph_off + m_seg->l3_len;
+	size_t header_len = tcph_off + m_seg->l4_len;
 	/* Offset of the payload in the last segment that contains the header */
 	size_t in_off = 0;
-	const struct tcp_hdr *th;
-	uint16_t packet_id;
+	const struct rte_tcp_hdr *th;
+	uint16_t packet_id = 0;
+	uint16_t outer_packet_id = 0;
 	uint32_t sent_seq;
 	uint8_t *hdr_addr;
 	rte_iova_t hdr_iova;
@@ -340,9 +385,6 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 	struct rte_mbuf *m_seg_to_free_up_to = first_m_seg;
 	bool eop;
 
-	if (unlikely(tcph_off > txq->tso_tcp_header_offset_limit))
-		return EMSGSIZE;
-
 	/*
 	 * Preliminary estimation of required DMA descriptors, including extra
 	 * descriptor for TSO header that is needed when the header is
@@ -351,8 +393,8 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 	 * several descriptors.
 	 */
 	needed_desc = m_seg->nb_segs +
-			(unsigned int)SFC_TSO_OPT_DESCS_NUM +
-			(unsigned int)SFC_TSO_HDR_DESCS_NUM;
+			(unsigned int)SFC_EF10_TSO_OPT_DESCS_NUM +
+			(unsigned int)SFC_EF10_TSO_HDR_DESCS_NUM;
 
 	if (needed_desc > *dma_desc_space &&
 	    !sfc_ef10_try_reap(txq, pkt_start, needed_desc,
@@ -369,8 +411,8 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		 * descriptors, header descriptor and at least 1
 		 * segment descriptor.
 		 */
-		if (*dma_desc_space < SFC_TSO_OPT_DESCS_NUM +
-				SFC_TSO_HDR_DESCS_NUM + 1)
+		if (*dma_desc_space < SFC_EF10_TSO_OPT_DESCS_NUM +
+				SFC_EF10_TSO_HDR_DESCS_NUM + 1)
 			return EMSGSIZE;
 	}
 
@@ -386,7 +428,7 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 			 * Associate header mbuf with header descriptor
 			 * which is located after TSO descriptors.
 			 */
-			txq->sw_ring[(pkt_start + SFC_TSO_OPT_DESCS_NUM) &
+			txq->sw_ring[(pkt_start + SFC_EF10_TSO_OPT_DESCS_NUM) &
 				     txq->ptr_mask].mbuf = m_seg;
 			m_seg = m_seg->next;
 			in_off = 0;
@@ -408,6 +450,8 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 		/*
 		 * Discard a packet if header linearization is needed but
 		 * the header is too big.
+		 * Duplicate Tx prepare check here to avoid spoil of
+		 * memory if Tx prepare is skipped.
 		 */
 		if (unlikely(header_len > SFC_TSOH_STD_LEN))
 			return EMSGSIZE;
@@ -433,29 +477,25 @@ sfc_ef10_xmit_tso_pkt(struct sfc_ef10_txq * const txq, struct rte_mbuf *m_seg,
 			needed_desc--;
 	}
 
-	switch (first_m_seg->ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) {
-	case PKT_TX_IPV4: {
-		const struct ipv4_hdr *iphe4;
+	/*
+	 * Tx prepare has debug-only checks that offload flags are correctly
+	 * filled in in TSO mbuf. Use zero IPID if there is no IPv4 flag.
+	 * If the packet is still IPv4, HW will simply start from zero IPID.
+	 */
+	if (first_m_seg->ol_flags & PKT_TX_IPV4)
+		packet_id = sfc_tso_ip4_get_ipid(hdr_addr, iph_off);
 
-		iphe4 = (const struct ipv4_hdr *)(hdr_addr + iph_off);
-		rte_memcpy(&packet_id, &iphe4->packet_id, sizeof(uint16_t));
-		packet_id = rte_be_to_cpu_16(packet_id);
-		break;
-	}
-	case PKT_TX_IPV6:
-		packet_id = 0;
-		break;
-	default:
-		return EINVAL;
-	}
+	if (first_m_seg->ol_flags & PKT_TX_OUTER_IPV4)
+		outer_packet_id = sfc_tso_ip4_get_ipid(hdr_addr,
+						first_m_seg->outer_l2_len);
 
-	th = (const struct tcp_hdr *)(hdr_addr + tcph_off);
+	th = (const struct rte_tcp_hdr *)(hdr_addr + tcph_off);
 	rte_memcpy(&sent_seq, &th->sent_seq, sizeof(uint32_t));
 	sent_seq = rte_be_to_cpu_32(sent_seq);
 
-	sfc_ef10_tx_qdesc_tso2_create(txq, *added, packet_id, 0, sent_seq,
-			first_m_seg->tso_segsz);
-	(*added) += SFC_TSO_OPT_DESCS_NUM;
+	sfc_ef10_tx_qdesc_tso2_create(txq, *added, packet_id, outer_packet_id,
+			sent_seq, first_m_seg->tso_segsz);
+	(*added) += SFC_EF10_TSO_OPT_DESCS_NUM;
 
 	sfc_ef10_tx_qdesc_dma_create(hdr_iova, header_len, false,
 			&txq->txq_hw_ring[(*added) & txq->ptr_mask]);
@@ -715,6 +755,62 @@ sfc_ef10_simple_tx_reap(struct sfc_ef10_txq *txq)
 			   txq->evq_read_ptr);
 }
 
+#ifdef RTE_LIBRTE_SFC_EFX_DEBUG
+static uint16_t
+sfc_ef10_simple_prepare_pkts(__rte_unused void *tx_queue,
+			     struct rte_mbuf **tx_pkts,
+			     uint16_t nb_pkts)
+{
+	uint16_t i;
+
+	for (i = 0; i < nb_pkts; i++) {
+		struct rte_mbuf *m = tx_pkts[i];
+		int ret;
+
+		ret = rte_validate_tx_offload(m);
+		if (unlikely(ret != 0)) {
+			/*
+			 * Negative error code is returned by
+			 * rte_validate_tx_offload(), but positive are used
+			 * inside net/sfc PMD.
+			 */
+			SFC_ASSERT(ret < 0);
+			rte_errno = -ret;
+			break;
+		}
+
+		/* ef10_simple does not support TSO and VLAN insertion */
+		if (unlikely(m->ol_flags &
+			     (PKT_TX_TCP_SEG | PKT_TX_VLAN_PKT))) {
+			rte_errno = ENOTSUP;
+			break;
+		}
+
+		/* ef10_simple does not support scattered packets */
+		if (unlikely(m->nb_segs != 1)) {
+			rte_errno = ENOTSUP;
+			break;
+		}
+
+		/*
+		 * ef10_simple requires fast-free which ignores reference
+		 * counters
+		 */
+		if (unlikely(rte_mbuf_refcnt_read(m) != 1)) {
+			rte_errno = ENOTSUP;
+			break;
+		}
+
+		/* ef10_simple requires single pool for all packets */
+		if (unlikely(m->pool != tx_pkts[0]->pool)) {
+			rte_errno = ENOTSUP;
+			break;
+		}
+	}
+
+	return i;
+}
+#endif
 
 static uint16_t
 sfc_ef10_simple_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
@@ -787,6 +883,7 @@ sfc_ef10_get_dev_info(struct rte_eth_dev_info *dev_info)
 static sfc_dp_tx_qsize_up_rings_t sfc_ef10_tx_qsize_up_rings;
 static int
 sfc_ef10_tx_qsize_up_rings(uint16_t nb_tx_desc,
+			   struct sfc_dp_tx_hw_limits *limits,
 			   unsigned int *txq_entries,
 			   unsigned int *evq_entries,
 			   unsigned int *txq_max_fill_level)
@@ -795,8 +892,8 @@ sfc_ef10_tx_qsize_up_rings(uint16_t nb_tx_desc,
 	 * rte_ethdev API guarantees that the number meets min, max and
 	 * alignment requirements.
 	 */
-	if (nb_tx_desc <= EFX_TXQ_MINNDESCS)
-		*txq_entries = EFX_TXQ_MINNDESCS;
+	if (nb_tx_desc <= limits->txq_min_entries)
+		*txq_entries = limits->txq_min_entries;
 	else
 		*txq_entries = rte_align32pow2(nb_tx_desc);
 
@@ -837,7 +934,9 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 	if (txq->sw_ring == NULL)
 		goto fail_sw_ring_alloc;
 
-	if (info->offloads & DEV_TX_OFFLOAD_TCP_TSO) {
+	if (info->offloads & (DEV_TX_OFFLOAD_TCP_TSO |
+			      DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+			      DEV_TX_OFFLOAD_GENEVE_TNL_TSO)) {
 		txq->tsoh = rte_calloc_socket("sfc-ef10-txq-tsoh",
 					      info->txq_entries,
 					      SFC_TSOH_STD_LEN,
@@ -999,11 +1098,15 @@ struct sfc_dp_tx sfc_ef10_tx = {
 		.type		= SFC_DP_TX,
 		.hw_fw_caps	= SFC_DP_HW_FW_CAP_EF10,
 	},
-	.features		= SFC_DP_TX_FEAT_TSO |
-				  SFC_DP_TX_FEAT_MULTI_SEG |
-				  SFC_DP_TX_FEAT_MULTI_POOL |
-				  SFC_DP_TX_FEAT_REFCNT |
-				  SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.dev_offload_capa	= DEV_TX_OFFLOAD_MULTI_SEGS,
+	.queue_offload_capa	= DEV_TX_OFFLOAD_IPV4_CKSUM |
+				  DEV_TX_OFFLOAD_UDP_CKSUM |
+				  DEV_TX_OFFLOAD_TCP_CKSUM |
+				  DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+				  DEV_TX_OFFLOAD_TCP_TSO |
+				  DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
+				  DEV_TX_OFFLOAD_GENEVE_TNL_TSO,
 	.get_dev_info		= sfc_ef10_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,
@@ -1013,6 +1116,7 @@ struct sfc_dp_tx sfc_ef10_tx = {
 	.qstop			= sfc_ef10_tx_qstop,
 	.qreap			= sfc_ef10_tx_qreap,
 	.qdesc_status		= sfc_ef10_tx_qdesc_status,
+	.pkt_prepare		= sfc_ef10_prepare_pkts,
 	.pkt_burst		= sfc_ef10_xmit_pkts,
 };
 
@@ -1022,6 +1126,11 @@ struct sfc_dp_tx sfc_ef10_simple_tx = {
 		.type		= SFC_DP_TX,
 	},
 	.features		= SFC_DP_TX_FEAT_MULTI_PROCESS,
+	.dev_offload_capa	= DEV_TX_OFFLOAD_MBUF_FAST_FREE,
+	.queue_offload_capa	= DEV_TX_OFFLOAD_IPV4_CKSUM |
+				  DEV_TX_OFFLOAD_UDP_CKSUM |
+				  DEV_TX_OFFLOAD_TCP_CKSUM |
+				  DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM,
 	.get_dev_info		= sfc_ef10_get_dev_info,
 	.qsize_up_rings		= sfc_ef10_tx_qsize_up_rings,
 	.qcreate		= sfc_ef10_tx_qcreate,
@@ -1031,5 +1140,8 @@ struct sfc_dp_tx sfc_ef10_simple_tx = {
 	.qstop			= sfc_ef10_tx_qstop,
 	.qreap			= sfc_ef10_tx_qreap,
 	.qdesc_status		= sfc_ef10_tx_qdesc_status,
+#ifdef RTE_LIBRTE_SFC_EFX_DEBUG
+	.pkt_prepare		= sfc_ef10_simple_prepare_pkts,
+#endif
 	.pkt_burst		= sfc_ef10_simple_xmit_pkts,
 };

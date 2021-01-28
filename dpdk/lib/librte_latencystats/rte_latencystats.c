@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <math.h>
 
+#include <rte_string_fns.h>
 #include <rte_mbuf.h>
 #include <rte_log.h>
 #include <rte_cycles.h>
@@ -41,6 +42,7 @@ struct rte_latency_stats {
 	float avg_latency; /**< Average latency in nano seconds */
 	float max_latency; /**< Maximum latency in nano seconds */
 	float jitter; /** Latency variation */
+	rte_spinlock_t lock; /** Latency calculation lock */
 };
 
 static struct rte_latency_stats *glob_stats;
@@ -163,6 +165,7 @@ calc_latency(uint16_t pid __rte_unused,
 			latency[cnt++] = now - pkts[i]->timestamp;
 	}
 
+	rte_spinlock_lock(&glob_stats->lock);
 	for (i = 0; i < cnt; i++) {
 		/*
 		 * The jitter is calculated as statistical mean of interpacket
@@ -192,6 +195,7 @@ calc_latency(uint16_t pid __rte_unused,
 			alpha * (latency[i] - glob_stats->avg_latency);
 		prev_latency = latency[i];
 	}
+	rte_spinlock_unlock(&glob_stats->lock);
 
 	return nb_pkts;
 }
@@ -207,6 +211,7 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	const char *ptr_strings[NUM_LATENCY_STATS] = {0};
 	const struct rte_memzone *mz = NULL;
 	const unsigned int flags = 0;
+	int ret;
 
 	if (rte_memzone_lookup(MZ_RTE_LATENCY_STATS))
 		return -EEXIST;
@@ -221,6 +226,7 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	}
 
 	glob_stats = mz->addr;
+	rte_spinlock_init(&glob_stats->lock);
 	samp_intvl = app_samp_intvl * latencystat_cycles_per_ns();
 
 	/** Register latency stats with stats library */
@@ -238,7 +244,16 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	/** Register Rx/Tx callbacks */
 	RTE_ETH_FOREACH_DEV(pid) {
 		struct rte_eth_dev_info dev_info;
-		rte_eth_dev_info_get(pid, &dev_info);
+
+		ret = rte_eth_dev_info_get(pid, &dev_info);
+		if (ret != 0) {
+			RTE_LOG(INFO, LATENCY_STATS,
+				"Error during getting device (port %u) info: %s\n",
+				pid, strerror(-ret));
+
+			continue;
+		}
+
 		for (qid = 0; qid < dev_info.nb_rx_queues; qid++) {
 			cbs = &rx_cbs[pid][qid];
 			cbs->cb = rte_eth_add_first_rx_callback(pid, qid,
@@ -273,7 +288,16 @@ rte_latencystats_uninit(void)
 	/** De register Rx/Tx callbacks */
 	RTE_ETH_FOREACH_DEV(pid) {
 		struct rte_eth_dev_info dev_info;
-		rte_eth_dev_info_get(pid, &dev_info);
+
+		ret = rte_eth_dev_info_get(pid, &dev_info);
+		if (ret != 0) {
+			RTE_LOG(INFO, LATENCY_STATS,
+				"Error during getting device (port %u) info: %s\n",
+				pid, strerror(-ret));
+
+			continue;
+		}
+
 		for (qid = 0; qid < dev_info.nb_rx_queues; qid++) {
 			cbs = &rx_cbs[pid][qid];
 			ret = rte_eth_remove_rx_callback(pid, qid, cbs->cb);
@@ -309,8 +333,8 @@ rte_latencystats_get_names(struct rte_metric_name *names, uint16_t size)
 		return NUM_LATENCY_STATS;
 
 	for (i = 0; i < NUM_LATENCY_STATS; i++)
-		snprintf(names[i].name, sizeof(names[i].name),
-				"%s", lat_stats_strings[i].name);
+		strlcpy(names[i].name, lat_stats_strings[i].name,
+			sizeof(names[i].name));
 
 	return NUM_LATENCY_STATS;
 }

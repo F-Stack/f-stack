@@ -4,8 +4,7 @@
 Event Timer Adapter Library
 ===========================
 
-The DPDK
-`Event Device library <http://doc.dpdk.org/guides/prog_guide/eventdev.html>`_
+The DPDK :doc:`Event Device library <eventdev>`
 introduces an event driven programming model which presents applications with
 an alternative to the polling model traditionally used in DPDK
 applications. Event devices can be coupled with arbitrary components to provide
@@ -21,7 +20,7 @@ The Event Timer Adapter library is designed to interface with hardware or
 software implementations of the timer mechanism; it will query an eventdev PMD
 to determine which implementation should be used.  The default software
 implementation manages timers using the DPDK
-`Timer library <http://doc.dpdk.org/guides/prog_guide/timer_lib.html>`_.
+:doc:`Timer library <timer_lib>`.
 
 Examples of using the API are presented in the `API Overview`_ and
 `Processing Timer Expiry Events`_ sections.  Code samples are abstracted and
@@ -178,6 +177,11 @@ The application should call ``rte_event_timer_adapter_start()`` to start
 running the event timer adapter. This function calls the start entry points
 defined by eventdev PMDs for hardware implementations or puts a service
 component into the running state in the software implementation.
+
+.. Note::
+
+         The eventdev to which the event_timer_adapter is connected needs to
+         be started before calling rte_event_timer_adapter_start().
 
 Arming Event Timers
 ~~~~~~~~~~~~~~~~~~~

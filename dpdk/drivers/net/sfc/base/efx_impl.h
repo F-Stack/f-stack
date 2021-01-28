@@ -10,6 +10,9 @@
 #include "efx.h"
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
+#if EFSYS_OPT_MCDI
+#include "efx_mcdi.h"
+#endif	/* EFSYS_OPT_MCDI */
 
 /* FIXME: Add definition for driver generated software events */
 #ifndef	ESE_DZ_EV_CODE_DRV_GEN_EV
@@ -33,9 +36,9 @@
 #include "medford2_impl.h"
 #endif	/* EFSYS_OPT_MEDFORD2 */
 
-#if (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2)
+#if EFX_OPTS_EF10()
 #include "ef10_impl.h"
-#endif	/* (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2) */
+#endif	/* EFX_OPTS_EF10() */
 
 #ifdef	__cplusplus
 extern "C" {
@@ -55,6 +58,8 @@ extern "C" {
 #define	EFX_MOD_FILTER		0x00001000
 #define	EFX_MOD_LIC		0x00002000
 #define	EFX_MOD_TUNNEL		0x00004000
+#define	EFX_MOD_EVB		0x00008000
+#define	EFX_MOD_PROXY		0x00010000
 
 #define	EFX_RESET_PHY		0x00000001
 #define	EFX_RESET_RXQ_ERR	0x00000002
@@ -131,8 +136,9 @@ typedef struct efx_tx_ops_s {
 } efx_tx_ops_t;
 
 typedef union efx_rxq_type_data_u {
-	/* Dummy member to have non-empty union if no options are enabled */
-	uint32_t	ertd_dummy;
+	struct {
+		size_t		ed_buf_size;
+	} ertd_default;
 #if EFSYS_OPT_RX_PACKED_STREAM
 	struct {
 		uint32_t	eps_buf_size;
@@ -430,9 +436,9 @@ typedef struct efx_filter_s {
 #if EFSYS_OPT_SIENA
 	siena_filter_t		*ef_siena_filter;
 #endif /* EFSYS_OPT_SIENA */
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 	ef10_filter_table_t	*ef_ef10_filter_table;
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 } efx_filter_t;
 
 #if EFSYS_OPT_SIENA
@@ -497,7 +503,8 @@ typedef struct efx_nvram_ops_s {
 #endif	/* EFSYS_OPT_DIAG */
 	efx_rc_t	(*envo_type_to_partn)(efx_nic_t *, efx_nvram_type_t,
 					    uint32_t *);
-	efx_rc_t	(*envo_partn_size)(efx_nic_t *, uint32_t, size_t *);
+	efx_rc_t	(*envo_partn_info)(efx_nic_t *, uint32_t,
+					    efx_nvram_info_t *);
 	efx_rc_t	(*envo_partn_rw_start)(efx_nic_t *, uint32_t, size_t *);
 	efx_rc_t	(*envo_partn_read)(efx_nic_t *, uint32_t,
 					    unsigned int, caddr_t, size_t);
@@ -558,10 +565,7 @@ efx_mcdi_nvram_metadata(
 efx_mcdi_nvram_info(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
-	__out_opt		size_t *sizep,
-	__out_opt		uint32_t *addressp,
-	__out_opt		uint32_t *erase_sizep,
-	__out_opt		uint32_t *write_sizep);
+	__out			efx_nvram_info_t *eni);
 
 	__checkReturn		efx_rc_t
 efx_mcdi_nvram_update_start(
@@ -592,11 +596,15 @@ efx_mcdi_nvram_write(
 	__in_bcount(size)	caddr_t data,
 	__in			size_t size);
 
+#define	EFX_NVRAM_UPDATE_FLAGS_BACKGROUND	0x00000001
+#define	EFX_NVRAM_UPDATE_FLAGS_POLL		0x00000002
+
 	__checkReturn		efx_rc_t
 efx_mcdi_nvram_update_finish(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in			boolean_t reboot,
+	__in			uint32_t flags,
 	__out_opt		uint32_t *verify_resultp);
 
 #if EFSYS_OPT_DIAG
@@ -643,6 +651,80 @@ typedef struct efx_lic_ops_s {
 
 #endif
 
+#if EFSYS_OPT_EVB
+
+struct efx_vswitch_s {
+	efx_nic_t		*ev_enp;
+	efx_vswitch_id_t	ev_vswitch_id;
+	uint32_t		ev_num_vports;
+	/*
+	 * Vport configuration array: index 0 to store PF configuration
+	 * and next ev_num_vports-1 entries hold VFs configuration.
+	 */
+	efx_vport_config_t	*ev_evcp;
+};
+
+typedef struct efx_evb_ops_s {
+	efx_rc_t	(*eeo_init)(efx_nic_t *);
+	void		(*eeo_fini)(efx_nic_t *);
+	efx_rc_t	(*eeo_vswitch_alloc)(efx_nic_t *, efx_vswitch_id_t *);
+	efx_rc_t	(*eeo_vswitch_free)(efx_nic_t *, efx_vswitch_id_t);
+	efx_rc_t	(*eeo_vport_alloc)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_type_t, uint16_t,
+						boolean_t, efx_vport_id_t *);
+	efx_rc_t	(*eeo_vport_free)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t);
+	efx_rc_t	(*eeo_vport_mac_addr_add)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, uint8_t *);
+	efx_rc_t	(*eeo_vport_mac_addr_del)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, uint8_t *);
+	efx_rc_t	(*eeo_vadaptor_alloc)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t);
+	efx_rc_t	(*eeo_vadaptor_free)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t);
+	efx_rc_t	(*eeo_vport_assign)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, uint32_t);
+	efx_rc_t	(*eeo_vport_reconfigure)(efx_nic_t *, efx_vswitch_id_t,
+							efx_vport_id_t,
+							uint16_t *, uint8_t *,
+							boolean_t *);
+	efx_rc_t	(*eeo_vport_stats)(efx_nic_t *, efx_vswitch_id_t,
+						efx_vport_id_t, efsys_mem_t *);
+} efx_evb_ops_t;
+
+extern __checkReturn	boolean_t
+efx_is_zero_eth_addr(
+	__in_bcount(EFX_MAC_ADDR_LEN)	const uint8_t *addrp);
+
+#endif /* EFSYS_OPT_EVB */
+
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+
+#define	EFX_PROXY_CONFIGURE_MAGIC	0xAB2015EF
+
+
+typedef struct efx_proxy_ops_s {
+	efx_rc_t	(*epo_init)(efx_nic_t *);
+	void		(*epo_fini)(efx_nic_t *);
+	efx_rc_t	(*epo_mc_config)(efx_nic_t *, efsys_mem_t *,
+					efsys_mem_t *, efsys_mem_t *,
+					uint32_t, uint32_t *, size_t);
+	efx_rc_t	(*epo_disable)(efx_nic_t *);
+	efx_rc_t	(*epo_privilege_modify)(efx_nic_t *, uint32_t, uint32_t,
+					uint32_t, uint32_t, uint32_t);
+	efx_rc_t	(*epo_set_privilege_mask)(efx_nic_t *, uint32_t,
+					uint32_t, uint32_t);
+	efx_rc_t	(*epo_complete_request)(efx_nic_t *, uint32_t,
+					uint32_t, uint32_t);
+	efx_rc_t	(*epo_exec_cmd)(efx_nic_t *, efx_proxy_cmd_params_t *);
+	efx_rc_t	(*epo_get_privilege_mask)(efx_nic_t *, uint32_t,
+					uint32_t, uint32_t *);
+} efx_proxy_ops_t;
+
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
+
+#define	EFX_DRV_VER_MAX		20
+
 typedef struct efx_drv_cfg_s {
 	uint32_t		edc_min_vi_count;
 	uint32_t		edc_max_vi_count;
@@ -673,6 +755,7 @@ struct efx_nic_s {
 	const efx_tx_ops_t	*en_etxop;
 	const efx_rx_ops_t	*en_erxop;
 	efx_fw_variant_t	efv;
+	char			en_drv_version[EFX_DRV_VER_MAX];
 #if EFSYS_OPT_FILTER
 	efx_filter_t		en_filter;
 	const efx_filter_ops_t	*en_efop;
@@ -716,7 +799,7 @@ struct efx_nic_s {
 #endif	/* EFSYS_OPT_SIENA */
 		int	enu_unused;
 	} en_u;
-#if (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2)
+#if EFX_OPTS_EF10()
 	union en_arch {
 		struct {
 			int			ena_vi_base;
@@ -737,8 +820,20 @@ struct efx_nic_s {
 			size_t			ena_wc_mem_map_size;
 		} ef10;
 	} en_arch;
-#endif	/* (EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2) */
+#endif	/* EFX_OPTS_EF10() */
+#if EFSYS_OPT_EVB
+	const efx_evb_ops_t	*en_eeop;
+	struct efx_vswitch_s    *en_vswitchp;
+#endif	/* EFSYS_OPT_EVB */
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	const efx_proxy_ops_t	*en_epop;
+#endif	/* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 };
+
+#define	EFX_FAMILY_IS_EF10(_enp) \
+	((_enp)->en_family == EFX_FAMILY_MEDFORD2 || \
+	 (_enp)->en_family == EFX_FAMILY_MEDFORD || \
+	 (_enp)->en_family == EFX_FAMILY_HUNTINGTON)
 
 
 #define	EFX_NIC_MAGIC	0x02121996
@@ -760,6 +855,7 @@ typedef struct efx_evq_rxq_state_s {
 
 struct efx_evq_s {
 	uint32_t			ee_magic;
+	uint32_t			ee_flags;
 	efx_nic_t			*ee_enp;
 	unsigned int			ee_index;
 	unsigned int			ee_mask;
@@ -778,13 +874,21 @@ struct efx_evq_s {
 #endif	/* EFSYS_OPT_MCDI */
 
 	efx_evq_rxq_state_t		ee_rxq_state[EFX_EV_RX_NLABELS];
-
-	uint32_t			ee_flags;
 };
 
 #define	EFX_EVQ_MAGIC	0x08081997
 
 #define	EFX_EVQ_SIENA_TIMER_QUANTUM_NS	6144 /* 768 cycles */
+
+#if EFSYS_OPT_QSTATS
+#define	EFX_EV_QSTAT_INCR(_eep, _stat)					\
+	do {								\
+		(_eep)->ee_stat[_stat]++;				\
+	_NOTE(CONSTANTCONDITION)					\
+	} while (B_FALSE)
+#else
+#define	EFX_EV_QSTAT_INCR(_eep, _stat)
+#endif
 
 struct efx_rxq_s {
 	uint32_t			er_magic;
@@ -793,6 +897,7 @@ struct efx_rxq_s {
 	unsigned int			er_index;
 	unsigned int			er_label;
 	unsigned int			er_mask;
+	size_t				er_buf_size;
 	efsys_mem_t			*er_esmp;
 	efx_evq_rxq_state_t		*er_ev_qstate;
 };
@@ -1257,12 +1362,28 @@ struct efx_mac_stats_range {
 	efx_mac_stat_t		last;
 };
 
+typedef enum efx_stats_action_e {
+	EFX_STATS_CLEAR,
+	EFX_STATS_UPLOAD,
+	EFX_STATS_ENABLE_NOEVENTS,
+	EFX_STATS_ENABLE_EVENTS,
+	EFX_STATS_DISABLE,
+} efx_stats_action_t;
+
 extern					efx_rc_t
 efx_mac_stats_mask_add_ranges(
 	__inout_bcount(mask_size)	uint32_t *maskp,
 	__in				size_t mask_size,
 	__in_ecount(rng_count)		const struct efx_mac_stats_range *rngp,
 	__in				unsigned int rng_count);
+
+extern	__checkReturn	efx_rc_t
+efx_mcdi_mac_stats(
+	__in		efx_nic_t *enp,
+	__in		uint32_t vport_id,
+	__in_opt	efsys_mem_t *esmp,
+	__in		efx_stats_action_t action,
+	__in		uint16_t period_ms);
 
 #endif	/* EFSYS_OPT_MAC_STATS */
 

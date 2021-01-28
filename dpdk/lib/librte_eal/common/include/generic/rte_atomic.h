@@ -25,7 +25,6 @@
  *
  * Guarantees that the LOAD and STORE operations generated before the
  * barrier occur before the LOAD and STORE operations generated after.
- * This function is architecture dependent.
  */
 static inline void rte_mb(void);
 
@@ -34,7 +33,6 @@ static inline void rte_mb(void);
  *
  * Guarantees that the STORE operations generated before the barrier
  * occur before the STORE operations generated after.
- * This function is architecture dependent.
  */
 static inline void rte_wmb(void);
 
@@ -43,7 +41,6 @@ static inline void rte_wmb(void);
  *
  * Guarantees that the LOAD operations generated before the barrier
  * occur before the LOAD operations generated after.
- * This function is architecture dependent.
  */
 static inline void rte_rmb(void);
 ///@}
@@ -1081,5 +1078,73 @@ static inline void rte_atomic64_clear(rte_atomic64_t *v)
 	rte_atomic64_set(v, 0);
 }
 #endif
+
+/*------------------------ 128 bit atomic operations -------------------------*/
+
+/**
+ * 128-bit integer structure.
+ */
+RTE_STD_C11
+typedef struct {
+	RTE_STD_C11
+	union {
+		uint64_t val[2];
+#ifdef RTE_ARCH_64
+		__extension__ __int128 int128;
+#endif
+	};
+} __rte_aligned(16) rte_int128_t;
+
+#ifdef __DOXYGEN__
+
+/**
+ * An atomic compare and set function used by the mutex functions.
+ * (Atomically) Equivalent to:
+ * @code
+ *   if (*dst == *exp)
+ *     *dst = *src
+ *   else
+ *     *exp = *dst
+ * @endcode
+ *
+ * @note This function is currently available for the x86-64 and aarch64
+ * platforms.
+ *
+ * @note The success and failure arguments must be one of the __ATOMIC_* values
+ * defined in the C++11 standard. For details on their behavior, refer to the
+ * standard.
+ *
+ * @param dst
+ *   The destination into which the value will be written.
+ * @param exp
+ *   Pointer to the expected value. If the operation fails, this memory is
+ *   updated with the actual value.
+ * @param src
+ *   Pointer to the new value.
+ * @param weak
+ *   A value of true allows the comparison to spuriously fail and allows the
+ *   'exp' update to occur non-atomically (i.e. a torn read may occur).
+ *   Implementations may ignore this argument and only implement the strong
+ *   variant.
+ * @param success
+ *   If successful, the operation's memory behavior conforms to this (or a
+ *   stronger) model.
+ * @param failure
+ *   If unsuccessful, the operation's memory behavior conforms to this (or a
+ *   stronger) model. This argument cannot be __ATOMIC_RELEASE,
+ *   __ATOMIC_ACQ_REL, or a stronger model than success.
+ * @return
+ *   Non-zero on success; 0 on failure.
+ */
+__rte_experimental
+static inline int
+rte_atomic128_cmp_exchange(rte_int128_t *dst,
+			   rte_int128_t *exp,
+			   const rte_int128_t *src,
+			   unsigned int weak,
+			   int success,
+			   int failure);
+
+#endif /* __DOXYGEN__ */
 
 #endif /* _RTE_ATOMIC_H_ */

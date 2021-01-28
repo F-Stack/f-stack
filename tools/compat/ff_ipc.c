@@ -80,6 +80,13 @@ ff_ipc_init(void)
     return 0;
 }
 
+void
+ff_ipc_exit(void)
+{
+	rte_eal_cleanup();
+	return;
+}
+
 struct ff_msg *
 ff_ipc_msg_alloc(void)
 {
@@ -105,6 +112,13 @@ ff_ipc_msg_free(struct ff_msg *msg)
     if (inited == 0) {
         printf("ff ipc not inited\n");
         return -1;
+    }
+
+    if (msg->original_buf) {
+        rte_free(msg->buf_addr);
+        msg->buf_addr = msg->original_buf;
+        msg->buf_len = msg->original_buf_len;
+        msg->original_buf = NULL;
     }
 
     rte_mempool_put(message_pool, msg);

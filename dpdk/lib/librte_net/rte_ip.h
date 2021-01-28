@@ -30,70 +30,78 @@ extern "C" {
 /**
  * IPv4 Header
  */
-struct ipv4_hdr {
+struct rte_ipv4_hdr {
 	uint8_t  version_ihl;		/**< version and header length */
 	uint8_t  type_of_service;	/**< type of service */
-	uint16_t total_length;		/**< length of packet */
-	uint16_t packet_id;		/**< packet ID */
-	uint16_t fragment_offset;	/**< fragmentation offset */
+	rte_be16_t total_length;	/**< length of packet */
+	rte_be16_t packet_id;		/**< packet ID */
+	rte_be16_t fragment_offset;	/**< fragmentation offset */
 	uint8_t  time_to_live;		/**< time to live */
 	uint8_t  next_proto_id;		/**< protocol ID */
-	uint16_t hdr_checksum;		/**< header checksum */
-	uint32_t src_addr;		/**< source address */
-	uint32_t dst_addr;		/**< destination address */
+	rte_be16_t hdr_checksum;	/**< header checksum */
+	rte_be32_t src_addr;		/**< source address */
+	rte_be32_t dst_addr;		/**< destination address */
 } __attribute__((__packed__));
 
 /** Create IPv4 address */
-#define IPv4(a,b,c,d) ((uint32_t)(((a) & 0xff) << 24) | \
+#define RTE_IPV4(a, b, c, d) ((uint32_t)(((a) & 0xff) << 24) | \
 					   (((b) & 0xff) << 16) | \
 					   (((c) & 0xff) << 8)  | \
 					   ((d) & 0xff))
 
 /** Maximal IPv4 packet length (including a header) */
-#define IPV4_MAX_PKT_LEN        65535
+#define RTE_IPV4_MAX_PKT_LEN        65535
 
 /** Internet header length mask for version_ihl field */
-#define IPV4_HDR_IHL_MASK	(0x0f)
+#define RTE_IPV4_HDR_IHL_MASK	(0x0f)
 /**
  * Internet header length field multiplier (IHL field specifies overall header
  * length in number of 4-byte words)
  */
-#define IPV4_IHL_MULTIPLIER	(4)
+#define RTE_IPV4_IHL_MULTIPLIER	(4)
+
+/* Type of Service fields */
+#define RTE_IPV4_HDR_DSCP_MASK	(0xfc)
+#define RTE_IPV4_HDR_ECN_MASK	(0x03)
+#define RTE_IPV4_HDR_ECN_CE	RTE_IPV4_HDR_ECN_MASK
 
 /* Fragment Offset * Flags. */
-#define	IPV4_HDR_DF_SHIFT	14
-#define	IPV4_HDR_MF_SHIFT	13
-#define	IPV4_HDR_FO_SHIFT	3
+#define	RTE_IPV4_HDR_DF_SHIFT	14
+#define	RTE_IPV4_HDR_MF_SHIFT	13
+#define	RTE_IPV4_HDR_FO_SHIFT	3
 
-#define	IPV4_HDR_DF_FLAG	(1 << IPV4_HDR_DF_SHIFT)
-#define	IPV4_HDR_MF_FLAG	(1 << IPV4_HDR_MF_SHIFT)
+#define	RTE_IPV4_HDR_DF_FLAG	(1 << RTE_IPV4_HDR_DF_SHIFT)
+#define	RTE_IPV4_HDR_MF_FLAG	(1 << RTE_IPV4_HDR_MF_SHIFT)
 
-#define	IPV4_HDR_OFFSET_MASK	((1 << IPV4_HDR_MF_SHIFT) - 1)
+#define	RTE_IPV4_HDR_OFFSET_MASK	((1 << RTE_IPV4_HDR_MF_SHIFT) - 1)
 
-#define	IPV4_HDR_OFFSET_UNITS	8
+#define	RTE_IPV4_HDR_OFFSET_UNITS	8
 
 /*
  * IPv4 address types
  */
-#define IPV4_ANY              ((uint32_t)0x00000000) /**< 0.0.0.0 */
-#define IPV4_LOOPBACK         ((uint32_t)0x7f000001) /**< 127.0.0.1 */
-#define IPV4_BROADCAST        ((uint32_t)0xe0000000) /**< 224.0.0.0 */
-#define IPV4_ALLHOSTS_GROUP   ((uint32_t)0xe0000001) /**< 224.0.0.1 */
-#define IPV4_ALLRTRS_GROUP    ((uint32_t)0xe0000002) /**< 224.0.0.2 */
-#define IPV4_MAX_LOCAL_GROUP  ((uint32_t)0xe00000ff) /**< 224.0.0.255 */
+#define RTE_IPV4_ANY              ((uint32_t)0x00000000) /**< 0.0.0.0 */
+#define RTE_IPV4_LOOPBACK         ((uint32_t)0x7f000001) /**< 127.0.0.1 */
+#define RTE_IPV4_BROADCAST        ((uint32_t)0xe0000000) /**< 224.0.0.0 */
+#define RTE_IPV4_ALLHOSTS_GROUP   ((uint32_t)0xe0000001) /**< 224.0.0.1 */
+#define RTE_IPV4_ALLRTRS_GROUP    ((uint32_t)0xe0000002) /**< 224.0.0.2 */
+#define RTE_IPV4_MAX_LOCAL_GROUP  ((uint32_t)0xe00000ff) /**< 224.0.0.255 */
 
 /*
  * IPv4 Multicast-related macros
  */
-#define IPV4_MIN_MCAST  IPv4(224, 0, 0, 0)          /**< Minimal IPv4-multicast address */
-#define IPV4_MAX_MCAST  IPv4(239, 255, 255, 255)    /**< Maximum IPv4 multicast address */
+#define RTE_IPV4_MIN_MCAST \
+	RTE_IPV4(224, 0, 0, 0)          /**< Minimal IPv4-multicast address */
+#define RTE_IPV4_MAX_MCAST \
+	RTE_IPV4(239, 255, 255, 255)    /**< Maximum IPv4 multicast address */
 
-#define IS_IPV4_MCAST(x) \
-	((x) >= IPV4_MIN_MCAST && (x) <= IPV4_MAX_MCAST) /**< check if IPv4 address is multicast */
+#define RTE_IS_IPV4_MCAST(x) \
+	((x) >= RTE_IPV4_MIN_MCAST && (x) <= RTE_IPV4_MAX_MCAST)
+	/**< check if IPv4 address is multicast */
 
 /* IPv4 default fields values */
-#define IPV4_MIN_IHL    (0x5)
-#define IPV4_VHL_DEF    (IPVERSION | IPV4_MIN_IHL)
+#define RTE_IPV4_MIN_IHL    (0x5)
+#define RTE_IPV4_VHL_DEF    ((IPVERSION << 4) | RTE_IPV4_MIN_IHL)
 
 /**
  * @internal Calculate a sum of all words in the buffer.
@@ -255,10 +263,10 @@ rte_raw_cksum_mbuf(const struct rte_mbuf *m, uint32_t off, uint32_t len,
  *   The complemented checksum to set in the IP packet.
  */
 static inline uint16_t
-rte_ipv4_cksum(const struct ipv4_hdr *ipv4_hdr)
+rte_ipv4_cksum(const struct rte_ipv4_hdr *ipv4_hdr)
 {
 	uint16_t cksum;
-	cksum = rte_raw_cksum(ipv4_hdr, sizeof(struct ipv4_hdr));
+	cksum = rte_raw_cksum(ipv4_hdr, sizeof(struct rte_ipv4_hdr));
 	return (cksum == 0xffff) ? cksum : (uint16_t)~cksum;
 }
 
@@ -281,7 +289,7 @@ rte_ipv4_cksum(const struct ipv4_hdr *ipv4_hdr)
  *   The non-complemented checksum to set in the L4 header.
  */
 static inline uint16_t
-rte_ipv4_phdr_cksum(const struct ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
+rte_ipv4_phdr_cksum(const struct rte_ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
 {
 	struct ipv4_psd_header {
 		uint32_t src_addr; /* IP address of source host. */
@@ -300,7 +308,7 @@ rte_ipv4_phdr_cksum(const struct ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
 	} else {
 		psd_hdr.len = rte_cpu_to_be_16(
 			(uint16_t)(rte_be_to_cpu_16(ipv4_hdr->total_length)
-				- sizeof(struct ipv4_hdr)));
+				- sizeof(struct rte_ipv4_hdr)));
 	}
 	return rte_raw_cksum(&psd_hdr, sizeof(psd_hdr));
 }
@@ -320,16 +328,16 @@ rte_ipv4_phdr_cksum(const struct ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
  *   or 0 on error
  */
 static inline uint16_t
-rte_ipv4_udptcp_cksum(const struct ipv4_hdr *ipv4_hdr, const void *l4_hdr)
+rte_ipv4_udptcp_cksum(const struct rte_ipv4_hdr *ipv4_hdr, const void *l4_hdr)
 {
 	uint32_t cksum;
 	uint32_t l3_len, l4_len;
 
 	l3_len = rte_be_to_cpu_16(ipv4_hdr->total_length);
-	if (l3_len < sizeof(struct ipv4_hdr))
+	if (l3_len < sizeof(struct rte_ipv4_hdr))
 		return 0;
 
-	l4_len = l3_len - sizeof(struct ipv4_hdr);
+	l4_len = l3_len - sizeof(struct rte_ipv4_hdr);
 
 	cksum = rte_raw_cksum(l4_hdr, l4_len);
 	cksum += rte_ipv4_phdr_cksum(ipv4_hdr, 0);
@@ -345,20 +353,23 @@ rte_ipv4_udptcp_cksum(const struct ipv4_hdr *ipv4_hdr, const void *l4_hdr)
 /**
  * IPv6 Header
  */
-struct ipv6_hdr {
-	uint32_t vtc_flow;     /**< IP version, traffic class & flow label. */
-	uint16_t payload_len;  /**< IP packet length - includes sizeof(ip_header). */
-	uint8_t  proto;        /**< Protocol, next header. */
-	uint8_t  hop_limits;   /**< Hop limits. */
-	uint8_t  src_addr[16]; /**< IP address of source host. */
-	uint8_t  dst_addr[16]; /**< IP address of destination host(s). */
+struct rte_ipv6_hdr {
+	rte_be32_t vtc_flow;	/**< IP version, traffic class & flow label. */
+	rte_be16_t payload_len;	/**< IP packet length - includes header size */
+	uint8_t  proto;		/**< Protocol, next header. */
+	uint8_t  hop_limits;	/**< Hop limits. */
+	uint8_t  src_addr[16];	/**< IP address of source host. */
+	uint8_t  dst_addr[16];	/**< IP address of destination host(s). */
 } __attribute__((__packed__));
 
 /* IPv6 vtc_flow: IPv / TC / flow_label */
-#define IPV6_HDR_FL_SHIFT 0
-#define IPV6_HDR_TC_SHIFT 20
-#define IPV6_HDR_FL_MASK ((1u << IPV6_HDR_TC_SHIFT) - 1)
-#define IPV6_HDR_TC_MASK (0xff << IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_FL_SHIFT 0
+#define RTE_IPV6_HDR_TC_SHIFT 20
+#define RTE_IPV6_HDR_FL_MASK	((1u << RTE_IPV6_HDR_TC_SHIFT) - 1)
+#define RTE_IPV6_HDR_TC_MASK	(0xff << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_DSCP_MASK	(0xfc << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_ECN_MASK	(0x03 << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_ECN_CE	RTE_IPV6_HDR_ECN_MASK
 
 /**
  * Process the pseudo-header checksum of an IPv6 header.
@@ -377,12 +388,12 @@ struct ipv6_hdr {
  *   The non-complemented checksum to set in the L4 header.
  */
 static inline uint16_t
-rte_ipv6_phdr_cksum(const struct ipv6_hdr *ipv6_hdr, uint64_t ol_flags)
+rte_ipv6_phdr_cksum(const struct rte_ipv6_hdr *ipv6_hdr, uint64_t ol_flags)
 {
 	uint32_t sum;
 	struct {
-		uint32_t len;   /* L4 length. */
-		uint32_t proto; /* L4 protocol - top 3 bytes must be zero */
+		rte_be32_t len;   /* L4 length. */
+		rte_be32_t proto; /* L4 protocol - top 3 bytes must be zero */
 	} psd_hdr;
 
 	psd_hdr.proto = (uint32_t)(ipv6_hdr->proto << 24);
@@ -413,7 +424,7 @@ rte_ipv6_phdr_cksum(const struct ipv6_hdr *ipv6_hdr, uint64_t ol_flags)
  *   The complemented checksum to set in the IP packet.
  */
 static inline uint16_t
-rte_ipv6_udptcp_cksum(const struct ipv6_hdr *ipv6_hdr, const void *l4_hdr)
+rte_ipv6_udptcp_cksum(const struct rte_ipv6_hdr *ipv6_hdr, const void *l4_hdr)
 {
 	uint32_t cksum;
 	uint32_t l4_len;
@@ -429,6 +440,56 @@ rte_ipv6_udptcp_cksum(const struct ipv6_hdr *ipv6_hdr, const void *l4_hdr)
 		cksum = 0xffff;
 
 	return (uint16_t)cksum;
+}
+
+/* IPv6 fragmentation header size */
+#define RTE_IPV6_FRAG_HDR_SIZE 8
+
+/**
+ * Parse next IPv6 header extension
+ *
+ * This function checks if proto number is an IPv6 extensions and parses its
+ * data if so, providing information on next header and extension length.
+ *
+ * @param p
+ *   Pointer to an extension raw data.
+ * @param proto
+ *   Protocol number extracted from the "next header" field from
+ *   the IPv6 header or the previous extension.
+ * @param ext_len
+ *   Extension data length.
+ * @return
+ *   next protocol number if proto is an IPv6 extension, -EINVAL otherwise
+ */
+__rte_experimental
+static inline int
+rte_ipv6_get_next_ext(const uint8_t *p, int proto, size_t *ext_len)
+{
+	int next_proto;
+
+	switch (proto) {
+	case IPPROTO_AH:
+		next_proto = *p++;
+		*ext_len = (*p + 2) * sizeof(uint32_t);
+		break;
+
+	case IPPROTO_HOPOPTS:
+	case IPPROTO_ROUTING:
+	case IPPROTO_DSTOPTS:
+		next_proto = *p++;
+		*ext_len = (*p + 1) * sizeof(uint64_t);
+		break;
+
+	case IPPROTO_FRAGMENT:
+		next_proto = *p;
+		*ext_len = RTE_IPV6_FRAG_HDR_SIZE;
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	return next_proto;
 }
 
 #ifdef __cplusplus

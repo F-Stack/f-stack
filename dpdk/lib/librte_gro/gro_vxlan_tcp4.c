@@ -164,9 +164,9 @@ insert_new_flow(struct gro_vxlan_tcp4_tbl *tbl,
 
 	dst = &(tbl->flows[flow_idx].key);
 
-	ether_addr_copy(&(src->inner_key.eth_saddr),
+	rte_ether_addr_copy(&(src->inner_key.eth_saddr),
 			&(dst->inner_key.eth_saddr));
-	ether_addr_copy(&(src->inner_key.eth_daddr),
+	rte_ether_addr_copy(&(src->inner_key.eth_daddr),
 			&(dst->inner_key.eth_daddr));
 	dst->inner_key.ip_src_addr = src->inner_key.ip_src_addr;
 	dst->inner_key.ip_dst_addr = src->inner_key.ip_dst_addr;
@@ -176,8 +176,8 @@ insert_new_flow(struct gro_vxlan_tcp4_tbl *tbl,
 
 	dst->vxlan_hdr.vx_flags = src->vxlan_hdr.vx_flags;
 	dst->vxlan_hdr.vx_vni = src->vxlan_hdr.vx_vni;
-	ether_addr_copy(&(src->outer_eth_saddr), &(dst->outer_eth_saddr));
-	ether_addr_copy(&(src->outer_eth_daddr), &(dst->outer_eth_daddr));
+	rte_ether_addr_copy(&(src->outer_eth_saddr), &(dst->outer_eth_saddr));
+	rte_ether_addr_copy(&(src->outer_eth_daddr), &(dst->outer_eth_daddr));
 	dst->outer_ip_src_addr = src->outer_ip_src_addr;
 	dst->outer_ip_dst_addr = src->outer_ip_dst_addr;
 	dst->outer_src_port = src->outer_src_port;
@@ -193,8 +193,9 @@ static inline int
 is_same_vxlan_tcp4_flow(struct vxlan_tcp4_flow_key k1,
 		struct vxlan_tcp4_flow_key k2)
 {
-	return (is_same_ether_addr(&k1.outer_eth_saddr, &k2.outer_eth_saddr) &&
-			is_same_ether_addr(&k1.outer_eth_daddr,
+	return (rte_is_same_ether_addr(&k1.outer_eth_saddr,
+					&k2.outer_eth_saddr) &&
+			rte_is_same_ether_addr(&k1.outer_eth_daddr,
 				&k2.outer_eth_daddr) &&
 			(k1.outer_ip_src_addr == k2.outer_ip_src_addr) &&
 			(k1.outer_ip_dst_addr == k2.outer_ip_dst_addr) &&
@@ -207,7 +208,7 @@ is_same_vxlan_tcp4_flow(struct vxlan_tcp4_flow_key k1,
 
 static inline int
 check_vxlan_seq_option(struct gro_vxlan_tcp4_item *item,
-		struct tcp_hdr *tcp_hdr,
+		struct rte_tcp_hdr *tcp_hdr,
 		uint32_t sent_seq,
 		uint16_t outer_ip_id,
 		uint16_t ip_id,
@@ -262,25 +263,25 @@ merge_two_vxlan_tcp4_packets(struct gro_vxlan_tcp4_item *item,
 static inline void
 update_vxlan_header(struct gro_vxlan_tcp4_item *item)
 {
-	struct ipv4_hdr *ipv4_hdr;
-	struct udp_hdr *udp_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_udp_hdr *udp_hdr;
 	struct rte_mbuf *pkt = item->inner_item.firstseg;
 	uint16_t len;
 
 	/* Update the outer IPv4 header. */
 	len = pkt->pkt_len - pkt->outer_l2_len;
-	ipv4_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(pkt, char *) +
+	ipv4_hdr = (struct rte_ipv4_hdr *)(rte_pktmbuf_mtod(pkt, char *) +
 			pkt->outer_l2_len);
 	ipv4_hdr->total_length = rte_cpu_to_be_16(len);
 
 	/* Update the outer UDP header. */
 	len -= pkt->outer_l3_len;
-	udp_hdr = (struct udp_hdr *)((char *)ipv4_hdr + pkt->outer_l3_len);
+	udp_hdr = (struct rte_udp_hdr *)((char *)ipv4_hdr + pkt->outer_l3_len);
 	udp_hdr->dgram_len = rte_cpu_to_be_16(len);
 
 	/* Update the inner IPv4 header. */
 	len -= pkt->l2_len;
-	ipv4_hdr = (struct ipv4_hdr *)((char *)udp_hdr + pkt->l2_len);
+	ipv4_hdr = (struct rte_ipv4_hdr *)((char *)udp_hdr + pkt->l2_len);
 	ipv4_hdr->total_length = rte_cpu_to_be_16(len);
 }
 
@@ -289,11 +290,11 @@ gro_vxlan_tcp4_reassemble(struct rte_mbuf *pkt,
 		struct gro_vxlan_tcp4_tbl *tbl,
 		uint64_t start_time)
 {
-	struct ether_hdr *outer_eth_hdr, *eth_hdr;
-	struct ipv4_hdr *outer_ipv4_hdr, *ipv4_hdr;
-	struct tcp_hdr *tcp_hdr;
-	struct udp_hdr *udp_hdr;
-	struct vxlan_hdr *vxlan_hdr;
+	struct rte_ether_hdr *outer_eth_hdr, *eth_hdr;
+	struct rte_ipv4_hdr *outer_ipv4_hdr, *ipv4_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
+	struct rte_udp_hdr *udp_hdr;
+	struct rte_vxlan_hdr *vxlan_hdr;
 	uint32_t sent_seq;
 	int32_t tcp_dl;
 	uint16_t frag_off, outer_ip_id, ip_id;
@@ -313,23 +314,23 @@ gro_vxlan_tcp4_reassemble(struct rte_mbuf *pkt,
 	if (unlikely(INVALID_TCP_HDRLEN(pkt->l4_len)))
 		return -1;
 
-	outer_eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-	outer_ipv4_hdr = (struct ipv4_hdr *)((char *)outer_eth_hdr +
+	outer_eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+	outer_ipv4_hdr = (struct rte_ipv4_hdr *)((char *)outer_eth_hdr +
 			pkt->outer_l2_len);
-	udp_hdr = (struct udp_hdr *)((char *)outer_ipv4_hdr +
+	udp_hdr = (struct rte_udp_hdr *)((char *)outer_ipv4_hdr +
 			pkt->outer_l3_len);
-	vxlan_hdr = (struct vxlan_hdr *)((char *)udp_hdr +
-			sizeof(struct udp_hdr));
-	eth_hdr = (struct ether_hdr *)((char *)vxlan_hdr +
-			sizeof(struct vxlan_hdr));
-	ipv4_hdr = (struct ipv4_hdr *)((char *)udp_hdr + pkt->l2_len);
-	tcp_hdr = (struct tcp_hdr *)((char *)ipv4_hdr + pkt->l3_len);
+	vxlan_hdr = (struct rte_vxlan_hdr *)((char *)udp_hdr +
+			sizeof(struct rte_udp_hdr));
+	eth_hdr = (struct rte_ether_hdr *)((char *)vxlan_hdr +
+			sizeof(struct rte_vxlan_hdr));
+	ipv4_hdr = (struct rte_ipv4_hdr *)((char *)udp_hdr + pkt->l2_len);
+	tcp_hdr = (struct rte_tcp_hdr *)((char *)ipv4_hdr + pkt->l3_len);
 
 	/*
 	 * Don't process the packet which has FIN, SYN, RST, PSH, URG,
 	 * ECE or CWR set.
 	 */
-	if (tcp_hdr->tcp_flags != TCP_ACK_FLAG)
+	if (tcp_hdr->tcp_flags != RTE_TCP_ACK_FLAG)
 		return -1;
 
 	hdr_len = pkt->outer_l2_len + pkt->outer_l3_len + pkt->l2_len +
@@ -347,17 +348,18 @@ gro_vxlan_tcp4_reassemble(struct rte_mbuf *pkt,
 	 * whose DF bit is 1, IPv4 ID is ignored.
 	 */
 	frag_off = rte_be_to_cpu_16(outer_ipv4_hdr->fragment_offset);
-	outer_is_atomic = (frag_off & IPV4_HDR_DF_FLAG) == IPV4_HDR_DF_FLAG;
+	outer_is_atomic =
+		(frag_off & RTE_IPV4_HDR_DF_FLAG) == RTE_IPV4_HDR_DF_FLAG;
 	outer_ip_id = outer_is_atomic ? 0 :
 		rte_be_to_cpu_16(outer_ipv4_hdr->packet_id);
 	frag_off = rte_be_to_cpu_16(ipv4_hdr->fragment_offset);
-	is_atomic = (frag_off & IPV4_HDR_DF_FLAG) == IPV4_HDR_DF_FLAG;
+	is_atomic = (frag_off & RTE_IPV4_HDR_DF_FLAG) == RTE_IPV4_HDR_DF_FLAG;
 	ip_id = is_atomic ? 0 : rte_be_to_cpu_16(ipv4_hdr->packet_id);
 
 	sent_seq = rte_be_to_cpu_32(tcp_hdr->sent_seq);
 
-	ether_addr_copy(&(eth_hdr->s_addr), &(key.inner_key.eth_saddr));
-	ether_addr_copy(&(eth_hdr->d_addr), &(key.inner_key.eth_daddr));
+	rte_ether_addr_copy(&(eth_hdr->s_addr), &(key.inner_key.eth_saddr));
+	rte_ether_addr_copy(&(eth_hdr->d_addr), &(key.inner_key.eth_daddr));
 	key.inner_key.ip_src_addr = ipv4_hdr->src_addr;
 	key.inner_key.ip_dst_addr = ipv4_hdr->dst_addr;
 	key.inner_key.recv_ack = tcp_hdr->recv_ack;
@@ -366,8 +368,8 @@ gro_vxlan_tcp4_reassemble(struct rte_mbuf *pkt,
 
 	key.vxlan_hdr.vx_flags = vxlan_hdr->vx_flags;
 	key.vxlan_hdr.vx_vni = vxlan_hdr->vx_vni;
-	ether_addr_copy(&(outer_eth_hdr->s_addr), &(key.outer_eth_saddr));
-	ether_addr_copy(&(outer_eth_hdr->d_addr), &(key.outer_eth_daddr));
+	rte_ether_addr_copy(&(outer_eth_hdr->s_addr), &(key.outer_eth_saddr));
+	rte_ether_addr_copy(&(outer_eth_hdr->d_addr), &(key.outer_eth_daddr));
 	key.outer_ip_src_addr = outer_ipv4_hdr->src_addr;
 	key.outer_ip_dst_addr = outer_ipv4_hdr->dst_addr;
 	key.outer_src_port = udp_hdr->src_port;

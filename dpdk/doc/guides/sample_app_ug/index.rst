@@ -12,7 +12,6 @@ Sample Applications User Guides
     compiling
     cmd_line
     ethtool
-    exception_path
     hello_world
     skeleton
     rxtx_callbacks
@@ -23,30 +22,28 @@ Sample Applications User Guides
     ip_reassembly
     kernel_nic_interface
     keep_alive
+    ioat
     l2_forward_crypto
     l2_forward_job_stats
     l2_forward_real_virtual
+    l2_forward_event
     l2_forward_cat
     l3_forward
     l3_forward_power_man
     l3_forward_access_ctrl
-    l3_forward_virtual
     link_status_intr
-    load_balancer
     server_node_efd
     service_cores
     multi_process
     qos_metering
     qos_scheduler
-    quota_watermark
     timer
     packet_ordering
     vmdq_dcb_forwarding
     vhost
-    vhost_scsi
+    vhost_blk
     vhost_crypto
     vdpa
-    netmap_compatibility
     ip_pipeline
     test_pipeline
     eventdev_pipeline
@@ -58,3 +55,4 @@ Sample Applications User Guides
     fips_validation
     ipsec_secgw
     bbdev_app
+    ntb

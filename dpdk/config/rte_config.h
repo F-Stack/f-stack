@@ -18,10 +18,18 @@
 
 #include <rte_build_config.h>
 
-/****** library defines ********/
+/* legacy defines */
+#ifdef RTE_EXEC_ENV_LINUX
+#define RTE_EXEC_ENV_LINUXAPP 1
+#endif
+#ifdef RTE_EXEC_ENV_FREEBSD
+#define RTE_EXEC_ENV_BSDAPP 1
+#endif
 
-/* compat defines */
-#define RTE_BUILD_SHARED_LIB
+/* String that appears before the version number */
+#define RTE_VER_PREFIX "DPDK"
+
+/****** library defines ********/
 
 /* EAL defines */
 #define RTE_MAX_HEAPS 32
@@ -51,7 +59,6 @@
 #define RTE_PKTMBUF_HEADROOM 128
 
 /* ether defines */
-#define RTE_MAX_ETHPORTS 32
 #define RTE_MAX_QUEUES_PER_PORT 1024
 #define RTE_ETHDEV_QUEUE_STAT_CNTRS 16
 #define RTE_ETHDEV_RXTX_CALLBACKS 1
@@ -72,7 +79,7 @@
 #define RTE_EVENT_ETH_TX_ADAPTER_MAX_INSTANCE 32
 
 /* rawdev defines */
-#define RTE_RAWDEV_MAX_DEVS 10
+#define RTE_RAWDEV_MAX_DEVS 64
 
 /* ip_fragmentation defines */
 #define RTE_LIBRTE_IP_FRAG_MAX_FRAG 4
@@ -87,6 +94,9 @@
 #undef RTE_SCHED_SUBPORT_TC_OV
 #define RTE_SCHED_PORT_N_GRINDERS 8
 #undef RTE_SCHED_VECTOR
+
+/* KNI defines */
+#define RTE_KNI_PREEMPT_DEFAULT 1
 
 /****** driver defines ********/
 

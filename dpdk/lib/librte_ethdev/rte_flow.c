@@ -12,9 +12,17 @@
 #include <rte_errno.h>
 #include <rte_branch_prediction.h>
 #include <rte_string_fns.h>
+#include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 #include "rte_ethdev.h"
 #include "rte_flow_driver.h"
 #include "rte_flow.h"
+
+/* Mbuf dynamic field name for metadata. */
+int rte_flow_dynf_metadata_offs = -1;
+
+/* Mbuf dynamic field flag bit number for metadata. */
+uint64_t rte_flow_dynf_metadata_mask;
 
 /**
  * Flow elements description tables.
@@ -74,6 +82,17 @@ static const struct rte_flow_desc_data rte_flow_desc_item[] = {
 		     sizeof(struct rte_flow_item_icmp6_nd_opt_tla_eth)),
 	MK_FLOW_ITEM(MARK, sizeof(struct rte_flow_item_mark)),
 	MK_FLOW_ITEM(META, sizeof(struct rte_flow_item_meta)),
+	MK_FLOW_ITEM(TAG, sizeof(struct rte_flow_item_tag)),
+	MK_FLOW_ITEM(GRE_KEY, sizeof(rte_be32_t)),
+	MK_FLOW_ITEM(GTP_PSC, sizeof(struct rte_flow_item_gtp_psc)),
+	MK_FLOW_ITEM(PPPOES, sizeof(struct rte_flow_item_pppoe)),
+	MK_FLOW_ITEM(PPPOED, sizeof(struct rte_flow_item_pppoe)),
+	MK_FLOW_ITEM(PPPOE_PROTO_ID,
+			sizeof(struct rte_flow_item_pppoe_proto_id)),
+	MK_FLOW_ITEM(NSH, sizeof(struct rte_flow_item_nsh)),
+	MK_FLOW_ITEM(IGMP, sizeof(struct rte_flow_item_igmp)),
+	MK_FLOW_ITEM(AH, sizeof(struct rte_flow_item_ah)),
+	MK_FLOW_ITEM(HIGIG2, sizeof(struct rte_flow_item_higig2_hdr)),
 };
 
 /** Generate flow_action[] entry. */
@@ -143,7 +162,44 @@ static const struct rte_flow_desc_data rte_flow_desc_action[] = {
 	MK_FLOW_ACTION(SET_TTL, sizeof(struct rte_flow_action_set_ttl)),
 	MK_FLOW_ACTION(SET_MAC_SRC, sizeof(struct rte_flow_action_set_mac)),
 	MK_FLOW_ACTION(SET_MAC_DST, sizeof(struct rte_flow_action_set_mac)),
+	MK_FLOW_ACTION(INC_TCP_SEQ, sizeof(rte_be32_t)),
+	MK_FLOW_ACTION(DEC_TCP_SEQ, sizeof(rte_be32_t)),
+	MK_FLOW_ACTION(INC_TCP_ACK, sizeof(rte_be32_t)),
+	MK_FLOW_ACTION(DEC_TCP_ACK, sizeof(rte_be32_t)),
+	MK_FLOW_ACTION(SET_TAG, sizeof(struct rte_flow_action_set_tag)),
+	MK_FLOW_ACTION(SET_META, sizeof(struct rte_flow_action_set_meta)),
 };
+
+int
+rte_flow_dynf_metadata_register(void)
+{
+	int offset;
+	int flag;
+
+	static const struct rte_mbuf_dynfield desc_offs = {
+		.name = RTE_MBUF_DYNFIELD_METADATA_NAME,
+		.size = sizeof(uint32_t),
+		.align = __alignof__(uint32_t),
+	};
+	static const struct rte_mbuf_dynflag desc_flag = {
+		.name = RTE_MBUF_DYNFLAG_METADATA_NAME,
+	};
+
+	offset = rte_mbuf_dynfield_register(&desc_offs);
+	if (offset < 0)
+		goto error;
+	flag = rte_mbuf_dynflag_register(&desc_flag);
+	if (flag < 0)
+		goto error;
+	rte_flow_dynf_metadata_offs = offset;
+	rte_flow_dynf_metadata_mask = (1ULL << flag);
+	return 0;
+
+error:
+	rte_flow_dynf_metadata_offs = -1;
+	rte_flow_dynf_metadata_mask = 0ULL;
+	return -rte_errno;
+}
 
 static int
 flow_err(uint16_t port_id, int ret, struct rte_flow_error *error)
@@ -154,6 +210,99 @@ flow_err(uint16_t port_id, int ret, struct rte_flow_error *error)
 		return rte_flow_error_set(error, EIO,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 					  NULL, rte_strerror(EIO));
+	return ret;
+}
+
+static enum rte_flow_item_type
+rte_flow_expand_rss_item_complete(const struct rte_flow_item *item)
+{
+	enum rte_flow_item_type ret = RTE_FLOW_ITEM_TYPE_VOID;
+	uint16_t ether_type = 0;
+	uint16_t ether_type_m;
+	uint8_t ip_next_proto = 0;
+	uint8_t ip_next_proto_m;
+
+	if (item == NULL || item->spec == NULL)
+		return ret;
+	switch (item->type) {
+	case RTE_FLOW_ITEM_TYPE_ETH:
+		if (item->mask)
+			ether_type_m = ((const struct rte_flow_item_eth *)
+						(item->mask))->type;
+		else
+			ether_type_m = rte_flow_item_eth_mask.type;
+		if (ether_type_m != RTE_BE16(0xFFFF))
+			break;
+		ether_type = ((const struct rte_flow_item_eth *)
+				(item->spec))->type;
+		if (rte_be_to_cpu_16(ether_type) == RTE_ETHER_TYPE_IPV4)
+			ret = RTE_FLOW_ITEM_TYPE_IPV4;
+		else if (rte_be_to_cpu_16(ether_type) == RTE_ETHER_TYPE_IPV6)
+			ret = RTE_FLOW_ITEM_TYPE_IPV6;
+		else if (rte_be_to_cpu_16(ether_type) == RTE_ETHER_TYPE_VLAN)
+			ret = RTE_FLOW_ITEM_TYPE_VLAN;
+		break;
+	case RTE_FLOW_ITEM_TYPE_VLAN:
+		if (item->mask)
+			ether_type_m = ((const struct rte_flow_item_vlan *)
+						(item->mask))->inner_type;
+		else
+			ether_type_m = rte_flow_item_vlan_mask.inner_type;
+		if (ether_type_m != RTE_BE16(0xFFFF))
+			break;
+		ether_type = ((const struct rte_flow_item_vlan *)
+				(item->spec))->inner_type;
+		if (rte_be_to_cpu_16(ether_type) == RTE_ETHER_TYPE_IPV4)
+			ret = RTE_FLOW_ITEM_TYPE_IPV4;
+		else if (rte_be_to_cpu_16(ether_type) == RTE_ETHER_TYPE_IPV6)
+			ret = RTE_FLOW_ITEM_TYPE_IPV6;
+		else if (rte_be_to_cpu_16(ether_type) == RTE_ETHER_TYPE_VLAN)
+			ret = RTE_FLOW_ITEM_TYPE_VLAN;
+		break;
+	case RTE_FLOW_ITEM_TYPE_IPV4:
+		if (item->mask)
+			ip_next_proto_m = ((const struct rte_flow_item_ipv4 *)
+					(item->mask))->hdr.next_proto_id;
+		else
+			ip_next_proto_m =
+				rte_flow_item_ipv4_mask.hdr.next_proto_id;
+		if (ip_next_proto_m != 0xFF)
+			break;
+		ip_next_proto = ((const struct rte_flow_item_ipv4 *)
+				(item->spec))->hdr.next_proto_id;
+		if (ip_next_proto == IPPROTO_UDP)
+			ret = RTE_FLOW_ITEM_TYPE_UDP;
+		else if (ip_next_proto == IPPROTO_TCP)
+			ret = RTE_FLOW_ITEM_TYPE_TCP;
+		else if (ip_next_proto == IPPROTO_IP)
+			ret = RTE_FLOW_ITEM_TYPE_IPV4;
+		else if (ip_next_proto == IPPROTO_IPV6)
+			ret = RTE_FLOW_ITEM_TYPE_IPV6;
+		break;
+	case RTE_FLOW_ITEM_TYPE_IPV6:
+		if (item->mask)
+			ip_next_proto_m = ((const struct rte_flow_item_ipv6 *)
+						(item->mask))->hdr.proto;
+		else
+			ip_next_proto_m =
+				rte_flow_item_ipv6_mask.hdr.proto;
+		if (ip_next_proto_m != 0xFF)
+			break;
+		ip_next_proto = ((const struct rte_flow_item_ipv6 *)
+				(item->spec))->hdr.proto;
+		if (ip_next_proto == IPPROTO_UDP)
+			ret = RTE_FLOW_ITEM_TYPE_UDP;
+		else if (ip_next_proto == IPPROTO_TCP)
+			ret = RTE_FLOW_ITEM_TYPE_TCP;
+		else if (ip_next_proto == IPPROTO_IP)
+			ret = RTE_FLOW_ITEM_TYPE_IPV4;
+		else if (ip_next_proto == IPPROTO_IPV6)
+			ret = RTE_FLOW_ITEM_TYPE_IPV6;
+		break;
+	default:
+		ret = RTE_FLOW_ITEM_TYPE_VOID;
+		break;
+	}
 	return ret;
 }
 
@@ -899,7 +1048,7 @@ rte_flow_copy(struct rte_flow_desc *desc, size_t len,
  * Expand RSS flows into several possible flows according to the RSS hash
  * fields requested and the driver capabilities.
  */
-int __rte_experimental
+int
 rte_flow_expand_rss(struct rte_flow_expand_rss *buf, size_t size,
 		    const struct rte_flow_item *pattern, uint64_t types,
 		    const struct rte_flow_expand_node graph[],
@@ -916,7 +1065,13 @@ rte_flow_expand_rss(struct rte_flow_expand_rss *buf, size_t size,
 	size_t lsize;
 	size_t user_pattern_size = 0;
 	void *addr = NULL;
+	const struct rte_flow_expand_node *next = NULL;
+	struct rte_flow_item missed_item;
+	int missed = 0;
+	int elt = 0;
+	const struct rte_flow_item *last_item = NULL;
 
+	memset(&missed_item, 0, sizeof(missed_item));
 	lsize = offsetof(struct rte_flow_expand_rss, entry) +
 		elt_n * sizeof(buf->entry[0]);
 	if (lsize <= size) {
@@ -926,8 +1081,8 @@ rte_flow_expand_rss(struct rte_flow_expand_rss *buf, size_t size,
 		addr = buf->entry[0].pattern;
 	}
 	for (item = pattern; item->type != RTE_FLOW_ITEM_TYPE_END; item++) {
-		const struct rte_flow_expand_node *next = NULL;
-
+		if (item->type != RTE_FLOW_ITEM_TYPE_VOID)
+			last_item = item;
 		for (i = 0; node->next && node->next[i]; ++i) {
 			next = &graph[node->next[i]];
 			if (next->type == item->type)
@@ -948,6 +1103,41 @@ rte_flow_expand_rss(struct rte_flow_expand_rss *buf, size_t size,
 	/* Start expanding. */
 	memset(flow_items, 0, sizeof(flow_items));
 	user_pattern_size -= sizeof(*item);
+	/*
+	 * Check if the last valid item has spec set
+	 * and need complete pattern.
+	 */
+	missed_item.type = rte_flow_expand_rss_item_complete(last_item);
+	if (missed_item.type != RTE_FLOW_ITEM_TYPE_VOID) {
+		next = NULL;
+		missed = 1;
+		for (i = 0; node->next && node->next[i]; ++i) {
+			next = &graph[node->next[i]];
+			if (next->type == missed_item.type) {
+				flow_items[0].type = missed_item.type;
+				flow_items[1].type = RTE_FLOW_ITEM_TYPE_END;
+				break;
+			}
+			next = NULL;
+		}
+	}
+	if (next && missed) {
+		elt = 2; /* missed item + item end. */
+		node = next;
+		lsize += elt * sizeof(*item) + user_pattern_size;
+		if ((node->rss_types & types) && lsize <= size) {
+			buf->entry[buf->entries].priority = 1;
+			buf->entry[buf->entries].pattern = addr;
+			buf->entries++;
+			rte_memcpy(addr, buf->entry[0].pattern,
+				   user_pattern_size);
+			addr = (void *)(((uintptr_t)addr) + user_pattern_size);
+			rte_memcpy(addr, flow_items, elt * sizeof(*item));
+			addr = (void *)(((uintptr_t)addr) +
+					elt * sizeof(*item));
+		}
+	}
+	memset(flow_items, 0, sizeof(flow_items));
 	next_node = node->next;
 	stack[stack_pos] = next_node;
 	node = next_node ? &graph[*next_node] : NULL;
@@ -960,21 +1150,24 @@ rte_flow_expand_rss(struct rte_flow_expand_rss *buf, size_t size,
 			 * When the stack_pos is 0, there are 1 element in it,
 			 * plus the addition END item.
 			 */
-			int elt = stack_pos + 2;
-
+			elt = stack_pos + 2;
 			flow_items[stack_pos + 1].type = RTE_FLOW_ITEM_TYPE_END;
 			lsize += elt * sizeof(*item) + user_pattern_size;
 			if (lsize <= size) {
 				size_t n = elt * sizeof(*item);
 
 				buf->entry[buf->entries].priority =
-					stack_pos + 1;
+					stack_pos + 1 + missed;
 				buf->entry[buf->entries].pattern = addr;
 				buf->entries++;
 				rte_memcpy(addr, buf->entry[0].pattern,
 					   user_pattern_size);
 				addr = (void *)(((uintptr_t)addr) +
 						user_pattern_size);
+				rte_memcpy(addr, &missed_item,
+					   missed * sizeof(*item));
+				addr = (void *)(((uintptr_t)addr) +
+					missed * sizeof(*item));
 				rte_memcpy(addr, flow_items, n);
 				addr = (void *)(((uintptr_t)addr) + n);
 			}
@@ -999,5 +1192,23 @@ rte_flow_expand_rss(struct rte_flow_expand_rss *buf, size_t size,
 		}
 		node = *next_node ? &graph[*next_node] : NULL;
 	};
+	/* no expanded flows but we have missed item, create one rule for it */
+	if (buf->entries == 1 && missed != 0) {
+		elt = 2;
+		lsize += elt * sizeof(*item) + user_pattern_size;
+		if (lsize <= size) {
+			buf->entry[buf->entries].priority = 1;
+			buf->entry[buf->entries].pattern = addr;
+			buf->entries++;
+			flow_items[0].type = missed_item.type;
+			flow_items[1].type = RTE_FLOW_ITEM_TYPE_END;
+			rte_memcpy(addr, buf->entry[0].pattern,
+				   user_pattern_size);
+			addr = (void *)(((uintptr_t)addr) + user_pattern_size);
+			rte_memcpy(addr, flow_items, elt * sizeof(*item));
+			addr = (void *)(((uintptr_t)addr) +
+					elt * sizeof(*item));
+		}
+	}
 	return lsize;
 }

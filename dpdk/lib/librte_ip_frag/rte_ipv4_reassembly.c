@@ -14,7 +14,7 @@
 struct rte_mbuf *
 ipv4_frag_reassemble(struct ip_frag_pkt *fp)
 {
-	struct ipv4_hdr *ip_hdr;
+	struct rte_ipv4_hdr *ip_hdr;
 	struct rte_mbuf *m, *prev;
 	uint32_t i, n, ofs, first_len;
 	uint32_t curr_idx = 0;
@@ -66,16 +66,13 @@ ipv4_frag_reassemble(struct ip_frag_pkt *fp)
 	m = fp->frags[IP_FIRST_FRAG_IDX].mb;
 	fp->frags[IP_FIRST_FRAG_IDX].mb = NULL;
 
-	/* update mbuf fields for reassembled packet. */
-	m->ol_flags |= PKT_TX_IP_CKSUM;
-
 	/* update ipv4 header for the reassembled packet */
-	ip_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *, m->l2_len);
+	ip_hdr = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, m->l2_len);
 
 	ip_hdr->total_length = rte_cpu_to_be_16((uint16_t)(fp->total_size +
 		m->l3_len));
 	ip_hdr->fragment_offset = (uint16_t)(ip_hdr->fragment_offset &
-		rte_cpu_to_be_16(IPV4_HDR_DF_FLAG));
+		rte_cpu_to_be_16(RTE_IPV4_HDR_DF_FLAG));
 	ip_hdr->hdr_checksum = 0;
 
 	return m;
@@ -100,7 +97,7 @@ ipv4_frag_reassemble(struct ip_frag_pkt *fp)
 struct rte_mbuf *
 rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	struct rte_ip_frag_death_row *dr, struct rte_mbuf *mb, uint64_t tms,
-	struct ipv4_hdr *ip_hdr)
+	struct rte_ipv4_hdr *ip_hdr)
 {
 	struct ip_frag_pkt *fp;
 	struct ip_frag_key key;
@@ -109,8 +106,8 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	int32_t ip_len;
 
 	flag_offset = rte_be_to_cpu_16(ip_hdr->fragment_offset);
-	ip_ofs = (uint16_t)(flag_offset & IPV4_HDR_OFFSET_MASK);
-	ip_flag = (uint16_t)(flag_offset & IPV4_HDR_MF_FLAG);
+	ip_ofs = (uint16_t)(flag_offset & RTE_IPV4_HDR_OFFSET_MASK);
+	ip_flag = (uint16_t)(flag_offset & RTE_IPV4_HDR_MF_FLAG);
 
 	psd = (unaligned_uint64_t *)&ip_hdr->src_addr;
 	/* use first 8 bytes only */
@@ -118,7 +115,7 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	key.id = ip_hdr->packet_id;
 	key.key_len = IPV4_KEYLEN;
 
-	ip_ofs *= IPV4_HDR_OFFSET_UNITS;
+	ip_ofs *= RTE_IPV4_HDR_OFFSET_UNITS;
 	ip_len = rte_be_to_cpu_16(ip_hdr->total_length) - mb->l3_len;
 
 	IP_FRAG_LOG(DEBUG, "%s:%d:\n"

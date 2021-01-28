@@ -49,7 +49,7 @@ Thread::Thread(int stack_size)
     memset(&_jmpbuf, 0, sizeof(_jmpbuf));
 }
 
-
+static DefaultLogAdapter def_log_adapt;
 /**
  *  @brief LINUX x86/x86_64's allocated stacks.
  */
@@ -75,7 +75,7 @@ bool Thread::InitStack()
     void* vaddr = mmap(NULL, memsize, PROT_READ | PROT_WRITE, mmap_flags, zero_fd, 0);
     if (vaddr == (void *)MAP_FAILED)
     {
-        MTLOG_ERROR("mmap stack failed, size %d", memsize);
+        MTLOG_ERROR("mmap stack failed, size %d,errmsg: %s.", memsize,strerror(errno));
         free(_stack);
         _stack = NULL;
         return false;
@@ -128,6 +128,12 @@ void Thread::SwitchContext()
     {
         ScheduleObj::Instance()->ScheduleThread();
     }
+}
+
+
+int Thread::SaveContext()
+{
+    return save_context(_jmpbuf);
 }
 
 void Thread::RestoreContext()
@@ -375,6 +381,7 @@ void ScheduleObj::ScheduleStartRun()
 
 
 unsigned int ThreadPool::default_thread_num = DEFAULT_THREAD_NUM;   ///< 2000 micro threads.
+unsigned int ThreadPool::last_default_thread_num = DEFAULT_THREAD_NUM;   ///< 2000 micro threads.
 unsigned int ThreadPool::default_stack_size = DEFAULT_STACK_SIZE;   ///< 128k stack. 
 
 bool ThreadPool::InitialPool(int max_num)
@@ -442,6 +449,7 @@ MicroThread* ThreadPool::AllocThread()
     if (_total_num >= _max_num)
     {
         MT_ATTR_API(361140, 1); // no more quota
+        MTLOG_ERROR("total %d is outof max: %d", _total_num,_max_num);
         return NULL;
     }
     
@@ -455,6 +463,12 @@ MicroThread* ThreadPool::AllocThread()
     }
     _total_num++;
     _use_num++;
+    if(_use_num >(int) default_thread_num){
+        if(((int) default_thread_num * 2 )< _max_num){
+            last_default_thread_num = default_thread_num;
+            default_thread_num = default_thread_num * 2;
+        }
+    }
 
     return thread;    
 }
@@ -475,6 +489,10 @@ void ThreadPool::FreeThread(MicroThread* thread)
         thread->Destroy();
         delete thread;
         _total_num--;
+        if(default_thread_num / 2 >= DEFAULT_THREAD_NUM){
+            last_default_thread_num = default_thread_num;
+            default_thread_num = default_thread_num / 2;
+        }
     }
 }
 
@@ -500,7 +518,11 @@ void MtFrame::SetHookFlag() {
 
 bool MtFrame::InitFrame(LogAdapter* logadpt, int max_thread_num)
 {
-    _log_adpt = logadpt;
+    if(logadpt == NULL){
+        _log_adpt = &def_log_adapt;
+    }else{
+        _log_adpt = logadpt;
+    }
 
     if ((this->InitKqueue(max_thread_num) < 0) || !this->InitialPool(max_thread_num))
     {
@@ -849,6 +871,42 @@ void MtFrame::WaitNotify(utime64_t timeout)
     thread->SetWakeupTime(timeout + this->GetLastClock());
     this->InsertIoWait(thread); 
     thread->SwitchContext();
+}
+
+void MtFrame::NotifyThread(MicroThread* thread)
+{
+    if(thread == NULL){
+        return;
+    }
+    MicroThread* cur_thread = GetActiveThread();
+    if (thread->HasFlag(MicroThread::IO_LIST))
+    {
+        this->RemoveIoWait(thread);
+        if(cur_thread == this->DaemonThread()){
+            // 这里不直接切的话,还是不及时,会导致目标线程等待到超时
+            if(cur_thread->SaveContext() == 0){
+                this->SetActiveThread(thread);
+                thread->SetState(MicroThread::RUNNING);
+                thread->RestoreContext();
+            }
+        }else{
+            this->InsertRunable(thread);
+        }
+    }
+}
+
+void MtFrame::SwapDaemonThread()
+{
+    MicroThread* thread = GetActiveThread();
+    MicroThread* daemon_thread = this->DaemonThread();
+    if(thread != daemon_thread){
+        if(thread->SaveContext() == 0){
+            this->InsertRunable(thread);
+            this->SetActiveThread(daemon_thread);
+            daemon_thread->SetState(MicroThread::RUNNING);
+            daemon_thread->RestoreContext();
+        }
+    }
 }
 
 bool MtFrame::KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout)

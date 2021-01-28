@@ -93,8 +93,8 @@ static void
 ieee1588_packet_fwd(struct fwd_stream *fs)
 {
 	struct rte_mbuf  *mb;
-	struct ether_hdr *eth_hdr;
-	struct ether_addr addr;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ether_addr addr;
 	struct ptpv2_msg *ptp_hdr;
 	uint16_t eth_type;
 	uint32_t timesync_index;
@@ -111,11 +111,11 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	 * Check that the received packet is a PTP packet that was detected
 	 * by the hardware.
 	 */
-	eth_hdr = rte_pktmbuf_mtod(mb, struct ether_hdr *);
+	eth_hdr = rte_pktmbuf_mtod(mb, struct rte_ether_hdr *);
 	eth_type = rte_be_to_cpu_16(eth_hdr->ether_type);
 
 	if (! (mb->ol_flags & PKT_RX_IEEE1588_PTP)) {
-		if (eth_type == ETHER_TYPE_1588) {
+		if (eth_type == RTE_ETHER_TYPE_1588) {
 			printf("Port %u Received PTP packet not filtered"
 			       " by hardware\n",
 			       fs->rx_port);
@@ -128,7 +128,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 		rte_pktmbuf_free(mb);
 		return;
 	}
-	if (eth_type != ETHER_TYPE_1588) {
+	if (eth_type != RTE_ETHER_TYPE_1588) {
 		printf("Port %u Received NON PTP packet incorrectly"
 		       " detected by hardware\n",
 		       fs->rx_port);
@@ -141,7 +141,7 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	 * PTP_SYNC_MESSAGE.
 	 */
 	ptp_hdr = (struct ptpv2_msg *) (rte_pktmbuf_mtod(mb, char *) +
-					sizeof(struct ether_hdr));
+					sizeof(struct rte_ether_hdr));
 	if (ptp_hdr->version != 0x02) {
 		printf("Port %u Received PTP V2 Ethernet frame with wrong PTP"
 		       " protocol version 0x%x (should be 0x02)\n",
@@ -178,9 +178,9 @@ ieee1588_packet_fwd(struct fwd_stream *fs)
 	port_ieee1588_rx_timestamp_check(fs->rx_port, timesync_index);
 
 	/* Swap dest and src mac addresses. */
-	ether_addr_copy(&eth_hdr->d_addr, &addr);
-	ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
-	ether_addr_copy(&addr, &eth_hdr->s_addr);
+	rte_ether_addr_copy(&eth_hdr->d_addr, &addr);
+	rte_ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
+	rte_ether_addr_copy(&addr, &eth_hdr->s_addr);
 
 	/* Forward PTP packet with hardware TX timestamp */
 	mb->ol_flags |= PKT_TX_IEEE1588_TMST;

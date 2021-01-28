@@ -13,15 +13,12 @@ CFLAGS += $(WERROR_FLAGS)
 CFLAGS += -I$(RTE_SDK)/drivers/common/octeontx/
 CFLAGS += -I$(RTE_SDK)/drivers/mempool/octeontx/
 CFLAGS += -I$(RTE_SDK)/drivers/net/octeontx/
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 LDLIBS += -lrte_eal -lrte_eventdev -lrte_common_octeontx -lrte_pmd_octeontx
 LDLIBS += -lrte_bus_pci -lrte_mempool -lrte_mbuf -lrte_kvargs
 LDLIBS += -lrte_bus_vdev -lrte_ethdev
 
 EXPORT_MAP := rte_pmd_octeontx_event_version.map
-
-LIBABIVER := 1
 
 #
 # all source are stored in SRCS-y

@@ -1,36 +1,5 @@
 /*
- *   BSD LICENSE
- *
- *   Copyright (C) IBM Corporation 2014.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of IBM Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
-
-/*
+ * SPDX-License-Identifier: BSD-3-Clause
  * Inspired from FreeBSD src/sys/powerpc/include/atomic.h
  * Copyright (c) 2008 Marcel Moolenaar
  * Copyright (c) 2001 Benno Rice
@@ -49,28 +18,10 @@ extern "C" {
 #include <stdint.h>
 #include "generic/rte_atomic.h"
 
-/**
- * General memory barrier.
- *
- * Guarantees that the LOAD and STORE operations generated before the
- * barrier occur before the LOAD and STORE operations generated after.
- */
 #define	rte_mb()  asm volatile("sync" : : : "memory")
 
-/**
- * Write memory barrier.
- *
- * Guarantees that the STORE operations generated before the barrier
- * occur before the STORE operations generated after.
- */
 #define	rte_wmb() asm volatile("sync" : : : "memory")
 
-/**
- * Read memory barrier.
- *
- * Guarantees that the LOAD operations generated before the barrier
- * occur before the LOAD operations generated after.
- */
 #define	rte_rmb() asm volatile("sync" : : : "memory")
 
 #define rte_smp_mb() rte_mb()
@@ -450,7 +401,7 @@ static inline void rte_atomic64_clear(rte_atomic64_t *v)
 static inline uint64_t
 rte_atomic64_exchange(volatile uint64_t *dst, uint64_t val)
 {
-	return __atomic_exchange_4(dst, val, __ATOMIC_SEQ_CST);
+	return __atomic_exchange_8(dst, val, __ATOMIC_SEQ_CST);
 }
 
 #endif

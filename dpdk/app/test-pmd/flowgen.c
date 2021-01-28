@@ -1,35 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2010-2013 Tilera Corporation. All rights reserved.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Tilera Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2014-2020 Mellanox Technologies, Ltd
  */
 
 #include <stdarg.h>
@@ -72,19 +42,16 @@
 
 /* hardcoded configuration (for now) */
 static unsigned cfg_n_flows	= 1024;
-static uint32_t cfg_ip_src	= IPv4(10, 254, 0, 0);
-static uint32_t cfg_ip_dst	= IPv4(10, 253, 0, 0);
+static uint32_t cfg_ip_src	= RTE_IPV4(10, 254, 0, 0);
+static uint32_t cfg_ip_dst	= RTE_IPV4(10, 253, 0, 0);
 static uint16_t cfg_udp_src	= 1000;
 static uint16_t cfg_udp_dst	= 1001;
-static struct ether_addr cfg_ether_src	=
+static struct rte_ether_addr cfg_ether_src =
 	{{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x00 }};
-static struct ether_addr cfg_ether_dst	=
+static struct rte_ether_addr cfg_ether_dst =
 	{{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x01 }};
 
 #define IP_DEFTTL  64   /* from RFC 1340. */
-#define IP_VERSION 0x40
-#define IP_HDRLEN  0x05 /* default IP header length == five 32-bits words. */
-#define IP_VHL_DEF (IP_VERSION | IP_HDRLEN)
 
 static inline uint16_t
 ip_sum(const unaligned_uint16_t *hdr, int hdr_len)
@@ -119,9 +86,9 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	struct rte_mbuf  *pkts_burst[MAX_PKT_BURST];
 	struct rte_mempool *mbp;
 	struct rte_mbuf  *pkt;
-	struct ether_hdr *eth_hdr;
-	struct ipv4_hdr *ip_hdr;
-	struct udp_hdr *udp_hdr;
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ip_hdr;
+	struct rte_udp_hdr *udp_hdr;
 	uint16_t vlan_tci, vlan_tci_outer;
 	uint64_t ol_flags = 0;
 	uint16_t nb_rx;
@@ -170,15 +137,15 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 		pkt->next = NULL;
 
 		/* Initialize Ethernet header. */
-		eth_hdr = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
-		ether_addr_copy(&cfg_ether_dst, &eth_hdr->d_addr);
-		ether_addr_copy(&cfg_ether_src, &eth_hdr->s_addr);
-		eth_hdr->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+		rte_ether_addr_copy(&cfg_ether_dst, &eth_hdr->d_addr);
+		rte_ether_addr_copy(&cfg_ether_src, &eth_hdr->s_addr);
+		eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
 		/* Initialize IP header. */
-		ip_hdr = (struct ipv4_hdr *)(eth_hdr + 1);
+		ip_hdr = (struct rte_ipv4_hdr *)(eth_hdr + 1);
 		memset(ip_hdr, 0, sizeof(*ip_hdr));
-		ip_hdr->version_ihl	= IP_VHL_DEF;
+		ip_hdr->version_ihl	= RTE_IPV4_VHL_DEF;
 		ip_hdr->type_of_service	= 0;
 		ip_hdr->fragment_offset	= 0;
 		ip_hdr->time_to_live	= IP_DEFTTL;
@@ -193,7 +160,7 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 						 sizeof(*ip_hdr));
 
 		/* Initialize UDP header. */
-		udp_hdr = (struct udp_hdr *)(ip_hdr + 1);
+		udp_hdr = (struct rte_udp_hdr *)(ip_hdr + 1);
 		udp_hdr->src_port	= rte_cpu_to_be_16(cfg_udp_src);
 		udp_hdr->dst_port	= rte_cpu_to_be_16(cfg_udp_dst);
 		udp_hdr->dgram_cksum	= 0; /* No UDP checksum. */
@@ -205,8 +172,8 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 		pkt->ol_flags		= ol_flags;
 		pkt->vlan_tci		= vlan_tci;
 		pkt->vlan_tci_outer	= vlan_tci_outer;
-		pkt->l2_len		= sizeof(struct ether_hdr);
-		pkt->l3_len		= sizeof(struct ipv4_hdr);
+		pkt->l2_len		= sizeof(struct rte_ether_hdr);
+		pkt->l3_len		= sizeof(struct rte_ipv4_hdr);
 		pkts_burst[nb_pkt]	= pkt;
 
 		next_flow = (next_flow + 1) % cfg_n_flows;

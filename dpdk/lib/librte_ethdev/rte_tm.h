@@ -1,36 +1,7 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Intel Corporation.
- *   Copyright(c) 2017 Cavium.
- *   Copyright(c) 2017 NXP.
- *   All rights reserved.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of Intel Corporation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Intel Corporation.
+ * Copyright(c) 2017 Cavium.
+ * Copyright(c) 2017 NXP.
  */
 
 #ifndef __INCLUDE_RTE_TM_H__
@@ -51,6 +22,7 @@
 #include <stdint.h>
 
 #include <rte_common.h>
+#include <rte_meter.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,16 +88,6 @@ extern "C" {
 #define RTE_TM_NODE_LEVEL_ID_ANY                     UINT32_MAX
 
 /**
- * Color
- */
-enum rte_tm_color {
-	RTE_TM_GREEN = 0, /**< Green */
-	RTE_TM_YELLOW, /**< Yellow */
-	RTE_TM_RED, /**< Red */
-	RTE_TM_COLORS /**< Number of colors */
-};
-
-/**
  * Node statistics counter type
  */
 enum rte_tm_stats_type {
@@ -179,12 +141,12 @@ struct rte_tm_node_stats {
 		/** Number of packets dropped by current leaf node per each
 		 * color.
 		 */
-		uint64_t n_pkts_dropped[RTE_TM_COLORS];
+		uint64_t n_pkts_dropped[RTE_COLORS];
 
 		/** Number of bytes dropped by current leaf node per each
 		 * color.
 		 */
-		uint64_t n_bytes_dropped[RTE_TM_COLORS];
+		uint64_t n_bytes_dropped[RTE_COLORS];
 
 		/** Number of packets currently waiting in the packet queue of
 		 * current leaf node.
@@ -435,16 +397,16 @@ struct rte_tm_capabilities {
 	uint32_t cman_wred_context_shared_n_contexts_per_node_max;
 
 	/** Support for VLAN DEI packet marking (per color). */
-	int mark_vlan_dei_supported[RTE_TM_COLORS];
+	int mark_vlan_dei_supported[RTE_COLORS];
 
 	/** Support for IPv4/IPv6 ECN marking of TCP packets (per color). */
-	int mark_ip_ecn_tcp_supported[RTE_TM_COLORS];
+	int mark_ip_ecn_tcp_supported[RTE_COLORS];
 
 	/** Support for IPv4/IPv6 ECN marking of SCTP packets (per color). */
-	int mark_ip_ecn_sctp_supported[RTE_TM_COLORS];
+	int mark_ip_ecn_sctp_supported[RTE_COLORS];
 
 	/** Support for IPv4/IPv6 DSCP packet marking (per color). */
-	int mark_ip_dscp_supported[RTE_TM_COLORS];
+	int mark_ip_dscp_supported[RTE_COLORS];
 
 	/** Set of supported dynamic update operations.
 	 * @see enum rte_tm_dynamic_update_type
@@ -861,7 +823,7 @@ struct rte_tm_red_params {
  */
 struct rte_tm_wred_params {
 	/** One set of RED parameters per packet color */
-	struct rte_tm_red_params red_params[RTE_TM_COLORS];
+	struct rte_tm_red_params red_params[RTE_COLORS];
 
 	/** When non-zero, the *min_th* and *max_th* thresholds are specified
 	 * in packets (WRED packet mode). When zero, the *min_th* and *max_th*

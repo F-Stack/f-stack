@@ -113,6 +113,7 @@ struct virtnet_ctl;
 
 #define VIRTIO_F_VERSION_1		32
 #define VIRTIO_F_IOMMU_PLATFORM	33
+#define VIRTIO_F_RING_PACKED		34
 
 /*
  * Some VirtIO feature bits (currently bits 28 through 31) are
@@ -127,6 +128,12 @@ struct virtnet_ctl;
  * in the same order in which they have been made available.
  */
 #define VIRTIO_F_IN_ORDER 35
+
+/*
+ * This feature indicates that memory accesses by the driver and the device
+ * are ordered in a way described by the platform.
+ */
+#define VIRTIO_F_ORDER_PLATFORM 36
 
 /* The Guest publishes the used index for which it expects an interrupt
  * at the end of the avail ring. Host should ignore the avail->flags field. */
@@ -240,10 +247,11 @@ struct virtio_hw {
 	uint8_t     use_simple_rx;
 	uint8_t     use_inorder_rx;
 	uint8_t     use_inorder_tx;
+	uint8_t     weak_barriers;
 	bool        has_tx_offload;
 	bool        has_rx_offload;
 	uint16_t    port_id;
-	uint8_t     mac_addr[ETHER_ADDR_LEN];
+	uint8_t     mac_addr[RTE_ETHER_ADDR_LEN];
 	uint32_t    notify_off_multiplier;
 	uint8_t     *isr;
 	uint16_t    *notify_base;
@@ -286,7 +294,7 @@ extern struct virtio_hw_internal virtio_hw_internal[RTE_MAX_ETHPORTS];
  */
 struct virtio_net_config {
 	/* The config defining mac address (if VIRTIO_NET_F_MAC) */
-	uint8_t    mac[ETHER_ADDR_LEN];
+	uint8_t    mac[RTE_ETHER_ADDR_LEN];
 	/* See VIRTIO_NET_F_STATUS and VIRTIO_NET_S_* above */
 	uint16_t   status;
 	uint16_t   max_virtqueue_pairs;
@@ -312,6 +320,12 @@ static inline int
 vtpci_with_feature(struct virtio_hw *hw, uint64_t bit)
 {
 	return (hw->guest_features & (1ULL << bit)) != 0;
+}
+
+static inline int
+vtpci_packed_queue(struct virtio_hw *hw)
+{
+	return vtpci_with_feature(hw, VIRTIO_F_RING_PACKED);
 }
 
 /*

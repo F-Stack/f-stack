@@ -8,7 +8,7 @@
 #define CRYPTODEV_NAME_NULL_PMD		crypto_null
 /**< Null crypto PMD device name */
 
-int null_logtype_driver;
+extern int null_logtype_driver;
 
 #define NULL_LOG(level, fmt, ...)  \
 	rte_log(RTE_LOG_ ## level, null_logtype_driver,  \
@@ -30,6 +30,8 @@ struct null_crypto_qp {
 	struct rte_ring *processed_pkts;
 	/**< Ring for placing process packets */
 	struct rte_mempool *sess_mp;
+	/**< Session Mempool */
+	struct rte_mempool *sess_mp_priv;
 	/**< Session Mempool */
 	struct rte_cryptodev_stats qp_stats;
 	/**< Queue pair statistics */

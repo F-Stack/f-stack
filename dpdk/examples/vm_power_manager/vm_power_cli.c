@@ -95,8 +95,8 @@ cmd_show_vm_parsed(void *parsed_result, struct cmdline *cl,
 	}
 	cmdline_printf(cl, "Virtual CPU(s): %u\n", info.num_vcpus);
 	for (i = 0; i < info.num_vcpus; i++) {
-		cmdline_printf(cl, "  [%u]: Physical CPU Mask 0x%"PRIx64"\n", i,
-				info.pcpu_mask[i]);
+		cmdline_printf(cl, "  [%u]: Physical CPU %d\n", i,
+				info.pcpu_map[i]);
 	}
 }
 
@@ -124,54 +124,7 @@ cmdline_parse_inst_t cmd_show_vm_set = {
 };
 
 /* *** vCPU to pCPU mapping operations *** */
-struct cmd_set_pcpu_mask_result {
-	cmdline_fixed_string_t set_pcpu_mask;
-	cmdline_fixed_string_t vm_name;
-	uint8_t vcpu;
-	uint64_t core_mask;
-};
 
-static void
-cmd_set_pcpu_mask_parsed(void *parsed_result, struct cmdline *cl,
-		__attribute__((unused)) void *data)
-{
-	struct cmd_set_pcpu_mask_result *res = parsed_result;
-
-	if (set_pcpus_mask(res->vm_name, res->vcpu, res->core_mask) == 0)
-		cmdline_printf(cl, "Pinned vCPU(%"PRId8") to pCPU core "
-				"mask(0x%"PRIx64")\n", res->vcpu, res->core_mask);
-	else
-		cmdline_printf(cl, "Unable to pin vCPU(%"PRId8") to pCPU core "
-				"mask(0x%"PRIx64")\n", res->vcpu, res->core_mask);
-}
-
-cmdline_parse_token_string_t cmd_set_pcpu_mask =
-		TOKEN_STRING_INITIALIZER(struct cmd_set_pcpu_mask_result,
-				set_pcpu_mask, "set_pcpu_mask");
-cmdline_parse_token_string_t cmd_set_pcpu_mask_vm_name =
-		TOKEN_STRING_INITIALIZER(struct cmd_set_pcpu_mask_result,
-				vm_name, NULL);
-cmdline_parse_token_num_t set_pcpu_mask_vcpu =
-		TOKEN_NUM_INITIALIZER(struct cmd_set_pcpu_mask_result,
-				vcpu, UINT8);
-cmdline_parse_token_num_t set_pcpu_mask_core_mask =
-		TOKEN_NUM_INITIALIZER(struct cmd_set_pcpu_mask_result,
-				core_mask, UINT64);
-
-
-cmdline_parse_inst_t cmd_set_pcpu_mask_set = {
-		.f = cmd_set_pcpu_mask_parsed,
-		.data = NULL,
-		.help_str = "set_pcpu_mask <vm_name> <vcpu> <pcpu>, Set the binding "
-				"of Virtual CPU on VM to the Physical CPU mask.",
-				.tokens = {
-						(void *)&cmd_set_pcpu_mask,
-						(void *)&cmd_set_pcpu_mask_vm_name,
-						(void *)&set_pcpu_mask_vcpu,
-						(void *)&set_pcpu_mask_core_mask,
-						NULL,
-		},
-};
 
 struct cmd_set_pcpu_result {
 	cmdline_fixed_string_t set_pcpu;
@@ -272,7 +225,7 @@ cmd_channels_op_parsed(void *parsed_result, struct cmdline *cl,
 {
 	unsigned num_channels = 0, channel_num, i;
 	int channels_added;
-	unsigned channel_list[CHANNEL_CMDS_MAX_VM_CHANNELS];
+	unsigned int channel_list[RTE_MAX_LCORE];
 	char *token, *remaining, *tail_ptr;
 	struct cmd_channels_op_result *res = parsed_result;
 
@@ -296,10 +249,10 @@ cmd_channels_op_parsed(void *parsed_result, struct cmdline *cl,
 		if ((errno != 0) || tail_ptr == NULL || (*tail_ptr != '\0'))
 			break;
 
-		if (channel_num == CHANNEL_CMDS_MAX_VM_CHANNELS) {
+		if (channel_num == RTE_MAX_LCORE) {
 			cmdline_printf(cl, "Channel number '%u' exceeds the maximum number "
 					"of allowable channels(%u) for VM '%s'\n", channel_num,
-					CHANNEL_CMDS_MAX_VM_CHANNELS, res->vm_name);
+					RTE_MAX_LCORE, res->vm_name);
 			return;
 		}
 		channel_list[num_channels++] = channel_num;
@@ -340,6 +293,53 @@ cmdline_parse_inst_t cmd_channels_op_set = {
 	},
 };
 
+struct cmd_set_query_result {
+	cmdline_fixed_string_t set_query;
+	cmdline_fixed_string_t vm_name;
+	cmdline_fixed_string_t query_status;
+};
+
+static void
+cmd_set_query_parsed(void *parsed_result,
+		__rte_unused struct cmdline *cl,
+		__rte_unused void *data)
+{
+	struct cmd_set_query_result *res = parsed_result;
+
+	if (!strcmp(res->query_status, "enable")) {
+		if (set_query_status(res->vm_name, true) < 0)
+			cmdline_printf(cl, "Unable to allow query for VM '%s'\n",
+					res->vm_name);
+	} else if (!strcmp(res->query_status, "disable")) {
+		if (set_query_status(res->vm_name, false) < 0)
+			cmdline_printf(cl, "Unable to disallow query for VM '%s'\n",
+					res->vm_name);
+	}
+}
+
+cmdline_parse_token_string_t cmd_set_query =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_query_result,
+			set_query, "set_query");
+cmdline_parse_token_string_t cmd_set_query_vm_name =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_query_result,
+			vm_name, NULL);
+cmdline_parse_token_string_t cmd_set_query_status =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_query_result,
+			query_status, "enable#disable");
+
+cmdline_parse_inst_t cmd_set_query_set = {
+	.f = cmd_set_query_parsed,
+	.data = NULL,
+	.help_str = "set_query <vm_name> <enable|disable>, allow or disallow queries"
+			" for the specified VM",
+	.tokens = {
+		(void *)&cmd_set_query,
+		(void *)&cmd_set_query_vm_name,
+		(void *)&cmd_set_query_status,
+		NULL,
+	},
+};
+
 struct cmd_channels_status_op_result {
 	cmdline_fixed_string_t op;
 	cmdline_fixed_string_t vm_name;
@@ -353,7 +353,7 @@ cmd_channels_status_op_parsed(void *parsed_result, struct cmdline *cl,
 {
 	unsigned num_channels = 0, channel_num;
 	int changed;
-	unsigned channel_list[CHANNEL_CMDS_MAX_VM_CHANNELS];
+	unsigned int channel_list[RTE_MAX_LCORE];
 	char *token, *remaining, *tail_ptr;
 	struct cmd_channels_status_op_result *res = parsed_result;
 	enum channel_status status;
@@ -381,10 +381,10 @@ cmd_channels_status_op_parsed(void *parsed_result, struct cmdline *cl,
 		if ((errno != 0) || tail_ptr == NULL || (*tail_ptr != '\0'))
 			break;
 
-		if (channel_num == CHANNEL_CMDS_MAX_VM_CHANNELS) {
+		if (channel_num == RTE_MAX_LCORE) {
 			cmdline_printf(cl, "%u exceeds the maximum number of allowable "
 					"channels(%u) for VM '%s'\n", channel_num,
-					CHANNEL_CMDS_MAX_VM_CHANNELS, res->vm_name);
+					RTE_MAX_LCORE, res->vm_name);
 			return;
 		}
 		channel_list[num_channels++] = channel_num;
@@ -428,105 +428,6 @@ cmdline_parse_inst_t cmd_channels_status_op_set = {
 };
 
 /* *** CPU Frequency operations *** */
-struct cmd_show_cpu_freq_mask_result {
-	cmdline_fixed_string_t show_cpu_freq_mask;
-	uint64_t core_mask;
-};
-
-static void
-cmd_show_cpu_freq_mask_parsed(void *parsed_result, struct cmdline *cl,
-		       __attribute__((unused)) void *data)
-{
-	struct cmd_show_cpu_freq_mask_result *res = parsed_result;
-	unsigned i;
-	uint64_t mask = res->core_mask;
-	uint32_t freq;
-
-	for (i = 0; mask; mask &= ~(1ULL << i++)) {
-		if ((mask >> i) & 1) {
-			freq = power_manager_get_current_frequency(i);
-			if (freq > 0)
-				cmdline_printf(cl, "Core %u: %"PRId32"\n", i, freq);
-		}
-	}
-}
-
-cmdline_parse_token_string_t cmd_show_cpu_freq_mask =
-	TOKEN_STRING_INITIALIZER(struct cmd_show_cpu_freq_mask_result,
-			show_cpu_freq_mask, "show_cpu_freq_mask");
-cmdline_parse_token_num_t cmd_show_cpu_freq_mask_core_mask =
-	TOKEN_NUM_INITIALIZER(struct cmd_show_cpu_freq_mask_result,
-			core_mask, UINT64);
-
-cmdline_parse_inst_t cmd_show_cpu_freq_mask_set = {
-	.f = cmd_show_cpu_freq_mask_parsed,
-	.data = NULL,
-	.help_str = "show_cpu_freq_mask <mask>, Get the current frequency for each "
-			"core specified in the mask",
-	.tokens = {
-		(void *)&cmd_show_cpu_freq_mask,
-		(void *)&cmd_show_cpu_freq_mask_core_mask,
-		NULL,
-	},
-};
-
-struct cmd_set_cpu_freq_mask_result {
-	cmdline_fixed_string_t set_cpu_freq_mask;
-	uint64_t core_mask;
-	cmdline_fixed_string_t cmd;
-};
-
-static void
-cmd_set_cpu_freq_mask_parsed(void *parsed_result, struct cmdline *cl,
-			__attribute__((unused)) void *data)
-{
-	struct cmd_set_cpu_freq_mask_result *res = parsed_result;
-	int ret = -1;
-
-	if (!strcmp(res->cmd , "up"))
-		ret = power_manager_scale_mask_up(res->core_mask);
-	else if (!strcmp(res->cmd , "down"))
-		ret = power_manager_scale_mask_down(res->core_mask);
-	else if (!strcmp(res->cmd , "min"))
-		ret = power_manager_scale_mask_min(res->core_mask);
-	else if (!strcmp(res->cmd , "max"))
-		ret = power_manager_scale_mask_max(res->core_mask);
-	else if (!strcmp(res->cmd, "enable_turbo"))
-		ret = power_manager_enable_turbo_mask(res->core_mask);
-	else if (!strcmp(res->cmd, "disable_turbo"))
-		ret = power_manager_disable_turbo_mask(res->core_mask);
-	if (ret < 0) {
-		cmdline_printf(cl, "Error scaling core_mask(0x%"PRIx64") '%s' , not "
-				"all cores specified have been scaled\n",
-				res->core_mask, res->cmd);
-	};
-}
-
-cmdline_parse_token_string_t cmd_set_cpu_freq_mask =
-	TOKEN_STRING_INITIALIZER(struct cmd_set_cpu_freq_mask_result,
-			set_cpu_freq_mask, "set_cpu_freq_mask");
-cmdline_parse_token_num_t cmd_set_cpu_freq_mask_core_mask =
-	TOKEN_NUM_INITIALIZER(struct cmd_set_cpu_freq_mask_result,
-			core_mask, UINT64);
-cmdline_parse_token_string_t cmd_set_cpu_freq_mask_result =
-	TOKEN_STRING_INITIALIZER(struct cmd_set_cpu_freq_mask_result,
-			cmd, "up#down#min#max#enable_turbo#disable_turbo");
-
-cmdline_parse_inst_t cmd_set_cpu_freq_mask_set = {
-	.f = cmd_set_cpu_freq_mask_parsed,
-	.data = NULL,
-	.help_str = "set_cpu_freq <core_mask> <up|down|min|max|enable_turbo|disable_turbo>, adjust the current "
-			"frequency for the cores specified in <core_mask>",
-	.tokens = {
-		(void *)&cmd_set_cpu_freq_mask,
-		(void *)&cmd_set_cpu_freq_mask_core_mask,
-		(void *)&cmd_set_cpu_freq_mask_result,
-		NULL,
-	},
-};
-
-
-
 struct cmd_show_cpu_freq_result {
 	cmdline_fixed_string_t show_cpu_freq;
 	uint8_t core_num;
@@ -627,12 +528,10 @@ cmdline_parse_ctx_t main_ctx[] = {
 		(cmdline_parse_inst_t *)&cmd_channels_op_set,
 		(cmdline_parse_inst_t *)&cmd_channels_status_op_set,
 		(cmdline_parse_inst_t *)&cmd_show_vm_set,
-		(cmdline_parse_inst_t *)&cmd_show_cpu_freq_mask_set,
-		(cmdline_parse_inst_t *)&cmd_set_cpu_freq_mask_set,
 		(cmdline_parse_inst_t *)&cmd_show_cpu_freq_set,
 		(cmdline_parse_inst_t *)&cmd_set_cpu_freq_set,
-		(cmdline_parse_inst_t *)&cmd_set_pcpu_mask_set,
 		(cmdline_parse_inst_t *)&cmd_set_pcpu_set,
+		(cmdline_parse_inst_t *)&cmd_set_query_set,
 		NULL,
 };
 

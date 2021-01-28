@@ -41,7 +41,7 @@ enum rte_lcore_role_t {
 };
 
 /**
- * The type of process in a linuxapp, multi-process setup
+ * The type of process in a linux, multi-process setup
  */
 enum rte_proc_type_t {
 	RTE_PROC_AUTO = -1,   /* allow auto-detection of primary/secondary */
@@ -50,49 +50,6 @@ enum rte_proc_type_t {
 
 	RTE_PROC_INVALID
 };
-
-/**
- * The global RTE configuration structure.
- */
-struct rte_config {
-	uint32_t master_lcore;       /**< Id of the master lcore */
-	uint32_t lcore_count;        /**< Number of available logical cores. */
-	uint32_t numa_node_count;    /**< Number of detected NUMA nodes. */
-	uint32_t numa_nodes[RTE_MAX_NUMA_NODES]; /**< List of detected NUMA nodes. */
-	uint32_t service_lcore_count;/**< Number of available service cores. */
-	enum rte_lcore_role_t lcore_role[RTE_MAX_LCORE]; /**< State of cores. */
-
-	/** Primary or secondary configuration */
-	enum rte_proc_type_t process_type;
-
-	/** PA or VA mapping mode */
-	enum rte_iova_mode iova_mode;
-
-	/**
-	 * Pointer to memory configuration, which may be shared across multiple
-	 * DPDK instances
-	 */
-	struct rte_mem_config *mem_config;
-} __attribute__((__packed__));
-
-/**
- * Get the global configuration structure.
- *
- * @return
- *   A pointer to the global configuration structure.
- */
-struct rte_config *rte_eal_get_configuration(void);
-
-/**
- * Get a lcore's role.
- *
- * @param lcore_id
- *   The identifier of the lcore.
- * @return
- *   The role of the lcore.
- */
-enum rte_lcore_role_t rte_eal_lcore_role(unsigned lcore_id);
-
 
 /**
  * Get the process type in a multi-process setup
@@ -174,9 +131,6 @@ int rte_eal_iopl_init(void);
 int rte_eal_init(int argc, char **argv);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Clean up the Environment Abstraction Layer (EAL)
  *
  * This function must be called to release any internal resources that EAL has
@@ -187,7 +141,7 @@ int rte_eal_init(int argc, char **argv);
  * @return 0 Successfully released all internal EAL resources
  * @return -EFAULT There was an error in releasing all resources.
  */
-int __rte_experimental rte_eal_cleanup(void);
+int rte_eal_cleanup(void);
 
 /**
  * Check if a primary process is currently alive
@@ -265,6 +219,9 @@ typedef int (*rte_mp_async_reply_t)(const struct rte_mp_msg *request,
  * to response the messages from the corresponding component in its primary
  * process or secondary processes.
  *
+ * @note IPC may be unsupported in certain circumstances, so caller should check
+ *    for ENOTSUP error.
+ *
  * @param name
  *   The name argument plays as the nonredundant key to find the action.
  *
@@ -275,7 +232,8 @@ typedef int (*rte_mp_async_reply_t)(const struct rte_mp_msg *request,
  *  - 0 on success.
  *  - (<0) on failure.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_mp_action_register(const char *name, rte_mp_t action);
 
 /**
@@ -288,11 +246,15 @@ rte_mp_action_register(const char *name, rte_mp_t action);
  * not want to response the messages from the corresponding component in its
  * primary process or secondary processes.
  *
+ * @note IPC may be unsupported in certain circumstances, so caller should check
+ *    for ENOTSUP error.
+ *
  * @param name
  *   The name argument plays as the nonredundant key to find the action.
  *
  */
-void __rte_experimental
+__rte_experimental
+void
 rte_mp_action_unregister(const char *name);
 
 /**
@@ -311,7 +273,8 @@ rte_mp_action_unregister(const char *name);
  *  - On success, return 0.
  *  - On failure, return -1, and the reason will be stored in rte_errno.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_mp_sendmsg(struct rte_mp_msg *msg);
 
 /**
@@ -328,6 +291,9 @@ rte_mp_sendmsg(struct rte_mp_msg *msg);
  * @note This API must not be used inside memory-related or IPC callbacks, and
  *   no memory allocations should take place inside such callback.
  *
+ * @note IPC may be unsupported in certain circumstances, so caller should check
+ *    for ENOTSUP error.
+ *
  * @param req
  *   The req argument contains the customized request message.
  *
@@ -342,7 +308,8 @@ rte_mp_sendmsg(struct rte_mp_msg *msg);
  *  - On success, return 0.
  *  - On failure, return -1, and the reason will be stored in rte_errno.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
 	       const struct timespec *ts);
 
@@ -354,6 +321,9 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
  *
  * This function sends a request message to the peer process, and will not
  * block. Instead, reply will be received in a separate callback.
+ *
+ * @note IPC may be unsupported in certain circumstances, so caller should check
+ *    for ENOTSUP error.
  *
  * @param req
  *   The req argument contains the customized request message.
@@ -368,7 +338,8 @@ rte_mp_request_sync(struct rte_mp_msg *req, struct rte_mp_reply *reply,
  *  - On success, return 0.
  *  - On failure, return -1, and the reason will be stored in rte_errno.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_mp_request_async(struct rte_mp_msg *req, const struct timespec *ts,
 		rte_mp_async_reply_t clb);
 
@@ -396,7 +367,8 @@ rte_mp_request_async(struct rte_mp_msg *req, const struct timespec *ts,
  *  - On success, return 0.
  *  - On failure, return -1, and the reason will be stored in rte_errno.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_mp_reply(struct rte_mp_msg *msg, const char *peer);
 
 /**
@@ -432,21 +404,8 @@ rte_usage_hook_t
 rte_set_application_usage_hook(rte_usage_hook_t usage_func);
 
 /**
- * macro to get the lock of tailq in mem_config
- */
-#define RTE_EAL_TAILQ_RWLOCK         (&rte_eal_get_configuration()->mem_config->qlock)
-
-/**
- * macro to get the multiple lock of mempool shared by multiple-instance
- */
-#define RTE_EAL_MEMPOOL_RWLOCK            (&rte_eal_get_configuration()->mem_config->mplock)
-
-/**
  * Whether EAL is using huge pages (disabled by --no-huge option).
- * The no-huge mode cannot be used with UIO poll-mode drivers like igb/ixgbe.
- * It is useful for NIC drivers (e.g. librte_pmd_mlx4, librte_pmd_vmxnet3) or
- * crypto drivers (e.g. librte_crypto_nitrox) provided by third-parties such
- * as 6WIND.
+ * The no-huge mode is not compatible with all drivers or features.
  *
  * @return
  *   Nonzero if hugepages are enabled.

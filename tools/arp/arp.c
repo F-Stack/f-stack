@@ -230,6 +230,10 @@ main(int argc, char *argv[])
 	if (ifnameindex != NULL)
 		if_freenameindex(ifnameindex);
 
+#ifdef FSTACK
+		ff_ipc_exit();
+#endif
+
 	return (rtn);
 }
 
@@ -735,6 +739,9 @@ usage(void)
 		"       arp -p <f-stack proc_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
 		"       arp -p <f-stack proc_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
 		"       arp -p <f-stack proc_id> -f filename");
+#endif
+#ifdef FSTACK
+		ff_ipc_exit();
 #endif
 	exit(1);
 }

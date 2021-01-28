@@ -17,7 +17,7 @@ enum ecore_int_mode;
 
 struct qed_dev_info {
 	uint8_t num_hwfns;
-	uint8_t hw_mac[ETHER_ADDR_LEN];
+	uint8_t hw_mac[RTE_ETHER_ADDR_LEN];
 	bool is_mf_default;
 
 	/* FW version */
@@ -59,7 +59,7 @@ struct qed_dev_eth_info {
 	uint8_t num_queues;
 	uint8_t num_tc;
 
-	struct ether_addr port_mac;
+	struct rte_ether_addr port_mac;
 	uint16_t num_vlan_filters;
 	uint32_t num_mac_filters;
 

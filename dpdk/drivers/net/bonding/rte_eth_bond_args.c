@@ -7,11 +7,8 @@
 #include <rte_bus_pci.h>
 #include <rte_kvargs.h>
 
-#include <cmdline_parse.h>
-#include <cmdline_parse_etheraddr.h>
-
 #include "rte_eth_bond.h"
-#include "rte_eth_bond_private.h"
+#include "eth_bond_private.h"
 
 const char *pmd_bond_init_valid_arguments[] = {
 	PMD_BOND_SLAVE_PORT_KVARG,
@@ -63,11 +60,10 @@ find_port_id_by_dev_name(const char *name)
 static inline int
 bond_pci_addr_cmp(const struct rte_device *dev, const void *_pci_addr)
 {
-	struct rte_pci_device *pdev;
+	const struct rte_pci_device *pdev = RTE_DEV_TO_PCI_CONST(dev);
 	const struct rte_pci_addr *paddr = _pci_addr;
 
-	pdev = RTE_DEV_TO_PCI(*(struct rte_device **)(void *)&dev);
-	return rte_eal_compare_pci_addr(&pdev->addr, paddr);
+	return rte_pci_addr_cmp(&pdev->addr, paddr);
 }
 
 /**
@@ -84,7 +80,7 @@ parse_port_id(const char *port_str)
 
 	pci_bus = rte_bus_find_by_name("pci");
 	if (pci_bus == NULL) {
-		RTE_LOG(ERR, PMD, "unable to find PCI bus\n");
+		RTE_BOND_LOG(ERR, "unable to find PCI bus\n");
 		return -1;
 	}
 
@@ -281,8 +277,7 @@ bond_ethdev_parse_bond_mac_addr_kvarg(const char *key __rte_unused,
 		return -1;
 
 	/* Parse MAC */
-	return cmdline_parse_etheraddr(NULL, value, extra_args,
-		sizeof(struct ether_addr));
+	return rte_ether_unformat_addr(value, extra_args);
 }
 
 int

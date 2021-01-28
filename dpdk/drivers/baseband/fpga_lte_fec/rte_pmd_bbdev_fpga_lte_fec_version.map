@@ -1,0 +1,10 @@
+DPDK_20.0 {
+	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	fpga_lte_fec_configure;
+
+};

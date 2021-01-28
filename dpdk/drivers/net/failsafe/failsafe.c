@@ -3,6 +3,8 @@
  * Copyright 2017 Mellanox Technologies, Ltd
  */
 
+#include <stdbool.h>
+
 #include <rte_alarm.h>
 #include <rte_malloc.h>
 #include <rte_ethdev_driver.h>
@@ -30,6 +32,8 @@ fs_sub_device_alloc(struct rte_eth_dev *dev,
 	uint8_t nb_subs;
 	int ret;
 	int i;
+	struct sub_device *sdev;
+	uint8_t sdev_iterator;
 
 	ret = failsafe_args_count_subdevice(dev, params);
 	if (ret)
@@ -51,6 +55,10 @@ fs_sub_device_alloc(struct rte_eth_dev *dev,
 	for (i = 1; i < nb_subs; i++)
 		PRIV(dev)->subs[i - 1].next = PRIV(dev)->subs + i;
 	PRIV(dev)->subs[i - 1].next = PRIV(dev)->subs;
+
+	FOREACH_SUBDEV(sdev, sdev_iterator, dev) {
+		sdev->sdev_port_id = RTE_MAX_ETHPORTS;
+	}
 	return 0;
 }
 
@@ -158,7 +166,7 @@ static int
 fs_eth_dev_create(struct rte_vdev_device *vdev)
 {
 	struct rte_eth_dev *dev;
-	struct ether_addr *mac;
+	struct rte_ether_addr *mac;
 	struct fs_priv *priv;
 	struct sub_device *sdev;
 	const char *params;
@@ -181,7 +189,7 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		return -1;
 	}
 	priv = PRIV(dev);
-	priv->dev = dev;
+	priv->data = dev->data;
 	dev->dev_ops = &failsafe_ops;
 	dev->data->mac_addrs = &PRIV(dev)->mac_addrs[0];
 	dev->data->dev_link = eth_link;
@@ -245,8 +253,8 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		 */
 		FOREACH_SUBDEV(sdev, i, dev)
 			if (sdev->state >= DEV_PROBED) {
-				ether_addr_copy(&ETH(sdev)->data->mac_addrs[0],
-						mac);
+				rte_ether_addr_copy(
+					&ETH(sdev)->data->mac_addrs[0], mac);
 				break;
 			}
 		/*
@@ -257,7 +265,7 @@ fs_eth_dev_create(struct rte_vdev_device *vdev)
 		 * probed slaves.
 		 */
 		if (i == priv->subs_tail)
-			eth_random_addr(&mac->addr_bytes[0]);
+			rte_eth_random_addr(&mac->addr_bytes[0]);
 	}
 	INFO("MAC address is %02x:%02x:%02x:%02x:%02x:%02x",
 		mac->addr_bytes[0], mac->addr_bytes[1],
@@ -312,11 +320,28 @@ fs_rte_eth_free(const char *name)
 	return ret;
 }
 
+static bool
+devargs_already_listed(struct rte_devargs *devargs)
+{
+	struct rte_devargs *list_da;
+
+	RTE_EAL_DEVARGS_FOREACH(devargs->bus->name, list_da) {
+		if (strcmp(list_da->name, devargs->name) == 0)
+			/* devargs already in the list */
+			return true;
+	}
+	return false;
+}
+
 static int
 rte_pmd_failsafe_probe(struct rte_vdev_device *vdev)
 {
 	const char *name;
 	struct rte_eth_dev *eth_dev;
+	struct sub_device  *sdev;
+	struct rte_devargs devargs;
+	uint8_t i;
+	int ret;
 
 	name = rte_vdev_device_name(vdev);
 	INFO("Initializing " FAILSAFE_DRIVER_NAME " for %s",
@@ -329,9 +354,37 @@ rte_pmd_failsafe_probe(struct rte_vdev_device *vdev)
 			ERROR("Failed to probe %s", name);
 			return -1;
 		}
-		/* TODO: request info from primary to set up Rx and Tx */
 		eth_dev->dev_ops = &failsafe_ops;
 		eth_dev->device = &vdev->device;
+		eth_dev->rx_pkt_burst = (eth_rx_burst_t)&failsafe_rx_burst;
+		eth_dev->tx_pkt_burst = (eth_tx_burst_t)&failsafe_tx_burst;
+		/*
+		 * Failsafe will attempt to probe all of its sub-devices.
+		 * Any failure in sub-devices is not a fatal error.
+		 * A sub-device can be plugged later.
+		 */
+		FOREACH_SUBDEV(sdev, i, eth_dev) {
+			/* skip empty devargs */
+			if (sdev->devargs.name[0] == '\0')
+				continue;
+
+			/* rebuild devargs to be able to get the bus name. */
+			ret = rte_devargs_parse(&devargs,
+						sdev->devargs.name);
+			if (ret != 0) {
+				ERROR("Failed to parse devargs %s",
+					devargs.name);
+				continue;
+			}
+			if (!devargs_already_listed(&devargs)) {
+				ret = rte_dev_probe(devargs.name);
+				if (ret < 0) {
+					ERROR("Failed to probe devargs %s",
+					      devargs.name);
+					continue;
+				}
+			}
+		}
 		rte_eth_dev_probing_finish(eth_dev);
 		return 0;
 	}

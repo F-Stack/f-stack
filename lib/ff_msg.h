@@ -44,6 +44,7 @@ enum FF_MSG_TYPE {
     FF_NGCTL,
     FF_IPFW_CTL,
     FF_TRAFFIC,
+    FF_KNICTL,
 
     /*
      * to add other msg type before FF_MSG_NUM
@@ -106,6 +107,25 @@ struct ff_traffic_args {
     uint64_t tx_bytes;
 };
 
+enum FF_KNICTL_CMD {
+    FF_KNICTL_CMD_GET,
+    FF_KNICTL_CMD_SET,
+    FF_KNICTL_CMD_UNKNOWN,
+};
+
+enum FF_KNICTL_ACTION {
+    FF_KNICTL_ACTION_DEFAULT,
+    FF_KNICTL_ACTION_ALL_TO_KNI,
+    FF_KNICTL_ACTION_ALL_TO_FF,
+    FF_KNICTL_ACTION_MAX
+};
+
+struct ff_knictl_args {
+    int kni_cmd;
+    int kni_action;
+};
+
+
 #define MAX_MSG_BUF_SIZE 10240
 
 /* structure of ipc msg */
@@ -117,6 +137,8 @@ struct ff_msg {
     size_t buf_len;
     /* Address of segment buffer. */
     char *buf_addr;
+    char *original_buf;
+    size_t original_buf_len;
 
     union {
         struct ff_sysctl_args sysctl;
@@ -126,6 +148,7 @@ struct ff_msg {
         struct ff_ngctl_args ngctl;
         struct ff_ipfw_args ipfw;
         struct ff_traffic_args traffic;
+        struct ff_knictl_args knictl;
     };
 } __attribute__((packed)) __rte_cache_aligned;
 

@@ -31,9 +31,11 @@ enum {
 
 struct mbox {
 	int init_once;
+	uint8_t ready;
 	uint8_t *ram_mbox_base; /* Base address of mbox message stored in ram */
 	uint8_t *reg; /* Store to this register triggers PF mbox interrupt */
 	uint16_t tag_own; /* Last tag which was written to own channel */
+	uint16_t domain; /* Domain */
 	rte_spinlock_t lock;
 };
 
@@ -57,6 +59,13 @@ struct mbox_ram_hdr {
 			uint16_t len;
 		};
 	};
+};
+
+/* MBOX interface version message */
+struct mbox_intf_ver {
+	uint32_t platform:12;
+	uint32_t major:10;
+	uint32_t minor:10;
 };
 
 int octeontx_logtype_mbox;
@@ -190,7 +199,7 @@ mbox_send(struct mbox *m, struct octeontx_mbox_hdr *hdr, const void *txmsg,
 }
 
 int
-octeontx_mbox_set_ram_mbox_base(uint8_t *ram_mbox_base)
+octeontx_mbox_set_ram_mbox_base(uint8_t *ram_mbox_base, uint16_t domain)
 {
 	struct mbox *m = &octeontx_mbox;
 
@@ -207,13 +216,14 @@ octeontx_mbox_set_ram_mbox_base(uint8_t *ram_mbox_base)
 	if (m->reg != NULL) {
 		rte_spinlock_init(&m->lock);
 		m->init_once = 1;
+		m->domain = domain;
 	}
 
 	return 0;
 }
 
 int
-octeontx_mbox_set_reg(uint8_t *reg)
+octeontx_mbox_set_reg(uint8_t *reg, uint16_t domain)
 {
 	struct mbox *m = &octeontx_mbox;
 
@@ -230,6 +240,7 @@ octeontx_mbox_set_reg(uint8_t *reg)
 	if (m->ram_mbox_base != NULL) {
 		rte_spinlock_init(&m->lock);
 		m->init_once = 1;
+		m->domain = domain;
 	}
 
 	return 0;
@@ -246,4 +257,101 @@ octeontx_mbox_send(struct octeontx_mbox_hdr *hdr, void *txdata,
 		return -EINVAL;
 
 	return mbox_send(m, hdr, txdata, txlen, rxdata, rxlen);
+}
+
+static int
+octeontx_start_domain(void)
+{
+	struct octeontx_mbox_hdr hdr = {0};
+	int result = -EINVAL;
+
+	hdr.coproc = NO_COPROC;
+	hdr.msg = RM_START_APP;
+
+	result = octeontx_mbox_send(&hdr, NULL, 0, NULL, 0);
+	if (result != 0) {
+		mbox_log_err("Could not start domain. Err=%d. FuncErr=%d\n",
+			     result, hdr.res_code);
+		result = -EINVAL;
+	}
+
+	return result;
+}
+
+static int
+octeontx_check_mbox_version(struct mbox_intf_ver app_intf_ver,
+			    struct mbox_intf_ver *intf_ver)
+{
+	struct mbox_intf_ver kernel_intf_ver = {0};
+	struct octeontx_mbox_hdr hdr = {0};
+	int result = 0;
+
+
+	hdr.coproc = NO_COPROC;
+	hdr.msg = RM_INTERFACE_VERSION;
+
+	result = octeontx_mbox_send(&hdr, &app_intf_ver, sizeof(app_intf_ver),
+			&kernel_intf_ver, sizeof(kernel_intf_ver));
+	if (result != sizeof(kernel_intf_ver)) {
+		mbox_log_err("Could not send interface version. Err=%d. FuncErr=%d\n",
+			     result, hdr.res_code);
+		result = -EINVAL;
+	}
+
+	if (intf_ver)
+		*intf_ver = kernel_intf_ver;
+
+	if (app_intf_ver.platform != kernel_intf_ver.platform ||
+			app_intf_ver.major != kernel_intf_ver.major ||
+			app_intf_ver.minor != kernel_intf_ver.minor)
+		result = -EINVAL;
+
+	return result;
+}
+
+int
+octeontx_mbox_init(void)
+{
+	const struct mbox_intf_ver MBOX_INTERFACE_VERSION = {
+		.platform = 0x01,
+		.major = 0x01,
+		.minor = 0x03
+	};
+	struct mbox_intf_ver rm_intf_ver = {0};
+	struct mbox *m = &octeontx_mbox;
+	int ret;
+
+	if (m->ready)
+		return 0;
+
+	ret = octeontx_start_domain();
+	if (ret < 0) {
+		m->init_once = 0;
+		return ret;
+	}
+
+	ret = octeontx_check_mbox_version(MBOX_INTERFACE_VERSION,
+					  &rm_intf_ver);
+	if (ret < 0) {
+		mbox_log_err("MBOX version: Kernel(%d.%d.%d) != DPDK(%d.%d.%d)",
+			     rm_intf_ver.platform, rm_intf_ver.major,
+			     rm_intf_ver.minor, MBOX_INTERFACE_VERSION.platform,
+			     MBOX_INTERFACE_VERSION.major,
+			     MBOX_INTERFACE_VERSION.minor);
+		m->init_once = 0;
+		return -EINVAL;
+	}
+
+	m->ready = 1;
+	rte_mb();
+
+	return 0;
+}
+
+uint16_t
+octeontx_get_global_domain(void)
+{
+	struct mbox *m = &octeontx_mbox;
+
+	return m->domain;
 }

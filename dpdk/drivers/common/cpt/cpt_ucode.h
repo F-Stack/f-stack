@@ -55,7 +55,7 @@ cpt_is_algo_supported(struct rte_crypto_sym_xform *xform)
 }
 
 static __rte_always_inline void
-gen_key_snow3g(uint8_t *ck, uint32_t *keyx)
+gen_key_snow3g(const uint8_t *ck, uint32_t *keyx)
 {
 	int i, base;
 
@@ -89,8 +89,7 @@ cpt_fc_ciph_validate_key_aes(uint16_t key_len)
 }
 
 static __rte_always_inline int
-cpt_fc_ciph_validate_key(cipher_type_t type, struct cpt_ctx *cpt_ctx,
-		uint16_t key_len)
+cpt_fc_ciph_set_type(cipher_type_t type, struct cpt_ctx *ctx, uint16_t key_len)
 {
 	int fc_type = 0;
 	switch (type) {
@@ -125,7 +124,7 @@ cpt_fc_ciph_validate_key(cipher_type_t type, struct cpt_ctx *cpt_ctx,
 		if (unlikely(key_len != 16))
 			return -1;
 		/* No support for AEAD yet */
-		if (unlikely(cpt_ctx->hash_type))
+		if (unlikely(ctx->hash_type))
 			return -1;
 		fc_type = ZUC_SNOW3G;
 		break;
@@ -134,14 +133,16 @@ cpt_fc_ciph_validate_key(cipher_type_t type, struct cpt_ctx *cpt_ctx,
 		if (unlikely(key_len != 16))
 			return -1;
 		/* No support for AEAD yet */
-		if (unlikely(cpt_ctx->hash_type))
+		if (unlikely(ctx->hash_type))
 			return -1;
 		fc_type = KASUMI;
 		break;
 	default:
 		return -1;
 	}
-	return fc_type;
+
+	ctx->fc_type = fc_type;
+	return 0;
 }
 
 static __rte_always_inline void
@@ -174,63 +175,57 @@ cpt_fc_ciph_set_key_set_aes_key_type(mc_fc_context_t *fctx, uint16_t key_len)
 }
 
 static __rte_always_inline void
-cpt_fc_ciph_set_key_snow3g_uea2(struct cpt_ctx *cpt_ctx, uint8_t *key,
+cpt_fc_ciph_set_key_snow3g_uea2(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
 	uint32_t keyx[4];
 	cpt_ctx->snow3g = 1;
 	gen_key_snow3g(key, keyx);
 	memcpy(cpt_ctx->zs_ctx.ci_key, keyx, key_len);
-	cpt_ctx->fc_type = ZUC_SNOW3G;
 	cpt_ctx->zsk_flags = 0;
 }
 
 static __rte_always_inline void
-cpt_fc_ciph_set_key_zuc_eea3(struct cpt_ctx *cpt_ctx, uint8_t *key,
+cpt_fc_ciph_set_key_zuc_eea3(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
 	cpt_ctx->snow3g = 0;
 	memcpy(cpt_ctx->zs_ctx.ci_key, key, key_len);
 	memcpy(cpt_ctx->zs_ctx.zuc_const, zuc_d, 32);
-	cpt_ctx->fc_type = ZUC_SNOW3G;
 	cpt_ctx->zsk_flags = 0;
 }
 
 static __rte_always_inline void
-cpt_fc_ciph_set_key_kasumi_f8_ecb(struct cpt_ctx *cpt_ctx, uint8_t *key,
+cpt_fc_ciph_set_key_kasumi_f8_ecb(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
 	cpt_ctx->k_ecb = 1;
 	memcpy(cpt_ctx->k_ctx.ci_key, key, key_len);
 	cpt_ctx->zsk_flags = 0;
-	cpt_ctx->fc_type = KASUMI;
 }
 
 static __rte_always_inline void
-cpt_fc_ciph_set_key_kasumi_f8_cbc(struct cpt_ctx *cpt_ctx, uint8_t *key,
+cpt_fc_ciph_set_key_kasumi_f8_cbc(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
 	memcpy(cpt_ctx->k_ctx.ci_key, key, key_len);
 	cpt_ctx->zsk_flags = 0;
-	cpt_ctx->fc_type = KASUMI;
 }
 
 static __rte_always_inline int
-cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, uint8_t *key,
+cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, const uint8_t *key,
 		    uint16_t key_len, uint8_t *salt)
 {
 	struct cpt_ctx *cpt_ctx = ctx;
 	mc_fc_context_t *fctx = &cpt_ctx->fctx;
 	uint64_t *ctrl_flags = NULL;
-	int fc_type;
+	int ret;
 
-	/* Validate key before proceeding */
-	fc_type = cpt_fc_ciph_validate_key(type, cpt_ctx, key_len);
-	if (unlikely(fc_type == -1))
+	ret = cpt_fc_ciph_set_type(type, cpt_ctx, key_len);
+	if (unlikely(ret))
 		return -1;
 
-	if (fc_type == FC_GEN) {
-		cpt_ctx->fc_type = FC_GEN;
+	if (cpt_ctx->fc_type == FC_GEN) {
 		ctrl_flags = (uint64_t *)&(fctx->enc.enc_ctrl.flags);
 		*ctrl_flags = rte_be_to_cpu_64(*ctrl_flags);
 		/*
@@ -303,7 +298,7 @@ cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, uint8_t *key,
 		cpt_fc_ciph_set_key_kasumi_f8_cbc(cpt_ctx, key, key_len);
 		goto success;
 	default:
-		break;
+		return -1;
 	}
 
 	/* Only for FC_GEN case */
@@ -315,7 +310,8 @@ cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, uint8_t *key,
 	memcpy(fctx->enc.encr_key, key, key_len);
 
 fc_success:
-	*ctrl_flags = rte_cpu_to_be_64(*ctrl_flags);
+	if (ctrl_flags != NULL)
+		*ctrl_flags = rte_cpu_to_be_64(*ctrl_flags);
 
 success:
 	cpt_ctx->enc_cipher = type;
@@ -381,7 +377,7 @@ fill_sg_comp_from_iov(sg_comp_t *list,
 {
 	int32_t j;
 	uint32_t extra_len = extra_buf ? extra_buf->size : 0;
-	uint32_t size = *psize - extra_len;
+	uint32_t size = *psize;
 	buf_ptr_t *bufs;
 
 	bufs = from->bufs;
@@ -389,9 +385,6 @@ fill_sg_comp_from_iov(sg_comp_t *list,
 		phys_addr_t e_dma_addr;
 		uint32_t e_len;
 		sg_comp_t *to = &list[i >> 2];
-
-		if (!bufs[j].size)
-			continue;
 
 		if (unlikely(from_offset)) {
 			if (from_offset >= bufs[j].size) {
@@ -424,18 +417,19 @@ fill_sg_comp_from_iov(sg_comp_t *list,
 				to->u.s.len[i % 4] = rte_cpu_to_be_16(e_len);
 			}
 
+			extra_len = RTE_MIN(extra_len, size);
 			/* Insert extra data ptr */
 			if (extra_len) {
 				i++;
 				to = &list[i >> 2];
 				to->u.s.len[i % 4] =
-					rte_cpu_to_be_16(extra_buf->size);
+					rte_cpu_to_be_16(extra_len);
 				to->ptr[i % 4] =
 					rte_cpu_to_be_64(extra_buf->dma_addr);
-
-				/* size already decremented by extra len */
+				size -= extra_len;
 			}
 
+			next_len = RTE_MIN(next_len, size);
 			/* insert the rest of the data */
 			if (next_len) {
 				i++;
@@ -458,7 +452,7 @@ fill_sg_comp_from_iov(sg_comp_t *list,
 	return (uint32_t)i;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_digest_gen_prep(uint32_t flags,
 		    uint64_t d_lens,
 		    digest_params_t *params,
@@ -467,7 +461,6 @@ cpt_digest_gen_prep(uint32_t flags,
 {
 	struct cpt_request_info *req;
 	uint32_t size, i;
-	int32_t m_size;
 	uint16_t data_len, mac_len, key_len;
 	auth_type_t hash_type;
 	buf_ptr_t *meta_p;
@@ -483,21 +476,11 @@ cpt_digest_gen_prep(uint32_t flags,
 	uint64_t c_dma, m_dma;
 	opcode_info_t opcode;
 
-	if (!params || !params->ctx_buf.vaddr)
-		return ERR_BAD_INPUT_ARG;
-
 	ctx = params->ctx_buf.vaddr;
 	meta_p = &params->meta_buf;
 
-	if (!meta_p->vaddr || !meta_p->dma_addr)
-		return ERR_BAD_INPUT_ARG;
-
-	if (meta_p->size < sizeof(struct cpt_request_info))
-		return ERR_BAD_INPUT_ARG;
-
 	m_vaddr = meta_p->vaddr;
 	m_dma = meta_p->dma_addr;
-	m_size = meta_p->size;
 
 	/*
 	 * Save initial space that followed app data for completion code &
@@ -513,14 +496,12 @@ cpt_digest_gen_prep(uint32_t flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	req = m_vaddr;
 
 	size = sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	hash_type = ctx->hash_type;
 	mac_len = ctx->mac_len;
@@ -529,16 +510,15 @@ cpt_digest_gen_prep(uint32_t flags,
 
 	/*GP op header */
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param2 = rte_cpu_to_be_16(((uint16_t)hash_type << 8));
+	vq_cmd_w0.s.param2 = ((uint16_t)hash_type << 8);
 	if (ctx->hmac) {
 		opcode.s.major = CPT_MAJOR_OP_HMAC | CPT_DMA_MODE;
-		vq_cmd_w0.s.param1 = rte_cpu_to_be_16(key_len);
-		vq_cmd_w0.s.dlen =
-			rte_cpu_to_be_16((data_len + ROUNDUP8(key_len)));
+		vq_cmd_w0.s.param1 = key_len;
+		vq_cmd_w0.s.dlen = data_len + ROUNDUP8(key_len);
 	} else {
 		opcode.s.major = CPT_MAJOR_OP_HASH | CPT_DMA_MODE;
 		vq_cmd_w0.s.param1 = 0;
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(data_len);
+		vq_cmd_w0.s.dlen = data_len;
 	}
 
 	opcode.s.minor = 0;
@@ -549,10 +529,10 @@ cpt_digest_gen_prep(uint32_t flags,
 		/* Minor op is passthrough */
 		opcode.s.minor = 0x03;
 		/* Send out completion code only */
-		vq_cmd_w0.s.param2 = rte_cpu_to_be_16(0x1);
+		vq_cmd_w0.s.param2 = 0x1;
 	}
 
-	vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+	vq_cmd_w0.s.opcode = opcode.flags;
 
 	/* DPTR has SG list */
 	in_buffer = m_vaddr;
@@ -582,10 +562,10 @@ cpt_digest_gen_prep(uint32_t flags,
 	if (size) {
 		i = fill_sg_comp_from_iov(gather_comp, i, params->src_iov,
 					  0, &size, NULL, 0);
-		if (size) {
+		if (unlikely(size)) {
 			CPT_LOG_DP_DEBUG("Insufficient dst IOV size, short"
 					 " by %dB", size);
-			return ERR_BAD_INPUT_ARG;
+			return;
 		}
 	} else {
 		/*
@@ -605,8 +585,10 @@ cpt_digest_gen_prep(uint32_t flags,
 	scatter_comp = (sg_comp_t *)((uint8_t *)gather_comp + g_size_bytes);
 
 	if (flags & VALID_MAC_BUF) {
-		if (params->mac_buf.size < mac_len)
-			return ERR_BAD_INPUT_ARG;
+		if (unlikely(params->mac_buf.size < mac_len)) {
+			CPT_LOG_DP_ERR("Insufficient MAC size");
+			return;
+		}
 
 		size = mac_len;
 		i = fill_sg_comp_from_buf_min(scatter_comp, i,
@@ -616,10 +598,10 @@ cpt_digest_gen_prep(uint32_t flags,
 		i = fill_sg_comp_from_iov(scatter_comp, i,
 					  params->src_iov, data_len,
 					  &size, NULL, 0);
-		if (size) {
-			CPT_LOG_DP_DEBUG("Insufficient dst IOV size, short by"
-					 " %dB", size);
-			return ERR_BAD_INPUT_ARG;
+		if (unlikely(size)) {
+			CPT_LOG_DP_ERR("Insufficient dst IOV size, short by"
+				       " %dB", size);
+			return;
 		}
 	}
 
@@ -629,11 +611,10 @@ cpt_digest_gen_prep(uint32_t flags,
 	size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 	/* This is DPTR len incase of SG mode */
-	vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+	vq_cmd_w0.s.dlen = size;
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* cpt alternate completion address saved earlier */
 	req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -642,11 +623,6 @@ cpt_digest_gen_prep(uint32_t flags,
 
 	req->ist.ei1 = dptr_dma;
 	req->ist.ei2 = rptr_dma;
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	/* vq command w3 */
 	vq_cmd_w3.u64 = 0;
@@ -663,10 +639,10 @@ cpt_digest_gen_prep(uint32_t flags,
 	req->op = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_enc_hmac_prep(uint32_t flags,
 		  uint64_t d_offs,
 		  uint64_t d_lens,
@@ -691,13 +667,11 @@ cpt_enc_hmac_prep(uint32_t flags,
 	vq_cmd_word3_t vq_cmd_w3;
 	void *c_vaddr;
 	uint64_t c_dma;
-	int32_t m_size;
 	opcode_info_t opcode;
 
 	meta_p = &fc_params->meta_buf;
 	m_vaddr = meta_p->vaddr;
 	m_dma = meta_p->dma_addr;
-	m_size = meta_p->size;
 
 	encr_offset = ENCR_OFFSET(d_offs);
 	auth_offset = AUTH_OFFSET(d_offs);
@@ -733,7 +707,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* start cpt request info struct at 8 byte boundary */
 	size = (uint8_t *)RTE_PTR_ALIGN(m_vaddr, 8) -
@@ -744,7 +717,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 	size += sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	if (hash_type == GMAC_TYPE)
 		encr_data_len = 0;
@@ -805,8 +777,8 @@ cpt_enc_hmac_prep(uint32_t flags,
 
 	/* GP op header */
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param1 = rte_cpu_to_be_16(encr_data_len);
-	vq_cmd_w0.s.param2 = rte_cpu_to_be_16(auth_data_len);
+	vq_cmd_w0.s.param1 = encr_data_len;
+	vq_cmd_w0.s.param2 = auth_data_len;
 	/*
 	 * In 83XX since we have a limitation of
 	 * IV & Offset control word not part of instruction
@@ -833,9 +805,9 @@ cpt_enc_hmac_prep(uint32_t flags,
 		req->alternate_caddr = (uint64_t *)((uint8_t *)dm_vaddr
 						    + outputlen - iv_len);
 
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(inputlen + OFF_CTRL_LEN);
+		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr
@@ -864,11 +836,10 @@ cpt_enc_hmac_prep(uint32_t flags,
 
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
-		m_size -= size;
 
 		opcode.s.major |= CPT_DMA_MODE;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr
@@ -922,7 +893,7 @@ cpt_enc_hmac_prep(uint32_t flags,
 			if (unlikely(size)) {
 				CPT_LOG_DP_ERR("Insufficient buffer space,"
 					       " size %d needed", size);
-				return ERR_BAD_INPUT_ARG;
+				return;
 			}
 		}
 		((uint16_t *)in_buffer)[2] = rte_cpu_to_be_16(i);
@@ -964,8 +935,12 @@ cpt_enc_hmac_prep(uint32_t flags,
 							aad_buf,
 							aad_offset);
 				}
-				if (size)
-					return ERR_BAD_INPUT_ARG;
+				if (unlikely(size)) {
+					CPT_LOG_DP_ERR("Insufficient buffer"
+						       " space, size %d needed",
+						       size);
+					return;
+				}
 			}
 			/* mac_data */
 			if (mac_len) {
@@ -998,7 +973,7 @@ cpt_enc_hmac_prep(uint32_t flags,
 					CPT_LOG_DP_ERR("Insufficient buffer"
 						       " space, size %d needed",
 						       size);
-					return ERR_BAD_INPUT_ARG;
+					return;
 				}
 			}
 		}
@@ -1008,11 +983,10 @@ cpt_enc_hmac_prep(uint32_t flags,
 		size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 		/* This is DPTR len incase of SG mode */
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+		vq_cmd_w0.s.dlen = size;
 
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
-		m_size -= size;
 
 		/* cpt alternate completion address saved earlier */
 		req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -1022,12 +996,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 		req->ist.ei1 = dptr_dma;
 		req->ist.ei2 = rptr_dma;
 	}
-
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	ctx_dma = fc_params->ctx_buf.dma_addr +
 		offsetof(struct cpt_ctx, fctx);
@@ -1048,10 +1016,10 @@ cpt_enc_hmac_prep(uint32_t flags,
 	req->op  = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_dec_hmac_prep(uint32_t flags,
 		  uint64_t d_offs,
 		  uint64_t d_lens,
@@ -1062,7 +1030,7 @@ cpt_dec_hmac_prep(uint32_t flags,
 	uint32_t iv_offset = 0, size;
 	int32_t inputlen, outputlen, enc_dlen, auth_dlen;
 	struct cpt_ctx *cpt_ctx;
-	int32_t hash_type, mac_len, m_size;
+	int32_t hash_type, mac_len;
 	uint8_t iv_len = 16;
 	struct cpt_request_info *req;
 	buf_ptr_t *meta_p, *aad_buf = NULL;
@@ -1080,7 +1048,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 	meta_p = &fc_params->meta_buf;
 	m_vaddr = meta_p->vaddr;
 	m_dma = meta_p->dma_addr;
-	m_size = meta_p->size;
 
 	encr_offset = ENCR_OFFSET(d_offs);
 	auth_offset = AUTH_OFFSET(d_offs);
@@ -1146,7 +1113,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* start cpt request info structure at 8 byte alignment */
 	size = (uint8_t *)RTE_PTR_ALIGN(m_vaddr, 8) -
@@ -1157,7 +1123,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 	size += sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* Decryption */
 	opcode.s.major = CPT_MAJOR_OP_FC;
@@ -1178,8 +1143,8 @@ cpt_dec_hmac_prep(uint32_t flags,
 		encr_offset = inputlen;
 
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param1 = rte_cpu_to_be_16(encr_data_len);
-	vq_cmd_w0.s.param2 = rte_cpu_to_be_16(auth_data_len);
+	vq_cmd_w0.s.param1 = encr_data_len;
+	vq_cmd_w0.s.param2 = auth_data_len;
 
 	/*
 	 * In 83XX since we have a limitation of
@@ -1212,9 +1177,9 @@ cpt_dec_hmac_prep(uint32_t flags,
 		 * hmac.
 		 */
 
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(inputlen + OFF_CTRL_LEN);
+		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr +
@@ -1244,11 +1209,10 @@ cpt_dec_hmac_prep(uint32_t flags,
 
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
-		m_size -= size;
 
 		opcode.s.major |= CPT_DMA_MODE;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr +
@@ -1303,8 +1267,12 @@ cpt_dec_hmac_prep(uint32_t flags,
 							aad_buf,
 							aad_offset);
 				}
-				if (size)
-					return ERR_BAD_INPUT_ARG;
+				if (unlikely(size)) {
+					CPT_LOG_DP_ERR("Insufficient buffer"
+						       " space, size %d needed",
+						       size);
+					return;
+				}
 			}
 
 			/* mac data */
@@ -1325,8 +1293,10 @@ cpt_dec_hmac_prep(uint32_t flags,
 					uint32_t aad_offset = aad_len ?
 						passthrough_len : 0;
 
-					if (!fc_params->src_iov)
-						return ERR_BAD_INPUT_ARG;
+					if (unlikely(!fc_params->src_iov)) {
+						CPT_LOG_DP_ERR("Bad input args");
+						return;
+					}
 
 					i = fill_sg_comp_from_iov(
 							gather_comp, i,
@@ -1336,8 +1306,12 @@ cpt_dec_hmac_prep(uint32_t flags,
 							aad_offset);
 				}
 
-				if (size)
-					return ERR_BAD_INPUT_ARG;
+				if (unlikely(size)) {
+					CPT_LOG_DP_ERR("Insufficient buffer"
+						       " space, size %d needed",
+						       size);
+					return;
+				}
 			}
 		}
 		((uint16_t *)in_buffer)[2] = rte_cpu_to_be_16(i);
@@ -1370,8 +1344,10 @@ cpt_dec_hmac_prep(uint32_t flags,
 				uint32_t aad_offset = aad_len ?
 					passthrough_len : 0;
 
-				if (!fc_params->dst_iov)
-					return ERR_BAD_INPUT_ARG;
+				if (unlikely(!fc_params->dst_iov)) {
+					CPT_LOG_DP_ERR("Bad input args");
+					return;
+				}
 
 				i = fill_sg_comp_from_iov(scatter_comp, i,
 							  fc_params->dst_iov, 0,
@@ -1379,8 +1355,11 @@ cpt_dec_hmac_prep(uint32_t flags,
 							  aad_offset);
 			}
 
-			if (unlikely(size))
-				return ERR_BAD_INPUT_ARG;
+			if (unlikely(size)) {
+				CPT_LOG_DP_ERR("Insufficient buffer space,"
+					       " size %d needed", size);
+				return;
+			}
 		}
 
 		((uint16_t *)in_buffer)[3] = rte_cpu_to_be_16(i);
@@ -1389,11 +1368,10 @@ cpt_dec_hmac_prep(uint32_t flags,
 		size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 		/* This is DPTR len incase of SG mode */
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+		vq_cmd_w0.s.dlen = size;
 
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
-		m_size -= size;
 
 		/* cpt alternate completion address saved earlier */
 		req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -1404,12 +1382,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 		req->ist.ei1 = dptr_dma;
 		req->ist.ei2 = rptr_dma;
 	}
-
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	ctx_dma = fc_params->ctx_buf.dma_addr +
 		offsetof(struct cpt_ctx, fctx);
@@ -1430,10 +1402,10 @@ cpt_dec_hmac_prep(uint32_t flags,
 	req->op = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 			uint64_t d_offs,
 			uint64_t d_lens,
@@ -1450,7 +1422,7 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	buf_ptr_t *buf_p;
 	uint32_t encr_offset = 0, auth_offset = 0;
 	uint32_t encr_data_len = 0, auth_data_len = 0;
-	int flags, iv_len = 16, m_size;
+	int flags, iv_len = 16;
 	void *m_vaddr, *c_vaddr;
 	uint64_t m_dma, c_dma, offset_ctrl;
 	uint64_t *offset_vaddr, offset_dma;
@@ -1462,7 +1434,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	buf_p = &params->meta_buf;
 	m_vaddr = buf_p->vaddr;
 	m_dma = buf_p->dma_addr;
-	m_size = buf_p->size;
 
 	cpt_ctx = params->ctx_buf.vaddr;
 	flags = cpt_ctx->zsk_flags;
@@ -1484,7 +1455,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* Reserve memory for cpt request info */
 	req = m_vaddr;
@@ -1492,12 +1462,12 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	size = sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	opcode.s.major = CPT_MAJOR_OP_ZUC_SNOW3G;
 
 	/* indicates CPTR ctx, operation type, KEY & IV mode from DPTR */
-	opcode.s.minor = ((1 << 6) | (snow3g << 5) | (0 << 4) |
+
+	opcode.s.minor = ((1 << 7) | (snow3g << 5) | (0 << 4) |
 			  (0 << 3) | (flags & 0x7));
 
 	if (flags == 0x1) {
@@ -1561,8 +1531,8 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	 * GP op header, lengths are expected in bits.
 	 */
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param1 = rte_cpu_to_be_16(encr_data_len);
-	vq_cmd_w0.s.param2 = rte_cpu_to_be_16(auth_data_len);
+	vq_cmd_w0.s.param1 = encr_data_len;
+	vq_cmd_w0.s.param2 = auth_data_len;
 
 	/*
 	 * In 83XX since we have a limitation of
@@ -1591,9 +1561,9 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 		req->alternate_caddr = (uint64_t *)((uint8_t *)dm_vaddr
 						    + outputlen - iv_len);
 
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(inputlen + OFF_CTRL_LEN);
+		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		if (likely(iv_len)) {
 			uint32_t *iv_d = (uint32_t *)((uint8_t *)offset_vaddr
@@ -1616,11 +1586,10 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 
 		m_vaddr = (uint8_t *)m_vaddr + OFF_CTRL_LEN + iv_len;
 		m_dma += OFF_CTRL_LEN + iv_len;
-		m_size -= OFF_CTRL_LEN + iv_len;
 
 		opcode.s.major |= CPT_DMA_MODE;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		/* DPTR has SG list */
 		in_buffer = m_vaddr;
@@ -1654,8 +1623,11 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 			i = fill_sg_comp_from_iov(gather_comp, i,
 						  params->src_iov,
 						  0, &size, NULL, 0);
-			if (size)
-				return ERR_BAD_INPUT_ARG;
+			if (unlikely(size)) {
+				CPT_LOG_DP_ERR("Insufficient buffer space,"
+					       " size %d needed", size);
+				return;
+			}
 		}
 		((uint16_t *)in_buffer)[2] = rte_cpu_to_be_16(i);
 		g_size_bytes = ((i + 3) / 4) * sizeof(sg_comp_t);
@@ -1686,8 +1658,11 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 							  params->dst_iov, 0,
 							  &size, NULL, 0);
 
-				if (size)
-					return ERR_BAD_INPUT_ARG;
+				if (unlikely(size)) {
+					CPT_LOG_DP_ERR("Insufficient buffer space,"
+						       " size %d needed", size);
+					return;
+				}
 			}
 
 			/* mac data */
@@ -1703,8 +1678,11 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 							  params->dst_iov, 0,
 							  &size, NULL, 0);
 
-				if (size)
-					return ERR_BAD_INPUT_ARG;
+				if (unlikely(size)) {
+					CPT_LOG_DP_ERR("Insufficient buffer space,"
+						       " size %d needed", size);
+					return;
+				}
 			}
 		}
 		((uint16_t *)in_buffer)[3] = rte_cpu_to_be_16(i);
@@ -1713,11 +1691,10 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 		size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 		/* This is DPTR len incase of SG mode */
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+		vq_cmd_w0.s.dlen = size;
 
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
-		m_size -= size;
 
 		/* cpt alternate completion address saved earlier */
 		req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -1727,12 +1704,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 		req->ist.ei1 = dptr_dma;
 		req->ist.ei2 = rptr_dma;
 	}
-
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	/* vq command w3 */
 	vq_cmd_w3.u64 = 0;
@@ -1752,10 +1723,10 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	req->op = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 			uint64_t d_offs,
 			uint64_t d_lens,
@@ -1771,7 +1742,7 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	buf_ptr_t *buf_p;
 	uint32_t encr_offset;
 	uint32_t encr_data_len;
-	int flags, m_size;
+	int flags;
 	void *m_vaddr, *c_vaddr;
 	uint64_t m_dma, c_dma;
 	uint64_t *offset_vaddr, offset_dma;
@@ -1783,7 +1754,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	buf_p = &params->meta_buf;
 	m_vaddr = buf_p->vaddr;
 	m_dma = buf_p->dma_addr;
-	m_size = buf_p->size;
 
 	/*
 	 * Microcode expects offsets in bytes
@@ -1810,7 +1780,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* Reserve memory for cpt request info */
 	req = m_vaddr;
@@ -1818,12 +1787,12 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	size = sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	opcode.s.major = CPT_MAJOR_OP_ZUC_SNOW3G;
 
 	/* indicates CPTR ctx, operation type, KEY & IV mode from DPTR */
-	opcode.s.minor = ((1 << 6) | (snow3g << 5) | (0 << 4) |
+
+	opcode.s.minor = ((1 << 7) | (snow3g << 5) | (0 << 4) |
 			  (0 << 3) | (flags & 0x7));
 
 	/* consider iv len */
@@ -1853,7 +1822,7 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	 * GP op header, lengths are expected in bits.
 	 */
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param1 = rte_cpu_to_be_16(encr_data_len);
+	vq_cmd_w0.s.param1 = encr_data_len;
 
 	/*
 	 * In 83XX since we have a limitation of
@@ -1882,9 +1851,9 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 		req->alternate_caddr = (uint64_t *)((uint8_t *)dm_vaddr
 						    + outputlen - iv_len);
 
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(inputlen + OFF_CTRL_LEN);
+		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		if (likely(iv_len)) {
 			uint32_t *iv_d = (uint32_t *)((uint8_t *)offset_vaddr
@@ -1908,11 +1877,10 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 
 		m_vaddr = (uint8_t *)m_vaddr + OFF_CTRL_LEN + iv_len;
 		m_dma += OFF_CTRL_LEN + iv_len;
-		m_size -= OFF_CTRL_LEN + iv_len;
 
 		opcode.s.major |= CPT_DMA_MODE;
 
-		vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+		vq_cmd_w0.s.opcode = opcode.flags;
 
 		/* DPTR has SG list */
 		in_buffer = m_vaddr;
@@ -1946,8 +1914,11 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 			i = fill_sg_comp_from_iov(gather_comp, i,
 						  params->src_iov,
 						  0, &size, NULL, 0);
-			if (size)
-				return ERR_BAD_INPUT_ARG;
+			if (unlikely(size)) {
+				CPT_LOG_DP_ERR("Insufficient buffer space,"
+					       " size %d needed", size);
+				return;
+			}
 		}
 		((uint16_t *)in_buffer)[2] = rte_cpu_to_be_16(i);
 		g_size_bytes = ((i + 3) / 4) * sizeof(sg_comp_t);
@@ -1972,8 +1943,11 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 						  params->dst_iov, 0,
 						  &size, NULL, 0);
 
-			if (size)
-				return ERR_BAD_INPUT_ARG;
+			if (unlikely(size)) {
+				CPT_LOG_DP_ERR("Insufficient buffer space,"
+					       " size %d needed", size);
+				return;
+			}
 		}
 		((uint16_t *)in_buffer)[3] = rte_cpu_to_be_16(i);
 		s_size_bytes = ((i + 3) / 4) * sizeof(sg_comp_t);
@@ -1981,11 +1955,10 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 		size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 		/* This is DPTR len incase of SG mode */
-		vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+		vq_cmd_w0.s.dlen = size;
 
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
-		m_size -= size;
 
 		/* cpt alternate completion address saved earlier */
 		req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -1995,12 +1968,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 		req->ist.ei1 = dptr_dma;
 		req->ist.ei2 = rptr_dma;
 	}
-
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	/* vq command w3 */
 	vq_cmd_w3.u64 = 0;
@@ -2020,10 +1987,10 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	req->op = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_kasumi_enc_prep(uint32_t req_flags,
 		    uint64_t d_offs,
 		    uint64_t d_lens,
@@ -2040,7 +2007,7 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	buf_ptr_t *buf_p;
 	uint32_t encr_offset, auth_offset;
 	uint32_t encr_data_len, auth_data_len;
-	int flags, m_size;
+	int flags;
 	uint8_t *iv_s, *iv_d, iv_len = 8;
 	uint8_t dir = 0;
 	void *m_vaddr, *c_vaddr;
@@ -2058,7 +2025,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	buf_p = &params->meta_buf;
 	m_vaddr = buf_p->vaddr;
 	m_dma = buf_p->dma_addr;
-	m_size = buf_p->size;
 
 	encr_offset = ENCR_OFFSET(d_offs) / 8;
 	auth_offset = AUTH_OFFSET(d_offs) / 8;
@@ -2091,7 +2057,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* Reserve memory for cpt request info */
 	req = m_vaddr;
@@ -2099,7 +2064,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	size = sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	opcode.s.major = CPT_MAJOR_OP_KASUMI | CPT_DMA_MODE;
 
@@ -2111,9 +2075,9 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	 * GP op header, lengths are expected in bits.
 	 */
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param1 = rte_cpu_to_be_16(encr_data_len);
-	vq_cmd_w0.s.param2 = rte_cpu_to_be_16(auth_data_len);
-	vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+	vq_cmd_w0.s.param1 = encr_data_len;
+	vq_cmd_w0.s.param2 = auth_data_len;
+	vq_cmd_w0.s.opcode = opcode.flags;
 
 	/* consider iv len */
 	if (flags == 0x0) {
@@ -2127,7 +2091,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 
 	m_vaddr = (uint8_t *)m_vaddr + OFF_CTRL_LEN + iv_len;
 	m_dma += OFF_CTRL_LEN + iv_len;
-	m_size -= OFF_CTRL_LEN + iv_len;
 
 	/* DPTR has SG list */
 	in_buffer = m_vaddr;
@@ -2171,8 +2134,11 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 					  params->src_iov, 0,
 					  &size, NULL, 0);
 
-		if (size)
-			return ERR_BAD_INPUT_ARG;
+		if (unlikely(size)) {
+			CPT_LOG_DP_ERR("Insufficient buffer space,"
+				       " size %d needed", size);
+			return;
+		}
 	}
 	((uint16_t *)in_buffer)[2] = rte_cpu_to_be_16(i);
 	g_size_bytes = ((i + 3) / 4) * sizeof(sg_comp_t);
@@ -2204,8 +2170,11 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 						  params->dst_iov, 0,
 						  &size, NULL, 0);
 
-			if (size)
-				return ERR_BAD_INPUT_ARG;
+			if (unlikely(size)) {
+				CPT_LOG_DP_ERR("Insufficient buffer space,"
+					       " size %d needed", size);
+				return;
+			}
 		}
 
 		/* mac data */
@@ -2221,8 +2190,11 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 						  params->dst_iov, 0,
 						  &size, NULL, 0);
 
-			if (size)
-				return ERR_BAD_INPUT_ARG;
+			if (unlikely(size)) {
+				CPT_LOG_DP_ERR("Insufficient buffer space,"
+					       " size %d needed", size);
+				return;
+			}
 		}
 	}
 	((uint16_t *)in_buffer)[3] = rte_cpu_to_be_16(i);
@@ -2231,11 +2203,10 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 	/* This is DPTR len incase of SG mode */
-	vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+	vq_cmd_w0.s.dlen = size;
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* cpt alternate completion address saved earlier */
 	req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -2244,12 +2215,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 
 	req->ist.ei1 = dptr_dma;
 	req->ist.ei2 = rptr_dma;
-
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	/* vq command w3 */
 	vq_cmd_w3.u64 = 0;
@@ -2269,10 +2234,10 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	req->op = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
-static __rte_always_inline int
+static __rte_always_inline void
 cpt_kasumi_dec_prep(uint64_t d_offs,
 		    uint64_t d_lens,
 		    fc_params_t *params,
@@ -2287,7 +2252,7 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	buf_ptr_t *buf_p;
 	uint32_t encr_offset;
 	uint32_t encr_data_len;
-	int flags, m_size;
+	int flags;
 	uint8_t dir = 0;
 	void *m_vaddr, *c_vaddr;
 	uint64_t m_dma, c_dma;
@@ -2304,7 +2269,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	buf_p = &params->meta_buf;
 	m_vaddr = buf_p->vaddr;
 	m_dma = buf_p->dma_addr;
-	m_size = buf_p->size;
 
 	encr_offset = ENCR_OFFSET(d_offs) / 8;
 	encr_data_len = ENCR_DLEN(d_lens);
@@ -2326,7 +2290,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* Reserve memory for cpt request info */
 	req = m_vaddr;
@@ -2334,7 +2297,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	size = sizeof(struct cpt_request_info);
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	opcode.s.major = CPT_MAJOR_OP_KASUMI | CPT_DMA_MODE;
 
@@ -2346,8 +2308,8 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	 * GP op header, lengths are expected in bits.
 	 */
 	vq_cmd_w0.u64 = 0;
-	vq_cmd_w0.s.param1 = rte_cpu_to_be_16(encr_data_len);
-	vq_cmd_w0.s.opcode = rte_cpu_to_be_16(opcode.flags);
+	vq_cmd_w0.s.param1 = encr_data_len;
+	vq_cmd_w0.s.opcode = opcode.flags;
 
 	/* consider iv len */
 	encr_offset += iv_len;
@@ -2361,7 +2323,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 
 	m_vaddr = (uint8_t *)m_vaddr + OFF_CTRL_LEN + iv_len;
 	m_dma += OFF_CTRL_LEN + iv_len;
-	m_size -= OFF_CTRL_LEN + iv_len;
 
 	/* DPTR has SG list */
 	in_buffer = m_vaddr;
@@ -2393,8 +2354,11 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 		i = fill_sg_comp_from_iov(gather_comp, i,
 					  params->src_iov,
 					  0, &size, NULL, 0);
-		if (size)
-			return ERR_BAD_INPUT_ARG;
+		if (unlikely(size)) {
+			CPT_LOG_DP_ERR("Insufficient buffer space,"
+				       " size %d needed", size);
+			return;
+		}
 	}
 	((uint16_t *)in_buffer)[2] = rte_cpu_to_be_16(i);
 	g_size_bytes = ((i + 3) / 4) * sizeof(sg_comp_t);
@@ -2417,8 +2381,11 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 		i = fill_sg_comp_from_iov(scatter_comp, i,
 					  params->dst_iov, 0,
 					  &size, NULL, 0);
-		if (size)
-			return ERR_BAD_INPUT_ARG;
+		if (unlikely(size)) {
+			CPT_LOG_DP_ERR("Insufficient buffer space,"
+				       " size %d needed", size);
+			return;
+		}
 	}
 	((uint16_t *)in_buffer)[3] = rte_cpu_to_be_16(i);
 	s_size_bytes = ((i + 3) / 4) * sizeof(sg_comp_t);
@@ -2426,11 +2393,10 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	size = g_size_bytes + s_size_bytes + SG_LIST_HDR_SIZE;
 
 	/* This is DPTR len incase of SG mode */
-	vq_cmd_w0.s.dlen = rte_cpu_to_be_16(size);
+	vq_cmd_w0.s.dlen = size;
 
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
-	m_size -= size;
 
 	/* cpt alternate completion address saved earlier */
 	req->alternate_caddr = (uint64_t *)((uint8_t *)c_vaddr - 8);
@@ -2439,12 +2405,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 
 	req->ist.ei1 = dptr_dma;
 	req->ist.ei2 = rptr_dma;
-
-	/* First 16-bit swap then 64-bit swap */
-	/* TODO: HACK: Reverse the vq_cmd and cpt_req bit field definitions
-	 * to eliminate all the swapping
-	 */
-	vq_cmd_w0.u64 = rte_cpu_to_be_64(vq_cmd_w0.u64);
 
 	/* vq command w3 */
 	vq_cmd_w3.u64 = 0;
@@ -2464,7 +2424,7 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	req->op = op;
 
 	*prep_req = req;
-	return 0;
+	return;
 }
 
 static __rte_always_inline void *
@@ -2472,74 +2432,62 @@ cpt_fc_dec_hmac_prep(uint32_t flags,
 		     uint64_t d_offs,
 		     uint64_t d_lens,
 		     fc_params_t *fc_params,
-		     void *op, int *ret_val)
+		     void *op)
 {
 	struct cpt_ctx *ctx = fc_params->ctx_buf.vaddr;
 	uint8_t fc_type;
 	void *prep_req = NULL;
-	int ret;
 
 	fc_type = ctx->fc_type;
 
 	if (likely(fc_type == FC_GEN)) {
-		ret = cpt_dec_hmac_prep(flags, d_offs, d_lens,
-					fc_params, op, &prep_req);
+		cpt_dec_hmac_prep(flags, d_offs, d_lens, fc_params, op,
+				  &prep_req);
 	} else if (fc_type == ZUC_SNOW3G) {
-		ret = cpt_zuc_snow3g_dec_prep(flags, d_offs, d_lens,
-					      fc_params, op, &prep_req);
+		cpt_zuc_snow3g_dec_prep(flags, d_offs, d_lens, fc_params, op,
+					&prep_req);
 	} else if (fc_type == KASUMI) {
-		ret = cpt_kasumi_dec_prep(d_offs, d_lens, fc_params, op,
-					  &prep_req);
-	} else {
-		/*
-		 * For AUTH_ONLY case,
-		 * MC only supports digest generation and verification
-		 * should be done in software by memcmp()
-		 */
-
-		ret = ERR_EIO;
+		cpt_kasumi_dec_prep(d_offs, d_lens, fc_params, op, &prep_req);
 	}
 
-	if (unlikely(!prep_req))
-		*ret_val = ret;
+	/*
+	 * For AUTH_ONLY case,
+	 * MC only supports digest generation and verification
+	 * should be done in software by memcmp()
+	 */
+
 	return prep_req;
 }
 
 static __rte_always_inline void *__hot
 cpt_fc_enc_hmac_prep(uint32_t flags, uint64_t d_offs, uint64_t d_lens,
-		     fc_params_t *fc_params, void *op, int *ret_val)
+		     fc_params_t *fc_params, void *op)
 {
 	struct cpt_ctx *ctx = fc_params->ctx_buf.vaddr;
 	uint8_t fc_type;
 	void *prep_req = NULL;
-	int ret;
 
 	fc_type = ctx->fc_type;
 
 	/* Common api for rest of the ops */
 	if (likely(fc_type == FC_GEN)) {
-		ret = cpt_enc_hmac_prep(flags, d_offs, d_lens,
-					fc_params, op, &prep_req);
+		cpt_enc_hmac_prep(flags, d_offs, d_lens, fc_params, op,
+				  &prep_req);
 	} else if (fc_type == ZUC_SNOW3G) {
-		ret = cpt_zuc_snow3g_enc_prep(flags, d_offs, d_lens,
-					      fc_params, op, &prep_req);
+		cpt_zuc_snow3g_enc_prep(flags, d_offs, d_lens, fc_params, op,
+					&prep_req);
 	} else if (fc_type == KASUMI) {
-		ret = cpt_kasumi_enc_prep(flags, d_offs, d_lens,
-					  fc_params, op, &prep_req);
+		cpt_kasumi_enc_prep(flags, d_offs, d_lens, fc_params, op,
+				    &prep_req);
 	} else if (fc_type == HASH_HMAC) {
-		ret = cpt_digest_gen_prep(flags, d_lens, fc_params, op,
-					  &prep_req);
-	} else {
-		ret = ERR_EIO;
+		cpt_digest_gen_prep(flags, d_lens, fc_params, op, &prep_req);
 	}
 
-	if (unlikely(!prep_req))
-		*ret_val = ret;
 	return prep_req;
 }
 
 static __rte_always_inline int
-cpt_fc_auth_set_key(void *ctx, auth_type_t type, uint8_t *key,
+cpt_fc_auth_set_key(void *ctx, auth_type_t type, const uint8_t *key,
 		    uint16_t key_len, uint16_t mac_len)
 {
 	struct cpt_ctx *cpt_ctx = ctx;
@@ -2627,9 +2575,9 @@ fill_sess_aead(struct rte_crypto_sym_xform *xform,
 	cipher_type_t enc_type = 0; /* NULL Cipher type */
 	auth_type_t auth_type = 0; /* NULL Auth type */
 	uint32_t cipher_key_len = 0;
-	uint8_t zsk_flag = 0, aes_gcm = 0;
+	uint8_t aes_gcm = 0;
 	aead_form = &xform->aead;
-	void *ctx;
+	void *ctx = SESS_PRIV(sess);
 
 	if (aead_form->op == RTE_CRYPTO_AEAD_OP_ENCRYPT &&
 	   aead_form->algo == RTE_CRYPTO_AEAD_AES_GCM) {
@@ -2663,18 +2611,20 @@ fill_sess_aead(struct rte_crypto_sym_xform *xform,
 			       (unsigned int long)aead_form->key.length);
 		return -1;
 	}
-	sess->zsk_flag = zsk_flag;
+	sess->zsk_flag = 0;
 	sess->aes_gcm = aes_gcm;
 	sess->mac_len = aead_form->digest_length;
 	sess->iv_offset = aead_form->iv.offset;
 	sess->iv_length = aead_form->iv.length;
 	sess->aad_length = aead_form->aad_length;
-	ctx = (void *)((uint8_t *)sess + sizeof(struct cpt_sess_misc)),
 
-	cpt_fc_ciph_set_key(ctx, enc_type, aead_form->key.data,
-			aead_form->key.length, NULL);
+	if (unlikely(cpt_fc_ciph_set_key(ctx, enc_type, aead_form->key.data,
+			aead_form->key.length, NULL)))
+		return -1;
 
-	cpt_fc_auth_set_key(ctx, auth_type, NULL, 0, aead_form->digest_length);
+	if (unlikely(cpt_fc_auth_set_key(ctx, auth_type, NULL, 0,
+			aead_form->digest_length)))
+		return -1;
 
 	return 0;
 }
@@ -2686,10 +2636,7 @@ fill_sess_cipher(struct rte_crypto_sym_xform *xform,
 	struct rte_crypto_cipher_xform *c_form;
 	cipher_type_t enc_type = 0; /* NULL Cipher type */
 	uint32_t cipher_key_len = 0;
-	uint8_t zsk_flag = 0, aes_gcm = 0, aes_ctr = 0, is_null = 0;
-
-	if (xform->type != RTE_CRYPTO_SYM_XFORM_CIPHER)
-		return -1;
+	uint8_t zsk_flag = 0, aes_ctr = 0, is_null = 0;
 
 	c_form = &xform->cipher;
 
@@ -2771,14 +2718,15 @@ fill_sess_cipher(struct rte_crypto_sym_xform *xform,
 	}
 
 	sess->zsk_flag = zsk_flag;
-	sess->aes_gcm = aes_gcm;
+	sess->aes_gcm = 0;
 	sess->aes_ctr = aes_ctr;
 	sess->iv_offset = c_form->iv.offset;
 	sess->iv_length = c_form->iv.length;
 	sess->is_null = is_null;
 
-	cpt_fc_ciph_set_key(SESS_PRIV(sess), enc_type, c_form->key.data,
-			    c_form->key.length, NULL);
+	if (unlikely(cpt_fc_ciph_set_key(SESS_PRIV(sess), enc_type,
+			c_form->key.data, c_form->key.length, NULL)))
+		return -1;
 
 	return 0;
 }
@@ -2790,9 +2738,6 @@ fill_sess_auth(struct rte_crypto_sym_xform *xform,
 	struct rte_crypto_auth_xform *a_form;
 	auth_type_t auth_type = 0; /* NULL Auth type */
 	uint8_t zsk_flag = 0, aes_gcm = 0, is_null = 0;
-
-	if (xform->type != RTE_CRYPTO_SYM_XFORM_AUTH)
-		goto error_out;
 
 	a_form = &xform->auth;
 
@@ -2865,11 +2810,11 @@ fill_sess_auth(struct rte_crypto_sym_xform *xform,
 	case RTE_CRYPTO_AUTH_AES_CBC_MAC:
 		CPT_LOG_DP_ERR("Crypto: Unsupported hash algo %u",
 			       a_form->algo);
-		goto error_out;
+		return -1;
 	default:
 		CPT_LOG_DP_ERR("Crypto: Undefined Hash algo %u specified",
 			       a_form->algo);
-		goto error_out;
+		return -1;
 	}
 
 	sess->zsk_flag = zsk_flag;
@@ -2880,13 +2825,12 @@ fill_sess_auth(struct rte_crypto_sym_xform *xform,
 		sess->auth_iv_offset = a_form->iv.offset;
 		sess->auth_iv_length = a_form->iv.length;
 	}
-	cpt_fc_auth_set_key(SESS_PRIV(sess), auth_type, a_form->key.data,
-			    a_form->key.length, a_form->digest_length);
+	if (unlikely(cpt_fc_auth_set_key(SESS_PRIV(sess), auth_type,
+			a_form->key.data, a_form->key.length,
+			a_form->digest_length)))
+		return -1;
 
 	return 0;
-
-error_out:
-	return -1;
 }
 
 static __rte_always_inline int
@@ -2896,11 +2840,7 @@ fill_sess_gmac(struct rte_crypto_sym_xform *xform,
 	struct rte_crypto_auth_xform *a_form;
 	cipher_type_t enc_type = 0; /* NULL Cipher type */
 	auth_type_t auth_type = 0; /* NULL Auth type */
-	uint8_t zsk_flag = 0, aes_gcm = 0;
-	void *ctx;
-
-	if (xform->type != RTE_CRYPTO_SYM_XFORM_AUTH)
-		return -1;
+	void *ctx = SESS_PRIV(sess);
 
 	a_form = &xform->auth;
 
@@ -2924,17 +2864,20 @@ fill_sess_gmac(struct rte_crypto_sym_xform *xform,
 		return -1;
 	}
 
-	sess->zsk_flag = zsk_flag;
-	sess->aes_gcm = aes_gcm;
+	sess->zsk_flag = 0;
+	sess->aes_gcm = 0;
 	sess->is_gmac = 1;
 	sess->iv_offset = a_form->iv.offset;
 	sess->iv_length = a_form->iv.length;
 	sess->mac_len = a_form->digest_length;
-	ctx = (void *)((uint8_t *)sess + sizeof(struct cpt_sess_misc)),
 
-	cpt_fc_ciph_set_key(ctx, enc_type, a_form->key.data,
-			a_form->key.length, NULL);
-	cpt_fc_auth_set_key(ctx, auth_type, NULL, 0, a_form->digest_length);
+	if (unlikely(cpt_fc_ciph_set_key(ctx, enc_type, a_form->key.data,
+			a_form->key.length, NULL)))
+		return -1;
+
+	if (unlikely(cpt_fc_auth_set_key(ctx, auth_type, NULL, 0,
+			a_form->digest_length)))
+		return -1;
 
 	return 0;
 }
@@ -3114,25 +3057,22 @@ prepare_iov_from_pkt_inplace(struct rte_mbuf *pkt,
 	return 0;
 }
 
-static __rte_always_inline void *
+static __rte_always_inline int
 fill_fc_params(struct rte_crypto_op *cop,
 	       struct cpt_sess_misc *sess_misc,
+	       struct cpt_qp_meta_info *m_info,
 	       void **mdata_ptr,
-	       int *op_ret)
+	       void **prep_req)
 {
 	uint32_t space = 0;
 	struct rte_crypto_sym_op *sym_op = cop->sym;
-	void *mdata;
+	void *mdata = NULL;
 	uintptr_t *op;
 	uint32_t mc_hash_off;
 	uint32_t flags = 0;
 	uint64_t d_offs, d_lens;
-	void *prep_req = NULL;
 	struct rte_mbuf *m_src, *m_dst;
 	uint8_t cpt_op = sess_misc->cpt_op;
-	uint8_t zsk_flag = sess_misc->zsk_flag;
-	uint8_t aes_gcm = sess_misc->aes_gcm;
-	uint16_t mac_len = sess_misc->mac_len;
 #ifdef CPT_ALWAYS_USE_SG_MODE
 	uint8_t inplace = 0;
 #else
@@ -3142,8 +3082,7 @@ fill_fc_params(struct rte_crypto_op *cop,
 	char src[SRC_IOV_SIZE];
 	char dst[SRC_IOV_SIZE];
 	uint32_t iv_buf[4];
-	struct cptvf_meta_info *cpt_m_info =
-				(struct cptvf_meta_info *)(*mdata_ptr);
+	int ret;
 
 	if (likely(sess_misc->iv_length)) {
 		flags |= VALID_IV_BUF;
@@ -3159,21 +3098,17 @@ fill_fc_params(struct rte_crypto_op *cop,
 		}
 	}
 
-	if (zsk_flag) {
+	if (sess_misc->zsk_flag) {
 		fc_params.auth_iv_buf = rte_crypto_op_ctod_offset(cop,
 					uint8_t *,
 					sess_misc->auth_iv_offset);
-		if (zsk_flag == K_F9) {
-			CPT_LOG_DP_ERR("Should not reach here for "
-			"kasumi F9\n");
-		}
-		if (zsk_flag != ZS_EA)
+		if (sess_misc->zsk_flag != ZS_EA)
 			inplace = 0;
 	}
 	m_src = sym_op->m_src;
 	m_dst = sym_op->m_dst;
 
-	if (aes_gcm) {
+	if (sess_misc->aes_gcm) {
 		uint8_t *salt;
 		uint8_t *aad_data;
 		uint16_t aad_len;
@@ -3207,7 +3142,7 @@ fill_fc_params(struct rte_crypto_op *cop,
 			sess_misc->salt = *(uint32_t *)salt;
 		}
 		fc_params.iv_buf = salt + 4;
-		if (likely(mac_len)) {
+		if (likely(sess_misc->mac_len)) {
 			struct rte_mbuf *m = (cpt_op & CPT_OP_ENCODE) ? m_dst :
 					     m_src;
 
@@ -3250,7 +3185,7 @@ fill_fc_params(struct rte_crypto_op *cop,
 			}
 			fc_params.iv_buf = salt + 4;
 		}
-		if (likely(mac_len)) {
+		if (likely(sess_misc->mac_len)) {
 			struct rte_mbuf *m;
 
 			m = (cpt_op & CPT_OP_ENCODE) ? m_dst : m_src;
@@ -3289,8 +3224,8 @@ fill_fc_params(struct rte_crypto_op *cop,
 							  &fc_params,
 							  &flags))) {
 			CPT_LOG_DP_ERR("Prepare inplace src iov failed");
-			*op_ret = -1;
-			return NULL;
+			ret = -EINVAL;
+			goto err_exit;
 		}
 
 	} else {
@@ -3301,15 +3236,14 @@ fill_fc_params(struct rte_crypto_op *cop,
 		/* Store SG I/O in the api for reuse */
 		if (prepare_iov_from_pkt(m_src, fc_params.src_iov, 0)) {
 			CPT_LOG_DP_ERR("Prepare src iov failed");
-			*op_ret = -1;
-			return NULL;
+			ret = -EINVAL;
+			goto err_exit;
 		}
 
 		if (unlikely(m_dst != NULL)) {
 			uint32_t pkt_len;
 
 			/* Try to make room as much as src has */
-			m_dst = sym_op->m_dst;
 			pkt_len = rte_pktmbuf_pkt_len(m_dst);
 
 			if (unlikely(pkt_len < rte_pktmbuf_pkt_len(m_src))) {
@@ -3319,14 +3253,16 @@ fill_fc_params(struct rte_crypto_op *cop,
 						       "m_dst %p, need %u"
 						       " more",
 						       m_dst, pkt_len);
-					return NULL;
+					ret = -EINVAL;
+					goto err_exit;
 				}
 			}
 
 			if (prepare_iov_from_pkt(m_dst, fc_params.dst_iov, 0)) {
 				CPT_LOG_DP_ERR("Prepare dst iov failed for "
 					       "m_dst %p", m_dst);
-				return NULL;
+				ret = -EINVAL;
+				goto err_exit;
 			}
 		} else {
 			fc_params.dst_iov = (void *)src;
@@ -3334,19 +3270,16 @@ fill_fc_params(struct rte_crypto_op *cop,
 	}
 
 	if (likely(flags & SINGLE_BUF_HEADTAILROOM))
-		mdata = alloc_op_meta(m_src,
-				      &fc_params.meta_buf,
-				      cpt_m_info->cptvf_op_sb_mlen,
-				      cpt_m_info->cptvf_meta_pool);
+		mdata = alloc_op_meta(m_src, &fc_params.meta_buf,
+				      m_info->lb_mlen, m_info->pool);
 	else
-		mdata = alloc_op_meta(NULL,
-				      &fc_params.meta_buf,
-				      cpt_m_info->cptvf_op_mlen,
-				      cpt_m_info->cptvf_meta_pool);
+		mdata = alloc_op_meta(NULL, &fc_params.meta_buf,
+				      m_info->sg_mlen, m_info->pool);
 
 	if (unlikely(mdata == NULL)) {
 		CPT_LOG_DP_ERR("Error allocating meta buffer for request");
-		return NULL;
+		ret = -ENOMEM;
+		goto err_exit;
 	}
 
 	op = (uintptr_t *)((uintptr_t)mdata & (uintptr_t)~1ull);
@@ -3361,16 +3294,26 @@ fill_fc_params(struct rte_crypto_op *cop,
 
 	/* Finally prepare the instruction */
 	if (cpt_op & CPT_OP_ENCODE)
-		prep_req = cpt_fc_enc_hmac_prep(flags, d_offs, d_lens,
-						&fc_params, op, op_ret);
+		*prep_req = cpt_fc_enc_hmac_prep(flags, d_offs, d_lens,
+						 &fc_params, op);
 	else
-		prep_req = cpt_fc_dec_hmac_prep(flags, d_offs, d_lens,
-						&fc_params, op, op_ret);
+		*prep_req = cpt_fc_dec_hmac_prep(flags, d_offs, d_lens,
+						 &fc_params, op);
 
-	if (unlikely(!prep_req))
-		free_op_meta(mdata, cpt_m_info->cptvf_meta_pool);
+	if (unlikely(*prep_req == NULL)) {
+		CPT_LOG_DP_ERR("Preparing request failed due to bad input arg");
+		ret = -EINVAL;
+		goto free_mdata_and_exit;
+	}
+
 	*mdata_ptr = mdata;
-	return prep_req;
+
+	return 0;
+
+free_mdata_and_exit:
+	free_op_meta(mdata, m_info->pool);
+err_exit:
+	return ret;
 }
 
 static __rte_always_inline void
@@ -3476,11 +3419,12 @@ find_kasumif9_direction_and_length(uint8_t *src,
 /*
  * This handles all auth only except AES_GMAC
  */
-static __rte_always_inline void *
+static __rte_always_inline int
 fill_digest_params(struct rte_crypto_op *cop,
 		   struct cpt_sess_misc *sess,
+		   struct cpt_qp_meta_info *m_info,
 		   void **mdata_ptr,
-		   int *op_ret)
+		   void **prep_req)
 {
 	uint32_t space = 0;
 	struct rte_crypto_sym_op *sym_op = cop->sym;
@@ -3490,27 +3434,24 @@ fill_digest_params(struct rte_crypto_op *cop,
 	uint32_t auth_range_off;
 	uint32_t flags = 0;
 	uint64_t d_offs = 0, d_lens;
-	void *prep_req = NULL;
 	struct rte_mbuf *m_src, *m_dst;
 	uint16_t auth_op = sess->cpt_op & CPT_OP_AUTH_MASK;
-	uint8_t zsk_flag = sess->zsk_flag;
 	uint16_t mac_len = sess->mac_len;
 	fc_params_t params;
 	char src[SRC_IOV_SIZE];
 	uint8_t iv_buf[16];
+	int ret;
+
 	memset(&params, 0, sizeof(fc_params_t));
-	struct cptvf_meta_info *cpt_m_info =
-				(struct cptvf_meta_info *)(*mdata_ptr);
 
 	m_src = sym_op->m_src;
 
 	/* For just digest lets force mempool alloc */
-	mdata = alloc_op_meta(NULL, &params.meta_buf, cpt_m_info->cptvf_op_mlen,
-			      cpt_m_info->cptvf_meta_pool);
+	mdata = alloc_op_meta(NULL, &params.meta_buf, m_info->sg_mlen,
+			      m_info->pool);
 	if (mdata == NULL) {
-		CPT_LOG_DP_ERR("Error allocating meta buffer for request");
-		*op_ret = -ENOMEM;
-		return NULL;
+		ret = -ENOMEM;
+		goto err_exit;
 	}
 
 	mphys = params.meta_buf.dma_addr;
@@ -3525,7 +3466,7 @@ fill_digest_params(struct rte_crypto_op *cop,
 
 	flags = VALID_MAC_BUF;
 	params.src_iov = (void *)src;
-	if (unlikely(zsk_flag)) {
+	if (unlikely(sess->zsk_flag)) {
 		/*
 		 * Since for Zuc, Kasumi, Snow3g offsets are in bits
 		 * we will send pass through even for auth only case,
@@ -3535,10 +3476,9 @@ fill_digest_params(struct rte_crypto_op *cop,
 		auth_range_off = 0;
 		params.auth_iv_buf = rte_crypto_op_ctod_offset(cop,
 					uint8_t *, sess->auth_iv_offset);
-		if (zsk_flag == K_F9) {
+		if (sess->zsk_flag == K_F9) {
 			uint32_t length_in_bits, num_bytes;
 			uint8_t *src, direction = 0;
-			uint32_t counter_num_bytes;
 
 			memcpy(iv_buf, rte_pktmbuf_mtod(cop->sym->m_src,
 							uint8_t *), 8);
@@ -3548,10 +3488,9 @@ fill_digest_params(struct rte_crypto_op *cop,
 			 */
 			length_in_bits = cop->sym->auth.data.length;
 			num_bytes = (length_in_bits >> 3);
-			counter_num_bytes = num_bytes;
 			src = rte_pktmbuf_mtod(cop->sym->m_src, uint8_t *);
 			find_kasumif9_direction_and_length(src,
-						counter_num_bytes,
+						num_bytes,
 						&length_in_bits,
 						&direction);
 			length_in_bits -= 64;
@@ -3597,7 +3536,8 @@ fill_digest_params(struct rte_crypto_op *cop,
 				if (!rte_pktmbuf_append(m_dst, space)) {
 					CPT_LOG_DP_ERR("Failed to extend "
 						       "mbuf by %uB", space);
-					goto err;
+					ret = -EINVAL;
+					goto free_mdata_and_exit;
 				}
 
 			params.mac_buf.vaddr =
@@ -3626,18 +3566,24 @@ fill_digest_params(struct rte_crypto_op *cop,
 	/*Store SG I/O in the api for reuse */
 	if (prepare_iov_from_pkt(m_src, params.src_iov, auth_range_off)) {
 		CPT_LOG_DP_ERR("Prepare src iov failed");
-		*op_ret = -1;
-		goto err;
+		ret = -EINVAL;
+		goto free_mdata_and_exit;
 	}
 
-	prep_req = cpt_fc_enc_hmac_prep(flags, d_offs, d_lens,
-					&params, op, op_ret);
+	*prep_req = cpt_fc_enc_hmac_prep(flags, d_offs, d_lens, &params, op);
+	if (unlikely(*prep_req == NULL)) {
+		ret = -EINVAL;
+		goto free_mdata_and_exit;
+	}
+
 	*mdata_ptr = mdata;
-	return prep_req;
-err:
-	if (unlikely(!prep_req))
-		free_op_meta(mdata, cpt_m_info->cptvf_meta_pool);
-	return NULL;
+
+	return 0;
+
+free_mdata_and_exit:
+	free_op_meta(mdata, m_info->pool);
+err_exit:
+	return ret;
 }
 
 #endif /*_CPT_UCODE_H_ */

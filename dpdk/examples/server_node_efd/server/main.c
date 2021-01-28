@@ -11,6 +11,8 @@
 #include <inttypes.h>
 #include <sys/queue.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 
 #include <rte_common.h>
@@ -68,12 +70,19 @@ get_printable_mac_addr(uint16_t port)
 {
 	static const char err_address[] = "00:00:00:00:00:00";
 	static char addresses[RTE_MAX_ETHPORTS][sizeof(err_address)];
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
+	int ret;
 
 	if (unlikely(port >= RTE_MAX_ETHPORTS))
 		return err_address;
 	if (unlikely(addresses[port][0] == '\0')) {
-		rte_eth_macaddr_get(port, &mac);
+		ret = rte_eth_macaddr_get(port, &mac);
+		if (ret != 0) {
+			printf("Failed to get MAC address (port %u): %s\n",
+			       port, rte_strerror(-ret));
+			return err_address;
+		}
+
 		snprintf(addresses[port], sizeof(addresses[port]),
 				"%02x:%02x:%02x:%02x:%02x:%02x\n",
 				mac.addr_bytes[0], mac.addr_bytes[1],
@@ -247,13 +256,13 @@ process_packets(uint32_t port_num __rte_unused, struct rte_mbuf *pkts[],
 	efd_value_t data[RTE_EFD_BURST_MAX];
 	const void *key_ptrs[RTE_EFD_BURST_MAX];
 
-	struct ipv4_hdr *ipv4_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
 	uint32_t ipv4_dst_ip[RTE_EFD_BURST_MAX];
 
 	for (i = 0; i < rx_count; i++) {
 		/* Handle IPv4 header.*/
-		ipv4_hdr = rte_pktmbuf_mtod_offset(pkts[i], struct ipv4_hdr *,
-				sizeof(struct ether_hdr));
+		ipv4_hdr = rte_pktmbuf_mtod_offset(pkts[i],
+			struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
 		ipv4_dst_ip[i] = ipv4_hdr->dst_addr;
 		key_ptrs[i] = (void *)&ipv4_dst_ip[i];
 	}

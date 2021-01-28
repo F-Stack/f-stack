@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2016-2017 Intel Corporation
+ * Copyright(c) 2016-2019 Intel Corporation
  */
 
 #ifndef _RTE_CRYPTO_SYM_H_
@@ -114,8 +114,8 @@ struct rte_crypto_cipher_xform {
 	/**< Cipher algorithm */
 
 	struct {
-		uint8_t *data;	/**< pointer to key data */
-		uint16_t length;/**< key length in bytes */
+		const uint8_t *data;	/**< pointer to key data */
+		uint16_t length;	/**< key length in bytes */
 	} key;
 	/**< Cipher key
 	 *
@@ -123,11 +123,6 @@ struct rte_crypto_cipher_xform {
 	 * point to a concatenation of the AES encryption key followed by a
 	 * keymask. As per RFC3711, the keymask should be padded with trailing
 	 * bytes to match the length of the encryption key used.
-	 *
-	 * For AES-XTS mode of operation, two keys must be provided and
-	 * key.data must point to the two keys concatenated together (Key1 ||
-	 * Key2). The cipher key length will contain the total size of both
-	 * keys.
 	 *
 	 * Cipher key length is in bytes. For AES it can be 128 bits (16 bytes),
 	 * 192 bits (24 bytes) or 256 bits (32 bytes).
@@ -140,6 +135,8 @@ struct rte_crypto_cipher_xform {
 	 * For the AES-XTS mode of operation:
 	 *  - Two keys must be provided and key.length refers to total length of
 	 *    the two keys.
+	 *  - key.data must point to the two keys concatenated together
+	 *    (key1 || key2).
 	 *  - Each key can be either 128 bits (16 bytes) or 256 bits (32 bytes).
 	 *  - Both keys must have the same size.
 	 **/
@@ -154,11 +151,6 @@ struct rte_crypto_cipher_xform {
 		 * Initialisation Vector (IV) value.
 		 *
 		 * - For block ciphers in CTR mode, this is the counter.
-		 *
-		 * - For GCM mode, this is either the IV (if the length
-		 * is 96 bits) or J0 (for other sizes), where J0 is as
-		 * defined by NIST SP800-38D. Regardless of the IV
-		 * length, a full 16 bytes needs to be allocated.
 		 *
 		 * - For CCM mode, the first byte is reserved, and the
 		 * nonce should be written starting at &iv[1] (to allow
@@ -186,9 +178,6 @@ struct rte_crypto_cipher_xform {
 		 * - For block ciphers in CTR mode, this is the length
 		 * of the counter (which must be the same as the block
 		 * length of the cipher).
-		 *
-		 * - For GCM mode, this is either 12 (for 96-bit IVs)
-		 * or 16, in which case data points to J0.
 		 *
 		 * - For CCM mode, this is the length of the nonce,
 		 * which can be in the range 7 to 13 inclusive.
@@ -293,8 +282,8 @@ struct rte_crypto_auth_xform {
 	/**< Authentication algorithm selection */
 
 	struct {
-		uint8_t *data;	/**< pointer to key data */
-		uint16_t length;/**< key length in bytes */
+		const uint8_t *data;	/**< pointer to key data */
+		uint16_t length;	/**< key length in bytes */
 	} key;
 	/**< Authentication key data.
 	 * The authentication key length MUST be less than or equal to the
@@ -309,9 +298,10 @@ struct rte_crypto_auth_xform {
 		 * specified as number of bytes from start of crypto
 		 * operation (rte_crypto_op).
 		 *
-		 * - For SNOW 3G in UIA2 mode, for ZUC in EIA3 mode and
-		 *   for AES-GMAC, this is the authentication
-		 *   Initialisation Vector (IV) value.
+		 * - For SNOW 3G in UIA2 mode, for ZUC in EIA3 mode
+		 *   this is the authentication Initialisation Vector
+		 *   (IV) value. For AES-GMAC IV description please refer
+		 *   to the field `length` in iv struct.
 		 *
 		 * - For KASUMI in F9 mode and other authentication
 		 *   algorithms, this field is not used.
@@ -327,6 +317,14 @@ struct rte_crypto_auth_xform {
 		 *
 		 * - For KASUMI in F9 mode and other authentication
 		 *   algorithms, this field is not used.
+		 *
+		 * - For GMAC mode, this is either:
+		 * 1) Number greater or equal to one, which means that IV
+		 *    is used and J0 will be computed internally, a minimum
+		 *    of 16 bytes must be allocated.
+		 * 2) Zero, in which case data points to J0. In this case
+		 *    16 bytes of J0 should be passed where J0 is defined
+		 *    by NIST SP800-38D.
 		 *
 		 */
 	} iv;	/**< Initialisation vector parameters */
@@ -376,8 +374,8 @@ struct rte_crypto_aead_xform {
 	/**< AEAD algorithm selection */
 
 	struct {
-		uint8_t *data;  /**< pointer to key data */
-		uint16_t length;/**< key length in bytes */
+		const uint8_t *data;	/**< pointer to key data */
+		uint16_t length;	/**< key length in bytes */
 	} key;
 
 	struct {
@@ -385,11 +383,6 @@ struct rte_crypto_aead_xform {
 		/**< Starting point for Initialisation Vector or Counter,
 		 * specified as number of bytes from start of crypto
 		 * operation (rte_crypto_op).
-		 *
-		 * - For GCM mode, this is either the IV (if the length
-		 * is 96 bits) or J0 (for other sizes), where J0 is as
-		 * defined by NIST SP800-38D. Regardless of the IV
-		 * length, a full 16 bytes needs to be allocated.
 		 *
 		 * - For CCM mode, the first byte is reserved, and the
 		 * nonce should be written starting at &iv[1] (to allow
@@ -404,8 +397,13 @@ struct rte_crypto_aead_xform {
 		uint16_t length;
 		/**< Length of valid IV data.
 		 *
-		 * - For GCM mode, this is either 12 (for 96-bit IVs)
-		 * or 16, in which case data points to J0.
+		 * - For GCM mode, this is either:
+		 * 1) Number greater or equal to one, which means that IV
+		 *    is used and J0 will be computed internally, a minimum
+		 *    of 16 bytes must be allocated.
+		 * 2) Zero, in which case data points to J0. In this case
+		 *    16 bytes of J0 should be passed where J0 is defined
+		 *    by NIST SP800-38D.
 		 *
 		 * - For CCM mode, this is the length of the nonce,
 		 * which can be in the range 7 to 13 inclusive.
@@ -592,7 +590,9 @@ struct rte_crypto_sym_op {
 					  * For SNOW 3G @ RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
 					  * KASUMI @ RTE_CRYPTO_CIPHER_KASUMI_F8
 					  * and ZUC @ RTE_CRYPTO_CIPHER_ZUC_EEA3,
-					  * this field should be in bits.
+					  * this field should be in bits. For
+					  * digest-encrypted cases this must be
+					  * an 8-bit multiple.
 					  */
 					uint32_t length;
 					 /**< The message length, in bytes, of the
@@ -606,7 +606,9 @@ struct rte_crypto_sym_op {
 					  * For SNOW 3G @ RTE_CRYPTO_AUTH_SNOW3G_UEA2,
 					  * KASUMI @ RTE_CRYPTO_CIPHER_KASUMI_F8
 					  * and ZUC @ RTE_CRYPTO_CIPHER_ZUC_EEA3,
-					  * this field should be in bits.
+					  * this field should be in bits. For
+					  * digest-encrypted cases this must be
+					  * an 8-bit multiple.
 					  */
 				} data; /**< Data offsets and length for ciphering */
 			} cipher;
@@ -622,7 +624,9 @@ struct rte_crypto_sym_op {
 					  * For SNOW 3G @ RTE_CRYPTO_AUTH_SNOW3G_UIA2,
 					  * KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9
 					  * and ZUC @ RTE_CRYPTO_AUTH_ZUC_EIA3,
-					  * this field should be in bits.
+					  * this field should be in bits. For
+					  * digest-encrypted cases this must be
+					  * an 8-bit multiple.
 					  *
 					  * @note
 					  * For KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9,
@@ -637,7 +641,9 @@ struct rte_crypto_sym_op {
 					  * For SNOW 3G @ RTE_CRYPTO_AUTH_SNOW3G_UIA2,
 					  * KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9
 					  * and ZUC @ RTE_CRYPTO_AUTH_ZUC_EIA3,
-					  * this field should be in bits.
+					  * this field should be in bits. For
+					  * digest-encrypted cases this must be
+					  * an 8-bit multiple.
 					  *
 					  * @note
 					  * For KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9,
@@ -667,6 +673,57 @@ struct rte_crypto_sym_op {
 					 *
 					 * For digest generation, the digest result
 					 * will overwrite any data at this location.
+					 *
+					 * @note
+					 * Digest-encrypted case.
+					 * Digest can be generated, appended to
+					 * the end of raw data and encrypted
+					 * together using chained digest
+					 * generation
+					 * (@ref RTE_CRYPTO_AUTH_OP_GENERATE)
+					 * and encryption
+					 * (@ref RTE_CRYPTO_CIPHER_OP_ENCRYPT)
+					 * xforms. Similarly, authentication
+					 * of the raw data against appended,
+					 * decrypted digest, can be performed
+					 * using decryption
+					 * (@ref RTE_CRYPTO_CIPHER_OP_DECRYPT)
+					 * and digest verification
+					 * (@ref RTE_CRYPTO_AUTH_OP_VERIFY)
+					 * chained xforms.
+					 * To perform those operations, a few
+					 * additional conditions must be met:
+					 * - caller must allocate at least
+					 * digest_length of memory at the end of
+					 * source and (in case of out-of-place
+					 * operations) destination buffer; those
+					 * buffers can be linear or split using
+					 * scatter-gather lists,
+					 * - digest data pointer must point to
+					 * the end of source or (in case of
+					 * out-of-place operations) destination
+					 * data, which is pointer to the
+					 * data buffer + auth.data.offset +
+					 * auth.data.length,
+					 * - cipher.data.offset +
+					 * cipher.data.length must be greater
+					 * than auth.data.offset +
+					 * auth.data.length and is typically
+					 * equal to auth.data.offset +
+					 * auth.data.length + digest_length.
+					 * - for wireless algorithms, i.e.
+					 * SNOW 3G, KASUMI and ZUC, as the
+					 * cipher.data.length,
+					 * cipher.data.offset,
+					 * auth.data.length and
+					 * auth.data.offset are in bits, they
+					 * must be 8-bit multiples.
+					 *
+					 * Note, that for security reasons, it
+					 * is PMDs' responsibility to not
+					 * leave an unencrypted digest in any
+					 * buffer after performing auth-cipher
+					 * operations.
 					 *
 					 */
 					rte_iova_t phys_addr;

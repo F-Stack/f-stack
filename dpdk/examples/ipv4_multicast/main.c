@@ -80,7 +80,7 @@ static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
-static struct ether_addr ports_eth_addr[MAX_PORTS];
+static struct rte_ether_addr ports_eth_addr[MAX_PORTS];
 
 /* mask of enabled ports */
 static uint32_t enabled_port_mask = 0;
@@ -138,21 +138,21 @@ struct mcast_group_params {
 };
 
 static struct mcast_group_params mcast_group_table[] = {
-		{IPv4(224,0,0,101), 0x1},
-		{IPv4(224,0,0,102), 0x2},
-		{IPv4(224,0,0,103), 0x3},
-		{IPv4(224,0,0,104), 0x4},
-		{IPv4(224,0,0,105), 0x5},
-		{IPv4(224,0,0,106), 0x6},
-		{IPv4(224,0,0,107), 0x7},
-		{IPv4(224,0,0,108), 0x8},
-		{IPv4(224,0,0,109), 0x9},
-		{IPv4(224,0,0,110), 0xA},
-		{IPv4(224,0,0,111), 0xB},
-		{IPv4(224,0,0,112), 0xC},
-		{IPv4(224,0,0,113), 0xD},
-		{IPv4(224,0,0,114), 0xE},
-		{IPv4(224,0,0,115), 0xF},
+		{RTE_IPV4(224,0,0,101), 0x1},
+		{RTE_IPV4(224,0,0,102), 0x2},
+		{RTE_IPV4(224,0,0,103), 0x3},
+		{RTE_IPV4(224,0,0,104), 0x4},
+		{RTE_IPV4(224,0,0,105), 0x5},
+		{RTE_IPV4(224,0,0,106), 0x6},
+		{RTE_IPV4(224,0,0,107), 0x7},
+		{RTE_IPV4(224,0,0,108), 0x8},
+		{RTE_IPV4(224,0,0,109), 0x9},
+		{RTE_IPV4(224,0,0,110), 0xA},
+		{RTE_IPV4(224,0,0,111), 0xB},
+		{RTE_IPV4(224,0,0,112), 0xC},
+		{RTE_IPV4(224,0,0,113), 0xD},
+		{RTE_IPV4(224,0,0,114), 0xE},
+		{RTE_IPV4(224,0,0,115), 0xF},
 };
 
 #define N_MCAST_GROUPS \
@@ -254,17 +254,9 @@ mcast_out_pkt(struct rte_mbuf *pkt, int use_clone)
 	/* prepend new header */
 	hdr->next = pkt;
 
-
 	/* update header's fields */
 	hdr->pkt_len = (uint16_t)(hdr->data_len + pkt->pkt_len);
 	hdr->nb_segs = pkt->nb_segs + 1;
-
-	/* copy metadata from source packet*/
-	hdr->port = pkt->port;
-	hdr->vlan_tci = pkt->vlan_tci;
-	hdr->vlan_tci_outer = pkt->vlan_tci_outer;
-	hdr->tx_offload = pkt->tx_offload;
-	hdr->hash = pkt->hash;
 
 	__rte_mbuf_sanity_check(hdr, 1);
 	return hdr;
@@ -275,19 +267,20 @@ mcast_out_pkt(struct rte_mbuf *pkt, int use_clone)
  * and put it into the outgoing queue for the given port.
  */
 static inline void
-mcast_send_pkt(struct rte_mbuf *pkt, struct ether_addr *dest_addr,
+mcast_send_pkt(struct rte_mbuf *pkt, struct rte_ether_addr *dest_addr,
 		struct lcore_queue_conf *qconf, uint16_t port)
 {
-	struct ether_hdr *ethdr;
+	struct rte_ether_hdr *ethdr;
 	uint16_t len;
 
 	/* Construct Ethernet header. */
-	ethdr = (struct ether_hdr *)rte_pktmbuf_prepend(pkt, (uint16_t)sizeof(*ethdr));
+	ethdr = (struct rte_ether_hdr *)
+		rte_pktmbuf_prepend(pkt, (uint16_t)sizeof(*ethdr));
 	RTE_ASSERT(ethdr != NULL);
 
-	ether_addr_copy(dest_addr, &ethdr->d_addr);
-	ether_addr_copy(&ports_eth_addr[port], &ethdr->s_addr);
-	ethdr->ether_type = rte_be_to_cpu_16(ETHER_TYPE_IPv4);
+	rte_ether_addr_copy(dest_addr, &ethdr->d_addr);
+	rte_ether_addr_copy(&ports_eth_addr[port], &ethdr->s_addr);
+	ethdr->ether_type = rte_be_to_cpu_16(RTE_ETHER_TYPE_IPV4);
 
 	/* Put new packet into the output queue */
 	len = qconf->tx_mbufs[port].len;
@@ -304,17 +297,18 @@ static inline void
 mcast_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf)
 {
 	struct rte_mbuf *mc;
-	struct ipv4_hdr *iphdr;
+	struct rte_ipv4_hdr *iphdr;
 	uint32_t dest_addr, port_mask, port_num, use_clone;
 	int32_t hash;
 	uint16_t port;
 	union {
 		uint64_t as_int;
-		struct ether_addr as_addr;
+		struct rte_ether_addr as_addr;
 	} dst_eth_addr;
 
 	/* Remove the Ethernet header from the input packet */
-	iphdr = (struct ipv4_hdr *)rte_pktmbuf_adj(m, (uint16_t)sizeof(struct ether_hdr));
+	iphdr = (struct rte_ipv4_hdr *)
+		rte_pktmbuf_adj(m, (uint16_t)sizeof(struct rte_ether_hdr));
 	RTE_ASSERT(iphdr != NULL);
 
 	dest_addr = rte_be_to_cpu_32(iphdr->dst_addr);
@@ -323,7 +317,7 @@ mcast_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf)
 	 * Check that it is a valid multicast address and
 	 * we have some active ports assigned to it.
 	 */
-	if(!IS_IPV4_MCAST(dest_addr) ||
+	if (!RTE_IS_IPV4_MCAST(dest_addr) ||
 	    (hash = rte_fbk_hash_lookup(mcast_hash, dest_addr)) <= 0 ||
 	    (port_mask = hash & enabled_port_mask) == 0) {
 		rte_pktmbuf_free(m);
@@ -543,10 +537,10 @@ parse_args(int argc, char **argv)
 }
 
 static void
-print_ethaddr(const char *name, struct ether_addr *eth_addr)
+print_ethaddr(const char *name, struct rte_ether_addr *eth_addr)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, eth_addr);
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", name, buf);
 }
 
@@ -581,6 +575,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -590,7 +585,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -692,7 +694,12 @@ main(int argc, char **argv)
 		qconf = &lcore_queue_conf[rx_lcore_id];
 
 		/* limit the frame size to the maximum supported by NIC */
-		rte_eth_dev_info_get(portid, &dev_info);
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
 		    dev_info.max_rx_pktlen,
 		    local_port_conf.rxmode.max_rx_pkt_len);
@@ -732,7 +739,12 @@ main(int argc, char **argv)
 				 "Cannot adjust number of descriptors: err=%d, port=%d\n",
 				 ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot get MAC address: err=%d, port=%d\n",
+				 ret, portid);
+
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
 
@@ -771,7 +783,11 @@ main(int argc, char **argv)
 			qconf->tx_queue_id[portid] = queueid;
 			queueid++;
 		}
-		rte_eth_allmulticast_enable(portid);
+		ret = rte_eth_allmulticast_enable(portid);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				"rte_eth_allmulticast_enable: err=%d, port=%d\n",
+				ret, portid);
 		/* Start device */
 		ret = rte_eth_dev_start(portid);
 		if (ret < 0)

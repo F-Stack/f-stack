@@ -57,7 +57,7 @@ struct flow_conf qos_conf[MAX_DATA_STREAMS];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 	},
 	.txmode = {
@@ -98,7 +98,13 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	/* init port */
 	RTE_LOG(INFO, APP, "Initializing port %"PRIu16"... ", portid);
 	fflush(stdout);
-	rte_eth_dev_info_get(portid, &dev_info);
+
+	ret = rte_eth_dev_info_get(portid, &dev_info);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"Error during getting device (port %u) info: %s\n",
+			portid, strerror(-ret));
+
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -148,7 +154,12 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	printf("done: ");
 
 	/* get link status */
-	rte_eth_link_get(portid, &link);
+	ret = rte_eth_link_get(portid, &link);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE,
+			 "rte_eth_link_get: err=%d, port=%u: %s\n",
+			 ret, portid, rte_strerror(-ret));
+
 	if (link.link_status) {
 		printf(" Link Up - speed %u Mbps - %s\n",
 			(uint32_t) link.link_speed,
@@ -157,7 +168,11 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	} else {
 		printf(" Link Down\n");
 	}
-	rte_eth_promiscuous_enable(portid);
+	ret = rte_eth_promiscuous_enable(portid);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			"rte_eth_promiscuous_enable: err=%s, port=%u\n",
+			rte_strerror(-ret), portid);
 
 	/* mark port as initialized */
 	app_inited_port_mask |= 1u << portid;
@@ -165,43 +180,37 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	return 0;
 }
 
-static struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
-	{
-		.tb_rate = 1250000000,
-		.tb_size = 1000000,
-
-		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000},
-		.tc_period = 10,
-	},
-};
-
-static struct rte_sched_pipe_params pipe_profiles[RTE_SCHED_PIPE_PROFILES_PER_PORT] = {
+static struct rte_sched_pipe_params pipe_profiles[MAX_SCHED_PIPE_PROFILES] = {
 	{ /* Profile #0 */
 		.tb_rate = 305175,
 		.tb_size = 1000000,
 
-		.tc_rate = {305175, 305175, 305175, 305175},
+		.tc_rate = {305175, 305175, 305175, 305175, 305175, 305175,
+			305175, 305175, 305175, 305175, 305175, 305175, 305175},
 		.tc_period = 40,
 #ifdef RTE_SCHED_SUBPORT_TC_OV
 		.tc_ov_weight = 1,
 #endif
 
-		.wrr_weights = {1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1},
+		.wrr_weights = {1, 1, 1, 1},
 	},
 };
 
-struct rte_sched_port_params port_params = {
-	.name = "port_scheduler_0",
-	.socket = 0, /* computed */
-	.rate = 0, /* computed */
-	.mtu = 6 + 6 + 4 + 4 + 2 + 1500,
-	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
-	.n_subports_per_port = 1,
-	.n_pipes_per_subport = 4096,
-	.qsize = {64, 64, 64, 64},
-	.pipe_profiles = pipe_profiles,
-	.n_pipe_profiles = sizeof(pipe_profiles) / sizeof(struct rte_sched_pipe_params),
+struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
+	{
+		.tb_rate = 1250000000,
+		.tb_size = 1000000,
 
+		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000,
+			1250000000, 1250000000, 1250000000, 1250000000, 1250000000,
+			1250000000, 1250000000, 1250000000, 1250000000},
+		.tc_period = 10,
+		.n_pipes_per_subport_enabled = 4096,
+		.qsize = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
+		.pipe_profiles = pipe_profiles,
+		.n_pipe_profiles = sizeof(pipe_profiles) /
+			sizeof(struct rte_sched_pipe_params),
+		.n_max_pipe_profiles = MAX_SCHED_PIPE_PROFILES,
 #ifdef RTE_SCHED_RED
 	.red_params = {
 		/* Traffic Class 0 Colors Green / Yellow / Red */
@@ -222,9 +231,65 @@ struct rte_sched_port_params port_params = {
 		/* Traffic Class 3 - Colors Green / Yellow / Red */
 		[3][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
 		[3][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[3][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9}
-	}
+		[3][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 4 - Colors Green / Yellow / Red */
+		[4][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[4][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[4][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 5 - Colors Green / Yellow / Red */
+		[5][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[5][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[5][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 6 - Colors Green / Yellow / Red */
+		[6][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[6][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[6][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 7 - Colors Green / Yellow / Red */
+		[7][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[7][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[7][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 8 - Colors Green / Yellow / Red */
+		[8][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[8][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[8][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 9 - Colors Green / Yellow / Red */
+		[9][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[9][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[9][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 10 - Colors Green / Yellow / Red */
+		[10][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[10][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[10][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 11 - Colors Green / Yellow / Red */
+		[11][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[11][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[11][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+
+		/* Traffic Class 12 - Colors Green / Yellow / Red */
+		[12][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[12][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+		[12][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
+	},
 #endif /* RTE_SCHED_RED */
+	},
+};
+
+struct rte_sched_port_params port_params = {
+	.name = "port_scheduler_0",
+	.socket = 0, /* computed */
+	.rate = 0, /* computed */
+	.mtu = 6 + 6 + 4 + 4 + 2 + 1500,
+	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
+	.n_subports_per_port = 1,
+	.n_pipes_per_subport = MAX_SCHED_PIPES,
 };
 
 static struct rte_sched_port *
@@ -236,7 +301,11 @@ app_init_sched_port(uint32_t portid, uint32_t socketid)
 	uint32_t pipe, subport;
 	int err;
 
-	rte_eth_link_get(portid, &link);
+	err = rte_eth_link_get(portid, &link);
+	if (err < 0)
+		rte_exit(EXIT_FAILURE,
+			 "rte_eth_link_get: err=%d, port=%u: %s\n",
+			 err, portid, rte_strerror(-err));
 
 	port_params.socket = socketid;
 	port_params.rate = (uint64_t) link.link_speed * 1000 * 1000 / 8;
@@ -255,7 +324,10 @@ app_init_sched_port(uint32_t portid, uint32_t socketid)
 					subport, err);
 		}
 
-		for (pipe = 0; pipe < port_params.n_pipes_per_subport; pipe ++) {
+		uint32_t n_pipes_per_subport =
+			subport_params[subport].n_pipes_per_subport_enabled;
+
+		for (pipe = 0; pipe < n_pipes_per_subport; pipe++) {
 			if (app_pipe_to_profile[subport][pipe] != -1) {
 				err = rte_sched_pipe_config(port, subport, pipe,
 						app_pipe_to_profile[subport][pipe]);

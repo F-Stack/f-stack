@@ -35,8 +35,8 @@ sysctl(int *name, unsigned namelen, void *old,
     size_t *oldlenp, const void *new, size_t newlen)
 {
     struct ff_msg *msg, *retmsg = NULL;
-    char *extra_buf = NULL, *original_buf = NULL;
-    size_t total_len, original_buf_len;
+    char *extra_buf = NULL;
+    size_t total_len;
 
     if (old != NULL && oldlenp == NULL) {
         errno = EINVAL;
@@ -54,7 +54,7 @@ sysctl(int *name, unsigned namelen, void *old,
         oldlen = *oldlenp;
     }
 
-    total_len = namelen + oldlen + newlen;
+    total_len = namelen * sizeof(int) + sizeof(size_t) + oldlen + newlen;
     if (total_len > msg->buf_len) {
         extra_buf = rte_malloc(NULL, total_len, 0);
         if (extra_buf == NULL) {
@@ -62,8 +62,8 @@ sysctl(int *name, unsigned namelen, void *old,
             ff_ipc_msg_free(msg);
             return -1;
         }
-        original_buf = msg->buf_addr;
-        original_buf_len = msg->buf_len;
+        msg->original_buf = msg->buf_addr;
+        msg->original_buf_len = msg->buf_len;
         msg->buf_addr = extra_buf;
         msg->buf_len = total_len; 
     }
@@ -118,7 +118,7 @@ sysctl(int *name, unsigned namelen, void *old,
         ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
             errno = EPIPE;
-            goto error;
+            return -1;
         }
     } while (msg != retmsg);
 
@@ -137,14 +137,7 @@ sysctl(int *name, unsigned namelen, void *old,
     }
 
 error:
-    if (original_buf) {
-        msg->buf_addr = original_buf;
-        msg->buf_len = original_buf_len;
-    }
     ff_ipc_msg_free(msg);
-    if (extra_buf) {
-        rte_free(extra_buf);
-    }
 
     return ret;
 }

@@ -30,7 +30,7 @@ struct pcmd_intstr_params {
 struct pcmd_intmac_params {
 	cmdline_fixed_string_t cmd;
 	uint16_t port;
-	struct ether_addr mac;
+	struct rte_ether_addr mac;
 };
 struct pcmd_str_params {
 	cmdline_fixed_string_t cmd;
@@ -475,7 +475,7 @@ pcmd_macaddr_callback(void *ptr_params,
 	void *ptr_data)
 {
 	struct pcmd_intmac_params *params = ptr_params;
-	struct ether_addr mac_addr;
+	struct rte_ether_addr mac_addr;
 	int stat;
 
 	stat = 0;
@@ -530,8 +530,8 @@ pcmd_mtu_callback(void *ptr_params,
 	new_mtu = atoi(params->opt);
 	new_mtu = strtoul(params->opt, &ptr_parse_end, 10);
 	if (*ptr_parse_end != '\0' ||
-			new_mtu < ETHER_MIN_MTU ||
-			new_mtu > ETHER_MAX_JUMBO_FRAME_LEN) {
+			new_mtu < RTE_ETHER_MIN_MTU ||
+			new_mtu > RTE_ETHER_MAX_JUMBO_FRAME_LEN) {
 		printf("Port %i: Invalid MTU value\n", params->port);
 		return;
 	}

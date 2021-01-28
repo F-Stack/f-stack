@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP
+ *   Copyright 2017-2019 NXP
  *
  */
 #ifndef __RTE_DPAA_BUS_H__
@@ -10,10 +10,10 @@
 #include <rte_mempool.h>
 #include <dpaax_iova_table.h>
 
+#include <dpaa_of.h>
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
 #include <netcfg.h>
 
 #define DPAA_MEMPOOL_OPS_NAME	"dpaa"
@@ -29,6 +29,9 @@
 #define SVR_LS1043A_FAMILY	0x87920000
 #define SVR_LS1046A_FAMILY	0x87070000
 #define SVR_MASK		0xffff0000
+
+#define RTE_DEV_TO_DPAA_CONST(ptr) \
+	container_of(ptr, const struct rte_dpaa_device, device)
 
 extern unsigned int dpaa_svr_family;
 
@@ -54,6 +57,7 @@ struct rte_dpaa_bus {
 	struct rte_dpaa_device_list device_list;
 	struct rte_dpaa_driver_list driver_list;
 	int device_count;
+	int detected;
 };
 
 struct dpaa_device_id {
@@ -71,6 +75,7 @@ struct rte_dpaa_device {
 	};
 	struct rte_dpaa_driver *driver;
 	struct dpaa_device_id id;
+	struct rte_intr_handle intr_handle;
 	enum rte_dpaa_type device_type; /**< Ethernet or crypto type device */
 	char name[RTE_ETH_NAME_MAX_LEN];
 };
@@ -127,7 +132,23 @@ static inline void *rte_dpaa_mem_ptov(phys_addr_t paddr)
 	}
 
 	/* If not, Fallback to full memseg list searching */
-	return rte_mem_iova2virt(paddr);
+	va = rte_mem_iova2virt(paddr);
+
+	dpaax_iova_table_update(paddr, va, RTE_CACHE_LINE_SIZE);
+
+	return va;
+}
+
+static inline rte_iova_t
+rte_dpaa_mem_vtop(void *vaddr)
+{
+	const struct rte_memseg *ms;
+
+	ms = rte_mem_virt2memseg(vaddr, NULL);
+	if (ms)
+		return ms->iova + RTE_PTR_DIFF(vaddr, ms->addr);
+
+	return (size_t)NULL;
 }
 
 /**

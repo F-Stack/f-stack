@@ -82,7 +82,7 @@ static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
-static struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
+static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
 static uint32_t enabled_port_mask;
@@ -125,7 +125,7 @@ static uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
 		.mq_mode	= ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
 	},
@@ -146,7 +146,7 @@ static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 /***********************start of ACL part******************************/
 #ifdef DO_RFC_1812_CHECKS
 static inline int
-is_valid_ipv4_pkt(struct ipv4_hdr *pkt, uint32_t link_len);
+is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len);
 #endif
 static inline void
 send_single_packet(struct rte_mbuf *m, uint16_t port);
@@ -173,9 +173,9 @@ send_single_packet(struct rte_mbuf *m, uint16_t port);
 		*c = (unsigned char)(ip >> 8 & 0xff);\
 		*d = (unsigned char)(ip & 0xff);\
 	} while (0)
-#define OFF_ETHHEAD	(sizeof(struct ether_hdr))
-#define OFF_IPV42PROTO (offsetof(struct ipv4_hdr, next_proto_id))
-#define OFF_IPV62PROTO (offsetof(struct ipv6_hdr, proto))
+#define OFF_ETHHEAD	(sizeof(struct rte_ether_hdr))
+#define OFF_IPV42PROTO (offsetof(struct rte_ipv4_hdr, next_proto_id))
+#define OFF_IPV62PROTO (offsetof(struct rte_ipv6_hdr, proto))
 #define MBUF_IPV4_2PROTO(m)	\
 	rte_pktmbuf_mtod_offset((m), uint8_t *, OFF_ETHHEAD + OFF_IPV42PROTO)
 #define MBUF_IPV6_2PROTO(m)	\
@@ -252,32 +252,32 @@ struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
 		.size = sizeof(uint32_t),
 		.field_index = SRC_FIELD_IPV4,
 		.input_index = RTE_ACL_IPV4VLAN_SRC,
-		.offset = offsetof(struct ipv4_hdr, src_addr) -
-			offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = offsetof(struct rte_ipv4_hdr, src_addr) -
+			offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = DST_FIELD_IPV4,
 		.input_index = RTE_ACL_IPV4VLAN_DST,
-		.offset = offsetof(struct ipv4_hdr, dst_addr) -
-			offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = offsetof(struct rte_ipv4_hdr, dst_addr) -
+			offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_RANGE,
 		.size = sizeof(uint16_t),
 		.field_index = SRCP_FIELD_IPV4,
 		.input_index = RTE_ACL_IPV4VLAN_PORTS,
-		.offset = sizeof(struct ipv4_hdr) -
-			offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = sizeof(struct rte_ipv4_hdr) -
+			offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_RANGE,
 		.size = sizeof(uint16_t),
 		.field_index = DSTP_FIELD_IPV4,
 		.input_index = RTE_ACL_IPV4VLAN_PORTS,
-		.offset = sizeof(struct ipv4_hdr) -
-			offsetof(struct ipv4_hdr, next_proto_id) +
+		.offset = sizeof(struct rte_ipv4_hdr) -
+			offsetof(struct rte_ipv4_hdr, next_proto_id) +
 			sizeof(uint16_t),
 	},
 };
@@ -314,80 +314,84 @@ struct rte_acl_field_def ipv6_defs[NUM_FIELDS_IPV6] = {
 		.size = sizeof(uint32_t),
 		.field_index = SRC1_FIELD_IPV6,
 		.input_index = SRC1_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, src_addr) -
-			offsetof(struct ipv6_hdr, proto),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr) -
+			offsetof(struct rte_ipv6_hdr, proto),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = SRC2_FIELD_IPV6,
 		.input_index = SRC2_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, src_addr) -
-			offsetof(struct ipv6_hdr, proto) + sizeof(uint32_t),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr) -
+			offsetof(struct rte_ipv6_hdr, proto) + sizeof(uint32_t),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = SRC3_FIELD_IPV6,
 		.input_index = SRC3_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, src_addr) -
-			offsetof(struct ipv6_hdr, proto) + 2 * sizeof(uint32_t),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr) -
+			offsetof(struct rte_ipv6_hdr, proto) +
+			2 * sizeof(uint32_t),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = SRC4_FIELD_IPV6,
 		.input_index = SRC4_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, src_addr) -
-			offsetof(struct ipv6_hdr, proto) + 3 * sizeof(uint32_t),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr) -
+			offsetof(struct rte_ipv6_hdr, proto) +
+			3 * sizeof(uint32_t),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = DST1_FIELD_IPV6,
 		.input_index = DST1_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, dst_addr)
-				- offsetof(struct ipv6_hdr, proto),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr)
+				- offsetof(struct rte_ipv6_hdr, proto),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = DST2_FIELD_IPV6,
 		.input_index = DST2_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, dst_addr) -
-			offsetof(struct ipv6_hdr, proto) + sizeof(uint32_t),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr) -
+			offsetof(struct rte_ipv6_hdr, proto) + sizeof(uint32_t),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = DST3_FIELD_IPV6,
 		.input_index = DST3_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, dst_addr) -
-			offsetof(struct ipv6_hdr, proto) + 2 * sizeof(uint32_t),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr) -
+			offsetof(struct rte_ipv6_hdr, proto) +
+			2 * sizeof(uint32_t),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_MASK,
 		.size = sizeof(uint32_t),
 		.field_index = DST4_FIELD_IPV6,
 		.input_index = DST4_FIELD_IPV6,
-		.offset = offsetof(struct ipv6_hdr, dst_addr) -
-			offsetof(struct ipv6_hdr, proto) + 3 * sizeof(uint32_t),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr) -
+			offsetof(struct rte_ipv6_hdr, proto) +
+			3 * sizeof(uint32_t),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_RANGE,
 		.size = sizeof(uint16_t),
 		.field_index = SRCP_FIELD_IPV6,
 		.input_index = SRCP_FIELD_IPV6,
-		.offset = sizeof(struct ipv6_hdr) -
-			offsetof(struct ipv6_hdr, proto),
+		.offset = sizeof(struct rte_ipv6_hdr) -
+			offsetof(struct rte_ipv6_hdr, proto),
 	},
 	{
 		.type = RTE_ACL_FIELD_TYPE_RANGE,
 		.size = sizeof(uint16_t),
 		.field_index = DSTP_FIELD_IPV6,
 		.input_index = SRCP_FIELD_IPV6,
-		.offset = sizeof(struct ipv6_hdr) -
-			offsetof(struct ipv6_hdr, proto) + sizeof(uint16_t),
+		.offset = sizeof(struct rte_ipv6_hdr) -
+			offsetof(struct rte_ipv6_hdr, proto) + sizeof(uint16_t),
 	},
 };
 
@@ -542,9 +546,9 @@ dump_acl4_rule(struct rte_mbuf *m, uint32_t sig)
 {
 	uint32_t offset = sig & ~ACL_DENY_SIGNATURE;
 	unsigned char a, b, c, d;
-	struct ipv4_hdr *ipv4_hdr = rte_pktmbuf_mtod_offset(m,
-							    struct ipv4_hdr *,
-							    sizeof(struct ether_hdr));
+	struct rte_ipv4_hdr *ipv4_hdr =
+		rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *,
+					sizeof(struct rte_ether_hdr));
 
 	uint32_t_to_char(rte_bswap32(ipv4_hdr->src_addr), &a, &b, &c, &d);
 	printf("Packet Src:%hhu.%hhu.%hhu.%hhu ", a, b, c, d);
@@ -566,9 +570,9 @@ dump_acl6_rule(struct rte_mbuf *m, uint32_t sig)
 {
 	unsigned i;
 	uint32_t offset = sig & ~ACL_DENY_SIGNATURE;
-	struct ipv6_hdr *ipv6_hdr = rte_pktmbuf_mtod_offset(m,
-							    struct ipv6_hdr *,
-							    sizeof(struct ether_hdr));
+	struct rte_ipv6_hdr *ipv6_hdr =
+		rte_pktmbuf_mtod_offset(m, struct rte_ipv6_hdr *,
+					sizeof(struct rte_ether_hdr));
 
 	printf("Packet Src");
 	for (i = 0; i < RTE_DIM(ipv6_hdr->src_addr); i += sizeof(uint16_t))
@@ -620,12 +624,12 @@ static inline void
 prepare_one_packet(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
 	int index)
 {
-	struct ipv4_hdr *ipv4_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
 	struct rte_mbuf *pkt = pkts_in[index];
 
 	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
-		ipv4_hdr = rte_pktmbuf_mtod_offset(pkt, struct ipv4_hdr *,
-						   sizeof(struct ether_hdr));
+		ipv4_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *,
+						sizeof(struct rte_ether_hdr));
 
 		/* Check to make sure the packet is valid (RFC1812) */
 		if (is_valid_ipv4_pkt(ipv4_hdr, pkt->pkt_len) >= 0) {
@@ -897,7 +901,7 @@ parse_ipv4_net(const char *in, uint32_t *addr, uint32_t *mask_len)
 	GET_CB_FIELD(in, d, 0, UINT8_MAX, '/');
 	GET_CB_FIELD(in, m, 0, sizeof(uint32_t) * CHAR_BIT, 0);
 
-	addr[0] = IPv4(a, b, c, d);
+	addr[0] = RTE_IPV4(a, b, c, d);
 	mask_len[0] = m;
 
 	return 0;
@@ -1281,14 +1285,14 @@ send_single_packet(struct rte_mbuf *m, uint16_t port)
 
 #ifdef DO_RFC_1812_CHECKS
 static inline int
-is_valid_ipv4_pkt(struct ipv4_hdr *pkt, uint32_t link_len)
+is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len)
 {
 	/* From http://www.rfc-editor.org/rfc/rfc1812.txt section 5.2.2 */
 	/*
 	 * 1. The packet length reported by the Link Layer must be large
 	 * enough to hold the minimum length legal IP datagram (20 bytes).
 	 */
-	if (link_len < sizeof(struct ipv4_hdr))
+	if (link_len < sizeof(struct rte_ipv4_hdr))
 		return -1;
 
 	/* 2. The IP checksum must be correct. */
@@ -1313,7 +1317,7 @@ is_valid_ipv4_pkt(struct ipv4_hdr *pkt, uint32_t link_len)
 	 * datagram header, whose length is specified in the IP header length
 	 * field.
 	 */
-	if (rte_cpu_to_be_16(pkt->total_length) < sizeof(struct ipv4_hdr))
+	if (rte_cpu_to_be_16(pkt->total_length) < sizeof(struct rte_ipv4_hdr))
 		return -5;
 
 	return 0;
@@ -1701,7 +1705,7 @@ parse_args(int argc, char **argv)
 
 				/*
 				 * if no max-pkt-len set, then use the
-				 * default value ETHER_MAX_LEN
+				 * default value RTE_ETHER_MAX_LEN
 				 */
 				if (0 == getopt_long(argc, argvopt, "",
 						&lenopts, &option_index)) {
@@ -1754,10 +1758,10 @@ parse_args(int argc, char **argv)
 }
 
 static void
-print_ethaddr(const char *name, const struct ether_addr *eth_addr)
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
 {
-	char buf[ETHER_ADDR_FMT_SIZE];
-	ether_format_addr(buf, ETHER_ADDR_FMT_SIZE, eth_addr);
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", name, buf);
 }
 
@@ -1810,6 +1814,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -1819,7 +1824,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -1920,7 +1932,13 @@ main(int argc, char **argv)
 			n_tx_queue = MAX_TX_QUEUE_PER_PORT;
 		printf("Creating queues: nb_rxq=%d nb_txq=%u... ",
 			nb_rx_queue, (unsigned)n_tx_queue);
-		rte_eth_dev_info_get(portid, &dev_info);
+
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
 				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -1950,7 +1968,12 @@ main(int argc, char **argv)
 				"rte_eth_dev_adjust_nb_rx_tx_desc: err=%d, port=%d\n",
 				ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				"rte_eth_macaddr_get: err=%d, port=%d\n",
+				ret, portid);
+
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
 
@@ -1990,7 +2013,12 @@ main(int argc, char **argv)
 			printf("txq=%u,%d,%d ", lcore_id, queueid, socketid);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
+			ret = rte_eth_dev_info_get(portid, &dev_info);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"Error during getting device (port %u) info: %s\n",
+					portid, strerror(-ret));
+
 			txconf = &dev_info.default_txconf;
 			txconf->offloads = local_port_conf.txmode.offloads;
 			ret = rte_eth_tx_queue_setup(portid, queueid, nb_txd,
@@ -2032,7 +2060,12 @@ main(int argc, char **argv)
 			printf("rxq=%d,%d,%d ", portid, queueid, socketid);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
+			ret = rte_eth_dev_info_get(portid, &dev_info);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"Error during getting device (port %u) info: %s\n",
+					portid, strerror(-ret));
+
 			rxq_conf = dev_info.default_rxconf;
 			rxq_conf.offloads = port_conf.rxmode.offloads;
 			ret = rte_eth_rx_queue_setup(portid, queueid, nb_rxd,
@@ -2065,8 +2098,13 @@ main(int argc, char **argv)
 		 * to itself through 2 cross-connected  ports of the
 		 * target machine.
 		 */
-		if (promiscuous_on)
-			rte_eth_promiscuous_enable(portid);
+		if (promiscuous_on) {
+			ret = rte_eth_promiscuous_enable(portid);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"rte_eth_promiscuous_enable: err=%s, port=%u\n",
+					rte_strerror(-ret), portid);
+		}
 	}
 
 	check_all_ports_link_status(enabled_port_mask);

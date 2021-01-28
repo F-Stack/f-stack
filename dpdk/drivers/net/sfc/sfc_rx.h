@@ -50,32 +50,15 @@ enum sfc_rxq_state_bit {
 };
 
 /**
- * Receive queue control information.
- * Allocated on the socket specified on the queue setup.
+ * Receive queue control primary process-only information.
  */
 struct sfc_rxq {
 	struct sfc_evq		*evq;
 	efx_rxq_t		*common;
 	efsys_mem_t		mem;
 	unsigned int		hw_index;
-	unsigned int		refill_threshold;
-	struct rte_mempool	*refill_mb_pool;
 	uint16_t		buf_size;
-	struct sfc_dp_rxq	*dp;
-	unsigned int		state;
 };
-
-static inline unsigned int
-sfc_rxq_sw_index_by_hw_index(unsigned int hw_index)
-{
-	return hw_index;
-}
-
-static inline unsigned int
-sfc_rxq_sw_index(const struct sfc_rxq *rxq)
-{
-	return sfc_rxq_sw_index_by_hw_index(rxq->hw_index);
-}
 
 struct sfc_rxq *sfc_rxq_by_dp_rxq(const struct sfc_dp_rxq *dp_rxq);
 
@@ -90,6 +73,7 @@ struct sfc_efx_rxq {
 #define SFC_EFX_RXQ_FLAG_STARTED	0x1
 #define SFC_EFX_RXQ_FLAG_RUNNING	0x2
 #define SFC_EFX_RXQ_FLAG_RSS_HASH	0x4
+#define SFC_EFX_RXQ_FLAG_INTR_EN	0x8
 	unsigned int			ptr_mask;
 	unsigned int			pending;
 	unsigned int			completed;
@@ -121,14 +105,19 @@ sfc_efx_rxq_by_dp_rxq(struct sfc_dp_rxq *dp_rxq)
  * Allocated on the same socket as adapter data.
  */
 struct sfc_rxq_info {
+	unsigned int		state;
 	unsigned int		max_entries;
 	unsigned int		entries;
 	efx_rxq_type_t		type;
 	unsigned int		type_flags;
-	struct sfc_rxq		*rxq;
+	struct sfc_dp_rxq	*dp;
 	boolean_t		deferred_start;
 	boolean_t		deferred_started;
+	unsigned int		refill_threshold;
+	struct rte_mempool	*refill_mb_pool;
 };
+
+struct sfc_rxq_info *sfc_rxq_info_by_dp_rxq(const struct sfc_dp_rxq *dp_rxq);
 
 int sfc_rx_configure(struct sfc_adapter *sa);
 void sfc_rx_close(struct sfc_adapter *sa);
@@ -146,19 +135,14 @@ void sfc_rx_qstop(struct sfc_adapter *sa, unsigned int sw_index);
 uint64_t sfc_rx_get_dev_offload_caps(struct sfc_adapter *sa);
 uint64_t sfc_rx_get_queue_offload_caps(struct sfc_adapter *sa);
 
-void sfc_rx_qflush_done(struct sfc_rxq *rxq);
-void sfc_rx_qflush_failed(struct sfc_rxq *rxq);
-
-unsigned int sfc_rx_qdesc_npending(struct sfc_adapter *sa,
-				   unsigned int sw_index);
-int sfc_rx_qdesc_done(struct sfc_dp_rxq *dp_rxq, unsigned int offset);
+void sfc_rx_qflush_done(struct sfc_rxq_info *rxq_info);
+void sfc_rx_qflush_failed(struct sfc_rxq_info *rxq_info);
 
 int sfc_rx_hash_init(struct sfc_adapter *sa);
 void sfc_rx_hash_fini(struct sfc_adapter *sa);
 int sfc_rx_hf_rte_to_efx(struct sfc_adapter *sa, uint64_t rte,
 			 efx_rx_hash_type_t *efx);
-uint64_t sfc_rx_hf_efx_to_rte(struct sfc_adapter *sa,
-			      efx_rx_hash_type_t efx);
+uint64_t sfc_rx_hf_efx_to_rte(struct sfc_rss *rss, efx_rx_hash_type_t efx);
 boolean_t sfc_rx_check_scatter(size_t pdu, size_t rx_buf_size,
 			       uint32_t rx_prefix_size,
 			       boolean_t rx_scatter_enabled,

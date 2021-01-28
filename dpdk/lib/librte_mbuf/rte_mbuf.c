@@ -49,7 +49,7 @@ rte_pktmbuf_pool_init(struct rte_mempool *mp, void *opaque_arg)
 	/* if no structure is provided, assume no mbuf private area */
 	user_mbp_priv = opaque_arg;
 	if (user_mbp_priv == NULL) {
-		default_mbp_priv.mbuf_priv_size = 0;
+		memset(&default_mbp_priv, 0, sizeof(default_mbp_priv));
 		if (mp->elt_size > sizeof(struct rte_mbuf))
 			roomsz = mp->elt_size - sizeof(struct rte_mbuf);
 		else
@@ -61,6 +61,7 @@ rte_pktmbuf_pool_init(struct rte_mempool *mp, void *opaque_arg)
 	RTE_ASSERT(mp->elt_size >= sizeof(struct rte_mbuf) +
 		user_mbp_priv->mbuf_data_room_size +
 		user_mbp_priv->mbuf_priv_size);
+	RTE_ASSERT(user_mbp_priv->flags == 0);
 
 	mbp_priv = rte_mempool_get_priv(mp);
 	memcpy(mbp_priv, user_mbp_priv, sizeof(*mbp_priv));
@@ -126,6 +127,7 @@ rte_pktmbuf_pool_create_by_ops(const char *name, unsigned int n,
 	}
 	elt_size = sizeof(struct rte_mbuf) + (unsigned)priv_size +
 		(unsigned)data_room_size;
+	memset(&mbp_priv, 0, sizeof(mbp_priv));
 	mbp_priv.mbuf_data_room_size = data_room_size;
 	mbp_priv.mbuf_priv_size = priv_size;
 
@@ -171,43 +173,297 @@ rte_pktmbuf_pool_create(const char *name, unsigned int n,
 void
 rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header)
 {
+	const char *reason;
+
+	if (rte_mbuf_check(m, is_header, &reason))
+		rte_panic("%s\n", reason);
+}
+
+int rte_mbuf_check(const struct rte_mbuf *m, int is_header,
+		   const char **reason)
+{
 	unsigned int nb_segs, pkt_len;
 
-	if (m == NULL)
-		rte_panic("mbuf is NULL\n");
+	if (m == NULL) {
+		*reason = "mbuf is NULL";
+		return -1;
+	}
 
 	/* generic checks */
-	if (m->pool == NULL)
-		rte_panic("bad mbuf pool\n");
-	if (m->buf_iova == 0)
-		rte_panic("bad IO addr\n");
-	if (m->buf_addr == NULL)
-		rte_panic("bad virt addr\n");
+	if (m->pool == NULL) {
+		*reason = "bad mbuf pool";
+		return -1;
+	}
+	if (m->buf_iova == 0) {
+		*reason = "bad IO addr";
+		return -1;
+	}
+	if (m->buf_addr == NULL) {
+		*reason = "bad virt addr";
+		return -1;
+	}
 
 	uint16_t cnt = rte_mbuf_refcnt_read(m);
-	if ((cnt == 0) || (cnt == UINT16_MAX))
-		rte_panic("bad ref cnt\n");
+	if ((cnt == 0) || (cnt == UINT16_MAX)) {
+		*reason = "bad ref cnt";
+		return -1;
+	}
 
 	/* nothing to check for sub-segments */
 	if (is_header == 0)
-		return;
+		return 0;
 
 	/* data_len is supposed to be not more than pkt_len */
-	if (m->data_len > m->pkt_len)
-		rte_panic("bad data_len\n");
+	if (m->data_len > m->pkt_len) {
+		*reason = "bad data_len";
+		return -1;
+	}
 
 	nb_segs = m->nb_segs;
 	pkt_len = m->pkt_len;
 
 	do {
+		if (m->data_off > m->buf_len) {
+			*reason = "data offset too big in mbuf segment";
+			return -1;
+		}
+		if (m->data_off + m->data_len > m->buf_len) {
+			*reason = "data length too big in mbuf segment";
+			return -1;
+		}
 		nb_segs -= 1;
 		pkt_len -= m->data_len;
 	} while ((m = m->next) != NULL);
 
-	if (nb_segs)
-		rte_panic("bad nb_segs\n");
-	if (pkt_len)
-		rte_panic("bad pkt_len\n");
+	if (nb_segs) {
+		*reason = "bad nb_segs";
+		return -1;
+	}
+	if (pkt_len) {
+		*reason = "bad pkt_len";
+		return -1;
+	}
+
+	return 0;
+}
+
+/**
+ * @internal helper function for freeing a bulk of packet mbuf segments
+ * via an array holding the packet mbuf segments from the same mempool
+ * pending to be freed.
+ *
+ * @param m
+ *  The packet mbuf segment to be freed.
+ * @param pending
+ *  Pointer to the array of packet mbuf segments pending to be freed.
+ * @param nb_pending
+ *  Pointer to the number of elements held in the array.
+ * @param pending_sz
+ *  Number of elements the array can hold.
+ *  Note: The compiler should optimize this parameter away when using a
+ *  constant value, such as RTE_PKTMBUF_FREE_PENDING_SZ.
+ */
+static void
+__rte_pktmbuf_free_seg_via_array(struct rte_mbuf *m,
+	struct rte_mbuf ** const pending, unsigned int * const nb_pending,
+	const unsigned int pending_sz)
+{
+	m = rte_pktmbuf_prefree_seg(m);
+	if (likely(m != NULL)) {
+		if (*nb_pending == pending_sz ||
+		    (*nb_pending > 0 && m->pool != pending[0]->pool)) {
+			rte_mempool_put_bulk(pending[0]->pool,
+					(void **)pending, *nb_pending);
+			*nb_pending = 0;
+		}
+
+		pending[(*nb_pending)++] = m;
+	}
+}
+
+/**
+ * Size of the array holding mbufs from the same mempool pending to be freed
+ * in bulk.
+ */
+#define RTE_PKTMBUF_FREE_PENDING_SZ 64
+
+/* Free a bulk of packet mbufs back into their original mempools. */
+void rte_pktmbuf_free_bulk(struct rte_mbuf **mbufs, unsigned int count)
+{
+	struct rte_mbuf *m, *m_next, *pending[RTE_PKTMBUF_FREE_PENDING_SZ];
+	unsigned int idx, nb_pending = 0;
+
+	for (idx = 0; idx < count; idx++) {
+		m = mbufs[idx];
+		if (unlikely(m == NULL))
+			continue;
+
+		__rte_mbuf_sanity_check(m, 1);
+
+		do {
+			m_next = m->next;
+			__rte_pktmbuf_free_seg_via_array(m,
+					pending, &nb_pending,
+					RTE_PKTMBUF_FREE_PENDING_SZ);
+			m = m_next;
+		} while (m != NULL);
+	}
+
+	if (nb_pending > 0)
+		rte_mempool_put_bulk(pending[0]->pool, (void **)pending, nb_pending);
+}
+
+/* Creates a shallow copy of mbuf */
+struct rte_mbuf *
+rte_pktmbuf_clone(struct rte_mbuf *md, struct rte_mempool *mp)
+{
+	struct rte_mbuf *mc, *mi, **prev;
+	uint32_t pktlen;
+	uint16_t nseg;
+
+	mc = rte_pktmbuf_alloc(mp);
+	if (unlikely(mc == NULL))
+		return NULL;
+
+	mi = mc;
+	prev = &mi->next;
+	pktlen = md->pkt_len;
+	nseg = 0;
+
+	do {
+		nseg++;
+		rte_pktmbuf_attach(mi, md);
+		*prev = mi;
+		prev = &mi->next;
+	} while ((md = md->next) != NULL &&
+	    (mi = rte_pktmbuf_alloc(mp)) != NULL);
+
+	*prev = NULL;
+	mc->nb_segs = nseg;
+	mc->pkt_len = pktlen;
+
+	/* Allocation of new indirect segment failed */
+	if (unlikely(mi == NULL)) {
+		rte_pktmbuf_free(mc);
+		return NULL;
+	}
+
+	__rte_mbuf_sanity_check(mc, 1);
+	return mc;
+}
+
+/* convert multi-segment mbuf to single mbuf */
+int
+__rte_pktmbuf_linearize(struct rte_mbuf *mbuf)
+{
+	size_t seg_len, copy_len;
+	struct rte_mbuf *m;
+	struct rte_mbuf *m_next;
+	char *buffer;
+
+	/* Extend first segment to the total packet length */
+	copy_len = rte_pktmbuf_pkt_len(mbuf) - rte_pktmbuf_data_len(mbuf);
+
+	if (unlikely(copy_len > rte_pktmbuf_tailroom(mbuf)))
+		return -1;
+
+	buffer = rte_pktmbuf_mtod_offset(mbuf, char *, mbuf->data_len);
+	mbuf->data_len = (uint16_t)(mbuf->pkt_len);
+
+	/* Append data from next segments to the first one */
+	m = mbuf->next;
+	while (m != NULL) {
+		m_next = m->next;
+
+		seg_len = rte_pktmbuf_data_len(m);
+		rte_memcpy(buffer, rte_pktmbuf_mtod(m, char *), seg_len);
+		buffer += seg_len;
+
+		rte_pktmbuf_free_seg(m);
+		m = m_next;
+	}
+
+	mbuf->next = NULL;
+	mbuf->nb_segs = 1;
+
+	return 0;
+}
+
+/* Create a deep copy of mbuf */
+struct rte_mbuf *
+rte_pktmbuf_copy(const struct rte_mbuf *m, struct rte_mempool *mp,
+		 uint32_t off, uint32_t len)
+{
+	const struct rte_mbuf *seg = m;
+	struct rte_mbuf *mc, *m_last, **prev;
+
+	/* garbage in check */
+	__rte_mbuf_sanity_check(m, 1);
+
+	/* check for request to copy at offset past end of mbuf */
+	if (unlikely(off >= m->pkt_len))
+		return NULL;
+
+	mc = rte_pktmbuf_alloc(mp);
+	if (unlikely(mc == NULL))
+		return NULL;
+
+	/* truncate requested length to available data */
+	if (len > m->pkt_len - off)
+		len = m->pkt_len - off;
+
+	__rte_pktmbuf_copy_hdr(mc, m);
+
+	/* copied mbuf is not indirect or external */
+	mc->ol_flags = m->ol_flags & ~(IND_ATTACHED_MBUF|EXT_ATTACHED_MBUF);
+
+	prev = &mc->next;
+	m_last = mc;
+	while (len > 0) {
+		uint32_t copy_len;
+
+		/* skip leading mbuf segments */
+		while (off >= seg->data_len) {
+			off -= seg->data_len;
+			seg = seg->next;
+		}
+
+		/* current buffer is full, chain a new one */
+		if (rte_pktmbuf_tailroom(m_last) == 0) {
+			m_last = rte_pktmbuf_alloc(mp);
+			if (unlikely(m_last == NULL)) {
+				rte_pktmbuf_free(mc);
+				return NULL;
+			}
+			++mc->nb_segs;
+			*prev = m_last;
+			prev = &m_last->next;
+		}
+
+		/*
+		 * copy the min of data in input segment (seg)
+		 * vs space available in output (m_last)
+		 */
+		copy_len = RTE_MIN(seg->data_len - off, len);
+		if (copy_len > rte_pktmbuf_tailroom(m_last))
+			copy_len = rte_pktmbuf_tailroom(m_last);
+
+		/* append from seg to m_last */
+		rte_memcpy(rte_pktmbuf_mtod_offset(m_last, char *,
+						   m_last->data_len),
+			   rte_pktmbuf_mtod_offset(seg, char *, off),
+			   copy_len);
+
+		/* update offsets and lengths */
+		m_last->data_len += copy_len;
+		mc->pkt_len += copy_len;
+		off += copy_len;
+		len -= copy_len;
+	}
+
+	/* garbage out check */
+	__rte_mbuf_sanity_check(mc, 1);
+	return mc;
 }
 
 /* dump a mbuf on console */
@@ -403,6 +659,7 @@ const char *rte_get_tx_ol_flag_name(uint64_t mask)
 	case PKT_TX_OUTER_IPV4: return "PKT_TX_OUTER_IPV4";
 	case PKT_TX_OUTER_IPV6: return "PKT_TX_OUTER_IPV6";
 	case PKT_TX_TUNNEL_VXLAN: return "PKT_TX_TUNNEL_VXLAN";
+	case PKT_TX_TUNNEL_GTP: return "PKT_TX_TUNNEL_GTP";
 	case PKT_TX_TUNNEL_GRE: return "PKT_TX_TUNNEL_GRE";
 	case PKT_TX_TUNNEL_IPIP: return "PKT_TX_TUNNEL_IPIP";
 	case PKT_TX_TUNNEL_GENEVE: return "PKT_TX_TUNNEL_GENEVE";
@@ -415,7 +672,6 @@ const char *rte_get_tx_ol_flag_name(uint64_t mask)
 	case PKT_TX_SEC_OFFLOAD: return "PKT_TX_SEC_OFFLOAD";
 	case PKT_TX_UDP_SEG: return "PKT_TX_UDP_SEG";
 	case PKT_TX_OUTER_UDP_CKSUM: return "PKT_TX_OUTER_UDP_CKSUM";
-	case PKT_TX_METADATA: return "PKT_TX_METADATA";
 	default: return NULL;
 	}
 }
@@ -439,6 +695,7 @@ rte_get_tx_ol_flag_list(uint64_t mask, char *buf, size_t buflen)
 		{ PKT_TX_OUTER_IPV4, PKT_TX_OUTER_IPV4, NULL },
 		{ PKT_TX_OUTER_IPV6, PKT_TX_OUTER_IPV6, NULL },
 		{ PKT_TX_TUNNEL_VXLAN, PKT_TX_TUNNEL_MASK, NULL },
+		{ PKT_TX_TUNNEL_GTP, PKT_TX_TUNNEL_MASK, NULL },
 		{ PKT_TX_TUNNEL_GRE, PKT_TX_TUNNEL_MASK, NULL },
 		{ PKT_TX_TUNNEL_IPIP, PKT_TX_TUNNEL_MASK, NULL },
 		{ PKT_TX_TUNNEL_GENEVE, PKT_TX_TUNNEL_MASK, NULL },
@@ -451,7 +708,6 @@ rte_get_tx_ol_flag_list(uint64_t mask, char *buf, size_t buflen)
 		{ PKT_TX_SEC_OFFLOAD, PKT_TX_SEC_OFFLOAD, NULL },
 		{ PKT_TX_UDP_SEG, PKT_TX_UDP_SEG, NULL },
 		{ PKT_TX_OUTER_UDP_CKSUM, PKT_TX_OUTER_UDP_CKSUM, NULL },
-		{ PKT_TX_METADATA, PKT_TX_METADATA, NULL },
 	};
 	const char *name;
 	unsigned int i;

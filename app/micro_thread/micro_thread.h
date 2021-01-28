@@ -40,6 +40,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <setjmp.h>
+#include <stdarg.h>
 
 #include <set>
 #include <vector>
@@ -56,8 +57,9 @@ namespace NS_MICRO_THREAD {
 
 #define STACK_PAD_SIZE      128
 #define MEM_PAGE_SIZE       4096
-#define DEFAULT_STACK_SIZE  128*1024
-#define DEFAULT_THREAD_NUM  2000
+#define DEFAULT_STACK_SIZE  STACK_PAD_SIZE * 1024
+#define DEFAULT_THREAD_NUM  5000
+#define MAX_THREAD_NUM  800000
 
 typedef unsigned long long  utime64_t;
 typedef void (*ThreadStart)(void*);
@@ -118,6 +120,8 @@ public:
     void Wait();
 
     void SwitchContext(void);
+
+    int SaveContext(void);
 
     void RestoreContext(void);
 
@@ -317,12 +321,51 @@ public:
     
 };
 
+class DefaultLogAdapter :public LogAdapter
+{
+public:
+
+
+    bool CheckDebug(){ return false;};
+    bool CheckTrace(){ return false;};
+    bool CheckError(){ return false;};
+
+    inline void LogDebug(char* fmt, ...){
+        va_list args;
+        char szBuff[1024];
+        va_start(args, fmt);
+        memset(szBuff, 0, sizeof(szBuff));
+        vsprintf(szBuff, fmt, args);
+        va_end(args);
+        printf("%s\n",szBuff);
+    };
+    inline void LogTrace(char* fmt, ...){
+        va_list args;
+        char szBuff[1024];
+        va_start(args, fmt);
+        memset(szBuff, 0, sizeof(szBuff));
+        vsprintf(szBuff, fmt, args);
+        va_end(args);
+        printf("%s\n",szBuff);
+    };
+    inline void LogError(char* fmt, ...){
+        va_list args;
+        char szBuff[1024];
+        va_start(args, fmt);
+        memset(szBuff, 0, sizeof(szBuff));
+        vsprintf(szBuff, fmt, args);
+        va_end(args);
+        printf("%s\n",szBuff);
+    };
+    
+};
 
 class ThreadPool
 {
 public:
 
     static unsigned int default_thread_num;
+    static unsigned int last_default_thread_num;
     static unsigned int default_stack_size;
 
     static void SetDefaultThreadNum(unsigned int num) {
@@ -403,7 +446,7 @@ public:
 
     MicroThread *GetRootThread();
 
-    bool InitFrame(LogAdapter* logadpt = NULL, int max_thread_num = 50000);
+    bool InitFrame(LogAdapter* logadpt = NULL, int max_thread_num = MAX_THREAD_NUM);
 
     void SetHookFlag();
 
@@ -440,6 +483,10 @@ public:
     virtual bool KqueueSchedule(KqObjList* fdlist, KqueuerObj* fd, int timeout);    
 
     void WaitNotify(utime64_t timeout);
+
+    void NotifyThread(MicroThread* thread);
+
+    void SwapDaemonThread();
 
     void RemoveIoWait(MicroThread* thread);    
 
@@ -496,7 +543,7 @@ do {                                                                           \
        register NS_MICRO_THREAD::MtFrame *fm = NS_MICRO_THREAD::MtFrame::Instance(); \
        if (fm && fm->GetLogAdpt() && fm->GetLogAdpt()->CheckDebug())           \
        {                                                                       \
-          fm->GetLogAdpt()->LogDebug((char*)"[%-10s][%-4d][%-10s]"fmt,         \
+          fm->GetLogAdpt()->LogDebug((char*)"[%-10s][%-4d][%-10s]" fmt,        \
                 __FILE__, __LINE__, __FUNCTION__, ##args);                     \
        }                                                                       \
 } while (0)
@@ -506,7 +553,7 @@ do {                                                                           \
        register NS_MICRO_THREAD::MtFrame *fm = NS_MICRO_THREAD::MtFrame::Instance(); \
        if (fm && fm->GetLogAdpt() && fm->GetLogAdpt()->CheckTrace())           \
        {                                                                       \
-          fm->GetLogAdpt()->LogTrace((char*)"[%-10s][%-4d][%-10s]"fmt,         \
+          fm->GetLogAdpt()->LogTrace((char*)"[%-10s][%-4d][%-10s]" fmt,        \
                 __FILE__, __LINE__, __FUNCTION__, ##args);                     \
        }                                                                       \
 } while (0)
@@ -516,7 +563,7 @@ do {                                                                           \
        register NS_MICRO_THREAD::MtFrame *fm = NS_MICRO_THREAD::MtFrame::Instance(); \
        if (fm && fm->GetLogAdpt() && fm->GetLogAdpt()->CheckError())           \
        {                                                                       \
-          fm->GetLogAdpt()->LogError((char*)"[%-10s][%-4d][%-10s]"fmt,         \
+          fm->GetLogAdpt()->LogError((char*)"[%-10s][%-4d][%-10s]" fmt,        \
                 __FILE__, __LINE__, __FUNCTION__, ##args);                     \
        }                                                                       \
 } while (0)

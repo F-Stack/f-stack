@@ -37,8 +37,8 @@ See :doc:`../platform/dpaa2` for setup information
 
 Currently supported by DPDK:
 
-- NXP SDK **18.09+**.
-- MC Firmware version **10.10.0** and higher.
+- NXP SDK **19.09+**.
+- MC Firmware version **10.18.0** and higher.
 - Supported architectures:  **arm64 LE**.
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
@@ -81,7 +81,7 @@ following ``make`` command:
 .. code-block:: console
 
    cd <DPDK-source-directory>
-   make config T=arm64-dpaa2-linuxapp-gcc install
+   make config T=arm64-dpaa-linux-gcc install
 
 Initialization
 --------------

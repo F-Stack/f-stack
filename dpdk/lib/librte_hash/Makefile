@@ -6,13 +6,11 @@ include $(RTE_SDK)/mk/rte.vars.mk
 # library name
 LIB = librte_hash.a
 
-CFLAGS += -O3
+CFLAGS += -O3 -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR)
 LDLIBS += -lrte_eal -lrte_ring
 
 EXPORT_MAP := rte_hash_version.map
-
-LIBABIVER := 2
 
 # all source are stored in SRCS-y
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) := rte_cuckoo_hash.c

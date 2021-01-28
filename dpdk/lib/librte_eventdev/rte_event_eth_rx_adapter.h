@@ -66,16 +66,17 @@
  * For SW based packet transfers, i.e., when the
  * RTE_EVENT_ETH_RX_ADAPTER_CAP_INTERNAL_PORT is not set in the adapter's
  * capabilities flags for a particular ethernet device, the service function
- * temporarily enqueues mbufs to an event buffer before batch enqueuing these
+ * temporarily enqueues events to an event buffer before batch enqueuing these
  * to the event device. If the buffer fills up, the service function stops
  * dequeuing packets from the ethernet device. The application may want to
  * monitor the buffer fill level and instruct the service function to
- * selectively buffer packets. The application may also use some other
+ * selectively buffer events. The application may also use some other
  * criteria to decide which packets should enter the event device even when
- * the event buffer fill level is low. The
- * rte_event_eth_rx_adapter_cb_register() function allows the
- * application to register a callback that selects which packets to enqueue
- * to the event device.
+ * the event buffer fill level is low or may want to enqueue packets to an
+ * internal event port. The rte_event_eth_rx_adapter_cb_register() function
+ * allows the application to register a callback that selects which packets are
+ * enqueued to the event device by the SW adapter. The callback interface is
+ * event based so the callback can also modify the event data if it needs to.
  */
 
 #ifdef __cplusplus
@@ -97,9 +98,6 @@ extern "C" {
  */
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Adapter configuration structure that the adapter configuration callback
  * function is expected to fill out
  * @see rte_event_eth_rx_adapter_conf_cb
@@ -117,9 +115,6 @@ struct rte_event_eth_rx_adapter_conf {
 };
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Function type used for adapter configuration callback. The callback is
  * used to fill in members of the struct rte_event_eth_rx_adapter_conf, this
  * callback is invoked when creating a SW service for packet transfer from
@@ -145,9 +140,6 @@ typedef int (*rte_event_eth_rx_adapter_conf_cb) (uint8_t id, uint8_t dev_id,
 			void *arg);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Rx queue configuration structure
  */
 struct rte_event_eth_rx_adapter_queue_conf {
@@ -182,9 +174,6 @@ struct rte_event_eth_rx_adapter_queue_conf {
 };
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * A structure used to retrieve statistics for an eth rx adapter instance.
  */
 struct rte_event_eth_rx_adapter_stats {
@@ -196,6 +185,8 @@ struct rte_event_eth_rx_adapter_stats {
 	/**< Eventdev enqueue count */
 	uint64_t rx_enq_retry;
 	/**< Eventdev enqueue retry count */
+	uint64_t rx_dropped;
+	/**< Received packet dropped count */
 	uint64_t rx_enq_start_ts;
 	/**< Rx enqueue start timestamp */
 	uint64_t rx_enq_block_cycles;
@@ -213,16 +204,25 @@ struct rte_event_eth_rx_adapter_stats {
 };
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
  *
  * Callback function invoked by the SW adapter before it continues
- * to process packets. The callback is passed the size of the enqueue
+ * to process events. The callback is passed the size of the enqueue
  * buffer in the SW adapter and the occupancy of the buffer. The
- * callback can use these values to decide which mbufs should be
- * enqueued to the event device. If the return value of the callback
- * is less than nb_mbuf then the SW adapter uses the return value to
- * enqueue enq_mbuf[] to the event device.
+ * callback can use these values to decide which events are
+ * enqueued to the event device by the SW adapter. The callback may
+ * also enqueue events internally using its own event port. The SW
+ * adapter populates the event information based on the Rx queue
+ * configuration in the adapter. The callback can modify the this event
+ * information for the events to be enqueued by the SW adapter.
+ *
+ * The callback return value is the number of events from the
+ * beginning of the event array that are to be enqueued by
+ * the SW adapter. It is the callback's responsibility to arrange
+ * these events at the beginning of the array, if these events are
+ * not contiguous in the original array. The *nb_dropped* parameter is
+ * a pointer to the number of events dropped by the callback, this
+ * number is used by the adapter to indicate the number of dropped packets
+ * as part of its statistics.
  *
  * @param eth_dev_id
  *  Port identifier of the Ethernet device.
@@ -231,32 +231,28 @@ struct rte_event_eth_rx_adapter_stats {
  * @param enqueue_buf_size
  *  Total enqueue buffer size.
  * @param enqueue_buf_count
- *  mbuf count in enqueue buffer.
- * @param mbuf
- *  mbuf array.
- * @param nb_mbuf
- *  mbuf count.
+ *  Event count in enqueue buffer.
+ * @param[in, out] ev
+ *  Event array.
+ * @param nb_event
+ *  Event array length.
  * @param cb_arg
  *  Callback argument.
- * @param[out] enq_mbuf
- *  The adapter enqueues enq_mbuf[] if the return value of the
- *  callback is less than nb_mbuf
+ * @param[out] nb_dropped
+ *  Packets dropped by callback.
  * @return
- *  Returns the number of mbufs should be enqueued to eventdev
+ *  - The number of events to be enqueued by the SW adapter.
  */
 typedef uint16_t (*rte_event_eth_rx_adapter_cb_fn)(uint16_t eth_dev_id,
 						uint16_t queue_id,
 						uint32_t enqueue_buf_size,
 						uint32_t enqueue_buf_count,
-						struct rte_mbuf **mbuf,
-						uint16_t nb_mbuf,
+						struct rte_event *ev,
+						uint16_t nb_event,
 						void *cb_arg,
-						struct rte_mbuf **enq_buf);
+						uint16_t *nb_dropped);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Create a new ethernet Rx event adapter with the specified identifier.
  *
  * @param id
@@ -282,9 +278,6 @@ int rte_event_eth_rx_adapter_create_ext(uint8_t id, uint8_t dev_id,
 				void *conf_arg);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Create a new ethernet Rx event adapter with the specified identifier.
  * This function uses an internal configuration function that creates an event
  * port. This default function reconfigures the event device with an
@@ -311,9 +304,6 @@ int rte_event_eth_rx_adapter_create(uint8_t id, uint8_t dev_id,
 				struct rte_event_port_conf *port_config);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Free an event adapter
  *
  * @param id
@@ -327,9 +317,6 @@ int rte_event_eth_rx_adapter_create(uint8_t id, uint8_t dev_id,
 int rte_event_eth_rx_adapter_free(uint8_t id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Add receive queue to an event adapter. After a queue has been
  * added to the event adapter, the result of the application calling
  * rte_eth_rx_burst(eth_dev_id, rx_queue_id, ..) is undefined.
@@ -367,9 +354,6 @@ int rte_event_eth_rx_adapter_queue_add(uint8_t id,
 			const struct rte_event_eth_rx_adapter_queue_conf *conf);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Delete receive queue from an event adapter.
  *
  * @param id
@@ -394,9 +378,6 @@ int rte_event_eth_rx_adapter_queue_del(uint8_t id, uint16_t eth_dev_id,
 				       int32_t rx_queue_id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Start ethernet Rx event adapter
  *
  * @param id
@@ -405,13 +386,14 @@ int rte_event_eth_rx_adapter_queue_del(uint8_t id, uint16_t eth_dev_id,
  * @return
  *  - 0: Success, Adapter started correctly.
  *  - <0: Error code on failure.
+ *
+ * @note
+ *  The eventdev to which the event_eth_rx_adapter is connected needs to
+ *  be started before calling rte_event_eth_rx_adapter_start().
  */
 int rte_event_eth_rx_adapter_start(uint8_t id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Stop  ethernet Rx event adapter
  *
  * @param id
@@ -424,9 +406,6 @@ int rte_event_eth_rx_adapter_start(uint8_t id);
 int rte_event_eth_rx_adapter_stop(uint8_t id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Retrieve statistics for an adapter
  *
  * @param id
@@ -440,12 +419,9 @@ int rte_event_eth_rx_adapter_stop(uint8_t id);
  *  - <0: Error code on failure.
  */
 int rte_event_eth_rx_adapter_stats_get(uint8_t id,
-				struct rte_event_eth_rx_adapter_stats *stats);
+				  struct rte_event_eth_rx_adapter_stats *stats);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Reset statistics for an adapter.
  *
  * @param id
@@ -458,9 +434,6 @@ int rte_event_eth_rx_adapter_stats_get(uint8_t id,
 int rte_event_eth_rx_adapter_stats_reset(uint8_t id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Retrieve the service ID of an adapter. If the adapter doesn't use
  * a rte_service function, this function returns -ESRCH.
  *
@@ -478,9 +451,6 @@ int rte_event_eth_rx_adapter_stats_reset(uint8_t id);
 int rte_event_eth_rx_adapter_service_id_get(uint8_t id, uint32_t *service_id);
 
 /**
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
- *
  * Register callback to process Rx packets, this is supported for
  * SW based packet transfers.
  * @see rte_event_eth_rx_cb_fn
@@ -497,11 +467,9 @@ int rte_event_eth_rx_adapter_service_id_get(uint8_t id, uint32_t *service_id);
  *  - 0: Success
  *  - <0: Error code on failure.
  */
-int __rte_experimental
-rte_event_eth_rx_adapter_cb_register(uint8_t id,
-				uint16_t eth_dev_id,
-				rte_event_eth_rx_adapter_cb_fn cb_fn,
-				void *cb_arg);
+int rte_event_eth_rx_adapter_cb_register(uint8_t id, uint16_t eth_dev_id,
+					 rte_event_eth_rx_adapter_cb_fn cb_fn,
+					 void *cb_arg);
 
 #ifdef __cplusplus
 }

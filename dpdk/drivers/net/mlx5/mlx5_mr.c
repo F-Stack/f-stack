@@ -11,9 +11,11 @@
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
 
+#include <rte_eal_memconfig.h>
 #include <rte_mempool.h>
 #include <rte_malloc.h>
 #include <rte_rwlock.h>
+#include <rte_bus_pci.h>
 
 #include "mlx5.h"
 #include "mlx5_mr.h"
@@ -35,7 +37,7 @@ struct mr_update_mp_data {
 
 /**
  * Expand B-tree table to a given size. Can't be called with holding
- * memory_hotplug_lock or priv->mr.rwlock due to rte_realloc().
+ * memory_hotplug_lock or sh->mr.rwlock due to rte_realloc().
  *
  * @param bt
  *   Pointer to B-tree structure.
@@ -326,7 +328,7 @@ mr_find_next_chunk(struct mlx5_mr *mr, struct mlx5_mr_cache *entry,
  * mlx5_mr_create() on miss.
  *
  * @param dev
- *   Pointer to Ethernet device.
+ *   Pointer to Ethernet device shared context.
  * @param mr
  *   Pointer to MR to insert.
  *
@@ -334,13 +336,12 @@ mr_find_next_chunk(struct mlx5_mr *mr, struct mlx5_mr_cache *entry,
  *   0 on success, -1 on failure.
  */
 static int
-mr_insert_dev_cache(struct rte_eth_dev *dev, struct mlx5_mr *mr)
+mr_insert_dev_cache(struct mlx5_ibv_shared *sh, struct mlx5_mr *mr)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int n;
 
-	DRV_LOG(DEBUG, "port %u inserting MR(%p) to global cache",
-		dev->data->port_id, (void *)mr);
+	DRV_LOG(DEBUG, "device %s inserting MR(%p) to global cache",
+		sh->ibdev_name, (void *)mr);
 	for (n = 0; n < mr->ms_bmp_n; ) {
 		struct mlx5_mr_cache entry;
 
@@ -349,7 +350,7 @@ mr_insert_dev_cache(struct rte_eth_dev *dev, struct mlx5_mr *mr)
 		n = mr_find_next_chunk(mr, &entry, n);
 		if (!entry.end)
 			break;
-		if (mr_btree_insert(&priv->mr.cache, &entry) < 0) {
+		if (mr_btree_insert(&sh->mr.cache, &entry) < 0) {
 			/*
 			 * Overflowed, but the global table cannot be expanded
 			 * because of deadlock.
@@ -363,8 +364,8 @@ mr_insert_dev_cache(struct rte_eth_dev *dev, struct mlx5_mr *mr)
 /**
  * Look up address in the original global MR list.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param sh
+ *   Pointer to Ethernet device shared context.
  * @param[out] entry
  *   Pointer to returning MR cache entry. If no match, this will not be updated.
  * @param addr
@@ -374,14 +375,13 @@ mr_insert_dev_cache(struct rte_eth_dev *dev, struct mlx5_mr *mr)
  *   Found MR on match, NULL otherwise.
  */
 static struct mlx5_mr *
-mr_lookup_dev_list(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+mr_lookup_dev_list(struct mlx5_ibv_shared *sh, struct mlx5_mr_cache *entry,
 		   uintptr_t addr)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr;
 
 	/* Iterate all the existing MRs. */
-	LIST_FOREACH(mr, &priv->mr.mr_list, mr) {
+	LIST_FOREACH(mr, &sh->mr.mr_list, mr) {
 		unsigned int n;
 
 		if (mr->ms_n == 0)
@@ -405,7 +405,7 @@ mr_lookup_dev_list(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
  * Look up address on device.
  *
  * @param dev
- *   Pointer to Ethernet device.
+ *   Pointer to Ethernet device shared context.
  * @param[out] entry
  *   Pointer to returning MR cache entry. If no match, this will not be updated.
  * @param addr
@@ -415,10 +415,9 @@ mr_lookup_dev_list(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
  *   Searched LKey on success, UINT32_MAX on failure and rte_errno is set.
  */
 static uint32_t
-mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+mr_lookup_dev(struct mlx5_ibv_shared *sh, struct mlx5_mr_cache *entry,
 	      uintptr_t addr)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	uint16_t idx;
 	uint32_t lkey = UINT32_MAX;
 	struct mlx5_mr *mr;
@@ -429,13 +428,13 @@ mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
 	 * has to be searched by traversing the original MR list instead, which
 	 * is very slow path. Otherwise, the global cache is all inclusive.
 	 */
-	if (!unlikely(priv->mr.cache.overflow)) {
-		lkey = mr_btree_lookup(&priv->mr.cache, &idx, addr);
+	if (!unlikely(sh->mr.cache.overflow)) {
+		lkey = mr_btree_lookup(&sh->mr.cache, &idx, addr);
 		if (lkey != UINT32_MAX)
-			*entry = (*priv->mr.cache.table)[idx];
+			*entry = (*sh->mr.cache.table)[idx];
 	} else {
 		/* Falling back to the slowest path. */
-		mr = mr_lookup_dev_list(dev, entry, addr);
+		mr = mr_lookup_dev_list(sh, entry, addr);
 		if (mr != NULL)
 			lkey = entry->lkey;
 	}
@@ -467,13 +466,12 @@ mr_free(struct mlx5_mr *mr)
 /**
  * Release resources of detached MR having no online entry.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param sh
+ *   Pointer to Ethernet device shared context.
  */
 static void
-mlx5_mr_garbage_collect(struct rte_eth_dev *dev)
+mlx5_mr_garbage_collect(struct mlx5_ibv_shared *sh)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr_next;
 	struct mlx5_mr_list free_list = LIST_HEAD_INITIALIZER(free_list);
 
@@ -483,11 +481,11 @@ mlx5_mr_garbage_collect(struct rte_eth_dev *dev)
 	 * MR can't be freed with holding the lock because rte_free() could call
 	 * memory free callback function. This will be a deadlock situation.
 	 */
-	rte_rwlock_write_lock(&priv->mr.rwlock);
+	rte_rwlock_write_lock(&sh->mr.rwlock);
 	/* Detach the whole free list and release it after unlocking. */
-	free_list = priv->mr.mr_free_list;
-	LIST_INIT(&priv->mr.mr_free_list);
-	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	free_list = sh->mr.mr_free_list;
+	LIST_INIT(&sh->mr.mr_free_list);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
 	/* Release resources. */
 	mr_next = LIST_FIRST(&free_list);
 	while (mr_next != NULL) {
@@ -516,7 +514,10 @@ mr_find_contig_memsegs_cb(const struct rte_memseg_list *msl,
 
 /**
  * Create a new global Memory Region (MR) for a missing virtual address.
- * Register entire virtually contiguous memory chunk around the address.
+ * This API should be called on a secondary process, then a request is sent to
+ * the primary process in order to create a MR for the address. As the global MR
+ * list is on the shared memory, following LKey lookup should succeed unless the
+ * request fails.
  *
  * @param dev
  *   Pointer to Ethernet device.
@@ -530,11 +531,56 @@ mr_find_contig_memsegs_cb(const struct rte_memseg_list *msl,
  *   Searched LKey on success, UINT32_MAX on failure and rte_errno is set.
  */
 static uint32_t
-mlx5_mr_create(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
-	       uintptr_t addr)
+mlx5_mr_create_secondary(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+			 uintptr_t addr)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
+	int ret;
+
+	DEBUG("port %u requesting MR creation for address (%p)",
+	      dev->data->port_id, (void *)addr);
+	ret = mlx5_mp_req_mr_create(dev, addr);
+	if (ret) {
+		DEBUG("port %u fail to request MR creation for address (%p)",
+		      dev->data->port_id, (void *)addr);
+		return UINT32_MAX;
+	}
+	rte_rwlock_read_lock(&priv->sh->mr.rwlock);
+	/* Fill in output data. */
+	mr_lookup_dev(priv->sh, entry, addr);
+	/* Lookup can't fail. */
+	assert(entry->lkey != UINT32_MAX);
+	rte_rwlock_read_unlock(&priv->sh->mr.rwlock);
+	DEBUG("port %u MR CREATED by primary process for %p:\n"
+	      "  [0x%" PRIxPTR ", 0x%" PRIxPTR "), lkey=0x%x",
+	      dev->data->port_id, (void *)addr,
+	      entry->start, entry->end, entry->lkey);
+	return entry->lkey;
+}
+
+/**
+ * Create a new global Memory Region (MR) for a missing virtual address.
+ * Register entire virtually contiguous memory chunk around the address.
+ * This must be called from the primary process.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry, found in the global cache or newly
+ *   created. If failed to create one, this will not be updated.
+ * @param addr
+ *   Target virtual address to register.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on failure and rte_errno is set.
+ */
+uint32_t
+mlx5_mr_create_primary(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+		       uintptr_t addr)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_ibv_shared *sh = priv->sh;
+	struct mlx5_dev_config *config = &priv->config;
 	const struct rte_memseg_list *msl;
 	const struct rte_memseg *ms;
 	struct mlx5_mr *mr = NULL;
@@ -551,32 +597,33 @@ mlx5_mr_create(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
 
 	DRV_LOG(DEBUG, "port %u creating a MR using address (%p)",
 		dev->data->port_id, (void *)addr);
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
-		DRV_LOG(WARNING,
-			"port %u using address (%p) of unregistered mempool"
-			" in secondary process, please create mempool"
-			" before rte_eth_dev_start()",
-			dev->data->port_id, (void *)addr);
-		rte_errno = EPERM;
-		goto err_nolock;
-	}
 	/*
 	 * Release detached MRs if any. This can't be called with holding either
-	 * memory_hotplug_lock or priv->mr.rwlock. MRs on the free list have
+	 * memory_hotplug_lock or sh->mr.rwlock. MRs on the free list have
 	 * been detached by the memory free event but it couldn't be released
 	 * inside the callback due to deadlock. As a result, releasing resources
 	 * is quite opportunistic.
 	 */
-	mlx5_mr_garbage_collect(dev);
+	mlx5_mr_garbage_collect(sh);
 	/*
-	 * Find out a contiguous virtual address chunk in use, to which the
-	 * given address belongs, in order to register maximum range. In the
-	 * best case where mempools are not dynamically recreated and
+	 * If enabled, find out a contiguous virtual address chunk in use, to
+	 * which the given address belongs, in order to register maximum range.
+	 * In the best case where mempools are not dynamically recreated and
 	 * '--socket-mem' is specified as an EAL option, it is very likely to
 	 * have only one MR(LKey) per a socket and per a hugepage-size even
-	 * though the system memory is highly fragmented.
+	 * though the system memory is highly fragmented. As the whole memory
+	 * chunk will be pinned by kernel, it can't be reused unless entire
+	 * chunk is freed from EAL.
+	 *
+	 * If disabled, just register one memseg (page). Then, memory
+	 * consumption will be minimized but it may drop performance if there
+	 * are many MRs to lookup on the datapath.
 	 */
-	if (!rte_memseg_contig_walk(mr_find_contig_memsegs_cb, &data)) {
+	if (!config->mr_ext_memseg_en) {
+		data.msl = rte_mem_virt2memseg_list((void *)addr);
+		data.start = RTE_ALIGN_FLOOR(addr, data.msl->page_sz);
+		data.end = data.start + data.msl->page_sz;
+	} else if (!rte_memseg_contig_walk(mr_find_contig_memsegs_cb, &data)) {
 		DRV_LOG(WARNING,
 			"port %u unable to find virtually contiguous"
 			" chunk for address (%p)."
@@ -637,7 +684,7 @@ alloc_resources:
 	 * just single page. If not, go on with the big chunk atomically from
 	 * here.
 	 */
-	rte_rwlock_read_lock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_lock();
 	data_re = data;
 	if (len > msl->page_sz &&
 	    !rte_memseg_contig_walk(mr_find_contig_memsegs_cb, &data_re)) {
@@ -655,27 +702,27 @@ alloc_resources:
 		 */
 		data.start = RTE_ALIGN_FLOOR(addr, msl->page_sz);
 		data.end = data.start + msl->page_sz;
-		rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+		rte_mcfg_mem_read_unlock();
 		mr_free(mr);
 		goto alloc_resources;
 	}
 	assert(data.msl == data_re.msl);
-	rte_rwlock_write_lock(&priv->mr.rwlock);
+	rte_rwlock_write_lock(&sh->mr.rwlock);
 	/*
 	 * Check the address is really missing. If other thread already created
 	 * one or it is not found due to overflow, abort and return.
 	 */
-	if (mr_lookup_dev(dev, entry, addr) != UINT32_MAX) {
+	if (mr_lookup_dev(sh, entry, addr) != UINT32_MAX) {
 		/*
 		 * Insert to the global cache table. It may fail due to
 		 * low-on-memory. Then, this entry will have to be searched
 		 * here again.
 		 */
-		mr_btree_insert(&priv->mr.cache, entry);
+		mr_btree_insert(&sh->mr.cache, entry);
 		DEBUG("port %u found MR for %p on final lookup, abort",
 		      dev->data->port_id, (void *)addr);
-		rte_rwlock_write_unlock(&priv->mr.rwlock);
-		rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+		rte_rwlock_write_unlock(&sh->mr.rwlock);
+		rte_mcfg_mem_read_unlock();
 		/*
 		 * Must be unlocked before calling rte_free() because
 		 * mlx5_mr_mem_event_free_cb() can be called inside.
@@ -695,7 +742,7 @@ alloc_resources:
 		memset(&ret, 0, sizeof(ret));
 		start = data_re.start + n * msl->page_sz;
 		/* Exclude memsegs already registered by other MRs. */
-		if (mr_lookup_dev(dev, &ret, start) == UINT32_MAX) {
+		if (mr_lookup_dev(sh, &ret, start) == UINT32_MAX) {
 			/*
 			 * Start from the first unregistered memseg in the
 			 * extended range.
@@ -719,7 +766,7 @@ alloc_resources:
 	 * mlx5_alloc_buf_extern() which eventually calls rte_malloc_socket()
 	 * through mlx5_alloc_verbs_buf().
 	 */
-	mr->ibv_mr = mlx5_glue->reg_mr(priv->pd, (void *)data.start, len,
+	mr->ibv_mr = mlx5_glue->reg_mr(sh->pd, (void *)data.start, len,
 				       IBV_ACCESS_LOCAL_WRITE);
 	if (mr->ibv_mr == NULL) {
 		DEBUG("port %u fail to create a verbs MR for address (%p)",
@@ -729,7 +776,7 @@ alloc_resources:
 	}
 	assert((uintptr_t)mr->ibv_mr->addr == data.start);
 	assert(mr->ibv_mr->length == len);
-	LIST_INSERT_HEAD(&priv->mr.mr_list, mr, mr);
+	LIST_INSERT_HEAD(&sh->mr.mr_list, mr, mr);
 	DEBUG("port %u MR CREATED (%p) for %p:\n"
 	      "  [0x%" PRIxPTR ", 0x%" PRIxPTR "),"
 	      " lkey=0x%x base_idx=%u ms_n=%u, ms_bmp_n=%u",
@@ -737,18 +784,18 @@ alloc_resources:
 	      data.start, data.end, rte_cpu_to_be_32(mr->ibv_mr->lkey),
 	      mr->ms_base_idx, mr->ms_n, mr->ms_bmp_n);
 	/* Insert to the global cache table. */
-	mr_insert_dev_cache(dev, mr);
+	mr_insert_dev_cache(sh, mr);
 	/* Fill in output data. */
-	mr_lookup_dev(dev, entry, addr);
+	mr_lookup_dev(sh, entry, addr);
 	/* Lookup can't fail. */
 	assert(entry->lkey != UINT32_MAX);
-	rte_rwlock_write_unlock(&priv->mr.rwlock);
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
+	rte_mcfg_mem_read_unlock();
 	return entry->lkey;
 err_mrlock:
-	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
 err_memlock:
-	rte_rwlock_read_unlock(&mcfg->memory_hotplug_lock);
+	rte_mcfg_mem_read_unlock();
 err_nolock:
 	/*
 	 * In case of error, as this can be called in a datapath, a warning
@@ -761,24 +808,57 @@ err_nolock:
 }
 
 /**
- * Rebuild the global B-tree cache of device from the original MR list.
+ * Create a new global Memory Region (MR) for a missing virtual address.
+ * This can be called from primary and secondary process.
  *
  * @param dev
  *   Pointer to Ethernet device.
+ * @param[out] entry
+ *   Pointer to returning MR cache entry, found in the global cache or newly
+ *   created. If failed to create one, this will not be updated.
+ * @param addr
+ *   Target virtual address to register.
+ *
+ * @return
+ *   Searched LKey on success, UINT32_MAX on failure and rte_errno is set.
+ */
+static uint32_t
+mlx5_mr_create(struct rte_eth_dev *dev, struct mlx5_mr_cache *entry,
+	       uintptr_t addr)
+{
+	uint32_t ret = 0;
+
+	switch (rte_eal_process_type()) {
+	case RTE_PROC_PRIMARY:
+		ret = mlx5_mr_create_primary(dev, entry, addr);
+		break;
+	case RTE_PROC_SECONDARY:
+		ret = mlx5_mr_create_secondary(dev, entry, addr);
+		break;
+	default:
+		break;
+	}
+	return ret;
+}
+
+/**
+ * Rebuild the global B-tree cache of device from the original MR list.
+ *
+ * @param sh
+ *   Pointer to Ethernet device shared context.
  */
 static void
-mr_rebuild_dev_cache(struct rte_eth_dev *dev)
+mr_rebuild_dev_cache(struct mlx5_ibv_shared *sh)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr;
 
-	DRV_LOG(DEBUG, "port %u rebuild dev cache[]", dev->data->port_id);
+	DRV_LOG(DEBUG, "device %s rebuild dev cache[]", sh->ibdev_name);
 	/* Flush cache to rebuild. */
-	priv->mr.cache.len = 1;
-	priv->mr.cache.overflow = 0;
+	sh->mr.cache.len = 1;
+	sh->mr.cache.overflow = 0;
 	/* Iterate all the existing MRs. */
-	LIST_FOREACH(mr, &priv->mr.mr_list, mr)
-		if (mr_insert_dev_cache(dev, mr) < 0)
+	LIST_FOREACH(mr, &sh->mr.mr_list, mr)
+		if (mr_insert_dev_cache(sh, mr) < 0)
 			return;
 }
 
@@ -793,31 +873,31 @@ mr_rebuild_dev_cache(struct rte_eth_dev *dev)
  * The global cache must be rebuilt if there's any change and this event has to
  * be propagated to dataplane threads to flush the local caches.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param sh
+ *   Pointer to the Ethernet device shared context.
  * @param addr
  *   Address of freed memory.
  * @param len
  *   Size of freed memory.
  */
 static void
-mlx5_mr_mem_event_free_cb(struct rte_eth_dev *dev, const void *addr, size_t len)
+mlx5_mr_mem_event_free_cb(struct mlx5_ibv_shared *sh,
+			  const void *addr, size_t len)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	const struct rte_memseg_list *msl;
 	struct mlx5_mr *mr;
 	int ms_n;
 	int i;
 	int rebuild = 0;
 
-	DEBUG("port %u free callback: addr=%p, len=%zu",
-	      dev->data->port_id, addr, len);
+	DEBUG("device %s free callback: addr=%p, len=%zu",
+	      sh->ibdev_name, addr, len);
 	msl = rte_mem_virt2memseg_list(addr);
 	/* addr and len must be page-aligned. */
 	assert((uintptr_t)addr == RTE_ALIGN((uintptr_t)addr, msl->page_sz));
 	assert(len == RTE_ALIGN(len, msl->page_sz));
 	ms_n = len / msl->page_sz;
-	rte_rwlock_write_lock(&priv->mr.rwlock);
+	rte_rwlock_write_lock(&sh->mr.rwlock);
 	/* Clear bits of freed memsegs from MR. */
 	for (i = 0; i < ms_n; ++i) {
 		const struct rte_memseg *ms;
@@ -828,7 +908,7 @@ mlx5_mr_mem_event_free_cb(struct rte_eth_dev *dev, const void *addr, size_t len)
 
 		/* Find MR having this memseg. */
 		start = (uintptr_t)addr + i * msl->page_sz;
-		mr = mr_lookup_dev_list(dev, &entry, start);
+		mr = mr_lookup_dev_list(sh, &entry, start);
 		if (mr == NULL)
 			continue;
 		assert(mr->msl); /* Can't be external memory. */
@@ -839,14 +919,14 @@ mlx5_mr_mem_event_free_cb(struct rte_eth_dev *dev, const void *addr, size_t len)
 		pos = ms_idx - mr->ms_base_idx;
 		assert(rte_bitmap_get(mr->ms_bmp, pos));
 		assert(pos < mr->ms_bmp_n);
-		DEBUG("port %u MR(%p): clear bitmap[%u] for addr %p",
-		      dev->data->port_id, (void *)mr, pos, (void *)start);
+		DEBUG("device %s MR(%p): clear bitmap[%u] for addr %p",
+		      sh->ibdev_name, (void *)mr, pos, (void *)start);
 		rte_bitmap_clear(mr->ms_bmp, pos);
 		if (--mr->ms_n == 0) {
 			LIST_REMOVE(mr, mr);
-			LIST_INSERT_HEAD(&priv->mr.mr_free_list, mr, mr);
-			DEBUG("port %u remove MR(%p) from list",
-			      dev->data->port_id, (void *)mr);
+			LIST_INSERT_HEAD(&sh->mr.mr_free_list, mr, mr);
+			DEBUG("device %s remove MR(%p) from list",
+			      sh->ibdev_name, (void *)mr);
 		}
 		/*
 		 * MR is fragmented or will be freed. the global cache must be
@@ -855,7 +935,7 @@ mlx5_mr_mem_event_free_cb(struct rte_eth_dev *dev, const void *addr, size_t len)
 		rebuild = 1;
 	}
 	if (rebuild) {
-		mr_rebuild_dev_cache(dev);
+		mr_rebuild_dev_cache(sh);
 		/*
 		 * Flush local caches by propagating invalidation across cores.
 		 * rte_smp_wmb() is enough to synchronize this event. If one of
@@ -865,12 +945,12 @@ mlx5_mr_mem_event_free_cb(struct rte_eth_dev *dev, const void *addr, size_t len)
 		 * generation below) will be guaranteed to be seen by other core
 		 * before the core sees the newly allocated memory.
 		 */
-		++priv->mr.dev_gen;
+		++sh->mr.dev_gen;
 		DEBUG("broadcasting local cache flush, gen=%d",
-		      priv->mr.dev_gen);
+		      sh->mr.dev_gen);
 		rte_smp_wmb();
 	}
-	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
 }
 
 /**
@@ -888,7 +968,7 @@ void
 mlx5_mr_mem_event_cb(enum rte_mem_event event_type, const void *addr,
 		     size_t len, void *arg __rte_unused)
 {
-	struct mlx5_priv *priv;
+	struct mlx5_ibv_shared *sh;
 	struct mlx5_dev_list *dev_list = &mlx5_shared_data->mem_event_cb_list;
 
 	/* Must be called from the primary process. */
@@ -897,8 +977,8 @@ mlx5_mr_mem_event_cb(enum rte_mem_event event_type, const void *addr,
 	case RTE_MEM_EVENT_FREE:
 		rte_rwlock_write_lock(&mlx5_shared_data->mem_event_rwlock);
 		/* Iterate all the existing mlx5 devices. */
-		LIST_FOREACH(priv, dev_list, mem_event_cb)
-			mlx5_mr_mem_event_free_cb(ETH_DEV(priv), addr, len);
+		LIST_FOREACH(sh, dev_list, mem_event_cb)
+			mlx5_mr_mem_event_free_cb(sh, addr, len);
 		rte_rwlock_write_unlock(&mlx5_shared_data->mem_event_rwlock);
 		break;
 	case RTE_MEM_EVENT_ALLOC:
@@ -929,6 +1009,7 @@ mlx5_mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
 		   struct mlx5_mr_cache *entry, uintptr_t addr)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_ibv_shared *sh = priv->sh;
 	struct mlx5_mr_btree *bt = &mr_ctrl->cache_bh;
 	uint16_t idx;
 	uint32_t lkey;
@@ -937,12 +1018,12 @@ mlx5_mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
 	if (unlikely(bt->len == bt->size))
 		mr_btree_expand(bt, bt->size << 1);
 	/* Look up in the global cache. */
-	rte_rwlock_read_lock(&priv->mr.rwlock);
-	lkey = mr_btree_lookup(&priv->mr.cache, &idx, addr);
+	rte_rwlock_read_lock(&sh->mr.rwlock);
+	lkey = mr_btree_lookup(&sh->mr.cache, &idx, addr);
 	if (lkey != UINT32_MAX) {
 		/* Found. */
-		*entry = (*priv->mr.cache.table)[idx];
-		rte_rwlock_read_unlock(&priv->mr.rwlock);
+		*entry = (*sh->mr.cache.table)[idx];
+		rte_rwlock_read_unlock(&sh->mr.rwlock);
 		/*
 		 * Update local cache. Even if it fails, return the found entry
 		 * to update top-half cache. Next time, this entry will be found
@@ -951,7 +1032,7 @@ mlx5_mr_lookup_dev(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
 		mr_btree_insert(bt, entry);
 		return lkey;
 	}
-	rte_rwlock_read_unlock(&priv->mr.rwlock);
+	rte_rwlock_read_unlock(&sh->mr.rwlock);
 	/* First time to see the address? Create a new MR. */
 	lkey = mlx5_mr_create(dev, entry, addr);
 	/*
@@ -1105,6 +1186,58 @@ mlx5_mr_flush_local_cache(struct mlx5_mr_ctrl *mr_ctrl)
 }
 
 /**
+ * Creates a memory region for external memory, that is memory which is not
+ * part of the DPDK memory segments.
+ *
+ * @param dev
+ *   Pointer to the ethernet device.
+ * @param addr
+ *   Starting virtual address of memory.
+ * @param len
+ *   Length of memory segment being mapped.
+ * @param socked_id
+ *   Socket to allocate heap memory for the control structures.
+ *
+ * @return
+ *   Pointer to MR structure on success, NULL otherwise.
+ */
+static struct mlx5_mr *
+mlx5_create_mr_ext(struct rte_eth_dev *dev, uintptr_t addr, size_t len,
+		   int socket_id)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_mr *mr = NULL;
+
+	mr = rte_zmalloc_socket(NULL,
+				RTE_ALIGN_CEIL(sizeof(*mr),
+					       RTE_CACHE_LINE_SIZE),
+				RTE_CACHE_LINE_SIZE, socket_id);
+	if (mr == NULL)
+		return NULL;
+	mr->ibv_mr = mlx5_glue->reg_mr(priv->sh->pd, (void *)addr, len,
+				       IBV_ACCESS_LOCAL_WRITE);
+	if (mr->ibv_mr == NULL) {
+		DRV_LOG(WARNING,
+			"port %u fail to create a verbs MR for address (%p)",
+			dev->data->port_id, (void *)addr);
+		rte_free(mr);
+		return NULL;
+	}
+	mr->msl = NULL; /* Mark it is external memory. */
+	mr->ms_bmp = NULL;
+	mr->ms_n = 1;
+	mr->ms_bmp_n = 1;
+	DRV_LOG(DEBUG,
+		"port %u MR CREATED (%p) for external memory %p:\n"
+		"  [0x%" PRIxPTR ", 0x%" PRIxPTR "),"
+		" lkey=0x%x base_idx=%u ms_n=%u, ms_bmp_n=%u",
+		dev->data->port_id, (void *)mr, (void *)addr,
+		addr, addr + len, rte_cpu_to_be_32(mr->ibv_mr->lkey),
+		mr->ms_base_idx, mr->ms_n, mr->ms_bmp_n);
+	return mr;
+}
+
+/**
  * Called during rte_mempool_mem_iter() by mlx5_mr_update_ext_mp().
  *
  * Externally allocated chunk is registered and a MR is created for the chunk.
@@ -1125,6 +1258,7 @@ mlx5_mr_update_ext_mp_cb(struct rte_mempool *mp, void *opaque,
 	struct mr_update_mp_data *data = opaque;
 	struct rte_eth_dev *dev = data->dev;
 	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_ibv_shared *sh = priv->sh;
 	struct mlx5_mr_ctrl *mr_ctrl = data->mr_ctrl;
 	struct mlx5_mr *mr = NULL;
 	uintptr_t addr = (uintptr_t)memhdr->addr;
@@ -1134,53 +1268,164 @@ mlx5_mr_update_ext_mp_cb(struct rte_mempool *mp, void *opaque,
 
 	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	/* If already registered, it should return. */
-	rte_rwlock_read_lock(&priv->mr.rwlock);
-	lkey = mr_lookup_dev(dev, &entry, addr);
-	rte_rwlock_read_unlock(&priv->mr.rwlock);
+	rte_rwlock_read_lock(&sh->mr.rwlock);
+	lkey = mr_lookup_dev(sh, &entry, addr);
+	rte_rwlock_read_unlock(&sh->mr.rwlock);
 	if (lkey != UINT32_MAX)
 		return;
-	mr = rte_zmalloc_socket(NULL,
-				RTE_ALIGN_CEIL(sizeof(*mr),
-					       RTE_CACHE_LINE_SIZE),
-				RTE_CACHE_LINE_SIZE, mp->socket_id);
-	if (mr == NULL) {
+	DRV_LOG(DEBUG, "port %u register MR for chunk #%d of mempool (%s)",
+		dev->data->port_id, mem_idx, mp->name);
+	mr = mlx5_create_mr_ext(dev, addr, len, mp->socket_id);
+	if (!mr) {
 		DRV_LOG(WARNING,
-			"port %u unable to allocate memory for a new MR of"
+			"port %u unable to allocate a new MR of"
 			" mempool (%s).",
 			dev->data->port_id, mp->name);
 		data->ret = -1;
 		return;
 	}
-	DRV_LOG(DEBUG, "port %u register MR for chunk #%d of mempool (%s)",
-		dev->data->port_id, mem_idx, mp->name);
-	mr->ibv_mr = mlx5_glue->reg_mr(priv->pd, (void *)addr, len,
-				       IBV_ACCESS_LOCAL_WRITE);
-	if (mr->ibv_mr == NULL) {
-		DRV_LOG(WARNING,
-			"port %u fail to create a verbs MR for address (%p)",
-			dev->data->port_id, (void *)addr);
-		rte_free(mr);
-		data->ret = -1;
-		return;
-	}
-	mr->msl = NULL; /* Mark it is external memory. */
-	mr->ms_bmp = NULL;
-	mr->ms_n = 1;
-	mr->ms_bmp_n = 1;
-	rte_rwlock_write_lock(&priv->mr.rwlock);
-	LIST_INSERT_HEAD(&priv->mr.mr_list, mr, mr);
-	DRV_LOG(DEBUG,
-		"port %u MR CREATED (%p) for external memory %p:\n"
-		"  [0x%" PRIxPTR ", 0x%" PRIxPTR "),"
-		" lkey=0x%x base_idx=%u ms_n=%u, ms_bmp_n=%u",
-		dev->data->port_id, (void *)mr, (void *)addr,
-		addr, addr + len, rte_cpu_to_be_32(mr->ibv_mr->lkey),
-		mr->ms_base_idx, mr->ms_n, mr->ms_bmp_n);
+	rte_rwlock_write_lock(&sh->mr.rwlock);
+	LIST_INSERT_HEAD(&sh->mr.mr_list, mr, mr);
 	/* Insert to the global cache table. */
-	mr_insert_dev_cache(dev, mr);
-	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	mr_insert_dev_cache(sh, mr);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
 	/* Insert to the local cache table */
 	mlx5_mr_addr2mr_bh(dev, mr_ctrl, addr);
+}
+
+/**
+ * Finds the first ethdev that match the pci device.
+ * The existence of multiple ethdev per pci device is only with representors.
+ * On such case, it is enough to get only one of the ports as they all share
+ * the same ibv context.
+ *
+ * @param pdev
+ *   Pointer to the PCI device.
+ *
+ * @return
+ *   Pointer to the ethdev if found, NULL otherwise.
+ */
+static struct rte_eth_dev *
+pci_dev_to_eth_dev(struct rte_pci_device *pdev)
+{
+	uint16_t port_id;
+
+	RTE_ETH_FOREACH_DEV_OF(port_id, &pdev->device)
+		return &rte_eth_devices[port_id];
+	return NULL;
+}
+
+/**
+ * DPDK callback to DMA map external memory to a PCI device.
+ *
+ * @param pdev
+ *   Pointer to the PCI device.
+ * @param addr
+ *   Starting virtual address of memory to be mapped.
+ * @param iova
+ *   Starting IOVA address of memory to be mapped.
+ * @param len
+ *   Length of memory segment being mapped.
+ *
+ * @return
+ *   0 on success, negative value on error.
+ */
+int
+mlx5_dma_map(struct rte_pci_device *pdev, void *addr,
+	     uint64_t iova __rte_unused, size_t len)
+{
+	struct rte_eth_dev *dev;
+	struct mlx5_mr *mr;
+	struct mlx5_priv *priv;
+	struct mlx5_ibv_shared *sh;
+
+	dev = pci_dev_to_eth_dev(pdev);
+	if (!dev) {
+		DRV_LOG(WARNING, "unable to find matching ethdev "
+				 "to PCI device %p", (void *)pdev);
+		rte_errno = ENODEV;
+		return -1;
+	}
+	priv = dev->data->dev_private;
+	mr = mlx5_create_mr_ext(dev, (uintptr_t)addr, len, SOCKET_ID_ANY);
+	if (!mr) {
+		DRV_LOG(WARNING,
+			"port %u unable to dma map", dev->data->port_id);
+		rte_errno = EINVAL;
+		return -1;
+	}
+	sh = priv->sh;
+	rte_rwlock_write_lock(&sh->mr.rwlock);
+	LIST_INSERT_HEAD(&sh->mr.mr_list, mr, mr);
+	/* Insert to the global cache table. */
+	mr_insert_dev_cache(sh, mr);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
+	return 0;
+}
+
+/**
+ * DPDK callback to DMA unmap external memory to a PCI device.
+ *
+ * @param pdev
+ *   Pointer to the PCI device.
+ * @param addr
+ *   Starting virtual address of memory to be unmapped.
+ * @param iova
+ *   Starting IOVA address of memory to be unmapped.
+ * @param len
+ *   Length of memory segment being unmapped.
+ *
+ * @return
+ *   0 on success, negative value on error.
+ */
+int
+mlx5_dma_unmap(struct rte_pci_device *pdev, void *addr,
+	       uint64_t iova __rte_unused, size_t len __rte_unused)
+{
+	struct rte_eth_dev *dev;
+	struct mlx5_priv *priv;
+	struct mlx5_ibv_shared *sh;
+	struct mlx5_mr *mr;
+	struct mlx5_mr_cache entry;
+
+	dev = pci_dev_to_eth_dev(pdev);
+	if (!dev) {
+		DRV_LOG(WARNING, "unable to find matching ethdev "
+				 "to PCI device %p", (void *)pdev);
+		rte_errno = ENODEV;
+		return -1;
+	}
+	priv = dev->data->dev_private;
+	sh = priv->sh;
+	rte_rwlock_read_lock(&sh->mr.rwlock);
+	mr = mr_lookup_dev_list(sh, &entry, (uintptr_t)addr);
+	if (!mr) {
+		rte_rwlock_read_unlock(&sh->mr.rwlock);
+		DRV_LOG(WARNING, "address 0x%" PRIxPTR " wasn't registered "
+				 "to PCI device %p", (uintptr_t)addr,
+				 (void *)pdev);
+		rte_errno = EINVAL;
+		return -1;
+	}
+	LIST_REMOVE(mr, mr);
+	LIST_INSERT_HEAD(&sh->mr.mr_free_list, mr, mr);
+	DEBUG("port %u remove MR(%p) from list", dev->data->port_id,
+	      (void *)mr);
+	mr_rebuild_dev_cache(sh);
+	/*
+	 * Flush local caches by propagating invalidation across cores.
+	 * rte_smp_wmb() is enough to synchronize this event. If one of
+	 * freed memsegs is seen by other core, that means the memseg
+	 * has been allocated by allocator, which will come after this
+	 * free call. Therefore, this store instruction (incrementing
+	 * generation below) will be guaranteed to be seen by other core
+	 * before the core sees the newly allocated memory.
+	 */
+	++sh->mr.dev_gen;
+	DEBUG("broadcasting local cache flush, gen=%d",	sh->mr.dev_gen);
+	rte_smp_wmb();
+	rte_rwlock_read_unlock(&sh->mr.rwlock);
+	return 0;
 }
 
 /**
@@ -1300,25 +1545,24 @@ mlx5_mr_update_mp(struct rte_eth_dev *dev, struct mlx5_mr_ctrl *mr_ctrl,
 /**
  * Dump all the created MRs and the global cache entries.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param sh
+ *   Pointer to Ethernet device shared context.
  */
 void
-mlx5_mr_dump_dev(struct rte_eth_dev *dev __rte_unused)
+mlx5_mr_dump_dev(struct mlx5_ibv_shared *sh __rte_unused)
 {
 #ifndef NDEBUG
-	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr;
 	int mr_n = 0;
 	int chunk_n = 0;
 
-	rte_rwlock_read_lock(&priv->mr.rwlock);
+	rte_rwlock_read_lock(&sh->mr.rwlock);
 	/* Iterate all the existing MRs. */
-	LIST_FOREACH(mr, &priv->mr.mr_list, mr) {
+	LIST_FOREACH(mr, &sh->mr.mr_list, mr) {
 		unsigned int n;
 
-		DEBUG("port %u MR[%u], LKey = 0x%x, ms_n = %u, ms_bmp_n = %u",
-		      dev->data->port_id, mr_n++,
+		DEBUG("device %s MR[%u], LKey = 0x%x, ms_n = %u, ms_bmp_n = %u",
+		      sh->ibdev_name, mr_n++,
 		      rte_cpu_to_be_32(mr->ibv_mr->lkey),
 		      mr->ms_n, mr->ms_bmp_n);
 		if (mr->ms_n == 0)
@@ -1333,45 +1577,40 @@ mlx5_mr_dump_dev(struct rte_eth_dev *dev __rte_unused)
 			      chunk_n++, ret.start, ret.end);
 		}
 	}
-	DEBUG("port %u dumping global cache", dev->data->port_id);
-	mlx5_mr_btree_dump(&priv->mr.cache);
-	rte_rwlock_read_unlock(&priv->mr.rwlock);
+	DEBUG("device %s dumping global cache", sh->ibdev_name);
+	mlx5_mr_btree_dump(&sh->mr.cache);
+	rte_rwlock_read_unlock(&sh->mr.rwlock);
 #endif
 }
 
 /**
- * Release all the created MRs and resources. Remove device from memory callback
+ * Release all the created MRs and resources for shared device context.
  * list.
  *
- * @param dev
- *   Pointer to Ethernet device.
+ * @param sh
+ *   Pointer to Ethernet device shared context.
  */
 void
-mlx5_mr_release(struct rte_eth_dev *dev)
+mlx5_mr_release(struct mlx5_ibv_shared *sh)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_mr *mr_next;
 
-	/* Remove from memory callback device list. */
-	rte_rwlock_write_lock(&mlx5_shared_data->mem_event_rwlock);
-	LIST_REMOVE(priv, mem_event_cb);
-	rte_rwlock_write_unlock(&mlx5_shared_data->mem_event_rwlock);
 	if (rte_log_get_level(mlx5_logtype) == RTE_LOG_DEBUG)
-		mlx5_mr_dump_dev(dev);
-	rte_rwlock_write_lock(&priv->mr.rwlock);
+		mlx5_mr_dump_dev(sh);
+	rte_rwlock_write_lock(&sh->mr.rwlock);
 	/* Detach from MR list and move to free list. */
-	mr_next = LIST_FIRST(&priv->mr.mr_list);
+	mr_next = LIST_FIRST(&sh->mr.mr_list);
 	while (mr_next != NULL) {
 		struct mlx5_mr *mr = mr_next;
 
 		mr_next = LIST_NEXT(mr, mr);
 		LIST_REMOVE(mr, mr);
-		LIST_INSERT_HEAD(&priv->mr.mr_free_list, mr, mr);
+		LIST_INSERT_HEAD(&sh->mr.mr_free_list, mr, mr);
 	}
-	LIST_INIT(&priv->mr.mr_list);
+	LIST_INIT(&sh->mr.mr_list);
 	/* Free global cache. */
-	mlx5_mr_btree_free(&priv->mr.cache);
-	rte_rwlock_write_unlock(&priv->mr.rwlock);
+	mlx5_mr_btree_free(&sh->mr.cache);
+	rte_rwlock_write_unlock(&sh->mr.rwlock);
 	/* Free all remaining MRs. */
-	mlx5_mr_garbage_collect(dev);
+	mlx5_mr_garbage_collect(sh);
 }

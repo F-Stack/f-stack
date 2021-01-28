@@ -23,7 +23,6 @@
 enum chip_ids {
 	CHIP_BB,
 	CHIP_K2,
-	CHIP_E5,
 	MAX_CHIP_IDS
 };
 
@@ -47,7 +46,21 @@ enum bin_init_buffer_type {
 	BIN_BUF_INIT_VAL /* init data */,
 	BIN_BUF_INIT_MODE_TREE /* init modes tree */,
 	BIN_BUF_INIT_IRO /* internal RAM offsets */,
+	BIN_BUF_INIT_OVERLAYS /* FW overlays (except overlay 0) */,
 	MAX_BIN_INIT_BUFFER_TYPE
+};
+
+
+/*
+ * FW overlay buffer header
+ */
+struct fw_overlay_buf_hdr {
+	u32 data;
+#define FW_OVERLAY_BUF_HDR_STORM_ID_MASK  0xFF /* Storm ID */
+#define FW_OVERLAY_BUF_HDR_STORM_ID_SHIFT 0
+/* Size of Storm FW overlay buffer in dwords */
+#define FW_OVERLAY_BUF_HDR_BUF_SIZE_MASK  0xFFFFFF
+#define FW_OVERLAY_BUF_HDR_BUF_SIZE_SHIFT 8
 };
 
 
@@ -118,6 +131,30 @@ union init_array_hdr {
 };
 
 
+enum dbg_bus_clients {
+	DBG_BUS_CLIENT_RBCN,
+	DBG_BUS_CLIENT_RBCP,
+	DBG_BUS_CLIENT_RBCR,
+	DBG_BUS_CLIENT_RBCT,
+	DBG_BUS_CLIENT_RBCU,
+	DBG_BUS_CLIENT_RBCF,
+	DBG_BUS_CLIENT_RBCX,
+	DBG_BUS_CLIENT_RBCS,
+	DBG_BUS_CLIENT_RBCH,
+	DBG_BUS_CLIENT_RBCZ,
+	DBG_BUS_CLIENT_OTHER_ENGINE,
+	DBG_BUS_CLIENT_TIMESTAMP,
+	DBG_BUS_CLIENT_CPU,
+	DBG_BUS_CLIENT_RBCY,
+	DBG_BUS_CLIENT_RBCQ,
+	DBG_BUS_CLIENT_RBCM,
+	DBG_BUS_CLIENT_RBCB,
+	DBG_BUS_CLIENT_RBCW,
+	DBG_BUS_CLIENT_RBCV,
+	MAX_DBG_BUS_CLIENTS
+};
+
+
 enum init_modes {
 	MODE_BB_A0_DEPRECATED,
 	MODE_BB,
@@ -134,7 +171,8 @@ enum init_modes {
 	MODE_PORTS_PER_ENG_2,
 	MODE_PORTS_PER_ENG_4,
 	MODE_100G,
-	MODE_E5,
+	MODE_SKIP_PRAM_INIT,
+	MODE_EMUL_MAC,
 	MAX_INIT_MODES
 };
 
