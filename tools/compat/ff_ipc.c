@@ -114,6 +114,13 @@ ff_ipc_msg_free(struct ff_msg *msg)
         return -1;
     }
 
+    if (msg->original_buf) {
+        rte_free(msg->buf_addr);
+        msg->buf_addr = msg->original_buf;
+        msg->buf_len = msg->original_buf_len;
+        msg->original_buf = NULL;
+    }
+
     rte_mempool_put(message_pool, msg);
 
     return 0;
