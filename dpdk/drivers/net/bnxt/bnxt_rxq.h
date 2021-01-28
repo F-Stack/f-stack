@@ -6,13 +6,13 @@
 #ifndef _BNXT_RQX_H_
 #define _BNXT_RQX_H_
 
+/* Drop by default when receive desc is not available. */
+#define BNXT_DEFAULT_RX_DROP_EN		1
+
 struct bnxt;
 struct bnxt_rx_ring_info;
 struct bnxt_cp_ring_info;
 struct bnxt_rx_queue {
-	rte_spinlock_t		lock;	/* Synchronize between rx_queue_stop
-					 * and fast path
-					 */
 	struct rte_mempool	*mb_pool; /* mbuf pool for RX ring */
 	struct rte_mbuf		*pkt_first_seg; /* 1st seg of pkt */
 	struct rte_mbuf		*pkt_last_seg; /* Last seg of pkt */
@@ -31,6 +31,7 @@ struct bnxt_rx_queue {
 	uint8_t			crc_len; /* 0 if CRC stripped, 4 otherwise */
 	uint8_t			rx_deferred_start; /* not in global dev start */
 	uint8_t			rx_started; /* RX queue is started */
+	uint8_t			drop_en; /* Drop when rx desc not available. */
 
 	struct bnxt		*bp;
 	int			index;

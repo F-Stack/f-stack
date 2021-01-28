@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_FLEX_PIPE_H_
@@ -36,7 +36,7 @@ ice_get_sw_fv_bitmap(struct ice_hw *hw, enum ice_prof_type type,
 void
 ice_init_prof_result_bm(struct ice_hw *hw);
 enum ice_status
-ice_get_sw_fv_list(struct ice_hw *hw, u16 *prot_ids, u8 ids_cnt,
+ice_get_sw_fv_list(struct ice_hw *hw, u16 *prot_ids, u16 ids_cnt,
 		   ice_bitmap_t *bm, struct LIST_HEAD_TYPE *fv_list);
 bool
 ice_get_open_tunnel_port(struct ice_hw *hw, enum ice_tunnel_type type,

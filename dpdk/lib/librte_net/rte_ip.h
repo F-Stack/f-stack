@@ -139,8 +139,11 @@ __rte_raw_cksum(const void *buf, size_t len, uint32_t sum)
 	}
 
 	/* if length is in odd bytes */
-	if (len == 1)
-		sum += *((const uint8_t *)u16_buf);
+	if (len == 1) {
+		uint16_t left = 0;
+		*(uint8_t *)&left = *(const uint8_t *)u16_buf;
+		sum += left;
+	}
 
 	return sum;
 }
@@ -222,6 +225,9 @@ rte_raw_cksum_mbuf(const struct rte_mbuf *m, uint32_t off, uint32_t len,
 			break;
 		off -= seglen;
 	}
+	RTE_ASSERT(seg != NULL);
+	if (seg == NULL)
+		return -1;
 	seglen -= off;
 	buf = rte_pktmbuf_mtod_offset(seg, const char *, off);
 	if (seglen >= len) {
@@ -267,7 +273,7 @@ rte_ipv4_cksum(const struct rte_ipv4_hdr *ipv4_hdr)
 {
 	uint16_t cksum;
 	cksum = rte_raw_cksum(ipv4_hdr, sizeof(struct rte_ipv4_hdr));
-	return (cksum == 0xffff) ? cksum : (uint16_t)~cksum;
+	return (uint16_t)~cksum;
 }
 
 /**
@@ -324,8 +330,7 @@ rte_ipv4_phdr_cksum(const struct rte_ipv4_hdr *ipv4_hdr, uint64_t ol_flags)
  * @param l4_hdr
  *   The pointer to the beginning of the L4 header.
  * @return
- *   The complemented checksum to set in the IP packet
- *   or 0 on error
+ *   The complemented checksum to set in the IP packet.
  */
 static inline uint16_t
 rte_ipv4_udptcp_cksum(const struct rte_ipv4_hdr *ipv4_hdr, const void *l4_hdr)
@@ -344,7 +349,12 @@ rte_ipv4_udptcp_cksum(const struct rte_ipv4_hdr *ipv4_hdr, const void *l4_hdr)
 
 	cksum = ((cksum & 0xffff0000) >> 16) + (cksum & 0xffff);
 	cksum = (~cksum) & 0xffff;
-	if (cksum == 0)
+	/*
+	 * Per RFC 768:If the computed checksum is zero for UDP,
+	 * it is transmitted as all ones
+	 * (the equivalent in one's complement arithmetic).
+	 */
+	if (cksum == 0 && ipv4_hdr->next_proto_id == IPPROTO_UDP)
 		cksum = 0xffff;
 
 	return (uint16_t)cksum;
@@ -436,7 +446,12 @@ rte_ipv6_udptcp_cksum(const struct rte_ipv6_hdr *ipv6_hdr, const void *l4_hdr)
 
 	cksum = ((cksum & 0xffff0000) >> 16) + (cksum & 0xffff);
 	cksum = (~cksum) & 0xffff;
-	if (cksum == 0)
+	/*
+	 * Per RFC 768: If the computed checksum is zero for UDP,
+	 * it is transmitted as all ones
+	 * (the equivalent in one's complement arithmetic).
+	 */
+	if (cksum == 0 && ipv6_hdr->proto == IPPROTO_UDP)
 		cksum = 0xffff;
 
 	return (uint16_t)cksum;

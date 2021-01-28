@@ -39,7 +39,7 @@ vhost_kernel_tap_set_offload(int fd, uint64_t features)
 
 	/* Check if our kernel supports TUNSETOFFLOAD */
 	if (ioctl(fd, TUNSETOFFLOAD, 0) != 0 && errno == EINVAL) {
-		PMD_DRV_LOG(ERR, "Kernel does't support TUNSETOFFLOAD\n");
+		PMD_DRV_LOG(ERR, "Kernel doesn't support TUNSETOFFLOAD\n");
 		return -ENOTSUP;
 	}
 
@@ -128,7 +128,10 @@ vhost_kernel_open_tap(char **p_ifname, int hdr_size, int req_mq,
 		goto error;
 	}
 
-	fcntl(tapfd, F_SETFL, O_NONBLOCK);
+	if (fcntl(tapfd, F_SETFL, O_NONBLOCK) < 0) {
+		PMD_DRV_LOG(ERR, "fcntl tapfd failed: %s", strerror(errno));
+		goto error;
+	}
 
 	if (ioctl(tapfd, TUNSETVNETHDRSZ, &hdr_size) < 0) {
 		PMD_DRV_LOG(ERR, "TUNSETVNETHDRSZ failed: %s", strerror(errno));

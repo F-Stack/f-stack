@@ -45,6 +45,9 @@ if arch_subdir == 'x86'
 				c_args: [cflags, '-mavx2'])
 		objs += i40e_avx2_lib.extract_objects('i40e_rxtx_vec_avx2.c')
 	endif
+elif arch_subdir == 'arm'
+       dpdk_conf.set('RTE_LIBRTE_I40E_INC_VECTOR', 1)
+       sources += files('i40e_rxtx_vec_neon.c')
 endif
 
 install_headers('rte_pmd_i40e.h')

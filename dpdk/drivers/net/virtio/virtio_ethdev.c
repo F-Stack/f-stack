@@ -466,7 +466,7 @@ virtio_init_queue(struct rte_eth_dev *dev, uint16_t vtpci_queue_idx)
 	}
 
 	if (!vtpci_packed_queue(hw) && !rte_is_power_of_2(vq_size)) {
-		PMD_INIT_LOG(ERR, "split virtqueue size is not powerof 2");
+		PMD_INIT_LOG(ERR, "split virtqueue size is not power of 2");
 		return -EINVAL;
 	}
 
@@ -588,8 +588,8 @@ virtio_init_queue(struct rte_eth_dev *dev, uint16_t vtpci_queue_idx)
 		hw->cvq = cvq;
 	}
 
-	/* For virtio_user case (that is when hw->dev is NULL), we use
-	 * virtual address. And we need properly set _offset_, please see
+	/* For virtio_user case (that is when hw->virtio_user_dev is not NULL),
+	 * we use virtual address. And we need properly set _offset_, please see
 	 * VIRTIO_MBUF_DATA_DMA_ADDR in virtqueue.h for more information.
 	 */
 	if (!hw->virtio_user_dev)
@@ -610,10 +610,9 @@ virtio_init_queue(struct rte_eth_dev *dev, uint16_t vtpci_queue_idx)
 		txr = hdr_mz->addr;
 		memset(txr, 0, vq_size * sizeof(*txr));
 		for (i = 0; i < vq_size; i++) {
-			struct vring_desc *start_dp = txr[i].tx_indir;
-
 			/* first indirect descriptor is always the tx header */
 			if (!vtpci_packed_queue(hw)) {
+				struct vring_desc *start_dp = txr[i].tx_indir;
 				vring_desc_init_split(start_dp,
 						      RTE_DIM(txr[i].tx_indir));
 				start_dp->addr = txvq->virtio_net_hdr_mem
@@ -622,6 +621,16 @@ virtio_init_queue(struct rte_eth_dev *dev, uint16_t vtpci_queue_idx)
 						   tx_hdr);
 				start_dp->len = hw->vtnet_hdr_size;
 				start_dp->flags = VRING_DESC_F_NEXT;
+			} else {
+				struct vring_packed_desc *start_dp =
+					txr[i].tx_packed_indir;
+				vring_desc_init_indirect_packed(start_dp,
+				      RTE_DIM(txr[i].tx_packed_indir));
+				start_dp->addr = txvq->virtio_net_hdr_mem
+					+ i * sizeof(*txr)
+					+ offsetof(struct virtio_tx_region,
+						   tx_hdr);
+				start_dp->len = hw->vtnet_hdr_size;
 			}
 		}
 	}

@@ -158,6 +158,8 @@ print_stats(void)
 						kni_stats[i].tx_dropped);
 	}
 	printf("======  ==============  ============  ============  ============  ============\n");
+
+	fflush(stdout);
 }
 
 /* Custom handling of signals to handle stats and kni processing */
@@ -679,7 +681,7 @@ check_all_ports_link_status(uint32_t port_mask)
 					"Port%d Link Up - speed %uMbps - %s\n",
 						portid, link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n", portid);
 				continue;
@@ -764,15 +766,16 @@ monitor_all_ports_link_status(void *arg)
 	return NULL;
 }
 
-/* Callback for request of changing MTU */
 static int
-kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
+kni_change_mtu_(uint16_t port_id, unsigned int new_mtu)
 {
 	int ret;
 	uint16_t nb_rxd = NB_RXD;
+	uint16_t nb_txd = NB_TXD;
 	struct rte_eth_conf conf;
 	struct rte_eth_dev_info dev_info;
 	struct rte_eth_rxconf rxq_conf;
+	struct rte_eth_txconf txq_conf;
 
 	if (!rte_eth_dev_is_valid_port(port_id)) {
 		RTE_LOG(ERR, APP, "Invalid port id %d\n", port_id);
@@ -800,7 +803,7 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 		return ret;
 	}
 
-	ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, NULL);
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Could not adjust number of descriptors "
 				"for port%u (%d)\n", (unsigned int)port_id,
@@ -825,6 +828,16 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 		return ret;
 	}
 
+	txq_conf = dev_info.default_txconf;
+	txq_conf.offloads = conf.txmode.offloads;
+	ret = rte_eth_tx_queue_setup(port_id, 0, nb_txd,
+		rte_eth_dev_socket_id(port_id), &txq_conf);
+	if (ret < 0) {
+		RTE_LOG(ERR, APP, "Fail to setup Tx queue of port %d\n",
+				port_id);
+		return ret;
+	}
+
 	/* Restart specific port */
 	ret = rte_eth_dev_start(port_id);
 	if (ret < 0) {
@@ -833,6 +846,19 @@ kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
 	}
 
 	return 0;
+}
+
+/* Callback for request of changing MTU */
+static int
+kni_change_mtu(uint16_t port_id, unsigned int new_mtu)
+{
+	int ret;
+
+	rte_atomic32_inc(&kni_pause);
+	ret =  kni_change_mtu_(port_id, new_mtu);
+	rte_atomic32_dec(&kni_pause);
+
+	return ret;
 }
 
 /* Callback for request of configuring network interface up/down */

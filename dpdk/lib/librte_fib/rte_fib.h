@@ -8,11 +8,22 @@
 
 /**
  * @file
+ *
+ * RTE FIB library.
+ *
+ * @warning
+ * @b EXPERIMENTAL:
+ * All functions in this file may be changed or removed without prior notice.
+ *
  * FIB (Forwarding information base) implementation
  * for IPv4 Longest Prefix Match
  */
 
 #include <rte_compat.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct rte_fib;
 struct rte_rib;
@@ -184,5 +195,9 @@ rte_fib_get_dp(struct rte_fib *fib);
 __rte_experimental
 struct rte_rib *
 rte_fib_get_rib(struct rte_fib *fib);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_FIB_H_ */

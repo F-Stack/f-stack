@@ -5,11 +5,20 @@
 #ifndef _HNS3_RXTX_H_
 #define _HNS3_RXTX_H_
 
-#define	HNS3_MIN_RING_DESC	32
+#define	HNS3_MIN_RING_DESC	64
 #define	HNS3_MAX_RING_DESC	32768
 #define HNS3_DEFAULT_RING_DESC  1024
 #define	HNS3_ALIGN_RING_DESC	32
 #define HNS3_RING_BASE_ALIGN	128
+#define HNS3_DEFAULT_RX_FREE_THRESH	32
+
+#define HNS3_512_BD_BUF_SIZE	512
+#define HNS3_1K_BD_BUF_SIZE	1024
+#define HNS3_2K_BD_BUF_SIZE	2048
+#define HNS3_4K_BD_BUF_SIZE	4096
+
+#define HNS3_MIN_BD_BUF_SIZE	HNS3_512_BD_BUF_SIZE
+#define HNS3_MAX_BD_BUF_SIZE	HNS3_4K_BD_BUF_SIZE
 
 #define HNS3_BD_SIZE_512_TYPE			0
 #define HNS3_BD_SIZE_1024_TYPE			1
@@ -222,6 +231,7 @@ struct hns3_entry {
 
 struct hns3_rx_queue {
 	void *io_base;
+	volatile void *io_head_reg;
 	struct hns3_adapter *hns;
 	struct rte_mempool *mb_pool;
 	struct hns3_desc *rx_ring;
@@ -235,17 +245,24 @@ struct hns3_rx_queue {
 	uint16_t queue_id;
 	uint16_t port_id;
 	uint16_t nb_rx_desc;
-	uint16_t nb_rx_hold;
-	uint16_t rx_tail;
-	uint16_t next_to_clean;
 	uint16_t next_to_use;
 	uint16_t rx_buf_len;
+	/*
+	 * threshold for the number of BDs waited to passed to hardware. If the
+	 * number exceeds the threshold, driver will pass these BDs to hardware.
+	 */
 	uint16_t rx_free_thresh;
+	uint16_t rx_free_hold;   /* num of BDs waited to passed to hardware */
+
+	/*
+	 * port based vlan configuration state.
+	 * value range: HNS3_PORT_BASE_VLAN_DISABLE / HNS3_PORT_BASE_VLAN_ENABLE
+	 */
+	uint16_t pvid_state;
 
 	bool rx_deferred_start; /* don't start this queue in dev start */
 	bool configured;        /* indicate if rx queue has been configured */
 
-	uint64_t non_vld_descs; /* num of non valid rx descriptors */
 	uint64_t l2_errors;
 	uint64_t pkt_len_errors;
 	uint64_t l3_csum_erros;
@@ -269,19 +286,28 @@ struct hns3_tx_queue {
 	uint16_t next_to_use;
 	uint16_t tx_bd_ready;
 
+	/*
+	 * port based vlan configuration state.
+	 * value range: HNS3_PORT_BASE_VLAN_DISABLE / HNS3_PORT_BASE_VLAN_ENABLE
+	 */
+	uint16_t pvid_state;
+
 	bool tx_deferred_start; /* don't start this queue in dev start */
 	bool configured;        /* indicate if tx queue has been configured */
 };
 
+struct hns3_queue_info {
+	const char *type;   /* point to queue memory name */
+	const char *ring_name;  /* point to hardware ring name */
+	uint16_t idx;
+	uint16_t nb_desc;
+	unsigned int socket_id;
+};
+
 #define HNS3_TX_CKSUM_OFFLOAD_MASK ( \
-	PKT_TX_OUTER_IPV6 | \
-	PKT_TX_OUTER_IPV4 | \
 	PKT_TX_OUTER_IP_CKSUM | \
-	PKT_TX_IPV6 | \
-	PKT_TX_IPV4 | \
 	PKT_TX_IP_CKSUM | \
-	PKT_TX_L4_MASK | \
-	PKT_TX_TUNNEL_MASK)
+	PKT_TX_L4_MASK)
 
 enum hns3_cksum_status {
 	HNS3_CKSUM_NONE = 0,
@@ -295,6 +321,10 @@ void hns3_dev_rx_queue_release(void *queue);
 void hns3_dev_tx_queue_release(void *queue);
 void hns3_free_all_queues(struct rte_eth_dev *dev);
 int hns3_reset_all_queues(struct hns3_adapter *hns);
+void hns3_dev_all_rx_queue_intr_enable(struct hns3_hw *hw, bool en);
+int hns3_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id);
+int hns3_dev_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id);
+void hns3_enable_all_queues(struct hns3_hw *hw, bool en);
 int hns3_start_queues(struct hns3_adapter *hns, bool reset_queue);
 int hns3_stop_queues(struct hns3_adapter *hns, bool reset_queue);
 void hns3_dev_release_mbufs(struct hns3_adapter *hns);
@@ -311,4 +341,12 @@ uint16_t hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			uint16_t nb_pkts);
 const uint32_t *hns3_dev_supported_ptypes_get(struct rte_eth_dev *dev);
 void hns3_set_rxtx_function(struct rte_eth_dev *eth_dev);
+void hns3_set_queue_intr_gl(struct hns3_hw *hw, uint16_t queue_id,
+			    uint8_t gl_idx, uint16_t gl_value);
+void hns3_set_queue_intr_rl(struct hns3_hw *hw, uint16_t queue_id,
+			    uint16_t rl_value);
+int hns3_set_fake_rx_or_tx_queues(struct rte_eth_dev *dev, uint16_t nb_rx_q,
+				  uint16_t nb_tx_q);
+void hns3_update_all_queues_pvid_state(struct hns3_hw *hw);
+
 #endif /* _HNS3_RXTX_H_ */

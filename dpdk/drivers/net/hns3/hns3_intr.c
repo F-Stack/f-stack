@@ -882,8 +882,14 @@ hns3_reset_err_handle(struct hns3_adapter *hns)
 		return true;
 	}
 
+	/*
+	 * Failure to reset does not mean that the network port is
+	 * completely unavailable, so cmd still needs to be initialized.
+	 * Regardless of whether the execution is successful or not, the
+	 * flow after execution must be continued.
+	 */
 	if (rte_atomic16_read(&hw->reset.disable_cmd))
-		hns3_cmd_init(hw);
+		(void)hns3_cmd_init(hw);
 reset_fail:
 	hw->reset.attempts = 0;
 	hw->reset.stats.fail_cnt++;
@@ -1001,7 +1007,9 @@ hns3_reset_post(struct hns3_adapter *hns)
 		hw->reset.attempts = 0;
 		hw->reset.stats.success_cnt++;
 		hw->reset.stage = RESET_STAGE_NONE;
+		rte_spinlock_lock(&hw->lock);
 		hw->reset.ops->start_service(hns);
+		rte_spinlock_unlock(&hw->lock);
 		gettimeofday(&tv, NULL);
 		timersub(&tv, &hw->reset.start_time, &tv_delta);
 		hns3_warn(hw, "%s reset done fail_cnt:%" PRIx64

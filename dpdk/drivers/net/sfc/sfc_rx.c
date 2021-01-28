@@ -719,6 +719,7 @@ retry:
 		sfc_warn(sa, "promiscuous mode will be disabled");
 
 		port->promisc = B_FALSE;
+		sa->eth_dev->data->promiscuous = 0;
 		rc = sfc_set_rx_mode(sa);
 		if (rc != 0)
 			return rc;
@@ -732,6 +733,7 @@ retry:
 		sfc_warn(sa, "all-multicast mode will be disabled");
 
 		port->allmulti = B_FALSE;
+		sa->eth_dev->data->all_multicast = 0;
 		rc = sfc_set_rx_mode(sa);
 		if (rc != 0)
 			return rc;
@@ -820,10 +822,12 @@ sfc_rx_qstart(struct sfc_adapter *sa, unsigned int sw_index)
 	return 0;
 
 fail_mac_filter_default_rxq_set:
+	sfc_rx_qflush(sa, sw_index);
 	sa->priv.dp_rx->qstop(rxq_info->dp, &rxq->evq->read_ptr);
+	rxq_info->state = SFC_RXQ_INITIALIZED;
 
 fail_dp_qstart:
-	sfc_rx_qflush(sa, sw_index);
+	efx_rx_qdestroy(rxq->common);
 
 fail_rx_qcreate:
 fail_bad_contig_block_size:
@@ -1135,6 +1139,13 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	rxq_info->refill_threshold =
 		RTE_MAX(rx_free_thresh, SFC_RX_REFILL_BULK);
 	rxq_info->refill_mb_pool = mb_pool;
+
+	if (rss->hash_support == EFX_RX_HASH_AVAILABLE && rss->channels > 0 &&
+	    (offloads & DEV_RX_OFFLOAD_RSS_HASH))
+		rxq_info->rxq_flags = SFC_RXQ_FLAG_RSS_HASH;
+	else
+		rxq_info->rxq_flags = 0;
+
 	rxq->buf_size = buf_size;
 
 	rc = sfc_dma_alloc(sa, "rxq", sw_index,
@@ -1150,10 +1161,7 @@ sfc_rx_qinit(struct sfc_adapter *sa, unsigned int sw_index,
 	info.buf_size = buf_size;
 	info.batch_max = encp->enc_rx_batch_max;
 	info.prefix_size = encp->enc_rx_prefix_size;
-
-	if (rss->hash_support == EFX_RX_HASH_AVAILABLE && rss->channels > 0)
-		info.flags |= SFC_RXQ_FLAG_RSS_HASH;
-
+	info.flags = rxq_info->rxq_flags;
 	info.rxq_entries = rxq_info->entries;
 	info.rxq_hw_ring = rxq->mem.esm_base;
 	info.evq_hw_index = sfc_evq_index_by_rxq_sw_index(sa, sw_index);
@@ -1556,10 +1564,6 @@ sfc_rx_check_mode(struct sfc_adapter *sa, struct rte_eth_rxmode *rxmode)
 		sfc_warn(sa, "Rx outer IPv4 checksum offload cannot be disabled - always on");
 		rxmode->offloads |= DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM;
 	}
-
-	if ((offloads_supported & DEV_RX_OFFLOAD_RSS_HASH) &&
-	    (rxmode->mq_mode & ETH_MQ_RX_RSS_FLAG))
-		rxmode->offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	return rc;
 }

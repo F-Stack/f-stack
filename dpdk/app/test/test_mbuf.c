@@ -1144,7 +1144,7 @@ test_refcnt_mbuf(void)
 		tref += refcnt_lcore[slave];
 
 	if (tref != refcnt_lcore[master])
-		rte_panic("refernced mbufs: %u, freed mbufs: %u\n",
+		rte_panic("referenced mbufs: %u, freed mbufs: %u\n",
 		          tref, refcnt_lcore[master]);
 
 	rte_mempool_dump(stdout, refcnt_pool);
@@ -2481,9 +2481,13 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 
 	offset3 = rte_mbuf_dynfield_register_offset(&dynfield3,
 				offsetof(struct rte_mbuf, dynfield1[1]));
-	if (offset3 != offsetof(struct rte_mbuf, dynfield1[1]))
-		GOTO_FAIL("failed to register dynamic field 3, offset=%d: %s",
-			offset3, strerror(errno));
+	if (offset3 != offsetof(struct rte_mbuf, dynfield1[1])) {
+		if (rte_errno == EBUSY)
+			printf("mbuf test error skipped: dynfield is busy\n");
+		else
+			GOTO_FAIL("failed to register dynamic field 3, offset="
+				"%d: %s", offset3, strerror(errno));
+	}
 
 	printf("dynfield: offset=%d, offset2=%d, offset3=%d\n",
 		offset, offset2, offset3);
@@ -2519,7 +2523,7 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 	flag3 = rte_mbuf_dynflag_register_bitnum(&dynflag3,
 						rte_bsf64(PKT_LAST_FREE));
 	if (flag3 != rte_bsf64(PKT_LAST_FREE))
-		GOTO_FAIL("failed to register dynamic flag 3, flag2=%d: %s",
+		GOTO_FAIL("failed to register dynamic flag 3, flag3=%d: %s",
 			flag3, strerror(errno));
 
 	printf("dynflag: flag=%d, flag2=%d, flag3=%d\n", flag, flag2, flag3);

@@ -155,7 +155,7 @@ qat_sym_process_response(void **op, uint8_t *resp)
 		struct qat_sym_session *sess = (struct qat_sym_session *)
 						get_sym_session_private_data(
 						rx_op->sym->session,
-						cryptodev_qat_driver_id);
+						qat_sym_driver_id);
 
 
 		if (sess->bpi_ctx)

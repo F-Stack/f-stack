@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 #include <linux/limits.h>
-#include <sys/un.h>
+#include <linux/un.h>
 #include <rte_atomic.h>
 #include <stdbool.h>
 
@@ -26,11 +26,6 @@ extern "C" {
 /* FIFO file name template */
 #define CHANNEL_MGR_FIFO_PATTERN_NAME   "fifo"
 
-#ifndef UNIX_PATH_MAX
-struct sockaddr_un _sockaddr_un;
-#define UNIX_PATH_MAX sizeof(_sockaddr_un.sun_path)
-#endif
-
 #define MAX_CLIENTS 64
 #define MAX_VCPUS 20
 
@@ -41,7 +36,7 @@ struct libvirt_vm_info {
 	uint8_t num_cpus;
 };
 
-struct libvirt_vm_info lvm_info[MAX_CLIENTS];
+extern struct libvirt_vm_info lvm_info[MAX_CLIENTS];
 /* Communication Channel Status */
 enum channel_status { CHANNEL_MGR_CHANNEL_DISCONNECTED = 0,
 	CHANNEL_MGR_CHANNEL_CONNECTED,

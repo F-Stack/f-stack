@@ -94,7 +94,7 @@ static void cmd_help_brief_parsed(__attribute__((unused)) void *parsed_result,
 		"    help ports                      : Configuring ports.\n"
 		"    help registers                  : Reading and setting port registers.\n"
 		"    help filters                    : Filters configuration help.\n"
-		"    help traffic_management         : Traffic Management commmands.\n"
+		"    help traffic_management         : Traffic Management commands.\n"
 		"    help devices                    : Device related cmds.\n"
 		"    help all                        : All of the above sections.\n\n"
 	);
@@ -614,7 +614,7 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"set bonding mode IEEE802.3AD aggregator policy (port_id) (agg_name)"
 			"	Set Aggregation mode for IEEE802.3AD (mode 4)"
 
-			"set bonding xmit_balance_policy (port_id) (l2|l23|l34)\n"
+			"set bonding balance_xmit_policy (port_id) (l2|l23|l34)\n"
 			"	Set the transmit balance policy for bonded device running in balance mode.\n\n"
 
 			"set bonding mon_period (port_id) (value)\n"
@@ -1913,18 +1913,13 @@ cmd_config_rx_tx_parsed(void *parsed_result,
 		nb_txq = res->value;
 	}
 	else if (!strcmp(res->name, "rxd")) {
-		if (res->value <= 0 || res->value > RTE_TEST_RX_DESC_MAX) {
-			printf("rxd %d invalid - must be > 0 && <= %d\n",
-					res->value, RTE_TEST_RX_DESC_MAX);
+		if (check_nb_rxd(res->value) != 0)
 			return;
-		}
 		nb_rxd = res->value;
 	} else if (!strcmp(res->name, "txd")) {
-		if (res->value <= 0 || res->value > RTE_TEST_TX_DESC_MAX) {
-			printf("txd %d invalid - must be > 0 && <= %d\n",
-					res->value, RTE_TEST_TX_DESC_MAX);
+		if (check_nb_txd(res->value) != 0)
 			return;
-		}
+
 		nb_txd = res->value;
 	} else {
 		printf("Unknown parameter\n");
@@ -4173,6 +4168,9 @@ cmd_tx_vlan_set_parsed(void *parsed_result,
 {
 	struct cmd_tx_vlan_set_result *res = parsed_result;
 
+	if (port_id_is_invalid(res->port_id, ENABLED_WARN))
+		return;
+
 	if (!port_is_stopped(res->port_id)) {
 		printf("Please stop port %d first\n", res->port_id);
 		return;
@@ -4226,6 +4224,9 @@ cmd_tx_vlan_set_qinq_parsed(void *parsed_result,
 			    __attribute__((unused)) void *data)
 {
 	struct cmd_tx_vlan_set_qinq_result *res = parsed_result;
+
+	if (port_id_is_invalid(res->port_id, ENABLED_WARN))
+		return;
 
 	if (!port_is_stopped(res->port_id)) {
 		printf("Please stop port %d first\n", res->port_id);
@@ -4339,6 +4340,9 @@ cmd_tx_vlan_reset_parsed(void *parsed_result,
 			 __attribute__((unused)) void *data)
 {
 	struct cmd_tx_vlan_reset_result *res = parsed_result;
+
+	if (port_id_is_invalid(res->port_id, ENABLED_WARN))
+		return;
 
 	if (!port_is_stopped(res->port_id)) {
 		printf("Please stop port %d first\n", res->port_id);
@@ -5122,7 +5126,7 @@ cmd_gso_size_parsed(void *parsed_result,
 
 	if (test_done == 0) {
 		printf("Before setting GSO segsz, please first"
-				" stop fowarding\n");
+				" stop forwarding\n");
 		return;
 	}
 
@@ -16805,8 +16809,10 @@ cmd_ddp_get_list_parsed(
 #ifdef RTE_LIBRTE_I40E_PMD
 	size = PROFILE_INFO_SIZE * MAX_PROFILE_NUM + 4;
 	p_list = (struct rte_pmd_i40e_profile_list *)malloc(size);
-	if (!p_list)
+	if (!p_list) {
 		printf("%s: Failed to malloc buffer\n", __func__);
+		return;
+	}
 
 	if (ret == -ENOTSUP)
 		ret = rte_pmd_i40e_get_ddp_list(res->port_id,

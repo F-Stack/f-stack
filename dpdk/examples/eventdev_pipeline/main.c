@@ -10,6 +10,8 @@
 
 #include "pipeline_common.h"
 
+struct fastpath_data *fdata;
+
 struct config_data cdata = {
 	.num_packets = (1L << 25), /* do ~32M packets */
 	.num_fids = 512,
@@ -79,7 +81,7 @@ parse_coremask(const char *coremask)
 		val = xdigit2val(c);
 		for (j = 0; j < BITS_HEX && idx < MAX_NUM_CORE; j++, idx++) {
 			if ((1 << j) & val) {
-				mask |= (1UL << idx);
+				mask |= (1ULL << idx);
 				count++;
 			}
 		}
@@ -230,10 +232,10 @@ parse_app_args(int argc, char **argv)
 		usage();
 
 	for (i = 0; i < MAX_NUM_CORE; i++) {
-		fdata->rx_core[i] = !!(rx_lcore_mask & (1UL << i));
-		fdata->tx_core[i] = !!(tx_lcore_mask & (1UL << i));
-		fdata->sched_core[i] = !!(sched_lcore_mask & (1UL << i));
-		fdata->worker_core[i] = !!(worker_lcore_mask & (1UL << i));
+		fdata->rx_core[i] = !!(rx_lcore_mask & (1ULL << i));
+		fdata->tx_core[i] = !!(tx_lcore_mask & (1ULL << i));
+		fdata->sched_core[i] = !!(sched_lcore_mask & (1ULL << i));
+		fdata->worker_core[i] = !!(worker_lcore_mask & (1ULL << i));
 
 		if (fdata->worker_core[i])
 			cdata.num_workers++;
@@ -299,12 +301,6 @@ signal_handler(int signum)
 
 		rte_eal_mp_wait_lcore();
 
-		RTE_ETH_FOREACH_DEV(portid) {
-			rte_eth_dev_close(portid);
-		}
-
-		rte_event_dev_stop(0);
-		rte_event_dev_close(0);
 	}
 	if (signum == SIGTSTP)
 		rte_event_dev_dump(0, stdout);
@@ -466,6 +462,15 @@ main(int argc, char **argv)
 		}
 
 	}
+
+	RTE_ETH_FOREACH_DEV(portid) {
+		rte_eth_dev_close(portid);
+	}
+
+	rte_event_dev_stop(0);
+	rte_event_dev_close(0);
+
+	rte_eal_cleanup();
 
 	return 0;
 }

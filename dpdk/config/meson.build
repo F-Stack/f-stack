@@ -14,6 +14,10 @@ foreach env:supported_exec_envs
 	set_variable('is_' + env, exec_env == env)
 endforeach
 
+# MS linker requires special treatment.
+# TODO: use cc.get_linker_id() with Meson >= 0.54
+is_ms_linker = is_windows and (cc.get_id() == 'clang')
+
 # set the major version, which might be used by drivers and libraries
 # depending on the configuration options
 pver = meson.project_version().split('.')
@@ -50,9 +54,11 @@ eal_pmd_path = join_paths(get_option('prefix'), driver_install_path)
 # driver .so files often depend upon the bus drivers for their connect bus,
 # e.g. ixgbe depends on librte_bus_pci. This means that the bus drivers need
 # to be in the library path, so symlink the drivers from the main lib directory.
-meson.add_install_script('../buildtools/symlink-drivers-solibs.sh',
-		get_option('libdir'),
-		pmd_subdir_opt)
+if not is_windows
+	meson.add_install_script('../buildtools/symlink-drivers-solibs.sh',
+			get_option('libdir'),
+			pmd_subdir_opt)
+endif
 
 # set the machine type and cflags for it
 if meson.is_cross_build()
@@ -98,11 +104,15 @@ dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
 
 dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
 
-add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
+if not is_windows
+	add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
+endif
 
-# use pthreads
-add_project_link_arguments('-pthread', language: 'c')
-dpdk_extra_ldflags += '-pthread'
+# use pthreads if available for the platform
+if not is_ms_linker
+	add_project_link_arguments('-pthread', language: 'c')
+	dpdk_extra_ldflags += '-pthread'
+endif
 
 # on some OS, maths functions are in a separate library
 if cc.find_library('m', required : false).found()
@@ -136,6 +146,15 @@ if numa_dep.found() and cc.has_header('numaif.h')
 	dpdk_extra_ldflags += '-lnuma'
 endif
 
+has_libfdt = 0
+fdt_dep = cc.find_library('libfdt', required: false)
+if fdt_dep.found() and cc.has_header('fdt.h')
+	dpdk_conf.set10('RTE_HAS_LIBFDT', true)
+	has_libfdt = 1
+	add_project_link_arguments('-lfdt', language: 'c')
+	dpdk_extra_ldflags += '-lfdt'
+endif
+
 # check for libbsd
 libbsd = dependency('libbsd', required: false)
 if libbsd.found()
@@ -143,11 +162,9 @@ if libbsd.found()
 endif
 
 # check for pcap
-pcap_dep = dependency('pcap', required: false)
-if pcap_dep.found()
-	# pcap got a pkg-config file only in 1.9.0 and before that meson uses
-	# an internal pcap-config finder, which is not compatible with
-	# cross-compilation, so try to fallback to find_library
+pcap_dep = dependency('libpcap', required: false, method: 'pkg-config')
+if not pcap_dep.found()
+	# pcap got a pkg-config file only in 1.9.0
 	pcap_dep = cc.find_library('pcap', required: false)
 endif
 if pcap_dep.found() and cc.has_header('pcap.h', dependencies: pcap_dep)
@@ -166,6 +183,7 @@ warning_flags = [
 	# additional warnings in alphabetical order
 	'-Wcast-qual',
 	'-Wdeprecated',
+	'-Wformat',
 	'-Wformat-nonliteral',
 	'-Wformat-security',
 	'-Wmissing-declarations',
@@ -183,6 +201,10 @@ warning_flags = [
 	'-Wno-packed-not-aligned',
 	'-Wno-missing-field-initializers'
 ]
+if cc.get_id() == 'gcc' and cc.version().version_compare('>=10.0')
+# FIXME: Bugzilla 396
+	warning_flags += '-Wno-zero-length-bounds'
+endif
 if not dpdk_conf.get('RTE_ARCH_64')
 # for 32-bit, don't warn about casting a 32-bit pointer to 64-bit int - it's fine!!
 	warning_flags += '-Wno-pointer-to-int-cast'
@@ -202,6 +224,11 @@ dpdk_conf.set('RTE_LIBEAL_USE_HPET', get_option('use_hpet'))
 dpdk_conf.set('RTE_MAX_VFIO_GROUPS', 64)
 dpdk_conf.set('RTE_DRIVER_MEMPOOL_BUCKET_SIZE_KB', 64)
 dpdk_conf.set('RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', true)
+if dpdk_conf.get('RTE_ARCH_64')
+	dpdk_conf.set('RTE_MAX_MEM_MB', 524288)
+else # for 32-bit we need smaller reserved memory areas
+	dpdk_conf.set('RTE_MAX_MEM_MB', 2048)
+endif
 
 
 compile_time_cpuflags = []
@@ -229,6 +256,16 @@ add_project_arguments('-D_GNU_SOURCE', language: 'c')
 # specify -D__BSD_VISIBLE for FreeBSD
 if is_freebsd
 	add_project_arguments('-D__BSD_VISIBLE', language: 'c')
+endif
+
+if is_windows
+	# Minimum supported API is Windows 7.
+	add_project_arguments('-D_WIN32_WINNT=0x0601', language: 'c')
+
+	# Use MinGW-w64 stdio, because DPDK assumes ANSI-compliant formatting.
+	if cc.get_id() == 'gcc'
+		add_project_arguments('-D__USE_MINGW_ANSI_STDIO', language: 'c')
+	endif
 endif
 
 if get_option('b_lto')

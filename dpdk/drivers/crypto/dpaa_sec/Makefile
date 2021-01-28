@@ -14,6 +14,13 @@ CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
+# FIXME: temporary solution for Bugzilla 469
+ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
+ifeq ($(shell test $(GCC_VERSION) -ge 100 && echo 1), 1)
+CFLAGS += -fcommon
+endif
+endif
+
 CFLAGS += -I$(RTE_SDK)/drivers/bus/dpaa
 CFLAGS += -I$(RTE_SDK)/drivers/bus/dpaa/include
 CFLAGS += -I$(RTE_SDK)/drivers/bus/dpaa/base/qbman

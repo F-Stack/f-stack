@@ -121,6 +121,8 @@ struct icp_qat_fw_comn_resp {
 #define ICP_QAT_FW_COMN_CNV_FLAG_MASK 0x1
 #define ICP_QAT_FW_COMN_CNVNR_FLAG_BITPOS 5
 #define ICP_QAT_FW_COMN_CNVNR_FLAG_MASK 0x1
+#define ICP_QAT_FW_COMN_NULL_VERSION_FLAG_BITPOS 0
+#define ICP_QAT_FW_COMN_NULL_VERSION_FLAG_MASK 0x1
 
 #define ICP_QAT_FW_COMN_OV_SRV_TYPE_GET(icp_qat_fw_comn_req_hdr_t) \
 	icp_qat_fw_comn_req_hdr_t.service_type
@@ -175,6 +177,9 @@ struct icp_qat_fw_comn_resp {
 #define QAT_COMN_PTR_TYPE_SGL 0x1
 #define QAT_COMN_CD_FLD_TYPE_64BIT_ADR 0x0
 #define QAT_COMN_CD_FLD_TYPE_16BYTE_DATA 0x1
+#define QAT_COMN_EXT_FLAGS_BITPOS 8
+#define QAT_COMN_EXT_FLAGS_MASK 0x1
+#define QAT_COMN_EXT_FLAGS_USED 0x1
 
 #define ICP_QAT_FW_COMN_FLAGS_BUILD(cdt, ptr) \
 	((((cdt) & QAT_COMN_CD_FLD_TYPE_MASK) << QAT_COMN_CD_FLD_TYPE_BITPOS) \

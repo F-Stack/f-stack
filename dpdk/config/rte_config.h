@@ -38,7 +38,6 @@
 #define RTE_MAX_MEM_MB_PER_LIST 32768
 #define RTE_MAX_MEMSEG_PER_TYPE 32768
 #define RTE_MAX_MEM_MB_PER_TYPE 65536
-#define RTE_MAX_MEM_MB 524288
 #define RTE_MAX_MEMZONE 2560
 #define RTE_MAX_TAILQ 32
 #define RTE_LOG_DP_LEVEL RTE_LOG_INFO
@@ -99,6 +98,9 @@
 #define RTE_KNI_PREEMPT_DEFAULT 1
 
 /****** driver defines ********/
+
+/* Packet prefetching in PMDs */
+#define RTE_PMD_PACKET_PREFETCH 1
 
 /* QuickAssist device */
 /* Max. number of QuickAssist devices which can be attached */

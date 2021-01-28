@@ -91,7 +91,8 @@ static int i40evf_vlan_filter_set(struct rte_eth_dev *dev,
 				  uint16_t vlan_id, int on);
 static int i40evf_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 static void i40evf_dev_close(struct rte_eth_dev *dev);
-static int  i40evf_dev_reset(struct rte_eth_dev *dev);
+static int i40evf_dev_reset(struct rte_eth_dev *dev);
+static int i40evf_check_vf_reset_done(struct rte_eth_dev *dev);
 static int i40evf_dev_promiscuous_enable(struct rte_eth_dev *dev);
 static int i40evf_dev_promiscuous_disable(struct rte_eth_dev *dev);
 static int i40evf_dev_allmulticast_enable(struct rte_eth_dev *dev);
@@ -262,7 +263,7 @@ i40evf_read_pfmsg(struct rte_eth_dev *dev, struct i40evf_arq_msg_info *data)
 		case VIRTCHNL_EVENT_RESET_IMPENDING:
 			vf->vf_reset = true;
 			vf->pend_msg |= PFMSG_RESET_IMPENDING;
-			PMD_DRV_LOG(INFO, "vf is reseting");
+			PMD_DRV_LOG(INFO, "VF is resetting");
 			break;
 		case VIRTCHNL_EVENT_PF_DRIVER_CLOSE:
 			vf->dev_closed = true;
@@ -316,7 +317,7 @@ _atomic_set_cmd(struct i40e_vf *vf, enum virtchnl_ops ops)
 #define ASQ_DELAY_MS  10
 
 static int
-i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
+_i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
 {
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
@@ -407,6 +408,19 @@ i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
 	return err | vf->cmd_retval;
 }
 
+static int
+i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
+{
+	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
+	int err;
+
+	while (!rte_spinlock_trylock(&vf->cmd_send_lock))
+		rte_delay_us_sleep(50);
+	err = _i40evf_execute_vf_cmd(dev, args);
+	rte_spinlock_unlock(&vf->cmd_send_lock);
+	return err;
+}
+
 /*
  * Check API version with sync wait until version read or fail from admin queue
  */
@@ -467,7 +481,8 @@ i40evf_get_vf_resource(struct rte_eth_dev *dev)
 		       VIRTCHNL_VF_OFFLOAD_RSS_AQ |
 		       VIRTCHNL_VF_OFFLOAD_RSS_REG |
 		       VIRTCHNL_VF_OFFLOAD_VLAN |
-		       VIRTCHNL_VF_OFFLOAD_RX_POLLING;
+		       VIRTCHNL_VF_OFFLOAD_RX_POLLING |
+		       VIRTCHNL_VF_CAP_ADV_LINK_SPEED;
 		args.in_args = (uint8_t *)&caps;
 		args.in_args_size = sizeof(caps);
 	} else {
@@ -518,10 +533,19 @@ i40evf_config_promisc(struct rte_eth_dev *dev,
 
 	err = i40evf_execute_vf_cmd(dev, &args);
 
-	if (err)
+	if (err) {
 		PMD_DRV_LOG(ERR, "fail to execute command "
 			    "CONFIG_PROMISCUOUS_MODE");
-	return err;
+
+		if (err == I40E_NOT_SUPPORTED)
+			return -ENOTSUP;
+
+		return -EAGAIN;
+	}
+
+	vf->promisc_unicast_enabled = enable_unicast;
+	vf->promisc_multicast_enabled = enable_multicast;
+	return 0;
 }
 
 static int
@@ -763,7 +787,6 @@ i40evf_stop_queues(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		if (i40evf_dev_tx_queue_stop(dev, i) != 0) {
 			PMD_DRV_LOG(ERR, "Fail to stop queue %u", i);
-			return -1;
 		}
 	}
 
@@ -771,7 +794,6 @@ i40evf_stop_queues(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		if (i40evf_dev_rx_queue_stop(dev, i) != 0) {
 			PMD_DRV_LOG(ERR, "Fail to stop queue %u", i);
-			return -1;
 		}
 	}
 
@@ -1057,12 +1079,28 @@ i40evf_request_queues(struct rte_eth_dev *dev, uint16_t num)
 	args.out_size = I40E_AQ_BUF_SZ;
 
 	rte_eal_alarm_cancel(i40evf_dev_alarm_handler, dev);
-	err = i40evf_execute_vf_cmd(dev, &args);
-	if (err)
-		PMD_DRV_LOG(ERR, "fail to execute command OP_REQUEST_QUEUES");
 
-	rte_eal_alarm_set(I40EVF_ALARM_INTERVAL,
-			  i40evf_dev_alarm_handler, dev);
+	err = i40evf_execute_vf_cmd(dev, &args);
+
+	rte_eal_alarm_set(I40EVF_ALARM_INTERVAL, i40evf_dev_alarm_handler, dev);
+
+	if (err != I40E_SUCCESS) {
+		PMD_DRV_LOG(ERR, "fail to execute command OP_REQUEST_QUEUES");
+		return err;
+	}
+
+	/* The PF will issue a reset to the VF when change the number of
+	 * queues. The PF will set I40E_VFGEN_RSTAT to COMPLETE first, then
+	 * wait 10ms and set it to ACTIVE. In this duration, vf may not catch
+	 * the moment that COMPLETE is set. So, for vf, we'll try to wait a
+	 * long time.
+	 */
+	rte_delay_ms(100);
+
+	err = i40evf_check_vf_reset_done(dev);
+	if (err)
+		PMD_DRV_LOG(ERR, "VF is still resetting");
+
 	return err;
 }
 
@@ -1199,6 +1237,7 @@ i40evf_init_vf(struct rte_eth_dev *dev)
 
 	vf->adapter = I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	vf->dev_data = dev->data;
+	rte_spinlock_init(&vf->cmd_send_lock);
 	err = i40e_set_mac_type(hw);
 	if (err) {
 		PMD_INIT_LOG(ERR, "set_mac_type failed: %d", err);
@@ -1338,8 +1377,47 @@ i40evf_handle_pf_event(struct rte_eth_dev *dev, uint8_t *msg,
 		break;
 	case VIRTCHNL_EVENT_LINK_CHANGE:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_LINK_CHANGE event");
-		vf->link_up = pf_msg->event_data.link_event.link_status;
-		vf->link_speed = pf_msg->event_data.link_event.link_speed;
+
+		if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_CAP_ADV_LINK_SPEED) {
+			vf->link_up =
+				pf_msg->event_data.link_event_adv.link_status;
+
+			switch (pf_msg->event_data.link_event_adv.link_speed) {
+			case ETH_SPEED_NUM_100M:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_100MB;
+				break;
+			case ETH_SPEED_NUM_1G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_1GB;
+				break;
+			case ETH_SPEED_NUM_2_5G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_2_5GB;
+				break;
+			case ETH_SPEED_NUM_5G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_5GB;
+				break;
+			case ETH_SPEED_NUM_10G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_10GB;
+				break;
+			case ETH_SPEED_NUM_20G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_20GB;
+				break;
+			case ETH_SPEED_NUM_25G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_25GB;
+				break;
+			case ETH_SPEED_NUM_40G:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_40GB;
+				break;
+			default:
+				vf->link_speed = VIRTCHNL_LINK_SPEED_UNKNOWN;
+				break;
+			}
+		} else {
+			vf->link_up =
+				pf_msg->event_data.link_event.link_status;
+			vf->link_speed =
+				pf_msg->event_data.link_event.link_speed;
+		}
+
 		break;
 	case VIRTCHNL_EVENT_PF_DRIVER_CLOSE:
 		PMD_DRV_LOG(DEBUG, "VIRTCHNL_EVENT_PF_DRIVER_CLOSE event");
@@ -1492,7 +1570,7 @@ i40evf_dev_init(struct rte_eth_dev *eth_dev)
 	hw->bus.device = pci_dev->addr.devid;
 	hw->bus.func = pci_dev->addr.function;
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
-	hw->adapter_stopped = 0;
+	hw->adapter_stopped = 1;
 	hw->adapter_closed = 0;
 
 	/* Pass the information to the rte_eth_dev_close() that it should also
@@ -1588,7 +1666,20 @@ i40evf_dev_configure(struct rte_eth_dev *dev)
 	ad->tx_vec_allowed = true;
 
 	if (num_queue_pairs > vf->vsi_res->num_queue_pairs) {
-		int ret = 0;
+		struct i40e_hw *hw;
+		int ret;
+
+		if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+			PMD_DRV_LOG(ERR,
+				    "For secondary processes, change queue pairs is not supported!");
+			return -ENOTSUP;
+		}
+
+		hw  = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+		if (!hw->adapter_stopped) {
+			PMD_DRV_LOG(ERR, "Device must be stopped first!");
+			return -EBUSY;
+		}
 
 		PMD_DRV_LOG(INFO, "change queue pairs from %u to %u",
 			    vf->vsi_res->num_queue_pairs, num_queue_pairs);
@@ -2160,76 +2251,32 @@ static int
 i40evf_dev_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
-	int ret;
 
-	/* If enabled, just return */
-	if (vf->promisc_unicast_enabled)
-		return 0;
-
-	ret = i40evf_config_promisc(dev, 1, vf->promisc_multicast_enabled);
-	if (ret == 0)
-		vf->promisc_unicast_enabled = TRUE;
-	else
-		ret = -EAGAIN;
-
-	return ret;
+	return i40evf_config_promisc(dev, true, vf->promisc_multicast_enabled);
 }
 
 static int
 i40evf_dev_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
-	int ret;
 
-	/* If disabled, just return */
-	if (!vf->promisc_unicast_enabled)
-		return 0;
-
-	ret = i40evf_config_promisc(dev, 0, vf->promisc_multicast_enabled);
-	if (ret == 0)
-		vf->promisc_unicast_enabled = FALSE;
-	else
-		ret = -EAGAIN;
-
-	return ret;
+	return i40evf_config_promisc(dev, false, vf->promisc_multicast_enabled);
 }
 
 static int
 i40evf_dev_allmulticast_enable(struct rte_eth_dev *dev)
 {
 	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
-	int ret;
 
-	/* If enabled, just return */
-	if (vf->promisc_multicast_enabled)
-		return 0;
-
-	ret = i40evf_config_promisc(dev, vf->promisc_unicast_enabled, 1);
-	if (ret == 0)
-		vf->promisc_multicast_enabled = TRUE;
-	else
-		ret = -EAGAIN;
-
-	return ret;
+	return i40evf_config_promisc(dev, vf->promisc_unicast_enabled, true);
 }
 
 static int
 i40evf_dev_allmulticast_disable(struct rte_eth_dev *dev)
 {
 	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
-	int ret;
 
-	/* If enabled, just return */
-	if (!vf->promisc_multicast_enabled)
-		return 0;
-
-	ret = i40evf_config_promisc(dev, vf->promisc_unicast_enabled, 0);
-	if (ret == 0)
-		vf->promisc_multicast_enabled = FALSE;
-	else
-		ret = -EAGAIN;
-
-	return ret;
+	return i40evf_config_promisc(dev, vf->promisc_unicast_enabled, false);
 }
 
 static int
@@ -2351,8 +2398,9 @@ i40evf_dev_close(struct rte_eth_dev *dev)
 	 * it is a workaround solution when work with kernel driver
 	 * and it is not the normal way
 	 */
-	i40evf_dev_promiscuous_disable(dev);
-	i40evf_dev_allmulticast_disable(dev);
+	if (vf->promisc_unicast_enabled || vf->promisc_multicast_enabled)
+		i40evf_config_promisc(dev, false, false);
+
 	rte_eal_alarm_cancel(i40evf_dev_alarm_handler, dev);
 
 	i40evf_reset_vf(dev);

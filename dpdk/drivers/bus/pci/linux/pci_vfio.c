@@ -149,6 +149,38 @@ pci_vfio_get_msix_bar(int fd, struct pci_msix_table *msix_table)
 	return 0;
 }
 
+/* enable PCI bus memory space */
+static int
+pci_vfio_enable_bus_memory(int dev_fd)
+{
+	uint16_t cmd;
+	int ret;
+
+	ret = pread64(dev_fd, &cmd, sizeof(cmd),
+		      VFIO_GET_REGION_ADDR(VFIO_PCI_CONFIG_REGION_INDEX) +
+		      PCI_COMMAND);
+
+	if (ret != sizeof(cmd)) {
+		RTE_LOG(ERR, EAL, "Cannot read command from PCI config space!\n");
+		return -1;
+	}
+
+	if (cmd & PCI_COMMAND_MEMORY)
+		return 0;
+
+	cmd |= PCI_COMMAND_MEMORY;
+	ret = pwrite64(dev_fd, &cmd, sizeof(cmd),
+		       VFIO_GET_REGION_ADDR(VFIO_PCI_CONFIG_REGION_INDEX) +
+		       PCI_COMMAND);
+
+	if (ret != sizeof(cmd)) {
+		RTE_LOG(ERR, EAL, "Cannot write command to PCI config space!\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 /* set PCI bus mastering */
 static int
 pci_vfio_set_bus_master(int dev_fd, bool op)
@@ -424,6 +456,11 @@ pci_rte_vfio_setup_device(struct rte_pci_device *dev, int vfio_dev_fd)
 {
 	if (pci_vfio_setup_interrupts(dev, vfio_dev_fd) != 0) {
 		RTE_LOG(ERR, EAL, "Error setting up interrupts!\n");
+		return -1;
+	}
+
+	if (pci_vfio_enable_bus_memory(vfio_dev_fd)) {
+		RTE_LOG(ERR, EAL, "Cannot enable bus memory!\n");
 		return -1;
 	}
 
@@ -789,7 +826,8 @@ pci_vfio_map_resource_primary(struct rte_pci_device *dev)
 err_vfio_res:
 	rte_free(vfio_res);
 err_vfio_dev_fd:
-	close(vfio_dev_fd);
+	rte_vfio_release_device(rte_pci_get_sysfs_path(),
+			pci_addr, vfio_dev_fd);
 	return -1;
 }
 
@@ -857,7 +895,8 @@ pci_vfio_map_resource_secondary(struct rte_pci_device *dev)
 
 	return 0;
 err_vfio_dev_fd:
-	close(vfio_dev_fd);
+	rte_vfio_release_device(rte_pci_get_sysfs_path(),
+			pci_addr, vfio_dev_fd);
 	return -1;
 }
 
@@ -966,7 +1005,7 @@ pci_vfio_unmap_resource_primary(struct rte_pci_device *dev)
 	}
 
 	TAILQ_REMOVE(vfio_res_list, vfio_res, next);
-
+	rte_free(vfio_res);
 	return 0;
 }
 

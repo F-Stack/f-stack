@@ -926,6 +926,10 @@ rte_vhost_driver_register(const char *path, uint64_t flags)
 			ret = -1;
 			goto out_mutex;
 		}
+		if ((flags & RTE_VHOST_USER_CLIENT) != 0)
+			RTE_LOG(WARNING, VHOST_CONFIG,
+			"zero copy may be incompatible with vhost client mode\n");
+
 		vsocket->supported_features &= ~(1ULL << VIRTIO_F_IN_ORDER);
 		vsocket->features &= ~(1ULL << VIRTIO_F_IN_ORDER);
 

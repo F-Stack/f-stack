@@ -74,6 +74,9 @@ uint16_t cxgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	t4_os_lock(&txq->txq_lock);
 	/* free up desc from already completed tx */
 	reclaim_completed_tx(&txq->q);
+	if (unlikely(!nb_pkts))
+		goto out_unlock;
+
 	rte_prefetch0(rte_pktmbuf_mtod(tx_pkts[0], volatile void *));
 	while (total_sent < nb_pkts) {
 		pkts_remain = nb_pkts - total_sent;
@@ -94,6 +97,7 @@ uint16_t cxgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		reclaim_completed_tx(&txq->q);
 	}
 
+out_unlock:
 	t4_os_unlock(&txq->txq_lock);
 	return total_sent;
 }
@@ -329,12 +333,7 @@ void cxgbe_dev_close(struct rte_eth_dev *eth_dev)
 		return;
 
 	cxgbe_down(pi);
-
-	/*
-	 *  We clear queues only if both tx and rx path of the port
-	 *  have been disabled
-	 */
-	t4_sge_eth_clear_queues(pi);
+	t4_sge_eth_release_queues(pi);
 }
 
 /* Start the device.

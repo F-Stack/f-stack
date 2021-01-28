@@ -57,6 +57,7 @@
 #define HINIC_DEFAULT_BURST_SIZE	32
 #define HINIC_DEFAULT_NB_QUEUES		1
 #define HINIC_DEFAULT_RING_SIZE		1024
+#define HINIC_MAX_LRO_SIZE		65536
 
 /*
  * vlan_id is a 12 bit number.
@@ -439,7 +440,7 @@ static int hinic_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	nic_dev->rxqs[queue_idx] = rxq;
 
 	/* alloc rx sq hw wqepage*/
-	rc = hinic_create_rq(hwdev, queue_idx, rq_depth);
+	rc = hinic_create_rq(hwdev, queue_idx, rq_depth, socket_id);
 	if (rc) {
 		PMD_DRV_LOG(ERR, "Create rxq[%d] failed, dev_name: %s, rq_depth: %d",
 			    queue_idx, dev->data->name, rq_depth);
@@ -466,6 +467,7 @@ static int hinic_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	rxq->q_depth = rq_depth;
 	rxq->buf_len = (u16)buf_size;
 	rxq->rx_free_thresh = rx_free_thresh;
+	rxq->socket_id = socket_id;
 
 	/* the last point cant do mbuf rearm in bulk */
 	rxq->rxinfo_align_end = rxq->q_depth - rxq->rx_free_thresh;
@@ -593,7 +595,7 @@ static int hinic_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	nic_dev->txqs[queue_idx] = txq;
 
 	/* alloc tx sq hw wqepage */
-	rc = hinic_create_sq(hwdev, queue_idx, sq_depth);
+	rc = hinic_create_sq(hwdev, queue_idx, sq_depth, socket_id);
 	if (rc) {
 		PMD_DRV_LOG(ERR, "Create txq[%d] failed, dev_name: %s, sq_depth: %d",
 			    queue_idx, dev->data->name, sq_depth);
@@ -612,6 +614,7 @@ static int hinic_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	txq->sq_bot_sge_addr = HINIC_GET_WQ_TAIL(txq) -
 					sizeof(struct hinic_sq_bufdesc);
 	txq->cos = nic_dev->default_cos;
+	txq->socket_id = socket_id;
 
 	/* alloc software txinfo */
 	rc = hinic_setup_tx_resources(txq);
@@ -733,6 +736,7 @@ hinic_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->max_mac_addrs  = HINIC_MAX_UC_MAC_ADDRS;
 	info->min_mtu = HINIC_MIN_MTU_SIZE;
 	info->max_mtu = HINIC_MAX_MTU_SIZE;
+	info->max_lro_pkt_size = HINIC_MAX_LRO_SIZE;
 
 	hinic_get_speed_capa(dev, &info->speed_capa);
 	info->rx_queue_offload_capa = 0;
@@ -808,12 +812,10 @@ static int hinic_config_rx_mode(struct hinic_nic_dev *nic_dev, u32 rx_mode_ctrl)
 	return 0;
 }
 
-
 static int hinic_rxtx_configure(struct rte_eth_dev *dev)
 {
-	int err;
 	struct hinic_nic_dev *nic_dev = HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(dev);
-	bool lro_en;
+	int err;
 
 	/* rx configure, if rss enable, need to init default configuration */
 	err = hinic_rx_configure(dev);
@@ -827,18 +829,6 @@ static int hinic_rxtx_configure(struct rte_eth_dev *dev)
 	if (err) {
 		PMD_DRV_LOG(ERR, "Configure rx_mode:0x%x failed",
 			HINIC_DEFAULT_RX_MODE);
-		goto set_rx_mode_fail;
-	}
-
-	/* config lro */
-	lro_en = dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_TCP_LRO ?
-			true : false;
-
-	err = hinic_set_rx_lro(nic_dev->hwdev, lro_en, lro_en,
-				HINIC_LRO_WQE_NUM_DEFAULT);
-	if (err) {
-		PMD_DRV_LOG(ERR, "%s lro failed, err: %d",
-			lro_en ? "Enable" : "Disable", err);
 		goto set_rx_mode_fail;
 	}
 
@@ -951,13 +941,6 @@ static int hinic_dev_set_link_up(struct rte_eth_dev *dev)
 	struct hinic_nic_dev *nic_dev = HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(dev);
 	int ret;
 
-	ret = hinic_set_xsfp_tx_status(nic_dev->hwdev, true);
-	if (ret) {
-		PMD_DRV_LOG(ERR, "Enable port tx xsfp failed, dev_name: %s, port_id: %d",
-			    nic_dev->proc_dev_name, dev->data->port_id);
-		return ret;
-	}
-
 	/* link status follow phy port status, up will open pma */
 	ret = hinic_set_port_enable(nic_dev->hwdev, true);
 	if (ret)
@@ -980,13 +963,6 @@ static int hinic_dev_set_link_down(struct rte_eth_dev *dev)
 {
 	struct hinic_nic_dev *nic_dev = HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(dev);
 	int ret;
-
-	ret = hinic_set_xsfp_tx_status(nic_dev->hwdev, false);
-	if (ret) {
-		PMD_DRV_LOG(ERR, "Disable port tx xsfp failed, dev_name: %s, port_id: %d",
-			    nic_dev->proc_dev_name, dev->data->port_id);
-		return ret;
-	}
 
 	/* link status follow phy port status, up will close pma */
 	ret = hinic_set_port_enable(nic_dev->hwdev, false);
@@ -1279,14 +1255,25 @@ static void hinic_disable_interrupt(struct rte_eth_dev *dev)
 
 static int hinic_set_dev_promiscuous(struct hinic_nic_dev *nic_dev, bool enable)
 {
-	u32 rx_mode_ctrl = nic_dev->rx_mode_status;
+	u32 rx_mode_ctrl;
+	int err;
+
+	err = hinic_mutex_lock(&nic_dev->rx_mode_mutex);
+	if (err)
+		return err;
+
+	rx_mode_ctrl = nic_dev->rx_mode_status;
 
 	if (enable)
 		rx_mode_ctrl |= HINIC_RX_MODE_PROMISC;
 	else
 		rx_mode_ctrl &= (~HINIC_RX_MODE_PROMISC);
 
-	return hinic_config_rx_mode(nic_dev, rx_mode_ctrl);
+	err = hinic_config_rx_mode(nic_dev, rx_mode_ctrl);
+
+	(void)hinic_mutex_unlock(&nic_dev->rx_mode_mutex);
+
+	return err;
 }
 
 /**
@@ -1319,6 +1306,8 @@ hinic_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			nic_dev->proc_dev_name);
 		return err;
 	}
+
+	dev->data->rx_mbuf_alloc_failed = 0;
 
 	/* rx queue stats */
 	q_num = (nic_dev->num_rq < RTE_ETHDEV_QUEUE_STAT_CNTRS) ?
@@ -1700,12 +1689,6 @@ static int hinic_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 			  nic_dev->proc_dev_name, dev->data->port_id);
 	}
 
-	if (mask & ETH_VLAN_EXTEND_MASK) {
-		PMD_DRV_LOG(ERR, "Don't support vlan qinq, device: %s, port_id: %d",
-			  nic_dev->proc_dev_name, dev->data->port_id);
-		return -ENOTSUP;
-	}
-
 	return 0;
 }
 
@@ -1730,14 +1713,25 @@ static void hinic_remove_all_vlanid(struct rte_eth_dev *eth_dev)
 static int hinic_set_dev_allmulticast(struct hinic_nic_dev *nic_dev,
 				bool enable)
 {
-	u32 rx_mode_ctrl = nic_dev->rx_mode_status;
+	u32 rx_mode_ctrl;
+	int err;
+
+	err = hinic_mutex_lock(&nic_dev->rx_mode_mutex);
+	if (err)
+		return err;
+
+	rx_mode_ctrl = nic_dev->rx_mode_status;
 
 	if (enable)
 		rx_mode_ctrl |= HINIC_RX_MODE_MC_ALL;
 	else
 		rx_mode_ctrl &= (~HINIC_RX_MODE_MC_ALL);
 
-	return hinic_config_rx_mode(nic_dev, rx_mode_ctrl);
+	err = hinic_config_rx_mode(nic_dev, rx_mode_ctrl);
+
+	(void)hinic_mutex_unlock(&nic_dev->rx_mode_mutex);
+
+	return err;
 }
 
 /**
@@ -2490,25 +2484,52 @@ static int hinic_set_default_dcb_feature(struct hinic_nic_dev *nic_dev)
 					up_pgid, up_bw, up_strict);
 }
 
+static int hinic_pf_get_default_cos(struct hinic_hwdev *hwdev, u8 *cos_id)
+{
+	u8 default_cos = 0;
+	u8 valid_cos_bitmap;
+	u8 i;
+
+	valid_cos_bitmap = hwdev->cfg_mgmt->svc_cap.valid_cos_bitmap;
+	if (!valid_cos_bitmap) {
+		PMD_DRV_LOG(ERR, "PF has none cos to support\n");
+		return -EFAULT;
+	}
+
+	for (i = 0; i < NR_MAX_COS; i++) {
+		if (valid_cos_bitmap & BIT(i))
+			default_cos = i; /* Find max cos id as default cos */
+	}
+
+	*cos_id = default_cos;
+
+	return 0;
+}
+
 static int hinic_init_default_cos(struct hinic_nic_dev *nic_dev)
 {
 	u8 cos_id = 0;
 	int err;
 
 	if (!HINIC_IS_VF(nic_dev->hwdev)) {
-		nic_dev->default_cos =
-				(hinic_global_func_id(nic_dev->hwdev) +
-						DEFAULT_BASE_COS) % NR_MAX_COS;
+		err = hinic_pf_get_default_cos(nic_dev->hwdev, &cos_id);
+		if (err) {
+			PMD_DRV_LOG(ERR, "Get PF default cos failed, err: %d",
+				    err);
+			return HINIC_ERROR;
+		}
 	} else {
 		err = hinic_vf_get_default_cos(nic_dev->hwdev, &cos_id);
 		if (err) {
 			PMD_DRV_LOG(ERR, "Get VF default cos failed, err: %d",
-					err);
+				    err);
 			return HINIC_ERROR;
 		}
-
-		nic_dev->default_cos = cos_id;
 	}
+
+	nic_dev->default_cos = cos_id;
+
+	PMD_DRV_LOG(INFO, "Default cos %d", nic_dev->default_cos);
 
 	return 0;
 }
@@ -3044,6 +3065,8 @@ static int hinic_func_init(struct rte_eth_dev *eth_dev)
 	}
 	hinic_set_bit(HINIC_DEV_INTR_EN, &nic_dev->dev_status);
 
+	hinic_mutex_init(&nic_dev->rx_mode_mutex, NULL);
+
 	/* initialize filter info */
 	filter_info = &nic_dev->filter;
 	memset(filter_info, 0, sizeof(struct hinic_filter_info));
@@ -3114,6 +3137,8 @@ static int hinic_dev_uninit(struct rte_eth_dev *dev)
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
+
+	hinic_mutex_destroy(&nic_dev->rx_mode_mutex);
 
 	hinic_dev_close(dev);
 

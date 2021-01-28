@@ -15,18 +15,6 @@ extern struct rte_pci_bus rte_pci_bus;
 struct rte_pci_driver;
 struct rte_pci_device;
 
-extern struct rte_pci_bus rte_pci_bus;
-
-/**
- * Probe the PCI bus
- *
- * @return
- *   - 0 on success.
- *   - !0 on error.
- */
-int
-rte_pci_probe(void);
-
 /**
  * Scan the content of the PCI bus, and the devices in the devices
  * list
@@ -66,19 +54,6 @@ void rte_pci_add_device(struct rte_pci_device *pci_dev);
  */
 void rte_pci_insert_device(struct rte_pci_device *exist_pci_dev,
 		struct rte_pci_device *new_pci_dev);
-
-/**
- * Update a pci device object by asking the kernel for the latest information.
- *
- * This function is private to EAL.
- *
- * @param addr
- *	The PCI Bus-Device-Function address to look for
- * @return
- *   - 0 on success.
- *   - negative on error.
- */
-int pci_update_device(const struct rte_pci_addr *addr);
 
 /**
  * Map the PCI resource of a PCI device in virtual memory

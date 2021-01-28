@@ -150,22 +150,25 @@ static inline int hinic_test_and_set_bit(int nr, volatile unsigned long *addr)
 }
 
 void *dma_zalloc_coherent(void *dev, size_t size, dma_addr_t *dma_handle,
-			  gfp_t flag);
-void *dma_zalloc_coherent_aligned(void *dev, size_t size,
-				dma_addr_t *dma_handle, gfp_t flag);
-void *dma_zalloc_coherent_aligned256k(void *dev, size_t size,
-				dma_addr_t *dma_handle, gfp_t flag);
+			  unsigned int socket_id);
+
+void *dma_zalloc_coherent_aligned(void *hwdev, size_t size,
+		dma_addr_t *dma_handle, unsigned int socket_id);
+
+void *dma_zalloc_coherent_aligned256k(void *hwdev, size_t size,
+			      dma_addr_t *dma_handle, unsigned int socket_id);
+
 void dma_free_coherent(void *dev, size_t size, void *virt, dma_addr_t phys);
 
 /* dma pool alloc and free */
 #define	pci_pool dma_pool
-#define	pci_pool_alloc(pool, flags, handle) dma_pool_alloc(pool, flags, handle)
+#define	pci_pool_alloc(pool, handle) dma_pool_alloc(pool, handle)
 #define	pci_pool_free(pool, vaddr, addr) dma_pool_free(pool, vaddr, addr)
 
 struct dma_pool *dma_pool_create(const char *name, void *dev, size_t size,
 				size_t align, size_t boundary);
 void dma_pool_destroy(struct dma_pool *pool);
-void *dma_pool_alloc(struct pci_pool *pool, int flags, dma_addr_t *dma_addr);
+void *dma_pool_alloc(struct pci_pool *pool, dma_addr_t *dma_addr);
 void dma_pool_free(struct pci_pool *pool, void *vaddr, dma_addr_t dma);
 
 #define kzalloc(size, flag) rte_zmalloc(NULL, size, HINIC_MEM_ALLOC_ALIGN_MIN)
@@ -195,16 +198,23 @@ static inline u32 readl(const volatile void *addr)
 #define spin_lock(spinlock_prt)		rte_spinlock_lock(spinlock_prt)
 #define spin_unlock(spinlock_prt)	rte_spinlock_unlock(spinlock_prt)
 
-static inline unsigned long get_timeofday_ms(void)
+#ifdef CLOCK_MONOTONIC_RAW /* Defined in glibc bits/time.h */
+#define CLOCK_TYPE CLOCK_MONOTONIC_RAW
+#else
+#define CLOCK_TYPE CLOCK_MONOTONIC
+#endif
+
+static inline unsigned long clock_gettime_ms(void)
 {
-	struct timeval tv;
+	struct timespec tv;
 
-	(void)gettimeofday(&tv, NULL);
+	(void)clock_gettime(CLOCK_TYPE, &tv);
 
-	return (unsigned long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+	return (unsigned long)tv.tv_sec * 1000 +
+	       (unsigned long)tv.tv_nsec / 1000000;
 }
 
-#define jiffies	get_timeofday_ms()
+#define jiffies	clock_gettime_ms()
 #define msecs_to_jiffies(ms)	(ms)
 #define time_before(now, end)	((now) < (end))
 

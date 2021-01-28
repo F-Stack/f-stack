@@ -754,7 +754,7 @@ mlx5_glue_dv_create_flow_action_tag(uint32_t tag)
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 #ifdef HAVE_MLX5DV_DR
 	return mlx5dv_dr_action_create_tag(tag);
-#else
+#else /* HAVE_MLX5DV_DR */
 	struct mlx5dv_flow_action_attr *action;
 	action = malloc(sizeof(*action));
 	if (!action)
@@ -762,11 +762,12 @@ mlx5_glue_dv_create_flow_action_tag(uint32_t tag)
 	action->type = MLX5DV_FLOW_ACTION_TAG;
 	action->tag_value = tag;
 	return action;
-#endif
-#endif
+#endif /* HAVE_MLX5DV_DR */
+#else /* HAVE_IBV_FLOW_DV_SUPPORT */
 	(void)tag;
 	errno = ENOTSUP;
 	return NULL;
+#endif /* HAVE_IBV_FLOW_DV_SUPPORT */
 }
 
 static void *
@@ -1008,7 +1009,7 @@ mlx5_glue_devx_qp_query(struct ibv_qp *qp,
 			const void *in, size_t inlen,
 			void *out, size_t outlen)
 {
-#ifdef HAVE_IBV_DEVX_OBJ
+#ifdef HAVE_IBV_DEVX_QP
 	return mlx5dv_devx_qp_query(qp, in, inlen, out, outlen);
 #else
 	(void)qp;

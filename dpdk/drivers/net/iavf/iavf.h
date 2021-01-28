@@ -103,8 +103,12 @@ struct iavf_info {
 	bool link_up;
 	uint32_t link_speed;
 
+	/* Multicast addrs */
+	struct rte_ether_addr mc_addrs[IAVF_NUM_MACADDR_MAX];
+	uint16_t mc_addrs_num;   /* Multicast mac addresses number */
+
 	struct iavf_vsi vsi;
-	bool vf_reset;
+	bool vf_reset;	/* true for VF reset pending, false for no VF reset */
 	uint64_t flags;
 
 	uint8_t *rss_lut;
@@ -230,4 +234,7 @@ int iavf_config_promisc(struct iavf_adapter *adapter, bool enable_unicast,
 int iavf_add_del_eth_addr(struct iavf_adapter *adapter,
 			 struct rte_ether_addr *addr, bool add);
 int iavf_add_del_vlan(struct iavf_adapter *adapter, uint16_t vlanid, bool add);
+int iavf_add_del_mc_addr_list(struct iavf_adapter *adapter,
+			      struct rte_ether_addr *mc_addrs,
+			      uint32_t mc_addrs_num, bool add);
 #endif /* _IAVF_ETHDEV_H_ */

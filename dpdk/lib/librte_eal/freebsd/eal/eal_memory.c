@@ -193,7 +193,7 @@ rte_eal_hugepage_init(void)
 			if (msl_idx == RTE_MAX_MEMSEG_LISTS) {
 				RTE_LOG(ERR, EAL, "Could not find space for memseg. Please increase %s and/or %s in configuration.\n",
 					RTE_STR(CONFIG_RTE_MAX_MEMSEG_PER_TYPE),
-					RTE_STR(CONFIG_RTE_MAX_MEM_PER_TYPE));
+					RTE_STR(CONFIG_RTE_MAX_MEM_MB_PER_TYPE));
 				return -1;
 			}
 			arr = &msl->memseg_arr;
@@ -449,7 +449,7 @@ memseg_primary_init(void)
 		 *
 		 * we need (N*2)-1 segments because we cannot guarantee that
 		 * each segment will be IOVA-contiguous with the previous one,
-		 * so we will allocate more and put spaces inbetween segments
+		 * so we will allocate more and put spaces between segments
 		 * that are non-contiguous.
 		 */
 		avail_segs = (hpi->num_pages[0] * 2) - 1;
