@@ -11,7 +11,7 @@
 /**< KASUMI PMD device name */
 
 /** KASUMI PMD LOGTYPE DRIVER */
-int kasumi_logtype_driver;
+extern int kasumi_logtype_driver;
 
 #define KASUMI_LOG(level, fmt, ...)  \
 	rte_log(RTE_LOG_ ## level, kasumi_logtype_driver,  \
@@ -72,6 +72,6 @@ kasumi_set_session_parameters(struct kasumi_session *sess,
 
 
 /** device specific operations function pointer structure */
-struct rte_cryptodev_ops *rte_kasumi_pmd_ops;
+extern struct rte_cryptodev_ops *rte_kasumi_pmd_ops;
 
 #endif /* _KASUMI_PMD_PRIVATE_H_ */

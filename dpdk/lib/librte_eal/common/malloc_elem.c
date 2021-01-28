@@ -171,7 +171,7 @@ malloc_elem_insert(struct malloc_elem *elem)
 		next_elem = NULL;
 		heap->last = elem;
 	} else {
-		/* the new memory is somewhere inbetween start and end */
+		/* the new memory is somewhere between start and end */
 		uint64_t dist_from_start, dist_from_end;
 
 		dist_from_end = RTE_PTR_DIFF(heap->last, elem);
@@ -382,14 +382,14 @@ malloc_elem_free_list_index(size_t size)
 		return 0;
 
 	/* Find next power of 2 >= size. */
-	log2 = sizeof(size) * 8 - __builtin_clzl(size-1);
+	log2 = sizeof(size) * 8 - __builtin_clzl(size - 1);
 
 	/* Compute freelist index, based on log2(size). */
 	index = (log2 - MALLOC_MINSIZE_LOG2 + MALLOC_LOG2_INCREMENT - 1) /
-	        MALLOC_LOG2_INCREMENT;
+			MALLOC_LOG2_INCREMENT;
 
-	return index <= RTE_HEAP_NUM_FREELISTS-1?
-	        index: RTE_HEAP_NUM_FREELISTS-1;
+	return index <= RTE_HEAP_NUM_FREELISTS - 1 ?
+			index : RTE_HEAP_NUM_FREELISTS - 1;
 }
 
 /*

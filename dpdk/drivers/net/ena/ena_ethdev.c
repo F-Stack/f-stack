@@ -89,7 +89,7 @@ struct ena_stats {
  * Each rte_memzone should have unique name.
  * To satisfy it, count number of allocation and add it to name.
  */
-uint32_t ena_alloc_cnt;
+rte_atomic32_t ena_alloc_cnt;
 
 static const struct ena_stats ena_stats_global_strings[] = {
 	ENA_STAT_GLOBAL_ENTRY(wd_expired),
@@ -267,21 +267,23 @@ static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 	else if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_UDP)
 		packet_type |= RTE_PTYPE_L4_UDP;
 
-	if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV4)
+	if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV4) {
 		packet_type |= RTE_PTYPE_L3_IPV4;
-	else if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV6)
+		if (unlikely(ena_rx_ctx->l3_csum_err))
+			ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		else
+			ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+	} else if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV6) {
 		packet_type |= RTE_PTYPE_L3_IPV6;
+	}
 
-	if (!ena_rx_ctx->l4_csum_checked)
+	if (!ena_rx_ctx->l4_csum_checked || ena_rx_ctx->frag)
 		ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
 	else
-		if (unlikely(ena_rx_ctx->l4_csum_err) && !ena_rx_ctx->frag)
+		if (unlikely(ena_rx_ctx->l4_csum_err))
 			ol_flags |= PKT_RX_L4_CKSUM_BAD;
 		else
-			ol_flags |= PKT_RX_L4_CKSUM_UNKNOWN;
-
-	if (unlikely(ena_rx_ctx->l3_csum_err))
-		ol_flags |= PKT_RX_IP_CKSUM_BAD;
+			ol_flags |= PKT_RX_L4_CKSUM_GOOD;
 
 	mbuf->ol_flags = ol_flags;
 	mbuf->packet_type = packet_type;
@@ -1079,16 +1081,15 @@ static int ena_create_io_queue(struct ena_ring *ring)
 		ena_qid = ENA_IO_TXQ_IDX(ring->id);
 		ctx.direction = ENA_COM_IO_QUEUE_DIRECTION_TX;
 		ctx.mem_queue_type = ena_dev->tx_mem_queue_type;
-		ctx.queue_size = adapter->tx_ring_size;
 		for (i = 0; i < ring->ring_size; i++)
 			ring->empty_tx_reqs[i] = i;
 	} else {
 		ena_qid = ENA_IO_RXQ_IDX(ring->id);
 		ctx.direction = ENA_COM_IO_QUEUE_DIRECTION_RX;
-		ctx.queue_size = adapter->rx_ring_size;
 		for (i = 0; i < ring->ring_size; i++)
 			ring->empty_rx_reqs[i] = i;
 	}
+	ctx.queue_size = ring->ring_size;
 	ctx.qid = ena_qid;
 	ctx.msix_vector = -1; /* interrupts not used */
 	ctx.numa_node = ring->numa_socket_id;
@@ -1675,7 +1676,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	int rc;
 
 	static int adapters_found;
-	bool wd_state;
+	bool wd_state = false;
 
 	eth_dev->dev_ops = &ena_dev_ops;
 	eth_dev->rx_pkt_burst = &eth_ena_recv_pkts;
@@ -2480,7 +2481,7 @@ static int ena_xstats_get(struct rte_eth_dev *dev,
 		return 0;
 
 	for (stat = 0; stat < ENA_STATS_ARRAY_GLOBAL; stat++, count++) {
-		stat_offset = ena_stats_rx_strings[stat].stat_offset;
+		stat_offset = ena_stats_global_strings[stat].stat_offset;
 		stats_begin = &adapter->dev_stats;
 
 		xstats[count].id = count;

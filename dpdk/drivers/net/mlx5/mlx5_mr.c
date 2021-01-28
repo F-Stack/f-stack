@@ -1408,7 +1408,7 @@ mlx5_dma_unmap(struct rte_pci_device *pdev, void *addr,
 		return -1;
 	}
 	LIST_REMOVE(mr, mr);
-	LIST_INSERT_HEAD(&sh->mr.mr_free_list, mr, mr);
+	mr_free(mr);
 	DEBUG("port %u remove MR(%p) from list", dev->data->port_id,
 	      (void *)mr);
 	mr_rebuild_dev_cache(sh);

@@ -13,7 +13,7 @@ sources = files(
 	'scheduler_roundrobin.c',
 )
 
-headers = files(
+install_headers(
 	'rte_cryptodev_scheduler.h',
 	'rte_cryptodev_scheduler_operations.h',
 )

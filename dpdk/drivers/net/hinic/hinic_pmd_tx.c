@@ -312,6 +312,8 @@ static inline struct rte_mbuf *hinic_copy_tx_mbuf(struct hinic_nic_dev *nic_dev,
 		mbuf = mbuf->next;
 	}
 
+	dst_mbuf->pkt_len = dst_mbuf->data_len;
+
 	return dst_mbuf;
 }
 
@@ -421,7 +423,7 @@ static inline bool hinic_is_tso_sge_valid(struct rte_mbuf *mbuf,
 					  *poff_info,
 					  struct hinic_wqe_info *sqe_info)
 {
-	u32 total_len, limit_len, checked_len, left_len;
+	u32 total_len, limit_len, checked_len, left_len, adjust_mss;
 	u32 i, first_mss_sges, left_sges;
 	struct rte_mbuf *mbuf_head, *mbuf_pre;
 
@@ -431,7 +433,9 @@ static inline bool hinic_is_tso_sge_valid(struct rte_mbuf *mbuf,
 	/* tso sge number validation */
 	if (unlikely(left_sges >= HINIC_NONTSO_PKT_MAX_SGE)) {
 		checked_len = 0;
-		limit_len = mbuf->tso_segsz + poff_info->payload_offset;
+		adjust_mss = mbuf->tso_segsz >= TX_MSS_MIN ?
+				mbuf->tso_segsz : TX_MSS_MIN;
+		limit_len = adjust_mss + poff_info->payload_offset;
 		first_mss_sges = HINIC_NONTSO_PKT_MAX_SGE;
 
 		/* each continues 17 mbufs segmust do one check */
@@ -445,7 +449,7 @@ static inline bool hinic_is_tso_sge_valid(struct rte_mbuf *mbuf,
 				mbuf_pre = mbuf;
 				mbuf = mbuf->next;
 				if (total_len >= limit_len) {
-					limit_len = mbuf_head->tso_segsz;
+					limit_len = adjust_mss;
 					break;
 				}
 			}
@@ -1185,7 +1189,8 @@ void hinic_free_all_tx_resources(struct rte_eth_dev *eth_dev)
 				HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(eth_dev);
 
 	for (q_id = 0; q_id < nic_dev->num_sq; q_id++) {
-		eth_dev->data->tx_queues[q_id] = NULL;
+		if (eth_dev->data->tx_queues != NULL)
+			eth_dev->data->tx_queues[q_id] = NULL;
 
 		if (nic_dev->txqs[q_id] == NULL)
 			continue;
@@ -1216,7 +1221,8 @@ int hinic_setup_tx_resources(struct hinic_txq *txq)
 	u64 tx_info_sz;
 
 	tx_info_sz = txq->q_depth * sizeof(*txq->tx_info);
-	txq->tx_info = kzalloc_aligned(tx_info_sz, GFP_KERNEL);
+	txq->tx_info = rte_zmalloc_socket("tx_info", tx_info_sz,
+			RTE_CACHE_LINE_SIZE, txq->socket_id);
 	if (!txq->tx_info)
 		return -ENOMEM;
 
@@ -1228,11 +1234,12 @@ void hinic_free_tx_resources(struct hinic_txq *txq)
 	if (txq->tx_info == NULL)
 		return;
 
-	kfree(txq->tx_info);
+	rte_free(txq->tx_info);
 	txq->tx_info = NULL;
 }
 
-int hinic_create_sq(struct hinic_hwdev *hwdev, u16 q_id, u16 sq_depth)
+int hinic_create_sq(struct hinic_hwdev *hwdev, u16 q_id,
+			u16 sq_depth, unsigned int socket_id)
 {
 	int err;
 	struct hinic_nic_io *nic_io = hwdev->nic_io;
@@ -1246,7 +1253,8 @@ int hinic_create_sq(struct hinic_hwdev *hwdev, u16 q_id, u16 sq_depth)
 
 	/* alloc wq */
 	err = hinic_wq_allocate(nic_io->hwdev, &nic_io->sq_wq[q_id],
-				HINIC_SQ_WQEBB_SHIFT, nic_io->sq_depth);
+				HINIC_SQ_WQEBB_SHIFT, nic_io->sq_depth,
+				socket_id);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Failed to allocate WQ for SQ");
 		return err;

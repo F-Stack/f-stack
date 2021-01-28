@@ -72,6 +72,19 @@ can be downloaded from `<https://github.com/01org/intel-ipsec-mb/archive/v0.53.z
     make
     make install
 
+The library requires NASM to be built. Depending on the library version, it might require a minimum NASM version (e.g. v0.53 requires at least NASM 2.13.03).
+
+NASM is packaged for different OS. However, on some OS the version is too old, so a manual installation is required.
+In that case, NASM can be downloaded from
+`NASM website <https://www.nasm.us/pub/nasm/releasebuilds/?C=M;O=D>`_.
+Once it is downloaded, extract it and follow these steps:
+
+.. code-block:: console
+
+    ./configure
+    make
+    make install
+
 As a reference, the following table shows a mapping between the past DPDK versions
 and the Multi-Buffer library version supported by them:
 

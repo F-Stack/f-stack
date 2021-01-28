@@ -735,6 +735,13 @@ eth_dev_close(struct rte_eth_dev *dev)
 			struct pcap_rx_queue *pcap_q = &internals->rx_queue[i];
 			struct rte_mbuf *pcap_buf;
 
+			/*
+			 * 'pcap_q->pkts' can be NULL if 'eth_dev_close()'
+			 * called before 'eth_rx_queue_setup()' has been called
+			 */
+			if (pcap_q->pkts == NULL)
+				continue;
+
 			while (!rte_ring_dequeue(pcap_q->pkts,
 					(void **)&pcap_buf))
 				rte_pktmbuf_free(pcap_buf);
@@ -1398,7 +1405,8 @@ pmd_pcap_probe(struct rte_vdev_device *dev)
 	devargs_all.is_rx_pcap =
 		rte_kvargs_count(kvlist, ETH_PCAP_RX_PCAP_ARG) ? 1 : 0;
 	devargs_all.is_rx_iface =
-		rte_kvargs_count(kvlist, ETH_PCAP_RX_IFACE_ARG) ? 1 : 0;
+		(rte_kvargs_count(kvlist, ETH_PCAP_RX_IFACE_ARG) +
+		 rte_kvargs_count(kvlist, ETH_PCAP_RX_IFACE_IN_ARG)) ? 1 : 0;
 	pcaps.num_of_queue = 0;
 
 	devargs_all.is_tx_pcap =

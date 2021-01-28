@@ -35,6 +35,23 @@ extern "C" {
 /* support only linear buffers (no chained mbufs) */
 #define RTE_VHOST_USER_LINEARBUF_SUPPORT	(1ULL << 6)
 
+/* Features. */
+#ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
+ #define VIRTIO_NET_F_GUEST_ANNOUNCE 21
+#endif
+
+#ifndef VIRTIO_NET_F_MQ
+ #define VIRTIO_NET_F_MQ		22
+#endif
+
+#ifndef VIRTIO_NET_F_MTU
+ #define VIRTIO_NET_F_MTU 3
+#endif
+
+#ifndef VIRTIO_F_ANY_LAYOUT
+ #define VIRTIO_F_ANY_LAYOUT		27
+#endif
+
 /** Protocol features. */
 #ifndef VHOST_USER_PROTOCOL_F_MQ
 #define VHOST_USER_PROTOCOL_F_MQ	0
@@ -68,6 +85,10 @@ extern "C" {
 #define VHOST_USER_PROTOCOL_F_PAGEFAULT 8
 #endif
 
+#ifndef VHOST_USER_PROTOCOL_F_CONFIG
+#define VHOST_USER_PROTOCOL_F_CONFIG 9
+#endif
+
 #ifndef VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD
 #define VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD 10
 #endif
@@ -84,6 +105,7 @@ extern "C" {
 #ifndef VHOST_USER_F_PROTOCOL_FEATURES
 #define VHOST_USER_F_PROTOCOL_FEATURES	30
 #endif
+
 
 /**
  * Information relating to memory regions including offsets to
@@ -253,7 +275,7 @@ struct vhost_device_ops {
 
 	/**
 	 * This callback gets called each time a guest gets notified
-	 * about waiting packets. This is the interrupt handling trough
+	 * about waiting packets. This is the interrupt handling through
 	 * the eventfd_write(callfd), which can be used for counting these
 	 * "slow" syscalls.
 	 */

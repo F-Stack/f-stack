@@ -270,6 +270,9 @@ enum i40e_flxpld_layer_idx {
 #define I40E_ETH_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + I40E_VLAN_TAG_SIZE * 2)
 
+#define I40E_RXTX_BYTES_H_16_BIT(bytes) ((bytes) & ~I40E_48_BIT_MASK)
+#define I40E_RXTX_BYTES_L_48_BIT(bytes) ((bytes) & I40E_48_BIT_MASK)
+
 struct i40e_adapter;
 struct rte_pci_driver;
 
@@ -387,6 +390,8 @@ struct i40e_vsi {
 	uint8_t vlan_anti_spoof_on; /* The VLAN anti-spoofing enabled */
 	uint8_t vlan_filter_on; /* The VLAN filter enabled */
 	struct i40e_bw_info bw_info; /* VSI bandwidth information */
+	uint64_t prev_rx_bytes;
+	uint64_t prev_tx_bytes;
 };
 
 struct pool_entry {
@@ -533,17 +538,30 @@ enum i40e_fdir_ip_type {
 	I40E_FDIR_IPTYPE_IPV6,
 };
 
+/**
+ * Structure to store flex pit for flow diretor.
+ */
+struct i40e_fdir_flex_pit {
+	uint8_t src_offset; /* offset in words from the beginning of payload */
+	uint8_t size;       /* size in words */
+	uint8_t dst_offset; /* offset in words of flexible payload */
+};
+
 /* A structure used to contain extend input of flow */
 struct i40e_fdir_flow_ext {
 	uint16_t vlan_tci;
 	uint8_t flexbytes[RTE_ETH_FDIR_MAX_FLEXLEN];
 	/* It is filled by the flexible payload to match. */
+	uint8_t flex_mask[I40E_FDIR_MAX_FLEX_LEN];
+	uint8_t raw_id;
 	uint8_t is_vf;   /* 1 for VF, 0 for port dev */
 	uint16_t dst_id; /* VF ID, available when is_vf is 1*/
 	bool inner_ip;   /* If there is inner ip */
 	enum i40e_fdir_ip_type iip_type; /* ip type for inner ip */
 	bool customized_pctype; /* If customized pctype is used */
 	bool pkt_template; /* If raw packet template is used */
+	enum i40e_flxpld_layer_idx layer_idx;
+	struct i40e_fdir_flex_pit flex_pit[I40E_MAX_FLXPLD_LAYER * I40E_MAX_FLXPLD_FIED];
 };
 
 /* A structure used to define the input for a flow director filter entry */
@@ -593,15 +611,6 @@ struct i40e_fdir_filter_conf {
 	/* ID, an unique value is required when deal with FDIR entry */
 	struct i40e_fdir_input input;    /* Input set */
 	struct i40e_fdir_action action;  /* Action taken when match */
-};
-
-/*
- * Structure to store flex pit for flow diretor.
- */
-struct i40e_fdir_flex_pit {
-	uint8_t src_offset;    /* offset in words from the beginning of payload */
-	uint8_t size;          /* size in words */
-	uint8_t dst_offset;    /* offset in words of flexible payload */
 };
 
 struct i40e_fdir_flex_mask {
@@ -1007,6 +1016,10 @@ struct i40e_pf {
 	uint16_t switch_domain_id;
 
 	struct i40e_vf_msg_cfg vf_msg_cfg;
+	uint64_t prev_rx_bytes;
+	uint64_t prev_tx_bytes;
+	uint64_t internal_prev_rx_bytes;
+	uint64_t internal_prev_tx_bytes;
 };
 
 enum pending_msg {
@@ -1051,6 +1064,7 @@ struct i40e_vf {
 	bool promisc_unicast_enabled;
 	bool promisc_multicast_enabled;
 
+	rte_spinlock_t cmd_send_lock;
 	uint32_t version_major; /* Major version number */
 	uint32_t version_minor; /* Minor version number */
 	uint16_t promisc_flags; /* Promiscuous setting */
@@ -1170,8 +1184,9 @@ void i40e_update_vsi_stats(struct i40e_vsi *vsi);
 void i40e_pf_disable_irq0(struct i40e_hw *hw);
 void i40e_pf_enable_irq0(struct i40e_hw *hw);
 int i40e_dev_link_update(struct rte_eth_dev *dev, int wait_to_complete);
-void i40e_vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t itr_idx);
+int i40e_vsi_queues_bind_intr(struct i40e_vsi *vsi, uint16_t itr_idx);
 void i40e_vsi_queues_unbind_intr(struct i40e_vsi *vsi);
+void i40e_vsi_disable_queues_intr(struct i40e_vsi *vsi);
 int i40e_vsi_vlan_pvid_set(struct i40e_vsi *vsi,
 			   struct i40e_vsi_vlan_pvid_info *info);
 int i40e_vsi_config_vlan_stripping(struct i40e_vsi *vsi, bool on);
@@ -1181,6 +1196,7 @@ uint64_t i40e_parse_hena(const struct i40e_adapter *adapter, uint64_t flags);
 enum i40e_status_code i40e_fdir_setup_tx_resources(struct i40e_pf *pf);
 enum i40e_status_code i40e_fdir_setup_rx_resources(struct i40e_pf *pf);
 int i40e_fdir_setup(struct i40e_pf *pf);
+void i40e_vsi_enable_queues_intr(struct i40e_vsi *vsi);
 const struct rte_memzone *i40e_memzone_reserve(const char *name,
 					uint32_t len,
 					int socket_id);

@@ -38,6 +38,8 @@ extern int otx2_cpt_logtype;
 /*
  * Crypto device driver ID
  */
-uint8_t otx2_cryptodev_driver_id;
+extern uint8_t otx2_cryptodev_driver_id;
+
+void otx2_cpt_set_enqdeq_fns(struct rte_cryptodev *dev);
 
 #endif /* _OTX2_CRYPTODEV_H_ */

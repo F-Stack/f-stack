@@ -52,8 +52,8 @@ be loaded as shown below:
 
    If the devices used for DPDK are bound to the ``uio_pci_generic`` kernel module,
    please make sure that the IOMMU is disabled or passthrough. One can add
-   ``intel_iommu=off`` or ``amd_iommu=off`` or ``intel_iommu=on iommu=pt``in GRUB
-   command line on x86_64 systems, or add ``iommu.passthrough=1`` on arm64 system.
+   ``intel_iommu=off`` or ``amd_iommu=off`` or ``intel_iommu=on iommu=pt`` in GRUB
+   command line on x86_64 systems, or add ``iommu.passthrough=1`` on aarch64 system.
 
 Since DPDK release 1.7 onward provides VFIO support, use of UIO is optional
 for platforms that support using VFIO.
@@ -120,7 +120,7 @@ Binding and Unbinding Network Ports to/from the Kernel Modules
     PMDs Which use the bifurcated driver should not be unbind from their kernel drivers. this section is for PMDs which use the UIO or VFIO drivers.
 
 As of release 1.4, DPDK applications no longer automatically unbind all supported network ports from the kernel driver in use.
-Instead, in case the PMD being used use the UIO or VFIO drivers, all ports that are to be used by an DPDK application must be bound to the
+Instead, in case the PMD being used use the UIO or VFIO drivers, all ports that are to be used by a DPDK application must be bound to the
 ``uio_pci_generic``, ``igb_uio`` or ``vfio-pci`` module before the application is run.
 For such PMDs, any network ports under Linux* control will be ignored and cannot be used by the application.
 

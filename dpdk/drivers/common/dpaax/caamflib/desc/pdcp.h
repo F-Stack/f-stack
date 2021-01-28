@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause or GPL-2.0+
  * Copyright 2008-2013 Freescale Semiconductor, Inc.
- * Copyright 2019 NXP
+ * Copyright 2019-2020 NXP
  */
 
 #ifndef __DESC_PDCP_H__
@@ -261,6 +261,50 @@ enum pdb_type_e {
 	PDCP_PDB_TYPE_REDUCED_PDB,
 	PDCP_PDB_TYPE_INVALID
 };
+
+/**
+ * rta_inline_pdcp_query() - Provide indications if a key can be passed as
+ *                           immediate data or shall be referenced in a
+ *                           shared descriptor.
+ * Return: 0 if data can be inlined or 1 if referenced.
+ */
+static inline int
+rta_inline_pdcp_query(enum auth_type_pdcp auth_alg,
+		      enum cipher_type_pdcp cipher_alg,
+		      enum pdcp_sn_size sn_size,
+		      int8_t hfn_ovd)
+{
+	/**
+	 * Shared Descriptors for some of the cases does not fit in the
+	 * MAX_DESC_SIZE of the descriptor especially when non-protocol
+	 * descriptors are formed as in 18bit cases and when HFN override
+	 * is enabled as 2 extra words are added in the job descriptor.
+	 * The cases which exceed are for RTA_SEC_ERA=8 and HFN override
+	 * enabled and 18bit uplane and either of following Algo combinations.
+	 * - SNOW-AES
+	 * - AES-SNOW
+	 * - SNOW-SNOW
+	 * - ZUC-SNOW
+	 *
+	 * We cannot make inline for all cases, as this will impact performance
+	 * due to extra memory accesses for the keys.
+	 */
+	if ((rta_sec_era == RTA_SEC_ERA_8) && hfn_ovd &&
+			(sn_size == PDCP_SN_SIZE_18) &&
+			((cipher_alg == PDCP_CIPHER_TYPE_SNOW &&
+				auth_alg == PDCP_AUTH_TYPE_AES) ||
+			(cipher_alg == PDCP_CIPHER_TYPE_AES &&
+				auth_alg == PDCP_AUTH_TYPE_SNOW) ||
+			(cipher_alg == PDCP_CIPHER_TYPE_SNOW &&
+				auth_alg == PDCP_AUTH_TYPE_SNOW) ||
+			(cipher_alg == PDCP_CIPHER_TYPE_ZUC &&
+				auth_alg == PDCP_AUTH_TYPE_SNOW))) {
+
+		return 1;
+	}
+
+	return 0;
+}
 
 /*
  * Function for appending the portion of a PDCP Control Plane shared descriptor
@@ -3484,6 +3528,15 @@ cnstr_shdsc_pdcp_u_plane_decap(uint32_t *descbuf,
 				KEY(p, KEY2, authdata->key_enc_flags,
 				    (uint64_t)authdata->key, authdata->keylen,
 				    INLINE_KEY(authdata));
+			else if (authdata && authdata->algtype == 0) {
+				err = pdcp_insert_uplane_with_int_op(p, swap,
+						cipherdata, authdata,
+						sn_size, era_2_sw_hfn_ovrd,
+						OP_TYPE_DECAP_PROTOCOL);
+				if (err)
+					return err;
+				break;
+			}
 
 			/* Insert Cipher Key */
 			KEY(p, KEY1, cipherdata->key_enc_flags,

@@ -666,8 +666,8 @@ process_op(struct armv8_crypto_qp *qp, struct rte_crypto_op *op,
 		memset(op->sym->session, 0,
 			rte_cryptodev_sym_get_existing_header_session_size(
 				op->sym->session));
-		rte_mempool_put(qp->sess_mp, sess);
-		rte_mempool_put(qp->sess_mp_priv, op->sym->session);
+		rte_mempool_put(qp->sess_mp_priv, sess);
+		rte_mempool_put(qp->sess_mp, op->sym->session);
 		op->sym->session = NULL;
 	}
 
@@ -851,6 +851,8 @@ static struct rte_vdev_driver armv8_crypto_pmd_drv = {
 };
 
 static struct cryptodev_driver armv8_crypto_drv;
+
+RTE_LOG_REGISTER(crypto_armv8_log_type, pmd.crypto.armv8, ERR);
 
 RTE_PMD_REGISTER_VDEV(CRYPTODEV_NAME_ARMV8_PMD, armv8_crypto_pmd_drv);
 RTE_PMD_REGISTER_ALIAS(CRYPTODEV_NAME_ARMV8_PMD, cryptodev_armv8_pmd);

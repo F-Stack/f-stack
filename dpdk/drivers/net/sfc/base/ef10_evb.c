@@ -9,15 +9,13 @@
 
 #if EFSYS_OPT_EVB
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 	__checkReturn	efx_rc_t
 ef10_evb_init(
 	__in		efx_nic_t *enp)
 {
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		enp->en_family == EFX_FAMILY_MEDFORD ||
-		enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 
 	return (0);
 }
@@ -26,12 +24,10 @@ ef10_evb_init(
 ef10_evb_fini(
 	__in		efx_nic_t *enp)
 {
-	EFSYS_ASSERT(enp->en_family == EFX_FAMILY_HUNTINGTON ||
-		enp->en_family == EFX_FAMILY_MEDFORD ||
-		enp->en_family == EFX_FAMILY_MEDFORD2);
+	EFSYS_ASSERT(EFX_FAMILY_IS_EF10(enp));
 }
 
-	__checkReturn	efx_rc_t
+static	__checkReturn	efx_rc_t
 efx_mcdi_vswitch_alloc(
 	__in		efx_nic_t *enp,
 	__in		efx_vport_id_t vport_id,
@@ -98,7 +94,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn	efx_rc_t
+static	__checkReturn	efx_rc_t
 efx_mcdi_vswitch_free(
 	__in		efx_nic_t *enp)
 {
@@ -129,7 +125,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn	efx_rc_t
+static	__checkReturn	efx_rc_t
 efx_mcdi_vport_alloc(
 	__in		efx_nic_t *enp,
 	__in		efx_vport_type_t vport_type,
@@ -192,7 +188,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn	efx_rc_t
+static	__checkReturn	efx_rc_t
 efx_mcdi_vport_free(
 	__in		efx_nic_t *enp,
 	__in		efx_vport_id_t vport_id)
@@ -223,7 +219,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn			efx_rc_t
+static	__checkReturn			efx_rc_t
 efx_mcdi_vport_mac_addr_add(
 	__in				efx_nic_t *enp,
 	__in				efx_vport_id_t vport_id,
@@ -258,7 +254,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn			efx_rc_t
+static	__checkReturn			efx_rc_t
 efx_mcdi_vport_mac_addr_del(
 	__in				efx_nic_t *enp,
 	__in				efx_vport_id_t vport_id,
@@ -293,7 +289,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn	efx_rc_t
+static	__checkReturn	efx_rc_t
 efx_mcdi_port_assign(
 	__in		efx_nic_t *enp,
 	__in		efx_vport_id_t vport_id,
@@ -330,7 +326,7 @@ fail1:
 	return (rc);
 }
 
-	__checkReturn				efx_rc_t
+static	__checkReturn				efx_rc_t
 efx_mcdi_vport_reconfigure(
 	__in					efx_nic_t *enp,
 	__in					efx_vport_id_t vport_id,
@@ -549,5 +545,5 @@ ef10_evb_vport_stats(
 			EFX_STATS_UPLOAD, 0));
 }
 
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 #endif /* EFSYS_OPT_EVB */

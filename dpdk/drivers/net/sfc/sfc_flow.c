@@ -1132,6 +1132,7 @@ sfc_flow_parse_attr(const struct rte_flow_attr *attr,
 
 	flow->spec.template.efs_flags |= EFX_FILTER_FLAG_RX;
 	flow->spec.template.efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+	flow->spec.template.efs_priority = EFX_FILTER_PRI_MANUAL;
 
 	return 0;
 }
@@ -1239,12 +1240,17 @@ sfc_flow_parse_queue(struct sfc_adapter *sa,
 		     struct rte_flow *flow)
 {
 	struct sfc_rxq *rxq;
+	struct sfc_rxq_info *rxq_info;
 
 	if (queue->index >= sfc_sa2shared(sa)->rxq_count)
 		return -EINVAL;
 
 	rxq = &sa->rxq_ctrl[queue->index];
 	flow->spec.template.efs_dmaq_id = (uint16_t)rxq->hw_index;
+
+	rxq_info = &sfc_sa2shared(sa)->rxq_info[queue->index];
+	flow->spec.rss_hash_required = !!(rxq_info->rxq_flags &
+					    SFC_RXQ_FLAG_RSS_HASH);
 
 	return 0;
 }
@@ -1404,13 +1410,34 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 	struct sfc_rss *rss = &sas->rss;
 	struct sfc_flow_rss *flow_rss = &flow->rss_conf;
 	uint32_t efs_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+	boolean_t create_context;
 	unsigned int i;
 	int rc = 0;
 
-	if (flow->rss) {
-		unsigned int rss_spread = MIN(flow_rss->rxq_hw_index_max -
-					      flow_rss->rxq_hw_index_min + 1,
-					      EFX_MAXRSS);
+	create_context = flow->rss || (flow->spec.rss_hash_required &&
+			rss->dummy_rss_context == EFX_RSS_CONTEXT_DEFAULT);
+
+	if (create_context) {
+		unsigned int rss_spread;
+		unsigned int rss_hash_types;
+		uint8_t *rss_key;
+
+		if (flow->rss) {
+			rss_spread = MIN(flow_rss->rxq_hw_index_max -
+					flow_rss->rxq_hw_index_min + 1,
+					EFX_MAXRSS);
+			rss_hash_types = flow_rss->rss_hash_types;
+			rss_key = flow_rss->rss_key;
+		} else {
+			/*
+			 * Initialize dummy RSS context parameters to have
+			 * valid RSS hash. Use default RSS hash function and
+			 * key.
+			 */
+			rss_spread = 1;
+			rss_hash_types = rss->hash_types;
+			rss_key = rss->key;
+		}
 
 		rc = efx_rx_scale_context_alloc(sa->nic,
 						EFX_RX_SCALE_EXCLUSIVE,
@@ -1421,16 +1448,19 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 
 		rc = efx_rx_scale_mode_set(sa->nic, efs_rss_context,
 					   rss->hash_alg,
-					   flow_rss->rss_hash_types, B_TRUE);
+					   rss_hash_types, B_TRUE);
 		if (rc != 0)
 			goto fail_scale_mode_set;
 
 		rc = efx_rx_scale_key_set(sa->nic, efs_rss_context,
-					  flow_rss->rss_key,
-					  sizeof(rss->key));
+					  rss_key, sizeof(rss->key));
 		if (rc != 0)
 			goto fail_scale_key_set;
+	} else {
+		efs_rss_context = rss->dummy_rss_context;
+	}
 
+	if (flow->rss || flow->spec.rss_hash_required) {
 		/*
 		 * At this point, fully elaborated filter specifications
 		 * have been produced from the template. To make sure that
@@ -1441,8 +1471,9 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 			efx_filter_spec_t *spec = &flow->spec.filters[i];
 
 			spec->efs_rss_context = efs_rss_context;
-			spec->efs_dmaq_id = flow_rss->rxq_hw_index_min;
 			spec->efs_flags |= EFX_FILTER_FLAG_RX_RSS;
+			if (flow->rss)
+				spec->efs_dmaq_id = flow_rss->rxq_hw_index_min;
 		}
 	}
 
@@ -1450,7 +1481,12 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 	if (rc != 0)
 		goto fail_filter_insert;
 
-	if (flow->rss) {
+	if (create_context) {
+		unsigned int dummy_tbl[RTE_DIM(flow_rss->rss_tbl)] = {0};
+		unsigned int *tbl;
+
+		tbl = flow->rss ? flow_rss->rss_tbl : dummy_tbl;
+
 		/*
 		 * Scale table is set after filter insertion because
 		 * the table entries are relative to the base RxQ ID
@@ -1460,10 +1496,13 @@ sfc_flow_filter_insert(struct sfc_adapter *sa,
 		 * the table entries, and the operation will succeed
 		 */
 		rc = efx_rx_scale_tbl_set(sa->nic, efs_rss_context,
-					  flow_rss->rss_tbl,
-					  RTE_DIM(flow_rss->rss_tbl));
+					  tbl, RTE_DIM(flow_rss->rss_tbl));
 		if (rc != 0)
 			goto fail_scale_tbl_set;
+
+		/* Remember created dummy RSS context */
+		if (!flow->rss)
+			rss->dummy_rss_context = efs_rss_context;
 	}
 
 	return 0;
@@ -1474,7 +1513,7 @@ fail_scale_tbl_set:
 fail_filter_insert:
 fail_scale_key_set:
 fail_scale_mode_set:
-	if (efs_rss_context != EFX_RSS_CONTEXT_DEFAULT)
+	if (create_context)
 		efx_rx_scale_context_free(sa->nic, efs_rss_context);
 
 fail_scale_context_alloc:
@@ -2473,12 +2512,19 @@ sfc_flow_fini(struct sfc_adapter *sa)
 void
 sfc_flow_stop(struct sfc_adapter *sa)
 {
+	struct sfc_adapter_shared * const sas = sfc_sa2shared(sa);
+	struct sfc_rss *rss = &sas->rss;
 	struct rte_flow *flow;
 
 	SFC_ASSERT(sfc_adapter_is_locked(sa));
 
 	TAILQ_FOREACH(flow, &sa->filter.flow_list, entries)
 		sfc_flow_filter_remove(sa, flow);
+
+	if (rss->dummy_rss_context != EFX_RSS_CONTEXT_DEFAULT) {
+		efx_rx_scale_context_free(sa->nic, rss->dummy_rss_context);
+		rss->dummy_rss_context = EFX_RSS_CONTEXT_DEFAULT;
+	}
 }
 
 int

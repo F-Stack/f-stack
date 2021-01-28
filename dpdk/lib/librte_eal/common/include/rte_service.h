@@ -104,11 +104,15 @@ int32_t rte_service_probe_capability(uint32_t id, uint32_t capability);
  * Each core can be added or removed from running a specific service. This
  * function enables or disables *lcore* to run *service_id*.
  *
- * If multiple cores are enabled on a service, an atomic is used to ensure that
- * only one cores runs the service at a time. The exception to this is when
+ * If multiple cores are enabled on a service, a lock is used to ensure that
+ * only one core runs the service at a time. The exception to this is when
  * a service indicates that it is multi-thread safe by setting the capability
  * called RTE_SERVICE_CAP_MT_SAFE. With the multi-thread safe capability set,
  * the service function can be run on multiple threads at the same time.
+ *
+ * If the service is known to be mapped to a single lcore, setting the
+ * capability of the service to RTE_SERVICE_CAP_MT_SAFE can achieve
+ * better performance by avoiding the use of lock.
  *
  * @param service_id the service to apply the lcore to
  * @param lcore The lcore that will be mapped to service
@@ -299,6 +303,10 @@ int32_t rte_service_lcore_count(void);
  * Resets all service core mappings. This does not remove the service cores
  * from duty, just unmaps all services / cores, and stops() the service cores.
  * The runstate of services is not modified.
+ *
+ * The cores that are stopped with this call, are in FINISHED state and
+ * the application must take care of bringing them back to a launchable state:
+ * e.g. call *rte_eal_lcore_wait* on the lcore_id.
  *
  * @retval 0 Success
  */

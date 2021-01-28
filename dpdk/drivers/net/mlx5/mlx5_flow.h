@@ -327,8 +327,25 @@ enum mlx5_feature_name {
 #define MLX5_GENEVE_OPT_LEN_0 14
 #define MLX5_GENEVE_OPT_LEN_1 63
 
-#define MLX5_ENCAPSULATION_DECISION_SIZE (sizeof(struct rte_flow_item_eth) + \
-					  sizeof(struct rte_flow_item_ipv4))
+#define MLX5_ENCAPSULATION_DECISION_SIZE (sizeof(struct rte_ether_hdr) + \
+					  sizeof(struct rte_ipv4_hdr))
+
+/* Software header modify action numbers of a flow. */
+#define MLX5_ACT_NUM_MDF_IPV4		1
+#define MLX5_ACT_NUM_MDF_IPV6		4
+#define MLX5_ACT_NUM_MDF_MAC		2
+#define MLX5_ACT_NUM_MDF_VID		1
+#define MLX5_ACT_NUM_MDF_PORT		2
+#define MLX5_ACT_NUM_MDF_TTL		1
+#define MLX5_ACT_NUM_DEC_TTL		MLX5_ACT_NUM_MDF_TTL
+#define MLX5_ACT_NUM_MDF_TCPSEQ		1
+#define MLX5_ACT_NUM_MDF_TCPACK		1
+#define MLX5_ACT_NUM_SET_REG		1
+#define MLX5_ACT_NUM_SET_TAG		1
+#define MLX5_ACT_NUM_CPY_MREG		MLX5_ACT_NUM_SET_TAG
+#define MLX5_ACT_NUM_SET_MARK		MLX5_ACT_NUM_SET_TAG
+#define MLX5_ACT_NUM_SET_META		MLX5_ACT_NUM_SET_TAG
+#define MLX5_ACT_NUM_SET_DSCP		1
 
 enum mlx5_flow_drv_type {
 	MLX5_FLOW_TYPE_MIN,
@@ -385,14 +402,16 @@ struct mlx5_flow_dv_tag_resource {
 
 /*
  * Number of modification commands.
- * If extensive metadata registers are supported, the maximal actions amount is
- * 16 and 8 otherwise on root table. The validation could also be done in the
- * lower driver layer.
- * On non-root table, there is no limitation, but 32 is enough right now.
+ * The maximal actions amount in FW is some constant, and it is 16 in the
+ * latest releases. In some old releases, it will be limited to 8.
+ * Since there is no interface to query the capacity, the maximal value should
+ * be used to allow PMD to create the flow. The validation will be done in the
+ * lower driver layer or FW. A failure will be returned if exceeds the maximal
+ * supported actions number on the root table.
+ * On non-root tables, there is no limitation, but 32 is enough right now.
  */
 #define MLX5_MAX_MODIFY_NUM			32
 #define MLX5_ROOT_TBL_MODIFY_NUM		16
-#define MLX5_ROOT_TBL_MODIFY_NUM_NO_MREG	8
 
 /* Modify resource structure */
 struct mlx5_flow_dv_modify_hdr_resource {
@@ -572,6 +591,8 @@ struct mlx5_flow_policer_stats {
 struct mlx5_meter_domain_info {
 	struct mlx5_flow_tbl_resource *tbl;
 	/**< Meter table. */
+	struct mlx5_flow_tbl_resource *sfx_tbl;
+	/**< Meter suffix table. */
 	void *any_matcher;
 	/**< Meter color not match default criteria. */
 	void *color_matcher;
@@ -675,6 +696,7 @@ typedef int (*mlx5_flow_validate_t)(struct rte_eth_dev *dev,
 				    const struct rte_flow_item items[],
 				    const struct rte_flow_action actions[],
 				    bool external,
+				    int hairpin,
 				    struct rte_flow_error *error);
 typedef struct mlx5_flow *(*mlx5_flow_prepare_t)
 	(const struct rte_flow_attr *attr, const struct rte_flow_item items[],

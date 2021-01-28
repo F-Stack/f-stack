@@ -237,7 +237,7 @@ af_xdp_rx_zc(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	if (rte_pktmbuf_alloc_bulk(umem->mb_pool, fq_bufs, nb_pkts)) {
 		AF_XDP_LOG(DEBUG,
 			"Failed to get enough buffers for fq.\n");
-		return -1;
+		return 0;
 	}
 
 	rcvd = xsk_ring_cons__peek(rx, nb_pkts, &idx_rx);
@@ -305,6 +305,10 @@ af_xdp_rx_cp(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	uint32_t free_thresh = fq->size >> 1;
 	struct rte_mbuf *mbufs[ETH_AF_XDP_RX_BATCH_SIZE];
 
+	if (xsk_prod_nb_free(fq, free_thresh) >= free_thresh)
+		(void)reserve_fill_queue(umem, ETH_AF_XDP_RX_BATCH_SIZE, NULL);
+
+
 	if (unlikely(rte_pktmbuf_alloc_bulk(rxq->mb_pool, mbufs, nb_pkts) != 0))
 		return 0;
 
@@ -317,9 +321,6 @@ af_xdp_rx_cp(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 		goto out;
 	}
-
-	if (xsk_prod_nb_free(fq, free_thresh) >= free_thresh)
-		(void)reserve_fill_queue(umem, ETH_AF_XDP_RX_BATCH_SIZE, NULL);
 
 	for (i = 0; i < rcvd; i++) {
 		const struct xdp_desc *desc;
@@ -685,7 +686,6 @@ static void
 xdp_umem_destroy(struct xsk_umem_info *umem)
 {
 #if defined(XDP_UMEM_UNALIGNED_CHUNK_FLAG)
-	rte_mempool_free(umem->mb_pool);
 	umem->mb_pool = NULL;
 #else
 	rte_memzone_free(umem->mz);
@@ -744,12 +744,17 @@ eth_link_update(struct rte_eth_dev *dev __rte_unused,
 }
 
 #if defined(XDP_UMEM_UNALIGNED_CHUNK_FLAG)
-static inline uint64_t get_base_addr(struct rte_mempool *mp)
+static inline uintptr_t get_base_addr(struct rte_mempool *mp, uint64_t *align)
 {
 	struct rte_mempool_memhdr *memhdr;
+	uintptr_t memhdr_addr, aligned_addr;
 
 	memhdr = STAILQ_FIRST(&mp->mem_list);
-	return (uint64_t)memhdr->addr & ~(getpagesize() - 1);
+	memhdr_addr = (uintptr_t)memhdr->addr;
+	aligned_addr = memhdr_addr & ~(getpagesize() - 1);
+	*align = memhdr_addr - aligned_addr;
+
+	return aligned_addr;
 }
 
 static struct
@@ -764,6 +769,7 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals __rte_unused,
 		.flags = XDP_UMEM_UNALIGNED_CHUNK_FLAG};
 	void *base_addr = NULL;
 	struct rte_mempool *mb_pool = rxq->mb_pool;
+	uint64_t umem_size, align = 0;
 
 	usr_config.frame_size = rte_mempool_calc_obj_size(mb_pool->elt_size,
 								mb_pool->flags,
@@ -780,12 +786,11 @@ xsk_umem_info *xdp_umem_configure(struct pmd_internals *internals __rte_unused,
 	}
 
 	umem->mb_pool = mb_pool;
-	base_addr = (void *)get_base_addr(mb_pool);
+	base_addr = (void *)get_base_addr(mb_pool, &align);
+	umem_size = mb_pool->populated_size * usr_config.frame_size + align;
 
-	ret = xsk_umem__create(&umem->umem, base_addr,
-			       mb_pool->populated_size * usr_config.frame_size,
-			       &umem->fq, &umem->cq,
-			       &usr_config);
+	ret = xsk_umem__create(&umem->umem, base_addr, umem_size,
+			       &umem->fq, &umem->cq, &usr_config);
 
 	if (ret) {
 		AF_XDP_LOG(ERR, "Failed to create umem");
@@ -1111,7 +1116,7 @@ xdp_get_channels_info(const char *if_name, int *max_queues,
 
 	channels.cmd = ETHTOOL_GCHANNELS;
 	ifr.ifr_data = (void *)&channels;
-	strncpy(ifr.ifr_name, if_name, IFNAMSIZ);
+	strlcpy(ifr.ifr_name, if_name, IFNAMSIZ);
 	ret = ioctl(fd, SIOCETHTOOL, &ifr);
 	if (ret) {
 		if (errno == EOPNOTSUPP) {

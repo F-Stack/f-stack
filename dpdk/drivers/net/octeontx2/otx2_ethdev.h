@@ -192,6 +192,7 @@ struct otx2_eth_qconf {
 	void *mempool;
 	uint32_t socket_id;
 	uint16_t nb_desc;
+	uint8_t valid;
 };
 
 struct otx2_fc_info {
@@ -266,6 +267,7 @@ struct otx2_eth_dev {
 	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 	uint8_t mkex_pfl_name[MKEX_NAME_LEN];
 	uint8_t max_mac_entries;
+	bool dmac_filter_enable;
 	uint8_t lf_tx_stats;
 	uint8_t lf_rx_stats;
 	uint16_t flags;
@@ -422,6 +424,8 @@ int otx2_nix_set_mc_addr_list(struct rte_eth_dev *eth_dev,
 /* MTU */
 int otx2_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu);
 int otx2_nix_recalc_mtu(struct rte_eth_dev *eth_dev);
+void otx2_nix_enable_mseg_on_jumbo(struct otx2_eth_rxq *rxq);
+
 
 /* Link */
 void otx2_nix_toggle_flag_link_cfg(struct otx2_eth_dev *dev, bool set);
@@ -438,6 +442,8 @@ int oxt2_nix_register_cq_irqs(struct rte_eth_dev *eth_dev);
 void otx2_nix_unregister_irqs(struct rte_eth_dev *eth_dev);
 void oxt2_nix_unregister_queue_irqs(struct rte_eth_dev *eth_dev);
 void oxt2_nix_unregister_cq_irqs(struct rte_eth_dev *eth_dev);
+void otx2_nix_err_intr_enb_dis(struct rte_eth_dev *eth_dev, bool enb);
+void otx2_nix_ras_intr_enb_dis(struct rte_eth_dev *eth_dev, bool enb);
 
 int otx2_nix_rx_queue_intr_enable(struct rte_eth_dev *eth_dev,
 				  uint16_t rx_queue_id);

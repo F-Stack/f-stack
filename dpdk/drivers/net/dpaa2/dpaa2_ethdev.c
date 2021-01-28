@@ -147,7 +147,7 @@ dpaa2_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 {
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
 	struct fsl_mc_io *dpni = dev->process_private;
-	int ret;
+	int ret = 0;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -155,7 +155,7 @@ dpaa2_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 		/* VLAN Filter not avaialble */
 		if (!priv->max_vlan_filters) {
 			DPAA2_PMD_INFO("VLAN filter not available");
-			goto next_mask;
+			return -ENOTSUP;
 		}
 
 		if (dev->data->dev_conf.rxmode.offloads &
@@ -168,14 +168,8 @@ dpaa2_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 		if (ret < 0)
 			DPAA2_PMD_INFO("Unable to set vlan filter = %d", ret);
 	}
-next_mask:
-	if (mask & ETH_VLAN_EXTEND_MASK) {
-		if (dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_VLAN_EXTEND)
-			DPAA2_PMD_INFO("VLAN extend offload not supported");
-	}
 
-	return 0;
+	return ret;
 }
 
 static int
@@ -254,8 +248,6 @@ dpaa2_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
 
 	PMD_INIT_FUNC_TRACE();
-
-	dev_info->if_index = priv->hw_id;
 
 	dev_info->max_mac_addrs = priv->max_mac_filters;
 	dev_info->max_rx_pktlen = DPAA2_MAX_RX_PKT_LEN;
@@ -553,9 +545,6 @@ dpaa2_eth_dev_configure(struct rte_eth_dev *dev)
 	if (rx_offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
 		dpaa2_vlan_offload_set(dev, ETH_VLAN_FILTER_MASK);
 
-	/* update the current status */
-	dpaa2_dev_link_update(dev, 0);
-
 	return 0;
 }
 
@@ -663,7 +652,7 @@ dpaa2_dev_rx_queue_setup(struct rte_eth_dev *dev,
 						DPNI_CP_CONGESTION_GROUP,
 						DPNI_QUEUE_RX,
 						dpaa2_q->tc_index,
-						flow_id, &taildrop);
+						dpaa2_q->cgid, &taildrop);
 		} else {
 			/*enabling per rx queue congestion control */
 			taildrop.threshold = CONG_THRESHOLD_RX_BYTES_Q;
@@ -690,7 +679,7 @@ dpaa2_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			ret = dpni_set_taildrop(dpni, CMD_PRI_LOW, priv->token,
 					DPNI_CP_CONGESTION_GROUP, DPNI_QUEUE_RX,
 					dpaa2_q->tc_index,
-					flow_id, &taildrop);
+					dpaa2_q->cgid, &taildrop);
 		} else {
 			ret = dpni_set_taildrop(dpni, CMD_PRI_LOW, priv->token,
 					DPNI_CP_QUEUE, DPNI_QUEUE_RX,
@@ -1757,6 +1746,7 @@ dpaa2_dev_set_link_up(struct rte_eth_dev *dev)
 	/* changing tx burst function to start enqueues */
 	dev->tx_pkt_burst = dpaa2_dev_tx;
 	dev->data->dev_link.link_status = state.up;
+	dev->data->dev_link.link_speed = state.rate;
 
 	if (state.up)
 		DPAA2_PMD_INFO("Port %d Link is Up", dev->data->port_id);

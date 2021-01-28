@@ -13,3 +13,6 @@ sources = files('cperf_ops.c',
 		'cperf_test_verify.c',
 		'main.c')
 deps += ['cryptodev', 'security']
+if dpdk_conf.has('RTE_LIBRTE_PMD_CRYPTO_SCHEDULER')
+	deps += 'pmd_crypto_scheduler'
+endif

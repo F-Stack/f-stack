@@ -398,7 +398,11 @@ no_free_bufs:
 
 refill:
 	if (type == MEMIF_RING_M2S) {
-		head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+		/* ring->head is updated by the receiver and this function
+		 * is called in the context of receiver thread. The loads in
+		 * the receiver do not need to synchronize with its own stores.
+		 */
+		head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
 		n_slots = ring_size - head + mq->last_tail;
 
 		while (n_slots--) {
@@ -561,14 +565,24 @@ eth_memif_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	ring_size = 1 << mq->log2_ring_size;
 	mask = ring_size - 1;
 
-	n_free = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE) - mq->last_tail;
-	mq->last_tail += n_free;
-
 	if (type == MEMIF_RING_S2M) {
-		slot = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
-		n_free = ring_size - slot + mq->last_tail;
+		/* For S2M queues ring->head is updated by the sender and
+		 * this function is called in the context of sending thread.
+		 * The loads in the sender do not need to synchronize with
+		 * its own stores. Hence, the following load can be a
+		 * relaxed load.
+		 */
+		slot = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+		n_free = ring_size - slot +
+				__atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
 	} else {
-		slot = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+		/* For M2S queues ring->tail is updated by the sender and
+		 * this function is called in the context of sending thread.
+		 * The loads in the sender do not need to synchronize with
+		 * its own stores. Hence, the following load can be a
+		 * relaxed load.
+		 */
+		slot = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
 		n_free = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE) - slot;
 	}
 
@@ -1501,7 +1515,7 @@ memif_create(struct rte_vdev_device *vdev, enum memif_role_t role,
 	}
 
 
-	eth_dev->data->dev_flags &= RTE_ETH_DEV_CLOSE_REMOVE;
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	rte_eth_dev_probing_finish(eth_dev);
 

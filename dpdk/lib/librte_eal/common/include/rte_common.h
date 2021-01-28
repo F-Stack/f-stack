@@ -245,7 +245,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * than the first parameter.
  */
 #define RTE_ALIGN_MUL_CEIL(v, mul) \
-	(((v + (typeof(v))(mul) - 1) / ((typeof(v))(mul))) * (typeof(v))(mul))
+	((((v) + (typeof(v))(mul) - 1) / ((typeof(v))(mul))) * (typeof(v))(mul))
 
 /**
  * Macro to align a value to the multiple of given value. The resultant
@@ -253,7 +253,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * than the first parameter.
  */
 #define RTE_ALIGN_MUL_FLOOR(v, mul) \
-	((v / ((typeof(v))(mul))) * (typeof(v))(mul))
+	(((v) / ((typeof(v))(mul))) * (typeof(v))(mul))
 
 /**
  * Macro to align value to the nearest multiple of the given value.
@@ -264,7 +264,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 	({							\
 		typeof(v) ceil = RTE_ALIGN_MUL_CEIL(v, mul);	\
 		typeof(v) floor = RTE_ALIGN_MUL_FLOOR(v, mul);	\
-		(ceil - v) > (v - floor) ? floor : ceil;	\
+		(ceil - (v)) > ((v) - floor) ? floor : ceil;	\
 	})
 
 /**
@@ -347,7 +347,7 @@ typedef uint64_t rte_iova_t;
  *    The combined value.
  */
 static inline uint32_t
-rte_combine32ms1b(register uint32_t x)
+rte_combine32ms1b(uint32_t x)
 {
 	x |= x >> 1;
 	x |= x >> 2;
@@ -369,7 +369,7 @@ rte_combine32ms1b(register uint32_t x)
  *    The combined value.
  */
 static inline uint64_t
-rte_combine64ms1b(register uint64_t v)
+rte_combine64ms1b(uint64_t v)
 {
 	v |= v >> 1;
 	v |= v >> 2;

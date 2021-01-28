@@ -49,6 +49,10 @@
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
 
+#ifdef MLX4_GLUE
+const struct mlx4_glue *mlx4_glue;
+#endif
+
 static const char *MZ_MLX4_PMD_SHARED_DATA = "mlx4_pmd_shared_data";
 
 /* Shared memory between primary and secondary processes. */
@@ -247,9 +251,6 @@ mlx4_dev_configure(struct rte_eth_dev *dev)
 	struct mlx4_priv *priv = dev->data->dev_private;
 	struct rte_flow_error error;
 	int ret;
-
-	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
-		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	/* Prepare internal flow rules. */
 	ret = mlx4_flow_sync(priv, &error);
@@ -461,6 +462,7 @@ mlx4_ibv_device_to_pci_addr(const struct ibv_device *device,
 {
 	FILE *file;
 	char line[32];
+	int rc = -ENOENT;
 	MKSTR(path, "%s/device/uevent", device->ibdev_path);
 
 	file = fopen(path, "rb");
@@ -470,16 +472,18 @@ mlx4_ibv_device_to_pci_addr(const struct ibv_device *device,
 	}
 	while (fgets(line, sizeof(line), file) == line) {
 		size_t len = strlen(line);
-		int ret;
 
 		/* Truncate long lines. */
-		if (len == (sizeof(line) - 1))
+		if (len == (sizeof(line) - 1)) {
 			while (line[(len - 1)] != '\n') {
-				ret = fgetc(file);
+				int ret = fgetc(file);
 				if (ret == EOF)
-					break;
+					goto exit;
 				line[(len - 1)] = ret;
 			}
+			/* No match for long lines. */
+			continue;
+		}
 		/* Extract information. */
 		if (sscanf(line,
 			   "PCI_SLOT_NAME="
@@ -488,12 +492,15 @@ mlx4_ibv_device_to_pci_addr(const struct ibv_device *device,
 			   &pci_addr->bus,
 			   &pci_addr->devid,
 			   &pci_addr->function) == 4) {
-			ret = 0;
+			rc = 0;
 			break;
 		}
 	}
+exit:
 	fclose(file);
-	return 0;
+	if (rc)
+		rte_errno = -rc;
+	return rc;
 }
 
 /**
@@ -1029,10 +1036,9 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		eth_dev->device = &pci_dev->device;
 		rte_eth_copy_pci_info(eth_dev, pci_dev);
 		/* Initialize local interrupt handle for current port. */
-		priv->intr_handle = (struct rte_intr_handle){
-			.fd = -1,
-			.type = RTE_INTR_HANDLE_EXT,
-		};
+		memset(&priv->intr_handle, 0, sizeof(struct rte_intr_handle));
+		priv->intr_handle.fd = -1;
+		priv->intr_handle.type = RTE_INTR_HANDLE_EXT;
 		/*
 		 * Override ethdev interrupt handle pointer with private
 		 * handle instead of that of the parent PCI device used by

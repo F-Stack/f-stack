@@ -9,6 +9,7 @@
 
 #include <rte_atomic.h>
 #include <rte_cycles.h>
+#include <rte_malloc.h>
 
 #include "otx2_mbox.h"
 
@@ -35,7 +36,7 @@ otx2_mbox_fini(struct otx2_mbox *mbox)
 {
 	mbox->reg_base = 0;
 	mbox->hwbase = 0;
-	free(mbox->dev);
+	rte_free(mbox->dev);
 	mbox->dev = NULL;
 }
 
@@ -126,7 +127,9 @@ otx2_mbox_init(struct otx2_mbox *mbox, uintptr_t hwbase,
 		return -ENODEV;
 	}
 
-	mbox->dev = malloc(ndevs * sizeof(struct otx2_mbox_dev));
+	mbox->dev = rte_zmalloc("mbox dev",
+				ndevs * sizeof(struct otx2_mbox_dev),
+				OTX2_ALIGN);
 	if (!mbox->dev) {
 		otx2_mbox_fini(mbox);
 		return -ENOMEM;
