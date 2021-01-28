@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -548,28 +548,46 @@ ice_flow_proc_seg_hdrs(struct ice_flow_prof_params *params)
 				(const ice_bitmap_t *)ice_ptypes_ipv4_il;
 			ice_and_bitmap(params->ptypes, params->ptypes, src,
 				       ICE_FLOW_PTYPE_MAX);
+			if (hdrs & ICE_FLOW_SEG_HDR_UDP) {
+				src = (const ice_bitmap_t *)ice_ptypes_udp_il;
+				ice_and_bitmap(params->ptypes,
+						params->ptypes, src,
+					       ICE_FLOW_PTYPE_MAX);
+			} else if (hdrs & ICE_FLOW_SEG_HDR_TCP) {
+				ice_and_bitmap(params->ptypes, params->ptypes,
+					       (const ice_bitmap_t *)
+					       ice_ptypes_tcp_il,
+					       ICE_FLOW_PTYPE_MAX);
+			} else if (hdrs & ICE_FLOW_SEG_HDR_SCTP) {
+				src = (const ice_bitmap_t *)ice_ptypes_sctp_il;
+				ice_and_bitmap(params->ptypes, params->ptypes,
+					       src, ICE_FLOW_PTYPE_MAX);
+			}
 		} else if (hdrs & ICE_FLOW_SEG_HDR_IPV6) {
 			src = !i ? (const ice_bitmap_t *)ice_ptypes_ipv6_ofos :
 				(const ice_bitmap_t *)ice_ptypes_ipv6_il;
 			ice_and_bitmap(params->ptypes, params->ptypes, src,
 				       ICE_FLOW_PTYPE_MAX);
+			if (hdrs & ICE_FLOW_SEG_HDR_UDP) {
+				src = (const ice_bitmap_t *)ice_ptypes_udp_il;
+				ice_and_bitmap(params->ptypes,
+						params->ptypes, src,
+					       ICE_FLOW_PTYPE_MAX);
+			} else if (hdrs & ICE_FLOW_SEG_HDR_TCP) {
+				ice_and_bitmap(params->ptypes, params->ptypes,
+					       (const ice_bitmap_t *)
+					       ice_ptypes_tcp_il,
+					       ICE_FLOW_PTYPE_MAX);
+			} else if (hdrs & ICE_FLOW_SEG_HDR_SCTP) {
+				src = (const ice_bitmap_t *)ice_ptypes_sctp_il;
+				ice_and_bitmap(params->ptypes, params->ptypes,
+					       src, ICE_FLOW_PTYPE_MAX);
+			}
 		}
 
 		if (hdrs & ICE_FLOW_SEG_HDR_ICMP) {
 			src = !i ? (const ice_bitmap_t *)ice_ptypes_icmp_of :
 				(const ice_bitmap_t *)ice_ptypes_icmp_il;
-			ice_and_bitmap(params->ptypes, params->ptypes, src,
-				       ICE_FLOW_PTYPE_MAX);
-		} else if (hdrs & ICE_FLOW_SEG_HDR_UDP) {
-			src = (const ice_bitmap_t *)ice_ptypes_udp_il;
-			ice_and_bitmap(params->ptypes, params->ptypes, src,
-				       ICE_FLOW_PTYPE_MAX);
-		} else if (hdrs & ICE_FLOW_SEG_HDR_TCP) {
-			ice_and_bitmap(params->ptypes, params->ptypes,
-				       (const ice_bitmap_t *)ice_ptypes_tcp_il,
-				       ICE_FLOW_PTYPE_MAX);
-		} else if (hdrs & ICE_FLOW_SEG_HDR_SCTP) {
-			src = (const ice_bitmap_t *)ice_ptypes_sctp_il;
 			ice_and_bitmap(params->ptypes, params->ptypes, src,
 				       ICE_FLOW_PTYPE_MAX);
 		} else if (hdrs & ICE_FLOW_SEG_HDR_GRE) {
@@ -1162,7 +1180,7 @@ ice_flow_add_prof_sync(struct ice_hw *hw, enum ice_block blk,
 		       struct ice_flow_prof **prof)
 {
 	struct ice_flow_prof_params params;
-	enum ice_status status = ICE_SUCCESS;
+	enum ice_status status;
 	u8 i;
 
 	if (!prof || (acts_cnt && !acts))
@@ -1835,14 +1853,11 @@ void ice_rem_vsi_rss_list(struct ice_hw *hw, u16 vsi_handle)
 	ice_acquire_lock(&hw->rss_locks);
 	LIST_FOR_EACH_ENTRY_SAFE(r, tmp, &hw->rss_list_head,
 				 ice_rss_cfg, l_entry) {
-		if (ice_is_bit_set(r->vsis, vsi_handle)) {
-			ice_clear_bit(vsi_handle, r->vsis);
-
+		if (ice_test_and_clear_bit(vsi_handle, r->vsis))
 			if (!ice_is_any_bit_set(r->vsis, ICE_MAX_VSI)) {
 				LIST_DEL(&r->l_entry);
 				ice_free(hw, r);
 			}
-		}
 	}
 	ice_release_lock(&hw->rss_locks);
 }
@@ -2109,6 +2124,13 @@ ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle, u64 hashed_flds,
 	if (status)
 		goto exit;
 
+	/* don't do RSS for GTPU outer */
+	if (segs_cnt == ICE_RSS_OUTER_HEADERS &&
+	    segs[segs_cnt - 1].hdrs & ICE_FLOW_SEG_HDR_GTPU) {
+		status = ICE_SUCCESS;
+		goto exit;
+	}
+
 	/* Search for a flow profile that has matching headers, hash fields
 	 * and has the input VSI associated to it. If found, no further
 	 * operations required and exit.
@@ -2225,6 +2247,7 @@ ice_add_rss_cfg(struct ice_hw *hw, u16 vsi_handle, u64 hashed_flds,
 	ice_acquire_lock(&hw->rss_locks);
 	status = ice_add_rss_cfg_sync(hw, vsi_handle, hashed_flds, addl_hdrs,
 				      ICE_RSS_OUTER_HEADERS, symm);
+
 	if (!status)
 		status = ice_add_rss_cfg_sync(hw, vsi_handle, hashed_flds,
 					      addl_hdrs, ICE_RSS_INNER_HEADERS,
@@ -2263,6 +2286,12 @@ ice_rem_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle, u64 hashed_flds,
 					   addl_hdrs);
 	if (status)
 		goto out;
+
+	if (segs_cnt == ICE_RSS_OUTER_HEADERS &&
+	    segs[segs_cnt - 1].hdrs & ICE_FLOW_SEG_HDR_GTPU) {
+		status = ICE_SUCCESS;
+		goto out;
+	}
 
 	prof = ice_flow_find_prof_conds(hw, blk, ICE_FLOW_RX, segs, segs_cnt,
 					vsi_handle,

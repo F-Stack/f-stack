@@ -9,6 +9,11 @@
  * Include this file if you are writing a component that requires CPU cycles to
  * operate, and you wish to run the component using service cores
  */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <rte_compat.h>
 #include <rte_service.h>
 
@@ -43,7 +48,7 @@ struct rte_service_spec {
 /**
  * Register a new service.
  *
- * A service represents a component that the requires CPU time periodically to
+ * A service represents a component that requires CPU time periodically to
  * achieve its purpose.
  *
  * For example the eventdev SW PMD requires CPU cycles to perform its
@@ -55,6 +60,10 @@ struct rte_service_spec {
  * only API that may be called by the service-component is
  * *rte_service_component_runstate_set*, which indicates that the service
  * component is ready to be executed.
+ *
+ * If the service is known to be mapped to a single lcore, setting the
+ * capability of the service to RTE_SERVICE_CAP_MT_SAFE can achieve
+ * better performance.
  *
  * @param spec The specification of the service to register
  * @param[out] service_id A pointer to a uint32_t, which will be filled in
@@ -125,5 +134,9 @@ int32_t rte_service_init(void);
  * @retval None
  */
 void rte_service_finalize(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _SERVICE_PRIVATE_H_ */

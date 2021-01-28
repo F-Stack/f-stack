@@ -2949,17 +2949,15 @@ typedef uint8_t efx_filter_flags_t;
 
 typedef uint32_t efx_filter_match_flags_t;
 
+/* Filter priority from lowest to highest */
 typedef enum efx_filter_priority_s {
-	EFX_FILTER_PRI_HINT = 0,	/* Performance hint */
-	EFX_FILTER_PRI_AUTO,		/* Automatic filter based on device
+	EFX_FILTER_PRI_AUTO = 0,	/* Automatic filter based on device
 					 * address list or hardware
 					 * requirements. This may only be used
 					 * by the filter implementation for
 					 * each NIC type. */
 	EFX_FILTER_PRI_MANUAL,		/* Manually configured filter */
-	EFX_FILTER_PRI_REQUIRED,	/* Required for correct behaviour of the
-					 * client (e.g. SR-IOV, HyperV VMQ etc.)
-					 */
+	EFX_FILTER_NPRI,
 } efx_filter_priority_t;
 
 /*
@@ -2974,6 +2972,11 @@ typedef struct efx_filter_spec_s {
 	uint16_t			efs_dmaq_id;
 	uint32_t			efs_rss_context;
 	uint32_t			efs_mark;
+	/*
+	 * Saved lower-priority filter. If it is set, it is restored on
+	 * filter delete operation.
+	 */
+	struct efx_filter_spec_s	*efs_overridden_spec;
 	/* Fields below here are hashed for software filter lookup */
 	uint16_t			efs_outer_vid;
 	uint16_t			efs_inner_vid;

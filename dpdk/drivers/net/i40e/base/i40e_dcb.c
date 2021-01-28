@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "i40e_adminq.h"
@@ -1212,7 +1212,8 @@ enum i40e_status_code i40e_set_dcb_config(struct i40e_hw *hw)
 
 /**
  * i40e_dcb_config_to_lldp - Convert Dcbconfig to MIB format
- * @hw: pointer to the hw struct
+ * @lldpmib: pointer to mib to be output
+ * @miblen: pointer to u16 for length of lldpmib
  * @dcbcfg: store for LLDPDU data
  *
  * send DCB configuration to FW

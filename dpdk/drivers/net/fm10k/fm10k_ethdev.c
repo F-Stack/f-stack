@@ -1575,28 +1575,9 @@ fm10k_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 }
 
 static int
-fm10k_vlan_offload_set(struct rte_eth_dev *dev, int mask)
+fm10k_vlan_offload_set(struct rte_eth_dev *dev __rte_unused,
+		       int mask __rte_unused)
 {
-	if (mask & ETH_VLAN_STRIP_MASK) {
-		if (!(dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_VLAN_STRIP))
-			PMD_INIT_LOG(ERR, "VLAN stripping is "
-					"always on in fm10k");
-	}
-
-	if (mask & ETH_VLAN_EXTEND_MASK) {
-		if (dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_VLAN_EXTEND)
-			PMD_INIT_LOG(ERR, "VLAN QinQ is not "
-					"supported in fm10k");
-	}
-
-	if (mask & ETH_VLAN_FILTER_MASK) {
-		if (!(dev->data->dev_conf.rxmode.offloads &
-			DEV_RX_OFFLOAD_VLAN_FILTER))
-			PMD_INIT_LOG(ERR, "VLAN filter is always on in fm10k");
-	}
-
 	return 0;
 }
 
@@ -1873,9 +1854,10 @@ fm10k_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id,
 	q->tail_ptr = (volatile uint32_t *)
 		&((uint32_t *)hw->hw_addr)[FM10K_RDT(queue_id)];
 	q->offloads = offloads;
-	if (handle_rxconf(q, conf))
+	if (handle_rxconf(q, conf)) {
+		rte_free(q);
 		return -EINVAL;
-
+	}
 	/* allocate memory for the software ring */
 	q->sw_ring = rte_zmalloc_socket("fm10k sw ring",
 			(nb_desc + q->nb_fake_desc) * sizeof(struct rte_mbuf *),
@@ -2055,8 +2037,10 @@ fm10k_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id,
 	q->ops = &def_txq_ops;
 	q->tail_ptr = (volatile uint32_t *)
 		&((uint32_t *)hw->hw_addr)[FM10K_TDT(queue_id)];
-	if (handle_txconf(q, conf))
+	if (handle_txconf(q, conf)) {
+		rte_free(q);
 		return -EINVAL;
+	}
 
 	/* allocate memory for the software ring */
 	q->sw_ring = rte_zmalloc_socket("fm10k sw ring",

@@ -236,7 +236,7 @@ The application has a number of command line options:
 
 ..  code-block:: console
 
-    ./build/l3fwd-acl [EAL options] -- -p PORTMASK [-P] --config(port,queue,lcore)[,(port,queue,lcore)] --rule_ipv4 FILENAME rule_ipv6 FILENAME [--scalar] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
+    ./build/l3fwd-acl [EAL options] -- -p PORTMASK [-P] --config(port,queue,lcore)[,(port,queue,lcore)] --rule_ipv4 FILENAME --rule_ipv6 FILENAME [--scalar] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
 
 
 where,
@@ -268,7 +268,7 @@ To enable L3 forwarding between two ports, assuming that both ports are in the s
 
 ..  code-block:: console
 
-    ./build/l3fwd-acl -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)" --rule_ipv4="./rule_ipv4.db" -- rule_ipv6="./rule_ipv6.db" --scalar
+    ./build/l3fwd-acl -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)" --rule_ipv4="./rule_ipv4.db" --rule_ipv6="./rule_ipv6.db" --scalar
 
 In this command:
 
@@ -290,9 +290,9 @@ In this command:
     |          |            |           |                                     |
     +----------+------------+-----------+-------------------------------------+
 
-*   The --rule_ipv4 option specifies the reading of IPv4 rules sets from the ./ rule_ipv4.db file.
+*   The --rule_ipv4 option specifies the reading of IPv4 rules sets from the rule_ipv4.db file.
 
-*   The --rule_ipv6 option specifies the reading of IPv6 rules sets from the ./ rule_ipv6.db file.
+*   The --rule_ipv6 option specifies the reading of IPv6 rules sets from the rule_ipv6.db file.
 
 *   The --scalar option specifies the performing of rule lookup with a scalar function.
 

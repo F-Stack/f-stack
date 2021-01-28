@@ -195,7 +195,7 @@ vhost_crypto_usage(const char *prgname)
 {
 	printf("%s [EAL options] --\n"
 		"  --%s <lcore>,SOCKET-FILE-PATH\n"
-		"  --%s (lcore,cdev_id,queue_id)[,(lcore,cdev_id,queue_id)]"
+		"  --%s (lcore,cdev_id,queue_id)[,(lcore,cdev_id,queue_id)]\n"
 		"  --%s: zero copy\n"
 		"  --%s: guest polling\n",
 		prgname, SOCKET_FILE_KEYWORD, CONFIG_KEYWORD,
@@ -544,7 +544,7 @@ main(int argc, char *argv[])
 		snprintf(name, 127, "COPPOOL_%u", lo->lcore_id);
 		info->cop_pool = rte_crypto_op_pool_create(name,
 				RTE_CRYPTO_OP_TYPE_SYMMETRIC, NB_MEMPOOL_OBJS,
-				NB_CACHE_OBJS, 0,
+				NB_CACHE_OBJS, VHOST_CRYPTO_MAX_IV_LEN,
 				rte_lcore_to_socket_id(lo->lcore_id));
 
 		if (!info->cop_pool) {

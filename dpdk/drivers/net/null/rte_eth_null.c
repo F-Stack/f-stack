@@ -584,6 +584,7 @@ rte_pmd_null_probe(struct rte_vdev_device *dev)
 	PMD_LOG(INFO, "Initializing pmd_null for %s", name);
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		struct pmd_internals *internals;
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (!eth_dev) {
 			PMD_LOG(ERR, "Failed to probe %s", name);
@@ -592,7 +593,8 @@ rte_pmd_null_probe(struct rte_vdev_device *dev)
 		/* TODO: request info from primary to set up Rx and Tx */
 		eth_dev->dev_ops = &ops;
 		eth_dev->device = &dev->device;
-		if (packet_copy) {
+		internals = eth_dev->data->dev_private;
+		if (internals->packet_copy) {
 			eth_dev->rx_pkt_burst = eth_null_copy_rx;
 			eth_dev->tx_pkt_burst = eth_null_copy_tx;
 		} else {
@@ -608,23 +610,18 @@ rte_pmd_null_probe(struct rte_vdev_device *dev)
 		if (kvlist == NULL)
 			return -1;
 
-		if (rte_kvargs_count(kvlist, ETH_NULL_PACKET_SIZE_ARG) == 1) {
+		ret = rte_kvargs_process(kvlist,
+				ETH_NULL_PACKET_SIZE_ARG,
+				&get_packet_size_arg, &packet_size);
+		if (ret < 0)
+			goto free_kvlist;
 
-			ret = rte_kvargs_process(kvlist,
-					ETH_NULL_PACKET_SIZE_ARG,
-					&get_packet_size_arg, &packet_size);
-			if (ret < 0)
-				goto free_kvlist;
-		}
 
-		if (rte_kvargs_count(kvlist, ETH_NULL_PACKET_COPY_ARG) == 1) {
-
-			ret = rte_kvargs_process(kvlist,
-					ETH_NULL_PACKET_COPY_ARG,
-					&get_packet_copy_arg, &packet_copy);
-			if (ret < 0)
-				goto free_kvlist;
-		}
+		ret = rte_kvargs_process(kvlist,
+				ETH_NULL_PACKET_COPY_ARG,
+				&get_packet_copy_arg, &packet_copy);
+		if (ret < 0)
+			goto free_kvlist;
 	}
 
 	PMD_LOG(INFO, "Configure pmd_null: packet size is %d, "

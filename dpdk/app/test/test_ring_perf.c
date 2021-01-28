@@ -296,12 +296,13 @@ load_loop_fn(void *p)
 static int
 run_on_all_cores(struct rte_ring *r)
 {
-	uint64_t total = 0;
+	uint64_t total;
 	struct thread_params param;
 	unsigned int i, c;
 
 	memset(&param, 0, sizeof(struct thread_params));
 	for (i = 0; i < RTE_DIM(bulk_sizes); i++) {
+		total = 0;
 		printf("\nBulk enq/dequeue count on size %u\n", bulk_sizes[i]);
 		param.size = bulk_sizes[i];
 		param.r = r;

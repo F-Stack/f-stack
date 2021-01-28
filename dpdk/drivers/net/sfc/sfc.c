@@ -241,8 +241,8 @@ sfc_estimate_resource_limits(struct sfc_adapter *sa)
 	return 0;
 
 fail_get_vi_pool:
-fail_nic_init:
 	efx_nic_fini(sa->nic);
+fail_nic_init:
 	return rc;
 }
 
@@ -684,6 +684,7 @@ sfc_rss_attach(struct sfc_adapter *sa)
 	efx_intr_fini(sa->nic);
 
 	rte_memcpy(rss->key, default_rss_key, sizeof(rss->key));
+	rss->dummy_rss_context = EFX_RSS_CONTEXT_DEFAULT;
 
 	return 0;
 

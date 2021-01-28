@@ -726,7 +726,8 @@ add_step(struct rte_lpm6 *lpm, struct rte_lpm6_tbl_entry *tbl,
 			tbl8_group_start = tbl8_gindex *
 					RTE_LPM6_TBL8_GROUP_NUM_ENTRIES;
 			memset(&lpm->tbl8[tbl8_group_start], 0,
-					  RTE_LPM6_TBL8_GROUP_NUM_ENTRIES);
+					RTE_LPM6_TBL8_GROUP_NUM_ENTRIES *
+					sizeof(struct rte_lpm6_tbl_entry));
 
 			/* init the new table's header:
 			 *   save the reference to the owner table
@@ -813,7 +814,7 @@ add_step(struct rte_lpm6 *lpm, struct rte_lpm6_tbl_entry *tbl,
  *
  *	Returns:
  *    0 on success
- *    -ENOSPC not enought tbl8 left
+ *    -ENOSPC not enough tbl8 left
  */
 static int
 simulate_add(struct rte_lpm6 *lpm, const uint8_t *masked_ip, uint8_t depth)
@@ -843,7 +844,7 @@ simulate_add(struct rte_lpm6 *lpm, const uint8_t *masked_ip, uint8_t depth)
 	}
 
 	if (tbl8_available(lpm) < total_need_tbl_nb)
-		/* not enought tbl8 to add a rule */
+		/* not enough tbl8 to add a rule */
 		return -ENOSPC;
 
 	return 0;
@@ -1211,7 +1212,7 @@ rule_find_range(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth,
 		/* minus top level */
 		depth -= 24;
 
-		/* interate through levels (tbl8s)
+		/* iterate through levels (tbl8s)
 		 * until we reach the last one
 		 */
 		while (depth > 8) {

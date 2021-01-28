@@ -296,7 +296,11 @@ static int bnxt_setup_one_vnic(struct bnxt *bp, uint16_t vnic_id)
 
 		if (BNXT_HAS_RING_GRPS(bp) && rxq->rx_deferred_start)
 			rxq->vnic->fw_grp_ids[j] = INVALID_HW_RING_ID;
+		else
+			vnic->rx_queue_cnt++;
 	}
+
+	PMD_DRV_LOG(DEBUG, "vnic->rx_queue_cnt = %d\n", vnic->rx_queue_cnt);
 
 	rc = bnxt_vnic_rss_configure(bp, vnic);
 	if (rc)
@@ -541,8 +545,7 @@ static int bnxt_dev_info_get_op(struct rte_eth_dev *eth_dev,
 			.wthresh = 0,
 		},
 		.rx_free_thresh = 32,
-		/* If no descriptors available, pkts are dropped by default */
-		.rx_drop_en = 1,
+		.rx_drop_en = BNXT_DEFAULT_RX_DROP_EN,
 	};
 
 	dev_info->default_txconf = (struct rte_eth_txconf) {
@@ -833,7 +836,7 @@ static int bnxt_dev_start_op(struct rte_eth_dev *eth_dev)
 	struct bnxt *bp = eth_dev->data->dev_private;
 	uint64_t rx_offloads = eth_dev->data->dev_conf.rxmode.offloads;
 	int vlan_mask = 0;
-	int rc;
+	int rc, retry_cnt = BNXT_IF_CHANGE_RETRY_COUNT;
 
 	if (!eth_dev->data->nb_tx_queues || !eth_dev->data->nb_rx_queues) {
 		PMD_DRV_LOG(ERR, "Queues are not configured yet!\n");
@@ -846,14 +849,23 @@ static int bnxt_dev_start_op(struct rte_eth_dev *eth_dev)
 			bp->rx_cp_nr_rings, RTE_ETHDEV_QUEUE_STAT_CNTRS);
 	}
 
-	rc = bnxt_hwrm_if_change(bp, 1);
-	if (!rc) {
-		if (bp->flags & BNXT_FLAG_IF_CHANGE_HOT_FW_RESET_DONE) {
-			rc = bnxt_handle_if_change_status(bp);
-			if (rc)
-				return rc;
-		}
+	do {
+		rc = bnxt_hwrm_if_change(bp, true);
+		if (rc == 0 || rc != -EAGAIN)
+			break;
+
+		rte_delay_ms(BNXT_IF_CHANGE_RETRY_INTERVAL);
+	} while (retry_cnt--);
+
+	if (rc)
+		return rc;
+
+	if (bp->flags & BNXT_FLAG_IF_CHANGE_HOT_FW_RESET_DONE) {
+		rc = bnxt_handle_if_change_status(bp);
+		if (rc)
+			return rc;
 	}
+
 	bnxt_enable_int(bp);
 
 	rc = bnxt_init_chip(bp);
@@ -863,7 +875,7 @@ static int bnxt_dev_start_op(struct rte_eth_dev *eth_dev)
 	eth_dev->data->scattered_rx = bnxt_scattered_rx(eth_dev);
 	eth_dev->data->dev_started = 1;
 
-	bnxt_link_update(eth_dev, 1, ETH_LINK_UP);
+	bnxt_link_update_op(eth_dev, 1);
 
 	if (rx_offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
 		vlan_mask |= ETH_VLAN_FILTER_MASK;
@@ -876,16 +888,15 @@ static int bnxt_dev_start_op(struct rte_eth_dev *eth_dev)
 	eth_dev->rx_pkt_burst = bnxt_receive_function(eth_dev);
 	eth_dev->tx_pkt_burst = bnxt_transmit_function(eth_dev);
 
-	pthread_mutex_lock(&bp->def_cp_lock);
 	bnxt_schedule_fw_health_check(bp);
-	pthread_mutex_unlock(&bp->def_cp_lock);
+
 	return 0;
 
 error:
-	bnxt_hwrm_if_change(bp, 0);
 	bnxt_shutdown_nic(bp);
 	bnxt_free_tx_mbufs(bp);
 	bnxt_free_rx_mbufs(bp);
+	bnxt_hwrm_if_change(bp, false);
 	eth_dev->data->dev_started = 0;
 	return rc;
 }
@@ -921,6 +932,7 @@ static void bnxt_dev_stop_op(struct rte_eth_dev *eth_dev)
 	struct bnxt *bp = eth_dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	struct rte_eth_link link;
 
 	eth_dev->data->dev_started = 0;
 	/* Prevent crashes when queues are still in use */
@@ -934,14 +946,16 @@ static void bnxt_dev_stop_op(struct rte_eth_dev *eth_dev)
 
 	bnxt_cancel_fw_health_check(bp);
 
-	bnxt_dev_set_link_down_op(eth_dev);
-
-	/* Wait for link to be reset and the async notification to process.
-	 * During reset recovery, there is no need to wait and
-	 * VF/NPAR functions do not have privilege to change PHY config.
-	 */
-	if (!is_bnxt_in_error(bp) && BNXT_SINGLE_PF(bp))
-		bnxt_link_update(eth_dev, 1, ETH_LINK_DOWN);
+	/* Do not bring link down during reset recovery */
+	if (!is_bnxt_in_error(bp)) {
+		bnxt_dev_set_link_down_op(eth_dev);
+		/* Wait for link to be reset */
+		if (BNXT_SINGLE_PF(bp))
+			rte_delay_ms(500);
+		/* clear the recorded link status */
+		memset(&link, 0, sizeof(link));
+		rte_eth_linkstatus_set(eth_dev, &link);
+	}
 
 	/* Clean queue intr-vector mapping */
 	rte_intr_efd_disable(intr_handle);
@@ -956,7 +970,7 @@ static void bnxt_dev_stop_op(struct rte_eth_dev *eth_dev)
 	/* Process any remaining notifications in default completion queue */
 	bnxt_int_handler(eth_dev);
 	bnxt_shutdown_nic(bp);
-	bnxt_hwrm_if_change(bp, 0);
+	bnxt_hwrm_if_change(bp, false);
 	bp->rx_cosq_cnt = 0;
 }
 
@@ -1078,7 +1092,7 @@ static int bnxt_mac_addr_add_op(struct rte_eth_dev *eth_dev,
 	if (rc)
 		return rc;
 
-	if (BNXT_VF(bp) & !BNXT_VF_IS_TRUSTED(bp)) {
+	if (BNXT_VF(bp) && !BNXT_VF_IS_TRUSTED(bp)) {
 		PMD_DRV_LOG(ERR, "Cannot add MAC address to a VF interface\n");
 		return -ENOTSUP;
 	}
@@ -1097,14 +1111,13 @@ static int bnxt_mac_addr_add_op(struct rte_eth_dev *eth_dev,
 	return rc;
 }
 
-int bnxt_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete,
-		     bool exp_link_status)
+int bnxt_link_update_op(struct rte_eth_dev *eth_dev, int wait_to_complete)
 {
 	int rc = 0;
 	struct bnxt *bp = eth_dev->data->dev_private;
 	struct rte_eth_link new;
-	int cnt = exp_link_status ? BNXT_LINK_UP_WAIT_CNT :
-		  BNXT_LINK_DOWN_WAIT_CNT;
+	int cnt = wait_to_complete ? BNXT_MAX_LINK_WAIT_CNT :
+			BNXT_MIN_LINK_WAIT_CNT;
 
 	rc = is_bnxt_in_error(bp);
 	if (rc)
@@ -1122,11 +1135,17 @@ int bnxt_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete,
 			goto out;
 		}
 
-		if (!wait_to_complete || new.link_status == exp_link_status)
+		if (!wait_to_complete || new.link_status)
 			break;
 
 		rte_delay_ms(BNXT_LINK_WAIT_INTERVAL);
 	} while (cnt--);
+
+	/* Only single function PF can bring phy down.
+	 * When port is stopped, report link down for VF/MH/NPAR functions.
+	 */
+	if (!BNXT_SINGLE_PF(bp) && !eth_dev->data->dev_started)
+		memset(&new, 0, sizeof(new));
 
 out:
 	/* Timed out or success */
@@ -1142,12 +1161,6 @@ out:
 	}
 
 	return rc;
-}
-
-static int bnxt_link_update_op(struct rte_eth_dev *eth_dev,
-			       int wait_to_complete)
-{
-	return bnxt_link_update(eth_dev, wait_to_complete, ETH_LINK_UP);
 }
 
 static int bnxt_promiscuous_enable_op(struct rte_eth_dev *eth_dev)
@@ -1431,7 +1444,9 @@ static int bnxt_rss_hash_update_op(struct rte_eth_dev *eth_dev,
 	}
 
 	bp->flags |= BNXT_FLAG_UPDATE_HASH;
-	memcpy(&bp->rss_conf, rss_conf, sizeof(*rss_conf));
+	memcpy(&eth_dev->data->dev_conf.rx_adv_conf.rss_conf,
+	       rss_conf,
+	       sizeof(*rss_conf));
 
 	/* Update the default RSS VNIC(s) */
 	vnic = &bp->vnic_info[0];
@@ -1508,7 +1523,7 @@ static int bnxt_rss_hash_conf_get_op(struct rte_eth_dev *eth_dev,
 		}
 		if (hash_types) {
 			PMD_DRV_LOG(ERR,
-				"Unknwon RSS config from firmware (%08x), RSS disabled",
+				"Unknown RSS config from firmware (%08x), RSS disabled",
 				vnic->hash_type);
 			return -ENOTSUP;
 		}
@@ -1840,6 +1855,11 @@ static int bnxt_vlan_filter_set_op(struct rte_eth_dev *eth_dev,
 	if (rc)
 		return rc;
 
+	if (!eth_dev->data->dev_started) {
+		PMD_DRV_LOG(ERR, "port must be started before setting vlan\n");
+		return -EINVAL;
+	}
+
 	/* These operations apply to ALL existing MAC/VLAN filters */
 	if (on)
 		return bnxt_add_vlan_filter(bp, vlan_id);
@@ -1925,6 +1945,8 @@ static int bnxt_free_one_vnic(struct bnxt *bp, uint16_t vnic_id)
 
 	rte_free(vnic->fw_grp_ids);
 	vnic->fw_grp_ids = NULL;
+
+	vnic->rx_queue_cnt = 0;
 
 	return 0;
 }
@@ -2155,10 +2177,11 @@ bnxt_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 	uint8_t fw_major = (bp->fw_ver >> 24) & 0xff;
 	uint8_t fw_minor = (bp->fw_ver >> 16) & 0xff;
 	uint8_t fw_updt = (bp->fw_ver >> 8) & 0xff;
+	uint8_t fw_rsvd = bp->fw_ver & 0xff;
 	int ret;
 
-	ret = snprintf(fw_version, fw_size, "%d.%d.%d",
-			fw_major, fw_minor, fw_updt);
+	ret = snprintf(fw_version, fw_size, "%d.%d.%d.%d",
+			fw_major, fw_minor, fw_updt, fw_rsvd);
 
 	ret += 1; /* add the size of '\0' */
 	if (fw_size < (uint32_t)ret)
@@ -2184,8 +2207,9 @@ bnxt_rxq_info_get_op(struct rte_eth_dev *dev, uint16_t queue_id,
 	qinfo->nb_desc = rxq->nb_rx_desc;
 
 	qinfo->conf.rx_free_thresh = rxq->rx_free_thresh;
-	qinfo->conf.rx_drop_en = 0;
+	qinfo->conf.rx_drop_en = rxq->drop_en;
 	qinfo->conf.rx_deferred_start = rxq->rx_deferred_start;
+	qinfo->conf.offloads = dev->data->dev_conf.rxmode.offloads;
 }
 
 static void
@@ -2209,6 +2233,7 @@ bnxt_txq_info_get_op(struct rte_eth_dev *dev, uint16_t queue_id,
 	qinfo->conf.tx_free_thresh = txq->tx_free_thresh;
 	qinfo->conf.tx_rs_thresh = 0;
 	qinfo->conf.tx_deferred_start = txq->tx_deferred_start;
+	qinfo->conf.offloads = dev->data->dev_conf.txmode.offloads;
 }
 
 int bnxt_mtu_set_op(struct rte_eth_dev *eth_dev, uint16_t new_mtu)
@@ -3790,8 +3815,6 @@ static const struct eth_dev_ops bnxt_dev_ops = {
 	.txq_info_get = bnxt_txq_info_get_op,
 	.dev_led_on = bnxt_dev_led_on_op,
 	.dev_led_off = bnxt_dev_led_off_op,
-	.xstats_get_by_id = bnxt_dev_xstats_get_by_id_op,
-	.xstats_get_names_by_id = bnxt_dev_xstats_get_names_by_id_op,
 	.rx_queue_count = bnxt_rx_queue_count_op,
 	.rx_descriptor_status = bnxt_rx_descriptor_status_op,
 	.tx_descriptor_status = bnxt_tx_descriptor_status_op,
@@ -3890,7 +3913,7 @@ static void bnxt_write_fw_reset_reg(struct bnxt *bp, uint32_t index)
 
 static void bnxt_dev_cleanup(struct bnxt *bp)
 {
-	bnxt_set_hwrm_link_config(bp, false);
+	bp->eth_dev->data->dev_link.link_status = 0;
 	bp->link_info.link_up = 0;
 	if (bp->eth_dev->data->dev_started)
 		bnxt_dev_stop_op(bp->eth_dev);
@@ -3931,7 +3954,7 @@ static int bnxt_restore_mac_filters(struct bnxt *bp)
 	uint16_t i;
 	int rc;
 
-	if (BNXT_VF(bp) & !BNXT_VF_IS_TRUSTED(bp))
+	if (BNXT_VF(bp) && !BNXT_VF_IS_TRUSTED(bp))
 		return 0;
 
 	rc = bnxt_dev_info_get_op(dev, &dev_info);
@@ -4186,17 +4209,22 @@ void bnxt_schedule_fw_health_check(struct bnxt *bp)
 {
 	uint32_t polling_freq;
 
+	pthread_mutex_lock(&bp->health_check_lock);
+
 	if (!bnxt_is_recovery_enabled(bp))
-		return;
+		goto done;
 
 	if (bp->flags & BNXT_FLAG_FW_HEALTH_CHECK_SCHEDULED)
-		return;
+		goto done;
 
 	polling_freq = bp->recovery_info->driver_polling_freq;
 
 	rte_eal_alarm_set(US_PER_MS * polling_freq,
 			  bnxt_check_fw_health, (void *)bp);
 	bp->flags |= BNXT_FLAG_FW_HEALTH_CHECK_SCHEDULED;
+
+done:
+	pthread_mutex_unlock(&bp->health_check_lock);
 }
 
 static void bnxt_cancel_fw_health_check(struct bnxt *bp)
@@ -4592,7 +4620,7 @@ static int bnxt_setup_mac_addr(struct rte_eth_dev *eth_dev)
 		return -ENOMEM;
 	}
 
-	if (bnxt_check_zero_bytes(bp->dflt_mac_addr, RTE_ETHER_ADDR_LEN)) {
+	if (!BNXT_HAS_DFLT_MAC_SET(bp)) {
 		if (BNXT_PF(bp))
 			return -EINVAL;
 
@@ -4605,14 +4633,11 @@ static int bnxt_setup_mac_addr(struct rte_eth_dev *eth_dev)
 			    bp->mac_addr[3], bp->mac_addr[4], bp->mac_addr[5]);
 
 		rc = bnxt_hwrm_set_mac(bp);
-		if (!rc)
-			memcpy(&bp->eth_dev->data->mac_addrs[0], bp->mac_addr,
-			       RTE_ETHER_ADDR_LEN);
-		return rc;
+		if (rc)
+			return rc;
 	}
 
 	/* Copy the permanent MAC from the FUNC_QCAPS response */
-	memcpy(bp->mac_addr, bp->dflt_mac_addr, RTE_ETHER_ADDR_LEN);
 	memcpy(&eth_dev->data->mac_addrs[0], bp->mac_addr, RTE_ETHER_ADDR_LEN);
 
 	return rc;
@@ -4623,7 +4648,7 @@ static int bnxt_restore_dflt_mac(struct bnxt *bp)
 	int rc = 0;
 
 	/* MAC is already configured in FW */
-	if (!bnxt_check_zero_bytes(bp->dflt_mac_addr, RTE_ETHER_ADDR_LEN))
+	if (BNXT_HAS_DFLT_MAC_SET(bp))
 		return 0;
 
 	/* Restore the old MAC configured */
@@ -4707,10 +4732,6 @@ static int bnxt_init_fw(struct bnxt *bp)
 	if (rc)
 		return rc;
 
-	rc = bnxt_hwrm_cfa_adv_flow_mgmt_qcaps(bp);
-	if (rc)
-		return rc;
-
 	/* Get the adapter error recovery support info */
 	rc = bnxt_hwrm_error_recovery_qcfg(bp);
 	if (rc)
@@ -4735,6 +4756,10 @@ bnxt_init_locks(struct bnxt *bp)
 	err = pthread_mutex_init(&bp->def_cp_lock, NULL);
 	if (err)
 		PMD_DRV_LOG(ERR, "Unable to initialize def_cp_lock\n");
+
+	err = pthread_mutex_init(&bp->health_check_lock, NULL);
+	if (err)
+		PMD_DRV_LOG(ERR, "Unable to initialize health_check_lock\n");
 	return err;
 }
 
@@ -4876,6 +4901,7 @@ bnxt_uninit_locks(struct bnxt *bp)
 {
 	pthread_mutex_destroy(&bp->flow_lock);
 	pthread_mutex_destroy(&bp->def_cp_lock);
+	pthread_mutex_destroy(&bp->health_check_lock);
 }
 
 static int
@@ -4929,8 +4955,7 @@ bnxt_dev_uninit(struct rte_eth_dev *eth_dev)
 
 	if (eth_dev->data->dev_started)
 		bnxt_dev_close_op(eth_dev);
-	if (bp->pf.vf_info)
-		rte_free(bp->pf.vf_info);
+	bnxt_hwrm_free_vf_info(bp);
 	eth_dev->dev_ops = NULL;
 	eth_dev->rx_pkt_burst = NULL;
 	eth_dev->tx_pkt_burst = NULL;

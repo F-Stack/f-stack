@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2015 Intel Corporation.
+
 How to get best performance with NICs on Intel platforms
 ========================================================
 
@@ -64,7 +67,7 @@ This aligns with the previous output which showed that each channel has one memo
 Network Interface Card Requirements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use a `DPDK supported <http://core.dpdk.org/supported/>`_ high end NIC such as the Intel XL710 40GbE.
+Use a `DPDK supported <https://core.dpdk.org/supported/>`_ high end NIC such as the Intel XL710 40GbE.
 
 Make sure each NIC has been flashed the latest version of NVM/firmware.
 

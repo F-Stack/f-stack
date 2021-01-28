@@ -293,7 +293,7 @@ vfio_open_group_fd(int iommu_group_num)
 							strerror(errno));
 					return -1;
 				}
-				return 0;
+				return -ENOENT;
 			}
 			/* noiommu group found */
 		}
@@ -318,12 +318,12 @@ vfio_open_group_fd(int iommu_group_num)
 			vfio_group_fd = mp_rep->fds[0];
 		} else if (p->result == SOCKET_NO_FD) {
 			RTE_LOG(ERR, EAL, "  bad VFIO group fd\n");
-			vfio_group_fd = 0;
+			vfio_group_fd = -ENOENT;
 		}
 	}
 
 	free(mp_reply.msgs);
-	if (vfio_group_fd < 0)
+	if (vfio_group_fd < 0 && vfio_group_fd != -ENOENT)
 		RTE_LOG(ERR, EAL, "  cannot request group fd\n");
 	return vfio_group_fd;
 }
@@ -381,7 +381,7 @@ vfio_get_group_fd(struct vfio_config *vfio_cfg,
 	vfio_group_fd = vfio_open_group_fd(iommu_group_num);
 	if (vfio_group_fd < 0) {
 		RTE_LOG(ERR, EAL, "Failed to open group %d\n", iommu_group_num);
-		return -1;
+		return vfio_group_fd;
 	}
 
 	cur_grp->group_num = iommu_group_num;
@@ -514,9 +514,11 @@ static void
 vfio_mem_event_callback(enum rte_mem_event type, const void *addr, size_t len,
 		void *arg __rte_unused)
 {
+	rte_iova_t iova_start, iova_expected;
 	struct rte_memseg_list *msl;
 	struct rte_memseg *ms;
 	size_t cur_len = 0;
+	uint64_t va_start;
 
 	msl = rte_mem_virt2memseg_list(addr);
 
@@ -545,22 +547,63 @@ vfio_mem_event_callback(enum rte_mem_event type, const void *addr, size_t len,
 #endif
 	/* memsegs are contiguous in memory */
 	ms = rte_mem_virt2memseg(addr, msl);
+
+	/*
+	 * This memory is not guaranteed to be contiguous, but it still could
+	 * be, or it could have some small contiguous chunks. Since the number
+	 * of VFIO mappings is limited, and VFIO appears to not concatenate
+	 * adjacent mappings, we have to do this ourselves.
+	 *
+	 * So, find contiguous chunks, then map them.
+	 */
+	va_start = ms->addr_64;
+	iova_start = iova_expected = ms->iova;
 	while (cur_len < len) {
+		bool new_contig_area = ms->iova != iova_expected;
+		bool last_seg = (len - cur_len) == ms->len;
+		bool skip_last = false;
+
+		/* only do mappings when current contiguous area ends */
+		if (new_contig_area) {
+			if (type == RTE_MEM_EVENT_ALLOC)
+				vfio_dma_mem_map(default_vfio_cfg, va_start,
+						iova_start,
+						iova_expected - iova_start, 1);
+			else
+				vfio_dma_mem_map(default_vfio_cfg, va_start,
+						iova_start,
+						iova_expected - iova_start, 0);
+			va_start = ms->addr_64;
+			iova_start = ms->iova;
+		}
 		/* some memory segments may have invalid IOVA */
 		if (ms->iova == RTE_BAD_IOVA) {
 			RTE_LOG(DEBUG, EAL, "Memory segment at %p has bad IOVA, skipping\n",
 					ms->addr);
-			goto next;
+			skip_last = true;
 		}
-		if (type == RTE_MEM_EVENT_ALLOC)
-			vfio_dma_mem_map(default_vfio_cfg, ms->addr_64,
-					ms->iova, ms->len, 1);
-		else
-			vfio_dma_mem_map(default_vfio_cfg, ms->addr_64,
-					ms->iova, ms->len, 0);
-next:
+		iova_expected = ms->iova + ms->len;
 		cur_len += ms->len;
 		++ms;
+
+		/*
+		 * don't count previous segment, and don't attempt to
+		 * dereference a potentially invalid pointer.
+		 */
+		if (skip_last && !last_seg) {
+			iova_expected = iova_start = ms->iova;
+			va_start = ms->addr_64;
+		} else if (!skip_last && last_seg) {
+			/* this is the last segment and we're not skipping */
+			if (type == RTE_MEM_EVENT_ALLOC)
+				vfio_dma_mem_map(default_vfio_cfg, va_start,
+						iova_start,
+						iova_expected - iova_start, 1);
+			else
+				vfio_dma_mem_map(default_vfio_cfg, va_start,
+						iova_start,
+						iova_expected - iova_start, 0);
+		}
 	}
 #ifdef RTE_ARCH_PPC_64
 	cur_len = 0;
@@ -685,11 +728,14 @@ rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 
 	/* get the actual group fd */
 	vfio_group_fd = rte_vfio_get_group_fd(iommu_group_num);
-	if (vfio_group_fd < 0)
+	if (vfio_group_fd < 0 && vfio_group_fd != -ENOENT)
 		return -1;
 
-	/* if group_fd == 0, that means the device isn't managed by VFIO */
-	if (vfio_group_fd == 0) {
+	/*
+	 * if vfio_group_fd == -ENOENT, that means the device
+	 * isn't managed by VFIO
+	 */
+	if (vfio_group_fd == -ENOENT) {
 		RTE_LOG(WARNING, EAL, " %s not managed by VFIO driver, skipping\n",
 				dev_addr);
 		return 1;
@@ -886,9 +932,6 @@ int
 rte_vfio_release_device(const char *sysfs_base, const char *dev_addr,
 		    int vfio_dev_fd)
 {
-	struct vfio_group_status group_status = {
-			.argsz = sizeof(group_status)
-	};
 	struct vfio_config *vfio_cfg;
 	int vfio_group_fd;
 	int iommu_group_num;
@@ -912,10 +955,10 @@ rte_vfio_release_device(const char *sysfs_base, const char *dev_addr,
 
 	/* get the actual group fd */
 	vfio_group_fd = rte_vfio_get_group_fd(iommu_group_num);
-	if (vfio_group_fd <= 0) {
+	if (vfio_group_fd < 0) {
 		RTE_LOG(INFO, EAL, "rte_vfio_get_group_fd failed for %s\n",
 				   dev_addr);
-		ret = -1;
+		ret = vfio_group_fd;
 		goto out;
 	}
 
@@ -1049,6 +1092,7 @@ vfio_get_default_container_fd(void)
 	struct rte_mp_reply mp_reply = {0};
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct vfio_mp_param *p = (struct vfio_mp_param *)mp_req.param;
+	int container_fd;
 
 	if (default_vfio_cfg->vfio_enabled)
 		return default_vfio_cfg->vfio_container_fd;
@@ -1071,8 +1115,9 @@ vfio_get_default_container_fd(void)
 		mp_rep = &mp_reply.msgs[0];
 		p = (struct vfio_mp_param *)mp_rep->param;
 		if (p->result == SOCKET_OK && mp_rep->num_fds == 1) {
+			container_fd = mp_rep->fds[0];
 			free(mp_reply.msgs);
-			return mp_rep->fds[0];
+			return container_fd;
 		}
 	}
 

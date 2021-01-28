@@ -47,6 +47,12 @@ extern "C" {
 /*------------------------ 128 bit atomic operations -------------------------*/
 
 #if defined(__ARM_FEATURE_ATOMICS) || defined(RTE_ARM_FEATURE_ATOMICS)
+#if defined(RTE_CC_CLANG)
+#define __LSE_PREAMBLE	".arch armv8-a+lse\n"
+#else
+#define __LSE_PREAMBLE	""
+#endif
+
 #define __ATOMIC128_CAS_OP(cas_op_name, op_string)                          \
 static __rte_noinline rte_int128_t                                          \
 cas_op_name(rte_int128_t *dst, rte_int128_t old, rte_int128_t updated)      \
@@ -60,6 +66,7 @@ cas_op_name(rte_int128_t *dst, rte_int128_t old, rte_int128_t updated)      \
 	register uint64_t x2 __asm("x2") = (uint64_t)updated.val[0];        \
 	register uint64_t x3 __asm("x3") = (uint64_t)updated.val[1];        \
 	asm volatile(                                                       \
+		__LSE_PREAMBLE						    \
 		op_string " %[old0], %[old1], %[upd0], %[upd1], [%[dst]]"   \
 		: [old0] "+r" (x0),                                         \
 		[old1] "+r" (x1)                                            \
@@ -77,6 +84,7 @@ __ATOMIC128_CAS_OP(__cas_128_acquire, "caspa")
 __ATOMIC128_CAS_OP(__cas_128_release, "caspl")
 __ATOMIC128_CAS_OP(__cas_128_acq_rel, "caspal")
 
+#undef __LSE_PREAMBLE
 #undef __ATOMIC128_CAS_OP
 
 #endif

@@ -2,6 +2,12 @@
  * Copyright(c) 2010-2019 Intel Corporation
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <pthread.h>
+#include <sched.h>
+
 #include <stdint.h>
 #include <unistd.h>
 #include <stdbool.h>
@@ -30,6 +36,8 @@
 			    (1ULL << VIRTIO_F_VERSION_1) |\
 			    (1ULL << VIRTIO_F_NOTIFY_ON_EMPTY) | \
 			    (1ULL << VHOST_USER_F_PROTOCOL_FEATURES))
+
+struct vhost_blk_ctrlr *g_vhost_ctrlr;
 
 /* Path to folder where character device will be created. Can be set by user. */
 static char dev_pathname[PATH_MAX] = "";
@@ -1080,7 +1088,11 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	rte_vhost_driver_start(dev_pathname);
+	ret = rte_vhost_driver_start(dev_pathname);
+	if (ret < 0) {
+		fprintf(stderr, "Failed to start vhost driver.\n");
+		return -1;
+	}
 
 	/* loop for exit the application */
 	while (1)

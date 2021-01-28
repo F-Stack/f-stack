@@ -114,9 +114,9 @@ struct mlx5_rxq_data {
 	unsigned int strd_sz_n:4; /* Log 2 of stride size. */
 	unsigned int strd_shift_en:1; /* Enable 2bytes shift on a stride. */
 	unsigned int err_state:2; /* enum mlx5_rxq_err_state. */
-	unsigned int strd_headroom_en:1; /* Enable mbuf headroom in MPRQ. */
+	unsigned int strd_scatter_en:1; /* Scattered packets from a stride. */
 	unsigned int lro:1; /* Enable LRO. */
-	unsigned int :1; /* Remaining bits. */
+	unsigned int dynf_meta:1; /* Dynamic metadata is configured. */
 	volatile uint32_t *rq_db;
 	volatile uint32_t *cq_db;
 	uint16_t port_id;
@@ -154,6 +154,8 @@ struct mlx5_rxq_data {
 	/* CQ (UAR) access lock required for 32bit implementations */
 #endif
 	uint32_t tunnel; /* Tunnel information. */
+	uint64_t flow_meta_mask;
+	int32_t flow_meta_offset;
 } __rte_cache_aligned;
 
 enum mlx5_rxq_obj_type {
@@ -427,6 +429,7 @@ int mlx5_tx_hairpin_queue_setup
 	 const struct rte_eth_hairpin_conf *hairpin_conf);
 void mlx5_tx_queue_release(void *dpdk_txq);
 int mlx5_tx_uar_init_secondary(struct rte_eth_dev *dev, int fd);
+void mlx5_tx_uar_uninit_secondary(struct rte_eth_dev *dev);
 struct mlx5_txq_obj *mlx5_txq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 				      enum mlx5_txq_obj_type type);
 struct mlx5_txq_obj *mlx5_txq_obj_get(struct rte_eth_dev *dev, uint16_t idx);

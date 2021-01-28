@@ -322,10 +322,10 @@ fs_dev_stats_save(struct sub_device *sdev)
 	if (err) {
 		uint64_t timestamp = sdev->stats_snapshot.timestamp;
 
-		WARN("Could not access latest statistics from sub-device %d.\n",
+		WARN("Could not access latest statistics from sub-device %d.",
 			 SUB_ID(sdev));
 		if (timestamp != 0)
-			WARN("Using latest snapshot taken before %"PRIu64" seconds.\n",
+			WARN("Using latest snapshot taken before %"PRIu64" seconds.",
 				 (rte_rdtsc() - timestamp) / rte_get_tsc_hz());
 	}
 	failsafe_stats_increment
@@ -383,14 +383,23 @@ failsafe_dev_remove(struct rte_eth_dev *dev)
 	struct sub_device *sdev;
 	uint8_t i;
 
-	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_ACTIVE)
-		if (sdev->remove && fs_rxtx_clean(sdev)) {
-			if (fs_lock(dev, 1) != 0)
-				return;
+	FOREACH_SUBDEV(sdev, i, dev) {
+		if (!sdev->remove)
+			continue;
+
+		/* Active devices must have finished their burst and
+		 * their stats must be saved.
+		 */
+		if (sdev->state >= DEV_ACTIVE &&
+		    fs_rxtx_clean(sdev) == 0)
+			continue;
+		if (fs_lock(dev, 1) != 0)
+			return;
+		if (sdev->state >= DEV_ACTIVE)
 			fs_dev_stats_save(sdev);
-			fs_dev_remove(sdev);
-			fs_unlock(dev, 1);
-		}
+		fs_dev_remove(sdev);
+		fs_unlock(dev, 1);
+	}
 }
 
 static int

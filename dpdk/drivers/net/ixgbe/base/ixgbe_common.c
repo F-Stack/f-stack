@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "ixgbe_common.h"
@@ -3777,11 +3777,11 @@ s32 ixgbe_clear_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq)
 	if (vmdq == IXGBE_CLEAR_VMDQ_ALL) {
 		if (mpsar_lo) {
 			IXGBE_WRITE_REG(hw, IXGBE_MPSAR_LO(rar), 0);
-			mpsar_lo = 0;
+			mpsar_lo = IXGBE_READ_REG(hw, IXGBE_MPSAR_LO(rar));
 		}
 		if (mpsar_hi) {
 			IXGBE_WRITE_REG(hw, IXGBE_MPSAR_HI(rar), 0);
-			mpsar_hi = 0;
+			mpsar_hi = IXGBE_READ_REG(hw, IXGBE_MPSAR_HI(rar));
 		}
 	} else if (vmdq < 32) {
 		mpsar_lo &= ~(1 << vmdq);
@@ -4600,7 +4600,8 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, u32 *buffer,
 	 * Read Flash command requires reading buffer length from
 	 * two byes instead of one byte
 	 */
-	if (resp->cmd == 0x30) {
+	if (resp->cmd == IXGBE_HOST_INTERFACE_FLASH_READ_CMD ||
+	    resp->cmd == IXGBE_HOST_INTERFACE_SHADOW_RAM_READ_CMD) {
 		for (; bi < dword_len + 2; bi++) {
 			buffer[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG,
 							  bi);

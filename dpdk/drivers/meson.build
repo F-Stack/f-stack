@@ -151,7 +151,7 @@ foreach class:dpdk_driver_classes
 			version_map = '@0@/@1@/@2@_version.map'.format(
 					meson.current_source_dir(),
 					drv_path, lib_name)
-			implib = dir_name + '.dll.a'
+			implib = 'lib' + lib_name + '.dll.a'
 
 			def_file = custom_target(lib_name + '_def',
 				command: [map_to_def_cmd, '@INPUT@', '@OUTPUT@'],
@@ -159,8 +159,14 @@ foreach class:dpdk_driver_classes
 				output: '@0@_exports.def'.format(lib_name))
 			lk_deps = [version_map, def_file]
 			if is_windows
-				lk_args = ['-Wl,/def:' + def_file.full_path(),
-					'-Wl,/implib:lib\\' + implib]
+				if is_ms_linker
+					lk_args = ['-Wl,/def:' + def_file.full_path()]
+					if meson.version().version_compare('<0.54.0')
+						lk_args += ['-Wl,/implib:drivers\\' + implib]
+					endif
+				else
+					lk_args = []
+				endif
 			else
 				lk_args = ['-Wl,--version-script=' + version_map]
 				# on unix systems check the output of the
@@ -192,7 +198,7 @@ foreach class:dpdk_driver_classes
 			shared_dep = declare_dependency(link_with: shared_lib,
 					include_directories: includes,
 					dependencies: shared_deps)
-			static_dep = declare_dependency(link_with: static_lib,
+			static_dep = declare_dependency(
 					include_directories: includes,
 					dependencies: static_deps)
 

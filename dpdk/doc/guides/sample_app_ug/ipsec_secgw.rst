@@ -92,7 +92,7 @@ The application has a number of command line options::
 
    ./build/ipsec-secgw [EAL options] --
                         -p PORTMASK -P -u PORTMASK -j FRAMESIZE
-                        -l -w REPLAY_WINOW_SIZE -e -a
+                        -l -w REPLAY_WINDOW_SIZE -e -a
                         --config (port,queue,lcore)[,(port,queue,lcore]
                         --single-sa SAIDX
                         --rxoffload MASK
@@ -122,7 +122,7 @@ Where:
 
 *   ``-l``: enables code-path that uses librte_ipsec.
 
-*   ``-w REPLAY_WINOW_SIZE``: specifies the IPsec sequence number replay window
+*   ``-w REPLAY_WINDOW_SIZE``: specifies the IPsec sequence number replay window
     size for each Security Association (available only with librte_ipsec
     code path).
 

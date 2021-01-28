@@ -1998,7 +1998,7 @@ check_all_ports_link_status(uint32_t port_mask)
 						"Mbps - %s\n", (uint8_t)portid,
 						(unsigned)link.link_speed,
 				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
+					("full-duplex") : ("half-duplex"));
 				else
 					printf("Port %d Link Down\n",
 						(uint8_t)portid);
@@ -2445,9 +2445,7 @@ main(int argc, char **argv)
 				if (add_cb_parse_ptype(portid, queueid) < 0)
 					rte_exit(EXIT_FAILURE,
 						 "Fail to add ptype cb\n");
-			} else if (!check_ptype(portid))
-				rte_exit(EXIT_FAILURE,
-					 "PMD can not provide needed ptypes\n");
+			}
 		}
 	}
 
@@ -2478,6 +2476,11 @@ main(int argc, char **argv)
 		}
 		/* initialize spinlock for each port */
 		rte_spinlock_init(&(locks[portid]));
+
+		if (!parse_ptype)
+			if (!check_ptype(portid))
+				rte_exit(EXIT_FAILURE,
+					"PMD can not provide needed ptypes\n");
 	}
 
 	check_all_ports_link_status(enabled_port_mask);

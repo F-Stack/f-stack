@@ -143,6 +143,8 @@ if build
 		'MLX5DV_FLOW_ACTION_COUNTERS_DEVX' ],
 		[ 'HAVE_IBV_DEVX_ASYNC', 'infiniband/mlx5dv.h',
 		'mlx5dv_devx_obj_query_async' ],
+		[ 'HAVE_IBV_DEVX_QP', 'infiniband/mlx5dv.h',
+		'mlx5dv_devx_qp_query' ],
 		[ 'HAVE_MLX5DV_DR_ACTION_DEST_DEVX_TIR', 'infiniband/mlx5dv.h',
 		'mlx5dv_dr_action_create_dest_devx_tir' ],
 		[ 'HAVE_MLX5_DR_CREATE_ACTION_FLOW_METER', 'infiniband/mlx5dv.h',

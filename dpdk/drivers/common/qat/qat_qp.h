@@ -11,10 +11,8 @@ struct qat_pci_device;
 
 #define QAT_CSR_HEAD_WRITE_THRESH 32U
 /* number of requests to accumulate before writing head CSR */
-#define QAT_CSR_TAIL_WRITE_THRESH 32U
-/* number of requests to accumulate before writing tail CSR */
-#define QAT_CSR_TAIL_FORCE_WRITE_THRESH 256U
-/* number of inflights below which no tail write coalescing should occur */
+
+#define QAT_QP_MIN_INFL_THRESHOLD	256
 
 typedef int (*build_request_t)(void *op,
 		uint8_t *req, void *op_cookie,
@@ -55,7 +53,6 @@ struct qat_queue {
 	uint32_t	tail;			/* Shadow copy of the tail */
 	uint32_t	modulo_mask;
 	uint32_t	msg_size;
-	uint16_t	max_inflights;
 	uint32_t	queue_size;
 	uint8_t		hw_bundle_number;
 	uint8_t		hw_queue_number;
@@ -64,13 +61,10 @@ struct qat_queue {
 	uint32_t	csr_tail;		/* last written tail value */
 	uint16_t	nb_processed_responses;
 	/* number of responses processed since last CSR head write */
-	uint16_t	nb_pending_requests;
-	/* number of requests pending since last CSR tail write */
 };
 
 struct qat_qp {
 	void			*mmap_bar_addr;
-	uint16_t		inflights16;
 	struct qat_queue	tx_q;
 	struct qat_queue	rx_q;
 	struct qat_common_stats stats;
@@ -82,6 +76,10 @@ struct qat_qp {
 	enum qat_service_type service_type;
 	struct qat_pci_device *qat_dev;
 	/**< qat device this qp is on */
+	uint32_t enqueued;
+	uint32_t dequeued __rte_aligned(4);
+	uint16_t max_inflights;
+	uint16_t min_enq_burst_threshold;
 } __rte_cache_aligned;
 
 extern const struct qat_qp_hw_data qat_gen1_qps[][ADF_MAX_QPS_ON_ANY_SERVICE];
@@ -104,6 +102,9 @@ qat_qp_setup(struct qat_pci_device *qat_dev,
 int
 qat_qps_per_service(const struct qat_qp_hw_data *qp_hw_data,
 			enum qat_service_type service);
+
+int
+qat_cq_get_fw_version(struct qat_qp *qp);
 
 /* Needed for weak function*/
 int

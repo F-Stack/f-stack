@@ -202,25 +202,8 @@ struct vhost_virtqueue {
 	TAILQ_HEAD(, vhost_iotlb_entry) iotlb_pending_list;
 } __rte_cache_aligned;
 
-/* Old kernels have no such macros defined */
-#ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
- #define VIRTIO_NET_F_GUEST_ANNOUNCE 21
-#endif
-
-#ifndef VIRTIO_NET_F_MQ
- #define VIRTIO_NET_F_MQ		22
-#endif
-
 #define VHOST_MAX_VRING			0x100
 #define VHOST_MAX_QUEUE_PAIRS		0x80
-
-#ifndef VIRTIO_NET_F_MTU
- #define VIRTIO_NET_F_MTU 3
-#endif
-
-#ifndef VIRTIO_F_ANY_LAYOUT
- #define VIRTIO_F_ANY_LAYOUT		27
-#endif
 
 /* Declare IOMMU related bits for older kernels */
 #ifndef VIRTIO_F_IOMMU_PLATFORM
@@ -537,7 +520,6 @@ vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 #define PRINT_PACKET(device, addr, size, header) do {} while (0)
 #endif
 
-extern uint64_t VHOST_FEATURES;
 #define MAX_VHOST_DEVICE	1024
 extern struct virtio_net *vhost_devices[MAX_VHOST_DEVICE];
 

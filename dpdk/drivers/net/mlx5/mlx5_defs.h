@@ -61,7 +61,7 @@
 
 /* Switch port ID parameters for bonding configurations. */
 #define MLX5_PORT_ID_BONDING_PF_MASK 0xf
-#define MLX5_PORT_ID_BONDING_PF_SHIFT 0xf
+#define MLX5_PORT_ID_BONDING_PF_SHIFT 12
 
 /* Alarm timeout. */
 #define MLX5_ALARM_TIMEOUT_US 100000
@@ -145,6 +145,9 @@
 
 /* Log 2 of the default number of strides per WQE for Multi-Packet RQ. */
 #define MLX5_MPRQ_STRIDE_NUM_N 6U
+
+/* Log 2 of the default size of a stride per WQE for Multi-Packet RQ. */
+#define MLX5_MPRQ_STRIDE_SIZE_N 11U
 
 /* Two-byte shift is disabled for Multi-Packet RQ. */
 #define MLX5_MPRQ_TWO_BYTE_SHIFT 0

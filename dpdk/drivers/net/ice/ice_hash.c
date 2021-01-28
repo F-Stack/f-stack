@@ -95,7 +95,7 @@ struct rss_type_match_hdr hint_7 = {
 struct rss_type_match_hdr hint_8 = {
 	ICE_FLOW_SEG_HDR_IPV6 | ICE_FLOW_SEG_HDR_SCTP, ETH_RSS_NONFRAG_IPV6_SCTP};
 struct rss_type_match_hdr hint_9 = {
-	ICE_FLOW_SEG_HDR_GTPU_IP,	ETH_RSS_IPV4};
+	ICE_FLOW_SEG_HDR_GTPU_EH, ETH_RSS_IPV4};
 struct rss_type_match_hdr hint_10 = {
 	ICE_FLOW_SEG_HDR_PPPOE,	ETH_RSS_IPV4};
 struct rss_type_match_hdr hint_11 = {
@@ -104,6 +104,10 @@ struct rss_type_match_hdr hint_12 = {
 	ICE_FLOW_SEG_HDR_PPPOE,	ETH_RSS_NONFRAG_IPV4_TCP};
 struct rss_type_match_hdr hint_13 = {
 	ICE_FLOW_SEG_HDR_PPPOE,	ETH_RSS_NONFRAG_IPV4_SCTP};
+struct rss_type_match_hdr hint_14 = {
+	ICE_FLOW_SEG_HDR_GTPU_EH, ETH_RSS_NONFRAG_IPV4_UDP};
+struct rss_type_match_hdr hint_15 = {
+	ICE_FLOW_SEG_HDR_GTPU_EH, ETH_RSS_NONFRAG_IPV4_TCP};
 
 /* Supported pattern for os default package. */
 static struct ice_pattern_match_item ice_hash_pattern_list_os[] = {
@@ -130,8 +134,8 @@ static struct ice_pattern_match_item ice_hash_pattern_list_comms[] = {
 	{pattern_eth_ipv6_sctp,		    ICE_INSET_NONE,  &hint_8},
 	{pattern_empty,			    ICE_INSET_NONE,  &hint_0},
 	{pattern_eth_ipv4_gtpu_eh_ipv4,	    ICE_INSET_NONE,  &hint_9},
-	{pattern_eth_ipv4_gtpu_eh_ipv4_udp, ICE_INSET_NONE,  &hint_9},
-	{pattern_eth_ipv4_gtpu_eh_ipv4_tcp, ICE_INSET_NONE,  &hint_9},
+	{pattern_eth_ipv4_gtpu_eh_ipv4_udp, ICE_INSET_NONE,  &hint_14},
+	{pattern_eth_ipv4_gtpu_eh_ipv4_tcp, ICE_INSET_NONE,  &hint_15},
 	{pattern_eth_pppoes_ipv4,	    ICE_INSET_NONE,  &hint_10},
 	{pattern_eth_pppoes_ipv4_udp,	    ICE_INSET_NONE,  &hint_11},
 	{pattern_eth_pppoes_ipv4_tcp,	    ICE_INSET_NONE,  &hint_12},
@@ -409,7 +413,7 @@ ice_hash_parse_pattern_action(__rte_unused struct ice_adapter *ad,
 			void **meta,
 			struct rte_flow_error *error)
 {
-	int ret = -rte_errno;
+	int ret = 0;
 	struct ice_pattern_match_item *pattern_match_item;
 	struct rss_meta *rss_meta_ptr;
 
@@ -424,22 +428,27 @@ ice_hash_parse_pattern_action(__rte_unused struct ice_adapter *ad,
 	/* Check rss supported pattern and find matched pattern. */
 	pattern_match_item = ice_search_pattern_match_item(pattern,
 					array, array_len, error);
-	if (!pattern_match_item)
+	if (!pattern_match_item) {
+		ret = -rte_errno;
 		goto error;
+	}
 
 	ret = ice_hash_check_inset(pattern, error);
 	if (ret)
 		goto error;
 
 	/* Save protocol header to rss_meta. */
-	*meta = rss_meta_ptr;
-	((struct rss_meta *)*meta)->pkt_hdr = ((struct rss_type_match_hdr *)
+	rss_meta_ptr->pkt_hdr = ((struct rss_type_match_hdr *)
 		(pattern_match_item->meta))->hdr_mask;
 
 	/* Check rss action. */
-	ret = ice_hash_parse_action(pattern_match_item, actions, meta, error);
+	ret = ice_hash_parse_action(pattern_match_item, actions,
+				    (void **)&rss_meta_ptr, error);
+
 error:
-	if (ret)
+	if (!ret && meta)
+		*meta = rss_meta_ptr;
+	else
 		rte_free(rss_meta_ptr);
 	rte_free(pattern_match_item);
 

@@ -68,6 +68,9 @@ enum vhost_xstats_pkts {
 	VHOST_BROADCAST_PKT,
 	VHOST_MULTICAST_PKT,
 	VHOST_UNICAST_PKT,
+	VHOST_PKT,
+	VHOST_BYTE,
+	VHOST_MISSED_PKT,
 	VHOST_ERRORS_PKT,
 	VHOST_ERRORS_FRAGMENTED,
 	VHOST_ERRORS_JABBER,
@@ -143,11 +146,11 @@ struct vhost_xstats_name_off {
 /* [rx]_is prepended to the name string here */
 static const struct vhost_xstats_name_off vhost_rxport_stat_strings[] = {
 	{"good_packets",
-	 offsetof(struct vhost_queue, stats.pkts)},
+	 offsetof(struct vhost_queue, stats.xstats[VHOST_PKT])},
 	{"total_bytes",
-	 offsetof(struct vhost_queue, stats.bytes)},
+	 offsetof(struct vhost_queue, stats.xstats[VHOST_BYTE])},
 	{"missed_pkts",
-	 offsetof(struct vhost_queue, stats.missed_pkts)},
+	 offsetof(struct vhost_queue, stats.xstats[VHOST_MISSED_PKT])},
 	{"broadcast_packets",
 	 offsetof(struct vhost_queue, stats.xstats[VHOST_BROADCAST_PKT])},
 	{"multicast_packets",
@@ -183,11 +186,11 @@ static const struct vhost_xstats_name_off vhost_rxport_stat_strings[] = {
 /* [tx]_ is prepended to the name string here */
 static const struct vhost_xstats_name_off vhost_txport_stat_strings[] = {
 	{"good_packets",
-	 offsetof(struct vhost_queue, stats.pkts)},
+	 offsetof(struct vhost_queue, stats.xstats[VHOST_PKT])},
 	{"total_bytes",
-	 offsetof(struct vhost_queue, stats.bytes)},
+	 offsetof(struct vhost_queue, stats.xstats[VHOST_BYTE])},
 	{"missed_pkts",
-	 offsetof(struct vhost_queue, stats.missed_pkts)},
+	 offsetof(struct vhost_queue, stats.xstats[VHOST_MISSED_PKT])},
 	{"broadcast_packets",
 	 offsetof(struct vhost_queue, stats.xstats[VHOST_BROADCAST_PKT])},
 	{"multicast_packets",
@@ -281,23 +284,6 @@ vhost_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 	if (n < nxstats)
 		return nxstats;
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		vq = dev->data->rx_queues[i];
-		if (!vq)
-			continue;
-		vq->stats.xstats[VHOST_UNICAST_PKT] = vq->stats.pkts
-				- (vq->stats.xstats[VHOST_BROADCAST_PKT]
-				+ vq->stats.xstats[VHOST_MULTICAST_PKT]);
-	}
-	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		vq = dev->data->tx_queues[i];
-		if (!vq)
-			continue;
-		vq->stats.xstats[VHOST_UNICAST_PKT] = vq->stats.pkts
-				+ vq->stats.missed_pkts
-				- (vq->stats.xstats[VHOST_BROADCAST_PKT]
-				+ vq->stats.xstats[VHOST_MULTICAST_PKT]);
-	}
 	for (t = 0; t < VHOST_NB_XSTATS_RXPORT; t++) {
 		xstats[count].value = 0;
 		for (i = 0; i < dev->data->nb_rx_queues; i++) {
@@ -328,7 +314,7 @@ vhost_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 }
 
 static inline void
-vhost_count_multicast_broadcast(struct vhost_queue *vq,
+vhost_count_xcast_packets(struct vhost_queue *vq,
 				struct rte_mbuf *mbuf)
 {
 	struct rte_ether_addr *ea = NULL;
@@ -340,20 +326,27 @@ vhost_count_multicast_broadcast(struct vhost_queue *vq,
 			pstats->xstats[VHOST_BROADCAST_PKT]++;
 		else
 			pstats->xstats[VHOST_MULTICAST_PKT]++;
+	} else {
+		pstats->xstats[VHOST_UNICAST_PKT]++;
 	}
 }
 
 static void
-vhost_update_packet_xstats(struct vhost_queue *vq,
-			   struct rte_mbuf **bufs,
-			   uint16_t count)
+vhost_update_packet_xstats(struct vhost_queue *vq, struct rte_mbuf **bufs,
+			   uint16_t count, uint64_t nb_bytes,
+			   uint64_t nb_missed)
 {
 	uint32_t pkt_len = 0;
 	uint64_t i = 0;
 	uint64_t index;
 	struct vhost_stats *pstats = &vq->stats;
 
+	pstats->xstats[VHOST_BYTE] += nb_bytes;
+	pstats->xstats[VHOST_MISSED_PKT] += nb_missed;
+	pstats->xstats[VHOST_UNICAST_PKT] += nb_missed;
+
 	for (i = 0; i < count ; i++) {
+		pstats->xstats[VHOST_PKT]++;
 		pkt_len = bufs[i]->pkt_len;
 		if (pkt_len == 64) {
 			pstats->xstats[VHOST_64_PKT]++;
@@ -369,7 +362,7 @@ vhost_update_packet_xstats(struct vhost_queue *vq,
 			else if (pkt_len > 1522)
 				pstats->xstats[VHOST_1523_TO_MAX_PKT]++;
 		}
-		vhost_count_multicast_broadcast(vq, bufs[i]);
+		vhost_count_xcast_packets(vq, bufs[i]);
 	}
 }
 
@@ -379,6 +372,7 @@ eth_vhost_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 	struct vhost_queue *r = q;
 	uint16_t i, nb_rx = 0;
 	uint16_t nb_receive = nb_bufs;
+	uint64_t nb_bytes = 0;
 
 	if (unlikely(rte_atomic32_read(&r->allow_queuing) == 0))
 		return 0;
@@ -413,10 +407,11 @@ eth_vhost_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 		if (r->internal->vlan_strip)
 			rte_vlan_strip(bufs[i]);
 
-		r->stats.bytes += bufs[i]->pkt_len;
+		nb_bytes += bufs[i]->pkt_len;
 	}
 
-	vhost_update_packet_xstats(r, bufs, nb_rx);
+	r->stats.bytes += nb_bytes;
+	vhost_update_packet_xstats(r, bufs, nb_rx, nb_bytes, 0);
 
 out:
 	rte_atomic32_set(&r->while_queuing, 0);
@@ -430,6 +425,8 @@ eth_vhost_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 	struct vhost_queue *r = q;
 	uint16_t i, nb_tx = 0;
 	uint16_t nb_send = 0;
+	uint64_t nb_bytes = 0;
+	uint64_t nb_missed = 0;
 
 	if (unlikely(rte_atomic32_read(&r->allow_queuing) == 0))
 		return 0;
@@ -470,20 +467,23 @@ eth_vhost_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 			break;
 	}
 
+	for (i = 0; likely(i < nb_tx); i++)
+		nb_bytes += bufs[i]->pkt_len;
+
+	nb_missed = nb_bufs - nb_tx;
+
 	r->stats.pkts += nb_tx;
+	r->stats.bytes += nb_bytes;
 	r->stats.missed_pkts += nb_bufs - nb_tx;
 
-	for (i = 0; likely(i < nb_tx); i++)
-		r->stats.bytes += bufs[i]->pkt_len;
+	vhost_update_packet_xstats(r, bufs, nb_tx, nb_bytes, nb_missed);
 
-	vhost_update_packet_xstats(r, bufs, nb_tx);
-
-	/* According to RFC2863 page42 section ifHCOutMulticastPkts and
-	 * ifHCOutBroadcastPkts, the counters "multicast" and "broadcast"
-	 * are increased when packets are not transmitted successfully.
+	/* According to RFC2863, ifHCOutUcastPkts, ifHCOutMulticastPkts and
+	 * ifHCOutBroadcastPkts counters are increased when packets are not
+	 * transmitted successfully.
 	 */
 	for (i = nb_tx; i < nb_bufs; i++)
-		vhost_count_multicast_broadcast(r, bufs[i]);
+		vhost_count_xcast_packets(r, bufs[i]);
 
 	for (i = 0; likely(i < nb_tx); i++)
 		rte_pktmbuf_free(bufs[i]);
@@ -1066,16 +1066,14 @@ eth_dev_close(struct rte_eth_dev *dev)
 
 	eth_dev_stop(dev);
 
-	rte_vhost_driver_unregister(internal->iface_name);
-
 	list = find_internal_resource(internal->iface_name);
-	if (!list)
-		return;
-
-	pthread_mutex_lock(&internal_list_lock);
-	TAILQ_REMOVE(&internal_list, list, next);
-	pthread_mutex_unlock(&internal_list_lock);
-	rte_free(list);
+	if (list) {
+		rte_vhost_driver_unregister(internal->iface_name);
+		pthread_mutex_lock(&internal_list_lock);
+		TAILQ_REMOVE(&internal_list, list, next);
+		pthread_mutex_unlock(&internal_list_lock);
+		rte_free(list);
+	}
 
 	if (dev->data->rx_queues)
 		for (i = 0; i < dev->data->nb_rx_queues; i++)
