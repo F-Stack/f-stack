@@ -37,7 +37,7 @@
 
   5. DPDK:
 
-  - Upgrade to 19.11.5 LTS.
+  - Upgrade to 19.11.6 LTS.
 
   6. Others:
 
