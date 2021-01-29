@@ -41,7 +41,7 @@ extern "C" {
 
 struct linux_sockaddr {
     short sa_family;
-    char sa_data[126];
+    char sa_data[14];
 };
 
 #define AF_INET6_LINUX    10
