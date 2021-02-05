@@ -791,19 +791,9 @@ init_port_start(void)
     //RSS reta update will failed when enable flow isolate
     #ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
-                /* set HW rss hash function to Toeplitz. */
-                if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
-                    struct rte_eth_hash_filter_info info = {0};
-                    info.info_type = RTE_ETH_HASH_FILTER_GLOBAL_CONFIG;
-                    info.info.global_conf.hash_func = RTE_ETH_HASH_FUNCTION_TOEPLITZ;
-
-                    if (rte_eth_dev_filter_ctrl(port_id, RTE_ETH_FILTER_HASH,
-                        RTE_ETH_FILTER_SET, &info) < 0) {
-                        rte_exit(EXIT_FAILURE, "port[%d] set hash func failed\n",
-                            port_id);
-                    }
-                }
-
+                /*
+                 * FIXME: modify RSS set to FDIR
+                 */
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
     #endif
@@ -1977,7 +1967,7 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
         sizeof(struct loop_routine), 0);
     lr->loop = loop;
     lr->arg = arg;
-    rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
+    rte_eal_mp_remote_launch(main_loop, lr, CALL_MAIN);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
 }

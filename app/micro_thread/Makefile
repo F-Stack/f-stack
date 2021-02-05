@@ -24,15 +24,16 @@ ifeq ($(FF_PATH),)
     $(warning FF_PATH environment variable not defined, default FF_PATH=/usr/local)
 endif
 
-ifeq ($(FF_DPDK),)
-    FF_DPDK=/usr/local
-    $(warning FF_DPDK environment variable not defined, default FF_DPDK=/usr/local)
+ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+$(error "no installation of DPDK found, maybe you shuld export environment variable `PKG_CONFIG_PATH`")
 endif
+
+PKGCONF ?= pkg-config
 
 DEBUG= -g
 BINARY = libmt.a
+FF_LIBS+= $(shell $(PKGCONF) --static --libs libdpdk)
 FF_LIBS+= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive
-FF_LIBS+= -L${FF_DPDK}/lib -Wl,--whole-archive,-ldpdk,--no-whole-archive
 FF_LIBS+= -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lpthread -lnuma
 
 # Comment the following line if you are not using the gnu c compiler
