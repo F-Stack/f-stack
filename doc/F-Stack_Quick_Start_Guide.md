@@ -16,10 +16,10 @@ See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 
 Read DPDK Quick Started Guide or run the command below
 
-	cd /data/f-stack/dpdk/tools
-	./dpdk-setup.sh 
-
-Compile with x86_64-native-linuxapp-gcc
+	cd /data/f-stack/dpdk
+	meson build
+	ninja -C build
+	ninja -C build install
 
 ## Set hugepage
 
@@ -52,9 +52,20 @@ The mount point can be made permanent across reboots, by adding the following li
 
 ## Compile  lib
 
+    # Upgrade pkg-config while version < 0.28
+    cd /data/
+    wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+    tar xzvf pkg-config-0.29.2.tar.gz
+    cd pkg-config-0.29.2
+    ./configure --with-internal-glib
+    make
+    make install
+    mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+    ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
+
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
-    cd ../../
+    export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
+    cd /data/f-stack
     cd lib
     make
 

@@ -40,8 +40,10 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
     cd f-stack
     # Compile DPDK
-    cd dpdk/usertools
-    ./dpdk-setup.sh # compile with x86_64-native-linuxapp-gcc
+    cd dpdk/
+    meson build
+    ninja -C build
+    ninja -C build install
 
     # Set hugepage
     # single-node system
@@ -60,7 +62,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
     # Install python for running DPDK python scripts
     sudo apt install python # On ubuntu
-    
+
     # Offload NIC
     modprobe uio
     insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
@@ -69,20 +71,27 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
 
-    # Install DPDK
-    cd ../x86_64-native-linuxapp-gcc
-    make install
-
     # On Ubuntu, use gawk instead of the default mawk.
     #sudo apt-get install gawk  # or execute `sudo update-alternatives --config awk` to choose gawk.
 
     # Install dependencies for F-Stack
     sudo apt install gcc make libssl-dev # On ubuntu
+
+    # Upgrade pkg-config while version < 0.28
+    #cd /data
+    #wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+    #tar xzvf pkg-config-0.29.2.tar.gz
+    #cd pkg-config-0.29.2
+    #./configure --with-internal-glib
+    #make
+    #make install
+    #mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+    #ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
  
     # Compile F-Stack
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
-    cd ../../lib/
+    export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
+    cd /data/f-stack/lib/
     make
 
     # Install F-STACK
@@ -119,10 +128,6 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     route add -net 0.0.0.0 gw <gateway> dev veth0
     echo 1 > /sys/class/net/veth0/carrier # if `carrier=on` not set while `insmod rte_kni.ko` 
     # route add -net ...  # other route rules
-
-## Binary Release
-
-We provide a  f-stack-binary-release package that you can use F-Stack directly without compiling. For more details, see [Binary_Release_Quick_Start](https://github.com/F-Stack/f-stack/blob/master/doc/F-Stack_Binary_Release_Quick_Start.md).
 
 ## Nginx Testing Result
 
