@@ -15,8 +15,7 @@ generate_doxygen = find_program('generate_doxygen.sh')
 generate_examples = find_program('generate_examples.sh')
 generate_css = find_program('doxy-html-custom.sh')
 
-inputdir = join_paths(meson.source_root(), 'examples')
-htmldir = join_paths('share', 'doc', 'dpdk')
+htmldir = join_paths(get_option('datadir'), 'doc', 'dpdk')
 
 # due to the following bug: https://github.com/mesonbuild/meson/issues/4107
 # if install is set to true it will override build_by_default and it will
@@ -24,9 +23,9 @@ htmldir = join_paths('share', 'doc', 'dpdk')
 # false it would be impossible to install the docs.
 # So use a configure option for now.
 example = custom_target('examples.dox',
-	input: inputdir,
 	output: 'examples.dox',
-	command: [generate_examples, '@INPUT@', '@OUTPUT@'],
+	command: [generate_examples, join_paths(meson.source_root(), 'examples'), '@OUTPUT@'],
+	depfile: 'examples.dox.d',
 	install: get_option('enable_docs'),
 	install_dir: htmldir,
 	build_by_default: get_option('enable_docs'))
@@ -35,9 +34,13 @@ cdata = configuration_data()
 cdata.set('VERSION', meson.project_version())
 cdata.set('API_EXAMPLES', join_paths(meson.build_root(), 'doc', 'api', 'examples.dox'))
 cdata.set('OUTPUT', join_paths(meson.build_root(), 'doc', 'api'))
-cdata.set('HTML_OUTPUT', 'api')
+cdata.set('HTML_OUTPUT', 'html')
 cdata.set('TOPDIR', meson.source_root())
 cdata.set('STRIP_FROM_PATH', meson.source_root())
+cdata.set('WARN_AS_ERROR', 'NO')
+if get_option('werror')
+	cdata.set('WARN_AS_ERROR', 'YES')
+endif
 
 doxy_conf = configure_file(input: 'doxy-api.conf.in',
 	output: 'doxy-api.conf',
@@ -45,8 +48,10 @@ doxy_conf = configure_file(input: 'doxy-api.conf.in',
 
 doxy_build = custom_target('doxygen',
 	depends: example,
+	depend_files: 'doxy-api-index.md',
 	input: doxy_conf,
-	output: 'api',
+	output: 'html',
+	depfile: 'html.d',
 	command: [generate_doxygen, '@INPUT@', '@OUTPUT@', generate_css],
 	install: get_option('enable_docs'),
 	install_dir: htmldir,

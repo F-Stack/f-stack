@@ -3,10 +3,9 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
-allow_experimental_apis = true
-install_headers('rte_eth_softnic.h')
+headers = files('rte_eth_softnic.h')
 sources = files('rte_eth_softnic_tm.c',
 	'rte_eth_softnic.c',
 	'rte_eth_softnic_mempool.c',

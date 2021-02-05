@@ -1,12 +1,12 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2016 Intel Corporation.
+    Copyright(c) 2016-2019 Intel Corporation.
 
 ZUC Crypto Poll Mode Driver
 ===========================
 
-The ZUC PMD (**librte_pmd_zuc**) provides poll mode crypto driver
-support for utilizing Intel Libsso library, which implements F8 and F9 functions
-for ZUC EEA3 cipher and EIA3 hash algorithms.
+The ZUC PMD (**librte_crypto_zuc**) provides poll mode crypto driver support for
+utilizing `Intel IPSec Multi-buffer library <https://github.com/01org/intel-ipsec-mb>`_
+which implements F8 and F9 functions for ZUC EEA3 cipher and EIA3 hash algorithms.
 
 Features
 --------
@@ -27,44 +27,66 @@ Limitations
 * Chained mbufs are not supported.
 * ZUC (EIA3) supported only if hash offset field is byte-aligned.
 * ZUC (EEA3) supported only if cipher length, cipher offset fields are byte-aligned.
-* ZUC PMD cannot be built as a shared library, due to limitations in
-  the underlying library.
 
 
 Installation
 ------------
 
-To build DPDK with the ZUC_PMD the user is required to download
-the export controlled ``libsso_zuc`` library, by registering in
-`Intel Resource & Design Center <https://www.intel.com/content/www/us/en/design/resource-design-center.html>`_.
-Once approval has been granted, the user needs to search for
-*ZUC 128-EAA3 and 128-EIA3 3GPP cryptographic algorithms Software Library* to download the
-library or directly through this `link <https://cdrdv2.intel.com/v1/dl/getContent/575868>`_.
-After downloading the library, the user needs to unpack and compile it
-on their system before building DPDK::
+To build DPDK with the ZUC_PMD the user is required to download the multi-buffer
+library from `here <https://github.com/01org/intel-ipsec-mb>`_
+and compile it on their user system before building DPDK.
+The latest version of the library supported by this PMD is v0.54, which
+can be downloaded from `<https://github.com/01org/intel-ipsec-mb/archive/v0.54.zip>`_.
 
-   make
+After downloading the library, the user needs to unpack and compile it
+on their system before building DPDK:
+
+.. code-block:: console
+
+    make
+    make install
+
+The library requires NASM to be built. Depending on the library version, it might
+require a minimum NASM version (e.g. v0.54 requires at least NASM 2.14).
+
+NASM is packaged for different OS. However, on some OS the version is too old,
+so a manual installation is required. In that case, NASM can be downloaded from
+`NASM website <https://www.nasm.us/pub/nasm/releasebuilds/?C=M;O=D>`_.
+Once it is downloaded, extract it and follow these steps:
+
+.. code-block:: console
+
+    ./configure
+    make
+    make install
+
+.. note::
+
+   Compilation of the Multi-Buffer library is broken when GCC < 5.0, if library <= v0.53.
+   If a lower GCC version than 5.0, the workaround proposed by the following link
+   should be used: `<https://github.com/intel/intel-ipsec-mb/issues/40>`_.
+
+As a reference, the following table shows a mapping between the past DPDK versions
+and the external crypto libraries supported by them:
+
+.. _table_zuc_versions:
+
+.. table:: DPDK and external crypto library version compatibility
+
+   =============  ================================
+   DPDK version   Crypto library version
+   =============  ================================
+   16.11 - 19.11  LibSSO ZUC
+   20.02+         Multi-buffer library 0.53 - 0.54
+   =============  ================================
+
 
 Initialization
 --------------
 
 In order to enable this virtual crypto PMD, user must:
 
-* Export the environmental variable LIBSSO_ZUC_PATH with the path where
-  the library was extracted (zuc folder).
-
-* Export the environmental variable LD_LIBRARY_PATH with the path
-  where the built libsso library is (LIBSSO_ZUC_PATH/build).
-
-* Build the LIBSSO_ZUC library (explained in Installation section).
-
-* Build DPDK as follows:
-
-.. code-block:: console
-
-	make config T=x86_64-native-linux-gcc
-	sed -i 's,\(CONFIG_RTE_LIBRTE_PMD_ZUC\)=n,\1=y,' build/.config
-	make
+* Build the multi buffer library (explained in Installation section).
 
 To use the PMD in an application, user must:
 
@@ -85,5 +107,5 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_zuc,socket_id=0,max_nb_sessions=128" \
+    ./dpdk-l2fwd-crypto -l 1 -n 4 --vdev="crypto_zuc,socket_id=0,max_nb_sessions=128" \
     -- -p 1 --cdev SW --chain CIPHER_ONLY --cipher_algo "zuc-eea3"

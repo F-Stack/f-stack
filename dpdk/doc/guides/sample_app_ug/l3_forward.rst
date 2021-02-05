@@ -4,16 +4,23 @@
 L3 Forwarding Sample Application
 ================================
 
-The L3 Forwarding application is a simple example of packet processing using the DPDK.
+The L3 Forwarding application is a simple example of packet processing using
+DPDK to demonstrate usage of poll and event mode packet I/O mechanism.
 The application performs L3 forwarding.
 
 Overview
 --------
 
-The application demonstrates the use of the hash and LPM libraries in the DPDK to implement packet forwarding.
-The initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
-The main difference from the L2 Forwarding sample application is that the forwarding decision
-is made based on information read from the input packet.
+The application demonstrates the use of the hash and LPM libraries in the DPDK
+to implement packet forwarding using poll or event mode PMDs for packet I/O.
+The initialization and run-time paths are very similar to those of the
+:doc:`l2_forward_real_virtual` and :doc:`l2_forward_event`.
+The main difference from the L2 Forwarding sample application is that optionally
+packet can be Rx/Tx from/to eventdev instead of port directly and forwarding
+decision is made based on information read from the input packet.
+
+Eventdev can optionally use S/W or H/W (if supported by platform) scheduler
+implementation for packet I/O based on run time parameters.
 
 The lookup method is either hash-based or LPM-based and is selected at run time. When the selected lookup method is hash-based,
 a hash object is used to emulate the flow classification stage.
@@ -44,7 +51,7 @@ Running the Application
 
 The application has a number of command line options::
 
-    ./l3fwd [EAL options] -- -p PORTMASK
+    ./dpdk-l3fwd [EAL options] -- -p PORTMASK
                              [-P]
                              [-E]
                              [-L]
@@ -56,6 +63,9 @@ The application has a number of command line options::
                              [--ipv6]
                              [--parse-ptype]
                              [--per-port-pool]
+                             [--mode]
+                             [--eventq-sched]
+                             [--event-eth-rxqs]
 
 Where,
 
@@ -86,6 +96,13 @@ Where,
 
 * ``--per-port-pool:`` Optional, set to use independent buffer pools per port. Without this option, single buffer pool is used for all ports.
 
+* ``--mode:`` Optional, Packet transfer mode for I/O, poll or eventdev.
+
+* ``--eventq-sched:`` Optional, Event queue synchronization method, Ordered, Atomic or Parallel. Only valid if --mode=eventdev.
+
+* ``--event-eth-rxqs:`` Optional, Number of ethernet RX queues per device. Only valid if --mode=eventdev.
+
+
 For example, consider a dual processor socket platform with 8 physical cores, where cores 0-7 and 16-23 appear on socket 0,
 while cores 8-15 and 24-31 appear on socket 1.
 
@@ -94,7 +111,7 @@ To enable L3 forwarding between two ports, assuming that both ports are in the s
 
 .. code-block:: console
 
-    ./build/l3fwd -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)"
+    ./<build_dir>/examples/dpdk-l3fwd -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)"
 
 In this command:
 
@@ -116,6 +133,53 @@ In this command:
 |          |           |           |                                     |
 +----------+-----------+-----------+-------------------------------------+
 
+To use eventdev mode with sync method **ordered** on above mentioned environment,
+Following is the sample command:
+
+.. code-block:: console
+
+    ./<build_dir>/examples/dpdk-l3fwd -l 0-3 -n 4 -a <event device> -- -p 0x3 --eventq-sched=ordered
+
+or
+
+.. code-block:: console
+
+    ./<build_dir>/examples/dpdk-l3fwd -l 0-3 -n 4 -a <event device> \
+		-- -p 0x03 --mode=eventdev --eventq-sched=ordered
+
+In this command:
+
+*   -a option allows the event device supported by platform.
+    The syntax used to indicate this device may vary based on platform.
+
+*   The --mode option defines PMD to be used for packet I/O.
+
+*   The --eventq-sched option enables synchronization menthod of event queue so that packets will be scheduled accordingly.
+
+If application uses S/W scheduler, it uses following DPDK services:
+
+*   Software scheduler
+*   Rx adapter service function
+*   Tx adapter service function
+
+Application needs service cores to run above mentioned services. Service cores
+must be provided as EAL parameters along with the --vdev=event_sw0 to enable S/W
+scheduler. Following is the sample command:
+
+.. code-block:: console
+
+    ./<build_dir>/examples/dpdk-l3fwd -l 0-7 -s 0xf0000 -n 4 --vdev event_sw0 -- -p 0x3 --mode=eventdev --eventq-sched=ordered
+
+In case of eventdev mode, *--config* option is not used for ethernet port
+configuration. Instead each ethernet port will be configured with mentioned
+setup:
+
+*   Single Rx/Tx queue
+
+*   Each Rx queue will be connected to event queue via Rx adapter.
+
+*   Each Tx queue will be connected via Tx adapter.
+
 Refer to the *DPDK Getting Started Guide* for general information on running applications and
 the Environment Abstraction Layer (EAL) options.
 
@@ -125,7 +189,7 @@ Explanation
 -----------
 
 The following sections provide some explanation of the sample application code. As mentioned in the overview section,
-the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
+the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual` and :doc:`l2_forward_event`.
 The following sections describe aspects that are specific to the L3 Forwarding sample application.
 
 Hash Initialization
@@ -315,3 +379,8 @@ for LPM-based lookups is done by the get_ipv4_dst_port() function below:
 
         return ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct, rte_be_to_cpu_32(ipv4_hdr->dst_addr), &next_hop) == 0)? next_hop : portid);
     }
+
+Eventdev Driver Initialization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Eventdev driver initialization is same as L2 forwarding eventdev application.
+Refer :doc:`l2_forward_event` for more details.

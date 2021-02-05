@@ -4,6 +4,7 @@
 
 #include <unistd.h>
 
+#include "rte_pmd_ark.h"
 #include "ark_ethdev_tx.h"
 #include "ark_global.h"
 #include "ark_mpu.h"
@@ -14,6 +15,11 @@
 #define ARK_TX_META_OFFSET (RTE_PKTMBUF_HEADROOM - ARK_TX_META_SIZE)
 #define ARK_TX_MAX_NOCHAIN (RTE_MBUF_DEFAULT_DATAROOM)
 
+#ifndef RTE_LIBRTE_ARK_MIN_TX_PKTLEN
+#define ARK_MIN_TX_PKTLEN 0
+#else
+#define ARK_MIN_TX_PKTLEN RTE_LIBRTE_ARK_MIN_TX_PKTLEN
+#endif
 
 /* ************************************************************************* */
 struct ark_tx_queue {
@@ -42,7 +48,7 @@ struct ark_tx_queue {
 	uint32_t pad[1];
 
 	/* second cache line - fields only used in slow path */
-	MARKER cacheline1 __rte_cache_min_aligned;
+	RTE_MARKER cacheline1 __rte_cache_min_aligned;
 	uint32_t cons_index;		/* hw is done, can be freed */
 } __rte_cache_aligned;
 
@@ -65,7 +71,7 @@ eth_ark_tx_meta_from_mbuf(struct ark_tx_meta *meta,
 			  uint8_t flags)
 {
 	meta->physaddr = rte_mbuf_data_iova(mbuf);
-	meta->user1 = (uint32_t)mbuf->udata64;
+	meta->user1 = rte_pmd_ark_mbuf_tx_userdata_get(mbuf);
 	meta->data_len = rte_pktmbuf_data_len(mbuf);
 	meta->flags = flags;
 }
@@ -91,6 +97,7 @@ eth_ark_xmit_pkts(void *vtxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	uint32_t prod_index_limit;
 	int stat;
 	uint16_t nb;
+	const uint32_t min_pkt_len = ARK_MIN_TX_PKTLEN;
 
 	queue = (struct ark_tx_queue *)vtxq;
 
@@ -104,27 +111,26 @@ eth_ark_xmit_pkts(void *vtxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	     ++nb) {
 		mbuf = tx_pkts[nb];
 
-		if (ARK_TX_PAD_TO_60) {
-			if (unlikely(rte_pktmbuf_pkt_len(mbuf) < 60)) {
-				/* this packet even if it is small can be split,
-				 * be sure to add to the end mbuf
-				 */
-				uint16_t to_add =
-					60 - rte_pktmbuf_pkt_len(mbuf);
-				char *appended =
-					rte_pktmbuf_append(mbuf, to_add);
+		if (min_pkt_len &&
+		    unlikely(rte_pktmbuf_pkt_len(mbuf) < min_pkt_len)) {
+			/* this packet even if it is small can be split,
+			 * be sure to add to the end mbuf
+			 */
+			uint16_t to_add = min_pkt_len -
+				rte_pktmbuf_pkt_len(mbuf);
+			char *appended =
+				rte_pktmbuf_append(mbuf, to_add);
 
-				if (appended == 0) {
-					/* This packet is in error,
-					 * we cannot send it so just
-					 * count it and delete it.
-					 */
-					queue->tx_errors += 1;
-					rte_pktmbuf_free(mbuf);
-					continue;
-				}
-				memset(appended, 0, to_add);
+			if (appended == 0) {
+				/* This packet is in error,
+				 * we cannot send it so just
+				 * count it and delete it.
+				 */
+				queue->tx_errors += 1;
+				rte_pktmbuf_free(mbuf);
+				continue;
 			}
+			memset(appended, 0, to_add);
 		}
 
 		if (unlikely(mbuf->nb_segs != 1)) {
@@ -143,8 +149,8 @@ eth_ark_xmit_pkts(void *vtxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 	}
 
-	if (ARK_TX_DEBUG && (nb != nb_pkts)) {
-		PMD_TX_LOG(DEBUG, "TX: Failure to send:"
+	if (ARK_DEBUG_CORE && nb != nb_pkts) {
+		ARK_PMD_LOG(DEBUG, "TX: Failure to send:"
 			   " req: %" PRIU32
 			   " sent: %" PRIU32
 			   " prod: %" PRIU32
@@ -214,7 +220,7 @@ eth_ark_tx_queue_setup(struct rte_eth_dev *dev,
 	int qidx = queue_idx;
 
 	if (!rte_is_power_of_2(nb_desc)) {
-		PMD_DRV_LOG(ERR,
+		ARK_PMD_LOG(ERR,
 			    "DPDK Arkville configuration queue size"
 			    " must be power of two %u (%s)\n",
 			    nb_desc, __func__);
@@ -227,7 +233,7 @@ eth_ark_tx_queue_setup(struct rte_eth_dev *dev,
 				   64,
 				   socket_id);
 	if (queue == 0) {
-		PMD_DRV_LOG(ERR, "Failed to allocate tx "
+		ARK_PMD_LOG(ERR, "Failed to allocate tx "
 			    "queue memory in %s\n",
 			    __func__);
 		return -ENOMEM;
@@ -252,7 +258,7 @@ eth_ark_tx_queue_setup(struct rte_eth_dev *dev,
 				   socket_id);
 
 	if (queue->meta_q == 0 || queue->bufs == 0) {
-		PMD_DRV_LOG(ERR, "Failed to allocate "
+		ARK_PMD_LOG(ERR, "Failed to allocate "
 			    "queue memory in %s\n", __func__);
 		rte_free(queue->meta_q);
 		rte_free(queue->bufs);

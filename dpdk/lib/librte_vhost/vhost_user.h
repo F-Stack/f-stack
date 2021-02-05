@@ -23,7 +23,8 @@
 					 (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_SESSION) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
-					 (1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT))
+					 (1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_STATUS))
 
 typedef enum VhostUserRequest {
 	VHOST_USER_NONE = 0,
@@ -56,12 +57,15 @@ typedef enum VhostUserRequest {
 	VHOST_USER_POSTCOPY_END = 30,
 	VHOST_USER_GET_INFLIGHT_FD = 31,
 	VHOST_USER_SET_INFLIGHT_FD = 32,
-	VHOST_USER_MAX = 33
+	VHOST_USER_SET_STATUS = 39,
+	VHOST_USER_GET_STATUS = 40,
+	VHOST_USER_MAX = 41
 } VhostUserRequest;
 
 typedef enum VhostUserSlaveRequest {
 	VHOST_USER_SLAVE_NONE = 0,
 	VHOST_USER_SLAVE_IOTLB_MSG = 1,
+	VHOST_USER_SLAVE_CONFIG_CHANGE_MSG = 2,
 	VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG = 3,
 	VHOST_USER_SLAVE_MAX
 } VhostUserSlaveRequest;
@@ -147,7 +151,7 @@ typedef struct VhostUserMsg {
 	} payload;
 	int fds[VHOST_MEMORY_MAX_NREGIONS];
 	int fd_num;
-} __attribute((packed)) VhostUserMsg;
+} __rte_packed VhostUserMsg;
 
 #define VHOST_USER_HDR_SIZE offsetof(VhostUserMsg, payload.u64)
 

@@ -6,7 +6,6 @@
 #ifndef MLX4_UTILS_H_
 #define MLX4_UTILS_H_
 
-#include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
 
@@ -27,10 +26,10 @@
 
 extern int mlx4_logtype;
 
-#ifndef NDEBUG
+#ifdef RTE_LIBRTE_MLX4_DEBUG
 
 /*
- * When debugging is enabled (NDEBUG not defined), file, line and function
+ * When debugging is enabled (MLX4_DEBUG is defined), file, line and function
  * information replace the driver name (MLX4_DRIVER_NAME) in log messages.
  */
 
@@ -54,12 +53,13 @@ pmd_drv_log_basename(const char *s)
 			__func__, \
 			RTE_FMT_TAIL(__VA_ARGS__,)))
 #define DEBUG(...) PMD_DRV_LOG(DEBUG, __VA_ARGS__)
-#define claim_zero(...) assert((__VA_ARGS__) == 0)
+#define MLX4_ASSERT(exp) RTE_VERIFY(exp)
+#define claim_zero(...) MLX4_ASSERT((__VA_ARGS__) == 0)
 
-#else /* NDEBUG */
+#else /* RTE_LIBRTE_MLX4_DEBUG */
 
 /*
- * Like assert(), DEBUG() becomes a no-op and claim_zero() does not perform
+ * Like MLX4_ASSERT(), DEBUG() becomes a no-op and claim_zero() does not perform
  * any check when debugging is disabled.
  */
 
@@ -69,9 +69,10 @@ pmd_drv_log_basename(const char *s)
 			RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
 		RTE_FMT_TAIL(__VA_ARGS__,)))
 #define DEBUG(...) (void)0
+#define MLX4_ASSERT(exp) RTE_ASSERT(exp)
 #define claim_zero(...) (__VA_ARGS__)
 
-#endif /* NDEBUG */
+#endif /* RTE_LIBRTE_MLX4_DEBUG */
 
 #define INFO(...) PMD_DRV_LOG(INFO, __VA_ARGS__)
 #define WARN(...) PMD_DRV_LOG(WARNING, __VA_ARGS__)

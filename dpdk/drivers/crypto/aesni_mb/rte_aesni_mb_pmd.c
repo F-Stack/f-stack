@@ -11,15 +11,21 @@
 #include <rte_bus_vdev.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
+#include <rte_per_lcore.h>
+#include <rte_ether.h>
 
 #include "aesni_mb_pmd_private.h"
-
-int aesni_mb_logtype_driver;
 
 #define AES_CCM_DIGEST_MIN_LEN 4
 #define AES_CCM_DIGEST_MAX_LEN 16
 #define HMAC_MAX_BLOCK_SIZE 128
 static uint8_t cryptodev_driver_id;
+
+/*
+ * Needed to support CPU-CRYPTO API (rte_cryptodev_sym_cpu_crypto_process),
+ * as we still use JOB based API even for synchronous processing.
+ */
+static RTE_DEFINE_PER_LCORE(MB_MGR *, sync_mb_mgr);
 
 typedef void (*hash_one_block_t)(const void *data, void *digest);
 typedef void (*aes_keyexp_t)(const void *key, void *enc_exp_keys, void *dec_exp_keys);
@@ -119,6 +125,18 @@ aesni_mb_get_chain_order(const struct rte_crypto_sym_xform *xform)
 	return AESNI_MB_OP_NOT_SUPPORTED;
 }
 
+static inline int
+is_aead_algo(JOB_HASH_ALG hash_alg, JOB_CIPHER_MODE cipher_mode)
+{
+#if IMB_VERSION(0, 54, 3) <= IMB_VERSION_NUM
+	return (hash_alg == IMB_AUTH_CHACHA20_POLY1305 || hash_alg == AES_CCM ||
+		(hash_alg == AES_GMAC && cipher_mode == GCM));
+#else
+	return ((hash_alg == AES_GMAC && cipher_mode == GCM) ||
+		hash_alg == AES_CCM);
+#endif
+}
+
 /** Set session authentication parameters */
 static int
 aesni_mb_set_session_auth_parameters(const MB_MGR *mb_mgr,
@@ -139,6 +157,10 @@ aesni_mb_set_session_auth_parameters(const MB_MGR *mb_mgr,
 		AESNI_MB_LOG(ERR, "Crypto xform struct not of type auth");
 		return -1;
 	}
+
+	/* Set IV parameters */
+	sess->auth_iv.offset = xform->auth.iv.offset;
+	sess->auth_iv.length = xform->auth.iv.length;
 
 	/* Set the request digest size */
 	sess->auth.req_digest_len = xform->auth.digest_length;
@@ -234,6 +256,48 @@ aesni_mb_set_session_auth_parameters(const MB_MGR *mb_mgr,
 
 		return 0;
 	}
+
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	if (xform->auth.algo == RTE_CRYPTO_AUTH_ZUC_EIA3) {
+		sess->auth.algo = IMB_AUTH_ZUC_EIA3_BITLEN;
+		uint16_t zuc_eia3_digest_len =
+			get_truncated_digest_byte_length(IMB_AUTH_ZUC_EIA3_BITLEN);
+		if (sess->auth.req_digest_len != zuc_eia3_digest_len) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
+		}
+		sess->auth.gen_digest_len = sess->auth.req_digest_len;
+
+		memcpy(sess->auth.zuc_auth_key, xform->auth.key.data, 16);
+		return 0;
+	} else if (xform->auth.algo == RTE_CRYPTO_AUTH_SNOW3G_UIA2) {
+		sess->auth.algo = IMB_AUTH_SNOW3G_UIA2_BITLEN;
+		uint16_t snow3g_uia2_digest_len =
+			get_truncated_digest_byte_length(IMB_AUTH_SNOW3G_UIA2_BITLEN);
+		if (sess->auth.req_digest_len != snow3g_uia2_digest_len) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
+		}
+		sess->auth.gen_digest_len = sess->auth.req_digest_len;
+
+		IMB_SNOW3G_INIT_KEY_SCHED(mb_mgr, xform->auth.key.data,
+					&sess->auth.pKeySched_snow3g_auth);
+		return 0;
+	} else if (xform->auth.algo == RTE_CRYPTO_AUTH_KASUMI_F9) {
+		sess->auth.algo = IMB_AUTH_KASUMI_UIA1;
+		uint16_t kasumi_f9_digest_len =
+			get_truncated_digest_byte_length(IMB_AUTH_KASUMI_UIA1);
+		if (sess->auth.req_digest_len != kasumi_f9_digest_len) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
+		}
+		sess->auth.gen_digest_len = sess->auth.req_digest_len;
+
+		IMB_KASUMI_INIT_F9_KEY_SCHED(mb_mgr, xform->auth.key.data,
+					&sess->auth.pKeySched_kasumi_auth);
+		return 0;
+	}
+#endif
 
 	switch (xform->auth.algo) {
 	case RTE_CRYPTO_AUTH_MD5_HMAC:
@@ -366,6 +430,12 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 {
 	uint8_t is_aes = 0;
 	uint8_t is_3DES = 0;
+	uint8_t is_docsis = 0;
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	uint8_t is_zuc = 0;
+	uint8_t is_snow3g = 0;
+	uint8_t is_kasumi = 0;
+#endif
 
 	if (xform == NULL) {
 		sess->cipher.mode = NULL_CIPHER;
@@ -402,7 +472,7 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 		break;
 	case RTE_CRYPTO_CIPHER_AES_DOCSISBPI:
 		sess->cipher.mode = DOCSIS_SEC_BPI;
-		is_aes = 1;
+		is_docsis = 1;
 		break;
 	case RTE_CRYPTO_CIPHER_DES_CBC:
 		sess->cipher.mode = DES;
@@ -414,6 +484,26 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 		sess->cipher.mode = DES3;
 		is_3DES = 1;
 		break;
+#if IMB_VERSION(0, 53, 0) <= IMB_VERSION_NUM
+	case RTE_CRYPTO_CIPHER_AES_ECB:
+		sess->cipher.mode = ECB;
+		is_aes = 1;
+		break;
+#endif
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	case RTE_CRYPTO_CIPHER_ZUC_EEA3:
+		sess->cipher.mode = IMB_CIPHER_ZUC_EEA3;
+		is_zuc = 1;
+		break;
+	case RTE_CRYPTO_CIPHER_SNOW3G_UEA2:
+		sess->cipher.mode = IMB_CIPHER_SNOW3G_UEA2_BITLEN;
+		is_snow3g = 1;
+		break;
+	case RTE_CRYPTO_CIPHER_KASUMI_F8:
+		sess->cipher.mode = IMB_CIPHER_KASUMI_UEA1_BITLEN;
+		is_kasumi = 1;
+		break;
+#endif
 	default:
 		AESNI_MB_LOG(ERR, "Unsupported cipher mode parameter");
 		return -ENOTSUP;
@@ -444,6 +534,26 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 					sess->cipher.expanded_aes_keys.encode,
 					sess->cipher.expanded_aes_keys.decode);
 			break;
+		default:
+			AESNI_MB_LOG(ERR, "Invalid cipher key length");
+			return -EINVAL;
+		}
+	} else if (is_docsis) {
+		switch (xform->cipher.key.length) {
+		case AES_128_BYTES:
+			sess->cipher.key_length_in_bytes = AES_128_BYTES;
+			IMB_AES_KEYEXP_128(mb_mgr, xform->cipher.key.data,
+					sess->cipher.expanded_aes_keys.encode,
+					sess->cipher.expanded_aes_keys.decode);
+			break;
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+		case AES_256_BYTES:
+			sess->cipher.key_length_in_bytes = AES_256_BYTES;
+			IMB_AES_KEYEXP_256(mb_mgr, xform->cipher.key.data,
+					sess->cipher.expanded_aes_keys.encode,
+					sess->cipher.expanded_aes_keys.decode);
+			break;
+#endif
 		default:
 			AESNI_MB_LOG(ERR, "Invalid cipher key length");
 			return -EINVAL;
@@ -492,6 +602,32 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 		}
 
 		sess->cipher.key_length_in_bytes = 24;
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	} else if (is_zuc) {
+		if (xform->cipher.key.length != 16) {
+			AESNI_MB_LOG(ERR, "Invalid cipher key length");
+			return -EINVAL;
+		}
+		sess->cipher.key_length_in_bytes = 16;
+		memcpy(sess->cipher.zuc_cipher_key, xform->cipher.key.data,
+			16);
+	} else if (is_snow3g) {
+		if (xform->cipher.key.length != 16) {
+			AESNI_MB_LOG(ERR, "Invalid cipher key length");
+			return -EINVAL;
+		}
+		sess->cipher.key_length_in_bytes = 16;
+		IMB_SNOW3G_INIT_KEY_SCHED(mb_mgr, xform->cipher.key.data,
+					&sess->cipher.pKeySched_snow3g_cipher);
+	} else if (is_kasumi) {
+		if (xform->cipher.key.length != 16) {
+			AESNI_MB_LOG(ERR, "Invalid cipher key length");
+			return -EINVAL;
+		}
+		sess->cipher.key_length_in_bytes = 16;
+		IMB_KASUMI_INIT_F8_KEY_SCHED(mb_mgr, xform->cipher.key.data,
+					&sess->cipher.pKeySched_kasumi_cipher);
+#endif
 	} else {
 		if (xform->cipher.key.length != 8) {
 			AESNI_MB_LOG(ERR, "Invalid cipher key length");
@@ -550,6 +686,12 @@ aesni_mb_set_session_aead_parameters(const MB_MGR *mb_mgr,
 					sess->cipher.expanded_aes_keys.encode,
 					sess->cipher.expanded_aes_keys.decode);
 			break;
+		case AES_256_BYTES:
+			sess->cipher.key_length_in_bytes = AES_256_BYTES;
+			IMB_AES_KEYEXP_256(mb_mgr, xform->aead.key.data,
+					sess->cipher.expanded_aes_keys.encode,
+					sess->cipher.expanded_aes_keys.decode);
+			break;
 		default:
 			AESNI_MB_LOG(ERR, "Invalid cipher key length");
 			return -EINVAL;
@@ -597,6 +739,24 @@ aesni_mb_set_session_aead_parameters(const MB_MGR *mb_mgr,
 		}
 		break;
 
+#if IMB_VERSION(0, 54, 3) <= IMB_VERSION_NUM
+	case RTE_CRYPTO_AEAD_CHACHA20_POLY1305:
+		sess->cipher.mode = IMB_CIPHER_CHACHA20_POLY1305;
+		sess->auth.algo = IMB_AUTH_CHACHA20_POLY1305;
+
+		if (xform->aead.key.length != 32) {
+			AESNI_MB_LOG(ERR, "Invalid key length");
+			return -EINVAL;
+		}
+		sess->cipher.key_length_in_bytes = 32;
+		memcpy(sess->cipher.expanded_aes_keys.encode,
+			xform->aead.key.data, 32);
+		if (sess->auth.req_digest_len != 16) {
+			AESNI_MB_LOG(ERR, "Invalid digest size\n");
+			return -EINVAL;
+		}
+		break;
+#endif
 	default:
 		AESNI_MB_LOG(ERR, "Unsupported aead mode parameter");
 		return -ENOTSUP;
@@ -665,6 +825,7 @@ aesni_mb_set_session_parameters(const MB_MGR *mb_mgr,
 
 	/* Default IV length = 0 */
 	sess->iv.length = 0;
+	sess->auth_iv.length = 0;
 
 	ret = aesni_mb_set_session_auth_parameters(mb_mgr, sess, auth_xform);
 	if (ret != 0) {
@@ -690,6 +851,134 @@ aesni_mb_set_session_parameters(const MB_MGR *mb_mgr,
 
 	return 0;
 }
+
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+/** Check DOCSIS security session configuration is valid */
+static int
+check_docsis_sec_session(struct rte_security_session_conf *conf)
+{
+	struct rte_crypto_sym_xform *crypto_sym = conf->crypto_xform;
+	struct rte_security_docsis_xform *docsis = &conf->docsis;
+
+	/* Downlink: CRC generate -> Cipher encrypt */
+	if (docsis->direction == RTE_SECURITY_DOCSIS_DOWNLINK) {
+
+		if (crypto_sym != NULL &&
+		    crypto_sym->type ==	RTE_CRYPTO_SYM_XFORM_CIPHER &&
+		    crypto_sym->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT &&
+		    crypto_sym->cipher.algo ==
+					RTE_CRYPTO_CIPHER_AES_DOCSISBPI &&
+		    (crypto_sym->cipher.key.length == IMB_KEY_AES_128_BYTES ||
+		     crypto_sym->cipher.key.length == IMB_KEY_AES_256_BYTES) &&
+		    crypto_sym->cipher.iv.length == AES_BLOCK_SIZE &&
+		    crypto_sym->next == NULL) {
+			return 0;
+		}
+	/* Uplink: Cipher decrypt -> CRC verify */
+	} else if (docsis->direction == RTE_SECURITY_DOCSIS_UPLINK) {
+
+		if (crypto_sym != NULL &&
+		    crypto_sym->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
+		    crypto_sym->cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT &&
+		    crypto_sym->cipher.algo ==
+					RTE_CRYPTO_CIPHER_AES_DOCSISBPI &&
+		    (crypto_sym->cipher.key.length == IMB_KEY_AES_128_BYTES ||
+		     crypto_sym->cipher.key.length == IMB_KEY_AES_256_BYTES) &&
+		    crypto_sym->cipher.iv.length == AES_BLOCK_SIZE &&
+		    crypto_sym->next == NULL) {
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
+/** Set DOCSIS security session auth (CRC) parameters */
+static int
+aesni_mb_set_docsis_sec_session_auth_parameters(struct aesni_mb_session *sess,
+		struct rte_security_docsis_xform *xform)
+{
+	if (xform == NULL) {
+		AESNI_MB_LOG(ERR, "Invalid DOCSIS xform");
+		return -EINVAL;
+	}
+
+	/* Select CRC generate/verify */
+	if (xform->direction == RTE_SECURITY_DOCSIS_UPLINK) {
+		sess->auth.algo = IMB_AUTH_DOCSIS_CRC32;
+		sess->auth.operation = RTE_CRYPTO_AUTH_OP_VERIFY;
+	} else if (xform->direction == RTE_SECURITY_DOCSIS_DOWNLINK) {
+		sess->auth.algo = IMB_AUTH_DOCSIS_CRC32;
+		sess->auth.operation = RTE_CRYPTO_AUTH_OP_GENERATE;
+	} else {
+		AESNI_MB_LOG(ERR, "Unsupported DOCSIS direction");
+		return -ENOTSUP;
+	}
+
+	sess->auth.req_digest_len = RTE_ETHER_CRC_LEN;
+	sess->auth.gen_digest_len = RTE_ETHER_CRC_LEN;
+
+	return 0;
+}
+
+/**
+ * Parse DOCSIS security session configuration and set private session
+ * parameters
+ */
+int
+aesni_mb_set_docsis_sec_session_parameters(
+		__rte_unused struct rte_cryptodev *dev,
+		struct rte_security_session_conf *conf,
+		void *sess)
+{
+	struct rte_security_docsis_xform *docsis_xform;
+	struct rte_crypto_sym_xform *cipher_xform;
+	struct aesni_mb_session *aesni_sess = sess;
+	struct aesni_mb_private *internals = dev->data->dev_private;
+	int ret;
+
+	ret = check_docsis_sec_session(conf);
+	if (ret) {
+		AESNI_MB_LOG(ERR, "Unsupported DOCSIS security configuration");
+		return ret;
+	}
+
+	switch (conf->docsis.direction) {
+	case RTE_SECURITY_DOCSIS_UPLINK:
+		aesni_sess->chain_order = IMB_ORDER_CIPHER_HASH;
+		docsis_xform = &conf->docsis;
+		cipher_xform = conf->crypto_xform;
+		break;
+	case RTE_SECURITY_DOCSIS_DOWNLINK:
+		aesni_sess->chain_order = IMB_ORDER_HASH_CIPHER;
+		cipher_xform = conf->crypto_xform;
+		docsis_xform = &conf->docsis;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	/* Default IV length = 0 */
+	aesni_sess->iv.length = 0;
+
+	ret = aesni_mb_set_docsis_sec_session_auth_parameters(aesni_sess,
+			docsis_xform);
+	if (ret != 0) {
+		AESNI_MB_LOG(ERR, "Invalid/unsupported DOCSIS parameters");
+		return -EINVAL;
+	}
+
+	ret = aesni_mb_set_session_cipher_parameters(internals->mb_mgr,
+			aesni_sess, cipher_xform);
+
+	if (ret != 0) {
+		AESNI_MB_LOG(ERR, "Invalid/unsupported cipher parameters");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+#endif
 
 /**
  * burst enqueue, place crypto operations on ingress queue for processing.
@@ -729,6 +1018,13 @@ get_session(struct aesni_mb_qp *qp, struct rte_crypto_op *op)
 					get_sym_session_private_data(
 					op->sym->session,
 					cryptodev_driver_id);
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+	} else if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+		if (likely(op->sym->sec_session != NULL))
+			sess = (struct aesni_mb_session *)
+					get_sec_session_private_data(
+						op->sym->sec_session);
+#endif
 	} else {
 		void *_sess = rte_cryptodev_sym_session_create(qp->sess_mp);
 		void *_sess_private_data = NULL;
@@ -809,6 +1105,128 @@ auth_start_offset(struct rte_crypto_op *op, struct aesni_mb_session *session,
 			(UINT64_MAX - u_src + u_dst + 1);
 }
 
+static inline void
+set_cpu_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_session *session,
+		union rte_crypto_sym_ofs sofs, void *buf, uint32_t len,
+		struct rte_crypto_va_iova_ptr *iv,
+		struct rte_crypto_va_iova_ptr *aad, void *digest, void *udata)
+{
+	/* Set crypto operation */
+	job->chain_order = session->chain_order;
+
+	/* Set cipher parameters */
+	job->cipher_direction = session->cipher.direction;
+	job->cipher_mode = session->cipher.mode;
+
+	job->aes_key_len_in_bytes = session->cipher.key_length_in_bytes;
+
+	/* Set authentication parameters */
+	job->hash_alg = session->auth.algo;
+	job->iv = iv->va;
+
+	switch (job->hash_alg) {
+	case AES_XCBC:
+		job->u.XCBC._k1_expanded = session->auth.xcbc.k1_expanded;
+		job->u.XCBC._k2 = session->auth.xcbc.k2;
+		job->u.XCBC._k3 = session->auth.xcbc.k3;
+
+		job->aes_enc_key_expanded =
+				session->cipher.expanded_aes_keys.encode;
+		job->aes_dec_key_expanded =
+				session->cipher.expanded_aes_keys.decode;
+		break;
+
+	case AES_CCM:
+		job->u.CCM.aad = (uint8_t *)aad->va + 18;
+		job->u.CCM.aad_len_in_bytes = session->aead.aad_len;
+		job->aes_enc_key_expanded =
+				session->cipher.expanded_aes_keys.encode;
+		job->aes_dec_key_expanded =
+				session->cipher.expanded_aes_keys.decode;
+		job->iv++;
+		break;
+
+	case AES_CMAC:
+		job->u.CMAC._key_expanded = session->auth.cmac.expkey;
+		job->u.CMAC._skey1 = session->auth.cmac.skey1;
+		job->u.CMAC._skey2 = session->auth.cmac.skey2;
+		job->aes_enc_key_expanded =
+				session->cipher.expanded_aes_keys.encode;
+		job->aes_dec_key_expanded =
+				session->cipher.expanded_aes_keys.decode;
+		break;
+
+	case AES_GMAC:
+		if (session->cipher.mode == GCM) {
+			job->u.GCM.aad = aad->va;
+			job->u.GCM.aad_len_in_bytes = session->aead.aad_len;
+		} else {
+			/* For GMAC */
+			job->u.GCM.aad = buf;
+			job->u.GCM.aad_len_in_bytes = len;
+			job->cipher_mode = GCM;
+		}
+		job->aes_enc_key_expanded = &session->cipher.gcm_key;
+		job->aes_dec_key_expanded = &session->cipher.gcm_key;
+		break;
+
+#if IMB_VERSION(0, 54, 3) <= IMB_VERSION_NUM
+	case IMB_AUTH_CHACHA20_POLY1305:
+		job->u.CHACHA20_POLY1305.aad = aad->va;
+		job->u.CHACHA20_POLY1305.aad_len_in_bytes = session->aead.aad_len;
+		job->aes_enc_key_expanded = session->cipher.expanded_aes_keys.encode;
+		job->aes_dec_key_expanded = session->cipher.expanded_aes_keys.encode;
+		break;
+#endif
+	default:
+		job->u.HMAC._hashed_auth_key_xor_ipad =
+				session->auth.pads.inner;
+		job->u.HMAC._hashed_auth_key_xor_opad =
+				session->auth.pads.outer;
+
+		if (job->cipher_mode == DES3) {
+			job->aes_enc_key_expanded =
+				session->cipher.exp_3des_keys.ks_ptr;
+			job->aes_dec_key_expanded =
+				session->cipher.exp_3des_keys.ks_ptr;
+		} else {
+			job->aes_enc_key_expanded =
+				session->cipher.expanded_aes_keys.encode;
+			job->aes_dec_key_expanded =
+				session->cipher.expanded_aes_keys.decode;
+		}
+	}
+
+	/*
+	 * Multi-buffer library current only support returning a truncated
+	 * digest length as specified in the relevant IPsec RFCs
+	 */
+
+	/* Set digest location and length */
+	job->auth_tag_output = digest;
+	job->auth_tag_output_len_in_bytes = session->auth.gen_digest_len;
+
+	/* Set IV parameters */
+	job->iv_len_in_bytes = session->iv.length;
+
+	/* Data Parameters */
+	job->src = buf;
+	job->dst = (uint8_t *)buf + sofs.ofs.cipher.head;
+	job->cipher_start_src_offset_in_bytes = sofs.ofs.cipher.head;
+	job->hash_start_src_offset_in_bytes = sofs.ofs.auth.head;
+	if (job->hash_alg == AES_GMAC && session->cipher.mode != GCM) {
+		job->msg_len_to_hash_in_bytes = 0;
+		job->msg_len_to_cipher_in_bytes = 0;
+	} else {
+		job->msg_len_to_hash_in_bytes = len - sofs.ofs.auth.head -
+			sofs.ofs.auth.tail;
+		job->msg_len_to_cipher_in_bytes = len - sofs.ofs.cipher.head -
+			sofs.ofs.cipher.tail;
+	}
+
+	job->user_data = udata;
+}
+
 /**
  * Process a crypto operation and complete a JOB_AES_HMAC job structure for
  * submission to the multi buffer library for processing.
@@ -846,6 +1264,8 @@ set_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
 
 	/* Set authentication parameters */
 	job->hash_alg = session->auth.algo;
+
+	const int aead = is_aead_algo(job->hash_alg, job->cipher_mode);
 
 	switch (job->hash_alg) {
 	case AES_XCBC:
@@ -892,7 +1312,29 @@ set_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
 		job->aes_enc_key_expanded = &session->cipher.gcm_key;
 		job->aes_dec_key_expanded = &session->cipher.gcm_key;
 		break;
-
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	case IMB_AUTH_ZUC_EIA3_BITLEN:
+		job->u.ZUC_EIA3._key = session->auth.zuc_auth_key;
+		job->u.ZUC_EIA3._iv = rte_crypto_op_ctod_offset(op, uint8_t *,
+						session->auth_iv.offset);
+		break;
+	case IMB_AUTH_SNOW3G_UIA2_BITLEN:
+		job->u.SNOW3G_UIA2._key = (void *) &session->auth.pKeySched_snow3g_auth;
+		job->u.SNOW3G_UIA2._iv = rte_crypto_op_ctod_offset(op, uint8_t *,
+						session->auth_iv.offset);
+		break;
+	case IMB_AUTH_KASUMI_UIA1:
+		job->u.KASUMI_UIA1._key = (void *) &session->auth.pKeySched_kasumi_auth;
+		break;
+#endif
+#if IMB_VERSION(0, 54, 3) <= IMB_VERSION_NUM
+	case IMB_AUTH_CHACHA20_POLY1305:
+		job->u.CHACHA20_POLY1305.aad = op->sym->aead.aad.data;
+		job->u.CHACHA20_POLY1305.aad_len_in_bytes = session->aead.aad_len;
+		job->aes_enc_key_expanded = session->cipher.expanded_aes_keys.encode;
+		job->aes_dec_key_expanded = session->cipher.expanded_aes_keys.encode;
+		break;
+#endif
 	default:
 		job->u.HMAC._hashed_auth_key_xor_ipad = session->auth.pads.inner;
 		job->u.HMAC._hashed_auth_key_xor_opad = session->auth.pads.outer;
@@ -910,6 +1352,24 @@ set_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
 		}
 	}
 
+	if (aead)
+		m_offset = op->sym->aead.data.offset;
+	else
+		m_offset = op->sym->cipher.data.offset;
+
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	if (job->cipher_mode == IMB_CIPHER_ZUC_EEA3) {
+		job->aes_enc_key_expanded = session->cipher.zuc_cipher_key;
+		job->aes_dec_key_expanded = session->cipher.zuc_cipher_key;
+	} else if (job->cipher_mode == IMB_CIPHER_SNOW3G_UEA2_BITLEN) {
+		job->enc_keys = &session->cipher.pKeySched_snow3g_cipher;
+		m_offset = 0;
+	} else if (job->cipher_mode == IMB_CIPHER_KASUMI_UEA1_BITLEN) {
+		job->enc_keys = &session->cipher.pKeySched_kasumi_cipher;
+		m_offset = 0;
+	}
+#endif
+
 	if (!op->sym->m_dst) {
 		/* in-place operation */
 		m_dst = m_src;
@@ -924,20 +1384,13 @@ set_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
 		oop = 1;
 	}
 
-	if (job->hash_alg == AES_CCM || (job->hash_alg == AES_GMAC &&
-			session->cipher.mode == GCM))
-		m_offset = op->sym->aead.data.offset;
-	else
-		m_offset = op->sym->cipher.data.offset;
-
 	/* Set digest output location */
 	if (job->hash_alg != NULL_HASH &&
 			session->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY) {
 		job->auth_tag_output = qp->temp_digests[*digest_idx];
 		*digest_idx = (*digest_idx + 1) % MAX_JOBS;
 	} else {
-		if (job->hash_alg == AES_CCM || (job->hash_alg == AES_GMAC &&
-				session->cipher.mode == GCM))
+		if (aead)
 			job->auth_tag_output = op->sym->aead.digest.data;
 		else
 			job->auth_tag_output = op->sym->auth.digest.data;
@@ -997,7 +1450,21 @@ set_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
 				session->iv.offset);
 		break;
 
+#if IMB_VERSION(0, 54, 3) <= IMB_VERSION_NUM
+	case IMB_AUTH_CHACHA20_POLY1305:
+		job->cipher_start_src_offset_in_bytes = op->sym->aead.data.offset;
+		job->hash_start_src_offset_in_bytes = op->sym->aead.data.offset;
+		job->msg_len_to_cipher_in_bytes =
+				op->sym->aead.data.length;
+		job->msg_len_to_hash_in_bytes =
+					op->sym->aead.data.length;
+
+		job->iv = rte_crypto_op_ctod_offset(op, uint8_t *,
+				session->iv.offset);
+		break;
+#endif
 	default:
+		/* For SNOW3G, length and offsets are already in bits */
 		job->cipher_start_src_offset_in_bytes =
 				op->sym->cipher.data.offset;
 		job->msg_len_to_cipher_in_bytes = op->sym->cipher.data.length;
@@ -1010,11 +1477,118 @@ set_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
 			session->iv.offset);
 	}
 
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+	if (job->cipher_mode == IMB_CIPHER_ZUC_EEA3)
+		job->msg_len_to_cipher_in_bytes >>= 3;
+	else if (job->hash_alg == IMB_AUTH_KASUMI_UIA1)
+		job->msg_len_to_hash_in_bytes >>= 3;
+#endif
+
 	/* Set user data to be crypto operation data struct */
 	job->user_data = op;
 
 	return 0;
 }
+
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+/**
+ * Process a crypto operation containing a security op and complete a
+ * JOB_AES_HMAC job structure for submission to the multi buffer library for
+ * processing.
+ */
+static inline int
+set_sec_mb_job_params(JOB_AES_HMAC *job, struct aesni_mb_qp *qp,
+		struct rte_crypto_op *op, uint8_t *digest_idx)
+{
+	struct rte_mbuf *m_src, *m_dst;
+	struct rte_crypto_sym_op *sym;
+	struct aesni_mb_session *session;
+
+	session = get_session(qp, op);
+	if (unlikely(session == NULL)) {
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+		return -1;
+	}
+
+	/* Only DOCSIS protocol operations supported now */
+	if (session->cipher.mode != IMB_CIPHER_DOCSIS_SEC_BPI ||
+			session->auth.algo != IMB_AUTH_DOCSIS_CRC32) {
+		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
+		return -1;
+	}
+
+	sym = op->sym;
+	m_src = sym->m_src;
+
+	if (likely(sym->m_dst == NULL || sym->m_dst == m_src)) {
+		/* in-place operation */
+		m_dst = m_src;
+	} else {
+		/* out-of-place operation not supported */
+		op->status = RTE_CRYPTO_OP_STATUS_ERROR;
+		return -ENOTSUP;
+	}
+
+	/* Set crypto operation */
+	job->chain_order = session->chain_order;
+
+	/* Set cipher parameters */
+	job->cipher_direction = session->cipher.direction;
+	job->cipher_mode = session->cipher.mode;
+
+	job->aes_key_len_in_bytes = session->cipher.key_length_in_bytes;
+	job->aes_enc_key_expanded = session->cipher.expanded_aes_keys.encode;
+	job->aes_dec_key_expanded = session->cipher.expanded_aes_keys.decode;
+
+	/* Set IV parameters */
+	job->iv_len_in_bytes = session->iv.length;
+	job->iv = (uint8_t *)op + session->iv.offset;
+
+	/* Set authentication parameters */
+	job->hash_alg = session->auth.algo;
+
+	/* Set digest output location */
+	job->auth_tag_output = qp->temp_digests[*digest_idx];
+	*digest_idx = (*digest_idx + 1) % MAX_JOBS;
+
+	/* Set digest length */
+	job->auth_tag_output_len_in_bytes = session->auth.gen_digest_len;
+
+	/* Set data parameters */
+	job->src = rte_pktmbuf_mtod(m_src, uint8_t *);
+	job->dst = rte_pktmbuf_mtod_offset(m_dst, uint8_t *,
+						sym->cipher.data.offset);
+
+	job->cipher_start_src_offset_in_bytes = sym->cipher.data.offset;
+	job->msg_len_to_cipher_in_bytes = sym->cipher.data.length;
+
+	job->hash_start_src_offset_in_bytes = sym->auth.data.offset;
+	job->msg_len_to_hash_in_bytes = sym->auth.data.length;
+
+	job->user_data = op;
+
+	return 0;
+}
+
+static inline void
+verify_docsis_sec_crc(JOB_AES_HMAC *job, uint8_t *status)
+{
+	uint16_t crc_offset;
+	uint8_t *crc;
+
+	if (!job->msg_len_to_hash_in_bytes)
+		return;
+
+	crc_offset = job->hash_start_src_offset_in_bytes +
+			job->msg_len_to_hash_in_bytes -
+			job->cipher_start_src_offset_in_bytes;
+	crc = job->dst + crc_offset;
+
+	/* Verify CRC (at the end of the message) */
+	if (memcmp(job->auth_tag_output, crc, RTE_ETHER_CRC_LEN) != 0)
+		*status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
+}
+#endif
 
 static inline void
 verify_digest(JOB_AES_HMAC *job, void *digest, uint16_t len, uint8_t *status)
@@ -1054,9 +1628,29 @@ static inline struct rte_crypto_op *
 post_process_mb_job(struct aesni_mb_qp *qp, JOB_AES_HMAC *job)
 {
 	struct rte_crypto_op *op = (struct rte_crypto_op *)job->user_data;
-	struct aesni_mb_session *sess = get_sym_session_private_data(
-							op->sym->session,
-							cryptodev_driver_id);
+	struct aesni_mb_session *sess = NULL;
+
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+	uint8_t is_docsis_sec = 0;
+
+	if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+		/*
+		 * Assuming at this point that if it's a security type op, that
+		 * this is for DOCSIS
+		 */
+		is_docsis_sec = 1;
+		sess = get_sec_session_private_data(op->sym->sec_session);
+	} else
+#endif
+	{
+		sess = get_sym_session_private_data(op->sym->session,
+						cryptodev_driver_id);
+	}
+
+	if (unlikely(sess == NULL)) {
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+		return op;
+	}
 
 	if (likely(op->status == RTE_CRYPTO_OP_STATUS_NOT_PROCESSED)) {
 		switch (job->status) {
@@ -1067,13 +1661,16 @@ post_process_mb_job(struct aesni_mb_qp *qp, JOB_AES_HMAC *job)
 				break;
 
 			if (sess->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY) {
-				if (job->hash_alg == AES_CCM ||
-					(job->hash_alg == AES_GMAC &&
-						sess->cipher.mode == GCM))
+				if (is_aead_algo(job->hash_alg, sess->cipher.mode))
 					verify_digest(job,
 						op->sym->aead.digest.data,
 						sess->auth.req_digest_len,
 						&op->status);
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+				else if (is_docsis_sec)
+					verify_docsis_sec_crc(job,
+						&op->status);
+#endif
 				else
 					verify_digest(job,
 						op->sym->auth.digest.data,
@@ -1099,6 +1696,15 @@ post_process_mb_job(struct aesni_mb_qp *qp, JOB_AES_HMAC *job)
 	}
 
 	return op;
+}
+
+static inline void
+post_process_mb_sync_job(JOB_AES_HMAC *job)
+{
+	uint32_t *st;
+
+	st = job->user_data;
+	st[0] = (job->status == STS_COMPLETED) ? 0 : EBADMSG;
 }
 
 /**
@@ -1135,6 +1741,26 @@ handle_completed_jobs(struct aesni_mb_qp *qp, JOB_AES_HMAC *job,
 	}
 
 	return processed_jobs;
+}
+
+static inline uint32_t
+handle_completed_sync_jobs(JOB_AES_HMAC *job, MB_MGR *mb_mgr)
+{
+	uint32_t i;
+
+	for (i = 0; job != NULL; i++, job = IMB_GET_COMPLETED_JOB(mb_mgr))
+		post_process_mb_sync_job(job);
+
+	return i;
+}
+
+static inline uint32_t
+flush_mb_sync_mgr(MB_MGR *mb_mgr)
+{
+	JOB_AES_HMAC *job;
+
+	job = IMB_FLUSH_JOB(mb_mgr);
+	return handle_completed_sync_jobs(job, mb_mgr);
 }
 
 static inline uint16_t
@@ -1207,7 +1833,14 @@ aesni_mb_pmd_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
 		if (retval < 0)
 			break;
 
-		retval = set_mb_job_params(job, qp, op, &digest_idx);
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+		if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION)
+			retval = set_sec_mb_job_params(job, qp, op,
+						&digest_idx);
+		else
+#endif
+			retval = set_mb_job_params(job, qp, op, &digest_idx);
+
 		if (unlikely(retval != 0)) {
 			qp->stats.dequeue_err_count++;
 			set_job_null_op(job, op);
@@ -1240,7 +1873,199 @@ aesni_mb_pmd_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
 	return processed_jobs;
 }
 
+static MB_MGR *
+alloc_init_mb_mgr(enum aesni_mb_vector_mode vector_mode)
+{
+	MB_MGR *mb_mgr = alloc_mb_mgr(0);
+	if (mb_mgr == NULL)
+		return NULL;
+
+	switch (vector_mode) {
+	case RTE_AESNI_MB_SSE:
+		init_mb_mgr_sse(mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX:
+		init_mb_mgr_avx(mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX2:
+		init_mb_mgr_avx2(mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX512:
+		init_mb_mgr_avx512(mb_mgr);
+		break;
+	default:
+		AESNI_MB_LOG(ERR, "Unsupported vector mode %u\n", vector_mode);
+		free_mb_mgr(mb_mgr);
+		return NULL;
+	}
+
+	return mb_mgr;
+}
+
+static inline void
+aesni_mb_fill_error_code(struct rte_crypto_sym_vec *vec, int32_t err)
+{
+	uint32_t i;
+
+	for (i = 0; i != vec->num; ++i)
+		vec->status[i] = err;
+}
+
+static inline int
+check_crypto_sgl(union rte_crypto_sym_ofs so, const struct rte_crypto_sgl *sgl)
+{
+	/* no multi-seg support with current AESNI-MB PMD */
+	if (sgl->num != 1)
+		return ENOTSUP;
+	else if (so.ofs.cipher.head + so.ofs.cipher.tail > sgl->vec[0].len)
+		return EINVAL;
+	return 0;
+}
+
+static inline JOB_AES_HMAC *
+submit_sync_job(MB_MGR *mb_mgr)
+{
+#ifdef RTE_LIBRTE_PMD_AESNI_MB_DEBUG
+	return IMB_SUBMIT_JOB(mb_mgr);
+#else
+	return IMB_SUBMIT_JOB_NOCHECK(mb_mgr);
+#endif
+}
+
+static inline uint32_t
+generate_sync_dgst(struct rte_crypto_sym_vec *vec,
+	const uint8_t dgst[][DIGEST_LENGTH_MAX], uint32_t len)
+{
+	uint32_t i, k;
+
+	for (i = 0, k = 0; i != vec->num; i++) {
+		if (vec->status[i] == 0) {
+			memcpy(vec->digest[i].va, dgst[i], len);
+			k++;
+		}
+	}
+
+	return k;
+}
+
+static inline uint32_t
+verify_sync_dgst(struct rte_crypto_sym_vec *vec,
+	const uint8_t dgst[][DIGEST_LENGTH_MAX], uint32_t len)
+{
+	uint32_t i, k;
+
+	for (i = 0, k = 0; i != vec->num; i++) {
+		if (vec->status[i] == 0) {
+			if (memcmp(vec->digest[i].va, dgst[i], len) != 0)
+				vec->status[i] = EBADMSG;
+			else
+				k++;
+		}
+	}
+
+	return k;
+}
+
+uint32_t
+aesni_mb_cpu_crypto_process_bulk(struct rte_cryptodev *dev,
+	struct rte_cryptodev_sym_session *sess, union rte_crypto_sym_ofs sofs,
+	struct rte_crypto_sym_vec *vec)
+{
+	int32_t ret;
+	uint32_t i, j, k, len;
+	void *buf;
+	JOB_AES_HMAC *job;
+	MB_MGR *mb_mgr;
+	struct aesni_mb_private *priv;
+	struct aesni_mb_session *s;
+	uint8_t tmp_dgst[vec->num][DIGEST_LENGTH_MAX];
+
+	s = get_sym_session_private_data(sess, dev->driver_id);
+	if (s == NULL) {
+		aesni_mb_fill_error_code(vec, EINVAL);
+		return 0;
+	}
+
+	/* get per-thread MB MGR, create one if needed */
+	mb_mgr = RTE_PER_LCORE(sync_mb_mgr);
+	if (mb_mgr == NULL) {
+
+		priv = dev->data->dev_private;
+		mb_mgr = alloc_init_mb_mgr(priv->vector_mode);
+		if (mb_mgr == NULL) {
+			aesni_mb_fill_error_code(vec, ENOMEM);
+			return 0;
+		}
+		RTE_PER_LCORE(sync_mb_mgr) = mb_mgr;
+	}
+
+	for (i = 0, j = 0, k = 0; i != vec->num; i++) {
+
+
+		ret = check_crypto_sgl(sofs, vec->sgl + i);
+		if (ret != 0) {
+			vec->status[i] = ret;
+			continue;
+		}
+
+		buf = vec->sgl[i].vec[0].base;
+		len = vec->sgl[i].vec[0].len;
+
+		job = IMB_GET_NEXT_JOB(mb_mgr);
+		if (job == NULL) {
+			k += flush_mb_sync_mgr(mb_mgr);
+			job = IMB_GET_NEXT_JOB(mb_mgr);
+			RTE_ASSERT(job != NULL);
+		}
+
+		/* Submit job for processing */
+		set_cpu_mb_job_params(job, s, sofs, buf, len, &vec->iv[i],
+			&vec->aad[i], tmp_dgst[i], &vec->status[i]);
+		job = submit_sync_job(mb_mgr);
+		j++;
+
+		/* handle completed jobs */
+		k += handle_completed_sync_jobs(job, mb_mgr);
+	}
+
+	/* flush remaining jobs */
+	while (k != j)
+		k += flush_mb_sync_mgr(mb_mgr);
+
+	/* finish processing for successful jobs: check/update digest */
+	if (k != 0) {
+		if (s->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY)
+			k = verify_sync_dgst(vec,
+				(const uint8_t (*)[DIGEST_LENGTH_MAX])tmp_dgst,
+				s->auth.req_digest_len);
+		else
+			k = generate_sync_dgst(vec,
+				(const uint8_t (*)[DIGEST_LENGTH_MAX])tmp_dgst,
+				s->auth.req_digest_len);
+	}
+
+	return k;
+}
+
 static int cryptodev_aesni_mb_remove(struct rte_vdev_device *vdev);
+
+static uint64_t
+vec_mode_to_flags(enum aesni_mb_vector_mode mode)
+{
+	switch (mode) {
+	case RTE_AESNI_MB_SSE:
+		return RTE_CRYPTODEV_FF_CPU_SSE;
+	case RTE_AESNI_MB_AVX:
+		return RTE_CRYPTODEV_FF_CPU_AVX;
+	case RTE_AESNI_MB_AVX2:
+		return RTE_CRYPTODEV_FF_CPU_AVX2;
+	case RTE_AESNI_MB_AVX512:
+		return RTE_CRYPTODEV_FF_CPU_AVX512;
+	default:
+		AESNI_MB_LOG(ERR, "Unsupported vector mode %u\n", mode);
+		return 0;
+	}
+}
 
 static int
 cryptodev_aesni_mb_create(const char *name,
@@ -1277,7 +2102,28 @@ cryptodev_aesni_mb_create(const char *name,
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
-			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT;
+			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
+			RTE_CRYPTODEV_FF_SYM_CPU_CRYPTO |
+			RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA |
+			RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
+
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+	struct rte_security_ctx *security_instance;
+	security_instance = rte_malloc("aesni_mb_sec",
+				sizeof(struct rte_security_ctx),
+				RTE_CACHE_LINE_SIZE);
+	if (security_instance == NULL) {
+		AESNI_MB_LOG(ERR, "rte_security_ctx memory alloc failed");
+		rte_cryptodev_pmd_destroy(dev);
+		return -ENOMEM;
+	}
+
+	security_instance->device = (void *)dev;
+	security_instance->ops = rte_aesni_mb_pmd_sec_ops;
+	security_instance->sess_cnt = 0;
+	dev->security_ctx = security_instance;
+	dev->feature_flags |= RTE_CRYPTODEV_FF_SECURITY;
+#endif
 
 	/* Check CPU for support for AES instruction set */
 	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_AES))
@@ -1285,30 +2131,16 @@ cryptodev_aesni_mb_create(const char *name,
 	else
 		AESNI_MB_LOG(WARNING, "AES instructions not supported by CPU");
 
-	mb_mgr = alloc_mb_mgr(0);
-	if (mb_mgr == NULL)
-		return -ENOMEM;
+	dev->feature_flags |= vec_mode_to_flags(vector_mode);
 
-	switch (vector_mode) {
-	case RTE_AESNI_MB_SSE:
-		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_SSE;
-		init_mb_mgr_sse(mb_mgr);
-		break;
-	case RTE_AESNI_MB_AVX:
-		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX;
-		init_mb_mgr_avx(mb_mgr);
-		break;
-	case RTE_AESNI_MB_AVX2:
-		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX2;
-		init_mb_mgr_avx2(mb_mgr);
-		break;
-	case RTE_AESNI_MB_AVX512:
-		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX512;
-		init_mb_mgr_avx512(mb_mgr);
-		break;
-	default:
-		AESNI_MB_LOG(ERR, "Unsupported vector mode %u\n", vector_mode);
-		goto error_exit;
+	mb_mgr = alloc_init_mb_mgr(vector_mode);
+	if (mb_mgr == NULL) {
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+		rte_free(dev->security_ctx);
+		dev->security_ctx = NULL;
+#endif
+		rte_cryptodev_pmd_destroy(dev);
+		return -ENOMEM;
 	}
 
 	/* Set vector instructions mode supported */
@@ -1320,16 +2152,7 @@ cryptodev_aesni_mb_create(const char *name,
 
 	AESNI_MB_LOG(INFO, "IPSec Multi-buffer library version used: %s\n",
 			imb_get_version_str());
-
 	return 0;
-
-error_exit:
-	if (mb_mgr)
-		free_mb_mgr(mb_mgr);
-
-	rte_cryptodev_pmd_destroy(dev);
-
-	return -1;
 }
 
 static int
@@ -1378,6 +2201,15 @@ cryptodev_aesni_mb_remove(struct rte_vdev_device *vdev)
 	internals = cryptodev->data->dev_private;
 
 	free_mb_mgr(internals->mb_mgr);
+	if (RTE_PER_LCORE(sync_mb_mgr)) {
+		free_mb_mgr(RTE_PER_LCORE(sync_mb_mgr));
+		RTE_PER_LCORE(sync_mb_mgr) = NULL;
+	}
+
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+	rte_free(cryptodev->security_ctx);
+	cryptodev->security_ctx = NULL;
+#endif
 
 	return rte_cryptodev_pmd_destroy(cryptodev);
 }
@@ -1397,8 +2229,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_AESNI_MB_PMD,
 RTE_PMD_REGISTER_CRYPTO_DRIVER(aesni_mb_crypto_drv,
 		cryptodev_aesni_mb_pmd_drv.driver,
 		cryptodev_driver_id);
-
-RTE_INIT(aesni_mb_init_log)
-{
-	aesni_mb_logtype_driver = rte_log_register("pmd.crypto.aesni_mb");
-}
+RTE_LOG_REGISTER(aesni_mb_logtype_driver, pmd.crypto.aesni_mb, NOTICE);

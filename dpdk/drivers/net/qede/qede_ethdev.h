@@ -34,6 +34,7 @@
 #include "base/ecore_l2.h"
 #include "base/ecore_vf.h"
 
+#include "qede_sriov.h"
 #include "qede_logs.h"
 #include "qede_if.h"
 #include "qede_rxtx.h"
@@ -214,6 +215,8 @@ struct qede_tunn_params {
 	uint16_t udp_port;
 };
 
+#define QEDE_FW_DUMP_FILE_SIZE 128
+
 /*
  *  Structure to store private data for each port.
  */
@@ -252,6 +255,7 @@ struct qede_dev {
 	char drv_ver[QEDE_PMD_DRV_VER_STR_SIZE];
 	bool vport_started;
 	int vlan_offload_mask;
+	char dump_file[QEDE_FW_DUMP_FILE_SIZE];
 	void *ethdev;
 };
 
@@ -289,11 +293,6 @@ int qede_ntuple_filter_conf(struct rte_eth_dev *eth_dev,
 
 int qede_check_fdir_support(struct rte_eth_dev *eth_dev);
 
-uint16_t qede_fdir_construct_pkt(struct rte_eth_dev *eth_dev,
-				 struct rte_eth_fdir_filter *fdir,
-				 void *buff,
-				 struct ecore_arfs_config_params *params);
-
 void qede_fdir_dealloc_resc(struct rte_eth_dev *eth_dev);
 
 int qede_activate_vport(struct rte_eth_dev *eth_dev, bool flg);
@@ -313,4 +312,26 @@ void qede_config_accept_any_vlan(struct qede_dev *qdev, bool flg);
 int qede_ucast_filter(struct rte_eth_dev *eth_dev,
 		      struct ecore_filter_ucast *ucast,
 		      bool add);
+
+#define REGDUMP_HEADER_SIZE sizeof(u32)
+#define REGDUMP_HEADER_FEATURE_SHIFT 24
+#define REGDUMP_HEADER_ENGINE_SHIFT 31
+#define REGDUMP_HEADER_OMIT_ENGINE_SHIFT 30
+
+enum debug_print_features {
+	OLD_MODE = 0,
+	IDLE_CHK = 1,
+	GRC_DUMP = 2,
+	MCP_TRACE = 3,
+	REG_FIFO = 4,
+	PROTECTION_OVERRIDE = 5,
+	IGU_FIFO = 6,
+	PHY = 7,
+	FW_ASSERTS = 8,
+};
+
+int qede_get_regs_len(struct qede_dev *qdev);
+int qede_get_regs(struct rte_eth_dev *dev, struct rte_dev_reg_info *regs);
+void qede_config_rx_mode(struct rte_eth_dev *eth_dev);
+void qed_dbg_dump(struct rte_eth_dev *eth_dev);
 #endif /* _QEDE_ETHDEV_H_ */

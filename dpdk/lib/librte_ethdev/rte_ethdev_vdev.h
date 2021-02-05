@@ -1,7 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Brocade Communications Systems, Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Brocade Communications Systems, Inc.
  *   Author: Jan Blunck <jblunck@infradead.org>
  */
 
@@ -50,7 +48,6 @@ rte_eth_vdev_allocate(struct rte_vdev_device *dev, size_t private_data_size)
 	eth_dev->device = &dev->device;
 	eth_dev->intr_handle = NULL;
 
-	eth_dev->data->kdrv = RTE_KDRV_NONE;
 	eth_dev->data->numa_node = dev->device.numa_node;
 	return eth_dev;
 }

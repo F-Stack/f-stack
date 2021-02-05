@@ -84,8 +84,6 @@ static struct pp2_bpool *mrvl_port_to_bpool_lookup[RTE_MAX_ETHPORTS];
 static int mrvl_port_bpool_size[PP2_NUM_PKT_PROC][PP2_BPOOL_NUM_POOLS][RTE_MAX_LCORE];
 static uint64_t cookie_addr_high = MRVL_COOKIE_ADDR_INVALID;
 
-int mrvl_logtype;
-
 struct mrvl_ifnames {
 	const char *names[PP2_NUM_ETH_PPIO * PP2_NUM_PKT_PROC];
 	int idx;
@@ -816,7 +814,7 @@ mrvl_flush_bpool(struct rte_eth_dev *dev)
 	unsigned int core_id = rte_lcore_id();
 
 	if (core_id == LCORE_ID_ANY)
-		core_id = rte_get_master_lcore();
+		core_id = rte_get_main_lcore();
 
 	hif = mrvl_get_hif(priv, core_id);
 
@@ -845,10 +843,10 @@ mrvl_flush_bpool(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 mrvl_dev_stop(struct rte_eth_dev *dev)
 {
-	mrvl_dev_set_link_down(dev);
+	return mrvl_dev_set_link_down(dev);
 }
 
 /**
@@ -857,11 +855,14 @@ mrvl_dev_stop(struct rte_eth_dev *dev)
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 mrvl_dev_close(struct rte_eth_dev *dev)
 {
 	struct mrvl_priv *priv = dev->data->dev_private;
 	size_t i;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
 
 	mrvl_flush_rx_queues(dev);
 	mrvl_flush_tx_shadow_queues(dev);
@@ -917,6 +918,8 @@ mrvl_dev_close(struct rte_eth_dev *dev)
 		mrvl_deinit_pp2();
 		rte_mvep_deinit(MVEP_MOD_T_PP2);
 	}
+
+	return 0;
 }
 
 /**
@@ -1620,7 +1623,7 @@ mrvl_fill_bpool(struct mrvl_rxq *rxq, int num)
 
 	core_id = rte_lcore_id();
 	if (core_id == LCORE_ID_ANY)
-		core_id = rte_get_master_lcore();
+		core_id = rte_get_main_lcore();
 
 	hif = mrvl_get_hif(rxq->priv, core_id);
 	if (!hif)
@@ -1770,7 +1773,7 @@ mrvl_rx_queue_release(void *rxq)
 	unsigned int core_id = rte_lcore_id();
 
 	if (core_id == LCORE_ID_ANY)
-		core_id = rte_get_master_lcore();
+		core_id = rte_get_main_lcore();
 
 	if (!q)
 		return;
@@ -2858,14 +2861,11 @@ mrvl_eth_dev_create(struct rte_vdev_device *vdev, const char *name)
 	memcpy(eth_dev->data->mac_addrs[0].addr_bytes,
 	       req.ifr_addr.sa_data, RTE_ETHER_ADDR_LEN);
 
-	eth_dev->data->kdrv = RTE_KDRV_NONE;
 	eth_dev->device = &vdev->device;
 	eth_dev->rx_pkt_burst = mrvl_rx_pkt_burst;
 	mrvl_set_tx_function(eth_dev);
 	eth_dev->dev_ops = &mrvl_ops;
-
-	/* Flag to call rte_eth_dev_release_port() in rte_eth_dev_close(). */
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	rte_eth_dev_probing_finish(eth_dev);
 	return 0;
@@ -3023,14 +3023,15 @@ static int
 rte_pmd_mrvl_remove(struct rte_vdev_device *vdev)
 {
 	uint16_t port_id;
+	int ret = 0;
 
 	RTE_ETH_FOREACH_DEV(port_id) {
 		if (rte_eth_devices[port_id].device != &vdev->device)
 			continue;
-		rte_eth_dev_close(port_id);
+		ret |= rte_eth_dev_close(port_id);
 	}
 
-	return 0;
+	return ret == 0 ? 0 : -EIO;
 }
 
 static struct rte_vdev_driver pmd_mrvl_drv = {
@@ -3040,10 +3041,4 @@ static struct rte_vdev_driver pmd_mrvl_drv = {
 
 RTE_PMD_REGISTER_VDEV(net_mvpp2, pmd_mrvl_drv);
 RTE_PMD_REGISTER_ALIAS(net_mvpp2, eth_mvpp2);
-
-RTE_INIT(mrvl_init_log)
-{
-	mrvl_logtype = rte_log_register("pmd.net.mvpp2");
-	if (mrvl_logtype >= 0)
-		rte_log_set_level(mrvl_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(mrvl_logtype, pmd.net.mvpp2, NOTICE);

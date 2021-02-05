@@ -1,0 +1,15 @@
+EXPERIMENTAL {
+	global:
+
+	rte_pmd_dpaa2_mux_flow_create;
+	rte_pmd_dpaa2_set_custom_hash;
+};
+
+INTERNAL {
+	global:
+
+	dpaa2_eth_eventq_attach;
+	dpaa2_eth_eventq_detach;
+
+	local: *;
+};

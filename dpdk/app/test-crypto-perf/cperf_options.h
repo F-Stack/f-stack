@@ -7,7 +7,7 @@
 
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 #include <rte_security.h>
 #endif
 
@@ -47,9 +47,12 @@
 
 #define CPERF_DIGEST_SZ		("digest-sz")
 
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 #define CPERF_PDCP_SN_SZ	("pdcp-sn-sz")
 #define CPERF_PDCP_DOMAIN	("pdcp-domain")
+#define CPERF_PDCP_SES_HFN_EN	("pdcp-ses-hfn-en")
+#define PDCP_DEFAULT_HFN	0x1
+#define CPERF_DOCSIS_HDR_SZ	("docsis-hdr-sz")
 #endif
 
 #define CPERF_CSV		("csv-friendly")
@@ -75,7 +78,8 @@ enum cperf_op_type {
 	CPERF_CIPHER_THEN_AUTH,
 	CPERF_AUTH_THEN_CIPHER,
 	CPERF_AEAD,
-	CPERF_PDCP
+	CPERF_PDCP,
+	CPERF_DOCSIS
 };
 
 extern const char *cperf_op_type_strs[];
@@ -119,9 +123,11 @@ struct cperf_options {
 
 	uint16_t digest_sz;
 
-#ifdef RTE_LIBRTE_SECURITY
+#ifdef RTE_LIB_SECURITY
 	uint16_t pdcp_sn_sz;
+	uint16_t pdcp_ses_hfn_en;
 	enum rte_security_pdcp_domain pdcp_domain;
+	uint16_t docsis_hdr_sz;
 #endif
 	char device_type[RTE_CRYPTODEV_NAME_MAX_LEN];
 	enum cperf_op_type op_type;

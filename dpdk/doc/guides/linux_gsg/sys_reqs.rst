@@ -37,17 +37,13 @@ Compilation of the DPDK
     The setup commands and installed packages needed on various systems may be different.
     For details on Linux distributions and the versions tested, please consult the DPDK Release Notes.
 
-*   General development tools including ``make``, and a supported C compiler such as ``gcc`` (version 4.9+) or ``clang`` (version 3.4+).
+*   General development tools including a supported C compiler such as gcc (version 4.9+) or clang (version 3.4+).
 
     * For RHEL/Fedora systems these can be installed using ``dnf groupinstall "Development Tools"``
 
     * For Ubuntu/Debian systems these can be installed using ``apt install build-essential``
 
-*   Python, recommended version 3.5+.
-
-    * Python v3.5+ is needed to build DPDK using meson and ninja
-
-    * Python 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
+*   Python 3.5 or later.
 
 *   Meson (version 0.47.1+) and ninja
 
@@ -61,8 +57,6 @@ Compilation of the DPDK
     * ``numactl-devel`` in RHEL/Fedora;
 
     * ``libnuma-dev`` in Debian/Ubuntu;
-
-*   Linux kernel headers or sources required to build kernel modules.
 
 .. note::
 
@@ -82,12 +76,8 @@ Compilation of the DPDK
 **Additional Libraries**
 
 A number of DPDK components, such as libraries and poll-mode drivers (PMDs) have additional dependencies.
-For DPDK builds using meson, the presence or absence of these dependencies will be
-automatically detected enabling or disabling the relevant components appropriately.
-
-For builds using make, these components are disabled in the default configuration and
-need to be enabled manually by changing the relevant setting to "y" in the build configuration file
-i.e. the ``.config`` file in the build folder.
+For DPDK builds, the presence or absence of these dependencies will be automatically detected
+enabling or disabling the relevant components appropriately.
 
 In each case, the relevant library development package (``-devel`` or ``-dev``) is needed to build the DPDK components.
 
@@ -95,13 +85,24 @@ For libraries the additional dependencies include:
 
 *   libarchive: for some unit tests using tar to get their resources.
 
-*   jansson: to compile and use the telemetry library.
-
 *   libelf: to compile and use the bpf library.
 
 For poll-mode drivers, the additional dependencies for each driver can be
 found in that driver's documentation in the relevant DPDK guide document,
 e.g. :doc:`../nics/index`
+
+
+Building DPDK Applications
+--------------------------
+
+The tool pkg-config or pkgconf, integrated in most build systems,
+must be used to parse options and dependencies from libdpdk.pc.
+
+.. note::
+
+   pkg-config 0.27, supplied with RHEL-7,
+   does not process the Libs.private section correctly,
+   resulting in statically linked applications not being linked properly.
 
 
 Running DPDK Applications

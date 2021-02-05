@@ -55,7 +55,7 @@ static int cxgbevf_dev_stats_get(struct rte_eth_dev *eth_dev,
 
 	for (i = 0; i < pi->n_rx_qsets; i++) {
 		struct sge_eth_rxq *rxq =
-			&s->ethrxq[pi->first_qset + i];
+			&s->ethrxq[pi->first_rxqset + i];
 
 		eth_stats->q_ipackets[i] = rxq->stats.pkts;
 		eth_stats->q_ibytes[i] = rxq->stats.rx_bytes;
@@ -65,7 +65,7 @@ static int cxgbevf_dev_stats_get(struct rte_eth_dev *eth_dev,
 
 	for (i = 0; i < pi->n_tx_qsets; i++) {
 		struct sge_eth_txq *txq =
-			&s->ethtxq[pi->first_qset + i];
+			&s->ethtxq[pi->first_txqset + i];
 
 		eth_stats->q_opackets[i] = txq->stats.pkts;
 		eth_stats->q_obytes[i] = txq->stats.tx_bytes;
@@ -181,12 +181,15 @@ out_free_adapter:
 
 static int eth_cxgbevf_dev_uninit(struct rte_eth_dev *eth_dev)
 {
-	struct port_info *pi = eth_dev->data->dev_private;
-	struct adapter *adap = pi->adapter;
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
+	uint16_t port_id;
+	int err = 0;
 
 	/* Free up other ports and all resources */
-	cxgbe_close(adap);
-	return 0;
+	RTE_ETH_FOREACH_DEV_OF(port_id, &pci_dev->device)
+		err |= rte_eth_dev_close(port_id);
+
+	return err == 0 ? 0 : -EIO;
 }
 
 static int eth_cxgbevf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,

@@ -13,15 +13,7 @@
  * @param arg
  *   opaque pointer
  */
-__attribute__((noreturn)) void *eal_thread_loop(void *arg);
-
-/**
- * Init per-lcore info for master thread
- *
- * @param lcore_id
- *   identifier of master lcore
- */
-void eal_thread_init_master(unsigned lcore_id);
+__rte_noreturn void *eal_thread_loop(void *arg);
 
 /**
  * Get the NUMA socket id from cpu id.
@@ -40,13 +32,15 @@ unsigned eal_cpu_socket_id(unsigned cpu_id);
 #define RTE_CPU_AFFINITY_STR_LEN            256
 
 /**
- * Dump the current pthread cpuset.
+ * Dump the cpuset as a human readable string.
  * This function is private to EAL.
  *
  * Note:
  *   If the dump size is greater than the size of given buffer,
  *   the string will be truncated and with '\0' at the end.
  *
+ * @param cpuset
+ *   The CPU affinity object to dump.
  * @param str
  *   The string buffer the cpuset will dump to.
  * @param size
@@ -55,6 +49,13 @@ unsigned eal_cpu_socket_id(unsigned cpu_id);
  *   0 for success, -1 if truncation happens.
  */
 int
-eal_thread_dump_affinity(char *str, unsigned size);
+eal_thread_dump_affinity(rte_cpuset_t *cpuset, char *str, unsigned int size);
+
+/**
+ * Dump the current thread cpuset.
+ * This is a wrapper on eal_thread_dump_affinity().
+ */
+int
+eal_thread_dump_current_affinity(char *str, unsigned int size);
 
 #endif /* EAL_THREAD_H */

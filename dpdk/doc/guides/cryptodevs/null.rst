@@ -4,7 +4,7 @@
 Null Crypto Poll Mode Driver
 ============================
 
-The Null Crypto PMD (**librte_pmd_null_crypto**) provides a crypto poll mode
+The Null Crypto PMD (**librte_crypto_null**) provides a crypto poll mode
 driver which provides a minimal implementation for a software crypto device. As
 a null device it does not modify the data in the mbuf on which the crypto
 operation is to operate and it only has support for a single cipher and
@@ -67,5 +67,5 @@ Example:
 
 .. code-block:: console
 
-    ./l2fwd-crypto -l 1 -n 4 --vdev="crypto_null,socket_id=0,max_nb_sessions=128" \
+    ./dpdk-l2fwd-crypto -l 1 -n 4 --vdev="crypto_null,socket_id=0,max_nb_sessions=128" \
     -- -p 1 --cdev SW --chain CIPHER_ONLY --cipher_algo "null"

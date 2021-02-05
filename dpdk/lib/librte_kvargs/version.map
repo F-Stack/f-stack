@@ -1,0 +1,18 @@
+DPDK_21 {
+	global:
+
+	rte_kvargs_count;
+	rte_kvargs_free;
+	rte_kvargs_parse;
+	rte_kvargs_process;
+
+	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	rte_kvargs_parse_delim;
+	rte_kvargs_strcmp;
+
+};

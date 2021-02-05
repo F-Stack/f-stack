@@ -118,7 +118,8 @@ The proposer should justify the need for a new sub-tree and should have demonstr
 The maintainer should be confirmed by an ``ack`` from an existing tree maintainer.
 Disagreements on trees or maintainers can be brought to the Technical Board.
 
-The backup maintainer for the master tree should be selected from the existing sub-tree maintainers from the project.
+The backup maintainer for the main tree should be selected
+from the existing sub-tree maintainers of the project.
 The backup maintainer for a sub-tree should be selected from among the component maintainers within that sub-tree.
 
 
@@ -319,7 +320,7 @@ For example::
 Patch for Stable Releases
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-All fix patches to the master branch that are candidates for backporting
+All fix patches to the main branch that are candidates for backporting
 should also be CCed to the `stable@dpdk.org <https://mails.dpdk.org/listinfo/stable>`_
 mailing list.
 In the commit message body the Cc: stable@dpdk.org should be inserted as follows::
@@ -336,6 +337,24 @@ In the commit message body the Cc: stable@dpdk.org should be inserted as follows
 For further information on stable contribution you can go to
 :doc:`Stable Contribution Guide <stable>`.
 
+Patch Dependencies
+~~~~~~~~~~~~~~~~~~
+
+Sometimes a patch or patchset can depend on another one.
+To help the maintainers and automation tasks, please document this dependency in commit log or cover letter
+with the following syntax:
+
+``Depends-on: series-NNNNN ("Title of the series")`` or ``Depends-on: patch-NNNNN ("Title of the patch")``
+
+Where ``NNNNN`` is patchwork ID for patch or series::
+
+     doc: fix some parameter description
+
+     Update the docs, fixing description of some parameter.
+
+     Signed-off-by: Alex Smith <alex.smith@example.com>
+     ---
+     Depends-on: series-10000 ("Title of the series")
 
 Creating Patches
 ----------------
@@ -429,77 +448,21 @@ Once the environment variable is set, the script can be run as follows::
 
 The script usage is::
 
-   checkpatches.sh [-h] [-q] [-v] [patch1 [patch2] ...]]"
-
-Where:
-
-* ``-h``: help, usage.
-* ``-q``: quiet. Don't output anything for files without issues.
-* ``-v``: verbose.
-* ``patchX``: path to one or more patches.
+   checkpatches.sh [-h] [-q] [-v] [-nX|-r range|patch1 [patch2] ...]
 
 Then the git logs should be checked using the ``check-git-log.sh`` script.
 
 The script usage is::
 
-   check-git-log.sh [range]
+   check-git-log.sh [-h] [-nX|-r range]
 
-Where the range is a ``git log`` option.
-
+For both of the above scripts, the -n option is used to specify a number of commits from HEAD,
+and the -r option allows the user specify a ``git log`` range.
 
 .. _contrib_check_compilation:
 
 Checking Compilation
 --------------------
-
-Makefile System
-~~~~~~~~~~~~~~~
-
-Compilation of patches and changes should be tested using the ``test-build.sh`` script in the ``devtools``
-directory of the DPDK repo::
-
-  devtools/test-build.sh x86_64-native-linux-gcc+next+shared
-
-The script usage is::
-
-   test-build.sh [-h] [-jX] [-s] [config1 [config2] ...]]
-
-Where:
-
-* ``-h``: help, usage.
-* ``-jX``: use X parallel jobs in "make".
-* ``-s``: short test with only first config and without examples/doc.
-* ``config``: default config name plus config switches delimited with a ``+`` sign.
-
-Examples of configs are::
-
-   x86_64-native-linux-gcc
-   x86_64-native-linux-gcc+next+shared
-   x86_64-native-linux-clang+shared
-
-The builds can be modified via the following environmental variables:
-
-* ``DPDK_BUILD_TEST_CONFIGS`` (target1+option1+option2 target2)
-* ``DPDK_BUILD_TEST_DIR``
-* ``DPDK_DEP_CFLAGS``
-* ``DPDK_DEP_LDFLAGS``
-* ``DPDK_DEP_PCAP`` (y/[n])
-* ``DPDK_NOTIFY`` (notify-send)
-
-These can be set from the command line or in the config files shown above in the :ref:`contrib_checkpatch`.
-
-The recommended configurations and options to test compilation prior to submitting patches are::
-
-   x86_64-native-linux-gcc+shared+next
-   x86_64-native-linux-clang+shared
-   i686-native-linux-gcc
-
-   export DPDK_DEP_ZLIB=y
-   export DPDK_DEP_PCAP=y
-   export DPDK_DEP_SSL=y
-
-Meson System
-~~~~~~~~~~~~
 
 Compilation of patches is to be tested with ``devtools/test-meson-builds.sh`` script.
 
@@ -511,6 +474,28 @@ the environment variable ``DPDK_BUILD_TEST_DIR`` can be set to that desired loca
 For example, setting ``DPDK_BUILD_TEST_DIR=__builds`` will put all builds
 in a single subfolder called "__builds" created in the current directory.
 Setting ``DPDK_BUILD_TEST_DIR`` to an absolute directory path e.g. ``/tmp`` is also supported.
+
+
+.. _integrated_abi_check:
+
+Checking ABI compatibility
+--------------------------
+
+By default, ABI compatibility checks are disabled.
+
+To enable them, a reference version must be selected via the environment
+variable ``DPDK_ABI_REF_VERSION``. Contributors should ordinarily reference the
+git tag of the most recent release of DPDK in ``DPDK_ABI_REF_VERSION``.
+
+The ``devtools/test-meson-builds.sh`` script then build this reference version
+in a temporary directory and store the results in a subfolder of the current
+working directory.
+The environment variable ``DPDK_ABI_REF_DIR`` can be set so that the results go
+to a different location.
+
+Sample::
+
+   DPDK_ABI_REF_VERSION=v19.11 DPDK_ABI_REF_DIR=/tmp ./devtools/test-meson-builds.sh
 
 
 Sending Patches

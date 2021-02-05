@@ -15,6 +15,7 @@
 #include <stddef.h>
 
 #include <rte_compat.h>
+#include <rte_rcu_qsbr.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,7 +46,8 @@ extern "C" {
 /** Flag to disable freeing of key index on hash delete.
  * Refer to rte_hash_del_xxx APIs for more details.
  * This is enabled by default when RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF
- * is enabled.
+ * is enabled. However, if internal RCU is enabled, freeing of internal
+ * memory/index is done on delete
  */
 #define RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL 0x10
 
@@ -68,6 +70,13 @@ typedef uint32_t (*rte_hash_function)(const void *key, uint32_t key_len,
 typedef int (*rte_hash_cmp_eq_t)(const void *key1, const void *key2, size_t key_len);
 
 /**
+ * Type of function used to free data stored in the key.
+ * Required when using internal RCU to allow application to free key-data once
+ * the key is returned to the ring of free key-slots.
+ */
+typedef void (*rte_hash_free_key_data)(void *p, void *key_data);
+
+/**
  * Parameters used when creating the hash table.
  */
 struct rte_hash_parameters {
@@ -79,6 +88,39 @@ struct rte_hash_parameters {
 	uint32_t hash_func_init_val;	/**< Init value used by hash_func. */
 	int socket_id;			/**< NUMA Socket ID for memory. */
 	uint8_t extra_flag;		/**< Indicate if additional parameters are present. */
+};
+
+/** RCU reclamation modes */
+enum rte_hash_qsbr_mode {
+	/** Create defer queue for reclaim. */
+	RTE_HASH_QSBR_MODE_DQ = 0,
+	/** Use blocking mode reclaim. No defer queue created. */
+	RTE_HASH_QSBR_MODE_SYNC
+};
+
+/** HASH RCU QSBR configuration structure. */
+struct rte_hash_rcu_config {
+	struct rte_rcu_qsbr *v;		/**< RCU QSBR variable. */
+	enum rte_hash_qsbr_mode mode;
+	/**< Mode of RCU QSBR. RTE_HASH_QSBR_MODE_xxx
+	 * '0' for default: create defer queue for reclaim.
+	 */
+	uint32_t dq_size;
+	/**< RCU defer queue size.
+	 * default: total hash table entries.
+	 */
+	uint32_t trigger_reclaim_limit;	/**< Threshold to trigger auto reclaim. */
+	uint32_t max_reclaim_size;
+	/**< Max entries to reclaim in one go.
+	 * default: RTE_HASH_RCU_DQ_RECLAIM_MAX.
+	 */
+	void *key_data_ptr;
+	/**< Pointer passed to the free function. Typically, this is the
+	 * pointer to the data structure to which the resource to free
+	 * (key-data) belongs. This can be NULL.
+	 */
+	rte_hash_free_key_data free_key_data_func;
+	/**< Function to call to free the resource (key-data). */
 };
 
 /** @internal A hash table structure. */
@@ -163,6 +205,23 @@ int32_t
 rte_hash_count(const struct rte_hash *h);
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Return the maximum key value ID that could possibly be returned by
+ * rte_hash_add_key function.
+ *
+ * @param h
+ *  Hash table to query from
+ * @return
+ *   - -EINVAL if parameters are invalid
+ *   - A value indicating the max key ID of key slots present in the table.
+ */
+__rte_experimental
+int32_t
+rte_hash_max_key_id(const struct rte_hash *h);
+
+/**
  * Add a key-value pair to an existing hash table.
  * This operation is not multi-thread safe
  * and should only be called from one thread by default.
@@ -232,7 +291,9 @@ rte_hash_add_key_with_hash_data(const struct rte_hash *h, const void *key,
  *   - -EINVAL if the parameters are invalid.
  *   - -ENOSPC if there is no space in the hash for this key.
  *   - A positive value that can be used by the caller as an offset into an
- *     array of user data. This value is unique for this key.
+ *     array of user data. This value is unique for this key. This
+ *     unique key id may be larger than the user specified entry count
+ *     when RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD flag is set.
  */
 int32_t
 rte_hash_add_key(const struct rte_hash *h, const void *key);
@@ -254,7 +315,9 @@ rte_hash_add_key(const struct rte_hash *h, const void *key);
  *   - -EINVAL if the parameters are invalid.
  *   - -ENOSPC if there is no space in the hash for this key.
  *   - A positive value that can be used by the caller as an offset into an
- *     array of user data. This value is unique for this key.
+ *     array of user data. This value is unique for this key. This
+ *     unique key ID may be larger than the user specified entry count
+ *     when RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD flag is set.
  */
 int32_t
 rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key, hash_sig_t sig);
@@ -266,7 +329,8 @@ rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key, hash_sig_t
  * Thread safety can be enabled by setting flag during
  * table creation.
  * If RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL or
- * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
+ * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled and
+ * internal RCU is NOT enabled,
  * the key index returned by rte_hash_add_key_xxx APIs will not be
  * freed by this API. rte_hash_free_key_with_position API must be called
  * additionally to free the index associated with the key.
@@ -295,7 +359,8 @@ rte_hash_del_key(const struct rte_hash *h, const void *key);
  * Thread safety can be enabled by setting flag during
  * table creation.
  * If RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL or
- * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
+ * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled and
+ * internal RCU is NOT enabled,
  * the key index returned by rte_hash_add_key_xxx APIs will not be
  * freed by this API. rte_hash_free_key_with_position API must be called
  * additionally to free the index associated with the key.
@@ -349,7 +414,8 @@ rte_hash_get_key_with_position(const struct rte_hash *h, const int32_t position,
  * only be called from one thread by default. Thread safety
  * can be enabled by setting flag during table creation.
  * If RTE_HASH_EXTRA_FLAGS_NO_FREE_ON_DEL or
- * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled,
+ * RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF is enabled and
+ * internal RCU is NOT enabled,
  * the key index returned by rte_hash_del_key_xxx APIs must be freed
  * using this API. This API should be called after all the readers
  * have stopped referencing the entry corresponding to this key.
@@ -498,6 +564,67 @@ rte_hash_lookup_bulk_data(const struct rte_hash *h, const void **keys,
 		      uint32_t num_keys, uint64_t *hit_mask, void *data[]);
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Find multiple keys in the hash table with precomputed hash value array.
+ * This operation is multi-thread safe with regarding to other lookup threads.
+ * Read-write concurrency can be enabled by setting flag during
+ * table creation.
+ *
+ * @param h
+ *   Hash table to look in.
+ * @param keys
+ *   A pointer to a list of keys to look for.
+ * @param sig
+ *   A pointer to a list of precomputed hash values for keys.
+ * @param num_keys
+ *   How many keys are in the keys list (less than RTE_HASH_LOOKUP_BULK_MAX).
+ * @param positions
+ *   Output containing a list of values, corresponding to the list of keys that
+ *   can be used by the caller as an offset into an array of user data. These
+ *   values are unique for each key, and are the same values that were returned
+ *   when each key was added. If a key in the list was not found, then -ENOENT
+ *   will be the value.
+ * @return
+ *   -EINVAL if there's an error, otherwise 0.
+ */
+__rte_experimental
+int
+rte_hash_lookup_with_hash_bulk(const struct rte_hash *h, const void **keys,
+		hash_sig_t *sig, uint32_t num_keys, int32_t *positions);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Find multiple keys in the hash table with precomputed hash value array.
+ * This operation is multi-thread safe with regarding to other lookup threads.
+ * Read-write concurrency can be enabled by setting flag during
+ * table creation.
+ *
+ * @param h
+ *   Hash table to look in.
+ * @param keys
+ *   A pointer to a list of keys to look for.
+ * @param sig
+ *   A pointer to a list of precomputed hash values for keys.
+ * @param num_keys
+ *   How many keys are in the keys list (less than RTE_HASH_LOOKUP_BULK_MAX).
+ * @param hit_mask
+ *   Output containing a bitmask with all successful lookups.
+ * @param data
+ *   Output containing array of data returned from all the successful lookups.
+ * @return
+ *   -EINVAL if there's an error, otherwise number of successful lookups.
+ */
+__rte_experimental
+int
+rte_hash_lookup_with_hash_bulk_data(const struct rte_hash *h,
+		const void **keys, hash_sig_t *sig,
+		uint32_t num_keys, uint64_t *hit_mask, void *data[]);
+
+/**
  * Find multiple keys in the hash table.
  * This operation is multi-thread safe with regarding to other lookup threads.
  * Read-write concurrency can be enabled by setting flag during
@@ -543,6 +670,30 @@ rte_hash_lookup_bulk(const struct rte_hash *h, const void **keys,
  */
 int32_t
 rte_hash_iterate(const struct rte_hash *h, const void **key, void **data, uint32_t *next);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Associate RCU QSBR variable with a Hash object.
+ * This API should be called to enable the integrated RCU QSBR support and
+ * should be called immediately after creating the Hash object.
+ *
+ * @param h
+ *   the hash object to add RCU QSBR
+ * @param cfg
+ *   RCU QSBR configuration
+ * @return
+ *   On success - 0
+ *   On error - 1 with error code set in rte_errno.
+ *   Possible rte_errno codes are:
+ *   - EINVAL - invalid pointer
+ *   - EEXIST - already added QSBR
+ *   - ENOMEM - memory allocation failure
+ */
+__rte_experimental
+int rte_hash_rcu_qsbr_add(struct rte_hash *h, struct rte_hash_rcu_config *cfg);
+
 #ifdef __cplusplus
 }
 #endif

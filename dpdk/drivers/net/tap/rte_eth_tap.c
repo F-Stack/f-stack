@@ -72,6 +72,10 @@
 
 static int tap_devices_count;
 
+static const char *tuntap_types[ETH_TUNTAP_TYPE_MAX] = {
+	"UNKNOWN", "TUN", "TAP"
+};
+
 static const char *valid_arguments[] = {
 	ETH_TAP_IFACE_ARG,
 	ETH_TAP_REMOTE_ARG,
@@ -134,7 +138,7 @@ tun_alloc(struct pmd_internals *pmd, int is_keepalive)
 #ifdef IFF_MULTI_QUEUE
 	unsigned int features;
 #endif
-	int fd;
+	int fd, signo, flags;
 
 	memset(&ifr, 0, sizeof(struct ifreq));
 
@@ -199,52 +203,87 @@ tun_alloc(struct pmd_internals *pmd, int is_keepalive)
 		}
 	}
 
+	flags = fcntl(fd, F_GETFL);
+	if (flags == -1) {
+		TAP_LOG(WARNING,
+			"Unable to get %s current flags\n",
+			ifr.ifr_name);
+		goto error;
+	}
+
 	/* Always set the file descriptor to non-blocking */
-	if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+	flags |= O_NONBLOCK;
+	if (fcntl(fd, F_SETFL, flags) < 0) {
 		TAP_LOG(WARNING,
 			"Unable to set %s to nonblocking: %s",
 			ifr.ifr_name, strerror(errno));
 		goto error;
 	}
 
-	/* Set up trigger to optimize empty Rx bursts */
-	errno = 0;
-	do {
+	/* Find a free realtime signal */
+	for (signo = SIGRTMIN + 1; signo < SIGRTMAX; signo++) {
 		struct sigaction sa;
-		int flags = fcntl(fd, F_GETFL);
 
-		if (flags == -1 || sigaction(SIGIO, NULL, &sa) == -1)
-			break;
-		if (sa.sa_handler != tap_trigger_cb) {
-			/*
-			 * Make sure SIGIO is not already taken. This is done
-			 * as late as possible to leave the application a
-			 * chance to set up its own signal handler first.
-			 */
-			if (sa.sa_handler != SIG_IGN &&
-			    sa.sa_handler != SIG_DFL) {
-				errno = EBUSY;
-				break;
-			}
-			sa = (struct sigaction){
-				.sa_flags = SA_RESTART,
-				.sa_handler = tap_trigger_cb,
-			};
-			if (sigaction(SIGIO, &sa, NULL) == -1)
-				break;
+		if (sigaction(signo, NULL, &sa) == -1) {
+			TAP_LOG(WARNING,
+				"Unable to get current rt-signal %d handler",
+				signo);
+			goto error;
 		}
-		/* Enable SIGIO on file descriptor */
-		fcntl(fd, F_SETFL, flags | O_ASYNC);
-		fcntl(fd, F_SETOWN, getpid());
-	} while (0);
 
-	if (errno) {
-		/* Disable trigger globally in case of error */
-		tap_trigger = 0;
-		TAP_LOG(WARNING, "Rx trigger disabled: %s",
-			strerror(errno));
+		/* Already have the handler we want on this signal  */
+		if (sa.sa_handler == tap_trigger_cb)
+			break;
+
+		/* Is handler in use by application */
+		if (sa.sa_handler != SIG_DFL) {
+			TAP_LOG(DEBUG,
+				"Skipping used rt-signal %d", signo);
+			continue;
+		}
+
+		sa = (struct sigaction) {
+			.sa_flags = SA_RESTART,
+			.sa_handler = tap_trigger_cb,
+		};
+
+		if (sigaction(signo, &sa, NULL) == -1) {
+			TAP_LOG(WARNING,
+				"Unable to set rt-signal %d handler\n", signo);
+			goto error;
+		}
+
+		/* Found a good signal to use */
+		TAP_LOG(DEBUG,
+			"Using rt-signal %d", signo);
+		break;
 	}
 
+	if (signo == SIGRTMAX) {
+		TAP_LOG(WARNING, "All rt-signals are in use\n");
+
+		/* Disable trigger globally in case of error */
+		tap_trigger = 0;
+		TAP_LOG(NOTICE, "No Rx trigger signal available\n");
+	} else {
+		/* Enable signal on file descriptor */
+		if (fcntl(fd, F_SETSIG, signo) < 0) {
+			TAP_LOG(WARNING, "Unable to set signo %d for fd %d: %s",
+				signo, fd, strerror(errno));
+			goto error;
+		}
+		if (fcntl(fd, F_SETFL, flags | O_ASYNC) < 0) {
+			TAP_LOG(WARNING, "Unable to set fcntl flags: %s",
+				strerror(errno));
+			goto error;
+		}
+
+		if (fcntl(fd, F_SETOWN, getpid()) < 0) {
+			TAP_LOG(WARNING, "Unable to set fcntl owner: %s",
+				strerror(errno));
+			goto error;
+		}
+	}
 	return fd;
 
 error:
@@ -264,6 +303,7 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 	uint16_t cksum = 0;
 	void *l3_hdr;
 	void *l4_hdr;
+	struct rte_udp_hdr *udp_hdr;
 
 	if (l2 == RTE_PTYPE_L2_ETHER_VLAN)
 		l2_len += 4;
@@ -277,8 +317,7 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 	if (l3 == RTE_PTYPE_L3_IPV4 || l3 == RTE_PTYPE_L3_IPV4_EXT) {
 		struct rte_ipv4_hdr *iph = l3_hdr;
 
-		/* ihl contains the number of 4-byte words in the header */
-		l3_len = 4 * (iph->version_ihl & 0xf);
+		l3_len = rte_ipv4_hdr_len(iph);
 		if (unlikely(l2_len + l3_len > rte_pktmbuf_data_len(mbuf)))
 			return;
 		/* check that the total length reported by header is not
@@ -311,10 +350,23 @@ tap_verify_csum(struct rte_mbuf *mbuf)
 		/* Don't verify checksum for multi-segment packets. */
 		if (mbuf->nb_segs > 1)
 			return;
-		if (l3 == RTE_PTYPE_L3_IPV4)
+		if (l3 == RTE_PTYPE_L3_IPV4) {
+			if (l4 == RTE_PTYPE_L4_UDP) {
+				udp_hdr = (struct rte_udp_hdr *)l4_hdr;
+				if (udp_hdr->dgram_cksum == 0) {
+					/*
+					 * For IPv4, a zero UDP checksum
+					 * indicates that the sender did not
+					 * generate one [RFC 768].
+					 */
+					mbuf->ol_flags |= PKT_RX_L4_CKSUM_NONE;
+					return;
+				}
+			}
 			cksum = ~rte_ipv4_udptcp_cksum(l3_hdr, l4_hdr);
-		else if (l3 == RTE_PTYPE_L3_IPV6)
+		} else if (l3 == RTE_PTYPE_L3_IPV6) {
 			cksum = ~rte_ipv6_udptcp_cksum(l3_hdr, l4_hdr);
+		}
 		mbuf->ol_flags |= cksum ?
 			PKT_RX_L4_CKSUM_BAD :
 			PKT_RX_L4_CKSUM_GOOD;
@@ -713,8 +765,16 @@ pmd_tx_burst(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 			if (num_tso_mbufs < 0)
 				break;
 
-			mbuf = gso_mbufs;
-			num_mbufs = num_tso_mbufs;
+			if (num_tso_mbufs >= 1) {
+				mbuf = gso_mbufs;
+				num_mbufs = num_tso_mbufs;
+			} else {
+				/* 0 means it can be transmitted directly
+				 * without gso.
+				 */
+				mbuf = &mbuf_in;
+				num_mbufs = 1;
+			}
 		} else {
 			/* stats.errs will be incremented */
 			if (rte_pktmbuf_pkt_len(mbuf_in) > max_size)
@@ -862,7 +922,7 @@ tap_dev_start(struct rte_eth_dev *dev)
 
 /* This function gets called when the current port gets stopped.
  */
-static void
+static int
 tap_dev_stop(struct rte_eth_dev *dev)
 {
 	int i;
@@ -874,6 +934,8 @@ tap_dev_stop(struct rte_eth_dev *dev)
 
 	tap_intr_handle_set(dev, 0);
 	tap_link_set_down(dev);
+
+	return 0;
 }
 
 static int
@@ -1032,13 +1094,18 @@ tap_stats_reset(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
+static int
 tap_dev_close(struct rte_eth_dev *dev)
 {
 	int i;
 	struct pmd_internals *internals = dev->data->dev_private;
 	struct pmd_process_private *process_private = dev->process_private;
 	struct rx_queue *rxq;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		rte_free(dev->process_private);
+		return 0;
+	}
 
 	tap_link_set_down(dev);
 	if (internals->nlsk_fd != -1) {
@@ -1077,10 +1144,28 @@ tap_dev_close(struct rte_eth_dev *dev)
 		close(internals->ka_fd);
 		internals->ka_fd = -1;
 	}
+
+	/* mac_addrs must not be freed alone because part of dev_private */
+	dev->data->mac_addrs = NULL;
+
+	internals = dev->data->dev_private;
+	TAP_LOG(DEBUG, "Closing %s Ethernet device on numa %u",
+		tuntap_types[internals->type], rte_socket_id());
+
+	if (internals->ioctl_sock != -1) {
+		close(internals->ioctl_sock);
+		internals->ioctl_sock = -1;
+	}
+	rte_free(dev->process_private);
+	if (tap_devices_count == 1)
+		rte_mp_action_unregister(TAP_MP_KEY);
+	tap_devices_count--;
 	/*
 	 * Since TUN device has no more opened file descriptors
 	 * it will be removed from kernel
 	 */
+
+	return 0;
 }
 
 static void
@@ -1808,10 +1893,6 @@ static const struct eth_dev_ops ops = {
 	.filter_ctrl            = tap_dev_filter_ctrl,
 };
 
-static const char *tuntap_types[ETH_TUNTAP_TYPE_MAX] = {
-	"UNKNOWN", "TUN", "TAP"
-};
-
 static int
 eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 		   char *remote_iface, struct rte_ether_addr *mac_addr,
@@ -1863,7 +1944,8 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 	/* Setup some default values */
 	data = dev->data;
 	data->dev_private = pmd;
-	data->dev_flags = RTE_ETH_DEV_INTR_LSC;
+	data->dev_flags = RTE_ETH_DEV_INTR_LSC |
+				RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 	data->numa_node = numa_node;
 
 	data->dev_link = pmd_link;
@@ -2455,30 +2537,13 @@ static int
 rte_pmd_tap_remove(struct rte_vdev_device *dev)
 {
 	struct rte_eth_dev *eth_dev = NULL;
-	struct pmd_internals *internals;
 
 	/* find the ethdev entry */
 	eth_dev = rte_eth_dev_allocated(rte_vdev_device_name(dev));
 	if (!eth_dev)
-		return -ENODEV;
-
-	/* mac_addrs must not be freed alone because part of dev_private */
-	eth_dev->data->mac_addrs = NULL;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return rte_eth_dev_release_port(eth_dev);
+		return 0;
 
 	tap_dev_close(eth_dev);
-
-	internals = eth_dev->data->dev_private;
-	TAP_LOG(DEBUG, "Closing %s Ethernet device on numa %u",
-		tuntap_types[internals->type], rte_socket_id());
-
-	close(internals->ioctl_sock);
-	rte_free(eth_dev->process_private);
-	if (tap_devices_count == 1)
-		rte_mp_action_unregister(TAP_MP_KEY);
-	tap_devices_count--;
 	rte_eth_dev_release_port(eth_dev);
 
 	return 0;
@@ -2503,11 +2568,4 @@ RTE_PMD_REGISTER_PARAM_STRING(net_tap,
 			      ETH_TAP_IFACE_ARG "=<string> "
 			      ETH_TAP_MAC_ARG "=" ETH_TAP_MAC_ARG_FMT " "
 			      ETH_TAP_REMOTE_ARG "=<string>");
-int tap_logtype;
-
-RTE_INIT(tap_init_log)
-{
-	tap_logtype = rte_log_register("pmd.net.tap");
-	if (tap_logtype >= 0)
-		rte_log_set_level(tap_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(tap_logtype, pmd.net.tap, NOTICE);

@@ -36,8 +36,9 @@
  * - nb_pkts < RTE_VIRTIO_DESC_PER_LOOP, just return no packet
  */
 uint16_t
-virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
-	uint16_t nb_pkts)
+virtio_recv_pkts_vec(void *rx_queue,
+		struct rte_mbuf **__rte_restrict rx_pkts,
+		uint16_t nb_pkts)
 {
 	struct virtnet_rx *rxvq = rx_queue;
 	struct virtqueue *vq = rxvq->vq;
@@ -71,8 +72,8 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	 */
 	uint16x8_t len_adjust = {
 		0, 0,
-		(uint16_t)vq->hw->vtnet_hdr_size, 0,
-		(uint16_t)vq->hw->vtnet_hdr_size,
+		(uint16_t)hw->vtnet_hdr_size, 0,
+		(uint16_t)hw->vtnet_hdr_size,
 		0,
 		0, 0
 	};
@@ -83,9 +84,8 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	if (unlikely(nb_pkts < RTE_VIRTIO_DESC_PER_LOOP))
 		return 0;
 
-	nb_used = VIRTQUEUE_NUSED(vq);
-
-	rte_rmb();
+	/* virtqueue_nused has a load-acquire or rte_io_rmb inside */
+	nb_used = virtqueue_nused(vq);
 
 	if (unlikely(nb_used == 0))
 		return 0;

@@ -4,8 +4,7 @@
 cflags += ['-DPF_DRIVER',
 	'-DVF_DRIVER',
 	'-DINTEGRATED_VF',
-	'-DX722_A0_SUPPORT',
-	'-DALLOW_EXPERIMENTAL_API']
+	'-DX722_A0_SUPPORT']
 
 subdir('base')
 objs = [base_objs]
@@ -32,7 +31,7 @@ if arch_subdir == 'x86'
 	# compile AVX2 version if either:
 	# a. we have AVX supported in minimum instruction set baseline
 	# b. it's not minimum instruction set, but supported by compiler
-	if dpdk_conf.has('RTE_MACHINE_CPUFLAG_AVX2')
+	if cc.get_define('__AVX2__', args: machine_args) != ''
 		cflags += ['-DCC_AVX2_SUPPORT']
 		sources += files('i40e_rxtx_vec_avx2.c')
 	elif cc.has_argument('-mavx2')
@@ -45,9 +44,12 @@ if arch_subdir == 'x86'
 				c_args: [cflags, '-mavx2'])
 		objs += i40e_avx2_lib.extract_objects('i40e_rxtx_vec_avx2.c')
 	endif
+elif arch_subdir == 'ppc'
+       dpdk_conf.set('RTE_LIBRTE_I40E_INC_VECTOR', 1)
+       sources += files('i40e_rxtx_vec_altivec.c')
 elif arch_subdir == 'arm'
        dpdk_conf.set('RTE_LIBRTE_I40E_INC_VECTOR', 1)
        sources += files('i40e_rxtx_vec_neon.c')
 endif
 
-install_headers('rte_pmd_i40e.h')
+headers = files('rte_pmd_i40e.h')

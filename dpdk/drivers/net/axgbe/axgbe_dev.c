@@ -260,6 +260,9 @@ static int axgbe_enable_tx_flow_control(struct axgbe_port *pdata)
 			ehfc = 1;
 
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_RQOMR, EHFC, ehfc);
+
+		PMD_DRV_LOG(DEBUG, "flow control %s for RXq%u\n",
+			    ehfc ? "enabled" : "disabled", i);
 	}
 
 	/* Set MAC flow control */
@@ -611,7 +614,7 @@ static int axgbe_write_rss_reg(struct axgbe_port *pdata, unsigned int type,
 	return -EBUSY;
 }
 
-static int axgbe_write_rss_hash_key(struct axgbe_port *pdata)
+int axgbe_write_rss_hash_key(struct axgbe_port *pdata)
 {
 	struct rte_eth_rss_conf *rss_conf;
 	unsigned int key_regs = sizeof(pdata->rss_key) / sizeof(u32);
@@ -635,7 +638,7 @@ static int axgbe_write_rss_hash_key(struct axgbe_port *pdata)
 	return 0;
 }
 
-static int axgbe_write_rss_lookup_table(struct axgbe_port *pdata)
+int axgbe_write_rss_lookup_table(struct axgbe_port *pdata)
 {
 	unsigned int i;
 	int ret;
@@ -680,6 +683,7 @@ static void axgbe_rss_options(struct axgbe_port *pdata)
 	uint64_t rss_hf;
 
 	rss_conf = &pdata->eth_dev->data->dev_conf.rx_adv_conf.rss_conf;
+	pdata->rss_hf = rss_conf->rss_hf;
 	rss_hf = rss_conf->rss_hf;
 
 	if (rss_hf & (ETH_RSS_IPV4 | ETH_RSS_IPV6))
@@ -915,6 +919,9 @@ static void axgbe_config_rx_fifo_size(struct axgbe_port *pdata)
 	/*Calculate and config Flow control threshold*/
 	axgbe_calculate_flow_control_threshold(pdata);
 	axgbe_config_flow_control_threshold(pdata);
+
+	PMD_DRV_LOG(DEBUG, "%d Rx hardware queues, %d byte fifo per queue\n",
+		    pdata->rx_q_count, q_fifo_size);
 }
 
 static void axgbe_config_tx_fifo_size(struct axgbe_port *pdata)
@@ -938,6 +945,9 @@ static void axgbe_config_tx_fifo_size(struct axgbe_port *pdata)
 
 	for (i = 0; i < pdata->tx_q_count; i++)
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_TQOMR, TQS, p_fifo);
+
+	PMD_DRV_LOG(DEBUG, "%d Tx hardware queues, %d byte fifo per queue\n",
+		    pdata->tx_q_count, q_fifo_size);
 }
 
 static void axgbe_config_queue_mapping(struct axgbe_port *pdata)
@@ -952,12 +962,16 @@ static void axgbe_config_queue_mapping(struct axgbe_port *pdata)
 	qptc_extra = pdata->tx_q_count % pdata->hw_feat.tc_cnt;
 
 	for (i = 0, queue = 0; i < pdata->hw_feat.tc_cnt; i++) {
-		for (j = 0; j < qptc; j++)
+		for (j = 0; j < qptc; j++) {
+			PMD_DRV_LOG(DEBUG, "TXq%u mapped to TC%u\n", queue, i);
 			AXGMAC_MTL_IOWRITE_BITS(pdata, queue, MTL_Q_TQOMR,
 						Q2TCMAP, i);
-		if (i < qptc_extra)
+		}
+		if (i < qptc_extra) {
+			PMD_DRV_LOG(DEBUG, "TXq%u mapped to TC%u\n", queue, i);
 			AXGMAC_MTL_IOWRITE_BITS(pdata, queue, MTL_Q_TQOMR,
 						Q2TCMAP, i);
+		}
 	}
 
 	if (pdata->rss_enable) {
@@ -995,6 +1009,79 @@ static void axgbe_enable_mtl_interrupts(struct axgbe_port *pdata)
 	}
 }
 
+static uint32_t bitrev32(uint32_t x)
+{
+	x = (x >> 16) | (x << 16);
+	x = (((x & 0xff00ff00) >> 8) | ((x & 0x00ff00ff) << 8));
+	x = (((x & 0xf0f0f0f0) >> 4) | ((x & 0x0f0f0f0f) << 4));
+	x = (((x & 0xcccccccc) >> 2) | ((x & 0x33333333) << 2));
+	x = (((x & 0xaaaaaaaa) >> 1) | ((x & 0x55555555) << 1));
+	return x;
+}
+
+static uint32_t crc32_le(uint32_t crc, uint8_t *p, uint32_t len)
+{
+	int i;
+	while (len--) {
+		crc ^= *p++;
+		for (i = 0; i < 8; i++)
+			crc = (crc >> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+	}
+	return crc;
+}
+
+void axgbe_set_mac_hash_table(struct axgbe_port *pdata, u8 *addr, bool add)
+{
+	uint32_t crc, htable_index, htable_bitmask;
+
+	crc = bitrev32(~crc32_le(~0, addr, RTE_ETHER_ADDR_LEN));
+	crc >>= pdata->hash_table_shift;
+	htable_index = crc >> 5;
+	htable_bitmask = 1 << (crc & 0x1f);
+
+	if (add) {
+		pdata->uc_hash_table[htable_index] |= htable_bitmask;
+		pdata->uc_hash_mac_addr++;
+	} else {
+		pdata->uc_hash_table[htable_index] &= ~htable_bitmask;
+		pdata->uc_hash_mac_addr--;
+	}
+	PMD_DRV_LOG(DEBUG, "%s MAC hash table Bit %d at Index %#x\n",
+		    add ? "set" : "clear", (crc & 0x1f), htable_index);
+
+	AXGMAC_IOWRITE(pdata, MAC_HTR(htable_index),
+		       pdata->uc_hash_table[htable_index]);
+}
+
+void axgbe_set_mac_addn_addr(struct axgbe_port *pdata, u8 *addr, uint32_t index)
+{
+	unsigned int mac_addr_hi, mac_addr_lo;
+	u8 *mac_addr;
+
+	mac_addr_lo = 0;
+	mac_addr_hi = 0;
+
+	if (addr) {
+		mac_addr = (u8 *)&mac_addr_lo;
+		mac_addr[0] = addr[0];
+		mac_addr[1] = addr[1];
+		mac_addr[2] = addr[2];
+		mac_addr[3] = addr[3];
+		mac_addr = (u8 *)&mac_addr_hi;
+		mac_addr[0] = addr[4];
+		mac_addr[1] = addr[5];
+
+		/*Address Enable: Use this Addr for Perfect Filtering */
+		AXGMAC_SET_BITS(mac_addr_hi, MAC_MACA1HR, AE, 1);
+	}
+
+	PMD_DRV_LOG(DEBUG, "%s mac address at %#x\n",
+		    addr ? "set" : "clear", index);
+
+	AXGMAC_IOWRITE(pdata, MAC_MACAHR(index), mac_addr_hi);
+	AXGMAC_IOWRITE(pdata, MAC_MACALR(index), mac_addr_lo);
+}
+
 static int axgbe_set_mac_address(struct axgbe_port *pdata, u8 *addr)
 {
 	unsigned int mac_addr_hi, mac_addr_lo;
@@ -1007,6 +1094,21 @@ static int axgbe_set_mac_address(struct axgbe_port *pdata, u8 *addr)
 	AXGMAC_IOWRITE(pdata, MAC_MACA0LR, mac_addr_lo);
 
 	return 0;
+}
+
+static void axgbe_config_mac_hash_table(struct axgbe_port *pdata)
+{
+	struct axgbe_hw_features *hw_feat = &pdata->hw_feat;
+
+	pdata->hash_table_shift = 0;
+	pdata->hash_table_count = 0;
+	pdata->uc_hash_mac_addr = 0;
+	memset(pdata->uc_hash_table, 0, sizeof(pdata->uc_hash_table));
+
+	if (hw_feat->hash_table_size) {
+		pdata->hash_table_shift = 26 - (hw_feat->hash_table_size >> 7);
+		pdata->hash_table_count = hw_feat->hash_table_size / 32;
+	}
 }
 
 static void axgbe_config_mac_address(struct axgbe_port *pdata)
@@ -1034,6 +1136,20 @@ static void axgbe_config_checksum_offload(struct axgbe_port *pdata)
 		AXGMAC_IOWRITE_BITS(pdata, MAC_RCR, IPC, 1);
 	else
 		AXGMAC_IOWRITE_BITS(pdata, MAC_RCR, IPC, 0);
+}
+
+static void axgbe_config_mmc(struct axgbe_port *pdata)
+{
+	struct axgbe_mmc_stats *stats = &pdata->mmc_stats;
+
+	/* Reset stats */
+	memset(stats, 0, sizeof(*stats));
+
+	/* Set counters to reset on read */
+	AXGMAC_IOWRITE_BITS(pdata, MMC_CR, ROR, 1);
+
+	/* Reset the counters */
+	AXGMAC_IOWRITE_BITS(pdata, MMC_CR, CR, 1);
 }
 
 static int axgbe_init(struct axgbe_port *pdata)
@@ -1073,11 +1189,13 @@ static int axgbe_init(struct axgbe_port *pdata)
 	axgbe_enable_mtl_interrupts(pdata);
 
 	/* Initialize MAC related features */
+	axgbe_config_mac_hash_table(pdata);
 	axgbe_config_mac_address(pdata);
 	axgbe_config_jumbo_enable(pdata);
 	axgbe_config_flow_control(pdata);
 	axgbe_config_mac_speed(pdata);
 	axgbe_config_checksum_offload(pdata);
+	axgbe_config_mmc(pdata);
 
 	return 0;
 }

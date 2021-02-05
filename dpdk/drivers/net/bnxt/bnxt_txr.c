@@ -113,7 +113,7 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	uint32_t outer_tpid_bd = 0;
 	struct tx_bd_long *txbd;
 	struct tx_bd_long_hi *txbd1 = NULL;
-	uint32_t vlan_tag_flags, cfa_action;
+	uint32_t vlan_tag_flags;
 	bool long_bd = false;
 	unsigned short nr_bds = 0;
 	struct rte_mbuf *m_seg;
@@ -133,7 +133,9 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				PKT_TX_VLAN_PKT | PKT_TX_OUTER_IP_CKSUM |
 				PKT_TX_TUNNEL_GRE | PKT_TX_TUNNEL_VXLAN |
 				PKT_TX_TUNNEL_GENEVE | PKT_TX_IEEE1588_TMST |
-				PKT_TX_QINQ_PKT))
+				PKT_TX_QINQ_PKT) ||
+	     (BNXT_TRUFLOW_EN(txq->bp) &&
+	      (txq->bp->tx_cfa_action || txq->vfr_tx_cfa_action)))
 		long_bd = true;
 
 	nr_bds = long_bd + tx_pkt->nb_segs;
@@ -186,7 +188,7 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	if (long_bd) {
 		txbd->flags_type |= TX_BD_LONG_TYPE_TX_BD_LONG;
 		vlan_tag_flags = 0;
-		cfa_action = 0;
+
 		/* HW can accelerate only outer vlan in QinQ mode */
 		if (tx_buf->mbuf->ol_flags & PKT_TX_QINQ_PKT) {
 			vlan_tag_flags = TX_BD_LONG_CFA_META_KEY_VLAN_TAG |
@@ -214,7 +216,15 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 					&txr->tx_desc_ring[txr->tx_prod];
 		txbd1->lflags = 0;
 		txbd1->cfa_meta = vlan_tag_flags;
-		txbd1->cfa_action = cfa_action;
+		/* Legacy tx_bd_long_hi->mss =
+		 * tx_bd_long_hi->kid_or_ts_high_mss
+		 */
+		txbd1->kid_or_ts_high_mss = 0;
+
+		if (txq->vfr_tx_cfa_action)
+			txbd1->cfa_action = txq->vfr_tx_cfa_action;
+		else
+			txbd1->cfa_action = txq->bp->tx_cfa_action;
 
 		if (tx_pkt->ol_flags & PKT_TX_TCP_SEG) {
 			uint16_t hdr_size;
@@ -229,91 +239,76 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				    tx_pkt->outer_l3_len : 0;
 			/* The hdr_size is multiple of 16bit units not 8bit.
 			 * Hence divide by 2.
+			 * Also legacy hdr_size = kid_or_ts_low_hdr_size.
 			 */
-			txbd1->hdr_size = hdr_size >> 1;
-			txbd1->mss = tx_pkt->tso_segsz;
-			RTE_VERIFY(txbd1->mss);
+			txbd1->kid_or_ts_low_hdr_size = hdr_size >> 1;
+			txbd1->kid_or_ts_high_mss = tx_pkt->tso_segsz;
+			RTE_VERIFY(txbd1->kid_or_ts_high_mss);
 
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_IIP_TCP_UDP_CKSUM) ==
 			   PKT_TX_OIP_IIP_TCP_UDP_CKSUM) {
 			/* Outer IP, Inner IP, Inner TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_IP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_IIP_TCP_CKSUM) ==
 			   PKT_TX_OIP_IIP_TCP_CKSUM) {
 			/* Outer IP, Inner IP, Inner TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_IP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_IIP_UDP_CKSUM) ==
 			   PKT_TX_OIP_IIP_UDP_CKSUM) {
 			/* Outer IP, Inner IP, Inner TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_IP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_IIP_TCP_UDP_CKSUM) ==
 			   PKT_TX_IIP_TCP_UDP_CKSUM) {
 			/* (Inner) IP, (Inner) TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_IP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_IIP_UDP_CKSUM) ==
 			   PKT_TX_IIP_UDP_CKSUM) {
 			/* (Inner) IP, (Inner) TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_IP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_IIP_TCP_CKSUM) ==
 			   PKT_TX_IIP_TCP_CKSUM) {
 			/* (Inner) IP, (Inner) TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_IP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_TCP_UDP_CKSUM) ==
 			   PKT_TX_OIP_TCP_UDP_CKSUM) {
 			/* Outer IP, (Inner) TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_UDP_CKSUM) ==
 			   PKT_TX_OIP_UDP_CKSUM) {
 			/* Outer IP, (Inner) TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_TCP_CKSUM) ==
 			   PKT_TX_OIP_TCP_CKSUM) {
 			/* Outer IP, (Inner) TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_IIP_CKSUM) ==
 			   PKT_TX_OIP_IIP_CKSUM) {
 			/* Outer IP, Inner IP CSO */
 			txbd1->lflags |= TX_BD_FLG_TIP_IP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_TCP_UDP_CKSUM) ==
 			   PKT_TX_TCP_UDP_CKSUM) {
 			/* TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_TCP_CKSUM) ==
 			   PKT_TX_TCP_CKSUM) {
 			/* TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_UDP_CKSUM) ==
 			   PKT_TX_UDP_CKSUM) {
 			/* TCP/UDP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_TCP_UDP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_IP_CKSUM) ==
 			   PKT_TX_IP_CKSUM) {
 			/* IP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_IP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_OUTER_IP_CKSUM) ==
 			   PKT_TX_OUTER_IP_CKSUM) {
 			/* IP CSO */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_T_IP_CHKSUM;
-			txbd1->mss = 0;
 		} else if ((tx_pkt->ol_flags & PKT_TX_IEEE1588_TMST) ==
 			   PKT_TX_IEEE1588_TMST) {
 			/* PTP */
 			txbd1->lflags |= TX_BD_LONG_LFLAGS_STAMP;
-			txbd1->mss = 0;
 		}
 	} else {
 		txbd->flags_type |= TX_BD_SHORT_TYPE_TX_BD_SHORT;
@@ -340,6 +335,40 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	txr->tx_prod = RING_NEXT(txr->tx_ring_struct, txr->tx_prod);
 
 	return 0;
+}
+
+/*
+ * Transmit completion function for use when DEV_TX_OFFLOAD_MBUF_FAST_FREE
+ * is enabled.
+ */
+static void bnxt_tx_cmp_fast(struct bnxt_tx_queue *txq, int nr_pkts)
+{
+	struct bnxt_tx_ring_info *txr = txq->tx_ring;
+	struct rte_mbuf **free = txq->free;
+	uint16_t cons = txr->tx_cons;
+	unsigned int blk = 0;
+	int i, j;
+
+	for (i = 0; i < nr_pkts; i++) {
+		struct bnxt_sw_tx_bd *tx_buf;
+		unsigned short nr_bds;
+
+		tx_buf = &txr->tx_buf_ring[cons];
+		nr_bds = tx_buf->nr_bds;
+		for (j = 0; j < nr_bds; j++) {
+			if (tx_buf->mbuf) {
+				/* Add mbuf to the bulk free array */
+				free[blk++] = tx_buf->mbuf;
+				tx_buf->mbuf = NULL;
+			}
+			cons = RING_NEXT(txr->tx_ring_struct, cons);
+			tx_buf = &txr->tx_buf_ring[cons];
+		}
+	}
+	if (blk)
+		rte_mempool_put_bulk(free[0]->pool, (void *)free, blk);
+
+	txr->tx_cons = cons;
 }
 
 static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
@@ -433,7 +462,10 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 	} while (nb_tx_pkts < ring_mask);
 
 	if (nb_tx_pkts) {
-		bnxt_tx_cmp(txq, nb_tx_pkts);
+		if (txq->offloads & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+			bnxt_tx_cmp_fast(txq, nb_tx_pkts);
+		else
+			bnxt_tx_cmp(txq, nb_tx_pkts);
 		cpr->cp_raw_cons = raw_cons;
 		bnxt_db_cq(cpr);
 	}

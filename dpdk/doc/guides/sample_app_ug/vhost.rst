@@ -38,7 +38,7 @@ Start the vswitch example
 
 .. code-block:: console
 
-        ./vhost-switch -l 0-3 -n 4 --socket-mem 1024  \
+        ./dpdk-vhost-switch -l 0-3 -n 4 --socket-mem 1024  \
              -- --socket-file /tmp/sock0 --client \
              ...
 
@@ -78,13 +78,13 @@ could be done by:
 .. code-block:: console
 
    modprobe uio_pci_generic
-   $RTE_SDK/usertools/dpdk-devbind.py -b uio_pci_generic 0000:00:04.0
+   dpdk/usertools/dpdk-devbind.py -b uio_pci_generic 0000:00:04.0
 
 Then start testpmd for packet forwarding testing.
 
 .. code-block:: console
 
-    ./x86_64-native-gcc/app/testpmd -l 0-1 -- -i
+    ./<build_dir>/app/dpdk-testpmd -l 0-1 -- -i
     > start tx_first
 
 Inject packets
@@ -162,6 +162,17 @@ enabled and cannot be disabled.
 A very simple vhost-user net driver which demonstrates how to use the generic
 vhost APIs will be used when this option is given. It is disabled by default.
 
+**--dma-type**
+This parameter is used to specify DMA type for async vhost-user net driver which
+demonstrates how to use the async vhost APIs. It's used in combination with dmas.
+
+**--dmas**
+This parameter is used to specify the assigned DMA device of a vhost device.
+Async vhost-user net driver will be used if --dmas is set. For example
+--dmas [txd0@00:04.0,txd1@00:04.1] means use DMA channel 00:04.0 for vhost
+device 0 enqueue operation and use DMA channel 00:04.1 for vhost device 1
+enqueue operation.
+
 Common Issues
 -------------
 
@@ -192,12 +203,14 @@ Common Issues
   max queue number is larger than 128, device start will fail due to
   insufficient mbuf.
 
-  Change the default number to make it work as below, just set the number
-  according to the NIC's property. ::
-
-      make EXTRA_CFLAGS="-DMAX_QUEUES=320"
-
 * Option "builtin-net-driver" is incompatible with QEMU
 
   QEMU vhost net device start will fail if protocol feature is not negotiated.
   DPDK virtio-user pmd can be the replacement of QEMU.
+
+* Device start fails when enabling "builtin-net-driver" without memory
+  pre-allocation
+
+  The builtin example doesn't support dynamic memory allocation. When vhost
+  backend enables "builtin-net-driver", "--socket-mem" option should be
+  added at virtio-user pmd side as a startup item.

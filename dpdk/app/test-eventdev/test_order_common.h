@@ -13,12 +13,16 @@
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 
 #include "evt_common.h"
 #include "evt_options.h"
 #include "evt_test.h"
 
 #define BURST_SIZE 16
+
+typedef uint32_t flow_id_t;
+typedef uint32_t seqn_t;
 
 struct test_order;
 
@@ -49,6 +53,8 @@ struct test_order {
 	uint32_t nb_flows;
 	uint64_t nb_pkts;
 	struct rte_mempool *pool;
+	int flow_id_dynfield_offset;
+	int seqn_dynfield_offset;
 	struct prod_data prod;
 	struct worker_data worker[EVT_MAX_PORTS];
 	uint32_t *producer_flow_seq;
@@ -56,13 +62,36 @@ struct test_order {
 	struct evt_options *opt;
 } __rte_cache_aligned;
 
+static inline void
+order_flow_id_copy_from_mbuf(struct test_order *t, struct rte_event *event)
+{
+	event->flow_id = *RTE_MBUF_DYNFIELD(event->mbuf,
+			t->flow_id_dynfield_offset, flow_id_t *);
+}
+
+static inline void
+order_flow_id_save(struct test_order *t, flow_id_t flow_id,
+		struct rte_mbuf *mbuf, struct rte_event *event)
+{
+	*RTE_MBUF_DYNFIELD(mbuf,
+			t->flow_id_dynfield_offset, flow_id_t *) = flow_id;
+	event->flow_id = flow_id;
+	event->mbuf = mbuf;
+}
+
+static inline seqn_t *
+order_mbuf_seqn(struct test_order *t, struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf, t->seqn_dynfield_offset, seqn_t *);
+}
+
 static inline int
 order_nb_event_ports(struct evt_options *opt)
 {
 	return evt_nr_active_lcores(opt->wlcores) + 1 /* producer */;
 }
 
-static inline __attribute__((always_inline)) void
+static __rte_always_inline void
 order_process_stage_1(struct test_order *const t,
 		struct rte_event *const ev, const uint32_t nb_flows,
 		uint32_t *const expected_flow_seq,
@@ -70,9 +99,10 @@ order_process_stage_1(struct test_order *const t,
 {
 	const uint32_t flow = (uintptr_t)ev->mbuf % nb_flows;
 	/* compare the seqn against expected value */
-	if (ev->mbuf->seqn != expected_flow_seq[flow]) {
+	if (*order_mbuf_seqn(t, ev->mbuf) != expected_flow_seq[flow]) {
 		evt_err("flow=%x seqn mismatch got=%x expected=%x",
-			flow, ev->mbuf->seqn, expected_flow_seq[flow]);
+			flow, *order_mbuf_seqn(t, ev->mbuf),
+			expected_flow_seq[flow]);
 		t->err = true;
 		rte_smp_wmb();
 	}
@@ -87,7 +117,7 @@ order_process_stage_1(struct test_order *const t,
 	rte_atomic64_sub(outstand_pkts, 1);
 }
 
-static inline __attribute__((always_inline)) void
+static __rte_always_inline void
 order_process_stage_invalid(struct test_order *const t,
 			struct rte_event *const ev)
 {

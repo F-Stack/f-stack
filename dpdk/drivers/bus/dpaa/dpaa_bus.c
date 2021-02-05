@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017-2019 NXP
+ *   Copyright 2017-2020 NXP
  *
  */
 /* System headers */
@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
+#include <sys/eventfd.h>
 
 #include <rte_byteorder.h>
 #include <rte_common.h>
@@ -31,6 +32,7 @@
 #include <rte_ring.h>
 #include <rte_bus.h>
 #include <rte_mbuf_pool_ops.h>
+#include <rte_mbuf_dyn.h>
 
 #include <dpaa_of.h>
 #include <rte_dpaa_bus.h>
@@ -42,11 +44,6 @@
 #include <fsl_bman.h>
 #include <netcfg.h>
 
-int dpaa_logtype_bus;
-int dpaa_logtype_mempool;
-int dpaa_logtype_pmd;
-int dpaa_logtype_eventdev;
-
 static struct rte_dpaa_bus rte_dpaa_bus;
 struct netcfg_info *dpaa_netcfg;
 
@@ -57,8 +54,16 @@ unsigned int dpaa_svr_family;
 
 #define FSL_DPAA_BUS_NAME	dpaa_bus
 
-RTE_DEFINE_PER_LCORE(bool, dpaa_io);
-RTE_DEFINE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
+RTE_DEFINE_PER_LCORE(struct dpaa_portal *, dpaa_io);
+
+#define DPAA_SEQN_DYNFIELD_NAME "dpaa_seqn_dynfield"
+int dpaa_seqn_dynfield_offset = -1;
+
+struct fm_eth_port_cfg *
+dpaa_get_eth_port_cfg(int dev_id)
+{
+	return &dpaa_netcfg->port_cfg[dev_id];
+}
 
 static int
 compare_dpaa_devices(struct rte_dpaa_device *dev1,
@@ -250,19 +255,30 @@ dpaa_clean_device_list(void)
 
 int rte_dpaa_portal_init(void *arg)
 {
+	static const struct rte_mbuf_dynfield dpaa_seqn_dynfield_desc = {
+		.name = DPAA_SEQN_DYNFIELD_NAME,
+		.size = sizeof(dpaa_seqn_t),
+		.align = __alignof__(dpaa_seqn_t),
+	};
 	unsigned int cpu, lcore = rte_lcore_id();
 	int ret;
-	struct dpaa_portal *dpaa_io_portal;
 
 	BUS_INIT_FUNC_TRACE();
 
 	if ((size_t)arg == 1 || lcore == LCORE_ID_ANY)
-		lcore = rte_get_master_lcore();
+		lcore = rte_get_main_lcore();
 	else
 		if (lcore >= RTE_MAX_LCORE)
 			return -1;
 
 	cpu = rte_lcore_to_cpu_id(lcore);
+
+	dpaa_seqn_dynfield_offset =
+		rte_mbuf_dynfield_register(&dpaa_seqn_dynfield_desc);
+	if (dpaa_seqn_dynfield_offset < 0) {
+		DPAA_BUS_LOG(ERR, "Failed to register mbuf field for dpaa sequence number\n");
+		return -rte_errno;
+	}
 
 	/* Initialise bman thread portals */
 	ret = bman_thread_init();
@@ -287,20 +303,21 @@ int rte_dpaa_portal_init(void *arg)
 	DPAA_BUS_LOG(DEBUG, "QMAN thread initialized - CPU=%d lcore=%d",
 		     cpu, lcore);
 
-	dpaa_io_portal = rte_malloc(NULL, sizeof(struct dpaa_portal),
+	DPAA_PER_LCORE_PORTAL = rte_malloc(NULL, sizeof(struct dpaa_portal),
 				    RTE_CACHE_LINE_SIZE);
-	if (!dpaa_io_portal) {
+	if (!DPAA_PER_LCORE_PORTAL) {
 		DPAA_BUS_LOG(ERR, "Unable to allocate memory");
 		bman_thread_finish();
 		qman_thread_finish();
 		return -ENOMEM;
 	}
 
-	dpaa_io_portal->qman_idx = qman_get_portal_index();
-	dpaa_io_portal->bman_idx = bman_get_portal_index();
-	dpaa_io_portal->tid = syscall(SYS_gettid);
+	DPAA_PER_LCORE_PORTAL->qman_idx = qman_get_portal_index();
+	DPAA_PER_LCORE_PORTAL->bman_idx = bman_get_portal_index();
+	DPAA_PER_LCORE_PORTAL->tid = syscall(SYS_gettid);
 
-	ret = pthread_setspecific(dpaa_portal_key, (void *)dpaa_io_portal);
+	ret = pthread_setspecific(dpaa_portal_key,
+				  (void *)DPAA_PER_LCORE_PORTAL);
 	if (ret) {
 		DPAA_BUS_LOG(ERR, "pthread_setspecific failed on core %u"
 			     " (lcore=%u) with ret: %d", cpu, lcore, ret);
@@ -308,8 +325,6 @@ int rte_dpaa_portal_init(void *arg)
 
 		return ret;
 	}
-
-	RTE_PER_LCORE(dpaa_io) = true;
 
 	DPAA_BUS_LOG(DEBUG, "QMAN thread initialized");
 
@@ -323,7 +338,7 @@ rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq)
 	u32 sdqcr;
 	int ret;
 
-	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+	if (unlikely(!DPAA_PER_LCORE_PORTAL)) {
 		ret = rte_dpaa_portal_init(arg);
 		if (ret < 0) {
 			DPAA_BUS_LOG(ERR, "portal initialization failure");
@@ -366,8 +381,7 @@ dpaa_portal_finish(void *arg)
 
 	rte_free(dpaa_io_portal);
 	dpaa_io_portal = NULL;
-
-	RTE_PER_LCORE(dpaa_io) = false;
+	DPAA_PER_LCORE_PORTAL = NULL;
 }
 
 static int
@@ -545,6 +559,23 @@ rte_dpaa_bus_dev_build(void)
 	return 0;
 }
 
+static int rte_dpaa_setup_intr(struct rte_intr_handle *intr_handle)
+{
+	int fd;
+
+	fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (fd < 0) {
+		DPAA_BUS_ERR("Cannot set up eventfd, error %i (%s)",
+			     errno, strerror(errno));
+		return errno;
+	}
+
+	intr_handle->fd = fd;
+	intr_handle->type = RTE_INTR_HANDLE_EXT;
+
+	return 0;
+}
+
 static int
 rte_dpaa_bus_probe(void)
 {
@@ -553,7 +584,7 @@ rte_dpaa_bus_probe(void)
 	struct rte_dpaa_driver *drv;
 	FILE *svr_file = NULL;
 	unsigned int svr_ver;
-	int probe_all = rte_dpaa_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST;
+	int probe_all = rte_dpaa_bus.bus.conf.scan_mode != RTE_BUS_SCAN_ALLOWLIST;
 	static int process_once;
 
 	/* If DPAA bus is not present nothing needs to be done */
@@ -567,13 +598,13 @@ rte_dpaa_bus_probe(void)
 			/* One time load of Qman/Bman drivers */
 			ret = qman_global_init();
 			if (ret) {
-				DPAA_PMD_ERR("QMAN initialization failed: %d",
+				DPAA_BUS_ERR("QMAN initialization failed: %d",
 					     ret);
 				return ret;
 			}
 			ret = bman_global_init();
 			if (ret) {
-				DPAA_PMD_ERR("BMAN initialization failed: %d",
+				DPAA_BUS_ERR("BMAN initialization failed: %d",
 					     ret);
 				return ret;
 			}
@@ -592,6 +623,14 @@ rte_dpaa_bus_probe(void)
 		fclose(svr_file);
 	}
 
+	TAILQ_FOREACH(dev, &rte_dpaa_bus.device_list, next) {
+		if (dev->device_type == FSL_DPAA_ETH) {
+			ret = rte_dpaa_setup_intr(&dev->intr_handle);
+			if (ret)
+				DPAA_BUS_ERR("Error setting up interrupt.\n");
+		}
+	}
+
 	/* And initialize the PA->VA translation table */
 	dpaax_iova_table_populate();
 
@@ -607,13 +646,12 @@ rte_dpaa_bus_probe(void)
 
 			if (!drv->probe ||
 			    (dev->device.devargs &&
-			    dev->device.devargs->policy == RTE_DEV_BLACKLISTED))
+			     dev->device.devargs->policy == RTE_DEV_BLOCKED))
 				continue;
 
 			if (probe_all ||
 			    (dev->device.devargs &&
-			    dev->device.devargs->policy ==
-			    RTE_DEV_WHITELISTED)) {
+			     dev->device.devargs->policy == RTE_DEV_ALLOWED)) {
 				ret = drv->probe(drv, dev);
 				if (ret) {
 					DPAA_BUS_ERR("unable to probe:%s",
@@ -751,22 +789,4 @@ static struct rte_dpaa_bus rte_dpaa_bus = {
 };
 
 RTE_REGISTER_BUS(FSL_DPAA_BUS_NAME, rte_dpaa_bus.bus);
-
-RTE_INIT(dpaa_init_log)
-{
-	dpaa_logtype_bus = rte_log_register("bus.dpaa");
-	if (dpaa_logtype_bus >= 0)
-		rte_log_set_level(dpaa_logtype_bus, RTE_LOG_NOTICE);
-
-	dpaa_logtype_mempool = rte_log_register("mempool.dpaa");
-	if (dpaa_logtype_mempool >= 0)
-		rte_log_set_level(dpaa_logtype_mempool, RTE_LOG_NOTICE);
-
-	dpaa_logtype_pmd = rte_log_register("pmd.net.dpaa");
-	if (dpaa_logtype_pmd >= 0)
-		rte_log_set_level(dpaa_logtype_pmd, RTE_LOG_NOTICE);
-
-	dpaa_logtype_eventdev = rte_log_register("pmd.event.dpaa");
-	if (dpaa_logtype_eventdev >= 0)
-		rte_log_set_level(dpaa_logtype_eventdev, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(dpaa_logtype_bus, bus.dpaa, NOTICE);

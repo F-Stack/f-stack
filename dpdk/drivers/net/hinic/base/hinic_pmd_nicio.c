@@ -312,8 +312,9 @@ static int init_sq_ctxts(struct hinic_nic_io *nic_io)
 					     HINIC_UCODE_CMD_MDY_QUEUE_CONTEXT,
 					     cmd_buf, &out_param, 0);
 		if (err || out_param != 0) {
-			PMD_DRV_LOG(ERR, "Failed to set SQ ctxts, err:%d", err);
-			err = -EFAULT;
+			PMD_DRV_LOG(ERR, "Failed to set SQ ctxts, err: %d",
+				err);
+			err = -EIO;
 			break;
 		}
 
@@ -368,10 +369,9 @@ static int init_rq_ctxts(struct hinic_nic_io *nic_io)
 					     HINIC_MOD_L2NIC,
 					     HINIC_UCODE_CMD_MDY_QUEUE_CONTEXT,
 					     cmd_buf, &out_param, 0);
-
 		if ((err) || out_param != 0) {
 			PMD_DRV_LOG(ERR, "Failed to set RQ ctxts");
-			err = -EFAULT;
+			err = -EIO;
 			break;
 		}
 
@@ -422,7 +422,7 @@ static int clean_queue_offload_ctxt(struct hinic_nic_io *nic_io,
 
 	if ((err) || (out_param)) {
 		PMD_DRV_LOG(ERR, "Failed to clean queue offload ctxts");
-		err = -EFAULT;
+		err = -EIO;
 	}
 
 	hinic_free_cmd_buf(hwdev, cmd_buf);
@@ -571,26 +571,23 @@ int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev)
 	/* clean LRO/TSO context space */
 	err = clean_qp_offload_ctxt(nic_io);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Clean qp offload ctxts failed, rc: %d",
-			err);
+		PMD_DRV_LOG(ERR, "Clean qp offload ctxts failed, rc: %d", err);
 		return err;
 	}
 
 	rx_buf_sz = nic_io->rq_buf_size;
 
 	/* update rx buf size to function table */
-	err = hinic_set_rx_vhd_mode(hwdev, 0, rx_buf_sz);
+	err = hinic_set_rx_vhd_mode(hwdev, HINIC_VHD_TYPE_0B, rx_buf_sz);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Set rx vhd mode failed, rc: %d",
-			err);
+		PMD_DRV_LOG(ERR, "Set rx vhd mode failed, rc: %d", err);
 		return err;
 	}
 
 	err = hinic_set_root_ctxt(hwdev, nic_io->rq_depth,
 				  nic_io->sq_depth, rx_buf_sz);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Set root context failed, rc: %d",
-			err);
+		PMD_DRV_LOG(ERR, "Set root context failed, rc: %d", err);
 		return err;
 	}
 
@@ -605,8 +602,7 @@ int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev)
 		sq_attr.dma_attr_off = 0;
 		err = hinic_set_ci_table(hwdev, q_id, &sq_attr);
 		if (err) {
-			PMD_DRV_LOG(ERR, "Set ci table failed, rc: %d",
-				err);
+			PMD_DRV_LOG(ERR, "Set ci table failed, rc: %d", err);
 			goto set_cons_idx_table_err;
 		}
 	}
@@ -668,7 +664,6 @@ err_init_nic_hwdev:
 static void hinic_free_nic_hwdev(struct hinic_hwdev *hwdev)
 {
 	hinic_vf_func_free(hwdev);
-	hwdev->nic_io = NULL;
 }
 
 int hinic_rx_tx_flush(struct hinic_hwdev *hwdev)

@@ -3,11 +3,9 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
 sources = files('vdev_netvsc.c')
-
-allow_experimental_apis = true
 
 cflags_options = [
         '-D_BSD_SOURCE',

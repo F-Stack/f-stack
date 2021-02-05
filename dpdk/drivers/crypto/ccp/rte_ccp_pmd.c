@@ -6,7 +6,6 @@
 #include <rte_bus_pci.h>
 #include <rte_bus_vdev.h>
 #include <rte_common.h>
-#include <rte_config.h>
 #include <rte_cryptodev.h>
 #include <rte_cryptodev_pmd.h>
 #include <rte_pci.h>
@@ -292,6 +291,9 @@ static struct rte_pci_id ccp_pci_id[] = {
 	{
 		RTE_PCI_DEVICE(0x1022, 0x1468), /* AMD CCP-5b */
 	},
+	{
+		RTE_PCI_DEVICE(0x1022, 0x15df), /* AMD CCP RV */
+	},
 	{.device_id = 0},
 };
 
@@ -350,7 +352,8 @@ cryptodev_ccp_create(const char *name,
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_HW_ACCELERATED |
-			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING;
+			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
+			RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
 
 	internals = dev->data->dev_private;
 

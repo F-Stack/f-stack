@@ -10,8 +10,6 @@
 #include "enetc_logs.h"
 #include "enetc.h"
 
-int enetc_logtype_pmd;
-
 static int
 enetc_dev_start(struct rte_eth_dev *dev)
 {
@@ -47,7 +45,7 @@ enetc_dev_start(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
+static int
 enetc_dev_stop(struct rte_eth_dev *dev)
 {
 	struct enetc_eth_hw *hw =
@@ -56,6 +54,7 @@ enetc_dev_stop(struct rte_eth_dev *dev)
 	uint32_t val;
 
 	PMD_INIT_FUNC_TRACE();
+	dev->data->dev_started = 0;
 	/* Disable port */
 	val = enetc_port_rd(enetc_hw, ENETC_PMR);
 	enetc_port_wr(enetc_hw, ENETC_PMR, val & (~ENETC_PMR_EN));
@@ -63,6 +62,8 @@ enetc_dev_stop(struct rte_eth_dev *dev)
 	val = enetc_port_rd(enetc_hw, ENETC_PM0_CMD_CFG);
 	enetc_port_wr(enetc_hw, ENETC_PM0_CMD_CFG,
 		      val & (~(ENETC_PM0_TX_EN | ENETC_PM0_RX_EN)));
+
+	return 0;
 }
 
 static const uint32_t *
@@ -149,6 +150,12 @@ enetc_hardware_init(struct enetc_eth_hw *hw)
 
 	/* WA for Rx lock-up HW erratum */
 	enetc_port_wr(enetc_hw, ENETC_PM0_RX_FIFO, 1);
+
+	/* set ENETC transaction flags to coherent, don't allocate.
+	 * BD writes merge with surrounding cache line data, frame data writes
+	 * overwrite cache line.
+	 */
+	enetc_wr(enetc_hw, ENETC_SICAR0, ENETC_SICAR0_COHERENT);
 
 	/* Enabling Station Interface */
 	enetc_wr(enetc_hw, ENETC_SIMR, ENETC_SIMR_EN);
@@ -541,13 +548,17 @@ enetc_stats_reset(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
+static int
 enetc_dev_close(struct rte_eth_dev *dev)
 {
 	uint16_t i;
+	int ret;
 
 	PMD_INIT_FUNC_TRACE();
-	enetc_dev_stop(dev);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = enetc_dev_stop(dev);
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		enetc_rx_queue_release(dev->data->rx_queues[i]);
@@ -560,6 +571,11 @@ enetc_dev_close(struct rte_eth_dev *dev)
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_depopulate();
+
+	return ret;
 }
 
 static int
@@ -869,6 +885,8 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 	eth_dev->rx_pkt_burst = &enetc_recv_pkts;
 	eth_dev->tx_pkt_burst = &enetc_xmit_pkts;
 
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+
 	/* Retrieving and storing the HW base address of device */
 	hw->hw.reg = (void *)pci_dev->mem_resource[0].addr;
 	hw->device_id = pci_dev->id.device_id;
@@ -910,14 +928,11 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 }
 
 static int
-enetc_dev_uninit(struct rte_eth_dev *eth_dev __rte_unused)
+enetc_dev_uninit(struct rte_eth_dev *eth_dev)
 {
 	PMD_INIT_FUNC_TRACE();
 
-	if (rte_eal_iova_mode() == RTE_IOVA_PA)
-		dpaax_iova_table_depopulate();
-
-	return 0;
+	return enetc_dev_close(eth_dev);
 }
 
 static int
@@ -945,10 +960,4 @@ static struct rte_pci_driver rte_enetc_pmd = {
 RTE_PMD_REGISTER_PCI(net_enetc, rte_enetc_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_enetc, pci_id_enetc_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_enetc, "* vfio-pci");
-
-RTE_INIT(enetc_pmd_init_log)
-{
-	enetc_logtype_pmd = rte_log_register("pmd.net.enetc");
-	if (enetc_logtype_pmd >= 0)
-		rte_log_set_level(enetc_logtype_pmd, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(enetc_logtype_pmd, pmd.net.enetc, NOTICE);

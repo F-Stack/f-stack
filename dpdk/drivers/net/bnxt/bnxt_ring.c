@@ -196,7 +196,7 @@ int bnxt_alloc_rings(struct bnxt *bp, uint16_t qidx,
 	total_alloc_len += tpa_info_len;
 
 	snprintf(mz_name, RTE_MEMZONE_NAMESIZE,
-		 "bnxt_%04x:%02x:%02x:%02x-%04x_%s", pdev->addr.domain,
+		 "bnxt_" PCI_PRI_FMT "-%04x_%s", pdev->addr.domain,
 		 pdev->addr.bus, pdev->addr.devid, pdev->addr.function, qidx,
 		 suffix);
 	mz_name[RTE_MEMZONE_NAMESIZE - 1] = 0;
@@ -251,7 +251,7 @@ int bnxt_alloc_rings(struct bnxt *bp, uint16_t qidx,
 			rx_ring->vmem =
 			    (void **)((char *)mz->addr + rx_vmem_start);
 			rx_ring_info->rx_buf_ring =
-			    (struct bnxt_sw_rx_bd *)rx_ring->vmem;
+			    (struct rte_mbuf **)rx_ring->vmem;
 		}
 
 		rx_ring = rx_ring_info->ag_ring_struct;
@@ -269,7 +269,7 @@ int bnxt_alloc_rings(struct bnxt *bp, uint16_t qidx,
 			rx_ring->vmem =
 			    (void **)((char *)mz->addr + ag_vmem_start);
 			rx_ring_info->ag_buf_ring =
-			    (struct bnxt_sw_rx_bd *)rx_ring->vmem;
+			    (struct rte_mbuf **)rx_ring->vmem;
 		}
 
 		rx_ring_info->ag_bitmap =
@@ -429,7 +429,7 @@ int bnxt_alloc_rxtx_nq_ring(struct bnxt *bp)
 	if (!BNXT_HAS_NQ(bp) || bp->rxtx_nq_ring)
 		return 0;
 
-	socket_id = rte_lcore_to_socket_id(rte_get_master_lcore());
+	socket_id = rte_lcore_to_socket_id(rte_get_main_lcore());
 
 	nqr = rte_zmalloc_socket("nqr",
 				 sizeof(struct bnxt_cp_ring_info),
@@ -609,7 +609,7 @@ int bnxt_alloc_hwrm_rx_ring(struct bnxt *bp, int queue_index)
 		bnxt_db_write(&rxr->ag_db, rxr->ag_prod);
 	}
 	rxq->index = queue_index;
-#ifdef RTE_ARCH_X86
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM64)
 	bnxt_rxq_vec_setup(rxq);
 #endif
 
@@ -714,7 +714,7 @@ int bnxt_alloc_hwrm_rings(struct bnxt *bp)
 		bnxt_db_write(&rxr->rx_db, rxr->rx_prod);
 		bnxt_db_write(&rxr->ag_db, rxr->ag_prod);
 		rxq->index = i;
-#ifdef RTE_ARCH_X86
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM64)
 		bnxt_rxq_vec_setup(rxq);
 #endif
 	}
@@ -820,7 +820,7 @@ int bnxt_alloc_async_ring_struct(struct bnxt *bp)
 	if (BNXT_NUM_ASYNC_CPR(bp) == 0)
 		return 0;
 
-	socket_id = rte_lcore_to_socket_id(rte_get_master_lcore());
+	socket_id = rte_lcore_to_socket_id(rte_get_main_lcore());
 
 	cpr = rte_zmalloc_socket("cpr",
 				 sizeof(struct bnxt_cp_ring_info),

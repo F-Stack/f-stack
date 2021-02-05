@@ -6,7 +6,11 @@
 #define _IAVF_ETHDEV_H_
 
 #include <rte_kvargs.h>
-#include "base/iavf_type.h"
+#include <iavf_prototype.h>
+#include <iavf_adminq_cmd.h>
+#include <iavf_type.h>
+
+#include "iavf_log.h"
 
 #define IAVF_AQ_LEN               32
 #define IAVF_AQ_BUF_SZ            4096
@@ -15,7 +19,11 @@
 #define IAVF_FRAME_SIZE_MAX       9728
 #define IAVF_QUEUE_BASE_ADDR_UNIT 128
 
-#define IAVF_MAX_NUM_QUEUES       16
+#define IAVF_MAX_NUM_QUEUES_DFLT	 16
+#define IAVF_MAX_NUM_QUEUES_LV		 256
+#define IAVF_CFG_Q_NUM_PER_BUF		 32
+#define IAVF_IRQ_MAP_NUM_PER_BUF	 128
+#define IAVF_RXTX_QUEUE_CHUNKS_NUM	 2
 
 #define IAVF_NUM_MACADDR_MAX      64
 
@@ -63,6 +71,9 @@
 #define IAVF_48_BIT_WIDTH (CHAR_BIT * 6)
 #define IAVF_48_BIT_MASK  RTE_LEN2MASK(IAVF_48_BIT_WIDTH, uint64_t)
 
+#define IAVF_RX_DESC_EXT_STATUS_FLEXBH_MASK  0x03
+#define IAVF_RX_DESC_EXT_STATUS_FLEXBH_FD_ID 0x01
+
 struct iavf_adapter;
 struct iavf_rx_queue;
 struct iavf_tx_queue;
@@ -79,8 +90,36 @@ struct iavf_vsi {
 	struct virtchnl_eth_stats eth_stats_offset;
 };
 
-/* TODO: is that correct to assume the max number to be 16 ?*/
-#define IAVF_MAX_MSIX_VECTORS   16
+struct rte_flow;
+TAILQ_HEAD(iavf_flow_list, rte_flow);
+
+struct iavf_flow_parser_node;
+TAILQ_HEAD(iavf_parser_list, iavf_flow_parser_node);
+
+struct iavf_fdir_conf {
+	struct virtchnl_fdir_add add_fltr;
+	struct virtchnl_fdir_del del_fltr;
+	uint64_t input_set;
+	uint32_t flow_id;
+	uint32_t mark_flag;
+};
+
+struct iavf_fdir_info {
+	struct iavf_fdir_conf conf;
+};
+
+struct iavf_qv_map {
+	uint16_t queue_id;
+	uint16_t vector_id;
+};
+
+/* Message type read in admin queue from PF */
+enum iavf_aq_result {
+	IAVF_MSG_ERR = -1, /* Meet error when accessing admin queue */
+	IAVF_MSG_NON,      /* Read nothing from admin queue */
+	IAVF_MSG_SYS,      /* Read system msg from admin queue */
+	IAVF_MSG_CMD,      /* Read async command result */
+};
 
 /* Structure to store private data specific for VF instance. */
 struct iavf_info {
@@ -93,7 +132,8 @@ struct iavf_info {
 	struct virtchnl_version_info virtchnl_version;
 	struct virtchnl_vf_resource *vf_res; /* VF resource */
 	struct virtchnl_vsi_resource *vsi_res; /* LAN VSI */
-
+	uint64_t supported_rxdid;
+	uint8_t *proto_xtr; /* proto xtr type for all queues */
 	volatile enum virtchnl_ops pend_cmd; /* pending command not finished */
 	uint32_t cmd_retval; /* return value of the cmd response from PF */
 	uint8_t *aq_resp; /* buffer to store the adminq response from PF */
@@ -115,11 +155,40 @@ struct iavf_info {
 	uint8_t *rss_key;
 	uint16_t nb_msix;   /* number of MSI-X interrupts on Rx */
 	uint16_t msix_base; /* msix vector base from */
-	/* queue bitmask for each vector */
-	uint16_t rxq_map[IAVF_MAX_MSIX_VECTORS];
+	uint16_t max_rss_qregion; /* max RSS queue region supported by PF */
+	struct iavf_qv_map *qv_map; /* queue vector mapping */
+	struct iavf_flow_list flow_list;
+	rte_spinlock_t flow_ops_lock;
+	struct iavf_parser_list rss_parser_list;
+	struct iavf_parser_list dist_parser_list;
+
+	struct iavf_fdir_info fdir; /* flow director info */
+	/* indicate large VF support enabled or not */
+	bool lv_enabled;
 };
 
-#define IAVF_MAX_PKT_TYPE 256
+#define IAVF_MAX_PKT_TYPE 1024
+
+#define IAVF_MAX_QUEUE_NUM  2048
+
+enum iavf_proto_xtr_type {
+	IAVF_PROTO_XTR_NONE,
+	IAVF_PROTO_XTR_VLAN,
+	IAVF_PROTO_XTR_IPV4,
+	IAVF_PROTO_XTR_IPV6,
+	IAVF_PROTO_XTR_IPV6_FLOW,
+	IAVF_PROTO_XTR_TCP,
+	IAVF_PROTO_XTR_IP_OFFSET,
+	IAVF_PROTO_XTR_MAX,
+};
+
+/**
+ * Cache devargs parse result.
+ */
+struct iavf_devargs {
+	uint8_t proto_xtr_dflt;
+	uint8_t proto_xtr[IAVF_MAX_QUEUE_NUM];
+};
 
 /* Structure to store private data for each VF instance. */
 struct iavf_adapter {
@@ -131,6 +200,10 @@ struct iavf_adapter {
 	/* For vector PMD */
 	bool rx_vec_allowed;
 	bool tx_vec_allowed;
+	const uint32_t *ptype_tbl;
+	bool stopped;
+	uint16_t fdir_ref_cnt;
+	struct iavf_devargs devargs;
 };
 
 /* IAVF_DEV_PRIVATE_TO */
@@ -218,12 +291,20 @@ int iavf_enable_vlan_strip(struct iavf_adapter *adapter);
 int iavf_disable_vlan_strip(struct iavf_adapter *adapter);
 int iavf_switch_queue(struct iavf_adapter *adapter, uint16_t qid,
 		     bool rx, bool on);
+int iavf_switch_queue_lv(struct iavf_adapter *adapter, uint16_t qid,
+		     bool rx, bool on);
 int iavf_enable_queues(struct iavf_adapter *adapter);
+int iavf_enable_queues_lv(struct iavf_adapter *adapter);
 int iavf_disable_queues(struct iavf_adapter *adapter);
+int iavf_disable_queues_lv(struct iavf_adapter *adapter);
 int iavf_configure_rss_lut(struct iavf_adapter *adapter);
 int iavf_configure_rss_key(struct iavf_adapter *adapter);
-int iavf_configure_queues(struct iavf_adapter *adapter);
+int iavf_configure_queues(struct iavf_adapter *adapter,
+			uint16_t num_queue_pairs, uint16_t index);
+int iavf_get_supported_rxdid(struct iavf_adapter *adapter);
 int iavf_config_irq_map(struct iavf_adapter *adapter);
+int iavf_config_irq_map_lv(struct iavf_adapter *adapter, uint16_t num,
+			uint16_t index);
 void iavf_add_del_all_mac_addr(struct iavf_adapter *adapter, bool add);
 int iavf_dev_link_update(struct rte_eth_dev *dev,
 			__rte_unused int wait_to_complete);
@@ -234,7 +315,15 @@ int iavf_config_promisc(struct iavf_adapter *adapter, bool enable_unicast,
 int iavf_add_del_eth_addr(struct iavf_adapter *adapter,
 			 struct rte_ether_addr *addr, bool add);
 int iavf_add_del_vlan(struct iavf_adapter *adapter, uint16_t vlanid, bool add);
+int iavf_fdir_add(struct iavf_adapter *adapter, struct iavf_fdir_conf *filter);
+int iavf_fdir_del(struct iavf_adapter *adapter, struct iavf_fdir_conf *filter);
+int iavf_fdir_check(struct iavf_adapter *adapter,
+		struct iavf_fdir_conf *filter);
+int iavf_add_del_rss_cfg(struct iavf_adapter *adapter,
+			 struct virtchnl_rss_cfg *rss_cfg, bool add);
 int iavf_add_del_mc_addr_list(struct iavf_adapter *adapter,
-			      struct rte_ether_addr *mc_addrs,
-			      uint32_t mc_addrs_num, bool add);
+			struct rte_ether_addr *mc_addrs,
+			uint32_t mc_addrs_num, bool add);
+int iavf_request_queues(struct iavf_adapter *adapter, uint16_t num);
+int iavf_get_max_rss_queue_region(struct iavf_adapter *adapter);
 #endif /* _IAVF_ETHDEV_H_ */

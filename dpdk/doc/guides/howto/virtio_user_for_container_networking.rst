@@ -56,12 +56,6 @@ Sample Usage
 Here we use Docker as container engine. It also applies to LXC, Rocket with
 some minor changes.
 
-#. Compile DPDK.
-
-    .. code-block:: console
-
-        make install RTE_SDK=`pwd` T=x86_64-native-linux-gcc
-
 #. Write a Dockerfile like below.
 
     .. code-block:: console
@@ -70,7 +64,7 @@ some minor changes.
 	FROM ubuntu:latest
 	WORKDIR /usr/src/dpdk
 	COPY . /usr/src/dpdk
-	ENV PATH "$PATH:/usr/src/dpdk/x86_64-native-linux-gcc/app/"
+	ENV PATH "$PATH:/usr/src/dpdk/<build_dir>/app/"
 	EOT
 
 #. Build a Docker image.

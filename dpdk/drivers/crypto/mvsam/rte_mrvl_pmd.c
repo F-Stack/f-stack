@@ -19,7 +19,6 @@
 #define MRVL_PMD_MAX_NB_SESS_ARG		("max_nb_sessions")
 #define MRVL_PMD_DEFAULT_MAX_NB_SESSIONS	2048
 
-int mrvl_logtype_driver;
 static uint8_t cryptodev_driver_id;
 
 struct mrvl_pmd_init_params {
@@ -68,7 +67,7 @@ __rte_aligned(32);
  * Map of supported cipher algorithms.
  */
 static const
-struct cipher_params_mapping cipher_map[RTE_CRYPTO_CIPHER_LIST_END] = {
+struct cipher_params_mapping cipher_map[] = {
 	[RTE_CRYPTO_CIPHER_NULL] = {
 		.supported = ALGO_SUPPORTED,
 		.cipher_alg = SAM_CIPHER_NONE },
@@ -108,7 +107,7 @@ struct cipher_params_mapping cipher_map[RTE_CRYPTO_CIPHER_LIST_END] = {
  * Map of supported auth algorithms.
  */
 static const
-struct auth_params_mapping auth_map[RTE_CRYPTO_AUTH_LIST_END] = {
+struct auth_params_mapping auth_map[] = {
 	[RTE_CRYPTO_AUTH_NULL] = {
 		.supported = ALGO_SUPPORTED,
 		.auth_alg = SAM_AUTH_NONE },
@@ -157,7 +156,7 @@ struct auth_params_mapping auth_map[RTE_CRYPTO_AUTH_LIST_END] = {
  * Map of supported aead algorithms.
  */
 static const
-struct cipher_params_mapping aead_map[RTE_CRYPTO_AEAD_LIST_END] = {
+struct cipher_params_mapping aead_map[] = {
 	[RTE_CRYPTO_AEAD_AES_GCM] = {
 		.supported = ALGO_SUPPORTED,
 		.cipher_alg = SAM_CIPHER_AES,
@@ -1020,8 +1019,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_MRVL_PMD,
 	"socket_id=<int>");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(mrvl_crypto_drv, cryptodev_mrvl_pmd_drv.driver,
 		cryptodev_driver_id);
-
-RTE_INIT(crypto_mrvl_init_log)
-{
-	mrvl_logtype_driver = rte_log_register("pmd.crypto.mvsam");
-}
+RTE_LOG_REGISTER(mrvl_logtype_driver, pmd.crypto.mvsam, NOTICE);

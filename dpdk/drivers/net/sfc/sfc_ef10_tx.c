@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -19,6 +19,7 @@
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
 
+#include "sfc_debug.h"
 #include "sfc_dp_tx.h"
 #include "sfc_tweak.h"
 #include "sfc_kvargs.h"
@@ -27,6 +28,9 @@
 
 #define sfc_ef10_tx_err(dpq, ...) \
 	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, ERR, dpq, __VA_ARGS__)
+
+#define sfc_ef10_tx_info(dpq, ...) \
+	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, INFO, dpq, __VA_ARGS__)
 
 /** Maximum length of the DMA descriptor data */
 #define SFC_EF10_TX_DMA_DESC_LEN_MAX \
@@ -243,7 +247,7 @@ sfc_ef10_tx_qpush(struct sfc_ef10_txq *txq, unsigned int added,
 	 */
 	rte_io_wmb();
 
-	*(volatile __m128i *)txq->doorbell = oword.eo_u128[0];
+	*(volatile efsys_uint128_t *)txq->doorbell = oword.eo_u128[0];
 }
 
 static unsigned int
@@ -348,7 +352,7 @@ sfc_ef10_prepare_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			}
 		}
 #endif
-		ret = sfc_dp_tx_prepare_pkt(m,
+		ret = sfc_dp_tx_prepare_pkt(m, 0, SFC_TSOH_STD_LEN,
 				txq->tso_tcp_header_offset_limit,
 				txq->max_fill_level,
 				SFC_EF10_TSO_OPT_DESCS_NUM, 0);
@@ -958,6 +962,8 @@ sfc_ef10_tx_qcreate(uint16_t port_id, uint16_t queue_id,
 			(info->hw_index << info->vi_window_shift);
 	txq->evq_hw_ring = info->evq_hw_ring;
 	txq->tso_tcp_header_offset_limit = info->tso_tcp_header_offset_limit;
+
+	sfc_ef10_tx_info(&txq->dp.dpq, "TxQ doorbell is %p", txq->doorbell);
 
 	*dp_txqp = &txq->dp;
 	return 0;

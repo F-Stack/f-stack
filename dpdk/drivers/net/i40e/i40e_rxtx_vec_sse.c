@@ -86,7 +86,7 @@ i40e_rxq_rearm(struct i40e_rx_queue *rxq)
 			     (rxq->nb_rx_desc - 1) : (rxq->rxrearm_start - 1));
 
 	/* Update the tail pointer on the NIC */
-	I40E_PCI_REG_WRITE(rxq->qrx_tail, rx_id);
+	I40E_PCI_REG_WC_WRITE(rxq->qrx_tail, rx_id);
 }
 
 #ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
@@ -757,30 +757,30 @@ i40e_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	txq->tx_tail = tx_id;
 
-	I40E_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	I40E_PCI_REG_WC_WRITE(txq->qtx_tail, txq->tx_tail);
 
 	return nb_pkts;
 }
 
-void __attribute__((cold))
+void __rte_cold
 i40e_rx_queue_release_mbufs_vec(struct i40e_rx_queue *rxq)
 {
 	_i40e_rx_queue_release_mbufs_vec(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 i40e_rxq_vec_setup(struct i40e_rx_queue *rxq)
 {
 	return i40e_rxq_vec_setup_default(rxq);
 }
 
-int __attribute__((cold))
+int __rte_cold
 i40e_txq_vec_setup(struct i40e_tx_queue __rte_unused *txq)
 {
 	return 0;
 }
 
-int __attribute__((cold))
+int __rte_cold
 i40e_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 {
 	return i40e_rx_vec_dev_conf_condition_check_default(dev);

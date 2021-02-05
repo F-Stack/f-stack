@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2016-2017 Intel Corporation
+ * Copyright(c) 2016-2020 Intel Corporation
  */
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -10,6 +10,7 @@
 #include <rte_crypto.h>
 #include <rte_security.h>
 #include <rte_cryptodev.h>
+#include <rte_ipsec.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include <rte_hash.h>
@@ -86,7 +87,8 @@ create_lookaside_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa,
 			ipsec_ctx->tbl[cdev_id_qp].id,
 			ipsec_ctx->tbl[cdev_id_qp].qp);
 
-	if (ips->type != RTE_SECURITY_ACTION_TYPE_NONE) {
+	if (ips->type != RTE_SECURITY_ACTION_TYPE_NONE &&
+		ips->type != RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO) {
 		struct rte_security_session_conf sess_conf = {
 			.action_type = ips->type,
 			.protocol = RTE_SECURITY_PROTOCOL_IPSEC,
@@ -115,7 +117,8 @@ create_lookaside_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa,
 			set_ipsec_conf(sa, &(sess_conf.ipsec));
 
 			ips->security.ses = rte_security_session_create(ctx,
-					&sess_conf, ipsec_ctx->session_priv_pool);
+					&sess_conf, ipsec_ctx->session_pool,
+					ipsec_ctx->session_priv_pool);
 			if (ips->security.ses == NULL) {
 				RTE_LOG(ERR, IPSEC,
 				"SEC Session init failed: err: %d\n", ret);
@@ -126,6 +129,18 @@ create_lookaside_session(struct ipsec_ctx *ipsec_ctx, struct ipsec_sa *sa,
 			return -1;
 		}
 	} else {
+		if (ips->type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO) {
+			struct rte_cryptodev_info info;
+			uint16_t cdev_id;
+
+			cdev_id = ipsec_ctx->tbl[cdev_id_qp].id;
+			rte_cryptodev_info_get(cdev_id, &info);
+			if (!(info.feature_flags &
+				RTE_CRYPTODEV_FF_SYM_CPU_CRYPTO))
+				return -ENOTSUP;
+
+			ips->crypto.dev_id = cdev_id;
+		}
 		ips->crypto.ses = rte_cryptodev_sym_session_create(
 				ipsec_ctx->session_pool);
 		rte_cryptodev_sym_session_init(ipsec_ctx->tbl[cdev_id_qp].id,
@@ -184,7 +199,8 @@ create_inline_session(struct socket_ctx *skt_ctx, struct ipsec_sa *sa,
 		}
 
 		ips->security.ses = rte_security_session_create(sec_ctx,
-				&sess_conf, skt_ctx->session_pool);
+				&sess_conf, skt_ctx->session_pool,
+				skt_ctx->session_priv_pool);
 		if (ips->security.ses == NULL) {
 			RTE_LOG(ERR, IPSEC,
 				"SEC Session init failed: err: %d\n", ret);
@@ -260,6 +276,10 @@ create_inline_session(struct socket_ctx *skt_ctx, struct ipsec_sa *sa,
 			struct rte_flow_action_rss action_rss;
 			unsigned int i;
 			unsigned int j;
+
+			/* Don't create flow if default flow is created */
+			if (flow_info_tbl[sa->portid].rx_def_flow)
+				return 0;
 
 			ret = rte_eth_dev_info_get(sa->portid, &dev_info);
 			if (ret != 0) {
@@ -360,7 +380,8 @@ flow_create_failure:
 		sess_conf.userdata = (void *) sa;
 
 		ips->security.ses = rte_security_session_create(sec_ctx,
-					&sess_conf, skt_ctx->session_pool);
+					&sess_conf, skt_ctx->session_pool,
+					skt_ctx->session_priv_pool);
 		if (ips->security.ses == NULL) {
 			RTE_LOG(ERR, IPSEC,
 				"SEC Session init failed: err: %d\n", ret);
@@ -396,7 +417,72 @@ flow_create_failure:
 		ips->security.ol_flags = sec_cap->ol_flags;
 		ips->security.ctx = sec_ctx;
 	}
-	sa->cdev_id_qp = 0;
+
+	return 0;
+}
+
+int
+create_ipsec_esp_flow(struct ipsec_sa *sa)
+{
+	int ret = 0;
+	struct rte_flow_error err;
+	if (sa->direction == RTE_SECURITY_IPSEC_SA_DIR_EGRESS) {
+		RTE_LOG(ERR, IPSEC,
+			"No Flow director rule for Egress traffic\n");
+		return -1;
+	}
+	if (sa->flags == TRANSPORT) {
+		RTE_LOG(ERR, IPSEC,
+			"No Flow director rule for transport mode\n");
+		return -1;
+	}
+	sa->action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+	sa->pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+	sa->action[0].conf = &(struct rte_flow_action_queue) {
+				.index = sa->fdir_qid,
+	};
+	sa->attr.egress = 0;
+	sa->attr.ingress = 1;
+	if (IS_IP6(sa->flags)) {
+		sa->pattern[1].mask = &rte_flow_item_ipv6_mask;
+		sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV6;
+		sa->pattern[1].spec = &sa->ipv6_spec;
+		memcpy(sa->ipv6_spec.hdr.dst_addr,
+			sa->dst.ip.ip6.ip6_b, sizeof(sa->dst.ip.ip6.ip6_b));
+		memcpy(sa->ipv6_spec.hdr.src_addr,
+			sa->src.ip.ip6.ip6_b, sizeof(sa->src.ip.ip6.ip6_b));
+		sa->pattern[2].type = RTE_FLOW_ITEM_TYPE_ESP;
+		sa->pattern[2].spec = &sa->esp_spec;
+		sa->pattern[2].mask = &rte_flow_item_esp_mask;
+		sa->esp_spec.hdr.spi = rte_cpu_to_be_32(sa->spi);
+		sa->pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+	} else if (IS_IP4(sa->flags)) {
+		sa->pattern[1].mask = &rte_flow_item_ipv4_mask;
+		sa->pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+		sa->pattern[1].spec = &sa->ipv4_spec;
+		sa->ipv4_spec.hdr.dst_addr = sa->dst.ip.ip4;
+		sa->ipv4_spec.hdr.src_addr = sa->src.ip.ip4;
+		sa->pattern[2].type = RTE_FLOW_ITEM_TYPE_ESP;
+		sa->pattern[2].spec = &sa->esp_spec;
+		sa->pattern[2].mask = &rte_flow_item_esp_mask;
+		sa->esp_spec.hdr.spi = rte_cpu_to_be_32(sa->spi);
+		sa->pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
+	}
+	sa->action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+	ret = rte_flow_validate(sa->portid, &sa->attr, sa->pattern, sa->action,
+				&err);
+	if (ret < 0) {
+		RTE_LOG(ERR, IPSEC, "Flow validation failed %s\n", err.message);
+		return ret;
+	}
+
+	sa->flow = rte_flow_create(sa->portid, &sa->attr, sa->pattern,
+					sa->action, &err);
+	if (!sa->flow) {
+		RTE_LOG(ERR, IPSEC, "Flow creation failed %s\n", err.message);
+		return -1;
+	}
 
 	return 0;
 }
@@ -417,7 +503,7 @@ enqueue_cop_burst(struct cdev_qp *cqp)
 			cqp->id, cqp->qp, ret, len);
 			/* drop packets that we fail to enqueue */
 			for (i = ret; i < len; i++)
-				rte_pktmbuf_free(cqp->buf[i]->sym->m_src);
+				free_pkts(&cqp->buf[i]->sym->m_src, 1);
 	}
 	cqp->in_flight += ret;
 	cqp->len = 0;
@@ -445,7 +531,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 	for (i = 0; i < nb_pkts; i++) {
 		if (unlikely(sas[i] == NULL)) {
-			rte_pktmbuf_free(pkts[i]);
+			free_pkts(&pkts[i], 1);
 			continue;
 		}
 
@@ -466,7 +552,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 			if ((unlikely(ips->security.ses == NULL)) &&
 				create_lookaside_session(ipsec_ctx, sa, ips)) {
-				rte_pktmbuf_free(pkts[i]);
+				free_pkts(&pkts[i], 1);
 				continue;
 			}
 
@@ -476,6 +562,13 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 			rte_security_attach_session(&priv->cop,
 				ips->security.ses);
 			break;
+
+		case RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO:
+			RTE_LOG(ERR, IPSEC, "CPU crypto is not supported by the"
+					" legacy mode.");
+			free_pkts(&pkts[i], 1);
+			continue;
+
 		case RTE_SECURITY_ACTION_TYPE_NONE:
 
 			priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
@@ -485,7 +578,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 			if ((unlikely(ips->crypto.ses == NULL)) &&
 				create_lookaside_session(ipsec_ctx, sa, ips)) {
-				rte_pktmbuf_free(pkts[i]);
+				free_pkts(&pkts[i], 1);
 				continue;
 			}
 
@@ -494,7 +587,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 			ret = xform_func(pkts[i], sa, &priv->cop);
 			if (unlikely(ret)) {
-				rte_pktmbuf_free(pkts[i]);
+				free_pkts(&pkts[i], 1);
 				continue;
 			}
 			break;
@@ -518,7 +611,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 
 			ret = xform_func(pkts[i], sa, &priv->cop);
 			if (unlikely(ret)) {
-				rte_pktmbuf_free(pkts[i]);
+				free_pkts(&pkts[i], 1);
 				continue;
 			}
 
@@ -553,7 +646,7 @@ ipsec_inline_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 		sa = priv->sa;
 		ret = xform_func(pkt, sa, &priv->cop);
 		if (unlikely(ret)) {
-			rte_pktmbuf_free(pkt);
+			free_pkts(&pkt, 1);
 			continue;
 		}
 		pkts[nb_pkts++] = pkt;
@@ -600,13 +693,13 @@ ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 				RTE_SECURITY_ACTION_TYPE_NONE) {
 				ret = xform_func(pkt, sa, cops[j]);
 				if (unlikely(ret)) {
-					rte_pktmbuf_free(pkt);
+					free_pkts(&pkt, 1);
 					continue;
 				}
 			} else if (ipsec_get_action_type(sa) ==
 				RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL) {
 				if (cops[j]->status) {
-					rte_pktmbuf_free(pkt);
+					free_pkts(&pkt, 1);
 					continue;
 				}
 			}

@@ -58,27 +58,13 @@ Supported Asymmetric Crypto algorithms:
 Installation
 ------------
 
-To compile openssl PMD, it has to be enabled in the config/common_base file
-and appropriate openssl packages have to be installed in the build environment.
+To compile the OpenSSL PMD the openssl library must be installed. It will
+then be picked up by the Meson/Ninja build system.
 
-The newest openssl library version is supported:
+To ensure that you have the latest security fixes it is recommended that you
+use version 1.1.1g or newer.
 
-* 1.0.2h-fips  3 May 2016.
-
-Older versions that were also verified:
-
-* 1.0.1f 6 Jan 2014
-* 1.0.1 14 Mar 2012
-
-For Ubuntu 14.04 LTS these packages have to be installed in the build system:
-
-.. code-block:: console
-
-    sudo apt-get install openssl
-    sudo apt-get install libc6-dev-i386 # for i686-native-linux-gcc target
-
-This code was also verified on Fedora 24.
-This code has NOT been verified on FreeBSD yet.
+* 1.1.1g, 2020-Apr-21. https://www.openssl.org/source/
 
 Initialization
 --------------
@@ -93,7 +79,7 @@ To verify real traffic l2fwd-crypto example can be used with this command:
 
 .. code-block:: console
 
-	sudo ./build/l2fwd-crypto -l 0-1 -n 4 --vdev "crypto_openssl"
+	sudo ./<build_dir>/examples/dpdk-l2fwd-crypto -l 0-1 -n 4 --vdev "crypto_openssl"
 	--vdev "crypto_openssl"-- -p 0x3 --chain CIPHER_HASH
 	--cipher_op ENCRYPT --cipher_algo AES_CBC
 	--cipher_key 00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f

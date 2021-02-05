@@ -66,8 +66,8 @@ main(int argc, char **argv)
 	app_init();
 
 	/* Launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(app_lcore_main_loop, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(lcore) {
+	rte_eal_mp_remote_launch(app_lcore_main_loop, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(lcore) {
 		if (rte_eal_wait_lcore(lcore) < 0)
 			return -1;
 	}
@@ -76,7 +76,7 @@ main(int argc, char **argv)
 }
 
 int
-app_lcore_main_loop(__attribute__((unused)) void *arg)
+app_lcore_main_loop(__rte_unused void *arg)
 {
 	unsigned lcore;
 
@@ -126,7 +126,7 @@ app_lcore_main_loop(__attribute__((unused)) void *arg)
 			return 0;
 
 		case e_APP_PIPELINE_ACL:
-#ifndef RTE_LIBRTE_ACL
+#ifndef RTE_LIB_ACL
 			rte_exit(EXIT_FAILURE, "ACL not present in build\n");
 #else
 			app_main_loop_worker_pipeline_acl();

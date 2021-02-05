@@ -57,7 +57,7 @@ __vhost_iova_to_vva(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 		vhost_user_iotlb_pending_insert(vq, iova, perm);
 		if (vhost_user_iotlb_miss(dev, iova, perm)) {
-			RTE_LOG(ERR, VHOST_CONFIG,
+			VHOST_LOG_CONFIG(ERR,
 				"IOTLB miss req failed for IOVA 0x%" PRIx64 "\n",
 				iova);
 			vhost_user_iotlb_pending_remove(vq, iova, 1, perm);
@@ -124,7 +124,7 @@ __vhost_log_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 	hva = __vhost_iova_to_vva(dev, vq, iova, &map_len, VHOST_ACCESS_RW);
 	if (map_len != len) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_DATA(ERR,
 			"Failed to write log for IOVA 0x%" PRIx64 ". No IOTLB entry found\n",
 			iova);
 		return;
@@ -229,7 +229,7 @@ __vhost_log_cache_write_iova(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 	hva = __vhost_iova_to_vva(dev, vq, iova, &map_len, VHOST_ACCESS_RW);
 	if (map_len != len) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_DATA(ERR,
 			"Failed to write log for IOVA 0x%" PRIx64 ". No IOTLB entry found\n",
 			iova);
 		return;
@@ -324,13 +324,33 @@ cleanup_device(struct virtio_net *dev, int destroy)
 	}
 }
 
+static void
+vhost_free_async_mem(struct vhost_virtqueue *vq)
+{
+	if (vq->async_pkts_pending)
+		rte_free(vq->async_pkts_pending);
+	if (vq->async_pkts_info)
+		rte_free(vq->async_pkts_info);
+	if (vq->it_pool)
+		rte_free(vq->it_pool);
+	if (vq->vec_pool)
+		rte_free(vq->vec_pool);
+
+	vq->async_pkts_pending = NULL;
+	vq->async_pkts_info = NULL;
+	vq->it_pool = NULL;
+	vq->vec_pool = NULL;
+}
+
 void
 free_vq(struct virtio_net *dev, struct vhost_virtqueue *vq)
 {
 	if (vq_is_packed(dev))
 		rte_free(vq->shadow_used_packed);
-	else
+	else {
 		rte_free(vq->shadow_used_split);
+		vhost_free_async_mem(vq);
+	}
 	rte_free(vq->batch_copy_elems);
 	rte_mempool_free(vq->iotlb_pool);
 	rte_free(vq);
@@ -388,7 +408,7 @@ translate_log_addr(struct virtio_net *dev, struct vhost_virtqueue *vq,
 
 		gpa = hva_to_gpa(dev, hva, exp_size);
 		if (!gpa) {
-			RTE_LOG(ERR, VHOST_CONFIG,
+			VHOST_LOG_CONFIG(ERR,
 				"VQ: Failed to find GPA for log_addr: 0x%"
 				PRIx64 " hva: 0x%" PRIx64 "\n",
 				log_addr, hva);
@@ -517,24 +537,28 @@ init_vring_queue(struct virtio_net *dev, uint32_t vring_idx)
 	struct vhost_virtqueue *vq;
 
 	if (vring_idx >= VHOST_MAX_VRING) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_CONFIG(ERR,
 				"Failed not init vring, out of bound (%d)\n",
 				vring_idx);
 		return;
 	}
 
 	vq = dev->virtqueue[vring_idx];
+	if (!vq) {
+		VHOST_LOG_CONFIG(ERR, "Virtqueue not allocated (%d)\n",
+				vring_idx);
+		return;
+	}
 
 	memset(vq, 0, sizeof(struct vhost_virtqueue));
 
 	vq->kickfd = VIRTIO_UNINITIALIZED_EVENTFD;
 	vq->callfd = VIRTIO_UNINITIALIZED_EVENTFD;
+	vq->notif_enable = VIRTIO_UNINITIALIZED_NOTIF;
 
 	vhost_user_iotlb_init(dev, vring_idx);
 	/* Backends are set to -1 indicating an inactive device. */
 	vq->backend = -1;
-
-	TAILQ_INIT(&vq->zmbuf_list);
 }
 
 static void
@@ -544,13 +568,19 @@ reset_vring_queue(struct virtio_net *dev, uint32_t vring_idx)
 	int callfd;
 
 	if (vring_idx >= VHOST_MAX_VRING) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_CONFIG(ERR,
 				"Failed not init vring, out of bound (%d)\n",
 				vring_idx);
 		return;
 	}
 
 	vq = dev->virtqueue[vring_idx];
+	if (!vq) {
+		VHOST_LOG_CONFIG(ERR, "Virtqueue not allocated (%d)\n",
+				vring_idx);
+		return;
+	}
+
 	callfd = vq->callfd;
 	init_vring_queue(dev, vring_idx);
 	vq->callfd = callfd;
@@ -569,7 +599,7 @@ alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx)
 
 		vq = rte_malloc(NULL, sizeof(struct vhost_virtqueue), 0);
 		if (vq == NULL) {
-			RTE_LOG(ERR, VHOST_CONFIG,
+			VHOST_LOG_CONFIG(ERR,
 				"Failed to allocate memory for vring:%u.\n", i);
 			return -1;
 		}
@@ -621,14 +651,14 @@ vhost_new_device(void)
 	}
 
 	if (i == MAX_VHOST_DEVICE) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_CONFIG(ERR,
 			"Failed to find a free slot for new device.\n");
 		return -1;
 	}
 
 	dev = rte_zmalloc(NULL, sizeof(struct virtio_net), 0);
 	if (dev == NULL) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_CONFIG(ERR,
 			"Failed to allocate memory for new dev.\n");
 		return -1;
 	}
@@ -637,7 +667,6 @@ vhost_new_device(void)
 	dev->vid = i;
 	dev->flags = VIRTIO_DEV_BUILTIN_VIRTIO_NET;
 	dev->slave_req_fd = -1;
-	dev->vdpa_dev_id = -1;
 	dev->postcopy_ufd = -1;
 	rte_spinlock_init(&dev->slave_req_lock);
 
@@ -648,12 +677,10 @@ void
 vhost_destroy_device_notify(struct virtio_net *dev)
 {
 	struct rte_vdpa_device *vdpa_dev;
-	int did;
 
 	if (dev->flags & VIRTIO_DEV_RUNNING) {
-		did = dev->vdpa_dev_id;
-		vdpa_dev = rte_vdpa_get_device(did);
-		if (vdpa_dev && vdpa_dev->ops->dev_close)
+		vdpa_dev = dev->vdpa_dev;
+		if (vdpa_dev)
 			vdpa_dev->ops->dev_close(dev->vid);
 		dev->flags &= ~VIRTIO_DEV_RUNNING;
 		dev->notify_ops->destroy_device(dev->vid);
@@ -681,17 +708,14 @@ vhost_destroy_device(int vid)
 }
 
 void
-vhost_attach_vdpa_device(int vid, int did)
+vhost_attach_vdpa_device(int vid, struct rte_vdpa_device *vdpa_dev)
 {
 	struct virtio_net *dev = get_device(vid);
 
 	if (dev == NULL)
 		return;
 
-	if (rte_vdpa_get_device(did) == NULL)
-		return;
-
-	dev->vdpa_dev_id = did;
+	dev->vdpa_dev = vdpa_dev;
 }
 
 void
@@ -709,17 +733,6 @@ vhost_set_ifname(int vid, const char *if_name, unsigned int if_len)
 
 	strncpy(dev->ifname, if_name, len);
 	dev->ifname[sizeof(dev->ifname) - 1] = '\0';
-}
-
-void
-vhost_enable_dequeue_zero_copy(int vid)
-{
-	struct virtio_net *dev = get_device(vid);
-
-	if (dev == NULL)
-		return;
-
-	dev->dequeue_zero_copy = 1;
 }
 
 void
@@ -791,7 +804,7 @@ rte_vhost_get_numa_node(int vid)
 	ret = get_mempolicy(&numa_node, NULL, 0, dev,
 			    MPOL_F_NODE | MPOL_F_ADDR);
 	if (ret < 0) {
-		RTE_LOG(ERR, VHOST_CONFIG,
+		VHOST_LOG_CONFIG(ERR,
 			"(%d) failed to query numa node: %s\n",
 			vid, rte_strerror(errno));
 		return -1;
@@ -1324,6 +1337,23 @@ vhost_enable_notify_packed(struct virtio_net *dev,
 }
 
 int
+vhost_enable_guest_notification(struct virtio_net *dev,
+		struct vhost_virtqueue *vq, int enable)
+{
+	/*
+	 * If the virtqueue is not ready yet, it will be applied
+	 * when it will become ready.
+	 */
+	if (!vq->ready)
+		return 0;
+
+	if (vq_is_packed(dev))
+		return vhost_enable_notify_packed(dev, vq, enable);
+	else
+		return vhost_enable_notify_split(dev, vq, enable);
+}
+
+int
 rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 {
 	struct virtio_net *dev = get_device(vid);
@@ -1342,10 +1372,8 @@ rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
 
 	rte_spinlock_lock(&vq->access_lock);
 
-	if (vq_is_packed(dev))
-		ret = vhost_enable_notify_packed(dev, vq, enable);
-	else
-		ret = vhost_enable_notify_split(dev, vq, enable);
+	vq->notif_enable = enable;
+	ret = vhost_enable_guest_notification(dev, vq, enable);
 
 	rte_spinlock_unlock(&vq->access_lock);
 
@@ -1395,7 +1423,7 @@ rte_vhost_rx_queue_count(int vid, uint16_t qid)
 		return 0;
 
 	if (unlikely(qid >= dev->nr_vring || (qid & 1) == 0)) {
-		RTE_LOG(ERR, VHOST_DATA, "(%d) %s: invalid virtqueue idx %d.\n",
+		VHOST_LOG_DATA(ERR, "(%d) %s: invalid virtqueue idx %d.\n",
 			dev->vid, __func__, qid);
 		return 0;
 	}
@@ -1416,14 +1444,15 @@ out:
 	return ret;
 }
 
-int rte_vhost_get_vdpa_device_id(int vid)
+struct rte_vdpa_device *
+rte_vhost_get_vdpa_device(int vid)
 {
 	struct virtio_net *dev = get_device(vid);
 
 	if (dev == NULL)
-		return -1;
+		return NULL;
 
-	return dev->vdpa_dev_id;
+	return dev->vdpa_dev;
 }
 
 int rte_vhost_get_log_base(int vid, uint64_t *log_base,
@@ -1544,3 +1573,142 @@ int rte_vhost_extern_callback_register(int vid,
 	dev->extern_data = ctx;
 	return 0;
 }
+
+int rte_vhost_async_channel_register(int vid, uint16_t queue_id,
+					uint32_t features,
+					struct rte_vhost_async_channel_ops *ops)
+{
+	struct vhost_virtqueue *vq;
+	struct virtio_net *dev = get_device(vid);
+	struct rte_vhost_async_features f;
+	int node;
+
+	if (dev == NULL || ops == NULL)
+		return -1;
+
+	f.intval = features;
+
+	if (queue_id >= VHOST_MAX_VRING)
+		return -1;
+
+	vq = dev->virtqueue[queue_id];
+
+	if (unlikely(vq == NULL || !dev->async_copy))
+		return -1;
+
+	/* packed queue is not supported */
+	if (unlikely(vq_is_packed(dev) || !f.async_inorder)) {
+		VHOST_LOG_CONFIG(ERR,
+			"async copy is not supported on packed queue or non-inorder mode "
+			"(vid %d, qid: %d)\n", vid, queue_id);
+		return -1;
+	}
+
+	if (unlikely(ops->check_completed_copies == NULL ||
+		ops->transfer_data == NULL))
+		return -1;
+
+	rte_spinlock_lock(&vq->access_lock);
+
+	if (unlikely(vq->async_registered)) {
+		VHOST_LOG_CONFIG(ERR,
+			"async register failed: channel already registered "
+			"(vid %d, qid: %d)\n", vid, queue_id);
+		goto reg_out;
+	}
+
+#ifdef RTE_LIBRTE_VHOST_NUMA
+	if (get_mempolicy(&node, NULL, 0, vq, MPOL_F_NODE | MPOL_F_ADDR)) {
+		VHOST_LOG_CONFIG(ERR,
+			"unable to get numa information in async register. "
+			"allocating async buffer memory on the caller thread node\n");
+		node = SOCKET_ID_ANY;
+	}
+#else
+	node = SOCKET_ID_ANY;
+#endif
+
+	vq->async_pkts_pending = rte_malloc_socket(NULL,
+			vq->size * sizeof(uintptr_t),
+			RTE_CACHE_LINE_SIZE, node);
+	vq->async_pkts_info = rte_malloc_socket(NULL,
+			vq->size * sizeof(struct async_inflight_info),
+			RTE_CACHE_LINE_SIZE, node);
+	vq->it_pool = rte_malloc_socket(NULL,
+			VHOST_MAX_ASYNC_IT * sizeof(struct rte_vhost_iov_iter),
+			RTE_CACHE_LINE_SIZE, node);
+	vq->vec_pool = rte_malloc_socket(NULL,
+			VHOST_MAX_ASYNC_VEC * sizeof(struct iovec),
+			RTE_CACHE_LINE_SIZE, node);
+	if (!vq->async_pkts_pending || !vq->async_pkts_info ||
+		!vq->it_pool || !vq->vec_pool) {
+		vhost_free_async_mem(vq);
+		VHOST_LOG_CONFIG(ERR,
+				"async register failed: cannot allocate memory for vq data "
+				"(vid %d, qid: %d)\n", vid, queue_id);
+		goto reg_out;
+	}
+
+	vq->async_ops.check_completed_copies = ops->check_completed_copies;
+	vq->async_ops.transfer_data = ops->transfer_data;
+
+	vq->async_inorder = f.async_inorder;
+	vq->async_threshold = f.async_threshold;
+
+	vq->async_registered = true;
+
+reg_out:
+	rte_spinlock_unlock(&vq->access_lock);
+
+	return 0;
+}
+
+int rte_vhost_async_channel_unregister(int vid, uint16_t queue_id)
+{
+	struct vhost_virtqueue *vq;
+	struct virtio_net *dev = get_device(vid);
+	int ret = -1;
+
+	if (dev == NULL)
+		return ret;
+
+	if (queue_id >= VHOST_MAX_VRING)
+		return ret;
+
+	vq = dev->virtqueue[queue_id];
+
+	if (vq == NULL)
+		return ret;
+
+	ret = 0;
+
+	if (!vq->async_registered)
+		return ret;
+
+	if (!rte_spinlock_trylock(&vq->access_lock)) {
+		VHOST_LOG_CONFIG(ERR, "Failed to unregister async channel. "
+			"virt queue busy.\n");
+		return -1;
+	}
+
+	if (vq->async_pkts_inflight_n) {
+		VHOST_LOG_CONFIG(ERR, "Failed to unregister async channel. "
+			"async inflight packets must be completed before unregistration.\n");
+		ret = -1;
+		goto out;
+	}
+
+	vhost_free_async_mem(vq);
+
+	vq->async_ops.transfer_data = NULL;
+	vq->async_ops.check_completed_copies = NULL;
+	vq->async_registered = false;
+
+out:
+	rte_spinlock_unlock(&vq->access_lock);
+
+	return ret;
+}
+
+RTE_LOG_REGISTER(vhost_config_log_level, lib.vhost.config, INFO);
+RTE_LOG_REGISTER(vhost_data_log_level, lib.vhost.data, WARNING);

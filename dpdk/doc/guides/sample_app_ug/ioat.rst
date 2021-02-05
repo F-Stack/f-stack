@@ -45,7 +45,7 @@ The application requires a number of command line options:
 
 .. code-block:: console
 
-    ./build/ioatfwd [EAL options] -- [-p MASK] [-q NQ] [-s RS] [-c <sw|hw>]
+    ./<build_dir>/examples/dpdk-ioat [EAL options] -- [-p MASK] [-q NQ] [-s RS] [-c <sw|hw>]
         [--[no-]mac-updating]
 
 where,
@@ -69,27 +69,27 @@ provided parameters. The app can use up to 2 lcores: one of them receives
 incoming traffic and makes a copy of each packet. The second lcore then
 updates MAC address and sends the copy. If one lcore per port is used,
 both operations are done sequentially. For each configuration an additional
-lcore is needed since the master lcore does not handle traffic but is
+lcore is needed since the main lcore does not handle traffic but is
 responsible for configuration, statistics printing and safe shutdown of
 all ports and devices.
 
 The application can use a maximum of 8 ports.
 
-To run the application in a Linux environment with 3 lcores (the master lcore,
+To run the application in a Linux environment with 3 lcores (the main lcore,
 plus two forwarding cores), a single port (port 0), software copying and MAC
 updating issue the command:
 
 .. code-block:: console
 
-    $ ./build/ioatfwd -l 0-2 -n 2 -- -p 0x1 --mac-updating -c sw
+    $ ./<build_dir>/examples/dpdk-ioat -l 0-2 -n 2 -- -p 0x1 --mac-updating -c sw
 
-To run the application in a Linux environment with 2 lcores (the master lcore,
+To run the application in a Linux environment with 2 lcores (the main lcore,
 plus one forwarding core), 2 ports (ports 0 and 1), hardware copying and no MAC
 updating issue the command:
 
 .. code-block:: console
 
-    $ ./build/ioatfwd -l 0-1 -n 1 -- -p 0x3 --no-mac-updating -c hw
+    $ ./<build_dir>/examples/dpdk-ioat -l 0-1 -n 1 -- -p 0x3 --no-mac-updating -c hw
 
 Refer to the *DPDK Getting Started Guide* for general information on
 running applications and the Environment Abstraction Layer (EAL) options.
@@ -208,7 +208,7 @@ After that each port application assigns resources needed.
     cfg.nb_lcores = rte_lcore_count() - 1;
     if (cfg.nb_lcores < 1)
         rte_exit(EXIT_FAILURE,
-            "There should be at least one slave lcore.\n");
+            "There should be at least one worker lcore.\n");
 
     ret = 0;
 
@@ -265,7 +265,7 @@ functions:
                 do {
                     if (rdev_id == rte_rawdev_count())
                         goto end;
-                    rte_rawdev_info_get(rdev_id++, &rdev_info);
+                    rte_rawdev_info_get(rdev_id++, &rdev_info, 0);
                 } while (strcmp(rdev_info.driver_name,
                     IOAT_PMD_RAWDEV_NAME_STR) != 0);
 
@@ -296,7 +296,7 @@ is done in ``configure_rawdev_queue()``.
         struct rte_ioat_rawdev_config dev_config = { .ring_size = ring_size };
         struct rte_rawdev_info info = { .dev_private = &dev_config };
 
-        if (rte_rawdev_configure(dev_id, &info) != 0) {
+        if (rte_rawdev_configure(dev_id, &info, sizeof(dev_config)) != 0) {
             rte_exit(EXIT_FAILURE,
                 "Error with rte_rawdev_configure()\n");
         }
@@ -310,9 +310,9 @@ If initialization is successful, memory for hardware device
 statistics is allocated.
 
 Finally ``main()`` function starts all packet handling lcores and starts
-printing stats in a loop on the master lcore. The application can be
-interrupted and closed using ``Ctrl-C``. The master lcore waits for
-all slave processes to finish, deallocates resources and exits.
+printing stats in a loop on the main lcore. The application can be
+interrupted and closed using ``Ctrl-C``. The main lcore waits for
+all worker lcores to finish, deallocates resources and exits.
 
 The processing lcores launching function are described below.
 
@@ -394,7 +394,7 @@ packet using ``pktmbuf_sw_copy()`` function and enqueue them to an rte_ring:
                 nb_enq = ioat_enqueue_packets(pkts_burst,
                     nb_rx, rx_config->ioat_ids[i]);
                 if (nb_enq > 0)
-                    rte_ioat_do_copies(rx_config->ioat_ids[i]);
+                    rte_ioat_perform_ops(rx_config->ioat_ids[i]);
             } else {
                 /* Perform packet software copy, free source packets */
                 int ret;
@@ -433,7 +433,7 @@ The packets are received in burst mode using ``rte_eth_rx_burst()``
 function. When using hardware copy mode the packets are enqueued in
 copying device's buffer using ``ioat_enqueue_packets()`` which calls
 ``rte_ioat_enqueue_copy()``. When all received packets are in the
-buffer the copy operations are started by calling ``rte_ioat_do_copies()``.
+buffer the copy operations are started by calling ``rte_ioat_perform_ops()``.
 Function ``rte_ioat_enqueue_copy()`` operates on physical address of
 the packet. Structure ``rte_mbuf`` contains only physical address to
 start of the data buffer (``buf_iova``). Thus the address is adjusted
@@ -490,7 +490,7 @@ or indirect mbufs, then multiple copy operations must be used.
 
 
 All completed copies are processed by ``ioat_tx_port()`` function. When using
-hardware copy mode the function invokes ``rte_ioat_completed_copies()``
+hardware copy mode the function invokes ``rte_ioat_completed_ops()``
 on each assigned IOAT channel to gather copied packets. If software copy
 mode is used the function dequeues copied packets from the rte_ring. Then each
 packet MAC address is changed if it was enabled. After that copies are sent
@@ -510,7 +510,7 @@ in burst mode using `` rte_eth_tx_burst()``.
         for (i = 0; i < tx_config->nb_queues; i++) {
             if (copy_mode == COPY_MODE_IOAT_NUM) {
                 /* Deque the mbufs from IOAT device. */
-                nb_dq = rte_ioat_completed_copies(
+                nb_dq = rte_ioat_completed_ops(
                     tx_config->ioat_ids[i], MAX_PKT_BURST,
                     (void *)mbufs_src, (void *)mbufs_dst);
             } else {

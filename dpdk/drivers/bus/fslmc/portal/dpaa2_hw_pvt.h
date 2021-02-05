@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ *   Copyright 2016-2020 NXP
  *
  */
 
@@ -87,6 +87,13 @@ struct eqresp_metadata {
 	struct rte_mempool *mp;
 };
 
+#define DPAA2_PORTAL_DEQUEUE_DEPTH	32
+struct dpaa2_portal_dqrr {
+	struct rte_mbuf *mbuf[DPAA2_PORTAL_DEQUEUE_DEPTH];
+	uint64_t dqrr_held;
+	uint8_t dqrr_size;
+};
+
 struct dpaa2_dpio_dev {
 	TAILQ_ENTRY(dpaa2_dpio_dev) next;
 		/**< Pointer to Next device instance */
@@ -112,6 +119,7 @@ struct dpaa2_dpio_dev {
 	struct rte_intr_handle intr_handle; /* Interrupt related info */
 	int32_t	epoll_fd; /**< File descriptor created for interrupt polling */
 	int32_t hw_id; /**< An unique ID of this DPIO device instance */
+	struct dpaa2_portal_dqrr dpaa2_held_bufs;
 };
 
 struct dpaa2_dpbp_dev {
@@ -159,13 +167,16 @@ struct dpaa2_queue {
 		struct qbman_result *cscn;
 	};
 	struct rte_event ev;
-	int32_t eventfd;	/*!< Event Fd of this queue */
 	dpaa2_queue_cb_dqrr_t *cb;
 	dpaa2_queue_cb_eqresp_free_t *cb_eqresp_free;
 	struct dpaa2_bp_info *bp_array;
 	/*to store tx_conf_queue corresponding to tx_queue*/
 	struct dpaa2_queue *tx_conf_queue;
-};
+	int32_t eventfd;	/*!< Event Fd of this queue */
+	uint16_t nb_desc;
+	uint16_t resv;
+	uint64_t offloads;
+} __rte_cache_aligned;
 
 struct swp_active_dqs {
 	struct qbman_result *global_active_dqs;
@@ -198,16 +209,29 @@ struct dpaa2_dpcon_dev {
 	uint8_t channel_index;
 };
 
-/*! Global MCP list */
-extern void *(*rte_mcp_ptr_list);
-
 /* Refer to Table 7-3 in SEC BG */
+#define QBMAN_FLE_WORD4_FMT_SBF 0x0    /* Single buffer frame */
+#define QBMAN_FLE_WORD4_FMT_SGE 0x2 /* Scatter gather frame */
+
+struct qbman_fle_word4 {
+	uint32_t bpid:14; /* Frame buffer pool ID */
+	uint32_t ivp:1; /* Invalid Pool ID. */
+	uint32_t bmt:1; /* Bypass Memory Translation */
+	uint32_t offset:12; /* Frame offset */
+	uint32_t fmt:2; /* Frame Format */
+	uint32_t sl:1; /* Short Length */
+	uint32_t f:1; /* Final bit */
+};
+
 struct qbman_fle {
 	uint32_t addr_lo;
 	uint32_t addr_hi;
 	uint32_t length;
 	/* FMT must be 00, MSB is final bit  */
-	uint32_t fin_bpid_offset;
+	union {
+		uint32_t fin_bpid_offset;
+		struct qbman_fle_word4 word4;
+	};
 	uint32_t frc;
 	uint32_t reserved[3]; /* Not used currently */
 };
@@ -328,12 +352,9 @@ struct dpaa2_memseg {
 	size_t len;
 };
 
-TAILQ_HEAD(dpaa2_memseg_list, dpaa2_memseg);
-extern struct dpaa2_memseg_list rte_dpaa2_memsegs;
-
 #ifdef RTE_LIBRTE_DPAA2_USE_PHYS_IOVA
 extern uint8_t dpaa2_virt_mode;
-static void *dpaa2_mem_ptov(phys_addr_t paddr) __attribute__((unused));
+static void *dpaa2_mem_ptov(phys_addr_t paddr) __rte_unused;
 
 static void *dpaa2_mem_ptov(phys_addr_t paddr)
 {
@@ -352,7 +373,7 @@ static void *dpaa2_mem_ptov(phys_addr_t paddr)
 	return va;
 }
 
-static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr) __attribute__((unused));
+static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr) __rte_unused;
 
 static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
 {
@@ -363,7 +384,7 @@ static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
 
 	memseg = rte_mem_virt2memseg((void *)(uintptr_t)vaddr, NULL);
 	if (memseg)
-		return memseg->phys_addr + RTE_PTR_DIFF(vaddr, memseg->addr);
+		return memseg->iova + RTE_PTR_DIFF(vaddr, memseg->addr);
 	return (size_t)NULL;
 }
 
@@ -395,8 +416,8 @@ static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
 #else	/* RTE_LIBRTE_DPAA2_USE_PHYS_IOVA */
 
 #define DPAA2_MBUF_VADDR_TO_IOVA(mbuf) ((mbuf)->buf_addr)
-#define DPAA2_VADDR_TO_IOVA(_vaddr) (_vaddr)
-#define DPAA2_IOVA_TO_VADDR(_iova) (_iova)
+#define DPAA2_VADDR_TO_IOVA(_vaddr) (phys_addr_t)(_vaddr)
+#define DPAA2_IOVA_TO_VADDR(_iova) (void *)(_iova)
 #define DPAA2_MODIFY_IOVA_TO_VADDR(_mem, _type)
 
 #endif /* RTE_LIBRTE_DPAA2_USE_PHYS_IOVA */
@@ -426,11 +447,24 @@ void set_swp_active_dqs(uint16_t dpio_index, struct qbman_result *dqs)
 {
 	rte_global_active_dqs_list[dpio_index].global_active_dqs = dqs;
 }
+
+__rte_internal
 struct dpaa2_dpbp_dev *dpaa2_alloc_dpbp_dev(void);
+
+__rte_internal
 void dpaa2_free_dpbp_dev(struct dpaa2_dpbp_dev *dpbp);
+
+__rte_internal
 int dpaa2_dpbp_supported(void);
 
+__rte_internal
 struct dpaa2_dpci_dev *rte_dpaa2_alloc_dpci_dev(void);
+
+__rte_internal
 void rte_dpaa2_free_dpci_dev(struct dpaa2_dpci_dev *dpci);
+
+/* Global MCP pointer */
+__rte_internal
+void *dpaa2_get_mcp_ptr(int portal_idx);
 
 #endif

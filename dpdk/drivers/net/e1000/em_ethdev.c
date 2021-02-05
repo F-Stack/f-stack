@@ -33,8 +33,8 @@
 
 static int eth_em_configure(struct rte_eth_dev *dev);
 static int eth_em_start(struct rte_eth_dev *dev);
-static void eth_em_stop(struct rte_eth_dev *dev);
-static void eth_em_close(struct rte_eth_dev *dev);
+static int eth_em_stop(struct rte_eth_dev *dev);
+static int eth_em_close(struct rte_eth_dev *dev);
 static int eth_em_promiscuous_enable(struct rte_eth_dev *dev);
 static int eth_em_promiscuous_disable(struct rte_eth_dev *dev);
 static int eth_em_allmulticast_enable(struct rte_eth_dev *dev);
@@ -176,10 +176,6 @@ static const struct eth_dev_ops eth_em_ops = {
 	.vlan_offload_set     = eth_em_vlan_offload_set,
 	.rx_queue_setup       = eth_em_rx_queue_setup,
 	.rx_queue_release     = eth_em_rx_queue_release,
-	.rx_queue_count       = eth_em_rx_queue_count,
-	.rx_descriptor_done   = eth_em_rx_descriptor_done,
-	.rx_descriptor_status = eth_em_rx_descriptor_status,
-	.tx_descriptor_status = eth_em_tx_descriptor_status,
 	.tx_queue_setup       = eth_em_tx_queue_setup,
 	.tx_queue_release     = eth_em_tx_queue_release,
 	.rx_queue_intr_enable = eth_em_rx_queue_intr_enable,
@@ -250,6 +246,10 @@ eth_em_dev_init(struct rte_eth_dev *eth_dev)
 		E1000_DEV_PRIVATE_TO_VFTA(eth_dev->data->dev_private);
 
 	eth_dev->dev_ops = &eth_em_ops;
+	eth_dev->rx_queue_count = eth_em_rx_queue_count;
+	eth_dev->rx_descriptor_done   = eth_em_rx_descriptor_done;
+	eth_dev->rx_descriptor_status = eth_em_rx_descriptor_status;
+	eth_dev->tx_descriptor_status = eth_em_tx_descriptor_status;
 	eth_dev->rx_pkt_burst = (eth_rx_burst_t)&eth_em_recv_pkts;
 	eth_dev->tx_pkt_burst = (eth_tx_burst_t)&eth_em_xmit_pkts;
 	eth_dev->tx_pkt_prepare = (eth_tx_prep_t)&eth_em_prep_pkts;
@@ -265,6 +265,7 @@ eth_em_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 	hw->device_id = pci_dev->id.device_id;
@@ -296,11 +297,6 @@ eth_em_dev_init(struct rte_eth_dev *eth_dev)
 	/* Copy the permanent MAC address */
 	rte_ether_addr_copy((struct rte_ether_addr *)hw->mac.addr,
 		eth_dev->data->mac_addrs);
-
-	/* Pass the information to the rte_eth_dev_close() that it should also
-	 * release the private port resources.
-	 */
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	/* initialize the vfta */
 	memset(shadow_vfta, 0, sizeof(*shadow_vfta));
@@ -538,7 +534,9 @@ eth_em_start(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	eth_em_stop(dev);
+	ret = eth_em_stop(dev);
+	if (ret != 0)
+		return ret;
 
 	e1000_power_up_phy(hw);
 
@@ -714,13 +712,15 @@ error_invalid_config:
  *  global reset on the MAC.
  *
  **********************************************************************/
-static void
+static int
 eth_em_stop(struct rte_eth_dev *dev)
 {
 	struct rte_eth_link link;
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+
+	dev->data->dev_started = 0;
 
 	eth_em_rxtx_control(dev, false);
 	em_rxq_intr_disable(hw);
@@ -756,9 +756,11 @@ eth_em_stop(struct rte_eth_dev *dev)
 		rte_free(intr_handle->intr_vec);
 		intr_handle->intr_vec = NULL;
 	}
+
+	return 0;
 }
 
-static void
+static int
 eth_em_close(struct rte_eth_dev *dev)
 {
 	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -766,22 +768,24 @@ eth_em_close(struct rte_eth_dev *dev)
 		E1000_DEV_PRIVATE(dev->data->dev_private);
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
+	int ret;
 
-	eth_em_stop(dev);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = eth_em_stop(dev);
 	adapter->stopped = 1;
 	em_dev_free_queues(dev);
 	e1000_phy_hw_reset(hw);
 	em_release_manageability(hw);
 	em_hw_control_release(hw);
 
-	dev->dev_ops = NULL;
-	dev->rx_pkt_burst = NULL;
-	dev->tx_pkt_burst = NULL;
-
 	/* disable uio intr before callback unregister */
 	rte_intr_disable(intr_handle);
 	rte_intr_callback_unregister(intr_handle,
 				     eth_em_interrupt_handler, dev);
+
+	return ret;
 }
 
 static int
@@ -1605,7 +1609,7 @@ eth_em_interrupt_action(struct rte_eth_dev *dev,
 	} else {
 		PMD_INIT_LOG(INFO, " Port %d: Link Down", dev->data->port_id);
 	}
-	PMD_INIT_LOG(DEBUG, "PCI Address: %04d:%02d:%02d:%d",
+	PMD_INIT_LOG(DEBUG, "PCI Address: " PCI_PRI_FMT,
 		     pci_dev->addr.domain, pci_dev->addr.bus,
 		     pci_dev->addr.devid, pci_dev->addr.function);
 
@@ -1630,7 +1634,7 @@ eth_em_interrupt_handler(void *param)
 
 	eth_em_interrupt_get_status(dev);
 	eth_em_interrupt_action(dev, dev->intr_handle);
-	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
 }
 
 static int

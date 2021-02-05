@@ -45,6 +45,15 @@ struct qed_dev_info {
 
 	bool smart_an;
 
+	/* MBI version */
+	uint32_t mbi_version;
+#define QED_MBI_VERSION_0_MASK          0x000000FF
+#define QED_MBI_VERSION_0_OFFSET        0
+#define QED_MBI_VERSION_1_MASK          0x0000FF00
+#define QED_MBI_VERSION_1_OFFSET        8
+#define QED_MBI_VERSION_2_MASK          0x00FF0000
+#define QED_MBI_VERSION_2_OFFSET        16
+
 	/* Out param for qede */
 	bool vxlan_enable;
 	bool gre_enable;
@@ -73,6 +82,7 @@ struct qed_eth_ops {
 	const struct qed_common_ops *common;
 	int (*fill_dev_info)(struct ecore_dev *edev,
 			     struct qed_dev_eth_info *info);
+	void (*sriov_configure)(struct ecore_dev *edev, int num_vfs);
 };
 
 struct qed_link_params {
@@ -180,6 +190,51 @@ struct qed_common_ops {
 			      uint32_t dp_module, uint8_t dp_level);
 
 	int (*send_drv_state)(struct ecore_dev *edev, bool active);
+
+	/* ###############  DEBUG *************************/
+
+	int     (*dbg_grc)(struct ecore_dev       *edev,
+			   void		 *buffer,
+			   u32		  *num_dumped_bytes);
+	int     (*dbg_grc_size)(struct ecore_dev *edev);
+
+	int     (*dbg_idle_chk)(struct ecore_dev  *edev,
+				void	    *buffer,
+				u32	     *num_dumped_bytes);
+	int     (*dbg_idle_chk_size)(struct ecore_dev *edev);
+
+	int     (*dbg_reg_fifo)(struct ecore_dev  *edev,
+				void	    *buffer,
+				u32	     *num_dumped_bytes);
+	int     (*dbg_reg_fifo_size)(struct ecore_dev *edev);
+
+	int     (*dbg_mcp_trace)(struct ecore_dev *edev,
+				 void	   *buffer,
+				 u32	    *num_dumped_bytes);
+	int     (*dbg_mcp_trace_size)(struct ecore_dev *edev);
+
+	int	(*dbg_protection_override)(struct ecore_dev *edev, void *buffer,
+					   u32 *num_dumped_bytes);
+	int     (*dbg_protection_override_size)(struct ecore_dev *edev);
+
+	int	(*dbg_igu_fifo_size)(struct ecore_dev *edev);
+	int	(*dbg_igu_fifo)(struct ecore_dev *edev, void *buffer,
+				u32 *num_dumped_bytes);
+
+	int	(*dbg_fw_asserts)(struct ecore_dev *edev, void *buffer,
+				  u32 *num_dumped_bytes);
+
+	int	(*dbg_fw_asserts_size)(struct ecore_dev *edev);
+
+	int	(*dbg_ilt)(struct ecore_dev *edev, void *buffer,
+			   u32 *num_dumped_bytes);
+
+	int	(*dbg_ilt_size)(struct ecore_dev *edev);
+
+	u8      (*dbg_get_debug_engine)(struct ecore_dev *edev);
+	void    (*dbg_set_debug_engine)(struct ecore_dev  *edev,
+					int	     engine_number);
+
 };
 
 /* Externs */

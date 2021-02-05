@@ -36,9 +36,6 @@
 struct dpaa2_bp_info *rte_dpaa2_bpid_info;
 static struct dpaa2_bp_list *h_bp_list;
 
-/* Dynamic logging identified for mempool */
-int dpaa2_logtype_mempool;
-
 static int
 rte_hw_mbuf_create_pool(struct rte_mempool *mp)
 {
@@ -69,7 +66,9 @@ rte_hw_mbuf_create_pool(struct rte_mempool *mp)
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
-			DPAA2_MEMPOOL_ERR("Failure in affining portal");
+			DPAA2_MEMPOOL_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			goto err1;
 		}
 	}
@@ -198,7 +197,9 @@ rte_dpaa2_mbuf_release(struct rte_mempool *pool __rte_unused,
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret != 0) {
-			DPAA2_MEMPOOL_ERR("Failed to allocate IO portal");
+			DPAA2_MEMPOOL_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return;
 		}
 	}
@@ -317,7 +318,9 @@ rte_dpaa2_mbuf_alloc_bulk(struct rte_mempool *pool,
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret != 0) {
-			DPAA2_MEMPOOL_ERR("Failed to allocate IO portal");
+			DPAA2_MEMPOOL_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return ret;
 		}
 	}
@@ -448,9 +451,4 @@ static const struct rte_mempool_ops dpaa2_mpool_ops = {
 
 MEMPOOL_REGISTER_OPS(dpaa2_mpool_ops);
 
-RTE_INIT(dpaa2_mempool_init_log)
-{
-	dpaa2_logtype_mempool = rte_log_register("mempool.dpaa2");
-	if (dpaa2_logtype_mempool >= 0)
-		rte_log_set_level(dpaa2_logtype_mempool, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(dpaa2_logtype_mempool, mempool.dpaa2, NOTICE);

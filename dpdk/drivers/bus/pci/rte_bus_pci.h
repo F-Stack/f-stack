@@ -51,6 +51,15 @@ TAILQ_HEAD(rte_pci_driver_list, rte_pci_driver);
 
 struct rte_devargs;
 
+enum rte_pci_kernel_driver {
+	RTE_PCI_KDRV_UNKNOWN = 0,
+	RTE_PCI_KDRV_IGB_UIO,
+	RTE_PCI_KDRV_VFIO,
+	RTE_PCI_KDRV_UIO_GENERIC,
+	RTE_PCI_KDRV_NIC_UIO,
+	RTE_PCI_KDRV_NONE,
+};
+
 /**
  * A structure describing a PCI device.
  */
@@ -64,7 +73,7 @@ struct rte_pci_device {
 	struct rte_intr_handle intr_handle; /**< Interrupt handle */
 	struct rte_pci_driver *driver;      /**< PCI driver used in probing */
 	uint16_t max_vfs;                   /**< sriov enable if not zero */
-	enum rte_kernel_driver kdrv;        /**< Kernel driver passthrough */
+	enum rte_pci_kernel_driver kdrv;    /**< Kernel driver passthrough */
 	char name[PCI_PRI_STR_SIZE+1];      /**< PCI location (ASCII) */
 	struct rte_intr_handle vfio_req_intr_handle;
 				/**< Handler of VFIO request interrupt */
@@ -223,6 +232,25 @@ void rte_pci_unmap_device(struct rte_pci_device *dev);
  *   A pointer to a file for output
  */
 void rte_pci_dump(FILE *f);
+
+/**
+ * Find device's extended PCI capability.
+ *
+ *  @param dev
+ *    A pointer to rte_pci_device structure.
+ *
+ *  @param cap
+ *    Extended capability to be found, which can be any from
+ *    RTE_PCI_EXT_CAP_ID_*, defined in librte_pci.
+ *
+ *  @return
+ *  > 0: The offset of the next matching extended capability structure
+ *       within the device's PCI configuration space.
+ *  < 0: An error in PCI config space read.
+ *  = 0: Device does not support it.
+ */
+__rte_experimental
+off_t rte_pci_find_ext_capability(struct rte_pci_device *dev, uint32_t cap);
 
 /**
  * Register a PCI driver.

@@ -8,7 +8,6 @@
  * Data plane functions for mlx4 driver.
  */
 
-#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -264,7 +263,7 @@ mlx4_txq_stamp_freed_wqe(struct mlx4_sq *sq, volatile uint32_t *start,
 	uint32_t stamp = sq->stamp;
 	int32_t size = (intptr_t)end - (intptr_t)start;
 
-	assert(start != end);
+	MLX4_ASSERT(start != end);
 	/* Hold SQ ring wrap around. */
 	if (size < 0) {
 		size = (int32_t)sq->size + size;
@@ -321,7 +320,7 @@ mlx4_txq_complete(struct txq *txq, const unsigned int elts_m,
 		if (unlikely(!!(cqe->owner_sr_opcode & MLX4_CQE_OWNER_MASK) ^
 		    !!(cons_index & cq->cqe_cnt)))
 			break;
-#ifndef NDEBUG
+#ifdef RTE_LIBRTE_MLX4_DEBUG
 		/*
 		 * Make sure we read the CQE after we read the ownership bit.
 		 */
@@ -336,7 +335,7 @@ mlx4_txq_complete(struct txq *txq, const unsigned int elts_m,
 			      cqe_err->syndrome);
 			break;
 		}
-#endif /* NDEBUG */
+#endif /* RTE_LIBRTE_MLX4_DEBUG */
 		cons_index++;
 	} while (1);
 	completed = (cons_index - cq->cons_index) * txq->elts_comp_cd_init;
@@ -488,14 +487,14 @@ mlx4_tx_burst_fill_tso_dsegs(struct rte_mbuf *buf,
 				((uintptr_t)dseg & (MLX4_TXBB_SIZE - 1))) >>
 			       MLX4_SEG_SHIFT;
 		switch (nb_segs_txbb) {
-#ifndef NDEBUG
+#ifdef RTE_LIBRTE_MLX4_DEBUG
 		default:
 			/* Should never happen. */
 			rte_panic("%p: Invalid number of SGEs(%d) for a TXBB",
 			(void *)txq, nb_segs_txbb);
 			/* rte_panic never returns. */
 			break;
-#endif /* NDEBUG */
+#endif /* RTE_LIBRTE_MLX4_DEBUG */
 		case 4:
 			/* Memory region key for this memory pool. */
 			lkey = mlx4_tx_mb2mr(txq, sbuf);
@@ -891,12 +890,12 @@ mlx4_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	volatile struct mlx4_wqe_ctrl_seg *ctrl;
 	struct txq_elt *elt;
 
-	assert(txq->elts_comp_cd != 0);
+	MLX4_ASSERT(txq->elts_comp_cd != 0);
 	if (likely(max >= txq->elts_comp_cd_init))
 		mlx4_txq_complete(txq, elts_m, sq);
 	max = elts_n - max;
-	assert(max >= 1);
-	assert(max <= elts_n);
+	MLX4_ASSERT(max >= 1);
+	MLX4_ASSERT(max <= elts_n);
 	/* Always leave one free entry in the ring. */
 	--max;
 	if (max > pkts_n)
@@ -922,7 +921,7 @@ mlx4_tx_burst(void *dpdk_txq, struct rte_mbuf **pkts, uint16_t pkts_n)
 		if (likely(elt->buf != NULL)) {
 			struct rte_mbuf *tmp = elt->buf;
 
-#ifndef NDEBUG
+#ifdef RTE_LIBRTE_MLX4_DEBUG
 			/* Poisoning. */
 			memset(&elt->buf, 0x66, sizeof(struct rte_mbuf *));
 #endif
@@ -1194,9 +1193,9 @@ mlx4_cq_poll_one(struct rxq *rxq, volatile struct mlx4_cqe **out)
 	 * ownership bit.
 	 */
 	rte_rmb();
-	assert(!(cqe->owner_sr_opcode & MLX4_CQE_IS_SEND_MASK));
-	assert((cqe->owner_sr_opcode & MLX4_CQE_OPCODE_MASK) !=
-	       MLX4_CQE_OPCODE_ERROR);
+	MLX4_ASSERT(!(cqe->owner_sr_opcode & MLX4_CQE_IS_SEND_MASK));
+	MLX4_ASSERT((cqe->owner_sr_opcode & MLX4_CQE_OPCODE_MASK) !=
+		    MLX4_CQE_OPCODE_ERROR);
 	ret = rte_be_to_cpu_32(cqe->byte_cnt);
 	++cq->cons_index;
 out:
@@ -1252,7 +1251,7 @@ mlx4_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 				break;
 			}
 			while (pkt != seg) {
-				assert(pkt != (*rxq->elts)[idx]);
+				MLX4_ASSERT(pkt != (*rxq->elts)[idx]);
 				rep = pkt->next;
 				pkt->next = NULL;
 				pkt->nb_segs = 1;
@@ -1275,7 +1274,7 @@ mlx4_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 				goto skip;
 			}
 			pkt = seg;
-			assert(len >= (rxq->crc_present << 2));
+			MLX4_ASSERT(len >= (rxq->crc_present << 2));
 			/* Update packet information. */
 			pkt->packet_type =
 				rxq_cq_to_pkt_type(cqe, rxq->l2tun_offload);

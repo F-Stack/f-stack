@@ -23,111 +23,6 @@ extern "C" {
 #endif
 
 /**
- * Feature filter types
- */
-enum rte_filter_type {
-	RTE_ETH_FILTER_NONE = 0,
-	RTE_ETH_FILTER_MACVLAN,
-	RTE_ETH_FILTER_ETHERTYPE,
-	RTE_ETH_FILTER_FLEXIBLE,
-	RTE_ETH_FILTER_SYN,
-	RTE_ETH_FILTER_NTUPLE,
-	RTE_ETH_FILTER_TUNNEL,
-	RTE_ETH_FILTER_FDIR,
-	RTE_ETH_FILTER_HASH,
-	RTE_ETH_FILTER_L2_TUNNEL,
-	RTE_ETH_FILTER_GENERIC,
-	RTE_ETH_FILTER_MAX
-};
-
-/**
- * Generic operations on filters
- */
-enum rte_filter_op {
-	/** used to check whether the type filter is supported */
-	RTE_ETH_FILTER_NOP = 0,
-	RTE_ETH_FILTER_ADD,      /**< add filter entry */
-	RTE_ETH_FILTER_UPDATE,   /**< update filter entry */
-	RTE_ETH_FILTER_DELETE,   /**< delete filter entry */
-	RTE_ETH_FILTER_FLUSH,    /**< flush all entries */
-	RTE_ETH_FILTER_GET,      /**< get filter entry */
-	RTE_ETH_FILTER_SET,      /**< configurations */
-	RTE_ETH_FILTER_INFO,     /**< retrieve information */
-	RTE_ETH_FILTER_STATS,    /**< retrieve statistics */
-	RTE_ETH_FILTER_OP_MAX
-};
-
-/**
- * MAC filter type
- */
-enum rte_mac_filter_type {
-	RTE_MAC_PERFECT_MATCH = 1, /**< exact match of MAC addr. */
-	RTE_MACVLAN_PERFECT_MATCH, /**< exact match of MAC addr and VLAN ID. */
-	RTE_MAC_HASH_MATCH, /**< hash match of MAC addr. */
-	/** hash match of MAC addr and exact match of VLAN ID. */
-	RTE_MACVLAN_HASH_MATCH,
-};
-
-/**
- * MAC filter info
- */
-struct rte_eth_mac_filter {
-	uint8_t is_vf; /**< 1 for VF, 0 for port dev */
-	uint16_t dst_id; /**< VF ID, available when is_vf is 1*/
-	enum rte_mac_filter_type filter_type; /**< MAC filter type */
-	struct rte_ether_addr mac_addr;
-};
-
-/**
- * Define all structures for Ethertype Filter type.
- */
-
-#define RTE_ETHTYPE_FLAGS_MAC    0x0001 /**< If set, compare mac */
-#define RTE_ETHTYPE_FLAGS_DROP   0x0002 /**< If set, drop packet when match */
-
-/**
- * A structure used to define the ethertype filter entry
- * to support RTE_ETH_FILTER_ETHERTYPE with RTE_ETH_FILTER_ADD,
- * RTE_ETH_FILTER_DELETE and RTE_ETH_FILTER_GET operations.
- */
-struct rte_eth_ethertype_filter {
-	struct rte_ether_addr mac_addr;   /**< Mac address to match. */
-	uint16_t ether_type;          /**< Ether type to match */
-	uint16_t flags;               /**< Flags from RTE_ETHTYPE_FLAGS_* */
-	uint16_t queue;               /**< Queue assigned to when match*/
-};
-
-#define RTE_FLEX_FILTER_MAXLEN	128	/**< bytes to use in flex filter. */
-#define RTE_FLEX_FILTER_MASK_SIZE	\
-	(RTE_ALIGN(RTE_FLEX_FILTER_MAXLEN, CHAR_BIT) / CHAR_BIT)
-					/**< mask bytes in flex filter. */
-
-/**
- *  A structure used to define the flex filter entry
- *  to support RTE_ETH_FILTER_FLEXIBLE with RTE_ETH_FILTER_ADD,
- *  RTE_ETH_FILTER_DELETE and RTE_ETH_FILTER_GET operations.
- */
-struct rte_eth_flex_filter {
-	uint16_t len;
-	uint8_t bytes[RTE_FLEX_FILTER_MAXLEN];  /**< flex bytes in big endian.*/
-	uint8_t mask[RTE_FLEX_FILTER_MASK_SIZE];    /**< if mask bit is 1b, do
-					not compare corresponding byte. */
-	uint8_t priority;
-	uint16_t queue;       /**< Queue assigned to when match. */
-};
-
-/**
- * A structure used to define the TCP syn filter entry
- * to support RTE_ETH_FILTER_SYN with RTE_ETH_FILTER_ADD,
- * RTE_ETH_FILTER_DELETE and RTE_ETH_FILTER_GET operations.
- */
-struct rte_eth_syn_filter {
-	uint8_t hig_pri;     /**< 1 - higher priority than other filters,
-				  0 - lower priority. */
-	uint16_t queue;      /**< Queue assigned to when match */
-};
-
-/**
  * Define all structures for ntuple Filter type.
  */
 
@@ -153,8 +48,7 @@ struct rte_eth_syn_filter {
 
 /**
  * A structure used to define the ntuple filter entry
- * to support RTE_ETH_FILTER_NTUPLE with RTE_ETH_FILTER_ADD,
- * RTE_ETH_FILTER_DELETE and RTE_ETH_FILTER_GET operations.
+ * to support RTE_ETH_FILTER_NTUPLE data representation.
  */
 struct rte_eth_ntuple_filter {
 	uint16_t flags;          /**< Flags from RTE_NTUPLE_FLAGS_* */
@@ -175,77 +69,6 @@ struct rte_eth_ntuple_filter {
 	uint16_t priority;       /**< seven levels (001b-111b), 111b is highest,
 				      used when more than one filter matches. */
 	uint16_t queue;          /**< Queue assigned to when match*/
-};
-
-/**
- * filter type of tunneling packet
- */
-#define ETH_TUNNEL_FILTER_OMAC  0x01 /**< filter by outer MAC addr */
-#define ETH_TUNNEL_FILTER_OIP   0x02 /**< filter by outer IP Addr */
-#define ETH_TUNNEL_FILTER_TENID 0x04 /**< filter by tenant ID */
-#define ETH_TUNNEL_FILTER_IMAC  0x08 /**< filter by inner MAC addr */
-#define ETH_TUNNEL_FILTER_IVLAN 0x10 /**< filter by inner VLAN ID */
-#define ETH_TUNNEL_FILTER_IIP   0x20 /**< filter by inner IP addr */
-
-#define RTE_TUNNEL_FILTER_IMAC_IVLAN (ETH_TUNNEL_FILTER_IMAC | \
-					ETH_TUNNEL_FILTER_IVLAN)
-#define RTE_TUNNEL_FILTER_IMAC_IVLAN_TENID (ETH_TUNNEL_FILTER_IMAC | \
-					ETH_TUNNEL_FILTER_IVLAN | \
-					ETH_TUNNEL_FILTER_TENID)
-#define RTE_TUNNEL_FILTER_IMAC_TENID (ETH_TUNNEL_FILTER_IMAC | \
-					ETH_TUNNEL_FILTER_TENID)
-#define RTE_TUNNEL_FILTER_OMAC_TENID_IMAC (ETH_TUNNEL_FILTER_OMAC | \
-					ETH_TUNNEL_FILTER_TENID | \
-					ETH_TUNNEL_FILTER_IMAC)
-
-/**
- *  Select IPv4 or IPv6 for tunnel filters.
- */
-enum rte_tunnel_iptype {
-	RTE_TUNNEL_IPTYPE_IPV4 = 0, /**< IPv4. */
-	RTE_TUNNEL_IPTYPE_IPV6,     /**< IPv6. */
-};
-
-/**
- * Tunneling Packet filter configuration.
- */
-struct rte_eth_tunnel_filter_conf {
-	struct rte_ether_addr outer_mac;    /**< Outer MAC address to match. */
-	struct rte_ether_addr inner_mac;    /**< Inner MAC address to match. */
-	uint16_t inner_vlan;            /**< Inner VLAN to match. */
-	enum rte_tunnel_iptype ip_type; /**< IP address type. */
-	/** Outer destination IP address to match if ETH_TUNNEL_FILTER_OIP
-	    is set in filter_type, or inner destination IP address to match
-	    if ETH_TUNNEL_FILTER_IIP is set in filter_type . */
-	union {
-		uint32_t ipv4_addr;     /**< IPv4 address in big endian. */
-		uint32_t ipv6_addr[4];  /**< IPv6 address in big endian. */
-	} ip_addr;
-	/** Flags from ETH_TUNNEL_FILTER_XX - see above. */
-	uint16_t filter_type;
-	enum rte_eth_tunnel_type tunnel_type; /**< Tunnel Type. */
-	uint32_t tenant_id;     /**< Tenant ID to match. VNI, GRE key... */
-	uint16_t queue_id;      /**< Queue assigned to if match. */
-};
-
-/**
- * Global eth device configuration type.
- */
-enum rte_eth_global_cfg_type {
-	RTE_ETH_GLOBAL_CFG_TYPE_UNKNOWN = 0,
-	RTE_ETH_GLOBAL_CFG_TYPE_GRE_KEY_LEN,
-	RTE_ETH_GLOBAL_CFG_TYPE_MAX,
-};
-
-/**
- * Global eth device configuration.
- */
-struct rte_eth_global_cfg {
-	enum rte_eth_global_cfg_type cfg_type; /**< Global config type. */
-	union {
-		uint8_t gre_key_len; /**< Valid GRE key length in byte. */
-		uint64_t reserved; /**< Reserve space for future use. */
-	} cfg;
 };
 
 #define RTE_ETH_FDIR_MAX_FLEXLEN 16  /**< Max length of flexbytes. */
@@ -515,9 +338,7 @@ struct rte_eth_fdir_action {
 };
 
 /**
- * A structure used to define the flow director filter entry by filter_ctrl API
- * It supports RTE_ETH_FILTER_FDIR with RTE_ETH_FILTER_ADD and
- * RTE_ETH_FILTER_DELETE operations.
+ * A structure used to define the flow director filter entry by filter_ctrl API.
  */
 struct rte_eth_fdir_filter {
 	uint32_t soft_id;
@@ -663,97 +484,6 @@ struct rte_eth_fdir_stats {
 	uint64_t f_remove;     /**< Number of failed removed filters. */
 	uint32_t guarant_cnt;  /**< Number of filters in guaranteed spaces. */
 	uint32_t best_cnt;     /**< Number of filters in best effort spaces. */
-};
-
-/**
- * Flow Director filter information types.
- */
-enum rte_eth_fdir_filter_info_type {
-	RTE_ETH_FDIR_FILTER_INFO_TYPE_UNKNOWN = 0,
-	/** Flow Director filter input set configuration */
-	RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT,
-	RTE_ETH_FDIR_FILTER_INFO_TYPE_MAX,
-};
-
-/**
- * A structure used to set FDIR filter information, to support filter type
- * of 'RTE_ETH_FILTER_FDIR' RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT operation.
- */
-struct rte_eth_fdir_filter_info {
-	enum rte_eth_fdir_filter_info_type info_type; /**< Information type */
-	/** Details of fdir filter information */
-	union {
-		/** Flow Director input set configuration per port */
-		struct rte_eth_input_set_conf input_set_conf;
-	} info;
-};
-
-/**
- * Hash filter information types.
- * - RTE_ETH_HASH_FILTER_SYM_HASH_ENA_PER_PORT is for getting/setting the
- *   information/configuration of 'symmetric hash enable' per port.
- * - RTE_ETH_HASH_FILTER_GLOBAL_CONFIG is for getting/setting the global
- *   configurations of hash filters. Those global configurations are valid
- *   for all ports of the same NIC.
- * - RTE_ETH_HASH_FILTER_INPUT_SET_SELECT is for setting the global
- *   hash input set fields
- */
-enum rte_eth_hash_filter_info_type {
-	RTE_ETH_HASH_FILTER_INFO_TYPE_UNKNOWN = 0,
-	/** Symmetric hash enable per port */
-	RTE_ETH_HASH_FILTER_SYM_HASH_ENA_PER_PORT,
-	/** Configure globally for hash filter */
-	RTE_ETH_HASH_FILTER_GLOBAL_CONFIG,
-	/** Global Hash filter input set configuration */
-	RTE_ETH_HASH_FILTER_INPUT_SET_SELECT,
-	RTE_ETH_HASH_FILTER_INFO_TYPE_MAX,
-};
-
-#define RTE_SYM_HASH_MASK_ARRAY_SIZE \
-	(RTE_ALIGN(RTE_ETH_FLOW_MAX, UINT64_BIT)/UINT64_BIT)
-/**
- * A structure used to set or get global hash function configurations which
- * include symmetric hash enable per flow type and hash function type.
- * Each bit in sym_hash_enable_mask[] indicates if the symmetric hash of the
- * corresponding flow type is enabled or not.
- * Each bit in valid_bit_mask[] indicates if the corresponding bit in
- * sym_hash_enable_mask[] is valid or not. For the configurations gotten, it
- * also means if the flow type is supported by hardware or not.
- */
-struct rte_eth_hash_global_conf {
-	enum rte_eth_hash_function hash_func; /**< Hash function type */
-	/** Bit mask for symmetric hash enable per flow type */
-	uint64_t sym_hash_enable_mask[RTE_SYM_HASH_MASK_ARRAY_SIZE];
-	/** Bit mask indicates if the corresponding bit is valid */
-	uint64_t valid_bit_mask[RTE_SYM_HASH_MASK_ARRAY_SIZE];
-};
-
-/**
- * A structure used to set or get hash filter information, to support filter
- * type of 'RTE_ETH_FILTER_HASH' and its operations.
- */
-struct rte_eth_hash_filter_info {
-	enum rte_eth_hash_filter_info_type info_type; /**< Information type */
-	/** Details of hash filter information */
-	union {
-		/** For RTE_ETH_HASH_FILTER_SYM_HASH_ENA_PER_PORT */
-		uint8_t enable;
-		/** Global configurations of hash filter */
-		struct rte_eth_hash_global_conf global_conf;
-		/** Global configurations of hash filter input set */
-		struct rte_eth_input_set_conf input_set_conf;
-	} info;
-};
-
-/**
- * l2 tunnel configuration.
- */
-struct rte_eth_l2_tunnel_conf {
-	enum rte_eth_tunnel_type l2_tunnel_type;
-	uint16_t ether_type; /* ether type in l2 header */
-	uint32_t tunnel_id; /* port tag id for e-tag */
-	uint16_t vf_id; /* VF id for tag insertion */
-	uint32_t pool; /* destination pool for tag based forwarding */
 };
 
 #ifdef __cplusplus

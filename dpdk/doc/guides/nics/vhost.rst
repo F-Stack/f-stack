@@ -54,6 +54,16 @@ The user can specify below arguments in `--vdev` option.
     It is used to enable tso support in vhost library.
     (Default: 0 (disabled))
 
+#.  ``linear-buffer``:
+
+    It is used to enable linear buffer support in vhost library.
+    (Default: 0 (disabled))
+
+#.  ``ext-buffer``:
+
+    It is used to enable external buffer support in vhost library.
+    (Default: 0 (disabled))
+
 Vhost PMD event handling
 ------------------------
 
@@ -80,7 +90,7 @@ This section demonstrates vhost PMD with testpmd DPDK sample application.
 
     .. code-block:: console
 
-        ./testpmd -l 0-3 -n 4 --vdev 'net_vhost0,iface=/tmp/sock0,queues=1' -- -i
+        ./dpdk-testpmd -l 0-3 -n 4 --vdev 'net_vhost0,iface=/tmp/sock0,queues=1' -- -i
 
     Other basic DPDK preparations like hugepage enabling here.
     Please refer to the *DPDK Getting Started Guide* for detailed instructions.

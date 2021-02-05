@@ -30,6 +30,8 @@ struct event_eth_rx_adapter_test_params {
 };
 
 static struct event_eth_rx_adapter_test_params default_params;
+static bool event_dev_created;
+static bool eth_dev_created;
 
 static inline int
 port_init_common(uint16_t port, const struct rte_eth_conf *port_conf,
@@ -156,7 +158,9 @@ init_port_rx_intr(int num_ports)
 			default_params.rx_intr_port = portid;
 			return 0;
 		}
-		rte_eth_dev_stop(portid);
+		retval = rte_eth_dev_stop(portid);
+		TEST_ASSERT(retval == 0, "Failed to stop port %u: %d\n",
+					portid, retval);
 	}
 	return 0;
 }
@@ -202,7 +206,10 @@ testsuite_setup(void)
 	if (!count) {
 		printf("Failed to find a valid event device,"
 			" testing with event_skeleton device\n");
-		rte_vdev_init("event_skeleton", NULL);
+		err = rte_vdev_init("event_skeleton", NULL);
+		TEST_ASSERT(err == 0, "Failed to create event_skeleton. err=%d",
+			    err);
+		event_dev_created = true;
 	}
 
 	struct rte_event_dev_config config = {
@@ -221,6 +228,15 @@ testsuite_setup(void)
 	err = rte_event_dev_configure(TEST_DEV_ID, &config);
 	TEST_ASSERT(err == 0, "Event device initialization failed err %d\n",
 			err);
+
+	count = rte_eth_dev_count_total();
+	if (!count) {
+		printf("Testing with net_null device\n");
+		err = rte_vdev_init("net_null", NULL);
+		TEST_ASSERT(err == 0, "Failed to create net_null. err=%d",
+			    err);
+		eth_dev_created = true;
+	}
 
 	/*
 	 * eth devices like octeontx use event device to receive packets
@@ -249,7 +265,10 @@ testsuite_setup_rx_intr(void)
 	if (!count) {
 		printf("Failed to find a valid event device,"
 			" testing with event_skeleton device\n");
-		rte_vdev_init("event_skeleton", NULL);
+		err = rte_vdev_init("event_skeleton", NULL);
+		TEST_ASSERT(err == 0, "Failed to create event_skeleton. err=%d",
+			    err);
+		event_dev_created = true;
 	}
 
 	struct rte_event_dev_config config = {
@@ -269,6 +288,15 @@ testsuite_setup_rx_intr(void)
 	err = rte_event_dev_configure(TEST_DEV_ID, &config);
 	TEST_ASSERT(err == 0, "Event device initialization failed err %d\n",
 			err);
+
+	count = rte_eth_dev_count_total();
+	if (!count) {
+		printf("Testing with net_null device\n");
+		err = rte_vdev_init("net_null", NULL);
+		TEST_ASSERT(err == 0, "Failed to create net_null. err=%d",
+			    err);
+		eth_dev_created = true;
+	}
 
 	/*
 	 * eth devices like octeontx use event device to receive packets
@@ -292,21 +320,52 @@ testsuite_setup_rx_intr(void)
 static void
 testsuite_teardown(void)
 {
+	int err;
 	uint32_t i;
 	RTE_ETH_FOREACH_DEV(i)
 		rte_eth_dev_stop(i);
 
+	if (eth_dev_created) {
+		err = rte_vdev_uninit("net_null");
+		if (err)
+			printf("Failed to delete net_null. err=%d", err);
+		eth_dev_created = false;
+	}
+
 	rte_mempool_free(default_params.mp);
+	if (event_dev_created) {
+		err = rte_vdev_uninit("event_skeleton");
+		if (err)
+			printf("Failed to delete event_skeleton. err=%d", err);
+		event_dev_created = false;
+	}
+
+	memset(&default_params, 0, sizeof(default_params));
 }
 
 static void
 testsuite_teardown_rx_intr(void)
 {
+	int err;
 	if (!default_params.rx_intr_port_inited)
 		return;
 
 	rte_eth_dev_stop(default_params.rx_intr_port);
+	if (eth_dev_created) {
+		err = rte_vdev_uninit("net_null");
+		if (err)
+			printf("Failed to delete net_null. err=%d", err);
+		eth_dev_created = false;
+	}
 	rte_mempool_free(default_params.mp);
+	if (event_dev_created) {
+		err = rte_vdev_uninit("event_skeleton");
+		if (err)
+			printf("Failed to delete event_skeleton. err=%d", err);
+		event_dev_created = false;
+	}
+
+	memset(&default_params, 0, sizeof(default_params));
 }
 
 static int
@@ -464,7 +523,7 @@ adapter_multi_eth_add_del(void)
 	int err;
 	struct rte_event ev;
 
-	uint16_t port_index, drv_id = 0;
+	uint16_t port_index, port_index_base, drv_id = 0;
 	char driver_name[50];
 
 	struct rte_event_eth_rx_adapter_queue_conf queue_config;
@@ -479,11 +538,15 @@ adapter_multi_eth_add_del(void)
 
 	/* stop eth devices for existing */
 	port_index = 0;
-	for (; port_index < rte_eth_dev_count_total(); port_index += 1)
-		rte_eth_dev_stop(port_index);
+	for (; port_index < rte_eth_dev_count_total(); port_index += 1) {
+		err = rte_eth_dev_stop(port_index);
+		TEST_ASSERT(err == 0, "Failed to stop port %u: %d\n",
+					port_index, err);
+	}
 
 	/* add the max port for rx_adapter */
 	port_index = rte_eth_dev_count_total();
+	port_index_base = port_index;
 	for (; port_index < RTE_MAX_ETHPORTS; port_index += 1) {
 		snprintf(driver_name, sizeof(driver_name), "%s%u", "net_null",
 				drv_id);
@@ -511,6 +574,17 @@ adapter_multi_eth_add_del(void)
 		err = rte_event_eth_rx_adapter_queue_del(TEST_INST_ID,
 				port_index, -1);
 		TEST_ASSERT(err == 0, "Expected 0 got %d", err);
+	}
+
+	/* delete vdev ports */
+	for (drv_id = 0, port_index = port_index_base;
+	     port_index < RTE_MAX_ETHPORTS;
+	     drv_id += 1, port_index += 1) {
+		snprintf(driver_name, sizeof(driver_name), "%s%u", "net_null",
+				drv_id);
+		err = rte_vdev_uninit(driver_name);
+		TEST_ASSERT(err == 0, "Failed driver %s got %d",
+			    driver_name, err);
 	}
 
 	return TEST_SUCCESS;

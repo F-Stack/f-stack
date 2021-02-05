@@ -20,15 +20,9 @@
 #include "ssovf_evdev.h"
 #include "timvf_evdev.h"
 
-int otx_logtype_ssovf;
 static uint8_t timvf_enable_stats;
 
-RTE_INIT(otx_ssovf_init_log)
-{
-	otx_logtype_ssovf = rte_log_register("pmd.event.octeontx");
-	if (otx_logtype_ssovf >= 0)
-		rte_log_set_level(otx_logtype_ssovf, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(otx_logtype_ssovf, pmd.event.octeontx, NOTICE);
 
 /* SSOPF Mailbox messages */
 
@@ -138,26 +132,6 @@ ssovf_mbox_timeout_ticks(uint64_t ns, uint64_t *tmo_ticks)
 }
 
 static void
-ssovf_fastpath_fns_set(struct rte_eventdev *dev)
-{
-	struct ssovf_evdev *edev = ssovf_pmd_priv(dev);
-
-	dev->enqueue       = ssows_enq;
-	dev->enqueue_burst = ssows_enq_burst;
-	dev->enqueue_new_burst = ssows_enq_new_burst;
-	dev->enqueue_forward_burst = ssows_enq_fwd_burst;
-	dev->dequeue       = ssows_deq;
-	dev->dequeue_burst = ssows_deq_burst;
-	dev->txa_enqueue = sso_event_tx_adapter_enqueue;
-	dev->txa_enqueue_same_dest = dev->txa_enqueue;
-
-	if (edev->is_timeout_deq) {
-		dev->dequeue       = ssows_deq_timeout;
-		dev->dequeue_burst = ssows_deq_timeout_burst;
-	}
-}
-
-static void
 ssovf_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *dev_info)
 {
 	struct ssovf_evdev *edev = ssovf_pmd_priv(dev);
@@ -178,7 +152,8 @@ ssovf_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *dev_info)
 					RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES|
 					RTE_EVENT_DEV_CAP_RUNTIME_PORT_LINK |
 					RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
-					RTE_EVENT_DEV_CAP_NONSEQ_MODE;
+					RTE_EVENT_DEV_CAP_NONSEQ_MODE |
+					RTE_EVENT_DEV_CAP_CARRY_FLOW_ID;
 
 }
 
@@ -244,7 +219,7 @@ ssovf_port_def_conf(struct rte_eventdev *dev, uint8_t port_id,
 	port_conf->new_event_threshold = edev->max_num_events;
 	port_conf->dequeue_depth = 1;
 	port_conf->enqueue_depth = 1;
-	port_conf->disable_implicit_release = 0;
+	port_conf->event_port_cfg = 0;
 }
 
 static void
@@ -292,6 +267,7 @@ ssovf_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	reg_off |= 1 << 16; /* Wait */
 	ws->getwork = ws->base + reg_off;
 	ws->port = port_id;
+	ws->lookup_mem = octeontx_fastpath_lookup_mem_get();
 
 	for (q = 0; q < edev->nb_event_queues; q++) {
 		ws->grps[q] = ssovf_bar(OCTEONTX_SSO_GROUP, q, 2);
@@ -409,20 +385,77 @@ ssovf_eth_rx_adapter_queue_add(const struct rte_eventdev *dev,
 		const struct rte_eth_dev *eth_dev, int32_t rx_queue_id,
 		const struct rte_event_eth_rx_adapter_queue_conf *queue_conf)
 {
-	int ret = 0;
 	const struct octeontx_nic *nic = eth_dev->data->dev_private;
+	struct ssovf_evdev *edev = ssovf_pmd_priv(dev);
+	uint16_t free_idx = UINT16_MAX;
+	struct octeontx_rxq *rxq;
 	pki_mod_qos_t pki_qos;
-	RTE_SET_USED(dev);
+	uint8_t found = false;
+	int i, ret = 0;
+	void *old_ptr;
 
 	ret = strncmp(eth_dev->data->name, "eth_octeontx", 12);
 	if (ret)
 		return -EINVAL;
 
-	if (rx_queue_id >= 0)
-		return -EINVAL;
-
 	if (queue_conf->ev.sched_type == RTE_SCHED_TYPE_PARALLEL)
 		return -ENOTSUP;
+
+	/* eth_octeontx only supports one rq. */
+	rx_queue_id = rx_queue_id == -1 ? 0 : rx_queue_id;
+	rxq = eth_dev->data->rx_queues[rx_queue_id];
+	/* Add rxq pool to list of used pools and reduce available events. */
+	for (i = 0; i < edev->rxq_pools; i++) {
+		if (edev->rxq_pool_array[i] == (uintptr_t)rxq->pool) {
+			edev->rxq_pool_rcnt[i]++;
+			found = true;
+			break;
+		} else if (free_idx == UINT16_MAX &&
+			   edev->rxq_pool_array[i] == 0) {
+			free_idx = i;
+		}
+	}
+
+	if (!found) {
+		uint16_t idx;
+
+		if (edev->available_events < rxq->pool->size) {
+			ssovf_log_err(
+				"Max available events %"PRIu32" requested events in rxq pool %"PRIu32"",
+				edev->available_events, rxq->pool->size);
+			return -ENOMEM;
+		}
+
+		if (free_idx != UINT16_MAX) {
+			idx = free_idx;
+		} else {
+			old_ptr = edev->rxq_pool_array;
+			edev->rxq_pools++;
+			edev->rxq_pool_array = rte_realloc(
+				edev->rxq_pool_array,
+				sizeof(uint64_t) * edev->rxq_pools, 0);
+			if (edev->rxq_pool_array == NULL) {
+				edev->rxq_pools--;
+				edev->rxq_pool_array = old_ptr;
+				return -ENOMEM;
+			}
+
+			old_ptr = edev->rxq_pool_rcnt;
+			edev->rxq_pool_rcnt = rte_realloc(
+				edev->rxq_pool_rcnt,
+				sizeof(uint8_t) * edev->rxq_pools, 0);
+			if (edev->rxq_pool_rcnt == NULL) {
+				edev->rxq_pools--;
+				edev->rxq_pool_rcnt = old_ptr;
+				return -ENOMEM;
+			}
+			idx = edev->rxq_pools - 1;
+		}
+
+		edev->rxq_pool_array[idx] = (uintptr_t)rxq->pool;
+		edev->rxq_pool_rcnt[idx] = 1;
+		edev->available_events -= rxq->pool->size;
+	}
 
 	memset(&pki_qos, 0, sizeof(pki_mod_qos_t));
 
@@ -447,6 +480,8 @@ ssovf_eth_rx_adapter_queue_add(const struct rte_eventdev *dev,
 		ssovf_log_err("failed to modify QOS, port=%d, q=%d",
 				nic->port_id, queue_conf->ev.queue_id);
 
+	edev->rx_offload_flags = nic->rx_offload_flags;
+	edev->tx_offload_flags = nic->tx_offload_flags;
 	return ret;
 }
 
@@ -454,10 +489,28 @@ static int
 ssovf_eth_rx_adapter_queue_del(const struct rte_eventdev *dev,
 		const struct rte_eth_dev *eth_dev, int32_t rx_queue_id)
 {
-	int ret = 0;
 	const struct octeontx_nic *nic = eth_dev->data->dev_private;
+	struct ssovf_evdev *edev = ssovf_pmd_priv(dev);
+	struct octeontx_rxq *rxq;
 	pki_del_qos_t pki_qos;
-	RTE_SET_USED(dev);
+	uint8_t found = false;
+	int i, ret = 0;
+
+	rx_queue_id = rx_queue_id == -1 ? 0 : rx_queue_id;
+	rxq = eth_dev->data->rx_queues[rx_queue_id];
+	for (i = 0; i < edev->rxq_pools; i++) {
+		if (edev->rxq_pool_array[i] == (uintptr_t)rxq->pool) {
+			found = true;
+			break;
+		}
+	}
+
+	if (found) {
+		edev->rxq_pool_rcnt[i]--;
+		if (edev->rxq_pool_rcnt[i] == 0)
+			edev->rxq_pool_array[i] = 0;
+		edev->available_events += rxq->pool->size;
+	}
 
 	ret = strncmp(eth_dev->data->name, "eth_octeontx", 12);
 	if (ret)
@@ -657,8 +710,7 @@ ssovf_close(struct rte_eventdev *dev)
 }
 
 static int
-ssovf_selftest(const char *key __rte_unused, const char *value,
-		void *opaque)
+ssovf_parsekv(const char *key __rte_unused, const char *value, void *opaque)
 {
 	int *flag = opaque;
 	*flag = !!atoi(value);
@@ -722,10 +774,8 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 	const char *name;
 	const char *params;
 	int ret;
-	int selftest = 0;
 
 	static const char *const args[] = {
-		SSOVF_SELFTEST_ARG,
 		TIMVF_ENABLE_STATS_ARG,
 		NULL
 	};
@@ -746,18 +796,9 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 				"Ignoring unsupported params supplied '%s'",
 				name);
 		} else {
-			int ret = rte_kvargs_process(kvlist,
-					SSOVF_SELFTEST_ARG,
-					ssovf_selftest, &selftest);
-			if (ret != 0) {
-				ssovf_log_err("%s: Error in selftest", name);
-				rte_kvargs_free(kvlist);
-				return ret;
-			}
-
-			ret = rte_kvargs_process(kvlist,
-					TIMVF_ENABLE_STATS_ARG,
-					ssovf_selftest, &timvf_enable_stats);
+			ret = rte_kvargs_process(kvlist, TIMVF_ENABLE_STATS_ARG,
+						 ssovf_parsekv,
+						 &timvf_enable_stats);
 			if (ret != 0) {
 				ssovf_log_err("%s: Error in timvf stats", name);
 				rte_kvargs_free(kvlist);
@@ -775,6 +816,8 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 		return -ENOMEM;
 	}
 	eventdev->dev_ops = &ssovf_ops;
+
+	timvf_set_eventdevice(eventdev);
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -803,9 +846,12 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 	edev->min_deq_timeout_ns = info.min_deq_timeout_ns;
 	edev->max_deq_timeout_ns = info.max_deq_timeout_ns;
 	edev->max_num_events =  info.max_num_events;
-	ssovf_log_dbg("min_deq_tmo=%"PRId64" max_deq_tmo=%"PRId64" max_evts=%d",
-			info.min_deq_timeout_ns, info.max_deq_timeout_ns,
-			info.max_num_events);
+	edev->available_events = info.max_num_events;
+
+	ssovf_log_dbg("min_deq_tmo=%" PRId64 " max_deq_tmo=%" PRId64
+		      " max_evts=%d",
+		      info.min_deq_timeout_ns, info.max_deq_timeout_ns,
+		      info.max_num_events);
 
 	if (!edev->max_event_ports || !edev->max_event_queues) {
 		ssovf_log_err("Not enough eventdev resource queues=%d ports=%d",
@@ -819,8 +865,6 @@ ssovf_vdev_probe(struct rte_vdev_device *vdev)
 			edev->max_event_ports);
 
 	ssovf_init_once = 1;
-	if (selftest)
-		test_eventdev_octeontx();
 	return 0;
 
 error:

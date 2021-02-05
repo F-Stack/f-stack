@@ -2,6 +2,8 @@
  * Copyright(C) 2019 Marvell International Ltd.
  */
 
+#include <rte_string_fns.h>
+
 #include "l2fwd_event.h"
 #include "l2fwd_poll.h"
 
@@ -22,7 +24,9 @@ l2fwd_event_usage(const char *prgname)
 	       "          Default mode = eventdev\n"
 	       "  --eventq-sched: Event queue schedule type, ordered, atomic or parallel.\n"
 	       "                  Default: atomic\n"
-	       "                  Valid only if --mode=eventdev\n\n",
+	       "                  Valid only if --mode=eventdev\n"
+	       "  --config: Configure forwarding port pair mapping\n"
+	       "	    Default: alternate port pairs\n\n",
 	       prgname);
 }
 
@@ -35,10 +39,7 @@ l2fwd_event_parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -99,6 +100,70 @@ l2fwd_event_parse_eventq_sched(const char *optarg,
 		rsrc->sched_type = RTE_SCHED_TYPE_PARALLEL;
 }
 
+static int
+l2fwd_parse_port_pair_config(const char *q_arg, struct l2fwd_resources *rsrc)
+{
+	enum fieldnames {
+		FLD_PORT1 = 0,
+		FLD_PORT2,
+		_NUM_FLD
+	};
+	const char *p, *p0 = q_arg;
+	uint16_t int_fld[_NUM_FLD];
+	char *str_fld[_NUM_FLD];
+	uint16_t port_pair = 0;
+	unsigned int size;
+	char s[256];
+	char *end;
+	int i;
+
+	while ((p = strchr(p0, '(')) != NULL) {
+		++p;
+		p0 = strchr(p, ')');
+		if (p0 == NULL)
+			return -1;
+
+		size = p0 - p;
+		if (size >= sizeof(s))
+			return -1;
+
+		memcpy(s, p, size);
+		if (rte_strsplit(s, sizeof(s), str_fld,
+					_NUM_FLD, ',') != _NUM_FLD)
+			return -1;
+
+		for (i = 0; i < _NUM_FLD; i++) {
+			errno = 0;
+			int_fld[i] = strtoul(str_fld[i], &end, 0);
+			if (errno != 0 || end == str_fld[i] ||
+			    int_fld[i] >= RTE_MAX_ETHPORTS)
+				return -1;
+		}
+
+		if (port_pair >= RTE_MAX_ETHPORTS / 2) {
+			printf("exceeded max number of port pair params: Current %d Max = %d\n",
+			       port_pair, RTE_MAX_ETHPORTS / 2);
+			return -1;
+		}
+
+		if ((rsrc->dst_ports[int_fld[FLD_PORT1]] != UINT32_MAX) ||
+			(rsrc->dst_ports[int_fld[FLD_PORT2]] != UINT32_MAX)) {
+			printf("Duplicate port pair (%d,%d) config\n",
+					int_fld[FLD_PORT1], int_fld[FLD_PORT2]);
+			return -1;
+		}
+
+		rsrc->dst_ports[int_fld[FLD_PORT1]] = int_fld[FLD_PORT2];
+		rsrc->dst_ports[int_fld[FLD_PORT2]] = int_fld[FLD_PORT1];
+
+		port_pair++;
+	}
+
+	rsrc->port_pairs = true;
+
+	return 0;
+}
+
 static const char short_options[] =
 	"p:"  /* portmask */
 	"q:"  /* number of queues */
@@ -109,6 +174,7 @@ static const char short_options[] =
 #define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
 #define CMD_LINE_OPT_MODE "mode"
 #define CMD_LINE_OPT_EVENTQ_SCHED "eventq-sched"
+#define CMD_LINE_OPT_PORT_PAIR_CONF "config"
 
 enum {
 	/* long options mapped to a short option */
@@ -119,12 +185,12 @@ enum {
 	CMD_LINE_OPT_MIN_NUM = 256,
 	CMD_LINE_OPT_MODE_NUM,
 	CMD_LINE_OPT_EVENTQ_SCHED_NUM,
+	CMD_LINE_OPT_PORT_PAIR_CONF_NUM,
 };
 
 /* Parse the argument given in the command line of the application */
 static int
-l2fwd_event_parse_args(int argc, char **argv,
-		struct l2fwd_resources *rsrc)
+l2fwd_event_parse_args(int argc, char **argv, struct l2fwd_resources *rsrc)
 {
 	int mac_updating = 1;
 	struct option lgopts[] = {
@@ -134,12 +200,19 @@ l2fwd_event_parse_args(int argc, char **argv,
 							CMD_LINE_OPT_MODE_NUM},
 		{ CMD_LINE_OPT_EVENTQ_SCHED, required_argument, NULL,
 						CMD_LINE_OPT_EVENTQ_SCHED_NUM},
+		{ CMD_LINE_OPT_PORT_PAIR_CONF, required_argument, NULL,
+					CMD_LINE_OPT_PORT_PAIR_CONF_NUM},
 		{NULL, 0, 0, 0}
 	};
 	int opt, ret, timer_secs;
 	char *prgname = argv[0];
-	char **argvopt;
+	uint16_t port_id;
 	int option_index;
+	char **argvopt;
+
+	/* reset l2fwd_dst_ports */
+	for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++)
+		rsrc->dst_ports[port_id] = UINT32_MAX;
 
 	argvopt = argv;
 	while ((opt = getopt_long(argc, argvopt, short_options,
@@ -189,6 +262,15 @@ l2fwd_event_parse_args(int argc, char **argv,
 			l2fwd_event_parse_eventq_sched(optarg, rsrc);
 			break;
 
+		case CMD_LINE_OPT_PORT_PAIR_CONF_NUM:
+			ret = l2fwd_parse_port_pair_config(optarg, rsrc);
+			if (ret) {
+				printf("Invalid port pair config\n");
+				l2fwd_event_usage(prgname);
+				return -1;
+			}
+			break;
+
 		/* long options */
 		case 0:
 			break;
@@ -207,6 +289,52 @@ l2fwd_event_parse_args(int argc, char **argv,
 	ret = optind-1;
 	optind = 1; /* reset getopt lib */
 	return ret;
+}
+
+/*
+ * Check port pair config with enabled port mask,
+ * and for valid port pair combinations.
+ */
+static int
+check_port_pair_config(struct l2fwd_resources *rsrc)
+{
+	uint32_t port_pair_mask = 0;
+	uint32_t portid;
+	uint16_t index;
+
+	for (index = 0; index < rte_eth_dev_count_avail(); index++) {
+		if ((rsrc->enabled_port_mask & (1 << index)) == 0 ||
+		    (port_pair_mask & (1 << index)))
+			continue;
+
+		portid = rsrc->dst_ports[index];
+		if (portid == UINT32_MAX) {
+			printf("port %u is enabled in but no valid port pair\n",
+			       index);
+			return -1;
+		}
+
+		if (!rte_eth_dev_is_valid_port(index)) {
+			printf("port %u is not valid\n", index);
+			return -1;
+		}
+
+		if (!rte_eth_dev_is_valid_port(portid)) {
+			printf("port %u is not valid\n", portid);
+			return -1;
+		}
+
+		if (port_pair_mask & (1 << portid) &&
+				rsrc->dst_ports[portid] != index) {
+			printf("port %u is used in other port pairs\n", portid);
+			return -1;
+		}
+
+		port_pair_mask |= (1 << portid);
+		port_pair_mask |= (1 << index);
+	}
+
+	return 0;
 }
 
 static int
@@ -235,6 +363,7 @@ check_all_ports_link_status(struct l2fwd_resources *rsrc,
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status...");
 	fflush(stdout);
@@ -258,14 +387,10 @@ check_all_ports_link_status(struct l2fwd_resources *rsrc,
 			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up. Speed %u Mbps - %s\n",
-						port_id, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex"));
-				else
-					printf("Port %d Link Down\n", port_id);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", port_id,
+				       link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -467,31 +592,33 @@ main(int argc, char **argv)
 		rte_panic("Invalid portmask; possible (0x%x)\n",
 			(1 << nb_ports) - 1);
 
-	/* reset l2fwd_dst_ports */
-	for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++)
-		rsrc->dst_ports[port_id] = 0;
-	last_port = 0;
+	if (!rsrc->port_pairs) {
+		last_port = 0;
+		/*
+		 * Each logical core is assigned a dedicated TX queue on each
+		 * port.
+		 */
+		RTE_ETH_FOREACH_DEV(port_id) {
+			/* skip ports that are not enabled */
+			if ((rsrc->enabled_port_mask & (1 << port_id)) == 0)
+				continue;
 
-	/*
-	 * Each logical core is assigned a dedicated TX queue on each port.
-	 */
-	RTE_ETH_FOREACH_DEV(port_id) {
-		/* skip ports that are not enabled */
-		if ((rsrc->enabled_port_mask & (1 << port_id)) == 0)
-			continue;
+			if (nb_ports_in_mask % 2) {
+				rsrc->dst_ports[port_id] = last_port;
+				rsrc->dst_ports[last_port] = port_id;
+			} else {
+				last_port = port_id;
+			}
 
-		if (nb_ports_in_mask % 2) {
-			rsrc->dst_ports[port_id] = last_port;
-			rsrc->dst_ports[last_port] = port_id;
-		} else {
-			last_port = port_id;
+			nb_ports_in_mask++;
 		}
-
-		nb_ports_in_mask++;
-	}
-	if (nb_ports_in_mask % 2) {
-		printf("Notice: odd number of ports in portmask.\n");
-		rsrc->dst_ports[last_port] = last_port;
+		if (nb_ports_in_mask % 2) {
+			printf("Notice: odd number of ports in portmask.\n");
+			rsrc->dst_ports[last_port] = last_port;
+		}
+	} else {
+		if (check_port_pair_config(rsrc) < 0)
+			rte_panic("Invalid port pair config\n");
 	}
 
 	nb_mbufs = RTE_MAX(nb_ports * (RTE_TEST_RX_DESC_DEFAULT +
@@ -540,7 +667,7 @@ main(int argc, char **argv)
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, rsrc,
-				 SKIP_MASTER);
+				 SKIP_MAIN);
 	l2fwd_event_print_stats(rsrc);
 	if (rsrc->event_mode) {
 		struct l2fwd_event_resources *evt_rsrc =
@@ -556,7 +683,10 @@ main(int argc, char **argv)
 			if ((rsrc->enabled_port_mask &
 							(1 << port_id)) == 0)
 				continue;
-			rte_eth_dev_stop(port_id);
+			ret = rte_eth_dev_stop(port_id);
+			if (ret < 0)
+				printf("rte_eth_dev_stop:err=%d, port=%u\n",
+				       ret, port_id);
 		}
 
 		rte_eal_mp_wait_lcore();
@@ -578,7 +708,10 @@ main(int argc, char **argv)
 							(1 << port_id)) == 0)
 				continue;
 			printf("Closing port %d...", port_id);
-			rte_eth_dev_stop(port_id);
+			ret = rte_eth_dev_stop(port_id);
+			if (ret < 0)
+				printf("rte_eth_dev_stop:err=%d, port=%u\n",
+				       ret, port_id);
 			rte_eth_dev_close(port_id);
 			printf(" Done\n");
 		}

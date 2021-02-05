@@ -11,14 +11,17 @@
 
 #include <rte_dev.h>
 #include <rte_lcore.h>
+#include <rte_memory.h>
+
+#include "eal_internal_cfg.h"
 
 /**
  * Structure storing internal configuration (per-lcore)
  */
 struct lcore_config {
 	pthread_t thread_id;       /**< pthread identifier */
-	int pipe_master2slave[2];  /**< communication pipe with master */
-	int pipe_slave2master[2];  /**< communication pipe with master */
+	int pipe_main2worker[2];   /**< communication pipe with main */
+	int pipe_worker2main[2];   /**< communication pipe with main */
 
 	lcore_function_t * volatile f; /**< function to call */
 	void * volatile arg;       /**< argument of function */
@@ -29,7 +32,6 @@ struct lcore_config {
 	unsigned int core_id;      /**< core number on socket for this lcore */
 	int core_index;            /**< relative index, starting from 0 */
 	uint8_t core_role;         /**< role of core eg: OFF, RTE, SERVICE */
-	uint8_t detected;          /**< true if lcore was detected */
 
 	rte_cpuset_t cpuset;       /**< cpu set which the lcore affinity to */
 };
@@ -40,7 +42,7 @@ extern struct lcore_config lcore_config[RTE_MAX_LCORE];
  * The global RTE configuration structure.
  */
 struct rte_config {
-	uint32_t master_lcore;       /**< Id of the master lcore */
+	uint32_t main_lcore;         /**< Id of the main lcore */
 	uint32_t lcore_count;        /**< Number of available logical cores. */
 	uint32_t numa_node_count;    /**< Number of detected NUMA nodes. */
 	uint32_t numa_nodes[RTE_MAX_NUMA_NODES]; /**< List of detected NUMA nodes. */
@@ -58,7 +60,7 @@ struct rte_config {
 	 * DPDK instances
 	 */
 	struct rte_mem_config *mem_config;
-} __attribute__((__packed__));
+} __rte_packed;
 
 /**
  * Get the global configuration structure.
@@ -204,6 +206,24 @@ int rte_eal_alarm_init(void);
 int rte_eal_check_module(const char *module_name);
 
 /**
+ * Memory reservation flags.
+ */
+enum eal_mem_reserve_flags {
+	/**
+	 * Reserve hugepages. May be unsupported by some platforms.
+	 */
+	EAL_RESERVE_HUGEPAGES = 1 << 0,
+	/**
+	 * Force reserving memory at the requested address.
+	 * This can be a destructive action depending on the implementation.
+	 *
+	 * @see RTE_MAP_FORCE_ADDRESS for description of possible consequences
+	 *      (although implementations are not required to use it).
+	 */
+	EAL_RESERVE_FORCE_ADDRESS = 1 << 1
+};
+
+/**
  * Get virtual area of specified size from the OS.
  *
  * This function is private to the EAL.
@@ -216,8 +236,8 @@ int rte_eal_check_module(const char *module_name);
  *   Page size on which to align requested virtual area.
  * @param flags
  *   EAL_VIRTUAL_AREA_* flags.
- * @param mmap_flags
- *   Extra flags passed directly to mmap().
+ * @param reserve_flags
+ *   Extra flags passed directly to eal_mem_reserve().
  *
  * @return
  *   Virtual area address if successful.
@@ -234,7 +254,108 @@ int rte_eal_check_module(const char *module_name);
 /**< immediately unmap reserved virtual area. */
 void *
 eal_get_virtual_area(void *requested_addr, size_t *size,
-		size_t page_sz, int flags, int mmap_flags);
+		size_t page_sz, int flags, int reserve_flags);
+
+/**
+ * Initialize a memory segment list and create its backing storage.
+ *
+ * @param msl
+ *  Memory segment list to be filled.
+ * @param name
+ *  Name for the backing storage.
+ * @param page_sz
+ *  Size of segment pages in the MSL.
+ * @param n_segs
+ *  Number of segments.
+ * @param socket_id
+ *  Socket ID. Must not be SOCKET_ID_ANY.
+ * @param heap
+ *  Mark MSL as pointing to a heap.
+ * @return
+ *  0 on success, (-1) on failure and rte_errno is set.
+ */
+int
+eal_memseg_list_init_named(struct rte_memseg_list *msl, const char *name,
+	uint64_t page_sz, int n_segs, int socket_id, bool heap);
+
+/**
+ * Initialize memory segment list and create its backing storage
+ * with a name corresponding to MSL parameters.
+ *
+ * @param type_msl_idx
+ *  Index of the MSL among other MSLs of the same socket and page size.
+ *
+ * @see eal_memseg_list_init_named for remaining parameters description.
+ */
+int
+eal_memseg_list_init(struct rte_memseg_list *msl, uint64_t page_sz,
+	int n_segs, int socket_id, int type_msl_idx, bool heap);
+
+/**
+ * Reserve VA space for a memory segment list
+ * previously initialized with eal_memseg_list_init().
+ *
+ * @param msl
+ *  Initialized memory segment list with page size defined.
+ * @param reserve_flags
+ *  Extra memory reservation flags. Can be 0 if unnecessary.
+ * @return
+ *  0 on success, (-1) on failure and rte_errno is set.
+ */
+int
+eal_memseg_list_alloc(struct rte_memseg_list *msl, int reserve_flags);
+
+/**
+ * Populate MSL, each segment is one page long.
+ *
+ * @param msl
+ *  Initialized memory segment list with page size defined.
+ * @param addr
+ *  Starting address of list segments.
+ * @param n_segs
+ *  Number of segments to populate.
+ */
+void
+eal_memseg_list_populate(struct rte_memseg_list *msl, void *addr, int n_segs);
+
+/**
+ * Distribute available memory between MSLs.
+ *
+ * @return
+ *  0 on success, (-1) on failure.
+ */
+int
+eal_dynmem_memseg_lists_init(void);
+
+/**
+ * Preallocate hugepages for dynamic allocation.
+ *
+ * @return
+ *  0 on success, (-1) on failure.
+ */
+int
+eal_dynmem_hugepage_init(void);
+
+/**
+ * Given the list of hugepage sizes and the number of pages thereof,
+ * calculate the best number of pages of each size to fulfill the request
+ * for RAM on each NUMA node.
+ *
+ * @param memory
+ *  Amounts of memory requested for each NUMA node of RTE_MAX_NUMA_NODES.
+ * @param hp_info
+ *  Information about hugepages of different size.
+ * @param hp_used
+ *  Receives information about used hugepages of each size.
+ * @param num_hp_info
+ *  Number of elements in hp_info and hp_used.
+ * @return
+ *  0 on success, (-1) on failure.
+ */
+int
+eal_dynmem_calc_num_pages_per_socket(
+		uint64_t *memory, struct hugepage_info *hp_info,
+		struct hugepage_info *hp_used, unsigned int num_hp_info);
 
 /**
  * Get cpu core_id.
@@ -274,6 +395,25 @@ uint64_t get_tsc_freq(void);
  *   Returns zero if the architecture support is not available.
  */
 uint64_t get_tsc_freq_arch(void);
+
+/**
+ * Allocate a free lcore to associate to a non-EAL thread.
+ *
+ * @return
+ *   - the id of a lcore with role ROLE_NON_EAL on success.
+ *   - RTE_MAX_LCORE if none was available or initializing was refused (see
+ *     rte_lcore_callback_register).
+ */
+unsigned int eal_lcore_non_eal_allocate(void);
+
+/**
+ * Release the lcore used by a non-EAL thread.
+ * Counterpart of eal_lcore_non_eal_allocate().
+ *
+ * @param lcore_id
+ *   The lcore with role ROLE_NON_EAL to release.
+ */
+void eal_lcore_non_eal_release(unsigned int lcore_id);
 
 /**
  * Prepare physical memory mapping
@@ -411,37 +551,191 @@ int
 dev_sigbus_handler_unregister(void);
 
 /**
- * Check if the option is registered.
- *
- * @param option
- *  The option to be parsed.
- *
- * @return
- *  0 on success
- * @return
- *  -1 on fail
- */
-int
-rte_option_parse(const char *opt);
-
-/**
- * Iterate through the registered options and execute the associated
- * callback if enabled.
- */
-void
-rte_option_init(void);
-
-/**
- * Iterate through the registered options and show the associated
- * usage string.
- */
-void
-rte_option_usage(void);
-
-/**
  * Get OS-specific EAL mapping base address.
  */
 uint64_t
 eal_get_baseaddr(void);
+
+void *
+eal_malloc_no_trace(const char *type, size_t size, unsigned int align);
+
+void eal_free_no_trace(void *addr);
+
+/** Options for eal_file_open(). */
+enum eal_open_flags {
+	/** Open file for reading. */
+	EAL_OPEN_READONLY = 0x00,
+	/** Open file for reading and writing. */
+	EAL_OPEN_READWRITE = 0x02,
+	/**
+	 * Create the file if it doesn't exist.
+	 * New files are only accessible to the owner (0600 equivalent).
+	 */
+	EAL_OPEN_CREATE = 0x04
+};
+
+/**
+ * Open or create a file.
+ *
+ * @param path
+ *  Path to the file.
+ * @param flags
+ *  A combination of eal_open_flags controlling operation and FD behavior.
+ * @return
+ *  Open file descriptor on success, (-1) on failure and rte_errno is set.
+ */
+int
+eal_file_open(const char *path, int flags);
+
+/** File locking operation. */
+enum eal_flock_op {
+	EAL_FLOCK_SHARED,    /**< Acquire a shared lock. */
+	EAL_FLOCK_EXCLUSIVE, /**< Acquire an exclusive lock. */
+	EAL_FLOCK_UNLOCK     /**< Release a previously taken lock. */
+};
+
+/** Behavior on file locking conflict. */
+enum eal_flock_mode {
+	EAL_FLOCK_WAIT,  /**< Wait until the file gets unlocked to lock it. */
+	EAL_FLOCK_RETURN /**< Return immediately if the file is locked. */
+};
+
+/**
+ * Lock or unlock the file.
+ *
+ * On failure @code rte_errno @endcode is set to the error code
+ * specified by POSIX flock(3) description.
+ *
+ * @param fd
+ *  Opened file descriptor.
+ * @param op
+ *  Operation to perform.
+ * @param mode
+ *  Behavior on conflict.
+ * @return
+ *  0 on success, (-1) on failure.
+ */
+int
+eal_file_lock(int fd, enum eal_flock_op op, enum eal_flock_mode mode);
+
+/**
+ * Truncate or extend the file to the specified size.
+ *
+ * On failure @code rte_errno @endcode is set to the error code
+ * specified by POSIX ftruncate(3) description.
+ *
+ * @param fd
+ *  Opened file descriptor.
+ * @param size
+ *  Desired file size.
+ * @return
+ *  0 on success, (-1) on failure.
+ */
+int
+eal_file_truncate(int fd, ssize_t size);
+
+/**
+ * Reserve a region of virtual memory.
+ *
+ * Use eal_mem_free() to free reserved memory.
+ *
+ * @param requested_addr
+ *  A desired reservation address which must be page-aligned.
+ *  The system might not respect it.
+ *  NULL means the address will be chosen by the system.
+ * @param size
+ *  Reservation size. Must be a multiple of system page size.
+ * @param flags
+ *  Reservation options, a combination of eal_mem_reserve_flags.
+ * @returns
+ *  Starting address of the reserved area on success, NULL on failure.
+ *  Callers must not access this memory until remapping it.
+ */
+void *
+eal_mem_reserve(void *requested_addr, size_t size, int flags);
+
+/**
+ * Free memory obtained by eal_mem_reserve() and possibly allocated.
+ *
+ * If *virt* and *size* describe a part of the reserved region,
+ * only this part of the region is freed (accurately up to the system
+ * page size). If *virt* points to allocated memory, *size* must match
+ * the one specified on allocation. The behavior is undefined
+ * if the memory pointed by *virt* is obtained from another source
+ * than listed above.
+ *
+ * @param virt
+ *  A virtual address in a region previously reserved.
+ * @param size
+ *  Number of bytes to unreserve.
+ */
+void
+eal_mem_free(void *virt, size_t size);
+
+/**
+ * Configure memory region inclusion into dumps.
+ *
+ * @param virt
+ *  Starting address of the region.
+ * @param size
+ *  Size of the region.
+ * @param dump
+ *  True to include memory into dumps, false to exclude.
+ * @return
+ *  0 on success, (-1) on failure and rte_errno is set.
+ */
+int
+eal_mem_set_dump(void *virt, size_t size, bool dump);
+
+/**
+ * Sets the runtime directory of DPDK
+ *
+ * @param run_dir
+ *   The new runtime directory path of DPDK
+ * @param size
+ *   The size of the new runtime directory path in bytes.
+ * @return
+ *   0 on success, (-1) on failure.
+ */
+int
+eal_set_runtime_dir(char *run_dir, size_t size);
+
+/**
+ * Get the internal configuration structure.
+ *
+ * @return
+ *   A pointer to the internal configuration structure.
+ */
+struct internal_config *
+eal_get_internal_configuration(void);
+
+/**
+ * Get the current value of the rte_application_usage pointer
+ *
+ * @return
+ *   Pointer to the current value of rte_application_usage .
+ */
+rte_usage_hook_t
+eal_get_application_usage_hook(void);
+
+/**
+ * Instruct primary process that a secondary process wants to attach.
+ */
+bool __rte_mp_enable(void);
+
+/**
+ * Init per-lcore info in current thread.
+ *
+ * @param lcore_id
+ *   identifier of lcore.
+ * @param cpuset
+ *   CPU affinity for this thread.
+ */
+void __rte_thread_init(unsigned int lcore_id, rte_cpuset_t *cpuset);
+
+/**
+ * Uninitialize per-lcore info for current thread.
+ */
+void __rte_thread_uninit(void);
 
 #endif /* _EAL_PRIVATE_H_ */

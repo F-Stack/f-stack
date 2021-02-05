@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018 Intel Corporation
+ * Copyright(c) 2018-2020 Intel Corporation
  */
 
 #include <rte_string_fns.h>
@@ -54,6 +54,9 @@ static const struct rte_pci_id pci_id_qat_map[] = {
 			RTE_PCI_DEVICE(0x8086, 0x6f55),
 		},
 		{
+			RTE_PCI_DEVICE(0x8086, 0x18ef),
+		},
+		{
 			RTE_PCI_DEVICE(0x8086, 0x18a1),
 		},
 		{.device_id = 0},
@@ -82,14 +85,14 @@ qat_pci_get_named_dev(const char *name)
 static uint8_t
 qat_pci_find_free_device_index(void)
 {
-	uint8_t dev_id;
+		uint8_t dev_id;
 
-	for (dev_id = 0; dev_id < RTE_PMD_QAT_MAX_PCI_DEVICES;
-			dev_id++) {
-		if (qat_pci_devs[dev_id].mz == NULL)
-			break;
-	}
-	return dev_id;
+		for (dev_id = 0; dev_id < RTE_PMD_QAT_MAX_PCI_DEVICES;
+				dev_id++) {
+			if (qat_pci_devs[dev_id].mz == NULL)
+				break;
+		}
+		return dev_id;
 }
 
 struct qat_pci_device *
@@ -121,7 +124,7 @@ static void qat_dev_parse_cmd(const char *str, struct qat_dev_cmd_param
 		if (arg) {
 			arg2 = arg + strlen(param);
 			if (*arg2 != '=') {
-			QAT_LOG(DEBUG, "parsing error '=' sign"
+				QAT_LOG(DEBUG, "parsing error '=' sign"
 						" should immediately follow %s",
 						param);
 				arg2 = NULL;
@@ -132,7 +135,6 @@ static void qat_dev_parse_cmd(const char *str, struct qat_dev_cmd_param
 		}
 		if (arg2) {
 			int iter = 0;
-
 			while (iter < 2) {
 				if (!isdigit(*(arg2 + iter)))
 					break;
@@ -190,7 +192,6 @@ qat_pci_device_allocate(struct rte_pci_device *pci_dev,
 		return qat_dev;
 	}
 
-
 	if (qat_pci_get_named_dev(name) != NULL) {
 		QAT_LOG(ERR, "QAT device with name %s already allocated!",
 				name);
@@ -225,6 +226,7 @@ qat_pci_device_allocate(struct rte_pci_device *pci_dev,
 	case 0x37c9:
 	case 0x19e3:
 	case 0x6f55:
+	case 0x18ef:
 		qat_dev->qat_dev_gen = QAT_GEN2;
 		break;
 	case 0x18a1:
@@ -240,16 +242,15 @@ qat_pci_device_allocate(struct rte_pci_device *pci_dev,
 		qat_dev_parse_cmd(devargs->drv_str, qat_dev_cmd_param);
 
 	rte_spinlock_init(&qat_dev->arb_csr_lock);
-
 	qat_nb_pci_devices++;
 
 	QAT_LOG(DEBUG, "QAT device %d found, name %s, total QATs %d",
-		qat_dev->qat_dev_id, qat_dev->name, qat_nb_pci_devices);
+			qat_dev->qat_dev_id, qat_dev->name, qat_nb_pci_devices);
 
 	return qat_dev;
 }
 
-int
+static int
 qat_pci_device_release(struct rte_pci_device *pci_dev)
 {
 	struct qat_pci_device *qat_dev;
@@ -331,6 +332,7 @@ static int qat_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	sym_ret = qat_sym_dev_create(qat_pci_dev, qat_dev_cmd_param);
 	if (sym_ret == 0) {
 		num_pmds_created++;
+
 	}
 	else
 		QAT_LOG(WARNING,

@@ -1,4 +1,4 @@
-..  SPDX-License-Identifier: BSD-3-Clause
+o..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
 Hello World Sample Application
@@ -21,7 +21,7 @@ To run the example in a linux environment:
 
 .. code-block:: console
 
-    $ ./build/helloworld -l 0-3 -n 4
+    $ ./<build_dir>/examples/dpdk-helloworld -l 0-3 -n 4
 
 Refer to *DPDK Getting Started Guide* for general information on running applications
 and the Environment Abstraction Layer (EAL) options.
@@ -62,7 +62,7 @@ The following is the definition of the function:
 .. code-block:: c
 
     static int
-    lcore_hello( attribute ((unused)) void *arg)
+    lcore_hello(__rte_unused void *arg)
     {
         unsigned lcore_id;
 
@@ -75,13 +75,13 @@ The code that launches the function on each lcore is as follows:
 
 .. code-block:: c
 
-    /* call lcore_hello() on every slave lcore */
+    /* call lcore_hello() on every worker lcore */
 
-    RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
        rte_eal_remote_launch(lcore_hello, NULL, lcore_id);
     }
 
-    /* call it on master lcore too */
+    /* call it on main lcore too */
 
     lcore_hello(NULL);
 
@@ -89,6 +89,6 @@ The following code is equivalent and simpler:
 
 .. code-block:: c
 
-    rte_eal_mp_remote_launch(lcore_hello, NULL, CALL_MASTER);
+    rte_eal_mp_remote_launch(lcore_hello, NULL, CALL_MAIN);
 
 Refer to the *DPDK API Reference* for detailed information on the rte_eal_mp_remote_launch() function.

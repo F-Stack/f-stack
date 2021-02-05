@@ -46,6 +46,51 @@ void bnxt_wait_for_device_shutdown(struct bnxt *bp)
 	} while (timeout);
 }
 
+static void
+bnxt_process_default_vnic_change(struct bnxt *bp,
+				 struct hwrm_async_event_cmpl *async_cmp)
+{
+	uint16_t vnic_state, vf_fid, vf_id;
+	struct bnxt_representor *vf_rep_bp;
+	struct rte_eth_dev *eth_dev;
+	bool vfr_found = false;
+	uint32_t event_data;
+
+	if (!BNXT_TRUFLOW_EN(bp))
+		return;
+
+	PMD_DRV_LOG(INFO, "Default vnic change async event received\n");
+	event_data = rte_le_to_cpu_32(async_cmp->event_data1);
+
+	vnic_state = (event_data & BNXT_DEFAULT_VNIC_STATE_MASK) >>
+			BNXT_DEFAULT_VNIC_STATE_SFT;
+	if (vnic_state != BNXT_DEFAULT_VNIC_ALLOC)
+		return;
+
+	if (!bp->rep_info)
+		return;
+
+	vf_fid = (event_data & BNXT_DEFAULT_VNIC_CHANGE_VF_ID_MASK) >>
+			BNXT_DEFAULT_VNIC_CHANGE_VF_ID_SFT;
+	PMD_DRV_LOG(INFO, "async event received vf_id 0x%x\n", vf_fid);
+
+	for (vf_id = 0; vf_id < BNXT_MAX_VF_REPS; vf_id++) {
+		eth_dev = bp->rep_info[vf_id].vfr_eth_dev;
+		if (!eth_dev)
+			continue;
+		vf_rep_bp = eth_dev->data->dev_private;
+		if (vf_rep_bp &&
+		    vf_rep_bp->fw_fid == vf_fid) {
+			vfr_found = true;
+			break;
+		}
+	}
+	if (!vfr_found)
+		return;
+
+	bnxt_rep_dev_start_op(eth_dev);
+}
+
 /*
  * Async event handling
  */
@@ -145,6 +190,14 @@ void bnxt_handle_async_event(struct bnxt *bp,
 
 		bnxt_schedule_fw_health_check(bp);
 		break;
+	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_DEBUG_NOTIFICATION:
+		PMD_DRV_LOG(INFO, "DNC event: evt_data1 %#x evt_data2 %#x\n",
+			    rte_le_to_cpu_32(async_cmp->event_data1),
+			    rte_le_to_cpu_32(async_cmp->event_data2));
+		break;
+	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_DEFAULT_VNIC_CHANGE:
+		bnxt_process_default_vnic_change(bp, async_cmp);
+		break;
 	default:
 		PMD_DRV_LOG(DEBUG, "handle_async_event id = 0x%x\n", event_id);
 		break;
@@ -161,14 +214,14 @@ void bnxt_handle_fwd_req(struct bnxt *bp, struct cmpl_base *cmpl)
 	uint16_t req_len;
 	int rc;
 
-	if (bp->pf.active_vfs <= 0) {
+	if (bp->pf->active_vfs <= 0) {
 		PMD_DRV_LOG(ERR, "Forwarded VF with no active VFs\n");
 		return;
 	}
 
 	/* Qualify the fwd request */
 	fw_vf_id = rte_le_to_cpu_16(fwd_cmpl->source_id);
-	vf_id = fw_vf_id - bp->pf.first_vf_id;
+	vf_id = fw_vf_id - bp->pf->first_vf_id;
 
 	req_len = (rte_le_to_cpu_16(fwd_cmpl->req_len_type) &
 		   HWRM_FWD_REQ_CMPL_REQ_LEN_MASK) >>
@@ -177,19 +230,19 @@ void bnxt_handle_fwd_req(struct bnxt *bp, struct cmpl_base *cmpl)
 		req_len = sizeof(fwreq->encap_request);
 
 	/* Locate VF's forwarded command */
-	fwd_cmd = (struct input *)bp->pf.vf_info[vf_id].req_buf;
+	fwd_cmd = (struct input *)bp->pf->vf_info[vf_id].req_buf;
 
-	if (fw_vf_id < bp->pf.first_vf_id ||
-	    fw_vf_id >= (bp->pf.first_vf_id) + bp->pf.active_vfs) {
+	if (fw_vf_id < bp->pf->first_vf_id ||
+	    fw_vf_id >= bp->pf->first_vf_id + bp->pf->active_vfs) {
 		PMD_DRV_LOG(ERR,
 		"FWD req's source_id 0x%x out of range 0x%x - 0x%x (%d %d)\n",
-			fw_vf_id, bp->pf.first_vf_id,
-			(bp->pf.first_vf_id) + bp->pf.active_vfs - 1,
-			bp->pf.first_vf_id, bp->pf.active_vfs);
+			fw_vf_id, bp->pf->first_vf_id,
+			(bp->pf->first_vf_id) + bp->pf->active_vfs - 1,
+			bp->pf->first_vf_id, bp->pf->active_vfs);
 		goto reject;
 	}
 
-	if (bnxt_rcv_msg_from_vf(bp, vf_id, fwd_cmd) == true) {
+	if (bnxt_rcv_msg_from_vf(bp, vf_id, fwd_cmd)) {
 		/*
 		 * In older firmware versions, the MAC had to be all zeros for
 		 * the VF to set it's MAC via hwrm_func_vf_cfg. Set to all
@@ -204,6 +257,7 @@ void bnxt_handle_fwd_req(struct bnxt *bp, struct cmpl_base *cmpl)
 				(const uint8_t *)"\x00\x00\x00\x00\x00");
 			}
 		}
+
 		if (fwd_cmd->req_type == HWRM_CFA_L2_SET_RX_MASK) {
 			struct hwrm_cfa_l2_set_rx_mask_input *srm =
 							(void *)fwd_cmd;
@@ -215,12 +269,13 @@ void bnxt_handle_fwd_req(struct bnxt *bp, struct cmpl_base *cmpl)
 			    HWRM_CFA_L2_SET_RX_MASK_INPUT_MASK_VLAN_NONVLAN |
 			    HWRM_CFA_L2_SET_RX_MASK_INPUT_MASK_ANYVLAN_NONVLAN);
 		}
+
 		/* Forward */
 		rc = bnxt_hwrm_exec_fwd_resp(bp, fw_vf_id, fwd_cmd, req_len);
 		if (rc) {
 			PMD_DRV_LOG(ERR,
 				"Failed to send FWD req VF 0x%x, type 0x%x.\n",
-				fw_vf_id - bp->pf.first_vf_id,
+				fw_vf_id - bp->pf->first_vf_id,
 				rte_le_to_cpu_16(fwd_cmd->req_type));
 		}
 		return;
@@ -231,7 +286,7 @@ reject:
 	if (rc) {
 		PMD_DRV_LOG(ERR,
 			"Failed to send REJECT req VF 0x%x, type 0x%x.\n",
-			fw_vf_id - bp->pf.first_vf_id,
+			fw_vf_id - bp->pf->first_vf_id,
 			rte_le_to_cpu_16(fwd_cmd->req_type));
 	}
 
@@ -256,7 +311,7 @@ int bnxt_event_hwrm_resp_handler(struct bnxt *bp, struct cmpl_base *cmp)
 		bnxt_handle_async_event(bp, cmp);
 		evt = 1;
 		break;
-	case CMPL_BASE_TYPE_HWRM_FWD_RESP:
+	case CMPL_BASE_TYPE_HWRM_FWD_REQ:
 		/* Handle HWRM forwarded responses */
 		bnxt_handle_fwd_req(bp, cmp);
 		evt = 1;

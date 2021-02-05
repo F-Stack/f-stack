@@ -1,26 +1,27 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
-# Custom EAL processing. EAL is complicated enough that it can't just
-# have a straight list of headers and source files.
-# Initially pull in common settings
-eal_inc = [global_inc]
-subdir('common') # defines common_sources, common_objs, etc.
+includes += global_inc
+subdir('include')
 
-# Now do OS/exec-env specific settings, including building kernel modules
-# The <exec-env>/eal/meson.build file should define env_sources, etc.
+subdir('common')
+
+if not is_windows
+	subdir('unix')
+endif
+
 dpdk_conf.set('RTE_EXEC_ENV_' + exec_env.to_upper(), 1)
-subdir(exec_env + '/eal')
+subdir(exec_env)
 
-allow_experimental_apis = true
-deps += 'kvargs'
+subdir(arch_subdir)
+
+deps += ['kvargs']
+if not is_windows
+	deps += ['telemetry']
+endif
 if dpdk_conf.has('RTE_USE_LIBBSD')
 	ext_deps += libbsd
 endif
 if cc.has_function('getentropy', prefix : '#include <unistd.h>')
 	cflags += '-DRTE_LIBEAL_USE_GETENTROPY'
 endif
-sources = common_sources + env_sources
-objs = common_objs + env_objs
-headers = common_headers + env_headers
-includes = eal_inc

@@ -9,7 +9,7 @@ endif
 
 if arch_subdir != 'x86' and arch_subdir != 'arm' or not dpdk_conf.get('RTE_ARCH_64')
 	build = false
-	reason = 'only supported on x86_64 and arm64'
+	reason = 'only supported on x86_64 and aarch64'
 	subdir_done()
 endif
 
@@ -27,11 +27,12 @@ sources = files('hns3_cmd.c',
 	'hns3_stats.c',
 	'hns3_mp.c')
 
-allow_experimental_apis = true
-# Experimantal APIs:
-# - rte_mp_action_register
-# - rte_mp_action_unregister
-# - rte_mp_reply
-# - rte_mp_request_sync
-
 deps += ['hash']
+
+if arch_subdir == 'arm' and dpdk_conf.get('RTE_ARCH_64')
+	sources += files('hns3_rxtx_vec.c')
+	if cc.get_define('__ARM_FEATURE_SVE', args: machine_args) != ''
+		cflags = ['-DCC_SVE_SUPPORT']
+		sources += files('hns3_rxtx_vec_sve.c')
+	endif
+endif

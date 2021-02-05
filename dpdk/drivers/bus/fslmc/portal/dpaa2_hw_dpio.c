@@ -53,14 +53,13 @@ static uint32_t io_space_count;
 /* Variable to store DPAA2 platform type */
 uint32_t dpaa2_svr_family;
 
-/* Physical core id for lcores running on dpaa2. */
-/* DPAA2 only support 1 lcore to 1 phy cpu mapping */
-static unsigned int dpaa2_cpu[RTE_MAX_LCORE];
-
 /* Variable to store DPAA2 DQRR size */
 uint8_t dpaa2_dqrr_size;
 /* Variable to store DPAA2 EQCR size */
 uint8_t dpaa2_eqcr_size;
+
+/* Variable to hold the portal_key, once created.*/
+static pthread_key_t dpaa2_portal_key;
 
 /*Stashing Macros default for LS208x*/
 static int dpaa2_core_cluster_base = 0x04;
@@ -88,6 +87,32 @@ static int dpaa2_cluster_sz = 2;
  */
 
 static int
+dpaa2_get_core_id(void)
+{
+	rte_cpuset_t cpuset;
+	int i, ret, cpu_id = -1;
+
+	ret = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t),
+		&cpuset);
+	if (ret) {
+		DPAA2_BUS_ERR("pthread_getaffinity_np() failed");
+		return ret;
+	}
+
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
+		if (CPU_ISSET(i, &cpuset)) {
+			if (cpu_id == -1)
+				cpu_id = i;
+			else
+				/* Multiple cpus are affined */
+				return -1;
+		}
+	}
+
+	return cpu_id;
+}
+
+static int
 dpaa2_core_cluster_sdest(int cpu_id)
 {
 	int x = cpu_id / dpaa2_cluster_sz;
@@ -95,9 +120,9 @@ dpaa2_core_cluster_sdest(int cpu_id)
 	return dpaa2_core_cluster_base + x;
 }
 
-#ifdef RTE_LIBRTE_PMD_DPAA2_EVENTDEV
+#ifdef RTE_EVENT_DPAA2
 static void
-dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int lcoreid)
+dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int cpu_id)
 {
 #define STRING_LEN	28
 #define COMMAND_LEN	50
@@ -130,7 +155,7 @@ dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int lcoreid)
 		return;
 	}
 
-	cpu_mask = cpu_mask << dpaa2_cpu[lcoreid];
+	cpu_mask = cpu_mask << cpu_id;
 	snprintf(command, COMMAND_LEN, "echo %X > /proc/irq/%s/smp_affinity",
 		 cpu_mask, token);
 	ret = system(command);
@@ -144,7 +169,7 @@ dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int lcoreid)
 	fclose(file);
 }
 
-static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev, int lcoreid)
+static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 {
 	struct epoll_event epoll_ev;
 	int eventfd, dpio_epoll_fd, ret;
@@ -181,36 +206,34 @@ static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev, int lcoreid)
 	}
 	dpio_dev->epoll_fd = dpio_epoll_fd;
 
-	dpaa2_affine_dpio_intr_to_respective_core(dpio_dev->hw_id, lcoreid);
+	dpaa2_affine_dpio_intr_to_respective_core(dpio_dev->hw_id, cpu_id);
 
 	return 0;
+}
+
+static void dpaa2_dpio_intr_deinit(struct dpaa2_dpio_dev *dpio_dev)
+{
+	int ret;
+
+	ret = rte_dpaa2_intr_disable(&dpio_dev->intr_handle, 0);
+	if (ret)
+		DPAA2_BUS_ERR("DPIO interrupt disable failed");
+
+	close(dpio_dev->epoll_fd);
 }
 #endif
 
 static int
-dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int lcoreid)
+dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 {
 	int sdest, ret;
-	int cpu_id;
-
-	/* Set the Stashing Destination */
-	if (lcoreid < 0) {
-		lcoreid = rte_get_master_lcore();
-		if (lcoreid < 0) {
-			DPAA2_BUS_ERR("Getting CPU Index failed");
-			return -1;
-		}
-	}
-
-	cpu_id = dpaa2_cpu[lcoreid];
 
 	/* Set the STASH Destination depending on Current CPU ID.
 	 * Valid values of SDEST are 4,5,6,7. Where,
 	 */
-
 	sdest = dpaa2_core_cluster_sdest(cpu_id);
-	DPAA2_BUS_DEBUG("Portal= %d  CPU= %u lcore id =%u SDEST= %d",
-			dpio_dev->index, cpu_id, lcoreid, sdest);
+	DPAA2_BUS_DEBUG("Portal= %d  CPU= %u SDEST= %d",
+			dpio_dev->index, cpu_id, sdest);
 
 	ret = dpio_set_stashing_destination(dpio_dev->dpio, CMD_PRI_LOW,
 					    dpio_dev->token, sdest);
@@ -219,8 +242,8 @@ dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int lcoreid)
 		return -1;
 	}
 
-#ifdef RTE_LIBRTE_PMD_DPAA2_EVENTDEV
-	if (dpaa2_dpio_intr_init(dpio_dev, lcoreid)) {
+#ifdef RTE_EVENT_DPAA2
+	if (dpaa2_dpio_intr_init(dpio_dev, cpu_id)) {
 		DPAA2_BUS_ERR("Interrupt registration failed for dpio");
 		return -1;
 	}
@@ -229,9 +252,20 @@ dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int lcoreid)
 	return 0;
 }
 
-static struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(int lcoreid)
+static void dpaa2_put_qbman_swp(struct dpaa2_dpio_dev *dpio_dev)
+{
+	if (dpio_dev) {
+#ifdef RTE_EVENT_DPAA2
+		dpaa2_dpio_intr_deinit(dpio_dev);
+#endif
+		rte_atomic16_clear(&dpio_dev->ref_count);
+	}
+}
+
+static struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(void)
 {
 	struct dpaa2_dpio_dev *dpio_dev = NULL;
+	int cpu_id;
 	int ret;
 
 	/* Get DPIO dev handle from list using index */
@@ -239,15 +273,35 @@ static struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(int lcoreid)
 		if (dpio_dev && rte_atomic16_test_and_set(&dpio_dev->ref_count))
 			break;
 	}
-	if (!dpio_dev)
+	if (!dpio_dev) {
+		DPAA2_BUS_ERR("No software portal resource left");
 		return NULL;
+	}
 
 	DPAA2_BUS_DEBUG("New Portal %p (%d) affined thread - %lu",
 			dpio_dev, dpio_dev->index, syscall(SYS_gettid));
 
-	ret = dpaa2_configure_stashing(dpio_dev, lcoreid);
-	if (ret)
-		DPAA2_BUS_ERR("dpaa2_configure_stashing failed");
+	/* Set the Stashing Destination */
+	cpu_id = dpaa2_get_core_id();
+	if (cpu_id < 0) {
+		DPAA2_BUS_WARN("Thread not affined to a single core");
+		if (dpaa2_svr_family != SVR_LX2160A)
+			qbman_swp_update(dpio_dev->sw_portal, 1);
+	} else {
+		ret = dpaa2_configure_stashing(dpio_dev, cpu_id);
+		if (ret) {
+			DPAA2_BUS_ERR("dpaa2_configure_stashing failed");
+			rte_atomic16_clear(&dpio_dev->ref_count);
+			return NULL;
+		}
+	}
+
+	ret = pthread_setspecific(dpaa2_portal_key, (void *)dpio_dev);
+	if (ret) {
+		DPAA2_BUS_ERR("pthread_setspecific failed with ret: %d", ret);
+		dpaa2_put_qbman_swp(dpio_dev);
+		return NULL;
+	}
 
 	return dpio_dev;
 }
@@ -255,133 +309,55 @@ static struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(int lcoreid)
 int
 dpaa2_affine_qbman_swp(void)
 {
-	unsigned int lcore_id = rte_lcore_id();
+	struct dpaa2_dpio_dev *dpio_dev;
 	uint64_t tid = syscall(SYS_gettid);
 
-	if (lcore_id == LCORE_ID_ANY)
-		lcore_id = rte_get_master_lcore();
-	/* if the core id is not supported */
-	else if (lcore_id >= RTE_MAX_LCORE)
-		return -1;
-
-	if (dpaa2_io_portal[lcore_id].dpio_dev) {
-		DPAA2_BUS_DP_INFO("DPAA Portal=%p (%d) is being shared"
-			    " between thread %" PRIu64 " and current "
-			    "%" PRIu64 "\n",
-			    dpaa2_io_portal[lcore_id].dpio_dev,
-			    dpaa2_io_portal[lcore_id].dpio_dev->index,
-			    dpaa2_io_portal[lcore_id].net_tid,
-			    tid);
-		RTE_PER_LCORE(_dpaa2_io).dpio_dev
-			= dpaa2_io_portal[lcore_id].dpio_dev;
-		rte_atomic16_inc(&dpaa2_io_portal
-				 [lcore_id].dpio_dev->ref_count);
-		dpaa2_io_portal[lcore_id].net_tid = tid;
-
-		DPAA2_BUS_DP_DEBUG("Old Portal=%p (%d) affined thread - "
-				   "%" PRIu64 "\n",
-			    dpaa2_io_portal[lcore_id].dpio_dev,
-			    dpaa2_io_portal[lcore_id].dpio_dev->index,
-			    tid);
-		return 0;
-	}
-
 	/* Populate the dpaa2_io_portal structure */
-	dpaa2_io_portal[lcore_id].dpio_dev = dpaa2_get_qbman_swp(lcore_id);
+	if (!RTE_PER_LCORE(_dpaa2_io).dpio_dev) {
+		dpio_dev = dpaa2_get_qbman_swp();
+		if (!dpio_dev) {
+			DPAA2_BUS_ERR("Error in software portal allocation");
+			return -1;
+		}
+		RTE_PER_LCORE(_dpaa2_io).dpio_dev = dpio_dev;
 
-	if (dpaa2_io_portal[lcore_id].dpio_dev) {
-		RTE_PER_LCORE(_dpaa2_io).dpio_dev
-			= dpaa2_io_portal[lcore_id].dpio_dev;
-		dpaa2_io_portal[lcore_id].net_tid = tid;
-
-		return 0;
-	} else {
-		return -1;
+		DPAA2_BUS_INFO(
+			"DPAA Portal=%p (%d) is affined to thread %" PRIu64,
+			dpio_dev, dpio_dev->index, tid);
 	}
+	return 0;
 }
 
 int
 dpaa2_affine_qbman_ethrx_swp(void)
 {
-	unsigned int lcore_id = rte_lcore_id();
+	struct dpaa2_dpio_dev *dpio_dev;
 	uint64_t tid = syscall(SYS_gettid);
 
-	if (lcore_id == LCORE_ID_ANY)
-		lcore_id = rte_get_master_lcore();
-	/* if the core id is not supported */
-	else if (lcore_id >= RTE_MAX_LCORE)
-		return -1;
-
-	if (dpaa2_io_portal[lcore_id].ethrx_dpio_dev) {
-		DPAA2_BUS_DP_INFO(
-			"DPAA Portal=%p (%d) is being shared between thread"
-			" %" PRIu64 " and current %" PRIu64 "\n",
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev,
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev->index,
-			dpaa2_io_portal[lcore_id].sec_tid,
-			tid);
-		RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev
-			= dpaa2_io_portal[lcore_id].ethrx_dpio_dev;
-		rte_atomic16_inc(&dpaa2_io_portal
-				 [lcore_id].ethrx_dpio_dev->ref_count);
-		dpaa2_io_portal[lcore_id].sec_tid = tid;
-
-		DPAA2_BUS_DP_DEBUG(
-			"Old Portal=%p (%d) affined thread"
-			" - %" PRIu64 "\n",
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev,
-			dpaa2_io_portal[lcore_id].ethrx_dpio_dev->index,
-			tid);
-		return 0;
-	}
-
 	/* Populate the dpaa2_io_portal structure */
-	dpaa2_io_portal[lcore_id].ethrx_dpio_dev =
-		dpaa2_get_qbman_swp(lcore_id);
+	if (!RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev) {
+		dpio_dev = dpaa2_get_qbman_swp();
+		if (!dpio_dev) {
+			DPAA2_BUS_ERR("Error in software portal allocation");
+			return -1;
+		}
+		RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev = dpio_dev;
 
-	if (dpaa2_io_portal[lcore_id].ethrx_dpio_dev) {
-		RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev
-			= dpaa2_io_portal[lcore_id].ethrx_dpio_dev;
-		dpaa2_io_portal[lcore_id].sec_tid = tid;
-		return 0;
-	} else {
-		return -1;
+		DPAA2_BUS_INFO(
+			"DPAA Portal=%p (%d) is affined for eth rx to thread %"
+			PRIu64, dpio_dev, dpio_dev->index, tid);
 	}
+	return 0;
 }
 
-/*
- * This checks for not supported lcore mappings as well as get the physical
- * cpuid for the lcore.
- * one lcore can only map to 1 cpu i.e. 1@10-14 not supported.
- * one cpu can be mapped to more than one lcores.
- */
-static int
-dpaa2_check_lcore_cpuset(void)
+static void dpaa2_portal_finish(void *arg)
 {
-	unsigned int lcore_id, i;
-	int ret = 0;
+	RTE_SET_USED(arg);
 
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++)
-		dpaa2_cpu[lcore_id] = 0xffffffff;
+	dpaa2_put_qbman_swp(RTE_PER_LCORE(_dpaa2_io).dpio_dev);
+	dpaa2_put_qbman_swp(RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev);
 
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-		for (i = 0; i < RTE_MAX_LCORE; i++) {
-			rte_cpuset_t cpuset = rte_lcore_cpuset(lcore_id);
-
-			if (CPU_ISSET(i, &cpuset)) {
-				RTE_LOG(DEBUG, EAL, "lcore id = %u cpu=%u\n",
-					lcore_id, i);
-				if (dpaa2_cpu[lcore_id] != 0xffffffff) {
-					DPAA2_BUS_ERR(
-				    "ERR:lcore map to multi-cpu not supported");
-					ret = -1;
-				} else  {
-					dpaa2_cpu[lcore_id] = i;
-				}
-			}
-		}
-	}
-	return ret;
+	pthread_setspecific(dpaa2_portal_key, NULL);
 }
 
 static int
@@ -393,7 +369,7 @@ dpaa2_create_dpio_device(int vdev_fd,
 	struct vfio_region_info reg_info = { .argsz = sizeof(reg_info)};
 	struct qbman_swp_desc p_des;
 	struct dpio_attr attr;
-	static int check_lcore_cpuset;
+	int ret;
 
 	if (obj_info->num_regions < NUM_DPIO_REGIONS) {
 		DPAA2_BUS_ERR("Not sufficient number of DPIO regions");
@@ -411,14 +387,7 @@ dpaa2_create_dpio_device(int vdev_fd,
 	dpio_dev->hw_id = object_id;
 	rte_atomic16_init(&dpio_dev->ref_count);
 	/* Using single portal  for all devices */
-	dpio_dev->mc_portal = rte_mcp_ptr_list[MC_PORTAL_INDEX];
-
-	if (!check_lcore_cpuset) {
-		check_lcore_cpuset = 1;
-
-		if (dpaa2_check_lcore_cpuset() < 0)
-			goto err;
-	}
+	dpio_dev->mc_portal = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
 
 	dpio_dev->dpio = rte_zmalloc(NULL, sizeof(struct fsl_mc_io),
 				     RTE_CACHE_LINE_SIZE);
@@ -542,6 +511,19 @@ dpaa2_create_dpio_device(int vdev_fd,
 
 	TAILQ_INSERT_TAIL(&dpio_dev_list, dpio_dev, next);
 
+	if (!dpaa2_portal_key) {
+		/* create the key, supplying a function that'll be invoked
+		 * when a portal affined thread will be deleted.
+		 */
+		ret = pthread_key_create(&dpaa2_portal_key,
+					 dpaa2_portal_finish);
+		if (ret) {
+			DPAA2_BUS_DEBUG("Unable to create pthread key (%d)",
+					ret);
+			goto err;
+		}
+	}
+
 	return 0;
 
 err:
@@ -553,6 +535,7 @@ err:
 				   dpio_dev->token);
 		}
 
+		rte_free(dpio_dev->eqresp);
 		rte_free(dpio_dev->dpio);
 	}
 

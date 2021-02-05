@@ -51,13 +51,13 @@ static size_t buf_sizes[TEST_VALUE_RANGE];
 #define TEST_BATCH_SIZE         100
 
 /* Data is aligned on this many bytes (power of 2) */
-#ifdef RTE_MACHINE_CPUFLAG_AVX512F
+#ifdef __AVX512F__
 #define ALIGNMENT_UNIT          64
-#elif defined RTE_MACHINE_CPUFLAG_AVX2
+#elif defined __AVX2__
 #define ALIGNMENT_UNIT          32
-#else /* RTE_MACHINE_CPUFLAG */
+#else
 #define ALIGNMENT_UNIT          16
-#endif /* RTE_MACHINE_CPUFLAG */
+#endif
 
 /*
  * Pointers used in performance tests. The two large buffers are for uncached
@@ -250,9 +250,8 @@ perf_test_constant_unaligned(void)
 static inline void
 perf_test_variable_aligned(void)
 {
-	unsigned n = sizeof(buf_sizes) / sizeof(buf_sizes[0]);
 	unsigned i;
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < RTE_DIM(buf_sizes); i++) {
 		ALL_PERF_TESTS_FOR_SIZE((size_t)buf_sizes[i]);
 	}
 }
@@ -261,9 +260,8 @@ perf_test_variable_aligned(void)
 static inline void
 perf_test_variable_unaligned(void)
 {
-	unsigned n = sizeof(buf_sizes) / sizeof(buf_sizes[0]);
 	unsigned i;
-	for (i = 0; i < n; i++) {
+	for (i = 0; i < RTE_DIM(buf_sizes); i++) {
 		ALL_PERF_TESTS_FOR_SIZE_UNALIGNED((size_t)buf_sizes[i]);
 	}
 }

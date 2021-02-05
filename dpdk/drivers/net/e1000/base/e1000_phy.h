@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001 - 2015 Intel Corporation
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _E1000_PHY_H_
@@ -90,6 +90,11 @@ s32 e1000_read_phy_reg_mphy(struct e1000_hw *hw, u32 address, u32 *data);
 s32 e1000_write_phy_reg_mphy(struct e1000_hw *hw, u32 address, u32 data,
 			     bool line_override);
 bool e1000_is_mphy_ready(struct e1000_hw *hw);
+
+s32 e1000_read_xmdio_reg(struct e1000_hw *hw, u16 addr, u8 dev_addr,
+			 u16 *data);
+s32 e1000_write_xmdio_reg(struct e1000_hw *hw, u16 addr, u8 dev_addr,
+			  u16 data);
 
 #define E1000_MAX_PHY_ADDR		8
 

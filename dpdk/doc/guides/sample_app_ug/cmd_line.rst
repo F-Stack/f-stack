@@ -52,7 +52,7 @@ To run the application in linux environment, issue the following command:
 
 .. code-block:: console
 
-    $ ./build/cmdline -l 0-3 -n 4
+    $ ./<build_dir>/examples/dpdk-cmdline -l 0-3 -n 4
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications
 and the Environment Abstraction Layer (EAL) options.
@@ -128,7 +128,7 @@ For example, the cmd_obj_del_show command is defined as shown below:
         struct object *obj;
     };
 
-    static void cmd_obj_del_show_parsed(void *parsed_result, struct cmdline *cl, attribute ((unused)) void *data)
+    static void cmd_obj_del_show_parsed(void *parsed_result, struct cmdline *cl, __rte_unused void *data)
     {
        /* ... */
     }

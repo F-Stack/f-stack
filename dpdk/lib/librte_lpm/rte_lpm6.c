@@ -854,8 +854,8 @@ simulate_add(struct rte_lpm6 *lpm, const uint8_t *masked_ip, uint8_t depth)
  * Add a route
  */
 int
-rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
-	uint32_t next_hop)
+rte_lpm6_add(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth,
+	     uint32_t next_hop)
 {
 	struct rte_lpm6_tbl_entry *tbl;
 	struct rte_lpm6_tbl_entry *tbl_next = NULL;
@@ -913,7 +913,7 @@ rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
  */
 static inline int
 lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
-		const struct rte_lpm6_tbl_entry **tbl_next, uint8_t *ip,
+		const struct rte_lpm6_tbl_entry **tbl_next, const uint8_t *ip,
 		uint8_t first_byte, uint32_t *next_hop)
 {
 	uint32_t tbl8_index, tbl_entry;
@@ -943,7 +943,7 @@ lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
  * Looks up an IP
  */
 int
-rte_lpm6_lookup(const struct rte_lpm6 *lpm, uint8_t *ip,
+rte_lpm6_lookup(const struct rte_lpm6 *lpm, const uint8_t *ip,
 		uint32_t *next_hop)
 {
 	const struct rte_lpm6_tbl_entry *tbl;
@@ -1020,8 +1020,8 @@ rte_lpm6_lookup_bulk_func(const struct rte_lpm6 *lpm,
  * Look for a rule in the high-level rules table
  */
 int
-rte_lpm6_is_rule_present(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
-		uint32_t *next_hop)
+rte_lpm6_is_rule_present(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth,
+			 uint32_t *next_hop)
 {
 	uint8_t masked_ip[RTE_LPM6_IPV6_ADDR_SIZE];
 
@@ -1291,7 +1291,7 @@ remove_tbl(struct rte_lpm6 *lpm, struct rte_lpm_tbl8_hdr *tbl_hdr,
  * Deletes a rule
  */
 int
-rte_lpm6_delete(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth)
+rte_lpm6_delete(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth)
 {
 	uint8_t masked_ip[RTE_LPM6_IPV6_ADDR_SIZE];
 	struct rte_lpm6_rule lsp_rule_obj;

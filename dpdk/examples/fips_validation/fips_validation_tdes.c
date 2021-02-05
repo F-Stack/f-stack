@@ -94,7 +94,7 @@ struct fips_test_callback tdes_writeback_callbacks[] = {
 
 static int
 parse_tdes_interim(const char *key, char *text,
-		__attribute__((__unused__)) struct fips_val *val)
+		__rte_unused struct fips_val *val)
 {
 	if (strstr(key, ENC_STR))
 		info.op = FIPS_TEST_ENC_AUTH_GEN;
