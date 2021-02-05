@@ -35,27 +35,13 @@ FF_INET6=1
 
 include ${TOPDIR}/mk/kern.pre.mk
 
-ifeq ($(FF_DPDK),)
-ifeq (${MACHINE_CPUARCH},aarch64)
-    FF_DPDK=${TOPDIR}/dpdk/build
-else
-    FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
-endif
+ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+$(error "no installation of DPDK found, maybe you shuld export environment variable `PKG_CONFIG_PATH`")
 endif
 
-ifdef RTE_SDK
-ifeq (${MACHINE_CPUARCH},aarch64) 
-    FF_DPDK=${RTE_SDK}/build
-else
-    FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
-endif
-endif
+PKGCONF ?= pkg-config
 
-DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror -include ${FF_DPDK}/include/rte_config.h
-DPDK_CFLAGS+= -march=native -DRTE_MACHINE_CPUFLAG_SSE -DRTE_MACHINE_CPUFLAG_SSE2 -DRTE_MACHINE_CPUFLAG_SSE3
-DPDK_CFLAGS+= -DRTE_MACHINE_CPUFLAG_SSSE3 -DRTE_MACHINE_CPUFLAG_SSE4_1 -DRTE_MACHINE_CPUFLAG_SSE4_2
-DPDK_CFLAGS+= -DRTE_COMPILE_TIME_CPUFLAGS=RTE_CPUFLAG_SSE,RTE_CPUFLAG_SSE2,RTE_CPUFLAG_SSE3,RTE_CPUFLAG_SSSE3,RTE_CPUFLAG_SSE4_1,RTE_CPUFLAG_SSE4_2
-DPDK_CFLAGS+= -I${FF_DPDK}/include
+DPDK_CFLAGS= -Wall -Wno-deprecated-declarations -Werror $(shell $(PKGCONF) --cflags libdpdk)
 
 KERNPREINCLUDES:= ${INCLUDES}
 INCLUDES= -I${OVERRIDE_INCLUDES_ROOT} ${KERNPREINCLUDES}

@@ -2,6 +2,18 @@
 
 Compile ff tools
 
+    # Upgrade pkg-config while version < 0.28
+    #wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+    #tar xzvf pkg-config-0.29.2.tar.gz
+    #cd pkg-config-0.29.2
+    #./configure --with-internal-glib
+    #make
+    #make install
+    #mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+    #ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
+
+    export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
+
     make
 
 Install ff tools, all ff tools will be installed to `/usr/local/bin/f-stack/`, and some soft link will be created in `/usr/local/bin`, such as `ff_top`,`ff_traffic`, etc.
