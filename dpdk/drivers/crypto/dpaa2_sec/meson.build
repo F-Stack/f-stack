@@ -3,18 +3,11 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
 
 deps += ['security', 'mempool_dpaa2']
 sources = files('dpaa2_sec_dpseci.c',
 		'mc/dpseci.c')
-
-allow_experimental_apis = true
-
-# FIXME: temporary solution for Bugzilla 469
-if (toolchain == 'gcc' and cc.version().version_compare('>=10.0.0'))
-	cflags += '-fcommon'
-endif
 
 includes += include_directories('mc', '../../common/dpaax', '../../common/dpaax/caamflib')

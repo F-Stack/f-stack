@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001 - 2015 Intel Corporation
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _E1000_API_H_
@@ -15,7 +15,6 @@ extern void e1000_init_function_pointers_82541(struct e1000_hw *hw);
 extern void e1000_init_function_pointers_80003es2lan(struct e1000_hw *hw);
 extern void e1000_init_function_pointers_ich8lan(struct e1000_hw *hw);
 extern void e1000_init_function_pointers_82575(struct e1000_hw *hw);
-extern void e1000_rx_fifo_flush_82575(struct e1000_hw *hw);
 extern void e1000_init_function_pointers_vf(struct e1000_hw *hw);
 extern void e1000_power_up_fiber_serdes_link(struct e1000_hw *hw);
 extern void e1000_shutdown_fiber_serdes_link(struct e1000_hw *hw);

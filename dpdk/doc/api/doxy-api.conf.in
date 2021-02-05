@@ -7,19 +7,25 @@ USE_MDFILE_AS_MAINPAGE  = @TOPDIR@/doc/api/doxy-api-index.md
 INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/drivers/bus/vdev \
                           @TOPDIR@/drivers/crypto/scheduler \
+                          @TOPDIR@/drivers/event/dlb \
+                          @TOPDIR@/drivers/event/dlb2 \
                           @TOPDIR@/drivers/mempool/dpaa2 \
+                          @TOPDIR@/drivers/net/ark \
                           @TOPDIR@/drivers/net/bnxt \
                           @TOPDIR@/drivers/net/bonding \
                           @TOPDIR@/drivers/net/dpaa \
                           @TOPDIR@/drivers/net/dpaa2 \
                           @TOPDIR@/drivers/net/i40e \
+                          @TOPDIR@/drivers/net/iavf \
                           @TOPDIR@/drivers/net/ice \
                           @TOPDIR@/drivers/net/ixgbe \
+                          @TOPDIR@/drivers/net/mlx5 \
                           @TOPDIR@/drivers/net/softnic \
                           @TOPDIR@/drivers/raw/dpaa2_cmdif \
                           @TOPDIR@/drivers/raw/dpaa2_qdma \
-                          @TOPDIR@/lib/librte_eal/common/include \
-                          @TOPDIR@/lib/librte_eal/common/include/generic \
+                          @TOPDIR@/drivers/raw/ioat \
+                          @TOPDIR@/lib/librte_eal/include \
+                          @TOPDIR@/lib/librte_eal/include/generic \
                           @TOPDIR@/lib/librte_acl \
                           @TOPDIR@/lib/librte_bbdev \
                           @TOPDIR@/lib/librte_bitratestats \
@@ -34,6 +40,7 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/librte_eventdev \
                           @TOPDIR@/lib/librte_fib \
                           @TOPDIR@/lib/librte_flow_classify \
+                          @TOPDIR@/lib/librte_graph \
                           @TOPDIR@/lib/librte_gro \
                           @TOPDIR@/lib/librte_gso \
                           @TOPDIR@/lib/librte_hash \
@@ -49,6 +56,7 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/librte_mempool \
                           @TOPDIR@/lib/librte_meter \
                           @TOPDIR@/lib/librte_metrics \
+                          @TOPDIR@/lib/librte_node \
                           @TOPDIR@/lib/librte_net \
                           @TOPDIR@/lib/librte_pci \
                           @TOPDIR@/lib/librte_pdump \
@@ -57,6 +65,7 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/librte_power \
                           @TOPDIR@/lib/librte_rawdev \
                           @TOPDIR@/lib/librte_rcu \
+                          @TOPDIR@/lib/librte_regexdev \
                           @TOPDIR@/lib/librte_reorder \
                           @TOPDIR@/lib/librte_rib \
                           @TOPDIR@/lib/librte_ring \
@@ -105,3 +114,5 @@ GENERATE_LATEX          = NO
 GENERATE_MAN            = NO
 
 HAVE_DOT                = NO
+
+WARN_AS_ERROR           = @WARN_AS_ERROR@

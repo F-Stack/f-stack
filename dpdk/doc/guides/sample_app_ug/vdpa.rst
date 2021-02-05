@@ -29,7 +29,7 @@ Start the vdpa example
 
 .. code-block:: console
 
-        ./vdpa [EAL options]  -- [--client] [--interactive|-i] or [--iface SOCKET_PATH]
+        ./dpdk-vdpa [EAL options]  -- [--client] [--interactive|-i] or [--iface SOCKET_PATH]
 
 where
 
@@ -44,14 +44,15 @@ where
   1. help: show help message
   2. list: list all available vdpa devices
   3. create: create a new vdpa port with socket file and vdpa device address
-  4. quit: unregister vhost driver and exit the application
+  4. stats: show statistics of virtio queues
+  5. quit: unregister vhost driver and exit the application
 
 Take IFCVF driver for example:
 
 .. code-block:: console
 
-        ./vdpa -c 0x2 -n 4 --socket-mem 1024,1024 \
-                -w 0000:06:00.3,vdpa=1 -w 0000:06:00.4,vdpa=1 \
+        ./dpdk-vdpa -c 0x2 -n 4 --socket-mem 1024,1024 \
+                -a 0000:06:00.3,vdpa=1 -a 0000:06:00.4,vdpa=1 \
                 -- --interactive
 
 .. note::

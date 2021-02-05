@@ -5,7 +5,7 @@
 HINIC Poll Mode Driver
 ======================
 
-The hinic PMD (librte_pmd_hinic) provides poll mode driver support
+The hinic PMD (**librte_net_hinic**) provides poll mode driver support
 for 25Gbps Huawei Intelligent PCIE Network Adapters based on the
 Huawei Ethernet Controller Hi1822.
 
@@ -46,15 +46,6 @@ Prerequisites
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-
-- ``CONFIG_RTE_LIBRTE_HINIC_PMD`` (default ``y``)
 
 Driver compilation and testing
 ------------------------------

@@ -14,8 +14,16 @@ which are passed to compress device with compression operations.
 Then, the output buffers are fed into the decompression stage, and the resulting
 data is compared against the original data (verification phase). After that,
 a number of iterations are performed, compressing first and decompressing later,
-to check the throughput rate
-(showing cycles/iteration, cycles/Byte and Gbps, for compression and decompression).
+to check the throughput rate (showing cycles/iteration, cycles/Byte and Gbps,
+for compression and decompression).
+Another option: ``pmd-cyclecount``, gives the user the opportunity to measure
+the number of cycles per operation for the 3 phases: setup, enqueue_burst and
+dequeue_burst, for both compression and decompression. An optional delay can be
+inserted between enqueue and dequeue so no cycles are wasted in retries while
+waiting for a hardware device to finish. Although artificial, this allows
+to measure the minimum offload cost which could be achieved in a perfectly
+tuned system. Comparing the results of the two tests gives information about
+the trade-off between throughput and cycle-count.
 
 .. Note::
 
@@ -45,9 +53,9 @@ See the DPDK Getting Started Guides for more information on these options.
 	One lcore is needed for process admin, tests are run on all other cores.
 	To run tests on two lcores, three lcores must be passed to the tool.
 
-*   ``-w <PCI>``
+*   ``-a <PCI>``
 
-	Add a PCI device in white list.
+	Add a PCI device in allow list.
 
 *   ``--vdev <driver><id>``
 
@@ -56,7 +64,7 @@ See the DPDK Getting Started Guides for more information on these options.
 Application Options
 ~~~~~~~~~~~~~~~~~~~
 
- ``--ptest [benchmark/verify]``: set test type (default: benchmark)
+ ``--ptest [throughput/verify/pmd-cyclecount]``: set test type (default: throughput)
 
  ``--driver-name NAME``: compress driver to use
 
@@ -84,19 +92,9 @@ Application Options
 
  ``--external-mbufs``: allocate and use memzones as external buffers instead of keeping the data directly in mbuf areas
 
+ ``--cc-delay-us N``: delay between enqueue and dequeue operations in microseconds, valid only for the cyclecount test (default: 500 us)
+
  ``-h``: prints this help
-
-
-Compiling the Tool
-------------------
-
-**Step 1: PMD setting**
-
-The ``dpdk-test-compress-perf`` tool depends on compression device drivers PMD which
-can be disabled by default in the build configuration file ``common_base``.
-The compression device drivers PMD which should be tested can be enabled by setting e.g.::
-
-   CONFIG_RTE_LIBRTE_PMD_ISAL=y
 
 
 Running the Tool
@@ -106,5 +104,5 @@ The tool has a number of command line options. Here is the sample command line:
 
 .. code-block:: console
 
-   ./build/app/dpdk-test-compress-perf  -l 4 -- --driver-name compress_qat --input-file test.txt --seg-sz 8192
+   ./<build_dir>/app/dpdk-test-compress-perf  -l 4 -- --driver-name compress_qat --input-file test.txt --seg-sz 8192
     --compress-level 1:1:9 --num-iter 10 --extended-input-sz 1048576  --max-num-sgl-segs 16 --huffman-enc fixed

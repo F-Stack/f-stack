@@ -33,9 +33,9 @@ Lcore-related options
     At a given instance only one core option ``--lcores``, ``-l`` or ``-c`` can
     be used.
 
-*   ``--master-lcore <core ID>``
+*   ``--main-lcore <core ID>``
 
-    Core ID that is used as master.
+    Core ID that is used as main.
 
 *   ``-s <service core mask>``
 
@@ -44,20 +44,20 @@ Lcore-related options
 Device-related options
 ~~~~~~~~~~~~~~~~~~~~~~
 
-*   ``-b, --pci-blacklist <[domain:]bus:devid.func>``
+*   ``-b, --block <[domain:]bus:devid.func>``
 
-    Blacklist a PCI device to prevent EAL from using it. Multiple -b options are
-    allowed.
-
-.. Note::
-    PCI blacklist cannot be used with ``-w`` option.
-
-*   ``-w, --pci-whitelist <[domain:]bus:devid.func>``
-
-    Add a PCI device in white list.
+    Skip probing a PCI device to prevent EAL from using it.
+    Multiple -b options are allowed.
 
 .. Note::
-    PCI whitelist cannot be used with ``-b`` option.
+    Block list cannot be used with the allow list ``-a`` option.
+
+*   ``-a, --allow <[domain:]bus:devid.func>``
+
+    Add a PCI device in to the list of devices to probe.
+
+.. Note::
+    Allow list cannot be used with the block list ``-b`` option.
 
 *   ``--vdev <device arguments>``
 
@@ -136,6 +136,58 @@ Debugging options
 
     Can be specified multiple times.
 
+*   ``--trace=<regex-match>``
+
+    Enable trace based on regular expression trace name. By default, the trace is
+    disabled. User must specify this option to enable trace.
+    For example:
+
+    Global trace configuration for EAL only::
+
+        --trace=eal
+
+    Global trace configuration for ALL the components::
+
+        --trace=.*
+
+    Can be specified multiple times up to 32 times.
+
+*   ``--trace-dir=<directory path>``
+
+    Specify trace directory for trace output. For example:
+
+    Configuring ``/tmp/`` as a trace output directory::
+
+        --trace-dir=/tmp
+
+    By default, trace output will created at ``home`` directory and parameter
+    must be specified once only.
+
+*   ``--trace-bufsz=<val>``
+
+    Specify maximum size of allocated memory for trace output for each thread.
+    Valid unit can be either ``B`` or ``K`` or ``M`` for ``Bytes``, ``KBytes``
+    and ``MBytes`` respectively. For example:
+
+    Configuring ``2MB`` as a maximum size for trace output file::
+
+        --trace-bufsz=2M
+
+    By default, size of trace output file is ``1MB`` and parameter
+    must be specified once only.
+
+*   ``--trace-mode=<o[verwrite] | d[iscard] >``
+
+    Specify the mode of update of trace output file. Either update on a file
+    can be wrapped or discarded when file size reaches its maximum limit.
+    For example:
+
+    To ``discard`` update on trace output file::
+
+        --trace-mode=d or --trace-mode=discard
+
+    Default mode is ``overwrite`` and parameter must be specified once only.
+
 Other options
 ~~~~~~~~~~~~~
 
@@ -150,3 +202,27 @@ Other options
 *   ``mbuf-pool-ops-name``:
 
     Pool ops name for mbuf to use.
+
+*    ``--telemetry``:
+
+    Enable telemetry (enabled by default).
+
+*    ``--no-telemetry``:
+
+    Disable telemetry.
+
+*    ``--force-max-simd-bitwidth=<val>``:
+
+    Specify the maximum SIMD bitwidth size to handle. This limits which vector paths,
+    if any, are taken, as any paths taken must use a bitwidth below the max bitwidth limit.
+    For example, to allow all SIMD bitwidths up to and including AVX-512::
+
+        --force-max-simd-bitwidth=512
+
+    The following example shows limiting the bitwidth to 64-bits to disable all vector code::
+
+        --force-max-simd-bitwidth=64
+
+    To disable use of max SIMD bitwidth limit::
+
+        --force-max-simd-bitwidth=0

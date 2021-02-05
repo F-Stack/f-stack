@@ -15,7 +15,7 @@
 #include "ipsec.h"
 #include "parser.h"
 
-#define MAX_ACL_RULE_NUM	1024
+#define INIT_ACL_RULE_NUM	128
 
 #define IPV4_DST_FROM_SP(acr) \
 		(rte_cpu_to_be_32((acr).field[DST_FIELD_IPV4].value.u32))
@@ -97,11 +97,39 @@ static struct rte_acl_field_def ip4_defs[NUM_FIELDS_IPV4] = {
 
 RTE_ACL_RULE_DEF(acl4_rules, RTE_DIM(ip4_defs));
 
-static struct acl4_rules acl4_rules_out[MAX_ACL_RULE_NUM];
+static struct acl4_rules *acl4_rules_out;
 static uint32_t nb_acl4_rules_out;
+static uint32_t sp_out_sz;
 
-static struct acl4_rules acl4_rules_in[MAX_ACL_RULE_NUM];
+static struct acl4_rules *acl4_rules_in;
 static uint32_t nb_acl4_rules_in;
+static uint32_t sp_in_sz;
+
+static int
+extend_sp_arr(struct acl4_rules **sp_tbl, uint32_t cur_cnt, uint32_t *cur_sz)
+{
+	if (*sp_tbl == NULL) {
+		*sp_tbl = calloc(INIT_ACL_RULE_NUM, sizeof(struct acl4_rules));
+		if (*sp_tbl == NULL)
+			return -1;
+		*cur_sz = INIT_ACL_RULE_NUM;
+		return 0;
+	}
+
+	if (cur_cnt >= *cur_sz) {
+		*sp_tbl = realloc(*sp_tbl,
+			*cur_sz * sizeof(struct acl4_rules) * 2);
+		if (*sp_tbl == NULL)
+			return -1;
+		/* clean reallocated extra space */
+		memset(&(*sp_tbl)[*cur_sz], 0,
+			*cur_sz * sizeof(struct acl4_rules));
+		*cur_sz *= 2;
+	}
+
+	return 0;
+}
+
 
 void
 parse_sp4_tokens(char **tokens, uint32_t n_tokens,
@@ -127,9 +155,8 @@ parse_sp4_tokens(char **tokens, uint32_t n_tokens,
 	if (strcmp(tokens[1], "in") == 0) {
 		ri = &nb_acl4_rules_in;
 
-		APP_CHECK(*ri <= MAX_ACL_RULE_NUM - 1, status,
-			"too many sp rules, abort insertion\n");
-		if (status->status < 0)
+		if (extend_sp_arr(&acl4_rules_in, nb_acl4_rules_in,
+				&sp_in_sz) < 0)
 			return;
 
 		rule_ipv4 = &acl4_rules_in[*ri];
@@ -137,9 +164,8 @@ parse_sp4_tokens(char **tokens, uint32_t n_tokens,
 	} else if (strcmp(tokens[1], "out") == 0) {
 		ri = &nb_acl4_rules_out;
 
-		APP_CHECK(*ri <= MAX_ACL_RULE_NUM - 1, status,
-			"too many sp rules, abort insertion\n");
-		if (status->status < 0)
+		if (extend_sp_arr(&acl4_rules_out, nb_acl4_rules_out,
+				&sp_out_sz) < 0)
 			return;
 
 		rule_ipv4 = &acl4_rules_out[*ri];
@@ -451,7 +477,7 @@ acl4_init(const char *name, int32_t socketid, const struct acl4_rules *rules,
 	struct rte_acl_config acl_build_param;
 	struct rte_acl_ctx *ctx;
 
-	printf("Creating SP context with %u max rules\n", MAX_ACL_RULE_NUM);
+	printf("Creating SP context with %u rules\n", rules_nb);
 
 	memset(&acl_param, 0, sizeof(acl_param));
 
@@ -464,7 +490,7 @@ acl4_init(const char *name, int32_t socketid, const struct acl4_rules *rules,
 	acl_param.name = s;
 	acl_param.socket_id = socketid;
 	acl_param.rule_size = RTE_ACL_RULE_SZ(RTE_DIM(ip4_defs));
-	acl_param.max_rule_num = MAX_ACL_RULE_NUM;
+	acl_param.max_rule_num = rules_nb;
 
 	ctx = rte_acl_create(&acl_param);
 	if (ctx == NULL)
@@ -493,10 +519,11 @@ acl4_init(const char *name, int32_t socketid, const struct acl4_rules *rules,
  * check that for each rule it's SPI has a correspondent entry in SAD
  */
 static int
-check_spi_value(int inbound)
+check_spi_value(struct sa_ctx *sa_ctx, int inbound)
 {
 	uint32_t i, num, spi;
-	const struct acl4_rules *acr;
+	int32_t spi_idx;
+	struct acl4_rules *acr;
 
 	if (inbound != 0) {
 		acr = acl4_rules_in;
@@ -508,11 +535,16 @@ check_spi_value(int inbound)
 
 	for (i = 0; i != num; i++) {
 		spi = acr[i].data.userdata;
-		if (spi != DISCARD && spi != BYPASS &&
-				sa_spi_present(spi, inbound) < 0) {
-			RTE_LOG(ERR, IPSEC, "SPI %u is not present in SAD\n",
-				spi);
-			return -ENOENT;
+		if (spi != DISCARD && spi != BYPASS) {
+			spi_idx = sa_spi_present(sa_ctx, spi, inbound);
+			if (spi_idx < 0) {
+				RTE_LOG(ERR, IPSEC,
+					"SPI %u is not present in SAD\n",
+					spi);
+				return -ENOENT;
+			}
+			/* Update userdata with spi index */
+			acr[i].data.userdata = spi_idx + 1;
 		}
 	}
 
@@ -535,11 +567,11 @@ sp4_init(struct socket_ctx *ctx, int32_t socket_id)
 		rte_exit(EXIT_FAILURE, "Outbound SP DB for socket %u already "
 				"initialized\n", socket_id);
 
-	if (check_spi_value(1) < 0)
+	if (check_spi_value(ctx->sa_in, 1) < 0)
 		rte_exit(EXIT_FAILURE,
 			"Inbound IPv4 SP DB has unmatched in SAD SPIs\n");
 
-	if (check_spi_value(0) < 0)
+	if (check_spi_value(ctx->sa_out, 0) < 0)
 		rte_exit(EXIT_FAILURE,
 			"Outbound IPv4 SP DB has unmatched in SAD SPIs\n");
 
@@ -560,6 +592,16 @@ sp4_init(struct socket_ctx *ctx, int32_t socket_id)
 			"specified\n");
 }
 
+static int
+sp_cmp(const void *p, const void *q)
+{
+	uint32_t spi1 = ((const struct acl4_rules *)p)->data.userdata;
+	uint32_t spi2 = ((const struct acl4_rules *)q)->data.userdata;
+
+	return (int)(spi1 - spi2);
+}
+
+
 /*
  * Search though SP rules for given SPI.
  */
@@ -567,8 +609,10 @@ int
 sp4_spi_present(uint32_t spi, int inbound, struct ip_addr ip_addr[2],
 			uint32_t mask[2])
 {
-	uint32_t i, num;
+	uint32_t num;
+	struct acl4_rules *rule;
 	const struct acl4_rules *acr;
+	struct acl4_rules tmpl;
 
 	if (inbound != 0) {
 		acr = acl4_rules_in;
@@ -578,17 +622,27 @@ sp4_spi_present(uint32_t spi, int inbound, struct ip_addr ip_addr[2],
 		num = nb_acl4_rules_out;
 	}
 
-	for (i = 0; i != num; i++) {
-		if (acr[i].data.userdata == spi) {
-			if (NULL != ip_addr && NULL != mask) {
-				ip_addr[0].ip.ip4 = IPV4_SRC_FROM_SP(acr[i]);
-				ip_addr[1].ip.ip4 = IPV4_DST_FROM_SP(acr[i]);
-				mask[0] = IPV4_SRC_MASK_FROM_SP(acr[i]);
-				mask[1] = IPV4_DST_MASK_FROM_SP(acr[i]);
-			}
-			return i;
+	tmpl.data.userdata = spi;
+
+	rule = bsearch(&tmpl, acr, num, sizeof(struct acl4_rules), sp_cmp);
+	if (rule != NULL) {
+		if (NULL != ip_addr && NULL != mask) {
+			ip_addr[0].ip.ip4 = IPV4_SRC_FROM_SP(*rule);
+			ip_addr[1].ip.ip4 = IPV4_DST_FROM_SP(*rule);
+			mask[0] = IPV4_SRC_MASK_FROM_SP(*rule);
+			mask[1] = IPV4_DST_MASK_FROM_SP(*rule);
 		}
+		return RTE_PTR_DIFF(rule, acr) / sizeof(struct acl4_rules);
 	}
 
 	return -ENOENT;
+}
+
+void
+sp4_sort_arr(void)
+{
+	qsort(acl4_rules_in, nb_acl4_rules_in, sizeof(struct acl4_rules),
+		sp_cmp);
+	qsort(acl4_rules_out, nb_acl4_rules_out, sizeof(struct acl4_rules),
+		sp_cmp);
 }

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001 - 2015 Intel Corporation
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "e1000_mbx.h"
@@ -7,6 +7,7 @@
 /**
  *  e1000_null_mbx_check_for_flag - No-op function, return 0
  *  @hw: pointer to the HW structure
+ *  @mbx_id: id of mailbox to read
  **/
 STATIC s32 e1000_null_mbx_check_for_flag(struct e1000_hw E1000_UNUSEDARG *hw,
 					 u16 E1000_UNUSEDARG mbx_id)
@@ -20,6 +21,9 @@ STATIC s32 e1000_null_mbx_check_for_flag(struct e1000_hw E1000_UNUSEDARG *hw,
 /**
  *  e1000_null_mbx_transact - No-op function, return 0
  *  @hw: pointer to the HW structure
+ *  @msg: The message buffer
+ *  @size: Length of buffer
+ *  @mbx_id: id of mailbox to read
  **/
 STATIC s32 e1000_null_mbx_transact(struct e1000_hw E1000_UNUSEDARG *hw,
 				   u32 E1000_UNUSEDARG *msg,
@@ -755,6 +759,7 @@ s32 e1000_init_mbx_params_pf(struct e1000_hw *hw)
 		mbx->stats.reqs = 0;
 		mbx->stats.acks = 0;
 		mbx->stats.rsts = 0;
+		/* Fall through */
 	default:
 		return E1000_SUCCESS;
 	}

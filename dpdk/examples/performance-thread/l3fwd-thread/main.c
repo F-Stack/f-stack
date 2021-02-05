@@ -336,7 +336,7 @@ struct ipv4_5tuple {
 	uint16_t port_dst;
 	uint16_t port_src;
 	uint8_t  proto;
-} __attribute__((__packed__));
+} __rte_packed;
 
 union ipv4_5tuple_host {
 	struct {
@@ -359,7 +359,7 @@ struct ipv6_5tuple {
 	uint16_t port_dst;
 	uint16_t port_src;
 	uint8_t  proto;
-} __attribute__((__packed__));
+} __rte_packed;
 
 union ipv6_5tuple_host {
 	struct {
@@ -874,7 +874,7 @@ get_ipv6_dst_port(void *ipv6_hdr,  uint16_t portid,
 #endif
 
 static inline void l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid)
-		__attribute__((unused));
+		__rte_unused;
 
 #if ((APP_LOOKUP_METHOD == APP_LOOKUP_EXACT_MATCH) && \
 	(ENABLE_MULTI_BUFFER_OPTIMIZE == 1))
@@ -1125,7 +1125,7 @@ simple_ipv6_fwd_8pkts(struct rte_mbuf *m[8], uint16_t portid)
 	struct rte_ether_hdr *eth_hdr[8];
 	union ipv6_5tuple_host key[8];
 
-	__attribute__((unused)) struct rte_ipv6_hdr *ipv6_hdr[8];
+	__rte_unused struct rte_ipv6_hdr *ipv6_hdr[8];
 
 	eth_hdr[0] = rte_pktmbuf_mtod(m[0], struct rte_ether_hdr *);
 	eth_hdr[1] = rte_pktmbuf_mtod(m[1], struct rte_ether_hdr *);
@@ -1882,7 +1882,7 @@ process_burst(struct rte_mbuf *pkts_burst[MAX_PKT_BURST], int nb_rx,
 /*
  * CPU-load stats collector
  */
-static int __attribute__((noreturn))
+static int __rte_noreturn
 cpu_load_collector(__rte_unused void *arg) {
 	unsigned i, j, k;
 	uint64_t hits;
@@ -2216,7 +2216,7 @@ lthread_rx(void *dummy)
 /*
  * Start scheduler with initial lthread on lcore
  *
- * This lthread loop spawns all rx and tx lthreads on master lcore
+ * This lthread loop spawns all rx and tx lthreads on main lcore
  */
 
 static void *
@@ -2266,11 +2266,11 @@ lthread_spawner(__rte_unused void *arg)
 }
 
 /*
- * Start master scheduler with initial lthread spawning rx and tx lthreads
- * (main_lthread_master).
+ * Start main scheduler with initial lthread spawning rx and tx lthreads
+ * (main_lthread_main).
  */
 static int
-lthread_master_spawner(__rte_unused void *arg) {
+lthread_main_spawner(__rte_unused void *arg) {
 	struct lthread *lt;
 	int lcore_id = rte_lcore_id();
 
@@ -2304,7 +2304,7 @@ sched_spawner(__rte_unused void *arg) {
 }
 
 /* main processing loop */
-static int __attribute__((noreturn))
+static int __rte_noreturn
 pthread_tx(void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
@@ -2686,10 +2686,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -3438,6 +3435,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -3457,14 +3455,10 @@ check_all_ports_link_status(uint32_t port_mask)
 			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up. Speed %u Mbps - %s\n",
-						portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex"));
-				else
-					printf("Port %d Link Down\n", portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", portid,
+					link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -3770,14 +3764,14 @@ main(int argc, char **argv)
 #endif
 
 		lthread_num_schedulers_set(nb_lcores);
-		rte_eal_mp_remote_launch(sched_spawner, NULL, SKIP_MASTER);
-		lthread_master_spawner(NULL);
+		rte_eal_mp_remote_launch(sched_spawner, NULL, SKIP_MAIN);
+		lthread_main_spawner(NULL);
 
 	} else {
 		printf("Starting P-Threading Model\n");
 		/* launch per-lcore init on every lcore */
-		rte_eal_mp_remote_launch(pthread_run, NULL, CALL_MASTER);
-		RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		rte_eal_mp_remote_launch(pthread_run, NULL, CALL_MAIN);
+		RTE_LCORE_FOREACH_WORKER(lcore_id) {
 			if (rte_eal_wait_lcore(lcore_id) < 0)
 				return -1;
 		}

@@ -172,9 +172,15 @@ out:
 			bp->flags &= ~BNXT_FLAG_UPDATE_HASH;
 
 		for (i = 0; i < bp->nr_vnics; i++) {
+			uint32_t lvl = ETH_RSS_LEVEL(rss->rss_hf);
+
 			vnic = &bp->vnic_info[i];
 			vnic->hash_type =
 				bnxt_rte_to_hwrm_hash_types(rss->rss_hf);
+			vnic->hash_mode =
+				bnxt_rte_to_hwrm_hash_level(bp,
+							    rss->rss_hf,
+							    lvl);
 
 			/*
 			 * Use the supplied key if the key length is
@@ -197,7 +203,7 @@ err_out:
 
 void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 {
-	struct bnxt_sw_rx_bd *sw_ring;
+	struct rte_mbuf **sw_ring;
 	struct bnxt_tpa_info *tpa_info;
 	uint16_t i;
 
@@ -208,9 +214,10 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 	if (sw_ring) {
 		for (i = 0;
 		     i < rxq->rx_ring->rx_ring_struct->ring_size; i++) {
-			if (sw_ring[i].mbuf) {
-				rte_pktmbuf_free_seg(sw_ring[i].mbuf);
-				sw_ring[i].mbuf = NULL;
+			if (sw_ring[i]) {
+				if (sw_ring[i] != &rxq->fake_mbuf)
+					rte_pktmbuf_free_seg(sw_ring[i]);
+				sw_ring[i] = NULL;
 			}
 		}
 	}
@@ -219,9 +226,9 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 	if (sw_ring) {
 		for (i = 0;
 		     i < rxq->rx_ring->ag_ring_struct->ring_size; i++) {
-			if (sw_ring[i].mbuf) {
-				rte_pktmbuf_free_seg(sw_ring[i].mbuf);
-				sw_ring[i].mbuf = NULL;
+			if (sw_ring[i]) {
+				rte_pktmbuf_free_seg(sw_ring[i]);
+				sw_ring[i] = NULL;
 			}
 		}
 	}
@@ -311,7 +318,7 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 		return -EINVAL;
 	}
 
-	if (!nb_desc || nb_desc > MAX_RX_DESC_CNT) {
+	if (nb_desc < BNXT_MIN_RING_DESC || nb_desc > MAX_RX_DESC_CNT) {
 		PMD_DRV_LOG(ERR, "nb_desc %d is invalid\n", nb_desc);
 		return -EINVAL;
 	}
@@ -330,7 +337,8 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	rxq->bp = bp;
 	rxq->mb_pool = mp;
 	rxq->nb_rx_desc = nb_desc;
-	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
+	rxq->rx_free_thresh =
+		RTE_MIN(rte_align32pow2(nb_desc) / 4, RTE_BNXT_MAX_RX_BURST);
 
 	if (rx_conf->rx_drop_en != BNXT_DEFAULT_RX_DROP_EN)
 		PMD_DRV_LOG(NOTICE,

@@ -8,6 +8,7 @@
 #include <rte_atomic.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
+#include <rte_kvargs.h>
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_io.h>
@@ -16,9 +17,11 @@
 #include "hw/otx2_nix.h"
 #include "hw/otx2_npc.h"
 #include "hw/otx2_npa.h"
+#include "hw/otx2_sdp.h"
 #include "hw/otx2_sso.h"
 #include "hw/otx2_ssow.h"
 #include "hw/otx2_tim.h"
+#include "hw/otx2_ree.h"
 
 /* Alignment */
 #define OTX2_ALIGN  128
@@ -48,10 +51,7 @@
 	 (~0ULL >> (BITS_PER_LONG_LONG - 1 - (h))))
 #endif
 
-/* Compiler attributes */
-#ifndef __hot
-#define __hot   __attribute__((hot))
-#endif
+#define OTX2_NPA_LOCK_MASK "npa_lock_mask"
 
 /* Intra device related functions */
 struct otx2_npa_lf;
@@ -64,16 +64,27 @@ struct otx2_idev_cfg {
 		rte_atomic16_t npa_refcnt;
 		uint16_t npa_refcnt_u16;
 	};
+	uint64_t npa_lock_mask;
 };
 
+__rte_internal
 struct otx2_idev_cfg *otx2_intra_dev_get_cfg(void);
+__rte_internal
 void otx2_sso_pf_func_set(uint16_t sso_pf_func);
+__rte_internal
 uint16_t otx2_sso_pf_func_get(void);
+__rte_internal
 uint16_t otx2_npa_pf_func_get(void);
+__rte_internal
 struct otx2_npa_lf *otx2_npa_lf_obj_get(void);
+__rte_internal
 void otx2_npa_set_defaults(struct otx2_idev_cfg *idev);
+__rte_internal
 int otx2_npa_lf_active(void *dev);
+__rte_internal
 int otx2_npa_lf_obj_ref(void);
+__rte_internal
+void otx2_parse_common_devargs(struct rte_kvargs *kvlist);
 
 /* Log */
 extern int otx2_logtype_base;
@@ -85,6 +96,8 @@ extern int otx2_logtype_npc;
 extern int otx2_logtype_tm;
 extern int otx2_logtype_tim;
 extern int otx2_logtype_dpi;
+extern int otx2_logtype_ep;
+extern int otx2_logtype_ree;
 
 #define otx2_err(fmt, args...)			\
 	RTE_LOG(ERR, PMD, "%s():%u " fmt "\n",	\
@@ -107,6 +120,8 @@ extern int otx2_logtype_dpi;
 #define otx2_tm_dbg(fmt, ...) otx2_dbg(tm, fmt, ##__VA_ARGS__)
 #define otx2_tim_dbg(fmt, ...) otx2_dbg(tim, fmt, ##__VA_ARGS__)
 #define otx2_dpi_dbg(fmt, ...) otx2_dbg(dpi, fmt, ##__VA_ARGS__)
+#define otx2_sdp_dbg(fmt, ...) otx2_dbg(ep, fmt, ##__VA_ARGS__)
+#define otx2_ree_dbg(fmt, ...) otx2_dbg(ree, fmt, ##__VA_ARGS__)
 
 /* PCI IDs */
 #define PCI_VENDOR_ID_CAVIUM			0x177D
@@ -121,11 +136,11 @@ extern int otx2_logtype_dpi;
 #define PCI_DEVID_OCTEONTX2_RVU_CPT_VF		0xA0FE
 #define PCI_DEVID_OCTEONTX2_RVU_AF_VF		0xA0f8
 #define PCI_DEVID_OCTEONTX2_DPI_VF		0xA081
+#define PCI_DEVID_OCTEONTX2_EP_VF		0xB203 /* OCTEON TX2 EP mode */
 #define PCI_DEVID_OCTEONTX2_RVU_SDP_PF		0xA0f6
 #define PCI_DEVID_OCTEONTX2_RVU_SDP_VF		0xA0f7
-
-/* Subsystem Device ID */
-#define PCI_SUBSYS_DEVID_96XX_95XX		0xB200
+#define PCI_DEVID_OCTEONTX2_RVU_REE_PF		0xA0f4
+#define PCI_DEVID_OCTEONTX2_RVU_REE_VF		0xA0f5
 
 /*
  * REVID for RVU PCIe devices.
@@ -153,5 +168,9 @@ extern int otx2_logtype_dpi;
 #else
 #include "otx2_io_generic.h"
 #endif
+
+/* Fastpath lookup */
+#define OTX2_NIX_FASTPATH_LOOKUP_MEM	"otx2_nix_fastpath_lookup_mem"
+#define OTX2_NIX_SA_TBL_START		(4096*4 + 69632*2)
 
 #endif /* _OTX2_COMMON_H_ */

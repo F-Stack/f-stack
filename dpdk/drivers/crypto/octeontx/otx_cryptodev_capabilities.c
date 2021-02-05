@@ -141,9 +141,9 @@ static const struct rte_cryptodev_capabilities otx_sym_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA1_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
-					.max = 64,
-					.increment = 0
+					.min = 1,
+					.max = 1024,
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 20,
@@ -181,9 +181,9 @@ static const struct rte_cryptodev_capabilities otx_sym_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA224_HMAC,
 				.block_size = 64,
 					.key_size = {
-					.min = 64,
-					.max = 64,
-					.increment = 0
+					.min = 1,
+					.max = 1024,
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 28,
@@ -221,9 +221,9 @@ static const struct rte_cryptodev_capabilities otx_sym_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA256_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
-					.max = 64,
-					.increment = 0
+					.min = 1,
+					.max = 1024,
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 32,
@@ -261,9 +261,9 @@ static const struct rte_cryptodev_capabilities otx_sym_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA384_HMAC,
 				.block_size = 64,
 				.key_size = {
-					.min = 64,
-					.max = 64,
-					.increment = 0
+					.min = 1,
+					.max = 1024,
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 48,
@@ -301,9 +301,9 @@ static const struct rte_cryptodev_capabilities otx_sym_capabilities[] = {
 				.algo = RTE_CRYPTO_AUTH_SHA512_HMAC,
 				.block_size = 128,
 				.key_size = {
-					.min = 64,
-					.max = 64,
-					.increment = 0
+					.min = 1,
+					.max = 1024,
+					.increment = 1
 				},
 				.digest_size = {
 					.min = 64,
@@ -629,6 +629,27 @@ static const struct rte_cryptodev_capabilities otx_asym_capabilities[] = {
 				}, }
 			}
 		}, }
+	},
+	{	/* ECDSA */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_ECDSA,
+				.op_types = ((1 << RTE_CRYPTO_ASYM_OP_SIGN) |
+					(1 << RTE_CRYPTO_ASYM_OP_VERIFY)),
+				}
+			},
+		}
+	},
+	{	/* ECPM */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_ECPM,
+				.op_types = 0
+				}
+			},
+		}
 	},
 	/* End of asymmetric capabilities */
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()

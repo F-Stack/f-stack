@@ -145,7 +145,6 @@ static int qat_asym_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	}
 
 	qat_qp_conf.hw = qp_hw_data;
-	qat_qp_conf.build_request = qat_asym_build_request;
 	qat_qp_conf.cookie_size = sizeof(struct qat_asym_op_cookie);
 	qat_qp_conf.nb_descriptors = qp_conf->nb_descriptors;
 	qat_qp_conf.socket_id = socket_id;
@@ -203,7 +202,6 @@ struct rte_cryptodev_ops crypto_qat_ops = {
 	.stats_reset		= qat_asym_stats_reset,
 	.queue_pair_setup	= qat_asym_qp_setup,
 	.queue_pair_release	= qat_asym_qp_release,
-	.queue_pair_count	= NULL,
 
 	/* Crypto related operations */
 	.asym_session_get_size	= qat_asym_session_get_private_size,
@@ -242,7 +240,6 @@ qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
 	int i = 0;
 	struct qat_device_info *qat_dev_instance =
 			&qat_pci_devs[qat_pci_dev->qat_dev_id];
-
 	struct rte_cryptodev_pmd_init_params init_params = {
 			.name = "",
 			.socket_id =

@@ -10,8 +10,6 @@
 #include <rte_table_acl.h>
 #include <stdbool.h>
 
-int librte_flow_classify_logtype;
-
 static uint32_t unique_id = 1;
 
 enum rte_flow_classify_table_type table_type
@@ -417,7 +415,6 @@ static struct rte_flow_classify_rule *
 allocate_acl_ipv4_5tuple_rule(struct rte_flow_classifier *cls)
 {
 	struct rte_flow_classify_rule *rule;
-	int log_level;
 
 	rule = malloc(sizeof(struct rte_flow_classify_rule));
 	if (!rule)
@@ -466,9 +463,7 @@ allocate_acl_ipv4_5tuple_rule(struct rte_flow_classifier *cls)
 			cls->ntuple_filter.dst_port_mask;
 	rule->rules.u.ipv4_5tuple.dst_port = cls->ntuple_filter.dst_port;
 
-	log_level = rte_log_get_level(librte_flow_classify_logtype);
-
-	if (log_level == RTE_LOG_DEBUG)
+	if (rte_log_can_log(librte_flow_classify_logtype, RTE_LOG_DEBUG))
 		print_acl_ipv4_key_add(&rule->u.key.key_add);
 
 	/* key delete values */
@@ -476,7 +471,7 @@ allocate_acl_ipv4_5tuple_rule(struct rte_flow_classifier *cls)
 	       &rule->u.key.key_add.field_value[PROTO_FIELD_IPV4],
 	       NUM_FIELDS_IPV4 * sizeof(struct rte_acl_field));
 
-	if (log_level == RTE_LOG_DEBUG)
+	if (rte_log_can_log(librte_flow_classify_logtype, RTE_LOG_DEBUG))
 		print_acl_ipv4_key_delete(&rule->u.key.key_del);
 
 	return rule;
@@ -672,10 +667,4 @@ rte_flow_classifier_query(struct rte_flow_classifier *cls,
 	return ret;
 }
 
-RTE_INIT(librte_flow_classify_init_log)
-{
-	librte_flow_classify_logtype =
-		rte_log_register("lib.flow_classify");
-	if (librte_flow_classify_logtype >= 0)
-		rte_log_set_level(librte_flow_classify_logtype, RTE_LOG_INFO);
-}
+RTE_LOG_REGISTER(librte_flow_classify_logtype, lib.flow_classify, INFO);

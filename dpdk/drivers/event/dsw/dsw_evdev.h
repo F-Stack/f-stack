@@ -10,7 +10,6 @@
 
 #define DSW_PMD_NAME RTE_STR(event_dsw)
 
-/* Code changes are required to allow more ports. */
 #define DSW_MAX_PORTS (64)
 #define DSW_MAX_PORT_DEQUEUE_DEPTH (128)
 #define DSW_MAX_PORT_ENQUEUE_DEPTH (128)
@@ -20,8 +19,20 @@
 
 #define DSW_MAX_EVENTS (16384)
 
-/* Code changes are required to allow more flows than 32k. */
-#define DSW_MAX_FLOWS_BITS (15)
+/* Multiple 24-bit flow ids will map to the same DSW-level flow. The
+ * number of DSW flows should be high enough make it unlikely that
+ * flow ids of several large flows hash to the same DSW-level flow.
+ * Such collisions will limit parallism and thus the number of cores
+ * that may be utilized. However, configuring a large number of DSW
+ * flows might potentially, depending on traffic and actual
+ * application flow id value range, result in each such DSW-level flow
+ * being very small. The effect of migrating such flows will be small,
+ * in terms amount of processing load redistributed. This will in turn
+ * reduce the load balancing speed, since flow migration rate has an
+ * upper limit. Code changes are required to allow > 32k DSW-level
+ * flows.
+ */
+#define DSW_MAX_FLOWS_BITS (13)
 #define DSW_MAX_FLOWS (1<<(DSW_MAX_FLOWS_BITS))
 #define DSW_MAX_FLOWS_MASK (DSW_MAX_FLOWS-1)
 
@@ -82,11 +93,14 @@
 #define DSW_MIGRATION_INTERVAL (1000)
 #define DSW_MIN_SOURCE_LOAD_FOR_MIGRATION (DSW_LOAD_FROM_PERCENT(70))
 #define DSW_MAX_TARGET_LOAD_FOR_MIGRATION (DSW_LOAD_FROM_PERCENT(95))
+#define DSW_REBALANCE_THRESHOLD (DSW_LOAD_FROM_PERCENT(3))
 
 #define DSW_MAX_EVENTS_RECORDED (128)
 
+#define DSW_MAX_FLOWS_PER_MIGRATION (8)
+
 /* Only one outstanding migration per port is allowed */
-#define DSW_MAX_PAUSED_FLOWS (DSW_MAX_PORTS)
+#define DSW_MAX_PAUSED_FLOWS (DSW_MAX_PORTS*DSW_MAX_FLOWS_PER_MIGRATION)
 
 /* Enough room for paus request/confirm and unpaus request/confirm for
  * all possible senders.
@@ -151,17 +165,21 @@ struct dsw_port {
 	uint64_t total_busy_cycles;
 
 	/* For the ctl interface and flow migration mechanism. */
-	uint64_t next_migration;
+	uint64_t next_emigration;
 	uint64_t migration_interval;
 	enum dsw_migration_state migration_state;
 
-	uint64_t migration_start;
-	uint64_t migrations;
-	uint64_t migration_latency;
+	uint64_t emigration_start;
+	uint64_t emigrations;
+	uint64_t emigration_latency;
 
-	uint8_t migration_target_port_id;
-	struct dsw_queue_flow migration_target_qf;
+	uint8_t emigration_target_port_ids[DSW_MAX_FLOWS_PER_MIGRATION];
+	struct dsw_queue_flow
+		emigration_target_qfs[DSW_MAX_FLOWS_PER_MIGRATION];
+	uint8_t emigration_targets_len;
 	uint8_t cfm_cnt;
+
+	uint64_t immigrations;
 
 	uint16_t paused_flows_len;
 	struct dsw_queue_flow paused_flows[DSW_MAX_PAUSED_FLOWS];
@@ -176,11 +194,13 @@ struct dsw_port {
 	uint16_t seen_events_idx;
 	struct dsw_queue_flow seen_events[DSW_MAX_EVENTS_RECORDED];
 
+	uint64_t enqueue_calls;
 	uint64_t new_enqueued;
 	uint64_t forward_enqueued;
 	uint64_t release_enqueued;
 	uint64_t queue_enqueued[DSW_MAX_QUEUES];
 
+	uint64_t dequeue_calls;
 	uint64_t dequeued;
 	uint64_t queue_dequeued[DSW_MAX_QUEUES];
 
@@ -200,6 +220,8 @@ struct dsw_port {
 
 	/* Estimate of current port load. */
 	rte_atomic16_t load __rte_cache_aligned;
+	/* Estimate of flows currently migrating to this port. */
+	rte_atomic32_t immigration_load __rte_cache_aligned;
 } __rte_cache_aligned;
 
 struct dsw_queue {
@@ -226,15 +248,12 @@ struct dsw_evdev {
 #define DSW_CTL_UNPAUS_REQ (1)
 #define DSW_CTL_CFM (2)
 
-/* sizeof(struct dsw_ctl_msg) must be equal or less than
- * sizeof(void *), to fit on the control ring.
- */
 struct dsw_ctl_msg {
-	uint8_t type:2;
-	uint8_t originating_port_id:6;
-	uint8_t queue_id;
-	uint16_t flow_hash;
-} __rte_packed;
+	uint8_t type;
+	uint8_t originating_port_id;
+	uint8_t qfs_len;
+	struct dsw_queue_flow qfs[DSW_MAX_FLOWS_PER_MIGRATION];
+} __rte_aligned(4);
 
 uint16_t dsw_event_enqueue(void *port, const struct rte_event *event);
 uint16_t dsw_event_enqueue_burst(void *port,

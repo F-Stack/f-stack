@@ -480,7 +480,9 @@ rte_dev_event_callback_register(const char *device_name,
 		RTE_LOG(ERR, EAL,
 			"The callback is already exist, no need "
 			"to register again.\n");
+		event_cb = NULL;
 		ret = -EEXIST;
+		goto error;
 	}
 
 	rte_spinlock_unlock(&dev_event_lock);
@@ -530,9 +532,15 @@ rte_dev_event_callback_unregister(const char *device_name,
 			free(event_cb);
 			ret++;
 		} else {
-			continue;
+			ret = -EAGAIN;
+			break;
 		}
 	}
+
+	/* this callback is not be registered */
+	if (ret == 0)
+		ret = -ENOENT;
+
 	rte_spinlock_unlock(&dev_event_lock);
 	return ret;
 }

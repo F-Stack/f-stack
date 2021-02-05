@@ -14,8 +14,13 @@
 static int
 test_rawdev_selftest_impl(const char *pmd, const char *opts)
 {
+	int ret;
+
+	printf("\n### Test rawdev infrastructure using skeleton driver\n");
 	rte_vdev_init(pmd, opts);
-	return rte_rawdev_selftest(rte_rawdev_get_dev_id(pmd));
+	ret = rte_rawdev_selftest(rte_rawdev_get_dev_id(pmd));
+	rte_vdev_uninit(pmd);
+	return ret;
 }
 
 static int
@@ -24,24 +29,29 @@ test_rawdev_selftest_skeleton(void)
 	return test_rawdev_selftest_impl("rawdev_skeleton", "");
 }
 
-REGISTER_TEST_COMMAND(rawdev_autotest, test_rawdev_selftest_skeleton);
-
 static int
-test_rawdev_selftest_ioat(void)
+test_rawdev_selftests(void)
 {
 	const int count = rte_rawdev_count();
+	int ret = 0;
 	int i;
 
+	/* basic sanity on rawdev infrastructure */
+	if (test_rawdev_selftest_skeleton() < 0)
+		return -1;
+
+	/* now run self-test on all rawdevs */
+	if (count > 0)
+		printf("\n### Run selftest on each available rawdev\n");
 	for (i = 0; i < count; i++) {
-		struct rte_rawdev_info info = { .dev_private = NULL };
-		if (rte_rawdev_info_get(i, &info) == 0 &&
-				strstr(info.driver_name, "ioat") != NULL)
-			return rte_rawdev_selftest(i) == 0 ?
-					TEST_SUCCESS : TEST_FAILED;
+		int result = rte_rawdev_selftest(i);
+		printf("Rawdev %u (%s) selftest: %s\n", i,
+				rte_rawdevs[i].name,
+				result == 0 ? "Passed" : "Failed");
+		ret |=  result;
 	}
 
-	printf("No IOAT rawdev found, skipping tests\n");
-	return TEST_SKIPPED;
+	return ret;
 }
 
-REGISTER_TEST_COMMAND(ioat_rawdev_autotest, test_rawdev_selftest_ioat);
+REGISTER_TEST_COMMAND(rawdev_autotest, test_rawdev_selftests);

@@ -2,6 +2,12 @@
 # Copyright(C) 2019 Marvell International Ltd.
 #
 
+if not dpdk_conf.get('RTE_ARCH_64')
+	build = false
+	reason = 'only supported on 64-bit'
+	subdir_done()
+endif
+
 sources = files('otx2_rx.c',
 		'otx2_tx.c',
 		'otx2_tm.c',
@@ -20,22 +26,20 @@ sources = files('otx2_rx.c',
 		'otx2_flow_utils.c',
 		'otx2_ethdev_irq.c',
 		'otx2_ethdev_ops.c',
+		'otx2_ethdev_sec.c',
 		'otx2_ethdev_debug.c',
 		'otx2_ethdev_devargs.c'
 		)
 
-deps += ['bus_pci', 'common_octeontx2', 'mempool_octeontx2']
+deps += ['bus_pci', 'cryptodev', 'eventdev', 'security']
+deps += ['common_octeontx2', 'mempool_octeontx2']
 
-cflags += ['-flax-vector-conversions']
-
-extra_flags = []
-# This integrated controller runs only on a arm64 machine, remove 32bit warnings
-if not dpdk_conf.get('RTE_ARCH_64')
-	extra_flags += ['-Wno-int-to-pointer-cast', '-Wno-pointer-to-int-cast']
-endif
-
+extra_flags = ['-flax-vector-conversions']
 foreach flag: extra_flags
 	if cc.has_argument(flag)
 		cflags += flag
 	endif
 endforeach
+
+includes += include_directories('../../common/cpt')
+includes += include_directories('../../crypto/octeontx2')

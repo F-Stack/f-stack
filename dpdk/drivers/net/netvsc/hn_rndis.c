@@ -18,6 +18,7 @@
 #include <rte_memzone.h>
 #include <rte_malloc.h>
 #include <rte_atomic.h>
+#include <rte_alarm.h>
 #include <rte_branch_prediction.h>
 #include <rte_ether.h>
 #include <rte_common.h>
@@ -64,10 +65,9 @@ hn_rndis_rid(struct hn_data *hv)
 	return rid;
 }
 
-static void *hn_rndis_alloc(struct hn_data *hv, size_t size)
+static void *hn_rndis_alloc(size_t size)
 {
-	return rte_zmalloc_socket("RNDIS", size, PAGE_SIZE,
-				 hv->vmbus->device.numa_node);
+	return rte_zmalloc("RNDIS", size, PAGE_SIZE);
 }
 
 #ifdef RTE_LIBRTE_NETVSC_DEBUG_DUMP
@@ -286,6 +286,15 @@ static int hn_nvs_send_rndis_ctrl(struct vmbus_channel *chan,
 				  &nvs_rndis, sizeof(nvs_rndis), 0U, NULL);
 }
 
+/*
+ * Alarm callback to process link changed notifications.
+ * Can not directly since link_status is discovered while reading ring
+ */
+static void hn_rndis_link_alarm(void *arg)
+{
+	rte_eth_dev_callback_process(arg, RTE_ETH_EVENT_INTR_LSC, NULL);
+}
+
 void hn_rndis_link_status(struct rte_eth_dev *dev, const void *msg)
 {
 	const struct rndis_status_msg *indicate = msg;
@@ -303,11 +312,8 @@ void hn_rndis_link_status(struct rte_eth_dev *dev, const void *msg)
 	case RNDIS_STATUS_LINK_SPEED_CHANGE:
 	case RNDIS_STATUS_MEDIA_CONNECT:
 	case RNDIS_STATUS_MEDIA_DISCONNECT:
-		if (dev->data->dev_conf.intr_conf.lsc &&
-		    hn_dev_link_update(dev, 0) == 0)
-			_rte_eth_dev_callback_process(dev,
-						      RTE_ETH_EVENT_INTR_LSC,
-						      NULL);
+		if (dev->data->dev_conf.intr_conf.lsc)
+			rte_eal_alarm_set(10, hn_rndis_link_alarm, dev);
 		break;
 	default:
 		PMD_DRV_LOG(NOTICE, "unknown RNDIS indication: %#x",
@@ -468,7 +474,7 @@ hn_rndis_query(struct hn_data *hv, uint32_t oid,
 	uint32_t rid;
 
 	reqlen = sizeof(*req) + idlen;
-	req = hn_rndis_alloc(hv, reqlen);
+	req = hn_rndis_alloc(reqlen);
 	if (req == NULL)
 		return -ENOMEM;
 
@@ -543,7 +549,7 @@ hn_rndis_halt(struct hn_data *hv)
 {
 	struct rndis_halt_req *halt;
 
-	halt = hn_rndis_alloc(hv, sizeof(*halt));
+	halt = hn_rndis_alloc(sizeof(*halt));
 	if (halt == NULL)
 		return -ENOMEM;
 
@@ -1030,7 +1036,7 @@ static int hn_rndis_init(struct hn_data *hv)
 	uint32_t comp_len, rid;
 	int error;
 
-	req = hn_rndis_alloc(hv, sizeof(*req));
+	req = hn_rndis_alloc(sizeof(*req));
 	if (!req) {
 		PMD_DRV_LOG(ERR, "no memory for RNDIS init");
 		return -ENXIO;
@@ -1128,6 +1134,10 @@ hn_rndis_attach(struct hn_data *hv)
 void
 hn_rndis_detach(struct hn_data *hv)
 {
+	struct rte_eth_dev *dev = &rte_eth_devices[hv->port_id];
+
+	rte_eal_alarm_cancel(hn_rndis_link_alarm, dev);
+
 	/* Halt the RNDIS. */
 	hn_rndis_halt(hv);
 }

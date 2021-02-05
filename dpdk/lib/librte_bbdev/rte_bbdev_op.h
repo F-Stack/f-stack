@@ -31,8 +31,12 @@ extern "C" {
 #define RTE_BBDEV_TURBO_MAX_TB_SIZE (391656)
 /* Maximum size of Code Block (36.212, Table 5.1.3-3) */
 #define RTE_BBDEV_TURBO_MAX_CB_SIZE (6144)
-/* Maximum size of Code Block  */
+/* Maximum size of Code Block */
 #define RTE_BBDEV_LDPC_MAX_CB_SIZE (8448)
+/* Minimum size of Code Block */
+#define RTE_BBDEV_LDPC_MIN_CB_SIZE (40)
+/* Maximum E size we can manage with default mbuf */
+#define RTE_BBDEV_LDPC_E_MAX_MBUF (64000)
 /* Minimum size of Code Block (36.212, Table 5.1.3-3) */
 #define RTE_BBDEV_TURBO_MIN_CB_SIZE (40)
 /* Maximum size of circular buffer */
@@ -177,7 +181,12 @@ enum rte_bbdev_op_ldpcdec_flag_bitmasks {
 	/** Set if a device supports loop-back access to
 	 *  HARQ internal memory. Intended for troubleshooting.
 	 */
-	RTE_BBDEV_LDPC_INTERNAL_HARQ_MEMORY_LOOPBACK = (1ULL << 17)
+	RTE_BBDEV_LDPC_INTERNAL_HARQ_MEMORY_LOOPBACK = (1ULL << 17),
+	/** Set if a device includes LLR filler bits in the circular buffer
+	 *  for HARQ memory. If not set, it is assumed the filler bits are not
+	 *  in HARQ memory and handled directly by the LDPC decoder.
+	 */
+	RTE_BBDEV_LDPC_INTERNAL_HARQ_MEMORY_FILLERS = (1ULL << 18)
 };
 
 /** Flags for LDPC encoder operation and capability structure */
@@ -704,8 +713,6 @@ struct rte_bbdev_op_cap_ldpc_dec {
 	int8_t llr_size;
 	/** LLR numbers of decimals bit for arithmetic representation */
 	int8_t llr_decimals;
-	/** Amount of memory for HARQ in external DDR in MB */
-	uint16_t harq_memory_size;
 	/** Num input code block buffers */
 	uint16_t num_buffers_src;
 	/** Num hard output code block buffers */

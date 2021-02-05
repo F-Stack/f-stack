@@ -52,7 +52,7 @@ The application requires a number of command line options:
 
 .. code-block:: console
 
-    ./build/l2fwd-event [EAL options] -- -p PORTMASK [-q NQ] --[no-]mac-updating --mode=MODE --eventq-sched=SCHED_MODE
+    ./<build_dir>/examples/dpdk-l2fwd-event [EAL options] -- -p PORTMASK [-q NQ] --[no-]mac-updating --mode=MODE --eventq-sched=SCHED_MODE
 
 where,
 
@@ -66,6 +66,8 @@ where,
 
 *   --eventq-sched=SCHED_MODE: Event queue schedule mode, Ordered, Atomic or Parallel. Atomic by default.
 
+*   --config: Configure forwarding port pair mapping. Alternate port pairs by default.
+
 Sample usage commands are given below to run the application into different mode:
 
 Poll mode with 4 lcores, 16 ports and 8 RX queues per lcore and MAC address updating enabled,
@@ -73,20 +75,20 @@ issue the command:
 
 .. code-block:: console
 
-    ./build/l2fwd-event -l 0-3 -n 4 -- -q 8 -p ffff --mode=poll
+    ./<build_dir>/examples/dpdk-l2fwd-event -l 0-3 -n 4 -- -q 8 -p ffff --mode=poll
 
 Eventdev mode with 4 lcores, 16 ports , sched method ordered and MAC address updating enabled,
 issue the command:
 
 .. code-block:: console
 
-    ./build/l2fwd-event -l 0-3 -n 4 -- -p ffff --eventq-sched=ordered
+    ./<build_dir>/examples/dpdk-l2fwd-event -l 0-3 -n 4 -- -p ffff --eventq-sched=ordered
 
 or
 
 .. code-block:: console
 
-    ./build/l2fwd-event -l 0-3 -n 4 -- -q 8 -p ffff --mode=eventdev --eventq-sched=ordered
+    ./<build_dir>/examples/dpdk-l2fwd-event -l 0-3 -n 4 -- -q 8 -p ffff --mode=eventdev --eventq-sched=ordered
 
 Refer to the *DPDK Getting Started Guide* for general information on running
 applications and the Environment Abstraction Layer (EAL) options.
@@ -103,7 +105,7 @@ scheduler. Following is the sample command:
 
 .. code-block:: console
 
-    ./build/l2fwd-event -l 0-7 -s 0-3 -n 4 --vdev event_sw0 -- -q 8 -p ffff --mode=eventdev --eventq-sched=ordered
+    ./<build_dir>/examples/dpdk-l2fwd-event -l 0-7 -s 0-3 -n 4 --vdev event_sw0 -- -q 8 -p ffff --mode=eventdev --eventq-sched=ordered
 
 Explanation
 -----------
@@ -628,8 +630,8 @@ not many packets to send, however it improves performance:
 
                         /* if timer has reached its timeout */
                         if (unlikely(timer_tsc >= timer_period)) {
-                                /* do this only on master core */
-                                if (lcore_id == rte_get_master_lcore()) {
+                                /* do this only on main core */
+                                if (lcore_id == rte_get_main_lcore()) {
                                         print_stats();
                                         /* reset the timer */
                                         timer_tsc = 0;

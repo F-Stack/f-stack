@@ -22,7 +22,6 @@
 
 #include "private.h"
 
-int vmbus_logtype_bus;
 extern struct rte_vmbus_bus rte_vmbus_bus;
 
 /* map a particular resource from a file */
@@ -102,7 +101,7 @@ vmbus_probe_one_driver(struct rte_vmbus_driver *dr,
 	VMBUS_LOG(INFO, "VMBUS device %s on NUMA socket %i",
 		  guid, dev->device.numa_node);
 
-	/* TODO add blacklisted */
+	/* TODO add block/allow logic */
 
 	/* map resources for device */
 	ret = rte_vmbus_map_device(dev);
@@ -178,7 +177,7 @@ rte_vmbus_probe(void)
 
 		rte_uuid_unparse(dev->device_id, ubuf, sizeof(ubuf));
 
-		/* TODO: add whitelist/blacklist */
+		/* TODO: add allowlist/blocklist */
 
 		if (vmbus_probe_all_drivers(dev) < 0) {
 			VMBUS_LOG(NOTICE,
@@ -207,7 +206,7 @@ vmbus_parse(const char *name, void *addr)
 /*
  * scan for matching device args on command line
  * example:
- *	-w 'vmbus:635a7ae3-091e-4410-ad59-667c4f8c04c3,latency=20'
+ *	-a 'vmbus:635a7ae3-091e-4410-ad59-667c4f8c04c3,latency=20'
  */
 struct rte_devargs *
 vmbus_devargs_lookup(struct rte_vmbus_device *dev)
@@ -298,10 +297,4 @@ struct rte_vmbus_bus rte_vmbus_bus = {
 };
 
 RTE_REGISTER_BUS(vmbus, rte_vmbus_bus.bus);
-
-RTE_INIT(vmbus_init_log)
-{
-	vmbus_logtype_bus = rte_log_register("bus.vmbus");
-	if (vmbus_logtype_bus >= 0)
-		rte_log_set_level(vmbus_logtype_bus, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(vmbus_logtype_bus, bus.vmbus, NOTICE);

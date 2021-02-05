@@ -3,9 +3,9 @@
 
 # override default name to drop the hyphen
 name = 'testpmd'
-allow_experimental_apis = true
 cflags += '-Wno-deprecated-declarations'
-sources = files('cmdline.c',
+sources = files('5tswap.c',
+	'cmdline.c',
 	'cmdline_flow.c',
 	'cmdline_mtr.c',
 	'cmdline_tm.c',
@@ -25,38 +25,37 @@ sources = files('cmdline.c',
 	'util.c')
 
 deps += ['ethdev', 'gro', 'gso', 'cmdline', 'metrics', 'meter', 'bus_pci']
-if dpdk_conf.has('RTE_LIBRTE_PDUMP')
-	deps += 'pdump'
-endif
-if dpdk_conf.has('RTE_LIBRTE_BITRATESTATS')
+if dpdk_conf.has('RTE_LIB_BITRATESTATS')
 	deps += 'bitratestats'
 endif
-if dpdk_conf.has('RTE_LIBRTE_LATENCYSTATS')
+if dpdk_conf.has('RTE_LIB_PDUMP')
+	deps += 'pdump'
+endif
+if dpdk_conf.has('RTE_LIB_BITRATESTATS')
+	deps += 'bitratestats'
+endif
+if dpdk_conf.has('RTE_LIB_LATENCYSTATS')
 	deps += 'latencystats'
 endif
-if dpdk_conf.has('RTE_LIBRTE_PMD_CRYPTO_SCHEDULER')
-	deps += 'pmd_crypto_scheduler'
+if dpdk_conf.has('RTE_CRYPTO_SCHEDULER')
+	deps += 'crypto_scheduler'
 endif
-if dpdk_conf.has('RTE_LIBRTE_BOND_PMD')
-	deps += 'pmd_bond'
+if dpdk_conf.has('RTE_NET_BOND')
+	deps += 'net_bond'
 endif
-if dpdk_conf.has('RTE_LIBRTE_BNXT_PMD')
-	deps += 'pmd_bnxt'
+if dpdk_conf.has('RTE_NET_BNXT')
+	deps += 'net_bnxt'
 endif
-if dpdk_conf.has('RTE_LIBRTE_I40E_PMD')
-	deps += 'pmd_i40e'
+if dpdk_conf.has('RTE_NET_I40E')
+	deps += 'net_i40e'
 endif
-if dpdk_conf.has('RTE_LIBRTE_IXGBE_PMD')
-	deps += 'pmd_ixgbe'
+if dpdk_conf.has('RTE_NET_IXGBE')
+	deps += 'net_ixgbe'
 endif
-if dpdk_conf.has('RTE_LIBRTE_SOFTNIC_PMD')
-	sources += files('softnicfwd.c')
-	deps += 'pmd_softnic'
+if dpdk_conf.has('RTE_NET_DPAA')
+	deps += ['bus_dpaa', 'mempool_dpaa', 'net_dpaa']
 endif
-if dpdk_conf.has('RTE_LIBRTE_DPAA_PMD')
-	deps += ['bus_dpaa', 'mempool_dpaa', 'pmd_dpaa']
-endif
-if dpdk_conf.has('RTE_LIBRTE_BPF')
+if dpdk_conf.has('RTE_LIB_BPF')
 	sources += files('bpf_cmd.c')
 	deps += 'bpf'
 endif

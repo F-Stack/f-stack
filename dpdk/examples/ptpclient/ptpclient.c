@@ -62,7 +62,7 @@ struct tstamp {
 	uint16_t   sec_msb;
 	uint32_t   sec_lsb;
 	uint32_t   ns;
-}  __attribute__((packed));
+}  __rte_packed;
 
 struct clock_id {
 	uint8_t id[8];
@@ -71,7 +71,7 @@ struct clock_id {
 struct port_id {
 	struct clock_id        clock_id;
 	uint16_t               port_number;
-}  __attribute__((packed));
+}  __rte_packed;
 
 struct ptp_header {
 	uint8_t              msg_type;
@@ -86,30 +86,30 @@ struct ptp_header {
 	uint16_t             seq_id;
 	uint8_t              control;
 	int8_t               log_message_interval;
-} __attribute__((packed));
+} __rte_packed;
 
 struct sync_msg {
 	struct ptp_header   hdr;
 	struct tstamp       origin_tstamp;
-} __attribute__((packed));
+} __rte_packed;
 
 struct follow_up_msg {
 	struct ptp_header   hdr;
 	struct tstamp       precise_origin_tstamp;
 	uint8_t             suffix[0];
-} __attribute__((packed));
+} __rte_packed;
 
 struct delay_req_msg {
 	struct ptp_header   hdr;
 	struct tstamp       origin_tstamp;
-} __attribute__((packed));
+} __rte_packed;
 
 struct delay_resp_msg {
 	struct ptp_header    hdr;
 	struct tstamp        rx_tstamp;
 	struct port_id       req_port_id;
 	uint8_t              suffix[0];
-} __attribute__((packed));
+} __rte_packed;
 
 struct ptp_message {
 	union {
@@ -118,7 +118,7 @@ struct ptp_message {
 		struct delay_req_msg       delay_req;
 		struct follow_up_msg       follow_up;
 		struct delay_resp_msg      delay_resp;
-	} __attribute__((packed));
+	} __rte_packed;
 };
 
 struct ptpv2_data_slave_ordinary {
@@ -372,7 +372,7 @@ parse_sync(struct ptpv2_data_slave_ordinary *ptp_data, uint16_t rx_tstamp_idx)
 }
 
 /*
- * Parse the PTP FOLLOWUP message and send DELAY_REQ to the master clock.
+ * Parse the PTP FOLLOWUP message and send DELAY_REQ to the main clock.
  */
 static void
 parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
@@ -596,7 +596,7 @@ parse_ptp_frames(uint16_t portid, struct rte_mbuf *m) {
  * The lcore main. This is the main thread that does the work, reading from an
  * input port and writing to an output port.
  */
-static __attribute__((noreturn)) void
+static __rte_noreturn void
 lcore_main(void)
 {
 	uint16_t portid;
@@ -650,10 +650,7 @@ ptp_parse_portmask(const char *portmask)
 	pm = strtoul(portmask, &end, 16);
 
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -785,7 +782,7 @@ main(int argc, char *argv[])
 	if (rte_lcore_count() > 1)
 		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
-	/* Call lcore_main on the master core only. */
+	/* Call lcore_main on the main core only. */
 	lcore_main();
 
 	return 0;

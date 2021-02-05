@@ -88,6 +88,10 @@ For more detail on SR-IOV, please refer to the following documents:
     assignment in hypervisor. Take qemu for example, the device assignment should carry the IAVF device id (0x1889) like
     ``-device vfio-pci,x-pci-device-id=0x1889,host=03:0a.0``.
 
+    When IAVF is backed by an Intel® E810 device, the "Protocol Extraction" feature which is supported by ice PMD is also
+    available for IAVF PMD. The same devargs with the same parameters can be applied to IAVF PMD, for detail please reference
+    the section ``Protocol extraction for per queue`` of ice.rst.
+
 The PCIE host-interface of Intel Ethernet Switch FM10000 Series VF infrastructure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -124,7 +128,6 @@ Intel® X710/XL710 Gigabit Ethernet Controller VF Infrastructure
 
 In a virtualized environment, the programmer can enable a maximum of *128 Virtual Functions (VF)*
 globally per Intel® X710/XL710 Gigabit Ethernet Controller NIC device.
-The number of queue pairs of each VF can be configured by ``CONFIG_RTE_LIBRTE_I40E_QUEUE_NUM_PER_VF`` in ``config`` file.
 The Physical Function in host could be either configured by the Linux* i40e driver
 (in the case of the Linux Kernel-based Virtual Machine [KVM]) or by DPDK PMD PF driver.
 When using both DPDK PMD PF/VF drivers, the whole NIC will be taken over by DPDK based application.
@@ -521,20 +524,12 @@ The setup procedure is as follows:
 
     .. code-block:: console
 
-        make install T=x86_64-native-linux-gcc
-        ./x86_64-native-linux-gcc/app/testpmd -l 0-3 -n 4 -- -i
+        ./<build_dir>/app/dpdk-testpmd -l 0-3 -n 4 -- -i
 
 #.  Finally, access the Guest OS using vncviewer with the localhost:5900 port and check the lspci command output in the Guest OS.
     The virtual functions will be listed as available for use.
 
-#.  Configure and install the DPDK with an x86_64-native-linux-gcc configuration on the Guest OS as normal,
-    that is, there is no change to the normal installation procedure.
-
-    .. code-block:: console
-
-        make config T=x86_64-native-linux-gcc O=x86_64-native-linux-gcc
-        cd x86_64-native-linux-gcc
-        make
+#.  Configure and install the DPDK on the Guest OS as normal, that is, there is no change to the normal installation procedure.
 
 .. note::
 

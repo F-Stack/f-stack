@@ -149,18 +149,6 @@ struct rte_sched_pipe_params {
  * byte.
  */
 struct rte_sched_subport_params {
-	/** Token bucket rate (measured in bytes per second) */
-	uint64_t tb_rate;
-
-	/** Token bucket size (measured in credits) */
-	uint64_t tb_size;
-
-	/** Traffic class rates (measured in bytes per second) */
-	uint64_t tc_rate[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
-
-	/** Enforcement period for rates (measured in milliseconds) */
-	uint64_t tc_period;
-
 	/** Number of subport pipes.
 	 * The subport can enable/allocate fewer pipes than the maximum
 	 * number set through struct port_params::n_max_pipes_per_subport,
@@ -190,6 +178,20 @@ struct rte_sched_subport_params {
 	/** RED parameters */
 	struct rte_red_params red_params[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE][RTE_COLORS];
 #endif
+};
+
+struct rte_sched_subport_profile_params {
+	/** Token bucket rate (measured in bytes per second) */
+	uint64_t tb_rate;
+
+	/** Token bucket size (measured in credits) */
+	uint64_t tb_size;
+
+	/** Traffic class rates (measured in bytes per second) */
+	uint64_t tc_rate[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+
+	/** Enforcement period for rates (measured in milliseconds) */
+	uint64_t tc_period;
 };
 
 /** Subport statistics */
@@ -254,6 +256,17 @@ struct rte_sched_port_params {
 	/** Number of subports */
 	uint32_t n_subports_per_port;
 
+	/** subport profile table.
+	 * Every pipe is configured using one of the profiles from this table.
+	 */
+	struct rte_sched_subport_profile_params *subport_profiles;
+
+	/** Profiles in the pipe profile table */
+	uint32_t n_subport_profiles;
+
+	/** Max allowed profiles in the pipe profile table */
+	uint32_t n_max_subport_profiles;
+
 	/** Maximum number of subport pipes.
 	 * This parameter is used to reserve a fixed number of bits
 	 * in struct rte_mbuf::sched.queue_id for the pipe_id for all
@@ -312,21 +325,51 @@ rte_sched_subport_pipe_profile_add(struct rte_sched_port *port,
 	uint32_t *pipe_profile_id);
 
 /**
- * Hierarchical scheduler subport configuration
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
  *
+ * Hierarchical scheduler subport bandwidth profile add
+ * Note that this function is safe to use in runtime for adding new
+ * subport bandwidth profile as it doesn't have any impact on hiearchical
+ * structure of the scheduler.
+ * @param port
+ *   Handle to port scheduler instance
+ * @param profile
+ *   Subport bandwidth profile
+ * @param subport_profile_id
+ *   Subport profile id
+ * @return
+ *   0 upon success, error code otherwise
+ */
+__rte_experimental
+int
+rte_sched_port_subport_profile_add(struct rte_sched_port *port,
+	struct rte_sched_subport_profile_params *profile,
+	uint32_t *subport_profile_id);
+
+/**
+ * Hierarchical scheduler subport configuration
+ * Note that this function is safe to use at runtime
+ * to configure subport bandwidth profile.
  * @param port
  *   Handle to port scheduler instance
  * @param subport_id
  *   Subport ID
  * @param params
- *   Subport configuration parameters
+ *   Subport configuration parameters. Must be non-NULL
+ *   for first invocation (i.e initialization) for a given
+ *   subport. Ignored (recommended value is NULL) for all
+ *   subsequent invocation on the same subport.
+ * @param subport_profile_id
+ *   ID of subport bandwidth profile
  * @return
  *   0 upon success, error code otherwise
  */
 int
 rte_sched_subport_config(struct rte_sched_port *port,
 	uint32_t subport_id,
-	struct rte_sched_subport_params *params);
+	struct rte_sched_subport_params *params,
+	uint32_t subport_profile_id);
 
 /**
  * Hierarchical scheduler pipe configuration

@@ -33,7 +33,6 @@ extern "C" {
 #include <string.h>
 
 #include <rte_compat.h>
-#include <rte_atomic.h>
 #include <rte_bus.h>
 #include <rte_cpuflags.h>
 #include <rte_memory.h>
@@ -308,6 +307,8 @@ struct rte_bbdev_driver_info {
 	bool queue_intr_supported;
 	/** Minimum alignment of buffers, in bytes */
 	uint16_t min_alignment;
+	/** HARQ memory available in kB */
+	uint32_t harq_buffer_size;
 	/** Default queue configuration used if none is supplied  */
 	struct rte_bbdev_queue_conf default_queue_conf;
 	/** Device operation capabilities */
@@ -424,8 +425,7 @@ struct rte_bbdev_data {
 	uint16_t dev_id;  /**< Device ID */
 	int socket_id;  /**< NUMA socket that device is on */
 	bool started;  /**< Device run-time state */
-	/** Counter of processes using the device */
-	rte_atomic16_t process_cnt;
+	uint16_t process_cnt;  /** Counter of processes using the device */
 };
 
 /* Forward declarations */
@@ -608,6 +608,7 @@ rte_bbdev_enqueue_ldpc_dec_ops(uint16_t dev_id, uint16_t queue_id,
  * @param ops
  *   Pointer array where operations will be dequeued to. Must have at least
  *   @p num_ops entries
+ *   ie. A pointer to a table of void * pointers (ops) that will be filled.
  * @param num_ops
  *   The maximum number of operations to dequeue.
  *
@@ -639,6 +640,7 @@ rte_bbdev_dequeue_enc_ops(uint16_t dev_id, uint16_t queue_id,
  * @param ops
  *   Pointer array where operations will be dequeued to. Must have at least
  *   @p num_ops entries
+ *   ie. A pointer to a table of void * pointers (ops) that will be filled.
  * @param num_ops
  *   The maximum number of operations to dequeue.
  *

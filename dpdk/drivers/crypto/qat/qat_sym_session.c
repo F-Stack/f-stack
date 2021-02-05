@@ -14,6 +14,9 @@
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_crypto_sym.h>
+#ifdef RTE_LIB_SECURITY
+#include <rte_security.h>
+#endif
 
 #include "qat_logs.h"
 #include "qat_sym_session.h"
@@ -70,7 +73,7 @@ bpi_cipher_ctx_free(void *bpi_ctx)
 static int
 bpi_cipher_ctx_init(enum rte_crypto_cipher_algorithm cryptodev_algo,
 		enum rte_crypto_cipher_operation direction __rte_unused,
-		const uint8_t *key, void **ctx)
+		const uint8_t *key, uint16_t key_length, void **ctx)
 {
 	const EVP_CIPHER *algo = NULL;
 	int ret;
@@ -84,7 +87,10 @@ bpi_cipher_ctx_init(enum rte_crypto_cipher_algorithm cryptodev_algo,
 	if (cryptodev_algo == RTE_CRYPTO_CIPHER_DES_DOCSISBPI)
 		algo = EVP_des_ecb();
 	else
-		algo = EVP_aes_128_ecb();
+		if (key_length == ICP_QAT_HW_AES_128_KEY_SZ)
+			algo = EVP_aes_128_ecb();
+		else
+			algo = EVP_aes_256_ecb();
 
 	/* IV will be ECB encrypted whether direction is encrypt or decrypt*/
 	if (EVP_EncryptInit_ex(*ctx, algo, NULL, key, 0) != 1) {
@@ -321,6 +327,7 @@ qat_sym_session_configure_cipher(struct rte_cryptodev *dev,
 					cipher_xform->algo,
 					cipher_xform->op,
 					cipher_xform->key.data,
+					cipher_xform->key.length,
 					&session->bpi_ctx);
 		if (ret != 0) {
 			QAT_LOG(ERR, "failed to create DES BPI ctx");
@@ -339,6 +346,7 @@ qat_sym_session_configure_cipher(struct rte_cryptodev *dev,
 					cipher_xform->algo,
 					cipher_xform->op,
 					cipher_xform->key.data,
+					cipher_xform->key.length,
 					&session->bpi_ctx);
 		if (ret != 0) {
 			QAT_LOG(ERR, "failed to create AES BPI ctx");
@@ -532,8 +540,16 @@ qat_sym_session_set_parameters(struct rte_cryptodev *dev,
 	int ret;
 	int qat_cmd_id;
 
+	/* Verify the session physical address is known */
+	rte_iova_t session_paddr = rte_mempool_virt2iova(session);
+	if (session_paddr == 0 || session_paddr == RTE_BAD_IOVA) {
+		QAT_LOG(ERR,
+			"Session physical address unknown. Bad memory pool.");
+		return -EINVAL;
+	}
+
 	/* Set context descriptor physical address */
-	session->cd_paddr = rte_mempool_virt2iova(session) +
+	session->cd_paddr = session_paddr +
 			offsetof(struct qat_sym_session, cd);
 
 	session->min_qat_dev_gen = QAT_GEN1;
@@ -616,69 +632,68 @@ qat_sym_session_set_parameters(struct rte_cryptodev *dev,
 }
 
 static int
-qat_sym_session_handle_single_pass(struct qat_sym_dev_private *internals,
-		struct qat_sym_session *session,
+qat_sym_session_handle_single_pass(struct qat_sym_session *session,
 		struct rte_crypto_aead_xform *aead_xform)
 {
-	enum qat_device_gen qat_dev_gen = internals->qat_dev->qat_dev_gen;
+	struct icp_qat_fw_la_cipher_req_params *cipher_param =
+			(void *) &session->fw_req.serv_specif_rqpars;
 
-	if (qat_dev_gen == QAT_GEN3 &&
-			aead_xform->iv.length == QAT_AES_GCM_SPC_IV_SIZE) {
-		/* Use faster Single-Pass GCM */
-		struct icp_qat_fw_la_cipher_req_params *cipher_param =
-				(void *) &session->fw_req.serv_specif_rqpars;
-
-		session->is_single_pass = 1;
-		session->min_qat_dev_gen = QAT_GEN3;
-		session->qat_cmd = ICP_QAT_FW_LA_CMD_CIPHER;
+	session->is_single_pass = 1;
+	session->min_qat_dev_gen = QAT_GEN3;
+	session->qat_cmd = ICP_QAT_FW_LA_CMD_CIPHER;
+	if (aead_xform->algo == RTE_CRYPTO_AEAD_AES_GCM) {
 		session->qat_mode = ICP_QAT_HW_CIPHER_AEAD_MODE;
-		session->cipher_iv.offset = aead_xform->iv.offset;
-		session->cipher_iv.length = aead_xform->iv.length;
-		if (qat_sym_session_aead_create_cd_cipher(session,
-				aead_xform->key.data, aead_xform->key.length))
-			return -EINVAL;
-		session->aad_len = aead_xform->aad_length;
-		session->digest_length = aead_xform->digest_length;
-		if (aead_xform->op == RTE_CRYPTO_AEAD_OP_ENCRYPT) {
-			session->qat_dir = ICP_QAT_HW_CIPHER_ENCRYPT;
-			session->auth_op = ICP_QAT_HW_AUTH_GENERATE;
-			ICP_QAT_FW_LA_RET_AUTH_SET(
-				session->fw_req.comn_hdr.serv_specif_flags,
-				ICP_QAT_FW_LA_RET_AUTH_RES);
-		} else {
-			session->qat_dir = ICP_QAT_HW_CIPHER_DECRYPT;
-			session->auth_op = ICP_QAT_HW_AUTH_VERIFY;
-			ICP_QAT_FW_LA_CMP_AUTH_SET(
-				session->fw_req.comn_hdr.serv_specif_flags,
-				ICP_QAT_FW_LA_CMP_AUTH_RES);
-		}
-		ICP_QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_SET(
-				session->fw_req.comn_hdr.serv_specif_flags,
-				ICP_QAT_FW_LA_SINGLE_PASS_PROTO);
-		ICP_QAT_FW_LA_PROTO_SET(
-				session->fw_req.comn_hdr.serv_specif_flags,
-				ICP_QAT_FW_LA_NO_PROTO);
 		ICP_QAT_FW_LA_GCM_IV_LEN_FLAG_SET(
-				session->fw_req.comn_hdr.serv_specif_flags,
-				ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS);
-		session->fw_req.comn_hdr.service_cmd_id =
-				ICP_QAT_FW_LA_CMD_CIPHER;
-		session->cd.cipher.cipher_config.val =
-				ICP_QAT_HW_CIPHER_CONFIG_BUILD(
-					ICP_QAT_HW_CIPHER_AEAD_MODE,
-					session->qat_cipher_alg,
-					ICP_QAT_HW_CIPHER_NO_CONVERT,
-					session->qat_dir);
-		QAT_FIELD_SET(session->cd.cipher.cipher_config.val,
-				aead_xform->digest_length,
-				QAT_CIPHER_AEAD_HASH_CMP_LEN_BITPOS,
-				QAT_CIPHER_AEAD_HASH_CMP_LEN_MASK);
-		session->cd.cipher.cipher_config.reserved =
-				ICP_QAT_HW_CIPHER_CONFIG_BUILD_UPPER(
-					aead_xform->aad_length);
-		cipher_param->spc_aad_sz = aead_xform->aad_length;
-		cipher_param->spc_auth_res_sz = aead_xform->digest_length;
+			session->fw_req.comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_GCM_IV_LEN_12_OCTETS);
+	} else {
+		/* Chacha-Poly is special case that use QAT CTR mode */
+		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 	}
+	session->cipher_iv.offset = aead_xform->iv.offset;
+	session->cipher_iv.length = aead_xform->iv.length;
+	if (qat_sym_session_aead_create_cd_cipher(session,
+			aead_xform->key.data, aead_xform->key.length))
+		return -EINVAL;
+	session->aad_len = aead_xform->aad_length;
+	session->digest_length = aead_xform->digest_length;
+	if (aead_xform->op == RTE_CRYPTO_AEAD_OP_ENCRYPT) {
+		session->qat_dir = ICP_QAT_HW_CIPHER_ENCRYPT;
+		session->auth_op = ICP_QAT_HW_AUTH_GENERATE;
+		ICP_QAT_FW_LA_RET_AUTH_SET(
+			session->fw_req.comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_RET_AUTH_RES);
+	} else {
+		session->qat_dir = ICP_QAT_HW_CIPHER_DECRYPT;
+		session->auth_op = ICP_QAT_HW_AUTH_VERIFY;
+		ICP_QAT_FW_LA_CMP_AUTH_SET(
+			session->fw_req.comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_CMP_AUTH_RES);
+	}
+	ICP_QAT_FW_LA_SINGLE_PASS_PROTO_FLAG_SET(
+			session->fw_req.comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_SINGLE_PASS_PROTO);
+	ICP_QAT_FW_LA_PROTO_SET(
+			session->fw_req.comn_hdr.serv_specif_flags,
+			ICP_QAT_FW_LA_NO_PROTO);
+	session->fw_req.comn_hdr.service_cmd_id =
+			ICP_QAT_FW_LA_CMD_CIPHER;
+	session->cd.cipher.cipher_config.val =
+			ICP_QAT_HW_CIPHER_CONFIG_BUILD(
+				ICP_QAT_HW_CIPHER_AEAD_MODE,
+				session->qat_cipher_alg,
+				ICP_QAT_HW_CIPHER_NO_CONVERT,
+				session->qat_dir);
+	QAT_FIELD_SET(session->cd.cipher.cipher_config.val,
+			aead_xform->digest_length,
+			QAT_CIPHER_AEAD_HASH_CMP_LEN_BITPOS,
+			QAT_CIPHER_AEAD_HASH_CMP_LEN_MASK);
+	session->cd.cipher.cipher_config.reserved =
+			ICP_QAT_HW_CIPHER_CONFIG_BUILD_UPPER(
+				aead_xform->aad_length);
+	cipher_param->spc_aad_sz = aead_xform->aad_length;
+	cipher_param->spc_auth_res_sz = aead_xform->digest_length;
+
 	return 0;
 }
 
@@ -692,6 +707,9 @@ qat_sym_session_configure_auth(struct rte_cryptodev *dev,
 	const uint8_t *key_data = auth_xform->key.data;
 	uint8_t key_length = auth_xform->key.length;
 	session->aes_cmac = 0;
+
+	session->auth_iv.offset = auth_xform->iv.offset;
+	session->auth_iv.length = auth_xform->iv.length;
 	session->auth_mode = ICP_QAT_HW_AUTH_MODE1;
 
 	switch (auth_xform->algo) {
@@ -745,6 +763,8 @@ qat_sym_session_configure_auth(struct rte_cryptodev *dev,
 		}
 		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		session->qat_hash_alg = ICP_QAT_HW_AUTH_ALGO_GALOIS_128;
+		if (session->auth_iv.length == 0)
+			session->auth_iv.length = AES_GCM_J0_LEN;
 
 		break;
 	case RTE_CRYPTO_AUTH_SNOW3G_UIA2:
@@ -778,9 +798,6 @@ qat_sym_session_configure_auth(struct rte_cryptodev *dev,
 				auth_xform->algo);
 		return -EINVAL;
 	}
-
-	session->auth_iv.offset = auth_xform->iv.offset;
-	session->auth_iv.length = auth_xform->iv.length;
 
 	if (auth_xform->algo == RTE_CRYPTO_AUTH_AES_GMAC) {
 		if (auth_xform->op == RTE_CRYPTO_AUTH_OP_GENERATE) {
@@ -847,6 +864,10 @@ qat_sym_session_configure_aead(struct rte_cryptodev *dev,
 {
 	struct rte_crypto_aead_xform *aead_xform = &xform->aead;
 	enum rte_crypto_auth_operation crypto_operation;
+	struct qat_sym_dev_private *internals =
+			dev->data->dev_private;
+	enum qat_device_gen qat_dev_gen =
+			internals->qat_dev->qat_dev_gen;
 
 	/*
 	 * Store AEAD IV parameters as cipher IV,
@@ -857,6 +878,7 @@ qat_sym_session_configure_aead(struct rte_cryptodev *dev,
 
 	session->auth_mode = ICP_QAT_HW_AUTH_MODE1;
 
+	session->is_single_pass = 0;
 	switch (aead_xform->algo) {
 	case RTE_CRYPTO_AEAD_AES_GCM:
 		if (qat_sym_validate_aes_key(aead_xform->key.length,
@@ -866,6 +888,14 @@ qat_sym_session_configure_aead(struct rte_cryptodev *dev,
 		}
 		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		session->qat_hash_alg = ICP_QAT_HW_AUTH_ALGO_GALOIS_128;
+		if (qat_dev_gen > QAT_GEN2 && aead_xform->iv.length ==
+				QAT_AES_GCM_SPC_IV_SIZE) {
+			return qat_sym_session_handle_single_pass(session,
+					aead_xform);
+		}
+		if (session->cipher_iv.length == 0)
+			session->cipher_iv.length = AES_GCM_J0_LEN;
+
 		break;
 	case RTE_CRYPTO_AEAD_AES_CCM:
 		if (qat_sym_validate_aes_key(aead_xform->key.length,
@@ -876,21 +906,17 @@ qat_sym_session_configure_aead(struct rte_cryptodev *dev,
 		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		session->qat_hash_alg = ICP_QAT_HW_AUTH_ALGO_AES_CBC_MAC;
 		break;
+	case RTE_CRYPTO_AEAD_CHACHA20_POLY1305:
+		if (aead_xform->key.length != ICP_QAT_HW_CHACHAPOLY_KEY_SZ)
+			return -EINVAL;
+		session->qat_cipher_alg =
+				ICP_QAT_HW_CIPHER_ALGO_CHACHA20_POLY1305;
+		return qat_sym_session_handle_single_pass(session,
+						aead_xform);
 	default:
 		QAT_LOG(ERR, "Crypto: Undefined AEAD specified %u\n",
 				aead_xform->algo);
 		return -EINVAL;
-	}
-
-	session->is_single_pass = 0;
-	if (aead_xform->algo == RTE_CRYPTO_AEAD_AES_GCM) {
-		/* Use faster Single-Pass GCM if possible */
-		int res = qat_sym_session_handle_single_pass(
-				dev->data->dev_private, session, aead_xform);
-		if (res < 0)
-			return res;
-		if (session->is_single_pass)
-			return 0;
 	}
 
 	if ((aead_xform->op == RTE_CRYPTO_AEAD_OP_ENCRYPT &&
@@ -2012,6 +2038,9 @@ int qat_sym_validate_aes_docsisbpi_key(int key_len,
 	case ICP_QAT_HW_AES_128_KEY_SZ:
 		*alg = ICP_QAT_HW_CIPHER_ALGO_AES128;
 		break;
+	case ICP_QAT_HW_AES_256_KEY_SZ:
+		*alg = ICP_QAT_HW_CIPHER_ALGO_AES256;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -2079,3 +2108,151 @@ int qat_sym_validate_zuc_key(int key_len, enum icp_qat_hw_cipher_algo *alg)
 	}
 	return 0;
 }
+
+#ifdef RTE_LIB_SECURITY
+static int
+qat_sec_session_check_docsis(struct rte_security_session_conf *conf)
+{
+	struct rte_crypto_sym_xform *crypto_sym = conf->crypto_xform;
+	struct rte_security_docsis_xform *docsis = &conf->docsis;
+
+	/* CRC generate -> Cipher encrypt */
+	if (docsis->direction == RTE_SECURITY_DOCSIS_DOWNLINK) {
+
+		if (crypto_sym != NULL &&
+		    crypto_sym->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
+		    crypto_sym->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT &&
+		    crypto_sym->cipher.algo ==
+					RTE_CRYPTO_CIPHER_AES_DOCSISBPI &&
+		    (crypto_sym->cipher.key.length ==
+					ICP_QAT_HW_AES_128_KEY_SZ ||
+		     crypto_sym->cipher.key.length ==
+					ICP_QAT_HW_AES_256_KEY_SZ) &&
+		    crypto_sym->cipher.iv.length == ICP_QAT_HW_AES_BLK_SZ &&
+		    crypto_sym->next == NULL) {
+			return 0;
+		}
+	/* Cipher decrypt -> CRC verify */
+	} else if (docsis->direction == RTE_SECURITY_DOCSIS_UPLINK) {
+
+		if (crypto_sym != NULL &&
+		    crypto_sym->type == RTE_CRYPTO_SYM_XFORM_CIPHER &&
+		    crypto_sym->cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT &&
+		    crypto_sym->cipher.algo ==
+					RTE_CRYPTO_CIPHER_AES_DOCSISBPI &&
+		    (crypto_sym->cipher.key.length ==
+					ICP_QAT_HW_AES_128_KEY_SZ ||
+		     crypto_sym->cipher.key.length ==
+					ICP_QAT_HW_AES_256_KEY_SZ) &&
+		    crypto_sym->cipher.iv.length == ICP_QAT_HW_AES_BLK_SZ &&
+		    crypto_sym->next == NULL) {
+			return 0;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static int
+qat_sec_session_set_docsis_parameters(struct rte_cryptodev *dev,
+		struct rte_security_session_conf *conf, void *session_private)
+{
+	int ret;
+	int qat_cmd_id;
+	struct rte_crypto_sym_xform *xform = NULL;
+	struct qat_sym_session *session = session_private;
+
+	/* Clear the session */
+	memset(session, 0, qat_sym_session_get_private_size(dev));
+
+	ret = qat_sec_session_check_docsis(conf);
+	if (ret) {
+		QAT_LOG(ERR, "Unsupported DOCSIS security configuration");
+		return ret;
+	}
+
+	xform = conf->crypto_xform;
+
+	/* Verify the session physical address is known */
+	rte_iova_t session_paddr = rte_mempool_virt2iova(session);
+	if (session_paddr == 0 || session_paddr == RTE_BAD_IOVA) {
+		QAT_LOG(ERR,
+			"Session physical address unknown. Bad memory pool.");
+		return -EINVAL;
+	}
+
+	/* Set context descriptor physical address */
+	session->cd_paddr = session_paddr +
+			offsetof(struct qat_sym_session, cd);
+
+	session->min_qat_dev_gen = QAT_GEN1;
+
+	/* Get requested QAT command id - should be cipher */
+	qat_cmd_id = qat_get_cmd_id(xform);
+	if (qat_cmd_id != ICP_QAT_FW_LA_CMD_CIPHER) {
+		QAT_LOG(ERR, "Unsupported xform chain requested");
+		return -ENOTSUP;
+	}
+	session->qat_cmd = (enum icp_qat_fw_la_cmd_id)qat_cmd_id;
+
+	ret = qat_sym_session_configure_cipher(dev, xform, session);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+int
+qat_security_session_create(void *dev,
+				struct rte_security_session_conf *conf,
+				struct rte_security_session *sess,
+				struct rte_mempool *mempool)
+{
+	void *sess_private_data;
+	struct rte_cryptodev *cdev = (struct rte_cryptodev *)dev;
+	int ret;
+
+	if (conf->action_type != RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL ||
+			conf->protocol != RTE_SECURITY_PROTOCOL_DOCSIS) {
+		QAT_LOG(ERR, "Invalid security protocol");
+		return -EINVAL;
+	}
+
+	if (rte_mempool_get(mempool, &sess_private_data)) {
+		QAT_LOG(ERR, "Couldn't get object from session mempool");
+		return -ENOMEM;
+	}
+
+	ret = qat_sec_session_set_docsis_parameters(cdev, conf,
+			sess_private_data);
+	if (ret != 0) {
+		QAT_LOG(ERR, "Failed to configure session parameters");
+		/* Return session to mempool */
+		rte_mempool_put(mempool, sess_private_data);
+		return ret;
+	}
+
+	set_sec_session_private_data(sess, sess_private_data);
+
+	return ret;
+}
+
+int
+qat_security_session_destroy(void *dev __rte_unused,
+				 struct rte_security_session *sess)
+{
+	void *sess_priv = get_sec_session_private_data(sess);
+	struct qat_sym_session *s = (struct qat_sym_session *)sess_priv;
+
+	if (sess_priv) {
+		if (s->bpi_ctx)
+			bpi_cipher_ctx_free(s->bpi_ctx);
+		memset(s, 0, qat_sym_session_get_private_size(dev));
+		struct rte_mempool *sess_mp = rte_mempool_from_obj(sess_priv);
+
+		set_sec_session_private_data(sess, NULL);
+		rte_mempool_put(sess_mp, sess_priv);
+	}
+	return 0;
+}
+#endif

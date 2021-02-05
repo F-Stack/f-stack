@@ -3,7 +3,7 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
 
 deps += ['common_dpaax', 'eventdev', 'kvargs']
@@ -21,7 +21,5 @@ sources = files('fslmc_bus.c',
 		'portal/dpaa2_hw_dpio.c',
 		'qbman/qbman_portal.c',
 		'qbman/qbman_debug.c')
-
-allow_experimental_apis = true
 
 includes += include_directories('mc', 'qbman/include', 'portal')

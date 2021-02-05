@@ -14,7 +14,6 @@
 #include <errno.h>
 #include <inttypes.h>
 
-#include <rte_atomic.h>
 #include <rte_memcpy.h>
 #include <rte_memory.h>
 #include <rte_string_fns.h>
@@ -74,6 +73,7 @@
 		"/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_min_freq"
 #define POWER_SYSFILE_BASE_FREQ  \
 		"/sys/devices/system/cpu/cpu%u/cpufreq/base_frequency"
+#define POWER_PSTATE_DRIVER "intel_pstate"
 #define POWER_MSR_PATH  "/dev/cpu/%u/msr"
 
 /*
@@ -102,7 +102,7 @@ struct pstate_power_info {
 	uint32_t non_turbo_max_ratio;        /**< Non Turbo Max ratio  */
 	uint32_t sys_max_freq;               /**< system wide max freq  */
 	uint32_t core_base_freq;             /**< core base freq  */
-	volatile uint32_t state;             /**< Power in use state */
+	uint32_t state;                      /**< Power in use state */
 	uint16_t turbo_available;            /**< Turbo Boost available */
 	uint16_t turbo_enable;               /**< Turbo Boost enable/disable */
 	uint16_t priority_core;              /**< High Performance core */
@@ -586,9 +586,16 @@ fail:
 }
 
 int
+power_pstate_cpufreq_check_supported(void)
+{
+	return cpufreq_check_scaling_driver(POWER_PSTATE_DRIVER);
+}
+
+int
 power_pstate_cpufreq_init(unsigned int lcore_id)
 {
 	struct pstate_power_info *pi;
+	uint32_t exp_state;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Lcore id %u can not exceed %u\n",
@@ -597,8 +604,16 @@ power_pstate_cpufreq_init(unsigned int lcore_id)
 	}
 
 	pi = &lcore_power_info[lcore_id];
-	if (rte_atomic32_cmpset(&(pi->state), POWER_IDLE, POWER_ONGOING)
-			== 0) {
+	exp_state = POWER_IDLE;
+	/* The power in use state works as a guard variable between
+	 * the CPU frequency control initialization and exit process.
+	 * The ACQUIRE memory ordering here pairs with the RELEASE
+	 * ordering below as lock to make sure the frequency operations
+	 * in the critical section are done under the correct state.
+	 */
+	if (!__atomic_compare_exchange_n(&(pi->state), &exp_state,
+					POWER_ONGOING, 0,
+					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
 		RTE_LOG(INFO, POWER, "Power management of lcore %u is "
 				"in use\n", lcore_id);
 		return -1;
@@ -640,12 +655,16 @@ power_pstate_cpufreq_init(unsigned int lcore_id)
 
 	RTE_LOG(INFO, POWER, "Initialized successfully for lcore %u "
 			"power management\n", lcore_id);
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_USED);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_USED,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return 0;
 
 fail:
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_UNKNOWN);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_UNKNOWN,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return -1;
 }
@@ -654,6 +673,7 @@ int
 power_pstate_cpufreq_exit(unsigned int lcore_id)
 {
 	struct pstate_power_info *pi;
+	uint32_t exp_state;
 
 	if (lcore_id >= RTE_MAX_LCORE) {
 		RTE_LOG(ERR, POWER, "Lcore id %u can not exceeds %u\n",
@@ -662,8 +682,16 @@ power_pstate_cpufreq_exit(unsigned int lcore_id)
 	}
 	pi = &lcore_power_info[lcore_id];
 
-	if (rte_atomic32_cmpset(&(pi->state), POWER_USED, POWER_ONGOING)
-			== 0) {
+	exp_state = POWER_USED;
+	/* The power in use state works as a guard variable between
+	 * the CPU frequency control initialization and exit process.
+	 * The ACQUIRE memory ordering here pairs with the RELEASE
+	 * ordering below as lock to make sure the frequency operations
+	 * in the critical section are under done the correct state.
+	 */
+	if (!__atomic_compare_exchange_n(&(pi->state), &exp_state,
+					POWER_ONGOING, 0,
+					__ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
 		RTE_LOG(INFO, POWER, "Power management of lcore %u is "
 				"not used\n", lcore_id);
 		return -1;
@@ -685,12 +713,16 @@ power_pstate_cpufreq_exit(unsigned int lcore_id)
 	RTE_LOG(INFO, POWER, "Power management of lcore %u has exited from "
 			"'performance' mode and been set back to the "
 			"original\n", lcore_id);
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_IDLE);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_IDLE,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return 0;
 
 fail:
-	rte_atomic32_cmpset(&(pi->state), POWER_ONGOING, POWER_UNKNOWN);
+	exp_state = POWER_ONGOING;
+	__atomic_compare_exchange_n(&(pi->state), &exp_state, POWER_UNKNOWN,
+				    0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 
 	return -1;
 }

@@ -253,11 +253,11 @@ cmdline_parse_token_string_t cmd_show_port_meter_cap_cap =
 		struct cmd_show_port_meter_cap_result, cap, "cap");
 cmdline_parse_token_num_t cmd_show_port_meter_cap_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_show_port_meter_cap_result, port_id, UINT16);
+		struct cmd_show_port_meter_cap_result, port_id, RTE_UINT16);
 
 static void cmd_show_port_meter_cap_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_show_port_meter_cap_result *res = parsed_result;
 	struct rte_mtr_capabilities cap;
@@ -359,27 +359,27 @@ cmdline_parse_token_string_t cmd_add_port_meter_profile_srtcm_srtcm_rfc2697 =
 cmdline_parse_token_num_t cmd_add_port_meter_profile_srtcm_port_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_srtcm_result,
-			port_id, UINT16);
+			port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_srtcm_profile_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_srtcm_result,
-			profile_id, UINT32);
+			profile_id, RTE_UINT32);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_srtcm_cir =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_srtcm_result,
-			cir, UINT64);
+			cir, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_srtcm_cbs =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_srtcm_result,
-			cbs, UINT64);
+			cbs, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_srtcm_ebs =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_srtcm_result,
-			ebs, UINT64);
+			ebs, RTE_UINT64);
 
 static void cmd_add_port_meter_profile_srtcm_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_add_port_meter_profile_srtcm_result *res = parsed_result;
 	struct rte_mtr_meter_profile mp;
@@ -461,31 +461,31 @@ cmdline_parse_token_string_t cmd_add_port_meter_profile_trtcm_trtcm_rfc2698 =
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_port_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_result,
-			port_id, UINT16);
+			port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_profile_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_result,
-			profile_id, UINT32);
+			profile_id, RTE_UINT32);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_cir =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_result,
-			cir, UINT64);
+			cir, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_pir =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_result,
-			pir, UINT64);
+			pir, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_cbs =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_result,
-			cbs, UINT64);
+			cbs, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_pbs =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_result,
-			pbs, UINT64);
+			pbs, RTE_UINT64);
 
 static void cmd_add_port_meter_profile_trtcm_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_add_port_meter_profile_trtcm_result *res = parsed_result;
 	struct rte_mtr_meter_profile mp;
@@ -571,32 +571,32 @@ cmdline_parse_token_string_t
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_port_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_rfc4115_result,
-			port_id, UINT16);
+			port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_profile_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_rfc4115_result,
-			profile_id, UINT32);
+			profile_id, RTE_UINT32);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_cir =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_rfc4115_result,
-			cir, UINT64);
+			cir, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_eir =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_rfc4115_result,
-			eir, UINT64);
+			eir, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_cbs =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_rfc4115_result,
-			cbs, UINT64);
+			cbs, RTE_UINT64);
 cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_ebs =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_add_port_meter_profile_trtcm_rfc4115_result,
-			ebs, UINT64);
+			ebs, RTE_UINT64);
 
 static void cmd_add_port_meter_profile_trtcm_rfc4115_parsed(
 	void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_add_port_meter_profile_trtcm_rfc4115_result *res =
 		parsed_result;
@@ -672,15 +672,15 @@ cmdline_parse_token_string_t cmd_del_port_meter_profile_profile =
 cmdline_parse_token_num_t cmd_del_port_meter_profile_port_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_del_port_meter_profile_result,
-			port_id, UINT16);
+			port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_del_port_meter_profile_profile_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_del_port_meter_profile_result,
-			profile_id, UINT32);
+			profile_id, RTE_UINT32);
 
 static void cmd_del_port_meter_profile_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_del_port_meter_profile_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -742,13 +742,13 @@ cmdline_parse_token_string_t cmd_create_port_meter_meter =
 		struct cmd_create_port_meter_result, meter, "meter");
 cmdline_parse_token_num_t cmd_create_port_meter_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_create_port_meter_result, port_id, UINT16);
+		struct cmd_create_port_meter_result, port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_create_port_meter_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_create_port_meter_result, mtr_id, UINT32);
+		struct cmd_create_port_meter_result, mtr_id, RTE_UINT32);
 cmdline_parse_token_num_t cmd_create_port_meter_profile_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_create_port_meter_result, profile_id, UINT32);
+		struct cmd_create_port_meter_result, profile_id, RTE_UINT32);
 cmdline_parse_token_string_t cmd_create_port_meter_meter_enable =
 	TOKEN_STRING_INITIALIZER(struct cmd_create_port_meter_result,
 		meter_enable, "yes#no");
@@ -763,17 +763,17 @@ cmdline_parse_token_string_t cmd_create_port_meter_r_action =
 		r_action, "R#Y#G#D#r#y#g#d");
 cmdline_parse_token_num_t cmd_create_port_meter_statistics_mask =
 	TOKEN_NUM_INITIALIZER(struct cmd_create_port_meter_result,
-		statistics_mask, UINT64);
+		statistics_mask, RTE_UINT64);
 cmdline_parse_token_num_t cmd_create_port_meter_shared =
 	TOKEN_NUM_INITIALIZER(struct cmd_create_port_meter_result,
-		shared, UINT32);
+		shared, RTE_UINT32);
 cmdline_parse_token_string_t cmd_create_port_meter_input_color =
 	TOKEN_STRING_INITIALIZER(struct cmd_create_port_meter_result,
 		meter_input_color, TOKEN_STRING_MULTI);
 
 static void cmd_create_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_create_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -866,14 +866,14 @@ cmdline_parse_token_string_t cmd_enable_port_meter_meter =
 		struct cmd_enable_port_meter_result, meter, "meter");
 cmdline_parse_token_num_t cmd_enable_port_meter_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_enable_port_meter_result, port_id, UINT16);
+		struct cmd_enable_port_meter_result, port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_enable_port_meter_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_enable_port_meter_result, mtr_id, UINT32);
+		struct cmd_enable_port_meter_result, mtr_id, RTE_UINT32);
 
 static void cmd_enable_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_enable_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -927,14 +927,14 @@ cmdline_parse_token_string_t cmd_disable_port_meter_meter =
 		struct cmd_disable_port_meter_result, meter, "meter");
 cmdline_parse_token_num_t cmd_disable_port_meter_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_disable_port_meter_result, port_id, UINT16);
+		struct cmd_disable_port_meter_result, port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_disable_port_meter_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_disable_port_meter_result, mtr_id, UINT32);
+		struct cmd_disable_port_meter_result, mtr_id, RTE_UINT32);
 
 static void cmd_disable_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_disable_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -988,14 +988,14 @@ cmdline_parse_token_string_t cmd_del_port_meter_meter =
 		struct cmd_del_port_meter_result, meter, "meter");
 cmdline_parse_token_num_t cmd_del_port_meter_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_del_port_meter_result, port_id, UINT16);
+		struct cmd_del_port_meter_result, port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_del_port_meter_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_del_port_meter_result, mtr_id, UINT32);
+		struct cmd_del_port_meter_result, mtr_id, RTE_UINT32);
 
 static void cmd_del_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_del_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1054,17 +1054,20 @@ cmdline_parse_token_string_t cmd_set_port_meter_profile_profile =
 		struct cmd_set_port_meter_profile_result, profile, "profile");
 cmdline_parse_token_num_t cmd_set_port_meter_profile_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_set_port_meter_profile_result, port_id, UINT16);
+		struct cmd_set_port_meter_profile_result, port_id,
+		RTE_UINT16);
 cmdline_parse_token_num_t cmd_set_port_meter_profile_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_set_port_meter_profile_result, mtr_id, UINT32);
+		struct cmd_set_port_meter_profile_result, mtr_id,
+		RTE_UINT32);
 cmdline_parse_token_num_t cmd_set_port_meter_profile_profile_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_set_port_meter_profile_result, profile_id, UINT32);
+		struct cmd_set_port_meter_profile_result, profile_id,
+		RTE_UINT32);
 
 static void cmd_set_port_meter_profile_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_profile_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1129,8 +1132,8 @@ cmdline_parse_token_string_t cmd_set_port_meter_dscp_table_token_string =
 		token_string, TOKEN_STRING_MULTI);
 
 static void cmd_set_port_meter_dscp_table_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_dscp_table_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1208,23 +1211,23 @@ cmdline_parse_token_string_t cmd_set_port_meter_policer_action_action =
 cmdline_parse_token_num_t cmd_set_port_meter_policer_action_port_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_set_port_meter_policer_action_result, port_id,
-		UINT16);
+		RTE_UINT16);
 cmdline_parse_token_num_t cmd_set_port_meter_policer_action_mtr_id =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_set_port_meter_policer_action_result, mtr_id,
-		UINT32);
+		RTE_UINT32);
 cmdline_parse_token_num_t cmd_set_port_meter_policer_action_action_mask =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_set_port_meter_policer_action_result, action_mask,
-		UINT32);
+		RTE_UINT32);
 cmdline_parse_token_string_t cmd_set_port_meter_policer_action_policer_action =
 	TOKEN_STRING_INITIALIZER(
 		struct cmd_set_port_meter_policer_action_result,
 		policer_action, TOKEN_STRING_MULTI);
 
 static void cmd_set_port_meter_policer_action_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_policer_action_result *res = parsed_result;
 	enum rte_mtr_policer_action *actions;
@@ -1317,18 +1320,20 @@ cmdline_parse_token_string_t cmd_set_port_meter_stats_mask_mask =
 		struct cmd_set_port_meter_stats_mask_result, mask, "mask");
 cmdline_parse_token_num_t cmd_set_port_meter_stats_mask_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_set_port_meter_stats_mask_result, port_id, UINT16);
+		struct cmd_set_port_meter_stats_mask_result, port_id,
+		RTE_UINT16);
 cmdline_parse_token_num_t cmd_set_port_meter_stats_mask_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_set_port_meter_stats_mask_result, mtr_id, UINT32);
+		struct cmd_set_port_meter_stats_mask_result, mtr_id,
+		RTE_UINT32);
 cmdline_parse_token_num_t cmd_set_port_meter_stats_mask_stats_mask =
 	TOKEN_NUM_INITIALIZER(
 		struct cmd_set_port_meter_stats_mask_result, stats_mask,
-		UINT64);
+		RTE_UINT64);
 
 static void cmd_set_port_meter_stats_mask_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_stats_mask_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1389,17 +1394,17 @@ cmdline_parse_token_string_t cmd_show_port_meter_stats_stats =
 		struct cmd_show_port_meter_stats_result, stats, "stats");
 cmdline_parse_token_num_t cmd_show_port_meter_stats_port_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_show_port_meter_stats_result, port_id, UINT16);
+		struct cmd_show_port_meter_stats_result, port_id, RTE_UINT16);
 cmdline_parse_token_num_t cmd_show_port_meter_stats_mtr_id =
 	TOKEN_NUM_INITIALIZER(
-		struct cmd_show_port_meter_stats_result, mtr_id, UINT32);
+		struct cmd_show_port_meter_stats_result, mtr_id, RTE_UINT32);
 cmdline_parse_token_string_t cmd_show_port_meter_stats_clear =
 	TOKEN_STRING_INITIALIZER(
 		struct cmd_show_port_meter_stats_result, clear, "yes#no");
 
 static void cmd_show_port_meter_stats_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_show_port_meter_stats_result *res = parsed_result;
 	struct rte_mtr_stats stats;

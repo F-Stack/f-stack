@@ -8,6 +8,7 @@
 #include <rte_eventdev_pmd.h>
 #include <rte_eventdev_pmd_vdev.h>
 #include <rte_random.h>
+#include <rte_ring_elem.h>
 
 #include "dsw_evdev.h"
 
@@ -46,9 +47,11 @@ dsw_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	snprintf(ring_name, sizeof(ring_name), "dswctl%d_p%u",
 		 dev->data->dev_id, port_id);
 
-	ctl_in_ring = rte_ring_create(ring_name, DSW_CTL_IN_RING_SIZE,
-				      dev->data->socket_id,
-				      RING_F_SC_DEQ|RING_F_EXACT_SZ);
+	ctl_in_ring = rte_ring_create_elem(ring_name,
+					   sizeof(struct dsw_ctl_msg),
+					   DSW_CTL_IN_RING_SIZE,
+					   dev->data->socket_id,
+					   RING_F_SC_DEQ|RING_F_EXACT_SZ);
 
 	if (ctl_in_ring == NULL) {
 		rte_event_ring_free(in_ring);
@@ -59,6 +62,7 @@ dsw_port_setup(struct rte_eventdev *dev, uint8_t port_id,
 	port->ctl_in_ring = ctl_in_ring;
 
 	rte_atomic16_init(&port->load);
+	rte_atomic32_init(&port->immigration_load);
 
 	port->load_update_interval =
 		(DSW_LOAD_UPDATE_INTERVAL * rte_get_timer_hz()) / US_PER_S;
@@ -220,7 +224,8 @@ dsw_info_get(struct rte_eventdev *dev __rte_unused,
 		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE|
 		RTE_EVENT_DEV_CAP_DISTRIBUTED_SCHED|
 		RTE_EVENT_DEV_CAP_NONSEQ_MODE|
-		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT
+		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT|
+		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID
 	};
 }
 

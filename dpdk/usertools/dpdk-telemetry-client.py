@@ -1,9 +1,6 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Intel Corporation
-
-from __future__ import print_function
-from __future__ import unicode_literals
 
 import socket
 import os
@@ -17,11 +14,6 @@ API_REG = "{\"action\":1,\"command\":\"clients\",\"data\":{\"client_path\":\""
 API_UNREG = "{\"action\":2,\"command\":\"clients\",\"data\":{\"client_path\":\""
 GLOBAL_METRICS_REQ = "{\"action\":0,\"command\":\"global_stat_values\",\"data\":null}"
 DEFAULT_FP = "/var/run/dpdk/default_client"
-
-try:
-    raw_input  # Python 2
-except NameError:
-    raw_input = input  # Python 3
 
 class Socket:
 
@@ -82,7 +74,7 @@ class Client:
 
     def repeatedlyRequestMetrics(self, sleep_time): # Recursively requests metrics for given client
         print("\nPlease enter the number of times you'd like to continuously request Metrics:")
-        n_requests = int(raw_input("\n:"))
+        n_requests = int(input("\n:"))
         print("\033[F") #Removes the user input from screen, cleans it up
         print("\033[K")
         for i in range(n_requests):
@@ -103,7 +95,7 @@ class Client:
             print("[4] Unregister client")
 
             try:
-                self.choice = int(raw_input("\n:"))
+                self.choice = int(input("\n:"))
                 print("\033[F") #Removes the user input for screen, cleans it up
                 print("\033[K")
                 if self.choice == 1:
@@ -124,7 +116,7 @@ if __name__ == "__main__":
 
     sleep_time = 1
     file_path = ""
-    if (len(sys.argv) == 2):
+    if len(sys.argv) == 2:
         file_path = sys.argv[1]
     else:
         print("Warning - No filepath passed, using default (" + DEFAULT_FP + ").")

@@ -12,6 +12,7 @@ test_sources = files('commands.c',
 	'test_alarm.c',
 	'test_atomic.c',
 	'test_barrier.c',
+	'test_bitops.c',
 	'test_bpf.c',
 	'test_byteorder.c',
 	'test_cmdline.c',
@@ -38,6 +39,7 @@ test_sources = files('commands.c',
 	'test_efd.c',
 	'test_efd_perf.c',
 	'test_errno.c',
+	'test_ethdev_link.c',
 	'test_event_crypto_adapter.c',
 	'test_event_eth_rx_adapter.c',
 	'test_event_ring.c',
@@ -51,6 +53,8 @@ test_sources = files('commands.c',
 	'test_fib6_perf.c',
 	'test_func_reentrancy.c',
 	'test_flow_classify.c',
+	'test_graph.c',
+	'test_graph_perf.c',
 	'test_hash.c',
 	'test_hash_functions.c',
 	'test_hash_multiwriter.c',
@@ -58,12 +62,13 @@ test_sources = files('commands.c',
 	'test_hash_perf.c',
 	'test_hash_readwrite_lf_perf.c',
 	'test_interrupts.c',
+        'test_ipfrag.c',
 	'test_ipsec.c',
 	'test_ipsec_sad.c',
+	'test_ipsec_perf.c',
 	'test_kni.c',
 	'test_kvargs.c',
-	'test_link_bonding.c',
-	'test_link_bonding_rssconf.c',
+	'test_lcores.c',
 	'test_logs.c',
 	'test_lpm.c',
 	'test_lpm6.c',
@@ -100,9 +105,18 @@ test_sources = files('commands.c',
 	'test_rib.c',
 	'test_rib6.c',
 	'test_ring.c',
+	'test_ring_mpmc_stress.c',
+	'test_ring_hts_stress.c',
+	'test_ring_mt_peek_stress.c',
+	'test_ring_mt_peek_stress_zc.c',
 	'test_ring_perf.c',
+	'test_ring_rts_stress.c',
+	'test_ring_st_peek_stress.c',
+	'test_ring_st_peek_stress_zc.c',
+	'test_ring_stress.c',
 	'test_rwlock.c',
 	'test_sched.c',
+	'test_security.c',
 	'test_service_cores.c',
 	'test_spinlock.c',
 	'test_stack.c',
@@ -121,11 +135,16 @@ test_sources = files('commands.c',
 	'test_timer_racecond.c',
 	'test_timer_secondary.c',
 	'test_ticketlock.c',
+	'test_trace.c',
+	'test_trace_register.c',
+	'test_trace_perf.c',
 	'test_version.c',
 	'virtual_pmd.c'
 )
 
 test_deps = ['acl',
+	'bus_pci',
+	'bus_vdev',
 	'bitratestats',
 	'bpf',
 	'cfgfile',
@@ -137,12 +156,14 @@ test_deps = ['acl',
 	'eventdev',
 	'fib',
 	'flow_classify',
+	'graph',
 	'hash',
 	'ipsec',
 	'latencystats',
 	'lpm',
 	'member',
 	'metrics',
+	'node',
 	'pipeline',
 	'port',
 	'rawdev',
@@ -150,7 +171,9 @@ test_deps = ['acl',
 	'reorder',
 	'rib',
 	'ring',
+	'security',
 	'stack',
+	'telemetry',
 	'timer'
 ]
 
@@ -160,6 +183,7 @@ fast_tests = [
         ['acl_autotest', true],
         ['alarm_autotest', false],
         ['atomic_autotest', false],
+        ['bitops_autotest', true],
         ['byteorder_autotest', true],
         ['cmdline_autotest', true],
         ['common_autotest', true],
@@ -167,11 +191,11 @@ fast_tests = [
         ['cycles_autotest', true],
         ['debug_autotest', true],
         ['eal_flags_c_opt_autotest', false],
-        ['eal_flags_master_opt_autotest', false],
+        ['eal_flags_main_opt_autotest', false],
         ['eal_flags_n_opt_autotest', false],
         ['eal_flags_hpet_autotest', false],
         ['eal_flags_no_huge_autotest', false],
-        ['eal_flags_w_opt_autotest', false],
+        ['eal_flags_a_opt_autotest', false],
         ['eal_flags_b_opt_autotest', false],
         ['eal_flags_vdev_opt_autotest', false],
         ['eal_flags_r_opt_autotest', false],
@@ -180,6 +204,7 @@ fast_tests = [
         ['eal_flags_misc_autotest', false],
         ['eal_fs_autotest', true],
         ['errno_autotest', true],
+        ['ethdev_link_status', true],
         ['event_ring_autotest', true],
         ['fib_autotest', true],
         ['fib6_autotest', true],
@@ -187,6 +212,8 @@ fast_tests = [
         ['flow_classify_autotest', false],
         ['hash_autotest', true],
         ['interrupt_autotest', true],
+        ['ipfrag_autotest', false],
+        ['lcores_autotest', true],
         ['logs_autotest', true],
         ['lpm_autotest', true],
         ['lpm6_autotest', true],
@@ -211,6 +238,7 @@ fast_tests = [
         ['rwlock_rds_wrm_autotest', true],
         ['rwlock_rde_wro_autotest', true],
         ['sched_autotest', true],
+		['security_autotest', false],
         ['spinlock_autotest', true],
         ['stack_autotest', false],
         ['stack_lf_autotest', false],
@@ -225,7 +253,7 @@ fast_tests = [
         ['distributor_autotest', false],
         ['eventdev_common_autotest', true],
         ['fbarray_autotest', true],
-        ['hash_readwrite_autotest', false],
+        ['hash_readwrite_func_autotest', false],
         ['ipsec_autotest', true],
         ['kni_autotest', false],
         ['kvargs_autotest', true],
@@ -237,6 +265,7 @@ fast_tests = [
         ['reorder_autotest', true],
         ['service_autotest', true],
         ['thash_autotest', true],
+        ['trace_autotest', true],
 ]
 
 perf_test_names = [
@@ -270,7 +299,10 @@ perf_test_names = [
         'stack_perf_autotest',
         'stack_lf_perf_autotest',
         'rand_perf_autotest',
+        'hash_readwrite_perf_autotest',
         'hash_readwrite_lf_perf_autotest',
+        'trace_perf_autotest',
+	'ipsec_perf_autotest',
 ]
 
 driver_test_names = [
@@ -290,8 +322,6 @@ driver_test_names = [
         'cryptodev_sw_zuc_autotest',
         'eventdev_selftest_octeontx',
         'eventdev_selftest_sw',
-        'link_bonding_autotest',
-        'link_bonding_rssconf_autotest',
         'rawdev_autotest',
 ]
 
@@ -310,27 +340,33 @@ dump_test_names = [
 # unit tests without requiring that the developer install the
 # DPDK libraries.  Explicit linkage of drivers (plugin libraries)
 # in applications should not be used.
-if dpdk_conf.has('RTE_LIBRTE_RING_MEMPOOL')
+if dpdk_conf.has('RTE_MEMPOOL_RING')
 	test_deps += 'mempool_ring'
 endif
-if dpdk_conf.has('RTE_LIBRTE_STACK_MEMPOOL')
+if dpdk_conf.has('RTE_MEMPOOL_STACK')
 	test_deps += 'mempool_stack'
 endif
-if dpdk_conf.has('RTE_LIBRTE_SKELETON_EVENTDEV_PMD')
-	test_deps += 'pmd_skeleton_event'
+if dpdk_conf.has('RTE_EVENT_SKELETON')
+	test_deps += 'event_skeleton'
+endif
+if dpdk_conf.has('RTE_LIB_TELEMETRY')
+	test_sources += ['test_telemetry_json.c', 'test_telemetry_data.c']
+	fast_tests += [['telemetry_json_autotest', true], ['telemetry_data_autotest', true]]
 endif
 
 # The following linkages of drivers are required because
 # they are used via a driver-specific API.
-if dpdk_conf.has('RTE_LIBRTE_BOND_PMD')
-	test_deps += 'pmd_bond'
-	if dpdk_conf.has('RTE_LIBRTE_RING_PMD')
+if dpdk_conf.has('RTE_NET_BOND')
+	test_deps += 'net_bond'
+	test_sources += ['test_link_bonding.c', 'test_link_bonding_rssconf.c']
+	driver_test_names += ['link_bonding_autotest', 'link_bonding_rssconf_autotest']
+	if dpdk_conf.has('RTE_NET_RING')
 		test_sources += 'test_link_bonding_mode4.c'
 		driver_test_names += 'link_bonding_mode4_autotest'
 	endif
 endif
-if dpdk_conf.has('RTE_LIBRTE_RING_PMD')
-	test_deps += 'pmd_ring'
+if dpdk_conf.has('RTE_NET_RING')
+	test_deps += 'net_ring'
 	test_sources += 'test_pmd_ring_perf.c'
 	test_sources += 'test_pmd_ring.c'
 	test_sources += 'test_event_eth_tx_adapter.c'
@@ -346,29 +382,30 @@ if dpdk_conf.has('RTE_LIBRTE_RING_PMD')
 	fast_tests += [['pdump_autotest', true]]
 endif
 
-if dpdk_conf.has('RTE_LIBRTE_POWER')
+if dpdk_conf.has('RTE_LIB_POWER')
 	test_deps += 'power'
 endif
-if dpdk_conf.has('RTE_LIBRTE_KNI')
+if dpdk_conf.has('RTE_LIB_KNI')
 	test_deps += 'kni'
 endif
-if dpdk_conf.has('RTE_LIBRTE_PDUMP')
+if dpdk_conf.has('RTE_LIB_PDUMP')
 	test_deps += 'pdump'
 endif
 
-cflags = machine_args
 if cc.has_argument('-Wno-format-truncation')
     cflags += '-Wno-format-truncation'
 endif
 
 # specify -D_GNU_SOURCE unconditionally
 cflags += '-D_GNU_SOURCE'
+# Strict-aliasing rules are violated by uint8_t[] to context size casts.
+cflags += '-fno-strict-aliasing'
 
 # Enable using internal APIs in unit tests
 cflags += ['-DALLOW_INTERNAL_API']
 
 test_dep_objs = []
-if dpdk_conf.has('RTE_LIBRTE_COMPRESSDEV')
+if dpdk_conf.has('RTE_LIB_COMPRESSDEV')
 	compress_test_dep = dependency('zlib', required: false)
 	if compress_test_dep.found()
 		test_dep_objs += compress_test_dep
@@ -378,9 +415,9 @@ if dpdk_conf.has('RTE_LIBRTE_COMPRESSDEV')
 	endif
 endif
 
-if dpdk_conf.has('RTE_LIBRTE_PMD_CRYPTO_SCHEDULER')
+if dpdk_conf.has('RTE_CRYPTO_SCHEDULER')
 	driver_test_names += 'cryptodev_scheduler_autotest'
-	test_deps += 'pmd_crypto_scheduler'
+	test_deps += 'crypto_scheduler'
 endif
 
 foreach d:test_deps
@@ -398,20 +435,12 @@ dpdk_test = executable('dpdk-test',
 	test_sources,
 	link_whole: link_libs,
 	dependencies: test_dep_objs,
-	c_args: [cflags, '-DALLOW_EXPERIMENTAL_API'],
+	c_args: cflags,
 	install_rpath: join_paths(get_option('prefix'),
 			 driver_install_path),
 	install: true)
 
-has_hugepage = true
-if is_linux
-	check_hugepage = run_command('cat',
-				     '/proc/sys/vm/nr_hugepages')
-	if (check_hugepage.returncode() != 0 or
-	    check_hugepage.stdout().strip() == '0')
-		has_hugepage = false
-	endif
-endif
+has_hugepage = run_command('has-hugepage.sh').stdout().strip() != '0'
 message('hugepage availability: @0@'.format(has_hugepage))
 
 # some perf tests (eg: memcpy perf autotest)take very long

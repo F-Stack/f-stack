@@ -11,13 +11,13 @@
 #include <string.h>
 #include <unistd.h>
 #include <inttypes.h>
-#include <sys/mman.h>
 #include <sys/queue.h>
 
 #include <rte_fbarray.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_eal_memconfig.h>
+#include <rte_eal_paging.h>
 #include <rte_errno.h>
 #include <rte_log.h>
 
@@ -25,6 +25,7 @@
 #include "eal_private.h"
 #include "eal_internal_cfg.h"
 #include "eal_memcfg.h"
+#include "eal_options.h"
 #include "malloc_heap.h"
 
 /*
@@ -43,17 +44,17 @@ static uint64_t system_page_sz;
 #define MAX_MMAP_WITH_DEFINED_ADDR_TRIES 5
 void *
 eal_get_virtual_area(void *requested_addr, size_t *size,
-		size_t page_sz, int flags, int mmap_flags)
+	size_t page_sz, int flags, int reserve_flags)
 {
 	bool addr_is_hint, allow_shrink, unmap, no_align;
 	uint64_t map_sz;
 	void *mapped_addr, *aligned_addr;
 	uint8_t try = 0;
+	struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	if (system_page_sz == 0)
-		system_page_sz = sysconf(_SC_PAGESIZE);
-
-	mmap_flags |= MAP_PRIVATE | MAP_ANONYMOUS;
+		system_page_sz = rte_mem_page_size();
 
 	RTE_LOG(DEBUG, EAL, "Ask a virtual area of 0x%zx bytes\n", *size);
 
@@ -61,12 +62,12 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 	allow_shrink = (flags & EAL_VIRTUAL_AREA_ALLOW_SHRINK) > 0;
 	unmap = (flags & EAL_VIRTUAL_AREA_UNMAP) > 0;
 
-	if (next_baseaddr == NULL && internal_config.base_virtaddr != 0 &&
+	if (next_baseaddr == NULL && internal_conf->base_virtaddr != 0 &&
 			rte_eal_process_type() == RTE_PROC_PRIMARY)
-		next_baseaddr = (void *) internal_config.base_virtaddr;
+		next_baseaddr = (void *) internal_conf->base_virtaddr;
 
 #ifdef RTE_ARCH_64
-	if (next_baseaddr == NULL && internal_config.base_virtaddr == 0 &&
+	if (next_baseaddr == NULL && internal_conf->base_virtaddr == 0 &&
 			rte_eal_process_type() == RTE_PROC_PRIMARY)
 		next_baseaddr = (void *) eal_get_baseaddr();
 #endif
@@ -97,24 +98,24 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 			return NULL;
 		}
 
-		mapped_addr = mmap(requested_addr, (size_t)map_sz, PROT_NONE,
-				mmap_flags, -1, 0);
-		if (mapped_addr == MAP_FAILED && allow_shrink)
+		mapped_addr = eal_mem_reserve(
+			requested_addr, (size_t)map_sz, reserve_flags);
+		if ((mapped_addr == NULL) && allow_shrink)
 			*size -= page_sz;
 
-		if (mapped_addr != MAP_FAILED && addr_is_hint &&
-		    mapped_addr != requested_addr) {
+		if ((mapped_addr != NULL) && addr_is_hint &&
+				(mapped_addr != requested_addr)) {
 			try++;
 			next_baseaddr = RTE_PTR_ADD(next_baseaddr, page_sz);
 			if (try <= MAX_MMAP_WITH_DEFINED_ADDR_TRIES) {
 				/* hint was not used. Try with another offset */
-				munmap(mapped_addr, map_sz);
-				mapped_addr = MAP_FAILED;
+				eal_mem_free(mapped_addr, map_sz);
+				mapped_addr = NULL;
 				requested_addr = next_baseaddr;
 			}
 		}
 	} while ((allow_shrink || addr_is_hint) &&
-		 mapped_addr == MAP_FAILED && *size > 0);
+		(mapped_addr == NULL) && (*size > 0));
 
 	/* align resulting address - if map failed, we will ignore the value
 	 * anyway, so no need to add additional checks.
@@ -124,20 +125,17 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 
 	if (*size == 0) {
 		RTE_LOG(ERR, EAL, "Cannot get a virtual area of any size: %s\n",
-			strerror(errno));
-		rte_errno = errno;
+			rte_strerror(rte_errno));
 		return NULL;
-	} else if (mapped_addr == MAP_FAILED) {
+	} else if (mapped_addr == NULL) {
 		RTE_LOG(ERR, EAL, "Cannot get a virtual area: %s\n",
-			strerror(errno));
-		/* pass errno up the call chain */
-		rte_errno = errno;
+			rte_strerror(rte_errno));
 		return NULL;
 	} else if (requested_addr != NULL && !addr_is_hint &&
 			aligned_addr != requested_addr) {
 		RTE_LOG(ERR, EAL, "Cannot get a virtual area at requested address: %p (got %p)\n",
 			requested_addr, aligned_addr);
-		munmap(mapped_addr, map_sz);
+		eal_mem_free(mapped_addr, map_sz);
 		rte_errno = EADDRNOTAVAIL;
 		return NULL;
 	} else if (requested_addr != NULL && addr_is_hint &&
@@ -153,7 +151,7 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 		aligned_addr, *size);
 
 	if (unmap) {
-		munmap(mapped_addr, map_sz);
+		eal_mem_free(mapped_addr, map_sz);
 	} else if (!no_align) {
 		void *map_end, *aligned_end;
 		size_t before_len, after_len;
@@ -171,15 +169,115 @@ eal_get_virtual_area(void *requested_addr, size_t *size,
 		/* unmap space before aligned mmap address */
 		before_len = RTE_PTR_DIFF(aligned_addr, mapped_addr);
 		if (before_len > 0)
-			munmap(mapped_addr, before_len);
+			eal_mem_free(mapped_addr, before_len);
 
 		/* unmap space after aligned end mmap address */
 		after_len = RTE_PTR_DIFF(map_end, aligned_end);
 		if (after_len > 0)
-			munmap(aligned_end, after_len);
+			eal_mem_free(aligned_end, after_len);
+	}
+
+	if (!unmap) {
+		/* Exclude these pages from a core dump. */
+		eal_mem_set_dump(aligned_addr, *size, false);
 	}
 
 	return aligned_addr;
+}
+
+int
+eal_memseg_list_init_named(struct rte_memseg_list *msl, const char *name,
+		uint64_t page_sz, int n_segs, int socket_id, bool heap)
+{
+	if (rte_fbarray_init(&msl->memseg_arr, name, n_segs,
+			sizeof(struct rte_memseg))) {
+		RTE_LOG(ERR, EAL, "Cannot allocate memseg list: %s\n",
+			rte_strerror(rte_errno));
+		return -1;
+	}
+
+	msl->page_sz = page_sz;
+	msl->socket_id = socket_id;
+	msl->base_va = NULL;
+	msl->heap = heap;
+
+	RTE_LOG(DEBUG, EAL,
+		"Memseg list allocated at socket %i, page size 0x%"PRIx64"kB\n",
+		socket_id, page_sz >> 10);
+
+	return 0;
+}
+
+int
+eal_memseg_list_init(struct rte_memseg_list *msl, uint64_t page_sz,
+		int n_segs, int socket_id, int type_msl_idx, bool heap)
+{
+	char name[RTE_FBARRAY_NAME_LEN];
+
+	snprintf(name, sizeof(name), MEMSEG_LIST_FMT, page_sz >> 10, socket_id,
+		 type_msl_idx);
+
+	return eal_memseg_list_init_named(
+		msl, name, page_sz, n_segs, socket_id, heap);
+}
+
+int
+eal_memseg_list_alloc(struct rte_memseg_list *msl, int reserve_flags)
+{
+	size_t page_sz, mem_sz;
+	void *addr;
+
+	page_sz = msl->page_sz;
+	mem_sz = page_sz * msl->memseg_arr.len;
+
+	addr = eal_get_virtual_area(
+		msl->base_va, &mem_sz, page_sz, 0, reserve_flags);
+	if (addr == NULL) {
+#ifndef RTE_EXEC_ENV_WINDOWS
+		/* The hint would be misleading on Windows, because address
+		 * is by default system-selected (base VA = 0).
+		 * However, this function is called from many places,
+		 * including common code, so don't duplicate the message.
+		 */
+		if (rte_errno == EADDRNOTAVAIL)
+			RTE_LOG(ERR, EAL, "Cannot reserve %llu bytes at [%p] - "
+				"please use '--" OPT_BASE_VIRTADDR "' option\n",
+				(unsigned long long)mem_sz, msl->base_va);
+#endif
+		return -1;
+	}
+	msl->base_va = addr;
+	msl->len = mem_sz;
+
+	RTE_LOG(DEBUG, EAL, "VA reserved for memseg list at %p, size %zx\n",
+			addr, mem_sz);
+
+	return 0;
+}
+
+void
+eal_memseg_list_populate(struct rte_memseg_list *msl, void *addr, int n_segs)
+{
+	size_t page_sz = msl->page_sz;
+	int i;
+
+	for (i = 0; i < n_segs; i++) {
+		struct rte_fbarray *arr = &msl->memseg_arr;
+		struct rte_memseg *ms = rte_fbarray_get(arr, i);
+
+		if (rte_eal_iova_mode() == RTE_IOVA_VA)
+			ms->iova = (uintptr_t)addr;
+		else
+			ms->iova = RTE_BAD_IOVA;
+		ms->addr = addr;
+		ms->hugepage_sz = page_sz;
+		ms->socket_id = 0;
+		ms->len = page_sz;
+
+		rte_fbarray_set_used(arr, i);
+
+		addr = RTE_PTR_ADD(addr, page_sz);
+	}
 }
 
 static struct rte_memseg *
@@ -268,6 +366,8 @@ void *
 rte_mem_iova2virt(rte_iova_t iova)
 {
 	struct virtiova vi;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	memset(&vi, 0, sizeof(vi));
 
@@ -275,7 +375,7 @@ rte_mem_iova2virt(rte_iova_t iova)
 	/* for legacy mem, we can get away with scanning VA-contiguous segments,
 	 * as we know they are PA-contiguous as well
 	 */
-	if (internal_config.legacy_mem)
+	if (internal_conf->legacy_mem)
 		rte_memseg_contig_walk(find_virt_legacy, &vi);
 	else
 		rte_memseg_walk(find_virt, &vi);
@@ -356,8 +456,11 @@ int
 rte_mem_event_callback_register(const char *name, rte_mem_event_callback_t clb,
 		void *arg)
 {
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
+
 	/* FreeBSD boots with legacy mem enabled by default */
-	if (internal_config.legacy_mem) {
+	if (internal_conf->legacy_mem) {
 		RTE_LOG(DEBUG, EAL, "Registering mem event callbacks not supported\n");
 		rte_errno = ENOTSUP;
 		return -1;
@@ -368,8 +471,11 @@ rte_mem_event_callback_register(const char *name, rte_mem_event_callback_t clb,
 int
 rte_mem_event_callback_unregister(const char *name, void *arg)
 {
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
+
 	/* FreeBSD boots with legacy mem enabled by default */
-	if (internal_config.legacy_mem) {
+	if (internal_conf->legacy_mem) {
 		RTE_LOG(DEBUG, EAL, "Registering mem event callbacks not supported\n");
 		rte_errno = ENOTSUP;
 		return -1;
@@ -381,8 +487,11 @@ int
 rte_mem_alloc_validator_register(const char *name,
 		rte_mem_alloc_validator_t clb, int socket_id, size_t limit)
 {
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
+
 	/* FreeBSD boots with legacy mem enabled by default */
-	if (internal_config.legacy_mem) {
+	if (internal_conf->legacy_mem) {
 		RTE_LOG(DEBUG, EAL, "Registering mem alloc validators not supported\n");
 		rte_errno = ENOTSUP;
 		return -1;
@@ -394,8 +503,11 @@ rte_mem_alloc_validator_register(const char *name,
 int
 rte_mem_alloc_validator_unregister(const char *name, int socket_id)
 {
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
+
 	/* FreeBSD boots with legacy mem enabled by default */
-	if (internal_config.legacy_mem) {
+	if (internal_conf->legacy_mem) {
 		RTE_LOG(DEBUG, EAL, "Registering mem alloc validators not supported\n");
 		rte_errno = ENOTSUP;
 		return -1;
@@ -517,13 +629,15 @@ static int
 rte_eal_memdevice_init(void)
 {
 	struct rte_config *config;
+	const struct internal_config *internal_conf;
 
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
 		return 0;
 
+	internal_conf = eal_get_internal_configuration();
 	config = rte_eal_get_configuration();
-	config->mem_config->nchannel = internal_config.force_nchannel;
-	config->mem_config->nrank = internal_config.force_nrank;
+	config->mem_config->nchannel = internal_conf->force_nchannel;
+	config->mem_config->nrank = internal_conf->force_nrank;
 
 	return 0;
 }
@@ -532,10 +646,10 @@ rte_eal_memdevice_init(void)
 int
 rte_mem_lock_page(const void *virt)
 {
-	unsigned long virtual = (unsigned long)virt;
-	int page_size = getpagesize();
-	unsigned long aligned = (virtual & ~(page_size - 1));
-	return mlock((void *)aligned, page_size);
+	uintptr_t virtual = (uintptr_t)virt;
+	size_t page_size = rte_mem_page_size();
+	uintptr_t aligned = RTE_PTR_ALIGN_FLOOR(virtual, page_size);
+	return rte_mem_lock((void *)aligned, page_size);
 }
 
 int
@@ -893,6 +1007,9 @@ int
 rte_eal_memory_init(void)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
+
 	int retval;
 	RTE_LOG(DEBUG, EAL, "Setting up physically contiguous memory...\n");
 
@@ -914,7 +1031,7 @@ rte_eal_memory_init(void)
 	if (retval < 0)
 		goto fail;
 
-	if (internal_config.no_shconf == 0 && rte_eal_memdevice_init() < 0)
+	if (internal_conf->no_shconf == 0 && rte_eal_memdevice_init() < 0)
 		goto fail;
 
 	return 0;

@@ -5,5 +5,4 @@ deps += ['rawdev', 'mbuf', 'mempool',
 	 'pci', 'bus_pci']
 sources = files('ntb.c',
                 'ntb_hw_intel.c')
-install_headers('rte_pmd_ntb.h')
-allow_experimental_apis = true
+headers = files('rte_pmd_ntb.h')

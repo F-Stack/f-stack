@@ -31,8 +31,9 @@ Network Interface Controller Drivers
     hns3
     i40e
     ice
-    ifc
     igb
+    igc
+    ionic
     ipn3ke
     ixgbe
     intel_vf
@@ -46,6 +47,7 @@ Network Interface Controller Drivers
     netvsc
     nfb
     nfp
+    null
     octeontx
     octeontx2
     pfe
@@ -55,6 +57,7 @@ Network Interface Controller Drivers
     szedata2
     tap
     thunderx
+    txgbe
     vdev_netvsc
     virtio
     vhost

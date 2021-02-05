@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Intel Corporation
 
-allow_experimental_apis = true
 sources = files('bpf.c',
 		'bpf_exec.c',
 		'bpf_load.c',
@@ -14,9 +13,9 @@ elif dpdk_conf.has('RTE_ARCH_ARM64')
 	sources += files('bpf_jit_arm64.c')
 endif
 
-install_headers('bpf_def.h',
-			'rte_bpf.h',
-			'rte_bpf_ethdev.h')
+headers = files('bpf_def.h',
+		'rte_bpf.h',
+		'rte_bpf_ethdev.h')
 
 deps += ['mbuf', 'net', 'ethdev']
 

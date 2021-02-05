@@ -248,6 +248,9 @@ struct fw_filter2_wr {
 #define S_FW_FILTER_WR_DMAC	19
 #define V_FW_FILTER_WR_DMAC(x)	((x) << S_FW_FILTER_WR_DMAC)
 
+#define S_FW_FILTER_WR_SMAC     18
+#define V_FW_FILTER_WR_SMAC(x)  ((x) << S_FW_FILTER_WR_SMAC)
+
 #define S_FW_FILTER_WR_INSVLAN		17
 #define V_FW_FILTER_WR_INSVLAN(x)	((x) << S_FW_FILTER_WR_INSVLAN)
 
@@ -624,7 +627,7 @@ struct fw_caps_config_cmd {
 	__be16 niccaps;
 	__be16 toecaps;
 	__be16 rdmacaps;
-	__be16 r4;
+	__be16 cryptocaps;
 	__be16 iscsicaps;
 	__be16 fcoecaps;
 	__be32 cfcsum;
@@ -668,6 +671,23 @@ enum fw_params_mnem {
 /*
  * device parameters
  */
+
+#define S_FW_PARAMS_PARAM_FILTER_MODE 16
+#define M_FW_PARAMS_PARAM_FILTER_MODE 0xffff
+#define V_FW_PARAMS_PARAM_FILTER_MODE(x)          \
+	((x) << S_FW_PARAMS_PARAM_FILTER_MODE)
+#define G_FW_PARAMS_PARAM_FILTER_MODE(x)          \
+	(((x) >> S_FW_PARAMS_PARAM_FILTER_MODE) & \
+	M_FW_PARAMS_PARAM_FILTER_MODE)
+
+#define S_FW_PARAMS_PARAM_FILTER_MASK 0
+#define M_FW_PARAMS_PARAM_FILTER_MASK 0xffff
+#define V_FW_PARAMS_PARAM_FILTER_MASK(x)          \
+	((x) << S_FW_PARAMS_PARAM_FILTER_MASK)
+#define G_FW_PARAMS_PARAM_FILTER_MASK(x)          \
+	(((x) >> S_FW_PARAMS_PARAM_FILTER_MASK) & \
+	M_FW_PARAMS_PARAM_FILTER_MASK)
+
 enum fw_params_param_dev {
 	FW_PARAMS_PARAM_DEV_CCLK	= 0x00, /* chip core clock in khz */
 	FW_PARAMS_PARAM_DEV_PORTVEC	= 0x01, /* the port vector */
@@ -679,6 +699,9 @@ enum fw_params_param_dev {
 	FW_PARAMS_PARAM_DEV_TPREV	= 0x0C, /* tp version */
 	FW_PARAMS_PARAM_DEV_ULPTX_MEMWRITE_DSGL = 0x17,
 	FW_PARAMS_PARAM_DEV_FILTER2_WR	= 0x1D,
+	FW_PARAMS_PARAM_DEV_OPAQUE_VIID_SMT_EXTN = 0x27,
+	FW_PARAMS_PARAM_DEV_HASHFILTER_WITH_OFLD = 0x28,
+	FW_PARAMS_PARAM_DEV_FILTER      = 0x2E,
 };
 
 /*
@@ -694,6 +717,8 @@ enum fw_params_param_pfvf {
 	FW_PARAMS_PARAM_PFVF_CPLFW4MSG_ENCAP = 0x31,
 	FW_PARAMS_PARAM_PFVF_PORT_CAPS32 = 0x3A,
 	FW_PARAMS_PARAM_PFVF_MAX_PKTS_PER_ETH_TX_PKTS_WR = 0x3D,
+	FW_PARAMS_PARAM_PFVF_GET_SMT_START = 0x3E,
+	FW_PARAMS_PARAM_PFVF_GET_SMT_SIZE = 0x3F,
 };
 
 /*
@@ -702,6 +727,11 @@ enum fw_params_param_pfvf {
 enum fw_params_param_dmaq {
 	FW_PARAMS_PARAM_DMAQ_IQ_INTCNTTHRESH = 0x01,
 	FW_PARAMS_PARAM_DMAQ_CONM_CTXT = 0x20,
+};
+
+enum fw_params_param_dev_filter {
+	FW_PARAM_DEV_FILTER_VNIC_MODE   = 0x00,
+	FW_PARAM_DEV_FILTER_MODE_MASK   = 0x01,
 };
 
 #define S_FW_PARAMS_MNEM	24
@@ -1235,6 +1265,18 @@ enum fw_vi_func {
 	FW_VI_FUNC_ETH,
 };
 
+/* Macros for VIID parsing:
+ * VIID - [10:8] PFN, [7] VI Valid, [6:0] VI number
+ */
+
+#define S_FW_VIID_VIVLD         7
+#define M_FW_VIID_VIVLD         0x1
+#define G_FW_VIID_VIVLD(x)      (((x) >> S_FW_VIID_VIVLD) & M_FW_VIID_VIVLD)
+
+#define S_FW_VIID_VIN           0
+#define M_FW_VIID_VIN           0x7F
+#define G_FW_VIID_VIN(x)        (((x) >> S_FW_VIID_VIN) & M_FW_VIID_VIN)
+
 struct fw_vi_cmd {
 	__be32 op_to_vfn;
 	__be32 alloc_to_len16;
@@ -1276,6 +1318,16 @@ struct fw_vi_cmd {
 #define G_FW_VI_CMD_FREE(x)	(((x) >> S_FW_VI_CMD_FREE) & M_FW_VI_CMD_FREE)
 #define F_FW_VI_CMD_FREE	V_FW_VI_CMD_FREE(1U)
 
+#define S_FW_VI_CMD_VFVLD       24
+#define M_FW_VI_CMD_VFVLD       0x1
+#define G_FW_VI_CMD_VFVLD(x)    \
+	(((x) >> S_FW_VI_CMD_VFVLD) & M_FW_VI_CMD_VFVLD)
+
+#define S_FW_VI_CMD_VIN         16
+#define M_FW_VI_CMD_VIN         0xff
+#define G_FW_VI_CMD_VIN(x)      \
+	(((x) >> S_FW_VI_CMD_VIN) & M_FW_VI_CMD_VIN)
+
 #define S_FW_VI_CMD_TYPE	15
 #define M_FW_VI_CMD_TYPE	0x1
 #define V_FW_VI_CMD_TYPE(x)	((x) << S_FW_VI_CMD_TYPE)
@@ -1310,8 +1362,8 @@ struct fw_vi_cmd {
 #define FW_VI_MAC_ID_BASED_FREE         0x3FC
 
 enum fw_vi_mac_smac {
-	FW_VI_MAC_MPS_TCAM_ENTRY,
-	FW_VI_MAC_SMT_AND_MPSTCAM
+	FW_VI_MAC_MPS_TCAM_ENTRY = 0x0,
+	FW_VI_MAC_SMT_AND_MPSTCAM = 0x3
 };
 
 enum fw_vi_mac_entry_types {

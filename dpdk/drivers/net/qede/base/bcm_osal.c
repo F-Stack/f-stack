@@ -14,6 +14,37 @@
 #include "ecore_iov_api.h"
 #include "ecore_mcp_api.h"
 #include "ecore_l2_api.h"
+#include "../qede_sriov.h"
+
+int osal_pf_vf_msg(struct ecore_hwfn *p_hwfn)
+{
+	int rc;
+
+	rc = qed_schedule_iov(p_hwfn, QED_IOV_WQ_MSG_FLAG);
+	if (rc) {
+		DP_VERBOSE(p_hwfn, ECORE_MSG_IOV,
+			   "Failed to schedule alarm handler rc=%d\n", rc);
+	}
+
+	return rc;
+}
+
+void osal_vf_flr_update(struct ecore_hwfn *p_hwfn)
+{
+	qed_schedule_iov(p_hwfn, QED_IOV_WQ_FLR_FLAG);
+}
+
+void osal_poll_mode_dpc(osal_int_ptr_t hwfn_cookie)
+{
+	struct ecore_hwfn *p_hwfn = (struct ecore_hwfn *)hwfn_cookie;
+
+	if (!p_hwfn)
+		return;
+
+	OSAL_SPIN_LOCK(&p_hwfn->spq_lock);
+	ecore_int_sp_dpc((osal_int_ptr_t)(p_hwfn));
+	OSAL_SPIN_UNLOCK(&p_hwfn->spq_lock);
+}
 
 /* Array of memzone pointers */
 static const struct rte_memzone *ecore_mz_mapping[RTE_MAX_MEMZONE];
@@ -46,26 +77,6 @@ u32 qede_osal_log2(u32 val)
 	return log;
 }
 
-inline void qede_set_bit(u32 nr, unsigned long *addr)
-{
-	__sync_fetch_and_or(addr, (1UL << nr));
-}
-
-inline void qede_clr_bit(u32 nr, unsigned long *addr)
-{
-	__sync_fetch_and_and(addr, ~(1UL << nr));
-}
-
-inline bool qede_test_bit(u32 nr, unsigned long *addr)
-{
-	bool res;
-
-	rte_mb();
-	res = ((*addr) & (1UL << nr)) != 0;
-	rte_mb();
-	return res;
-}
-
 static inline u32 qede_ffb(unsigned long word)
 {
 	unsigned long first_bit;
@@ -95,7 +106,7 @@ static inline u32 qede_ffz(unsigned long word)
 	return first_zero ? (first_zero - 1) : OSAL_BITS_PER_UL;
 }
 
-inline u32 qede_find_first_zero_bit(unsigned long *addr, u32 limit)
+inline u32 qede_find_first_zero_bit(u32 *addr, u32 limit)
 {
 	u32 i;
 	u32 nwords = 0;
@@ -132,7 +143,7 @@ void *osal_dma_alloc_coherent(struct ecore_dev *p_dev,
 	snprintf(mz_name, sizeof(mz_name), "%lx",
 					(unsigned long)rte_get_timer_cycles());
 	if (core_id == (unsigned int)LCORE_ID_ANY)
-		core_id = rte_get_master_lcore();
+		core_id = rte_get_main_lcore();
 	socket_id = rte_lcore_to_socket_id(core_id);
 	mz = rte_memzone_reserve_aligned(mz_name, size, socket_id,
 			RTE_MEMZONE_IOVA_CONTIG, RTE_CACHE_LINE_SIZE);
@@ -171,7 +182,7 @@ void *osal_dma_alloc_coherent_aligned(struct ecore_dev *p_dev,
 	snprintf(mz_name, sizeof(mz_name), "%lx",
 					(unsigned long)rte_get_timer_cycles());
 	if (core_id == (unsigned int)LCORE_ID_ANY)
-		core_id = rte_get_master_lcore();
+		core_id = rte_get_main_lcore();
 	socket_id = rte_lcore_to_socket_id(core_id);
 	mz = rte_memzone_reserve_aligned(mz_name, size, socket_id,
 			RTE_MEMZONE_IOVA_CONTIG, align);
@@ -266,6 +277,28 @@ qede_get_mcp_proto_stats(struct ecore_dev *edev,
 	}
 }
 
+static void qede_hw_err_handler(void *dev, enum ecore_hw_err_type err_type)
+{
+	struct ecore_dev *edev = dev;
+
+	switch (err_type) {
+	case ECORE_HW_ERR_FAN_FAIL:
+		break;
+
+	case ECORE_HW_ERR_MFW_RESP_FAIL:
+	case ECORE_HW_ERR_HW_ATTN:
+	case ECORE_HW_ERR_DMAE_FAIL:
+	case ECORE_HW_ERR_RAMROD_FAIL:
+	case ECORE_HW_ERR_FW_ASSERT:
+		OSAL_SAVE_FW_DUMP(0); /* Using port 0 as default port_id */
+		break;
+
+	default:
+		DP_NOTICE(edev, false, "Unknown HW error [%d]\n", err_type);
+		return;
+	}
+}
+
 void
 qede_hw_err_notify(struct ecore_hwfn *p_hwfn, enum ecore_hw_err_type err_type)
 {
@@ -295,6 +328,9 @@ qede_hw_err_notify(struct ecore_hwfn *p_hwfn, enum ecore_hw_err_type err_type)
 	}
 
 	DP_ERR(p_hwfn, "HW error occurred [%s]\n", err_str);
+
+	qede_hw_err_handler(p_hwfn->p_dev, err_type);
+
 	ecore_int_attn_clr_enable(p_hwfn->p_dev, true);
 }
 
@@ -308,4 +344,10 @@ u32 qede_crc32(u32 crc, u8 *ptr, u32 length)
 			crc = (crc >> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
 	}
 	return crc;
+}
+
+void qed_set_platform_str(struct ecore_hwfn *p_hwfn,
+			  char *buf_str, u32 buf_size)
+{
+	snprintf(buf_str, buf_size, "%s.", rte_version());
 }

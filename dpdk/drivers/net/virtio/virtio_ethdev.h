@@ -36,7 +36,9 @@
 	 1ULL << VIRTIO_F_IN_ORDER        |	\
 	 1ULL << VIRTIO_F_RING_PACKED	  |	\
 	 1ULL << VIRTIO_F_IOMMU_PLATFORM  |	\
-	 1ULL << VIRTIO_F_ORDER_PLATFORM)
+	 1ULL << VIRTIO_F_ORDER_PLATFORM  |	\
+	 1ULL << VIRTIO_F_NOTIFICATION_DATA | \
+	 1ULL << VIRTIO_NET_F_SPEED_DUPLEX)
 
 #define VIRTIO_PMD_SUPPORTED_GUEST_FEATURES	\
 	(VIRTIO_PMD_DEFAULT_GUEST_FEATURES |	\
@@ -101,6 +103,12 @@ uint16_t virtio_xmit_pkts_inorder(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
 
 uint16_t virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+		uint16_t nb_pkts);
+
+uint16_t virtio_recv_pkts_packed_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
+		uint16_t nb_pkts);
+
+uint16_t virtio_xmit_pkts_packed_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
 
 int eth_virtio_dev_init(struct rte_eth_dev *eth_dev);

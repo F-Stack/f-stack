@@ -10,6 +10,8 @@
 
 #include <otx2_common.h>
 #include "otx2_evdev.h"
+#include "otx2_evdev_crypto_adptr_dp.h"
+#include "otx2_ethdev_sec_tx.h"
 
 /* SSO Operations */
 
@@ -65,16 +67,23 @@ otx2_ssogws_get_work(struct otx2_ssogws *ws, struct rte_event *ev,
 	ws->cur_tt = event.sched_type;
 	ws->cur_grp = event.queue_id;
 
-	if (event.sched_type != SSO_TT_EMPTY &&
-	    event.event_type == RTE_EVENT_TYPE_ETHDEV) {
-		otx2_wqe_to_mbuf(get_work1, mbuf, event.sub_event_type,
-				 (uint32_t) event.get_work0, flags, lookup_mem);
-		/* Extracting tstamp, if PTP enabled*/
-		tstamp_ptr = *(uint64_t *)(((struct nix_wqe_hdr_s *)get_work1)
-					     + OTX2_SSO_WQE_SG_PTR);
-		otx2_nix_mbuf_to_tstamp((struct rte_mbuf *)mbuf, ws->tstamp,
-					flags, (uint64_t *)tstamp_ptr);
-		get_work1 = mbuf;
+	if (event.sched_type != SSO_TT_EMPTY) {
+		if ((flags & NIX_RX_OFFLOAD_SECURITY_F) &&
+		    (event.event_type == RTE_EVENT_TYPE_CRYPTODEV)) {
+			get_work1 = otx2_handle_crypto_event(get_work1);
+		} else if (event.event_type == RTE_EVENT_TYPE_ETHDEV) {
+			otx2_wqe_to_mbuf(get_work1, mbuf, event.sub_event_type,
+					 (uint32_t) event.get_work0, flags,
+					 lookup_mem);
+			/* Extracting tstamp, if PTP enabled*/
+			tstamp_ptr = *(uint64_t *)(((struct nix_wqe_hdr_s *)
+						     get_work1) +
+						     OTX2_SSO_WQE_SG_PTR);
+			otx2_nix_mbuf_to_tstamp((struct rte_mbuf *)mbuf,
+						ws->tstamp, flags,
+						(uint64_t *)tstamp_ptr);
+			get_work1 = mbuf;
+		}
 	}
 
 	ev->event = event.get_work0;
@@ -189,8 +198,11 @@ otx2_ssogws_swtag_untag(struct otx2_ssogws *ws)
 static __rte_always_inline void
 otx2_ssogws_swtag_flush(struct otx2_ssogws *ws)
 {
-	otx2_write64(0, OTX2_SSOW_GET_BASE_ADDR(ws->getwrk_op) +
-		     SSOW_LF_GWS_OP_SWTAG_FLUSH);
+	if (OTX2_SSOW_TT_FROM_TAG(otx2_read64(ws->tag_op)) == SSO_TT_EMPTY) {
+		ws->cur_tt = SSO_SYNC_EMPTY;
+		return;
+	}
+	otx2_write64(0, ws->swtag_flush_op);
 	ws->cur_tt = SSO_SYNC_EMPTY;
 }
 
@@ -207,20 +219,18 @@ otx2_ssogws_swtag_wait(struct otx2_ssogws *ws)
 #ifdef RTE_ARCH_ARM64
 	uint64_t swtp;
 
-	asm volatile (
-			"	ldr %[swtb], [%[swtp_loc]]	\n"
-			"	cbz %[swtb], done%=		\n"
-			"	sevl				\n"
-			"rty%=:	wfe				\n"
-			"	ldr %[swtb], [%[swtp_loc]]	\n"
-			"	cbnz %[swtb], rty%=		\n"
-			"done%=:				\n"
-			: [swtb] "=&r" (swtp)
-			: [swtp_loc] "r" (ws->swtp_op)
-			);
+	asm volatile("		ldr %[swtb], [%[swtp_loc]]	\n"
+		     "		tbz %[swtb], 62, done%=		\n"
+		     "		sevl				\n"
+		     "rty%=:	wfe				\n"
+		     "		ldr %[swtb], [%[swtp_loc]]	\n"
+		     "		tbnz %[swtb], 62, rty%=		\n"
+		     "done%=:					\n"
+		     : [swtb] "=&r" (swtp)
+		     : [swtp_loc] "r" (ws->tag_op));
 #else
 	/* Wait for the SWTAG/SWTAG_FULL operation */
-	while (otx2_read64(ws->swtp_op))
+	while (otx2_read64(ws->tag_op) & BIT_ULL(62))
 		;
 #endif
 }
@@ -249,20 +259,12 @@ otx2_ssogws_head_wait(struct otx2_ssogws *ws)
 #endif
 }
 
-static __rte_always_inline void
-otx2_ssogws_order(struct otx2_ssogws *ws, const uint8_t wait_flag)
-{
-	if (wait_flag)
-		otx2_ssogws_head_wait(ws);
-
-	rte_cio_wmb();
-}
-
 static __rte_always_inline const struct otx2_eth_txq *
-otx2_ssogws_xtract_meta(struct rte_mbuf *m)
+otx2_ssogws_xtract_meta(struct rte_mbuf *m,
+			const uint64_t txq_data[][RTE_MAX_QUEUES_PER_PORT])
 {
-	return rte_eth_devices[m->port].data->tx_queues[
-			rte_event_eth_tx_adapter_txq_get(m)];
+	return (const struct otx2_eth_txq *)txq_data[m->port][
+					rte_event_eth_tx_adapter_txq_get(m)];
 }
 
 static __rte_always_inline void
@@ -274,29 +276,70 @@ otx2_ssogws_prepare_pkt(const struct otx2_eth_txq *txq, struct rte_mbuf *m,
 }
 
 static __rte_always_inline uint16_t
-otx2_ssogws_event_tx(struct otx2_ssogws *ws, struct rte_event ev[],
-		     uint64_t *cmd, const uint32_t flags)
+otx2_ssogws_event_tx(struct otx2_ssogws *ws, struct rte_event *ev,
+		     uint64_t *cmd,
+		     const uint64_t txq_data[][RTE_MAX_QUEUES_PER_PORT],
+		     const uint32_t flags)
 {
-	struct rte_mbuf *m = ev[0].mbuf;
-	const struct otx2_eth_txq *txq = otx2_ssogws_xtract_meta(m);
+	struct rte_mbuf *m = ev->mbuf;
+	const struct otx2_eth_txq *txq;
+	uint16_t ref_cnt = m->refcnt;
 
-	rte_prefetch_non_temporal(txq);
+	if ((flags & NIX_TX_OFFLOAD_SECURITY_F) &&
+	    (m->ol_flags & PKT_TX_SEC_OFFLOAD)) {
+		txq = otx2_ssogws_xtract_meta(m, txq_data);
+		return otx2_sec_event_tx(ws, ev, m, txq, flags);
+	}
+
 	/* Perform header writes before barrier for TSO */
 	otx2_nix_xmit_prepare_tso(m, flags);
-	otx2_ssogws_order(ws, !ev->sched_type);
+	/* Lets commit any changes in the packet here in case when
+	 * fast free is set as no further changes will be made to mbuf.
+	 * In case of fast free is not set, both otx2_nix_prepare_mseg()
+	 * and otx2_nix_xmit_prepare() has a barrier after refcnt update.
+	 */
+	if (!(flags & NIX_TX_OFFLOAD_MBUF_NOFF_F))
+		rte_io_wmb();
+	txq = otx2_ssogws_xtract_meta(m, txq_data);
 	otx2_ssogws_prepare_pkt(txq, m, cmd, flags);
 
 	if (flags & NIX_TX_MULTI_SEG_F) {
 		const uint16_t segdw = otx2_nix_prepare_mseg(m, cmd, flags);
 		otx2_nix_xmit_prepare_tstamp(cmd, &txq->cmd[0],
 					     m->ol_flags, segdw, flags);
-		otx2_nix_xmit_mseg_one(cmd, txq->lmt_addr, txq->io_addr, segdw);
+		if (!ev->sched_type) {
+			otx2_nix_xmit_mseg_prep_lmt(cmd, txq->lmt_addr, segdw);
+			otx2_ssogws_head_wait(ws);
+			if (otx2_nix_xmit_submit_lmt(txq->io_addr) == 0)
+				otx2_nix_xmit_mseg_one(cmd, txq->lmt_addr,
+						       txq->io_addr, segdw);
+		} else {
+			otx2_nix_xmit_mseg_one(cmd, txq->lmt_addr,
+					       txq->io_addr, segdw);
+		}
 	} else {
 		/* Passing no of segdw as 4: HDR + EXT + SG + SMEM */
 		otx2_nix_xmit_prepare_tstamp(cmd, &txq->cmd[0],
 					     m->ol_flags, 4, flags);
-		otx2_nix_xmit_one(cmd, txq->lmt_addr, txq->io_addr, flags);
+
+		if (!ev->sched_type) {
+			otx2_nix_xmit_prep_lmt(cmd, txq->lmt_addr, flags);
+			otx2_ssogws_head_wait(ws);
+			if (otx2_nix_xmit_submit_lmt(txq->io_addr) == 0)
+				otx2_nix_xmit_one(cmd, txq->lmt_addr,
+						  txq->io_addr, flags);
+		} else {
+			otx2_nix_xmit_one(cmd, txq->lmt_addr, txq->io_addr,
+					  flags);
+		}
 	}
+
+	if (flags & NIX_TX_OFFLOAD_MBUF_NOFF_F) {
+		if (ref_cnt > 1)
+			return 1;
+	}
+
+	otx2_ssogws_swtag_flush(ws);
 
 	return 1;
 }

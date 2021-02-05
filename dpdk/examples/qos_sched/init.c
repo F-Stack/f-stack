@@ -76,6 +76,7 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 	uint16_t rx_size;
 	uint16_t tx_size;
 	struct rte_eth_conf local_port_conf = port_conf;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	/* check if port already initialized (multistream configuration) */
 	if (app_inited_port_mask & (1u << portid))
@@ -160,14 +161,9 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 			 "rte_eth_link_get: err=%d, port=%u: %s\n",
 			 ret, portid, rte_strerror(-ret));
 
-	if (link.link_status) {
-		printf(" Link Up - speed %u Mbps - %s\n",
-			(uint32_t) link.link_speed,
-			(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-			("full-duplex") : ("half-duplex"));
-	} else {
-		printf(" Link Down\n");
-	}
+	rte_eth_link_to_str(link_status_text, sizeof(link_status_text), &link);
+	printf("%s\n", link_status_text);
+
 	ret = rte_eth_promiscuous_enable(portid);
 	if (ret != 0)
 		rte_exit(EXIT_FAILURE,
@@ -196,15 +192,20 @@ static struct rte_sched_pipe_params pipe_profiles[MAX_SCHED_PIPE_PROFILES] = {
 	},
 };
 
-struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
+static struct rte_sched_subport_profile_params
+		subport_profile[MAX_SCHED_SUBPORT_PROFILES] = {
 	{
 		.tb_rate = 1250000000,
 		.tb_size = 1000000,
-
 		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000,
 			1250000000, 1250000000, 1250000000, 1250000000, 1250000000,
 			1250000000, 1250000000, 1250000000, 1250000000},
 		.tc_period = 10,
+	},
+};
+
+struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
+	{
 		.n_pipes_per_subport_enabled = 4096,
 		.qsize = {64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64},
 		.pipe_profiles = pipe_profiles,
@@ -289,6 +290,9 @@ struct rte_sched_port_params port_params = {
 	.mtu = 6 + 6 + 4 + 4 + 2 + 1500,
 	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
 	.n_subports_per_port = 1,
+	.n_subport_profiles = 1,
+	.subport_profiles = subport_profile,
+	.n_max_subport_profiles = MAX_SCHED_SUBPORT_PROFILES,
 	.n_pipes_per_subport = MAX_SCHED_PIPES,
 };
 
@@ -318,10 +322,12 @@ app_init_sched_port(uint32_t portid, uint32_t socketid)
 	}
 
 	for (subport = 0; subport < port_params.n_subports_per_port; subport ++) {
-		err = rte_sched_subport_config(port, subport, &subport_params[subport]);
+		err = rte_sched_subport_config(port, subport,
+				&subport_params[subport],
+				0);
 		if (err) {
-			rte_exit(EXIT_FAILURE, "Unable to config sched subport %u, err=%d\n",
-					subport, err);
+			rte_exit(EXIT_FAILURE, "Unable to config sched "
+				 "subport %u, err=%d\n", subport, err);
 		}
 
 		uint32_t n_pipes_per_subport =
@@ -354,6 +360,7 @@ app_load_cfg_profile(const char *profile)
 
 	cfg_load_port(file, &port_params);
 	cfg_load_subport(file, subport_params);
+	cfg_load_subport_profile(file, subport_profile);
 	cfg_load_pipe(file, pipe_profiles);
 
 	rte_cfgfile_close(file);

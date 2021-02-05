@@ -3,7 +3,7 @@
 
 if not is_linux or not dpdk_conf.get('RTE_ARCH_64')
 	build = false
-	reason = 'only supported on 64-bit linux'
+	reason = 'only supported on 64-bit Linux'
 endif
 sources = files('nfpcore/nfp_cpp_pcie_ops.c',
 	'nfpcore/nfp_nsp.c',
@@ -18,5 +18,3 @@ sources = files('nfpcore/nfp_cpp_pcie_ops.c',
 	'nfpcore/nfp_nsp_eth.c',
 	'nfpcore/nfp_hwinfo.c',
 	'nfp_net.c')
-
-allow_experimental_apis = true

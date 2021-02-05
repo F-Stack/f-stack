@@ -750,6 +750,86 @@ struct hinic_fdir_tcam_info {
 	struct tag_pa_action filter_action;
 };
 
+#define TCAM_SET	0x1
+#define TCAM_CLEAR	0x2
+
+struct hinic_port_qfilter_info {
+	struct hinic_mgmt_msg_head mgmt_msg_head;
+
+	u16 func_id;
+	u8 normal_type_enable;
+	u8 filter_type_enable;
+	u8 filter_enable;
+	u8 filter_type;
+	u8 qid;
+	u8 fdir_flag;
+	u32 key;
+};
+
+struct hinic_port_tcam_info {
+	struct hinic_mgmt_msg_head mgmt_msg_head;
+
+	u16 func_id;
+	u8 tcam_enable;
+	u8 rsvd1;
+	u32 rsvd2;
+};
+
+#define HINIC_MAX_TCAM_RULES_NUM   (10240)
+#define HINIC_TCAM_BLOCK_ENABLE      1
+#define HINIC_TCAM_BLOCK_DISABLE     0
+
+struct tag_tcam_result {
+	u32 qid;
+	u32 rsvd;
+};
+
+#define TCAM_FLOW_KEY_SIZE   24
+
+struct tag_tcam_key_x_y {
+	u8 x[TCAM_FLOW_KEY_SIZE];
+	u8 y[TCAM_FLOW_KEY_SIZE];
+};
+
+struct tag_tcam_cfg_rule {
+	u32 index;
+	struct tag_tcam_result data;
+	struct tag_tcam_key_x_y key;
+};
+
+struct tag_fdir_add_rule_cmd {
+	struct hinic_mgmt_msg_head mgmt_msg_head;
+	struct tag_tcam_cfg_rule rule;
+};
+
+struct tag_fdir_del_rule_cmd {
+	struct hinic_mgmt_msg_head mgmt_msg_head;
+
+	u32 index_start;
+	u32 index_num;
+};
+
+struct hinic_cmd_flush_tcam_rules {
+	struct hinic_mgmt_msg_head mgmt_msg_head;
+
+	u16 func_id;
+	u16 rsvd;
+};
+
+struct hinic_cmd_ctrl_tcam_block {
+	struct hinic_mgmt_msg_head mgmt_msg_head;
+
+	u16 func_id;
+	u8  alloc_en; /* 0: free tcam block, 1: alloc tcam block */
+	/*
+	 * 0: alloc 1k size tcam block,
+	 * 1: alloc 128 size tcam block, others rsvd
+	 */
+	u8  tcam_type;
+	u16 tcam_block_index;
+	u16 rsvd;
+};
+
 int hinic_set_mac(void *hwdev, u8 *mac_addr, u16 vlan_id, u16 func_id);
 
 int hinic_del_mac(void *hwdev, u8 *mac_addr, u16 vlan_id, u16 func_id);
@@ -778,6 +858,8 @@ int hinic_get_port_info(void *hwdev, struct nic_port_info *port_info);
 int hinic_set_rx_vhd_mode(void *hwdev, u16 vhd_mode, u16 rx_buf_sz);
 
 int hinic_set_pause_config(void *hwdev, struct nic_pause_config nic_pause);
+
+int hinic_get_pause_info(void *hwdev, struct nic_pause_config *nic_pause);
 
 int hinic_reset_port_link_cfg(void *hwdev);
 
@@ -855,5 +937,17 @@ int hinic_set_fdir_tcam(void *hwdev, u16 type_mask,
 	struct tag_pa_rule *filter_rule, struct tag_pa_action *filter_action);
 
 int hinic_clear_fdir_tcam(void *hwdev, u16 type_mask);
+
+int hinic_add_tcam_rule(void *hwdev, struct tag_tcam_cfg_rule *tcam_rule);
+
+int hinic_del_tcam_rule(void *hwdev, u32 index);
+
+int hinic_alloc_tcam_block(void *hwdev, u8 block_type, u16 *index);
+
+int hinic_free_tcam_block(void *hwdev, u8 block_type, u16 *index);
+
+int hinic_flush_tcam_rule(void *hwdev);
+
+int hinic_set_fdir_tcam_rule_filter(void *hwdev, bool enable);
 
 #endif /* _HINIC_PMD_NICCFG_H_ */

@@ -29,14 +29,6 @@ Prerequisites and Compilation procedure
 Pre-Installation Configuration
 ------------------------------
 
-Compile time Config Options
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The following option can be modified in the ``config`` file.
-
-- ``CONFIG_RTE_LIBRTE_OCTEONTX2_MEMPOOL`` (default ``y``)
-
-  Toggle compilation of the ``librte_mempool_octeontx2`` driver.
 
 Runtime Config Options
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -50,7 +42,7 @@ Runtime Config Options
   for the application.
   For example::
 
-    -w 0002:02:00.0,max_pools=512
+    -a 0002:02:00.0,max_pools=512
 
   With the above configuration, the driver will set up only 512 mempools for
   the given application to save HW resources.
@@ -60,6 +52,16 @@ Runtime Config Options
    Since this configuration is per application, the end user needs to
    provide ``max_pools`` parameter to the first PCIe device probed by the given
    application.
+
+- ``Lock NPA contexts in NDC``
+
+   Lock NPA aura and pool contexts in NDC cache.
+   The device args take hexadecimal bitmask where each bit represent the
+   corresponding aura/pool id.
+
+   For example::
+
+      -a 0002:02:00.0,npa_lock_mask=0xf
 
 Debugging Options
 ~~~~~~~~~~~~~~~~~
@@ -87,4 +89,4 @@ Standalone mempool device
 
    Example command to run ``mempool_autotest`` test with standalone OCTEONTX2 NPA device::
 
-     echo "mempool_autotest" | build/app/test -c 0xf0 --mbuf-pool-ops-name="octeontx2_npa"
+     echo "mempool_autotest" | <build_dir>/app/test/dpdk-test -c 0xf0 --mbuf-pool-ops-name="octeontx2_npa"

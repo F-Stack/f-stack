@@ -39,6 +39,9 @@
 #include <rte_string_fns.h>
 #include <rte_acl.h>
 
+#include <cmdline_parse.h>
+#include <cmdline_parse_etheraddr.h>
+
 #if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
 #define L3FWDACL_DEBUG
 #endif
@@ -80,9 +83,6 @@
 #define RTE_TEST_TX_DESC_DEFAULT 1024
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
-
-/* ethernet addresses of ports */
-static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
 static uint32_t enabled_port_mask;
@@ -143,6 +143,43 @@ static struct rte_eth_conf port_conf = {
 
 static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
+/* ethernet addresses of ports */
+static struct rte_ether_hdr port_l2hdr[RTE_MAX_ETHPORTS];
+
+static const struct {
+	const char *name;
+	enum rte_acl_classify_alg alg;
+} acl_alg[] = {
+	{
+		.name = "scalar",
+		.alg = RTE_ACL_CLASSIFY_SCALAR,
+	},
+	{
+		.name = "sse",
+		.alg = RTE_ACL_CLASSIFY_SSE,
+	},
+	{
+		.name = "avx2",
+		.alg = RTE_ACL_CLASSIFY_AVX2,
+	},
+	{
+		.name = "neon",
+		.alg = RTE_ACL_CLASSIFY_NEON,
+	},
+	{
+		.name = "altivec",
+		.alg = RTE_ACL_CLASSIFY_ALTIVEC,
+	},
+	{
+		.name = "avx512x16",
+		.alg = RTE_ACL_CLASSIFY_AVX512X16,
+	},
+	{
+		.name = "avx512x32",
+		.alg = RTE_ACL_CLASSIFY_AVX512X32,
+	},
+};
+
 /***********************start of ACL part******************************/
 #ifdef DO_RFC_1812_CHECKS
 static inline int
@@ -163,7 +200,8 @@ send_single_packet(struct rte_mbuf *m, uint16_t port);
 #define OPTION_ENBJMO		"enable-jumbo"
 #define OPTION_RULE_IPV4	"rule_ipv4"
 #define OPTION_RULE_IPV6	"rule_ipv6"
-#define OPTION_SCALAR		"scalar"
+#define OPTION_ALG		"alg"
+#define OPTION_ETH_DEST		"eth-dest"
 #define ACL_DENY_SIGNATURE	0xf0000000
 #define RTE_LOGTYPE_L3FWDACL	RTE_LOGTYPE_USER3
 #define acl_log(format, ...)	RTE_LOG(ERR, L3FWDACL, format, ##__VA_ARGS__)
@@ -437,7 +475,7 @@ static struct {
 static struct{
 	const char *rule_ipv4_name;
 	const char *rule_ipv6_name;
-	int scalar;
+	enum rte_acl_classify_alg alg;
 } parm_config;
 
 const char cb_port_delim[] = ":";
@@ -1090,13 +1128,58 @@ add_rules(const char *rule_path,
 	return 0;
 }
 
+static int
+usage_acl_alg(char *buf, size_t sz)
+{
+	uint32_t i, n, rc, tn;
+
+	n = 0;
+	tn = 0;
+	for (i = 0; i < RTE_DIM(acl_alg); i++) {
+		rc = snprintf(buf + n, sz - n,
+			i == RTE_DIM(acl_alg) - 1 ? "%s" : "%s|",
+			acl_alg[i].name);
+		tn += rc;
+		if (rc < sz - n)
+			n += rc;
+	}
+
+	return tn;
+}
+
+static const char *
+str_acl_alg(enum rte_acl_classify_alg alg)
+{
+	uint32_t i;
+
+	for (i = 0; i != RTE_DIM(acl_alg); i++) {
+		if (alg == acl_alg[i].alg)
+			return acl_alg[i].name;
+	}
+
+	return "default";
+}
+
+static enum rte_acl_classify_alg
+parse_acl_alg(const char *alg)
+{
+	uint32_t i;
+
+	for (i = 0; i != RTE_DIM(acl_alg); i++) {
+		if (strcmp(alg, acl_alg[i].name) == 0)
+			return acl_alg[i].alg;
+	}
+
+	return RTE_ACL_CLASSIFY_DEFAULT;
+}
+
 static void
 dump_acl_config(void)
 {
 	printf("ACL option are:\n");
 	printf(OPTION_RULE_IPV4": %s\n", parm_config.rule_ipv4_name);
 	printf(OPTION_RULE_IPV6": %s\n", parm_config.rule_ipv6_name);
-	printf(OPTION_SCALAR": %d\n", parm_config.scalar);
+	printf(OPTION_ALG": %s\n", str_acl_alg(parm_config.alg));
 }
 
 static int
@@ -1137,8 +1220,8 @@ setup_acl(struct rte_acl_rule *route_base,
 	if ((context = rte_acl_create(&acl_param)) == NULL)
 		rte_exit(EXIT_FAILURE, "Failed to create ACL context\n");
 
-	if (parm_config.scalar && rte_acl_set_ctx_classify(context,
-			RTE_ACL_CLASSIFY_SCALAR) != 0)
+	if (parm_config.alg != RTE_ACL_CLASSIFY_DEFAULT &&
+			rte_acl_set_ctx_classify(context, parm_config.alg) != 0)
 		rte_exit(EXIT_FAILURE,
 			"Failed to setup classify method for  ACL context\n");
 
@@ -1275,8 +1358,13 @@ send_single_packet(struct rte_mbuf *m, uint16_t port)
 {
 	uint32_t lcore_id;
 	struct lcore_conf *qconf;
+	struct rte_ether_hdr *eh;
 
 	lcore_id = rte_lcore_id();
+
+	/* update src and dst mac*/
+	eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	memcpy(eh, &port_l2hdr[port], sizeof(eh->d_addr) + sizeof(eh->s_addr));
 
 	qconf = &lcore_conf[lcore_id];
 	rte_eth_tx_buffer(port, qconf->tx_queue_id[port],
@@ -1326,7 +1414,7 @@ is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len)
 
 /* main processing loop */
 static int
-main_loop(__attribute__((unused)) void *dummy)
+main_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
@@ -1516,6 +1604,9 @@ init_lcore_rx_queues(void)
 static void
 print_usage(const char *prgname)
 {
+	char alg[PATH_MAX];
+
+	usage_acl_alg(alg, sizeof(alg));
 	printf("%s [EAL options] -- -p PORTMASK -P"
 		"--"OPTION_RULE_IPV4"=FILE"
 		"--"OPTION_RULE_IPV6"=FILE"
@@ -1537,8 +1628,8 @@ print_usage(const char *prgname)
 		"character '%c'.\n"
 		"  --"OPTION_RULE_IPV6"=FILE: specify the ipv6 rules "
 		"entries file.\n"
-		"  --"OPTION_SCALAR": Use scalar function to do lookup\n",
-		prgname, ACL_LEAD_CHAR, ROUTE_LEAD_CHAR);
+		"  --"OPTION_ALG": ACL classify method to use, one of: %s\n",
+		prgname, ACL_LEAD_CHAR, ROUTE_LEAD_CHAR, alg);
 }
 
 static int
@@ -1567,10 +1658,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -1630,6 +1718,26 @@ parse_config(const char *q_arg)
 	return 0;
 }
 
+static const char *
+parse_eth_dest(const char *optarg)
+{
+	unsigned long portid;
+	char *port_end;
+
+	errno = 0;
+	portid = strtoul(optarg, &port_end, 0);
+	if (errno != 0 || port_end == optarg || *port_end++ != ',')
+		return "Invalid format";
+	else if (portid >= RTE_MAX_ETHPORTS)
+		return "port value exceeds RTE_MAX_ETHPORTS("
+			RTE_STR(RTE_MAX_ETHPORTS) ")";
+
+	if (cmdline_parse_etheraddr(NULL, port_end, &port_l2hdr[portid].d_addr,
+			sizeof(port_l2hdr[portid].d_addr)) < 0)
+		return "Invalid ethernet address";
+	return NULL;
+}
+
 /* Parse the argument given in the command line of the application */
 static int
 parse_args(int argc, char **argv)
@@ -1644,7 +1752,8 @@ parse_args(int argc, char **argv)
 		{OPTION_ENBJMO, 0, 0, 0},
 		{OPTION_RULE_IPV4, 1, 0, 0},
 		{OPTION_RULE_IPV6, 1, 0, 0},
-		{OPTION_SCALAR, 0, 0, 0},
+		{OPTION_ALG, 1, 0, 0},
+		{OPTION_ETH_DEST, 1, 0, 0},
 		{NULL, 0, 0, 0}
 	};
 
@@ -1737,9 +1846,27 @@ parse_args(int argc, char **argv)
 			}
 
 			if (!strncmp(lgopts[option_index].name,
-					OPTION_SCALAR, sizeof(OPTION_SCALAR)))
-				parm_config.scalar = 1;
+					OPTION_ALG, sizeof(OPTION_ALG))) {
+				parm_config.alg = parse_acl_alg(optarg);
+				if (parm_config.alg ==
+						RTE_ACL_CLASSIFY_DEFAULT) {
+					printf("unknown %s value:\"%s\"\n",
+						OPTION_ALG, optarg);
+					print_usage(prgname);
+					return -1;
+				}
+			}
 
+			if (!strncmp(lgopts[option_index].name, OPTION_ETH_DEST,
+					sizeof(OPTION_ETH_DEST))) {
+				const char *serr = parse_eth_dest(optarg);
+				if (serr != NULL) {
+					printf("invalid %s value:\"%s\": %s\n",
+						OPTION_ETH_DEST, optarg, serr);
+					print_usage(prgname);
+					return -1;
+				}
+			}
 
 			break;
 
@@ -1815,6 +1942,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -1834,14 +1962,10 @@ check_all_ports_link_status(uint32_t port_mask)
 			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up. Speed %u Mbps %s\n",
-						portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex"));
-				else
-					printf("Port %d Link Down\n", portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", portid,
+				       link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -1868,6 +1992,20 @@ check_all_ports_link_status(uint32_t port_mask)
 	}
 }
 
+/*
+ * build-up default vaues for dest MACs.
+ */
+static void
+set_default_dest_mac(void)
+{
+	uint32_t i;
+
+	for (i = 0; i != RTE_DIM(port_l2hdr); i++) {
+		port_l2hdr[i].d_addr.addr_bytes[0] = RTE_ETHER_LOCAL_ADMIN_ADDR;
+		port_l2hdr[i].d_addr.addr_bytes[5] = i;
+	}
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1888,6 +2026,8 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Invalid EAL parameters\n");
 	argc -= ret;
 	argv += ret;
+
+	set_default_dest_mac();
 
 	/* parse application arguments (after the EAL ones) */
 	ret = parse_args(argc, argv);
@@ -1968,13 +2108,14 @@ main(int argc, char **argv)
 				"rte_eth_dev_adjust_nb_rx_tx_desc: err=%d, port=%d\n",
 				ret, portid);
 
-		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &port_l2hdr[portid].s_addr);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
 				"rte_eth_macaddr_get: err=%d, port=%d\n",
 				ret, portid);
 
-		print_ethaddr(" Address:", &ports_eth_addr[portid]);
+		print_ethaddr("Dst MAC:", &port_l2hdr[portid].d_addr);
+		print_ethaddr(", Src MAC:", &port_l2hdr[portid].s_addr);
 		printf(", ");
 
 		/* init memory */
@@ -2110,8 +2251,8 @@ main(int argc, char **argv)
 	check_all_ports_link_status(enabled_port_mask);
 
 	/* launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

@@ -91,6 +91,7 @@ struct axgbe_rx_queue {
 	uint64_t pkts;
 	uint64_t bytes;
 	uint64_t errors;
+	uint64_t rx_mbuf_alloc_failed;
 	/* Number of mbufs allocated from pool*/
 	uint64_t mbuf_alloc;
 
@@ -178,9 +179,13 @@ int axgbe_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int axgbe_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 uint16_t axgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			 uint16_t nb_pkts);
+uint16_t eth_axgbe_recv_scattered_pkts(void *rx_queue,
+		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
 uint16_t axgbe_recv_pkts_threshold_refresh(void *rx_queue,
 					   struct rte_mbuf **rx_pkts,
 					   uint16_t nb_pkts);
 void axgbe_dev_clear_queues(struct rte_eth_dev *dev);
+int axgbe_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
+int axgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
 
 #endif /* _AXGBE_RXTX_H_ */

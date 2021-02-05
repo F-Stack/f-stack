@@ -97,16 +97,10 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	uint16_t i;
 	uint32_t retry;
 	uint64_t tx_offloads;
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	uint64_t start_tsc;
-	uint64_t end_tsc;
-	uint64_t core_cycles;
-#endif
+	uint64_t start_tsc = 0;
 	static int next_flow = 0;
 
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	start_tsc = rte_rdtsc();
-#endif
+	get_start_cycles(&start_tsc);
 
 	/* Receive a burst of packets and discard them. */
 	nb_rx = rte_eth_rx_burst(fs->rx_port, fs->rx_queue, pkts_burst,
@@ -169,7 +163,8 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 							   sizeof(*ip_hdr));
 		pkt->nb_segs		= 1;
 		pkt->pkt_len		= pkt_size;
-		pkt->ol_flags		= ol_flags;
+		pkt->ol_flags		&= EXT_ATTACHED_MBUF;
+		pkt->ol_flags		|= ol_flags;
 		pkt->vlan_tci		= vlan_tci;
 		pkt->vlan_tci_outer	= vlan_tci_outer;
 		pkt->l2_len		= sizeof(struct rte_ether_hdr);
@@ -193,9 +188,7 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 	}
 	fs->tx_packets += nb_tx;
 
-#ifdef RTE_TEST_PMD_RECORD_BURST_STATS
-	fs->tx_burst_stats.pkt_burst_spread[nb_tx]++;
-#endif
+	inc_tx_burst_stats(fs, nb_tx);
 	if (unlikely(nb_tx < nb_pkt)) {
 		/* Back out the flow counter. */
 		next_flow -= (nb_pkt - nb_tx);
@@ -206,11 +199,8 @@ pkt_burst_flow_gen(struct fwd_stream *fs)
 			rte_pktmbuf_free(pkts_burst[nb_tx]);
 		} while (++nb_tx < nb_pkt);
 	}
-#ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
-	end_tsc = rte_rdtsc();
-	core_cycles = (end_tsc - start_tsc);
-	fs->core_cycles = (uint64_t) (fs->core_cycles + core_cycles);
-#endif
+
+	get_end_cycles(fs, start_tsc);
 }
 
 struct fwd_engine flow_gen_engine = {

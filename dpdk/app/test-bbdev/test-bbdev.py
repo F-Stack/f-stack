@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
@@ -12,25 +12,18 @@ import shlex
 from threading import Timer
 
 def kill(process):
-    print "ERROR: Test app timed out"
+    print("ERROR: Test app timed out")
     process.kill()
 
-if "RTE_SDK" in os.environ:
-    dpdk_path = os.environ["RTE_SDK"]
-else:
-    dpdk_path = "../.."
-
-if "RTE_TARGET" in os.environ:
-    dpdk_target = os.environ["RTE_TARGET"]
-else:
-    dpdk_target = "x86_64-native-linux-gcc"
+dpdk_path = "../.."
+dpdk_target = "build"
 
 parser = argparse.ArgumentParser(
                     description='BBdev Unit Test Application',
                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("-p", "--testapp-path",
                     help="specifies path to the bbdev test app",
-                    default=dpdk_path + "/" + dpdk_target + "/app/testbbdev")
+                    default=dpdk_path + "/" + dpdk_target + "/app/dpdk-test-bbdev")
 parser.add_argument("-e", "--eal-params",
                     help="EAL arguments which are passed to the test app",
                     default="--vdev=baseband_null0")
@@ -66,7 +59,7 @@ parser.add_argument("-i", "--init-device",
 args = parser.parse_args()
 
 if not os.path.exists(args.testapp_path):
-    print "No such file: " + args.testapp_path
+    print("No such file: " + args.testapp_path)
     sys.exit(1)
 
 params = [args.testapp_path]

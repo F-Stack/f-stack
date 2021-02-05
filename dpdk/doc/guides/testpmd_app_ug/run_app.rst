@@ -20,7 +20,7 @@ They must be separated from the EAL options, shown in the previous section, with
 
 .. code-block:: console
 
-    sudo ./testpmd -l 0-3 -n 4 -- -i --portmask=0x1 --nb-cores=2
+    sudo ./dpdk-testpmd -l 0-3 -n 4 -- -i --portmask=0x1 --nb-cores=2
 
 The command line options are:
 
@@ -59,23 +59,30 @@ The command line options are:
 *   ``--nb-cores=N``
 
     Set the number of forwarding cores,
-    where 1 <= N <= "number of cores" or ``CONFIG_RTE_MAX_LCORE`` from the configuration file.
+    where 1 <= N <= "number of cores" or ``RTE_MAX_LCORE`` from the configuration file.
     The default value is 1.
 
 *   ``--nb-ports=N``
 
     Set the number of forwarding ports,
-    where 1 <= N <= "number of ports" on the board or ``CONFIG_RTE_MAX_ETHPORTS`` from the configuration file.
+    where 1 <= N <= "number of ports" on the board or ``RTE_MAX_ETHPORTS`` from the configuration file.
     The default value is the number of ports on the board.
 
 *   ``--coremask=0xXX``
 
     Set the hexadecimal bitmask of the cores running the packet forwarding test.
-    The master lcore is reserved for command line parsing only and cannot be masked on for packet forwarding.
+    The main lcore is reserved for command line parsing only and cannot be masked on for packet forwarding.
 
 *   ``--portmask=0xXX``
 
     Set the hexadecimal bitmask of the ports used by the packet forwarding test.
+
+*   ``--portlist=X``
+
+      Set the forwarding ports based on the user input used by the packet forwarding test.
+      '-' denotes a range of ports to set including the two specified port IDs
+      ',' separates multiple port values.
+      Possible examples like --portlist=0,1 or --portlist=0-2 or --portlist=0,1-2 etc
 
 *   ``--numa``
 
@@ -100,9 +107,12 @@ The command line options are:
     Set the socket from which all memory is allocated in NUMA mode,
     where 0 <= N < number of sockets on the board.
 
-*   ``--mbuf-size=N``
+*   ``--mbuf-size=N[,N1[,...Nn]``
 
-    Set the data size of the mbufs used to N bytes, where N < 65536. The default value is 2048.
+    Set the data size of the mbufs used to N bytes, where N < 65536.
+    The default value is 2048. If multiple mbuf-size values are specified the
+    extra memory pools will be created for allocating mbufs to receive packets
+    with buffer splittling features.
 
 *   ``--total-num-mbufs=N``
 
@@ -128,7 +138,7 @@ The command line options are:
 *   ``--eth-peer=N,XX:XX:XX:XX:XX:XX``
 
     Set the MAC address ``XX:XX:XX:XX:XX:XX`` of the peer port N,
-    where 0 <= N < ``CONFIG_RTE_MAX_ETHPORTS`` from the configuration file.
+    where 0 <= N < ``RTE_MAX_ETHPORTS``.
 
 *   ``--tx-ip=SRC,DST``
 
@@ -241,6 +251,7 @@ The command line options are:
        ieee1588
        tm
        noisy
+       5tswap
 
 *   ``--rss-ip``
 
@@ -350,6 +361,21 @@ The command line options are:
 
     Don't flush the RX streams before starting forwarding. Used mainly with the PCAP PMD.
 
+*   ``--rxoffs=X[,Y]``
+
+    Set the offsets of packet segments on receiving if split
+    feature is engaged. Affects only the queues configured
+    with split offloads (currently BUFFER_SPLIT is supported only).
+
+*   ``--rxpkts=X[,Y]``
+
+    Set the length of segments to scatter packets on receiving if split
+    feature is engaged. Affects only the queues configured
+    with split offloads (currently BUFFER_SPLIT is supported only).
+    Optionally the multiple memory pools can be specified with --mbuf-size
+    command line parameter and the mbufs to receive will be allocated
+    sequentially from these extra memory pools.
+
 *   ``--txpkts=X[,Y]``
 
     Set TX segment sizes or total packet length. Valid for ``tx-only``
@@ -381,12 +407,12 @@ The command line options are:
 
     Set the logical core N to perform bitrate calculation.
 
-*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|all>``
+*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|all>``
 
     Enable printing the occurrence of the designated event. Using all will
     enable all of them.
 
-*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|all>``
+*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|all>``
 
     Disable printing the occurrence of the designated event. Using all will
     disable all of them.
@@ -417,6 +443,12 @@ The command line options are:
 
     Set the UDP port number of tunnel VXLAN-GPE to N.
     The default value is 4790.
+
+*   ``--geneve-parsed-port=N``
+
+    Set the UDP port number that is used for parsing the GENEVE protocol to N.
+    HW may be configured with another tunnel Geneve port.
+    The default value is 6081.
 
 *   ``--mlockall``
 
@@ -474,3 +506,26 @@ The command line options are:
 
     Enable to create mempool which is not IOVA contiguous. Valid only with --mp-alloc=anon.
     The default value is 0.
+
+*   ``--rx-mq-mode``
+
+    Set the hexadecimal bitmask of RX multi queue mode which can be enabled.
+    The default value is 0x7::
+
+       ETH_MQ_RX_RSS_FLAG | ETH_MQ_RX_DCB_FLAG | ETH_MQ_RX_VMDQ_FLAG
+
+*   ``--record-core-cycles``
+
+    Enable measurement of CPU cycles per packet.
+
+*   ``--record-burst-stats``
+
+    Enable display of RX and TX burst stats.
+
+*   ``--hairpin-mode=0xXX``
+
+    Set the hairpin port mode with bitmask, only valid when hairpin queues number is set.
+    bit 4 - explicit Tx flow rule
+    bit 1 - two hairpin ports paired
+    bit 0 - two hairpin ports loop
+    The default value is 0. Hairpin will use single port mode and implicit Tx flow mode.

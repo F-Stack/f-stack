@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2019 Intel Corporation
 
@@ -9,7 +9,6 @@ ABI version is supplied via command-line parameter. This script is to be called
 from the devtools/update-abi.sh utility.
 """
 
-from __future__ import print_function
 import argparse
 import sys
 import re
@@ -50,7 +49,10 @@ def __parse_map_file(f_in):
     stable_lines = set()
     # copy experimental section as is
     experimental_lines = []
+    # copy internal section as is
+    internal_lines = []
     in_experimental = False
+    in_internal = False
     has_stable = False
 
     # gather all functions
@@ -63,12 +65,19 @@ def __parse_map_file(f_in):
         if match:
             # whatever section this was, it's not active any more
             in_experimental = False
+            in_internal = False
             continue
 
         # if we're in the middle of experimental section, we need to copy
         # the section verbatim, so just add the line
         if in_experimental:
             experimental_lines += [line]
+            continue
+
+        # if we're in the middle of internal section, we need to copy
+        # the section verbatim, so just add the line
+        if in_internal:
+            internal_lines += [line]
             continue
 
         # skip empty lines
@@ -81,7 +90,9 @@ def __parse_map_file(f_in):
             cur_section = match.group("version")
             # is it experimental?
             in_experimental = cur_section == "EXPERIMENTAL"
-            if not in_experimental:
+            # is it internal?
+            in_internal = cur_section == "INTERNAL"
+            if not in_experimental and not in_internal:
                 has_stable = True
             continue
 
@@ -90,12 +101,12 @@ def __parse_map_file(f_in):
         if match:
             stable_lines.add(match.group("func"))
 
-    return has_stable, stable_lines, experimental_lines
+    return has_stable, stable_lines, experimental_lines, internal_lines
 
 
-def __generate_stable_abi(f_out, abi_version, lines):
+def __generate_stable_abi(f_out, abi_major, lines):
     # print ABI version header
-    print("DPDK_{} {{".format(abi_version), file=f_out)
+    print("DPDK_{} {{".format(abi_major), file=f_out)
 
     # print global section if it exists
     if lines:
@@ -132,6 +143,20 @@ def __generate_experimental_abi(f_out, lines):
     # end section
     print("};", file=f_out)
 
+def __generate_internal_abi(f_out, lines):
+    # start internal section
+    print("INTERNAL {", file=f_out)
+
+    # print all internal lines as they were
+    for line in lines:
+        # don't print empty whitespace
+        if not line:
+            print("", file=f_out)
+        else:
+            print("\t{}".format(line), file=f_out)
+
+    # end section
+    print("};", file=f_out)
 
 def __main():
     arg_parser = argparse.ArgumentParser(
@@ -139,7 +164,7 @@ def __main():
 
     arg_parser.add_argument("map_file", type=str,
                             help='path to linker version script file '
-                                 '(pattern: *version.map)')
+                                 '(pattern: version.map)')
     arg_parser.add_argument("abi_version", type=str,
                             help='target ABI version (pattern: MAJOR.MINOR)')
 
@@ -156,19 +181,25 @@ def __main():
               file=sys.stderr)
         arg_parser.print_help()
         sys.exit(1)
+    abi_major = parsed.abi_version.split('.')[0]
 
     with open(parsed.map_file) as f_in:
-        has_stable, stable_lines, experimental_lines = __parse_map_file(f_in)
+        has_stable, stable_lines, experimental_lines, internal_lines = __parse_map_file(f_in)
 
     with open(parsed.map_file, 'w') as f_out:
         need_newline = has_stable and experimental_lines
         if has_stable:
-            __generate_stable_abi(f_out, parsed.abi_version, stable_lines)
+            __generate_stable_abi(f_out, abi_major, stable_lines)
         if need_newline:
             # separate sections with a newline
             print(file=f_out)
         if experimental_lines:
             __generate_experimental_abi(f_out, experimental_lines)
+        if internal_lines:
+            if has_stable or experimental_lines:
+              # separate sections with a newline
+              print(file=f_out)
+            __generate_internal_abi(f_out, internal_lines)
 
 
 if __name__ == "__main__":

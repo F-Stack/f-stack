@@ -87,6 +87,15 @@ cxgbe_tweak_filter_spec(struct adapter *adap,
 				fs->mask.ethtype = 0;
 			}
 			break;
+		case RTE_ETHER_TYPE_QINQ:
+			if (adap->params.tp.ethertype_shift < 0 &&
+			    adap->params.tp.vnic_shift >= 0) {
+				fs->val.ovlan_vld = 1;
+				fs->mask.ovlan_vld = 1;
+				fs->val.ethtype = 0;
+				fs->mask.ethtype = 0;
+			}
+			break;
 		default:
 			break;
 		}
@@ -145,6 +154,17 @@ cxgbe_fill_filter_region(struct adapter *adap,
 	if (tp->vlan_shift >= 0 && fs->mask.ivlan_vld)
 		ntuple_mask |= (u64)(F_FT_VLAN_VLD | fs->mask.ivlan) <<
 			       tp->vlan_shift;
+	if (tp->vnic_shift >= 0) {
+		if (fs->mask.ovlan_vld)
+			ntuple_mask |= (u64)(fs->val.ovlan_vld << 16 |
+					     fs->mask.ovlan) << tp->vnic_shift;
+		else if (fs->mask.pfvf_vld)
+			ntuple_mask |= (u64)(fs->mask.pfvf_vld << 16 |
+					     fs->mask.pf << 13 |
+					     fs->mask.vf) << tp->vnic_shift;
+	}
+	if (tp->tos_shift >= 0)
+		ntuple_mask |= (u64)fs->mask.tos << tp->tos_shift;
 
 	if (ntuple_mask != hash_filter_mask)
 		return;
@@ -167,41 +187,24 @@ ch_rte_parsetype_eth(const void *dmask, const struct rte_flow_item *item,
 	if (!spec)
 		return 0;
 
-	/* Chelsio hardware supports matching on only one ethertype
-	 * (i.e. either the outer or inner ethertype, but not both). If
-	 * we already encountered VLAN item, then ensure that the outer
-	 * ethertype is VLAN (0x8100) and don't overwrite the inner
-	 * ethertype stored during VLAN item parsing. Note that if
-	 * 'ivlan_vld' bit is set in Chelsio filter spec, then the
-	 * hardware automatically only matches packets with outer
-	 * ethertype having VLAN (0x8100).
-	 */
-	if (fs->mask.ivlan_vld &&
-	    be16_to_cpu(spec->type) != RTE_ETHER_TYPE_VLAN)
-		return rte_flow_error_set(e, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
-					  item,
-					  "Already encountered VLAN item,"
-					  " but outer ethertype is not 0x8100");
-
 	/* we don't support SRC_MAC filtering*/
-	if (!rte_is_zero_ether_addr(&mask->src))
+	if (!rte_is_zero_ether_addr(&spec->src) ||
+	    (umask && !rte_is_zero_ether_addr(&umask->src)))
 		return rte_flow_error_set(e, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
 					  item,
 					  "src mac filtering not supported");
 
-	if (!rte_is_zero_ether_addr(&mask->dst)) {
+	if (!rte_is_zero_ether_addr(&spec->dst) ||
+	    (umask && !rte_is_zero_ether_addr(&umask->dst))) {
 		CXGBE_FILL_FS(0, 0x1ff, macidx);
 		CXGBE_FILL_FS_MEMCPY(spec->dst.addr_bytes, mask->dst.addr_bytes,
 				     dmac);
 	}
 
-	/* Only set outer ethertype, if we didn't encounter VLAN item yet.
-	 * Otherwise, the inner ethertype set by VLAN item will get
-	 * overwritten.
-	 */
-	if (!fs->mask.ivlan_vld)
+	if (spec->type || (umask && umask->type))
 		CXGBE_FILL_FS(be16_to_cpu(spec->type),
 			      be16_to_cpu(mask->type), ethtype);
+
 	return 0;
 }
 
@@ -216,12 +219,16 @@ ch_rte_parsetype_port(const void *dmask, const struct rte_flow_item *item,
 
 	mask = umask ? umask : (const struct rte_flow_item_phy_port *)dmask;
 
+	if (!val)
+		return 0; /* Wildcard, match all physical ports */
+
 	if (val->index > 0x7)
 		return rte_flow_error_set(e, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
 					  item,
 					  "port index up to 0x7 is supported");
 
-	CXGBE_FILL_FS(val->index, mask->index, iport);
+	if (val->index || (umask && umask->index))
+		CXGBE_FILL_FS(val->index, mask->index, iport);
 
 	return 0;
 }
@@ -238,34 +245,95 @@ ch_rte_parsetype_vlan(const void *dmask, const struct rte_flow_item *item,
 	/* If user has not given any mask, then use chelsio supported mask. */
 	mask = umask ? umask : (const struct rte_flow_item_vlan *)dmask;
 
-	CXGBE_FILL_FS(1, 1, ivlan_vld);
-	if (!spec)
-		return 0; /* Wildcard, match all VLAN */
+	if (!fs->mask.ethtype)
+		return rte_flow_error_set(e, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
+					  item,
+					  "Can't parse VLAN item without knowing ethertype");
 
-	/* Chelsio hardware supports matching on only one ethertype
-	 * (i.e. either the outer or inner ethertype, but not both).
-	 * If outer ethertype is already set and is not VLAN (0x8100),
-	 * then don't proceed further. Otherwise, reset the outer
-	 * ethertype, so that it can be replaced by inner ethertype.
-	 * Note that the hardware will automatically match on outer
-	 * ethertype 0x8100, if 'ivlan_vld' bit is set in Chelsio
-	 * filter spec.
+	/* If ethertype is already set and is not VLAN (0x8100) or
+	 * QINQ(0x88A8), then don't proceed further. Otherwise,
+	 * reset the outer ethertype, so that it can be replaced by
+	 * innermost ethertype. Note that hardware will automatically
+	 * match against VLAN or QINQ packets, based on 'ivlan_vld' or
+	 * 'ovlan_vld' bit set in Chelsio filter spec, respectively.
 	 */
 	if (fs->mask.ethtype) {
-		if (fs->val.ethtype != RTE_ETHER_TYPE_VLAN)
+		if (fs->val.ethtype != RTE_ETHER_TYPE_VLAN &&
+		    fs->val.ethtype != RTE_ETHER_TYPE_QINQ)
 			return rte_flow_error_set(e, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ITEM,
 						  item,
-						  "Outer ethertype not 0x8100");
-
-		fs->val.ethtype = 0;
-		fs->mask.ethtype = 0;
+						  "Ethertype must be 0x8100 or 0x88a8");
 	}
 
-	CXGBE_FILL_FS(be16_to_cpu(spec->tci), be16_to_cpu(mask->tci), ivlan);
-	if (spec->inner_type)
+	if (fs->val.ethtype == RTE_ETHER_TYPE_QINQ) {
+		CXGBE_FILL_FS(1, 1, ovlan_vld);
+		if (spec) {
+			if (spec->tci || (umask && umask->tci))
+				CXGBE_FILL_FS(be16_to_cpu(spec->tci),
+					      be16_to_cpu(mask->tci), ovlan);
+			fs->mask.ethtype = 0;
+			fs->val.ethtype = 0;
+		}
+	} else if (fs->val.ethtype == RTE_ETHER_TYPE_VLAN) {
+		CXGBE_FILL_FS(1, 1, ivlan_vld);
+		if (spec) {
+			if (spec->tci || (umask && umask->tci))
+				CXGBE_FILL_FS(be16_to_cpu(spec->tci),
+					      be16_to_cpu(mask->tci), ivlan);
+			fs->mask.ethtype = 0;
+			fs->val.ethtype = 0;
+		}
+	}
+
+	if (spec && (spec->inner_type || (umask && umask->inner_type)))
 		CXGBE_FILL_FS(be16_to_cpu(spec->inner_type),
 			      be16_to_cpu(mask->inner_type), ethtype);
+
+	return 0;
+}
+
+static int
+ch_rte_parsetype_pf(const void *dmask __rte_unused,
+		    const struct rte_flow_item *item __rte_unused,
+		    struct ch_filter_specification *fs,
+		    struct rte_flow_error *e __rte_unused)
+{
+	struct rte_flow *flow = (struct rte_flow *)fs->private;
+	struct rte_eth_dev *dev = flow->dev;
+	struct adapter *adap = ethdev2adap(dev);
+
+	CXGBE_FILL_FS(1, 1, pfvf_vld);
+
+	CXGBE_FILL_FS(adap->pf, 0x7, pf);
+	return 0;
+}
+
+static int
+ch_rte_parsetype_vf(const void *dmask, const struct rte_flow_item *item,
+		    struct ch_filter_specification *fs,
+		    struct rte_flow_error *e)
+{
+	const struct rte_flow_item_vf *umask = item->mask;
+	const struct rte_flow_item_vf *val = item->spec;
+	const struct rte_flow_item_vf *mask;
+
+	/* If user has not given any mask, then use chelsio supported mask. */
+	mask = umask ? umask : (const struct rte_flow_item_vf *)dmask;
+
+	CXGBE_FILL_FS(1, 1, pfvf_vld);
+
+	if (!val)
+		return 0; /* Wildcard, match all Vf */
+
+	if (val->id > UCHAR_MAX)
+		return rte_flow_error_set(e, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
+					  item,
+					  "VF ID > MAX(255)");
+
+	if (val->id || (umask && umask->id))
+		CXGBE_FILL_FS(val->id, mask->id, vf);
 
 	return 0;
 }
@@ -289,10 +357,15 @@ ch_rte_parsetype_udp(const void *dmask, const struct rte_flow_item *item,
 	CXGBE_FILL_FS(IPPROTO_UDP, 0xff, proto);
 	if (!val)
 		return 0;
-	CXGBE_FILL_FS(be16_to_cpu(val->hdr.src_port),
-		      be16_to_cpu(mask->hdr.src_port), fport);
-	CXGBE_FILL_FS(be16_to_cpu(val->hdr.dst_port),
-		      be16_to_cpu(mask->hdr.dst_port), lport);
+
+	if (val->hdr.src_port || (umask && umask->hdr.src_port))
+		CXGBE_FILL_FS(be16_to_cpu(val->hdr.src_port),
+			      be16_to_cpu(mask->hdr.src_port), fport);
+
+	if (val->hdr.dst_port || (umask && umask->hdr.dst_port))
+		CXGBE_FILL_FS(be16_to_cpu(val->hdr.dst_port),
+			      be16_to_cpu(mask->hdr.dst_port), lport);
+
 	return 0;
 }
 
@@ -317,10 +390,15 @@ ch_rte_parsetype_tcp(const void *dmask, const struct rte_flow_item *item,
 	CXGBE_FILL_FS(IPPROTO_TCP, 0xff, proto);
 	if (!val)
 		return 0;
-	CXGBE_FILL_FS(be16_to_cpu(val->hdr.src_port),
-		      be16_to_cpu(mask->hdr.src_port), fport);
-	CXGBE_FILL_FS(be16_to_cpu(val->hdr.dst_port),
-		      be16_to_cpu(mask->hdr.dst_port), lport);
+
+	if (val->hdr.src_port || (umask && umask->hdr.src_port))
+		CXGBE_FILL_FS(be16_to_cpu(val->hdr.src_port),
+			      be16_to_cpu(mask->hdr.src_port), fport);
+
+	if (val->hdr.dst_port || (umask && umask->hdr.dst_port))
+		CXGBE_FILL_FS(be16_to_cpu(val->hdr.dst_port),
+			      be16_to_cpu(mask->hdr.dst_port), lport);
+
 	return 0;
 }
 
@@ -335,13 +413,12 @@ ch_rte_parsetype_ipv4(const void *dmask, const struct rte_flow_item *item,
 
 	mask = umask ? umask : (const struct rte_flow_item_ipv4 *)dmask;
 
-	if (mask->hdr.time_to_live || mask->hdr.type_of_service)
+	if (mask->hdr.time_to_live)
 		return rte_flow_error_set(e, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
-					  item, "ttl/tos are not supported");
+					  item, "ttl is not supported");
 
 	if (fs->mask.ethtype &&
-	    (fs->val.ethtype != RTE_ETHER_TYPE_VLAN &&
-	     fs->val.ethtype != RTE_ETHER_TYPE_IPV4))
+	    (fs->val.ethtype != RTE_ETHER_TYPE_IPV4))
 		return rte_flow_error_set(e, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
 					  item,
 					  "Couldn't find IPv4 ethertype");
@@ -349,9 +426,21 @@ ch_rte_parsetype_ipv4(const void *dmask, const struct rte_flow_item *item,
 	if (!val)
 		return 0; /* ipv4 wild card */
 
-	CXGBE_FILL_FS(val->hdr.next_proto_id, mask->hdr.next_proto_id, proto);
-	CXGBE_FILL_FS_MEMCPY(val->hdr.dst_addr, mask->hdr.dst_addr, lip);
-	CXGBE_FILL_FS_MEMCPY(val->hdr.src_addr, mask->hdr.src_addr, fip);
+	if (val->hdr.next_proto_id || (umask && umask->hdr.next_proto_id))
+		CXGBE_FILL_FS(val->hdr.next_proto_id, mask->hdr.next_proto_id,
+			      proto);
+
+	if (val->hdr.dst_addr || (umask && umask->hdr.dst_addr))
+		CXGBE_FILL_FS_MEMCPY(val->hdr.dst_addr, mask->hdr.dst_addr,
+				     lip);
+
+	if (val->hdr.src_addr || (umask && umask->hdr.src_addr))
+		CXGBE_FILL_FS_MEMCPY(val->hdr.src_addr, mask->hdr.src_addr,
+				     fip);
+
+	if (val->hdr.type_of_service || (umask && umask->hdr.type_of_service))
+		CXGBE_FILL_FS(val->hdr.type_of_service,
+			      mask->hdr.type_of_service, tos);
 
 	return 0;
 }
@@ -364,18 +453,21 @@ ch_rte_parsetype_ipv6(const void *dmask, const struct rte_flow_item *item,
 	const struct rte_flow_item_ipv6 *val = item->spec;
 	const struct rte_flow_item_ipv6 *umask = item->mask;
 	const struct rte_flow_item_ipv6 *mask;
+	u32 vtc_flow, vtc_flow_mask;
+	u8 z[16] = { 0 };
 
 	mask = umask ? umask : (const struct rte_flow_item_ipv6 *)dmask;
 
-	if (mask->hdr.vtc_flow ||
+	vtc_flow_mask = be32_to_cpu(mask->hdr.vtc_flow);
+
+	if (vtc_flow_mask & RTE_IPV6_HDR_FL_MASK ||
 	    mask->hdr.payload_len || mask->hdr.hop_limits)
 		return rte_flow_error_set(e, ENOTSUP, RTE_FLOW_ERROR_TYPE_ITEM,
 					  item,
-					  "tc/flow/hop are not supported");
+					  "flow/hop are not supported");
 
 	if (fs->mask.ethtype &&
-	    (fs->val.ethtype != RTE_ETHER_TYPE_VLAN &&
-	     fs->val.ethtype != RTE_ETHER_TYPE_IPV6))
+	    (fs->val.ethtype != RTE_ETHER_TYPE_IPV6))
 		return rte_flow_error_set(e, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM,
 					  item,
 					  "Couldn't find IPv6 ethertype");
@@ -383,9 +475,28 @@ ch_rte_parsetype_ipv6(const void *dmask, const struct rte_flow_item *item,
 	if (!val)
 		return 0; /* ipv6 wild card */
 
-	CXGBE_FILL_FS(val->hdr.proto, mask->hdr.proto, proto);
-	CXGBE_FILL_FS_MEMCPY(val->hdr.dst_addr, mask->hdr.dst_addr, lip);
-	CXGBE_FILL_FS_MEMCPY(val->hdr.src_addr, mask->hdr.src_addr, fip);
+	if (val->hdr.proto || (umask && umask->hdr.proto))
+		CXGBE_FILL_FS(val->hdr.proto, mask->hdr.proto, proto);
+
+	vtc_flow = be32_to_cpu(val->hdr.vtc_flow);
+	if (val->hdr.vtc_flow || (umask && umask->hdr.vtc_flow))
+		CXGBE_FILL_FS((vtc_flow & RTE_IPV6_HDR_TC_MASK) >>
+			      RTE_IPV6_HDR_TC_SHIFT,
+			      (vtc_flow_mask & RTE_IPV6_HDR_TC_MASK) >>
+			      RTE_IPV6_HDR_TC_SHIFT,
+			      tos);
+
+	if (memcmp(val->hdr.dst_addr, z, sizeof(val->hdr.dst_addr)) ||
+	    (umask &&
+	     memcmp(umask->hdr.dst_addr, z, sizeof(umask->hdr.dst_addr))))
+		CXGBE_FILL_FS_MEMCPY(val->hdr.dst_addr, mask->hdr.dst_addr,
+				     lip);
+
+	if (memcmp(val->hdr.src_addr, z, sizeof(val->hdr.src_addr)) ||
+	    (umask &&
+	     memcmp(umask->hdr.src_addr, z, sizeof(umask->hdr.src_addr))))
+		CXGBE_FILL_FS_MEMCPY(val->hdr.src_addr, mask->hdr.src_addr,
+				     fip);
 
 	return 0;
 }
@@ -563,6 +674,7 @@ ch_rte_parse_atype_switch(const struct rte_flow_action *a,
 	const struct rte_flow_action_set_ipv6 *ipv6;
 	const struct rte_flow_action_set_tp *tp_port;
 	const struct rte_flow_action_phy_port *port;
+	const struct rte_flow_action_set_mac *mac;
 	int item_index;
 	u16 tmp_vlan;
 
@@ -710,6 +822,31 @@ ch_rte_parse_atype_switch(const struct rte_flow_action *a,
 						  "found");
 		fs->swapmac = 1;
 		break;
+	case RTE_FLOW_ACTION_TYPE_SET_MAC_SRC:
+		item_index = cxgbe_get_flow_item_index(items,
+						       RTE_FLOW_ITEM_TYPE_ETH);
+		if (item_index < 0)
+			return rte_flow_error_set(e, EINVAL,
+						  RTE_FLOW_ERROR_TYPE_ACTION, a,
+						  "No RTE_FLOW_ITEM_TYPE_ETH "
+						  "found");
+		mac = (const struct rte_flow_action_set_mac *)a->conf;
+
+		fs->newsmac = 1;
+		memcpy(fs->smac, mac->mac_addr, sizeof(fs->smac));
+		break;
+	case RTE_FLOW_ACTION_TYPE_SET_MAC_DST:
+		item_index = cxgbe_get_flow_item_index(items,
+						       RTE_FLOW_ITEM_TYPE_ETH);
+		if (item_index < 0)
+			return rte_flow_error_set(e, EINVAL,
+						  RTE_FLOW_ERROR_TYPE_ACTION, a,
+						  "No RTE_FLOW_ITEM_TYPE_ETH found");
+		mac = (const struct rte_flow_action_set_mac *)a->conf;
+
+		fs->newdmac = 1;
+		memcpy(fs->dmac, mac->mac_addr, sizeof(fs->dmac));
+		break;
 	default:
 		/* We are not supposed to come here */
 		return rte_flow_error_set(e, EINVAL,
@@ -786,6 +923,8 @@ cxgbe_rtef_parse_actions(struct rte_flow *flow,
 			goto action_switch;
 		case RTE_FLOW_ACTION_TYPE_SET_TP_SRC:
 		case RTE_FLOW_ACTION_TYPE_SET_TP_DST:
+		case RTE_FLOW_ACTION_TYPE_SET_MAC_SRC:
+		case RTE_FLOW_ACTION_TYPE_SET_MAC_DST:
 action_switch:
 			/* We allow multiple switch actions, but switch is
 			 * not compatible with either queue or drop
@@ -854,12 +993,28 @@ static struct chrte_fparse parseitem[] = {
 
 	[RTE_FLOW_ITEM_TYPE_IPV4] = {
 		.fptr  = ch_rte_parsetype_ipv4,
-		.dmask = &rte_flow_item_ipv4_mask,
+		.dmask = &(const struct rte_flow_item_ipv4) {
+			.hdr = {
+				.src_addr = RTE_BE32(0xffffffff),
+				.dst_addr = RTE_BE32(0xffffffff),
+				.type_of_service = 0xff,
+			},
+		},
 	},
 
 	[RTE_FLOW_ITEM_TYPE_IPV6] = {
 		.fptr  = ch_rte_parsetype_ipv6,
-		.dmask = &rte_flow_item_ipv6_mask,
+		.dmask = &(const struct rte_flow_item_ipv6) {
+			.hdr = {
+				.src_addr =
+					"\xff\xff\xff\xff\xff\xff\xff\xff"
+					"\xff\xff\xff\xff\xff\xff\xff\xff",
+				.dst_addr =
+					"\xff\xff\xff\xff\xff\xff\xff\xff"
+					"\xff\xff\xff\xff\xff\xff\xff\xff",
+				.vtc_flow = RTE_BE32(0xff000000),
+			},
+		},
 	},
 
 	[RTE_FLOW_ITEM_TYPE_UDP] = {
@@ -870,6 +1025,18 @@ static struct chrte_fparse parseitem[] = {
 	[RTE_FLOW_ITEM_TYPE_TCP] = {
 		.fptr  = ch_rte_parsetype_tcp,
 		.dmask = &rte_flow_item_tcp_mask,
+	},
+
+	[RTE_FLOW_ITEM_TYPE_PF] = {
+		.fptr = ch_rte_parsetype_pf,
+		.dmask = NULL,
+	},
+
+	[RTE_FLOW_ITEM_TYPE_VF] = {
+		.fptr = ch_rte_parsetype_vf,
+		.dmask = &(const struct rte_flow_item_vf){
+			.id = 0xffffffff,
+		}
 	},
 };
 
@@ -896,15 +1063,13 @@ cxgbe_rtef_parse_items(struct rte_flow *flow,
 			continue;
 		default:
 			/* check if item is repeated */
-			if (repeat[i->type])
+			if (repeat[i->type] &&
+			    i->type != RTE_FLOW_ITEM_TYPE_VLAN)
 				return rte_flow_error_set(e, ENOTSUP,
 						RTE_FLOW_ERROR_TYPE_ITEM, i,
-						"parse items cannot be repeated (except void)");
-			repeat[i->type] = 1;
+						"parse items cannot be repeated(except void/vlan)");
 
-			/* No spec found for this pattern item. Skip it */
-			if (!i->spec)
-				break;
+			repeat[i->type] = 1;
 
 			/* validate the item */
 			ret = cxgbe_validate_item(i, e);
@@ -924,8 +1089,8 @@ cxgbe_rtef_parse_items(struct rte_flow *flow,
 		}
 	}
 
-	cxgbe_fill_filter_region(adap, &flow->fs);
 	cxgbe_tweak_filter_spec(adap, &flow->fs);
+	cxgbe_fill_filter_region(adap, &flow->fs);
 
 	return 0;
 }
@@ -1183,6 +1348,7 @@ cxgbe_flow_validate(struct rte_eth_dev *dev,
 
 	flow->item_parser = parseitem;
 	flow->dev = dev;
+	flow->fs.private = (void *)flow;
 
 	ret = cxgbe_flow_parse(flow, attr, item, action, e);
 	if (ret) {
