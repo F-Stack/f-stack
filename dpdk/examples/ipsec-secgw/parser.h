@@ -2,12 +2,13 @@
  * Copyright(c) 2016 Intel Corporation
  */
 
+#ifndef __PARSER_H
+#define __PARSER_H
+
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
-
-#ifndef __PARSER_H
-#define __PARSER_H
+#include <string.h>
 
 struct parse_status {
 	int status;
@@ -67,12 +68,21 @@ int
 parse_range(const char *token, uint16_t *low, uint16_t *high);
 
 void
+sp4_sort_arr(void);
+
+void
 parse_sp4_tokens(char **tokens, uint32_t n_tokens,
 	struct parse_status *status);
 
 void
+sp6_sort_arr(void);
+
+void
 parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 	struct parse_status *status);
+
+void
+sa_sort_arr(void);
 
 void
 parse_sa_tokens(char **tokens, uint32_t n_tokens,

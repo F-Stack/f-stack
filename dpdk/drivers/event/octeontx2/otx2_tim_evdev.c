@@ -327,7 +327,11 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 			tim_optimze_bkt_param(tim_ring);
 	}
 
-	tim_ring->nb_chunks = tim_ring->nb_chunks * tim_ring->nb_bkts;
+	if (tim_ring->disable_npa)
+		tim_ring->nb_chunks = tim_ring->nb_chunks * tim_ring->nb_bkts;
+	else
+		tim_ring->nb_chunks = tim_ring->nb_chunks + tim_ring->nb_bkts;
+
 	/* Create buckets. */
 	tim_ring->bkt = rte_zmalloc("otx2_tim_bucket", (tim_ring->nb_bkts) *
 				    sizeof(struct otx2_tim_bkt),
@@ -375,6 +379,11 @@ otx2_tim_ring_create(struct rte_event_timer_adapter *adptr)
 	sso_updt_xae_cnt(sso_pmd_priv(dev->event_dev), (void *)tim_ring,
 			 RTE_EVENT_TYPE_TIMER);
 	sso_xae_reconfigure(dev->event_dev);
+
+	otx2_tim_dbg("Total memory used %"PRIu64"MB\n",
+			(uint64_t)(((tim_ring->nb_chunks * tim_ring->chunk_sz)
+			+ (tim_ring->nb_bkts * sizeof(struct otx2_tim_bkt))) /
+			BIT_ULL(20)));
 
 	return rc;
 
@@ -517,7 +526,8 @@ otx2_tim_stats_get(const struct rte_event_timer_adapter *adapter,
 	uint64_t bkt_cyc = rte_rdtsc() - tim_ring->ring_start_cyc;
 
 
-	stats->evtim_exp_count = rte_atomic64_read(&tim_ring->arm_cnt);
+	stats->evtim_exp_count = __atomic_load_n(&tim_ring->arm_cnt,
+						 __ATOMIC_RELAXED);
 	stats->ev_enq_count = stats->evtim_exp_count;
 	stats->adapter_tick_count = rte_reciprocal_divide_u64(bkt_cyc,
 				&tim_ring->fast_div);
@@ -529,7 +539,7 @@ otx2_tim_stats_reset(const struct rte_event_timer_adapter *adapter)
 {
 	struct otx2_tim_ring *tim_ring = adapter->data->adapter_priv;
 
-	rte_atomic64_clear(&tim_ring->arm_cnt);
+	__atomic_store_n(&tim_ring->arm_cnt, 0, __ATOMIC_RELAXED);
 	return 0;
 }
 

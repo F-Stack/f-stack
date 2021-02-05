@@ -1,0 +1,9 @@
+DPDK_21 {
+	global:
+
+	rte_pci_addr_cmp;
+	rte_pci_addr_parse;
+	rte_pci_device_name;
+
+	local: *;
+};

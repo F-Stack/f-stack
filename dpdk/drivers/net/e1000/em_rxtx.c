@@ -1611,12 +1611,14 @@ em_dev_free_queues(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		eth_em_rx_queue_release(dev->data->rx_queues[i]);
 		dev->data->rx_queues[i] = NULL;
+		rte_eth_dma_zone_free(dev, "rx_ring", i);
 	}
 	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		eth_em_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
+		rte_eth_dma_zone_free(dev, "tx_ring", i);
 	}
 	dev->data->nb_tx_queues = 0;
 }
@@ -2049,7 +2051,7 @@ e1000_flush_tx_ring(struct rte_eth_dev *dev)
 		tx_desc->lower.data = rte_cpu_to_le_32(txd_lower | size);
 		tx_desc->upper.data = 0;
 
-		rte_cio_wmb();
+		rte_io_wmb();
 		txq->tx_tail++;
 		if (txq->tx_tail == txq->nb_tx_desc)
 			txq->tx_tail = 0;

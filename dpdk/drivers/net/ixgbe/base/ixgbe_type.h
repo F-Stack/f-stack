@@ -1082,8 +1082,10 @@ struct ixgbe_dmac_config {
 #define IXGBE_HSMC0R		0x15F04
 #define IXGBE_HSMC1R		0x15F08
 #define IXGBE_SWSR		0x15F10
+#define IXGBE_FWRESETCNT	0x15F40
 #define IXGBE_HFDR		0x15FE8
 #define IXGBE_FLEX_MNG		0x15800 /* 0x15800 - 0x15EFC */
+#define IXGBE_FLEX_MNG_PTR(_i)	(IXGBE_FLEX_MNG + ((_i) * 4))
 
 #define IXGBE_HICR_EN		0x01  /* Enable bit - RO */
 /* Driver sets this bit when done to put command in RAM */
@@ -2411,9 +2413,7 @@ enum {
 #define IXGBE_EEPROM_CTRL_2		1 /* EEPROM CTRL word 2 */
 #define IXGBE_EEPROM_CCD_BIT		2
 
-#ifndef IXGBE_EEPROM_GRANT_ATTEMPTS
 #define IXGBE_EEPROM_GRANT_ATTEMPTS	1000 /* EEPROM attempts to gain grant */
-#endif
 
 /* Number of 5 microseconds we wait for EERD read and
  * EERW write to complete */
@@ -3143,11 +3143,7 @@ enum ixgbe_fdir_pballoc_type {
 
 /* Host Interface Command Structures */
 
-#ifdef C99
 #pragma pack(push, 1)
-#else
-#pragma pack (1)
-#endif /* C99 */
 
 struct ixgbe_hic_hdr {
 	u8 cmd;
@@ -3260,11 +3256,7 @@ struct ixgbe_hic_phy_activity_resp {
 	__be32 data[FW_PHY_ACT_DATA_COUNT];
 };
 
-#ifdef C99
 #pragma pack(pop)
-#else
-#pragma pack()
-#endif /* C99 */
 
 /* Transmit Descriptor - Legacy */
 struct ixgbe_legacy_tx_desc {

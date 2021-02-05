@@ -4,7 +4,7 @@
 LiquidIO VF Poll Mode Driver
 ============================
 
-The LiquidIO VF PMD library (librte_pmd_lio) provides poll mode driver support for
+The LiquidIO VF PMD library (**librte_net_liquidio**) provides poll mode driver support for
 Cavium LiquidIO® II server adapter VFs. PF management and VF creation can be
 done using kernel driver.
 
@@ -18,33 +18,6 @@ Supported LiquidIO Adapters
 - LiquidIO II CN2350 210SVPT
 - LiquidIO II CN2360 210SV/225SV
 - LiquidIO II CN2360 210SVPT
-
-
-Pre-Installation Configuration
-------------------------------
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_LIO_PMD`` (default ``y``)
-
-  Toggle compilation of LiquidIO PMD.
-
-- ``CONFIG_RTE_LIBRTE_LIO_DEBUG_RX`` (default ``n``)
-
-  Toggle display of receive fast path run-time messages.
-
-- ``CONFIG_RTE_LIBRTE_LIO_DEBUG_TX`` (default ``n``)
-
-  Toggle display of transmit fast path run-time messages.
-
-- ``CONFIG_RTE_LIBRTE_LIO_DEBUG_MBOX`` (default ``n``)
-
-  Toggle display of mailbox messages.
-
-- ``CONFIG_RTE_LIBRTE_LIO_DEBUG_REGS`` (default ``n``)
-
-  Toggle display of register reads and writes.
 
 
 SR-IOV: Prerequisites and Sample Application Notes

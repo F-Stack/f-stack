@@ -279,7 +279,7 @@ inject_events(uint32_t flow_id, uint8_t event_type, uint8_t sub_event_type,
 		m = rte_pktmbuf_alloc(eventdev_test_mempool);
 		RTE_TEST_ASSERT_NOT_NULL(m, "mempool alloc failed");
 
-		m->seqn = i;
+		*rte_event_pmd_selftest_seqn(m) = i;
 		update_event_and_validation_attr(m, &ev, flow_id, event_type,
 						 sub_event_type, sched_type,
 						 queue, port);
@@ -301,7 +301,7 @@ check_excess_events(uint8_t port)
 
 		RTE_TEST_ASSERT_SUCCESS(valid_event,
 					"Unexpected valid event=%d",
-					ev.mbuf->seqn);
+					*rte_event_pmd_selftest_seqn(ev.mbuf));
 	}
 	return 0;
 }
@@ -406,8 +406,9 @@ static int
 validate_simple_enqdeq(uint32_t index, uint8_t port, struct rte_event *ev)
 {
 	RTE_SET_USED(port);
-	RTE_TEST_ASSERT_EQUAL(index, ev->mbuf->seqn, "index=%d != seqn=%d",
-			      index, ev->mbuf->seqn);
+	RTE_TEST_ASSERT_EQUAL(index, *rte_event_pmd_selftest_seqn(ev->mbuf),
+		"index=%d != seqn=%d",
+		index, *rte_event_pmd_selftest_seqn(ev->mbuf));
 	return 0;
 }
 
@@ -493,10 +494,11 @@ validate_queue_priority(uint32_t index, uint8_t port, struct rte_event *ev)
 
 	expected_val += ev->queue_id;
 	RTE_SET_USED(port);
-	RTE_TEST_ASSERT_EQUAL(ev->mbuf->seqn, expected_val,
-	"seqn=%d index=%d expected=%d range=%d nb_queues=%d max_event=%d",
-			      ev->mbuf->seqn, index, expected_val, range,
-			      queue_count, MAX_EVENTS);
+	RTE_TEST_ASSERT_EQUAL(
+		*rte_event_pmd_selftest_seqn(ev->mbuf), expected_val,
+		"seqn=%d index=%d expected=%d range=%d nb_queues=%d max_event=%d",
+		*rte_event_pmd_selftest_seqn(ev->mbuf), index, expected_val,
+		range, queue_count, MAX_EVENTS);
 	return 0;
 }
 
@@ -523,7 +525,7 @@ test_multi_queue_priority(void)
 		m = rte_pktmbuf_alloc(eventdev_test_mempool);
 		RTE_TEST_ASSERT_NOT_NULL(m, "mempool alloc failed");
 
-		m->seqn = i;
+		*rte_event_pmd_selftest_seqn(m) = i;
 		queue = i % queue_count;
 		update_event_and_validation_attr(m, &ev, 0, RTE_EVENT_TYPE_CPU,
 						 0, RTE_SCHED_TYPE_PARALLEL,
@@ -586,8 +588,8 @@ wait_workers_to_join(const rte_atomic32_t *count)
 }
 
 static inline int
-launch_workers_and_wait(int (*master_worker)(void *),
-			int (*slave_workers)(void *), uint32_t total_events,
+launch_workers_and_wait(int (*main_thread)(void *),
+			int (*worker_thread)(void *), uint32_t total_events,
 			uint8_t nb_workers, uint8_t sched_type)
 {
 	rte_atomic32_t atomic_total_events;
@@ -623,9 +625,9 @@ launch_workers_and_wait(int (*master_worker)(void *),
 
 	w_lcore = rte_get_next_lcore(
 			/* start core */ -1,
-			/* skip master */ 1,
+			/* skip main */ 1,
 			/* wrap */ 0);
-	rte_eal_remote_launch(master_worker, &param[0], w_lcore);
+	rte_eal_remote_launch(main_thread, &param[0], w_lcore);
 
 	for (port = 1; port < nb_workers; port++) {
 		param[port].total_events = &atomic_total_events;
@@ -634,7 +636,7 @@ launch_workers_and_wait(int (*master_worker)(void *),
 		param[port].dequeue_tmo_ticks = dequeue_tmo_ticks;
 		rte_smp_wmb();
 		w_lcore = rte_get_next_lcore(w_lcore, 1, 0);
-		rte_eal_remote_launch(slave_workers, &param[port], w_lcore);
+		rte_eal_remote_launch(worker_thread, &param[port], w_lcore);
 	}
 
 	rte_smp_wmb();
@@ -888,7 +890,9 @@ worker_flow_based_pipeline(void *arg)
 			ev.op = RTE_EVENT_OP_FORWARD;
 			rte_event_enqueue_burst(evdev, port, &ev, 1);
 		} else if (ev.sub_event_type == 1) { /* Events from stage 1*/
-			if (seqn_list_update(ev.mbuf->seqn) == 0) {
+			uint32_t seqn = *rte_event_pmd_selftest_seqn(ev.mbuf);
+
+			if (seqn_list_update(seqn) == 0) {
 				rte_pktmbuf_free(ev.mbuf);
 				rte_atomic32_sub(total_events, 1);
 			} else {
@@ -923,7 +927,7 @@ test_multiport_flow_sched_type_test(uint8_t in_sched_type,
 		return 0;
 	}
 
-	/* Injects events with m->seqn=0 to total_events */
+	/* Injects events with a 0 sequence number to total_events */
 	ret = inject_events(0x1 /*flow_id */,
 			    RTE_EVENT_TYPE_CPU /* event_type */,
 			    0 /* sub_event_type (stage 0) */,
@@ -1043,7 +1047,9 @@ worker_group_based_pipeline(void *arg)
 			ev.op = RTE_EVENT_OP_FORWARD;
 			rte_event_enqueue_burst(evdev, port, &ev, 1);
 		} else if (ev.queue_id == 1) { /* Events from stage 1(group 1)*/
-			if (seqn_list_update(ev.mbuf->seqn) == 0) {
+			uint32_t seqn = *rte_event_pmd_selftest_seqn(ev.mbuf);
+
+			if (seqn_list_update(seqn) == 0) {
 				rte_pktmbuf_free(ev.mbuf);
 				rte_atomic32_sub(total_events, 1);
 			} else {
@@ -1084,7 +1090,7 @@ test_multiport_queue_sched_type_test(uint8_t in_sched_type,
 		return 0;
 	}
 
-	/* Injects events with m->seqn=0 to total_events */
+	/* Injects events with a 0 sequence number to total_events */
 	ret = inject_events(0x1 /*flow_id */,
 			    RTE_EVENT_TYPE_CPU /* event_type */,
 			    0 /* sub_event_type (stage 0) */,
@@ -1222,7 +1228,7 @@ launch_multi_port_max_stages_random_sched_type(int (*fn)(void *))
 		return 0;
 	}
 
-	/* Injects events with m->seqn=0 to total_events */
+	/* Injects events with a 0 sequence number to total_events */
 	ret = inject_events(0x1 /*flow_id */,
 			    RTE_EVENT_TYPE_CPU /* event_type */,
 			    0 /* sub_event_type (stage 0) */,
@@ -1348,7 +1354,7 @@ worker_ordered_flow_producer(void *arg)
 		if (m == NULL)
 			continue;
 
-		m->seqn = counter++;
+		*rte_event_pmd_selftest_seqn(m) = counter++;
 
 		struct rte_event ev = {.event = 0, .u64 = 0};
 

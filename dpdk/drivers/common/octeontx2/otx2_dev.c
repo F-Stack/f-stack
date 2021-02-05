@@ -11,6 +11,7 @@
 #include <rte_common.h>
 #include <rte_eal.h>
 #include <rte_memcpy.h>
+#include <rte_eal_paging.h>
 
 #include "otx2_dev.h"
 #include "otx2_mbox.h"
@@ -34,10 +35,11 @@ mbox_mem_map(off_t off, size_t size)
 	if (mem_fd < 0)
 		goto error;
 
-	va = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, off);
+	va = rte_mem_map(NULL, size, RTE_PROT_READ | RTE_PROT_WRITE,
+			RTE_MAP_SHARED, mem_fd, off);
 	close(mem_fd);
 
-	if (va == MAP_FAILED)
+	if (va == NULL)
 		otx2_err("Failed to mmap sz=0x%zx, fd=%d, off=%jd",
 			 size, mem_fd, (intmax_t)off);
 error:
@@ -48,7 +50,7 @@ static void
 mbox_mem_unmap(void *va, size_t size)
 {
 	if (va)
-		munmap(va, size);
+		rte_mem_unmap(va, size);
 }
 
 static int
@@ -577,17 +579,16 @@ otx2_pf_vf_mbox_irq(void *param)
 
 	intr = otx2_read64(dev->bar2 + RVU_VF_INT);
 	if (intr == 0)
-		return;
+		otx2_base_dbg("Proceeding to check mbox UP messages if any");
 
 	otx2_write64(intr, dev->bar2 + RVU_VF_INT);
 	otx2_base_dbg("Irq 0x%" PRIx64 "(pf:%d,vf:%d)", intr, dev->pf, dev->vf);
-	if (intr) {
-		/* First process all configuration messages */
-		otx2_process_msgs(dev, dev->mbox);
 
-		/* Process Uplink messages */
-		otx2_process_msgs_up(dev, &dev->mbox_up);
-	}
+	/* First process all configuration messages */
+	otx2_process_msgs(dev, dev->mbox);
+
+	/* Process Uplink messages */
+	otx2_process_msgs_up(dev, &dev->mbox_up);
 }
 
 static void
@@ -598,18 +599,16 @@ otx2_af_pf_mbox_irq(void *param)
 
 	intr = otx2_read64(dev->bar2 + RVU_PF_INT);
 	if (intr == 0)
-		return;
+		otx2_base_dbg("Proceeding to check mbox UP messages if any");
 
 	otx2_write64(intr, dev->bar2 + RVU_PF_INT);
-
 	otx2_base_dbg("Irq 0x%" PRIx64 "(pf:%d,vf:%d)", intr, dev->pf, dev->vf);
-	if (intr) {
-		/* First process all configuration messages */
-		otx2_process_msgs(dev, dev->mbox);
 
-		/* Process Uplink messages */
-		otx2_process_msgs_up(dev, &dev->mbox_up);
-	}
+	/* First process all configuration messages */
+	otx2_process_msgs(dev, dev->mbox);
+
+	/* Process Uplink messages */
+	otx2_process_msgs_up(dev, &dev->mbox_up);
 }
 
 static int
@@ -900,6 +899,7 @@ otx2_dev_priv_init(struct rte_pci_device *pci_dev, void *otx2_dev)
 {
 	int up_direction = MBOX_DIR_PFAF_UP;
 	int rc, direction = MBOX_DIR_PFAF;
+	uint64_t intr_offset = RVU_PF_INT;
 	struct otx2_dev *dev = otx2_dev;
 	uintptr_t bar2, bar4;
 	uint64_t bar4_addr;
@@ -924,15 +924,18 @@ otx2_dev_priv_init(struct rte_pci_device *pci_dev, void *otx2_dev)
 	if (otx2_dev_is_vf(dev)) {
 		direction = MBOX_DIR_VFPF;
 		up_direction = MBOX_DIR_VFPF_UP;
+		intr_offset = RVU_VF_INT;
 	}
 
 	/* Initialize the local mbox */
-	rc = otx2_mbox_init(&dev->mbox_local, bar4, bar2, direction, 1);
+	rc = otx2_mbox_init(&dev->mbox_local, bar4, bar2, direction, 1,
+			    intr_offset);
 	if (rc)
 		goto error;
 	dev->mbox = &dev->mbox_local;
 
-	rc = otx2_mbox_init(&dev->mbox_up, bar4, bar2, up_direction, 1);
+	rc = otx2_mbox_init(&dev->mbox_up, bar4, bar2, up_direction, 1,
+			    intr_offset);
 	if (rc)
 		goto error;
 
@@ -967,13 +970,15 @@ otx2_dev_priv_init(struct rte_pci_device *pci_dev, void *otx2_dev)
 		}
 		/* Init mbox object */
 		rc = otx2_mbox_init(&dev->mbox_vfpf, (uintptr_t)hwbase,
-				    bar2, MBOX_DIR_PFVF, pci_dev->max_vfs);
+				    bar2, MBOX_DIR_PFVF, pci_dev->max_vfs,
+				    intr_offset);
 		if (rc)
 			goto iounmap;
 
 		/* PF -> VF UP messages */
 		rc = otx2_mbox_init(&dev->mbox_vfpf_up, (uintptr_t)hwbase,
-				    bar2, MBOX_DIR_PFVF_UP, pci_dev->max_vfs);
+				    bar2, MBOX_DIR_PFVF_UP, pci_dev->max_vfs,
+				    intr_offset);
 		if (rc)
 			goto mbox_fini;
 	}

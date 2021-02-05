@@ -10,7 +10,6 @@
 #include "null_crypto_pmd_private.h"
 
 static uint8_t cryptodev_driver_id;
-int null_logtype_driver;
 
 /** verify and set session parameters */
 int
@@ -178,7 +177,8 @@ cryptodev_null_create(const char *name,
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
-			RTE_CRYPTODEV_FF_IN_PLACE_SGL;
+			RTE_CRYPTODEV_FF_IN_PLACE_SGL |
+			RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
 
 	internals = dev->data->dev_private;
 
@@ -248,8 +248,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_NULL_PMD,
 	"socket_id=<int>");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(null_crypto_drv, cryptodev_null_pmd_drv.driver,
 		cryptodev_driver_id);
-
-RTE_INIT(null_init_log)
-{
-	null_logtype_driver = rte_log_register("pmd.crypto.null");
-}
+RTE_LOG_REGISTER(null_logtype_driver, pmd.crypto.null, INFO);

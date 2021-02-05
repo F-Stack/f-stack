@@ -3,7 +3,7 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
 
 deps += ['common_dpaax', 'eventdev']
@@ -18,8 +18,6 @@ sources = files('base/fman/fman.c',
 		'base/qbman/qman.c',
 		'base/qbman/qman_driver.c',
 		'dpaa_bus.c')
-
-allow_experimental_apis = true
 
 if cc.has_argument('-Wno-cast-qual')
 	cflags += '-Wno-cast-qual'

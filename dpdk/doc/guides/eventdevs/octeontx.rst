@@ -4,7 +4,7 @@
 OCTEON TX SSOVF Eventdev Driver
 ===============================
 
-The OCTEON TX SSOVF PMD (**librte_pmd_octeontx_ssovf**) provides poll mode
+The OCTEON TX SSOVF PMD (**librte_event_octeontx**) provides poll mode
 eventdev driver support for the inbuilt event device found in the **Cavium OCTEON TX**
 SoC family as well as their virtual functions (VF) in SR-IOV context.
 
@@ -41,30 +41,6 @@ Prerequisites
 
 See :doc:`../platform/octeontx` for setup information.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_octeontx_ssovf`` driver.
-
-Driver Compilation
-~~~~~~~~~~~~~~~~~~
-
-To compile the OCTEON TX SSOVF PMD for Linux arm64 gcc target, run the
-following ``make`` command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   make config T=arm64-thunderx-linux-gcc install
-
 
 Initialization
 --------------
@@ -85,18 +61,6 @@ Example:
 .. code-block:: console
 
     ./your_eventdev_application --vdev="event_octeontx"
-
-
-Selftest
---------
-
-The functionality of OCTEON TX eventdev can be verified using this option,
-various unit and functional tests are run to verify the sanity.
-The tests are run once the vdev creation is successfully complete.
-
-.. code-block:: console
-
-    --vdev="event_octeontx,selftest=1"
 
 
 Enable TIMvf stats
@@ -140,9 +104,22 @@ follows:
 When timvf is used as Event timer adapter event schedule type
 ``RTE_SCHED_TYPE_PARALLEL`` is not supported.
 
-Max mempool size
-~~~~~~~~~~~~~~~~
+Max number of events
+~~~~~~~~~~~~~~~~~~~~
 
-Max mempool size when using OCTEON TX Eventdev (SSO) should be limited to 128K.
-When running dpdk-test-eventdev on OCTEON TX the application can limit the
-number of mbufs by using the option ``--pool_sz 131072``
+Max number of events in OCTEON TX Eventdev (SSO) are only limited by DRAM size
+and they can be configured by passing limits to kernel bootargs as follows:
+
+.. code-block:: console
+
+        ssopf.max_events=4194304
+
+The same can be verified by looking at the following sysfs entry:
+
+.. code-block:: console
+
+        # cat /sys/module/ssopf/parameters/max_events
+        4194304
+
+The maximum number of events that can be added to SSO by the event adapters such
+as (Rx/Timer) should be limited to the above configured value.

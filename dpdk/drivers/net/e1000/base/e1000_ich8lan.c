@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001 - 2015 Intel Corporation
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 /* 82562G 10/100 Network Connection
@@ -51,11 +51,9 @@ STATIC bool e1000_check_mng_mode_pchlan(struct e1000_hw *hw);
 STATIC int  e1000_rar_set_pch2lan(struct e1000_hw *hw, u8 *addr, u32 index);
 STATIC int  e1000_rar_set_pch_lpt(struct e1000_hw *hw, u8 *addr, u32 index);
 STATIC s32 e1000_sw_lcd_config_ich8lan(struct e1000_hw *hw);
-#ifndef NO_NON_BLOCKING_PHY_MTA_UPDATE_SUPPORT
 STATIC void e1000_update_mc_addr_list_pch2lan(struct e1000_hw *hw,
 					      u8 *mc_addr_list,
 					      u32 mc_addr_count);
-#endif /* NO_NON_BLOCKING_PHY_MTA_UPDATE_SUPPORT */
 STATIC s32  e1000_check_reset_block_ich8lan(struct e1000_hw *hw);
 STATIC s32  e1000_phy_hw_reset_ich8lan(struct e1000_hw *hw);
 STATIC s32  e1000_set_lplu_state_pchlan(struct e1000_hw *hw, bool active);
@@ -297,13 +295,11 @@ STATIC s32 e1000_init_phy_workarounds_pchlan(struct e1000_hw *hw)
 	 */
 	e1000_gate_hw_phy_config_ich8lan(hw, true);
 
-#ifdef ULP_SUPPORT
 	/* It is not possible to be certain of the current state of ULP
 	 * so forcibly disable it.
 	 */
 	hw->dev_spec.ich8lan.ulp_state = e1000_ulp_state_unknown;
 
-#endif /* ULP_SUPPORT */
 	ret_val = hw->phy.ops.acquire(hw);
 	if (ret_val) {
 		DEBUGOUT("Failed to initialize PHY flow\n");
@@ -318,6 +314,7 @@ STATIC s32 e1000_init_phy_workarounds_pchlan(struct e1000_hw *hw)
 	case e1000_pch_lpt:
 	case e1000_pch_spt:
 	case e1000_pch_cnp:
+	case e1000_pch_adp:
 		if (e1000_phy_is_accessible_pchlan(hw))
 			break;
 
@@ -467,6 +464,7 @@ STATIC s32 e1000_init_phy_params_pchlan(struct e1000_hw *hw)
 		case e1000_pch_lpt:
 		case e1000_pch_spt:
 		case e1000_pch_cnp:
+		case e1000_pch_adp:
 			/* In case the PHY needs to be in mdio slow mode,
 			 * set slow mode and try to get the PHY id again.
 			 */
@@ -699,9 +697,7 @@ STATIC s32 e1000_init_nvm_params_ich8lan(struct e1000_hw *hw)
 STATIC s32 e1000_init_mac_params_ich8lan(struct e1000_hw *hw)
 {
 	struct e1000_mac_info *mac = &hw->mac;
-#if defined(QV_RELEASE) || !defined(NO_PCH_LPT_B0_SUPPORT)
 	u16 pci_cfg;
-#endif /* QV_RELEASE || !defined(NO_PCH_LPT_B0_SUPPORT) */
 
 	DEBUGFUNC("e1000_init_mac_params_ich8lan");
 
@@ -772,14 +768,12 @@ STATIC s32 e1000_init_mac_params_ich8lan(struct e1000_hw *hw)
 	case e1000_pch_lpt:
 	case e1000_pch_spt:
 	case e1000_pch_cnp:
-#ifndef NO_NON_BLOCKING_PHY_MTA_UPDATE_SUPPORT
+	case e1000_pch_adp:
 		/* multicast address update for pch2 */
 		mac->ops.update_mc_addr_list =
 			e1000_update_mc_addr_list_pch2lan;
 		/* fall-through */
-#endif
 	case e1000_pchlan:
-#if defined(QV_RELEASE) || !defined(NO_PCH_LPT_B0_SUPPORT)
 		/* save PCH revision_id */
 		e1000_read_pci_cfg(hw, E1000_PCI_REVISION_ID_REG, &pci_cfg);
 		/* SPT uses full byte for revision ID,
@@ -789,7 +783,6 @@ STATIC s32 e1000_init_mac_params_ich8lan(struct e1000_hw *hw)
 			hw->revision_id = (u8)(pci_cfg &= 0x00FF);
 		else
 			hw->revision_id = (u8)(pci_cfg &= 0x000F);
-#endif /* QV_RELEASE || !defined(NO_PCH_LPT_B0_SUPPORT) */
 		/* check management mode */
 		mac->ops.check_mng_mode = e1000_check_mng_mode_pchlan;
 		/* ID LED init */
@@ -822,7 +815,7 @@ STATIC s32 e1000_init_mac_params_ich8lan(struct e1000_hw *hw)
 /**
  *  __e1000_access_emi_reg_locked - Read/write EMI register
  *  @hw: pointer to the HW structure
- *  @addr: EMI address to program
+ *  @address: EMI address to program
  *  @data: pointer to value to read/write from/to the EMI address
  *  @read: boolean flag to indicate read or write
  *
@@ -1073,7 +1066,6 @@ update_fextnvm6:
 	return ret_val;
 }
 
-#ifdef ULP_SUPPORT
 /**
  *  e1000_enable_ulp_lpt_lp - configure Ultra Low Power mode for LynxPoint-LP
  *  @hw: pointer to the HW structure
@@ -1268,6 +1260,7 @@ out:
 s32 e1000_disable_ulp_lpt_lp(struct e1000_hw *hw, bool force)
 {
 	s32 ret_val = E1000_SUCCESS;
+	u8 ulp_exit_timeout = 30;
 	u32 mac_reg;
 	u16 phy_reg;
 	int i = 0;
@@ -1289,10 +1282,12 @@ s32 e1000_disable_ulp_lpt_lp(struct e1000_hw *hw, bool force)
 			E1000_WRITE_REG(hw, E1000_H2ME, mac_reg);
 		}
 
-		/* Poll up to 300msec for ME to clear ULP_CFG_DONE. */
+		if (hw->mac.type == e1000_pch_cnp)
+			ulp_exit_timeout = 100;
+
 		while (E1000_READ_REG(hw, E1000_FWSM) &
 		       E1000_FWSM_ULP_CFG_DONE) {
-			if (i++ == 30) {
+			if (i++ == ulp_exit_timeout) {
 				ret_val = -E1000_ERR_PHY;
 				goto out;
 			}
@@ -1449,7 +1444,6 @@ out:
 	return ret_val;
 }
 
-#endif /* ULP_SUPPORT */
 
 
 /**
@@ -1546,8 +1540,6 @@ STATIC s32 e1000_check_for_copper_link_ich8lan(struct e1000_hw *hw)
 
 
 		if (hw->mac.type >= e1000_pch_lpt) {
-			u16 phy_reg;
-
 			hw->phy.ops.read_reg_locked(hw, I217_PLL_CLOCK_GATE_REG,
 						    &phy_reg);
 			phy_reg &= ~I217_PLL_CLOCK_GATE_MASK;
@@ -1763,6 +1755,7 @@ void e1000_init_function_pointers_ich8lan(struct e1000_hw *hw)
 	case e1000_pch_lpt:
 	case e1000_pch_spt:
 	case e1000_pch_cnp:
+	case e1000_pch_adp:
 		hw->phy.ops.init_params = e1000_init_phy_params_pchlan;
 		break;
 	default:
@@ -2077,7 +2070,6 @@ out:
 	return -E1000_ERR_CONFIG;
 }
 
-#ifndef NO_NON_BLOCKING_PHY_MTA_UPDATE_SUPPORT
 /**
  *  e1000_update_mc_addr_list_pch2lan - Update Multicast addresses
  *  @hw: pointer to the HW structure
@@ -2122,7 +2114,6 @@ release:
 	hw->phy.ops.release(hw);
 }
 
-#endif /* NO_NON_BLOCKING_PHY_MTA_UPDATE_SUPPORT */
 /**
  *  e1000_check_reset_block_ich8lan - Check if PHY reset is blocked
  *  @hw: pointer to the HW structure
@@ -2230,6 +2221,7 @@ STATIC s32 e1000_sw_lcd_config_ich8lan(struct e1000_hw *hw)
 	case e1000_pch_lpt:
 	case e1000_pch_spt:
 	case e1000_pch_cnp:
+	case e1000_pch_adp:
 		sw_cfg_mask = E1000_FEXTNVM_SW_CONFIG_ICH8M;
 		break;
 	default:
@@ -2401,7 +2393,7 @@ release:
 /**
  *  e1000_configure_k1_ich8lan - Configure K1 power state
  *  @hw: pointer to the HW structure
- *  @enable: K1 state to configure
+ *  @k1_enable: K1 state to configure
  *
  *  Configure the K1 power state based on the provided parameter.
  *  Assumes semaphore already acquired.
@@ -2549,6 +2541,7 @@ STATIC s32 e1000_set_mdio_slow_mode_hv(struct e1000_hw *hw)
 /**
  *  e1000_hv_phy_workarounds_ich8lan - A series of Phy workarounds to be
  *  done after every PHY reset.
+ *  @hw: pointer to the HW structure
  **/
 STATIC s32 e1000_hv_phy_workarounds_ich8lan(struct e1000_hw *hw)
 {
@@ -2672,7 +2665,6 @@ release:
 	hw->phy.ops.release(hw);
 }
 
-#ifndef CRC32_OS_SUPPORT
 STATIC u32 e1000_calc_rx_da_crc(u8 mac[])
 {
 	u32 poly = 0xEDB88320;	/* Polynomial for 802.3 CRC calculation */
@@ -2691,7 +2683,6 @@ STATIC u32 e1000_calc_rx_da_crc(u8 mac[])
 	return ~crc;
 }
 
-#endif /* CRC32_OS_SUPPORT */
 /**
  *  e1000_lv_jumbo_workaround_ich8lan - required for jumbo frame operation
  *  with 82579 PHY
@@ -2736,13 +2727,8 @@ s32 e1000_lv_jumbo_workaround_ich8lan(struct e1000_hw *hw, bool enable)
 			mac_addr[4] = (addr_high & 0xFF);
 			mac_addr[5] = ((addr_high >> 8) & 0xFF);
 
-#ifndef CRC32_OS_SUPPORT
 			E1000_WRITE_REG(hw, E1000_PCH_RAICC(i),
 					e1000_calc_rx_da_crc(mac_addr));
-#else /* CRC32_OS_SUPPORT */
-			E1000_WRITE_REG(hw, E1000_PCH_RAICC(i),
-					E1000_CRC32(ETH_ADDR_LEN, mac_addr));
-#endif /* CRC32_OS_SUPPORT */
 		}
 
 		/* Write Rx addresses to the PHY */
@@ -2875,6 +2861,7 @@ s32 e1000_lv_jumbo_workaround_ich8lan(struct e1000_hw *hw, bool enable)
 /**
  *  e1000_lv_phy_workarounds_ich8lan - A series of Phy workarounds to be
  *  done after every PHY reset.
+ *  @hw: pointer to the HW structure
  **/
 STATIC s32 e1000_lv_phy_workarounds_ich8lan(struct e1000_hw *hw)
 {
@@ -3355,6 +3342,7 @@ STATIC s32 e1000_valid_nvm_bank_detect_ich8lan(struct e1000_hw *hw, u32 *bank)
 	switch (hw->mac.type) {
 	case e1000_pch_spt:
 	case e1000_pch_cnp:
+	case e1000_pch_adp:
 		bank1_offset = nvm->flash_bank_size;
 		act_offset = E1000_ICH_NVM_SIG_WORD;
 
@@ -3479,8 +3467,9 @@ STATIC s32 e1000_read_nvm_spt(struct e1000_hw *hw, u16 offset, u16 words,
 
 	for (i = 0; i < words; i += 2) {
 		if (words - i == 1) {
-			if (dev_spec->shadow_ram[offset+i].modified) {
-				data[i] = dev_spec->shadow_ram[offset+i].value;
+			if (dev_spec->shadow_ram[offset + i].modified) {
+				data[i] =
+				    dev_spec->shadow_ram[offset + i].value;
 			} else {
 				offset_to_read = act_offset + i -
 						 ((act_offset + i) % 2);
@@ -3497,8 +3486,8 @@ STATIC s32 e1000_read_nvm_spt(struct e1000_hw *hw, u16 offset, u16 words,
 			}
 		} else {
 			offset_to_read = act_offset + i;
-			if (!(dev_spec->shadow_ram[offset+i].modified) ||
-			    !(dev_spec->shadow_ram[offset+i+1].modified)) {
+			if (!(dev_spec->shadow_ram[offset + i].modified) ||
+			    !(dev_spec->shadow_ram[offset + i + 1].modified)) {
 				ret_val =
 				   e1000_read_flash_dword_ich8lan(hw,
 								 offset_to_read,
@@ -3506,15 +3495,16 @@ STATIC s32 e1000_read_nvm_spt(struct e1000_hw *hw, u16 offset, u16 words,
 				if (ret_val)
 					break;
 			}
-			if (dev_spec->shadow_ram[offset+i].modified)
-				data[i] = dev_spec->shadow_ram[offset+i].value;
+			if (dev_spec->shadow_ram[offset + i].modified)
+				data[i] =
+				    dev_spec->shadow_ram[offset + i].value;
 			else
-				data[i] = (u16) (dword & 0xFFFF);
-			if (dev_spec->shadow_ram[offset+i].modified)
-				data[i+1] =
-				   dev_spec->shadow_ram[offset+i+1].value;
+				data[i] = (u16)(dword & 0xFFFF);
+			if (dev_spec->shadow_ram[offset + i + 1].modified)
+				data[i + 1] =
+				   dev_spec->shadow_ram[offset + i + 1].value;
 			else
-				data[i+1] = (u16) (dword >> 16 & 0xFFFF);
+				data[i + 1] = (u16)(dword >> 16 & 0xFFFF);
 		}
 	}
 
@@ -3568,8 +3558,8 @@ STATIC s32 e1000_read_nvm_ich8lan(struct e1000_hw *hw, u16 offset, u16 words,
 
 	ret_val = E1000_SUCCESS;
 	for (i = 0; i < words; i++) {
-		if (dev_spec->shadow_ram[offset+i].modified) {
-			data[i] = dev_spec->shadow_ram[offset+i].value;
+		if (dev_spec->shadow_ram[offset + i].modified) {
+			data[i] = dev_spec->shadow_ram[offset + i].value;
 		} else {
 			ret_val = e1000_read_flash_word_ich8lan(hw,
 								act_offset + i,
@@ -3974,8 +3964,8 @@ STATIC s32 e1000_write_nvm_ich8lan(struct e1000_hw *hw, u16 offset, u16 words,
 	nvm->ops.acquire(hw);
 
 	for (i = 0; i < words; i++) {
-		dev_spec->shadow_ram[offset+i].modified = true;
-		dev_spec->shadow_ram[offset+i].value = data[i];
+		dev_spec->shadow_ram[offset + i].modified = true;
+		dev_spec->shadow_ram[offset + i].value = data[i];
 	}
 
 	nvm->ops.release(hw);
@@ -4107,13 +4097,6 @@ STATIC s32 e1000_update_nvm_checksum_spt(struct e1000_hw *hw)
 
 	if (ret_val)
 		goto release;
-
-	/* And invalidate the previously valid segment by setting
-	 * its signature word (0x13) high_byte to 0b. This can be
-	 * done without an erase because flash erase sets all bits
-	 * to 1's. We can write 1's to 0's without an erase
-	 */
-	act_offset = (old_bank_offset + E1000_ICH_NVM_SIG_WORD) * 2 + 1;
 
 	/* offset in words but we read dword*/
 	act_offset = old_bank_offset + E1000_ICH_NVM_SIG_WORD - 1;
@@ -4331,6 +4314,7 @@ STATIC s32 e1000_validate_nvm_checksum_ich8lan(struct e1000_hw *hw)
 	case e1000_pch_lpt:
 	case e1000_pch_spt:
 	case e1000_pch_cnp:
+	case e1000_pch_adp:
 		word = NVM_COMPAT;
 		valid_csum_mask = NVM_COMPAT_VALID_CSUM;
 		break;
@@ -4894,6 +4878,7 @@ STATIC s32 e1000_reset_hw_ich8lan(struct e1000_hw *hw)
 	u16 kum_cfg;
 	u32 ctrl, reg;
 	s32 ret_val;
+	u16 pci_cfg;
 
 	DEBUGFUNC("e1000_reset_hw_ich8lan");
 
@@ -4954,10 +4939,27 @@ STATIC s32 e1000_reset_hw_ich8lan(struct e1000_hw *hw)
 			e1000_gate_hw_phy_config_ich8lan(hw, true);
 	}
 	ret_val = e1000_acquire_swflag_ich8lan(hw);
+
+	/* Read from EXTCNF_CTRL in e1000_acquire_swflag_ich8lan function
+	 * may occur during global reset and cause system hang.
+	 * Configuration space access creates the needed delay.
+	 * Write to E1000_STRAP RO register E1000_PCI_VENDOR_ID_REGISTER value
+	 * insures configuration space read is done before global reset.
+	 */
+	e1000_read_pci_cfg(hw, E1000_PCI_VENDOR_ID_REGISTER, &pci_cfg);
+	E1000_WRITE_REG(hw, E1000_STRAP, pci_cfg);
 	DEBUGOUT("Issuing a global reset to ich8lan\n");
 	E1000_WRITE_REG(hw, E1000_CTRL, (ctrl | E1000_CTRL_RST));
 	/* cannot issue a flush here because it hangs the hardware */
 	msec_delay(20);
+
+	/* Configuration space access improve HW level time sync mechanism.
+	 * Write to E1000_STRAP RO register E1000_PCI_VENDOR_ID_REGISTER
+	 * value to insure configuration space read is done
+	 * before any access to mac register.
+	 */
+	e1000_read_pci_cfg(hw, E1000_PCI_VENDOR_ID_REGISTER, &pci_cfg);
+	E1000_WRITE_REG(hw, E1000_STRAP, pci_cfg);
 
 	/* Set Phy Config Counter to 50msec */
 	if (hw->mac.type == e1000_pch2lan) {
@@ -5184,9 +5186,6 @@ STATIC s32 e1000_setup_link_ich8lan(struct e1000_hw *hw)
 
 	DEBUGFUNC("e1000_setup_link_ich8lan");
 
-	if (hw->phy.ops.check_reset_block(hw))
-		return E1000_SUCCESS;
-
 	/* ICH parts do not have a word in the NVM to determine
 	 * the default flow control setting, so we explicitly
 	 * set it to full.
@@ -5202,10 +5201,12 @@ STATIC s32 e1000_setup_link_ich8lan(struct e1000_hw *hw)
 	DEBUGOUT1("After fix-ups FlowControl is now = %x\n",
 		hw->fc.current_mode);
 
-	/* Continue to configure the copper link. */
-	ret_val = hw->mac.ops.setup_physical_interface(hw);
-	if (ret_val)
-		return ret_val;
+	if (!hw->phy.ops.check_reset_block(hw)) {
+		/* Continue to configure the copper link. */
+		ret_val = hw->mac.ops.setup_physical_interface(hw);
+		if (ret_val)
+			return ret_val;
+	}
 
 	E1000_WRITE_REG(hw, E1000_FCTTV, hw->fc.pause_time);
 	if ((hw->phy.type == e1000_phy_82578) ||

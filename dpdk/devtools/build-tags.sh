@@ -19,8 +19,8 @@ arm_64=true
 print_usage()
 {
 	echo "Usage: $(basename $0) [-h] [-v] tags|cscope|gtags|etags [config]"
-	echo "Valid configs are:"
-	make showconfigs | sed 's,^,\t,'
+	echo "Examples of valid configs are: "
+	echo "x86_64-bsd, arm64-linux, ppc_64-linux"
 }
 
 # Move to the root of the git tree
@@ -79,29 +79,26 @@ bsd_sources()
 
 arm_common()
 {
-	find_sources "lib/librte_eal/common/arch/arm" '*.[chS]'
 	find_sources "$source_dirs" '*neon*.[chS]'
 }
 
 arm_32_sources()
 {
 	arm_common
-	find_sources "lib/librte_eal/common/include/arch/arm" '*.[chS]' \
+	find_sources "lib/librte_eal/arm" '*.[chS]' \
 					"$skip_64b_files"
 }
 
 arm_64_sources()
 {
 	arm_common
-	find_sources "lib/librte_eal/common/include/arch/arm" '*.[chS]' \
+	find_sources "lib/librte_eal/arm" '*.[chS]' \
 					 "$skip_32b_files"
 	find_sources "$source_dirs" '*arm64.[chS]'
 }
 
 x86_common()
 {
-	find_sources "lib/librte_eal/common/arch/x86" '*.[chS]'
-
 	find_sources "examples/performance-thread/common/arch/x86" '*.[chS]'
 	find_sources "$source_dirs" '*_sse*.[chS]'
 	find_sources "$source_dirs" '*_avx*.[chS]'
@@ -111,36 +108,24 @@ x86_common()
 x86_32_sources()
 {
 	x86_common
-	find_sources "lib/librte_eal/common/include/arch/x86" '*.[chS]' \
+	find_sources "lib/librte_eal/x86" '*.[chS]' \
 					"$skip_64b_files"
 }
 
 x86_64_sources()
 {
 	x86_common
-	find_sources "lib/librte_eal/common/include/arch/x86" '*.[chS]' \
+	find_sources "lib/librte_eal/x86" '*.[chS]' \
 					"$skip_32b_files"
 }
 
 ppc_64_sources()
 {
-	find_sources "lib/librte_eal/common/arch/ppc_64" '*.[chS]'
-	find_sources "lib/librte_eal/common/include/arch/ppc_64" '*.[chS]'
+	find_sources "lib/librte_eal/ppc" '*.[chS]'
 	find_sources "$source_dirs" '*altivec*.[chS]'
 }
 
-check_valid_target()
-{
-	if [ ! -f "config/defconfig_$1" ] ; then
-		echo "Invalid config: $1"
-		print_usage
-		exit 0
-	fi
-}
-
 if [ -n "$2" ]; then
-	check_valid_target $2
-
 	echo $2 | grep -q "linux" || linux=false
 	echo $2 | grep -q "bsd" || bsd=false
 	echo $2 | grep -q "x86_64-" || x86_64=false

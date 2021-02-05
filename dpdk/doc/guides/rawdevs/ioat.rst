@@ -3,10 +3,12 @@
 
 .. include:: <isonum.txt>
 
-IOAT Rawdev Driver for Intel\ |reg| QuickData Technology
-======================================================================
+IOAT Rawdev Driver
+===================
 
 The ``ioat`` rawdev driver provides a poll-mode driver (PMD) for Intel\ |reg|
+Data Streaming Accelerator `(Intel DSA)
+<https://01.org/blogs/2019/introducing-intel-data-streaming-accelerator>`_ and for Intel\ |reg|
 QuickData Technology, part of Intel\ |reg| I/O Acceleration Technology
 `(Intel I/OAT)
 <https://www.intel.com/content/www/us/en/wireless-network/accel-technology.html>`_.
@@ -17,68 +19,99 @@ be done by software, freeing up CPU cycles for other tasks.
 Hardware Requirements
 ----------------------
 
-On Linux, the presence of an Intel\ |reg| QuickData Technology hardware can
-be detected by checking the output of the ``lspci`` command, where the
-hardware will be often listed as "Crystal Beach DMA" or "CBDMA". For
-example, on a system with Intel\ |reg| Xeon\ |reg| CPU E5-2699 v4 @2.20GHz,
-lspci shows:
-
-.. code-block:: console
-
-  # lspci | grep DMA
-  00:04.0 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 0 (rev 01)
-  00:04.1 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 1 (rev 01)
-  00:04.2 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 2 (rev 01)
-  00:04.3 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 3 (rev 01)
-  00:04.4 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 4 (rev 01)
-  00:04.5 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 5 (rev 01)
-  00:04.6 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 6 (rev 01)
-  00:04.7 System peripheral: Intel Corporation Xeon E7 v4/Xeon E5 v4/Xeon E3 v4/Xeon D Crystal Beach DMA Channel 7 (rev 01)
-
-On a system with Intel\ |reg| Xeon\ |reg| Gold 6154 CPU @ 3.00GHz, lspci
-shows:
-
-.. code-block:: console
-
-  # lspci | grep DMA
-  00:04.0 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.1 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.2 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.3 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.4 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.5 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.6 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-  00:04.7 System peripheral: Intel Corporation Sky Lake-E CBDMA Registers (rev 04)
-
+The ``dpdk-devbind.py`` script, included with DPDK,
+can be used to show the presence of supported hardware.
+Running ``dpdk-devbind.py --status-dev misc`` will show all the miscellaneous,
+or rawdev-based devices on the system.
+For Intel\ |reg| QuickData Technology devices, the hardware will be often listed as "Crystal Beach DMA",
+or "CBDMA".
+For Intel\ |reg| DSA devices, they are currently (at time of writing) appearing as devices with type "0b25",
+due to the absence of pci-id database entries for them at this point.
 
 Compilation
 ------------
 
-For builds done with ``make``, the driver compilation is enabled by the
-``CONFIG_RTE_LIBRTE_PMD_IOAT_RAWDEV`` build configuration option. This is
-enabled by default in builds for x86 platforms, and disabled in other
-configurations.
-
-For builds using ``meson`` and ``ninja``, the driver will be built when the
-target platform is x86-based.
+For builds using ``meson`` and ``ninja``, the driver will be built when the target platform is x86-based.
+No additional compilation steps are necessary.
 
 Device Setup
 -------------
 
-The Intel\ |reg| QuickData Technology HW devices will need to be bound to a
-user-space IO driver for use. The script ``dpdk-devbind.py`` script
-included with DPDK can be used to view the state of the devices and to bind
-them to a suitable DPDK-supported kernel driver. When querying the status
-of the devices, they will appear under the category of "Misc (rawdev)
-devices", i.e. the command ``dpdk-devbind.py --status-dev misc`` can be
-used to see the state of those devices alone.
+Depending on support provided by the PMD, HW devices can either use the kernel configured driver
+or be bound to a user-space IO driver for use.
+For example, Intel\ |reg| DSA devices can use the IDXD kernel driver or DPDK-supported drivers,
+such as ``vfio-pci``.
+
+Intel\ |reg| DSA devices using idxd kernel driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To use a Intel\ |reg| DSA device bound to the IDXD kernel driver, the device must first be configured.
+The `accel-config <https://github.com/intel/idxd-config>`_ utility library can be used for configuration.
+
+.. note::
+        The device configuration can also be done by directly interacting with the sysfs nodes.
+        An example of how this may be done can be seen in the script ``dpdk_idxd_cfg.py``
+        included in the driver source directory.
+
+There are some mandatory configuration steps before being able to use a device with an application.
+The internal engines, which do the copies or other operations,
+and the work-queues, which are used by applications to assign work to the device,
+need to be assigned to groups, and the various other configuration options,
+such as priority or queue depth, need to be set for each queue.
+
+To assign an engine to a group::
+
+        $ accel-config config-engine dsa0/engine0.0 --group-id=0
+        $ accel-config config-engine dsa0/engine0.1 --group-id=1
+
+To assign work queues to groups for passing descriptors to the engines a similar accel-config command can be used.
+However, the work queues also need to be configured depending on the use-case.
+Some configuration options include:
+
+* mode (Dedicated/Shared): Indicates whether a WQ may accept jobs from multiple queues simultaneously.
+* priority: WQ priority between 1 and 15. Larger value means higher priority.
+* wq-size: the size of the WQ. Sum of all WQ sizes must be less that the total-size defined by the device.
+* type: WQ type (kernel/mdev/user). Determines how the device is presented.
+* name: identifier given to the WQ.
+
+Example configuration for a work queue::
+
+        $ accel-config config-wq dsa0/wq0.0 --group-id=0 \
+           --mode=dedicated --priority=10 --wq-size=8 \
+           --type=user --name=app1
+
+Once the devices have been configured, they need to be enabled::
+
+        $ accel-config enable-device dsa0
+        $ accel-config enable-wq dsa0/wq0.0
+
+Check the device configuration::
+
+        $ accel-config list
+
+Devices using VFIO/UIO drivers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The HW devices to be used will need to be bound to a user-space IO driver for use.
+The ``dpdk-devbind.py`` script can be used to view the state of the devices
+and to bind them to a suitable DPDK-supported driver, such as ``vfio-pci``.
+For example::
+
+	$ dpdk-devbind.py -b vfio-pci 00:04.0 00:04.1
 
 Device Probing and Initialization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Once bound to a suitable kernel device driver, the HW devices will be found
-as part of the PCI scan done at application initialization time. No vdev
-parameters need to be passed to create or initialize the device.
+For devices bound to a suitable DPDK-supported VFIO/UIO driver, the HW devices will
+be found as part of the device scan done at application initialization time without
+the need to pass parameters to the application.
+
+If the device is bound to the IDXD kernel driver (and previously configured with sysfs),
+then a specific work queue needs to be passed to the application via a vdev parameter.
+This vdev parameter take the driver name and work queue name as parameters.
+For example, to use work queue 0 on Intel\ |reg| DSA instance 0::
+
+        $ dpdk-test --no-pci --vdev=rawdev_idxd,wq=0.0
 
 Once probed successfully, the device will appear as a ``rawdev``, that is a
 "raw device type" inside DPDK, and can be accessed using APIs from the
@@ -107,7 +140,7 @@ rawdev device for use by an application:
 
         for (i = 0; i < count && !found; i++) {
                 struct rte_rawdev_info info = { .dev_private = NULL };
-                found = (rte_rawdev_info_get(i, &info) == 0 &&
+                found = (rte_rawdev_info_get(i, &info, 0) == 0 &&
                                 strcmp(info.driver_name,
                                                 IOAT_PMD_RAWDEV_NAME_STR) == 0);
         }
@@ -129,6 +162,9 @@ output, the ``dev_private`` structure element cannot be NULL, and must
 point to a valid ``rte_ioat_rawdev_config`` structure, containing the ring
 size to be used by the device. The ring size must be a power of two,
 between 64 and 4096.
+If it is not needed, the tracking by the driver of user-provided completion
+handles may be disabled by setting the ``hdls_disable`` flag in
+the configuration structure also.
 
 The following code shows how the device is configured in
 ``test_ioat_rawdev.c``:
@@ -142,7 +178,7 @@ The following code shows how the device is configured in
         /* ... */
 
         p.ring_size = IOAT_TEST_RINGSIZE;
-        if (rte_rawdev_configure(dev_id, &info) != 0) {
+        if (rte_rawdev_configure(dev_id, &info, sizeof(p)) != 0) {
                 printf("Error with rte_rawdev_configure()\n");
                 return -1;
         }
@@ -154,9 +190,9 @@ Performing Data Copies
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 To perform data copies using IOAT rawdev devices, the functions
-``rte_ioat_enqueue_copy()`` and ``rte_ioat_do_copies()`` should be used.
+``rte_ioat_enqueue_copy()`` and ``rte_ioat_perform_ops()`` should be used.
 Once copies have been completed, the completion will be reported back when
-the application calls ``rte_ioat_completed_copies()``.
+the application calls ``rte_ioat_completed_ops()``.
 
 The ``rte_ioat_enqueue_copy()`` function enqueues a single copy to the
 device ring for copying at a later point. The parameters to that function
@@ -169,11 +205,11 @@ pointers if packet data is being copied.
 
 While the ``rte_ioat_enqueue_copy()`` function enqueues a copy operation on
 the device ring, the copy will not actually be performed until after the
-application calls the ``rte_ioat_do_copies()`` function. This function
+application calls the ``rte_ioat_perform_ops()`` function. This function
 informs the device hardware of the elements enqueued on the ring, and the
 device will begin to process them. It is expected that, for efficiency
 reasons, a burst of operations will be enqueued to the device via multiple
-enqueue calls between calls to the ``rte_ioat_do_copies()`` function.
+enqueue calls between calls to the ``rte_ioat_perform_ops()`` function.
 
 The following code from ``test_ioat_rawdev.c`` demonstrates how to enqueue
 a burst of copies to the device and start the hardware processing of them:
@@ -200,17 +236,16 @@ a burst of copies to the device and start the hardware processing of them:
                                 dsts[i]->buf_iova + dsts[i]->data_off,
                                 length,
                                 (uintptr_t)srcs[i],
-                                (uintptr_t)dsts[i],
-                                0 /* nofence */) != 1) {
+                                (uintptr_t)dsts[i]) != 1) {
                         printf("Error with rte_ioat_enqueue_copy for buffer %u\n",
                                         i);
                         return -1;
                 }
         }
-        rte_ioat_do_copies(dev_id);
+        rte_ioat_perform_ops(dev_id);
 
 To retrieve information about completed copies, the API
-``rte_ioat_completed_copies()`` should be used. This API will return to the
+``rte_ioat_completed_ops()`` should be used. This API will return to the
 application a set of completion handles passed in when the relevant copies
 were enqueued.
 
@@ -220,9 +255,9 @@ is correct before freeing the data buffers using the returned handles:
 
 .. code-block:: C
 
-        if (rte_ioat_completed_copies(dev_id, 64, (void *)completed_src,
+        if (rte_ioat_completed_ops(dev_id, 64, (void *)completed_src,
                         (void *)completed_dst) != RTE_DIM(srcs)) {
-                printf("Error with rte_ioat_completed_copies\n");
+                printf("Error with rte_ioat_completed_ops\n");
                 return -1;
         }
         for (i = 0; i < RTE_DIM(srcs); i++) {
@@ -248,6 +283,16 @@ is correct before freeing the data buffers using the returned handles:
                 rte_pktmbuf_free(srcs[i]);
                 rte_pktmbuf_free(dsts[i]);
         }
+
+
+Filling an Area of Memory
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The IOAT driver also has support for the ``fill`` operation, where an area
+of memory is overwritten, or filled, with a short pattern of data.
+Fill operations can be performed in much the same was as copy operations
+described above, just using the ``rte_ioat_enqueue_fill()`` function rather
+than the ``rte_ioat_enqueue_copy()`` function.
 
 
 Querying Device Statistics

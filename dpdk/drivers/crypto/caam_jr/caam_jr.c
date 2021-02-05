@@ -35,9 +35,6 @@
 #endif
 #define CRYPTODEV_NAME_CAAM_JR_PMD	crypto_caam_jr
 static uint8_t cryptodev_driver_id;
-int caam_jr_logtype;
-
-enum rta_sec_era rta_sec_era;
 
 /* Lists the states possible for the SEC user space driver. */
 enum sec_driver_state_e {
@@ -1353,6 +1350,9 @@ caam_jr_enqueue_op(struct rte_crypto_op *op, struct caam_jr_qp *qp)
 	struct caam_jr_session *ses;
 	struct caam_jr_op_ctx *ctx = NULL;
 	struct sec_job_descriptor_t *jobdescr __rte_unused;
+#if CAAM_JR_DBG
+	int i;
+#endif
 
 	switch (op->sess_type) {
 	case RTE_CRYPTO_OP_WITH_SESSION:
@@ -1415,7 +1415,7 @@ err1:
 			rte_pktmbuf_data_len(op->sym->m_src));
 
 	printf("\n JD before conversion\n");
-	for (int i = 0; i < 12; i++)
+	for (i = 0; i < 12; i++)
 		printf("\n 0x%08x", ctx->jobdes.desc[i]);
 #endif
 
@@ -1536,15 +1536,6 @@ caam_jr_queue_pair_setup(
 	dev->data->queue_pairs[qp_id] = qp;
 
 	return 0;
-}
-
-/* Return the number of allocated queue pairs */
-static uint32_t
-caam_jr_queue_pair_count(struct rte_cryptodev *dev)
-{
-	PMD_INIT_FUNC_TRACE();
-
-	return dev->data->nb_queue_pairs;
 }
 
 /* Returns the size of the aesni gcm session structure */
@@ -2062,7 +2053,6 @@ static struct rte_cryptodev_ops caam_jr_ops = {
 	.stats_reset	      = caam_jr_stats_reset,
 	.queue_pair_setup     = caam_jr_queue_pair_setup,
 	.queue_pair_release   = caam_jr_queue_pair_release,
-	.queue_pair_count     = caam_jr_queue_pair_count,
 	.sym_session_get_size = caam_jr_sym_session_get_size,
 	.sym_session_configure = caam_jr_sym_session_configure,
 	.sym_session_clear    = caam_jr_sym_session_clear
@@ -2497,9 +2487,4 @@ RTE_INIT(caam_jr_init)
 	sec_job_rings_init();
 }
 
-RTE_INIT(caam_jr_init_log)
-{
-	caam_jr_logtype = rte_log_register("pmd.crypto.caam");
-	if (caam_jr_logtype >= 0)
-		rte_log_set_level(caam_jr_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(caam_jr_logtype, pmd.crypto.caam, NOTICE);

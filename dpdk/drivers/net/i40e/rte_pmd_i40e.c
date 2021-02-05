@@ -211,7 +211,7 @@ i40e_vsi_rm_mac_filter(struct i40e_vsi *vsi)
 	struct i40e_mac_filter *f;
 	struct i40e_macvlan_filter *mv_f;
 	int i, vlan_num;
-	enum rte_mac_filter_type filter_type;
+	enum i40e_mac_filter_type filter_type;
 	int ret = I40E_SUCCESS;
 	void *temp;
 
@@ -219,14 +219,14 @@ i40e_vsi_rm_mac_filter(struct i40e_vsi *vsi)
 	TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
 		vlan_num = vsi->vlan_num;
 		filter_type = f->mac_info.filter_type;
-		if (filter_type == RTE_MACVLAN_PERFECT_MATCH ||
-		    filter_type == RTE_MACVLAN_HASH_MATCH) {
+		if (filter_type == I40E_MACVLAN_PERFECT_MATCH ||
+		    filter_type == I40E_MACVLAN_HASH_MATCH) {
 			if (vlan_num == 0) {
 				PMD_DRV_LOG(ERR, "VLAN number shouldn't be 0");
 				return I40E_ERR_PARAM;
 			}
-		} else if (filter_type == RTE_MAC_PERFECT_MATCH ||
-			   filter_type == RTE_MAC_HASH_MATCH)
+		} else if (filter_type == I40E_MAC_PERFECT_MATCH ||
+			   filter_type == I40E_MAC_HASH_MATCH)
 			vlan_num = 1;
 
 		mv_f = rte_zmalloc("macvlan_data", vlan_num * sizeof(*mv_f), 0);
@@ -241,8 +241,8 @@ i40e_vsi_rm_mac_filter(struct i40e_vsi *vsi)
 					 &f->mac_info.mac_addr,
 					 ETH_ADDR_LEN);
 		}
-		if (filter_type == RTE_MACVLAN_PERFECT_MATCH ||
-		    filter_type == RTE_MACVLAN_HASH_MATCH) {
+		if (filter_type == I40E_MACVLAN_PERFECT_MATCH ||
+		    filter_type == I40E_MACVLAN_HASH_MATCH) {
 			ret = i40e_find_all_vlan_for_mac(vsi, mv_f, vlan_num,
 							 &f->mac_info.mac_addr);
 			if (ret != I40E_SUCCESS) {
@@ -275,8 +275,8 @@ i40e_vsi_restore_mac_filter(struct i40e_vsi *vsi)
 
 	/* restore all the MACs */
 	TAILQ_FOREACH_SAFE(f, &vsi->mac_list, next, temp) {
-		if ((f->mac_info.filter_type == RTE_MACVLAN_PERFECT_MATCH) ||
-		    (f->mac_info.filter_type == RTE_MACVLAN_HASH_MATCH)) {
+		if (f->mac_info.filter_type == I40E_MACVLAN_PERFECT_MATCH ||
+		    f->mac_info.filter_type == I40E_MACVLAN_HASH_MATCH) {
 			/**
 			 * If vlan_num is 0, that's the first time to add mac,
 			 * set mask for vlan_id 0.
@@ -286,8 +286,8 @@ i40e_vsi_restore_mac_filter(struct i40e_vsi *vsi)
 				vsi->vlan_num = 1;
 			}
 			vlan_num = vsi->vlan_num;
-		} else if ((f->mac_info.filter_type == RTE_MAC_PERFECT_MATCH) ||
-			   (f->mac_info.filter_type == RTE_MAC_HASH_MATCH))
+		} else if (f->mac_info.filter_type == I40E_MAC_PERFECT_MATCH ||
+			   f->mac_info.filter_type == I40E_MAC_HASH_MATCH)
 			vlan_num = 1;
 
 		mv_f = rte_zmalloc("macvlan_data", vlan_num * sizeof(*mv_f), 0);
@@ -303,8 +303,8 @@ i40e_vsi_restore_mac_filter(struct i40e_vsi *vsi)
 					 ETH_ADDR_LEN);
 		}
 
-		if (f->mac_info.filter_type == RTE_MACVLAN_PERFECT_MATCH ||
-		    f->mac_info.filter_type == RTE_MACVLAN_HASH_MATCH) {
+		if (f->mac_info.filter_type == I40E_MACVLAN_PERFECT_MATCH ||
+		    f->mac_info.filter_type == I40E_MACVLAN_HASH_MATCH) {
 			ret = i40e_find_all_vlan_for_mac(vsi, mv_f, vlan_num,
 							 &f->mac_info.mac_addr);
 			if (ret != I40E_SUCCESS) {
@@ -768,7 +768,7 @@ int rte_pmd_i40e_set_vf_broadcast(uint16_t port, uint16_t vf_id,
 
 	if (on) {
 		rte_memcpy(&filter.mac_addr, &broadcast, RTE_ETHER_ADDR_LEN);
-		filter.filter_type = RTE_MACVLAN_PERFECT_MATCH;
+		filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
 		ret = i40e_vsi_add_mac(vsi, &filter);
 	} else {
 		ret = i40e_vsi_delete_mac(vsi, &broadcast);
@@ -1409,7 +1409,7 @@ rte_pmd_i40e_set_tc_strict_prio(uint16_t port, uint8_t tc_map)
 
 	/* Disable DCBx if it's the first time to set strict priority. */
 	if (!veb->strict_prio_tc) {
-		ret = i40e_aq_stop_lldp(hw, true, NULL);
+		ret = i40e_aq_stop_lldp(hw, true, true, NULL);
 		if (ret)
 			PMD_DRV_LOG(INFO,
 				    "Failed to disable DCBx as it's already"
@@ -1464,7 +1464,7 @@ rte_pmd_i40e_set_tc_strict_prio(uint16_t port, uint8_t tc_map)
 
 	/* Enable DCBx again, if all the TCs' strict priority disabled. */
 	if (!tc_map) {
-		ret = i40e_aq_start_lldp(hw, NULL);
+		ret = i40e_aq_start_lldp(hw, true, NULL);
 		if (ret) {
 			PMD_DRV_LOG(ERR,
 				    "Failed to enable DCBx, err(%d).", ret);
@@ -2171,7 +2171,8 @@ static int check_invalid_pkt_type(uint32_t pkt_type)
 	    tnl != RTE_PTYPE_TUNNEL_GENEVE &&
 	    tnl != RTE_PTYPE_TUNNEL_GTPC &&
 	    tnl != RTE_PTYPE_TUNNEL_GTPU &&
-	    tnl != RTE_PTYPE_TUNNEL_L2TP)
+	    tnl != RTE_PTYPE_TUNNEL_L2TP &&
+	    tnl != RTE_PTYPE_TUNNEL_ESP)
 		return -1;
 
 	if (il2 &&
@@ -2387,7 +2388,7 @@ rte_pmd_i40e_add_vf_mac_addr(uint16_t port, uint16_t vf_id,
 		return -EINVAL;
 	}
 
-	mac_filter.filter_type = RTE_MACVLAN_PERFECT_MATCH;
+	mac_filter.filter_type = I40E_MACVLAN_PERFECT_MATCH;
 	rte_ether_addr_copy(mac_addr, &mac_filter.mac_addr);
 	ret = i40e_vsi_add_mac(vsi, &mac_filter);
 	if (ret != I40E_SUCCESS) {
@@ -3205,6 +3206,57 @@ rte_pmd_i40e_inset_set(uint16_t port, uint8_t pctype,
 
 	I40E_WRITE_FLUSH(hw);
 	return 0;
+}
+
+int
+rte_pmd_i40e_get_fdir_info(uint16_t port, struct rte_eth_fdir_info *fdir_info)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	i40e_fdir_info_get(dev, fdir_info);
+
+	return 0;
+}
+
+int
+rte_pmd_i40e_get_fdir_stats(uint16_t port, struct rte_eth_fdir_stats *fdir_stat)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	i40e_fdir_stats_get(dev, fdir_stat);
+
+	return 0;
+}
+
+int
+rte_pmd_i40e_set_gre_key_len(uint16_t port, uint8_t len)
+{
+	struct rte_eth_dev *dev;
+	struct i40e_pf *pf;
+	struct i40e_hw *hw;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+	if (!is_i40e_supported(dev))
+		return -ENOTSUP;
+
+	pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	hw = I40E_PF_TO_HW(pf);
+
+	return i40e_dev_set_gre_key_len(hw, len);
 }
 
 int

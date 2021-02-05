@@ -13,6 +13,7 @@
 #include <rte_errno.h>
 #include <rte_malloc.h>
 #include <rte_string_fns.h>
+#include <rte_bitops.h>
 #include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
 
@@ -551,5 +552,62 @@ void rte_mbuf_dyn_dump(FILE *out)
 		fprintf(out, "%2.2x%s", shm->free_space[i],
 			(i % 8 != 7) ? " " : "\n");
 	}
+	fprintf(out, "Free bit in mbuf->ol_flags (0 = occupied, 1 = free):\n");
+	for (i = 0; i < sizeof(uint64_t) * CHAR_BIT; i++) {
+		if ((i % 8) == 0)
+			fprintf(out, "  %4.4zx: ", i);
+		fprintf(out, "%1.1x%s", (shm->free_flags & (1ULL << i)) ? 1 : 0,
+			(i % 8 != 7) ? " " : "\n");
+	}
+
 	rte_mcfg_tailq_write_unlock();
+}
+
+static int
+rte_mbuf_dyn_timestamp_register(int *field_offset, uint64_t *flag,
+		const char *direction, const char *flag_name)
+{
+	static const struct rte_mbuf_dynfield field_desc = {
+		.name = RTE_MBUF_DYNFIELD_TIMESTAMP_NAME,
+		.size = sizeof(rte_mbuf_timestamp_t),
+		.align = __alignof__(rte_mbuf_timestamp_t),
+	};
+	struct rte_mbuf_dynflag flag_desc = {};
+	int offset;
+
+	offset = rte_mbuf_dynfield_register(&field_desc);
+	if (offset < 0) {
+		RTE_LOG(ERR, MBUF,
+			"Failed to register mbuf field for timestamp\n");
+		return -1;
+	}
+	if (field_offset != NULL)
+		*field_offset = offset;
+
+	strlcpy(flag_desc.name, flag_name, sizeof(flag_desc.name));
+	offset = rte_mbuf_dynflag_register(&flag_desc);
+	if (offset < 0) {
+		RTE_LOG(ERR, MBUF,
+			"Failed to register mbuf flag for %s timestamp\n",
+			direction);
+		return -1;
+	}
+	if (flag != NULL)
+		*flag = RTE_BIT64(offset);
+
+	return 0;
+}
+
+int
+rte_mbuf_dyn_rx_timestamp_register(int *field_offset, uint64_t *rx_flag)
+{
+	return rte_mbuf_dyn_timestamp_register(field_offset, rx_flag,
+			"Rx", RTE_MBUF_DYNFLAG_RX_TIMESTAMP_NAME);
+}
+
+int
+rte_mbuf_dyn_tx_timestamp_register(int *field_offset, uint64_t *tx_flag)
+{
+	return rte_mbuf_dyn_timestamp_register(field_offset, tx_flag,
+			"Tx", RTE_MBUF_DYNFLAG_TX_TIMESTAMP_NAME);
 }

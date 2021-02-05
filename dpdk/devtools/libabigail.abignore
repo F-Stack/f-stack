@@ -1,0 +1,9 @@
+[suppress_function]
+        symbol_version = EXPERIMENTAL
+[suppress_variable]
+        symbol_version = EXPERIMENTAL
+
+[suppress_function]
+        symbol_version = INTERNAL
+[suppress_variable]
+        symbol_version = INTERNAL

@@ -60,7 +60,7 @@ pipeline_launch_lcores(struct evt_test *test, struct evt_options *opt,
 
 	int port_idx = 0;
 	/* launch workers */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (!(opt->wlcores[lcore_id]))
 			continue;
 
@@ -106,10 +106,16 @@ int
 pipeline_opt_check(struct evt_options *opt, uint64_t nb_queues)
 {
 	unsigned int lcores;
-	/*
-	 * N worker + 1 master
-	 */
+
+	/* N worker + main */
 	lcores = 2;
+
+	if (opt->prod_type != EVT_PROD_TYPE_ETH_RX_ADPTR) {
+		evt_err("Invalid producer type '%s' valid producer '%s'",
+			evt_prod_id_to_name(opt->prod_type),
+			evt_prod_id_to_name(EVT_PROD_TYPE_ETH_RX_ADPTR));
+		return -1;
+	}
 
 	if (!rte_eth_dev_count_avail()) {
 		evt_err("test needs minimum 1 ethernet dev");
@@ -122,8 +128,8 @@ pipeline_opt_check(struct evt_options *opt, uint64_t nb_queues)
 	}
 
 	/* Validate worker lcores */
-	if (evt_lcores_has_overlap(opt->wlcores, rte_get_master_lcore())) {
-		evt_err("worker lcores overlaps with master lcore");
+	if (evt_lcores_has_overlap(opt->wlcores, rte_get_main_lcore())) {
+		evt_err("worker lcores overlaps with main lcore");
 		return -1;
 	}
 	if (evt_has_disabled_lcore(opt->wlcores)) {
@@ -211,6 +217,11 @@ pipeline_ethdev_setup(struct evt_test *test, struct evt_options *opt)
 				i, strerror(-ret));
 			return ret;
 		}
+
+		/* Enable mbuf fast free if PMD has the capability. */
+		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+			local_port_conf.txmode.offloads |=
+				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 
 		rx_conf = dev_info.default_rxconf;
 		rx_conf.offloads = port_conf.rxmode.offloads;

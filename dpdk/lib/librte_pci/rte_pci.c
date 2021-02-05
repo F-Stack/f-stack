@@ -9,12 +9,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/queue.h>
-#include <sys/mman.h>
 
 #include <rte_errno.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
 #include <rte_bus.h>
+#include <rte_eal_paging.h>
 #include <rte_per_lcore.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
@@ -84,6 +84,10 @@ pci_dbdf_parse(const char *input, struct rte_pci_addr *dev_addr)
 
 	errno = 0;
 	val = strtoul(in, &end, 16);
+	/* Empty string is not an error for strtoul, but the check
+	 *   end[0] != ':'
+	 * will detect the issue.
+	 */
 	if (errno != 0 || end[0] != ':' || val > UINT32_MAX)
 		return -EINVAL;
 	dev_addr->domain = (uint32_t)val;
@@ -139,44 +143,4 @@ rte_pci_addr_parse(const char *str, struct rte_pci_addr *addr)
 	    pci_dbdf_parse(str, addr) == 0)
 		return 0;
 	return -1;
-}
-
-
-/* map a particular resource from a file */
-void *
-pci_map_resource(void *requested_addr, int fd, off_t offset, size_t size,
-		 int additional_flags)
-{
-	void *mapaddr;
-
-	/* Map the PCI memory resource of device */
-	mapaddr = mmap(requested_addr, size, PROT_READ | PROT_WRITE,
-			MAP_SHARED | additional_flags, fd, offset);
-	if (mapaddr == MAP_FAILED) {
-		RTE_LOG(ERR, EAL,
-			"%s(): cannot mmap(%d, %p, 0x%zx, 0x%llx): %s (%p)\n",
-			__func__, fd, requested_addr, size,
-			(unsigned long long)offset,
-			strerror(errno), mapaddr);
-	} else
-		RTE_LOG(DEBUG, EAL, "  PCI memory mapped at %p\n", mapaddr);
-
-	return mapaddr;
-}
-
-/* unmap a particular resource */
-void
-pci_unmap_resource(void *requested_addr, size_t size)
-{
-	if (requested_addr == NULL)
-		return;
-
-	/* Unmap the PCI memory resource of device */
-	if (munmap(requested_addr, size)) {
-		RTE_LOG(ERR, EAL, "%s(): cannot munmap(%p, %#zx): %s\n",
-			__func__, requested_addr, size,
-			strerror(errno));
-	} else
-		RTE_LOG(DEBUG, EAL, "  PCI memory unmapped at %p\n",
-				requested_addr);
 }

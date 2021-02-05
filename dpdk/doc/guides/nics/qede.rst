@@ -5,7 +5,7 @@
 QEDE Poll Mode Driver
 ======================
 
-The QEDE poll mode driver library (**librte_pmd_qede**) implements support
+The QEDE poll mode driver library (**librte_net_qede**) implements support
 for **QLogic FastLinQ QL4xxxx 10G/25G/40G/50G/100G Intelligent Ethernet Adapters (IEA) and Converged Network Adapters (CNA)** family of adapters as well as SR-IOV virtual functions (VF). It is supported on
 several standard Linux distros like RHEL, SLES, Ubuntu etc.
 It is compile-tested under FreeBSD OS.
@@ -34,17 +34,12 @@ Supported Features
 - VLAN offload - Filtering and stripping
 - N-tuple filter and flow director (limited support)
 - NPAR (NIC Partitioning)
-- SR-IOV VF
+- SR-IOV PF and VF
 - GRE Tunneling offload
 - GENEVE Tunneling offload
 - VXLAN Tunneling offload
 - MPLSoUDP Tx Tunneling offload
 - Generic flow API
-
-Non-supported Features
-----------------------
-
-- SR-IOV PF
 
 Co-existence considerations
 ---------------------------
@@ -108,25 +103,12 @@ Performance note
 
 - For better performance, it is recommended to use 4K or higher RX/TX rings.
 
-Config File Options
-~~~~~~~~~~~~~~~~~~~
+Config Options
+~~~~~~~~~~~~~~
 
-The following options can be modified in the ``.config`` file. Please note that
-enabling debugging options may affect system performance.
+The following option can be modified in the ``config/rte_config.h`` file.
 
-- ``CONFIG_RTE_LIBRTE_QEDE_PMD`` (default **y**)
-
-  Toggle compilation of QEDE PMD driver.
-
-- ``CONFIG_RTE_LIBRTE_QEDE_DEBUG_TX`` (default **n**)
-
-  Toggle display of transmit fast path run-time messages.
-
-- ``CONFIG_RTE_LIBRTE_QEDE_DEBUG_RX`` (default **n**)
-
-  Toggle display of receive fast path run-time messages.
-
-- ``CONFIG_RTE_LIBRTE_QEDE_FW`` (default **""**)
+- ``RTE_LIBRTE_QEDE_FW`` (default **""**)
 
   Gives absolute path of firmware file.
   ``Eg: "/lib/firmware/qed/qed_init_values-8.40.33.0.bin"``
@@ -134,6 +116,16 @@ enabling debugging options may affect system performance.
   from the default location /lib/firmware/qed.
   CAUTION this option is more for custom firmware, it is not
   recommended for use under normal condition.
+
+The following options can be enabled with Meson flags.
+
+- ``RTE_LIBRTE_QEDE_DEBUG_TX`` (default **disabled**)
+
+  Toggle display of transmit fast path run-time messages.
+
+- ``RTE_LIBRTE_QEDE_DEBUG_RX`` (default **disabled**)
+
+  Toggle display of receive fast path run-time messages.
 
 Config notes
 ~~~~~~~~~~~~
@@ -198,7 +190,7 @@ SR-IOV: Prerequisites and Sample Application Notes
 
 This section provides instructions to configure SR-IOV with Linux OS.
 
-**Note**: librte_pmd_qede will be used to bind to SR-IOV VF device and Linux native kernel driver (qede) will function as SR-IOV PF driver. Requires PF driver to be 8.20.x.x or higher.
+**Note**: librte_net_qede will be used to bind to SR-IOV VF device and Linux native kernel driver (qede) will function as SR-IOV PF driver. Requires PF driver to be 8.20.x.x or higher.
 
 #. Verify SR-IOV and ARI capability is enabled on the adapter using ``lspci``:
 

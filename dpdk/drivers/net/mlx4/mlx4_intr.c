@@ -8,7 +8,6 @@
  * Interrupts handling for mlx4 driver.
  */
 
-#include <assert.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -122,12 +121,12 @@ mlx4_link_status_alarm(struct mlx4_priv *priv)
 	const struct rte_intr_conf *const intr_conf =
 		&ETH_DEV(priv)->data->dev_conf.intr_conf;
 
-	assert(priv->intr_alarm == 1);
+	MLX4_ASSERT(priv->intr_alarm == 1);
 	priv->intr_alarm = 0;
 	if (intr_conf->lsc && !mlx4_link_status_check(priv))
-		_rte_eth_dev_callback_process(ETH_DEV(priv),
-					      RTE_ETH_EVENT_INTR_LSC,
-					      NULL);
+		rte_eth_dev_callback_process(ETH_DEV(priv),
+					     RTE_ETH_EVENT_INTR_LSC,
+					     NULL);
 }
 
 /**
@@ -208,8 +207,8 @@ mlx4_interrupt_handler(struct mlx4_priv *priv)
 	}
 	for (i = 0; i != RTE_DIM(caught); ++i)
 		if (caught[i])
-			_rte_eth_dev_callback_process(ETH_DEV(priv), type[i],
-						      NULL);
+			rte_eth_dev_callback_process(ETH_DEV(priv), type[i],
+						     NULL);
 }
 
 /**
@@ -327,13 +326,20 @@ mlx4_rx_intr_disable(struct rte_eth_dev *dev, uint16_t idx)
 	} else {
 		ret = mlx4_glue->get_cq_event(rxq->cq->channel, &ev_cq,
 					      &ev_ctx);
-		if (ret || ev_cq != rxq->cq)
+		/** For non-zero ret save the errno (may be EAGAIN
+		 * which means the get_cq_event function was called before
+		 * receiving one).
+		 */
+		if (ret)
+			ret = errno;
+		else if (ev_cq != rxq->cq)
 			ret = EINVAL;
 	}
 	if (ret) {
 		rte_errno = ret;
-		WARN("unable to disable interrupt on rx queue %d",
-		     idx);
+		if (ret != EAGAIN)
+			WARN("unable to disable interrupt on rx queue %d",
+			     idx);
 	} else {
 		rxq->mcq.arm_sn++;
 		mlx4_glue->ack_cq_events(rxq->cq, 1);

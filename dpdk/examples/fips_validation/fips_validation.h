@@ -12,7 +12,8 @@
 #define MAX_CASE_LINE		15
 #define MAX_LINE_CHAR		204800 /*< max number of characters per line */
 #define MAX_NB_TESTS		10240
-#define MAX_BUF_SIZE		2048
+#define DEF_MBUF_SEG_SIZE	(UINT16_MAX - sizeof(struct rte_mbuf) - \
+				RTE_PKTMBUF_HEADROOM)
 #define MAX_STRING_SIZE		64
 #define MAX_FILE_NAME_SIZE	256
 #define MAX_DIGEST_SIZE		64
@@ -32,6 +33,7 @@ enum fips_test_algorithms {
 		FIPS_TEST_ALGO_HMAC,
 		FIPS_TEST_ALGO_TDES,
 		FIPS_TEST_ALGO_SHA,
+		FIPS_TEST_ALGO_AES_XTS,
 		FIPS_TEST_ALGO_MAX
 };
 
@@ -154,6 +156,11 @@ struct sha_interim_data {
 	enum rte_crypto_auth_algorithm algo;
 };
 
+struct gcm_interim_data {
+	uint8_t is_gmac;
+	uint8_t gen_iv;
+};
+
 struct fips_test_interim_info {
 	FILE *fp_rd;
 	FILE *fp_wr;
@@ -173,6 +180,7 @@ struct fips_test_interim_info {
 		struct tdes_interim_data tdes_data;
 		struct ccm_interim_data ccm_data;
 		struct sha_interim_data sha_data;
+		struct gcm_interim_data gcm_data;
 	} interim_info;
 
 	enum fips_test_op op;
@@ -226,6 +234,9 @@ int
 parse_test_sha_init(void);
 
 int
+parse_test_xts_init(void);
+
+int
 parser_read_uint8_hex(uint8_t *value, const char *p);
 
 int
@@ -254,5 +265,25 @@ parse_write_hex_str(struct fips_val *src);
 
 int
 update_info_vec(uint32_t count);
+
+typedef int (*fips_test_one_case_t)(void);
+typedef int (*fips_prepare_op_t)(void);
+typedef int (*fips_prepare_xform_t)(struct rte_crypto_sym_xform *);
+
+struct fips_test_ops {
+	fips_prepare_xform_t prepare_xform;
+	fips_prepare_op_t prepare_op;
+	fips_test_one_case_t test;
+};
+
+extern struct fips_test_ops test_ops;
+
+int prepare_aead_op(void);
+
+int prepare_auth_op(void);
+
+int prepare_gcm_xform(struct rte_crypto_sym_xform *xform);
+
+int prepare_gmac_xform(struct rte_crypto_sym_xform *xform);
 
 #endif

@@ -4,7 +4,7 @@
 OCTEON TX Poll Mode driver
 ==========================
 
-The OCTEON TX ETHDEV PMD (**librte_pmd_octeontx**) provides poll mode ethdev
+The OCTEON TX ETHDEV PMD (**librte_net_octeontx**) provides poll mode ethdev
 driver support for the inbuilt network device found in the **Cavium OCTEON TX**
 SoC family as well as their virtual functions (VF) in SR-IOV context.
 
@@ -20,7 +20,10 @@ Features of the OCTEON TX Ethdev PMD are:
 - Promiscuous mode
 - Port hardware statistics
 - Jumbo frames
+- Scatter-Gather IO support
 - Link state information
+- MAC/VLAN filtering
+- MTU update
 - SR-IOV VF
 - Multiple queues for TX
 - Lock-free Tx queue
@@ -49,29 +52,12 @@ See :doc:`../platform/octeontx` for setup information.
 Pre-Installation Configuration
 ------------------------------
 
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_OCTEONTX_PMD`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_octeontx`` driver.
 
 Driver compilation and testing
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
 for details.
-
-To compile the OCTEON TX PMD for Linux arm64 gcc target, run the
-following ``make`` command:
-
-.. code-block:: console
-
-   cd <DPDK-source-directory>
-   make config T=arm64-thunderx-linux-gcc install
 
 #. Running testpmd:
 
@@ -83,7 +69,7 @@ following ``make`` command:
 
    .. code-block:: console
 
-      ./arm64-thunderx-linux-gcc/app/testpmd -c 700 \
+      ./<build_dir>/app/dpdk-testpmd -c 700 \
                 --base-virtaddr=0x100000000000 \
                 --mbuf-pool-ops-name="octeontx_fpavf" \
                 --vdev='event_octeontx' \

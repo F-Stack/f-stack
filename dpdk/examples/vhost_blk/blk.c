@@ -50,7 +50,10 @@ vhost_bdev_blk_readwrite(struct vhost_block_dev *bdev,
 
 	offset = lba_512 * 512;
 
-	for (i = 0; i < task->iovs_cnt; i++) {
+	/* iovs[0] is the head and iovs[iovs_cnt - 1] is the tail
+	 * Middle is the data range
+	 */
+	for (i = 1; i < task->iovs_cnt - 1; i++) {
 		if (task->dxfer_dir == BLK_DIR_TO_DEV)
 			memcpy(bdev->data + offset, task->iovs[i].iov_base,
 			       task->iovs[i].iov_len);
@@ -68,7 +71,7 @@ int
 vhost_bdev_process_blk_commands(struct vhost_block_dev *bdev,
 				 struct vhost_blk_task *task)
 {
-	int used_len;
+	size_t used_len;
 
 	if (unlikely(task->data_len > (bdev->blockcnt * bdev->blocklen))) {
 		fprintf(stderr, "read or write beyond capacity\n");
@@ -83,7 +86,7 @@ vhost_bdev_process_blk_commands(struct vhost_block_dev *bdev,
 				"%s - passed IO buffer is not multiple of 512b"
 				"(req_idx = %"PRIu16").\n",
 				task->req->type ? "WRITE" : "READ",
-				task->head_idx);
+				task->req_idx);
 			return VIRTIO_BLK_S_UNSUPP;
 		}
 
@@ -98,14 +101,10 @@ vhost_bdev_process_blk_commands(struct vhost_block_dev *bdev,
 				"%s - passed IO buffer is not multiple of 512b"
 				"(req_idx = %"PRIu16").\n",
 				task->req->type ? "WRITE" : "READ",
-				task->head_idx);
+				task->req_idx);
 			return VIRTIO_BLK_S_UNSUPP;
 		}
 
-		if (task->readtype) {
-			fprintf(stderr, "type isn't right\n");
-			return VIRTIO_BLK_S_IOERR;
-		}
 		task->dxfer_dir = BLK_DIR_TO_DEV;
 		vhost_bdev_blk_readwrite(bdev, task,
 					 task->req->sector, task->data_len);
@@ -113,7 +112,7 @@ vhost_bdev_process_blk_commands(struct vhost_block_dev *bdev,
 	case VIRTIO_BLK_T_GET_ID:
 		if (!task->iovs_cnt || task->data_len)
 			return VIRTIO_BLK_S_UNSUPP;
-		used_len = min(VIRTIO_BLK_ID_BYTES, task->data_len);
+		used_len = RTE_MIN((size_t)VIRTIO_BLK_ID_BYTES, task->data_len);
 		vhost_strcpy_pad(task->iovs[0].iov_base,
 				 bdev->product_name, used_len, ' ');
 		break;

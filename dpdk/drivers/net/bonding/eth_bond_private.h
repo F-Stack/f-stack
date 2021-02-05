@@ -316,10 +316,10 @@ bond_tlb_enable(struct bond_dev_private *internals);
 void
 bond_tlb_activate_slave(struct bond_dev_private *internals);
 
-void
+int
 bond_ethdev_stop(struct rte_eth_dev *eth_dev);
 
-void
+int
 bond_ethdev_close(struct rte_eth_dev *dev);
 
 #endif

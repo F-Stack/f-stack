@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 
+#include <rte_bitops.h>
 #include <rte_net.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
@@ -20,6 +21,39 @@ print_ether_addr(const char *what, const struct rte_ether_addr *eth_addr)
 	char buf[RTE_ETHER_ADDR_FMT_SIZE];
 	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
 	printf("%s%s", what, buf);
+}
+
+static inline bool
+is_timestamp_enabled(const struct rte_mbuf *mbuf)
+{
+	static uint64_t timestamp_rx_dynflag;
+	int timestamp_rx_dynflag_offset;
+
+	if (timestamp_rx_dynflag == 0) {
+		timestamp_rx_dynflag_offset = rte_mbuf_dynflag_lookup(
+				RTE_MBUF_DYNFLAG_RX_TIMESTAMP_NAME, NULL);
+		if (timestamp_rx_dynflag_offset < 0)
+			return false;
+		timestamp_rx_dynflag = RTE_BIT64(timestamp_rx_dynflag_offset);
+	}
+
+	return (mbuf->ol_flags & timestamp_rx_dynflag) != 0;
+}
+
+static inline rte_mbuf_timestamp_t
+get_timestamp(const struct rte_mbuf *mbuf)
+{
+	static int timestamp_dynfield_offset = -1;
+
+	if (timestamp_dynfield_offset < 0) {
+		timestamp_dynfield_offset = rte_mbuf_dynfield_lookup(
+				RTE_MBUF_DYNFIELD_TIMESTAMP_NAME, NULL);
+		if (timestamp_dynfield_offset < 0)
+			return 0;
+	}
+
+	return *RTE_MBUF_DYNFIELD(mbuf,
+			timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
 }
 
 static inline void
@@ -39,6 +73,7 @@ dump_pkt_burst(uint16_t port_id, uint16_t queue, struct rte_mbuf *pkts[],
 	uint16_t udp_port;
 	uint32_t vx_vni;
 	const char *reason;
+	int dynf_index;
 
 	if (!nb_pkts)
 		return;
@@ -47,18 +82,49 @@ dump_pkt_burst(uint16_t port_id, uint16_t queue, struct rte_mbuf *pkts[],
 	       is_rx ? "received" : "sent",
 	       (unsigned int) nb_pkts);
 	for (i = 0; i < nb_pkts; i++) {
+		int ret;
+		struct rte_flow_error error;
+		struct rte_flow_restore_info info = { 0, };
+
 		mb = pkts[i];
 		eth_hdr = rte_pktmbuf_read(mb, 0, sizeof(_eth_hdr), &_eth_hdr);
 		eth_type = RTE_BE_TO_CPU_16(eth_hdr->ether_type);
-		ol_flags = mb->ol_flags;
 		packet_type = mb->packet_type;
 		is_encapsulation = RTE_ETH_IS_TUNNEL_PKT(packet_type);
+		ret = rte_flow_get_restore_info(port_id, mb, &info, &error);
+		if (!ret) {
+			printf("restore info:");
+			if (info.flags & RTE_FLOW_RESTORE_INFO_TUNNEL) {
+				struct port_flow_tunnel *port_tunnel;
 
+				port_tunnel = port_flow_locate_tunnel
+					      (port_id, &info.tunnel);
+				printf(" - tunnel");
+				if (port_tunnel)
+					printf(" #%u", port_tunnel->id);
+				else
+					printf(" %s", "-none-");
+				printf(" type %s",
+					port_flow_tunnel_type(&info.tunnel));
+			} else {
+				printf(" - no tunnel info");
+			}
+			if (info.flags & RTE_FLOW_RESTORE_INFO_ENCAPSULATED)
+				printf(" - outer header present");
+			else
+				printf(" - no outer header");
+			if (info.flags & RTE_FLOW_RESTORE_INFO_GROUP_ID)
+				printf(" - miss group %u", info.group_id);
+			else
+				printf(" - no miss group");
+			printf("\n");
+		}
 		print_ether_addr("  src=", &eth_hdr->s_addr);
 		print_ether_addr(" - dst=", &eth_hdr->d_addr);
 		printf(" - type=0x%04x - length=%u - nb_segs=%d",
 		       eth_type, (unsigned int) mb->pkt_len,
 		       (int)mb->nb_segs);
+		ol_flags = mb->ol_flags;
 		if (ol_flags & PKT_RX_RSS_HASH) {
 			printf(" - RSS hash=0x%x", (unsigned int) mb->hash.rss);
 			printf(" - RSS queue=0x%x", (unsigned int) queue);
@@ -75,8 +141,8 @@ dump_pkt_burst(uint16_t port_id, uint16_t queue, struct rte_mbuf *pkts[],
 				printf("hash=0x%x ID=0x%x ",
 				       mb->hash.fdir.hash, mb->hash.fdir.id);
 		}
-		if (ol_flags & PKT_RX_TIMESTAMP)
-			printf(" - timestamp %"PRIu64" ", mb->timestamp);
+		if (is_timestamp_enabled(mb))
+			printf(" - timestamp %"PRIu64" ", get_timestamp(mb));
 		if (ol_flags & PKT_RX_QINQ)
 			printf(" - QinQ VLAN tci=0x%x, VLAN tci outer=0x%x",
 			       mb->vlan_tci, mb->vlan_tci_outer);
@@ -88,6 +154,12 @@ dump_pkt_burst(uint16_t port_id, uint16_t queue, struct rte_mbuf *pkts[],
 		if (is_rx && (ol_flags & PKT_RX_DYNF_METADATA))
 			printf(" - Rx metadata: 0x%x",
 			       *RTE_FLOW_DYNF_METADATA(mb));
+		for (dynf_index = 0; dynf_index < 64; dynf_index++) {
+			if (dynf_names[dynf_index][0] != '\0')
+				printf(" - dynf %s: %d",
+				       dynf_names[dynf_index],
+				       !!(ol_flags & (1UL << dynf_index)));
+		}
 		if (mb->packet_type) {
 			rte_get_ptype_name(mb->packet_type, buf, sizeof(buf));
 			printf(" - hw ptype: %s", buf);
@@ -238,6 +310,62 @@ remove_tx_md_callback(portid_t portid)
 			rte_eth_remove_tx_callback(portid, queue,
 				ports[portid].tx_set_md_cb[queue]);
 			ports[portid].tx_set_md_cb[queue] = NULL;
+		}
+}
+
+uint16_t
+tx_pkt_set_dynf(uint16_t port_id, __rte_unused uint16_t queue,
+		struct rte_mbuf *pkts[], uint16_t nb_pkts,
+		__rte_unused void *user_param)
+{
+	uint16_t i = 0;
+
+	if (ports[port_id].mbuf_dynf)
+		for (i = 0; i < nb_pkts; i++)
+			pkts[i]->ol_flags |= ports[port_id].mbuf_dynf;
+	return nb_pkts;
+}
+
+void
+add_tx_dynf_callback(portid_t portid)
+{
+	struct rte_eth_dev_info dev_info;
+	uint16_t queue;
+	int ret;
+
+	if (port_id_is_invalid(portid, ENABLED_WARN))
+		return;
+
+	ret = eth_dev_info_get_print_err(portid, &dev_info);
+	if (ret != 0)
+		return;
+
+	for (queue = 0; queue < dev_info.nb_tx_queues; queue++)
+		if (!ports[portid].tx_set_dynf_cb[queue])
+			ports[portid].tx_set_dynf_cb[queue] =
+				rte_eth_add_tx_callback(portid, queue,
+							tx_pkt_set_dynf, NULL);
+}
+
+void
+remove_tx_dynf_callback(portid_t portid)
+{
+	struct rte_eth_dev_info dev_info;
+	uint16_t queue;
+	int ret;
+
+	if (port_id_is_invalid(portid, ENABLED_WARN))
+		return;
+
+	ret = eth_dev_info_get_print_err(portid, &dev_info);
+	if (ret != 0)
+		return;
+
+	for (queue = 0; queue < dev_info.nb_tx_queues; queue++)
+		if (ports[portid].tx_set_dynf_cb[queue]) {
+			rte_eth_remove_tx_callback(portid, queue,
+				ports[portid].tx_set_dynf_cb[queue]);
+			ports[portid].tx_set_dynf_cb[queue] = NULL;
 		}
 }
 

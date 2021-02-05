@@ -1,14 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 # Copyright(c) 2017 Cavium, Inc. All rights reserved.
-
-from __future__ import print_function
-import sys
-try:
-    xrange # Python 2
-except NameError:
-    xrange = range # Python 3
 
 sockets = []
 cores = []
@@ -17,7 +10,7 @@ base_path = "/sys/devices/system/cpu"
 fd = open("{}/kernel_max".format(base_path))
 max_cpus = int(fd.read())
 fd.close()
-for cpu in xrange(max_cpus + 1):
+for cpu in range(max_cpus + 1):
     try:
         fd = open("{}/cpu{}/topology/core_id".format(base_path, cpu))
     except IOError:

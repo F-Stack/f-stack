@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -26,7 +26,7 @@
  * this improves cache locality because the same mbufs may be used to send
  * subsequent bursts in certain cases because of well-timed reap
  */
-#define SFC_TX_XMIT_PKTS_REAP_AT_LEAST_ONCE	0
+#define SFC_TX_XMIT_PKTS_REAP_AT_LEAST_ONCE	1
 
 /** Default free threshold follows recommendations from DPDK documentation */
 #define SFC_TX_DEFAULT_FREE_THRESH	32

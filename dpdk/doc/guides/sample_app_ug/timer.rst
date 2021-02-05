@@ -21,7 +21,7 @@ To run the example in linux environment:
 
 .. code-block:: console
 
-    $ ./build/timer -l 0-3 -n 4
+    $ ./<build_dir>/examples/dpdk-timer -l 0-3 -n 4
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications and
 the Environment Abstraction Layer (EAL) options.
@@ -48,18 +48,18 @@ In addition to EAL initialization, the timer subsystem must be initialized, by c
 
     rte_timer_subsystem_init();
 
-After timer creation (see the next paragraph),
-the main loop is executed on each slave lcore using the well-known rte_eal_remote_launch() and also on the master.
+After timer creation (see the next paragraph), the main loop is
+executed on each worker lcore using the well-known
+rte_eal_remote_launch() and also on the main.
 
 .. code-block:: c
 
-    /* call lcore_mainloop() on every slave lcore  */
-
-    RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+    /* call lcore_mainloop() on every worker lcore  */
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
         rte_eal_remote_launch(lcore_mainloop, NULL, lcore_id);
     }
 
-    /* call it on master lcore too */
+    /* call it on main lcore too */
 
     (void) lcore_mainloop(NULL);
 
@@ -105,7 +105,7 @@ This call to rte_timer_init() is necessary before doing any other operation on t
 
 Then, the two timers are configured:
 
-*   The first timer (timer0) is loaded on the master lcore and expires every second.
+*   The first timer (timer0) is loaded on the main lcore and expires every second.
     Since the PERIODICAL flag is provided, the timer is reloaded automatically by the timer subsystem.
     The callback function is timer0_cb().
 
@@ -115,7 +115,7 @@ Then, the two timers are configured:
 
 .. code-block:: c
 
-    /* load timer0, every second, on master lcore, reloaded automatically */
+    /* load timer0, every second, on main lcore, reloaded automatically */
 
     hz = rte_get_hpet_hz();
 
@@ -137,7 +137,7 @@ In this case, the timer is stopped using the rte_timer_stop() function.
     /* timer0 callback */
 
     static void
-    timer0_cb( attribute ((unused)) struct rte_timer *tim, __attribute ((unused)) void *arg)
+    timer0_cb(__rte_unused struct rte_timer *tim, __rte_unused void *arg)
     {
         static unsigned counter = 0;
 
@@ -159,7 +159,7 @@ rte_timer_reset() function:
     /* timer1 callback */
 
     static void
-    timer1_cb( attribute ((unused)) struct rte_timer *tim, _attribute ((unused)) void *arg)
+    timer1_cb(__rte_unused struct rte_timer *tim, __rte_unused void *arg)
     {
         unsigned lcore_id = rte_lcore_id();
         uint64_t hz;

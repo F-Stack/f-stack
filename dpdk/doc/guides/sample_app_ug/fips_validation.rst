@@ -70,9 +70,7 @@ Compiling the Application
 
 * Compile Application
 
-    .. code-block:: console
-
-         make -C examples/fips_validation
+    To compile the sample application see :doc:`compiling`.
 
 *  Run ``dos2unix`` on the request files
 
@@ -92,10 +90,11 @@ The application requires a number of command line options:
 
     .. code-block:: console
 
-         ./fips_validation [EAL options]
+         ./dpdk-fips_validation [EAL options]
          -- --req-file FILE_PATH/FOLDER_PATH
          --rsp-file FILE_PATH/FOLDER_PATH
          [--cryptodev DEVICE_NAME] [--cryptodev-id ID] [--path-is-folder]
+         --mbuf-dataroom DATAROOM_SIZE
 
 where,
   * req-file: The path of the request file or folder, separated by
@@ -111,13 +110,18 @@ where,
   * path-is-folder: If presented the application expects req-file and rsp-file
     are folder paths.
 
+  * mbuf-dataroom: By default the application creates mbuf pool with maximum
+    possible data room (65535 bytes). If the user wants to test scatter-gather
+    list feature of the PMD he or she may set this value to reduce the dataroom
+    size so that the input data may be dividied into multiple chained mbufs.
+
 
 To run the application in linux environment to test one AES FIPS test data
 file for crypto_aesni_mb PMD, issue the command:
 
 .. code-block:: console
 
-    $ ./fips_validation --vdev crypto_aesni_mb --
+    $ ./dpdk-fips_validation --vdev crypto_aesni_mb --
     --req-file /PATH/TO/REQUEST/FILE.req --rsp-file ./PATH/TO/RESPONSE/FILE.rsp
     --cryptodev crypto_aesni_mb
 
@@ -126,7 +130,7 @@ data files in one folder for crypto_aesni_gcm PMD, issue the command:
 
 .. code-block:: console
 
-    $ ./fips_validation --vdev crypto_aesni_gcm0 --
+    $ ./dpdk-fips_validation --vdev crypto_aesni_gcm0 --
     --req-file /PATH/TO/REQUEST/FILE/FOLDER/
     --rsp-file ./PATH/TO/RESPONSE/FILE/FOLDER/
     --cryptodev-id 0 --path-is-folder

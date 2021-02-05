@@ -25,6 +25,7 @@
 
 #include "eal_filesystem.h"
 #include "pci_init.h"
+#include "private.h"
 
 void *pci_map_addr = NULL;
 
@@ -248,7 +249,7 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 		goto error;
 	}
 
-	if (dev->kdrv == RTE_KDRV_IGB_UIO)
+	if (dev->kdrv == RTE_PCI_KDRV_IGB_UIO)
 		dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
 	else {
 		dev->intr_handle.type = RTE_INTR_HANDLE_UIO_INTX;
@@ -345,7 +346,7 @@ pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
 	mapaddr = pci_map_resource(pci_map_addr, fd, 0,
 			(size_t)dev->mem_resource[res_idx].len, 0);
 	close(fd);
-	if (mapaddr == MAP_FAILED)
+	if (mapaddr == NULL)
 		goto error;
 
 	pci_map_addr = RTE_PTR_ADD(mapaddr,

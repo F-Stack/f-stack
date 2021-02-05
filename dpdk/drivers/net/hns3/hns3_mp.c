@@ -2,8 +2,6 @@
  * Copyright(c) 2018-2019 Hisilicon Limited.
  */
 
-#include <stdbool.h>
-
 #include <rte_eal.h>
 #include <rte_ethdev_driver.h>
 #include <rte_string_fns.h>
@@ -80,7 +78,7 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 
 	if (!rte_eth_dev_is_valid_port(param->port_id)) {
 		rte_errno = ENODEV;
-		PMD_INIT_LOG(ERR, "port %u invalid port ID", param->port_id);
+		PMD_INIT_LOG(ERR, "port %d invalid port ID", param->port_id);
 		return -rte_errno;
 	}
 	dev = &rte_eth_devices[param->port_id];

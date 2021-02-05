@@ -4,7 +4,7 @@
 ZLIB Compression Poll Mode Driver
 ==================================
 
-The ZLIB PMD (**librte_pmd_zlib**) provides poll mode compression &
+The ZLIB PMD (**librte_compress_zlib**) provides poll mode compression &
 decompression driver based on SW zlib library,
 
 Features
@@ -52,10 +52,6 @@ Installation
 
 Initialization
 --------------
-
-In order to enable this virtual compression PMD, user must:
-
-* Set ``CONFIG_RTE_LIBRTE_PMD_ZLIB=y`` in config/common_base.
 
 To use the PMD in an application, user must:
 

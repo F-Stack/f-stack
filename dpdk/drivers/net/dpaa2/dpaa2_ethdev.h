@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2015-2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ *   Copyright 2016-2020 NXP
  *
  */
 
@@ -23,6 +23,8 @@
 #define MAX_RX_QUEUES		128
 #define MAX_TX_QUEUES		16
 #define MAX_DPNI		8
+
+#define DPAA2_RX_DEFAULT_NBDESC 512
 
 /*default tc to be used for ,congestion, distribution etc configuration. */
 #define DPAA2_DEF_TC		0
@@ -89,14 +91,46 @@
 #define DPAA2_PKT_TYPE_VLAN_2		0x0260
 
 /* enable timestamp in mbuf*/
-extern enum pmd_dpaa2_ts dpaa2_enable_ts;
+extern bool dpaa2_enable_ts[];
+extern uint64_t dpaa2_timestamp_rx_dynflag;
+extern int dpaa2_timestamp_dynfield_offset;
 
 #define DPAA2_QOS_TABLE_RECONFIGURE	1
 #define DPAA2_FS_TABLE_RECONFIGURE	2
 
+#define DPAA2_QOS_TABLE_IPADDR_EXTRACT 4
+#define DPAA2_FS_TABLE_IPADDR_EXTRACT 8
+
+#define DPAA2_FLOW_MAX_KEY_SIZE		16
+
 /*Externaly defined*/
 extern const struct rte_flow_ops dpaa2_flow_ops;
 extern enum rte_filter_type dpaa2_filter_type;
+
+#define IP_ADDRESS_OFFSET_INVALID (-1)
+
+struct dpaa2_key_info {
+	uint8_t key_offset[DPKG_MAX_NUM_OF_EXTRACTS];
+	uint8_t key_size[DPKG_MAX_NUM_OF_EXTRACTS];
+	/* Special for IP address. */
+	int ipv4_src_offset;
+	int ipv4_dst_offset;
+	int ipv6_src_offset;
+	int ipv6_dst_offset;
+	uint8_t key_total_size;
+};
+
+struct dpaa2_key_extract {
+	struct dpkg_profile_cfg dpkg;
+	struct dpaa2_key_info key_info;
+};
+
+struct extract_s {
+	struct dpaa2_key_extract qos_key_extract;
+	struct dpaa2_key_extract tc_key_extract[MAX_TCS];
+	uint64_t qos_extract_param;
+	uint64_t tc_extract_param[MAX_TCS];
+};
 
 struct dpaa2_dev_priv {
 	void *hw;
@@ -114,23 +148,16 @@ struct dpaa2_dev_priv {
 	uint8_t max_mac_filters;
 	uint8_t max_vlan_filters;
 	uint8_t num_rx_tc;
+	uint16_t qos_entries;
+	uint16_t fs_entries;
+	uint8_t dist_queues;
 	uint8_t flags; /*dpaa2 config flags */
 	uint8_t en_ordered;
 	uint8_t en_loose_ordered;
 	uint8_t max_cgs;
 	uint8_t cgid_in_use[MAX_RX_QUEUES];
 
-	struct pattern_s {
-		uint8_t item_count;
-		uint8_t pattern_type[DPKG_MAX_NUM_OF_EXTRACTS];
-	} pattern[MAX_TCS + 1];
-
-	struct extract_s {
-		struct dpkg_profile_cfg qos_key_cfg;
-		struct dpkg_profile_cfg fs_key_cfg[MAX_TCS];
-		uint64_t qos_extract_param;
-		uint64_t fs_extract_param[MAX_TCS];
-	} extract;
+	struct extract_s extract;
 
 	uint16_t ss_offset;
 	uint64_t ss_iova;
@@ -153,18 +180,20 @@ int dpaa2_distset_to_dpkg_profile_cfg(uint64_t req_dist_set,
 				      struct dpkg_profile_cfg *kg_cfg);
 
 int dpaa2_setup_flow_dist(struct rte_eth_dev *eth_dev,
-			  uint64_t req_dist_set);
+		uint64_t req_dist_set, int tc_index);
 
 int dpaa2_remove_flow_dist(struct rte_eth_dev *eth_dev,
 			   uint8_t tc_index);
 
 int dpaa2_attach_bp_list(struct dpaa2_dev_priv *priv, void *blist);
 
+__rte_internal
 int dpaa2_eth_eventq_attach(const struct rte_eth_dev *dev,
 		int eth_rx_queue_id,
 		struct dpaa2_dpcon_dev *dpcon,
 		const struct rte_event_eth_rx_adapter_queue_conf *queue_conf);
 
+__rte_internal
 int dpaa2_eth_eventq_detach(const struct rte_eth_dev *dev,
 		int eth_rx_queue_id);
 
@@ -196,7 +225,7 @@ uint16_t dpaa2_dev_tx_ordered(void *queue, struct rte_mbuf **bufs,
 uint16_t dummy_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts);
 void dpaa2_dev_free_eqresp_buf(uint16_t eqresp_ci);
 void dpaa2_flow_clean(struct rte_eth_dev *dev);
-uint16_t dpaa2_dev_tx_conf(void *queue)  __attribute__((unused));
+uint16_t dpaa2_dev_tx_conf(void *queue)  __rte_unused;
 
 int dpaa2_timesync_enable(struct rte_eth_dev *dev);
 int dpaa2_timesync_disable(struct rte_eth_dev *dev);

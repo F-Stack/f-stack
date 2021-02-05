@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018-2019 NXP
+ * Copyright 2018-2020 NXP
  */
 
 #include <stdbool.h>
@@ -14,33 +14,66 @@
 #include "enetc.h"
 #include "enetc_logs.h"
 
-#define ENETC_RXBD_BUNDLE 8 /* Number of BDs to update at once */
+#define ENETC_CACHE_LINE_RXBDS	(RTE_CACHE_LINE_SIZE / \
+				 sizeof(union enetc_rx_bd))
+#define ENETC_RXBD_BUNDLE 16 /* Number of buffers to allocate at once */
 
 static int
 enetc_clean_tx_ring(struct enetc_bdr *tx_ring)
 {
 	int tx_frm_cnt = 0;
-	struct enetc_swbd *tx_swbd;
-	int i;
+	struct enetc_swbd *tx_swbd, *tx_swbd_base;
+	int i, hwci, bd_count;
+	struct rte_mbuf *m[ENETC_RXBD_BUNDLE];
 
+	/* we don't need barriers here, we just want a relatively current value
+	 * from HW.
+	 */
+	hwci = (int)(rte_read32_relaxed(tx_ring->tcisr) &
+		     ENETC_TBCISR_IDX_MASK);
+
+	tx_swbd_base = tx_ring->q_swbd;
+	bd_count = tx_ring->bd_count;
 	i = tx_ring->next_to_clean;
-	tx_swbd = &tx_ring->q_swbd[i];
-	while ((int)(enetc_rd_reg(tx_ring->tcisr) &
-	       ENETC_TBCISR_IDX_MASK) != i) {
-		rte_pktmbuf_free(tx_swbd->buffer_addr);
+	tx_swbd = &tx_swbd_base[i];
+
+	/* we're only reading the CI index once here, which means HW may update
+	 * it while we're doing clean-up.  We could read the register in a loop
+	 * but for now I assume it's OK to leave a few Tx frames for next call.
+	 * The issue with reading the register in a loop is that we're stalling
+	 * here trying to catch up with HW which keeps sending traffic as long
+	 * as it has traffic to send, so in effect we could be waiting here for
+	 * the Tx ring to be drained by HW, instead of us doing Rx in that
+	 * meantime.
+	 */
+	while (i != hwci) {
+		/* It seems calling rte_pktmbuf_free is wasting a lot of cycles,
+		 * make a list and call _free when it's done.
+		 */
+		if (tx_frm_cnt == ENETC_RXBD_BUNDLE) {
+			rte_pktmbuf_free_bulk(m, tx_frm_cnt);
+			tx_frm_cnt = 0;
+		}
+
+		m[tx_frm_cnt] = tx_swbd->buffer_addr;
 		tx_swbd->buffer_addr = NULL;
-		tx_swbd++;
+
 		i++;
-		if (unlikely(i == tx_ring->bd_count)) {
+		tx_swbd++;
+		if (unlikely(i == bd_count)) {
 			i = 0;
-			tx_swbd = &tx_ring->q_swbd[0];
+			tx_swbd = tx_swbd_base;
 		}
 
 		tx_frm_cnt++;
 	}
 
+	if (tx_frm_cnt)
+		rte_pktmbuf_free_bulk(m, tx_frm_cnt);
+
 	tx_ring->next_to_clean = i;
-	return tx_frm_cnt++;
+
+	return 0;
 }
 
 uint16_t
@@ -61,7 +94,6 @@ enetc_xmit_pkts(void *tx_queue,
 
 	start = 0;
 	while (nb_pkts--) {
-		enetc_clean_tx_ring(tx_ring);
 		tx_ring->q_swbd[i].buffer_addr = tx_pkts[start];
 		txbd = ENETC_TXBD(*tx_ring, i);
 		tx_swbd = &tx_ring->q_swbd[i];
@@ -77,6 +109,14 @@ enetc_xmit_pkts(void *tx_queue,
 			i = 0;
 	}
 
+	/* we're only cleaning up the Tx ring here, on the assumption that
+	 * software is slower than hardware and hardware completed sending
+	 * older frames out by now.
+	 * We're also cleaning up the ring before kicking off Tx for the new
+	 * batch to minimize chances of contention on the Tx ring
+	 */
+	enetc_clean_tx_ring(tx_ring);
+
 	tx_ring->next_to_use = i;
 	enetc_wr_reg(tx_ring->tcir, i);
 	return start;
@@ -87,15 +127,25 @@ enetc_refill_rx_ring(struct enetc_bdr *rx_ring, const int buff_cnt)
 {
 	struct enetc_swbd *rx_swbd;
 	union enetc_rx_bd *rxbd;
-	int i, j;
+	int i, j, k = ENETC_RXBD_BUNDLE;
+	struct rte_mbuf *m[ENETC_RXBD_BUNDLE];
+	struct rte_mempool *mb_pool;
 
 	i = rx_ring->next_to_use;
+	mb_pool = rx_ring->mb_pool;
 	rx_swbd = &rx_ring->q_swbd[i];
 	rxbd = ENETC_RXBD(*rx_ring, i);
 	for (j = 0; j < buff_cnt; j++) {
-		rx_swbd->buffer_addr = (void *)(uintptr_t)
-			rte_cpu_to_le_64((uint64_t)(uintptr_t)
-					rte_pktmbuf_alloc(rx_ring->mb_pool));
+		/* bulk alloc for the next up to 8 BDs */
+		if (k == ENETC_RXBD_BUNDLE) {
+			k = 0;
+			int m_cnt = RTE_MIN(buff_cnt - j, ENETC_RXBD_BUNDLE);
+
+			if (rte_pktmbuf_alloc_bulk(mb_pool, m, m_cnt))
+				return -1;
+		}
+
+		rx_swbd->buffer_addr = m[k];
 		rxbd->w.addr = (uint64_t)(uintptr_t)
 			       rx_swbd->buffer_addr->buf_iova +
 			       rx_swbd->buffer_addr->data_off;
@@ -104,6 +154,7 @@ enetc_refill_rx_ring(struct enetc_bdr *rx_ring, const int buff_cnt)
 		rx_swbd++;
 		rxbd++;
 		i++;
+		k++;
 		if (unlikely(i == rx_ring->bd_count)) {
 			i = 0;
 			rxbd = ENETC_RXBD(*rx_ring, 0);
@@ -201,7 +252,7 @@ static inline void enetc_slow_parsing(struct rte_mbuf *m,
 }
 
 
-static inline void __attribute__((hot))
+static inline void __rte_hot
 enetc_dev_rx_parse(struct rte_mbuf *m, uint16_t parse_results)
 {
 	ENETC_PMD_DP_DEBUG("parse summary = 0x%x   ", parse_results);
@@ -272,24 +323,37 @@ enetc_clean_rx_ring(struct enetc_bdr *rx_ring,
 		    int work_limit)
 {
 	int rx_frm_cnt = 0;
-	int cleaned_cnt, i;
+	int cleaned_cnt, i, bd_count;
 	struct enetc_swbd *rx_swbd;
+	union enetc_rx_bd *rxbd;
 
-	cleaned_cnt = enetc_bd_unused(rx_ring);
 	/* next descriptor to process */
 	i = rx_ring->next_to_clean;
+	/* next descriptor to process */
+	rxbd = ENETC_RXBD(*rx_ring, i);
+	rte_prefetch0(rxbd);
+	bd_count = rx_ring->bd_count;
+	/* LS1028A does not have platform cache so any software access following
+	 * a hardware write will go directly to DDR.  Latency of such a read is
+	 * in excess of 100 core cycles, so try to prefetch more in advance to
+	 * mitigate this.
+	 * How much is worth prefetching really depends on traffic conditions.
+	 * With congested Rx this could go up to 4 cache lines or so.  But if
+	 * software keeps up with hardware and follows behind Rx PI by a cache
+	 * line or less then it's harmful in terms of performance to cache more.
+	 * We would only prefetch BDs that have yet to be written by ENETC,
+	 * which will have to be evicted again anyway.
+	 */
+	rte_prefetch0(ENETC_RXBD(*rx_ring,
+				 (i + ENETC_CACHE_LINE_RXBDS) % bd_count));
+	rte_prefetch0(ENETC_RXBD(*rx_ring,
+				 (i + ENETC_CACHE_LINE_RXBDS * 2) % bd_count));
+
+	cleaned_cnt = enetc_bd_unused(rx_ring);
 	rx_swbd = &rx_ring->q_swbd[i];
 	while (likely(rx_frm_cnt < work_limit)) {
-		union enetc_rx_bd *rxbd;
 		uint32_t bd_status;
 
-		if (cleaned_cnt >= ENETC_RXBD_BUNDLE) {
-			int count = enetc_refill_rx_ring(rx_ring, cleaned_cnt);
-
-			cleaned_cnt -= count;
-		}
-
-		rxbd = ENETC_RXBD(*rx_ring, i);
 		bd_status = rte_le_to_cpu_32(rxbd->r.lstatus);
 		if (!bd_status)
 			break;
@@ -310,10 +374,19 @@ enetc_clean_rx_ring(struct enetc_bdr *rx_ring,
 			i = 0;
 			rx_swbd = &rx_ring->q_swbd[i];
 		}
+		rxbd = ENETC_RXBD(*rx_ring, i);
+		rte_prefetch0(ENETC_RXBD(*rx_ring,
+					 (i + ENETC_CACHE_LINE_RXBDS) %
+					  bd_count));
+		rte_prefetch0(ENETC_RXBD(*rx_ring,
+					 (i + ENETC_CACHE_LINE_RXBDS * 2) %
+					 bd_count));
 
-		rx_ring->next_to_clean = i;
 		rx_frm_cnt++;
 	}
+
+	rx_ring->next_to_clean = i;
+	enetc_refill_rx_ring(rx_ring, cleaned_cnt);
 
 	return rx_frm_cnt;
 }

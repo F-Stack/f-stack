@@ -45,9 +45,6 @@ error_cflags = [
 	'-Wno-pointer-bool-conversion',
 ]
 c_args = cflags
-if allow_experimental_apis
-	c_args += '-DALLOW_EXPERIMENTAL_API'
-endif
 foreach flag: error_cflags
         if cc.has_argument(flag)
                 c_args += flag
@@ -55,6 +52,6 @@ foreach flag: error_cflags
 endforeach
 
 base_lib = static_library('qede_base', sources,
-	dependencies: static_rte_net,
+	dependencies: [static_rte_net, static_rte_bus_pci],
 	c_args: c_args)
 base_objs = base_lib.extract_all_objects()

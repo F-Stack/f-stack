@@ -23,10 +23,9 @@
 #include "rte_pmd_ntb.h"
 #include "ntb.h"
 
-int ntb_logtype;
-
 static const struct rte_pci_id pci_id_ntb_map[] = {
 	{ RTE_PCI_DEVICE(NTB_INTEL_VENDOR_ID, NTB_INTEL_DEV_ID_B2B_SKX) },
+	{ RTE_PCI_DEVICE(NTB_INTEL_VENDOR_ID, NTB_INTEL_DEV_ID_B2B_ICX) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -246,19 +245,28 @@ ntb_dev_intr_handler(void *param)
 		hw->peer_dev_up = 0;
 		return;
 	}
+
+	/* Clear other received doorbells. */
+	(*hw->ntb_ops->db_clear)(dev, db_bits);
 }
 
-static void
+static int
 ntb_queue_conf_get(struct rte_rawdev *dev,
 		   uint16_t queue_id,
-		   rte_rawdev_obj_t queue_conf)
+		   rte_rawdev_obj_t queue_conf,
+		   size_t conf_size)
 {
 	struct ntb_queue_conf *q_conf = queue_conf;
 	struct ntb_hw *hw = dev->dev_private;
 
+	if (conf_size != sizeof(*q_conf))
+		return -EINVAL;
+
 	q_conf->tx_free_thresh = hw->tx_queues[queue_id]->tx_free_thresh;
 	q_conf->nb_desc = hw->rx_queues[queue_id]->nb_rx_desc;
 	q_conf->rx_mp = hw->rx_queues[queue_id]->mpool;
+
+	return 0;
 }
 
 static void
@@ -296,11 +304,15 @@ ntb_rxq_release(struct ntb_rx_queue *rxq)
 static int
 ntb_rxq_setup(struct rte_rawdev *dev,
 	      uint16_t qp_id,
-	      rte_rawdev_obj_t queue_conf)
+	      rte_rawdev_obj_t queue_conf,
+	      size_t conf_size)
 {
 	struct ntb_queue_conf *rxq_conf = queue_conf;
 	struct ntb_hw *hw = dev->dev_private;
 	struct ntb_rx_queue *rxq;
+
+	if (conf_size != sizeof(*rxq_conf))
+		return -EINVAL;
 
 	/* Allocate the rx queue data structure */
 	rxq = rte_zmalloc_socket("ntb rx queue",
@@ -377,12 +389,16 @@ ntb_txq_release(struct ntb_tx_queue *txq)
 static int
 ntb_txq_setup(struct rte_rawdev *dev,
 	      uint16_t qp_id,
-	      rte_rawdev_obj_t queue_conf)
+	      rte_rawdev_obj_t queue_conf,
+	      size_t conf_size)
 {
 	struct ntb_queue_conf *txq_conf = queue_conf;
 	struct ntb_hw *hw = dev->dev_private;
 	struct ntb_tx_queue *txq;
 	uint16_t i, prev;
+
+	if (conf_size != sizeof(*txq_conf))
+		return -EINVAL;
 
 	/* Allocate the TX queue data structure. */
 	txq = rte_zmalloc_socket("ntb tx queue",
@@ -441,7 +457,8 @@ ntb_txq_setup(struct rte_rawdev *dev,
 static int
 ntb_queue_setup(struct rte_rawdev *dev,
 		uint16_t queue_id,
-		rte_rawdev_obj_t queue_conf)
+		rte_rawdev_obj_t queue_conf,
+		size_t conf_size)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	int ret;
@@ -449,11 +466,11 @@ ntb_queue_setup(struct rte_rawdev *dev,
 	if (queue_id >= hw->queue_pairs)
 		return -EINVAL;
 
-	ret = ntb_txq_setup(dev, queue_id, queue_conf);
+	ret = ntb_txq_setup(dev, queue_id, queue_conf, conf_size);
 	if (ret < 0)
 		return ret;
 
-	ret = ntb_rxq_setup(dev, queue_id, queue_conf);
+	ret = ntb_rxq_setup(dev, queue_id, queue_conf, conf_size);
 
 	return ret;
 }
@@ -802,11 +819,17 @@ end_of_rx:
 	return nb_rx;
 }
 
-static void
-ntb_dev_info_get(struct rte_rawdev *dev, rte_rawdev_obj_t dev_info)
+static int
+ntb_dev_info_get(struct rte_rawdev *dev, rte_rawdev_obj_t dev_info,
+		size_t dev_info_size)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	struct ntb_dev_info *info = dev_info;
+
+	if (dev_info_size != sizeof(*info)) {
+		NTB_LOG(ERR, "Invalid size parameter to %s", __func__);
+		return -EINVAL;
+	}
 
 	info->mw_cnt = hw->mw_cnt;
 	info->mw_size = hw->mw_size;
@@ -820,7 +843,7 @@ ntb_dev_info_get(struct rte_rawdev *dev, rte_rawdev_obj_t dev_info)
 
 	if (!hw->queue_size || !hw->queue_pairs) {
 		NTB_LOG(ERR, "No queue size and queue num assigned.");
-		return;
+		return -EAGAIN;
 	}
 
 	hw->hdr_size_per_queue = RTE_ALIGN(sizeof(struct ntb_header) +
@@ -828,15 +851,21 @@ ntb_dev_info_get(struct rte_rawdev *dev, rte_rawdev_obj_t dev_info)
 				hw->queue_size * sizeof(struct ntb_used),
 				RTE_CACHE_LINE_SIZE);
 	info->ntb_hdr_size = hw->hdr_size_per_queue * hw->queue_pairs;
+
+	return 0;
 }
 
 static int
-ntb_dev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
+ntb_dev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config,
+		size_t config_size)
 {
 	struct ntb_dev_config *conf = config;
 	struct ntb_hw *hw = dev->dev_private;
 	uint32_t xstats_num;
 	int ret;
+
+	if (conf == NULL || config_size != sizeof(*conf))
+		return -EINVAL;
 
 	hw->queue_pairs	= conf->num_queues;
 	hw->queue_size = conf->queue_size;
@@ -1335,6 +1364,7 @@ ntb_init_hw(struct rte_rawdev *dev, struct rte_pci_device *pci_dev)
 
 	switch (pci_dev->id.device_id) {
 	case NTB_INTEL_DEV_ID_B2B_SKX:
+	case NTB_INTEL_DEV_ID_B2B_ICX:
 		hw->ntb_ops = &intel_ntb_ops;
 		break;
 	default:
@@ -1504,10 +1534,4 @@ static struct rte_pci_driver rte_ntb_pmd = {
 RTE_PMD_REGISTER_PCI(raw_ntb, rte_ntb_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(raw_ntb, pci_id_ntb_map);
 RTE_PMD_REGISTER_KMOD_DEP(raw_ntb, "* igb_uio | uio_pci_generic | vfio-pci");
-
-RTE_INIT(ntb_init_log)
-{
-	ntb_logtype = rte_log_register("pmd.raw.ntb");
-	if (ntb_logtype >= 0)
-		rte_log_set_level(ntb_logtype, RTE_LOG_INFO);
-}
+RTE_LOG_REGISTER(ntb_logtype, pmd.raw.ntb, INFO);

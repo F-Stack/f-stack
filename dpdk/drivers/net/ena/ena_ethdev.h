@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2015-2019 Amazon.com, Inc. or its affiliates.
+ * Copyright (c) 2015-2020 Amazon.com, Inc. or its affiliates.
  * All rights reserved.
  */
 
@@ -20,6 +20,8 @@
 #define ENA_MIN_FRAME_LEN	64
 #define ENA_NAME_MAX_LEN	20
 #define ENA_PKT_MAX_BUFS	17
+#define ENA_RX_BUF_MIN_SIZE	1400
+#define ENA_DEFAULT_RING_SIZE	1024
 
 #define ENA_MIN_MTU		128
 
@@ -27,6 +29,19 @@
 
 #define ENA_WD_TIMEOUT_SEC	3
 #define ENA_DEVICE_KALIVE_TIMEOUT (ENA_WD_TIMEOUT_SEC * rte_get_timer_hz())
+
+/* While processing submitted and completed descriptors (rx and tx path
+ * respectively) in a loop it is desired to:
+ *  - perform batch submissions while populating sumbissmion queue
+ *  - avoid blocking transmission of other packets during cleanup phase
+ * Hence the utilization ratio of 1/8 of a queue size or max value if the size
+ * of the ring is very big - like 8k Rx rings.
+ */
+#define ENA_REFILL_THRESH_DIVIDER      8
+#define ENA_REFILL_THRESH_PACKET       256
+
+#define ENA_IDX_NEXT_MASKED(idx, mask) (((idx) + 1) & (mask))
+#define ENA_IDX_ADD_MASKED(idx, n, mask) (((idx) + (n)) & (mask))
 
 struct ena_adapter;
 
@@ -42,11 +57,17 @@ struct ena_tx_buffer {
 	struct ena_com_buf bufs[ENA_PKT_MAX_BUFS];
 };
 
+/* Rx buffer holds only pointer to the mbuf - may be expanded in the future */
+struct ena_rx_buffer {
+	struct rte_mbuf *mbuf;
+	struct ena_com_buf ena_buf;
+};
+
 struct ena_calc_queue_size_ctx {
 	struct ena_com_dev_get_features_ctx *get_feat_ctx;
 	struct ena_com_dev *ena_dev;
-	u16 rx_queue_size;
-	u16 tx_queue_size;
+	u32 max_rx_queue_size;
+	u32 max_tx_queue_size;
 	u16 max_tx_sgl_size;
 	u16 max_rx_sgl_size;
 };
@@ -87,10 +108,11 @@ struct ena_ring {
 
 	union {
 		struct ena_tx_buffer *tx_buffer_info; /* contex of tx packet */
-		struct rte_mbuf **rx_buffer_info; /* contex of rx packet */
+		struct ena_rx_buffer *rx_buffer_info; /* contex of rx packet */
 	};
 	struct rte_mbuf **rx_refill_buffer;
 	unsigned int ring_size; /* number of tx/rx_buffer_info's entries */
+	unsigned int size_mask;
 
 	struct ena_com_io_cq *ena_com_io_cq;
 	struct ena_com_io_sq *ena_com_io_sq;
@@ -110,6 +132,8 @@ struct ena_ring {
 	struct ena_adapter *adapter;
 	uint64_t offloads;
 	u16 sgl_size;
+
+	bool disable_meta_caching;
 
 	union {
 		struct ena_stats_rx rx_stats;
@@ -132,13 +156,45 @@ struct ena_driver_stats {
 	rte_atomic64_t ierrors;
 	rte_atomic64_t oerrors;
 	rte_atomic64_t rx_nombuf;
-	rte_atomic64_t rx_drops;
+	u64 rx_drops;
 };
 
 struct ena_stats_dev {
 	u64 wd_expired;
 	u64 dev_start;
 	u64 dev_stop;
+	/*
+	 * Tx drops cannot be reported as the driver statistic, because DPDK
+	 * rte_eth_stats structure isn't providing appropriate field for that.
+	 * As a workaround it is being published as an extended statistic.
+	 */
+	u64 tx_drops;
+};
+
+struct ena_stats_eni {
+	/*
+	 * The number of packets shaped due to inbound aggregate BW
+	 * allowance being exceeded
+	 */
+	uint64_t bw_in_allowance_exceeded;
+	/*
+	 * The number of packets shaped due to outbound aggregate BW
+	 * allowance being exceeded
+	 */
+	uint64_t bw_out_allowance_exceeded;
+	/* The number of packets shaped due to PPS allowance being exceeded */
+	uint64_t pps_allowance_exceeded;
+	/*
+	 * The number of packets shaped due to connection tracking
+	 * allowance being exceeded and leading to failure in establishment
+	 * of new connections
+	 */
+	uint64_t conntrack_allowance_exceeded;
+	/*
+	 * The number of packets shaped due to linklocal packet rate
+	 * allowance being exceeded
+	 */
+	uint64_t linklocal_allowance_exceeded;
 };
 
 struct ena_offloads {
@@ -158,17 +214,24 @@ struct ena_adapter {
 
 	/* TX */
 	struct ena_ring tx_ring[ENA_MAX_NUM_QUEUES] __rte_cache_aligned;
-	int tx_ring_size;
+	u32 max_tx_ring_size;
 	u16 max_tx_sgl_size;
 
 	/* RX */
 	struct ena_ring rx_ring[ENA_MAX_NUM_QUEUES] __rte_cache_aligned;
-	int rx_ring_size;
+	u32 max_rx_ring_size;
 	u16 max_rx_sgl_size;
 
-	u16 num_queues;
+	u32 max_num_io_queues;
 	u16 max_mtu;
 	struct ena_offloads offloads;
+
+	/* The admin queue isn't protected by the lock and is used to
+	 * retrieve statistics from the device. As there is no guarantee that
+	 * application won't try to get statistics from multiple threads, it is
+	 * safer to lock the queue to avoid admin queue failure.
+	 */
+	rte_spinlock_t admin_lock;
 
 	int id_number;
 	char name[ENA_NAME_MAX_LEN];
@@ -194,10 +257,13 @@ struct ena_adapter {
 	uint64_t keep_alive_timeout;
 
 	struct ena_stats_dev dev_stats;
+	struct ena_stats_eni eni_stats;
 
 	bool trigger_reset;
 
 	bool wd_state;
+
+	bool use_large_llq_hdr;
 };
 
 #endif /* _ENA_ETHDEV_H_ */

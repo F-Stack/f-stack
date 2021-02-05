@@ -8,7 +8,6 @@
  * Miscellaneous control operations for mlx4 driver.
  */
 
-#include <assert.h>
 #include <dirent.h>
 #include <errno.h>
 #include <linux/ethtool.h>
@@ -646,9 +645,8 @@ mlx4_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	 */
 	max = ((priv->device_attr.max_cq > priv->device_attr.max_qp) ?
 	       priv->device_attr.max_qp : priv->device_attr.max_cq);
-	/* If max >= 65535 then max = 0, max_rx_queues is uint16_t. */
-	if (max >= 65535)
-		max = 65535;
+	/* max_rx_queues is uint16_t. */
+	max = RTE_MIN(max, (unsigned int)UINT16_MAX);
 	info->max_rx_queues = max;
 	info->max_tx_queues = max;
 	info->max_mac_addrs = RTE_DIM(priv->mac);
@@ -874,7 +872,7 @@ mlx4_flow_ctrl_get(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		fc_conf->mode = RTE_FC_NONE;
 	ret = 0;
 out:
-	assert(ret >= 0);
+	MLX4_ASSERT(ret >= 0);
 	return -ret;
 }
 
@@ -920,7 +918,7 @@ mlx4_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	}
 	ret = 0;
 out:
-	assert(ret >= 0);
+	MLX4_ASSERT(ret >= 0);
 	return -ret;
 }
 

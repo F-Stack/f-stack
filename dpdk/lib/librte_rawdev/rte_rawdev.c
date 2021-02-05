@@ -29,12 +29,10 @@
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
+#include <rte_telemetry.h>
 
 #include "rte_rawdev.h"
 #include "rte_rawdev_pmd.h"
-
-/* dynamic log identifier */
-int librawdev_logtype;
 
 static struct rte_rawdev rte_rawdevices[RTE_RAWDEV_MAX_DEVS];
 
@@ -80,9 +78,11 @@ rte_rawdev_socket_id(uint16_t dev_id)
 }
 
 int
-rte_rawdev_info_get(uint16_t dev_id, struct rte_rawdev_info *dev_info)
+rte_rawdev_info_get(uint16_t dev_id, struct rte_rawdev_info *dev_info,
+		size_t dev_private_size)
 {
 	struct rte_rawdev *rawdev;
+	int ret = 0;
 
 	RTE_RAWDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
 	RTE_FUNC_PTR_OR_ERR_RET(dev_info, -EINVAL);
@@ -91,18 +91,21 @@ rte_rawdev_info_get(uint16_t dev_id, struct rte_rawdev_info *dev_info)
 
 	if (dev_info->dev_private != NULL) {
 		RTE_FUNC_PTR_OR_ERR_RET(*rawdev->dev_ops->dev_info_get, -ENOTSUP);
-		(*rawdev->dev_ops->dev_info_get)(rawdev, dev_info->dev_private);
+		ret = (*rawdev->dev_ops->dev_info_get)(rawdev,
+				dev_info->dev_private,
+				dev_private_size);
 	}
 
 	dev_info->driver_name = rawdev->driver_name;
 	dev_info->device = rawdev->device;
 	dev_info->socket_id = rawdev->socket_id;
 
-	return 0;
+	return ret;
 }
 
 int
-rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf)
+rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf,
+		size_t dev_private_size)
 {
 	struct rte_rawdev *dev;
 	int diag;
@@ -121,7 +124,8 @@ rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf)
 	}
 
 	/* Configure the device */
-	diag = (*dev->dev_ops->dev_configure)(dev, dev_conf->dev_private);
+	diag = (*dev->dev_ops->dev_configure)(dev, dev_conf->dev_private,
+			dev_private_size);
 	if (diag != 0)
 		RTE_RDEV_ERR("dev%d dev_configure = %d", dev_id, diag);
 	else
@@ -133,7 +137,8 @@ rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf)
 int
 rte_rawdev_queue_conf_get(uint16_t dev_id,
 			  uint16_t queue_id,
-			  rte_rawdev_obj_t queue_conf)
+			  rte_rawdev_obj_t queue_conf,
+			  size_t queue_conf_size)
 {
 	struct rte_rawdev *dev;
 
@@ -141,14 +146,15 @@ rte_rawdev_queue_conf_get(uint16_t dev_id,
 	dev = &rte_rawdevs[dev_id];
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->queue_def_conf, -ENOTSUP);
-	(*dev->dev_ops->queue_def_conf)(dev, queue_id, queue_conf);
-	return 0;
+	return (*dev->dev_ops->queue_def_conf)(dev, queue_id, queue_conf,
+			queue_conf_size);
 }
 
 int
 rte_rawdev_queue_setup(uint16_t dev_id,
 		       uint16_t queue_id,
-		       rte_rawdev_obj_t queue_conf)
+		       rte_rawdev_obj_t queue_conf,
+		       size_t queue_conf_size)
 {
 	struct rte_rawdev *dev;
 
@@ -156,7 +162,8 @@ rte_rawdev_queue_setup(uint16_t dev_id,
 	dev = &rte_rawdevs[dev_id];
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->queue_setup, -ENOTSUP);
-	return (*dev->dev_ops->queue_setup)(dev, queue_id, queue_conf);
+	return (*dev->dev_ops->queue_setup)(dev, queue_id, queue_conf,
+			queue_conf_size);
 }
 
 int
@@ -391,20 +398,21 @@ rte_rawdev_start(uint16_t dev_id)
 
 	RTE_RAWDEV_VALID_DEVID_OR_ERR_RET(dev_id, -EINVAL);
 	dev = &rte_rawdevs[dev_id];
-	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->dev_start, -ENOTSUP);
-
 	if (dev->started != 0) {
 		RTE_RDEV_ERR("Device with dev_id=%" PRIu8 "already started",
 			     dev_id);
 		return 0;
 	}
 
+	if (dev->dev_ops->dev_start == NULL)
+		goto mark_started;
+
 	diag = (*dev->dev_ops->dev_start)(dev);
-	if (diag == 0)
-		dev->started = 1;
-	else
+	if (diag != 0)
 		return diag;
 
+mark_started:
+	dev->started = 1;
 	return 0;
 }
 
@@ -418,15 +426,18 @@ rte_rawdev_stop(uint16_t dev_id)
 	RTE_RAWDEV_VALID_DEVID_OR_RET(dev_id);
 	dev = &rte_rawdevs[dev_id];
 
-	RTE_FUNC_PTR_OR_RET(*dev->dev_ops->dev_stop);
-
 	if (dev->started == 0) {
 		RTE_RDEV_ERR("Device with dev_id=%" PRIu8 "already stopped",
 			dev_id);
 		return;
 	}
 
+	if (dev->dev_ops->dev_stop == NULL)
+		goto mark_stopped;
+
 	(*dev->dev_ops->dev_stop)(dev);
+
+mark_stopped:
 	dev->started = 0;
 }
 
@@ -544,9 +555,84 @@ rte_rawdev_pmd_release(struct rte_rawdev *rawdev)
 	return 0;
 }
 
-RTE_INIT(librawdev_init_log)
+static int
+handle_dev_list(const char *cmd __rte_unused,
+		const char *params __rte_unused,
+		struct rte_tel_data *d)
 {
-	librawdev_logtype = rte_log_register("lib.rawdev");
-	if (librawdev_logtype >= 0)
-		rte_log_set_level(librawdev_logtype, RTE_LOG_INFO);
+	int i;
+
+	rte_tel_data_start_array(d, RTE_TEL_INT_VAL);
+	for (i = 0; i < rawdev_globals.nb_devs; i++)
+		if (rte_rawdevices[i].attached == RTE_RAWDEV_ATTACHED)
+			rte_tel_data_add_array_int(d, i);
+	return 0;
+}
+
+static int
+handle_dev_xstats(const char *cmd __rte_unused,
+		const char *params,
+		struct rte_tel_data *d)
+{
+	uint64_t *rawdev_xstats;
+	struct rte_rawdev_xstats_name *xstat_names;
+	int dev_id, num_xstats, i, ret;
+	unsigned int *ids;
+	char *end_param;
+
+	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+		return -1;
+
+	dev_id = strtoul(params, &end_param, 0);
+	if (*end_param != '\0')
+		RTE_RDEV_LOG(NOTICE,
+			"Extra parameters passed to rawdev telemetry command, ignoring");
+	if (!rte_rawdev_pmd_is_valid_dev(dev_id))
+		return -1;
+
+	num_xstats = xstats_get_count(dev_id);
+	if (num_xstats < 0)
+		return -1;
+
+	/* use one malloc for names, stats and ids */
+	rawdev_xstats = malloc((sizeof(uint64_t) +
+			sizeof(struct rte_rawdev_xstats_name) +
+			sizeof(unsigned int)) * num_xstats);
+	if (rawdev_xstats == NULL)
+		return -1;
+	xstat_names = (void *)&rawdev_xstats[num_xstats];
+	ids = (void *)&xstat_names[num_xstats];
+
+	ret = rte_rawdev_xstats_names_get(dev_id, xstat_names, num_xstats);
+	if (ret < 0 || ret > num_xstats) {
+		free(rawdev_xstats);
+		return -1;
+	}
+
+	for (i = 0; i < num_xstats; i++)
+		ids[i] = i;
+
+	ret = rte_rawdev_xstats_get(dev_id, ids, rawdev_xstats, num_xstats);
+	if (ret < 0 || ret > num_xstats) {
+		free(rawdev_xstats);
+		return -1;
+	}
+
+	rte_tel_data_start_dict(d);
+	for (i = 0; i < num_xstats; i++)
+		rte_tel_data_add_dict_u64(d, xstat_names[i].name,
+				rawdev_xstats[i]);
+
+	free(rawdev_xstats);
+	return 0;
+}
+
+RTE_LOG_REGISTER(librawdev_logtype, lib.rawdev, INFO);
+
+RTE_INIT(librawdev_init_telemetry)
+{
+	rte_telemetry_register_cmd("/rawdev/list", handle_dev_list,
+			"Returns list of available rawdev ports. Takes no parameters");
+	rte_telemetry_register_cmd("/rawdev/xstats", handle_dev_xstats,
+			"Returns the xstats for a rawdev port. Parameters: int port_id");
 }

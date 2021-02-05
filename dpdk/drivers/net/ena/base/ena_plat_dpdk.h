@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <errno.h>
 
@@ -56,6 +57,7 @@ typedef uint64_t dma_addr_t;
 #define ENA_ABORT() abort()
 
 #define ENA_MSLEEP(x) rte_delay_us_sleep(x * 1000)
+#define ENA_USLEEP(x) rte_delay_us_sleep(x)
 #define ENA_UDELAY(x) rte_delay_us_block(x)
 
 #define ENA_TOUCH(x) ((void)(x))
@@ -159,6 +161,7 @@ do {                                                                   \
 #define ena_wait_event_t ena_wait_queue_t
 #define ENA_MIGHT_SLEEP()
 
+#define ena_time_t uint64_t
 #define ENA_TIME_EXPIRE(timeout)  (timeout < rte_get_timer_cycles())
 #define ENA_GET_SYSTEM_TIMEOUT(timeout_us)                             \
        (timeout_us * rte_get_timer_hz() / 1000000 + rte_get_timer_cycles())
@@ -248,7 +251,8 @@ extern rte_atomic32_t ena_alloc_cnt;
 	} while (0)
 
 #define ENA_MEM_ALLOC(dmadev, size) rte_zmalloc(NULL, size, 1)
-#define ENA_MEM_FREE(dmadev, ptr) ({ENA_TOUCH(dmadev); rte_free(ptr); })
+#define ENA_MEM_FREE(dmadev, ptr, size)					\
+	({ ENA_TOUCH(dmadev); ENA_TOUCH(size); rte_free(ptr); })
 
 #define ENA_DB_SYNC(mem_handle) ((void)mem_handle)
 
@@ -276,6 +280,7 @@ extern rte_atomic32_t ena_alloc_cnt;
 #define might_sleep()
 
 #define prefetch(x) rte_prefetch0(x)
+#define prefetchw(x) prefetch(x)
 
 #define lower_32_bits(x) ((uint32_t)(x))
 #define upper_32_bits(x) ((uint32_t)(((x) >> 16) >> 16))
@@ -308,4 +313,13 @@ extern rte_atomic32_t ena_alloc_cnt;
 
 #define ENA_FFS(x) ffs(x)
 
+void ena_rss_key_fill(void *key, size_t size);
+
+#define ENA_RSS_FILL_KEY(key, size) ena_rss_key_fill(key, size)
+
+#define ENA_INTR_INITIAL_TX_INTERVAL_USECS_PLAT 0
+
+#define ENA_PRIu64 PRIu64
+
+#include "ena_includes.h"
 #endif /* DPDK_ENA_COM_ENA_PLAT_DPDK_H_ */

@@ -41,7 +41,9 @@ Enabling HPET in the DPDK
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 By default, HPET support is disabled in the DPDK build configuration files.
-To use HPET, the ``CONFIG_RTE_LIBEAL_USE_HPET`` setting should be changed to ``y``, which will enable the HPET settings at compile time.
+To use HPET, use the following meson build option which will enable the HPET settings at compile time::
+
+   meson configure -Duse_hpet=true
 
 For an application to use the ``rte_get_hpet_cycles()`` and ``rte_get_hpet_hz()`` API calls,
 and optionally to make the HPET the default time source for the rte_timer library,
@@ -56,6 +58,8 @@ The application can then determine what action to take, if any, if the HPET is n
     it is recommended that the ``rte_get_timer_cycles()`` and ``rte_get_timer_hz()`` API calls be used instead of the HPET-specific APIs.
     These generic APIs can work with either TSC or HPET time sources, depending on what is requested by an application call to ``rte_eal_hpet_init()``,
     if any, and on what is available on the system at runtime.
+
+.. _Running_Without_Root_Privileges:
 
 Running DPDK Applications Without Root Privileges
 -------------------------------------------------
@@ -152,13 +156,10 @@ Loading the DPDK KNI Kernel Module
 ----------------------------------
 
 To run the DPDK Kernel NIC Interface (KNI) sample application, an extra kernel module (the kni module) must be loaded into the running kernel.
-The module is found in the kmod sub-directory of the DPDK target directory.
-Similar to the loading of the ``igb_uio`` module, this module should be loaded using the insmod command as shown below
-(assuming that the current directory is the DPDK target directory):
+The module is found in the kernel/linux sub-directory of the DPDK build directory.
+It should be loaded using the insmod command::
 
-.. code-block:: console
-
-   insmod kmod/rte_kni.ko
+   insmod <build_dir>/kernel/linux/kni/rte_kni.ko
 
 .. note::
 
@@ -180,4 +181,5 @@ This results in pass-through of the DMAR (DMA Remapping) lookup in the host.
 Also, if ``INTEL_IOMMU_DEFAULT_ON`` is not set in the kernel, the ``intel_iommu=on`` kernel parameter must be used too.
 This ensures that the Intel IOMMU is being initialized as expected.
 
-Please note that while using ``iommu=pt`` is compulsory for ``igb_uio driver``, the ``vfio-pci`` driver can actually work with both ``iommu=pt`` and ``iommu=on``.
+Please note that while using ``iommu=pt`` is compulsory for ``igb_uio`` driver,
+the ``vfio-pci`` driver can actually work with both ``iommu=pt`` and ``iommu=on``.

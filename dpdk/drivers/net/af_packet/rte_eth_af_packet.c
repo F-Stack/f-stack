@@ -19,6 +19,7 @@
 #include <linux/if_packet.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <net/if_arp.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -36,8 +37,6 @@
 
 #define DFLT_FRAME_SIZE		(1 << 11)
 #define DFLT_FRAME_COUNT	(1 << 9)
-
-#define RTE_PMD_AF_PACKET_MAX_RINGS 16
 
 struct pkt_rx_queue {
 	int sockfd;
@@ -77,8 +76,8 @@ struct pmd_internals {
 
 	struct tpacket_req req;
 
-	struct pkt_rx_queue rx_queue[RTE_PMD_AF_PACKET_MAX_RINGS];
-	struct pkt_tx_queue tx_queue[RTE_PMD_AF_PACKET_MAX_RINGS];
+	struct pkt_rx_queue *rx_queue;
+	struct pkt_tx_queue *tx_queue;
 };
 
 static const char *valid_arguments[] = {
@@ -98,7 +97,7 @@ static struct rte_eth_link pmd_link = {
 	.link_autoneg = ETH_LINK_FIXED,
 };
 
-static int af_packet_logtype;
+RTE_LOG_REGISTER(af_packet_logtype, pmd.net.packet, NOTICE);
 
 #define PMD_LOG(level, fmt, args...) \
 	rte_log(RTE_LOG_ ## level, af_packet_logtype, \
@@ -273,7 +272,7 @@ eth_dev_start(struct rte_eth_dev *dev)
 /*
  * This function gets called when the current port gets stopped.
  */
-static void
+static int
 eth_dev_stop(struct rte_eth_dev *dev)
 {
 	unsigned i;
@@ -297,6 +296,7 @@ eth_dev_stop(struct rte_eth_dev *dev)
 	}
 
 	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	return 0;
 }
 
 static int
@@ -377,9 +377,34 @@ eth_stats_reset(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
-eth_dev_close(struct rte_eth_dev *dev __rte_unused)
+static int
+eth_dev_close(struct rte_eth_dev *dev)
 {
+	struct pmd_internals *internals;
+	struct tpacket_req *req;
+	unsigned int q;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	PMD_LOG(INFO, "Closing AF_PACKET ethdev on NUMA socket %u",
+		rte_socket_id());
+
+	internals = dev->data->dev_private;
+	req = &internals->req;
+	for (q = 0; q < internals->nb_queues; q++) {
+		munmap(internals->rx_queue[q].map,
+			2 * req->tp_block_size * req->tp_block_nr);
+		rte_free(internals->rx_queue[q].rd);
+		rte_free(internals->tx_queue[q].rd);
+	}
+	free(internals->if_name);
+	rte_free(internals->rx_queue);
+	rte_free(internals->tx_queue);
+
+	/* mac_addrs must not be freed alone because part of dev_private */
+	dev->data->mac_addrs = NULL;
+	return 0;
 }
 
 static void
@@ -469,6 +494,32 @@ eth_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 }
 
 static int
+eth_dev_macaddr_set(struct rte_eth_dev *dev, struct rte_ether_addr *addr)
+{
+	struct pmd_internals *internals = dev->data->dev_private;
+	struct ifreq ifr = { };
+	int sockfd = internals->rx_queue[0].sockfd;
+	int ret;
+
+	if (sockfd == -1) {
+		PMD_LOG(ERR, "receive socket not found");
+		return -EINVAL;
+	}
+
+	strlcpy(ifr.ifr_name, internals->if_name, IFNAMSIZ);
+	ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+	memcpy(ifr.ifr_hwaddr.sa_data, addr, sizeof(*addr));
+	ret = ioctl(sockfd, SIOCSIFHWADDR, &ifr);
+
+	if (ret < 0) {
+		PMD_LOG_ERRNO(ERR, "ioctl(SIOCSIFHWADDR) failed");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int
 eth_dev_change_flags(char *if_name, uint32_t flags, uint32_t mask)
 {
 	struct ifreq ifr;
@@ -517,6 +568,7 @@ static const struct eth_dev_ops ops = {
 	.dev_close = eth_dev_close,
 	.dev_configure = eth_dev_configure,
 	.dev_infos_get = eth_dev_info,
+	.mac_addr_set = eth_dev_macaddr_set,
 	.mtu_set = eth_dev_mtu_set,
 	.promiscuous_enable = eth_dev_promiscuous_enable,
 	.promiscuous_disable = eth_dev_promiscuous_disable,
@@ -600,6 +652,19 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 	                                0, numa_node);
 	if (*internals == NULL)
 		return -1;
+
+
+	(*internals)->rx_queue = rte_calloc_socket("af_packet_rx",
+						nb_queues,
+						sizeof(struct pkt_rx_queue),
+						0, numa_node);
+	(*internals)->tx_queue = rte_calloc_socket("af_packet_tx",
+						nb_queues,
+						sizeof(struct pkt_tx_queue),
+						0, numa_node);
+	if (!(*internals)->rx_queue || !(*internals)->tx_queue) {
+		goto free_internals;
+	}
 
 	for (q = 0; q < nb_queues; q++) {
 		(*internals)->rx_queue[q].map = MAP_FAILED;
@@ -795,6 +860,7 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 	data->nb_tx_queues = (uint16_t)nb_queues;
 	data->dev_link = pmd_link;
 	data->mac_addrs = &(*internals)->eth_addr;
+	data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	(*eth_dev)->dev_ops = &ops;
 
@@ -852,8 +918,7 @@ rte_eth_from_packet(struct rte_vdev_device *dev,
 		pair = &kvlist->pairs[k_idx];
 		if (strstr(pair->key, ETH_AF_PACKET_NUM_Q_ARG) != NULL) {
 			qpairs = atoi(pair->value);
-			if (qpairs < 1 ||
-			    qpairs > RTE_PMD_AF_PACKET_MAX_RINGS) {
+			if (qpairs < 1) {
 				PMD_LOG(ERR,
 					"%s: invalid qpairs value",
 				        name);
@@ -994,13 +1059,7 @@ exit:
 static int
 rte_pmd_af_packet_remove(struct rte_vdev_device *dev)
 {
-	struct rte_eth_dev *eth_dev = NULL;
-	struct pmd_internals *internals;
-	struct tpacket_req *req;
-	unsigned q;
-
-	PMD_LOG(INFO, "Closing AF_PACKET ethdev on numa socket %u",
-		rte_socket_id());
+	struct rte_eth_dev *eth_dev;
 
 	if (dev == NULL)
 		return -1;
@@ -1008,24 +1067,9 @@ rte_pmd_af_packet_remove(struct rte_vdev_device *dev)
 	/* find the ethdev entry */
 	eth_dev = rte_eth_dev_allocated(rte_vdev_device_name(dev));
 	if (eth_dev == NULL)
-		return -1;
+		return 0; /* port already released */
 
-	/* mac_addrs must not be freed alone because part of dev_private */
-	eth_dev->data->mac_addrs = NULL;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return rte_eth_dev_release_port(eth_dev);
-
-	internals = eth_dev->data->dev_private;
-	req = &internals->req;
-	for (q = 0; q < internals->nb_queues; q++) {
-		munmap(internals->rx_queue[q].map,
-			2 * req->tp_block_size * req->tp_block_nr);
-		rte_free(internals->rx_queue[q].rd);
-		rte_free(internals->tx_queue[q].rd);
-	}
-	free(internals->if_name);
-
+	eth_dev_close(eth_dev);
 	rte_eth_dev_release_port(eth_dev);
 
 	return 0;
@@ -1045,10 +1089,3 @@ RTE_PMD_REGISTER_PARAM_STRING(net_af_packet,
 	"framesz=<int> "
 	"framecnt=<int> "
 	"qdisc_bypass=<0|1>");
-
-RTE_INIT(af_packet_init_log)
-{
-	af_packet_logtype = rte_log_register("pmd.net.packet");
-	if (af_packet_logtype >= 0)
-		rte_log_set_level(af_packet_logtype, RTE_LOG_NOTICE);
-}

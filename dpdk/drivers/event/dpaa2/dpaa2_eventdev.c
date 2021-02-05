@@ -48,8 +48,6 @@
  * Soft Event Flow is DPCI Instance
  */
 
-/* Dynamic logging identified for mempool */
-int dpaa2_logtype_event;
 #define DPAA2_EV_TX_RETRY_COUNT 10000
 
 static uint16_t
@@ -74,7 +72,9 @@ dpaa2_eventdev_enqueue_burst(void *port, const struct rte_event ev[],
 		/* Affine current thread context to a qman portal */
 		ret = dpaa2_affine_qbman_swp();
 		if (ret < 0) {
-			DPAA2_EVENTDEV_ERR("Failure in affining portal");
+			DPAA2_EVENTDEV_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return 0;
 		}
 	}
@@ -131,8 +131,9 @@ skip_linking:
 			qbman_eq_desc_set_response(&eqdesc[loop], 0, 0);
 
 			if (event->sched_type == RTE_SCHED_TYPE_ATOMIC
-				&& event->mbuf->seqn) {
-				uint8_t dqrr_index = event->mbuf->seqn - 1;
+				&& *dpaa2_seqn(event->mbuf)) {
+				uint8_t dqrr_index =
+					*dpaa2_seqn(event->mbuf) - 1;
 
 				qbman_eq_desc_set_dca(&eqdesc[loop], 1,
 						      dqrr_index, 0);
@@ -249,7 +250,7 @@ static void dpaa2_eventdev_process_atomic(struct qbman_swp *swp,
 
 	rte_memcpy(ev, ev_temp, sizeof(struct rte_event));
 	rte_free(ev_temp);
-	ev->mbuf->seqn = dqrr_index + 1;
+	*dpaa2_seqn(ev->mbuf) = dqrr_index + 1;
 	DPAA2_PER_LCORE_DQRR_SIZE++;
 	DPAA2_PER_LCORE_DQRR_HELD |= 1 << dqrr_index;
 	DPAA2_PER_LCORE_DQRR_MBUF(dqrr_index) = ev->mbuf;
@@ -273,7 +274,9 @@ dpaa2_eventdev_dequeue_burst(void *port, struct rte_event ev[],
 		/* Affine current thread context to a qman portal */
 		ret = dpaa2_affine_qbman_swp();
 		if (ret < 0) {
-			DPAA2_EVENTDEV_ERR("Failure in affining portal");
+			DPAA2_EVENTDEV_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return 0;
 		}
 	}
@@ -312,7 +315,7 @@ skip_linking:
 		if (DPAA2_PER_LCORE_DQRR_HELD & (1 << i)) {
 			qbman_swp_dqrr_idx_consume(swp, i);
 			DPAA2_PER_LCORE_DQRR_SIZE--;
-			DPAA2_PER_LCORE_DQRR_MBUF(i)->seqn =
+			*dpaa2_seqn(DPAA2_PER_LCORE_DQRR_MBUF(i)) =
 				DPAA2_INVALID_MBUF_SEQN;
 		}
 		i++;
@@ -404,7 +407,8 @@ dpaa2_eventdev_info_get(struct rte_eventdev *dev,
 		RTE_EVENT_DEV_CAP_RUNTIME_PORT_LINK |
 		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
 		RTE_EVENT_DEV_CAP_NONSEQ_MODE |
-		RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES;
+		RTE_EVENT_DEV_CAP_QUEUE_ALL_TYPES |
+		RTE_EVENT_DEV_CAP_CARRY_FLOW_ID;
 
 }
 
@@ -534,7 +538,7 @@ dpaa2_eventdev_port_def_conf(struct rte_eventdev *dev, uint8_t port_id,
 		DPAA2_EVENT_MAX_PORT_DEQUEUE_DEPTH;
 	port_conf->enqueue_depth =
 		DPAA2_EVENT_MAX_PORT_ENQUEUE_DEPTH;
-	port_conf->disable_implicit_release = 0;
+	port_conf->event_port_cfg = 0;
 }
 
 static int
@@ -1202,10 +1206,4 @@ static struct rte_vdev_driver vdev_eventdev_dpaa2_pmd = {
 };
 
 RTE_PMD_REGISTER_VDEV(EVENTDEV_NAME_DPAA2_PMD, vdev_eventdev_dpaa2_pmd);
-
-RTE_INIT(dpaa2_eventdev_init_log)
-{
-	dpaa2_logtype_event = rte_log_register("pmd.event.dpaa2");
-	if (dpaa2_logtype_event >= 0)
-		rte_log_set_level(dpaa2_logtype_event, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(dpaa2_logtype_event, pmd.event.dpaa2, NOTICE);

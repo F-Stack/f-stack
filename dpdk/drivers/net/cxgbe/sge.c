@@ -1421,37 +1421,6 @@ int t4_mgmt_tx(struct sge_ctrl_txq *q, struct rte_mbuf *mbuf)
 	return ctrl_xmit(q, mbuf);
 }
 
-static int cxgbe_dma_mzone_name(char *name, size_t len, uint16_t port_id,
-				uint16_t queue_id, const char *ring_name)
-{
-	return snprintf(name, len, "eth_p%d_q%d_%s",
-			port_id, queue_id, ring_name);
-}
-
-static int cxgbe_dma_zone_free(const struct rte_eth_dev *dev,
-			       const char *ring_name,
-			       uint16_t queue_id)
-{
-	char z_name[RTE_MEMZONE_NAMESIZE];
-	const struct rte_memzone *mz;
-	int rc = 0;
-
-	rc = cxgbe_dma_mzone_name(z_name, sizeof(z_name), dev->data->port_id,
-				  queue_id, ring_name);
-	if (rc >= RTE_MEMZONE_NAMESIZE) {
-		RTE_ETHDEV_LOG(ERR, "ring name too long\n");
-		return -ENAMETOOLONG;
-	}
-
-	mz = rte_memzone_lookup(z_name);
-	if (mz)
-		rc = rte_memzone_free(mz);
-	else
-		rc = -ENOENT;
-
-	return rc;
-}
-
 /**
  * alloc_ring - allocate resources for an SGE descriptor ring
  * @dev: the port associated with the queue
@@ -1725,6 +1694,11 @@ int cxgbe_poll(struct sge_rspq *q, struct rte_mbuf **rx_pkts,
 	unsigned int params;
 	u32 val;
 
+	if (unlikely(rxq->flags & IQ_STOPPED)) {
+		*work_done = 0;
+		return 0;
+	}
+
 	*work_done = process_responses(q, budget, rx_pkts);
 
 	if (*work_done) {
@@ -1785,22 +1759,22 @@ static void __iomem *bar2_address(struct adapter *adapter, unsigned int qid,
 	return adapter->bar2 + bar2_qoffset;
 }
 
-int t4_sge_eth_rxq_start(struct adapter *adap, struct sge_rspq *rq)
+int t4_sge_eth_rxq_start(struct adapter *adap, struct sge_eth_rxq *rxq)
 {
-	struct sge_eth_rxq *rxq = container_of(rq, struct sge_eth_rxq, rspq);
 	unsigned int fl_id = rxq->fl.size ? rxq->fl.cntxt_id : 0xffff;
 
+	rxq->flags &= ~IQ_STOPPED;
 	return t4_iq_start_stop(adap, adap->mbox, true, adap->pf, 0,
-				rq->cntxt_id, fl_id, 0xffff);
+				rxq->rspq.cntxt_id, fl_id, 0xffff);
 }
 
-int t4_sge_eth_rxq_stop(struct adapter *adap, struct sge_rspq *rq)
+int t4_sge_eth_rxq_stop(struct adapter *adap, struct sge_eth_rxq *rxq)
 {
-	struct sge_eth_rxq *rxq = container_of(rq, struct sge_eth_rxq, rspq);
 	unsigned int fl_id = rxq->fl.size ? rxq->fl.cntxt_id : 0xffff;
 
+	rxq->flags |= IQ_STOPPED;
 	return t4_iq_start_stop(adap, adap->mbox, false, adap->pf, 0,
-				rq->cntxt_id, fl_id, 0xffff);
+				rxq->rspq.cntxt_id, fl_id, 0xffff);
 }
 
 /*
@@ -1980,7 +1954,8 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	 * simple (and hopefully less wrong).
 	 */
 	if (is_pf4(adap) && !is_t4(adap->params.chip) && cong >= 0) {
-		u32 param, val;
+		u8 cng_ch_bits_log = adap->params.arch.cng_ch_bits_log;
+		u32 param, val, ch_map = 0;
 		int i;
 
 		param = (V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DMAQ) |
@@ -1993,9 +1968,9 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 					X_CONMCTXT_CNGTPMODE_CHANNEL);
 			for (i = 0; i < 4; i++) {
 				if (cong & (1 << i))
-					val |= V_CONMCTXT_CNGCHMAP(1 <<
-								   (i << 2));
+					ch_map |= 1 << (i << cng_ch_bits_log);
 			}
+			val |= V_CONMCTXT_CNGCHMAP(ch_map);
 		}
 		ret = t4_set_params(adap, adap->mbox, adap->pf, 0, 1,
 				    &param, &val);
@@ -2224,15 +2199,18 @@ static void free_rspq_fl(struct adapter *adap, struct sge_rspq *rq,
  */
 void t4_sge_eth_clear_queues(struct port_info *pi)
 {
-	int i;
 	struct adapter *adap = pi->adapter;
-	struct sge_eth_rxq *rxq = &adap->sge.ethrxq[pi->first_qset];
-	struct sge_eth_txq *txq = &adap->sge.ethtxq[pi->first_qset];
+	struct sge_eth_rxq *rxq;
+	struct sge_eth_txq *txq;
+	int i;
 
+	rxq = &adap->sge.ethrxq[pi->first_rxqset];
 	for (i = 0; i < pi->n_rx_qsets; i++, rxq++) {
 		if (rxq->rspq.desc)
-			t4_sge_eth_rxq_stop(adap, &rxq->rspq);
+			t4_sge_eth_rxq_stop(adap, rxq);
 	}
+
+	txq = &adap->sge.ethtxq[pi->first_txqset];
 	for (i = 0; i < pi->n_tx_qsets; i++, txq++) {
 		if (txq->q.desc) {
 			struct sge_txq *q = &txq->q;
@@ -2248,7 +2226,7 @@ void t4_sge_eth_clear_queues(struct port_info *pi)
 void t4_sge_eth_rxq_release(struct adapter *adap, struct sge_eth_rxq *rxq)
 {
 	if (rxq->rspq.desc) {
-		t4_sge_eth_rxq_stop(adap, &rxq->rspq);
+		t4_sge_eth_rxq_stop(adap, rxq);
 		free_rspq_fl(adap, &rxq->rspq, rxq->fl.size ? &rxq->fl : NULL);
 	}
 }
@@ -2272,24 +2250,24 @@ void t4_sge_eth_release_queues(struct port_info *pi)
 	struct sge_eth_txq *txq;
 	unsigned int i;
 
-	rxq = &adap->sge.ethrxq[pi->first_qset];
+	rxq = &adap->sge.ethrxq[pi->first_rxqset];
 	/* clean up Ethernet Tx/Rx queues */
 	for (i = 0; i < pi->n_rx_qsets; i++, rxq++) {
 		/* Free only the queues allocated */
 		if (rxq->rspq.desc) {
 			t4_sge_eth_rxq_release(adap, rxq);
-			cxgbe_dma_zone_free(rxq->rspq.eth_dev, "fl_ring", i);
-			cxgbe_dma_zone_free(rxq->rspq.eth_dev, "rx_ring", i);
+			rte_eth_dma_zone_free(rxq->rspq.eth_dev, "fl_ring", i);
+			rte_eth_dma_zone_free(rxq->rspq.eth_dev, "rx_ring", i);
 			rxq->rspq.eth_dev = NULL;
 		}
 	}
 
-	txq = &adap->sge.ethtxq[pi->first_qset];
+	txq = &adap->sge.ethtxq[pi->first_txqset];
 	for (i = 0; i < pi->n_tx_qsets; i++, txq++) {
 		/* Free only the queues allocated */
 		if (txq->q.desc) {
 			t4_sge_eth_txq_release(adap, txq);
-			cxgbe_dma_zone_free(txq->eth_dev, "tx_ring", i);
+			rte_eth_dma_zone_free(txq->eth_dev, "tx_ring", i);
 			txq->eth_dev = NULL;
 		}
 	}
@@ -2323,7 +2301,7 @@ void t4_free_sge_resources(struct adapter *adap)
 			reclaim_completed_tx_imm(&cq->q);
 			t4_ctrl_eq_free(adap, adap->mbox, adap->pf, 0,
 					cq->q.cntxt_id);
-			cxgbe_dma_zone_free(adap->eth_dev, "ctrl_tx_ring", i);
+			rte_eth_dma_zone_free(adap->eth_dev, "ctrl_tx_ring", i);
 			rte_mempool_free(cq->mb_pool);
 			free_txq(&cq->q);
 		}
@@ -2332,7 +2310,7 @@ void t4_free_sge_resources(struct adapter *adap)
 	/* clean up firmware event queue */
 	if (adap->sge.fw_evtq.desc) {
 		free_rspq_fl(adap, &adap->sge.fw_evtq, NULL);
-		cxgbe_dma_zone_free(adap->eth_dev, "fwq_ring", 0);
+		rte_eth_dma_zone_free(adap->eth_dev, "fwq_ring", 0);
 	}
 }
 

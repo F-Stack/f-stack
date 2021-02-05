@@ -100,7 +100,7 @@ test_bulk_enqueue_dequeue(void)
 	unsigned sz, i = 0;
 	struct rte_mbuf *burst[MAX_BURST] = {0};
 
-	for (sz = 0; sz < sizeof(bulk_sizes)/sizeof(bulk_sizes[0]); sz++) {
+	for (sz = 0; sz < RTE_DIM(bulk_sizes); sz++) {
 		const uint64_t sc_start = rte_rdtsc();
 		for (i = 0; i < iterations; i++) {
 			rte_ring_sp_enqueue_bulk(r, (void *)burst,
@@ -155,7 +155,8 @@ test_ring_pmd_perf(void)
 	test_bulk_enqueue_dequeue();
 
 	/* release port and ring resources */
-	rte_eth_dev_stop(ring_ethdev_port);
+	if (rte_eth_dev_stop(ring_ethdev_port) != 0)
+		return -1;
 	rte_eth_dev_get_name_by_port(ring_ethdev_port, name);
 	rte_vdev_uninit(name);
 	rte_ring_free(r);

@@ -19,6 +19,7 @@
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_common.h>
+#include <rte_eal_trace.h>
 
 #include "malloc_heap.h"
 #include "malloc_elem.h"
@@ -71,7 +72,9 @@ memzone_reserve_aligned_thread_unsafe(const char *name, size_t len,
 
 	/* no more room in config */
 	if (arr->count >= arr->len) {
-		RTE_LOG(ERR, EAL, "%s(): No more room in config\n", __func__);
+		RTE_LOG(ERR, EAL,
+		"%s(): Number of requested memzone segments exceeds RTE_MAX_MEMZONE\n",
+			__func__);
 		rte_errno = ENOSPC;
 		return NULL;
 	}
@@ -199,6 +202,9 @@ rte_memzone_reserve_thread_safe(const char *name, size_t len, int socket_id,
 	mz = memzone_reserve_aligned_thread_unsafe(
 		name, len, socket_id, flags, align, bound);
 
+	rte_eal_trace_memzone_reserve(name, len, socket_id, flags, align,
+		bound, mz);
+
 	rte_rwlock_write_unlock(&mcfg->mlock);
 
 	return mz;
@@ -244,6 +250,7 @@ rte_memzone_reserve(const char *name, size_t len, int socket_id,
 int
 rte_memzone_free(const struct rte_memzone *mz)
 {
+	char name[RTE_MEMZONE_NAMESIZE];
 	struct rte_mem_config *mcfg;
 	struct rte_fbarray *arr;
 	struct rte_memzone *found_mz;
@@ -254,6 +261,7 @@ rte_memzone_free(const struct rte_memzone *mz)
 	if (mz == NULL)
 		return -EINVAL;
 
+	rte_strlcpy(name, mz->name, RTE_MEMZONE_NAMESIZE);
 	mcfg = rte_eal_get_configuration()->mem_config;
 	arr = &mcfg->memzones;
 
@@ -278,6 +286,7 @@ rte_memzone_free(const struct rte_memzone *mz)
 	if (addr != NULL)
 		rte_free(addr);
 
+	rte_eal_trace_memzone_free(name, addr, ret);
 	return ret;
 }
 
@@ -298,6 +307,7 @@ rte_memzone_lookup(const char *name)
 
 	rte_rwlock_read_unlock(&mcfg->mlock);
 
+	rte_eal_trace_memzone_lookup(name, memzone);
 	return memzone;
 }
 

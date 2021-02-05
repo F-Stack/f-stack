@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -21,6 +21,7 @@
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
 
+#include "sfc_debug.h"
 #include "sfc_tweak.h"
 #include "sfc_dp_rx.h"
 #include "sfc_kvargs.h"
@@ -31,6 +32,9 @@
 
 #define sfc_ef10_rx_err(dpq, ...) \
 	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, ERR, dpq, __VA_ARGS__)
+
+#define sfc_ef10_rx_info(dpq, ...) \
+	SFC_DP_LOG(SFC_KVARG_DATAPATH_EF10, INFO, dpq, __VA_ARGS__)
 
 /**
  * Maximum number of descriptors/buffers in the Rx ring.
@@ -144,7 +148,7 @@ sfc_ef10_rx_qrefill(struct sfc_ef10_rxq *rxq)
 			struct sfc_ef10_rx_sw_desc *rxd;
 			rte_iova_t phys_addr;
 
-			MBUF_RAW_ALLOC_CHECK(m);
+			__rte_mbuf_raw_sanity_check(m);
 
 			SFC_ASSERT((id & ~ptr_mask) == 0);
 			rxd = &rxq->sw_ring[id];
@@ -219,6 +223,18 @@ sfc_ef10_rx_pending(struct sfc_ef10_rxq *rxq, struct rte_mbuf **rx_pkts,
 	return rx_pkts;
 }
 
+/*
+ * Below Rx pseudo-header (aka Rx prefix) accessors rely on the
+ * following fields layout.
+ */
+static const efx_rx_prefix_layout_t sfc_ef10_rx_prefix_layout = {
+	.erpl_fields	= {
+		[EFX_RX_PREFIX_FIELD_RSS_HASH]	=
+		    { 0, sizeof(uint32_t) * CHAR_BIT, B_FALSE },
+		[EFX_RX_PREFIX_FIELD_LENGTH]	=
+		    { 8 * CHAR_BIT, sizeof(uint16_t) * CHAR_BIT, B_FALSE },
+	}
+};
 static uint16_t
 sfc_ef10_rx_pseudo_hdr_get_len(const uint8_t *pseudo_hdr)
 {
@@ -281,7 +297,7 @@ sfc_ef10_rx_process_event(struct sfc_ef10_rxq *rxq, efx_qword_t rx_ev,
 		rxd = &rxq->sw_ring[pending++ & ptr_mask];
 		m = rxd->mbuf;
 
-		MBUF_RAW_ALLOC_CHECK(m);
+		__rte_mbuf_raw_sanity_check(m);
 
 		m->data_off = RTE_PKTMBUF_HEADROOM;
 		rte_pktmbuf_data_len(m) = seg_len;
@@ -671,6 +687,8 @@ sfc_ef10_rx_qcreate(uint16_t port_id, uint16_t queue_id,
 		      ER_DZ_EVQ_RPTR_REG_OFST +
 		      (info->evq_hw_index << info->vi_window_shift);
 
+	sfc_ef10_rx_info(&rxq->dp.dpq, "RxQ doorbell is %p", rxq->doorbell);
+
 	*dp_rxqp = &rxq->dp;
 	return 0;
 
@@ -694,13 +712,18 @@ sfc_ef10_rx_qdestroy(struct sfc_dp_rxq *dp_rxq)
 
 static sfc_dp_rx_qstart_t sfc_ef10_rx_qstart;
 static int
-sfc_ef10_rx_qstart(struct sfc_dp_rxq *dp_rxq, unsigned int evq_read_ptr)
+sfc_ef10_rx_qstart(struct sfc_dp_rxq *dp_rxq, unsigned int evq_read_ptr,
+		   const efx_rx_prefix_layout_t *pinfo)
 {
 	struct sfc_ef10_rxq *rxq = sfc_ef10_rxq_by_dp_rxq(dp_rxq);
 
 	SFC_ASSERT(rxq->completed == 0);
 	SFC_ASSERT(rxq->pending == 0);
 	SFC_ASSERT(rxq->added == 0);
+
+	if (pinfo->erpl_length != rxq->prefix_size ||
+	    efx_rx_prefix_layout_check(pinfo, &sfc_ef10_rx_prefix_layout) != 0)
+		return ENOTSUP;
 
 	sfc_ef10_rx_qrefill(rxq);
 
