@@ -94,6 +94,8 @@
 #define LINUX_IP_ADD_MEMBERSHIP     35
 #define LINUX_IP_DROP_MEMBERSHIP    36
 
+#define LINUX_IPV6_V6ONLY     26
+
 #define LINUX_TCP_NODELAY     1
 #define LINUX_TCP_MAXSEG      2
 #define LINUX_TCP_KEEPIDLE    4
@@ -384,6 +386,17 @@ ip_opt_convert(int optname)
 }
 
 static int
+ip6_opt_convert(int optname)
+{
+    switch(optname) {
+        case LINUX_IPV6_V6ONLY:
+            return IPV6_V6ONLY;
+        default:
+            return optname;
+    }
+}
+
+static int
 tcp_opt_convert(int optname)
 {
     switch(optname) {
@@ -414,6 +427,8 @@ linux2freebsd_opt(int level, int optname)
             return so_opt_convert(optname);
         case IPPROTO_IP:
             return ip_opt_convert(optname);
+        case IPPROTO_IPV6:
+            return ip6_opt_convert(optname);    
         case IPPROTO_TCP:
             return tcp_opt_convert(optname);
         default:
