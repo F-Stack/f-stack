@@ -94,7 +94,8 @@
 #define LINUX_IP_ADD_MEMBERSHIP     35
 #define LINUX_IP_DROP_MEMBERSHIP    36
 
-#define LINUX_IPV6_V6ONLY     26
+#define LINUX_IPV6_V6ONLY           26
+#define LINUX_IPV6_RECVPKTINFO      49  
 
 #define LINUX_TCP_NODELAY     1
 #define LINUX_TCP_MAXSEG      2
@@ -391,6 +392,8 @@ ip6_opt_convert(int optname)
     switch(optname) {
         case LINUX_IPV6_V6ONLY:
             return IPV6_V6ONLY;
+        case LINUX_IPV6_RECVPKTINFO:
+            return IPV6_RECVPKTINFO;    
         default:
             return optname;
     }
