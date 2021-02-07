@@ -41,7 +41,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     cd f-stack
     # Compile DPDK
     cd dpdk/
-    meson build
+    meson -Denable_kmods=true build
     ninja -C build
     ninja -C build install
 
@@ -65,8 +65,8 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
     # Offload NIC
     modprobe uio
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
+    insmod /data/f-stack/dpdk/build/kernel/linux/igb_uio/igb_uio.ko
+    insmod /data/f-stack/dpdk/build/kernel/linux/kni/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0

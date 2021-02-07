@@ -14,7 +14,7 @@ $ git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
 # compile dpdk
 $ cd /data/f-stack/dpdk
-$ meson build
+$ meson -Denable_kmods=true build
 $ ninja -C build
 $ ninja -C build install
 
