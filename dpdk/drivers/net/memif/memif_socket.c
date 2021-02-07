@@ -143,8 +143,8 @@ memif_msg_enq_hello(struct memif_control_channel *cc)
 	e->msg.type = MEMIF_MSG_TYPE_HELLO;
 	h->min_version = MEMIF_VERSION;
 	h->max_version = MEMIF_VERSION;
-	h->max_s2m_ring = ETH_MEMIF_MAX_NUM_Q_PAIRS;
-	h->max_m2s_ring = ETH_MEMIF_MAX_NUM_Q_PAIRS;
+	h->max_c2s_ring = ETH_MEMIF_MAX_NUM_Q_PAIRS;
+	h->max_s2c_ring = ETH_MEMIF_MAX_NUM_Q_PAIRS;
 	h->max_region = ETH_MEMIF_MAX_REGION_NUM - 1;
 	h->max_log2_ring_size = ETH_MEMIF_MAX_LOG2_RING_SIZE;
 
@@ -165,10 +165,10 @@ memif_msg_receive_hello(struct rte_eth_dev *dev, memif_msg_t *msg)
 	}
 
 	/* Set parameters for active connection */
-	pmd->run.num_s2m_rings = RTE_MIN(h->max_s2m_ring + 1,
-					   pmd->cfg.num_s2m_rings);
-	pmd->run.num_m2s_rings = RTE_MIN(h->max_m2s_ring + 1,
-					   pmd->cfg.num_m2s_rings);
+	pmd->run.num_c2s_rings = RTE_MIN(h->max_c2s_ring + 1,
+					   pmd->cfg.num_c2s_rings);
+	pmd->run.num_s2c_rings = RTE_MIN(h->max_s2c_ring + 1,
+					   pmd->cfg.num_s2c_rings);
 	pmd->run.log2_ring_size = RTE_MIN(h->max_log2_ring_size,
 					    pmd->cfg.log2_ring_size);
 	pmd->run.pkt_buffer_size = pmd->cfg.pkt_buffer_size;
@@ -203,7 +203,14 @@ memif_msg_receive_init(struct memif_control_channel *cc, memif_msg_t *msg)
 		dev = elt->dev;
 		pmd = dev->data->dev_private;
 		if (((pmd->flags & ETH_MEMIF_FLAG_DISABLED) == 0) &&
-		    pmd->id == i->id) {
+		    (pmd->id == i->id) && (pmd->role == MEMIF_ROLE_SERVER)) {
+			if (pmd->flags & (ETH_MEMIF_FLAG_CONNECTING |
+					   ETH_MEMIF_FLAG_CONNECTED)) {
+				memif_msg_enq_disconnect(cc,
+							 "Already connected", 0);
+				return -1;
+			}
+
 			/* assign control channel to device */
 			cc->dev = dev;
 			pmd->cc = cc;
@@ -215,12 +222,6 @@ memif_msg_receive_init(struct memif_control_channel *cc, memif_msg_t *msg)
 				return -1;
 			}
 
-			if (pmd->flags & (ETH_MEMIF_FLAG_CONNECTING |
-					   ETH_MEMIF_FLAG_CONNECTED)) {
-				memif_msg_enq_disconnect(pmd->cc,
-							 "Already connected", 0);
-				return -1;
-			}
 			strlcpy(pmd->remote_name, (char *)i->name,
 				sizeof(pmd->remote_name));
 
@@ -299,21 +300,21 @@ memif_msg_receive_add_ring(struct rte_eth_dev *dev, memif_msg_t *msg, int fd)
 	}
 
 	/* check if we have enough queues */
-	if (ar->flags & MEMIF_MSG_ADD_RING_FLAG_S2M) {
-		if (ar->index >= pmd->cfg.num_s2m_rings) {
+	if (ar->flags & MEMIF_MSG_ADD_RING_FLAG_C2S) {
+		if (ar->index >= pmd->cfg.num_c2s_rings) {
 			memif_msg_enq_disconnect(pmd->cc, "Invalid ring index", 0);
 			return -1;
 		}
-		pmd->run.num_s2m_rings++;
+		pmd->run.num_c2s_rings++;
 	} else {
-		if (ar->index >= pmd->cfg.num_m2s_rings) {
+		if (ar->index >= pmd->cfg.num_s2c_rings) {
 			memif_msg_enq_disconnect(pmd->cc, "Invalid ring index", 0);
 			return -1;
 		}
-		pmd->run.num_m2s_rings++;
+		pmd->run.num_s2c_rings++;
 	}
 
-	mq = (ar->flags & MEMIF_MSG_ADD_RING_FLAG_S2M) ?
+	mq = (ar->flags & MEMIF_MSG_ADD_RING_FLAG_C2S) ?
 	    dev->data->rx_queues[ar->index] : dev->data->tx_queues[ar->index];
 
 	mq->intr_handle.fd = fd;
@@ -448,7 +449,7 @@ memif_msg_enq_add_ring(struct rte_eth_dev *dev, uint8_t idx,
 		return -1;
 
 	ar = &e->msg.add_ring;
-	mq = (type == MEMIF_RING_S2M) ? dev->data->tx_queues[idx] :
+	mq = (type == MEMIF_RING_C2S) ? dev->data->tx_queues[idx] :
 	    dev->data->rx_queues[idx];
 
 	e->msg.type = MEMIF_MSG_TYPE_ADD_RING;
@@ -457,7 +458,7 @@ memif_msg_enq_add_ring(struct rte_eth_dev *dev, uint8_t idx,
 	ar->offset = mq->ring_offset;
 	ar->region = mq->region;
 	ar->log2_ring_size = mq->log2_ring_size;
-	ar->flags = (type == MEMIF_RING_S2M) ? MEMIF_MSG_ADD_RING_FLAG_S2M : 0;
+	ar->flags = (type == MEMIF_RING_C2S) ? MEMIF_MSG_ADD_RING_FLAG_C2S : 0;
 	ar->private_hdr_size = 0;
 
 	return 0;
@@ -528,6 +529,7 @@ memif_disconnect(struct rte_eth_dev *dev)
 	pmd->flags &= ~ETH_MEMIF_FLAG_CONNECTING;
 	pmd->flags &= ~ETH_MEMIF_FLAG_CONNECTED;
 
+	rte_spinlock_lock(&pmd->cc_lock);
 	if (pmd->cc != NULL) {
 		/* Clear control message queue (except disconnect message if any). */
 		for (elt = TAILQ_FIRST(&pmd->cc->msg_queue); elt != NULL; elt = next) {
@@ -570,10 +572,11 @@ memif_disconnect(struct rte_eth_dev *dev)
 					"Failed to unregister control channel callback.");
 		}
 	}
+	rte_spinlock_unlock(&pmd->cc_lock);
 
 	/* unconfig interrupts */
-	for (i = 0; i < pmd->cfg.num_s2m_rings; i++) {
-		if (pmd->role == MEMIF_ROLE_SLAVE) {
+	for (i = 0; i < pmd->cfg.num_c2s_rings; i++) {
+		if (pmd->role == MEMIF_ROLE_CLIENT) {
 			if (dev->data->tx_queues != NULL)
 				mq = dev->data->tx_queues[i];
 			else
@@ -589,8 +592,8 @@ memif_disconnect(struct rte_eth_dev *dev)
 			mq->intr_handle.fd = -1;
 		}
 	}
-	for (i = 0; i < pmd->cfg.num_m2s_rings; i++) {
-		if (pmd->role == MEMIF_ROLE_MASTER) {
+	for (i = 0; i < pmd->cfg.num_s2c_rings; i++) {
+		if (pmd->role == MEMIF_ROLE_SERVER) {
 			if (dev->data->tx_queues != NULL)
 				mq = dev->data->tx_queues[i];
 			else
@@ -612,7 +615,8 @@ memif_disconnect(struct rte_eth_dev *dev)
 	/* reset connection configuration */
 	memset(&pmd->run, 0, sizeof(pmd->run));
 
-	MIF_LOG(DEBUG, "Disconnected.");
+	MIF_LOG(DEBUG, "Disconnected, id: %d, role: %s.", pmd->id,
+		(pmd->role == MEMIF_ROLE_SERVER) ? "server" : "client");
 }
 
 static int
@@ -642,8 +646,12 @@ memif_msg_receive(struct memif_control_channel *cc)
 
 	size = recvmsg(cc->intr_handle.fd, &mh, 0);
 	if (size != sizeof(memif_msg_t)) {
-		MIF_LOG(DEBUG, "Invalid message size.");
-		memif_msg_enq_disconnect(cc, "Invalid message size", 0);
+		MIF_LOG(DEBUG, "Invalid message size = %zd", size);
+		if (size > 0)
+			/* 0 means end-of-file, negative size means error,
+			 * don't send further disconnect message in such cases.
+			 */
+			memif_msg_enq_disconnect(cc, "Invalid message size", 0);
 		return -1;
 	}
 	MIF_LOG(DEBUG, "Received msg type: %u.", msg.type);
@@ -686,15 +694,15 @@ memif_msg_receive(struct memif_control_channel *cc)
 			if (ret < 0)
 				goto exit;
 		}
-		for (i = 0; i < pmd->run.num_s2m_rings; i++) {
+		for (i = 0; i < pmd->run.num_c2s_rings; i++) {
 			ret = memif_msg_enq_add_ring(cc->dev, i,
-						     MEMIF_RING_S2M);
+						     MEMIF_RING_C2S);
 			if (ret < 0)
 				goto exit;
 		}
-		for (i = 0; i < pmd->run.num_m2s_rings; i++) {
+		for (i = 0; i < pmd->run.num_s2c_rings; i++) {
 			ret = memif_msg_enq_add_ring(cc->dev, i,
-						     MEMIF_RING_M2S);
+						     MEMIF_RING_S2C);
 			if (ret < 0)
 				goto exit;
 		}
@@ -765,6 +773,7 @@ memif_intr_handler(void *arg)
 	ret = memif_msg_receive(cc);
 	/* if driver failed to assign device */
 	if (cc->dev == NULL) {
+		memif_msg_send_from_queue(cc);
 		ret = rte_intr_callback_unregister_pending(&cc->intr_handle,
 							   memif_intr_handler,
 							   cc,
@@ -853,10 +862,10 @@ memif_listener_handler(void *arg)
 }
 
 static struct memif_socket *
-memif_socket_create(char *key, uint8_t listener)
+memif_socket_create(char *key, uint8_t listener, bool is_abstract)
 {
 	struct memif_socket *sock;
-	struct sockaddr_un un;
+	struct sockaddr_un un = { 0 };
 	int sockfd;
 	int ret;
 	int on = 1;
@@ -877,7 +886,13 @@ memif_socket_create(char *key, uint8_t listener)
 			goto error;
 
 		un.sun_family = AF_UNIX;
-		strlcpy(un.sun_path, sock->filename, MEMIF_SOCKET_UN_SIZE);
+		if (is_abstract) {
+			/* abstract address */
+			un.sun_path[0] = '\0';
+			strlcpy(un.sun_path + 1, sock->filename, MEMIF_SOCKET_UN_SIZE - 1);
+		} else {
+			strlcpy(un.sun_path, sock->filename, MEMIF_SOCKET_UN_SIZE);
+		}
 
 		ret = setsockopt(sockfd, SOL_SOCKET, SO_PASSCRED, &on,
 				 sizeof(on));
@@ -954,7 +969,8 @@ memif_socket_init(struct rte_eth_dev *dev, const char *socket_filename)
 	ret = rte_hash_lookup_data(hash, key, (void **)&socket);
 	if (ret < 0) {
 		socket = memif_socket_create(key,
-					     (pmd->role == MEMIF_ROLE_SLAVE) ? 0 : 1);
+			(pmd->role == MEMIF_ROLE_CLIENT) ? 0 : 1,
+			pmd->flags & ETH_MEMIF_FLAG_SOCKET_ABSTRACT);
 		if (socket == NULL)
 			return -1;
 		ret = rte_hash_add_key_data(hash, key, socket);
@@ -965,20 +981,11 @@ memif_socket_init(struct rte_eth_dev *dev, const char *socket_filename)
 	}
 	pmd->socket_filename = socket->filename;
 
-	if (socket->listener != 0 && pmd->role == MEMIF_ROLE_SLAVE) {
-		MIF_LOG(ERR, "Socket is a listener.");
-		return -1;
-	} else if ((socket->listener == 0) && (pmd->role == MEMIF_ROLE_MASTER)) {
-		MIF_LOG(ERR, "Socket is not a listener.");
-		return -1;
-	}
-
 	TAILQ_FOREACH(elt, &socket->dev_queue, next) {
 		tmp_pmd = elt->dev->data->dev_private;
-		if (tmp_pmd->id == pmd->id) {
-			MIF_LOG(ERR, "Memif device with id %d already "
-				"exists on socket %s",
-				pmd->id, socket->filename);
+		if (tmp_pmd->id == pmd->id && tmp_pmd->role == pmd->role) {
+			MIF_LOG(ERR, "Two interfaces with the same id (%d) can "
+				"not have the same role.", pmd->id);
 			return -1;
 		}
 	}
@@ -1025,7 +1032,7 @@ memif_socket_remove_device(struct rte_eth_dev *dev)
 	/* remove socket, if this was the last device using it */
 	if (TAILQ_EMPTY(&socket->dev_queue)) {
 		rte_hash_del_key(hash, socket->filename);
-		if (socket->listener) {
+		if (socket->listener && !(pmd->flags & ETH_MEMIF_FLAG_SOCKET_ABSTRACT)) {
 			/* remove listener socket file,
 			 * so we can create new one later.
 			 */
@@ -1039,7 +1046,7 @@ memif_socket_remove_device(struct rte_eth_dev *dev)
 }
 
 int
-memif_connect_master(struct rte_eth_dev *dev)
+memif_connect_server(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 
@@ -1050,11 +1057,11 @@ memif_connect_master(struct rte_eth_dev *dev)
 }
 
 int
-memif_connect_slave(struct rte_eth_dev *dev)
+memif_connect_client(struct rte_eth_dev *dev)
 {
 	int sockfd;
 	int ret;
-	struct sockaddr_un sun;
+	struct sockaddr_un sun = { 0 };
 	struct pmd_internals *pmd = dev->data->dev_private;
 
 	memset(pmd->local_disc_string, 0, ETH_MEMIF_DISC_STRING_SIZE);
@@ -1068,8 +1075,13 @@ memif_connect_slave(struct rte_eth_dev *dev)
 	}
 
 	sun.sun_family = AF_UNIX;
-
-	memcpy(sun.sun_path, pmd->socket_filename, sizeof(sun.sun_path) - 1);
+	if (pmd->flags & ETH_MEMIF_FLAG_SOCKET_ABSTRACT) {
+		/* abstract address */
+		sun.sun_path[0] = '\0';
+		strlcpy(sun.sun_path + 1,  pmd->socket_filename, MEMIF_SOCKET_UN_SIZE - 1);
+	} else {
+		strlcpy(sun.sun_path,  pmd->socket_filename, MEMIF_SOCKET_UN_SIZE);
+	}
 
 	ret = connect(sockfd, (struct sockaddr *)&sun,
 		      sizeof(struct sockaddr_un));

@@ -8,35 +8,41 @@
 #include "base/t4_tcb.h"
 #include "base/t4_regs.h"
 #include "cxgbe_filter.h"
+#include "mps_tcam.h"
 #include "clip_tbl.h"
 #include "l2t.h"
+#include "smt.h"
+#include "cxgbe_pfvf.h"
 
 /**
  * Initialize Hash Filters
  */
 int cxgbe_init_hash_filter(struct adapter *adap)
 {
-	unsigned int n_user_filters;
-	unsigned int user_filter_perc;
+	unsigned int user_filter_perc, n_user_filters;
+	u32 param, val;
 	int ret;
-	u32 params[7], val[7];
 
-#define FW_PARAM_DEV(param) \
-	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) | \
-	V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_##param))
+	if (CHELSIO_CHIP_VERSION(adap->params.chip) > CHELSIO_T5) {
+		val = t4_read_reg(adap, A_LE_DB_RSP_CODE_0);
+		if (G_TCAM_ACTV_HIT(val) != 4) {
+			adap->params.hash_filter = 0;
+			return 0;
+		}
 
-#define FW_PARAM_PFVF(param) \
-	(V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_PFVF) | \
-	V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_PFVF_##param) |  \
-	V_FW_PARAMS_PARAM_Y(0) | \
-	V_FW_PARAMS_PARAM_Z(0))
+		val = t4_read_reg(adap, A_LE_DB_RSP_CODE_1);
+		if (G_HASH_ACTV_HIT(val) != 4) {
+			adap->params.hash_filter = 0;
+			return 0;
+		}
+	}
 
-	params[0] = FW_PARAM_DEV(NTID);
+	param = CXGBE_FW_PARAM_DEV(NTID);
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1,
-			      params, val);
+			      &param, &val);
 	if (ret < 0)
 		return ret;
-	adap->tids.ntids = val[0];
+	adap->tids.ntids = val;
 	adap->tids.natids = min(adap->tids.ntids / 2, MAX_ATIDS);
 
 	user_filter_perc = 100;
@@ -56,12 +62,15 @@ int cxgbe_init_hash_filter(struct adapter *adap)
 int cxgbe_validate_filter(struct adapter *adapter,
 			  struct ch_filter_specification *fs)
 {
-	u32 fconf;
+	u32 fconf, iconf;
 
 	/*
 	 * Check for unconfigured fields being used.
 	 */
-	fconf = adapter->params.tp.vlan_pri_map;
+	fconf = fs->cap ? adapter->params.tp.filter_mask :
+			  adapter->params.tp.vlan_pri_map;
+
+	iconf = adapter->params.tp.ingress_config;
 
 #define S(_field) \
 	(fs->val._field || fs->mask._field)
@@ -70,7 +79,18 @@ int cxgbe_validate_filter(struct adapter *adapter,
 
 	if (U(F_PORT, iport) || U(F_ETHERTYPE, ethtype) ||
 	    U(F_PROTOCOL, proto) || U(F_MACMATCH, macidx) ||
-	    U(F_VLAN, ivlan_vld))
+	    U(F_VLAN, ivlan_vld) || U(F_VNIC_ID, ovlan_vld) ||
+	    U(F_TOS, tos) || U(F_VNIC_ID, pfvf_vld))
+		return -EOPNOTSUPP;
+
+	/* Either OVLAN or PFVF match is enabled in hardware, but not both */
+	if ((S(pfvf_vld) && !(iconf & F_VNIC)) ||
+	    (S(ovlan_vld) && (iconf & F_VNIC)))
+		return -EOPNOTSUPP;
+
+	/* To use OVLAN or PFVF, L4 encapsulation match must not be enabled */
+	if ((S(ovlan_vld) && (iconf & F_USE_ENC_IDX)) ||
+	    (S(pfvf_vld) && (iconf & F_USE_ENC_IDX)))
 		return -EOPNOTSUPP;
 
 #undef S
@@ -125,7 +145,7 @@ static unsigned int get_filter_steerq(struct rte_eth_dev *dev,
 		 * then assume it is an absolute qid.
 		 */
 		if (fs->iq < pi->n_rx_qsets)
-			iq = adapter->sge.ethrxq[pi->first_qset +
+			iq = adapter->sge.ethrxq[pi->first_rxqset +
 						 fs->iq].rspq.abs_id;
 		else
 			iq = fs->iq;
@@ -270,6 +290,33 @@ int cxgbe_alloc_ftid(struct adapter *adap, u8 nentries)
 }
 
 /**
+ * Clear a filter and release any of its resources that we own.  This also
+ * clears the filter's "pending" status.
+ */
+static void clear_filter(struct filter_entry *f)
+{
+	struct port_info *pi = ethdev2pinfo(f->dev);
+
+	if (f->clipt)
+		cxgbe_clip_release(f->dev, f->clipt);
+
+	if (f->l2t)
+		cxgbe_l2t_release(f->l2t);
+
+	if (f->fs.mask.macidx)
+		cxgbe_mpstcam_remove(pi, f->fs.val.macidx);
+
+	if (f->smt)
+		cxgbe_smt_release(f->smt);
+
+	/* The zeroing of the filter rule below clears the filter valid,
+	 * pending, locked flags etc. so it's all we need for
+	 * this operation.
+	 */
+	memset(f, 0, sizeof(*f));
+}
+
+/**
  * Construct hash filter ntuple.
  */
 static u64 hash_filter_ntuple(const struct filter_entry *f)
@@ -296,6 +343,19 @@ static u64 hash_filter_ntuple(const struct filter_entry *f)
 	if (tp->vlan_shift >= 0 && f->fs.mask.ivlan)
 		ntuple |= (u64)(F_FT_VLAN_VLD | f->fs.val.ivlan) <<
 			  tp->vlan_shift;
+	if (tp->vnic_shift >= 0) {
+		if ((adap->params.tp.ingress_config & F_VNIC) &&
+		    f->fs.mask.pfvf_vld)
+			ntuple |= (u64)(f->fs.val.pfvf_vld << 16 |
+					f->fs.val.pf << 13 | f->fs.val.vf) <<
+					tp->vnic_shift;
+		else if (!(adap->params.tp.ingress_config & F_VNIC) &&
+			 f->fs.mask.ovlan_vld)
+			ntuple |= (u64)(f->fs.val.ovlan_vld << 16 |
+					f->fs.val.ovlan) << tp->vnic_shift;
+	}
+	if (tp->tos_shift >= 0 && f->fs.mask.tos)
+		ntuple |= (u64)f->fs.val.tos << tp->tos_shift;
 
 	return ntuple;
 }
@@ -555,25 +615,49 @@ static int cxgbe_set_hash_filter(struct rte_eth_dev *dev,
 
 	f = t4_os_alloc(sizeof(*f));
 	if (!f)
-		goto out_err;
+		return -ENOMEM;
 
 	f->fs = *fs;
 	f->ctx = ctx;
 	f->dev = dev;
 	f->fs.iq = iq;
 
+	/* Allocate MPS TCAM entry to match Destination MAC. */
+	if (f->fs.mask.macidx) {
+		int idx;
+
+		idx = cxgbe_mpstcam_alloc(pi, f->fs.val.dmac, f->fs.mask.dmac);
+		if (idx <= 0) {
+			ret = -ENOMEM;
+			goto out_err;
+		}
+
+		f->fs.val.macidx = idx;
+	}
+
 	/*
 	 * If the new filter requires loopback Destination MAC and/or VLAN
 	 * rewriting then we need to allocate a Layer 2 Table (L2T) entry for
 	 * the filter.
 	 */
-	if (f->fs.newvlan == VLAN_INSERT ||
+	if (f->fs.newdmac || f->fs.newvlan == VLAN_INSERT ||
 	    f->fs.newvlan == VLAN_REWRITE) {
 		/* allocate L2T entry for new filter */
 		f->l2t = cxgbe_l2t_alloc_switching(dev, f->fs.vlan,
 						   f->fs.eport, f->fs.dmac);
 		if (!f->l2t) {
 			ret = -ENOMEM;
+			goto out_err;
+		}
+	}
+
+	/* If the new filter requires Source MAC rewriting then we need to
+	 * allocate a SMT entry for the filter
+	 */
+	if (f->fs.newsmac) {
+		f->smt = cxgbe_smt_alloc_switching(f->dev, f->fs.smac);
+		if (!f->smt) {
+			ret = -EAGAIN;
 			goto out_err;
 		}
 	}
@@ -592,7 +676,7 @@ static int cxgbe_set_hash_filter(struct rte_eth_dev *dev,
 		mbuf = rte_pktmbuf_alloc(ctrlq->mb_pool);
 		if (!mbuf) {
 			ret = -ENOMEM;
-			goto free_clip;
+			goto free_atid;
 		}
 
 		mbuf->data_len = size;
@@ -622,31 +706,13 @@ static int cxgbe_set_hash_filter(struct rte_eth_dev *dev,
 	t4_mgmt_tx(ctrlq, mbuf);
 	return 0;
 
-free_clip:
-	cxgbe_clip_release(f->dev, f->clipt);
 free_atid:
 	cxgbe_free_atid(t, atid);
 
 out_err:
+	clear_filter(f);
 	t4_os_free(f);
 	return ret;
-}
-
-/**
- * Clear a filter and release any of its resources that we own.  This also
- * clears the filter's "pending" status.
- */
-static void clear_filter(struct filter_entry *f)
-{
-	if (f->clipt)
-		cxgbe_clip_release(f->dev, f->clipt);
-
-	/*
-	 * The zeroing of the filter rule below clears the filter valid,
-	 * pending, locked flags etc. so it's all we need for
-	 * this operation.
-	 */
-	memset(f, 0, sizeof(*f));
 }
 
 /**
@@ -718,19 +784,6 @@ static int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 	unsigned int port_id = ethdev2pinfo(dev)->port_id;
 	int ret;
 
-	/*
-	 * If the new filter requires loopback Destination MAC and/or VLAN
-	 * rewriting then we need to allocate a Layer 2 Table (L2T) entry for
-	 * the filter.
-	 */
-	if (f->fs.newvlan) {
-		/* allocate L2T entry for new filter */
-		f->l2t = cxgbe_l2t_alloc_switching(f->dev, f->fs.vlan,
-						   f->fs.eport, f->fs.dmac);
-		if (!f->l2t)
-			return -ENOMEM;
-	}
-
 	ctrlq = &adapter->sge.ctrlq[port_id];
 	mbuf = rte_pktmbuf_alloc(ctrlq->mb_pool);
 	if (!mbuf) {
@@ -761,6 +814,8 @@ static int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 		cpu_to_be32(V_FW_FILTER_WR_DROP(f->fs.action == FILTER_DROP) |
 			    V_FW_FILTER_WR_DIRSTEER(f->fs.dirsteer) |
 			    V_FW_FILTER_WR_LPBK(f->fs.action == FILTER_SWITCH) |
+			    V_FW_FILTER_WR_SMAC(f->fs.newsmac) |
+			    V_FW_FILTER_WR_DMAC(f->fs.newdmac) |
 			    V_FW_FILTER_WR_INSVLAN
 				(f->fs.newvlan == VLAN_INSERT ||
 				 f->fs.newvlan == VLAN_REWRITE) |
@@ -775,8 +830,10 @@ static int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 	fwr->ethtypem = cpu_to_be16(f->fs.mask.ethtype);
 	fwr->frag_to_ovlan_vldm =
 		(V_FW_FILTER_WR_IVLAN_VLD(f->fs.val.ivlan_vld) |
-		 V_FW_FILTER_WR_IVLAN_VLDM(f->fs.mask.ivlan_vld));
-	fwr->smac_sel = 0;
+		 V_FW_FILTER_WR_IVLAN_VLDM(f->fs.mask.ivlan_vld) |
+		 V_FW_FILTER_WR_OVLAN_VLD(f->fs.val.ovlan_vld) |
+		 V_FW_FILTER_WR_OVLAN_VLDM(f->fs.mask.ovlan_vld));
+	fwr->smac_sel = f->smt ? f->smt->hw_idx : 0;
 	fwr->rx_chan_rx_rpl_iq =
 		cpu_to_be16(V_FW_FILTER_WR_RX_CHAN(0) |
 			    V_FW_FILTER_WR_RX_RPL_IQ(adapter->sge.fw_evtq.abs_id
@@ -788,8 +845,12 @@ static int set_filter_wr(struct rte_eth_dev *dev, unsigned int fidx)
 			    V_FW_FILTER_WR_PORTM(f->fs.mask.iport));
 	fwr->ptcl = f->fs.val.proto;
 	fwr->ptclm = f->fs.mask.proto;
+	fwr->ttyp = f->fs.val.tos;
+	fwr->ttypm = f->fs.mask.tos;
 	fwr->ivlan = cpu_to_be16(f->fs.val.ivlan);
 	fwr->ivlanm = cpu_to_be16(f->fs.mask.ivlan);
+	fwr->ovlan = cpu_to_be16(f->fs.val.ovlan);
+	fwr->ovlanm = cpu_to_be16(f->fs.mask.ovlan);
 	rte_memcpy(fwr->lip, f->fs.val.lip, sizeof(fwr->lip));
 	rte_memcpy(fwr->lipm, f->fs.mask.lip, sizeof(fwr->lipm));
 	rte_memcpy(fwr->fip, f->fs.val.fip, sizeof(fwr->fip));
@@ -940,10 +1001,11 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 {
 	struct port_info *pi = ethdev2pinfo(dev);
 	struct adapter *adapter = pi->adapter;
-	unsigned int fidx, iq;
+	u8 nentries, bitoff[16] = {0};
 	struct filter_entry *f;
 	unsigned int chip_ver;
-	u8 nentries, bitoff[16] = {0};
+	unsigned int fidx, iq;
+	u32 iconf;
 	int ret;
 
 	if (is_hashfilter(adapter) && fs->cap)
@@ -1008,16 +1070,6 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	}
 
 	/*
-	 * Allocate a clip table entry only if we have non-zero IPv6 address
-	 */
-	if (chip_ver > CHELSIO_T5 && fs->type &&
-	    memcmp(fs->val.lip, bitoff, sizeof(bitoff))) {
-		f->clipt = cxgbe_clip_alloc(dev, (u32 *)&fs->val.lip);
-		if (!f->clipt)
-			goto free_tid;
-	}
-
-	/*
 	 * Convert the filter specification into our internal format.
 	 * We copy the PF/VF specification into the Outer VLAN field
 	 * here so the rest of the code -- including the interface to
@@ -1026,6 +1078,67 @@ int cxgbe_set_filter(struct rte_eth_dev *dev, unsigned int filter_id,
 	f->fs = *fs;
 	f->fs.iq = iq;
 	f->dev = dev;
+
+	/* Allocate MPS TCAM entry to match Destination MAC. */
+	if (f->fs.mask.macidx) {
+		int idx;
+
+		idx = cxgbe_mpstcam_alloc(pi, f->fs.val.dmac, f->fs.mask.dmac);
+		if (idx <= 0) {
+			ret = -ENOMEM;
+			goto free_tid;
+		}
+
+		f->fs.val.macidx = idx;
+	}
+
+	/* Allocate a clip table entry only if we have non-zero IPv6 address. */
+	if (chip_ver > CHELSIO_T5 && f->fs.type &&
+	    memcmp(f->fs.val.lip, bitoff, sizeof(bitoff))) {
+		f->clipt = cxgbe_clip_alloc(dev, (u32 *)&f->fs.val.lip);
+		if (!f->clipt) {
+			ret = -ENOMEM;
+			goto free_tid;
+		}
+	}
+
+	/* If the new filter requires loopback Destination MAC and/or VLAN
+	 * rewriting then we need to allocate a Layer 2 Table (L2T) entry for
+	 * the filter.
+	 */
+	if (f->fs.newvlan || f->fs.newdmac) {
+		f->l2t = cxgbe_l2t_alloc_switching(f->dev, f->fs.vlan,
+						   f->fs.eport, f->fs.dmac);
+		if (!f->l2t) {
+			ret = -ENOMEM;
+			goto free_tid;
+		}
+	}
+
+	/* If the new filter requires Source MAC rewriting then we need to
+	 * allocate a SMT entry for the filter
+	 */
+	if (f->fs.newsmac) {
+		f->smt = cxgbe_smt_alloc_switching(f->dev, f->fs.smac);
+		if (!f->smt) {
+			ret = -ENOMEM;
+			goto free_tid;
+		}
+	}
+
+	iconf = adapter->params.tp.ingress_config;
+
+	/* Either PFVF or OVLAN can be active, but not both
+	 * So, if PFVF is enabled, then overwrite the OVLAN
+	 * fields with PFVF fields before writing the spec
+	 * to hardware.
+	 */
+	if (iconf & F_VNIC) {
+		f->fs.val.ovlan = fs->val.pf << 13 | fs->val.vf;
+		f->fs.mask.ovlan = fs->mask.pf << 13 | fs->mask.vf;
+		f->fs.val.ovlan_vld = fs->val.pfvf_vld;
+		f->fs.mask.ovlan_vld = fs->mask.pfvf_vld;
+	}
 
 	/*
 	 * Attempt to set the filter.  If we don't succeed, we clear
@@ -1090,9 +1203,17 @@ void cxgbe_hash_filter_rpl(struct adapter *adap,
 				      V_TCB_TIMESTAMP(0ULL) |
 				      V_TCB_T_RTT_TS_RECENT_AGE(0ULL),
 				      1);
+		if (f->fs.newdmac)
+			set_tcb_tflag(adap, tid, S_TF_CCTRL_ECE, 1, 1);
 		if (f->fs.newvlan == VLAN_INSERT ||
 		    f->fs.newvlan == VLAN_REWRITE)
 			set_tcb_tflag(adap, tid, S_TF_CCTRL_RFR, 1, 1);
+		if (f->fs.newsmac) {
+			set_tcb_tflag(adap, tid, S_TF_CCTRL_CWR, 1, 1);
+			set_tcb_field(adap, tid, W_TCB_SMAC_SEL,
+				      V_TCB_SMAC_SEL(M_TCB_SMAC_SEL),
+				      V_TCB_SMAC_SEL(f->smt->hw_idx), 1);
+		}
 		break;
 	}
 	default:
@@ -1107,6 +1228,7 @@ void cxgbe_hash_filter_rpl(struct adapter *adap,
 		}
 
 		cxgbe_free_atid(t, ftid);
+		clear_filter(f);
 		t4_os_free(f);
 	}
 
@@ -1331,13 +1453,8 @@ void cxgbe_hash_del_filter_rpl(struct adapter *adap,
 	}
 
 	ctx = f->ctx;
-	f->ctx = NULL;
 
-	f->valid = 0;
-
-	if (f->clipt)
-		cxgbe_clip_release(f->dev, f->clipt);
-
+	clear_filter(f);
 	cxgbe_remove_tid(t, 0, tid, 0);
 	t4_os_free(f);
 

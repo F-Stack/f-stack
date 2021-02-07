@@ -53,9 +53,20 @@
     sed "s/#tcp_port=80/tcp_port=80/" -i /data/f-stack/config.ini
     sed "s/#vlanstrip=1/vlanstrip=1/" -i /data/f-stack/config.ini
 
+    # Upgrade pkg-config while version < 0.28
+    cd /data/
+    wget https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+    tar xzvf pkg-config-0.29.2.tar.gz
+    cd pkg-config-0.29.2
+    ./configure --with-internal-glib
+    make
+    make install
+    mv /usr/bin/pkg-config /usr/bin/pkg-config.bak
+    ln -s /usr/local/bin/pkg-config /usr/bin/pkg-config
+
     # Compile F-Stack lib
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/build
+    export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
     cd /data/f-stack/lib
     make
 

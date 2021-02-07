@@ -726,7 +726,8 @@ add_step(struct rte_lpm6 *lpm, struct rte_lpm6_tbl_entry *tbl,
 			tbl8_group_start = tbl8_gindex *
 					RTE_LPM6_TBL8_GROUP_NUM_ENTRIES;
 			memset(&lpm->tbl8[tbl8_group_start], 0,
-					  RTE_LPM6_TBL8_GROUP_NUM_ENTRIES);
+					RTE_LPM6_TBL8_GROUP_NUM_ENTRIES *
+					sizeof(struct rte_lpm6_tbl_entry));
 
 			/* init the new table's header:
 			 *   save the reference to the owner table
@@ -813,7 +814,7 @@ add_step(struct rte_lpm6 *lpm, struct rte_lpm6_tbl_entry *tbl,
  *
  *	Returns:
  *    0 on success
- *    -ENOSPC not enought tbl8 left
+ *    -ENOSPC not enough tbl8 left
  */
 static int
 simulate_add(struct rte_lpm6 *lpm, const uint8_t *masked_ip, uint8_t depth)
@@ -843,7 +844,7 @@ simulate_add(struct rte_lpm6 *lpm, const uint8_t *masked_ip, uint8_t depth)
 	}
 
 	if (tbl8_available(lpm) < total_need_tbl_nb)
-		/* not enought tbl8 to add a rule */
+		/* not enough tbl8 to add a rule */
 		return -ENOSPC;
 
 	return 0;
@@ -853,8 +854,8 @@ simulate_add(struct rte_lpm6 *lpm, const uint8_t *masked_ip, uint8_t depth)
  * Add a route
  */
 int
-rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
-	uint32_t next_hop)
+rte_lpm6_add(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth,
+	     uint32_t next_hop)
 {
 	struct rte_lpm6_tbl_entry *tbl;
 	struct rte_lpm6_tbl_entry *tbl_next = NULL;
@@ -912,7 +913,7 @@ rte_lpm6_add(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
  */
 static inline int
 lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
-		const struct rte_lpm6_tbl_entry **tbl_next, uint8_t *ip,
+		const struct rte_lpm6_tbl_entry **tbl_next, const uint8_t *ip,
 		uint8_t first_byte, uint32_t *next_hop)
 {
 	uint32_t tbl8_index, tbl_entry;
@@ -942,7 +943,7 @@ lookup_step(const struct rte_lpm6 *lpm, const struct rte_lpm6_tbl_entry *tbl,
  * Looks up an IP
  */
 int
-rte_lpm6_lookup(const struct rte_lpm6 *lpm, uint8_t *ip,
+rte_lpm6_lookup(const struct rte_lpm6 *lpm, const uint8_t *ip,
 		uint32_t *next_hop)
 {
 	const struct rte_lpm6_tbl_entry *tbl;
@@ -1019,8 +1020,8 @@ rte_lpm6_lookup_bulk_func(const struct rte_lpm6 *lpm,
  * Look for a rule in the high-level rules table
  */
 int
-rte_lpm6_is_rule_present(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth,
-		uint32_t *next_hop)
+rte_lpm6_is_rule_present(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth,
+			 uint32_t *next_hop)
 {
 	uint8_t masked_ip[RTE_LPM6_IPV6_ADDR_SIZE];
 
@@ -1211,7 +1212,7 @@ rule_find_range(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth,
 		/* minus top level */
 		depth -= 24;
 
-		/* interate through levels (tbl8s)
+		/* iterate through levels (tbl8s)
 		 * until we reach the last one
 		 */
 		while (depth > 8) {
@@ -1290,7 +1291,7 @@ remove_tbl(struct rte_lpm6 *lpm, struct rte_lpm_tbl8_hdr *tbl_hdr,
  * Deletes a rule
  */
 int
-rte_lpm6_delete(struct rte_lpm6 *lpm, uint8_t *ip, uint8_t depth)
+rte_lpm6_delete(struct rte_lpm6 *lpm, const uint8_t *ip, uint8_t depth)
 {
 	uint8_t masked_ip[RTE_LPM6_IPV6_ADDR_SIZE];
 	struct rte_lpm6_rule lsp_rule_obj;

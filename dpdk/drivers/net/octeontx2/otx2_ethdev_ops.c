@@ -72,22 +72,15 @@ otx2_nix_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 int
 otx2_nix_recalc_mtu(struct rte_eth_dev *eth_dev)
 {
-	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 	struct rte_eth_dev_data *data = eth_dev->data;
-	struct rte_pktmbuf_pool_private *mbp_priv;
 	struct otx2_eth_rxq *rxq;
-	uint32_t buffsz;
 	uint16_t mtu;
 	int rc;
 
-	/* Get rx buffer size */
 	rxq = data->rx_queues[0];
-	mbp_priv = rte_mempool_get_priv(rxq->pool);
-	buffsz = mbp_priv->mbuf_data_room_size - RTE_PKTMBUF_HEADROOM;
 
 	/* Setup scatter mode if needed by jumbo */
-	if (data->dev_conf.rxmode.max_rx_pkt_len > buffsz)
-		dev->rx_offloads |= DEV_RX_OFFLOAD_SCATTER;
+	otx2_nix_enable_mseg_on_jumbo(rxq);
 
 	/* Setup MTU based on max_rx_pkt_len */
 	mtu = data->dev_conf.rxmode.max_rx_pkt_len - NIX_L2_OVERHEAD;
@@ -148,8 +141,10 @@ otx2_nix_promisc_enable(struct rte_eth_dev *eth_dev)
 int
 otx2_nix_promisc_disable(struct rte_eth_dev *eth_dev)
 {
-	otx2_nix_promisc_config(eth_dev, 0);
+	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
+	otx2_nix_promisc_config(eth_dev, dev->dmac_filter_enable);
 	nix_cgx_promisc_config(eth_dev, 0);
+	dev->dmac_filter_enable = false;
 
 	return 0;
 }
@@ -610,9 +605,17 @@ otx2_nix_info_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *devinfo)
 
 	/* Auto negotiation disabled */
 	devinfo->speed_capa = ETH_LINK_SPEED_FIXED;
-	devinfo->speed_capa |= ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
-				ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G |
-				ETH_LINK_SPEED_50G | ETH_LINK_SPEED_100G;
+	if (!otx2_dev_is_vf_or_sdp(dev) && !otx2_dev_is_lbk(dev)) {
+		devinfo->speed_capa |= ETH_LINK_SPEED_1G | ETH_LINK_SPEED_10G |
+			ETH_LINK_SPEED_25G | ETH_LINK_SPEED_40G;
+
+		/* 50G and 100G to be supported for board version C0
+		 * and above.
+		 */
+		if (!otx2_dev_is_Ax(dev))
+			devinfo->speed_capa |= ETH_LINK_SPEED_50G |
+					       ETH_LINK_SPEED_100G;
+	}
 
 	devinfo->dev_capa = RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP |
 				RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP;

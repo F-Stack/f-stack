@@ -26,18 +26,6 @@ Prerequisites and Compilation procedure
    See :doc:`../platform/octeontx2` for setup information.
 
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-
-- ``CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_DMA_RAWDEV`` (default ``y``)
-
-  Toggle compilation of the ``lrte_pmd_octeontx2_dma`` driver.
-
 Enabling logs
 -------------
 
@@ -92,7 +80,7 @@ The following code shows how the device is configured
    rte_mempool_set_ops_byname(conf.chunk_pool, rte_mbuf_platform_mempool_ops(), NULL);
    rte_mempool_populate_default(conf.chunk_pool);
 
-   rte_rawdev_configure(dev_id, (rte_rawdev_obj_t)&rdev_info);
+   rte_rawdev_configure(dev_id, (rte_rawdev_obj_t)&rdev_info, sizeof(conf));
 
 Performing Data Transfer
 ------------------------

@@ -10,6 +10,7 @@
  * Interface to vhost-user
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/eventfd.h>
 
@@ -27,13 +28,31 @@ extern "C" {
 
 #define RTE_VHOST_USER_CLIENT		(1ULL << 0)
 #define RTE_VHOST_USER_NO_RECONNECT	(1ULL << 1)
-#define RTE_VHOST_USER_DEQUEUE_ZERO_COPY	(1ULL << 2)
+#define RTE_VHOST_USER_RESERVED_1	(1ULL << 2)
 #define RTE_VHOST_USER_IOMMU_SUPPORT	(1ULL << 3)
 #define RTE_VHOST_USER_POSTCOPY_SUPPORT		(1ULL << 4)
 /* support mbuf with external buffer attached */
 #define RTE_VHOST_USER_EXTBUF_SUPPORT	(1ULL << 5)
 /* support only linear buffers (no chained mbufs) */
 #define RTE_VHOST_USER_LINEARBUF_SUPPORT	(1ULL << 6)
+#define RTE_VHOST_USER_ASYNC_COPY	(1ULL << 7)
+
+/* Features. */
+#ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
+ #define VIRTIO_NET_F_GUEST_ANNOUNCE 21
+#endif
+
+#ifndef VIRTIO_NET_F_MQ
+ #define VIRTIO_NET_F_MQ		22
+#endif
+
+#ifndef VIRTIO_NET_F_MTU
+ #define VIRTIO_NET_F_MTU 3
+#endif
+
+#ifndef VIRTIO_F_ANY_LAYOUT
+ #define VIRTIO_F_ANY_LAYOUT		27
+#endif
 
 /** Protocol features. */
 #ifndef VHOST_USER_PROTOCOL_F_MQ
@@ -68,6 +87,10 @@ extern "C" {
 #define VHOST_USER_PROTOCOL_F_PAGEFAULT 8
 #endif
 
+#ifndef VHOST_USER_PROTOCOL_F_CONFIG
+#define VHOST_USER_PROTOCOL_F_CONFIG 9
+#endif
+
 #ifndef VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD
 #define VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD 10
 #endif
@@ -80,10 +103,16 @@ extern "C" {
 #define VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD 12
 #endif
 
+#ifndef VHOST_USER_PROTOCOL_F_STATUS
+#define VHOST_USER_PROTOCOL_F_STATUS 16
+#endif
+
 /** Indicate whether protocol features negotiation is supported. */
 #ifndef VHOST_USER_F_PROTOCOL_FEATURES
 #define VHOST_USER_F_PROTOCOL_FEATURES	30
 #endif
+
+struct rte_vdpa_device;
 
 /**
  * Information relating to memory regions including offsets to
@@ -253,7 +282,7 @@ struct vhost_device_ops {
 
 	/**
 	 * This callback gets called each time a guest gets notified
-	 * about waiting packets. This is the interrupt handling trough
+	 * about waiting packets. This is the interrupt handling through
 	 * the eventfd_write(callfd), which can be used for counting these
 	 * "slow" syscalls.
 	 */
@@ -396,14 +425,14 @@ int rte_vhost_driver_unregister(const char *path);
  *
  * @param path
  *  The vhost-user socket file path
- * @param did
- *  Device id
+ * @param dev
+ *  vDPA device pointer
  * @return
  *  0 on success, -1 on failure
  */
-__rte_experimental
 int
-rte_vhost_driver_attach_vdpa_device(const char *path, int did);
+rte_vhost_driver_attach_vdpa_device(const char *path,
+		struct rte_vdpa_device *dev);
 
 /**
  * Unset the vdpa device id
@@ -413,7 +442,6 @@ rte_vhost_driver_attach_vdpa_device(const char *path, int did);
  * @return
  *  0 on success, -1 on failure
  */
-__rte_experimental
 int
 rte_vhost_driver_detach_vdpa_device(const char *path);
 
@@ -423,11 +451,10 @@ rte_vhost_driver_detach_vdpa_device(const char *path);
  * @param path
  *  The vhost-user socket file path
  * @return
- *  Device id, -1 on failure
+ *  vDPA device pointer, NULL on failure
  */
-__rte_experimental
-int
-rte_vhost_driver_get_vdpa_device_id(const char *path);
+struct rte_vdpa_device *
+rte_vhost_driver_get_vdpa_device(const char *path);
 
 /**
  * Set the feature bits the vhost-user driver supports.
@@ -883,7 +910,6 @@ uint32_t rte_vhost_rx_queue_count(int vid, uint16_t qid);
  * @return
  *  0 on success, -1 on failure
  */
-__rte_experimental
 int
 rte_vhost_get_log_base(int vid, uint64_t *log_base, uint64_t *log_size);
 
@@ -901,7 +927,6 @@ rte_vhost_get_log_base(int vid, uint64_t *log_base, uint64_t *log_size);
  * @return
  *  0 on success, -1 on failure
  */
-__rte_experimental
 int
 rte_vhost_get_vring_base(int vid, uint16_t queue_id,
 		uint16_t *last_avail_idx, uint16_t *last_used_idx);
@@ -943,7 +968,6 @@ rte_vhost_get_vring_base_from_inflight(int vid,
  * @return
  *  0 on success, -1 on failure
  */
-__rte_experimental
 int
 rte_vhost_set_vring_base(int vid, uint16_t queue_id,
 		uint16_t last_avail_idx, uint16_t last_used_idx);
@@ -971,11 +995,24 @@ rte_vhost_extern_callback_register(int vid,
  * @param vid
  *  vhost device id
  * @return
- *  device id
+ *  vDPA device pointer on success, NULL on failure
+ */
+struct rte_vdpa_device *
+rte_vhost_get_vdpa_device(int vid);
+
+/**
+ * Notify the guest that should get virtio configuration space from backend.
+ *
+ * @param vid
+ *  vhost device ID
+ * @param need_reply
+ *  wait for the master response the status of this operation
+ * @return
+ *  0 on success, < 0 on failure
  */
 __rte_experimental
 int
-rte_vhost_get_vdpa_device_id(int vid);
+rte_vhost_slave_config_change(int vid, bool need_reply);
 
 #ifdef __cplusplus
 }

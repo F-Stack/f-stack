@@ -6,6 +6,111 @@
 #define _QAT_SYM_CAPABILITIES_H_
 
 #define QAT_BASE_GEN1_SYM_CAPABILITIES					\
+	{	/* SHA1 */						\
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,	\
+			{.auth = {					\
+				.algo = RTE_CRYPTO_AUTH_SHA1,		\
+				.block_size = 64,			\
+				.key_size = {				\
+					.min = 0,			\
+					.max = 0,			\
+					.increment = 0			\
+				},					\
+				.digest_size = {			\
+					.min = 1,			\
+					.max = 20,			\
+					.increment = 1			\
+				},					\
+				.iv_size = { 0 }			\
+			}, }						\
+		}, }							\
+	},								\
+	{	/* SHA224 */						\
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,	\
+			{.auth = {					\
+				.algo = RTE_CRYPTO_AUTH_SHA224,		\
+				.block_size = 64,			\
+				.key_size = {				\
+					.min = 0,			\
+					.max = 0,			\
+					.increment = 0			\
+				},					\
+				.digest_size = {			\
+					.min = 1,			\
+					.max = 28,			\
+					.increment = 1			\
+				},					\
+				.iv_size = { 0 }			\
+			}, }						\
+		}, }							\
+	},								\
+	{	/* SHA256 */						\
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,	\
+			{.auth = {					\
+				.algo = RTE_CRYPTO_AUTH_SHA256,		\
+				.block_size = 64,			\
+				.key_size = {				\
+					.min = 0,			\
+					.max = 0,			\
+					.increment = 0			\
+				},					\
+				.digest_size = {			\
+					.min = 1,			\
+					.max = 32,			\
+					.increment = 1			\
+				},					\
+				.iv_size = { 0 }			\
+			}, }						\
+		}, }							\
+	},								\
+	{	/* SHA384 */						\
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,	\
+			{.auth = {					\
+				.algo = RTE_CRYPTO_AUTH_SHA384,		\
+				.block_size = 128,			\
+				.key_size = {				\
+					.min = 0,			\
+					.max = 0,			\
+					.increment = 0			\
+				},					\
+				.digest_size = {			\
+					.min = 1,			\
+					.max = 48,			\
+					.increment = 1			\
+				},					\
+				.iv_size = { 0 }			\
+			}, }						\
+		}, }							\
+	},								\
+	{	/* SHA512 */						\
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,	\
+			{.auth = {					\
+				.algo = RTE_CRYPTO_AUTH_SHA512,		\
+				.block_size = 128,			\
+				.key_size = {				\
+					.min = 0,			\
+					.max = 0,			\
+					.increment = 0			\
+				},					\
+				.digest_size = {			\
+					.min = 1,			\
+					.max = 64,			\
+					.increment = 1			\
+				},					\
+				.iv_size = { 0 }			\
+			}, }						\
+		}, }							\
+	},								\
 	{	/* SHA1 HMAC */						\
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
 		{.sym = {						\
@@ -227,9 +332,9 @@
 					.increment = 1			\
 				},					\
 				.iv_size = {				\
-					.min = 12,			\
+					.min = 0,			\
 					.max = 12,			\
-					.increment = 0			\
+					.increment = 12			\
 				},					\
 			}, }						\
 		}, }							\
@@ -252,9 +357,9 @@
 					.increment = 4			\
 				},					\
 				.iv_size = {				\
-					.min = 12,			\
+					.min = 0,			\
 					.max = 12,			\
-					.increment = 0			\
+					.increment = 12			\
 				}					\
 			}, }						\
 		}, }							\
@@ -314,7 +419,7 @@
 				.key_size = {				\
 					.min = 32,			\
 					.max = 64,			\
-					.increment = 0			\
+					.increment = 32			\
 				},					\
 				.iv_size = {				\
 					.min = 16,			\
@@ -333,8 +438,8 @@
 				.block_size = 16,			\
 				.key_size = {				\
 					.min = 16,			\
-					.max = 16,			\
-					.increment = 0			\
+					.max = 32,			\
+					.increment = 16			\
 				},					\
 				.iv_size = {				\
 					.min = 16,			\
@@ -593,5 +698,79 @@
 			}, }						\
 		}, }							\
 	}
+
+#define QAT_EXTRA_GEN3_SYM_CAPABILITIES					\
+	{	/* Chacha20-Poly1305 */					\
+	.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,	\
+			{.aead = {					\
+				.algo = RTE_CRYPTO_AEAD_CHACHA20_POLY1305, \
+				.block_size = 64,			\
+				.key_size = {				\
+					.min = 32,			\
+					.max = 32,			\
+					.increment = 0			\
+				},					\
+				.digest_size = {			\
+					.min = 16,			\
+					.max = 16,			\
+					.increment = 0			\
+				},					\
+				.aad_size = {				\
+					.min = 0,			\
+					.max = 240,			\
+					.increment = 1			\
+				},					\
+				.iv_size = {				\
+					.min = 12,			\
+					.max = 12,			\
+					.increment = 0			\
+				},					\
+			}, }						\
+		}, }							\
+	}
+
+#ifdef RTE_LIB_SECURITY
+#define QAT_SECURITY_SYM_CAPABILITIES					\
+	{	/* AES DOCSIS BPI */					\
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,			\
+		{.sym = {						\
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,	\
+			{.cipher = {					\
+				.algo = RTE_CRYPTO_CIPHER_AES_DOCSISBPI,\
+				.block_size = 16,			\
+				.key_size = {				\
+					.min = 16,			\
+					.max = 32,			\
+					.increment = 16			\
+				},					\
+				.iv_size = {				\
+					.min = 16,			\
+					.max = 16,			\
+					.increment = 0			\
+				}					\
+			}, }						\
+		}, }							\
+	}
+
+#define QAT_SECURITY_CAPABILITIES(sym)					\
+	[0] = {	/* DOCSIS Uplink */					\
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,	\
+		.protocol = RTE_SECURITY_PROTOCOL_DOCSIS,		\
+		.docsis = {						\
+			.direction = RTE_SECURITY_DOCSIS_UPLINK		\
+		},							\
+		.crypto_capabilities = (sym)				\
+	},								\
+	[1] = {	/* DOCSIS Downlink */					\
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,	\
+		.protocol = RTE_SECURITY_PROTOCOL_DOCSIS,		\
+		.docsis = {						\
+			.direction = RTE_SECURITY_DOCSIS_DOWNLINK	\
+		},							\
+		.crypto_capabilities = (sym)				\
+	}
+#endif
 
 #endif /* _QAT_SYM_CAPABILITIES_H_ */

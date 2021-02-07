@@ -17,18 +17,47 @@ extern "C" {
 #endif
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <limits.h>
-#include <errno.h>
 #include <sys/queue.h>
-#include <stdint.h>
 #include <inttypes.h>
+#include <sys/types.h>
 
-#include <rte_debug.h>
-#include <rte_interrupts.h>
+/*
+ * Conventional PCI and PCI-X Mode 1 devices have 256 bytes of
+ * configuration space.  PCI-X Mode 2 and PCIe devices have 4096 bytes of
+ * configuration space.
+ */
+#define RTE_PCI_CFG_SPACE_SIZE		256
+#define RTE_PCI_CFG_SPACE_EXP_SIZE	4096
+
+#define RTE_PCI_VENDOR_ID	0x00	/* 16 bits */
+#define RTE_PCI_DEVICE_ID	0x02	/* 16 bits */
+
+/* PCI Express capability registers */
+#define RTE_PCI_EXP_DEVCTL	8	/* Device Control */
+
+/* Extended Capabilities (PCI-X 2.0 and Express) */
+#define RTE_PCI_EXT_CAP_ID(header)	(header & 0x0000ffff)
+#define RTE_PCI_EXT_CAP_NEXT(header)	((header >> 20) & 0xffc)
+
+#define RTE_PCI_EXT_CAP_ID_ERR		0x01	/* Advanced Error Reporting */
+#define RTE_PCI_EXT_CAP_ID_DSN		0x03	/* Device Serial Number */
+#define RTE_PCI_EXT_CAP_ID_SRIOV	0x10	/* SR-IOV*/
+
+/* Single Root I/O Virtualization */
+#define RTE_PCI_SRIOV_CAP		0x04	/* SR-IOV Capabilities */
+#define RTE_PCI_SRIOV_CTRL		0x08	/* SR-IOV Control */
+#define RTE_PCI_SRIOV_INITIAL_VF	0x0c	/* Initial VFs */
+#define RTE_PCI_SRIOV_TOTAL_VF		0x0e	/* Total VFs */
+#define RTE_PCI_SRIOV_NUM_VF		0x10	/* Number of VFs */
+#define RTE_PCI_SRIOV_FUNC_LINK		0x12	/* Function Dependency Link */
+#define RTE_PCI_SRIOV_VF_OFFSET		0x14	/* First VF Offset */
+#define RTE_PCI_SRIOV_VF_STRIDE		0x16	/* Following VF Stride */
+#define RTE_PCI_SRIOV_VF_DID		0x1a	/* VF Device ID */
+#define RTE_PCI_SRIOV_SUP_PGSIZE	0x1c	/* Supported Page Sizes */
 
 /** Formatting string for PCI device identifier: Ex: 0000:00:01.0 */
-#define PCI_PRI_FMT "%.4" PRIx16 ":%.2" PRIx8 ":%.2" PRIx8 ".%" PRIx8
+#define PCI_PRI_FMT "%.4" PRIx32 ":%.2" PRIx8 ":%.2" PRIx8 ".%" PRIx8
 #define PCI_PRI_STR_SIZE sizeof("XXXXXXXX:XX:XX.X")
 
 /** Short formatting string, without domain, for PCI device: Ex: 00:01.0 */
@@ -68,42 +97,6 @@ struct rte_pci_addr {
 /** Any PCI device identifier (vendor, device, ...) */
 #define PCI_ANY_ID (0xffff)
 #define RTE_CLASS_ANY_ID (0xffffff)
-
-/**
- * A structure describing a PCI mapping.
- */
-struct pci_map {
-	void *addr;
-	char *path;
-	uint64_t offset;
-	uint64_t size;
-	uint64_t phaddr;
-};
-
-struct pci_msix_table {
-	int bar_index;
-	uint32_t offset;
-	uint32_t size;
-};
-
-/**
- * A structure describing a mapped PCI resource.
- * For multi-process we need to reproduce all PCI mappings in secondary
- * processes, so save them in a tailq.
- */
-struct mapped_pci_resource {
-	TAILQ_ENTRY(mapped_pci_resource) next;
-
-	struct rte_pci_addr pci_addr;
-	char path[PATH_MAX];
-	int nb_maps;
-	struct pci_map maps[PCI_MAX_RESOURCE];
-	struct pci_msix_table msix_table;
-};
-
-
-/** mapped pci device list */
-TAILQ_HEAD(mapped_pci_res_list, mapped_pci_resource);
 
 /**
  * Utility function to write a pci device name, this device name can later be
@@ -149,36 +142,6 @@ int rte_pci_addr_cmp(const struct rte_pci_addr *addr,
  *	<0 otherwise
  */
 int rte_pci_addr_parse(const char *str, struct rte_pci_addr *addr);
-
-/**
- * Map a particular resource from a file.
- *
- * @param requested_addr
- *      The starting address for the new mapping range.
- * @param fd
- *      The file descriptor.
- * @param offset
- *      The offset for the mapping range.
- * @param size
- *      The size for the mapping range.
- * @param additional_flags
- *      The additional flags for the mapping range.
- * @return
- *   - On success, the function returns a pointer to the mapped area.
- *   - On error, the value MAP_FAILED is returned.
- */
-void *pci_map_resource(void *requested_addr, int fd, off_t offset,
-		size_t size, int additional_flags);
-
-/**
- * Unmap a particular resource.
- *
- * @param requested_addr
- *      The address for the unmapping range.
- * @param size
- *      The size for the unmapping range.
- */
-void pci_unmap_resource(void *requested_addr, size_t size);
 
 #ifdef __cplusplus
 }

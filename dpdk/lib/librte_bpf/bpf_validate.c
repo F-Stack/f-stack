@@ -70,6 +70,7 @@ struct bpf_verifier {
 	uint64_t stack_sz;
 	uint32_t nb_nodes;
 	uint32_t nb_jcc_nodes;
+	uint32_t nb_ldmb_nodes;
 	uint32_t node_colour[MAX_NODE_COLOUR];
 	uint32_t edge_type[MAX_EDGE_TYPE];
 	struct bpf_eval_state *evst;
@@ -101,6 +102,9 @@ struct bpf_ins_check {
 #define	ALL_REGS	RTE_LEN2MASK(EBPF_REG_NUM, uint16_t)
 #define	WRT_REGS	RTE_LEN2MASK(EBPF_REG_10, uint16_t)
 #define	ZERO_REG	RTE_LEN2MASK(EBPF_REG_1, uint16_t)
+
+/* For LD_IND R6 is an implicit CTX register. */
+#define	IND_SRC_REGS	(WRT_REGS ^ 1 << EBPF_REG_6)
 
 /*
  * check and evaluate functions for particular instruction types.
@@ -226,7 +230,7 @@ eval_add(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, uint64_t msk)
 	struct bpf_reg_val rv;
 
 	rv.u.min = (rd->u.min + rs->u.min) & msk;
-	rv.u.max = (rd->u.min + rs->u.max) & msk;
+	rv.u.max = (rd->u.max + rs->u.max) & msk;
 	rv.s.min = (rd->s.min + rs->s.min) & msk;
 	rv.s.max = (rd->s.max + rs->s.max) & msk;
 
@@ -254,10 +258,10 @@ eval_sub(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, uint64_t msk)
 {
 	struct bpf_reg_val rv;
 
-	rv.u.min = (rd->u.min - rs->u.min) & msk;
-	rv.u.max = (rd->u.min - rs->u.max) & msk;
-	rv.s.min = (rd->s.min - rs->s.min) & msk;
-	rv.s.max = (rd->s.max - rs->s.max) & msk;
+	rv.u.min = (rd->u.min - rs->u.max) & msk;
+	rv.u.max = (rd->u.max - rs->u.min) & msk;
+	rv.s.min = (rd->s.min - rs->s.max) & msk;
+	rv.s.max = (rd->s.max - rs->s.min) & msk;
 
 	/*
 	 * if at least one of the operands is not constant,
@@ -578,6 +582,42 @@ eval_neg(struct bpf_reg_val *rd, size_t opsz, uint64_t msk)
 
 	rd->s.max = RTE_MAX(sx, sy);
 	rd->s.min = RTE_MIN(sx, sy);
+}
+
+static const char *
+eval_ld_mbuf(struct bpf_verifier *bvf, const struct ebpf_insn *ins)
+{
+	uint32_t i, mode;
+	struct bpf_reg_val *rv, ri, rs;
+
+	mode = BPF_MODE(ins->code);
+
+	/* R6 is an implicit input that must contain pointer to mbuf */
+	if (bvf->evst->rv[EBPF_REG_6].v.type != RTE_BPF_ARG_PTR_MBUF)
+		return "invalid type for implicit ctx register";
+
+	if (mode == BPF_IND) {
+		rs = bvf->evst->rv[ins->src_reg];
+		if (rs.v.type != RTE_BPF_ARG_RAW)
+			return "unexpected type for src register";
+
+		eval_fill_imm(&ri, UINT64_MAX, ins->imm);
+		eval_add(&rs, &ri, UINT64_MAX);
+
+		if (rs.s.max < 0 || rs.u.min > UINT32_MAX)
+			return "mbuf boundary violation";
+	}
+
+	/* R1-R5 scratch registers */
+	for (i = EBPF_REG_1; i != EBPF_REG_6; i++)
+		bvf->evst->rv[i].v.type = RTE_BPF_ARG_UNDEF;
+
+	/* R0 is an implicit output, contains data fetched from the packet */
+	rv = bvf->evst->rv + EBPF_REG_0;
+	rv->v.size = bpf_size(BPF_SIZE(ins->code));
+	eval_fill_max_bound(rv, RTE_LEN2MASK(rv->v.size * CHAR_BIT, uint64_t));
+
+	return NULL;
 }
 
 /*
@@ -1425,6 +1465,44 @@ static const struct bpf_ins_check ins_chk[UINT8_MAX + 1] = {
 		.imm = { .min = 0, .max = UINT32_MAX},
 		.eval = eval_ld_imm64,
 	},
+	/* load absolute instructions */
+	[(BPF_LD | BPF_ABS | BPF_B)] = {
+		.mask = {. dreg = ZERO_REG, .sreg = ZERO_REG},
+		.off = { .min = 0, .max = 0},
+		.imm = { .min = 0, .max = INT32_MAX},
+		.eval = eval_ld_mbuf,
+	},
+	[(BPF_LD | BPF_ABS | BPF_H)] = {
+		.mask = {. dreg = ZERO_REG, .sreg = ZERO_REG},
+		.off = { .min = 0, .max = 0},
+		.imm = { .min = 0, .max = INT32_MAX},
+		.eval = eval_ld_mbuf,
+	},
+	[(BPF_LD | BPF_ABS | BPF_W)] = {
+		.mask = {. dreg = ZERO_REG, .sreg = ZERO_REG},
+		.off = { .min = 0, .max = 0},
+		.imm = { .min = 0, .max = INT32_MAX},
+		.eval = eval_ld_mbuf,
+	},
+	/* load indirect instructions */
+	[(BPF_LD | BPF_IND | BPF_B)] = {
+		.mask = {. dreg = ZERO_REG, .sreg = IND_SRC_REGS},
+		.off = { .min = 0, .max = 0},
+		.imm = { .min = 0, .max = UINT32_MAX},
+		.eval = eval_ld_mbuf,
+	},
+	[(BPF_LD | BPF_IND | BPF_H)] = {
+		.mask = {. dreg = ZERO_REG, .sreg = IND_SRC_REGS},
+		.off = { .min = 0, .max = 0},
+		.imm = { .min = 0, .max = UINT32_MAX},
+		.eval = eval_ld_mbuf,
+	},
+	[(BPF_LD | BPF_IND | BPF_W)] = {
+		.mask = {. dreg = ZERO_REG, .sreg = IND_SRC_REGS},
+		.off = { .min = 0, .max = 0},
+		.imm = { .min = 0, .max = UINT32_MAX},
+		.eval = eval_ld_mbuf,
+	},
 	/* store REG instructions */
 	[(BPF_STX | BPF_MEM | BPF_B)] = {
 		.mask = { .dreg = ALL_REGS, .sreg = ALL_REGS},
@@ -1943,6 +2021,14 @@ validate(struct bpf_verifier *bvf)
 			rc |= add_edge(bvf, node, i + 2);
 			i++;
 			break;
+		case (BPF_LD | BPF_ABS | BPF_B):
+		case (BPF_LD | BPF_ABS | BPF_H):
+		case (BPF_LD | BPF_ABS | BPF_W):
+		case (BPF_LD | BPF_IND | BPF_B):
+		case (BPF_LD | BPF_IND | BPF_H):
+		case (BPF_LD | BPF_IND | BPF_W):
+			bvf->nb_ldmb_nodes++;
+			/* fallthrough */
 		default:
 			rc |= add_edge(bvf, node, i + 1);
 			break;
@@ -2243,8 +2329,14 @@ bpf_validate(struct rte_bpf *bpf)
 	free(bvf.in);
 
 	/* copy collected info */
-	if (rc == 0)
+	if (rc == 0) {
 		bpf->stack_sz = bvf.stack_sz;
+
+		/* for LD_ABS/LD_IND, we'll need extra space on the stack */
+		if (bvf.nb_ldmb_nodes != 0)
+			bpf->stack_sz = RTE_ALIGN_CEIL(bpf->stack_sz +
+				sizeof(uint64_t), sizeof(uint64_t));
+	}
 
 	return rc;
 }

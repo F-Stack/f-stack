@@ -80,7 +80,7 @@ struct rte_kni_conf {
 /**
  * Initialize and preallocate KNI subsystem
  *
- * This function is to be executed on the MASTER lcore only, after EAL
+ * This function is to be executed on the main lcore only, after EAL
  * initialization and before any KNI interface is attempted to be
  * allocated
  *
@@ -212,7 +212,7 @@ const char *rte_kni_get_name(const struct rte_kni *kni);
 
 /**
  * Register KNI request handling for a specified port,and it can
- * be called by master process or slave process.
+ * be called by primary process or secondary process.
  *
  * @param kni
  *  pointer to struct rte_kni.

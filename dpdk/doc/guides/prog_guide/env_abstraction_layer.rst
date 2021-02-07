@@ -64,7 +64,7 @@ It consist of calls to the pthread library (more specifically, pthread_self(), p
 .. note::
 
     Initialization of objects, such as memory zones, rings, memory pools, lpm tables and hash tables,
-    should be done as part of the overall application initialization on the master lcore.
+    should be done as part of the overall application initialization on the main lcore.
     The creation and initialization functions for these objects are not multi-thread safe.
     However, once initialized, the objects themselves can safely be used in multiple threads simultaneously.
 
@@ -186,7 +186,7 @@ very dependent on the memory allocation patterns of the application.
 
 Additional restrictions are present when running in 32-bit mode. In dynamic
 memory mode, by default maximum of 2 gigabytes of VA space will be preallocated,
-and all of it will be on master lcore NUMA node unless ``--socket-mem`` flag is
+and all of it will be on main lcore NUMA node unless ``--socket-mem`` flag is
 used.
 
 In legacy mode, VA space will only be preallocated for segments that were
@@ -201,16 +201,16 @@ each segment is strictly one physical page. It is possible to change the amount
 of virtual memory being preallocated at startup by editing the following config
 variables:
 
-* ``CONFIG_RTE_MAX_MEMSEG_LISTS`` controls how many segment lists can DPDK have
-* ``CONFIG_RTE_MAX_MEM_MB_PER_LIST`` controls how much megabytes of memory each
+* ``RTE_MAX_MEMSEG_LISTS`` controls how many segment lists can DPDK have
+* ``RTE_MAX_MEM_MB_PER_LIST`` controls how much megabytes of memory each
   segment list can address
-* ``CONFIG_RTE_MAX_MEMSEG_PER_LIST`` controls how many segments each segment can
+* ``RTE_MAX_MEMSEG_PER_LIST`` controls how many segments each segment can
   have
-* ``CONFIG_RTE_MAX_MEMSEG_PER_TYPE`` controls how many segments each memory type
+* ``RTE_MAX_MEMSEG_PER_TYPE`` controls how many segments each memory type
   can have (where "type" is defined as "page size + NUMA node" combination)
-* ``CONFIG_RTE_MAX_MEM_MB_PER_TYPE`` controls how much megabytes of memory each
+* ``RTE_MAX_MEM_MB_PER_TYPE`` controls how much megabytes of memory each
   memory type can address
-* ``CONFIG_RTE_MAX_MEM_MB`` places a global maximum on the amount of memory
+* ``RTE_MAX_MEM_MB`` places a global maximum on the amount of memory
   DPDK can reserve
 
 Normally, these options do not need to be changed.
@@ -407,12 +407,12 @@ device having emitted a Device Removal Event. In such case, calling
 callback. Care must be taken not to close the device from the interrupt handler
 context. It is necessary to reschedule such closing operation.
 
-Blacklisting
-~~~~~~~~~~~~
+Block list
+~~~~~~~~~~
 
-The EAL PCI device blacklist functionality can be used to mark certain NIC ports as blacklisted,
+The EAL PCI device block list functionality can be used to mark certain NIC ports as unavailable,
 so they are ignored by the DPDK.
-The ports to be blacklisted are identified using the PCIe* description (Domain:Bus:Device.Function).
+The ports to be blocked are identified using the PCIe* description (Domain:Bus:Device.Function).
 
 Misc Functions
 ~~~~~~~~~~~~~~
@@ -485,6 +485,40 @@ Auto detection of the IOVA mode, based on probing the bus and IOMMU configuratio
 the desired addressing mode when virtual devices that are not directly attached to the bus are present.
 To facilitate forcing the IOVA mode to a specific value the EAL command line option ``--iova-mode`` can
 be used to select either physical addressing('pa') or virtual addressing('va').
+
+.. _max_simd_bitwidth:
+
+
+Max SIMD bitwidth
+~~~~~~~~~~~~~~~~~
+
+The EAL provides a single setting to limit the max SIMD bitwidth used by DPDK,
+which is used in determining the vector path, if any, chosen by a component.
+The value can be set at runtime by an application using the
+'rte_vect_set_max_simd_bitwidth(uint16_t bitwidth)' function,
+which should only be called once at initialization, before EAL init.
+The value can be overridden by the user using the EAL command-line option '--force-max-simd-bitwidth'.
+
+When choosing a vector path, along with checking the CPU feature support,
+the value of the max SIMD bitwidth must also be checked, and can be retrieved using the
+'rte_vect_get_max_simd_bitwidth()' function.
+The value should be compared against the enum values for accepted max SIMD bitwidths:
+
+.. code-block:: c
+
+   enum rte_vect_max_simd {
+       RTE_VECT_SIMD_DISABLED = 64,
+       RTE_VECT_SIMD_128 = 128,
+       RTE_VECT_SIMD_256 = 256,
+       RTE_VECT_SIMD_512 = 512,
+       RTE_VECT_SIMD_MAX = INT16_MAX + 1,
+   };
+
+    if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_512)
+        /* Take AVX-512 vector path */
+    else if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
+        /* Take AVX2 vector path */
+
 
 Memory Segments and Memory Zones (memzone)
 ------------------------------------------
@@ -564,9 +598,13 @@ It's also compatible with the pattern of corelist('-l') option.
 non-EAL pthread support
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-It is possible to use the DPDK execution context with any user pthread (aka. Non-EAL pthreads).
-In a non-EAL pthread, the *_lcore_id* is always LCORE_ID_ANY which identifies that it is not an EAL thread with a valid, unique, *_lcore_id*.
-Some libraries will use an alternative unique ID (e.g. TID), some will not be impacted at all, and some will work but with limitations (e.g. timer and mempool libraries).
+It is possible to use the DPDK execution context with any user pthread (aka. non-EAL pthreads).
+There are two kinds of non-EAL pthreads:
+
+- a registered non-EAL pthread with a valid *_lcore_id* that was successfully assigned by calling ``rte_thread_register()``,
+- a non registered non-EAL pthread with a LCORE_ID_ANY,
+
+For non registered non-EAL pthread (with a LCORE_ID_ANY *_lcore_id*), some libraries will use an alternative unique ID (e.g. TID), some will not be impacted at all, and some will work but with limitations (e.g. timer and mempool libraries).
 
 All these impacts are mentioned in :ref:`known_issue_label` section.
 
@@ -603,7 +641,7 @@ controlled with tools like taskset (Linux) or cpuset (FreeBSD),
 - with affinity restricted to 2-4, the Control Threads will end up on
   CPU 4.
 - with affinity restricted to 2-3, the Control Threads will end up on
-  CPU 2 (master lcore, which is the default when no CPU is available).
+  CPU 2 (main lcore, which is the default when no CPU is available).
 
 .. _known_issue_label:
 
@@ -613,9 +651,9 @@ Known Issues
 + rte_mempool
 
   The rte_mempool uses a per-lcore cache inside the mempool.
-  For non-EAL pthreads, ``rte_lcore_id()`` will not return a valid number.
-  So for now, when rte_mempool is used with non-EAL pthreads, the put/get operations will bypass the default mempool cache and there is a performance penalty because of this bypass.
-  Only user-owned external caches can be used in a non-EAL context in conjunction with ``rte_mempool_generic_put()`` and ``rte_mempool_generic_get()`` that accept an explicit cache parameter.
+  For unregistered non-EAL pthreads, ``rte_lcore_id()`` will not return a valid number.
+  So for now, when rte_mempool is used with unregistered non-EAL pthreads, the put/get operations will bypass the default mempool cache and there is a performance penalty because of this bypass.
+  Only user-owned external caches can be used in an unregistered non-EAL context in conjunction with ``rte_mempool_generic_put()`` and ``rte_mempool_generic_get()`` that accept an explicit cache parameter.
 
 + rte_ring
 
@@ -660,15 +698,15 @@ Known Issues
 
 + rte_timer
 
-  Running  ``rte_timer_manage()`` on a non-EAL pthread is not allowed. However, resetting/stopping the timer from a non-EAL pthread is allowed.
+  Running  ``rte_timer_manage()`` on an unregistered non-EAL pthread is not allowed. However, resetting/stopping the timer from a non-EAL pthread is allowed.
 
 + rte_log
 
-  In non-EAL pthreads, there is no per thread loglevel and logtype, global loglevels are used.
+  In unregistered non-EAL pthreads, there is no per thread loglevel and logtype, global loglevels are used.
 
 + misc
 
-  The debug statistics of rte_ring, rte_mempool and rte_timer are not supported in a non-EAL pthread.
+  The debug statistics of rte_ring, rte_mempool and rte_timer are not supported in an unregistered non-EAL pthread.
 
 cgroup control
 ~~~~~~~~~~~~~~
@@ -711,11 +749,6 @@ However, they can be used in configuration code.
 Refer to the rte_malloc() function description in the *DPDK API Reference*
 manual for more information.
 
-Cookies
-~~~~~~~
-
-When CONFIG_RTE_MALLOC_DEBUG is enabled, the allocated memory contains
-overwrite protection fields to help identify buffer overflows.
 
 Alignment and NUMA Constraints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2016 Intel Corporation.
+ * Copyright(c) 2015-2020 Intel Corporation.
  */
 
 #ifndef _RTE_CRYPTODEV_PMD_H_
@@ -41,7 +41,8 @@ extern "C" {
 static const char * const cryptodev_pmd_valid_params[] = {
 	RTE_CRYPTODEV_PMD_NAME_ARG,
 	RTE_CRYPTODEV_PMD_MAX_NB_QP_ARG,
-	RTE_CRYPTODEV_PMD_SOCKET_ID_ARG
+	RTE_CRYPTODEV_PMD_SOCKET_ID_ARG,
+	NULL
 };
 
 /**
@@ -208,15 +209,6 @@ typedef int (*cryptodev_queue_pair_release_t)(struct rte_cryptodev *dev,
 		uint16_t qp_id);
 
 /**
- * Get number of available queue pairs of a device.
- *
- * @param	dev	Crypto device pointer
- *
- * @return	Returns number of queue pairs on success.
- */
-typedef uint32_t (*cryptodev_queue_pair_count_t)(struct rte_cryptodev *dev);
-
-/**
  * Create a session mempool to allocate sessions from
  *
  * @param	dev		Crypto device pointer
@@ -308,6 +300,59 @@ typedef void (*cryptodev_sym_free_session_t)(struct rte_cryptodev *dev,
  */
 typedef void (*cryptodev_asym_free_session_t)(struct rte_cryptodev *dev,
 		struct rte_cryptodev_asym_session *sess);
+/**
+ * Perform actual crypto processing (encrypt/digest or auth/decrypt)
+ * on user provided data.
+ *
+ * @param	dev	Crypto device pointer
+ * @param	sess	Cryptodev session structure
+ * @param	ofs	Start and stop offsets for auth and cipher operations
+ * @param	vec	Vectorized operation descriptor
+ *
+ * @return
+ *  - Returns number of successfully processed packets.
+ *
+ */
+typedef uint32_t (*cryptodev_sym_cpu_crypto_process_t)
+	(struct rte_cryptodev *dev, struct rte_cryptodev_sym_session *sess,
+	union rte_crypto_sym_ofs ofs, struct rte_crypto_sym_vec *vec);
+
+/**
+ * Typedef that the driver provided to get service context private date size.
+ *
+ * @param	dev	Crypto device pointer.
+ *
+ * @return
+ *   - On success return the size of the device's service context private data.
+ *   - On failure return negative integer.
+ */
+typedef int (*cryptodev_sym_get_raw_dp_ctx_size_t)(struct rte_cryptodev *dev);
+
+/**
+ * Typedef that the driver provided to configure raw data-path context.
+ *
+ * @param	dev		Crypto device pointer.
+ * @param	qp_id		Crypto device queue pair index.
+ * @param	service_type	Type of the service requested.
+ * @param	ctx		The raw data-path context data.
+ * @param	sess_type	session type.
+ * @param	session_ctx	Session context data. If NULL the driver
+ *				shall only configure the drv_ctx_data in
+ *				ctx buffer. Otherwise the driver shall only
+ *				parse the session_ctx to set appropriate
+ *				function pointers in ctx.
+ * @param	is_update	Set 0 if it is to initialize the ctx.
+ *				Set 1 if ctx is initialized and only to update
+ *				session context data.
+ * @return
+ *   - On success return 0.
+ *   - On failure return negative integer.
+ */
+typedef int (*cryptodev_sym_configure_raw_dp_ctx_t)(
+	struct rte_cryptodev *dev, uint16_t qp_id,
+	struct rte_crypto_raw_dp_ctx *ctx,
+	enum rte_crypto_op_sess_type sess_type,
+	union rte_cryptodev_session_ctx session_ctx, uint8_t is_update);
 
 /** Crypto device operations function pointer table */
 struct rte_cryptodev_ops {
@@ -327,8 +372,6 @@ struct rte_cryptodev_ops {
 	/**< Set up a device queue pair. */
 	cryptodev_queue_pair_release_t queue_pair_release;
 	/**< Release a queue pair. */
-	cryptodev_queue_pair_count_t queue_pair_count;
-	/**< Get count of the queue pairs. */
 
 	cryptodev_sym_get_session_private_size_t sym_session_get_size;
 	/**< Return private session. */
@@ -342,6 +385,19 @@ struct rte_cryptodev_ops {
 	/**< Clear a Crypto sessions private data. */
 	cryptodev_asym_free_session_t asym_session_clear;
 	/**< Clear a Crypto sessions private data. */
+	union {
+		cryptodev_sym_cpu_crypto_process_t sym_cpu_process;
+		/**< process input data synchronously (cpu-crypto). */
+		__extension__
+		struct {
+			cryptodev_sym_get_raw_dp_ctx_size_t
+				sym_get_raw_dp_ctx_size;
+			/**< Get raw data path service context data size. */
+			cryptodev_sym_configure_raw_dp_ctx_t
+				sym_configure_raw_dp_ctx;
+			/**< Initialize raw data path context data. */
+		};
+	};
 };
 
 

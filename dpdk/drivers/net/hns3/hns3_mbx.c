@@ -2,27 +2,14 @@
  * Copyright(c) 2018-2019 Hisilicon Limited.
  */
 
-#include <errno.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <inttypes.h>
-#include <unistd.h>
-#include <rte_byteorder.h>
-#include <rte_common.h>
-#include <rte_cycles.h>
-#include <rte_dev.h>
 #include <rte_ethdev_driver.h>
 #include <rte_io.h>
-#include <rte_spinlock.h>
-#include <rte_pci.h>
-#include <rte_bus_pci.h>
 
 #include "hns3_ethdev.h"
 #include "hns3_regs.h"
 #include "hns3_logs.h"
 #include "hns3_intr.h"
+#include "hns3_rxtx.h"
 
 #define HNS3_CMD_CODE_OFFSET		2
 
@@ -87,7 +74,7 @@ hns3_get_mbx_resp(struct hns3_hw *hw, uint16_t code0, uint16_t code1,
 	uint64_t end;
 
 	if (resp_len > HNS3_MBX_MAX_RESP_DATA_SIZE) {
-		hns3_err(hw, "VF mbx response len(=%d) exceeds maximum(=%d)",
+		hns3_err(hw, "VF mbx response len(=%u) exceeds maximum(=%d)",
 			 resp_len, HNS3_MBX_MAX_RESP_DATA_SIZE);
 		return -EINVAL;
 	}
@@ -126,7 +113,7 @@ hns3_get_mbx_resp(struct hns3_hw *hw, uint16_t code0, uint16_t code1,
 	if (now >= end) {
 		hw->mbx_resp.lost++;
 		hns3_err(hw,
-			 "VF could not get mbx(%d,%d) head(%d) tail(%d) lost(%d) from PF in_irq:%d",
+			 "VF could not get mbx(%u,%u) head(%u) tail(%u) lost(%u) from PF in_irq:%d",
 			 code0, code1, hw->mbx_resp.head, hw->mbx_resp.tail,
 			 hw->mbx_resp.lost, in_irq);
 		return -ETIME;
@@ -159,7 +146,7 @@ hns3_send_mbx_msg(struct hns3_hw *hw, uint16_t code, uint16_t subcode,
 	/* first two bytes are reserved for code & subcode */
 	if (msg_len > (HNS3_MBX_MAX_MSG_SIZE - HNS3_CMD_CODE_OFFSET)) {
 		hns3_err(hw,
-			 "VF send mbx msg fail, msg len %d exceeds max payload len %d",
+			 "VF send mbx msg fail, msg len %u exceeds max payload len %d",
 			 msg_len, HNS3_MBX_MAX_MSG_SIZE - HNS3_CMD_CODE_OFFSET);
 		return -EINVAL;
 	}
@@ -219,6 +206,7 @@ hns3_mbx_handler(struct hns3_hw *hw)
 	struct hns3_mac *mac = &hw->mac;
 	enum hns3_reset_level reset_level;
 	uint16_t *msg_q;
+	uint8_t opcode;
 	uint32_t tail;
 
 	tail = hw->arq.tail;
@@ -227,7 +215,8 @@ hns3_mbx_handler(struct hns3_hw *hw)
 	while (tail != hw->arq.head) {
 		msg_q = hw->arq.msg_q[hw->arq.head];
 
-		switch (msg_q[0]) {
+		opcode = msg_q[0] & 0xff;
+		switch (opcode) {
 		case HNS3_MBX_LINK_STAT_CHANGE:
 			memcpy(&mac->link_speed, &msg_q[2],
 				   sizeof(mac->link_speed));
@@ -248,8 +237,8 @@ hns3_mbx_handler(struct hns3_hw *hw)
 			hns3_schedule_reset(HNS3_DEV_HW_TO_ADAPTER(hw));
 			break;
 		default:
-			hns3_err(hw, "Fetched unsupported(%d) message from arq",
-				 msg_q[0]);
+			hns3_err(hw, "Fetched unsupported(%u) message from arq",
+				 opcode);
 			break;
 		}
 
@@ -277,17 +266,90 @@ hns3_update_resp_position(struct hns3_hw *hw, uint32_t resp_msg)
 		if (resp->lost)
 			resp->lost--;
 		hns3_warn(hw, "Received a mismatched response req_msg(%x) "
-			  "resp_msg(%x) head(%d) tail(%d) lost(%d)",
+			  "resp_msg(%x) head(%u) tail(%u) lost(%u)",
 			  resp->req_msg_data, resp_msg, resp->head, tail,
 			  resp->lost);
 	} else if (tail + resp->lost > resp->head) {
 		resp->lost--;
 		hns3_warn(hw, "Received a new response again resp_msg(%x) "
-			  "head(%d) tail(%d) lost(%d)", resp_msg,
+			  "head(%u) tail(%u) lost(%u)", resp_msg,
 			  resp->head, tail, resp->lost);
 	}
 	rte_io_wmb();
 	resp->tail = tail;
+}
+
+static void
+hns3_link_fail_parse(struct hns3_hw *hw, uint8_t link_fail_code)
+{
+	switch (link_fail_code) {
+	case HNS3_MBX_LF_NORMAL:
+		break;
+	case HNS3_MBX_LF_REF_CLOCK_LOST:
+		hns3_warn(hw, "Reference clock lost!");
+		break;
+	case HNS3_MBX_LF_XSFP_TX_DISABLE:
+		hns3_warn(hw, "SFP tx is disabled!");
+		break;
+	case HNS3_MBX_LF_XSFP_ABSENT:
+		hns3_warn(hw, "SFP is absent!");
+		break;
+	default:
+		hns3_warn(hw, "Unknown fail code:%u!", link_fail_code);
+		break;
+	}
+}
+
+static void
+hns3_handle_link_change_event(struct hns3_hw *hw,
+			      struct hns3_mbx_pf_to_vf_cmd *req)
+{
+#define LINK_STATUS_OFFSET     1
+#define LINK_FAIL_CODE_OFFSET  2
+
+	if (!req->msg[LINK_STATUS_OFFSET])
+		hns3_link_fail_parse(hw, req->msg[LINK_FAIL_CODE_OFFSET]);
+
+	hns3_update_link_status(hw);
+}
+
+static void
+hns3_update_port_base_vlan_info(struct hns3_hw *hw,
+				struct hns3_mbx_pf_to_vf_cmd *req)
+{
+#define PVID_STATE_OFFSET	1
+	uint16_t new_pvid_state = req->msg[PVID_STATE_OFFSET] ?
+		HNS3_PORT_BASE_VLAN_ENABLE : HNS3_PORT_BASE_VLAN_DISABLE;
+	/*
+	 * Currently, hardware doesn't support more than two layers VLAN offload
+	 * based on hns3 network engine, which would cause packets loss or wrong
+	 * packets for these types of packets. If the hns3 PF kernel ethdev
+	 * driver sets the PVID for VF device after initialization of the
+	 * related VF device, the PF driver will notify VF driver to update the
+	 * PVID configuration state. The VF driver will update the PVID
+	 * configuration state immediately to ensure that the VLAN process in Tx
+	 * and Rx is correct. But in the window period of this state transition,
+	 * packets loss or packets with wrong VLAN may occur.
+	 */
+	if (hw->port_base_vlan_cfg.state != new_pvid_state) {
+		hw->port_base_vlan_cfg.state = new_pvid_state;
+		hns3_update_all_queues_pvid_proc_en(hw);
+	}
+}
+
+static void
+hns3_handle_promisc_info(struct hns3_hw *hw, uint16_t promisc_en)
+{
+	if (!promisc_en) {
+		/*
+		 * When promisc/allmulti mode is closed by the hns3 PF kernel
+		 * ethdev driver for untrusted, modify VF's related status.
+		 */
+		hns3_warn(hw, "Promisc mode will be closed by host for being "
+			      "untrusted.");
+		hw->data->promiscuous = 0;
+		hw->data->all_multicast = 0;
+	}
 }
 
 void
@@ -299,6 +361,7 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 	struct hns3_cmd_desc *desc;
 	uint32_t msg_data;
 	uint16_t *msg_q;
+	uint8_t opcode;
 	uint16_t flag;
 	uint8_t *temp;
 	int i;
@@ -309,12 +372,13 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 
 		desc = &crq->desc[crq->next_to_use];
 		req = (struct hns3_mbx_pf_to_vf_cmd *)desc->data;
+		opcode = req->msg[0] & 0xff;
 
 		flag = rte_le_to_cpu_16(crq->desc[crq->next_to_use].flag);
 		if (unlikely(!hns3_get_bit(flag, HNS3_CMDQ_RX_OUTVLD_B))) {
 			hns3_warn(hw,
-				  "dropped invalid mailbox message, code = %d",
-				  req->msg[0]);
+				  "dropped invalid mailbox message, code = %u",
+				  opcode);
 
 			/* dropping/not processing this invalid message */
 			crq->desc[crq->next_to_use].flag = 0;
@@ -322,7 +386,7 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 			continue;
 		}
 
-		switch (req->msg[0]) {
+		switch (opcode) {
 		case HNS3_MBX_PF_VF_RESP:
 			resp->resp_status = hns3_resp_to_errno(req->msg[3]);
 
@@ -343,9 +407,28 @@ hns3_dev_handle_mbx_msg(struct hns3_hw *hw)
 
 			hns3_mbx_handler(hw);
 			break;
+		case HNS3_MBX_PUSH_LINK_STATUS:
+			hns3_handle_link_change_event(hw, req);
+			break;
+		case HNS3_MBX_PUSH_VLAN_INFO:
+			/*
+			 * When the PVID configuration status of VF device is
+			 * changed by the hns3 PF kernel driver, VF driver will
+			 * receive this mailbox message from PF driver.
+			 */
+			hns3_update_port_base_vlan_info(hw, req);
+			break;
+		case HNS3_MBX_PUSH_PROMISC_INFO:
+			/*
+			 * When the trust status of VF device changed by the
+			 * hns3 PF kernel driver, VF driver will receive this
+			 * mailbox message from PF driver.
+			 */
+			hns3_handle_promisc_info(hw, req->msg[1]);
+			break;
 		default:
 			hns3_err(hw,
-				 "VF received unsupported(%d) mbx msg from PF",
+				 "VF received unsupported(%u) mbx msg from PF",
 				 req->msg[0]);
 			break;
 		}

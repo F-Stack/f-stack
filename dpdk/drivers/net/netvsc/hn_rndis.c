@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
+#include <time.h>
 
 #include <rte_ethdev_driver.h>
 #include <rte_ethdev.h>
@@ -17,6 +18,7 @@
 #include <rte_memzone.h>
 #include <rte_malloc.h>
 #include <rte_atomic.h>
+#include <rte_alarm.h>
 #include <rte_branch_prediction.h>
 #include <rte_ether.h>
 #include <rte_common.h>
@@ -32,6 +34,9 @@
 #include "hn_nvs.h"
 #include "hn_rndis.h"
 #include "ndis.h"
+
+#define RNDIS_TIMEOUT_SEC 5
+#define RNDIS_DELAY_MS    10
 
 #define HN_RNDIS_XFER_SIZE		0x4000
 
@@ -60,10 +65,9 @@ hn_rndis_rid(struct hn_data *hv)
 	return rid;
 }
 
-static void *hn_rndis_alloc(struct hn_data *hv, size_t size)
+static void *hn_rndis_alloc(size_t size)
 {
-	return rte_zmalloc_socket("RNDIS", size, PAGE_SIZE,
-				 hv->vmbus->device.numa_node);
+	return rte_zmalloc("RNDIS", size, PAGE_SIZE);
 }
 
 #ifdef RTE_LIBRTE_NETVSC_DEBUG_DUMP
@@ -272,7 +276,7 @@ static int hn_nvs_send_rndis_ctrl(struct vmbus_channel *chan,
 	sg.len  = reqlen;
 
 	if (sg.ofs + reqlen >  PAGE_SIZE) {
-		PMD_DRV_LOG(ERR, "RNDIS request crosses page bounary");
+		PMD_DRV_LOG(ERR, "RNDIS request crosses page boundary");
 		return -EINVAL;
 	}
 
@@ -280,6 +284,15 @@ static int hn_nvs_send_rndis_ctrl(struct vmbus_channel *chan,
 
 	return hn_nvs_send_sglist(chan, &sg, 1,
 				  &nvs_rndis, sizeof(nvs_rndis), 0U, NULL);
+}
+
+/*
+ * Alarm callback to process link changed notifications.
+ * Can not directly since link_status is discovered while reading ring
+ */
+static void hn_rndis_link_alarm(void *arg)
+{
+	rte_eth_dev_callback_process(arg, RTE_ETH_EVENT_INTR_LSC, NULL);
 }
 
 void hn_rndis_link_status(struct rte_eth_dev *dev, const void *msg)
@@ -299,11 +312,8 @@ void hn_rndis_link_status(struct rte_eth_dev *dev, const void *msg)
 	case RNDIS_STATUS_LINK_SPEED_CHANGE:
 	case RNDIS_STATUS_MEDIA_CONNECT:
 	case RNDIS_STATUS_MEDIA_DISCONNECT:
-		if (dev->data->dev_conf.intr_conf.lsc &&
-		    hn_dev_link_update(dev, 0) == 0)
-			_rte_eth_dev_callback_process(dev,
-						      RTE_ETH_EVENT_INTR_LSC,
-						      NULL);
+		if (dev->data->dev_conf.intr_conf.lsc)
+			rte_eal_alarm_set(10, hn_rndis_link_alarm, dev);
 		break;
 	default:
 		PMD_DRV_LOG(NOTICE, "unknown RNDIS indication: %#x",
@@ -348,7 +358,7 @@ void hn_rndis_receive_response(struct hn_data *hv,
 	rte_smp_wmb();
 
 	if (rte_atomic32_cmpset(&hv->rndis_pending, hdr->rid, 0) == 0) {
-		PMD_DRV_LOG(ERR,
+		PMD_DRV_LOG(NOTICE,
 			    "received id %#x pending id %#x",
 			    hdr->rid, (uint32_t)hv->rndis_pending);
 	}
@@ -371,6 +381,11 @@ static int hn_rndis_exec1(struct hn_data *hv,
 		return -EIO;
 	}
 
+	if (rid == 0) {
+		PMD_DRV_LOG(ERR, "Invalid request id");
+		return -EINVAL;
+	}
+
 	if (comp != NULL &&
 	    rte_atomic32_cmpset(&hv->rndis_pending, 0, rid) == 0) {
 		PMD_DRV_LOG(ERR,
@@ -385,9 +400,26 @@ static int hn_rndis_exec1(struct hn_data *hv,
 	}
 
 	if (comp) {
+		time_t start = time(NULL);
+
 		/* Poll primary channel until response received */
-		while (hv->rndis_pending == rid)
+		while (hv->rndis_pending == rid) {
+			if (hv->closed)
+				return -ENETDOWN;
+
+			if (time(NULL) - start > RNDIS_TIMEOUT_SEC) {
+				PMD_DRV_LOG(ERR,
+					    "RNDIS response timed out");
+
+				rte_atomic32_cmpset(&hv->rndis_pending, rid, 0);
+				return -ETIMEDOUT;
+			}
+
+			if (rte_vmbus_chan_rx_empty(hv->primary->chan))
+				rte_delay_ms(RNDIS_DELAY_MS);
+
 			hn_process_events(hv, 0, 1);
+		}
 
 		memcpy(comp, hv->rndis_resp, comp_len);
 	}
@@ -442,7 +474,7 @@ hn_rndis_query(struct hn_data *hv, uint32_t oid,
 	uint32_t rid;
 
 	reqlen = sizeof(*req) + idlen;
-	req = hn_rndis_alloc(hv, reqlen);
+	req = hn_rndis_alloc(reqlen);
 	if (req == NULL)
 		return -ENOMEM;
 
@@ -517,7 +549,7 @@ hn_rndis_halt(struct hn_data *hv)
 {
 	struct rndis_halt_req *halt;
 
-	halt = hn_rndis_alloc(hv, sizeof(*halt));
+	halt = hn_rndis_alloc(sizeof(*halt));
 	if (halt == NULL)
 		return -ENOMEM;
 
@@ -1004,7 +1036,7 @@ static int hn_rndis_init(struct hn_data *hv)
 	uint32_t comp_len, rid;
 	int error;
 
-	req = hn_rndis_alloc(hv, sizeof(*req));
+	req = hn_rndis_alloc(sizeof(*req));
 	if (!req) {
 		PMD_DRV_LOG(ERR, "no memory for RNDIS init");
 		return -ENXIO;
@@ -1102,6 +1134,10 @@ hn_rndis_attach(struct hn_data *hv)
 void
 hn_rndis_detach(struct hn_data *hv)
 {
+	struct rte_eth_dev *dev = &rte_eth_devices[hv->port_id];
+
+	rte_eal_alarm_cancel(hn_rndis_link_alarm, dev);
+
 	/* Halt the RNDIS. */
 	hn_rndis_halt(hv);
 }

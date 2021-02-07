@@ -522,6 +522,9 @@ rte_pmd_ixgbe_macsec_enable(uint16_t port, uint8_t en, uint8_t rp)
 
 	dev = &rte_eth_devices[port];
 
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
 	macsec_setting.offload_en = 1;
 	macsec_setting.encrypt_en = en;
 	macsec_setting.replayprotect_en = rp;
@@ -541,6 +544,9 @@ rte_pmd_ixgbe_macsec_disable(uint16_t port)
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
 
 	dev = &rte_eth_devices[port];
+
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
 
 	ixgbe_dev_macsec_setting_reset(dev);
 
@@ -1131,5 +1137,38 @@ rte_pmd_ixgbe_mdio_unlocked_write(uint16_t port, uint32_t reg_addr,
 			      "PHY write cmd didn't complete\n");
 		return IXGBE_ERR_PHY;
 	}
+	return 0;
+}
+
+int
+rte_pmd_ixgbe_get_fdir_info(uint16_t port, struct rte_eth_fdir_info *fdir_info)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	ixgbe_fdir_info_get(dev, fdir_info);
+
+	return 0;
+}
+
+int
+rte_pmd_ixgbe_get_fdir_stats(uint16_t port,
+			     struct rte_eth_fdir_stats *fdir_stats)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port, -ENODEV);
+
+	dev = &rte_eth_devices[port];
+	if (!is_ixgbe_supported(dev))
+		return -ENOTSUP;
+
+	ixgbe_fdir_stats_get(dev, fdir_stats);
+
 	return 0;
 }

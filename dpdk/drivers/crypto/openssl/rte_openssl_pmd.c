@@ -2037,6 +2037,26 @@ process_asym_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 	return retval;
 }
 
+static void
+copy_plaintext(struct rte_mbuf *m_src, struct rte_mbuf *m_dst,
+		struct rte_crypto_op *op)
+{
+	uint8_t *p_src, *p_dst;
+
+	p_src = rte_pktmbuf_mtod(m_src, uint8_t *);
+	p_dst = rte_pktmbuf_mtod(m_dst, uint8_t *);
+
+	/**
+	 * Copy the content between cipher offset and auth offset
+	 * for generating correct digest.
+	 */
+	if (op->sym->cipher.data.offset > op->sym->auth.data.offset)
+		memcpy(p_dst + op->sym->auth.data.offset,
+				p_src + op->sym->auth.data.offset,
+				op->sym->cipher.data.offset -
+				op->sym->auth.data.offset);
+}
+
 /** Process crypto operation for mbuf */
 static int
 process_op(struct openssl_qp *qp, struct rte_crypto_op *op,
@@ -2059,6 +2079,9 @@ process_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 		break;
 	case OPENSSL_CHAIN_CIPHER_AUTH:
 		process_openssl_cipher_op(op, sess, msrc, mdst);
+		/* OOP */
+		if (msrc != mdst)
+			copy_plaintext(msrc, mdst, op);
 		process_openssl_auth_op(qp, op, sess, mdst, mdst);
 		break;
 	case OPENSSL_CHAIN_AUTH_CIPHER:
@@ -2183,7 +2206,8 @@ cryptodev_openssl_create(const char *name,
 			RTE_CRYPTODEV_FF_OOP_LB_IN_LB_OUT |
 			RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_EXP |
-			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT;
+			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT |
+			RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
 
 	internals = dev->data->dev_private;
 
@@ -2254,8 +2278,4 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_OPENSSL_PMD,
 	"socket_id=<int>");
 RTE_PMD_REGISTER_CRYPTO_DRIVER(openssl_crypto_drv,
 		cryptodev_openssl_pmd_drv.driver, cryptodev_driver_id);
-
-RTE_INIT(openssl_init_log)
-{
-	openssl_logtype_driver = rte_log_register("pmd.crypto.openssl");
-}
+RTE_LOG_REGISTER(openssl_logtype_driver, pmd.crypto.openssl, INFO);

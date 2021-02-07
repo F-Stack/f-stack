@@ -11,7 +11,7 @@
 #include "qat_sym_capabilities.h"
 #include "qat_asym_capabilities.h"
 
-uint8_t cryptodev_qat_asym_driver_id;
+uint8_t qat_asym_driver_id;
 
 static const struct rte_cryptodev_capabilities qat_gen1_asym_capabilities[] = {
 	QAT_BASE_GEN1_ASYM_CAPABILITIES,
@@ -63,7 +63,7 @@ static void qat_asym_dev_info_get(struct rte_cryptodev *dev,
 							QAT_SERVICE_ASYMMETRIC);
 		info->feature_flags = dev->feature_flags;
 		info->capabilities = internals->qat_dev_capabilities;
-		info->driver_id = cryptodev_qat_asym_driver_id;
+		info->driver_id = qat_asym_driver_id;
 		/* No limit of number of sessions */
 		info->sym.max_nb_sessions = 0;
 	}
@@ -145,7 +145,6 @@ static int qat_asym_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	}
 
 	qat_qp_conf.hw = qp_hw_data;
-	qat_qp_conf.build_request = qat_asym_build_request;
 	qat_qp_conf.cookie_size = sizeof(struct qat_asym_op_cookie);
 	qat_qp_conf.nb_descriptors = qp_conf->nb_descriptors;
 	qat_qp_conf.socket_id = socket_id;
@@ -160,6 +159,7 @@ static int qat_asym_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 							= *qp_addr;
 
 	qp = (struct qat_qp *)*qp_addr;
+	qp->min_enq_burst_threshold = qat_private->min_enq_burst_threshold;
 
 	for (i = 0; i < qp->nb_descriptors; i++) {
 		int j;
@@ -202,7 +202,6 @@ struct rte_cryptodev_ops crypto_qat_ops = {
 	.stats_reset		= qat_asym_stats_reset,
 	.queue_pair_setup	= qat_asym_qp_setup,
 	.queue_pair_release	= qat_asym_qp_release,
-	.queue_pair_count	= NULL,
 
 	/* Crypto related operations */
 	.asym_session_get_size	= qat_asym_session_get_private_size,
@@ -235,35 +234,54 @@ static const struct rte_driver cryptodev_qat_asym_driver = {
 };
 
 int
-qat_asym_dev_create(struct qat_pci_device *qat_pci_dev)
+qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
+		struct qat_dev_cmd_param *qat_dev_cmd_param)
 {
+	int i = 0;
+	struct qat_device_info *qat_dev_instance =
+			&qat_pci_devs[qat_pci_dev->qat_dev_id];
 	struct rte_cryptodev_pmd_init_params init_params = {
 			.name = "",
-			.socket_id = qat_pci_dev->pci_dev->device.numa_node,
+			.socket_id =
+				qat_dev_instance->pci_dev->device.numa_node,
 			.private_data_size = sizeof(struct qat_asym_dev_private)
 	};
 	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
+	char capa_memz_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	struct rte_cryptodev *cryptodev;
 	struct qat_asym_dev_private *internals;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		qat_pci_dev->qat_asym_driver_id =
+				qat_asym_driver_id;
+	} else if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		if (qat_pci_dev->qat_asym_driver_id !=
+				qat_asym_driver_id) {
+			QAT_LOG(ERR,
+				"Device %s have different driver id than corresponding device in primary process",
+				name);
+			return -(EFAULT);
+		}
+	}
 
 	snprintf(name, RTE_CRYPTODEV_NAME_MAX_LEN, "%s_%s",
 			qat_pci_dev->name, "asym");
 	QAT_LOG(DEBUG, "Creating QAT ASYM device %s\n", name);
 
 	/* Populate subset device to use in cryptodev device creation */
-	qat_pci_dev->asym_rte_dev.driver = &cryptodev_qat_asym_driver;
-	qat_pci_dev->asym_rte_dev.numa_node =
-				qat_pci_dev->pci_dev->device.numa_node;
-	qat_pci_dev->asym_rte_dev.devargs = NULL;
+	qat_dev_instance->asym_rte_dev.driver = &cryptodev_qat_asym_driver;
+	qat_dev_instance->asym_rte_dev.numa_node =
+			qat_dev_instance->pci_dev->device.numa_node;
+	qat_dev_instance->asym_rte_dev.devargs = NULL;
 
 	cryptodev = rte_cryptodev_pmd_create(name,
-			&(qat_pci_dev->asym_rte_dev), &init_params);
+			&(qat_dev_instance->asym_rte_dev), &init_params);
 
 	if (cryptodev == NULL)
 		return -ENODEV;
 
-	qat_pci_dev->asym_rte_dev.name = cryptodev->data->name;
-	cryptodev->driver_id = cryptodev_qat_asym_driver_id;
+	qat_dev_instance->asym_rte_dev.name = cryptodev->data->name;
+	cryptodev->driver_id = qat_asym_driver_id;
 	cryptodev->dev_ops = &crypto_qat_ops;
 
 	cryptodev->enqueue_burst = qat_asym_pmd_enqueue_op_burst;
@@ -274,13 +292,49 @@ qat_asym_dev_create(struct qat_pci_device *qat_pci_dev)
 			RTE_CRYPTODEV_FF_ASYM_SESSIONLESS |
 			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_EXP |
 			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	snprintf(capa_memz_name, RTE_CRYPTODEV_NAME_MAX_LEN,
+			"QAT_ASYM_CAPA_GEN_%d",
+			qat_pci_dev->qat_dev_gen);
+
 	internals = cryptodev->data->dev_private;
 	internals->qat_dev = qat_pci_dev;
-	qat_pci_dev->asym_dev = internals;
-
 	internals->asym_dev_id = cryptodev->data->dev_id;
 	internals->qat_dev_capabilities = qat_gen1_asym_capabilities;
 
+	internals->capa_mz = rte_memzone_lookup(capa_memz_name);
+	if (internals->capa_mz == NULL) {
+		internals->capa_mz = rte_memzone_reserve(capa_memz_name,
+			sizeof(qat_gen1_asym_capabilities),
+			rte_socket_id(), 0);
+	}
+	if (internals->capa_mz == NULL) {
+		QAT_LOG(DEBUG,
+			"Error allocating memzone for capabilities, destroying PMD for %s",
+			name);
+		rte_cryptodev_pmd_destroy(cryptodev);
+		memset(&qat_dev_instance->asym_rte_dev, 0,
+			sizeof(qat_dev_instance->asym_rte_dev));
+		return -EFAULT;
+	}
+
+	memcpy(internals->capa_mz->addr, qat_gen1_asym_capabilities,
+			sizeof(qat_gen1_asym_capabilities));
+	internals->qat_dev_capabilities = internals->capa_mz->addr;
+
+	while (1) {
+		if (qat_dev_cmd_param[i].name == NULL)
+			break;
+		if (!strcmp(qat_dev_cmd_param[i].name, ASYM_ENQ_THRESHOLD_NAME))
+			internals->min_enq_burst_threshold =
+					qat_dev_cmd_param[i].val;
+		i++;
+	}
+
+	qat_pci_dev->asym_dev = internals;
 	QAT_LOG(DEBUG, "Created QAT ASYM device %s as cryptodev instance %d",
 			cryptodev->data->name, internals->asym_dev_id);
 	return 0;
@@ -295,12 +349,14 @@ qat_asym_dev_destroy(struct qat_pci_device *qat_pci_dev)
 		return -ENODEV;
 	if (qat_pci_dev->asym_dev == NULL)
 		return 0;
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		rte_memzone_free(qat_pci_dev->asym_dev->capa_mz);
 
 	/* free crypto device */
 	cryptodev = rte_cryptodev_pmd_get_dev(
 			qat_pci_dev->asym_dev->asym_dev_id);
 	rte_cryptodev_pmd_destroy(cryptodev);
-	qat_pci_dev->asym_rte_dev.name = NULL;
+	qat_pci_devs[qat_pci_dev->qat_dev_id].asym_rte_dev.name = NULL;
 	qat_pci_dev->asym_dev = NULL;
 
 	return 0;
@@ -309,4 +365,4 @@ qat_asym_dev_destroy(struct qat_pci_device *qat_pci_dev)
 static struct cryptodev_driver qat_crypto_drv;
 RTE_PMD_REGISTER_CRYPTO_DRIVER(qat_crypto_drv,
 		cryptodev_qat_asym_driver,
-		cryptodev_qat_asym_driver_id);
+		qat_asym_driver_id);

@@ -143,10 +143,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -348,10 +345,10 @@ print_stats(void)
 {
 	uint16_t i;
 	struct rte_eth_stats eth_stats;
-	unsigned int lcore_id, last_lcore_id, master_lcore_id, end_w_lcore_id;
+	unsigned int lcore_id, last_lcore_id, main_lcore_id, end_w_lcore_id;
 
 	last_lcore_id   = get_last_lcore_id();
-	master_lcore_id = rte_get_master_lcore();
+	main_lcore_id = rte_get_main_lcore();
 	end_w_lcore_id  = get_previous_lcore_id(last_lcore_id);
 
 	printf("\nRX thread stats:\n");
@@ -363,7 +360,7 @@ print_stats(void)
 	for (lcore_id = 0; lcore_id <= end_w_lcore_id; lcore_id++) {
 		if (insight_worker
 			&& rte_lcore_is_enabled(lcore_id)
-			&& lcore_id != master_lcore_id) {
+			&& lcore_id != main_lcore_id) {
 			printf("\nWorker thread stats on core [%u]:\n",
 					lcore_id);
 			printf(" - Pkts deqd from workers ring:		%"PRIu64"\n",
@@ -454,7 +451,7 @@ rx_thread(struct rte_ring *ring_out)
 
 				/* mark sequence number */
 				for (i = 0; i < nb_rx_pkts; )
-					pkts[i++]->seqn = seqn++;
+					*rte_reorder_seqn(pkts[i++]) = seqn++;
 
 				/* enqueue to rx_to_workers ring */
 				ret = rte_ring_enqueue_burst(ring_out,
@@ -661,7 +658,7 @@ main(int argc, char **argv)
 {
 	int ret;
 	unsigned nb_ports;
-	unsigned int lcore_id, last_lcore_id, master_lcore_id;
+	unsigned int lcore_id, last_lcore_id, main_lcore_id;
 	uint16_t port_id;
 	uint16_t nb_ports_available;
 	struct worker_thread_args worker_args = {NULL, NULL};
@@ -675,7 +672,7 @@ main(int argc, char **argv)
 	/* Initialize EAL */
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
-		return -1;
+		rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
 
 	argc -= ret;
 	argv += ret;
@@ -683,7 +680,7 @@ main(int argc, char **argv)
 	/* Parse the application specific arguments */
 	ret = parse_args(argc, argv);
 	if (ret < 0)
-		return -1;
+		rte_exit(EXIT_FAILURE, "Invalid packet_ordering arguments\n");
 
 	/* Check if we have enought cores */
 	if (rte_lcore_count() < 3)
@@ -748,32 +745,32 @@ main(int argc, char **argv)
 	}
 
 	last_lcore_id   = get_last_lcore_id();
-	master_lcore_id = rte_get_master_lcore();
+	main_lcore_id = rte_get_main_lcore();
 
 	worker_args.ring_in  = rx_to_workers;
 	worker_args.ring_out = workers_to_tx;
 
-	/* Start worker_thread() on all the available slave cores but the last 1 */
+	/* Start worker_thread() on all the available worker cores but the last 1 */
 	for (lcore_id = 0; lcore_id <= get_previous_lcore_id(last_lcore_id); lcore_id++)
-		if (rte_lcore_is_enabled(lcore_id) && lcore_id != master_lcore_id)
+		if (rte_lcore_is_enabled(lcore_id) && lcore_id != main_lcore_id)
 			rte_eal_remote_launch(worker_thread, (void *)&worker_args,
 					lcore_id);
 
 	if (disable_reorder) {
-		/* Start tx_thread() on the last slave core */
+		/* Start tx_thread() on the last worker core */
 		rte_eal_remote_launch((lcore_function_t *)tx_thread, workers_to_tx,
 				last_lcore_id);
 	} else {
 		send_args.ring_in = workers_to_tx;
-		/* Start send_thread() on the last slave core */
+		/* Start send_thread() on the last worker core */
 		rte_eal_remote_launch((lcore_function_t *)send_thread,
 				(void *)&send_args, last_lcore_id);
 	}
 
-	/* Start rx_thread() on the master core */
+	/* Start rx_thread() on the main core */
 	rx_thread(rx_to_workers);
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

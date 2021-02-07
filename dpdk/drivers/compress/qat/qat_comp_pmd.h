@@ -5,7 +5,7 @@
 #ifndef _QAT_COMP_PMD_H_
 #define _QAT_COMP_PMD_H_
 
-#ifdef RTE_LIBRTE_COMPRESSDEV
+#ifdef RTE_LIB_COMPRESSDEV
 
 #include <rte_compressdev.h>
 #include <rte_compressdev_pmd.h>
@@ -32,10 +32,14 @@ struct qat_comp_dev_private {
 	/**< The device's pool for qat_comp_xforms */
 	struct rte_mempool *streampool;
 	/**< The device's pool for qat_comp_streams */
+	const struct rte_memzone *capa_mz;
+	/* Shared memzone for storing capabilities */
+	uint16_t min_enq_burst_threshold;
 };
 
 int
-qat_comp_dev_create(struct qat_pci_device *qat_pci_dev);
+qat_comp_dev_create(struct qat_pci_device *qat_pci_dev,
+		struct qat_dev_cmd_param *qat_dev_cmd_param);
 
 int
 qat_comp_dev_destroy(struct qat_pci_device *qat_pci_dev);

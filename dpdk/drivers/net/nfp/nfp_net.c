@@ -50,7 +50,7 @@
 #include <errno.h>
 
 /* Prototypes */
-static void nfp_net_close(struct rte_eth_dev *dev);
+static int nfp_net_close(struct rte_eth_dev *dev);
 static int nfp_net_configure(struct rte_eth_dev *dev);
 static void nfp_net_dev_interrupt_handler(void *param);
 static void nfp_net_dev_interrupt_delayed_handler(void *param);
@@ -80,7 +80,7 @@ static int nfp_net_start(struct rte_eth_dev *dev);
 static int nfp_net_stats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_stats *stats);
 static int nfp_net_stats_reset(struct rte_eth_dev *dev);
-static void nfp_net_stop(struct rte_eth_dev *dev);
+static int nfp_net_stop(struct rte_eth_dev *dev);
 static uint16_t nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts);
 
@@ -788,7 +788,7 @@ error:
 }
 
 /* Stop device: disable rx and tx functions to allow for reconfiguring. */
-static void
+static int
 nfp_net_stop(struct rte_eth_dev *dev)
 {
 	int i;
@@ -819,6 +819,8 @@ nfp_net_stop(struct rte_eth_dev *dev)
 			nfp_eth_set_configured(dev->process_private,
 					       hw->pf_port_idx, 0);
 	}
+
+	return 0;
 }
 
 /* Set the link up. */
@@ -864,12 +866,15 @@ nfp_net_set_link_down(struct rte_eth_dev *dev)
 }
 
 /* Reset and stop device. The device can not be restarted. */
-static void
+static int
 nfp_net_close(struct rte_eth_dev *dev)
 {
 	struct nfp_net_hw *hw;
 	struct rte_pci_device *pci_dev;
 	int i;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
 
 	PMD_INIT_LOG(DEBUG, "Close");
 
@@ -906,6 +911,8 @@ nfp_net_close(struct rte_eth_dev *dev)
 	 * The ixgbe PMD driver disables the pcie master on the
 	 * device. The i40e does not...
 	 */
+
+	return 0;
 }
 
 static int
@@ -1250,6 +1257,20 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.tx_rs_thresh = DEFAULT_TX_RSBIT_THRESH,
 	};
 
+	dev_info->rx_desc_lim = (struct rte_eth_desc_lim) {
+		.nb_max = NFP_NET_MAX_RX_DESC,
+		.nb_min = NFP_NET_MIN_RX_DESC,
+		.nb_align = NFP_ALIGN_RING_DESC,
+	};
+
+	dev_info->tx_desc_lim = (struct rte_eth_desc_lim) {
+		.nb_max = NFP_NET_MAX_TX_DESC,
+		.nb_min = NFP_NET_MIN_TX_DESC,
+		.nb_align = NFP_ALIGN_RING_DESC,
+		.nb_seg_max = NFP_TX_MAX_SEG,
+		.nb_mtu_seg_max = NFP_TX_MAX_MTU_SEG,
+	};
+
 	dev_info->flow_type_rss_offloads = ETH_RSS_IPV4 |
 					   ETH_RSS_NONFRAG_IPV4_TCP |
 					   ETH_RSS_NONFRAG_IPV4_UDP |
@@ -1377,9 +1398,9 @@ nfp_net_dev_link_status_print(struct rte_eth_dev *dev)
 		PMD_DRV_LOG(INFO, " Port %d: Link Down",
 			    dev->data->port_id);
 
-	PMD_DRV_LOG(INFO, "PCI Address: %04d:%02d:%02d:%d",
-		pci_dev->addr.domain, pci_dev->addr.bus,
-		pci_dev->addr.devid, pci_dev->addr.function);
+	PMD_DRV_LOG(INFO, "PCI Address: " PCI_PRI_FMT,
+		    pci_dev->addr.domain, pci_dev->addr.bus,
+		    pci_dev->addr.devid, pci_dev->addr.function);
 }
 
 /* Interrupt configuration and handling */
@@ -1460,7 +1481,7 @@ nfp_net_dev_interrupt_delayed_handler(void *param)
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
 
 	nfp_net_link_update(dev, 0);
-	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
 
 	nfp_net_dev_link_status_print(dev);
 
@@ -1513,15 +1534,17 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	const struct rte_memzone *tz;
 	struct nfp_net_rxq *rxq;
 	struct nfp_net_hw *hw;
+	uint32_t rx_desc_sz;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	PMD_INIT_FUNC_TRACE();
 
 	/* Validating number of descriptors */
-	if (((nb_desc * sizeof(struct nfp_net_rx_desc)) % 128) != 0 ||
-	    (nb_desc > NFP_NET_MAX_RX_DESC) ||
-	    (nb_desc < NFP_NET_MIN_RX_DESC)) {
+	rx_desc_sz = nb_desc * sizeof(struct nfp_net_rx_desc);
+	if (rx_desc_sz % NFP_ALIGN_RING_DESC != 0 ||
+	    nb_desc > NFP_NET_MAX_RX_DESC ||
+	    nb_desc < NFP_NET_MIN_RX_DESC) {
 		PMD_DRV_LOG(ERR, "Wrong nb_desc value");
 		return -EINVAL;
 	}
@@ -1660,15 +1683,17 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	struct nfp_net_txq *txq;
 	uint16_t tx_free_thresh;
 	struct nfp_net_hw *hw;
+	uint32_t tx_desc_sz;
 
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	PMD_INIT_FUNC_TRACE();
 
 	/* Validating number of descriptors */
-	if (((nb_desc * sizeof(struct nfp_net_tx_desc)) % 128) != 0 ||
-	    (nb_desc > NFP_NET_MAX_TX_DESC) ||
-	    (nb_desc < NFP_NET_MIN_TX_DESC)) {
+	tx_desc_sz = nb_desc * sizeof(struct nfp_net_tx_desc);
+	if (tx_desc_sz % NFP_ALIGN_RING_DESC != 0 ||
+	    nb_desc > NFP_NET_MAX_TX_DESC ||
+	    nb_desc < NFP_NET_MIN_TX_DESC) {
 		PMD_DRV_LOG(ERR, "Wrong nb_desc value");
 		return -EINVAL;
 	}
@@ -2353,11 +2378,6 @@ nfp_net_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	hw = NFP_NET_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	new_ctrl = 0;
 
-	if ((mask & ETH_VLAN_FILTER_OFFLOAD) ||
-	    (mask & ETH_VLAN_EXTEND_OFFLOAD))
-		PMD_DRV_LOG(INFO, "No support for ETH_VLAN_FILTER_OFFLOAD or"
-			" ETH_VLAN_EXTEND_OFFLOAD");
-
 	/* Enable vlan strip if it is not configured yet */
 	if ((mask & ETH_VLAN_STRIP_OFFLOAD) &&
 	    !(hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN))
@@ -2626,6 +2646,9 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 	if (cfg_rss_ctrl & NFP_NET_CFG_RSS_IPV6)
 		rss_hf |= ETH_RSS_NONFRAG_IPV4_UDP | ETH_RSS_NONFRAG_IPV6_UDP;
 
+	/* Propagate current RSS hash functions to caller */
+	rss_conf->rss_hf = rss_hf;
+
 	/* Reading the key size */
 	rss_conf->rss_key_len = nn_cfg_readl(hw, NFP_NET_CFG_RSS_KEY_SZ);
 
@@ -2703,7 +2726,6 @@ static const struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.rss_hash_conf_get	= nfp_net_rss_hash_conf_get,
 	.rx_queue_setup		= nfp_net_rx_queue_setup,
 	.rx_queue_release	= nfp_net_rx_queue_release,
-	.rx_queue_count		= nfp_net_rx_queue_count,
 	.tx_queue_setup		= nfp_net_tx_queue_setup,
 	.tx_queue_release	= nfp_net_tx_queue_release,
 	.rx_queue_intr_enable   = nfp_rx_queue_intr_enable,
@@ -2787,6 +2809,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	}
 
 	eth_dev->dev_ops = &nfp_net_eth_dev_ops;
+	eth_dev->rx_queue_count = nfp_net_rx_queue_count;
 	eth_dev->rx_pkt_burst = &nfp_net_recv_pkts;
 	eth_dev->tx_pkt_burst = &nfp_net_xmit_pkts;
 
@@ -2969,6 +2992,8 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	if (!(hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR))
 		eth_dev->data->dev_flags |= RTE_ETH_DEV_NOLIVE_MAC_ADDR;
 
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+
 	PMD_INIT_LOG(INFO, "port %d VendorID=0x%x DeviceID=0x%x "
 		     "mac=%02x:%02x:%02x:%02x:%02x:%02x",
 		     eth_dev->data->port_id, pci_dev->id.vendor_id,
@@ -3014,7 +3039,7 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 	size_t count, curlen, totlen = 0;
 	int err = 0;
 
-	PMD_CPP_LOG(DEBUG, "%s: offset size %lu, count_size: %lu\n", __func__,
+	PMD_CPP_LOG(DEBUG, "%s: offset size %zu, count_size: %zu\n", __func__,
 		sizeof(off_t), sizeof(size_t));
 
 	/* Reading the count param */
@@ -3033,9 +3058,9 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 	cpp_id = (offset >> 40) << 8;
 	nfp_offset = offset & ((1ull << 40) - 1);
 
-	PMD_CPP_LOG(DEBUG, "%s: count %lu and offset %ld\n", __func__, count,
+	PMD_CPP_LOG(DEBUG, "%s: count %zu and offset %jd\n", __func__, count,
 		offset);
-	PMD_CPP_LOG(DEBUG, "%s: cpp_id %08x and nfp_offset %ld\n", __func__,
+	PMD_CPP_LOG(DEBUG, "%s: cpp_id %08x and nfp_offset %jd\n", __func__,
 		cpp_id, nfp_offset);
 
 	/* Adjust length if not aligned */
@@ -3067,12 +3092,12 @@ nfp_cpp_bridge_serve_write(int sockfd, struct nfp_cpp *cpp)
 			if (len > sizeof(tmpbuf))
 				len = sizeof(tmpbuf);
 
-			PMD_CPP_LOG(DEBUG, "%s: Receive %u of %lu\n", __func__,
+			PMD_CPP_LOG(DEBUG, "%s: Receive %u of %zu\n", __func__,
 					   len, count);
 			err = recv(sockfd, tmpbuf, len, MSG_WAITALL);
 			if (err != (int)len) {
 				RTE_LOG(ERR, PMD,
-					"%s: error when receiving, %d of %lu\n",
+					"%s: error when receiving, %d of %zu\n",
 					__func__, err, count);
 				nfp_cpp_area_release(area);
 				nfp_cpp_area_free(area);
@@ -3116,7 +3141,7 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 	size_t count, curlen, totlen = 0;
 	int err = 0;
 
-	PMD_CPP_LOG(DEBUG, "%s: offset size %lu, count_size: %lu\n", __func__,
+	PMD_CPP_LOG(DEBUG, "%s: offset size %zu, count_size: %zu\n", __func__,
 		sizeof(off_t), sizeof(size_t));
 
 	/* Reading the count param */
@@ -3135,9 +3160,9 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 	cpp_id = (offset >> 40) << 8;
 	nfp_offset = offset & ((1ull << 40) - 1);
 
-	PMD_CPP_LOG(DEBUG, "%s: count %lu and offset %ld\n", __func__, count,
+	PMD_CPP_LOG(DEBUG, "%s: count %zu and offset %jd\n", __func__, count,
 			   offset);
-	PMD_CPP_LOG(DEBUG, "%s: cpp_id %08x and nfp_offset %ld\n", __func__,
+	PMD_CPP_LOG(DEBUG, "%s: cpp_id %08x and nfp_offset %jd\n", __func__,
 			   cpp_id, nfp_offset);
 
 	/* Adjust length if not aligned */
@@ -3174,13 +3199,13 @@ nfp_cpp_bridge_serve_read(int sockfd, struct nfp_cpp *cpp)
 				nfp_cpp_area_free(area);
 				return -EIO;
 			}
-			PMD_CPP_LOG(DEBUG, "%s: sending %u of %lu\n", __func__,
+			PMD_CPP_LOG(DEBUG, "%s: sending %u of %zu\n", __func__,
 					   len, count);
 
 			err = send(sockfd, tmpbuf, len, 0);
 			if (err != (int)len) {
 				RTE_LOG(ERR, PMD,
-					"%s: error when sending: %d of %lu\n",
+					"%s: error when sending: %d of %zu\n",
 					__func__, err, count);
 				nfp_cpp_area_release(area);
 				nfp_cpp_area_free(area);
@@ -3451,9 +3476,10 @@ nfp_pf_create_dev(struct rte_pci_device *dev, int port, int ports,
 probe_failed:
 	rte_free(port_name);
 	/* free ports private data if primary process */
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
 		rte_free(eth_dev->data->dev_private);
-
+		eth_dev->data->dev_private = NULL;
+	}
 	rte_eth_dev_release_port(eth_dev);
 
 	return retval;
@@ -3615,7 +3641,7 @@ static int nfp_pf_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	 * interface. Here we avoid this telling to the CPP init code to
 	 * use a lock file if UIO is being used.
 	 */
-	if (dev->kdrv == RTE_KDRV_VFIO)
+	if (dev->kdrv == RTE_PCI_KDRV_VFIO)
 		cpp = nfp_cpp_from_device_name(dev, 0);
 	else
 		cpp = nfp_cpp_from_device_name(dev, 1);
@@ -3682,9 +3708,6 @@ error:
 	return ret;
 }
 
-int nfp_logtype_init;
-int nfp_logtype_driver;
-
 static const struct rte_pci_id pci_id_nfp_pf_net_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
@@ -3723,6 +3746,8 @@ static int eth_nfp_pci_remove(struct rte_pci_device *pci_dev)
 	int port = 0;
 
 	eth_dev = rte_eth_dev_allocated(pci_dev->device.name);
+	if (eth_dev == NULL)
+		return 0; /* port already released */
 	if ((pci_dev->id.device_id == PCI_DEVICE_ID_NFP4000_PF_NIC) ||
 	    (pci_dev->id.device_id == PCI_DEVICE_ID_NFP6000_PF_NIC)) {
 		port = get_pf_port_number(eth_dev->data->name);
@@ -3768,16 +3793,8 @@ RTE_PMD_REGISTER_PCI_TABLE(net_nfp_pf, pci_id_nfp_pf_net_map);
 RTE_PMD_REGISTER_PCI_TABLE(net_nfp_vf, pci_id_nfp_vf_net_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_nfp_pf, "* igb_uio | uio_pci_generic | vfio");
 RTE_PMD_REGISTER_KMOD_DEP(net_nfp_vf, "* igb_uio | uio_pci_generic | vfio");
-
-RTE_INIT(nfp_init_log)
-{
-	nfp_logtype_init = rte_log_register("pmd.net.nfp.init");
-	if (nfp_logtype_init >= 0)
-		rte_log_set_level(nfp_logtype_init, RTE_LOG_NOTICE);
-	nfp_logtype_driver = rte_log_register("pmd.net.nfp.driver");
-	if (nfp_logtype_driver >= 0)
-		rte_log_set_level(nfp_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(nfp_logtype_init, pmd.net.nfp.init, NOTICE);
+RTE_LOG_REGISTER(nfp_logtype_driver, pmd.net.nfp.driver, NOTICE);
 /*
  * Local variables:
  * c-file-style: "Linux"

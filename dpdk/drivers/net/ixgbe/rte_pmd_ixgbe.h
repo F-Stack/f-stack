@@ -11,7 +11,9 @@
 #ifndef _PMD_IXGBE_H_
 #define _PMD_IXGBE_H_
 
-#include <rte_ethdev_driver.h>
+#include <rte_compat.h>
+#include <rte_ethdev.h>
+#include <rte_ether.h>
 
 /**
  * Notify VF when PF link status changes.
@@ -726,4 +728,37 @@ enum {
 __rte_experimental
 int
 rte_pmd_ixgbe_upd_fctrl_sbp(uint16_t port, int enable);
+
+/**
+ * Get port fdir info
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_info
+ *   The fdir info of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_ixgbe_get_fdir_info(uint16_t port, struct rte_eth_fdir_info *fdir_info);
+
+/**
+ * Get port fdir status
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_stats
+ *   The fdir status of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_ixgbe_get_fdir_stats(uint16_t port,
+			     struct rte_eth_fdir_stats *fdir_stats);
 #endif /* _PMD_IXGBE_H_ */

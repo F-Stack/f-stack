@@ -22,38 +22,6 @@ static uint8_t zuc_d[32] = {
 	0x5E, 0x26, 0x3C, 0x4D, 0x78, 0x9A, 0x47, 0xAC
 };
 
-static __rte_always_inline int
-cpt_is_algo_supported(struct rte_crypto_sym_xform *xform)
-{
-	/*
-	 * Microcode only supports the following combination.
-	 * Encryption followed by authentication
-	 * Authentication followed by decryption
-	 */
-	if (xform->next) {
-		if ((xform->type == RTE_CRYPTO_SYM_XFORM_AUTH) &&
-		    (xform->next->type == RTE_CRYPTO_SYM_XFORM_CIPHER) &&
-		    (xform->next->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT)) {
-			/* Unsupported as of now by microcode */
-			CPT_LOG_DP_ERR("Unsupported combination");
-			return -1;
-		}
-		if ((xform->type == RTE_CRYPTO_SYM_XFORM_CIPHER) &&
-		    (xform->next->type == RTE_CRYPTO_SYM_XFORM_AUTH) &&
-		    (xform->cipher.op == RTE_CRYPTO_CIPHER_OP_DECRYPT)) {
-			/* For GMAC auth there is no cipher operation */
-			if (xform->aead.algo != RTE_CRYPTO_AEAD_AES_GCM ||
-			    xform->next->auth.algo !=
-			    RTE_CRYPTO_AUTH_AES_GMAC) {
-				/* Unsupported as of now by microcode */
-				CPT_LOG_DP_ERR("Unsupported combination");
-				return -1;
-			}
-		}
-	}
-	return 0;
-}
-
 static __rte_always_inline void
 gen_key_snow3g(const uint8_t *ck, uint32_t *keyx)
 {
@@ -67,21 +35,62 @@ gen_key_snow3g(const uint8_t *ck, uint32_t *keyx)
 	}
 }
 
+static __rte_always_inline int
+cpt_mac_len_verify(struct rte_crypto_auth_xform *auth)
+{
+	uint16_t mac_len = auth->digest_length;
+	int ret;
+
+	switch (auth->algo) {
+	case RTE_CRYPTO_AUTH_MD5:
+	case RTE_CRYPTO_AUTH_MD5_HMAC:
+		ret = (mac_len == 16) ? 0 : -1;
+		break;
+	case RTE_CRYPTO_AUTH_SHA1:
+	case RTE_CRYPTO_AUTH_SHA1_HMAC:
+		ret = (mac_len == 20) ? 0 : -1;
+		break;
+	case RTE_CRYPTO_AUTH_SHA224:
+	case RTE_CRYPTO_AUTH_SHA224_HMAC:
+		ret = (mac_len == 28) ? 0 : -1;
+		break;
+	case RTE_CRYPTO_AUTH_SHA256:
+	case RTE_CRYPTO_AUTH_SHA256_HMAC:
+		ret = (mac_len == 32) ? 0 : -1;
+		break;
+	case RTE_CRYPTO_AUTH_SHA384:
+	case RTE_CRYPTO_AUTH_SHA384_HMAC:
+		ret = (mac_len == 48) ? 0 : -1;
+		break;
+	case RTE_CRYPTO_AUTH_SHA512:
+	case RTE_CRYPTO_AUTH_SHA512_HMAC:
+		ret = (mac_len == 64) ? 0 : -1;
+		break;
+	case RTE_CRYPTO_AUTH_NULL:
+		ret = 0;
+		break;
+	default:
+		ret = -1;
+	}
+
+	return ret;
+}
+
 static __rte_always_inline void
-cpt_fc_salt_update(void *ctx,
+cpt_fc_salt_update(struct cpt_ctx *cpt_ctx,
 		   uint8_t *salt)
 {
-	struct cpt_ctx *cpt_ctx = ctx;
-	memcpy(&cpt_ctx->fctx.enc.encr_iv, salt, 4);
+	mc_fc_context_t *fctx = &cpt_ctx->mc_ctx.fctx;
+	memcpy(fctx->enc.encr_iv, salt, 4);
 }
 
 static __rte_always_inline int
 cpt_fc_ciph_validate_key_aes(uint16_t key_len)
 {
 	switch (key_len) {
-	case CPT_BYTE_16:
-	case CPT_BYTE_24:
-	case CPT_BYTE_32:
+	case 16:
+	case 24:
+	case 32:
 		return 0;
 	default:
 		return -1;
@@ -109,9 +118,12 @@ cpt_fc_ciph_set_type(cipher_type_t type, struct cpt_ctx *ctx, uint16_t key_len)
 			return -1;
 		fc_type = FC_GEN;
 		break;
+	case CHACHA20:
+		fc_type = FC_GEN;
+		break;
 	case AES_XTS:
 		key_len = key_len / 2;
-		if (unlikely(key_len == CPT_BYTE_24)) {
+		if (unlikely(key_len == 24)) {
 			CPT_LOG_DP_ERR("Invalid AES key len for XTS");
 			return -1;
 		}
@@ -149,7 +161,7 @@ static __rte_always_inline void
 cpt_fc_ciph_set_key_passthrough(struct cpt_ctx *cpt_ctx, mc_fc_context_t *fctx)
 {
 	cpt_ctx->enc_cipher = 0;
-	CPT_P_ENC_CTRL(fctx).enc_cipher = 0;
+	fctx->enc.enc_cipher = 0;
 }
 
 static __rte_always_inline void
@@ -157,13 +169,13 @@ cpt_fc_ciph_set_key_set_aes_key_type(mc_fc_context_t *fctx, uint16_t key_len)
 {
 	mc_aes_type_t aes_key_type = 0;
 	switch (key_len) {
-	case CPT_BYTE_16:
+	case 16:
 		aes_key_type = AES_128_BIT;
 		break;
-	case CPT_BYTE_24:
+	case 24:
 		aes_key_type = AES_192_BIT;
 		break;
-	case CPT_BYTE_32:
+	case 32:
 		aes_key_type = AES_256_BIT;
 		break;
 	default:
@@ -171,17 +183,19 @@ cpt_fc_ciph_set_key_set_aes_key_type(mc_fc_context_t *fctx, uint16_t key_len)
 		CPT_LOG_DP_ERR("Invalid AES key len");
 		return;
 	}
-	CPT_P_ENC_CTRL(fctx).aes_key = aes_key_type;
+	fctx->enc.aes_key = aes_key_type;
 }
 
 static __rte_always_inline void
 cpt_fc_ciph_set_key_snow3g_uea2(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
+	mc_zuc_snow3g_ctx_t *zs_ctx = &cpt_ctx->mc_ctx.zs_ctx;
 	uint32_t keyx[4];
+
 	cpt_ctx->snow3g = 1;
 	gen_key_snow3g(key, keyx);
-	memcpy(cpt_ctx->zs_ctx.ci_key, keyx, key_len);
+	memcpy(zs_ctx->ci_key, keyx, key_len);
 	cpt_ctx->zsk_flags = 0;
 }
 
@@ -189,9 +203,11 @@ static __rte_always_inline void
 cpt_fc_ciph_set_key_zuc_eea3(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
+	mc_zuc_snow3g_ctx_t *zs_ctx = &cpt_ctx->mc_ctx.zs_ctx;
+
 	cpt_ctx->snow3g = 0;
-	memcpy(cpt_ctx->zs_ctx.ci_key, key, key_len);
-	memcpy(cpt_ctx->zs_ctx.zuc_const, zuc_d, 32);
+	memcpy(zs_ctx->ci_key, key, key_len);
+	memcpy(zs_ctx->zuc_const, zuc_d, 32);
 	cpt_ctx->zsk_flags = 0;
 }
 
@@ -199,8 +215,10 @@ static __rte_always_inline void
 cpt_fc_ciph_set_key_kasumi_f8_ecb(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
+	mc_kasumi_ctx_t *k_ctx = &cpt_ctx->mc_ctx.k_ctx;
+
 	cpt_ctx->k_ecb = 1;
-	memcpy(cpt_ctx->k_ctx.ci_key, key, key_len);
+	memcpy(k_ctx->ci_key, key, key_len);
 	cpt_ctx->zsk_flags = 0;
 }
 
@@ -208,17 +226,17 @@ static __rte_always_inline void
 cpt_fc_ciph_set_key_kasumi_f8_cbc(struct cpt_ctx *cpt_ctx, const uint8_t *key,
 		uint16_t key_len)
 {
-	memcpy(cpt_ctx->k_ctx.ci_key, key, key_len);
+	mc_kasumi_ctx_t *k_ctx = &cpt_ctx->mc_ctx.k_ctx;
+
+	memcpy(k_ctx->ci_key, key, key_len);
 	cpt_ctx->zsk_flags = 0;
 }
 
 static __rte_always_inline int
-cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, const uint8_t *key,
-		    uint16_t key_len, uint8_t *salt)
+cpt_fc_ciph_set_key(struct cpt_ctx *cpt_ctx, cipher_type_t type,
+		    const uint8_t *key, uint16_t key_len, uint8_t *salt)
 {
-	struct cpt_ctx *cpt_ctx = ctx;
-	mc_fc_context_t *fctx = &cpt_ctx->fctx;
-	uint64_t *ctrl_flags = NULL;
+	mc_fc_context_t *fctx = &cpt_ctx->mc_ctx.fctx;
 	int ret;
 
 	ret = cpt_fc_ciph_set_type(type, cpt_ctx, key_len);
@@ -226,19 +244,20 @@ cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, const uint8_t *key,
 		return -1;
 
 	if (cpt_ctx->fc_type == FC_GEN) {
-		ctrl_flags = (uint64_t *)&(fctx->enc.enc_ctrl.flags);
-		*ctrl_flags = rte_be_to_cpu_64(*ctrl_flags);
 		/*
 		 * We need to always say IV is from DPTR as user can
 		 * sometimes iverride IV per operation.
 		 */
-		CPT_P_ENC_CTRL(fctx).iv_source = CPT_FROM_DPTR;
+		fctx->enc.iv_source = CPT_FROM_DPTR;
+
+		if (cpt_ctx->auth_key_len > 64)
+			return -1;
 	}
 
 	switch (type) {
 	case PASSTHROUGH:
 		cpt_fc_ciph_set_key_passthrough(cpt_ctx, fctx);
-		goto fc_success;
+		goto success;
 	case DES3_CBC:
 		/* CPT performs DES using 3DES with the 8B DES-key
 		 * replicated 2 more times to match the 24B 3DES-key.
@@ -255,12 +274,13 @@ cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, const uint8_t *key,
 		break;
 	case DES3_ECB:
 		/* For DES3_ECB IV need to be from CTX. */
-		CPT_P_ENC_CTRL(fctx).iv_source = CPT_FROM_CTX;
+		fctx->enc.iv_source = CPT_FROM_CTX;
 		break;
 	case AES_CBC:
 	case AES_ECB:
 	case AES_CFB:
 	case AES_CTR:
+	case CHACHA20:
 		cpt_fc_ciph_set_key_set_aes_key_type(fctx, key_len);
 		break;
 	case AES_GCM:
@@ -273,7 +293,7 @@ cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, const uint8_t *key,
 			 * and nothing else
 			 */
 			if (!key)
-				goto fc_success;
+				goto success;
 		}
 		cpt_fc_ciph_set_key_set_aes_key_type(fctx, key_len);
 		break;
@@ -305,13 +325,9 @@ cpt_fc_ciph_set_key(void *ctx, cipher_type_t type, const uint8_t *key,
 
 	/* For GMAC auth, cipher must be NULL */
 	if (cpt_ctx->hash_type != GMAC_TYPE)
-		CPT_P_ENC_CTRL(fctx).enc_cipher = type;
+		fctx->enc.enc_cipher = type;
 
 	memcpy(fctx->enc.encr_key, key, key_len);
-
-fc_success:
-	if (ctrl_flags != NULL)
-		*ctrl_flags = rte_cpu_to_be_64(*ctrl_flags);
 
 success:
 	cpt_ctx->enc_cipher = type;
@@ -471,10 +487,8 @@ cpt_digest_gen_prep(uint32_t flags,
 	uint32_t g_size_bytes, s_size_bytes;
 	uint64_t dptr_dma, rptr_dma;
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
 	void *c_vaddr, *m_vaddr;
 	uint64_t c_dma, m_dma;
-	opcode_info_t opcode;
 
 	ctx = params->ctx_buf.vaddr;
 	meta_p = &params->meta_buf;
@@ -509,30 +523,26 @@ cpt_digest_gen_prep(uint32_t flags,
 	data_len = AUTH_DLEN(d_lens);
 
 	/*GP op header */
-	vq_cmd_w0.u64 = 0;
+	vq_cmd_w0.s.opcode.minor = 0;
 	vq_cmd_w0.s.param2 = ((uint16_t)hash_type << 8);
 	if (ctx->hmac) {
-		opcode.s.major = CPT_MAJOR_OP_HMAC | CPT_DMA_MODE;
+		vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_HMAC | CPT_DMA_MODE;
 		vq_cmd_w0.s.param1 = key_len;
-		vq_cmd_w0.s.dlen = data_len + ROUNDUP8(key_len);
+		vq_cmd_w0.s.dlen = data_len + RTE_ALIGN_CEIL(key_len, 8);
 	} else {
-		opcode.s.major = CPT_MAJOR_OP_HASH | CPT_DMA_MODE;
+		vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_HASH | CPT_DMA_MODE;
 		vq_cmd_w0.s.param1 = 0;
 		vq_cmd_w0.s.dlen = data_len;
 	}
 
-	opcode.s.minor = 0;
-
 	/* Null auth only case enters the if */
 	if (unlikely(!hash_type && !ctx->enc_cipher)) {
-		opcode.s.major = CPT_MAJOR_OP_MISC;
+		vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_MISC;
 		/* Minor op is passthrough */
-		opcode.s.minor = 0x03;
+		vq_cmd_w0.s.opcode.minor = 0x03;
 		/* Send out completion code only */
 		vq_cmd_w0.s.param2 = 0x1;
 	}
-
-	vq_cmd_w0.s.opcode = opcode.flags;
 
 	/* DPTR has SG list */
 	in_buffer = m_vaddr;
@@ -554,7 +564,8 @@ cpt_digest_gen_prep(uint32_t flags,
 		uint64_t k_dma = params->ctx_buf.dma_addr +
 			offsetof(struct cpt_ctx, auth_key);
 		/* Key */
-		i = fill_sg_comp(gather_comp, i, k_dma, ROUNDUP8(key_len));
+		i = fill_sg_comp(gather_comp, i, k_dma,
+				 RTE_ALIGN_CEIL(key_len, 8));
 	}
 
 	/* input data */
@@ -624,9 +635,6 @@ cpt_digest_gen_prep(uint32_t flags,
 	req->ist.ei1 = dptr_dma;
 	req->ist.ei2 = rptr_dma;
 
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -634,7 +642,6 @@ cpt_digest_gen_prep(uint32_t flags,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op = op;
 
@@ -662,12 +669,10 @@ cpt_enc_hmac_prep(uint32_t flags,
 	uint32_t encr_data_len, auth_data_len, aad_len = 0;
 	uint32_t passthrough_len = 0;
 	void *m_vaddr, *offset_vaddr;
-	uint64_t m_dma, offset_dma, ctx_dma;
+	uint64_t m_dma, offset_dma;
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
 	void *c_vaddr;
 	uint64_t c_dma;
-	opcode_info_t opcode;
 
 	meta_p = &fc_params->meta_buf;
 	m_vaddr = meta_p->vaddr;
@@ -718,9 +723,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
 
-	if (hash_type == GMAC_TYPE)
-		encr_data_len = 0;
-
 	if (unlikely(!(flags & VALID_IV_BUF))) {
 		iv_len = 0;
 		iv_offset = ENCR_IV_OFFSET(d_offs);
@@ -749,22 +751,24 @@ cpt_enc_hmac_prep(uint32_t flags,
 	}
 
 	/* Encryption */
-	opcode.s.major = CPT_MAJOR_OP_FC;
-	opcode.s.minor = 0;
+	vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_FC;
+	vq_cmd_w0.s.opcode.minor = 0;
+
+	if (hash_type == GMAC_TYPE) {
+		encr_offset = 0;
+		encr_data_len = 0;
+	}
 
 	auth_dlen = auth_offset + auth_data_len;
 	enc_dlen = encr_data_len + encr_offset;
 	if (unlikely(encr_data_len & 0xf)) {
 		if ((cipher_type == DES3_CBC) || (cipher_type == DES3_ECB))
-			enc_dlen = ROUNDUP8(encr_data_len) + encr_offset;
+			enc_dlen = RTE_ALIGN_CEIL(encr_data_len, 8) +
+					encr_offset;
 		else if (likely((cipher_type == AES_CBC) ||
 				(cipher_type == AES_ECB)))
-			enc_dlen = ROUNDUP16(encr_data_len) + encr_offset;
-	}
-
-	if (unlikely(hash_type == GMAC_TYPE)) {
-		encr_offset = auth_dlen;
-		enc_dlen = 0;
+			enc_dlen = RTE_ALIGN_CEIL(encr_data_len, 8) +
+					encr_offset;
 	}
 
 	if (unlikely(auth_dlen > enc_dlen)) {
@@ -776,7 +780,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 	}
 
 	/* GP op header */
-	vq_cmd_w0.u64 = 0;
 	vq_cmd_w0.s.param1 = encr_data_len;
 	vq_cmd_w0.s.param2 = auth_data_len;
 	/*
@@ -807,8 +810,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 
 		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = opcode.flags;
-
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr
 						      + OFF_CTRL_LEN);
@@ -837,9 +838,7 @@ cpt_enc_hmac_prep(uint32_t flags,
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
 
-		opcode.s.major |= CPT_DMA_MODE;
-
-		vq_cmd_w0.s.opcode = opcode.flags;
+		vq_cmd_w0.s.opcode.major |= CPT_DMA_MODE;
 
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr
@@ -997,13 +996,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 		req->ist.ei2 = rptr_dma;
 	}
 
-	ctx_dma = fc_params->ctx_buf.dma_addr +
-		offsetof(struct cpt_ctx, fctx);
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-	vq_cmd_w3.s.grp = 0;
-	vq_cmd_w3.s.cptr = ctx_dma;
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -1011,7 +1003,6 @@ cpt_enc_hmac_prep(uint32_t flags,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op  = op;
 
@@ -1038,10 +1029,8 @@ cpt_dec_hmac_prep(uint32_t flags,
 	uint32_t encr_data_len, auth_data_len, aad_len = 0;
 	uint32_t passthrough_len = 0;
 	void *m_vaddr, *offset_vaddr;
-	uint64_t m_dma, offset_dma, ctx_dma;
-	opcode_info_t opcode;
+	uint64_t m_dma, offset_dma;
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
 	void *c_vaddr;
 	uint64_t c_dma;
 
@@ -1068,9 +1057,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 	cpt_ctx = fc_params->ctx_buf.vaddr;
 	hash_type = cpt_ctx->hash_type;
 	mac_len = cpt_ctx->mac_len;
-
-	if (hash_type == GMAC_TYPE)
-		encr_data_len = 0;
 
 	if (unlikely(!(flags & VALID_IV_BUF))) {
 		iv_len = 0;
@@ -1125,8 +1111,13 @@ cpt_dec_hmac_prep(uint32_t flags,
 	m_dma += size;
 
 	/* Decryption */
-	opcode.s.major = CPT_MAJOR_OP_FC;
-	opcode.s.minor = 1;
+	vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_FC;
+	vq_cmd_w0.s.opcode.minor = 1;
+
+	if (hash_type == GMAC_TYPE) {
+		encr_offset = 0;
+		encr_data_len = 0;
+	}
 
 	enc_dlen = encr_offset + encr_data_len;
 	auth_dlen = auth_offset + auth_data_len;
@@ -1139,10 +1130,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 		outputlen = enc_dlen;
 	}
 
-	if (hash_type == GMAC_TYPE)
-		encr_offset = inputlen;
-
-	vq_cmd_w0.u64 = 0;
 	vq_cmd_w0.s.param1 = encr_data_len;
 	vq_cmd_w0.s.param2 = auth_data_len;
 
@@ -1179,8 +1166,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 
 		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = opcode.flags;
-
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr +
 						      OFF_CTRL_LEN);
@@ -1210,9 +1195,7 @@ cpt_dec_hmac_prep(uint32_t flags,
 		m_vaddr = (uint8_t *)m_vaddr + size;
 		m_dma += size;
 
-		opcode.s.major |= CPT_DMA_MODE;
-
-		vq_cmd_w0.s.opcode = opcode.flags;
+		vq_cmd_w0.s.opcode.major |= CPT_DMA_MODE;
 
 		if (likely(iv_len)) {
 			uint64_t *dest = (uint64_t *)((uint8_t *)offset_vaddr +
@@ -1383,13 +1366,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 		req->ist.ei2 = rptr_dma;
 	}
 
-	ctx_dma = fc_params->ctx_buf.dma_addr +
-		offsetof(struct cpt_ctx, fctx);
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-	vq_cmd_w3.s.grp = 0;
-	vq_cmd_w3.s.cptr = ctx_dma;
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -1397,7 +1373,6 @@ cpt_dec_hmac_prep(uint32_t flags,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op = op;
 
@@ -1428,8 +1403,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	uint64_t *offset_vaddr, offset_dma;
 	uint32_t *iv_s, iv[4];
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
-	opcode_info_t opcode;
 
 	buf_p = &params->meta_buf;
 	m_vaddr = buf_p->vaddr;
@@ -1463,11 +1436,11 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
 
-	opcode.s.major = CPT_MAJOR_OP_ZUC_SNOW3G;
+	vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_ZUC_SNOW3G;
 
 	/* indicates CPTR ctx, operation type, KEY & IV mode from DPTR */
 
-	opcode.s.minor = ((1 << 7) | (snow3g << 5) | (0 << 4) |
+	vq_cmd_w0.s.opcode.minor = ((1 << 7) | (snow3g << 5) | (0 << 4) |
 			  (0 << 3) | (flags & 0x7));
 
 	if (flags == 0x1) {
@@ -1530,7 +1503,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 	/*
 	 * GP op header, lengths are expected in bits.
 	 */
-	vq_cmd_w0.u64 = 0;
 	vq_cmd_w0.s.param1 = encr_data_len;
 	vq_cmd_w0.s.param2 = auth_data_len;
 
@@ -1563,8 +1535,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 
 		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = opcode.flags;
-
 		if (likely(iv_len)) {
 			uint32_t *iv_d = (uint32_t *)((uint8_t *)offset_vaddr
 						      + OFF_CTRL_LEN);
@@ -1587,9 +1557,7 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 		m_vaddr = (uint8_t *)m_vaddr + OFF_CTRL_LEN + iv_len;
 		m_dma += OFF_CTRL_LEN + iv_len;
 
-		opcode.s.major |= CPT_DMA_MODE;
-
-		vq_cmd_w0.s.opcode = opcode.flags;
+		vq_cmd_w0.s.opcode.major |= CPT_DMA_MODE;
 
 		/* DPTR has SG list */
 		in_buffer = m_vaddr;
@@ -1705,12 +1673,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 		req->ist.ei2 = rptr_dma;
 	}
 
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-	vq_cmd_w3.s.grp = 0;
-	vq_cmd_w3.s.cptr = params->ctx_buf.dma_addr +
-		offsetof(struct cpt_ctx, zs_ctx);
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -1718,7 +1680,6 @@ cpt_zuc_snow3g_enc_prep(uint32_t req_flags,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op = op;
 
@@ -1748,8 +1709,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	uint64_t *offset_vaddr, offset_dma;
 	uint32_t *iv_s, iv[4], j;
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
-	opcode_info_t opcode;
 
 	buf_p = &params->meta_buf;
 	m_vaddr = buf_p->vaddr;
@@ -1788,11 +1747,12 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
 
-	opcode.s.major = CPT_MAJOR_OP_ZUC_SNOW3G;
+	vq_cmd_w0.u64 = 0;
+	vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_ZUC_SNOW3G;
 
 	/* indicates CPTR ctx, operation type, KEY & IV mode from DPTR */
 
-	opcode.s.minor = ((1 << 7) | (snow3g << 5) | (0 << 4) |
+	vq_cmd_w0.s.opcode.minor = ((1 << 7) | (snow3g << 5) | (0 << 4) |
 			  (0 << 3) | (flags & 0x7));
 
 	/* consider iv len */
@@ -1821,7 +1781,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 	/*
 	 * GP op header, lengths are expected in bits.
 	 */
-	vq_cmd_w0.u64 = 0;
 	vq_cmd_w0.s.param1 = encr_data_len;
 
 	/*
@@ -1853,8 +1812,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 
 		vq_cmd_w0.s.dlen = inputlen + OFF_CTRL_LEN;
 
-		vq_cmd_w0.s.opcode = opcode.flags;
-
 		if (likely(iv_len)) {
 			uint32_t *iv_d = (uint32_t *)((uint8_t *)offset_vaddr
 						      + OFF_CTRL_LEN);
@@ -1878,9 +1835,7 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 		m_vaddr = (uint8_t *)m_vaddr + OFF_CTRL_LEN + iv_len;
 		m_dma += OFF_CTRL_LEN + iv_len;
 
-		opcode.s.major |= CPT_DMA_MODE;
-
-		vq_cmd_w0.s.opcode = opcode.flags;
+		vq_cmd_w0.s.opcode.major |= CPT_DMA_MODE;
 
 		/* DPTR has SG list */
 		in_buffer = m_vaddr;
@@ -1969,12 +1924,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 		req->ist.ei2 = rptr_dma;
 	}
 
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-	vq_cmd_w3.s.grp = 0;
-	vq_cmd_w3.s.cptr = params->ctx_buf.dma_addr +
-		offsetof(struct cpt_ctx, zs_ctx);
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -1982,7 +1931,6 @@ cpt_zuc_snow3g_dec_prep(uint32_t req_flags,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op = op;
 
@@ -2014,8 +1962,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	uint64_t m_dma, c_dma;
 	uint64_t *offset_vaddr, offset_dma;
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
-	opcode_info_t opcode;
 	uint8_t *in_buffer;
 	uint32_t g_size_bytes, s_size_bytes;
 	uint64_t dptr_dma, rptr_dma;
@@ -2065,19 +2011,17 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
 
-	opcode.s.major = CPT_MAJOR_OP_KASUMI | CPT_DMA_MODE;
+	vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_KASUMI | CPT_DMA_MODE;
 
 	/* indicates ECB/CBC, direction, ctx from cptr, iv from dptr */
-	opcode.s.minor = ((1 << 6) | (cpt_ctx->k_ecb << 5) |
+	vq_cmd_w0.s.opcode.minor = ((1 << 6) | (cpt_ctx->k_ecb << 5) |
 			  (dir << 4) | (0 << 3) | (flags & 0x7));
 
 	/*
 	 * GP op header, lengths are expected in bits.
 	 */
-	vq_cmd_w0.u64 = 0;
 	vq_cmd_w0.s.param1 = encr_data_len;
 	vq_cmd_w0.s.param2 = auth_data_len;
-	vq_cmd_w0.s.opcode = opcode.flags;
 
 	/* consider iv len */
 	if (flags == 0x0) {
@@ -2216,12 +2160,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 	req->ist.ei1 = dptr_dma;
 	req->ist.ei2 = rptr_dma;
 
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-	vq_cmd_w3.s.grp = 0;
-	vq_cmd_w3.s.cptr = params->ctx_buf.dma_addr +
-		offsetof(struct cpt_ctx, k_ctx);
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -2229,7 +2167,6 @@ cpt_kasumi_enc_prep(uint32_t req_flags,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op = op;
 
@@ -2258,8 +2195,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	uint64_t m_dma, c_dma;
 	uint64_t *offset_vaddr, offset_dma;
 	vq_cmd_word0_t vq_cmd_w0;
-	vq_cmd_word3_t vq_cmd_w3;
-	opcode_info_t opcode;
 	uint8_t *in_buffer;
 	uint32_t g_size_bytes, s_size_bytes;
 	uint64_t dptr_dma, rptr_dma;
@@ -2298,18 +2233,17 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	m_vaddr = (uint8_t *)m_vaddr + size;
 	m_dma += size;
 
-	opcode.s.major = CPT_MAJOR_OP_KASUMI | CPT_DMA_MODE;
+	vq_cmd_w0.u64 = 0;
+	vq_cmd_w0.s.opcode.major = CPT_MAJOR_OP_KASUMI | CPT_DMA_MODE;
 
 	/* indicates ECB/CBC, direction, ctx from cptr, iv from dptr */
-	opcode.s.minor = ((1 << 6) | (cpt_ctx->k_ecb << 5) |
+	vq_cmd_w0.s.opcode.minor = ((1 << 6) | (cpt_ctx->k_ecb << 5) |
 			  (dir << 4) | (0 << 3) | (flags & 0x7));
 
 	/*
 	 * GP op header, lengths are expected in bits.
 	 */
-	vq_cmd_w0.u64 = 0;
 	vq_cmd_w0.s.param1 = encr_data_len;
-	vq_cmd_w0.s.opcode = opcode.flags;
 
 	/* consider iv len */
 	encr_offset += iv_len;
@@ -2406,12 +2340,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 	req->ist.ei1 = dptr_dma;
 	req->ist.ei2 = rptr_dma;
 
-	/* vq command w3 */
-	vq_cmd_w3.u64 = 0;
-	vq_cmd_w3.s.grp = 0;
-	vq_cmd_w3.s.cptr = params->ctx_buf.dma_addr +
-		offsetof(struct cpt_ctx, k_ctx);
-
 	/* 16 byte aligned cpt res address */
 	req->completion_addr = (uint64_t *)((uint8_t *)c_vaddr);
 	*req->completion_addr = COMPLETION_CODE_INIT;
@@ -2419,7 +2347,6 @@ cpt_kasumi_dec_prep(uint64_t d_offs,
 
 	/* Fill microcode part of instruction */
 	req->ist.ei0 = vq_cmd_w0.u64;
-	req->ist.ei3 = vq_cmd_w3.u64;
 
 	req->op = op;
 
@@ -2459,7 +2386,7 @@ cpt_fc_dec_hmac_prep(uint32_t flags,
 	return prep_req;
 }
 
-static __rte_always_inline void *__hot
+static __rte_always_inline void *__rte_hot
 cpt_fc_enc_hmac_prep(uint32_t flags, uint64_t d_offs, uint64_t d_lens,
 		     fc_params_t *fc_params, void *op)
 {
@@ -2487,12 +2414,12 @@ cpt_fc_enc_hmac_prep(uint32_t flags, uint64_t d_offs, uint64_t d_lens,
 }
 
 static __rte_always_inline int
-cpt_fc_auth_set_key(void *ctx, auth_type_t type, const uint8_t *key,
-		    uint16_t key_len, uint16_t mac_len)
+cpt_fc_auth_set_key(struct cpt_ctx *cpt_ctx, auth_type_t type,
+		    const uint8_t *key, uint16_t key_len, uint16_t mac_len)
 {
-	struct cpt_ctx *cpt_ctx = ctx;
-	mc_fc_context_t *fctx = &cpt_ctx->fctx;
-	uint64_t *ctrl_flags = NULL;
+	mc_fc_context_t *fctx = &cpt_ctx->mc_ctx.fctx;
+	mc_zuc_snow3g_ctx_t *zs_ctx = &cpt_ctx->mc_ctx.zs_ctx;
+	mc_kasumi_ctx_t *k_ctx = &cpt_ctx->mc_ctx.k_ctx;
 
 	if ((type >= ZUC_EIA3) && (type <= KASUMI_F9_ECB)) {
 		uint32_t keyx[4];
@@ -2507,26 +2434,26 @@ cpt_fc_auth_set_key(void *ctx, auth_type_t type, const uint8_t *key,
 		case SNOW3G_UIA2:
 			cpt_ctx->snow3g = 1;
 			gen_key_snow3g(key, keyx);
-			memcpy(cpt_ctx->zs_ctx.ci_key, keyx, key_len);
+			memcpy(zs_ctx->ci_key, keyx, key_len);
 			cpt_ctx->fc_type = ZUC_SNOW3G;
 			cpt_ctx->zsk_flags = 0x1;
 			break;
 		case ZUC_EIA3:
 			cpt_ctx->snow3g = 0;
-			memcpy(cpt_ctx->zs_ctx.ci_key, key, key_len);
-			memcpy(cpt_ctx->zs_ctx.zuc_const, zuc_d, 32);
+			memcpy(zs_ctx->ci_key, key, key_len);
+			memcpy(zs_ctx->zuc_const, zuc_d, 32);
 			cpt_ctx->fc_type = ZUC_SNOW3G;
 			cpt_ctx->zsk_flags = 0x1;
 			break;
 		case KASUMI_F9_ECB:
 			/* Kasumi ECB mode */
 			cpt_ctx->k_ecb = 1;
-			memcpy(cpt_ctx->k_ctx.ci_key, key, key_len);
+			memcpy(k_ctx->ci_key, key, key_len);
 			cpt_ctx->fc_type = KASUMI;
 			cpt_ctx->zsk_flags = 0x1;
 			break;
 		case KASUMI_F9_CBC:
-			memcpy(cpt_ctx->k_ctx.ci_key, key, key_len);
+			memcpy(k_ctx->ci_key, key, key_len);
 			cpt_ctx->fc_type = KASUMI;
 			cpt_ctx->zsk_flags = 0x1;
 			break;
@@ -2543,15 +2470,15 @@ cpt_fc_auth_set_key(void *ctx, auth_type_t type, const uint8_t *key,
 			cpt_ctx->fc_type = HASH_HMAC;
 	}
 
-	ctrl_flags = (uint64_t *)&fctx->enc.enc_ctrl.flags;
-	*ctrl_flags = rte_be_to_cpu_64(*ctrl_flags);
+	if (cpt_ctx->fc_type == FC_GEN && key_len > 64)
+		return -1;
 
 	/* For GMAC auth, cipher must be NULL */
 	if (type == GMAC_TYPE)
-		CPT_P_ENC_CTRL(fctx).enc_cipher = 0;
+		fctx->enc.enc_cipher = 0;
 
-	CPT_P_ENC_CTRL(fctx).hash_type = cpt_ctx->hash_type = type;
-	CPT_P_ENC_CTRL(fctx).mac_len = cpt_ctx->mac_len = mac_len;
+	fctx->enc.hash_type = cpt_ctx->hash_type = type;
+	fctx->enc.mac_len = cpt_ctx->mac_len = mac_len;
 
 	if (key_len) {
 		cpt_ctx->hmac = 1;
@@ -2560,10 +2487,11 @@ cpt_fc_auth_set_key(void *ctx, auth_type_t type, const uint8_t *key,
 		cpt_ctx->auth_key_len = key_len;
 		memset(fctx->hmac.ipad, 0, sizeof(fctx->hmac.ipad));
 		memset(fctx->hmac.opad, 0, sizeof(fctx->hmac.opad));
-		memcpy(fctx->hmac.opad, key, key_len);
-		CPT_P_ENC_CTRL(fctx).auth_input_type = 1;
+
+		if (key_len <= 64)
+			memcpy(fctx->hmac.opad, key, key_len);
+		fctx->enc.auth_input_type = 1;
 	}
-	*ctrl_flags = rte_cpu_to_be_64(*ctrl_flags);
 	return 0;
 }
 
@@ -2579,16 +2507,14 @@ fill_sess_aead(struct rte_crypto_sym_xform *xform,
 	aead_form = &xform->aead;
 	void *ctx = SESS_PRIV(sess);
 
-	if (aead_form->op == RTE_CRYPTO_AEAD_OP_ENCRYPT &&
-	   aead_form->algo == RTE_CRYPTO_AEAD_AES_GCM) {
+	if (aead_form->op == RTE_CRYPTO_AEAD_OP_ENCRYPT) {
 		sess->cpt_op |= CPT_OP_CIPHER_ENCRYPT;
 		sess->cpt_op |= CPT_OP_AUTH_GENERATE;
-	} else if (aead_form->op == RTE_CRYPTO_AEAD_OP_DECRYPT &&
-		aead_form->algo == RTE_CRYPTO_AEAD_AES_GCM) {
+	} else if (aead_form->op == RTE_CRYPTO_AEAD_OP_DECRYPT) {
 		sess->cpt_op |= CPT_OP_CIPHER_DECRYPT;
 		sess->cpt_op |= CPT_OP_AUTH_VERIFY;
 	} else {
-		CPT_LOG_DP_ERR("Unknown cipher operation\n");
+		CPT_LOG_DP_ERR("Unknown aead operation\n");
 		return -1;
 	}
 	switch (aead_form->algo) {
@@ -2601,6 +2527,12 @@ fill_sess_aead(struct rte_crypto_sym_xform *xform,
 		CPT_LOG_DP_ERR("Crypto: Unsupported cipher algo %u",
 			       aead_form->algo);
 		return -1;
+	case RTE_CRYPTO_AEAD_CHACHA20_POLY1305:
+		enc_type = CHACHA20;
+		auth_type = POLY1305;
+		cipher_key_len = 32;
+		sess->chacha_poly = 1;
+		break;
 	default:
 		CPT_LOG_DP_ERR("Crypto: Undefined cipher algo %u specified",
 			       aead_form->algo);
@@ -2750,11 +2682,6 @@ fill_sess_auth(struct rte_crypto_sym_xform *xform,
 		return -1;
 	}
 
-	if (a_form->key.length > 64) {
-		CPT_LOG_DP_ERR("Auth key length is big");
-		return -1;
-	}
-
 	switch (a_form->algo) {
 	case RTE_CRYPTO_AUTH_SHA1_HMAC:
 		/* Fall through */
@@ -2899,7 +2826,7 @@ alloc_op_meta(struct rte_mbuf *m_src,
 		tailroom = rte_pktmbuf_tailroom(m_src);
 		if (likely(tailroom > len + 8)) {
 			mdata = (uint8_t *)m_src->buf_addr + m_src->buf_len;
-			mphys = m_src->buf_physaddr + m_src->buf_len;
+			mphys = m_src->buf_iova + m_src->buf_len;
 			mdata -= len;
 			mphys -= len;
 			buf->vaddr = mdata;
@@ -2955,7 +2882,7 @@ prepare_iov_from_pkt(struct rte_mbuf *pkt,
 
 	if (!start_offset) {
 		seg_data = rte_pktmbuf_mtod(pkt, void *);
-		seg_phys = rte_pktmbuf_mtophys(pkt);
+		seg_phys = rte_pktmbuf_iova(pkt);
 		seg_size = pkt->data_len;
 	} else {
 		while (start_offset >= pkt->data_len) {
@@ -2964,7 +2891,7 @@ prepare_iov_from_pkt(struct rte_mbuf *pkt,
 		}
 
 		seg_data = rte_pktmbuf_mtod_offset(pkt, void *, start_offset);
-		seg_phys = rte_pktmbuf_mtophys_offset(pkt, start_offset);
+		seg_phys = rte_pktmbuf_iova_offset(pkt, start_offset);
 		seg_size = pkt->data_len - start_offset;
 		if (!seg_size)
 			return 1;
@@ -2979,7 +2906,7 @@ prepare_iov_from_pkt(struct rte_mbuf *pkt,
 
 	while (unlikely(pkt != NULL)) {
 		seg_data = rte_pktmbuf_mtod(pkt, void *);
-		seg_phys = rte_pktmbuf_mtophys(pkt);
+		seg_phys = rte_pktmbuf_iova(pkt);
 		seg_size = pkt->data_len;
 		if (!seg_size)
 			break;
@@ -3009,7 +2936,7 @@ prepare_iov_from_pkt_inplace(struct rte_mbuf *pkt,
 	iov_ptr_t *iovec;
 
 	seg_data = rte_pktmbuf_mtod(pkt, void *);
-	seg_phys = rte_pktmbuf_mtophys(pkt);
+	seg_phys = rte_pktmbuf_iova(pkt);
 	seg_size = pkt->data_len;
 
 	/* first seg */
@@ -3038,7 +2965,7 @@ prepare_iov_from_pkt_inplace(struct rte_mbuf *pkt,
 
 	while (unlikely(pkt != NULL)) {
 		seg_data = rte_pktmbuf_mtod(pkt, void *);
-		seg_phys = rte_pktmbuf_mtophys(pkt);
+		seg_phys = rte_pktmbuf_iova(pkt);
 		seg_size = pkt->data_len;
 
 		if (!seg_size)
@@ -3108,7 +3035,7 @@ fill_fc_params(struct rte_crypto_op *cop,
 	m_src = sym_op->m_src;
 	m_dst = sym_op->m_dst;
 
-	if (sess_misc->aes_gcm) {
+	if (sess_misc->aes_gcm || sess_misc->chacha_poly) {
 		uint8_t *salt;
 		uint8_t *aad_data;
 		uint16_t aad_len;
@@ -3342,49 +3269,6 @@ compl_auth_verify(struct rte_crypto_op *op,
 		op->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 }
 
-static __rte_always_inline int
-instance_session_cfg(struct rte_crypto_sym_xform *xform, void *sess)
-{
-	struct rte_crypto_sym_xform *chain;
-
-	CPT_PMD_INIT_FUNC_TRACE();
-
-	if (cpt_is_algo_supported(xform))
-		goto err;
-
-	chain = xform;
-	while (chain) {
-		switch (chain->type) {
-		case RTE_CRYPTO_SYM_XFORM_AEAD:
-			if (fill_sess_aead(chain, sess))
-				goto err;
-			break;
-		case RTE_CRYPTO_SYM_XFORM_CIPHER:
-			if (fill_sess_cipher(chain, sess))
-				goto err;
-			break;
-		case RTE_CRYPTO_SYM_XFORM_AUTH:
-			if (chain->auth.algo == RTE_CRYPTO_AUTH_AES_GMAC) {
-				if (fill_sess_gmac(chain, sess))
-					goto err;
-			} else {
-				if (fill_sess_auth(chain, sess))
-					goto err;
-			}
-			break;
-		default:
-			CPT_LOG_DP_ERR("Invalid crypto xform type");
-			break;
-		}
-		chain = chain->next;
-	}
-
-	return 0;
-
-err:
-	return -1;
-}
-
 static __rte_always_inline void
 find_kasumif9_direction_and_length(uint8_t *src,
 				   uint32_t counter_num_bytes,
@@ -3543,7 +3427,7 @@ fill_digest_params(struct rte_crypto_op *cop,
 			params.mac_buf.vaddr =
 				rte_pktmbuf_mtod_offset(m_dst, void *, off);
 			params.mac_buf.dma_addr =
-				rte_pktmbuf_mtophys_offset(m_dst, off);
+				rte_pktmbuf_iova_offset(m_dst, off);
 			params.mac_buf.size = mac_len;
 		}
 	} else {

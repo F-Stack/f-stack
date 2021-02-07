@@ -31,6 +31,7 @@
 	(0x80008ull | (uint64_t)(a) << 6)
 #define NPC_AF_PKINDX_CPI_DEFX(a, b)                 \
 	(0x80020ull | (uint64_t)(a) << 6 | (uint64_t)(b) << 3)
+#define NPC_AF_CHLEN90B_PKIND                        (0x3bull)
 #define NPC_AF_KPUX_ENTRYX_CAMX(a, b, c)             \
 	(0x100000ull | (uint64_t)(a) << 14 | (uint64_t)(b) << 6 | \
 	(uint64_t)(c) << 3)
@@ -184,6 +185,7 @@ enum npc_kpu_la_ltype {
 	NPC_LT_LA_IH_2_ETHER,
 	NPC_LT_LA_HIGIG2_ETHER,
 	NPC_LT_LA_IH_NIX_HIGIG2_ETHER,
+	NPC_LT_LA_CH_LEN_90B_ETHER,   /* Custom L2 header of length 90 bytes */
 };
 
 enum npc_kpu_lb_ltype {
@@ -213,7 +215,7 @@ enum npc_kpu_lc_ltype {
 	NPC_LT_LC_FCOE,
 };
 
-/* Don't modify Ltypes upto SCTP, otherwise it will
+/* Don't modify Ltypes up to SCTP, otherwise it will
  * effect flow tag calculation and thus RSS.
  */
 enum npc_kpu_ld_ltype {
@@ -223,7 +225,6 @@ enum npc_kpu_ld_ltype {
 	NPC_LT_LD_SCTP,
 	NPC_LT_LD_ICMP6,
 	NPC_LT_LD_IGMP = 8,
-	NPC_LT_LD_ESP,
 	NPC_LT_LD_AH,
 	NPC_LT_LD_GRE,
 	NPC_LT_LD_NVGRE,
@@ -235,6 +236,7 @@ enum npc_kpu_ld_ltype {
 enum npc_kpu_le_ltype {
 	NPC_LT_LE_VXLAN = 1,
 	NPC_LT_LE_GENEVE,
+	NPC_LT_LE_ESP,
 	NPC_LT_LE_GTPU = 4,
 	NPC_LT_LE_VXLANGPE,
 	NPC_LT_LE_GTPC,
@@ -260,7 +262,7 @@ enum npc_kpu_lg_ltype {
 	NPC_LT_LG_TU_ETHER_IN_NSH,
 };
 
-/* Don't modify Ltypes upto SCTP, otherwise it will
+/* Don't modify Ltypes up to SCTP, otherwise it will
  * effect flow tag calculation and thus RSS.
  */
 enum npc_kpu_lh_ltype {

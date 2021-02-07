@@ -35,9 +35,6 @@
 #endif
 #define CRYPTODEV_NAME_CAAM_JR_PMD	crypto_caam_jr
 static uint8_t cryptodev_driver_id;
-int caam_jr_logtype;
-
-enum rta_sec_era rta_sec_era;
 
 /* Lists the states possible for the SEC user space driver. */
 enum sec_driver_state_e {
@@ -1353,6 +1350,9 @@ caam_jr_enqueue_op(struct rte_crypto_op *op, struct caam_jr_qp *qp)
 	struct caam_jr_session *ses;
 	struct caam_jr_op_ctx *ctx = NULL;
 	struct sec_job_descriptor_t *jobdescr __rte_unused;
+#if CAAM_JR_DBG
+	int i;
+#endif
 
 	switch (op->sess_type) {
 	case RTE_CRYPTO_OP_WITH_SESSION:
@@ -1415,7 +1415,7 @@ err1:
 			rte_pktmbuf_data_len(op->sym->m_src));
 
 	printf("\n JD before conversion\n");
-	for (int i = 0; i < 12; i++)
+	for (i = 0; i < 12; i++)
 		printf("\n 0x%08x", ctx->jobdes.desc[i]);
 #endif
 
@@ -1536,15 +1536,6 @@ caam_jr_queue_pair_setup(
 	dev->data->queue_pairs[qp_id] = qp;
 
 	return 0;
-}
-
-/* Return the number of allocated queue pairs */
-static uint32_t
-caam_jr_queue_pair_count(struct rte_cryptodev *dev)
-{
-	PMD_INIT_FUNC_TRACE();
-
-	return dev->data->nb_queue_pairs;
 }
 
 /* Returns the size of the aesni gcm session structure */
@@ -2062,7 +2053,6 @@ static struct rte_cryptodev_ops caam_jr_ops = {
 	.stats_reset	      = caam_jr_stats_reset,
 	.queue_pair_setup     = caam_jr_queue_pair_setup,
 	.queue_pair_release   = caam_jr_queue_pair_release,
-	.queue_pair_count     = caam_jr_queue_pair_count,
 	.sym_session_get_size = caam_jr_sym_session_get_size,
 	.sym_session_configure = caam_jr_sym_session_configure,
 	.sym_session_clear    = caam_jr_sym_session_clear
@@ -2084,7 +2074,7 @@ static struct rte_security_ops caam_jr_security_ops = {
 static void
 close_job_ring(struct sec_job_ring_t *job_ring)
 {
-	if (job_ring->irq_fd) {
+	if (job_ring->irq_fd != -1) {
 		/* Producer index is frozen. If consumer index is not equal
 		 * with producer index, then we have descs to flush.
 		 */
@@ -2093,7 +2083,7 @@ close_job_ring(struct sec_job_ring_t *job_ring)
 
 		/* free the uio job ring */
 		free_job_ring(job_ring->irq_fd);
-		job_ring->irq_fd = 0;
+		job_ring->irq_fd = -1;
 		caam_jr_dma_free(job_ring->input_ring);
 		caam_jr_dma_free(job_ring->output_ring);
 		g_job_rings_no--;
@@ -2197,7 +2187,7 @@ caam_jr_dev_uninit(struct rte_cryptodev *dev)
  *
  */
 static void *
-init_job_ring(void *reg_base_addr, uint32_t irq_id)
+init_job_ring(void *reg_base_addr, int irq_id)
 {
 	struct sec_job_ring_t *job_ring = NULL;
 	int i, ret = 0;
@@ -2207,7 +2197,7 @@ init_job_ring(void *reg_base_addr, uint32_t irq_id)
 	int irq_coalescing_count = 0;
 
 	for (i = 0; i < MAX_SEC_JOB_RINGS; i++) {
-		if (g_job_rings[i].irq_fd == 0) {
+		if (g_job_rings[i].irq_fd == -1) {
 			job_ring = &g_job_rings[i];
 			g_job_rings_no++;
 			break;
@@ -2398,6 +2388,8 @@ init_error:
 static int
 cryptodev_caam_jr_probe(struct rte_vdev_device *vdev)
 {
+	int ret;
+
 	struct rte_cryptodev_pmd_init_params init_params = {
 		"",
 		sizeof(struct sec_job_ring_t),
@@ -2414,6 +2406,12 @@ cryptodev_caam_jr_probe(struct rte_vdev_device *vdev)
 	input_args = rte_vdev_device_args(vdev);
 	rte_cryptodev_pmd_parse_input_args(&init_params, input_args);
 
+	ret = of_init();
+	if (ret) {
+		RTE_LOG(ERR, PMD,
+		"of_init failed\n");
+		return -EINVAL;
+	}
 	/* if sec device version is not configured */
 	if (!rta_get_sec_era()) {
 		const struct device_node *caam_node;
@@ -2424,7 +2422,7 @@ cryptodev_caam_jr_probe(struct rte_vdev_device *vdev)
 					NULL);
 			if (prop) {
 				rta_set_sec_era(
-					INTL_SEC_ERA(cpu_to_caam32(*prop)));
+					INTL_SEC_ERA(rte_be_to_cpu_32(*prop)));
 				break;
 			}
 		}
@@ -2460,6 +2458,15 @@ cryptodev_caam_jr_remove(struct rte_vdev_device *vdev)
 	return rte_cryptodev_pmd_destroy(cryptodev);
 }
 
+static void
+sec_job_rings_init(void)
+{
+	int i;
+
+	for (i = 0; i < MAX_SEC_JOB_RINGS; i++)
+		g_job_rings[i].irq_fd = -1;
+}
+
 static struct rte_vdev_driver cryptodev_caam_jr_drv = {
 	.probe = cryptodev_caam_jr_probe,
 	.remove = cryptodev_caam_jr_remove
@@ -2474,9 +2481,10 @@ RTE_PMD_REGISTER_PARAM_STRING(CRYPTODEV_NAME_CAAM_JR_PMD,
 RTE_PMD_REGISTER_CRYPTO_DRIVER(caam_jr_crypto_drv, cryptodev_caam_jr_drv.driver,
 		cryptodev_driver_id);
 
-RTE_INIT(caam_jr_init_log)
+RTE_INIT(caam_jr_init)
 {
-	caam_jr_logtype = rte_log_register("pmd.crypto.caam");
-	if (caam_jr_logtype >= 0)
-		rte_log_set_level(caam_jr_logtype, RTE_LOG_NOTICE);
+	sec_uio_job_rings_init();
+	sec_job_rings_init();
 }
+
+RTE_LOG_REGISTER(caam_jr_logtype, pmd.crypto.caam, NOTICE);

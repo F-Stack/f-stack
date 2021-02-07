@@ -30,7 +30,7 @@ after a primary process has already configured the hugepage shared memory for th
     Secondary processes should run alongside primary process with same DPDK version.
 
     Secondary processes which requires access to physical devices in Primary process, must
-    be passed with the same whitelist and blacklist options.
+    be passed with the same allow and block options.
 
 To support these two process types, and other multi-process setups described later,
 two additional command-line parameters are available to the EAL:
@@ -75,7 +75,7 @@ and point to the same objects, in both processes.
 
 
 The EAL also supports an auto-detection mode (set by EAL ``--proc-type=auto`` flag ),
-whereby an DPDK process is started as a secondary instance if a primary instance is already running.
+whereby a DPDK process is started as a secondary instance if a primary instance is already running.
 
 Deployment Models
 -----------------
@@ -131,7 +131,7 @@ can use).
 .. note::
 
     Independent DPDK instances running side-by-side on a single machine cannot share any network ports.
-    Any network ports being used by one process should be blacklisted in every other process.
+    Any network ports being used by one process should be blocked by every other process.
 
 Running Multiple Independent Groups of DPDK Applications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

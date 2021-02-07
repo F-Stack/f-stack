@@ -320,7 +320,7 @@ igbe_set_xmit_ctx(struct igb_tx_queue* txq,
 	vlan_macip_lens = (uint32_t)tx_offload.data;
 	ctx_txd->vlan_macip_lens = rte_cpu_to_le_32(vlan_macip_lens);
 	ctx_txd->mss_l4len_idx = rte_cpu_to_le_32(mss_l4len_idx);
-	ctx_txd->seqnum_seed = 0;
+	ctx_txd->u.seqnum_seed = 0;
 }
 
 /*
@@ -1295,113 +1295,107 @@ igb_tx_done_cleanup(struct igb_tx_queue *txq, uint32_t free_cnt)
 	uint16_t tx_id;    /* Current segment being processed. */
 	uint16_t tx_last;  /* Last segment in the current packet. */
 	uint16_t tx_next;  /* First segment of the next packet. */
-	int count;
+	int count = 0;
 
-	if (txq != NULL) {
-		count = 0;
-		sw_ring = txq->sw_ring;
-		txr = txq->tx_ring;
+	if (!txq)
+		return -ENODEV;
 
-		/*
-		 * tx_tail is the last sent packet on the sw_ring. Goto the end
-		 * of that packet (the last segment in the packet chain) and
-		 * then the next segment will be the start of the oldest segment
-		 * in the sw_ring. This is the first packet that will be
-		 * attempted to be freed.
-		 */
+	sw_ring = txq->sw_ring;
+	txr = txq->tx_ring;
 
-		/* Get last segment in most recently added packet. */
-		tx_first = sw_ring[txq->tx_tail].last_id;
+	/* tx_tail is the last sent packet on the sw_ring. Goto the end
+	 * of that packet (the last segment in the packet chain) and
+	 * then the next segment will be the start of the oldest segment
+	 * in the sw_ring. This is the first packet that will be
+	 * attempted to be freed.
+	 */
 
-		/* Get the next segment, which is the oldest segment in ring. */
-		tx_first = sw_ring[tx_first].next_id;
+	/* Get last segment in most recently added packet. */
+	tx_first = sw_ring[txq->tx_tail].last_id;
 
-		/* Set the current index to the first. */
-		tx_id = tx_first;
+	/* Get the next segment, which is the oldest segment in ring. */
+	tx_first = sw_ring[tx_first].next_id;
 
-		/*
-		 * Loop through each packet. For each packet, verify that an
-		 * mbuf exists and that the last segment is free. If so, free
-		 * it and move on.
-		 */
-		while (1) {
-			tx_last = sw_ring[tx_id].last_id;
+	/* Set the current index to the first. */
+	tx_id = tx_first;
 
-			if (sw_ring[tx_last].mbuf) {
-				if (txr[tx_last].wb.status &
-						E1000_TXD_STAT_DD) {
-					/*
-					 * Increment the number of packets
-					 * freed.
-					 */
-					count++;
+	/* Loop through each packet. For each packet, verify that an
+	 * mbuf exists and that the last segment is free. If so, free
+	 * it and move on.
+	 */
+	while (1) {
+		tx_last = sw_ring[tx_id].last_id;
 
-					/* Get the start of the next packet. */
-					tx_next = sw_ring[tx_last].next_id;
-
-					/*
-					 * Loop through all segments in a
-					 * packet.
-					 */
-					do {
-						rte_pktmbuf_free_seg(sw_ring[tx_id].mbuf);
-						sw_ring[tx_id].mbuf = NULL;
-						sw_ring[tx_id].last_id = tx_id;
-
-						/* Move to next segemnt. */
-						tx_id = sw_ring[tx_id].next_id;
-
-					} while (tx_id != tx_next);
-
-					if (unlikely(count == (int)free_cnt))
-						break;
-				} else
-					/*
-					 * mbuf still in use, nothing left to
-					 * free.
-					 */
-					break;
-			} else {
-				/*
-				 * There are multiple reasons to be here:
-				 * 1) All the packets on the ring have been
-				 *    freed - tx_id is equal to tx_first
-				 *    and some packets have been freed.
-				 *    - Done, exit
-				 * 2) Interfaces has not sent a rings worth of
-				 *    packets yet, so the segment after tail is
-				 *    still empty. Or a previous call to this
-				 *    function freed some of the segments but
-				 *    not all so there is a hole in the list.
-				 *    Hopefully this is a rare case.
-				 *    - Walk the list and find the next mbuf. If
-				 *      there isn't one, then done.
+		if (sw_ring[tx_last].mbuf) {
+			if (txr[tx_last].wb.status &
+			    E1000_TXD_STAT_DD) {
+				/* Increment the number of packets
+				 * freed.
 				 */
-				if (likely((tx_id == tx_first) && (count != 0)))
-					break;
+				count++;
 
-				/*
-				 * Walk the list and find the next mbuf, if any.
+				/* Get the start of the next packet. */
+				tx_next = sw_ring[tx_last].next_id;
+
+				/* Loop through all segments in a
+				 * packet.
 				 */
 				do {
+					if (sw_ring[tx_id].mbuf) {
+						rte_pktmbuf_free_seg(
+							sw_ring[tx_id].mbuf);
+						sw_ring[tx_id].mbuf = NULL;
+						sw_ring[tx_id].last_id = tx_id;
+					}
+
 					/* Move to next segemnt. */
 					tx_id = sw_ring[tx_id].next_id;
 
-					if (sw_ring[tx_id].mbuf)
-						break;
+				} while (tx_id != tx_next);
 
-				} while (tx_id != tx_first);
-
-				/*
-				 * Determine why previous loop bailed. If there
-				 * is not an mbuf, done.
-				 */
-				if (sw_ring[tx_id].mbuf == NULL)
+				if (unlikely(count == (int)free_cnt))
 					break;
+			} else {
+				/* mbuf still in use, nothing left to
+				 * free.
+				 */
+				break;
 			}
+		} else {
+			/* There are multiple reasons to be here:
+			 * 1) All the packets on the ring have been
+			 *    freed - tx_id is equal to tx_first
+			 *    and some packets have been freed.
+			 *    - Done, exit
+			 * 2) Interfaces has not sent a rings worth of
+			 *    packets yet, so the segment after tail is
+			 *    still empty. Or a previous call to this
+			 *    function freed some of the segments but
+			 *    not all so there is a hole in the list.
+			 *    Hopefully this is a rare case.
+			 *    - Walk the list and find the next mbuf. If
+			 *      there isn't one, then done.
+			 */
+			if (likely(tx_id == tx_first && count != 0))
+				break;
+
+			/* Walk the list and find the next mbuf, if any. */
+			do {
+				/* Move to next segemnt. */
+				tx_id = sw_ring[tx_id].next_id;
+
+				if (sw_ring[tx_id].mbuf)
+					break;
+
+			} while (tx_id != tx_first);
+
+			/* Determine why previous loop bailed. If there
+			 * is not an mbuf, done.
+			 */
+			if (!sw_ring[tx_id].mbuf)
+				break;
 		}
-	} else
-		count = -ENODEV;
+	}
 
 	return count;
 }
@@ -1637,8 +1631,10 @@ uint64_t
 igb_get_rx_port_offloads_capa(struct rte_eth_dev *dev)
 {
 	uint64_t rx_offload_capa;
+	struct e1000_hw *hw;
 
-	RTE_SET_USED(dev);
+	hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
 	rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP  |
 			  DEV_RX_OFFLOAD_VLAN_FILTER |
 			  DEV_RX_OFFLOAD_IPV4_CKSUM  |
@@ -1648,6 +1644,11 @@ igb_get_rx_port_offloads_capa(struct rte_eth_dev *dev)
 			  DEV_RX_OFFLOAD_KEEP_CRC    |
 			  DEV_RX_OFFLOAD_SCATTER     |
 			  DEV_RX_OFFLOAD_RSS_HASH;
+
+	if (hw->mac.type == e1000_i350 ||
+	    hw->mac.type == e1000_i210 ||
+	    hw->mac.type == e1000_i211)
+		rx_offload_capa |= DEV_RX_OFFLOAD_VLAN_EXTEND;
 
 	return rx_offload_capa;
 }
@@ -1884,12 +1885,14 @@ igb_dev_free_queues(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		eth_igb_rx_queue_release(dev->data->rx_queues[i]);
 		dev->data->rx_queues[i] = NULL;
+		rte_eth_dma_zone_free(dev, "rx_ring", i);
 	}
 	dev->data->nb_rx_queues = 0;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		eth_igb_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
+		rte_eth_dma_zone_free(dev, "tx_ring", i);
 	}
 	dev->data->nb_tx_queues = 0;
 }

@@ -201,6 +201,7 @@ zuc_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		int socket_id)
 {
 	struct zuc_qp *qp = NULL;
+	struct zuc_private *internals = dev->data->dev_private;
 
 	/* Free memory prior to re-allocation if needed. */
 	if (dev->data->queue_pairs[qp_id] != NULL)
@@ -223,6 +224,7 @@ zuc_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (qp->processed_ops == NULL)
 		goto qp_setup_cleanup;
 
+	qp->mb_mgr = internals->mb_mgr;
 	qp->sess_mp = qp_conf->mp_session;
 	qp->sess_mp_priv = qp_conf->mp_session_private;
 
@@ -235,13 +237,6 @@ qp_setup_cleanup:
 		rte_free(qp);
 
 	return -1;
-}
-
-/** Return the number of allocated queue pairs */
-static uint32_t
-zuc_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
 }
 
 /** Returns the size of the ZUC session structure */
@@ -318,7 +313,6 @@ struct rte_cryptodev_ops zuc_pmd_ops = {
 
 		.queue_pair_setup   = zuc_pmd_qp_setup,
 		.queue_pair_release = zuc_pmd_qp_release,
-		.queue_pair_count   = zuc_pmd_qp_count,
 
 		.sym_session_get_size   = zuc_pmd_sym_session_get_size,
 		.sym_session_configure  = zuc_pmd_sym_session_configure,

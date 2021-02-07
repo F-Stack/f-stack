@@ -2,8 +2,6 @@
  * Copyright(c) 2018-2019 Hisilicon Limited.
  */
 
-#include <stdbool.h>
-
 #include <rte_eal.h>
 #include <rte_ethdev_driver.h>
 #include <rte_string_fns.h>
@@ -13,6 +11,8 @@
 #include "hns3_logs.h"
 #include "hns3_rxtx.h"
 #include "hns3_mp.h"
+
+static bool hns3_inited;
 
 /*
  * Initialize IPC message.
@@ -78,7 +78,7 @@ mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
 
 	if (!rte_eth_dev_is_valid_port(param->port_id)) {
 		rte_errno = ENODEV;
-		PMD_INIT_LOG(ERR, "port %u invalid port ID", param->port_id);
+		PMD_INIT_LOG(ERR, "port %d invalid port ID", param->port_id);
 		return -rte_errno;
 	}
 	dev = &rte_eth_devices[param->port_id];
@@ -192,9 +192,20 @@ void hns3_mp_req_stop_rxtx(struct rte_eth_dev *dev)
 /*
  * Initialize by primary process.
  */
-void hns3_mp_init_primary(void)
+int hns3_mp_init_primary(void)
 {
-	rte_mp_action_register(HNS3_MP_NAME, mp_primary_handle);
+	int ret;
+
+	if (!hns3_inited) {
+		/* primary is allowed to not support IPC */
+		ret = rte_mp_action_register(HNS3_MP_NAME, mp_primary_handle);
+		if (ret && rte_errno != ENOTSUP)
+			return ret;
+
+		hns3_inited = true;
+	}
+
+	return 0;
 }
 
 /*
@@ -202,13 +213,24 @@ void hns3_mp_init_primary(void)
  */
 void hns3_mp_uninit_primary(void)
 {
-	rte_mp_action_unregister(HNS3_MP_NAME);
+	if (hns3_inited)
+		rte_mp_action_unregister(HNS3_MP_NAME);
 }
 
 /*
  * Initialize by secondary process.
  */
-void hns3_mp_init_secondary(void)
+int hns3_mp_init_secondary(void)
 {
-	rte_mp_action_register(HNS3_MP_NAME, mp_secondary_handle);
+	int ret;
+
+	if (!hns3_inited) {
+		ret = rte_mp_action_register(HNS3_MP_NAME, mp_secondary_handle);
+		if (ret)
+			return ret;
+
+		hns3_inited = true;
+	}
+
+	return 0;
 }

@@ -44,7 +44,7 @@
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
-#define NB_MBUF   8192
+#define NB_MBUF_PER_PORT 3000
 
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
@@ -117,8 +117,8 @@ static void handle_sigterm(__rte_unused int value)
 
 /* Print out statistics on packets dropped */
 static void
-print_stats(__attribute__((unused)) struct rte_timer *ptr_timer,
-	__attribute__((unused)) void *ptr_data)
+print_stats(__rte_unused struct rte_timer *ptr_timer,
+	__rte_unused void *ptr_data)
 {
 	uint64_t total_packets_dropped, total_packets_tx, total_packets_rx;
 	uint16_t portid;
@@ -160,6 +160,8 @@ print_stats(__attribute__((unused)) struct rte_timer *ptr_timer,
 		   total_packets_rx,
 		   total_packets_dropped);
 	printf("\n====================================================\n");
+
+	fflush(stdout);
 }
 
 static void
@@ -278,7 +280,7 @@ l2fwd_main_loop(void)
 }
 
 static int
-l2fwd_launch_one_lcore(__attribute__((unused)) void *dummy)
+l2fwd_launch_one_lcore(__rte_unused void *dummy)
 {
 	l2fwd_main_loop();
 	return 0;
@@ -305,10 +307,7 @@ l2fwd_parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -451,6 +450,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -470,14 +470,10 @@ check_all_ports_link_status(uint32_t port_mask)
 			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up. Speed %u Mbps - %s\n",
-						portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
-				else
-					printf("Port %d Link Down\n", portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", portid,
+				       link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -536,6 +532,7 @@ main(int argc, char **argv)
 	uint16_t portid, last_port;
 	unsigned lcore_id, rx_lcore_id;
 	unsigned nb_ports_in_mask = 0;
+	unsigned int total_nb_mbufs;
 	struct sigaction signal_handler;
 	struct rte_keepalive_shm *ka_shm;
 
@@ -561,15 +558,18 @@ main(int argc, char **argv)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L2FWD arguments\n");
 
-	/* create the mbuf pool */
-	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF, 32,
-		0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-	if (l2fwd_pktmbuf_pool == NULL)
-		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
-
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
+
+	/* create the mbuf pool */
+	total_nb_mbufs = NB_MBUF_PER_PORT * nb_ports;
+
+	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool",
+		total_nb_mbufs,	32, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+		rte_socket_id());
+	if (l2fwd_pktmbuf_pool == NULL)
+		rte_exit(EXIT_FAILURE, "Cannot init mbuf pool\n");
 
 	/* reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
@@ -786,8 +786,8 @@ main(int argc, char **argv)
 				) != 0 )
 			rte_exit(EXIT_FAILURE, "Stats setup failure.\n");
 	}
-	/* launch per-lcore init on every slave lcore */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	/* launch per-lcore init on every worker lcore */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
 		if (qconf->n_rx_port == 0)
@@ -810,7 +810,7 @@ main(int argc, char **argv)
 		rte_delay_ms(5);
 		}
 
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

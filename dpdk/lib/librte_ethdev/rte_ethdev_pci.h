@@ -1,34 +1,6 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright(c) 2017 Brocade Communications Systems, Inc.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2017 Brocade Communications Systems, Inc.
  *   Author: Jan Blunck <jblunck@infradead.org>
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of the copyright holder nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef _RTE_ETHDEV_PCI_H_
@@ -69,7 +41,6 @@ rte_eth_copy_pci_info(struct rte_eth_dev *eth_dev,
 		if (pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_RMV)
 			eth_dev->data->dev_flags |= RTE_ETH_DEV_INTR_RMV;
 
-		eth_dev->data->kdrv = pci_dev->kdrv;
 		eth_dev->data->numa_node = pci_dev->device.numa_node;
 	}
 }
@@ -136,16 +107,6 @@ rte_eth_dev_pci_allocate(struct rte_pci_device *dev, size_t private_data_size)
 	return eth_dev;
 }
 
-static inline void
-rte_eth_dev_pci_release(struct rte_eth_dev *eth_dev)
-{
-	eth_dev->device = NULL;
-	eth_dev->intr_handle = NULL;
-
-	/* free ether device */
-	rte_eth_dev_release_port(eth_dev);
-}
-
 typedef int (*eth_dev_pci_callback_t)(struct rte_eth_dev *eth_dev);
 
 /**
@@ -167,7 +128,7 @@ rte_eth_dev_pci_generic_probe(struct rte_pci_device *pci_dev,
 	RTE_FUNC_PTR_OR_ERR_RET(*dev_init, -EINVAL);
 	ret = dev_init(eth_dev);
 	if (ret)
-		rte_eth_dev_pci_release(eth_dev);
+		rte_eth_dev_release_port(eth_dev);
 	else
 		rte_eth_dev_probing_finish(eth_dev);
 
@@ -196,7 +157,7 @@ rte_eth_dev_pci_generic_remove(struct rte_pci_device *pci_dev,
 			return ret;
 	}
 
-	rte_eth_dev_pci_release(eth_dev);
+	rte_eth_dev_release_port(eth_dev);
 	return 0;
 }
 

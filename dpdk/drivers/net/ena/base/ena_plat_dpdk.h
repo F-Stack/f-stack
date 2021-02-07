@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright (c) 2015-2019 Amazon.com, Inc. or its affiliates.
+ * Copyright (c) 2015-2020 Amazon.com, Inc. or its affiliates.
  * All rights reserved.
  */
 
@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <errno.h>
 
@@ -55,8 +56,9 @@ typedef uint64_t dma_addr_t;
 
 #define ENA_ABORT() abort()
 
-#define ENA_MSLEEP(x) rte_delay_ms(x)
-#define ENA_UDELAY(x) rte_delay_us(x)
+#define ENA_MSLEEP(x) rte_delay_us_sleep(x * 1000)
+#define ENA_USLEEP(x) rte_delay_us_sleep(x)
+#define ENA_UDELAY(x) rte_delay_us_block(x)
 
 #define ENA_TOUCH(x) ((void)(x))
 #define memcpy_toio memcpy
@@ -71,26 +73,15 @@ typedef uint64_t dma_addr_t;
 	(rte_get_timer_cycles() * US_PER_S / rte_get_timer_hz())
 
 extern int ena_logtype_com;
-#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
-#define ENA_ASSERT(cond, format, arg...)				\
-	do {								\
-		if (unlikely(!(cond))) {				\
-			rte_log(RTE_LOGTYPE_ERR, ena_logtype_com,	\
-				format, ##arg);				\
-			rte_panic("line %d\tassert \"" #cond "\""	\
-					"failed\n", __LINE__);		\
-		}							\
-	} while (0)
-#else
-#define ENA_ASSERT(cond, format, arg...) do {} while (0)
-#endif
 
-#define ENA_MAX32(x, y) RTE_MAX((x), (y))
-#define ENA_MAX16(x, y) RTE_MAX((x), (y))
-#define ENA_MAX8(x, y) RTE_MAX((x), (y))
-#define ENA_MIN32(x, y) RTE_MIN((x), (y))
-#define ENA_MIN16(x, y) RTE_MIN((x), (y))
-#define ENA_MIN8(x, y) RTE_MIN((x), (y))
+#define ENA_MAX_T(type, x, y) RTE_MAX((type)(x), (type)(y))
+#define ENA_MAX32(x, y) ENA_MAX_T(uint32_t, (x), (y))
+#define ENA_MAX16(x, y) ENA_MAX_T(uint16_t, (x), (y))
+#define ENA_MAX8(x, y) ENA_MAX_T(uint8_t, (x), (y))
+#define ENA_MIN_T(type, x, y) RTE_MIN((type)(x), (type)(y))
+#define ENA_MIN32(x, y) ENA_MIN_T(uint32_t, (x), (y))
+#define ENA_MIN16(x, y) ENA_MIN_T(uint16_t, (x), (y))
+#define ENA_MIN8(x, y) ENA_MIN_T(uint8_t, (x), (y))
 
 #define BITS_PER_LONG_LONG (__SIZEOF_LONG_LONG__ * 8)
 #define U64_C(x) x ## ULL
@@ -170,6 +161,7 @@ do {                                                                   \
 #define ena_wait_event_t ena_wait_queue_t
 #define ENA_MIGHT_SLEEP()
 
+#define ena_time_t uint64_t
 #define ENA_TIME_EXPIRE(timeout)  (timeout < rte_get_timer_cycles())
 #define ENA_GET_SYSTEM_TIMEOUT(timeout_us)                             \
        (timeout_us * rte_get_timer_hz() / 1000000 + rte_get_timer_cycles())
@@ -178,18 +170,24 @@ do {                                                                   \
  * Each rte_memzone should have unique name.
  * To satisfy it, count number of allocations and add it to name.
  */
-extern uint32_t ena_alloc_cnt;
+extern rte_atomic32_t ena_alloc_cnt;
 
-#define ENA_MEM_ALLOC_COHERENT(dmadev, size, virt, phys, handle)	\
+#define ENA_MEM_ALLOC_COHERENT_ALIGNED(					\
+	dmadev, size, virt, phys, handle, alignment)			\
 	do {								\
-		const struct rte_memzone *mz;				\
-		char z_name[RTE_MEMZONE_NAMESIZE];			\
+		const struct rte_memzone *mz = NULL;			\
 		ENA_TOUCH(dmadev); ENA_TOUCH(handle);			\
-		snprintf(z_name, sizeof(z_name),			\
-				"ena_alloc_%d", ena_alloc_cnt++);	\
-		mz = rte_memzone_reserve(z_name, size, SOCKET_ID_ANY,	\
-				RTE_MEMZONE_IOVA_CONTIG);		\
-		handle = mz;						\
+		if (size > 0) {						\
+			char z_name[RTE_MEMZONE_NAMESIZE];		\
+			snprintf(z_name, sizeof(z_name),		\
+			 "ena_alloc_%d",				\
+			 rte_atomic32_add_return(&ena_alloc_cnt, 1));	\
+			mz = rte_memzone_reserve_aligned(z_name, size,	\
+					SOCKET_ID_ANY,			\
+					RTE_MEMZONE_IOVA_CONTIG,	\
+					alignment);			\
+			handle = mz;					\
+		}							\
 		if (mz == NULL) {					\
 			virt = NULL;					\
 			phys = 0;					\
@@ -199,22 +197,33 @@ extern uint32_t ena_alloc_cnt;
 			phys = mz->iova;				\
 		}							\
 	} while (0)
+#define ENA_MEM_ALLOC_COHERENT(dmadev, size, virt, phys, handle)	\
+		ENA_MEM_ALLOC_COHERENT_ALIGNED(				\
+			dmadev,						\
+			size,						\
+			virt,						\
+			phys,						\
+			handle,						\
+			RTE_CACHE_LINE_SIZE)
 #define ENA_MEM_FREE_COHERENT(dmadev, size, virt, phys, handle) 	\
 		({ ENA_TOUCH(size); ENA_TOUCH(phys);			\
 		   ENA_TOUCH(dmadev);					\
 		   rte_memzone_free(handle); })
 
-#define ENA_MEM_ALLOC_COHERENT_NODE(					\
-	dmadev, size, virt, phys, mem_handle, node, dev_node)		\
+#define ENA_MEM_ALLOC_COHERENT_NODE_ALIGNED(				\
+	dmadev, size, virt, phys, mem_handle, node, dev_node, alignment) \
 	do {								\
-		const struct rte_memzone *mz;				\
-		char z_name[RTE_MEMZONE_NAMESIZE];			\
+		const struct rte_memzone *mz = NULL;			\
 		ENA_TOUCH(dmadev); ENA_TOUCH(dev_node);			\
-		snprintf(z_name, sizeof(z_name),			\
-				"ena_alloc_%d", ena_alloc_cnt++);	\
-		mz = rte_memzone_reserve(z_name, size, node,		\
-				RTE_MEMZONE_IOVA_CONTIG);		\
-		mem_handle = mz;					\
+		if (size > 0) {						\
+			char z_name[RTE_MEMZONE_NAMESIZE];		\
+			snprintf(z_name, sizeof(z_name),		\
+			 "ena_alloc_%d",				\
+			 rte_atomic32_add_return(&ena_alloc_cnt, 1));   \
+			mz = rte_memzone_reserve_aligned(z_name, size, node, \
+				RTE_MEMZONE_IOVA_CONTIG, alignment);	\
+			mem_handle = mz;				\
+		}							\
 		if (mz == NULL) {					\
 			virt = NULL;					\
 			phys = 0;					\
@@ -224,7 +233,17 @@ extern uint32_t ena_alloc_cnt;
 			phys = mz->iova;				\
 		}							\
 	} while (0)
-
+#define ENA_MEM_ALLOC_COHERENT_NODE(					\
+	dmadev, size, virt, phys, mem_handle, node, dev_node)		\
+		ENA_MEM_ALLOC_COHERENT_NODE_ALIGNED(			\
+			dmadev,						\
+			size,						\
+			virt,						\
+			phys,						\
+			mem_handle,					\
+			node,						\
+			dev_node,					\
+			RTE_CACHE_LINE_SIZE)
 #define ENA_MEM_ALLOC_NODE(dmadev, size, virt, node, dev_node) \
 	do {								\
 		ENA_TOUCH(dmadev); ENA_TOUCH(dev_node);			\
@@ -232,7 +251,8 @@ extern uint32_t ena_alloc_cnt;
 	} while (0)
 
 #define ENA_MEM_ALLOC(dmadev, size) rte_zmalloc(NULL, size, 1)
-#define ENA_MEM_FREE(dmadev, ptr) ({ENA_TOUCH(dmadev); rte_free(ptr); })
+#define ENA_MEM_FREE(dmadev, ptr, size)					\
+	({ ENA_TOUCH(dmadev); ENA_TOUCH(size); rte_free(ptr); })
 
 #define ENA_DB_SYNC(mem_handle) ((void)mem_handle)
 
@@ -260,6 +280,7 @@ extern uint32_t ena_alloc_cnt;
 #define might_sleep()
 
 #define prefetch(x) rte_prefetch0(x)
+#define prefetchw(x) prefetch(x)
 
 #define lower_32_bits(x) ((uint32_t)(x))
 #define upper_32_bits(x) ((uint32_t)(((x) >> 16) >> 16))
@@ -290,4 +311,15 @@ extern uint32_t ena_alloc_cnt;
 
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
+#define ENA_FFS(x) ffs(x)
+
+void ena_rss_key_fill(void *key, size_t size);
+
+#define ENA_RSS_FILL_KEY(key, size) ena_rss_key_fill(key, size)
+
+#define ENA_INTR_INITIAL_TX_INTERVAL_USECS_PLAT 0
+
+#define ENA_PRIu64 PRIu64
+
+#include "ena_includes.h"
 #endif /* DPDK_ENA_COM_ENA_PLAT_DPDK_H_ */

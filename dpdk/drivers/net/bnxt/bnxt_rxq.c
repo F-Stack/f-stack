@@ -168,15 +168,19 @@ out:
 	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {
 		struct rte_eth_rss_conf *rss = &dev_conf->rx_adv_conf.rss_conf;
 
-		if (bp->flags & BNXT_FLAG_UPDATE_HASH) {
-			rss = &bp->rss_conf;
+		if (bp->flags & BNXT_FLAG_UPDATE_HASH)
 			bp->flags &= ~BNXT_FLAG_UPDATE_HASH;
-		}
 
 		for (i = 0; i < bp->nr_vnics; i++) {
+			uint32_t lvl = ETH_RSS_LEVEL(rss->rss_hf);
+
 			vnic = &bp->vnic_info[i];
 			vnic->hash_type =
 				bnxt_rte_to_hwrm_hash_types(rss->rss_hf);
+			vnic->hash_mode =
+				bnxt_rte_to_hwrm_hash_level(bp,
+							    rss->rss_hf,
+							    lvl);
 
 			/*
 			 * Use the supplied key if the key length is
@@ -199,22 +203,21 @@ err_out:
 
 void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 {
-	struct bnxt_sw_rx_bd *sw_ring;
+	struct rte_mbuf **sw_ring;
 	struct bnxt_tpa_info *tpa_info;
 	uint16_t i;
 
-	if (!rxq)
+	if (!rxq || !rxq->rx_ring)
 		return;
-
-	rte_spinlock_lock(&rxq->lock);
 
 	sw_ring = rxq->rx_ring->rx_buf_ring;
 	if (sw_ring) {
 		for (i = 0;
 		     i < rxq->rx_ring->rx_ring_struct->ring_size; i++) {
-			if (sw_ring[i].mbuf) {
-				rte_pktmbuf_free_seg(sw_ring[i].mbuf);
-				sw_ring[i].mbuf = NULL;
+			if (sw_ring[i]) {
+				if (sw_ring[i] != &rxq->fake_mbuf)
+					rte_pktmbuf_free_seg(sw_ring[i]);
+				sw_ring[i] = NULL;
 			}
 		}
 	}
@@ -223,9 +226,9 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 	if (sw_ring) {
 		for (i = 0;
 		     i < rxq->rx_ring->ag_ring_struct->ring_size; i++) {
-			if (sw_ring[i].mbuf) {
-				rte_pktmbuf_free_seg(sw_ring[i].mbuf);
-				sw_ring[i].mbuf = NULL;
+			if (sw_ring[i]) {
+				rte_pktmbuf_free_seg(sw_ring[i]);
+				sw_ring[i] = NULL;
 			}
 		}
 	}
@@ -243,7 +246,6 @@ void bnxt_rx_queue_release_mbufs(struct bnxt_rx_queue *rxq)
 		}
 	}
 
-	rte_spinlock_unlock(&rxq->lock);
 }
 
 void bnxt_free_rx_mbufs(struct bnxt *bp)
@@ -268,12 +270,21 @@ void bnxt_rx_queue_release_op(void *rx_queue)
 		bnxt_rx_queue_release_mbufs(rxq);
 
 		/* Free RX ring hardware descriptors */
-		bnxt_free_ring(rxq->rx_ring->rx_ring_struct);
-		/* Free RX Agg ring hardware descriptors */
-		bnxt_free_ring(rxq->rx_ring->ag_ring_struct);
+		if (rxq->rx_ring) {
+			bnxt_free_ring(rxq->rx_ring->rx_ring_struct);
+			rte_free(rxq->rx_ring->rx_ring_struct);
+			/* Free RX Agg ring hardware descriptors */
+			bnxt_free_ring(rxq->rx_ring->ag_ring_struct);
+			rte_free(rxq->rx_ring->ag_ring_struct);
 
+			rte_free(rxq->rx_ring);
+		}
 		/* Free RX completion ring hardware descriptors */
-		bnxt_free_ring(rxq->cp_ring->cp_ring_struct);
+		if (rxq->cp_ring) {
+			bnxt_free_ring(rxq->cp_ring->cp_ring_struct);
+			rte_free(rxq->cp_ring->cp_ring_struct);
+			rte_free(rxq->cp_ring);
+		}
 
 		bnxt_free_rxq_stats(rxq);
 		rte_memzone_free(rxq->mz);
@@ -307,10 +318,9 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 		return -EINVAL;
 	}
 
-	if (!nb_desc || nb_desc > MAX_RX_DESC_CNT) {
+	if (nb_desc < BNXT_MIN_RING_DESC || nb_desc > MAX_RX_DESC_CNT) {
 		PMD_DRV_LOG(ERR, "nb_desc %d is invalid\n", nb_desc);
-		rc = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 
 	if (eth_dev->data->rx_queues) {
@@ -322,19 +332,27 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 				 RTE_CACHE_LINE_SIZE, socket_id);
 	if (!rxq) {
 		PMD_DRV_LOG(ERR, "bnxt_rx_queue allocation failed!\n");
-		rc = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
 	rxq->bp = bp;
 	rxq->mb_pool = mp;
 	rxq->nb_rx_desc = nb_desc;
-	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
+	rxq->rx_free_thresh =
+		RTE_MIN(rte_align32pow2(nb_desc) / 4, RTE_BNXT_MAX_RX_BURST);
+
+	if (rx_conf->rx_drop_en != BNXT_DEFAULT_RX_DROP_EN)
+		PMD_DRV_LOG(NOTICE,
+			    "Per-queue config of drop-en is not supported.\n");
+	rxq->drop_en = BNXT_DEFAULT_RX_DROP_EN;
 
 	PMD_DRV_LOG(DEBUG, "RX Buf MTU %d\n", eth_dev->data->mtu);
 
 	rc = bnxt_init_rx_ring_struct(rxq, socket_id);
-	if (rc)
-		goto out;
+	if (rc) {
+		PMD_DRV_LOG(ERR,
+			    "init_rx_ring_struct failed!\n");
+		goto err;
+	}
 
 	PMD_DRV_LOG(DEBUG, "RX Buf size is %d\n", rxq->rx_buf_size);
 	rxq->queue_id = queue_idx;
@@ -349,10 +367,8 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	if (bnxt_alloc_rings(bp, queue_idx, NULL, rxq, rxq->cp_ring, NULL,
 			     "rxr")) {
 		PMD_DRV_LOG(ERR,
-			"ring_dma_zone_reserve for rx_ring failed!\n");
-		bnxt_rx_queue_release_op(rxq);
-		rc = -ENOMEM;
-		goto out;
+			    "ring_dma_zone_reserve for rx_ring failed!\n");
+		goto err;
 	}
 	rte_atomic64_init(&rxq->rx_mbuf_alloc_fail);
 
@@ -370,13 +386,14 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 		rxq->rx_started = true;
 	}
 	eth_dev->data->rx_queue_state[queue_idx] = queue_state;
-	rte_spinlock_init(&rxq->lock);
 
 	/* Configure mtu if it is different from what was configured before */
 	if (!queue_idx)
 		bnxt_mtu_set_op(eth_dev, eth_dev->data->mtu);
 
-out:
+	return 0;
+err:
+	bnxt_rx_queue_release_op(rxq);
 	return rc;
 }
 

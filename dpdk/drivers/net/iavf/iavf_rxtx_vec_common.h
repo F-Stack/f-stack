@@ -33,6 +33,7 @@ reassemble_packets(struct iavf_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 			if (!split_flags[buf_idx]) {
 				/* it's the last packet of the set */
 				start->hash = end->hash;
+				start->vlan_tci = end->vlan_tci;
 				start->ol_flags = end->ol_flags;
 				/* we need to strip crc for the whole packet */
 				start->pkt_len -= rxq->crc_len;
@@ -221,6 +222,9 @@ iavf_rx_vec_queue_default(struct iavf_rx_queue *rxq)
 		return -1;
 
 	if (rxq->nb_rx_desc % rxq->rx_free_thresh)
+		return -1;
+
+	if (rxq->proto_xtr != IAVF_PROTO_XTR_NONE)
 		return -1;
 
 	return 0;

@@ -52,8 +52,7 @@ gso_udp4_segment(struct rte_mbuf *pkt,
 			pkt->l2_len);
 	frag_off = rte_be_to_cpu_16(ipv4_hdr->fragment_offset);
 	if (unlikely(IS_FRAGMENTED(frag_off))) {
-		pkts_out[0] = pkt;
-		return 1;
+		return 0;
 	}
 
 	/*
@@ -65,11 +64,13 @@ gso_udp4_segment(struct rte_mbuf *pkt,
 
 	/* Don't process the packet without data. */
 	if (unlikely(hdr_offset + pkt->l4_len >= pkt->pkt_len)) {
-		pkts_out[0] = pkt;
-		return 1;
+		return 0;
 	}
 
-	pyld_unit_size = gso_size - hdr_offset;
+	/* pyld_unit_size must be a multiple of 8 because frag_off
+	 * uses 8 bytes as unit.
+	 */
+	pyld_unit_size = (gso_size - hdr_offset) & ~7U;
 
 	/* Segment the payload */
 	ret = gso_do_segment(pkt, hdr_offset, pyld_unit_size, direct_pool,

@@ -2,8 +2,6 @@
  * Copyright(c) 2018-2019 Hisilicon Limited.
  */
 
-#include <stdbool.h>
-#include <sys/queue.h>
 #include <rte_flow_driver.h>
 #include <rte_io.h>
 #include <rte_malloc.h>
@@ -90,16 +88,56 @@ net_addr_to_host(uint32_t *dst, const rte_be32_t *src, size_t len)
 		dst[i] = rte_be_to_cpu_32(src[i]);
 }
 
-static inline const struct rte_flow_action *
-find_rss_action(const struct rte_flow_action actions[])
+/*
+ * This function is used to find rss general action.
+ * 1. As we know RSS is used to spread packets among several queues, the flow
+ *    API provide the struct rte_flow_action_rss, user could config it's field
+ *    sush as: func/level/types/key/queue to control RSS function.
+ * 2. The flow API also support queue region configuration for hns3. It was
+ *    implemented by FDIR + RSS in hns3 hardware, user can create one FDIR rule
+ *    which action is RSS queues region.
+ * 3. When action is RSS, we use the following rule to distinguish:
+ *    Case 1: pattern have ETH and action's queue_num > 0, indicate it is queue
+ *            region configuration.
+ *    Case other: an rss general action.
+ */
+static const struct rte_flow_action *
+hns3_find_rss_general_action(const struct rte_flow_item pattern[],
+			     const struct rte_flow_action actions[])
 {
-	const struct rte_flow_action *next = &actions[0];
+	const struct rte_flow_action *act = NULL;
+	const struct hns3_rss_conf *rss;
+	bool have_eth = false;
 
-	for (; next->type != RTE_FLOW_ACTION_TYPE_END; next++) {
-		if (next->type == RTE_FLOW_ACTION_TYPE_RSS)
-			return next;
+	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
+		if (actions->type == RTE_FLOW_ACTION_TYPE_RSS) {
+			act = actions;
+			break;
+		}
 	}
-	return NULL;
+	if (!act)
+		return NULL;
+
+	for (; pattern->type != RTE_FLOW_ITEM_TYPE_END; pattern++) {
+		if (pattern->type == RTE_FLOW_ITEM_TYPE_ETH) {
+			have_eth = true;
+			break;
+		}
+	}
+
+	rss = act->conf;
+	if (have_eth && rss->conf.queue_num) {
+		/*
+		 * Patter have ETH and action's queue_num > 0, indicate this is
+		 * queue region configuration.
+		 * Because queue region is implemented by FDIR + RSS in hns3
+		 * hardware, it need enter FDIR process, so here return NULL to
+		 * avoid enter RSS process.
+		 */
+		return NULL;
+	}
+
+	return act;
 }
 
 static inline struct hns3_flow_counter *
@@ -128,9 +166,9 @@ hns3_counter_new(struct rte_eth_dev *dev, uint32_t shared, uint32_t id,
 	if (cnt) {
 		if (!cnt->shared || cnt->shared != shared)
 			return rte_flow_error_set(error, ENOTSUP,
-						  RTE_FLOW_ERROR_TYPE_ACTION,
-						  cnt,
-						  "Counter id is used,shared flag not match");
+				RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+				cnt,
+				"Counter id is used, shared flag not match");
 		cnt->ref_cnt++;
 		return 0;
 	}
@@ -138,7 +176,7 @@ hns3_counter_new(struct rte_eth_dev *dev, uint32_t shared, uint32_t id,
 	cnt = rte_zmalloc("hns3 counter", sizeof(*cnt), 0);
 	if (cnt == NULL)
 		return rte_flow_error_set(error, ENOMEM,
-					  RTE_FLOW_ERROR_TYPE_ACTION, cnt,
+					  RTE_FLOW_ERROR_TYPE_HANDLE, cnt,
 					  "Alloc mem for counter failed");
 	cnt->id = id;
 	cnt->shared = shared;
@@ -166,13 +204,12 @@ hns3_counter_query(struct rte_eth_dev *dev, struct rte_flow *flow,
 	cnt = hns3_counter_lookup(dev, flow->counter_id);
 	if (cnt == NULL)
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+					  RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 					  "Can't find counter id");
 
 	ret = hns3_get_count(&hns->hw, flow->counter_id, &value);
 	if (ret) {
-		rte_flow_error_set(error, -ret,
-				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+		rte_flow_error_set(error, -ret, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "Read counter fail.");
 		return ret;
 	}
@@ -224,15 +261,62 @@ hns3_handle_action_queue(struct rte_eth_dev *dev,
 			 struct rte_flow_error *error)
 {
 	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
 	const struct rte_flow_action_queue *queue;
+	struct hns3_hw *hw = &hns->hw;
 
 	queue = (const struct rte_flow_action_queue *)action->conf;
-	if (queue->index >= hw->data->nb_rx_queues)
+	if (queue->index >= hw->used_rx_queues) {
+		hns3_err(hw, "queue ID(%u) is greater than number of "
+			  "available queue (%u) in driver.",
+			  queue->index, hw->used_rx_queues);
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION, action,
-					  "Invalid queue ID in PF");
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					  action, "Invalid queue ID in PF");
+	}
+
 	rule->queue_id = queue->index;
+	rule->nb_queues = 1;
+	rule->action = HNS3_FD_ACTION_ACCEPT_PACKET;
+	return 0;
+}
+
+static int
+hns3_handle_action_queue_region(struct rte_eth_dev *dev,
+				const struct rte_flow_action *action,
+				struct hns3_fdir_rule *rule,
+				struct rte_flow_error *error)
+{
+	struct hns3_adapter *hns = dev->data->dev_private;
+	const struct rte_flow_action_rss *conf = action->conf;
+	struct hns3_hw *hw = &hns->hw;
+	uint16_t idx;
+
+	if (!hns3_dev_fd_queue_region_supported(hw))
+		return rte_flow_error_set(error, ENOTSUP,
+			RTE_FLOW_ERROR_TYPE_ACTION, action,
+			"Not support config queue region!");
+
+	if ((!rte_is_power_of_2(conf->queue_num)) ||
+		conf->queue_num > hw->rss_size_max ||
+		conf->queue[0] >= hw->used_rx_queues ||
+		conf->queue[0] + conf->queue_num > hw->used_rx_queues) {
+		return rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_ACTION_CONF, action,
+			"Invalid start queue ID and queue num! the start queue "
+			"ID must valid, the queue num must be power of 2 and "
+			"<= rss_size_max.");
+	}
+
+	for (idx = 1; idx < conf->queue_num; idx++) {
+		if (conf->queue[idx] != conf->queue[idx - 1] + 1)
+			return rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ACTION_CONF, action,
+				"Invalid queue ID sequence! the queue ID "
+				"must be continuous increment.");
+	}
+
+	rule->queue_id = conf->queue[0];
+	rule->nb_queues = conf->queue_num;
 	rule->action = HNS3_FD_ACTION_ACCEPT_PACKET;
 	return 0;
 }
@@ -269,14 +353,27 @@ hns3_handle_actions(struct rte_eth_dev *dev,
 		case RTE_FLOW_ACTION_TYPE_DROP:
 			rule->action = HNS3_FD_ACTION_DROP_PACKET;
 			break;
+		/*
+		 * Here RSS's real action is queue region.
+		 * Queue region is implemented by FDIR + RSS in hns3 hardware,
+		 * the FDIR's action is one queue region (start_queue_id and
+		 * queue_num), then RSS spread packets to the queue region by
+		 * RSS algorigthm.
+		 */
+		case RTE_FLOW_ACTION_TYPE_RSS:
+			ret = hns3_handle_action_queue_region(dev, actions,
+							      rule, error);
+			if (ret)
+				return ret;
+			break;
 		case RTE_FLOW_ACTION_TYPE_MARK:
 			mark =
 			    (const struct rte_flow_action_mark *)actions->conf;
 			if (mark->id >= HNS3_MAX_FILTER_ID)
 				return rte_flow_error_set(error, EINVAL,
-						     RTE_FLOW_ERROR_TYPE_ACTION,
-						     actions,
-						     "Invalid Mark ID");
+						RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+						actions,
+						"Invalid Mark ID");
 			rule->fd_id = mark->id;
 			rule->flags |= HNS3_RULE_FLAG_FDID;
 			break;
@@ -290,9 +387,9 @@ hns3_handle_actions(struct rte_eth_dev *dev,
 			counter_num = pf->fdir.fd_cfg.cnt_num[HNS3_FD_STAGE_1];
 			if (act_count->id >= counter_num)
 				return rte_flow_error_set(error, EINVAL,
-						     RTE_FLOW_ERROR_TYPE_ACTION,
-						     actions,
-						     "Invalid counter id");
+						RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+						actions,
+						"Invalid counter id");
 			rule->act_cnt = *act_count;
 			rule->flags |= HNS3_RULE_FLAG_COUNTER;
 			break;
@@ -449,14 +546,13 @@ hns3_parse_ipv4(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (item->mask) {
 		ipv4_mask = item->mask;
-
 		if (ipv4_mask->hdr.total_length ||
 		    ipv4_mask->hdr.packet_id ||
 		    ipv4_mask->hdr.fragment_offset ||
 		    ipv4_mask->hdr.time_to_live ||
 		    ipv4_mask->hdr.hdr_checksum) {
 			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  RTE_FLOW_ERROR_TYPE_ITEM_MASK,
 						  item,
 						  "Only support src & dst ip,tos,proto in IPV4");
 		}
@@ -518,10 +614,10 @@ hns3_parse_ipv6(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (item->mask) {
 		ipv6_mask = item->mask;
-		if (ipv6_mask->hdr.vtc_flow ||
-		    ipv6_mask->hdr.payload_len || ipv6_mask->hdr.hop_limits) {
+		if (ipv6_mask->hdr.vtc_flow || ipv6_mask->hdr.payload_len ||
+		    ipv6_mask->hdr.hop_limits) {
 			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  RTE_FLOW_ERROR_TYPE_ITEM_MASK,
 						  item,
 						  "Only support src & dst ip,proto in IPV6");
 		}
@@ -574,14 +670,12 @@ hns3_parse_tcp(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (item->mask) {
 		tcp_mask = item->mask;
-		if (tcp_mask->hdr.sent_seq ||
-		    tcp_mask->hdr.recv_ack ||
-		    tcp_mask->hdr.data_off ||
-		    tcp_mask->hdr.tcp_flags ||
-		    tcp_mask->hdr.rx_win ||
-		    tcp_mask->hdr.cksum || tcp_mask->hdr.tcp_urp) {
+		if (tcp_mask->hdr.sent_seq || tcp_mask->hdr.recv_ack ||
+		    tcp_mask->hdr.data_off || tcp_mask->hdr.tcp_flags ||
+		    tcp_mask->hdr.rx_win || tcp_mask->hdr.cksum ||
+		    tcp_mask->hdr.tcp_urp) {
 			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  RTE_FLOW_ERROR_TYPE_ITEM_MASK,
 						  item,
 						  "Only support src & dst port in TCP");
 		}
@@ -628,7 +722,7 @@ hns3_parse_udp(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 		udp_mask = item->mask;
 		if (udp_mask->hdr.dgram_len || udp_mask->hdr.dgram_cksum) {
 			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  RTE_FLOW_ERROR_TYPE_ITEM_MASK,
 						  item,
 						  "Only support src & dst port in UDP");
 		}
@@ -675,10 +769,9 @@ hns3_parse_sctp(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 		sctp_mask = item->mask;
 		if (sctp_mask->hdr.cksum)
 			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  RTE_FLOW_ERROR_TYPE_ITEM_MASK,
 						  item,
 						  "Only support src & dst port in SCTP");
-
 		if (sctp_mask->hdr.src_port) {
 			hns3_set_bit(rule->input_set, INNER_SRC_PORT, 1);
 			rule->key_conf.mask.src_port =
@@ -820,14 +913,14 @@ hns3_parse_vxlan(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (vxlan_mask->flags)
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "Flags is not supported in VxLAN");
 
 	/* VNI must be totally masked or not. */
 	if (memcmp(vxlan_mask->vni, full_mask, VNI_OR_TNI_LEN) &&
 	    memcmp(vxlan_mask->vni, zero_mask, VNI_OR_TNI_LEN))
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "VNI must be totally masked or not in VxLAN");
 	if (vxlan_mask->vni[0]) {
 		hns3_set_bit(rule->input_set, OUTER_TUN_VNI, 1);
@@ -871,14 +964,14 @@ hns3_parse_nvgre(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (nvgre_mask->protocol || nvgre_mask->c_k_s_rsvd0_ver)
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "Ver/protocal is not supported in NVGRE");
 
 	/* TNI must be totally masked or not. */
 	if (memcmp(nvgre_mask->tni, full_mask, VNI_OR_TNI_LEN) &&
 	    memcmp(nvgre_mask->tni, zero_mask, VNI_OR_TNI_LEN))
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "TNI must be totally masked or not in NVGRE");
 
 	if (nvgre_mask->tni[0]) {
@@ -925,13 +1018,13 @@ hns3_parse_geneve(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 
 	if (geneve_mask->ver_opt_len_o_c_rsvd0 || geneve_mask->protocol)
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "Ver/protocal is not supported in GENEVE");
 	/* VNI must be totally masked or not. */
 	if (memcmp(geneve_mask->vni, full_mask, VNI_OR_TNI_LEN) &&
 	    memcmp(geneve_mask->vni, zero_mask, VNI_OR_TNI_LEN))
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
 					  "VNI must be totally masked or not in GENEVE");
 	if (geneve_mask->vni[0]) {
 		hns3_set_bit(rule->input_set, OUTER_TUN_VNI, 1);
@@ -962,7 +1055,7 @@ hns3_parse_tunnel(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 		break;
 	default:
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_HANDLE,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
 					  NULL, "Unsupported tunnel type!");
 	}
 	if (ret)
@@ -971,8 +1064,7 @@ hns3_parse_tunnel(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 }
 
 static int
-hns3_parse_normal(const struct rte_flow_item *item,
-		  struct hns3_fdir_rule *rule,
+hns3_parse_normal(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 		  struct items_step_mngr *step_mngr,
 		  struct rte_flow_error *error)
 {
@@ -1016,7 +1108,7 @@ hns3_parse_normal(const struct rte_flow_item *item,
 		break;
 	default:
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_HANDLE,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
 					  NULL, "Unsupported normal type!");
 	}
 
@@ -1032,7 +1124,7 @@ hns3_validate_item(const struct rte_flow_item *item,
 
 	if (item->last)
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, item,
+					  RTE_FLOW_ERROR_TYPE_ITEM_LAST, item,
 					  "Not supported last point for range");
 
 	for (i = 0; i < step_mngr.count; i++) {
@@ -1118,7 +1210,7 @@ hns3_parse_fdir_filter(struct rte_eth_dev *dev,
 
 	if (dev->data->dev_conf.fdir_conf.mode != RTE_FDIR_MODE_PERFECT)
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ITEM_NUM, NULL,
+					  RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 					  "fdir_conf.mode isn't perfect");
 
 	step_mngr.items = first_items;
@@ -1193,10 +1285,24 @@ static bool
 hns3_action_rss_same(const struct rte_flow_action_rss *comp,
 		     const struct rte_flow_action_rss *with)
 {
-	return (comp->func == with->func &&
-		comp->level == with->level &&
-		comp->types == with->types &&
-		comp->key_len == with->key_len &&
+	bool func_is_same;
+
+	/*
+	 * When user flush all RSS rule, RSS func is set invalid with
+	 * RTE_ETH_HASH_FUNCTION_MAX. Then the user create a flow after
+	 * flushed, any validate RSS func is different with it before
+	 * flushed. Others, when user create an action RSS with RSS func
+	 * specified RTE_ETH_HASH_FUNCTION_DEFAULT, the func is the same
+	 * between continuous RSS flow.
+	 */
+	if (comp->func == RTE_ETH_HASH_FUNCTION_MAX)
+		func_is_same = false;
+	else
+		func_is_same = (with->func ? (comp->func == with->func) : true);
+
+	return (func_is_same &&
+		comp->types == (with->types & HNS3_ETH_RSS_SUPPORT) &&
+		comp->level == with->level && comp->key_len == with->key_len &&
 		comp->queue_num == with->queue_num &&
 		!memcmp(comp->key, with->key, with->key_len) &&
 		!memcmp(comp->queue, with->queue,
@@ -1219,9 +1325,8 @@ hns3_rss_conf_copy(struct hns3_rss_conf *out,
 		.key_len = in->key_len,
 		.queue_num = in->queue_num,
 	};
-	out->conf.queue =
-		memcpy(out->queue, in->queue,
-		       sizeof(*in->queue) * in->queue_num);
+	out->conf.queue = memcpy(out->queue, in->queue,
+				sizeof(*in->queue) * in->queue_num);
 	if (in->key)
 		out->conf.key = memcpy(out->key, in->key, in->key_len);
 
@@ -1242,65 +1347,66 @@ hns3_parse_rss_filter(struct rte_eth_dev *dev,
 	const struct rte_flow_action_rss *rss;
 	const struct rte_flow_action *act;
 	uint32_t act_index = 0;
-	uint64_t flow_types;
 	uint16_t n;
 
 	NEXT_ITEM_OF_ACTION(act, actions, act_index);
-	/* Get configuration args from APP cmdline input */
 	rss = act->conf;
 
-	if (rss == NULL || rss->queue_num == 0) {
+	if (rss == NULL) {
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 					  act, "no valid queues");
 	}
 
+	if (rss->queue_num > RTE_DIM(rss_conf->queue))
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, act,
+					  "queue number configured exceeds "
+					  "queue buffer size driver supported");
+
 	for (n = 0; n < rss->queue_num; n++) {
-		if (rss->queue[n] < dev->data->nb_rx_queues)
+		if (rss->queue[n] < hw->alloc_rss_size)
 			continue;
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION,
-					  act,
-					  "queue id > max number of queues");
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, act,
+					  "queue id must be less than queue number allocated to a TC");
 	}
 
-	/* Parse flow types of RSS */
 	if (!(rss->types & HNS3_ETH_RSS_SUPPORT) && rss->types)
 		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 					  act,
 					  "Flow types is unsupported by "
 					  "hns3's RSS");
-
-	flow_types = rss->types & HNS3_ETH_RSS_SUPPORT;
-	if (flow_types != rss->types)
-		hns3_warn(hw, "RSS flow types(%" PRIx64 ") include unsupported "
-			  "flow types", rss->types);
-
-	/* Parse RSS related parameters from RSS configuration */
-	switch (rss->func) {
-	case RTE_ETH_HASH_FUNCTION_DEFAULT:
-	case RTE_ETH_HASH_FUNCTION_TOEPLITZ:
-	case RTE_ETH_HASH_FUNCTION_SIMPLE_XOR:
-		break;
-	default:
+	if (rss->func >= RTE_ETH_HASH_FUNCTION_MAX)
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ACTION, act,
-					  "input RSS hash functions are not supported");
-	}
-
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, act,
+					  "RSS hash func are not supported");
 	if (rss->level)
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ACTION, act,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, act,
 					  "a nonzero RSS encapsulation level is not supported");
 	if (rss->key_len && rss->key_len != RTE_DIM(rss_conf->key))
 		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ACTION, act,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, act,
 					  "RSS hash key must be exactly 40 bytes");
-	if (rss->queue_num > RTE_DIM(rss_conf->queue))
-		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ACTION, act,
-					  "too many queues for RSS context");
+
+	/*
+	 * For Kunpeng920 and Kunpeng930 NIC hardware, it is not supported to
+	 * use dst port/src port fields to RSS hash for the following packet
+	 * types.
+	 * - IPV4 FRAG | IPV4 NONFRAG | IPV6 FRAG | IPV6 NONFRAG
+	 * Besides, for Kunpeng920, The NIC hardware is not supported to use
+	 * src/dst port fields to RSS hash for IPV6 SCTP packet type.
+	 */
+	if (rss->types & (ETH_RSS_L4_DST_ONLY | ETH_RSS_L4_SRC_ONLY) &&
+	   (rss->types & ETH_RSS_IP ||
+	   (!hw->rss_info.ipv6_sctp_offload_supported &&
+	   rss->types & ETH_RSS_NONFRAG_IPV6_SCTP)))
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					  &rss->types,
+					  "input RSS types are not supported");
 
 	act_index++;
 
@@ -1328,6 +1434,7 @@ hns3_disable_rss(struct hns3_hw *hw)
 
 	/* Disable RSS */
 	hw->rss_info.conf.types = 0;
+	hw->rss_dis_flag = true;
 
 	return 0;
 }
@@ -1335,9 +1442,8 @@ hns3_disable_rss(struct hns3_hw *hw)
 static void
 hns3_parse_rss_key(struct hns3_hw *hw, struct rte_flow_action_rss *rss_conf)
 {
-	if (rss_conf->key == NULL ||
-	    rss_conf->key_len < HNS3_RSS_KEY_SIZE) {
-		hns3_info(hw, "Default RSS hash key to be set");
+	if (rss_conf->key == NULL || rss_conf->key_len < HNS3_RSS_KEY_SIZE) {
+		hns3_warn(hw, "Default RSS hash key to be set");
 		rss_conf->key = hns3_hash_key;
 		rss_conf->key_len = HNS3_RSS_KEY_SIZE;
 	}
@@ -1359,6 +1465,9 @@ hns3_parse_rss_algorithm(struct hns3_hw *hw, enum rte_eth_hash_function *func,
 	case RTE_ETH_HASH_FUNCTION_SIMPLE_XOR:
 		*hash_algo = HNS3_RSS_HASH_ALGO_SIMPLE;
 		break;
+	case RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ:
+		*hash_algo = HNS3_RSS_HASH_ALGO_SYMMETRIC_TOEP;
+		break;
 	default:
 		hns3_err(hw, "Invalid RSS algorithm configuration(%u)",
 			 algo_func);
@@ -1372,21 +1481,17 @@ hns3_parse_rss_algorithm(struct hns3_hw *hw, enum rte_eth_hash_function *func,
 static int
 hns3_hw_rss_hash_set(struct hns3_hw *hw, struct rte_flow_action_rss *rss_config)
 {
-	uint8_t hash_algo =
-		(hw->rss_info.conf.func == RTE_ETH_HASH_FUNCTION_TOEPLITZ ?
-		 HNS3_RSS_HASH_ALGO_TOEPLITZ : HNS3_RSS_HASH_ALGO_SIMPLE);
 	struct hns3_rss_tuple_cfg *tuple;
 	int ret;
 
-	/* Parse hash key */
 	hns3_parse_rss_key(hw, rss_config);
 
-	/* Parse hash algorithm */
-	ret = hns3_parse_rss_algorithm(hw, &rss_config->func, &hash_algo);
+	ret = hns3_parse_rss_algorithm(hw, &rss_config->func,
+				       &hw->rss_info.hash_algo);
 	if (ret)
 		return ret;
 
-	ret = hns3_set_rss_algo_key(hw, hash_algo, rss_config->key);
+	ret = hns3_set_rss_algo_key(hw, rss_config->key);
 	if (ret)
 		return ret;
 
@@ -1408,31 +1513,22 @@ hns3_update_indir_table(struct rte_eth_dev *dev,
 {
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
-	uint8_t indir_tbl[HNS3_RSS_IND_TBL_SIZE];
-	uint16_t j, allow_rss_queues;
-	uint8_t queue_id;
+	uint16_t indir_tbl[HNS3_RSS_IND_TBL_SIZE];
+	uint16_t j;
 	uint32_t i;
 
-	if (num == 0) {
-		hns3_err(hw, "No PF queues are configured to enable RSS");
-		return -ENOTSUP;
-	}
-
-	allow_rss_queues = RTE_MIN(dev->data->nb_rx_queues, hw->rss_size_max);
 	/* Fill in redirection table */
 	memcpy(indir_tbl, hw->rss_info.rss_indirection_tbl,
-	       HNS3_RSS_IND_TBL_SIZE);
+	       sizeof(hw->rss_info.rss_indirection_tbl));
 	for (i = 0, j = 0; i < HNS3_RSS_IND_TBL_SIZE; i++, j++) {
 		j %= num;
-		if (conf->queue[j] >= allow_rss_queues) {
-			hns3_err(hw, "Invalid queue id(%u) to be set in "
-				     "redirection table, max number of rss "
-				     "queues: %u", conf->queue[j],
-				 allow_rss_queues);
+		if (conf->queue[j] >= hw->alloc_rss_size) {
+			hns3_err(hw, "queue id(%u) set to redirection table "
+				 "exceeds queue number(%u) allocated to a TC.",
+				 conf->queue[j], hw->alloc_rss_size);
 			return -EINVAL;
 		}
-		queue_id = conf->queue[j];
-		indir_tbl[i] = queue_id;
+		indir_tbl[i] = conf->queue[j];
 	}
 
 	return hns3_set_rss_indir_table(hw, indir_tbl, HNS3_RSS_IND_TBL_SIZE);
@@ -1442,7 +1538,9 @@ static int
 hns3_config_rss_filter(struct rte_eth_dev *dev,
 		       const struct hns3_rss_conf *conf, bool add)
 {
+	struct hns3_process_private *process_list = dev->process_private;
 	struct hns3_adapter *hns = dev->data->dev_private;
+	struct hns3_rss_conf_ele *rss_filter_ptr;
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_rss_conf *rss_info;
 	uint64_t flow_types;
@@ -1460,17 +1558,10 @@ hns3_config_rss_filter(struct rte_eth_dev *dev,
 		.queue = conf->conf.queue,
 	};
 
-	/* The types is Unsupported by hns3' RSS */
-	if (!(rss_flow_conf.types & HNS3_ETH_RSS_SUPPORT) &&
-	    rss_flow_conf.types) {
-		hns3_err(hw,
-			 "Flow types(%" PRIx64 ") is unsupported by hns3's RSS",
-			 rss_flow_conf.types);
-		return -EINVAL;
-	}
-
 	/* Filter the unsupported flow types */
-	flow_types = rss_flow_conf.types & HNS3_ETH_RSS_SUPPORT;
+	flow_types = conf->conf.types ?
+		     rss_flow_conf.types & HNS3_ETH_RSS_SUPPORT :
+		     hw->rss_info.conf.types;
 	if (flow_types != rss_flow_conf.types)
 		hns3_warn(hw, "modified RSS types based on hardware support, "
 			      "requested:%" PRIx64 " configured:%" PRIx64,
@@ -1478,38 +1569,44 @@ hns3_config_rss_filter(struct rte_eth_dev *dev,
 	/* Update the useful flow types */
 	rss_flow_conf.types = flow_types;
 
-	if ((rss_flow_conf.types & ETH_RSS_PROTO_MASK) == 0)
-		return hns3_disable_rss(hw);
-
 	rss_info = &hw->rss_info;
 	if (!add) {
-		if (hns3_action_rss_same(&rss_info->conf, &rss_flow_conf)) {
-			ret = hns3_disable_rss(hw);
-			if (ret) {
-				hns3_err(hw, "RSS disable failed(%d)", ret);
-				return ret;
-			}
-			memset(rss_info, 0, sizeof(struct hns3_rss_conf));
+		if (!conf->valid)
 			return 0;
+
+		ret = hns3_disable_rss(hw);
+		if (ret) {
+			hns3_err(hw, "RSS disable failed(%d)", ret);
+			return ret;
 		}
-		return -EINVAL;
+
+		if (rss_flow_conf.queue_num) {
+			/*
+			 * Due the content of queue pointer have been reset to
+			 * 0, the rss_info->conf.queue should be set NULL
+			 */
+			rss_info->conf.queue = NULL;
+			rss_info->conf.queue_num = 0;
+		}
+
+		/* set RSS func invalid after flushed */
+		rss_info->conf.func = RTE_ETH_HASH_FUNCTION_MAX;
+		return 0;
 	}
 
-	/* Get rx queues num */
-	num = dev->data->nb_rx_queues;
-
 	/* Set rx queues to use */
-	num = RTE_MIN(num, rss_flow_conf.queue_num);
+	num = RTE_MIN(dev->data->nb_rx_queues, rss_flow_conf.queue_num);
 	if (rss_flow_conf.queue_num > num)
 		hns3_warn(hw, "Config queue numbers %u are beyond the scope of truncated",
 			  rss_flow_conf.queue_num);
 	hns3_info(hw, "Max of contiguous %u PF queues are configured", num);
 
 	rte_spinlock_lock(&hw->lock);
-	/* Update redirection talbe of rss */
-	ret = hns3_update_indir_table(dev, &rss_flow_conf, num);
-	if (ret)
-		goto rss_config_err;
+	if (num) {
+		ret = hns3_update_indir_table(dev, &rss_flow_conf, num);
+		if (ret)
+			goto rss_config_err;
+	}
 
 	/* Set hash algorithm and flow types by the user's config */
 	ret = hns3_hw_rss_hash_set(hw, &rss_flow_conf);
@@ -1522,23 +1619,65 @@ hns3_config_rss_filter(struct rte_eth_dev *dev,
 		goto rss_config_err;
 	}
 
+	/*
+	 * When create a new RSS rule, the old rule will be overlaid and set
+	 * invalid.
+	 */
+	TAILQ_FOREACH(rss_filter_ptr, &process_list->filter_rss_list, entries)
+		rss_filter_ptr->filter_info.valid = false;
+
 rss_config_err:
 	rte_spinlock_unlock(&hw->lock);
 
 	return ret;
 }
 
-/* Remove the rss filter */
 static int
 hns3_clear_rss_filter(struct rte_eth_dev *dev)
+{
+	struct hns3_process_private *process_list = dev->process_private;
+	struct hns3_adapter *hns = dev->data->dev_private;
+	struct hns3_rss_conf_ele *rss_filter_ptr;
+	struct hns3_hw *hw = &hns->hw;
+	int rss_rule_succ_cnt = 0; /* count for success of clearing RSS rules */
+	int rss_rule_fail_cnt = 0; /* count for failure of clearing RSS rules */
+	int ret = 0;
+
+	rss_filter_ptr = TAILQ_FIRST(&process_list->filter_rss_list);
+	while (rss_filter_ptr) {
+		TAILQ_REMOVE(&process_list->filter_rss_list, rss_filter_ptr,
+			     entries);
+		ret = hns3_config_rss_filter(dev, &rss_filter_ptr->filter_info,
+					     false);
+		if (ret)
+			rss_rule_fail_cnt++;
+		else
+			rss_rule_succ_cnt++;
+		rte_free(rss_filter_ptr);
+		rss_filter_ptr = TAILQ_FIRST(&process_list->filter_rss_list);
+	}
+
+	if (rss_rule_fail_cnt) {
+		hns3_err(hw, "fail to delete all RSS filters, success num = %d "
+			     "fail num = %d", rss_rule_succ_cnt,
+			     rss_rule_fail_cnt);
+		ret = -EIO;
+	}
+
+	return ret;
+}
+
+int
+hns3_restore_rss_filter(struct rte_eth_dev *dev)
 {
 	struct hns3_adapter *hns = dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 
-	if (hw->rss_info.conf.queue_num == 0)
+	/* When user flush all rules, it doesn't need to restore RSS rule */
+	if (hw->rss_info.conf.func == RTE_ETH_HASH_FUNCTION_MAX)
 		return 0;
 
-	return hns3_config_rss_filter(dev, &hw->rss_info, false);
+	return hns3_config_rss_filter(dev, &hw->rss_info, true);
 }
 
 static int
@@ -1549,7 +1688,6 @@ hns3_flow_parse_rss(struct rte_eth_dev *dev,
 	struct hns3_hw *hw = &hns->hw;
 	bool ret;
 
-	/* Action rss same */
 	ret = hns3_action_rss_same(&hw->rss_info.conf, &conf->conf);
 	if (ret) {
 		hns3_err(hw, "Enter duplicate RSS configuration : %d", ret);
@@ -1601,7 +1739,7 @@ hns3_flow_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	if (ret)
 		return ret;
 
-	if (find_rss_action(actions))
+	if (hns3_find_rss_general_action(pattern, actions))
 		return hns3_parse_rss_filter(dev, actions, error);
 
 	memset(&fdir_rule, 0, sizeof(struct hns3_fdir_rule));
@@ -1632,23 +1770,21 @@ hns3_flow_create(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	struct hns3_fdir_rule fdir_rule;
 	int ret;
 
-	ret = hns3_flow_args_check(attr, pattern, actions, error);
+	ret = hns3_flow_validate(dev, attr, pattern, actions, error);
 	if (ret)
 		return NULL;
 
 	flow = rte_zmalloc("hns3 flow", sizeof(struct rte_flow), 0);
 	if (flow == NULL) {
-		rte_flow_error_set(error, ENOMEM,
-				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
-				   "Failed to allocate flow memory");
+		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
+				   NULL, "Failed to allocate flow memory");
 		return NULL;
 	}
 	flow_node = rte_zmalloc("hns3 flow node",
 				sizeof(struct hns3_flow_mem), 0);
 	if (flow_node == NULL) {
-		rte_flow_error_set(error, ENOMEM,
-				   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
-				   "Failed to allocate flow list memory");
+		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
+				   NULL, "Failed to allocate flow list memory");
 		rte_free(flow);
 		return NULL;
 	}
@@ -1656,7 +1792,7 @@ hns3_flow_create(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	flow_node->flow = flow;
 	TAILQ_INSERT_TAIL(&process_list->flow_list, flow_node, entries);
 
-	act = find_rss_action(actions);
+	act = hns3_find_rss_general_action(pattern, actions);
 	if (act) {
 		rss_conf = act->conf;
 
@@ -1673,8 +1809,9 @@ hns3_flow_create(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 			ret = -ENOMEM;
 			goto err;
 		}
-		memcpy(&rss_filter_ptr->filter_info, rss_conf,
-			sizeof(struct hns3_rss_conf));
+		hns3_rss_conf_copy(&rss_filter_ptr->filter_info,
+				   &rss_conf->conf);
+		rss_filter_ptr->filter_info.valid = true;
 		TAILQ_INSERT_TAIL(&process_list->filter_rss_list,
 				  rss_filter_ptr, entries);
 
@@ -1706,6 +1843,7 @@ hns3_flow_create(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 			ret = -ENOMEM;
 			goto err_fdir;
 		}
+
 		memcpy(&fdir_rule_ptr->fdir_conf, &fdir_rule,
 			sizeof(struct hns3_fdir_rule));
 		TAILQ_INSERT_TAIL(&process_list->fdir_list,
@@ -1740,7 +1878,6 @@ hns3_flow_destroy(struct rte_eth_dev *dev, struct rte_flow *flow,
 	struct hns3_fdir_rule_ele *fdir_rule_ptr;
 	struct hns3_rss_conf_ele *rss_filter_ptr;
 	struct hns3_flow_mem *flow_node;
-	struct hns3_hw *hw = &hns->hw;
 	enum rte_filter_type filter_type;
 	struct hns3_fdir_rule fdir_rule;
 	int ret;
@@ -1770,7 +1907,8 @@ hns3_flow_destroy(struct rte_eth_dev *dev, struct rte_flow *flow,
 		break;
 	case RTE_ETH_FILTER_HASH:
 		rss_filter_ptr = (struct hns3_rss_conf_ele *)flow->rule;
-		ret = hns3_config_rss_filter(dev, &hw->rss_info, false);
+		ret = hns3_config_rss_filter(dev, &rss_filter_ptr->filter_info,
+					     false);
 		if (ret)
 			return rte_flow_error_set(error, EIO,
 						  RTE_FLOW_ERROR_TYPE_HANDLE,
@@ -1822,8 +1960,11 @@ hns3_flow_flush(struct rte_eth_dev *dev, struct rte_flow_error *error)
 	}
 
 	ret = hns3_clear_rss_filter(dev);
-	if (ret)
+	if (ret) {
+		rte_flow_error_set(error, ret, RTE_FLOW_ERROR_TYPE_HANDLE,
+				   NULL, "Failed to flush rss filter");
 		return ret;
+	}
 
 	hns3_filterlist_flush(dev);
 
@@ -1836,8 +1977,14 @@ hns3_flow_query(struct rte_eth_dev *dev, struct rte_flow *flow,
 		const struct rte_flow_action *actions, void *data,
 		struct rte_flow_error *error)
 {
+	struct rte_flow_action_rss *rss_conf;
+	struct hns3_rss_conf_ele *rss_rule;
 	struct rte_flow_query_count *qc;
 	int ret;
+
+	if (!flow->rule)
+		return rte_flow_error_set(error, EINVAL,
+			RTE_FLOW_ERROR_TYPE_HANDLE, NULL, "invalid rule");
 
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
 		switch (actions->type) {
@@ -1849,13 +1996,24 @@ hns3_flow_query(struct rte_eth_dev *dev, struct rte_flow *flow,
 			if (ret)
 				return ret;
 			break;
+		case RTE_FLOW_ACTION_TYPE_RSS:
+			if (flow->filter_type != RTE_ETH_FILTER_HASH) {
+				return rte_flow_error_set(error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ACTION,
+					actions, "action is not supported");
+			}
+			rss_conf = (struct rte_flow_action_rss *)data;
+			rss_rule = (struct hns3_rss_conf_ele *)flow->rule;
+			rte_memcpy(rss_conf, &rss_rule->filter_info.conf,
+				   sizeof(struct rte_flow_action_rss));
+			break;
 		default:
 			return rte_flow_error_set(error, ENOTSUP,
-						  RTE_FLOW_ERROR_TYPE_ACTION,
-						  actions,
-						  "Query action only support count");
+				RTE_FLOW_ERROR_TYPE_ACTION,
+				actions, "action is not supported");
 		}
 	}
+
 	return 0;
 }
 
@@ -1882,8 +2040,6 @@ hns3_dev_filter_ctrl(struct rte_eth_dev *dev, enum rte_filter_type filter_type,
 	struct hns3_hw *hw;
 	int ret = 0;
 
-	if (dev == NULL)
-		return -EINVAL;
 	hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	switch (filter_type) {
 	case RTE_ETH_FILTER_GENERIC:

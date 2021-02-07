@@ -1,0 +1,9 @@
+DPDK_21 {
+	global:
+
+	rte_stack_create;
+	rte_stack_free;
+	rte_stack_lookup;
+
+	local: *;
+};

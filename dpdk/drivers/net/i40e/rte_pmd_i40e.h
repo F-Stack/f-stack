@@ -14,7 +14,13 @@
  *
  */
 
-#include <rte_ethdev_driver.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <rte_compat.h>
+#include <rte_ethdev.h>
+#include <rte_ether.h>
 
 /**
  * Response sent back to i40e driver from user app after callback
@@ -1062,6 +1068,55 @@ rte_pmd_i40e_inset_field_clear(uint64_t *inset, uint8_t field_idx)
 }
 
 /**
+ * Get port fdir info
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_info
+ *   The fdir info of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_get_fdir_info(uint16_t port, struct rte_eth_fdir_info *fdir_info);
+
+/**
+ * Get port fdir status
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param fdir_stat
+ *   The fdir status of the port
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_get_fdir_stats(uint16_t port,
+			    struct rte_eth_fdir_stats *fdir_stat);
+
+/**
+ * Set GRE key length
+ *
+ * @param port
+ *   The port identifier of the Ethernet device.
+ * @param len
+ *   Length of gre-key
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if *port* invalid.
+ *   - (-ENOTSUP) if operation not supported.
+ */
+__rte_experimental
+int
+rte_pmd_i40e_set_gre_key_len(uint16_t port, uint8_t len);
+
+/**
  * For ipn3ke, i40e works with FPGA.
  * In this situation, i40e get link status from fpga,
  * fpga works as switch_dev for i40e.
@@ -1078,5 +1133,9 @@ rte_pmd_i40e_inset_field_clear(uint64_t *inset, uint8_t field_idx)
 __rte_experimental
 int
 rte_pmd_i40e_set_switch_dev(uint16_t port_id, struct rte_eth_dev *switch_dev);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _PMD_I40E_H_ */

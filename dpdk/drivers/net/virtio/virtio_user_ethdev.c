@@ -6,6 +6,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <linux/major.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/socket.h>
 
 #include <rte_malloc.h>
@@ -64,21 +67,51 @@ virtio_user_reset_queues_packed(struct rte_eth_dev *dev)
 static int
 virtio_user_server_reconnect(struct virtio_user_dev *dev)
 {
-	int ret;
-	int connectfd;
+	int ret, connectfd, old_status;
 	struct rte_eth_dev *eth_dev = &rte_eth_devices[dev->port_id];
 	struct virtio_hw *hw = eth_dev->data->dev_private;
+	uint64_t protocol_features;
 
 	connectfd = accept(dev->listenfd, NULL, NULL);
 	if (connectfd < 0)
 		return -1;
 
 	dev->vhostfd = connectfd;
+	old_status = vtpci_get_status(hw);
+
+	vtpci_reset(hw);
+
+	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_ACK);
+
+	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_DRIVER);
+
 	if (dev->ops->send_request(dev, VHOST_USER_GET_FEATURES,
 				   &dev->device_features) < 0) {
 		PMD_INIT_LOG(ERR, "get_features failed: %s",
 			     strerror(errno));
 		return -1;
+	}
+
+	if (dev->device_features &
+			(1ULL << VHOST_USER_F_PROTOCOL_FEATURES)) {
+		if (dev->ops->send_request(dev,
+					VHOST_USER_GET_PROTOCOL_FEATURES,
+					&protocol_features))
+			return -1;
+
+		/* Offer VHOST_USER_PROTOCOL_F_STATUS */
+		dev->protocol_features |=
+			(1ULL << VHOST_USER_PROTOCOL_F_STATUS);
+		dev->protocol_features &= protocol_features;
+
+		if (dev->ops->send_request(dev,
+					VHOST_USER_SET_PROTOCOL_FEATURES,
+					&dev->protocol_features))
+			return -1;
+
+		if (!(dev->protocol_features &
+				(1ULL << VHOST_USER_PROTOCOL_F_MQ)))
+			dev->unsupported_features |= (1ull << VIRTIO_NET_F_MQ);
 	}
 
 	dev->device_features |= dev->frontend_features;
@@ -89,14 +122,18 @@ virtio_user_server_reconnect(struct virtio_user_dev *dev)
 	dev->features &= dev->device_features;
 
 	/* For packed ring, resetting queues is required in reconnection. */
-	if (vtpci_packed_queue(hw)) {
+	if (vtpci_packed_queue(hw) &&
+	   (old_status & VIRTIO_CONFIG_STATUS_DRIVER_OK)) {
 		PMD_INIT_LOG(NOTICE, "Packets on the fly will be dropped"
 				" when packed ring reconnecting.");
 		virtio_user_reset_queues_packed(eth_dev);
 	}
 
-	ret = virtio_user_start_device(dev);
-	if (ret < 0)
+	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_FEATURES_OK);
+
+	/* Start the device */
+	vtpci_set_status(hw, VIRTIO_CONFIG_STATUS_DRIVER_OK);
+	if (!dev->started)
 		return -1;
 
 	if (dev->queue_pairs > 1) {
@@ -144,6 +181,11 @@ virtio_user_delayed_handler(void *param)
 		if (dev->vhostfd >= 0) {
 			close(dev->vhostfd);
 			dev->vhostfd = -1;
+			/* Until the featuers are negotiated again, don't assume
+			 * the backend supports VHOST_USER_PROTOCOL_F_STATUS
+			 */
+			dev->protocol_features &=
+				~(1ULL << VHOST_USER_PROTOCOL_F_STATUS);
 		}
 		eth_dev->intr_handle->fd = dev->listenfd;
 		rte_intr_callback_register(eth_dev->intr_handle,
@@ -184,7 +226,7 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 			}
 			r = recv(dev->vhostfd, buf, 128, MSG_PEEK);
 			if (r == 0 || (r < 0 && errno != EAGAIN)) {
-				dev->status &= (~VIRTIO_NET_S_LINK_UP);
+				dev->net_status &= (~VIRTIO_NET_S_LINK_UP);
 				PMD_DRV_LOG(ERR, "virtio-user port %u is down",
 					    hw->port_id);
 
@@ -196,7 +238,7 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 						  virtio_user_delayed_handler,
 						  (void *)hw);
 			} else {
-				dev->status |= VIRTIO_NET_S_LINK_UP;
+				dev->net_status |= VIRTIO_NET_S_LINK_UP;
 			}
 			if (fcntl(dev->vhostfd, F_SETFL,
 					flags & ~O_NONBLOCK) == -1) {
@@ -204,12 +246,12 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 				return;
 			}
 		} else if (dev->is_server) {
-			dev->status &= (~VIRTIO_NET_S_LINK_UP);
+			dev->net_status &= (~VIRTIO_NET_S_LINK_UP);
 			if (virtio_user_server_reconnect(dev) >= 0)
-				dev->status |= VIRTIO_NET_S_LINK_UP;
+				dev->net_status |= VIRTIO_NET_S_LINK_UP;
 		}
 
-		*(uint16_t *)dst = dev->status;
+		*(uint16_t *)dst = dev->net_status;
 	}
 
 	if (offset == offsetof(struct virtio_net_config, max_virtqueue_pairs))
@@ -245,18 +287,25 @@ static void
 virtio_user_set_status(struct virtio_hw *hw, uint8_t status)
 {
 	struct virtio_user_dev *dev = virtio_user_get_dev(hw);
+	uint8_t old_status = dev->status;
 
+	if (status & VIRTIO_CONFIG_STATUS_FEATURES_OK &&
+			~old_status & VIRTIO_CONFIG_STATUS_FEATURES_OK)
+		virtio_user_dev_set_features(dev);
 	if (status & VIRTIO_CONFIG_STATUS_DRIVER_OK)
 		virtio_user_start_device(dev);
 	else if (status == VIRTIO_CONFIG_STATUS_RESET)
 		virtio_user_reset(hw);
-	dev->status = status;
+
+	virtio_user_dev_set_status(dev, status);
 }
 
 static uint8_t
 virtio_user_get_status(struct virtio_hw *hw)
 {
 	struct virtio_user_dev *dev = virtio_user_get_dev(hw);
+
+	virtio_user_dev_update_status(dev);
 
 	return dev->status;
 }
@@ -450,6 +499,10 @@ static const char *valid_args[] = {
 	VIRTIO_USER_ARG_IN_ORDER,
 #define VIRTIO_USER_ARG_PACKED_VQ      "packed_vq"
 	VIRTIO_USER_ARG_PACKED_VQ,
+#define VIRTIO_USER_ARG_SPEED          "speed"
+	VIRTIO_USER_ARG_SPEED,
+#define VIRTIO_USER_ARG_VECTORIZED     "vectorized"
+	VIRTIO_USER_ARG_VECTORIZED,
 	NULL
 };
 
@@ -477,12 +530,71 @@ static int
 get_integer_arg(const char *key __rte_unused,
 		const char *value, void *extra_args)
 {
+	uint64_t integer = 0;
 	if (!value || !extra_args)
 		return -EINVAL;
+	errno = 0;
+	integer = strtoull(value, NULL, 0);
+	/* extra_args keeps default value, it should be replaced
+	 * only in case of successful parsing of the 'value' arg
+	 */
+	if (errno == 0)
+		*(uint64_t *)extra_args = integer;
+	return -errno;
+}
 
-	*(uint64_t *)extra_args = strtoull(value, NULL, 0);
+static uint32_t
+vdpa_dynamic_major_num(void)
+{
+	FILE *fp;
+	char *line = NULL;
+	size_t size;
+	char name[11];
+	bool found = false;
+	uint32_t num;
 
-	return 0;
+	fp = fopen("/proc/devices", "r");
+	if (fp == NULL) {
+		PMD_INIT_LOG(ERR, "Cannot open /proc/devices: %s",
+			     strerror(errno));
+		return UNNAMED_MAJOR;
+	}
+
+	while (getline(&line, &size, fp) > 0) {
+		char *stripped = line + strspn(line, " ");
+		if ((sscanf(stripped, "%u %10s", &num, name) == 2) &&
+		    (strncmp(name, "vhost-vdpa", 10) == 0)) {
+			found = true;
+			break;
+		}
+	}
+	fclose(fp);
+	return found ? num : UNNAMED_MAJOR;
+}
+
+static enum virtio_user_backend_type
+virtio_user_backend_type(const char *path)
+{
+	struct stat sb;
+
+	if (stat(path, &sb) == -1) {
+		if (errno == ENOENT)
+			return VIRTIO_USER_BACKEND_VHOST_USER;
+
+		PMD_INIT_LOG(ERR, "Stat fails: %s (%s)\n", path,
+			     strerror(errno));
+		return VIRTIO_USER_BACKEND_UNKNOWN;
+	}
+
+	if (S_ISSOCK(sb.st_mode)) {
+		return VIRTIO_USER_BACKEND_VHOST_USER;
+	} else if (S_ISCHR(sb.st_mode)) {
+		if (major(sb.st_rdev) == MISC_MAJOR)
+			return VIRTIO_USER_BACKEND_VHOST_KERNEL;
+		if (major(sb.st_rdev) == vdpa_dynamic_major_num())
+			return VIRTIO_USER_BACKEND_VHOST_VDPA;
+	}
+	return VIRTIO_USER_BACKEND_UNKNOWN;
 }
 
 static struct rte_eth_dev *
@@ -518,7 +630,8 @@ virtio_user_eth_dev_alloc(struct rte_vdev_device *vdev)
 	 */
 	hw->use_msix = 1;
 	hw->modern   = 0;
-	hw->use_simple_rx = 0;
+	hw->use_vec_rx = 0;
+	hw->use_vec_tx = 0;
 	hw->use_inorder_rx = 0;
 	hw->use_inorder_tx = 0;
 	hw->virtio_user_dev = dev;
@@ -545,6 +658,7 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 	struct rte_kvargs *kvlist = NULL;
 	struct rte_eth_dev *eth_dev;
 	struct virtio_hw *hw;
+	enum virtio_user_backend_type backend_type = VIRTIO_USER_BACKEND_UNKNOWN;
 	uint64_t queues = VIRTIO_USER_DEF_Q_NUM;
 	uint64_t cq = VIRTIO_USER_DEF_CQ_EN;
 	uint64_t queue_size = VIRTIO_USER_DEF_Q_SZ;
@@ -552,6 +666,7 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 	uint64_t mrg_rxbuf = 1;
 	uint64_t in_order = 1;
 	uint64_t packed_vq = 0;
+	uint64_t vectorized = 0;
 	char *path = NULL;
 	char *ifname = NULL;
 	char *mac_addr = NULL;
@@ -561,7 +676,7 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		const char *name = rte_vdev_device_name(dev);
 		eth_dev = rte_eth_dev_attach_secondary(name);
 		if (!eth_dev) {
-			RTE_LOG(ERR, PMD, "Failed to probe %s\n", name);
+			PMD_INIT_LOG(ERR, "Failed to probe %s", name);
 			return -1;
 		}
 
@@ -596,8 +711,18 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		goto end;
 	}
 
+	backend_type = virtio_user_backend_type(path);
+	if (backend_type == VIRTIO_USER_BACKEND_UNKNOWN) {
+		PMD_INIT_LOG(ERR,
+			     "unable to determine backend type for path %s",
+			path);
+		goto end;
+	}
+	PMD_INIT_LOG(INFO, "Backend type detected: %s",
+		     virtio_user_backend_strings[backend_type]);
+
 	if (rte_kvargs_count(kvlist, VIRTIO_USER_ARG_INTERFACE_NAME) == 1) {
-		if (is_vhost_user_by_type(path)) {
+		if (backend_type != VIRTIO_USER_BACKEND_VHOST_KERNEL) {
 			PMD_INIT_LOG(ERR,
 				"arg %s applies only to vhost-kernel backend",
 				VIRTIO_USER_ARG_INTERFACE_NAME);
@@ -668,6 +793,15 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		}
 	}
 
+	if (rte_kvargs_count(kvlist, VIRTIO_USER_ARG_VECTORIZED) == 1) {
+		if (rte_kvargs_process(kvlist, VIRTIO_USER_ARG_VECTORIZED,
+				       &get_integer_arg, &vectorized) < 0) {
+			PMD_INIT_LOG(ERR, "error to parse %s",
+				     VIRTIO_USER_ARG_VECTORIZED);
+			goto end;
+		}
+	}
+
 	if (queues > 1 && cq == 0) {
 		PMD_INIT_LOG(ERR, "multi-q requires ctrl-q");
 		goto end;
@@ -707,17 +841,31 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 	hw = eth_dev->data->dev_private;
 	if (virtio_user_dev_init(hw->virtio_user_dev, path, queues, cq,
 			 queue_size, mac_addr, &ifname, server_mode,
-			 mrg_rxbuf, in_order, packed_vq) < 0) {
+			 mrg_rxbuf, in_order, packed_vq, backend_type) < 0) {
 		PMD_INIT_LOG(ERR, "virtio_user_dev_init fails");
 		virtio_user_eth_dev_free(eth_dev);
 		goto end;
 	}
 
-	/* previously called by rte_pci_probe() for physical dev */
+	/* previously called by pci probing for physical dev */
 	if (eth_virtio_dev_init(eth_dev) < 0) {
 		PMD_INIT_LOG(ERR, "eth_virtio_dev_init fails");
 		virtio_user_eth_dev_free(eth_dev);
 		goto end;
+	}
+
+	if (vectorized) {
+		if (packed_vq) {
+#if defined(CC_AVX512_SUPPORT)
+			hw->use_vec_rx = 1;
+			hw->use_vec_tx = 1;
+#else
+			PMD_INIT_LOG(INFO,
+				"building environment do not support packed ring vectorized");
+#endif
+		} else {
+			hw->use_vec_rx = 1;
+		}
 	}
 
 	rte_eth_dev_probing_finish(eth_dev);
@@ -755,7 +903,57 @@ virtio_user_pmd_remove(struct rte_vdev_device *vdev)
 		return rte_eth_dev_release_port(eth_dev);
 
 	/* make sure the device is stopped, queues freed */
-	rte_eth_dev_close(eth_dev->data->port_id);
+	return rte_eth_dev_close(eth_dev->data->port_id);
+}
+
+static int virtio_user_pmd_dma_map(struct rte_vdev_device *vdev, void *addr,
+		uint64_t iova, size_t len)
+{
+	const char *name;
+	struct rte_eth_dev *eth_dev;
+	struct virtio_user_dev *dev;
+	struct virtio_hw *hw;
+
+	if (!vdev)
+		return -EINVAL;
+
+	name = rte_vdev_device_name(vdev);
+	eth_dev = rte_eth_dev_allocated(name);
+	/* Port has already been released by close. */
+	if (!eth_dev)
+		return 0;
+
+	hw = (struct virtio_hw *)eth_dev->data->dev_private;
+	dev = hw->virtio_user_dev;
+
+	if (dev->ops->dma_map)
+		return dev->ops->dma_map(dev, addr, iova, len);
+
+	return 0;
+}
+
+static int virtio_user_pmd_dma_unmap(struct rte_vdev_device *vdev, void *addr,
+		uint64_t iova, size_t len)
+{
+	const char *name;
+	struct rte_eth_dev *eth_dev;
+	struct virtio_user_dev *dev;
+	struct virtio_hw *hw;
+
+	if (!vdev)
+		return -EINVAL;
+
+	name = rte_vdev_device_name(vdev);
+	eth_dev = rte_eth_dev_allocated(name);
+	/* Port has already been released by close. */
+	if (!eth_dev)
+		return 0;
+
+	hw = (struct virtio_hw *)eth_dev->data->dev_private;
+	dev = hw->virtio_user_dev;
+
+	if (dev->ops->dma_unmap)
+		return dev->ops->dma_unmap(dev, addr, iova, len);
 
 	return 0;
 }
@@ -763,6 +961,8 @@ virtio_user_pmd_remove(struct rte_vdev_device *vdev)
 static struct rte_vdev_driver virtio_user_driver = {
 	.probe = virtio_user_pmd_probe,
 	.remove = virtio_user_pmd_remove,
+	.dma_map = virtio_user_pmd_dma_map,
+	.dma_unmap = virtio_user_pmd_dma_unmap,
 };
 
 RTE_PMD_REGISTER_VDEV(net_virtio_user, virtio_user_driver);
@@ -777,4 +977,6 @@ RTE_PMD_REGISTER_PARAM_STRING(net_virtio_user,
 	"server=<0|1> "
 	"mrg_rxbuf=<0|1> "
 	"in_order=<0|1> "
-	"packed_vq=<0|1>");
+	"packed_vq=<0|1> "
+	"speed=<int> "
+	"vectorized=<0|1>");

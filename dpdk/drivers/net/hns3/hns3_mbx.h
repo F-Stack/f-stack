@@ -40,8 +40,13 @@ enum HNS3_MBX_OPCODE {
 	HNS3_MBX_SET_MTU,               /* (VF -> PF) set mtu */
 	HNS3_MBX_GET_QID_IN_PF,         /* (VF -> PF) get queue id in pf */
 
+	HNS3_MBX_PUSH_VLAN_INFO = 34,   /* (PF -> VF) push port base vlan */
+
+	HNS3_MBX_PUSH_PROMISC_INFO = 36, /* (PF -> VF) push vf promisc info */
+
 	HNS3_MBX_HANDLE_VF_TBL = 38,    /* (VF -> PF) store/clear hw cfg tbl */
 	HNS3_MBX_GET_RING_VECTOR_MAP,   /* (VF -> PF) get ring-to-vector map */
+	HNS3_MBX_PUSH_LINK_STATUS = 201, /* (IMP -> PF) get port link status */
 };
 
 /* below are per-VF mac-vlan subcodes */
@@ -59,10 +64,18 @@ enum hns3_mbx_vlan_cfg_subcode {
 	HNS3_MBX_VLAN_FILTER = 0,               /* set vlan filter */
 	HNS3_MBX_VLAN_TX_OFF_CFG,               /* set tx side vlan offload */
 	HNS3_MBX_VLAN_RX_OFF_CFG,               /* set rx side vlan offload */
+	HNS3_MBX_GET_PORT_BASE_VLAN_STATE = 4,  /* get port based vlan state */
 };
 
 enum hns3_mbx_tbl_cfg_subcode {
 	HNS3_MBX_VPORT_LIST_CLEAR = 0,
+};
+
+enum hns3_mbx_link_fail_subcode {
+	HNS3_MBX_LF_NORMAL = 0,
+	HNS3_MBX_LF_REF_CLOCK_LOST,
+	HNS3_MBX_LF_XSFP_TX_DISABLE,
+	HNS3_MBX_LF_XSFP_ABSENT,
 };
 
 #define HNS3_MBX_MAX_MSG_SIZE	16
@@ -103,6 +116,19 @@ struct hns3_mbx_pf_to_vf_cmd {
 	uint8_t msg_len;
 	uint8_t rsv1[3];
 	uint16_t msg[8];
+};
+
+struct hns3_ring_chain_param {
+	uint8_t ring_type;
+	uint8_t tqp_index;
+	uint8_t int_gl_index;
+};
+
+#define HNS3_MBX_MAX_RING_CHAIN_PARAM_NUM	4
+struct hns3_vf_bind_vector_msg {
+	uint8_t vector_id;
+	uint8_t ring_num;
+	struct hns3_ring_chain_param param[HNS3_MBX_MAX_RING_CHAIN_PARAM_NUM];
 };
 
 struct hns3_vf_rst_cmd {

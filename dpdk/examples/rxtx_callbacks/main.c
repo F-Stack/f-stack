@@ -10,6 +10,7 @@
 #include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -17,6 +18,24 @@
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
+
+static int hwts_dynfield_offset = -1;
+
+static inline rte_mbuf_timestamp_t *
+hwts_field(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf,
+			hwts_dynfield_offset, rte_mbuf_timestamp_t *);
+}
+
+typedef uint64_t tsc_t;
+static int tsc_dynfield_offset = -1;
+
+static inline tsc_t *
+tsc_field(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf, tsc_dynfield_offset, tsc_t *);
+}
 
 static const char usage[] =
 	"%s EAL_ARGS -- [-t]\n";
@@ -47,7 +66,7 @@ add_timestamps(uint16_t port __rte_unused, uint16_t qidx __rte_unused,
 	uint64_t now = rte_rdtsc();
 
 	for (i = 0; i < nb_pkts; i++)
-		pkts[i]->udata64 = now;
+		*tsc_field(pkts[i]) = now;
 	return nb_pkts;
 }
 
@@ -65,9 +84,9 @@ calc_latency(uint16_t port, uint16_t qidx __rte_unused,
 		rte_eth_read_clock(port, &ticks);
 
 	for (i = 0; i < nb_pkts; i++) {
-		cycles += now - pkts[i]->udata64;
+		cycles += now - *tsc_field(pkts[i]);
 		if (hw_timestamping)
-			queue_ticks += ticks - pkts[i]->timestamp;
+			queue_ticks += ticks - *hwts_field(pkts[i]);
 	}
 
 	latency_numbers.total_cycles += cycles;
@@ -131,6 +150,11 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			return -1;
 		}
 		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TIMESTAMP;
+		rte_mbuf_dyn_rx_timestamp_register(&hwts_dynfield_offset, NULL);
+		if (hwts_dynfield_offset < 0) {
+			printf("ERROR: Failed to register timestamp field\n");
+			return -rte_errno;
+		}
 	}
 
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
@@ -215,7 +239,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
  * Main thread that does the work, reading from INPUT_PORT
  * and writing to OUTPUT_PORT
  */
-static  __attribute__((noreturn)) void
+static  __rte_noreturn void
 lcore_main(void)
 {
 	uint16_t port;
@@ -261,6 +285,11 @@ main(int argc, char *argv[])
 	};
 	int opt, option_index;
 
+	static const struct rte_mbuf_dynfield tsc_dynfield_desc = {
+		.name = "example_bbdev_dynfield_tsc",
+		.size = sizeof(tsc_t),
+		.align = __alignof__(tsc_t),
+	};
 
 	/* init EAL */
 	int ret = rte_eal_init(argc, argv);
@@ -292,6 +321,11 @@ main(int argc, char *argv[])
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
+	tsc_dynfield_offset =
+		rte_mbuf_dynfield_register(&tsc_dynfield_desc);
+	if (tsc_dynfield_offset < 0)
+		rte_exit(EXIT_FAILURE, "Cannot register mbuf field\n");
+
 	/* initialize all ports */
 	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
@@ -302,7 +336,7 @@ main(int argc, char *argv[])
 		printf("\nWARNING: Too much enabled lcores - "
 			"App uses only 1 lcore\n");
 
-	/* call lcore_main on master core only */
+	/* call lcore_main on main core only */
 	lcore_main();
 	return 0;
 }

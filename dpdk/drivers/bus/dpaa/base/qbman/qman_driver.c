@@ -30,6 +30,16 @@ static __thread struct dpaa_ioctl_portal_map map = {
 	.type = dpaa_portal_qman
 };
 
+u16 dpaa_get_qm_channel_caam(void)
+{
+	return qm_channel_caam;
+}
+
+u16 dpaa_get_qm_channel_pool(void)
+{
+	return qm_channel_pool1;
+}
+
 static int fsl_qman_portal_init(uint32_t index, int is_shared)
 {
 	struct qman_portal *portal;
@@ -132,7 +142,7 @@ struct qman_portal *fsl_qman_fq_portal_create(int *fd)
 	struct qm_portal_config *q_pcfg;
 	struct dpaa_ioctl_irq_map irq_map;
 	struct dpaa_ioctl_portal_map q_map = {0};
-	int q_fd = 0, ret;
+	int q_fd, ret;
 
 	q_pcfg = kzalloc((sizeof(struct qm_portal_config)), 0);
 	if (!q_pcfg) {
@@ -169,7 +179,7 @@ struct qman_portal *fsl_qman_fq_portal_create(int *fd)
 	if (!portal) {
 		pr_err("Qman portal initialisation failed (%d)\n",
 		       q_pcfg->cpu);
-		goto err;
+		goto err_alloc;
 	}
 
 	irq_map.type = dpaa_portal_qman;
@@ -178,11 +188,9 @@ struct qman_portal *fsl_qman_fq_portal_create(int *fd)
 
 	*fd = q_fd;
 	return portal;
+err_alloc:
+	close(q_fd);
 err:
-	if (portal)
-		qman_free_global_portal(portal);
-	if (q_fd)
-		close(q_fd);
 	process_portal_unmap(&q_map.addr);
 	kfree(q_pcfg);
 	return NULL;

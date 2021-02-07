@@ -4,7 +4,7 @@
 AXGBE Poll Mode Driver
 ======================
 
-The AXGBE poll mode driver library (**librte_pmd_axgbe**) implements support
+The AXGBE poll mode driver library (**librte_net_axgbe**) implements support
 for AMD 10 Gbps family of adapters. It is compiled and tested in standard linux distro like Ubuntu.
 
 Detailed information about SoCs that use these devices can be found here:
@@ -25,21 +25,6 @@ AXGBE PMD has support for:
 - RSS (Receive Side Scaling)
 - Checksum offload
 - Jumbo Frame up to 9K
-
-
-Configuration Information
--------------------------
-
-The following options can be modified in the ``.config`` file. Please note that
-enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_AXGBE_PMD`` (default **y**)
-
-  Toggle compilation of axgbe PMD.
-
-- ``CONFIG_RTE_LIBRTE_AXGBE_PMD_DEBUG`` (default **n**)
-
-  Toggle display for PMD debug related messages.
 
 
 Building DPDK

@@ -165,9 +165,11 @@ contigmem_load()
 
 error:
 	for (i = 0; i < contigmem_num_buffers; i++) {
-		if (contigmem_buffers[i].addr != NULL)
+		if (contigmem_buffers[i].addr != NULL) {
 			contigfree(contigmem_buffers[i].addr,
 				contigmem_buffer_size, M_CONTIGMEM);
+			contigmem_buffers[i].addr = NULL;
+		}
 		if (mtx_initialized(&contigmem_buffers[i].mtx))
 			mtx_destroy(&contigmem_buffers[i].mtx);
 	}
@@ -297,19 +299,22 @@ contigmem_cdev_pager_fault(vm_object_t object, vm_ooffset_t offset, int prot,
 		VM_OBJECT_WLOCK(object);
 		vm_page_updatefake(page, paddr, memattr);
 	} else {
-		vm_page_t mret;
 		/*
 		 * Replace the passed in reqpage page with our own fake page and
 		 * free up the original page.
 		 */
 		page = vm_page_getfake(paddr, memattr);
 		VM_OBJECT_WLOCK(object);
-		mret = vm_page_replace(page, object, (*mres)->pindex);
+#if __FreeBSD__ >= 13
+		vm_page_replace(page, object, (*mres)->pindex, *mres);
+#else
+		vm_page_t mret = vm_page_replace(page, object, (*mres)->pindex);
 		KASSERT(mret == *mres,
 		    ("invalid page replacement, old=%p, ret=%p", *mres, mret));
 		vm_page_lock(mret);
 		vm_page_free(mret);
 		vm_page_unlock(mret);
+#endif
 		*mres = page;
 	}
 

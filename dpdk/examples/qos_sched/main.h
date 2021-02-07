@@ -51,6 +51,7 @@ extern "C" {
 #define MAX_SCHED_SUBPORTS		8
 #define MAX_SCHED_PIPES		4096
 #define MAX_SCHED_PIPE_PROFILES		256
+#define MAX_SCHED_SUBPORT_PROFILES	8
 
 #ifndef APP_COLLECT_STAT
 #define APP_COLLECT_STAT		1
@@ -148,8 +149,8 @@ extern struct burst_conf burst_conf;
 extern struct ring_thresh rx_thresh;
 extern struct ring_thresh tx_thresh;
 
-uint32_t active_queues[RTE_SCHED_QUEUES_PER_PIPE];
-uint32_t n_active_queues;
+extern uint32_t active_queues[RTE_SCHED_QUEUES_PER_PIPE];
+extern uint32_t n_active_queues;
 
 extern struct rte_sched_port_params port_params;
 extern struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS];

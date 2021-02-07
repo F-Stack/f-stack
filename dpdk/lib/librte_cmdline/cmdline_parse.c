@@ -10,15 +10,12 @@
 #include <string.h>
 #include <inttypes.h>
 #include <ctype.h>
-#include <termios.h>
 
 #include <netinet/in.h>
 
 #include <rte_string_fns.h>
 
-#include "cmdline_rdline.h"
-#include "cmdline_parse.h"
-#include "cmdline.h"
+#include "cmdline_private.h"
 
 #ifdef RTE_LIBRTE_CMDLINE_DEBUG
 #define debug_printf printf

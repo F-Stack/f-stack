@@ -54,7 +54,7 @@ BEGIN {
 	}
 	for (i in deny_folders) {
 		re = "^\\+\\+\\+ b/" deny_folders[i];
-		if ($0 ~ deny_folders[i]) {
+		if ($0 ~ re) {
 			in_file = 1
 			last_file = $0
 		}
@@ -62,7 +62,7 @@ BEGIN {
 }
 END {
 	if (count > 0) {
-		print "Warning in " substr(last_file,6) ":"
+		print "Warning in " substr(last_file,7) ":"
 		print MESSAGE
 		exit RET_ON_FAIL
 	}

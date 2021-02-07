@@ -45,8 +45,10 @@
 			    DEV_RX_OFFLOAD_VLAN_STRIP | \
 			    DEV_RX_OFFLOAD_RSS_HASH)
 
-int hn_logtype_init;
-int hn_logtype_driver;
+#define NETVSC_ARG_LATENCY "latency"
+#define NETVSC_ARG_RXBREAK "rx_copybreak"
+#define NETVSC_ARG_TXBREAK "tx_copybreak"
+#define NETVSC_ARG_RX_EXTMBUF_ENABLE "rx_extmbuf_enable"
 
 struct hn_xstats_name_off {
 	char name[RTE_ETH_XSTATS_NAME_SIZE];
@@ -58,6 +60,7 @@ static const struct hn_xstats_name_off hn_stat_strings[] = {
 	{ "good_bytes",             offsetof(struct hn_stats, bytes) },
 	{ "errors",                 offsetof(struct hn_stats, errors) },
 	{ "ring full",              offsetof(struct hn_stats, ring_full) },
+	{ "channel full",           offsetof(struct hn_stats, channel_full) },
 	{ "multicast_packets",      offsetof(struct hn_stats, multicast) },
 	{ "broadcast_packets",      offsetof(struct hn_stats, broadcast) },
 	{ "undersize_packets",      offsetof(struct hn_stats, size_bins[0]) },
@@ -72,7 +75,7 @@ static const struct hn_xstats_name_off hn_stat_strings[] = {
 
 /* The default RSS key.
  * This value is the same as MLX5 so that flows will be
- * received on same path for both VF ans synthetic NIC.
+ * received on same path for both VF and synthetic NIC.
  */
 static const uint8_t rss_default_key[NDIS_HASH_KEYSIZE_TOEPLITZ] = {
 	0x2c, 0xc6, 0x81, 0xd1,	0x5b, 0xdb, 0xf4, 0xf7,
@@ -125,17 +128,12 @@ eth_dev_vmbus_allocate(struct rte_vmbus_device *dev, size_t private_data_size)
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_INTR_LSC;
 	eth_dev->intr_handle = &dev->intr_handle;
 
-	/* allow ethdev to remove on close */
-	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
-
 	return eth_dev;
 }
 
 static void
 eth_dev_vmbus_release(struct rte_eth_dev *eth_dev)
 {
-	/* mac_addrs must not be freed alone because part of dev_private */
-	eth_dev->data->mac_addrs = NULL;
 	/* free ether device */
 	rte_eth_dev_release_port(eth_dev);
 
@@ -143,24 +141,36 @@ eth_dev_vmbus_release(struct rte_eth_dev *eth_dev)
 	eth_dev->intr_handle = NULL;
 }
 
-/* handle "latency=X" from devargs */
-static int hn_set_latency(const char *key, const char *value, void *opaque)
+static int hn_set_parameter(const char *key, const char *value, void *opaque)
 {
 	struct hn_data *hv = opaque;
 	char *endp = NULL;
-	unsigned long lat;
+	unsigned long v;
 
-	errno = 0;
-	lat = strtoul(value, &endp, 0);
-
+	v = strtoul(value, &endp, 0);
 	if (*value == '\0' || *endp != '\0') {
 		PMD_DRV_LOG(ERR, "invalid parameter %s=%s", key, value);
 		return -EINVAL;
 	}
 
-	PMD_DRV_LOG(DEBUG, "set latency %lu usec", lat);
+	if (!strcmp(key, NETVSC_ARG_LATENCY)) {
+		/* usec to nsec */
+		hv->latency = v * 1000;
+		PMD_DRV_LOG(DEBUG, "set latency %u usec", hv->latency);
+	} else if (!strcmp(key, NETVSC_ARG_RXBREAK)) {
+		hv->rx_copybreak = v;
+		PMD_DRV_LOG(DEBUG, "rx copy break set to %u",
+			    hv->rx_copybreak);
+	} else if (!strcmp(key, NETVSC_ARG_TXBREAK)) {
+		hv->tx_copybreak = v;
+		PMD_DRV_LOG(DEBUG, "tx copy break set to %u",
+			    hv->tx_copybreak);
+	} else if (!strcmp(key, NETVSC_ARG_RX_EXTMBUF_ENABLE)) {
+		hv->rx_extmbuf_enable = v;
+		PMD_DRV_LOG(DEBUG, "rx extmbuf enable set to %u",
+			    hv->rx_extmbuf_enable);
+	}
 
-	hv->latency = lat * 1000;	/* usec to nsec */
 	return 0;
 }
 
@@ -170,7 +180,10 @@ static int hn_parse_args(const struct rte_eth_dev *dev)
 	struct hn_data *hv = dev->data->dev_private;
 	struct rte_devargs *devargs = dev->device->devargs;
 	static const char * const valid_keys[] = {
-		"latency",
+		NETVSC_ARG_LATENCY,
+		NETVSC_ARG_RXBREAK,
+		NETVSC_ARG_TXBREAK,
+		NETVSC_ARG_RX_EXTMBUF_ENABLE,
 		NULL
 	};
 	struct rte_kvargs *kvlist;
@@ -184,15 +197,13 @@ static int hn_parse_args(const struct rte_eth_dev *dev)
 
 	kvlist = rte_kvargs_parse(devargs->args, valid_keys);
 	if (!kvlist) {
-		PMD_DRV_LOG(NOTICE, "invalid parameters");
+		PMD_DRV_LOG(ERR, "invalid parameters");
 		return -EINVAL;
 	}
 
-	ret = rte_kvargs_process(kvlist, "latency", hn_set_latency, hv);
-	if (ret)
-		PMD_DRV_LOG(ERR, "Unable to process latency arg\n");
-
+	ret = rte_kvargs_process(kvlist, NULL, hn_set_parameter, hv);
 	rte_kvargs_free(kvlist);
+
 	return ret;
 }
 
@@ -203,7 +214,7 @@ static int hn_parse_args(const struct rte_eth_dev *dev)
  */
 int
 hn_dev_link_update(struct rte_eth_dev *dev,
-		   int wait_to_complete)
+		   int wait_to_complete __rte_unused)
 {
 	struct hn_data *hv = dev->data->dev_private;
 	struct rte_eth_link link, old;
@@ -216,8 +227,6 @@ hn_dev_link_update(struct rte_eth_dev *dev,
 		return error;
 
 	hn_rndis_get_linkspeed(hv);
-
-	hn_vf_link_update(dev, wait_to_complete);
 
 	link = (struct rte_eth_link) {
 		.link_duplex = ETH_LINK_FULL_DUPLEX,
@@ -256,6 +265,9 @@ static int hn_dev_info_get(struct rte_eth_dev *dev,
 
 	dev_info->max_rx_queues = hv->max_queues;
 	dev_info->max_tx_queues = hv->max_queues;
+
+	dev_info->tx_desc_lim.nb_min = 1;
+	dev_info->tx_desc_lim.nb_max = 4096;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
@@ -375,13 +387,14 @@ static int hn_rss_hash_update(struct rte_eth_dev *dev,
 
 	hn_rss_hash_init(hv, rss_conf);
 
-	err = hn_rndis_conf_rss(hv, 0);
-	if (err) {
-		PMD_DRV_LOG(NOTICE,
-			    "rss reconfig failed (RSS disabled)");
-		return err;
+	if (rss_conf->rss_hf != 0) {
+		err = hn_rndis_conf_rss(hv, 0);
+		if (err) {
+			PMD_DRV_LOG(NOTICE,
+				    "rss reconfig failed (RSS disabled)");
+			return err;
+		}
 	}
-
 
 	return hn_vf_rss_hash_update(dev, rss_conf);
 }
@@ -574,7 +587,7 @@ static int hn_dev_configure(struct rte_eth_dev *dev)
 				 dev->data->nb_tx_queues);
 
 	for (i = 0; i < NDIS_HASH_INDCNT; i++)
-		hv->rss_ind[i] = i % hv->num_queues;
+		hv->rss_ind[i] = i % dev->data->nb_rx_queues;
 
 	hn_rss_hash_init(hv, rss_conf);
 
@@ -594,11 +607,13 @@ static int hn_dev_configure(struct rte_eth_dev *dev)
 			return err;
 		}
 
-		err = hn_rndis_conf_rss(hv, 0);
-		if (err) {
-			PMD_DRV_LOG(NOTICE,
-				    "initial RSS config failed");
-			return err;
+		if (rss_conf->rss_hf != 0) {
+			err = hn_rndis_conf_rss(hv, 0);
+			if (err) {
+				PMD_DRV_LOG(NOTICE,
+					    "initial RSS config failed");
+				return err;
+			}
 		}
 	}
 
@@ -830,24 +845,31 @@ hn_dev_start(struct rte_eth_dev *dev)
 	return error;
 }
 
-static void
+static int
 hn_dev_stop(struct rte_eth_dev *dev)
 {
 	struct hn_data *hv = dev->data->dev_private;
 
 	PMD_INIT_FUNC_TRACE();
+	dev->data->dev_started = 0;
 
 	hn_rndis_set_rxfilter(hv, 0);
-	hn_vf_stop(dev);
+	return hn_vf_stop(dev);
 }
 
-static void
+static int
 hn_dev_close(struct rte_eth_dev *dev)
 {
-	PMD_INIT_FUNC_TRACE();
+	int ret;
 
-	hn_vf_close(dev);
+	PMD_INIT_FUNC_TRACE();
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = hn_vf_close(dev);
 	hn_dev_free_queues(dev);
+
+	return ret;
 }
 
 static const struct eth_dev_ops hn_eth_dev_ops = {
@@ -856,6 +878,8 @@ static const struct eth_dev_ops hn_eth_dev_ops = {
 	.dev_stop		= hn_dev_stop,
 	.dev_close		= hn_dev_close,
 	.dev_infos_get		= hn_dev_info_get,
+	.txq_info_get		= hn_dev_tx_queue_info,
+	.rxq_info_get		= hn_dev_rx_queue_info,
 	.dev_supported_ptypes_get = hn_vf_supported_ptypes,
 	.promiscuous_enable     = hn_dev_promiscuous_enable,
 	.promiscuous_disable    = hn_dev_promiscuous_disable,
@@ -931,11 +955,11 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 
 	vmbus = container_of(device, struct rte_vmbus_device, device);
 	eth_dev->dev_ops = &hn_eth_dev_ops;
+	eth_dev->rx_queue_count = hn_dev_rx_queue_count;
+	eth_dev->rx_descriptor_status = hn_dev_rx_queue_status;
+	eth_dev->tx_descriptor_status = hn_dev_tx_descriptor_status;
 	eth_dev->tx_pkt_burst = &hn_xmit_pkts;
 	eth_dev->rx_pkt_burst = &hn_recv_pkts;
-
-	/* Since Hyper-V only supports one MAC address, just use local data */
-	eth_dev->data->mac_addrs = &hv->mac_addr;
 
 	/*
 	 * for secondary processes, we don't initialize any further as primary
@@ -944,13 +968,28 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+
+	/* Since Hyper-V only supports one MAC address */
+	eth_dev->data->mac_addrs = rte_calloc("hv_mac", HN_MAX_MAC_ADDRS,
+					      sizeof(struct rte_ether_addr), 0);
+	if (eth_dev->data->mac_addrs == NULL) {
+		PMD_INIT_LOG(ERR,
+			     "Failed to allocate memory store MAC addresses");
+		return -ENOMEM;
+	}
+
 	hv->vmbus = vmbus;
 	hv->rxbuf_res = &vmbus->resource[HV_RECV_BUF_MAP];
 	hv->chim_res  = &vmbus->resource[HV_SEND_BUF_MAP];
 	hv->port_id = eth_dev->data->port_id;
 	hv->latency = HN_CHAN_LATENCY_NS;
+	hv->rx_copybreak = HN_RXCOPY_THRESHOLD;
+	hv->tx_copybreak = HN_TXCOPY_THRESHOLD;
+	hv->rx_extmbuf_enable = HN_RX_EXTMBUF_ENABLE;
 	hv->max_queues = 1;
-	rte_spinlock_init(&hv->vf_lock);
+
+	rte_rwlock_init(&hv->vf_lock);
 	hv->vf_port = HN_INVALID_PORT;
 
 	err = hn_parse_args(eth_dev);
@@ -982,11 +1021,11 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	if  (err)
 		goto failed;
 
-	err = hn_tx_pool_init(eth_dev);
+	err = hn_chim_init(eth_dev);
 	if (err)
 		goto failed;
 
-	err = hn_rndis_get_eaddr(hv, hv->mac_addr.addr_bytes);
+	err = hn_rndis_get_eaddr(hv, eth_dev->data->mac_addrs->addr_bytes);
 	if (err)
 		goto failed;
 
@@ -1018,7 +1057,7 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 failed:
 	PMD_INIT_LOG(NOTICE, "device init failed");
 
-	hn_tx_pool_uninit(eth_dev);
+	hn_chim_uninit(eth_dev);
 	hn_detach(hv);
 	return err;
 }
@@ -1027,29 +1066,25 @@ static int
 eth_hn_dev_uninit(struct rte_eth_dev *eth_dev)
 {
 	struct hn_data *hv = eth_dev->data->dev_private;
-	int ret;
+	int ret, ret_stop;
 
 	PMD_INIT_FUNC_TRACE();
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	hn_dev_stop(eth_dev);
+	ret_stop = hn_dev_stop(eth_dev);
 	hn_dev_close(eth_dev);
 
-	eth_dev->dev_ops = NULL;
-	eth_dev->tx_pkt_burst = NULL;
-	eth_dev->rx_pkt_burst = NULL;
-
 	hn_detach(hv);
-	hn_tx_pool_uninit(eth_dev);
+	hn_chim_uninit(eth_dev);
 	rte_vmbus_chan_close(hv->primary->chan);
 	rte_free(hv->primary);
 	ret = rte_eth_dev_owner_delete(hv->owner.id);
 	if (ret != 0)
 		return ret;
 
-	return 0;
+	return ret_stop;
 }
 
 static int eth_hn_probe(struct rte_vmbus_driver *drv __rte_unused,
@@ -1082,7 +1117,7 @@ static int eth_hn_remove(struct rte_vmbus_device *dev)
 
 	eth_dev = rte_eth_dev_allocated(dev->device.name);
 	if (!eth_dev)
-		return -ENODEV;
+		return 0; /* port already released */
 
 	ret = eth_hn_dev_uninit(eth_dev);
 	if (ret)
@@ -1107,13 +1142,10 @@ static struct rte_vmbus_driver rte_netvsc_pmd = {
 
 RTE_PMD_REGISTER_VMBUS(net_netvsc, rte_netvsc_pmd);
 RTE_PMD_REGISTER_KMOD_DEP(net_netvsc, "* uio_hv_generic");
-
-RTE_INIT(hn_init_log)
-{
-	hn_logtype_init = rte_log_register("pmd.net.netvsc.init");
-	if (hn_logtype_init >= 0)
-		rte_log_set_level(hn_logtype_init, RTE_LOG_NOTICE);
-	hn_logtype_driver = rte_log_register("pmd.net.netvsc.driver");
-	if (hn_logtype_driver >= 0)
-		rte_log_set_level(hn_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(hn_logtype_init, pmd.net.netvsc.init, NOTICE);
+RTE_LOG_REGISTER(hn_logtype_driver, pmd.net.netvsc.driver, NOTICE);
+RTE_PMD_REGISTER_PARAM_STRING(net_netvsc,
+			      NETVSC_ARG_LATENCY "=<uint32> "
+			      NETVSC_ARG_RXBREAK "=<uint32> "
+			      NETVSC_ARG_TXBREAK "=<uint32> "
+			      NETVSC_ARG_RX_EXTMBUF_ENABLE "=<0|1>");

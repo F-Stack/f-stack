@@ -13,3 +13,5 @@ application through the mempool API.
 
     octeontx
     octeontx2
+    ring
+    stack

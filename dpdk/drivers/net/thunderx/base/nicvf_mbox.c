@@ -36,7 +36,7 @@ static const char *mbox_message[NIC_MBOX_MSG_MAX] =  {
 	[NIC_MBOX_MSG_SHUTDOWN]           = "NIC_MBOX_MSG_SHUTDOWN",
 };
 
-static inline const char * __attribute__((unused))
+static inline const char * __rte_unused
 nicvf_mbox_msg_str(int msg)
 {
 	assert(msg >= 0 && msg < NIC_MBOX_MSG_MAX);
@@ -413,6 +413,16 @@ nicvf_mbox_reset_stat_counters(struct nicvf *nic, uint16_t rx_stat_mask,
 	return nicvf_mbox_send_msg_to_pf(nic, &mbx);
 }
 
+int
+nicvf_mbox_set_link_up_down(struct nicvf *nic, bool enable)
+{
+	struct nic_mbx mbx = { .msg = { 0 } };
+
+	mbx.lbk.msg = NIC_MBOX_MSG_SET_LINK;
+	mbx.lbk.vf_id = nic->vf_id;
+	mbx.lbk.enable = enable;
+	return nicvf_mbox_send_msg_to_pf(nic, &mbx);
+}
 void
 nicvf_mbox_shutdown(struct nicvf *nic)
 {

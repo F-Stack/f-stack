@@ -41,7 +41,9 @@ Enabling HPET in the DPDK
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 By default, HPET support is disabled in the DPDK build configuration files.
-To use HPET, the ``CONFIG_RTE_LIBEAL_USE_HPET`` setting should be changed to ``y``, which will enable the HPET settings at compile time.
+To use HPET, use the following meson build option which will enable the HPET settings at compile time::
+
+   meson configure -Duse_hpet=true
 
 For an application to use the ``rte_get_hpet_cycles()`` and ``rte_get_hpet_hz()`` API calls,
 and optionally to make the HPET the default time source for the rte_timer library,
@@ -57,23 +59,54 @@ The application can then determine what action to take, if any, if the HPET is n
     These generic APIs can work with either TSC or HPET time sources, depending on what is requested by an application call to ``rte_eal_hpet_init()``,
     if any, and on what is available on the system at runtime.
 
+.. _Running_Without_Root_Privileges:
+
 Running DPDK Applications Without Root Privileges
---------------------------------------------------------
+-------------------------------------------------
+
+In order to run DPDK as non-root, the following Linux filesystem objects'
+permissions should be adjusted to ensure that the Linux account being used to
+run the DPDK application has access to them:
+
+*   All directories which serve as hugepage mount points, for example, ``/dev/hugepages``
+
+*   If the HPET is to be used,  ``/dev/hpet``
+
+When running as non-root user, there may be some additional resource limits
+that are imposed by the system. Specifically, the following resource limits may
+need to be adjusted in order to ensure normal DPDK operation:
+
+* RLIMIT_LOCKS (number of file locks that can be held by a process)
+
+* RLIMIT_NOFILE (number of open file descriptors that can be held open by a process)
+
+* RLIMIT_MEMLOCK (amount of pinned pages the process is allowed to have)
+
+The above limits can usually be adjusted by editing
+``/etc/security/limits.conf`` file, and rebooting.
+
+Additionally, depending on which kernel driver is in use, the relevant
+resources also should be accessible by the user running the DPDK application.
+
+For ``vfio-pci`` kernel driver, the following Linux file system objects'
+permissions should be adjusted:
+
+* The VFIO device file, ``/dev/vfio/vfio``
+
+* The directories under ``/dev/vfio`` that correspond to IOMMU group numbers of
+  devices intended to be used by DPDK, for example, ``/dev/vfio/50``
 
 .. note::
 
-    The instructions below will allow running DPDK as non-root with older
-    Linux kernel versions. However, since version 4.0, the kernel does not allow
-    unprivileged processes to read the physical address information from
-    the pagemaps file, making it impossible for those processes to use HW
-    devices which require physical addresses
+    The instructions below will allow running DPDK with ``igb_uio`` or
+    ``uio_pci_generic`` drivers as non-root with older Linux kernel versions.
+    However, since version 4.0, the kernel does not allow unprivileged processes
+    to read the physical address information from the pagemaps file, making it
+    impossible for those processes to be used by non-privileged users. In such
+    cases, using the VFIO driver is recommended.
 
-Although applications using the DPDK use network ports and other hardware resources directly,
-with a number of small permission adjustments it is possible to run these applications as a user other than "root".
-To do so, the ownership, or permissions, on the following Linux file system objects should be adjusted to ensure that
-the Linux user account being used to run the DPDK application has access to them:
-
-*   All directories which serve as hugepage mount points, for example,   ``/mnt/huge``
+For ``igb_uio`` or ``uio_pci_generic`` kernel drivers, the following Linux file
+system objects' permissions should be adjusted:
 
 *   The userspace-io device files in  ``/dev``, for example,  ``/dev/uio0``, ``/dev/uio1``, and so on
 
@@ -82,11 +115,6 @@ the Linux user account being used to run the DPDK application has access to them
        /sys/class/uio/uio0/device/config
        /sys/class/uio/uio0/device/resource*
 
-*   If the HPET is to be used,  ``/dev/hpet``
-
-.. note::
-
-    On some Linux installations, ``/dev/hugepages``  is also a hugepage mount point created by default.
 
 Power Management and Power Saving Functionality
 -----------------------------------------------
@@ -112,7 +140,7 @@ In addition, C3 and C6 should be enabled as well for power management. The path 
 Using Linux Core Isolation to Reduce Context Switches
 -----------------------------------------------------
 
-While the threads used by an DPDK application are pinned to logical cores on the system,
+While the threads used by a DPDK application are pinned to logical cores on the system,
 it is possible for the Linux scheduler to run other tasks on those cores also.
 To help prevent additional workloads from running on those cores,
 it is possible to use the ``isolcpus`` Linux kernel parameter to isolate them from the general Linux scheduler.
@@ -128,13 +156,10 @@ Loading the DPDK KNI Kernel Module
 ----------------------------------
 
 To run the DPDK Kernel NIC Interface (KNI) sample application, an extra kernel module (the kni module) must be loaded into the running kernel.
-The module is found in the kmod sub-directory of the DPDK target directory.
-Similar to the loading of the ``igb_uio`` module, this module should be loaded using the insmod command as shown below
-(assuming that the current directory is the DPDK target directory):
+The module is found in the kernel/linux sub-directory of the DPDK build directory.
+It should be loaded using the insmod command::
 
-.. code-block:: console
-
-   insmod kmod/rte_kni.ko
+   insmod <build_dir>/kernel/linux/kni/rte_kni.ko
 
 .. note::
 
@@ -156,4 +181,5 @@ This results in pass-through of the DMAR (DMA Remapping) lookup in the host.
 Also, if ``INTEL_IOMMU_DEFAULT_ON`` is not set in the kernel, the ``intel_iommu=on`` kernel parameter must be used too.
 This ensures that the Intel IOMMU is being initialized as expected.
 
-Please note that while using ``iommu=pt`` is compulsory for ``igb_uio driver``, the ``vfio-pci`` driver can actually work with both ``iommu=pt`` and ``iommu=on``.
+Please note that while using ``iommu=pt`` is compulsory for ``igb_uio`` driver,
+the ``vfio-pci`` driver can actually work with both ``iommu=pt`` and ``iommu=on``.

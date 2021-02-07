@@ -37,17 +37,13 @@ Compilation of the DPDK
     The setup commands and installed packages needed on various systems may be different.
     For details on Linux distributions and the versions tested, please consult the DPDK Release Notes.
 
-*   General development tools including ``make``, and a supported C compiler such as ``gcc`` (version 4.9+) or ``clang`` (version 3.4+).
+*   General development tools including a supported C compiler such as gcc (version 4.9+) or clang (version 3.4+).
 
     * For RHEL/Fedora systems these can be installed using ``dnf groupinstall "Development Tools"``
 
     * For Ubuntu/Debian systems these can be installed using ``apt install build-essential``
 
-*   Python, recommended version 3.5+.
-
-    * Python v3.5+ is needed to build DPDK using meson and ninja
-
-    * Python 2.7+ or 3.2+, to use various helper scripts included in the DPDK package.
+*   Python 3.5 or later.
 
 *   Meson (version 0.47.1+) and ninja
 
@@ -61,8 +57,6 @@ Compilation of the DPDK
     * ``numactl-devel`` in RHEL/Fedora;
 
     * ``libnuma-dev`` in Debian/Ubuntu;
-
-*   Linux kernel headers or sources required to build kernel modules.
 
 .. note::
 
@@ -82,20 +76,14 @@ Compilation of the DPDK
 **Additional Libraries**
 
 A number of DPDK components, such as libraries and poll-mode drivers (PMDs) have additional dependencies.
-For DPDK builds using meson, the presence or absence of these dependencies will be
-automatically detected enabling or disabling the relevant components appropriately.
-
-For builds using make, these components are disabled in the default configuration and
-need to be enabled manually by changing the relevant setting to "y" in the build configuration file
-i.e. the ``.config`` file in the build folder.
+For DPDK builds, the presence or absence of these dependencies will be automatically detected
+enabling or disabling the relevant components appropriately.
 
 In each case, the relevant library development package (``-devel`` or ``-dev``) is needed to build the DPDK components.
 
 For libraries the additional dependencies include:
 
 *   libarchive: for some unit tests using tar to get their resources.
-
-*   jansson: to compile and use the telemetry library.
 
 *   libelf: to compile and use the bpf library.
 
@@ -104,10 +92,23 @@ found in that driver's documentation in the relevant DPDK guide document,
 e.g. :doc:`../nics/index`
 
 
+Building DPDK Applications
+--------------------------
+
+The tool pkg-config or pkgconf, integrated in most build systems,
+must be used to parse options and dependencies from libdpdk.pc.
+
+.. note::
+
+   pkg-config 0.27, supplied with RHEL-7,
+   does not process the Libs.private section correctly,
+   resulting in statically linked applications not being linked properly.
+
+
 Running DPDK Applications
 -------------------------
 
-To run an DPDK application, some customization may be required on the target machine.
+To run a DPDK application, some customization may be required on the target machine.
 
 System Software
 ~~~~~~~~~~~~~~~
@@ -157,8 +158,36 @@ Without hugepages, high TLB miss rates would occur with the standard 4k page siz
 Reserving Hugepages for DPDK Use
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The allocation of hugepages should be done at boot time or as soon as possible after system boot
-to prevent memory from being fragmented in physical memory.
+The reservation of hugepages can be performed at run time.
+This is done by echoing the number of hugepages required
+to a ``nr_hugepages`` file in the ``/sys/kernel/`` directory
+corresponding to a specific page size (in Kilobytes).
+For a single-node system, the command to use is as follows
+(assuming that 1024 of 2MB pages are required)::
+
+    echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+
+On a NUMA machine, the above command will usually divide the number of hugepages
+equally across all NUMA nodes (assuming there is enough memory on all NUMA nodes).
+However, pages can also be reserved explicitly on individual NUMA nodes
+using a ``nr_hugepages`` file in the ``/sys/devices/`` directory::
+
+    echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+    echo 1024 > /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
+
+.. note::
+
+    Some kernel versions may not allow reserving 1 GB hugepages at run time,
+    so reserving them at boot time may be the only option.
+    Please see below for instructions.
+
+**Alternative:**
+
+In the general case, reserving hugepages at run time is perfectly fine,
+but in use cases where having lots of physically contiguous memory is required,
+it is preferable to reserve hugepages at boot time,
+as that will help in preventing physical memory from becoming heavily fragmented.
+
 To reserve hugepages at boot time, a parameter is passed to the Linux kernel on the kernel command line.
 
 For 2 MB pages, just pass the hugepages option to the kernel. For example, to reserve 1024 pages of 2 MB, use::
@@ -187,35 +216,29 @@ the number of hugepages reserved at boot time is generally divided equally betwe
 
 See the Documentation/admin-guide/kernel-parameters.txt file in your Linux source tree for further details of these and other kernel options.
 
-**Alternative:**
-
-For 2 MB pages, there is also the option of allocating hugepages after the system has booted.
-This is done by echoing the number of hugepages required to a nr_hugepages file in the ``/sys/devices/`` directory.
-For a single-node system, the command to use is as follows (assuming that 1024 pages are required)::
-
-    echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-
-On a NUMA machine, pages should be allocated explicitly on separate nodes::
-
-    echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
-    echo 1024 > /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
-
-.. note::
-
-    For 1G pages, it is not possible to reserve the hugepage memory after the system has booted.
-
 Using Hugepages with the DPDK
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once the hugepage memory is reserved, to make the memory available for DPDK use, perform the following steps::
+If secondary process support is not required, DPDK is able to use hugepages
+without any configuration by using "in-memory" mode.
+Please see :doc:`linux_eal_parameters` for more details.
+
+If secondary process support is required,
+mount points for hugepages need to be created.
+On modern Linux distributions, a default mount point for hugepages
+is provided by the system and is located at ``/dev/hugepages``.
+This mount point will use the default hugepage size
+set by the kernel parameters as described above.
+
+However, in order to use hugepage sizes other than the default, it is necessary
+to manually create mount points for those hugepage sizes (e.g. 1GB pages).
+
+To make the hugepages of size 1GB available for DPDK use,
+following steps must be performed::
 
     mkdir /mnt/huge
-    mount -t hugetlbfs nodev /mnt/huge
+    mount -t hugetlbfs pagesize=1GB /mnt/huge
 
 The mount point can be made permanent across reboots, by adding the following line to the ``/etc/fstab`` file::
 
-    nodev /mnt/huge hugetlbfs defaults 0 0
-
-For 1GB pages, the page size must be specified as a mount option::
-
-    nodev /mnt/huge_1GB hugetlbfs pagesize=1GB 0 0
+    nodev /mnt/huge hugetlbfs pagesize=1GB 0 0

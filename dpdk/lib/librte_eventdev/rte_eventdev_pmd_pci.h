@@ -32,28 +32,25 @@ typedef int (*eventdev_pmd_pci_callback_t)(struct rte_eventdev *dev);
 
 /**
  * @internal
- * Wrapper for use by pci drivers as a .probe function to attach to a event
- * interface.
+ * Wrapper for use by pci drivers as a .probe function to attach to an event
+ * interface.  Same as rte_event_pmd_pci_probe, except caller can specify
+ * the name.
  */
+__rte_experimental
 static inline int
-rte_event_pmd_pci_probe(struct rte_pci_driver *pci_drv,
-			    struct rte_pci_device *pci_dev,
-			    size_t private_data_size,
-			    eventdev_pmd_pci_callback_t devinit)
+rte_event_pmd_pci_probe_named(struct rte_pci_driver *pci_drv,
+			      struct rte_pci_device *pci_dev,
+			      size_t private_data_size,
+			      eventdev_pmd_pci_callback_t devinit,
+			      const char *name)
 {
 	struct rte_eventdev *eventdev;
-
-	char eventdev_name[RTE_EVENTDEV_NAME_MAX_LEN];
-
 	int retval;
 
 	if (devinit == NULL)
 		return -EINVAL;
 
-	rte_pci_device_name(&pci_dev->addr, eventdev_name,
-			sizeof(eventdev_name));
-
-	eventdev = rte_event_pmd_allocate(eventdev_name,
+	eventdev = rte_event_pmd_allocate(name,
 			 pci_dev->device.numa_node);
 	if (eventdev == NULL)
 		return -ENOMEM;
@@ -88,6 +85,28 @@ rte_event_pmd_pci_probe(struct rte_pci_driver *pci_drv,
 	return -ENXIO;
 }
 
+/**
+ * @internal
+ * Wrapper for use by pci drivers as a .probe function to attach to a event
+ * interface.
+ */
+static inline int
+rte_event_pmd_pci_probe(struct rte_pci_driver *pci_drv,
+			    struct rte_pci_device *pci_dev,
+			    size_t private_data_size,
+			    eventdev_pmd_pci_callback_t devinit)
+{
+	char eventdev_name[RTE_EVENTDEV_NAME_MAX_LEN];
+
+	rte_pci_device_name(&pci_dev->addr, eventdev_name,
+			sizeof(eventdev_name));
+
+	return rte_event_pmd_pci_probe_named(pci_drv,
+					     pci_dev,
+					     private_data_size,
+					     devinit,
+					     eventdev_name);
+}
 
 /**
  * @internal
@@ -112,9 +131,11 @@ rte_event_pmd_pci_remove(struct rte_pci_device *pci_dev,
 	if (eventdev == NULL)
 		return -ENODEV;
 
-	ret = rte_event_dev_close(eventdev->data->dev_id);
-	if (ret < 0)
-		return ret;
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		ret = rte_event_dev_close(eventdev->data->dev_id);
+		if (ret < 0)
+			return ret;
+	}
 
 	/* Invoke PMD device un-init function */
 	if (devuninit)

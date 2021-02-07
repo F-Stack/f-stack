@@ -116,6 +116,8 @@ struct lcore_conf lcore_conf;
 
 struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
+static pcblddr_func_t pcblddr_fun;
+
 static struct rte_ring **dispatch_ring[RTE_MAX_ETHPORTS];
 static dispatch_func_t packet_dispatcher;
 
@@ -789,19 +791,9 @@ init_port_start(void)
     //RSS reta update will failed when enable flow isolate
     #ifndef FF_FLOW_ISOLATE
             if (nb_queues > 1) {
-                /* set HW rss hash function to Toeplitz. */
-                if (!rte_eth_dev_filter_supported(port_id, RTE_ETH_FILTER_HASH)) {
-                    struct rte_eth_hash_filter_info info = {0};
-                    info.info_type = RTE_ETH_HASH_FILTER_GLOBAL_CONFIG;
-                    info.info.global_conf.hash_func = RTE_ETH_HASH_FUNCTION_TOEPLITZ;
-
-                    if (rte_eth_dev_filter_ctrl(port_id, RTE_ETH_FILTER_HASH,
-                        RTE_ETH_FILTER_SET, &info) < 0) {
-                        rte_exit(EXIT_FAILURE, "port[%d] set hash func failed\n",
-                            port_id);
-                    }
-                }
-
+                /*
+                 * FIXME: modify RSS set to FDIR
+                 */
                 set_rss_table(port_id, dev_info.reta_size, nb_queues);
             }
     #endif
@@ -1150,7 +1142,7 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         data = rte_pktmbuf_mtod(pn, void*);
         len = rte_pktmbuf_data_len(pn);
 
-        void *mb = ff_mbuf_get(prev, data, len);
+        void *mb = ff_mbuf_get(prev, pn, data, len);
         if (mb == NULL) {
             ff_mbuf_free(hdr);
             rte_pktmbuf_free(pkt);
@@ -1598,17 +1590,33 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             handle_default_msg(msg);
             break;
     }
-    rte_ring_enqueue(msg_ring[proc_id].ring[msg->msg_type], msg);
+    if (rte_ring_enqueue(msg_ring[proc_id].ring[msg->msg_type], msg) < 0) {
+        if (msg->original_buf) {
+            rte_free(msg->buf_addr);
+            msg->buf_addr = msg->original_buf;
+            msg->buf_len = msg->original_buf_len;
+            msg->original_buf = NULL;
+        }
+
+        rte_mempool_put(message_pool, msg);
+    }
 }
 
 static inline int
-process_msg_ring(uint16_t proc_id)
+process_msg_ring(uint16_t proc_id, struct rte_mbuf **pkts_burst)
 {
-    void *msg;
-    int ret = rte_ring_dequeue(msg_ring[proc_id].ring[0], &msg);
+    /* read msg from ring buf and to process */
+    uint16_t nb_rb;
+    int i;
 
-    if (unlikely(ret == 0)) {
-        handle_msg((struct ff_msg *)msg, proc_id);
+    nb_rb = rte_ring_dequeue_burst(msg_ring[proc_id].ring[0],
+        (void **)pkts_burst, MAX_PKT_BURST, NULL);
+
+    if (likely(nb_rb == 0))
+        return 0;
+
+    for (i = 0; i < nb_rb; ++i) {
+        handle_msg((struct ff_msg *)pkts_burst[i], proc_id);
     }
 
     return 0;
@@ -1900,7 +1908,7 @@ main_loop(void *arg)
             }
         }
 
-        process_msg_ring(qconf->proc_id);
+        process_msg_ring(qconf->proc_id, pkts_burst);
 
         div_tsc = rte_rdtsc();
 
@@ -1959,7 +1967,7 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
         sizeof(struct loop_routine), 0);
     lr->loop = loop;
     lr->arg = arg;
-    rte_eal_mp_remote_launch(main_loop, lr, CALL_MASTER);
+    rte_eal_mp_remote_launch(main_loop, lr, CALL_MAIN);
     rte_eal_mp_wait_lcore();
     rte_free(lr);
 }
@@ -1967,7 +1975,7 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
 void
 ff_dpdk_pktmbuf_free(void *m)
 {
-    rte_pktmbuf_free((struct rte_mbuf *)m);
+    rte_pktmbuf_free_seg((struct rte_mbuf *)m);
 }
 
 static uint32_t
@@ -1991,6 +1999,33 @@ toeplitz_hash(unsigned keylen, const uint8_t *key,
         }
     }
     return (hash);
+}
+
+int
+ff_in_pcbladdr(uint16_t family, void *faddr, uint16_t fport, void *laddr)
+{
+    int ret = 0;
+    uint16_t fa;
+
+    if (!pcblddr_fun)
+        return ret;
+
+    if (family == AF_INET)
+        fa = AF_INET;
+    else if (family == AF_INET6_FREEBSD)
+        fa = AF_INET6_LINUX;
+    else
+        return EADDRNOTAVAIL;
+
+    ret = (*pcblddr_fun)(fa, faddr, fport, laddr);
+
+    return ret;
+}
+
+void
+ff_regist_pcblddr_fun(pcblddr_func_t func)
+{
+    pcblddr_fun = func;
 }
 
 int

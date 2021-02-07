@@ -23,7 +23,6 @@
 #define MLX4_GLUE_VERSION ""
 #endif
 
-/* LIB_GLUE_VERSION must be updated every time this structure is modified. */
 struct mlx4_glue {
 	const char *version;
 	int (*fork_init)(void);
@@ -84,6 +83,6 @@ struct mlx4_glue {
 				   void *attr);
 };
 
-const struct mlx4_glue *mlx4_glue;
+extern const struct mlx4_glue *mlx4_glue;
 
 #endif /* MLX4_GLUE_H_ */

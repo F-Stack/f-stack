@@ -161,7 +161,7 @@ To define classification for the IPv6 2-tuple: <protocol, IPv6 source address> o
         uint8_t hop_limits;    /* Hop limits. */
         uint8_t src_addr[16];  /* IP address of source host. */
         uint8_t dst_addr[16];  /* IP address of destination host(s). */
-    } __attribute__((__packed__));
+    } __rte_packed;
 
 The following array of field definitions can be used:
 
@@ -368,14 +368,36 @@ After rte_acl_build() over given AC context has finished successfully, it can be
 There are several implementations of classify algorithm:
 
 *   **RTE_ACL_CLASSIFY_SCALAR**: generic implementation, doesn't require any specific HW support.
+    Requires max SIMD bitwidth to be at least 64.
 
 *   **RTE_ACL_CLASSIFY_SSE**: vector implementation, can process up to 8 flows in parallel. Requires SSE 4.1 support.
+    Requires max SIMD bitwidth to be at least 128.
 
 *   **RTE_ACL_CLASSIFY_AVX2**: vector implementation, can process up to 16 flows in parallel. Requires AVX2 support.
+    Requires max SIMD bitwidth to be at least 256.
+
+*   **RTE_ACL_CLASSIFY_NEON**: vector implementation, can process up to 8 flows
+    in parallel. Requires NEON support. Requires max SIMD bitwidth to be at least 128.
+
+*   **RTE_ACL_CLASSIFY_ALTIVEC**: vector implementation, can process up to 8
+    flows in parallel. Requires ALTIVEC support. Requires max SIMD bitwidth to be at least 128.
+
+*   **RTE_ACL_CLASSIFY_AVX512X16**: vector implementation, can process up to 16
+    flows in parallel. Uses 256-bit width SIMD registers.
+    Requires AVX512 support. Requires max SIMD bitwidth to be at least 256.
+
+*   **RTE_ACL_CLASSIFY_AVX512X32**: vector implementation, can process up to 32
+    flows in parallel. Uses 512-bit width SIMD registers.
+    Requires AVX512 support. Requires max SIMD bitwidth to be at least 512.
 
 It is purely a runtime decision which method to choose, there is no build-time difference.
 All implementations operates over the same internal RT structures and use similar principles. The main difference is that vector implementations can manually exploit IA SIMD instructions and process several input data flows in parallel.
 At startup ACL library determines the highest available classify method for the given platform and sets it as default one. Though the user has an ability to override the default classifier function for a given ACL context or perform particular search using non-default classify method. In that case it is user responsibility to make sure that given platform supports selected classify implementation.
+
+.. note::
+
+     Runtime algorithm selection obeys EAL max SIMD bitwidth parameter.
+     For more details about expected behaviour please see :ref:`max_simd_bitwidth`
 
 Application Programming Interface (API) Usage
 ---------------------------------------------

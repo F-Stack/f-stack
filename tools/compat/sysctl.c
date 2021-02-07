@@ -30,16 +30,6 @@
 
 #include "ff_ipc.h"
 
-#define FREE_FF_MSG(m) do { \
-        if (m->original_buf) { \
-            rte_free(m->buf_addr); \
-            m->buf_addr = m->original_buf; \
-            m->buf_len = m->original_buf_len; \
-            m->original_buf = NULL; \
-        } \
-        ff_ipc_msg_free(m); \
-    } while (0);
-
 int
 sysctl(int *name, unsigned namelen, void *old,
     size_t *oldlenp, const void *new, size_t newlen)
@@ -64,7 +54,7 @@ sysctl(int *name, unsigned namelen, void *old,
         oldlen = *oldlenp;
     }
 
-    total_len = namelen + oldlen + newlen;
+    total_len = namelen * sizeof(int) + sizeof(size_t) + oldlen + newlen;
     if (total_len > msg->buf_len) {
         extra_buf = rte_malloc(NULL, total_len, 0);
         if (extra_buf == NULL) {
@@ -123,7 +113,7 @@ sysctl(int *name, unsigned namelen, void *old,
 
     do {
         if (retmsg != NULL) {
-            FREE_FF_MSG(retmsg)
+            ff_ipc_msg_free(retmsg);
         }
         ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
@@ -147,7 +137,7 @@ sysctl(int *name, unsigned namelen, void *old,
     }
 
 error:
-    FREE_FF_MSG(msg)
+    ff_ipc_msg_free(msg);
 
     return ret;
 }

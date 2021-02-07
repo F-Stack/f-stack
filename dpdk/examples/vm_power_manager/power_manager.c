@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <inttypes.h>
-#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -60,7 +59,6 @@ core_info_init(void)
 	ci = get_core_info();
 
 	ci->core_count = get_nprocs_conf();
-	ci->branch_ratio_threshold = BRANCH_RATIO_THRESHOLD;
 	ci->cd = malloc(ci->core_count * sizeof(struct core_details));
 	memset(ci->cd, 0, ci->core_count * sizeof(struct core_details));
 	if (!ci->cd) {
@@ -69,6 +67,7 @@ core_info_init(void)
 	}
 	for (i = 0; i < ci->core_count; i++) {
 		ci->cd[i].global_enabled_cpus = 1;
+		ci->cd[i].branch_ratio_threshold = BRANCH_RATIO_THRESHOLD;
 	}
 	printf("%d cores in system\n", ci->core_count);
 	return 0;

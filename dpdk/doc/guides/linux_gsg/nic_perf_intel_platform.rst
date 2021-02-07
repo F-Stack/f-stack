@@ -1,3 +1,6 @@
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2015 Intel Corporation.
+
 How to get best performance with NICs on Intel platforms
 ========================================================
 
@@ -64,7 +67,7 @@ This aligns with the previous output which showed that each channel has one memo
 Network Interface Card Requirements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use a `DPDK supported <http://core.dpdk.org/supported/>`_ high end NIC such as the Intel XL710 40GbE.
+Use a `DPDK supported <https://core.dpdk.org/supported/>`_ high end NIC such as the Intel XL710 40GbE.
 
 Make sure each NIC has been flashed the latest version of NVM/firmware.
 
@@ -124,16 +127,10 @@ The following are some recommendations on GRUB boot settings:
 Configurations before running DPDK
 ----------------------------------
 
-1. Build the DPDK target and reserve huge pages.
+1. Reserve huge pages.
    See the earlier section on :ref:`linux_gsg_hugepages` for more details.
 
-   The following shell commands may help with building and configuration:
-
    .. code-block:: console
-
-      # Build DPDK target.
-      cd dpdk_folder
-      make install T=x86_64-native-linux-gcc -j
 
       # Get the hugepage size.
       awk '/Hugepagesize/ {print $2}' /proc/meminfo

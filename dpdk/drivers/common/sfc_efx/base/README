@@ -1,0 +1,16 @@
+   SPDX-License-Identifier: BSD-3-Clause
+
+   Copyright(c) 2019-2020 Xilinx, Inc.
+   Copyright(c) 2006-2019 Solarflare Communications Inc.
+
+Solarflare libefx driver library
+================================
+
+This directory contains source code of Solarflare Communications libefx
+driver library of version v4.10.0.1012.
+
+Updating
+========
+
+The source code in this directory should not be modified.
+Please contact the driver maintainers to request changes.

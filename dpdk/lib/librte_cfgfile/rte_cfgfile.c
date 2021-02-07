@@ -27,7 +27,7 @@ struct rte_cfgfile {
 	struct rte_cfgfile_section *sections;
 };
 
-static int cfgfile_logtype;
+RTE_LOG_REGISTER(cfgfile_logtype, lib.cfgfile, INFO);
 
 #define CFG_LOG(level, fmt, args...)					\
 	rte_log(RTE_LOG_ ## level, cfgfile_logtype, "%s(): " fmt "\n",	\
@@ -191,7 +191,8 @@ rte_cfgfile_load_with_params(const char *filename, int flags,
 		}
 		/* skip parsing if comment character found */
 		pos = memchr(buffer, params->comment_character, len);
-		if (pos != NULL && (*(pos-1) != '\\')) {
+		if (pos != NULL &&
+		    (pos == buffer || *(pos-1) != '\\')) {
 			*pos = '\0';
 			len = pos -  buffer;
 		}
@@ -271,6 +272,10 @@ rte_cfgfile_create(int flags)
 {
 	int i;
 	struct rte_cfgfile *cfg;
+
+	/* future proof flags usage */
+	if (flags & ~(CFG_FLAG_GLOBAL_SECTION | CFG_FLAG_EMPTY_VALUES))
+		return NULL;
 
 	cfg = malloc(sizeof(*cfg));
 
@@ -561,11 +566,4 @@ rte_cfgfile_has_entry(struct rte_cfgfile *cfg, const char *sectionname,
 		const char *entryname)
 {
 	return rte_cfgfile_get_entry(cfg, sectionname, entryname) != NULL;
-}
-
-RTE_INIT(cfgfile_init)
-{
-	cfgfile_logtype = rte_log_register("lib.cfgfile");
-	if (cfgfile_logtype >= 0)
-		rte_log_set_level(cfgfile_logtype, RTE_LOG_INFO);
 }

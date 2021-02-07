@@ -79,6 +79,7 @@
 #define SSOW_LF_GWS_OP_GWC_INVAL            (0xe00ull)
 
 #define OTX2_SSOW_GET_BASE_ADDR(_GW)        ((_GW) - SSOW_LF_GWS_OP_GET_WORK)
+#define OTX2_SSOW_TT_FROM_TAG(x)	    (((x) >> 32) & SSO_TT_EMPTY)
 
 #define NSEC2USEC(__ns)			((__ns) / 1E3)
 #define USEC2NSEC(__us)                 ((__us) * 1E3)
@@ -141,12 +142,12 @@ struct otx2_sso_evdev {
 	uint64_t adptr_xae_cnt;
 	uint16_t rx_adptr_pool_cnt;
 	uint64_t *rx_adptr_pools;
+	uint16_t max_port_id;
 	uint16_t tim_adptr_ring_cnt;
 	uint16_t *timer_adptr_rings;
 	uint64_t *timer_adptr_sz;
 	/* Dev args */
 	uint8_t dual_ws;
-	uint8_t selftest;
 	uint32_t xae_cnt;
 	uint8_t qos_queue_cnt;
 	struct otx2_sso_qos *qos_parse_data;
@@ -161,15 +162,15 @@ struct otx2_sso_evdev {
 	struct otx2_timesync_info *tstamp;
 } __rte_cache_aligned;
 
-#define OTX2_SSOGWS_OPS \
-	/* WS ops */			\
-	uintptr_t getwrk_op;		\
-	uintptr_t tag_op;		\
-	uintptr_t wqp_op;		\
-	uintptr_t swtp_op;		\
-	uintptr_t swtag_norm_op;	\
-	uintptr_t swtag_desched_op;	\
-	uint8_t cur_tt;			\
+#define OTX2_SSOGWS_OPS                                                        \
+	/* WS ops */                                                           \
+	uintptr_t getwrk_op;                                                   \
+	uintptr_t tag_op;                                                      \
+	uintptr_t wqp_op;                                                      \
+	uintptr_t swtag_flush_op;                                              \
+	uintptr_t swtag_norm_op;                                               \
+	uintptr_t swtag_desched_op;                                            \
+	uint8_t cur_tt;                                                        \
 	uint8_t cur_grp
 
 /* Event port aka GWS */
@@ -185,6 +186,8 @@ struct otx2_ssogws {
 	uintptr_t grps_base[OTX2_SSO_MAX_VHGRP];
 	/* PTP timestamp */
 	struct otx2_timesync_info *tstamp;
+	/* Tx Fastpath data */
+	uint8_t tx_adptr_data[] __rte_cache_aligned;
 } __rte_cache_aligned;
 
 struct otx2_ssogws_state {
@@ -204,12 +207,26 @@ struct otx2_ssogws_dual {
 	uintptr_t grps_base[OTX2_SSO_MAX_VHGRP];
 	/* PTP timestamp */
 	struct otx2_timesync_info *tstamp;
+	/* Tx Fastpath data */
+	uint8_t tx_adptr_data[] __rte_cache_aligned;
 } __rte_cache_aligned;
 
 static inline struct otx2_sso_evdev *
 sso_pmd_priv(const struct rte_eventdev *event_dev)
 {
 	return event_dev->data->dev_private;
+}
+
+struct otx2_ssogws_cookie {
+	const struct rte_eventdev *event_dev;
+	bool configured;
+};
+
+static inline struct otx2_ssogws_cookie *
+ssogws_get_cookie(void *ws)
+{
+	return (struct otx2_ssogws_cookie *)
+		((uint8_t *)ws - RTE_CACHE_LINE_SIZE);
 }
 
 static const union mbuf_initializer mbuf_init = {
@@ -278,7 +295,7 @@ uint16_t otx2_ssogws_dual_enq_fwd_burst(void *port, const struct rte_event ev[],
 					uint16_t nb_events);
 
 /* Auto generated API's */
-#define R(name, f5, f4, f3, f2, f1, f0, flags)				       \
+#define R(name, f6, f5, f4, f3, f2, f1, f0, flags)			       \
 uint16_t otx2_ssogws_deq_ ##name(void *port, struct rte_event *ev,	       \
 				 uint64_t timeout_ticks);		       \
 uint16_t otx2_ssogws_deq_burst_ ##name(void *port, struct rte_event ev[],      \
@@ -335,7 +352,7 @@ uint16_t otx2_ssogws_dual_deq_seg_timeout_burst_ ##name(void *port,	       \
 SSO_RX_ADPTR_ENQ_FASTPATH_FUNC
 #undef R
 
-#define T(name, f5, f4, f3, f2, f1, f0, sz, flags)			     \
+#define T(name, f6, f5, f4, f3, f2, f1, f0, sz, flags)			     \
 uint16_t otx2_ssogws_tx_adptr_enq_ ## name(void *port, struct rte_event ev[],\
 					   uint16_t nb_events);		     \
 uint16_t otx2_ssogws_tx_adptr_enq_seg_ ## name(void *port,		     \
@@ -382,6 +399,17 @@ int otx2_sso_tx_adapter_queue_del(uint8_t id,
 				  const struct rte_eventdev *event_dev,
 				  const struct rte_eth_dev *eth_dev,
 				  int32_t tx_queue_id);
+
+/* Event crypto adapter API's */
+int otx2_ca_caps_get(const struct rte_eventdev *dev,
+		     const struct rte_cryptodev *cdev, uint32_t *caps);
+
+int otx2_ca_qp_add(const struct rte_eventdev *dev,
+		   const struct rte_cryptodev *cdev, int32_t queue_pair_id,
+		   const struct rte_event *event);
+
+int otx2_ca_qp_del(const struct rte_eventdev *dev,
+		   const struct rte_cryptodev *cdev, int32_t queue_pair_id);
 
 /* Clean up API's */
 typedef void (*otx2_handle_event_t)(void *arg, struct rte_event ev);

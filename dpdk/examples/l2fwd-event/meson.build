@@ -7,6 +7,7 @@
 # To build this example as a standalone application with an already-installed
 # DPDK instance, use 'make'
 
+allow_experimental_apis = true
 deps += 'eventdev'
 sources = files(
 	'main.c',
@@ -16,8 +17,3 @@ sources = files(
 	'l2fwd_event_internal_port.c',
 	'l2fwd_event_generic.c'
 )
-
-# for clang 32-bit compiles we need libatomic for 64-bit atomic ops
-if cc.get_id() == 'clang' and dpdk_conf.get('RTE_ARCH_64') == false
-	ext_deps += cc.find_library('atomic')
-endif

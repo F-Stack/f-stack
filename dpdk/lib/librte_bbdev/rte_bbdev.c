@@ -29,7 +29,7 @@
 
 
 /* BBDev library logging ID */
-static int bbdev_logtype;
+RTE_LOG_REGISTER(bbdev_logtype, lib.bbdev, NOTICE);
 
 /* Helper macro for logging */
 #define rte_bbdev_log(level, fmt, ...) \
@@ -210,7 +210,7 @@ rte_bbdev_allocate(const char *name)
 		return NULL;
 	}
 
-	rte_atomic16_inc(&bbdev->data->process_cnt);
+	__atomic_add_fetch(&bbdev->data->process_cnt, 1, __ATOMIC_RELAXED);
 	bbdev->data->dev_id = dev_id;
 	bbdev->state = RTE_BBDEV_INITIALIZED;
 
@@ -252,7 +252,8 @@ rte_bbdev_release(struct rte_bbdev *bbdev)
 	}
 
 	/* clear shared BBDev Data if no process is using the device anymore */
-	if (rte_atomic16_dec_and_test(&bbdev->data->process_cnt))
+	if (__atomic_sub_fetch(&bbdev->data->process_cnt, 1,
+			      __ATOMIC_RELAXED) == 0)
 		memset(bbdev->data, 0, sizeof(*bbdev->data));
 
 	memset(bbdev, 0, sizeof(*bbdev));
@@ -1132,11 +1133,4 @@ rte_bbdev_op_type_str(enum rte_bbdev_op_type op_type)
 
 	rte_bbdev_log(ERR, "Invalid operation type");
 	return NULL;
-}
-
-RTE_INIT(rte_bbdev_init_log)
-{
-	bbdev_logtype = rte_log_register("lib.bbdev");
-	if (bbdev_logtype >= 0)
-		rte_log_set_level(bbdev_logtype, RTE_LOG_NOTICE);
 }

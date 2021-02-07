@@ -57,12 +57,13 @@ struct virtnet_ctl;
 #define VIRTIO_ID_9P       0x09
 
 /* Status byte for guest to report progress. */
-#define VIRTIO_CONFIG_STATUS_RESET     0x00
-#define VIRTIO_CONFIG_STATUS_ACK       0x01
-#define VIRTIO_CONFIG_STATUS_DRIVER    0x02
-#define VIRTIO_CONFIG_STATUS_DRIVER_OK 0x04
-#define VIRTIO_CONFIG_STATUS_FEATURES_OK 0x08
-#define VIRTIO_CONFIG_STATUS_FAILED    0x80
+#define VIRTIO_CONFIG_STATUS_RESET		0x00
+#define VIRTIO_CONFIG_STATUS_ACK		0x01
+#define VIRTIO_CONFIG_STATUS_DRIVER		0x02
+#define VIRTIO_CONFIG_STATUS_DRIVER_OK		0x04
+#define VIRTIO_CONFIG_STATUS_FEATURES_OK	0x08
+#define VIRTIO_CONFIG_STATUS_DEV_NEED_RESET	0x40
+#define VIRTIO_CONFIG_STATUS_FAILED		0x80
 
 /*
  * Each virtqueue indirect descriptor list must be physically contiguous.
@@ -134,6 +135,15 @@ struct virtnet_ctl;
  * are ordered in a way described by the platform.
  */
 #define VIRTIO_F_ORDER_PLATFORM 36
+
+/*
+ * This feature indicates that the driver passes extra data (besides
+ * identifying the virtqueue) in its device notifications.
+ */
+#define VIRTIO_F_NOTIFICATION_DATA 38
+
+/* Device set linkspeed and duplex */
+#define VIRTIO_NET_F_SPEED_DUPLEX 63
 
 /* The Guest publishes the used index for which it expects an interrupt
  * at the end of the avail ring. Host should ignore the avail->flags field. */
@@ -244,7 +254,8 @@ struct virtio_hw {
 	uint8_t	    vlan_strip;
 	uint8_t	    use_msix;
 	uint8_t     modern;
-	uint8_t     use_simple_rx;
+	uint8_t     use_vec_rx;
+	uint8_t     use_vec_tx;
 	uint8_t     use_inorder_rx;
 	uint8_t     use_inorder_tx;
 	uint8_t     weak_barriers;
@@ -253,6 +264,8 @@ struct virtio_hw {
 	uint16_t    port_id;
 	uint8_t     mac_addr[RTE_ETHER_ADDR_LEN];
 	uint32_t    notify_off_multiplier;
+	uint32_t    speed;  /* link speed in MB */
+	uint8_t     duplex;
 	uint8_t     *isr;
 	uint16_t    *notify_base;
 	struct virtio_pci_common_cfg *common_cfg;
@@ -299,7 +312,19 @@ struct virtio_net_config {
 	uint16_t   status;
 	uint16_t   max_virtqueue_pairs;
 	uint16_t   mtu;
-} __attribute__((packed));
+	/*
+	 * speed, in units of 1Mb. All values 0 to INT_MAX are legal.
+	 * Any other value stands for unknown.
+	 */
+	uint32_t speed;
+	/*
+	 * 0x00 - half duplex
+	 * 0x01 - full duplex
+	 * Any other value stands for unknown.
+	 */
+	uint8_t duplex;
+
+} __rte_packed;
 
 /*
  * How many bits to shift physical queue address written to QUEUE_PFN.

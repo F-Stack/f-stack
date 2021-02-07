@@ -50,7 +50,7 @@ static int is_eth_addr_valid(uint8_t *addr)
 	return !is_mcast_addr(addr) && !is_zero_addr(addr);
 }
 
-static void
+void
 enic_rxmbuf_queue_release(__rte_unused struct enic *enic, struct vnic_rq *rq)
 {
 	uint16_t i;
@@ -68,7 +68,7 @@ enic_rxmbuf_queue_release(__rte_unused struct enic *enic, struct vnic_rq *rq)
 	}
 }
 
-static void enic_free_wq_buf(struct rte_mbuf **buf)
+void enic_free_wq_buf(struct rte_mbuf **buf)
 {
 	struct rte_mbuf *mbuf = *buf;
 
@@ -79,7 +79,7 @@ static void enic_free_wq_buf(struct rte_mbuf **buf)
 static void enic_log_q_error(struct enic *enic)
 {
 	unsigned int i;
-	u32 error_status;
+	uint32_t error_status;
 
 	for (i = 0; i < enic->wq_count; i++) {
 		error_status = vnic_wq_error_status(&enic->wq[i]);
@@ -191,8 +191,7 @@ int enic_set_mac_address(struct enic *enic, uint8_t *mac_addr)
 	return err;
 }
 
-static void
-enic_free_rq_buf(struct rte_mbuf **mbuf)
+void enic_free_rq_buf(struct rte_mbuf **mbuf)
 {
 	if (*mbuf == NULL)
 		return;
@@ -222,13 +221,12 @@ void enic_init_vnic_resources(struct enic *enic)
 			error_interrupt_enable,
 			error_interrupt_offset);
 
-		data_rq = &enic->rq[enic_rte_rq_idx_to_data_idx(index)];
+		data_rq = &enic->rq[enic_rte_rq_idx_to_data_idx(index, enic)];
 		if (data_rq->in_use)
 			vnic_rq_init(data_rq,
 				     cq_idx,
 				     error_interrupt_enable,
 				     error_interrupt_offset);
-
 		vnic_cq_init(&enic->cq[cq_idx],
 			0 /* flow_control_enable */,
 			1 /* color_enable */,
@@ -264,7 +262,7 @@ void enic_init_vnic_resources(struct enic *enic)
 			0 /* cq_entry_enable */,
 			1 /* cq_message_enable */,
 			0 /* interrupt offset */,
-			(u64)enic->wq[index].cqmsg_rz->iova);
+			(uint64_t)enic->wq[index].cqmsg_rz->iova);
 	}
 
 	for (index = 0; index < enic->intr_count; index++) {
@@ -276,7 +274,7 @@ void enic_init_vnic_resources(struct enic *enic)
 }
 
 
-static int
+int
 enic_alloc_rx_queue_mbufs(struct enic *enic, struct vnic_rq *rq)
 {
 	struct rte_mbuf *mb;
@@ -359,7 +357,7 @@ enic_initial_post_rx(struct enic *enic, struct vnic_rq *rq)
 
 void *
 enic_alloc_consistent(void *priv, size_t size,
-	dma_addr_t *dma_handle, u8 *name)
+	dma_addr_t *dma_handle, uint8_t *name)
 {
 	void *vaddr;
 	const struct rte_memzone *rz;
@@ -368,7 +366,7 @@ enic_alloc_consistent(void *priv, size_t size,
 	struct enic_memzone_entry *mze;
 
 	rz = rte_memzone_reserve_aligned((const char *)name, size,
-			SOCKET_ID_ANY, RTE_MEMZONE_IOVA_CONTIG, ENIC_ALIGN);
+			SOCKET_ID_ANY, RTE_MEMZONE_IOVA_CONTIG, ENIC_PAGE_SIZE);
 	if (!rz) {
 		pr_err("%s : Failed to allocate memory requested for %s\n",
 			__func__, name);
@@ -446,7 +444,7 @@ enic_intr_handler(void *arg)
 	vnic_intr_return_all_credits(&enic->intr[ENICPMD_LSC_INTR_OFFSET]);
 
 	enic_link_update(dev);
-	_rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+	rte_eth_dev_callback_process(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
 	enic_log_q_error(enic);
 	/* Re-enable irq in case of INTx */
 	rte_intr_ack(&enic->pdev->intr_handle);
@@ -609,7 +607,8 @@ int enic_enable(struct enic *enic)
 		dev_warning(enic, "Init of hash table for clsf failed."\
 			"Flow director feature will not work\n");
 
-	if (enic_fm_init(enic))
+	/* Initialize flowman if not already initialized during probe */
+	if (enic->fm == NULL && enic_fm_init(enic))
 		dev_warning(enic, "Init of flowman failed.\n");
 
 	for (index = 0; index < enic->rq_count; index++) {
@@ -620,7 +619,7 @@ int enic_enable(struct enic *enic)
 			return err;
 		}
 		err = enic_alloc_rx_queue_mbufs(enic,
-			&enic->rq[enic_rte_rq_idx_to_data_idx(index)]);
+			&enic->rq[enic_rte_rq_idx_to_data_idx(index, enic)]);
 		if (err) {
 			/* release the allocated mbufs for the sop rq*/
 			enic_rxmbuf_queue_release(enic,
@@ -806,16 +805,36 @@ int enic_alloc_rq(struct enic *enic, uint16_t queue_idx,
 	unsigned int socket_id, struct rte_mempool *mp,
 	uint16_t nb_desc, uint16_t free_thresh)
 {
+	struct enic_vf_representor *vf;
 	int rc;
-	uint16_t sop_queue_idx = enic_rte_rq_idx_to_sop_idx(queue_idx);
-	uint16_t data_queue_idx = enic_rte_rq_idx_to_data_idx(queue_idx);
-	struct vnic_rq *rq_sop = &enic->rq[sop_queue_idx];
-	struct vnic_rq *rq_data = &enic->rq[data_queue_idx];
+	uint16_t sop_queue_idx;
+	uint16_t data_queue_idx;
+	uint16_t cq_idx;
+	struct vnic_rq *rq_sop;
+	struct vnic_rq *rq_data;
 	unsigned int mbuf_size, mbufs_per_pkt;
 	unsigned int nb_sop_desc, nb_data_desc;
 	uint16_t min_sop, max_sop, min_data, max_data;
 	uint32_t max_rx_pkt_len;
 
+	/*
+	 * Representor uses a reserved PF queue. Translate representor
+	 * queue number to PF queue number.
+	 */
+	if (enic_is_vf_rep(enic)) {
+		RTE_ASSERT(queue_idx == 0);
+		vf = VF_ENIC_TO_VF_REP(enic);
+		sop_queue_idx = vf->pf_rq_sop_idx;
+		data_queue_idx = vf->pf_rq_data_idx;
+		enic = vf->pf;
+		queue_idx = sop_queue_idx;
+	} else {
+		sop_queue_idx = enic_rte_rq_idx_to_sop_idx(queue_idx);
+		data_queue_idx = enic_rte_rq_idx_to_data_idx(queue_idx, enic);
+	}
+	cq_idx = enic_cq_rq(enic, sop_queue_idx);
+	rq_sop = &enic->rq[sop_queue_idx];
+	rq_data = &enic->rq[data_queue_idx];
 	rq_sop->is_sop = 1;
 	rq_sop->data_queue_idx = data_queue_idx;
 	rq_data->is_sop = 0;
@@ -935,7 +954,7 @@ int enic_alloc_rq(struct enic *enic, uint16_t queue_idx,
 		}
 		nb_data_desc = rq_data->ring.desc_count;
 	}
-	rc = vnic_cq_alloc(enic->vdev, &enic->cq[queue_idx], queue_idx,
+	rc = vnic_cq_alloc(enic->vdev, &enic->cq[cq_idx], cq_idx,
 			   socket_id, nb_sop_desc + nb_data_desc,
 			   sizeof(struct cq_enet_rq_desc));
 	if (rc) {
@@ -979,7 +998,7 @@ err_free_sop_mbuf:
 	rte_free(rq_sop->mbuf_ring);
 err_free_cq:
 	/* cleanup on error */
-	vnic_cq_free(&enic->cq[queue_idx]);
+	vnic_cq_free(&enic->cq[cq_idx]);
 err_free_rq_data:
 	if (rq_data->in_use)
 		vnic_rq_free(rq_data);
@@ -1007,12 +1026,27 @@ void enic_free_wq(void *txq)
 int enic_alloc_wq(struct enic *enic, uint16_t queue_idx,
 	unsigned int socket_id, uint16_t nb_desc)
 {
+	struct enic_vf_representor *vf;
 	int err;
-	struct vnic_wq *wq = &enic->wq[queue_idx];
-	unsigned int cq_index = enic_cq_wq(enic, queue_idx);
-	char name[NAME_MAX];
+	struct vnic_wq *wq;
+	unsigned int cq_index;
+	char name[RTE_MEMZONE_NAMESIZE];
 	static int instance;
 
+	/*
+	 * Representor uses a reserved PF queue. Translate representor
+	 * queue number to PF queue number.
+	 */
+	if (enic_is_vf_rep(enic)) {
+		RTE_ASSERT(queue_idx == 0);
+		vf = VF_ENIC_TO_VF_REP(enic);
+		queue_idx = vf->pf_wq_idx;
+		cq_index = vf->pf_wq_cq_idx;
+		enic = vf->pf;
+	} else {
+		cq_index = enic_cq_wq(enic, queue_idx);
+	}
+	wq = &enic->wq[queue_idx];
 	wq->socket_id = socket_id;
 	/*
 	 * rte_eth_tx_queue_setup() checks min, max, and alignment. So just
@@ -1044,7 +1078,7 @@ int enic_alloc_wq(struct enic *enic, uint16_t queue_idx,
 
 	wq->cqmsg_rz = rte_memzone_reserve_aligned((const char *)name,
 			sizeof(uint32_t), SOCKET_ID_ANY,
-			RTE_MEMZONE_IOVA_CONTIG, ENIC_ALIGN);
+			RTE_MEMZONE_IOVA_CONTIG, ENIC_PAGE_SIZE);
 	if (!wq->cqmsg_rz)
 		return -ENOMEM;
 
@@ -1154,10 +1188,10 @@ static int enic_set_rsskey(struct enic *enic, uint8_t *user_key)
 	dma_addr_t rss_key_buf_pa;
 	union vnic_rss_key *rss_key_buf_va = NULL;
 	int err, i;
-	u8 name[NAME_MAX];
+	uint8_t name[RTE_MEMZONE_NAMESIZE];
 
 	RTE_ASSERT(user_key != NULL);
-	snprintf((char *)name, NAME_MAX, "rss_key-%s", enic->bdf_name);
+	snprintf((char *)name, sizeof(name), "rss_key-%s", enic->bdf_name);
 	rss_key_buf_va = enic_alloc_consistent(enic, sizeof(union vnic_rss_key),
 		&rss_key_buf_pa, name);
 	if (!rss_key_buf_va)
@@ -1186,9 +1220,9 @@ int enic_set_rss_reta(struct enic *enic, union vnic_rss_cpu *rss_cpu)
 	dma_addr_t rss_cpu_buf_pa;
 	union vnic_rss_cpu *rss_cpu_buf_va = NULL;
 	int err;
-	u8 name[NAME_MAX];
+	uint8_t name[RTE_MEMZONE_NAMESIZE];
 
-	snprintf((char *)name, NAME_MAX, "rss_cpu-%s", enic->bdf_name);
+	snprintf((char *)name, sizeof(name), "rss_cpu-%s", enic->bdf_name);
 	rss_cpu_buf_va = enic_alloc_consistent(enic, sizeof(union vnic_rss_cpu),
 		&rss_cpu_buf_pa, name);
 	if (!rss_cpu_buf_va)
@@ -1209,10 +1243,11 @@ int enic_set_rss_reta(struct enic *enic, union vnic_rss_cpu *rss_cpu)
 	return err;
 }
 
-static int enic_set_niccfg(struct enic *enic, u8 rss_default_cpu,
-	u8 rss_hash_type, u8 rss_hash_bits, u8 rss_base_cpu, u8 rss_enable)
+static int enic_set_niccfg(struct enic *enic, uint8_t rss_default_cpu,
+	uint8_t rss_hash_type, uint8_t rss_hash_bits, uint8_t rss_base_cpu,
+	uint8_t rss_enable)
 {
-	const u8 tso_ipid_split_en = 0;
+	const uint8_t tso_ipid_split_en = 0;
 	int err;
 
 	err = enic_set_nic_cfg(enic,
@@ -1268,6 +1303,18 @@ int enic_setup_finish(struct enic *enic)
 {
 	enic_init_soft_stats(enic);
 
+	/* switchdev: enable promisc mode on PF */
+	if (enic->switchdev_mode) {
+		vnic_dev_packet_filter(enic->vdev,
+				       0 /* directed  */,
+				       0 /* multicast */,
+				       0 /* broadcast */,
+				       1 /* promisc   */,
+				       0 /* allmulti  */);
+		enic->promisc = 1;
+		enic->allmulti = 0;
+		return 0;
+	}
 	/* Default conf */
 	vnic_dev_packet_filter(enic->vdev,
 		1 /* directed  */,
@@ -1308,8 +1355,8 @@ int enic_set_rss_conf(struct enic *enic, struct rte_eth_rss_conf *rss_conf)
 {
 	struct rte_eth_dev *eth_dev;
 	uint64_t rss_hf;
-	u8 rss_hash_type;
-	u8 rss_enable;
+	uint8_t rss_hash_type;
+	uint8_t rss_enable;
 	int ret;
 
 	RTE_ASSERT(rss_conf != NULL);
@@ -1393,6 +1440,11 @@ int enic_set_vlan_strip(struct enic *enic)
 
 int enic_add_packet_filter(struct enic *enic)
 {
+	/* switchdev ignores packet filters */
+	if (enic->switchdev_mode) {
+		ENICPMD_LOG(DEBUG, " switchdev: ignore packet filter");
+		return 0;
+	}
 	/* Args -> directed, multicast, broadcast, promisc, allmulti */
 	return vnic_dev_packet_filter(enic->vdev, 1, 1, 1,
 		enic->promisc, enic->allmulti);
@@ -1429,6 +1481,17 @@ int enic_set_vnic_res(struct enic *enic)
 	required_intr = 1; /* 1 for LSC even if intr_conf.lsc is 0 */
 	if (eth_dev->data->dev_conf.intr_conf.rxq) {
 		required_intr += eth_dev->data->nb_rx_queues;
+	}
+	ENICPMD_LOG(DEBUG, "Required queues for PF: rq %u wq %u cq %u",
+		    required_rq, required_wq, required_cq);
+	if (enic->vf_required_rq) {
+		/* Queues needed for VF representors */
+		required_rq += enic->vf_required_rq;
+		required_wq += enic->vf_required_wq;
+		required_cq += enic->vf_required_cq;
+		ENICPMD_LOG(DEBUG, "Required queues for VF representors: rq %u wq %u cq %u",
+			    enic->vf_required_rq, enic->vf_required_wq,
+			    enic->vf_required_cq);
 	}
 
 	if (enic->conf_rq_count < required_rq) {
@@ -1474,8 +1537,8 @@ enic_reinit_rq(struct enic *enic, unsigned int rq_idx)
 	int rc = 0;
 
 	sop_rq = &enic->rq[enic_rte_rq_idx_to_sop_idx(rq_idx)];
-	data_rq = &enic->rq[enic_rte_rq_idx_to_data_idx(rq_idx)];
-	cq_idx = rq_idx;
+	data_rq = &enic->rq[enic_rte_rq_idx_to_data_idx(rq_idx, enic)];
+	cq_idx = enic_cq_rq(enic, rq_idx);
 
 	vnic_cq_clean(&enic->cq[cq_idx]);
 	vnic_cq_init(&enic->cq[cq_idx],
@@ -1497,8 +1560,8 @@ enic_reinit_rq(struct enic *enic, unsigned int rq_idx)
 	if (data_rq->in_use) {
 		vnic_rq_init_start(data_rq,
 				   enic_cq_rq(enic,
-				   enic_rte_rq_idx_to_data_idx(rq_idx)), 0,
-				   data_rq->ring.desc_count - 1, 1, 0);
+				   enic_rte_rq_idx_to_data_idx(rq_idx, enic)),
+				   0, data_rq->ring.desc_count - 1, 1, 0);
 	}
 
 	rc = enic_alloc_rx_queue_mbufs(enic, sop_rq);
@@ -1785,8 +1848,24 @@ static int enic_dev_init(struct enic *enic)
 		}
 	}
 
+	if (enic_fm_init(enic))
+		dev_warning(enic, "Init of flowman failed.\n");
 	return 0;
 
+}
+
+static void lock_devcmd(void *priv)
+{
+	struct enic *enic = priv;
+
+	rte_spinlock_lock(&enic->devcmd_lock);
+}
+
+static void unlock_devcmd(void *priv)
+{
+	struct enic *enic = priv;
+
+	rte_spinlock_unlock(&enic->devcmd_lock);
 }
 
 int enic_probe(struct enic *enic)
@@ -1864,6 +1943,11 @@ int enic_probe(struct enic *enic)
 		goto err_out_dev_close;
 	}
 
+	/* Use a PF spinlock to serialize devcmd from PF and VF representors */
+	if (enic->switchdev_mode) {
+		rte_spinlock_init(&enic->devcmd_lock);
+		vnic_register_lock(enic->vdev, lock_devcmd, unlock_devcmd);
+	}
 	return 0;
 
 err_out_dev_close:

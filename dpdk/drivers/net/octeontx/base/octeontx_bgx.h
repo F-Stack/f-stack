@@ -5,10 +5,13 @@
 #ifndef __OCTEONTX_BGX_H__
 #define __OCTEONTX_BGX_H__
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include <octeontx_mbox.h>
+
+#define OCTEONTX_BGX_RSVD_RX_FIFOBYTES	0x40
 
 #define OCTEONTX_BGX_COPROC	        6
 
@@ -28,6 +31,12 @@
 #define MBOX_BGX_PORT_SET_BCAST         12
 #define MBOX_BGX_PORT_SET_MCAST         13
 #define MBOX_BGX_PORT_SET_MTU		14
+#define MBOX_BGX_PORT_ADD_MACADDR	15
+#define MBOX_BGX_PORT_DEL_MACADDR	16
+#define MBOX_BGX_PORT_GET_MACADDR_ENTRIES 17
+#define MBOX_BGX_PORT_GET_FIFO_CFG	18
+#define MBOX_BGX_PORT_FLOW_CTRL_CFG	19
+#define MBOX_BGX_PORT_SET_LINK_STATE	20
 
 /* BGX port configuration parameters: */
 typedef struct octeontx_mbox_bgx_port_conf {
@@ -109,6 +118,31 @@ typedef struct octeontx_mbox_bgx_port_stats {
 	uint64_t rx_jabber_errors;
 } octeontx_mbox_bgx_port_stats_t;
 
+struct octeontx_mbox_bgx_port_mac_filter {
+	uint8_t mac_addr[6];
+	int index;
+};
+
+/* BGX port fifo config: */
+typedef struct octeontx_mbox_bgx_port_fifo_cfg {
+	uint32_t rx_fifosz; /* in Bytes */
+} octeontx_mbox_bgx_port_fifo_cfg_t;
+
+typedef enum {
+	BGX_PORT_FC_CFG_GET = 0,
+	BGX_PORT_FC_CFG_SET = 1
+} bgx_port_fc_t;
+
+/* BGX port flow control config: */
+typedef struct octeontx_mbox_bgx_port_fc_cfg {
+	/* BP on/off threshold levels in Bytes, must be a multiple of 16 */
+	uint16_t high_water;
+	uint16_t low_water;
+	uint8_t rx_pause; /* rx_pause = 1/0 to enable/disable fc on Tx */
+	uint8_t tx_pause; /* tx_pause = 1/0 to enable/disable fc on Rx */
+	bgx_port_fc_t fc_cfg;
+} octeontx_mbox_bgx_port_fc_cfg_t;
+
 int octeontx_bgx_port_open(int port, octeontx_mbox_bgx_port_conf_t *conf);
 int octeontx_bgx_port_close(int port);
 int octeontx_bgx_port_start(int port);
@@ -120,6 +154,15 @@ int octeontx_bgx_port_stats_clr(int port);
 int octeontx_bgx_port_link_status(int port);
 int octeontx_bgx_port_promisc_set(int port, int en);
 int octeontx_bgx_port_mac_set(int port, uint8_t *mac_addr);
+int octeontx_bgx_port_mac_add(int port, uint8_t *mac_addr, int index);
+int octeontx_bgx_port_mac_del(int port, uint32_t index);
+int octeontx_bgx_port_mac_entries_get(int port);
+int octeontx_bgx_port_mtu_set(int port, int mtu);
+int octeontx_bgx_port_set_link_state(int port, bool en);
+int octeontx_bgx_port_get_fifo_cfg(int port,
+				   octeontx_mbox_bgx_port_fifo_cfg_t *cfg);
+int octeontx_bgx_port_flow_ctrl_cfg(int port,
+				    octeontx_mbox_bgx_port_fc_cfg_t *cfg);
 
 #endif	/* __OCTEONTX_BGX_H__ */
 

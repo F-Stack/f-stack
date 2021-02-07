@@ -1,14 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 # Copyright(c) 2017 Cavium, Inc. All rights reserved.
-
-from __future__ import print_function
-import sys
-try:
-    xrange # Python 2
-except NameError:
-    xrange = range # Python 3
 
 sockets = []
 cores = []
@@ -17,13 +10,11 @@ base_path = "/sys/devices/system/cpu"
 fd = open("{}/kernel_max".format(base_path))
 max_cpus = int(fd.read())
 fd.close()
-for cpu in xrange(max_cpus + 1):
+for cpu in range(max_cpus + 1):
     try:
         fd = open("{}/cpu{}/topology/core_id".format(base_path, cpu))
     except IOError:
         continue
-    except:
-        break
     core = int(fd.read())
     fd.close()
     fd = open("{}/cpu{}/topology/physical_package_id".format(base_path, cpu))
@@ -66,7 +57,7 @@ print(output)
 for c in cores:
     output = "Core %s" % str(c).ljust(max_core_id_len)
     for s in sockets:
-        if (s,c) in core_map:
+        if (s, c) in core_map:
             output += " " + str(core_map[(s, c)]).ljust(max_core_map_len)
         else:
             output += " " * (max_core_map_len + 1)

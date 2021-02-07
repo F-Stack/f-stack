@@ -13,7 +13,7 @@
 #define CRYPTODEV_NAME_QAT_ASYM_PMD	crypto_qat_asym
 
 
-extern uint8_t cryptodev_qat_asym_driver_id;
+extern uint8_t qat_asym_driver_id;
 
 /** private data structure for a QAT device.
  * This QAT device is a device offering only asymmetric crypto service,
@@ -26,6 +26,9 @@ struct qat_asym_dev_private {
 	/**< Device instance for this rte_cryptodev */
 	const struct rte_cryptodev_capabilities *qat_dev_capabilities;
 	/* QAT device asymmetric crypto capabilities */
+	const struct rte_memzone *capa_mz;
+	/* Shared memzone for storing capabilities */
+	uint16_t min_enq_burst_threshold;
 };
 
 uint16_t
@@ -42,7 +45,8 @@ int qat_asym_session_configure(struct rte_cryptodev *dev,
 		struct rte_mempool *mempool);
 
 int
-qat_asym_dev_create(struct qat_pci_device *qat_pci_dev);
+qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
+		struct qat_dev_cmd_param *qat_dev_cmd_param);
 
 int
 qat_asym_dev_destroy(struct qat_pci_device *qat_pci_dev);

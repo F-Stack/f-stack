@@ -195,6 +195,7 @@ kasumi_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		int socket_id)
 {
 	struct kasumi_qp *qp = NULL;
+	struct kasumi_private *internals = dev->data->dev_private;
 
 	/* Free memory prior to re-allocation if needed. */
 	if (dev->data->queue_pairs[qp_id] != NULL)
@@ -217,6 +218,7 @@ kasumi_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	if (qp->processed_ops == NULL)
 		goto qp_setup_cleanup;
 
+	qp->mgr = internals->mgr;
 	qp->sess_mp = qp_conf->mp_session;
 	qp->sess_mp_priv = qp_conf->mp_session_private;
 
@@ -230,13 +232,6 @@ qp_setup_cleanup:
 	return -1;
 }
 
-/** Return the number of allocated queue pairs */
-static uint32_t
-kasumi_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
-}
-
 /** Returns the size of the KASUMI session structure */
 static unsigned
 kasumi_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
@@ -246,13 +241,14 @@ kasumi_pmd_sym_session_get_size(struct rte_cryptodev *dev __rte_unused)
 
 /** Configure a KASUMI session from a crypto xform chain */
 static int
-kasumi_pmd_sym_session_configure(struct rte_cryptodev *dev __rte_unused,
+kasumi_pmd_sym_session_configure(struct rte_cryptodev *dev,
 		struct rte_crypto_sym_xform *xform,
 		struct rte_cryptodev_sym_session *sess,
 		struct rte_mempool *mempool)
 {
 	void *sess_private_data;
 	int ret;
+	struct kasumi_private *internals = dev->data->dev_private;
 
 	if (unlikely(sess == NULL)) {
 		KASUMI_LOG(ERR, "invalid session struct");
@@ -265,7 +261,8 @@ kasumi_pmd_sym_session_configure(struct rte_cryptodev *dev __rte_unused,
 		return -ENOMEM;
 	}
 
-	ret = kasumi_set_session_parameters(sess_private_data, xform);
+	ret = kasumi_set_session_parameters(internals->mgr,
+					sess_private_data, xform);
 	if (ret != 0) {
 		KASUMI_LOG(ERR, "failed configure session parameters");
 
@@ -310,7 +307,6 @@ struct rte_cryptodev_ops kasumi_pmd_ops = {
 
 		.queue_pair_setup   = kasumi_pmd_qp_setup,
 		.queue_pair_release = kasumi_pmd_qp_release,
-		.queue_pair_count   = kasumi_pmd_qp_count,
 
 		.sym_session_get_size   = kasumi_pmd_sym_session_get_size,
 		.sym_session_configure  = kasumi_pmd_sym_session_configure,

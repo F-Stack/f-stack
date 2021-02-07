@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_CONTROLQ_H_
@@ -35,6 +35,8 @@ enum ice_ctl_q {
 /* Control Queue timeout settings - max delay 250ms */
 #define ICE_CTL_Q_SQ_CMD_TIMEOUT	2500  /* Count 2500 times */
 #define ICE_CTL_Q_SQ_CMD_USEC		100   /* Check every 100usec */
+#define ICE_CTL_Q_ADMIN_INIT_TIMEOUT	10    /* Count 10 times */
+#define ICE_CTL_Q_ADMIN_INIT_MSEC	100   /* Check every 100msec */
 
 struct ice_ctl_q_ring {
 	void *dma_head;			/* Virtual address to DMA head */
@@ -60,6 +62,7 @@ struct ice_ctl_q_ring {
 	u32 bal;
 	u32 len_mask;
 	u32 len_ena_mask;
+	u32 len_crit_mask;
 	u32 head_mask;
 };
 

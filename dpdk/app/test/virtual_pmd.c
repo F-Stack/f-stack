@@ -48,7 +48,7 @@ virtual_ethdev_start_fail(struct rte_eth_dev *eth_dev __rte_unused)
 
 	return -1;
 }
-static void  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
+static int  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
 {
 	void *pkt = NULL;
 	struct virtual_ethdev_private *prv = eth_dev->data->dev_private;
@@ -60,11 +60,15 @@ static void  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
 
 	while (rte_ring_dequeue(prv->tx_queue, &pkt) != -ENOENT)
 		rte_pktmbuf_free(pkt);
+
+	return 0;
 }
 
-static void
+static int
 virtual_ethdev_close(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
 static int
 virtual_ethdev_configure_success(struct rte_eth_dev *dev __rte_unused)
@@ -474,8 +478,8 @@ virtual_ethdev_simulate_link_status_interrupt(uint16_t port_id,
 
 	vrtl_eth_dev->data->dev_link.link_status = link_status;
 
-	_rte_eth_dev_callback_process(vrtl_eth_dev, RTE_ETH_EVENT_INTR_LSC,
-				      NULL);
+	rte_eth_dev_callback_process(vrtl_eth_dev, RTE_ETH_EVENT_INTR_LSC,
+				     NULL);
 }
 
 int

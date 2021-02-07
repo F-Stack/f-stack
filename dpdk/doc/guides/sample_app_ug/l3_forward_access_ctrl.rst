@@ -18,7 +18,7 @@ The application loads two types of rules at initialization:
 
 *   Route information rules, which are used for L3 forwarding
 
-*   Access Control List (ACL) rules that blacklist (or block) packets with a specific characteristic
+*   Access Control List (ACL) rules that block packets with a specific characteristic
 
 When packets are received from a port,
 the application extracts the necessary information from the TCP/IP header of the received packet and
@@ -184,7 +184,7 @@ Packet 2 matches Rule 2 and is forwarded to port 1.
 Packet 3 matches Rule 3 and is forwarded to port 0.
 
 For more details on the rule file format,
-please refer to rule_ipv4.db and rule_ipv6.db files (inside <RTE_SDK>/examples/l3fwd-acl/).
+please refer to rule_ipv4.db and rule_ipv6.db files (inside dpdk/examples/l3fwd-acl/).
 
 Application Phases
 ~~~~~~~~~~~~~~~~~~
@@ -236,7 +236,7 @@ The application has a number of command line options:
 
 ..  code-block:: console
 
-    ./build/l3fwd-acl [EAL options] -- -p PORTMASK [-P] --config(port,queue,lcore)[,(port,queue,lcore)] --rule_ipv4 FILENAME rule_ipv6 FILENAME [--scalar] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
+    ./<build_dir>/examples/dpdk-l3fwd-acl [EAL options] -- -p PORTMASK [-P] --config(port,queue,lcore)[,(port,queue,lcore)] --rule_ipv4 FILENAME --rule_ipv6 FILENAME [--alg=<val>] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa] [--eth-dest=X,MM:MM:MM:MM:MM:MM]
 
 
 where,
@@ -252,13 +252,16 @@ where,
 
 *   --rule_ipv6 FILENAME: Specifies the IPv6 ACL and route rules file
 
-*   --scalar: Use a scalar function to perform rule lookup
+*   --alg=<val>: optional, ACL classify method to use, one of:
+    ``scalar|sse|avx2|neon|altivec|avx512x16|avx512x32``
 
 *   --enable-jumbo: optional, enables jumbo frames
 
 *   --max-pkt-len: optional, maximum packet length in decimal (64-9600)
 
 *   --no-numa: optional, disables numa awareness
+
+*   --eth-dest=X,MM:MM:MM:MM:MM:MM: optional, ethernet destination for port X
 
 For example, consider a dual processor socket platform with 8 physical cores, where cores 0-7 and 16-23 appear on socket 0,
 while cores 8-15 and 24-31 appear on socket 1.
@@ -268,7 +271,7 @@ To enable L3 forwarding between two ports, assuming that both ports are in the s
 
 ..  code-block:: console
 
-    ./build/l3fwd-acl -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)" --rule_ipv4="./rule_ipv4.db" -- rule_ipv6="./rule_ipv6.db" --scalar
+    ./<build_dir>/examples/dpdk-l3fwd-acl -l 1,2 -n 4 -- -p 0x3 --config="(0,0,1),(1,0,2)" --rule_ipv4="rule_ipv4.db" --rule_ipv6="rule_ipv6.db" --alg=scalar
 
 In this command:
 
@@ -290,11 +293,11 @@ In this command:
     |          |            |           |                                     |
     +----------+------------+-----------+-------------------------------------+
 
-*   The --rule_ipv4 option specifies the reading of IPv4 rules sets from the ./ rule_ipv4.db file.
+*   The --rule_ipv4 option specifies the reading of IPv4 rules sets from the rule_ipv4.db file.
 
-*   The --rule_ipv6 option specifies the reading of IPv6 rules sets from the ./ rule_ipv6.db file.
+*   The --rule_ipv6 option specifies the reading of IPv6 rules sets from the rule_ipv6.db file.
 
-*   The --scalar option specifies the performing of rule lookup with a scalar function.
+*   The --alg=scalar option specifies the performing of rule lookup with a scalar function.
 
 Explanation
 -----------

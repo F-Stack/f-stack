@@ -20,6 +20,7 @@
 #define NPS_PKT_IN_INSTR_SIZE 64
 #define IV_FROM_DPTR 1
 #define FLEXI_CRYPTO_ENCRYPT_HMAC 0x33
+#define FLEXI_CRYPTO_MAX_AAD_LEN 512
 #define AES_KEYSIZE_128 16
 #define AES_KEYSIZE_192 24
 #define AES_KEYSIZE_256 32
@@ -297,6 +298,9 @@ get_crypto_chain_order(const struct rte_crypto_sym_xform *xform)
 			}
 		}
 		break;
+	case RTE_CRYPTO_SYM_XFORM_AEAD:
+		res = NITROX_CHAIN_COMBINED;
+		break;
 	default:
 		break;
 	}
@@ -313,6 +317,10 @@ get_flexi_cipher_type(enum rte_crypto_cipher_algorithm algo, bool *is_aes)
 	case RTE_CRYPTO_CIPHER_AES_CBC:
 		type = CIPHER_AES_CBC;
 		*is_aes = true;
+		break;
+	case RTE_CRYPTO_CIPHER_3DES_CBC:
+		type = CIPHER_3DES_CBC;
+		*is_aes = false;
 		break;
 	default:
 		type = CIPHER_INVALID;
@@ -427,17 +435,17 @@ get_flexi_auth_type(enum rte_crypto_auth_algorithm algo)
 }
 
 static bool
-auth_key_digest_is_valid(struct rte_crypto_auth_xform *xform,
-			 struct flexi_crypto_context *fctx)
+auth_key_is_valid(const uint8_t *data, uint16_t length,
+		  struct flexi_crypto_context *fctx)
 {
-	if (unlikely(!xform->key.data && xform->key.length)) {
+	if (unlikely(!data && length)) {
 		NITROX_LOG(ERR, "Invalid auth key\n");
 		return false;
 	}
 
-	if (unlikely(xform->key.length > sizeof(fctx->auth.opad))) {
+	if (unlikely(length > sizeof(fctx->auth.opad))) {
 		NITROX_LOG(ERR, "Invalid auth key length %d\n",
-			   xform->key.length);
+			   length);
 		return false;
 	}
 
@@ -455,11 +463,10 @@ configure_auth_ctx(struct rte_crypto_auth_xform *xform,
 	if (unlikely(type == AUTH_INVALID))
 		return -ENOTSUP;
 
-	if (unlikely(!auth_key_digest_is_valid(xform, fctx)))
+	if (unlikely(!auth_key_is_valid(xform->key.data, xform->key.length,
+					fctx)))
 		return -EINVAL;
 
-	ctx->auth_op = xform->op;
-	ctx->auth_algo = xform->algo;
 	ctx->digest_length = xform->digest_length;
 
 	fctx->flags = rte_be_to_cpu_64(fctx->flags);
@@ -473,6 +480,56 @@ configure_auth_ctx(struct rte_crypto_auth_xform *xform,
 }
 
 static int
+configure_aead_ctx(struct rte_crypto_aead_xform *xform,
+		   struct nitrox_crypto_ctx *ctx)
+{
+	int aes_keylen;
+	struct flexi_crypto_context *fctx = &ctx->fctx;
+
+	if (unlikely(xform->aad_length > FLEXI_CRYPTO_MAX_AAD_LEN)) {
+		NITROX_LOG(ERR, "AAD length %d not supported\n",
+			   xform->aad_length);
+		return -ENOTSUP;
+	}
+
+	if (unlikely(xform->algo != RTE_CRYPTO_AEAD_AES_GCM))
+		return -ENOTSUP;
+
+	aes_keylen = flexi_aes_keylen(xform->key.length, true);
+	if (unlikely(aes_keylen < 0))
+		return -EINVAL;
+
+	if (unlikely(!auth_key_is_valid(xform->key.data, xform->key.length,
+					fctx)))
+		return -EINVAL;
+
+	if (unlikely(xform->iv.length > MAX_IV_LEN))
+		return -EINVAL;
+
+	fctx->flags = rte_be_to_cpu_64(fctx->flags);
+	fctx->w0.cipher_type = CIPHER_AES_GCM;
+	fctx->w0.aes_keylen = aes_keylen;
+	fctx->w0.iv_source = IV_FROM_DPTR;
+	fctx->w0.hash_type = AUTH_NULL;
+	fctx->w0.auth_input_type = 1;
+	fctx->w0.mac_len = xform->digest_length;
+	fctx->flags = rte_cpu_to_be_64(fctx->flags);
+	memset(fctx->crypto.key, 0, sizeof(fctx->crypto.key));
+	memcpy(fctx->crypto.key, xform->key.data, xform->key.length);
+	memset(&fctx->auth, 0, sizeof(fctx->auth));
+	memcpy(fctx->auth.opad, xform->key.data, xform->key.length);
+
+	ctx->opcode = FLEXI_CRYPTO_ENCRYPT_HMAC;
+	ctx->req_op = (xform->op == RTE_CRYPTO_AEAD_OP_ENCRYPT) ?
+			NITROX_OP_ENCRYPT : NITROX_OP_DECRYPT;
+	ctx->iv.offset = xform->iv.offset;
+	ctx->iv.length = xform->iv.length;
+	ctx->digest_length = xform->digest_length;
+	ctx->aad_length = xform->aad_length;
+	return 0;
+}
+
+static int
 nitrox_sym_dev_sess_configure(struct rte_cryptodev *cdev,
 			      struct rte_crypto_sym_xform *xform,
 			      struct rte_cryptodev_sym_session *sess,
@@ -482,6 +539,8 @@ nitrox_sym_dev_sess_configure(struct rte_cryptodev *cdev,
 	struct nitrox_crypto_ctx *ctx;
 	struct rte_crypto_cipher_xform *cipher_xform = NULL;
 	struct rte_crypto_auth_xform *auth_xform = NULL;
+	struct rte_crypto_aead_xform *aead_xform = NULL;
+	int ret = -EINVAL;
 
 	if (rte_mempool_get(mempool, &mp_obj)) {
 		NITROX_LOG(ERR, "Couldn't allocate context\n");
@@ -491,6 +550,9 @@ nitrox_sym_dev_sess_configure(struct rte_cryptodev *cdev,
 	ctx = mp_obj;
 	ctx->nitrox_chain = get_crypto_chain_order(xform);
 	switch (ctx->nitrox_chain) {
+	case NITROX_CHAIN_CIPHER_ONLY:
+		cipher_xform = &xform->cipher;
+		break;
 	case NITROX_CHAIN_CIPHER_AUTH:
 		cipher_xform = &xform->cipher;
 		auth_xform = &xform->next->auth;
@@ -499,8 +561,12 @@ nitrox_sym_dev_sess_configure(struct rte_cryptodev *cdev,
 		auth_xform = &xform->auth;
 		cipher_xform = &xform->next->cipher;
 		break;
+	case NITROX_CHAIN_COMBINED:
+		aead_xform = &xform->aead;
+		break;
 	default:
 		NITROX_LOG(ERR, "Crypto chain not supported\n");
+		ret = -ENOTSUP;
 		goto err;
 	}
 
@@ -514,12 +580,17 @@ nitrox_sym_dev_sess_configure(struct rte_cryptodev *cdev,
 		goto err;
 	}
 
+	if (aead_xform && unlikely(configure_aead_ctx(aead_xform, ctx))) {
+		NITROX_LOG(ERR, "Failed to configure aead ctx\n");
+		goto err;
+	}
+
 	ctx->iova = rte_mempool_virt2iova(ctx);
 	set_sym_session_private_data(sess, cdev->driver_id, ctx);
 	return 0;
 err:
 	rte_mempool_put(mempool, mp_obj);
-	return -EINVAL;
+	return ret;
 }
 
 static void
@@ -683,7 +754,8 @@ nitrox_sym_pmd_create(struct nitrox_device *ndev)
 	struct rte_cryptodev *cdev;
 
 	rte_pci_device_name(&ndev->pdev->addr, name, sizeof(name));
-	snprintf(name + strlen(name), RTE_CRYPTODEV_NAME_MAX_LEN, "_n5sym");
+	snprintf(name + strlen(name), RTE_CRYPTODEV_NAME_MAX_LEN - strlen(name),
+		 "_n5sym");
 	ndev->rte_sym_dev.driver = &nitrox_rte_sym_drv;
 	ndev->rte_sym_dev.numa_node = ndev->pdev->device.numa_node;
 	ndev->rte_sym_dev.devargs = NULL;

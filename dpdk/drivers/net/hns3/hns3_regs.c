@@ -2,24 +2,8 @@
  * Copyright(c) 2018-2019 Hisilicon Limited.
  */
 
-#include <errno.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <string.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <inttypes.h>
-#include <unistd.h>
-#include <rte_bus_pci.h>
-#include <rte_byteorder.h>
-#include <rte_common.h>
-#include <rte_dev.h>
-#include <rte_eal.h>
-#include <rte_ether.h>
-#include <rte_ethdev_driver.h>
 #include <rte_ethdev_pci.h>
 #include <rte_io.h>
-#include <rte_pci.h>
 
 #include "hns3_ethdev.h"
 #include "hns3_logs.h"
@@ -62,6 +46,7 @@ static const uint32_t ring_reg_addrs[] = {HNS3_RING_RX_BASEADDR_L_REG,
 					  HNS3_RING_RX_BASEADDR_H_REG,
 					  HNS3_RING_RX_BD_NUM_REG,
 					  HNS3_RING_RX_BD_LEN_REG,
+					  HNS3_RING_RX_EN_REG,
 					  HNS3_RING_RX_MERGE_EN_REG,
 					  HNS3_RING_RX_TAIL_REG,
 					  HNS3_RING_RX_HEAD_REG,
@@ -73,6 +58,7 @@ static const uint32_t ring_reg_addrs[] = {HNS3_RING_RX_BASEADDR_L_REG,
 					  HNS3_RING_TX_BASEADDR_L_REG,
 					  HNS3_RING_TX_BASEADDR_H_REG,
 					  HNS3_RING_TX_BD_NUM_REG,
+					  HNS3_RING_TX_EN_REG,
 					  HNS3_RING_TX_PRIORITY_REG,
 					  HNS3_RING_TX_TC_REG,
 					  HNS3_RING_TX_MERGE_EN_REG,
@@ -116,7 +102,7 @@ static int
 hns3_get_regs_length(struct hns3_hw *hw, uint32_t *length)
 {
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
-	int cmdq_lines, common_lines, ring_lines, tqp_intr_lines;
+	uint32_t cmdq_lines, common_lines, ring_lines, tqp_intr_lines;
 	uint32_t regs_num_32_bit, regs_num_64_bit;
 	uint32_t len;
 	int ret;
@@ -295,7 +281,7 @@ hns3_direct_access_regs(struct hns3_hw *hw, uint32_t *data)
 	reg_um = sizeof(ring_reg_addrs) / sizeof(uint32_t);
 	separator_num = MAX_SEPARATE_NUM - reg_um % REG_NUM_PER_LINE;
 	for (j = 0; j < hw->tqps_num; j++) {
-		reg_offset = HNS3_TQP_REG_OFFSET + HNS3_TQP_REG_SIZE * j;
+		reg_offset = hns3_get_tqp_reg_offset(j);
 		for (i = 0; i < reg_um; i++)
 			*data++ = hns3_read_dev(hw,
 						ring_reg_addrs[i] + reg_offset);

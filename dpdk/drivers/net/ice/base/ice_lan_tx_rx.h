@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2019
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _ICE_LAN_TX_RX_H_
@@ -162,7 +162,9 @@ struct ice_fltr_desc {
 
 #define ICE_FXD_FLTR_QW1_FDID_PRI_S	25
 #define ICE_FXD_FLTR_QW1_FDID_PRI_M	(0x7ULL << ICE_FXD_FLTR_QW1_FDID_PRI_S)
+#define ICE_FXD_FLTR_QW1_FDID_PRI_ZERO	0x0ULL
 #define ICE_FXD_FLTR_QW1_FDID_PRI_ONE	0x1ULL
+#define ICE_FXD_FLTR_QW1_FDID_PRI_THREE	0x3ULL
 
 #define ICE_FXD_FLTR_QW1_FDID_MDID_S	28
 #define ICE_FXD_FLTR_QW1_FDID_MDID_M	(0xFULL << ICE_FXD_FLTR_QW1_FDID_MDID_S)
@@ -172,6 +174,50 @@ struct ice_fltr_desc {
 #define ICE_FXD_FLTR_QW1_FDID_M		\
 			(0xFFFFFFFFULL << ICE_FXD_FLTR_QW1_FDID_S)
 #define ICE_FXD_FLTR_QW1_FDID_ZERO	0x0ULL
+
+/* definition for FD filter programming status descriptor WB format */
+#define ICE_FXD_FLTR_WB_QW0_BUKT_LEN_S	28
+#define ICE_FXD_FLTR_WB_QW0_BUKT_LEN_M	\
+			(0xFULL << ICE_FXD_FLTR_WB_QW0_BUKT_LEN_S)
+
+#define ICE_FXD_FLTR_WB_QW0_FLTR_STAT_S	32
+#define ICE_FXD_FLTR_WB_QW0_FLTR_STAT_M	\
+			(0xFFFFFFFFULL << ICE_FXD_FLTR_WB_QW0_FLTR_STAT_S)
+
+#define ICE_FXD_FLTR_WB_QW1_DD_S	0
+#define ICE_FXD_FLTR_WB_QW1_DD_M	(0x1ULL << ICE_FXD_FLTR_WB_QW1_DD_S)
+#define ICE_FXD_FLTR_WB_QW1_DD_YES	0x1ULL
+
+#define ICE_FXD_FLTR_WB_QW1_PROG_ID_S	1
+#define ICE_FXD_FLTR_WB_QW1_PROG_ID_M	\
+				(0x3ULL << ICE_FXD_FLTR_WB_QW1_PROG_ID_S)
+#define ICE_FXD_FLTR_WB_QW1_PROG_ADD	0x0ULL
+#define ICE_FXD_FLTR_WB_QW1_PROG_DEL	0x1ULL
+
+#define ICE_FXD_FLTR_WB_QW1_FAIL_S	4
+#define ICE_FXD_FLTR_WB_QW1_FAIL_M	(0x1ULL << ICE_FXD_FLTR_WB_QW1_FAIL_S)
+#define ICE_FXD_FLTR_WB_QW1_FAIL_YES	0x1ULL
+
+#define ICE_FXD_FLTR_WB_QW1_FAIL_PROF_S	5
+#define ICE_FXD_FLTR_WB_QW1_FAIL_PROF_M	\
+				(0x1ULL << ICE_FXD_FLTR_WB_QW1_FAIL_PROF_S)
+#define ICE_FXD_FLTR_WB_QW1_FAIL_PROF_YES	0x1ULL
+
+#define ICE_FXD_FLTR_WB_QW1_FLT_ADDR_S	8
+#define ICE_FXD_FLTR_WB_QW1_FLT_ADDR_M	\
+				(0x3FFFULL << ICE_FXD_FLTR_WB_QW1_FLT_ADDR_S)
+
+#define ICE_FXD_FLTR_WB_QW1_PKT_PROF_S	28
+#define ICE_FXD_FLTR_WB_QW1_PKT_PROF_M	\
+				(0x7FULL << ICE_FXD_FLTR_WB_QW1_PKT_PROF_S)
+
+#define ICE_FXD_FLTR_WB_QW1_BUKT_HASH_S	38
+#define ICE_FXD_FLTR_WB_QW1_BUKT_HASH_M	\
+				(0x3FFFFFF << ICE_FXD_FLTR_WB_QW1_BUKT_HASH_S)
+
+#define ICE_FXD_FLTR_WB_QW1_FAIL_PROF_M	\
+				(0x1ULL << ICE_FXD_FLTR_WB_QW1_FAIL_PROF_S)
+#define ICE_FXD_FLTR_WB_QW1_FAIL_PROF_YES	0x1ULL
 
 enum ice_rx_desc_status_bits {
 	/* Note: These are predefined bit offsets */
@@ -669,6 +715,7 @@ enum ice_rxdid {
 	ICE_RXDID_COMMS_AUX_IPV6	= 19,
 	ICE_RXDID_COMMS_AUX_IPV6_FLOW	= 20,
 	ICE_RXDID_COMMS_AUX_TCP		= 21,
+	ICE_RXDID_COMMS_AUX_IP_OFFSET   = 25,
 	ICE_RXDID_LAST			= 63,
 };
 
@@ -1089,7 +1136,7 @@ struct ice_tlan_ctx {
 	u8 drop_ena;
 	u8 cache_prof_idx;
 	u8 pkt_shaper_prof_idx;
-	u8 int_q_state;	/* width not needed - internal do not write */
+	u8 int_q_state;	/* width not needed - internal - DO NOT WRITE!!! */
 };
 
 /* LAN Tx Completion Queue data */
@@ -1101,7 +1148,6 @@ struct ice_tx_cmpltnq {
 	u8 cmpl_type;
 };
 #pragma pack()
-
 
 /* LAN Tx Completion Queue Context */
 #pragma pack(1)

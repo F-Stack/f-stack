@@ -49,7 +49,7 @@ to set the CPUFreq governor and set the frequency of specific cores.
 
 This application includes a P-state power management algorithm to generate a frequency hint to be sent to CPUFreq.
 The algorithm uses the number of received and available Rx packets on recent polls to make a heuristic decision to scale frequency up/down.
-Specifically, some thresholds are checked to see whether a specific core running an DPDK polling thread needs to increase frequency
+Specifically, some thresholds are checked to see whether a specific core running a DPDK polling thread needs to increase frequency
 a step up based on the near to full trend of polled Rx queues.
 Also, it decreases frequency a step if packet processed per loop is far less than the expected threshold
 or the thread's sleeping time exceeds a threshold.
@@ -88,7 +88,7 @@ The application has a number of command line options:
 
 .. code-block:: console
 
-    ./build/l3fwd_power [EAL options] -- -p PORTMASK [-P]  --config(port,queue,lcore)[,(port,queue,lcore)] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
+    ./<build_dir>/examples/dpdk-l3fwd_power [EAL options] -- -p PORTMASK [-P]  --config(port,queue,lcore)[,(port,queue,lcore)] [--enable-jumbo [--max-pkt-len PKTLEN]] [--no-numa]
 
 where,
 
@@ -206,7 +206,7 @@ to generate hints based on recent network load trends.
 .. code-block:: c
 
     static
-    attribute ((noreturn)) int main_loop( attribute ((unused)) void *dummy)
+    __rte_noreturn int main_loop(__rte_unused void *dummy)
     {
         // ...
 
@@ -378,7 +378,8 @@ See :doc:`Power Management<../prog_guide/power_man>` chapter in the DPDK Program
 
 .. code-block:: console
 
-    ./l3fwd-power -l xxx   -n 4   -w 0000:xx:00.0 -w 0000:xx:00.1 -- -p 0x3 -P --config="(0,0,xx),(1,0,xx)" --empty-poll="0,0,0" -l 14 -m 9 -h 1
+    ./<build_dir>/examples/dpdk-l3fwd-power -l xxx -n 4 -a 0000:xx:00.0 -a 0000:xx:00.1 \
+    	-- -p 0x3 -P --config="(0,0,xx),(1,0,xx)" --empty-poll="0,0,0" -l 14 -m 9 -h 1
 
 Where,
 
@@ -407,7 +408,7 @@ app with the training flag set to “1”, and the other parameters set to
 
 .. code-block:: console
 
-        ./examples/l3fwd-power/build/l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --empty-poll "1,0,0" –P
+        ./<build_dir>/examples/dpdk-l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --empty-poll "1,0,0" –P
 
 This will run the training algorithm for x seconds on each core (cores 2
 and 3), and then print out the recommended threshold values for those
@@ -432,7 +433,7 @@ then be started without the training mode so traffic can start immediately.
 
 .. code-block:: console
 
-        ./examples/l3fwd-power/build/l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --empty-poll "0,340000,540000" –P
+        ./<build_dir>/examples/dpdk-l3fwd-power -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --empty-poll "0,340000,540000" –P
 
 Telemetry Mode
 --------------
@@ -441,7 +442,7 @@ The telemetry mode support for ``l3fwd-power`` is a standalone mode, in this mod
 ``l3fwd-power`` does simple l3fwding along with calculating empty polls, full polls,
 and busy percentage for each forwarding core. The aggregation of these
 values of all cores is reported as application level telemetry to metric
-library for every 500ms from the master core.
+library for every 500ms from the main core.
 
 The busy percentage is calculated by recording the poll_count
 and when the count reaches a defined value the total
@@ -449,13 +450,9 @@ cycles it took is measured and compared with minimum and maximum
 reference cycles and accordingly busy rate is set  to either 0% or
 50% or 100%.
 
-   .. Note::
-
-      * The CONFIG_RTE_LIBRTE_TELEMETRY should be set in order to get the stats in DPDK telemetry.
-
 .. code-block:: console
 
-        ./examples/l3fwd-power/build/l3fwd-power --telemetry -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --telemetry
+        ./<build_dir>/examples/dpdk-l3fwd-power --telemetry -l 1-3 -- -p 0x0f --config="(0,0,2),(0,1,3)" --telemetry
 
 The new stats ``empty_poll`` , ``full_poll`` and ``busy_percent`` can be viewed by running the script
 ``/usertools/dpdk-telemetry-client.py`` and selecting the menu option ``Send for global Metrics``.

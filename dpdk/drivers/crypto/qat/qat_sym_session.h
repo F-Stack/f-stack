@@ -6,6 +6,9 @@
 
 #include <rte_crypto.h>
 #include <rte_cryptodev_pmd.h>
+#ifdef RTE_LIB_SECURITY
+#include <rte_security.h>
+#endif
 
 #include "qat_common.h"
 #include "icp_qat_hw.h"
@@ -19,6 +22,11 @@
 #define KASUMI_F9_KEY_MODIFIER_4_BYTES   0xAAAAAAAA
 
 #define KASUMI_F8_KEY_MODIFIER_4_BYTES   0x55555555
+
+/*
+ * AES-GCM J0 length
+ */
+#define AES_GCM_J0_LEN 16
 
 /* 3DES key sizes */
 #define QAT_3DES_KEY_SZ_OPT1 24 /* Keys are independent */
@@ -62,6 +70,7 @@ struct qat_sym_session {
 	enum icp_qat_hw_cipher_mode qat_mode;
 	enum icp_qat_hw_auth_algo qat_hash_alg;
 	enum icp_qat_hw_auth_op auth_op;
+	enum icp_qat_hw_auth_mode auth_mode;
 	void *bpi_ctx;
 	struct qat_sym_cd cd;
 	uint8_t *cd_cur_ptr;
@@ -149,5 +158,13 @@ int
 qat_cipher_get_block_size(enum icp_qat_hw_cipher_algo qat_cipher_alg);
 int
 qat_sym_validate_zuc_key(int key_len, enum icp_qat_hw_cipher_algo *alg);
+
+#ifdef RTE_LIB_SECURITY
+int
+qat_security_session_create(void *dev, struct rte_security_session_conf *conf,
+		struct rte_security_session *sess, struct rte_mempool *mempool);
+int
+qat_security_session_destroy(void *dev, struct rte_security_session *sess);
+#endif
 
 #endif /* _QAT_SYM_SESSION_H_ */

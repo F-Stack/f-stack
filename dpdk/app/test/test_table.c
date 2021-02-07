@@ -43,9 +43,9 @@ static void app_init_rings(void);
 static void app_init_mbuf_pools(void);
 
 uint64_t pipeline_test_hash(void *key,
-		__attribute__((unused)) void *key_mask,
-		__attribute__((unused)) uint32_t key_size,
-		__attribute__((unused)) uint64_t seed)
+		__rte_unused void *key_mask,
+		__rte_unused uint32_t key_size,
+		__rte_unused uint64_t seed)
 {
 	uint32_t *k32 = key;
 	uint32_t ip_dst = rte_be_to_cpu_32(k32[0]);
@@ -55,8 +55,8 @@ uint64_t pipeline_test_hash(void *key,
 }
 
 uint32_t pipeline_test_hash_cuckoo(const void *key,
-		__attribute__((unused)) uint32_t key_size,
-		__attribute__((unused)) uint32_t seed)
+		__rte_unused uint32_t key_size,
+		__rte_unused uint32_t seed)
 {
 	const uint32_t *k32 = key;
 	uint32_t ip_dst = rte_be_to_cpu_32(k32[0]);
@@ -180,7 +180,7 @@ test_table(void)
 		}
 	}
 
-#ifdef RTE_LIBRTE_ACL
+#ifdef RTE_LIB_ACL
 	printf("\n\n\n\n************ACL tests************\n");
 	if (test_table_acl() < 0) {
 		ret = TEST_FAILED;

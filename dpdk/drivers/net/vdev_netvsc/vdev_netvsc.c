@@ -27,7 +27,6 @@
 #include <rte_bus.h>
 #include <rte_bus_vdev.h>
 #include <rte_common.h>
-#include <rte_config.h>
 #include <rte_dev.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
@@ -49,15 +48,14 @@
 #define NETVSC_CLASS_ID "{f8615163-df3e-46c5-913f-f2d2f965ed0e}"
 #define NETVSC_MAX_ROUTE_LINE_SIZE 300
 
+RTE_LOG_REGISTER(vdev_netvsc_logtype, pmd.net.vdev_netvsc, NOTICE);
+
 #define DRV_LOG(level, ...) \
 	rte_log(RTE_LOG_ ## level, \
 		vdev_netvsc_logtype, \
 		RTE_FMT(VDEV_NETVSC_DRIVER_NAME ": " \
 			RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
 		RTE_FMT_TAIL(__VA_ARGS__,)))
-
-/** Driver-specific log messages type. */
-static int vdev_netvsc_logtype;
 
 /** Context structure for a vdev_netvsc instance. */
 struct vdev_netvsc_ctx {
@@ -673,6 +671,7 @@ vdev_netvsc_vdev_probe(struct rte_vdev_device *dev)
 	int ret;
 
 	DRV_LOG(DEBUG, "invoked as \"%s\", using arguments \"%s\"", name, args);
+	rte_eal_alarm_cancel(vdev_netvsc_alarm, NULL);
 	if (!kvargs) {
 		DRV_LOG(ERR, "cannot parse arguments list");
 		goto error;
@@ -688,17 +687,13 @@ vdev_netvsc_vdev_probe(struct rte_vdev_device *dev)
 			 !strcmp(pair->key, VDEV_NETVSC_ARG_MAC))
 			++specified;
 	}
-	if (ignore) {
-		if (kvargs)
-			rte_kvargs_free(kvargs);
-		return 0;
-	}
+	if (ignore)
+		goto ignore;
 	if (specified > 1) {
 		DRV_LOG(ERR, "More than one way used to specify the netvsc"
 			" device.");
 		goto error;
 	}
-	rte_eal_alarm_cancel(vdev_netvsc_alarm, NULL);
 	/* Gather interfaces. */
 	ret = vdev_netvsc_foreach_iface(vdev_netvsc_netvsc_probe, 1, name,
 					kvargs, specified, &matched);
@@ -719,17 +714,19 @@ vdev_netvsc_vdev_probe(struct rte_vdev_device *dev)
 		}
 		DRV_LOG(WARNING, "non-netvsc device was probed as netvsc");
 	}
-	ret = rte_eal_alarm_set(VDEV_NETVSC_PROBE_MS * 1000,
-				vdev_netvsc_alarm, NULL);
-	if (ret < 0) {
-		DRV_LOG(ERR, "unable to schedule alarm callback: %s",
-			rte_strerror(-ret));
-		goto error;
-	}
 error:
+	++vdev_netvsc_ctx_inst;
+ignore:
 	if (kvargs)
 		rte_kvargs_free(kvargs);
-	++vdev_netvsc_ctx_inst;
+	/* Reset alarm if there are device context created */
+	if (vdev_netvsc_ctx_count) {
+		ret = rte_eal_alarm_set(VDEV_NETVSC_PROBE_MS * 1000,
+					vdev_netvsc_alarm, NULL);
+		if (ret < 0)
+			DRV_LOG(ERR, "unable to schedule alarm callback: %s",
+				rte_strerror(-ret));
+	}
 	return 0;
 }
 
@@ -774,14 +771,6 @@ RTE_PMD_REGISTER_PARAM_STRING(net_vdev_netvsc,
 			      VDEV_NETVSC_ARG_MAC "=<string> "
 			      VDEV_NETVSC_ARG_FORCE "=<int> "
 			      VDEV_NETVSC_ARG_IGNORE "=<int>");
-
-/** Initialize driver log type. */
-RTE_INIT(vdev_netvsc_init_log)
-{
-	vdev_netvsc_logtype = rte_log_register("pmd.net.vdev_netvsc");
-	if (vdev_netvsc_logtype >= 0)
-		rte_log_set_level(vdev_netvsc_logtype, RTE_LOG_NOTICE);
-}
 
 /** Compare function for vdev find device operation. */
 static int

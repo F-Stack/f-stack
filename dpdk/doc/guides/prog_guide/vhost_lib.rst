@@ -51,50 +51,6 @@ The following is an overview of some key Vhost API functions:
     This reconnect option is enabled by default. However, it can be turned off
     by setting this flag.
 
-  - ``RTE_VHOST_USER_DEQUEUE_ZERO_COPY``
-
-    Dequeue zero copy will be enabled when this flag is set. It is disabled by
-    default.
-
-    There are some truths (including limitations) you might want to know while
-    setting this flag:
-
-    * zero copy is not good for small packets (typically for packet size below
-      512).
-
-    * zero copy is really good for VM2VM case. For iperf between two VMs, the
-      boost could be above 70% (when TSO is enabled).
-
-    * For zero copy in VM2NIC case, guest Tx used vring may be starved if the
-      PMD driver consume the mbuf but not release them timely.
-
-      For example, i40e driver has an optimization to maximum NIC pipeline which
-      postpones returning transmitted mbuf until only tx_free_threshold free
-      descs left. The virtio TX used ring will be starved if the formula
-      (num_i40e_tx_desc - num_virtio_tx_desc > tx_free_threshold) is true, since
-      i40e will not return back mbuf.
-
-      A performance tip for tuning zero copy in VM2NIC case is to adjust the
-      frequency of mbuf free (i.e. adjust tx_free_threshold of i40e driver) to
-      balance consumer and producer.
-
-    * Guest memory should be backended with huge pages to achieve better
-      performance. Using 1G page size is the best.
-
-      When dequeue zero copy is enabled, the guest phys address and host phys
-      address mapping has to be established. Using non-huge pages means far
-      more page segments. To make it simple, DPDK vhost does a linear search
-      of those segments, thus the fewer the segments, the quicker we will get
-      the mapping. NOTE: we may speed it by using tree searching in future.
-
-    * zero copy can not work when using vfio-pci with iommu mode currently, this
-      is because we don't setup iommu dma mapping for guest memory. If you have
-      to use vfio-pci driver, please insert vfio-pci kernel module in noiommu
-      mode.
-
-    * The consumer of zero copy mbufs should consume these mbufs as soon as
-      possible, otherwise it may block the operations in vhost.
-
   - ``RTE_VHOST_USER_IOMMU_SUPPORT``
 
     IOMMU support will be enabled when this flag is set. It is disabled by
@@ -103,11 +59,6 @@ The following is an overview of some key Vhost API functions:
     Enabling this flag makes possible to use guest vIOMMU to protect vhost
     from accessing memory the virtio device isn't allowed to, when the feature
     is negotiated and an IOMMU device is declared.
-
-    However, this feature enables vhost-user's reply-ack protocol feature,
-    which implementation is buggy in Qemu v2.7.0-v2.9.0 when doing multiqueue.
-    Enabling this flag with these Qemu version results in Qemu being blocked
-    when multiple queue pairs are declared.
 
   - ``RTE_VHOST_USER_POSTCOPY_SUPPORT``
 
@@ -149,6 +100,21 @@ The following is an overview of some key Vhost API functions:
 
     See RTE_VHOST_USER_LINEARBUF_SUPPORT as well to disable multi-segmented
     mbufs for application that doesn't support chained mbufs.
+
+    It is disabled by default.
+
+  - ``RTE_VHOST_USER_ASYNC_COPY``
+
+    Asynchronous data path will be enabled when this flag is set. Async data
+    path allows applications to register async copy devices (typically
+    hardware DMA channels) to the vhost queues. Vhost leverages the copy
+    device registered to free CPU from memory copy operations. A set of
+    async data path APIs are defined for DPDK applications to make use of
+    the async capability. Only packets enqueued/dequeued by async APIs are
+    processed through the async data path.
+
+    Currently this feature is only implemented on split ring enqueue data
+    path.
 
     It is disabled by default.
 
@@ -240,6 +206,59 @@ The following is an overview of some key Vhost API functions:
 
   Enable or disable zero copy feature of the vhost crypto backend.
 
+* ``rte_vhost_async_channel_register(vid, queue_id, features, ops)``
+
+  Register a vhost queue with async copy device channel.
+  Following device ``features`` must be specified together with the
+  registration:
+
+  * ``async_inorder``
+
+    Async copy device can guarantee the ordering of copy completion
+    sequence. Copies are completed in the same order with that at
+    the submission time.
+
+    Currently, only ``async_inorder`` capable device is supported by vhost.
+
+  * ``async_threshold``
+
+    The copy length (in bytes) below which CPU copy will be used even if
+    applications call async vhost APIs to enqueue/dequeue data.
+
+    Typical value is 512~1024 depending on the async device capability.
+
+  Applications must provide following ``ops`` callbacks for vhost lib to
+  work with the async copy devices:
+
+  * ``transfer_data(vid, queue_id, descs, opaque_data, count)``
+
+    vhost invokes this function to submit copy data to the async devices.
+    For non-async_inorder capable devices, ``opaque_data`` could be used
+    for identifying the completed packets.
+
+  * ``check_completed_copies(vid, queue_id, opaque_data, max_packets)``
+
+    vhost invokes this function to get the copy data completed by async
+    devices.
+
+* ``rte_vhost_async_channel_unregister(vid, queue_id)``
+
+  Unregister the async copy device channel from a vhost queue.
+
+* ``rte_vhost_submit_enqueue_burst(vid, queue_id, pkts, count)``
+
+  Submit an enqueue request to transmit ``count`` packets from host to guest
+  by async data path. Enqueue is not guaranteed to finish upon the return of
+  this API call.
+
+  Applications must not free the packets submitted for enqueue until the
+  packets are completed.
+
+* ``rte_vhost_poll_enqueue_completed(vid, queue_id, pkts, count)``
+
+  Poll enqueue completion status from async data path. Completed packets
+  are returned to applications through ``pkts``.
+
 Vhost-user Implementations
 --------------------------
 
@@ -299,16 +318,16 @@ Guest memory requirement
 
 * Memory pre-allocation
 
-  For non-zerocopy, guest memory pre-allocation is not a must. This can help
-  save of memory. If users really want the guest memory to be pre-allocated
-  (e.g., for performance reason), we can add option ``-mem-prealloc`` when
-  starting QEMU. Or, we can lock all memory at vhost side which will force
-  memory to be allocated when mmap at vhost side; option --mlockall in
-  ovs-dpdk is an example in hand.
+  For non-async data path, guest memory pre-allocation is not a
+  must. This can help save of memory. If users really want the guest memory
+  to be pre-allocated (e.g., for performance reason), we can add option
+  ``-mem-prealloc`` when starting QEMU. Or, we can lock all memory at vhost
+  side which will force memory to be allocated when mmap at vhost side;
+  option --mlockall in ovs-dpdk is an example in hand.
 
-  For zerocopy, we force the VM memory to be pre-allocated at vhost lib when
-  mapping the guest memory; and also we need to lock the memory to prevent
-  pages being swapped out to disk.
+  For async data path, we force the VM memory to be pre-allocated at vhost
+  lib when mapping the guest memory; and also we need to lock the memory to
+  prevent pages being swapped out to disk.
 
 * Memory sharing
 

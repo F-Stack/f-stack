@@ -39,7 +39,7 @@ The application requires a number of command line options:
 
 .. code-block:: console
 
-    ./build/link_status_interrupt [EAL options] -- -p PORTMASK [-q NQ][-T PERIOD]
+    ./<build_dir>/examples/dpdk-link_status_interrupt [EAL options] -- -p PORTMASK [-q NQ][-T PERIOD]
 
 where,
 
@@ -54,7 +54,7 @@ issue the command:
 
 .. code-block:: console
 
-    $ ./build/link_status_interrupt -l 0-3 -n 4-- -q 8 -p ffff
+    $ ./<build_dir>/examples/dpdk-link_status_interrupt -l 0-3 -n 4-- -q 8 -p ffff
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications
 and the Environment Abstraction Layer (EAL) options.
@@ -88,9 +88,6 @@ To fully understand this code, it is recommended to study the chapters that rela
 
 .. code-block:: c
 
-    if (rte_pci_probe() < 0)
-        rte_exit(EXIT_FAILURE, "Cannot probe PCI\n");
-
     /*
      * Each logical core is assigned a dedicated TX queue on each port.
      */
@@ -114,10 +111,6 @@ To fully understand this code, it is recommended to study the chapters that rela
 
         rte_eth_dev_info_get((uint8_t) portid, &dev_info);
     }
-
-Observe that:
-
-*   rte_pci_probe()  parses the devices on the PCI bus and initializes recognized devices.
 
 The next step is to configure the RX and TX queues.
 For each port, there is only one RX queue (only one lcore is able to poll a given port).
@@ -165,6 +158,7 @@ An example callback function that has been written as indicated below.
     {
         struct rte_eth_link link;
         int ret;
+        char link_status[RTE_ETH_LINK_MAX_STR_LEN];
 
         RTE_SET_USED(param);
 
@@ -176,11 +170,10 @@ An example callback function that has been written as indicated below.
         if (ret < 0) {
             printf("Failed to get port %d link status: %s\n\n",
                    port_id, rte_strerror(-ret));
-        } else if (link.link_status) {
-            printf("Port %d Link Up - speed %u Mbps - %s\n\n", port_id, (unsigned)link.link_speed,
-                  (link.link_duplex == ETH_LINK_FULL_DUPLEX) ? ("full-duplex") : ("half-duplex"));
-        } else
-            printf("Port %d Link Down\n\n", port_id);
+        } else {
+            rte_eth_link_to_str(link_status, sizeof(link_status), &link);
+            printf("Port %d %s\n", port_id, link_status);
+        }
     }
 
 This function is called when a link status interrupt is present for the right port.
@@ -408,9 +401,8 @@ However, it improves performance:
             /* if timer has reached its timeout */
 
             if (unlikely(timer_tsc >= (uint64_t) timer_period)) {
-                /* do this only on master core */
-
-                if (lcore_id == rte_get_master_lcore()) {
+                /* do this only on main core */
+                if (lcore_id == rte_get_main_lcore()) {
                     print_stats();
 
                     /* reset the timer */

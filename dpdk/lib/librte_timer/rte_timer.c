@@ -10,7 +10,6 @@
 #include <assert.h>
 #include <sys/queue.h>
 
-#include <rte_atomic.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_eal_memconfig.h>
@@ -145,10 +144,12 @@ rte_timer_subsystem_init(void)
 	const size_t mem_size = data_arr_size + sizeof(*rte_timer_mz_refcnt);
 	bool do_full_init = true;
 
-	if (rte_timer_subsystem_initialized)
-		return -EALREADY;
-
 	rte_mcfg_timer_lock();
+
+	if (rte_timer_subsystem_initialized) {
+		rte_mcfg_timer_unlock();
+		return -EALREADY;
+	}
 
 	mz = rte_memzone_lookup(mz_name);
 	if (mz == NULL) {
@@ -183,9 +184,9 @@ rte_timer_subsystem_init(void)
 	rte_timer_data_arr[default_data_id].internal_flags |= FL_ALLOCATED;
 	(*rte_timer_mz_refcnt)++;
 
-	rte_mcfg_timer_unlock();
-
 	rte_timer_subsystem_initialized = 1;
+
+	rte_mcfg_timer_unlock();
 
 	return 0;
 }
@@ -193,17 +194,19 @@ rte_timer_subsystem_init(void)
 void
 rte_timer_subsystem_finalize(void)
 {
-	if (!rte_timer_subsystem_initialized)
-		return;
-
 	rte_mcfg_timer_lock();
+
+	if (!rte_timer_subsystem_initialized) {
+		rte_mcfg_timer_unlock();
+		return;
+	}
 
 	if (--(*rte_timer_mz_refcnt) == 0)
 		rte_memzone_free(rte_timer_data_mz);
 
-	rte_mcfg_timer_unlock();
-
 	rte_timer_subsystem_initialized = 0;
+
+	rte_mcfg_timer_unlock();
 }
 
 /* Initialize the timer handle tim for use */
@@ -214,7 +217,7 @@ rte_timer_init(struct rte_timer *tim)
 
 	status.state = RTE_TIMER_STOP;
 	status.owner = RTE_TIMER_NO_OWNER;
-	tim->status.u32 = status.u32;
+	__atomic_store_n(&tim->status.u32, status.u32, __ATOMIC_RELAXED);
 }
 
 /*
@@ -235,9 +238,9 @@ timer_set_config_state(struct rte_timer *tim,
 
 	/* wait that the timer is in correct status before update,
 	 * and mark it as being configured */
-	while (success == 0) {
-		prev_status.u32 = tim->status.u32;
+	prev_status.u32 = __atomic_load_n(&tim->status.u32, __ATOMIC_RELAXED);
 
+	while (success == 0) {
 		/* timer is running on another core
 		 * or ready to run on local core, exit
 		 */
@@ -254,9 +257,15 @@ timer_set_config_state(struct rte_timer *tim,
 		 * mark it atomically as being configured */
 		status.state = RTE_TIMER_CONFIG;
 		status.owner = (int16_t)lcore_id;
-		success = rte_atomic32_cmpset(&tim->status.u32,
-					      prev_status.u32,
-					      status.u32);
+		/* CONFIG states are acting as locked states. If the
+		 * timer is in CONFIG state, the state cannot be changed
+		 * by other threads. So, we should use ACQUIRE here.
+		 */
+		success = __atomic_compare_exchange_n(&tim->status.u32,
+					      &prev_status.u32,
+					      status.u32, 0,
+					      __ATOMIC_ACQUIRE,
+					      __ATOMIC_RELAXED);
 	}
 
 	ret_prev_status->u32 = prev_status.u32;
@@ -275,20 +284,27 @@ timer_set_running_state(struct rte_timer *tim)
 
 	/* wait that the timer is in correct status before update,
 	 * and mark it as running */
-	while (success == 0) {
-		prev_status.u32 = tim->status.u32;
+	prev_status.u32 = __atomic_load_n(&tim->status.u32, __ATOMIC_RELAXED);
 
+	while (success == 0) {
 		/* timer is not pending anymore */
 		if (prev_status.state != RTE_TIMER_PENDING)
 			return -1;
 
-		/* here, we know that timer is stopped or pending,
-		 * mark it atomically as being configured */
+		/* we know that the timer will be pending at this point
+		 * mark it atomically as being running
+		 */
 		status.state = RTE_TIMER_RUNNING;
 		status.owner = (int16_t)lcore_id;
-		success = rte_atomic32_cmpset(&tim->status.u32,
-					      prev_status.u32,
-					      status.u32);
+		/* RUNNING states are acting as locked states. If the
+		 * timer is in RUNNING state, the state cannot be changed
+		 * by other threads. So, we should use ACQUIRE here.
+		 */
+		success = __atomic_compare_exchange_n(&tim->status.u32,
+					      &prev_status.u32,
+					      status.u32, 0,
+					      __ATOMIC_ACQUIRE,
+					      __ATOMIC_RELAXED);
 	}
 
 	return 0;
@@ -516,10 +532,12 @@ __rte_timer_reset(struct rte_timer *tim, uint64_t expire,
 
 	/* update state: as we are in CONFIG state, only us can modify
 	 * the state so we don't need to use cmpset() here */
-	rte_wmb();
 	status.state = RTE_TIMER_PENDING;
 	status.owner = (int16_t)tim_lcore;
-	tim->status.u32 = status.u32;
+	/* The "RELEASE" ordering guarantees the memory operations above
+	 * the status update are observed before the update by all threads
+	 */
+	__atomic_store_n(&tim->status.u32, status.u32, __ATOMIC_RELEASE);
 
 	if (tim_lcore != lcore_id || !local_is_locked)
 		rte_spinlock_unlock(&priv_timer[tim_lcore].list_lock);
@@ -596,10 +614,12 @@ __rte_timer_stop(struct rte_timer *tim, int local_is_locked,
 	}
 
 	/* mark timer as stopped */
-	rte_wmb();
 	status.state = RTE_TIMER_STOP;
 	status.owner = RTE_TIMER_NO_OWNER;
-	tim->status.u32 = status.u32;
+	/* The "RELEASE" ordering guarantees the memory operations above
+	 * the status update are observed before the update by all threads
+	 */
+	__atomic_store_n(&tim->status.u32, status.u32, __ATOMIC_RELEASE);
 
 	return 0;
 }
@@ -633,7 +653,8 @@ rte_timer_stop_sync(struct rte_timer *tim)
 int
 rte_timer_pending(struct rte_timer *tim)
 {
-	return tim->status.state == RTE_TIMER_PENDING;
+	return __atomic_load_n(&tim->status.state,
+				__ATOMIC_RELAXED) == RTE_TIMER_PENDING;
 }
 
 /* must be called periodically, run all timer that expired */
@@ -735,8 +756,12 @@ __rte_timer_manage(struct rte_timer_data *timer_data)
 			/* remove from done list and mark timer as stopped */
 			status.state = RTE_TIMER_STOP;
 			status.owner = RTE_TIMER_NO_OWNER;
-			rte_wmb();
-			tim->status.u32 = status.u32;
+			/* The "RELEASE" ordering guarantees the memory
+			 * operations above the status update are observed
+			 * before the update by all threads
+			 */
+			__atomic_store_n(&tim->status.u32, status.u32,
+				__ATOMIC_RELEASE);
 		}
 		else {
 			/* keep it in list and mark timer as pending */
@@ -744,8 +769,12 @@ __rte_timer_manage(struct rte_timer_data *timer_data)
 			status.state = RTE_TIMER_PENDING;
 			__TIMER_STAT_ADD(priv_timer, pending, 1);
 			status.owner = (int16_t)lcore_id;
-			rte_wmb();
-			tim->status.u32 = status.u32;
+			/* The "RELEASE" ordering guarantees the memory
+			 * operations above the status update are observed
+			 * before the update by all threads
+			 */
+			__atomic_store_n(&tim->status.u32, status.u32,
+				__ATOMIC_RELEASE);
 			__rte_timer_reset(tim, tim->expire + tim->period,
 				tim->period, lcore_id, tim->f, tim->arg, 1,
 				timer_data);
@@ -915,8 +944,12 @@ rte_timer_alt_manage(uint32_t timer_data_id,
 			/* remove from done list and mark timer as stopped */
 			status.state = RTE_TIMER_STOP;
 			status.owner = RTE_TIMER_NO_OWNER;
-			rte_wmb();
-			tim->status.u32 = status.u32;
+			/* The "RELEASE" ordering guarantees the memory
+			 * operations above the status update are observed
+			 * before the update by all threads
+			 */
+			__atomic_store_n(&tim->status.u32, status.u32,
+				__ATOMIC_RELEASE);
 		} else {
 			/* keep it in list and mark timer as pending */
 			rte_spinlock_lock(
@@ -924,8 +957,12 @@ rte_timer_alt_manage(uint32_t timer_data_id,
 			status.state = RTE_TIMER_PENDING;
 			__TIMER_STAT_ADD(data->priv_timer, pending, 1);
 			status.owner = (int16_t)this_lcore;
-			rte_wmb();
-			tim->status.u32 = status.u32;
+			/* The "RELEASE" ordering guarantees the memory
+			 * operations above the status update are observed
+			 * before the update by all threads
+			 */
+			__atomic_store_n(&tim->status.u32, status.u32,
+				__ATOMIC_RELEASE);
 			__rte_timer_reset(tim, tim->expire + tim->period,
 				tim->period, this_lcore, tim->f, tim->arg, 1,
 				data);
@@ -975,6 +1012,33 @@ rte_timer_stop_all(uint32_t timer_data_id, unsigned int *walk_lcores,
 	}
 
 	return 0;
+}
+
+int64_t
+rte_timer_next_ticks(void)
+{
+	unsigned int lcore_id = rte_lcore_id();
+	struct rte_timer_data *timer_data;
+	struct priv_timer *priv_timer;
+	const struct rte_timer *tm;
+	uint64_t cur_time;
+	int64_t left = -ENOENT;
+
+	TIMER_DATA_VALID_GET_OR_ERR_RET(default_data_id, timer_data, -EINVAL);
+
+	priv_timer = timer_data->priv_timer;
+	cur_time = rte_get_timer_cycles();
+
+	rte_spinlock_lock(&priv_timer[lcore_id].list_lock);
+	tm = priv_timer[lcore_id].pending_head.sl_next[0];
+	if (tm) {
+		left = tm->expire - cur_time;
+		if (left < 0)
+			left = 0;
+	}
+	rte_spinlock_unlock(&priv_timer[lcore_id].list_lock);
+
+	return left;
 }
 
 /* dump statistics about timers */

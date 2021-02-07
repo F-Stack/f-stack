@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -115,6 +115,7 @@ struct sfc_rxq_info {
 	boolean_t		deferred_started;
 	unsigned int		refill_threshold;
 	struct rte_mempool	*refill_mb_pool;
+	unsigned int		rxq_flags;
 };
 
 struct sfc_rxq_info *sfc_rxq_info_by_dp_rxq(const struct sfc_dp_rxq *dp_rxq);
@@ -146,6 +147,7 @@ uint64_t sfc_rx_hf_efx_to_rte(struct sfc_rss *rss, efx_rx_hash_type_t efx);
 boolean_t sfc_rx_check_scatter(size_t pdu, size_t rx_buf_size,
 			       uint32_t rx_prefix_size,
 			       boolean_t rx_scatter_enabled,
+			       uint32_t rx_scatter_max,
 			       const char **error);
 
 #ifdef __cplusplus

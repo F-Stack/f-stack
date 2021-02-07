@@ -77,6 +77,13 @@ struct rte_acl_bitset {
  */
 
 /*
+ * Each ACL RT contains an idle nomatch node:
+ * a SINGLE node at predefined position (RTE_ACL_DFA_SIZE)
+ * that points to itself.
+ */
+#define RTE_ACL_IDLE_NODE	(RTE_ACL_DFA_SIZE | RTE_ACL_NODE_SINGLE)
+
+/*
  * Structure of a node is a set of ptrs and each ptr has a bit map
  * of values associated with this transition.
  */
@@ -162,6 +169,7 @@ struct rte_acl_ctx {
 	int32_t             socket_id;
 	/** Socket ID to allocate memory from. */
 	enum rte_acl_classify_alg alg;
+	uint32_t           first_load_sz;
 	void               *rules;
 	uint32_t            max_rules;
 	uint32_t            rule_sz;
@@ -199,6 +207,14 @@ rte_acl_classify_sse(const struct rte_acl_ctx *ctx, const uint8_t **data,
 
 int
 rte_acl_classify_avx2(const struct rte_acl_ctx *ctx, const uint8_t **data,
+	uint32_t *results, uint32_t num, uint32_t categories);
+
+int
+rte_acl_classify_avx512x16(const struct rte_acl_ctx *ctx, const uint8_t **data,
+	uint32_t *results, uint32_t num, uint32_t categories);
+
+int
+rte_acl_classify_avx512x32(const struct rte_acl_ctx *ctx, const uint8_t **data,
 	uint32_t *results, uint32_t num, uint32_t categories);
 
 int

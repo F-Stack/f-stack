@@ -55,6 +55,7 @@ Hash algorithms:
 AEAD algorithms:
 
 * ``RTE_CRYPTO_AEAD_AES_GCM``
+* ``RTE_CRYPTO_AEAD_CHACHA20_POLY1305``
 
 Asymmetric Crypto Algorithms
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -68,10 +69,6 @@ Installation
 
 The OCTEON TX2 crypto PMD may be compiled natively on an OCTEON TX2 platform or
 cross-compiled on an x86 platform.
-
-Enable OCTEON TX2 crypto PMD in your config file:
-
-* ``CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_CRYPTO=y``
 
 Refer to :doc:`../platform/octeontx2` for instructions to build your DPDK
 application.
@@ -147,7 +144,7 @@ application:
 
 .. code-block:: console
 
-    ./test
+    ./dpdk-test
     RTE>>cryptodev_octeontx2_autotest
 
 The asymmetric crypto operations on OCTEON TX2 crypto PMD may be verified by running the test
@@ -155,5 +152,27 @@ application:
 
 .. code-block:: console
 
-    ./test
+    ./dpdk-test
     RTE>>cryptodev_octeontx2_asym_autotest
+
+
+Lookaside IPsec Support
+-----------------------
+
+The OCTEON TX2 SoC can accelerate IPsec traffic in lookaside protocol mode,
+with its **cryptographic accelerator (CPT)**. ``OCTEON TX2 crypto PMD`` implements
+this as an ``RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL`` offload.
+
+Refer to :doc:`../prog_guide/rte_security` for more details on protocol offloads.
+
+This feature can be tested with ipsec-secgw sample application.
+
+
+Features supported
+~~~~~~~~~~~~~~~~~~
+
+* IPv4
+* IPv6
+* ESP
+* Tunnel mode
+* AES-128/192/256-GCM

@@ -59,6 +59,7 @@ static uint32_t enabled_port_mask;
 /* number of pools (if user does not specify any, 8 by default */
 static uint32_t num_queues = 8;
 static uint32_t num_pools = 8;
+static uint8_t rss_enable;
 
 /* empty vmdq configuration structure. Filled in programatically */
 static const struct rte_eth_conf vmdq_conf_default = {
@@ -143,6 +144,13 @@ get_eth_conf(struct rte_eth_conf *eth_conf, uint32_t num_pools)
 	(void)(rte_memcpy(eth_conf, &vmdq_conf_default, sizeof(*eth_conf)));
 	(void)(rte_memcpy(&eth_conf->rx_adv_conf.vmdq_rx_conf, &conf,
 		   sizeof(eth_conf->rx_adv_conf.vmdq_rx_conf)));
+	if (rss_enable) {
+		eth_conf->rxmode.mq_mode = ETH_MQ_RX_VMDQ_RSS;
+		eth_conf->rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP |
+							ETH_RSS_UDP |
+							ETH_RSS_TCP |
+							ETH_RSS_SCTP;
+	}
 	return 0;
 }
 
@@ -164,6 +172,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	uint16_t q;
 	uint16_t queues_per_pool;
 	uint32_t max_nb_pools;
+	uint64_t rss_hf_tmp;
 
 	/*
 	 * The max pool number from dev_info will be used to validate the pool
@@ -208,6 +217,17 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		vmdq_queue_base, vmdq_pool_base);
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
+
+	rss_hf_tmp = port_conf.rx_adv_conf.rss_conf.rss_hf;
+	port_conf.rx_adv_conf.rss_conf.rss_hf &=
+		dev_info.flow_type_rss_offloads;
+	if (port_conf.rx_adv_conf.rss_conf.rss_hf != rss_hf_tmp) {
+		printf("Port %u modified RSS hash function based on hardware support,"
+			"requested:%#"PRIx64" configured:%#"PRIx64"\n",
+			port,
+			rss_hf_tmp,
+			port_conf.rx_adv_conf.rss_conf.rss_hf);
+	}
 
 	/*
 	 * Though in this example, we only receive packets from the first queue
@@ -350,10 +370,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -363,7 +380,8 @@ static void
 vmdq_usage(const char *prgname)
 {
 	printf("%s [EAL options] -- -p PORTMASK]\n"
-	"  --nb-pools NP: number of pools\n",
+	"  --nb-pools NP: number of pools\n"
+	"  --enable-rss: enable RSS (disabled by default)\n",
 	       prgname);
 }
 
@@ -377,6 +395,7 @@ vmdq_parse_args(int argc, char **argv)
 	const char *prgname = argv[0];
 	static struct option long_option[] = {
 		{"nb-pools", required_argument, NULL, 0},
+		{"enable-rss", 0, NULL, 0},
 		{NULL, 0, 0, 0}
 	};
 
@@ -394,11 +413,18 @@ vmdq_parse_args(int argc, char **argv)
 			}
 			break;
 		case 0:
-			if (vmdq_parse_num_pools(optarg) == -1) {
-				printf("invalid number of pools\n");
-				vmdq_usage(prgname);
-				return -1;
+			if (!strcmp(long_option[option_index].name,
+			    "nb-pools")) {
+				if (vmdq_parse_num_pools(optarg) == -1) {
+					printf("invalid number of pools\n");
+					vmdq_usage(prgname);
+					return -1;
+				}
 			}
+
+			if (!strcmp(long_option[option_index].name,
+			    "enable-rss"))
+				rss_enable = 1;
 			break;
 
 		default:
@@ -441,10 +467,11 @@ update_mac_address(struct rte_mbuf *m, unsigned dst_port)
 static void
 sighup_handler(int signum)
 {
-	unsigned q;
-	for (q = 0; q < num_queues; q++) {
-		if (q % (num_queues/num_pools) == 0)
-			printf("\nPool %u: ", q/(num_queues/num_pools));
+	unsigned int q = vmdq_queue_base;
+	for (; q < num_queues; q++) {
+		if ((q - vmdq_queue_base) % (num_vmdq_queues / num_pools) == 0)
+			printf("\nPool %u: ", (q - vmdq_queue_base) /
+			       (num_vmdq_queues / num_pools));
 		printf("%lu ", rxPackets[q]);
 	}
 	printf("\nFinished handling signal %d\n", signum);
@@ -455,7 +482,7 @@ sighup_handler(int signum)
  * and writing to OUTPUT_PORT
  */
 static int
-lcore_main(__attribute__((__unused__)) void *dummy)
+lcore_main(__rte_unused void *dummy)
 {
 	const uint16_t lcore_id = (uint16_t)rte_lcore_id();
 	const uint16_t num_cores = (uint16_t)rte_lcore_count();
@@ -503,7 +530,7 @@ lcore_main(__attribute__((__unused__)) void *dummy)
 
 	for (;;) {
 		struct rte_mbuf *buf[MAX_PKT_BURST];
-		const uint16_t buf_size = sizeof(buf) / sizeof(buf[0]);
+		const uint16_t buf_size = RTE_DIM(buf);
 
 		for (p = 0; p < num_ports; p++) {
 			const uint8_t sport = ports[p];
@@ -626,8 +653,8 @@ main(int argc, char *argv[])
 	}
 
 	/* call lcore_main() on every lcore */
-	rte_eal_mp_remote_launch(lcore_main, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	rte_eal_mp_remote_launch(lcore_main, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

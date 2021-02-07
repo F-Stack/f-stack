@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+*
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -21,7 +21,13 @@
 
 #include "efx.h"
 
+#include "sfc_efx_mcdi.h"
+
+#include "sfc_debug.h"
+#include "sfc_log.h"
 #include "sfc_filter.h"
+#include "sfc_sriov.h"
+#include "sfc_mae.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,25 +89,6 @@ enum sfc_dev_filter_mode {
 	SFC_DEV_FILTER_MODE_ALLMULTI,
 
 	SFC_DEV_FILTER_NMODES
-};
-
-enum sfc_mcdi_state {
-	SFC_MCDI_UNINITIALIZED = 0,
-	SFC_MCDI_INITIALIZED,
-	SFC_MCDI_BUSY,
-	SFC_MCDI_COMPLETED,
-
-	SFC_MCDI_NSTATES
-};
-
-struct sfc_mcdi {
-	rte_spinlock_t			lock;
-	efsys_mem_t			mem;
-	enum sfc_mcdi_state		state;
-	efx_mcdi_transport_t		transport;
-	uint32_t			logtype;
-	uint32_t			proxy_handle;
-	efx_rc_t			proxy_result;
 };
 
 struct sfc_intr {
@@ -172,6 +159,8 @@ struct sfc_rss {
 	efx_rx_hash_type_t		hash_types;
 	unsigned int			tbl[EFX_RSS_TBL_SIZE];
 	uint8_t				key[EFX_RSS_KEY_SIZE];
+
+	uint32_t			dummy_rss_context;
 };
 
 /* Adapter private data shared by primary and secondary processes */
@@ -187,6 +176,7 @@ struct sfc_adapter_shared {
 	boolean_t			isolated;
 	uint32_t			tunnel_encaps;
 
+	char				log_prefix[SFC_LOG_PREFIX_MAX];
 	struct rte_pci_addr		pci_addr;
 	uint16_t			port_id;
 
@@ -232,15 +222,21 @@ struct sfc_adapter {
 	struct rte_kvargs		*kvargs;
 	int				socket_id;
 	efsys_bar_t			mem_bar;
+	/* Function control window offset */
+	efsys_dma_addr_t		fcw_offset;
 	efx_family_t			family;
 	efx_nic_t			*nic;
 	rte_spinlock_t			nic_lock;
 	rte_atomic32_t			restart_required;
 
-	struct sfc_mcdi			mcdi;
+	struct sfc_efx_mcdi		mcdi;
+	struct sfc_sriov		sriov;
 	struct sfc_intr			intr;
 	struct sfc_port			port;
 	struct sfc_filter		filter;
+	struct sfc_mae			mae;
+
+	struct sfc_flow_list		flow_list;
 
 	unsigned int			rxq_max;
 	unsigned int			txq_max;
@@ -405,7 +401,16 @@ void sfc_port_link_mode_to_info(efx_link_mode_t link_mode,
 int sfc_port_update_mac_stats(struct sfc_adapter *sa);
 int sfc_port_reset_mac_stats(struct sfc_adapter *sa);
 int sfc_set_rx_mode(struct sfc_adapter *sa);
+int sfc_set_rx_mode_unchecked(struct sfc_adapter *sa);
 
+struct sfc_hw_switch_id;
+
+int sfc_hw_switch_id_init(struct sfc_adapter *sa,
+			  struct sfc_hw_switch_id **idp);
+void sfc_hw_switch_id_fini(struct sfc_adapter *sa,
+			   struct sfc_hw_switch_id *idp);
+bool sfc_hw_switch_ids_equal(const struct sfc_hw_switch_id *left,
+			     const struct sfc_hw_switch_id *right);
 
 #ifdef __cplusplus
 }

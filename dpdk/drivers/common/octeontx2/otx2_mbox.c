@@ -9,8 +9,10 @@
 
 #include <rte_atomic.h>
 #include <rte_cycles.h>
+#include <rte_malloc.h>
 
 #include "otx2_mbox.h"
+#include "otx2_dev.h"
 
 #define RVU_AF_AFPF_MBOX0	(0x02000)
 #define RVU_AF_AFPF_MBOX1	(0x02008)
@@ -35,7 +37,7 @@ otx2_mbox_fini(struct otx2_mbox *mbox)
 {
 	mbox->reg_base = 0;
 	mbox->hwbase = 0;
-	free(mbox->dev);
+	rte_free(mbox->dev);
 	mbox->dev = NULL;
 }
 
@@ -59,12 +61,13 @@ otx2_mbox_reset(struct otx2_mbox *mbox, int devid)
 }
 
 int
-otx2_mbox_init(struct otx2_mbox *mbox, uintptr_t hwbase,
-	       uintptr_t reg_base, int direction, int ndevs)
+otx2_mbox_init(struct otx2_mbox *mbox, uintptr_t hwbase, uintptr_t reg_base,
+	       int direction, int ndevs, uint64_t intr_offset)
 {
 	struct otx2_mbox_dev *mdev;
 	int devid;
 
+	mbox->intr_offset = intr_offset;
 	mbox->reg_base = reg_base;
 	mbox->hwbase = hwbase;
 
@@ -126,7 +129,9 @@ otx2_mbox_init(struct otx2_mbox *mbox, uintptr_t hwbase,
 		return -ENODEV;
 	}
 
-	mbox->dev = malloc(ndevs * sizeof(struct otx2_mbox_dev));
+	mbox->dev = rte_zmalloc("mbox dev",
+				ndevs * sizeof(struct otx2_mbox_dev),
+				OTX2_ALIGN);
 	if (!mbox->dev) {
 		otx2_mbox_fini(mbox);
 		return -ENOMEM;
@@ -245,6 +250,39 @@ otx2_mbox_get_rsp(struct otx2_mbox *mbox, int devid, void **msg)
 }
 
 /**
+ * Polling for given wait time to get mailbox response
+ */
+static int
+mbox_poll(struct otx2_mbox *mbox, uint32_t wait)
+{
+	uint32_t timeout = 0, sleep = 1;
+	uint32_t wait_us = wait * 1000;
+	uint64_t rsp_reg = 0;
+	uintptr_t reg_addr;
+
+	reg_addr = mbox->reg_base + mbox->intr_offset;
+	do {
+		rsp_reg = otx2_read64(reg_addr);
+
+		if (timeout >= wait_us)
+			return -ETIMEDOUT;
+
+		rte_delay_us(sleep);
+		timeout += sleep;
+	} while (!rsp_reg);
+
+	rte_smp_rmb();
+
+	/* Clear interrupt */
+	otx2_write64(rsp_reg, reg_addr);
+
+	/* Reset mbox */
+	otx2_mbox_reset(mbox, 0);
+
+	return 0;
+}
+
+/**
  * @internal
  * Wait and get mailbox response with timeout
  */
@@ -278,8 +316,9 @@ mbox_wait(struct otx2_mbox *mbox, int devid, uint32_t rst_timo)
 	volatile struct otx2_mbox_dev *mdev = &mbox->dev[devid];
 	uint32_t timeout = 0, sleep = 1;
 
+	rst_timo  = rst_timo * 1000; /* Milli seconds to micro seconds */
 	while (mdev->num_msgs > mdev->msgs_acked) {
-		rte_delay_ms(sleep);
+		rte_delay_us(sleep);
 		timeout += sleep;
 		if (timeout >= rst_timo) {
 			struct mbox_hdr *tx_hdr =
@@ -321,11 +360,15 @@ otx2_mbox_wait_for_rsp_tmo(struct otx2_mbox *mbox, int devid, uint32_t tmo)
 	}
 
 	/* Wait message */
-	rc = mbox_wait(mbox, devid, tmo);
-	if (rc)
-		return rc;
+	if (rte_thread_is_intr())
+		rc = mbox_poll(mbox, tmo);
+	else
+		rc = mbox_wait(mbox, devid, tmo);
 
-	return mdev->msgs_acked;
+	if (!rc)
+		rc = mdev->num_msgs;
+
+	return rc;
 }
 
 /**

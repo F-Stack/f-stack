@@ -1,0 +1,28 @@
+DPDK_21 {
+	global:
+
+	rte_table_acl_ops;
+	rte_table_array_ops;
+	rte_table_hash_cuckoo_ops;
+	rte_table_hash_ext_ops;
+	rte_table_hash_key16_ext_ops;
+	rte_table_hash_key16_lru_ops;
+	rte_table_hash_key32_ext_ops;
+	rte_table_hash_key32_lru_ops;
+	rte_table_hash_key8_ext_ops;
+	rte_table_hash_key8_lru_ops;
+	rte_table_hash_lru_ops;
+	rte_table_lpm_ipv6_ops;
+	rte_table_lpm_ops;
+	rte_table_stub_ops;
+
+	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	# added in 20.11
+	rte_swx_table_exact_match_ops;
+	rte_swx_table_exact_match_unoptimized_ops;
+};

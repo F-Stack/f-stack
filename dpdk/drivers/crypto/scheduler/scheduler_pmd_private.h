@@ -10,7 +10,7 @@
 #define CRYPTODEV_NAME_SCHEDULER_PMD	crypto_scheduler
 /**< Scheduler Crypto PMD device name */
 
-#define PER_SLAVE_BUFF_SIZE			(256)
+#define PER_WORKER_BUFF_SIZE			(256)
 
 extern int scheduler_logtype_driver;
 
@@ -18,7 +18,7 @@ extern int scheduler_logtype_driver;
 	rte_log(RTE_LOG_ ## level, scheduler_logtype_driver,		\
 			"%s() line %u: "fmt "\n", __func__, __LINE__, ##args)
 
-struct scheduler_slave {
+struct scheduler_worker {
 	uint8_t dev_id;
 	uint16_t qp_id;
 	uint32_t nb_inflight_cops;
@@ -35,8 +35,8 @@ struct scheduler_ctx {
 
 	uint32_t max_nb_queue_pairs;
 
-	struct scheduler_slave slaves[RTE_CRYPTODEV_SCHEDULER_MAX_NB_SLAVES];
-	uint32_t nb_slaves;
+	struct scheduler_worker workers[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKERS];
+	uint32_t nb_workers;
 
 	enum rte_cryptodev_scheduler_mode mode;
 
@@ -49,8 +49,8 @@ struct scheduler_ctx {
 	uint16_t wc_pool[RTE_MAX_LCORE];
 	uint16_t nb_wc;
 
-	char *init_slave_names[RTE_CRYPTODEV_SCHEDULER_MAX_NB_SLAVES];
-	int nb_init_slaves;
+	char *init_worker_names[RTE_CRYPTODEV_SCHEDULER_MAX_NB_WORKERS];
+	int nb_init_workers;
 } __rte_cache_aligned;
 
 struct scheduler_qp_ctx {
@@ -59,7 +59,6 @@ struct scheduler_qp_ctx {
 	uint32_t max_nb_objs;
 
 	struct rte_ring *order_ring;
-	uint32_t seqn;
 } __rte_cache_aligned;
 
 
@@ -80,36 +79,28 @@ scheduler_order_insert(struct rte_ring *order_ring,
 	rte_ring_sp_enqueue_burst(order_ring, (void **)ops, nb_ops, NULL);
 }
 
-#define SCHEDULER_GET_RING_OBJ(order_ring, pos, op) do {            \
-	struct rte_crypto_op **ring = (void *)&order_ring[1];     \
-	op = ring[(order_ring->cons.head + pos) & order_ring->mask]; \
-} while (0)
-
 static __rte_always_inline uint16_t
 scheduler_order_drain(struct rte_ring *order_ring,
 		struct rte_crypto_op **ops, uint16_t nb_ops)
 {
 	struct rte_crypto_op *op;
-	uint32_t nb_objs = rte_ring_count(order_ring);
-	uint32_t nb_ops_to_deq = 0;
-	uint32_t nb_ops_deqd = 0;
+	uint32_t nb_objs, nb_ops_to_deq;
 
-	if (nb_objs > nb_ops)
-		nb_objs = nb_ops;
+	nb_objs = rte_ring_dequeue_burst_start(order_ring, (void **)ops,
+		nb_ops, NULL);
+	if (nb_objs == 0)
+		return 0;
 
-	while (nb_ops_to_deq < nb_objs) {
-		SCHEDULER_GET_RING_OBJ(order_ring, nb_ops_to_deq, op);
+	for (nb_ops_to_deq = 0; nb_ops_to_deq != nb_objs; nb_ops_to_deq++) {
+		op = ops[nb_ops_to_deq];
 		if (op->status == RTE_CRYPTO_OP_STATUS_NOT_PROCESSED)
 			break;
-		nb_ops_to_deq++;
 	}
 
-	if (nb_ops_to_deq)
-		nb_ops_deqd = rte_ring_sc_dequeue_bulk(order_ring,
-				(void **)ops, nb_ops_to_deq, NULL);
-
-	return nb_ops_deqd;
+	rte_ring_dequeue_finish(order_ring, nb_ops_to_deq);
+	return nb_ops_to_deq;
 }
+
 /** device specific operations function pointer structure */
 extern struct rte_cryptodev_ops *rte_crypto_scheduler_pmd_ops;
 

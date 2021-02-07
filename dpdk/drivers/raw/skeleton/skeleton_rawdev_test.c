@@ -42,6 +42,12 @@ static int
 testsuite_setup(void)
 {
 	uint8_t count;
+
+	total = 0;
+	passed = 0;
+	failed = 0;
+	unsupported = 0;
+
 	count = rte_rawdev_count();
 	if (!count) {
 		SKELDEV_TEST_INFO("\tNo existing rawdev; "
@@ -106,12 +112,12 @@ test_rawdev_info_get(void)
 	struct rte_rawdev_info rdev_info = {0};
 	struct skeleton_rawdev_conf skel_conf = {0};
 
-	ret = rte_rawdev_info_get(test_dev_id, NULL);
+	ret = rte_rawdev_info_get(test_dev_id, NULL, 0);
 	RTE_TEST_ASSERT(ret == -EINVAL, "Expected -EINVAL, %d", ret);
 
 	rdev_info.dev_private = &skel_conf;
 
-	ret = rte_rawdev_info_get(test_dev_id, &rdev_info);
+	ret = rte_rawdev_info_get(test_dev_id, &rdev_info, sizeof(skel_conf));
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to get raw dev info");
 
 	return TEST_SUCCESS;
@@ -126,7 +132,7 @@ test_rawdev_configure(void)
 	struct skeleton_rawdev_conf rdev_conf_get = {0};
 
 	/* Check invalid configuration */
-	ret = rte_rawdev_configure(test_dev_id, NULL);
+	ret = rte_rawdev_configure(test_dev_id, NULL, 0);
 	RTE_TEST_ASSERT(ret == -EINVAL,
 			"Null configure; Expected -EINVAL, got %d", ret);
 
@@ -137,12 +143,14 @@ test_rawdev_configure(void)
 
 	rdev_info.dev_private = &rdev_conf_set;
 	ret = rte_rawdev_configure(test_dev_id,
-				   (rte_rawdev_obj_t)&rdev_info);
+				   (rte_rawdev_obj_t)&rdev_info,
+				   sizeof(rdev_conf_set));
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to configure rawdev (%d)", ret);
 
 	rdev_info.dev_private = &rdev_conf_get;
 	ret = rte_rawdev_info_get(test_dev_id,
-				  (rte_rawdev_obj_t)&rdev_info);
+				  (rte_rawdev_obj_t)&rdev_info,
+				  sizeof(rdev_conf_get));
 	RTE_TEST_ASSERT_SUCCESS(ret,
 				"Failed to obtain rawdev configuration (%d)",
 				ret);
@@ -170,7 +178,8 @@ test_rawdev_queue_default_conf_get(void)
 	/* Get the current configuration */
 	rdev_info.dev_private = &rdev_conf_get;
 	ret = rte_rawdev_info_get(test_dev_id,
-				  (rte_rawdev_obj_t)&rdev_info);
+				  (rte_rawdev_obj_t)&rdev_info,
+				  sizeof(rdev_conf_get));
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to obtain rawdev configuration (%d)",
 				ret);
 
@@ -182,7 +191,7 @@ test_rawdev_queue_default_conf_get(void)
 	 * depth = DEF_DEPTH
 	 */
 	for (i = 0; i < rdev_conf_get.num_queues; i++) {
-		rte_rawdev_queue_conf_get(test_dev_id, i, &q);
+		rte_rawdev_queue_conf_get(test_dev_id, i, &q, sizeof(q));
 		RTE_TEST_ASSERT_EQUAL(q.depth, SKELETON_QUEUE_DEF_DEPTH,
 				      "Invalid default depth of queue (%d)",
 				      q.depth);
@@ -218,7 +227,8 @@ test_rawdev_queue_setup(void)
 	/* Get the current configuration */
 	rdev_info.dev_private = &rdev_conf_get;
 	ret = rte_rawdev_info_get(test_dev_id,
-				  (rte_rawdev_obj_t)&rdev_info);
+				  (rte_rawdev_obj_t)&rdev_info,
+				  sizeof(rdev_conf_get));
 	RTE_TEST_ASSERT_SUCCESS(ret,
 				"Failed to obtain rawdev configuration (%d)",
 				ret);
@@ -231,11 +241,11 @@ test_rawdev_queue_setup(void)
 	/* Modify the queue depth for Queue 0 and attach it */
 	qset.depth = 15;
 	qset.state = SKELETON_QUEUE_ATTACH;
-	ret = rte_rawdev_queue_setup(test_dev_id, 0, &qset);
+	ret = rte_rawdev_queue_setup(test_dev_id, 0, &qset, sizeof(qset));
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to setup queue (%d)", ret);
 
 	/* Now, fetching the queue 0 should show depth as 15 */
-	ret = rte_rawdev_queue_conf_get(test_dev_id, 0, &qget);
+	ret = rte_rawdev_queue_conf_get(test_dev_id, 0, &qget, sizeof(qget));
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to get queue config (%d)", ret);
 
 	RTE_TEST_ASSERT_EQUAL(qset.depth, qget.depth,
@@ -259,7 +269,7 @@ test_rawdev_queue_release(void)
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to release queue 0; (%d)", ret);
 
 	/* Now, fetching the queue 0 should show depth as default */
-	ret = rte_rawdev_queue_conf_get(test_dev_id, 0, &qget);
+	ret = rte_rawdev_queue_conf_get(test_dev_id, 0, &qget, sizeof(qget));
 	RTE_TEST_ASSERT_SUCCESS(ret, "Failed to get queue config (%d)", ret);
 
 	RTE_TEST_ASSERT_EQUAL(qget.depth, SKELETON_QUEUE_DEF_DEPTH,
@@ -327,7 +337,8 @@ test_rawdev_start_stop(void)
 	dummy_firmware = NULL;
 
 	rte_rawdev_start(test_dev_id);
-	ret = rte_rawdev_info_get(test_dev_id, (rte_rawdev_obj_t)&rdev_info);
+	ret = rte_rawdev_info_get(test_dev_id, (rte_rawdev_obj_t)&rdev_info,
+			sizeof(rdev_conf_get));
 	RTE_TEST_ASSERT_SUCCESS(ret,
 				"Failed to obtain rawdev configuration (%d)",
 				ret);
@@ -336,7 +347,8 @@ test_rawdev_start_stop(void)
 			      rdev_conf_get.device_state);
 
 	rte_rawdev_stop(test_dev_id);
-	ret = rte_rawdev_info_get(test_dev_id, (rte_rawdev_obj_t)&rdev_info);
+	ret = rte_rawdev_info_get(test_dev_id, (rte_rawdev_obj_t)&rdev_info,
+			sizeof(rdev_conf_get));
 	RTE_TEST_ASSERT_SUCCESS(ret,
 				"Failed to obtain rawdev configuration (%d)",
 				ret);

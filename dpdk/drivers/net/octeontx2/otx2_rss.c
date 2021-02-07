@@ -33,6 +33,29 @@ otx2_nix_rss_tbl_init(struct otx2_eth_dev *dev,
 		req->qidx = (group * rss->rss_size) + idx;
 		req->ctype = NIX_AQ_CTYPE_RSS;
 		req->op = NIX_AQ_INSTOP_INIT;
+
+		if (!dev->lock_rx_ctx)
+			continue;
+
+		req = otx2_mbox_alloc_msg_nix_aq_enq(mbox);
+		if (!req) {
+			/* The shared memory buffer can be full.
+			 * Flush it and retry
+			 */
+			otx2_mbox_msg_send(mbox, 0);
+			rc = otx2_mbox_wait_for_rsp(mbox, 0);
+			if (rc < 0)
+				return rc;
+
+			req = otx2_mbox_alloc_msg_nix_aq_enq(mbox);
+			if (!req)
+				return -ENOMEM;
+		}
+		req->rss.rq = ind_tbl[idx];
+		/* Fill AQ info */
+		req->qidx = (group * rss->rss_size) + idx;
+		req->ctype = NIX_AQ_CTYPE_RSS;
+		req->op = NIX_AQ_INSTOP_LOCK;
 	}
 
 	otx2_mbox_msg_send(mbox, 0);
@@ -210,6 +233,26 @@ otx2_rss_ethdev_to_nix(struct otx2_eth_dev *dev, uint64_t ethdev_rss,
 
 	dev->rss_info.nix_rss = ethdev_rss;
 
+	if (ethdev_rss & ETH_RSS_L2_PAYLOAD &&
+	    dev->npc_flow.switch_header_type == OTX2_PRIV_FLAGS_LEN_90B) {
+		flowkey_cfg |= FLOW_KEY_TYPE_CH_LEN_90B;
+	}
+
+	if (ethdev_rss & ETH_RSS_C_VLAN)
+		flowkey_cfg |= FLOW_KEY_TYPE_VLAN;
+
+	if (ethdev_rss & ETH_RSS_L3_SRC_ONLY)
+		flowkey_cfg |= FLOW_KEY_TYPE_L3_SRC;
+
+	if (ethdev_rss & ETH_RSS_L3_DST_ONLY)
+		flowkey_cfg |= FLOW_KEY_TYPE_L3_DST;
+
+	if (ethdev_rss & ETH_RSS_L4_SRC_ONLY)
+		flowkey_cfg |= FLOW_KEY_TYPE_L4_SRC;
+
+	if (ethdev_rss & ETH_RSS_L4_DST_ONLY)
+		flowkey_cfg |= FLOW_KEY_TYPE_L4_DST;
+
 	if (ethdev_rss & RSS_IPV4_ENABLE)
 		flowkey_cfg |= flow_key_type[rss_level][RSS_IPV4_INDEX];
 
@@ -283,6 +326,7 @@ otx2_nix_rss_hash_update(struct rte_eth_dev *eth_dev,
 			 struct rte_eth_rss_conf *rss_conf)
 {
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
+	uint8_t rss_hash_level;
 	uint32_t flowkey_cfg;
 	uint8_t alg_idx;
 	int rc;
@@ -299,7 +343,11 @@ otx2_nix_rss_hash_update(struct rte_eth_dev *eth_dev,
 		otx2_nix_rss_set_key(dev, rss_conf->rss_key,
 				     (uint32_t)rss_conf->rss_key_len);
 
-	flowkey_cfg = otx2_rss_ethdev_to_nix(dev, rss_conf->rss_hf, 0);
+	rss_hash_level = ETH_RSS_LEVEL(rss_conf->rss_hf);
+	if (rss_hash_level)
+		rss_hash_level -= 1;
+	flowkey_cfg =
+		otx2_rss_ethdev_to_nix(dev, rss_conf->rss_hf, rss_hash_level);
 
 	rc = otx2_rss_set_hf(dev, flowkey_cfg, &alg_idx,
 			     NIX_DEFAULT_RSS_CTX_GROUP,
@@ -335,13 +383,14 @@ otx2_nix_rss_config(struct rte_eth_dev *eth_dev)
 {
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 	uint32_t idx, qcnt = eth_dev->data->nb_rx_queues;
+	uint8_t rss_hash_level;
 	uint32_t flowkey_cfg;
 	uint64_t rss_hf;
 	uint8_t alg_idx;
 	int rc;
 
 	/* Skip further configuration if selected mode is not RSS */
-	if (eth_dev->data->dev_conf.rxmode.mq_mode != ETH_MQ_RX_RSS)
+	if (eth_dev->data->dev_conf.rxmode.mq_mode != ETH_MQ_RX_RSS || !qcnt)
 		return 0;
 
 	/* Update default RSS key and cfg */
@@ -359,7 +408,10 @@ otx2_nix_rss_config(struct rte_eth_dev *eth_dev)
 	}
 
 	rss_hf = eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
-	flowkey_cfg = otx2_rss_ethdev_to_nix(dev, rss_hf, 0);
+	rss_hash_level = ETH_RSS_LEVEL(rss_hf);
+	if (rss_hash_level)
+		rss_hash_level -= 1;
+	flowkey_cfg = otx2_rss_ethdev_to_nix(dev, rss_hf, rss_hash_level);
 
 	rc = otx2_rss_set_hf(dev, flowkey_cfg, &alg_idx,
 			     NIX_DEFAULT_RSS_CTX_GROUP,

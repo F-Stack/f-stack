@@ -51,6 +51,15 @@ static int fslmc_iommu_type;
 static uint32_t *msi_intr_vaddr;
 void *(*rte_mcp_ptr_list);
 
+void *
+dpaa2_get_mcp_ptr(int portal_idx)
+{
+	if (rte_mcp_ptr_list)
+		return rte_mcp_ptr_list[portal_idx];
+	else
+		return NULL;
+}
+
 static struct rte_dpaa2_object_list dpaa2_obj_list =
 	TAILQ_HEAD_INITIALIZER(dpaa2_obj_list);
 
@@ -448,11 +457,14 @@ fslmc_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 
 	/* get the actual group fd */
 	vfio_group_fd = rte_vfio_get_group_fd(iommu_group_no);
-	if (vfio_group_fd < 0)
+	if (vfio_group_fd < 0 && vfio_group_fd != -ENOENT)
 		return -1;
 
-	/* if group_fd == 0, that means the device isn't managed by VFIO */
-	if (vfio_group_fd == 0) {
+	/*
+	 * if vfio_group_fd == -ENOENT, that means the device
+	 * isn't managed by VFIO
+	 */
+	if (vfio_group_fd == -ENOENT) {
 		RTE_LOG(WARNING, EAL, " %s not managed by VFIO driver, skipping\n",
 				dev_addr);
 		return 1;
@@ -730,20 +742,12 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 {
 	int ret;
 	intptr_t v_addr;
-	char *dev_name = NULL;
 	struct fsl_mc_io dpmng  = {0};
 	struct mc_version mc_ver_info = {0};
 
-	rte_mcp_ptr_list = malloc(sizeof(void *) * 1);
+	rte_mcp_ptr_list = malloc(sizeof(void *) * (MC_PORTAL_INDEX + 1));
 	if (!rte_mcp_ptr_list) {
 		DPAA2_BUS_ERR("Unable to allocate MC portal memory");
-		ret = -ENOMEM;
-		goto cleanup;
-	}
-
-	dev_name = strdup(dev->device.name);
-	if (!dev_name) {
-		DPAA2_BUS_ERR("Unable to allocate MC device name memory");
 		ret = -ENOMEM;
 		goto cleanup;
 	}
@@ -762,7 +766,7 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 	 * required.
 	 */
 	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
-		rte_mcp_ptr_list[0] = (void *)v_addr;
+		rte_mcp_ptr_list[MC_PORTAL_INDEX] = (void *)v_addr;
 		return 0;
 	}
 
@@ -782,15 +786,11 @@ fslmc_process_mcp(struct rte_dpaa2_device *dev)
 		ret = -1;
 		goto cleanup;
 	}
-	rte_mcp_ptr_list[0] = (void *)v_addr;
+	rte_mcp_ptr_list[MC_PORTAL_INDEX] = (void *)v_addr;
 
-	free(dev_name);
 	return 0;
 
 cleanup:
-	if (dev_name)
-		free(dev_name);
-
 	if (rte_mcp_ptr_list) {
 		free(rte_mcp_ptr_list);
 		rte_mcp_ptr_list = NULL;
@@ -805,26 +805,56 @@ fslmc_vfio_process_group(void)
 	int ret;
 	int found_mportal = 0;
 	struct rte_dpaa2_device *dev, *dev_temp;
+	bool is_dpmcp_in_blocklist = false, is_dpio_in_blocklist = false;
+	int dpmcp_count = 0, dpio_count = 0, current_device;
 
-	/* Search the MCP as that should be initialized first. */
 	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, dev_temp) {
 		if (dev->dev_type == DPAA2_MPORTAL) {
+			dpmcp_count++;
 			if (dev->device.devargs &&
-			    dev->device.devargs->policy == RTE_DEV_BLACKLISTED) {
-				DPAA2_BUS_LOG(DEBUG, "%s Blacklisted, skipping",
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED)
+				is_dpmcp_in_blocklist = true;
+		}
+		if (dev->dev_type == DPAA2_IO) {
+			dpio_count++;
+			if (dev->device.devargs &&
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED)
+				is_dpio_in_blocklist = true;
+		}
+	}
+
+	/* Search the MCP as that should be initialized first. */
+	current_device = 0;
+	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, dev_temp) {
+		if (dev->dev_type == DPAA2_MPORTAL) {
+			current_device++;
+			if (dev->device.devargs &&
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED) {
+				DPAA2_BUS_LOG(DEBUG, "%s Blocked, skipping",
 					      dev->device.name);
 				TAILQ_REMOVE(&rte_fslmc_bus.device_list,
 						dev, next);
 				continue;
 			}
 
-			ret = fslmc_process_mcp(dev);
-			if (ret) {
-				DPAA2_BUS_ERR("Unable to map MC Portal");
-				return -1;
+			if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
+			    !is_dpmcp_in_blocklist) {
+				if (dpmcp_count == 1 ||
+				    current_device != dpmcp_count) {
+					TAILQ_REMOVE(&rte_fslmc_bus.device_list,
+						     dev, next);
+					continue;
+				}
 			}
-			if (!found_mportal)
+
+			if (!found_mportal) {
+				ret = fslmc_process_mcp(dev);
+				if (ret) {
+					DPAA2_BUS_ERR("Unable to map MC Portal");
+					return -1;
+				}
 				found_mportal = 1;
+			}
 
 			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
 			free(dev);
@@ -841,11 +871,22 @@ fslmc_vfio_process_group(void)
 		return -1;
 	}
 
+	current_device = 0;
 	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, dev_temp) {
+		if (dev->dev_type == DPAA2_IO)
+			current_device++;
 		if (dev->device.devargs &&
-		    dev->device.devargs->policy == RTE_DEV_BLACKLISTED) {
-			DPAA2_BUS_LOG(DEBUG, "%s Blacklisted, skipping",
+		    dev->device.devargs->policy == RTE_DEV_BLOCKED) {
+			DPAA2_BUS_LOG(DEBUG, "%s Blocked, skipping",
 				      dev->device.name);
+			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
+			continue;
+		}
+		if (rte_eal_process_type() == RTE_PROC_SECONDARY &&
+		    dev->dev_type != DPAA2_ETH &&
+		    dev->dev_type != DPAA2_CRYPTO &&
+		    dev->dev_type != DPAA2_QDMA &&
+		    dev->dev_type != DPAA2_IO) {
 			TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
 			continue;
 		}
@@ -885,6 +926,21 @@ fslmc_vfio_process_group(void)
 
 			break;
 		case DPAA2_IO:
+			if (!is_dpio_in_blocklist && dpio_count > 1) {
+				if (rte_eal_process_type() == RTE_PROC_SECONDARY
+				    && current_device != dpio_count) {
+					TAILQ_REMOVE(&rte_fslmc_bus.device_list,
+						     dev, next);
+					break;
+				}
+				if (rte_eal_process_type() == RTE_PROC_PRIMARY
+				    && current_device == dpio_count) {
+					TAILQ_REMOVE(&rte_fslmc_bus.device_list,
+						     dev, next);
+					break;
+				}
+			}
+
 			ret = fslmc_process_iodevices(dev);
 			if (ret) {
 				DPAA2_BUS_DEBUG("Dev (%s) init failed",

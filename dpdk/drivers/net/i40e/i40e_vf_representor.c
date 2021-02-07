@@ -7,6 +7,7 @@
 #include <rte_pci.h>
 #include <rte_malloc.h>
 
+#include "rte_ethdev_driver.h"
 #include "base/i40e_type.h"
 #include "base/virtchnl.h"
 #include "i40e_ethdev.h"
@@ -46,7 +47,8 @@ i40e_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 		DEV_RX_OFFLOAD_QINQ_STRIP |
 		DEV_RX_OFFLOAD_IPV4_CKSUM |
 		DEV_RX_OFFLOAD_UDP_CKSUM |
-		DEV_RX_OFFLOAD_TCP_CKSUM;
+		DEV_RX_OFFLOAD_TCP_CKSUM |
+		DEV_RX_OFFLOAD_VLAN_FILTER;
 	dev_info->tx_offload_capa =
 		DEV_TX_OFFLOAD_MULTI_SEGS  |
 		DEV_TX_OFFLOAD_VLAN_INSERT |
@@ -116,9 +118,10 @@ i40e_vf_representor_dev_start(__rte_unused struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
+static int
 i40e_vf_representor_dev_stop(__rte_unused struct rte_eth_dev *dev)
 {
+	return 0;
 }
 
 static int
@@ -505,7 +508,8 @@ i40e_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params)
 		return -ENODEV;
 	}
 
-	ethdev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR;
+	ethdev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR |
+					RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 	ethdev->data->representor_id = representor->vf_id;
 
 	/* Setting the number queues allocated to the VF */

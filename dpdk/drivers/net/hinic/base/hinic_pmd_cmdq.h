@@ -9,7 +9,7 @@
 
 #define HINIC_SCMD_DATA_LEN		16
 
-/* hiovs pmd use 64, kernel l2nic use 4096 */
+/* pmd driver uses 64, kernel l2nic use 4096 */
 #define	HINIC_CMDQ_DEPTH		64
 
 #define	HINIC_CMDQ_BUF_SIZE		2048U
@@ -170,6 +170,7 @@ struct hinic_cmdq_ctxt {
 
 enum hinic_cmdq_status {
 	HINIC_CMDQ_ENABLE = BIT(0),
+	HINIC_CMDQ_SET_FAIL = BIT(1)
 };
 
 enum hinic_cmdq_cmd_type {

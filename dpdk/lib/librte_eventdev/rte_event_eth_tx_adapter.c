@@ -6,6 +6,7 @@
 #include <rte_ethdev.h>
 
 #include "rte_eventdev_pmd.h"
+#include "rte_eventdev_trace.h"
 #include "rte_event_eth_tx_adapter.h"
 
 #define TXA_BATCH_SIZE		32
@@ -285,7 +286,7 @@ txa_service_conf_cb(uint8_t __rte_unused id, uint8_t dev_id,
 		return ret;
 	}
 
-	pc->disable_implicit_release = 0;
+	pc->event_port_cfg = 0;
 	ret = rte_event_port_setup(dev_id, port_id, pc);
 	if (ret) {
 		RTE_EDEV_LOG_ERR("failed to setup event port %u\n",
@@ -733,6 +734,8 @@ txa_service_queue_add(uint8_t id,
 
 		qdone = rte_zmalloc(txa->mem_name,
 				nb_queues * sizeof(*qdone), 0);
+		if (qdone == NULL)
+			return -ENOMEM;
 		j = 0;
 		for (i = 0; i < nb_queues; i++) {
 			if (txa_service_is_queue_added(txa, eth_dev, i))
@@ -942,7 +945,8 @@ rte_event_eth_tx_adapter_create(uint8_t id, uint8_t dev_id,
 		txa_dev_id_array[id] = TXA_INVALID_DEV_ID;
 		return ret;
 	}
-
+	rte_eventdev_trace_eth_tx_adapter_create(id, dev_id, NULL, port_conf,
+		ret);
 	txa_dev_id_array[id] = dev_id;
 	return 0;
 }
@@ -984,6 +988,8 @@ rte_event_eth_tx_adapter_create_ext(uint8_t id, uint8_t dev_id,
 		return ret;
 	}
 
+	rte_eventdev_trace_eth_tx_adapter_create(id, dev_id, conf_cb, conf_arg,
+		ret);
 	txa_dev_id_array[id] = dev_id;
 	return 0;
 }
@@ -1012,6 +1018,7 @@ rte_event_eth_tx_adapter_free(uint8_t id)
 		ret = txa_service_adapter_free(id);
 	txa_dev_id_array[id] = TXA_INVALID_DEV_ID;
 
+	rte_eventdev_trace_eth_tx_adapter_free(id, ret);
 	return ret;
 }
 
@@ -1043,6 +1050,8 @@ rte_event_eth_tx_adapter_queue_add(uint8_t id,
 	else
 		ret = txa_service_queue_add(id, txa_evdev(id), eth_dev, queue);
 
+	rte_eventdev_trace_eth_tx_adapter_queue_add(id, eth_dev_id, queue,
+		ret);
 	return ret;
 }
 
@@ -1073,6 +1082,8 @@ rte_event_eth_tx_adapter_queue_del(uint8_t id,
 	else
 		ret = txa_service_queue_del(id, eth_dev, queue);
 
+	rte_eventdev_trace_eth_tx_adapter_queue_del(id, eth_dev_id, queue,
+		ret);
 	return ret;
 }
 
@@ -1094,6 +1105,7 @@ rte_event_eth_tx_adapter_start(uint8_t id)
 	ret = txa_dev_start(id) ? txa_dev_start(id)(id, txa_evdev(id)) : 0;
 	if (ret == 0)
 		ret = txa_service_start(id);
+	rte_eventdev_trace_eth_tx_adapter_start(id, ret);
 	return ret;
 }
 
@@ -1154,5 +1166,6 @@ rte_event_eth_tx_adapter_stop(uint8_t id)
 	ret = txa_dev_stop(id) ? txa_dev_stop(id)(id,  txa_evdev(id)) : 0;
 	if (ret == 0)
 		ret = txa_service_stop(id);
+	rte_eventdev_trace_eth_tx_adapter_stop(id, ret);
 	return ret;
 }

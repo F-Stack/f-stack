@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2018-2019 NXP
+ * Copyright 2018-2020 NXP
  */
 
 #ifndef _ENETC_HW_H_
@@ -22,6 +22,8 @@
 #define ENETC_SIMR			0x0
 #define ENETC_SIMR_EN			BIT(31)
 
+#define ENETC_SICAR0			0x40
+#define ENETC_SICAR0_COHERENT		0x2B2B6727
 #define ENETC_SIPMAR0			0x80
 #define ENETC_SIPMAR1			0x84
 
@@ -86,6 +88,7 @@ enum enetc_bdr_type {TX, RX};
 #define ENETC_PSIPMAR1(n)		(0x00104 + (n) * 0x20)
 #define ENETC_PCAPR0			0x00900
 #define ENETC_PCAPR1			0x00904
+#define ENETC_PM0_RX_FIFO		0x801C
 #define ENETC_PM0_IF_MODE		0x8300
 #define ENETC_PM1_IF_MODE		0x9300
 #define ENETC_PMO_IFM_RG		BIT(2)

@@ -28,8 +28,8 @@ To run the example in a ``linux`` environment:
 
 .. code-block:: console
 
-    cd ~/dpdk/examples/flow_classify
-    ./build/flow_classify -c 4 -n 4 -- --rule_ipv4="../ipv4_rules_file.txt"
+    ./<build_dir>/examples/dpdk-flow_classify -c 4 -n 4 -- /
+    --rule_ipv4="../ipv4_rules_file.txt"
 
 Please refer to the *DPDK Getting Started Guide*, section
 :doc:`../linux_gsg/build_sample_apps`
@@ -271,7 +271,7 @@ Forwarding application is shown below:
 .. code-block:: c
 
     static inline int
-    port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+    port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     {
         struct rte_eth_conf port_conf = port_conf_default;
         const uint16_t rx_rings = 1, tx_rings = 1;
@@ -422,7 +422,7 @@ following:
             .stats = (void *)&ntuple_stats
     };
 
-    static __attribute__((noreturn)) void
+    static __rte_noreturn void
     lcore_main(cls_app)
     {
         uint16_t port;

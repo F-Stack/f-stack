@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #ifndef _IXGBE_OS_H_
@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_cycles.h>
@@ -82,9 +83,6 @@ typedef int16_t		s16;
 typedef uint32_t	u32;
 typedef int32_t		s32;
 typedef uint64_t	u64;
-#ifndef __cplusplus
-typedef int		bool;
-#endif
 
 #define mb()	rte_mb()
 #define wmb()	rte_wmb()
@@ -106,6 +104,12 @@ static inline uint32_t ixgbe_read_addr(volatile void* addr)
 
 #define IXGBE_PCI_REG_WRITE_RELAXED(reg, value)		\
 	rte_write32_relaxed((rte_cpu_to_le_32(value)), reg)
+
+#define IXGBE_PCI_REG_WC_WRITE(reg, value)			\
+	rte_write32_wc((rte_cpu_to_le_32(value)), reg)
+
+#define IXGBE_PCI_REG_WC_WRITE_RELAXED(reg, value)		\
+	rte_write32_wc_relaxed((rte_cpu_to_le_32(value)), reg)
 
 #define IXGBE_PCI_REG_ADDR(hw, reg) \
 	((volatile uint32_t *)((char *)(hw)->hw_addr + (reg)))

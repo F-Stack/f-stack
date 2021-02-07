@@ -168,7 +168,7 @@ print_stats(char *prgname)
 	struct rte_rawdev_xstats_name *names_xstats;
 	uint64_t *xstats;
 	unsigned int *ids_xstats, nb_xstats;
-	char status_string[120]; /* to print at the top of the output */
+	char status_string[255]; /* to print at the top of the output */
 	int status_strlen;
 	int ret;
 
@@ -194,7 +194,7 @@ print_stats(char *prgname)
 		"Rx Queues = %d, ", nb_queues);
 	status_strlen += snprintf(status_string + status_strlen,
 		sizeof(status_string) - status_strlen,
-		"Ring Size = %d\n", ring_size);
+		"Ring Size = %d", ring_size);
 
 	/* Allocate memory for xstats names and values */
 	ret = rte_rawdev_xstats_names_get(
@@ -251,7 +251,7 @@ print_stats(char *prgname)
 
 		memset(&delta_ts, 0, sizeof(struct total_statistics));
 
-		printf("%s", status_string);
+		printf("%s\n", status_string);
 
 		for (i = 0; i < cfg.nb_ports; i++) {
 			port_id = cfg.ports[i].rxtx_port;
@@ -293,6 +293,8 @@ print_stats(char *prgname)
 
 		printf("\n");
 		print_total_stats(&delta_ts);
+
+		fflush(stdout);
 
 		ts.total_packets_tx += delta_ts.total_packets_tx;
 		ts.total_packets_rx += delta_ts.total_packets_rx;
@@ -359,15 +361,11 @@ ioat_enqueue_packets(struct rte_mbuf **pkts,
 	for (i = 0; i < nb_rx; i++) {
 		/* Perform data copy */
 		ret = rte_ioat_enqueue_copy(dev_id,
-			pkts[i]->buf_iova
-			- addr_offset,
-			pkts_copy[i]->buf_iova
-			- addr_offset,
-			rte_pktmbuf_data_len(pkts[i])
-			+ addr_offset,
+			pkts[i]->buf_iova - addr_offset,
+			pkts_copy[i]->buf_iova - addr_offset,
+			rte_pktmbuf_data_len(pkts[i]) + addr_offset,
 			(uintptr_t)pkts[i],
-			(uintptr_t)pkts_copy[i],
-			0 /* nofence */);
+			(uintptr_t)pkts_copy[i]);
 
 		if (ret != 1)
 			break;
@@ -404,7 +402,7 @@ ioat_rx_port(struct rxtx_port_config *rx_config)
 			nb_enq = ioat_enqueue_packets(pkts_burst,
 				nb_rx, rx_config->ioat_ids[i]);
 			if (nb_enq > 0)
-				rte_ioat_do_copies(rx_config->ioat_ids[i]);
+				rte_ioat_perform_ops(rx_config->ioat_ids[i]);
 		} else {
 			/* Perform packet software copy, free source packets */
 			int ret;
@@ -450,7 +448,7 @@ ioat_tx_port(struct rxtx_port_config *tx_config)
 	for (i = 0; i < tx_config->nb_queues; i++) {
 		if (copy_mode == COPY_MODE_IOAT_NUM) {
 			/* Deque the mbufs from IOAT device. */
-			nb_dq = rte_ioat_completed_copies(
+			nb_dq = rte_ioat_completed_ops(
 				tx_config->ioat_ids[i], MAX_PKT_BURST,
 				(void *)mbufs_src, (void *)mbufs_dst);
 		} else {
@@ -518,7 +516,7 @@ tx_main_loop(void)
 			ioat_tx_port(&cfg.ports[i]);
 }
 
-/* Main rx and tx loop if only one slave lcore available */
+/* Main rx and tx loop if only one worker lcore available */
 static void
 rxtx_main_loop(void)
 {
@@ -582,7 +580,7 @@ ioat_parse_portmask(const char *portmask)
 	/* Parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -698,6 +696,7 @@ check_link_status(uint32_t port_mask)
 	uint16_t portid;
 	struct rte_eth_link link;
 	int ret, link_status = 0;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status\n");
 	RTE_ETH_FOREACH_DEV(portid) {
@@ -713,15 +712,12 @@ check_link_status(uint32_t port_mask)
 		}
 
 		/* Print link status */
-		if (link.link_status) {
-			printf(
-				"Port %d Link Up. Speed %u Mbps - %s\n",
-				portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-				("full-duplex") : ("half-duplex\n"));
+		rte_eth_link_to_str(link_status_text,
+			sizeof(link_status_text), &link);
+		printf("Port %d %s\n", portid, link_status_text);
+
+		if (link.link_status)
 			link_status = 1;
-		} else
-			printf("Port %d Link Down\n", portid);
 	}
 	return link_status;
 }
@@ -732,7 +728,7 @@ configure_rawdev_queue(uint32_t dev_id)
 	struct rte_ioat_rawdev_config dev_config = { .ring_size = ring_size };
 	struct rte_rawdev_info info = { .dev_private = &dev_config };
 
-	if (rte_rawdev_configure(dev_id, &info) != 0) {
+	if (rte_rawdev_configure(dev_id, &info, sizeof(dev_config)) != 0) {
 		rte_exit(EXIT_FAILURE,
 			"Error with rte_rawdev_configure()\n");
 	}
@@ -755,7 +751,7 @@ assign_rawdevs(void)
 			do {
 				if (rdev_id == rte_rawdev_count())
 					goto end;
-				rte_rawdev_info_get(rdev_id++, &rdev_info);
+				rte_rawdev_info_get(rdev_id++, &rdev_info, 0);
 			} while (rdev_info.driver_name == NULL ||
 					strcmp(rdev_info.driver_name,
 						IOAT_PMD_RAWDEV_NAME_STR) != 0);
@@ -982,7 +978,7 @@ main(int argc, char **argv)
 	cfg.nb_lcores = rte_lcore_count() - 1;
 	if (cfg.nb_lcores < 1)
 		rte_exit(EXIT_FAILURE,
-			"There should be at least one slave lcore.\n");
+			"There should be at least one worker lcore.\n");
 
 	if (copy_mode == COPY_MODE_IOAT_NUM)
 		assign_rawdevs();
@@ -990,7 +986,7 @@ main(int argc, char **argv)
 		assign_rings();
 
 	start_forwarding_cores();
-	/* master core prints stats while other cores forward */
+	/* main core prints stats while other cores forward */
 	print_stats(argv[0]);
 
 	/* force_quit is true when we get here */
@@ -999,7 +995,11 @@ main(int argc, char **argv)
 	uint32_t j;
 	for (i = 0; i < cfg.nb_ports; i++) {
 		printf("Closing port %d\n", cfg.ports[i].rxtx_port);
-		rte_eth_dev_stop(cfg.ports[i].rxtx_port);
+		ret = rte_eth_dev_stop(cfg.ports[i].rxtx_port);
+		if (ret != 0)
+			RTE_LOG(ERR, IOAT, "rte_eth_dev_stop: err=%s, port=%u\n",
+				rte_strerror(-ret), cfg.ports[i].rxtx_port);
+
 		rte_eth_dev_close(cfg.ports[i].rxtx_port);
 		if (copy_mode == COPY_MODE_IOAT_NUM) {
 			for (j = 0; j < cfg.ports[i].nb_queues; j++) {

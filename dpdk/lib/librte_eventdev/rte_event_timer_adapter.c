@@ -22,15 +22,16 @@
 
 #include "rte_eventdev.h"
 #include "rte_eventdev_pmd.h"
+#include "rte_eventdev_trace.h"
 #include "rte_event_timer_adapter.h"
 #include "rte_event_timer_adapter_pmd.h"
 
 #define DATA_MZ_NAME_MAX_LEN 64
 #define DATA_MZ_NAME_FORMAT "rte_event_timer_adapter_data_%d"
 
-static int evtim_logtype;
-static int evtim_svc_logtype;
-static int evtim_buffer_logtype;
+RTE_LOG_REGISTER(evtim_logtype, lib.eventdev.adapter.timer, NOTICE);
+RTE_LOG_REGISTER(evtim_buffer_logtype, lib.eventdev.adapter.timer, NOTICE);
+RTE_LOG_REGISTER(evtim_svc_logtype, lib.eventdev.adapter.timer.svc, NOTICE);
 
 static struct rte_event_timer_adapter adapters[RTE_EVENT_TIMER_ADAPTER_NUM_MAX];
 
@@ -228,6 +229,8 @@ rte_event_timer_adapter_create_ext(
 
 	adapter->allocated = 1;
 
+	rte_eventdev_trace_timer_adapter_create(adapter_id, adapter, conf,
+		conf_cb);
 	return adapter;
 
 free_memzone:
@@ -272,7 +275,7 @@ rte_event_timer_adapter_start(const struct rte_event_timer_adapter *adapter)
 		return ret;
 
 	adapter->data->started = 1;
-
+	rte_eventdev_trace_timer_adapter_start(adapter);
 	return 0;
 }
 
@@ -295,7 +298,7 @@ rte_event_timer_adapter_stop(const struct rte_event_timer_adapter *adapter)
 		return ret;
 
 	adapter->data->started = 0;
-
+	rte_eventdev_trace_timer_adapter_stop(adapter);
 	return 0;
 }
 
@@ -379,6 +382,7 @@ rte_event_timer_adapter_free(struct rte_event_timer_adapter *adapter)
 	adapter->data = NULL;
 	adapter->allocated = 0;
 
+	rte_eventdev_trace_timer_adapter_free(adapter);
 	return 0;
 }
 
@@ -550,7 +554,7 @@ struct swtim {
 	uint32_t timer_data_id;
 	/* Track which cores have actually armed a timer */
 	struct {
-		rte_atomic16_t v;
+		uint16_t v;
 	} __rte_cache_aligned in_use[RTE_MAX_LCORE];
 	/* Track which cores' timer lists should be polled */
 	unsigned int poll_lcores[RTE_MAX_LCORE];
@@ -579,6 +583,7 @@ swtim_callback(struct rte_timer *tim)
 	uint16_t nb_evs_invalid = 0;
 	uint64_t opaque;
 	int ret;
+	int n_lcores;
 
 	opaque = evtim->impl_opaque[1];
 	adapter = (struct rte_event_timer_adapter *)(uintptr_t)opaque;
@@ -601,8 +606,13 @@ swtim_callback(struct rte_timer *tim)
 				      "with immediate expiry value");
 		}
 
-		if (unlikely(rte_atomic16_test_and_set(&sw->in_use[lcore].v)))
-			sw->poll_lcores[sw->n_poll_lcores++] = lcore;
+		if (unlikely(sw->in_use[lcore].v == 0)) {
+			sw->in_use[lcore].v = 1;
+			n_lcores = __atomic_fetch_add(&sw->n_poll_lcores, 1,
+						     __ATOMIC_RELAXED);
+			__atomic_store_n(&sw->poll_lcores[n_lcores], lcore,
+					__ATOMIC_RELAXED);
+		}
 	} else {
 		EVTIM_BUF_LOG_DBG("buffered an event timer expiry event");
 
@@ -619,7 +629,8 @@ swtim_callback(struct rte_timer *tim)
 		sw->expired_timers[sw->n_expired_timers++] = tim;
 		sw->stats.evtim_exp_count++;
 
-		evtim->state = RTE_EVENT_TIMER_NOT_ARMED;
+		__atomic_store_n(&evtim->state, RTE_EVENT_TIMER_NOT_ARMED,
+				__ATOMIC_RELEASE);
 	}
 
 	if (event_buffer_batch_ready(&sw->buffer)) {
@@ -825,7 +836,7 @@ swtim_init(struct rte_event_timer_adapter *adapter)
 
 	/* Initialize the variables that track in-use timer lists */
 	for (i = 0; i < RTE_MAX_LCORE; i++)
-		rte_atomic16_init(&sw->in_use[i].v);
+		sw->in_use[i].v = 0;
 
 	/* Initialize the timer subsystem and allocate timer data instance */
 	ret = rte_timer_subsystem_init();
@@ -1007,6 +1018,10 @@ __swtim_arm_burst(const struct rte_event_timer_adapter *adapter,
 	uint32_t lcore_id = rte_lcore_id();
 	struct rte_timer *tim, *tims[nb_evtims];
 	uint64_t cycles;
+	int n_lcores;
+	/* Timer list for this lcore is not in use. */
+	uint16_t exp_state = 0;
+	enum rte_event_timer_state n_state;
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 	/* Check that the service is running. */
@@ -1025,12 +1040,18 @@ __swtim_arm_burst(const struct rte_event_timer_adapter *adapter,
 	/* If this is the first time we're arming an event timer on this lcore,
 	 * mark this lcore as "in use"; this will cause the service
 	 * function to process the timer list that corresponds to this lcore.
+	 * The atomic compare-and-swap operation can prevent the race condition
+	 * on in_use flag between multiple non-EAL threads.
 	 */
-	if (unlikely(rte_atomic16_test_and_set(&sw->in_use[lcore_id].v))) {
+	if (unlikely(__atomic_compare_exchange_n(&sw->in_use[lcore_id].v,
+			&exp_state, 1, 0,
+			__ATOMIC_RELAXED, __ATOMIC_RELAXED))) {
 		EVTIM_LOG_DBG("Adding lcore id = %u to list of lcores to poll",
 			      lcore_id);
-		sw->poll_lcores[sw->n_poll_lcores] = lcore_id;
-		++sw->n_poll_lcores;
+		n_lcores = __atomic_fetch_add(&sw->n_poll_lcores, 1,
+					     __ATOMIC_RELAXED);
+		__atomic_store_n(&sw->poll_lcores[n_lcores], lcore_id,
+				__ATOMIC_RELAXED);
 	}
 
 	ret = rte_mempool_get_bulk(sw->tim_pool, (void **)tims,
@@ -1041,30 +1062,36 @@ __swtim_arm_burst(const struct rte_event_timer_adapter *adapter,
 	}
 
 	for (i = 0; i < nb_evtims; i++) {
-		/* Don't modify the event timer state in these cases */
-		if (evtims[i]->state == RTE_EVENT_TIMER_ARMED) {
+		n_state = __atomic_load_n(&evtims[i]->state, __ATOMIC_ACQUIRE);
+		if (n_state == RTE_EVENT_TIMER_ARMED) {
 			rte_errno = EALREADY;
 			break;
-		} else if (!(evtims[i]->state == RTE_EVENT_TIMER_NOT_ARMED ||
-			     evtims[i]->state == RTE_EVENT_TIMER_CANCELED)) {
+		} else if (!(n_state == RTE_EVENT_TIMER_NOT_ARMED ||
+			     n_state == RTE_EVENT_TIMER_CANCELED)) {
 			rte_errno = EINVAL;
 			break;
 		}
 
 		ret = check_timeout(evtims[i], adapter);
 		if (unlikely(ret == -1)) {
-			evtims[i]->state = RTE_EVENT_TIMER_ERROR_TOOLATE;
+			__atomic_store_n(&evtims[i]->state,
+					RTE_EVENT_TIMER_ERROR_TOOLATE,
+					__ATOMIC_RELAXED);
 			rte_errno = EINVAL;
 			break;
 		} else if (unlikely(ret == -2)) {
-			evtims[i]->state = RTE_EVENT_TIMER_ERROR_TOOEARLY;
+			__atomic_store_n(&evtims[i]->state,
+					RTE_EVENT_TIMER_ERROR_TOOEARLY,
+					__ATOMIC_RELAXED);
 			rte_errno = EINVAL;
 			break;
 		}
 
 		if (unlikely(check_destination_event_queue(evtims[i],
 							   adapter) < 0)) {
-			evtims[i]->state = RTE_EVENT_TIMER_ERROR;
+			__atomic_store_n(&evtims[i]->state,
+					RTE_EVENT_TIMER_ERROR,
+					__ATOMIC_RELAXED);
 			rte_errno = EINVAL;
 			break;
 		}
@@ -1080,13 +1107,18 @@ __swtim_arm_burst(const struct rte_event_timer_adapter *adapter,
 					  SINGLE, lcore_id, NULL, evtims[i]);
 		if (ret < 0) {
 			/* tim was in RUNNING or CONFIG state */
-			evtims[i]->state = RTE_EVENT_TIMER_ERROR;
+			__atomic_store_n(&evtims[i]->state,
+					RTE_EVENT_TIMER_ERROR,
+					__ATOMIC_RELEASE);
 			break;
 		}
 
-		rte_smp_wmb();
 		EVTIM_LOG_DBG("armed an event timer");
-		evtims[i]->state = RTE_EVENT_TIMER_ARMED;
+		/* RELEASE ordering guarantees the adapter specific value
+		 * changes observed before the update of state.
+		 */
+		__atomic_store_n(&evtims[i]->state, RTE_EVENT_TIMER_ARMED,
+				__ATOMIC_RELEASE);
 	}
 
 	if (i < nb_evtims)
@@ -1113,6 +1145,7 @@ swtim_cancel_burst(const struct rte_event_timer_adapter *adapter,
 	struct rte_timer *timp;
 	uint64_t opaque;
 	struct swtim *sw = swtim_pmd_priv(adapter);
+	enum rte_event_timer_state n_state;
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 	/* Check that the service is running. */
@@ -1124,15 +1157,17 @@ swtim_cancel_burst(const struct rte_event_timer_adapter *adapter,
 
 	for (i = 0; i < nb_evtims; i++) {
 		/* Don't modify the event timer state in these cases */
-		if (evtims[i]->state == RTE_EVENT_TIMER_CANCELED) {
+		/* ACQUIRE ordering guarantees the access of implementation
+		 * specific opaque data under the correct state.
+		 */
+		n_state = __atomic_load_n(&evtims[i]->state, __ATOMIC_ACQUIRE);
+		if (n_state == RTE_EVENT_TIMER_CANCELED) {
 			rte_errno = EALREADY;
 			break;
-		} else if (evtims[i]->state != RTE_EVENT_TIMER_ARMED) {
+		} else if (n_state != RTE_EVENT_TIMER_ARMED) {
 			rte_errno = EINVAL;
 			break;
 		}
-
-		rte_smp_rmb();
 
 		opaque = evtims[i]->impl_opaque[0];
 		timp = (struct rte_timer *)(uintptr_t)opaque;
@@ -1147,11 +1182,12 @@ swtim_cancel_burst(const struct rte_event_timer_adapter *adapter,
 
 		rte_mempool_put(sw->tim_pool, (void **)timp);
 
-		evtims[i]->state = RTE_EVENT_TIMER_CANCELED;
-		evtims[i]->impl_opaque[0] = 0;
-		evtims[i]->impl_opaque[1] = 0;
-
-		rte_smp_wmb();
+		/* The RELEASE ordering here pairs with atomic ordering
+		 * to make sure the state update data observed between
+		 * threads.
+		 */
+		__atomic_store_n(&evtims[i]->state, RTE_EVENT_TIMER_CANCELED,
+				__ATOMIC_RELEASE);
 	}
 
 	return i;
@@ -1183,19 +1219,3 @@ static const struct rte_event_timer_adapter_ops swtim_ops = {
 	.arm_tmo_tick_burst	= swtim_arm_tmo_tick_burst,
 	.cancel_burst		= swtim_cancel_burst,
 };
-
-RTE_INIT(event_timer_adapter_init_log)
-{
-	evtim_logtype = rte_log_register("lib.eventdev.adapter.timer");
-	if (evtim_logtype >= 0)
-		rte_log_set_level(evtim_logtype, RTE_LOG_NOTICE);
-
-	evtim_buffer_logtype = rte_log_register("lib.eventdev.adapter.timer."
-						"buffer");
-	if (evtim_buffer_logtype >= 0)
-		rte_log_set_level(evtim_buffer_logtype, RTE_LOG_NOTICE);
-
-	evtim_svc_logtype = rte_log_register("lib.eventdev.adapter.timer.svc");
-	if (evtim_svc_logtype >= 0)
-		rte_log_set_level(evtim_svc_logtype, RTE_LOG_NOTICE);
-}

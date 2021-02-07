@@ -53,7 +53,7 @@ struct rte_mempool *message_pool;
 volatile int quit = 0;
 
 static int
-lcore_recv(__attribute__((unused)) void *arg)
+lcore_recv(__rte_unused void *arg)
 {
 	unsigned lcore_id = rte_lcore_id();
 
@@ -108,12 +108,12 @@ main(int argc, char **argv)
 
 	RTE_LOG(INFO, APP, "Finished Process Init.\n");
 
-	/* call lcore_recv() on every slave lcore */
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	/* call lcore_recv() on every worker lcore */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		rte_eal_remote_launch(lcore_recv, NULL, lcore_id);
 	}
 
-	/* call cmd prompt on master lcore */
+	/* call cmd prompt on main lcore */
 	struct cmdline *cl = cmdline_stdin_new(simple_mp_ctx, "\nsimple_mp > ");
 	if (cl == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create cmdline instance\n");

@@ -51,14 +51,15 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 			void *mapaddr = pci_map_resource(uio_res->maps[i].addr,
 					fd, (off_t)uio_res->maps[i].offset,
 					(size_t)uio_res->maps[i].size, 0);
-			/* fd is not needed in slave process, close it */
+
+			/* fd is not needed in secondary process, close it */
 			close(fd);
 			if (mapaddr != uio_res->maps[i].addr) {
 				RTE_LOG(ERR, EAL,
 					"Cannot mmap device resource file %s to address: %p\n",
 					uio_res->maps[i].path,
 					uio_res->maps[i].addr);
-				if (mapaddr != MAP_FAILED) {
+				if (mapaddr != NULL) {
 					/* unmap addrs correctly mapped */
 					for (j = 0; j < i; j++)
 						pci_unmap_resource(
@@ -70,6 +71,7 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 				}
 				return -1;
 			}
+			dev->mem_resource[i].addr = mapaddr;
 		}
 		return 0;
 	}

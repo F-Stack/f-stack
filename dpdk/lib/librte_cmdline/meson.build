@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
-allow_experimental_apis = true
 sources = files('cmdline.c',
 	'cmdline_cirbuf.c',
 	'cmdline_parse.c',
@@ -25,5 +24,11 @@ headers = files('cmdline.h',
 	'cmdline_socket.h',
 	'cmdline_cirbuf.h',
 	'cmdline_parse_portlist.h')
+
+if is_windows
+	sources += files('cmdline_os_windows.c')
+else
+	sources += files('cmdline_os_unix.c')
+endif
 
 deps += ['net']

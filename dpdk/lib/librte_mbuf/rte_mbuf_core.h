@@ -12,6 +12,8 @@
  * packet offload flags and some related macros.
  * For majority of DPDK entities, it is not recommended to include
  * this file directly, use include <rte_mbuf.h> instead.
+ *
+ * New fields and flags should fit in the "dynamic space".
  */
 
 #include <stdint.h>
@@ -124,12 +126,19 @@ extern "C" {
 #define PKT_RX_FDIR_FLX      (1ULL << 14)
 
 /**
- * The 2 vlans have been stripped by the hardware and their tci are
- * saved in mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
- * This can only happen if vlan stripping is enabled in the RX
+ * The outer VLAN has been stripped by the hardware and its TCI is
+ * saved in mbuf->vlan_tci_outer.
+ * This can only happen if VLAN stripping is enabled in the Rx
  * configuration of the PMD.
- * When PKT_RX_QINQ_STRIPPED is set, the flags (PKT_RX_VLAN |
- * PKT_RX_VLAN_STRIPPED | PKT_RX_QINQ) must also be set.
+ * When PKT_RX_QINQ_STRIPPED is set, the flags PKT_RX_VLAN and PKT_RX_QINQ
+ * must also be set.
+ *
+ * - If both PKT_RX_QINQ_STRIPPED and PKT_RX_VLAN_STRIPPED are set, the 2 VLANs
+ *   have been stripped by the hardware and their TCIs are saved in
+ *   mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
+ * - If PKT_RX_QINQ_STRIPPED is set and PKT_RX_VLAN_STRIPPED is unset, only the
+ *   outer VLAN is removed from packet data, but both tci are saved in
+ *   mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
  */
 #define PKT_RX_QINQ_STRIPPED (1ULL << 15)
 
@@ -140,10 +149,7 @@ extern "C" {
  */
 #define PKT_RX_LRO           (1ULL << 16)
 
-/**
- * Indicate that the timestamp field in the mbuf is valid.
- */
-#define PKT_RX_TIMESTAMP     (1ULL << 17)
+/* There is no flag defined at offset 17. It is free for any future use. */
 
 /**
  * Indicate that security offload processing was applied on the RX packet.
@@ -157,8 +163,8 @@ extern "C" {
 
 /**
  * The RX packet is a double VLAN, and the outer tci has been
- * saved in in mbuf->vlan_tci_outer. If PKT_RX_QINQ set, PKT_RX_VLAN
- * also should be set and inner tci should be saved to mbuf->vlan_tci.
+ * saved in mbuf->vlan_tci_outer. If this flag is set, PKT_RX_VLAN
+ * must also be set and the inner tci is saved in mbuf->vlan_tci.
  * If the flag PKT_RX_QINQ_STRIPPED is also present, both VLANs
  * headers have been stripped from mbuf data, else they are still
  * present.
@@ -270,7 +276,7 @@ extern "C" {
  * mbuf 'vlan_tci' & 'vlan_tci_outer' must be valid when this flag is set.
  */
 #define PKT_TX_QINQ        (1ULL << 49)
-/* this old name is deprecated */
+/** This old name is deprecated. */
 #define PKT_TX_QINQ_PKT    PKT_TX_QINQ
 
 /**
@@ -406,19 +412,6 @@ extern "C" {
 #define	RTE_MBUF_DEFAULT_BUF_SIZE	\
 	(RTE_MBUF_DEFAULT_DATAROOM + RTE_PKTMBUF_HEADROOM)
 
-/*
- * define a set of marker types that can be used to refer to set points in the
- * mbuf.
- */
-__extension__
-typedef void    *MARKER[0];   /**< generic marker for a point in a structure */
-__extension__
-typedef uint8_t  MARKER8[0];  /**< generic marker with 1B alignment */
-
- /** marker that allows us to overwrite 8 bytes with a single assignment */
-__extension__
-typedef uint64_t MARKER64[0];
-
 struct rte_mbuf_sched {
 	uint32_t queue_id;   /**< Queue ID. */
 	uint8_t traffic_class;
@@ -478,7 +471,7 @@ enum {
  * The generic rte_mbuf, containing a packet mbuf.
  */
 struct rte_mbuf {
-	MARKER cacheline0;
+	RTE_MARKER cacheline0;
 
 	void *buf_addr;           /**< Virtual address of segment buffer. */
 	/**
@@ -487,14 +480,10 @@ struct rte_mbuf {
 	 * same mbuf cacheline0 layout for 32-bit and 64-bit. This makes
 	 * working on vector drivers easier.
 	 */
-	RTE_STD_C11
-	union {
-		rte_iova_t buf_iova;
-		rte_iova_t buf_physaddr; /**< deprecated */
-	} __rte_aligned(sizeof(rte_iova_t));
+	rte_iova_t buf_iova __rte_aligned(sizeof(rte_iova_t));
 
 	/* next 8 bytes are initialised on RX descriptor rearm */
-	MARKER64 rearm_data;
+	RTE_MARKER64 rearm_data;
 	uint16_t data_off;
 
 	/**
@@ -503,15 +492,9 @@ struct rte_mbuf {
 	 * It should only be accessed using the following functions:
 	 * rte_mbuf_refcnt_update(), rte_mbuf_refcnt_read(), and
 	 * rte_mbuf_refcnt_set(). The functionality of these functions (atomic,
-	 * or non-atomic) is controlled by the CONFIG_RTE_MBUF_REFCNT_ATOMIC
-	 * config option.
+	 * or non-atomic) is controlled by the RTE_MBUF_REFCNT_ATOMIC flag.
 	 */
-	RTE_STD_C11
-	union {
-		rte_atomic16_t refcnt_atomic; /**< Atomically accessed refcnt */
-		/** Non-atomically accessed refcnt */
-		uint16_t refcnt;
-	};
+	uint16_t refcnt;
 	uint16_t nb_segs;         /**< Number of segments. */
 
 	/** Input port (16 bits to support more than 256 virtual ports).
@@ -522,7 +505,7 @@ struct rte_mbuf {
 	uint64_t ol_flags;        /**< Offload features. */
 
 	/* remaining bytes are set on RX when pulling packet from descriptor */
-	MARKER rx_descriptor_fields1;
+	RTE_MARKER rx_descriptor_fields1;
 
 	/*
 	 * The packet type, which is the combination of outer/inner L2, L3, L4
@@ -534,11 +517,12 @@ struct rte_mbuf {
 	RTE_STD_C11
 	union {
 		uint32_t packet_type; /**< L2/L3/L4 and tunnel information. */
+		__extension__
 		struct {
-			uint32_t l2_type:4; /**< (Outer) L2 type. */
-			uint32_t l3_type:4; /**< (Outer) L3 type. */
-			uint32_t l4_type:4; /**< (Outer) L4 type. */
-			uint32_t tun_type:4; /**< Tunnel type. */
+			uint8_t l2_type:4;   /**< (Outer) L2 type. */
+			uint8_t l3_type:4;   /**< (Outer) L3 type. */
+			uint8_t l4_type:4;   /**< (Outer) L4 type. */
+			uint8_t tun_type:4;  /**< Tunnel type. */
 			RTE_STD_C11
 			union {
 				uint8_t inner_esp_next_proto;
@@ -554,7 +538,7 @@ struct rte_mbuf {
 					/**< Inner L3 type. */
 				};
 			};
-			uint32_t inner_l4_type:4; /**< Inner L4 type. */
+			uint8_t inner_l4_type:4; /**< Inner L4 type. */
 		};
 	};
 
@@ -602,23 +586,11 @@ struct rte_mbuf {
 
 	uint16_t buf_len;         /**< Length of segment buffer. */
 
-	/** Valid if PKT_RX_TIMESTAMP is set. The unit and time reference
-	 * are not normalized but are always the same for a given port.
-	 * Some devices allow to query rte_eth_read_clock that will return the
-	 * current device timestamp.
-	 */
-	uint64_t timestamp;
+	struct rte_mempool *pool; /**< Pool from which mbuf was allocated. */
 
 	/* second cache line - fields only used in slow path or on TX */
-	MARKER cacheline1 __rte_cache_min_aligned;
+	RTE_MARKER cacheline1 __rte_cache_min_aligned;
 
-	RTE_STD_C11
-	union {
-		void *userdata;   /**< Can be used for external metadata */
-		uint64_t udata64; /**< Allow 8-byte userdata on 32-bit */
-	};
-
-	struct rte_mempool *pool; /**< Pool from which mbuf was allocated. */
 	struct rte_mbuf *next;    /**< Next segment of scattered packet. */
 
 	/* fields to support TX offloads */
@@ -659,6 +631,11 @@ struct rte_mbuf {
 		};
 	};
 
+	/** Shared data for external buffer attached to mbuf. See
+	 * rte_pktmbuf_attach_extbuf().
+	 */
+	struct rte_mbuf_ext_shared_info *shinfo;
+
 	/** Size of the application private data. In case of an indirect
 	 * mbuf, it stores the direct mbuf private data size.
 	 */
@@ -667,15 +644,7 @@ struct rte_mbuf {
 	/** Timesync flags for use with IEEE1588. */
 	uint16_t timesync;
 
-	/** Sequence number. See also rte_reorder_insert(). */
-	uint32_t seqn;
-
-	/** Shared data for external buffer attached to mbuf. See
-	 * rte_pktmbuf_attach_extbuf().
-	 */
-	struct rte_mbuf_ext_shared_info *shinfo;
-
-	uint64_t dynfield1[2]; /**< Reserved for dynamic fields. */
+	uint32_t dynfield1[9]; /**< Reserved for dynamic fields. */
 } __rte_cache_aligned;
 
 /**
@@ -689,10 +658,10 @@ typedef void (*rte_mbuf_extbuf_free_callback_t)(void *addr, void *opaque);
 struct rte_mbuf_ext_shared_info {
 	rte_mbuf_extbuf_free_callback_t free_cb; /**< Free callback function */
 	void *fcb_opaque;                        /**< Free callback argument */
-	rte_atomic16_t refcnt_atomic;        /**< Atomically accessed refcnt */
+	uint16_t refcnt;
 };
 
-/**< Maximum number of nb_segs allowed. */
+/** Maximum number of nb_segs allowed. */
 #define RTE_MBUF_MAX_NB_SEGS	UINT16_MAX
 
 /**
@@ -720,7 +689,10 @@ struct rte_mbuf_ext_shared_info {
 #define RTE_MBUF_DIRECT(mb) \
 	(!((mb)->ol_flags & (IND_ATTACHED_MBUF | EXT_ATTACHED_MBUF)))
 
-#define MBUF_INVALID_PORT UINT16_MAX
+/** Uninitialized or unspecified port. */
+#define RTE_MBUF_PORT_INVALID UINT16_MAX
+/** For backwards compatibility. */
+#define MBUF_INVALID_PORT RTE_MBUF_PORT_INVALID
 
 /**
  * A macro that points to an offset into the data in the mbuf.

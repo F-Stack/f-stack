@@ -6,6 +6,9 @@
 #define _QAT_SYM_H_
 
 #include <rte_cryptodev_pmd.h>
+#ifdef RTE_LIB_SECURITY
+#include <rte_net_crc.h>
+#endif
 
 #ifdef BUILD_QAT_SYM
 #include <openssl/evp.h>
@@ -132,14 +135,90 @@ qat_bpicipher_postprocess(struct qat_sym_session *ctx,
 	return sym_op->cipher.data.length - last_block_len;
 }
 
+#ifdef RTE_LIB_SECURITY
+static inline void
+qat_crc_verify(struct qat_sym_session *ctx, struct rte_crypto_op *op)
+{
+	struct rte_crypto_sym_op *sym_op = op->sym;
+	uint32_t crc_data_ofs, crc_data_len, crc;
+	uint8_t *crc_data;
+
+	if (ctx->qat_dir == ICP_QAT_HW_CIPHER_DECRYPT &&
+			sym_op->auth.data.length != 0) {
+
+		crc_data_ofs = sym_op->auth.data.offset;
+		crc_data_len = sym_op->auth.data.length;
+		crc_data = rte_pktmbuf_mtod_offset(sym_op->m_src, uint8_t *,
+				crc_data_ofs);
+
+		crc = rte_net_crc_calc(crc_data, crc_data_len,
+				RTE_NET_CRC32_ETH);
+
+		if (crc != *(uint32_t *)(crc_data + crc_data_len))
+			op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
+	}
+}
+
+static inline void
+qat_crc_generate(struct qat_sym_session *ctx,
+			struct rte_crypto_op *op)
+{
+	struct rte_crypto_sym_op *sym_op = op->sym;
+	uint32_t *crc, crc_data_len;
+	uint8_t *crc_data;
+
+	if (ctx->qat_dir == ICP_QAT_HW_CIPHER_ENCRYPT &&
+			sym_op->auth.data.length != 0 &&
+			sym_op->m_src->nb_segs == 1) {
+
+		crc_data_len = sym_op->auth.data.length;
+		crc_data = rte_pktmbuf_mtod_offset(sym_op->m_src, uint8_t *,
+				sym_op->auth.data.offset);
+		crc = (uint32_t *)(crc_data + crc_data_len);
+		*crc = rte_net_crc_calc(crc_data, crc_data_len,
+				RTE_NET_CRC32_ETH);
+	}
+}
+
+static inline void
+qat_sym_preprocess_requests(void **ops, uint16_t nb_ops)
+{
+	struct rte_crypto_op *op;
+	struct qat_sym_session *ctx;
+	uint16_t i;
+
+	for (i = 0; i < nb_ops; i++) {
+		op = (struct rte_crypto_op *)ops[i];
+
+		if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+			ctx = (struct qat_sym_session *)
+				get_sec_session_private_data(
+					op->sym->sec_session);
+
+			if (ctx == NULL || ctx->bpi_ctx == NULL)
+				continue;
+
+			qat_crc_generate(ctx, op);
+		}
+	}
+}
+#else
+
+static inline void
+qat_sym_preprocess_requests(void **ops __rte_unused,
+				uint16_t nb_ops __rte_unused)
+{
+}
+#endif
+
 static inline void
 qat_sym_process_response(void **op, uint8_t *resp)
 {
-
 	struct icp_qat_fw_comn_resp *resp_msg =
 			(struct icp_qat_fw_comn_resp *)resp;
 	struct rte_crypto_op *rx_op = (struct rte_crypto_op *)(uintptr_t)
 			(resp_msg->opaque_data);
+	struct qat_sym_session *sess;
 
 #if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
 	QAT_DP_HEXDUMP_LOG(DEBUG, "qat_response:", (uint8_t *)resp_msg,
@@ -152,23 +231,61 @@ qat_sym_process_response(void **op, uint8_t *resp)
 
 		rx_op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
 	} else {
-		struct qat_sym_session *sess = (struct qat_sym_session *)
-						get_sym_session_private_data(
-						rx_op->sym->session,
-						cryptodev_qat_driver_id);
+#ifdef RTE_LIB_SECURITY
+		uint8_t is_docsis_sec = 0;
 
+		if (rx_op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+			/*
+			 * Assuming at this point that if it's a security
+			 * op, that this is for DOCSIS
+			 */
+			sess = (struct qat_sym_session *)
+					get_sec_session_private_data(
+					rx_op->sym->sec_session);
+			is_docsis_sec = 1;
+		} else
+#endif
+		{
+			sess = (struct qat_sym_session *)
+					get_sym_session_private_data(
+					rx_op->sym->session,
+					qat_sym_driver_id);
+		}
 
-		if (sess->bpi_ctx)
-			qat_bpicipher_postprocess(sess, rx_op);
 		rx_op->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+
+		if (sess->bpi_ctx) {
+			qat_bpicipher_postprocess(sess, rx_op);
+#ifdef RTE_LIB_SECURITY
+			if (is_docsis_sec)
+				qat_crc_verify(sess, rx_op);
+#endif
+		}
 	}
 	*op = (void *)rx_op;
 }
+
+int
+qat_sym_configure_dp_ctx(struct rte_cryptodev *dev, uint16_t qp_id,
+	struct rte_crypto_raw_dp_ctx *raw_dp_ctx,
+	enum rte_crypto_op_sess_type sess_type,
+	union rte_cryptodev_session_ctx session_ctx, uint8_t is_update);
+
+int
+qat_sym_get_dp_ctx_size(struct rte_cryptodev *dev);
+
 #else
+
+static inline void
+qat_sym_preprocess_requests(void **ops __rte_unused,
+				uint16_t nb_ops __rte_unused)
+{
+}
 
 static inline void
 qat_sym_process_response(void **op __rte_unused, uint8_t *resp __rte_unused)
 {
 }
+
 #endif
 #endif /* _QAT_SYM_H_ */

@@ -7,7 +7,7 @@
 
 #include "otx2_mempool.h"
 
-static int __hot
+static int __rte_hot
 otx2_npa_enq(struct rte_mempool *mp, void * const *obj_table, unsigned int n)
 {
 	unsigned int index; const uint64_t aura_handle = mp->pool_id;
@@ -15,6 +15,10 @@ otx2_npa_enq(struct rte_mempool *mp, void * const *obj_table, unsigned int n)
 	const uint64_t addr = npa_lf_aura_handle_to_base(aura_handle) +
 				 NPA_LF_AURA_OP_FREE0;
 
+	/* Ensure mbuf init changes are written before the free pointers
+	 * are enqueued to the stack.
+	 */
+	rte_io_wmb();
 	for (index = 0; index < n; index++)
 		otx2_store_pair((uint64_t)obj_table[index], reg, addr);
 
@@ -281,7 +285,7 @@ otx2_npa_clear_alloc(struct rte_mempool *mp, void **obj_table, unsigned int n)
 	}
 }
 
-static __rte_noinline int __hot
+static __rte_noinline int __rte_hot
 otx2_npa_deq_arm64(struct rte_mempool *mp, void **obj_table, unsigned int n)
 {
 	const int64_t wdata = npa_lf_aura_handle_to_aura(mp->pool_id);
@@ -308,7 +312,7 @@ otx2_npa_deq_arm64(struct rte_mempool *mp, void **obj_table, unsigned int n)
 
 #else
 
-static inline int __hot
+static inline int __rte_hot
 otx2_npa_deq(struct rte_mempool *mp, void **obj_table, unsigned int n)
 {
 	const int64_t wdata = npa_lf_aura_handle_to_aura(mp->pool_id);
@@ -348,7 +352,12 @@ npa_lf_aura_pool_init(struct otx2_mbox *mbox, uint32_t aura_id,
 	struct npa_aq_enq_req *aura_init_req, *pool_init_req;
 	struct npa_aq_enq_rsp *aura_init_rsp, *pool_init_rsp;
 	struct otx2_mbox_dev *mdev = &mbox->dev[0];
+	struct otx2_idev_cfg *idev;
 	int rc, off;
+
+	idev = otx2_intra_dev_get_cfg();
+	if (idev == NULL)
+		return -ENOMEM;
 
 	aura_init_req = otx2_mbox_alloc_msg_npa_aq_enq(mbox);
 
@@ -379,6 +388,44 @@ npa_lf_aura_pool_init(struct otx2_mbox *mbox, uint32_t aura_id,
 		return 0;
 	else
 		return NPA_LF_ERR_AURA_POOL_INIT;
+
+	if (!(idev->npa_lock_mask & BIT_ULL(aura_id)))
+		return 0;
+
+	aura_init_req = otx2_mbox_alloc_msg_npa_aq_enq(mbox);
+	aura_init_req->aura_id = aura_id;
+	aura_init_req->ctype = NPA_AQ_CTYPE_AURA;
+	aura_init_req->op = NPA_AQ_INSTOP_LOCK;
+
+	pool_init_req = otx2_mbox_alloc_msg_npa_aq_enq(mbox);
+	if (!pool_init_req) {
+		/* The shared memory buffer can be full.
+		 * Flush it and retry
+		 */
+		otx2_mbox_msg_send(mbox, 0);
+		rc = otx2_mbox_wait_for_rsp(mbox, 0);
+		if (rc < 0) {
+			otx2_err("Failed to LOCK AURA context");
+			return -ENOMEM;
+		}
+
+		pool_init_req = otx2_mbox_alloc_msg_npa_aq_enq(mbox);
+		if (!pool_init_req) {
+			otx2_err("Failed to LOCK POOL context");
+			return -ENOMEM;
+		}
+	}
+	pool_init_req->aura_id = aura_id;
+	pool_init_req->ctype = NPA_AQ_CTYPE_POOL;
+	pool_init_req->op = NPA_AQ_INSTOP_LOCK;
+
+	rc = otx2_mbox_process(mbox);
+	if (rc < 0) {
+		otx2_err("Failed to lock POOL ctx to NDC");
+		return -ENOMEM;
+	}
+
+	return 0;
 }
 
 static int
@@ -390,7 +437,12 @@ npa_lf_aura_pool_fini(struct otx2_mbox *mbox,
 	struct npa_aq_enq_rsp *aura_rsp, *pool_rsp;
 	struct otx2_mbox_dev *mdev = &mbox->dev[0];
 	struct ndc_sync_op *ndc_req;
+	struct otx2_idev_cfg *idev;
 	int rc, off;
+
+	idev = otx2_intra_dev_get_cfg();
+	if (idev == NULL)
+		return -EINVAL;
 
 	/* Procedure for disabling an aura/pool */
 	rte_delay_us(10);
@@ -434,6 +486,32 @@ npa_lf_aura_pool_fini(struct otx2_mbox *mbox,
 		otx2_err("Error on NDC-NPA LF sync, rc %d", rc);
 		return NPA_LF_ERR_AURA_POOL_FINI;
 	}
+
+	if (!(idev->npa_lock_mask & BIT_ULL(aura_id)))
+		return 0;
+
+	aura_req = otx2_mbox_alloc_msg_npa_aq_enq(mbox);
+	aura_req->aura_id = aura_id;
+	aura_req->ctype = NPA_AQ_CTYPE_AURA;
+	aura_req->op = NPA_AQ_INSTOP_UNLOCK;
+
+	rc = otx2_mbox_process(mbox);
+	if (rc < 0) {
+		otx2_err("Failed to unlock AURA ctx to NDC");
+		return -EINVAL;
+	}
+
+	pool_req = otx2_mbox_alloc_msg_npa_aq_enq(mbox);
+	pool_req->aura_id = aura_id;
+	pool_req->ctype = NPA_AQ_CTYPE_POOL;
+	pool_req->op = NPA_AQ_INSTOP_UNLOCK;
+
+	rc = otx2_mbox_process(mbox);
+	if (rc < 0) {
+		otx2_err("Failed to unlock POOL ctx to NDC");
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -637,10 +715,11 @@ static int
 otx2_npa_alloc(struct rte_mempool *mp)
 {
 	uint32_t block_size, block_count;
+	uint64_t aura_handle = 0;
 	struct otx2_npa_lf *lf;
 	struct npa_aura_s aura;
 	struct npa_pool_s pool;
-	uint64_t aura_handle;
+	size_t padding;
 	int rc;
 
 	lf = otx2_npa_lf_obj_get();
@@ -650,6 +729,18 @@ otx2_npa_alloc(struct rte_mempool *mp)
 	}
 
 	block_size = mp->elt_size + mp->header_size + mp->trailer_size;
+	/*
+	 * OCTEON TX2 has 8 sets, 41 ways L1D cache, VA<9:7> bits dictate
+	 * the set selection.
+	 * Add additional padding to ensure that the element size always
+	 * occupies odd number of cachelines to ensure even distribution
+	 * of elements among L1D cache sets.
+	 */
+	padding = ((block_size / RTE_CACHE_LINE_SIZE) % 2) ? 0 :
+				RTE_CACHE_LINE_SIZE;
+	mp->trailer_size += padding;
+	block_size += padding;
+
 	block_count = mp->size;
 
 	if (block_size % OTX2_ALIGN != 0) {
@@ -724,13 +815,24 @@ otx2_npa_calc_mem_size(const struct rte_mempool *mp, uint32_t obj_num,
 						align);
 }
 
+static uint8_t
+otx2_npa_l1d_way_set_get(uint64_t iova)
+{
+	return (iova >> rte_log2_u32(RTE_CACHE_LINE_SIZE)) & 0x7;
+}
+
 static int
 otx2_npa_populate(struct rte_mempool *mp, unsigned int max_objs, void *vaddr,
 		  rte_iova_t iova, size_t len,
 		  rte_mempool_populate_obj_cb_t *obj_cb, void *obj_cb_arg)
 {
+#define OTX2_L1D_NB_SETS	8
+	uint64_t distribution[OTX2_L1D_NB_SETS];
+	rte_iova_t start_iova;
 	size_t total_elt_sz;
+	uint8_t set;
 	size_t off;
+	int i;
 
 	if (iova == RTE_BAD_IOVA)
 		return -EINVAL;
@@ -743,9 +845,30 @@ otx2_npa_populate(struct rte_mempool *mp, unsigned int max_objs, void *vaddr,
 	if (len < off)
 		return -EINVAL;
 
+
 	vaddr = (char *)vaddr + off;
 	iova += off;
 	len -= off;
+
+	memset(distribution, 0, sizeof(uint64_t) * OTX2_L1D_NB_SETS);
+	start_iova = iova;
+	while (start_iova < iova + len) {
+		set = otx2_npa_l1d_way_set_get(start_iova + mp->header_size);
+		distribution[set]++;
+		start_iova += total_elt_sz;
+	}
+
+	otx2_npa_dbg("iova %"PRIx64", aligned iova %"PRIx64"", iova - off,
+		     iova);
+	otx2_npa_dbg("length %"PRIu64", aligned length %"PRIu64"",
+		     (uint64_t)(len + off), (uint64_t)len);
+	otx2_npa_dbg("element size %"PRIu64"", (uint64_t)total_elt_sz);
+	otx2_npa_dbg("requested objects %"PRIu64", possible objects %"PRIu64"",
+		     (uint64_t)max_objs, (uint64_t)(len / total_elt_sz));
+	otx2_npa_dbg("L1D set distribution :");
+	for (i = 0; i < OTX2_L1D_NB_SETS; i++)
+		otx2_npa_dbg("set[%d] : objects : %"PRIu64"", i,
+			     distribution[i]);
 
 	npa_lf_aura_op_range_set(mp->pool_id, iova, iova + len);
 

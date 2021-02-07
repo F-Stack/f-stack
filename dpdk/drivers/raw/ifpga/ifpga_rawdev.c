@@ -41,14 +41,6 @@
 #include "ifpga_rawdev.h"
 #include "ipn3ke_rawdev_api.h"
 
-#define RTE_PCI_EXT_CAP_ID_ERR           0x01	/* Advanced Error Reporting */
-#define RTE_PCI_CFG_SPACE_SIZE           256
-#define RTE_PCI_CFG_SPACE_EXP_SIZE       4096
-#define RTE_PCI_EXT_CAP_ID(header)       (int)(header & 0x0000ffff)
-#define RTE_PCI_EXT_CAP_NEXT(header)     ((header >> 20) & 0xffc)
-
-int ifpga_rawdev_logtype;
-
 #define PCI_VENDOR_ID_INTEL          0x8086
 /* PCI Device ID */
 #define PCIE_DEVICE_ID_PF_INT_5_X    0xBCBD
@@ -88,8 +80,8 @@ ifpga_rawdev_allocate(struct rte_rawdev *rawdev);
 static int set_surprise_link_check_aer(
 		struct ifpga_rawdev *ifpga_rdev, int force_disable);
 static int ifpga_pci_find_next_ext_capability(unsigned int fd,
-		int start, int cap);
-static int ifpga_pci_find_ext_capability(unsigned int fd, int cap);
+					      int start, uint32_t cap);
+static int ifpga_pci_find_ext_capability(unsigned int fd, uint32_t cap);
 
 struct ifpga_rawdev *
 ifpga_rawdev_get(const struct rte_rawdev *rawdev)
@@ -146,8 +138,8 @@ ifpga_rawdev_allocate(struct rte_rawdev *rawdev)
 	return dev;
 }
 
-static int ifpga_pci_find_next_ext_capability(unsigned int fd,
-int start, int cap)
+static int
+ifpga_pci_find_next_ext_capability(unsigned int fd, int start, uint32_t cap)
 {
 	uint32_t header;
 	int ttl;
@@ -185,7 +177,8 @@ int start, int cap)
 	return 0;
 }
 
-static int ifpga_pci_find_ext_capability(unsigned int fd, int cap)
+static int
+ifpga_pci_find_ext_capability(unsigned int fd, uint32_t cap)
 {
 	return ifpga_pci_find_next_ext_capability(fd, 0, cap);
 }
@@ -237,8 +230,9 @@ static int ifpga_rawdev_fill_info(struct ifpga_rawdev *ifpga_dev,
 	memset(link, 0, sizeof(link));
 	memset(link1, 0, sizeof(link1));
 	ret = readlink(path, link, (sizeof(link)-1));
-	if (ret == -1)
+	if ((ret < 0) || ((unsigned int)ret > (sizeof(link)-1)))
 		return -1;
+	link[ret] = 0;   /* terminate string with null character */
 	strlcpy(link1, link, sizeof(link1));
 	memset(ifpga_dev->parent_bdf, 0, 16);
 	point = strlen(link);
@@ -605,9 +599,10 @@ ifpga_fill_afu_dev(struct opae_accelerator *acc,
 	return 0;
 }
 
-static void
+static int
 ifpga_rawdev_info_get(struct rte_rawdev *dev,
-				     rte_rawdev_obj_t dev_info)
+		      rte_rawdev_obj_t dev_info,
+		      size_t dev_info_size)
 {
 	struct opae_adapter *adapter;
 	struct opae_accelerator *acc;
@@ -619,14 +614,14 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 
 	IFPGA_RAWDEV_PMD_FUNC_TRACE();
 
-	if (!dev_info) {
+	if (!dev_info || dev_info_size != sizeof(*afu_dev)) {
 		IFPGA_RAWDEV_PMD_ERR("Invalid request");
-		return;
+		return -EINVAL;
 	}
 
 	adapter = ifpga_rawdev_get_priv(dev);
 	if (!adapter)
-		return;
+		return -ENOENT;
 
 	afu_dev = dev_info;
 	afu_dev->rawdev = dev;
@@ -638,7 +633,7 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 
 		if (ifpga_fill_afu_dev(acc, afu_dev)) {
 			IFPGA_RAWDEV_PMD_ERR("cannot get info\n");
-			return;
+			return -ENOENT;
 		}
 	}
 
@@ -648,21 +643,21 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 		/* get LineSide BAR Index */
 		if (opae_manager_get_eth_group_region_info(mgr, 0,
 			&opae_lside_eth_info)) {
-			return;
+			return -ENOENT;
 		}
 		lside_bar_idx = opae_lside_eth_info.mem_idx;
 
 		/* get NICSide BAR Index */
 		if (opae_manager_get_eth_group_region_info(mgr, 1,
 			&opae_nside_eth_info)) {
-			return;
+			return -ENOENT;
 		}
 		nside_bar_idx = opae_nside_eth_info.mem_idx;
 
 		if (lside_bar_idx >= PCI_MAX_RESOURCE ||
 			nside_bar_idx >= PCI_MAX_RESOURCE ||
 			lside_bar_idx == nside_bar_idx)
-			return;
+			return -ENOENT;
 
 		/* fill LineSide BAR Index */
 		afu_dev->mem_resource[lside_bar_idx].phys_addr =
@@ -680,11 +675,13 @@ ifpga_rawdev_info_get(struct rte_rawdev *dev,
 		afu_dev->mem_resource[nside_bar_idx].addr =
 			opae_nside_eth_info.addr;
 	}
+	return 0;
 }
 
 static int
 ifpga_rawdev_configure(const struct rte_rawdev *dev,
-		rte_rawdev_obj_t config)
+		rte_rawdev_obj_t config,
+		size_t config_size __rte_unused)
 {
 	IFPGA_RAWDEV_PMD_FUNC_TRACE();
 
@@ -719,6 +716,16 @@ ifpga_rawdev_stop(struct rte_rawdev *dev)
 static int
 ifpga_rawdev_close(struct rte_rawdev *dev)
 {
+	struct opae_adapter *adapter;
+
+	if (dev) {
+		adapter = ifpga_rawdev_get_priv(dev);
+		if (adapter) {
+			opae_adapter_destroy(adapter);
+			opae_adapter_data_free(adapter->data);
+		}
+	}
+
 	return dev ? 0:1;
 }
 
@@ -779,7 +786,7 @@ rte_fpga_do_pr(struct rte_rawdev *rawdev, int port_id,
 	int file_fd;
 	int ret = 0;
 	ssize_t buffer_size;
-	void *buffer;
+	void *buffer, *buf_to_free;
 	u64 pr_error;
 
 	if (!file_name)
@@ -811,6 +818,7 @@ rte_fpga_do_pr(struct rte_rawdev *rawdev, int port_id,
 		ret = -ENOMEM;
 		goto close_fd;
 	}
+	buf_to_free = buffer;
 
 	/*read the raw data*/
 	if (buffer_size != read(file_fd, (void *)buffer, buffer_size)) {
@@ -828,8 +836,8 @@ rte_fpga_do_pr(struct rte_rawdev *rawdev, int port_id,
 	}
 
 free_buffer:
-	if (buffer)
-		rte_free(buffer);
+	if (buf_to_free)
+		rte_free(buf_to_free);
 close_fd:
 	close(file_fd);
 	file_fd = 0;
@@ -1336,17 +1344,18 @@ int
 ifpga_unregister_msix_irq(enum ifpga_irq_type type,
 		int vec_start, rte_intr_callback_fn handler, void *arg)
 {
-	struct rte_intr_handle intr_handle;
+	struct rte_intr_handle *intr_handle;
 
 	if (type == IFPGA_FME_IRQ)
-		intr_handle = ifpga_irq_handle[0];
+		intr_handle = &ifpga_irq_handle[0];
 	else if (type == IFPGA_AFU_IRQ)
-		intr_handle = ifpga_irq_handle[vec_start + 1];
+		intr_handle = &ifpga_irq_handle[vec_start + 1];
+	else
+		return 0;
 
-	rte_intr_efd_disable(&intr_handle);
+	rte_intr_efd_disable(intr_handle);
 
-	return rte_intr_callback_unregister(&intr_handle,
-			handler, arg);
+	return rte_intr_callback_unregister(intr_handle, handler, arg);
 }
 
 int
@@ -1356,7 +1365,7 @@ ifpga_register_msix_irq(struct rte_rawdev *dev, int port_id,
 		void *arg)
 {
 	int ret;
-	struct rte_intr_handle intr_handle;
+	struct rte_intr_handle *intr_handle;
 	struct opae_adapter *adapter;
 	struct opae_manager *mgr;
 	struct opae_accelerator *acc;
@@ -1370,26 +1379,29 @@ ifpga_register_msix_irq(struct rte_rawdev *dev, int port_id,
 		return -ENODEV;
 
 	if (type == IFPGA_FME_IRQ) {
-		intr_handle = ifpga_irq_handle[0];
+		intr_handle = &ifpga_irq_handle[0];
 		count = 1;
-	} else if (type == IFPGA_AFU_IRQ)
-		intr_handle = ifpga_irq_handle[vec_start + 1];
+	} else if (type == IFPGA_AFU_IRQ) {
+		intr_handle = &ifpga_irq_handle[vec_start + 1];
+	} else {
+		return -EINVAL;
+	}
 
-	intr_handle.type = RTE_INTR_HANDLE_VFIO_MSIX;
+	intr_handle->type = RTE_INTR_HANDLE_VFIO_MSIX;
 
-	ret = rte_intr_efd_enable(&intr_handle, count);
+	ret = rte_intr_efd_enable(intr_handle, count);
 	if (ret)
 		return -ENODEV;
 
-	intr_handle.fd = intr_handle.efds[0];
+	intr_handle->fd = intr_handle->efds[0];
 
 	IFPGA_RAWDEV_PMD_DEBUG("register %s irq, vfio_fd=%d, fd=%d\n",
-			name, intr_handle.vfio_dev_fd,
-			intr_handle.fd);
+			name, intr_handle->vfio_dev_fd,
+			intr_handle->fd);
 
 	if (type == IFPGA_FME_IRQ) {
 		struct fpga_fme_err_irq_set err_irq_set;
-		err_irq_set.evtfd = intr_handle.efds[0];
+		err_irq_set.evtfd = intr_handle->efds[0];
 
 		ret = opae_manager_ifpga_set_err_irq(mgr, &err_irq_set);
 		if (ret)
@@ -1399,13 +1411,14 @@ ifpga_register_msix_irq(struct rte_rawdev *dev, int port_id,
 		if (!acc)
 			return -EINVAL;
 
-		ret = opae_acc_set_irq(acc, vec_start, count, intr_handle.efds);
+		ret = opae_acc_set_irq(acc, vec_start, count,
+				intr_handle->efds);
 		if (ret)
 			return -EINVAL;
 	}
 
 	/* register interrupt handler using DPDK API */
-	ret = rte_intr_callback_register(&intr_handle,
+	ret = rte_intr_callback_register(intr_handle,
 			handler, (void *)arg);
 	if (ret)
 		return -EINVAL;
@@ -1529,6 +1542,7 @@ ifpga_rawdev_destroy(struct rte_pci_device *pci_dev)
 	char name[RTE_RAWDEV_NAME_MAX_LEN];
 	struct opae_adapter *adapter;
 	struct opae_manager *mgr;
+	struct ifpga_rawdev *dev;
 
 	if (!pci_dev) {
 		IFPGA_RAWDEV_PMD_ERR("Invalid pci_dev of the device!");
@@ -1548,6 +1562,9 @@ ifpga_rawdev_destroy(struct rte_pci_device *pci_dev)
 		IFPGA_RAWDEV_PMD_ERR("Invalid device name (%s)", name);
 		return -EINVAL;
 	}
+	dev = ifpga_rawdev_get(rawdev);
+	if (dev)
+		dev->rawdev = NULL;
 
 	adapter = ifpga_rawdev_get_priv(rawdev);
 	if (!adapter)
@@ -1558,11 +1575,8 @@ ifpga_rawdev_destroy(struct rte_pci_device *pci_dev)
 		return -ENODEV;
 
 	if (ifpga_unregister_msix_irq(IFPGA_FME_IRQ, 0,
-				fme_interrupt_handler, mgr))
+				fme_interrupt_handler, mgr) < 0)
 		return -EINVAL;
-
-	opae_adapter_data_free(adapter->data);
-	opae_adapter_free(adapter);
 
 	/* rte_rawdev_close is called by pmd_release */
 	ret = rte_rawdev_pmd_release(rawdev);
@@ -1597,13 +1611,7 @@ static struct rte_pci_driver rte_ifpga_rawdev_pmd = {
 RTE_PMD_REGISTER_PCI(ifpga_rawdev_pci_driver, rte_ifpga_rawdev_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(ifpga_rawdev_pci_driver, rte_ifpga_rawdev_pmd);
 RTE_PMD_REGISTER_KMOD_DEP(ifpga_rawdev_pci_driver, "* igb_uio | uio_pci_generic | vfio-pci");
-
-RTE_INIT(ifpga_rawdev_init_log)
-{
-	ifpga_rawdev_logtype = rte_log_register("driver.raw.init");
-	if (ifpga_rawdev_logtype >= 0)
-		rte_log_set_level(ifpga_rawdev_logtype, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(ifpga_rawdev_logtype, driver.raw.init, NOTICE);
 
 static const char * const valid_args[] = {
 #define IFPGA_ARG_NAME         "ifpga"

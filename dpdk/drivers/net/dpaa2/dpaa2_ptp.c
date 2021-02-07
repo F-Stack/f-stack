@@ -129,6 +129,7 @@ int dpaa2_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 	return 0;
 }
 
+#if defined(RTE_LIBRTE_IEEE1588)
 static int
 dpaa2_create_dprtc_device(int vdev_fd __rte_unused,
 			   struct vfio_device_info *obj_info __rte_unused,
@@ -147,7 +148,7 @@ dpaa2_create_dprtc_device(int vdev_fd __rte_unused,
 	}
 
 	/* Open the dprtc object */
-	dprtc_dev->dprtc.regs = rte_mcp_ptr_list[MC_PORTAL_INDEX];
+	dprtc_dev->dprtc.regs = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
 	ret = dprtc_open(&dprtc_dev->dprtc, CMD_PRI_LOW, dprtc_id,
 			  &dprtc_dev->token);
 	if (ret) {
@@ -179,3 +180,4 @@ static struct rte_dpaa2_object rte_dpaa2_dprtc_obj = {
 };
 
 RTE_PMD_REGISTER_DPAA2_OBJECT(dprtc, rte_dpaa2_dprtc_obj);
+#endif

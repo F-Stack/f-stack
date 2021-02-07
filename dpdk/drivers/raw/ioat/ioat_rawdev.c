@@ -4,13 +4,13 @@
 
 #include <rte_cycles.h>
 #include <rte_bus_pci.h>
+#include <rte_memzone.h>
 #include <rte_string_fns.h>
 #include <rte_rawdev_pmd.h>
 
 #include "rte_ioat_rawdev.h"
-
-/* Dynamic log type identifier */
-int ioat_pmd_logtype;
+#include "ioat_spec.h"
+#include "ioat_private.h"
 
 static struct rte_pci_driver ioat_pmd_drv;
 
@@ -26,20 +26,16 @@ static struct rte_pci_driver ioat_pmd_drv;
 #define IOAT_DEVICE_ID_BDX7	0x6f27
 #define IOAT_DEVICE_ID_BDXE	0x6f2E
 #define IOAT_DEVICE_ID_BDXF	0x6f2F
+#define IOAT_DEVICE_ID_ICX	0x0b00
 
-#define IOAT_PMD_LOG(level, fmt, args...) rte_log(RTE_LOG_ ## level, \
-	ioat_pmd_logtype, "%s(): " fmt "\n", __func__, ##args)
-
-#define IOAT_PMD_DEBUG(fmt, args...)  IOAT_PMD_LOG(DEBUG, fmt, ## args)
-#define IOAT_PMD_INFO(fmt, args...)   IOAT_PMD_LOG(INFO, fmt, ## args)
-#define IOAT_PMD_ERR(fmt, args...)    IOAT_PMD_LOG(ERR, fmt, ## args)
-#define IOAT_PMD_WARN(fmt, args...)   IOAT_PMD_LOG(WARNING, fmt, ## args)
+RTE_LOG_REGISTER(ioat_pmd_logtype, rawdev.ioat, INFO);
 
 #define DESC_SZ sizeof(struct rte_ioat_generic_hw_desc)
 #define COMPLETION_SZ sizeof(__m128i)
 
 static int
-ioat_dev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
+ioat_dev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config,
+		size_t config_size)
 {
 	struct rte_ioat_rawdev_config *params = config;
 	struct rte_ioat_rawdev *ioat = dev->dev_private;
@@ -49,7 +45,7 @@ ioat_dev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
 	if (dev->started)
 		return -EBUSY;
 
-	if (params == NULL)
+	if (params == NULL || config_size != sizeof(*params))
 		return -EINVAL;
 
 	if (params->ring_size > 4096 || params->ring_size < 64 ||
@@ -57,6 +53,7 @@ ioat_dev_configure(const struct rte_rawdev *dev, rte_rawdev_obj_t config)
 		return -EINVAL;
 
 	ioat->ring_size = params->ring_size;
+	ioat->hdls_disable = params->hdls_disable;
 	if (ioat->desc_ring != NULL) {
 		rte_memzone_free(ioat->desc_mz);
 		ioat->desc_ring = NULL;
@@ -110,95 +107,26 @@ ioat_dev_stop(struct rte_rawdev *dev)
 	RTE_SET_USED(dev);
 }
 
-static void
-ioat_dev_info_get(struct rte_rawdev *dev, rte_rawdev_obj_t dev_info)
+static int
+ioat_dev_info_get(struct rte_rawdev *dev, rte_rawdev_obj_t dev_info,
+		size_t dev_info_size)
 {
 	struct rte_ioat_rawdev_config *cfg = dev_info;
 	struct rte_ioat_rawdev *ioat = dev->dev_private;
 
-	if (cfg != NULL)
-		cfg->ring_size = ioat->ring_size;
-}
+	if (dev_info == NULL || dev_info_size != sizeof(*cfg))
+		return -EINVAL;
 
-static const char * const xstat_names[] = {
-		"failed_enqueues", "successful_enqueues",
-		"copies_started", "copies_completed"
-};
-
-static int
-ioat_xstats_get(const struct rte_rawdev *dev, const unsigned int ids[],
-		uint64_t values[], unsigned int n)
-{
-	const struct rte_ioat_rawdev *ioat = dev->dev_private;
-	unsigned int i;
-
-	for (i = 0; i < n; i++) {
-		switch (ids[i]) {
-		case 0: values[i] = ioat->enqueue_failed; break;
-		case 1: values[i] = ioat->enqueued; break;
-		case 2: values[i] = ioat->started; break;
-		case 3: values[i] = ioat->completed; break;
-		default: values[i] = 0; break;
-		}
-	}
-	return n;
-}
-
-static int
-ioat_xstats_get_names(const struct rte_rawdev *dev,
-		struct rte_rawdev_xstats_name *names,
-		unsigned int size)
-{
-	unsigned int i;
-
-	RTE_SET_USED(dev);
-	if (size < RTE_DIM(xstat_names))
-		return RTE_DIM(xstat_names);
-
-	for (i = 0; i < RTE_DIM(xstat_names); i++)
-		strlcpy(names[i].name, xstat_names[i], sizeof(names[i]));
-
-	return RTE_DIM(xstat_names);
-}
-
-static int
-ioat_xstats_reset(struct rte_rawdev *dev, const uint32_t *ids, uint32_t nb_ids)
-{
-	struct rte_ioat_rawdev *ioat = dev->dev_private;
-	unsigned int i;
-
-	if (!ids) {
-		ioat->enqueue_failed = 0;
-		ioat->enqueued = 0;
-		ioat->started = 0;
-		ioat->completed = 0;
-		return 0;
-	}
-
-	for (i = 0; i < nb_ids; i++) {
-		switch (ids[i]) {
-		case 0:
-			ioat->enqueue_failed = 0;
-			break;
-		case 1:
-			ioat->enqueued = 0;
-			break;
-		case 2:
-			ioat->started = 0;
-			break;
-		case 3:
-			ioat->completed = 0;
-			break;
-		default:
-			IOAT_PMD_WARN("Invalid xstat id - cannot reset value");
-			break;
-		}
-	}
-
+	cfg->ring_size = ioat->ring_size;
+	cfg->hdls_disable = ioat->hdls_disable;
 	return 0;
 }
 
-extern int ioat_rawdev_test(uint16_t dev_id);
+static int
+ioat_dev_close(struct rte_rawdev *dev __rte_unused)
+{
+	return 0;
+}
 
 static int
 ioat_rawdev_create(const char *name, struct rte_pci_device *dev)
@@ -207,6 +135,7 @@ ioat_rawdev_create(const char *name, struct rte_pci_device *dev)
 			.dev_configure = ioat_dev_configure,
 			.dev_start = ioat_dev_start,
 			.dev_stop = ioat_dev_stop,
+			.dev_close = ioat_dev_close,
 			.dev_info_get = ioat_dev_info_get,
 			.xstats_get = ioat_xstats_get,
 			.xstats_get_names = ioat_xstats_get_names,
@@ -251,9 +180,11 @@ ioat_rawdev_create(const char *name, struct rte_pci_device *dev)
 	rawdev->driver_name = dev->device.driver->name;
 
 	ioat = rawdev->dev_private;
+	ioat->type = RTE_IOAT_DEV;
 	ioat->rawdev = rawdev;
 	ioat->mz = mz;
 	ioat->regs = dev->mem_resource[0].addr;
+	ioat->doorbell = &ioat->regs->dmacount;
 	ioat->ring_size = 0;
 	ioat->desc_ring = NULL;
 	ioat->status_addr = ioat->mz->iova +
@@ -371,6 +302,7 @@ static const struct rte_pci_id pci_id_ioat_map[] = {
 	{ RTE_PCI_DEVICE(IOAT_VENDOR_ID, IOAT_DEVICE_ID_BDX7) },
 	{ RTE_PCI_DEVICE(IOAT_VENDOR_ID, IOAT_DEVICE_ID_BDXE) },
 	{ RTE_PCI_DEVICE(IOAT_VENDOR_ID, IOAT_DEVICE_ID_BDXF) },
+	{ RTE_PCI_DEVICE(IOAT_VENDOR_ID, IOAT_DEVICE_ID_ICX) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -384,10 +316,3 @@ static struct rte_pci_driver ioat_pmd_drv = {
 RTE_PMD_REGISTER_PCI(IOAT_PMD_RAWDEV_NAME, ioat_pmd_drv);
 RTE_PMD_REGISTER_PCI_TABLE(IOAT_PMD_RAWDEV_NAME, pci_id_ioat_map);
 RTE_PMD_REGISTER_KMOD_DEP(IOAT_PMD_RAWDEV_NAME, "* igb_uio | uio_pci_generic");
-
-RTE_INIT(ioat_pmd_init_log)
-{
-	ioat_pmd_logtype = rte_log_register(IOAT_PMD_LOG_NAME);
-	if (ioat_pmd_logtype >= 0)
-		rte_log_set_level(ioat_pmd_logtype, RTE_LOG_INFO);
-}

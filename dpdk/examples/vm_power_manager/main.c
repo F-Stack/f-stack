@@ -31,13 +31,13 @@
 #include "vm_power_cli.h"
 #include "oob_monitor.h"
 #include "parse.h"
-#ifdef RTE_LIBRTE_IXGBE_PMD
+#ifdef RTE_NET_IXGBE
 #include <rte_pmd_ixgbe.h>
 #endif
-#ifdef RTE_LIBRTE_I40E_PMD
+#ifdef RTE_NET_I40E
 #include <rte_pmd_i40e.h>
 #endif
-#ifdef RTE_LIBRTE_BNXT_PMD
+#ifdef RTE_NET_BNXT
 #include <rte_pmd_bnxt.h>
 #endif
 
@@ -144,10 +144,7 @@ parse_portmask(const char *portmask)
 	/* parse hexadecimal string */
 	pm = strtoul(portmask, &end, 16);
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -165,15 +162,14 @@ parse_args(int argc, char **argv)
 	static struct option lgopts[] = {
 		{ "mac-updating", no_argument, 0, 1},
 		{ "no-mac-updating", no_argument, 0, 0},
-		{ "core-list", optional_argument, 0, 'l'},
+		{ "core-branch-ratio", optional_argument, 0, 'b'},
 		{ "port-list", optional_argument, 0, 'p'},
-		{ "branch-ratio", optional_argument, 0, 'b'},
 		{NULL, 0, 0, 0}
 	};
 	argvopt = argv;
 	ci = get_core_info();
 
-	while ((opt = getopt_long(argc, argvopt, "l:p:q:T:b:",
+	while ((opt = getopt_long(argc, argvopt, "p:q:T:b:",
 				  lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -185,7 +181,8 @@ parse_args(int argc, char **argv)
 				return -1;
 			}
 			break;
-		case 'l':
+		case 'b':
+			branch_ratio = BRANCH_RATIO_THRESHOLD;
 			oob_enable = malloc(ci->core_count * sizeof(uint16_t));
 			if (oob_enable == NULL) {
 				printf("Error - Unable to allocate memory\n");
@@ -193,31 +190,37 @@ parse_args(int argc, char **argv)
 			}
 			cnt = parse_set(optarg, oob_enable, ci->core_count);
 			if (cnt < 0) {
-				printf("Invalid core-list - [%s]\n",
+				printf("Invalid core-list section in "
+				       "core-branch-ratio matrix - [%s]\n",
 						optarg);
 				free(oob_enable);
 				break;
 			}
+			cnt = parse_branch_ratio(optarg, &branch_ratio);
+			if (cnt < 0) {
+				printf("Invalid branch-ratio section in "
+				       "core-branch-ratio matrix - [%s]\n",
+						optarg);
+				free(oob_enable);
+				break;
+			}
+			if (branch_ratio <= 0.0 || branch_ratio > 100.0) {
+				printf("invalid branch ratio specified\n");
+				free(oob_enable);
+				return -1;
+			}
 			for (i = 0; i < ci->core_count; i++) {
 				if (oob_enable[i]) {
-					printf("***Using core %d\n", i);
+					printf("***Using core %d "
+					       "with branch ratio %f\n",
+					       i, branch_ratio);
 					ci->cd[i].oob_enabled = 1;
 					ci->cd[i].global_enabled_cpus = 1;
+					ci->cd[i].branch_ratio_threshold =
+								branch_ratio;
 				}
 			}
 			free(oob_enable);
-			break;
-		case 'b':
-			branch_ratio = 0.0;
-			if (strlen(optarg))
-				branch_ratio = atof(optarg);
-			if (branch_ratio <= 0.0) {
-				printf("invalid branch ratio specified\n");
-				return -1;
-			}
-			ci->branch_ratio_threshold = branch_ratio;
-			printf("***Setting branch ratio to %f\n",
-					branch_ratio);
 			break;
 		/* long options */
 		case 0:
@@ -244,6 +247,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid, count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
 	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -267,15 +271,10 @@ check_all_ports_link_status(uint32_t port_mask)
 			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", (uint16_t)portid,
-						(unsigned int)link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
-				else
-					printf("Port %d Link Down\n",
-						(uint16_t)portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n", portid,
+				       link_status_text);
 				continue;
 			}
 		       /* clear all_ports_up flag if any link down */
@@ -302,7 +301,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	}
 }
 static int
-run_monitor(__attribute__((unused)) void *arg)
+run_monitor(__rte_unused void *arg)
 {
 	if (channel_monitor_init() < 0) {
 		printf("Unable to initialize channel monitor\n");
@@ -313,7 +312,7 @@ run_monitor(__attribute__((unused)) void *arg)
 }
 
 static int
-run_core_monitor(__attribute__((unused)) void *arg)
+run_core_monitor(__rte_unused void *arg)
 {
 	if (branch_monitor_init() < 0) {
 		printf("Unable to initialize core monitor\n");
@@ -399,16 +398,16 @@ main(int argc, char **argv)
 				eth.addr_bytes[5] = w + 0xf0;
 
 				ret = -ENOTSUP;
-#ifdef RTE_LIBRTE_IXGBE_PMD
+#ifdef RTE_NET_IXGBE
 				ret = rte_pmd_ixgbe_set_vf_mac_addr(portid,
 							w, &eth);
 #endif
-#ifdef RTE_LIBRTE_I40E_PMD
+#ifdef RTE_NET_I40E
 				if (ret == -ENOTSUP)
 					ret = rte_pmd_i40e_set_vf_mac_addr(
 							portid, w, &eth);
 #endif
-#ifdef RTE_LIBRTE_BNXT_PMD
+#ifdef RTE_NET_BNXT
 				if (ret == -ENOTSUP)
 					ret = rte_pmd_bnxt_set_vf_mac_addr(
 							portid, w, &eth);

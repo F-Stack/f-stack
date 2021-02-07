@@ -46,20 +46,20 @@ struct octeontx_mbox_fpa_cfg {
 	uint64_t	aura_cfg;
 };
 
-struct __attribute__((__packed__)) gen_req {
+struct __rte_packed gen_req {
 	uint32_t	value;
 };
 
-struct __attribute__((__packed__)) idn_req {
+struct __rte_packed idn_req {
 	uint8_t	domain_id;
 };
 
-struct __attribute__((__packed__)) gen_resp {
+struct __rte_packed gen_resp {
 	uint16_t	domain_id;
 	uint16_t	vfid;
 };
 
-struct __attribute__((__packed__)) dcfg_resp {
+struct __rte_packed dcfg_resp {
 	uint8_t	sso_count;
 	uint8_t	ssow_count;
 	uint8_t	fpa_count;
@@ -105,15 +105,7 @@ struct octeontx_fpadev {
 
 static struct octeontx_fpadev fpadev;
 
-int octeontx_logtype_fpavf;
-int octeontx_logtype_fpavf_mbox;
-
-RTE_INIT(otx_pool_init_log)
-{
-	octeontx_logtype_fpavf = rte_log_register("pmd.mempool.octeontx");
-	if (octeontx_logtype_fpavf >= 0)
-		rte_log_set_level(octeontx_logtype_fpavf, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(octeontx_logtype_fpavf, pmd.mempool.octeontx, NOTICE);
 
 /* lock is taken by caller */
 static int
@@ -267,7 +259,7 @@ octeontx_fpapf_pool_setup(unsigned int gpool, unsigned int buf_size,
 		POOL_LTYPE(0x2) | POOL_STYPE(0) | POOL_SET_NAT_ALIGN |
 		POOL_ENA;
 
-	cfg.aid = FPA_AURA_IDX(gpool);
+	cfg.aid = 0;
 	cfg.pool_cfg = reg;
 	cfg.pool_stack_base = phys_addr;
 	cfg.pool_stack_end = phys_addr + memsz;
@@ -353,7 +345,7 @@ octeontx_fpapf_aura_attach(unsigned int gpool_index)
 	hdr.vfid = gpool_index;
 	hdr.res_code = 0;
 	memset(&cfg, 0x0, sizeof(struct octeontx_mbox_fpa_cfg));
-	cfg.aid = FPA_AURA_IDX(gpool_index);
+	cfg.aid = 0;
 
 	ret = octeontx_mbox_send(&hdr, &cfg,
 					sizeof(struct octeontx_mbox_fpa_cfg),
@@ -382,7 +374,7 @@ octeontx_fpapf_aura_detach(unsigned int gpool_index)
 		goto err;
 	}
 
-	cfg.aid = FPA_AURA_IDX(gpool_index);
+	cfg.aid = 0;
 	hdr.coproc = FPA_COPROC;
 	hdr.msg = FPA_DETACHAURA;
 	hdr.vfid = gpool_index;

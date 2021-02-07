@@ -34,6 +34,8 @@
 #define HINIC_MSG_HEADER_P2P_IDX_MASK				0xF
 #define HINIC_MSG_HEADER_MSG_ID_MASK				0x3FF
 
+#define HINIC_DEV_BUSY_ACTIVE_FW				0xFE
+
 #define HINIC_MSG_HEADER_GET(val, member)			\
 		(((val) >> HINIC_MSG_HEADER_##member##_SHIFT) & \
 		HINIC_MSG_HEADER_##member##_MASK)
@@ -67,7 +69,7 @@ struct hinic_recv_msg {
 	u8			cmd;
 	u16			msg_id;
 	int			async_mgmt_to_pf;
-	u8			sed_id;
+	u8			seq_id;
 };
 
 #define HINIC_COMM_SELF_CMD_MAX 8
@@ -99,8 +101,7 @@ struct hinic_msg_pf_to_mgmt {
 };
 
 int hinic_msg_to_mgmt_no_ack(void *hwdev, enum hinic_mod_type mod, u8 cmd,
-			     void *buf_in, u16 in_size, void *buf_out,
-			     u16 *out_size);
+			     void *buf_in, u16 in_size);
 
 int hinic_comm_pf_to_mgmt_init(struct hinic_hwdev *hwdev);
 

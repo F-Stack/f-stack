@@ -12,9 +12,6 @@
  *
  * This API allow applications to configure and use generic devices having
  * no specific type already available in DPDK.
- *
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
  */
 
 #ifdef __cplusplus
@@ -77,7 +74,19 @@ struct rte_rawdev_info;
  *
  * @param[out] dev_info
  *   A pointer to a structure of type *rte_rawdev_info* to be filled with the
- *   contextual information of the device.
+ *   contextual information of the device. The dev_info->dev_private field
+ *   should point to an appropriate buffer space for holding the device-
+ *   specific info for that hardware.
+ *   If the dev_private field is set to NULL, then the device-specific info
+ *   function will not be called and only basic information about the device
+ *   will be returned. This can be used to safely query the type of a rawdev
+ *   instance without needing to know the size of the private data to return.
+ *
+ * @param dev_private_size
+ *   The length of the memory space pointed to by dev_private in dev_info.
+ *   This should be set to the size of the expected private structure to be
+ *   returned, and may be checked by drivers to ensure the expected struct
+ *   type is provided.
  *
  * @return
  *   - 0: Success, driver updates the contextual information of the raw device
@@ -85,7 +94,8 @@ struct rte_rawdev_info;
  *
  */
 int
-rte_rawdev_info_get(uint16_t dev_id, struct rte_rawdev_info *dev_info);
+rte_rawdev_info_get(uint16_t dev_id, struct rte_rawdev_info *dev_info,
+		size_t dev_private_size);
 
 /**
  * Configure a raw device.
@@ -106,13 +116,19 @@ rte_rawdev_info_get(uint16_t dev_id, struct rte_rawdev_info *dev_info);
  *   driver/implementation can use to configure the device. It is also assumed
  *   that once the configuration is done, a `queue_id` type field can be used
  *   to refer to some arbitrary internal representation of a queue.
+ * @param dev_private_size
+ *   The length of the memory space pointed to by dev_private in dev_info.
+ *   This should be set to the size of the expected private structure to be
+ *   used by the driver, and may be checked by drivers to ensure the expected
+ *   struct type is provided.
  *
  * @return
  *   - 0: Success, device configured.
  *   - <0: Error code returned by the driver configuration function.
  */
 int
-rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf);
+rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf,
+		size_t dev_private_size);
 
 
 /**
@@ -130,6 +146,8 @@ rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf);
  *   previously supplied to rte_rawdev_configure().
  * @param[out] queue_conf
  *   The pointer to the default raw queue configuration data.
+ * @param queue_conf_size
+ *   The size of the structure pointed to by queue_conf
  * @return
  *   - 0: Success, driver updates the default raw queue configuration data.
  *   - <0: Error code returned by the driver info get function.
@@ -140,7 +158,8 @@ rte_rawdev_configure(uint16_t dev_id, struct rte_rawdev_info *dev_conf);
 int
 rte_rawdev_queue_conf_get(uint16_t dev_id,
 			  uint16_t queue_id,
-			  rte_rawdev_obj_t queue_conf);
+			  rte_rawdev_obj_t queue_conf,
+			  size_t queue_conf_size);
 
 /**
  * Allocate and set up a raw queue for a raw device.
@@ -153,6 +172,8 @@ rte_rawdev_queue_conf_get(uint16_t dev_id,
  * @param queue_conf
  *   The pointer to the configuration data to be used for the raw queue.
  *   NULL value is allowed, in which case default configuration	used.
+ * @param queue_conf_size
+ *   The size of the structure pointed to by queue_conf
  *
  * @see rte_rawdev_queue_conf_get()
  *
@@ -163,7 +184,8 @@ rte_rawdev_queue_conf_get(uint16_t dev_id,
 int
 rte_rawdev_queue_setup(uint16_t dev_id,
 		       uint16_t queue_id,
-		       rte_rawdev_obj_t queue_conf);
+		       rte_rawdev_obj_t queue_conf,
+		       size_t queue_conf_size);
 
 /**
  * Release and deallocate a raw queue from a raw device.

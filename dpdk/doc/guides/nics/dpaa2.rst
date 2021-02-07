@@ -1,11 +1,11 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2016 NXP
+    Copyright 2016,2020 NXP
 
 
 DPAA2 Poll Mode Driver
 ======================
 
-The DPAA2 NIC PMD (**librte_pmd_dpaa2**) provides poll mode driver
+The DPAA2 NIC PMD (**librte_net_dpaa2**) provides poll mode driver
 support for the inbuilt NIC found in the **NXP DPAA2** SoC family.
 
 More information can be found at `NXP Official Website
@@ -300,7 +300,7 @@ The diagram below shows the dpaa2 drivers involved in a networking
 scenario and the objects bound to each driver.  A brief description
 of each driver follows.
 
-.. code-block: console
+.. code-block:: console
 
 
                                        +------------+
@@ -432,30 +432,6 @@ Currently supported by DPDK:
    Some part of fslmc bus code (mc flib - object library) routines are
    dual licensed (BSD & GPLv2), however they are used as BSD in DPDK in userspace.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_FSLMC_BUS`` (default ``y``)
-
-  Toggle compilation of the ``librte_bus_fslmc`` driver.
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_PMD`` (default ``y``)
-
-  Toggle compilation of the ``librte_pmd_dpaa2`` driver.
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_DEBUG_DRIVER`` (default ``n``)
-
-  Toggle display of debugging messages/logic
-
-- ``CONFIG_RTE_LIBRTE_DPAA2_USE_PHYS_IOVA`` (default ``n``)
-
-  Toggle to use physical address vs virtual address for hardware accelerators.
 
 Driver compilation and testing
 ------------------------------
@@ -473,7 +449,7 @@ for details.
 
    .. code-block:: console
 
-      ./testpmd -c 0xff -n 1 -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
+      ./dpdk-testpmd -c 0xff -n 1 -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
 
       .....
       EAL: Registered [pci] bus.
@@ -527,16 +503,29 @@ which are lower than logging ``level``.
 Using ``pmd.net.dpaa2`` as log matching criteria, all PMD logs can be enabled
 which are lower than logging ``level``.
 
-Whitelisting & Blacklisting
----------------------------
+Allowing & Blocking
+-------------------
 
-For blacklisting a DPAA2 device, following commands can be used.
+For blocking a DPAA2 device, following commands can be used.
 
  .. code-block:: console
 
     <dpdk app> <EAL args> -b "fslmc:dpni.x" -- ...
 
 Where x is the device object id as configured in resource container.
+
+Running secondary debug app without blocklist
+---------------------------------------------
+
+dpaa2 hardware imposes limits on some H/W access devices like Management
+Control Port and H/W portal. This causes issue in their shared usages in
+case of multi-process applications. It can overcome by using
+allowlist/blocklist in primary and secondary applications.
+
+In order to ease usage of standard debugging apps like dpdk-procinfo, dpaa2
+driver reserves extra Management Control Port and H/W portal which can be
+used by debug application to debug any existing application without
+blocking these devices in primary process.
 
 Limitations
 -----------

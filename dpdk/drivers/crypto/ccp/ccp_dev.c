@@ -546,7 +546,7 @@ ccp_add_device(struct ccp_device *dev, int type)
 						  cmd_q->qsize, SOCKET_ID_ANY);
 		cmd_q->qbase_addr = (void *)q_mz->addr;
 		cmd_q->qbase_desc = (void *)q_mz->addr;
-		cmd_q->qbase_phys_addr =  q_mz->phys_addr;
+		cmd_q->qbase_phys_addr =  q_mz->iova;
 
 		cmd_q->qcontrol = 0;
 		/* init control reg to zero */
@@ -760,7 +760,7 @@ ccp_probe_device(const char *dirname, uint16_t domain,
 	return 0;
 fail:
 	CCP_LOG_ERR("CCP Device probe failed");
-	if (uio_fd > 0)
+	if (uio_fd >= 0)
 		close(uio_fd);
 	if (ccp_dev)
 		rte_free(ccp_dev);

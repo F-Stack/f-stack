@@ -7,6 +7,12 @@
 
 #include <intel-ipsec-mb.h>
 
+#if defined(RTE_LIB_SECURITY) && (IMB_VERSION_NUM) >= IMB_VERSION(0, 54, 0)
+#define AESNI_MB_DOCSIS_SEC_ENABLED 1
+#include <rte_security.h>
+#include <rte_security_driver.h>
+#endif
+
 enum aesni_mb_vector_mode {
 	RTE_AESNI_MB_NOT_SUPPORTED = 0,
 	RTE_AESNI_MB_SSE,
@@ -19,7 +25,7 @@ enum aesni_mb_vector_mode {
 /**< AES-NI Multi buffer PMD device name */
 
 /** AESNI_MB PMD LOGTYPE DRIVER */
-int aesni_mb_logtype_driver;
+extern int aesni_mb_logtype_driver;
 
 #define AESNI_MB_LOG(level, fmt, ...)  \
 	rte_log(RTE_LOG_ ## level, aesni_mb_logtype_driver,  \
@@ -33,22 +39,27 @@ int aesni_mb_logtype_driver;
 /* Maximum length for digest */
 #define DIGEST_LENGTH_MAX 64
 static const unsigned auth_blocksize[] = {
-		[NULL_HASH]	= 0,
-		[MD5]		= 64,
-		[SHA1]		= 64,
-		[SHA_224]	= 64,
-		[SHA_256]	= 64,
-		[SHA_384]	= 128,
-		[SHA_512]	= 128,
-		[AES_XCBC]	= 16,
-		[AES_CCM]	= 16,
-		[AES_CMAC]	= 16,
-		[AES_GMAC]	= 16,
-		[PLAIN_SHA1]	= 64,
-		[PLAIN_SHA_224]	= 64,
-		[PLAIN_SHA_256]	= 64,
-		[PLAIN_SHA_384]	= 128,
-		[PLAIN_SHA_512]	= 128
+		[NULL_HASH]			= 0,
+		[MD5]				= 64,
+		[SHA1]				= 64,
+		[SHA_224]			= 64,
+		[SHA_256]			= 64,
+		[SHA_384]			= 128,
+		[SHA_512]			= 128,
+		[AES_XCBC]			= 16,
+		[AES_CCM]			= 16,
+		[AES_CMAC]			= 16,
+		[AES_GMAC]			= 16,
+		[PLAIN_SHA1]			= 64,
+		[PLAIN_SHA_224]			= 64,
+		[PLAIN_SHA_256]			= 64,
+		[PLAIN_SHA_384]			= 128,
+		[PLAIN_SHA_512]			= 128,
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+		[IMB_AUTH_ZUC_EIA3_BITLEN]	= 16,
+		[IMB_AUTH_SNOW3G_UIA2_BITLEN]	= 16,
+		[IMB_AUTH_KASUMI_UIA1]		= 16
+#endif
 };
 
 /**
@@ -64,22 +75,27 @@ get_auth_algo_blocksize(JOB_HASH_ALG algo)
 }
 
 static const unsigned auth_truncated_digest_byte_lengths[] = {
-		[MD5]		= 12,
-		[SHA1]		= 12,
-		[SHA_224]	= 14,
-		[SHA_256]	= 16,
-		[SHA_384]	= 24,
-		[SHA_512]	= 32,
-		[AES_XCBC]	= 12,
-		[AES_CMAC]	= 12,
-		[AES_CCM]	= 8,
-		[NULL_HASH]	= 0,
-		[AES_GMAC]	= 16,
-		[PLAIN_SHA1]	= 20,
-		[PLAIN_SHA_224]	= 28,
-		[PLAIN_SHA_256]	= 32,
-		[PLAIN_SHA_384]	= 48,
-		[PLAIN_SHA_512]	= 64
+		[MD5]				= 12,
+		[SHA1]				= 12,
+		[SHA_224]			= 14,
+		[SHA_256]			= 16,
+		[SHA_384]			= 24,
+		[SHA_512]			= 32,
+		[AES_XCBC]			= 12,
+		[AES_CMAC]			= 12,
+		[AES_CCM]			= 8,
+		[NULL_HASH]			= 0,
+		[AES_GMAC]			= 12,
+		[PLAIN_SHA1]			= 20,
+		[PLAIN_SHA_224]			= 28,
+		[PLAIN_SHA_256]			= 32,
+		[PLAIN_SHA_384]			= 48,
+		[PLAIN_SHA_512]			= 64,
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+		[IMB_AUTH_ZUC_EIA3_BITLEN]	= 4,
+		[IMB_AUTH_SNOW3G_UIA2_BITLEN]	= 4,
+		[IMB_AUTH_KASUMI_UIA1]		= 4
+#endif
 };
 
 /**
@@ -96,22 +112,27 @@ get_truncated_digest_byte_length(JOB_HASH_ALG algo)
 }
 
 static const unsigned auth_digest_byte_lengths[] = {
-		[MD5]		= 16,
-		[SHA1]		= 20,
-		[SHA_224]	= 28,
-		[SHA_256]	= 32,
-		[SHA_384]	= 48,
-		[SHA_512]	= 64,
-		[AES_XCBC]	= 16,
-		[AES_CMAC]	= 16,
-		[AES_CCM]	= 16,
-		[AES_GMAC]	= 12,
-		[NULL_HASH]	= 0,
-		[PLAIN_SHA1]	= 20,
-		[PLAIN_SHA_224]	= 28,
-		[PLAIN_SHA_256]	= 32,
-		[PLAIN_SHA_384]	= 48,
-		[PLAIN_SHA_512]	= 64
+		[MD5]				= 16,
+		[SHA1]				= 20,
+		[SHA_224]			= 28,
+		[SHA_256]			= 32,
+		[SHA_384]			= 48,
+		[SHA_512]			= 64,
+		[AES_XCBC]			= 16,
+		[AES_CMAC]			= 16,
+		[AES_CCM]			= 16,
+		[AES_GMAC]			= 16,
+		[NULL_HASH]			= 0,
+		[PLAIN_SHA1]			= 20,
+		[PLAIN_SHA_224]			= 28,
+		[PLAIN_SHA_256]			= 32,
+		[PLAIN_SHA_384]			= 48,
+		[PLAIN_SHA_512]			= 64,
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+		[IMB_AUTH_ZUC_EIA3_BITLEN]	= 4,
+		[IMB_AUTH_SNOW3G_UIA2_BITLEN]	= 4,
+		[IMB_AUTH_KASUMI_UIA1]		= 4
+#endif
 	/**< Vector mode dependent pointer table of the multi-buffer APIs */
 
 };
@@ -183,6 +204,10 @@ struct aesni_mb_session {
 		uint16_t length;
 		uint16_t offset;
 	} iv;
+	struct {
+		uint16_t length;
+		uint16_t offset;
+	} auth_iv;
 	/**< IV parameters */
 
 	/** Cipher Parameters */const struct aesni_mb_op_fns *op_fns;
@@ -203,19 +228,29 @@ struct aesni_mb_session {
 				uint32_t decode[60] __rte_aligned(16);
 				/**< decode key */
 			} expanded_aes_keys;
+			/**< Expanded AES keys - Allocating space to
+			 * contain the maximum expanded key size which
+			 * is 240 bytes for 256 bit AES, calculate by:
+			 * ((key size (bytes)) *
+			 * ((number of rounds) + 1))
+			 */
 			struct {
 				const void *ks_ptr[3];
 				uint64_t key[3][16];
 			} exp_3des_keys;
+			/**< Expanded 3DES keys */
 
 			struct gcm_key_data gcm_key;
+			/**< Expanded GCM key */
+			uint8_t zuc_cipher_key[16];
+			/**< ZUC cipher key */
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+			snow3g_key_schedule_t pKeySched_snow3g_cipher;
+			/**< SNOW3G scheduled cipher key */
+			kasumi_key_sched_t pKeySched_kasumi_cipher;
+			/**< KASUMI scheduled cipher key */
+#endif
 		};
-		/**< Expanded AES keys - Allocating space to
-		 * contain the maximum expanded key size which
-		 * is 240 bytes for 256 bit AES, calculate by:
-		 * ((key size (bytes)) *
-		 * ((number of rounds) + 1))
-		 */
 	} cipher;
 
 	/** Authentication Parameters */
@@ -254,6 +289,14 @@ struct aesni_mb_session {
 						    /**< k3. */
 			} cmac;
 			/**< Expanded XCBC authentication keys */
+			uint8_t zuc_auth_key[16];
+			/**< ZUC authentication key */
+#if IMB_VERSION(0, 53, 3) <= IMB_VERSION_NUM
+			snow3g_key_schedule_t pKeySched_snow3g_auth;
+			/**< SNOW3G scheduled authentication key */
+			kasumi_key_sched_t pKeySched_kasumi_auth;
+			/**< KASUMI scheduled authentication key */
+#endif
 		};
 	/** Generated digest size by the Multi-buffer library */
 	uint16_t gen_digest_len;
@@ -272,9 +315,23 @@ aesni_mb_set_session_parameters(const MB_MGR *mb_mgr,
 		struct aesni_mb_session *sess,
 		const struct rte_crypto_sym_xform *xform);
 
-/** device specific operations function pointer structure */
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+extern int
+aesni_mb_set_docsis_sec_session_parameters(
+		__rte_unused struct rte_cryptodev *dev,
+		struct rte_security_session_conf *conf,
+		void *sess);
+#endif
+
+/** device specific operations function pointer structures */
 extern struct rte_cryptodev_ops *rte_aesni_mb_pmd_ops;
+#ifdef AESNI_MB_DOCSIS_SEC_ENABLED
+extern struct rte_security_ops *rte_aesni_mb_pmd_sec_ops;
+#endif
 
-
+extern uint32_t
+aesni_mb_cpu_crypto_process_bulk(struct rte_cryptodev *dev,
+	struct rte_cryptodev_sym_session *sess, union rte_crypto_sym_ofs sofs,
+	struct rte_crypto_sym_vec *vec);
 
 #endif /* _AESNI_MB_PMD_PRIVATE_H_ */

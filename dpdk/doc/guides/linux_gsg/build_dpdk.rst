@@ -6,11 +6,6 @@
 Compiling the DPDK Target from Source
 =====================================
 
-.. note::
-
-    Parts of this process can also be done using the setup script described in
-    the :ref:`linux_setup_script` section of this document.
-
 Uncompress DPDK and Browse Sources
 ----------------------------------
 
@@ -31,7 +26,7 @@ The DPDK is composed of several directories:
 
 *   examples: Source code of DPDK application examples
 
-*   config, buildtools, mk: Framework-related makefiles, scripts and configuration
+*   config, buildtools: Framework-related scripts and configuration
 
 Compiling and Installing DPDK System-wide
 -----------------------------------------
@@ -39,11 +34,6 @@ Compiling and Installing DPDK System-wide
 DPDK can be configured, built and installed on your system using the tools
 ``meson`` and ``ninja``.
 
-.. note::
-
-  The older makefile-based build system used in older DPDK releases is
-  still present and its use is described in section
-  `Installation of DPDK Target Environment using Make`_.
 
 DPDK Configuration
 ~~~~~~~~~~~~~~~~~~
@@ -81,6 +71,7 @@ and the last step causing the dynamic loader `ld.so` to update its cache to take
    distributions, `/usr/local/lib` and `/usr/local/lib64` should be added
    to a file in `/etc/ld.so.conf.d/` before running `ldconfig`.
 
+.. _adjusting_build_options:
 
 Adjusting Build Options
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -117,6 +108,37 @@ dependencies are met on the current system are built.
 When `-Dexamples=all` is set as a meson option, meson will check each example application to see if it can be built,
 and add all which can be built to the list of tasks in the ninja build configuration file.
 
+
+Building 32-bit DPDK on 64-bit Systems
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To build a 32-bit copy of DPDK on a 64-bit OS,
+the ``-m32`` flag should be passed to the compiler and linker
+to force the generation of 32-bit objects and binaries.
+This can be done either by setting ``CFLAGS`` and ``LDFLAGS`` in the environment,
+or by passing the value to meson using ``-Dc_args=-m32`` and ``-Dc_link_args=-m32``.
+For correctly identifying and using any dependency packages,
+the ``pkg-config`` tool must also be configured
+to look in the appropriate directory for .pc files for 32-bit libraries.
+This is done by setting ``PKG_CONFIG_LIBDIR`` to the appropriate path.
+
+The following meson command can be used on RHEL/Fedora systems to configure a 32-bit build,
+assuming the relevant 32-bit development packages, such as a 32-bit libc, are installed::
+
+  PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig \
+      meson -Dc_args='-m32' -Dc_link_args='-m32' build
+
+For Debian/Ubuntu systems, the equivalent command is::
+
+  PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig \
+      meson -Dc_args='-m32' -Dc_link_args='-m32' build
+
+Once the build directory has been configured,
+DPDK can be compiled using ``ninja`` as described above.
+
+
+.. _building_app_using_installed_dpdk:
+
 Building Applications Using Installed DPDK
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -140,7 +162,8 @@ and the sources for that build are stored in ``$(SRCS-y)``.
 
 .. note::
 
-   Unlike with the older make build system, the meson system is not
+   Unlike with the make build system present in older DPDK releases,
+   the meson system is not
    designed to be used directly from a build directory. Instead it is
    recommended that it be installed either system-wide or to a known
    location in the user's home directory. The install location can be set
@@ -156,94 +179,3 @@ build system is shown below:
    dpdk = dependency('libdpdk')
    sources = files('main.c')
    executable('dpdk-app', sources, dependencies: dpdk)
-
-
-Installation of DPDK Target Environment using Make
---------------------------------------------------
-
-.. note::
-
-   The building of DPDK using make will be deprecated in a future release. It
-   is therefore recommended that DPDK installation is done using meson and
-   ninja as described above.
-
-The format of a DPDK target is::
-
-    ARCH-MACHINE-EXECENV-TOOLCHAIN
-
-where:
-
-* ``ARCH`` can be:  ``i686``, ``x86_64``, ``ppc_64``, ``arm64``
-
-* ``MACHINE`` can be:  ``native``, ``power8``, ``armv8a``
-
-* ``EXECENV`` can be:  ``linux``,  ``freebsd``
-
-* ``TOOLCHAIN`` can be:  ``gcc``,  ``icc``
-
-The targets to be installed depend on the 32-bit and/or 64-bit packages and compilers installed on the host.
-Available targets can be found in the DPDK/config directory.
-The defconfig\_ prefix should not be used.
-
-.. note::
-
-    Configuration files are provided with the ``RTE_MACHINE`` optimization level set.
-    Within the configuration files, the ``RTE_MACHINE`` configuration value is set to native,
-    which means that the compiled software is tuned for the platform on which it is built.
-    For more information on this setting, and its possible values, see the *DPDK Programmers Guide*.
-
-When using the Intel® C++ Compiler (icc), one of the following commands should be invoked for 64-bit or 32-bit use respectively.
-Notice that the shell scripts update the ``$PATH`` variable and therefore should not be performed in the same session.
-Also, verify the compiler's installation directory since the path may be different:
-
-.. code-block:: console
-
-    source /opt/intel/bin/iccvars.sh intel64
-    source /opt/intel/bin/iccvars.sh ia32
-
-To install and make targets, use the ``make install T=<target>`` command in the top-level DPDK directory.
-
-For example, to compile a 64-bit target using icc, run:
-
-.. code-block:: console
-
-    make install T=x86_64-native-linux-icc
-
-To compile a 32-bit build using gcc, the make command should be:
-
-.. code-block:: console
-
-    make install T=i686-native-linux-gcc
-
-To prepare a target without building it, for example, if the configuration changes need to be made before compilation,
-use the ``make config T=<target>`` command:
-
-.. code-block:: console
-
-    make config T=x86_64-native-linux-gcc
-
-.. warning::
-
-    Any kernel modules to be used, e.g. ``igb_uio``, ``kni``, must be compiled with the
-    same kernel as the one running on the target.
-    If the DPDK is not being built on the target machine,
-    the ``RTE_KERNELDIR`` environment variable should be used to point the compilation at a copy of the kernel version to be used on the target machine.
-
-Once the target environment is created, the user may move to the target environment directory and continue to make code changes and re-compile.
-The user may also make modifications to the compile-time DPDK configuration by editing the .config file in the build directory.
-(This is a build-local copy of the defconfig file from the top- level config directory).
-
-.. code-block:: console
-
-    cd x86_64-native-linux-gcc
-    vi .config
-    make
-
-In addition, the make clean command can be used to remove any existing compiled files for a subsequent full, clean rebuild of the code.
-
-Browsing the Installed DPDK Environment Target
-----------------------------------------------
-
-Once a target is created it contains all libraries, including poll-mode drivers, and header files for the DPDK environment that are required to build customer applications.
-In addition, the test and testpmd applications are built under the build/app directory, which may be used for testing.
-A kmod  directory is also present that contains kernel modules which may be loaded if needed.

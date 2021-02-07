@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -28,8 +28,7 @@ extern uint32_t sfc_logtype_driver;
 /** Device MCDI log type name prefix */
 #define SFC_LOGTYPE_MCDI_STR	SFC_LOGTYPE_PREFIX "mcdi"
 
-/** Level value used by MCDI log statements */
-#define SFC_LOG_LEVEL_MCDI	RTE_LOG_INFO
+#define SFC_LOG_PREFIX_MAX	32
 
 /* Log PMD message, automatically add prefix and \n */
 #define SFC_LOG(sas, level, type, ...) \
@@ -37,14 +36,8 @@ extern uint32_t sfc_logtype_driver;
 		const struct sfc_adapter_shared *_sas = (sas);		\
 									\
 		rte_log(level, type,					\
-			RTE_FMT("PMD: sfc_efx "				\
-				PCI_PRI_FMT " #%" PRIu16		\
-				": " RTE_FMT_HEAD(__VA_ARGS__ ,) "\n",	\
-				_sas->pci_addr.domain,			\
-				_sas->pci_addr.bus,			\
-				_sas->pci_addr.devid,			\
-				_sas->pci_addr.function,		\
-				_sas->port_id,				\
+			RTE_FMT("%s" RTE_FMT_HEAD(__VA_ARGS__ ,) "\n",	\
+				_sas->log_prefix,			\
 				RTE_FMT_TAIL(__VA_ARGS__,)));		\
 	} while (0)
 
@@ -90,14 +83,6 @@ extern uint32_t sfc_logtype_driver;
 				RTE_FMT_HEAD(__VA_ARGS__ ,),		\
 				__func__,				\
 				RTE_FMT_TAIL(__VA_ARGS__ ,)));		\
-	} while (0)
-
-#define sfc_log_mcdi(sa, ...) \
-	do {								\
-		const struct sfc_adapter *_sa = (sa);			\
-									\
-		SFC_LOG(_sa->priv.shared, SFC_LOG_LEVEL_MCDI,		\
-			_sa->mcdi.logtype, __VA_ARGS__);		\
 	} while (0)
 
 

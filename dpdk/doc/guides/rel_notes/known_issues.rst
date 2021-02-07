@@ -118,8 +118,8 @@ HPET timers do not work on the Osage customer reference platform
    On Osage boards, the implementation of the ``rte_delay_us()`` function must be changed to not use the HPET timer.
 
 **Resolution/Workaround**:
-   This can be addressed by building the system with the ``CONFIG_RTE_LIBEAL_USE_HPET=n``
-   configuration option or by using the ``--no-hpet`` EAL option.
+   This can be addressed by building the system with ``RTE_LIBEAL_USE_HPET`` unset
+   or by using the ``--no-hpet`` EAL option.
 
 **Affected Environment/Platform**:
    The Osage customer reference platform.
@@ -127,7 +127,7 @@ HPET timers do not work on the Osage customer reference platform
    work correctly, provided the BIOS supports HPET.
 
 **Driver/Module**:
-   ``lib/librte_eal/common/include/rte_cycles.h``
+   ``lib/librte_eal/include/rte_cycles.h``
 
 
 Not all variants of supported NIC types have been used in testing
@@ -833,10 +833,6 @@ AVX-512 support disabled
 
 **Description**:
    ``AVX-512`` support has been disabled on some conditions.
-   This shouldn't be confused with ``CONFIG_RTE_ENABLE_AVX512`` config option which is already
-   disabled by default. This config option defines if ``AVX-512`` specific implementations of
-   some file to be used or not. What has been disabled is compiler feature to produce ``AVX-512``
-   instructions from any source code.
 
    On DPDK v18.11 ``AVX-512`` is disabled for all ``GCC`` builds which reported to cause a performance
    drop.
@@ -888,3 +884,24 @@ Unsuitable IOVA mode may be picked as the default
 
 **Driver/Module**:
    ALL.
+
+Vhost multi-queue reconnection failed with QEMU version >= 4.2.0
+----------------------------------------------------------------
+
+**Description**
+   It's a QEMU regression bug (bad commit: c6beefd674ff). QEMU only saves
+   acked features for one vhost-net when vhost quits. When vhost reconnects
+   to virtio-net/virtio-pmd in multi-queue situations, the features been
+   set multiple times are not consistent.
+
+**Implication**
+   Vhost cannot reconnect back to virtio-net/virtio-pmd normally.
+
+**Resolution/Workaround**:
+   It is possible to filter the incorrect acked features at vhost-user side.
+
+**Affected Environment/Platform**:
+   ALL.
+
+**Driver/Module**:
+   Virtual Device Poll Mode Driver (PMD).

@@ -21,6 +21,7 @@
 #include <rte_jhash.h>
 #include <rte_hash_crc.h>
 #include <rte_tailq.h>
+#include <rte_vect.h>
 
 #include "rte_efd.h"
 #if defined(RTE_ARCH_X86)
@@ -207,7 +208,7 @@ struct efd_offline_chunk_rules {
 struct efd_online_group_entry {
 	efd_hashfunc_t hash_idx[RTE_EFD_VALUE_NUM_BITS];
 	efd_lookuptbl_t lookup_table[RTE_EFD_VALUE_NUM_BITS];
-} __attribute__((__packed__));
+} __rte_packed;
 
 /**
  * A single chunk record, containing EFD_TARGET_CHUNK_NUM_RULES rules.
@@ -223,7 +224,7 @@ struct efd_online_chunk {
 
 	struct efd_online_group_entry groups[EFD_CHUNK_NUM_GROUPS];
 	/**< Array of all the groups in the chunk. */
-} __attribute__((__packed__));
+} __rte_packed;
 
 /**
  * EFD table structure
@@ -645,7 +646,9 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	 * For less than 4 bits, scalar function performs better
 	 * than vectorised version
 	 */
-	if (RTE_EFD_VALUE_NUM_BITS > 3 && rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2))
+	if (RTE_EFD_VALUE_NUM_BITS > 3
+			&& rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2)
+			&& rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256)
 		table->lookup_fn = EFD_LOOKUP_AVX2;
 	else
 #endif
@@ -655,7 +658,8 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	 * than vectorised version
 	 */
 	if (RTE_EFD_VALUE_NUM_BITS > 16 &&
-	    rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON))
+	    rte_cpu_get_flag_enabled(RTE_CPUFLAG_NEON) &&
+			rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128)
 		table->lookup_fn = EFD_LOOKUP_NEON;
 	else
 #endif
@@ -707,6 +711,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 
 error_unlock_exit:
 	rte_mcfg_tailq_write_unlock();
+	rte_free(te);
 	rte_efd_free(table);
 
 	return NULL;

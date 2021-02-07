@@ -356,16 +356,28 @@ rx_machine(struct bond_dev_private *internals, uint16_t slave_id,
 
 		timer_set(&port->current_while_timer, timeout);
 		ACTOR_STATE_CLR(port, EXPIRED);
+		SM_FLAG_CLR(port, EXPIRED);
 		return; /* No state change */
 	}
 
 	/* If CURRENT state timer is not running (stopped or expired)
 	 * transit to EXPIRED state from DISABLED or CURRENT */
 	if (!timer_is_running(&port->current_while_timer)) {
-		ACTOR_STATE_SET(port, EXPIRED);
-		PARTNER_STATE_CLR(port, SYNCHRONIZATION);
-		PARTNER_STATE_SET(port, LACP_SHORT_TIMEOUT);
-		timer_set(&port->current_while_timer, internals->mode4.short_timeout);
+		if (SM_FLAG(port, EXPIRED)) {
+			port->selected = UNSELECTED;
+			memcpy(&port->partner, &port->partner_admin,
+				sizeof(struct port_params));
+			record_default(port);
+			ACTOR_STATE_CLR(port, EXPIRED);
+			timer_cancel(&port->current_while_timer);
+		} else {
+			SM_FLAG_SET(port, EXPIRED);
+			ACTOR_STATE_SET(port, EXPIRED);
+			PARTNER_STATE_CLR(port, SYNCHRONIZATION);
+			PARTNER_STATE_SET(port, LACP_SHORT_TIMEOUT);
+			timer_set(&port->current_while_timer,
+				internals->mode4.short_timeout);
+		}
 	}
 }
 
@@ -798,7 +810,8 @@ rx_machine_update(struct bond_dev_private *internals, uint16_t slave_id,
 		RTE_ASSERT(lacp->lacpdu.subtype == SLOW_SUBTYPE_LACP);
 
 		partner = &lacp->lacpdu.partner;
-		if (rte_is_same_ether_addr(&partner->port_params.system,
+		if (rte_is_zero_ether_addr(&partner->port_params.system) ||
+			rte_is_same_ether_addr(&partner->port_params.system,
 			&internals->mode4.mac_addr)) {
 			/* This LACP frame is sending to the bonding port
 			 * so pass it to rx_machine.
@@ -1020,6 +1033,7 @@ bond_mode_8023ad_activate_slave(struct rte_eth_dev *bond_dev,
 	port->actor.port_number = rte_cpu_to_be_16(slave_id + 1);
 
 	memcpy(&port->partner, &initial, sizeof(struct port_params));
+	memcpy(&port->partner_admin, &initial, sizeof(struct port_params));
 
 	/* default states */
 	port->actor_state = STATE_AGGREGATION | STATE_LACP_ACTIVE | STATE_DEFAULTED;
@@ -1043,7 +1057,7 @@ bond_mode_8023ad_activate_slave(struct rte_eth_dev *bond_dev,
 	RTE_ASSERT(port->tx_ring == NULL);
 
 	socket_id = rte_eth_dev_socket_id(slave_id);
-	if (socket_id == (int)LCORE_ID_ANY)
+	if (socket_id == -1)
 		socket_id = rte_socket_id();
 
 	element_size = sizeof(struct slow_protocol_frame) +
@@ -1675,9 +1689,6 @@ rte_eth_bond_8023ad_dedicated_queues_enable(uint16_t port)
 	dev = &rte_eth_devices[port];
 	internals = dev->data->dev_private;
 
-	if (check_for_bonded_ethdev(dev) != 0)
-		return -1;
-
 	if (bond_8023ad_slow_pkt_hw_filter_supported(port) != 0)
 		return -1;
 
@@ -1703,9 +1714,6 @@ rte_eth_bond_8023ad_dedicated_queues_disable(uint16_t port)
 
 	dev = &rte_eth_devices[port];
 	internals = dev->data->dev_private;
-
-	if (check_for_bonded_ethdev(dev) != 0)
-		return -1;
 
 	/* Device must be stopped to set up slow queue */
 	if (dev->data->dev_started)

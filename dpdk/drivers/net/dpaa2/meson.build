@@ -3,7 +3,7 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
 
 deps += ['mempool_dpaa2']
@@ -13,18 +13,12 @@ sources = files('base/dpaa2_hw_dpni.c',
 		'dpaa2_flow.c',
 		'dpaa2_rxtx.c',
 		'dpaa2_sparser.c',
+		'dpaa2_ptp.c',
+		'mc/dprtc.c',
 		'mc/dpkg.c',
 		'mc/dpdmux.c',
 		'mc/dpni.c')
 
-if dpdk_conf.has('RTE_LIBRTE_IEEE1588')
-	sources += files('mc/dprtc.c')
-	sources += files('dpaa2_ptp.c')
-endif
-
 includes += include_directories('base', 'mc')
 
-# depends on fslmc bus which uses experimental API
-allow_experimental_apis = true
-
-install_headers('rte_pmd_dpaa2.h')
+headers = files('rte_pmd_dpaa2.h')

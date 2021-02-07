@@ -3,8 +3,6 @@
 
 sources = files('vdev.c',
 	'vdev_params.c')
-install_headers('rte_bus_vdev.h')
-
-allow_experimental_apis = true
+headers = files('rte_bus_vdev.h')
 
 deps += ['kvargs']

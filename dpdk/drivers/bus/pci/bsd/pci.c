@@ -50,7 +50,7 @@
  * This code is used to simulate a PCI probe by parsing information in
  * sysfs. Moreover, when a registered driver matches a device, the
  * kernel driver currently using it is unloaded and replaced by
- * igb_uio module, which is a very minimal userland driver for Intel
+ * nic_uio module, which is a very minimal userland driver for Intel
  * network card, only providing access to PCI BAR to applications, and
  * enabling bus master.
  */
@@ -65,7 +65,7 @@ rte_pci_map_device(struct rte_pci_device *dev)
 
 	/* try mapping the NIC resources */
 	switch (dev->kdrv) {
-	case RTE_KDRV_NIC_UIO:
+	case RTE_PCI_KDRV_NIC_UIO:
 		/* map resources for devices that use uio */
 		ret = pci_uio_map_resource(dev);
 		break;
@@ -85,7 +85,7 @@ rte_pci_unmap_device(struct rte_pci_device *dev)
 {
 	/* try unmapping the NIC resources */
 	switch (dev->kdrv) {
-	case RTE_KDRV_NIC_UIO:
+	case RTE_PCI_KDRV_NIC_UIO:
 		/* unmap resources for devices that use uio */
 		pci_uio_unmap_resource(dev);
 		break;
@@ -192,7 +192,7 @@ pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
 	mapaddr = pci_map_resource(NULL, fd, (off_t)offset,
 			(size_t)dev->mem_resource[res_idx].len, 0);
 	close(fd);
-	if (mapaddr == MAP_FAILED)
+	if (mapaddr == NULL)
 		goto error;
 
 	maps[map_idx].phaddr = dev->mem_resource[res_idx].phys_addr;
@@ -255,7 +255,7 @@ pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 	pci_name_set(dev);
 
 	/* FreeBSD has only one pass through driver */
-	dev->kdrv = RTE_KDRV_NIC_UIO;
+	dev->kdrv = RTE_PCI_KDRV_NIC_UIO;
 
 	/* parse resources */
 	switch (conf->pc_hdr & PCIM_HDRTYPE) {
@@ -338,6 +338,7 @@ rte_pci_scan(void)
 			.match_buf_len = sizeof(matches),
 			.matches = &matches[0],
 	};
+	struct rte_pci_addr pci_addr;
 
 	/* for debug purposes, PCI can be disabled */
 	if (!rte_eal_has_pci())
@@ -357,9 +358,18 @@ rte_pci_scan(void)
 			goto error;
 		}
 
-		for (i = 0; i < conf_io.num_matches; i++)
+		for (i = 0; i < conf_io.num_matches; i++) {
+			pci_addr.domain = matches[i].pc_sel.pc_domain;
+			pci_addr.bus = matches[i].pc_sel.pc_bus;
+			pci_addr.devid = matches[i].pc_sel.pc_dev;
+			pci_addr.function = matches[i].pc_sel.pc_func;
+
+			if (rte_pci_ignore_device(&pci_addr))
+				continue;
+
 			if (pci_scan_one(fd, &matches[i]) < 0)
 				goto error;
+		}
 
 		dev_count += conf_io.num_matches;
 	} while(conf_io.status == PCI_GETCONF_MORE_DEVS);
@@ -385,60 +395,10 @@ enum rte_iova_mode
 pci_device_iova_mode(const struct rte_pci_driver *pdrv __rte_unused,
 		     const struct rte_pci_device *pdev)
 {
-	/* Supports only RTE_KDRV_NIC_UIO */
-	if (pdev->kdrv != RTE_KDRV_NIC_UIO)
+	if (pdev->kdrv != RTE_PCI_KDRV_NIC_UIO)
 		RTE_LOG(DEBUG, EAL, "Unsupported kernel driver? Defaulting to IOVA as 'PA'\n");
 
 	return RTE_IOVA_PA;
-}
-
-int
-pci_update_device(const struct rte_pci_addr *addr)
-{
-	int fd;
-	struct pci_conf matches[2];
-	struct pci_match_conf match = {
-		.pc_sel = {
-			.pc_domain = addr->domain,
-			.pc_bus = addr->bus,
-			.pc_dev = addr->devid,
-			.pc_func = addr->function,
-		},
-	};
-	struct pci_conf_io conf_io = {
-		.pat_buf_len = 0,
-		.num_patterns = 1,
-		.patterns = &match,
-		.match_buf_len = sizeof(matches),
-		.matches = &matches[0],
-	};
-
-	fd = open("/dev/pci", O_RDONLY);
-	if (fd < 0) {
-		RTE_LOG(ERR, EAL, "%s(): error opening /dev/pci\n", __func__);
-		goto error;
-	}
-
-	if (ioctl(fd, PCIOCGETCONF, &conf_io) < 0) {
-		RTE_LOG(ERR, EAL, "%s(): error with ioctl on /dev/pci: %s\n",
-				__func__, strerror(errno));
-		goto error;
-	}
-
-	if (conf_io.num_matches != 1)
-		goto error;
-
-	if (pci_scan_one(fd, &matches[0]) < 0)
-		goto error;
-
-	close(fd);
-
-	return 0;
-
-error:
-	if (fd >= 0)
-		close(fd);
-	return -1;
 }
 
 /* Read PCI config space. */
@@ -538,7 +498,7 @@ rte_pci_ioport_map(struct rte_pci_device *dev, int bar,
 
 	switch (dev->kdrv) {
 #if defined(RTE_ARCH_X86)
-	case RTE_KDRV_NIC_UIO:
+	case RTE_PCI_KDRV_NIC_UIO:
 		if (rte_eal_iopl_init() != 0) {
 			RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
 				__func__, dev->name);
@@ -596,7 +556,7 @@ rte_pci_ioport_read(struct rte_pci_ioport *p,
 		void *data, size_t len, off_t offset)
 {
 	switch (p->dev->kdrv) {
-	case RTE_KDRV_NIC_UIO:
+	case RTE_PCI_KDRV_NIC_UIO:
 		pci_uio_ioport_read(p, data, len, offset);
 		break;
 	default:
@@ -638,7 +598,7 @@ rte_pci_ioport_write(struct rte_pci_ioport *p,
 		const void *data, size_t len, off_t offset)
 {
 	switch (p->dev->kdrv) {
-	case RTE_KDRV_NIC_UIO:
+	case RTE_PCI_KDRV_NIC_UIO:
 		pci_uio_ioport_write(p, data, len, offset);
 		break;
 	default:
@@ -653,7 +613,7 @@ rte_pci_ioport_unmap(struct rte_pci_ioport *p)
 
 	switch (p->dev->kdrv) {
 #if defined(RTE_ARCH_X86)
-	case RTE_KDRV_NIC_UIO:
+	case RTE_PCI_KDRV_NIC_UIO:
 		ret = 0;
 		break;
 #endif

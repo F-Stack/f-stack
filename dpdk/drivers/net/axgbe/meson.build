@@ -3,10 +3,8 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
-
-allow_experimental_apis = true
 
 sources = files('axgbe_ethdev.c',
 		'axgbe_dev.c',

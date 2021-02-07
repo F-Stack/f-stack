@@ -7,15 +7,22 @@ Compiling the DPDK Target from Source
 System Requirements
 -------------------
 
-The DPDK and its applications require the Clang-LLVM C compiler
-and Microsoft MSVC linker.
+Building the DPDK and its applications requires one of the following
+environments:
+
+* The Clang-LLVM C compiler and Microsoft MSVC linker.
+* The MinGW-w64 toolchain (either native or cross).
+
 The Meson Build system is used to prepare the sources for compilation
 with the Ninja backend.
 The installation of these tools is covered in this section.
 
 
+Option 1. Clang-LLVM C Compiler and Microsoft MSVC Linker
+---------------------------------------------------------
+
 Install the Compiler
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
 Download and install the clang compiler from
 `LLVM website <http://releases.llvm.org/download.html>`_.
@@ -25,13 +32,27 @@ For example, Clang-LLVM direct download link::
 
 
 Install the Linker
-------------------
+~~~~~~~~~~~~~~~~~~
 
 Download and install the Build Tools for Visual Studio to link and build the
 files on windows,
 from `Microsoft website <https://visualstudio.microsoft.com/downloads>`_.
 When installing build tools, select the "Visual C++ build tools" option
 and ensure the Windows SDK is selected.
+
+
+Option 2. MinGW-w64 Toolchain
+-----------------------------
+
+On Linux, i.e. for cross-compilation, install MinGW-w64 via a package manager.
+Version 4.0.4 for Ubuntu 16.04 cannot be used due to a
+`MinGW-w64 bug <https://sourceforge.net/p/mingw-w64/bugs/562/>`_.
+
+On Windows, obtain the latest version installer from
+`MinGW-w64 repository <https://sourceforge.net/projects/mingw-w64/files/>`_.
+Any thread model (POSIX or Win32) can be chosen, DPDK does not rely on it.
+Install to a folder without spaces in its name, like ``C:\MinGW``.
+This path is assumed for the rest of this guide.
 
 
 Install the Build System
@@ -42,6 +63,8 @@ Download and install the build system from
 A good option to choose is the MSI installer for both meson and ninja together::
 
 	http://mesonbuild.com/Getting-meson.html#installing-meson-and-ninja-with-the-msi-installer%22
+
+Recommended version is either Meson 0.47.1 (baseline) or the latest release.
 
 Install the Backend
 -------------------
@@ -56,14 +79,21 @@ Build the code
 The build environment is setup to build the EAL and the helloworld example by
 default.
 
-Using the ninja backend
-~~~~~~~~~~~~~~~~~~~~~~~~
+Option 1. Native Build on Windows
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Specifying the compiler might be required to complete the meson command.
+When using Clang-LLVM, specifying the compiler might be required to complete
+the meson command:
 
 .. code-block:: console
 
     set CC=clang
+
+When using MinGW-w64, it is sufficient to have toolchain executables in PATH:
+
+.. code-block:: console
+
+    set PATH=C:\MinGW\mingw64\bin;%PATH%
 
 To compile the examples, the flag ``-Dexamples`` is required.
 
@@ -71,19 +101,15 @@ To compile the examples, the flag ``-Dexamples`` is required.
 
     cd C:\Users\me\dpdk
     meson -Dexamples=helloworld build
-    cd build
-    ninja
+    ninja -C build
 
-Run the helloworld example
-==========================
+Option 2. Cross-Compile with MinGW-w64
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Navigate to the examples in the build directory and run `dpdk-helloworld.exe`.
+The cross-file option must be specified for Meson.
+Depending on the distribution, paths in this file may need adjustments.
 
 .. code-block:: console
 
-    cd C:\Users\me\dpdk\build\examples
-    dpdk-helloworld.exe
-    hello from core 1
-    hello from core 3
-    hello from core 0
-    hello from core 2
+    meson --cross-file config/x86/cross-mingw -Dexamples=helloworld build
+    ninja -C build

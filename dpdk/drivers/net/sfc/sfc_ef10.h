@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2017-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2017-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -9,6 +9,8 @@
 
 #ifndef _SFC_EF10_H
 #define _SFC_EF10_H
+
+#include "sfc_debug.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +21,15 @@ extern "C" {
 	(RTE_CACHE_LINE_SIZE / sizeof(efx_qword_t))
 
 #define SFC_EF10_EV_QCLEAR_MASK		(~(SFC_EF10_EV_PER_CACHE_LINE - 1))
+
+/*
+ * Use simple libefx-based implementation of the
+ * sfc_ef10_ev_qclear_cache_line() if SSE2 is not available
+ * since optimized implementation uses __m128i intrinsics.
+ */
+#ifndef __SSE2__
+#define SFC_EF10_EV_QCLEAR_USE_EFX
+#endif
 
 #if defined(SFC_EF10_EV_QCLEAR_USE_EFX)
 static inline void
@@ -38,8 +49,8 @@ sfc_ef10_ev_qclear_cache_line(void *ptr)
 static inline void
 sfc_ef10_ev_qclear_cache_line(void *ptr)
 {
-	const __m128i val = _mm_set1_epi64x(UINT64_MAX);
-	__m128i *addr = ptr;
+	const efsys_uint128_t val = _mm_set1_epi64x(UINT64_MAX);
+	efsys_uint128_t *addr = ptr;
 	unsigned int i;
 
 	RTE_BUILD_BUG_ON(sizeof(val) > RTE_CACHE_LINE_SIZE);

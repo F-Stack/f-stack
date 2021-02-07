@@ -5,33 +5,19 @@
 
 #include <stddef.h>
 #include <errno.h>
-#include <assert.h>
 #include <stdint.h>
-
-/*
- * Not needed by this file; included to work around the lack of off_t
- * definition for mlx5dv.h with unpatched rdma-core versions.
- */
-#include <sys/types.h>
-
-/* Verbs headers do not support -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
+#include <unistd.h>
 
 #include <rte_ethdev_driver.h>
 #include <rte_common.h>
+#include <rte_malloc.h>
+#include <rte_hypervisor.h>
 
 #include "mlx5.h"
 #include "mlx5_autoconf.h"
-#include "mlx5_glue.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
+#include "mlx5_devx.h"
 
 /**
  * DPDK callback to configure a VLAN filter.
@@ -54,7 +40,7 @@ mlx5_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 
 	DRV_LOG(DEBUG, "port %u %s VLAN filter ID %" PRIu16,
 		dev->data->port_id, (on ? "enable" : "disable"), vlan_id);
-	assert(priv->vlan_filter_n <= RTE_DIM(priv->vlan_filter));
+	MLX5_ASSERT(priv->vlan_filter_n <= RTE_DIM(priv->vlan_filter));
 	for (i = 0; (i != priv->vlan_filter_n); ++i)
 		if (priv->vlan_filter[i] == vlan_id)
 			break;
@@ -64,7 +50,7 @@ mlx5_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 		return -rte_errno;
 	}
 	if (i < priv->vlan_filter_n) {
-		assert(priv->vlan_filter_n != 0);
+		MLX5_ASSERT(priv->vlan_filter_n != 0);
 		/* Enabling an existing VLAN filter has no effect. */
 		if (on)
 			goto out;
@@ -76,7 +62,7 @@ mlx5_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 			(priv->vlan_filter_n - i));
 		priv->vlan_filter[priv->vlan_filter_n] = 0;
 	} else {
-		assert(i == priv->vlan_filter_n);
+		MLX5_ASSERT(i == priv->vlan_filter_n);
 		/* Disabling an unknown VLAN filter has no effect. */
 		if (!on)
 			goto out;
@@ -107,10 +93,6 @@ mlx5_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue, int on)
 	struct mlx5_rxq_data *rxq = (*priv->rxqs)[queue];
 	struct mlx5_rxq_ctrl *rxq_ctrl =
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
-	struct ibv_wq_attr mod;
-	uint16_t vlan_offloads =
-		(on ? IBV_WQ_FLAGS_CVLAN_STRIPPING : 0) |
-		0;
 	int ret = 0;
 
 	/* Validate hw support */
@@ -125,34 +107,17 @@ mlx5_vlan_strip_queue_set(struct rte_eth_dev *dev, uint16_t queue, int on)
 			dev->data->port_id, queue);
 		return;
 	}
-	DRV_LOG(DEBUG, "port %u set VLAN offloads 0x%x for port %uqueue %d",
-		dev->data->port_id, vlan_offloads, rxq->port_id, queue);
+	DRV_LOG(DEBUG, "port %u set VLAN stripping offloads %d for port %uqueue %d",
+		dev->data->port_id, on, rxq->port_id, queue);
 	if (!rxq_ctrl->obj) {
 		/* Update related bits in RX queue. */
 		rxq->vlan_strip = !!on;
 		return;
 	}
-	if (rxq_ctrl->obj->type == MLX5_RXQ_OBJ_TYPE_IBV) {
-		mod = (struct ibv_wq_attr){
-			.attr_mask = IBV_WQ_ATTR_FLAGS,
-			.flags_mask = IBV_WQ_FLAGS_CVLAN_STRIPPING,
-			.flags = vlan_offloads,
-		};
-		ret = mlx5_glue->modify_wq(rxq_ctrl->obj->wq, &mod);
-	} else if (rxq_ctrl->obj->type == MLX5_RXQ_OBJ_TYPE_DEVX_RQ) {
-		struct mlx5_devx_modify_rq_attr rq_attr;
-
-		memset(&rq_attr, 0, sizeof(rq_attr));
-		rq_attr.rq_state = MLX5_RQC_STATE_RDY;
-		rq_attr.state = MLX5_RQC_STATE_RDY;
-		rq_attr.vsd = (on ? 0 : 1);
-		rq_attr.modify_bitmask = MLX5_MODIFY_RQ_IN_MODIFY_BITMASK_VSD;
-		ret = mlx5_devx_cmd_modify_rq(rxq_ctrl->obj->rq, &rq_attr);
-	}
+	ret = priv->obj_ops.rxq_obj_modify_vlan_strip(rxq_ctrl->obj, on);
 	if (ret) {
-		DRV_LOG(ERR, "port %u failed to modify object %d stripping "
-			"mode: %s", dev->data->port_id,
-			rxq_ctrl->obj->type, strerror(rte_errno));
+		DRV_LOG(ERR, "Port %u failed to modify object stripping mode:"
+			" %s", dev->data->port_id, strerror(rte_errno));
 		return;
 	}
 	/* Update related bits in RX queue. */

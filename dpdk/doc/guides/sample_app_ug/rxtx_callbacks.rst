@@ -25,13 +25,6 @@ To compile the sample application see :doc:`compiling`.
 
 The application is located in the ``rxtx_callbacks`` sub-directory.
 
-The callbacks feature requires that the ``CONFIG_RTE_ETHDEV_RXTX_CALLBACKS``
-setting is on in the ``config/common_`` config file that applies to the
-target. This is generally on by default:
-
-.. code-block:: console
-
-    CONFIG_RTE_ETHDEV_RXTX_CALLBACKS=y
 
 Running the Application
 -----------------------
@@ -40,7 +33,7 @@ To run the example in a ``linux`` environment:
 
 .. code-block:: console
 
-    ./build/rxtx_callbacks -l 1 -n 4 -- [-t]
+    ./<build_dir>/examples/dpdk-rxtx_callbacks -l 1 -n 4 -- [-t]
 
 Use -t to enable hardware timestamping. If not supported by the NIC, an error
 will be displayed.
@@ -159,7 +152,7 @@ all packets received:
         uint64_t now = rte_rdtsc();
 
         for (i = 0; i < nb_pkts; i++)
-            pkts[i]->udata64 = now;
+            *tsc_field(pkts[i]) = now;
 
         return nb_pkts;
     }
@@ -186,7 +179,7 @@ packets prior to transmission:
         unsigned i;
 
         for (i = 0; i < nb_pkts; i++)
-            cycles += now - pkts[i]->udata64;
+            cycles += now - *tsc_field(pkts[i]);
 
         latency_numbers.total_cycles += cycles;
         latency_numbers.total_pkts   += nb_pkts;

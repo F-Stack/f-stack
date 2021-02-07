@@ -919,6 +919,25 @@ static int spi_self_checking(struct intel_max10_device *dev)
 	return 0;
 }
 
+static void init_spi_share_data(struct ifpga_fme_hw *fme,
+				struct altera_spi_device *spi)
+{
+	struct ifpga_hw *hw = (struct ifpga_hw *)fme->parent;
+	opae_share_data *sd = NULL;
+
+	if (hw && hw->adapter && hw->adapter->shm.ptr) {
+		dev_info(NULL, "transfer share data to spi\n");
+		sd = (opae_share_data *)hw->adapter->shm.ptr;
+		spi->mutex = &sd->spi_mutex;
+		spi->dtb_sz_ptr = &sd->dtb_size;
+		spi->dtb = sd->dtb;
+	} else {
+		spi->mutex = NULL;
+		spi->dtb_sz_ptr = NULL;
+		spi->dtb = NULL;
+	}
+}
+
 static int fme_spi_init(struct ifpga_feature *feature)
 {
 	struct ifpga_fme_hw *fme = (struct ifpga_fme_hw *)feature->parent;
@@ -935,6 +954,7 @@ static int fme_spi_init(struct ifpga_feature *feature)
 	spi_master = altera_spi_alloc(feature->addr, TYPE_SPI);
 	if (!spi_master)
 		return -ENODEV;
+	init_spi_share_data(fme, spi_master);
 
 	altera_spi_init(spi_master);
 
@@ -944,7 +964,6 @@ static int fme_spi_init(struct ifpga_feature *feature)
 		dev_err(fme, "max10 init fail\n");
 		goto spi_fail;
 	}
-
 
 	fme->max10_dev = max10;
 
@@ -979,28 +998,32 @@ struct ifpga_feature_ops fme_spi_master_ops = {
 static int nios_spi_wait_init_done(struct altera_spi_device *dev)
 {
 	u32 val = 0;
-	unsigned long timeout = msecs_to_timer_cycles(10000);
+	unsigned long timeout = rte_get_timer_cycles() +
+			msecs_to_timer_cycles(10000);
 	unsigned long ticks;
 	int major_version;
+	int fecmode = FEC_MODE_NO;
 
 	if (spi_reg_read(dev, NIOS_VERSION, &val))
 		return -EIO;
 
-	major_version = (val >> NIOS_VERSION_MAJOR_SHIFT) &
-		NIOS_VERSION_MAJOR;
-	dev_debug(dev, "A10 NIOS FW version %d\n", major_version);
+	major_version =
+		(val & NIOS_VERSION_MAJOR) >> NIOS_VERSION_MAJOR_SHIFT;
+	dev_info(dev, "A10 NIOS FW version %d\n", major_version);
 
 	if (major_version >= 3) {
 		/* read NIOS_INIT to check if PKVL INIT done or not */
 		if (spi_reg_read(dev, NIOS_INIT, &val))
 			return -EIO;
 
+		dev_debug(dev, "read NIOS_INIT: 0x%x\n", val);
+
 		/* check if PKVLs are initialized already */
 		if (val & NIOS_INIT_DONE || val & NIOS_INIT_START)
 			goto nios_init_done;
 
 		/* start to config the default FEC mode */
-		val = NIOS_INIT_START;
+		val = fecmode | NIOS_INIT_START;
 
 		if (spi_reg_write(dev, NIOS_INIT, val))
 			return -EIO;
@@ -1010,14 +1033,23 @@ nios_init_done:
 	do {
 		if (spi_reg_read(dev, NIOS_INIT, &val))
 			return -EIO;
-		if (val)
+		if (val & NIOS_INIT_DONE)
 			break;
 
 		ticks = rte_get_timer_cycles();
 		if (time_after(ticks, timeout))
 			return -ETIMEDOUT;
 		msleep(100);
-	} while (!val);
+	} while (1);
+
+	/* get the fecmode */
+	if (spi_reg_read(dev, NIOS_INIT, &val))
+		return -EIO;
+	dev_debug(dev, "read NIOS_INIT: 0x%x\n", val);
+	fecmode = (val & REQ_FEC_MODE) >> REQ_FEC_MODE_SHIFT;
+	dev_info(dev, "fecmode: 0x%x, %s\n", fecmode,
+			(fecmode == FEC_MODE_KR) ? "kr" :
+			((fecmode == FEC_MODE_RS) ? "rs" : "no"));
 
 	return 0;
 }
@@ -1071,14 +1103,20 @@ static int fme_nios_spi_init(struct ifpga_feature *feature)
 	spi_master = altera_spi_alloc(feature->addr, TYPE_NIOS_SPI);
 	if (!spi_master)
 		return -ENODEV;
+	init_spi_share_data(fme, spi_master);
 
 	/**
 	 * 1. wait A10 NIOS initial finished and
 	 * release the SPI master to Host
 	 */
+	if (spi_master->mutex)
+		pthread_mutex_lock(spi_master->mutex);
+
 	ret = nios_spi_wait_init_done(spi_master);
 	if (ret != 0) {
 		dev_err(fme, "FME NIOS_SPI init fail\n");
+		if (spi_master->mutex)
+			pthread_mutex_unlock(spi_master->mutex);
 		goto release_dev;
 	}
 
@@ -1087,6 +1125,9 @@ static int fme_nios_spi_init(struct ifpga_feature *feature)
 	/* 2. check if error occur? */
 	if (nios_spi_check_error(spi_master))
 		dev_info(fme, "NIOS_SPI INIT done, but found some error\n");
+
+	if (spi_master->mutex)
+		pthread_mutex_unlock(spi_master->mutex);
 
 	/* 3. init the spi master*/
 	altera_spi_init(spi_master);
@@ -1099,11 +1140,12 @@ static int fme_nios_spi_init(struct ifpga_feature *feature)
 		goto release_dev;
 	}
 
+	fme->max10_dev = max10;
+
 	max10->bus = hw->pci_data->bus;
 
 	fme_get_board_interface(fme);
 
-	fme->max10_dev = max10;
 	mgr->sensor_list = &max10->opae_sensor_list;
 
 	/* SPI self test */
@@ -1165,6 +1207,25 @@ static int i2c_mac_rom_test(struct altera_i2c_dev *dev)
 	return 0;
 }
 
+static void init_i2c_mutex(struct ifpga_fme_hw *fme)
+{
+	struct ifpga_hw *hw = (struct ifpga_hw *)fme->parent;
+	struct altera_i2c_dev *i2c_dev;
+	opae_share_data *sd = NULL;
+
+	if (fme->i2c_master) {
+		i2c_dev = (struct altera_i2c_dev *)fme->i2c_master;
+		if (hw && hw->adapter && hw->adapter->shm.ptr) {
+			dev_info(NULL, "use multi-process mutex in i2c\n");
+			sd = (opae_share_data *)hw->adapter->shm.ptr;
+			i2c_dev->mutex = &sd->i2c_mutex;
+		} else {
+			dev_info(NULL, "use multi-thread mutex in i2c\n");
+			i2c_dev->mutex = &i2c_dev->lock;
+		}
+	}
+}
+
 static int fme_i2c_init(struct ifpga_feature *feature)
 {
 	struct feature_fme_i2c *i2c;
@@ -1177,6 +1238,8 @@ static int fme_i2c_init(struct ifpga_feature *feature)
 	fme->i2c_master = altera_i2c_probe(i2c);
 	if (!fme->i2c_master)
 		return -ENODEV;
+
+	init_i2c_mutex(fme);
 
 	/* MAC ROM self test */
 	i2c_mac_rom_test(fme->i2c_master);
