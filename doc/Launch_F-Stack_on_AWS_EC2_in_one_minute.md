@@ -10,8 +10,10 @@
 
     # Compile DPDK
     cd /data/f-stack/dpdk
-    make config T=x86_64-native-linuxapp-gcc
-    make
+    cd dpdk/
+    meson -Denable_kmods=true build
+    ninja -C build
+    ninja -C build install
 
     # set hugepage	
     echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
@@ -24,8 +26,8 @@
     # insmod ko
     modprobe uio
     modprobe hwmon
-    insmod build/kmod/igb_uio.ko
-    insmod build/kmod/rte_kni.ko carrier=on
+    insmod build/kernel/linux/igb_uio/igb_uio.ko
+    insmod build/kernel/linux/kni/rte_kni.ko carrier=on
 
     # set ip address
     #redhat7.3
