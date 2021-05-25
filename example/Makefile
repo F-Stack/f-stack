@@ -5,7 +5,7 @@ ifeq ($(FF_PATH),)
 endif
 
 ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
-$(error "no installation of DPDK found, maybe you shuld export environment variable `PKG_CONFIG_PATH`")
+$(error "No installation of DPDK found, maybe you should export environment variable `PKG_CONFIG_PATH`")
 endif
 
 PKGCONF ?= pkg-config
