@@ -3,14 +3,13 @@
   If you have a Redhat7.3 EC2 instance，and then execute the following cmds, you will get the F-Stack server in one minute 
 
     sudo -i
-    yum install -y git gcc openssl-devel kernel-devel-$(uname -r) bc numactl-devel mkdir make net-tools vim pciutils iproute pcre-devel zlib-devel elfutils-libelf-devel vim
+    yum install -y git gcc openssl-devel kernel-devel-$(uname -r) bc numactl-devel mkdir make net-tools vim pciutils iproute pcre-devel zlib-devel elfutils-libelf-devel meson
 
     mkdir /data/f-stack
     git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 
     # Compile DPDK
     cd /data/f-stack/dpdk
-    cd dpdk/
     meson -Denable_kmods=true build
     ninja -C build
     ninja -C build install
