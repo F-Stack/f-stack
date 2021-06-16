@@ -367,6 +367,81 @@ parse_port_slave_list(struct ff_port_cfg *cfg, const char *v_str)
 }
 
 static int
+vip_cfg_hander(struct ff_port_cfg *cur)
+{
+    //vip cfg
+    int ret;
+    char *vip_addr_array[VIP_MAX_NUM];
+
+    ret = rte_strsplit(cur->vip_addr_str, strlen(cur->vip_addr_str), &vip_addr_array[0], VIP_MAX_NUM, ';');
+    if (ret <= 0) {
+        fprintf(stdout, "vip_cfg_hander nb_vip is 0, not set vip_addr or set invalid vip_addr %s\n",
+            cur->vip_addr_str);
+        return 1;
+    }
+
+    cur->nb_vip = ret;
+
+    cur->vip_addr_array = (char **)calloc(cur->nb_vip, sizeof(char *));
+    if (cur->vip_addr_array == NULL) {
+        fprintf(stderr, "vip_cfg_hander malloc failed\n");
+        goto err;
+    }
+
+    memcpy(cur->vip_addr_array, vip_addr_array, cur->nb_vip * sizeof(char *));
+
+    return 1;
+
+err:
+    cur->nb_vip = 0;
+    if (cur->vip_addr_array) {
+        free(cur->vip_addr_array);
+        cur->vip_addr_array = NULL;
+    }
+
+    return 0;
+}
+
+#ifdef INET6
+static int
+vip6_cfg_hander(struct ff_port_cfg *cur)
+{
+    //vip6 cfg
+    int ret;
+    char *vip_addr6_array[VIP_MAX_NUM];
+
+    ret = rte_strsplit(cur->vip_addr6_str, strlen(cur->vip_addr6_str),
+                                    &vip_addr6_array[0], VIP_MAX_NUM, ';');
+    if (ret == 0) {
+        fprintf(stdout, "vip6_cfg_hander nb_vip6 is 0, not set vip_addr6 or set invalid vip_addr6 %s\n",
+            cur->vip_addr6_str);
+        return 1;
+    }
+
+    cur->nb_vip6 = ret;
+
+    cur->vip_addr6_array = (char **) calloc(cur->nb_vip6, sizeof(char *));
+    if (cur->vip_addr6_array == NULL) {
+        fprintf(stderr, "port_cfg_handler malloc failed\n");
+        goto fail;
+    }
+
+    memcpy(cur->vip_addr6_array, vip_addr6_array, cur->nb_vip6 * sizeof(char *));
+
+    return 1;
+
+fail:
+    cur->nb_vip6 = 0;
+    if (cur->vip_addr6_array) {
+        free(cur->vip_addr6_array);
+        cur->vip_addr6_array = NULL;
+    }
+
+    return 0;
+}
+#endif
+
+static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
 
@@ -426,20 +501,29 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         return parse_port_lcore_list(cur, value);
     } else if (strcmp(name, "slave_port_list") == 0) {
         return parse_port_slave_list(cur, value);
+    } else if (strcmp(name, "vip_addr") == 0) {
+        cur->vip_addr_str = strdup(value);
+        if (cur->vip_addr_str) {
+            return vip_cfg_hander(cur);
+        }
+    } else if (strcmp(name, "vip_ifname") == 0) {
+        cur->vip_ifname = strdup(value);
     }
 
 #ifdef INET6
-    else if (0 == strcmp(name, "addr6"))
-    {
+    else if (0 == strcmp(name, "addr6")) {
         cur->addr6_str = strdup(value);
-    }
-    else if (0 == strcmp(name, "prefix_len"))
-    {
+    } else if (0 == strcmp(name, "prefix_len")) {
         cur->prefix_len = atoi(value);
-    }
-    else if (0 == strcmp(name, "gateway6"))
-    {
+    } else if (0 == strcmp(name, "gateway6")) {
         cur->gateway6_str = strdup(value);
+    } else if (strcmp(name, "vip_addr6") == 0) {
+        cur->vip_addr6_str = strdup(value);
+        if (cur->vip_addr_str) {
+            return vip6_cfg_hander(cur);
+        }
+    } else if (0 == strcmp(name, "vip_prefix_len")) {
+        cur->vip_prefix_len = atoi(value);
     }
 #endif
 

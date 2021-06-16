@@ -44,6 +44,8 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
+#define VIP_MAX_NUM 64
+
 struct ff_hw_features {
     uint8_t rx_csum;
     uint8_t rx_lro;
@@ -62,10 +64,20 @@ struct ff_port_cfg {
     char *broadcast;
     char *gateway;
 
+    char *vip_ifname;
+    char *vip_addr_str;
+    char **vip_addr_array;
+    uint32_t nb_vip;
+
 #ifdef INET6
         char *addr6_str;
         char *gateway6_str;
         uint8_t prefix_len;
+
+        char *vip_addr6_str;
+        char **vip_addr6_array;
+        uint32_t nb_vip6;
+        uint8_t vip_prefix_len;
 #endif
 
     int nb_lcores;
