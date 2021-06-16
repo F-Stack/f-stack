@@ -68,10 +68,6 @@ struct ff_port_cfg {
         uint8_t prefix_len;
 #endif
 
-    char *pcap;
-    uint16_t snaplen;
-    uint32_t savelen;
-
     int nb_lcores;
     int nb_slaves;
     uint16_t lcore_list[DPDK_MAX_LCORE];
