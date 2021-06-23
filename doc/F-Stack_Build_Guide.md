@@ -65,7 +65,7 @@ $ make
 
 ## Compile dpdk in virtual machine
 
-- f-stack/dpdk/lib/librte_eal/linuxapp/igb_uio/igb_uio.c line 279:
+- f-stack/dpdk/kernel/linux/igb_uio/igb_uio.c line 274:
 ```
 
 -   if (pci_intx_mask_supported(udev->pdev)) {
