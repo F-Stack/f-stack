@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: (BSD-3-Clause AND MIT-CMU)
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -66,6 +68,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_param.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -83,10 +87,12 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_page.h>
 #include <vm/vm_pager.h>
 #include <vm/vm_extern.h>
+#include <vm/uma.h>
 
-int cluster_pbuf_freecnt = -1;	/* unlimited to begin with */
-
-struct buf *swbuf;
+uma_zone_t pbuf_zone;
+static int	pbuf_init(void *, int, int);
+static int	pbuf_ctor(void *, int, void *, int);
+static void	pbuf_dtor(void *, int, void *);
 
 static int dead_pager_getpages(vm_object_t, vm_page_t *, int, int *, int *);
 static vm_object_t dead_pager_alloc(void *, vm_ooffset_t, vm_prot_t,
@@ -107,43 +113,35 @@ static vm_object_t
 dead_pager_alloc(void *handle, vm_ooffset_t size, vm_prot_t prot,
     vm_ooffset_t off, struct ucred *cred)
 {
-	return NULL;
+
+	return (NULL);
 }
 
 static void
-dead_pager_putpages(object, m, count, flags, rtvals)
-	vm_object_t object;
-	vm_page_t *m;
-	int count;
-	int flags;
-	int *rtvals;
+dead_pager_putpages(vm_object_t object, vm_page_t *m, int count,
+    int flags, int *rtvals)
 {
 	int i;
 
-	for (i = 0; i < count; i++) {
+	for (i = 0; i < count; i++)
 		rtvals[i] = VM_PAGER_AGAIN;
-	}
 }
 
 static int
-dead_pager_haspage(object, pindex, prev, next)
-	vm_object_t object;
-	vm_pindex_t pindex;
-	int *prev;
-	int *next;
+dead_pager_haspage(vm_object_t object, vm_pindex_t pindex, int *prev, int *next)
 {
-	if (prev)
+
+	if (prev != NULL)
 		*prev = 0;
-	if (next)
+	if (next != NULL)
 		*next = 0;
-	return FALSE;
+	return (FALSE);
 }
 
 static void
-dead_pager_dealloc(object)
-	vm_object_t object;
+dead_pager_dealloc(vm_object_t object)
 {
-	return;
+
 }
 
 static struct pagerops deadpagerops = {
@@ -165,56 +163,64 @@ struct pagerops *pagertab[] = {
 	&mgtdevicepagerops,	/* OBJT_MGTDEVICE */
 };
 
-/*
- * Kernel address space for mapping pages.
- * Used by pagers where KVAs are needed for IO.
- *
- * XXX needs to be large enough to support the number of pending async
- * cleaning requests (NPENDINGIO == 64) * the maximum swap cluster size
- * (MAXPHYS == 64k) if you want to get the most efficiency.
- */
-struct mtx_padalign pbuf_mtx;
-static TAILQ_HEAD(swqueue, buf) bswlist;
-static int bswneeded;
-vm_offset_t swapbkva;		/* swap buffers kva */
-
 void
-vm_pager_init()
+vm_pager_init(void)
 {
 	struct pagerops **pgops;
 
-	TAILQ_INIT(&bswlist);
 	/*
 	 * Initialize known pagers
 	 */
 	for (pgops = pagertab; pgops < &pagertab[nitems(pagertab)]; pgops++)
 		if ((*pgops)->pgo_init != NULL)
-			(*(*pgops)->pgo_init) ();
+			(*(*pgops)->pgo_init)();
 }
+
+static int nswbuf_max;
 
 void
-vm_pager_bufferinit()
+vm_pager_bufferinit(void)
 {
-	struct buf *bp;
-	int i;
 
-	mtx_init(&pbuf_mtx, "pbuf mutex", NULL, MTX_DEF);
-	bp = swbuf;
-	/*
-	 * Now set up swap and physical I/O buffer headers.
-	 */
-	for (i = 0; i < nswbuf; i++, bp++) {
-		TAILQ_INSERT_HEAD(&bswlist, bp, b_freelist);
-		BUF_LOCKINIT(bp);
-		LIST_INIT(&bp->b_dep);
-		bp->b_rcred = bp->b_wcred = NOCRED;
-		bp->b_xflags = 0;
-	}
-
-	cluster_pbuf_freecnt = nswbuf / 2;
-	vnode_pbuf_freecnt = nswbuf / 2 + 1;
-	vnode_async_pbuf_freecnt = nswbuf / 2;
+	/* Main zone for paging bufs. */
+	pbuf_zone = uma_zcreate("pbuf",
+	    sizeof(struct buf) + PBUF_PAGES * sizeof(vm_page_t),
+	    pbuf_ctor, pbuf_dtor, pbuf_init, NULL, UMA_ALIGN_CACHE,
+	    UMA_ZONE_NOFREE);
+	/* Few systems may still use this zone directly, so it needs a limit. */
+	nswbuf_max += uma_zone_set_max(pbuf_zone, NSWBUF_MIN);
 }
+
+uma_zone_t
+pbuf_zsecond_create(const char *name, int max)
+{
+	uma_zone_t zone;
+
+	zone = uma_zsecond_create(name, pbuf_ctor, pbuf_dtor, NULL, NULL,
+	    pbuf_zone);
+	/*
+	 * uma_prealloc() rounds up to items per slab. If we would prealloc
+	 * immediately on every pbuf_zsecond_create(), we may accumulate too
+	 * much of difference between hard limit and prealloced items, which
+	 * means wasted memory.
+	 */
+	if (nswbuf_max > 0)
+		nswbuf_max += uma_zone_set_max(zone, max);
+	else
+		uma_prealloc(pbuf_zone, uma_zone_set_max(zone, max));
+
+	return (zone);
+}
+
+static void
+pbuf_prealloc(void *arg __unused)
+{
+
+	uma_prealloc(pbuf_zone, nswbuf_max);
+	nswbuf_max = -1;
+}
+
+SYSINIT(pbuf, SI_SUB_KTHREAD_BUF, SI_ORDER_ANY, pbuf_prealloc, NULL);
 
 /*
  * Allocate an instance of a pager of the given type.
@@ -230,7 +236,7 @@ vm_pager_allocate(objtype_t type, void *handle, vm_ooffset_t size,
 
 	ops = pagertab[type];
 	if (ops)
-		ret = (*ops->pgo_alloc) (handle, size, prot, off, cred);
+		ret = (*ops->pgo_alloc)(handle, size, prot, off, cred);
 	else
 		ret = NULL;
 	return (ret);
@@ -240,8 +246,7 @@ vm_pager_allocate(objtype_t type, void *handle, vm_ooffset_t size,
  *	The object must be locked.
  */
 void
-vm_pager_deallocate(object)
-	vm_object_t object;
+vm_pager_deallocate(vm_object_t object)
 {
 
 	VM_OBJECT_ASSERT_WLOCKED(object);
@@ -253,13 +258,21 @@ vm_pager_assert_in(vm_object_t object, vm_page_t *m, int count)
 {
 #ifdef INVARIANTS
 
-	VM_OBJECT_ASSERT_WLOCKED(object);
-	KASSERT(count > 0, ("%s: 0 count", __func__));
 	/*
-	 * All pages must be busied, not mapped, not fully valid,
-	 * not dirty and belong to the proper object.
+	 * All pages must be consecutive, busied, not mapped, not fully valid,
+	 * not dirty and belong to the proper object.  Some pages may be the
+	 * bogus page, but the first and last pages must be a real ones.
 	 */
+
+	VM_OBJECT_ASSERT_UNLOCKED(object);
+	VM_OBJECT_ASSERT_PAGING(object);
+	KASSERT(count > 0, ("%s: 0 count", __func__));
 	for (int i = 0 ; i < count; i++) {
+		if (m[i] == bogus_page) {
+			KASSERT(i != 0 && i != count - 1,
+			    ("%s: page %d is the bogus page", __func__, i));
+			continue;
+		}
 		vm_page_assert_xbusied(m[i]);
 		KASSERT(!pmap_page_is_mapped(m[i]),
 		    ("%s: page %p is mapped", __func__, m[i]));
@@ -269,6 +282,8 @@ vm_pager_assert_in(vm_object_t object, vm_page_t *m, int count)
 		    ("%s: page %p is dirty", __func__, m[i]));
 		KASSERT(m[i]->object == object,
 		    ("%s: wrong object %p/%p", __func__, object, m[i]->object));
+		KASSERT(m[i]->pindex == m[0]->pindex + i,
+		    ("%s: page %p isn't consecutive", __func__, m[i]));
 	}
 #endif
 }
@@ -298,9 +313,13 @@ vm_pager_get_pages(vm_object_t object, vm_page_t *m, int count, int *rbehind,
 		 * If pager has replaced a page, assert that it had
 		 * updated the array.
 		 */
+#ifdef INVARIANTS
+		VM_OBJECT_RLOCK(object);
 		KASSERT(m[i] == vm_page_lookup(object, pindex++),
 		    ("%s: mismatch page %p pindex %ju", __func__,
 		    m[i], (uintmax_t )pindex - 1));
+		VM_OBJECT_RUNLOCK(object);
+#endif
 		/*
 		 * Zero out partially filled data.
 		 */
@@ -352,114 +371,33 @@ vm_pager_object_lookup(struct pagerlst *pg_list, void *handle)
 	return (object);
 }
 
-/*
- * initialize a physical buffer
- */
-
-/*
- * XXX This probably belongs in vfs_bio.c
- */
-static void
-initpbuf(struct buf *bp)
+static int
+pbuf_ctor(void *mem, int size, void *arg, int flags)
 {
-	KASSERT(bp->b_bufobj == NULL, ("initpbuf with bufobj"));
-	KASSERT(bp->b_vp == NULL, ("initpbuf with vp"));
+	struct buf *bp = mem;
+
+	bp->b_vp = NULL;
+	bp->b_bufobj = NULL;
+
+	/* copied from initpbuf() */
 	bp->b_rcred = NOCRED;
 	bp->b_wcred = NOCRED;
-	bp->b_qindex = 0;	/* On no queue (QUEUE_NONE) */
-	bp->b_kvabase = (caddr_t) (MAXPHYS * (bp - swbuf)) + swapbkva;
+	bp->b_qindex = 0;       /* On no queue (QUEUE_NONE) */
 	bp->b_data = bp->b_kvabase;
-	bp->b_kvasize = MAXPHYS;
-	bp->b_flags = 0;
 	bp->b_xflags = 0;
+	bp->b_flags = B_MAXPHYS;
 	bp->b_ioflags = 0;
 	bp->b_iodone = NULL;
 	bp->b_error = 0;
 	BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
+
+	return (0);
 }
 
-/*
- * allocate a physical buffer
- *
- *	There are a limited number (nswbuf) of physical buffers.  We need
- *	to make sure that no single subsystem is able to hog all of them,
- *	so each subsystem implements a counter which is typically initialized
- *	to 1/2 nswbuf.  getpbuf() decrements this counter in allocation and
- *	increments it on release, and blocks if the counter hits zero.  A
- *	subsystem may initialize the counter to -1 to disable the feature,
- *	but it must still be sure to match up all uses of getpbuf() with 
- *	relpbuf() using the same variable.
- *
- *	NOTE: pfreecnt can be NULL, but this 'feature' will be removed
- *	relatively soon when the rest of the subsystems get smart about it. XXX
- */
-struct buf *
-getpbuf(int *pfreecnt)
+static void
+pbuf_dtor(void *mem, int size, void *arg)
 {
-	struct buf *bp;
-
-	mtx_lock(&pbuf_mtx);
-
-	for (;;) {
-		if (pfreecnt) {
-			while (*pfreecnt == 0) {
-				msleep(pfreecnt, &pbuf_mtx, PVM, "wswbuf0", 0);
-			}
-		}
-
-		/* get a bp from the swap buffer header pool */
-		if ((bp = TAILQ_FIRST(&bswlist)) != NULL)
-			break;
-
-		bswneeded = 1;
-		msleep(&bswneeded, &pbuf_mtx, PVM, "wswbuf1", 0);
-		/* loop in case someone else grabbed one */
-	}
-	TAILQ_REMOVE(&bswlist, bp, b_freelist);
-	if (pfreecnt)
-		--*pfreecnt;
-	mtx_unlock(&pbuf_mtx);
-
-	initpbuf(bp);
-	return bp;
-}
-
-/*
- * allocate a physical buffer, if one is available.
- *
- *	Note that there is no NULL hack here - all subsystems using this
- *	call understand how to use pfreecnt.
- */
-struct buf *
-trypbuf(int *pfreecnt)
-{
-	struct buf *bp;
-
-	mtx_lock(&pbuf_mtx);
-	if (*pfreecnt == 0 || (bp = TAILQ_FIRST(&bswlist)) == NULL) {
-		mtx_unlock(&pbuf_mtx);
-		return NULL;
-	}
-	TAILQ_REMOVE(&bswlist, bp, b_freelist);
-
-	--*pfreecnt;
-
-	mtx_unlock(&pbuf_mtx);
-
-	initpbuf(bp);
-
-	return bp;
-}
-
-/*
- * release a physical buffer
- *
- *	NOTE: pfreecnt can be NULL, but this 'feature' will be removed
- *	relatively soon when the rest of the subsystems get smart about it. XXX
- */
-void
-relpbuf(struct buf *bp, int *pfreecnt)
-{
+	struct buf *bp = mem;
 
 	if (bp->b_rcred != NOCRED) {
 		crfree(bp->b_rcred);
@@ -470,23 +408,24 @@ relpbuf(struct buf *bp, int *pfreecnt)
 		bp->b_wcred = NOCRED;
 	}
 
-	KASSERT(bp->b_vp == NULL, ("relpbuf with vp"));
-	KASSERT(bp->b_bufobj == NULL, ("relpbuf with bufobj"));
-
 	BUF_UNLOCK(bp);
+}
 
-	mtx_lock(&pbuf_mtx);
-	TAILQ_INSERT_HEAD(&bswlist, bp, b_freelist);
+static int
+pbuf_init(void *mem, int size, int flags)
+{
+	struct buf *bp = mem;
 
-	if (bswneeded) {
-		bswneeded = 0;
-		wakeup(&bswneeded);
-	}
-	if (pfreecnt) {
-		if (++*pfreecnt == 1)
-			wakeup(pfreecnt);
-	}
-	mtx_unlock(&pbuf_mtx);
+	bp->b_kvabase = (void *)kva_alloc(ptoa(PBUF_PAGES));
+	if (bp->b_kvabase == NULL)
+		return (ENOMEM);
+	bp->b_kvasize = ptoa(PBUF_PAGES);
+	BUF_LOCKINIT(bp);
+	LIST_INIT(&bp->b_dep);
+	bp->b_rcred = bp->b_wcred = NOCRED;
+	bp->b_xflags = 0;
+
+	return (0);
 }
 
 /*

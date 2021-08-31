@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1983, 1988, 1993
  *	Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -58,9 +60,7 @@ __FBSDID("$FreeBSD$");
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
-#ifndef FSTACK
 #include <kvm.h>
-#endif
 #include <limits.h>
 #include <netdb.h>
 #include <nlist.h>
@@ -74,10 +74,6 @@ __FBSDID("$FreeBSD$");
 #include "netstat.h"
 #include "nl_defs.h"
 #include <libxo/xo.h>
-
-#ifdef FSTACK
-#include "ff_ipc.h"
-#endif
 
 static struct protox {
 	int	pr_index;		/* index into nlist of cb head */
@@ -200,17 +196,17 @@ static void usage(void);
 static struct protox *name2protox(const char *);
 static struct protox *knownname(const char *);
 
-#ifndef FSTACK
 static int kresolve_list(struct nlist *_nl);
 
 static kvm_t *kvmd;
-#endif
 static char *nlistf = NULL, *memf = NULL;
 
 int	Aflag;		/* show addresses of protocol control block */
 int	aflag;		/* show all sockets (including servers) */
 static int	Bflag;		/* show information about bpf consumers */
 int	bflag;		/* show i/f total bytes in/out */
+int	cflag;		/* show TCP congestion control stack */
+int	Cflag;		/* show congestion control algo and vars */
 int	dflag;		/* show i/f dropped packets */
 int	gflag;		/* show group (multicast) routing or stats */
 int	hflag;		/* show counters in human readable format */
@@ -220,6 +216,9 @@ int	mflag;		/* show memory stats */
 int	noutputs = 0;	/* how much outputs before we exit */
 int	numeric_addr;	/* show addresses numerically */
 int	numeric_port;	/* show ports numerically */
+int	Oflag;		/* show nhgrp objects*/
+int	oflag;		/* show nexthop objects*/
+int	Pflag;		/* show TCP log ID */
 static int pflag;	/* show given protocol */
 static int	Qflag;		/* show netisr information */
 int	rflag;		/* show routing tables (or routing stats) */
@@ -247,25 +246,13 @@ main(int argc, char *argv[])
 	char *endptr;
 	bool first = true;
 
-#ifdef FSTACK
-	ff_ipc_init();
-#endif
-
 	af = AF_UNSPEC;
 
 	argc = xo_parse_args(argc, argv);
-	if (argc < 0) {
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
+	if (argc < 0)
 		exit(EXIT_FAILURE);
-	}
 
-#ifndef FSTACK
-	while ((ch = getopt(argc, argv, "46AaBbdF:f:ghI:iLlM:mN:np:Qq:RrSTsuWw:xz"))
-#else
-	while ((ch = getopt(argc, argv, "46AaBbdF:f:ghI:iLlnp:Qq:RrSTsuWw:xzP:"))
-#endif
+	while ((ch = getopt(argc, argv, "46AaBbCcdF:f:ghI:iLlM:mN:nOoPp:Qq:RrSTsuWw:xz"))
 	    != -1)
 		switch(ch) {
 		case '4':
@@ -293,6 +280,12 @@ main(int argc, char *argv[])
 			break;
 		case 'b':
 			bflag = 1;
+			break;
+		case 'c':
+			cflag = 1;
+			break;
+		case 'C':
+			Cflag = 1;
 			break;
 		case 'd':
 			dflag = 1;
@@ -350,7 +343,6 @@ main(int argc, char *argv[])
 		case 'L':
 			Lflag = 1;
 			break;
-#ifndef FSTACK
 		case 'M':
 			memf = optarg;
 			break;
@@ -360,9 +352,17 @@ main(int argc, char *argv[])
 		case 'N':
 			nlistf = optarg;
 			break;
-#endif
 		case 'n':
 			numeric_addr = numeric_port = 1;
+			break;
+		case 'o':
+			oflag = 1;
+			break;
+		case 'O':
+			Oflag = 1;
+			break;
+		case 'P':
+			Pflag = 1;
 			break;
 		case 'p':
 			if ((tp = name2protox(optarg)) == NULL) {
@@ -411,11 +411,6 @@ main(int argc, char *argv[])
 		case 'z':
 			zflag = 1;
 			break;
-#ifdef FSTACK
-        case 'P':
-            ff_set_proc_id(atoi(optarg));
-            break;
-#endif
 		case '?':
 		default:
 			usage();
@@ -445,14 +440,12 @@ main(int argc, char *argv[])
 	 * Discard setgid privileges if not the running kernel so that bad
 	 * guys can't print interesting stuff from kernel memory.
 	 */
-#ifndef FSTACK
 	live = (nlistf == NULL && memf == NULL);
-#else
-    live = 1;
-#endif
 	if (!live) {
 		if (setgid(getgid()) != 0)
 			xo_err(-1, "setgid");
+		/* Load all necessary kvm symbols */
+		kresolve_list(nl);
 	}
 
 	if (xflag && Tflag)
@@ -463,40 +456,26 @@ main(int argc, char *argv[])
 			usage();
 		bpf_stats(interface);
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
 	if (mflag) {
 		if (!live) {
-#ifndef FSTACK
 			if (kread(0, NULL, 0) == 0)
 				mbpr(kvmd, nl[N_SFSTAT].n_value);
-#endif
 		} else
 			mbpr(NULL, 0);
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
 	if (Qflag) {
 		if (!live) {
-#ifndef FSTACK
 			if (kread(0, NULL, 0) == 0)
 				netisr_stats();
-#endif
 		} else
 			netisr_stats();
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
-
 #if 0
 	/*
 	 * Keep file descriptors open to avoid overhead
@@ -516,25 +495,37 @@ main(int argc, char *argv[])
 		intpr(NULL, af);
 		xo_close_container("statistics");
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
 	if (rflag) {
 		xo_open_container("statistics");
 		if (sflag) {
+			if (live) {
+				kresolve_list(nl);
+			}
 			rt_stats();
-			flowtable_stats();
 		} else
 			routepr(fib, af);
 		xo_close_container("statistics");
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
+	if (oflag) {
+		xo_open_container("statistics");
+		nhops_print(fib, af);
+		xo_close_container("statistics");
+		xo_finish();
+		exit(0);
+	}
+	if (Oflag) {
+		xo_open_container("statistics");
+		nhgrp_print(fib, af);
+		xo_close_container("statistics");
+		xo_finish();
+		exit(0);
+	}
+
+
 
 	if (gflag) {
 		xo_open_container("statistics");
@@ -555,16 +546,8 @@ main(int argc, char *argv[])
 		}
 		xo_close_container("statistics");
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
-
-#ifndef FSTACK
-	/* Load all necessary kvm symbols */
-	kresolve_list(nl);
-#endif
 
 	if (tp) {
 		xo_open_container("statistics");
@@ -573,9 +556,6 @@ main(int argc, char *argv[])
 			xo_close_list("socket");
 		xo_close_container("statistics");
 		xo_finish();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
 
@@ -607,11 +587,6 @@ main(int argc, char *argv[])
 		xo_close_list("socket");
 	xo_close_container("statistics");
 	xo_finish();
-
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
-
 	exit(0);
 }
 
@@ -722,7 +697,6 @@ printproto(struct protox *tp, const char *name, bool *first)
 	}
 }
 
-#ifndef FSTACK
 static int
 kvmd_init(void)
 {
@@ -849,32 +823,6 @@ kread_counters(u_long addr, void *buf, size_t size)
 	return (0);
 }
 
-#else
-int
-kread(u_long addr, void *buf, size_t size)
-{
-	return 0;
-}
-
-uint64_t
-kread_counter(u_long addr)
-{
-	return 0;
-}
-
-int
-kread_counters(u_long addr, void *buf, size_t size)
-{
-	return 0;
-}
-void
-kset_dpcpu(u_int cpuid)
-{
-
-}
-
-#endif
-
 const char *
 plural(uintmax_t n)
 {
@@ -942,8 +890,7 @@ static void
 usage(void)
 {
 	(void)xo_error("%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
-#ifndef FSTACK
-"usage: netstat [-46AaLnRSTWx] [-f protocol_family | -p protocol]\n"
+"usage: netstat [-46AaCcLnRSTWx] [-f protocol_family | -p protocol]\n"
 "               [-M core] [-N system]",
 "       netstat -i | -I interface [-46abdhnW] [-f address_family]\n"
 "               [-M core] [-N system]",
@@ -961,24 +908,6 @@ usage(void)
 "       netstat -g [-46W] [-f address_family] [-M core] [-N system]",
 "       netstat -gs [-46s] [-f address_family] [-M core] [-N system]",
 "       netstat -Q");
-#else
-"usage: netstat -P <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]",
-"       netstat -P <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]",
-"       netstat -P <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]",
-"       netstat -P <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]",
-"       netstat -P <f-stack proc_id> -i | -I interface -s [-46s]\n"
-"               [-f protocol_family | -p protocol]",
-"       netstat -P <f-stack proc_id> -B [-z] [-I interface]",
-"       netstat -P <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]",
-"       netstat -P <f-stack proc_id> -rs [-s]",
-"       netstat -P <f-stack proc_id> -g [-46W] [-f address_family]",
-"       netstat -P <f-stack proc_id> -gs [-46s] [-f address_family]",
-"       netstat -P <f-stack proc_id> -Q");
-
-#endif
 	xo_finish();
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
 	exit(1);
 }

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Ian Dowse.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -179,17 +181,16 @@ msgbuf_addchar(struct msgbuf *mbp, int c)
  * carriage returns down this path.  So do we still need it?
  */
 void
-msgbuf_addstr(struct msgbuf *mbp, int pri, char *str, int filter_cr)
+msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr)
 {
 	u_int seq;
 	size_t len, prefix_len;
 	char prefix[MAXPRIBUF];
 	char buf[32];
-	int nl, i, j, needtime;
+	int i, j, needtime;
 
 	len = strlen(str);
 	prefix_len = 0;
-	nl = 0;
 
 	/* If we have a zero-length string, no need to do anything. */
 	if (len == 0)
@@ -217,7 +218,6 @@ msgbuf_addstr(struct msgbuf *mbp, int pri, char *str, int filter_cr)
 	 * insert a newline before this string.
 	 */
 	if (mbp->msg_lastpri != pri && (mbp->msg_flags & MSGBUF_NEEDNL) != 0) {
-
 		msgbuf_do_addchar(mbp, &seq, '\n');
 		mbp->msg_flags &= ~MSGBUF_NEEDNL;
 	}
@@ -238,7 +238,6 @@ msgbuf_addstr(struct msgbuf *mbp, int pri, char *str, int filter_cr)
 
 		if (msgbuf_show_timestamp && needtime == 1 &&
 		    (mbp->msg_flags & MSGBUF_NEEDNL) == 0) {
-
 			snprintf(buf, sizeof(buf), "[%jd] ",
 			    (intmax_t)time_uptime);
 			for (j = 0; buf[j] != '\0'; j++)

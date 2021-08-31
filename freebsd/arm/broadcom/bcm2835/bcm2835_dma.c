@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Daisuke Aoyama <aoyama@peach.ne.jp>
  * Copyright (c) 2013 Oleksandr Tymoshenko <gonzo@bluezbox.com>
  *
@@ -40,7 +42,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/resource.h>
 #include <sys/rman.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -48,8 +49,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm.h>
 #include <vm/pmap.h>
 #include <machine/bus.h>
-#include <machine/cpu.h>
-#include <machine/cpufunc.h>
 
 #include "bcm2835_dma.h"
 #include "bcm2835_vcbus.h"
@@ -154,6 +153,12 @@ struct bcm_dma_softc {
 static struct bcm_dma_softc *bcm_dma_sc = NULL;
 static uint32_t bcm_dma_channel_mask;
 
+static struct ofw_compat_data compat_data[] = {
+	{"broadcom,bcm2835-dma",	1},
+	{"brcm,bcm2835-dma",		1},
+	{NULL,				0}
+};
+
 static void
 bcm_dmamap_cb(void *arg, bus_dma_segment_t *segs,
 	int nseg, int err)
@@ -164,7 +169,7 @@ bcm_dmamap_cb(void *arg, bus_dma_segment_t *segs,
                 return;
 
         addr = (bus_addr_t*)arg;
-        *addr = PHYS_TO_VCBUS(segs[0].ds_addr);
+        *addr = ARMC_TO_VCBUS(segs[0].ds_addr);
 }
 
 static void
@@ -242,8 +247,12 @@ bcm_dma_init(device_t dev)
 	if ((reg & bcm_dma_channel_mask) != 0)
 		device_printf(dev, "statuses are not cleared\n");
 
-	/* Allocate DMA chunks control blocks */
-	/* p.40 of spec - control block should be 32-bit aligned */
+	/*
+	 * Allocate DMA chunks control blocks based on p.40 of the peripheral
+	 * spec - control block should be 32-bit aligned.  The DMA controller
+	 * has a full 32-bit register dedicated to this address, so we do not
+	 * need to bother with the per-SoC peripheral restrictions.
+	 */
 	err = bus_dma_tag_create(bus_get_dma_tag(dev),
 	    1, 0, BUS_SPACE_MAXADDR_32BIT,
 	    BUS_SPACE_MAXADDR, NULL, NULL,
@@ -556,14 +565,9 @@ bcm_dma_start(int ch, vm_paddr_t src, vm_paddr_t dst, int len)
 		return (-1);
 
 	cb = sc->sc_dma_ch[ch].cb;
-	if (BCM2835_ARM_IS_IO(src))
-		cb->src = IO_TO_VCBUS(src);
-	else
-		cb->src = PHYS_TO_VCBUS(src);
-	if (BCM2835_ARM_IS_IO(dst))
-		cb->dst = IO_TO_VCBUS(dst);
-	else
-		cb->dst = PHYS_TO_VCBUS(dst);
+	cb->src = ARMC_TO_VCBUS(src);
+	cb->dst = ARMC_TO_VCBUS(dst);
+
 	cb->len = len;
 
 	bus_dmamap_sync(sc->sc_dma_tag,
@@ -614,18 +618,18 @@ bcm_dma_intr(void *arg)
 	/* my interrupt? */
 	cs = bus_read_4(sc->sc_mem, BCM_DMA_CS(ch->ch));
 
-	if (!(cs & (CS_INT | CS_ERR))) {
-		device_printf(sc->sc_dev,
-		    "unexpected DMA intr CH=%d, CS=%x\n", ch->ch, cs);
+	/*
+	 * Is it an active channel?  Our diagnostics could be better here, but
+	 * it's not necessarily an easy task to resolve a rid/resource to an
+	 * actual irq number.  We'd want to do this to set a flag indicating
+	 * whether the irq is shared or not, so we know to complain.
+	 */
+	if (!(ch->flags & BCM_DMA_CH_USED))
 		return;
-	}
 
-	/* running? */
-	if (!(ch->flags & BCM_DMA_CH_USED)) {
-		device_printf(sc->sc_dev,
-		    "unused DMA intr CH=%d, CS=%x\n", ch->ch, cs);
+	/* Again, we can't complain here.  The same logic applies. */
+	if (!(cs & (CS_INT | CS_ERR)))
 		return;
-	}
 
 	if (cs & CS_ERR) {
 		debug = bus_read_4(sc->sc_mem, BCM_DMA_DEBUG(ch->ch));
@@ -658,7 +662,7 @@ bcm_dma_probe(device_t dev)
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
 
-	if (!ofw_bus_is_compatible(dev, "broadcom,bcm2835-dma"))
+	if (ofw_bus_search_compatible(dev, compat_data)->ocd_data == 0)
 		return (ENXIO);
 
 	device_set_desc(dev, "BCM2835 DMA Controller");
@@ -710,7 +714,7 @@ bcm_dma_attach(device_t dev)
 			continue;
 
 		sc->sc_irq[rid] = bus_alloc_resource_any(dev, SYS_RES_IRQ, &rid,
-						       RF_ACTIVE);
+		    RF_ACTIVE | RF_SHAREABLE);
 		if (sc->sc_irq[rid] == NULL) {
 			device_printf(dev, "cannot allocate interrupt\n");
 			err = ENXIO;

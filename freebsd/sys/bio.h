@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -51,6 +53,7 @@
 #define BIO_CMD1	0x07	/* Available for local hacks */
 #define BIO_CMD2	0x08	/* Available for local hacks */
 #define BIO_ZONE	0x09	/* Zone command */
+#define BIO_SPEEDUP	0x0a	/* Upper layers face shortage */
 
 /* bio_flags */
 #define BIO_ERROR	0x01	/* An error occurred processing this bio. */
@@ -65,13 +68,16 @@
 #define	BIO_TRANSIENT_MAPPING	0x20
 #define	BIO_VLIST	0x40
 
+#define	PRINT_BIO_FLAGS "\20\7vlist\6transient_mapping\5unmapped" \
+	"\4ordered\3onqueue\2done\1error"
+
+#define BIO_SPEEDUP_WRITE	0x4000	/* Resource shortage at upper layers */
+#define BIO_SPEEDUP_TRIM	0x8000	/* Resource shortage at upper layers */
+
 #ifdef _KERNEL
 struct disk;
 struct bio;
 struct vm_map;
-
-/* Empty classifier tag, to prevent further classification. */
-#define	BIO_NOTCLASSIFIED		(void *)(~0UL)
 
 typedef void bio_task_t(void *);
 
@@ -113,13 +119,16 @@ struct bio {
 	bio_task_t *bio_task;		/* Task_queue handler */
 	void	*bio_task_arg;		/* Argument to above */
 
-	void	*bio_classifier1;	/* Classifier tag. */
-	void	*bio_classifier2;	/* Classifier tag. */
+	void	*bio_spare1;
+	void	*bio_spare2;
 
 #ifdef DIAGNOSTIC
 	void	*_bio_caller1;
 	void	*_bio_caller2;
 	uint8_t	_bio_cflags;
+#endif
+#if defined(BUF_TRACKING) || defined(FULL_BUF_TRACKING)
+	struct buf *bio_track_bp;	/* Parent buf for tracking */
 #endif
 
 	/* XXX: these go away when bio chaining is introduced */
@@ -133,6 +142,8 @@ struct bio_queue_head {
 	TAILQ_HEAD(bio_queue, bio) queue;
 	off_t last_offset;
 	struct	bio *insert_point;
+	int total;
+	int batched;
 };
 
 extern struct vm_map *bio_transient_map;
@@ -142,6 +153,23 @@ void biodone(struct bio *bp);
 void biofinish(struct bio *bp, struct devstat *stat, int error);
 int biowait(struct bio *bp, const char *wchan);
 
+#if defined(BUF_TRACKING) || defined(FULL_BUF_TRACKING)
+void biotrack_buf(struct bio *bp, const char *location);
+
+static __inline void
+biotrack(struct bio *bp, const char *location)
+{
+
+	if (bp->bio_track_bp != NULL)
+		biotrack_buf(bp, location);
+}
+#else
+static __inline void
+biotrack(struct bio *bp __unused, const char *location __unused)
+{
+}
+#endif
+
 void bioq_disksort(struct bio_queue_head *ap, struct bio *bp);
 struct bio *bioq_first(struct bio_queue_head *head);
 struct bio *bioq_takefirst(struct bio_queue_head *head);
@@ -150,8 +178,6 @@ void bioq_init(struct bio_queue_head *head);
 void bioq_insert_head(struct bio_queue_head *head, struct bio *bp);
 void bioq_insert_tail(struct bio_queue_head *head, struct bio *bp);
 void bioq_remove(struct bio_queue_head *head, struct bio *bp);
-
-void bio_taskqueue(struct bio *bp, bio_task_t *fund, void *arg);
 
 int	physio(struct cdev *dev, struct uio *uio, int ioflag);
 #define physread physio

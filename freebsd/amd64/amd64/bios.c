@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997 Michael Smith
  * Copyright (c) 1998 Jonathan Lemon
  * All rights reserved.
@@ -83,7 +85,6 @@ bios_sigsearch(u_int32_t start, u_char *sig, int siglen, int paralen, int sigofs
 
     /* loop searching */
     while ((sp + sigofs + siglen) < end) {
-	
 	/* compare here */
 	if (!bcmp(sp + sigofs, sig, siglen)) {
 	    /* convert back to physical address */

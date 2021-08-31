@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
  * 	All rights reserved.
@@ -130,7 +132,6 @@ T##_func(node_p node, hook_p hook, void *arg1, int arg2)		\
 	    "timer_" #T " expired"));					\
 	sscop_signal(sscop, SIG_T_##N, NULL);				\
 }
-
 
 /*
  * Message queues

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: Beerware
+ *
  * ----------------------------------------------------------------------------
  * "THE BEER-WARE LICENSE" (Revision 42):
  * <phk@FreeBSD.org> wrote this file.  As long as you retain this notice you
@@ -120,8 +122,25 @@ struct topo_node * topo_next_node(struct topo_node *top,
 struct topo_node * topo_next_nonchild_node(struct topo_node *top,
     struct topo_node *node);
 void topo_set_pu_id(struct topo_node *node, cpuid_t id);
-int topo_analyze(struct topo_node *topo_root, int all, int *pkg_count,
-    int *cores_per_pkg, int *thrs_per_core);
+
+enum topo_level {
+	TOPO_LEVEL_PKG = 0,
+	/*
+	 * Some systems have useful sub-package core organizations.  On these,
+	 * a package has one or more subgroups.  Each subgroup contains one or
+	 * more cache groups (cores that share a last level cache).
+	 */
+	TOPO_LEVEL_GROUP,
+	TOPO_LEVEL_CACHEGROUP,
+	TOPO_LEVEL_CORE,
+	TOPO_LEVEL_THREAD,
+	TOPO_LEVEL_COUNT	/* Must be last */
+};
+struct topo_analysis {
+	int entities[TOPO_LEVEL_COUNT];
+};
+int topo_analyze(struct topo_node *topo_root, int all,
+    struct topo_analysis *results);
 
 #define	TOPO_FOREACH(i, root)	\
 	for (i = root; i != NULL; i = topo_next_node(root, i))
@@ -135,18 +154,23 @@ struct cpu_group *smp_topo_2level(int l2share, int l2count, int l1share,
 struct cpu_group *smp_topo_find(struct cpu_group *top, int cpu);
 
 extern void (*cpustop_restartfunc)(void);
-extern int smp_cpus;
-extern volatile cpuset_t started_cpus;
-extern volatile cpuset_t stopped_cpus;
-extern volatile cpuset_t suspended_cpus;
-extern cpuset_t hlt_cpus_mask;
+/* The suspend/resume cpusets are x86 only, but minimize ifdefs. */
+extern volatile cpuset_t resuming_cpus;	/* woken up cpus in suspend pen */
+extern volatile cpuset_t started_cpus;	/* cpus to let out of stop pen */
+extern volatile cpuset_t stopped_cpus;	/* cpus in stop pen */
+extern volatile cpuset_t suspended_cpus; /* cpus [near] sleeping in susp pen */
+extern volatile cpuset_t toresume_cpus;	/* cpus to let out of suspend pen */
+extern cpuset_t hlt_cpus_mask;		/* XXX 'mask' is detail in old impl */
 extern cpuset_t logical_cpus_mask;
 #endif /* SMP */
 
 extern u_int mp_maxid;
 extern int mp_maxcpus;
+extern int mp_ncores;
 extern int mp_ncpus;
+extern int smp_cpus;
 extern volatile int smp_started;
+extern int smp_threads_per_core;
 
 extern cpuset_t all_cpus;
 extern cpuset_t cpuset_domain[MAXMEMDOM]; 	/* CPUs in each NUMA domain. */
@@ -240,7 +264,9 @@ extern	struct mtx smp_ipi_mtx;
 
 int	quiesce_all_cpus(const char *, int);
 int	quiesce_cpus(cpuset_t, const char *, int);
-void	smp_no_rendevous_barrier(void *);
+void	quiesce_all_critical(void);
+void	cpus_fence_seq_cst(void);
+void	smp_no_rendezvous_barrier(void *);
 void	smp_rendezvous(void (*)(void *), 
 		       void (*)(void *),
 		       void (*)(void *),
@@ -250,6 +276,19 @@ void	smp_rendezvous_cpus(cpuset_t,
 		       void (*)(void *),
 		       void (*)(void *),
 		       void *arg);
+
+struct smp_rendezvous_cpus_retry_arg {
+	cpuset_t cpus;
+};
+void	smp_rendezvous_cpus_retry(cpuset_t,
+		       void (*)(void *),
+		       void (*)(void *),
+		       void (*)(void *),
+		       void (*)(void *, int),
+		       struct smp_rendezvous_cpus_retry_arg *);
+
+void	smp_rendezvous_cpus_done(struct smp_rendezvous_cpus_retry_arg *);
+
 #endif /* !LOCORE */
 #endif /* _KERNEL */
 #endif /* _SYS_SMP_H_ */

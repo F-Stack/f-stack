@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2016 Svatopluk Kraus
  * Copyright (c) 2016 Michal Meloun
  * All rights reserved.
@@ -30,16 +32,10 @@
 #ifndef _MACHINE_PMAP_H_
 #define _MACHINE_PMAP_H_
 
-#if __ARM_ARCH >= 6
 #include <machine/pmap-v6.h>
-#else
-#include <machine/pmap-v4.h>
-#endif
 
 #ifdef _KERNEL
-
-extern vm_paddr_t dump_avail[];
-extern vm_paddr_t phys_avail[];
+#include <sys/systm.h>
 
 extern char *_tmppt;	/* poor name! */
 
@@ -47,11 +43,17 @@ extern vm_offset_t virtual_avail;
 extern vm_offset_t virtual_end;
 
 void *pmap_kenter_temporary(vm_paddr_t, int);
-#define	pmap_page_is_write_mapped(m)	(((m)->aflags & PGA_WRITEABLE) != 0)
+#define	pmap_page_is_write_mapped(m)	(((m)->a.flags & PGA_WRITEABLE) != 0)
 void pmap_page_set_memattr(vm_page_t, vm_memattr_t);
 
 void *pmap_mapdev(vm_paddr_t, vm_size_t);
 void pmap_unmapdev(vm_offset_t, vm_size_t);
+
+static inline void *
+pmap_mapdev_attr(vm_paddr_t addr, vm_size_t size, int attr)
+{
+	panic("%s is not implemented yet!\n", __func__);
+}
 
 struct pcb;
 void pmap_set_pcb_pagedir(pmap_t, struct pcb *);
@@ -61,6 +63,15 @@ void pmap_kremove_device(vm_offset_t, vm_size_t);
 
 vm_paddr_t pmap_kextract(vm_offset_t);
 #define vtophys(va)	pmap_kextract((vm_offset_t)(va))
+
+static inline int
+pmap_vmspace_copy(pmap_t dst_pmap __unused, pmap_t src_pmap __unused)
+{
+
+	return (0);
+}
+
+#define	PMAP_ENTER_QUICK_LOCKED	0x10000000
 
 #endif	/* _KERNEL */
 #endif	/* !_MACHINE_PMAP_H_ */

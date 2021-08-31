@@ -12,15 +12,15 @@
 #ifndef	__IP_PROXY_H__
 #define	__IP_PROXY_H__
 
-#ifndef SOLARIS
-#define SOLARIS (defined(sun) && (defined(__svr4__) || defined(__SVR4)))
+#ifndef	SOLARIS
+# if defined(sun) && defined(__SVR4)
+#  define	SOLARIS		1
+# else
+#  define	SOLARIS		0
+# endif
 #endif
 
-#if defined(__STDC__) || defined(__GNUC__) || defined(_AIX51)
 #define	SIOCPROXY	_IOWR('r', 64, struct ap_control)
-#else
-#define	SIOCPROXY	_IOWR(r, 64, struct ap_control)
-#endif
 
 #ifndef	APR_LABELLEN
 #define	APR_LABELLEN	16

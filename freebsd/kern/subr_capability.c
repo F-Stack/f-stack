@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 FreeBSD Foundation
  * All rights reserved.
  *
@@ -39,7 +41,7 @@ __FBSDID("$FreeBSD$");
 
 #ifdef _KERNEL
 #include <sys/systm.h>
-
+#include <sys/kernel.h>
 #include <machine/stdarg.h>
 #else	/* !_KERNEL */
 #include <assert.h>
@@ -51,6 +53,105 @@ __FBSDID("$FreeBSD$");
 
 #ifdef _KERNEL
 #define	assert(exp)	KASSERT((exp), ("%s:%u", __func__, __LINE__))
+__read_mostly cap_rights_t cap_accept_rights;
+__read_mostly cap_rights_t cap_bind_rights;
+__read_mostly cap_rights_t cap_chflags_rights;
+__read_mostly cap_rights_t cap_connect_rights;
+__read_mostly cap_rights_t cap_event_rights;
+__read_mostly cap_rights_t cap_fchdir_rights;
+__read_mostly cap_rights_t cap_fchflags_rights;
+__read_mostly cap_rights_t cap_fchmod_rights;
+__read_mostly cap_rights_t cap_fchown_rights;
+__read_mostly cap_rights_t cap_fcntl_rights;
+__read_mostly cap_rights_t cap_fexecve_rights;
+__read_mostly cap_rights_t cap_flock_rights;
+__read_mostly cap_rights_t cap_fpathconf_rights;
+__read_mostly cap_rights_t cap_fstat_rights;
+__read_mostly cap_rights_t cap_fstatfs_rights;
+__read_mostly cap_rights_t cap_fsync_rights;
+__read_mostly cap_rights_t cap_ftruncate_rights;
+__read_mostly cap_rights_t cap_futimes_rights;
+__read_mostly cap_rights_t cap_getpeername_rights;
+__read_mostly cap_rights_t cap_getsockopt_rights;
+__read_mostly cap_rights_t cap_getsockname_rights;
+__read_mostly cap_rights_t cap_ioctl_rights;
+__read_mostly cap_rights_t cap_listen_rights;
+__read_mostly cap_rights_t cap_linkat_source_rights;
+__read_mostly cap_rights_t cap_linkat_target_rights;
+__read_mostly cap_rights_t cap_mmap_rights;
+__read_mostly cap_rights_t cap_mkdirat_rights;
+__read_mostly cap_rights_t cap_mkfifoat_rights;
+__read_mostly cap_rights_t cap_mknodat_rights;
+__read_mostly cap_rights_t cap_pdgetpid_rights;
+__read_mostly cap_rights_t cap_pdkill_rights;
+__read_mostly cap_rights_t cap_pread_rights;
+__read_mostly cap_rights_t cap_pwrite_rights;
+__read_mostly cap_rights_t cap_read_rights;
+__read_mostly cap_rights_t cap_recv_rights;
+__read_mostly cap_rights_t cap_renameat_source_rights;
+__read_mostly cap_rights_t cap_renameat_target_rights;
+__read_mostly cap_rights_t cap_seek_rights;
+__read_mostly cap_rights_t cap_send_rights;
+__read_mostly cap_rights_t cap_send_connect_rights;
+__read_mostly cap_rights_t cap_setsockopt_rights;
+__read_mostly cap_rights_t cap_shutdown_rights;
+__read_mostly cap_rights_t cap_symlinkat_rights;
+__read_mostly cap_rights_t cap_unlinkat_rights;
+__read_mostly cap_rights_t cap_write_rights;
+__read_mostly cap_rights_t cap_no_rights;
+
+static void
+cap_rights_sysinit(void *arg)
+{
+	cap_rights_init_one(&cap_accept_rights, CAP_ACCEPT);
+	cap_rights_init_one(&cap_bind_rights, CAP_BIND);
+	cap_rights_init_one(&cap_connect_rights, CAP_CONNECT);
+	cap_rights_init_one(&cap_event_rights, CAP_EVENT);
+	cap_rights_init_one(&cap_fchdir_rights, CAP_FCHDIR);
+	cap_rights_init_one(&cap_fchflags_rights, CAP_FCHFLAGS);
+	cap_rights_init_one(&cap_fchmod_rights, CAP_FCHMOD);
+	cap_rights_init_one(&cap_fchown_rights, CAP_FCHOWN);
+	cap_rights_init_one(&cap_fcntl_rights, CAP_FCNTL);
+	cap_rights_init_one(&cap_fexecve_rights, CAP_FEXECVE);
+	cap_rights_init_one(&cap_flock_rights, CAP_FLOCK);
+	cap_rights_init_one(&cap_fpathconf_rights, CAP_FPATHCONF);
+	cap_rights_init_one(&cap_fstat_rights, CAP_FSTAT);
+	cap_rights_init_one(&cap_fstatfs_rights, CAP_FSTATFS);
+	cap_rights_init_one(&cap_fsync_rights, CAP_FSYNC);
+	cap_rights_init_one(&cap_ftruncate_rights, CAP_FTRUNCATE);
+	cap_rights_init_one(&cap_futimes_rights, CAP_FUTIMES);
+	cap_rights_init_one(&cap_getpeername_rights, CAP_GETPEERNAME);
+	cap_rights_init_one(&cap_getsockname_rights, CAP_GETSOCKNAME);
+	cap_rights_init_one(&cap_getsockopt_rights, CAP_GETSOCKOPT);
+	cap_rights_init_one(&cap_ioctl_rights, CAP_IOCTL);
+	cap_rights_init_one(&cap_linkat_source_rights, CAP_LINKAT_SOURCE);
+	cap_rights_init_one(&cap_linkat_target_rights, CAP_LINKAT_TARGET);
+	cap_rights_init_one(&cap_listen_rights, CAP_LISTEN);
+	cap_rights_init_one(&cap_mkdirat_rights, CAP_MKDIRAT);
+	cap_rights_init_one(&cap_mkfifoat_rights, CAP_MKFIFOAT);
+	cap_rights_init_one(&cap_mknodat_rights, CAP_MKNODAT);
+	cap_rights_init_one(&cap_mmap_rights, CAP_MMAP);
+	cap_rights_init_one(&cap_pdgetpid_rights, CAP_PDGETPID);
+	cap_rights_init_one(&cap_pdkill_rights, CAP_PDKILL);
+	cap_rights_init_one(&cap_pread_rights, CAP_PREAD);
+	cap_rights_init_one(&cap_pwrite_rights, CAP_PWRITE);
+	cap_rights_init_one(&cap_read_rights, CAP_READ);
+	cap_rights_init_one(&cap_recv_rights, CAP_RECV);
+	cap_rights_init_one(&cap_renameat_source_rights, CAP_RENAMEAT_SOURCE);
+	cap_rights_init_one(&cap_renameat_target_rights, CAP_RENAMEAT_TARGET);
+	cap_rights_init_one(&cap_seek_rights, CAP_SEEK);
+	cap_rights_init_one(&cap_send_rights, CAP_SEND);
+	cap_rights_init(&cap_send_connect_rights, CAP_SEND, CAP_CONNECT);
+	cap_rights_init_one(&cap_setsockopt_rights, CAP_SETSOCKOPT);
+	cap_rights_init_one(&cap_shutdown_rights, CAP_SHUTDOWN);
+	cap_rights_init_one(&cap_symlinkat_rights, CAP_SYMLINKAT);
+	cap_rights_init_one(&cap_unlinkat_rights, CAP_UNLINKAT);
+	cap_rights_init_one(&cap_write_rights, CAP_WRITE);
+	cap_rights_init(&cap_no_rights);
+}
+SYSINIT(cap_rights_sysinit, SI_SUB_COPYRIGHT, SI_ORDER_ANY, cap_rights_sysinit,
+    NULL);
+
 #endif
 
 #define	CAPARSIZE_MIN	(CAP_RIGHTS_VERSION_00 + 2)
@@ -74,7 +175,7 @@ static void
 cap_rights_vset(cap_rights_t *rights, va_list ap)
 {
 	uint64_t right;
-	int i, n;
+	int i, n __unused;
 
 	assert(CAPVER(rights) == CAP_RIGHTS_VERSION_00);
 
@@ -99,7 +200,7 @@ static void
 cap_rights_vclear(cap_rights_t *rights, va_list ap)
 {
 	uint64_t right;
-	int i, n;
+	int i, n __unused;
 
 	assert(CAPVER(rights) == CAP_RIGHTS_VERSION_00);
 
@@ -124,7 +225,7 @@ static bool
 cap_rights_is_vset(const cap_rights_t *rights, va_list ap)
 {
 	uint64_t right;
-	int i, n;
+	int i, n __unused;
 
 	assert(CAPVER(rights) == CAP_RIGHTS_VERSION_00);
 
@@ -150,7 +251,7 @@ cap_rights_is_vset(const cap_rights_t *rights, va_list ap)
 cap_rights_t *
 __cap_rights_init(int version, cap_rights_t *rights, ...)
 {
-	unsigned int n;
+	unsigned int n __unused;
 	va_list ap;
 
 	assert(version == CAP_RIGHTS_VERSION_00);
@@ -284,6 +385,7 @@ cap_rights_remove(cap_rights_t *dst, const cap_rights_t *src)
 	return (dst);
 }
 
+#ifndef _KERNEL
 bool
 cap_rights_contains(const cap_rights_t *big, const cap_rights_t *little)
 {
@@ -305,3 +407,4 @@ cap_rights_contains(const cap_rights_t *big, const cap_rights_t *little)
 
 	return (true);
 }
+#endif

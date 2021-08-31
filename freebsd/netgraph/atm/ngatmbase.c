@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
  * 	All rights reserved.
@@ -481,7 +483,6 @@ ngatm_handler(module_t mod, int what, void *arg)
 	int error = 0;
 
 	switch (what) {
-
 	  case MOD_LOAD:
 		uni_msg_init();
 		break;

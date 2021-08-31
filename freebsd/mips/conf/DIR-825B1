@@ -21,7 +21,6 @@ hints		"DIR-825B1.hints"
 
 # Since the kernel image must fit inside 1024KiB, we have to build almost
 # everything as modules.
-# nodevice random
 nodevice gpio
 nodevice gpioled
 nodevice gif
@@ -45,16 +44,9 @@ nodevice ath_rate_sample
 
 nooptions	INET6
 
-# Don't include the SCSI/CAM strings in the default build
-options 	SCSI_NO_SENSE_STRINGS
-options 	SCSI_NO_OP_STRINGS
-
-# .. And no sysctl strings
-options 	NO_SYSCTL_DESCR
-
 # GEOM modules
 device		geom_map	# to get access to the SPI flash partitions
-device		geom_uzip	# compressed in-memory filesystem hackery!
+device		xz
 options 	GEOM_UZIP
 options 	GEOM_PART_GPT
 

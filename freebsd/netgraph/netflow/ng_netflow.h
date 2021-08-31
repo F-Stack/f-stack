@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010-2011 Alexander V. Chernikov <melifaro@ipfw.ru>
  * Copyright (c) 2004-2005 Gleb Smirnoff <glebius@FreeBSD.org>
  * Copyright (c) 2001-2003 Roman V. Palagin <romanp@unshadow.net>
@@ -109,7 +111,6 @@ struct ng_netflow_info {
 	{ NULL }						\
 }
 
-
 /* This structure is returned by the NGM_NETFLOW_IFINFO message */
 struct ng_netflow_ifinfo {
 	uint32_t	ifinfo_packets;	/* number of packets for this iface */
@@ -118,7 +119,6 @@ struct ng_netflow_ifinfo {
 	uint16_t	ifinfo_index;	/* connected iface index */
 	uint32_t	conf;
 };
-
 
 /* This structure is passed to NGM_NETFLOW_SETDLT message */
 struct ng_netflow_setdlt {
@@ -246,7 +246,7 @@ struct flow6_rec {
 #define r_ports	ports.both
 #define r_sport	ports.dir.s_port
 #define r_dport	ports.dir.d_port
-	
+
 /* A flow entry which accumulates statistics */
 struct flow_entry_data {
 	uint16_t	version;	/* Protocol version */
@@ -491,7 +491,6 @@ struct flow_hash_entry {
 	struct mtx		mtx;
 	TAILQ_HEAD(fhead, flow_entry) head;
 };
-
 #define	ERROUT(x)	{ error = (x); goto done; }
 
 #define MTAG_NETFLOW		1221656444
@@ -520,7 +519,7 @@ void	ng_netflow_cache_flush(priv_p);
 int	ng_netflow_fib_init(priv_p priv, int fib);
 void	ng_netflow_copyinfo(priv_p, struct ng_netflow_info *);
 void	ng_netflow_copyv9info(priv_p, struct ng_netflow_v9info *);
-timeout_t ng_netflow_expire;
+callout_func_t ng_netflow_expire;
 int 	ng_netflow_flow_add(priv_p, fib_export_p, struct ip *, caddr_t,
 	uint8_t, uint8_t, unsigned int);
 int	ng_netflow_flow6_add(priv_p, fib_export_p, struct ip6_hdr *, caddr_t,

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008-2010 Lawrence Stewart <lstewart@freebsd.org>
  * Copyright (c) 2010 The FreeBSD Foundation
  * All rights reserved.
@@ -39,6 +41,8 @@
 #ifndef _NETINET_CC_CUBIC_H_
 #define _NETINET_CC_CUBIC_H_
 
+#include <sys/limits.h>
+
 /* Number of bits of precision for fixed point math calcs. */
 #define	CUBIC_SHIFT		8
 
@@ -47,26 +51,32 @@
 /* 0.5 << CUBIC_SHIFT. */
 #define	RENO_BETA		128
 
-/* ~0.8 << CUBIC_SHIFT. */
-#define	CUBIC_BETA		204
+/* ~0.7 << CUBIC_SHIFT. */
+#define	CUBIC_BETA		179
 
-/* ~0.2 << CUBIC_SHIFT. */
-#define	ONE_SUB_CUBIC_BETA	51
+/* ~0.3 << CUBIC_SHIFT. */
+#define	ONE_SUB_CUBIC_BETA	77
 
 /* 3 * ONE_SUB_CUBIC_BETA. */
-#define	THREE_X_PT2		153
+#define	THREE_X_PT3		231
 
 /* (2 << CUBIC_SHIFT) - ONE_SUB_CUBIC_BETA. */
-#define	TWO_SUB_PT2		461
+#define	TWO_SUB_PT3		435
 
 /* ~0.4 << CUBIC_SHIFT. */
 #define	CUBIC_C_FACTOR		102
 
-/* CUBIC fast convergence factor: ~0.9 << CUBIC_SHIFT. */
-#define	CUBIC_FC_FACTOR		230
+/* CUBIC fast convergence factor: (1+beta_cubic)/2. */
+#define	CUBIC_FC_FACTOR		217
 
 /* Don't trust s_rtt until this many rtt samples have been taken. */
 #define	CUBIC_MIN_RTT_SAMPLES	8
+
+/*
+ * (2^21)^3 is long max. Dividing (2^63) by Cubic_C_factor
+ * and taking cube-root yields 448845 as the effective useful limit
+ */
+#define	CUBED_ROOT_MAX_ULONG	448845
 
 /* Userland only bits. */
 #ifndef _KERNEL
@@ -75,9 +85,8 @@ extern int hz;
 
 /*
  * Implementation based on the formulae found in the CUBIC Internet Draft
- * "draft-rhee-tcpm-cubic-02".
+ * "draft-ietf-tcpm-cubic-04".
  *
- * Note BETA used in cc_cubic is equal to (1-beta) in the I-D
  */
 
 static __inline float
@@ -87,7 +96,7 @@ theoretical_cubic_k(double wmax_pkts)
 
 	C = 0.4;
 
-	return (pow((wmax_pkts * 0.2) / C, (1.0 / 3.0)) * pow(2, CUBIC_SHIFT));
+	return (pow((wmax_pkts * 0.3) / C, (1.0 / 3.0)) * pow(2, CUBIC_SHIFT));
 }
 
 static __inline unsigned long
@@ -116,7 +125,7 @@ theoretical_tf_cwnd(int ticks_since_cong, int rtt_ticks, unsigned long wmax,
     uint32_t smss)
 {
 
-	return ((wmax * 0.8) + ((3 * 0.2) / (2 - 0.2) *
+	return ((wmax * 0.7) + ((3 * 0.3) / (2 - 0.3) *
 	    (ticks_since_cong / (float)rtt_ticks) * smss));
 }
 
@@ -171,7 +180,12 @@ cubic_cwnd(int ticks_since_cong, unsigned long wmax, uint32_t smss, int64_t K)
 	/* K is in fixed point form with CUBIC_SHIFT worth of precision. */
 
 	/* t - K, with CUBIC_SHIFT worth of precision. */
-	cwnd = ((int64_t)(ticks_since_cong << CUBIC_SHIFT) - (K * hz)) / hz;
+	cwnd = (((int64_t)ticks_since_cong << CUBIC_SHIFT) - (K * hz)) / hz;
+
+	if (cwnd > CUBED_ROOT_MAX_ULONG)
+		return INT_MAX;
+	if (cwnd < -CUBED_ROOT_MAX_ULONG)
+		return 0;
 
 	/* (t - K)^3, with CUBIC_SHIFT^3 worth of precision. */
 	cwnd *= (cwnd * cwnd);
@@ -182,9 +196,13 @@ cubic_cwnd(int ticks_since_cong, unsigned long wmax, uint32_t smss, int64_t K)
 	 * CUBIC_SHIFT included in the value. 3 from the cubing of cwnd above,
 	 * and an extra from multiplying through by CUBIC_C_FACTOR.
 	 */
-	cwnd = ((cwnd * CUBIC_C_FACTOR * smss) >> CUBIC_SHIFT_4) + wmax;
 
-	return ((unsigned long)cwnd);
+	cwnd = ((cwnd * CUBIC_C_FACTOR) >> CUBIC_SHIFT_4) * smss + wmax;
+
+	/*
+	 * for negative cwnd, limiting to zero as lower bound
+	 */
+	return (lmax(0,cwnd));
 }
 
 /*
@@ -212,7 +230,7 @@ reno_cwnd(int ticks_since_cong, int rtt_ticks, unsigned long wmax,
 /*
  * Compute an approximation of the "TCP friendly" cwnd some number of ticks
  * after a congestion event that is designed to yield the same average cwnd as
- * NewReno while using CUBIC's beta of 0.8. RTT should be the average RTT
+ * NewReno while using CUBIC's beta of 0.7. RTT should be the average RTT
  * estimate for the path measured over the previous congestion epoch and wmax is
  * the value of cwnd at the last congestion event.
  */
@@ -222,8 +240,10 @@ tf_cwnd(int ticks_since_cong, int rtt_ticks, unsigned long wmax,
 {
 
 	/* Equation 4 of I-D. */
-	return (((wmax * CUBIC_BETA) + (((THREE_X_PT2 * ticks_since_cong *
-	    smss) << CUBIC_SHIFT) / TWO_SUB_PT2 / rtt_ticks)) >> CUBIC_SHIFT);
+	return (((wmax * CUBIC_BETA) +
+	    (((THREE_X_PT3 * (unsigned long)ticks_since_cong *
+	    (unsigned long)smss) << CUBIC_SHIFT) / (TWO_SUB_PT3 * rtt_ticks)))
+	    >> CUBIC_SHIFT);
 }
 
 #endif /* _NETINET_CC_CUBIC_H_ */

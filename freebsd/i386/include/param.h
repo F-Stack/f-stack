@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -33,7 +35,6 @@
  * $FreeBSD$
  */
 
-
 #ifndef _I386_INCLUDE_PARAM_H_
 #define	_I386_INCLUDE_PARAM_H_
 
@@ -42,7 +43,6 @@
 /*
  * Machine dependent constants for Intel 386.
  */
-
 
 #define __HAVE_ACPI
 #define	__HAVE_PIR
@@ -56,13 +56,13 @@
 #endif
 #define MID_MACHINE	MID_I386
 
-#if defined(SMP) || defined(KLD_MODULE)
+#ifdef SMP
 #ifndef MAXCPU
 #define MAXCPU		32
 #endif
 #else
 #define MAXCPU		1
-#endif /* SMP || KLD_MODULE */
+#endif
 
 #ifndef MAXMEMDOM
 #define	MAXMEMDOM	1
@@ -82,36 +82,34 @@
  * CACHE_LINE_SIZE is the compile-time maximum cache line size for an
  * architecture.  It should be used with appropriate caution.
  */
-#define	CACHE_LINE_SHIFT	7
+#define	CACHE_LINE_SHIFT	6
 #define	CACHE_LINE_SIZE		(1 << CACHE_LINE_SHIFT)
 
 #define PAGE_SHIFT	12		/* LOG2(PAGE_SIZE) */
-#define PAGE_SIZE	(1<<PAGE_SHIFT)	/* bytes/page */
-#define PAGE_MASK	(PAGE_SIZE-1)
-#define NPTEPG		(PAGE_SIZE/(sizeof (pt_entry_t)))
+#define PAGE_SIZE	(1 << PAGE_SHIFT)	/* bytes/page */
+#define PAGE_MASK	(PAGE_SIZE - 1)
+#define NPTEPG		(PAGE_SIZE / sizeof(pt_entry_t))
 
-#if defined(PAE) || defined(PAE_TABLES)
-#define NPGPTD		4
-#define PDRSHIFT	21		/* LOG2(NBPDR) */
-#define NPGPTD_SHIFT	9
-#else
-#define NPGPTD		1
-#define PDRSHIFT	22		/* LOG2(NBPDR) */
-#define NPGPTD_SHIFT	10
+/* Size in bytes of the page directory */
+#define NBPTD		(NPGPTD << PAGE_SHIFT)
+/* Number of PDEs in page directory, 2048 for PAE, 1024 for non-PAE */
+#define NPDEPTD		(NBPTD / sizeof(pd_entry_t))
+/* Number of PDEs in one page of the page directory, 512 vs. 1024 */
+#define NPDEPG		(PAGE_SIZE / sizeof(pd_entry_t))
+#define PDRMASK		(NBPDR - 1)
+#ifndef PDRSHIFT
+#define	PDRSHIFT	i386_pmap_PDRSHIFT
 #endif
-
-#define NBPTD		(NPGPTD<<PAGE_SHIFT)
-#define NPDEPTD		(NBPTD/(sizeof (pd_entry_t)))
-#define NPDEPG		(PAGE_SIZE/(sizeof (pd_entry_t)))
-#define NBPDR		(1<<PDRSHIFT)	/* bytes/page dir */
-#define PDRMASK		(NBPDR-1)
+#ifndef NBPDR
+#define NBPDR		(1 << PDRSHIFT)	/* bytes/page dir */
+#endif
 
 #define	MAXPAGESIZES	2	/* maximum number of supported page sizes */
 
 #define IOPAGES	2		/* pages of i/o permission bitmap */
 
 #ifndef KSTACK_PAGES
-#define KSTACK_PAGES 2		/* Includes pcb! */
+#define KSTACK_PAGES 4		/* Includes pcb! */
 #endif
 #define KSTACK_GUARD_PAGES 1	/* pages of kstack guard; 0 disables */
 #if KSTACK_PAGES < 4
@@ -162,7 +160,6 @@
 
 #define	pgtok(x)		((x) * (PAGE_SIZE / 1024))
 
-#define INKERNEL(va)	(((vm_offset_t)(va)) >= VM_MAXUSER_ADDRESS && \
-    ((vm_offset_t)(va)) < VM_MAX_KERNEL_ADDRESS)
+#define INKERNEL(va)		(TRUE)
 
 #endif /* !_I386_INCLUDE_PARAM_H_ */

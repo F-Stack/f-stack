@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
  * All rights reserved.
@@ -30,6 +32,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_bhyve_snapshot.h"
+
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/lock.h>
@@ -40,6 +44,7 @@ __FBSDID("$FreeBSD$");
 
 #include <x86/apicreg.h>
 #include <machine/vmm.h>
+#include <machine/vmm_snapshot.h>
 
 #include "vmm_ktr.h"
 #include "vmm_lapic.h"
@@ -49,7 +54,7 @@ __FBSDID("$FreeBSD$");
 #define	IOREGSEL	0x00
 #define	IOWIN		0x10
 
-#define	REDIR_ENTRIES	24
+#define	REDIR_ENTRIES	32
 #define	RTBL_RO_BITS	((uint64_t)(IOART_REM_IRR | IOART_DELIVS))
 
 struct vioapic {
@@ -351,7 +356,7 @@ vioapic_write(struct vioapic *vioapic, int vcpuid, uint32_t addr, uint32_t data)
 			    "vlapic trigger-mode register", pin);
 			VIOAPIC_UNLOCK(vioapic);
 			allvcpus = vm_active_cpus(vioapic->vm);
-			vm_smp_rendezvous(vioapic->vm, vcpuid, allvcpus,
+			(void)vm_smp_rendezvous(vioapic->vm, vcpuid, allvcpus,
 			    vioapic_update_tmr, NULL);
 			VIOAPIC_LOCK(vioapic);
 		}
@@ -497,3 +502,22 @@ vioapic_pincount(struct vm *vm)
 
 	return (REDIR_ENTRIES);
 }
+
+#ifdef BHYVE_SNAPSHOT
+int
+vioapic_snapshot(struct vioapic *vioapic, struct vm_snapshot_meta *meta)
+{
+	int ret;
+	int i;
+
+	SNAPSHOT_VAR_OR_LEAVE(vioapic->ioregsel, meta, ret, done);
+
+	for (i = 0; i < nitems(vioapic->rtbl); i++) {
+		SNAPSHOT_VAR_OR_LEAVE(vioapic->rtbl[i].reg, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(vioapic->rtbl[i].acnt, meta, ret, done);
+	}
+
+done:
+	return (ret);
+}
+#endif

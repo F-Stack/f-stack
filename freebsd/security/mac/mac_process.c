@@ -252,7 +252,7 @@ static void
 mac_proc_vm_revoke_recurse(struct thread *td, struct ucred *cred,
     struct vm_map *map)
 {
-	vm_map_entry_t vme;
+	vm_map_entry_t prev, vme;
 	int result;
 	vm_prot_t revokeperms;
 	vm_object_t backing_object, object;
@@ -263,8 +263,10 @@ mac_proc_vm_revoke_recurse(struct thread *td, struct ucred *cred,
 	if (!mac_mmap_revocation)
 		return;
 
+	prev = &map->header;
 	vm_map_lock(map);
-	for (vme = map->header.next; vme != &map->header; vme = vme->next) {
+	for (vme = vm_map_entry_first(map); vme != &map->header;
+	    prev = vme, vme = vm_map_entry_succ(prev)) {
 		if (vme->eflags & MAP_ENTRY_IS_SUB_MAP) {
 			mac_proc_vm_revoke_recurse(td, cred,
 			    vme->object.sub_map);
@@ -302,7 +304,7 @@ mac_proc_vm_revoke_recurse(struct thread *td, struct ucred *cred,
 		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 		result = vme->max_protection;
 		mac_vnode_check_mmap_downgrade(cred, vp, &result);
-		VOP_UNLOCK(vp, 0);
+		VOP_UNLOCK(vp);
 		/*
 		 * Find out what maximum protection we may be allowing now
 		 * but a policy needs to get removed.
@@ -337,7 +339,7 @@ mac_proc_vm_revoke_recurse(struct thread *td, struct ucred *cred,
 				vm_object_page_clean(object, offset, offset +
 				    vme->end - vme->start, OBJPC_SYNC);
 				VM_OBJECT_WUNLOCK(object);
-				VOP_UNLOCK(vp, 0);
+				VOP_UNLOCK(vp);
 				vn_finished_write(mp);
 				vm_object_deallocate(object);
 				/*
@@ -363,7 +365,7 @@ mac_proc_vm_revoke_recurse(struct thread *td, struct ucred *cred,
 			}
 			pmap_protect(map->pmap, vme->start, vme->end,
 			    vme->protection & ~revokeperms);
-			vm_map_simplify_entry(map, vme);
+			vm_map_try_merge_entries(map, prev, vme);
 		}
 	}
 	vm_map_unlock(map);

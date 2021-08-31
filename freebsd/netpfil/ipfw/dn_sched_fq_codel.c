@@ -44,6 +44,7 @@
 #include <netinet/ip_fw.h>	/* flow_id */
 #include <netinet/ip_dummynet.h>
 
+#include <sys/lock.h>
 #include <sys/proc.h>
 #include <sys/rwlock.h>
 
@@ -122,24 +123,26 @@ fqcodel_sysctl_target_handler(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-
 SYSBEGIN(f4)
 
 SYSCTL_DECL(_net_inet);
 SYSCTL_DECL(_net_inet_ip);
 SYSCTL_DECL(_net_inet_ip_dummynet);
 static SYSCTL_NODE(_net_inet_ip_dummynet, OID_AUTO, fqcodel,
-	CTLFLAG_RW, 0, "FQ_CODEL");
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "FQ_CODEL");
 
 #ifdef SYSCTL_NODE
-	
+
 SYSCTL_PROC(_net_inet_ip_dummynet_fqcodel, OID_AUTO, target,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0, fqcodel_sysctl_target_handler, "L",
-	"FQ_CoDel target in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    NULL, 0, fqcodel_sysctl_target_handler, "L",
+    "FQ_CoDel target in microsecond");
 SYSCTL_PROC(_net_inet_ip_dummynet_fqcodel, OID_AUTO, interval,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0, fqcodel_sysctl_interval_handler, "L",
-	"FQ_CoDel interval in microsecond");
-	
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    NULL, 0, fqcodel_sysctl_interval_handler, "L",
+    "FQ_CoDel interval in microsecond");
+
 SYSCTL_UINT(_net_inet_ip_dummynet_fqcodel, OID_AUTO, quantum,
 	CTLFLAG_RW, &fq_codel_sysctl.quantum, 1514, "FQ_CoDel quantum");
 SYSCTL_UINT(_net_inet_ip_dummynet_fqcodel, OID_AUTO, flows,
@@ -218,13 +221,14 @@ fq_codel_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_codel_si *si)
 	uint8_t tuple[41];
 	uint16_t hash=0;
 
+	ip = (struct ip *)mtodo(m, dn_tag_get(m)->iphdr_off);
 //#ifdef INET6
 	struct ip6_hdr *ip6;
 	int isip6;
-	isip6 = (mtod(m, struct ip *)->ip_v == 6) ? 1 : 0;
+	isip6 = (ip->ip_v == 6);
 
 	if(isip6) {
-		ip6 = mtod(m, struct ip6_hdr *);
+		ip6 = (struct ip6_hdr *)ip;
 		*((uint8_t *) &tuple[0]) = ip6->ip6_nxt;
 		*((uint32_t *) &tuple[1]) = si->perturbation;
 		memcpy(&tuple[5], ip6->ip6_src.s6_addr, 16);
@@ -244,7 +248,6 @@ fq_codel_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_codel_si *si)
 			break;
 		default:
 			memset(&tuple[37], 0, 4);
-
 		}
 
 		hash = jenkins_hash(tuple, 41, HASHINIT) %  fcount;
@@ -253,7 +256,6 @@ fq_codel_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_codel_si *si)
 //#endif
 
 	/* IPv4 */
-	ip = mtod(m, struct ip *);
 	*((uint8_t *) &tuple[0]) = ip->ip_p;
 	*((uint32_t *) &tuple[1]) = si->perturbation;
 	*((uint32_t *) &tuple[5]) = ip->ip_src.s_addr;
@@ -273,7 +275,6 @@ fq_codel_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_codel_si *si)
 			break;
 		default:
 			memset(&tuple[13], 0, 4);
-
 	}
 	hash = jenkins_hash(tuple, 17, HASHINIT) %  fcount;
 
@@ -305,11 +306,11 @@ fq_codel_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	 * Note: 'codel_enqueue' function returns 1 only when it unable to 
 	 * add timestamp to packet (no limit check)*/
 	drop = codel_enqueue(&si->flows[idx], m, si);
-	
+
 	/* codel unable to timestamp a packet */ 
 	if (drop)
 		return 1;
-	
+
 	/* If the flow (sub-queue) is not active ,then add it to the tail of
 	 * new flows list, initialize and activate it.
 	 */
@@ -421,7 +422,7 @@ fq_codel_dequeue(struct dn_sch_inst *_si)
 		return mbuf;
 
 	} while (1);
-	
+
 	/* unreachable point */
 	return NULL;
 }
@@ -453,8 +454,8 @@ fq_codel_new_sched(struct dn_sch_inst *_si)
 	q->fs = _si->sched->fs;
 
 	/* allocate memory for flows array */
-	si->flows = malloc(schk->cfg.flows_cnt * sizeof(struct fq_codel_flow),
-		 M_DUMMYNET, M_NOWAIT | M_ZERO);
+	si->flows = mallocarray(schk->cfg.flows_cnt,
+	    sizeof(struct fq_codel_flow), M_DUMMYNET, M_NOWAIT | M_ZERO);
 	if (si->flows == NULL) {
 		D("cannot allocate memory for fq_codel configuration parameters");
 		return ENOMEM ; 
@@ -503,7 +504,7 @@ fq_codel_config(struct dn_schk *_schk)
 	struct fq_codel_schk *schk;
 	struct dn_extra_parms *ep;
 	struct dn_sch_fq_codel_parms *fqc_cfg;
-	
+
 	schk = (struct fq_codel_schk *)(_schk+1);
 	ep = (struct dn_extra_parms *) _schk->cfg;
 
@@ -513,7 +514,6 @@ fq_codel_config(struct dn_schk *_schk)
 	 */
 	if (ep && ep->oid.len ==sizeof(*ep) &&
 		ep->oid.subtype == DN_SCH_PARAMS) {
-
 		fqc_cfg = &schk->cfg;
 		if (ep->par[0] < 0)
 			fqc_cfg->ccfg.target = fq_codel_sysctl.ccfg.target;
@@ -568,7 +568,6 @@ fq_codel_config(struct dn_schk *_schk)
  */
 static int 
 fq_codel_getconfig (struct dn_schk *_schk, struct dn_extra_parms *ep) {
-	
 	struct fq_codel_schk *schk = (struct fq_codel_schk *)(_schk+1);
 	struct dn_sch_fq_codel_parms *fqc_cfg;
 

@@ -1,6 +1,8 @@
 /*	$NetBSD: disassem.c,v 1.14 2003/03/27 16:58:36 mycroft Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1996 Mark Brinicombe.
  * Copyright (c) 1996 Brini.
  *
@@ -50,7 +52,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 #include <sys/param.h>
-
 
 #include <sys/systm.h>
 #include <machine/disassem.h>
@@ -130,7 +131,7 @@ static const struct arm32_insn arm32_i[] = {
     { 0x0c500000, 0x04100000, "ldr",	"daW" },
     { 0x0c500000, 0x04400000, "strb",	"daW" },
     { 0x0c500000, 0x04500000, "ldrb",	"daW" },
-#if __ARM_ARCH >= 6
+    { 0x0fff0ff0, 0x06bf0fb0, "rev16",  "dm" },
     { 0xffffffff, 0xf57ff01f, "clrex",	"c" },
     { 0x0ff00ff0, 0x01800f90, "strex",	"dmo" },
     { 0x0ff00fff, 0x01900f9f, "ldrex",	"do" },
@@ -140,7 +141,6 @@ static const struct arm32_insn arm32_i[] = {
     { 0x0ff00fff, 0x01d00f9f, "ldrexb",	"do" },
     { 0x0ff00ff0, 0x01e00f90, "strexh",	"dmo" },
     { 0x0ff00fff, 0x01f00f9f, "ldrexh",	"do" },
-#endif
     { 0x0e1f0000, 0x080d0000, "stm",	"YnWl" },/* separate out r13 base */
     { 0x0e1f0000, 0x081d0000, "ldm",	"YnWl" },/* separate out r13 base */
     { 0x0e100000, 0x08000000, "stm",	"XnWl" },
@@ -529,7 +529,6 @@ disasm(const disasm_interface_t *di, vm_offset_t loc, int altfmt)
 	return(loc + INSN_SIZE);
 }
 
-
 static void
 disasm_register_shift(const disasm_interface_t *di, u_int insn)
 {
@@ -547,7 +546,6 @@ disasm_register_shift(const disasm_interface_t *di, u_int insn)
 			    (insn >> 7) & 0x1f);
 	}
 }
-
 
 static void
 disasm_print_reglist(const disasm_interface_t *di, u_int insn)

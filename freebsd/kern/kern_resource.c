@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -36,8 +38,6 @@
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
-
-#include "opt_compat.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -66,7 +66,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/pmap.h>
 #include <vm/vm_map.h>
 
-
 static MALLOC_DEFINE(M_PLIMIT, "plimit", "plimit structures");
 static MALLOC_DEFINE(M_UIDINFO, "uidinfo", "uidinfo structures");
 #define	UIHASH(uid)	(&uihashtbl[(uid) & uihash])
@@ -78,7 +77,7 @@ static void	calcru1(struct proc *p, struct rusage_ext *ruxp,
 		    struct timeval *up, struct timeval *sp);
 static int	donice(struct thread *td, struct proc *chgp, int n);
 static struct uidinfo *uilookup(uid_t uid);
-static void	ruxagg_locked(struct rusage_ext *rux, struct thread *td);
+static void	ruxagg_ext_locked(struct rusage_ext *rux, struct thread *td);
 
 /*
  * Resource controls and accounting.
@@ -90,7 +89,14 @@ struct getpriority_args {
 };
 #endif
 int
-sys_getpriority(struct thread *td, register struct getpriority_args *uap)
+sys_getpriority(struct thread *td, struct getpriority_args *uap)
+{
+
+	return (kern_getpriority(td, uap->which, uap->who));
+}
+
+int
+kern_getpriority(struct thread *td, int which, int who)
 {
 	struct proc *p;
 	struct pgrp *pg;
@@ -98,13 +104,12 @@ sys_getpriority(struct thread *td, register struct getpriority_args *uap)
 
 	error = 0;
 	low = PRIO_MAX + 1;
-	switch (uap->which) {
-
+	switch (which) {
 	case PRIO_PROCESS:
-		if (uap->who == 0)
+		if (who == 0)
 			low = td->td_proc->p_nice;
 		else {
-			p = pfind(uap->who);
+			p = pfind(who);
 			if (p == NULL)
 				break;
 			if (p_cansee(td, p) == 0)
@@ -115,11 +120,11 @@ sys_getpriority(struct thread *td, register struct getpriority_args *uap)
 
 	case PRIO_PGRP:
 		sx_slock(&proctree_lock);
-		if (uap->who == 0) {
+		if (who == 0) {
 			pg = td->td_proc->p_pgrp;
 			PGRP_LOCK(pg);
 		} else {
-			pg = pgfind(uap->who);
+			pg = pgfind(who);
 			if (pg == NULL) {
 				sx_sunlock(&proctree_lock);
 				break;
@@ -139,14 +144,14 @@ sys_getpriority(struct thread *td, register struct getpriority_args *uap)
 		break;
 
 	case PRIO_USER:
-		if (uap->who == 0)
-			uap->who = td->td_ucred->cr_uid;
+		if (who == 0)
+			who = td->td_ucred->cr_uid;
 		sx_slock(&allproc_lock);
 		FOREACH_PROC_IN_SYSTEM(p) {
 			PROC_LOCK(p);
 			if (p->p_state == PRS_NORMAL &&
 			    p_cansee(td, p) == 0 &&
-			    p->p_ucred->cr_uid == uap->who) {
+			    p->p_ucred->cr_uid == who) {
 				if (p->p_nice < low)
 					low = p->p_nice;
 			}
@@ -175,24 +180,31 @@ struct setpriority_args {
 int
 sys_setpriority(struct thread *td, struct setpriority_args *uap)
 {
+
+	return (kern_setpriority(td, uap->which, uap->who, uap->prio));
+}
+
+int
+kern_setpriority(struct thread *td, int which, int who, int prio)
+{
 	struct proc *curp, *p;
 	struct pgrp *pg;
 	int found = 0, error = 0;
 
 	curp = td->td_proc;
-	switch (uap->which) {
+	switch (which) {
 	case PRIO_PROCESS:
-		if (uap->who == 0) {
+		if (who == 0) {
 			PROC_LOCK(curp);
-			error = donice(td, curp, uap->prio);
+			error = donice(td, curp, prio);
 			PROC_UNLOCK(curp);
 		} else {
-			p = pfind(uap->who);
+			p = pfind(who);
 			if (p == NULL)
 				break;
 			error = p_cansee(td, p);
 			if (error == 0)
-				error = donice(td, p, uap->prio);
+				error = donice(td, p, prio);
 			PROC_UNLOCK(p);
 		}
 		found++;
@@ -200,11 +212,11 @@ sys_setpriority(struct thread *td, struct setpriority_args *uap)
 
 	case PRIO_PGRP:
 		sx_slock(&proctree_lock);
-		if (uap->who == 0) {
+		if (who == 0) {
 			pg = curp->p_pgrp;
 			PGRP_LOCK(pg);
 		} else {
-			pg = pgfind(uap->who);
+			pg = pgfind(who);
 			if (pg == NULL) {
 				sx_sunlock(&proctree_lock);
 				break;
@@ -215,7 +227,7 @@ sys_setpriority(struct thread *td, struct setpriority_args *uap)
 			PROC_LOCK(p);
 			if (p->p_state == PRS_NORMAL &&
 			    p_cansee(td, p) == 0) {
-				error = donice(td, p, uap->prio);
+				error = donice(td, p, prio);
 				found++;
 			}
 			PROC_UNLOCK(p);
@@ -224,15 +236,15 @@ sys_setpriority(struct thread *td, struct setpriority_args *uap)
 		break;
 
 	case PRIO_USER:
-		if (uap->who == 0)
-			uap->who = td->td_ucred->cr_uid;
+		if (who == 0)
+			who = td->td_ucred->cr_uid;
 		sx_slock(&allproc_lock);
 		FOREACH_PROC_IN_SYSTEM(p) {
 			PROC_LOCK(p);
 			if (p->p_state == PRS_NORMAL &&
-			    p->p_ucred->cr_uid == uap->who &&
+			    p->p_ucred->cr_uid == who &&
 			    p_cansee(td, p) == 0) {
-				error = donice(td, p, uap->prio);
+				error = donice(td, p, prio);
 				found++;
 			}
 			PROC_UNLOCK(p);
@@ -303,8 +315,7 @@ sys_rtprio_thread(struct thread *td, struct rtprio_thread_args *uap)
 		td1 = td;
 		PROC_LOCK(p);
 	} else {
-		/* Only look up thread in current process */
-		td1 = tdfind(uap->lwpid, curproc->p_pid);
+		td1 = tdfind(uap->lwpid, -1);
 		if (td1 == NULL)
 			return (ESRCH);
 		p = td1->td_proc;
@@ -367,7 +378,7 @@ struct rtprio_args {
 };
 #endif
 int
-sys_rtprio(struct thread *td, register struct rtprio_args *uap)
+sys_rtprio(struct thread *td, struct rtprio_args *uap)
 {
 	struct proc *p;
 	struct thread *tdp;
@@ -533,7 +544,7 @@ struct osetrlimit_args {
 };
 #endif
 int
-osetrlimit(struct thread *td, register struct osetrlimit_args *uap)
+osetrlimit(struct thread *td, struct osetrlimit_args *uap)
 {
 	struct orlimit olim;
 	struct rlimit lim;
@@ -554,7 +565,7 @@ struct ogetrlimit_args {
 };
 #endif
 int
-ogetrlimit(struct thread *td, register struct ogetrlimit_args *uap)
+ogetrlimit(struct thread *td, struct ogetrlimit_args *uap)
 {
 	struct orlimit olim;
 	struct rlimit rl;
@@ -587,7 +598,7 @@ struct __setrlimit_args {
 };
 #endif
 int
-sys_setrlimit(struct thread *td, register struct __setrlimit_args *uap)
+sys_setrlimit(struct thread *td, struct __setrlimit_args *uap)
 {
 	struct rlimit alim;
 	int error;
@@ -645,7 +656,7 @@ kern_proc_setrlimit(struct thread *td, struct proc *p, u_int which,
     struct rlimit *limp)
 {
 	struct plimit *newlim, *oldlim;
-	register struct rlimit *alimp;
+	struct rlimit *alimp;
 	struct rlimit oldssiz;
 	int error;
 
@@ -678,7 +689,6 @@ kern_proc_setrlimit(struct thread *td, struct proc *p, u_int which,
 	alimp = &newlim->pl_rlimit[which];
 
 	switch (which) {
-
 	case RLIMIT_CPU:
 		if (limp->rlim_cur != RLIM_INFINITY &&
 		    p->p_cpulimit == RLIM_INFINITY)
@@ -760,7 +770,8 @@ kern_proc_setrlimit(struct thread *td, struct proc *p, u_int which,
 			addr = trunc_page(addr);
 			size = round_page(size);
 			(void)vm_map_protect(&p->p_vmspace->vm_map,
-			    addr, addr + size, prot, FALSE);
+			    addr, addr + size, prot, 0,
+			    VM_MAP_PROTECT_SET_PROT);
 		}
 	}
 
@@ -775,7 +786,7 @@ struct __getrlimit_args {
 #endif
 /* ARGSUSED */
 int
-sys_getrlimit(struct thread *td, register struct __getrlimit_args *uap)
+sys_getrlimit(struct thread *td, struct __getrlimit_args *uap)
 {
 	struct rlimit rlim;
 	int error;
@@ -858,9 +869,93 @@ rufetchtd(struct thread *td, struct rusage *ru)
 		td->td_incruntime += runtime;
 		PCPU_SET(switchtime, u);
 	}
-	ruxagg(p, td);
+	ruxagg_locked(p, td);
 	*ru = td->td_ru;
 	calcru1(p, &td->td_rux, &ru->ru_utime, &ru->ru_stime);
+}
+
+/* XXX: the MI version is too slow to use: */
+#ifndef __HAVE_INLINE_FLSLL
+#define	flsll(x)	(fls((x) >> 32) != 0 ? fls((x) >> 32) + 32 : fls(x))
+#endif
+
+static uint64_t
+mul64_by_fraction(uint64_t a, uint64_t b, uint64_t c)
+{
+	uint64_t acc, bh, bl;
+	int i, s, sa, sb;
+
+	/*
+	 * Calculate (a * b) / c accurately enough without overflowing.  c
+	 * must be nonzero, and its top bit must be 0.  a or b must be
+	 * <= c, and the implementation is tuned for b <= c.
+	 *
+	 * The comments about times are for use in calcru1() with units of
+	 * microseconds for 'a' and stathz ticks at 128 Hz for b and c.
+	 *
+	 * Let n be the number of top zero bits in c.  Each iteration
+	 * either returns, or reduces b by right shifting it by at least n.
+	 * The number of iterations is at most 1 + 64 / n, and the error is
+	 * at most the number of iterations.
+	 *
+	 * It is very unusual to need even 2 iterations.  Previous
+	 * implementations overflowed essentially by returning early in the
+	 * first iteration, with n = 38 giving overflow at 105+ hours and
+	 * n = 32 giving overlow at at 388+ days despite a more careful
+	 * calculation.  388 days is a reasonable uptime, and the calculation
+	 * needs to work for the uptime times the number of CPUs since 'a'
+	 * is per-process.
+	 */
+	if (a >= (uint64_t)1 << 63)
+		return (0);		/* Unsupported arg -- can't happen. */
+	acc = 0;
+	for (i = 0; i < 128; i++) {
+		sa = flsll(a);
+		sb = flsll(b);
+		if (sa + sb <= 64)
+			/* Up to 105 hours on first iteration. */
+			return (acc + (a * b) / c);
+		if (a >= c) {
+			/*
+			 * This reduction is based on a = q * c + r, with the
+			 * remainder r < c.  'a' may be large to start, and
+			 * moving bits from b into 'a' at the end of the loop
+			 * sets the top bit of 'a', so the reduction makes
+			 * significant progress.
+			 */
+			acc += (a / c) * b;
+			a %= c;
+			sa = flsll(a);
+			if (sa + sb <= 64)
+				/* Up to 388 days on first iteration. */
+				return (acc + (a * b) / c);
+		}
+
+		/*
+		 * This step writes a * b as a * ((bh << s) + bl) =
+		 * a * (bh << s) + a * bl = (a << s) * bh + a * bl.  The 2
+		 * additive terms are handled separately.  Splitting in
+		 * this way is linear except for rounding errors.
+		 *
+		 * s = 64 - sa is the maximum such that a << s fits in 64
+		 * bits.  Since a < c and c has at least 1 zero top bit,
+		 * sa < 64 and s > 0.  Thus this step makes progress by
+		 * reducing b (it increases 'a', but taking remainders on
+		 * the next iteration completes the reduction).
+		 *
+		 * Finally, the choice for s is just what is needed to keep
+		 * a * bl from overflowing, so we don't need complications
+		 * like a recursive call mul64_by_fraction(a, bl, c) to
+		 * handle the second additive term.
+		 */
+		s = 64 - sa;
+		bh = b >> s;
+		bl = b - (bh << s);
+		acc += (a * bl) / c;
+		a <<= s;
+		b = bh;
+	}
+	return (0);		/* Algorithm failure -- can't happen. */
 }
 
 static void
@@ -887,15 +982,23 @@ calcru1(struct proc *p, struct rusage_ext *ruxp, struct timeval *up,
 		tu = ruxp->rux_tu;
 	}
 
+	/* Subdivide tu.  Avoid overflow in the multiplications. */
+	if (__predict_true(tu <= ((uint64_t)1 << 38) && tt <= (1 << 26))) {
+		/* Up to 76 hours when stathz is 128. */
+		uu = (tu * ut) / tt;
+		su = (tu * st) / tt;
+	} else {
+		uu = mul64_by_fraction(tu, ut, tt);
+		su = mul64_by_fraction(tu, st, tt);
+	}
+
 	if (tu >= ruxp->rux_tu) {
 		/*
 		 * The normal case, time increased.
 		 * Enforce monotonicity of bucketed numbers.
 		 */
-		uu = (tu * ut) / tt;
 		if (uu < ruxp->rux_uu)
 			uu = ruxp->rux_uu;
-		su = (tu * st) / tt;
 		if (su < ruxp->rux_su)
 			su = ruxp->rux_su;
 	} else if (tu + 3 > ruxp->rux_tu || 101 * tu > 100 * ruxp->rux_tu) {
@@ -924,8 +1027,6 @@ calcru1(struct proc *p, struct rusage_ext *ruxp, struct timeval *up,
 		    "to %ju usec for pid %d (%s)\n",
 		    (uintmax_t)ruxp->rux_tu, (uintmax_t)tu,
 		    p->p_pid, p->p_comm);
-		uu = (tu * ut) / tt;
-		su = (tu * st) / tt;
 	}
 
 	ruxp->rux_uu = uu;
@@ -945,7 +1046,7 @@ struct getrusage_args {
 };
 #endif
 int
-sys_getrusage(register struct thread *td, register struct getrusage_args *uap)
+sys_getrusage(struct thread *td, struct getrusage_args *uap)
 {
 	struct rusage ru;
 	int error;
@@ -1024,11 +1125,9 @@ ruadd(struct rusage *ru, struct rusage_ext *rux, struct rusage *ru2,
  * Aggregate tick counts into the proc's rusage_ext.
  */
 static void
-ruxagg_locked(struct rusage_ext *rux, struct thread *td)
+ruxagg_ext_locked(struct rusage_ext *rux, struct thread *td)
 {
 
-	THREAD_LOCK_ASSERT(td, MA_OWNED);
-	PROC_STATLOCK_ASSERT(td->td_proc, MA_OWNED);
 	rux->rux_runtime += td->td_incruntime;
 	rux->rux_uticks += td->td_uticks;
 	rux->rux_sticks += td->td_sticks;
@@ -1036,16 +1135,25 @@ ruxagg_locked(struct rusage_ext *rux, struct thread *td)
 }
 
 void
-ruxagg(struct proc *p, struct thread *td)
+ruxagg_locked(struct proc *p, struct thread *td)
 {
+	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	PROC_STATLOCK_ASSERT(td->td_proc, MA_OWNED);
 
-	thread_lock(td);
-	ruxagg_locked(&p->p_rux, td);
-	ruxagg_locked(&td->td_rux, td);
+	ruxagg_ext_locked(&p->p_rux, td);
+	ruxagg_ext_locked(&td->td_rux, td);
 	td->td_incruntime = 0;
 	td->td_uticks = 0;
 	td->td_iticks = 0;
 	td->td_sticks = 0;
+}
+
+void
+ruxagg(struct proc *p, struct thread *td)
+{
+
+	thread_lock(td);
+	ruxagg_locked(p, td);
 	thread_unlock(td);
 }
 
@@ -1129,6 +1237,14 @@ lim_free(struct plimit *limp)
 		free((void *)limp, M_PLIMIT);
 }
 
+void
+lim_freen(struct plimit *limp, int n)
+{
+
+	if (refcount_releasen(&limp->pl_refcnt, n))
+		free((void *)limp, M_PLIMIT);
+}
+
 /*
  * Make a copy of the plimit structure.
  * We share these structures copy-on-write after fork.
@@ -1168,7 +1284,7 @@ lim_max_proc(struct proc *p, int which)
  * The which parameter which specifies the index into the rlimit array
  */
 rlim_t
-lim_cur(struct thread *td, int which)
+(lim_cur)(struct thread *td, int which)
 {
 	struct rlimit rl;
 
@@ -1253,6 +1369,18 @@ struct uidinfo *
 uifind(uid_t uid)
 {
 	struct uidinfo *new_uip, *uip;
+	struct ucred *cred;
+
+	cred = curthread->td_ucred;
+	if (cred->cr_uidinfo->ui_uid == uid) {
+		uip = cred->cr_uidinfo;
+		uihold(uip);
+		return (uip);
+	} else if (cred->cr_ruidinfo->ui_uid == uid) {
+		uip = cred->cr_ruidinfo;
+		uihold(uip);
+		return (uip);
+	}
 
 	rw_rlock(&uihashtbl_lock);
 	uip = uilookup(uid);
@@ -1264,7 +1392,6 @@ uifind(uid_t uid)
 	racct_create(&new_uip->ui_racct);
 	refcount_init(&new_uip->ui_ref, 1);
 	new_uip->ui_uid = uid;
-	mtx_init(&new_uip->ui_vmsize_mtx, "ui_vmsize", NULL, MTX_DEF);
 
 	rw_wlock(&uihashtbl_lock);
 	/*
@@ -1279,7 +1406,6 @@ uifind(uid_t uid)
 	} else {
 		rw_wunlock(&uihashtbl_lock);
 		racct_destroy(&new_uip->ui_racct);
-		mtx_destroy(&new_uip->ui_vmsize_mtx);
 		free(new_uip, M_UIDINFO);
 	}
 	return (uip);
@@ -1313,14 +1439,10 @@ uihold(struct uidinfo *uip)
 void
 uifree(struct uidinfo *uip)
 {
-	int old;
 
-	/* Prepare for optimal case. */
-	old = uip->ui_ref;
-	if (old > 1 && atomic_cmpset_int(&uip->ui_ref, old, old - 1))
+	if (refcount_release_if_not_last(&uip->ui_ref))
 		return;
 
-	/* Prepare for suboptimal case. */
 	rw_wlock(&uihashtbl_lock);
 	if (refcount_release(&uip->ui_ref) == 0) {
 		rw_wunlock(&uihashtbl_lock);
@@ -1340,7 +1462,6 @@ uifree(struct uidinfo *uip)
 	if (uip->ui_vmsize != 0)
 		printf("freeing uidinfo: uid = %d, swapuse = %lld\n",
 		    uip->ui_uid, (unsigned long long)uip->ui_vmsize);
-	mtx_destroy(&uip->ui_vmsize_mtx);
 	free(uip, M_UIDINFO);
 }
 
@@ -1370,18 +1491,17 @@ ui_racct_foreach(void (*callback)(struct racct *racct,
 static inline int
 chglimit(struct uidinfo *uip, long *limit, int diff, rlim_t max, const char *name)
 {
+	long new;
 
 	/* Don't allow them to exceed max, but allow subtraction. */
+	new = atomic_fetchadd_long(limit, (long)diff) + diff;
 	if (diff > 0 && max != 0) {
-		if (atomic_fetchadd_long(limit, (long)diff) + diff > max) {
+		if (new < 0 || new > max) {
 			atomic_subtract_long(limit, (long)diff);
 			return (0);
 		}
-	} else {
-		atomic_add_long(limit, (long)diff);
-		if (*limit < 0)
-			printf("negative %s for uid = %d\n", name, uip->ui_uid);
-	}
+	} else if (new < 0)
+		printf("negative %s for uid = %d\n", name, uip->ui_uid);
 	return (1);
 }
 

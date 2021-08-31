@@ -67,6 +67,7 @@ __FBSDID("$FreeBSD$");
 
 struct intr_event *clk_intr_event;
 
+#if 0
 void
 critical_enter(void)
 {
@@ -78,6 +79,7 @@ critical_exit(void)
 {
 
 }
+#endif
 
 int
 swi_add(struct intr_event **eventp, const char *name, driver_intr_t handler,

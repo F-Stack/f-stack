@@ -1,25 +1,10 @@
 # $FreeBSD$
 
-PACKAGE=lib${LIB}
-SHLIBDIR?=      /lib
+.include <src.opts.mk>
 
-TOPDIR?=${CURDIR}/../..
-include ${TOPDIR}/tools/opts.mk
+HAS_TESTS=
+SUBDIR.${MK_TESTS}+= tests
 
-LIBXOSRC=	./libxo
-VPATH+= ${LIBXOSRC}
+SUBDIR = libxo .WAIT encoder
 
-LIB=	xo
-SHLIB_MAJOR=0
-
-#SRCS=	${LIBXOSRC}/libxo.c ${LIBXOSRC}/xo_encoder.c ${LIBXOSRC}/xo_syslog.c
-SRCS=	libxo.c xo_encoder.c xo_syslog.c
-
-CFLAGS+= -I${LIBXOSRC} -I${CURDIR}
-#CFLAGS+= -DXO_ENCODERDIR=\"/usr/lib/libxo/encoder\"
-CFLAGS+= -DXO_ENCODERDIR=\"\"
-
-CFLAGS+= -I${TOPDIR}/tools/libutil
-
-include ${TOPDIR}/tools/lib.mk
-
+.include <bsd.subdir.mk>

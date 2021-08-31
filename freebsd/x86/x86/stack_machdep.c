@@ -28,6 +28,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_stack.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -47,24 +49,25 @@ __FBSDID("$FreeBSD$");
 
 #ifdef __i386__
 #define	PCB_FP(pcb)	((pcb)->pcb_ebp)
+#define	TF_FLAGS(tf)	((tf)->tf_eflags)
 #define	TF_FP(tf)	((tf)->tf_ebp)
 #define	TF_PC(tf)	((tf)->tf_eip)
 
 typedef struct i386_frame *x86_frame_t;
 #else
 #define	PCB_FP(pcb)	((pcb)->pcb_rbp)
+#define	TF_FLAGS(tf)	((tf)->tf_rflags)
 #define	TF_FP(tf)	((tf)->tf_rbp)
 #define	TF_PC(tf)	((tf)->tf_rip)
 
 typedef struct amd64_frame *x86_frame_t;
 #endif
 
-static struct stack *nmi_stack;
-static volatile struct thread *nmi_pending;
-
 #ifdef SMP
-static struct mtx nmi_lock;
-MTX_SYSINIT(nmi_lock, &nmi_lock, "stack_nmi", MTX_SPIN);
+static struct stack *stack_intr_stack;
+static struct thread *stack_intr_td;
+static struct mtx intr_lock;
+MTX_SYSINIT(intr_lock, &intr_lock, "stack intr", MTX_DEF);
 #endif
 
 static void
@@ -76,82 +79,87 @@ stack_capture(struct thread *td, struct stack *st, register_t fp)
 	stack_zero(st);
 	frame = (x86_frame_t)fp;
 	while (1) {
-		if (!INKERNEL((long)frame))
+		if (!kstack_contains(td, (vm_offset_t)frame, sizeof(*frame)))
 			break;
 		callpc = frame->f_retaddr;
 		if (!INKERNEL(callpc))
 			break;
 		if (stack_put(st, callpc) == -1)
 			break;
-		if (frame->f_frame <= frame ||
-		    (vm_offset_t)frame->f_frame >= td->td_kstack +
-		    td->td_kstack_pages * PAGE_SIZE)
+		if (frame->f_frame <= frame)
 			break;
 		frame = frame->f_frame;
 	}
 }
 
-int
-stack_nmi_handler(struct trapframe *tf)
-{
-
-	/* Don't consume an NMI that wasn't meant for us. */
-	if (nmi_stack == NULL || curthread != nmi_pending)
-		return (0);
-
-	if (INKERNEL(TF_PC(tf)))
-		stack_capture(curthread, nmi_stack, TF_FP(tf));
-	else
-		/* We interrupted a thread in user mode. */
-		nmi_stack->depth = 0;
-
-	atomic_store_rel_ptr((long *)&nmi_pending, (long)NULL);
-	return (1);
-}
-
+#ifdef SMP
 void
+stack_capture_intr(void)
+{
+	struct thread *td;
+
+	td = curthread;
+	stack_capture(td, stack_intr_stack, TF_FP(td->td_intr_frame));
+	atomic_store_rel_ptr((void *)&stack_intr_td, (uintptr_t)td);
+}
+#endif
+
+int
 stack_save_td(struct stack *st, struct thread *td)
 {
-
-	if (TD_IS_SWAPPED(td))
-		panic("stack_save_td: swapped");
-	if (TD_IS_RUNNING(td))
-		panic("stack_save_td: running");
-
-	stack_capture(td, st, PCB_FP(td->td_pcb));
-}
-
-int
-stack_save_td_running(struct stack *st, struct thread *td)
-{
+	int cpuid, error;
+	bool done;
 
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
-	MPASS(TD_IS_RUNNING(td));
+	KASSERT(!TD_IS_SWAPPED(td),
+	    ("stack_save_td: thread %p is swapped", td));
+	if (TD_IS_RUNNING(td) && td != curthread)
+		PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
 
 	if (td == curthread) {
 		stack_save(st);
 		return (0);
 	}
 
+	for (done = false, error = 0; !done;) {
+		if (!TD_IS_RUNNING(td)) {
+			/*
+			 * The thread will not start running so long as we hold
+			 * its lock.
+			 */
+			stack_capture(td, st, PCB_FP(td->td_pcb));
+			error = 0;
+			break;
+		}
+
 #ifdef SMP
-	mtx_lock_spin(&nmi_lock);
-
-	nmi_stack = st;
-	nmi_pending = td;
-	ipi_cpu(td->td_oncpu, IPI_TRACE);
-	while ((void *)atomic_load_acq_ptr((long *)&nmi_pending) != NULL)
-		cpu_spinwait();
-	nmi_stack = NULL;
-
-	mtx_unlock_spin(&nmi_lock);
-
-	if (st->depth == 0)
-		/* We interrupted a thread in user mode. */
-		return (EAGAIN);
+		thread_unlock(td);
+		cpuid = atomic_load_int(&td->td_oncpu);
+		if (cpuid == NOCPU) {
+			cpu_spinwait();
+		} else {
+			mtx_lock(&intr_lock);
+			stack_intr_td = NULL;
+			stack_intr_stack = st;
+			ipi_cpu(cpuid, IPI_TRACE);
+			while (atomic_load_acq_ptr((void *)&stack_intr_td) ==
+			    (uintptr_t)NULL)
+				cpu_spinwait();
+			if (stack_intr_td == td) {
+				done = true;
+				error = st->depth > 0 ? 0 : EBUSY;
+			}
+			stack_intr_td = NULL;
+			mtx_unlock(&intr_lock);
+		}
+		thread_lock(td);
 #else
-	KASSERT(0, ("curthread isn't running"));
+		(void)cpuid;
+		KASSERT(0, ("%s: multiple running threads", __func__));
 #endif
-	return (0);
+	}
+
+	return (error);
 }
 
 void

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2000 Nikolai Saoukh
  * All rights reserved.
  *
@@ -161,7 +163,7 @@ orm_detach(device_t dev)
 {
 	int			i;
 	struct orm_softc	*sc = device_get_softc(dev);
-	
+
 	for (i = 0; i < sc->rnum; i++)
 		bus_release_resource(dev, SYS_RES_MEMORY, sc->rid[i],
 		    sc->res[i]);
@@ -186,3 +188,4 @@ static driver_t orm_driver = {
 static devclass_t orm_devclass;
 
 DRIVER_MODULE(orm, isa, orm_driver, orm_devclass, 0, 0);
+ISA_PNP_INFO(orm_ids);

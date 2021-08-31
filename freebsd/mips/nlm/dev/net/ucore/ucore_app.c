@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003-2012 Broadcom Corporation
  * All Rights Reserved
  *
@@ -32,13 +34,11 @@
 
 int main(void)
 {
-	unsigned int pktrdy;
 	int num_cachelines = 1518 / 64 ; /* pktsize / L3 cacheline size */
-
 
 	/* Spray packets to using distribution vector */
 	while (1) {
-		pktrdy = nlm_read_ucore_rxpktrdy();
+		(void)nlm_read_ucore_rxpktrdy();
 		nlm_ucore_setup_poepktdistr(FWD_DIST_VEC, 0, 0, 0, 0);
 		nlm_ucore_pkt_done(num_cachelines, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		    0, 0);

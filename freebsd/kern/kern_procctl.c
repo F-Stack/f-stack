@@ -1,6 +1,6 @@
 /*-
  * Copyright (c) 2014 John Baldwin
- * Copyright (c) 2014 The FreeBSD Foundation
+ * Copyright (c) 2014, 2016 The FreeBSD Foundation
  *
  * Portions of this software were developed by Konstantin Belousov
  * under sponsorship from the FreeBSD Foundation.
@@ -34,6 +34,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/capsicum.h>
 #include <sys/lock.h>
+#include <sys/mman.h>
 #include <sys/mutex.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
@@ -42,6 +43,11 @@ __FBSDID("$FreeBSD$");
 #include <sys/syscallsubr.h>
 #include <sys/sysproto.h>
 #include <sys/wait.h>
+
+#include <vm/vm.h>
+#include <vm/pmap.h>
+#include <vm/vm_map.h>
+#include <vm/vm_extern.h>
 
 static int
 protect_setchild(struct thread *td, struct proc *p, int flags)
@@ -221,6 +227,8 @@ reap_getpids(struct thread *td, struct proc *p, struct procctl_reaper_pids *rp)
 		pip->pi_flags = REAPER_PIDINFO_VALID;
 		if (proc_realparent(p2) == reap)
 			pip->pi_flags |= REAPER_PIDINFO_CHILD;
+		if ((p2->p_treeflag & P_TREE_REAPER) != 0)
+			pip->pi_flags |= REAPER_PIDINFO_REAPER;
 		i++;
 	}
 	sx_sunlock(&proctree_lock);
@@ -231,19 +239,59 @@ reap_getpids(struct thread *td, struct proc *p, struct procctl_reaper_pids *rp)
 	return (error);
 }
 
+static void
+reap_kill_proc(struct thread *td, struct proc *p2, ksiginfo_t *ksi,
+    struct procctl_reaper_kill *rk, int *error)
+{
+	int error1;
+
+	PROC_LOCK(p2);
+	error1 = p_cansignal(td, p2, rk->rk_sig);
+	if (error1 == 0) {
+		pksignal(p2, rk->rk_sig, ksi);
+		rk->rk_killed++;
+		*error = error1;
+	} else if (*error == ESRCH) {
+		rk->rk_fpid = p2->p_pid;
+		*error = error1;
+	}
+	PROC_UNLOCK(p2);
+}
+
+struct reap_kill_tracker {
+	struct proc *parent;
+	TAILQ_ENTRY(reap_kill_tracker) link;
+};
+
+TAILQ_HEAD(reap_kill_tracker_head, reap_kill_tracker);
+
+static void
+reap_kill_sched(struct reap_kill_tracker_head *tracker, struct proc *p2)
+{
+	struct reap_kill_tracker *t;
+
+	t = malloc(sizeof(struct reap_kill_tracker), M_TEMP, M_WAITOK);
+	t->parent = p2;
+	TAILQ_INSERT_TAIL(tracker, t, link);
+}
+
 static int
 reap_kill(struct thread *td, struct proc *p, struct procctl_reaper_kill *rk)
 {
 	struct proc *reap, *p2;
 	ksiginfo_t ksi;
-	int error, error1;
+	struct reap_kill_tracker_head tracker;
+	struct reap_kill_tracker *t;
+	int error;
 
 	sx_assert(&proctree_lock, SX_LOCKED);
 	if (IN_CAPABILITY_MODE(td))
 		return (ECAPMODE);
-	if (rk->rk_sig <= 0 || rk->rk_sig > _SIG_MAXSIG)
-		return (EINVAL);
-	if ((rk->rk_flags & ~REAPER_KILL_CHILDREN) != 0)
+	if (rk->rk_sig <= 0 || rk->rk_sig > _SIG_MAXSIG ||
+	    (rk->rk_flags & ~(REAPER_KILL_CHILDREN |
+	    REAPER_KILL_SUBTREE)) != 0 || (rk->rk_flags &
+	    (REAPER_KILL_CHILDREN | REAPER_KILL_SUBTREE)) ==
+	    (REAPER_KILL_CHILDREN | REAPER_KILL_SUBTREE))
 		return (EINVAL);
 	PROC_UNLOCK(p);
 	reap = (p->p_treeflag & P_TREE_REAPER) == 0 ? p->p_reaper : p;
@@ -255,26 +303,33 @@ reap_kill(struct thread *td, struct proc *p, struct procctl_reaper_kill *rk)
 	error = ESRCH;
 	rk->rk_killed = 0;
 	rk->rk_fpid = -1;
-	for (p2 = (rk->rk_flags & REAPER_KILL_CHILDREN) != 0 ?
-	    LIST_FIRST(&reap->p_children) : LIST_FIRST(&reap->p_reaplist);
-	    p2 != NULL;
-	    p2 = (rk->rk_flags & REAPER_KILL_CHILDREN) != 0 ?
-	    LIST_NEXT(p2, p_sibling) : LIST_NEXT(p2, p_reapsibling)) {
-		if ((rk->rk_flags & REAPER_KILL_SUBTREE) != 0 &&
-		    p2->p_reapsubtree != rk->rk_subtree)
-			continue;
-		PROC_LOCK(p2);
-		error1 = p_cansignal(td, p2, rk->rk_sig);
-		if (error1 == 0) {
-			pksignal(p2, rk->rk_sig, &ksi);
-			rk->rk_killed++;
-			error = error1;
-		} else if (error == ESRCH) {
-			error = error1;
-			rk->rk_fpid = p2->p_pid;
+	if ((rk->rk_flags & REAPER_KILL_CHILDREN) != 0) {
+		for (p2 = LIST_FIRST(&reap->p_children); p2 != NULL;
+		    p2 = LIST_NEXT(p2, p_sibling)) {
+			reap_kill_proc(td, p2, &ksi, rk, &error);
+			/*
+			 * Do not end the loop on error, signal
+			 * everything we can.
+			 */
 		}
-		PROC_UNLOCK(p2);
-		/* Do not end the loop on error, signal everything we can. */
+	} else {
+		TAILQ_INIT(&tracker);
+		reap_kill_sched(&tracker, reap);
+		while ((t = TAILQ_FIRST(&tracker)) != NULL) {
+			MPASS((t->parent->p_treeflag & P_TREE_REAPER) != 0);
+			TAILQ_REMOVE(&tracker, t, link);
+			for (p2 = LIST_FIRST(&t->parent->p_reaplist); p2 != NULL;
+			    p2 = LIST_NEXT(p2, p_reapsibling)) {
+				if (t->parent == reap &&
+				    (rk->rk_flags & REAPER_KILL_SUBTREE) != 0 &&
+				    p2->p_reapsubtree != rk->rk_subtree)
+					continue;
+				if ((p2->p_treeflag & P_TREE_REAPER) != 0)
+					reap_kill_sched(&tracker, p2);
+				reap_kill_proc(td, p2, &ksi, rk, &error);
+			}
+			free(t, M_TEMP);
+		}
 	}
 	PROC_LOCK(p);
 	return (error);
@@ -336,6 +391,184 @@ trace_status(struct thread *td, struct proc *p, int *data)
 	return (0);
 }
 
+static int
+trapcap_ctl(struct thread *td, struct proc *p, int state)
+{
+
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	switch (state) {
+	case PROC_TRAPCAP_CTL_ENABLE:
+		p->p_flag2 |= P2_TRAPCAP;
+		break;
+	case PROC_TRAPCAP_CTL_DISABLE:
+		p->p_flag2 &= ~P2_TRAPCAP;
+		break;
+	default:
+		return (EINVAL);
+	}
+	return (0);
+}
+
+static int
+trapcap_status(struct thread *td, struct proc *p, int *data)
+{
+
+	*data = (p->p_flag2 & P2_TRAPCAP) != 0 ? PROC_TRAPCAP_CTL_ENABLE :
+	    PROC_TRAPCAP_CTL_DISABLE;
+	return (0);
+}
+
+static int
+protmax_ctl(struct thread *td, struct proc *p, int state)
+{
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	switch (state) {
+	case PROC_PROTMAX_FORCE_ENABLE:
+		p->p_flag2 &= ~P2_PROTMAX_DISABLE;
+		p->p_flag2 |= P2_PROTMAX_ENABLE;
+		break;
+	case PROC_PROTMAX_FORCE_DISABLE:
+		p->p_flag2 |= P2_PROTMAX_DISABLE;
+		p->p_flag2 &= ~P2_PROTMAX_ENABLE;
+		break;
+	case PROC_PROTMAX_NOFORCE:
+		p->p_flag2 &= ~(P2_PROTMAX_ENABLE | P2_PROTMAX_DISABLE);
+		break;
+	default:
+		return (EINVAL);
+	}
+	return (0);
+}
+
+static int
+protmax_status(struct thread *td, struct proc *p, int *data)
+{
+	int d;
+
+	switch (p->p_flag2 & (P2_PROTMAX_ENABLE | P2_PROTMAX_DISABLE)) {
+	case 0:
+		d = PROC_PROTMAX_NOFORCE;
+		break;
+	case P2_PROTMAX_ENABLE:
+		d = PROC_PROTMAX_FORCE_ENABLE;
+		break;
+	case P2_PROTMAX_DISABLE:
+		d = PROC_PROTMAX_FORCE_DISABLE;
+		break;
+	}
+	if (kern_mmap_maxprot(p, PROT_READ) == PROT_READ)
+		d |= PROC_PROTMAX_ACTIVE;
+	*data = d;
+	return (0);
+}
+
+static int
+aslr_ctl(struct thread *td, struct proc *p, int state)
+{
+
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	switch (state) {
+	case PROC_ASLR_FORCE_ENABLE:
+		p->p_flag2 &= ~P2_ASLR_DISABLE;
+		p->p_flag2 |= P2_ASLR_ENABLE;
+		break;
+	case PROC_ASLR_FORCE_DISABLE:
+		p->p_flag2 |= P2_ASLR_DISABLE;
+		p->p_flag2 &= ~P2_ASLR_ENABLE;
+		break;
+	case PROC_ASLR_NOFORCE:
+		p->p_flag2 &= ~(P2_ASLR_ENABLE | P2_ASLR_DISABLE);
+		break;
+	default:
+		return (EINVAL);
+	}
+	return (0);
+}
+
+static int
+aslr_status(struct thread *td, struct proc *p, int *data)
+{
+	struct vmspace *vm;
+	int d;
+
+	switch (p->p_flag2 & (P2_ASLR_ENABLE | P2_ASLR_DISABLE)) {
+	case 0:
+		d = PROC_ASLR_NOFORCE;
+		break;
+	case P2_ASLR_ENABLE:
+		d = PROC_ASLR_FORCE_ENABLE;
+		break;
+	case P2_ASLR_DISABLE:
+		d = PROC_ASLR_FORCE_DISABLE;
+		break;
+	}
+	if ((p->p_flag & P_WEXIT) == 0) {
+		_PHOLD(p);
+		PROC_UNLOCK(p);
+		vm = vmspace_acquire_ref(p);
+		if (vm != NULL && (vm->vm_map.flags & MAP_ASLR) != 0) {
+			d |= PROC_ASLR_ACTIVE;
+			vmspace_free(vm);
+		}
+		PROC_LOCK(p);
+		_PRELE(p);
+	}
+	*data = d;
+	return (0);
+}
+
+static int
+stackgap_ctl(struct thread *td, struct proc *p, int state)
+{
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	if ((state & ~(PROC_STACKGAP_ENABLE | PROC_STACKGAP_DISABLE |
+	    PROC_STACKGAP_ENABLE_EXEC | PROC_STACKGAP_DISABLE_EXEC)) != 0)
+		return (EINVAL);
+	switch (state & (PROC_STACKGAP_ENABLE | PROC_STACKGAP_DISABLE)) {
+	case PROC_STACKGAP_ENABLE:
+		if ((p->p_flag2 & P2_STKGAP_DISABLE) != 0)
+			return (EINVAL);
+		break;
+	case PROC_STACKGAP_DISABLE:
+		p->p_flag2 |= P2_STKGAP_DISABLE;
+		break;
+	case 0:
+		break;
+	default:
+		return (EINVAL);
+	}
+	switch (state & (PROC_STACKGAP_ENABLE_EXEC |
+	    PROC_STACKGAP_DISABLE_EXEC)) {
+	case PROC_STACKGAP_ENABLE_EXEC:
+		p->p_flag2 &= ~P2_STKGAP_DISABLE_EXEC;
+		break;
+	case PROC_STACKGAP_DISABLE_EXEC:
+		p->p_flag2 |= P2_STKGAP_DISABLE_EXEC;
+		break;
+	case 0:
+		break;
+	default:
+		return (EINVAL);
+	}
+	return (0);
+}
+
+static int
+stackgap_status(struct thread *td, struct proc *p, int *data)
+{
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	*data = (p->p_flag2 & P2_STKGAP_DISABLE) != 0 ? PROC_STACKGAP_DISABLE :
+	    PROC_STACKGAP_ENABLE;
+	*data |= (p->p_flag2 & P2_STKGAP_DISABLE_EXEC) != 0 ?
+	    PROC_STACKGAP_DISABLE_EXEC : PROC_STACKGAP_ENABLE_EXEC;
+	return (0);
+}
+
 #ifndef _SYS_SYSPROTO_H_
 struct procctl_args {
 	idtype_t idtype;
@@ -354,11 +587,19 @@ sys_procctl(struct thread *td, struct procctl_args *uap)
 		struct procctl_reaper_pids rp;
 		struct procctl_reaper_kill rk;
 	} x;
-	int error, error1, flags;
+	int error, error1, flags, signum;
+
+	if (uap->com >= PROC_PROCCTL_MD_MIN)
+		return (cpu_procctl(td, uap->idtype, uap->id,
+		    uap->com, uap->data));
 
 	switch (uap->com) {
+	case PROC_ASLR_CTL:
+	case PROC_PROTMAX_CTL:
 	case PROC_SPROTECT:
+	case PROC_STACKGAP_CTL:
 	case PROC_TRACE_CTL:
+	case PROC_TRAPCAP_CTL:
 		error = copyin(uap->data, &flags, sizeof(flags));
 		if (error != 0)
 			return (error);
@@ -385,8 +626,21 @@ sys_procctl(struct thread *td, struct procctl_args *uap)
 			return (error);
 		data = &x.rk;
 		break;
+	case PROC_ASLR_STATUS:
+	case PROC_PROTMAX_STATUS:
+	case PROC_STACKGAP_STATUS:
 	case PROC_TRACE_STATUS:
+	case PROC_TRAPCAP_STATUS:
 		data = &flags;
+		break;
+	case PROC_PDEATHSIG_CTL:
+		error = copyin(uap->data, &signum, sizeof(signum));
+		if (error != 0)
+			return (error);
+		data = &signum;
+		break;
+	case PROC_PDEATHSIG_STATUS:
+		data = &signum;
 		break;
 	default:
 		return (EINVAL);
@@ -402,9 +656,17 @@ sys_procctl(struct thread *td, struct procctl_args *uap)
 		if (error == 0)
 			error = error1;
 		break;
+	case PROC_ASLR_STATUS:
+	case PROC_PROTMAX_STATUS:
+	case PROC_STACKGAP_STATUS:
 	case PROC_TRACE_STATUS:
+	case PROC_TRAPCAP_STATUS:
 		if (error == 0)
 			error = copyout(&flags, uap->data, sizeof(flags));
+		break;
+	case PROC_PDEATHSIG_STATUS:
+		if (error == 0)
+			error = copyout(&signum, uap->data, sizeof(signum));
 		break;
 	}
 	return (error);
@@ -416,8 +678,20 @@ kern_procctl_single(struct thread *td, struct proc *p, int com, void *data)
 
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 	switch (com) {
+	case PROC_ASLR_CTL:
+		return (aslr_ctl(td, p, *(int *)data));
+	case PROC_ASLR_STATUS:
+		return (aslr_status(td, p, data));
 	case PROC_SPROTECT:
 		return (protect_set(td, p, *(int *)data));
+	case PROC_PROTMAX_CTL:
+		return (protmax_ctl(td, p, *(int *)data));
+	case PROC_PROTMAX_STATUS:
+		return (protmax_status(td, p, data));
+	case PROC_STACKGAP_CTL:
+		return (stackgap_ctl(td, p, *(int *)data));
+	case PROC_STACKGAP_STATUS:
+		return (stackgap_status(td, p, data));
 	case PROC_REAP_ACQUIRE:
 		return (reap_acquire(td, p));
 	case PROC_REAP_RELEASE:
@@ -432,6 +706,10 @@ kern_procctl_single(struct thread *td, struct proc *p, int com, void *data)
 		return (trace_ctl(td, p, *(int *)data));
 	case PROC_TRACE_STATUS:
 		return (trace_status(td, p, data));
+	case PROC_TRAPCAP_CTL:
+		return (trapcap_ctl(td, p, *(int *)data));
+	case PROC_TRAPCAP_STATUS:
+		return (trapcap_status(td, p, data));
 	default:
 		return (EINVAL);
 	}
@@ -443,17 +721,48 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 	struct pgrp *pg;
 	struct proc *p;
 	int error, first_error, ok;
+	int signum;
 	bool tree_locked;
 
 	switch (com) {
+	case PROC_ASLR_CTL:
+	case PROC_ASLR_STATUS:
+	case PROC_PROTMAX_CTL:
+	case PROC_PROTMAX_STATUS:
 	case PROC_REAP_ACQUIRE:
 	case PROC_REAP_RELEASE:
 	case PROC_REAP_STATUS:
 	case PROC_REAP_GETPIDS:
 	case PROC_REAP_KILL:
+	case PROC_STACKGAP_CTL:
+	case PROC_STACKGAP_STATUS:
 	case PROC_TRACE_STATUS:
+	case PROC_TRAPCAP_STATUS:
+	case PROC_PDEATHSIG_CTL:
+	case PROC_PDEATHSIG_STATUS:
 		if (idtype != P_PID)
 			return (EINVAL);
+	}
+
+	switch (com) {
+	case PROC_PDEATHSIG_CTL:
+		signum = *(int *)data;
+		p = td->td_proc;
+		if ((id != 0 && id != p->p_pid) ||
+		    (signum != 0 && !_SIG_VALID(signum)))
+			return (EINVAL);
+		PROC_LOCK(p);
+		p->p_pdeathsig = signum;
+		PROC_UNLOCK(p);
+		return (0);
+	case PROC_PDEATHSIG_STATUS:
+		p = td->td_proc;
+		if (id != 0 && id != p->p_pid)
+			return (EINVAL);
+		PROC_LOCK(p);
+		*(int *)data = p->p_pdeathsig;
+		PROC_UNLOCK(p);
+		return (0);
 	}
 
 	switch (com) {
@@ -462,6 +771,7 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 	case PROC_REAP_GETPIDS:
 	case PROC_REAP_KILL:
 	case PROC_TRACE_CTL:
+	case PROC_TRAPCAP_CTL:
 		sx_slock(&proctree_lock);
 		tree_locked = true;
 		break;
@@ -470,7 +780,14 @@ kern_procctl(struct thread *td, idtype_t idtype, id_t id, int com, void *data)
 		sx_xlock(&proctree_lock);
 		tree_locked = true;
 		break;
+	case PROC_ASLR_CTL:
+	case PROC_ASLR_STATUS:
+	case PROC_PROTMAX_CTL:
+	case PROC_PROTMAX_STATUS:
+	case PROC_STACKGAP_CTL:
+	case PROC_STACKGAP_STATUS:
 	case PROC_TRACE_STATUS:
+	case PROC_TRAPCAP_STATUS:
 		tree_locked = false;
 		break;
 	default:

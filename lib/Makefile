@@ -11,6 +11,7 @@
 
 TOPDIR?=${CURDIR}/..
 S=${TOPDIR}/freebsd
+C=${TOPDIR}/freebsd/contrib/ck/include
 MACHINE_INCLUDES_ROOT:=${CURDIR}/machine_include
 OVERRIDE_INCLUDES_ROOT:=${CURDIR}/include
 X86_INCLUDES=0
@@ -23,7 +24,7 @@ F-STACK_VERSION=1.22
 
 HOST_OS:=$(shell uname -s)
 
-#DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 FF_KNI=1
 #FF_FLOW_ISOLATE=1
@@ -78,6 +79,9 @@ endif
 ifdef FF_USE_PAGE_ARRAY
 HOST_CFLAGS+= -DFF_USE_PAGE_ARRAY
 endif
+
+HOST_CFLAGS+= -DINET
+CFLAGS+= -DINET
 
 ifdef FF_INET6
 HOST_CFLAGS+= -DINET6
@@ -147,6 +151,7 @@ CFLAGS+= -DFSTACK
 
 VPATH+= $S/${MACHINE_CPUARCH}/${MACHINE_CPUARCH}
 VPATH+= $S/kern
+VPATH+= $S/x86
 VPATH+= $S/crypto
 VPATH+= $S/crypto/aesni
 VPATH+= $S/crypto/blowfish
@@ -156,6 +161,7 @@ VPATH+= $S/crypto/rijndael
 VPATH+= $S/crypto/sha2
 VPATH+= $S/crypto/siphash
 VPATH+= $S/net
+VPATH+= $S/net/route
 ifdef FF_NETGRAPH
 VPATH+= $S/netgraph
 endif
@@ -273,6 +279,8 @@ KERN_SRCS+=                 \
 	subr_sbuf.c         \
 	subr_taskqueue.c    \
 	subr_unit.c         \
+	subr_smr.c          \
+	subr_epoch.c        \
 	sys_capability.c    \
 	sys_generic.c       \
 	sys_socket.c        \
@@ -297,23 +305,20 @@ KERN_MSRCS+=		\
 ifeq (${MACHINE_CPUARCH},arm64)
 LIBKERN_SRCS+=		 \
 	bcd.c		 \
-	crc32.c          \
 	inet_ntoa.c	 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
 	strnlen.c        \
-	zlib.c		 \
 	fls.c		 \
 	flsl.c
 else
 LIBKERN_SRCS+=		 \
 	bcd.c		 \
-	crc32.c          \
+	gsb_crc32.c	 \
 	inet_ntoa.c	 \
 	jenkins_hash.c   \
 	strlcpy.c	 \
-	strnlen.c        \
-	zlib.c		 
+	strnlen.c
 endif
 
 
@@ -345,6 +350,14 @@ NET_SRCS+=		 \
 	raw_cb.c	 \
 	raw_usrreq.c	 \
 	route.c		 \
+	route_ctl.c	 \
+	route_tables.c	 \
+	route_helpers.c	 \
+	route_ifaddrs.c	 \
+	route_temporal.c \
+	nhop_utils.c	 \
+	nhop.c		 \
+	nhop_ctl.c	 \
 	rtsock.c         \
 	slcompress.c
 
@@ -417,7 +430,6 @@ NETINET_SRCS+=		\
 	ip_output.c	\
 	raw_ip.c	\
 	tcp_debug.c	\
-	tcp_fastopen.c	\
 	tcp_hostcache.c	\
 	tcp_input.c	\
 	tcp_lro.c	\

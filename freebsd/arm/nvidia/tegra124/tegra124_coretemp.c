@@ -45,7 +45,6 @@ __FBSDID("$FreeBSD$");
 
 #include "tegra_soctherm_if.h"
 
-
 enum therm_info {
 	CORETEMP_TEMP,
 	CORETEMP_DELTA,
@@ -71,11 +70,9 @@ coretemp_get_val_sysctl(SYSCTL_HANDLER_ARGS)
 	enum therm_info type;
 	char stemp[16];
 
-
 	dev = (device_t) arg1;
 	sc = device_get_softc(dev);
 	type = arg2;
-
 
 	rv = TEGRA_SOCTHERM_GET_TEMPERATURE(sc->tsens_dev, sc->dev,
 	     sc->tsens_id, &temp);
@@ -102,7 +99,6 @@ coretemp_get_val_sysctl(SYSCTL_HANDLER_ARGS)
 		val +=  2731;
 		break;
 	}
-
 
 	if ((temp > sc->core_max_temp)  && !sc->overheat_log) {
 		sc->overheat_log = 1;
@@ -178,7 +174,11 @@ tegra124_coretemp_ofw_parse(struct tegra124_coretemp_softc *sc)
 static void
 tegra124_coretemp_identify(driver_t *driver, device_t parent)
 {
+	phandle_t root;
 
+	root = OF_finddevice("/");
+	if (!ofw_bus_node_is_compatible(root, "nvidia,tegra124"))
+		return;
 	if (device_find_child(parent, "tegra124_coretemp", -1) != NULL)
 		return;
 	if (BUS_ADD_CHILD(parent, 0, "tegra124_coretemp", -1) == NULL)
@@ -189,7 +189,7 @@ static int
 tegra124_coretemp_probe(device_t dev)
 {
 
-	device_set_desc(dev, "CPU Frequency Control");
+	device_set_desc(dev, "CPU Thermal Sensor");
 	return (0);
 }
 
@@ -216,7 +216,8 @@ tegra124_coretemp_attach(device_t dev)
 
 	oid = SYSCTL_ADD_NODE(ctx,
 	    SYSCTL_CHILDREN(device_get_sysctl_tree(pdev)), OID_AUTO,
-	    "coretemp", CTLFLAG_RD, NULL, "Per-CPU thermal information");
+	    "coretemp", CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+	    "Per-CPU thermal information");
 
 	/*
 	 * Add the MIBs to dev.cpu.N and dev.cpu.N.coretemp.
@@ -250,7 +251,6 @@ tegra124_coretemp_detach(device_t dev)
 	return (0);
 }
 
-
 static device_method_t tegra124_coretemp_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_identify,	tegra124_coretemp_identify),
@@ -258,16 +258,11 @@ static device_method_t tegra124_coretemp_methods[] = {
 	DEVMETHOD(device_attach,	tegra124_coretemp_attach),
 	DEVMETHOD(device_detach,	tegra124_coretemp_detach),
 
-
 	DEVMETHOD_END
 };
 
 static devclass_t tegra124_coretemp_devclass;
-static driver_t tegra124_coretemp_driver = {
-	"tegra124_coretemp",
-	tegra124_coretemp_methods,
-	sizeof(struct tegra124_coretemp_softc),
-};
-
+static DEFINE_CLASS_0(tegra124_coretemp, tegra124_coretemp_driver,
+    tegra124_coretemp_methods, sizeof(struct tegra124_coretemp_softc));
 DRIVER_MODULE(tegra124_coretemp, cpu, tegra124_coretemp_driver,
-    tegra124_coretemp_devclass, 0, 0);
+    tegra124_coretemp_devclass, NULL, NULL);

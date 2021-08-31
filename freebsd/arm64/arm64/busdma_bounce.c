@@ -72,6 +72,8 @@ struct bounce_zone;
 
 struct bus_dma_tag {
 	struct bus_dma_tag_common common;
+	size_t			alloc_size;
+	size_t			alloc_alignment;
 	int			map_count;
 	int			bounce_flags;
 	bus_dma_segment_t	*segments;
@@ -113,7 +115,8 @@ static int total_bpages;
 static int busdma_zonecount;
 static STAILQ_HEAD(, bounce_zone) bounce_zone_list;
 
-static SYSCTL_NODE(_hw, OID_AUTO, busdma, CTLFLAG_RD, 0, "Busdma parameters");
+static SYSCTL_NODE(_hw, OID_AUTO, busdma, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "Busdma parameters");
 SYSCTL_INT(_hw_busdma, OID_AUTO, total_bpages, CTLFLAG_RD, &total_bpages, 0,
 	   "Total bounce pages");
 
@@ -134,8 +137,9 @@ struct bus_dmamap {
 	void		      *callback_arg;
 	STAILQ_ENTRY(bus_dmamap) links;
 	u_int			flags;
-#define	DMAMAP_COULD_BOUNCE	(1 << 0)
+#define	DMAMAP_COHERENT		(1 << 0)
 #define	DMAMAP_FROM_DMAMEM	(1 << 1)
+#define	DMAMAP_MBUF		(1 << 2)
 	int			sync_count;
 	struct sync_list	slist[];
 };
@@ -152,12 +156,89 @@ static bus_addr_t add_bounce_page(bus_dma_tag_t dmat, bus_dmamap_t map,
     vm_offset_t vaddr, bus_addr_t addr, bus_size_t size);
 static void free_bounce_page(bus_dma_tag_t dmat, struct bounce_page *bpage);
 int run_filter(bus_dma_tag_t dmat, bus_addr_t paddr);
+static bool _bus_dmamap_pagesneeded(bus_dma_tag_t dmat, bus_dmamap_t map,
+    vm_paddr_t buf, bus_size_t buflen, int *pagesneeded);
 static void _bus_dmamap_count_pages(bus_dma_tag_t dmat, bus_dmamap_t map,
     pmap_t pmap, void *buf, bus_size_t buflen, int flags);
 static void _bus_dmamap_count_phys(bus_dma_tag_t dmat, bus_dmamap_t map,
     vm_paddr_t buf, bus_size_t buflen, int flags);
 static int _bus_dmamap_reserve_pages(bus_dma_tag_t dmat, bus_dmamap_t map,
     int flags);
+
+/*
+ * Return true if the DMA should bounce because the start or end does not fall
+ * on a cacheline boundary (which would require a partial cacheline flush).
+ * COHERENT memory doesn't trigger cacheline flushes.  Memory allocated by
+ * bus_dmamem_alloc() is always aligned to cacheline boundaries, and there's a
+ * strict rule that such memory cannot be accessed by the CPU while DMA is in
+ * progress (or by multiple DMA engines at once), so that it's always safe to do
+ * full cacheline flushes even if that affects memory outside the range of a
+ * given DMA operation that doesn't involve the full allocated buffer.  If we're
+ * mapping an mbuf, that follows the same rules as a buffer we allocated.
+ */
+static bool
+cacheline_bounce(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t paddr,
+    bus_size_t size)
+{
+
+#define	DMAMAP_CACHELINE_FLAGS						\
+    (DMAMAP_FROM_DMAMEM | DMAMAP_COHERENT | DMAMAP_MBUF)
+	if ((dmat->bounce_flags & BF_COHERENT) != 0)
+		return (false);
+	if (map != NULL && (map->flags & DMAMAP_CACHELINE_FLAGS) != 0)
+		return (false);
+	return (((paddr | size) & (dcache_line_size - 1)) != 0);
+#undef DMAMAP_CACHELINE_FLAGS
+}
+
+/*
+ * Return true if the given address does not fall on the alignment boundary.
+ */
+static bool
+alignment_bounce(bus_dma_tag_t dmat, bus_addr_t addr)
+{
+
+	return ((addr & (dmat->common.alignment - 1)) != 0);
+}
+
+static bool
+might_bounce(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t paddr,
+    bus_size_t size)
+{
+
+	/* Memory allocated by bounce_bus_dmamem_alloc won't bounce */
+	if (map && (map->flags & DMAMAP_FROM_DMAMEM) != 0)
+		return (false);
+
+	if ((dmat->bounce_flags & BF_COULD_BOUNCE) != 0)
+		return (true);
+
+	if (cacheline_bounce(dmat, map, paddr, size))
+		return (true);
+
+	if (alignment_bounce(dmat, paddr))
+		return (true);
+
+	return (false);
+}
+
+static bool
+must_bounce(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t paddr,
+    bus_size_t size)
+{
+
+	if (cacheline_bounce(dmat, map, paddr, size))
+		return (true);
+
+	if (alignment_bounce(dmat, paddr))
+		return (true);
+
+	if ((dmat->bounce_flags & BF_COULD_BOUNCE) != 0 &&
+	    bus_dma_run_filter(&dmat->common, paddr))
+		return (true);
+
+	return (false);
+}
 
 /*
  * Allocate a device specific dma_tag.
@@ -184,8 +265,22 @@ bounce_bus_dma_tag_create(bus_dma_tag_t parent, bus_size_t alignment,
 	newtag->map_count = 0;
 	newtag->segments = NULL;
 
-	if ((flags & BUS_DMA_COHERENT) != 0)
+	if ((flags & BUS_DMA_COHERENT) != 0) {
 		newtag->bounce_flags |= BF_COHERENT;
+		newtag->alloc_alignment = newtag->common.alignment;
+		newtag->alloc_size = newtag->common.maxsize;
+	} else {
+		/*
+		 * Ensure the buffer is aligned to a cacheline when allocating
+		 * a non-coherent buffer. This is so we don't have any data
+		 * that another CPU may be accessing around DMA buffer
+		 * causing the cache to become dirty.
+		 */
+		newtag->alloc_alignment = MAX(newtag->common.alignment,
+		    dcache_line_size);
+		newtag->alloc_size = roundup2(newtag->common.maxsize,
+		    dcache_line_size);
+	}
 
 	if (parent != NULL) {
 		if ((newtag->common.filter != NULL ||
@@ -200,9 +295,14 @@ bounce_bus_dma_tag_create(bus_dma_tag_t parent, bus_size_t alignment,
 	    newtag->common.alignment > 1)
 		newtag->bounce_flags |= BF_COULD_BOUNCE;
 
-	if (((newtag->bounce_flags & BF_COULD_BOUNCE) != 0) &&
-	    (flags & BUS_DMA_ALLOCNOW) != 0) {
+	if ((flags & BUS_DMA_ALLOCNOW) != 0) {
 		struct bounce_zone *bz;
+		/*
+		 * Round size up to a full page, and add one more page because
+		 * there can always be one more boundary crossing than the
+		 * number of pages in a transfer.
+		 */
+		maxsize = roundup2(maxsize, PAGE_SIZE) + PAGE_SIZE;
 
 		/* Must bounce */
 		if ((error = alloc_bounce_zone(newtag)) != 0) {
@@ -214,7 +314,7 @@ bounce_bus_dma_tag_create(bus_dma_tag_t parent, bus_size_t alignment,
 		if (ptoa(bz->total_bpages) < maxsize) {
 			int pages;
 
-			pages = atop(maxsize) - bz->total_bpages;
+			pages = atop(maxsize) + 1 - bz->total_bpages;
 
 			/* Add pages to our bounce pool */
 			if (alloc_bounce_pages(newtag, pages) < pages)
@@ -271,6 +371,15 @@ out:
 	return (error);
 }
 
+static bool
+bounce_bus_dma_id_mapped(bus_dma_tag_t dmat, vm_paddr_t buf, bus_size_t buflen)
+{
+
+	if (!might_bounce(dmat, NULL, buf, buflen))
+		return (true);
+	return (!_bus_dmamap_pagesneeded(dmat, NULL, buf, buflen, NULL));
+}
+
 static bus_dmamap_t
 alloc_dmamap(bus_dma_tag_t dmat, int flags)
 {
@@ -324,49 +433,48 @@ bounce_bus_dmamap_create(bus_dma_tag_t dmat, int flags, bus_dmamap_t *mapp)
 	 * exclusion region, a data alignment that is stricter than 1, and/or
 	 * an active address boundary.
 	 */
-	if (dmat->bounce_flags & BF_COULD_BOUNCE) {
-		/* Must bounce */
-		if (dmat->bounce_zone == NULL) {
-			if ((error = alloc_bounce_zone(dmat)) != 0) {
-				free(*mapp, M_DEVBUF);
-				return (error);
-			}
+	if (dmat->bounce_zone == NULL) {
+		if ((error = alloc_bounce_zone(dmat)) != 0) {
+			free(*mapp, M_DEVBUF);
+			return (error);
 		}
-		bz = dmat->bounce_zone;
-
-		(*mapp)->flags = DMAMAP_COULD_BOUNCE;
-
-		/*
-		 * Attempt to add pages to our pool on a per-instance
-		 * basis up to a sane limit.
-		 */
-		if (dmat->common.alignment > 1)
-			maxpages = MAX_BPAGES;
-		else
-			maxpages = MIN(MAX_BPAGES, Maxmem -
-			    atop(dmat->common.lowaddr));
-		if ((dmat->bounce_flags & BF_MIN_ALLOC_COMP) == 0 ||
-		    (bz->map_count > 0 && bz->total_bpages < maxpages)) {
-			pages = MAX(atop(dmat->common.maxsize), 1);
-			pages = MIN(maxpages - bz->total_bpages, pages);
-			pages = MAX(pages, 1);
-			if (alloc_bounce_pages(dmat, pages) < pages)
-				error = ENOMEM;
-			if ((dmat->bounce_flags & BF_MIN_ALLOC_COMP)
-			    == 0) {
-				if (error == 0) {
-					dmat->bounce_flags |=
-					    BF_MIN_ALLOC_COMP;
-				}
-			} else
-				error = 0;
-		}
-		bz->map_count++;
 	}
-	if (error == 0)
-		dmat->map_count++;
+	bz = dmat->bounce_zone;
+
+	/*
+	 * Attempt to add pages to our pool on a per-instance basis up to a sane
+	 * limit. Even if the tag isn't subject of bouncing due to alignment
+	 * and boundary constraints, it could still auto-bounce due to
+	 * cacheline alignment, which requires at most two bounce pages.
+	 */
+	if (dmat->common.alignment > 1)
+		maxpages = MAX_BPAGES;
 	else
+		maxpages = MIN(MAX_BPAGES, Maxmem -
+		    atop(dmat->common.lowaddr));
+	if ((dmat->bounce_flags & BF_MIN_ALLOC_COMP) == 0 ||
+	    (bz->map_count > 0 && bz->total_bpages < maxpages)) {
+		pages = atop(roundup2(dmat->common.maxsize, PAGE_SIZE)) + 1;
+		pages = MIN(maxpages - bz->total_bpages, pages);
+		pages = MAX(pages, 2);
+		if (alloc_bounce_pages(dmat, pages) < pages)
+			error = ENOMEM;
+		if ((dmat->bounce_flags & BF_MIN_ALLOC_COMP) == 0) {
+			if (error == 0) {
+				dmat->bounce_flags |= BF_MIN_ALLOC_COMP;
+			}
+		} else
+			error = 0;
+	}
+	bz->map_count++;
+
+	if (error == 0) {
+		dmat->map_count++;
+		if ((dmat->bounce_flags & BF_COHERENT) != 0)
+			(*mapp)->flags |= DMAMAP_COHERENT;
+	} else {
 		free(*mapp, M_DEVBUF);
+	}
 	CTR4(KTR_BUSDMA, "%s: tag %p tag flags 0x%x error %d",
 	    __func__, dmat, dmat->common.flags, error);
 	return (error);
@@ -388,17 +496,13 @@ bounce_bus_dmamap_destroy(bus_dma_tag_t dmat, bus_dmamap_t map)
 		CTR3(KTR_BUSDMA, "%s: tag %p error %d", __func__, dmat, EBUSY);
 		return (EBUSY);
 	}
-	if (dmat->bounce_zone) {
-		KASSERT((map->flags & DMAMAP_COULD_BOUNCE) != 0,
-		    ("%s: Bounce zone when cannot bounce", __func__));
+	if (dmat->bounce_zone)
 		dmat->bounce_zone->map_count--;
-	}
 	free(map, M_DEVBUF);
 	dmat->map_count--;
 	CTR2(KTR_BUSDMA, "%s: tag %p error 0", __func__, dmat);
 	return (0);
 }
-
 
 /*
  * Allocate a piece of memory that can be efficiently mapped into
@@ -409,13 +513,6 @@ static int
 bounce_bus_dmamem_alloc(bus_dma_tag_t dmat, void** vaddr, int flags,
     bus_dmamap_t *mapp)
 {
-	/*
-	 * XXX ARM64TODO:
-	 * This bus_dma implementation requires IO-Coherent architecutre.
-	 * If IO-Coherency is not guaranteed, the BUS_DMA_COHERENT flag has
-	 * to be implented using non-cacheable memory.
-	 */
-
 	vm_memattr_t attr;
 	int mflags;
 
@@ -438,6 +535,13 @@ bounce_bus_dmamem_alloc(bus_dma_tag_t dmat, void** vaddr, int flags,
 		mflags |= M_ZERO;
 	if (flags & BUS_DMA_NOCACHE)
 		attr = VM_MEMATTR_UNCACHEABLE;
+	else if ((flags & BUS_DMA_COHERENT) != 0 &&
+	    (dmat->bounce_flags & BF_COHERENT) == 0)
+		/*
+		 * If we have a non-coherent tag, and are trying to allocate
+		 * a coherent block of memory it needs to be uncached.
+		 */
+		attr = VM_MEMATTR_UNCACHEABLE;
 	else
 		attr = VM_MEMATTR_DEFAULT;
 
@@ -451,35 +555,55 @@ bounce_bus_dmamem_alloc(bus_dma_tag_t dmat, void** vaddr, int flags,
 		    __func__, dmat, dmat->common.flags, ENOMEM);
 		return (ENOMEM);
 	}
-	(*mapp)->flags = DMAMAP_FROM_DMAMEM;
 
 	/*
-	 * XXX:
-	 * (dmat->alignment <= dmat->maxsize) is just a quick hack; the exact
-	 * alignment guarantees of malloc need to be nailed down, and the
-	 * code below should be rewritten to take that into account.
-	 *
-	 * In the meantime, we'll warn the user if malloc gets it wrong.
+	 * Mark the map as coherent if we used uncacheable memory or the
+	 * tag was already marked as coherent.
 	 */
-	if ((dmat->common.maxsize <= PAGE_SIZE) &&
-	   (dmat->common.alignment <= dmat->common.maxsize) &&
+	if (attr == VM_MEMATTR_UNCACHEABLE ||
+	    (dmat->bounce_flags & BF_COHERENT) != 0)
+		(*mapp)->flags |= DMAMAP_COHERENT;
+
+	(*mapp)->flags |= DMAMAP_FROM_DMAMEM;
+
+	/*
+	 * Allocate the buffer from the malloc(9) allocator if...
+	 *  - It's small enough to fit into a single power of two sized bucket.
+	 *  - The alignment is less than or equal to the maximum size
+	 *  - The low address requirement is fulfilled.
+	 * else allocate non-contiguous pages if...
+	 *  - The page count that could get allocated doesn't exceed
+	 *    nsegments also when the maximum segment size is less
+	 *    than PAGE_SIZE.
+	 *  - The alignment constraint isn't larger than a page boundary.
+	 *  - There are no boundary-crossing constraints.
+	 * else allocate a block of contiguous pages because one or more of the
+	 * constraints is something that only the contig allocator can fulfill.
+	 *
+	 * NOTE: The (dmat->common.alignment <= dmat->maxsize) check
+	 * below is just a quick hack. The exact alignment guarantees
+	 * of malloc(9) need to be nailed down, and the code below
+	 * should be rewritten to take that into account.
+	 *
+	 * In the meantime warn the user if malloc gets it wrong.
+	 */
+	if ((dmat->alloc_size <= PAGE_SIZE) &&
+	   (dmat->alloc_alignment <= dmat->alloc_size) &&
 	    dmat->common.lowaddr >= ptoa((vm_paddr_t)Maxmem) &&
 	    attr == VM_MEMATTR_DEFAULT) {
-		*vaddr = malloc(dmat->common.maxsize, M_DEVBUF, mflags);
-	} else if (dmat->common.nsegments >= btoc(dmat->common.maxsize) &&
-	    dmat->common.alignment <= PAGE_SIZE &&
-	    (dmat->common.boundary == 0 ||
-	    dmat->common.boundary >= dmat->common.lowaddr)) {
+		*vaddr = malloc(dmat->alloc_size, M_DEVBUF, mflags);
+	} else if (dmat->common.nsegments >=
+	    howmany(dmat->alloc_size, MIN(dmat->common.maxsegsz, PAGE_SIZE)) &&
+	    dmat->alloc_alignment <= PAGE_SIZE &&
+	    (dmat->common.boundary % PAGE_SIZE) == 0) {
 		/* Page-based multi-segment allocations allowed */
-		*vaddr = (void *)kmem_alloc_attr(kernel_arena,
-		    dmat->common.maxsize, mflags, 0ul, dmat->common.lowaddr,
-		    attr);
+		*vaddr = (void *)kmem_alloc_attr(dmat->alloc_size, mflags,
+		    0ul, dmat->common.lowaddr, attr);
 		dmat->bounce_flags |= BF_KMEM_ALLOC;
 	} else {
-		*vaddr = (void *)kmem_alloc_contig(kernel_arena,
-		    dmat->common.maxsize, mflags, 0ul, dmat->common.lowaddr,
-		    dmat->common.alignment != 0 ? dmat->common.alignment : 1ul,
-		    dmat->common.boundary, attr);
+		*vaddr = (void *)kmem_alloc_contig(dmat->alloc_size, mflags,
+		    0ul, dmat->common.lowaddr, dmat->alloc_alignment != 0 ?
+		    dmat->alloc_alignment : 1ul, dmat->common.boundary, attr);
 		dmat->bounce_flags |= BF_KMEM_ALLOC;
 	}
 	if (*vaddr == NULL) {
@@ -487,7 +611,7 @@ bounce_bus_dmamem_alloc(bus_dma_tag_t dmat, void** vaddr, int flags,
 		    __func__, dmat, dmat->common.flags, ENOMEM);
 		free(*mapp, M_DEVBUF);
 		return (ENOMEM);
-	} else if (vtophys(*vaddr) & (dmat->common.alignment - 1)) {
+	} else if (vtophys(*vaddr) & (dmat->alloc_alignment - 1)) {
 		printf("bus_dmamem_alloc failed to align memory properly.\n");
 	}
 	dmat->map_count++;
@@ -514,37 +638,53 @@ bounce_bus_dmamem_free(bus_dma_tag_t dmat, void *vaddr, bus_dmamap_t map)
 	if ((dmat->bounce_flags & BF_KMEM_ALLOC) == 0)
 		free(vaddr, M_DEVBUF);
 	else
-		kmem_free(kernel_arena, (vm_offset_t)vaddr,
-		    dmat->common.maxsize);
+		kmem_free((vm_offset_t)vaddr, dmat->alloc_size);
 	free(map, M_DEVBUF);
 	dmat->map_count--;
 	CTR3(KTR_BUSDMA, "%s: tag %p flags 0x%x", __func__, dmat,
 	    dmat->bounce_flags);
 }
 
+static bool
+_bus_dmamap_pagesneeded(bus_dma_tag_t dmat, bus_dmamap_t map, vm_paddr_t buf,
+    bus_size_t buflen, int *pagesneeded)
+{
+	bus_addr_t curaddr;
+	bus_size_t sgsize;
+	int count;
+
+	/*
+	 * Count the number of bounce pages needed in order to
+	 * complete this transfer
+	 */
+	count = 0;
+	curaddr = buf;
+	while (buflen != 0) {
+		sgsize = MIN(buflen, dmat->common.maxsegsz);
+		if (must_bounce(dmat, map, curaddr, sgsize)) {
+			sgsize = MIN(sgsize,
+			    PAGE_SIZE - (curaddr & PAGE_MASK));
+			if (pagesneeded == NULL)
+				return (true);
+			count++;
+		}
+		curaddr += sgsize;
+		buflen -= sgsize;
+	}
+
+	if (pagesneeded != NULL)
+		*pagesneeded = count;
+	return (count != 0);
+}
+
 static void
 _bus_dmamap_count_phys(bus_dma_tag_t dmat, bus_dmamap_t map, vm_paddr_t buf,
     bus_size_t buflen, int flags)
 {
-	bus_addr_t curaddr;
-	bus_size_t sgsize;
 
-	if ((map->flags & DMAMAP_COULD_BOUNCE) != 0 && map->pagesneeded == 0) {
-		/*
-		 * Count the number of bounce pages
-		 * needed in order to complete this transfer
-		 */
-		curaddr = buf;
-		while (buflen != 0) {
-			sgsize = MIN(buflen, dmat->common.maxsegsz);
-			if (bus_dma_run_filter(&dmat->common, curaddr)) {
-				sgsize = MIN(sgsize,
-				    PAGE_SIZE - (curaddr & PAGE_MASK));
-				map->pagesneeded++;
-			}
-			curaddr += sgsize;
-			buflen -= sgsize;
-		}
+	if (map->pagesneeded == 0) {
+		_bus_dmamap_pagesneeded(dmat, map, buf, buflen,
+		    &map->pagesneeded);
 		CTR1(KTR_BUSDMA, "pagesneeded= %d\n", map->pagesneeded);
 	}
 }
@@ -558,7 +698,7 @@ _bus_dmamap_count_pages(bus_dma_tag_t dmat, bus_dmamap_t map, pmap_t pmap,
 	bus_addr_t paddr;
 	bus_size_t sg_len;
 
-	if ((map->flags & DMAMAP_COULD_BOUNCE) != 0 && map->pagesneeded == 0) {
+	if (map->pagesneeded == 0) {
 		CTR4(KTR_BUSDMA, "lowaddr= %d Maxmem= %d, boundary= %d, "
 		    "alignment= %d", dmat->common.lowaddr,
 		    ptoa((vm_paddr_t)Maxmem),
@@ -578,7 +718,9 @@ _bus_dmamap_count_pages(bus_dma_tag_t dmat, bus_dmamap_t map, pmap_t pmap,
 				paddr = pmap_kextract(vaddr);
 			else
 				paddr = pmap_extract(pmap, vaddr);
-			if (bus_dma_run_filter(&dmat->common, paddr) != 0) {
+			if (must_bounce(dmat, map, paddr,
+			    min(vendaddr - vaddr, (PAGE_SIZE - ((vm_offset_t)vaddr &
+			    PAGE_MASK)))) != 0) {
 				sg_len = roundup2(sg_len,
 				    dmat->common.alignment);
 				map->pagesneeded++;
@@ -616,7 +758,7 @@ _bus_dmamap_reserve_pages(bus_dma_tag_t dmat, bus_dmamap_t map, int flags)
 /*
  * Add a single contiguous physical range to the segment list.
  */
-static int
+static bus_size_t
 _bus_dmamap_addseg(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t curaddr,
     bus_size_t sgsize, bus_dma_segment_t *segs, int *segp)
 {
@@ -676,7 +818,7 @@ bounce_bus_dmamap_load_phys(bus_dma_tag_t dmat, bus_dmamap_t map,
 	if (segs == NULL)
 		segs = dmat->segments;
 
-	if ((dmat->bounce_flags & BF_COULD_BOUNCE) != 0) {
+	if (might_bounce(dmat, map, (bus_addr_t)buf, buflen)) {
 		_bus_dmamap_count_phys(dmat, map, buf, buflen, flags);
 		if (map->pagesneeded != 0) {
 			error = _bus_dmamap_reserve_pages(dmat, map, flags);
@@ -691,13 +833,22 @@ bounce_bus_dmamap_load_phys(bus_dma_tag_t dmat, bus_dmamap_t map,
 	while (buflen > 0) {
 		curaddr = buf;
 		sgsize = MIN(buflen, dmat->common.maxsegsz);
-		if (((dmat->bounce_flags & BF_COULD_BOUNCE) != 0) &&
-		    map->pagesneeded != 0 &&
-		    bus_dma_run_filter(&dmat->common, curaddr)) {
+		if (map->pagesneeded != 0 &&
+		    must_bounce(dmat, map, curaddr, sgsize)) {
+			/*
+			 * The attempt to split a physically continuous buffer
+			 * seems very controversial, it's unclear whether we
+			 * can do this in all cases. Also, memory for bounced
+			 * buffers is allocated as pages, so we cannot
+			 * guarantee multipage alignment.
+			 */
+			KASSERT(dmat->common.alignment <= PAGE_SIZE,
+			    ("bounced buffer cannot have alignment bigger "
+			    "than PAGE_SIZE: %lu", dmat->common.alignment));
 			sgsize = MIN(sgsize, PAGE_SIZE - (curaddr & PAGE_MASK));
 			curaddr = add_bounce_page(dmat, map, 0, curaddr,
 			    sgsize);
-		} else if ((dmat->bounce_flags & BF_COHERENT) == 0) {
+		} else if ((map->flags & DMAMAP_COHERENT) == 0) {
 			if (map->sync_count > 0)
 				sl_end = sl->paddr + sl->datacount;
 
@@ -707,11 +858,11 @@ bounce_bus_dmamap_load_phys(bus_dma_tag_t dmat, bus_dmamap_t map,
 				sl++;
 				sl->vaddr = 0;
 				sl->paddr = curaddr;
-				sl->datacount = sgsize;
 				sl->pages = PHYS_TO_VM_PAGE(curaddr);
 				KASSERT(sl->pages != NULL,
 				    ("%s: page at PA:0x%08lx is not in "
 				    "vm_page_array", __func__, curaddr));
+				sl->datacount = sgsize;
 			} else
 				sl->datacount += sgsize;
 		}
@@ -726,7 +877,11 @@ bounce_bus_dmamap_load_phys(bus_dma_tag_t dmat, bus_dmamap_t map,
 	/*
 	 * Did we fit?
 	 */
-	return (buflen != 0 ? EFBIG : 0); /* XXX better return value here? */
+	if (buflen != 0) {
+		bus_dmamap_unload(dmat, map);
+		return (EFBIG); /* XXX better return value here? */
+	}
+	return (0);
 }
 
 /*
@@ -739,15 +894,23 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
     int *segp)
 {
 	struct sync_list *sl;
-	bus_size_t sgsize, max_sgsize;
+	bus_size_t sgsize;
 	bus_addr_t curaddr, sl_pend;
 	vm_offset_t kvaddr, vaddr, sl_vend;
 	int error;
 
+	KASSERT((map->flags & DMAMAP_FROM_DMAMEM) != 0 ||
+	    dmat->common.alignment <= PAGE_SIZE,
+	    ("loading user buffer with alignment bigger than PAGE_SIZE is not "
+	    "supported"));
+
 	if (segs == NULL)
 		segs = dmat->segments;
 
-	if ((dmat->bounce_flags & BF_COULD_BOUNCE) != 0) {
+	if (flags & BUS_DMA_LOAD_MBUF)
+		map->flags |= DMAMAP_MBUF;
+
+	if (might_bounce(dmat, map, (bus_addr_t)buf, buflen)) {
 		_bus_dmamap_count_pages(dmat, map, pmap, buf, buflen, flags);
 		if (map->pagesneeded != 0) {
 			error = _bus_dmamap_reserve_pages(dmat, map, flags);
@@ -756,6 +919,11 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 		}
 	}
 
+	/*
+	 * XXX Optimally we should parse input buffer for physically
+	 * continuous segments first and then pass these segment into
+	 * load loop.
+	 */
 	sl = map->slist + map->sync_count - 1;
 	vaddr = (vm_offset_t)buf;
 	sl_pend = 0;
@@ -765,7 +933,7 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 		/*
 		 * Get the physical address for this segment.
 		 */
-		if (pmap == kernel_pmap) {
+		if (__predict_true(pmap == kernel_pmap)) {
 			curaddr = pmap_kextract(vaddr);
 			kvaddr = vaddr;
 		} else {
@@ -776,17 +944,19 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 		/*
 		 * Compute the segment size, and adjust counts.
 		 */
-		max_sgsize = MIN(buflen, dmat->common.maxsegsz);
-		sgsize = PAGE_SIZE - (curaddr & PAGE_MASK);
-		if (((dmat->bounce_flags & BF_COULD_BOUNCE) != 0) &&
-		    map->pagesneeded != 0 &&
-		    bus_dma_run_filter(&dmat->common, curaddr)) {
-			sgsize = roundup2(sgsize, dmat->common.alignment);
-			sgsize = MIN(sgsize, max_sgsize);
+		sgsize = MIN(buflen, dmat->common.maxsegsz);
+		if ((map->flags & DMAMAP_FROM_DMAMEM) == 0)
+			sgsize = MIN(sgsize, PAGE_SIZE - (curaddr & PAGE_MASK));
+
+		if (map->pagesneeded != 0 &&
+		    must_bounce(dmat, map, curaddr, sgsize)) {
+			/* See comment in bounce_bus_dmamap_load_phys */
+			KASSERT(dmat->common.alignment <= PAGE_SIZE,
+			    ("bounced buffer cannot have alignment bigger "
+			    "than PAGE_SIZE: %lu", dmat->common.alignment));
 			curaddr = add_bounce_page(dmat, map, kvaddr, curaddr,
 			    sgsize);
-		} else if ((dmat->bounce_flags & BF_COHERENT) == 0) {
-			sgsize = MIN(sgsize, max_sgsize);
+		} else if ((map->flags & DMAMAP_COHERENT) == 0) {
 			if (map->sync_count > 0) {
 				sl_pend = sl->paddr + sl->datacount;
 				sl_vend = sl->vaddr + sl->datacount;
@@ -795,9 +965,8 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 			if (map->sync_count == 0 ||
 			    (kvaddr != 0 && kvaddr != sl_vend) ||
 			    (curaddr != sl_pend)) {
-
 				if (++map->sync_count > dmat->common.nsegments)
-					goto cleanup;
+					break;
 				sl++;
 				sl->vaddr = kvaddr;
 				sl->paddr = curaddr;
@@ -813,8 +982,6 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 				sl->datacount = sgsize;
 			} else
 				sl->datacount += sgsize;
-		} else {
-			sgsize = MIN(sgsize, max_sgsize);
 		}
 		sgsize = _bus_dmamap_addseg(dmat, map, curaddr, sgsize, segs,
 		    segp);
@@ -824,11 +991,14 @@ bounce_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 		buflen -= sgsize;
 	}
 
-cleanup:
 	/*
 	 * Did we fit?
 	 */
-	return (buflen != 0 ? EFBIG : 0); /* XXX better return value here? */
+	if (buflen != 0) {
+		bus_dmamap_unload(dmat, map);
+		return (EFBIG); /* XXX better return value here? */
+	}
+	return (0);
 }
 
 static void
@@ -836,8 +1006,6 @@ bounce_bus_dmamap_waitok(bus_dma_tag_t dmat, bus_dmamap_t map,
     struct memdesc *mem, bus_dmamap_callback_t *callback, void *callback_arg)
 {
 
-	if ((map->flags & DMAMAP_COULD_BOUNCE) == 0)
-		return;
 	map->mem = *mem;
 	map->dmat = dmat;
 	map->callback = callback;
@@ -868,6 +1036,7 @@ bounce_bus_dmamap_unload(bus_dma_tag_t dmat, bus_dmamap_t map)
 	}
 
 	map->sync_count = 0;
+	map->flags &= ~DMAMAP_MBUF;
 }
 
 static void
@@ -982,7 +1151,7 @@ bounce_bus_dmamap_sync(bus_dma_tag_t dmat, bus_dmamap_t map,
 				    (void *)bpage->vaddr, bpage->datacount);
 				if (tempvaddr != 0)
 					pmap_quick_remove_page(tempvaddr);
-				if ((dmat->bounce_flags & BF_COHERENT) == 0)
+				if ((map->flags & DMAMAP_COHERENT) == 0)
 					cpu_dcache_wb_range(bpage->vaddr,
 					    bpage->datacount);
 				bpage = STAILQ_NEXT(bpage, links);
@@ -990,7 +1159,7 @@ bounce_bus_dmamap_sync(bus_dma_tag_t dmat, bus_dmamap_t map,
 			dmat->bounce_zone->total_bounced++;
 		} else if ((op & BUS_DMASYNC_PREREAD) != 0) {
 			while (bpage != NULL) {
-				if ((dmat->bounce_flags & BF_COHERENT) == 0)
+				if ((map->flags & DMAMAP_COHERENT) == 0)
 					cpu_dcache_wbinv_range(bpage->vaddr,
 					    bpage->datacount);
 				bpage = STAILQ_NEXT(bpage, links);
@@ -999,7 +1168,7 @@ bounce_bus_dmamap_sync(bus_dma_tag_t dmat, bus_dmamap_t map,
 
 		if ((op & BUS_DMASYNC_POSTREAD) != 0) {
 			while (bpage != NULL) {
-				if ((dmat->bounce_flags & BF_COHERENT) == 0)
+				if ((map->flags & DMAMAP_COHERENT) == 0)
 					cpu_dcache_inv_range(bpage->vaddr,
 					    bpage->datacount);
 				tempvaddr = 0;
@@ -1102,7 +1271,7 @@ alloc_bounce_zone(bus_dma_tag_t dmat)
 	sysctl_ctx_init(&bz->sysctl_tree);
 	bz->sysctl_tree_top = SYSCTL_ADD_NODE(&bz->sysctl_tree,
 	    SYSCTL_STATIC_CHILDREN(_hw_busdma), OID_AUTO, bz->zoneid,
-	    CTLFLAG_RD, 0, "");
+	    CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "");
 	if (bz->sysctl_tree_top == NULL) {
 		sysctl_ctx_free(&bz->sysctl_tree);
 		return (0);	/* XXX error code? */
@@ -1204,8 +1373,6 @@ add_bounce_page(bus_dma_tag_t dmat, bus_dmamap_t map, vm_offset_t vaddr,
 	struct bounce_page *bpage;
 
 	KASSERT(dmat->bounce_zone != NULL, ("no bounce zone in dma tag"));
-	KASSERT((map->flags & DMAMAP_COULD_BOUNCE) != 0,
-	    ("add_bounce_page: bad map %p", map));
 
 	bz = dmat->bounce_zone;
 	if (map->pagesneeded == 0)
@@ -1299,6 +1466,7 @@ busdma_swi(void)
 struct bus_dma_impl bus_dma_bounce_impl = {
 	.tag_create = bounce_bus_dma_tag_create,
 	.tag_destroy = bounce_bus_dma_tag_destroy,
+	.id_mapped = bounce_bus_dma_id_mapped,
 	.map_create = bounce_bus_dmamap_create,
 	.map_destroy = bounce_bus_dmamap_destroy,
 	.mem_alloc = bounce_bus_dmamem_alloc,

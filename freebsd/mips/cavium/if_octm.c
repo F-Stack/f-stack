@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010-2011 Juli Mallett <jmallett@FreeBSD.org>
  * All rights reserved.
  *
@@ -97,7 +99,6 @@ static device_method_t octm_methods[] = {
 	DEVMETHOD(device_attach,	octm_attach),
 	DEVMETHOD(device_detach,	octm_detach),
 	DEVMETHOD(device_shutdown,	octm_shutdown),
-
 	{ 0, 0 }
 };
 
@@ -462,7 +463,7 @@ octm_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		}
 		sc->sc_flags = ifp->if_flags;
 		return (0);
-	
+
 	case SIOCSIFCAP:
 		/*
 		 * Just change the capabilities in software, currently none
@@ -482,7 +483,7 @@ octm_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		if (error != 0)
 			return (error);
 		return (0);
-	
+
 	default:
 		error = ether_ioctl(ifp, cmd, data);
 		if (error != 0)
@@ -510,7 +511,6 @@ octm_rx_intr(void *arg)
 			device_printf(sc->sc_dev, "no memory for receive mbuf.\n");
 			return;
 		}
-
 
 		len = cvmx_mgmt_port_receive(sc->sc_port, MCLBYTES, m->m_data);
 		if (len > 0) {

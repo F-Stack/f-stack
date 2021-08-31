@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
  *
@@ -76,7 +78,7 @@ void	ttyhook_unregister(struct tty *);
 static __inline int
 ttyhook_rint(struct tty *tp, char c, int flags)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return tp->t_hook->th_rint(tp, c, flags);
@@ -85,7 +87,7 @@ ttyhook_rint(struct tty *tp, char c, int flags)
 static __inline size_t
 ttyhook_rint_bypass(struct tty *tp, const void *buf, size_t len)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return tp->t_hook->th_rint_bypass(tp, buf, len);
@@ -94,7 +96,7 @@ ttyhook_rint_bypass(struct tty *tp, const void *buf, size_t len)
 static __inline void
 ttyhook_rint_done(struct tty *tp)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	tp->t_hook->th_rint_done(tp);
@@ -103,7 +105,7 @@ ttyhook_rint_done(struct tty *tp)
 static __inline size_t
 ttyhook_rint_poll(struct tty *tp)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return tp->t_hook->th_rint_poll(tp);
@@ -112,7 +114,7 @@ ttyhook_rint_poll(struct tty *tp)
 static __inline size_t
 ttyhook_getc_inject(struct tty *tp, void *buf, size_t len)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return tp->t_hook->th_getc_inject(tp, buf, len);
@@ -121,7 +123,7 @@ ttyhook_getc_inject(struct tty *tp, void *buf, size_t len)
 static __inline void
 ttyhook_getc_capture(struct tty *tp, const void *buf, size_t len)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	tp->t_hook->th_getc_capture(tp, buf, len);
@@ -130,7 +132,7 @@ ttyhook_getc_capture(struct tty *tp, const void *buf, size_t len)
 static __inline size_t
 ttyhook_getc_poll(struct tty *tp)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	return tp->t_hook->th_getc_poll(tp);
@@ -139,7 +141,7 @@ ttyhook_getc_poll(struct tty *tp)
 static __inline void
 ttyhook_close(struct tty *tp)
 {
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	tp->t_hook->th_close(tp);
 }

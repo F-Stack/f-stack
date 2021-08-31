@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: (BSD-3-Clause AND MIT-CMU)
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -67,6 +69,7 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/elf.h>
 #include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/lock.h>
@@ -88,6 +91,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/pmap.h>
 #include <vm/vm_map.h>
 #include <vm/vm_page.h>
+#include <vm/vm_pageout.h>
 #include <vm/vm_object.h>
 #include <vm/vm_pager.h>
 #include <vm/vm_kern.h>
@@ -124,19 +128,18 @@ __FBSDID("$FreeBSD$");
 static struct mtx map_sleep_mtx;
 static uma_zone_t mapentzone;
 static uma_zone_t kmapentzone;
-static uma_zone_t mapzone;
 static uma_zone_t vmspace_zone;
 static int vmspace_zinit(void *mem, int size, int flags);
-static int vm_map_zinit(void *mem, int ize, int flags);
 static void _vm_map_init(vm_map_t map, pmap_t pmap, vm_offset_t min,
     vm_offset_t max);
 static void vm_map_entry_deallocate(vm_map_entry_t entry, boolean_t system_map);
 static void vm_map_entry_dispose(vm_map_t map, vm_map_entry_t entry);
 static void vm_map_entry_unwire(vm_map_t map, vm_map_entry_t entry);
+static int vm_map_growstack(vm_map_t map, vm_offset_t addr,
+    vm_map_entry_t gap_entry);
 static void vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
     vm_object_t object, vm_pindex_t pindex, vm_size_t size, int flags);
 #ifdef INVARIANTS
-static void vm_map_zdtor(void *mem, int size, void *arg);
 static void vmspace_zdtor(void *mem, int size, void *arg);
 #endif
 static int vm_map_stack_locked(vm_map_t map, vm_offset_t addrbos,
@@ -172,37 +175,106 @@ static void vm_map_wire_entry_failure(vm_map_t map, vm_map_entry_t entry,
 			start = end;			\
 		}
 
+#ifndef UMA_MD_SMALL_ALLOC
+
+/*
+ * Allocate a new slab for kernel map entries.  The kernel map may be locked or
+ * unlocked, depending on whether the request is coming from the kernel map or a
+ * submap.  This function allocates a virtual address range directly from the
+ * kernel map instead of the kmem_* layer to avoid recursion on the kernel map
+ * lock and also to avoid triggering allocator recursion in the vmem boundary
+ * tag allocator.
+ */
+static void *
+kmapent_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
+    int wait)
+{
+	vm_offset_t addr;
+	int error, locked;
+
+	*pflag = UMA_SLAB_PRIV;
+
+	if (!(locked = vm_map_locked(kernel_map)))
+		vm_map_lock(kernel_map);
+	addr = vm_map_findspace(kernel_map, vm_map_min(kernel_map), bytes);
+	if (addr + bytes < addr || addr + bytes > vm_map_max(kernel_map))
+		panic("%s: kernel map is exhausted", __func__);
+	error = vm_map_insert(kernel_map, NULL, 0, addr, addr + bytes,
+	    VM_PROT_RW, VM_PROT_RW, MAP_NOFAULT);
+	if (error != KERN_SUCCESS)
+		panic("%s: vm_map_insert() failed: %d", __func__, error);
+	if (!locked)
+		vm_map_unlock(kernel_map);
+	error = kmem_back_domain(domain, kernel_object, addr, bytes, M_NOWAIT |
+	    M_USE_RESERVE | (wait & M_ZERO));
+	if (error == KERN_SUCCESS) {
+		return ((void *)addr);
+	} else {
+		if (!locked)
+			vm_map_lock(kernel_map);
+		vm_map_delete(kernel_map, addr, bytes);
+		if (!locked)
+			vm_map_unlock(kernel_map);
+		return (NULL);
+	}
+}
+
+static void
+kmapent_free(void *item, vm_size_t size, uint8_t pflag)
+{
+	vm_offset_t addr;
+	int error;
+
+	if ((pflag & UMA_SLAB_PRIV) == 0)
+		/* XXX leaked */
+		return;
+
+	addr = (vm_offset_t)item;
+	kmem_unback(kernel_object, addr, size);
+	error = vm_map_remove(kernel_map, addr, addr + size);
+	KASSERT(error == KERN_SUCCESS,
+	    ("%s: vm_map_remove failed: %d", __func__, error));
+}
+
+/*
+ * The worst-case upper bound on the number of kernel map entries that may be
+ * created before the zone must be replenished in _vm_map_unlock().
+ */
+#define	KMAPENT_RESERVE		1
+
+#endif /* !UMD_MD_SMALL_ALLOC */
+
 /*
  *	vm_map_startup:
  *
- *	Initialize the vm_map module.  Must be called before
- *	any other vm_map routines.
+ *	Initialize the vm_map module.  Must be called before any other vm_map
+ *	routines.
  *
- *	Map and entry structures are allocated from the general
- *	purpose memory pool with some exceptions:
- *
- *	- The kernel map and kmem submap are allocated statically.
- *	- Kernel map entries are allocated out of a static pool.
- *
- *	These restrictions are necessary since malloc() uses the
- *	maps and requires map entries.
+ *	User map and entry structures are allocated from the general purpose
+ *	memory pool.  Kernel maps are statically defined.  Kernel map entries
+ *	require special handling to avoid recursion; see the comments above
+ *	kmapent_alloc() and in vm_map_entry_create().
  */
-
 void
 vm_map_startup(void)
 {
 	mtx_init(&map_sleep_mtx, "vm map sleep mutex", NULL, MTX_DEF);
-	mapzone = uma_zcreate("MAP", sizeof(struct vm_map), NULL,
-#ifdef INVARIANTS
-	    vm_map_zdtor,
-#else
-	    NULL,
-#endif
-	    vm_map_zinit, NULL, UMA_ALIGN_PTR, UMA_ZONE_NOFREE);
-	uma_prealloc(mapzone, MAX_KMAP);
+
+	/*
+	 * Disable the use of per-CPU buckets: map entry allocation is
+	 * serialized by the kernel map lock.
+	 */
 	kmapentzone = uma_zcreate("KMAP ENTRY", sizeof(struct vm_map_entry),
 	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR,
-	    UMA_ZONE_MTXCLASS | UMA_ZONE_VM);
+	    UMA_ZONE_VM | UMA_ZONE_NOBUCKET);
+#ifndef UMA_MD_SMALL_ALLOC
+	/* Reserve an extra map entry for use when replenishing the reserve. */
+	uma_zone_reserve(kmapentzone, KMAPENT_RESERVE + 1);
+	uma_prealloc(kmapentzone, KMAPENT_RESERVE + 1);
+	uma_zone_set_allocf(kmapentzone, kmapent_alloc);
+	uma_zone_set_freef(kmapentzone, kmapent_free);
+#endif
+
 	mapentzone = uma_zcreate("MAP ENTRY", sizeof(struct vm_map_entry),
 	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, 0);
 	vmspace_zone = uma_zcreate("VMSPACE", sizeof(struct vmspace), NULL,
@@ -218,24 +290,16 @@ static int
 vmspace_zinit(void *mem, int size, int flags)
 {
 	struct vmspace *vm;
-
-	vm = (struct vmspace *)mem;
-
-	vm->vm_map.pmap = NULL;
-	(void)vm_map_zinit(&vm->vm_map, sizeof(vm->vm_map), flags);
-	PMAP_LOCK_INIT(vmspace_pmap(vm));
-	return (0);
-}
-
-static int
-vm_map_zinit(void *mem, int size, int flags)
-{
 	vm_map_t map;
 
-	map = (vm_map_t)mem;
+	vm = (struct vmspace *)mem;
+	map = &vm->vm_map;
+
 	memset(map, 0, sizeof(*map));
-	mtx_init(&map->system_mtx, "vm map (system)", NULL, MTX_DEF | MTX_DUPOK);
+	mtx_init(&map->system_mtx, "vm map (system)", NULL,
+	    MTX_DEF | MTX_DUPOK);
 	sx_init(&map->lock, "vm map (user)");
+	PMAP_LOCK_INIT(vmspace_pmap(vm));
 	return (0);
 }
 
@@ -246,29 +310,16 @@ vmspace_zdtor(void *mem, int size, void *arg)
 	struct vmspace *vm;
 
 	vm = (struct vmspace *)mem;
-
-	vm_map_zdtor(&vm->vm_map, sizeof(vm->vm_map), arg);
-}
-static void
-vm_map_zdtor(void *mem, int size, void *arg)
-{
-	vm_map_t map;
-
-	map = (vm_map_t)mem;
-	KASSERT(map->nentries == 0,
-	    ("map %p nentries == %d on free.",
-	    map, map->nentries));
-	KASSERT(map->size == 0,
-	    ("map %p size == %lu on free.",
-	    map, (unsigned long)map->size));
+	KASSERT(vm->vm_map.nentries == 0,
+	    ("vmspace %p nentries == %d on free", vm, vm->vm_map.nentries));
+	KASSERT(vm->vm_map.size == 0,
+	    ("vmspace %p size == %ju on free", vm, (uintmax_t)vm->vm_map.size));
 }
 #endif	/* INVARIANTS */
 
 /*
  * Allocate a vmspace structure, including a vm_map and pmap,
  * and initialize those structures.  The refcnt is set to 1.
- *
- * If 'pinit' is NULL then the embedded pmap is initialized via pmap_pinit().
  */
 struct vmspace *
 vmspace_alloc(vm_offset_t min, vm_offset_t max, pmap_pinit_t pinit)
@@ -276,19 +327,14 @@ vmspace_alloc(vm_offset_t min, vm_offset_t max, pmap_pinit_t pinit)
 	struct vmspace *vm;
 
 	vm = uma_zalloc(vmspace_zone, M_WAITOK);
-
 	KASSERT(vm->vm_map.pmap == NULL, ("vm_map.pmap must be NULL"));
-
-	if (pinit == NULL)
-		pinit = &pmap_pinit;
-
 	if (!pinit(vmspace_pmap(vm))) {
 		uma_zfree(vmspace_zone, vm);
 		return (NULL);
 	}
 	CTR1(KTR_VM, "vmspace_alloc: %p", vm);
 	_vm_map_init(&vm->vm_map, vmspace_pmap(vm), min, max);
-	vm->vm_refcnt = 1;
+	refcount_init(&vm->vm_refcnt, 1);
 	vm->vm_shm = NULL;
 	vm->vm_swrss = 0;
 	vm->vm_tsize = 0;
@@ -332,8 +378,8 @@ vmspace_dofree(struct vmspace *vm)
 	 * Delete all of the mappings and pages they hold, then call
 	 * the pmap module to reclaim anything left.
 	 */
-	(void)vm_map_remove(&vm->vm_map, vm->vm_map.min_offset,
-	    vm->vm_map.max_offset);
+	(void)vm_map_remove(&vm->vm_map, vm_map_min(&vm->vm_map),
+	    vm_map_max(&vm->vm_map));
 
 	pmap_release(vmspace_pmap(vm));
 	vm->vm_map.pmap = NULL;
@@ -347,10 +393,7 @@ vmspace_free(struct vmspace *vm)
 	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
 	    "vmspace_free() called");
 
-	if (vm->vm_refcnt == 0)
-		panic("vmspace_free: attempt to free already freed vmspace");
-
-	if (atomic_fetchadd_int(&vm->vm_refcnt, -1) == 1)
+	if (refcount_release(&vm->vm_refcnt))
 		vmspace_dofree(vm);
 }
 
@@ -370,45 +413,42 @@ vmspace_exitfree(struct proc *p)
 void
 vmspace_exit(struct thread *td)
 {
-	int refcnt;
 	struct vmspace *vm;
 	struct proc *p;
-
-	/*
-	 * Release user portion of address space.
-	 * This releases references to vnodes,
-	 * which could cause I/O if the file has been unlinked.
-	 * Need to do this early enough that we can still sleep.
-	 *
-	 * The last exiting process to reach this point releases as
-	 * much of the environment as it can. vmspace_dofree() is the
-	 * slower fallback in case another process had a temporary
-	 * reference to the vmspace.
-	 */
+	bool released;
 
 	p = td->td_proc;
 	vm = p->p_vmspace;
-	atomic_add_int(&vmspace0.vm_refcnt, 1);
-	do {
-		refcnt = vm->vm_refcnt;
-		if (refcnt > 1 && p->p_vmspace != &vmspace0) {
-			/* Switch now since other proc might free vmspace */
+
+	/*
+	 * Prepare to release the vmspace reference.  The thread that releases
+	 * the last reference is responsible for tearing down the vmspace.
+	 * However, threads not releasing the final reference must switch to the
+	 * kernel's vmspace0 before the decrement so that the subsequent pmap
+	 * deactivation does not modify a freed vmspace.
+	 */
+	refcount_acquire(&vmspace0.vm_refcnt);
+	if (!(released = refcount_release_if_last(&vm->vm_refcnt))) {
+		if (p->p_vmspace != &vmspace0) {
 			PROC_VMSPACE_LOCK(p);
 			p->p_vmspace = &vmspace0;
 			PROC_VMSPACE_UNLOCK(p);
 			pmap_activate(td);
 		}
-	} while (!atomic_cmpset_int(&vm->vm_refcnt, refcnt, refcnt - 1));
-	if (refcnt == 1) {
+		released = refcount_release(&vm->vm_refcnt);
+	}
+	if (released) {
+		/*
+		 * pmap_remove_pages() expects the pmap to be active, so switch
+		 * back first if necessary.
+		 */
 		if (p->p_vmspace != vm) {
-			/* vmspace not yet freed, switch back */
 			PROC_VMSPACE_LOCK(p);
 			p->p_vmspace = vm;
 			PROC_VMSPACE_UNLOCK(p);
 			pmap_activate(td);
 		}
 		pmap_remove_pages(vmspace_pmap(vm));
-		/* Switch now since this proc will free vmspace */
 		PROC_VMSPACE_LOCK(p);
 		p->p_vmspace = &vmspace0;
 		PROC_VMSPACE_UNLOCK(p);
@@ -427,21 +467,13 @@ struct vmspace *
 vmspace_acquire_ref(struct proc *p)
 {
 	struct vmspace *vm;
-	int refcnt;
 
 	PROC_VMSPACE_LOCK(p);
 	vm = p->p_vmspace;
-	if (vm == NULL) {
+	if (vm == NULL || !refcount_acquire_if_not_zero(&vm->vm_refcnt)) {
 		PROC_VMSPACE_UNLOCK(p);
 		return (NULL);
 	}
-	do {
-		refcnt = vm->vm_refcnt;
-		if (refcnt <= 0) { 	/* Avoid 0->1 transition */
-			PROC_VMSPACE_UNLOCK(p);
-			return (NULL);
-		}
-	} while (!atomic_cmpset_int(&vm->vm_refcnt, refcnt, refcnt + 1));
 	if (vm != p->p_vmspace) {
 		PROC_VMSPACE_UNLOCK(p);
 		vmspace_free(vm);
@@ -454,18 +486,17 @@ vmspace_acquire_ref(struct proc *p)
 /*
  * Switch between vmspaces in an AIO kernel process.
  *
- * The AIO kernel processes switch to and from a user process's
- * vmspace while performing an I/O operation on behalf of a user
- * process.  The new vmspace is either the vmspace of a user process
- * obtained from an active AIO request or the initial vmspace of the
- * AIO kernel process (when it is idling).  Because user processes
- * will block to drain any active AIO requests before proceeding in
- * exit() or execve(), the vmspace reference count for these vmspaces
- * can never be 0.  This allows for a much simpler implementation than
- * the loop in vmspace_acquire_ref() above.  Similarly, AIO kernel
- * processes hold an extra reference on their initial vmspace for the
- * life of the process so that this guarantee is true for any vmspace
- * passed as 'newvm'.
+ * The new vmspace is either the vmspace of a user process obtained
+ * from an active AIO request or the initial vmspace of the AIO kernel
+ * process (when it is idling).  Because user processes will block to
+ * drain any active AIO requests before proceeding in exit() or
+ * execve(), the reference count for vmspaces from AIO requests can
+ * never be 0.  Similarly, AIO kernel processes hold an extra
+ * reference on their initial vmspace for the life of the process.  As
+ * a result, the 'newvm' vmspace always has a non-zero reference
+ * count.  This permits an additional reference on 'newvm' to be
+ * acquired via a simple atomic increment rather than the loop in
+ * vmspace_acquire_ref() above.
  */
 void
 vmspace_switch_aio(struct vmspace *newvm)
@@ -474,7 +505,7 @@ vmspace_switch_aio(struct vmspace *newvm)
 
 	/* XXX: Need some way to assert that this is an aio daemon. */
 
-	KASSERT(newvm->vm_refcnt > 0,
+	KASSERT(refcount_load(&newvm->vm_refcnt) > 0,
 	    ("vmspace_switch_aio: newvm unreferenced"));
 
 	oldvm = curproc->p_vmspace;
@@ -485,14 +516,11 @@ vmspace_switch_aio(struct vmspace *newvm)
 	 * Point to the new address space and refer to it.
 	 */
 	curproc->p_vmspace = newvm;
-	atomic_add_int(&newvm->vm_refcnt, 1);
+	refcount_acquire(&newvm->vm_refcnt);
 
 	/* Activate the new mapping. */
 	pmap_activate(curthread);
 
-	/* Remove the daemon's reference to the old address space. */
-	KASSERT(oldvm->vm_refcnt > 1,
-	    ("vmspace_switch_aio: oldvm dropping last reference"));
 	vmspace_free(oldvm);
 }
 
@@ -507,6 +535,83 @@ _vm_map_lock(vm_map_t map, const char *file, int line)
 	map->timestamp++;
 }
 
+void
+vm_map_entry_set_vnode_text(vm_map_entry_t entry, bool add)
+{
+	vm_object_t object;
+	struct vnode *vp;
+	bool vp_held;
+
+	if ((entry->eflags & MAP_ENTRY_VN_EXEC) == 0)
+		return;
+	KASSERT((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0,
+	    ("Submap with execs"));
+	object = entry->object.vm_object;
+	KASSERT(object != NULL, ("No object for text, entry %p", entry));
+	if ((object->flags & OBJ_ANON) != 0)
+		object = object->handle;
+	else
+		KASSERT(object->backing_object == NULL,
+		    ("non-anon object %p shadows", object));
+	KASSERT(object != NULL, ("No content object for text, entry %p obj %p",
+	    entry, entry->object.vm_object));
+
+	/*
+	 * Mostly, we do not lock the backing object.  It is
+	 * referenced by the entry we are processing, so it cannot go
+	 * away.
+	 */
+	vp = NULL;
+	vp_held = false;
+	if (object->type == OBJT_DEAD) {
+		/*
+		 * For OBJT_DEAD objects, v_writecount was handled in
+		 * vnode_pager_dealloc().
+		 */
+	} else if (object->type == OBJT_VNODE) {
+		vp = object->handle;
+	} else if (object->type == OBJT_SWAP) {
+		KASSERT((object->flags & OBJ_TMPFS_NODE) != 0,
+		    ("vm_map_entry_set_vnode_text: swap and !TMPFS "
+		    "entry %p, object %p, add %d", entry, object, add));
+		/*
+		 * Tmpfs VREG node, which was reclaimed, has
+		 * OBJ_TMPFS_NODE flag set, but not OBJ_TMPFS.  In
+		 * this case there is no v_writecount to adjust.
+		 */
+		VM_OBJECT_RLOCK(object);
+		if ((object->flags & OBJ_TMPFS) != 0) {
+			vp = object->un_pager.swp.swp_tmpfs;
+			if (vp != NULL) {
+				vhold(vp);
+				vp_held = true;
+			}
+		}
+		VM_OBJECT_RUNLOCK(object);
+	} else {
+		KASSERT(0,
+		    ("vm_map_entry_set_vnode_text: wrong object type, "
+		    "entry %p, object %p, add %d", entry, object, add));
+	}
+	if (vp != NULL) {
+		if (add) {
+			VOP_SET_TEXT_CHECKED(vp);
+		} else {
+			vn_lock(vp, LK_SHARED | LK_RETRY);
+			VOP_UNSET_TEXT_CHECKED(vp);
+			VOP_UNLOCK(vp);
+		}
+		if (vp_held)
+			vdrop(vp);
+	}
+}
+
+/*
+ * Use a different name for this vm_map_entry field when it's use
+ * is not consistent with its use as part of an ordered search tree.
+ */
+#define defer_next right
+
 static void
 vm_map_process_deferred(void)
 {
@@ -518,8 +623,11 @@ vm_map_process_deferred(void)
 	entry = td->td_map_def_user;
 	td->td_map_def_user = NULL;
 	while (entry != NULL) {
-		next = entry->next;
-		if ((entry->eflags & MAP_ENTRY_VN_WRITECNT) != 0) {
+		next = entry->defer_next;
+		MPASS((entry->eflags & (MAP_ENTRY_WRITECNT |
+		    MAP_ENTRY_VN_EXEC)) != (MAP_ENTRY_WRITECNT |
+		    MAP_ENTRY_VN_EXEC));
+		if ((entry->eflags & MAP_ENTRY_WRITECNT) != 0) {
 			/*
 			 * Decrement the object's writemappings and
 			 * possibly the vnode's v_writecount.
@@ -528,21 +636,72 @@ vm_map_process_deferred(void)
 			    ("Submap with writecount"));
 			object = entry->object.vm_object;
 			KASSERT(object != NULL, ("No object for writecount"));
-			vnode_pager_release_writecount(object, entry->start,
+			vm_pager_release_writecount(object, entry->start,
 			    entry->end);
 		}
+		vm_map_entry_set_vnode_text(entry, false);
 		vm_map_entry_deallocate(entry, FALSE);
 		entry = next;
 	}
 }
 
+#ifdef INVARIANTS
+static void
+_vm_map_assert_locked(vm_map_t map, const char *file, int line)
+{
+
+	if (map->system_map)
+		mtx_assert_(&map->system_mtx, MA_OWNED, file, line);
+	else
+		sx_assert_(&map->lock, SA_XLOCKED, file, line);
+}
+
+#define	VM_MAP_ASSERT_LOCKED(map) \
+    _vm_map_assert_locked(map, LOCK_FILE, LOCK_LINE)
+
+enum { VMMAP_CHECK_NONE, VMMAP_CHECK_UNLOCK, VMMAP_CHECK_ALL };
+#ifdef DIAGNOSTIC
+static int enable_vmmap_check = VMMAP_CHECK_UNLOCK;
+#else
+static int enable_vmmap_check = VMMAP_CHECK_NONE;
+#endif
+SYSCTL_INT(_debug, OID_AUTO, vmmap_check, CTLFLAG_RWTUN,
+    &enable_vmmap_check, 0, "Enable vm map consistency checking");
+
+static void _vm_map_assert_consistent(vm_map_t map, int check);
+
+#define VM_MAP_ASSERT_CONSISTENT(map) \
+    _vm_map_assert_consistent(map, VMMAP_CHECK_ALL)
+#ifdef DIAGNOSTIC
+#define VM_MAP_UNLOCK_CONSISTENT(map) do {				\
+	if (map->nupdates > map->nentries) {				\
+		_vm_map_assert_consistent(map, VMMAP_CHECK_UNLOCK);	\
+		map->nupdates = 0;					\
+	}								\
+} while (0)
+#else
+#define VM_MAP_UNLOCK_CONSISTENT(map)
+#endif
+#else
+#define	VM_MAP_ASSERT_LOCKED(map)
+#define VM_MAP_ASSERT_CONSISTENT(map)
+#define VM_MAP_UNLOCK_CONSISTENT(map)
+#endif /* INVARIANTS */
+
 void
 _vm_map_unlock(vm_map_t map, const char *file, int line)
 {
 
-	if (map->system_map)
+	VM_MAP_UNLOCK_CONSISTENT(map);
+	if (map->system_map) {
+#ifndef UMA_MD_SMALL_ALLOC
+		if (map == kernel_map && (map->flags & MAP_REPLENISH) != 0) {
+			uma_prealloc(kmapentzone, 1);
+			map->flags &= ~MAP_REPLENISH;
+		}
+#endif
 		mtx_unlock_flags_(&map->system_mtx, 0, file, line);
-	else {
+	} else {
 		sx_xunlock_(&map->lock, file, line);
 		vm_map_process_deferred();
 	}
@@ -562,9 +721,11 @@ void
 _vm_map_unlock_read(vm_map_t map, const char *file, int line)
 {
 
-	if (map->system_map)
+	if (map->system_map) {
+		KASSERT((map->flags & MAP_REPLENISH) == 0,
+		    ("%s: MAP_REPLENISH leaked", __func__));
 		mtx_unlock_flags_(&map->system_mtx, 0, file, line);
-	else {
+	} else {
 		sx_sunlock_(&map->lock, file, line);
 		vm_map_process_deferred();
 	}
@@ -636,9 +797,13 @@ _vm_map_lock_downgrade(vm_map_t map, const char *file, int line)
 {
 
 	if (map->system_map) {
+		KASSERT((map->flags & MAP_REPLENISH) == 0,
+		    ("%s: MAP_REPLENISH leaked", __func__));
 		mtx_assert_(&map->system_mtx, MA_OWNED, file, line);
-	} else
+	} else {
+		VM_MAP_UNLOCK_CONSISTENT(map);
 		sx_downgrade_(&map->lock, file, line);
+	}
 }
 
 /*
@@ -656,23 +821,6 @@ vm_map_locked(vm_map_t map)
 	else
 		return (sx_xlocked(&map->lock));
 }
-
-#ifdef INVARIANTS
-static void
-_vm_map_assert_locked(vm_map_t map, const char *file, int line)
-{
-
-	if (map->system_map)
-		mtx_assert_(&map->system_mtx, MA_OWNED, file, line);
-	else
-		sx_assert_(&map->lock, SA_XLOCKED, file, line);
-}
-
-#define	VM_MAP_ASSERT_LOCKED(map) \
-    _vm_map_assert_locked(map, LOCK_FILE, LOCK_LINE)
-#else
-#define	VM_MAP_ASSERT_LOCKED(map)
-#endif
 
 /*
  *	_vm_map_unlock_and_wait:
@@ -692,11 +840,15 @@ int
 _vm_map_unlock_and_wait(vm_map_t map, int timo, const char *file, int line)
 {
 
+	VM_MAP_UNLOCK_CONSISTENT(map);
 	mtx_lock(&map_sleep_mtx);
-	if (map->system_map)
+	if (map->system_map) {
+		KASSERT((map->flags & MAP_REPLENISH) == 0,
+		    ("%s: MAP_REPLENISH leaked", __func__));
 		mtx_unlock_flags_(&map->system_mtx, 0, file, line);
-	else
+	} else {
 		sx_xunlock_(&map->lock, file, line);
+	}
 	return (msleep(&map->root, &map_sleep_mtx, PDROP | PVM, "vmmaps",
 	    timo));
 }
@@ -763,24 +915,6 @@ vmspace_resident_count(struct vmspace *vmspace)
 }
 
 /*
- *	vm_map_create:
- *
- *	Creates and returns a new empty VM map with
- *	the given physical map structure, and having
- *	the given lower and upper address bounds.
- */
-vm_map_t
-vm_map_create(pmap_t pmap, vm_offset_t min, vm_offset_t max)
-{
-	vm_map_t result;
-
-	result = uma_zalloc(mapzone, M_WAITOK);
-	CTR1(KTR_VM, "vm_map_create: %p", result);
-	_vm_map_init(result, pmap, min, max);
-	return (result);
-}
-
-/*
  * Initialize an existing vm_map structure
  * such as that in the vmspace structure.
  */
@@ -788,16 +922,21 @@ static void
 _vm_map_init(vm_map_t map, pmap_t pmap, vm_offset_t min, vm_offset_t max)
 {
 
-	map->header.next = map->header.prev = &map->header;
+	map->header.eflags = MAP_ENTRY_HEADER;
 	map->needs_wakeup = FALSE;
 	map->system_map = 0;
 	map->pmap = pmap;
-	map->min_offset = min;
-	map->max_offset = max;
+	map->header.end = min;
+	map->header.start = max;
 	map->flags = 0;
+	map->header.left = map->header.right = &map->header;
 	map->root = NULL;
 	map->timestamp = 0;
 	map->busy = 0;
+	map->anon_loc = 0;
+#ifdef DIAGNOSTIC
+	map->nupdates = 0;
+#endif
 }
 
 void
@@ -805,8 +944,9 @@ vm_map_init(vm_map_t map, pmap_t pmap, vm_offset_t min, vm_offset_t max)
 {
 
 	_vm_map_init(map, pmap, min, max);
-	mtx_init(&map->system_mtx, "system map", NULL, MTX_DEF | MTX_DUPOK);
-	sx_init(&map->lock, "user map");
+	mtx_init(&map->system_mtx, "vm map (system)", NULL,
+	    MTX_DEF | MTX_DUPOK);
+	sx_init(&map->lock, "vm map (user)");
 }
 
 /*
@@ -831,12 +971,33 @@ vm_map_entry_create(vm_map_t map)
 {
 	vm_map_entry_t new_entry;
 
-	if (map->system_map)
+#ifndef UMA_MD_SMALL_ALLOC
+	if (map == kernel_map) {
+		VM_MAP_ASSERT_LOCKED(map);
+
+		/*
+		 * A new slab of kernel map entries cannot be allocated at this
+		 * point because the kernel map has not yet been updated to
+		 * reflect the caller's request.  Therefore, we allocate a new
+		 * map entry, dipping into the reserve if necessary, and set a
+		 * flag indicating that the reserve must be replenished before
+		 * the map is unlocked.
+		 */
+		new_entry = uma_zalloc(kmapentzone, M_NOWAIT | M_NOVM);
+		if (new_entry == NULL) {
+			new_entry = uma_zalloc(kmapentzone,
+			    M_NOWAIT | M_NOVM | M_USE_RESERVE);
+			kernel_map->flags |= MAP_REPLENISH;
+		}
+	} else
+#endif
+	if (map->system_map) {
 		new_entry = uma_zalloc(kmapentzone, M_NOWAIT);
-	else
+	} else {
 		new_entry = uma_zalloc(mapentzone, M_WAITOK);
-	if (new_entry == NULL)
-		panic("vm_map_entry_create: kernel resources exhausted");
+	}
+	KASSERT(new_entry != NULL,
+	    ("vm_map_entry_create: kernel resources exhausted"));
 	return (new_entry);
 }
 
@@ -854,23 +1015,334 @@ vm_map_entry_set_behavior(vm_map_entry_t entry, u_char behavior)
 }
 
 /*
- *	vm_map_entry_set_max_free:
+ *	vm_map_entry_max_free_{left,right}:
  *
- *	Set the max_free field in a vm_map_entry.
+ *	Compute the size of the largest free gap between two entries,
+ *	one the root of a tree and the other the ancestor of that root
+ *	that is the least or greatest ancestor found on the search path.
  */
-static inline void
-vm_map_entry_set_max_free(vm_map_entry_t entry)
+static inline vm_size_t
+vm_map_entry_max_free_left(vm_map_entry_t root, vm_map_entry_t left_ancestor)
 {
 
-	entry->max_free = entry->adj_free;
-	if (entry->left != NULL && entry->left->max_free > entry->max_free)
-		entry->max_free = entry->left->max_free;
-	if (entry->right != NULL && entry->right->max_free > entry->max_free)
-		entry->max_free = entry->right->max_free;
+	return (root->left != left_ancestor ?
+	    root->left->max_free : root->start - left_ancestor->end);
+}
+
+static inline vm_size_t
+vm_map_entry_max_free_right(vm_map_entry_t root, vm_map_entry_t right_ancestor)
+{
+
+	return (root->right != right_ancestor ?
+	    root->right->max_free : right_ancestor->start - root->end);
 }
 
 /*
- *	vm_map_entry_splay:
+ *	vm_map_entry_{pred,succ}:
+ *
+ *	Find the {predecessor, successor} of the entry by taking one step
+ *	in the appropriate direction and backtracking as much as necessary.
+ *	vm_map_entry_succ is defined in vm_map.h.
+ */
+static inline vm_map_entry_t
+vm_map_entry_pred(vm_map_entry_t entry)
+{
+	vm_map_entry_t prior;
+
+	prior = entry->left;
+	if (prior->right->start < entry->start) {
+		do
+			prior = prior->right;
+		while (prior->right != entry);
+	}
+	return (prior);
+}
+
+static inline vm_size_t
+vm_size_max(vm_size_t a, vm_size_t b)
+{
+
+	return (a > b ? a : b);
+}
+
+#define SPLAY_LEFT_STEP(root, y, llist, rlist, test) do {		\
+	vm_map_entry_t z;						\
+	vm_size_t max_free;						\
+									\
+	/*								\
+	 * Infer root->right->max_free == root->max_free when		\
+	 * y->max_free < root->max_free || root->max_free == 0.		\
+	 * Otherwise, look right to find it.				\
+	 */								\
+	y = root->left;							\
+	max_free = root->max_free;					\
+	KASSERT(max_free == vm_size_max(				\
+	    vm_map_entry_max_free_left(root, llist),			\
+	    vm_map_entry_max_free_right(root, rlist)),			\
+	    ("%s: max_free invariant fails", __func__));		\
+	if (max_free - 1 < vm_map_entry_max_free_left(root, llist))	\
+		max_free = vm_map_entry_max_free_right(root, rlist);	\
+	if (y != llist && (test)) {					\
+		/* Rotate right and make y root. */			\
+		z = y->right;						\
+		if (z != root) {					\
+			root->left = z;					\
+			y->right = root;				\
+			if (max_free < y->max_free)			\
+			    root->max_free = max_free =			\
+			    vm_size_max(max_free, z->max_free);		\
+		} else if (max_free < y->max_free)			\
+			root->max_free = max_free =			\
+			    vm_size_max(max_free, root->start - y->end);\
+		root = y;						\
+		y = root->left;						\
+	}								\
+	/* Copy right->max_free.  Put root on rlist. */			\
+	root->max_free = max_free;					\
+	KASSERT(max_free == vm_map_entry_max_free_right(root, rlist),	\
+	    ("%s: max_free not copied from right", __func__));		\
+	root->left = rlist;						\
+	rlist = root;							\
+	root = y != llist ? y : NULL;					\
+} while (0)
+
+#define SPLAY_RIGHT_STEP(root, y, llist, rlist, test) do {		\
+	vm_map_entry_t z;						\
+	vm_size_t max_free;						\
+									\
+	/*								\
+	 * Infer root->left->max_free == root->max_free when		\
+	 * y->max_free < root->max_free || root->max_free == 0.		\
+	 * Otherwise, look left to find it.				\
+	 */								\
+	y = root->right;						\
+	max_free = root->max_free;					\
+	KASSERT(max_free == vm_size_max(				\
+	    vm_map_entry_max_free_left(root, llist),			\
+	    vm_map_entry_max_free_right(root, rlist)),			\
+	    ("%s: max_free invariant fails", __func__));		\
+	if (max_free - 1 < vm_map_entry_max_free_right(root, rlist))	\
+		max_free = vm_map_entry_max_free_left(root, llist);	\
+	if (y != rlist && (test)) {					\
+		/* Rotate left and make y root. */			\
+		z = y->left;						\
+		if (z != root) {					\
+			root->right = z;				\
+			y->left = root;					\
+			if (max_free < y->max_free)			\
+			    root->max_free = max_free =			\
+			    vm_size_max(max_free, z->max_free);		\
+		} else if (max_free < y->max_free)			\
+			root->max_free = max_free =			\
+			    vm_size_max(max_free, y->start - root->end);\
+		root = y;						\
+		y = root->right;					\
+	}								\
+	/* Copy left->max_free.  Put root on llist. */			\
+	root->max_free = max_free;					\
+	KASSERT(max_free == vm_map_entry_max_free_left(root, llist),	\
+	    ("%s: max_free not copied from left", __func__));		\
+	root->right = llist;						\
+	llist = root;							\
+	root = y != rlist ? y : NULL;					\
+} while (0)
+
+/*
+ * Walk down the tree until we find addr or a gap where addr would go, breaking
+ * off left and right subtrees of nodes less than, or greater than addr.  Treat
+ * subtrees with root->max_free < length as empty trees.  llist and rlist are
+ * the two sides in reverse order (bottom-up), with llist linked by the right
+ * pointer and rlist linked by the left pointer in the vm_map_entry, and both
+ * lists terminated by &map->header.  This function, and the subsequent call to
+ * vm_map_splay_merge_{left,right,pred,succ}, rely on the start and end address
+ * values in &map->header.
+ */
+static __always_inline vm_map_entry_t
+vm_map_splay_split(vm_map_t map, vm_offset_t addr, vm_size_t length,
+    vm_map_entry_t *llist, vm_map_entry_t *rlist)
+{
+	vm_map_entry_t left, right, root, y;
+
+	left = right = &map->header;
+	root = map->root;
+	while (root != NULL && root->max_free >= length) {
+		KASSERT(left->end <= root->start &&
+		    root->end <= right->start,
+		    ("%s: root not within tree bounds", __func__));
+		if (addr < root->start) {
+			SPLAY_LEFT_STEP(root, y, left, right,
+			    y->max_free >= length && addr < y->start);
+		} else if (addr >= root->end) {
+			SPLAY_RIGHT_STEP(root, y, left, right,
+			    y->max_free >= length && addr >= y->end);
+		} else
+			break;
+	}
+	*llist = left;
+	*rlist = right;
+	return (root);
+}
+
+static __always_inline void
+vm_map_splay_findnext(vm_map_entry_t root, vm_map_entry_t *rlist)
+{
+	vm_map_entry_t hi, right, y;
+
+	right = *rlist;
+	hi = root->right == right ? NULL : root->right;
+	if (hi == NULL)
+		return;
+	do
+		SPLAY_LEFT_STEP(hi, y, root, right, true);
+	while (hi != NULL);
+	*rlist = right;
+}
+
+static __always_inline void
+vm_map_splay_findprev(vm_map_entry_t root, vm_map_entry_t *llist)
+{
+	vm_map_entry_t left, lo, y;
+
+	left = *llist;
+	lo = root->left == left ? NULL : root->left;
+	if (lo == NULL)
+		return;
+	do
+		SPLAY_RIGHT_STEP(lo, y, left, root, true);
+	while (lo != NULL);
+	*llist = left;
+}
+
+static inline void
+vm_map_entry_swap(vm_map_entry_t *a, vm_map_entry_t *b)
+{
+	vm_map_entry_t tmp;
+
+	tmp = *b;
+	*b = *a;
+	*a = tmp;
+}
+
+/*
+ * Walk back up the two spines, flip the pointers and set max_free.  The
+ * subtrees of the root go at the bottom of llist and rlist.
+ */
+static vm_size_t
+vm_map_splay_merge_left_walk(vm_map_entry_t header, vm_map_entry_t root,
+    vm_map_entry_t tail, vm_size_t max_free, vm_map_entry_t llist)
+{
+	do {
+		/*
+		 * The max_free values of the children of llist are in
+		 * llist->max_free and max_free.  Update with the
+		 * max value.
+		 */
+		llist->max_free = max_free =
+		    vm_size_max(llist->max_free, max_free);
+		vm_map_entry_swap(&llist->right, &tail);
+		vm_map_entry_swap(&tail, &llist);
+	} while (llist != header);
+	root->left = tail;
+	return (max_free);
+}
+
+/*
+ * When llist is known to be the predecessor of root.
+ */
+static inline vm_size_t
+vm_map_splay_merge_pred(vm_map_entry_t header, vm_map_entry_t root,
+    vm_map_entry_t llist)
+{
+	vm_size_t max_free;
+
+	max_free = root->start - llist->end;
+	if (llist != header) {
+		max_free = vm_map_splay_merge_left_walk(header, root,
+		    root, max_free, llist);
+	} else {
+		root->left = header;
+		header->right = root;
+	}
+	return (max_free);
+}
+
+/*
+ * When llist may or may not be the predecessor of root.
+ */
+static inline vm_size_t
+vm_map_splay_merge_left(vm_map_entry_t header, vm_map_entry_t root,
+    vm_map_entry_t llist)
+{
+	vm_size_t max_free;
+
+	max_free = vm_map_entry_max_free_left(root, llist);
+	if (llist != header) {
+		max_free = vm_map_splay_merge_left_walk(header, root,
+		    root->left == llist ? root : root->left,
+		    max_free, llist);
+	}
+	return (max_free);
+}
+
+static vm_size_t
+vm_map_splay_merge_right_walk(vm_map_entry_t header, vm_map_entry_t root,
+    vm_map_entry_t tail, vm_size_t max_free, vm_map_entry_t rlist)
+{
+	do {
+		/*
+		 * The max_free values of the children of rlist are in
+		 * rlist->max_free and max_free.  Update with the
+		 * max value.
+		 */
+		rlist->max_free = max_free =
+		    vm_size_max(rlist->max_free, max_free);
+		vm_map_entry_swap(&rlist->left, &tail);
+		vm_map_entry_swap(&tail, &rlist);
+	} while (rlist != header);
+	root->right = tail;
+	return (max_free);
+}
+
+/*
+ * When rlist is known to be the succecessor of root.
+ */
+static inline vm_size_t
+vm_map_splay_merge_succ(vm_map_entry_t header, vm_map_entry_t root,
+    vm_map_entry_t rlist)
+{
+	vm_size_t max_free;
+
+	max_free = rlist->start - root->end;
+	if (rlist != header) {
+		max_free = vm_map_splay_merge_right_walk(header, root,
+		    root, max_free, rlist);
+	} else {
+		root->right = header;
+		header->left = root;
+	}
+	return (max_free);
+}
+
+/*
+ * When rlist may or may not be the succecessor of root.
+ */
+static inline vm_size_t
+vm_map_splay_merge_right(vm_map_entry_t header, vm_map_entry_t root,
+    vm_map_entry_t rlist)
+{
+	vm_size_t max_free;
+
+	max_free = vm_map_entry_max_free_right(root, rlist);
+	if (rlist != header) {
+		max_free = vm_map_splay_merge_right_walk(header, root,
+		    root->right == rlist ? root : root->right,
+		    max_free, rlist);
+	}
+	return (max_free);
+}
+
+/*
+ *	vm_map_splay:
  *
  *	The Sleator and Tarjan top-down splay algorithm with the
  *	following variation.  Max_free must be computed bottom-up, so
@@ -879,210 +1351,200 @@ vm_map_entry_set_max_free(vm_map_entry_t entry)
  *	the pointers and compute max_free.  The time bound is O(log n)
  *	amortized.
  *
+ *	The tree is threaded, which means that there are no null pointers.
+ *	When a node has no left child, its left pointer points to its
+ *	predecessor, which the last ancestor on the search path from the root
+ *	where the search branched right.  Likewise, when a node has no right
+ *	child, its right pointer points to its successor.  The map header node
+ *	is the predecessor of the first map entry, and the successor of the
+ *	last.
+ *
  *	The new root is the vm_map_entry containing "addr", or else an
- *	adjacent entry (lower or higher) if addr is not in the tree.
+ *	adjacent entry (lower if possible) if addr is not in the tree.
  *
  *	The map must be locked, and leaves it so.
  *
  *	Returns: the new root.
  */
 static vm_map_entry_t
-vm_map_entry_splay(vm_offset_t addr, vm_map_entry_t root)
+vm_map_splay(vm_map_t map, vm_offset_t addr)
 {
-	vm_map_entry_t llist, rlist;
-	vm_map_entry_t ltree, rtree;
-	vm_map_entry_t y;
+	vm_map_entry_t header, llist, rlist, root;
+	vm_size_t max_free_left, max_free_right;
 
-	/* Special case of empty tree. */
-	if (root == NULL)
-		return (root);
-
-	/*
-	 * Pass One: Splay down the tree until we find addr or a NULL
-	 * pointer where addr would go.  llist and rlist are the two
-	 * sides in reverse order (bottom-up), with llist linked by
-	 * the right pointer and rlist linked by the left pointer in
-	 * the vm_map_entry.  Wait until Pass Two to set max_free on
-	 * the two spines.
-	 */
-	llist = NULL;
-	rlist = NULL;
-	for (;;) {
-		/* root is never NULL in here. */
-		if (addr < root->start) {
-			y = root->left;
-			if (y == NULL)
-				break;
-			if (addr < y->start && y->left != NULL) {
-				/* Rotate right and put y on rlist. */
-				root->left = y->right;
-				y->right = root;
-				vm_map_entry_set_max_free(root);
-				root = y->left;
-				y->left = rlist;
-				rlist = y;
-			} else {
-				/* Put root on rlist. */
-				root->left = rlist;
-				rlist = root;
-				root = y;
-			}
-		} else if (addr >= root->end) {
-			y = root->right;
-			if (y == NULL)
-				break;
-			if (addr >= y->end && y->right != NULL) {
-				/* Rotate left and put y on llist. */
-				root->right = y->left;
-				y->left = root;
-				vm_map_entry_set_max_free(root);
-				root = y->right;
-				y->right = llist;
-				llist = y;
-			} else {
-				/* Put root on llist. */
-				root->right = llist;
-				llist = root;
-				root = y;
-			}
-		} else
-			break;
+	header = &map->header;
+	root = vm_map_splay_split(map, addr, 0, &llist, &rlist);
+	if (root != NULL) {
+		max_free_left = vm_map_splay_merge_left(header, root, llist);
+		max_free_right = vm_map_splay_merge_right(header, root, rlist);
+	} else if (llist != header) {
+		/*
+		 * Recover the greatest node in the left
+		 * subtree and make it the root.
+		 */
+		root = llist;
+		llist = root->right;
+		max_free_left = vm_map_splay_merge_left(header, root, llist);
+		max_free_right = vm_map_splay_merge_succ(header, root, rlist);
+	} else if (rlist != header) {
+		/*
+		 * Recover the least node in the right
+		 * subtree and make it the root.
+		 */
+		root = rlist;
+		rlist = root->left;
+		max_free_left = vm_map_splay_merge_pred(header, root, llist);
+		max_free_right = vm_map_splay_merge_right(header, root, rlist);
+	} else {
+		/* There is no root. */
+		return (NULL);
 	}
-
-	/*
-	 * Pass Two: Walk back up the two spines, flip the pointers
-	 * and set max_free.  The subtrees of the root go at the
-	 * bottom of llist and rlist.
-	 */
-	ltree = root->left;
-	while (llist != NULL) {
-		y = llist->right;
-		llist->right = ltree;
-		vm_map_entry_set_max_free(llist);
-		ltree = llist;
-		llist = y;
-	}
-	rtree = root->right;
-	while (rlist != NULL) {
-		y = rlist->left;
-		rlist->left = rtree;
-		vm_map_entry_set_max_free(rlist);
-		rtree = rlist;
-		rlist = y;
-	}
-
-	/*
-	 * Final assembly: add ltree and rtree as subtrees of root.
-	 */
-	root->left = ltree;
-	root->right = rtree;
-	vm_map_entry_set_max_free(root);
-
+	root->max_free = vm_size_max(max_free_left, max_free_right);
+	map->root = root;
+	VM_MAP_ASSERT_CONSISTENT(map);
 	return (root);
 }
 
 /*
  *	vm_map_entry_{un,}link:
  *
- *	Insert/remove entries from maps.
+ *	Insert/remove entries from maps.  On linking, if new entry clips
+ *	existing entry, trim existing entry to avoid overlap, and manage
+ *	offsets.  On unlinking, merge disappearing entry with neighbor, if
+ *	called for, and manage offsets.  Callers should not modify fields in
+ *	entries already mapped.
  */
 static void
-vm_map_entry_link(vm_map_t map,
-		  vm_map_entry_t after_where,
-		  vm_map_entry_t entry)
+vm_map_entry_link(vm_map_t map, vm_map_entry_t entry)
 {
+	vm_map_entry_t header, llist, rlist, root;
+	vm_size_t max_free_left, max_free_right;
 
-	CTR4(KTR_VM,
-	    "vm_map_entry_link: map %p, nentries %d, entry %p, after %p", map,
-	    map->nentries, entry, after_where);
+	CTR3(KTR_VM,
+	    "vm_map_entry_link: map %p, nentries %d, entry %p", map,
+	    map->nentries, entry);
 	VM_MAP_ASSERT_LOCKED(map);
-	KASSERT(after_where == &map->header ||
-	    after_where->end <= entry->start,
-	    ("vm_map_entry_link: prev end %jx new start %jx overlap",
-	    (uintmax_t)after_where->end, (uintmax_t)entry->start));
-	KASSERT(after_where->next == &map->header ||
-	    entry->end <= after_where->next->start,
-	    ("vm_map_entry_link: new end %jx next start %jx overlap",
-	    (uintmax_t)entry->end, (uintmax_t)after_where->next->start));
-
 	map->nentries++;
-	entry->prev = after_where;
-	entry->next = after_where->next;
-	entry->next->prev = entry;
-	after_where->next = entry;
-
-	if (after_where != &map->header) {
-		if (after_where != map->root)
-			vm_map_entry_splay(after_where->start, map->root);
-		entry->right = after_where->right;
-		entry->left = after_where;
-		after_where->right = NULL;
-		after_where->adj_free = entry->start - after_where->end;
-		vm_map_entry_set_max_free(after_where);
+	header = &map->header;
+	root = vm_map_splay_split(map, entry->start, 0, &llist, &rlist);
+	if (root == NULL) {
+		/*
+		 * The new entry does not overlap any existing entry in the
+		 * map, so it becomes the new root of the map tree.
+		 */
+		max_free_left = vm_map_splay_merge_pred(header, entry, llist);
+		max_free_right = vm_map_splay_merge_succ(header, entry, rlist);
+	} else if (entry->start == root->start) {
+		/*
+		 * The new entry is a clone of root, with only the end field
+		 * changed.  The root entry will be shrunk to abut the new
+		 * entry, and will be the right child of the new root entry in
+		 * the modified map.
+		 */
+		KASSERT(entry->end < root->end,
+		    ("%s: clip_start not within entry", __func__));
+		vm_map_splay_findprev(root, &llist);
+		root->offset += entry->end - root->start;
+		root->start = entry->end;
+		max_free_left = vm_map_splay_merge_pred(header, entry, llist);
+		max_free_right = root->max_free = vm_size_max(
+		    vm_map_splay_merge_pred(entry, root, entry),
+		    vm_map_splay_merge_right(header, root, rlist));
 	} else {
-		entry->right = map->root;
-		entry->left = NULL;
+		/*
+		 * The new entry is a clone of root, with only the start field
+		 * changed.  The root entry will be shrunk to abut the new
+		 * entry, and will be the left child of the new root entry in
+		 * the modified map.
+		 */
+		KASSERT(entry->end == root->end,
+		    ("%s: clip_start not within entry", __func__));
+		vm_map_splay_findnext(root, &rlist);
+		entry->offset += entry->start - root->start;
+		root->end = entry->start;
+		max_free_left = root->max_free = vm_size_max(
+		    vm_map_splay_merge_left(header, root, llist),
+		    vm_map_splay_merge_succ(entry, root, entry));
+		max_free_right = vm_map_splay_merge_succ(header, entry, rlist);
 	}
-	entry->adj_free = (entry->next == &map->header ? map->max_offset :
-	    entry->next->start) - entry->end;
-	vm_map_entry_set_max_free(entry);
+	entry->max_free = vm_size_max(max_free_left, max_free_right);
 	map->root = entry;
+	VM_MAP_ASSERT_CONSISTENT(map);
 }
 
+enum unlink_merge_type {
+	UNLINK_MERGE_NONE,
+	UNLINK_MERGE_NEXT
+};
+
 static void
-vm_map_entry_unlink(vm_map_t map,
-		    vm_map_entry_t entry)
+vm_map_entry_unlink(vm_map_t map, vm_map_entry_t entry,
+    enum unlink_merge_type op)
 {
-	vm_map_entry_t next, prev, root;
+	vm_map_entry_t header, llist, rlist, root;
+	vm_size_t max_free_left, max_free_right;
 
 	VM_MAP_ASSERT_LOCKED(map);
-	if (entry != map->root)
-		vm_map_entry_splay(entry->start, map->root);
-	if (entry->left == NULL)
-		root = entry->right;
-	else {
-		root = vm_map_entry_splay(entry->start, entry->left);
-		root->right = entry->right;
-		root->adj_free = (entry->next == &map->header ? map->max_offset :
-		    entry->next->start) - root->end;
-		vm_map_entry_set_max_free(root);
-	}
-	map->root = root;
+	header = &map->header;
+	root = vm_map_splay_split(map, entry->start, 0, &llist, &rlist);
+	KASSERT(root != NULL,
+	    ("vm_map_entry_unlink: unlink object not mapped"));
 
-	prev = entry->prev;
-	next = entry->next;
-	next->prev = prev;
-	prev->next = next;
+	vm_map_splay_findprev(root, &llist);
+	vm_map_splay_findnext(root, &rlist);
+	if (op == UNLINK_MERGE_NEXT) {
+		rlist->start = root->start;
+		rlist->offset = root->offset;
+	}
+	if (llist != header) {
+		root = llist;
+		llist = root->right;
+		max_free_left = vm_map_splay_merge_left(header, root, llist);
+		max_free_right = vm_map_splay_merge_succ(header, root, rlist);
+	} else if (rlist != header) {
+		root = rlist;
+		rlist = root->left;
+		max_free_left = vm_map_splay_merge_pred(header, root, llist);
+		max_free_right = vm_map_splay_merge_right(header, root, rlist);
+	} else {
+		header->left = header->right = header;
+		root = NULL;
+	}
+	if (root != NULL)
+		root->max_free = vm_size_max(max_free_left, max_free_right);
+	map->root = root;
+	VM_MAP_ASSERT_CONSISTENT(map);
 	map->nentries--;
 	CTR3(KTR_VM, "vm_map_entry_unlink: map %p, nentries %d, entry %p", map,
 	    map->nentries, entry);
 }
 
 /*
- *	vm_map_entry_resize_free:
+ *	vm_map_entry_resize:
  *
- *	Recompute the amount of free space following a vm_map_entry
- *	and propagate that value up the tree.  Call this function after
- *	resizing a map entry in-place, that is, without a call to
- *	vm_map_entry_link() or _unlink().
+ *	Resize a vm_map_entry, recompute the amount of free space that
+ *	follows it and propagate that value up the tree.
  *
  *	The map must be locked, and leaves it so.
  */
 static void
-vm_map_entry_resize_free(vm_map_t map, vm_map_entry_t entry)
+vm_map_entry_resize(vm_map_t map, vm_map_entry_t entry, vm_size_t grow_amount)
 {
+	vm_map_entry_t header, llist, rlist, root;
 
-	/*
-	 * Using splay trees without parent pointers, propagating
-	 * max_free up the tree is done by moving the entry to the
-	 * root and making the change there.
-	 */
-	if (entry != map->root)
-		map->root = vm_map_entry_splay(entry->start, map->root);
-
-	entry->adj_free = (entry->next == &map->header ? map->max_offset :
-	    entry->next->start) - entry->end;
-	vm_map_entry_set_max_free(entry);
+	VM_MAP_ASSERT_LOCKED(map);
+	header = &map->header;
+	root = vm_map_splay_split(map, entry->start, 0, &llist, &rlist);
+	KASSERT(root != NULL, ("%s: resize object not mapped", __func__));
+	vm_map_splay_findnext(root, &rlist);
+	entry->end += grow_amount;
+	root->max_free = vm_size_max(
+	    vm_map_splay_merge_left(header, root, llist),
+	    vm_map_splay_merge_succ(header, root, rlist));
+	map->root = root;
+	VM_MAP_ASSERT_CONSISTENT(map);
+	CTR4(KTR_VM, "%s: map %p, nentries %d, entry %p",
+	    __func__, map, map->nentries, entry);
 }
 
 /*
@@ -1101,20 +1563,24 @@ vm_map_lookup_entry(
 	vm_offset_t address,
 	vm_map_entry_t *entry)	/* OUT */
 {
-	vm_map_entry_t cur;
+	vm_map_entry_t cur, header, lbound, ubound;
 	boolean_t locked;
 
 	/*
 	 * If the map is empty, then the map entry immediately preceding
 	 * "address" is the map's header.
 	 */
+	header = &map->header;
 	cur = map->root;
-	if (cur == NULL)
-		*entry = &map->header;
-	else if (address >= cur->start && cur->end > address) {
+	if (cur == NULL) {
+		*entry = header;
+		return (FALSE);
+	}
+	if (address >= cur->start && cur->end > address) {
 		*entry = cur;
 		return (TRUE);
-	} else if ((locked = vm_map_locked(map)) ||
+	}
+	if ((locked = vm_map_locked(map)) ||
 	    sx_try_upgrade(&map->lock)) {
 		/*
 		 * Splay requires a write lock on the map.  However, it only
@@ -1122,44 +1588,46 @@ vm_map_lookup_entry(
 		 * change the map.  Thus, the map's timestamp need not change
 		 * on a temporary upgrade.
 		 */
-		map->root = cur = vm_map_entry_splay(address, cur);
-		if (!locked)
+		cur = vm_map_splay(map, address);
+		if (!locked) {
+			VM_MAP_UNLOCK_CONSISTENT(map);
 			sx_downgrade(&map->lock);
+		}
 
 		/*
 		 * If "address" is contained within a map entry, the new root
 		 * is that map entry.  Otherwise, the new root is a map entry
 		 * immediately before or after "address".
 		 */
-		if (address >= cur->start) {
-			*entry = cur;
-			if (cur->end > address)
-				return (TRUE);
-		} else
-			*entry = cur->prev;
-	} else
-		/*
-		 * Since the map is only locked for read access, perform a
-		 * standard binary search tree lookup for "address".
-		 */
-		for (;;) {
-			if (address < cur->start) {
-				if (cur->left == NULL) {
-					*entry = cur->prev;
-					break;
-				}
-				cur = cur->left;
-			} else if (cur->end > address) {
-				*entry = cur;
-				return (TRUE);
-			} else {
-				if (cur->right == NULL) {
-					*entry = cur;
-					break;
-				}
-				cur = cur->right;
-			}
+		if (address < cur->start) {
+			*entry = header;
+			return (FALSE);
 		}
+		*entry = cur;
+		return (address < cur->end);
+	}
+	/*
+	 * Since the map is only locked for read access, perform a
+	 * standard binary search tree lookup for "address".
+	 */
+	lbound = ubound = header;
+	for (;;) {
+		if (address < cur->start) {
+			ubound = cur;
+			cur = cur->left;
+			if (cur == lbound)
+				break;
+		} else if (cur->end <= address) {
+			lbound = cur;
+			cur = cur->right;
+			if (cur == ubound)
+				break;
+		} else {
+			*entry = cur;
+			return (TRUE);
+		}
+	}
+	*entry = lbound;
 	return (FALSE);
 }
 
@@ -1179,40 +1647,51 @@ int
 vm_map_insert(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
     vm_offset_t start, vm_offset_t end, vm_prot_t prot, vm_prot_t max, int cow)
 {
-	vm_map_entry_t new_entry, prev_entry, temp_entry;
-	vm_eflags_t protoeflags;
+	vm_map_entry_t new_entry, next_entry, prev_entry;
 	struct ucred *cred;
+	vm_eflags_t protoeflags;
 	vm_inherit_t inheritance;
+	u_long bdry;
+	u_int bidx;
 
 	VM_MAP_ASSERT_LOCKED(map);
-	KASSERT((object != kmem_object && object != kernel_object) ||
+	KASSERT(object != kernel_object ||
 	    (cow & MAP_COPY_ON_WRITE) == 0,
-	    ("vm_map_insert: kmem or kernel object and COW"));
-	KASSERT(object == NULL || (cow & MAP_NOFAULT) == 0,
-	    ("vm_map_insert: paradoxical MAP_NOFAULT request"));
+	    ("vm_map_insert: kernel object and COW"));
+	KASSERT(object == NULL || (cow & MAP_NOFAULT) == 0 ||
+	    (cow & MAP_SPLIT_BOUNDARY_MASK) != 0,
+	    ("vm_map_insert: paradoxical MAP_NOFAULT request, obj %p cow %#x",
+	    object, cow));
+	KASSERT((prot & ~max) == 0,
+	    ("prot %#x is not subset of max_prot %#x", prot, max));
 
 	/*
 	 * Check that the start and end points are not bogus.
 	 */
-	if ((start < map->min_offset) || (end > map->max_offset) ||
-	    (start >= end))
+	if (start == end || !vm_map_range_valid(map, start, end))
 		return (KERN_INVALID_ADDRESS);
+
+	if ((map->flags & MAP_WXORX) != 0 && (prot & (VM_PROT_WRITE |
+	    VM_PROT_EXECUTE)) == (VM_PROT_WRITE | VM_PROT_EXECUTE))
+		return (KERN_PROTECTION_FAILURE);
 
 	/*
 	 * Find the entry prior to the proposed starting address; if it's part
 	 * of an existing entry, this range is bogus.
 	 */
-	if (vm_map_lookup_entry(map, start, &temp_entry))
+	if (vm_map_lookup_entry(map, start, &prev_entry))
 		return (KERN_NO_SPACE);
-
-	prev_entry = temp_entry;
 
 	/*
 	 * Assert that the next entry doesn't overlap the end point.
 	 */
-	if ((prev_entry->next != &map->header) &&
-	    (prev_entry->next->start < end))
+	next_entry = vm_map_entry_succ(prev_entry);
+	if (next_entry->start < end)
 		return (KERN_NO_SPACE);
+
+	if ((cow & MAP_CREATE_GUARD) != 0 && (object != NULL ||
+	    max != VM_PROT_NONE))
+		return (KERN_INVALID_ARGUMENT);
 
 	protoeflags = 0;
 	if (cow & MAP_COPY_ON_WRITE)
@@ -1227,23 +1706,43 @@ vm_map_insert(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 		protoeflags |= MAP_ENTRY_GROWS_DOWN;
 	if (cow & MAP_STACK_GROWS_UP)
 		protoeflags |= MAP_ENTRY_GROWS_UP;
-	if (cow & MAP_VN_WRITECOUNT)
-		protoeflags |= MAP_ENTRY_VN_WRITECNT;
+	if (cow & MAP_WRITECOUNT)
+		protoeflags |= MAP_ENTRY_WRITECNT;
+	if (cow & MAP_VN_EXEC)
+		protoeflags |= MAP_ENTRY_VN_EXEC;
+	if ((cow & MAP_CREATE_GUARD) != 0)
+		protoeflags |= MAP_ENTRY_GUARD;
+	if ((cow & MAP_CREATE_STACK_GAP_DN) != 0)
+		protoeflags |= MAP_ENTRY_STACK_GAP_DN;
+	if ((cow & MAP_CREATE_STACK_GAP_UP) != 0)
+		protoeflags |= MAP_ENTRY_STACK_GAP_UP;
 	if (cow & MAP_INHERIT_SHARE)
 		inheritance = VM_INHERIT_SHARE;
 	else
 		inheritance = VM_INHERIT_DEFAULT;
+	if ((cow & MAP_SPLIT_BOUNDARY_MASK) != 0) {
+		/* This magically ignores index 0, for usual page size. */
+		bidx = (cow & MAP_SPLIT_BOUNDARY_MASK) >>
+		    MAP_SPLIT_BOUNDARY_SHIFT;
+		if (bidx >= MAXPAGESIZES)
+			return (KERN_INVALID_ARGUMENT);
+		bdry = pagesizes[bidx] - 1;
+		if ((start & bdry) != 0 || (end & bdry) != 0)
+			return (KERN_INVALID_ARGUMENT);
+		protoeflags |= bidx << MAP_ENTRY_SPLIT_BOUNDARY_SHIFT;
+	}
 
 	cred = NULL;
-	if (cow & (MAP_ACC_NO_CHARGE | MAP_NOFAULT))
+	if ((cow & (MAP_ACC_NO_CHARGE | MAP_NOFAULT | MAP_CREATE_GUARD)) != 0)
 		goto charged;
 	if ((cow & MAP_ACC_CHARGED) || ((prot & VM_PROT_WRITE) &&
 	    ((protoeflags & MAP_ENTRY_NEEDS_COPY) || object == NULL))) {
 		if (!(cow & MAP_ACC_CHARGED) && !swap_reserve(end - start))
 			return (KERN_RESOURCE_SHORTAGE);
-		KASSERT(object == NULL || (protoeflags & MAP_ENTRY_NEEDS_COPY) ||
+		KASSERT(object == NULL ||
+		    (protoeflags & MAP_ENTRY_NEEDS_COPY) != 0 ||
 		    object->cred == NULL,
-		    ("OVERCOMMIT: vm_map_insert o %p", object));
+		    ("overcommit: vm_map_insert o %p", object));
 		cred = curthread->td_ucred;
 	}
 
@@ -1259,36 +1758,41 @@ charged:
 		 * reference counting is insufficient to recognize
 		 * aliases with precision.)
 		 */
-		VM_OBJECT_WLOCK(object);
-		if (object->ref_count > 1 || object->shadow_count != 0)
-			vm_object_clear_flag(object, OBJ_ONEMAPPING);
-		VM_OBJECT_WUNLOCK(object);
-	}
-	else if ((prev_entry != &map->header) &&
-		 (prev_entry->eflags == protoeflags) &&
-		 (cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP)) == 0 &&
-		 (prev_entry->end == start) &&
-		 (prev_entry->wired_count == 0) &&
-		 (prev_entry->cred == cred ||
-		  (prev_entry->object.vm_object != NULL &&
-		   (prev_entry->object.vm_object->cred == cred))) &&
-		   vm_object_coalesce(prev_entry->object.vm_object,
-		       prev_entry->offset,
-		       (vm_size_t)(prev_entry->end - prev_entry->start),
-		       (vm_size_t)(end - prev_entry->end), cred != NULL &&
-		       (protoeflags & MAP_ENTRY_NEEDS_COPY) == 0)) {
+		if ((object->flags & OBJ_ANON) != 0) {
+			VM_OBJECT_WLOCK(object);
+			if (object->ref_count > 1 || object->shadow_count != 0)
+				vm_object_clear_flag(object, OBJ_ONEMAPPING);
+			VM_OBJECT_WUNLOCK(object);
+		}
+	} else if ((prev_entry->eflags & ~MAP_ENTRY_USER_WIRED) ==
+	    protoeflags &&
+	    (cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP |
+	    MAP_VN_EXEC)) == 0 &&
+	    prev_entry->end == start && (prev_entry->cred == cred ||
+	    (prev_entry->object.vm_object != NULL &&
+	    prev_entry->object.vm_object->cred == cred)) &&
+	    vm_object_coalesce(prev_entry->object.vm_object,
+	    prev_entry->offset,
+	    (vm_size_t)(prev_entry->end - prev_entry->start),
+	    (vm_size_t)(end - prev_entry->end), cred != NULL &&
+	    (protoeflags & MAP_ENTRY_NEEDS_COPY) == 0)) {
 		/*
 		 * We were able to extend the object.  Determine if we
 		 * can extend the previous map entry to include the
 		 * new range as well.
 		 */
-		if ((prev_entry->inheritance == inheritance) &&
-		    (prev_entry->protection == prot) &&
-		    (prev_entry->max_protection == max)) {
-			map->size += (end - prev_entry->end);
-			prev_entry->end = end;
-			vm_map_entry_resize_free(map, prev_entry);
-			vm_map_simplify_entry(map, prev_entry);
+		if (prev_entry->inheritance == inheritance &&
+		    prev_entry->protection == prot &&
+		    prev_entry->max_protection == max &&
+		    prev_entry->wired_count == 0) {
+			KASSERT((prev_entry->eflags & MAP_ENTRY_USER_WIRED) ==
+			    0, ("prev_entry %p has incoherent wiring",
+			    prev_entry));
+			if ((prev_entry->eflags & MAP_ENTRY_GUARD) == 0)
+				map->size += end - prev_entry->end;
+			vm_map_entry_resize(map, prev_entry,
+			    end - prev_entry->end);
+			vm_map_try_merge_entries(map, prev_entry, next_entry);
 			return (KERN_SUCCESS);
 		}
 
@@ -1300,7 +1804,7 @@ charged:
 		 */
 		object = prev_entry->object.vm_object;
 		offset = prev_entry->offset +
-			(prev_entry->end - prev_entry->start);
+		    (prev_entry->end - prev_entry->start);
 		vm_object_reference(object);
 		if (cred != NULL && object != NULL && object->cred != NULL &&
 		    !(prev_entry->eflags & MAP_ENTRY_NEEDS_COPY)) {
@@ -1322,7 +1826,6 @@ charged:
 	new_entry->eflags = protoeflags;
 	new_entry->object.vm_object = object;
 	new_entry->offset = offset;
-	new_entry->avail_ssize = 0;
 
 	new_entry->inheritance = inheritance;
 	new_entry->protection = prot;
@@ -1333,14 +1836,15 @@ charged:
 	new_entry->next_read = start;
 
 	KASSERT(cred == NULL || !ENTRY_CHARGED(new_entry),
-	    ("OVERCOMMIT: vm_map_insert leaks vm_map %p", new_entry));
+	    ("overcommit: vm_map_insert leaks vm_map %p", new_entry));
 	new_entry->cred = cred;
 
 	/*
 	 * Insert the new entry into the list
 	 */
-	vm_map_entry_link(map, prev_entry, new_entry);
-	map->size += new_entry->end - new_entry->start;
+	vm_map_entry_link(map, new_entry);
+	if ((new_entry->eflags & MAP_ENTRY_GUARD) == 0)
+		map->size += new_entry->end - new_entry->start;
 
 	/*
 	 * Try to coalesce the new entry with both the previous and next
@@ -1348,12 +1852,12 @@ charged:
 	 * with the previous entry when object is NULL.  Here, we handle the
 	 * other cases, which are less common.
 	 */
-	vm_map_simplify_entry(map, new_entry);
+	vm_map_try_merge_entries(map, prev_entry, new_entry);
+	vm_map_try_merge_entries(map, new_entry, next_entry);
 
-	if (cow & (MAP_PREFAULT|MAP_PREFAULT_PARTIAL)) {
-		vm_map_pmap_enter(map, start, prot,
-				    object, OFF_TO_IDX(offset), end - start,
-				    cow & MAP_PREFAULT_PARTIAL);
+	if ((cow & (MAP_PREFAULT | MAP_PREFAULT_PARTIAL)) != 0) {
+		vm_map_pmap_enter(map, start, prot, object, OFF_TO_IDX(offset),
+		    end - start, cow & MAP_PREFAULT_PARTIAL);
 	}
 
 	return (KERN_SUCCESS);
@@ -1365,82 +1869,107 @@ charged:
  *	Find the first fit (lowest VM address) for "length" free bytes
  *	beginning at address >= start in the given map.
  *
- *	In a vm_map_entry, "adj_free" is the amount of free space
- *	adjacent (higher address) to this entry, and "max_free" is the
- *	maximum amount of contiguous free space in its subtree.  This
- *	allows finding a free region in one path down the tree, so
- *	O(log n) amortized with splay trees.
+ *	In a vm_map_entry, "max_free" is the maximum amount of
+ *	contiguous free space between an entry in its subtree and a
+ *	neighbor of that entry.  This allows finding a free region in
+ *	one path down the tree, so O(log n) amortized with splay
+ *	trees.
  *
  *	The map must be locked, and leaves it so.
  *
- *	Returns: 0 on success, and starting address in *addr,
- *		 1 if insufficient space.
+ *	Returns: starting address if sufficient space,
+ *		 vm_map_max(map)-length+1 if insufficient space.
  */
-int
-vm_map_findspace(vm_map_t map, vm_offset_t start, vm_size_t length,
-    vm_offset_t *addr)	/* OUT */
+vm_offset_t
+vm_map_findspace(vm_map_t map, vm_offset_t start, vm_size_t length)
 {
-	vm_map_entry_t entry;
-	vm_offset_t st;
+	vm_map_entry_t header, llist, rlist, root, y;
+	vm_size_t left_length, max_free_left, max_free_right;
+	vm_offset_t gap_end;
+
+	VM_MAP_ASSERT_LOCKED(map);
 
 	/*
 	 * Request must fit within min/max VM address and must avoid
 	 * address wrap.
 	 */
-	if (start < map->min_offset)
-		start = map->min_offset;
-	if (start + length > map->max_offset || start + length < start)
-		return (1);
+	start = MAX(start, vm_map_min(map));
+	if (start >= vm_map_max(map) || length > vm_map_max(map) - start)
+		return (vm_map_max(map) - length + 1);
 
 	/* Empty tree means wide open address space. */
-	if (map->root == NULL) {
-		*addr = start;
-		return (0);
-	}
+	if (map->root == NULL)
+		return (start);
 
 	/*
-	 * After splay, if start comes before root node, then there
-	 * must be a gap from start to the root.
+	 * After splay_split, if start is within an entry, push it to the start
+	 * of the following gap.  If rlist is at the end of the gap containing
+	 * start, save the end of that gap in gap_end to see if the gap is big
+	 * enough; otherwise set gap_end to start skip gap-checking and move
+	 * directly to a search of the right subtree.
 	 */
-	map->root = vm_map_entry_splay(start, map->root);
-	if (start + length <= map->root->start) {
-		*addr = start;
-		return (0);
+	header = &map->header;
+	root = vm_map_splay_split(map, start, length, &llist, &rlist);
+	gap_end = rlist->start;
+	if (root != NULL) {
+		start = root->end;
+		if (root->right != rlist)
+			gap_end = start;
+		max_free_left = vm_map_splay_merge_left(header, root, llist);
+		max_free_right = vm_map_splay_merge_right(header, root, rlist);
+	} else if (rlist != header) {
+		root = rlist;
+		rlist = root->left;
+		max_free_left = vm_map_splay_merge_pred(header, root, llist);
+		max_free_right = vm_map_splay_merge_right(header, root, rlist);
+	} else {
+		root = llist;
+		llist = root->right;
+		max_free_left = vm_map_splay_merge_left(header, root, llist);
+		max_free_right = vm_map_splay_merge_succ(header, root, rlist);
 	}
-
-	/*
-	 * Root is the last node that might begin its gap before
-	 * start, and this is the last comparison where address
-	 * wrap might be a problem.
-	 */
-	st = (start > map->root->end) ? start : map->root->end;
-	if (length <= map->root->end + map->root->adj_free - st) {
-		*addr = st;
-		return (0);
-	}
+	root->max_free = vm_size_max(max_free_left, max_free_right);
+	map->root = root;
+	VM_MAP_ASSERT_CONSISTENT(map);
+	if (length <= gap_end - start)
+		return (start);
 
 	/* With max_free, can immediately tell if no solution. */
-	entry = map->root->right;
-	if (entry == NULL || length > entry->max_free)
-		return (1);
+	if (root->right == header || length > root->right->max_free)
+		return (vm_map_max(map) - length + 1);
 
 	/*
-	 * Search the right subtree in the order: left subtree, root,
-	 * right subtree (first fit).  The previous splay implies that
-	 * all regions in the right subtree have addresses > start.
+	 * Splay for the least large-enough gap in the right subtree.
 	 */
-	while (entry != NULL) {
-		if (entry->left != NULL && entry->left->max_free >= length)
-			entry = entry->left;
-		else if (entry->adj_free >= length) {
-			*addr = entry->end;
-			return (0);
-		} else
-			entry = entry->right;
+	llist = rlist = header;
+	for (left_length = 0;;
+	    left_length = vm_map_entry_max_free_left(root, llist)) {
+		if (length <= left_length)
+			SPLAY_LEFT_STEP(root, y, llist, rlist,
+			    length <= vm_map_entry_max_free_left(y, llist));
+		else
+			SPLAY_RIGHT_STEP(root, y, llist, rlist,
+			    length > vm_map_entry_max_free_left(y, root));
+		if (root == NULL)
+			break;
 	}
-
-	/* Can't get here, so panic if we do. */
-	panic("vm_map_findspace: max_free corrupt");
+	root = llist;
+	llist = root->right;
+	max_free_left = vm_map_splay_merge_left(header, root, llist);
+	if (rlist == header) {
+		root->max_free = vm_size_max(max_free_left,
+		    vm_map_splay_merge_succ(header, root, rlist));
+	} else {
+		y = rlist;
+		rlist = y->left;
+		y->max_free = vm_size_max(
+		    vm_map_splay_merge_pred(root, y, root),
+		    vm_map_splay_merge_right(header, y, rlist));
+		root->max_free = vm_size_max(max_free_left, y->max_free);
+	}
+	map->root = root;
+	VM_MAP_ASSERT_CONSISTENT(map);
+	return (root->end);
 }
 
 int
@@ -1457,8 +1986,11 @@ vm_map_fixed(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 	    ("vm_map_fixed: non-NULL backing object for stack"));
 	vm_map_lock(map);
 	VM_MAP_RANGE_CHECK(map, start, end);
-	if ((cow & MAP_CHECK_EXCL) == 0)
-		vm_map_delete(map, start, end);
+	if ((cow & MAP_CHECK_EXCL) == 0) {
+		result = vm_map_delete(map, start, end);
+		if (result != KERN_SUCCESS)
+			goto out;
+	}
 	if ((cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP)) != 0) {
 		result = vm_map_stack_locked(map, start, length, sgrowsiz,
 		    prot, max, cow);
@@ -1466,8 +1998,117 @@ vm_map_fixed(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 		result = vm_map_insert(map, object, offset, start, end,
 		    prot, max, cow);
 	}
+out:
 	vm_map_unlock(map);
 	return (result);
+}
+
+static const int aslr_pages_rnd_64[2] = {0x1000, 0x10};
+static const int aslr_pages_rnd_32[2] = {0x100, 0x4};
+
+static int cluster_anon = 1;
+SYSCTL_INT(_vm, OID_AUTO, cluster_anon, CTLFLAG_RW,
+    &cluster_anon, 0,
+    "Cluster anonymous mappings: 0 = no, 1 = yes if no hint, 2 = always");
+
+static bool
+clustering_anon_allowed(vm_offset_t addr)
+{
+
+	switch (cluster_anon) {
+	case 0:
+		return (false);
+	case 1:
+		return (addr == 0);
+	case 2:
+	default:
+		return (true);
+	}
+}
+
+static long aslr_restarts;
+SYSCTL_LONG(_vm, OID_AUTO, aslr_restarts, CTLFLAG_RD,
+    &aslr_restarts, 0,
+    "Number of aslr failures");
+
+/*
+ * Searches for the specified amount of free space in the given map with the
+ * specified alignment.  Performs an address-ordered, first-fit search from
+ * the given address "*addr", with an optional upper bound "max_addr".  If the
+ * parameter "alignment" is zero, then the alignment is computed from the
+ * given (object, offset) pair so as to enable the greatest possible use of
+ * superpage mappings.  Returns KERN_SUCCESS and the address of the free space
+ * in "*addr" if successful.  Otherwise, returns KERN_NO_SPACE.
+ *
+ * The map must be locked.  Initially, there must be at least "length" bytes
+ * of free space at the given address.
+ */
+static int
+vm_map_alignspace(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
+    vm_offset_t *addr, vm_size_t length, vm_offset_t max_addr,
+    vm_offset_t alignment)
+{
+	vm_offset_t aligned_addr, free_addr;
+
+	VM_MAP_ASSERT_LOCKED(map);
+	free_addr = *addr;
+	KASSERT(free_addr == vm_map_findspace(map, free_addr, length),
+	    ("caller failed to provide space %#jx at address %p",
+	     (uintmax_t)length, (void *)free_addr));
+	for (;;) {
+		/*
+		 * At the start of every iteration, the free space at address
+		 * "*addr" is at least "length" bytes.
+		 */
+		if (alignment == 0)
+			pmap_align_superpage(object, offset, addr, length);
+		else if ((*addr & (alignment - 1)) != 0) {
+			*addr &= ~(alignment - 1);
+			*addr += alignment;
+		}
+		aligned_addr = *addr;
+		if (aligned_addr == free_addr) {
+			/*
+			 * Alignment did not change "*addr", so "*addr" must
+			 * still provide sufficient free space.
+			 */
+			return (KERN_SUCCESS);
+		}
+
+		/*
+		 * Test for address wrap on "*addr".  A wrapped "*addr" could
+		 * be a valid address, in which case vm_map_findspace() cannot
+		 * be relied upon to fail.
+		 */
+		if (aligned_addr < free_addr)
+			return (KERN_NO_SPACE);
+		*addr = vm_map_findspace(map, aligned_addr, length);
+		if (*addr + length > vm_map_max(map) ||
+		    (max_addr != 0 && *addr + length > max_addr))
+			return (KERN_NO_SPACE);
+		free_addr = *addr;
+		if (free_addr == aligned_addr) {
+			/*
+			 * If a successful call to vm_map_findspace() did not
+			 * change "*addr", then "*addr" must still be aligned
+			 * and provide sufficient free space.
+			 */
+			return (KERN_SUCCESS);
+		}
+	}
+}
+
+int
+vm_map_find_aligned(vm_map_t map, vm_offset_t *addr, vm_size_t length,
+    vm_offset_t max_addr, vm_offset_t alignment)
+{
+	/* XXXKIB ASLR eh ? */
+	*addr = vm_map_findspace(map, *addr, length);
+	if (*addr + length > vm_map_max(map) ||
+	    (max_addr != 0 && *addr + length > max_addr))
+		return (KERN_NO_SPACE);
+	return (vm_map_alignspace(map, NULL, 0, addr, length, max_addr,
+	    alignment));
 }
 
 /*
@@ -1485,12 +2126,15 @@ vm_map_find(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 	    vm_size_t length, vm_offset_t max_addr, int find_space,
 	    vm_prot_t prot, vm_prot_t max, int cow)
 {
-	vm_offset_t alignment, initial_addr, start;
-	int result;
+	vm_offset_t alignment, curr_min_addr, min_addr;
+	int gap, pidx, rv, try;
+	bool cluster, en_aslr, update_anon;
 
 	KASSERT((cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP)) == 0 ||
 	    object == NULL,
 	    ("vm_map_find: non-NULL backing object for stack"));
+	MPASS((cow & MAP_REMAP) == 0 || (find_space == VMFS_NO_SPACE &&
+	    (cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP)) == 0));
 	if (find_space == VMFS_OPTIMAL_SPACE && (object == NULL ||
 	    (object->flags & OBJ_COLORED) == 0))
 		find_space = VMFS_ANY_SPACE;
@@ -1499,143 +2143,316 @@ vm_map_find(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 		alignment = (vm_offset_t)1 << (find_space >> 8);
 	} else
 		alignment = 0;
-	initial_addr = *addr;
-again:
-	start = initial_addr;
+	en_aslr = (map->flags & MAP_ASLR) != 0;
+	update_anon = cluster = clustering_anon_allowed(*addr) &&
+	    (map->flags & MAP_IS_SUB_MAP) == 0 && max_addr == 0 &&
+	    find_space != VMFS_NO_SPACE && object == NULL &&
+	    (cow & (MAP_INHERIT_SHARE | MAP_STACK_GROWS_UP |
+	    MAP_STACK_GROWS_DOWN)) == 0 && prot != PROT_NONE;
+	curr_min_addr = min_addr = *addr;
+	if (en_aslr && min_addr == 0 && !cluster &&
+	    find_space != VMFS_NO_SPACE &&
+	    (map->flags & MAP_ASLR_IGNSTART) != 0)
+		curr_min_addr = min_addr = vm_map_min(map);
+	try = 0;
 	vm_map_lock(map);
-	do {
-		if (find_space != VMFS_NO_SPACE) {
-			if (vm_map_findspace(map, start, length, addr) ||
+	if (cluster) {
+		curr_min_addr = map->anon_loc;
+		if (curr_min_addr == 0)
+			cluster = false;
+	}
+	if (find_space != VMFS_NO_SPACE) {
+		KASSERT(find_space == VMFS_ANY_SPACE ||
+		    find_space == VMFS_OPTIMAL_SPACE ||
+		    find_space == VMFS_SUPER_SPACE ||
+		    alignment != 0, ("unexpected VMFS flag"));
+again:
+		/*
+		 * When creating an anonymous mapping, try clustering
+		 * with an existing anonymous mapping first.
+		 *
+		 * We make up to two attempts to find address space
+		 * for a given find_space value. The first attempt may
+		 * apply randomization or may cluster with an existing
+		 * anonymous mapping. If this first attempt fails,
+		 * perform a first-fit search of the available address
+		 * space.
+		 *
+		 * If all tries failed, and find_space is
+		 * VMFS_OPTIMAL_SPACE, fallback to VMFS_ANY_SPACE.
+		 * Again enable clustering and randomization.
+		 */
+		try++;
+		MPASS(try <= 2);
+
+		if (try == 2) {
+			/*
+			 * Second try: we failed either to find a
+			 * suitable region for randomizing the
+			 * allocation, or to cluster with an existing
+			 * mapping.  Retry with free run.
+			 */
+			curr_min_addr = (map->flags & MAP_ASLR_IGNSTART) != 0 ?
+			    vm_map_min(map) : min_addr;
+			atomic_add_long(&aslr_restarts, 1);
+		}
+
+		if (try == 1 && en_aslr && !cluster) {
+			/*
+			 * Find space for allocation, including
+			 * gap needed for later randomization.
+			 */
+			pidx = MAXPAGESIZES > 1 && pagesizes[1] != 0 &&
+			    (find_space == VMFS_SUPER_SPACE || find_space ==
+			    VMFS_OPTIMAL_SPACE) ? 1 : 0;
+			gap = vm_map_max(map) > MAP_32BIT_MAX_ADDR &&
+			    (max_addr == 0 || max_addr > MAP_32BIT_MAX_ADDR) ?
+			    aslr_pages_rnd_64[pidx] : aslr_pages_rnd_32[pidx];
+			*addr = vm_map_findspace(map, curr_min_addr,
+			    length + gap * pagesizes[pidx]);
+			if (*addr + length + gap * pagesizes[pidx] >
+			    vm_map_max(map))
+				goto again;
+			/* And randomize the start address. */
+			*addr += (arc4random() % gap) * pagesizes[pidx];
+			if (max_addr != 0 && *addr + length > max_addr)
+				goto again;
+		} else {
+			*addr = vm_map_findspace(map, curr_min_addr, length);
+			if (*addr + length > vm_map_max(map) ||
 			    (max_addr != 0 && *addr + length > max_addr)) {
-				vm_map_unlock(map);
-				if (find_space == VMFS_OPTIMAL_SPACE) {
-					find_space = VMFS_ANY_SPACE;
+				if (cluster) {
+					cluster = false;
+					MPASS(try == 1);
 					goto again;
 				}
-				return (KERN_NO_SPACE);
+				rv = KERN_NO_SPACE;
+				goto done;
 			}
-			switch (find_space) {
-			case VMFS_SUPER_SPACE:
-			case VMFS_OPTIMAL_SPACE:
-				pmap_align_superpage(object, offset, addr,
-				    length);
-				break;
-			case VMFS_ANY_SPACE:
-				break;
-			default:
-				if ((*addr & (alignment - 1)) != 0) {
-					*addr &= ~(alignment - 1);
-					*addr += alignment;
-				}
-				break;
-			}
+		}
 
-			start = *addr;
+		if (find_space != VMFS_ANY_SPACE &&
+		    (rv = vm_map_alignspace(map, object, offset, addr, length,
+		    max_addr, alignment)) != KERN_SUCCESS) {
+			if (find_space == VMFS_OPTIMAL_SPACE) {
+				find_space = VMFS_ANY_SPACE;
+				curr_min_addr = min_addr;
+				cluster = update_anon;
+				try = 0;
+				goto again;
+			}
+			goto done;
 		}
-		if ((cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP)) != 0) {
-			result = vm_map_stack_locked(map, start, length,
-			    sgrowsiz, prot, max, cow);
-		} else {
-			result = vm_map_insert(map, object, offset, start,
-			    start + length, prot, max, cow);
+	} else if ((cow & MAP_REMAP) != 0) {
+		if (!vm_map_range_valid(map, *addr, *addr + length)) {
+			rv = KERN_INVALID_ADDRESS;
+			goto done;
 		}
-	} while (result == KERN_NO_SPACE && find_space != VMFS_NO_SPACE &&
-	    find_space != VMFS_ANY_SPACE);
+		rv = vm_map_delete(map, *addr, *addr + length);
+		if (rv != KERN_SUCCESS)
+			goto done;
+	}
+	if ((cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP)) != 0) {
+		rv = vm_map_stack_locked(map, *addr, length, sgrowsiz, prot,
+		    max, cow);
+	} else {
+		rv = vm_map_insert(map, object, offset, *addr, *addr + length,
+		    prot, max, cow);
+	}
+	if (rv == KERN_SUCCESS && update_anon)
+		map->anon_loc = *addr + length;
+done:
 	vm_map_unlock(map);
-	return (result);
+	return (rv);
 }
 
 /*
- *	vm_map_simplify_entry:
+ *	vm_map_find_min() is a variant of vm_map_find() that takes an
+ *	additional parameter (min_addr) and treats the given address
+ *	(*addr) differently.  Specifically, it treats *addr as a hint
+ *	and not as the minimum address where the mapping is created.
  *
- *	Simplify the given map entry by merging with either neighbor.  This
- *	routine also has the ability to merge with both neighbors.
- *
- *	The map must be locked.
- *
- *	This routine guarantees that the passed entry remains valid (though
- *	possibly extended).  When merging, this routine may delete one or
- *	both neighbors.
+ *	This function works in two phases.  First, it tries to
+ *	allocate above the hint.  If that fails and the hint is
+ *	greater than min_addr, it performs a second pass, replacing
+ *	the hint with min_addr as the minimum address for the
+ *	allocation.
  */
-void
-vm_map_simplify_entry(vm_map_t map, vm_map_entry_t entry)
+int
+vm_map_find_min(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
+    vm_offset_t *addr, vm_size_t length, vm_offset_t min_addr,
+    vm_offset_t max_addr, int find_space, vm_prot_t prot, vm_prot_t max,
+    int cow)
 {
-	vm_map_entry_t next, prev;
-	vm_size_t prevsize, esize;
+	vm_offset_t hint;
+	int rv;
 
-	if ((entry->eflags & (MAP_ENTRY_GROWS_DOWN | MAP_ENTRY_GROWS_UP |
-	    MAP_ENTRY_IN_TRANSITION | MAP_ENTRY_IS_SUB_MAP)) != 0)
-		return;
-
-	prev = entry->prev;
-	if (prev != &map->header) {
-		prevsize = prev->end - prev->start;
-		if ( (prev->end == entry->start) &&
-		     (prev->object.vm_object == entry->object.vm_object) &&
-		     (!prev->object.vm_object ||
-			(prev->offset + prevsize == entry->offset)) &&
-		     (prev->eflags == entry->eflags) &&
-		     (prev->protection == entry->protection) &&
-		     (prev->max_protection == entry->max_protection) &&
-		     (prev->inheritance == entry->inheritance) &&
-		     (prev->wired_count == entry->wired_count) &&
-		     (prev->cred == entry->cred)) {
-			vm_map_entry_unlink(map, prev);
-			entry->start = prev->start;
-			entry->offset = prev->offset;
-			if (entry->prev != &map->header)
-				vm_map_entry_resize_free(map, entry->prev);
-
-			/*
-			 * If the backing object is a vnode object,
-			 * vm_object_deallocate() calls vrele().
-			 * However, vrele() does not lock the vnode
-			 * because the vnode has additional
-			 * references.  Thus, the map lock can be kept
-			 * without causing a lock-order reversal with
-			 * the vnode lock.
-			 *
-			 * Since we count the number of virtual page
-			 * mappings in object->un_pager.vnp.writemappings,
-			 * the writemappings value should not be adjusted
-			 * when the entry is disposed of.
-			 */
-			if (prev->object.vm_object)
-				vm_object_deallocate(prev->object.vm_object);
-			if (prev->cred != NULL)
-				crfree(prev->cred);
-			vm_map_entry_dispose(map, prev);
-		}
-	}
-
-	next = entry->next;
-	if (next != &map->header) {
-		esize = entry->end - entry->start;
-		if ((entry->end == next->start) &&
-		    (next->object.vm_object == entry->object.vm_object) &&
-		     (!entry->object.vm_object ||
-			(entry->offset + esize == next->offset)) &&
-		    (next->eflags == entry->eflags) &&
-		    (next->protection == entry->protection) &&
-		    (next->max_protection == entry->max_protection) &&
-		    (next->inheritance == entry->inheritance) &&
-		    (next->wired_count == entry->wired_count) &&
-		    (next->cred == entry->cred)) {
-			vm_map_entry_unlink(map, next);
-			entry->end = next->end;
-			vm_map_entry_resize_free(map, entry);
-
-			/*
-			 * See comment above.
-			 */
-			if (next->object.vm_object)
-				vm_object_deallocate(next->object.vm_object);
-			if (next->cred != NULL)
-				crfree(next->cred);
-			vm_map_entry_dispose(map, next);
-		}
+	hint = *addr;
+	for (;;) {
+		rv = vm_map_find(map, object, offset, addr, length, max_addr,
+		    find_space, prot, max, cow);
+		if (rv == KERN_SUCCESS || min_addr >= hint)
+			return (rv);
+		*addr = hint = min_addr;
 	}
 }
+
+/*
+ * A map entry with any of the following flags set must not be merged with
+ * another entry.
+ */
+#define	MAP_ENTRY_NOMERGE_MASK	(MAP_ENTRY_GROWS_DOWN | MAP_ENTRY_GROWS_UP | \
+	    MAP_ENTRY_IN_TRANSITION | MAP_ENTRY_IS_SUB_MAP | MAP_ENTRY_VN_EXEC)
+
+static bool
+vm_map_mergeable_neighbors(vm_map_entry_t prev, vm_map_entry_t entry)
+{
+
+	KASSERT((prev->eflags & MAP_ENTRY_NOMERGE_MASK) == 0 ||
+	    (entry->eflags & MAP_ENTRY_NOMERGE_MASK) == 0,
+	    ("vm_map_mergeable_neighbors: neither %p nor %p are mergeable",
+	    prev, entry));
+	return (prev->end == entry->start &&
+	    prev->object.vm_object == entry->object.vm_object &&
+	    (prev->object.vm_object == NULL ||
+	    prev->offset + (prev->end - prev->start) == entry->offset) &&
+	    prev->eflags == entry->eflags &&
+	    prev->protection == entry->protection &&
+	    prev->max_protection == entry->max_protection &&
+	    prev->inheritance == entry->inheritance &&
+	    prev->wired_count == entry->wired_count &&
+	    prev->cred == entry->cred);
+}
+
+static void
+vm_map_merged_neighbor_dispose(vm_map_t map, vm_map_entry_t entry)
+{
+
+	/*
+	 * If the backing object is a vnode object, vm_object_deallocate()
+	 * calls vrele().  However, vrele() does not lock the vnode because
+	 * the vnode has additional references.  Thus, the map lock can be
+	 * kept without causing a lock-order reversal with the vnode lock.
+	 *
+	 * Since we count the number of virtual page mappings in
+	 * object->un_pager.vnp.writemappings, the writemappings value
+	 * should not be adjusted when the entry is disposed of.
+	 */
+	if (entry->object.vm_object != NULL)
+		vm_object_deallocate(entry->object.vm_object);
+	if (entry->cred != NULL)
+		crfree(entry->cred);
+	vm_map_entry_dispose(map, entry);
+}
+
+/*
+ *	vm_map_try_merge_entries:
+ *
+ *	Compare the given map entry to its predecessor, and merge its precessor
+ *	into it if possible.  The entry remains valid, and may be extended.
+ *	The predecessor may be deleted.
+ *
+ *	The map must be locked.
+ */
+void
+vm_map_try_merge_entries(vm_map_t map, vm_map_entry_t prev_entry,
+    vm_map_entry_t entry)
+{
+
+	VM_MAP_ASSERT_LOCKED(map);
+	if ((entry->eflags & MAP_ENTRY_NOMERGE_MASK) == 0 &&
+	    vm_map_mergeable_neighbors(prev_entry, entry)) {
+		vm_map_entry_unlink(map, prev_entry, UNLINK_MERGE_NEXT);
+		vm_map_merged_neighbor_dispose(map, prev_entry);
+	}
+}
+
+/*
+ *	vm_map_entry_back:
+ *
+ *	Allocate an object to back a map entry.
+ */
+static inline void
+vm_map_entry_back(vm_map_entry_t entry)
+{
+	vm_object_t object;
+
+	KASSERT(entry->object.vm_object == NULL,
+	    ("map entry %p has backing object", entry));
+	KASSERT((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0,
+	    ("map entry %p is a submap", entry));
+	object = vm_object_allocate_anon(atop(entry->end - entry->start), NULL,
+	    entry->cred, entry->end - entry->start);
+	entry->object.vm_object = object;
+	entry->offset = 0;
+	entry->cred = NULL;
+}
+
+/*
+ *	vm_map_entry_charge_object
+ *
+ *	If there is no object backing this entry, create one.  Otherwise, if
+ *	the entry has cred, give it to the backing object.
+ */
+static inline void
+vm_map_entry_charge_object(vm_map_t map, vm_map_entry_t entry)
+{
+
+	VM_MAP_ASSERT_LOCKED(map);
+	KASSERT((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0,
+	    ("map entry %p is a submap", entry));
+	if (entry->object.vm_object == NULL && !map->system_map &&
+	    (entry->eflags & MAP_ENTRY_GUARD) == 0)
+		vm_map_entry_back(entry);
+	else if (entry->object.vm_object != NULL &&
+	    ((entry->eflags & MAP_ENTRY_NEEDS_COPY) == 0) &&
+	    entry->cred != NULL) {
+		VM_OBJECT_WLOCK(entry->object.vm_object);
+		KASSERT(entry->object.vm_object->cred == NULL,
+		    ("OVERCOMMIT: %s: both cred e %p", __func__, entry));
+		entry->object.vm_object->cred = entry->cred;
+		entry->object.vm_object->charge = entry->end - entry->start;
+		VM_OBJECT_WUNLOCK(entry->object.vm_object);
+		entry->cred = NULL;
+	}
+}
+
+/*
+ *	vm_map_entry_clone
+ *
+ *	Create a duplicate map entry for clipping.
+ */
+static vm_map_entry_t
+vm_map_entry_clone(vm_map_t map, vm_map_entry_t entry)
+{
+	vm_map_entry_t new_entry;
+
+	VM_MAP_ASSERT_LOCKED(map);
+
+	/*
+	 * Create a backing object now, if none exists, so that more individual
+	 * objects won't be created after the map entry is split.
+	 */
+	vm_map_entry_charge_object(map, entry);
+
+	/* Clone the entry. */
+	new_entry = vm_map_entry_create(map);
+	*new_entry = *entry;
+	if (new_entry->cred != NULL)
+		crhold(entry->cred);
+	if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0) {
+		vm_object_reference(new_entry->object.vm_object);
+		vm_map_entry_set_vnode_text(new_entry, true);
+		/*
+		 * The object->un_pager.vnp.writemappings for the object of
+		 * MAP_ENTRY_WRITECNT type entry shall be kept as is here.  The
+		 * virtual pages are re-distributed among the clipped entries,
+		 * so the sum is left the same.
+		 */
+	}
+	return (new_entry);
+}
+
 /*
  *	vm_map_clip_start:	[ internal use only ]
  *
@@ -1643,81 +2460,71 @@ vm_map_simplify_entry(vm_map_t map, vm_map_entry_t entry)
  *	the specified address; if necessary,
  *	it splits the entry into two.
  */
-#define vm_map_clip_start(map, entry, startaddr) \
-{ \
-	if (startaddr > entry->start) \
-		_vm_map_clip_start(map, entry, startaddr); \
+static int
+vm_map_clip_start(vm_map_t map, vm_map_entry_t entry, vm_offset_t startaddr)
+{
+	vm_map_entry_t new_entry;
+	int bdry_idx;
+
+	if (!map->system_map)
+		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+		    "%s: map %p entry %p start 0x%jx", __func__, map, entry,
+		    (uintmax_t)startaddr);
+
+	if (startaddr <= entry->start)
+		return (KERN_SUCCESS);
+
+	VM_MAP_ASSERT_LOCKED(map);
+	KASSERT(entry->end > startaddr && entry->start < startaddr,
+	    ("%s: invalid clip of entry %p", __func__, entry));
+
+	bdry_idx = (entry->eflags & MAP_ENTRY_SPLIT_BOUNDARY_MASK) >>
+	    MAP_ENTRY_SPLIT_BOUNDARY_SHIFT;
+	if (bdry_idx != 0) {
+		if ((startaddr & (pagesizes[bdry_idx] - 1)) != 0)
+			return (KERN_INVALID_ARGUMENT);
+	}
+
+	new_entry = vm_map_entry_clone(map, entry);
+
+	/*
+	 * Split off the front portion.  Insert the new entry BEFORE this one,
+	 * so that this entry has the specified starting address.
+	 */
+	new_entry->end = startaddr;
+	vm_map_entry_link(map, new_entry);
+	return (KERN_SUCCESS);
 }
 
 /*
- *	This routine is called only when it is known that
- *	the entry must be split.
+ *	vm_map_lookup_clip_start:
+ *
+ *	Find the entry at or just after 'start', and clip it if 'start' is in
+ *	the interior of the entry.  Return entry after 'start', and in
+ *	prev_entry set the entry before 'start'.
  */
-static void
-_vm_map_clip_start(vm_map_t map, vm_map_entry_t entry, vm_offset_t start)
+static int
+vm_map_lookup_clip_start(vm_map_t map, vm_offset_t start,
+    vm_map_entry_t *res_entry, vm_map_entry_t *prev_entry)
 {
-	vm_map_entry_t new_entry;
+	vm_map_entry_t entry;
+	int rv;
 
-	VM_MAP_ASSERT_LOCKED(map);
+	if (!map->system_map)
+		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+		    "%s: map %p start 0x%jx prev %p", __func__, map,
+		    (uintmax_t)start, prev_entry);
 
-	/*
-	 * Split off the front portion -- note that we must insert the new
-	 * entry BEFORE this one, so that this entry has the specified
-	 * starting address.
-	 */
-	vm_map_simplify_entry(map, entry);
-
-	/*
-	 * If there is no object backing this entry, we might as well create
-	 * one now.  If we defer it, an object can get created after the map
-	 * is clipped, and individual objects will be created for the split-up
-	 * map.  This is a bit of a hack, but is also about the best place to
-	 * put this improvement.
-	 */
-	if (entry->object.vm_object == NULL && !map->system_map) {
-		vm_object_t object;
-		object = vm_object_allocate(OBJT_DEFAULT,
-				atop(entry->end - entry->start));
-		entry->object.vm_object = object;
-		entry->offset = 0;
-		if (entry->cred != NULL) {
-			object->cred = entry->cred;
-			object->charge = entry->end - entry->start;
-			entry->cred = NULL;
-		}
-	} else if (entry->object.vm_object != NULL &&
-		   ((entry->eflags & MAP_ENTRY_NEEDS_COPY) == 0) &&
-		   entry->cred != NULL) {
-		VM_OBJECT_WLOCK(entry->object.vm_object);
-		KASSERT(entry->object.vm_object->cred == NULL,
-		    ("OVERCOMMIT: vm_entry_clip_start: both cred e %p", entry));
-		entry->object.vm_object->cred = entry->cred;
-		entry->object.vm_object->charge = entry->end - entry->start;
-		VM_OBJECT_WUNLOCK(entry->object.vm_object);
-		entry->cred = NULL;
-	}
-
-	new_entry = vm_map_entry_create(map);
-	*new_entry = *entry;
-
-	new_entry->end = start;
-	entry->offset += (start - entry->start);
-	entry->start = start;
-	if (new_entry->cred != NULL)
-		crhold(entry->cred);
-
-	vm_map_entry_link(map, entry->prev, new_entry);
-
-	if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0) {
-		vm_object_reference(new_entry->object.vm_object);
-		/*
-		 * The object->un_pager.vnp.writemappings for the
-		 * object of MAP_ENTRY_VN_WRITECNT type entry shall be
-		 * kept as is here.  The virtual pages are
-		 * re-distributed among the clipped entries, so the sum is
-		 * left the same.
-		 */
-	}
+	if (vm_map_lookup_entry(map, start, prev_entry)) {
+		entry = *prev_entry;
+		rv = vm_map_clip_start(map, entry, start);
+		if (rv != KERN_SUCCESS)
+			return (rv);
+		*prev_entry = vm_map_entry_pred(entry);
+	} else
+		entry = vm_map_entry_succ(*prev_entry);
+	*res_entry = entry;
+	return (KERN_SUCCESS);
 }
 
 /*
@@ -1727,69 +2534,41 @@ _vm_map_clip_start(vm_map_t map, vm_map_entry_t entry, vm_offset_t start)
  *	the specified address; if necessary,
  *	it splits the entry into two.
  */
-#define vm_map_clip_end(map, entry, endaddr) \
-{ \
-	if ((endaddr) < (entry->end)) \
-		_vm_map_clip_end((map), (entry), (endaddr)); \
-}
-
-/*
- *	This routine is called only when it is known that
- *	the entry must be split.
- */
-static void
-_vm_map_clip_end(vm_map_t map, vm_map_entry_t entry, vm_offset_t end)
+static int
+vm_map_clip_end(vm_map_t map, vm_map_entry_t entry, vm_offset_t endaddr)
 {
 	vm_map_entry_t new_entry;
+	int bdry_idx;
+
+	if (!map->system_map)
+		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL,
+		    "%s: map %p entry %p end 0x%jx", __func__, map, entry,
+		    (uintmax_t)endaddr);
+
+	if (endaddr >= entry->end)
+		return (KERN_SUCCESS);
 
 	VM_MAP_ASSERT_LOCKED(map);
+	KASSERT(entry->start < endaddr && entry->end > endaddr,
+	    ("%s: invalid clip of entry %p", __func__, entry));
 
-	/*
-	 * If there is no object backing this entry, we might as well create
-	 * one now.  If we defer it, an object can get created after the map
-	 * is clipped, and individual objects will be created for the split-up
-	 * map.  This is a bit of a hack, but is also about the best place to
-	 * put this improvement.
-	 */
-	if (entry->object.vm_object == NULL && !map->system_map) {
-		vm_object_t object;
-		object = vm_object_allocate(OBJT_DEFAULT,
-				atop(entry->end - entry->start));
-		entry->object.vm_object = object;
-		entry->offset = 0;
-		if (entry->cred != NULL) {
-			object->cred = entry->cred;
-			object->charge = entry->end - entry->start;
-			entry->cred = NULL;
-		}
-	} else if (entry->object.vm_object != NULL &&
-		   ((entry->eflags & MAP_ENTRY_NEEDS_COPY) == 0) &&
-		   entry->cred != NULL) {
-		VM_OBJECT_WLOCK(entry->object.vm_object);
-		KASSERT(entry->object.vm_object->cred == NULL,
-		    ("OVERCOMMIT: vm_entry_clip_end: both cred e %p", entry));
-		entry->object.vm_object->cred = entry->cred;
-		entry->object.vm_object->charge = entry->end - entry->start;
-		VM_OBJECT_WUNLOCK(entry->object.vm_object);
-		entry->cred = NULL;
+	bdry_idx = (entry->eflags & MAP_ENTRY_SPLIT_BOUNDARY_MASK) >>
+	    MAP_ENTRY_SPLIT_BOUNDARY_SHIFT;
+	if (bdry_idx != 0) {
+		if ((endaddr & (pagesizes[bdry_idx] - 1)) != 0)
+			return (KERN_INVALID_ARGUMENT);
 	}
 
+	new_entry = vm_map_entry_clone(map, entry);
+
 	/*
-	 * Create a new entry and insert it AFTER the specified entry
+	 * Split off the back portion.  Insert the new entry AFTER this one,
+	 * so that this entry has the specified ending address.
 	 */
-	new_entry = vm_map_entry_create(map);
-	*new_entry = *entry;
+	new_entry->start = endaddr;
+	vm_map_entry_link(map, new_entry);
 
-	new_entry->start = entry->end = end;
-	new_entry->offset += (end - entry->start);
-	if (new_entry->cred != NULL)
-		crhold(entry->cred);
-
-	vm_map_entry_link(map, entry, new_entry);
-
-	if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0) {
-		vm_object_reference(new_entry->object.vm_object);
-	}
+	return (KERN_SUCCESS);
 }
 
 /*
@@ -1818,28 +2597,37 @@ vm_map_submap(
 	vm_map_t submap)
 {
 	vm_map_entry_t entry;
-	int result = KERN_INVALID_ARGUMENT;
+	int result;
+
+	result = KERN_INVALID_ARGUMENT;
+
+	vm_map_lock(submap);
+	submap->flags |= MAP_IS_SUB_MAP;
+	vm_map_unlock(submap);
 
 	vm_map_lock(map);
-
 	VM_MAP_RANGE_CHECK(map, start, end);
-
-	if (vm_map_lookup_entry(map, start, &entry)) {
-		vm_map_clip_start(map, entry, start);
-	} else
-		entry = entry->next;
-
-	vm_map_clip_end(map, entry, end);
-
-	if ((entry->start == start) && (entry->end == end) &&
-	    ((entry->eflags & MAP_ENTRY_COW) == 0) &&
-	    (entry->object.vm_object == NULL)) {
+	if (vm_map_lookup_entry(map, start, &entry) && entry->end >= end &&
+	    (entry->eflags & MAP_ENTRY_COW) == 0 &&
+	    entry->object.vm_object == NULL) {
+		result = vm_map_clip_start(map, entry, start);
+		if (result != KERN_SUCCESS)
+			goto unlock;
+		result = vm_map_clip_end(map, entry, end);
+		if (result != KERN_SUCCESS)
+			goto unlock;
 		entry->object.sub_map = submap;
 		entry->eflags |= MAP_ENTRY_IS_SUB_MAP;
 		result = KERN_SUCCESS;
 	}
+unlock:
 	vm_map_unlock(map);
 
+	if (result != KERN_SUCCESS) {
+		vm_map_lock(submap);
+		submap->flags &= ~MAP_IS_SUB_MAP;
+		vm_map_unlock(submap);
+	}
 	return (result);
 }
 
@@ -1858,9 +2646,7 @@ vm_map_submap(
  *	limited number of page mappings are created at the low-end of the
  *	specified address range.  (For this purpose, a superpage mapping
  *	counts as one page mapping.)  Otherwise, all resident pages within
- *	the specified address range are mapped.  Because these mappings are
- *	being created speculatively, cached pages are not reactivated and
- *	mapped.
+ *	the specified address range are mapped.
  */
 static void
 vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
@@ -1872,9 +2658,7 @@ vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
 
 	if ((prot & (VM_PROT_READ | VM_PROT_EXECUTE)) == 0 || object == NULL)
 		return;
-	VM_OBJECT_RLOCK(object);
 	if (object->type == OBJT_DEVICE || object->type == OBJT_SG) {
-		VM_OBJECT_RUNLOCK(object);
 		VM_OBJECT_WLOCK(object);
 		if (object->type == OBJT_DEVICE || object->type == OBJT_SG) {
 			pmap_object_init_pt(map->pmap, addr, object, pindex,
@@ -1883,11 +2667,12 @@ vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
 			return;
 		}
 		VM_OBJECT_LOCK_DOWNGRADE(object);
-	}
+	} else
+		VM_OBJECT_RLOCK(object);
 
 	psize = atop(size);
 	if (psize + pindex > object->size) {
-		if (object->size < pindex) {
+		if (pindex >= object->size) {
 			VM_OBJECT_RUNLOCK(object);
 			return;
 		}
@@ -1912,13 +2697,13 @@ vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
 		 * free pages allocating pv entries.
 		 */
 		if (((flags & MAP_PREFAULT_MADVISE) != 0 &&
-		    vm_cnt.v_free_count < vm_cnt.v_free_reserved) ||
+		    vm_page_count_severe()) ||
 		    ((flags & MAP_PREFAULT_PARTIAL) != 0 &&
 		    tmpidx >= threshold)) {
 			psize = tmpidx;
 			break;
 		}
-		if (p->valid == VM_PAGE_BITS_ALL) {
+		if (vm_page_all_valid(p)) {
 			if (p_start == NULL) {
 				start = addr + ptoa(tmpidx);
 				p_start = p;
@@ -1928,7 +2713,7 @@ vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
 			    (pagesizes[p->psind] - 1)) == 0) {
 				mask = atop(pagesizes[p->psind]) - 1;
 				if (tmpidx + mask < psize &&
-				    vm_page_ps_is_valid(p)) {
+				    vm_page_ps_test(p, PS_ALL_VALID, NULL)) {
 					p += mask;
 					threshold += mask;
 				}
@@ -1948,79 +2733,132 @@ vm_map_pmap_enter(vm_map_t map, vm_offset_t addr, vm_prot_t prot,
 /*
  *	vm_map_protect:
  *
- *	Sets the protection of the specified address
- *	region in the target map.  If "set_max" is
- *	specified, the maximum protection is to be set;
- *	otherwise, only the current protection is affected.
+ *	Sets the protection and/or the maximum protection of the
+ *	specified address region in the target map.
  */
 int
 vm_map_protect(vm_map_t map, vm_offset_t start, vm_offset_t end,
-	       vm_prot_t new_prot, boolean_t set_max)
+    vm_prot_t new_prot, vm_prot_t new_maxprot, int flags)
 {
-	vm_map_entry_t current, entry;
+	vm_map_entry_t entry, first_entry, in_tran, prev_entry;
 	vm_object_t obj;
 	struct ucred *cred;
 	vm_prot_t old_prot;
+	int rv;
 
 	if (start == end)
 		return (KERN_SUCCESS);
 
+	if ((flags & (VM_MAP_PROTECT_SET_PROT | VM_MAP_PROTECT_SET_MAXPROT)) ==
+	    (VM_MAP_PROTECT_SET_PROT | VM_MAP_PROTECT_SET_MAXPROT) &&
+	    (new_prot & new_maxprot) != new_prot)
+		return (KERN_OUT_OF_BOUNDS);
+
+again:
+	in_tran = NULL;
 	vm_map_lock(map);
+
+	if ((map->flags & MAP_WXORX) != 0 &&
+	    (flags & VM_MAP_PROTECT_SET_PROT) != 0 &&
+	    (new_prot & (VM_PROT_WRITE | VM_PROT_EXECUTE)) == (VM_PROT_WRITE |
+	    VM_PROT_EXECUTE)) {
+		vm_map_unlock(map);
+		return (KERN_PROTECTION_FAILURE);
+	}
+
+	/*
+	 * Ensure that we are not concurrently wiring pages.  vm_map_wire() may
+	 * need to fault pages into the map and will drop the map lock while
+	 * doing so, and the VM object may end up in an inconsistent state if we
+	 * update the protection on the map entry in between faults.
+	 */
+	vm_map_wait_busy(map);
 
 	VM_MAP_RANGE_CHECK(map, start, end);
 
-	if (vm_map_lookup_entry(map, start, &entry)) {
-		vm_map_clip_start(map, entry, start);
-	} else {
-		entry = entry->next;
-	}
+	if (!vm_map_lookup_entry(map, start, &first_entry))
+		first_entry = vm_map_entry_succ(first_entry);
 
 	/*
 	 * Make a first pass to check for protection violations.
 	 */
-	current = entry;
-	while ((current != &map->header) && (current->start < end)) {
-		if (current->eflags & MAP_ENTRY_IS_SUB_MAP) {
+	for (entry = first_entry; entry->start < end;
+	    entry = vm_map_entry_succ(entry)) {
+		if ((entry->eflags & MAP_ENTRY_GUARD) != 0)
+			continue;
+		if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0) {
 			vm_map_unlock(map);
 			return (KERN_INVALID_ARGUMENT);
 		}
-		if ((new_prot & current->max_protection) != new_prot) {
+		if ((flags & VM_MAP_PROTECT_SET_PROT) == 0)
+			new_prot = entry->protection;
+		if ((flags & VM_MAP_PROTECT_SET_MAXPROT) == 0)
+			new_maxprot = entry->max_protection;
+		if ((new_prot & entry->max_protection) != new_prot ||
+		    (new_maxprot & entry->max_protection) != new_maxprot) {
 			vm_map_unlock(map);
 			return (KERN_PROTECTION_FAILURE);
 		}
-		current = current->next;
+		if ((entry->eflags & MAP_ENTRY_IN_TRANSITION) != 0)
+			in_tran = entry;
 	}
 
+	/*
+	 * Postpone the operation until all in-transition map entries have
+	 * stabilized.  An in-transition entry might already have its pages
+	 * wired and wired_count incremented, but not yet have its
+	 * MAP_ENTRY_USER_WIRED flag set.  In which case, we would fail to call
+	 * vm_fault_copy_entry() in the final loop below.
+	 */
+	if (in_tran != NULL) {
+		in_tran->eflags |= MAP_ENTRY_NEEDS_WAKEUP;
+		vm_map_unlock_and_wait(map, 0);
+		goto again;
+	}
 
 	/*
-	 * Do an accounting pass for private read-only mappings that
-	 * now will do cow due to allowed write (e.g. debugger sets
-	 * breakpoint on text segment)
+	 * Before changing the protections, try to reserve swap space for any
+	 * private (i.e., copy-on-write) mappings that are transitioning from
+	 * read-only to read/write access.  If a reservation fails, break out
+	 * of this loop early and let the next loop simplify the entries, since
+	 * some may now be mergeable.
 	 */
-	for (current = entry; (current != &map->header) &&
-	     (current->start < end); current = current->next) {
-
-		vm_map_clip_end(map, current, end);
-
-		if (set_max ||
-		    ((new_prot & ~(current->protection)) & VM_PROT_WRITE) == 0 ||
-		    ENTRY_CHARGED(current)) {
-			continue;
+	rv = vm_map_clip_start(map, first_entry, start);
+	if (rv != KERN_SUCCESS) {
+		vm_map_unlock(map);
+		return (rv);
+	}
+	for (entry = first_entry; entry->start < end;
+	    entry = vm_map_entry_succ(entry)) {
+		rv = vm_map_clip_end(map, entry, end);
+		if (rv != KERN_SUCCESS) {
+			vm_map_unlock(map);
+			return (rv);
 		}
+
+		if ((flags & VM_MAP_PROTECT_SET_PROT) == 0 ||
+		    ((new_prot & ~entry->protection) & VM_PROT_WRITE) == 0 ||
+		    ENTRY_CHARGED(entry) ||
+		    (entry->eflags & MAP_ENTRY_GUARD) != 0)
+			continue;
 
 		cred = curthread->td_ucred;
-		obj = current->object.vm_object;
+		obj = entry->object.vm_object;
 
-		if (obj == NULL || (current->eflags & MAP_ENTRY_NEEDS_COPY)) {
-			if (!swap_reserve(current->end - current->start)) {
-				vm_map_unlock(map);
-				return (KERN_RESOURCE_SHORTAGE);
+		if (obj == NULL ||
+		    (entry->eflags & MAP_ENTRY_NEEDS_COPY) != 0) {
+			if (!swap_reserve(entry->end - entry->start)) {
+				rv = KERN_RESOURCE_SHORTAGE;
+				end = entry->end;
+				break;
 			}
 			crhold(cred);
-			current->cred = cred;
+			entry->cred = cred;
 			continue;
 		}
 
+		if (obj->type != OBJT_DEFAULT && obj->type != OBJT_SWAP)
+			continue;
 		VM_OBJECT_WLOCK(obj);
 		if (obj->type != OBJT_DEFAULT && obj->type != OBJT_SWAP) {
 			VM_OBJECT_WUNLOCK(obj);
@@ -2034,11 +2872,12 @@ vm_map_protect(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		 */
 		KASSERT(obj->charge == 0,
 		    ("vm_map_protect: object %p overcharged (entry %p)",
-		    obj, current));
+		    obj, entry));
 		if (!swap_reserve(ptoa(obj->size))) {
 			VM_OBJECT_WUNLOCK(obj);
-			vm_map_unlock(map);
-			return (KERN_RESOURCE_SHORTAGE);
+			rv = KERN_RESOURCE_SHORTAGE;
+			end = entry->end;
+			break;
 		}
 
 		crhold(cred);
@@ -2048,19 +2887,26 @@ vm_map_protect(vm_map_t map, vm_offset_t start, vm_offset_t end,
 	}
 
 	/*
-	 * Go back and fix up protections. [Note that clipping is not
-	 * necessary the second time.]
+	 * If enough swap space was available, go back and fix up protections.
+	 * Otherwise, just simplify entries, since some may have been modified.
+	 * [Note that clipping is not necessary the second time.]
 	 */
-	current = entry;
-	while ((current != &map->header) && (current->start < end)) {
-		old_prot = current->protection;
+	for (prev_entry = vm_map_entry_pred(first_entry), entry = first_entry;
+	    entry->start < end;
+	    vm_map_try_merge_entries(map, prev_entry, entry),
+	    prev_entry = entry, entry = vm_map_entry_succ(entry)) {
+		if (rv != KERN_SUCCESS ||
+		    (entry->eflags & MAP_ENTRY_GUARD) != 0)
+			continue;
 
-		if (set_max)
-			current->protection =
-			    (current->max_protection = new_prot) &
-			    old_prot;
-		else
-			current->protection = new_prot;
+		old_prot = entry->protection;
+
+		if ((flags & VM_MAP_PROTECT_SET_MAXPROT) != 0) {
+			entry->max_protection = new_maxprot;
+			entry->protection = new_maxprot & old_prot;
+		}
+		if ((flags & VM_MAP_PROTECT_SET_PROT) != 0)
+			entry->protection = new_prot;
 
 		/*
 		 * For user wired map entries, the normal lazy evaluation of
@@ -2068,28 +2914,27 @@ vm_map_protect(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		 * undesirable.  Instead, immediately copy any pages that are
 		 * copy-on-write and enable write access in the physical map.
 		 */
-		if ((current->eflags & MAP_ENTRY_USER_WIRED) != 0 &&
-		    (current->protection & VM_PROT_WRITE) != 0 &&
+		if ((entry->eflags & MAP_ENTRY_USER_WIRED) != 0 &&
+		    (entry->protection & VM_PROT_WRITE) != 0 &&
 		    (old_prot & VM_PROT_WRITE) == 0)
-			vm_fault_copy_entry(map, map, current, current, NULL);
+			vm_fault_copy_entry(map, map, entry, entry, NULL);
 
 		/*
 		 * When restricting access, update the physical map.  Worry
 		 * about copy-on-write here.
 		 */
-		if ((old_prot & ~current->protection) != 0) {
+		if ((old_prot & ~entry->protection) != 0) {
 #define MASK(entry)	(((entry)->eflags & MAP_ENTRY_COW) ? ~VM_PROT_WRITE : \
 							VM_PROT_ALL)
-			pmap_protect(map->pmap, current->start,
-			    current->end,
-			    current->protection & MASK(current));
+			pmap_protect(map->pmap, entry->start,
+			    entry->end,
+			    entry->protection & MASK(entry));
 #undef	MASK
 		}
-		vm_map_simplify_entry(map, current);
-		current = current->next;
 	}
+	vm_map_try_merge_entries(map, prev_entry, entry);
 	vm_map_unlock(map);
-	return (KERN_SUCCESS);
+	return (rv);
 }
 
 /*
@@ -2107,8 +2952,9 @@ vm_map_madvise(
 	vm_offset_t end,
 	int behav)
 {
-	vm_map_entry_t current, entry;
-	int modify_map = 0;
+	vm_map_entry_t entry, prev_entry;
+	int rv;
+	bool modify_map;
 
 	/*
 	 * Some madvise calls directly modify the vm_map_entry, in which case
@@ -2125,32 +2971,26 @@ vm_map_madvise(
 	case MADV_NOCORE:
 	case MADV_CORE:
 		if (start == end)
-			return (KERN_SUCCESS);
-		modify_map = 1;
+			return (0);
+		modify_map = true;
 		vm_map_lock(map);
 		break;
 	case MADV_WILLNEED:
 	case MADV_DONTNEED:
 	case MADV_FREE:
 		if (start == end)
-			return (KERN_SUCCESS);
+			return (0);
+		modify_map = false;
 		vm_map_lock_read(map);
 		break;
 	default:
-		return (KERN_INVALID_ARGUMENT);
+		return (EINVAL);
 	}
 
 	/*
 	 * Locate starting entry and clip if necessary.
 	 */
 	VM_MAP_RANGE_CHECK(map, start, end);
-
-	if (vm_map_lookup_entry(map, start, &entry)) {
-		if (modify_map)
-			vm_map_clip_start(map, entry, start);
-	} else {
-		entry = entry->next;
-	}
 
 	if (modify_map) {
 		/*
@@ -2159,42 +2999,54 @@ vm_map_madvise(
 		 * We clip the vm_map_entry so that behavioral changes are
 		 * limited to the specified address range.
 		 */
-		for (current = entry;
-		     (current != &map->header) && (current->start < end);
-		     current = current->next
-		) {
-			if (current->eflags & MAP_ENTRY_IS_SUB_MAP)
+		rv = vm_map_lookup_clip_start(map, start, &entry, &prev_entry);
+		if (rv != KERN_SUCCESS) {
+			vm_map_unlock(map);
+			return (vm_mmap_to_errno(rv));
+		}
+
+		for (; entry->start < end; prev_entry = entry,
+		    entry = vm_map_entry_succ(entry)) {
+			if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0)
 				continue;
 
-			vm_map_clip_end(map, current, end);
+			rv = vm_map_clip_end(map, entry, end);
+			if (rv != KERN_SUCCESS) {
+				vm_map_unlock(map);
+				return (vm_mmap_to_errno(rv));
+			}
 
 			switch (behav) {
 			case MADV_NORMAL:
-				vm_map_entry_set_behavior(current, MAP_ENTRY_BEHAV_NORMAL);
+				vm_map_entry_set_behavior(entry,
+				    MAP_ENTRY_BEHAV_NORMAL);
 				break;
 			case MADV_SEQUENTIAL:
-				vm_map_entry_set_behavior(current, MAP_ENTRY_BEHAV_SEQUENTIAL);
+				vm_map_entry_set_behavior(entry,
+				    MAP_ENTRY_BEHAV_SEQUENTIAL);
 				break;
 			case MADV_RANDOM:
-				vm_map_entry_set_behavior(current, MAP_ENTRY_BEHAV_RANDOM);
+				vm_map_entry_set_behavior(entry,
+				    MAP_ENTRY_BEHAV_RANDOM);
 				break;
 			case MADV_NOSYNC:
-				current->eflags |= MAP_ENTRY_NOSYNC;
+				entry->eflags |= MAP_ENTRY_NOSYNC;
 				break;
 			case MADV_AUTOSYNC:
-				current->eflags &= ~MAP_ENTRY_NOSYNC;
+				entry->eflags &= ~MAP_ENTRY_NOSYNC;
 				break;
 			case MADV_NOCORE:
-				current->eflags |= MAP_ENTRY_NOCOREDUMP;
+				entry->eflags |= MAP_ENTRY_NOCOREDUMP;
 				break;
 			case MADV_CORE:
-				current->eflags &= ~MAP_ENTRY_NOCOREDUMP;
+				entry->eflags &= ~MAP_ENTRY_NOCOREDUMP;
 				break;
 			default:
 				break;
 			}
-			vm_map_simplify_entry(map, current);
+			vm_map_try_merge_entries(map, prev_entry, entry);
 		}
+		vm_map_try_merge_entries(map, prev_entry, entry);
 		vm_map_unlock(map);
 	} else {
 		vm_pindex_t pstart, pend;
@@ -2206,26 +3058,38 @@ vm_map_madvise(
 		 * Since we don't clip the vm_map_entry, we have to clip
 		 * the vm_object pindex and count.
 		 */
-		for (current = entry;
-		     (current != &map->header) && (current->start < end);
-		     current = current->next
-		) {
+		if (!vm_map_lookup_entry(map, start, &entry))
+			entry = vm_map_entry_succ(entry);
+		for (; entry->start < end;
+		    entry = vm_map_entry_succ(entry)) {
 			vm_offset_t useEnd, useStart;
 
-			if (current->eflags & MAP_ENTRY_IS_SUB_MAP)
+			if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0)
 				continue;
 
-			pstart = OFF_TO_IDX(current->offset);
-			pend = pstart + atop(current->end - current->start);
-			useStart = current->start;
-			useEnd = current->end;
+			/*
+			 * MADV_FREE would otherwise rewind time to
+			 * the creation of the shadow object.  Because
+			 * we hold the VM map read-locked, neither the
+			 * entry's object nor the presence of a
+			 * backing object can change.
+			 */
+			if (behav == MADV_FREE &&
+			    entry->object.vm_object != NULL &&
+			    entry->object.vm_object->backing_object != NULL)
+				continue;
 
-			if (current->start < start) {
-				pstart += atop(start - current->start);
+			pstart = OFF_TO_IDX(entry->offset);
+			pend = pstart + atop(entry->end - entry->start);
+			useStart = entry->start;
+			useEnd = entry->end;
+
+			if (entry->start < start) {
+				pstart += atop(start - entry->start);
 				useStart = start;
 			}
-			if (current->end > end) {
-				pend -= atop(current->end - end);
+			if (entry->end > end) {
+				pend -= atop(entry->end - end);
 				useEnd = end;
 			}
 
@@ -2246,7 +3110,7 @@ vm_map_madvise(
 				pmap_advise(map->pmap, useStart, useEnd,
 				    behav);
 
-			vm_object_madvise(current->object.vm_object, pstart,
+			vm_object_madvise(entry->object.vm_object, pstart,
 			    pend, behav);
 
 			/*
@@ -2255,11 +3119,11 @@ vm_map_madvise(
 			 * paging structures are already populated.
 			 */
 			if (behav == MADV_WILLNEED &&
-			    current->wired_count == 0) {
+			    entry->wired_count == 0) {
 				vm_map_pmap_enter(map,
 				    useStart,
-				    current->protection,
-				    current->object.vm_object,
+				    entry->protection,
+				    entry->object.vm_object,
 				    pstart,
 				    ptoa(pend - pstart),
 				    MAP_PREFAULT_MADVISE
@@ -2270,7 +3134,6 @@ vm_map_madvise(
 	}
 	return (0);
 }
-
 
 /*
  *	vm_map_inherit:
@@ -2284,13 +3147,14 @@ int
 vm_map_inherit(vm_map_t map, vm_offset_t start, vm_offset_t end,
 	       vm_inherit_t new_inheritance)
 {
-	vm_map_entry_t entry;
-	vm_map_entry_t temp_entry;
+	vm_map_entry_t entry, lentry, prev_entry, start_entry;
+	int rv;
 
 	switch (new_inheritance) {
 	case VM_INHERIT_NONE:
 	case VM_INHERIT_COPY:
 	case VM_INHERIT_SHARE:
+	case VM_INHERIT_ZERO:
 		break;
 	default:
 		return (KERN_INVALID_ARGUMENT);
@@ -2299,19 +3163,86 @@ vm_map_inherit(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		return (KERN_SUCCESS);
 	vm_map_lock(map);
 	VM_MAP_RANGE_CHECK(map, start, end);
-	if (vm_map_lookup_entry(map, start, &temp_entry)) {
-		entry = temp_entry;
-		vm_map_clip_start(map, entry, start);
-	} else
-		entry = temp_entry->next;
-	while ((entry != &map->header) && (entry->start < end)) {
-		vm_map_clip_end(map, entry, end);
-		entry->inheritance = new_inheritance;
-		vm_map_simplify_entry(map, entry);
-		entry = entry->next;
+	rv = vm_map_lookup_clip_start(map, start, &start_entry, &prev_entry);
+	if (rv != KERN_SUCCESS)
+		goto unlock;
+	if (vm_map_lookup_entry(map, end - 1, &lentry)) {
+		rv = vm_map_clip_end(map, lentry, end);
+		if (rv != KERN_SUCCESS)
+			goto unlock;
 	}
+	if (new_inheritance == VM_INHERIT_COPY) {
+		for (entry = start_entry; entry->start < end;
+		    prev_entry = entry, entry = vm_map_entry_succ(entry)) {
+			if ((entry->eflags & MAP_ENTRY_SPLIT_BOUNDARY_MASK)
+			    != 0) {
+				rv = KERN_INVALID_ARGUMENT;
+				goto unlock;
+			}
+		}
+	}
+	for (entry = start_entry; entry->start < end; prev_entry = entry,
+	    entry = vm_map_entry_succ(entry)) {
+		KASSERT(entry->end <= end, ("non-clipped entry %p end %jx %jx",
+		    entry, (uintmax_t)entry->end, (uintmax_t)end));
+		if ((entry->eflags & MAP_ENTRY_GUARD) == 0 ||
+		    new_inheritance != VM_INHERIT_ZERO)
+			entry->inheritance = new_inheritance;
+		vm_map_try_merge_entries(map, prev_entry, entry);
+	}
+	vm_map_try_merge_entries(map, prev_entry, entry);
+unlock:
 	vm_map_unlock(map);
-	return (KERN_SUCCESS);
+	return (rv);
+}
+
+/*
+ *	vm_map_entry_in_transition:
+ *
+ *	Release the map lock, and sleep until the entry is no longer in
+ *	transition.  Awake and acquire the map lock.  If the map changed while
+ *	another held the lock, lookup a possibly-changed entry at or after the
+ *	'start' position of the old entry.
+ */
+static vm_map_entry_t
+vm_map_entry_in_transition(vm_map_t map, vm_offset_t in_start,
+    vm_offset_t *io_end, bool holes_ok, vm_map_entry_t in_entry)
+{
+	vm_map_entry_t entry;
+	vm_offset_t start;
+	u_int last_timestamp;
+
+	VM_MAP_ASSERT_LOCKED(map);
+	KASSERT((in_entry->eflags & MAP_ENTRY_IN_TRANSITION) != 0,
+	    ("not in-tranition map entry %p", in_entry));
+	/*
+	 * We have not yet clipped the entry.
+	 */
+	start = MAX(in_start, in_entry->start);
+	in_entry->eflags |= MAP_ENTRY_NEEDS_WAKEUP;
+	last_timestamp = map->timestamp;
+	if (vm_map_unlock_and_wait(map, 0)) {
+		/*
+		 * Allow interruption of user wiring/unwiring?
+		 */
+	}
+	vm_map_lock(map);
+	if (last_timestamp + 1 == map->timestamp)
+		return (in_entry);
+
+	/*
+	 * Look again for the entry because the map was modified while it was
+	 * unlocked.  Specifically, the entry may have been clipped, merged, or
+	 * deleted.
+	 */
+	if (!vm_map_lookup_entry(map, start, &entry)) {
+		if (!holes_ok) {
+			*io_end = start;
+			return (NULL);
+		}
+		entry = vm_map_entry_succ(entry);
+	}
+	return (entry);
 }
 
 /*
@@ -2323,76 +3254,51 @@ int
 vm_map_unwire(vm_map_t map, vm_offset_t start, vm_offset_t end,
     int flags)
 {
-	vm_map_entry_t entry, first_entry, tmp_entry;
-	vm_offset_t saved_start;
-	unsigned int last_timestamp;
+	vm_map_entry_t entry, first_entry, next_entry, prev_entry;
 	int rv;
-	boolean_t need_wakeup, result, user_unwire;
+	bool holes_ok, need_wakeup, user_unwire;
 
 	if (start == end)
 		return (KERN_SUCCESS);
-	user_unwire = (flags & VM_MAP_WIRE_USER) ? TRUE : FALSE;
+	holes_ok = (flags & VM_MAP_WIRE_HOLESOK) != 0;
+	user_unwire = (flags & VM_MAP_WIRE_USER) != 0;
 	vm_map_lock(map);
 	VM_MAP_RANGE_CHECK(map, start, end);
 	if (!vm_map_lookup_entry(map, start, &first_entry)) {
-		if (flags & VM_MAP_WIRE_HOLESOK)
-			first_entry = first_entry->next;
+		if (holes_ok)
+			first_entry = vm_map_entry_succ(first_entry);
 		else {
 			vm_map_unlock(map);
 			return (KERN_INVALID_ADDRESS);
 		}
 	}
-	last_timestamp = map->timestamp;
-	entry = first_entry;
-	while (entry != &map->header && entry->start < end) {
+	rv = KERN_SUCCESS;
+	for (entry = first_entry; entry->start < end; entry = next_entry) {
 		if (entry->eflags & MAP_ENTRY_IN_TRANSITION) {
 			/*
 			 * We have not yet clipped the entry.
 			 */
-			saved_start = (start >= entry->start) ? start :
-			    entry->start;
-			entry->eflags |= MAP_ENTRY_NEEDS_WAKEUP;
-			if (vm_map_unlock_and_wait(map, 0)) {
-				/*
-				 * Allow interruption of user unwiring?
-				 */
-			}
-			vm_map_lock(map);
-			if (last_timestamp+1 != map->timestamp) {
-				/*
-				 * Look again for the entry because the map was
-				 * modified while it was unlocked.
-				 * Specifically, the entry may have been
-				 * clipped, merged, or deleted.
-				 */
-				if (!vm_map_lookup_entry(map, saved_start,
-				    &tmp_entry)) {
-					if (flags & VM_MAP_WIRE_HOLESOK)
-						tmp_entry = tmp_entry->next;
-					else {
-						if (saved_start == start) {
-							/*
-							 * First_entry has been deleted.
-							 */
-							vm_map_unlock(map);
-							return (KERN_INVALID_ADDRESS);
-						}
-						end = saved_start;
-						rv = KERN_INVALID_ADDRESS;
-						goto done;
-					}
+			next_entry = vm_map_entry_in_transition(map, start,
+			    &end, holes_ok, entry);
+			if (next_entry == NULL) {
+				if (entry == first_entry) {
+					vm_map_unlock(map);
+					return (KERN_INVALID_ADDRESS);
 				}
-				if (entry == first_entry)
-					first_entry = tmp_entry;
-				else
-					first_entry = NULL;
-				entry = tmp_entry;
+				rv = KERN_INVALID_ADDRESS;
+				break;
 			}
-			last_timestamp = map->timestamp;
+			first_entry = (entry == first_entry) ?
+			    next_entry : NULL;
 			continue;
 		}
-		vm_map_clip_start(map, entry, start);
-		vm_map_clip_end(map, entry, end);
+		rv = vm_map_clip_start(map, entry, start);
+		if (rv != KERN_SUCCESS)
+			break;
+		rv = vm_map_clip_end(map, entry, end);
+		if (rv != KERN_SUCCESS)
+			break;
+
 		/*
 		 * Mark the entry in case the map lock is released.  (See
 		 * above.)
@@ -2402,16 +3308,16 @@ vm_map_unwire(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		    ("owned map entry %p", entry));
 		entry->eflags |= MAP_ENTRY_IN_TRANSITION;
 		entry->wiring_thread = curthread;
+		next_entry = vm_map_entry_succ(entry);
 		/*
 		 * Check the map for holes in the specified region.
-		 * If VM_MAP_WIRE_HOLESOK was specified, skip this check.
+		 * If holes_ok, skip this check.
 		 */
-		if (((flags & VM_MAP_WIRE_HOLESOK) == 0) &&
-		    (entry->end < end && (entry->next == &map->header ||
-		    entry->next->start > entry->end))) {
+		if (!holes_ok &&
+		    entry->end < end && next_entry->start > entry->end) {
 			end = entry->end;
 			rv = KERN_INVALID_ADDRESS;
-			goto done;
+			break;
 		}
 		/*
 		 * If system unwiring, require that the entry is system wired.
@@ -2420,24 +3326,23 @@ vm_map_unwire(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		    vm_map_entry_system_wired_count(entry) == 0) {
 			end = entry->end;
 			rv = KERN_INVALID_ARGUMENT;
-			goto done;
+			break;
 		}
-		entry = entry->next;
 	}
-	rv = KERN_SUCCESS;
-done:
-	need_wakeup = FALSE;
-	if (first_entry == NULL) {
-		result = vm_map_lookup_entry(map, start, &first_entry);
-		if (!result && (flags & VM_MAP_WIRE_HOLESOK))
-			first_entry = first_entry->next;
-		else
-			KASSERT(result, ("vm_map_unwire: lookup failed"));
+	need_wakeup = false;
+	if (first_entry == NULL &&
+	    !vm_map_lookup_entry(map, start, &first_entry)) {
+		KASSERT(holes_ok, ("vm_map_unwire: lookup failed"));
+		prev_entry = first_entry;
+		entry = vm_map_entry_succ(first_entry);
+	} else {
+		prev_entry = vm_map_entry_pred(first_entry);
+		entry = first_entry;
 	}
-	for (entry = first_entry; entry != &map->header && entry->start < end;
-	    entry = entry->next) {
+	for (; entry->start < end;
+	    prev_entry = entry, entry = vm_map_entry_succ(entry)) {
 		/*
-		 * If VM_MAP_WIRE_HOLESOK was specified, an empty
+		 * If holes_ok was specified, an empty
 		 * space in the unwired region could have been mapped
 		 * while the map lock was dropped for draining
 		 * MAP_ENTRY_IN_TRANSITION.  Moreover, another thread
@@ -2447,19 +3352,19 @@ done:
 		 */
 		if ((entry->eflags & MAP_ENTRY_IN_TRANSITION) == 0 ||
 		    entry->wiring_thread != curthread) {
-			KASSERT((flags & VM_MAP_WIRE_HOLESOK) != 0,
+			KASSERT(holes_ok,
 			    ("vm_map_unwire: !HOLESOK and new/changed entry"));
 			continue;
 		}
 
 		if (rv == KERN_SUCCESS && (!user_unwire ||
 		    (entry->eflags & MAP_ENTRY_USER_WIRED))) {
-			if (user_unwire)
-				entry->eflags &= ~MAP_ENTRY_USER_WIRED;
 			if (entry->wired_count == 1)
 				vm_map_entry_unwire(map, entry);
 			else
 				entry->wired_count--;
+			if (user_unwire)
+				entry->eflags &= ~MAP_ENTRY_USER_WIRED;
 		}
 		KASSERT((entry->eflags & MAP_ENTRY_IN_TRANSITION) != 0,
 		    ("vm_map_unwire: in-transition flag missing %p", entry));
@@ -2469,14 +3374,37 @@ done:
 		entry->wiring_thread = NULL;
 		if (entry->eflags & MAP_ENTRY_NEEDS_WAKEUP) {
 			entry->eflags &= ~MAP_ENTRY_NEEDS_WAKEUP;
-			need_wakeup = TRUE;
+			need_wakeup = true;
 		}
-		vm_map_simplify_entry(map, entry);
+		vm_map_try_merge_entries(map, prev_entry, entry);
 	}
+	vm_map_try_merge_entries(map, prev_entry, entry);
 	vm_map_unlock(map);
 	if (need_wakeup)
 		vm_map_wakeup(map);
 	return (rv);
+}
+
+static void
+vm_map_wire_user_count_sub(u_long npages)
+{
+
+	atomic_subtract_long(&vm_user_wire_count, npages);
+}
+
+static bool
+vm_map_wire_user_count_add(u_long npages)
+{
+	u_long wired;
+
+	wired = vm_user_wire_count;
+	do {
+		if (npages + wired > vm_page_max_user_wired)
+			return (false);
+	} while (!atomic_fcmpset_long(&vm_user_wire_count, &wired,
+	    npages + wired));
+
+	return (true);
 }
 
 /*
@@ -2515,89 +3443,74 @@ vm_map_wire_entry_failure(vm_map_t map, vm_map_entry_t entry,
 	entry->wired_count = -1;
 }
 
+int
+vm_map_wire(vm_map_t map, vm_offset_t start, vm_offset_t end, int flags)
+{
+	int rv;
+
+	vm_map_lock(map);
+	rv = vm_map_wire_locked(map, start, end, flags);
+	vm_map_unlock(map);
+	return (rv);
+}
+
 /*
- *	vm_map_wire:
+ *	vm_map_wire_locked:
  *
- *	Implements both kernel and user wiring.
+ *	Implements both kernel and user wiring.  Returns with the map locked,
+ *	the map lock may be dropped.
  */
 int
-vm_map_wire(vm_map_t map, vm_offset_t start, vm_offset_t end,
-    int flags)
+vm_map_wire_locked(vm_map_t map, vm_offset_t start, vm_offset_t end, int flags)
 {
-	vm_map_entry_t entry, first_entry, tmp_entry;
+	vm_map_entry_t entry, first_entry, next_entry, prev_entry;
 	vm_offset_t faddr, saved_end, saved_start;
-	unsigned int last_timestamp;
+	u_long incr, npages;
+	u_int bidx, last_timestamp;
 	int rv;
-	boolean_t need_wakeup, result, user_wire;
+	bool holes_ok, need_wakeup, user_wire;
 	vm_prot_t prot;
+
+	VM_MAP_ASSERT_LOCKED(map);
 
 	if (start == end)
 		return (KERN_SUCCESS);
 	prot = 0;
 	if (flags & VM_MAP_WIRE_WRITE)
 		prot |= VM_PROT_WRITE;
-	user_wire = (flags & VM_MAP_WIRE_USER) ? TRUE : FALSE;
-	vm_map_lock(map);
+	holes_ok = (flags & VM_MAP_WIRE_HOLESOK) != 0;
+	user_wire = (flags & VM_MAP_WIRE_USER) != 0;
 	VM_MAP_RANGE_CHECK(map, start, end);
 	if (!vm_map_lookup_entry(map, start, &first_entry)) {
-		if (flags & VM_MAP_WIRE_HOLESOK)
-			first_entry = first_entry->next;
-		else {
-			vm_map_unlock(map);
+		if (holes_ok)
+			first_entry = vm_map_entry_succ(first_entry);
+		else
 			return (KERN_INVALID_ADDRESS);
-		}
 	}
-	last_timestamp = map->timestamp;
-	entry = first_entry;
-	while (entry != &map->header && entry->start < end) {
+	for (entry = first_entry; entry->start < end; entry = next_entry) {
 		if (entry->eflags & MAP_ENTRY_IN_TRANSITION) {
 			/*
 			 * We have not yet clipped the entry.
 			 */
-			saved_start = (start >= entry->start) ? start :
-			    entry->start;
-			entry->eflags |= MAP_ENTRY_NEEDS_WAKEUP;
-			if (vm_map_unlock_and_wait(map, 0)) {
-				/*
-				 * Allow interruption of user wiring?
-				 */
-			}
-			vm_map_lock(map);
-			if (last_timestamp + 1 != map->timestamp) {
-				/*
-				 * Look again for the entry because the map was
-				 * modified while it was unlocked.
-				 * Specifically, the entry may have been
-				 * clipped, merged, or deleted.
-				 */
-				if (!vm_map_lookup_entry(map, saved_start,
-				    &tmp_entry)) {
-					if (flags & VM_MAP_WIRE_HOLESOK)
-						tmp_entry = tmp_entry->next;
-					else {
-						if (saved_start == start) {
-							/*
-							 * first_entry has been deleted.
-							 */
-							vm_map_unlock(map);
-							return (KERN_INVALID_ADDRESS);
-						}
-						end = saved_start;
-						rv = KERN_INVALID_ADDRESS;
-						goto done;
-					}
-				}
+			next_entry = vm_map_entry_in_transition(map, start,
+			    &end, holes_ok, entry);
+			if (next_entry == NULL) {
 				if (entry == first_entry)
-					first_entry = tmp_entry;
-				else
-					first_entry = NULL;
-				entry = tmp_entry;
+					return (KERN_INVALID_ADDRESS);
+				rv = KERN_INVALID_ADDRESS;
+				goto done;
 			}
-			last_timestamp = map->timestamp;
+			first_entry = (entry == first_entry) ?
+			    next_entry : NULL;
 			continue;
 		}
-		vm_map_clip_start(map, entry, start);
-		vm_map_clip_end(map, entry, end);
+		rv = vm_map_clip_start(map, entry, start);
+		if (rv != KERN_SUCCESS)
+			goto done;
+		rv = vm_map_clip_end(map, entry, end);
+		if (rv != KERN_SUCCESS)
+			goto done;
+
 		/*
 		 * Mark the entry in case the map lock is released.  (See
 		 * above.)
@@ -2610,35 +3523,47 @@ vm_map_wire(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		if ((entry->protection & (VM_PROT_READ | VM_PROT_EXECUTE)) == 0
 		    || (entry->protection & prot) != prot) {
 			entry->eflags |= MAP_ENTRY_WIRE_SKIPPED;
-			if ((flags & VM_MAP_WIRE_HOLESOK) == 0) {
+			if (!holes_ok) {
 				end = entry->end;
 				rv = KERN_INVALID_ADDRESS;
 				goto done;
 			}
-			goto next_entry;
-		}
-		if (entry->wired_count == 0) {
+		} else if (entry->wired_count == 0) {
 			entry->wired_count++;
-			saved_start = entry->start;
-			saved_end = entry->end;
+
+			npages = atop(entry->end - entry->start);
+			if (user_wire && !vm_map_wire_user_count_add(npages)) {
+				vm_map_wire_entry_failure(map, entry,
+				    entry->start);
+				end = entry->end;
+				rv = KERN_RESOURCE_SHORTAGE;
+				goto done;
+			}
 
 			/*
 			 * Release the map lock, relying on the in-transition
 			 * mark.  Mark the map busy for fork.
 			 */
+			saved_start = entry->start;
+			saved_end = entry->end;
+			last_timestamp = map->timestamp;
+			bidx = (entry->eflags & MAP_ENTRY_SPLIT_BOUNDARY_MASK)
+			    >> MAP_ENTRY_SPLIT_BOUNDARY_SHIFT;
+			incr =  pagesizes[bidx];
 			vm_map_busy(map);
 			vm_map_unlock(map);
 
-			faddr = saved_start;
-			do {
+			for (faddr = saved_start; faddr < saved_end;
+			    faddr += incr) {
 				/*
 				 * Simulate a fault to get the page and enter
 				 * it into the physical map.
 				 */
-				if ((rv = vm_fault(map, faddr, VM_PROT_NONE,
-				    VM_FAULT_WIRE)) != KERN_SUCCESS)
+				rv = vm_fault(map, faddr, VM_PROT_NONE,
+				    VM_FAULT_WIRE, NULL);
+				if (rv != KERN_SUCCESS)
 					break;
-			} while ((faddr += PAGE_SIZE) < saved_end);
+			}
 			vm_map_lock(map);
 			vm_map_unbusy(map);
 			if (last_timestamp + 1 != map->timestamp) {
@@ -2648,15 +3573,14 @@ vm_map_wire(vm_map_t map, vm_offset_t start, vm_offset_t end,
 				 * may have been clipped, but NOT merged or
 				 * deleted.
 				 */
-				result = vm_map_lookup_entry(map, saved_start,
-				    &tmp_entry);
-				KASSERT(result, ("vm_map_wire: lookup failed"));
-				if (entry == first_entry)
-					first_entry = tmp_entry;
-				else
-					first_entry = NULL;
-				entry = tmp_entry;
-				while (entry->end < saved_end) {
+				if (!vm_map_lookup_entry(map, saved_start,
+				    &next_entry))
+					KASSERT(false,
+					    ("vm_map_wire: lookup failed"));
+				first_entry = (entry == first_entry) ?
+				    next_entry : NULL;
+				for (entry = next_entry; entry->end < saved_end;
+				    entry = vm_map_entry_succ(entry)) {
 					/*
 					 * In case of failure, handle entries
 					 * that were not fully wired here;
@@ -2667,12 +3591,12 @@ vm_map_wire(vm_map_t map, vm_offset_t start, vm_offset_t end,
 					    faddr < entry->end)
 						vm_map_wire_entry_failure(map,
 						    entry, faddr);
-					entry = entry->next;
 				}
 			}
-			last_timestamp = map->timestamp;
 			if (rv != KERN_SUCCESS) {
 				vm_map_wire_entry_failure(map, entry, faddr);
+				if (user_wire)
+					vm_map_wire_user_count_sub(npages);
 				end = entry->end;
 				goto done;
 			}
@@ -2682,50 +3606,53 @@ vm_map_wire(vm_map_t map, vm_offset_t start, vm_offset_t end,
 		}
 		/*
 		 * Check the map for holes in the specified region.
-		 * If VM_MAP_WIRE_HOLESOK was specified, skip this check.
+		 * If holes_ok was specified, skip this check.
 		 */
-	next_entry:
-		if (((flags & VM_MAP_WIRE_HOLESOK) == 0) &&
-		    (entry->end < end && (entry->next == &map->header ||
-		    entry->next->start > entry->end))) {
+		next_entry = vm_map_entry_succ(entry);
+		if (!holes_ok &&
+		    entry->end < end && next_entry->start > entry->end) {
 			end = entry->end;
 			rv = KERN_INVALID_ADDRESS;
 			goto done;
 		}
-		entry = entry->next;
 	}
 	rv = KERN_SUCCESS;
 done:
-	need_wakeup = FALSE;
-	if (first_entry == NULL) {
-		result = vm_map_lookup_entry(map, start, &first_entry);
-		if (!result && (flags & VM_MAP_WIRE_HOLESOK))
-			first_entry = first_entry->next;
-		else
-			KASSERT(result, ("vm_map_wire: lookup failed"));
+	need_wakeup = false;
+	if (first_entry == NULL &&
+	    !vm_map_lookup_entry(map, start, &first_entry)) {
+		KASSERT(holes_ok, ("vm_map_wire: lookup failed"));
+		prev_entry = first_entry;
+		entry = vm_map_entry_succ(first_entry);
+	} else {
+		prev_entry = vm_map_entry_pred(first_entry);
+		entry = first_entry;
 	}
-	for (entry = first_entry; entry != &map->header && entry->start < end;
-	    entry = entry->next) {
-		if ((entry->eflags & MAP_ENTRY_WIRE_SKIPPED) != 0)
-			goto next_entry_done;
-
+	for (; entry->start < end;
+	    prev_entry = entry, entry = vm_map_entry_succ(entry)) {
 		/*
-		 * If VM_MAP_WIRE_HOLESOK was specified, an empty
+		 * If holes_ok was specified, an empty
 		 * space in the unwired region could have been mapped
 		 * while the map lock was dropped for faulting in the
 		 * pages or draining MAP_ENTRY_IN_TRANSITION.
 		 * Moreover, another thread could be simultaneously
 		 * wiring this new mapping entry.  Detect these cases
-		 * and skip any entries marked as in transition by us.
+		 * and skip any entries marked as in transition not by us.
+		 *
+		 * Another way to get an entry not marked with
+		 * MAP_ENTRY_IN_TRANSITION is after failed clipping,
+		 * which set rv to KERN_INVALID_ARGUMENT.
 		 */
 		if ((entry->eflags & MAP_ENTRY_IN_TRANSITION) == 0 ||
 		    entry->wiring_thread != curthread) {
-			KASSERT((flags & VM_MAP_WIRE_HOLESOK) != 0,
+			KASSERT(holes_ok || rv == KERN_INVALID_ARGUMENT,
 			    ("vm_map_wire: !HOLESOK and new/changed entry"));
 			continue;
 		}
 
-		if (rv == KERN_SUCCESS) {
+		if ((entry->eflags & MAP_ENTRY_WIRE_SKIPPED) != 0) {
+			/* do nothing */
+		} else if (rv == KERN_SUCCESS) {
 			if (user_wire)
 				entry->eflags |= MAP_ENTRY_USER_WIRED;
 		} else if (entry->wired_count == -1) {
@@ -2740,12 +3667,14 @@ done:
 			 * Undo the wiring.  Wiring succeeded on this entry
 			 * but failed on a later entry.  
 			 */
-			if (entry->wired_count == 1)
+			if (entry->wired_count == 1) {
 				vm_map_entry_unwire(map, entry);
-			else
+				if (user_wire)
+					vm_map_wire_user_count_sub(
+					    atop(entry->end - entry->start));
+			} else
 				entry->wired_count--;
 		}
-	next_entry_done:
 		KASSERT((entry->eflags & MAP_ENTRY_IN_TRANSITION) != 0,
 		    ("vm_map_wire: in-transition flag missing %p", entry));
 		KASSERT(entry->wiring_thread == curthread,
@@ -2755,11 +3684,11 @@ done:
 		entry->wiring_thread = NULL;
 		if (entry->eflags & MAP_ENTRY_NEEDS_WAKEUP) {
 			entry->eflags &= ~MAP_ENTRY_NEEDS_WAKEUP;
-			need_wakeup = TRUE;
+			need_wakeup = true;
 		}
-		vm_map_simplify_entry(map, entry);
+		vm_map_try_merge_entries(map, prev_entry, entry);
 	}
-	vm_map_unlock(map);
+	vm_map_try_merge_entries(map, prev_entry, entry);
 	if (need_wakeup)
 		vm_map_wakeup(map);
 	return (rv);
@@ -2789,35 +3718,47 @@ vm_map_sync(
 	boolean_t syncio,
 	boolean_t invalidate)
 {
-	vm_map_entry_t current;
-	vm_map_entry_t entry;
+	vm_map_entry_t entry, first_entry, next_entry;
 	vm_size_t size;
 	vm_object_t object;
 	vm_ooffset_t offset;
 	unsigned int last_timestamp;
+	int bdry_idx;
 	boolean_t failed;
 
 	vm_map_lock_read(map);
 	VM_MAP_RANGE_CHECK(map, start, end);
-	if (!vm_map_lookup_entry(map, start, &entry)) {
+	if (!vm_map_lookup_entry(map, start, &first_entry)) {
 		vm_map_unlock_read(map);
 		return (KERN_INVALID_ADDRESS);
 	} else if (start == end) {
-		start = entry->start;
-		end = entry->end;
+		start = first_entry->start;
+		end = first_entry->end;
 	}
+
 	/*
-	 * Make a first pass to check for user-wired memory and holes.
+	 * Make a first pass to check for user-wired memory, holes,
+	 * and partial invalidation of largepage mappings.
 	 */
-	for (current = entry; current != &map->header && current->start < end;
-	    current = current->next) {
-		if (invalidate && (current->eflags & MAP_ENTRY_USER_WIRED)) {
-			vm_map_unlock_read(map);
-			return (KERN_INVALID_ARGUMENT);
+	for (entry = first_entry; entry->start < end; entry = next_entry) {
+		if (invalidate) {
+			if ((entry->eflags & MAP_ENTRY_USER_WIRED) != 0) {
+				vm_map_unlock_read(map);
+				return (KERN_INVALID_ARGUMENT);
+			}
+			bdry_idx = (entry->eflags &
+			    MAP_ENTRY_SPLIT_BOUNDARY_MASK) >>
+			    MAP_ENTRY_SPLIT_BOUNDARY_SHIFT;
+			if (bdry_idx != 0 &&
+			    ((start & (pagesizes[bdry_idx] - 1)) != 0 ||
+			    (end & (pagesizes[bdry_idx] - 1)) != 0)) {
+				vm_map_unlock_read(map);
+				return (KERN_INVALID_ARGUMENT);
+			}
 		}
-		if (end > current->end &&
-		    (current->next == &map->header ||
-			current->end != current->next->start)) {
+		next_entry = vm_map_entry_succ(entry);
+		if (end > entry->end &&
+		    entry->end != next_entry->start) {
 			vm_map_unlock_read(map);
 			return (KERN_INVALID_ADDRESS);
 		}
@@ -2831,15 +3772,15 @@ vm_map_sync(
 	 * Make a second pass, cleaning/uncaching pages from the indicated
 	 * objects as we go.
 	 */
-	for (current = entry; current != &map->header && current->start < end;) {
-		offset = current->offset + (start - current->start);
-		size = (end <= current->end ? end : current->end) - start;
-		if (current->eflags & MAP_ENTRY_IS_SUB_MAP) {
+	for (entry = first_entry; entry->start < end;) {
+		offset = entry->offset + (start - entry->start);
+		size = (end <= entry->end ? end : entry->end) - start;
+		if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0) {
 			vm_map_t smap;
 			vm_map_entry_t tentry;
 			vm_size_t tsize;
 
-			smap = current->object.sub_map;
+			smap = entry->object.sub_map;
 			vm_map_lock_read(smap);
 			(void) vm_map_lookup_entry(smap, offset, &tentry);
 			tsize = tentry->end - offset;
@@ -2849,7 +3790,7 @@ vm_map_sync(
 			offset = tentry->offset + (offset - tentry->start);
 			vm_map_unlock_read(smap);
 		} else {
-			object = current->object.vm_object;
+			object = entry->object.vm_object;
 		}
 		vm_object_reference(object);
 		last_timestamp = map->timestamp;
@@ -2860,8 +3801,8 @@ vm_map_sync(
 		vm_object_deallocate(object);
 		vm_map_lock_read(map);
 		if (last_timestamp == map->timestamp ||
-		    !vm_map_lookup_entry(map, start, &current))
-			current = current->next;
+		    !vm_map_lookup_entry(map, start, &entry))
+			entry = vm_map_entry_succ(entry);
 	}
 
 	vm_map_unlock_read(map);
@@ -2879,13 +3820,18 @@ vm_map_sync(
 static void
 vm_map_entry_unwire(vm_map_t map, vm_map_entry_t entry)
 {
+	vm_size_t size;
 
 	VM_MAP_ASSERT_LOCKED(map);
 	KASSERT(entry->wired_count > 0,
 	    ("vm_map_entry_unwire: entry %p isn't wired", entry));
+
+	size = entry->end - entry->start;
+	if ((entry->eflags & MAP_ENTRY_USER_WIRED) != 0)
+		vm_map_wire_user_count_sub(atop(size));
 	pmap_unwire(map->pmap, entry->start, entry->end);
-	vm_object_unwire(entry->object.vm_object, entry->offset, entry->end -
-	    entry->start, PQ_ACTIVE);
+	vm_object_unwire(entry->object.vm_object, entry->offset, size,
+	    PQ_ACTIVE);
 	entry->wired_count = 0;
 }
 
@@ -2907,11 +3853,20 @@ static void
 vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 {
 	vm_object_t object;
-	vm_pindex_t offidxstart, offidxend, count, size1;
-	vm_ooffset_t size;
+	vm_pindex_t offidxstart, offidxend, size1;
+	vm_size_t size;
 
-	vm_map_entry_unlink(map, entry);
+	vm_map_entry_unlink(map, entry, UNLINK_MERGE_NONE);
 	object = entry->object.vm_object;
+
+	if ((entry->eflags & MAP_ENTRY_GUARD) != 0) {
+		MPASS(entry->cred == NULL);
+		MPASS((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0);
+		MPASS(object == NULL);
+		vm_map_entry_deallocate(entry, map->system_map);
+		return;
+	}
+
 	size = entry->end - entry->start;
 	map->size -= size;
 
@@ -2920,18 +3875,19 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 		crfree(entry->cred);
 	}
 
-	if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) == 0 &&
-	    (object != NULL)) {
+	if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0 || object == NULL) {
+		entry->object.vm_object = NULL;
+	} else if ((object->flags & OBJ_ANON) != 0 ||
+	    object == kernel_object) {
 		KASSERT(entry->cred == NULL || object->cred == NULL ||
 		    (entry->eflags & MAP_ENTRY_NEEDS_COPY),
 		    ("OVERCOMMIT vm_map_entry_delete: both cred %p", entry));
-		count = OFF_TO_IDX(size);
 		offidxstart = OFF_TO_IDX(entry->offset);
-		offidxend = offidxstart + count;
+		offidxend = offidxstart + atop(size);
 		VM_OBJECT_WLOCK(object);
 		if (object->ref_count != 1 &&
-		    ((object->flags & (OBJ_NOSPLIT|OBJ_ONEMAPPING)) == OBJ_ONEMAPPING ||
-		    object == kernel_object || object == kmem_object)) {
+		    ((object->flags & OBJ_ONEMAPPING) != 0 ||
+		    object == kernel_object)) {
 			vm_object_collapse(object);
 
 			/*
@@ -2942,8 +3898,6 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 			 */
 			vm_object_page_remove(object, offidxstart, offidxend,
 			    OBJPR_NOTMAPPED);
-			if (object->type == OBJT_SWAP)
-				swap_pager_freespace(object, offidxstart, count);
 			if (offidxend >= object->size &&
 			    offidxstart < object->size) {
 				size1 = object->size;
@@ -2951,19 +3905,19 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 				if (object->cred != NULL) {
 					size1 -= object->size;
 					KASSERT(object->charge >= ptoa(size1),
-					    ("vm_map_entry_delete: object->charge < 0"));
-					swap_release_by_cred(ptoa(size1), object->cred);
+					    ("object %p charge < 0", object));
+					swap_release_by_cred(ptoa(size1),
+					    object->cred);
 					object->charge -= ptoa(size1);
 				}
 			}
 		}
 		VM_OBJECT_WUNLOCK(object);
-	} else
-		entry->object.vm_object = NULL;
+	}
 	if (map->system_map)
 		vm_map_entry_deallocate(entry, TRUE);
 	else {
-		entry->next = curthread->td_map_def_user;
+		entry->defer_next = curthread->td_map_def_user;
 		curthread->td_map_def_user = entry;
 	}
 }
@@ -2977,29 +3931,22 @@ vm_map_entry_delete(vm_map_t map, vm_map_entry_t entry)
 int
 vm_map_delete(vm_map_t map, vm_offset_t start, vm_offset_t end)
 {
-	vm_map_entry_t entry;
-	vm_map_entry_t first_entry;
+	vm_map_entry_t entry, next_entry, scratch_entry;
+	int rv;
 
 	VM_MAP_ASSERT_LOCKED(map);
+
 	if (start == end)
 		return (KERN_SUCCESS);
 
 	/*
-	 * Find the start of the region, and clip it
+	 * Find the start of the region, and clip it.
+	 * Step through all entries in this region.
 	 */
-	if (!vm_map_lookup_entry(map, start, &first_entry))
-		entry = first_entry->next;
-	else {
-		entry = first_entry;
-		vm_map_clip_start(map, entry, start);
-	}
-
-	/*
-	 * Step through all entries in this region
-	 */
-	while ((entry != &map->header) && (entry->start < end)) {
-		vm_map_entry_t next;
-
+	rv = vm_map_lookup_clip_start(map, start, &entry, &scratch_entry);
+	if (rv != KERN_SUCCESS)
+		return (rv);
+	for (; entry->start < end; entry = next_entry) {
 		/*
 		 * Wait for wiring or unwiring of an entry to complete.
 		 * Also wait for any system wirings to disappear on
@@ -3010,7 +3957,6 @@ vm_map_delete(vm_map_t map, vm_offset_t start, vm_offset_t end)
 		    vm_map_entry_system_wired_count(entry) != 0)) {
 			unsigned int last_timestamp;
 			vm_offset_t saved_start;
-			vm_map_entry_t tmp_entry;
 
 			saved_start = entry->start;
 			entry->eflags |= MAP_ENTRY_NEEDS_WAKEUP;
@@ -3024,30 +3970,39 @@ vm_map_delete(vm_map_t map, vm_offset_t start, vm_offset_t end)
 				 * Specifically, the entry may have been
 				 * clipped, merged, or deleted.
 				 */
-				if (!vm_map_lookup_entry(map, saved_start,
-							 &tmp_entry))
-					entry = tmp_entry->next;
-				else {
-					entry = tmp_entry;
-					vm_map_clip_start(map, entry,
-							  saved_start);
-				}
-			}
+				rv = vm_map_lookup_clip_start(map, saved_start,
+				    &next_entry, &scratch_entry);
+				if (rv != KERN_SUCCESS)
+					break;
+			} else
+				next_entry = entry;
 			continue;
 		}
-		vm_map_clip_end(map, entry, end);
 
-		next = entry->next;
+		/* XXXKIB or delete to the upper superpage boundary ? */
+		rv = vm_map_clip_end(map, entry, end);
+		if (rv != KERN_SUCCESS)
+			break;
+		next_entry = vm_map_entry_succ(entry);
 
 		/*
 		 * Unwire before removing addresses from the pmap; otherwise,
 		 * unwiring will put the entries back in the pmap.
 		 */
-		if (entry->wired_count != 0) {
+		if (entry->wired_count != 0)
 			vm_map_entry_unwire(map, entry);
-		}
 
-		pmap_remove(map->pmap, entry->start, entry->end);
+		/*
+		 * Remove mappings for the pages, but only if the
+		 * mappings could exist.  For instance, it does not
+		 * make sense to call pmap_remove() for guard entries.
+		 */
+		if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0 ||
+		    entry->object.vm_object != NULL)
+			pmap_remove(map->pmap, entry->start, entry->end);
+
+		if (entry->end == map->anon_loc)
+			map->anon_loc = entry->start;
 
 		/*
 		 * Delete the entry only after removing all pmap
@@ -3056,9 +4011,8 @@ vm_map_delete(vm_map_t map, vm_offset_t start, vm_offset_t end)
 		 * will be set in the wrong object!)
 		 */
 		vm_map_entry_delete(map, entry);
-		entry = next;
 	}
-	return (KERN_SUCCESS);
+	return (rv);
 }
 
 /*
@@ -3105,8 +4059,6 @@ vm_map_check_protection(vm_map_t map, vm_offset_t start, vm_offset_t end,
 	entry = tmp_entry;
 
 	while (start < end) {
-		if (entry == &map->header)
-			return (FALSE);
 		/*
 		 * No holes allowed!
 		 */
@@ -3119,9 +4071,61 @@ vm_map_check_protection(vm_map_t map, vm_offset_t start, vm_offset_t end,
 			return (FALSE);
 		/* go to next entry */
 		start = entry->end;
-		entry = entry->next;
+		entry = vm_map_entry_succ(entry);
 	}
 	return (TRUE);
+}
+
+/*
+ *
+ *	vm_map_copy_swap_object:
+ *
+ *	Copies a swap-backed object from an existing map entry to a
+ *	new one.  Carries forward the swap charge.  May change the
+ *	src object on return.
+ */
+static void
+vm_map_copy_swap_object(vm_map_entry_t src_entry, vm_map_entry_t dst_entry,
+    vm_offset_t size, vm_ooffset_t *fork_charge)
+{
+	vm_object_t src_object;
+	struct ucred *cred;
+	int charged;
+
+	src_object = src_entry->object.vm_object;
+	charged = ENTRY_CHARGED(src_entry);
+	if ((src_object->flags & OBJ_ANON) != 0) {
+		VM_OBJECT_WLOCK(src_object);
+		vm_object_collapse(src_object);
+		if ((src_object->flags & OBJ_ONEMAPPING) != 0) {
+			vm_object_split(src_entry);
+			src_object = src_entry->object.vm_object;
+		}
+		vm_object_reference_locked(src_object);
+		vm_object_clear_flag(src_object, OBJ_ONEMAPPING);
+		VM_OBJECT_WUNLOCK(src_object);
+	} else
+		vm_object_reference(src_object);
+	if (src_entry->cred != NULL &&
+	    !(src_entry->eflags & MAP_ENTRY_NEEDS_COPY)) {
+		KASSERT(src_object->cred == NULL,
+		    ("OVERCOMMIT: vm_map_copy_anon_entry: cred %p",
+		     src_object));
+		src_object->cred = src_entry->cred;
+		src_object->charge = size;
+	}
+	dst_entry->object.vm_object = src_object;
+	if (charged) {
+		cred = curthread->td_ucred;
+		crhold(cred);
+		dst_entry->cred = cred;
+		*fork_charge += size;
+		if (!(src_entry->eflags & MAP_ENTRY_NEEDS_COPY)) {
+			crhold(cred);
+			src_entry->cred = cred;
+			*fork_charge += size;
+		}
+	}
 }
 
 /*
@@ -3141,8 +4145,6 @@ vm_map_copy_entry(
 	vm_object_t src_object;
 	vm_map_entry_t fake_entry;
 	vm_offset_t size;
-	struct ucred *cred;
-	int charged;
 
 	VM_MAP_ASSERT_LOCKED(dst_map);
 
@@ -3168,65 +4170,47 @@ vm_map_copy_entry(
 		 */
 		size = src_entry->end - src_entry->start;
 		if ((src_object = src_entry->object.vm_object) != NULL) {
-			VM_OBJECT_WLOCK(src_object);
-			charged = ENTRY_CHARGED(src_entry);
-			if ((src_object->handle == NULL) &&
-				(src_object->type == OBJT_DEFAULT ||
-				 src_object->type == OBJT_SWAP)) {
-				vm_object_collapse(src_object);
-				if ((src_object->flags & (OBJ_NOSPLIT|OBJ_ONEMAPPING)) == OBJ_ONEMAPPING) {
-					vm_object_split(src_entry);
-					src_object = src_entry->object.vm_object;
-				}
+			if (src_object->type == OBJT_DEFAULT ||
+			    src_object->type == OBJT_SWAP) {
+				vm_map_copy_swap_object(src_entry, dst_entry,
+				    size, fork_charge);
+				/* May have split/collapsed, reload obj. */
+				src_object = src_entry->object.vm_object;
+			} else {
+				vm_object_reference(src_object);
+				dst_entry->object.vm_object = src_object;
 			}
-			vm_object_reference_locked(src_object);
-			vm_object_clear_flag(src_object, OBJ_ONEMAPPING);
-			if (src_entry->cred != NULL &&
-			    !(src_entry->eflags & MAP_ENTRY_NEEDS_COPY)) {
-				KASSERT(src_object->cred == NULL,
-				    ("OVERCOMMIT: vm_map_copy_entry: cred %p",
-				     src_object));
-				src_object->cred = src_entry->cred;
-				src_object->charge = size;
-			}
-			VM_OBJECT_WUNLOCK(src_object);
-			dst_entry->object.vm_object = src_object;
-			if (charged) {
-				cred = curthread->td_ucred;
-				crhold(cred);
-				dst_entry->cred = cred;
-				*fork_charge += size;
-				if (!(src_entry->eflags &
-				      MAP_ENTRY_NEEDS_COPY)) {
-					crhold(cred);
-					src_entry->cred = cred;
-					*fork_charge += size;
-				}
-			}
-			src_entry->eflags |= (MAP_ENTRY_COW|MAP_ENTRY_NEEDS_COPY);
-			dst_entry->eflags |= (MAP_ENTRY_COW|MAP_ENTRY_NEEDS_COPY);
+			src_entry->eflags |= MAP_ENTRY_COW |
+			    MAP_ENTRY_NEEDS_COPY;
+			dst_entry->eflags |= MAP_ENTRY_COW |
+			    MAP_ENTRY_NEEDS_COPY;
 			dst_entry->offset = src_entry->offset;
-			if (src_entry->eflags & MAP_ENTRY_VN_WRITECNT) {
+			if (src_entry->eflags & MAP_ENTRY_WRITECNT) {
 				/*
-				 * MAP_ENTRY_VN_WRITECNT cannot
+				 * MAP_ENTRY_WRITECNT cannot
 				 * indicate write reference from
 				 * src_entry, since the entry is
 				 * marked as needs copy.  Allocate a
 				 * fake entry that is used to
-				 * decrement object->un_pager.vnp.writecount
+				 * decrement object->un_pager writecount
 				 * at the appropriate time.  Attach
 				 * fake_entry to the deferred list.
 				 */
 				fake_entry = vm_map_entry_create(dst_map);
-				fake_entry->eflags = MAP_ENTRY_VN_WRITECNT;
-				src_entry->eflags &= ~MAP_ENTRY_VN_WRITECNT;
+				fake_entry->eflags = MAP_ENTRY_WRITECNT;
+				src_entry->eflags &= ~MAP_ENTRY_WRITECNT;
 				vm_object_reference(src_object);
 				fake_entry->object.vm_object = src_object;
 				fake_entry->start = src_entry->start;
 				fake_entry->end = src_entry->end;
-				fake_entry->next = curthread->td_map_def_user;
+				fake_entry->defer_next =
+				    curthread->td_map_def_user;
 				curthread->td_map_def_user = fake_entry;
 			}
+
+			pmap_copy(dst_map->pmap, src_map->pmap,
+			    dst_entry->start, dst_entry->end - dst_entry->start,
+			    src_entry->start);
 		} else {
 			dst_entry->object.vm_object = NULL;
 			dst_entry->offset = 0;
@@ -3236,9 +4220,6 @@ vm_map_copy_entry(
 				*fork_charge += size;
 			}
 		}
-
-		pmap_copy(dst_map->pmap, src_map->pmap, dst_entry->start,
-		    dst_entry->end - dst_entry->start, src_entry->start);
 	} else {
 		/*
 		 * We don't want to make writeable wired pages copy-on-write.
@@ -3263,6 +4244,8 @@ vmspace_map_entry_forked(const struct vmspace *vm1, struct vmspace *vm2,
 	vm_size_t entrysize;
 	vm_offset_t newend;
 
+	if ((entry->eflags & MAP_ENTRY_GUARD) != 0)
+		return;
 	entrysize = entry->end - entry->start;
 	vm2->vm_map.size += entrysize;
 	if (entry->eflags & (MAP_ENTRY_GROWS_DOWN | MAP_ENTRY_GROWS_UP)) {
@@ -3298,13 +4281,16 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 	vm_map_t new_map, old_map;
 	vm_map_entry_t new_entry, old_entry;
 	vm_object_t object;
-	int locked;
+	int error, locked;
+	vm_inherit_t inh;
 
 	old_map = &vm1->vm_map;
 	/* Copy immutable fields of vm1 to vm2. */
-	vm2 = vmspace_alloc(old_map->min_offset, old_map->max_offset, NULL);
+	vm2 = vmspace_alloc(vm_map_min(old_map), vm_map_max(old_map),
+	    pmap_pinit);
 	if (vm2 == NULL)
 		return (NULL);
+
 	vm2->vm_taddr = vm1->vm_taddr;
 	vm2->vm_daddr = vm1->vm_daddr;
 	vm2->vm_maxsaddr = vm1->vm_maxsaddr;
@@ -3315,32 +4301,41 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 	locked = vm_map_trylock(new_map); /* trylock to silence WITNESS */
 	KASSERT(locked, ("vmspace_fork: lock failed"));
 
-	old_entry = old_map->header.next;
+	error = pmap_vmspace_copy(new_map->pmap, old_map->pmap);
+	if (error != 0) {
+		sx_xunlock(&old_map->lock);
+		sx_xunlock(&new_map->lock);
+		vm_map_process_deferred();
+		vmspace_free(vm2);
+		return (NULL);
+	}
 
-	while (old_entry != &old_map->header) {
-		if (old_entry->eflags & MAP_ENTRY_IS_SUB_MAP)
+	new_map->anon_loc = old_map->anon_loc;
+	new_map->flags |= old_map->flags & (MAP_ASLR | MAP_ASLR_IGNSTART |
+	    MAP_WXORX);
+
+	VM_MAP_ENTRY_FOREACH(old_entry, old_map) {
+		if ((old_entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0)
 			panic("vm_map_fork: encountered a submap");
 
-		switch (old_entry->inheritance) {
+		inh = old_entry->inheritance;
+		if ((old_entry->eflags & MAP_ENTRY_GUARD) != 0 &&
+		    inh != VM_INHERIT_NONE)
+			inh = VM_INHERIT_COPY;
+
+		switch (inh) {
 		case VM_INHERIT_NONE:
 			break;
 
 		case VM_INHERIT_SHARE:
 			/*
-			 * Clone the entry, creating the shared object if necessary.
+			 * Clone the entry, creating the shared object if
+			 * necessary.
 			 */
 			object = old_entry->object.vm_object;
 			if (object == NULL) {
-				object = vm_object_allocate(OBJT_DEFAULT,
-					atop(old_entry->end - old_entry->start));
-				old_entry->object.vm_object = object;
-				old_entry->offset = 0;
-				if (old_entry->cred != NULL) {
-					object->cred = old_entry->cred;
-					object->charge = old_entry->end -
-					    old_entry->start;
-					old_entry->cred = NULL;
-				}
+				vm_map_entry_back(old_entry);
+				object = old_entry->object.vm_object;
 			}
 
 			/*
@@ -3351,45 +4346,51 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 			if (old_entry->eflags & MAP_ENTRY_NEEDS_COPY) {
 				vm_object_shadow(&old_entry->object.vm_object,
 				    &old_entry->offset,
-				    old_entry->end - old_entry->start);
+				    old_entry->end - old_entry->start,
+				    old_entry->cred,
+				    /* Transfer the second reference too. */
+				    true);
 				old_entry->eflags &= ~MAP_ENTRY_NEEDS_COPY;
-				/* Transfer the second reference too. */
-				vm_object_reference(
-				    old_entry->object.vm_object);
+				old_entry->cred = NULL;
 
 				/*
-				 * As in vm_map_simplify_entry(), the
-				 * vnode lock will not be acquired in
+				 * As in vm_map_merged_neighbor_dispose(),
+				 * the vnode lock will not be acquired in
 				 * this call to vm_object_deallocate().
 				 */
 				vm_object_deallocate(object);
 				object = old_entry->object.vm_object;
-			}
-			VM_OBJECT_WLOCK(object);
-			vm_object_clear_flag(object, OBJ_ONEMAPPING);
-			if (old_entry->cred != NULL) {
-				KASSERT(object->cred == NULL, ("vmspace_fork both cred"));
-				object->cred = old_entry->cred;
-				object->charge = old_entry->end - old_entry->start;
-				old_entry->cred = NULL;
-			}
+			} else {
+				VM_OBJECT_WLOCK(object);
+				vm_object_clear_flag(object, OBJ_ONEMAPPING);
+				if (old_entry->cred != NULL) {
+					KASSERT(object->cred == NULL,
+					    ("vmspace_fork both cred"));
+					object->cred = old_entry->cred;
+					object->charge = old_entry->end -
+					    old_entry->start;
+					old_entry->cred = NULL;
+				}
 
-			/*
-			 * Assert the correct state of the vnode
-			 * v_writecount while the object is locked, to
-			 * not relock it later for the assertion
-			 * correctness.
-			 */
-			if (old_entry->eflags & MAP_ENTRY_VN_WRITECNT &&
-			    object->type == OBJT_VNODE) {
-				KASSERT(((struct vnode *)object->handle)->
-				    v_writecount > 0,
-				    ("vmspace_fork: v_writecount %p", object));
-				KASSERT(object->un_pager.vnp.writemappings > 0,
-				    ("vmspace_fork: vnp.writecount %p",
-				    object));
+				/*
+				 * Assert the correct state of the vnode
+				 * v_writecount while the object is locked, to
+				 * not relock it later for the assertion
+				 * correctness.
+				 */
+				if (old_entry->eflags & MAP_ENTRY_WRITECNT &&
+				    object->type == OBJT_VNODE) {
+					KASSERT(((struct vnode *)object->
+					    handle)->v_writecount > 0,
+					    ("vmspace_fork: v_writecount %p",
+					    object));
+					KASSERT(object->un_pager.vnp.
+					    writemappings > 0,
+					    ("vmspace_fork: vnp.writecount %p",
+					    object));
+				}
+				VM_OBJECT_WUNLOCK(object);
 			}
-			VM_OBJECT_WUNLOCK(object);
 
 			/*
 			 * Clone the entry, referencing the shared object.
@@ -3400,17 +4401,17 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 			    MAP_ENTRY_IN_TRANSITION);
 			new_entry->wiring_thread = NULL;
 			new_entry->wired_count = 0;
-			if (new_entry->eflags & MAP_ENTRY_VN_WRITECNT) {
-				vnode_pager_update_writecount(object,
+			if (new_entry->eflags & MAP_ENTRY_WRITECNT) {
+				vm_pager_update_writecount(object,
 				    new_entry->start, new_entry->end);
 			}
+			vm_map_entry_set_vnode_text(new_entry, true);
 
 			/*
 			 * Insert the entry into the new map -- we know we're
 			 * inserting at the end of the new map.
 			 */
-			vm_map_entry_link(new_map, new_map->header.prev,
-			    new_entry);
+			vm_map_entry_link(new_map, new_entry);
 			vmspace_map_entry_forked(vm1, vm2, new_entry);
 
 			/*
@@ -3432,19 +4433,45 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 			 * Copied entry is COW over the old object.
 			 */
 			new_entry->eflags &= ~(MAP_ENTRY_USER_WIRED |
-			    MAP_ENTRY_IN_TRANSITION | MAP_ENTRY_VN_WRITECNT);
+			    MAP_ENTRY_IN_TRANSITION | MAP_ENTRY_WRITECNT);
 			new_entry->wiring_thread = NULL;
 			new_entry->wired_count = 0;
 			new_entry->object.vm_object = NULL;
 			new_entry->cred = NULL;
-			vm_map_entry_link(new_map, new_map->header.prev,
-			    new_entry);
+			vm_map_entry_link(new_map, new_entry);
 			vmspace_map_entry_forked(vm1, vm2, new_entry);
 			vm_map_copy_entry(old_map, new_map, old_entry,
 			    new_entry, fork_charge);
+			vm_map_entry_set_vnode_text(new_entry, true);
+			break;
+
+		case VM_INHERIT_ZERO:
+			/*
+			 * Create a new anonymous mapping entry modelled from
+			 * the old one.
+			 */
+			new_entry = vm_map_entry_create(new_map);
+			memset(new_entry, 0, sizeof(*new_entry));
+
+			new_entry->start = old_entry->start;
+			new_entry->end = old_entry->end;
+			new_entry->eflags = old_entry->eflags &
+			    ~(MAP_ENTRY_USER_WIRED | MAP_ENTRY_IN_TRANSITION |
+			    MAP_ENTRY_WRITECNT | MAP_ENTRY_VN_EXEC |
+			    MAP_ENTRY_SPLIT_BOUNDARY_MASK);
+			new_entry->protection = old_entry->protection;
+			new_entry->max_protection = old_entry->max_protection;
+			new_entry->inheritance = VM_INHERIT_ZERO;
+
+			vm_map_entry_link(new_map, new_entry);
+			vmspace_map_entry_forked(vm1, vm2, new_entry);
+
+			new_entry->cred = curthread->td_ucred;
+			crhold(new_entry->cred);
+			*fork_charge += (new_entry->end - new_entry->start);
+
 			break;
 		}
-		old_entry = old_entry->next;
 	}
 	/*
 	 * Use inlined vm_map_unlock() to postpone handling the deferred
@@ -3458,25 +4485,23 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 	return (vm2);
 }
 
+/*
+ * Create a process's stack for exec_new_vmspace().  This function is never
+ * asked to wire the newly created stack.
+ */
 int
 vm_map_stack(vm_map_t map, vm_offset_t addrbos, vm_size_t max_ssize,
     vm_prot_t prot, vm_prot_t max, int cow)
 {
 	vm_size_t growsize, init_ssize;
-	rlim_t lmemlim, vmemlim;
+	rlim_t vmemlim;
 	int rv;
 
+	MPASS((map->flags & MAP_WIREFUTURE) == 0);
 	growsize = sgrowsiz;
 	init_ssize = (max_ssize < growsize) ? max_ssize : growsize;
 	vm_map_lock(map);
-	lmemlim = lim_cur(curthread, RLIMIT_MEMLOCK);
 	vmemlim = lim_cur(curthread, RLIMIT_VMEM);
-	if (!old_mlock && map->flags & MAP_WIREFUTURE) {
-		if (ptoa(pmap_wired_count(map->pmap)) + init_ssize > lmemlim) {
-			rv = KERN_NO_SPACE;
-			goto out;
-		}
-	}
 	/* If we would blow our VMEM resource limit, no go */
 	if (map->size + init_ssize > vmemlim) {
 		rv = KERN_NO_SPACE;
@@ -3489,30 +4514,42 @@ out:
 	return (rv);
 }
 
+static int stack_guard_page = 1;
+SYSCTL_INT(_security_bsd, OID_AUTO, stack_guard_page, CTLFLAG_RWTUN,
+    &stack_guard_page, 0,
+    "Specifies the number of guard pages for a stack that grows");
+
 static int
 vm_map_stack_locked(vm_map_t map, vm_offset_t addrbos, vm_size_t max_ssize,
     vm_size_t growsize, vm_prot_t prot, vm_prot_t max, int cow)
 {
 	vm_map_entry_t new_entry, prev_entry;
-	vm_offset_t bot, top;
-	vm_size_t init_ssize;
+	vm_offset_t bot, gap_bot, gap_top, top;
+	vm_size_t init_ssize, sgp;
 	int orient, rv;
 
 	/*
 	 * The stack orientation is piggybacked with the cow argument.
 	 * Extract it into orient and mask the cow argument so that we
 	 * don't pass it around further.
-	 * NOTE: We explicitly allow bi-directional stacks.
 	 */
-	orient = cow & (MAP_STACK_GROWS_DOWN|MAP_STACK_GROWS_UP);
+	orient = cow & (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP);
 	KASSERT(orient != 0, ("No stack grow direction"));
+	KASSERT(orient != (MAP_STACK_GROWS_DOWN | MAP_STACK_GROWS_UP),
+	    ("bi-dir stack"));
 
-	if (addrbos < vm_map_min(map) ||
-	    addrbos > vm_map_max(map) ||
-	    addrbos + max_ssize < addrbos)
-		return (KERN_NO_SPACE);
+	if (max_ssize == 0 ||
+	    !vm_map_range_valid(map, addrbos, addrbos + max_ssize))
+		return (KERN_INVALID_ADDRESS);
+	sgp = ((curproc->p_flag2 & P2_STKGAP_DISABLE) != 0 ||
+	    (curproc->p_fctl0 & NT_FREEBSD_FCTL_STKGAP_DISABLE) != 0) ? 0 :
+	    (vm_size_t)stack_guard_page * PAGE_SIZE;
+	if (sgp >= max_ssize)
+		return (KERN_INVALID_ARGUMENT);
 
-	init_ssize = (max_ssize < growsize) ? max_ssize : growsize;
+	init_ssize = growsize;
+	if (max_ssize < init_ssize + sgp)
+		init_ssize = max_ssize - sgp;
 
 	/* If addr is already mapped, no go */
 	if (vm_map_lookup_entry(map, addrbos, &prev_entry))
@@ -3520,15 +4557,8 @@ vm_map_stack_locked(vm_map_t map, vm_offset_t addrbos, vm_size_t max_ssize,
 
 	/*
 	 * If we can't accommodate max_ssize in the current mapping, no go.
-	 * However, we need to be aware that subsequent user mappings might
-	 * map into the space we have reserved for stack, and currently this
-	 * space is not protected.
-	 *
-	 * Hopefully we will at least detect this condition when we try to
-	 * grow the stack.
 	 */
-	if ((prev_entry->next != &map->header) &&
-	    (prev_entry->next->start < addrbos + max_ssize))
+	if (vm_map_entry_succ(prev_entry)->start < addrbos + max_ssize)
 		return (KERN_NO_SPACE);
 
 	/*
@@ -3541,57 +4571,67 @@ vm_map_stack_locked(vm_map_t map, vm_offset_t addrbos, vm_size_t max_ssize,
 	 * and cow to be 0.  Possibly we should eliminate these as input
 	 * parameters, and just pass these values here in the insert call.
 	 */
-	if (orient == MAP_STACK_GROWS_DOWN)
+	if (orient == MAP_STACK_GROWS_DOWN) {
 		bot = addrbos + max_ssize - init_ssize;
-	else if (orient == MAP_STACK_GROWS_UP)
+		top = bot + init_ssize;
+		gap_bot = addrbos;
+		gap_top = bot;
+	} else /* if (orient == MAP_STACK_GROWS_UP) */ {
 		bot = addrbos;
-	else
-		bot = round_page(addrbos + max_ssize/2 - init_ssize/2);
-	top = bot + init_ssize;
-	rv = vm_map_insert(map, NULL, 0, bot, top, prot, max, cow);
-
-	/* Now set the avail_ssize amount. */
-	if (rv == KERN_SUCCESS) {
-		new_entry = prev_entry->next;
-		if (new_entry->end != top || new_entry->start != bot)
-			panic("Bad entry start/end for new stack entry");
-
-		new_entry->avail_ssize = max_ssize - init_ssize;
-		KASSERT((orient & MAP_STACK_GROWS_DOWN) == 0 ||
-		    (new_entry->eflags & MAP_ENTRY_GROWS_DOWN) != 0,
-		    ("new entry lacks MAP_ENTRY_GROWS_DOWN"));
-		KASSERT((orient & MAP_STACK_GROWS_UP) == 0 ||
-		    (new_entry->eflags & MAP_ENTRY_GROWS_UP) != 0,
-		    ("new entry lacks MAP_ENTRY_GROWS_UP"));
+		top = bot + init_ssize;
+		gap_bot = top;
+		gap_top = addrbos + max_ssize;
 	}
-
+	rv = vm_map_insert(map, NULL, 0, bot, top, prot, max, cow);
+	if (rv != KERN_SUCCESS)
+		return (rv);
+	new_entry = vm_map_entry_succ(prev_entry);
+	KASSERT(new_entry->end == top || new_entry->start == bot,
+	    ("Bad entry start/end for new stack entry"));
+	KASSERT((orient & MAP_STACK_GROWS_DOWN) == 0 ||
+	    (new_entry->eflags & MAP_ENTRY_GROWS_DOWN) != 0,
+	    ("new entry lacks MAP_ENTRY_GROWS_DOWN"));
+	KASSERT((orient & MAP_STACK_GROWS_UP) == 0 ||
+	    (new_entry->eflags & MAP_ENTRY_GROWS_UP) != 0,
+	    ("new entry lacks MAP_ENTRY_GROWS_UP"));
+	if (gap_bot == gap_top)
+		return (KERN_SUCCESS);
+	rv = vm_map_insert(map, NULL, 0, gap_bot, gap_top, VM_PROT_NONE,
+	    VM_PROT_NONE, MAP_CREATE_GUARD | (orient == MAP_STACK_GROWS_DOWN ?
+	    MAP_CREATE_STACK_GAP_DN : MAP_CREATE_STACK_GAP_UP));
+	if (rv == KERN_SUCCESS) {
+		/*
+		 * Gap can never successfully handle a fault, so
+		 * read-ahead logic is never used for it.  Re-use
+		 * next_read of the gap entry to store
+		 * stack_guard_page for vm_map_growstack().
+		 */
+		if (orient == MAP_STACK_GROWS_DOWN)
+			vm_map_entry_pred(new_entry)->next_read = sgp;
+		else
+			vm_map_entry_succ(new_entry)->next_read = sgp;
+	} else {
+		(void)vm_map_delete(map, bot, top);
+	}
 	return (rv);
 }
 
-static int stack_guard_page = 0;
-SYSCTL_INT(_security_bsd, OID_AUTO, stack_guard_page, CTLFLAG_RWTUN,
-    &stack_guard_page, 0,
-    "Insert stack guard page ahead of the growable segments.");
-
-/* Attempts to grow a vm stack entry.  Returns KERN_SUCCESS if the
- * desired address is already mapped, or if we successfully grow
- * the stack.  Also returns KERN_SUCCESS if addr is outside the
- * stack range (this is strange, but preserves compatibility with
- * the grow function in vm_machdep.c).
+/*
+ * Attempts to grow a vm stack entry.  Returns KERN_SUCCESS if we
+ * successfully grow the stack.
  */
-int
-vm_map_growstack(struct proc *p, vm_offset_t addr)
+static int
+vm_map_growstack(vm_map_t map, vm_offset_t addr, vm_map_entry_t gap_entry)
 {
-	vm_map_entry_t next_entry, prev_entry;
-	vm_map_entry_t new_entry, stack_entry;
-	struct vmspace *vm = p->p_vmspace;
-	vm_map_t map = &vm->vm_map;
-	vm_offset_t end;
-	vm_size_t growsize;
-	size_t grow_amount, max_grow;
-	rlim_t lmemlim, stacklim, vmemlim;
-	int is_procstack, rv;
+	vm_map_entry_t stack_entry;
+	struct proc *p;
+	struct vmspace *vm;
 	struct ucred *cred;
+	vm_offset_t gap_end, gap_start, grow_start;
+	vm_size_t grow_amount, guard, max_grow;
+	rlim_t lmemlim, stacklim, vmemlim;
+	int rv, rv1;
+	bool gap_deleted, grow_down, is_procstack;
 #ifdef notyet
 	uint64_t limit;
 #endif
@@ -3599,125 +4639,85 @@ vm_map_growstack(struct proc *p, vm_offset_t addr)
 	int error;
 #endif
 
+	p = curproc;
+	vm = p->p_vmspace;
+
+	/*
+	 * Disallow stack growth when the access is performed by a
+	 * debugger or AIO daemon.  The reason is that the wrong
+	 * resource limits are applied.
+	 */
+	if (p != initproc && (map != &p->p_vmspace->vm_map ||
+	    p->p_textvp == NULL))
+		return (KERN_FAILURE);
+
+	MPASS(!map->system_map);
+
 	lmemlim = lim_cur(curthread, RLIMIT_MEMLOCK);
 	stacklim = lim_cur(curthread, RLIMIT_STACK);
 	vmemlim = lim_cur(curthread, RLIMIT_VMEM);
-Retry:
-
-	vm_map_lock_read(map);
-
-	/* If addr is already in the entry range, no need to grow.*/
-	if (vm_map_lookup_entry(map, addr, &prev_entry)) {
-		vm_map_unlock_read(map);
+retry:
+	/* If addr is not in a hole for a stack grow area, no need to grow. */
+	if (gap_entry == NULL && !vm_map_lookup_entry(map, addr, &gap_entry))
+		return (KERN_FAILURE);
+	if ((gap_entry->eflags & MAP_ENTRY_GUARD) == 0)
 		return (KERN_SUCCESS);
-	}
-
-	next_entry = prev_entry->next;
-	if (!(prev_entry->eflags & MAP_ENTRY_GROWS_UP)) {
-		/*
-		 * This entry does not grow upwards. Since the address lies
-		 * beyond this entry, the next entry (if one exists) has to
-		 * be a downward growable entry. The entry list header is
-		 * never a growable entry, so it suffices to check the flags.
-		 */
-		if (!(next_entry->eflags & MAP_ENTRY_GROWS_DOWN)) {
-			vm_map_unlock_read(map);
-			return (KERN_SUCCESS);
-		}
-		stack_entry = next_entry;
+	if ((gap_entry->eflags & MAP_ENTRY_STACK_GAP_DN) != 0) {
+		stack_entry = vm_map_entry_succ(gap_entry);
+		if ((stack_entry->eflags & MAP_ENTRY_GROWS_DOWN) == 0 ||
+		    stack_entry->start != gap_entry->end)
+			return (KERN_FAILURE);
+		grow_amount = round_page(stack_entry->start - addr);
+		grow_down = true;
+	} else if ((gap_entry->eflags & MAP_ENTRY_STACK_GAP_UP) != 0) {
+		stack_entry = vm_map_entry_pred(gap_entry);
+		if ((stack_entry->eflags & MAP_ENTRY_GROWS_UP) == 0 ||
+		    stack_entry->end != gap_entry->start)
+			return (KERN_FAILURE);
+		grow_amount = round_page(addr + 1 - stack_entry->end);
+		grow_down = false;
 	} else {
-		/*
-		 * This entry grows upward. If the next entry does not at
-		 * least grow downwards, this is the entry we need to grow.
-		 * otherwise we have two possible choices and we have to
-		 * select one.
-		 */
-		if (next_entry->eflags & MAP_ENTRY_GROWS_DOWN) {
-			/*
-			 * We have two choices; grow the entry closest to
-			 * the address to minimize the amount of growth.
-			 */
-			if (addr - prev_entry->end <= next_entry->start - addr)
-				stack_entry = prev_entry;
-			else
-				stack_entry = next_entry;
-		} else
-			stack_entry = prev_entry;
+		return (KERN_FAILURE);
 	}
-
-	if (stack_entry == next_entry) {
-		KASSERT(stack_entry->eflags & MAP_ENTRY_GROWS_DOWN, ("foo"));
-		KASSERT(addr < stack_entry->start, ("foo"));
-		end = (prev_entry != &map->header) ? prev_entry->end :
-		    stack_entry->start - stack_entry->avail_ssize;
-		grow_amount = roundup(stack_entry->start - addr, PAGE_SIZE);
-		max_grow = stack_entry->start - end;
-	} else {
-		KASSERT(stack_entry->eflags & MAP_ENTRY_GROWS_UP, ("foo"));
-		KASSERT(addr >= stack_entry->end, ("foo"));
-		end = (next_entry != &map->header) ? next_entry->start :
-		    stack_entry->end + stack_entry->avail_ssize;
-		grow_amount = roundup(addr + 1 - stack_entry->end, PAGE_SIZE);
-		max_grow = end - stack_entry->end;
-	}
-
-	if (grow_amount > stack_entry->avail_ssize) {
-		vm_map_unlock_read(map);
+	guard = ((curproc->p_flag2 & P2_STKGAP_DISABLE) != 0 ||
+	    (curproc->p_fctl0 & NT_FREEBSD_FCTL_STKGAP_DISABLE) != 0) ? 0 :
+	    gap_entry->next_read;
+	max_grow = gap_entry->end - gap_entry->start;
+	if (guard > max_grow)
 		return (KERN_NO_SPACE);
-	}
-
-	/*
-	 * If there is no longer enough space between the entries nogo, and
-	 * adjust the available space.  Note: this  should only happen if the
-	 * user has mapped into the stack area after the stack was created,
-	 * and is probably an error.
-	 *
-	 * This also effectively destroys any guard page the user might have
-	 * intended by limiting the stack size.
-	 */
-	if (grow_amount + (stack_guard_page ? PAGE_SIZE : 0) > max_grow) {
-		if (vm_map_lock_upgrade(map))
-			goto Retry;
-
-		stack_entry->avail_ssize = max_grow;
-
-		vm_map_unlock(map);
+	max_grow -= guard;
+	if (grow_amount > max_grow)
 		return (KERN_NO_SPACE);
-	}
-
-	is_procstack = (addr >= (vm_offset_t)vm->vm_maxsaddr &&
-	    addr < (vm_offset_t)p->p_sysent->sv_usrstack) ? 1 : 0;
 
 	/*
 	 * If this is the main process stack, see if we're over the stack
 	 * limit.
 	 */
-	if (is_procstack && (ctob(vm->vm_ssize) + grow_amount > stacklim)) {
-		vm_map_unlock_read(map);
+	is_procstack = addr >= (vm_offset_t)vm->vm_maxsaddr &&
+	    addr < (vm_offset_t)p->p_sysent->sv_usrstack;
+	if (is_procstack && (ctob(vm->vm_ssize) + grow_amount > stacklim))
 		return (KERN_NO_SPACE);
-	}
+
 #ifdef RACCT
 	if (racct_enable) {
 		PROC_LOCK(p);
 		if (is_procstack && racct_set(p, RACCT_STACK,
 		    ctob(vm->vm_ssize) + grow_amount)) {
 			PROC_UNLOCK(p);
-			vm_map_unlock_read(map);
 			return (KERN_NO_SPACE);
 		}
 		PROC_UNLOCK(p);
 	}
 #endif
 
-	/* Round up the grow amount modulo sgrowsiz */
-	growsize = sgrowsiz;
-	grow_amount = roundup(grow_amount, growsize);
-	if (grow_amount > stack_entry->avail_ssize)
-		grow_amount = stack_entry->avail_ssize;
+	grow_amount = roundup(grow_amount, sgrowsiz);
+	if (grow_amount > max_grow)
+		grow_amount = max_grow;
 	if (is_procstack && (ctob(vm->vm_ssize) + grow_amount > stacklim)) {
 		grow_amount = trunc_page((vm_size_t)stacklim) -
 		    ctob(vm->vm_ssize);
 	}
+
 #ifdef notyet
 	PROC_LOCK(p);
 	limit = racct_get_available(p, RACCT_STACK);
@@ -3725,9 +4725,9 @@ Retry:
 	if (is_procstack && (ctob(vm->vm_ssize) + grow_amount > limit))
 		grow_amount = limit - ctob(vm->vm_ssize);
 #endif
-	if (!old_mlock && map->flags & MAP_WIREFUTURE) {
+
+	if (!old_mlock && (map->flags & MAP_WIREFUTURE) != 0) {
 		if (ptoa(pmap_wired_count(map->pmap)) + grow_amount > lmemlim) {
-			vm_map_unlock_read(map);
 			rv = KERN_NO_SPACE;
 			goto out;
 		}
@@ -3737,7 +4737,6 @@ Retry:
 			if (racct_set(p, RACCT_MEMLOCK,
 			    ptoa(pmap_wired_count(map->pmap)) + grow_amount)) {
 				PROC_UNLOCK(p);
-				vm_map_unlock_read(map);
 				rv = KERN_NO_SPACE;
 				goto out;
 			}
@@ -3745,9 +4744,9 @@ Retry:
 		}
 #endif
 	}
+
 	/* If we would blow our VMEM resource limit, no go */
 	if (map->size + grow_amount > vmemlim) {
-		vm_map_unlock_read(map);
 		rv = KERN_NO_SPACE;
 		goto out;
 	}
@@ -3756,7 +4755,6 @@ Retry:
 		PROC_LOCK(p);
 		if (racct_set(p, RACCT_VMEM, map->size + grow_amount)) {
 			PROC_UNLOCK(p);
-			vm_map_unlock_read(map);
 			rv = KERN_NO_SPACE;
 			goto out;
 		}
@@ -3764,62 +4762,40 @@ Retry:
 	}
 #endif
 
-	if (vm_map_lock_upgrade(map))
-		goto Retry;
+	if (vm_map_lock_upgrade(map)) {
+		gap_entry = NULL;
+		vm_map_lock_read(map);
+		goto retry;
+	}
 
-	if (stack_entry == next_entry) {
-		/*
-		 * Growing downward.
-		 */
-		/* Get the preliminary new entry start value */
-		addr = stack_entry->start - grow_amount;
-
-		/*
-		 * If this puts us into the previous entry, cut back our
-		 * growth to the available space. Also, see the note above.
-		 */
-		if (addr < end) {
-			stack_entry->avail_ssize = max_grow;
-			addr = end;
-			if (stack_guard_page)
-				addr += PAGE_SIZE;
+	if (grow_down) {
+		grow_start = gap_entry->end - grow_amount;
+		if (gap_entry->start + grow_amount == gap_entry->end) {
+			gap_start = gap_entry->start;
+			gap_end = gap_entry->end;
+			vm_map_entry_delete(map, gap_entry);
+			gap_deleted = true;
+		} else {
+			MPASS(gap_entry->start < gap_entry->end - grow_amount);
+			vm_map_entry_resize(map, gap_entry, -grow_amount);
+			gap_deleted = false;
 		}
-
-		rv = vm_map_insert(map, NULL, 0, addr, stack_entry->start,
-		    next_entry->protection, next_entry->max_protection,
+		rv = vm_map_insert(map, NULL, 0, grow_start,
+		    grow_start + grow_amount,
+		    stack_entry->protection, stack_entry->max_protection,
 		    MAP_STACK_GROWS_DOWN);
-
-		/* Adjust the available stack space by the amount we grew. */
-		if (rv == KERN_SUCCESS) {
-			new_entry = prev_entry->next;
-			KASSERT(new_entry == stack_entry->prev, ("foo"));
-			KASSERT(new_entry->end == stack_entry->start, ("foo"));
-			KASSERT(new_entry->start == addr, ("foo"));
-			KASSERT((new_entry->eflags & MAP_ENTRY_GROWS_DOWN) !=
-			    0, ("new entry lacks MAP_ENTRY_GROWS_DOWN"));
-			grow_amount = new_entry->end - new_entry->start;
-			new_entry->avail_ssize = stack_entry->avail_ssize -
-			    grow_amount;
-			stack_entry->eflags &= ~MAP_ENTRY_GROWS_DOWN;
+		if (rv != KERN_SUCCESS) {
+			if (gap_deleted) {
+				rv1 = vm_map_insert(map, NULL, 0, gap_start,
+				    gap_end, VM_PROT_NONE, VM_PROT_NONE,
+				    MAP_CREATE_GUARD | MAP_CREATE_STACK_GAP_DN);
+				MPASS(rv1 == KERN_SUCCESS);
+			} else
+				vm_map_entry_resize(map, gap_entry,
+				    grow_amount);
 		}
 	} else {
-		/*
-		 * Growing upward.
-		 */
-		addr = stack_entry->end + grow_amount;
-
-		/*
-		 * If this puts us into the next entry, cut back our growth
-		 * to the available space. Also, see the note above.
-		 */
-		if (addr > end) {
-			stack_entry->avail_ssize = end - stack_entry->end;
-			addr = end;
-			if (stack_guard_page)
-				addr -= PAGE_SIZE;
-		}
-
-		grow_amount = addr - stack_entry->end;
+		grow_start = stack_entry->end;
 		cred = stack_entry->cred;
 		if (cred == NULL && stack_entry->object.vm_object != NULL)
 			cred = stack_entry->object.vm_object->cred;
@@ -3827,36 +4803,35 @@ Retry:
 			rv = KERN_NO_SPACE;
 		/* Grow the underlying object if applicable. */
 		else if (stack_entry->object.vm_object == NULL ||
-			 vm_object_coalesce(stack_entry->object.vm_object,
-			 stack_entry->offset,
-			 (vm_size_t)(stack_entry->end - stack_entry->start),
-			 (vm_size_t)grow_amount, cred != NULL)) {
-			map->size += (addr - stack_entry->end);
-			/* Update the current entry. */
-			stack_entry->end = addr;
-			stack_entry->avail_ssize -= grow_amount;
-			vm_map_entry_resize_free(map, stack_entry);
+		    vm_object_coalesce(stack_entry->object.vm_object,
+		    stack_entry->offset,
+		    (vm_size_t)(stack_entry->end - stack_entry->start),
+		    grow_amount, cred != NULL)) {
+			if (gap_entry->start + grow_amount == gap_entry->end) {
+				vm_map_entry_delete(map, gap_entry);
+				vm_map_entry_resize(map, stack_entry,
+				    grow_amount);
+			} else {
+				gap_entry->start += grow_amount;
+				stack_entry->end += grow_amount;
+			}
+			map->size += grow_amount;
 			rv = KERN_SUCCESS;
 		} else
 			rv = KERN_FAILURE;
 	}
-
 	if (rv == KERN_SUCCESS && is_procstack)
 		vm->vm_ssize += btoc(grow_amount);
-
-	vm_map_unlock(map);
 
 	/*
 	 * Heed the MAP_WIREFUTURE flag if it was set for this process.
 	 */
-	if (rv == KERN_SUCCESS && (map->flags & MAP_WIREFUTURE)) {
-		vm_map_wire(map,
-		    (stack_entry == next_entry) ? addr : addr - grow_amount,
-		    (stack_entry == next_entry) ? stack_entry->start : addr,
-		    (p->p_flag & P_SYSTEM)
-		    ? VM_MAP_WIRE_SYSTEM|VM_MAP_WIRE_NOHOLES
-		    : VM_MAP_WIRE_USER|VM_MAP_WIRE_NOHOLES);
+	if (rv == KERN_SUCCESS && (map->flags & MAP_WIREFUTURE) != 0) {
+		rv = vm_map_wire_locked(map, grow_start,
+		    grow_start + grow_amount,
+		    VM_MAP_WIRE_USER | VM_MAP_WIRE_NOHOLES);
 	}
+	vm_map_lock_downgrade(map);
 
 out:
 #ifdef RACCT
@@ -3890,7 +4865,7 @@ vmspace_exec(struct proc *p, vm_offset_t minuser, vm_offset_t maxuser)
 
 	KASSERT((curthread->td_pflags & TDP_EXECVMSPC) == 0,
 	    ("vmspace_exec recursed"));
-	newvmspace = vmspace_alloc(minuser, maxuser, NULL);
+	newvmspace = vmspace_alloc(minuser, maxuser, pmap_pinit);
 	if (newvmspace == NULL)
 		return (ENOMEM);
 	newvmspace->vm_swrss = oldvmspace->vm_swrss;
@@ -3921,7 +4896,7 @@ vmspace_unshare(struct proc *p)
 	struct vmspace *newvmspace;
 	vm_ooffset_t fork_charge;
 
-	if (oldvmspace->vm_refcnt == 1)
+	if (refcount_load(&oldvmspace->vm_refcnt) == 1)
 		return (0);
 	fork_charge = 0;
 	newvmspace = vmspace_fork(oldvmspace, &fork_charge);
@@ -3975,15 +4950,16 @@ vm_map_lookup(vm_map_t *var_map,		/* IN/OUT */
 	vm_map_entry_t entry;
 	vm_map_t map = *var_map;
 	vm_prot_t prot;
-	vm_prot_t fault_type = fault_typea;
+	vm_prot_t fault_type;
 	vm_object_t eobject;
 	vm_size_t size;
 	struct ucred *cred;
 
-RetryLookup:;
+RetryLookup:
 
 	vm_map_lock_read(map);
 
+RetryLookupLocked:
 	/*
 	 * Lookup the faulting address.
 	 */
@@ -4009,7 +4985,16 @@ RetryLookup:;
 	 * Check whether this task is allowed to have this page.
 	 */
 	prot = entry->protection;
-	fault_type &= (VM_PROT_READ|VM_PROT_WRITE|VM_PROT_EXECUTE);
+	if ((fault_typea & VM_PROT_FAULT_LOOKUP) != 0) {
+		fault_typea &= ~VM_PROT_FAULT_LOOKUP;
+		if (prot == VM_PROT_NONE && map != kernel_map &&
+		    (entry->eflags & MAP_ENTRY_GUARD) != 0 &&
+		    (entry->eflags & (MAP_ENTRY_STACK_GAP_DN |
+		    MAP_ENTRY_STACK_GAP_UP)) != 0 &&
+		    vm_map_growstack(map, vaddr, entry) == KERN_SUCCESS)
+			goto RetryLookupLocked;
+	}
+	fault_type = fault_typea & VM_PROT_ALL;
 	if ((fault_type & prot) != fault_type || prot == VM_PROT_NONE) {
 		vm_map_unlock_read(map);
 		return (KERN_PROTECTION_FAILURE);
@@ -4033,6 +5018,7 @@ RetryLookup:;
 	if (*wired)
 		fault_type = entry->protection;
 	size = entry->end - entry->start;
+
 	/*
 	 * If the entry was copy-on-write, we either ...
 	 */
@@ -4069,24 +5055,18 @@ RetryLookup:;
 				}
 				entry->cred = cred;
 			}
-			vm_object_shadow(&entry->object.vm_object,
-			    &entry->offset, size);
-			entry->eflags &= ~MAP_ENTRY_NEEDS_COPY;
 			eobject = entry->object.vm_object;
-			if (eobject->cred != NULL) {
+			vm_object_shadow(&entry->object.vm_object,
+			    &entry->offset, size, entry->cred, false);
+			if (eobject == entry->object.vm_object) {
 				/*
 				 * The object was not shadowed.
 				 */
 				swap_release_by_cred(size, entry->cred);
 				crfree(entry->cred);
-				entry->cred = NULL;
-			} else if (entry->cred != NULL) {
-				VM_OBJECT_WLOCK(eobject);
-				eobject->cred = entry->cred;
-				eobject->charge = size;
-				VM_OBJECT_WUNLOCK(eobject);
-				entry->cred = NULL;
 			}
+			entry->cred = NULL;
+			entry->eflags &= ~MAP_ENTRY_NEEDS_COPY;
 
 			vm_map_lock_downgrade(map);
 		} else {
@@ -4101,20 +5081,13 @@ RetryLookup:;
 	/*
 	 * Create an object if necessary.
 	 */
-	if (entry->object.vm_object == NULL &&
-	    !map->system_map) {
+	if (entry->object.vm_object == NULL && !map->system_map) {
 		if (vm_map_lock_upgrade(map))
 			goto RetryLookup;
-		entry->object.vm_object = vm_object_allocate(OBJT_DEFAULT,
-		    atop(size));
+		entry->object.vm_object = vm_object_allocate_anon(atop(size),
+		    NULL, entry->cred, entry->cred != NULL ? size : 0);
 		entry->offset = 0;
-		if (entry->cred != NULL) {
-			VM_OBJECT_WLOCK(entry->object.vm_object);
-			entry->object.vm_object->cred = entry->cred;
-			entry->object.vm_object->charge = size;
-			VM_OBJECT_WUNLOCK(entry->object.vm_object);
-			entry->cred = NULL;
-		}
+		entry->cred = NULL;
 		vm_map_lock_downgrade(map);
 	}
 
@@ -4225,6 +5198,100 @@ vm_map_lookup_done(vm_map_t map, vm_map_entry_t entry)
 	vm_map_unlock_read(map);
 }
 
+vm_offset_t
+vm_map_max_KBI(const struct vm_map *map)
+{
+
+	return (vm_map_max(map));
+}
+
+vm_offset_t
+vm_map_min_KBI(const struct vm_map *map)
+{
+
+	return (vm_map_min(map));
+}
+
+pmap_t
+vm_map_pmap_KBI(vm_map_t map)
+{
+
+	return (map->pmap);
+}
+
+bool
+vm_map_range_valid_KBI(vm_map_t map, vm_offset_t start, vm_offset_t end)
+{
+
+	return (vm_map_range_valid(map, start, end));
+}
+
+#ifdef INVARIANTS
+static void
+_vm_map_assert_consistent(vm_map_t map, int check)
+{
+	vm_map_entry_t entry, prev;
+	vm_map_entry_t cur, header, lbound, ubound;
+	vm_size_t max_left, max_right;
+
+#ifdef DIAGNOSTIC
+	++map->nupdates;
+#endif
+	if (enable_vmmap_check != check)
+		return;
+
+	header = prev = &map->header;
+	VM_MAP_ENTRY_FOREACH(entry, map) {
+		KASSERT(prev->end <= entry->start,
+		    ("map %p prev->end = %jx, start = %jx", map,
+		    (uintmax_t)prev->end, (uintmax_t)entry->start));
+		KASSERT(entry->start < entry->end,
+		    ("map %p start = %jx, end = %jx", map,
+		    (uintmax_t)entry->start, (uintmax_t)entry->end));
+		KASSERT(entry->left == header ||
+		    entry->left->start < entry->start,
+		    ("map %p left->start = %jx, start = %jx", map,
+		    (uintmax_t)entry->left->start, (uintmax_t)entry->start));
+		KASSERT(entry->right == header ||
+		    entry->start < entry->right->start,
+		    ("map %p start = %jx, right->start = %jx", map,
+		    (uintmax_t)entry->start, (uintmax_t)entry->right->start));
+		cur = map->root;
+		lbound = ubound = header;
+		for (;;) {
+			if (entry->start < cur->start) {
+				ubound = cur;
+				cur = cur->left;
+				KASSERT(cur != lbound,
+				    ("map %p cannot find %jx",
+				    map, (uintmax_t)entry->start));
+			} else if (cur->end <= entry->start) {
+				lbound = cur;
+				cur = cur->right;
+				KASSERT(cur != ubound,
+				    ("map %p cannot find %jx",
+				    map, (uintmax_t)entry->start));
+			} else {
+				KASSERT(cur == entry,
+				    ("map %p cannot find %jx",
+				    map, (uintmax_t)entry->start));
+				break;
+			}
+		}
+		max_left = vm_map_entry_max_free_left(entry, lbound);
+		max_right = vm_map_entry_max_free_right(entry, ubound);
+		KASSERT(entry->max_free == vm_size_max(max_left, max_right),
+		    ("map %p max = %jx, max_left = %jx, max_right = %jx", map,
+		    (uintmax_t)entry->max_free,
+		    (uintmax_t)max_left, (uintmax_t)max_right));
+		prev = entry;
+	}
+	KASSERT(prev->end <= entry->start,
+	    ("map %p prev->end = %jx, start = %jx", map,
+	    (uintmax_t)prev->end, (uintmax_t)entry->start));
+}
+#endif
+
 #include "opt_ddb.h"
 #ifdef DDB
 #include <sys/kernel.h>
@@ -4234,25 +5301,27 @@ vm_map_lookup_done(vm_map_t map, vm_map_entry_t entry)
 static void
 vm_map_print(vm_map_t map)
 {
-	vm_map_entry_t entry;
+	vm_map_entry_t entry, prev;
 
 	db_iprintf("Task map %p: pmap=%p, nentries=%d, version=%u\n",
 	    (void *)map,
 	    (void *)map->pmap, map->nentries, map->timestamp);
 
 	db_indent += 2;
-	for (entry = map->header.next; entry != &map->header;
-	    entry = entry->next) {
-		db_iprintf("map entry %p: start=%p, end=%p\n",
-		    (void *)entry, (void *)entry->start, (void *)entry->end);
+	prev = &map->header;
+	VM_MAP_ENTRY_FOREACH(entry, map) {
+		db_iprintf("map entry %p: start=%p, end=%p, eflags=%#x, \n",
+		    (void *)entry, (void *)entry->start, (void *)entry->end,
+		    entry->eflags);
 		{
-			static char *inheritance_name[4] =
+			static const char * const inheritance_name[4] =
 			{"share", "copy", "none", "donate_copy"};
 
 			db_iprintf(" prot=%x/%x/%s",
 			    entry->protection,
 			    entry->max_protection,
-			    inheritance_name[(int)(unsigned char)entry->inheritance]);
+			    inheritance_name[(int)(unsigned char)
+			    entry->inheritance]);
 			if (entry->wired_count != 0)
 				db_printf(", wired");
 		}
@@ -4260,9 +5329,9 @@ vm_map_print(vm_map_t map)
 			db_printf(", share=%p, offset=0x%jx\n",
 			    (void *)entry->object.sub_map,
 			    (uintmax_t)entry->offset);
-			if ((entry->prev == &map->header) ||
-			    (entry->prev->object.sub_map !=
-				entry->object.sub_map)) {
+			if (prev == &map->header ||
+			    prev->object.sub_map !=
+				entry->object.sub_map) {
 				db_indent += 2;
 				vm_map_print((vm_map_t)entry->object.sub_map);
 				db_indent -= 2;
@@ -4282,9 +5351,9 @@ vm_map_print(vm_map_t map)
 				    (entry->eflags & MAP_ENTRY_NEEDS_COPY) ? "needed" : "done");
 			db_printf("\n");
 
-			if ((entry->prev == &map->header) ||
-			    (entry->prev->object.vm_object !=
-				entry->object.vm_object)) {
+			if (prev == &map->header ||
+			    prev->object.vm_object !=
+				entry->object.vm_object) {
 				db_indent += 2;
 				vm_object_print((db_expr_t)(intptr_t)
 						entry->object.vm_object,
@@ -4292,6 +5361,7 @@ vm_map_print(vm_map_t map)
 				db_indent -= 2;
 			}
 		}
+		prev = entry;
 	}
 	db_indent -= 2;
 }
@@ -4311,7 +5381,7 @@ DB_SHOW_COMMAND(procvm, procvm)
 	struct proc *p;
 
 	if (have_addr) {
-		p = (struct proc *) addr;
+		p = db_lookup_proc(addr);
 	} else {
 		p = curproc;
 	}

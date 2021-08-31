@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Nuno Antunes <nuno.antunes@gmail.com>
  * Copyright (c) 2007 Alexander Motin <mav@freebsd.org>
  * All rights reserved.
@@ -284,7 +286,7 @@ ng_car_rcvdata(hook_p hook, item_p item )
 		default:				\
 			/* Drop packet and return. */	\
 			NG_FREE_ITEM(item);		\
-			++hinfo->stats.droped_pkts;	\
+			++hinfo->stats.dropped_pkts;	\
 			return (0);			\
 		}					\
 	} while (0)
@@ -303,7 +305,6 @@ ng_car_rcvdata(hook_p hook, item_p item )
 		hinfo->tc -= len;
 		NG_CAR_PERFORM_MATCH_ACTION(hinfo->conf.green_action);
 	} else {
-
 		/* Refill only if not green without it. */
 		ng_car_refillhook(hinfo);
 
@@ -671,7 +672,6 @@ ng_car_q_event(node_p node, hook_p hook, void *arg, int arg2)
 
 	/* If we have some tokens */
 	while (hinfo->tc >= 0) {
-
 		/* Send packet. */
 		m = hinfo->q[hinfo->q_first];
 		NG_SEND_DATA_ONLY(error, hinfo->dest, m);
@@ -728,7 +728,7 @@ ng_car_enqueue(struct hookinfo *hinfo, item_p item)
 	    (hinfo->te + len >= NG_CAR_QUEUE_SIZE)) {
 		/* Drop packet. */
 		++hinfo->stats.red_pkts;
-		++hinfo->stats.droped_pkts;
+		++hinfo->stats.dropped_pkts;
 		NG_FREE_M(m);
 
 		hinfo->te = 0;

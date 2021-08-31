@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Oleksandr Tymoshenko <gonzo@freebsd.org>
  * All rights reserved.
  *
@@ -41,6 +43,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
+#include <arm/broadcom/bcm2835/bcm2835_firmware.h>
 #include <arm/broadcom/bcm2835/bcm2835_mbox.h>
 #include <arm/broadcom/bcm2835/bcm2835_mbox_prop.h>
 #include <arm/broadcom/bcm2835/bcm2835_vcbus.h>
@@ -92,17 +95,27 @@ struct bcm_mbox_softc {
 #define	mbox_write_4(sc, reg, val)		\
     bus_space_write_4((sc)->bst, (sc)->bsh, reg, val)
 
+static struct ofw_compat_data compat_data[] = {
+	{"broadcom,bcm2835-mbox",	1},
+	{"brcm,bcm2835-mbox",		1},
+	{NULL,				0}
+};
+
 static int
 bcm_mbox_read_msg(struct bcm_mbox_softc *sc, int *ochan)
 {
+#ifdef DEBUG
 	uint32_t data;
+#endif
 	uint32_t msg;
 	int chan;
 
 	msg = mbox_read_4(sc, REG_READ);
 	dprintf("bcm_mbox_intr: raw data %08x\n", msg);
 	chan = MBOX_CHAN(msg);
+#ifdef DEBUG
 	data = MBOX_DATA(msg);
+#endif
 	if (sc->msg[chan]) {
 		printf("bcm_mbox_intr: channel %d oveflow\n", chan);
 		return (1);
@@ -138,12 +151,12 @@ bcm_mbox_probe(device_t dev)
 	if (!ofw_bus_status_okay(dev))
 		return (ENXIO);
 
-	if (ofw_bus_is_compatible(dev, "broadcom,bcm2835-mbox")) {
-		device_set_desc(dev, "BCM2835 VideoCore Mailbox");
-		return(BUS_PROBE_DEFAULT);
-	}
+	if (ofw_bus_search_compatible(dev, compat_data)->ocd_data == 0)
+		return (ENXIO);
 
-	return (ENXIO);
+	device_set_desc(dev, "BCM2835 VideoCore Mailbox");
+
+	return (BUS_PROBE_DEFAULT);
 }
 
 static int
@@ -281,7 +294,8 @@ static driver_t bcm_mbox_driver = {
 
 static devclass_t bcm_mbox_devclass;
 
-DRIVER_MODULE(mbox, simplebus, bcm_mbox_driver, bcm_mbox_devclass, 0, 0);
+EARLY_DRIVER_MODULE(mbox, simplebus, bcm_mbox_driver, bcm_mbox_devclass, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_LAST);
 
 static void
 bcm2835_mbox_dma_cb(void *arg, bus_dma_segment_t *segs, int nseg, int err)
@@ -291,7 +305,7 @@ bcm2835_mbox_dma_cb(void *arg, bus_dma_segment_t *segs, int nseg, int err)
 	if (err)
 		return;
 	addr = (bus_addr_t *)arg;
-	*addr = PHYS_TO_VCBUS(segs[0].ds_addr);
+	*addr = ARMC_TO_VCBUS(segs[0].ds_addr);
 }
 
 static void *
@@ -302,7 +316,7 @@ bcm2835_mbox_init_dma(device_t dev, size_t len, bus_dma_tag_t *tag,
 	int err;
 
 	err = bus_dma_tag_create(bus_get_dma_tag(dev), 16, 0,
-	    BUS_SPACE_MAXADDR_32BIT, BUS_SPACE_MAXADDR, NULL, NULL,
+	    bcm283x_dmabus_peripheral_lowaddr(), BUS_SPACE_MAXADDR, NULL, NULL,
 	    len, 1, len, 0, NULL, NULL, tag);
 	if (err != 0) {
 		device_printf(dev, "can't create DMA tag\n");
@@ -349,6 +363,16 @@ bcm2835_mbox_err(device_t dev, bus_addr_t msg_phys, uint32_t resp_phys,
 	tag = (struct bcm2835_mbox_tag_hdr *)(msg + 1);
 	last = (uint8_t *)msg + len;
 	for (idx = 0; tag->tag != 0; idx++) {
+		/*
+		 * When setting the GPIO config or state the firmware doesn't
+		 * set tag->val_len correctly.
+		 */
+		if ((tag->tag == BCM2835_FIRMWARE_TAG_SET_GPIO_CONFIG ||
+		     tag->tag == BCM2835_FIRMWARE_TAG_SET_GPIO_STATE) &&
+		    tag->val_len == 0) {
+			tag->val_len = BCM2835_MBOX_TAG_VAL_LEN_RESPONSE |
+			    tag->val_buf_size;
+		}
 		if ((tag->val_len & BCM2835_MBOX_TAG_VAL_LEN_RESPONSE) == 0) {
 			device_printf(dev, "tag %d response error\n", idx);
 			return (EIO);
@@ -373,10 +397,10 @@ int
 bcm2835_mbox_property(void *msg, size_t msg_size)
 {
 	struct bcm_mbox_softc *sc;
-	struct msg_set_power_state *buf;
 	bus_dma_tag_t msg_tag;
 	bus_dmamap_t msg_map;
 	bus_addr_t msg_phys;
+	char *buf;
 	uint32_t reg;
 	device_t mbox;
 	int err;
@@ -444,6 +468,26 @@ bcm2835_mbox_set_power_state(uint32_t device_id, boolean_t on)
 }
 
 int
+bcm2835_mbox_notify_xhci_reset(uint32_t pci_dev_addr)
+{
+	struct msg_notify_xhci_reset msg;
+	int err;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.hdr.buf_size = sizeof(msg);
+	msg.hdr.code = BCM2835_MBOX_CODE_REQ;
+	msg.tag_hdr.tag = BCM2835_MBOX_TAG_NOTIFY_XHCI_RESET;
+	msg.tag_hdr.val_buf_size = sizeof(msg.body);
+	msg.tag_hdr.val_len = sizeof(msg.body.req);
+	msg.body.req.pci_device_addr = pci_dev_addr;
+	msg.end_tag = 0;
+
+	err = bcm2835_mbox_property(&msg, sizeof(msg));
+
+	return (err);
+}
+
+int
 bcm2835_mbox_get_clock_rate(uint32_t clock_id, uint32_t *hz)
 {
 	struct msg_get_clock_rate msg;
@@ -487,6 +531,26 @@ bcm2835_mbox_fb_get_w_h(struct bcm2835_fb_config *fb)
 }
 
 int
+bcm2835_mbox_fb_get_bpp(struct bcm2835_fb_config *fb)
+{
+	int err;
+	struct msg_fb_get_bpp msg;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.hdr.buf_size = sizeof(msg);
+	msg.hdr.code = BCM2835_MBOX_CODE_REQ;
+	BCM2835_MBOX_INIT_TAG(&msg.bpp, GET_DEPTH);
+	msg.bpp.tag_hdr.val_len = 0;
+	msg.end_tag = 0;
+
+	err = bcm2835_mbox_property(&msg, sizeof(msg));
+	if (err == 0)
+		fb->bpp = msg.bpp.body.resp.bpp;
+
+	return (err);
+}
+
+int
 bcm2835_mbox_fb_init(struct bcm2835_fb_config *fb)
 {
 	int err;
@@ -522,7 +586,7 @@ bcm2835_mbox_fb_init(struct bcm2835_fb_config *fb)
 		fb->xoffset = msg.offset.body.resp.x;
 		fb->yoffset = msg.offset.body.resp.y;
 		fb->pitch = msg.pitch.body.resp.pitch;
-		fb->base = VCBUS_TO_PHYS(msg.buffer.body.resp.fb_address);
+		fb->base = VCBUS_TO_ARMC(msg.buffer.body.resp.fb_address);
 		fb->size = msg.buffer.body.resp.fb_size;
 	}
 

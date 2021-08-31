@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010,2013 Lawrence Stewart <lstewart@freebsd.org>
  * Copyright (c) 2010 The FreeBSD Foundation
  * All rights reserved.
@@ -505,7 +507,6 @@ hhook_vnet_uninit(const void *unused __unused)
 	}
 	HHHLIST_UNLOCK();
 }
-
 
 /*
  * When a vnet is created and being initialised, init the V_hhook_vhead_list.

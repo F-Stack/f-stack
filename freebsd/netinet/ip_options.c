@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1988, 1993
  *      The Regents of the University of California.
  * Copyright (c) 2005 Andre Oppermann, Internet Business Solutions AG.
@@ -12,7 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -50,6 +52,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if_var.h>
 #include <net/if_dl.h>
 #include <net/route.h>
+#include <net/route/nhop.h>
 #include <net/netisr.h>
 #include <net/vnet.h>
 
@@ -66,15 +69,15 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/socketvar.h>
 
-static VNET_DEFINE(int, ip_dosourceroute);
+VNET_DEFINE_STATIC(int, ip_dosourceroute);
 SYSCTL_INT(_net_inet_ip, IPCTL_SOURCEROUTE, sourceroute,
     CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip_dosourceroute), 0,
     "Enable forwarding source routed IP packets");
 #define	V_ip_dosourceroute	VNET(ip_dosourceroute)
 
-static VNET_DEFINE(int,	ip_acceptsourceroute);
-SYSCTL_INT(_net_inet_ip, IPCTL_ACCEPTSOURCEROUTE, accept_sourceroute, 
-    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip_acceptsourceroute), 0, 
+VNET_DEFINE_STATIC(int,	ip_acceptsourceroute);
+SYSCTL_INT(_net_inet_ip, IPCTL_ACCEPTSOURCEROUTE, accept_sourceroute,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip_acceptsourceroute), 0,
     "Enable accepting source routed IP packets");
 #define	V_ip_acceptsourceroute	VNET(ip_acceptsourceroute)
 
@@ -105,8 +108,10 @@ ip_dooptions(struct mbuf *m, int pass)
 	int opt, optlen, cnt, off, code, type = ICMP_PARAMPROB, forward = 0;
 	struct in_addr *sin, dst;
 	uint32_t ntime;
-	struct nhop4_extended nh_ext;
+	struct nhop_object *nh;
 	struct	sockaddr_in ipaddr = { sizeof(ipaddr), AF_INET };
+
+	NET_EPOCH_ASSERT();
 
 	/* Ignore or reject packets with IP options. */
 	if (V_ip_doopts == 0)
@@ -138,7 +143,6 @@ ip_dooptions(struct mbuf *m, int pass)
 			}
 		}
 		switch (opt) {
-
 		default:
 			break;
 
@@ -196,16 +200,19 @@ ip_dooptions(struct mbuf *m, int pass)
 #endif
 			if (!V_ip_dosourceroute) {
 				if (V_ipforwarding) {
-					char buf[16]; /* aaa.bbb.ccc.ddd\0 */
+					char srcbuf[INET_ADDRSTRLEN];
+					char dstbuf[INET_ADDRSTRLEN];
+
 					/*
 					 * Acting as a router, so generate
 					 * ICMP
 					 */
 nosourcerouting:
-					strcpy(buf, inet_ntoa(ip->ip_dst));
-					log(LOG_WARNING, 
-					    "attempted source route from %s to %s\n",
-					    inet_ntoa(ip->ip_src), buf);
+					log(LOG_WARNING,
+					    "attempted source route from %s "
+					    "to %s\n",
+					    inet_ntoa_r(ip->ip_src, srcbuf),
+					    inet_ntoa_r(ip->ip_dst, dstbuf));
 					type = ICMP_UNREACH;
 					code = ICMP_UNREACH_SRCFAIL;
 					goto bad;
@@ -245,14 +252,14 @@ dropit:
 
 				memcpy(cp + off, &(IA_SIN(ia)->sin_addr),
 				    sizeof(struct in_addr));
-				ifa_free(&ia->ia_ifa);
 			} else {
 				/* XXX MRT 0 for routing */
-				if (fib4_lookup_nh_ext(M_GETFIB(m),
-				    ipaddr.sin_addr, 0, 0, &nh_ext) != 0)
+				nh = fib4_lookup(M_GETFIB(m), ipaddr.sin_addr,
+				     0, NHR_NONE, 0);
+				if (nh == NULL)
 					goto bad;
 
-				memcpy(cp + off, &nh_ext.nh_src,
+				memcpy(cp + off, &(IA_SIN(nh->nh_ifa)->sin_addr),
 				    sizeof(struct in_addr));
 			}
 
@@ -293,10 +300,9 @@ dropit:
 			if ((ia = (INA)ifa_ifwithaddr((SA)&ipaddr)) != NULL) {
 				memcpy(cp + off, &(IA_SIN(ia)->sin_addr),
 				    sizeof(struct in_addr));
-				ifa_free(&ia->ia_ifa);
-			} else if (fib4_lookup_nh_ext(M_GETFIB(m),
-			    ipaddr.sin_addr, 0, 0, &nh_ext) == 0) {
-				memcpy(cp + off, &nh_ext.nh_src,
+			} else if ((nh = fib4_lookup(M_GETFIB(m),
+			    ipaddr.sin_addr, 0, NHR_NONE, 0)) != NULL) {
+				memcpy(cp + off, &(IA_SIN(nh->nh_ifa)->sin_addr),
 				    sizeof(struct in_addr));
 			} else {
 				type = ICMP_UNREACH;
@@ -331,7 +337,6 @@ dropit:
 			off--;				/* 0 origin */
 			sin = (struct in_addr *)(cp + off);
 			switch (cp[IPOPT_OFFSET + 1] & 0x0f) {
-
 			case IPOPT_TS_TSONLY:
 				break;
 
@@ -348,7 +353,6 @@ dropit:
 					continue;
 				(void)memcpy(sin, &IA_SIN(ia)->sin_addr,
 				    sizeof(struct in_addr));
-				ifa_free(&ia->ia_ifa);
 				cp[IPOPT_OFFSET] += sizeof(struct in_addr);
 				off += sizeof(struct in_addr);
 				break;
@@ -646,7 +650,6 @@ ip_pcbopts(struct inpcb *inp, int optname, struct mbuf *m)
 				goto bad;
 		}
 		switch (opt) {
-
 		default:
 			break;
 

@@ -4,9 +4,117 @@
  *
  *****************************************************************************/
 
-/*
- * Copyright (C) 2000 - 2016, Intel Corp.
+/******************************************************************************
+ *
+ * 1. Copyright Notice
+ *
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
+ *
+ * 2. License
+ *
+ * 2.1. This is your license from Intel Corp. under its intellectual property
+ * rights. You may have additional license terms from the party that provided
+ * you this software, covering your right to use that party's intellectual
+ * property rights.
+ *
+ * 2.2. Intel grants, free of charge, to any person ("Licensee") obtaining a
+ * copy of the source code appearing in this file ("Covered Code") an
+ * irrevocable, perpetual, worldwide license under Intel's copyrights in the
+ * base code distributed originally by Intel ("Original Intel Code") to copy,
+ * make derivatives, distribute, use and display any portion of the Covered
+ * Code in any form, with the right to sublicense such rights; and
+ *
+ * 2.3. Intel grants Licensee a non-exclusive and non-transferable patent
+ * license (with the right to sublicense), under only those claims of Intel
+ * patents that are infringed by the Original Intel Code, to make, use, sell,
+ * offer to sell, and import the Covered Code and derivative works thereof
+ * solely to the minimum extent necessary to exercise the above copyright
+ * license, and in no event shall the patent license extend to any additions
+ * to or modifications of the Original Intel Code. No other license or right
+ * is granted directly or by implication, estoppel or otherwise;
+ *
+ * The above copyright and patent license is granted only if the following
+ * conditions are met:
+ *
+ * 3. Conditions
+ *
+ * 3.1. Redistribution of Source with Rights to Further Distribute Source.
+ * Redistribution of source code of any substantial portion of the Covered
+ * Code or modification with rights to further distribute source must include
+ * the above Copyright Notice, the above License, this list of Conditions,
+ * and the following Disclaimer and Export Compliance provision. In addition,
+ * Licensee must cause all Covered Code to which Licensee contributes to
+ * contain a file documenting the changes Licensee made to create that Covered
+ * Code and the date of any change. Licensee must include in that file the
+ * documentation of any changes made by any predecessor Licensee. Licensee
+ * must include a prominent statement that the modification is derived,
+ * directly or indirectly, from Original Intel Code.
+ *
+ * 3.2. Redistribution of Source with no Rights to Further Distribute Source.
+ * Redistribution of source code of any substantial portion of the Covered
+ * Code or modification without rights to further distribute source must
+ * include the following Disclaimer and Export Compliance provision in the
+ * documentation and/or other materials provided with distribution. In
+ * addition, Licensee may not authorize further sublicense of source of any
+ * portion of the Covered Code, and must include terms to the effect that the
+ * license from Licensee to its licensee is limited to the intellectual
+ * property embodied in the software Licensee provides to its licensee, and
+ * not to intellectual property embodied in modifications its licensee may
+ * make.
+ *
+ * 3.3. Redistribution of Executable. Redistribution in executable form of any
+ * substantial portion of the Covered Code or modification must reproduce the
+ * above Copyright Notice, and the following Disclaimer and Export Compliance
+ * provision in the documentation and/or other materials provided with the
+ * distribution.
+ *
+ * 3.4. Intel retains all right, title, and interest in and to the Original
+ * Intel Code.
+ *
+ * 3.5. Neither the name Intel nor any other trademark owned or controlled by
+ * Intel shall be used in advertising or otherwise to promote the sale, use or
+ * other dealings in products derived from or relating to the Covered Code
+ * without prior written authorization from Intel.
+ *
+ * 4. Disclaimer and Export Compliance
+ *
+ * 4.1. INTEL MAKES NO WARRANTY OF ANY KIND REGARDING ANY SOFTWARE PROVIDED
+ * HERE. ANY SOFTWARE ORIGINATING FROM INTEL OR DERIVED FROM INTEL SOFTWARE
+ * IS PROVIDED "AS IS," AND INTEL WILL NOT PROVIDE ANY SUPPORT, ASSISTANCE,
+ * INSTALLATION, TRAINING OR OTHER SERVICES. INTEL WILL NOT PROVIDE ANY
+ * UPDATES, ENHANCEMENTS OR EXTENSIONS. INTEL SPECIFICALLY DISCLAIMS ANY
+ * IMPLIED WARRANTIES OF MERCHANTABILITY, NONINFRINGEMENT AND FITNESS FOR A
+ * PARTICULAR PURPOSE.
+ *
+ * 4.2. IN NO EVENT SHALL INTEL HAVE ANY LIABILITY TO LICENSEE, ITS LICENSEES
+ * OR ANY OTHER THIRD PARTY, FOR ANY LOST PROFITS, LOST DATA, LOSS OF USE OR
+ * COSTS OF PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES, OR FOR ANY INDIRECT,
+ * SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THIS AGREEMENT, UNDER ANY
+ * CAUSE OF ACTION OR THEORY OF LIABILITY, AND IRRESPECTIVE OF WHETHER INTEL
+ * HAS ADVANCE NOTICE OF THE POSSIBILITY OF SUCH DAMAGES. THESE LIMITATIONS
+ * SHALL APPLY NOTWITHSTANDING THE FAILURE OF THE ESSENTIAL PURPOSE OF ANY
+ * LIMITED REMEDY.
+ *
+ * 4.3. Licensee shall not export, either directly or indirectly, any of this
+ * software or system incorporating such software without first obtaining any
+ * required license or other approval from the U. S. Department of Commerce or
+ * any other agency or department of the United States Government. In the
+ * event Licensee exports any such software from the United States or
+ * re-exports any such software from a foreign destination, Licensee shall
+ * ensure that the distribution and export/re-export of the software is in
+ * compliance with all laws, regulations, orders, or other restrictions of the
+ * U.S. Export Administration Regulations. Licensee agrees that neither it nor
+ * any of its subsidiaries will export/re-export any technical data, process,
+ * software, or service, directly or indirectly, to any country for which the
+ * United States government or any agency thereof requires an export license,
+ * other governmental approval, or letter of assurance, without first obtaining
+ * such license, approval or letter.
+ *
+ *****************************************************************************
+ *
+ * Alternatively, you may choose to be licensed under the terms of the
+ * following license:
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -23,23 +131,23 @@
  *    of any contributors may be used to endorse or promote products derived
  *    from this software without specific prior written permission.
  *
- * Alternatively, this software may be distributed under the terms of the
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ * Alternatively, you may choose to be licensed under the terms of the
  * GNU General Public License ("GPL") version 2 as published by the Free
  * Software Foundation.
  *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
+ *****************************************************************************/
 
 #include <contrib/dev/acpica/include/acpi.h>
 #include <contrib/dev/acpica/include/accommon.h>
@@ -63,7 +171,7 @@
  */
 const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
 {
-    AH_PREDEF ("_ACx",    "Active Cooling", "Returns the active cooling policy threshold values"),
+    AH_PREDEF ("_ACx",    "Active Cooling, x=0-9", "Returns the active cooling policy threshold values"),
     AH_PREDEF ("_ADR",    "Address", "Returns address of a device on parent bus, and resource field"),
     AH_PREDEF ("_AEI",    "ACPI Event Interrupts", "Returns a list of GPIO events to be used as ACPI events"),
     AH_PREDEF ("_ALC",    "Ambient Light Chromaticity", "Returns the ambient light color chromaticity"),
@@ -72,7 +180,7 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_ALP",    "Ambient Light Polling", "Returns the ambient light sensor polling frequency"),
     AH_PREDEF ("_ALR",    "Ambient Light Response", "Returns the ambient light brightness to display brightness mappings"),
     AH_PREDEF ("_ALT",    "Ambient Light Temperature", "Returns the ambient light color temperature"),
-    AH_PREDEF ("_ALx",    "Active List", "Returns a list of active cooling device objects"),
+    AH_PREDEF ("_ALx",    "Active List, x=0-9", "Returns a list of active cooling device objects"),
     AH_PREDEF ("_ART",    "Active Cooling Relationship Table", "Returns thermal relationship information between platform devices and fan devices"),
     AH_PREDEF ("_ASI",    "Address Space Id", "Resource Descriptor field"),
     AH_PREDEF ("_ASZ",    "Access Size", "Resource Descriptor field"),
@@ -129,11 +237,11 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_DSS",    "Device Set State", "Sets the display device state"),
     AH_PREDEF ("_DSW",    "Device Sleep Wake", "Sets the sleep and wake transition states for a device"),
     AH_PREDEF ("_DTI",    "Device Temperature Indication", "Conveys native device temperature to the platform"),
-    AH_PREDEF ("_Exx",    "Edge-Triggered GPE", "Method executed as a result of a general-purpose event"),
+    AH_PREDEF ("_Exx",    "Edge-Triggered GPE, xx=0x00-0xFF", "Method executed as a result of a general-purpose event"),
     AH_PREDEF ("_EC_",    "Embedded Controller", "returns EC offset and query information"),
     AH_PREDEF ("_EDL",    "Eject Device List", "Returns a list of devices that are dependent on a device (docking)"),
     AH_PREDEF ("_EJD",    "Ejection Dependent Device", "Returns the name of dependent (parent) device (docking)"),
-    AH_PREDEF ("_EJx",    "Eject Device", "Begin or cancel a device ejection request (docking)"),
+    AH_PREDEF ("_EJx",    "Eject Device, x=0-9", "Begin or cancel a device ejection request (docking)"),
     AH_PREDEF ("_END",    "Endianness", "Endian orientation, Resource Descriptor field"),
     AH_PREDEF ("_EVT",    "Event", "Event method for GPIO events"),
     AH_PREDEF ("_FDE",    "Floppy Disk Enumerate", "Returns floppy disk configuration information"),
@@ -146,6 +254,7 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_FPS",    "Fan Performance States", "Returns a list of supported fan performance states"),
     AH_PREDEF ("_FSL",    "Fan Set Level", "Control method that sets the fan device's speed level (performance state)"),
     AH_PREDEF ("_FST",    "Fan Status", "Returns current status information for a fan device"),
+    AH_PREDEF ("_FUN",    "Function Number", "Resource descriptor field"),
     AH_PREDEF ("_GAI",    "Get Averaging Interval", "Returns the power meter averaging interval"),
     AH_PREDEF ("_GCP",    "Get Capabilities", "Get device time capabilities"),
     AH_PREDEF ("_GHL",    "Get Hardware Limit", "Returns the hardware limit enforced by the power meter"),
@@ -162,6 +271,7 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_GWS",    "Get Wake Status", "Return status of wake alarms"),
     AH_PREDEF ("_HE_",    "High-Edge", "Interrupt triggering, Resource Descriptor field"),
     AH_PREDEF ("_HID",    "Hardware ID", "Returns a device's Plug and Play Hardware ID"),
+    AH_PREDEF ("_HMA",    "Heterogeneous Memory Attributes", "Returns a list of HMAT structures."),
     AH_PREDEF ("_HOT",    "Hot Temperature", "Returns the critical temperature for sleep (entry to S4)"),
     AH_PREDEF ("_HPP",    "Hot Plug Parameters", "Returns a list of hot-plug information for a PCI device"),
     AH_PREDEF ("_HPX",    "Hot Plug Parameter Extensions", "Returns a list of hot-plug information for a PCI device. Supersedes _HPP"),
@@ -171,7 +281,7 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_INT",    "Interrupts", "Interrupt mask bits, Resource Descriptor field"),
     AH_PREDEF ("_IOR",    "I/O Restriction", "Restriction type, Resource Descriptor field"),
     AH_PREDEF ("_IRC",    "Inrush Current", "Presence indicates that a device has a significant inrush current draw"),
-    AH_PREDEF ("_Lxx",    "Level-Triggered GPE", "Control method executed as a result of a general-purpose event"),
+    AH_PREDEF ("_Lxx",    "Level-Triggered GPE, xx=0x00-0xFF", "Control method executed as a result of a general-purpose event"),
     AH_PREDEF ("_LCK",    "Lock Device", "Locks or unlocks a device (docking)"),
     AH_PREDEF ("_LEN",    "Length", "Range length, Resource Descriptor field"),
     AH_PREDEF ("_LID",    "Lid Status", "Returns the open/closed status of the lid on a mobile system"),
@@ -179,6 +289,9 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_LL_",    "Low Level", "Interrupt polarity, Resource Descriptor field"),
     AH_PREDEF ("_LPD",    "Low Power Dependencies", "Returns a list of dependencies for low power idle entry"),
     AH_PREDEF ("_LPI",    "Low Power Idle States", "Returns a list of supported low power idle states"),
+    AH_PREDEF ("_LSI",    "Label Storage Information", "Returns information about the Label Storage Area associated with the NVDIMM object."),
+    AH_PREDEF ("_LSR",    "Label Storage Read", "Returns label data from the Label Storage Area of the NVDIMM object."),
+    AH_PREDEF ("_LSW",    "Label Storage Write", "Writes label data in to the Label Storage Area of the NVDIMM object."),
     AH_PREDEF ("_MAF",    "Maximum Address Fixed", "Resource Descriptor field"),
     AH_PREDEF ("_MAT",    "Multiple APIC Table Entry", "Returns a list of MADT APIC structure entries"),
     AH_PREDEF ("_MAX",    "Maximum Base Address", "Resource Descriptor field"),
@@ -192,6 +305,11 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_MSM",    "Memory Set Monitoring", "Sets bandwidth monitoring parameters for a memory device"),
     AH_PREDEF ("_MTL",    "Minimum Throttle Limit", "Returns the minimum throttle limit for a thermal zone"),
     AH_PREDEF ("_MTP",    "Memory Type", "Resource Descriptor field"),
+    AH_PREDEF ("_NBS",    "NVDIMM Boot Status", "Returns information about NVDIMM device’s status at boot time"),
+    AH_PREDEF ("_NCH",    "NVDIMM Current Health Information", "Returns current health information of the NVDIMM device"),
+    AH_PREDEF ("_NIC",    "NVDIMM Health Error Injection Capabilities", "Returns health error injection capabilities that are supported by the platform"),
+    AH_PREDEF ("_NIG",    "NVDIMM Inject Health Error Status","Returns currently active health errors and their error attributes that are injected by _NIH"),
+    AH_PREDEF ("_NIH",    "NVDIMM Inject/Clear Health Errors", "Returns the status of injecting or clearing Health Errors"),
     AH_PREDEF ("_NTT",    "Notification Temperature Threshold", "Returns a threshold for device temperature change that requires platform notification"),
     AH_PREDEF ("_OFF",    "Power Off", "Sets a power resource to the off state"),
     AH_PREDEF ("_ON_",    "Power On", "Sets a power resource to the on state"),
@@ -245,7 +363,7 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_PTS",    "Prepare To Sleep", "Inform the platform of an impending sleep transition"),
     AH_PREDEF ("_PUR",    "Processor Utilization Request", "Returns the number of processors that the platform would like to idle"),
     AH_PREDEF ("_PXM",    "Device Proximity", "Returns a device's proximity domain identifier"),
-    AH_PREDEF ("_Qxx",    "EC Query", "Embedded Controller query and SMBus Alarm control method"),
+    AH_PREDEF ("_Qxx",    "EC Query, xx=0x00-0xFF", "Embedded Controller query and SMBus Alarm control method"),
     AH_PREDEF ("_RBO",    "Register Bit Offset", "Resource Descriptor field"),
     AH_PREDEF ("_RBW",    "Register Bit Width", "Resource Descriptor field"),
     AH_PREDEF ("_RDI",    "Resource Dependencies for Idle", "Returns a list of dependencies for idle states"),
@@ -275,12 +393,17 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_S3W",    "S3 Device Wake State", "Returns the lowest D-state for this device that can wake the system from S3"),
     AH_PREDEF ("_S4W",    "S4 Device Wake State", "Returns the lowest D-state for this device that can wake the system from S4"),
     AH_PREDEF ("_SB_",    "System Bus", "Predefined scope for device and bus objects"),
+    AH_PREDEF ("_SBA",    "SM Bus Alert information", "Returns info on an SMBus alert"),
+    AH_PREDEF ("_SBI",    "SM Bus General information", "Returns info on an SMBus segment"),
+    AH_PREDEF ("_SBR",    "SM Bus Data read", "Reads Byte, Word, or Block data from an SMBus segment"),
+    AH_PREDEF ("_SBT",    "SM Bus Data transfer", "Performs data transfer to/from an SMBus segment. Implements ProcessCall protocol"),
+    AH_PREDEF ("_SBW",    "SM Bus Data write", "Writes Byte, Word, or Block data to an SMBus segment"),
     AH_PREDEF ("_SBS",    "Smart Battery Subsystem", "Returns the subsystem configuration"),
     AH_PREDEF ("_SCP",    "Set Cooling Policy", "Sets the cooling policy (active or passive)"),
     AH_PREDEF ("_SDD",    "Set Device Data", "Sets data for a SATA device"),
     AH_PREDEF ("_SEG",    "PCI Segment", "Returns a device's PCI Segment Group number"),
     AH_PREDEF ("_SHL",    "Set Hardware Limit", "Sets the hardware limit enforced by the Power Meter"),
-    AH_PREDEF ("_SHR",    "Sharable", "Interrupt share status, Resource Descriptor field"),
+    AH_PREDEF ("_SHR",    "Shareable", "Interrupt share status, Resource Descriptor field"),
     AH_PREDEF ("_SI_",    "System Indicators", "Predefined scope"),
     AH_PREDEF ("_SIZ",    "Size", "DMA transfer size, Resource Descriptor field"),
     AH_PREDEF ("_SLI",    "System Locality Information", "Returns a list of NUMA system localities"),
@@ -300,7 +423,7 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_SUB",    "Subsystem ID", "Returns the subsystem ID for a device"),
     AH_PREDEF ("_SUN",    "Slot User Number", "Returns the slot unique ID number"),
     AH_PREDEF ("_SWS",    "System Wake Source", "Returns the source event that caused the system to wake"),
-    AH_PREDEF ("_T_x",    "Emitted by ASL Compiler", "Reserved for use by ASL compilers"),
+    AH_PREDEF ("_T_x",    "Emitted by ASL Compiler, x=0-9, A-Z", "Reserved for use by ASL compilers"),
     AH_PREDEF ("_TC1",    "Thermal Constant 1", "Returns TC1 for the passive cooling formula"),
     AH_PREDEF ("_TC2",    "Thermal Constant 2", "Returns TC2 for the passive cooling formula"),
     AH_PREDEF ("_TDL",    "T-State Depth Limit", "Returns the _TSS entry number of the lowest power throttling state"),
@@ -331,9 +454,10 @@ const AH_PREDEFINED_NAME    AslPredefinedInfo[] =
     AH_PREDEF ("_UPC",    "USB Port Capabilities", "Returns a list of USB port capabilities"),
     AH_PREDEF ("_UPD",    "User Presence Detect", "Returns user detection information"),
     AH_PREDEF ("_UPP",    "User Presence Polling", "Returns the recommended user presence polling interval"),
+    AH_PREDEF ("_VAL",    "Pin Configuration Value", "Resource Descriptor field"),
     AH_PREDEF ("_VEN",    "Vendor Data", "Resource Descriptor field"),
     AH_PREDEF ("_VPO",    "Video Post Options", "Returns the implemented video post options"),
-    AH_PREDEF ("_Wxx",    "Wake Event", "Method executed as a result of a wake event"),
+    AH_PREDEF ("_Wxx",    "Wake Event, xx=0x00-0xFF", "Method executed as a result of a wake event"),
     AH_PREDEF ("_WAK",    "Wake", "Inform AML that the system has just awakened"),
     AH_PREDEF ("_WPC",    "Wireless Power Calibration", "Calibrate power and notify wireless device"),
     AH_PREDEF ("_WPP",    "Wireless Power Polling", "Get recommended polling interval"),
@@ -360,9 +484,18 @@ AcpiAhMatchPredefinedName (
     const AH_PREDEFINED_NAME    *Info;
 
 
+    /* Nameseg must start with an underscore */
+
+    if (*Nameseg != '_')
+    {
+        return (NULL);
+    }
+
+    /* Search for a match in the predefined name table */
+
     for (Info = AslPredefinedInfo; Info->Name; Info++)
     {
-        if (ACPI_COMPARE_NAME (Nameseg, Info->Name))
+        if (ACPI_COMPARE_NAMESEG (Nameseg, Info->Name))
         {
             return (Info);
         }

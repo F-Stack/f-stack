@@ -43,7 +43,7 @@
 typedef vm_offset_t	db_addr_t;
 typedef long		db_expr_t;
 
-#define	PC_REGS()	((db_addr_t)kdb_thrctx->pcb_pc)
+#define	PC_REGS()	((db_addr_t)kdb_thrctx->pcb_lr)
 
 #define	BKPT_INST	(0xd4200000)
 #define	BKPT_SIZE	(4)
@@ -117,9 +117,6 @@ typedef long		db_expr_t;
 				 (((ins) & 0x3bc00000u) == 0x29800000u)) /* pair (pre-indexed) */
 
 #define	next_instr_address(pc, bd)	((bd) ? (pc) : ((pc) + 4))
-
-#define	DB_SMALL_VALUE_MAX	(0x7fffffff)
-#define	DB_SMALL_VALUE_MIN	(-0x40001)
 
 #define	DB_ELFSIZE		64
 

@@ -1,6 +1,7 @@
 /*-
- * Copyright (c) 2005 Antoine Brodin
- * All rights reserved.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2019 Ian Lepore <ian@freebsd.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -27,63 +28,61 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include <sys/types.h>
 #include <sys/systm.h>
-#include <sys/param.h>
+#include <sys/lock.h>
+#include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/stack.h>
 
-#include <machine/vmparam.h>
 #include <machine/pcb.h>
 #include <machine/stack.h>
 
-/*
- * This code makes assumptions about the stack layout. These are correct
- * when using APCS (the old ABI), but are no longer true with AAPCS and the
- * ARM EABI. There is also an issue with clang and llvm when building for
- * APCS where it lays out the stack incorrectly. Because of this we disable
- * this when building for ARM EABI or when building with clang.
- */
-
-extern vm_offset_t kernel_vm_end;
-
 static void
-stack_capture(struct stack *st, u_int32_t *frame)
+stack_capture(struct stack *st, struct unwind_state *state)
 {
-}
 
-void
-stack_save_td(struct stack *st, struct thread *td)
-{
-	u_int32_t *frame;
-
-	if (TD_IS_SWAPPED(td))
-		panic("stack_save_td: swapped");
-	if (TD_IS_RUNNING(td))
-		panic("stack_save_td: running");
-
-	/*
-	 * This register, the frame pointer, is incorrect for the ARM EABI
-	 * as it doesn't have a frame pointer, however it's value is not used
-	 * when building for EABI.
-	 */
-	frame = (u_int32_t *)td->td_pcb->pcb_regs.sf_r11;
 	stack_zero(st);
-	stack_capture(st, frame);
-}
-
-int
-stack_save_td_running(struct stack *st, struct thread *td)
-{
-
-	return (EOPNOTSUPP);
+	while (unwind_stack_one(state, 0) == 0) {
+		if (stack_put(st, state->registers[PC]) == -1)
+			break;
+	}
 }
 
 void
 stack_save(struct stack *st)
 {
-	u_int32_t *frame;
+	struct unwind_state state;
+	uint32_t sp;
 
-	frame = (u_int32_t *)__builtin_frame_address(0);
-	stack_zero(st);
-	stack_capture(st, frame);
+	/* Read the stack pointer */
+	__asm __volatile("mov %0, sp" : "=&r" (sp));
+
+	state.registers[FP] = (uint32_t)__builtin_frame_address(0);
+	state.registers[SP] = sp;
+	state.registers[LR] = (uint32_t)__builtin_return_address(0);
+	state.registers[PC] = (uint32_t)stack_save;
+
+	stack_capture(st, &state);
+}
+
+int
+stack_save_td(struct stack *st, struct thread *td)
+{
+	struct unwind_state state;
+
+	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	KASSERT(!TD_IS_SWAPPED(td),
+	    ("stack_save_td: thread %p is swapped", td));
+
+	if (TD_IS_RUNNING(td))
+		return (EOPNOTSUPP);
+
+	state.registers[FP] = td->td_pcb->pcb_regs.sf_r11;
+	state.registers[SP] = td->td_pcb->pcb_regs.sf_sp;
+	state.registers[LR] = td->td_pcb->pcb_regs.sf_lr;
+	state.registers[PC] = td->td_pcb->pcb_regs.sf_pc;
+
+	stack_capture(st, &state);
+	return (0);
 }

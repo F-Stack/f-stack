@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1996 Berkeley Software Design, Inc. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -56,14 +58,14 @@
 #define	KTR_SYSC	0x00002000		/* System call */
 #define	KTR_INIT	0x00004000		/* System initialization */
 #define	KTR_SPARE3	0x00008000		/* cxgb, drm2, ioat, ntb */
-#define	KTR_SPARE4	0x00010000		/* geom_sched */
+#define	KTR_SPARE4	0x00010000
 #define	KTR_EVH		0x00020000		/* Eventhandler */
 #define	KTR_VFS		0x00040000		/* VFS events */
 #define	KTR_VOP		0x00080000		/* Auto-generated vop events */
 #define	KTR_VM		0x00100000		/* The virtual memory system */
 #define	KTR_INET	0x00200000		/* IPv4 stack */
 #define	KTR_RUNQ	0x00400000		/* Run queue */
-#define	KTR_CONTENTION	0x00800000		/* Lock contention */
+#define	KTR_SPARE5	0x00800000
 #define	KTR_UMA		0x01000000		/* UMA slab allocator */
 #define	KTR_CALLOUT	0x02000000		/* Callouts and timeouts */
 #define	KTR_GEOM	0x04000000		/* GEOM I/O events */

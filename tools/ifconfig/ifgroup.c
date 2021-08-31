@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Max Laier. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -102,13 +104,7 @@ getifgroups(int s)
 	    sizeof(struct ifg_req));
 	if (ifgr.ifgr_groups == NULL)
 		err(1, "getifgroups");
-#ifndef FSTACK
 	if (ioctl(s, SIOCGIFGROUP, (caddr_t)&ifgr) == -1)
-#else
-	size_t offset = (char *)&(ifgr.ifgr_groups) - (char *)&(ifgr);
-	size_t clen = len;
-	if (ioctl_va(s, SIOCGIFGROUP, (caddr_t)&ifgr, 3, offset, ifgr.ifgr_groups, clen) == -1)
-#endif
 		err(1, "SIOCGIFGROUP");
 
 	cnt = 0;
@@ -117,9 +113,9 @@ getifgroups(int s)
 		len -= sizeof(struct ifg_req);
 		if (strcmp(ifg->ifgrq_group, "all")) {
 			if (cnt == 0)
-				printf("\tgroups: ");
+				printf("\tgroups:");
 			cnt++;
-			printf("%s ", ifg->ifgrq_group);
+			printf(" %s", ifg->ifgrq_group);
 		}
 	}
 	if (cnt)
@@ -144,7 +140,7 @@ printgroup(const char *groupname)
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1) {
 		if (errno == EINVAL || errno == ENOTTY ||
 		    errno == ENOENT)
-			exit(0);
+			exit(exit_code);
 		else
 			err(1, "SIOCGIFGMEMB");
 	}
@@ -152,14 +148,7 @@ printgroup(const char *groupname)
 	len = ifgr.ifgr_len;
 	if ((ifgr.ifgr_groups = calloc(1, len)) == NULL)
 		err(1, "printgroup");
-
-#ifndef FSTACK
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1)
-#else
-	size_t offset = (char *)&(ifgr.ifgr_groups) - (char *)&(ifgr);
-	size_t clen = len;
-	if (ioctl_va(s, SIOCGIFGMEMB, (caddr_t)&ifgr, 3, offset, ifgr.ifgr_groups, clen) == -1)
-#endif
 		err(1, "SIOCGIFGMEMB");
 
 	for (ifg = ifgr.ifgr_groups; ifg && len >= sizeof(struct ifg_req);
@@ -170,7 +159,7 @@ printgroup(const char *groupname)
 	}
 	free(ifgr.ifgr_groups);
 
-	exit(0);
+	exit(exit_code);
 }
 
 static struct cmd group_cmds[] = {

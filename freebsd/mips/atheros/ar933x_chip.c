@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Adrian Chadd <adrian@FreeBSD.org>
  * All rights reserved.
  *
@@ -212,7 +214,6 @@ ar933x_chip_ddr_flush(ar71xx_flush_ddr_id_t id)
 		break;
 	}
 }
-
 
 static uint32_t
 ar933x_chip_get_eth_pll(unsigned int mac, int speed)

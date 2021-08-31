@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -125,7 +127,7 @@ ng_l2cap_lp_con_req(ng_l2cap_p l2cap, bdaddr_p bdaddr, int type)
 		 * the caller.
 		 */
 	}
-	
+
 	return (error);
 } /* ng_l2cap_lp_con_req */
 
@@ -401,7 +403,7 @@ ng_l2cap_lp_qos_req(ng_l2cap_p l2cap, u_int16_t con_handle,
 	ep->delay_variation = flow->delay_variation;
 
 	NG_SEND_MSG_HOOK(error, l2cap->node, msg, l2cap->hci, 0);
-	
+
 	return (error);
 } /* ng_l2cap_lp_con_req */
 
@@ -522,13 +524,13 @@ ng_l2cap_lp_enc_change(ng_l2cap_p l2cap, struct ng_mesg *msg)
 	}
 
 	con->encryption = ep->status;
-	
+
 	LIST_FOREACH(ch, &l2cap->chan_list, next){
 		if((ch->con->con_handle == ep->con_handle) &&
 		   (ch->con->linktype == ep->link_type))
 			ng_l2cap_l2ca_encryption_change(ch, ep->status);
 	}
-	
+
 out:
 	return (error);
 } /* ng_l2cap_enc_change */
@@ -545,7 +547,7 @@ ng_l2cap_lp_send(ng_l2cap_con_p con, u_int16_t dcid, struct mbuf *m0)
 	ng_l2cap_hdr_t		*l2cap_hdr = NULL;
         ng_hci_acldata_pkt_t	*acl_hdr = NULL;
         struct mbuf		*m_last = NULL, *m = NULL;
-        int			 len, flag = NG_HCI_PACKET_START;
+        int			 len, flag = (con->linktype == NG_HCI_LINK_ACL) ? NG_HCI_PACKET_START : NG_HCI_LE_PACKET_START;
 
 	KASSERT((con->tx_pkt == NULL),
 ("%s: %s - another packet pending?!\n", __func__, NG_NODE_NAME(l2cap->node)));
@@ -711,7 +713,8 @@ ng_l2cap_lp_receive(ng_l2cap_p l2cap, struct mbuf *m)
 	}
 
 	/* Process packet */
-	if (pb == NG_HCI_PACKET_START) {
+	if ((pb == NG_HCI_PACKET_START) || (pb == NG_HCI_LE_PACKET_START))
+	  {
 		if (con->rx_pkt != NULL) {
 			NG_L2CAP_ERR(
 "%s: %s - dropping incomplete L2CAP packet, got %d bytes, want %d bytes\n",
@@ -964,4 +967,3 @@ ng_l2cap_process_discon_timeout(node_p node, hook_p hook, void *arg1, int con_ha
 
 	NG_SEND_MSG_HOOK(error, l2cap->node, msg, l2cap->hci, 0);
 } /* ng_l2cap_process_discon_timeout */
-

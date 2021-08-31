@@ -26,8 +26,10 @@
 #include "ar9300/ar9300phy.h"
 #include "ah_devid.h"
 
+#if 0
 #if AH_BYTE_ORDER == AH_BIG_ENDIAN
 static void ar9300_swap_tx_desc(void *ds);
+#endif
 #endif
 
 void
@@ -174,6 +176,7 @@ ar9300_clear_dest_mask(struct ath_hal *ah, void *ds)
 }
 #endif
 
+#if 0
 #if AH_BYTE_ORDER == AH_BIG_ENDIAN
 /* XXX what words need swapping */
 /* Swap transmit descriptor */
@@ -192,6 +195,7 @@ ar9300_swap_tx_desc(void *dsp)
     ds->status7 = __bswap32(ds->status7);
     ds->status8 = __bswap32(ds->status8);
 }
+#endif
 #endif
 
 
@@ -334,6 +338,9 @@ ar9300_proc_tx_desc(struct ath_hal *ah, void *txstatus)
         ts->ts_flags |= HAL_TX_BA;
         ts->ts_ba_low = ads->status5;
         ts->ts_ba_high = ads->status6;
+    }
+    if (ads->status8 & AR_tx_fast_ts) {
+        ts->ts_flags |= HAL_TX_FAST_TS;
     }
 
     /*
@@ -624,6 +631,11 @@ ar9300_set_11n_tx_desc(
     ads->ds_ctl18 = 0;
     ads->ds_ctl19 = AR_not_sounding; /* set not sounding for normal frame */
 
+    /* ToA/ToD positioning */
+    if (flags & HAL_TXDESC_POS) {
+        ads->ds_ctl12 |= AR_loc_mode;
+        ads->ds_ctl19 &= ~AR_not_sounding;
+    }
 
     /*
      * Clear Ness1/2/3 (Number of Extension Spatial Streams) fields.

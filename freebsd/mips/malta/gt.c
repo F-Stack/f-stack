@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Olivier Houchard.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -70,7 +72,6 @@ gt_attach(device_t dev)
 	bus_generic_probe(dev);
 	bus_generic_attach(dev);
 
-
 	return (0);
 }
 
@@ -80,7 +81,7 @@ gt_alloc_resource(device_t dev, device_t child, int type, int *rid,
 {
 	return (BUS_ALLOC_RESOURCE(device_get_parent(dev), child,
 		    type, rid, start, end, count, flags));
-	
+
 }
 
 static int

@@ -36,6 +36,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/rman.h>
 #include <sys/smp.h>
 #include <sys/limits.h>
+#include <sys/vmmeter.h>
 
 #include <vm/vm.h>
 #include <vm/vm_page.h>
@@ -53,12 +54,14 @@ __FBSDID("$FreeBSD$");
  * prevent clashes with MMIO/ACPI regions.
  *
  * Since this is not possible on i386 just use any available memory
- * chunk and hope we don't clash with anything else.
+ * chunk above 1MB and hope we don't clash with anything else.
  */
 #ifdef __amd64__
 #define LOW_MEM_LIMIT	0x100000000ul
+#elif defined(__i386__)
+#define LOW_MEM_LIMIT	0x100000ul
 #else
-#define LOW_MEM_LIMIT	0
+#error "Unsupported architecture"
 #endif
 
 static devclass_t xenpv_devclass;
@@ -92,24 +95,20 @@ xenpv_probe(device_t dev)
 static int
 xenpv_attach(device_t dev)
 {
-	device_t child;
+	int error;
 
 	/*
 	 * Let our child drivers identify any child devices that they
 	 * can find.  Once that is done attach any devices that we
 	 * found.
 	 */
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	error = bus_generic_probe(dev);
+	if (error)
+		return (error);
 
-	if (!devclass_get_device(devclass_find("isa"), 0)) {
-		child = BUS_ADD_CHILD(dev, 0, "isa", 0);
-		if (child == NULL)
-			panic("Failed to attach ISA bus.");
-		device_probe_and_attach(child);
-	}
+	error = bus_generic_attach(dev);
 
-	return (0);
+	return (error);
 }
 
 static struct resource *

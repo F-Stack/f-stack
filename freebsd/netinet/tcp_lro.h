@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006, Myricom Inc.
  * Copyright (c) 2008, Intel Corporation.
  * Copyright (c) 2016 Mellanox Technologies.
@@ -40,8 +42,11 @@
 
 struct lro_entry {
 	LIST_ENTRY(lro_entry)	next;
+	LIST_ENTRY(lro_entry)	hash_next;
 	struct mbuf		*m_head;
 	struct mbuf		*m_tail;
+	struct mbuf		*m_last_mbuf;
+	struct mbuf		*m_prev_last;
 	union {
 		struct ip	*ip4;
 		struct ip6_hdr	*ip6;
@@ -64,10 +69,22 @@ struct lro_entry {
 	uint32_t		ack_seq;	/* tcp_seq */
 	uint32_t		tsval;
 	uint32_t		tsecr;
+	uint32_t		tcp_tot_p_len;	/* TCP payload length of chain */
 	uint16_t		window;
 	uint16_t		timestamp;	/* flag, not a TCP hdr field. */
+	uint16_t		need_wakeup;
+	uint16_t		mbuf_cnt;	/* Count of mbufs collected see note */
+	uint16_t		mbuf_appended;
 	struct timeval		mtime;
 };
+/*
+ * Note: The mbuf_cnt field tracks our number of mbufs added to the m_next
+ *       list. Each mbuf counted can have data and of course it will
+ *	 have an ack as well (by defintion any inbound tcp segment will
+ *	 have an ack value. We use this count to tell us how many ACK's
+ *	 are present for our ack-count threshold. If we exceed that or
+ *	 the data threshold we will wake up the endpoint.
+ */
 LIST_HEAD(lro_head, lro_entry);
 
 #define	le_ip4			leip.ip4
@@ -95,6 +112,8 @@ struct lro_ctrl {
 	unsigned short	lro_ackcnt_lim;		/* max # of aggregated ACKs */
 	unsigned 	lro_length_lim;		/* max len of aggregated data */
 
+	u_long		lro_hashsz;
+	struct lro_head	*lro_hash;
 	struct lro_head	lro_active;
 	struct lro_head	lro_free;
 };
@@ -110,6 +129,8 @@ void tcp_lro_flush(struct lro_ctrl *, struct lro_entry *);
 void tcp_lro_flush_all(struct lro_ctrl *);
 int tcp_lro_rx(struct lro_ctrl *, struct mbuf *, uint32_t);
 void tcp_lro_queue_mbuf(struct lro_ctrl *, struct mbuf *);
+void tcp_lro_reg_mbufq(void);
+void tcp_lro_dereg_mbufq(void);
 
 #define	TCP_LRO_NO_ENTRIES	-2
 #define	TCP_LRO_CANNOT		-1

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following edsclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -70,7 +72,7 @@ struct edsc_softc {
 /*
  * Attach to the interface cloning framework.
  */
-static VNET_DEFINE(struct if_clone *, edsc_cloner);
+VNET_DEFINE_STATIC(struct if_clone *, edsc_cloner);
 #define	V_edsc_cloner	VNET(edsc_cloner)
 static int	edsc_clone_create(struct if_clone *, int, caddr_t);
 static void	edsc_clone_destroy(struct ifnet *);
@@ -96,7 +98,7 @@ edsc_clone_create(struct if_clone *ifc, int unit, caddr_t params)
 {
 	struct edsc_softc	*sc;
 	struct ifnet		*ifp;
-	static u_char		 eaddr[ETHER_ADDR_LEN];	/* 0:0:0:0:0:0 */
+	struct ether_addr	eaddr;
 
 	/*
 	 * Allocate soft and ifnet structures.  Link each to the other.
@@ -147,11 +149,15 @@ edsc_clone_create(struct if_clone *ifc, int unit, caddr_t params)
 	ifp->if_snd.ifq_maxlen = ifqmaxlen;
 
 	/*
+	 * Generate an arbitrary MAC address for the cloned interface.
+	 */
+	ether_gen_addr(ifp, &eaddr);
+
+	/*
 	 * Do ifnet initializations common to all Ethernet drivers
 	 * and attach to the network interface framework.
-	 * TODO: Pick a non-zero link level address.
 	 */
-	ether_ifattach(ifp, eaddr);
+	ether_ifattach(ifp, eaddr.octet);
 
 	/*
 	 * Now we can mark the interface as running, i.e., ready

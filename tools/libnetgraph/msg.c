@@ -38,17 +38,13 @@
  * $Whistle: msg.c,v 1.9 1999/01/20 00:57:23 archie Exp $
  */
 
-#ifdef FSTACK
-#define _GNU_SOURCE
-#include <stdio.h>
-#endif
-
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <netgraph/ng_message.h>
 #include <netgraph/ng_socket.h>
 
@@ -56,7 +52,7 @@ __FBSDID("$FreeBSD$");
 #include "internal.h"
 
 /* Next message token value */
-static int	gMsgId;
+static _Atomic(unsigned int) gMsgId;
 
 /* For delivering both messages and replies */
 static int	NgDeliverMsg(int cs, const char *path,
@@ -77,9 +73,7 @@ NgSendMsg(int cs, const char *path,
 	memset(&msg, 0, sizeof(msg));
 	msg.header.version = NG_VERSION;
 	msg.header.typecookie = cookie;
-	if (++gMsgId < 0)
-		gMsgId = 1;
-	msg.header.token = gMsgId;
+	msg.header.token = atomic_fetch_add(&gMsgId, 1) & INT_MAX;
 	msg.header.flags = NGF_ORIG;
 	msg.header.cmd = cmd;
 	snprintf((char *)msg.header.cmdstr, NG_CMDSTRSIZ, "cmd%d", cmd);
@@ -148,9 +142,7 @@ NgSendAsciiMsg(int cs, const char *path, const char *fmt, ...)
 
 	/* Now send binary version */
 	binary = (struct ng_mesg *)reply->data;
-	if (++gMsgId < 0)
-		gMsgId = 1;
-	binary->header.token = gMsgId;
+	binary->header.token = atomic_fetch_add(&gMsgId, 1) & INT_MAX;
 	binary->header.version = NG_VERSION;
 	if (NgDeliverMsg(cs,
 	    path, binary, binary->data, binary->header.arglen) < 0) {
@@ -238,7 +230,6 @@ NgDeliverMsg(int cs, const char *path,
 		goto done;
 	}
 
-#ifndef FSTACK
 	/* Wait for reply if there should be one. */
 	if (msg->header.cmd & NGM_HASREPLY && !(msg->header.flags & NGF_RESP)) {
 		struct pollfd rfds;
@@ -255,7 +246,6 @@ NgDeliverMsg(int cs, const char *path,
 			rtn = -1;
 		}
 	}
-#endif
 
 done:
 	/* Done */
@@ -312,15 +302,10 @@ int
 NgAllocRecvMsg(int cs, struct ng_mesg **rep, char *path)
 {
 	int len;
-#ifndef FSTACK
 	socklen_t optlen;
 
 	optlen = sizeof(len);
 	if (getsockopt(cs, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
-#else
-	len = NGCTL_DEFAULT_RCVBUF;
-	if (
-#endif
 	    (*rep = malloc(len)) == NULL)
 		return (-1);
 	if ((len = NgRecvMsg(cs, *rep, len, path)) < 0)
@@ -380,15 +365,10 @@ int
 NgAllocRecvAsciiMsg(int cs, struct ng_mesg **reply, char *path)
 {
 	int len;
-#ifndef FSTACK
 	socklen_t optlen;
 
 	optlen = sizeof(len);
 	if (getsockopt(cs, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
-#else
-	len = NGCTL_DEFAULT_RCVBUF;
-	if (
-#endif
 	    (*reply = malloc(len)) == NULL)
 		return (-1);
 	if ((len = NgRecvAsciiMsg(cs, *reply, len, path)) < 0)

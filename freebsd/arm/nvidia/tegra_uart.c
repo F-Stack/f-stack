@@ -27,7 +27,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-
 /*
  * UART driver for Tegra SoCs.
  */
@@ -44,7 +43,6 @@ __FBSDID("$FreeBSD$");
 
 #include <dev/extres/clk/clk.h>
 #include <dev/extres/hwreset/hwreset.h>
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 #include <dev/uart/uart.h>
@@ -103,6 +101,10 @@ tegra_uart_grab(struct uart_softc *sc)
 	uart_lock(sc->sc_hwmtx);
 	ier = uart_getreg(bas, REG_IER);
 	uart_setreg(bas, REG_IER, ier & ns8250->ier_mask);
+
+	while ((uart_getreg(bas, REG_LSR) & LSR_TEMT) == 0)
+		;
+
 	uart_setreg(bas, REG_FCR, 0);
 	uart_barrier(bas);
 	uart_unlock(sc->sc_hwmtx);
@@ -153,7 +155,8 @@ static struct uart_class tegra_uart_class = {
 /* Compatible devices. */
 static struct ofw_compat_data compat_data[] = {
 	{"nvidia,tegra124-uart", (uintptr_t)&tegra_uart_class},
-	{NULL,			(uintptr_t)NULL},
+	{"nvidia,tegra210-uart", (uintptr_t)&tegra_uart_class},
+	{NULL,			 (uintptr_t)NULL},
 };
 
 UART_FDT_CLASS(compat_data);
@@ -188,8 +191,7 @@ tegra_uart_probe(device_t dev)
 	if (cd->ocd_data == 0)
 		return (ENXIO);
 	sc->ns8250_base.base.sc_class = (struct uart_class *)cd->ocd_data;
-
-	rv = hwreset_get_by_ofw_name(dev, "serial", &sc->reset);
+	rv = hwreset_get_by_ofw_name(dev, 0, "serial", &sc->reset);
 	if (rv != 0) {
 		device_printf(dev, "Cannot get 'serial' reset\n");
 		return (ENXIO);
@@ -199,10 +201,9 @@ tegra_uart_probe(device_t dev)
 		device_printf(dev, "Cannot unreset 'serial' reset\n");
 		return (ENXIO);
 	}
-
 	node = ofw_bus_get_node(dev);
 	shift = uart_fdt_get_shift1(node);
-	rv = clk_get_by_ofw_index(dev, 0, &sc->clk);
+	rv = clk_get_by_ofw_index(dev, 0, 0, &sc->clk);
 	if (rv != 0) {
 		device_printf(dev, "Cannot get UART clock: %d\n", rv);
 		return (ENXIO);
@@ -217,7 +218,7 @@ tegra_uart_probe(device_t dev)
 		device_printf(dev, "Cannot enable UART clock: %d\n", rv);
 		return (ENXIO);
 	}
-	return (uart_bus_probe(dev, shift, (int)freq, 0, 0));
+	return (uart_bus_probe(dev, shift, 0, (int)freq, 0, 0, 0));
 }
 
 static int

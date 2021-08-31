@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997, Stefan Esser <se@freebsd.org>
  * Copyright (c) 2000, Michael Smith <msmith@freebsd.org>
  * Copyright (c) 2000, BSDi
@@ -42,12 +44,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/pmap.h>
 #include <machine/pci_cfgreg.h>
 
-enum {
-	CFGMECH_NONE = 0,
-	CFGMECH_1,
-	CFGMECH_PCIE,
-};
-
 static uint32_t	pci_docfgregread(int bus, int slot, int func, int reg,
 		    int bytes);
 static int	pciereg_cfgread(int bus, unsigned slot, unsigned func,
@@ -59,61 +55,25 @@ static void	pcireg_cfgwrite(int bus, int slot, int func, int reg, int data, int 
 
 SYSCTL_DECL(_hw_pci);
 
-static int cfgmech;
+/*
+ * For amd64 we assume that type 1 I/O port-based access always works.
+ * If an ACPI MCFG table exists, pcie_cfgregopen() will be called to
+ * switch to memory-mapped access.
+ */
+int cfgmech = CFGMECH_1;
+
 static vm_offset_t pcie_base;
 static int pcie_minbus, pcie_maxbus;
 static uint32_t pcie_badslots;
 static struct mtx pcicfg_mtx;
+MTX_SYSINIT(pcicfg_mtx, &pcicfg_mtx, "pcicfg_mtx", MTX_SPIN);
 static int mcfg_enable = 1;
 SYSCTL_INT(_hw_pci, OID_AUTO, mcfg, CTLFLAG_RDTUN, &mcfg_enable, 0,
     "Enable support for PCI-e memory mapped config access");
 
-/* 
- * Initialise access to PCI configuration space 
- */
 int
 pci_cfgregopen(void)
 {
-	static int once = 0;
-	uint64_t pciebar;
-	uint16_t did, vid;
-
-	if (!once) {
-		mtx_init(&pcicfg_mtx, "pcicfg", NULL, MTX_SPIN);
-		once = 1;
-	}
-
-	if (cfgmech != CFGMECH_NONE)
-		return (1);
-	cfgmech = CFGMECH_1;
-
-	/*
-	 * Grope around in the PCI config space to see if this is a
-	 * chipset that is capable of doing memory-mapped config cycles.
-	 * This also implies that it can do PCIe extended config cycles.
-	 */
-
-	/* Check for supported chipsets */
-	vid = pci_cfgregread(0, 0, 0, PCIR_VENDOR, 2);
-	did = pci_cfgregread(0, 0, 0, PCIR_DEVICE, 2);
-	switch (vid) {
-	case 0x8086:
-		switch (did) {
-		case 0x3590:
-		case 0x3592:
-			/* Intel 7520 or 7320 */
-			pciebar = pci_cfgregread(0, 0, 0, 0xce, 2) << 16;
-			pcie_cfgregopen(pciebar, 0, 255);
-			break;
-		case 0x2580:
-		case 0x2584:
-		case 0x2590:
-			/* Intel 915, 925, or 915GM */
-			pciebar = pci_cfgregread(0, 0, 0, 0x48, 4);
-			pcie_cfgregopen(pciebar, 0, 255);
-			break;
-		}
-	}
 
 	return (1);
 }
@@ -268,7 +228,7 @@ pcie_cfgregopen(uint64_t base, uint8_t minbus, uint8_t maxbus)
 		    base);
 
 	/* XXX: We should make sure this really fits into the direct map. */
-	pcie_base = (vm_offset_t)pmap_mapdev(base, (maxbus + 1) << 20);
+	pcie_base = (vm_offset_t)pmap_mapdev_pciecfg(base, (maxbus + 1) << 20);
 	pcie_minbus = minbus;
 	pcie_maxbus = maxbus;
 	cfgmech = CFGMECH_PCIE;

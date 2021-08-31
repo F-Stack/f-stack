@@ -30,6 +30,7 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/wait.h>
+#include <sys/event.h>
 
 #include <fcntl.h>
 #include <errno.h>
@@ -43,8 +44,8 @@ __FBSDID("$FreeBSD$");
 #include <libutil.h>
 
 /*
- * We need a signal handler so kill(2) will interrupt our child's
- * select(2) instead of killing it.
+ * We need a signal handler so kill(2) will interrupt the child
+ * instead of killing it.
  */
 static void
 signal_handler(int sig)
@@ -129,7 +130,9 @@ common_test_pidfile_child(const char *fn, int parent_open)
 	struct pidfh *pf = NULL;
 	pid_t other = 0, pid = 0;
 	int fd[2], serrno, status;
+	struct kevent event, ke;
 	char ch;
+	int kq;
 
 	unlink(fn);
 	if (pipe(fd) != 0)
@@ -166,10 +169,20 @@ common_test_pidfile_child(const char *fn, int parent_open)
 		if (pf == NULL)
 			_exit(1);
 		if (pidfile_write(pf) != 0)
-			_exit(1);
+			_exit(2);
+		kq = kqueue();
+		if (kq == -1)
+			_exit(3);
+		EV_SET(&ke, SIGINT, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+		/* Attach event to the kqueue. */
+		if (kevent(kq, &ke, 1, NULL, 0, NULL) != 0)
+			_exit(4);
+		/* Inform the parent we are ready to receive SIGINT */
 		if (write(fd[1], "*", 1) != 1)
-			_exit(1);
-		select(0, 0, 0, 0, 0);
+			_exit(5);
+		/* Wait for SIGINT received */
+		if (kevent(kq, NULL, 0, &event, 1, NULL) != 1)
+			_exit(6);
 		_exit(0);
 	}
 	// parent
@@ -250,6 +263,40 @@ test_pidfile_inherited(void)
 	return (result);
 }
 
+/*
+ * Make sure we handle relative pidfile paths correctly.
+ */
+static const char *
+test_pidfile_relative(void)
+{
+	char path[PATH_MAX], pid[32], tmpdir[PATH_MAX];
+	struct pidfh *pfh;
+	int fd;
+
+	(void)snprintf(tmpdir, sizeof(tmpdir), "%s.XXXXXX", __func__);
+	if (mkdtemp(tmpdir) == NULL)
+		return (strerror(errno));
+	(void)snprintf(path, sizeof(path), "%s/pidfile", tmpdir);
+
+	pfh = pidfile_open(path, 0600, NULL);
+	if (pfh == NULL)
+		return (strerror(errno));
+	if (pidfile_write(pfh) != 0)
+		return (strerror(errno));
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return (strerror(errno));
+	if (read(fd, pid, sizeof(pid)) < 0)
+		return (strerror(errno));
+	if (atoi(pid) != getpid())
+		return ("pid mismatch");
+	if (close(fd) != 0)
+		return (strerror(errno));
+	if (pidfile_close(pfh) != 0)
+		return (strerror(errno));
+	return (NULL);
+}
+
 static struct test {
 	const char *name;
 	const char *(*func)(void);
@@ -258,6 +305,7 @@ static struct test {
 	{ "pidfile_self", test_pidfile_self },
 	{ "pidfile_contested", test_pidfile_contested },
 	{ "pidfile_inherited", test_pidfile_inherited },
+	{ "pidfile_relative", test_pidfile_relative },
 };
 
 int

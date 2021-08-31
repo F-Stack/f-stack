@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Paolo Pisati <piso@FreeBSD.org>
  * All rights reserved.
  *
@@ -127,7 +129,7 @@ first_handler(void)
 
 #ifndef _KERNEL
 /* Dll manipulation code - this code is not thread safe... */
-SLIST_HEAD(dll_chain, dll) dll_chain = SLIST_HEAD_INITIALIZER(dll_chain);
+static SLIST_HEAD(dll_chain, dll) dll_chain = SLIST_HEAD_INITIALIZER(dll_chain);
 int
 attach_dll(struct dll *p)
 {

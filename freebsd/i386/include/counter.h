@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Konstantin Belousov <kib@FreeBSD.org>
  * All rights reserved.
  *
@@ -36,6 +38,8 @@
 #include <machine/md_var.h>
 #include <machine/specialreg.h>
 
+#define	EARLY_COUNTER	&__pcpu[0].pc_early_dummy_counter
+
 #define	counter_enter()	do {				\
 	if ((cpu_feature & CPUID_CX8) == 0)		\
 		critical_enter();			\
@@ -45,8 +49,6 @@
 	if ((cpu_feature & CPUID_CX8) == 0)		\
 		critical_exit();			\
 } while (0)
-
-extern struct pcpu __pcpu[MAXCPU];
 
 static inline void
 counter_64_inc_8b(uint64_t *p, int64_t inc)
@@ -68,7 +70,12 @@ counter_64_inc_8b(uint64_t *p, int64_t inc)
 }
 
 #ifdef IN_SUBR_COUNTER_C
-static inline uint64_t
+struct counter_u64_fetch_cx8_arg {
+	uint64_t res;
+	uint64_t *p;
+};
+
+static uint64_t
 counter_u64_read_one_8b(uint64_t *p)
 {
 	uint32_t res_lo, res_high;
@@ -83,9 +90,22 @@ counter_u64_read_one_8b(uint64_t *p)
 	return (res_lo + ((uint64_t)res_high << 32));
 }
 
+static void
+counter_u64_fetch_cx8_one(void *arg1)
+{
+	struct counter_u64_fetch_cx8_arg *arg;
+	uint64_t val;
+
+	arg = arg1;
+	val = counter_u64_read_one_8b((uint64_t *)((char *)arg->p +
+	    UMA_PCPU_ALLOC_SIZE * PCPU_GET(cpuid)));
+	atomic_add_64(&arg->res, val);
+}
+
 static inline uint64_t
 counter_u64_fetch_inline(uint64_t *p)
 {
+	struct counter_u64_fetch_cx8_arg arg;
 	uint64_t res;
 	int i;
 
@@ -100,13 +120,14 @@ counter_u64_fetch_inline(uint64_t *p)
 		critical_enter();
 		CPU_FOREACH(i) {
 			res += *(uint64_t *)((char *)p +
-			    sizeof(struct pcpu) * i);
+			    UMA_PCPU_ALLOC_SIZE * i);
 		}
 		critical_exit();
 	} else {
-		CPU_FOREACH(i)
-			res += counter_u64_read_one_8b((uint64_t *)((char *)p +
-			    sizeof(struct pcpu) * i));
+		arg.p = p;
+		arg.res = 0;
+		smp_rendezvous(NULL, counter_u64_fetch_cx8_one, NULL, &arg);
+		res = arg.res;
 	}
 	return (res);
 }
@@ -133,7 +154,7 @@ counter_u64_zero_one_cpu(void *arg)
 {
 	uint64_t *p;
 
-	p = (uint64_t *)((char *)arg + sizeof(struct pcpu) * PCPU_GET(cpuid));
+	p = (uint64_t *)((char *)arg + UMA_PCPU_ALLOC_SIZE * PCPU_GET(cpuid));
 	counter_u64_zero_one_8b(p);
 }
 
@@ -145,11 +166,11 @@ counter_u64_zero_inline(counter_u64_t c)
 	if ((cpu_feature & CPUID_CX8) == 0) {
 		critical_enter();
 		CPU_FOREACH(i)
-			*(uint64_t *)((char *)c + sizeof(struct pcpu) * i) = 0;
+			*(uint64_t *)((char *)c + UMA_PCPU_ALLOC_SIZE * i) = 0;
 		critical_exit();
 	} else {
-		smp_rendezvous(smp_no_rendevous_barrier,
-		    counter_u64_zero_one_cpu, smp_no_rendevous_barrier, c);
+		smp_rendezvous(smp_no_rendezvous_barrier,
+		    counter_u64_zero_one_cpu, smp_no_rendezvous_barrier, c);
 	}
 }
 #endif

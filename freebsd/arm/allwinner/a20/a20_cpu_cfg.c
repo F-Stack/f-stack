@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Ganbold Tsagaankhuu <ganbold@freebsd.org>
  * All rights reserved.
  *
@@ -43,7 +45,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/cpu.h>
 #include <machine/intr.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -118,7 +119,7 @@ static driver_t a20_cpu_cfg_driver = {
 static devclass_t a20_cpu_cfg_devclass;
 
 EARLY_DRIVER_MODULE(a20_cpu_cfg, simplebus, a20_cpu_cfg_driver, a20_cpu_cfg_devclass, 0, 0,
-    BUS_PASS_RESOURCE + BUS_PASS_ORDER_MIDDLE);
+    BUS_PASS_CPU + BUS_PASS_ORDER_FIRST);
 
 uint64_t
 a20_read_counter64(void)
@@ -135,4 +136,3 @@ a20_read_counter64(void)
 
 	return (((uint64_t)hi << 32) | lo);
 }
-

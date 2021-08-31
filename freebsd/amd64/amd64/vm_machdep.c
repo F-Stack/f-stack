@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1982, 1986 The Regents of the University of California.
  * Copyright (c) 1989, 1990 William Jolitz
  * Copyright (c) 1994 John Dyson
@@ -45,7 +47,6 @@ __FBSDID("$FreeBSD$");
 
 #include "opt_isa.h"
 #include "opt_cpu.h"
-#include "opt_compat.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -57,14 +58,16 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/mutex.h>
-#include <sys/pioctl.h>
+#include <sys/priv.h>
 #include <sys/proc.h>
+#include <sys/procctl.h>
 #include <sys/smp.h>
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
 #include <sys/unistd.h>
 #include <sys/vnode.h>
 #include <sys/vmmeter.h>
+#include <sys/wait.h>
 
 #include <machine/cpu.h>
 #include <machine/md_var.h>
@@ -80,51 +83,42 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 #include <vm/vm_param.h>
 
-#include <isa/isareg.h>
-
-static void	cpu_reset_real(void);
-#ifdef SMP
-static void	cpu_reset_proxy(void);
-static u_int	cpu_reset_proxyid;
-static volatile u_int	cpu_reset_proxy_active;
-#endif
-
-_Static_assert(OFFSETOF_CURTHREAD == offsetof(struct pcpu, pc_curthread),
-    "OFFSETOF_CURTHREAD does not correspond with offset of pc_curthread.");
-_Static_assert(OFFSETOF_CURPCB == offsetof(struct pcpu, pc_curpcb),
-    "OFFSETOF_CURPCB does not correspond with offset of pc_curpcb.");
 _Static_assert(OFFSETOF_MONITORBUF == offsetof(struct pcpu, pc_monitorbuf),
-    "OFFSETOF_MONINORBUF does not correspond with offset of pc_monitorbuf.");
+    "OFFSETOF_MONITORBUF does not correspond with offset of pc_monitorbuf.");
+
+void
+set_top_of_stack_td(struct thread *td)
+{
+	td->td_md.md_stack_base = td->td_kstack +
+	    td->td_kstack_pages * PAGE_SIZE -
+	    roundup2(cpu_max_ext_state_size, XSAVE_AREA_ALIGN);
+}
 
 struct savefpu *
 get_pcb_user_save_td(struct thread *td)
 {
 	vm_offset_t p;
 
-	p = td->td_kstack + td->td_kstack_pages * PAGE_SIZE -
-	    roundup2(cpu_max_ext_state_size, XSAVE_AREA_ALIGN);
-	KASSERT((p % XSAVE_AREA_ALIGN) == 0, ("Unaligned pcb_user_save area"));
-	return ((struct savefpu *)p);
-}
-
-struct savefpu *
-get_pcb_user_save_pcb(struct pcb *pcb)
-{
-	vm_offset_t p;
-
-	p = (vm_offset_t)(pcb + 1);
+	p = td->td_md.md_stack_base;
+	KASSERT((p % XSAVE_AREA_ALIGN) == 0,
+	    ("Unaligned pcb_user_save area ptr %#lx td %p", p, td));
 	return ((struct savefpu *)p);
 }
 
 struct pcb *
 get_pcb_td(struct thread *td)
 {
-	vm_offset_t p;
 
-	p = td->td_kstack + td->td_kstack_pages * PAGE_SIZE -
-	    roundup2(cpu_max_ext_state_size, XSAVE_AREA_ALIGN) -
-	    sizeof(struct pcb);
-	return ((struct pcb *)p);
+	return (&td->td_md.md_pcb);
+}
+
+struct savefpu *
+get_pcb_user_save_pcb(struct pcb *pcb)
+{
+	struct thread *td;
+
+	td = __containerof(pcb, struct thread, td_md.md_pcb);
+	return (get_pcb_user_save_td(td));
 }
 
 void *
@@ -148,13 +142,9 @@ alloc_fpusave(int flags)
  * ready to run and return to user mode.
  */
 void
-cpu_fork(td1, p2, td2, flags)
-	register struct thread *td1;
-	register struct proc *p2;
-	struct thread *td2;
-	int flags;
+cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 {
-	register struct proc *p1;
+	struct proc *p1;
 	struct pcb *pcb2;
 	struct mdproc *mdp1, *mdp2;
 	struct proc_ldt *pldt;
@@ -176,10 +166,11 @@ cpu_fork(td1, p2, td2, flags)
 
 	/* Ensure that td1's pcb is up to date. */
 	fpuexit(td1);
+	update_pcb_bases(td1->td_pcb);
 
-	/* Point the pcb to the top of the stack */
-	pcb2 = get_pcb_td(td2);
-	td2->td_pcb = pcb2;
+	/* Point the stack and pcb to the actual location */
+	set_top_of_stack_td(td2);
+	td2->td_pcb = pcb2 = get_pcb_td(td2);
 
 	/* Copy td1's pcb */
 	bcopy(td1->td_pcb, pcb2, sizeof(*pcb2));
@@ -198,7 +189,7 @@ cpu_fork(td1, p2, td2, flags)
 	 * Copy the trap frame for the return to user mode as if from a
 	 * syscall.  This copies most of the user mode register values.
 	 */
-	td2->td_frame = (struct trapframe *)td2->td_pcb - 1;
+	td2->td_frame = (struct trapframe *)td2->td_md.md_stack_base - 1;
 	bcopy(td1->td_frame, td2->td_frame, sizeof(struct trapframe));
 
 	td2->td_frame->tf_rax = 0;		/* Child returns zero */
@@ -206,15 +197,11 @@ cpu_fork(td1, p2, td2, flags)
 	td2->td_frame->tf_rdx = 1;
 
 	/*
-	 * If the parent process has the trap bit set (i.e. a debugger had
-	 * single stepped the process to the system call), we need to clear
-	 * the trap flag from the new frame unless the debugger had set PF_FORK
-	 * on the parent.  Otherwise, the child will receive a (likely
-	 * unexpected) SIGTRAP when it executes the first instruction after
-	 * returning  to userland.
+	 * If the parent process has the trap bit set (i.e. a debugger
+	 * had single stepped the process to the system call), we need
+	 * to clear the trap flag from the new frame.
 	 */
-	if ((p1->p_pfsflags & PF_FORK) == 0)
-		td2->td_frame->tf_rflags &= ~PSL_T;
+	td2->td_frame->tf_rflags &= ~PSL_T;
 
 	/*
 	 * Set registers for trampoline to user mode.  Leave space for the
@@ -236,17 +223,21 @@ cpu_fork(td1, p2, td2, flags)
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
 	td2->td_md.md_saved_flags = PSL_KERNEL | PSL_I;
-	td2->td_md.md_invl_gen.gen = 0;
+	pmap_thread_init_invl_gen(td2);
 
 	/* As an i386, do not copy io permission bitmap. */
 	pcb2->pcb_tssp = NULL;
 
 	/* New segment registers. */
-	set_pcb_flags(pcb2, PCB_FULL_IRET);
+	set_pcb_flags_raw(pcb2, PCB_FULL_IRET);
 
 	/* Copy the LDT, if necessary. */
 	mdp1 = &td1->td_proc->p_md;
 	mdp2 = &p2->p_md;
+	if (mdp1->md_ldt == NULL) {
+		mdp2->md_ldt = NULL;
+		return;
+	}
 	mtx_lock(&dt_lock);
 	if (mdp1->md_ldt != NULL) {
 		if (flags & RFMEM) {
@@ -302,11 +293,8 @@ cpu_exit(struct thread *td)
 	/*
 	 * If this process has a custom LDT, release it.
 	 */
-	mtx_lock(&dt_lock);
-	if (td->td_proc->p_md.md_ldt != 0)
+	if (td->td_proc->p_md.md_ldt != NULL)
 		user_ldt_free(td);
-	else
-		mtx_unlock(&dt_lock);
 }
 
 void
@@ -339,8 +327,9 @@ cpu_thread_clean(struct thread *td)
 	 * Clean TSS/iomap
 	 */
 	if (pcb->pcb_tssp != NULL) {
-		kmem_free(kernel_arena, (vm_offset_t)pcb->pcb_tssp,
-		    ctob(IOPAGES + 1));
+		pmap_pti_remove_kva((vm_offset_t)pcb->pcb_tssp,
+		    (vm_offset_t)pcb->pcb_tssp + ctob(IOPAGES + 1));
+		kmem_free((vm_offset_t)pcb->pcb_tssp, ctob(IOPAGES + 1));
 		pcb->pcb_tssp = NULL;
 	}
 }
@@ -361,8 +350,9 @@ cpu_thread_alloc(struct thread *td)
 	struct pcb *pcb;
 	struct xstate_hdr *xhdr;
 
+	set_top_of_stack_td(td);
 	td->td_pcb = pcb = get_pcb_td(td);
-	td->td_frame = (struct trapframe *)pcb - 1;
+	td->td_frame = (struct trapframe *)td->td_md.md_stack_base - 1;
 	pcb->pcb_save = get_pcb_user_save_pcb(pcb);
 	if (use_xsave) {
 		xhdr = (struct xstate_hdr *)(pcb->pcb_save + 1);
@@ -378,17 +368,159 @@ cpu_thread_free(struct thread *td)
 	cpu_thread_clean(td);
 }
 
+bool
+cpu_exec_vmspace_reuse(struct proc *p, vm_map_t map)
+{
+
+	return (((curproc->p_md.md_flags & P_MD_KPTI) != 0) ==
+	    (vm_map_pmap(map)->pm_ucr3 != PMAP_NO_CR3));
+}
+
+static void
+cpu_procctl_kpti_ctl(struct proc *p, int val)
+{
+
+	if (pti && val == PROC_KPTI_CTL_ENABLE_ON_EXEC)
+		p->p_md.md_flags |= P_MD_KPTI;
+	if (val == PROC_KPTI_CTL_DISABLE_ON_EXEC)
+		p->p_md.md_flags &= ~P_MD_KPTI;
+}
+
+static void
+cpu_procctl_kpti_status(struct proc *p, int *val)
+{
+	*val = (p->p_md.md_flags & P_MD_KPTI) != 0 ?
+	    PROC_KPTI_CTL_ENABLE_ON_EXEC:
+	    PROC_KPTI_CTL_DISABLE_ON_EXEC;
+	if (vmspace_pmap(p->p_vmspace)->pm_ucr3 != PMAP_NO_CR3)
+		*val |= PROC_KPTI_STATUS_ACTIVE;
+}
+
+static int
+cpu_procctl_la_ctl(struct proc *p, int val)
+{
+	int error;
+
+	error = 0;
+	switch (val) {
+	case PROC_LA_CTL_LA48_ON_EXEC:
+		p->p_md.md_flags |= P_MD_LA48;
+		p->p_md.md_flags &= ~P_MD_LA57;
+		break;
+	case PROC_LA_CTL_LA57_ON_EXEC:
+		if (la57) {
+			p->p_md.md_flags &= ~P_MD_LA48;
+			p->p_md.md_flags |= P_MD_LA57;
+		} else {
+			error = ENOTSUP;
+		}
+		break;
+	case PROC_LA_CTL_DEFAULT_ON_EXEC:
+		p->p_md.md_flags &= ~(P_MD_LA48 | P_MD_LA57);
+		break;
+	}
+	return (error);
+}
+
+static void
+cpu_procctl_la_status(struct proc *p, int *val)
+{
+	int res;
+
+	if ((p->p_md.md_flags & P_MD_LA48) != 0)
+		res = PROC_LA_CTL_LA48_ON_EXEC;
+	else if ((p->p_md.md_flags & P_MD_LA57) != 0)
+		res = PROC_LA_CTL_LA57_ON_EXEC;
+	else
+		res = PROC_LA_CTL_DEFAULT_ON_EXEC;
+	if (p->p_sysent->sv_maxuser == VM_MAXUSER_ADDRESS_LA48)
+		res |= PROC_LA_STATUS_LA48;
+	else
+		res |= PROC_LA_STATUS_LA57;
+	*val = res;
+}
+
+int
+cpu_procctl(struct thread *td, int idtype, id_t id, int com, void *data)
+{
+	struct proc *p;
+	int error, val;
+
+	switch (com) {
+	case PROC_KPTI_CTL:
+	case PROC_KPTI_STATUS:
+	case PROC_LA_CTL:
+	case PROC_LA_STATUS:
+		if (idtype != P_PID) {
+			error = EINVAL;
+			break;
+		}
+		if (com == PROC_KPTI_CTL) {
+			/* sad but true and not a joke */
+			error = priv_check(td, PRIV_IO);
+			if (error != 0)
+				break;
+		}
+		if (com == PROC_KPTI_CTL || com == PROC_LA_CTL) {
+			error = copyin(data, &val, sizeof(val));
+			if (error != 0)
+				break;
+		}
+		if (com == PROC_KPTI_CTL &&
+		    val != PROC_KPTI_CTL_ENABLE_ON_EXEC &&
+		    val != PROC_KPTI_CTL_DISABLE_ON_EXEC) {
+			error = EINVAL;
+			break;
+		}
+		if (com == PROC_LA_CTL &&
+		    val != PROC_LA_CTL_LA48_ON_EXEC &&
+		    val != PROC_LA_CTL_LA57_ON_EXEC &&
+		    val != PROC_LA_CTL_DEFAULT_ON_EXEC) {
+			error = EINVAL;
+			break;
+		}
+		error = pget(id, PGET_CANSEE | PGET_NOTWEXIT | PGET_NOTID, &p);
+		if (error != 0)
+			break;
+		switch (com) {
+		case PROC_KPTI_CTL:
+			cpu_procctl_kpti_ctl(p, val);
+			break;
+		case PROC_KPTI_STATUS:
+			cpu_procctl_kpti_status(p, &val);
+			break;
+		case PROC_LA_CTL:
+			error = cpu_procctl_la_ctl(p, val);
+			break;
+		case PROC_LA_STATUS:
+			cpu_procctl_la_status(p, &val);
+			break;
+		}
+		PROC_UNLOCK(p);
+		if (com == PROC_KPTI_STATUS || com == PROC_LA_STATUS)
+			error = copyout(&val, data, sizeof(val));
+		break;
+	default:
+		error = EINVAL;
+		break;
+	}
+	return (error);
+}
+
 void
 cpu_set_syscall_retval(struct thread *td, int error)
 {
+	struct trapframe *frame;
+
+	frame = td->td_frame;
+	if (__predict_true(error == 0)) {
+		frame->tf_rax = td->td_retval[0];
+		frame->tf_rdx = td->td_retval[1];
+		frame->tf_rflags &= ~PSL_C;
+		return;
+	}
 
 	switch (error) {
-	case 0:
-		td->td_frame->tf_rax = td->td_retval[0];
-		td->td_frame->tf_rdx = td->td_retval[1];
-		td->td_frame->tf_rflags &= ~PSL_C;
-		break;
-
 	case ERESTART:
 		/*
 		 * Reconstruct pc, we know that 'syscall' is 2 bytes,
@@ -402,8 +534,8 @@ cpu_set_syscall_retval(struct thread *td, int error)
 		 * Require full context restore to get the arguments
 		 * in the registers reloaded at return to usermode.
 		 */
-		td->td_frame->tf_rip -= td->td_frame->tf_err;
-		td->td_frame->tf_r10 = td->td_frame->tf_rcx;
+		frame->tf_rip -= frame->tf_err;
+		frame->tf_r10 = frame->tf_rcx;
 		set_pcb_flags(td->td_pcb, PCB_FULL_IRET);
 		break;
 
@@ -411,8 +543,8 @@ cpu_set_syscall_retval(struct thread *td, int error)
 		break;
 
 	default:
-		td->td_frame->tf_rax = SV_ABI_ERRNO(td->td_proc, error);
-		td->td_frame->tf_rflags |= PSL_C;
+		frame->tf_rax = error;
+		frame->tf_rflags |= PSL_C;
 		break;
 	}
 }
@@ -429,7 +561,6 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 {
 	struct pcb *pcb2;
 
-	/* Point the pcb to the top of the stack. */
 	pcb2 = td->td_pcb;
 
 	/*
@@ -437,13 +568,14 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 	 * Those not loaded individually below get their default
 	 * values here.
 	 */
+	update_pcb_bases(td0->td_pcb);
 	bcopy(td0->td_pcb, pcb2, sizeof(*pcb2));
 	clear_pcb_flags(pcb2, PCB_FPUINITDONE | PCB_USERFPUINITDONE |
 	    PCB_KERNFPU);
 	pcb2->pcb_save = get_pcb_user_save_pcb(pcb2);
 	bcopy(get_pcb_user_save_td(td0), pcb2->pcb_save,
 	    cpu_max_ext_state_size);
-	set_pcb_flags(pcb2, PCB_FULL_IRET);
+	set_pcb_flags_raw(pcb2, PCB_FULL_IRET);
 
 	/*
 	 * Create a new fresh stack for the new thread.
@@ -478,6 +610,7 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 	/* Setup to release spin count in fork_exit(). */
 	td->td_md.md_spinlock_count = 1;
 	td->td_md.md_saved_flags = PSL_KERNEL | PSL_I;
+	pmap_thread_init_invl_gen(td);
 }
 
 /*
@@ -509,6 +642,9 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 		   (((uintptr_t)stack->ss_sp + stack->ss_size - 4) & ~0x0f) - 4;
 		td->td_frame->tf_rip = (uintptr_t)entry;
 
+		/* Return address sentinel value to stop stack unwinding. */
+		suword32((void *)td->td_frame->tf_rsp, 0);
+
 		/* Pass the argument to the entry point. */
 		suword32((void *)(td->td_frame->tf_rsp + sizeof(int32_t)),
 		    (uint32_t)(uintptr_t)arg);
@@ -532,6 +668,9 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 	td->td_frame->tf_gs = _ugssel;
 	td->td_frame->tf_flags = TF_HASSEGS;
 
+	/* Return address sentinel value to stop stack unwinding. */
+	suword((void *)td->td_frame->tf_rsp, 0);
+
 	/* Pass the argument to the entry point. */
 	td->td_frame->tf_rdi = (register_t)arg;
 }
@@ -554,132 +693,6 @@ cpu_set_user_tls(struct thread *td, void *tls_base)
 #endif
 	pcb->pcb_fsbase = (register_t)tls_base;
 	return (0);
-}
-
-#ifdef SMP
-static void
-cpu_reset_proxy()
-{
-	cpuset_t tcrp;
-
-	cpu_reset_proxy_active = 1;
-	while (cpu_reset_proxy_active == 1)
-		ia32_pause(); /* Wait for other cpu to see that we've started */
-
-	CPU_SETOF(cpu_reset_proxyid, &tcrp);
-	stop_cpus(tcrp);
-	printf("cpu_reset_proxy: Stopped CPU %d\n", cpu_reset_proxyid);
-	DELAY(1000000);
-	cpu_reset_real();
-}
-#endif
-
-void
-cpu_reset()
-{
-#ifdef SMP
-	cpuset_t map;
-	u_int cnt;
-
-	if (smp_started) {
-		map = all_cpus;
-		CPU_CLR(PCPU_GET(cpuid), &map);
-		CPU_NAND(&map, &stopped_cpus);
-		if (!CPU_EMPTY(&map)) {
-			printf("cpu_reset: Stopping other CPUs\n");
-			stop_cpus(map);
-		}
-
-		if (PCPU_GET(cpuid) != 0) {
-			cpu_reset_proxyid = PCPU_GET(cpuid);
-			cpustop_restartfunc = cpu_reset_proxy;
-			cpu_reset_proxy_active = 0;
-			printf("cpu_reset: Restarting BSP\n");
-
-			/* Restart CPU #0. */
-			CPU_SETOF(0, &started_cpus);
-			wmb();
-
-			cnt = 0;
-			while (cpu_reset_proxy_active == 0 && cnt < 10000000) {
-				ia32_pause();
-				cnt++;	/* Wait for BSP to announce restart */
-			}
-			if (cpu_reset_proxy_active == 0)
-				printf("cpu_reset: Failed to restart BSP\n");
-			enable_intr();
-			cpu_reset_proxy_active = 2;
-
-			while (1)
-				ia32_pause();
-			/* NOTREACHED */
-		}
-
-		DELAY(1000000);
-	}
-#endif
-	cpu_reset_real();
-	/* NOTREACHED */
-}
-
-static void
-cpu_reset_real()
-{
-	struct region_descriptor null_idt;
-	int b;
-
-	disable_intr();
-
-	/*
-	 * Attempt to do a CPU reset via the keyboard controller,
-	 * do not turn off GateA20, as any machine that fails
-	 * to do the reset here would then end up in no man's land.
-	 */
-	outb(IO_KBD + 4, 0xFE);
-	DELAY(500000);	/* wait 0.5 sec to see if that did it */
-
-	/*
-	 * Attempt to force a reset via the Reset Control register at
-	 * I/O port 0xcf9.  Bit 2 forces a system reset when it
-	 * transitions from 0 to 1.  Bit 1 selects the type of reset
-	 * to attempt: 0 selects a "soft" reset, and 1 selects a
-	 * "hard" reset.  We try a "hard" reset.  The first write sets
-	 * bit 1 to select a "hard" reset and clears bit 2.  The
-	 * second write forces a 0 -> 1 transition in bit 2 to trigger
-	 * a reset.
-	 */
-	outb(0xcf9, 0x2);
-	outb(0xcf9, 0x6);
-	DELAY(500000);  /* wait 0.5 sec to see if that did it */
-
-	/*
-	 * Attempt to force a reset via the Fast A20 and Init register
-	 * at I/O port 0x92.  Bit 1 serves as an alternate A20 gate.
-	 * Bit 0 asserts INIT# when set to 1.  We are careful to only
-	 * preserve bit 1 while setting bit 0.  We also must clear bit
-	 * 0 before setting it if it isn't already clear.
-	 */
-	b = inb(0x92);
-	if (b != 0xff) {
-		if ((b & 0x1) != 0)
-			outb(0x92, b & 0xfe);
-		outb(0x92, b | 0x1);
-		DELAY(500000);  /* wait 0.5 sec to see if that did it */
-	}
-
-	printf("No known reset method worked, attempting CPU shutdown\n");
-	DELAY(1000000);	/* wait 1 sec for printf to complete */
-
-	/* Wipe the IDT. */
-	null_idt.rd_limit = 0;
-	null_idt.rd_base = 0;
-	lidt(&null_idt);
-
-	/* "good night, sweet prince .... <THUNK!>" */
-	breakpoint();
-
-	/* NOTREACHED */
-	while(1);
 }
 
 /*

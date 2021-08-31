@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007 Seccuris Inc.
  * All rights reserved.
  *
@@ -113,11 +115,7 @@ static void
 zbuf_page_free(vm_page_t pp)
 {
 
-	vm_page_lock(pp);
 	vm_page_unwire(pp, PQ_INACTIVE);
-	if (pp->wire_count == 0 && pp->object == NULL)
-		vm_page_free(pp);
-	vm_page_unlock(pp);
 }
 
 /*
@@ -165,10 +163,6 @@ zbuf_sfbuf_get(struct vm_map *map, vm_offset_t uaddr)
 	if (vm_fault_quick_hold_pages(map, uaddr, PAGE_SIZE, VM_PROT_READ |
 	    VM_PROT_WRITE, &pp, 1) < 0)
 		return (NULL);
-	vm_page_lock(pp);
-	vm_page_wire(pp);
-	vm_page_unhold(pp);
-	vm_page_unlock(pp);
 	sf = sf_buf_alloc(pp, SFB_NOWAIT);
 	if (sf == NULL) {
 		zbuf_page_free(pp);

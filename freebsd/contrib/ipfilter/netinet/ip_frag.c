@@ -16,39 +16,30 @@
 #include <sys/param.h>
 #include <sys/time.h>
 #include <sys/file.h>
-#ifdef __hpux
-# include <sys/timeout.h>
-#endif
 #if !defined(_KERNEL)
 # include <stdio.h>
 # include <string.h>
 # include <stdlib.h>
 # define _KERNEL
-# ifdef __OpenBSD__
-struct file;
-# endif
 # include <sys/uio.h>
 # undef _KERNEL
 #endif
-#if defined(_KERNEL) && \
-    defined(__FreeBSD_version) && (__FreeBSD_version >= 220000)
+#if defined(_KERNEL) && defined(__FreeBSD_version)
 # include <sys/filio.h>
 # include <sys/fcntl.h>
 #else
 # include <sys/ioctl.h>
 #endif
-#if !defined(linux)
 # include <sys/protosw.h>
-#endif
 #include <sys/socket.h>
 #if defined(_KERNEL)
 # include <sys/systm.h>
-# if !defined(__SVR4) && !defined(__svr4__)
+# if !defined(__SVR4)
 #  include <sys/mbuf.h>
 # endif
 #endif
-#if !defined(__SVR4) && !defined(__svr4__)
-# if defined(_KERNEL) && !defined(__sgi) && !defined(AIX)
+#if !defined(__SVR4)
+# if defined(_KERNEL)
 #  include <sys/kernel.h>
 # endif
 #else
@@ -66,9 +57,7 @@ struct file;
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
-#if !defined(linux)
 # include <netinet/ip_var.h>
-#endif
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
@@ -415,6 +404,7 @@ ipfr_frag_new(softc, softf, fin, pass, table
 		}
 	}
 
+	memset(&frag, 0, sizeof(frag));
 	frag.ipfr_v = fin->fin_v;
 	idx = fin->fin_v;
 	frag.ipfr_p = fin->fin_p;
@@ -463,6 +453,7 @@ ipfr_frag_new(softc, softf, fin, pass, table
 		FBUMPD(ifs_nomem);
 		return NULL;
 	}
+	memset(fran, 0, sizeof(*fran));
 
 	WRITE_ENTER(lock);
 
@@ -500,6 +491,7 @@ ipfr_frag_new(softc, softf, fin, pass, table
 	table[idx] = fra;
 	bcopy((char *)&frag.ipfr_ifp, (char *)&fra->ipfr_ifp, IPFR_CMPSZ);
 	fra->ipfr_v = fin->fin_v;
+	fra->ipfr_p = fin->fin_p;
 	fra->ipfr_ttl = softc->ipf_ticks + softf->ipfr_ttl;
 	fra->ipfr_firstend = frag.ipfr_firstend;
 
@@ -688,6 +680,7 @@ ipf_frag_lookup(softc, softf, fin, table
 	 *
 	 * build up a hash value to index the table with.
 	 */
+	memset(&frag, 0, sizeof(frag));
 	frag.ipfr_v = fin->fin_v;
 	idx = fin->fin_v;
 	frag.ipfr_p = fin->fin_p;
@@ -745,7 +738,7 @@ ipf_frag_lookup(softc, softf, fin, table
 			} else if (off == 0)
 				f->ipfr_seen0 = 1;
 
-			if (f != table[idx]) {
+			if (f != table[idx] && MUTEX_TRY_UPGRADE(lock)) {
 				ipfr_t **fp;
 
 				/*
@@ -763,6 +756,7 @@ ipf_frag_lookup(softc, softf, fin, table
 				table[idx]->ipfr_hprev = &f->ipfr_hnext;
 				f->ipfr_hprev = table + idx;
 				table[idx] = f;
+				MUTEX_DOWNGRADE(lock);
 			}
 
 			/*

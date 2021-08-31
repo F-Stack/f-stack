@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Matthew N. Dodd <winter@jurai.net>
  * All rights reserved.
  *
@@ -103,14 +105,29 @@ static int	vpd_modevent	(module_t, int, void *);
 
 static int	vpd_cksum	(struct vpd *);
 
-static SYSCTL_NODE(_hw, OID_AUTO, vpd, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd, OID_AUTO, machine, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd_machine, OID_AUTO, type, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd_machine, OID_AUTO, model, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd, OID_AUTO, build_id, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd, OID_AUTO, serial, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd_serial, OID_AUTO, box, CTLFLAG_RD, NULL, NULL);
-static SYSCTL_NODE(_hw_vpd_serial, OID_AUTO, planar, CTLFLAG_RD, NULL, NULL);
+static SYSCTL_NODE(_hw, OID_AUTO, vpd, CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd, OID_AUTO, machine,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd_machine, OID_AUTO, type,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd_machine, OID_AUTO, model,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd, OID_AUTO, build_id,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd, OID_AUTO, serial,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd_serial, OID_AUTO, box,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
+static SYSCTL_NODE(_hw_vpd_serial, OID_AUTO, planar,
+    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
+    NULL);
 
 static void
 vpd_identify (driver_t *driver, device_t parent)
@@ -193,19 +210,19 @@ vpd_attach (device_t dev)
 	sysctl_ctx_init(&sc->ctx);
 	SYSCTL_ADD_STRING(&sc->ctx,
 		SYSCTL_STATIC_CHILDREN(_hw_vpd_machine_type), OID_AUTO,
-		unit, CTLFLAG_RD|CTLFLAG_DYN, sc->MachineType, 0, NULL);
+		unit, CTLFLAG_RD, sc->MachineType, 0, NULL);
 	SYSCTL_ADD_STRING(&sc->ctx,
 		SYSCTL_STATIC_CHILDREN(_hw_vpd_machine_model), OID_AUTO,
-		unit, CTLFLAG_RD|CTLFLAG_DYN, sc->MachineModel, 0, NULL);
+		unit, CTLFLAG_RD, sc->MachineModel, 0, NULL);
 	SYSCTL_ADD_STRING(&sc->ctx,
 		SYSCTL_STATIC_CHILDREN(_hw_vpd_build_id), OID_AUTO,
-		unit, CTLFLAG_RD|CTLFLAG_DYN, sc->BuildID, 0, NULL);
+		unit, CTLFLAG_RD, sc->BuildID, 0, NULL);
 	SYSCTL_ADD_STRING(&sc->ctx,
 		SYSCTL_STATIC_CHILDREN(_hw_vpd_serial_box), OID_AUTO,
-		unit, CTLFLAG_RD|CTLFLAG_DYN, sc->BoxSerial, 0, NULL);
+		unit, CTLFLAG_RD, sc->BoxSerial, 0, NULL);
 	SYSCTL_ADD_STRING(&sc->ctx,
 		SYSCTL_STATIC_CHILDREN(_hw_vpd_serial_planar), OID_AUTO,
-		unit, CTLFLAG_RD|CTLFLAG_DYN, sc->PlanarSerial, 0, NULL);
+		unit, CTLFLAG_RD, sc->PlanarSerial, 0, NULL);
 
 	device_printf(dev, "Machine Type: %.4s, Model: %.3s, Build ID: %.9s\n",
 		sc->MachineType, sc->MachineModel, sc->BuildID);

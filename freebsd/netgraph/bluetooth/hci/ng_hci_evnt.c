@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -81,7 +83,7 @@ static int le_event		      (ng_hci_unit_p, struct mbuf *);
 /*
  * Process HCI event packet
  */
- 
+
 int
 ng_hci_process_event(ng_hci_unit_p unit, struct mbuf *event)
 {
@@ -379,6 +381,7 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 	ng_hci_neighbor_p		 n = NULL;
 	bdaddr_t			 bdaddr;
 	int				 error = 0;
+	int				 num_reports = 0;
 	u_int8_t event_type;
 	u_int8_t addr_type;
 
@@ -387,9 +390,11 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 		return (ENOBUFS);
 
 	ep = mtod(event, ng_hci_le_advertising_report_ep *);
+	num_reports = ep->num_reports;
 	m_adj(event, sizeof(*ep));
+	ep = NULL;
 
-	for (; ep->num_reports > 0; ep->num_reports --) {
+	for (; num_reports > 0; num_reports --) {
 		/* Get remote unit address */
 		NG_HCI_M_PULLUP(event, sizeof(u_int8_t));
 		event_type = *mtod(event, u_int8_t *);
@@ -417,7 +422,6 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 		} else
 			getmicrotime(&n->updated);
 		
-#if 0
 		{
 			/* 
 			 * TODO: Make these information 
@@ -425,21 +429,36 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 			 */
 			u_int8_t length_data;
 			
-			char *rssi;
-			
-			NG_HCI_M_PULLUP(event, sizeof(u_int8_t));
+			event = m_pullup(event, sizeof(u_int8_t));
+			if(event == NULL){
+				NG_HCI_WARN("%s: Event datasize Pullup Failed\n", __func__);
+				goto out;
+			}
 			length_data = *mtod(event, u_int8_t *);
 			m_adj(event, sizeof(u_int8_t));
+			n->extinq_size = (length_data < NG_HCI_EXTINQ_MAX)?
+				length_data : NG_HCI_EXTINQ_MAX;
+			
 			/*Advertizement data*/
-			NG_HCI_M_PULLUP(event, length_data);
-			m_adj(event, length_data);
-			NG_HCI_M_PULLUP(event, sizeof(char ));
+			event = m_pullup(event, n->extinq_size);
+			if(event == NULL){
+				NG_HCI_WARN("%s: Event data pullup Failed\n", __func__);
+				goto out;
+			}
+			m_copydata(event, 0, n->extinq_size, n->extinq_data);
+			m_adj(event, n->extinq_size);
+			event = m_pullup(event, sizeof(char ));
 			/*Get RSSI*/
-			rssi = mtod(event, char *);
+			if(event == NULL){
+				NG_HCI_WARN("%s: Event rssi pull up Failed\n", __func__);
+				
+				goto out;
+			}				
+			n->page_scan_mode = *mtod(event, char *);
 			m_adj(event, sizeof(u_int8_t));
 		}
-#endif
 	}
+ out:
 	NG_FREE_M(event);
 
 	return (error);
@@ -535,7 +554,6 @@ static int le_connection_complete(ng_hci_unit_p unit, struct mbuf *event)
 		 * supported link modes. Enable Role switch as well if
 		 * device supports it.
 		 */
-
 	}
 
 out:
@@ -549,7 +567,7 @@ static int le_connection_update(ng_hci_unit_p unit, struct mbuf *event)
 {
 	int error = 0;
 	/*TBD*/
-	
+
 	NG_FREE_M(event);
 	return error;
 
@@ -1163,7 +1181,7 @@ mode_change(ng_hci_unit_p unit, struct mbuf *event)
 	ng_hci_mode_change_ep	*ep = NULL;
 	ng_hci_unit_con_p	 con = NULL;
 	int			 error = 0;
-	
+
 	NG_HCI_M_PULLUP(event, sizeof(*ep));
 	if (event == NULL)
 		return (ENOBUFS);
@@ -1373,4 +1391,3 @@ out:
 
 	return (error);
 } /* page_scan_rep_mode_change */
-

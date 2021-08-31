@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1999-2006 Robert N. M. Watson
  * All rights reserved.
  *
@@ -55,7 +57,7 @@ __FBSDID("$FreeBSD$");
  */
 int
 vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
-    struct acl *acl, accmode_t accmode, struct ucred *cred, int *privused)
+    struct acl *acl, accmode_t accmode, struct ucred *cred)
 {
 	struct acl_entry *acl_other, *acl_mask;
 	accmode_t dac_granted;
@@ -75,8 +77,6 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 	 * privileges to use may be ambiguous due to "best match", in which
 	 * case fall back on first match for the time being.
 	 */
-	if (privused != NULL)
-		*privused = 0;
 
 	/*
 	 * Determine privileges now, but don't apply until we've found a DAC
@@ -88,8 +88,7 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 	priv_granted = 0;
 
 	if (type == VDIR) {
-		if ((accmode & VEXEC) && !priv_check_cred(cred,
-		     PRIV_VFS_LOOKUP, 0))
+		if ((accmode & VEXEC) && !priv_check_cred(cred, PRIV_VFS_LOOKUP))
 			priv_granted |= VEXEC;
 	} else {
 		/*
@@ -99,18 +98,18 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 		 */
 		if ((accmode & VEXEC) && (acl_posix1e_acl_to_mode(acl) &
 		    (S_IXUSR | S_IXGRP | S_IXOTH)) != 0 &&
-		    !priv_check_cred(cred, PRIV_VFS_EXEC, 0))
+		    !priv_check_cred(cred, PRIV_VFS_EXEC))
 			priv_granted |= VEXEC;
 	}
 
-	if ((accmode & VREAD) && !priv_check_cred(cred, PRIV_VFS_READ, 0))
+	if ((accmode & VREAD) && !priv_check_cred(cred, PRIV_VFS_READ))
 		priv_granted |= VREAD;
 
 	if (((accmode & VWRITE) || (accmode & VAPPEND)) &&
-	    !priv_check_cred(cred, PRIV_VFS_WRITE, 0))
+	    !priv_check_cred(cred, PRIV_VFS_WRITE))
 		priv_granted |= (VWRITE | VAPPEND);
 
-	if ((accmode & VADMIN) && !priv_check_cred(cred, PRIV_VFS_ADMIN, 0))
+	if ((accmode & VADMIN) && !priv_check_cred(cred, PRIV_VFS_ADMIN))
 		priv_granted |= VADMIN;
 
 	/*
@@ -141,8 +140,6 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 			 */
 			if ((accmode & (dac_granted | priv_granted)) ==
 			    accmode) {
-				if (privused != NULL)
-					*privused = 1;
 				return (0);
 			}
 			goto error;
@@ -219,8 +216,6 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 			    accmode)
 				goto error;
 
-			if (privused != NULL)
-				*privused = 1;
 			return (0);
 		}
 	}
@@ -302,8 +297,6 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 				    != accmode)
 					break;
 
-				if (privused != NULL)
-					*privused = 1;
 				return (0);
 
 			case ACL_GROUP:
@@ -326,8 +319,6 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 				    != accmode)
 					break;
 
-				if (privused != NULL)
-					*privused = 1;
 				return (0);
 
 			default:
@@ -358,8 +349,6 @@ vaccess_acl_posix1e(enum vtype type, uid_t file_uid, gid_t file_gid,
 	 * XXXRW: Do privilege lookup here.
 	 */
 	if ((accmode & (dac_granted | priv_granted)) == accmode) {
-		if (privused != NULL)
-			*privused = 1;
 		return (0);
 	}
 
@@ -650,7 +639,6 @@ acl_posix1e_newfilemode(mode_t cmode, struct acl *dacl)
 
 	return (mode);
 }
-
 
 static int
 acl_posix1e_modload(module_t mod, int what, void *arg)

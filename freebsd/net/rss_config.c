@@ -81,7 +81,8 @@ __FBSDID("$FreeBSD$");
  */
 
 SYSCTL_DECL(_net_inet);
-SYSCTL_NODE(_net_inet, OID_AUTO, rss, CTLFLAG_RW, 0, "Receive-side steering");
+SYSCTL_NODE(_net_inet, OID_AUTO, rss, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Receive-side steering");
 
 /*
  * Toeplitz is the only required hash function in the RSS spec, so use it by
@@ -283,7 +284,7 @@ rss_naive_hash(u_int keylen, const uint8_t *key, u_int datalen,
 uint32_t
 rss_hash(u_int datalen, const uint8_t *data)
 {
- 
+
 	switch (rss_hashalgo) {
 	case RSS_HASH_TOEPLITZ:
 		return (toeplitz_hash(sizeof(rss_key), rss_key, datalen,
@@ -489,7 +490,6 @@ rss_gethashconfig(void)
 	|    RSS_HASHTYPE_RSS_TCP_IPV6_EX
 #if 0
 	|    RSS_HASHTYPE_RSS_UDP_IPV4
-	|    RSS_HASHTYPE_RSS_UDP_IPV4_EX
 	|    RSS_HASHTYPE_RSS_UDP_IPV6
 	|    RSS_HASHTYPE_RSS_UDP_IPV6_EX
 #endif
@@ -550,5 +550,5 @@ sysctl_rss_bucket_mapping(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 SYSCTL_PROC(_net_inet_rss, OID_AUTO, bucket_mapping,
-    CTLTYPE_STRING | CTLFLAG_RD, NULL, 0,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
     sysctl_rss_bucket_mapping, "", "RSS bucket -> CPU mapping");

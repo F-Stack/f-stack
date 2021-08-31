@@ -10,7 +10,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -32,10 +32,7 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_capsicum.h"
-#include "opt_inet.h"
-#include "opt_inet6.h"
 #include "opt_sctp.h"
-#include "opt_compat.h"
 #include "opt_ktrace.h"
 
 #include <sys/param.h>
@@ -70,6 +67,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/ktrace.h>
 #endif
 #ifdef COMPAT_FREEBSD32
+#include <compat/freebsd32/freebsd32.h>
+#include <compat/freebsd32/freebsd32_syscall.h>
 #include <compat/freebsd32/freebsd32_util.h>
 #endif
 
@@ -79,38 +78,65 @@ __FBSDID("$FreeBSD$");
 #include <security/mac/mac_framework.h>
 
 #include <netinet/sctp.h>
+#include <netinet/sctp_os_bsd.h>
 #include <netinet/sctp_peeloff.h>
 
 static struct syscall_helper_data sctp_syscalls[] = {
-	SYSCALL_INIT_HELPER(sctp_peeloff),
-	SYSCALL_INIT_HELPER(sctp_generic_sendmsg),
-	SYSCALL_INIT_HELPER(sctp_generic_sendmsg_iov),
-	SYSCALL_INIT_HELPER(sctp_generic_recvmsg),
+	SYSCALL_INIT_HELPER_F(sctp_peeloff, SYF_CAPENABLED),
+	SYSCALL_INIT_HELPER_F(sctp_generic_sendmsg, SYF_CAPENABLED),
+	SYSCALL_INIT_HELPER_F(sctp_generic_sendmsg_iov, SYF_CAPENABLED),
+	SYSCALL_INIT_HELPER_F(sctp_generic_recvmsg, SYF_CAPENABLED),
 	SYSCALL_INIT_LAST
 };
 
-static void
-sctp_syscalls_init(void *unused __unused)
+#ifdef COMPAT_FREEBSD32
+static struct syscall_helper_data sctp32_syscalls[] = {
+	SYSCALL32_INIT_HELPER_COMPAT(sctp_peeloff),
+	SYSCALL32_INIT_HELPER_COMPAT(sctp_generic_sendmsg),
+	SYSCALL32_INIT_HELPER_COMPAT(sctp_generic_sendmsg_iov),
+	SYSCALL32_INIT_HELPER_COMPAT(sctp_generic_recvmsg),
+	SYSCALL_INIT_LAST
+};
+#endif
+
+int
+sctp_syscalls_init(void)
 {
 	int error;
 
-	error = syscall_helper_register(sctp_syscalls, SY_THR_STATIC);
-	KASSERT((error == 0),
-	    ("%s: syscall_helper_register failed for sctp syscalls", __func__));
+	error = syscall_helper_register(sctp_syscalls, SY_THR_STATIC_KLD);
+	if (error != 0)
+		return (error);
 #ifdef COMPAT_FREEBSD32
-	error = syscall32_helper_register(sctp_syscalls, SY_THR_STATIC);
-	KASSERT((error == 0),
-	    ("%s: syscall32_helper_register failed for sctp syscalls",
-	    __func__));
+	error = syscall32_helper_register(sctp32_syscalls, SY_THR_STATIC_KLD);
+	if (error != 0)
+		return (error);
 #endif
+	return (0);
 }
+
+#ifdef SCTP
 SYSINIT(sctp_syscalls, SI_SUB_SYSCALLS, SI_ORDER_ANY, sctp_syscalls_init, NULL);
+#endif
+
+int
+sctp_syscalls_uninit(void)
+{
+	int error;
+
+#ifdef COMPAT_FREEBSD32
+	error = syscall32_helper_unregister(sctp32_syscalls);
+	if (error != 0)
+		return (error);
+#endif
+	error = syscall_helper_unregister(sctp_syscalls);
+	if (error != 0)
+		return (error);
+	return (0);
+}
 
 /*
  * SCTP syscalls.
- * Functionality only compiled in if SCTP is defined in the kernel Makefile,
- * otherwise all return EOPNOTSUPP.
- * XXX: We should make this loadable one day.
  */
 int
 sys_sctp_peeloff(td, uap)
@@ -120,18 +146,18 @@ sys_sctp_peeloff(td, uap)
 		caddr_t	name;
 	} */ *uap;
 {
-#if (defined(INET) || defined(INET6)) && defined(SCTP)
-	struct file *nfp = NULL;
+	struct file *headfp, *nfp = NULL;
 	struct socket *head, *so;
 	cap_rights_t rights;
 	u_int fflag;
 	int error, fd;
 
 	AUDIT_ARG_FD(uap->sd);
-	error = fgetsock(td, uap->sd, cap_rights_init(&rights, CAP_PEELOFF),
-	    &head, &fflag);
+	error = getsock_cap(td, uap->sd, cap_rights_init_one(&rights, CAP_PEELOFF),
+	    &headfp, &fflag, NULL);
 	if (error != 0)
 		goto done2;
+	head = headfp->f_data;
 	if (head->so_proto->pr_protocol != IPPROTO_SCTP) {
 		error = EOPNOTSUPP;
 		goto done;
@@ -151,29 +177,11 @@ sys_sctp_peeloff(td, uap)
 	td->td_retval[0] = fd;
 
 	CURVNET_SET(head->so_vnet);
-	so = sonewconn(head, SS_ISCONNECTED);
+	so = sopeeloff(head);
 	if (so == NULL) {
 		error = ENOMEM;
 		goto noconnection;
 	}
-	/*
-	 * Before changing the flags on the socket, we have to bump the
-	 * reference count.  Otherwise, if the protocol calls sofree(),
-	 * the socket will be released due to a zero refcount.
-	 */
-        SOCK_LOCK(so);
-        soref(so);                      /* file descriptor reference */
-        SOCK_UNLOCK(so);
-
-	ACCEPT_LOCK();
-
-	TAILQ_REMOVE(&head->so_comp, so, so_list);
-	head->so_qlen--;
-	so->so_state |= (head->so_state & SS_NBIO);
-	so->so_state &= ~SS_NOFDREF;
-	so->so_qstate &= ~SQ_COMP;
-	so->so_head = NULL;
-	ACCEPT_UNLOCK();
 	finit(nfp, fflag, DTYPE_SOCKET, so, &socketops);
 	error = sctp_do_peeloff(head, so, (sctp_assoc_t)uap->name);
 	if (error != 0)
@@ -196,12 +204,9 @@ noconnection:
 done:
 	if (nfp != NULL)
 		fdrop(nfp, td);
-	fputsock(head);
+	fdrop(headfp, td);
 done2:
 	return (error);
-#else  /* SCTP */
-	return (EOPNOTSUPP);
-#endif /* SCTP */
 }
 
 int
@@ -217,7 +222,6 @@ sys_sctp_generic_sendmsg (td, uap)
 		int flags
 	} */ *uap;
 {
-#if (defined(INET) || defined(INET6)) && defined(SCTP)
 	struct sctp_sndrcvinfo sinfo, *u_sinfo = NULL;
 	struct socket *so;
 	struct file *fp = NULL;
@@ -237,18 +241,18 @@ sys_sctp_generic_sendmsg (td, uap)
 		u_sinfo = &sinfo;
 	}
 
-	cap_rights_init(&rights, CAP_SEND);
+	cap_rights_init_one(&rights, CAP_SEND);
 	if (uap->tolen != 0) {
 		error = getsockaddr(&to, uap->to, uap->tolen);
 		if (error != 0) {
 			to = NULL;
 			goto sctp_bad2;
 		}
-		cap_rights_set(&rights, CAP_CONNECT);
+		cap_rights_set_one(&rights, CAP_CONNECT);
 	}
 
 	AUDIT_ARG_FD(uap->sd);
-	error = getsock_cap(td, uap->sd, &rights, &fp, NULL);
+	error = getsock_cap(td, uap->sd, &rights, &fp, NULL, NULL);
 	if (error != 0)
 		goto sctp_bad;
 #ifdef KTRACE
@@ -312,9 +316,6 @@ sctp_bad:
 sctp_bad2:
 	free(to, M_SONAME);
 	return (error);
-#else  /* SCTP */
-	return (EOPNOTSUPP);
-#endif /* SCTP */
 }
 
 int
@@ -330,7 +331,6 @@ sys_sctp_generic_sendmsg_iov(td, uap)
 		int flags
 	} */ *uap;
 {
-#if (defined(INET) || defined(INET6)) && defined(SCTP)
 	struct sctp_sndrcvinfo sinfo, *u_sinfo = NULL;
 	struct socket *so;
 	struct file *fp = NULL;
@@ -350,18 +350,18 @@ sys_sctp_generic_sendmsg_iov(td, uap)
 			return (error);
 		u_sinfo = &sinfo;
 	}
-	cap_rights_init(&rights, CAP_SEND);
+	cap_rights_init_one(&rights, CAP_SEND);
 	if (uap->tolen != 0) {
 		error = getsockaddr(&to, uap->to, uap->tolen);
 		if (error != 0) {
 			to = NULL;
 			goto sctp_bad2;
 		}
-		cap_rights_set(&rights, CAP_CONNECT);
+		cap_rights_set_one(&rights, CAP_CONNECT);
 	}
 
 	AUDIT_ARG_FD(uap->sd);
-	error = getsock_cap(td, uap->sd, &rights, &fp, NULL);
+	error = getsock_cap(td, uap->sd, &rights, &fp, NULL, NULL);
 	if (error != 0)
 		goto sctp_bad1;
 
@@ -442,9 +442,6 @@ sctp_bad1:
 sctp_bad2:
 	free(to, M_SONAME);
 	return (error);
-#else  /* SCTP */
-	return (EOPNOTSUPP);
-#endif /* SCTP */
 }
 
 int
@@ -460,7 +457,6 @@ sys_sctp_generic_recvmsg(td, uap)
 		int *msg_flags
 	} */ *uap;
 {
-#if (defined(INET) || defined(INET6)) && defined(SCTP)
 	uint8_t sockbufstore[256];
 	struct uio auio;
 	struct iovec *iov, *tiov;
@@ -476,8 +472,8 @@ sys_sctp_generic_recvmsg(td, uap)
 	int error, fromlen, i, msg_flags;
 
 	AUDIT_ARG_FD(uap->sd);
-	error = getsock_cap(td, uap->sd, cap_rights_init(&rights, CAP_RECV),
-	    &fp, NULL);
+	error = getsock_cap(td, uap->sd, cap_rights_init_one(&rights, CAP_RECV),
+	    &fp, NULL, NULL);
 	if (error != 0)
 		return (error);
 #ifdef COMPAT_FREEBSD32
@@ -590,7 +586,4 @@ out1:
 		fdrop(fp, td);
 
 	return (error);
-#else  /* SCTP */
-	return (EOPNOTSUPP);
-#endif /* SCTP */
 }

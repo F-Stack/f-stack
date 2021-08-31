@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986 The Regents of the University of California.
  * Copyright (c) 1989, 1990 William Jolitz
  * Copyright (c) 1994 John Dyson
@@ -16,7 +18,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -41,7 +43,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_ddb.h"
 
 #include <sys/param.h>
@@ -57,11 +58,15 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/unistd.h>
 
+#include <machine/abi.h>
 #include <machine/cache.h>
 #include <machine/clock.h>
 #include <machine/cpu.h>
+#include <machine/cpufunc.h>
+#include <machine/cpuinfo.h>
 #include <machine/md_var.h>
 #include <machine/pcb.h>
+#include <machine/tls.h>
 
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
@@ -77,31 +82,16 @@ __FBSDID("$FreeBSD$");
 #include <sys/user.h>
 #include <sys/mbuf.h>
 
-/* Duplicated from asm.h */
-#if defined(__mips_o32)
-#define	SZREG	4
-#else
-#define	SZREG	8
-#endif
-#if defined(__mips_o32) || defined(__mips_o64)
-#define	CALLFRAME_SIZ	(SZREG * (4 + 2))
-#elif defined(__mips_n32) || defined(__mips_n64)
-#define	CALLFRAME_SIZ	(SZREG * 4)
-#endif
-
 /*
  * Finish a fork operation, with process p2 nearly set up.
  * Copy and update the pcb, set up the stack so that the child
  * ready to run and return to user mode.
  */
 void
-cpu_fork(register struct thread *td1,register struct proc *p2,
-    struct thread *td2,int flags)
+cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 {
-	register struct proc *p1;
 	struct pcb *pcb2;
 
-	p1 = td1->td_proc;
 	if ((flags & RFPROC) == 0)
 		return;
 	/* It is assumed that the vm_thread_alloc called
@@ -111,7 +101,7 @@ cpu_fork(register struct thread *td1,register struct proc *p2,
 	/* Point the pcb to the top of the stack */
 	pcb2 = td2->td_pcb;
 
-	/* Copy p1's pcb, note that in this case
+	/* Copy td1's pcb, note that in this case
 	 * our pcb also includes the td_frame being copied
 	 * too. The older mips2 code did an additional copy
 	 * of the td_frame, for us that's not needed any
@@ -151,6 +141,7 @@ cpu_fork(register struct thread *td1,register struct proc *p2,
 	 */
 
 	td2->td_md.md_tls = td1->td_md.md_tls;
+	p2->p_md.md_tls_tcb_offset = td1->td_proc->p_md.md_tls_tcb_offset;
 	td2->td_md.md_saved_intr = MIPS_SR_INT_IE;
 	td2->td_md.md_spinlock_count = 1;
 #ifdef CPU_CNMIPS
@@ -412,6 +403,7 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 	                          (MIPS_SR_PX | MIPS_SR_UX | MIPS_SR_KX | MIPS_SR_SX) |
 	                          (MIPS_SR_INT_IE | MIPS_HARD_INT_MASK));
 #endif
+	td->td_md.md_tls = NULL;
 }
 
 /*
@@ -423,15 +415,9 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
     stack_t *stack)
 {
 	struct trapframe *tf;
-	register_t sp;
+	register_t sp, sr;
 
-	/*
-	 * At the point where a function is called, sp must be 8
-	 * byte aligned[for compatibility with 64-bit CPUs]
-	 * in ``See MIPS Run'' by D. Sweetman, p. 269
-	 * align stack
-	 */
-	sp = (((intptr_t)stack->ss_sp + stack->ss_size) & ~0x7) -
+	sp = (((intptr_t)stack->ss_sp + stack->ss_size) & ~(STACK_ALIGN - 1)) -
 	    CALLFRAME_SIZ;
 
 	/*
@@ -439,8 +425,10 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 	 * function.
 	 */
 	tf = td->td_frame;
+	sr = tf->sr;
 	bzero(tf, sizeof(struct trapframe));
 	tf->sp = sp;
+	tf->sr = sr;
 	tf->pc = (register_t)(intptr_t)entry;
 	/* 
 	 * MIPS ABI requires T9 to be the same as PC 
@@ -450,31 +438,26 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 	tf->a0 = (register_t)(intptr_t)arg;
 
 	/*
-	 * Keep interrupt mask
-	 */
-	td->td_frame->sr = MIPS_SR_KSU_USER | MIPS_SR_EXL | MIPS_SR_INT_IE |
-	    (mips_rd_status() & MIPS_SR_INT_MASK);
-#if defined(__mips_n32) 
-	td->td_frame->sr |= MIPS_SR_PX;
-#elif  defined(__mips_n64)
-	td->td_frame->sr |= MIPS_SR_PX | MIPS_SR_UX | MIPS_SR_KX;
-#endif
-/*	tf->sr |= (ALL_INT_MASK & idle_mask) | SR_INT_ENAB; */
-	/**XXX the above may now be wrong -- mips2 implements this as panic */
-	/*
 	 * FREEBSD_DEVELOPERS_FIXME:
 	 * Setup any other CPU-Specific registers (Not MIPS Standard)
 	 * that are needed.
 	 */
 }
 
-/*
- * Implement the pre-zeroed page mechanism.
- * This routine is called from the idle loop.
- */
+bool
+cpu_exec_vmspace_reuse(struct proc *p __unused, vm_map_t map __unused)
+{
 
-#define	ZIDLE_LO(v)	((v) * 2 / 3)
-#define	ZIDLE_HI(v)	((v) * 4 / 5)
+	return (true);
+}
+
+int
+cpu_procctl(struct thread *td __unused, int idtype __unused, id_t id __unused,
+    int com __unused, void *data __unused)
+{
+
+	return (EINVAL);
+}
 
 /*
  * Software interrupt handler for queued VM system processing.
@@ -492,6 +475,10 @@ cpu_set_user_tls(struct thread *td, void *tls_base)
 {
 
 	td->td_md.md_tls = (char*)tls_base;
+	if (td == curthread && cpuinfo.userlocal_reg == true) {
+		mips_wr_userlocal((unsigned long)tls_base +
+		    td->td_proc->p_md.md_tls_tcb_offset);
+	}
 
 	return (0);
 }
@@ -573,7 +560,7 @@ DB_SHOW_COMMAND(pcb, ddb_dump_pcb)
 		td = db_lookup_thread(addr, true);
 	else
 		td = curthread;
-	
+
 	pcb = td->td_pcb;
 
 	db_printf("Thread %d at %p\n", td->td_tid, td);
@@ -614,7 +601,7 @@ DB_SHOW_COMMAND(pcb, ddb_dump_pcb)
  */
 DB_SHOW_COMMAND(trapframe, ddb_dump_trapframe)
 {
-	
+
 	if (!have_addr)
 		return;
 

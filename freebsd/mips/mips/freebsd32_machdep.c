@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Juli Mallett <jmallett@FreeBSD.org>
  * All rights reserved.
  *
@@ -30,8 +32,6 @@
  * Based on nwhitehorn's COMPAT_FREEBSD32 support code for PowerPC64.
  */
 
-#include "opt_compat.h"
-
 #define __ELF_WORD_SIZE 32
 
 #include <sys/types.h>
@@ -41,6 +41,7 @@
 #include <sys/sysent.h>
 #include <sys/exec.h>
 #include <sys/imgact.h>
+#include <sys/ktr.h>
 #include <sys/malloc.h>
 #include <sys/proc.h>
 #include <sys/namei.h>
@@ -57,16 +58,17 @@
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 
+#include <machine/cpuinfo.h>
 #include <machine/md_var.h>
 #include <machine/reg.h>
 #include <machine/sigframe.h>
 #include <machine/sysarch.h>
+#include <machine/tls.h>
 
 #include <compat/freebsd32/freebsd32_signal.h>
 #include <compat/freebsd32/freebsd32_util.h>
 #include <compat/freebsd32/freebsd32_proto.h>
 
-static void freebsd32_exec_setregs(struct thread *, struct image_params *, u_long);
 static int get_mcontext32(struct thread *, mcontext32_t *, int);
 static int set_mcontext32(struct thread *, mcontext32_t *);
 static void freebsd32_sendsig(sig_t, ksiginfo_t *, sigset_t *);
@@ -76,9 +78,6 @@ extern const char *freebsd32_syscallnames[];
 struct sysentvec elf32_freebsd_sysvec = {
 	.sv_size	= SYS_MAXSYSCALL,
 	.sv_table	= freebsd32_sysent,
-	.sv_mask	= 0,
-	.sv_errsize	= 0,
-	.sv_errtbl	= NULL,
 	.sv_transtrap	= NULL,
 	.sv_fixup	= __elfN(freebsd_fixup),
 	.sv_sendsig	= freebsd32_sendsig,
@@ -88,17 +87,17 @@ struct sysentvec elf32_freebsd_sysvec = {
 	.sv_coredump	= __elfN(coredump),
 	.sv_imgact_try	= NULL,
 	.sv_minsigstksz	= MINSIGSTKSZ,
-	.sv_pagesize	= PAGE_SIZE,
 	.sv_minuser	= VM_MIN_ADDRESS,
 	.sv_maxuser	= ((vm_offset_t)0x80000000),
 	.sv_usrstack	= FREEBSD32_USRSTACK,
 	.sv_psstrings	= FREEBSD32_PS_STRINGS,
 	.sv_stackprot	= VM_PROT_ALL,
+	.sv_copyout_auxargs = __elfN(freebsd_copyout_auxargs),
 	.sv_copyout_strings = freebsd32_copyout_strings,
-	.sv_setregs	= freebsd32_exec_setregs,
+	.sv_setregs	= exec_setregs,
 	.sv_fixlimit	= NULL,
 	.sv_maxssiz	= NULL,
-	.sv_flags	= SV_ABI_FREEBSD | SV_ILP32,
+	.sv_flags	= SV_ABI_FREEBSD | SV_ILP32 | SV_RNG_SEED_VER,
 	.sv_set_syscall_retval = cpu_set_syscall_retval,
 	.sv_fetch_syscall_args = cpu_fetch_syscall_args,
 	.sv_syscallnames = freebsd32_syscallnames,
@@ -116,29 +115,13 @@ static Elf32_Brandinfo freebsd_brand_info = {
 	.interp_path	= "/libexec/ld-elf.so.1",
 	.sysvec		= &elf32_freebsd_sysvec,
 	.interp_newpath	= "/libexec/ld-elf32.so.1",
-	.flags		= 0
+	.brand_note	= &elf32_freebsd_brandnote,
+	.flags		= BI_CAN_EXEC_DYN | BI_BRAND_NOTE
 };
 
 SYSINIT(elf32, SI_SUB_EXEC, SI_ORDER_FIRST,
     (sysinit_cfunc_t) elf32_insert_brand_entry,
     &freebsd_brand_info);
-
-static void
-freebsd32_exec_setregs(struct thread *td, struct image_params *imgp, u_long stack)
-{
-	exec_setregs(td, imgp, stack);
-
-	/*
-	 * See comment in exec_setregs about running 32-bit binaries with 64-bit
-	 * registers.
-	 */
-	td->td_frame->sp -= 65536;
-
-	/*
-	 * Clear extended address space bit for userland.
-	 */
-	td->td_frame->sr &= ~MIPS_SR_UX;
-}
 
 int
 set_regs32(struct thread *td, struct reg32 *regs)
@@ -290,6 +273,7 @@ freebsd32_getcontext(struct thread *td, struct freebsd32_getcontext_args *uap)
 	if (uap->ucp == NULL)
 		ret = EINVAL;
 	else {
+		bzero(&uc, sizeof(uc));
 		get_mcontext32(td, &uc.uc_mcontext, GET_MC_CLEAR_RET);
 		PROC_LOCK(td->td_proc);
 		uc.uc_sigmask = td->td_sigmask;
@@ -329,6 +313,7 @@ freebsd32_swapcontext(struct thread *td, struct freebsd32_swapcontext_args *uap)
 	if (uap->oucp == NULL || uap->ucp == NULL)
 		ret = EINVAL;
 	else {
+		bzero(&uc, sizeof(uc));
 		get_mcontext32(td, &uc.uc_mcontext, GET_MC_CLEAR_RET);
 		PROC_LOCK(td->td_proc);
 		uc.uc_sigmask = td->td_sigmask;
@@ -471,6 +456,17 @@ freebsd32_sysarch(struct thread *td, struct freebsd32_sysarch_args *uap)
 	switch (uap->op) {
 	case MIPS_SET_TLS:
 		td->td_md.md_tls = (void *)(intptr_t)uap->parms;
+
+		/*
+		 * If there is an user local register implementation (ULRI)
+		 * update it as well.  Add the TLS and TCB offsets so the
+		 * value in this register is adjusted like in the case of the
+		 * rdhwr trap() instruction handler.
+		 */
+		if (cpuinfo.userlocal_reg == true) {
+			mips_wr_userlocal((unsigned long)(uap->parms +
+			    td->td_proc->p_md.md_tls_tcb_offset));
+		}
 		return (0);
 	case MIPS_GET_TLS: 
 		tlsbase = (int32_t)(intptr_t)td->td_md.md_tls;

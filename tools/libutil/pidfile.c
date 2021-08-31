@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
  *
@@ -28,22 +30,26 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/capsicum.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <string.h>
-#include <time.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <libgen.h>
 #include <libutil.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 struct pidfh {
+	int	pf_dirfd;
 	int	pf_fd;
-	char	pf_path[MAXPATHLEN + 1];
+	char	pf_dir[MAXPATHLEN + 1];
+	char	pf_filename[MAXPATHLEN + 1];
 	dev_t	pf_dev;
 	ino_t	pf_ino;
 };
@@ -68,12 +74,12 @@ pidfile_verify(const struct pidfh *pfh)
 }
 
 static int
-pidfile_read(const char *path, pid_t *pidptr)
+pidfile_read(int dirfd, const char *filename, pid_t *pidptr)
 {
 	char buf[16], *endptr;
 	int error, fd, i;
 
-	fd = open(path, O_RDONLY | O_CLOEXEC);
+	fd = openat(dirfd, filename, O_RDONLY | O_CLOEXEC);
 	if (fd == -1)
 		return (errno);
 
@@ -94,26 +100,49 @@ pidfile_read(const char *path, pid_t *pidptr)
 }
 
 struct pidfh *
-pidfile_open(const char *path, mode_t mode, pid_t *pidptr)
+pidfile_open(const char *pathp, mode_t mode, pid_t *pidptr)
 {
+	char path[MAXPATHLEN];
 	struct pidfh *pfh;
 	struct stat sb;
-	int error, fd, len, count;
+	int error, fd, dirfd, dirlen, filenamelen, count;
 	struct timespec rqtp;
+	cap_rights_t caprights;
 
 	pfh = malloc(sizeof(*pfh));
 	if (pfh == NULL)
 		return (NULL);
 
-	if (path == NULL)
-		len = snprintf(pfh->pf_path, sizeof(pfh->pf_path),
-		    "/var/run/%s.pid", getprogname());
-	else
-		len = snprintf(pfh->pf_path, sizeof(pfh->pf_path),
-		    "%s", path);
-	if (len >= (int)sizeof(pfh->pf_path)) {
+	if (pathp == NULL) {
+		dirlen = snprintf(pfh->pf_dir, sizeof(pfh->pf_dir),
+		    "/var/run/");
+		filenamelen = snprintf(pfh->pf_filename,
+		    sizeof(pfh->pf_filename), "%s.pid", getprogname());
+	} else {
+		if (strlcpy(path, pathp, sizeof(path)) >= sizeof(path)) {
+			free(pfh);
+			errno = ENAMETOOLONG;
+			return (NULL);
+		}
+		dirlen = strlcpy(pfh->pf_dir, dirname(path),
+		    sizeof(pfh->pf_dir));
+		(void)strlcpy(path, pathp, sizeof(path));
+		filenamelen = strlcpy(pfh->pf_filename, basename(path),
+		    sizeof(pfh->pf_filename));
+	}
+
+	if (dirlen >= (int)sizeof(pfh->pf_dir) ||
+	    filenamelen >= (int)sizeof(pfh->pf_filename)) {
 		free(pfh);
 		errno = ENAMETOOLONG;
+		return (NULL);
+	}
+
+	dirfd = open(pfh->pf_dir, O_CLOEXEC | O_DIRECTORY | O_NONBLOCK);
+	if (dirfd == -1) {
+		error = errno;
+		free(pfh);
+		errno = error;
 		return (NULL);
 	}
 
@@ -123,7 +152,7 @@ pidfile_open(const char *path, mode_t mode, pid_t *pidptr)
 	 * PID file will be truncated again in pidfile_write(), so
 	 * pidfile_write() can be called multiple times.
 	 */
-	fd = flopen(pfh->pf_path,
+	fd = flopenat(dirfd, pfh->pf_filename,
 	    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK, mode);
 	if (fd == -1) {
 		if (errno == EWOULDBLOCK) {
@@ -134,8 +163,8 @@ pidfile_open(const char *path, mode_t mode, pid_t *pidptr)
 				rqtp.tv_sec = 0;
 				rqtp.tv_nsec = 5000000;
 				for (;;) {
-					errno = pidfile_read(pfh->pf_path,
-					    pidptr);
+					errno = pidfile_read(dirfd,
+					    pfh->pf_filename, pidptr);
 					if (errno != EAGAIN || --count == 0)
 						break;
 					nanosleep(&rqtp, 0);
@@ -146,7 +175,10 @@ pidfile_open(const char *path, mode_t mode, pid_t *pidptr)
 					errno = EEXIST;
 			}
 		}
+		error = errno;
+		close(dirfd);
 		free(pfh);
+		errno = error;
 		return (NULL);
 	}
 
@@ -155,19 +187,35 @@ pidfile_open(const char *path, mode_t mode, pid_t *pidptr)
 	 * to the proper descriptor.
 	 */
 	if (fstat(fd, &sb) == -1) {
-		error = errno;
-		unlink(pfh->pf_path);
-		close(fd);
-		free(pfh);
-		errno = error;
-		return (NULL);
+		goto failed;
 	}
 
+	if (cap_rights_limit(dirfd,
+	    cap_rights_init(&caprights, CAP_UNLINKAT)) < 0 && errno != ENOSYS) {
+		goto failed;
+	}
+
+	if (cap_rights_limit(fd, cap_rights_init(&caprights, CAP_PWRITE,
+	    CAP_FSTAT, CAP_FTRUNCATE, CAP_EVENT)) < 0 &&
+	    errno != ENOSYS) {
+		goto failed;
+	}
+
+	pfh->pf_dirfd = dirfd;
 	pfh->pf_fd = fd;
 	pfh->pf_dev = sb.st_dev;
 	pfh->pf_ino = sb.st_ino;
 
 	return (pfh);
+
+failed:
+	error = errno;
+	unlinkat(dirfd, pfh->pf_filename, 0);
+	close(dirfd);
+	close(fd);
+	free(pfh);
+	errno = error;
+	return (NULL);
 }
 
 int
@@ -223,6 +271,9 @@ pidfile_close(struct pidfh *pfh)
 
 	if (close(pfh->pf_fd) == -1)
 		error = errno;
+	if (close(pfh->pf_dirfd) == -1 && error == 0)
+		error = errno;
+
 	free(pfh);
 	if (error != 0) {
 		errno = error;
@@ -242,12 +293,15 @@ _pidfile_remove(struct pidfh *pfh, int freeit)
 		return (-1);
 	}
 
-	if (unlink(pfh->pf_path) == -1)
+	if (funlinkat(pfh->pf_dirfd, pfh->pf_filename, pfh->pf_fd, 0) == -1) {
+		if (errno == EDEADLK)
+			return (-1);
 		error = errno;
-	if (close(pfh->pf_fd) == -1) {
-		if (error == 0)
-			error = errno;
 	}
+	if (close(pfh->pf_fd) == -1 && error == 0)
+		error = errno;
+	if (close(pfh->pf_dirfd) == -1 && error == 0)
+		error = errno;
 	if (freeit)
 		free(pfh);
 	else

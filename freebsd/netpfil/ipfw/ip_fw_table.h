@@ -168,7 +168,8 @@ struct table_config;
 struct tableop_state;
 void ipfw_table_value_init(struct ip_fw_chain *ch, int first);
 void ipfw_table_value_destroy(struct ip_fw_chain *ch, int last);
-int ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts);
+int ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts,
+    uint8_t flags);
 void ipfw_garbage_table_values(struct ip_fw_chain *ch, struct table_config *tc,
     struct tentry_info *tei, uint32_t count, int rollback);
 void ipfw_import_table_value_v1(ipfw_table_value *iv);
@@ -228,7 +229,6 @@ int ipfw_count_xtable(struct ip_fw_chain *ch, struct tid_info *ti,
     uint32_t *cnt);
 int ipfw_dump_table_legacy(struct ip_fw_chain *ch, struct tid_info *ti,
     ipfw_table *tbl);
-
 
 #endif /* _KERNEL */
 #endif /* _IPFW2_TABLE_H */

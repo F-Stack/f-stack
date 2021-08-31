@@ -42,7 +42,6 @@
  * and off option is available but it does not work properly in this version.
  */
 
-
 #ifdef _KERNEL
 #include <sys/malloc.h>
 #include <sys/socket.h>
@@ -120,7 +119,6 @@ struct fq_pie_schk {
 	struct dn_sch_fq_pie_parms cfg;
 };
 
-
 /* fq_pie scheduler instance extra state vars.
  * The purpose of separation this structure is to preserve number of active
  * sub-queues and the flows array pointer even after the scheduler instance
@@ -142,7 +140,6 @@ struct fq_pie_si {
 	struct fq_pie_list oldflows;	/* list of old queues */
 	struct fq_pie_si_extra *si_extra; /* extra state vars*/
 };
-
 
 static struct dn_alg fq_pie_desc;
 
@@ -196,7 +193,7 @@ fqpie_sysctl_target_tupdate_maxb_handler(SYSCTL_HANDLER_ARGS)
 		value = fq_pie_sysctl.pcfg.tupdate;
 	else
 		value = fq_pie_sysctl.pcfg.max_burst;
-	
+
 	value = value / AQM_TIME_1US;
 	error = sysctl_handle_long(oidp, &value, 0, req);
 	if (error != 0 || req->newptr == NULL)
@@ -204,7 +201,7 @@ fqpie_sysctl_target_tupdate_maxb_handler(SYSCTL_HANDLER_ARGS)
 	if (value < 1 || value > 10 * AQM_TIME_1S)
 		return (EINVAL);
 	value = value * AQM_TIME_1US;
-	
+
 	if (!strcmp(oidp->oid_name,"target"))
 		fq_pie_sysctl.pcfg.qdelay_ref  = value;
 	else if (!strcmp(oidp->oid_name,"tupdate"))
@@ -238,37 +235,40 @@ SYSCTL_DECL(_net_inet);
 SYSCTL_DECL(_net_inet_ip);
 SYSCTL_DECL(_net_inet_ip_dummynet);
 static SYSCTL_NODE(_net_inet_ip_dummynet, OID_AUTO, fqpie,
-	CTLFLAG_RW, 0, "FQ_PIE");
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "FQ_PIE");
 
 #ifdef SYSCTL_NODE
-	
+
 SYSCTL_PROC(_net_inet_ip_dummynet_fqpie, OID_AUTO, target,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	fqpie_sysctl_target_tupdate_maxb_handler, "L",
-	"queue target in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    fqpie_sysctl_target_tupdate_maxb_handler, "L",
+    "queue target in microsecond");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_fqpie, OID_AUTO, tupdate,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	fqpie_sysctl_target_tupdate_maxb_handler, "L",
-	"the frequency of drop probability calculation in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    fqpie_sysctl_target_tupdate_maxb_handler, "L",
+    "the frequency of drop probability calculation in microsecond");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_fqpie, OID_AUTO, max_burst,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	fqpie_sysctl_target_tupdate_maxb_handler, "L",
-	"Burst allowance interval in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    fqpie_sysctl_target_tupdate_maxb_handler, "L",
+    "Burst allowance interval in microsecond");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_fqpie, OID_AUTO, max_ecnth,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	fqpie_sysctl_max_ecnth_handler, "L",
-	"ECN safeguard threshold scaled by 1000");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    fqpie_sysctl_max_ecnth_handler, "L",
+    "ECN safeguard threshold scaled by 1000");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_fqpie, OID_AUTO, alpha,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	fqpie_sysctl_alpha_beta_handler, "L", "PIE alpha scaled by 1000");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    fqpie_sysctl_alpha_beta_handler, "L",
+    "PIE alpha scaled by 1000");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_fqpie, OID_AUTO, beta,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	fqpie_sysctl_alpha_beta_handler, "L", "beta scaled by 1000");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    fqpie_sysctl_alpha_beta_handler, "L",
+    "beta scaled by 1000");
 
 SYSCTL_UINT(_net_inet_ip_dummynet_fqpie, OID_AUTO, quantum,
 	CTLFLAG_RW, &fq_pie_sysctl.quantum, 1514, "quantum for FQ_PIE");
@@ -377,22 +377,34 @@ fq_calculate_drop_prob(void *x)
 	struct dn_aqm_pie_parms *pprms; 
 	int64_t p, prob, oldprob;
 	aqm_time_t now;
+	int p_isneg;
 
 	now = AQM_UNOW;
 	pprms = pst->parms;
 	prob = pst->drop_prob;
 
-	/* calculate current qdelay */
-	if (pprms->flags & PIE_DEPRATEEST_ENABLED) {
+	/* calculate current qdelay using DRE method.
+	 * If TS is used and no data in the queue, reset current_qdelay
+	 * as it stays at last value during dequeue process.
+	*/
+	if (pprms->flags & PIE_DEPRATEEST_ENABLED)
 		pst->current_qdelay = ((uint64_t)q->stats.len_bytes  * pst->avg_dq_time)
 			>> PIE_DQ_THRESHOLD_BITS;
-	}
+	else
+		if (!q->stats.len_bytes)
+			pst->current_qdelay = 0;
 
 	/* calculate drop probability */
 	p = (int64_t)pprms->alpha * 
 		((int64_t)pst->current_qdelay - (int64_t)pprms->qdelay_ref); 
 	p +=(int64_t) pprms->beta * 
 		((int64_t)pst->current_qdelay - (int64_t)pst->qdelay_old); 
+
+	/* take absolute value so right shift result is well defined */
+	p_isneg = p < 0;
+	if (p_isneg) {
+		p = -p;
+	}
 		
 	/* We PIE_MAX_PROB shift by 12-bits to increase the division precision  */
 	p *= (PIE_MAX_PROB << 12) / AQM_TIME_1S;
@@ -415,40 +427,50 @@ fq_calculate_drop_prob(void *x)
 
 	oldprob = prob;
 
-	/* Cap Drop adjustment */
-	if ((pprms->flags & PIE_CAPDROP_ENABLED) && prob >= PIE_MAX_PROB / 10
-		&& p > PIE_MAX_PROB / 50 ) 
+	if (p_isneg) {
+		prob = prob - p;
+
+		/* check for multiplication underflow */
+		if (prob > oldprob) {
+			prob= 0;
+			D("underflow");
+		}
+	} else {
+		/* Cap Drop adjustment */
+		if ((pprms->flags & PIE_CAPDROP_ENABLED) &&
+		    prob >= PIE_MAX_PROB / 10 &&
+		    p > PIE_MAX_PROB / 50 ) {
 			p = PIE_MAX_PROB / 50;
+		}
 
-	prob = prob + p;
+		prob = prob + p;
 
-	/* decay the drop probability exponentially */
-	if (pst->current_qdelay == 0 && pst->qdelay_old == 0)
-		/* 0.98 ~= 1- 1/64 */
-		prob = prob - (prob >> 6); 
-
-
-	/* check for multiplication over/under flow */
-	if (p>0) {
+		/* check for multiplication overflow */
 		if (prob<oldprob) {
 			D("overflow");
 			prob= PIE_MAX_PROB;
 		}
 	}
-	else
-		if (prob>oldprob) {
-			prob= 0;
-			D("underflow");
+
+	/*
+	 * decay the drop probability exponentially
+	 * and restrict it to range 0 to PIE_MAX_PROB
+	 */
+	if (prob < 0) {
+		prob = 0;
+	} else {
+		if (pst->current_qdelay == 0 && pst->qdelay_old == 0) {
+			/* 0.98 ~= 1- 1/64 */
+			prob = prob - (prob >> 6); 
 		}
 
-	/* make drop probability between 0 and PIE_MAX_PROB*/
-	if (prob < 0)
-		prob = 0;
-	else if (prob > PIE_MAX_PROB)
-		prob = PIE_MAX_PROB;
+		if (prob > PIE_MAX_PROB) {
+			prob = PIE_MAX_PROB;
+		}
+	}
 
 	pst->drop_prob = prob;
-	
+
 	/* store current delay value */
 	pst->qdelay_old = pst->current_qdelay;
 
@@ -489,7 +511,7 @@ fq_activate_pie(struct fq_pie_flow *q)
 	pst->avg_dq_time = 0;
 	pst->sflags = PIE_INMEASUREMENT | PIE_ACTIVE;
 	pst->measurement_start = AQM_UNOW;
-	
+
 	callout_reset_sbt(&pst->aqm_pie_callout,
 		(uint64_t)pprms->tupdate * SBT_1US,
 		0, fq_calculate_drop_prob, q, 0);
@@ -497,7 +519,6 @@ fq_activate_pie(struct fq_pie_flow *q)
 	mtx_unlock(&pst->lock_mtx);
 }
 
- 
  /* 
   * Deactivate PIE and stop probe update callout
   */
@@ -555,7 +576,7 @@ fqpie_callout_cleanup(void *x)
 	mtx_unlock(&pst->lock_mtx);
 	mtx_destroy(&pst->lock_mtx);
 	psi_extra = q->psi_extra;
-	
+
 	DN_BH_WLOCK();
 	psi_extra->nr_active_q--;
 
@@ -604,7 +625,7 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 	/*we extarct packet ts only when Departure Rate Estimation dis not used*/
 	m = fq_pie_extract_head(q, &pkt_ts, si, 
 		!(pprms->flags & PIE_DEPRATEEST_ENABLED));
-	
+
 	if (!m || !(pst->sflags & PIE_ACTIVE))
 		return m;
 
@@ -654,7 +675,6 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 
 	return m;	
 }
-
 
  /*
  * Enqueue a packet in q, subject to space and FQ-PIE queue management policy
@@ -751,7 +771,7 @@ pie_drop_head(struct fq_pie_flow *q, struct fq_pie_si *si)
 			si->main_q.q_time = dn_cfg.curr_time;
 	/* reset accu_prob after packet drop */
 	q->pst.accu_prob = 0;
-	
+
 	FREE_PKT(m);
 }
 
@@ -770,13 +790,14 @@ fq_pie_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_pie_si *si)
 	uint8_t tuple[41];
 	uint16_t hash=0;
 
+	ip = (struct ip *)mtodo(m, dn_tag_get(m)->iphdr_off);
 //#ifdef INET6
 	struct ip6_hdr *ip6;
 	int isip6;
-	isip6 = (mtod(m, struct ip *)->ip_v == 6) ? 1 : 0;
+	isip6 = (ip->ip_v == 6);
 
 	if(isip6) {
-		ip6 = mtod(m, struct ip6_hdr *);
+		ip6 = (struct ip6_hdr *)ip;
 		*((uint8_t *) &tuple[0]) = ip6->ip6_nxt;
 		*((uint32_t *) &tuple[1]) = si->perturbation;
 		memcpy(&tuple[5], ip6->ip6_src.s6_addr, 16);
@@ -804,7 +825,6 @@ fq_pie_classify_flow(struct mbuf *m, uint16_t fcount, struct fq_pie_si *si)
 //#endif
 
 	/* IPv4 */
-	ip = mtod(m, struct ip *);
 	*((uint8_t *) &tuple[0]) = ip->ip_p;
 	*((uint32_t *) &tuple[1]) = si->perturbation;
 	*((uint32_t *) &tuple[5]) = ip->ip_src.s_addr;
@@ -858,11 +878,11 @@ fq_pie_enqueue(struct dn_sch_inst *_si, struct dn_queue *_q,
 	 * Note: 'pie_enqueue' function returns 1 only when it unable to 
 	 * add timestamp to packet (no limit check)*/
 	drop = pie_enqueue(&flows[idx], m, si);
-	
+
 	/* pie unable to timestamp a packet */ 
 	if (drop)
 		return 1;
-	
+
 	/* If the flow (sub-queue) is not active ,then add it to tail of
 	 * new flows list, initialize and activate it.
 	 */
@@ -972,7 +992,7 @@ fq_pie_dequeue(struct dn_sch_inst *_si)
 		return mbuf;
 
 	} while (1);
-	
+
 	/* unreachable point */
 	return NULL;
 }
@@ -1012,8 +1032,8 @@ fq_pie_new_sched(struct dn_sch_inst *_si)
 		return ENOMEM ; 
 	}
 	/* allocate memory for flows array */
-	si->si_extra->flows = malloc(schk->cfg.flows_cnt * sizeof(struct fq_pie_flow),
-		 M_DUMMYNET, M_NOWAIT | M_ZERO);
+	si->si_extra->flows = mallocarray(schk->cfg.flows_cnt,
+	    sizeof(struct fq_pie_flow), M_DUMMYNET, M_NOWAIT | M_ZERO);
 	flows = si->si_extra->flows;
 	if (flows == NULL) {
 		free(si->si_extra, M_DUMMYNET);
@@ -1041,7 +1061,6 @@ fq_pie_new_sched(struct dn_sch_inst *_si)
 
 	return 0;
 }
-
 
 /*
  * Free fq_pie scheduler instance.
@@ -1074,7 +1093,7 @@ fq_pie_config(struct dn_schk *_schk)
 	struct fq_pie_schk *schk;
 	struct dn_extra_parms *ep;
 	struct dn_sch_fq_pie_parms *fqp_cfg;
-	
+
 	schk = (struct fq_pie_schk *)(_schk+1);
 	ep = (struct dn_extra_parms *) _schk->cfg;
 
@@ -1085,7 +1104,6 @@ fq_pie_config(struct dn_schk *_schk)
 	 */
 	if (ep && ep->oid.len ==sizeof(*ep) &&
 		ep->oid.subtype == DN_SCH_PARAMS) {
-
 		fqp_cfg = &schk->cfg;
 		if (ep->par[0] < 0)
 			fqp_cfg->pcfg.qdelay_ref = fq_pie_sysctl.pcfg.qdelay_ref;
@@ -1160,7 +1178,6 @@ fq_pie_config(struct dn_schk *_schk)
  */
 static int 
 fq_pie_getconfig (struct dn_schk *_schk, struct dn_extra_parms *ep) {
-	
 	struct fq_pie_schk *schk = (struct fq_pie_schk *)(_schk+1);
 	struct dn_sch_fq_pie_parms *fqp_cfg;
 
@@ -1174,7 +1191,7 @@ fq_pie_getconfig (struct dn_schk *_schk, struct dn_extra_parms *ep) {
 	ep->par[4] = fqp_cfg->pcfg.alpha;
 	ep->par[5] = fqp_cfg->pcfg.beta;
 	ep->par[6] = fqp_cfg->pcfg.flags;
-	
+
 	ep->par[7] = fqp_cfg->quantum;
 	ep->par[8] = fqp_cfg->limit;
 	ep->par[9] = fqp_cfg->flows_cnt;

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990 The Regents of the University of California.
  * All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -58,7 +60,7 @@ __FBSDID("$FreeBSD$");
  * icc needs to be special cased here, as the asm code below results
  * in broken code if compiled with icc.
  */
-#if !defined(__GNUCLIKE_ASM) || defined(__INTEL_COMPILER)
+#if !defined(__GNUCLIKE_ASM)
 /* non gcc parts stolen from sys/alpha/alpha/in_cksum.c */
 #define REDUCE32							  \
     {									  \
@@ -75,7 +77,7 @@ __FBSDID("$FreeBSD$");
 #endif
 #define REDUCE          {sum = (sum & 0xffff) + (sum >> 16); ADDCARRY(sum);}
 
-#if !defined(__GNUCLIKE_ASM) || defined(__INTEL_COMPILER)
+#if !defined(__GNUCLIKE_ASM)
 static const u_int32_t in_masks[] = {
 	/*0 bytes*/ /*1 byte*/	/*2 bytes*/ /*3 bytes*/
 	0x00000000, 0x000000FF, 0x0000FFFF, 0x00FFFFFF,	/* offset 0 */
@@ -263,9 +265,9 @@ in_cksum_skip(m, len, skip)
 	int len;
 	int skip;
 {
-	register u_short *w;
-	register unsigned sum = 0;
-	register int mlen = 0;
+	u_short *w;
+	unsigned sum = 0;
+	int mlen = 0;
 	int byte_swapped = 0;
 	union { char	c[2]; u_short	s; } su;
 

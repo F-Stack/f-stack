@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
  * 	All rights reserved.
@@ -80,7 +82,6 @@
 
 #endif
 
-
 /*
  * Signal queues
  */
@@ -117,7 +118,6 @@ ng_sscfu_sigq_get(struct sscfu_sigq *q)					\
 	}								\
 	TAILQ_INIT(Q);							\
     } while (0)
-
 
 /*
  * Message buffers

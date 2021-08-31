@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002-2009 Luigi Rizzo, Universita` di Pisa
  *
  * Redistribution and use in source and binary forms, with or without
@@ -59,6 +61,7 @@ enum {
 	IP_FW_NGTEE,
 	IP_FW_NAT,
 	IP_FW_REASS,
+	IP_FW_NAT64,
 };
 
 /*
@@ -74,18 +77,26 @@ struct _ip6dn_args {
        u_long mtu_or;
 };
 
-
 /*
  * Arguments for calling ipfw_chk() and dummynet_io(). We put them
  * all into a structure because this way it is easier and more
  * efficient to pass variables around and extend the interface.
  */
 struct ip_fw_args {
-	struct mbuf	*m;		/* the mbuf chain		*/
-	struct ifnet	*oif;		/* output interface		*/
-	struct sockaddr_in *next_hop;	/* forward address		*/
-	struct sockaddr_in6 *next_hop6; /* ipv6 forward address		*/
-
+	uint32_t		flags;
+#define	IPFW_ARGS_ETHER		0x00010000	/* valid ethernet header */
+#define	IPFW_ARGS_NH4		0x00020000	/* IPv4 next hop in hopstore */
+#define	IPFW_ARGS_NH6		0x00040000	/* IPv6 next hop in hopstore */
+#define	IPFW_ARGS_NH4PTR	0x00080000	/* IPv4 next hop in next_hop */
+#define	IPFW_ARGS_NH6PTR	0x00100000	/* IPv6 next hop in next_hop6 */
+#define	IPFW_ARGS_REF		0x00200000	/* valid ipfw_rule_ref	*/
+#define	IPFW_ARGS_IN		0x00400000	/* called on input */
+#define	IPFW_ARGS_OUT		0x00800000	/* called on output */
+#define	IPFW_ARGS_IP4		0x01000000	/* belongs to v4 ISR */
+#define	IPFW_ARGS_IP6		0x02000000	/* belongs to v6 ISR */
+#define	IPFW_ARGS_DROP		0x04000000	/* drop it (dummynet) */
+#define	IPFW_ARGS_LENMASK	0x0000ffff	/* length of data in *mem */
+#define	IPFW_ARGS_LENGTH(f)	((f) & IPFW_ARGS_LENMASK)
 	/*
 	 * On return, it points to the matching rule.
 	 * On entry, rule.slot > 0 means the info is valid and
@@ -93,44 +104,35 @@ struct ip_fw_args {
 	 * If chain_id == chain->id && slot >0 then jump to that slot.
 	 * Otherwise, we locate the first rule >= rulenum:rule_id
 	 */
-	struct ipfw_rule_ref rule;	/* match/restart info		*/
+	struct ipfw_rule_ref	rule;	/* match/restart info		*/
 
-	struct ether_header *eh;	/* for bridged packets		*/
-
-	struct ipfw_flow_id f_id;	/* grabbed from IP header	*/
-	//uint32_t	cookie;		/* a cookie depending on rule action */
-	struct inpcb	*inp;
-
-	struct _ip6dn_args	dummypar; /* dummynet->ip6_output */
-	union {		/* store here if cannot use a pointer */
-		struct sockaddr_in hopstore;
-		struct sockaddr_in6 hopstore6;
+	struct ifnet		*ifp;	/* input/output interface	*/
+	struct inpcb		*inp;
+	union {
+		/*
+		 * next_hop[6] pointers can be used to point to next hop
+		 * stored in rule's opcode to avoid copying into hopstore.
+		 * Also, it is expected that all 0x1-0x10 flags are mutually
+		 * exclusive.
+		 */
+		struct sockaddr_in	*next_hop;
+		struct sockaddr_in6	*next_hop6;
+		/* ipfw next hop storage */
+		struct sockaddr_in	hopstore;
+		struct ip_fw_nh6 {
+			struct in6_addr sin6_addr;
+			uint32_t	sin6_scope_id;
+			uint16_t	sin6_port;
+		} hopstore6;
 	};
+	union {
+		struct mbuf	*m;	/* the mbuf chain		*/
+		void		*mem;	/* or memory pointer		*/
+	};
+	struct ipfw_flow_id	f_id;	/* grabbed from IP header	*/
 };
 
 MALLOC_DECLARE(M_IPFW);
-
-/*
- * Hooks sometime need to know the direction of the packet
- * (divert, dummynet, netgraph, ...)
- * We use a generic definition here, with bit0-1 indicating the
- * direction, bit 2 indicating layer2 or 3, bit 3-4 indicating the
- * specific protocol
- * indicating the protocol (if necessary)
- */
-enum {
-	DIR_MASK =	0x3,
-	DIR_OUT =	0,
-	DIR_IN =	1,
-	DIR_FWD =	2,
-	DIR_DROP =	3,
-	PROTO_LAYER2 =	0x4, /* set for layer 2 */
-	/* PROTO_DEFAULT = 0, */
-	PROTO_IPV4 =	0x08,
-	PROTO_IPV6 =	0x10,
-	PROTO_IFB =	0x0c, /* layer2 + ifbridge */
-   /*	PROTO_OLDBDG =	0x14, unused, old bridge */
-};
 
 /* wrapper for freeing a packet, in case we need to do more work */
 #ifndef FREE_PKT
@@ -144,9 +146,12 @@ enum {
 /*
  * Function definitions.
  */
+int ipfw_chk(struct ip_fw_args *args);
+struct mbuf *ipfw_send_pkt(struct mbuf *, struct ipfw_flow_id *,
+    u_int32_t, u_int32_t, int);
 
-/* attach (arg = 1) or detach (arg = 0) hooks */
-int ipfw_attach_hooks(int);
+int ipfw_attach_hooks(void);
+void ipfw_detach_hooks(void);
 #ifdef NOTYET
 void ipfw_nat_destroy(void);
 #endif
@@ -154,16 +159,21 @@ void ipfw_nat_destroy(void);
 /* In ip_fw_log.c */
 struct ip;
 struct ip_fw_chain;
-void ipfw_log_bpf(int);
+
+void ipfw_bpf_init(int);
+void ipfw_bpf_uninit(int);
+void ipfw_bpf_tap(u_char *, u_int);
+void ipfw_bpf_mtap(struct mbuf *);
+void ipfw_bpf_mtap2(void *, u_int, struct mbuf *);
 void ipfw_log(struct ip_fw_chain *chain, struct ip_fw *f, u_int hlen,
-    struct ip_fw_args *args, struct mbuf *m, struct ifnet *oif,
-    u_short offset, uint32_t tablearg, struct ip *ip);
+    struct ip_fw_args *args, u_short offset, uint32_t tablearg, struct ip *ip);
 VNET_DECLARE(u_int64_t, norule_counter);
 #define	V_norule_counter	VNET(norule_counter)
 VNET_DECLARE(int, verbose_limit);
 #define	V_verbose_limit		VNET(verbose_limit)
 
 /* In ip_fw_dynamic.c */
+struct sockopt_data;
 
 enum { /* result for matching dynamic rules */
 	MATCH_REVERSE = 0,
@@ -173,31 +183,46 @@ enum { /* result for matching dynamic rules */
 };
 
 /*
- * The lock for dynamic rules is only used once outside the file,
- * and only to release the result of lookup_dyn_rule().
- * Eventually we may implement it with a callback on the function.
+ * Macro to determine that we need to do or redo dynamic state lookup.
+ * direction == MATCH_UNKNOWN means that this is first lookup, then we need
+ * to do lookup.
+ * Otherwise check the state name, if previous lookup was for "any" name,
+ * this means there is no state with specific name. Thus no need to do
+ * lookup. If previous name was not "any", redo lookup for specific name.
  */
-struct ip_fw_chain;
-struct sockopt_data;
-int ipfw_is_dyn_rule(struct ip_fw *rule);
-void ipfw_expire_dyn_rules(struct ip_fw_chain *, ipfw_range_tlv *);
-void ipfw_dyn_unlock(ipfw_dyn_rule *q);
+#define	DYN_LOOKUP_NEEDED(p, cmd)	\
+    ((p)->direction == MATCH_UNKNOWN ||	\
+	((p)->kidx != 0 && (p)->kidx != (cmd)->arg1))
+#define	DYN_INFO_INIT(p)	do {	\
+	(p)->direction = MATCH_UNKNOWN;	\
+	(p)->kidx = 0;			\
+} while (0)
+struct ipfw_dyn_info {
+	uint16_t	direction;	/* match direction */
+	uint16_t	kidx;		/* state name kidx */
+	uint32_t	hashval;	/* hash value */
+	uint32_t	version;	/* bucket version */
+	uint32_t	f_pos;
+};
+int ipfw_dyn_install_state(struct ip_fw_chain *chain, struct ip_fw *rule,
+    const ipfw_insn_limit *cmd, const struct ip_fw_args *args,
+    const void *ulp, int pktlen, struct ipfw_dyn_info *info,
+    uint32_t tablearg);
+struct ip_fw *ipfw_dyn_lookup_state(const struct ip_fw_args *args,
+    const void *ulp, int pktlen, const ipfw_insn *cmd,
+    struct ipfw_dyn_info *info);
 
-struct tcphdr;
-struct mbuf *ipfw_send_pkt(struct mbuf *, struct ipfw_flow_id *,
-    u_int32_t, u_int32_t, int);
-int ipfw_install_state(struct ip_fw_chain *chain, struct ip_fw *rule,
-    ipfw_insn_limit *cmd, struct ip_fw_args *args, uint32_t tablearg);
-ipfw_dyn_rule *ipfw_lookup_dyn_rule(struct ipfw_flow_id *pkt,
-	int *match_direction, struct tcphdr *tcp);
-void ipfw_remove_dyn_children(struct ip_fw *rule);
+int ipfw_is_dyn_rule(struct ip_fw *rule);
+void ipfw_expire_dyn_states(struct ip_fw_chain *, ipfw_range_tlv *);
 void ipfw_get_dynamic(struct ip_fw_chain *chain, char **bp, const char *ep);
 int ipfw_dump_states(struct ip_fw_chain *chain, struct sockopt_data *sd);
 
 void ipfw_dyn_init(struct ip_fw_chain *);	/* per-vnet initialization */
 void ipfw_dyn_uninit(int);	/* per-vnet deinitialization */
 int ipfw_dyn_len(void);
-int ipfw_dyn_get_count(void);
+uint32_t ipfw_dyn_get_count(uint32_t *, int *);
+void ipfw_dyn_reset_eaction(struct ip_fw_chain *ch, uint16_t eaction_id,
+    uint16_t default_id, uint16_t instance_id);
 
 /* common variables */
 VNET_DECLARE(int, fw_one_pass);
@@ -252,7 +277,9 @@ struct ip_fw {
 	uint32_t	id;		/* rule id			*/
 	uint32_t	cached_id;	/* used by jump_fast		*/
 	uint32_t	cached_pos;	/* used by jump_fast		*/
+	uint32_t	refcnt;		/* number of references		*/
 
+	struct ip_fw	*next;		/* linked list of deleted rules */
 	ipfw_insn	cmd[1];		/* storage for commands		*/
 };
 
@@ -307,7 +334,6 @@ struct table_value {
 	uint32_t	zoneid;		/* scope zone id for nh6 */
 	uint64_t	refcnt;		/* Number of references */
 };
-
 
 struct named_object {
 	TAILQ_ENTRY(named_object)	nn_next;	/* namehash */
@@ -412,7 +438,7 @@ struct ipfw_ifc {
 #define	IPFW_PF_RUNLOCK(p)		IPFW_RUNLOCK(p)
 #else /* FreeBSD */
 #define	IPFW_LOCK_INIT(_chain) do {			\
-	rm_init(&(_chain)->rwmtx, "IPFW static rules");	\
+	rm_init_flags(&(_chain)->rwmtx, "IPFW static rules", RM_RECURSE); \
 	rw_init(&(_chain)->uh_lock, "IPFW UH lock");	\
 	} while (0)
 
@@ -587,7 +613,6 @@ enum ipfw_sets_cmd {
 typedef int (ipfw_obj_sets_cb)(struct ip_fw_chain *ch,
     uint16_t set, uint8_t new_set, enum ipfw_sets_cmd cmd);
 
-
 struct opcode_obj_rewrite {
 	uint32_t		opcode;		/* Opcode to act upon */
 	uint32_t		etlv;		/* Relevant export TLV id  */
@@ -626,14 +651,18 @@ void ipfw_init_skipto_cache(struct ip_fw_chain *chain);
 void ipfw_destroy_skipto_cache(struct ip_fw_chain *chain);
 int ipfw_find_rule(struct ip_fw_chain *chain, uint32_t key, uint32_t id);
 int ipfw_ctl3(struct sockopt *sopt);
-int ipfw_chk(struct ip_fw_args *args);
+int ipfw_add_protected_rule(struct ip_fw_chain *chain, struct ip_fw *rule,
+    int locked);
 void ipfw_reap_add(struct ip_fw_chain *chain, struct ip_fw **head,
     struct ip_fw *rule);
 void ipfw_reap_rules(struct ip_fw *head);
 void ipfw_init_counters(void);
 void ipfw_destroy_counters(void);
 struct ip_fw *ipfw_alloc_rule(struct ip_fw_chain *chain, size_t rulesize);
+void ipfw_free_rule(struct ip_fw *rule);
 int ipfw_match_range(struct ip_fw *rule, ipfw_range_tlv *rt);
+int ipfw_mark_object_kidx(uint32_t *bmask, uint16_t etlv, uint16_t kidx);
+ipfw_insn *ipfw_get_action(struct ip_fw *);
 
 typedef int (sopt_handler_f)(struct ip_fw_chain *ch,
     ip_fw3_opheader *op3, struct sockopt_data *sd);
@@ -732,6 +761,10 @@ uint16_t ipfw_add_eaction(struct ip_fw_chain *ch, ipfw_eaction_t handler,
 int ipfw_del_eaction(struct ip_fw_chain *ch, uint16_t eaction_id);
 int ipfw_run_eaction(struct ip_fw_chain *ch, struct ip_fw_args *args,
     ipfw_insn *cmd, int *done);
+int ipfw_reset_eaction(struct ip_fw_chain *ch, struct ip_fw *rule,
+    uint16_t eaction_id, uint16_t default_id, uint16_t instance_id);
+int ipfw_reset_eaction_instance(struct ip_fw_chain *ch, uint16_t eaction_id,
+    uint16_t instance_id);
 
 /* In ip_fw_table.c */
 struct table_info;
@@ -739,10 +772,12 @@ struct table_info;
 typedef int (table_lookup_t)(struct table_info *ti, void *key, uint32_t keylen,
     uint32_t *val);
 
-int ipfw_lookup_table(struct ip_fw_chain *ch, uint16_t tbl, in_addr_t addr,
-    uint32_t *val);
-int ipfw_lookup_table_extended(struct ip_fw_chain *ch, uint16_t tbl, uint16_t plen,
+int ipfw_lookup_table(struct ip_fw_chain *ch, uint16_t tbl, uint16_t plen,
     void *paddr, uint32_t *val);
+struct named_object *ipfw_objhash_lookup_table_kidx(struct ip_fw_chain *ch,
+    uint16_t kidx);
+int ipfw_ref_table(struct ip_fw_chain *ch, ipfw_obj_ntlv *ntlv, uint16_t *kidx);
+void ipfw_unref_table(struct ip_fw_chain *ch, uint16_t kidx);
 int ipfw_init_tables(struct ip_fw_chain *ch, int first);
 int ipfw_resize_tables(struct ip_fw_chain *ch, unsigned int ntables);
 int ipfw_switch_tables_namespace(struct ip_fw_chain *ch, unsigned int nsets);

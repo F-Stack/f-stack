@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Atsushi Onoe
  * Copyright (c) 2002-2009 Sam Leffler, Errno Consulting
  * All rights reserved.
@@ -77,16 +79,15 @@ void	ieee80211_promisc(struct ieee80211vap *, bool);
 void	ieee80211_allmulti(struct ieee80211vap *, bool);
 void	ieee80211_syncflag(struct ieee80211vap *, int flag);
 void	ieee80211_syncflag_ht(struct ieee80211vap *, int flag);
+void	ieee80211_syncflag_vht(struct ieee80211vap *, int flag);
 void	ieee80211_syncflag_ext(struct ieee80211vap *, int flag);
 
 #define	ieee80211_input(ni, m, rssi, nf) \
 	((ni)->ni_vap->iv_input(ni, m, NULL, rssi, nf))
 int	ieee80211_input_all(struct ieee80211com *, struct mbuf *, int, int);
 
-int	ieee80211_input_mimo(struct ieee80211_node *, struct mbuf *,
-	    struct ieee80211_rx_stats *);
-int	ieee80211_input_mimo_all(struct ieee80211com *, struct mbuf *,
-	    struct ieee80211_rx_stats *);
+int	ieee80211_input_mimo(struct ieee80211_node *, struct mbuf *);
+int	ieee80211_input_mimo_all(struct ieee80211com *, struct mbuf *);
 
 struct ieee80211_bpf_params;
 int	ieee80211_mgmt_output(struct ieee80211_node *, struct mbuf *, int,
@@ -139,6 +140,8 @@ struct mbuf *ieee80211_alloc_rts(struct ieee80211com *ic,
 		const uint8_t [IEEE80211_ADDR_LEN], uint16_t);
 struct mbuf *ieee80211_alloc_cts(struct ieee80211com *,
 		const uint8_t [IEEE80211_ADDR_LEN], uint16_t);
+struct mbuf *ieee80211_alloc_prot(struct ieee80211_node *,
+		const struct mbuf *, uint8_t, int);
 
 uint8_t *ieee80211_add_rates(uint8_t *, const struct ieee80211_rateset *);
 uint8_t *ieee80211_add_xrates(uint8_t *, const struct ieee80211_rateset *);
@@ -149,10 +152,12 @@ uint8_t *ieee80211_add_qos(uint8_t *, const struct ieee80211_node *);
 uint16_t ieee80211_getcapinfo(struct ieee80211vap *,
 		struct ieee80211_channel *);
 struct ieee80211_wme_state;
-uint8_t * ieee80211_add_wme_info(uint8_t *frm, struct ieee80211_wme_state *wme);
+uint8_t * ieee80211_add_wme_info(uint8_t *frm, struct ieee80211_wme_state *wme,
+	    struct ieee80211_node *ni);
 
+void	ieee80211_vap_reset_erp(struct ieee80211vap *);
 void	ieee80211_reset_erp(struct ieee80211com *);
-void	ieee80211_set_shortslottime(struct ieee80211com *, int onoff);
+void	ieee80211_vap_set_shortslottime(struct ieee80211vap *, int onoff);
 int	ieee80211_iserp_rateset(const struct ieee80211_rateset *);
 void	ieee80211_setbasicrates(struct ieee80211_rateset *,
 		enum ieee80211_phymode);
@@ -281,7 +286,7 @@ struct ieee80211_wme_state {
 	u_int	wme_hipri_switch_thresh;/* aggressive mode switch thresh */
 	u_int	wme_hipri_switch_hysteresis;/* aggressive mode switch hysteresis */
 
-	struct wmeParams wme_params[4];		/* from assoc resp for each AC*/
+	struct wmeParams wme_params[WME_NUM_AC]; /* from assoc resp for each AC */
 	struct chanAccParams wme_wmeChanParams;	/* WME params applied to self */
 	struct chanAccParams wme_wmeBssChanParams;/* WME params bcast to stations */
 	struct chanAccParams wme_chanParams;	/* params applied to self */
@@ -293,6 +298,30 @@ struct ieee80211_wme_state {
 void	ieee80211_wme_initparams(struct ieee80211vap *);
 void	ieee80211_wme_updateparams(struct ieee80211vap *);
 void	ieee80211_wme_updateparams_locked(struct ieee80211vap *);
+void	ieee80211_wme_vap_getparams(struct ieee80211vap *vap,
+	    struct chanAccParams *);
+void	ieee80211_wme_ic_getparams(struct ieee80211com *ic,
+	    struct chanAccParams *);
+int	ieee80211_wme_vap_ac_is_noack(struct ieee80211vap *vap, int ac);
+void	ieee80211_vap_update_preamble(struct ieee80211vap *vap);
+void	ieee80211_vap_update_erp_protmode(struct ieee80211vap *vap);
+void	ieee80211_vap_update_ht_protmode(struct ieee80211vap *vap);
+
+/*
+ * Return pointer to the QoS field from a Qos frame.
+ */
+static __inline uint8_t *
+ieee80211_getqos(void *data)
+{
+	struct ieee80211_frame *wh = data;
+
+	KASSERT(IEEE80211_QOS_HAS_SEQ(wh), ("QoS field is absent!"));
+
+	if (IEEE80211_IS_DSTODS(wh))
+		return (((struct ieee80211_qosframe_addr4 *)wh)->i_qos);
+	else
+		return (((struct ieee80211_qosframe *)wh)->i_qos);
+}
 
 /*
  * Return the WME TID from a QoS frame.  If no TID
@@ -363,7 +392,8 @@ struct ieee80211_beacon_offsets {
 	uint8_t		*bo_csa;	/* start of CSA element */
 	uint8_t		*bo_quiet;	/* start of Quiet element */
 	uint8_t		*bo_meshconf;	/* start of MESHCONF element */
-	uint8_t		*bo_spare[3];
+	uint8_t		*bo_vhtinfo;	/* start of VHT info element (XXX VHTCAP?) */
+	uint8_t		*bo_spare[2];
 };
 struct mbuf *ieee80211_beacon_alloc(struct ieee80211_node *);
 
@@ -391,6 +421,8 @@ enum {
 	IEEE80211_BEACON_TDMA	= 9,	/* TDMA Info */
 	IEEE80211_BEACON_ATH	= 10,	/* ATH parameters */
 	IEEE80211_BEACON_MESHCONF = 11,	/* Mesh Configuration */
+	IEEE80211_BEACON_QUIET	= 12,	/* Quiet time IE */
+	IEEE80211_BEACON_VHTINFO	= 13,	/* VHT information */
 };
 int	ieee80211_beacon_update(struct ieee80211_node *,
 		struct mbuf *, int mcast);
@@ -428,4 +460,5 @@ void	ieee80211_notify_node_auth(struct ieee80211_node *);
 void	ieee80211_notify_country(struct ieee80211vap *, const uint8_t [],
 		const uint8_t cc[2]);
 void	ieee80211_notify_radio(struct ieee80211com *, int);
+void	ieee80211_notify_ifnet_change(struct ieee80211vap *);
 #endif /* _NET80211_IEEE80211_PROTO_H_ */

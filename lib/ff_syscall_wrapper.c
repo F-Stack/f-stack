@@ -51,6 +51,7 @@
 #include <sys/sysproto.h>
 #include <sys/fcntl.h>
 #include <net/route.h>
+#include <net/route/route_ctl.h>
 
 #include <net/if.h>
 #include <sys/sockio.h>
@@ -1260,6 +1261,8 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     struct sockaddr *psa_gw, *psa_dst, *psa_nm;
     int rtreq, rtflag;
     int rc;
+    struct rt_addrinfo info;
+    struct rib_cmd_info rci;
 
     switch (req) {
         case FF_ROUTE_ADD:
@@ -1288,9 +1291,13 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
             goto kern_fail;
     };
 
+    bzero((caddr_t)&info, sizeof(info));
+    info.rti_flags = rtflag;
+
     if (gw != NULL) {
         psa_gw = (struct sockaddr *)&sa_gw;
         linux2freebsd_sockaddr(gw, sizeof(*gw), psa_gw);
+        info.rti_info[RTAX_GATEWAY] = psa_gw;
     } else {
         psa_gw = NULL;
     }
@@ -1298,6 +1305,7 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     if (dst != NULL) {
         psa_dst = (struct sockaddr *)&sa_dst;
         linux2freebsd_sockaddr(dst, sizeof(*dst), psa_dst);
+        info.rti_info[RTAX_DST] = psa_dst;
     } else {
         psa_dst = NULL;
     }
@@ -1305,12 +1313,12 @@ ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
     if (netmask != NULL) {
         psa_nm = (struct sockaddr *)&sa_nm;
         linux2freebsd_sockaddr(netmask, sizeof(*netmask), psa_nm);
+        info.rti_info[RTAX_NETMASK] = psa_nm;
     } else {
         psa_nm = NULL;
     }
 
-    rc = rtrequest_fib(rtreq, psa_dst, psa_gw, psa_nm, rtflag,
-        NULL, RT_DEFAULT_FIB);
+    rc = rib_action(RT_DEFAULT_FIB, rtreq, &info, &rci);
 
     if (rc != 0)
         goto kern_fail;

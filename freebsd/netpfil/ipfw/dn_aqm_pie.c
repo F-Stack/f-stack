@@ -121,7 +121,7 @@ pie_sysctl_target_tupdate_maxb_handler(SYSCTL_HANDLER_ARGS)
 		value = pie_sysctl.tupdate;
 	else
 		value = pie_sysctl.max_burst;
-	
+
 	value = value / AQM_TIME_1US;
 	error = sysctl_handle_long(oidp, &value, 0, req);
 	if (error != 0 || req->newptr == NULL)
@@ -129,7 +129,7 @@ pie_sysctl_target_tupdate_maxb_handler(SYSCTL_HANDLER_ARGS)
 	if (value < 1 || value > 10 * AQM_TIME_1S)
 		return (EINVAL);
 	value = value * AQM_TIME_1US;
-	
+
 	if (!strcmp(oidp->oid_name,"target"))
 		pie_sysctl.qdelay_ref  = value;
 	else if (!strcmp(oidp->oid_name,"tupdate"))
@@ -162,38 +162,38 @@ SYSBEGIN(f4)
 SYSCTL_DECL(_net_inet);
 SYSCTL_DECL(_net_inet_ip);
 SYSCTL_DECL(_net_inet_ip_dummynet);
-static SYSCTL_NODE(_net_inet_ip_dummynet, OID_AUTO, 
-	pie, CTLFLAG_RW, 0, "PIE");
+static SYSCTL_NODE(_net_inet_ip_dummynet, OID_AUTO, pie,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "PIE");
 
 #ifdef SYSCTL_NODE
 SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, target,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0, 
-	pie_sysctl_target_tupdate_maxb_handler, "L",
-	"queue target in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    pie_sysctl_target_tupdate_maxb_handler, "L",
+    "queue target in microsecond");
 SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, tupdate,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	pie_sysctl_target_tupdate_maxb_handler, "L",
-	"the frequency of drop probability calculation in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    pie_sysctl_target_tupdate_maxb_handler, "L",
+    "the frequency of drop probability calculation in microsecond");
 SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, max_burst,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	pie_sysctl_target_tupdate_maxb_handler, "L",
-	"Burst allowance interval in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    pie_sysctl_target_tupdate_maxb_handler, "L",
+    "Burst allowance interval in microsecond");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, max_ecnth,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	pie_sysctl_max_ecnth_handler, "L",
-	"ECN safeguard threshold scaled by 1000");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    pie_sysctl_max_ecnth_handler, "L",
+    "ECN safeguard threshold scaled by 1000");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, alpha,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	pie_sysctl_alpha_beta_handler, "L",
-	"PIE alpha scaled by 1000");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    pie_sysctl_alpha_beta_handler, "L",
+    "PIE alpha scaled by 1000");
 SYSCTL_PROC(_net_inet_ip_dummynet_pie, OID_AUTO, beta,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,
-	pie_sysctl_alpha_beta_handler, "L",
-	"beta scaled by 1000");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    pie_sysctl_alpha_beta_handler, "L",
+    "beta scaled by 1000");
 #endif
-
 
 /*
  * Callout function for drop probability calculation 
@@ -206,21 +206,33 @@ calculate_drop_prob(void *x)
 	int64_t p, prob, oldprob;
 	struct dn_aqm_pie_parms *pprms;
 	struct pie_status *pst = (struct pie_status *) x;
+	int p_isneg;
 
 	pprms = pst->parms;
 	prob = pst->drop_prob;
 
-	/* calculate current qdelay */
-	if (pprms->flags & PIE_DEPRATEEST_ENABLED) {
+	/* calculate current qdelay using DRE method.
+	 * If TS is used and no data in the queue, reset current_qdelay
+	 * as it stays at last value during dequeue process. 
+	*/
+	if (pprms->flags & PIE_DEPRATEEST_ENABLED)
 		pst->current_qdelay = ((uint64_t)pst->pq->ni.len_bytes *
 			pst->avg_dq_time) >> PIE_DQ_THRESHOLD_BITS;
-	}
+	else 
+		if (!pst->pq->ni.len_bytes)
+			 pst->current_qdelay = 0;
 
 	/* calculate drop probability */
 	p = (int64_t)pprms->alpha * 
 		((int64_t)pst->current_qdelay - (int64_t)pprms->qdelay_ref); 
 	p +=(int64_t) pprms->beta * 
 		((int64_t)pst->current_qdelay - (int64_t)pst->qdelay_old); 
+
+	/* take absolute value so right shift result is well defined */
+	p_isneg = p < 0;
+	if (p_isneg) {
+		p = -p;
+	}
 		
 	/* We PIE_MAX_PROB shift by 12-bits to increase the division precision */
 	p *= (PIE_MAX_PROB << 12) / AQM_TIME_1S;
@@ -243,40 +255,50 @@ calculate_drop_prob(void *x)
 
 	oldprob = prob;
 
-	/* Cap Drop adjustment */
-	if ((pprms->flags & PIE_CAPDROP_ENABLED) && prob >= PIE_MAX_PROB / 10
-		&& p > PIE_MAX_PROB / 50 ) 
+	if (p_isneg) {
+		prob = prob - p;
+
+		/* check for multiplication underflow */
+		if (prob > oldprob) {
+			prob= 0;
+			D("underflow");
+		}
+	} else {
+		/* Cap Drop adjustment */
+		if ((pprms->flags & PIE_CAPDROP_ENABLED) &&
+		    prob >= PIE_MAX_PROB / 10 &&
+		    p > PIE_MAX_PROB / 50 ) {
 			p = PIE_MAX_PROB / 50;
+		}
 
-	prob = prob + p;
+		prob = prob + p;
 
-	/* decay the drop probability exponentially */
-	if (pst->current_qdelay == 0 && pst->qdelay_old == 0)
-		/* 0.98 ~= 1- 1/64 */
-		prob = prob - (prob >> 6); 
-
-
-	/* check for multiplication overflow/underflow */
-	if (p>0) {
+		/* check for multiplication overflow */
 		if (prob<oldprob) {
 			D("overflow");
 			prob= PIE_MAX_PROB;
 		}
 	}
-	else
-		if (prob>oldprob) {
-			prob= 0;
-			D("underflow");
+
+	/*
+	 * decay the drop probability exponentially
+	 * and restrict it to range 0 to PIE_MAX_PROB
+	 */
+	if (prob < 0) {
+		prob = 0;
+	} else {
+		if (pst->current_qdelay == 0 && pst->qdelay_old == 0) {
+			/* 0.98 ~= 1- 1/64 */
+			prob = prob - (prob >> 6); 
 		}
 
-	/* make drop probability between 0 and PIE_MAX_PROB*/
-	if (prob < 0)
-		prob = 0;
-	else if (prob > PIE_MAX_PROB)
-		prob = PIE_MAX_PROB;
+		if (prob > PIE_MAX_PROB) {
+			prob = PIE_MAX_PROB;
+		}
+	}
 
 	pst->drop_prob = prob;
-	
+
 	/* store current queue delay value in old queue delay*/
 	pst->qdelay_old = pst->current_qdelay;
 
@@ -506,7 +528,6 @@ aqm_pie_enqueue(struct dn_queue *q, struct mbuf* m)
 	if ((pst->sflags & PIE_ACTIVE) && pst->drop_prob == 0 &&
 		pst->current_qdelay < (pprms->qdelay_ref >> 1) &&
 		pst->qdelay_old < (pprms->qdelay_ref >> 1)) {
-
 			pst->burst_allowance = pprms->max_burst;
 			if ((pprms->flags & PIE_ON_OFF_MODE_ENABLED) && qlen<=0)
 				deactivate_pie(pst);
@@ -553,9 +574,9 @@ aqm_pie_init(struct dn_queue *q)
 	struct pie_status *pst;
 	struct dn_aqm_pie_parms *pprms;
 	int err = 0;
-	
+
 	pprms = q->fs->aqmcfg;
-	
+
 	do { /* exit with break when error occurs*/
 		if (!pprms){
 			DX(2, "AQM_PIE is not configured");
@@ -592,7 +613,7 @@ aqm_pie_init(struct dn_queue *q)
 		//DX(2, "aqm_PIE_init");
 
 	} while(0);
-	
+
 	return err;
 }
 
@@ -675,7 +696,7 @@ aqm_pie_config(struct dn_fsk* fs, struct dn_extra_parms *ep, int len)
 		free(fs->aqmcfg, M_DUMMYNET);
 		fs->aqmcfg = NULL;
 	}
-	
+
 	fs->aqmcfg = malloc(sizeof(struct dn_aqm_pie_parms),
 			 M_DUMMYNET, M_NOWAIT | M_ZERO);
 	if (fs->aqmcfg== NULL) {
@@ -690,7 +711,7 @@ aqm_pie_config(struct dn_fsk* fs, struct dn_extra_parms *ep, int len)
 
 	/* configure PIE parameters */
 	pcfg = fs->aqmcfg;
-	
+
 	if (ep->par[0] < 0)
 		pcfg->qdelay_ref = pie_sysctl.qdelay_ref * AQM_TIME_1US;
 	else
@@ -755,7 +776,7 @@ aqm_pie_getconfig (struct dn_fsk *fs, struct dn_extra_parms * ep)
 {
 	struct dn_aqm_pie_parms *pcfg;
 	if (fs->aqmcfg) {
-		strcpy(ep->name, pie_desc.name);
+		strlcpy(ep->name, pie_desc.name, sizeof(ep->name));
 		pcfg = fs->aqmcfg;
 		ep->par[0] = pcfg->qdelay_ref / AQM_TIME_1US;
 		ep->par[1] = pcfg->tupdate / AQM_TIME_1US;

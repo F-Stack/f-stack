@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009 Alan L. Cox <alc@cs.rice.edu>
  * All rights reserved.
  *
@@ -29,7 +31,6 @@
 #ifndef _MACHINE_VM_H_
 #define	_MACHINE_VM_H_
 
-#if __ARM_ARCH >= 6
 #define VM_MEMATTR_WB_WA		((vm_memattr_t)0)
 #define VM_MEMATTR_NOCACHE		((vm_memattr_t)1)
 #define VM_MEMATTR_DEVICE		((vm_memattr_t)2)
@@ -42,11 +43,6 @@
 /* Don't export aliased VM_MEMATTR to userland */
 #define VM_MEMATTR_WRITE_COMBINING 	VM_MEMATTR_WRITE_THROUGH /* for DRM */
 #define VM_MEMATTR_WRITE_BACK		VM_MEMATTR_WB_WA	/* for DRM */
-#endif
-#else
-/* Memory attribute configuration. */
-#define	VM_MEMATTR_DEFAULT	0
-#define	VM_MEMATTR_UNCACHEABLE	1
 #endif
 
 #endif /* !_MACHINE_VM_H_ */

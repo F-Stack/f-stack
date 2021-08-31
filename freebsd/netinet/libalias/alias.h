@@ -1,6 +1,8 @@
 /* lint -save -library Flexelint comment for external headers */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Charles Mott <cm@linktel.net>
  * All rights reserved.
  *
@@ -91,10 +93,10 @@ unsigned int
 void		LibAliasUninit(struct libalias *);
 
 /* Packet Handling functions. */
-int		LibAliasIn (struct libalias *, char *_ptr, int _maxpacketsize);
-int		LibAliasOut(struct libalias *, char *_ptr, int _maxpacketsize);
-int		LibAliasOutTry(struct libalias *, char *_ptr, int _maxpacketsize, int _create);
-int		LibAliasUnaliasOut(struct libalias *, char *_ptr, int _maxpacketsize);
+int		LibAliasIn (struct libalias *, void *_ptr, int _maxpacketsize);
+int		LibAliasOut(struct libalias *, void *_ptr, int _maxpacketsize);
+int		LibAliasOutTry(struct libalias *, void *_ptr, int _maxpacketsize, int _create);
+int		LibAliasUnaliasOut(struct libalias *, void *_ptr, int _maxpacketsize);
 
 /* Port and address redirection functions. */
 
@@ -117,9 +119,9 @@ LibAliasRedirectProto(struct libalias *, struct in_addr _src_addr,
     unsigned char _proto);
 
 /* Fragment Handling functions. */
-void		LibAliasFragmentIn(struct libalias *, char *_ptr, char *_ptr_fragment);
-char           *LibAliasGetFragment(struct libalias *, char *_ptr);
-int		LibAliasSaveFragment(struct libalias *, char *_ptr);
+void		LibAliasFragmentIn(struct libalias *, void *_ptr, void *_ptr_fragment);
+void           *LibAliasGetFragment(struct libalias *, void *_ptr);
+int		LibAliasSaveFragment(struct libalias *, void *_ptr);
 
 /* Miscellaneous functions. */
 int		LibAliasCheckNewLink(struct libalias *);
@@ -141,7 +143,6 @@ struct mbuf    *m_megapullup(struct mbuf *, int);
 /*
  * Mode flags and other constants.
  */
-
 
 /* Mode flags, set using PacketAliasSetMode() */
 
@@ -225,6 +226,14 @@ struct mbuf    *m_megapullup(struct mbuf *, int);
  * states in 'ipfw nat global' rule.
  */
 #define	PKT_ALIAS_SKIP_GLOBAL		0x200
+
+/*
+ * Like PKT_ALIAS_UNREGISTERED_ONLY, but includes the RFC 6598
+ * (Carrier Grade NAT) address range as follows:
+ *
+ *		100.64.0.0   ->   100.127.255.255
+ */
+#define	PKT_ALIAS_UNREGISTERED_CGN	0x400
 
 /* Function return codes. */
 #define	PKT_ALIAS_ERROR			-1

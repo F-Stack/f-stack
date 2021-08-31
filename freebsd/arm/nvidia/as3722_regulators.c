@@ -42,7 +42,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/extres/regulator/regulator.h>
 #include <dev/gpio/gpiobusvar.h>
 
-#include <gnu/dts/include/dt-bindings/mfd/as3722.h>
+#include <dt-bindings/mfd/as3722.h>
 
 #include "as3722.h"
 
@@ -70,14 +70,6 @@ enum as3722_reg_id {
 	AS3722_REG_ID_LDO10,
 	AS3722_REG_ID_LDO11,
 };
-
-struct regulator_range {
-	u_int	min_uvolt;
-	u_int	step_uvolt;
-	u_int	min_sel;
-	u_int	max_sel;
-};
-
 
 /* Regulator HW definition. */
 struct reg_def {
@@ -107,40 +99,32 @@ struct as3722_reg_sc {
 	int			enable_usec;
 };
 
-#define	RANGE_INIT(_min_sel, _max_sel, _min_uvolt, _step_uvolt)		\
-{									\
-	.min_sel	= _min_sel,					\
-	.max_sel	= _max_sel,					\
-	.min_uvolt	= _min_uvolt,					\
-	.step_uvolt	= _step_uvolt,					\
-}
-
 static struct regulator_range as3722_sd016_ranges[] = {
-	RANGE_INIT(0x00, 0x00,       0,     0),
-	RANGE_INIT(0x01, 0x5A,  610000, 10000),
+	REG_RANGE_INIT(0x00, 0x00,       0,     0),
+	REG_RANGE_INIT(0x01, 0x5A,  610000, 10000),
 };
 
 static struct regulator_range as3722_sd0_lv_ranges[] = {
-	RANGE_INIT(0x00, 0x00,       0,     0),
-	RANGE_INIT(0x01, 0x6E,  410000, 10000),
+	REG_RANGE_INIT(0x00, 0x00,       0,     0),
+	REG_RANGE_INIT(0x01, 0x6E,  410000, 10000),
 };
 
 static struct regulator_range as3722_sd_ranges[] = {
-	RANGE_INIT(0x00, 0x00,       0,     0),
-	RANGE_INIT(0x01, 0x40,  612500, 12500),
-	RANGE_INIT(0x41, 0x70, 1425000, 25000),
-	RANGE_INIT(0x71, 0x7F, 2650000, 50000),
+	REG_RANGE_INIT(0x00, 0x00,       0,     0),
+	REG_RANGE_INIT(0x01, 0x40,  612500, 12500),
+	REG_RANGE_INIT(0x41, 0x70, 1425000, 25000),
+	REG_RANGE_INIT(0x71, 0x7F, 2650000, 50000),
 };
 
 static struct regulator_range as3722_ldo3_ranges[] = {
-	RANGE_INIT(0x00, 0x00,       0,     0),
-	RANGE_INIT(0x01, 0x2D,  620000, 20000),
+	REG_RANGE_INIT(0x00, 0x00,       0,     0),
+	REG_RANGE_INIT(0x01, 0x2D,  620000, 20000),
 };
 
 static struct regulator_range as3722_ldo_ranges[] = {
-	RANGE_INIT(0x00, 0x00,       0,     0),
-	RANGE_INIT(0x01, 0x24,  825000, 25000),
-	RANGE_INIT(0x40, 0x7F, 1725000, 25000),
+	REG_RANGE_INIT(0x00, 0x00,       0,     0),
+	REG_RANGE_INIT(0x01, 0x24,  825000, 25000),
+	REG_RANGE_INIT(0x40, 0x7F, 1725000, 25000),
 };
 
 static struct reg_def as3722s_def[] = {
@@ -377,7 +361,6 @@ static struct reg_def as3722s_def[] = {
 	},
 };
 
-
 struct as3722_regnode_init_def {
 	struct regnode_init_def	reg_init_def;
 	int 			ext_control;
@@ -400,87 +383,6 @@ static regnode_method_t as3722_regnode_methods[] = {
 };
 DEFINE_CLASS_1(as3722_regnode, as3722_regnode_class, as3722_regnode_methods,
    sizeof(struct as3722_reg_sc), regnode_class);
-
-static int
-regulator_range_sel_to_volt(struct as3722_reg_sc *sc, uint8_t sel, int *volt)
-{
-	struct regulator_range *range;
-	struct reg_def *def;
-	int i;
-
-	def = sc->def;
-	if (def->nranges == 0)
-		panic("Voltage regulator have zero ranges\n");
-
-	for (i = 0; i < def->nranges ; i++) {
-		range = def->ranges  + i;
-
-		if (!(sel >= range->min_sel &&
-		      sel <= range->max_sel))
-			continue;
-
-		sel -= range->min_sel;
-
-		*volt = range->min_uvolt + sel * range->step_uvolt;
-		return (0);
-	}
-
-	return (ERANGE);
-}
-
-static int
-regulator_range_volt_to_sel(struct as3722_reg_sc *sc, int min_uvolt,
-    int max_uvolt, uint8_t *out_sel)
-{
-	struct regulator_range *range;
-	struct reg_def *def;
-	uint8_t sel;
-	int uvolt;
-	int rv, i;
-
-	def = sc->def;
-	if (def->nranges == 0)
-		panic("Voltage regulator have zero ranges\n");
-
-	for (i = 0; i < def->nranges; i++) {
-		range = def->ranges  + i;
-		uvolt = range->min_uvolt +
-			(range->max_sel - range->min_sel) * range->step_uvolt;
-
-		if ((min_uvolt > uvolt) ||
-		    (max_uvolt < range->min_uvolt))
-			continue;
-
-		if (min_uvolt <= range->min_uvolt)
-			min_uvolt = range->min_uvolt;
-
-		/* If step is zero then range is fixed voltage range. */
-		if (range->step_uvolt == 0)
-			sel = 0;
-		else
-			sel = DIV_ROUND_UP(min_uvolt - range->min_uvolt,
-			   range->step_uvolt);
-
-
-		sel += range->min_sel;
-
-		break;
-	}
-
-	if (i >= def->nranges)
-		return (ERANGE);
-
-	/* Verify new settings. */
-	rv = regulator_range_sel_to_volt(sc, sel, &uvolt);
-	if (rv != 0)
-		return (rv);
-	if ((uvolt < min_uvolt) || (uvolt > max_uvolt))
-		return (ERANGE);
-
-	*out_sel = sel;
-	return (0);
-}
-
 
 static int
 as3722_read_sel(struct as3722_reg_sc *sc, uint8_t *sel)
@@ -583,7 +485,6 @@ as3722_regnode_init(struct regnode *regnode)
 	}
 
 	if (sc->ext_control) {
-
 		rv = as3722_reg_enable(sc);
 		if (rv < 0) {
 			device_printf(sc->base_sc->dev,
@@ -625,7 +526,6 @@ struct as3722_regnode_init_def *init_def)
 	if (OF_hasprop(node, "ams,enable-tracking"))
 		init_def->enable_tracking = 1;
 
-
 	/* Get parent supply. */
 	if (def->supply_name == NULL)
 		 return;
@@ -638,7 +538,7 @@ struct as3722_regnode_init_def *init_def)
 	if (rv <= 0)
 		return;
 	supply_node = OF_node_from_xref(supply_node);
-	rv = OF_getprop_alloc(supply_node, "regulator-name", 1,
+	rv = OF_getprop_alloc(supply_node, "regulator-name",
 	    (void **)&init_def->reg_init_def.parent_name);
 	if (rv <= 0)
 		init_def->reg_init_def.parent_name = NULL;
@@ -715,7 +615,6 @@ as3722_regulator_attach(struct as3722_softc *sc, phandle_t node)
 	sc->regs = malloc(sizeof(struct as3722_reg_sc *) * sc->nregs,
 	    M_AS3722_REG, M_WAITOK | M_ZERO);
 
-
 	/* Attach all known regulators if exist in DT. */
 	for (i = 0; i < sc->nregs; i++) {
 		child = ofw_bus_find_child(rnode, as3722s_def[i].name);
@@ -783,7 +682,8 @@ as3722_regnode_set_volt(struct regnode *regnode, int min_uvolt, int max_uvolt,
 	sc = regnode_get_softc(regnode);
 
 	*udelay = 0;
-	rv = regulator_range_volt_to_sel(sc, min_uvolt, max_uvolt, &sel);
+	rv = regulator_range_volt_to_sel8(sc->def->ranges, sc->def->nranges,
+	    min_uvolt, max_uvolt, &sel);
 	if (rv != 0)
 		return (rv);
 	rv = as3722_write_sel(sc, sel);
@@ -806,6 +706,7 @@ as3722_regnode_get_volt(struct regnode *regnode, int *uvolt)
 	/* LDO6 have bypass. */
 	if (sc->def->id == AS3722_REG_ID_LDO6 && sel == AS3722_LDO6_SEL_BYPASS)
 		return (ENOENT);
-	rv = regulator_range_sel_to_volt(sc, sel, uvolt);
+	rv = regulator_range_sel8_to_volt(sc->def->ranges, sc->def->nranges,
+	    sel, uvolt);
 	return (rv);
 }

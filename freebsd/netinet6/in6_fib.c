@@ -10,7 +10,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -33,12 +33,11 @@ __FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_route.h"
-#include "opt_mpath.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/lock.h>
-#include <sys/rwlock.h>
+#include <sys/rmlock.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/socket.h>
@@ -49,12 +48,12 @@ __FBSDID("$FreeBSD$");
 #include <net/if_var.h>
 #include <net/if_dl.h>
 #include <net/route.h>
-#include <net/route_var.h>
+#include <net/route/route_ctl.h>
+#include <net/route/route_var.h>
+#include <net/route/fib_algo.h>
+#include <net/route/nhop.h>
+#include <net/toeplitz.h>
 #include <net/vnet.h>
-
-#ifdef RADIX_MPATH
-#include <net/radix_mpath.h>
-#endif
 
 #include <netinet/in.h>
 #include <netinet/in_var.h>
@@ -68,209 +67,283 @@ __FBSDID("$FreeBSD$");
 #include <net/if_types.h>
 
 #ifdef INET6
-static void fib6_rte_to_nh_extended(struct rtentry *rte,
-    const struct in6_addr *dst, uint32_t flags, struct nhop6_extended *pnh6);
-static void fib6_rte_to_nh_basic(struct rtentry *rte, const struct in6_addr *dst,
-    uint32_t flags, struct nhop6_basic *pnh6);
-static struct ifnet *fib6_get_ifaifp(struct rtentry *rte);
-#define RNTORT(p)	((struct rtentry *)(p))
+
+CHK_STRUCT_ROUTE_COMPAT(struct route_in6, ro_dst);
+
+#ifdef FIB_ALGO
+VNET_DEFINE(struct fib_dp *, inet6_dp);
+#endif
+
+#ifdef ROUTE_MPATH
+struct _hash_5tuple_ipv6 {
+	struct in6_addr src;
+	struct in6_addr dst;
+	unsigned short src_port;
+	unsigned short dst_port;
+	char proto;
+	char spare[3];
+};
+_Static_assert(sizeof(struct _hash_5tuple_ipv6) == 40,
+    "_hash_5tuple_ipv6 size is wrong");
+
+uint32_t
+fib6_calc_software_hash(const struct in6_addr *src, const struct in6_addr *dst,
+    unsigned short src_port, unsigned short dst_port, char proto,
+    uint32_t *phashtype)
+{
+	struct _hash_5tuple_ipv6 data;
+
+	data.src = *src;
+	data.dst = *dst;
+	data.src_port = src_port;
+	data.dst_port = dst_port;
+	data.proto = proto;
+	data.spare[0] = data.spare[1] = data.spare[2] = 0;
+
+	*phashtype = M_HASHTYPE_OPAQUE_HASH;
+
+	return (toeplitz_hash(MPATH_ENTROPY_KEY_LEN, mpath_entropy_key,
+	  sizeof(data), (uint8_t *)&data));
+}
+#endif
 
 /*
- * Gets real interface for the @rte.
- * Returns rt_ifp for !IFF_LOOPBACK routers.
- * Extracts "real" address interface from interface address
- * loopback routes.
+ * Looks up path in fib @fibnum specified by @dst.
+ * Assumes scope is deembedded and provided in @scopeid.
+ *
+ * Returns path nexthop on success. Nexthop is safe to use
+ *  within the current network epoch. If longer lifetime is required,
+ *  one needs to pass NHR_REF as a flag. This will return referenced
+ *  nexthop.
  */
-static struct ifnet *
-fib6_get_ifaifp(struct rtentry *rte)
+#ifdef FIB_ALGO
+struct nhop_object *
+fib6_lookup(uint32_t fibnum, const struct in6_addr *dst6,
+    uint32_t scopeid, uint32_t flags, uint32_t flowid)
 {
-	struct ifnet *ifp;
-	struct sockaddr_dl *sdl;
+	struct nhop_object *nh;
+	struct fib_dp *dp = &V_inet6_dp[fibnum];
+	struct flm_lookup_key key = {.addr6 = dst6 };
 
-	ifp = rte->rt_ifp;
-	if ((ifp->if_flags & IFF_LOOPBACK) &&
-	    rte->rt_gateway->sa_family == AF_LINK) {
-		sdl = (struct sockaddr_dl *)rte->rt_gateway;
-		return (ifnet_byindex(sdl->sdl_index));
+	nh = dp->f(dp->arg, key, scopeid);
+	if (nh != NULL) {
+		nh = nhop_select(nh, flowid);
+		/* Ensure route & ifp is UP */
+		if (RT_LINK_IS_UP(nh->nh_ifp)) {
+			if (flags & NHR_REF)
+				nhop_ref_object(nh);
+			return (nh);
+		}
 	}
-
-	return (ifp);
+	RTSTAT_INC(rts_unreach);
+	return (NULL);
 }
-
-static void
-fib6_rte_to_nh_basic(struct rtentry *rte, const struct in6_addr *dst,
-    uint32_t flags, struct nhop6_basic *pnh6)
+#else
+struct nhop_object *
+fib6_lookup(uint32_t fibnum, const struct in6_addr *dst6,
+    uint32_t scopeid, uint32_t flags, uint32_t flowid)
 {
-	struct sockaddr_in6 *gw;
-
-	/* Do explicit nexthop zero unless we're copying it */
-	memset(pnh6, 0, sizeof(*pnh6));
-
-	if ((flags & NHR_IFAIF) != 0)
-		pnh6->nh_ifp = fib6_get_ifaifp(rte);
-	else
-		pnh6->nh_ifp = rte->rt_ifp;
-
-	pnh6->nh_mtu = min(rte->rt_mtu, IN6_LINKMTU(rte->rt_ifp));
-	if (rte->rt_flags & RTF_GATEWAY) {
-		gw = (struct sockaddr_in6 *)rte->rt_gateway;
-		pnh6->nh_addr = gw->sin6_addr;
-		in6_clearscope(&pnh6->nh_addr);
-	} else
-		pnh6->nh_addr = *dst;
-	/* Set flags */
-	pnh6->nh_flags = fib_rte_to_nh_flags(rte->rt_flags);
-	gw = (struct sockaddr_in6 *)rt_key(rte);
-	if (IN6_IS_ADDR_UNSPECIFIED(&gw->sin6_addr))
-		pnh6->nh_flags |= NHF_DEFAULT;
-}
-
-static void
-fib6_rte_to_nh_extended(struct rtentry *rte, const struct in6_addr *dst,
-    uint32_t flags, struct nhop6_extended *pnh6)
-{
-	struct sockaddr_in6 *gw;
-
-	/* Do explicit nexthop zero unless we're copying it */
-	memset(pnh6, 0, sizeof(*pnh6));
-
-	if ((flags & NHR_IFAIF) != 0)
-		pnh6->nh_ifp = fib6_get_ifaifp(rte);
-	else
-		pnh6->nh_ifp = rte->rt_ifp;
-
-	pnh6->nh_mtu = min(rte->rt_mtu, IN6_LINKMTU(rte->rt_ifp));
-	if (rte->rt_flags & RTF_GATEWAY) {
-		gw = (struct sockaddr_in6 *)rte->rt_gateway;
-		pnh6->nh_addr = gw->sin6_addr;
-		in6_clearscope(&pnh6->nh_addr);
-	} else
-		pnh6->nh_addr = *dst;
-	/* Set flags */
-	pnh6->nh_flags = fib_rte_to_nh_flags(rte->rt_flags);
-	gw = (struct sockaddr_in6 *)rt_key(rte);
-	if (IN6_IS_ADDR_UNSPECIFIED(&gw->sin6_addr))
-		pnh6->nh_flags |= NHF_DEFAULT;
-}
-
-/*
- * Performs IPv6 route table lookup on @dst. Returns 0 on success.
- * Stores basic nexthop info into provided @pnh6 structure.
- * Note that
- * - nh_ifp represents logical transmit interface (rt_ifp) by default
- * - nh_ifp represents "address" interface if NHR_IFAIF flag is passed
- * - mtu from logical transmit interface will be returned.
- * - nh_ifp cannot be safely dereferenced
- * - nh_ifp represents rt_ifp (e.g. if looking up address on
- *   interface "ix0" pointer to "ix0" interface will be returned instead
- *   of "lo0")
- * - howewer mtu from "transmit" interface will be returned.
- * - scope will be embedded in nh_addr
- */
-int
-fib6_lookup_nh_basic(uint32_t fibnum, const struct in6_addr *dst, uint32_t scopeid,
-    uint32_t flags, uint32_t flowid, struct nhop6_basic *pnh6)
-{
+	RIB_RLOCK_TRACKER;
 	struct rib_head *rh;
 	struct radix_node *rn;
-	struct sockaddr_in6 sin6;
-	struct rtentry *rte;
+	struct nhop_object *nh;
 
-	KASSERT((fibnum < rt_numfibs), ("fib6_lookup_nh_basic: bad fibnum"));
+	KASSERT((fibnum < rt_numfibs), ("fib6_lookup: bad fibnum"));
 	rh = rt_tables_get_rnh(fibnum, AF_INET6);
 	if (rh == NULL)
-		return (ENOENT);
+		return (NULL);
 
-	/* Prepare lookup key */
-	memset(&sin6, 0, sizeof(sin6));
-	sin6.sin6_addr = *dst;
-	sin6.sin6_len = sizeof(struct sockaddr_in6);
+	struct sockaddr_in6 sin6 = {
+		.sin6_len = sizeof(struct sockaddr_in6),
+		.sin6_addr = *dst6,
+	};
+
 	/* Assume scopeid is valid and embed it directly */
-	if (IN6_IS_SCOPE_LINKLOCAL(dst))
+	if (IN6_IS_SCOPE_LINKLOCAL(dst6))
 		sin6.sin6_addr.s6_addr16[1] = htons(scopeid & 0xffff);
 
 	RIB_RLOCK(rh);
 	rn = rh->rnh_matchaddr((void *)&sin6, &rh->head);
 	if (rn != NULL && ((rn->rn_flags & RNF_ROOT) == 0)) {
-		rte = RNTORT(rn);
+		nh = nhop_select((RNTORT(rn))->rt_nhop, flowid);
 		/* Ensure route & ifp is UP */
-		if (RT_LINK_IS_UP(rte->rt_ifp)) {
-			fib6_rte_to_nh_basic(rte, &sin6.sin6_addr, flags, pnh6);
+		if (RT_LINK_IS_UP(nh->nh_ifp)) {
+			if (flags & NHR_REF)
+				nhop_ref_object(nh);
 			RIB_RUNLOCK(rh);
-			return (0);
+			return (nh);
 		}
 	}
 	RIB_RUNLOCK(rh);
 
-	return (ENOENT);
+	RTSTAT_INC(rts_unreach);
+	return (NULL);
+}
+#endif
+
+inline static int
+check_urpf_nhop(const struct nhop_object *nh, uint32_t flags,
+    const struct ifnet *src_if)
+{
+
+	if (src_if != NULL && nh->nh_aifp == src_if) {
+		return (1);
+	}
+	if (src_if == NULL) {
+		if ((flags & NHR_NODEFAULT) == 0)
+			return (1);
+		else if ((nh->nh_flags & NHF_DEFAULT) == 0)
+			return (1);
+	}
+
+	return (0);
+}
+
+static int
+check_urpf(struct nhop_object *nh, uint32_t flags,
+    const struct ifnet *src_if)
+{
+#ifdef ROUTE_MPATH
+	if (NH_IS_NHGRP(nh)) {
+		struct weightened_nhop *wn;
+		uint32_t num_nhops;
+		wn = nhgrp_get_nhops((struct nhgrp_object *)nh, &num_nhops);
+		for (int i = 0; i < num_nhops; i++) {
+			if (check_urpf_nhop(wn[i].nh, flags, src_if) != 0)
+				return (1);
+		}
+		return (0);
+	} else
+#endif
+		return (check_urpf_nhop(nh, flags, src_if));
+}
+
+#ifndef FIB_ALGO
+static struct nhop_object *
+lookup_nhop(uint32_t fibnum, const struct in6_addr *dst6,
+    uint32_t scopeid)
+{
+	RIB_RLOCK_TRACKER;
+	struct rib_head *rh;
+	struct radix_node *rn;
+	struct nhop_object *nh;
+
+	KASSERT((fibnum < rt_numfibs), ("fib6_check_urpf: bad fibnum"));
+	rh = rt_tables_get_rnh(fibnum, AF_INET6);
+	if (rh == NULL)
+		return (NULL);
+
+	/* Prepare lookup key */
+	struct sockaddr_in6 sin6 = {
+		.sin6_len = sizeof(struct sockaddr_in6),
+		.sin6_addr = *dst6,
+	};
+
+	/* Assume scopeid is valid and embed it directly */
+	if (IN6_IS_SCOPE_LINKLOCAL(dst6))
+		sin6.sin6_addr.s6_addr16[1] = htons(scopeid & 0xffff);
+
+	nh = NULL;
+	RIB_RLOCK(rh);
+	rn = rh->rnh_matchaddr((void *)&sin6, &rh->head);
+	if (rn != NULL && ((rn->rn_flags & RNF_ROOT) == 0))
+		nh = RNTORT(rn)->rt_nhop;
+	RIB_RUNLOCK(rh);
+
+	return (nh);
+}
+#endif
+
+/*
+ * Performs reverse path forwarding lookup.
+ * If @src_if is non-zero, verifies that at least 1 path goes via
+ *   this interface.
+ * If @src_if is zero, verifies that route exist.
+ * if @flags contains NHR_NOTDEFAULT, do not consider default route.
+ *
+ * Returns 1 if route matching conditions is found, 0 otherwise.
+ */
+int
+fib6_check_urpf(uint32_t fibnum, const struct in6_addr *dst6,
+    uint32_t scopeid, uint32_t flags, const struct ifnet *src_if)
+{
+	struct nhop_object *nh;
+#ifdef FIB_ALGO
+	struct fib_dp *dp = &V_inet6_dp[fibnum];
+	struct flm_lookup_key key = {.addr6 = dst6 };
+
+	nh = dp->f(dp->arg, key, scopeid);
+#else
+	nh = lookup_nhop(fibnum, dst6, scopeid);
+#endif
+	if (nh != NULL)
+		return (check_urpf(nh, flags, src_if));
+	return (0);
 }
 
 /*
- * Performs IPv6 route table lookup on @dst. Returns 0 on success.
- * Stores extended nexthop info into provided @pnh6 structure.
- * Note that
- * - nh_ifp cannot be safely dereferenced unless NHR_REF is specified.
- * - in that case you need to call fib6_free_nh_ext()
- * - nh_ifp represents logical transmit interface (rt_ifp) by default
- * - nh_ifp represents "address" interface if NHR_IFAIF flag is passed
- * - mtu from logical transmit interface will be returned.
- * - scope will be embedded in nh_addr
+ * Function returning prefix match data along with the nexthop data.
+ * Intended to be used by the control plane code.
+ * Supported flags:
+ *  NHR_UNLOCKED: do not lock radix during lookup.
+ * Returns pointer to rtentry and raw nexthop in @rnd. Both rtentry
+ *  and nexthop are safe to use within current epoch. Note:
+ * Note: rnd_nhop can actually be the nexthop group.
  */
-int
-fib6_lookup_nh_ext(uint32_t fibnum, const struct in6_addr *dst,uint32_t scopeid,
-    uint32_t flags, uint32_t flowid, struct nhop6_extended *pnh6)
+struct rtentry *
+fib6_lookup_rt(uint32_t fibnum, const struct in6_addr *dst6,
+    uint32_t scopeid, uint32_t flags, struct route_nhop_data *rnd)
 {
+	RIB_RLOCK_TRACKER;
 	struct rib_head *rh;
 	struct radix_node *rn;
-	struct sockaddr_in6 sin6;
-	struct rtentry *rte;
+	struct rtentry *rt;
 
-	KASSERT((fibnum < rt_numfibs), ("fib6_lookup_nh_ext: bad fibnum"));
+	KASSERT((fibnum < rt_numfibs), ("fib6_lookup: bad fibnum"));
 	rh = rt_tables_get_rnh(fibnum, AF_INET6);
 	if (rh == NULL)
-		return (ENOENT);
+		return (NULL);
 
-	/* Prepare lookup key */
-	memset(&sin6, 0, sizeof(sin6));
-	sin6.sin6_len = sizeof(struct sockaddr_in6);
-	sin6.sin6_addr = *dst;
+	struct sockaddr_in6 sin6 = {
+		.sin6_len = sizeof(struct sockaddr_in6),
+		.sin6_addr = *dst6,
+	};
+
 	/* Assume scopeid is valid and embed it directly */
-	if (IN6_IS_SCOPE_LINKLOCAL(dst))
+	if (IN6_IS_SCOPE_LINKLOCAL(dst6))
 		sin6.sin6_addr.s6_addr16[1] = htons(scopeid & 0xffff);
 
-	RIB_RLOCK(rh);
+	rt = NULL;
+	if (!(flags & NHR_UNLOCKED))
+		RIB_RLOCK(rh);
 	rn = rh->rnh_matchaddr((void *)&sin6, &rh->head);
 	if (rn != NULL && ((rn->rn_flags & RNF_ROOT) == 0)) {
-		rte = RNTORT(rn);
-#ifdef RADIX_MPATH
-		rte = rt_mpath_select(rte, flowid);
-		if (rte == NULL) {
-			RIB_RUNLOCK(rh);
-			return (ENOENT);
-		}
-#endif
-		/* Ensure route & ifp is UP */
-		if (RT_LINK_IS_UP(rte->rt_ifp)) {
-			fib6_rte_to_nh_extended(rte, &sin6.sin6_addr, flags,
-			    pnh6);
-			if ((flags & NHR_REF) != 0) {
-				/* TODO: Do lwref on egress ifp's */
-			}
-			RIB_RUNLOCK(rh);
-
-			return (0);
-		}
+		rt = (struct rtentry *)rn;
+		rnd->rnd_nhop = rt->rt_nhop;
+		rnd->rnd_weight = rt->rt_weight;
 	}
-	RIB_RUNLOCK(rh);
+	if (!(flags & NHR_UNLOCKED))
+		RIB_RUNLOCK(rh);
 
-	return (ENOENT);
+	return (rt);
 }
 
-void
-fib6_free_nh_ext(uint32_t fibnum, struct nhop6_extended *pnh6)
+struct nhop_object *
+fib6_lookup_debugnet(uint32_t fibnum, const struct in6_addr *dst6,
+    uint32_t scopeid, uint32_t flags)
 {
+	struct rtentry *rt;
+	struct route_nhop_data rnd;
 
+	rt = fib6_lookup_rt(fibnum, dst6, scopeid, NHR_UNLOCKED, &rnd);
+	if (rt != NULL) {
+		struct nhop_object *nh = nhop_select(rnd.rnd_nhop, 0);
+		/* Ensure route & ifp is UP */
+		if (RT_LINK_IS_UP(nh->nh_ifp))
+			return (nh);
+	}
+
+	return (NULL);
 }
 
 #endif
-

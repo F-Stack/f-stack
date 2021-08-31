@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2003-2011 Netlogic Microsystems (Netlogic). All rights
  * reserved.
  *
@@ -105,7 +107,6 @@ nlm_write_c0_config7(uint32_t value)
  * 4(G)      128         128+2048     128          128+2048
  * (G) = Global mode
  */
-
 
 /* en = 1 to enable
  * en = 0 to disable

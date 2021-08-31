@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -66,7 +68,8 @@ __FBSDID("$FreeBSD$");
 #define	EPT_ENABLE_AD_BITS	(1 << 6)
 
 SYSCTL_DECL(_hw_vmm);
-SYSCTL_NODE(_hw_vmm, OID_AUTO, ept, CTLFLAG_RW, NULL, NULL);
+SYSCTL_NODE(_hw_vmm, OID_AUTO, ept, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+    NULL);
 
 static int ept_enable_ad_bits;
 

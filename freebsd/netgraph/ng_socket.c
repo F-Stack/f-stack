@@ -58,6 +58,8 @@
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/mutex.h>
+#include <sys/proc.h>
+#include <sys/epoch.h>
 #include <sys/priv.h>
 #include <sys/protosw.h>
 #include <sys/queue.h>
@@ -408,10 +410,12 @@ static int
 ngd_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 	 struct mbuf *control, struct thread *td)
 {
+	struct epoch_tracker et;
 	struct ngpcb *const pcbp = sotongpcb(so);
 	struct sockaddr_ng *const sap = (struct sockaddr_ng *) addr;
 	int	len, error;
 	hook_p  hook = NULL;
+	item_p	item;
 	char	hookname[NG_HOOKSIZ];
 
 	if ((pcbp == NULL) || (control != NULL)) {
@@ -464,7 +468,11 @@ ngd_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 	}
 
 	/* Send data. */
-	NG_SEND_DATA_FLAGS(error, hook, m, NG_WAITOK);
+	item = ng_package_data(m, NG_WAITOK);
+	m = NULL;
+	NET_EPOCH_ENTER(et);
+	NG_FWD_ITEM_HOOK(error, item, hook);
+	NET_EPOCH_EXIT(et);
 
 release:
 	if (control != NULL)
@@ -984,8 +992,10 @@ ngs_rcvmsg(node_p node, item_p item, hook_p lasthook)
 		m_freem(m);
 		return (ENOBUFS);
 	}
+
+	/* sorwakeup_locked () releases the lock internally. */
 	sorwakeup_locked(so);
-	
+
 	return (error);
 }
 
@@ -1022,12 +1032,17 @@ ngs_rcvdata(hook_p hook, item_p item)
 	addr->sg_data[addrlen] = '\0';
 
 	/* Try to tell the socket which hook it came in on. */
-	if (sbappendaddr(&so->so_rcv, (struct sockaddr *)addr, m, NULL) == 0) {
+	SOCKBUF_LOCK(&so->so_rcv);
+	if (sbappendaddr_locked(&so->so_rcv, (struct sockaddr *)addr, m,
+	    NULL) == 0) {
+		SOCKBUF_UNLOCK(&so->so_rcv);
 		m_freem(m);
 		TRAP_ERROR;
 		return (ENOBUFS);
 	}
-	sorwakeup(so);
+
+	/* sorwakeup_locked () releases the lock internally. */
+	sorwakeup_locked(so);
 	return (0);
 }
 
@@ -1205,8 +1220,9 @@ ngs_mod_event(module_t mod, int event, void *data)
 VNET_DOMAIN_SET(ng);
 
 SYSCTL_INT(_net_graph, OID_AUTO, family, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, AF_NETGRAPH, "");
-static SYSCTL_NODE(_net_graph, OID_AUTO, data, CTLFLAG_RW, 0, "DATA");
+static SYSCTL_NODE(_net_graph, OID_AUTO, data, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "DATA");
 SYSCTL_INT(_net_graph_data, OID_AUTO, proto, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, NG_DATA, "");
-static SYSCTL_NODE(_net_graph, OID_AUTO, control, CTLFLAG_RW, 0, "CONTROL");
+static SYSCTL_NODE(_net_graph, OID_AUTO, control, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "CONTROL");
 SYSCTL_INT(_net_graph_control, OID_AUTO, proto, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, NG_CONTROL, "");
-

@@ -1,6 +1,8 @@
 /* $FreeBSD$ */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 Hans Petter Selasky. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -56,7 +58,6 @@ struct octusb_td {
 };
 
 struct octusb_qh {
-
 	uint64_t fixup_phys;
 
 	struct octusb_softc *sc;
@@ -108,7 +109,6 @@ struct octusb_port {
 };
 
 struct octusb_softc {
-
 	struct usb_bus sc_bus;		/* base device */
 	union octusb_hub_desc sc_hub_desc;
 

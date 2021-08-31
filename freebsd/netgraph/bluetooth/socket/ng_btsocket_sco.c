@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2002 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -110,8 +112,9 @@ static int					ng_btsocket_sco_curpps;
 
 /* Sysctl tree */
 SYSCTL_DECL(_net_bluetooth_sco_sockets);
-static SYSCTL_NODE(_net_bluetooth_sco_sockets, OID_AUTO, seq, CTLFLAG_RW,
-	0, "Bluetooth SEQPACKET SCO sockets family");
+static SYSCTL_NODE(_net_bluetooth_sco_sockets, OID_AUTO, seq,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Bluetooth SEQPACKET SCO sockets family");
 SYSCTL_UINT(_net_bluetooth_sco_sockets_seq, OID_AUTO, debug_level,
 	CTLFLAG_RW,
 	&ng_btsocket_sco_debug_level, NG_BTSOCKET_WARN_LEVEL,
@@ -471,20 +474,13 @@ ng_btsocket_sco_process_lp_con_ind(struct ng_mesg *msg,
 
 	pcb = ng_btsocket_sco_pcb_by_addr(&rt->src);
 	if (pcb != NULL) {
-		struct socket	*so1 = NULL;
+		struct socket *so1;
 
 		/* pcb is locked */
 
-		/*
-		 * First check the pending connections queue and if we have
-		 * space then create new socket and set proper source address.
-		 */
-
-		if (pcb->so->so_qlen <= pcb->so->so_qlimit) {
-			CURVNET_SET(pcb->so->so_vnet);
-			so1 = sonewconn(pcb->so, 0);
-			CURVNET_RESTORE();
-		}
+		CURVNET_SET(pcb->so->so_vnet);
+		so1 = sonewconn(pcb->so, 0);
+		CURVNET_RESTORE();
 
 		if (so1 == NULL) {
 			status = 0x0d; /* Rejected due to limited resources */
@@ -1327,7 +1323,6 @@ ng_btsocket_sco_bind(struct socket *so, struct sockaddr *nam,
 
 			mtx_unlock(&pcb->pcb_mtx);
 		}
-
 	}
 
 	pcb = so2sco_pcb(so);
@@ -1512,7 +1507,7 @@ ng_btsocket_sco_ctloutput(struct socket *so, struct sockopt *sopt)
 	}
 
 	mtx_unlock(&pcb->pcb_mtx);
-	
+
 	return (error);
 } /* ng_btsocket_sco_ctloutput */
 
@@ -1984,4 +1979,3 @@ ng_btsocket_sco_process_timeout(void *xpcb)
 
 	mtx_unlock(&pcb->pcb_mtx);
 } /* ng_btsocket_sco_process_timeout */
-

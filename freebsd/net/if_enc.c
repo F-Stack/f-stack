@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 The FreeBSD Project.
  * Copyright (c) 2015 Andrey V. Elsukov <ae@FreeBSD.org>
  * All rights reserved.
@@ -30,6 +32,7 @@
 
 #include "opt_inet.h"
 #include "opt_inet6.h"
+#include "opt_ipsec.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -84,9 +87,9 @@ struct enchdr {
 struct enc_softc {
 	struct	ifnet *sc_ifp;
 };
-static VNET_DEFINE(struct enc_softc *, enc_sc);
+VNET_DEFINE_STATIC(struct enc_softc *, enc_sc);
 #define	V_enc_sc	VNET(enc_sc)
-static VNET_DEFINE(struct if_clone *, enc_cloner);
+VNET_DEFINE_STATIC(struct if_clone *, enc_cloner);
 #define	V_enc_cloner	VNET(enc_cloner)
 
 static int	enc_ioctl(struct ifnet *, u_long, caddr_t);
@@ -99,22 +102,31 @@ static void	enc_remove_hhooks(struct enc_softc *);
 
 static const char encname[] = "enc";
 
+#define	IPSEC_ENC_AFTER_PFIL	0x04
 /*
  * Before and after are relative to when we are stripping the
  * outer IP header.
+ *
+ * AFTER_PFIL flag used only for bpf_mask_*. It enables BPF capturing
+ * after PFIL hook execution. It might be useful when PFIL hook does
+ * some changes to the packet, e.g. address translation. If PFIL hook
+ * consumes mbuf, nothing will be captured.
  */
-static VNET_DEFINE(int, filter_mask_in) = IPSEC_ENC_BEFORE;
-static VNET_DEFINE(int, bpf_mask_in) = IPSEC_ENC_BEFORE;
-static VNET_DEFINE(int, filter_mask_out) = IPSEC_ENC_BEFORE;
-static VNET_DEFINE(int, bpf_mask_out) = IPSEC_ENC_BEFORE | IPSEC_ENC_AFTER;
+VNET_DEFINE_STATIC(int, filter_mask_in) = IPSEC_ENC_BEFORE;
+VNET_DEFINE_STATIC(int, bpf_mask_in) = IPSEC_ENC_BEFORE;
+VNET_DEFINE_STATIC(int, filter_mask_out) = IPSEC_ENC_BEFORE;
+VNET_DEFINE_STATIC(int, bpf_mask_out) = IPSEC_ENC_BEFORE | IPSEC_ENC_AFTER;
 #define	V_filter_mask_in	VNET(filter_mask_in)
 #define	V_bpf_mask_in		VNET(bpf_mask_in)
 #define	V_filter_mask_out	VNET(filter_mask_out)
 #define	V_bpf_mask_out		VNET(bpf_mask_out)
 
-static SYSCTL_NODE(_net, OID_AUTO, enc, CTLFLAG_RW, 0, "enc sysctl");
-static SYSCTL_NODE(_net_enc, OID_AUTO, in, CTLFLAG_RW, 0, "enc input sysctl");
-static SYSCTL_NODE(_net_enc, OID_AUTO, out, CTLFLAG_RW, 0, "enc output sysctl");
+static SYSCTL_NODE(_net, OID_AUTO, enc, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "enc sysctl");
+static SYSCTL_NODE(_net_enc, OID_AUTO, in, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "enc input sysctl");
+static SYSCTL_NODE(_net_enc, OID_AUTO, out, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "enc output sysctl");
 SYSCTL_INT(_net_enc_in, OID_AUTO, ipsec_filter_mask,
     CTLFLAG_RW | CTLFLAG_VNET, &VNET_NAME(filter_mask_in), 0,
     "IPsec input firewall filter mask");
@@ -194,6 +206,30 @@ enc_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 	return (0);
 }
 
+static void
+enc_bpftap(struct ifnet *ifp, struct mbuf *m, const struct secasvar *sav,
+    int32_t hhook_type, uint8_t enc, uint8_t af)
+{
+	struct enchdr hdr;
+
+	if (hhook_type == HHOOK_TYPE_IPSEC_IN &&
+	    (enc & V_bpf_mask_in) == 0)
+		return;
+	else if (hhook_type == HHOOK_TYPE_IPSEC_OUT &&
+	    (enc & V_bpf_mask_out) == 0)
+		return;
+	if (bpf_peers_present(ifp->if_bpf) == 0)
+		return;
+	hdr.af = af;
+	hdr.spi = sav->spi;
+	hdr.flags = 0;
+	if (sav->alg_enc != SADB_EALG_NONE)
+		hdr.flags |= M_CONF;
+	if (sav->alg_auth != SADB_AALG_NONE)
+		hdr.flags |= M_AUTH;
+	bpf_mtap2(ifp->if_bpf, &hdr, sizeof(hdr), m);
+}
+
 /*
  * One helper hook function is used by any hook points.
  * + from hhook_type we can determine the packet direction:
@@ -206,7 +242,6 @@ static int
 enc_hhook(int32_t hhook_type, int32_t hhook_id, void *udata, void *ctx_data,
     void *hdata, struct osd *hosd)
 {
-	struct enchdr hdr;
 	struct ipsec_ctx_data *ctx;
 	struct enc_softc *sc;
 	struct ifnet *ifp, *rcvif;
@@ -223,21 +258,7 @@ enc_hhook(int32_t hhook_type, int32_t hhook_id, void *udata, void *ctx_data,
 	if (ctx->af != hhook_id)
 		return (EPFNOSUPPORT);
 
-	if (((hhook_type == HHOOK_TYPE_IPSEC_IN &&
-	    (ctx->enc & V_bpf_mask_in) != 0) ||
-	    (hhook_type == HHOOK_TYPE_IPSEC_OUT &&
-	    (ctx->enc & V_bpf_mask_out) != 0)) &&
-	    bpf_peers_present(ifp->if_bpf) != 0) {
-		hdr.af = ctx->af;
-		hdr.spi = ctx->sav->spi;
-		hdr.flags = 0;
-		if (ctx->sav->alg_enc != SADB_EALG_NONE)
-			hdr.flags |= M_CONF;
-		if (ctx->sav->alg_auth != SADB_AALG_NONE)
-			hdr.flags |= M_AUTH;
-		bpf_mtap2(ifp->if_bpf, &hdr, sizeof(hdr), *ctx->mp);
-	}
-
+	enc_bpftap(ifp, *ctx->mp, ctx->sav, hhook_type, ctx->enc, ctx->af);
 	switch (hhook_type) {
 	case HHOOK_TYPE_IPSEC_IN:
 		if (ctx->enc == IPSEC_ENC_BEFORE) {
@@ -268,28 +289,30 @@ enc_hhook(int32_t hhook_type, int32_t hhook_id, void *udata, void *ctx_data,
 	switch (hhook_id) {
 #ifdef INET
 	case AF_INET:
-		ph = &V_inet_pfil_hook;
+		ph = V_inet_pfil_head;
 		break;
 #endif
 #ifdef INET6
 	case AF_INET6:
-		ph = &V_inet6_pfil_hook;
+		ph = V_inet6_pfil_head;
 		break;
 #endif
 	default:
 		ph = NULL;
 	}
-	if (ph == NULL || !PFIL_HOOKED(ph))
+	if (ph == NULL || (pdir == PFIL_OUT && !PFIL_HOOKED_OUT(ph)) ||
+	    (pdir == PFIL_IN && !PFIL_HOOKED_IN(ph)))
 		return (0);
 	/* Make a packet looks like it was received on enc(4) */
 	rcvif = (*ctx->mp)->m_pkthdr.rcvif;
 	(*ctx->mp)->m_pkthdr.rcvif = ifp;
-	if (pfil_run_hooks(ph, ctx->mp, ifp, pdir, NULL) != 0 ||
-	    *ctx->mp == NULL) {
+	if (pfil_run_hooks(ph, ctx->mp, ifp, pdir, ctx->inp) != PFIL_PASS) {
 		*ctx->mp = NULL; /* consumed by filter */
 		return (EACCES);
 	}
 	(*ctx->mp)->m_pkthdr.rcvif = rcvif;
+	enc_bpftap(ifp, *ctx->mp, ctx->sav, hhook_type,
+	    IPSEC_ENC_AFTER_PFIL, ctx->af);
 	return (0);
 }
 
@@ -423,3 +446,4 @@ static moduledata_t enc_mod = {
 };
 
 DECLARE_MODULE(if_enc, enc_mod, SI_SUB_PSEUDO, SI_ORDER_ANY);
+MODULE_VERSION(if_enc, 1);

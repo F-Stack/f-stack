@@ -25,7 +25,8 @@ options 	AR71XX_ENV_UBOOT
 options 	BOOTVERBOSE
 
 # GEOM modules
-device		geom_uzip	# compressed in-memory filesystem hackery!
+device		xz
+options		GEOM_UZIP
 device		geom_map	# to get access to the SPI flash partitions
 
 options 	ROOTDEVNAME=\"ufs:/dev/map/rootfs.uzip\"
@@ -48,4 +49,4 @@ device		hwpmc
 # load these via modules, shrink kernel
 nodevice	if_bridge
 nodevice	bridgestp
-nodevice	random
+options		RANDOM_LOADABLE

@@ -54,8 +54,6 @@
 /* My hook names */
 #define NG_IFACE_HOOK_INET		"inet"
 #define NG_IFACE_HOOK_INET6		"inet6"
-#define NG_IFACE_HOOK_ATM		"atm"
-#define NG_IFACE_HOOK_NATM		"natm"
 
 /* MTU bounds */
 #define NG_IFACE_MTU_MIN		72
@@ -69,8 +67,5 @@ enum {
 	NGM_IFACE_BROADCAST,
 	NGM_IFACE_GET_IFINDEX,
 };
-
-#define	MTAG_NGIF			NGM_IFACE_COOKIE
-#define	MTAG_NGIF_CALLED		0 | MTAG_PERSISTENT
 
 #endif /* _NETGRAPH_NG_IFACE_H_ */

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013, Anish Gupta (akgupt3@gmail.com)
  * All rights reserved.
  *
@@ -36,10 +38,6 @@
  */
 #define	VENTER  push %rbp ; mov %rsp,%rbp
 #define	VLEAVE  pop %rbp
-
-#define	VMLOAD	.byte 0x0f, 0x01, 0xda
-#define	VMRUN	.byte 0x0f, 0x01, 0xd8
-#define	VMSAVE	.byte 0x0f, 0x01, 0xdb
 
 /*
  * svm_launch(uint64_t vmcb, struct svm_regctx *gctx, struct pcpu *pcpu)
@@ -89,9 +87,9 @@ ENTRY(svm_launch)
 	movq SCTX_RDI(%rsi), %rdi
 	movq SCTX_RSI(%rsi), %rsi	/* %rsi must be restored last */
 
-	VMLOAD
-	VMRUN
-	VMSAVE
+	vmload %rax
+	vmrun %rax
+	vmsave %rax
 
 	pop %rax		/* pop guest context pointer from the stack */
 
@@ -113,6 +111,23 @@ ENTRY(svm_launch)
 	movq %rdi, SCTX_RDI(%rax)
 	movq %rsi, SCTX_RSI(%rax)
 
+	/*
+	 * To prevent malicious branch target predictions from
+	 * affecting the host, overwrite all entries in the RSB upon
+	 * exiting a guest.
+	 */
+	mov $16, %ecx	/* 16 iterations, two calls per loop */
+	mov %rsp, %rax
+0:	call 2f		/* create an RSB entry. */
+1:	pause
+	call 1b		/* capture rogue speculation. */
+2:	call 2f		/* create an RSB entry. */
+1:	pause
+	call 1b		/* capture rogue speculation. */
+2:	sub $1, %ecx
+	jnz 0b
+	mov %rax, %rsp
+
 	/* Restore host state */
 	pop %r15
 	pop %r14
@@ -124,8 +139,20 @@ ENTRY(svm_launch)
 	pop %rdx
 	mov %edx, %eax
 	shr $32, %rdx
-	mov $MSR_GSBASE, %ecx
+	mov $MSR_GSBASE, %rcx
 	wrmsr
+
+	/*
+	 * Clobber the remaining registers with guest contents so they
+	 * can't be misused.
+	 */
+	xor %rbp, %rbp
+	xor %rdi, %rdi
+	xor %rsi, %rsi
+	xor %r8, %r8
+	xor %r9, %r9
+	xor %r10, %r10
+	xor %r11, %r11
 
 	VLEAVE
 	ret

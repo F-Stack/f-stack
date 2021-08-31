@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2004-2009 Apple Inc.
  * Copyright (c) 2005 SPARTA, Inc.
  * All rights reserved.
@@ -49,7 +51,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
-
 
 #include <bsm/audit.h>
 #include <bsm/audit_internal.h>
@@ -339,7 +340,6 @@ au_to_data(char unit_print, char unit_type, char unit_count, const char *p)
 
 	return (t);
 }
-
 
 /*
  * token ID                1 byte

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Hiroki Sato <hrs@FreeBSD.org>
  * All rights reserved.
  *
@@ -36,7 +38,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/sysctl.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
@@ -149,7 +150,8 @@ ts_attach(device_t dev)
 	}
 	ctx = device_get_sysctl_ctx(dev);
 	SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
-	    OID_AUTO, "temperature", CTLTYPE_INT | CTLFLAG_RD, dev,
+	    OID_AUTO, "temperature",
+	    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT, dev,
 	    0, ts_sysctl_handler, "IK", "Current Temperature");
 
 	return (0);

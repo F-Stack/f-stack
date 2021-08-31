@@ -1,5 +1,7 @@
 /*-
- * Copyright (c) 2009 Isilon Inc http://www.isilon.com/
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
+ * Copyright (c) 2009-2019 Dell EMC Isilon http://www.isilon.com/
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -82,6 +84,8 @@ struct fail_point {
 	void (*fp_post_sleep_fn)(void *);
 	/**< Arg for fp_post_sleep_fn */
 	void *fp_post_sleep_arg;
+
+	struct callout *fp_callout;
 };
 
 #define	FAIL_POINT_DYNAMIC_NAME	0x01	/**< Must free name on destroy */
@@ -147,9 +151,12 @@ fail_point_sleep_set_post_arg(struct fail_point *fp, void *sleep_arg)
 {
 	fp->fp_post_sleep_arg = sleep_arg;
 }
+
+void fail_point_alloc_callout(struct fail_point *);
+
 /**
  * If the FAIL_POINT_USE_TIMEOUT flag is set on a failpoint, then
- * FAIL_POINT_SLEEP will result in a call to timeout instead of
+ * FAIL_POINT_SLEEP will result in a call to callout_reset instead of
  * msleep. Note that if you sleep while this flag is set, you must
  * set fp_post_sleep_fn or an error will occur upon waking.
  */
@@ -161,9 +168,10 @@ fail_point_use_timeout_path(struct fail_point *fp, bool use_timeout,
 	        (post_sleep_fn == NULL && fp->fp_post_sleep_fn != NULL),
 	        ("Setting fp to use timeout, but not setting post_sleep_fn\n"));
 
-	if (use_timeout)
+	if (use_timeout) {
+		fail_point_alloc_callout(fp);
 		fp->fp_flags |= FAIL_POINT_USE_TIMEOUT_PATH;
-	else
+	} else
 		fp->fp_flags &= ~FAIL_POINT_USE_TIMEOUT_PATH;
 
 	if (post_sleep_fn != NULL)
@@ -189,10 +197,12 @@ fail_point_eval(struct fail_point *fp, int *ret)
 __END_DECLS
 
 /* Declare a fail_point and its sysctl in a function. */
+#define KFAIL_POINT_DECLARE(name) \
+    extern struct fail_point _FAIL_POINT_NAME(name)
 #define _FAIL_POINT_NAME(name) _fail_point_##name
 #define _FAIL_POINT_LOCATION() "(" __FILE__ ":" __XSTRING(__LINE__) ")"
-#define _FAIL_POINT_INIT(parent, name, flags) \
-	static struct fail_point _FAIL_POINT_NAME(name) = { \
+#define KFAIL_POINT_DEFINE(parent, name, flags) \
+	struct fail_point _FAIL_POINT_NAME(name) = { \
 	        .fp_name = #name, \
 	        .fp_location = _FAIL_POINT_LOCATION(), \
 	        .fp_ref_cnt = 0, \
@@ -211,6 +221,9 @@ __END_DECLS
 	        CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, \
 	        &_FAIL_POINT_NAME(name), 0, \
 	        fail_point_sysctl_status, "A", "");
+
+#define _FAIL_POINT_INIT(parent, name, flags) \
+	static KFAIL_POINT_DEFINE(parent, name, flags)
 #define _FAIL_POINT_EVAL(name, cond, code...) \
 	int RETURN_VALUE; \
  \
@@ -220,7 +233,8 @@ __END_DECLS
 		code; \
  \
 	}
-
+#define KFAIL_POINT_EVAL(name, code...) \
+	_FAIL_POINT_EVAL(name, true, code)
 
 /**
  * Instantiate a failpoint which returns "RETURN_VALUE" from the function
@@ -313,7 +327,6 @@ __END_DECLS
 		_FAIL_POINT_NAME(name).fp_post_sleep_arg = post_arg; \
 		_FAIL_POINT_EVAL(name, true, code) \
 	} while (0)
-
 
 /**
  * Instantiate a failpoint which runs arbitrary code when triggered.

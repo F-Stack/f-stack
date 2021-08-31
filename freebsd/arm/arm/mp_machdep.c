@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 Semihalf.
  * All rights reserved.
  *
@@ -24,7 +26,6 @@
  * SUCH DAMAGE.
  */
 #include "opt_ddb.h"
-#include "opt_smp.h"
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
@@ -52,7 +53,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/debug_monitor.h>
 #include <machine/smp.h>
 #include <machine/pcb.h>
-#include <machine/physmem.h>
 #include <machine/intr.h>
 #include <machine/vmparam.h>
 #ifdef VFP
@@ -60,10 +60,8 @@ __FBSDID("$FreeBSD$");
 #endif
 #ifdef CPU_MV_PJ4B
 #include <arm/mv/mvwin.h>
-#include <dev/fdt/fdt_common.h>
 #endif
 
-extern struct pcpu __pcpu[];
 /* used to hold the AP's until we are ready to release them */
 struct mtx ap_boot_mtx;
 struct pcb stoppcbs[MAXCPU];
@@ -74,9 +72,6 @@ volatile int mp_naps;
 /* Set to 1 once we're ready to let the APs out of the pen. */
 volatile int aps_ready = 0;
 
-#ifndef INTRNG
-static int ipi_handler(void *arg);
-#endif
 void set_stackptrs(int cpu);
 
 /* Temporary variables for init_secondary()  */
@@ -110,8 +105,6 @@ check_ap(void)
 	return (-2);
 }
 
-extern unsigned char _end[];
-
 /* Initialize and fire up non-boot processors */
 void
 cpu_mp_start(void)
@@ -122,8 +115,7 @@ cpu_mp_start(void)
 
 	/* Reserve memory for application processors */
 	for(i = 0; i < (mp_ncpus - 1); i++)
-		dpcpu[i] = (void *)kmem_malloc(kernel_arena, DPCPU_SIZE,
-		    M_WAITOK | M_ZERO);
+		dpcpu[i] = (void *)kmem_malloc(DPCPU_SIZE, M_WAITOK | M_ZERO);
 
 	dcache_wbinv_poc_all();
 
@@ -146,20 +138,14 @@ cpu_mp_announce(void)
 
 }
 
-extern vm_paddr_t pmap_pa;
 void
 init_secondary(int cpu)
 {
 	struct pcpu *pc;
 	uint32_t loop_counter;
-#ifndef INTRNG
-	int start = 0, end = 0;
-#endif
-	uint32_t actlr_mask, actlr_set;
 
 	pmap_set_tex();
-	cpuinfo_get_actlr_modifier(&actlr_mask, &actlr_set);
-	reinit_mmu(pmap_kern_ttb, actlr_mask, actlr_set);
+	cpuinfo_reinit_mmu(pmap_kern_ttb);
 	cpu_setup();
 
 	/* Provide stack pointers for other processor modes. */
@@ -176,8 +162,9 @@ init_secondary(int cpu)
 		;
 
 	pcpu_init(pc, cpu, sizeof(struct pcpu));
+	pc->pc_mpidr = cp15_mpidr_get() & 0xFFFFFF;
 	dpcpu_init(dpcpu[cpu - 1], cpu);
-#if __ARM_ARCH >= 6 && defined(DDB)
+#if defined(DDB)
 	dbg_monitor_init_secondary();
 #endif
 	/* Signal our startup to BSP */
@@ -202,6 +189,9 @@ init_secondary(int cpu)
 	/* Configure the interrupt controller */
 	intr_pic_init_secondary();
 
+	/* Apply possible BP hardening */
+	cpuinfo_init_bp_hardening();
+
 	mtx_lock_spin(&ap_boot_mtx);
 
 	atomic_add_rel_32(&smp_cpus, 1);
@@ -212,22 +202,6 @@ init_secondary(int cpu)
 	}
 
 	mtx_unlock_spin(&ap_boot_mtx);
-
-#ifndef INTRNG
-	/* Enable ipi */
-#ifdef IPI_IRQ_START
-	start = IPI_IRQ_START;
-#ifdef IPI_IRQ_END
-	end = IPI_IRQ_END;
-#else
-	end = IPI_IRQ_START;
-#endif
-#endif
-
-	for (int i = start; i <= end; i++)
-		arm_unmask_irq(i);
-#endif /* INTRNG */
-	enable_interrupts(PSR_I);
 
 	loop_counter = 0;
 	while (smp_started == 0) {
@@ -248,7 +222,6 @@ init_secondary(int cpu)
 	/* NOTREACHED */
 }
 
-#ifdef INTRNG
 static void
 ipi_rendezvous(void *dummy __unused)
 {
@@ -345,131 +318,24 @@ ipi_hardclock(void *arg)
 	critical_exit();
 }
 
-#else
-static int
-ipi_handler(void *arg)
-{
-	u_int	cpu, ipi;
-
-	cpu = PCPU_GET(cpuid);
-
-	ipi = pic_ipi_read((int)arg);
-
-	while ((ipi != 0x3ff)) {
-		switch (ipi) {
-		case IPI_RENDEZVOUS:
-			CTR0(KTR_SMP, "IPI_RENDEZVOUS");
-			smp_rendezvous_action();
-			break;
-
-		case IPI_AST:
-			CTR0(KTR_SMP, "IPI_AST");
-			break;
-
-		case IPI_STOP:
-			/*
-			 * IPI_STOP_HARD is mapped to IPI_STOP so it is not
-			 * necessary to add it in the switch.
-			 */
-			CTR0(KTR_SMP, "IPI_STOP or IPI_STOP_HARD");
-
-			savectx(&stoppcbs[cpu]);
-
-			/*
-			 * CPUs are stopped when entering the debugger and at
-			 * system shutdown, both events which can precede a
-			 * panic dump.  For the dump to be correct, all caches
-			 * must be flushed and invalidated, but on ARM there's
-			 * no way to broadcast a wbinv_all to other cores.
-			 * Instead, we have each core do the local wbinv_all as
-			 * part of stopping the core.  The core requesting the
-			 * stop will do the l2 cache flush after all other cores
-			 * have done their l1 flushes and stopped.
-			 */
-			dcache_wbinv_poc_all();
-
-			/* Indicate we are stopped */
-			CPU_SET_ATOMIC(cpu, &stopped_cpus);
-
-			/* Wait for restart */
-			while (!CPU_ISSET(cpu, &started_cpus))
-				cpu_spinwait();
-
-			CPU_CLR_ATOMIC(cpu, &started_cpus);
-			CPU_CLR_ATOMIC(cpu, &stopped_cpus);
-#ifdef DDB
-			dbg_resume_dbreg();
-#endif
-			CTR0(KTR_SMP, "IPI_STOP (restart)");
-			break;
-		case IPI_PREEMPT:
-			CTR1(KTR_SMP, "%s: IPI_PREEMPT", __func__);
-			sched_preempt(curthread);
-			break;
-		case IPI_HARDCLOCK:
-			CTR1(KTR_SMP, "%s: IPI_HARDCLOCK", __func__);
-			hardclockintr();
-			break;
-		default:
-			panic("Unknown IPI 0x%0x on cpu %d", ipi, curcpu);
-		}
-
-		pic_ipi_clear(ipi);
-		ipi = pic_ipi_read(-1);
-	}
-
-	return (FILTER_HANDLED);
-}
-#endif
-
 static void
 release_aps(void *dummy __unused)
 {
 	uint32_t loop_counter;
-#ifndef INTRNG
-	int start = 0, end = 0;
-#endif
 
 	if (mp_ncpus == 1)
 		return;
 
-#ifdef INTRNG
 	intr_pic_ipi_setup(IPI_RENDEZVOUS, "rendezvous", ipi_rendezvous, NULL);
 	intr_pic_ipi_setup(IPI_AST, "ast", ipi_ast, NULL);
 	intr_pic_ipi_setup(IPI_STOP, "stop", ipi_stop, NULL);
 	intr_pic_ipi_setup(IPI_PREEMPT, "preempt", ipi_preempt, NULL);
 	intr_pic_ipi_setup(IPI_HARDCLOCK, "hardclock", ipi_hardclock, NULL);
-#else
-#ifdef IPI_IRQ_START
-	start = IPI_IRQ_START;
-#ifdef IPI_IRQ_END
-	end = IPI_IRQ_END;
-#else
-	end = IPI_IRQ_START;
-#endif
-#endif
 
-	for (int i = start; i <= end; i++) {
-		/*
-		 * IPI handler
-		 */
-		/*
-		 * Use 0xdeadbeef as the argument value for irq 0,
-		 * if we used 0, the intr code will give the trap frame
-		 * pointer instead.
-		 */
-		arm_setup_irqhandler("ipi", ipi_handler, NULL, (void *)i, i,
-		    INTR_TYPE_MISC | INTR_EXCL, NULL);
-
-		/* Enable ipi */
-		arm_unmask_irq(i);
-	}
-#endif
 	atomic_store_rel_int(&aps_ready, 1);
 	/* Wake the other threads up */
-#if __ARM_ARCH >= 7
-	armv7_sev();
-#endif
+	dsb();
+	sev();
 
 	printf("Release APs\n");
 
@@ -506,11 +372,7 @@ ipi_all_but_self(u_int ipi)
 	other_cpus = all_cpus;
 	CPU_CLR(PCPU_GET(cpuid), &other_cpus);
 	CTR2(KTR_SMP, "%s: ipi: %x", __func__, ipi);
-#ifdef INTRNG
 	intr_ipi_send(other_cpus, ipi);
-#else
-	pic_ipi_send(other_cpus, ipi);
-#endif
 }
 
 void
@@ -522,11 +384,7 @@ ipi_cpu(int cpu, u_int ipi)
 	CPU_SET(cpu, &cpus);
 
 	CTR3(KTR_SMP, "%s: cpu: %d, ipi: %x", __func__, cpu, ipi);
-#ifdef INTRNG
 	intr_ipi_send(cpus, ipi);
-#else
-	pic_ipi_send(cpus, ipi);
-#endif
 }
 
 void
@@ -534,9 +392,5 @@ ipi_selected(cpuset_t cpus, u_int ipi)
 {
 
 	CTR2(KTR_SMP, "%s: ipi: %x", __func__, ipi);
-#ifdef INTRNG
 	intr_ipi_send(cpus, ipi);
-#else
-	pic_ipi_send(cpus, ipi);
-#endif
 }

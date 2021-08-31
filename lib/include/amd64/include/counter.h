@@ -29,6 +29,8 @@
 
 #include <sys/pcpu.h>
 
+#define EARLY_COUNTER   (void *)__offsetof(struct pcpu, pc_early_dummy_counter)
+
 #define counter_enter()    do {} while (0)
 #define counter_exit()    do {} while (0)
 

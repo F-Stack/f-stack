@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -42,7 +44,6 @@
  * byte boundaries.  A strict alignment is good for keeping the tables small.
  */
 #define	FUNCTION_ALIGNMENT	16
-
 
 #define	_MCOUNT_DECL void mcount
 
@@ -89,7 +90,7 @@ typedef u_long	fptrdiff_t;
 	__asm__("ldmfd	sp!, {r0-r3, lr}");				\
 	/*								\
 	 * Return to the caller. Loading lr and pc in one instruction	\
-	 * is deprecated on ARMv7 so we need this on it's own.		\
+	 * is deprecated on ARMv7 so we need this on its own.		\
 	 */								\
 	__asm__("ldmfd	sp!, {pc}");
 void bintr(void);
@@ -105,19 +106,12 @@ void user(void);
 	    ((pc >= (uintfptr_t)bintr) ? (uintfptr_t)bintr :	\
 		(uintfptr_t)btrap) : ~0U)
 
-
 #ifdef _KERNEL
 
 #define	MCOUNT_DECL(s)	register_t s;
 
 #include <machine/asm.h>
 #include <machine/cpufunc.h>
-/*
- * splhigh() and splx() are heavyweight, and call mcount().  Therefore
- * we disabled interrupts (IRQ, but not FIQ) directly on the CPU.
- *
- * We're lucky that the CPSR and 's' both happen to be 'int's.
- */
 #define	MCOUNT_ENTER(s)	{s = intr_disable(); }	/* kill IRQ */
 #define	MCOUNT_EXIT(s)	{intr_restore(s); }	/* restore old value */
 

@@ -42,15 +42,13 @@ __FBSDID("$FreeBSD$");
 #include <machine/resource.h>
 #include <machine/intr.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include <dev/spibus/spi.h>
 #include <dev/spibus/spibusvar.h>
 
-#include <arm/ti/ti_prcm.h>
-#include <arm/ti/ti_hwmods.h>
+#include <arm/ti/ti_sysc.h>
 #include <arm/ti/ti_spireg.h>
 #include <arm/ti/ti_spivar.h>
 
@@ -167,28 +165,15 @@ ti_spi_probe(device_t dev)
 static int
 ti_spi_attach(device_t dev)
 {
-	int clk_id, err, i, rid, timeout;
+	int err, i, rid, timeout;
 	struct ti_spi_softc *sc;
 	uint32_t rev;
 
 	sc = device_get_softc(dev);
 	sc->sc_dev = dev;
 
-	/*
-	 * Get the MMCHS device id from FDT.  If it's not there use the newbus
-	 * unit number (which will work as long as the devices are in order and
-	 * none are skipped in the fdt).  Note that this is a property we made
-	 * up and added in freebsd, it doesn't exist in the published bindings.
-	 */
-	clk_id = ti_hwmods_get_clock(dev);
-	if (clk_id == INVALID_CLK_IDENT) {
-		device_printf(dev,
-		    "failed to get clock based on hwmods property\n");
-		return (EINVAL);
-	}
-
 	/* Activate the McSPI module. */
-	err = ti_prcm_clk_enable(clk_id);
+	err = ti_sysc_clock_enable(device_get_parent(dev));
 	if (err) {
 		device_printf(dev, "Error: failed to activate source clock\n");
 		return (err);
@@ -246,7 +231,8 @@ ti_spi_attach(device_t dev)
 	}
 
 	/* Print the McSPI module revision. */
-	rev = TI_SPI_READ(sc, MCSPI_REVISION);
+	rev = TI_SPI_READ(sc,
+	    ti_sysc_get_rev_address_offset_host(device_get_parent(dev)));
 	device_printf(dev,
 	    "scheme: %#x func: %#x rtl: %d rev: %d.%d custom rev: %d\n",
 	    (rev >> MCSPI_REVISION_SCHEME_SHIFT) & MCSPI_REVISION_SCHEME_MSK,
@@ -445,9 +431,9 @@ ti_spi_gcd(int a, int b)
 static int
 ti_spi_transfer(device_t dev, device_t child, struct spi_command *cmd)
 {
-	int cs, err;
+	int err;
 	struct ti_spi_softc *sc;
-	uint32_t reg;
+	uint32_t clockhz, cs, mode, reg;
 
 	sc = device_get_softc(dev);
 
@@ -458,10 +444,22 @@ ti_spi_transfer(device_t dev, device_t child, struct spi_command *cmd)
 
 	/* Get the proper chip select for this child. */
 	spibus_get_cs(child, &cs);
-	if (cs < 0 || cs > sc->sc_numcs) {
+	spibus_get_clock(child, &clockhz);
+	spibus_get_mode(child, &mode);
+
+	cs &= ~SPIBUS_CS_HIGH;
+
+	if (cs > sc->sc_numcs) {
 		device_printf(dev, "Invalid chip select %d requested by %s\n",
 		    cs, device_get_nameunit(child));
 		return (EINVAL);
+	}
+
+	if (mode > 3)
+	{
+	    device_printf(dev, "Invalid mode %d requested by %s\n", mode,
+		    device_get_nameunit(child));
+	    return (EINVAL);
 	}
 
 	TI_SPI_LOCK(sc);
@@ -485,8 +483,8 @@ ti_spi_transfer(device_t dev, device_t child, struct spi_command *cmd)
 	/* Disable FIFO for now. */
 	sc->sc_fifolvl = 1;
 
-	/* Use a safe clock - 500kHz. */
-	ti_spi_set_clock(sc, sc->sc_cs, 500000);
+	/* Set the bus frequency. */
+	ti_spi_set_clock(sc, sc->sc_cs, clockhz);
 
 	/* Disable the FIFO. */
 	TI_SPI_WRITE(sc, MCSPI_XFERLEVEL, 0);
@@ -498,6 +496,7 @@ ti_spi_transfer(device_t dev, device_t child, struct spi_command *cmd)
 	    MCSPI_CONF_DPE1 | MCSPI_CONF_DPE0 | MCSPI_CONF_DMAR |
 	    MCSPI_CONF_DMAW | MCSPI_CONF_EPOL);
 	reg |= MCSPI_CONF_DPE0 | MCSPI_CONF_EPOL | MCSPI_CONF_WL8BITS;
+	reg |= mode; /* POL and PHA are the low bits, we can just OR-in mode */
 	TI_SPI_WRITE(sc, MCSPI_CONF_CH(sc->sc_cs), reg);
 
 #if 0
@@ -580,3 +579,4 @@ static driver_t ti_spi_driver = {
 };
 
 DRIVER_MODULE(ti_spi, simplebus, ti_spi_driver, ti_spi_devclass, 0, 0);
+MODULE_DEPEND(ti_spi, ti_sysc, 1, 1, 1);

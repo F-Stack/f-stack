@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -128,7 +130,7 @@ bintime_shift(struct bintime *_bt, int _exp)
 #define	SBT_1M	(SBT_1S * 60)
 #define	SBT_1MS	(SBT_1S / 1000)
 #define	SBT_1US	(SBT_1S / 1000000)
-#define	SBT_1NS	(SBT_1S / 1000000000)
+#define	SBT_1NS	(SBT_1S / 1000000000) /* beware rounding, see nstosbt() */
 #define	SBT_MAX	0x7fffffffffffffffLL
 
 static __inline int
@@ -153,6 +155,112 @@ sbttobt(sbintime_t _sbt)
 	_bt.sec = _sbt >> 32;
 	_bt.frac = _sbt << 32;
 	return (_bt);
+}
+
+/*
+ * Decimal<->sbt conversions.  Multiplying or dividing by SBT_1NS results in
+ * large roundoff errors which sbttons() and nstosbt() avoid.  Millisecond and
+ * microsecond functions are also provided for completeness.
+ *
+ * These functions return the smallest sbt larger or equal to the
+ * number of seconds requested so that sbttoX(Xtosbt(y)) == y.  Unlike
+ * top of second computations below, which require that we tick at the
+ * top of second, these need to be rounded up so we do whatever for at
+ * least as long as requested.
+ *
+ * The naive computation we'd do is this
+ *	((unit * 2^64 / SIFACTOR) + 2^32-1) >> 32
+ * However, that overflows. Instead, we compute
+ *	((unit * 2^63 / SIFACTOR) + 2^31-1) >> 32
+ * and use pre-computed constants that are the ceil of the 2^63 / SIFACTOR
+ * term to ensure we are using exactly the right constant. We use the lesser
+ * evil of ull rather than a uint64_t cast to ensure we have well defined
+ * right shift semantics. With these changes, we get all the ns, us and ms
+ * conversions back and forth right.
+ * Note: This file is used for both kernel and userland includes, so we can't
+ * rely on KASSERT being defined, nor can we pollute the namespace by including
+ * assert.h.
+ */
+static __inline int64_t
+sbttons(sbintime_t _sbt)
+{
+	uint64_t ns;
+
+#ifdef KASSERT
+	KASSERT(_sbt >= 0, ("Negative values illegal for sbttons: %jx", _sbt));
+#endif
+	ns = _sbt;
+	if (ns >= SBT_1S)
+		ns = (ns >> 32) * 1000000000;
+	else
+		ns = 0;
+
+	return (ns + (1000000000 * (_sbt & 0xffffffffu) >> 32));
+}
+
+static __inline sbintime_t
+nstosbt(int64_t _ns)
+{
+	sbintime_t sb = 0;
+
+#ifdef KASSERT
+	KASSERT(_ns >= 0, ("Negative values illegal for nstosbt: %jd", _ns));
+#endif
+	if (_ns >= SBT_1S) {
+		sb = (_ns / 1000000000) * SBT_1S;
+		_ns = _ns % 1000000000;
+	}
+	/* 9223372037 = ceil(2^63 / 1000000000) */
+	sb += ((_ns * 9223372037ull) + 0x7fffffff) >> 31;
+	return (sb);
+}
+
+static __inline int64_t
+sbttous(sbintime_t _sbt)
+{
+
+	return ((1000000 * _sbt) >> 32);
+}
+
+static __inline sbintime_t
+ustosbt(int64_t _us)
+{
+	sbintime_t sb = 0;
+
+#ifdef KASSERT
+	KASSERT(_us >= 0, ("Negative values illegal for ustosbt: %jd", _us));
+#endif
+	if (_us >= SBT_1S) {
+		sb = (_us / 1000000) * SBT_1S;
+		_us = _us % 1000000;
+	}
+	/* 9223372036855 = ceil(2^63 / 1000000) */
+	sb += ((_us * 9223372036855ull) + 0x7fffffff) >> 31;
+	return (sb);
+}
+
+static __inline int64_t
+sbttoms(sbintime_t _sbt)
+{
+
+	return ((1000 * _sbt) >> 32);
+}
+
+static __inline sbintime_t
+mstosbt(int64_t _ms)
+{
+	sbintime_t sb = 0;
+
+#ifdef KASSERT
+	KASSERT(_ms >= 0, ("Negative values illegal for mstosbt: %jd", _ms));
+#endif
+	if (_ms >= SBT_1S) {
+		sb = (_ms / 1000) * SBT_1S;
+		_ms = _ms % 1000;
+	}
+	/* 9223372036854776 = ceil(2^63 / 1000) */
+	sb += ((_ms * 9223372036854776ull) + 0x7fffffff) >> 31;
+	return (sb);
 }
 
 /*-
@@ -210,7 +318,7 @@ sbttots(sbintime_t _sbt)
 	struct timespec _ts;
 
 	_ts.tv_sec = _sbt >> 32;
-	_ts.tv_nsec = ((uint64_t)1000000000 * (uint32_t)_sbt) >> 32;
+	_ts.tv_nsec = sbttons((uint32_t)_sbt);
 	return (_ts);
 }
 
@@ -218,8 +326,7 @@ static __inline sbintime_t
 tstosbt(struct timespec _ts)
 {
 
-	return (((sbintime_t)_ts.tv_sec << 32) +
-	    (_ts.tv_nsec * (((uint64_t)1 << 63) / 500000000) >> 32));
+	return (((sbintime_t)_ts.tv_sec << 32) + nstosbt(_ts.tv_nsec));
 }
 
 static __inline struct timeval
@@ -228,7 +335,7 @@ sbttotv(sbintime_t _sbt)
 	struct timeval _tv;
 
 	_tv.tv_sec = _sbt >> 32;
-	_tv.tv_usec = ((uint64_t)1000000 * (uint32_t)_sbt) >> 32;
+	_tv.tv_usec = sbttous((uint32_t)_sbt);
 	return (_tv);
 }
 
@@ -236,13 +343,29 @@ static __inline sbintime_t
 tvtosbt(struct timeval _tv)
 {
 
-	return (((sbintime_t)_tv.tv_sec << 32) +
-	    (_tv.tv_usec * (((uint64_t)1 << 63) / 500000) >> 32));
+	return (((sbintime_t)_tv.tv_sec << 32) + ustosbt(_tv.tv_usec));
 }
 #endif /* __BSD_VISIBLE */
 
 #ifdef _KERNEL
+/*
+ * Simple macros to convert ticks to milliseconds
+ * or microseconds and vice-versa. The answer
+ * will always be at least 1. Note the return
+ * value is a uint32_t however we step up the
+ * operations to 64 bit to avoid any overflow/underflow
+ * problems.
+ */
+#define TICKS_2_MSEC(t) max(1, (uint32_t)(hz == 1000) ? \
+	  (t) : (((uint64_t)(t) * (uint64_t)1000)/(uint64_t)hz))
+#define TICKS_2_USEC(t) max(1, (uint32_t)(hz == 1000) ? \
+	  ((t) * 1000) : (((uint64_t)(t) * (uint64_t)1000000)/(uint64_t)hz))
+#define MSEC_2_TICKS(m) max(1, (uint32_t)((hz == 1000) ? \
+	  (m) : ((uint64_t)(m) * (uint64_t)hz)/(uint64_t)1000))
+#define USEC_2_TICKS(u) max(1, (uint32_t)((hz == 1000) ? \
+	 ((u) / 1000) : ((uint64_t)(u) * (uint64_t)hz)/(uint64_t)1000000))
 
+#endif
 /* Operations on timespecs */
 #define	timespecclear(tvp)	((tvp)->tv_sec = (tvp)->tv_nsec = 0)
 #define	timespecisset(tvp)	((tvp)->tv_sec || (tvp)->tv_nsec)
@@ -250,24 +373,27 @@ tvtosbt(struct timeval _tv)
 	(((tvp)->tv_sec == (uvp)->tv_sec) ?				\
 	    ((tvp)->tv_nsec cmp (uvp)->tv_nsec) :			\
 	    ((tvp)->tv_sec cmp (uvp)->tv_sec))
-#define	timespecadd(vvp, uvp)						\
+
+#define	timespecadd(tsp, usp, vsp)					\
 	do {								\
-		(vvp)->tv_sec += (uvp)->tv_sec;				\
-		(vvp)->tv_nsec += (uvp)->tv_nsec;			\
-		if ((vvp)->tv_nsec >= 1000000000) {			\
-			(vvp)->tv_sec++;				\
-			(vvp)->tv_nsec -= 1000000000;			\
+		(vsp)->tv_sec = (tsp)->tv_sec + (usp)->tv_sec;		\
+		(vsp)->tv_nsec = (tsp)->tv_nsec + (usp)->tv_nsec;	\
+		if ((vsp)->tv_nsec >= 1000000000L) {			\
+			(vsp)->tv_sec++;				\
+			(vsp)->tv_nsec -= 1000000000L;			\
 		}							\
 	} while (0)
-#define	timespecsub(vvp, uvp)						\
+#define	timespecsub(tsp, usp, vsp)					\
 	do {								\
-		(vvp)->tv_sec -= (uvp)->tv_sec;				\
-		(vvp)->tv_nsec -= (uvp)->tv_nsec;			\
-		if ((vvp)->tv_nsec < 0) {				\
-			(vvp)->tv_sec--;				\
-			(vvp)->tv_nsec += 1000000000;			\
+		(vsp)->tv_sec = (tsp)->tv_sec - (usp)->tv_sec;		\
+		(vsp)->tv_nsec = (tsp)->tv_nsec - (usp)->tv_nsec;	\
+		if ((vsp)->tv_nsec < 0) {				\
+			(vsp)->tv_sec--;				\
+			(vsp)->tv_nsec += 1000000000L;			\
 		}							\
 	} while (0)
+
+#ifdef _KERNEL
 
 /* Operations on timevals. */
 
@@ -337,8 +463,12 @@ struct clockinfo {
 /* These macros are also in time.h. */
 #ifndef CLOCK_REALTIME
 #define	CLOCK_REALTIME	0
+#endif
+#ifndef CLOCK_VIRTUAL
 #define	CLOCK_VIRTUAL	1
 #define	CLOCK_PROF	2
+#endif
+#ifndef CLOCK_MONOTONIC
 #define	CLOCK_MONOTONIC	4
 #define	CLOCK_UPTIME	5		/* FreeBSD-specific. */
 #define	CLOCK_UPTIME_PRECISE	7	/* FreeBSD-specific. */
@@ -362,7 +492,7 @@ struct clockinfo {
 #define	CPUCLOCK_WHICH_TID	1
 #endif
 
-#ifdef _KERNEL
+#if defined(_KERNEL) || defined(_STANDALONE)
 
 /*
  * Kernel to clock driver interface.
@@ -372,8 +502,6 @@ void	resettodr(void);
 
 extern volatile time_t	time_second;
 extern volatile time_t	time_uptime;
-extern struct bintime boottimebin;
-extern struct timeval boottime;
 extern struct bintime tc_tick_bt;
 extern sbintime_t tc_tick_sbt;
 extern struct bintime tick_bt;
@@ -384,6 +512,8 @@ extern struct bintime bt_timethreshold;
 extern struct bintime bt_tickthreshold;
 extern sbintime_t sbt_timethreshold;
 extern sbintime_t sbt_tickthreshold;
+
+extern volatile int rtc_generation;
 
 /*
  * Functions for looking at our clock: [get]{bin,nano,micro}[up]time()
@@ -440,6 +570,9 @@ void	getbintime(struct bintime *bt);
 void	getnanotime(struct timespec *tsp);
 void	getmicrotime(struct timeval *tvp);
 
+void	getboottime(struct timeval *boottime);
+void	getboottimebin(struct bintime *boottimebin);
+
 /* Other functions */
 int	itimerdecr(struct itimerval *itp, int usec);
 int	itimerfix(struct timeval *tv);
@@ -467,7 +600,7 @@ int	tvtohz(struct timeval *tv);
 	(((sbt2) >= sbt_timethreshold) ?				\
 	    ((*(sbt) = getsbinuptime()), 1) : ((*(sbt) = sbinuptime()), 0))
 
-#else /* !_KERNEL */
+#else /* !_KERNEL && !_STANDALONE */
 #include <time.h>
 
 #include <sys/cdefs.h>

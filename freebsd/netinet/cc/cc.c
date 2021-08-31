@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007-2008
  *	Swinburne University of Technology, Melbourne, Australia.
  * Copyright (c) 2009-2010 Lawrence Stewart <lstewart@freebsd.org>
@@ -315,13 +317,26 @@ cc_modevent(module_t mod, int event_type, void *data)
 SYSINIT(cc, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_FIRST, cc_init, NULL);
 
 /* Declare sysctl tree and populate it. */
-SYSCTL_NODE(_net_inet_tcp, OID_AUTO, cc, CTLFLAG_RW, NULL,
+SYSCTL_NODE(_net_inet_tcp, OID_AUTO, cc, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
     "Congestion control related settings");
 
 SYSCTL_PROC(_net_inet_tcp_cc, OID_AUTO, algorithm,
-    CTLFLAG_VNET | CTLTYPE_STRING | CTLFLAG_RW,
-    NULL, 0, cc_default_algo, "A", "Default congestion control algorithm");
+    CTLFLAG_VNET | CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
+    NULL, 0, cc_default_algo, "A",
+    "Default congestion control algorithm");
 
-SYSCTL_PROC(_net_inet_tcp_cc, OID_AUTO, available, CTLTYPE_STRING|CTLFLAG_RD,
+SYSCTL_PROC(_net_inet_tcp_cc, OID_AUTO, available,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
     NULL, 0, cc_list_available, "A",
     "List available congestion control algorithms");
+
+VNET_DEFINE(int, cc_do_abe) = 0;
+SYSCTL_INT(_net_inet_tcp_cc, OID_AUTO, abe, CTLFLAG_VNET | CTLFLAG_RW,
+    &VNET_NAME(cc_do_abe), 0,
+    "Enable draft-ietf-tcpm-alternativebackoff-ecn (TCP Alternative Backoff with ECN)");
+
+VNET_DEFINE(int, cc_abe_frlossreduce) = 0;
+SYSCTL_INT(_net_inet_tcp_cc, OID_AUTO, abe_frlossreduce, CTLFLAG_VNET | CTLFLAG_RW,
+    &VNET_NAME(cc_abe_frlossreduce), 0,
+    "Apply standard beta instead of ABE-beta during ECN-signalled congestion "
+    "recovery episodes if loss also needs to be repaired");

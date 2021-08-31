@@ -37,6 +37,7 @@ options 	SCHED_4BSD		#4BSD scheduler
 options 	INET			#InterNETworking
 # Can't do IPv6 - it just doesn't fit.
 # options 	INET6
+options 	TCP_HHOOK		# hhook(9) framework for TCP
 # options 	NFSCL			#Network Filesystem Client
 options 	PSEUDOFS		#Pseudo-filesystem framework
 options 	_KPOSIX_PRIORITY_SCHEDULING #Posix P1003_1B real-time extensions
@@ -54,7 +55,7 @@ options         FFS                     #Berkeley Fast Filesystem
 #options         UFS_DIRHASH             #Improve performance on big directories
 
 # Support uncompress lzma rootfs
-device		geom_uzip
+device		xz
 options 	GEOM_UZIP
 options 	ROOTDEVNAME=\"ufs:/dev/map/rootfs.uzip\"
 
@@ -83,7 +84,6 @@ options 	ATH_ENABLE_11N
 options 	ATH_DIAGAPI
 
 # device		ath_hal
-options 	AH_SUPPORT_AR5416
 options 	AH_DEBUG
 options 	AH_DEBUG_ALQ
 
@@ -133,5 +133,4 @@ device		loop
 device		ether
 #device		md
 #device		bpf
-#device		random
 #device		if_bridge

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
  *
@@ -35,8 +37,8 @@ __FBSDID("$FreeBSD$");
 
 #include <vm/redzone.h>
 
-
-static SYSCTL_NODE(_vm, OID_AUTO, redzone, CTLFLAG_RW, NULL, "RedZone data");
+static SYSCTL_NODE(_vm, OID_AUTO, redzone, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
+    "RedZone data");
 static u_long redzone_extra_mem = 0;
 SYSCTL_ULONG(_vm_redzone, OID_AUTO, extra_mem, CTLFLAG_RD, &redzone_extra_mem,
     0, "Extra memory allocated by redzone");     

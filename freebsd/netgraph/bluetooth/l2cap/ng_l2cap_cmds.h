@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -425,4 +427,3 @@ void ng_l2cap_con_fail                (ng_l2cap_con_p, u_int16_t);
 void ng_l2cap_process_command_timeout (node_p, hook_p, void *, int);
 
 #endif /* ndef _NETGRAPH_L2CAP_CMDS_H_ */
-

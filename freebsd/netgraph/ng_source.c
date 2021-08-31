@@ -125,8 +125,16 @@ static int		ng_source_dup_mod(sc_p, struct mbuf *,
 
 /* Parse type for timeval */
 static const struct ng_parse_struct_field ng_source_timeval_type_fields[] = {
+#ifdef __i386__
 	{ "tv_sec",		&ng_parse_int32_type	},
+#else
+	{ "tv_sec",		&ng_parse_int64_type	},
+#endif
+#ifdef __LP64__
+	{ "tv_usec",		&ng_parse_int64_type	},
+#else
 	{ "tv_usec",		&ng_parse_int32_type	},
+#endif
 	{ NULL }
 };
 const struct ng_parse_type ng_source_timeval_type = {
@@ -675,8 +683,8 @@ ng_source_clr_data (sc_p sc)
 static int
 ng_source_start(sc_p sc, uint64_t packets)
 {
-	if (sc->output_ifp == NULL) {
-		printf("ng_source: start without iface configured\n");
+	if (sc->output_ifp == NULL && sc->stats.maxPps == 0) {
+		printf("ng_source: start without iface or pps configured\n");
 		return (ENXIO);
 	}
 

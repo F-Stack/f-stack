@@ -1,5 +1,6 @@
-/*	$NetBSD: sysv_shm.c,v 1.23 1994/07/04 23:25:12 glass Exp $	*/
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause AND BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1994 Adam Glass and Charles Hannum.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,15 +28,23 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ * $NetBSD: sysv_shm.c,v 1.39 1997/10/07 10:02:03 drochner Exp $
  */
 /*-
  * Copyright (c) 2003-2005 McAfee, Inc.
+ * Copyright (c) 2016-2017 Robert N. M. Watson
  * All rights reserved.
  *
  * This software was developed for the FreeBSD Project in part by McAfee
  * Research, the Security Research Division of McAfee, Inc under DARPA/SPAWAR
  * contract N66001-01-C-8035 ("CBOSS"), as part of the DARPA CHATS research
  * program.
+ *
+ * Portions of this software were developed by BAE Systems, the University of
+ * Cambridge Computer Laboratory, and Memorial University under DARPA/AFRL
+ * contract FA8650-15-C-7558 ("CADETS"), as part of the DARPA Transparent
+ * Computing (TC) research program.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -62,11 +71,11 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_sysvipc.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/abi_compat.h>
 #include <sys/kernel.h>
 #include <sys/limits.h>
 #include <sys/lock.h>
@@ -87,6 +96,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysproto.h>
 #include <sys/jail.h>
 
+#include <security/audit/audit.h>
 #include <security/mac/mac_framework.h>
 
 #include <vm/vm.h>
@@ -100,11 +110,6 @@ __FBSDID("$FreeBSD$");
 FEATURE(sysv_shm, "System V shared memory segments support");
 
 static MALLOC_DEFINE(M_SHM, "shm", "SVID compatible shared memory segments");
-
-static int shmget_allocate_segment(struct thread *td,
-    struct shmget_args *uap, int mode);
-static int shmget_existing(struct thread *td, struct shmget_args *uap,
-    int mode, int segnum);
 
 #define	SHMSEG_FREE     	0x0200
 #define	SHMSEG_REMOVED  	0x0400
@@ -124,12 +129,18 @@ static void shm_deallocate_segment(struct shmid_kernel *);
 static int shm_find_segment_by_key(struct prison *, key_t);
 static struct shmid_kernel *shm_find_segment(struct prison *, int, bool);
 static int shm_delete_mapping(struct vmspace *vm, struct shmmap_state *);
+static int shmget_allocate_segment(struct thread *td, key_t key, size_t size,
+    int mode);
+static int shmget_existing(struct thread *td, size_t size, int shmflg,
+    int mode, int segnum);
 static void shmrealloc(void);
 static int shminit(void);
 static int sysvshm_modload(struct module *, int, void *);
 static int shmunload(void);
+#ifndef SYSVSHM
 static void shmexit_myhook(struct vmspace *vm);
 static void shmfork_myhook(struct proc *p1, struct proc *p2);
+#endif
 static int sysctl_shmsegs(SYSCTL_HANDLER_ARGS);
 static void shm_remove(struct shmid_kernel *, int);
 static struct prison *shm_find_prison(struct ucred *);
@@ -190,7 +201,7 @@ SYSCTL_INT(_kern_ipc, OID_AUTO, shm_allow_removed, CTLFLAG_RWTUN,
     "Enable/Disable attachment to attached segments marked for removal");
 SYSCTL_PROC(_kern_ipc, OID_AUTO, shmsegs, CTLTYPE_OPAQUE | CTLFLAG_RD |
     CTLFLAG_MPSAFE, NULL, 0, sysctl_shmsegs, "",
-    "Current number of shared memory segments allocated");
+    "Array of struct shmid_kernel for each potential shared memory segment");
 
 static struct sx sysvshmsx;
 #define	SYSVSHM_LOCK()		sx_xlock(&sysvshmsx)
@@ -275,7 +286,7 @@ shm_delete_mapping(struct vmspace *vm, struct shmmap_state *shmmap_s)
 		return (EINVAL);
 	shmmap_s->shmid = -1;
 	shmseg->u.shm_dtime = time_second;
-	if ((--shmseg->u.shm_nattch <= 0) &&
+	if (--shmseg->u.shm_nattch == 0 &&
 	    (shmseg->u.shm_perm.mode & SHMSEG_REMOVED)) {
 		shm_deallocate_segment(shmseg);
 		shm_last_free = segnum;
@@ -289,7 +300,7 @@ shm_remove(struct shmid_kernel *shmseg, int segnum)
 
 	shmseg->u.shm_perm.key = IPC_PRIVATE;
 	shmseg->u.shm_perm.mode |= SHMSEG_REMOVED;
-	if (shmseg->u.shm_nattch <= 0) {
+	if (shmseg->u.shm_nattch == 0) {
 		shm_deallocate_segment(shmseg);
 		shm_last_free = segnum;
 	}
@@ -324,7 +335,6 @@ kern_shmdt_locked(struct thread *td, const void *shmaddr)
 	struct proc *p = td->td_proc;
 	struct shmmap_state *shmmap_s;
 #ifdef MAC
-	struct shmid_kernel *shmsegptr;
 	int error;
 #endif
 	int i;
@@ -335,6 +345,7 @@ kern_shmdt_locked(struct thread *td, const void *shmaddr)
 	shmmap_s = p->p_vmspace->vm_shm;
  	if (shmmap_s == NULL)
 		return (EINVAL);
+	AUDIT_ARG_SVIPC_ID(shmmap_s->shmid);
 	for (i = 0; i < shminfo.shmseg; i++, shmmap_s++) {
 		if (shmmap_s->shmid != -1 &&
 		    shmmap_s->va == (vm_offset_t)shmaddr) {
@@ -344,8 +355,8 @@ kern_shmdt_locked(struct thread *td, const void *shmaddr)
 	if (i == shminfo.shmseg)
 		return (EINVAL);
 #ifdef MAC
-	shmsegptr = &shmsegs[IPCID_TO_IX(shmmap_s->shmid)];
-	error = mac_sysvshm_check_shmdt(td->td_ucred, shmsegptr);
+	error = mac_sysvshm_check_shmdt(td->td_ucred,
+	    &shmsegs[IPCID_TO_IX(shmmap_s->shmid)]);
 	if (error != 0)
 		return (error);
 #endif
@@ -379,7 +390,10 @@ kern_shmat_locked(struct thread *td, int shmid, const void *shmaddr,
 	vm_offset_t attach_va;
 	vm_prot_t prot;
 	vm_size_t size;
-	int error, i, rv;
+	int cow, error, find_space, i, rv;
+
+	AUDIT_ARG_SVIPC_ID(shmid);
+	AUDIT_ARG_VALUE(shmflg);
 
 	SYSVSHM_ASSERT_LOCKED();
 	rpr = shm_find_prison(td->td_ucred);
@@ -415,6 +429,7 @@ kern_shmat_locked(struct thread *td, int shmid, const void *shmaddr,
 		return (EMFILE);
 	size = round_page(shmseg->u.shm_segsz);
 	prot = VM_PROT_READ;
+	cow = MAP_INHERIT_SHARE | MAP_PREFAULT_PARTIAL;
 	if ((shmflg & SHM_RDONLY) == 0)
 		prot |= VM_PROT_WRITE;
 	if (shmaddr != NULL) {
@@ -424,6 +439,9 @@ kern_shmat_locked(struct thread *td, int shmid, const void *shmaddr,
 			attach_va = (vm_offset_t)shmaddr;
 		else
 			return (EINVAL);
+		if ((shmflg & SHM_REMAP) != 0)
+			cow |= MAP_REMAP;
+		find_space = VMFS_NO_SPACE;
 	} else {
 		/*
 		 * This is just a hint to vm_map_find() about where to
@@ -431,12 +449,12 @@ kern_shmat_locked(struct thread *td, int shmid, const void *shmaddr,
 		 */
 		attach_va = round_page((vm_offset_t)p->p_vmspace->vm_daddr +
 		    lim_max(td, RLIMIT_DATA));
+		find_space = VMFS_OPTIMAL_SPACE;
 	}
 
 	vm_object_reference(shmseg->object);
 	rv = vm_map_find(&p->p_vmspace->vm_map, shmseg->object, 0, &attach_va,
-	    size, 0, shmaddr != NULL ? VMFS_NO_SPACE : VMFS_OPTIMAL_SPACE,
-	    prot, prot, MAP_INHERIT_SHARE | MAP_PREFAULT_PARTIAL);
+	    size, 0, find_space, prot, prot, cow);
 	if (rv != KERN_SUCCESS) {
 		vm_object_deallocate(shmseg->object);
 		return (ENOMEM);
@@ -491,6 +509,9 @@ kern_shmctl_locked(struct thread *td, int shmid, int cmd, void *buf,
 	rpr = shm_find_prison(td->td_ucred);
 	if (rpr == NULL)
 		return (ENOSYS);
+
+	AUDIT_ARG_SVIPC_ID(shmid);
+	AUDIT_ARG_SVIPC_CMD(cmd);
 
 	switch (cmd) {
 	/*
@@ -549,6 +570,7 @@ kern_shmctl_locked(struct thread *td, int shmid, int cmd, void *buf,
 		break;
 	case IPC_SET:
 		shmidp = (struct shmid_ds *)buf;
+		AUDIT_ARG_SVIPC_PERM(&shmidp->shm_perm);
 		error = ipcperm(td, &shmseg->u.shm_perm, IPC_M);
 		if (error != 0)
 			return (error);
@@ -586,7 +608,6 @@ kern_shmctl(struct thread *td, int shmid, int cmd, void *buf, size_t *bufsz)
 	SYSVSHM_UNLOCK();
 	return (error);
 }
-
 
 #ifndef _SYS_SYSPROTO_H_
 struct shmctl_args {
@@ -636,9 +657,8 @@ done:
 	return (error);
 }
 
-
 static int
-shmget_existing(struct thread *td, struct shmget_args *uap, int mode,
+shmget_existing(struct thread *td, size_t size, int shmflg, int mode,
     int segnum)
 {
 	struct shmid_kernel *shmseg;
@@ -650,35 +670,34 @@ shmget_existing(struct thread *td, struct shmget_args *uap, int mode,
 	KASSERT(segnum >= 0 && segnum < shmalloced,
 	    ("segnum %d shmalloced %d", segnum, shmalloced));
 	shmseg = &shmsegs[segnum];
-	if ((uap->shmflg & (IPC_CREAT | IPC_EXCL)) == (IPC_CREAT | IPC_EXCL))
+	if ((shmflg & (IPC_CREAT | IPC_EXCL)) == (IPC_CREAT | IPC_EXCL))
 		return (EEXIST);
 #ifdef MAC
-	error = mac_sysvshm_check_shmget(td->td_ucred, shmseg, uap->shmflg);
+	error = mac_sysvshm_check_shmget(td->td_ucred, shmseg, shmflg);
 	if (error != 0)
 		return (error);
 #endif
-	if (uap->size != 0 && uap->size > shmseg->u.shm_segsz)
+	if (size != 0 && size > shmseg->u.shm_segsz)
 		return (EINVAL);
 	td->td_retval[0] = IXSEQ_TO_IPCID(segnum, shmseg->u.shm_perm);
 	return (0);
 }
 
 static int
-shmget_allocate_segment(struct thread *td, struct shmget_args *uap, int mode)
+shmget_allocate_segment(struct thread *td, key_t key, size_t size, int mode)
 {
 	struct ucred *cred = td->td_ucred;
 	struct shmid_kernel *shmseg;
 	vm_object_t shm_object;
 	int i, segnum;
-	size_t size;
 
 	SYSVSHM_ASSERT_LOCKED();
 
-	if (uap->size < shminfo.shmmin || uap->size > shminfo.shmmax)
+	if (size < shminfo.shmmin || size > shminfo.shmmax)
 		return (EINVAL);
 	if (shm_nused >= shminfo.shmmni) /* Any shmids left? */
 		return (ENOSPC);
-	size = round_page(uap->size);
+	size = round_page(size);
 	if (shm_committed + btoc(size) > shminfo.shmall)
 		return (ENOMEM);
 	if (shm_last_free < 0) {
@@ -729,20 +748,15 @@ shmget_allocate_segment(struct thread *td, struct shmget_args *uap, int mode)
 #endif
 		return (ENOMEM);
 	}
-	shm_object->pg_color = 0;
-	VM_OBJECT_WLOCK(shm_object);
-	vm_object_clear_flag(shm_object, OBJ_ONEMAPPING);
-	vm_object_set_flag(shm_object, OBJ_COLORED | OBJ_NOSPLIT);
-	VM_OBJECT_WUNLOCK(shm_object);
 
 	shmseg->object = shm_object;
 	shmseg->u.shm_perm.cuid = shmseg->u.shm_perm.uid = cred->cr_uid;
 	shmseg->u.shm_perm.cgid = shmseg->u.shm_perm.gid = cred->cr_gid;
 	shmseg->u.shm_perm.mode = (mode & ACCESSPERMS) | SHMSEG_ALLOCATED;
-	shmseg->u.shm_perm.key = uap->key;
+	shmseg->u.shm_perm.key = key;
 	shmseg->u.shm_perm.seq = (shmseg->u.shm_perm.seq + 1) & 0x7fff;
 	shmseg->cred = crhold(cred);
-	shmseg->u.shm_segsz = uap->size;
+	shmseg->u.shm_segsz = size;
 	shmseg->u.shm_cpid = td->td_proc->p_pid;
 	shmseg->u.shm_lpid = shmseg->u.shm_nattch = 0;
 	shmseg->u.shm_atime = shmseg->u.shm_dtime = 0;
@@ -775,23 +789,30 @@ sys_shmget(struct thread *td, struct shmget_args *uap)
 	mode = uap->shmflg & ACCESSPERMS;
 	SYSVSHM_LOCK();
 	if (uap->key == IPC_PRIVATE) {
-		error = shmget_allocate_segment(td, uap, mode);
+		error = shmget_allocate_segment(td, uap->key, uap->size, mode);
 	} else {
 		segnum = shm_find_segment_by_key(td->td_ucred->cr_prison,
 		    uap->key);
 		if (segnum >= 0)
-			error = shmget_existing(td, uap, mode, segnum);
+			error = shmget_existing(td, uap->size, uap->shmflg,
+			    mode, segnum);
 		else if ((uap->shmflg & IPC_CREAT) == 0)
 			error = ENOENT;
 		else
-			error = shmget_allocate_segment(td, uap, mode);
+			error = shmget_allocate_segment(td, uap->key,
+			    uap->size, mode);
 	}
 	SYSVSHM_UNLOCK();
 	return (error);
 }
 
+#ifdef SYSVSHM
+void
+shmfork(struct proc *p1, struct proc *p2)
+#else
 static void
 shmfork_myhook(struct proc *p1, struct proc *p2)
+#endif
 {
 	struct shmmap_state *shmmap_s;
 	size_t size;
@@ -814,8 +835,13 @@ shmfork_myhook(struct proc *p1, struct proc *p2)
 	SYSVSHM_UNLOCK();
 }
 
+#ifdef SYSVSHM
+void
+shmexit(struct vmspace *vm)
+#else
 static void
 shmexit_myhook(struct vmspace *vm)
+#endif
 {
 	struct shmmap_state *base, *shm;
 	int i;
@@ -844,7 +870,8 @@ shmrealloc(void)
 	if (shmalloced >= shminfo.shmmni)
 		return;
 
-	newsegs = malloc(shminfo.shmmni * sizeof(*newsegs), M_SHM, M_WAITOK);
+	newsegs = malloc(shminfo.shmmni * sizeof(*newsegs), M_SHM,
+	    M_WAITOK | M_ZERO);
 	for (i = 0; i < shmalloced; i++)
 		bcopy(&shmsegs[i], &newsegs[i], sizeof(newsegs[0]));
 	for (; i < shminfo.shmmni; i++) {
@@ -922,7 +949,8 @@ shminit(void)
 		}
 	}
 	shmalloced = shminfo.shmmni;
-	shmsegs = malloc(shmalloced * sizeof(shmsegs[0]), M_SHM, M_WAITOK);
+	shmsegs = malloc(shmalloced * sizeof(shmsegs[0]), M_SHM,
+	    M_WAITOK|M_ZERO);
 	for (i = 0; i < shmalloced; i++) {
 		shmsegs[i].u.shm_perm.mode = SHMSEG_FREE;
 		shmsegs[i].u.shm_perm.seq = 0;
@@ -934,8 +962,10 @@ shminit(void)
 	shm_nused = 0;
 	shm_committed = 0;
 	sx_init(&sysvshmsx, "sysvshmsx");
+#ifndef SYSVSHM
 	shmexit_hook = &shmexit_myhook;
 	shmfork_hook = &shmfork_myhook;
+#endif
 
 	/* Set current prisons according to their allow.sysvipc. */
 	shm_prison_slot = osd_jail_register(NULL, methods);
@@ -949,7 +979,7 @@ shminit(void)
 		if (rsv == NULL)
 			rsv = osd_reserve(shm_prison_slot);
 		prison_lock(pr);
-		if ((pr->pr_allow & PR_ALLOW_SYSVIPC) && pr->pr_ref > 0) {
+		if (prison_isvalid(pr) && (pr->pr_allow & PR_ALLOW_SYSVIPC)) {
 			(void)osd_jail_set_reserved(pr, shm_prison_slot, rsv,
 			    &prison0);
 			rsv = NULL;
@@ -999,8 +1029,10 @@ shmunload(void)
 			vm_object_deallocate(shmsegs[i].object);
 	}
 	free(shmsegs, M_SHM);
+#ifndef SYSVSHM
 	shmexit_hook = NULL;
 	shmfork_hook = NULL;
+#endif
 	sx_destroy(&sysvshmsx);
 	return (0);
 }
@@ -1009,7 +1041,12 @@ static int
 sysctl_shmsegs(SYSCTL_HANDLER_ARGS)
 {
 	struct shmid_kernel tshmseg;
+#ifdef COMPAT_FREEBSD32
+	struct shmid_kernel32 tshmseg32;
+#endif
 	struct prison *pr, *rpr;
+	void *outaddr;
+	size_t outsize;
 	int error, i;
 
 	SYSVSHM_LOCK();
@@ -1026,7 +1063,31 @@ sysctl_shmsegs(SYSCTL_HANDLER_ARGS)
 			if (tshmseg.cred->cr_prison != pr)
 				tshmseg.u.shm_perm.key = IPC_PRIVATE;
 		}
-		error = SYSCTL_OUT(req, &tshmseg, sizeof(tshmseg));
+#ifdef COMPAT_FREEBSD32
+		if (SV_CURPROC_FLAG(SV_ILP32)) {
+			bzero(&tshmseg32, sizeof(tshmseg32));
+			freebsd32_ipcperm_out(&tshmseg.u.shm_perm,
+			    &tshmseg32.u.shm_perm);
+			CP(tshmseg, tshmseg32, u.shm_segsz);
+			CP(tshmseg, tshmseg32, u.shm_lpid);
+			CP(tshmseg, tshmseg32, u.shm_cpid);
+			CP(tshmseg, tshmseg32, u.shm_nattch);
+			CP(tshmseg, tshmseg32, u.shm_atime);
+			CP(tshmseg, tshmseg32, u.shm_dtime);
+			CP(tshmseg, tshmseg32, u.shm_ctime);
+			/* Don't copy object, label, or cred */
+			outaddr = &tshmseg32;
+			outsize = sizeof(tshmseg32);
+		} else
+#endif
+		{
+			tshmseg.object = NULL;
+			tshmseg.label = NULL;
+			tshmseg.cred = NULL;
+			outaddr = &tshmseg;
+			outsize = sizeof(tshmseg);
+		}
+		error = SYSCTL_OUT(req, outaddr, outsize);
 		if (error != 0)
 			break;
 	}
@@ -1300,6 +1361,7 @@ int
 sys_shmsys(struct thread *td, struct shmsys_args *uap)
 {
 
+	AUDIT_ARG_SVIPC_WHICH(uap->which);
 	if (uap->which < 0 || uap->which >= nitems(shmcalls))
 		return (EINVAL);
 	return ((*shmcalls[uap->which])(td, &uap->a2));
@@ -1315,6 +1377,7 @@ freebsd32_shmsys(struct thread *td, struct freebsd32_shmsys_args *uap)
 
 #if defined(COMPAT_FREEBSD4) || defined(COMPAT_FREEBSD5) || \
     defined(COMPAT_FREEBSD6) || defined(COMPAT_FREEBSD7)
+	AUDIT_ARG_SVIPC_WHICH(uap->which);
 	switch (uap->which) {
 	case 0:	{	/* shmat */
 		struct shmat_args ap;
@@ -1416,6 +1479,7 @@ freebsd7_freebsd32_shmctl(struct thread *td,
 		break;
 	case SHM_STAT:
 	case IPC_STAT:
+		memset(&u32.shmid_ds32, 0, sizeof(u32.shmid_ds32));
 		freebsd32_ipcperm_old_out(&u.shmid_ds.shm_perm,
 		    &u32.shmid_ds32.shm_perm);
 		if (u.shmid_ds.shm_segsz > INT32_MAX)
@@ -1530,10 +1594,6 @@ done:
 #if defined(COMPAT_FREEBSD4) || defined(COMPAT_FREEBSD5) || \
     defined(COMPAT_FREEBSD6) || defined(COMPAT_FREEBSD7)
 
-#ifndef CP
-#define CP(src, dst, fld)	do { (dst).fld = (src).fld; } while (0)
-#endif
-
 #ifndef _SYS_SYSPROTO_H_
 struct freebsd7_shmctl_args {
 	int shmid;
@@ -1579,6 +1639,7 @@ freebsd7_shmctl(struct thread *td, struct freebsd7_shmctl_args *uap)
 	/* Cases in which we need to copyout */
 	switch (uap->cmd) {
 	case IPC_STAT:
+		memset(&old, 0, sizeof(old));
 		ipcperm_new2old(&buf.shm_perm, &old.shm_perm);
 		if (buf.shm_segsz > INT_MAX)
 			old.shm_segsz = INT_MAX;

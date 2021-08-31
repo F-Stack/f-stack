@@ -53,59 +53,55 @@ __FBSDID("$FreeBSD$");
 #include <opencrypto/xform_auth.h>
 #include <opencrypto/xform_enc.h>
 
-static	int null_setkey(u_int8_t **, u_int8_t *, int);
-static	void null_encrypt(caddr_t, u_int8_t *);
-static	void null_decrypt(caddr_t, u_int8_t *);
-static	void null_zerokey(u_int8_t **);
+static	int null_setkey(void *, const uint8_t *, int);
+static	void null_crypt(void *, const uint8_t *, uint8_t *);
 
 static	void null_init(void *);
-static	void null_reinit(void *ctx, const u_int8_t *buf, u_int16_t len);
-static	int null_update(void *, const u_int8_t *, u_int16_t);
-static	void null_final(u_int8_t *, void *);
+static	void null_reinit(void *ctx, const uint8_t *buf, u_int len);
+static	int null_update(void *, const void *, u_int);
+static	void null_final(uint8_t *, void *);
 
 /* Encryption instances */
 struct enc_xform enc_xform_null = {
-	CRYPTO_NULL_CBC, "NULL",
+	.type = CRYPTO_NULL_CBC,
+	.name = "NULL",
 	/* NB: blocksize of 4 is to generate a properly aligned ESP header */
-	NULL_BLOCK_LEN, 0, NULL_MIN_KEY, NULL_MAX_KEY, 
-	null_encrypt,
-	null_decrypt,
-	null_setkey,
-	null_zerokey,
-	NULL,
+	.blocksize = NULL_BLOCK_LEN,
+	.ivsize = 0,
+	.minkey = NULL_MIN_KEY,
+	.maxkey = NULL_MAX_KEY,
+	.encrypt = null_crypt,
+	.decrypt = null_crypt,
+	.setkey = null_setkey,
 };
 
 /* Authentication instances */
-struct auth_hash auth_hash_null = {	/* NB: context isn't used */
-	CRYPTO_NULL_HMAC, "NULL-HMAC",
-	NULL_HMAC_KEY_LEN, NULL_HASH_LEN, sizeof(int), NULL_HMAC_BLOCK_LEN,
-	null_init, null_reinit, null_reinit, null_update, null_final
+struct auth_hash auth_hash_null = {
+	.type = CRYPTO_NULL_HMAC,
+	.name = "NULL-HMAC",
+	.keysize = 0,
+	.hashsize = NULL_HASH_LEN,
+	.ctxsize = sizeof(int),	/* NB: context isn't used */
+	.blocksize = NULL_HMAC_BLOCK_LEN,
+	.Init = null_init,
+	.Setkey = null_reinit,
+	.Reinit = null_reinit,
+	.Update = null_update,
+	.Final = null_final,
 };
 
 /*
  * Encryption wrapper routines.
  */
 static void
-null_encrypt(caddr_t key, u_int8_t *blk)
-{
-}
-
-static void
-null_decrypt(caddr_t key, u_int8_t *blk)
+null_crypt(void *key, const uint8_t *in, uint8_t *out)
 {
 }
 
 static int
-null_setkey(u_int8_t **sched, u_int8_t *key, int len)
+null_setkey(void *sched, const uint8_t *key, int len)
 {
-	*sched = NULL;
-	return 0;
-}
-
-static void
-null_zerokey(u_int8_t **sched)
-{
-	*sched = NULL;
+	return (0);
 }
 
 /*
@@ -118,19 +114,19 @@ null_init(void *ctx)
 }
 
 static void
-null_reinit(void *ctx, const u_int8_t *buf, u_int16_t len)
+null_reinit(void *ctx, const uint8_t *buf, u_int len)
 {
 }
 
 static int
-null_update(void *ctx, const u_int8_t *buf, u_int16_t len)
+null_update(void *ctx, const void *buf, u_int len)
 {
 	return 0;
 }
 
 static void
-null_final(u_int8_t *buf, void *ctx)
+null_final(uint8_t *buf, void *ctx)
 {
-	if (buf != (u_int8_t *) 0)
+	if (buf != (uint8_t *) 0)
 		bzero(buf, 12);
 }

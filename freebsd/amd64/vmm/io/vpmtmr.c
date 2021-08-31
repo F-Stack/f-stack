@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2014, Neel Natu (neel@freebsd.org)
  * All rights reserved.
  *
@@ -27,6 +29,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_bhyve_snapshot.h"
+
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/kernel.h>
@@ -34,6 +38,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 
 #include <machine/vmm.h>
+#include <machine/vmm_snapshot.h>
 
 #include "vpmtmr.h"
 
@@ -101,3 +106,16 @@ vpmtmr_handler(struct vm *vm, int vcpuid, bool in, int port, int bytes,
 
 	return (0);
 }
+
+#ifdef BHYVE_SNAPSHOT
+int
+vpmtmr_snapshot(struct vpmtmr *vpmtmr, struct vm_snapshot_meta *meta)
+{
+	int ret;
+
+	SNAPSHOT_VAR_OR_LEAVE(vpmtmr->baseval, meta, ret, done);
+
+done:
+	return (ret);
+}
+#endif

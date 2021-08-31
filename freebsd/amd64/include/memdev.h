@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Mark R V Murray
  * All rights reserved.
  *
@@ -34,7 +36,7 @@
 
 d_open_t	memopen;
 d_read_t	memrw;
-d_ioctl_t	memioctl;
+d_ioctl_t	memioctl_md;
 d_mmap_t	memmmap;
 
 #endif /* _MACHINE_MEMDEV_H_ */

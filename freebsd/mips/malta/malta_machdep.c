@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Wojciech A. Koszek <wkoszek@FreeBSD.org>
  * All rights reserved.
  *
@@ -52,8 +54,11 @@ __FBSDID("$FreeBSD$");
 #include <sys/user.h>
 
 #include <vm/vm.h>
+#include <vm/vm_param.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
+#include <vm/vm_phys.h>
+#include <vm/vm_dumpset.h>
 
 #include <machine/clock.h>
 #include <machine/cpu.h>
@@ -68,8 +73,7 @@ __FBSDID("$FreeBSD$");
 #endif
 
 #ifdef TICK_USE_MALTA_RTC
-#include <mips/mips4k/malta/maltareg.h>
-#include <dev/mc146818/mc146818reg.h>
+#include <mips/malta/maltareg.h>
 #include <isa/rtc.h>
 #endif
 
@@ -130,7 +134,7 @@ static void
 malta_lcd_print(char *str)
 {
 	int i;
-	
+
 	if (str == NULL)
 		return;
 
@@ -152,7 +156,7 @@ lcd_puts(char *s)
 
 #ifdef TICK_USE_MALTA_RTC
 static __inline uint8_t
-rtcin(uint8_t addr)
+malta_rtcin(uint8_t addr)
 {
 
 	*((volatile uint8_t *)
@@ -162,7 +166,7 @@ rtcin(uint8_t addr)
 }
 
 static __inline void
-writertc(uint8_t addr, uint8_t val)
+malta_writertc(uint8_t addr, uint8_t val)
 {
 
 	*((volatile uint8_t *)
@@ -191,7 +195,7 @@ mips_init(unsigned long memsize, uint64_t ememsize)
 	/* phys_avail regions are in bytes */
 	phys_avail[0] = MIPS_KSEG0_TO_PHYS(kernel_kseg0_end);
 	phys_avail[1] = memsize;
-	dump_avail[0] = phys_avail[0];
+	dump_avail[0] = 0;
 	dump_avail[1] = phys_avail[1];
 
 	/* Only specify the extended region if it's set */
@@ -252,19 +256,19 @@ malta_cpu_freq(void)
 	u_int64_t counterval[2];
 
 	/* Set RTC to binary mode. */
-	writertc(RTC_STATUSB, (rtcin(RTC_STATUSB) | RTCSB_BCD));
+	malta_writertc(RTC_STATUSB, (malta_rtcin(RTC_STATUSB) | RTCSB_BCD));
 
 	/* Busy-wait for falling edge of RTC update. */
-	while (((rtcin(RTC_STATUSA) & RTCSA_TUP) == 0))
+	while (((malta_rtcin(RTC_STATUSA) & RTCSA_TUP) == 0))
 		;
-	while (((rtcin(RTC_STATUSA)& RTCSA_TUP) != 0))
+	while (((malta_rtcin(RTC_STATUSA)& RTCSA_TUP) != 0))
 		;
 	counterval[0] = mips_rd_count();
 
 	/* Busy-wait for falling edge of RTC update. */
-	while (((rtcin(RTC_STATUSA) & RTCSA_TUP) == 0))
+	while (((malta_rtcin(RTC_STATUSA) & RTCSA_TUP) == 0))
 		;
-	while (((rtcin(RTC_STATUSA)& RTCSA_TUP) != 0))
+	while (((malta_rtcin(RTC_STATUSA)& RTCSA_TUP) != 0))
 		;
 	counterval[1] = mips_rd_count();
 
@@ -342,6 +346,15 @@ platform_start(__register_t a0, __register_t a1,  __register_t a2,
 		printf("memsize = %llu (0x%08x)\n",
 		    (unsigned long long) memsize, memsize);
 		printf("ememsize = %llu\n", (unsigned long long) ememsize);
+
+#ifdef __mips_o32
+		/*
+		 * For O32 phys_avail[] can't address memory beyond 2^32,
+		 * so cap extended memory to 2GB minus one page.
+		 */
+		if (ememsize >= 2ULL * 1024 * 1024 * 1024)
+			ememsize = 2ULL * 1024 * 1024 * 1024 - PAGE_SIZE;
+#endif
 	}
 
 	/*

@@ -1,6 +1,8 @@
 /*	$NetBSD: obio.c,v 1.11 2003/07/15 00:25:05 lukem Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2001, 2002, 2003 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -163,7 +165,7 @@ obio_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	rman_set_rid(rv, *rid);
 	rman_set_bustag(rv, bt);
 	rman_set_bushandle(rv, bh);
-	
+
 	if (0) {
 		if (bus_activate_resource(child, type, *rid, rv)) {
 			rman_release_resource(rv);

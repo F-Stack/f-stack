@@ -9,7 +9,7 @@
 .\" 2. Redistributions in binary form must reproduce the above copyright
 .\"    notice, this list of conditions and the following disclaimer in the
 .\"    documentation and/or other materials provided with the distribution.
-.\" 4. Neither the name of the University nor the names of its contributors
+.\" 3. Neither the name of the University nor the names of its contributors
 .\"    may be used to endorse or promote products derived from this software
 .\"    without specific prior written permission.
 .\"
@@ -28,7 +28,7 @@
 .\"	From: @(#)sysctl.8	8.1 (Berkeley) 6/6/93
 .\" $FreeBSD$
 .\"
-.Dd December 10, 2015
+.Dd October 30, 2020
 .Dt SYSCTL 8
 .Os
 .Sh NAME
@@ -36,13 +36,13 @@
 .Nd get or set kernel state
 .Sh SYNOPSIS
 .Nm
-.Op Fl bdehiNnoRTtqx
+.Op Fl bdehiNnoTtqWx
 .Op Fl B Ar bufsize
 .Op Fl f Ar filename
-.Ar name Ns Op = Ns Ar value
+.Ar name Ns Op = Ns Ar value Ns Op , Ns Ar value
 .Ar ...
 .Nm
-.Op Fl bdehNnoRTtqx
+.Op Fl bdehNnoTtqWx
 .Op Fl B Ar bufsize
 .Fl a
 .Sh DESCRIPTION
@@ -123,7 +123,7 @@ use:
 .Pp
 .Dl "complete sysctl 'n/*/`sysctl -Na`/'"
 .It Fl n
-Show only variable values, not their names.
+Do not show variable names.
 This option is useful for setting shell variables.
 For instance, to save the pagesize in variable
 .Va psize ,
@@ -214,7 +214,7 @@ String and integer values can be set using
 .It "kern.filedelay	integer	yes"
 .It "kern.dirdelay	integer	yes"
 .It "kern.metadelay	integer	yes"
-.It "kern.osreldate	string	no"
+.It "kern.osreldate	integer	no"
 .It "kern.bootfile	string	yes"
 .It "kern.corefile	string	yes"
 .It "kern.logsigexit	integer	yes"
@@ -256,6 +256,7 @@ String and integer values can be set using
 .It "user.posix2_upe	integer	no"
 .It "user.stream_max	integer	no"
 .It "user.tzname_max	integer	no"
+.It "user.localbase	string	no"
 .El
 .Sh FILES
 .Bl -tag -width ".In netinet/icmp_var.h" -compact
@@ -276,6 +277,8 @@ definitions for fourth level ICMP identifiers
 .It In netinet/udp_var.h
 definitions for fourth level UDP identifiers
 .El
+.Sh EXIT STATUS
+.Ex -std
 .Sh EXAMPLES
 For example, to retrieve the maximum number of processes allowed
 in the system, one would use the following request:

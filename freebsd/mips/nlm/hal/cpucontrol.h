@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2003-2011 Netlogic Microsystems (Netlogic). All rights
  * reserved.
  *
@@ -78,7 +80,6 @@
 #define	MMU_PGWKR_PMDMASK	0x417
 #define	MMU_PGWKR_PTESHFT	0x418
 #define	MMU_PGWKR_PTEMASK	0x419
-
 
 #if !defined(LOCORE) && !defined(__ASSEMBLY__)
 #if defined(__mips_n64) || defined(__mips_n32)

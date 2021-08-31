@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: MIT-CMU
+ *
  * Mach Operating System
  * Copyright (c) 1991,1990 Carnegie Mellon University
  * All Rights Reserved.
@@ -32,6 +34,7 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/systm.h>
 
 #include <ddb/ddb.h>
 #include <ddb/db_lex.h>
@@ -57,7 +60,8 @@ db_term(db_expr_t *valuep)
 	    if (!db_value_of_name(db_tok_string, valuep) &&
 		!db_value_of_name_pcpu(db_tok_string, valuep) &&
 		!db_value_of_name_vnet(db_tok_string, valuep)) {
-		db_error("Symbol not found\n");
+		db_printf("Symbol '%s' not found\n", db_tok_string);
+		db_error(NULL);
 		/*NOTREACHED*/
 	    }
 	    return (true);
@@ -89,12 +93,14 @@ db_term(db_expr_t *valuep)
 	}
 	if (t == tLPAREN) {
 	    if (!db_expression(valuep)) {
-		db_error("Syntax error\n");
+		db_printf("Expression syntax error after '%c'\n", '(');
+		db_error(NULL);
 		/*NOTREACHED*/
 	    }
 	    t = db_read_token();
 	    if (t != tRPAREN) {
-		db_error("Syntax error\n");
+		db_printf("Expression syntax error -- expected '%c'\n", ')');
+		db_error(NULL);
 		/*NOTREACHED*/
 	    }
 	    return (true);
@@ -164,7 +170,9 @@ db_mult_expr(db_expr_t *valuep)
 	while (t == tSTAR || t == tSLASH || t == tPCT || t == tHASH ||
 	    t == tBIT_AND ) {
 	    if (!db_term(&rhs)) {
-		db_printf("Expression syntax error after '%c'\n", '!');
+		db_printf("Expression syntax error after '%c'\n",
+		    t == tSTAR ? '*' : t == tSLASH ? '/' : t == tPCT ? '%' :
+		    t == tHASH ? '#' : '&');
 		db_error(NULL);
 		/*NOTREACHED*/
 	    }
@@ -177,7 +185,7 @@ db_mult_expr(db_expr_t *valuep)
 		    break;
 		default:
 		    if (rhs == 0) {
-			db_error("Divide by 0\n");
+			db_error("Division by 0\n");
 			/*NOTREACHED*/
 		    }
 		    if (t == tSLASH)
@@ -199,7 +207,6 @@ db_add_expr(db_expr_t *valuep)
 {
 	db_expr_t	lhs, rhs;
 	int		t;
-	char		c;
 
 	if (!db_mult_expr(&lhs))
 	    return (false);
@@ -207,8 +214,8 @@ db_add_expr(db_expr_t *valuep)
 	t = db_read_token();
 	while (t == tPLUS || t == tMINUS || t == tBIT_OR) {
 	    if (!db_mult_expr(&rhs)) {
-		c = db_tok_string[0];
-		db_printf("Expression syntax error after '%c'\n", c);
+		db_printf("Expression syntax error after '%c'\n",
+		    t == tPLUS ? '+' : t == tMINUS ? '-' : '|');
 		db_error(NULL);
 		/*NOTREACHED*/
 	    }
@@ -223,7 +230,7 @@ db_add_expr(db_expr_t *valuep)
 		lhs |= rhs;
 		break;
 	    default:
-		__unreachable();
+		__assert_unreachable();
 	    }
 	    t = db_read_token();
 	}
@@ -243,18 +250,21 @@ db_shift_expr(db_expr_t *valuep)
 	t = db_read_token();
 	while (t == tSHIFT_L || t == tSHIFT_R) {
 	    if (!db_add_expr(&rhs)) {
-		db_error("Syntax error\n");
+		db_printf("Expression syntax error after '%s'\n",
+		    t == tSHIFT_L ? "<<" : ">>");
+		db_error(NULL);
 		/*NOTREACHED*/
 	    }
 	    if (rhs < 0) {
-		db_error("Negative shift amount\n");
+		db_printf("Negative shift amount %jd\n", (intmax_t)rhs);
+		db_error(NULL);
 		/*NOTREACHED*/
 	    }
 	    if (t == tSHIFT_L)
 		lhs <<= rhs;
 	    else {
 		/* Shift right is unsigned */
-		lhs = (unsigned) lhs >> rhs;
+		lhs = (db_addr_t)lhs >> rhs;
 	    }
 	    t = db_read_token();
 	}
@@ -269,7 +279,6 @@ db_logical_relation_expr(
 {
 	db_expr_t	lhs, rhs;
 	int		t;
-	char		op[3];
 
 	if (!db_shift_expr(&lhs))
 	    return (false);
@@ -277,11 +286,11 @@ db_logical_relation_expr(
 	t = db_read_token();
 	while (t == tLOG_EQ || t == tLOG_NOT_EQ || t == tGREATER ||
 	    t == tGREATER_EQ || t == tLESS || t == tLESS_EQ) {
-	    op[0] = db_tok_string[0];
-	    op[1] = db_tok_string[1];
-	    op[2] = 0;
 	    if (!db_shift_expr(&rhs)) {
-		db_printf("Expression syntax error after \"%s\"\n", op);
+		db_printf("Expression syntax error after '%s'\n",
+		    t == tLOG_EQ ? "==" : t == tLOG_NOT_EQ ? "!=" :
+		    t == tGREATER ? ">" : t == tGREATER_EQ ? ">=" :
+		    t == tLESS ? "<" : "<=");
 		db_error(NULL);
 		/*NOTREACHED*/
 	    }
@@ -305,7 +314,7 @@ db_logical_relation_expr(
 		    lhs = (lhs <= rhs);
 		    break;
 		default:
-		    __unreachable();
+		    __assert_unreachable();
 	    }
 	    t = db_read_token();
 	}

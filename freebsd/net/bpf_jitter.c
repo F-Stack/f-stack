@@ -1,6 +1,8 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 2002-2003 NetGroup, Politecnico di Torino (Italy)
- * Copyright (C) 2005-2009 Jung-uk Kim <jkim@FreeBSD.org>
+ * Copyright (C) 2005-2017 Jung-uk Kim <jkim@FreeBSD.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,14 +52,13 @@ __FBSDID("$FreeBSD$");
 #include <net/bpf.h>
 #include <net/bpf_jitter.h>
 
-bpf_filter_func	bpf_jit_compile(struct bpf_insn *, u_int, size_t *);
-
 static u_int	bpf_jit_accept_all(u_char *, u_int, u_int);
 
 #ifdef _KERNEL
 MALLOC_DEFINE(M_BPFJIT, "BPF_JIT", "BPF JIT compiler");
 
-SYSCTL_NODE(_net, OID_AUTO, bpf_jitter, CTLFLAG_RW, 0, "BPF JIT compiler");
+SYSCTL_NODE(_net, OID_AUTO, bpf_jitter, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "BPF JIT compiler");
 int bpf_jitter_enable = 1;
 SYSCTL_INT(_net_bpf_jitter, OID_AUTO, enable, CTLFLAG_RW,
     &bpf_jitter_enable, 0, "enable BPF JIT compiler");

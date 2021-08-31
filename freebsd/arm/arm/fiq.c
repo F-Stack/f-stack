@@ -1,6 +1,8 @@
 /*	$NetBSD: fiq.c,v 1.5 2002/04/03 23:33:27 thorpej Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2001, 2002 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -73,15 +75,7 @@ fiq_installhandler(void *func, size_t size)
 {
 	const uint32_t fiqvector = 7 * sizeof(uint32_t);
 
-#if __ARM_ARCH < 6 && !defined(__ARM_FIQ_INDIRECT)
-	vector_page_setprot(VM_PROT_READ|VM_PROT_WRITE);
-#endif
-
 	memcpy((void *)(vector_page + fiqvector), func, size);
-
-#if __ARM_ARCH < 6 && !defined(__ARM_FIQ_INDIRECT)
-	vector_page_setprot(VM_PROT_READ);
-#endif
 	icache_sync((vm_offset_t) fiqvector, size);
 }
 

@@ -1,6 +1,8 @@
 /*	$NetBSD: bus.h,v 1.11 2003/07/28 17:35:54 thorpej Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 1996, 1997, 1998, 2001 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -67,33 +69,10 @@
 #define _ARM_BUS_DMA_H
 
 #include <sys/bus_dma.h>
+#include <sys/bus_dma_internal.h>
 
 /* Bus Space DMA macros */
 
 #define BUS_DMA_TAG_VALID(t)    ((t) != (bus_dma_tag_t)0)
-
-#ifdef _ARM32_BUS_DMA_PRIVATE
-/*
- *	arm32_dma_range
- *
- *	This structure describes a valid DMA range.
- */
-struct arm32_dma_range {
-	bus_addr_t	dr_sysbase;	/* system base address */
-	bus_addr_t	dr_busbase;	/* appears here on bus */
-	bus_size_t	dr_len;		/* length of range */
-};
-
-/* _dm_buftype */
-#define	ARM32_BUFTYPE_INVALID		0
-#define	ARM32_BUFTYPE_LINEAR		1
-#define	ARM32_BUFTYPE_MBUF		2
-#define	ARM32_BUFTYPE_UIO		3
-#define	ARM32_BUFTYPE_RAW		4
-
-struct arm32_dma_range	*bus_dma_get_range(void);
-int	bus_dma_get_range_nb(void);
-
-#endif /* _ARM32_BUS_DMA_PRIVATE */
 
 #endif /* _ARM_BUS_DMA_H */

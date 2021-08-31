@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Ian Lepore <ian@freebsd.org>
  * All rights reserved.
  *
@@ -30,7 +32,7 @@
 #define	_SYS_DEVMAP_H_
 
 #ifndef _KERNEL
-#error "no user-servicable parts inside"
+#error "no user-serviceable parts inside"
 #endif
 
 /*
@@ -61,16 +63,18 @@ void devmap_add_entry(vm_paddr_t pa, vm_size_t sz);
 
 /*
  * Register a platform-local table to be bootstrapped by the generic
- * initarm() in arm/machdep.c.  This is used by newer code that allocates and
- * fills in its own local table but does not have its own initarm() routine.
+ * platform-specific init function in <ARCH>/machdep.c.  This is used by newer
+ * code that allocates and fills in its own local table but does not have its
+ * own platform-specific init routine.
  */
 void devmap_register_table(const struct devmap_entry * _table);
 
 /*
  * Establish mappings for all the entries in the table.  This is called
- * automatically from the common initarm() in arm/machdep.c, and also from the
- * custom initarm() routines in older code.  If the table pointer is NULL, this
- * will use the table installed previously by devmap_register_table().
+ * automatically from the common platform-specific init function in
+ * <ARCH>/machdep.c, and also from the custom platform-specific init routines
+ * in older code.  If the table pointer is NULL, this will use the table
+ * installed previously by devmap_register_table().
  */
 void devmap_bootstrap(vm_offset_t _l1pt,
     const struct devmap_entry *_table);

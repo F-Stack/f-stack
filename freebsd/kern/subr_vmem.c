@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c)2006,2007,2008,2009 YAMAMOTO Takashi,
  * Copyright (c) 2013 EMC Corp.
  * All rights reserved.
@@ -57,6 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/taskqueue.h>
 #include <sys/vmem.h>
+#include <sys/vmmeter.h>
 
 #include "opt_vm.h"
 
@@ -68,7 +71,11 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_kern.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_param.h>
+#include <vm/vm_page.h>
 #include <vm/vm_pageout.h>
+#include <vm/vm_phys.h>
+#include <vm/vm_pagequeue.h>
+#include <vm/uma_int.h>
 
 #define	VMEM_OPTORDER		5
 #define	VMEM_OPTVALUE		(1 << VMEM_OPTORDER)
@@ -80,10 +87,10 @@ __FBSDID("$FreeBSD$");
 
 #define	VMEM_QCACHE_IDX_MAX	16
 
-#define	VMEM_FITMASK	(M_BESTFIT | M_FIRSTFIT)
+#define	VMEM_FITMASK	(M_BESTFIT | M_FIRSTFIT | M_NEXTFIT)
 
-#define	VMEM_FLAGS						\
-    (M_NOWAIT | M_WAITOK | M_USE_RESERVE | M_NOVM | M_BESTFIT | M_FIRSTFIT)
+#define	VMEM_FLAGS	(M_NOWAIT | M_WAITOK | M_USE_RESERVE | M_NOVM |	\
+    M_BESTFIT | M_FIRSTFIT | M_NEXTFIT)
 
 #define	BT_FLAGS	(M_NOWAIT | M_WAITOK | M_USE_RESERVE | M_NOVM)
 
@@ -111,6 +118,20 @@ typedef struct qcache qcache_t;
 
 #define	VMEM_NAME_MAX	16
 
+/* boundary tag */
+struct vmem_btag {
+	TAILQ_ENTRY(vmem_btag) bt_seglist;
+	union {
+		LIST_ENTRY(vmem_btag) u_freelist; /* BT_TYPE_FREE */
+		LIST_ENTRY(vmem_btag) u_hashlist; /* BT_TYPE_BUSY */
+	} bt_u;
+#define	bt_hashlist	bt_u.u_hashlist
+#define	bt_freelist	bt_u.u_freelist
+	vmem_addr_t	bt_start;
+	vmem_size_t	bt_size;
+	int		bt_type;
+};
+
 /* vmem arena */
 struct vmem {
 	struct mtx_padalign	vm_lock;
@@ -135,6 +156,8 @@ struct vmem {
 	int			vm_nbusytag;
 	vmem_size_t		vm_inuse;
 	vmem_size_t		vm_size;
+	vmem_size_t		vm_limit;
+	struct vmem_btag	vm_cursor;
 
 	/* Used on import. */
 	vmem_import_t		*vm_importfn;
@@ -148,24 +171,11 @@ struct vmem {
 	qcache_t		vm_qcache[VMEM_QCACHE_IDX_MAX];
 };
 
-/* boundary tag */
-struct vmem_btag {
-	TAILQ_ENTRY(vmem_btag) bt_seglist;
-	union {
-		LIST_ENTRY(vmem_btag) u_freelist; /* BT_TYPE_FREE */
-		LIST_ENTRY(vmem_btag) u_hashlist; /* BT_TYPE_BUSY */
-	} bt_u;
-#define	bt_hashlist	bt_u.u_hashlist
-#define	bt_freelist	bt_u.u_freelist
-	vmem_addr_t	bt_start;
-	vmem_size_t	bt_size;
-	int		bt_type;
-};
-
 #define	BT_TYPE_SPAN		1	/* Allocated from importfn */
 #define	BT_TYPE_SPAN_STATIC	2	/* vmem_add() or create. */
 #define	BT_TYPE_FREE		3	/* Available space. */
 #define	BT_TYPE_BUSY		4	/* Used space. */
+#define	BT_TYPE_CURSOR		5	/* Cursor for nextfit allocations. */
 #define	BT_ISSPAN_P(bt)	((bt)->bt_type <= BT_TYPE_SPAN_STATIC)
 
 #define	BT_END(bt)	((bt)->bt_start + (bt)->bt_size - 1)
@@ -181,15 +191,15 @@ static struct callout	vmem_periodic_ch;
 static int		vmem_periodic_interval;
 static struct task	vmem_periodic_wk;
 
-static struct mtx_padalign vmem_list_lock;
+static struct mtx_padalign __exclusive_cache_line vmem_list_lock;
 static LIST_HEAD(, vmem) vmem_list = LIST_HEAD_INITIALIZER(vmem_list);
+static uma_zone_t vmem_zone;
 
 /* ---- misc */
 #define	VMEM_CONDVAR_INIT(vm, wchan)	cv_init(&vm->vm_cv, wchan)
 #define	VMEM_CONDVAR_DESTROY(vm)	cv_destroy(&vm->vm_cv)
 #define	VMEM_CONDVAR_WAIT(vm)		cv_wait(&vm->vm_cv, &vm->vm_lock)
 #define	VMEM_CONDVAR_BROADCAST(vm)	cv_broadcast(&vm->vm_cv)
-
 
 #define	VMEM_LOCK(vm)		mtx_lock(&vm->vm_lock)
 #define	VMEM_TRYLOCK(vm)	mtx_trylock(&vm->vm_lock)
@@ -226,11 +236,11 @@ static uma_zone_t vmem_bt_zone;
 
 /* boot time arena storage. */
 static struct vmem kernel_arena_storage;
-static struct vmem kmem_arena_storage;
 static struct vmem buffer_arena_storage;
 static struct vmem transient_arena_storage;
+/* kernel and kmem arenas are aliased for backwards KPI compat. */
 vmem_t *kernel_arena = &kernel_arena_storage;
-vmem_t *kmem_arena = &kmem_arena_storage;
+vmem_t *kmem_arena = &kernel_arena_storage;
 vmem_t *buffer_arena = &buffer_arena_storage;
 vmem_t *transient_arena = &transient_arena_storage;
 
@@ -239,24 +249,36 @@ static struct vmem memguard_arena_storage;
 vmem_t *memguard_arena = &memguard_arena_storage;
 #endif
 
+static bool
+bt_isbusy(bt_t *bt)
+{
+	return (bt->bt_type == BT_TYPE_BUSY);
+}
+
+static bool
+bt_isfree(bt_t *bt)
+{
+	return (bt->bt_type == BT_TYPE_FREE);
+}
+
 /*
  * Fill the vmem's boundary tag cache.  We guarantee that boundary tag
  * allocation will not fail once bt_fill() passes.  To do so we cache
  * at least the maximum possible tag allocations in the arena.
  */
-static int
-bt_fill(vmem_t *vm, int flags)
+static __noinline int
+_bt_fill(vmem_t *vm, int flags)
 {
 	bt_t *bt;
 
 	VMEM_ASSERT_LOCKED(vm);
 
 	/*
-	 * Only allow the kmem arena to dip into reserve tags.  It is the
-	 * vmem where new tags come from.
+	 * Only allow the kernel arena and arenas derived from kernel arena to
+	 * dip into reserve tags.  They are where new tags come from.
 	 */
 	flags &= BT_FLAGS;
-	if (vm != kmem_arena)
+	if (vm != kernel_arena && vm->vm_arg != kernel_arena)
 		flags &= ~M_USE_RESERVE;
 
 	/*
@@ -272,7 +294,7 @@ bt_fill(vmem_t *vm, int flags)
 			VMEM_UNLOCK(vm);
 			bt = uma_zalloc(vmem_bt_zone, flags);
 			VMEM_LOCK(vm);
-			if (bt == NULL && (flags & M_NOWAIT) != 0)
+			if (bt == NULL)
 				break;
 		}
 		LIST_INSERT_HEAD(&vm->vm_freetags, bt, bt_freelist);
@@ -283,6 +305,14 @@ bt_fill(vmem_t *vm, int flags)
 		return ENOMEM;
 
 	return 0;
+}
+
+static inline int
+bt_fill(vmem_t *vm, int flags)
+{
+	if (vm->vm_nfreetags >= BT_MAXALLOC)
+		return (0);
+	return (_bt_fill(vm, flags));
 }
 
 /*
@@ -335,6 +365,24 @@ bt_free(vmem_t *vm, bt_t *bt)
 	MPASS(LIST_FIRST(&vm->vm_freetags) != bt);
 	LIST_INSERT_HEAD(&vm->vm_freetags, bt, bt_freelist);
 	vm->vm_nfreetags++;
+}
+
+/*
+ * Hide MAXALLOC tags before dropping the arena lock to ensure that a
+ * concurrent allocation attempt does not grab them.
+ */
+static void
+bt_save(vmem_t *vm)
+{
+	KASSERT(vm->vm_nfreetags >= BT_MAXALLOC,
+	    ("%s: insufficient free tags %d", __func__, vm->vm_nfreetags));
+	vm->vm_nfreetags -= BT_MAXALLOC;
+}
+
+static void
+bt_restore(vmem_t *vm)
+{
+	vm->vm_nfreetags += BT_MAXALLOC;
 }
 
 /*
@@ -453,6 +501,7 @@ static void
 bt_remseg(vmem_t *vm, bt_t *bt)
 {
 
+	MPASS(bt->bt_type != BT_TYPE_CURSOR);
 	TAILQ_REMOVE(&vm->vm_seglist, bt, bt_seglist);
 	bt_free(vm, bt);
 }
@@ -472,7 +521,7 @@ bt_insseg_tail(vmem_t *vm, bt_t *bt)
 }
 
 static void
-bt_remfree(vmem_t *vm, bt_t *bt)
+bt_remfree(vmem_t *vm __unused, bt_t *bt)
 {
 
 	MPASS(bt->bt_type == BT_TYPE_FREE);
@@ -493,27 +542,27 @@ bt_insfree(vmem_t *vm, bt_t *bt)
 
 /*
  * Import from the arena into the quantum cache in UMA.
+ *
+ * We use VMEM_ADDR_QCACHE_MIN instead of 0: uma_zalloc() returns 0 to indicate
+ * failure, so UMA can't be used to cache a resource with value 0.
  */
 static int
-qc_import(void *arg, void **store, int cnt, int flags)
+qc_import(void *arg, void **store, int cnt, int domain, int flags)
 {
 	qcache_t *qc;
 	vmem_addr_t addr;
 	int i;
 
+	KASSERT((flags & M_WAITOK) == 0, ("blocking allocation"));
+
 	qc = arg;
-	if ((flags & VMEM_FITMASK) == 0)
-		flags |= M_BESTFIT;
 	for (i = 0; i < cnt; i++) {
 		if (vmem_xalloc(qc->qc_vmem, qc->qc_size, 0, 0, 0,
-		    VMEM_ADDR_MIN, VMEM_ADDR_MAX, flags, &addr) != 0)
+		    VMEM_ADDR_QCACHE_MIN, VMEM_ADDR_MAX, flags, &addr) != 0)
 			break;
 		store[i] = (void *)addr;
-		/* Only guarantee one allocation. */
-		flags &= ~M_WAITOK;
-		flags |= M_NOWAIT;
 	}
-	return i;
+	return (i);
 }
 
 /*
@@ -550,8 +599,7 @@ qc_init(vmem_t *vm, vmem_size_t qcache_max)
 		qc->qc_vmem = vm;
 		qc->qc_size = size;
 		qc->qc_cache = uma_zcache_create(qc->qc_name, size,
-		    NULL, NULL, NULL, NULL, qc_import, qc_release, qc,
-		    UMA_ZONE_VM);
+		    NULL, NULL, NULL, NULL, qc_import, qc_release, qc, 0);
 		MPASS(qc->qc_cache);
 	}
 }
@@ -575,12 +623,12 @@ qc_drain(vmem_t *vm)
 
 	qcache_idx_max = vm->vm_qcache_max >> vm->vm_quantum_shift;
 	for (i = 0; i < qcache_idx_max; i++)
-		zone_drain(vm->vm_qcache[i].qc_cache);
+		uma_zone_reclaim(vm->vm_qcache[i].qc_cache, UMA_RECLAIM_DRAIN);
 }
 
 #ifndef UMA_MD_SMALL_ALLOC
 
-static struct mtx_padalign vmem_bt_lock;
+static struct mtx_padalign __exclusive_cache_line vmem_bt_lock;
 
 /*
  * vmem_bt_alloc:  Allocate a new page of boundary tags.
@@ -609,33 +657,34 @@ static struct mtx_padalign vmem_bt_lock;
  * we are really out of KVA.
  */
 static void *
-vmem_bt_alloc(uma_zone_t zone, vm_size_t bytes, uint8_t *pflag, int wait)
+vmem_bt_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
+    int wait)
 {
 	vmem_addr_t addr;
 
-	*pflag = UMA_SLAB_KMEM;
+	*pflag = UMA_SLAB_KERNEL;
 
 	/*
 	 * Single thread boundary tag allocation so that the address space
 	 * and memory are added in one atomic operation.
 	 */
 	mtx_lock(&vmem_bt_lock);
-	if (vmem_xalloc(kmem_arena, bytes, 0, 0, 0, VMEM_ADDR_MIN,
-	    VMEM_ADDR_MAX, M_NOWAIT | M_NOVM | M_USE_RESERVE | M_BESTFIT,
-	    &addr) == 0) {
-		if (kmem_back(kmem_object, addr, bytes,
+	if (vmem_xalloc(vm_dom[domain].vmd_kernel_arena, bytes, 0, 0, 0,
+	    VMEM_ADDR_MIN, VMEM_ADDR_MAX,
+	    M_NOWAIT | M_NOVM | M_USE_RESERVE | M_BESTFIT, &addr) == 0) {
+		if (kmem_back_domain(domain, kernel_object, addr, bytes,
 		    M_NOWAIT | M_USE_RESERVE) == 0) {
 			mtx_unlock(&vmem_bt_lock);
 			return ((void *)addr);
 		}
-		vmem_xfree(kmem_arena, addr, bytes);
+		vmem_xfree(vm_dom[domain].vmd_kernel_arena, addr, bytes);
 		mtx_unlock(&vmem_bt_lock);
 		/*
 		 * Out of memory, not address space.  This may not even be
 		 * possible due to M_USE_RESERVE page allocation.
 		 */
 		if (wait & M_WAITOK)
-			VM_WAIT;
+			vm_wait_domain(domain);
 		return (NULL);
 	}
 	mtx_unlock(&vmem_bt_lock);
@@ -654,6 +703,9 @@ vmem_startup(void)
 {
 
 	mtx_init(&vmem_list_lock, "vmem list lock", NULL, MTX_DEF);
+	vmem_zone = uma_zcreate("vmem",
+	    sizeof(struct vmem), NULL, NULL, NULL, NULL,
+	    UMA_ALIGN_PTR, 0);
 	vmem_bt_zone = uma_zcreate("vmem btag",
 	    sizeof(struct vmem_btag), NULL, NULL, NULL, NULL,
 	    UMA_ALIGN_PTR, UMA_ZONE_VM);
@@ -663,9 +715,11 @@ vmem_startup(void)
 	/*
 	 * Reserve enough tags to allocate new tags.  We allow multiple
 	 * CPUs to attempt to allocate new tags concurrently to limit
-	 * false restarts in UMA.
+	 * false restarts in UMA.  vmem_bt_alloc() allocates from a per-domain
+	 * arena, which may involve importing a range from the kernel arena,
+	 * so we need to keep at least 2 * BT_MAXALLOC tags reserved.
 	 */
-	uma_zone_reserve(vmem_bt_zone, BT_MAXALLOC * (mp_ncpus + 1) / 2);
+	uma_zone_reserve(vmem_bt_zone, 2 * BT_MAXALLOC * mp_ncpus);
 	uma_zone_set_allocf(vmem_bt_zone, vmem_bt_alloc);
 #endif
 }
@@ -676,10 +730,9 @@ static int
 vmem_rehash(vmem_t *vm, vmem_size_t newhashsize)
 {
 	bt_t *bt;
-	int i;
 	struct vmem_hashlist *newhashlist;
 	struct vmem_hashlist *oldhashlist;
-	vmem_size_t oldhashsize;
+	vmem_size_t i, oldhashsize;
 
 	MPASS(newhashsize > 0);
 
@@ -708,9 +761,8 @@ vmem_rehash(vmem_t *vm, vmem_size_t newhashsize)
 	}
 	VMEM_UNLOCK(vm);
 
-	if (oldhashlist != vm->vm_hash0) {
+	if (oldhashlist != vm->vm_hash0)
 		free(oldhashlist, M_VMEM);
-	}
 
 	return 0;
 }
@@ -775,24 +827,48 @@ SYSINIT(vfs, SI_SUB_CONFIGURE, SI_ORDER_ANY, vmem_start_callout, NULL);
 static void
 vmem_add1(vmem_t *vm, vmem_addr_t addr, vmem_size_t size, int type)
 {
-	bt_t *btspan;
-	bt_t *btfree;
+	bt_t *btfree, *btprev, *btspan;
 
+	VMEM_ASSERT_LOCKED(vm);
 	MPASS(type == BT_TYPE_SPAN || type == BT_TYPE_SPAN_STATIC);
 	MPASS((size & vm->vm_quantum_mask) == 0);
 
-	btspan = bt_alloc(vm);
-	btspan->bt_type = type;
-	btspan->bt_start = addr;
-	btspan->bt_size = size;
-	bt_insseg_tail(vm, btspan);
+	if (vm->vm_releasefn == NULL) {
+		/*
+		 * The new segment will never be released, so see if it is
+		 * contiguous with respect to an existing segment.  In this case
+		 * a span tag is not needed, and it may be possible now or in
+		 * the future to coalesce the new segment with an existing free
+		 * segment.
+		 */
+		btprev = TAILQ_LAST(&vm->vm_seglist, vmem_seglist);
+		if ((!bt_isbusy(btprev) && !bt_isfree(btprev)) ||
+		    btprev->bt_start + btprev->bt_size != addr)
+			btprev = NULL;
+	} else {
+		btprev = NULL;
+	}
 
-	btfree = bt_alloc(vm);
-	btfree->bt_type = BT_TYPE_FREE;
-	btfree->bt_start = addr;
-	btfree->bt_size = size;
-	bt_insseg(vm, btfree, btspan);
-	bt_insfree(vm, btfree);
+	if (btprev == NULL || bt_isbusy(btprev)) {
+		if (btprev == NULL) {
+			btspan = bt_alloc(vm);
+			btspan->bt_type = type;
+			btspan->bt_start = addr;
+			btspan->bt_size = size;
+			bt_insseg_tail(vm, btspan);
+		}
+
+		btfree = bt_alloc(vm);
+		btfree->bt_type = BT_TYPE_FREE;
+		btfree->bt_start = addr;
+		btfree->bt_size = size;
+		bt_insseg_tail(vm, btfree);
+		bt_insfree(vm, btfree);
+	} else {
+		bt_remfree(vm, btprev);
+		btprev->bt_size += size;
+		bt_insfree(vm, btprev);
+	}
 
 	vm->vm_size += size;
 }
@@ -813,6 +889,7 @@ vmem_destroy1(vmem_t *vm)
 	VMEM_LOCK(vm);
 	MPASS(vm->vm_nbusytag == 0);
 
+	TAILQ_REMOVE(&vm->vm_seglist, &vm->vm_cursor, bt_seglist);
 	while ((bt = TAILQ_FIRST(&vm->vm_seglist)) != NULL)
 		bt_remseg(vm, bt);
 
@@ -823,7 +900,7 @@ vmem_destroy1(vmem_t *vm)
 
 	VMEM_CONDVAR_DESTROY(vm);
 	VMEM_LOCK_DESTROY(vm);
-	free(vm, M_VMEM);
+	uma_zfree(vmem_zone, vm);
 }
 
 static int
@@ -833,7 +910,7 @@ vmem_import(vmem_t *vm, vmem_size_t size, vmem_size_t align, int flags)
 	int error;
 
 	if (vm->vm_importfn == NULL)
-		return EINVAL;
+		return (EINVAL);
 
 	/*
 	 * To make sure we get a span that meets the alignment we double it
@@ -843,18 +920,16 @@ vmem_import(vmem_t *vm, vmem_size_t size, vmem_size_t align, int flags)
 		size = (align * 2) + size;
 	size = roundup(size, vm->vm_import_quantum);
 
-	/*
-	 * Hide MAXALLOC tags so we're guaranteed to be able to add this
-	 * span and the tag we want to allocate from it.
-	 */
-	MPASS(vm->vm_nfreetags >= BT_MAXALLOC);
-	vm->vm_nfreetags -= BT_MAXALLOC;
+	if (vm->vm_limit != 0 && vm->vm_limit < vm->vm_size + size)
+		return (ENOMEM);
+
+	bt_save(vm);
 	VMEM_UNLOCK(vm);
 	error = (vm->vm_importfn)(vm->vm_arg, size, flags, &addr);
 	VMEM_LOCK(vm);
-	vm->vm_nfreetags += BT_MAXALLOC;
+	bt_restore(vm);
 	if (error)
-		return ENOMEM;
+		return (ENOMEM);
 
 	vmem_add1(vm, addr, size, BT_TYPE_SPAN);
 
@@ -957,7 +1032,167 @@ vmem_clip(vmem_t *vm, bt_t *bt, vmem_addr_t start, vmem_size_t size)
 		bt_insbusy(vm, bt);
 	}
 	MPASS(bt->bt_size >= size);
-	bt->bt_type = BT_TYPE_BUSY;
+}
+
+static int
+vmem_try_fetch(vmem_t *vm, const vmem_size_t size, vmem_size_t align, int flags)
+{
+	vmem_size_t avail;
+
+	VMEM_ASSERT_LOCKED(vm);
+
+	/*
+	 * XXX it is possible to fail to meet xalloc constraints with the
+	 * imported region.  It is up to the user to specify the
+	 * import quantum such that it can satisfy any allocation.
+	 */
+	if (vmem_import(vm, size, align, flags) == 0)
+		return (1);
+
+	/*
+	 * Try to free some space from the quantum cache or reclaim
+	 * functions if available.
+	 */
+	if (vm->vm_qcache_max != 0 || vm->vm_reclaimfn != NULL) {
+		avail = vm->vm_size - vm->vm_inuse;
+		bt_save(vm);
+		VMEM_UNLOCK(vm);
+		if (vm->vm_qcache_max != 0)
+			qc_drain(vm);
+		if (vm->vm_reclaimfn != NULL)
+			vm->vm_reclaimfn(vm, flags);
+		VMEM_LOCK(vm);
+		bt_restore(vm);
+		/* If we were successful retry even NOWAIT. */
+		if (vm->vm_size - vm->vm_inuse > avail)
+			return (1);
+	}
+	if ((flags & M_NOWAIT) != 0)
+		return (0);
+	bt_save(vm);
+	VMEM_CONDVAR_WAIT(vm);
+	bt_restore(vm);
+	return (1);
+}
+
+static int
+vmem_try_release(vmem_t *vm, struct vmem_btag *bt, const bool remfree)
+{
+	struct vmem_btag *prev;
+
+	MPASS(bt->bt_type == BT_TYPE_FREE);
+
+	if (vm->vm_releasefn == NULL)
+		return (0);
+
+	prev = TAILQ_PREV(bt, vmem_seglist, bt_seglist);
+	MPASS(prev != NULL);
+	MPASS(prev->bt_type != BT_TYPE_FREE);
+
+	if (prev->bt_type == BT_TYPE_SPAN && prev->bt_size == bt->bt_size) {
+		vmem_addr_t spanaddr;
+		vmem_size_t spansize;
+
+		MPASS(prev->bt_start == bt->bt_start);
+		spanaddr = prev->bt_start;
+		spansize = prev->bt_size;
+		if (remfree)
+			bt_remfree(vm, bt);
+		bt_remseg(vm, bt);
+		bt_remseg(vm, prev);
+		vm->vm_size -= spansize;
+		VMEM_CONDVAR_BROADCAST(vm);
+		bt_freetrim(vm, BT_MAXFREE);
+		vm->vm_releasefn(vm->vm_arg, spanaddr, spansize);
+		return (1);
+	}
+	return (0);
+}
+
+static int
+vmem_xalloc_nextfit(vmem_t *vm, const vmem_size_t size, vmem_size_t align,
+    const vmem_size_t phase, const vmem_size_t nocross, int flags,
+    vmem_addr_t *addrp)
+{
+	struct vmem_btag *bt, *cursor, *next, *prev;
+	int error;
+
+	error = ENOMEM;
+	VMEM_LOCK(vm);
+
+	/*
+	 * Make sure we have enough tags to complete the operation.
+	 */
+	if (bt_fill(vm, flags) != 0)
+		goto out;
+
+retry:
+	/*
+	 * Find the next free tag meeting our constraints.  If one is found,
+	 * perform the allocation.
+	 */
+	for (cursor = &vm->vm_cursor, bt = TAILQ_NEXT(cursor, bt_seglist);
+	    bt != cursor; bt = TAILQ_NEXT(bt, bt_seglist)) {
+		if (bt == NULL)
+			bt = TAILQ_FIRST(&vm->vm_seglist);
+		if (bt->bt_type == BT_TYPE_FREE && bt->bt_size >= size &&
+		    (error = vmem_fit(bt, size, align, phase, nocross,
+		    VMEM_ADDR_MIN, VMEM_ADDR_MAX, addrp)) == 0) {
+			vmem_clip(vm, bt, *addrp, size);
+			break;
+		}
+	}
+
+	/*
+	 * Try to coalesce free segments around the cursor.  If we succeed, and
+	 * have not yet satisfied the allocation request, try again with the
+	 * newly coalesced segment.
+	 */
+	if ((next = TAILQ_NEXT(cursor, bt_seglist)) != NULL &&
+	    (prev = TAILQ_PREV(cursor, vmem_seglist, bt_seglist)) != NULL &&
+	    next->bt_type == BT_TYPE_FREE && prev->bt_type == BT_TYPE_FREE &&
+	    prev->bt_start + prev->bt_size == next->bt_start) {
+		prev->bt_size += next->bt_size;
+		bt_remfree(vm, next);
+		bt_remseg(vm, next);
+
+		/*
+		 * The coalesced segment might be able to satisfy our request.
+		 * If not, we might need to release it from the arena.
+		 */
+		if (error == ENOMEM && prev->bt_size >= size &&
+		    (error = vmem_fit(prev, size, align, phase, nocross,
+		    VMEM_ADDR_MIN, VMEM_ADDR_MAX, addrp)) == 0) {
+			vmem_clip(vm, prev, *addrp, size);
+			bt = prev;
+		} else
+			(void)vmem_try_release(vm, prev, true);
+	}
+
+	/*
+	 * If the allocation was successful, advance the cursor.
+	 */
+	if (error == 0) {
+		TAILQ_REMOVE(&vm->vm_seglist, cursor, bt_seglist);
+		for (; bt != NULL && bt->bt_start < *addrp + size;
+		    bt = TAILQ_NEXT(bt, bt_seglist))
+			;
+		if (bt != NULL)
+			TAILQ_INSERT_BEFORE(bt, cursor, bt_seglist);
+		else
+			TAILQ_INSERT_HEAD(&vm->vm_seglist, cursor, bt_seglist);
+	}
+
+	/*
+	 * Attempt to bring additional resources into the arena.  If that fails
+	 * and M_WAITOK is specified, sleep waiting for resources to be freed.
+	 */
+	if (error == ENOMEM && vmem_try_fetch(vm, size, align, flags))
+		goto retry;
+
+out:
+	VMEM_UNLOCK(vm);
+	return (error);
 }
 
 /* ---- vmem API */
@@ -968,10 +1203,20 @@ vmem_set_import(vmem_t *vm, vmem_import_t *importfn,
 {
 
 	VMEM_LOCK(vm);
+	KASSERT(vm->vm_size == 0, ("%s: arena is non-empty", __func__));
 	vm->vm_importfn = importfn;
 	vm->vm_releasefn = releasefn;
 	vm->vm_arg = arg;
 	vm->vm_import_quantum = import_quantum;
+	VMEM_UNLOCK(vm);
+}
+
+void
+vmem_set_limit(vmem_t *vm, vmem_size_t limit)
+{
+
+	VMEM_LOCK(vm);
+	vm->vm_limit = limit;
 	VMEM_UNLOCK(vm);
 }
 
@@ -991,7 +1236,7 @@ vmem_t *
 vmem_init(vmem_t *vm, const char *name, vmem_addr_t base, vmem_size_t size,
     vmem_size_t quantum, vmem_size_t qcache_max, int flags)
 {
-	int i;
+	vmem_size_t i;
 
 	MPASS(quantum > 0);
 	MPASS((quantum & (quantum - 1)) == 0);
@@ -1007,13 +1252,18 @@ vmem_init(vmem_t *vm, const char *name, vmem_addr_t base, vmem_size_t size,
 	vm->vm_quantum_shift = flsl(quantum) - 1;
 	vm->vm_nbusytag = 0;
 	vm->vm_size = 0;
+	vm->vm_limit = 0;
 	vm->vm_inuse = 0;
 	qc_init(vm, qcache_max);
 
 	TAILQ_INIT(&vm->vm_seglist);
-	for (i = 0; i < VMEM_MAXORDER; i++) {
+	vm->vm_cursor.bt_start = vm->vm_cursor.bt_size = 0;
+	vm->vm_cursor.bt_type = BT_TYPE_CURSOR;
+	TAILQ_INSERT_TAIL(&vm->vm_seglist, &vm->vm_cursor, bt_seglist);
+
+	for (i = 0; i < VMEM_MAXORDER; i++)
 		LIST_INIT(&vm->vm_freelist[i]);
-	}
+
 	memset(&vm->vm_hash0, 0, sizeof(vm->vm_hash0));
 	vm->vm_hashsize = VMEM_HASHSIZE_MIN;
 	vm->vm_hashlist = vm->vm_hash0;
@@ -1042,7 +1292,7 @@ vmem_create(const char *name, vmem_addr_t base, vmem_size_t size,
 
 	vmem_t *vm;
 
-	vm = malloc(sizeof(*vm), M_VMEM, flags & (M_WAITOK|M_NOWAIT));
+	vm = uma_zalloc(vmem_zone, flags & (M_WAITOK|M_NOWAIT));
 	if (vm == NULL)
 		return (NULL);
 	if (vmem_init(vm, name, base, size, quantum, qcache_max,
@@ -1080,20 +1330,25 @@ vmem_alloc(vmem_t *vm, vmem_size_t size, int flags, vmem_addr_t *addrp)
 
 	flags &= VMEM_FLAGS;
 	MPASS(size > 0);
-	MPASS(strat == M_BESTFIT || strat == M_FIRSTFIT);
+	MPASS(strat == M_BESTFIT || strat == M_FIRSTFIT || strat == M_NEXTFIT);
 	if ((flags & M_NOWAIT) == 0)
 		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL, "vmem_alloc");
 
 	if (size <= vm->vm_qcache_max) {
+		/*
+		 * Resource 0 cannot be cached, so avoid a blocking allocation
+		 * in qc_import() and give the vmem_xalloc() call below a chance
+		 * to return 0.
+		 */
 		qc = &vm->vm_qcache[(size - 1) >> vm->vm_quantum_shift];
-		*addrp = (vmem_addr_t)uma_zalloc(qc->qc_cache, flags);
-		if (*addrp == 0)
-			return (ENOMEM);
-		return (0);
+		*addrp = (vmem_addr_t)uma_zalloc(qc->qc_cache,
+		    (flags & ~M_WAITOK) | M_NOWAIT);
+		if (__predict_true(*addrp != 0))
+			return (0);
 	}
 
-	return vmem_xalloc(vm, size, 0, 0, 0, VMEM_ADDR_MIN, VMEM_ADDR_MAX,
-	    flags, addrp);
+	return (vmem_xalloc(vm, size, 0, 0, 0, VMEM_ADDR_MIN, VMEM_ADDR_MAX,
+	    flags, addrp));
 }
 
 int
@@ -1106,7 +1361,6 @@ vmem_xalloc(vmem_t *vm, const vmem_size_t size0, vmem_size_t align,
 	struct vmem_freelist *list;
 	struct vmem_freelist *first;
 	struct vmem_freelist *end;
-	vmem_size_t avail;
 	bt_t *bt;
 	int error;
 	int strat;
@@ -1115,7 +1369,7 @@ vmem_xalloc(vmem_t *vm, const vmem_size_t size0, vmem_size_t align,
 	strat = flags & VMEM_FITMASK;
 	MPASS(size0 > 0);
 	MPASS(size > 0);
-	MPASS(strat == M_BESTFIT || strat == M_FIRSTFIT);
+	MPASS(strat == M_BESTFIT || strat == M_FIRSTFIT || strat == M_NEXTFIT);
 	MPASS((flags & (M_NOWAIT|M_WAITOK)) != (M_NOWAIT|M_WAITOK));
 	if ((flags & M_NOWAIT) == 0)
 		WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL, "vmem_xalloc");
@@ -1128,27 +1382,34 @@ vmem_xalloc(vmem_t *vm, const vmem_size_t size0, vmem_size_t align,
 	MPASS(nocross == 0 || nocross >= size);
 	MPASS(minaddr <= maxaddr);
 	MPASS(!VMEM_CROSS_P(phase, phase + size - 1, nocross));
+	if (strat == M_NEXTFIT)
+		MPASS(minaddr == VMEM_ADDR_MIN && maxaddr == VMEM_ADDR_MAX);
 
 	if (align == 0)
 		align = vm->vm_quantum_mask + 1;
-
 	*addrp = 0;
+
+	/*
+	 * Next-fit allocations don't use the freelists.
+	 */
+	if (strat == M_NEXTFIT)
+		return (vmem_xalloc_nextfit(vm, size0, align, phase, nocross,
+		    flags, addrp));
+
 	end = &vm->vm_freelist[VMEM_MAXORDER];
 	/*
 	 * choose a free block from which we allocate.
 	 */
 	first = bt_freehead_toalloc(vm, size, strat);
 	VMEM_LOCK(vm);
+
+	/*
+	 * Make sure we have enough tags to complete the operation.
+	 */
+	error = bt_fill(vm, flags);
+	if (error != 0)
+		goto out;
 	for (;;) {
-		/*
-		 * Make sure we have enough tags to complete the
-		 * operation.
-		 */
-		if (vm->vm_nfreetags < BT_MAXALLOC &&
-		    bt_fill(vm, flags) != 0) {
-			error = ENOMEM;
-			break;
-		}
 		/*
 	 	 * Scan freelists looking for a tag that satisfies the
 		 * allocation.  If we're doing BESTFIT we may encounter
@@ -1170,6 +1431,7 @@ vmem_xalloc(vmem_t *vm, const vmem_size_t size0, vmem_size_t align,
 					break;
 			}
 		}
+
 		/*
 		 * Retry if the fast algorithm failed.
 		 */
@@ -1178,35 +1440,16 @@ vmem_xalloc(vmem_t *vm, const vmem_size_t size0, vmem_size_t align,
 			first = bt_freehead_toalloc(vm, size, strat);
 			continue;
 		}
-		/*
-		 * XXX it is possible to fail to meet restrictions with the
-		 * imported region.  It is up to the user to specify the
-		 * import quantum such that it can satisfy any allocation.
-		 */
-		if (vmem_import(vm, size, align, flags) == 0)
-			continue;
 
 		/*
-		 * Try to free some space from the quantum cache or reclaim
-		 * functions if available.
+		 * Try a few measures to bring additional resources into the
+		 * arena.  If all else fails, we will sleep waiting for
+		 * resources to be freed.
 		 */
-		if (vm->vm_qcache_max != 0 || vm->vm_reclaimfn != NULL) {
-			avail = vm->vm_size - vm->vm_inuse;
-			VMEM_UNLOCK(vm);
-			if (vm->vm_qcache_max != 0)
-				qc_drain(vm);
-			if (vm->vm_reclaimfn != NULL)
-				vm->vm_reclaimfn(vm, flags);
-			VMEM_LOCK(vm);
-			/* If we were successful retry even NOWAIT. */
-			if (vm->vm_size - vm->vm_inuse > avail)
-				continue;
-		}
-		if ((flags & M_NOWAIT) != 0) {
+		if (!vmem_try_fetch(vm, size, align, flags)) {
 			error = ENOMEM;
 			break;
 		}
-		VMEM_CONDVAR_WAIT(vm);
 	}
 out:
 	VMEM_UNLOCK(vm);
@@ -1225,7 +1468,8 @@ vmem_free(vmem_t *vm, vmem_addr_t addr, vmem_size_t size)
 	qcache_t *qc;
 	MPASS(size > 0);
 
-	if (size <= vm->vm_qcache_max) {
+	if (size <= vm->vm_qcache_max &&
+	    __predict_true(addr >= VMEM_ADDR_QCACHE_MIN)) {
 		qc = &vm->vm_qcache[(size - 1) >> vm->vm_quantum_shift];
 		uma_zfree(qc->qc_cache, (void *)addr);
 	} else
@@ -1233,7 +1477,7 @@ vmem_free(vmem_t *vm, vmem_addr_t addr, vmem_size_t size)
 }
 
 void
-vmem_xfree(vmem_t *vm, vmem_addr_t addr, vmem_size_t size)
+vmem_xfree(vmem_t *vm, vmem_addr_t addr, vmem_size_t size __unused)
 {
 	bt_t *bt;
 	bt_t *t;
@@ -1267,24 +1511,7 @@ vmem_xfree(vmem_t *vm, vmem_addr_t addr, vmem_size_t size)
 		bt_remseg(vm, t);
 	}
 
-	t = TAILQ_PREV(bt, vmem_seglist, bt_seglist);
-	MPASS(t != NULL);
-	MPASS(BT_ISSPAN_P(t) || t->bt_type == BT_TYPE_BUSY);
-	if (vm->vm_releasefn != NULL && t->bt_type == BT_TYPE_SPAN &&
-	    t->bt_size == bt->bt_size) {
-		vmem_addr_t spanaddr;
-		vmem_size_t spansize;
-
-		MPASS(t->bt_start == bt->bt_start);
-		spanaddr = bt->bt_start;
-		spansize = bt->bt_size;
-		bt_remseg(vm, bt);
-		bt_remseg(vm, t);
-		vm->vm_size -= spansize;
-		VMEM_CONDVAR_BROADCAST(vm);
-		bt_freetrim(vm, BT_MAXFREE);
-		(*vm->vm_releasefn)(vm->vm_arg, spanaddr, spansize);
-	} else {
+	if (!vmem_try_release(vm, bt, false)) {
 		bt_insfree(vm, bt);
 		VMEM_CONDVAR_BROADCAST(vm);
 		bt_freetrim(vm, BT_MAXFREE);
@@ -1300,13 +1527,12 @@ vmem_add(vmem_t *vm, vmem_addr_t addr, vmem_size_t size, int flags)
 {
 	int error;
 
-	error = 0;
 	flags &= VMEM_FLAGS;
+
 	VMEM_LOCK(vm);
-	if (vm->vm_nfreetags >= BT_MAXALLOC || bt_fill(vm, flags) == 0)
+	error = bt_fill(vm, flags);
+	if (error == 0)
 		vmem_add1(vm, addr, size, BT_TYPE_SPAN_STATIC);
-	else
-		error = ENOMEM;
 	VMEM_UNLOCK(vm);
 
 	return (error);
@@ -1363,6 +1589,8 @@ bt_type_string(int type)
 		return "span";
 	case BT_TYPE_SPAN_STATIC:
 		return "static span";
+	case BT_TYPE_CURSOR:
+		return "cursor";
 	default:
 		break;
 	}
@@ -1554,8 +1782,18 @@ vmem_check_sanity(vmem_t *vm)
 		}
 	}
 	TAILQ_FOREACH(bt, &vm->vm_seglist, bt_seglist) {
+		if (bt->bt_type == BT_TYPE_CURSOR) {
+			if (bt->bt_start != 0 || bt->bt_size != 0) {
+				printf("corrupted cursor\n");
+				return false;
+			}
+			continue;
+		}
 		TAILQ_FOREACH(bt2, &vm->vm_seglist, bt_seglist) {
 			if (bt == bt2) {
+				continue;
+			}
+			if (bt2->bt_type == BT_TYPE_CURSOR) {
 				continue;
 			}
 			if (BT_ISSPAN_P(bt) != BT_ISSPAN_P(bt2)) {

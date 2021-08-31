@@ -46,10 +46,10 @@
 #define VCHIQ_MINOR 0
 
 /* Some per-instance constants */
-#define MAX_COMPLETIONS 16
+#define MAX_COMPLETIONS 128
 #define MAX_SERVICES 64
 #define MAX_ELEMENTS 8
-#define MSG_QUEUE_SIZE 64
+#define MSG_QUEUE_SIZE 128
 
 #define KEEPALIVE_VER 1
 #define KEEPALIVE_VER_MIN KEEPALIVE_VER
@@ -178,7 +178,6 @@ static const char *const ioctl_names[] = {
 vchiq_static_assert((sizeof(ioctl_names)/sizeof(ioctl_names[0])) ==
 	(VCHIQ_IOC_MAX + 1));
 
-static eventhandler_tag vchiq_ehtag = NULL;
 static d_open_t		vchiq_open;
 static d_close_t	vchiq_close;
 static d_ioctl_t	vchiq_ioctl;
@@ -208,30 +207,32 @@ add_completion(VCHIQ_INSTANCE_T instance, VCHIQ_REASON_T reason,
 	void *bulk_userdata)
 {
 	VCHIQ_COMPLETION_DATA_T *completion;
+	int insert;
 	DEBUG_INITIALISE(g_state.local)
 
-	while (instance->completion_insert ==
-		(instance->completion_remove + MAX_COMPLETIONS)) {
+	insert = instance->completion_insert;
+	while ((insert - instance->completion_remove) >= MAX_COMPLETIONS) {
 		/* Out of space - wait for the client */
 		DEBUG_TRACE(SERVICE_CALLBACK_LINE);
 		vchiq_log_trace(vchiq_arm_log_level,
 			"add_completion - completion queue full");
 		DEBUG_COUNT(COMPLETION_QUEUE_FULL_COUNT);
+
 		if (down_interruptible(&instance->remove_event) != 0) {
 			vchiq_log_info(vchiq_arm_log_level,
 				"service_callback interrupted");
 			return VCHIQ_RETRY;
-		} else if (instance->closing) {
+		}
+
+		if (instance->closing) {
 			vchiq_log_info(vchiq_arm_log_level,
 				"service_callback closing");
-			return VCHIQ_ERROR;
+			return VCHIQ_SUCCESS;
 		}
 		DEBUG_TRACE(SERVICE_CALLBACK_LINE);
 	}
 
-	completion =
-		 &instance->completions[instance->completion_insert &
-		 (MAX_COMPLETIONS - 1)];
+	completion = &instance->completions[insert & (MAX_COMPLETIONS - 1)];
 
 	completion->header = header;
 	completion->reason = reason;
@@ -252,9 +253,9 @@ add_completion(VCHIQ_INSTANCE_T instance, VCHIQ_REASON_T reason,
 	wmb();
 
 	if (reason == VCHIQ_MESSAGE_AVAILABLE)
-		user_service->message_available_pos =
-			instance->completion_insert;
-	instance->completion_insert++;
+		user_service->message_available_pos = insert;
+
+	instance->completion_insert = ++insert;
 
 	up(&instance->insert_event);
 
@@ -279,6 +280,7 @@ service_callback(VCHIQ_REASON_T reason, VCHIQ_HEADER_T *header,
 	USER_SERVICE_T *user_service;
 	VCHIQ_SERVICE_T *service;
 	VCHIQ_INSTANCE_T instance;
+	int skip_completion = 0;
 	DEBUG_INITIALISE(g_state.local)
 
 	DEBUG_TRACE(SERVICE_CALLBACK_LINE);
@@ -345,9 +347,6 @@ service_callback(VCHIQ_REASON_T reason, VCHIQ_HEADER_T *header,
 		user_service->msg_queue[user_service->msg_insert &
 			(MSG_QUEUE_SIZE - 1)] = header;
 		user_service->msg_insert++;
-		spin_unlock(&msg_queue_spinlock);
-
-		up(&user_service->insert_event);
 
 		/* If there is a thread waiting in DEQUEUE_MESSAGE, or if
 		** there is a MESSAGE_AVAILABLE in the completion queue then
@@ -356,13 +355,22 @@ service_callback(VCHIQ_REASON_T reason, VCHIQ_HEADER_T *header,
 		if (((user_service->message_available_pos -
 			instance->completion_remove) >= 0) ||
 			user_service->dequeue_pending) {
-			DEBUG_TRACE(SERVICE_CALLBACK_LINE);
 			user_service->dequeue_pending = 0;
-			return VCHIQ_SUCCESS;
+			skip_completion = 1;
 		}
+
+		spin_unlock(&msg_queue_spinlock);
+
+		up(&user_service->insert_event);
 
 		header = NULL;
 	}
+
+	if (skip_completion) {
+		DEBUG_TRACE(SERVICE_CALLBACK_LINE);
+		return VCHIQ_SUCCESS;
+	}
+
 	DEBUG_TRACE(SERVICE_CALLBACK_LINE);
 
 	return add_completion(instance, reason, header, user_service,
@@ -789,7 +797,7 @@ vchiq_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int fflag,
 			break;
 		}
 
-		memcpy(&args, (const void*)arg, sizeof(args));
+                memcpy(&args, (const void*)arg, sizeof(args));
 
 		lmutex_lock(&instance->completion_mutex);
 
@@ -797,6 +805,7 @@ vchiq_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int fflag,
 		while ((instance->completion_remove ==
 			instance->completion_insert)
 			&& !instance->closing) {
+
 			DEBUG_TRACE(AWAIT_COMPLETION_LINE);
 			lmutex_unlock(&instance->completion_mutex);
 			rc = down_interruptible(&instance->insert_event);
@@ -811,24 +820,29 @@ vchiq_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int fflag,
 		}
 		DEBUG_TRACE(AWAIT_COMPLETION_LINE);
 
-		/* A read memory barrier is needed to stop prefetch of a stale
-		** completion record
-		*/
-		rmb();
-
 		if (ret == 0) {
 			int msgbufcount = args.msgbufcount;
+			int remove;
+
+			remove = instance->completion_remove;
+
 			for (count = 0; count < args.count; count++) {
 				VCHIQ_COMPLETION_DATA_T *completion;
 				VCHIQ_SERVICE_T *service1;
 				USER_SERVICE_T *user_service;
 				VCHIQ_HEADER_T *header;
-				if (instance->completion_remove ==
-					instance->completion_insert)
+
+				if (remove == instance->completion_insert)
 					break;
+
 				completion = &instance->completions[
-					instance->completion_remove &
-					(MAX_COMPLETIONS - 1)];
+					remove & (MAX_COMPLETIONS - 1)];
+
+
+				/* A read memory barrier is needed to prevent
+				** the prefetch of a stale completion record
+				*/
+				rmb();
 
 				service1 = completion->service_userdata;
 				user_service = service1->base.userdata;
@@ -905,7 +919,11 @@ vchiq_ioctl(struct cdev *cdev, u_long cmd, caddr_t arg, int fflag,
 					break;
 				}
 
-				instance->completion_remove++;
+				/* Ensure that the above copy has completed
+				** before advancing the remove pointer. */
+				mb();
+
+				instance->completion_remove = ++remove;
 			}
 
 			if (msgbufcount != args.msgbufcount) {
@@ -1736,7 +1754,7 @@ vchiq_arm_init_state(VCHIQ_STATE_T *state, VCHIQ_ARM_STATE_T *arm_state)
 
 		arm_state->suspend_timer_timeout = SUSPEND_TIMER_TIMEOUT_MS;
 		arm_state->suspend_timer_running = 0;
-		init_timer(&arm_state->suspend_timer);
+		vchiq_init_timer(&arm_state->suspend_timer);
 		arm_state->suspend_timer.data = (unsigned long)(state);
 		arm_state->suspend_timer.function = suspend_timer_callback;
 
@@ -1787,7 +1805,7 @@ vchiq_arm_init_state(VCHIQ_STATE_T *state, VCHIQ_ARM_STATE_T *arm_state)
 **			suspend completion and reset the resume state machine.
 **
 ** VC_RESUME_IDLE - Initialise the resume completion at the same time.  The
-**			resume completion is in it's 'done' state whenever
+**			resume completion is in its 'done' state whenever
 **			videcore is running.  Therfore, the VC_RESUME_IDLE state
 **			implies that videocore is suspended.
 **			Hence, any thread which needs to wait until videocore is
@@ -1874,11 +1892,11 @@ set_resume_state(VCHIQ_ARM_STATE_T *arm_state,
 inline void
 start_suspend_timer(VCHIQ_ARM_STATE_T *arm_state)
 {
-	del_timer(&arm_state->suspend_timer);
+	vchiq_del_timer(&arm_state->suspend_timer);
 	arm_state->suspend_timer.expires = jiffies +
 		msecs_to_jiffies(arm_state->
 			suspend_timer_timeout);
-	add_timer(&arm_state->suspend_timer);
+	vchiq_add_timer(&arm_state->suspend_timer);
 	arm_state->suspend_timer_running = 1;
 }
 
@@ -1887,7 +1905,7 @@ static inline void
 stop_suspend_timer(VCHIQ_ARM_STATE_T *arm_state)
 {
 	if (arm_state->suspend_timer_running) {
-		del_timer(&arm_state->suspend_timer);
+		vchiq_del_timer(&arm_state->suspend_timer);
 		arm_state->suspend_timer_running = 0;
 	}
 }
@@ -2899,9 +2917,6 @@ void vchiq_exit(void);
 void
 vchiq_exit(void)
 {
-	if (vchiq_ehtag == NULL)
-		EVENTHANDLER_DEREGISTER(dev_clone, vchiq_ehtag);
-	vchiq_ehtag = NULL;
 
 	vchiq_platform_exit(&g_state);
 	if (vchiq_cdev) {

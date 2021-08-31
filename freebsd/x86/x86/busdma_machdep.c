@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997, 1998 Justin T. Gibbs.
  * Copyright (c) 2013 The FreeBSD Foundation
  * All rights reserved.
@@ -31,6 +33,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_acpi.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/malloc.h>
@@ -41,8 +45,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/memdesc.h>
 #include <sys/mutex.h>
 #include <sys/uio.h>
+#include <sys/vmmeter.h>
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
+#include <vm/vm_param.h>
+#include <vm/vm_page.h>
+#include <vm/vm_phys.h>
 #include <vm/pmap.h>
 #include <machine/bus.h>
 #include <x86/include/busdma_impl.h>
@@ -93,14 +101,15 @@ bus_dma_dflt_lock(void *arg, bus_dma_lock_op_t op)
  * to check for a match, if there is no filter callback then assume a match.
  */
 int
-bus_dma_run_filter(struct bus_dma_tag_common *tc, bus_addr_t paddr)
+bus_dma_run_filter(struct bus_dma_tag_common *tc, vm_paddr_t paddr)
 {
 	int retval;
 
 	retval = 0;
 	do {
-		if (((paddr > tc->lowaddr && paddr <= tc->highaddr) ||
-		    ((paddr & (tc->alignment - 1)) != 0)) &&
+		if ((paddr >= BUS_SPACE_MAXADDR ||
+		    (paddr > tc->lowaddr && paddr <= tc->highaddr) ||
+		    (paddr & (tc->alignment - 1)) != 0) &&
 		    (tc->filter == NULL ||
 		    (*tc->filter)(tc->filterarg, paddr) != 0))
 			retval = 1;
@@ -178,10 +187,27 @@ common_bus_dma_tag_create(struct bus_dma_tag_common *parent,
 			common->filterarg = parent->filterarg;
 			common->parent = parent->parent;
 		}
+		common->domain = parent->domain;
 		atomic_add_int(&parent->ref_count, 1);
 	}
+	common->domain = vm_phys_domain_match(common->domain, 0ul,
+	    common->lowaddr);
 	*dmat = common;
 	return (0);
+}
+
+int
+bus_dma_tag_set_domain(bus_dma_tag_t dmat, int domain)
+{
+	struct bus_dma_tag_common *tc;
+
+	tc = (struct bus_dma_tag_common *)dmat;
+	domain = vm_phys_domain_match(domain, 0ul, tc->lowaddr);
+	/* Only call the callback if it changes. */
+	if (domain == tc->domain)
+		return (0);
+	tc->domain = domain;
+	return (tc->impl->tag_set_domain(dmat));
 }
 
 /*
@@ -210,6 +236,29 @@ bus_dma_tag_create(bus_dma_tag_t parent, bus_size_t alignment,
 	return (error);
 }
 
+void
+bus_dma_template_clone(bus_dma_template_t *t, bus_dma_tag_t dmat)
+{
+	struct bus_dma_tag_common *common;
+
+	if (t == NULL || dmat == NULL)
+		return;
+
+	common = (struct bus_dma_tag_common *)dmat;
+
+	t->parent = (bus_dma_tag_t)common->parent;
+	t->alignment = common->alignment;
+	t->boundary = common->boundary;
+	t->lowaddr = common->lowaddr;
+	t->highaddr = common->highaddr;
+	t->maxsize = common->maxsize;
+	t->nsegments = common->nsegments;
+	t->maxsegsize = common->maxsegsz;
+	t->flags = common->flags;
+	t->lockfunc = common->lockfunc;
+	t->lockfuncarg = common->lockfuncarg;
+}
+
 int
 bus_dma_tag_destroy(bus_dma_tag_t dmat)
 {
@@ -217,143 +266,4 @@ bus_dma_tag_destroy(bus_dma_tag_t dmat)
 
 	tc = (struct bus_dma_tag_common *)dmat;
 	return (tc->impl->tag_destroy(dmat));
-}
-
-/*
- * Allocate a handle for mapping from kva/uva/physical
- * address space into bus device space.
- */
-int
-bus_dmamap_create(bus_dma_tag_t dmat, int flags, bus_dmamap_t *mapp)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->map_create(dmat, flags, mapp));
-}
-
-/*
- * Destroy a handle for mapping from kva/uva/physical
- * address space into bus device space.
- */
-int
-bus_dmamap_destroy(bus_dma_tag_t dmat, bus_dmamap_t map)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->map_destroy(dmat, map));
-}
-
-
-/*
- * Allocate a piece of memory that can be efficiently mapped into
- * bus device space based on the constraints lited in the dma tag.
- * A dmamap to for use with dmamap_load is also allocated.
- */
-int
-bus_dmamem_alloc(bus_dma_tag_t dmat, void** vaddr, int flags,
-    bus_dmamap_t *mapp)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->mem_alloc(dmat, vaddr, flags, mapp));
-}
-
-/*
- * Free a piece of memory and it's allociated dmamap, that was allocated
- * via bus_dmamem_alloc.  Make the same choice for free/contigfree.
- */
-void
-bus_dmamem_free(bus_dma_tag_t dmat, void *vaddr, bus_dmamap_t map)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	tc->impl->mem_free(dmat, vaddr, map);
-}
-
-/*
- * Utility function to load a physical buffer.  segp contains
- * the starting segment on entrace, and the ending segment on exit.
- */
-int
-_bus_dmamap_load_phys(bus_dma_tag_t dmat, bus_dmamap_t map, vm_paddr_t buf,
-    bus_size_t buflen, int flags, bus_dma_segment_t *segs, int *segp)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->load_phys(dmat, map, buf, buflen, flags, segs,
-	    segp));
-}
-
-int
-_bus_dmamap_load_ma(bus_dma_tag_t dmat, bus_dmamap_t map, struct vm_page **ma,
-    bus_size_t tlen, int ma_offs, int flags, bus_dma_segment_t *segs,
-    int *segp)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->load_ma(dmat, map, ma, tlen, ma_offs, flags,
-	    segs, segp));
-}
-
-/*
- * Utility function to load a linear buffer.  segp contains
- * the starting segment on entrace, and the ending segment on exit.
- */
-int
-_bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
-    bus_size_t buflen, pmap_t pmap, int flags, bus_dma_segment_t *segs,
-    int *segp)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->load_buffer(dmat, map, buf, buflen, pmap, flags, segs,
-	    segp));
-}
-
-void
-__bus_dmamap_waitok(bus_dma_tag_t dmat, bus_dmamap_t map,
-    struct memdesc *mem, bus_dmamap_callback_t *callback, void *callback_arg)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	tc->impl->map_waitok(dmat, map, mem, callback, callback_arg);
-}
-
-bus_dma_segment_t *
-_bus_dmamap_complete(bus_dma_tag_t dmat, bus_dmamap_t map,
-    bus_dma_segment_t *segs, int nsegs, int error)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	return (tc->impl->map_complete(dmat, map, segs, nsegs, error));
-}
-
-/*
- * Release the mapping held by map.
- */
-void
-_bus_dmamap_unload(bus_dma_tag_t dmat, bus_dmamap_t map)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	tc->impl->map_unload(dmat, map);
-}
-
-void
-_bus_dmamap_sync(bus_dma_tag_t dmat, bus_dmamap_t map, bus_dmasync_op_t op)
-{
-	struct bus_dma_tag_common *tc;
-
-	tc = (struct bus_dma_tag_common *)dmat;
-	tc->impl->map_sync(dmat, map, op);
 }

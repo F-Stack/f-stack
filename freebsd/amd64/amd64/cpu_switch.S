@@ -14,7 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -36,7 +36,7 @@
 #include <machine/asmacros.h>
 #include <machine/specialreg.h>
 
-#include "assym.s"
+#include "assym.inc"
 #include "opt_sched.h"
 
 /*****************************************************************************/
@@ -44,18 +44,6 @@
 /*****************************************************************************/
 
 	.text
-
-#ifdef SMP
-#define LK	lock ;
-#else
-#define LK
-#endif
-
-#if defined(SCHED_ULE) && defined(SMP)
-#define	SETLK	xchgq
-#else
-#define	SETLK	movq
-#endif
 
 /*
  * cpu_throw()
@@ -86,8 +74,7 @@ END(cpu_throw)
  */
 ENTRY(cpu_switch)
 	/* Switch to new thread.  First, save context. */
-	movq	TD_PCB(%rdi),%r8
-	orl	$PCB_FULL_IRET,PCB_FLAGS(%r8)
+	leaq	TD_MD_PCB(%rdi),%r8
 
 	movq	(%rsp),%rax			/* Hardware registers */
 	movq	%r15,PCB_R15(%r8)
@@ -99,57 +86,77 @@ ENTRY(cpu_switch)
 	movq	%rbx,PCB_RBX(%r8)
 	movq	%rax,PCB_RIP(%r8)
 
+	testl	$PCB_FULL_IRET,PCB_FLAGS(%r8)
+	jnz	2f
+	orl	$PCB_FULL_IRET,PCB_FLAGS(%r8)
+	testl	$TDP_KTHREAD,TD_PFLAGS(%rdi)
+	jnz	2f
+	testb	$CPUID_STDEXT_FSGSBASE,cpu_stdext_feature(%rip)
+	jz	2f
+	movl	%fs,%eax
+	cmpl	$KUF32SEL,%eax
+	jne	1f
+	rdfsbase %rax
+	movq	%rax,PCB_FSBASE(%r8)
+1:	movl	%gs,%eax
+	cmpl	$KUG32SEL,%eax
+	jne	2f
+	movq	%rdx,%r12
+	movl	$MSR_KGSBASE,%ecx		/* Read user gs base */
+	rdmsr
+	shlq	$32,%rdx
+	orq	%rdx,%rax
+	movq	%rax,PCB_GSBASE(%r8)
+	movq	%r12,%rdx
+
+2:
 	testl	$PCB_DBREGS,PCB_FLAGS(%r8)
 	jnz	store_dr			/* static predict not taken */
 done_store_dr:
 
 	/* have we used fp, and need a save? */
 	cmpq	%rdi,PCPU(FPCURTHREAD)
-	jne	3f
-	movq	PCB_SAVEFPU(%r8),%r8
+	jne	ctx_switch_fpusave_done
+	movq	PCB_SAVEFPU(%r8),%r9
 	clts
-	cmpl	$0,use_xsave
+	cmpl	$0,use_xsave(%rip)
 	jne	1f
-	fxsave	(%r8)
-	jmp	2f
+	fxsave	(%r9)
+	jmp	ctx_switch_fpusave_done
 1:	movq	%rdx,%rcx
 	movl	xsave_mask,%eax
 	movl	xsave_mask+4,%edx
+	testl	$PCB_32BIT,PCB_FLAGS(%r8)
+	jne	ctx_switch_xsave32
 	.globl	ctx_switch_xsave
 ctx_switch_xsave:
 	/* This is patched to xsaveopt if supported, see fpuinit_bsp1() */
-	xsave	(%r8)
+	xsave64	(%r9)
+ctx_switch_xsave_done:
 	movq	%rcx,%rdx
-2:	smsw	%ax
-	orb	$CR0_TS,%al
-	lmsw	%ax
-	xorl	%eax,%eax
-	movq	%rax,PCPU(FPCURTHREAD)
-3:
+ctx_switch_fpusave_done:
 	/* Save is done.  Now fire up new thread. Leave old vmspace. */
 	movq	%rsi,%r12
 	movq	%rdi,%r13
 	movq	%rdx,%r15
 	movq	%rsi,%rdi
 	callq	pmap_activate_sw
-	SETLK	%r15,TD_LOCK(%r13)		/* Release the old thread */
+	movq	%r15,TD_LOCK(%r13)		/* Release the old thread */
 sw1:
-	movq	TD_PCB(%r12),%r8
+	leaq	TD_MD_PCB(%r12),%r8
 #if defined(SCHED_ULE) && defined(SMP)
-	/* Wait for the new thread to become unblocked */
 	movq	$blocked_lock, %rdx
-1:
 	movq	TD_LOCK(%r12),%rcx
 	cmpq	%rcx, %rdx
-	pause
-	je	1b
+	je	sw1wait
+sw1cont:
 #endif
 	/*
 	 * At this point, we've switched address spaces and are ready
 	 * to load up the rest of the next context.
 	 */
 
-	/* Skip loading user fsbase/gsbase for kthreads */
+	/* Skip loading LDT and user fsbase/gsbase for kthreads */
 	testl	$TDP_KTHREAD,TD_PFLAGS(%r12)
 	jnz	do_kthread
 
@@ -184,15 +191,20 @@ do_kthread:
 	/* Do we need to reload tss ? */
 	movq	PCPU(TSSP),%rax
 	movq	PCB_TSSP(%r8),%rdx
+	movq	PCPU(PRVSPACE),%r13
+	addq	$PC_COMMONTSS,%r13
 	testq	%rdx,%rdx
-	cmovzq	PCPU(COMMONTSSP),%rdx
+	cmovzq	%r13,%rdx
 	cmpq	%rax,%rdx
 	jne	do_tss
 done_tss:
-	movq	%r8,PCPU(RSP0)
+	movq	TD_MD_STACK_BASE(%r12),%r9
+	movq	%r9,PCPU(RSP0)
 	movq	%r8,PCPU(CURPCB)
-	/* Update the TSS_RSP0 pointer for the next interrupt */
-	movq	%r8,COMMON_TSS_RSP0(%rdx)
+	movq	PCPU(PTI_RSP0),%rax
+	cmpq	$~0,PCPU(UCR3)
+	cmove	%r9,%rax
+	movq	%rax,TSS_RSP0(%rdx)
 	movq	%r12,PCPU(CURTHREAD)		/* into next thread */
 
 	/* Test if debug registers should be restored. */
@@ -210,6 +222,10 @@ done_load_dr:
 	movq	PCB_RBX(%r8),%rbx
 	movq	PCB_RIP(%r8),%rax
 	movq	%rax,(%rsp)
+	movq	PCPU(CURTHREAD),%rdi
+	call	fpu_activate_sw
+	cmpb	$0,cpu_flush_rsb_ctxsw(%rip)
+	jne	rsb_flush
 	ret
 
 	/*
@@ -281,6 +297,11 @@ do_ldt:	movq	PCPU(LDT),%rax
 	movq	%rdx,8(%rax)
 	movl	$LDTSEL,%eax
 	jmp	ld_ldt
+
+	.globl	ctx_switch_xsave32
+ctx_switch_xsave32:
+	xsave	(%r9)
+	jmp	ctx_switch_xsave_done
 END(cpu_switch)
 
 /*
@@ -369,8 +390,11 @@ END(savectx)
  * Resuming processor state from pcb.
  */     
 ENTRY(resumectx)
-	/* Switch to KPML4phys. */
+	/* Switch to KPML5/4phys. */
 	movq	KPML4phys,%rax
+	movq	KPML5phys,%rcx
+	cmpl	$0, la57
+	cmovne	%rcx, %rax
 	movq	%rax,%cr3
 
 	/* Force kernel segment registers. */
@@ -396,7 +420,7 @@ ENTRY(resumectx)
 	movl	4 + PCB_KGSBASE(%rdi),%edx
 	wrmsr
 
-	/* Restore EFER. */
+	/* Restore EFER one more time. */
 	movl	$MSR_EFER,%ecx
 	movl	PCB_EFER(%rdi),%eax
 	wrmsr
@@ -474,3 +498,14 @@ ENTRY(resumectx)
 	xorl	%eax,%eax
 	ret
 END(resumectx)
+
+/* Wait for the new thread to become unblocked */
+#if defined(SCHED_ULE) && defined(SMP)
+sw1wait:
+1:
+	pause
+	movq	TD_LOCK(%r12),%rcx
+	cmpq	%rcx, %rdx
+	je	1b
+	jmp	sw1cont
+#endif

@@ -11,36 +11,29 @@
 #ifndef	__IP_FIL_H__
 #define	__IP_FIL_H__
 
+# include <netinet/in.h>
+
 #include "netinet/ip_compat.h"
 #include "netinet/ipf_rb.h"
 #if NETBSD_GE_REV(104040000)
 # include <sys/callout.h>
 #endif
 #if defined(BSD) && defined(_KERNEL)
-# if NETBSD_LT_REV(399000000) || defined(__osf__) || FREEBSD_LT_REV(500043)
-#  include <sys/select.h>
-# else
 #  include <sys/selinfo.h>
-# endif
-#endif
-
-#if !defined(linux) || !defined(_KERNEL)
-# include <netinet/in.h>
 #endif
 
 #ifndef	SOLARIS
-# define SOLARIS (defined(sun) && (defined(__svr4__) || defined(__SVR4)))
-#endif
-
-#ifndef	__P
-# ifdef	__STDC__
-#  define	__P(x)	x
+# if defined(sun) && defined(__SVR4)
+#  define	SOLARIS		1
 # else
-#  define	__P(x)	()
+#  define	SOLARIS		0
 # endif
 #endif
 
-#if defined(__STDC__) || defined(__GNUC__) || defined(_AIX51)
+#ifndef	__P
+#  define	__P(x)	x
+#endif
+
 # define	SIOCADAFR	_IOW('r', 60, struct ipfobj)
 # define	SIOCRMAFR	_IOW('r', 61, struct ipfobj)
 # define	SIOCSETFF	_IOW('r', 62, u_int)
@@ -80,47 +73,6 @@
 # define	SIOCGTQTAB	_IOWR('r', 96, struct ipfobj)
 # define	SIOCMATCHFLUSH	_IOWR('r', 97, struct ipfobj)
 # define	SIOCIPFINTERROR	_IOR('r', 98, int)
-#else
-# define	SIOCADAFR	_IOW(r, 60, struct ipfobj)
-# define	SIOCRMAFR	_IOW(r, 61, struct ipfobj)
-# define	SIOCSETFF	_IOW(r, 62, u_int)
-# define	SIOCGETFF	_IOR(r, 63, u_int)
-# define	SIOCGETFS	_IOWR(r, 64, struct ipfobj)
-# define	SIOCIPFFL	_IOWR(r, 65, int)
-# define	SIOCIPFFB	_IOR(r, 66, int)
-# define	SIOCADIFR	_IOW(r, 67, struct ipfobj)
-# define	SIOCRMIFR	_IOW(r, 68, struct ipfobj)
-# define	SIOCSWAPA	_IOR(r, 69, u_int)
-# define	SIOCINAFR	_IOW(r, 70, struct ipfobj)
-# define	SIOCINIFR	_IOW(r, 71, struct ipfobj)
-# define	SIOCFRENB	_IOW(r, 72, u_int)
-# define	SIOCFRSYN	_IOW(r, 73, u_int)
-# define	SIOCFRZST	_IOWR(r, 74, struct ipfobj)
-# define	SIOCZRLST	_IOWR(r, 75, struct ipfobj)
-# define	SIOCAUTHW	_IOWR(r, 76, struct ipfobj)
-# define	SIOCAUTHR	_IOWR(r, 77, struct ipfobj)
-# define	SIOCSTAT1	_IOWR(r, 78, struct ipfobj)
-# define	SIOCSTLCK	_IOWR(r, 79, u_int)
-# define	SIOCSTPUT	_IOWR(r, 80, struct ipfobj)
-# define	SIOCSTGET	_IOWR(r, 81, struct ipfobj)
-# define	SIOCSTGSZ	_IOWR(r, 82, struct ipfobj)
-# define	SIOCSTAT2	_IOWR(r, 83, struct ipfobj)
-# define	SIOCSETLG	_IOWR(r, 84, int)
-# define	SIOCGETLG	_IOWR(r, 85, int)
-# define	SIOCFUNCL	_IOWR(r, 86, struct ipfunc_resolve)
-# define	SIOCIPFGETNEXT	_IOWR(r, 87, struct ipfobj)
-# define	SIOCIPFGET	_IOWR(r, 88, struct ipfobj)
-# define	SIOCIPFSET	_IOWR(r, 89, struct ipfobj)
-# define	SIOCIPFL6	_IOWR(r, 90, int)
-# define	SIOCIPFITER	_IOWR(r, 91, struct ipfobj)
-# define	SIOCGENITER	_IOWR(r, 92, struct ipfobj)
-# define	SIOCGTABL	_IOWR(r, 93, struct ipfobj)
-# define	SIOCIPFDELTOK	_IOWR(r, 94, int)
-# define	SIOCLOOKUPITER	_IOWR(r, 95, struct ipfobj)
-# define	SIOCGTQTAB	_IOWR(r, 96, struct ipfobj)
-# define	SIOCMATCHFLUSH	_IOWR(r, 97, struct ipfobj)
-# define	SIOCIPFINTERROR	_IOR(r, 98, int)
-#endif
 #define	SIOCADDFR	SIOCADAFR
 #define	SIOCDELFR	SIOCRMAFR
 #define	SIOCINSFR	SIOCINAFR
@@ -139,32 +91,20 @@ typedef	int	(* lookupfunc_t) __P((struct ipf_main_softc_s *, void *,
  * i6addr is used as a container for both IPv4 and IPv6 addresses, as well
  * as other types of objects, depending on its qualifier.
  */
+typedef	union	i6addr	{
+	u_32_t	i6[4];
+	struct	in_addr	in4;
 #ifdef	USE_INET6
-typedef	union	i6addr	{
-	u_32_t	i6[4];
-	struct	in_addr	in4;
 	struct	in6_addr in6;
-	void	*vptr[2];
-	lookupfunc_t	lptr[2];
-	struct {
-		u_short	type;
-		u_short	subtype;
-		int	name;
-	} i6un;
-} i6addr_t;
-#else
-typedef	union	i6addr	{
-	u_32_t	i6[4];
-	struct	in_addr	in4;
-	void	*vptr[2];
-	lookupfunc_t	lptr[2];
-	struct {
-		u_short	type;
-		u_short	subtype;
-		int	name;
-	} i6un;
-} i6addr_t;
 #endif
+	void	*vptr[2];
+	lookupfunc_t	lptr[2];
+	struct {
+		u_short	type;
+		u_short	subtype;
+		int	name;
+	} i6un;
+} i6addr_t;
 
 #define in4_addr	in4.s_addr
 #define	iplookupnum	i6[1]
@@ -467,9 +407,6 @@ typedef	struct	fr_info	{
 	void	*fin_qpi;
 	char	fin_ifname[LIFNAMSIZ];
 #endif
-#ifdef	__sgi
-	void	*fin_hbuf;
-#endif
 	void	*fin_fraghdr;		/* pointer to start of ipv6 frag hdr */
 } fr_info_t;
 
@@ -577,7 +514,6 @@ typedef	struct	frdest	{
 	addrfamily_t	fd_addr;
 	fr_dtypes_t	fd_type;
 	int		fd_name;
-	int		fd_local;
 } frdest_t;
 
 #define	fd_ip6	fd_addr.adf_addr
@@ -602,20 +538,20 @@ typedef enum fr_ctypes_e {
  */
 typedef	struct	frpcmp	{
 	fr_ctypes_t	frp_cmp;	/* data for port comparisons */
-	u_32_t		frp_port;	/* top port for <> and >< */
-	u_32_t		frp_top;	/* top port for <> and >< */
+	u_32_t		frp_port;	/* low port for <> and >< */
+	u_32_t		frp_top;	/* high port for <> and >< */
 } frpcmp_t;
 
 
 /*
- * Structure containing all the relevant TCP things that can be checked in
+ * Structure containing all the relevant TCP/UDP things that can be checked in
  * a filter rule.
  */
 typedef	struct	frtuc	{
 	u_char		ftu_tcpfm;	/* tcp flags mask */
 	u_char		ftu_tcpf;	/* tcp flags */
-	frpcmp_t	ftu_src;
-	frpcmp_t	ftu_dst;
+	frpcmp_t	ftu_src;	/* source port */
+	frpcmp_t	ftu_dst;	/* destination port */
 } frtuc_t;
 
 #define	ftu_scmp	ftu_src.frp_cmp
@@ -753,12 +689,9 @@ typedef	struct	frentry {
 	u_char	fr_icode;	/* return ICMP code */
 	int	fr_group;	/* group to which this rule belongs */
 	int	fr_grhead;	/* group # which this rule starts */
-	int	fr_ifnames[4];
 	int	fr_isctag;
 	int	fr_rpc;		/* XID Filtering */ 
 	ipftag_t fr_nattag;
-	frdest_t fr_tifs[2];	/* "to"/"reply-to" interface */
-	frdest_t fr_dif;	/* duplicate packet interface */
 	/*
 	 * These are all options related to stateful filtering
 	 */
@@ -767,6 +700,12 @@ typedef	struct	frentry {
 	int	fr_statemax;	/* max reference count */
 	int	fr_icmphead;	/* ICMP group  for state options */
 	u_int	fr_age[2];	/* non-TCP state timeouts */
+	/*
+	 * These are compared separately.
+	 */
+	int	fr_ifnames[4];
+	frdest_t fr_tifs[2];	/* "to"/"reply-to" interface */
+	frdest_t fr_dif;	/* duplicate packet interface */
 	/*
 	 * How big is the name buffer at the end?
 	 */
@@ -845,9 +784,10 @@ typedef	struct	frentry {
 
 #define	FR_NOLOGTAG	0
 
-#define	FR_CMPSIZ	(sizeof(struct frentry) - \
-			 offsetof(struct frentry, fr_func))
+#define	FR_CMPSIZ	(offsetof(struct frentry, fr_ifnames) - \
+			offsetof(struct frentry, fr_func))
 #define	FR_NAME(_f, _n)	(_f)->fr_names + (_f)->_n
+#define FR_NUM(_a)	(sizeof(_a) / sizeof(*_a))
 
 
 /*
@@ -1034,11 +974,7 @@ typedef	struct	iplog	{
 #define	IPLOG_SIZE	sizeof(iplog_t)
 
 typedef	struct	ipflog	{
-#if (defined(NetBSD) && (NetBSD <= 1991011) && (NetBSD >= 199603)) || \
-        (defined(OpenBSD) && (OpenBSD >= 199603))
-#else
-	u_int	fl_unit;
-#endif
+	u_int		fl_unit;
 	u_32_t		fl_rule;
 	u_32_t		fl_flags;
 	u_32_t		fl_lflags;
@@ -1437,30 +1373,9 @@ typedef	struct	ipftune	{
 /*
 ** HPUX Port
 */
-#ifdef __hpux
-/* HP-UX locking sequence deadlock detection module lock MAJOR ID */
-# define	IPF_SMAJ	0	/* temp assignment XXX, not critical */
-#endif
 
-#if !defined(CDEV_MAJOR) && defined (__FreeBSD_version) && \
-    (__FreeBSD_version >= 220000)
+#if !defined(CDEV_MAJOR) && defined (__FreeBSD_version)
 # define	CDEV_MAJOR	79
-#endif
-
-/*
- * Post NetBSD 1.2 has the PFIL interface for packet filters.  This turns
- * on those hooks.  We don't need any special mods in non-IP Filter code
- * with this!
- */
-#if (defined(NetBSD) && (NetBSD > 199609) && (NetBSD <= 1991011)) || \
-    (defined(NetBSD1_2) && NetBSD1_2 > 1) || \
-    (defined(__FreeBSD__) && (__FreeBSD_version >= 500043))
-# if (defined(NetBSD) && NetBSD >= 199905)
-#  define PFIL_HOOKS
-# endif
-# ifdef PFIL_HOOKS
-#  define NETBSD_PF
-# endif
 #endif
 
 #ifdef _KERNEL
@@ -1652,22 +1567,14 @@ typedef struct ipf_main_softc_s {
 	frentry_t	*ipf_rule_explist[2];
 	ipftoken_t	*ipf_token_head;
 	ipftoken_t	**ipf_token_tail;
-#if defined(__FreeBSD_version) && (__FreeBSD_version >= 300000) && \
-    defined(_KERNEL)
+#if defined(__FreeBSD_version) && defined(_KERNEL)
 	struct callout ipf_slow_ch;
-#endif
-#if defined(linux) && defined(_KERNEL)
-	struct timer_list	ipf_timer;
 #endif
 #if NETBSD_GE_REV(104040000)
 	struct callout	ipf_slow_ch;
 #endif
 #if SOLARIS
-# if SOLARIS2 >= 7
 	timeout_id_t	ipf_slow_ch;
-# else
-	int		ipf_slow_ch;
-# endif
 #endif
 #if defined(_KERNEL)
 # if SOLARIS
@@ -1690,12 +1597,7 @@ typedef struct ipf_main_softc_s {
 	hook_t		*ipf_hk_loop_v6_out;
 #  endif
 # else
-#  if defined(linux) && defined(_KERNEL)
-	struct poll_table_struct	ipf_selwait[IPL_LOGSIZE];
-	wait_queue_head_t		iplh_linux[IPL_LOGSIZE];
-#  else
 	struct selinfo	ipf_selwait[IPL_LOGSIZE];
-#  endif
 # endif
 #endif
 	void		*ipf_slow;
@@ -1709,7 +1611,7 @@ typedef struct ipf_main_softc_s {
 			} while (0)
 
 #ifndef	_KERNEL
-extern	int	ipf_check __P((void *, struct ip *, int, void *, int, mb_t **));
+extern	int	ipf_check __P((void *, struct ip *, int, struct ifnet *, int, mb_t **));
 extern	struct	ifnet *get_unit __P((char *, int));
 extern	char	*get_ifname __P((struct ifnet *));
 extern	int	ipfioctl __P((ipf_main_softc_t *, int, ioctlcmd_t,
@@ -1725,67 +1627,27 @@ extern	void	ipfilterattach __P((int));
 extern	int	ipl_enable __P((void));
 extern	int	ipl_disable __P((void));
 # ifdef MENTAT
-extern	int	ipf_check __P((void *, struct ip *, int, void *, int, void *,
+/* XXX MENTAT is always defined for Solaris */
+extern	int	ipf_check __P((void *, struct ip *, int, struct ifnet *, int, void *,
 			       mblk_t **));
 #  if SOLARIS
 extern	void	ipf_prependmbt(fr_info_t *, mblk_t *);
-#   if SOLARIS2 >= 7
 extern	int	ipfioctl __P((dev_t, int, intptr_t, int, cred_t *, int *));
-#   else
-extern	int	ipfioctl __P((dev_t, int, int *, int, cred_t *, int *));
-#   endif
-#  endif
-#  ifdef __hpux
-extern	int	ipfioctl __P((dev_t, int, caddr_t, int));
-extern	int	ipf_select __P((dev_t, int));
 #  endif
 extern	int	ipf_qout __P((queue_t *, mblk_t *));
 # else /* MENTAT */
-extern	int	ipf_check __P((void *, struct ip *, int, void *, int, mb_t **));
+/* XXX MENTAT is never defined for FreeBSD & NetBSD */
+extern	int	ipf_check __P((void *, struct ip *, int, struct ifnet *, int, mb_t **));
 extern	int	(*fr_checkp) __P((ip_t *, int, void *, int, mb_t **));
 extern	size_t	mbufchainlen __P((mb_t *));
-#  ifdef	__sgi
-#   include <sys/cred.h>
-extern	int	ipfioctl __P((dev_t, int, caddr_t, int, cred_t *, int *));
-extern	int	ipfilter_sgi_attach __P((void));
-extern	void	ipfilter_sgi_detach __P((void));
-extern	void	ipfilter_sgi_intfsync __P((void));
-#  else
 #   ifdef	IPFILTER_LKM
 extern	int	ipf_identify __P((char *));
 #   endif
-#   if BSDOS_GE_REV(199510) || FREEBSD_GE_REV(220000) || \
-      (defined(NetBSD) && (NetBSD >= 199511)) || defined(__OpenBSD__)
-#    if defined(__NetBSD__) || BSDOS_GE_REV(199701) || \
-       defined(__OpenBSD__) || FREEBSD_GE_REV(300000)
-#     if (__FreeBSD_version >= 500024)
-#      if (__FreeBSD_version >= 502116)
+#     if defined(__FreeBSD_version)
 extern	int	ipfioctl __P((struct cdev*, u_long, caddr_t, int, struct thread *));
-#      else
-extern	int	ipfioctl __P((dev_t, u_long, caddr_t, int, struct thread *));
-#      endif /* __FreeBSD_version >= 502116 */
-#     else
-#      if  NETBSD_GE_REV(499001000)
+#     elif defined(__NetBSD__)
 extern	int	ipfioctl __P((dev_t, u_long, void *, int, struct lwp *));
-#       else
-#       if  NETBSD_GE_REV(399001400)
-extern	int	ipfioctl __P((dev_t, u_long, caddr_t, int, struct lwp *));
-#       else
-extern	int	ipfioctl __P((dev_t, u_long, caddr_t, int, struct proc *));
-#       endif
-#      endif
-#     endif /* __FreeBSD_version >= 500024 */
-#    else
-extern	int	ipfioctl __P((dev_t, int, caddr_t, int, struct proc *));
-#    endif
-#   else
-#    ifdef linux
-extern	int	ipfioctl __P((struct inode *, struct file *, u_int, u_long));
-#    else
-extern	int	ipfioctl __P((dev_t, int, caddr_t, int));
-#    endif
-#   endif /* (_BSDI_VERSION >= 199510) */
-#  endif /* __ sgi */
+#     endif
 # endif /* MENTAT */
 
 # if defined(__FreeBSD_version)
@@ -1841,9 +1703,6 @@ extern	int	ipf_resolvefunc __P((ipf_main_softc_t *, void *));
 extern	void	*ipf_resolvenic __P((ipf_main_softc_t *, char *, int));
 extern	int	ipf_send_icmp_err __P((int, fr_info_t *, int));
 extern	int	ipf_send_reset __P((fr_info_t *));
-#if  (defined(__FreeBSD_version) && (__FreeBSD_version < 501000)) || \
-     !defined(_KERNEL) || defined(linux)
-#endif
 extern	void	ipf_apply_timeout __P((ipftq_t *, u_int));
 extern	ipftq_t	*ipf_addtimeoutqueue __P((ipf_main_softc_t *, ipftq_t **,
 					  u_int));
@@ -1933,6 +1792,10 @@ extern	int		ipf_matchicmpqueryreply __P((int, icmpinfo_t *,
 						     struct icmp *, int));
 extern	u_32_t		ipf_newisn __P((fr_info_t *));
 extern	u_int		ipf_pcksum __P((fr_info_t *, int, u_int));
+#ifdef	USE_INET6
+extern	u_int		ipf_pcksum6 __P((struct mbuf *, ip6_t *,
+						u_int32_t, u_int32_t));
+#endif
 extern	void		ipf_rule_expire __P((ipf_main_softc_t *));
 extern	int		ipf_scanlist __P((fr_info_t *, u_32_t));
 extern	frentry_t 	*ipf_srcgrpmap __P((fr_info_t *, u_32_t *));

@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001-2002 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -232,14 +234,18 @@ static struct domain ng_btsocket_domain = {
  * Socket sysctl tree 
  */
 
-SYSCTL_NODE(_net_bluetooth_hci, OID_AUTO, sockets, CTLFLAG_RW,
-	0, "Bluetooth HCI sockets family");
-SYSCTL_NODE(_net_bluetooth_l2cap, OID_AUTO, sockets, CTLFLAG_RW,
-	0, "Bluetooth L2CAP sockets family");
-SYSCTL_NODE(_net_bluetooth_rfcomm, OID_AUTO, sockets, CTLFLAG_RW,
-	0, "Bluetooth RFCOMM sockets family");
-SYSCTL_NODE(_net_bluetooth_sco, OID_AUTO, sockets, CTLFLAG_RW,
-	0, "Bluetooth SCO sockets family");
+SYSCTL_NODE(_net_bluetooth_hci, OID_AUTO, sockets,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Bluetooth HCI sockets family");
+SYSCTL_NODE(_net_bluetooth_l2cap, OID_AUTO, sockets,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Bluetooth L2CAP sockets family");
+SYSCTL_NODE(_net_bluetooth_rfcomm, OID_AUTO, sockets,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Bluetooth RFCOMM sockets family");
+SYSCTL_NODE(_net_bluetooth_sco, OID_AUTO, sockets,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Bluetooth SCO sockets family");
 
 /* 
  * Module 

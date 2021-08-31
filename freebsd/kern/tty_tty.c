@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Poul-Henning Kamp.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,6 +30,7 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/eventhandler.h>
 #include <sys/conf.h>
 #include <sys/kernel.h>
 #include <sys/proc.h>

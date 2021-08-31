@@ -1,4 +1,4 @@
-/*
+/*-
  * Copyright (c) 2002-2003,2010 Luigi Rizzo
  * Copyright (c) 1996 Alex Nash, Paul Traina, Poul-Henning Kamp
  * Copyright (c) 1994 Ugen J.S.Antsilevich
@@ -31,13 +31,6 @@
 #include <sysexits.h>
 #include <unistd.h>
 
-#ifdef FSTACK
-#include <stdint.h>
-#include "compat.h"
-
-#include "ff_ipc.h"
-#endif
-
 #include "ipfw2.h"
 
 static void
@@ -45,17 +38,13 @@ help(void)
 {
 	fprintf(stderr,
 "ipfw syntax summary (but please do read the ipfw(8) manpage):\n\n"
-#ifndef FSTACK
 "\tipfw [-abcdefhnNqStTv] <command>\n\n"
-#else
-"\tipfw -P <f-stack proc_id> [-abcdefhnNqStTv] <command>\n\n"
-#endif
 "where <command> is one of the following:\n\n"
 "add [num] [set N] [prob x] RULE-BODY\n"
 "{pipe|queue} N config PIPE-BODY\n"
 "[pipe|queue] {zero|delete|show} [N{,N}]\n"
-"nat N config {ip IPADDR|if IFNAME|log|deny_in|same_ports|unreg_only|reset|\n"
-"		reverse|proxy_only|redirect_addr linkspec|\n"
+"nat N config {ip IPADDR|if IFNAME|log|deny_in|same_ports|unreg_only|unreg_cgn|\n"
+"		reset|reverse|proxy_only|redirect_addr linkspec|\n"
 "		redirect_port linkspec|redirect_proto linkspec}\n"
 "set [disable N... enable N...] | move [rule] X to Y | swap X Y | show\n"
 "set N {show|list|zero|resetlog|delete} [N{,N}] | flush\n"
@@ -86,9 +75,6 @@ help(void)
 "	setup | {tcpack|tcpseq|tcpwin} NN | tcpflags SPEC | tcpoptions SPEC |\n"
 "	tcpdatalen LIST | verrevpath | versrcreach | antispoof\n"
 );
-#ifdef FSTACK
-			ff_ipc_exit();
-#endif
 
 	exit(0);
 }
@@ -240,8 +226,8 @@ ipfw_main(int oldac, char **oldav)
 	av[ac] = NULL;
 
 	/* Set the force flag for non-interactive processes */
-	if (!co.do_force)
-		co.do_force = !isatty(STDIN_FILENO);
+	if (!g_co.do_force)
+		g_co.do_force = !isatty(STDIN_FILENO);
 
 #ifdef EMULATE_SYSCTL /* sysctl emulation */
 	if ( ac >= 2 && !strcmp(av[1], "sysctl")) {
@@ -276,35 +262,35 @@ ipfw_main(int oldac, char **oldav)
 	save_av = av;
 
 	optind = optreset = 1;	/* restart getopt() */
-#ifndef FSTACK
-	while ((ch = getopt(ac, av, "abcdefhinNp:qs:STtv")) != -1)
-#else
-	while ((ch = getopt(ac, av, "abcdefhinNp:qs:STtvP:")) != -1)
-#endif
+	while ((ch = getopt(ac, av, "abcdDefhinNp:qs:STtv")) != -1)
 		switch (ch) {
 		case 'a':
 			do_acct = 1;
 			break;
 
 		case 'b':
-			co.comment_only = 1;
-			co.do_compact = 1;
+			g_co.comment_only = 1;
+			g_co.do_compact = 1;
 			break;
 
 		case 'c':
-			co.do_compact = 1;
+			g_co.do_compact = 1;
 			break;
 
 		case 'd':
-			co.do_dynamic = 1;
+			g_co.do_dynamic = 1;
+			break;
+
+		case 'D':
+			g_co.do_dynamic = 2;
 			break;
 
 		case 'e':
-			co.do_expired = 1;
+			/* nop for compatibility */
 			break;
 
 		case 'f':
-			co.do_force = 1;
+			g_co.do_force = 1;
 			break;
 
 		case 'h': /* help */
@@ -313,15 +299,15 @@ ipfw_main(int oldac, char **oldav)
 			break;	/* NOTREACHED */
 
 		case 'i':
-			co.do_value_as_ip = 1;
+			g_co.do_value_as_ip = 1;
 			break;
 
 		case 'n':
-			co.test_only = 1;
+			g_co.test_only = 1;
 			break;
 
 		case 'N':
-			co.do_resolv = 1;
+			g_co.do_resolv = 1;
 			break;
 
 		case 'p':
@@ -330,33 +316,29 @@ ipfw_main(int oldac, char **oldav)
 			/* NOTREACHED */
 
 		case 'q':
-			co.do_quiet = 1;
+			g_co.do_quiet = 1;
 			break;
 
 		case 's': /* sort */
-			co.do_sort = atoi(optarg);
+			g_co.do_sort = atoi(optarg);
 			break;
 
 		case 'S':
-			co.show_sets = 1;
+			g_co.show_sets = 1;
 			break;
 
 		case 't':
-			co.do_time = 1;
+			g_co.do_time = TIMESTAMP_STRING;
 			break;
 
 		case 'T':
-			co.do_time = 2;	/* numeric timestamp */
+			g_co.do_time = TIMESTAMP_NUMERIC;
 			break;
 
 		case 'v': /* verbose */
-			co.verbose = 1;
+			g_co.verbose = 1;
 			break;
-#ifdef FSTACK
-		case 'P':
-			ff_set_proc_id(atoi(optarg));
-			break;
-#endif
+
 		default:
 			free(save_av);
 			return 1;
@@ -381,31 +363,31 @@ ipfw_main(int oldac, char **oldav)
 	/*
 	 * Optional: pipe, queue or nat.
 	 */
-	co.do_nat = 0;
-	co.do_pipe = 0;
-	co.use_set = 0;
+	g_co.do_nat = 0;
+	g_co.do_pipe = 0;
+	g_co.use_set = 0;
 	if (!strncmp(*av, "nat", strlen(*av)))
- 		co.do_nat = 1;
- 	else if (!strncmp(*av, "pipe", strlen(*av)))
-		co.do_pipe = 1;
+		g_co.do_nat = 1;
+	else if (!strncmp(*av, "pipe", strlen(*av)))
+		g_co.do_pipe = 1;
 	else if (_substrcmp(*av, "queue") == 0)
-		co.do_pipe = 2;
+		g_co.do_pipe = 2;
 	else if (_substrcmp(*av, "flowset") == 0)
-		co.do_pipe = 2;
+		g_co.do_pipe = 2;
 	else if (_substrcmp(*av, "sched") == 0)
-		co.do_pipe = 3;
+		g_co.do_pipe = 3;
 	else if (!strncmp(*av, "set", strlen(*av))) {
 		if (ac > 1 && isdigit(av[1][0])) {
-			co.use_set = strtonum(av[1], 0, resvd_set_number,
+			g_co.use_set = strtonum(av[1], 0, resvd_set_number,
 					&errstr);
 			if (errstr)
 				errx(EX_DATAERR,
 				    "invalid set number %s\n", av[1]);
-			ac -= 2; av += 2; co.use_set++;
+			ac -= 2; av += 2; g_co.use_set++;
 		}
 	}
 
-	if (co.do_pipe || co.do_nat) {
+	if (g_co.do_pipe || g_co.do_nat) {
 		ac--;
 		av++;
 	}
@@ -416,27 +398,21 @@ ipfw_main(int oldac, char **oldav)
 	 * but the code is easier to parse as 'nat|pipe config NN'
 	 * so we swap the two arguments.
 	 */
-	if ((co.do_pipe || co.do_nat) && ac > 1 && isdigit(*av[0])) {
+	if ((g_co.do_pipe || g_co.do_nat) && ac > 1 && isdigit(*av[0])) {
 		char *p = av[0];
 
 		av[0] = av[1];
 		av[1] = p;
 	}
 
-	if (co.use_set == 0) {
+	if (g_co.use_set == 0) {
 		if (_substrcmp(*av, "add") == 0)
 			ipfw_add(av);
-		else if (co.do_nat && _substrcmp(*av, "show") == 0)
+		else if (g_co.do_nat && _substrcmp(*av, "show") == 0)
  			ipfw_show_nat(ac, av);
-		else if (co.do_pipe && _substrcmp(*av, "config") == 0)
-#ifdef DUMMYNET
+		else if (g_co.do_pipe && _substrcmp(*av, "config") == 0)
 			ipfw_config_pipe(ac, av);
-#else
-		{
-			errx(EX_UNAVAILABLE, "ipfw_config_pipe not supported");
-		}
-#endif
-		else if (co.do_nat && _substrcmp(*av, "config") == 0)
+		else if (g_co.do_nat && _substrcmp(*av, "config") == 0)
  			ipfw_config_nat(ac, av);
 		else if (_substrcmp(*av, "set") == 0)
 			ipfw_sets_handler(av);
@@ -450,11 +426,19 @@ ipfw_main(int oldac, char **oldav)
 			try_next = 1;
 	}
 
-	if (co.use_set || try_next) {
+	if (g_co.use_set || try_next) {
 		if (_substrcmp(*av, "delete") == 0)
 			ipfw_delete(av);
+		else if (!strncmp(*av, "nat64clat", strlen(*av)))
+			ipfw_nat64clat_handler(ac, av);
+		else if (!strncmp(*av, "nat64stl", strlen(*av)))
+			ipfw_nat64stl_handler(ac, av);
+		else if (!strncmp(*av, "nat64lsn", strlen(*av)))
+			ipfw_nat64lsn_handler(ac, av);
+		else if (!strncmp(*av, "nptv6", strlen(*av)))
+			ipfw_nptv6_handler(ac, av);
 		else if (_substrcmp(*av, "flush") == 0)
-			ipfw_flush(co.do_force);
+			ipfw_flush(g_co.do_force);
 		else if (_substrcmp(*av, "zero") == 0)
 			ipfw_zero(ac, av, 0 /* IP_FW_ZERO */);
 		else if (_substrcmp(*av, "resetlog") == 0)
@@ -490,26 +474,22 @@ ipfw_readfile(int ac, char *av[])
 	FILE	*f = NULL;
 	pid_t	preproc = 0;
 
-#ifndef FSTACK
 	while ((c = getopt(ac, av, "cfNnp:qS")) != -1) {
-#else
-	while ((c = getopt(ac, av, "cfNnp:qSP:")) != -1) {
-#endif
 		switch(c) {
 		case 'c':
-			co.do_compact = 1;
+			g_co.do_compact = 1;
 			break;
 
 		case 'f':
-			co.do_force = 1;
+			g_co.do_force = 1;
 			break;
 
 		case 'N':
-			co.do_resolv = 1;
+			g_co.do_resolv = 1;
 			break;
 
 		case 'n':
-			co.test_only = 1;
+			g_co.test_only = 1;
 			break;
 
 		case 'p':
@@ -538,18 +518,12 @@ ipfw_readfile(int ac, char *av[])
 			break;
 
 		case 'q':
-			co.do_quiet = 1;
+			g_co.do_quiet = 1;
 			break;
 
 		case 'S':
-			co.show_sets = 1;
+			g_co.show_sets = 1;
 			break;
-
-#ifdef FSTACK
-		case 'P':
-			ff_set_proc_id(atoi(optarg));
-			break;
-#endif
 
 		default:
 			errx(EX_USAGE, "bad arguments, for usage"
@@ -606,9 +580,7 @@ ipfw_readfile(int ac, char *av[])
 
 		lineno++;
 		snprintf(linename, sizeof(linename), "Line %d", lineno);
-#ifndef FSTACK
 		setprogname(linename); /* XXX */
-#endif
 		args[0] = progname;
 		args[1] = buf;
 		ipfw_main(2, args);
@@ -651,9 +623,7 @@ main(int ac, char *av[])
 	 * If the last argument is an absolute pathname, interpret it
 	 * as a file to be preprocessed.
 	 */
-#ifdef FSTACK
-	ff_ipc_init();
-#endif
+
 	if (ac > 1 && av[ac - 1][0] == '/') {
 		if (access(av[ac - 1], R_OK) == 0)
 			ipfw_readfile(ac, av);
@@ -666,8 +636,5 @@ main(int ac, char *av[])
 			    "do \"ipfw -h\" or \"man ipfw\" for details");
 		}
 	}
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
 	return EX_OK;
 }

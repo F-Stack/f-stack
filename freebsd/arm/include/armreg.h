@@ -1,6 +1,8 @@
 /*	$NetBSD: armreg.h,v 1.37 2007/01/06 00:50:54 christos Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1998, 2001 Ben Harris
  * Copyright (c) 1994-1996 Mark Brinicombe.
  * Copyright (c) 1994 Brini.
@@ -40,6 +42,10 @@
 
 #ifndef MACHINE_ARMREG_H
 #define MACHINE_ARMREG_H
+
+#ifndef _SYS_CDEFS_H_
+#error Please include sys/cdefs.h before including machine/armreg.h
+#endif
 
 #define INSN_SIZE	4
 #define INSN_COND_MASK	0xf0000000	/* Condition mask */
@@ -144,7 +150,7 @@
 #define	 CPU_ID_CORTEXA9R2	(CPU_ID_CORTEXA9 | (2 << CPU_ID_VARIANT_SHIFT))
 #define	 CPU_ID_CORTEXA9R3	(CPU_ID_CORTEXA9 | (3 << CPU_ID_VARIANT_SHIFT))
 #define	 CPU_ID_CORTEXA9R4	(CPU_ID_CORTEXA9 | (4 << CPU_ID_VARIANT_SHIFT))
-/* XXX: Cortx-A12 is the old name for this part, it has been renamed the A17 */
+/* XXX: Cortex-A12 is the old name for this part, it has been renamed the A17 */
 #define	CPU_ID_CORTEXA12	(CPU_ID_ARM_LTD | CPU_ID_CPUID_SCHEME | 0xc0d0)
 #define	 CPU_ID_CORTEXA12R0	(CPU_ID_CORTEXA12 | (0 << CPU_ID_VARIANT_SHIFT))
 #define	CPU_ID_CORTEXA15	(CPU_ID_ARM_LTD | CPU_ID_CPUID_SCHEME | 0xc0f0)
@@ -152,6 +158,9 @@
 #define	 CPU_ID_CORTEXA15R1	(CPU_ID_CORTEXA15 | (1 << CPU_ID_VARIANT_SHIFT))
 #define	 CPU_ID_CORTEXA15R2	(CPU_ID_CORTEXA15 | (2 << CPU_ID_VARIANT_SHIFT))
 #define	 CPU_ID_CORTEXA15R3	(CPU_ID_CORTEXA15 | (3 << CPU_ID_VARIANT_SHIFT))
+#define	CPU_ID_CORTEXA53	(CPU_ID_ARM_LTD | CPU_ID_CPUID_SCHEME | 0xd030)
+#define	CPU_ID_CORTEXA57	(CPU_ID_ARM_LTD | CPU_ID_CPUID_SCHEME | 0xd070)
+#define	CPU_ID_CORTEXA72	(CPU_ID_ARM_LTD | CPU_ID_CPUID_SCHEME | 0xd080)
 
 #define	CPU_ID_KRAIT300		(CPU_ID_QUALCOM | CPU_ID_CPUID_SCHEME | 0x06f0)
 /* Snapdragon S4 Pro/APQ8064 */
@@ -381,32 +390,6 @@
 /* Fault status register definitions */
 #define FAULT_USER      0x10
 
-#if __ARM_ARCH < 6
-#define FAULT_TYPE_MASK 0x0f
-#define FAULT_WRTBUF_0  0x00 /* Vector Exception */
-#define FAULT_WRTBUF_1  0x02 /* Terminal Exception */
-#define FAULT_BUSERR_0  0x04 /* External Abort on Linefetch -- Section */
-#define FAULT_BUSERR_1  0x06 /* External Abort on Linefetch -- Page */
-#define FAULT_BUSERR_2  0x08 /* External Abort on Non-linefetch -- Section */
-#define FAULT_BUSERR_3  0x0a /* External Abort on Non-linefetch -- Page */
-#define FAULT_BUSTRNL1  0x0c /* External abort on Translation -- Level 1 */
-#define FAULT_BUSTRNL2  0x0e /* External abort on Translation -- Level 2 */
-#define FAULT_ALIGN_0   0x01 /* Alignment */
-#define FAULT_ALIGN_1   0x03 /* Alignment */
-#define FAULT_TRANS_S   0x05 /* Translation -- Section */
-#define FAULT_TRANS_F   0x06 /* Translation -- Flag */
-#define FAULT_TRANS_P   0x07 /* Translation -- Page */
-#define FAULT_DOMAIN_S  0x09 /* Domain -- Section */
-#define FAULT_DOMAIN_P  0x0b /* Domain -- Page */
-#define FAULT_PERM_S    0x0d /* Permission -- Section */
-#define FAULT_PERM_P    0x0f /* Permission -- Page */
-
-#define	FAULT_IMPRECISE	0x400	/* Imprecise exception (XSCALE) */
-#define	FAULT_EXTERNAL	0x400	/* External abort (armv6+) */
-#define	FAULT_WNR	0x800	/* Write-not-Read access (armv6+) */
-
-#else /* __ARM_ARCH < 6 */
-
 #define FAULT_ALIGN		0x001	/* Alignment Fault */
 #define FAULT_DEBUG		0x002	/* Debug Event */
 #define FAULT_ACCESS_L1		0x003	/* Access Bit (L1) */
@@ -434,7 +417,6 @@
 #define FSR_WNR			(1 << 11) /* Write-not-Read access */
 #define FSR_EXT			(1 << 12) /* DECERR/SLVERR for external*/
 #define FSR_CM			(1 << 13) /* Cache maintenance fault */
-#endif /* !__ARM_ARCH < 6 */
 
 /*
  * Address of the vector page, low and high versions.
@@ -469,5 +451,8 @@
 #define	ARM_REG_NUM_SP		13
 
 #define THUMB_INSN_SIZE		2		/* Some are 4 bytes.  */
+
+/* ARM Hypervisor Related Defines */
+#define	ARM_CP15_HDCR_HPMN	0x0000001f
 
 #endif /* !MACHINE_ARMREG_H */

@@ -42,9 +42,8 @@
 #define	LAGG_PORT_ACTIVE	0x00000004	/* port is active */
 #define	LAGG_PORT_COLLECTING	0x00000008	/* port is receiving frames */
 #define	LAGG_PORT_DISTRIBUTING	0x00000010	/* port is sending frames */
-#define	LAGG_PORT_DISABLED	0x00000020	/* port is disabled */
 #define	LAGG_PORT_BITS		"\20\01MASTER\02STACK\03ACTIVE\04COLLECTING" \
-				  "\05DISTRIBUTING\06DISABLED"
+				  "\05DISTRIBUTING"
 
 /* Supported lagg PROTOs */
 typedef enum {
@@ -64,14 +63,41 @@ struct lagg_protos {
 
 #define	LAGG_PROTO_DEFAULT	LAGG_PROTO_FAILOVER
 #define LAGG_PROTOS	{						\
-	{ "failover",		LAGG_PROTO_FAILOVER },		\
+	{ "failover",		LAGG_PROTO_FAILOVER },			\
 	{ "lacp",		LAGG_PROTO_LACP },			\
 	{ "loadbalance",	LAGG_PROTO_LOADBALANCE },		\
-	{ "roundrobin",	LAGG_PROTO_ROUNDROBIN },		\
-	{ "broadcast",	LAGG_PROTO_BROADCAST },		\
+	{ "roundrobin",		LAGG_PROTO_ROUNDROBIN },		\
+	{ "broadcast",		LAGG_PROTO_BROADCAST },			\
 	{ "none",		LAGG_PROTO_NONE },			\
 	{ "default",		LAGG_PROTO_DEFAULT }			\
 }
+
+/* Supported lagg TYPEs */
+typedef enum {
+	LAGG_TYPE_ETHERNET = 0, /* ethernet (default) */
+	LAGG_TYPE_INFINIBAND,	/* infiniband */
+	LAGG_TYPE_MAX,
+} lagg_type;
+
+struct lagg_types {
+	const char		*lt_name;
+	lagg_type		lt_value;
+};
+
+#define	LAGG_TYPE_DEFAULT	LAGG_TYPE_ETHERNET
+#define LAGG_TYPES	{						\
+	{ "ethernet",		LAGG_TYPE_ETHERNET },			\
+	{ "infiniband",		LAGG_TYPE_INFINIBAND },			\
+}
+
+/*
+ * lagg create clone params
+ */
+struct iflaggparam {
+	uint8_t lagg_type;	/* see LAGG_TYPE_XXX */
+	uint8_t reserved_8[3];
+	uint32_t reserved_32[3];
+};
 
 /*
  * lagg ioctls.
@@ -144,23 +170,26 @@ struct lagg_reqopts {
 #define	LAGG_OPT_USE_FLOWID		0x01		/* enable use of flowid */
 /* Pseudo flags which are used in ro_opts but not stored into sc_opts. */
 #define	LAGG_OPT_FLOWIDSHIFT		0x02		/* set flowid shift */
+#define	LAGG_OPT_USE_NUMA		0x04		/* enable use of numa */
 #define	LAGG_OPT_FLOWIDSHIFT_MASK	0x1f		/* flowid is uint32_t */
 #define	LAGG_OPT_LACP_STRICT		0x10		/* LACP strict mode */
 #define	LAGG_OPT_LACP_TXTEST		0x20		/* LACP debug: txtest */
 #define	LAGG_OPT_LACP_RXTEST		0x40		/* LACP debug: rxtest */
-#define	LAGG_OPT_LACP_TIMEOUT		0x80		/* LACP timeout */
+#define	LAGG_OPT_LACP_FAST_TIMO		0x80		/* LACP fast timeout */
+#define	LAGG_OPT_RR_LIMIT		0x100		/* RR stride */
 	u_int			ro_count;		/* number of ports */
 	u_int			ro_active;		/* active port count */
 	u_int			ro_flapping;		/* number of flapping */
 	int			ro_flowid_shift;	/* shift the flowid */
-	uint32_t		ro_bkt;			/* packet bucket for roundrobin */
+	uint32_t		ro_bkt;			/* stride for RR */
 };
 
 #define	SIOCGLAGGOPTS		_IOWR('i', 152, struct lagg_reqopts)
 #define	SIOCSLAGGOPTS		 _IOW('i', 153, struct lagg_reqopts)
 
-#define	LAGG_OPT_BITS		"\020\001USE_FLOWID\005LACP_STRICT" \
-				"\006LACP_TXTEST\007LACP_RXTEST"
+#define	LAGG_OPT_BITS		"\020\001USE_FLOWID\003USE_NUMA" \
+				"\005LACP_STRICT\006LACP_TXTEST" \
+				"\007LACP_RXTEST\010LACP_FAST_TIMO"
 
 #ifdef _KERNEL
 
@@ -185,10 +214,6 @@ struct lagg_ifreq {
 
 #define	sc_ifflags		sc_ifp->if_flags		/* flags */
 #define	sc_ifname		sc_ifp->if_xname		/* name */
-#define	sc_capabilities		sc_ifp->if_capabilities	/* capabilities */
-
-#define	IFCAP_LAGG_MASK		0xffff0000	/* private capabilities */
-#define	IFCAP_LAGG_FULLDUPLEX	0x00010000	/* full duplex with >1 ports */
 
 /* Private data used by the loadbalancing protocol */
 struct lagg_lb {
@@ -202,26 +227,14 @@ struct lagg_mc {
 	SLIST_ENTRY(lagg_mc)	mc_entries;
 };
 
-typedef enum {
-	LAGG_LLQTYPE_PHYS = 0,	/* Task related to physical (underlying) port */
-	LAGG_LLQTYPE_VIRT,	/* Task related to lagg interface itself */
-} lagg_llqtype;
-
-/* List of interfaces to have the MAC address modified */
-struct lagg_llq {
-	struct ifnet		*llq_ifp;
-	uint8_t			llq_lladdr[ETHER_ADDR_LEN];
-	lagg_llqtype		llq_type;
-	SLIST_ENTRY(lagg_llq)	llq_entries;
-};
-
 struct lagg_counters {
 	uint64_t	val[IFCOUNTERS];
 };
 
 struct lagg_softc {
 	struct ifnet			*sc_ifp;	/* virtual interface */
-	struct rmlock			sc_mtx;
+	struct mtx			sc_mtx;		/* watchdog mutex */
+	struct sx			sc_sx;
 	int				sc_proto;	/* lagg protocol */
 	u_int				sc_count;	/* number of ports */
 	u_int				sc_active;	/* active port count */
@@ -231,37 +244,38 @@ struct lagg_softc {
 	struct ifmedia			sc_media;	/* media config */
 	void				*sc_psc;	/* protocol data */
 	uint32_t			sc_seq;		/* sequence counter */
+	uint32_t			sc_stride;	/* stride for RR */
 	uint32_t			sc_flags;
+	int				sc_destroying;	/* destroying lagg */
 
-	SLIST_HEAD(__tplhd, lagg_port)	sc_ports;	/* list of interfaces */
+	CK_SLIST_HEAD(__tplhd, lagg_port)	sc_ports;	/* list of interfaces */
 	SLIST_ENTRY(lagg_softc)	sc_entries;
 
-	struct task			sc_lladdr_task;
-	SLIST_HEAD(__llqhd, lagg_llq)	sc_llq_head;	/* interfaces to program
-							   the lladdr on */
 	eventhandler_tag vlan_attach;
 	eventhandler_tag vlan_detach;
 	struct callout			sc_callout;
 	u_int				sc_opts;
 	int				flowid_shift;	/* shift the flowid */
-	uint32_t			sc_bkt;		/* packates bucket for roundrobin */
-	uint32_t			sc_bkt_count;	/* packates bucket count for roundrobin */
 	struct lagg_counters		detached_counters; /* detached ports sum */
+	struct callout			sc_watchdog;	/* watchdog timer */
+#define	LAGG_ADDR_LEN \
+	MAX(INFINIBAND_ADDR_LEN, ETHER_ADDR_LEN)
+	uint8_t				sc_bcast_addr[LAGG_ADDR_LEN];
 };
 
 struct lagg_port {
 	struct ifnet			*lp_ifp;	/* physical interface */
 	struct lagg_softc		*lp_softc;	/* parent lagg */
-	uint8_t				lp_lladdr[ETHER_ADDR_LEN];
+	uint8_t				lp_lladdr[LAGG_ADDR_LEN];
 
 	u_char				lp_iftype;	/* interface type */
 	uint32_t			lp_prio;	/* port priority */
 	uint32_t			lp_flags;	/* port flags */
 	int				lp_ifflags;	/* saved ifp flags */
+	int				lp_ifcapenable;	/* saved ifp capenable */
 	void				*lh_cookie;	/* if state hook */
 	void				*lp_psc;	/* protocol data */
 	int				lp_detaching;	/* ifnet is detaching */
-
 	SLIST_HEAD(__mclhd, lagg_mc)	lp_mc_head;	/* multicast addresses */
 
 	/* Redirected callbacks */
@@ -270,20 +284,12 @@ struct lagg_port {
 		     const struct sockaddr *, struct route *);
 	struct lagg_counters		port_counters;	/* ifp counters copy */
 
-	SLIST_ENTRY(lagg_port)		lp_entries;
+	CK_SLIST_ENTRY(lagg_port)		lp_entries;
+	struct epoch_context	lp_epoch_ctx;
 };
 
-#define	LAGG_LOCK_INIT(_sc)	rm_init(&(_sc)->sc_mtx, "if_lagg rmlock")
-#define	LAGG_LOCK_DESTROY(_sc)	rm_destroy(&(_sc)->sc_mtx)
-#define	LAGG_RLOCK(_sc, _p)	rm_rlock(&(_sc)->sc_mtx, (_p))
-#define	LAGG_WLOCK(_sc)		rm_wlock(&(_sc)->sc_mtx)
-#define	LAGG_RUNLOCK(_sc, _p)	rm_runlock(&(_sc)->sc_mtx, (_p))
-#define	LAGG_WUNLOCK(_sc)	rm_wunlock(&(_sc)->sc_mtx)
-#define	LAGG_RLOCK_ASSERT(_sc)	rm_assert(&(_sc)->sc_mtx, RA_RLOCKED)
-#define	LAGG_WLOCK_ASSERT(_sc)	rm_assert(&(_sc)->sc_mtx, RA_WLOCKED)
-#define	LAGG_UNLOCK_ASSERT(_sc)	rm_assert(&(_sc)->sc_mtx, RA_UNLOCKED)
-
-extern struct mbuf *(*lagg_input_p)(struct ifnet *, struct mbuf *);
+extern struct mbuf *(*lagg_input_ethernet_p)(struct ifnet *, struct mbuf *);
+extern struct mbuf *(*lagg_input_infiniband_p)(struct ifnet *, struct mbuf *);
 extern void	(*lagg_linkstate_p)(struct ifnet *, int );
 
 int		lagg_enqueue(struct ifnet *, struct mbuf *);

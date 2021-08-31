@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2005, Gleb Smirnoff <glebius@FreeBSD.org>
  * All rights reserved.
  *
@@ -212,4 +214,6 @@ enum {
 	NGM_NAT_LIST_REDIRECTS,
 	NGM_NAT_PROXY_RULE,
 	NGM_NAT_LIBALIAS_INFO,
+	NGM_NAT_SET_DLT,
+	NGM_NAT_GET_DLT,
 };

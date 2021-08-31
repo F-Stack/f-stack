@@ -2,6 +2,9 @@
 /*	$NetBSD: pfil.h,v 1.22 2003/06/23 12:57:08 martin Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Copyright (c) 2019 Gleb Smirnoff <glebius@FreeBSD.org>
  * Copyright (c) 1996 Matthew R. Green
  * All rights reserved.
  *
@@ -32,117 +35,180 @@
 #ifndef _NET_PFIL_H_
 #define _NET_PFIL_H_
 
-#include <sys/systm.h>
-#include <sys/queue.h>
-#include <sys/_lock.h>
-#include <sys/_mutex.h>
-#include <sys/lock.h>
-#include <sys/rmlock.h>
+#include <sys/ioccom.h>
 
+enum pfil_types {
+	PFIL_TYPE_IP4,
+	PFIL_TYPE_IP6,
+	PFIL_TYPE_ETHERNET,
+};
+
+#define	MAXPFILNAME	64
+
+struct pfilioc_head {
+	char		pio_name[MAXPFILNAME];
+	int		pio_nhooksin;
+	int		pio_nhooksout;
+	enum pfil_types	pio_type;
+};
+
+struct pfilioc_hook {
+	char		pio_module[MAXPFILNAME];
+	char		pio_ruleset[MAXPFILNAME];
+	int		pio_flags;
+	enum pfil_types pio_type;
+};
+
+struct pfilioc_list {
+	u_int			 pio_nheads;
+	u_int			 pio_nhooks;
+	struct pfilioc_head	*pio_heads;
+	struct pfilioc_hook	*pio_hooks;
+};
+
+struct pfilioc_link {
+	char		pio_name[MAXPFILNAME];
+	char		pio_module[MAXPFILNAME];
+	char		pio_ruleset[MAXPFILNAME];
+	int		pio_flags;
+};
+
+#define	PFILDEV			"pfil"
+#define	PFILIOC_LISTHEADS	_IOWR('P', 1, struct pfilioc_list)
+#define	PFILIOC_LISTHOOKS	_IOWR('P', 2, struct pfilioc_list)
+#define	PFILIOC_LINK		_IOW('P', 3, struct pfilioc_link)
+
+#define	PFIL_IN		0x00010000
+#define	PFIL_OUT	0x00020000
+#define	PFIL_FWD	0x00040000
+#define	PFIL_DIR(f)	((f) & (PFIL_IN|PFIL_OUT))
+#define	PFIL_MEMPTR	0x00080000
+#define	PFIL_HEADPTR	0x00100000
+#define	PFIL_HOOKPTR	0x00200000
+#define	PFIL_APPEND	0x00400000
+#define	PFIL_UNLINK	0x00800000
+#define	PFIL_LENMASK	0x0000ffff
+#define	PFIL_LENGTH(f)	((f) & PFIL_LENMASK)
+
+#ifdef _KERNEL
 struct mbuf;
 struct ifnet;
 struct inpcb;
 
-typedef	int	(*pfil_func_t)(void *, struct mbuf **, struct ifnet *, int,
-		    struct inpcb *);
+typedef union {
+	struct mbuf	**m;
+	void		*mem;
+	uintptr_t	__ui;
+} pfil_packet_t __attribute__((__transparent_union__));
+
+static inline pfil_packet_t
+pfil_packet_align(pfil_packet_t p)
+{
+
+	return ((pfil_packet_t ) (((uintptr_t)(p).mem +
+	    (_Alignof(void *) - 1)) & - _Alignof(void *)));
+}
+
+static inline struct mbuf *
+pfil_mem2mbuf(void *v)
+{
+
+	return (*(struct mbuf **) (((uintptr_t)(v) +
+	    (_Alignof(void *) - 1)) & - _Alignof(void *)));
+}
+
+typedef enum {
+	PFIL_PASS = 0,
+	PFIL_DROPPED,
+	PFIL_CONSUMED,
+	PFIL_REALLOCED,
+} pfil_return_t;
+
+typedef	pfil_return_t	(*pfil_func_t)(pfil_packet_t, struct ifnet *, int,
+			    void *, struct inpcb *);
+/*
+ * A pfil head is created by a packet intercept point.
+ *
+ * A pfil hook is created by a packet filter.
+ *
+ * Hooks are chained on heads.  Historically some hooking happens
+ * automatically, e.g. ipfw(4), pf(4) and ipfilter(4) would register
+ * theirselves on IPv4 and IPv6 input/output.
+ */
+
+typedef struct pfil_hook *	pfil_hook_t;
+typedef struct pfil_head *	pfil_head_t;
 
 /*
- * The packet filter hooks are designed for anything to call them to
- * possibly intercept the packet.  Multiple filter hooks are chained
- * together and after each other in the specified order.
+ * Give us a chance to modify pfil_xxx_args structures in future.
  */
-struct packet_filter_hook {
-	TAILQ_ENTRY(packet_filter_hook) pfil_chain;
-	pfil_func_t	 pfil_func;
-	void		*pfil_arg;
-};
+#define	PFIL_VERSION	1
 
-#define PFIL_IN		0x00000001
-#define PFIL_OUT	0x00000002
-#define PFIL_WAITOK	0x00000004
-#define PFIL_ALL	(PFIL_IN|PFIL_OUT)
-
-typedef	TAILQ_HEAD(pfil_chain, packet_filter_hook) pfil_chain_t;
-
-#define	PFIL_TYPE_AF		1	/* key is AF_* type */
-#define	PFIL_TYPE_IFNET		2	/* key is ifnet pointer */
-
-#define	PFIL_FLAG_PRIVATE_LOCK	0x01	/* Personal lock instead of global */
-
-/*
- * A pfil head is created by each protocol or packet intercept point.
- * For packet is then run through the hook chain for inspection.
- */
-struct pfil_head {
-	pfil_chain_t	 ph_in;
-	pfil_chain_t	 ph_out;
-	int		 ph_type;
-	int		 ph_nhooks;
-#if defined( __linux__ ) || defined( _WIN32 )
-	rwlock_t	 ph_mtx;
-#else
-	struct rmlock	*ph_plock;	/* Pointer to the used lock */
-	struct rmlock	 ph_lock;	/* Private lock storage */
-	int		 flags;
-#endif
-	union {
-		u_long	 phu_val;
-		void	*phu_ptr;
-	} ph_un;
-#define	ph_af		 ph_un.phu_val
-#define	ph_ifnet	 ph_un.phu_ptr
-	LIST_ENTRY(pfil_head) ph_list;
+/* Argument structure used by packet filters to register themselves. */
+struct pfil_hook_args {
+	int		 pa_version;
+	int		 pa_flags;
+	enum pfil_types	 pa_type;
+	pfil_func_t	 pa_func;
+	void		*pa_ruleset;
+	const char	*pa_modname;
+	const char	*pa_rulname;
 };
 
 /* Public functions for pfil hook management by packet filters. */
-struct pfil_head *pfil_head_get(int, u_long);
-int	pfil_add_hook(pfil_func_t, void *, int, struct pfil_head *);
-int	pfil_remove_hook(pfil_func_t, void *, int, struct pfil_head *);
-#define	PFIL_HOOKED(p) ((p)->ph_nhooks > 0)
+pfil_hook_t	pfil_add_hook(struct pfil_hook_args *);
+void		pfil_remove_hook(pfil_hook_t);
 
-/* Public functions to run the packet inspection by protocols. */
-int	pfil_run_hooks(struct pfil_head *, struct mbuf **, struct ifnet *,
-	    int, struct inpcb *inp);
+/* Argument structure used by ioctl() and packet filters to set filters. */
+struct pfil_link_args {
+	int		pa_version;
+	int		pa_flags;
+	union {
+		const char	*pa_headname;
+		pfil_head_t	 pa_head;
+	};
+	union {
+		struct {
+			const char	*pa_modname;
+			const char	*pa_rulname;
+		};
+		pfil_hook_t	 pa_hook;
+	};
+};
 
-/* Public functions for pfil head management by protocols. */
-int	pfil_head_register(struct pfil_head *);
-int	pfil_head_unregister(struct pfil_head *);
+/* Public function to configure filter chains.  Used by ioctl() and filters. */
+int	pfil_link(struct pfil_link_args *);
 
-/* Public pfil locking functions for self managed locks by packet filters. */
-struct rm_priotracker;	/* Do not require including rmlock header */
-int	pfil_try_rlock(struct pfil_head *, struct rm_priotracker *);
-void	pfil_rlock(struct pfil_head *, struct rm_priotracker *);
-void	pfil_runlock(struct pfil_head *, struct rm_priotracker *);
-void	pfil_wlock(struct pfil_head *);
-void	pfil_wunlock(struct pfil_head *);
-int	pfil_wowned(struct pfil_head *ph);
+/* Argument structure used by inspection points to register themselves. */
+struct pfil_head_args {
+	int		 pa_version;
+	int		 pa_flags;
+	enum pfil_types	 pa_type;
+	const char	*pa_headname;
+};
 
-/* Internal pfil locking functions. */
-#define	PFIL_LOCK_INIT_REAL(l, t)	\
-	rm_init_flags(l, "PFil " t " rmlock", RM_RECURSE)
-#define	PFIL_LOCK_DESTROY_REAL(l)	\
-	rm_destroy(l)
-#define	PFIL_LOCK_INIT(p)	do {			\
-	if ((p)->flags & PFIL_FLAG_PRIVATE_LOCK) {	\
-		PFIL_LOCK_INIT_REAL(&(p)->ph_lock, "private");	\
-		(p)->ph_plock = &(p)->ph_lock;		\
-	} else						\
-		(p)->ph_plock = &V_pfil_lock;		\
-} while (0)
-#define	PFIL_LOCK_DESTROY(p)	do {			\
-	if ((p)->flags & PFIL_FLAG_PRIVATE_LOCK)	\
-		PFIL_LOCK_DESTROY_REAL((p)->ph_plock);	\
-} while (0)
+/* Public functions for pfil head management by inspection points. */
+pfil_head_t	pfil_head_register(struct pfil_head_args *);
+void		pfil_head_unregister(pfil_head_t);
 
-#define	PFIL_TRY_RLOCK(p, t)	rm_try_rlock((p)->ph_plock, (t))
-#define	PFIL_RLOCK(p, t)	rm_rlock((p)->ph_plock, (t))
-#define	PFIL_WLOCK(p)		rm_wlock((p)->ph_plock)
-#define	PFIL_RUNLOCK(p, t)	rm_runlock((p)->ph_plock, (t))
-#define	PFIL_WUNLOCK(p)		rm_wunlock((p)->ph_plock)
-#define	PFIL_WOWNED(p)		rm_wowned((p)->ph_plock)
+/* Public functions to run the packet inspection by inspection points. */
+int	pfil_run_hooks(struct pfil_head *, pfil_packet_t, struct ifnet *, int,
+    struct inpcb *inp);
+/*
+ * Minimally exposed structure to avoid function call in case of absence
+ * of any filters by protocols and macros to do the check.
+ */
+struct _pfil_head {
+	int	head_nhooksin;
+	int	head_nhooksout;
+};
+#define	PFIL_HOOKED_IN(p) (((struct _pfil_head *)(p))->head_nhooksin > 0)
+#define	PFIL_HOOKED_OUT(p) (((struct _pfil_head *)(p))->head_nhooksout > 0)
 
-/* Internal locking macros for global/vnet pfil_head_list. */
-#define	PFIL_HEADLIST_LOCK()	mtx_lock(&pfil_global_lock)
-#define	PFIL_HEADLIST_UNLOCK()	mtx_unlock(&pfil_global_lock)
+/*
+ * Alloc mbuf to be used instead of memory pointer.
+ */
+int	pfil_realloc(pfil_packet_t *, int, struct ifnet *);
 
+#endif /* _KERNEL */
 #endif /* _NET_PFIL_H_ */

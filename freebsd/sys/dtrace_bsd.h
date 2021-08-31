@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007-2008 John Birrell (jb@freebsd.org)
  * All rights reserved.
  *
@@ -37,7 +39,6 @@ struct trapframe;
 struct thread;
 struct vattr;
 struct vnode;
-struct reg;
 
 int dtrace_trap(struct trapframe *, u_int);
 
@@ -58,9 +59,9 @@ typedef void (*dtrace_doubletrap_func_t)(void);
 extern	dtrace_doubletrap_func_t	dtrace_doubletrap_func;
 
 /* Pid provider hooks */
-typedef int (*dtrace_pid_probe_ptr_t)(struct reg *);
+typedef int (*dtrace_pid_probe_ptr_t)(struct trapframe *);
 extern	dtrace_pid_probe_ptr_t	dtrace_pid_probe_ptr;
-typedef int (*dtrace_return_probe_ptr_t)(struct reg *);
+typedef int (*dtrace_return_probe_ptr_t)(struct trapframe *);
 extern	dtrace_return_probe_ptr_t	dtrace_return_probe_ptr;
 
 /* Virtual time hook function type. */
@@ -163,6 +164,11 @@ extern dtrace_nfsclient_nfs23_done_probe_func_t
  */
 size_t	kdtrace_proc_size(void);
 size_t	kdtrace_thread_size(void);
+
+void	kdtrace_proc_ctor(struct proc *p);
+void	kdtrace_proc_dtor(struct proc *p);
+void	kdtrace_thread_ctor(struct thread *td);
+void	kdtrace_thread_dtor(struct thread *td);
 
 /*
  * OpenSolaris compatible time functions returning nanoseconds.

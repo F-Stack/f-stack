@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007-2009 Robert N. M. Watson
  * Copyright (c) 2010-2011 Juniper Networks, Inc.
  * All rights reserved.
@@ -125,7 +127,8 @@ static struct rmlock	netisr_rmlock;
 #define	NETISR_WUNLOCK()	rm_wunlock(&netisr_rmlock)
 /* #define	NETISR_LOCKING */
 
-static SYSCTL_NODE(_net, OID_AUTO, isr, CTLFLAG_RW, 0, "netisr");
+static SYSCTL_NODE(_net, OID_AUTO, isr, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "netisr");
 
 /*-
  * Three global direct dispatch policies are supported:
@@ -150,7 +153,8 @@ static SYSCTL_NODE(_net, OID_AUTO, isr, CTLFLAG_RW, 0, "netisr");
 #define	NETISR_DISPATCH_POLICY_MAXSTR	20 /* Used for temporary buffers. */
 static u_int	netisr_dispatch_policy = NETISR_DISPATCH_POLICY_DEFAULT;
 static int	sysctl_netisr_dispatch_policy(SYSCTL_HANDLER_ARGS);
-SYSCTL_PROC(_net_isr, OID_AUTO, dispatch, CTLTYPE_STRING | CTLFLAG_RWTUN,
+SYSCTL_PROC(_net_isr, OID_AUTO, dispatch,
+    CTLTYPE_STRING | CTLFLAG_RWTUN | CTLFLAG_NEEDGIANT,
     0, 0, sysctl_netisr_dispatch_policy, "A",
     "netisr dispatch policy");
 
@@ -223,7 +227,7 @@ static struct netisr_proto	netisr_proto[NETISR_MAXPROT];
  * mechanism to stop netisr processing for vnet teardown.
  * Apart from that we expect a VNET to always be enabled.
  */
-static VNET_DEFINE(u_int,	netisr_enable[NETISR_MAXPROT]);
+VNET_DEFINE_STATIC(u_int,	netisr_enable[NETISR_MAXPROT]);
 #define	V_netisr_enable		VNET(netisr_enable)
 #endif
 
@@ -272,10 +276,7 @@ u_int
 netisr_get_cpuid(u_int cpunumber)
 {
 
-	KASSERT(cpunumber < nws_count, ("%s: %u > %u", __func__, cpunumber,
-	    nws_count));
-
-	return (nws_array[cpunumber]);
+	return (nws_array[cpunumber % nws_count]);
 }
 
 /*
@@ -344,19 +345,34 @@ static int
 sysctl_netisr_dispatch_policy(SYSCTL_HANDLER_ARGS)
 {
 	char tmp[NETISR_DISPATCH_POLICY_MAXSTR];
+	size_t len;
 	u_int dispatch_policy;
 	int error;
 
 	netisr_dispatch_policy_to_str(netisr_dispatch_policy, tmp,
 	    sizeof(tmp));
-	error = sysctl_handle_string(oidp, tmp, sizeof(tmp), req);
-	if (error == 0 && req->newptr != NULL) {
-		error = netisr_dispatch_policy_from_str(tmp,
-		    &dispatch_policy);
-		if (error == 0 && dispatch_policy == NETISR_DISPATCH_DEFAULT)
-			error = EINVAL;
-		if (error == 0)
-			netisr_dispatch_policy = dispatch_policy;
+	/*
+	 * netisr is initialised very early during the boot when malloc isn't
+	 * available yet so we can't use sysctl_handle_string() to process
+	 * any non-default value that was potentially set via loader.
+	 */
+	if (req->newptr != NULL) {
+		len = req->newlen - req->newidx;
+		if (len >= NETISR_DISPATCH_POLICY_MAXSTR)
+			return (EINVAL);
+		error = SYSCTL_IN(req, tmp, len);
+		if (error == 0) {
+			tmp[len] = '\0';
+			error = netisr_dispatch_policy_from_str(tmp,
+			    &dispatch_policy);
+			if (error == 0 &&
+			    dispatch_policy == NETISR_DISPATCH_DEFAULT)
+				error = EINVAL;
+			if (error == 0)
+				netisr_dispatch_policy = dispatch_policy;
+		}
+	} else {
+		error = sysctl_handle_string(oidp, tmp, sizeof(tmp), req);
 	}
 	return (error);
 }
@@ -676,7 +692,7 @@ netisr_register_vnet(const struct netisr_handler *nhp)
 	KASSERT(netisr_proto[proto].np_handler != NULL,
 	    ("%s(%u): protocol not registered for %s", __func__, proto,
 	    nhp->nh_name));
-	
+
 	V_netisr_enable[proto] = 1;
 	NETISR_WUNLOCK();
 }
@@ -744,7 +760,7 @@ netisr_unregister_vnet(const struct netisr_handler *nhp)
 	KASSERT(netisr_proto[proto].np_handler != NULL,
 	    ("%s(%u): protocol not registered for %s", __func__, proto,
 	    nhp->nh_name));
-	
+
 	V_netisr_enable[proto] = 0;
 
 	netisr_drain_proto_vnet(curvnet, proto);
@@ -810,10 +826,12 @@ netisr_select_cpuid(struct netisr_proto *npp, u_int dispatch_policy,
 		 * dispatch.  In the queued case, fall back on the SOURCE
 		 * policy.
 		 */
-		if (*cpuidp != NETISR_CPUID_NONE)
+		if (*cpuidp != NETISR_CPUID_NONE) {
+			*cpuidp = netisr_get_cpuid(*cpuidp);
 			return (m);
+		}
 		if (dispatch_policy == NETISR_DISPATCH_HYBRID) {
-			*cpuidp = curcpu;
+			*cpuidp = netisr_get_cpuid(curcpu);
 			return (m);
 		}
 		policy = NETISR_POLICY_SOURCE;
@@ -838,6 +856,7 @@ netisr_select_cpuid(struct netisr_proto *npp, u_int dispatch_policy,
 	    ("%s: invalid policy %u for %s", __func__, npp->np_policy,
 	    npp->np_name));
 
+	MPASS((m->m_pkthdr.csum_flags & CSUM_SND_TAG) == 0);
 	ifp = m->m_pkthdr.rcvif;
 	if (ifp != NULL)
 		*cpuidp = nws_array[(ifp->if_index + source) % nws_count];
@@ -1054,6 +1073,8 @@ netisr_queue_src(u_int proto, uintptr_t source, struct mbuf *m)
 	if (m != NULL) {
 		KASSERT(!CPU_ABSENT(cpuid), ("%s: CPU %u absent", __func__,
 		    cpuid));
+		VNET_ASSERT(m->m_pkthdr.rcvif != NULL,
+		    ("%s:%d rcvif == NULL: m=%p", __func__, __LINE__, m));
 		error = netisr_queue_internal(proto, m, cpuid);
 	} else
 		error = ENOBUFS;
@@ -1086,6 +1107,7 @@ netisr_dispatch_src(u_int proto, uintptr_t source, struct mbuf *m)
 	int dosignal, error;
 	u_int cpuid, dispatch_policy;
 
+	NET_EPOCH_ASSERT();
 	KASSERT(proto < NETISR_MAXPROT,
 	    ("%s: invalid proto %u", __func__, proto));
 #ifdef NETISR_LOCKING
@@ -1242,7 +1264,7 @@ netisr_start_swi(u_int cpuid, struct pcpu *pc)
 	nwsp->nws_cpu = cpuid;
 	snprintf(swiname, sizeof(swiname), "netisr %u", cpuid);
 	error = swi_add(&nwsp->nws_intr_event, swiname, swi_net, nwsp,
-	    SWI_NET, INTR_MPSAFE, &nwsp->nws_swi_cookie);
+	    SWI_NET, INTR_TYPE_NET | INTR_MPSAFE, &nwsp->nws_swi_cookie);
 	if (error)
 		panic("%s: swi_add %d", __func__, error);
 	pc->pc_netisr = nwsp->nws_intr_event;
@@ -1269,11 +1291,7 @@ netisr_start_swi(u_int cpuid, struct pcpu *pc)
 static void
 netisr_init(void *arg)
 {
-#ifdef EARLY_AP_STARTUP
 	struct pcpu *pc;
-#endif
-
-	KASSERT(curcpu == 0, ("%s: not on CPU 0", __func__));
 
 	NETISR_LOCK_INIT();
 	if (netisr_maxthreads == 0 || netisr_maxthreads < -1 )
@@ -1311,7 +1329,8 @@ netisr_init(void *arg)
 		netisr_start_swi(pc->pc_cpuid, pc);
 	}
 #else
-	netisr_start_swi(curcpu, pcpu_find(curcpu));
+	pc = get_pcpu();
+	netisr_start_swi(pc->pc_cpuid, pc);
 #endif
 }
 SYSINIT(netisr_init, SI_SUB_SOFTINTR, SI_ORDER_FIRST, netisr_init, NULL);

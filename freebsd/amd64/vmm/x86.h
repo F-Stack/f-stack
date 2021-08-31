@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -39,6 +41,7 @@
 #define	CPUID_0000_000A	(0xA)
 #define	CPUID_0000_000B	(0xB)
 #define	CPUID_0000_000D	(0xD)
+#define	CPUID_0000_0015	(0x15)
 #define CPUID_8000_0000	(0x80000000)
 #define CPUID_8000_0001	(0x80000001)
 #define CPUID_8000_0002	(0x80000002)
@@ -47,6 +50,8 @@
 #define CPUID_8000_0006	(0x80000006)
 #define CPUID_8000_0007	(0x80000007)
 #define CPUID_8000_0008	(0x80000008)
+#define CPUID_8000_001D	(0x8000001D)
+#define CPUID_8000_001E	(0x8000001E)
 
 /*
  * CPUID instruction Fn0000_0001:
@@ -59,8 +64,8 @@
  */
 #define CPUID_0000_0001_FEAT0_VMX	(1<<5)
 
-int x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint32_t *eax, uint32_t *ebx,
-		      uint32_t *ecx, uint32_t *edx);
+int x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
+    uint64_t *rcx, uint64_t *rdx);
 
 enum vm_cpuid_capability {
 	VCC_NONE,

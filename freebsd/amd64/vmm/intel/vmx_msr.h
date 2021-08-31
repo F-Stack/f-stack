@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -33,8 +35,10 @@ struct vmx;
 
 void vmx_msr_init(void);
 void vmx_msr_guest_init(struct vmx *vmx, int vcpuid);
+void vmx_msr_guest_enter_tsc_aux(struct vmx *vmx, int vcpuid);
 void vmx_msr_guest_enter(struct vmx *vmx, int vcpuid);
 void vmx_msr_guest_exit(struct vmx *vmx, int vcpuid);
+void vmx_msr_guest_exit_tsc_aux(struct vmx *vmx, int vcpuid);
 int vmx_rdmsr(struct vmx *, int vcpuid, u_int num, uint64_t *val, bool *retu);
 int vmx_wrmsr(struct vmx *, int vcpuid, u_int num, uint64_t val, bool *retu);
 

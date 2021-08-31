@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Ganbold Tsagaankhuu <ganbold@freebsd.org>
  * All rights reserved.
  *
@@ -44,7 +46,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/frame.h>
 #include <machine/intr.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -66,7 +67,6 @@ static struct a10_sramc_softc *a10_sramc_sc;
     bus_space_read_4((sc)->bst, (sc)->bsh, (reg))
 #define	sramc_write_4(sc, reg, val)	\
     bus_space_write_4((sc)->bst, (sc)->bsh, (reg), (val))
-
 
 static int
 a10_sramc_probe(device_t dev)
@@ -115,7 +115,7 @@ static driver_t a10_sramc_driver = {
 static devclass_t a10_sramc_devclass;
 
 EARLY_DRIVER_MODULE(a10_sramc, simplebus, a10_sramc_driver, a10_sramc_devclass,
-    0, 0, BUS_PASS_RESOURCE + BUS_PASS_ORDER_EARLY);
+    0, 0, BUS_PASS_SUPPORTDEV + BUS_PASS_ORDER_FIRST);
 
 int
 a10_map_to_emac(void)

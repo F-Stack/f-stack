@@ -72,15 +72,3 @@ extern void	_NgDebugSockaddr(const struct sockaddr_ng *sg);
 extern void	_NgDebugMsg(const struct ng_mesg *msg, const char *path);
 extern void	_NgDebugBytes(const u_char *ptr, int size);
 
-#ifdef FSTACK
-
-#define socket(a,b,c) ng_socket(a,b,c)
-#define connect(a,b,c) ng_connect(a,b,c)
-#define bind(a,b,c) ng_bind(a,b,c)
-#define sendto(a,b,c,d,e,f) ng_sendto(a,b,c,d,e,f)
-#define recvfrom(a,b,c,d,e,f) ng_recvfrom(a,b,c,d,e,f)
-#define close(a) ng_close(a)
-
-#endif
-
-

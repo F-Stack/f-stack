@@ -1,5 +1,7 @@
 /*	BSDI inet.c,v 2.3 1995/10/24 02:19:29 prb Exp	*/
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1983, 1988, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -69,8 +71,6 @@ __FBSDID("$FreeBSD$");
 #include <unistd.h>
 #include <libxo/xo.h>
 #include "netstat.h"
-
-char	*inet6name(struct in6_addr *);
 
 static char ntop_buf[INET6_ADDRSTRLEN];
 
@@ -391,6 +391,8 @@ ip6_stats(u_long off, const char *name, int af1 __unused, int proto __unused)
 	    "{N:/fragment%s dropped after timeout}\n");
 	p(ip6s_fragoverflow, "\t{:dropped-fragments-overflow/%ju} "
 	    "{N:/fragment%s that exceeded limit}\n");
+	p(ip6s_atomicfrags, "\t{:atomic-fragments/%ju} "
+	    "{N:/atomic fragment%s}\n");
 	p(ip6s_reassembled, "\t{:reassembled-packets/%ju} "
 	    "{N:/packet%s reassembled ok}\n");
 	p(ip6s_delivered, "\t{:received-local-packets/%ju} "
@@ -620,12 +622,8 @@ ip6_ifstats(char *ifname)
 		return;
 	}
 
-	strcpy(ifr.ifr_name, ifname);
-#ifndef FSTACK
+	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
 	if (ioctl(s, SIOCGIFSTAT_IN6, (char *)&ifr) < 0) {
-#else
-	if (ioctl_va(s, SIOCGIFSTAT_IN6, (char *)&ifr, 1, AF_INET6) < 0) {
-#endif
 		if (errno != EPFNOSUPPORT)
 			xo_warn("Warning: ioctl(SIOCGIFSTAT_IN6)");
 		goto end;
@@ -1057,6 +1055,16 @@ icmp6_stats(u_long off, const char *name, int af1 __unused, int proto __unused)
 	    "{N:/bad router advertisement message%s}\n");
 	p(icp6s_badredirect, "\t{:bad-redirect/%ju} "
 	    "{N:/bad redirect message%s}\n");
+	p(icp6s_overflowdefrtr, "\t{:default-routers-overflows/%ju} "
+	    "{N:/default routers overflow%s}\n");
+	p(icp6s_overflowprfx, "\t{:prefixes-overflows/%ju} "
+	    "{N:/prefix overflow%s}\n");
+	p(icp6s_overflownndp, "\t{:neighbour-entries-overflows/%ju} "
+	    "{N:/neighbour entries overflow%s}\n");
+	p(icp6s_overflowredirect, "\t{:redirect-overflows/%ju} "
+	    "{N:/redirect overflow%s}\n");
+	p(icp6s_invlhlim, "\t{:dropped-invalid-hop-limit/%ju} "
+	    "{N:/message%s with invalid hop limit}\n");
 	xo_close_container("errors");
 	p(icp6s_pmtuchg, "\t{:path-mtu-changes/%ju} {N:/path MTU change%s}\n");
 #undef p
@@ -1085,12 +1093,8 @@ icmp6_ifstats(char *ifname)
 		return;
 	}
 
-	strcpy(ifr.ifr_name, ifname);
-#ifndef FSTACK
+	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
 	if (ioctl(s, SIOCGIFSTAT_ICMP6, (char *)&ifr) < 0) {
-#else
-	if (ioctl_va(s, SIOCGIFSTAT_ICMP6, (char *)&ifr, 1, AF_INET6) < 0) {
-#endif
 		if (errno != EPFNOSUPPORT)
 			xo_warn("Warning: ioctl(SIOCGIFSTAT_ICMP6)");
 		goto end;
@@ -1278,24 +1282,30 @@ inet6print(const char *container, struct in6_addr *in6, int port,
 	struct servent *sp = 0;
 	char line[80], *cp;
 	int width;
+	size_t alen, plen;
 
 	if (container)
 		xo_open_container(container);
 
-	sprintf(line, "%.*s.", Wflag ? 39 : (Aflag && !numeric) ? 12 : 16,
+	snprintf(line, sizeof(line), "%.*s.",
+	    Wflag ? 39 : (Aflag && !numeric) ? 12 : 16,
 	    inet6name(in6));
-	cp = strchr(line, '\0');
+	alen = strlen(line);
+	cp = line + alen;
 	if (!numeric && port)
 		GETSERVBYPORT6(port, proto, sp);
 	if (sp || port == 0)
-		sprintf(cp, "%.15s", sp ? sp->s_name : "*");
+		snprintf(cp, sizeof(line) - alen,
+		    "%.15s", sp ? sp->s_name : "*");
 	else
-		sprintf(cp, "%d", ntohs((u_short)port));
+		snprintf(cp, sizeof(line) - alen,
+		    "%d", ntohs((u_short)port));
 	width = Wflag ? 45 : Aflag ? 18 : 22;
 
 	xo_emit("{d:target/%-*.*s} ", width, width, line);
 
-	int alen = cp - line - 1, plen = strlen(cp) - 1;
+	plen = strlen(cp);
+	alen--;
 	xo_emit("{e:address/%*.*s}{e:port/%*.*s}", alen, alen, line, plen,
 	    plen, cp);
 
@@ -1310,38 +1320,32 @@ inet6print(const char *container, struct in6_addr *in6, int port,
  */
 
 char *
-inet6name(struct in6_addr *in6p)
+inet6name(struct in6_addr *ia6)
 {
 	struct sockaddr_in6 sin6;
 	char hbuf[NI_MAXHOST], *cp;
-	static char line[50];
+	static char line[NI_MAXHOST];
 	static char domain[MAXHOSTNAMELEN];
 	static int first = 1;
 	int flags, error;
 
-	if (IN6_IS_ADDR_UNSPECIFIED(in6p)) {
+	if (IN6_IS_ADDR_UNSPECIFIED(ia6)) {
 		strcpy(line, "*");
 		return (line);
 	}
-
-#ifndef FSTACK
 	if (first && !numeric_addr) {
 		first = 0;
-		if (gethostname(domain, MAXHOSTNAMELEN) == 0 &&
+		if (gethostname(domain, sizeof(domain)) == 0 &&
 		    (cp = strchr(domain, '.')))
-			(void) strcpy(domain, cp + 1);
+			strlcpy(domain, cp + 1, sizeof(domain));
 		else
 			domain[0] = 0;
 	}
-#endif
-
 	memset(&sin6, 0, sizeof(sin6));
-	memcpy(&sin6.sin6_addr, in6p, sizeof(*in6p));
+	memcpy(&sin6.sin6_addr, ia6, sizeof(*ia6));
 	sin6.sin6_family = AF_INET6;
-	/* XXX: in6p.s6_addr[2] can contain scopeid. */
+	/* XXX: ia6.s6_addr[2] can contain scopeid. */
 	in6_fillscopeid(&sin6);
-
-#ifndef FSTACK
 	flags = (numeric_addr) ? NI_NUMERICHOST : 0;
 	error = getnameinfo((struct sockaddr *)&sin6, sizeof(sin6), hbuf,
 	    sizeof(hbuf), NULL, 0, flags);
@@ -1350,17 +1354,11 @@ inet6name(struct in6_addr *in6p)
 		    (cp = strchr(hbuf, '.')) &&
 		    !strcmp(cp + 1, domain))
 			*cp = 0;
-		strcpy(line, hbuf);
-	} else
-#endif
-	{
+		strlcpy(line, hbuf, sizeof(line));
+	} else {
 		/* XXX: this should not happen. */
-		sprintf(line, "%s",
-#ifndef FSTACK
+		snprintf(line, sizeof(line), "%s",
 			inet_ntop(AF_INET6, (void *)&sin6.sin6_addr, ntop_buf,
-#else
-			inet_ntop(AF_INET6_LINUX, (void *)&sin6.sin6_addr, ntop_buf,
-#endif
 				sizeof(ntop_buf)));
 	}
 	return (line);

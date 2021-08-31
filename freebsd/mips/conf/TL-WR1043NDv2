@@ -10,7 +10,7 @@
 #NO_UNIVERSE
 
 # Include the default QCA955x parameters
-include         "QCA955X_BASE"
+include         "std.QCA955X"
 
 ident           TL-WR1043NDv2
 
@@ -34,7 +34,7 @@ options 	MSDOSFS
 options 	AR71XX_ENV_UBOOT
 
 # uzip - to boot natively from flash
-device		geom_uzip
+device		xz
 options 	GEOM_UZIP
 
 # Used for the static uboot partition map

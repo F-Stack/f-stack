@@ -58,6 +58,8 @@ struct bcm2835_mbox_tag_hdr {
 	(tag_)->tag_hdr.val_len = sizeof((tag_)->body.req);	\
 } while (0)
 
+#define BCM2835_MBOX_TAG_FIRMWARE_REVISION	0x00000001
+
 #define BCM2835_MBOX_POWER_ID_EMMC		0x00000000
 #define BCM2835_MBOX_POWER_ID_UART0		0x00000001
 #define BCM2835_MBOX_POWER_ID_UART1		0x00000002
@@ -108,69 +110,30 @@ struct msg_set_power_state {
 /* Sets the power state for a given device */
 int bcm2835_mbox_set_power_state(uint32_t, boolean_t);
 
+#define BCM2835_MBOX_TAG_NOTIFY_XHCI_RESET	0x00030058
+
+struct msg_notify_xhci_reset {
+	struct bcm2835_mbox_hdr hdr;
+	struct bcm2835_mbox_tag_hdr tag_hdr;
+	union {
+		struct {
+			uint32_t pci_device_addr;
+		} req;
+		struct {
+		} resp;
+	} body;
+	uint32_t end_tag;
+};
+
+/* Prompts the VideoCore processor to reload the xhci firmware. */
+int bcm2835_mbox_notify_xhci_reset(uint32_t);
+
 #define BCM2835_MBOX_CLOCK_ID_EMMC		0x00000001
-#define BCM2835_MBOX_CLOCK_ID_UART		0x00000002
-#define BCM2835_MBOX_CLOCK_ID_ARM		0x00000003
-#define BCM2835_MBOX_CLOCK_ID_CORE		0x00000004
-#define BCM2835_MBOX_CLOCK_ID_V3D		0x00000005
-#define BCM2835_MBOX_CLOCK_ID_H264		0x00000006
-#define BCM2835_MBOX_CLOCK_ID_ISP		0x00000007
-#define BCM2835_MBOX_CLOCK_ID_SDRAM		0x00000008
-#define BCM2835_MBOX_CLOCK_ID_PIXEL		0x00000009
-#define BCM2835_MBOX_CLOCK_ID_PWM		0x0000000a
+#define BCM2838_MBOX_CLOCK_ID_EMMC2		0x0000000c
 
 #define BCM2835_MBOX_TAG_GET_CLOCK_RATE		0x00030002
-#define BCM2835_MBOX_TAG_SET_CLOCK_RATE		0x00038002
-#define BCM2835_MBOX_TAG_GET_MAX_CLOCK_RATE	0x00030004
-#define BCM2835_MBOX_TAG_GET_MIN_CLOCK_RATE	0x00030007
 
 struct msg_get_clock_rate {
-	struct bcm2835_mbox_hdr hdr;
-	struct bcm2835_mbox_tag_hdr tag_hdr;
-	union {
-		struct {
-			uint32_t clock_id;
-		} req;
-		struct {
-			uint32_t clock_id;
-			uint32_t rate_hz;
-		} resp;
-	} body;
-	uint32_t end_tag;
-};
-
-struct msg_set_clock_rate {
-	struct bcm2835_mbox_hdr hdr;
-	struct bcm2835_mbox_tag_hdr tag_hdr;
-	union {
-		struct {
-			uint32_t clock_id;
-			uint32_t rate_hz;
-		} req;
-		struct {
-			uint32_t clock_id;
-			uint32_t rate_hz;
-		} resp;
-	} body;
-	uint32_t end_tag;
-};
-
-struct msg_get_max_clock_rate {
-	struct bcm2835_mbox_hdr hdr;
-	struct bcm2835_mbox_tag_hdr tag_hdr;
-	union {
-		struct {
-			uint32_t clock_id;
-		} req;
-		struct {
-			uint32_t clock_id;
-			uint32_t rate_hz;
-		} resp;
-	} body;
-	uint32_t end_tag;
-};
-
-struct msg_get_min_clock_rate {
 	struct bcm2835_mbox_hdr hdr;
 	struct bcm2835_mbox_tag_hdr tag_hdr;
 	union {
@@ -473,6 +436,14 @@ struct msg_fb_get_w_h {
 };
 
 int bcm2835_mbox_fb_get_w_h(struct bcm2835_fb_config *);
+
+struct msg_fb_get_bpp {
+	struct bcm2835_mbox_hdr hdr;
+	struct bcm2835_mbox_tag_depth bpp;
+	uint32_t end_tag;
+};
+
+int bcm2835_mbox_fb_get_bpp(struct bcm2835_fb_config *);
 
 struct msg_fb_setup {
 	struct bcm2835_mbox_hdr hdr;

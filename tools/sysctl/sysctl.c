@@ -1,9 +1,8 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1993
  *	The Regents of the University of California.  All rights reserved.
- *
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -13,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -28,31 +27,18 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * Derived from FreeBSD's sbin/sysctl/sysctl.c.
  */
 
-#ifndef lint
-static const char copyright[] =
-"@(#) Copyright (c) 1993\n\
-	The Regents of the University of California.  All rights reserved.\n";
-#endif /* not lint */
+#include <sys/cdefs.h>
+__FBSDID("$FreeBSD$");
 
-#ifndef lint
-#if 0
-static char sccsid[] = "@(#)from: sysctl.c	8.1 (Berkeley) 6/6/93";
-#endif
-static const char rcsid[] =
-  "$FreeBSD$";
-#endif /* not lint */
-
-#ifndef FSTACK
 #include <sys/param.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/vmmeter.h>
+#include <dev/evdev/input.h>
 
 #ifdef __amd64__
 #include <sys/efi.h>
@@ -63,105 +49,18 @@ static const char rcsid[] =
 #include <machine/pc/bios.h>
 #endif
 
-#endif
-
 #include <assert.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <locale.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
 #include <unistd.h>
-
-#ifdef FSTACK
-#include <time.h>
-#include <limits.h>
-
-#include "sys/sysctl.h"
-#include "ff_ipc.h"
-
-struct clockinfo {
-    int hz;        /* clock frequency */
-    int tick;      /* micro-seconds per hz tick */
-    int spare;
-    int stathz;    /* statistics clock frequency */
-    int profhz;    /* profiling clock frequency */
-};
-
-struct loadavg {
-    __uint32_t ldavg[3];
-    long fscale;
-};
-
-/* Structure extended to include extended attribute field in ACPI 3.0. */
-struct bios_smap_xattr {
-    u_int64_t base;
-    u_int64_t length;
-    u_int32_t type;
-    u_int32_t xattr;
-} __packed;
-
-/* systemwide totals computed every five seconds */
-struct vmtotal {
-    int16_t t_rq;        /* length of the run queue */
-    int16_t t_dw;        /* jobs in ``disk wait'' (neg priority) */
-    int16_t t_pw;        /* jobs in page wait */
-    int16_t t_sl;        /* jobs sleeping in core */
-    int16_t t_sw;        /* swapped out runnable/short block jobs */
-    int32_t t_vm;        /* total virtual memory */
-    int32_t t_avm;       /* active virtual memory */
-    int32_t t_rm;        /* total real memory in use */
-    int32_t t_arm;       /* active real memory */
-    int32_t t_vmshr;     /* shared virtual memory */
-    int32_t t_avmshr;    /* active shared virtual memory */
-    int32_t t_rmshr;     /* shared real memory */
-    int32_t t_armshr;    /* active shared real memory */
-    int32_t t_free;      /* free memory pages */
-};
-
-struct efi_md {
-    uint32_t md_type;
-#define EFI_MD_TYPE_NULL    0
-#define EFI_MD_TYPE_CODE    1   /* Loader text. */
-#define EFI_MD_TYPE_DATA    2   /* Loader data. */
-#define EFI_MD_TYPE_BS_CODE 3   /* Boot services text. */
-#define EFI_MD_TYPE_BS_DATA 4   /* Boot services data. */
-#define EFI_MD_TYPE_RT_CODE 5   /* Runtime services text. */
-#define EFI_MD_TYPE_RT_DATA 6   /* Runtime services data. */
-#define EFI_MD_TYPE_FREE    7   /* Unused/free memory. */
-#define EFI_MD_TYPE_BAD     8   /* Bad memory */
-#define EFI_MD_TYPE_RECLAIM 9   /* ACPI reclaimable memory. */
-#define EFI_MD_TYPE_FIRMWARE    10  /* ACPI NV memory */
-#define EFI_MD_TYPE_IOMEM   11  /* Memory-mapped I/O. */
-#define EFI_MD_TYPE_IOPORT  12  /* I/O port space. */
-#define EFI_MD_TYPE_PALCODE 13  /* PAL */
-    uint32_t __pad;
-    uint64_t md_phys;
-    void *md_virt;
-    uint64_t md_pages;
-    uint64_t md_attr;
-#define EFI_MD_ATTR_UC      0x0000000000000001UL
-#define EFI_MD_ATTR_WC      0x0000000000000002UL
-#define EFI_MD_ATTR_WT      0x0000000000000004UL
-#define EFI_MD_ATTR_WB      0x0000000000000008UL
-#define EFI_MD_ATTR_UCE     0x0000000000000010UL
-#define EFI_MD_ATTR_WP      0x0000000000001000UL
-#define EFI_MD_ATTR_RP      0x0000000000002000UL
-#define EFI_MD_ATTR_XP      0x0000000000004000UL
-#define EFI_MD_ATTR_RT      0x8000000000000000UL
-};
-
-struct efi_map_header {
-    uint64_t memory_size;
-    uint64_t descriptor_size;
-    uint32_t descriptor_version;
-};
-
-#endif
 
 static const char *conffile;
 
@@ -171,8 +70,8 @@ static int	Nflag, nflag, oflag, qflag, tflag, Tflag, Wflag, xflag;
 static int	oidfmt(int *, int, char *, u_int *);
 static int	parsefile(const char *);
 static int	parse(const char *, int);
-static int	show_var(int *, int);
-static int	sysctl_all(int *oid, int len);
+static int	show_var(int *, int, bool);
+static int	sysctl_all(int *, int);
 static int	name2oid(const char *, int *);
 
 static int	strIKtoi(const char *, char **, const char *);
@@ -208,7 +107,7 @@ static const char *ctl_typename[CTLTYPE+1] = {
 	[CTLTYPE_ULONG] = "unsigned long",
 	[CTLTYPE_U8] = "uint8_t",
 	[CTLTYPE_U16] = "uint16_t",
-	[CTLTYPE_U32] = "uint16_t",
+	[CTLTYPE_U32] = "uint32_t",
 	[CTLTYPE_U64] = "uint64_t",
 	[CTLTYPE_S8] = "int8_t",
 	[CTLTYPE_S16] = "int16_t",
@@ -223,16 +122,9 @@ static void
 usage(void)
 {
 
-#ifndef FSTACK
 	(void)fprintf(stderr, "%s\n%s\n",
 	    "usage: sysctl [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
 	    "       sysctl [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
-#else
-	(void)fprintf(stderr, "%s\n%s\n",
-		"usage: sysctl -p <f-stack proc_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
-		"       sysctl -p <f-stack proc_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
-	ff_ipc_exit();
-#endif
 	exit(1);
 }
 
@@ -242,19 +134,11 @@ main(int argc, char **argv)
 	int ch;
 	int warncount = 0;
 
-#ifdef FSTACK
-	ff_ipc_init();
-#endif
-
 	setlocale(LC_NUMERIC, "");
 	setbuf(stdout,0);
 	setbuf(stderr,0);
 
-#ifndef FSTACK
 	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxX")) != -1) {
-#else
-	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxXp:")) != -1) {
-#endif
 		switch (ch) {
 		case 'A':
 			/* compatibility */
@@ -316,11 +200,6 @@ main(int argc, char **argv)
 		case 'x':
 			xflag = 1;
 			break;
-#ifdef FSTACK
-		case 'p':
-			ff_set_proc_id(atoi(optarg));
-			break;
-#endif
 		default:
 			usage();
 		}
@@ -330,13 +209,8 @@ main(int argc, char **argv)
 
 	if (Nflag && nflag)
 		usage();
-	if (aflag && argc == 0) {
-		int ret = sysctl_all(0, 0);
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
-		exit(ret);
-	}
+	if (aflag && argc == 0)
+		exit(sysctl_all(NULL, 0));
 	if (argc == 0 && conffile == NULL)
 		usage();
 
@@ -347,24 +221,21 @@ main(int argc, char **argv)
 	while (argc-- > 0)
 		warncount += parse(*argv++, 0);
 
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
-
 	return (warncount);
 }
 
 /*
- * Parse a name into a MIB entry.
- * Lookup and print out the MIB entry if it exists.
- * Set a new value if requested.
+ * Parse a single numeric value, append it to 'newbuf', and update
+ * 'newsize'.  Returns true if the value was parsed and false if the
+ * value was invalid.  Non-numeric types (strings) are handled
+ * directly in parse().
  */
-static int
-parse(const char *string, int lineno)
+static bool
+parse_numeric(const char *newvalstr, const char *fmt, u_int kind,
+    void **newbufp, size_t *newsizep)
 {
-	int len, i, j;
+	void *newbuf;
 	const void *newval;
-	const char *newvalstr = NULL;
 	int8_t i8val;
 	uint8_t u8val;
 	int16_t i16val;
@@ -375,11 +246,111 @@ parse(const char *string, int lineno)
 	unsigned int uintval;
 	long longval;
 	unsigned long ulongval;
-	size_t newsize = Bflag;
 	int64_t i64val;
 	uint64_t u64val;
+	size_t valsize;
+	char *endptr = NULL;
+	
+	errno = 0;
+
+	switch (kind & CTLTYPE) {
+	case CTLTYPE_INT:
+		if (strncmp(fmt, "IK", 2) == 0)
+			intval = strIKtoi(newvalstr, &endptr, fmt);
+		else
+			intval = (int)strtol(newvalstr, &endptr, 0);
+		newval = &intval;
+		valsize = sizeof(intval);
+		break;
+	case CTLTYPE_UINT:
+		uintval = (int) strtoul(newvalstr, &endptr, 0);
+		newval = &uintval;
+		valsize = sizeof(uintval);
+		break;
+	case CTLTYPE_LONG:
+		longval = strtol(newvalstr, &endptr, 0);
+		newval = &longval;
+		valsize = sizeof(longval);
+		break;
+	case CTLTYPE_ULONG:
+		ulongval = strtoul(newvalstr, &endptr, 0);
+		newval = &ulongval;
+		valsize = sizeof(ulongval);
+		break;
+	case CTLTYPE_S8:
+		i8val = (int8_t)strtol(newvalstr, &endptr, 0);
+		newval = &i8val;
+		valsize = sizeof(i8val);
+		break;
+	case CTLTYPE_S16:
+		i16val = (int16_t)strtol(newvalstr, &endptr, 0);
+		newval = &i16val;
+		valsize = sizeof(i16val);
+		break;
+	case CTLTYPE_S32:
+		i32val = (int32_t)strtol(newvalstr, &endptr, 0);
+		newval = &i32val;
+		valsize = sizeof(i32val);
+		break;
+	case CTLTYPE_S64:
+		i64val = strtoimax(newvalstr, &endptr, 0);
+		newval = &i64val;
+		valsize = sizeof(i64val);
+		break;
+	case CTLTYPE_U8:
+		u8val = (uint8_t)strtoul(newvalstr, &endptr, 0);
+		newval = &u8val;
+		valsize = sizeof(u8val);
+		break;
+	case CTLTYPE_U16:
+		u16val = (uint16_t)strtoul(newvalstr, &endptr, 0);
+		newval = &u16val;
+		valsize = sizeof(u16val);
+		break;
+	case CTLTYPE_U32:
+		u32val = (uint32_t)strtoul(newvalstr, &endptr, 0);
+		newval = &u32val;
+		valsize = sizeof(u32val);
+		break;
+	case CTLTYPE_U64:
+		u64val = strtoumax(newvalstr, &endptr, 0);
+		newval = &u64val;
+		valsize = sizeof(u64val);
+		break;
+	default:
+		/* NOTREACHED */
+		abort();
+	}
+	
+	if (errno != 0 || endptr == newvalstr ||
+	    (endptr != NULL && *endptr != '\0'))
+		return (false);
+
+	newbuf = realloc(*newbufp, *newsizep + valsize);
+	if (newbuf == NULL)
+		err(1, "out of memory");
+	memcpy((char *)newbuf + *newsizep, newval, valsize);
+	*newbufp = newbuf;
+	*newsizep += valsize;
+	
+	return (true);
+}
+
+/*
+ * Parse a name into a MIB entry.
+ * Lookup and print out the MIB entry if it exists.
+ * Set a new value if requested.
+ */
+static int
+parse(const char *string, int lineno)
+{
+	int len, i, j, save_errno;
+	const void *newval;
+	char *newvalstr = NULL;
+	void *newbuf;
+	size_t newsize = Bflag;
 	int mib[CTL_MAXNAME];
-	char *cp, *bufp, buf[BUFSIZ], *endptr = NULL, fmt[BUFSIZ], line[BUFSIZ];
+	char *cp, *bufp, *buf, fmt[BUFSIZ], line[BUFSIZ];
 	u_int kind;
 
 	if (lineno)
@@ -387,11 +358,14 @@ parse(const char *string, int lineno)
 	else
 		line[0] = '\0';
 
-	cp = buf;
-	if (snprintf(buf, BUFSIZ, "%s", string) >= BUFSIZ) {
-		warnx("oid too long: '%s'%s", string, line);
-		return (1);
-	}
+	/*
+	 * Split the string into name and value.
+	 *
+	 * Either = or : may be used as the delimiter.
+	 * Whitespace surrounding the delimiter is trimmed.
+	 * Quotes around the value are stripped.
+	 */
+	cp = buf = strdup(string);
 	bufp = strsep(&cp, "=:");
 	if (cp != NULL) {
 		/* Tflag just lists tunables, do not allow assignment */
@@ -399,6 +373,7 @@ parse(const char *string, int lineno)
 			warnx("Can't set variables when using -T or -W");
 			usage();
 		}
+		/* Trim whitespace before the value. */
 		while (isspace(*cp))
 			cp++;
 		/* Strip a pair of " or ' if any. */
@@ -412,213 +387,171 @@ parse(const char *string, int lineno)
 		newvalstr = cp;
 		newsize = strlen(cp);
 	}
-	/* Trim spaces */
+	/* Trim whitespace after the name. */
 	cp = bufp + strlen(bufp) - 1;
 	while (cp >= bufp && isspace((int)*cp)) {
 		*cp = '\0';
 		cp--;
 	}
-	len = name2oid(bufp, mib);
 
+	/*
+	 * Check the name is a useable oid.
+	 */
+	len = name2oid(bufp, mib);
 	if (len < 0) {
-		if (iflag)
+		if (iflag) {
+			free(buf);
 			return (0);
-		if (qflag)
-			return (1);
-		else {
+		}
+		if (!qflag) {
 			if (errno == ENOENT) {
 				warnx("unknown oid '%s'%s", bufp, line);
 			} else {
 				warn("unknown oid '%s'%s", bufp, line);
 			}
-			return (1);
 		}
+		free(buf);
+		return (1);
 	}
 
 	if (oidfmt(mib, len, fmt, &kind)) {
 		warn("couldn't find format of oid '%s'%s", bufp, line);
+		free(buf);
 		if (iflag)
 			return (1);
-		else {
-#ifdef FSTACK
-			ff_ipc_exit();
-#endif
+		else
 			exit(1);
-		}
 	}
 
+	/*
+	 * We have a useable oid to work with.  If there is no value given,
+	 * show the node and its children.  Otherwise, set the new value.
+	 */
 	if (newvalstr == NULL || dflag) {
+		free(buf);
 		if ((kind & CTLTYPE) == CTLTYPE_NODE) {
 			if (dflag) {
-				i = show_var(mib, len);
+				i = show_var(mib, len, false);
 				if (!i && !bflag)
 					putchar('\n');
 			}
 			sysctl_all(mib, len);
 		} else {
-			i = show_var(mib, len);
+			i = show_var(mib, len, false);
 			if (!i && !bflag)
 				putchar('\n');
 		}
-	} else {
-		if ((kind & CTLTYPE) == CTLTYPE_NODE) {
-			warnx("oid '%s' isn't a leaf node%s", bufp, line);
-			return (1);
-		}
-
-		if (!(kind & CTLFLAG_WR)) {
-			if (kind & CTLFLAG_TUN) {
-				warnx("oid '%s' is a read only tunable%s", bufp, line);
-				warnx("Tunable values are set in /boot/loader.conf");
-			} else
-				warnx("oid '%s' is read only%s", bufp, line);
-			return (1);
-		}
-
-		switch (kind & CTLTYPE) {
-		case CTLTYPE_INT:
-		case CTLTYPE_UINT:
-		case CTLTYPE_LONG:
-		case CTLTYPE_ULONG:
-		case CTLTYPE_S8:
-		case CTLTYPE_S16:
-		case CTLTYPE_S32:
-		case CTLTYPE_S64:
-		case CTLTYPE_U8:
-		case CTLTYPE_U16:
-		case CTLTYPE_U32:
-		case CTLTYPE_U64:
-			if (strlen(newvalstr) == 0) {
-				warnx("empty numeric value");
-				return (1);
-			}
-			/* FALLTHROUGH */
-		case CTLTYPE_STRING:
-			break;
-		default:
-			warnx("oid '%s' is type %d,"
-				" cannot set that%s", bufp,
-				kind & CTLTYPE, line);
-			return (1);
-		}
-
-		errno = 0;
-
-		switch (kind & CTLTYPE) {
-			case CTLTYPE_INT:
-				if (strncmp(fmt, "IK", 2) == 0)
-					intval = strIKtoi(newvalstr, &endptr, fmt);
-				else
-					intval = (int)strtol(newvalstr, &endptr,
-					    0);
-				newval = &intval;
-				newsize = sizeof(intval);
-				break;
-			case CTLTYPE_UINT:
-				uintval = (int) strtoul(newvalstr, &endptr, 0);
-				newval = &uintval;
-				newsize = sizeof(uintval);
-				break;
-			case CTLTYPE_LONG:
-				longval = strtol(newvalstr, &endptr, 0);
-				newval = &longval;
-				newsize = sizeof(longval);
-				break;
-			case CTLTYPE_ULONG:
-				ulongval = strtoul(newvalstr, &endptr, 0);
-				newval = &ulongval;
-				newsize = sizeof(ulongval);
-				break;
-			case CTLTYPE_STRING:
-				newval = newvalstr;
-				break;
-			case CTLTYPE_S8:
-				i8val = (int8_t)strtol(newvalstr, &endptr, 0);
-				newval = &i8val;
-				newsize = sizeof(i8val);
-				break;
-			case CTLTYPE_S16:
-				i16val = (int16_t)strtol(newvalstr, &endptr,
-				    0);
-				newval = &i16val;
-				newsize = sizeof(i16val);
-				break;
-			case CTLTYPE_S32:
-				i32val = (int32_t)strtol(newvalstr, &endptr,
-				    0);
-				newval = &i32val;
-				newsize = sizeof(i32val);
-				break;
-			case CTLTYPE_S64:
-				i64val = strtoimax(newvalstr, &endptr, 0);
-				newval = &i64val;
-				newsize = sizeof(i64val);
-				break;
-			case CTLTYPE_U8:
-				u8val = (uint8_t)strtoul(newvalstr, &endptr, 0);
-				newval = &u8val;
-				newsize = sizeof(u8val);
-				break;
-			case CTLTYPE_U16:
-				u16val = (uint16_t)strtoul(newvalstr, &endptr,
-				    0);
-				newval = &u16val;
-				newsize = sizeof(u16val);
-				break;
-			case CTLTYPE_U32:
-				u32val = (uint32_t)strtoul(newvalstr, &endptr,
-				    0);
-				newval = &u32val;
-				newsize = sizeof(u32val);
-				break;
-			case CTLTYPE_U64:
-				u64val = strtoumax(newvalstr, &endptr, 0);
-				newval = &u64val;
-				newsize = sizeof(u64val);
-				break;
-			default:
-				/* NOTREACHED */
-				abort();
-		}
-
-		if (errno != 0 || endptr == newvalstr ||
-		    (endptr != NULL && *endptr != '\0')) {
-			warnx("invalid %s '%s'%s", ctl_typename[kind & CTLTYPE],
-			    newvalstr, line);
-			return (1);
-		}
-
-		i = show_var(mib, len);
-		if (sysctl(mib, len, 0, 0, newval, newsize) == -1) {
-			if (!i && !bflag)
-				putchar('\n');
-			switch (errno) {
-			case EOPNOTSUPP:
-				warnx("%s: value is not available%s",
-					string, line);
-				return (1);
-			case ENOTDIR:
-				warnx("%s: specification is incomplete%s",
-					string, line);
-				return (1);
-			case ENOMEM:
-				warnx("%s: type is unknown to this program%s",
-					string, line);
-				return (1);
-			default:
-				warn("%s%s", string, line);
-				return (1);
-			}
-		}
-		if (!bflag)
-			printf(" -> ");
-		i = nflag;
-		nflag = 1;
-		j = show_var(mib, len);
-		if (!j && !bflag)
-			putchar('\n');
-		nflag = i;
+		return (0);
 	}
+
+	/*
+	 * We have a new value to set.  Check its validity and parse if numeric.
+	 */
+	if ((kind & CTLTYPE) == CTLTYPE_NODE) {
+		warnx("oid '%s' isn't a leaf node%s", bufp, line);
+		free(buf);
+		return (1);
+	}
+
+	if (!(kind & CTLFLAG_WR)) {
+		if (kind & CTLFLAG_TUN) {
+			warnx("oid '%s' is a read only tunable%s", bufp, line);
+			warnx("Tunable values are set in /boot/loader.conf");
+		} else
+			warnx("oid '%s' is read only%s", bufp, line);
+		free(buf);
+		return (1);
+	}
+
+	switch (kind & CTLTYPE) {
+	case CTLTYPE_INT:
+	case CTLTYPE_UINT:
+	case CTLTYPE_LONG:
+	case CTLTYPE_ULONG:
+	case CTLTYPE_S8:
+	case CTLTYPE_S16:
+	case CTLTYPE_S32:
+	case CTLTYPE_S64:
+	case CTLTYPE_U8:
+	case CTLTYPE_U16:
+	case CTLTYPE_U32:
+	case CTLTYPE_U64:
+		if (strlen(newvalstr) == 0) {
+			warnx("empty numeric value");
+			free(buf);
+			return (1);
+		}
+		/* FALLTHROUGH */
+	case CTLTYPE_STRING:
+		break;
+	default:
+		warnx("oid '%s' is type %d, cannot set that%s",
+		    bufp, kind & CTLTYPE, line);
+		free(buf);
+		return (1);
+	}
+
+	newbuf = NULL;
+
+	switch (kind & CTLTYPE) {
+	case CTLTYPE_STRING:
+		newval = newvalstr;
+		break;
+	default:
+		newsize = 0;
+		while ((cp = strsep(&newvalstr, " ,")) != NULL) {
+			if (*cp == '\0')
+				continue;
+			if (!parse_numeric(cp, fmt, kind, &newbuf, &newsize)) {
+				warnx("invalid %s '%s'%s",
+				    ctl_typename[kind & CTLTYPE], cp, line);
+				free(newbuf);
+				free(buf);
+				return (1);
+			}
+		}
+		newval = newbuf;
+		break;
+	}
+
+	/*
+	 * Show the current value, then set and show the new value.
+	 */
+	i = show_var(mib, len, false);
+	if (sysctl(mib, len, 0, 0, newval, newsize) == -1) {
+		save_errno = errno;
+		free(newbuf);
+		free(buf);
+		if (!i && !bflag)
+			putchar('\n');
+		switch (save_errno) {
+		case EOPNOTSUPP:
+			warnx("%s: value is not available%s",
+			    string, line);
+			return (1);
+		case ENOTDIR:
+			warnx("%s: specification is incomplete%s",
+			    string, line);
+			return (1);
+		case ENOMEM:
+			warnx("%s: type is unknown to this program%s",
+			    string, line);
+			return (1);
+		default:
+			warnc(save_errno, "%s%s", string, line);
+			return (1);
+		}
+	}
+	free(newbuf);
+	free(buf);
+	if (!bflag)
+		printf(" -> ");
+	i = nflag;
+	nflag = 1;
+	j = show_var(mib, len, false);
+	if (!j && !bflag)
+		putchar('\n');
+	nflag = i;
 
 	return (0);
 }
@@ -733,40 +666,76 @@ S_timeval(size_t l2, void *p)
 static int
 S_vmtotal(size_t l2, void *p)
 {
-	struct vmtotal *v = (struct vmtotal *)p;
-	int pageKilo = getpagesize() / 1024;
+	struct vmtotal *v;
+	int pageKilo;
 
 	if (l2 != sizeof(*v)) {
 		warnx("S_vmtotal %zu != %zu", l2, sizeof(*v));
 		return (1);
 	}
 
-	printf(
-	    "\nSystem wide totals computed every five seconds:"
+	v = p;
+	pageKilo = getpagesize() / 1024;
+
+#define	pg2k(a)	((uintmax_t)(a) * pageKilo)
+	printf("\nSystem wide totals computed every five seconds:"
 	    " (values in kilobytes)\n");
 	printf("===============================================\n");
-	printf(
-	    "Processes:\t\t(RUNQ: %hd Disk Wait: %hd Page Wait: "
-	    "%hd Sleep: %hd)\n",
+	printf("Processes:\t\t(RUNQ: %d Disk Wait: %d Page Wait: "
+	    "%d Sleep: %d)\n",
 	    v->t_rq, v->t_dw, v->t_pw, v->t_sl);
-	printf(
-	    "Virtual Memory:\t\t(Total: %jdK Active: %jdK)\n",
-	    (intmax_t)v->t_vm * pageKilo, (intmax_t)v->t_avm * pageKilo);
-	printf("Real Memory:\t\t(Total: %jdK Active: %jdK)\n",
-	    (intmax_t)v->t_rm * pageKilo, (intmax_t)v->t_arm * pageKilo);
-	printf("Shared Virtual Memory:\t(Total: %jdK Active: %jdK)\n",
-	    (intmax_t)v->t_vmshr * pageKilo, (intmax_t)v->t_avmshr * pageKilo);
-	printf("Shared Real Memory:\t(Total: %jdK Active: %jdK)\n",
-	    (intmax_t)v->t_rmshr * pageKilo, (intmax_t)v->t_armshr * pageKilo);
-	printf("Free Memory:\t%jdK", (intmax_t)v->t_free * pageKilo);
+	printf("Virtual Memory:\t\t(Total: %juK Active: %juK)\n",
+	    pg2k(v->t_vm), pg2k(v->t_avm));
+	printf("Real Memory:\t\t(Total: %juK Active: %juK)\n",
+	    pg2k(v->t_rm), pg2k(v->t_arm));
+	printf("Shared Virtual Memory:\t(Total: %juK Active: %juK)\n",
+	    pg2k(v->t_vmshr), pg2k(v->t_avmshr));
+	printf("Shared Real Memory:\t(Total: %juK Active: %juK)\n",
+	    pg2k(v->t_rmshr), pg2k(v->t_armshr));
+	printf("Free Memory:\t%juK", pg2k(v->t_free));
+	return (0);
+}
+
+static int
+S_input_id(size_t l2, void *p)
+{
+	struct input_id *id = p;
+
+	if (l2 != sizeof(*id)) {
+		warnx("S_input_id %zu != %zu", l2, sizeof(*id));
+		return (1);
+	}
+
+	printf("{ bustype = 0x%04x, vendor = 0x%04x, "
+	    "product = 0x%04x, version = 0x%04x }",
+	    id->bustype, id->vendor, id->product, id->version);
+	return (0);
+}
+
+static int
+S_pagesizes(size_t l2, void *p)
+{
+	char buf[256];
+	u_long *ps;
+	size_t l;
+	int i;
+
+	l = snprintf(buf, sizeof(buf), "{ ");
+	ps = p;
+	for (i = 0; i * sizeof(*ps) < l2 && ps[i] != 0 && l < sizeof(buf);
+	    i++) {
+		l += snprintf(&buf[l], sizeof(buf) - l,
+		    "%s%lu", i == 0 ? "" : ", ", ps[i]);
+	}
+	if (l < sizeof(buf))
+		(void)snprintf(&buf[l], sizeof(buf) - l, " }");
+
+	printf("%s", buf);
 
 	return (0);
 }
 
 #ifdef __amd64__
-#define efi_next_descriptor(ptr, size) \
-	((struct efi_md *)(((uint8_t *) ptr) + size))
-
 static int
 S_efi_map(size_t l2, void *p)
 {
@@ -776,21 +745,22 @@ S_efi_map(size_t l2, void *p)
 	size_t efisz;
 	int ndesc, i;
 
-	static const char *types[] = {
-		"Reserved",
-		"LoaderCode",
-		"LoaderData",
-		"BootServicesCode",
-		"BootServicesData",
-		"RuntimeServicesCode",
-		"RuntimeServicesData",
-		"ConventionalMemory",
-		"UnusableMemory",
-		"ACPIReclaimMemory",
-		"ACPIMemoryNVS",
-		"MemoryMappedIO",
-		"MemoryMappedIOPortSpace",
-		"PalCode"
+	static const char * const types[] = {
+		[EFI_MD_TYPE_NULL] =	"Reserved",
+		[EFI_MD_TYPE_CODE] =	"LoaderCode",
+		[EFI_MD_TYPE_DATA] =	"LoaderData",
+		[EFI_MD_TYPE_BS_CODE] =	"BootServicesCode",
+		[EFI_MD_TYPE_BS_DATA] =	"BootServicesData",
+		[EFI_MD_TYPE_RT_CODE] =	"RuntimeServicesCode",
+		[EFI_MD_TYPE_RT_DATA] =	"RuntimeServicesData",
+		[EFI_MD_TYPE_FREE] =	"ConventionalMemory",
+		[EFI_MD_TYPE_BAD] =	"UnusableMemory",
+		[EFI_MD_TYPE_RECLAIM] =	"ACPIReclaimMemory",
+		[EFI_MD_TYPE_FIRMWARE] = "ACPIMemoryNVS",
+		[EFI_MD_TYPE_IOMEM] =	"MemoryMappedIO",
+		[EFI_MD_TYPE_IOPORT] =	"MemoryMappedIOPortSpace",
+		[EFI_MD_TYPE_PALCODE] =	"PalCode",
+		[EFI_MD_TYPE_PERSISTENT] = "PersistentMemory",
 	};
 
 	/*
@@ -803,7 +773,7 @@ S_efi_map(size_t l2, void *p)
 	}
 	efihdr = p;
 	efisz = (sizeof(struct efi_map_header) + 0xf) & ~0xf;
-	map = (struct efi_md *)((uint8_t *)efihdr + efisz); 
+	map = (struct efi_md *)((uint8_t *)efihdr + efisz);
 
 	if (efihdr->descriptor_size == 0)
 		return (0);
@@ -811,7 +781,7 @@ S_efi_map(size_t l2, void *p)
 		warnx("S_efi_map length mismatch %zu vs %zu", l2, efisz +
 		    efihdr->memory_size);
 		return (1);
-	}		
+	}
 	ndesc = efihdr->memory_size / efihdr->descriptor_size;
 
 	printf("\n%23s %12s %12s %8s %4s",
@@ -819,12 +789,14 @@ S_efi_map(size_t l2, void *p)
 
 	for (i = 0; i < ndesc; i++,
 	    map = efi_next_descriptor(map, efihdr->descriptor_size)) {
-		if (map->md_type <= EFI_MD_TYPE_PALCODE)
+		type = NULL;
+		if (map->md_type < nitems(types))
 			type = types[map->md_type];
-		else
+		if (type == NULL)
 			type = "<INVALID>";
-		printf("\n%23s %012lx %12p %08lx ", type, map->md_phys,
-		    map->md_virt, map->md_pages);
+		printf("\n%23s %012jx %12p %08jx ", type,
+		    (uintmax_t)map->md_phys, map->md_virt,
+		    (uintmax_t)map->md_pages);
 		if (map->md_attr & EFI_MD_ATTR_UC)
 			printf("UC ");
 		if (map->md_attr & EFI_MD_ATTR_WC)
@@ -941,8 +913,8 @@ name2oid(const char *name, int *oidp)
 	int i;
 	size_t j;
 
-	oid[0] = 0;
-	oid[1] = 3;
+	oid[0] = CTL_SYSCTL;
+	oid[1] = CTL_SYSCTL_NAME2OID;
 
 	j = CTL_MAXNAME * sizeof(int);
 	i = sysctl(oid, 2, oidp, &j, name, strlen(name));
@@ -960,8 +932,8 @@ oidfmt(int *oid, int len, char *fmt, u_int *kind)
 	int i;
 	size_t j;
 
-	qoid[0] = 0;
-	qoid[1] = 4;
+	qoid[0] = CTL_SYSCTL;
+	qoid[1] = CTL_SYSCTL_OIDFMT;
 	memcpy(qoid + 2, oid, len * sizeof(int));
 
 	j = sizeof(buf);
@@ -985,8 +957,9 @@ oidfmt(int *oid, int len, char *fmt, u_int *kind)
  * Return minus one if we had errors.
  */
 static int
-show_var(int *oid, int nlen)
+show_var(int *oid, int nlen, bool honor_skip)
 {
+	static int skip_len = 0, skip_oid[CTL_MAXNAME];
 	u_char buf[BUFSIZ], *val, *oval, *p;
 	char name[BUFSIZ], fmt[BUFSIZ];
 	const char *sep, *sep1, *prntype;
@@ -1007,10 +980,10 @@ show_var(int *oid, int nlen)
 	bzero(buf, BUFSIZ);
 	bzero(fmt, BUFSIZ);
 	bzero(name, BUFSIZ);
-	qoid[0] = 0;
+	qoid[0] = CTL_SYSCTL;
 	memcpy(qoid + 2, oid, nlen * sizeof(int));
 
-	qoid[1] = 1;
+	qoid[1] = CTL_SYSCTL_NAME;
 	j = sizeof(name);
 	i = sysctl(qoid, nlen + 2, name, &j, 0, 0);
 	if (i || !j)
@@ -1019,11 +992,11 @@ show_var(int *oid, int nlen)
 	oidfmt(oid, nlen, fmt, &kind);
 	/* if Wflag then only list sysctls that are writeable and not stats. */
 	if (Wflag && ((kind & CTLFLAG_WR) == 0 || (kind & CTLFLAG_STATS) != 0))
-		return 1;
+		return (1);
 
 	/* if Tflag then only list sysctls that are tuneables. */
 	if (Tflag && (kind & CTLFLAG_TUN) == 0)
-		return 1;
+		return (1);
 
 	if (Nflag) {
 		printf("%s", name);
@@ -1049,12 +1022,59 @@ show_var(int *oid, int nlen)
 			printf("%s", prntype);
 			return (0);
 		}
-		qoid[1] = 5;
+		qoid[1] = CTL_SYSCTL_OIDDESCR;
 		j = sizeof(buf);
 		i = sysctl(qoid, nlen + 2, buf, &j, 0, 0);
 		printf("%s", buf);
 		return (0);
 	}
+
+	/* keep track of encountered skip nodes, ignoring descendants */
+	if ((skip_len == 0 || skip_len >= nlen * (int)sizeof(int)) &&
+	    (kind & CTLFLAG_SKIP) != 0) {
+		/* Save this oid so we can skip descendants. */
+		skip_len = nlen * sizeof(int);
+		memcpy(skip_oid, oid, skip_len);
+	}
+
+	/* bail before fetching the value if we're honoring skip */
+	if (honor_skip) {
+		if (0 < skip_len && skip_len <= nlen * (int)sizeof(int) &&
+		    memcmp(skip_oid, oid, skip_len) == 0)
+			return (1);
+		/* Not a skip node or descendant of a skip node. */
+		skip_len = 0;
+	}
+
+	/* don't fetch opaques that we don't know how to print */
+	if (ctltype == CTLTYPE_OPAQUE) {
+		if (strcmp(fmt, "S,clockinfo") == 0)
+			func = S_clockinfo;
+		else if (strcmp(fmt, "S,timeval") == 0)
+			func = S_timeval;
+		else if (strcmp(fmt, "S,loadavg") == 0)
+			func = S_loadavg;
+		else if (strcmp(fmt, "S,vmtotal") == 0)
+			func = S_vmtotal;
+		else if (strcmp(fmt, "S,input_id") == 0)
+			func = S_input_id;
+		else if (strcmp(fmt, "S,pagesizes") == 0)
+			func = S_pagesizes;
+#ifdef __amd64__
+		else if (strcmp(fmt, "S,efi_map_header") == 0)
+			func = S_efi_map;
+#endif
+#if defined(__amd64__) || defined(__i386__)
+		else if (strcmp(fmt, "S,bios_smap_xattr") == 0)
+			func = S_bios_smap_xattr;
+#endif
+		else {
+			func = NULL;
+			if (!bflag && !oflag && !xflag)
+				return (1);
+		}
+	}
+
 	/* find an estimate of how much we need for this var */
 	if (Bflag)
 		j = Bflag;
@@ -1175,24 +1195,6 @@ show_var(int *oid, int nlen)
 
 	case CTLTYPE_OPAQUE:
 		i = 0;
-		if (strcmp(fmt, "S,clockinfo") == 0)
-			func = S_clockinfo;
-		else if (strcmp(fmt, "S,timeval") == 0)
-			func = S_timeval;
-		else if (strcmp(fmt, "S,loadavg") == 0)
-			func = S_loadavg;
-		else if (strcmp(fmt, "S,vmtotal") == 0)
-			func = S_vmtotal;
-#ifdef __amd64__
-		else if (strcmp(fmt, "S,efi_map_header") == 0)
-			func = S_efi_map;
-#endif
-#if defined(__amd64__) || defined(__i386__)
-		else if (strcmp(fmt, "S,bios_smap_xattr") == 0)
-			func = S_bios_smap_xattr;
-#endif
-		else
-			func = NULL;
 		if (func) {
 			if (!nflag)
 				printf("%s%s", name, sep);
@@ -1227,14 +1229,15 @@ sysctl_all(int *oid, int len)
 	int i, j;
 	size_t l1, l2;
 
-	name1[0] = 0;
-	name1[1] = 2;
+	name1[0] = CTL_SYSCTL;
+	name1[1] = (oid != NULL || Nflag || dflag || tflag) ?
+	    CTL_SYSCTL_NEXTNOSKIP : CTL_SYSCTL_NEXT;
 	l1 = 2;
 	if (len) {
-		memcpy(name1+2, oid, len * sizeof(int));
+		memcpy(name1 + 2, oid, len * sizeof(int));
 		l1 += len;
 	} else {
-		name1[2] = 1;
+		name1[2] = CTL_KERN;
 		l1++;
 	}
 	for (;;) {
@@ -1252,15 +1255,14 @@ sysctl_all(int *oid, int len)
 		if (len < 0 || l2 < (unsigned int)len)
 			return (0);
 
-		for (i = 0; i < len; i++)
-			if (name2[i] != oid[i])
-				return (0);
+		if (memcmp(name2, oid, len * sizeof(int)) != 0)
+			return (0);
 
-		i = show_var(name2, l2);
+		i = show_var(name2, l2, true);
 		if (!i && !bflag)
 			putchar('\n');
 
-		memcpy(name1+2, name2, l2 * sizeof(int));
+		memcpy(name1 + 2, name2, l2 * sizeof(int));
 		l1 = 2 + l2;
 	}
 }

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -41,7 +43,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -101,7 +103,7 @@ struct in6_addr {
 };
 
 #define s6_addr   __u6_addr.__u6_addr8
-#ifdef _KERNEL	/* XXX nonstandard */
+#if defined(_KERNEL) || defined(_STANDALONE) /* XXX nonstandard */
 #define s6_addr8  __u6_addr.__u6_addr8
 #define s6_addr16 __u6_addr.__u6_addr16
 #define s6_addr32 __u6_addr.__u6_addr32
@@ -373,8 +375,9 @@ extern const struct in6_addr in6addr_linklocal_allv2routers;
  * IP6 route structure
  */
 #if __BSD_VISIBLE
+struct nhop_object;
 struct route_in6 {
-	struct	rtentry *ro_rt;
+	struct nhop_object *ro_nh;
 	struct	llentry *ro_lle;
 	/*
 	 * ro_prepend and ro_plen are only used for bpf to pass in a
@@ -432,10 +435,7 @@ struct route_in6 {
 #define IPV6_BINDV6ONLY		IPV6_V6ONLY
 #endif
 
-#if 1 /* IPSEC */
 #define IPV6_IPSEC_POLICY	28 /* struct; get/set security policy */
-#endif /* IPSEC */
-
 				   /* 29; unused; was IPV6_FAITH */
 #if 1 /* IPV6FIREWALL */
 #define IPV6_FW_ADD		30 /* add a firewall rule to chain */
@@ -500,6 +500,9 @@ struct route_in6 {
 #define	IPV6_RECVFLOWID		70 /* bool; receive IP6 flowid/flowtype w/ datagram */
 #define	IPV6_RECVRSSBUCKETID	71 /* bool; receive IP6 RSS bucket id w/ datagram */
 
+#define	IPV6_ORIGDSTADDR	72 /* bool: allow getting dstaddr /port info */
+#define	IPV6_RECVORIGDSTADDR	IPV6_ORIGDSTADDR
+
 /*
  * The following option is private; do not use it from user applications.
  * It is deliberately defined to the same value as IP_MSFILTER.
@@ -507,6 +510,10 @@ struct route_in6 {
 #define	IPV6_MSFILTER		74 /* struct __msfilterreq;
 				    * set/get multicast source filter list.
 				    */
+
+/* The following option deals with the 802.1Q Ethernet Priority Code Point */
+#define	IPV6_VLAN_PCP		75  /* int; set/get PCP used for packet, */
+				    /*      -1 use interface default */
 
 /* to define items, should talk with KAME guys first, for *BSD compatibility */
 
@@ -521,11 +528,8 @@ struct route_in6 {
 #define IPV6_DEFAULT_MULTICAST_LOOP 1	/* normally hear sends if a member */
 
 /*
- * The im6o_membership vector for each socket is now dynamically allocated at
- * run-time, bounded by USHRT_MAX, and is reallocated when needed, sized
- * according to a power-of-two increment.
+ * Limit for IPv6 multicast memberships
  */
-#define	IPV6_MIN_MEMBERSHIPS	31
 #define	IPV6_MAX_MEMBERSHIPS	4095
 
 /*
@@ -639,11 +643,10 @@ struct ip6_mtuinfo {
 					   enabled */
 #define	IPV6CTL_INTRQMAXLEN	51	/* max length of IPv6 netisr queue */
 #define	IPV6CTL_INTRDQMAXLEN	52	/* max length of direct IPv6 netisr
-						* queue */
+					 * queue */
 #define	IPV6CTL_MAXFRAGSPERPACKET	53 /* Max fragments per packet */
 #define	IPV6CTL_MAXFRAGBUCKETSIZE	54 /* Max reassembly queues per bucket */
-#define	IPV6CTL_MAXID	55
-
+#define	IPV6CTL_MAXID		55
 #endif /* __BSD_VISIBLE */
 
 /*
@@ -659,6 +662,7 @@ struct ip6_mtuinfo {
 #define	M_LOOP			M_PROTO6
 #define	M_AUTHIPDGM		M_PROTO7
 #define	M_RTALERT_MLD		M_PROTO8
+#define	M_FRAGMENTED		M_PROTO9	/* contained fragment header */
 
 #ifdef _KERNEL
 struct cmsghdr;

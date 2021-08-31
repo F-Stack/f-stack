@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Andre Oppermann, Internet Business Solutions AG
  * All rights reserved.
  *
@@ -46,6 +48,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 
 #include <net/if.h>
+#include <net/if_var.h>
 #include <net/route.h>
 #include <net/ethernet.h>
 #include <net/pfil.h>
@@ -68,25 +71,21 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/in_cksum.h>
 
-static VNET_DEFINE(int, fw_enable) = 1;
+VNET_DEFINE_STATIC(int, fw_enable) = 1;
 #define V_fw_enable	VNET(fw_enable)
 
 #ifdef INET6
-static VNET_DEFINE(int, fw6_enable) = 1;
+VNET_DEFINE_STATIC(int, fw6_enable) = 1;
 #define V_fw6_enable	VNET(fw6_enable)
 #endif
 
-static VNET_DEFINE(int, fwlink_enable) = 0;
+VNET_DEFINE_STATIC(int, fwlink_enable) = 0;
 #define V_fwlink_enable	VNET(fwlink_enable)
 
 int ipfw_chg_hook(SYSCTL_HANDLER_ARGS);
 
 /* Forward declarations. */
-static int ipfw_divert(struct mbuf **, int, struct ipfw_rule_ref *, int);
-int ipfw_check_packet(void *, struct mbuf **, struct ifnet *, int,
-	struct inpcb *);
-int ipfw_check_frame(void *, struct mbuf **, struct ifnet *, int,
-	struct inpcb *);
+static int ipfw_divert(struct mbuf **, struct ip_fw_args *, bool);
 
 #ifdef SYSCTL_NODE
 
@@ -94,19 +93,21 @@ SYSBEGIN(f1)
 
 SYSCTL_DECL(_net_inet_ip_fw);
 SYSCTL_PROC(_net_inet_ip_fw, OID_AUTO, enable,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE3,
-    &VNET_NAME(fw_enable), 0, ipfw_chg_hook, "I", "Enable ipfw");
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE3 |
+    CTLFLAG_NEEDGIANT, &VNET_NAME(fw_enable), 0, ipfw_chg_hook, "I",
+    "Enable ipfw");
 #ifdef INET6
 SYSCTL_DECL(_net_inet6_ip6_fw);
 SYSCTL_PROC(_net_inet6_ip6_fw, OID_AUTO, enable,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE3,
-    &VNET_NAME(fw6_enable), 0, ipfw_chg_hook, "I", "Enable ipfw+6");
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE3 |
+    CTLFLAG_NEEDGIANT, &VNET_NAME(fw6_enable), 0, ipfw_chg_hook, "I",
+    "Enable ipfw+6");
 #endif /* INET6 */
 
 SYSCTL_DECL(_net_link_ether);
 SYSCTL_PROC(_net_link_ether, OID_AUTO, ipfw,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE3,
-    &VNET_NAME(fwlink_enable), 0, ipfw_chg_hook, "I",
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE3 |
+    CTLFLAG_NEEDGIANT, &VNET_NAME(fwlink_enable), 0, ipfw_chg_hook, "I",
     "Pass ether pkts through firewall");
 
 SYSEND
@@ -118,19 +119,16 @@ SYSEND
  * dummynet, divert, netgraph or other modules.
  * The packet may be consumed.
  */
-int
-ipfw_check_packet(void *arg, struct mbuf **m0, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+static pfil_return_t
+ipfw_check_packet(struct mbuf **m0, struct ifnet *ifp, int flags,
+    void *ruleset __unused, struct inpcb *inp)
 {
 	struct ip_fw_args args;
 	struct m_tag *tag;
+	pfil_return_t ret;
 	int ipfw;
-	int ret;
 
-	/* convert dir to IPFW values */
-	dir = (dir == PFIL_IN) ? DIR_IN : DIR_OUT;
-	bzero(&args, sizeof(args));
-
+	args.flags = (flags & PFIL_IN) ? IPFW_ARGS_IN : IPFW_ARGS_OUT;
 again:
 	/*
 	 * extract and remove the tag if present. If we are left
@@ -142,107 +140,127 @@ again:
 		m_tag_delete(*m0, tag);
 		if (args.rule.info & IPFW_ONEPASS)
 			return (0);
+		args.flags |= IPFW_ARGS_REF;
 	}
 
 	args.m = *m0;
-	args.oif = dir == DIR_OUT ? ifp : NULL;
+	args.ifp = ifp;
 	args.inp = inp;
 
 	ipfw = ipfw_chk(&args);
 	*m0 = args.m;
 
-	KASSERT(*m0 != NULL || ipfw == IP_FW_DENY, ("%s: m0 is NULL",
-	    __func__));
+	KASSERT(*m0 != NULL || ipfw == IP_FW_DENY ||
+	    ipfw == IP_FW_NAT64, ("%s: m0 is NULL", __func__));
 
-	/* breaking out of the switch means drop */
-	ret = 0;	/* default return value for pass */
+	ret = PFIL_PASS;
 	switch (ipfw) {
 	case IP_FW_PASS:
 		/* next_hop may be set by ipfw_chk */
-		if (args.next_hop == NULL && args.next_hop6 == NULL)
-			break; /* pass */
+		if ((args.flags & (IPFW_ARGS_NH4 | IPFW_ARGS_NH4PTR |
+		    IPFW_ARGS_NH6 | IPFW_ARGS_NH6PTR)) == 0)
+			break;
 #if (!defined(INET6) && !defined(INET))
-		ret = EACCES;
+		ret = PFIL_DROPPED;
 #else
 	    {
-		struct m_tag *fwd_tag;
+		void *psa;
 		size_t len;
-
-		KASSERT(args.next_hop == NULL || args.next_hop6 == NULL,
-		    ("%s: both next_hop=%p and next_hop6=%p not NULL", __func__,
-		     args.next_hop, args.next_hop6));
-#ifdef INET6
-		if (args.next_hop6 != NULL)
-			len = sizeof(struct sockaddr_in6);
-#endif
 #ifdef INET
-		if (args.next_hop != NULL)
+		if (args.flags & (IPFW_ARGS_NH4 | IPFW_ARGS_NH4PTR)) {
+			MPASS((args.flags & (IPFW_ARGS_NH4 |
+			    IPFW_ARGS_NH4PTR)) != (IPFW_ARGS_NH4 |
+			    IPFW_ARGS_NH4PTR));
+			MPASS((args.flags & (IPFW_ARGS_NH6 |
+			    IPFW_ARGS_NH6PTR)) == 0);
 			len = sizeof(struct sockaddr_in);
-#endif
-
-		/* Incoming packets should not be tagged so we do not
+			psa = (args.flags & IPFW_ARGS_NH4) ?
+			    &args.hopstore : args.next_hop;
+			if (in_localip(satosin(psa)->sin_addr))
+				(*m0)->m_flags |= M_FASTFWD_OURS;
+			(*m0)->m_flags |= M_IP_NEXTHOP;
+		}
+#endif /* INET */
+#ifdef INET6
+		if (args.flags & (IPFW_ARGS_NH6 | IPFW_ARGS_NH6PTR)) {
+			MPASS((args.flags & (IPFW_ARGS_NH6 |
+			    IPFW_ARGS_NH6PTR)) != (IPFW_ARGS_NH6 |
+			    IPFW_ARGS_NH6PTR));
+			MPASS((args.flags & (IPFW_ARGS_NH4 |
+			    IPFW_ARGS_NH4PTR)) == 0);
+			len = sizeof(struct sockaddr_in6);
+			psa = args.next_hop6;
+			(*m0)->m_flags |= M_IP6_NEXTHOP;
+		}
+#endif /* INET6 */
+		/*
+		 * Incoming packets should not be tagged so we do not
 		 * m_tag_find. Outgoing packets may be tagged, so we
 		 * reuse the tag if present.
 		 */
-		fwd_tag = (dir == DIR_IN) ? NULL :
+		tag = (flags & PFIL_IN) ? NULL :
 			m_tag_find(*m0, PACKET_TAG_IPFORWARD, NULL);
-		if (fwd_tag != NULL) {
-			m_tag_unlink(*m0, fwd_tag);
+		if (tag != NULL) {
+			m_tag_unlink(*m0, tag);
 		} else {
-			fwd_tag = m_tag_get(PACKET_TAG_IPFORWARD, len,
+			tag = m_tag_get(PACKET_TAG_IPFORWARD, len,
 			    M_NOWAIT);
-			if (fwd_tag == NULL) {
-				ret = EACCES;
-				break; /* i.e. drop */
+			if (tag == NULL) {
+				ret = PFIL_DROPPED;
+				break;
 			}
 		}
+		if ((args.flags & IPFW_ARGS_NH6) == 0)
+			bcopy(psa, tag + 1, len);
+		m_tag_prepend(*m0, tag);
+		ret = 0;
 #ifdef INET6
-		if (args.next_hop6 != NULL) {
+		/* IPv6 next hop needs additional handling */
+		if (args.flags & (IPFW_ARGS_NH6 | IPFW_ARGS_NH6PTR)) {
 			struct sockaddr_in6 *sa6;
 
-			sa6 = (struct sockaddr_in6 *)(fwd_tag + 1);
-			bcopy(args.next_hop6, sa6, len);
+			sa6 = satosin6(tag + 1);
+			if (args.flags & IPFW_ARGS_NH6) {
+				sa6->sin6_family = AF_INET6;
+				sa6->sin6_len = sizeof(*sa6);
+				sa6->sin6_addr = args.hopstore6.sin6_addr;
+				sa6->sin6_port = args.hopstore6.sin6_port;
+				sa6->sin6_scope_id =
+				    args.hopstore6.sin6_scope_id;
+			}
 			/*
 			 * If nh6 address is link-local we should convert
 			 * it to kernel internal form before doing any
 			 * comparisons.
 			 */
 			if (sa6_embedscope(sa6, V_ip6_use_defzone) != 0) {
-				ret = EACCES;
+				ret = PFIL_DROPPED;
 				break;
 			}
 			if (in6_localip(&sa6->sin6_addr))
 				(*m0)->m_flags |= M_FASTFWD_OURS;
-			(*m0)->m_flags |= M_IP6_NEXTHOP;
 		}
-#endif
-#ifdef INET
-		if (args.next_hop != NULL) {
-			bcopy(args.next_hop, (fwd_tag+1), len);
-			if (in_localip(args.next_hop->sin_addr))
-				(*m0)->m_flags |= M_FASTFWD_OURS;
-			(*m0)->m_flags |= M_IP_NEXTHOP;
-		}
-#endif
-		m_tag_prepend(*m0, fwd_tag);
+#endif /* INET6 */
 	    }
 #endif /* INET || INET6 */
 		break;
 
 	case IP_FW_DENY:
-		ret = EACCES;
-		break; /* i.e. drop */
+		ret = PFIL_DROPPED;
+		break;
 
 	case IP_FW_DUMMYNET:
-		ret = EACCES;
-		if (ip_dn_io_ptr == NULL)
-			break; /* i.e. drop */
-		if (mtod(*m0, struct ip *)->ip_v == 4)
-			ret = ip_dn_io_ptr(m0, dir, &args);
-		else if (mtod(*m0, struct ip *)->ip_v == 6)
-			ret = ip_dn_io_ptr(m0, dir | PROTO_IPV6, &args);
-		else
-			break; /* drop it */
+		if (ip_dn_io_ptr == NULL) {
+			ret = PFIL_DROPPED;
+			break;
+		}
+		MPASS(args.flags & IPFW_ARGS_REF);
+		if (args.flags & (IPFW_ARGS_IP4 | IPFW_ARGS_IP6))
+			(void )ip_dn_io_ptr(m0, &args);
+		else {
+			ret = PFIL_DROPPED;
+			break;
+		}
 		/*
 		 * XXX should read the return value.
 		 * dummynet normally eats the packet and sets *m0=NULL
@@ -252,164 +270,174 @@ again:
 		 */
 		if (*m0 != NULL)
 			goto again;
+		ret = PFIL_CONSUMED;
 		break;
 
 	case IP_FW_TEE:
 	case IP_FW_DIVERT:
 		if (ip_divert_ptr == NULL) {
-			ret = EACCES;
-			break; /* i.e. drop */
+			ret = PFIL_DROPPED;
+			break;
 		}
-		ret = ipfw_divert(m0, dir, &args.rule,
-			(ipfw == IP_FW_TEE) ? 1 : 0);
+		MPASS(args.flags & IPFW_ARGS_REF);
+		(void )ipfw_divert(m0, &args, ipfw == IP_FW_TEE);
 		/* continue processing for the original packet (tee). */
 		if (*m0)
 			goto again;
+		ret = PFIL_CONSUMED;
 		break;
 
 	case IP_FW_NGTEE:
 	case IP_FW_NETGRAPH:
 		if (ng_ipfw_input_p == NULL) {
-			ret = EACCES;
-			break; /* i.e. drop */
+			ret = PFIL_DROPPED;
+			break;
 		}
-		ret = ng_ipfw_input_p(m0, dir, &args,
-			(ipfw == IP_FW_NGTEE) ? 1 : 0);
+		MPASS(args.flags & IPFW_ARGS_REF);
+		(void )ng_ipfw_input_p(m0, &args, ipfw == IP_FW_NGTEE);
 		if (ipfw == IP_FW_NGTEE) /* ignore errors for NGTEE */
 			goto again;	/* continue with packet */
+		ret = PFIL_CONSUMED;
 		break;
 
 	case IP_FW_NAT:
 		/* honor one-pass in case of successful nat */
 		if (V_fw_one_pass)
-			break; /* ret is already 0 */
+			break;
 		goto again;
 
 	case IP_FW_REASS:
 		goto again;		/* continue with packet */
-	
+
+	case IP_FW_NAT64:
+		ret = PFIL_CONSUMED;
+		break;
+
 	default:
 		KASSERT(0, ("%s: unknown retval", __func__));
 	}
 
-	if (ret != 0) {
+	if (ret != PFIL_PASS) {
 		if (*m0)
 			FREE_PKT(*m0);
 		*m0 = NULL;
 	}
 
-	return ret;
+	return (ret);
 }
 
 /*
  * ipfw processing for ethernet packets (in and out).
- * Inteface is NULL from ether_demux, and ifp from
- * ether_output_frame.
  */
-int
-ipfw_check_frame(void *arg, struct mbuf **m0, struct ifnet *dst, int dir,
-    struct inpcb *inp)
+static pfil_return_t
+ipfw_check_frame(pfil_packet_t p, struct ifnet *ifp, int flags,
+    void *ruleset __unused, struct inpcb *inp)
 {
-	struct ether_header *eh;
-	struct ether_header save_eh;
-	struct mbuf *m;
-	int i, ret;
 	struct ip_fw_args args;
-	struct m_tag *mtag;
+	pfil_return_t ret;
+	bool mem, realloc;
+	int ipfw;
 
-	/* fetch start point from rule, if any */
-	mtag = m_tag_locate(*m0, MTAG_IPFW_RULE, 0, NULL);
-	if (mtag == NULL) {
-		args.rule.slot = 0;
+	if (flags & PFIL_MEMPTR) {
+		mem = true;
+		realloc = false;
+		args.flags = PFIL_LENGTH(flags) | IPFW_ARGS_ETHER;
+		args.mem = p.mem;
 	} else {
-		/* dummynet packet, already partially processed */
-		struct ipfw_rule_ref *r;
-
-		/* XXX can we free it after use ? */
-		mtag->m_tag_id = PACKET_TAG_NONE;
-		r = (struct ipfw_rule_ref *)(mtag + 1);
-		if (r->info & IPFW_ONEPASS)
-			return (0);
-		args.rule = *r;
+		mem = realloc = false;
+		args.flags = IPFW_ARGS_ETHER;
 	}
+	args.flags |= (flags & PFIL_IN) ? IPFW_ARGS_IN : IPFW_ARGS_OUT;
+	args.ifp = ifp;
+	args.inp = inp;
 
-	/* I need some amt of data to be contiguous */
-	m = *m0;
-	i = min(m->m_pkthdr.len, max_protohdr);
-	if (m->m_len < i) {
-		m = m_pullup(m, i);
-		if (m == NULL) {
-			*m0 = m;
-			return (0);
-		}
-	}
-	eh = mtod(m, struct ether_header *);
-	save_eh = *eh;			/* save copy for restore below */
-	m_adj(m, ETHER_HDR_LEN);	/* strip ethernet header */
-
-	args.m = m;		/* the packet we are looking at		*/
-	args.oif = dir == PFIL_OUT ? dst: NULL;	/* destination, if any	*/
-	args.next_hop = NULL;	/* we do not support forward yet	*/
-	args.next_hop6 = NULL;	/* we do not support forward yet	*/
-	args.eh = &save_eh;	/* MAC header for bridged/MAC packets	*/
-	args.inp = NULL;	/* used by ipfw uid/gid/jail rules	*/
-	i = ipfw_chk(&args);
-	m = args.m;
-	if (m != NULL) {
+again:
+	if (!mem) {
 		/*
-		 * Restore Ethernet header, as needed, in case the
-		 * mbuf chain was replaced by ipfw.
+		 * Fetch start point from rule, if any.
+		 * Remove the tag if present.
 		 */
-		M_PREPEND(m, ETHER_HDR_LEN, M_NOWAIT);
-		if (m == NULL) {
-			*m0 = NULL;
-			return (0);
-		}
-		if (eh != mtod(m, struct ether_header *))
-			bcopy(&save_eh, mtod(m, struct ether_header *),
-				ETHER_HDR_LEN);
-	}
-	*m0 = m;
+		struct m_tag *mtag;
 
-	ret = 0;
-	/* Check result of ipfw_chk() */
-	switch (i) {
+		mtag = m_tag_locate(*p.m, MTAG_IPFW_RULE, 0, NULL);
+		if (mtag != NULL) {
+			args.rule = *((struct ipfw_rule_ref *)(mtag+1));
+			m_tag_delete(*p.m, mtag);
+			if (args.rule.info & IPFW_ONEPASS)
+				return (PFIL_PASS);
+			args.flags |= IPFW_ARGS_REF;
+		}
+		args.m = *p.m;
+	}
+
+	ipfw = ipfw_chk(&args);
+
+	ret = PFIL_PASS;
+	switch (ipfw) {
 	case IP_FW_PASS:
 		break;
 
 	case IP_FW_DENY:
-		ret = EACCES;
-		break; /* i.e. drop */
+		ret = PFIL_DROPPED;
+		break;
 
 	case IP_FW_DUMMYNET:
-		ret = EACCES;
-		int dir;
+		if (ip_dn_io_ptr == NULL) {
+			ret = PFIL_DROPPED;
+			break;
+		}
+		if (mem) {
+			if (pfil_realloc(&p, flags, ifp) != 0) {
+				ret = PFIL_DROPPED;
+				break;
+			}
+			mem = false;
+			realloc = true;
+		}
+		MPASS(args.flags & IPFW_ARGS_REF);
+		ip_dn_io_ptr(p.m, &args);
+		return (PFIL_CONSUMED);
 
-		if (ip_dn_io_ptr == NULL)
-			break; /* i.e. drop */
-
-		*m0 = NULL;
-		dir = PROTO_LAYER2 | (dst ? DIR_OUT : DIR_IN);
-		ip_dn_io_ptr(&m, dir, &args);
-		return 0;
+	case IP_FW_NGTEE:
+	case IP_FW_NETGRAPH:
+		if (ng_ipfw_input_p == NULL) {
+			ret = PFIL_DROPPED;
+			break;
+		}
+		if (mem) {
+			if (pfil_realloc(&p, flags, ifp) != 0) {
+				ret = PFIL_DROPPED;
+				break;
+			}
+			mem = false;
+			realloc = true;
+		}
+		MPASS(args.flags & IPFW_ARGS_REF);
+		(void )ng_ipfw_input_p(p.m, &args, ipfw == IP_FW_NGTEE);
+		if (ipfw == IP_FW_NGTEE) /* ignore errors for NGTEE */
+			goto again;	/* continue with packet */
+		ret = PFIL_CONSUMED;
+		break;
 
 	default:
 		KASSERT(0, ("%s: unknown retval", __func__));
 	}
 
-	if (ret != 0) {
-		if (*m0)
-			FREE_PKT(*m0);
-		*m0 = NULL;
+	if (!mem && ret != PFIL_PASS) {
+		if (*p.m)
+			FREE_PKT(*p.m);
+		*p.m = NULL;
 	}
 
-	return ret;
+	if (realloc && ret == PFIL_PASS)
+		ret = PFIL_REALLOCED;
+
+	return (ret);
 }
 
 /* do the divert, return 1 on error 0 on success */
 static int
-ipfw_divert(struct mbuf **m0, int incoming, struct ipfw_rule_ref *rule,
-	int tee)
+ipfw_divert(struct mbuf **m0, struct ip_fw_args *args, bool tee)
 {
 	/*
 	 * ipfw_chk() has already tagged the packet with the divert tag.
@@ -421,7 +449,7 @@ ipfw_divert(struct mbuf **m0, int incoming, struct ipfw_rule_ref *rule,
 	struct m_tag *tag;
 
 	/* Cloning needed for tee? */
-	if (tee == 0) {
+	if (tee == false) {
 		clone = *m0;	/* use the original mbuf */
 		*m0 = NULL;
 	} else {
@@ -441,7 +469,7 @@ ipfw_divert(struct mbuf **m0, int incoming, struct ipfw_rule_ref *rule,
 	 * Note that we now have the 'reass' ipfw option so if we care
 	 * we can do it before a 'tee'.
 	 */
-	if (!tee) switch (ip->ip_v) {
+	if (tee == false) switch (ip->ip_v) {
 	case IPVERSION:
 	    if (ntohs(ip->ip_off) & (IP_MF | IP_OFFMASK)) {
 		int hlen;
@@ -490,61 +518,145 @@ ipfw_divert(struct mbuf **m0, int incoming, struct ipfw_rule_ref *rule,
 		FREE_PKT(clone);
 		return 1;
 	}
-	*((struct ipfw_rule_ref *)(tag+1)) = *rule;
+	*((struct ipfw_rule_ref *)(tag+1)) = args->rule;
 	m_tag_prepend(clone, tag);
 
 	/* Do the dirty job... */
-	ip_divert_ptr(clone, incoming);
+	ip_divert_ptr(clone, args->flags & IPFW_ARGS_IN);
 	return 0;
 }
 
 /*
  * attach or detach hooks for a given protocol family
  */
-static int
-ipfw_hook(int onoff, int pf)
+VNET_DEFINE_STATIC(pfil_hook_t, ipfw_inet_hook);
+#define	V_ipfw_inet_hook	VNET(ipfw_inet_hook)
+#ifdef INET6
+VNET_DEFINE_STATIC(pfil_hook_t, ipfw_inet6_hook);
+#define	V_ipfw_inet6_hook	VNET(ipfw_inet6_hook)
+#endif
+VNET_DEFINE_STATIC(pfil_hook_t, ipfw_link_hook);
+#define	V_ipfw_link_hook	VNET(ipfw_link_hook)
+
+static void
+ipfw_hook(int pf)
 {
-	struct pfil_head *pfh;
-	pfil_func_t hook_func;
+	struct pfil_hook_args pha;
+	pfil_hook_t *h;
 
-	pfh = pfil_head_get(PFIL_TYPE_AF, pf);
-	if (pfh == NULL)
-		return ENOENT;
+	pha.pa_version = PFIL_VERSION;
+	pha.pa_flags = PFIL_IN | PFIL_OUT;
+	pha.pa_modname = "ipfw";
+	pha.pa_ruleset = NULL;
 
-	hook_func = (pf == AF_LINK) ? ipfw_check_frame : ipfw_check_packet;
+	switch (pf) {
+	case AF_INET:
+		pha.pa_func = ipfw_check_packet;
+		pha.pa_type = PFIL_TYPE_IP4;
+		pha.pa_rulname = "default";
+		h = &V_ipfw_inet_hook;
+		break;
+#ifdef INET6
+	case AF_INET6:
+		pha.pa_func = ipfw_check_packet;
+		pha.pa_type = PFIL_TYPE_IP6;
+		pha.pa_rulname = "default6";
+		h = &V_ipfw_inet6_hook;
+		break;
+#endif
+	case AF_LINK:
+		pha.pa_func = ipfw_check_frame;
+		pha.pa_type = PFIL_TYPE_ETHERNET;
+		pha.pa_rulname = "default-link";
+		pha.pa_flags |= PFIL_MEMPTR;
+		h = &V_ipfw_link_hook;
+		break;
+	}
 
-	(void) (onoff ? pfil_add_hook : pfil_remove_hook)
-	    (hook_func, NULL, PFIL_IN | PFIL_OUT | PFIL_WAITOK, pfh);
+	*h = pfil_add_hook(&pha);
+}
 
-	return 0;
+static void
+ipfw_unhook(int pf)
+{
+
+	switch (pf) {
+	case AF_INET:
+		pfil_remove_hook(V_ipfw_inet_hook);
+		break;
+#ifdef INET6
+	case AF_INET6:
+		pfil_remove_hook(V_ipfw_inet6_hook);
+		break;
+#endif
+	case AF_LINK:
+		pfil_remove_hook(V_ipfw_link_hook);
+		break;
+	}
+}
+
+static int
+ipfw_link(int pf, bool unlink)
+{
+	struct pfil_link_args pla;
+
+	pla.pa_version = PFIL_VERSION;
+	pla.pa_flags = PFIL_IN | PFIL_OUT | PFIL_HEADPTR | PFIL_HOOKPTR;
+	if (unlink)
+		pla.pa_flags |= PFIL_UNLINK;
+
+	switch (pf) {
+	case AF_INET:
+		pla.pa_head = V_inet_pfil_head;
+		pla.pa_hook = V_ipfw_inet_hook;
+		break;
+#ifdef INET6
+	case AF_INET6:
+		pla.pa_head = V_inet6_pfil_head;
+		pla.pa_hook = V_ipfw_inet6_hook;
+		break;
+#endif
+	case AF_LINK:
+		pla.pa_head = V_link_pfil_head;
+		pla.pa_hook = V_ipfw_link_hook;
+		break;
+	}
+
+	return (pfil_link(&pla));
 }
 
 int
-ipfw_attach_hooks(int arg)
+ipfw_attach_hooks(void)
 {
 	int error = 0;
 
-	if (arg == 0) /* detach */
-		ipfw_hook(0, AF_INET);
-	else if (V_fw_enable && ipfw_hook(1, AF_INET) != 0) {
-                error = ENOENT; /* see ip_fw_pfil.c::ipfw_hook() */
+	ipfw_hook(AF_INET);
+	TUNABLE_INT_FETCH("net.inet.ip.fw.enable", &V_fw_enable);
+	if (V_fw_enable && (error = ipfw_link(AF_INET, false)) != 0)
                 printf("ipfw_hook() error\n");
-        }
 #ifdef INET6
-	if (arg == 0) /* detach */
-		ipfw_hook(0, AF_INET6);
-	else if (V_fw6_enable && ipfw_hook(1, AF_INET6) != 0) {
-                error = ENOENT;
+	ipfw_hook(AF_INET6);
+	TUNABLE_INT_FETCH("net.inet6.ip6.fw.enable", &V_fw6_enable);
+	if (V_fw6_enable && (error = ipfw_link(AF_INET6, false)) != 0)
                 printf("ipfw6_hook() error\n");
-        }
 #endif
-	if (arg == 0) /* detach */
-		ipfw_hook(0, AF_LINK);
-	else if (V_fwlink_enable && ipfw_hook(1, AF_LINK) != 0) {
-                error = ENOENT;
+	ipfw_hook(AF_LINK);
+	TUNABLE_INT_FETCH("net.link.ether.ipfw", &V_fwlink_enable);
+	if (V_fwlink_enable && (error = ipfw_link(AF_LINK, false)) != 0)
                 printf("ipfw_link_hook() error\n");
-        }
-	return error;
+
+	return (error);
+}
+
+void
+ipfw_detach_hooks(void)
+{
+
+	ipfw_unhook(AF_INET);
+#ifdef INET6
+	ipfw_unhook(AF_INET6);
+#endif
+	ipfw_unhook(AF_LINK);
 }
 
 int
@@ -578,7 +690,7 @@ ipfw_chg_hook(SYSCTL_HANDLER_ARGS)
 	if (*(int *)arg1 == newval)
 		return (0);
 
-	error = ipfw_hook(newval, af);
+	error = ipfw_link(af, newval == 0 ? true : false);
 	if (error)
 		return (error);
 	*(int *)arg1 = newval;

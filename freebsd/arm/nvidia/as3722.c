@@ -51,7 +51,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <gnu/dts/include/dt-bindings/mfd/as3722.h>
+#include <dt-bindings/mfd/as3722.h>
 
 #include "clock_if.h"
 #include "regdev_if.h"
@@ -405,7 +405,7 @@ static device_method_t as3722_methods[] = {
 };
 
 static devclass_t as3722_devclass;
-DEFINE_CLASS_0(gpio, as3722_driver, as3722_methods,
+static DEFINE_CLASS_0(gpio, as3722_driver, as3722_methods,
     sizeof(struct as3722_softc));
 EARLY_DRIVER_MODULE(as3722, iicbus, as3722_driver, as3722_devclass,
-    0, 0, 74);
+    NULL, NULL, 74);
