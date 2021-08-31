@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -44,21 +46,21 @@
 #define BSD4_3	1
 #define BSD4_4	1
 
-/* 
+/*
  * __FreeBSD_version numbers are documented in the Porter's Handbook.
  * If you bump the version for any reason, you should update the documentation
  * there.
  * Currently this lives here in the doc/ repository:
  *
- *	head/en_US.ISO8859-1/books/porters-handbook/versions/chapter.xml
+ *	documentation/content/en/books/porters-handbook/versions/chapter.adoc
  *
  * scheme is:  <major><two digit minor>Rxx
  *		'R' is in the range 0 to 4 if this is a release branch or
- *		x.0-CURRENT before RELENG_*_0 is created, otherwise 'R' is
+ *		X.0-CURRENT before releng/X.0 is created, otherwise 'R' is
  *		in the range 5 to 9.
  */
 #undef __FreeBSD_version
-#define __FreeBSD_version 1100122	/* Master, propagated to newvers */
+#define __FreeBSD_version 1300139	/* Master, propagated to newvers */
 
 /*
  * __FreeBSD_kernel__ indicates that this system uses the kernel of FreeBSD,
@@ -76,12 +78,19 @@
 #undef __FreeBSD_kernel__
 #define __FreeBSD_kernel__
 
-#ifdef _KERNEL
+#if defined(_KERNEL) || defined(IN_RTLD)
 #define	P_OSREL_SIGWAIT			700000
 #define	P_OSREL_SIGSEGV			700004
 #define	P_OSREL_MAP_ANON		800104
 #define	P_OSREL_MAP_FSTRICT		1100036
 #define	P_OSREL_SHUTDOWN_ENOTCONN	1100077
+#define	P_OSREL_MAP_GUARD		1200035
+#define	P_OSREL_WRFSBASE		1200041
+#define	P_OSREL_CK_CYLGRP		1200046
+#define	P_OSREL_VMTOTAL64		1200054
+#define	P_OSREL_CK_SUPERBLOCK		1300000
+#define	P_OSREL_CK_INODE		1300005
+#define	P_OSREL_POWERPC_NEW_AUX_ARGS	1300070
 
 #define	P_OSREL_MAJOR(x)		((x) / 100000)
 #endif
@@ -107,7 +116,7 @@
 #define	NOFILE		OPEN_MAX	/* max open files per process */
 #define	NOGROUP		65535		/* marker for empty group set member */
 #define MAXHOSTNAMELEN	256		/* max hostname size */
-#define SPECNAMELEN	63		/* max length of devicename */
+#define SPECNAMELEN	255		/* max length of devicename */
 
 /* More types and definitions used throughout the kernel. */
 #ifdef _KERNEL
@@ -127,8 +136,10 @@
 #endif
 
 #ifndef _KERNEL
+#ifndef LOCORE
 /* Signals. */
 #include <sys/signal.h>
+#endif
 #endif
 
 /* Machine type dependent parameters. */
@@ -148,8 +159,12 @@
 #ifndef DFLTPHYS
 #define DFLTPHYS	(64 * 1024)	/* default max raw I/O transfer size */
 #endif
-#ifndef MAXPHYS
-#define MAXPHYS		(128 * 1024)	/* max raw I/O transfer size */
+#ifndef MAXPHYS				/* max raw I/O transfer size */
+#ifdef __ILP32__
+#define MAXPHYS		(128 * 1024)
+#else
+#define MAXPHYS		(1024 * 1024)
+#endif
 #endif
 #ifndef MAXDUMPPGS
 #define MAXDUMPPGS	(DFLTPHYS/PAGE_SIZE)
@@ -241,17 +256,15 @@
  *
  * BKVASIZE -	Nominal buffer space per buffer, in bytes.  BKVASIZE is the
  *		minimum KVM memory reservation the kernel is willing to make.
- *		Filesystems can of course request smaller chunks.  Actual 
+ *		Filesystems can of course request smaller chunks.  Actual
  *		backing memory uses a chunk size of a page (PAGE_SIZE).
  *		The default value here can be overridden on a per-architecture
- *		basis by defining it in <machine/param.h>.  This should
- *		probably be done to increase its value, when MAXBCACHEBUF is
- *		defined as a larger value in <machine/param.h>.
+ *		basis by defining it in <machine/param.h>.
  *
  *		If you make BKVASIZE too small you risk seriously fragmenting
  *		the buffer KVM map which may slow things down a bit.  If you
- *		make it too big the kernel will not be able to optimally use 
- *		the KVM memory reserved for the buffer cache and will wind 
+ *		make it too big the kernel will not be able to optimally use
+ *		the KVM memory reserved for the buffer cache and will wind
  *		up with too-few buffers.
  *
  *		The default is 16384, roughly 2x the block size used by a
@@ -317,7 +330,6 @@ __END_DECLS
 #endif
 #endif
 
-#ifndef lint
 #ifndef _BYTEORDER_FUNC_DEFINED
 #define	_BYTEORDER_FUNC_DEFINED
 #define	htonl(x)	__htonl(x)
@@ -325,7 +337,6 @@ __END_DECLS
 #define	ntohl(x)	__ntohl(x)
 #define	ntohs(x)	__ntohs(x)
 #endif /* !_BYTEORDER_FUNC_DEFINED */
-#endif /* lint */
 #endif /* _KERNEL */
 
 /*
@@ -344,7 +355,7 @@ __END_DECLS
 
 #define dbtoc(db)			/* calculates devblks to pages */ \
 	((db + (ctodb(1) - 1)) >> (PAGE_SHIFT - DEV_BSHIFT))
- 
+
 #define ctodb(db)			/* calculates pages to devblks */ \
 	((db) << (PAGE_SHIFT - DEV_BSHIFT))
 

@@ -1,9 +1,16 @@
 /*-
- * Copyright (c) 2009 Robert N. M. Watson
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
+ * Copyright (c) 2009, 2016 Robert N. M. Watson
  * All rights reserved.
  *
  * This software was developed at the University of Cambridge Computer
  * Laboratory with support from a grant from Google, Inc.
+ *
+ * Portions of this software were developed by BAE Systems, the University of
+ * Cambridge Computer Laboratory, and Memorial University under DARPA/AFRL
+ * contract FA8650-15-C-7558 ("CADETS"), as part of the DARPA Transparent
+ * Computing (TC) research program.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -53,7 +60,6 @@
  *
  * Open questions:
  *
- * - How to handle ptrace(2)?
  * - Will we want to add a pidtoprocdesc(2) system call to allow process
  *   descriptors to be created for processes without pdfork(2)?
  */
@@ -86,7 +92,7 @@ __FBSDID("$FreeBSD$");
 
 FEATURE(process_descriptors, "Process Descriptors");
 
-static uma_zone_t procdesc_zone;
+MALLOC_DEFINE(M_PROCDESC, "procdesc", "process descriptors");
 
 static fo_poll_t	procdesc_poll;
 static fo_kqfilter_t	procdesc_kqfilter;
@@ -109,22 +115,6 @@ static struct fileops procdesc_ops = {
 	.fo_fill_kinfo = procdesc_fill_kinfo,
 	.fo_flags = DFLAG_PASSABLE,
 };
-
-/*
- * Initialize with VFS so that process descriptors are available along with
- * other file descriptor types.  As long as it runs before init(8) starts,
- * there shouldn't be a problem.
- */
-static void
-procdesc_init(void *dummy __unused)
-{
-
-	procdesc_zone = uma_zcreate("procdesc", sizeof(struct procdesc),
-	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, 0);
-	if (procdesc_zone == NULL)
-		panic("procdesc_init: procdesc_zone not initialized");
-}
-SYSINIT(vfs, SI_SUB_VFS, SI_ORDER_ANY, procdesc_init, NULL);
 
 /*
  * Return a locked process given a process descriptor, or ESRCH if it has
@@ -202,13 +192,11 @@ out:
 int
 sys_pdgetpid(struct thread *td, struct pdgetpid_args *uap)
 {
-	cap_rights_t rights;
 	pid_t pid;
 	int error;
 
 	AUDIT_ARG_FD(uap->fd);
-	error = kern_pdgetpid(td, uap->fd,
-	    cap_rights_init(&rights, CAP_PDGETPID), &pid);
+	error = kern_pdgetpid(td, uap->fd, &cap_pdgetpid_rights, &pid);
 	if (error == 0)
 		error = copyout(&pid, uap->pidp, sizeof(pid));
 	return (error);
@@ -225,7 +213,7 @@ procdesc_new(struct proc *p, int flags)
 {
 	struct procdesc *pd;
 
-	pd = uma_zalloc(procdesc_zone, M_WAITOK | M_ZERO);
+	pd = malloc(sizeof(*pd), M_PROCDESC, M_WAITOK | M_ZERO);
 	pd->pd_proc = p;
 	pd->pd_pid = p->p_pid;
 	p->p_procdesc = pd;
@@ -286,7 +274,7 @@ procdesc_free(struct procdesc *pd)
 
 		knlist_destroy(&pd->pd_selinfo.si_note);
 		PROCDESC_LOCK_DESTROY(pd);
-		uma_zfree(procdesc_zone, pd);
+		free(pd, M_PROCDESC);
 	}
 }
 
@@ -307,8 +295,8 @@ procdesc_exit(struct proc *p)
 	pd = p->p_procdesc;
 
 	PROCDESC_LOCK(pd);
-	KASSERT((pd->pd_flags & PDF_CLOSED) == 0 || p->p_pptr == initproc,
-	    ("procdesc_exit: closed && parent not init"));
+	KASSERT((pd->pd_flags & PDF_CLOSED) == 0 || p->p_pptr == p->p_reaper,
+	    ("procdesc_exit: closed && parent not reaper"));
 
 	pd->pd_flags |= PDF_EXITED;
 	pd->pd_xstat = KW_EXITCODE(p->p_xexit, p->p_xsig);
@@ -356,7 +344,8 @@ procdesc_reap(struct proc *p)
 /*
  * procdesc_close() - last close on a process descriptor.  If the process is
  * still running, terminate with SIGKILL (unless PDF_DAEMON is set) and let
- * init(8) clean up the mess; if not, we have to clean up the zombie ourselves.
+ * its reaper clean up the mess; if not, we have to clean up the zombie
+ * ourselves.
  */
 static int
 procdesc_close(struct file *fp, struct thread *td)
@@ -383,6 +372,7 @@ procdesc_close(struct file *fp, struct thread *td)
 		sx_xunlock(&proctree_lock);
 	} else {
 		PROC_LOCK(p);
+		AUDIT_ARG_PROCESS(p);
 		if (p->p_state == PRS_ZOMBIE) {
 			/*
 			 * If the process is already dead and just awaiting
@@ -390,7 +380,6 @@ procdesc_close(struct file *fp, struct thread *td)
 			 * process's reference to the process descriptor when it
 			 * calls back into procdesc_reap().
 			 */
-			PROC_SLOCK(p);
 			proc_reap(curthread, p, NULL, 0);
 		} else {
 			/*
@@ -405,12 +394,18 @@ procdesc_close(struct file *fp, struct thread *td)
 			procdesc_free(pd);
 
 			/*
-			 * Next, reparent it to init(8) so that there's someone
-			 * to pick up the pieces; finally, terminate with
-			 * prejudice.
+			 * Next, reparent it to its reaper (usually init(8)) so
+			 * that there's someone to pick up the pieces; finally,
+			 * terminate with prejudice.
 			 */
 			p->p_sigparent = SIGCHLD;
-			proc_reparent(p, initproc);
+			if ((p->p_flag & P_TRACED) == 0) {
+				proc_reparent(p, p->p_reaper, true);
+			} else {
+				proc_clear_orphan(p);
+				p->p_oppid = p->p_reaper->p_pid;
+				proc_add_orphan(p, p->p_reaper);
+			}
 			if ((pd->pd_flags & PDF_DAEMON) == 0)
 				kern_psignal(p, SIGKILL);
 			PROC_UNLOCK(p);
@@ -517,7 +512,7 @@ procdesc_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
     struct thread *td)
 {
 	struct procdesc *pd;
-	struct timeval pstart;
+	struct timeval pstart, boottime;
 
 	/*
 	 * XXXRW: Perhaps we should cache some more information from the
@@ -529,9 +524,11 @@ procdesc_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
 	sx_slock(&proctree_lock);
 	if (pd->pd_proc != NULL) {
 		PROC_LOCK(pd->pd_proc);
+		AUDIT_ARG_PROCESS(pd->pd_proc);
 
 		/* Set birth and [acm] times to process start time. */
 		pstart = pd->pd_proc->p_stats->p_start;
+		getboottime(&boottime);
 		timevaladd(&pstart, &boottime);
 		TIMEVAL_TO_TIMESPEC(&pstart, &sb->st_birthtim);
 		sb->st_atim = sb->st_birthtim;

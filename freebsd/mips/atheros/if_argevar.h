@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009, Oleksandr Tymoshenko
  * All rights reserved.
  *
@@ -47,7 +49,6 @@
 #define	ARGE_RX_RING_ADDR(sc, i)	\
     ((sc)->arge_rdata.arge_rx_ring_paddr + sizeof(struct arge_desc) * (i))
 #define	ARGE_INC(x,y)		(x) = (((x) + 1) % y)
-
 
 #define	ARGE_MII_TIMEOUT	1000
 
@@ -204,6 +205,7 @@ struct arge_softc {
 		uint32_t	tx_pkts_unaligned;
 		uint32_t	tx_pkts_unaligned_start;
 		uint32_t	tx_pkts_unaligned_len;
+		uint32_t	tx_pkts_unaligned_tooshort;
 		uint32_t	tx_pkts_nosegs;
 		uint32_t	tx_pkts_aligned;
 		uint32_t	rx_overflow;

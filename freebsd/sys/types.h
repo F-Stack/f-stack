@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1991, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -99,7 +101,7 @@ typedef	__clockid_t	clockid_t;
 #endif
 
 typedef	__critical_t	critical_t;	/* Critical section value */
-typedef	__int64_t	daddr_t;	/* disk address */
+typedef	__daddr_t	daddr_t;	/* disk address */
 
 #ifndef _DEV_T_DECLARED
 typedef	__dev_t		dev_t;		/* device number or struct cdev */
@@ -249,10 +251,21 @@ struct cap_rights;
 typedef	struct cap_rights	cap_rights_t;
 #endif
 
+/*
+ * Types suitable for exporting physical addresses, virtual addresses
+ * (pointers), and memory object sizes from the kernel independent of native
+ * word size.  These should be used in place of vm_paddr_t, (u)intptr_t, and
+ * size_t in structs which contain such types that are shared with userspace.
+ */
+typedef	__uint64_t	kpaddr_t;
+typedef	__uint64_t	kvaddr_t;
+typedef	__uint64_t	ksize_t;
+typedef	__int64_t	kssize_t;
+
 typedef	__vm_offset_t	vm_offset_t;
-typedef	__vm_ooffset_t	vm_ooffset_t;
+typedef	__uint64_t	vm_ooffset_t;
 typedef	__vm_paddr_t	vm_paddr_t;
-typedef	__vm_pindex_t	vm_pindex_t;
+typedef	__uint64_t	vm_pindex_t;
 typedef	__vm_size_t	vm_size_t;
 
 typedef __rman_res_t    rman_res_t;
@@ -279,19 +292,17 @@ typedef	__uint64_t	uoff_t;
 typedef	char		vm_memattr_t;	/* memory attribute codes */
 typedef	struct vm_page	*vm_page_t;
 
+#define offsetof(type, field) __offsetof(type, field)
+#endif /* _KERNEL */
+
+#if	defined(_KERNEL) || defined(_STANDALONE)
 #if !defined(__bool_true_false_are_defined) && !defined(__cplusplus)
 #define	__bool_true_false_are_defined	1
 #define	false	0
 #define	true	1
-#if __STDC_VERSION__ < 199901L && __GNUC__ < 3 && !defined(__INTEL_COMPILER)
-typedef	int	_Bool;
-#endif
 typedef	_Bool	bool;
 #endif /* !__bool_true_false_are_defined && !__cplusplus */
-
-#define offsetof(type, field) __offsetof(type, field)
-
-#endif /* !_KERNEL */
+#endif /* KERNEL || _STANDALONE */
 
 /*
  * The following are all things that really shouldn't exist in this header,
@@ -365,13 +376,35 @@ __bitcount64(__uint64_t _x)
 #include <sys/select.h>
 
 /*
- * minor() gives a cookie instead of an index since we don't want to
- * change the meanings of bits 0-15 or waste time and space shifting
- * bits 16-31 for devices that don't use them.
+ * The major and minor numbers are encoded in dev_t as MMMmmmMm (where
+ * letters correspond to bytes).  The encoding of the lower 4 bytes is
+ * constrained by compatibility with 16-bit and 32-bit dev_t's.  The
+ * encoding of of the upper 4 bytes is the least unnatural one consistent
+ * with this and other constraints.  Also, the decoding of the m bytes by
+ * minor() is unnatural to maximize compatibility subject to not discarding
+ * bits.  The upper m byte is shifted into the position of the lower M byte
+ * instead of shifting 3 upper m bytes to close the gap.  Compatibility for
+ * minor() is achieved iff the upper m byte is 0.
  */
-#define	major(x)	((int)(((u_int)(x) >> 8)&0xff))	/* major number */
-#define	minor(x)	((int)((x)&0xffff00ff))		/* minor number */
-#define	makedev(x,y)	((dev_t)(((x) << 8) | (y)))	/* create dev_t */
+#define	major(d)	__major(d)
+static __inline int
+__major(dev_t _d)
+{
+	return (((_d >> 32) & 0xffffff00) | ((_d >> 8) & 0xff));
+}
+#define	minor(d)	__minor(d)
+static __inline int
+__minor(dev_t _d)
+{
+	return (((_d >> 24) & 0xff00) | (_d & 0xffff00ff));
+}
+#define	makedev(M, m)	__makedev((M), (m))
+static __inline dev_t
+__makedev(int _Major, int _Minor)
+{
+	return (((dev_t)(_Major & 0xffffff00) << 32) | ((_Major & 0xff) << 8) |
+	    ((dev_t)(_Minor & 0xff00) << 24) | (_Minor & 0xffff00ff));
+}
 
 /*
  * These declarations belong elsewhere, but are repeated here and in

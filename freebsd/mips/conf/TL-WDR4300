@@ -7,7 +7,7 @@
 #NO_UNIVERSE
 
 # Include the default AR934x parameters
-include         "AR934X_BASE"
+include         "std.AR934X"
 
 ident           TL-WDR4300
 
@@ -24,6 +24,7 @@ options         AR71XX_REALMEM=(128*1024*1024)
 #device		iic
 
 # Options required for miiproxy and mdiobus
+options 	ARGE_DEBUG
 options 	ARGE_MDIO	# Export an MDIO bus separate from arge
 device		miiproxy	# MDIO bus <-> MII PHY rendezvous
 
@@ -38,17 +39,23 @@ options 	MSDOSFS
 options 	AR71XX_ENV_UBOOT
 
 # uzip - to boot natively from flash
-device		geom_uzip
+device		xz
 options 	GEOM_UZIP
 
 # Used for the static uboot partition map
 device          geom_map
 
-# yes, this board has a PCI connected atheros device
-device		ath_pci
+# Yes, this board has a PCI connected atheros device
 options 	AR71XX_ATH_EEPROM
 device		firmware		# Used by the above
 options 	ATH_EEPROM_FIRMWARE
 
+options 	ATH_DEBUG_ALQ
+
 # Boot off of the rootfs, as defined in the geom_map setup.
 options 	ROOTDEVNAME=\"ufs:map/rootfs.uzip\"
+
+# This is required for the 2GHz LNAs on the AR9340 SoC.
+# Without this the 2GHz radio is Quite Deaf.
+device		gpio
+device		gpioled

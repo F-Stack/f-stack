@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
  * All rights reserved.
  *
@@ -154,7 +156,6 @@ struct vlapic {
 	struct vlapic_ops	ops;
 
 	uint32_t		esr_pending;
-	int			esr_firing;
 
 	struct callout	callout;	/* vlapic timer */
 	struct bintime	timer_fire_bt;	/* callout expiry time */

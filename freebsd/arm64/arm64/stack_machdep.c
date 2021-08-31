@@ -33,6 +33,8 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/lock.h>
+#include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/stack.h>
 
@@ -41,55 +43,51 @@ __FBSDID("$FreeBSD$");
 #include <machine/stack.h>
 
 static void
-stack_capture(struct stack *st, struct unwind_state *frame)
+stack_capture(struct thread *td, struct stack *st, struct unwind_state *frame)
 {
 
 	stack_zero(st);
 	while (1) {
-		unwind_frame(frame);
-		if (!INKERNEL((vm_offset_t)frame->fp) ||
-		     !INKERNEL((vm_offset_t)frame->pc))
+		if (!unwind_frame(td, frame))
+			break;
+		if (!INKERNEL((vm_offset_t)frame->pc))
 			break;
 		if (stack_put(st, frame->pc) == -1)
 			break;
 	}
 }
 
-void
+int
 stack_save_td(struct stack *st, struct thread *td)
 {
 	struct unwind_state frame;
 
-	if (TD_IS_SWAPPED(td))
-		panic("stack_save_td: swapped");
+	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	KASSERT(!TD_IS_SWAPPED(td),
+	    ("stack_save_td: thread %p is swapped", td));
+
 	if (TD_IS_RUNNING(td))
-		panic("stack_save_td: running");
+		return (EOPNOTSUPP);
 
 	frame.sp = td->td_pcb->pcb_sp;
 	frame.fp = td->td_pcb->pcb_x[29];
-	frame.pc = td->td_pcb->pcb_x[30];
+	frame.pc = td->td_pcb->pcb_lr;
 
-	stack_capture(st, &frame);
-}
-
-int
-stack_save_td_running(struct stack *st, struct thread *td)
-{
-
-	return (EOPNOTSUPP);
+	stack_capture(td, st, &frame);
+	return (0);
 }
 
 void
 stack_save(struct stack *st)
 {
 	struct unwind_state frame;
-	uint64_t sp;
+	uintptr_t sp;
 
 	__asm __volatile("mov %0, sp" : "=&r" (sp));
 
 	frame.sp = sp;
-	frame.fp = (uint64_t)__builtin_frame_address(0);
-	frame.pc = (uint64_t)stack_save;
+	frame.fp = (uintptr_t)__builtin_frame_address(0);
+	frame.pc = (uintptr_t)stack_save;
 
-	stack_capture(st, &frame);
+	stack_capture(curthread, st, &frame);
 }

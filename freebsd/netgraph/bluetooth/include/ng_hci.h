@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -80,6 +82,7 @@
 #define NG_HCI_FEATURES_SIZE			8   /* LMP features */
 #define NG_HCI_UNIT_NAME_SIZE			248 /* unit name size */
 #define NG_HCI_COMMANDS_SIZE			64  /*Command list BMP size*/
+#define NG_HCI_EXTINQ_MAX			240 /**/
 /* HCI specification */
 #define NG_HCI_SPEC_V10				0x00 /* v1.0 */
 #define NG_HCI_SPEC_V11				0x01 /* v1.1 */
@@ -222,7 +225,8 @@
 /* 0x0010 - 0x8000 - reserved for future use */
 
 /* Event masks */
-#define NG_HCI_EVMSK_ALL			0x00000000ffffffff
+#define NG_HCI_EVMSK_DEFAULT			0x00001fffffffffff
+#define NG_HCI_EVMSK_ALL		 	0x1fffffffffffffff	
 #define NG_HCI_EVMSK_NONE			0x0000000000000000
 #define NG_HCI_EVMSK_INQUIRY_COMPL		0x0000000000000001
 #define NG_HCI_EVMSK_INQUIRY_RESULT		0x0000000000000002
@@ -256,7 +260,70 @@
 #define NG_HCI_EVMSK_QOS_VIOLATION		0x0000000020000000
 #define NG_HCI_EVMSK_PAGE_SCAN_MODE_CHANGE	0x0000000040000000
 #define NG_HCI_EVMSK_PAGE_SCAN_REP_MODE_CHANGE	0x0000000080000000
-/* 0x0000000100000000 - 0x8000000000000000 - reserved for future use */
+#define NG_HCI_EVMSK_FLOW_SPEC_COMPL		0x0000000100000000
+#define NG_HCI_EVMSK_INQUIRY_RESULT_W_RSSI	0x0000000200000000
+#define NG_HCI_EVMSK_READ_REM_EXT_FEAT_COMPL	0x0000000400000000
+
+/* 0x0000000800000000 -	0x0000080000000000 - not in use */ 
+
+#define NG_HCI_EVMSK_SYNC_CONN_COMPL		0x0000100000000000
+#define NG_HCI_EVMSK_SYNC_CONN_CHANGED		0x0000200000000000
+#define NG_HCI_EVMSK_SNIFF_SUBRATING		0x0000400000000000
+#define NG_HCI_EVMSK_EXT_INQUIRY_RESULT		0x0000800000000000
+#define NG_HCI_EVMSK_ENC_KEY_REFRESH_COMPL	0x0001000000000000
+#define NG_HCI_EVMSK_IO_CAPABILITY_REQ		0x0002000000000000
+#define NG_HCI_EVMSK_IO_CAPABILITY_RESP		0x0004000000000000
+#define NG_HCI_EVMSK_USER_CONFIRMATION_REQ	0x0008000000000000
+#define NG_HCI_EVMSK_USER_PASSKEY_REQ		0x0010000000000000
+#define NG_HCI_EVMSK_REM_OOB_DATA_REQ		0x0020000000000000
+#define NG_HCI_EVMSK_SIMPLE_PAIRING_COMPL	0x0040000000000000
+#define NG_HCI_EVMSK_LINK_SUPERV_TO_CHANGED	0x0080000000000000
+#define NG_HCI_EVMSK_ENH_FLUSH_COMPL		0x0100000000000000
+#define NG_HCI_EVMSK_USER_PASSKEY_NOTIFICATION	0x0200000000000000
+#define NG_HCI_EVMSK_KEYPRESS_NOTIFICATION	0x0400000000000000
+#define NG_HCI_EVMSK_REM_HOST_SUPP_FEAT_NOTIFI	0x0800000000000000
+#define NG_HCI_EVMSK_LE_META			0x1000000000000000
+/* 0x1000000100000000 - 0x8000000000000000 - reserved for future use */
+
+/* LE events masks*/
+#define NG_HCI_LEEVMSK_ALL			0x000000003fffffff
+#define NG_HCI_LEEVMSK_NONE			0x0000000000000000
+#define NG_HCI_LEEVMSK_DEFAULT			0x000000000000001f
+#define NG_HCI_LEEVMSK_CONN_COMPLETE		0x0000000000000001
+#define NG_HCI_LEEVMSK_ADV_REP			0x0000000000000002
+#define NG_HCI_LEEVMSK_CONN_UPDATE		0x0000000000000004
+#define NG_HCI_LEEVMSK_READ_REM_FEAT_REQ	0x0000000000000008
+#define NG_HCI_LEEVMSK_LONG_TERM_KEY_REQ	0x0000000000000010
+#define NG_HCI_LEEVMSK_REM_CONN_PARAM_REQ	0x0000000000000020
+#define NG_HCI_LEEVMSK_DATA_LENGTH_CHG		0x0000000000000040
+#define NG_HCI_LEEVMSK_RD_LOC_P256_PK_COMPL	0x0000000000000080
+#define NG_HCI_LEEVMSK_GEN_DHKEY_COMPL		0x0000000000000100
+#define NG_HCI_LEEVMSK_ENH_CONN_COMPL		0x0000000000000200
+#define NG_HCI_LEEVMSK_DIR_ADV_REP		0x0000000000000400
+#define NG_HCI_LEEVMSK_PHY_UPD_COMPL		0x0000000000000800
+#define NG_HCI_LEEVMSK_EXT_ADV_REP		0x0000000000001000
+#define NG_HCI_LEEVMSK_PER_ADV_SYNC_EST		0x0000000000002000
+#define NG_HCI_LEEVMSK_PER_ADV_REP		0x0000000000004000
+#define NG_HCI_LEEVMSK_PER_ADV_SYNC_LOST	0x0000000000008000
+#define NG_HCI_LEEVMSK_SCAN_TIMEOUT		0x0000000000010000
+#define NG_HCI_LEEVMSK_ADV_SET_TERM		0x0000000000020000
+#define NG_HCI_LEEVMSK_SCAN_REQ_RCVD		0x0000000000040000
+#define NG_HCI_LEEVMSK_CHAN_SEL_ALGO		0x0000000000080000
+#define NG_HCI_LEEVMSK_CONNLESS_IQ_REP		0x0000000000010000
+#define NG_HCI_LEEVMSK_CONN_IQ_REP		0x0000000000020000
+#define NG_HCI_LEEVMSK_CTE_REQ_FAILED		0x0000000000040000
+#define NG_HCI_LEEVMSK_PER_ADV_SYN_TRF_RCVD	0x0000000000080000
+#define NG_HCI_LEEVMSK_CIS_EST			0x0000000000100000
+#define NG_HCI_LEEVMSK_CIS_REQ			0x0000000000200000
+#define NG_HCI_LEEVMSK_CREATE_BIG_COMPL		0x0000000000400000
+#define NG_HCI_LEEVMSK_TERM_BIG_COMPL		0x0000000000800000
+#define NG_HCI_LEEVMSK_BIG_SYNC_EST		0x0000000001000000
+#define NG_HCI_LEEVMSK_BIG_SYNC_LOST		0x0000000002000000
+#define NG_HCI_LEEVMSK_REQ_PEER_SCA_COMPL	0x0000000004000000
+#define NG_HCI_LEEVMSK_PATH_LOSS_THRESHOLD	0x0000000008000000
+#define NG_HCI_LEEVMSK_TX_PWR_REP		0x0000000010000000
+#define NG_HCI_LEEVMSK_BIGINFO_ADV_REP		0x0000000020000000
+/* 0x0000000040000000 - 0x8000000000000000 - reserved for future use */
 
 /* Filter types */
 #define NG_HCI_FILTER_TYPE_NONE			0x00
@@ -326,10 +393,10 @@
 	(((h) & 0x0fff) | (((pb) & 3) << 12) | (((bc) & 3) << 14))
 
 /* PB flag values */
-					/* 00 - reserved for future use */
+#define	NG_HCI_LE_PACKET_START		0x0
 #define	NG_HCI_PACKET_FRAGMENT		0x1 
 #define	NG_HCI_PACKET_START		0x2
-					/* 11 - reserved for future use */
+					/* 11 for AMP packet, not supported */
 
 /* BC flag values */
 #define NG_HCI_POINT2POINT		0x0 /* only Host controller to Host */
@@ -561,6 +628,9 @@ typedef struct {
 	u_int16_t	clock_offset;                   /* clock offset */
 	bdaddr_t	bdaddr;                         /* bdaddr */
 	u_int8_t	features[NG_HCI_FEATURES_SIZE]; /* features */
+	uint8_t 	addrtype;
+	uint8_t		extinq_size; /* MAX 240*/
+	uint8_t		extinq_data[NG_HCI_EXTINQ_MAX];
 } ng_hci_node_neighbor_cache_entry_ep;
 
 #define NG_HCI_MAX_NEIGHBOR_NUM \
@@ -645,7 +715,7 @@ typedef struct {
 } __attribute__ ((packed)) ng_hci_periodic_inquiry_cp;
 
 typedef ng_hci_status_rp	ng_hci_periodic_inquiry_rp;
-	
+
 #define NG_HCI_OCF_EXIT_PERIODIC_INQUIRY	0x0004
 /* No command parameter(s) */
 typedef ng_hci_status_rp	ng_hci_exit_periodic_inquiry_rp;
@@ -871,7 +941,7 @@ typedef struct {
 typedef struct {
 	u_int16_t	con_handle; /* connection handle */
 } __attribute__ ((packed)) ng_hci_read_link_policy_settings_cp;
-	
+
 typedef struct {
 	u_int8_t	status;     /* 0x00 - success */
 	u_int16_t	con_handle; /* connection handle */
@@ -1137,7 +1207,7 @@ typedef struct {
 	u_int16_t	con_handle; /* connection handle */
 	u_int16_t	timeout;    /* 0x00 - no flush, timeout * 0.625 msec */
 } __attribute__ ((packed)) ng_hci_read_auto_flush_timo_rp;
-	
+
 #define NG_HCI_OCF_WRITE_AUTO_FLUSH_TIMO	0x0028
 typedef struct {
 	u_int16_t	con_handle; /* connection handle */
@@ -1459,7 +1529,7 @@ typedef ng_hci_status_rp	ng_hci_enable_unit_under_test_rp;
 #define NG_HCI_OCF_LE_SET_EVENT_MASK			0x0001
 typedef struct {
 	u_int8_t	event_mask[NG_HCI_LE_EVENT_MASK_SIZE]; /* event_mask*/
-	
+
 } __attribute__ ((packed)) ng_hci_le_set_event_mask_cp;
 typedef ng_hci_status_rp	ng_hci_le_set_event_mask_rp;
 #define NG_HCI_LE_EVENT_MASK_ALL 0x1f
@@ -1471,7 +1541,6 @@ typedef struct {
 	u_int16_t 	hc_le_data_packet_length;
 	u_int8_t	hc_total_num_le_data_packets; 
 } __attribute__ ((packed)) ng_hci_le_read_buffer_size_rp;
-
 
 #define NG_HCI_OCF_LE_READ_LOCAL_SUPPORTED_FEATURES	0x0003
 /*No command parameter */
@@ -1570,7 +1639,7 @@ typedef struct {
 	u_int8_t status;
 	u_int8_t white_list_size;
 } __attribute__ ((packed)) ng_hci_le_read_white_list_size_rp;
-	
+
 #define NG_HCI_OCF_LE_CLEAR_WHITE_LIST			0x0010
 /* No command parameters. */
 typedef ng_hci_status_rp	ng_hci_le_clear_white_list_rp;	
@@ -1615,7 +1684,7 @@ typedef struct {
 	u_int16_t connection_handle;
 	u_int8_t le_channel_map[5];
 } __attribute__ ((packed)) ng_hci_le_read_channel_map_rp;
-	
+
 #define NG_HCI_OCF_LE_READ_REMOTE_USED_FEATURES		0x0016
 typedef struct {
 	u_int16_t connection_handle;
@@ -1638,7 +1707,7 @@ typedef struct {
 	u_int8_t status;
 	u_int64_t random_number;
 }__attribute__ ((packed)) ng_hci_le_rand_rp;	
-	
+
 #define NG_HCI_OCF_LE_START_ENCRYPTION			0x0019
 typedef struct {
 	u_int16_t connection_handle;
@@ -1660,19 +1729,43 @@ typedef struct {
 #define NG_HCI_OCF_LE_LONG_TERM_KEY_REQUEST_NEGATIVE_REPLY 0x001b
 typedef struct{
 	u_int16_t connection_handle;
-}ng_hci_le_long_term_key_request_negative_reply_cp;
+}__attribute__((packed)) ng_hci_le_long_term_key_request_negative_reply_cp;
 typedef struct {
 	u_int8_t status;
 	u_int16_t connection_handle;
 }__attribute__ ((packed)) ng_hci_le_long_term_key_request_negative_reply_rp;
 
-
-#define NG_HCI_OCF_LE_READ_SUPPORTED_STATUS		0x001c
+#define NG_HCI_OCF_LE_READ_SUGGESTED_DATA_LENGTH 	0x0023
 /*No command parameter*/
 typedef struct {
 	u_int8_t status;
-	u_int64_t le_status;
-}__attribute__ ((packed)) ng_hci_le_read_supported_status_rp;
+	u_int16_t suggested_max_tx_octets;
+	u_int16_t suggested_max_tx_time;
+}__attribute__ ((packed)) ng_hci_le_read_suggested_data_length_rp;
+
+#define NG_HCI_OCF_LE_WRITE_SUGGESTED_DATA_LENGTH 	0x0024
+typedef struct {
+	u_int16_t suggested_max_tx_octets;
+	u_int16_t suggested_max_tx_time;
+}__attribute__ ((packed)) ng_hci_le_write_suggested_data_length_cp;
+typedef ng_hci_status_rp	ng_hci_le_write_suggested_data_length_rp;
+
+#define NG_HCI_OCF_LE_READ_BUFFER_SIZE_V2		0x0060
+/*No command parameter */
+typedef struct {
+	u_int8_t	status;
+	u_int16_t 	hc_le_data_packet_length;
+	u_int8_t	hc_total_num_le_data_packets; 
+	u_int16_t 	hc_iso_data_packet_length;
+	u_int8_t	hc_total_num_iso_data_packets; 
+} __attribute__ ((packed)) ng_hci_le_read_buffer_size_rp_v2;
+
+#define NG_HCI_OCF_LE_READ_SUPPORTED_STATES		0x001c
+/*No command parameter*/
+typedef struct {
+	u_int8_t status;
+	u_int64_t le_states;
+}__attribute__ ((packed)) ng_hci_le_read_supported_states_rp;
 
 #define NG_HCI_OCF_LE_RECEIVER_TEST			0x001d
 typedef struct{
@@ -1949,14 +2042,14 @@ typedef struct {
 	u_int16_t 	interval;
 	u_int8_t	latency;
 	u_int16_t	supervision_timeout;
-	u_int8_t	master_clock_accracy;
-	
+	u_int8_t	master_clock_accuracy;
+
 } __attribute__ ((packed)) ng_hci_le_connection_complete_ep;
 
 #define NG_HCI_LEEV_ADVREP 0x02
 typedef struct {
 	u_int8_t num_reports;
-	
+
 }__attribute__ ((packed)) ng_hci_le_advertising_report_ep;
 #define NG_HCI_SCAN_RESPONSE_DATA_MAX 0x1f
 
@@ -1965,7 +2058,8 @@ typedef struct {
 	u_int8_t addr_type;
 	bdaddr_t bdaddr;
 	u_int8_t length_data;
-	u_int8_t data[NG_HCI_SCAN_RESPONSE_DATA_MAX];
+	/* The last octet is for RSSI */
+	u_int8_t data[NG_HCI_SCAN_RESPONSE_DATA_MAX+1];
 }__attribute__((packed)) ng_hci_le_advreport;
 
 #define NG_HCI_LEEV_CON_UPDATE_COMPL 0x03
@@ -1976,11 +2070,65 @@ typedef struct {
 	u_int16_t conn_latency;
 	u_int16_t supervision_timeout;
 }__attribute__((packed)) ng_hci_connection_update_complete_ep;
-#define NG_HCI_LEEV_READ_REMOTE_FEATURES_COMPL 0x04
-//TBD
-#define NG_HCI_LEEV_LONG_TERM_KEY_REQUEST 0x05
-//TBD
 
+#define NG_HCI_LEEV_READ_REMOTE_FEATURES_COMPL 0x04
+typedef struct {
+	u_int8_t 	status;
+	u_int16_t 	connection_handle;
+	u_int8_t	features[NG_HCI_FEATURES_SIZE];
+}__attribute__((packed)) ng_hci_le_read_remote_features_ep;
+
+#define NG_HCI_LEEV_LONG_TERM_KEY_REQUEST 0x05
+typedef struct {
+	u_int16_t 	connection_handle;
+	u_int64_t 	random_number;
+	u_int16_t 	encrypted_diversifier;
+}__attribute__((packed)) ng_hci_le_long_term_key_request_ep;
+
+#define NG_HCI_LEEV_REMOTE_CONN_PARAM_REQUEST 0x06
+typedef struct {
+	u_int16_t 	connection_handle;
+	u_int16_t 	interval_min;
+	u_int16_t 	interval_max;
+	u_int16_t 	latency;
+	u_int16_t 	timeout;
+}__attribute__((packed)) ng_hci_le_remote_conn_param_ep;
+
+#define NG_HCI_LEEV_DATA_LENGTH_CHANGE 0x07
+typedef struct {
+	u_int16_t 	connection_handle;
+	u_int16_t 	min_tx_octets;
+	u_int16_t 	max_tx_time;
+	u_int16_t 	max_rx_octets;
+	u_int16_t 	max_rx_time;
+}__attribute__((packed)) ng_hci_le_data_length_change_ep;
+
+#define NG_HCI_LEEV_READ_LOCAL_P256_PK_COMPL 0x08
+typedef struct {
+	u_int8_t 	status;
+	u_int8_t 	local_p256_pk[64];
+}__attribute__((packed)) ng_hci_le_read_local_p256_pk_compl_ep;
+
+#define NG_HCI_LEEV_GEN_DHKEY_COMPL 0x09
+typedef struct {
+	u_int8_t 	status;
+	u_int8_t 	dh_key[32];
+}__attribute__((packed)) ng_hci_le_gen_dhkey_compl_ep;
+
+#define NG_HCI_LEEV_ENH_CONN_COMPL 0x0a
+typedef struct {
+	u_int8_t 	status;
+	u_int16_t 	connection_handle;
+	u_int8_t	role;
+	u_int8_t 	peer_addr_type;
+	bdaddr_t 	peer_addr;
+	bdaddr_t 	local_res_private_addr;
+	bdaddr_t 	peer_res_private_addr;
+	u_int16_t 	conn_interval;
+	u_int16_t 	conn_latency;
+	u_int16_t 	supervision_timeout;
+	u_int8_t	master_clock_accuracy;
+}__attribute__((packed)) ng_hci_le_enh_conn_compl_ep;
 
 #define NG_HCI_EVENT_BT_LOGO			0xfe
 

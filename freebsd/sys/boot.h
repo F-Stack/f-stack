@@ -1,6 +1,9 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2014 Roger Pau Monné <roger.pau@citrix.com>
  * All rights reserved.
+ * Copyright (c) 2018 Netflix, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -29,27 +32,13 @@
 #ifndef _SYS_BOOT_H_
 #define _SYS_BOOT_H_
 
-/*
- * Return a 'boothowto' value corresponding to the kernel arguments in
- * (kargs) and any relevant environment variables.
- */
-static struct
-{
-	const char	*ev;
-	int		mask;
-} howto_names[] = {
-	{ "boot_askname",	RB_ASKNAME},
-	{ "boot_cdrom",		RB_CDROM},
-	{ "boot_ddb",		RB_KDB},
-	{ "boot_dfltroot",	RB_DFLTROOT},
-	{ "boot_gdb",		RB_GDB},
-	{ "boot_multicons",	RB_MULTIPLE},
-	{ "boot_mute",		RB_MUTE},
-	{ "boot_pause",		RB_PAUSE},
-	{ "boot_serial",	RB_SERIAL},
-	{ "boot_single",	RB_SINGLE},
-	{ "boot_verbose",	RB_VERBOSE},
-	{ NULL,	0}
-};
+#define PATH_KERNEL	"/boot/kernel/kernel"
+
+int boot_env_to_howto(void);
+void boot_howto_to_env(int howto);
+int boot_parse_arg(char *v);
+int boot_parse_cmdline_delim(char *cmdline, const char *delim);
+int boot_parse_cmdline(char *cmdline);
+int boot_parse_args(int argc, char *argv[]);
 
 #endif /* !_SYS_BOOT_H_ */

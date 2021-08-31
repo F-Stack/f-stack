@@ -229,12 +229,16 @@ mtk_spi_transfer(device_t dev, device_t child, struct spi_command *cmd)
 {
 	struct mtk_spi_softc *sc;
 	uint8_t *buf, byte, *tx_buf;
-	struct spibus_ivar *devi = SPIBUS_IVAR(child);
+	uint32_t cs;
 	int i, sz, error, write = 0;
 
 	sc = device_get_softc(dev);
 
-	if (devi->cs != 0)
+	spibus_get_cs(child, &cs);
+
+	cs &= ~SPIBUS_CS_HIGH;
+
+	if (cs != 0)
 		/* Only 1 CS */
 		return (ENXIO);
 
@@ -293,11 +297,11 @@ mtk_spi_transfer(device_t dev, device_t child, struct spi_command *cmd)
 			buf[i] = byte;
 		}
 	}
-	
+
 	/*
 	 * Transfer/Receive data
 	 */
-	
+
 	if (cmd->tx_data_sz + cmd->rx_data_sz) {
 		write = (cmd->tx_data_sz > 0)?1:0;
 		buf = (uint8_t *)(write ? cmd->tx_data : cmd->rx_data);

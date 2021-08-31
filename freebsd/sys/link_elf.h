@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1993 Paul Kranenburg
  * All rights reserved.
  *
@@ -55,17 +57,19 @@
 #define	LA_SER_SECURE	0x80	/* default (secure) path prepended */
 
 typedef struct link_map {
-	caddr_t		l_addr;			/* Base Address of library */
+	caddr_t		l_base;			/* Base Address of library */
 #ifdef __mips__
-	caddr_t		l_offs;			/* Load Offset of library */
+	caddr_t		l_xxx;			/* unused */
 #endif
 	const char	*l_name;		/* Absolute Path to Library */
 	const void	*l_ld;			/* Pointer to .dynamic in memory */
 	struct link_map	*l_next, *l_prev;	/* linked list of of mapped libs */
+	caddr_t		l_addr;			/* Load Offset of library */
+	const char	*l_refname;		/* object we are filtering for */
 } Link_map;
 
 struct r_debug {
-	int		r_version;		/* not used */
+	int		r_version;		/* Currently '1' */
 	struct link_map *r_map;			/* list of loaded images */
 	void		(*r_brk)(struct r_debug *, struct link_map *);
 						/* pointer to break point */
@@ -74,7 +78,10 @@ struct r_debug {
 		RT_ADD,				/* adding a shared library */
 		RT_DELETE			/* removing a shared library */
 	}		r_state;
+	void		*r_ldbase;		/* Base address of rtld */
 };
+
+#define	R_DEBUG_VERSION		1
 
 struct dl_phdr_info
 {

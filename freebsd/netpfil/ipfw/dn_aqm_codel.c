@@ -118,17 +118,20 @@ SYSBEGIN(f4)
 SYSCTL_DECL(_net_inet);
 SYSCTL_DECL(_net_inet_ip);
 SYSCTL_DECL(_net_inet_ip_dummynet);
-static SYSCTL_NODE(_net_inet_ip_dummynet, OID_AUTO, 
-	codel, CTLFLAG_RW, 0, "CODEL");
+static SYSCTL_NODE(_net_inet_ip_dummynet, OID_AUTO, codel,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "CODEL");
 
 #ifdef SYSCTL_NODE
 SYSCTL_PROC(_net_inet_ip_dummynet_codel, OID_AUTO, target,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0,codel_sysctl_target_handler, "L",
-	"CoDel target in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    NULL, 0,codel_sysctl_target_handler, "L",
+    "CoDel target in microsecond");
 
 SYSCTL_PROC(_net_inet_ip_dummynet_codel, OID_AUTO, interval,
-	CTLTYPE_LONG | CTLFLAG_RW, NULL, 0, codel_sysctl_interval_handler, "L",
-	"CoDel interval in microsecond");
+    CTLTYPE_LONG | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    NULL, 0, codel_sysctl_interval_handler, "L",
+    "CoDel interval in microsecond");
 #endif
 
 /* This function computes codel_interval/sqrt(count) 
@@ -271,7 +274,6 @@ drop:
 	return (1);
 }
 
-
 /* Dequeue a pcaket from queue q */
 static struct mbuf * 
 aqm_codel_dequeue(struct dn_queue *q)
@@ -361,10 +363,10 @@ aqm_codel_config(struct dn_fsk* fs, struct dn_extra_parms *ep, int len)
 		D("cannot allocate AQM_codel configuration parameters");
 		return ENOMEM; 
 	}
-	
+
 	/* configure codel parameters */
 	ccfg = fs->aqmcfg;
-	
+
 	if (ep->par[0] < 0)
 		ccfg->target = codel_sysctl.target;
 	else
@@ -416,7 +418,7 @@ aqm_codel_getconfig(struct dn_fsk *fs, struct dn_extra_parms * ep)
 	struct dn_aqm_codel_parms *ccfg;
 
 	if (fs->aqmcfg) {
-		strcpy(ep->name, codel_desc.name);
+		strlcpy(ep->name, codel_desc.name, sizeof(ep->name));
 		ccfg = fs->aqmcfg;
 		ep->par[0] = ccfg->target / AQM_TIME_1US;
 		ep->par[1] = ccfg->interval / AQM_TIME_1US;
@@ -439,6 +441,5 @@ static struct dn_aqm codel_desc = {
 };
 
 DECLARE_DNAQM_MODULE(dn_aqm_codel, &codel_desc);
-
 
 #endif

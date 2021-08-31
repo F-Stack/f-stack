@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Peter Wemm
  * All rights reserved.
  *
@@ -37,11 +39,14 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/kerneldump.h>
 #include <sys/msgbuf.h>
+#include <sys/sysctl.h>
 #include <sys/watchdog.h>
+#include <sys/vmmeter.h>
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 #include <vm/vm_page.h>
 #include <vm/vm_phys.h>
+#include <vm/vm_dumpset.h>
 #include <vm/pmap.h>
 #include <machine/atomic.h>
 #include <machine/elf.h>
@@ -50,24 +55,16 @@ __FBSDID("$FreeBSD$");
 
 CTASSERT(sizeof(struct kerneldumpheader) == 512);
 
-/*
- * Don't touch the first SIZEOF_METADATA bytes on the dump device. This
- * is to protect us from metadata and to protect metadata from us.
- */
-#define	SIZEOF_METADATA		(64*1024)
-
-uint64_t *vm_page_dump;
-int vm_page_dump_size;
-
 static struct kerneldumpheader kdh;
-static off_t dumplo;
 
 /* Handle chunked writes. */
 static size_t fragsz;
 static void *dump_va;
-static size_t counter, progress, dumpsize;
+static size_t counter, progress, dumpsize, wdog_next;
 
-CTASSERT(sizeof(*vm_page_dump) == 8);
+static int dump_retry_count = 5;
+SYSCTL_INT(_machdep, OID_AUTO, dump_retry_count, CTLFLAG_RWTUN,
+    &dump_retry_count, 0, "Number of times dump has to retry before bailing out");
 
 static int
 is_dumpable(vm_paddr_t pa)
@@ -94,8 +91,7 @@ blk_flush(struct dumperinfo *di)
 	if (fragsz == 0)
 		return (0);
 
-	error = dump_write(di, dump_va, 0, dumplo, fragsz);
-	dumplo += fragsz;
+	error = dump_append(di, dump_va, 0, fragsz);
 	fragsz = 0;
 	return (error);
 }
@@ -134,6 +130,9 @@ report_progress(size_t progress, size_t dumpsize)
 		return;
 	}
 }
+
+/* Pat the watchdog approximately every 128MB of the dump. */
+#define	WDOG_DUMP_INTERVAL	(128 * 1024 * 1024)
 
 static int
 blk_write(struct dumperinfo *di, char *ptr, vm_paddr_t pa, size_t sz)
@@ -174,14 +173,18 @@ blk_write(struct dumperinfo *di, char *ptr, vm_paddr_t pa, size_t sz)
 			report_progress(progress, dumpsize);
 			counter &= (1<<24) - 1;
 		}
-
-		wdog_kern_pat(WD_LASTVAL);
+		if (progress <= wdog_next) {
+			wdog_kern_pat(WD_LASTVAL);
+			if (wdog_next > WDOG_DUMP_INTERVAL)
+				wdog_next -= WDOG_DUMP_INTERVAL;
+			else
+				wdog_next = 0;
+		}
 
 		if (ptr) {
-			error = dump_write(di, ptr, 0, dumplo, len);
+			error = dump_append(di, ptr, 0, len);
 			if (error)
 				return (error);
-			dumplo += len;
 			ptr += len;
 			sz -= len;
 		} else {
@@ -217,10 +220,8 @@ minidumpsys(struct dumperinfo *di)
 	uint32_t pmapsize;
 	vm_offset_t va;
 	int error;
-	uint64_t bits;
 	uint64_t *pml4, *pdp, *pd, *pt, pa;
-	size_t size;
-	int i, ii, j, k, n, bit;
+	int i, ii, j, k, n;
 	int retry_count;
 	struct minidumphdr mdhdr;
 
@@ -239,10 +240,10 @@ minidumpsys(struct dumperinfo *di)
 		 * page written corresponds to 1GB of space
 		 */
 		pmapsize += PAGE_SIZE;
-		ii = (va >> PML4SHIFT) & ((1ul << NPML4EPGSHIFT) - 1);
+		ii = pmap_pml4e_index(va);
 		pml4 = (uint64_t *)PHYS_TO_DMAP(KPML4phys) + ii;
 		pdp = (uint64_t *)PHYS_TO_DMAP(*pml4 & PG_FRAME);
-		i = (va >> PDPSHIFT) & ((1ul << NPDPEPGSHIFT) - 1);
+		i = pmap_pdpe_index(va);
 		if ((pdp[i] & PG_V) == 0) {
 			va += NBPDP;
 			continue;
@@ -264,7 +265,7 @@ minidumpsys(struct dumperinfo *di)
 
 		pd = (uint64_t *)PHYS_TO_DMAP(pdp[i] & PG_FRAME);
 		for (n = 0; n < NPDEPG; n++, va += NBPDR) {
-			j = (va >> PDRSHIFT) & ((1ul << NPDEPGSHIFT) - 1);
+			j = pmap_pde_index(va);
 
 			if ((pd[j] & PG_V) == 0)
 				continue;
@@ -299,53 +300,41 @@ minidumpsys(struct dumperinfo *di)
 	/* Calculate dump size. */
 	dumpsize = pmapsize;
 	dumpsize += round_page(msgbufp->msg_size);
-	dumpsize += round_page(vm_page_dump_size);
-	for (i = 0; i < vm_page_dump_size / sizeof(*vm_page_dump); i++) {
-		bits = vm_page_dump[i];
-		while (bits) {
-			bit = bsfq(bits);
-			pa = (((uint64_t)i * sizeof(*vm_page_dump) * NBBY) + bit) * PAGE_SIZE;
-			/* Clear out undumpable pages now if needed */
-			if (is_dumpable(pa)) {
-				dumpsize += PAGE_SIZE;
-			} else {
-				dump_drop_page(pa);
-			}
-			bits &= ~(1ul << bit);
+	dumpsize += round_page(sizeof(dump_avail));
+	dumpsize += round_page(BITSET_SIZE(vm_page_dump_pages));
+	VM_PAGE_DUMP_FOREACH(pa) {
+		/* Clear out undumpable pages now if needed */
+		if (is_dumpable(pa)) {
+			dumpsize += PAGE_SIZE;
+		} else {
+			dump_drop_page(pa);
 		}
 	}
 	dumpsize += PAGE_SIZE;
 
-	/* Determine dump offset on device. */
-	if (di->mediasize < SIZEOF_METADATA + dumpsize + di->blocksize * 2) {
-		error = E2BIG;
-		goto fail;
-	}
-	dumplo = di->mediaoffset + di->mediasize - dumpsize;
-	dumplo -= di->blocksize * 2;
-	progress = dumpsize;
+	wdog_next = progress = dumpsize;
 
 	/* Initialize mdhdr */
 	bzero(&mdhdr, sizeof(mdhdr));
 	strcpy(mdhdr.magic, MINIDUMP_MAGIC);
 	mdhdr.version = MINIDUMP_VERSION;
 	mdhdr.msgbufsize = msgbufp->msg_size;
-	mdhdr.bitmapsize = vm_page_dump_size;
+	mdhdr.bitmapsize = round_page(BITSET_SIZE(vm_page_dump_pages));
 	mdhdr.pmapsize = pmapsize;
 	mdhdr.kernbase = VM_MIN_KERNEL_ADDRESS;
 	mdhdr.dmapbase = DMAP_MIN_ADDRESS;
 	mdhdr.dmapend = DMAP_MAX_ADDRESS;
+	mdhdr.dumpavailsize = round_page(sizeof(dump_avail));
 
-	mkdumpheader(&kdh, KERNELDUMPMAGIC, KERNELDUMP_AMD64_VERSION, dumpsize, di->blocksize);
+	dump_init_header(di, &kdh, KERNELDUMPMAGIC, KERNELDUMP_AMD64_VERSION,
+	    dumpsize);
+
+	error = dump_start(di, &kdh);
+	if (error != 0)
+		goto fail;
 
 	printf("Dumping %llu out of %ju MB:", (long long)dumpsize >> 20,
 	    ptoa((uintmax_t)physmem) / 1048576);
-
-	/* Dump leader */
-	error = dump_write_pad(di, &kdh, 0, dumplo, sizeof(kdh), &size);
-	if (error)
-		goto fail;
-	dumplo += size;
 
 	/* Dump my header */
 	bzero(&fakepd, sizeof(fakepd));
@@ -359,8 +348,18 @@ minidumpsys(struct dumperinfo *di)
 	if (error)
 		goto fail;
 
+	/* Dump dump_avail */
+	_Static_assert(sizeof(dump_avail) <= sizeof(fakepd),
+	    "Large dump_avail not handled");
+	bzero(&fakepd, sizeof(fakepd));
+	memcpy(fakepd, dump_avail, sizeof(dump_avail));
+	error = blk_write(di, (char *)fakepd, 0, PAGE_SIZE);
+	if (error)
+		goto fail;
+
 	/* Dump bitmap */
-	error = blk_write(di, (char *)vm_page_dump, 0, round_page(vm_page_dump_size));
+	error = blk_write(di, (char *)vm_page_dump, 0,
+	    round_page(BITSET_SIZE(vm_page_dump_pages)));
 	if (error)
 		goto fail;
 
@@ -368,10 +367,10 @@ minidumpsys(struct dumperinfo *di)
 	bzero(fakepd, sizeof(fakepd));
 	for (va = VM_MIN_KERNEL_ADDRESS; va < MAX(KERNBASE + nkpt * NBPDR,
 	    kernel_vm_end); va += NBPDP) {
-		ii = (va >> PML4SHIFT) & ((1ul << NPML4EPGSHIFT) - 1);
+		ii = pmap_pml4e_index(va);
 		pml4 = (uint64_t *)PHYS_TO_DMAP(KPML4phys) + ii;
 		pdp = (uint64_t *)PHYS_TO_DMAP(*pml4 & PG_FRAME);
-		i = (va >> PDPSHIFT) & ((1ul << NPDPEPGSHIFT) - 1);
+		i = pmap_pdpe_index(va);
 
 		/* We always write a page, even if it is zero */
 		if ((pdp[i] & PG_V) == 0) {
@@ -412,31 +411,20 @@ minidumpsys(struct dumperinfo *di)
 	}
 
 	/* Dump memory chunks */
-	/* XXX cluster it up and use blk_dump() */
-	for (i = 0; i < vm_page_dump_size / sizeof(*vm_page_dump); i++) {
-		bits = vm_page_dump[i];
-		while (bits) {
-			bit = bsfq(bits);
-			pa = (((uint64_t)i * sizeof(*vm_page_dump) * NBBY) + bit) * PAGE_SIZE;
-			error = blk_write(di, 0, pa, PAGE_SIZE);
-			if (error)
-				goto fail;
-			bits &= ~(1ul << bit);
-		}
+	VM_PAGE_DUMP_FOREACH(pa) {
+		error = blk_write(di, 0, pa, PAGE_SIZE);
+		if (error)
+			goto fail;
 	}
 
 	error = blk_flush(di);
 	if (error)
 		goto fail;
 
-	/* Dump trailer */
-	error = dump_write_pad(di, &kdh, 0, dumplo, sizeof(kdh), &size);
-	if (error)
+	error = dump_finish(di, &kdh);
+	if (error != 0)
 		goto fail;
-	dumplo += size;
 
-	/* Signal completion, signoff and exit stage left. */
-	dump_write(di, NULL, 0, 0, 0);
 	printf("\nDump complete\n");
 	return (0);
 
@@ -447,7 +435,7 @@ minidumpsys(struct dumperinfo *di)
 	printf("\n");
 	if (error == ENOSPC) {
 		printf("Dump map grown while dumping. ");
-		if (retry_count < 5) {
+		if (retry_count < dump_retry_count) {
 			printf("Retrying...\n");
 			goto retry;
 		}
@@ -455,31 +443,10 @@ minidumpsys(struct dumperinfo *di)
 	}
 	else if (error == ECANCELED)
 		printf("Dump aborted\n");
-	else if (error == E2BIG)
-		printf("Dump failed. Partition too small.\n");
-	else
+	else if (error == E2BIG) {
+		printf("Dump failed. Partition too small (about %lluMB were "
+		    "needed this time).\n", (long long)dumpsize >> 20);
+	} else
 		printf("** DUMP FAILED (ERROR %d) **\n", error);
 	return (error);
-}
-
-void
-dump_add_page(vm_paddr_t pa)
-{
-	int idx, bit;
-
-	pa >>= PAGE_SHIFT;
-	idx = pa >> 6;		/* 2^6 = 64 */
-	bit = pa & 63;
-	atomic_set_long(&vm_page_dump[idx], 1ul << bit);
-}
-
-void
-dump_drop_page(vm_paddr_t pa)
-{
-	int idx, bit;
-
-	pa >>= PAGE_SHIFT;
-	idx = pa >> 6;		/* 2^6 = 64 */
-	bit = pa & 63;
-	atomic_clear_long(&vm_page_dump[idx], 1ul << bit);
 }

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) KATO Takenori, 1997, 1998.
  * 
  * All rights reserved.  Unpublished rights reserved under the copyright
@@ -39,14 +41,11 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/cputypes.h>
 #include <machine/md_var.h>
+#include <machine/psl.h>
 #include <machine/specialreg.h>
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
-
-#if !defined(CPU_DISABLE_SSE) && defined(I686_CPU)
-#define CPU_ENABLE_SSE
-#endif
 
 #ifdef I486_CPU
 static void init_5x86(void);
@@ -91,10 +90,6 @@ static void
 init_bluelightning(void)
 {
 	register_t saveintr;
-
-#if defined(PC98) && !defined(CPU_UPGRADE_HW_CACHE)
-	need_post_dma_flush = 1;
-#endif
 
 	saveintr = intr_disable();
 
@@ -164,7 +159,6 @@ init_486dlc(void)
 	intr_restore(saveintr);
 }
 
-
 /*
  * Cyrix 486S/DX series
  */
@@ -182,18 +176,9 @@ init_cy486dx(void)
 	ccr2 |= CCR2_SUSP_HLT;
 #endif
 
-#ifdef PC98
-	/* Enables WB cache interface pin and Lock NW bit in CR0. */
-	ccr2 |= CCR2_WB | CCR2_LOCK_NW;
-	/* Unlock NW bit in CR0. */
-	write_cyrix_reg(CCR2, ccr2 & ~CCR2_LOCK_NW);
-	load_cr0((rcr0() & ~CR0_CD) | CR0_NW);	/* CD = 0, NW = 1 */
-#endif
-
 	write_cyrix_reg(CCR2, ccr2);
 	intr_restore(saveintr);
 }
-
 
 /*
  * Cyrix 5x86
@@ -302,10 +287,6 @@ static void
 init_i486_on_386(void)
 {
 	register_t saveintr;
-
-#if defined(PC98) && !defined(CPU_UPGRADE_HW_CACHE)
-	need_post_dma_flush = 1;
-#endif
 
 	saveintr = intr_disable();
 
@@ -645,11 +626,24 @@ init_transmeta(void)
 }
 #endif
 
+/*
+ * The value for the TSC_AUX MSR and rdtscp/rdpid on the invoking CPU.
+ *
+ * Caller should prevent CPU migration.
+ */
+u_int
+cpu_auxmsr(void)
+{
+	KASSERT((read_eflags() & PSL_I) == 0, ("context switch possible"));
+	return (PCPU_GET(cpuid));
+}
+
 extern int elf32_nxstack;
 
 void
 initializecpu(void)
 {
+	uint64_t msr;
 
 	switch (cpu) {
 #ifdef I486_CPU
@@ -726,8 +720,8 @@ initializecpu(void)
 				break;
 			}
 			break;
-#ifdef CPU_ATHLON_SSE_HACK
 		case CPU_VENDOR_AMD:
+#ifdef CPU_ATHLON_SSE_HACK
 			/*
 			 * Sometimes the BIOS doesn't enable SSE instructions.
 			 * According to AMD document 20734, the mobile
@@ -744,8 +738,16 @@ initializecpu(void)
 				do_cpuid(1, regs);
 				cpu_feature = regs[3];
 			}
-			break;
 #endif
+			/*
+			 * Detect C1E that breaks APIC.  See comment in
+			 * amd64/initcpu.c.
+			 */
+			if ((CPUID_TO_FAMILY(cpu_id) == 0xf ||
+			    CPUID_TO_FAMILY(cpu_id) == 0x10) &&
+			    (cpu_feature2 & CPUID2_HV) == 0)
+				cpu_amdc1e_bug = 1;
+			break;
 		case CPU_VENDOR_CENTAUR:
 			init_via();
 			break;
@@ -753,27 +755,22 @@ initializecpu(void)
 			init_transmeta();
 			break;
 		}
-#if defined(PAE) || defined(PAE_TABLES)
-		if ((amd_feature & AMDID_NX) != 0) {
-			uint64_t msr;
-
-			msr = rdmsr(MSR_EFER) | EFER_NXE;
-			wrmsr(MSR_EFER, msr);
-			pg_nx = PG_NX;
-			elf32_nxstack = 1;
-		}
-#endif
 		break;
 #endif
 	default:
 		break;
 	}
-#if defined(CPU_ENABLE_SSE)
 	if ((cpu_feature & CPUID_XMM) && (cpu_feature & CPUID_FXSR)) {
 		load_cr4(rcr4() | CR4_FXSR | CR4_XMM);
 		cpu_fxsr = hw_instruction_sse = 1;
 	}
-#endif
+	if (elf32_nxstack) {
+		msr = rdmsr(MSR_EFER) | EFER_NXE;
+		wrmsr(MSR_EFER, msr);
+	}
+	if ((amd_feature & AMDID_RDTSCP) != 0 ||
+	    (cpu_stdext_feature2 & CPUID_STDEXT2_RDPID) != 0)
+		wrmsr(MSR_TSC_AUX, cpu_auxmsr());
 }
 
 void
@@ -806,52 +803,6 @@ initializecpucache(void)
 		cpu_feature &= ~CPUID_CLFSH;
 		cpu_stdext_feature &= ~CPUID_STDEXT_CLFLUSHOPT;
 	}
-
-#if defined(PC98) && !defined(CPU_UPGRADE_HW_CACHE)
-	/*
-	 * OS should flush L1 cache by itself because no PC-98 supports
-	 * non-Intel CPUs.  Use wbinvd instruction before DMA transfer
-	 * when need_pre_dma_flush = 1, use invd instruction after DMA
-	 * transfer when need_post_dma_flush = 1.  If your CPU upgrade
-	 * product supports hardware cache control, you can add the
-	 * CPU_UPGRADE_HW_CACHE option in your kernel configuration file.
-	 * This option eliminates unneeded cache flush instruction(s).
-	 */
-	if (cpu_vendor_id == CPU_VENDOR_CYRIX) {
-		switch (cpu) {
-#ifdef I486_CPU
-		case CPU_486DLC:
-			need_post_dma_flush = 1;
-			break;
-		case CPU_M1SC:
-			need_pre_dma_flush = 1;
-			break;
-		case CPU_CY486DX:
-			need_pre_dma_flush = 1;
-#ifdef CPU_I486_ON_386
-			need_post_dma_flush = 1;
-#endif
-			break;
-#endif
-		default:
-			break;
-		}
-	} else if (cpu_vendor_id == CPU_VENDOR_AMD) {
-		switch (cpu_id & 0xFF0) {
-		case 0x470:		/* Enhanced Am486DX2 WB */
-		case 0x490:		/* Enhanced Am486DX4 WB */
-		case 0x4F0:		/* Am5x86 WB */
-			need_pre_dma_flush = 1;
-			break;
-		}
-	} else if (cpu_vendor_id == CPU_VENDOR_IBM) {
-		need_post_dma_flush = 1;
-	} else {
-#ifdef CPU_I486_ON_386
-		need_pre_dma_flush = 1;
-#endif
-	}
-#endif /* PC98 && !CPU_UPGRADE_HW_CACHE */
 }
 
 #if defined(I586_CPU) && defined(CPU_WT_ALLOC)
@@ -884,19 +835,13 @@ enable_K5_wt_alloc(void)
 		else
 		  msr = 0;
 		msr |= AMD_WT_ALLOC_TME | AMD_WT_ALLOC_FRE;
-#ifdef PC98
-		if (!(inb(0x43b) & 4)) {
-			wrmsr(0x86, 0x0ff00f0);
-			msr |= AMD_WT_ALLOC_PRE;
-		}
-#else
+
 		/*
 		 * There is no way to know wheter 15-16M hole exists or not. 
 		 * Therefore, we disable write allocate for this range.
 		 */
-			wrmsr(0x86, 0x0ff00f0);
-			msr |= AMD_WT_ALLOC_PRE;
-#endif
+		wrmsr(0x86, 0x0ff00f0);
+		msr |= AMD_WT_ALLOC_PRE;
 		wrmsr(0x85, msr);
 
 		msr=rdmsr(0x83);
@@ -922,7 +867,7 @@ enable_K6_wt_alloc(void)
 	 */
 	/*
 	 * The AMD-K6 processer provides the 64-bit Test Register 12(TR12),
-	 * but only the Cache Inhibit(CI) (bit 3 of TR12) is suppported.
+	 * but only the Cache Inhibit(CI) (bit 3 of TR12) is supported.
 	 * All other bits in TR12 have no effect on the processer's operation.
 	 * The I/O Trap Restart function (bit 9 of TR12) is always enabled
 	 * on the AMD-K6.
@@ -940,19 +885,9 @@ enable_K6_wt_alloc(void)
 		size = 0x7f;
 	whcr = (rdmsr(0xc0000082) & ~(0x7fLL << 1)) | (size << 1);
 
-#if defined(PC98) || defined(NO_MEMORY_HOLE)
-	if (whcr & (0x7fLL << 1)) {
-#ifdef PC98
-		/*
-		 * If bit 2 of port 0x43b is 0, disable wrte allocate for the
-		 * 15-16M range.
-		 */
-		if (!(inb(0x43b) & 4))
-			whcr &= ~0x0001LL;
-		else
-#endif
-			whcr |=  0x0001LL;
-	}
+#if defined(NO_MEMORY_HOLE)
+	if (whcr & (0x7fLL << 1))
+		whcr |=  0x0001LL;
 #else
 	/*
 	 * There is no way to know wheter 15-16M hole exists or not. 
@@ -982,7 +917,7 @@ enable_K6_2_wt_alloc(void)
 	 */
 	/*
 	 * The AMD-K6 processer provides the 64-bit Test Register 12(TR12),
-	 * but only the Cache Inhibit(CI) (bit 3 of TR12) is suppported.
+	 * but only the Cache Inhibit(CI) (bit 3 of TR12) is supported.
 	 * All other bits in TR12 have no effect on the processer's operation.
 	 * The I/O Trap Restart function (bit 9 of TR12) is always enabled
 	 * on the AMD-K6.
@@ -1000,19 +935,9 @@ enable_K6_2_wt_alloc(void)
 		size = 0x3ff;
 	whcr = (rdmsr(0xc0000082) & ~(0x3ffLL << 22)) | (size << 22);
 
-#if defined(PC98) || defined(NO_MEMORY_HOLE)
-	if (whcr & (0x3ffLL << 22)) {
-#ifdef PC98
-		/*
-		 * If bit 2 of port 0x43b is 0, disable wrte allocate for the
-		 * 15-16M range.
-		 */
-		if (!(inb(0x43b) & 4))
-			whcr &= ~(1LL << 16);
-		else
-#endif
-			whcr |=  1LL << 16;
-	}
+#if defined(NO_MEMORY_HOLE)
+	if (whcr & (0x3ffLL << 22))
+		whcr |=  1LL << 16;
 #else
 	/*
 	 * There is no way to know wheter 15-16M hole exists or not. 
@@ -1040,7 +965,6 @@ DB_SHOW_COMMAND(cyrixreg, cyrixreg)
 	cr0 = rcr0();
 	if (cpu_vendor_id == CPU_VENDOR_CYRIX) {
 		saveintr = intr_disable();
-
 
 		if ((cpu != CPU_M1SC) && (cpu != CPU_CY486DX)) {
 			ccr0 = read_cyrix_reg(CCR0);

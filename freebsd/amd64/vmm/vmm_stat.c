@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -65,7 +67,7 @@ vmm_stat_register(void *arg)
 	if (vst->scope == VMM_STAT_SCOPE_INTEL && !vmm_is_intel())
 		return;
 
-	if (vst->scope == VMM_STAT_SCOPE_AMD && !vmm_is_amd())
+	if (vst->scope == VMM_STAT_SCOPE_AMD && !vmm_is_svm())
 		return;
 
 	if (vst_num_elems + vst->nelems >= MAX_VMM_STAT_ELEMS) {
@@ -86,7 +88,7 @@ vmm_stat_copy(struct vm *vm, int vcpu, int *num_stats, uint64_t *buf)
 	uint64_t *stats;
 	int i;
 
-	if (vcpu < 0 || vcpu >= VM_MAXCPU)
+	if (vcpu < 0 || vcpu >= vm_get_maxcpus(vm))
 		return (EINVAL);
 
 	/* Let stats functions update their counters */

@@ -50,7 +50,6 @@ struct mtk_pin_group {
 #define GROUP(_name, _reg, _off, _mask, _funcs)	\
     { .name = (_name), .sysc_reg = (_reg), .offset = (_off),		\
     .mask = (_mask), .functions = (_funcs), .funcnum = nitems(_funcs) }
-
 #define GROUP_END	{ NULL, 0, 0, 0, NULL, 0 }
 
 #define DECL_FUNC(_name)	\
@@ -116,6 +115,14 @@ DECL_FUNC(pa_func) = {
 
 DECL_FUNC(gex_func) = {
 	FUNC("ge1", 0), FUNC("ge2", 0), FUNC("gpio", 1)
+};
+
+DECL_FUNC(rt2880_uartf_func) = {
+	FUNC("uartf", 0), FUNC("gpio", 1)
+};
+
+DECL_FUNC(rt2880_pci_func) = {
+	FUNC("pci", 0), FUNC("gpio", 1)
 };
 
 DECL_FUNC(rt3883_pci_func) = {
@@ -295,6 +302,18 @@ DECL_TABLE(mt7620_pintable) = {
 	GROUP("nd_sd", SYSCTL_GPIOMODE, 18, 3, nd_sd_func),
 	GROUP("pa", SYSCTL_GPIOMODE, 20, 1, pa_func),
 	GROUP("wdt", SYSCTL_GPIOMODE, 21, 3, wdt_func),
+	GROUP_END
+};
+
+DECL_TABLE(rt2880_pintable) = {
+	GROUP("i2c", SYSCTL_GPIOMODE, 0, 1, i2c_func),
+	GROUP("uartf", SYSCTL_GPIOMODE, 1, 1, rt2880_uartf_func),
+	GROUP("spi", SYSCTL_GPIOMODE, 2, 1, spi_func),
+	GROUP("uartlite", SYSCTL_GPIOMODE, 3, 1, uartlite_func),
+	GROUP("jtag", SYSCTL_GPIOMODE, 4, 1, jtag_func),
+	GROUP("mdio", SYSCTL_GPIOMODE, 5, 1, mdio_func),
+	GROUP("sdram", SYSCTL_GPIOMODE, 6, 1, sdram_func),
+	GROUP("pci", SYSCTL_GPIOMODE, 7, 1, rt2880_pci_func),
 	GROUP_END
 };
 

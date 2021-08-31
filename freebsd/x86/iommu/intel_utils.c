@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 The FreeBSD Foundation
  * All rights reserved.
  *
@@ -46,9 +48,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/taskqueue.h>
+#include <sys/time.h>
 #include <sys/tree.h>
 #include <sys/vmem.h>
-#include <dev/pci/pcivar.h>
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_kern.h>
@@ -56,13 +58,15 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_page.h>
 #include <vm/vm_map.h>
 #include <vm/vm_pageout.h>
+#include <dev/pci/pcireg.h>
+#include <dev/pci/pcivar.h>
 #include <machine/bus.h>
 #include <machine/cpu.h>
 #include <machine/intr_machdep.h>
 #include <x86/include/apicvar.h>
 #include <x86/include/busdma_impl.h>
+#include <dev/iommu/busdma_iommu.h>
 #include <x86/iommu/intel_reg.h>
-#include <x86/iommu/busdma_dmar.h>
 #include <x86/iommu/intel_dmar.h>
 
 u_int
@@ -144,7 +148,7 @@ domain_set_agaw(struct dmar_domain *domain, int mgaw)
  *     address space, accept the biggest sagaw, whatever is it.
  */
 int
-dmar_maxaddr2mgaw(struct dmar_unit *unit, dmar_gaddr_t maxaddr, bool allow_less)
+dmar_maxaddr2mgaw(struct dmar_unit *unit, iommu_gaddr_t maxaddr, bool allow_less)
 {
 	int i;
 
@@ -203,17 +207,17 @@ domain_is_sp_lvl(struct dmar_domain *domain, int lvl)
 	return (alvl < nitems(sagaw_sp) && (sagaw_sp[alvl] & cap_sps) != 0);
 }
 
-dmar_gaddr_t
+iommu_gaddr_t
 pglvl_page_size(int total_pglvl, int lvl)
 {
 	int rlvl;
-	static const dmar_gaddr_t pg_sz[] = {
-		(dmar_gaddr_t)DMAR_PAGE_SIZE,
-		(dmar_gaddr_t)DMAR_PAGE_SIZE << DMAR_NPTEPGSHIFT,
-		(dmar_gaddr_t)DMAR_PAGE_SIZE << (2 * DMAR_NPTEPGSHIFT),
-		(dmar_gaddr_t)DMAR_PAGE_SIZE << (3 * DMAR_NPTEPGSHIFT),
-		(dmar_gaddr_t)DMAR_PAGE_SIZE << (4 * DMAR_NPTEPGSHIFT),
-		(dmar_gaddr_t)DMAR_PAGE_SIZE << (5 * DMAR_NPTEPGSHIFT)
+	static const iommu_gaddr_t pg_sz[] = {
+		(iommu_gaddr_t)DMAR_PAGE_SIZE,
+		(iommu_gaddr_t)DMAR_PAGE_SIZE << DMAR_NPTEPGSHIFT,
+		(iommu_gaddr_t)DMAR_PAGE_SIZE << (2 * DMAR_NPTEPGSHIFT),
+		(iommu_gaddr_t)DMAR_PAGE_SIZE << (3 * DMAR_NPTEPGSHIFT),
+		(iommu_gaddr_t)DMAR_PAGE_SIZE << (4 * DMAR_NPTEPGSHIFT),
+		(iommu_gaddr_t)DMAR_PAGE_SIZE << (5 * DMAR_NPTEPGSHIFT)
 	};
 
 	KASSERT(lvl >= 0 && lvl < total_pglvl,
@@ -223,7 +227,7 @@ pglvl_page_size(int total_pglvl, int lvl)
 	return (pg_sz[rlvl]);
 }
 
-dmar_gaddr_t
+iommu_gaddr_t
 domain_page_size(struct dmar_domain *domain, int lvl)
 {
 
@@ -231,10 +235,10 @@ domain_page_size(struct dmar_domain *domain, int lvl)
 }
 
 int
-calc_am(struct dmar_unit *unit, dmar_gaddr_t base, dmar_gaddr_t size,
-    dmar_gaddr_t *isizep)
+calc_am(struct dmar_unit *unit, iommu_gaddr_t base, iommu_gaddr_t size,
+    iommu_gaddr_t *isizep)
 {
-	dmar_gaddr_t isize;
+	iommu_gaddr_t isize;
 	int am;
 
 	for (am = DMAR_CAP_MAMV(unit->hw_cap);; am--) {
@@ -248,7 +252,7 @@ calc_am(struct dmar_unit *unit, dmar_gaddr_t base, dmar_gaddr_t size,
 	return (am);
 }
 
-dmar_haddr_t dmar_high;
+iommu_haddr_t dmar_high;
 int haw;
 int dmar_tbl_pagecnt;
 
@@ -256,22 +260,24 @@ vm_page_t
 dmar_pgalloc(vm_object_t obj, vm_pindex_t idx, int flags)
 {
 	vm_page_t m;
-	int zeroed;
+	int zeroed, aflags;
 
-	zeroed = (flags & DMAR_PGF_ZERO) != 0 ? VM_ALLOC_ZERO : 0;
+	zeroed = (flags & IOMMU_PGF_ZERO) != 0 ? VM_ALLOC_ZERO : 0;
+	aflags = zeroed | VM_ALLOC_NOBUSY | VM_ALLOC_SYSTEM | VM_ALLOC_NODUMP |
+	    ((flags & IOMMU_PGF_WAITOK) != 0 ? VM_ALLOC_WAITFAIL :
+	    VM_ALLOC_NOWAIT);
 	for (;;) {
-		if ((flags & DMAR_PGF_OBJL) == 0)
+		if ((flags & IOMMU_PGF_OBJL) == 0)
 			VM_OBJECT_WLOCK(obj);
 		m = vm_page_lookup(obj, idx);
-		if ((flags & DMAR_PGF_NOALLOC) != 0 || m != NULL) {
-			if ((flags & DMAR_PGF_OBJL) == 0)
+		if ((flags & IOMMU_PGF_NOALLOC) != 0 || m != NULL) {
+			if ((flags & IOMMU_PGF_OBJL) == 0)
 				VM_OBJECT_WUNLOCK(obj);
 			break;
 		}
-		m = vm_page_alloc_contig(obj, idx, VM_ALLOC_NOBUSY |
-		    VM_ALLOC_SYSTEM | VM_ALLOC_NODUMP | zeroed, 1, 0,
+		m = vm_page_alloc_contig(obj, idx, aflags, 1, 0,
 		    dmar_high, PAGE_SIZE, 0, VM_MEMATTR_DEFAULT);
-		if ((flags & DMAR_PGF_OBJL) == 0)
+		if ((flags & IOMMU_PGF_OBJL) == 0)
 			VM_OBJECT_WUNLOCK(obj);
 		if (m != NULL) {
 			if (zeroed && (m->flags & PG_ZERO) == 0)
@@ -279,13 +285,8 @@ dmar_pgalloc(vm_object_t obj, vm_pindex_t idx, int flags)
 			atomic_add_int(&dmar_tbl_pagecnt, 1);
 			break;
 		}
-		if ((flags & DMAR_PGF_WAITOK) == 0)
+		if ((flags & IOMMU_PGF_WAITOK) == 0)
 			break;
-		if ((flags & DMAR_PGF_OBJL) != 0)
-			VM_OBJECT_WUNLOCK(obj);
-		VM_WAIT;
-		if ((flags & DMAR_PGF_OBJL) != 0)
-			VM_OBJECT_WLOCK(obj);
 	}
 	return (m);
 }
@@ -295,14 +296,14 @@ dmar_pgfree(vm_object_t obj, vm_pindex_t idx, int flags)
 {
 	vm_page_t m;
 
-	if ((flags & DMAR_PGF_OBJL) == 0)
+	if ((flags & IOMMU_PGF_OBJL) == 0)
 		VM_OBJECT_WLOCK(obj);
-	m = vm_page_lookup(obj, idx);
+	m = vm_page_grab(obj, idx, VM_ALLOC_NOCREAT);
 	if (m != NULL) {
 		vm_page_free(m);
 		atomic_subtract_int(&dmar_tbl_pagecnt, 1);
 	}
-	if ((flags & DMAR_PGF_OBJL) == 0)
+	if ((flags & IOMMU_PGF_OBJL) == 0)
 		VM_OBJECT_WUNLOCK(obj);
 }
 
@@ -313,39 +314,39 @@ dmar_map_pgtbl(vm_object_t obj, vm_pindex_t idx, int flags,
 	vm_page_t m;
 	bool allocated;
 
-	if ((flags & DMAR_PGF_OBJL) == 0)
+	if ((flags & IOMMU_PGF_OBJL) == 0)
 		VM_OBJECT_WLOCK(obj);
 	m = vm_page_lookup(obj, idx);
-	if (m == NULL && (flags & DMAR_PGF_ALLOC) != 0) {
-		m = dmar_pgalloc(obj, idx, flags | DMAR_PGF_OBJL);
+	if (m == NULL && (flags & IOMMU_PGF_ALLOC) != 0) {
+		m = dmar_pgalloc(obj, idx, flags | IOMMU_PGF_OBJL);
 		allocated = true;
 	} else
 		allocated = false;
 	if (m == NULL) {
-		if ((flags & DMAR_PGF_OBJL) == 0)
+		if ((flags & IOMMU_PGF_OBJL) == 0)
 			VM_OBJECT_WUNLOCK(obj);
 		return (NULL);
 	}
 	/* Sleepable allocations cannot fail. */
-	if ((flags & DMAR_PGF_WAITOK) != 0)
+	if ((flags & IOMMU_PGF_WAITOK) != 0)
 		VM_OBJECT_WUNLOCK(obj);
 	sched_pin();
-	*sf = sf_buf_alloc(m, SFB_CPUPRIVATE | ((flags & DMAR_PGF_WAITOK)
+	*sf = sf_buf_alloc(m, SFB_CPUPRIVATE | ((flags & IOMMU_PGF_WAITOK)
 	    == 0 ? SFB_NOWAIT : 0));
 	if (*sf == NULL) {
 		sched_unpin();
 		if (allocated) {
 			VM_OBJECT_ASSERT_WLOCKED(obj);
-			dmar_pgfree(obj, m->pindex, flags | DMAR_PGF_OBJL);
+			dmar_pgfree(obj, m->pindex, flags | IOMMU_PGF_OBJL);
 		}
-		if ((flags & DMAR_PGF_OBJL) == 0)
+		if ((flags & IOMMU_PGF_OBJL) == 0)
 			VM_OBJECT_WUNLOCK(obj);
 		return (NULL);
 	}
-	if ((flags & (DMAR_PGF_WAITOK | DMAR_PGF_OBJL)) ==
-	    (DMAR_PGF_WAITOK | DMAR_PGF_OBJL))
+	if ((flags & (IOMMU_PGF_WAITOK | IOMMU_PGF_OBJL)) ==
+	    (IOMMU_PGF_WAITOK | IOMMU_PGF_OBJL))
 		VM_OBJECT_WLOCK(obj);
-	else if ((flags & (DMAR_PGF_WAITOK | DMAR_PGF_OBJL)) == 0)
+	else if ((flags & (IOMMU_PGF_WAITOK | IOMMU_PGF_OBJL)) == 0)
 		VM_OBJECT_WUNLOCK(obj);
 	return ((void *)sf_buf_kva(*sf));
 }
@@ -368,8 +369,7 @@ dmar_flush_transl_to_ram(struct dmar_unit *unit, void *dst, size_t sz)
 	 * If DMAR does not snoop paging structures accesses, flush
 	 * CPU cache to memory.
 	 */
-	pmap_invalidate_cache_range((uintptr_t)dst, (uintptr_t)dst + sz,
-	    TRUE);
+	pmap_force_invalidate_cache_range((uintptr_t)dst, (uintptr_t)dst + sz);
 }
 
 void
@@ -401,6 +401,7 @@ int
 dmar_load_root_entry_ptr(struct dmar_unit *unit)
 {
 	vm_page_t root_entry;
+	int error;
 
 	/*
 	 * Access to the GCMD register must be serialized while the
@@ -413,10 +414,9 @@ dmar_load_root_entry_ptr(struct dmar_unit *unit)
 	VM_OBJECT_RUNLOCK(unit->ctx_obj);
 	dmar_write8(unit, DMAR_RTADDR_REG, VM_PAGE_TO_PHYS(root_entry));
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd | DMAR_GCMD_SRTP);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_RTPS) == 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_RTPS)
+	    != 0));
+	return (error);
 }
 
 /*
@@ -426,6 +426,7 @@ dmar_load_root_entry_ptr(struct dmar_unit *unit)
 int
 dmar_inv_ctx_glob(struct dmar_unit *unit)
 {
+	int error;
 
 	/*
 	 * Access to the CCMD register must be serialized while the
@@ -441,10 +442,9 @@ dmar_inv_ctx_glob(struct dmar_unit *unit)
 	 * writes the upper dword last.
 	 */
 	dmar_write8(unit, DMAR_CCMD_REG, DMAR_CCMD_ICC | DMAR_CCMD_CIRG_GLOB);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_CCMD_REG + 4) & DMAR_CCMD_ICC32) != 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_CCMD_REG + 4) & DMAR_CCMD_ICC32)
+	    == 0));
+	return (error);
 }
 
 /*
@@ -453,7 +453,7 @@ dmar_inv_ctx_glob(struct dmar_unit *unit)
 int
 dmar_inv_iotlb_glob(struct dmar_unit *unit)
 {
-	int reg;
+	int error, reg;
 
 	DMAR_ASSERT_LOCKED(unit);
 	KASSERT(!unit->qi_enabled, ("QI enabled"));
@@ -462,11 +462,9 @@ dmar_inv_iotlb_glob(struct dmar_unit *unit)
 	/* See a comment about DMAR_CCMD_ICC in dmar_inv_ctx_glob. */
 	dmar_write8(unit, reg + DMAR_IOTLB_REG_OFF, DMAR_IOTLB_IVT |
 	    DMAR_IOTLB_IIRG_GLB | DMAR_IOTLB_DR | DMAR_IOTLB_DW);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, reg + DMAR_IOTLB_REG_OFF + 4) &
-	    DMAR_IOTLB_IVT32) != 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, reg + DMAR_IOTLB_REG_OFF + 4) &
+	    DMAR_IOTLB_IVT32) == 0));
+	return (error);
 }
 
 /*
@@ -476,6 +474,7 @@ dmar_inv_iotlb_glob(struct dmar_unit *unit)
 int
 dmar_flush_write_bufs(struct dmar_unit *unit)
 {
+	int error;
 
 	DMAR_ASSERT_LOCKED(unit);
 
@@ -483,45 +482,45 @@ dmar_flush_write_bufs(struct dmar_unit *unit)
 	 * DMAR_GCMD_WBF is only valid when CAP_RWBF is reported.
 	 */
 	KASSERT((unit->hw_cap & DMAR_CAP_RWBF) != 0,
-	    ("dmar%d: no RWBF", unit->unit));
+	    ("dmar%d: no RWBF", unit->iommu.unit));
 
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd | DMAR_GCMD_WBF);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_WBFS) == 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_WBFS)
+	    != 0));
+	return (error);
 }
 
 int
 dmar_enable_translation(struct dmar_unit *unit)
 {
+	int error;
 
 	DMAR_ASSERT_LOCKED(unit);
 	unit->hw_gcmd |= DMAR_GCMD_TE;
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_TES) == 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_TES)
+	    != 0));
+	return (error);
 }
 
 int
 dmar_disable_translation(struct dmar_unit *unit)
 {
+	int error;
 
 	DMAR_ASSERT_LOCKED(unit);
 	unit->hw_gcmd &= ~DMAR_GCMD_TE;
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_TES) != 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_TES)
+	    == 0));
+	return (error);
 }
 
 int
 dmar_load_irt_ptr(struct dmar_unit *unit)
 {
 	uint64_t irta, s;
+	int error;
 
 	DMAR_ASSERT_LOCKED(unit);
 	irta = unit->irt_phys;
@@ -534,37 +533,36 @@ dmar_load_irt_ptr(struct dmar_unit *unit)
 	irta |= s;
 	dmar_write8(unit, DMAR_IRTA_REG, irta);
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd | DMAR_GCMD_SIRTP);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_IRTPS) == 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_IRTPS)
+	    != 0));
+	return (error);
 }
 
 int
 dmar_enable_ir(struct dmar_unit *unit)
 {
+	int error;
 
 	DMAR_ASSERT_LOCKED(unit);
 	unit->hw_gcmd |= DMAR_GCMD_IRE;
 	unit->hw_gcmd &= ~DMAR_GCMD_CFI;
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_IRES) == 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_IRES)
+	    != 0));
+	return (error);
 }
 
 int
 dmar_disable_ir(struct dmar_unit *unit)
 {
+	int error;
 
 	DMAR_ASSERT_LOCKED(unit);
 	unit->hw_gcmd &= ~DMAR_GCMD_IRE;
 	dmar_write4(unit, DMAR_GCMD_REG, unit->hw_gcmd);
-	/* XXXKIB should have a timeout */
-	while ((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_IRES) != 0)
-		cpu_spinwait();
-	return (0);
+	DMAR_WAIT_UNTIL(((dmar_read4(unit, DMAR_GSTS_REG) & DMAR_GSTS_IRES)
+	    == 0));
+	return (error);
 }
 
 #define BARRIER_F				\
@@ -588,11 +586,12 @@ dmar_barrier_enter(struct dmar_unit *dmar, u_int barrier_id)
 	if ((dmar->barrier_flags & f_inproc) != 0) {
 		while ((dmar->barrier_flags & f_inproc) != 0) {
 			dmar->barrier_flags |= f_wakeup;
-			msleep(&dmar->barrier_flags, &dmar->lock, 0,
+			msleep(&dmar->barrier_flags, &dmar->iommu.lock, 0,
 			    "dmarb", 0);
 		}
 		KASSERT((dmar->barrier_flags & f_done) != 0,
-		    ("dmar%d barrier %d missing done", dmar->unit, barrier_id));
+		    ("dmar%d barrier %d missing done", dmar->iommu.unit,
+		    barrier_id));
 		DMAR_UNLOCK(dmar);
 		return (false);
 	}
@@ -609,7 +608,7 @@ dmar_barrier_exit(struct dmar_unit *dmar, u_int barrier_id)
 
 	DMAR_ASSERT_LOCKED(dmar);
 	KASSERT((dmar->barrier_flags & (f_done | f_inproc)) == f_inproc,
-	    ("dmar%d barrier %d missed entry", dmar->unit, barrier_id));
+	    ("dmar%d barrier %d missed entry", dmar->iommu.unit, barrier_id));
 	dmar->barrier_flags |= f_done;
 	if ((dmar->barrier_flags & f_wakeup) != 0)
 		wakeup(&dmar->barrier_flags);
@@ -617,23 +616,54 @@ dmar_barrier_exit(struct dmar_unit *dmar, u_int barrier_id)
 	DMAR_UNLOCK(dmar);
 }
 
-int dmar_match_verbose;
 int dmar_batch_coalesce = 100;
+struct timespec dmar_hw_timeout = {
+	.tv_sec = 0,
+	.tv_nsec = 1000000
+};
 
-static SYSCTL_NODE(_hw, OID_AUTO, dmar, CTLFLAG_RD, NULL, "");
-SYSCTL_INT(_hw_dmar, OID_AUTO, tbl_pagecnt, CTLFLAG_RD,
+static const uint64_t d = 1000000000;
+
+void
+dmar_update_timeout(uint64_t newval)
+{
+
+	/* XXXKIB not atomic */
+	dmar_hw_timeout.tv_sec = newval / d;
+	dmar_hw_timeout.tv_nsec = newval % d;
+}
+
+uint64_t
+dmar_get_timeout(void)
+{
+
+	return ((uint64_t)dmar_hw_timeout.tv_sec * d +
+	    dmar_hw_timeout.tv_nsec);
+}
+
+static int
+dmar_timeout_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	uint64_t val;
+	int error;
+
+	val = dmar_get_timeout();
+	error = sysctl_handle_long(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	dmar_update_timeout(val);
+	return (error);
+}
+
+static SYSCTL_NODE(_hw_iommu, OID_AUTO, dmar, CTLFLAG_RD | CTLFLAG_MPSAFE,
+    NULL, "");
+SYSCTL_INT(_hw_iommu_dmar, OID_AUTO, tbl_pagecnt, CTLFLAG_RD,
     &dmar_tbl_pagecnt, 0,
     "Count of pages used for DMAR pagetables");
-SYSCTL_INT(_hw_dmar, OID_AUTO, match_verbose, CTLFLAG_RWTUN,
-    &dmar_match_verbose, 0,
-    "Verbose matching of the PCI devices to DMAR paths");
-SYSCTL_INT(_hw_dmar, OID_AUTO, batch_coalesce, CTLFLAG_RWTUN,
+SYSCTL_INT(_hw_iommu_dmar, OID_AUTO, batch_coalesce, CTLFLAG_RWTUN,
     &dmar_batch_coalesce, 0,
     "Number of qi batches between interrupt");
-#ifdef INVARIANTS
-int dmar_check_free;
-SYSCTL_INT(_hw_dmar, OID_AUTO, check_free, CTLFLAG_RWTUN,
-    &dmar_check_free, 0,
-    "Check the GPA RBtree for free_down and free_after validity");
-#endif
-
+SYSCTL_PROC(_hw_iommu_dmar, OID_AUTO, timeout,
+    CTLTYPE_U64 | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, 0,
+    dmar_timeout_sysctl, "QU",
+    "Timeout for command wait, in nanoseconds");

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Charles Mott <cm@linktel.net>
  * All rights reserved.
  *
@@ -43,7 +45,6 @@ __FBSDID("$FreeBSD$");
     this causes a certain amount of bookkeeping to keep track of the
     changes of sequence and acknowledgment numbers, since the client
     machine is totally unaware of the modification to the TCP stream.
-
 
     References: RFC 959, RFC 2428.
 
@@ -137,7 +138,6 @@ protohandler_out(struct libalias *la, struct ip *pip, struct alias_data *ah)
 	AliasHandleFtpOut(la, pip, ah->lnk, ah->maxpktsize);
 	return (0);
 }
-
 
 static int
 protohandler_in(struct libalias *la, struct ip *pip, struct alias_data *ah)
@@ -752,7 +752,8 @@ NewFtpMessage(struct libalias *la, struct ip *pip,
 		{
 			u_short new_len;
 
-			new_len = htons(hlen + slen);
+			new_len = htons(hlen +
+			    MIN(slen, maxpacketsize - hlen));
 			DifferentialChecksum(&pip->ip_sum,
 			    &new_len,
 			    &pip->ip_len,

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1988, 1990, 1993, 1994, 1995
  *	The Regents of the University of California.
  * All rights reserved.
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -126,29 +128,123 @@ __FBSDID("$FreeBSD$");
 VNET_DECLARE(struct uma_zone *, sack_hole_zone);
 #define	V_sack_hole_zone		VNET(sack_hole_zone)
 
-SYSCTL_NODE(_net_inet_tcp, OID_AUTO, sack, CTLFLAG_RW, 0, "TCP SACK");
+SYSCTL_NODE(_net_inet_tcp, OID_AUTO, sack, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "TCP SACK");
 VNET_DEFINE(int, tcp_do_sack) = 1;
 #define	V_tcp_do_sack			VNET(tcp_do_sack)
 SYSCTL_INT(_net_inet_tcp_sack, OID_AUTO, enable, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(tcp_do_sack), 0, "Enable/Disable TCP SACK support");
 
 VNET_DEFINE(int, tcp_sack_maxholes) = 128;
-#define	V_tcp_sack_maxholes		VNET(tcp_sack_maxholes)
 SYSCTL_INT(_net_inet_tcp_sack, OID_AUTO, maxholes, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(tcp_sack_maxholes), 0,
     "Maximum number of TCP SACK holes allowed per connection");
 
 VNET_DEFINE(int, tcp_sack_globalmaxholes) = 65536;
-#define	V_tcp_sack_globalmaxholes	VNET(tcp_sack_globalmaxholes)
 SYSCTL_INT(_net_inet_tcp_sack, OID_AUTO, globalmaxholes, CTLFLAG_VNET | CTLFLAG_RW,
-    &VNET_NAME(tcp_sack_globalmaxholes), 0, 
+    &VNET_NAME(tcp_sack_globalmaxholes), 0,
     "Global maximum number of TCP SACK holes");
 
 VNET_DEFINE(int, tcp_sack_globalholes) = 0;
-#define	V_tcp_sack_globalholes		VNET(tcp_sack_globalholes)
 SYSCTL_INT(_net_inet_tcp_sack, OID_AUTO, globalholes, CTLFLAG_VNET | CTLFLAG_RD,
     &VNET_NAME(tcp_sack_globalholes), 0,
     "Global number of TCP SACK holes currently allocated");
+
+/*
+ * This function will find overlaps with the currently stored sackblocks
+ * and add any overlap as a dsack block upfront
+ */
+void
+tcp_update_dsack_list(struct tcpcb *tp, tcp_seq rcv_start, tcp_seq rcv_end)
+{
+	struct sackblk head_blk,mid_blk,saved_blks[MAX_SACK_BLKS];
+	int i, j, n, identical;
+	tcp_seq start, end;
+
+	INP_WLOCK_ASSERT(tp->t_inpcb);
+
+	KASSERT(SEQ_LT(rcv_start, rcv_end), ("rcv_start < rcv_end"));
+
+	if (SEQ_LT(rcv_end, tp->rcv_nxt) ||
+	    ((rcv_end == tp->rcv_nxt) &&
+	     (tp->rcv_numsacks > 0 ) &&
+	     (tp->sackblks[0].end == tp->rcv_nxt))) {
+		saved_blks[0].start = rcv_start;
+		saved_blks[0].end = rcv_end;
+	} else {
+		saved_blks[0].start = saved_blks[0].end = 0;
+	}
+
+	head_blk.start = head_blk.end = 0;
+	mid_blk.start = rcv_start;
+	mid_blk.end = rcv_end;
+	identical = 0;
+
+	for (i = 0; i < tp->rcv_numsacks; i++) {
+		start = tp->sackblks[i].start;
+		end = tp->sackblks[i].end;
+		if (SEQ_LT(rcv_end, start)) {
+			/* pkt left to sack blk */
+			continue;
+		}
+		if (SEQ_GT(rcv_start, end)) {
+			/* pkt right to sack blk */
+			continue;
+		}
+		if (SEQ_GT(tp->rcv_nxt, end)) {
+			if ((SEQ_MAX(rcv_start, start) != SEQ_MIN(rcv_end, end)) &&
+			    (SEQ_GT(head_blk.start, SEQ_MAX(rcv_start, start)) ||
+			    (head_blk.start == head_blk.end))) {
+				head_blk.start = SEQ_MAX(rcv_start, start);
+				head_blk.end = SEQ_MIN(rcv_end, end);
+			}
+			continue;
+		}
+		if (((head_blk.start == head_blk.end) ||
+		     SEQ_LT(start, head_blk.start)) &&
+		     (SEQ_GT(end, rcv_start) &&
+		      SEQ_LEQ(start, rcv_end))) {
+			head_blk.start = start;
+			head_blk.end = end;
+		}
+		mid_blk.start = SEQ_MIN(mid_blk.start, start);
+		mid_blk.end = SEQ_MAX(mid_blk.end, end);
+		if ((mid_blk.start == start) &&
+		    (mid_blk.end == end))
+			identical = 1;
+	}
+	if (SEQ_LT(head_blk.start, head_blk.end)) {
+		/* store overlapping range */
+		saved_blks[0].start = SEQ_MAX(rcv_start, head_blk.start);
+		saved_blks[0].end   = SEQ_MIN(rcv_end, head_blk.end);
+	}
+	n = 1;
+	/*
+	 * Second, if not ACKed, store the SACK block that
+	 * overlaps with the DSACK block unless it is identical
+	 */
+	if ((SEQ_LT(tp->rcv_nxt, mid_blk.end) &&
+	    !((mid_blk.start == saved_blks[0].start) &&
+	    (mid_blk.end == saved_blks[0].end))) ||
+	    identical == 1) {
+		saved_blks[n].start = mid_blk.start;
+		saved_blks[n++].end = mid_blk.end;
+	}
+	for (j = 0; (j < tp->rcv_numsacks) && (n < MAX_SACK_BLKS); j++) {
+		if (((SEQ_LT(tp->sackblks[j].end, mid_blk.start) ||
+		      SEQ_GT(tp->sackblks[j].start, mid_blk.end)) &&
+		    (SEQ_GT(tp->sackblks[j].start, tp->rcv_nxt))))
+		saved_blks[n++] = tp->sackblks[j];
+	}
+	j = 0;
+	for (i = 0; i < n; i++) {
+		/* we can end up with a stale initial entry */
+		if (SEQ_LT(saved_blks[i].start, saved_blks[i].end)) {
+			tp->sackblks[j++] = saved_blks[i];
+		}
+	}
+	tp->rcv_numsacks = j;
+}
 
 /*
  * This function is called upon receipt of new valid data (while not in
@@ -169,11 +265,18 @@ tcp_update_sack_list(struct tcpcb *tp, tcp_seq rcv_start, tcp_seq rcv_end)
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 
 	/* Check arguments. */
-	KASSERT(SEQ_LT(rcv_start, rcv_end), ("rcv_start < rcv_end"));
+	KASSERT(SEQ_LEQ(rcv_start, rcv_end), ("rcv_start <= rcv_end"));
 
-	/* SACK block for the received segment. */
-	head_blk.start = rcv_start;
-	head_blk.end = rcv_end;
+	if ((rcv_start == rcv_end) &&
+	    (tp->rcv_numsacks >= 1) &&
+	    (rcv_end == tp->sackblks[0].end)) {
+		/* retaining DSACK block below rcv_nxt (todrop) */
+		head_blk = tp->sackblks[0];
+	} else {
+		/* SACK block for the received segment. */
+		head_blk.start = rcv_start;
+		head_blk.end = rcv_end;
+	}
 
 	/*
 	 * Merge updated SACK blocks into head_blk, and save unchanged SACK
@@ -194,11 +297,53 @@ tcp_update_sack_list(struct tcpcb *tp, tcp_seq rcv_start, tcp_seq rcv_end)
 			 * Merge this SACK block into head_blk.  This SACK
 			 * block itself will be discarded.
 			 */
-			if (SEQ_GT(head_blk.start, start))
+			/*
+			 * |-|
+			 *   |---|  merge
+			 *
+			 *     |-|
+			 * |---|    merge
+			 *
+			 * |-----|
+			 *   |-|    DSACK smaller
+			 *
+			 *   |-|
+			 * |-----|  DSACK smaller
+			 */
+			if (head_blk.start == end)
 				head_blk.start = start;
-			if (SEQ_LT(head_blk.end, end))
+			else if (head_blk.end == start)
 				head_blk.end = end;
+			else {
+				if (SEQ_LT(head_blk.start, start)) {
+					tcp_seq temp = start;
+					start = head_blk.start;
+					head_blk.start = temp;
+				}
+				if (SEQ_GT(head_blk.end, end)) {
+					tcp_seq temp = end;
+					end = head_blk.end;
+					head_blk.end = temp;
+				}
+				if ((head_blk.start != start) ||
+				    (head_blk.end != end)) {
+					if ((num_saved >= 1) &&
+					   SEQ_GEQ(saved_blks[num_saved-1].start, start) &&
+					   SEQ_LEQ(saved_blks[num_saved-1].end, end))
+						num_saved--;
+					saved_blks[num_saved].start = start;
+					saved_blks[num_saved].end = end;
+					num_saved++;
+				}
+			}
 		} else {
+			/*
+			 * This block supercedes the prior block
+			 */
+			if ((num_saved >= 1) &&
+			   SEQ_GEQ(saved_blks[num_saved-1].start, start) &&
+			   SEQ_LEQ(saved_blks[num_saved-1].end, end))
+				num_saved--;
 			/*
 			 * Save this SACK block.
 			 */
@@ -212,7 +357,7 @@ tcp_update_sack_list(struct tcpcb *tp, tcp_seq rcv_start, tcp_seq rcv_end)
 	 * Update SACK list in tp->sackblks[].
 	 */
 	num_head = 0;
-	if (SEQ_GT(head_blk.start, tp->rcv_nxt)) {
+	if (SEQ_LT(rcv_start, rcv_end)) {
 		/*
 		 * The received data segment is an out-of-order segment.  Put
 		 * head_blk at the top of SACK list.
@@ -226,6 +371,10 @@ tcp_update_sack_list(struct tcpcb *tp, tcp_seq rcv_start, tcp_seq rcv_end)
 		if (num_saved >= MAX_SACK_BLKS)
 			num_saved--;
 	}
+	if ((rcv_start == rcv_end) &&
+	    (rcv_start == tp->sackblks[0].end)) {
+		num_head = 1;
+	}
 	if (num_saved > 0) {
 		/*
 		 * Copy the saved SACK blocks back.
@@ -236,6 +385,45 @@ tcp_update_sack_list(struct tcpcb *tp, tcp_seq rcv_start, tcp_seq rcv_end)
 
 	/* Save the number of SACK blocks. */
 	tp->rcv_numsacks = num_head + num_saved;
+}
+
+void
+tcp_clean_dsack_blocks(struct tcpcb *tp)
+{
+	struct sackblk saved_blks[MAX_SACK_BLKS];
+	int num_saved, i;
+
+	INP_WLOCK_ASSERT(tp->t_inpcb);
+	/*
+	 * Clean up any DSACK blocks that
+	 * are in our queue of sack blocks.
+	 *
+	 */
+	num_saved = 0;
+	for (i = 0; i < tp->rcv_numsacks; i++) {
+		tcp_seq start = tp->sackblks[i].start;
+		tcp_seq end = tp->sackblks[i].end;
+		if (SEQ_GEQ(start, end) || SEQ_LEQ(start, tp->rcv_nxt)) {
+			/*
+			 * Discard this D-SACK block.
+			 */
+			continue;
+		}
+		/*
+		 * Save this SACK block.
+		 */
+		saved_blks[num_saved].start = start;
+		saved_blks[num_saved].end = end;
+		num_saved++;
+	}
+	if (num_saved > 0) {
+		/*
+		 * Copy the saved SACK blocks back.
+		 */
+		bcopy(saved_blks, &tp->sackblks[0],
+		      sizeof(struct sackblk) * num_saved);
+	}
+	tp->rcv_numsacks = num_saved;
 }
 
 /*
@@ -346,9 +534,7 @@ tcp_sackhole_remove(struct tcpcb *tp, struct sackhole *hole)
  * tp->snd_holes is an ordered list of holes (oldest to newest, in terms of
  * the sequence space).
  * Returns 1 if incoming ACK has previously unknown SACK information,
- * 0 otherwise. Note: We treat (snd_una, th_ack) as a sack block so any changes
- * to that (i.e. left edge moving) would also be considered a change in SACK
- * information which is slightly different than rfc6675.
+ * 0 otherwise.
  */
 int
 tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
@@ -356,16 +542,21 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 	struct sackhole *cur, *temp;
 	struct sackblk sack, sack_blocks[TCP_MAX_SACK + 1], *sblkp;
 	int i, j, num_sack_blks, sack_changed;
+	int delivered_data, left_edge_delta;
 
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 
 	num_sack_blks = 0;
 	sack_changed = 0;
+	delivered_data = 0;
+	left_edge_delta = 0;
 	/*
 	 * If SND.UNA will be advanced by SEG.ACK, and if SACK holes exist,
 	 * treat [SND.UNA, SEG.ACK) as if it is a SACK block.
+	 * Account changes to SND.UNA always in delivered data.
 	 */
 	if (SEQ_LT(tp->snd_una, th_ack) && !TAILQ_EMPTY(&tp->snd_holes)) {
+		left_edge_delta = th_ack - tp->snd_una;
 		sack_blocks[num_sack_blks].start = tp->snd_una;
 		sack_blocks[num_sack_blks++].end = th_ack;
 	}
@@ -374,7 +565,6 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 	 * received new blocks from the other side.
 	 */
 	if (to->to_flags & TOF_SACK) {
-		tp->sackhint.sacked_bytes = 0;	/* reset */
 		for (i = 0; i < to->to_nsacks; i++) {
 			bcopy((to->to_sacks + i * TCPOLEN_SACK),
 			    &sack, sizeof(sack));
@@ -387,8 +577,6 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 			    SEQ_GT(sack.end, tp->snd_una) &&
 			    SEQ_LEQ(sack.end, tp->snd_max)) {
 				sack_blocks[num_sack_blks++] = sack;
-				tp->sackhint.sacked_bytes +=
-				    (sack.end-sack.start);
 			}
 		}
 	}
@@ -413,7 +601,7 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 			}
 		}
 	}
-	if (TAILQ_EMPTY(&tp->snd_holes))
+	if (TAILQ_EMPTY(&tp->snd_holes)) {
 		/*
 		 * Empty scoreboard. Need to initialize snd_fack (it may be
 		 * uninitialized or have a bogus value). Scoreboard holes
@@ -422,6 +610,8 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 		 * scoreboard).
 		 */
 		tp->snd_fack = SEQ_MAX(tp->snd_una, th_ack);
+		tp->sackhint.sacked_bytes = 0;	/* reset */
+	}
 	/*
 	 * In the while-loop below, incoming SACK blocks (sack_blocks[]) and
 	 * SACK holes (snd_holes) are traversed from their tails with just
@@ -445,34 +635,36 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 		 */
 		temp = tcp_sackhole_insert(tp, tp->snd_fack,sblkp->start,NULL);
 		if (temp != NULL) {
+			delivered_data += sblkp->end - sblkp->start;
 			tp->snd_fack = sblkp->end;
 			/* Go to the previous sack block. */
 			sblkp--;
 			sack_changed = 1;
 		} else {
-			/* 
-			 * We failed to add a new hole based on the current 
-			 * sack block.  Skip over all the sack blocks that 
+			/*
+			 * We failed to add a new hole based on the current
+			 * sack block.  Skip over all the sack blocks that
 			 * fall completely to the right of snd_fack and
 			 * proceed to trim the scoreboard based on the
 			 * remaining sack blocks.  This also trims the
 			 * scoreboard for th_ack (which is sack_blocks[0]).
 			 */
-			while (sblkp >= sack_blocks && 
+			while (sblkp >= sack_blocks &&
 			       SEQ_LT(tp->snd_fack, sblkp->start))
 				sblkp--;
-			if (sblkp >= sack_blocks && 
-			    SEQ_LT(tp->snd_fack, sblkp->end))
+			if (sblkp >= sack_blocks &&
+			    SEQ_LT(tp->snd_fack, sblkp->end)) {
+				delivered_data += sblkp->end - tp->snd_fack;
 				tp->snd_fack = sblkp->end;
+				sack_changed = 1;
+			}
 		}
 	} else if (SEQ_LT(tp->snd_fack, sblkp->end)) {
 		/* fack is advanced. */
+		delivered_data += sblkp->end - tp->snd_fack;
 		tp->snd_fack = sblkp->end;
 		sack_changed = 1;
 	}
-	/* We must have at least one SACK hole in scoreboard. */
-	KASSERT(!TAILQ_EMPTY(&tp->snd_holes),
-	    ("SACK scoreboard must not be empty"));
 	cur = TAILQ_LAST(&tp->snd_holes, sackhole_head); /* Last SACK hole. */
 	/*
 	 * Since the incoming sack blocks are sorted, we can process them
@@ -503,6 +695,7 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 			/* Data acks at least the beginning of hole. */
 			if (SEQ_GEQ(sblkp->end, cur->end)) {
 				/* Acks entire hole, so delete hole. */
+				delivered_data += (cur->end - cur->start);
 				temp = cur;
 				cur = TAILQ_PREV(cur, sackhole_head, scblink);
 				tcp_sackhole_remove(tp, temp);
@@ -514,6 +707,7 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 				continue;
 			} else {
 				/* Move start of hole forward. */
+				delivered_data += (sblkp->end - cur->start);
 				cur->start = sblkp->end;
 				cur->rxmit = SEQ_MAX(cur->rxmit, cur->start);
 			}
@@ -521,6 +715,7 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 			/* Data acks at least the end of hole. */
 			if (SEQ_GEQ(sblkp->end, cur->end)) {
 				/* Move end of hole backward. */
+				delivered_data += (cur->end - sblkp->start);
 				cur->end = sblkp->start;
 				cur->rxmit = SEQ_MIN(cur->rxmit, cur->end);
 			} else {
@@ -540,6 +735,7 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 					cur->end = sblkp->start;
 					cur->rxmit = SEQ_MIN(cur->rxmit,
 					    cur->end);
+					delivered_data += (sblkp->end - sblkp->start);
 				}
 			}
 		}
@@ -554,6 +750,10 @@ tcp_sack_doack(struct tcpcb *tp, struct tcpopt *to, tcp_seq th_ack)
 		else
 			sblkp--;
 	}
+	tp->sackhint.delivered_data = delivered_data;
+	tp->sackhint.sacked_bytes += delivered_data - left_edge_delta;
+	KASSERT((delivered_data >= 0), ("delivered_data < 0"));
+	KASSERT((tp->sackhint.sacked_bytes >= 0), ("sacked_bytes < 0"));
 	return (sack_changed);
 }
 
@@ -587,15 +787,16 @@ void
 tcp_sack_partialack(struct tcpcb *tp, struct tcphdr *th)
 {
 	int num_segs = 1;
+	u_int maxseg = tcp_maxseg(tp);
 
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 	tcp_timer_activate(tp, TT_REXMT, 0);
 	tp->t_rtttime = 0;
 	/* Send one or 2 segments based on how much new data was acked. */
-	if ((BYTES_THIS_ACK(tp, th) / tp->t_maxseg) >= 2)
+	if ((BYTES_THIS_ACK(tp, th) / maxseg) >= 2)
 		num_segs = 2;
 	tp->snd_cwnd = (tp->sackhint.sack_bytes_rexmit +
-	    (tp->snd_nxt - tp->sack_newdata) + num_segs * tp->t_maxseg);
+	    (tp->snd_nxt - tp->snd_recover) + num_segs * maxseg);
 	if (tp->snd_cwnd > tp->snd_ssthresh)
 		tp->snd_cwnd = tp->snd_ssthresh;
 	tp->t_flags |= TF_ACKNOW;

@@ -1,6 +1,8 @@
 /*	$NetBSD: maltareg.h,v 1.1 2002/03/07 14:44:04 simonb Exp $	*/
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright 2002 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -225,7 +227,6 @@
 #define MALTA_KYBDADR              MALTA_SMSC_KYBD_ADR // MALTA_PCI0_ADDR(MALTA_SMSC_KYBD_ADR)
 #define MALTA_SMSC_MOUSE_ADR       MALTA_SMSC_KYBD_ADR
 #define MALTA_MOUSEADR             MALTA_KYBDADR
-
 
 #define	MALTA_DMA_PCI_PCIBASE	0x00000000UL
 #define	MALTA_DMA_PCI_PHYSBASE	0x00000000UL

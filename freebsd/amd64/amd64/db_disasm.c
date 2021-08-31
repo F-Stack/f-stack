@@ -145,6 +145,26 @@ static const struct inst db_inst_0f388x[] = {
 /*8f*/	{ "",	   FALSE, NONE,  0,	      0 },
 };
 
+static const struct inst db_inst_0f38fx[] = {
+/*f0*/	{ "crc32b",TRUE,  NONE,  op2(Eb, R),  0 },
+/*f1*/	{ "crc32", TRUE,  LONG,  op2(E, R),   0 },
+/*f2*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*f3*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*f4*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*f5*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*f6*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*f7*/	{ "",	   FALSE, NONE,  0,	      0 },
+
+/*f8*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*f9*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*fa*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*fb*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*fc*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*fd*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*fe*/	{ "",	   FALSE, NONE,  0,	      0 },
+/*ff*/	{ "",	   FALSE, NONE,  0,	      0 },
+};
+
 static const struct inst * const db_inst_0f38[] = {
 	0,
 	0,
@@ -161,7 +181,7 @@ static const struct inst * const db_inst_0f38[] = {
 	0,
 	0,
 	0,
-	0
+	db_inst_0f38fx
 };
 
 static const char * const db_Grp6[] = {
@@ -972,7 +992,6 @@ struct i_addr {
 };
 
 static const char * const db_reg[2][4][16] = {
-
 	{{"%al",  "%cl",  "%dl",  "%bl",  "%ah",  "%ch",  "%dh",  "%bh",
 	  "%r8b", "%r9b", "%r10b", "%r11b", "%r12b", "%r13b", "%r14b", "%r15b" },
 	{ "%ax",  "%cx",  "%dx",  "%bx",  "%sp",  "%bp",  "%si",  "%di",
@@ -1044,7 +1063,7 @@ db_read_address(loc, short_addr, rex, regmodrm, addrp)
 	    return (loc);
 	}
 	addrp->is_reg = FALSE;
-	addrp->index = 0;
+	addrp->index = NULL;
 
 	if (short_addr)
 	    size = LONG;
@@ -1067,7 +1086,7 @@ db_read_address(loc, short_addr, rex, regmodrm, addrp)
 		if (rm == 5) {
 		    get_value_inc(addrp->disp, loc, 4, FALSE);
 		    if (have_sib)
-			addrp->base = 0;
+			addrp->base = NULL;
 		    else if (short_addr)
 			addrp->base = "%eip";
 		    else
@@ -1109,9 +1128,9 @@ db_print_address(seg, size, rex, addrp)
 	    db_printf("%s:", seg);
 	}
 
-	if (addrp->disp != 0 || (addrp->base == 0 && addrp->index == 0))
+	if (addrp->disp != 0 || (addrp->base == NULL && addrp->index == NULL))
 		db_printsym((db_addr_t)addrp->disp, DB_STGY_ANY);
-	if (addrp->base != 0 || addrp->index != 0) {
+	if (addrp->base != NULL || addrp->index != NULL) {
 	    db_printf("(");
 	    if (addrp->base)
 		db_printf("%s", addrp->base);
@@ -1238,7 +1257,7 @@ db_disasm(db_addr_t loc, bool altfmt)
 	boolean_t	first;
 	int	displ;
 	int	prefix;
-	int	rep;
+	int	rep, repne;
 	int	imm;
 	int	imm2;
 	long	imm64;
@@ -1248,12 +1267,13 @@ db_disasm(db_addr_t loc, bool altfmt)
 	get_value_inc(inst, loc, 1, FALSE);
 	short_addr = FALSE;
 	size = LONG;
-	seg = 0;
+	seg = NULL;
 
 	/*
 	 * Get prefixes
 	 */
 	rep = FALSE;
+	repne = FALSE;
 	prefix = TRUE;
 	do {
 	    switch (inst) {
@@ -1284,8 +1304,12 @@ db_disasm(db_addr_t loc, bool altfmt)
 		case 0xf0:
 		    db_printf("lock ");
 		    break;
+		    /*
+		     * XXX repne/repe are only actually valid for MOVS, CMPS,
+		     * SCAS, LODS, STOS, INS, OUTS.
+		     */
 		case 0xf2:
-		    db_printf("repne ");
+		    repne = TRUE;
 		    break;
 		case 0xf3:
 		    rep = TRUE;
@@ -1313,7 +1337,7 @@ db_disasm(db_addr_t loc, bool altfmt)
 	while (ip->i_size == ESC) {
 	    get_value_inc(inst, loc, 1, FALSE);
 	    ip = ((const struct inst * const *)ip->i_extra)[inst>>4];
-	    if (ip == 0) {
+	    if (ip == NULL) {
 		ip = &db_bad_inst;
 	    }
 	    else {
@@ -1480,6 +1504,11 @@ db_disasm(db_addr_t loc, bool altfmt)
 		rep = FALSE;
 	    }
 	}
+	/* N.B., likely highly incomplete. */
+	if (repne) {
+		if (ip == &db_inst_0f38fx[0] || ip == &db_inst_0f38fx[1])
+			repne = FALSE;
+	}
 	if (size == WORD) {
 	    if (ip->i_extra == db_Grp9 && f_mod(rex, regmodrm) != 3 &&
 		f_reg(rex, regmodrm) == 0x6) {
@@ -1495,6 +1524,8 @@ db_disasm(db_addr_t loc, bool altfmt)
 
 	if (rep == TRUE)
 	    db_printf("repe ");	/* XXX repe VS rep */
+	if (repne == TRUE)
+	    db_printf("repne ");
 
 	if (i_size == SDEP) {
 	    if (size == LONG)
@@ -1541,7 +1572,6 @@ db_disasm(db_addr_t loc, bool altfmt)
 		db_printf(",");
 
 	    switch (i_mode & 0xFF) {
-
 		case E:
 		    db_print_address(seg, size, rex, &address);
 		    break;

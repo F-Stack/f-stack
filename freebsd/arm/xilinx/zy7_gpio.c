@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Thomas Skibo
  * All rights reserved.
  *
@@ -62,7 +64,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/resource.h>
 #include <machine/stdarg.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/gpio/gpiobusvar.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -96,7 +97,6 @@ struct zy7_gpio_softc {
 
 #define WR4(sc, off, val)	bus_write_4((sc)->mem_res, (off), (val))
 #define RD4(sc, off)		bus_read_4((sc)->mem_res, (off))
-
 
 /* Xilinx Zynq-7000 GPIO register definitions:
  */
@@ -297,24 +297,6 @@ zy7_gpio_probe(device_t dev)
 	return (0);
 }
 
-static void
-zy7_gpio_hw_reset(struct zy7_gpio_softc *sc)
-{
-	int i;
-
-	for (i = 0; i < NUMBANKS; i++) {
-		WR4(sc, ZY7_GPIO_DATA(i), 0);
-		WR4(sc, ZY7_GPIO_DIRM(i), 0);
-		WR4(sc, ZY7_GPIO_OEN(i), 0);
-		WR4(sc, ZY7_GPIO_INT_DIS(i), 0xffffffff);
-		WR4(sc, ZY7_GPIO_INT_POLARITY(i), 0);
-		WR4(sc, ZY7_GPIO_INT_TYPE(i),
-		    i == 1 ? 0x003fffff : 0xffffffff);
-		WR4(sc, ZY7_GPIO_INT_ANY(i), 0);
-		WR4(sc, ZY7_GPIO_INT_STAT(i), 0xffffffff);
-	}
-}
-
 static int zy7_gpio_detach(device_t dev);
 
 static int
@@ -336,9 +318,6 @@ zy7_gpio_attach(device_t dev)
 		zy7_gpio_detach(dev);
 		return (ENOMEM);
 	}
-
-	/* Completely reset. */
-	zy7_gpio_hw_reset(sc);
 
 	sc->busdev = gpiobus_attach_bus(dev);
 	if (sc->busdev == NULL) {

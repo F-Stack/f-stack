@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2003-2011 Netlogic Microsystems (Netlogic). All rights
  * reserved.
  *
@@ -60,13 +62,13 @@ uint64_t counter_freq;
 
 struct timecounter *platform_timecounter;
 
-static DPCPU_DEFINE(uint32_t, cycles_per_tick);
+DPCPU_DEFINE_STATIC(uint32_t, cycles_per_tick);
 static uint32_t cycles_per_usec;
 
-static DPCPU_DEFINE(volatile uint32_t, counter_upper);
-static DPCPU_DEFINE(volatile uint32_t, counter_lower_last);
-static DPCPU_DEFINE(uint32_t, compare_ticks);
-static DPCPU_DEFINE(uint32_t, lost_ticks);
+DPCPU_DEFINE_STATIC(volatile uint32_t, counter_upper);
+DPCPU_DEFINE_STATIC(volatile uint32_t, counter_lower_last);
+DPCPU_DEFINE_STATIC(uint32_t, compare_ticks);
+DPCPU_DEFINE_STATIC(uint32_t, lost_ticks);
 
 struct clock_softc {
 	int intr_rid;
@@ -177,8 +179,9 @@ sysctl_machdep_counter_freq(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 
-SYSCTL_PROC(_machdep, OID_AUTO, counter_freq, CTLTYPE_U64 | CTLFLAG_RW,
-    NULL, 0, sysctl_machdep_counter_freq, "QU",
+SYSCTL_PROC(_machdep, OID_AUTO, counter_freq,
+    CTLTYPE_U64 | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    sysctl_machdep_counter_freq, "QU",
     "Timecounter frequency in Hz");
 
 static unsigned
@@ -196,6 +199,7 @@ DELAY(int n)
 {
 	uint32_t cur, last, delta, usecs;
 
+	TSENTER();
 	/*
 	 * This works by polling the timer and counting the number of
 	 * microseconds that go by.
@@ -219,6 +223,7 @@ DELAY(int n)
 			delta %= cycles_per_usec;
 		}
 	}
+	TSEXIT();
 }
 
 static int
@@ -280,7 +285,6 @@ clock_intr(void *arg)
 	DPCPU_SET(counter_lower_last, count);
 
 	if (cycles_per_tick > 0) {
-
 		/*
 		 * Account for the "lost time" between when the timer interrupt
 		 * fired and when 'clock_intr' actually started executing.
@@ -368,7 +372,6 @@ static device_method_t clock_methods[] = {
 	DEVMETHOD(device_attach, clock_attach),
 	DEVMETHOD(device_detach, bus_generic_detach),
 	DEVMETHOD(device_shutdown, bus_generic_shutdown),
-
 	{0, 0}
 };
 

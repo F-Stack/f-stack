@@ -1,6 +1,8 @@
 /*	$NetBSD: obio_space.c,v 1.6 2003/07/15 00:25:05 lukem Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 2001, 2002, 2003 Wasabi Systems, Inc.
  * All rights reserved.
  *
@@ -88,7 +90,6 @@ generic_bs_alloc(bus_space_tag_t t, bus_addr_t rstart, bus_addr_t rend, bus_size
 
 	panic("generic_bs_alloc(): not implemented");
 }
-
 
 void
 generic_bs_unmap(bus_space_tag_t t, bus_space_handle_t h, bus_size_t size)

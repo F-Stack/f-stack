@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 1999-2002, 2007, 2009 Robert N. M. Watson
+ * Copyright (c) 1999-2002, 2007, 2009, 2019 Robert N. M. Watson
  * Copyright (c) 2001 Ilmar S. Habibulin
  * Copyright (c) 2001-2004 Networks Associates Technology, Inc.
  * Copyright (c) 2006 SPARTA, Inc.
@@ -266,16 +266,17 @@ void
 mac_netinet_arp_send(struct ifnet *ifp, struct mbuf *m)
 {
 	struct label *mlabel;
+	int locked;
 
 	if (mac_policy_count == 0)
 		return;
 
 	mlabel = mac_mbuf_to_label(m);
 
-	MAC_IFNET_LOCK(ifp);
+	MAC_IFNET_LOCK(ifp, locked);
 	MAC_POLICY_PERFORM_NOSLEEP(netinet_arp_send, ifp, ifp->if_label, m,
 	    mlabel);
-	MAC_IFNET_UNLOCK(ifp);
+	MAC_IFNET_UNLOCK(ifp, locked);
 }
 
 void
@@ -310,16 +311,17 @@ void
 mac_netinet_igmp_send(struct ifnet *ifp, struct mbuf *m)
 {
 	struct label *mlabel;
+	int locked;
 
 	if (mac_policy_count == 0)
 		return;
 
 	mlabel = mac_mbuf_to_label(m);
 
-	MAC_IFNET_LOCK(ifp);
+	MAC_IFNET_LOCK(ifp, locked);
 	MAC_POLICY_PERFORM_NOSLEEP(netinet_igmp_send, ifp, ifp->if_label, m,
 	    mlabel);
-	MAC_IFNET_UNLOCK(ifp);
+	MAC_IFNET_UNLOCK(ifp, locked);
 }
 
 void
@@ -435,7 +437,7 @@ mac_netinet_firewall_send(struct mbuf *m)
 /*
  * These functions really should be referencing the syncache structure
  * instead of the label.  However, due to some of the complexities associated
- * with exposing this syncache structure we operate directly on it's label
+ * with exposing this syncache structure we operate directly on its label
  * pointer.  This should be OK since we aren't making any access control
  * decisions within this code directly, we are merely allocating and copying
  * label storage so we can properly initialize mbuf labels for any packets

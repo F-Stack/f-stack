@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: (BSD-3-Clause AND MIT-CMU)
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -68,9 +70,12 @@
 #define	_VM_OBJECT_
 
 #include <sys/queue.h>
+#include <sys/_blockcount.h>
 #include <sys/_lock.h>
 #include <sys/_mutex.h>
+#include <sys/_pctrie.h>
 #include <sys/_rwlock.h>
+#include <sys/_domainset.h>
 
 #include <vm/_vm_radix.h>
 
@@ -79,46 +84,43 @@
  *
  *	vm_object_t		Virtual memory object.
  *
- *	The root of cached pages pool is protected by both the per-object lock
- *	and the free pages queue mutex.
- *	On insert in the cache radix trie, the per-object lock is expected
- *	to be already held and the free pages queue mutex will be
- *	acquired during the operation too.
- *	On remove and lookup from the cache radix trie, only the free
- *	pages queue mutex is expected to be locked.
- *	These rules allow for reliably checking for the presence of cached
- *	pages with only the per-object lock held, thereby reducing contention
- *	for the free pages queue mutex.
- *
  * List of locks
+ *	(a)	atomic
  *	(c)	const until freed
  *	(o)	per-object lock 
  *	(f)	free pages queue mutex
  *
  */
 
+#ifndef VM_PAGE_HAVE_PGLIST
+TAILQ_HEAD(pglist, vm_page);
+#define VM_PAGE_HAVE_PGLIST
+#endif
+
 struct vm_object {
 	struct rwlock lock;
 	TAILQ_ENTRY(vm_object) object_list; /* list of all objects */
 	LIST_HEAD(, vm_object) shadow_head; /* objects that this is a shadow for */
 	LIST_ENTRY(vm_object) shadow_list; /* chain of shadow objects */
-	TAILQ_HEAD(respgs, vm_page) memq; /* list of resident pages */
+	struct pglist memq;		/* list of resident pages */
 	struct vm_radix rtree;		/* root of the resident page radix trie*/
 	vm_pindex_t size;		/* Object size */
-	int generation;			/* generation ID */
-	int ref_count;			/* How many refs?? */
+	struct domainset_ref domain;	/* NUMA policy. */
+	volatile int generation;	/* generation ID */
+	int cleangeneration;		/* Generation at clean time */
+	volatile u_int ref_count;	/* How many refs?? */
 	int shadow_count;		/* how many objects that this is a shadow for */
 	vm_memattr_t memattr;		/* default memory attribute for pages */
 	objtype_t type;			/* type of pager */
 	u_short flags;			/* see below */
 	u_short pg_color;		/* (c) color of first page in obj */
-	u_int paging_in_progress;	/* Paging (in or out) so don't collapse or destroy */
+	blockcount_t paging_in_progress; /* (a) Paging (in or out) so don't collapse or destroy */
+	blockcount_t busy;		/* (a) object is busy, disallow page busy. */
 	int resident_page_count;	/* number of resident pages */
 	struct vm_object *backing_object; /* object that I'm a shadow of */
 	vm_ooffset_t backing_object_offset;/* Offset in backing object */
 	TAILQ_ENTRY(vm_object) pager_object_list; /* list of all objects of this pager type */
 	LIST_HEAD(, vm_reserv) rvq;	/* list of reservations */
-	struct vm_radix cache;		/* (o + f) root of the cache page radix trie */
 	void *handle;
 	union {
 		/*
@@ -163,14 +165,25 @@ struct vm_object {
 		 *		     the handle changed and hash-chain
 		 *		     invalid.
 		 *
-		 *	swp_bcount - number of swap 'swblock' metablocks, each
-		 *		     contains up to 16 swapblk assignments.
-		 *		     see vm/swap_pager.h
+		 *	swp_blks -   pc-trie of the allocated swap blocks.
+		 *
 		 */
 		struct {
 			void *swp_tmpfs;
-			int swp_bcount;
+			struct pctrie swp_blks;
+			vm_ooffset_t writemappings;
 		} swp;
+
+		/*
+		 * Phys pager
+		 */
+		struct {
+			struct phys_pager_ops *ops;
+			union {
+				void *data_ptr;
+				uintptr_t data_val;
+			};
+		} phys;
 	} un_pager;
 	struct ucred *cred;
 	vm_ooffset_t charge;
@@ -182,26 +195,36 @@ struct vm_object {
  */
 #define	OBJ_FICTITIOUS	0x0001		/* (c) contains fictitious pages */
 #define	OBJ_UNMANAGED	0x0002		/* (c) contains unmanaged pages */
-#define OBJ_DEAD	0x0008		/* dead objects (during rundown) */
-#define	OBJ_NOSPLIT	0x0010		/* dont split this object */
+#define	OBJ_POPULATE	0x0004		/* pager implements populate() */
+#define	OBJ_DEAD	0x0008		/* dead objects (during rundown) */
+#define	OBJ_ANON	0x0010		/* (c) contains anonymous memory */
 #define	OBJ_UMTXDEAD	0x0020		/* umtx pshared was terminated */
-#define OBJ_PIPWNT	0x0040		/* paging in progress wanted */
-#define OBJ_MIGHTBEDIRTY 0x0100		/* object might be dirty, only for vnode */
+#define	OBJ_SIZEVNLOCK	0x0040		/* lock vnode to check obj size */
+#define	OBJ_PG_DTOR	0x0080		/* dont reset object, leave that for dtor */
 #define	OBJ_TMPFS_NODE	0x0200		/* object belongs to tmpfs VREG node */
-#define	OBJ_TMPFS_DIRTY	0x0400		/* dirty tmpfs obj */
+#define	OBJ_SPLIT	0x0400		/* object is being split */
+#define	OBJ_COLLAPSING	0x0800		/* Parent of collapse. */
 #define	OBJ_COLORED	0x1000		/* pg_color is defined */
 #define	OBJ_ONEMAPPING	0x2000		/* One USE (a single, non-forked) mapping flag */
-#define	OBJ_DISCONNECTWNT 0x4000	/* disconnect from vnode wanted */
+#define	OBJ_SHADOWLIST	0x4000		/* Object is on the shadow list. */
 #define	OBJ_TMPFS	0x8000		/* has tmpfs vnode allocated */
 
-#define IDX_TO_OFF(idx) (((vm_ooffset_t)(idx)) << PAGE_SHIFT)
-#define OFF_TO_IDX(off) ((vm_pindex_t)(((vm_ooffset_t)(off)) >> PAGE_SHIFT))
+/*
+ * Helpers to perform conversion between vm_object page indexes and offsets.
+ * IDX_TO_OFF() converts an index into an offset.
+ * OFF_TO_IDX() converts an offset into an index.
+ * OBJ_MAX_SIZE specifies the maximum page index corresponding to the
+ *   maximum unsigned offset.
+ */
+#define	IDX_TO_OFF(idx) (((vm_ooffset_t)(idx)) << PAGE_SHIFT)
+#define	OFF_TO_IDX(off) ((vm_pindex_t)(((vm_ooffset_t)(off)) >> PAGE_SHIFT))
+#define	OBJ_MAX_SIZE	(OFF_TO_IDX(UINT64_MAX) + 1)
 
 #ifdef	_KERNEL
 
 #define OBJPC_SYNC	0x1			/* sync I/O */
 #define OBJPC_INVAL	0x2			/* invalidate */
-#define OBJPC_NOSYNC	0x4			/* skip if VPO_NOSYNC */
+#define OBJPC_NOSYNC	0x4			/* skip if PGA_NOSYNC */
 
 /*
  * The following options are supported by vm_object_page_remove().
@@ -215,10 +238,10 @@ extern struct object_q vm_object_list;	/* list of allocated objects */
 extern struct mtx vm_object_list_mtx;	/* lock for object list and count */
 
 extern struct vm_object kernel_object_store;
-extern struct vm_object kmem_object_store;
 
+/* kernel and kmem are aliased for backwards KPI compat. */
 #define	kernel_object	(&kernel_object_store)
-#define	kmem_object	(&kmem_object_store)
+#define	kmem_object	(&kernel_object_store)
 
 #define	VM_OBJECT_ASSERT_LOCKED(object)					\
 	rw_assert(&(object)->lock, RA_LOCKED)
@@ -248,6 +271,19 @@ extern struct vm_object kmem_object_store;
 	rw_wowned(&(object)->lock)
 #define	VM_OBJECT_WUNLOCK(object)					\
 	rw_wunlock(&(object)->lock)
+#define	VM_OBJECT_DROP(object)						\
+	lock_class_rw.lc_unlock(&(object)->lock.lock_object)
+#define	VM_OBJECT_PICKUP(object, state)					\
+	lock_class_rw.lc_lock(&(object)->lock.lock_object, (state))
+
+#define	VM_OBJECT_ASSERT_PAGING(object)					\
+	KASSERT(blockcount_read(&(object)->paging_in_progress) != 0,	\
+	    ("vm_object %p is not paging", object))
+#define	VM_OBJECT_ASSERT_REFERENCE(object)				\
+	KASSERT((object)->reference_count != 0,				\
+	    ("vm_object %p is not referenced", object))
+
+struct vnode;
 
 /*
  *	The object must be locked or thread private.
@@ -283,25 +319,58 @@ vm_object_color(vm_object_t object, u_short color)
 	}
 }
 
-void vm_object_clear_flag(vm_object_t object, u_short bits);
-void vm_object_pip_add(vm_object_t object, short i);
-void vm_object_pip_subtract(vm_object_t object, short i);
-void vm_object_pip_wakeup(vm_object_t object);
-void vm_object_pip_wakeupn(vm_object_t object, short i);
-void vm_object_pip_wait(vm_object_t object, char *waitid);
-
-static __inline boolean_t
-vm_object_cache_is_empty(vm_object_t object)
+static __inline bool
+vm_object_reserv(vm_object_t object)
 {
 
-	return (vm_radix_is_empty(&object->cache));
+	if (object != NULL &&
+	    (object->flags & (OBJ_COLORED | OBJ_FICTITIOUS)) == OBJ_COLORED) {
+		return (true);
+	}
+	return (false);
 }
+
+static __inline bool
+vm_object_mightbedirty(vm_object_t object)
+{
+
+	if (object->type != OBJT_VNODE) {
+		if ((object->flags & OBJ_TMPFS_NODE) == 0)
+			return (false);
+#ifdef KASSERT
+		KASSERT(object->type == OBJT_SWAP,
+		    ("TMPFS_NODE obj %p is not swap", object));
+#endif
+	}
+	return (object->generation != object->cleangeneration);
+}
+
+void vm_object_clear_flag(vm_object_t object, u_short bits);
+void vm_object_pip_add(vm_object_t object, short i);
+void vm_object_pip_wakeup(vm_object_t object);
+void vm_object_pip_wakeupn(vm_object_t object, short i);
+void vm_object_pip_wait(vm_object_t object, const char *waitid);
+void vm_object_pip_wait_unlocked(vm_object_t object, const char *waitid);
+
+void vm_object_busy(vm_object_t object);
+void vm_object_unbusy(vm_object_t object);
+void vm_object_busy_wait(vm_object_t object, const char *wmesg);
+
+static inline bool
+vm_object_busied(vm_object_t object)
+{
+
+	return (blockcount_read(&object->busy) != 0);
+}
+#define	VM_OBJECT_ASSERT_BUSY(object)	MPASS(vm_object_busied((object)))
 
 void umtx_shm_object_init(vm_object_t object);
 void umtx_shm_object_terminated(vm_object_t object);
 extern int umtx_shm_vnobj_persistent;
 
 vm_object_t vm_object_allocate (objtype_t, vm_pindex_t);
+vm_object_t vm_object_allocate_anon(vm_pindex_t, vm_object_t, struct ucred *,
+   vm_size_t);
 boolean_t vm_object_coalesce(vm_object_t, vm_ooffset_t, vm_size_t, vm_size_t,
    boolean_t);
 void vm_object_collapse (vm_object_t);
@@ -310,6 +379,7 @@ void vm_object_destroy (vm_object_t);
 void vm_object_terminate (vm_object_t);
 void vm_object_set_writeable_dirty (vm_object_t);
 void vm_object_init (void);
+int  vm_object_kvme_type(vm_object_t object, struct vnode **vpp);
 void vm_object_madvise(vm_object_t, vm_pindex_t, vm_pindex_t, int);
 boolean_t vm_object_page_clean(vm_object_t object, vm_ooffset_t start,
     vm_ooffset_t end, int flags);
@@ -322,7 +392,8 @@ void vm_object_print(long addr, boolean_t have_addr, long count, char *modif);
 void vm_object_reference (vm_object_t);
 void vm_object_reference_locked(vm_object_t);
 int  vm_object_set_memattr(vm_object_t object, vm_memattr_t memattr);
-void vm_object_shadow (vm_object_t *, vm_ooffset_t *, vm_size_t);
+void vm_object_shadow(vm_object_t *, vm_ooffset_t *, vm_size_t, struct ucred *,
+    bool);
 void vm_object_split(vm_map_entry_t);
 boolean_t vm_object_sync(vm_object_t, vm_ooffset_t, vm_size_t, boolean_t,
     boolean_t);

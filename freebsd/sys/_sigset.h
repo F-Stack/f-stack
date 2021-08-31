@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -45,7 +47,7 @@
 #define	_SIG_MAXSIG	128
 #define	_SIG_IDX(sig)	((sig) - 1)
 #define	_SIG_WORD(sig)	(_SIG_IDX(sig) >> 5)
-#define	_SIG_BIT(sig)	(1 << (_SIG_IDX(sig) & 31))
+#define	_SIG_BIT(sig)	(1U << (_SIG_IDX(sig) & 31))
 #define	_SIG_VALID(sig)	((sig) <= _SIG_MAXSIG && (sig) > 0)
 
 typedef struct __sigset {

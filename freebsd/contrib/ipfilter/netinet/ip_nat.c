@@ -31,27 +31,22 @@ struct file;
 # include <sys/uio.h>
 # undef KERNEL
 #endif
-#if defined(_KERNEL) && \
-    defined(__FreeBSD_version) && (__FreeBSD_version >= 220000)
+#if defined(_KERNEL) && defined(__FreeBSD_version)
 # include <sys/filio.h>
 # include <sys/fcntl.h>
 #else
 # include <sys/ioctl.h>
 #endif
-#if !defined(AIX)
 # include <sys/fcntl.h>
-#endif
-#if !defined(linux)
 # include <sys/protosw.h>
-#endif
 #include <sys/socket.h>
 #if defined(_KERNEL)
 # include <sys/systm.h>
-# if !defined(__SVR4) && !defined(__svr4__)
+# if !defined(__SVR4)
 #  include <sys/mbuf.h>
 # endif
 #endif
-#if defined(__SVR4) || defined(__svr4__)
+#if defined(__SVR4)
 # include <sys/filio.h>
 # include <sys/byteorder.h>
 # ifdef KERNEL
@@ -60,11 +55,11 @@ struct file;
 # include <sys/stream.h>
 # include <sys/kmem.h>
 #endif
-#if __FreeBSD_version >= 300000
+#if defined(__FreeBSD_version)
 # include <sys/queue.h>
 #endif
 #include <net/if.h>
-#if __FreeBSD_version >= 300000
+#if defined(__FreeBSD_version)
 # include <net/if_var.h>
 #endif
 #ifdef sun
@@ -80,9 +75,7 @@ struct file;
 extern struct ifnet vpnif;
 #endif
 
-#if !defined(linux)
 # include <netinet/ip_var.h>
-#endif
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
@@ -97,7 +90,7 @@ extern struct ifnet vpnif;
 #include "netinet/ip_lookup.h"
 #include "netinet/ip_dstlist.h"
 #include "netinet/ip_sync.h"
-#if FREEBSD_GE_REV(300000)
+#if defined(__FreeBSD_version)
 # include <sys/malloc.h>
 #endif
 #ifdef HAS_SYS_MD5_H
@@ -1017,14 +1010,14 @@ ipf_nat_ioctl(softc, data, cmd, mode, uid, ctx)
 	ipnat_t natd;
 	SPL_INT(s);
 
-#if BSD_GE_YEAR(199306) && defined(_KERNEL)
+#if !SOLARIS && defined(_KERNEL)
 # if NETBSD_GE_REV(399002000)
 	if ((mode & FWRITE) &&
 	     kauth_authorize_network(curlwp->l_cred, KAUTH_NETWORK_FIREWALL,
 				     KAUTH_REQ_NETWORK_FIREWALL_FW,
 				     NULL, NULL, NULL))
 # else
-#  if defined(__FreeBSD_version) && (__FreeBSD_version >= 500034)
+#  if defined(__FreeBSD_version)
 	if (securelevel_ge(curthread->td_ucred, 3) && (mode & FWRITE))
 #  else
 	if ((securelevel >= 3) && (mode & FWRITE))
@@ -1036,11 +1029,7 @@ ipf_nat_ioctl(softc, data, cmd, mode, uid, ctx)
 	}
 #endif
 
-#if defined(__osf__) && defined(_KERNEL)
-	getlock = 0;
-#else
 	getlock = (mode & NAT_LOCKHELD) ? 0 : 1;
-#endif
 
 	n = NULL;
 	nt = NULL;
@@ -1677,10 +1666,6 @@ ipf_nat_siocdelnat(softc, softn, n, getlock)
 	ipnat_t *n;
 	int getlock;
 {
-#ifdef IPF_NAT6
-	int i;
-#endif
-
 	if (getlock) {
 		WRITE_ENTER(&softc->ipf_nat);
 	}
@@ -1870,7 +1855,7 @@ ipf_nat_getent(softc, data, getlock)
 	 */
 	if (nat->nat_ptr != NULL)
 		bcopy((char *)nat->nat_ptr, (char *)&ipn->ipn_ipnat,
-		      ipn->ipn_ipnat.in_size);
+		      sizeof(nat->nat_ptr));
 
 	/*
 	 * If we also know the NAT entry has an associated filter rule,
@@ -1908,20 +1893,16 @@ ipf_nat_getent(softc, data, getlock)
 		}
 	}
 	if (error == 0) {
-		if (getlock) {
-			READ_ENTER(&softc->ipf_nat);
-			getlock = 0;
-		}
 		error = ipf_outobjsz(softc, data, ipn, IPFOBJ_NATSAVE,
 				     ipns.ipn_dsize);
 	}
 
 finished:
-	if (getlock) {
-		READ_ENTER(&softc->ipf_nat);
-	}
 	if (ipn != NULL) {
 		KFREES(ipn, ipns.ipn_dsize);
+	}
+	if (getlock) {
+		RWLOCK_EXIT(&softc->ipf_nat);
 	}
 	return error;
 }
@@ -2308,14 +2289,16 @@ ipf_nat_delete(softc, nat, logtype)
 
 		bkt = nat->nat_hv[0] % softn->ipf_nat_table_sz;
 		nss = &softn->ipf_nat_stats.ns_side[0];
-		nss->ns_bucketlen[bkt]--;
+		if (nss->ns_bucketlen[bkt] > 0)
+			nss->ns_bucketlen[bkt]--;
 		if (nss->ns_bucketlen[bkt] == 0) {
 			nss->ns_inuse--;
 		}
 
 		bkt = nat->nat_hv[1] % softn->ipf_nat_table_sz;
 		nss = &softn->ipf_nat_stats.ns_side[1];
-		nss->ns_bucketlen[bkt]--;
+		if (nss->ns_bucketlen[bkt] > 0)
+			nss->ns_bucketlen[bkt]--;
 		if (nss->ns_bucketlen[bkt] == 0) {
 			nss->ns_inuse--;
 		}
@@ -2680,6 +2663,7 @@ ipf_nat_newmap(fin, nat, ni)
 		if ((np->in_nsrcmsk == 0xffffffff) && (np->in_spnext == 0)) {
 			if (l > 0) {
 				NBUMPSIDEX(1, ns_exhausted, ns_exhausted_1);
+				DT4(ns_exhausted_1, fr_info_t *, fin, nat_t *, nat, natinfo_t *, ni, ipnat_t *, np);
 				return -1;
 			}
 		}
@@ -2697,6 +2681,7 @@ ipf_nat_newmap(fin, nat, ni)
 			if ((l >= np->in_ppip) || ((l > 0) &&
 			     !(flags & IPN_TCPUDP))) {
 				NBUMPSIDEX(1, ns_exhausted, ns_exhausted_2);
+				DT4(ns_exhausted_2, fr_info_t *, fin, nat_t *, nat, natinfo_t *, ni, ipnat_t *, np);
 				return -1;
 			}
 			/*
@@ -2732,6 +2717,7 @@ ipf_nat_newmap(fin, nat, ni)
 			    ipf_ifpaddr(softc, 4, FRI_NORMAL, fin->fin_ifp,
 				       &in6, NULL) == -1) {
 				NBUMPSIDEX(1, ns_new_ifpaddr, ns_new_ifpaddr_1);
+				DT4(ns_new_ifpaddr_1, fr_info_t *, fin, nat_t *, nat, natinfo_t *, ni, ipnat_t *, np);
 				return -1;
 			}
 			in.s_addr = ntohl(in6.in4.s_addr);
@@ -2742,6 +2728,7 @@ ipf_nat_newmap(fin, nat, ni)
 			 */
 			if (l > 0) {
 				NBUMPSIDEX(1, ns_exhausted, ns_exhausted_3);
+				DT4(ns_exhausted_3, fr_info_t *, fin, nat_t *, nat, natinfo_t *, ni, ipnat_t *, np);
 				return -1;
 			}
 			in.s_addr = ntohl(fin->fin_saddr);
@@ -2837,6 +2824,7 @@ ipf_nat_newmap(fin, nat, ni)
 		    (np->in_spnext != 0) && (st_port == np->in_spnext) &&
 		    (np->in_snip != 0) && (st_ip == np->in_snip)) {
 			NBUMPSIDED(1, ns_wrap);
+			DT4(ns_wrap, fr_info_t *, fin, nat_t *, nat, natinfo_t *, ni, ipnat_t *, np);
 			return -1;
 		}
 		l++;
@@ -2972,6 +2960,7 @@ ipf_nat_newrdr(fin, nat, ni)
 		if (ipf_ifpaddr(softc, 4, FRI_NORMAL, fin->fin_ifp,
 			       &in6, NULL) == -1) {
 			NBUMPSIDEX(0, ns_new_ifpaddr, ns_new_ifpaddr_2);
+			DT3(ns_new_ifpaddr_2, fr_info_t *, fin, nat_t *, nat, natinfo_t, ni);
 			return -1;
 		}
 		in.s_addr = ntohl(in6.in4.s_addr);
@@ -3084,12 +3073,12 @@ ipf_nat_newrdr(fin, nat, ni)
 /* Attempts to create a new NAT entry.  Does not actually change the packet */
 /* in any way.                                                              */
 /*                                                                          */
-/* This fucntion is in three main parts: (1) deal with creating a new NAT   */
+/* This function is in three main parts: (1) deal with creating a new NAT   */
 /* structure for a "MAP" rule (outgoing NAT translation); (2) deal with     */
 /* creating a new NAT structure for a "RDR" rule (incoming NAT translation) */
 /* and (3) building that structure and putting it into the NAT table(s).    */
 /*                                                                          */
-/* NOTE: natsave should NOT be used top point back to an ipstate_t struct   */
+/* NOTE: natsave should NOT be used to point back to an ipstate_t struct    */
 /*       as it can result in memory being corrupted.                        */
 /* ------------------------------------------------------------------------ */
 nat_t *
@@ -3118,6 +3107,7 @@ ipf_nat_add(fin, np, natsave, flags, direction)
 
 	if (nsp->ns_active >= softn->ipf_nat_table_max) {
 		NBUMPSIDED(fin->fin_out, ns_table_max);
+		DT2(ns_table_max, nat_stat_t *, nsp, ipf_nat_softc_t *, softn);
 		return NULL;
 	}
 
@@ -3132,6 +3122,7 @@ ipf_nat_add(fin, np, natsave, flags, direction)
 	/* Give me a new nat */
 	KMALLOC(nat, nat_t *);
 	if (nat == NULL) {
+		DT(ns_memfail);
 		NBUMPSIDED(fin->fin_out, ns_memfail);
 		/*
 		 * Try to automatically tune the max # of entries in the
@@ -3227,6 +3218,7 @@ ipf_nat_add(fin, np, natsave, flags, direction)
 	if ((np->in_apr != NULL) && ((nat->nat_flags & NAT_SLAVE) == 0)) {
 		if (ipf_proxy_new(fin, nat) == -1) {
 			NBUMPSIDED(fin->fin_out, ns_appr_fail);
+			DT3(ns_appr_fail, fr_info_t *, fin, nat_t *, nat, ipnat_t *, np);
 			goto badnat;
 		}
 	}
@@ -3263,7 +3255,7 @@ ipf_nat_add(fin, np, natsave, flags, direction)
 
 	goto done;
 badnat:
-	DT2(ns_badnatnew, fr_info_t *, fin, nat_t *, nat);
+	DT3(ns_badnatnew, fr_info_t *, fin, nat_t *, nat, ipnat_t *, np);
 	NBUMPSIDE(fin->fin_out, ns_badnatnew);
 	if ((hm = nat->nat_hm) != NULL)
 		ipf_nat_hostmapdel(softc, &hm);
@@ -3299,7 +3291,7 @@ ipf_nat_finalise(fin, nat)
 	u_32_t sum1, sum2, sumd;
 	frentry_t *fr;
 	u_32_t flags;
-#if SOLARIS && defined(_KERNEL) && (SOLARIS2 >= 6) && defined(ICK_M_CTL_MAGIC)
+#if SOLARIS && defined(_KERNEL) && defined(ICK_M_CTL_MAGIC)
 	qpktinfo_t *qpi = fin->fin_qpi;
 #endif
 
@@ -3384,6 +3376,7 @@ ipf_nat_finalise(fin, nat)
 	}
 
 	NBUMPSIDED(fin->fin_out, ns_unfinalised);
+	DT2(ns_unfinalised, fr_info_t *, fin, nat_t *, nat);
 	/*
 	 * nat_insert failed, so cleanup time...
 	 */
@@ -3413,6 +3406,7 @@ ipf_nat_insert(softc, softn, nat)
 	u_int hv0, hv1;
 	u_int sp, dp;
 	ipnat_t *in;
+	int ret;
 
 	/*
 	 * Try and return an error as early as possible, so calculate the hash
@@ -3495,12 +3489,16 @@ ipf_nat_insert(softc, softn, nat)
 		nat->nat_mtu[1] = GETIFMTU_4(nat->nat_ifps[1]);
 	}
 
-	return ipf_nat_hashtab_add(softc, softn, nat);
+	ret = ipf_nat_hashtab_add(softc, softn, nat);
+	if (ret == -1)
+		MUTEX_DESTROY(&nat->nat_lock);
+	return ret;
 }
 
 
 /* ------------------------------------------------------------------------ */
 /* Function:    ipf_nat_hashtab_add                                         */
+/* Returns:     int - 0 == sucess, -1 == failure                            */
 /* Parameters:  softc(I) - pointer to soft context main structure           */
 /*              softn(I) - pointer to NAT context structure                 */
 /*              nat(I) - pointer to NAT structure                           */
@@ -4104,13 +4102,8 @@ ipf_nat_inlookup(fin, flags, p, src, mapdst)
 		dport = htons(fin->fin_data[1]);
 		break;
 	case IPPROTO_ICMP :
-		if (flags & IPN_ICMPERR) {
-			sport = fin->fin_data[1];
-			dport = 0;
-		} else {
-			dport = fin->fin_data[1];
-			sport = 0;
-		}
+		sport = 0;
+		dport = fin->fin_data[1];
 		break;
 	default :
 		sport = 0;
@@ -4430,8 +4423,6 @@ ipf_nat_outlookup(fin, flags, p, src, dst)
 
 	ifp = fin->fin_ifp;
 	sflags = flags & IPN_TCPUDPICMP;
-	sport = 0;
-	dport = 0;
 
 	switch (p)
 	{
@@ -4441,12 +4432,12 @@ ipf_nat_outlookup(fin, flags, p, src, dst)
 		dport = htons(fin->fin_data[1]);
 		break;
 	case IPPROTO_ICMP :
-		if (flags & IPN_ICMPERR)
-			sport = fin->fin_data[1];
-		else
-			dport = fin->fin_data[1];
+		sport = 0;
+		dport = fin->fin_data[1];
 		break;
 	default :
+		sport = 0;
+		dport = 0;
 		break;
 	}
 
@@ -4704,8 +4695,8 @@ ipf_nat_lookupredir(np)
 				}
 			}
 
-			np->nl_realip = nat->nat_ndstip;
-			np->nl_realport = nat->nat_ndport;
+			np->nl_realip = nat->nat_odstip;
+			np->nl_realport = nat->nat_odport;
 		}
  	}
 
@@ -4962,7 +4953,7 @@ retry_roundrobin:
 				case 0 :
 					continue;
 				case -1 :
-					rval = -1;
+					rval = -3;
 					goto outmatchfail;
 				case 1 :
 				default :
@@ -5007,7 +4998,7 @@ retry_roundrobin:
 				natfailed = 0;
 				break;
 			}
-			natfailed = -1;
+			natfailed = -2;
 		}
 		if ((np == NULL) && (nmsk < softn->ipf_nat_map_max)) {
 			nmsk++;
@@ -5032,15 +5023,23 @@ outmatchfail:
 
 	switch (rval)
 	{
+	case -3 :
+		/* ipf_nat_match() failure */
+		/* FALLTHROUGH */
+	case -2 :
+		/* retry_roundrobin loop failure */
+		/* FALLTHROUGH */
 	case -1 :
+		/* proxy failure detected by ipf_nat_out() */
 		if (passp != NULL) {
-			DT1(frb_natv4out, fr_info_t *, fin);
+			DT2(frb_natv4out, fr_info_t *, fin, int, rval);
 			NBUMPSIDED(1, ns_drop);
 			*passp = FR_BLOCK;
 			fin->fin_reason = FRB_NATV4;
 		}
 		fin->fin_flx |= FI_BADNAT;
 		NBUMPSIDED(1, ns_badnat);
+		rval = -1;	/* We only return -1 on error. */
 		break;
 	case 0 :
 		NBUMPSIDE(1, ns_ignored);
@@ -5117,8 +5116,8 @@ ipf_nat_out(fin, nat, natadd, nflags)
 
 		ipf_fix_outcksum(0, &fin->fin_ip->ip_sum, msumd, 0);
 	}
-#if !defined(_KERNEL) || defined(MENTAT) || defined(__sgi) || \
-    defined(linux) || defined(BRIDGE_IPF) || defined(__FreeBSD__)
+#if !defined(_KERNEL) || defined(MENTAT) || \
+    defined(BRIDGE_IPF) || defined(__FreeBSD__)
 	else {
 		/*
 		 * Strictly speaking, this isn't necessary on BSD
@@ -5229,8 +5228,8 @@ ipf_nat_out(fin, nat, natadd, nflags)
 		uh = (udphdr_t *)(ip + 1);
 		uh->uh_ulen += fin->fin_plen;
 		uh->uh_ulen = htons(uh->uh_ulen);
-#if !defined(_KERNEL) || defined(MENTAT) || defined(__sgi) || \
-    defined(linux) || defined(BRIDGE_IPF) || defined(__FreeBSD__)
+#if !defined(_KERNEL) || defined(MENTAT) || \
+    defined(BRIDGE_IPF) || defined(__FreeBSD__)
 		ipf_fix_outcksum(0, &ip->ip_sum, sumd, 0);
 #endif
 
@@ -5448,7 +5447,7 @@ retry_roundrobin:
 				case 0 :
 					continue;
 				case -1 :
-					rval = -1;
+					rval = -3;
 					goto inmatchfail;
 				case 1 :
 				default :
@@ -5495,7 +5494,7 @@ retry_roundrobin:
 				natfailed = 0;
 				break;
 			}
-			natfailed = -1;
+			natfailed = -2;
 		}
 		if ((np == NULL) && (rmsk < softn->ipf_nat_rdr_max)) {
 			rmsk++;
@@ -5520,15 +5519,23 @@ inmatchfail:
 
 	switch (rval)
 	{
+	case -3 :
+		/* ipf_nat_match() failure */
+		/* FALLTHROUGH */
+	case -2 :
+		/* retry_roundrobin loop failure */
+		/* FALLTHROUGH */
 	case -1 :
+		/* proxy failure detected by ipf_nat_in() */
 		if (passp != NULL) {
-			DT1(frb_natv4in, fr_info_t *, fin);
+			DT2(frb_natv4in, fr_info_t *, fin, int, rval);
 			NBUMPSIDED(0, ns_drop);
 			*passp = FR_BLOCK;
 			fin->fin_reason = FRB_NATV4;
 		}
 		fin->fin_flx |= FI_BADNAT;
 		NBUMPSIDED(0, ns_badnat);
+		rval = -1;	/* We only return -1 on error. */
 		break;
 	case 0 :
 		NBUMPSIDE(0, ns_ignored);
@@ -5624,8 +5631,7 @@ ipf_nat_in(fin, nat, natadd, nflags)
 		}
 		fin->fin_ip->ip_dst = nat->nat_ndstip;
 		fin->fin_daddr = nat->nat_ndstaddr;
-#if !defined(_KERNEL) || defined(MENTAT) || defined(__sgi) || \
-     defined(__osf__) || defined(linux)
+#if !defined(_KERNEL) || defined(MENTAT)
 		ipf_fix_outcksum(0, &fin->fin_ip->ip_sum, ipsumd, 0);
 #endif
 		break;
@@ -5642,8 +5648,7 @@ ipf_nat_in(fin, nat, natadd, nflags)
 		}
 		fin->fin_ip->ip_dst = nat->nat_osrcip;
 		fin->fin_daddr = nat->nat_osrcaddr;
-#if !defined(_KERNEL) || defined(MENTAT) || defined(__sgi) || \
-     defined(__osf__) || defined(linux)
+#if !defined(_KERNEL) || defined(MENTAT)
 		ipf_fix_incksum(0, &fin->fin_ip->ip_sum, ipsumd, 0);
 #endif
 		break;
@@ -5675,8 +5680,7 @@ ipf_nat_in(fin, nat, natadd, nflags)
 		sum2 += ntohs(ip->ip_off) & IP_DF;
 		CALC_SUMD(sum1, sum2, sumd);
 
-#if !defined(_KERNEL) || defined(MENTAT) || defined(__sgi) || \
-     defined(__osf__) || defined(linux)
+#if !defined(_KERNEL) || defined(MENTAT)
 		ipf_fix_outcksum(0, &ip->ip_sum, sumd, 0);
 #endif
 		PREP_MB_T(fin, m);
@@ -6104,8 +6108,8 @@ ipf_nat_icmpquerytype(icmptype)
 	{
 	case ICMP_ECHOREPLY:
 	case ICMP_ECHO:
-	/* route aedvertisement/solliciation is currently unsupported: */
-	/* it would require rewriting the ICMP data section            */
+	/* route advertisement/solicitation is currently unsupported: */
+	/* it would require rewriting the ICMP data section          */
 	case ICMP_TSTAMP:
 	case ICMP_TSTAMPREPLY:
 	case ICMP_IREQ:
@@ -6195,27 +6199,6 @@ ipf_nat_log(softc, softn, nat, action)
 }
 
 
-#if defined(__OpenBSD__)
-/* ------------------------------------------------------------------------ */
-/* Function:    ipf_nat_ifdetach                                            */
-/* Returns:     Nil                                                         */
-/* Parameters:  ifp(I) - pointer to network interface                       */
-/*                                                                          */
-/* Compatibility interface for OpenBSD to trigger the correct updating of   */
-/* interface references within IPFilter.                                    */
-/* ------------------------------------------------------------------------ */
-void
-ipf_nat_ifdetach(ifp)
-	void *ifp;
-{
-	ipf_main_softc_t *softc;
-
-	softc = ipf_get_softc(0);
-
-	ipf_sync(ifp);
-	return;
-}
-#endif
 
 
 /* ------------------------------------------------------------------------ */
@@ -7060,6 +7043,7 @@ ipf_nat_newrewrite(fin, nat, nai)
 	do {
 		changed = -1;
 		/* TRACE (l, src_search, dst_search, np) */
+		DT4(ipf_nat_rewrite_1, int, l, int, src_search, int, dst_search, ipnat_t *, np);
 
 		if ((src_search == 0) && (np->in_spnext == 0) &&
 		    (dst_search == 0) && (np->in_dpnext == 0)) {
@@ -7124,6 +7108,7 @@ ipf_nat_newrewrite(fin, nat, nai)
 		 * Find a new destination address
 		 */
 		/* TRACE (fin, np, l, frnat) */
+		DT4(ipf_nat_rewrite_2, frinfo_t *, fin, ipnat_t *, np, int, l, frinfo_t *, &frnat);
 
 		if (ipf_nat_nextaddr(fin, &np->in_ndst, &frnat.fin_daddr,
 				     &frnat.fin_daddr) == -1)
@@ -7174,6 +7159,7 @@ ipf_nat_newrewrite(fin, nat, nai)
 		}
 
 		/* TRACE (frnat) */
+		DT1(ipf_nat_rewrite_3, frinfo_t *, &frnat);
 
 		/*
 		 * Here we do a lookup of the connection as seen from
@@ -7213,6 +7199,7 @@ ipf_nat_newrewrite(fin, nat, nai)
 		}
 
 		/* TRACE natl, in_stepnext, l */
+		DT3(ipf_nat_rewrite_2, nat_t *, natl, ipnat_t *, np , int, l);
 
 		if ((natl != NULL) && (l > 8))	/* XXX 8 is arbitrary */
 			return -1;
@@ -7305,6 +7292,7 @@ ipf_nat_newdivert(fin, nat, nai)
 
 	if (natl != NULL) {
 		NBUMPSIDED(fin->fin_out, ns_divert_exist);
+		DT3(ns_divert_exist, fr_info_t *, fin, nat_t *, nat, natinfo_t, nai);
 		return -1;
 	}
 
@@ -7441,8 +7429,7 @@ ipf_nat_decap(fin, nat)
 			CALC_SUMD(sum1, sum2, sumd);
 			fin->fin_ip->ip_dst = nat->nat_osrcip;
 			fin->fin_daddr = nat->nat_osrcaddr;
-#if !defined(_KERNEL) || defined(MENTAT) || defined(__sgi) || \
-     defined(__osf__) || defined(linux)
+#if !defined(_KERNEL) || defined(MENTAT)
 			ipf_fix_outcksum(0, &fin->fin_ip->ip_sum, sumd, 0);
 #endif
 		}
@@ -7557,6 +7544,7 @@ ipf_nat_nextaddr(fin, na, old, dst)
 	case FRI_PEERADDR :
 	case FRI_NETWORK :
 	default :
+		DT4(ns_na_atype, fr_info_t *, fin, nat_addr_t *, na, u_32_t *, old, u_32_t *, new);
 		return -1;
 	}
 
@@ -7568,6 +7556,7 @@ ipf_nat_nextaddr(fin, na, old, dst)
 							NULL);
 		} else {
 			NBUMPSIDE(fin->fin_out, ns_badnextaddr);
+			DT4(ns_badnextaddr_1, fr_info_t *, fin, nat_addr_t *, na, u_32_t *, old, u_32_t *, new);
 		}
 
 	} else if (na->na_atype == IPLT_NONE) {
@@ -7586,6 +7575,7 @@ ipf_nat_nextaddr(fin, na, old, dst)
 			if (ipf_ifpaddr(softc, 4, na->na_atype,
 					fin->fin_ifp, &newip, NULL) == -1) {
 				NBUMPSIDED(fin->fin_out, ns_ifpaddrfail);
+				DT4(ns_ifpaddrfail, fr_info_t *, fin, nat_addr_t *, na, u_32_t *, old, u_32_t *, new);
 				return -1;
 			}
 			new = newip.in4.s_addr;
@@ -7597,6 +7587,7 @@ ipf_nat_nextaddr(fin, na, old, dst)
 
 	} else {
 		NBUMPSIDE(fin->fin_out, ns_badnextaddr);
+		DT4(ns_badnextaddr_2, fr_info_t *, fin, nat_addr_t *, na, u_32_t *, old, u_32_t *, new);
 	}
 
 	return error;

@@ -15,6 +15,7 @@ options 	PREEMPTION		# Enable kernel thread preemption
 #options 	FULL_PREEMPTION		# Enable kernel thread preemption
 options 	INET			# InterNETworking
 options 	INET6			# IPv6 communications protocols
+options 	TCP_HHOOK		# hhook(9) framework for TCP
 options 	FFS			# Berkeley Fast Filesystem
 #options 	SOFTUPDATES		# Enable FFS soft updates support
 options 	UFS_ACL			# Support for access control lists
@@ -55,6 +56,7 @@ options 	ALT_BREAK_TO_DEBUGGER
 #options 	LOCK_DEBUG
 #options 	LOCK_PROFILING
 
+device		xz
 options 	GEOM_UZIP
 
 # Device tree
@@ -64,7 +66,6 @@ makeoptions	FDT_DTS_FILE=xlp-basic.dts
 
 # Pseudo
 device		loop
-device		random
 device		md
 device		bpf
 
@@ -74,6 +75,7 @@ device		ether
 device		xlpge
 #device		re
 device		msk
+device		iflib
 device		em
 
 # Disks
@@ -94,7 +96,7 @@ device		umass			# Requires scbus and da
 device		iic
 device		iicbus
 device		iicoc
-device		ds1374			# RTC on XLP boards
+device		ds13rtc			# RTC on XLP boards
 
 # Crypto
 device		crypto
@@ -111,6 +113,7 @@ device		cfi
 device		cfid
 
 # MMC/SD
+device		gpio
 device		mmc			# MMC/SD bus
 device		mmcsd			# MMC/SD memory card
 device		sdhci			# Generic PCI SD Host Controller

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -62,36 +64,41 @@ __FBSDID("$FreeBSD$");
 int
 dest6_input(struct mbuf **mp, int *offp, int proto)
 {
-	struct mbuf *m = *mp;
-	int off = *offp, dstoptlen, optlen;
+	struct mbuf *m;
+	int off, dstoptlen, optlen;
 	struct ip6_dest *dstopts;
 	u_int8_t *opt;
 
-	/* validation of the length of the header */
-#ifndef PULLDOWN_TEST
-	IP6_EXTHDR_CHECK(m, off, sizeof(*dstopts), IPPROTO_DONE);
+	m = *mp;
+	off = *offp;
+
+	/* Validation of the length of the header. */
+	if (m->m_len < off + sizeof(*dstopts)) {
+		m = m_pullup(m, off + sizeof(*dstopts));
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_exthdrtoolong);
+			*mp = m;
+			return (IPPROTO_DONE);
+		}
+	}
 	dstopts = (struct ip6_dest *)(mtod(m, caddr_t) + off);
-#else
-	IP6_EXTHDR_GET(dstopts, struct ip6_dest *, m, off, sizeof(*dstopts));
-	if (dstopts == NULL)
-		return IPPROTO_DONE;
-#endif
 	dstoptlen = (dstopts->ip6d_len + 1) << 3;
 
-#ifndef PULLDOWN_TEST
-	IP6_EXTHDR_CHECK(m, off, dstoptlen, IPPROTO_DONE);
+	if (m->m_len < off + dstoptlen) {
+		m = m_pullup(m, off + dstoptlen);
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_exthdrtoolong);
+			*mp = m;
+			return (IPPROTO_DONE);
+		}
+	}
 	dstopts = (struct ip6_dest *)(mtod(m, caddr_t) + off);
-#else
-	IP6_EXTHDR_GET(dstopts, struct ip6_dest *, m, off, dstoptlen);
-	if (dstopts == NULL)
-		return IPPROTO_DONE;
-#endif
 	off += dstoptlen;
 	dstoptlen -= sizeof(struct ip6_dest);
 	opt = (u_int8_t *)dstopts + sizeof(struct ip6_dest);
 
 	/* search header for all options. */
-	for (optlen = 0; dstoptlen > 0; dstoptlen -= optlen, opt += optlen) {
+	for (; dstoptlen > 0; dstoptlen -= optlen, opt += optlen) {
 		if (*opt != IP6OPT_PAD1 &&
 		    (dstoptlen < IP6OPT_MINLEN || *(opt + 1) + 2 > dstoptlen)) {
 			IP6STAT_INC(ip6s_toosmall);
@@ -108,17 +115,21 @@ dest6_input(struct mbuf **mp, int *offp, int proto)
 		default:		/* unknown option */
 			optlen = ip6_unknown_opt(opt, m,
 			    opt - mtod(m, u_int8_t *));
-			if (optlen == -1)
+			if (optlen == -1) {
+				*mp = NULL;
 				return (IPPROTO_DONE);
+			}
 			optlen += 2;
 			break;
 		}
 	}
 
 	*offp = off;
+	*mp = m;
 	return (dstopts->ip6d_nxt);
 
   bad:
 	m_freem(m);
+	*mp = NULL;
 	return (IPPROTO_DONE);
 }

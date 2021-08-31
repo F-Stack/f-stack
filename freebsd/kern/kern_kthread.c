@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1999 Peter Wemm <peter@FreeBSD.org>
  * All rights reserved.
  *
@@ -37,11 +39,13 @@ __FBSDID("$FreeBSD$");
 #include <sys/resourcevar.h>
 #include <sys/rwlock.h>
 #include <sys/signalvar.h>
+#include <sys/sysent.h>
 #include <sys/sx.h>
 #include <sys/umtx.h>
 #include <sys/unistd.h>
 #include <sys/wait.h>
 #include <sys/sched.h>
+#include <sys/tslog.h>
 #include <vm/vm.h>
 #include <vm/vm_extern.h>
 
@@ -122,12 +126,19 @@ kproc_create(void (*func)(void *), void *arg,
 #ifdef KTR
 	sched_clear_tdname(td);
 #endif
+	TSTHREAD(td, td->td_name);
+#ifdef HWPMC_HOOKS
+	if (PMC_SYSTEM_SAMPLING_ACTIVE()) {
+		PMC_CALL_HOOK_UNLOCKED(td, PMC_FN_PROC_CREATE_LOG, p2);
+		PMC_CALL_HOOK_UNLOCKED(td, PMC_FN_THR_CREATE_LOG, NULL);
+	}
+#endif
 
 	/* call the processes' main()... */
 	cpu_fork_kthread_handler(td, func, arg);
 
 	/* Avoid inheriting affinity from a random parent. */
-	cpuset_setthread(td->td_tid, cpuset_root);
+	cpuset_kernthread(td);
 	thread_lock(td);
 	TD_SET_CAN_RUN(td);
 	sched_prio(td, PVM);
@@ -136,7 +147,8 @@ kproc_create(void (*func)(void *), void *arg,
 	/* Delay putting it on the run queue until now. */
 	if (!(flags & RFSTOPPED))
 		sched_add(td, SRQ_BORING); 
-	thread_unlock(td);
+	else
+		thread_unlock(td);
 
 	return 0;
 }
@@ -156,7 +168,7 @@ kproc_exit(int ecode)
 	 */
 	sx_xlock(&proctree_lock);
 	PROC_LOCK(p);
-	proc_reparent(p, initproc);
+	proc_reparent(p, initproc, true);
 	PROC_UNLOCK(p);
 	sx_xunlock(&proctree_lock);
 
@@ -219,7 +231,6 @@ kproc_suspend_check(struct proc *p)
 	PROC_UNLOCK(p);
 }
 
-
 /*
  * Start a kernel thread.  
  *
@@ -281,6 +292,8 @@ kthread_add(void (*func)(void *), void *arg, struct proc *p,
 	vsnprintf(newtd->td_name, sizeof(newtd->td_name), fmt, ap);
 	va_end(ap);
 
+	TSTHREAD(newtd, newtd->td_name);
+
 	newtd->td_proc = p;  /* needed for cpu_copy_thread */
 	/* might be further optimized for kthread */
 	cpu_copy_thread(newtd, oldtd);
@@ -303,13 +316,15 @@ kthread_add(void (*func)(void *), void *arg, struct proc *p,
 	tidhash_add(newtd);
 
 	/* Avoid inheriting affinity from a random parent. */
-	cpuset_setthread(newtd->td_tid, cpuset_root);
-
+	cpuset_kernthread(newtd);
+#ifdef HWPMC_HOOKS
+	if (PMC_SYSTEM_SAMPLING_ACTIVE())
+		PMC_CALL_HOOK_UNLOCKED(td, PMC_FN_THR_CREATE_LOG, NULL);
+#endif
 	/* Delay putting it on the run queue until now. */
 	if (!(flags & RFSTOPPED)) {
 		thread_lock(newtd);
 		sched_add(newtd, SRQ_BORING); 
-		thread_unlock(newtd);
 	}
 	if (newtdp)
 		*newtdp = newtd;
@@ -320,26 +335,34 @@ void
 kthread_exit(void)
 {
 	struct proc *p;
+	struct thread *td;
 
-	p = curthread->td_proc;
+	td = curthread;
+	p = td->td_proc;
 
+#ifdef HWPMC_HOOKS
+	if (PMC_SYSTEM_SAMPLING_ACTIVE())
+		PMC_CALL_HOOK_UNLOCKED(td, PMC_FN_THR_EXIT_LOG, NULL);
+#endif
 	/* A module may be waiting for us to exit. */
-	wakeup(curthread);
+	wakeup(td);
 
 	/*
 	 * The last exiting thread in a kernel process must tear down
 	 * the whole process.
 	 */
-	rw_wlock(&tidhash_lock);
 	PROC_LOCK(p);
 	if (p->p_numthreads == 1) {
 		PROC_UNLOCK(p);
-		rw_wunlock(&tidhash_lock);
 		kproc_exit(0);
 	}
-	LIST_REMOVE(curthread, td_hash);
-	rw_wunlock(&tidhash_lock);
-	umtx_thread_exit(curthread);
+
+	if (p->p_sysent->sv_ontdexit != NULL)
+		p->p_sysent->sv_ontdexit(td);
+
+	tidhash_remove(td);
+	umtx_thread_exit(td);
+	tdsigcleanup(td);
 	PROC_SLOCK(p);
 	thread_exit();
 }
@@ -420,12 +443,15 @@ kthread_suspend_check(void)
 		panic("%s: curthread is not a valid kthread", __func__);
 
 	/*
-	 * As long as the double-lock protection is used when accessing the
-	 * TDF_KTH_SUSP flag, synchronizing the read operation via proc mutex
-	 * is fine.
+	 * Setting the TDF_KTH_SUSP flag is protected by process lock.
+	 *
+	 * Do an unlocked read first to avoid serializing with all other threads
+	 * in the common case of not suspending.
 	 */
+	if ((td->td_flags & TDF_KTH_SUSP) == 0)
+		return;
 	PROC_LOCK(p);
-	while (td->td_flags & TDF_KTH_SUSP) {
+	while ((td->td_flags & TDF_KTH_SUSP) != 0) {
 		wakeup(&td->td_flags);
 		msleep(&td->td_flags, &p->p_mtx, PPAUSE, "ktsusp", 0);
 	}

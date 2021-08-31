@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2007 Stephan Uphoff <ups@FreeBSD.org>
  * All rights reserved.
  *
@@ -51,6 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/turnstile.h>
 #include <sys/lock_profile.h>
 #include <machine/cpu.h>
+#include <vm/uma.h>
 
 #ifdef DDB
 #include <ddb/ddb.h>
@@ -156,7 +159,7 @@ unlock_rm(struct lock_object *lock)
 		 */
 		critical_enter();
 		td = curthread;
-		pc = pcpu_find(curcpu);
+		pc = get_pcpu();
 		for (queue = pc->pc_rm_queue.rmq_next;
 		    queue != &pc->pc_rm_queue; queue = queue->rmq_next) {
 			tracker = (struct rm_priotracker *)queue;
@@ -258,7 +261,7 @@ rm_cleanIPI(void *arg)
 	struct rmlock *rm = arg;
 	struct rm_priotracker *tracker;
 	struct rm_queue *queue;
-	pc = pcpu_find(curcpu);
+	pc = get_pcpu();
 
 	for (queue = pc->pc_rm_queue.rmq_next; queue != &pc->pc_rm_queue;
 	    queue = queue->rmq_next) {
@@ -336,26 +339,19 @@ rm_wowned(const struct rmlock *rm)
 void
 rm_sysinit(void *arg)
 {
-	struct rm_args *args = arg;
+	struct rm_args *args;
 
-	rm_init(args->ra_rm, args->ra_desc);
+	args = arg;
+	rm_init_flags(args->ra_rm, args->ra_desc, args->ra_flags);
 }
 
-void
-rm_sysinit_flags(void *arg)
-{
-	struct rm_args_flags *args = arg;
-
-	rm_init_flags(args->ra_rm, args->ra_desc, args->ra_opts);
-}
-
-static int
+static __noinline int
 _rm_rlock_hard(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 {
 	struct pcpu *pc;
 
 	critical_enter();
-	pc = pcpu_find(curcpu);
+	pc = get_pcpu();
 
 	/* Check if we just need to do a proper critical_exit. */
 	if (!CPU_ISSET(pc->pc_cpuid, &rm->rm_writecpus)) {
@@ -366,7 +362,11 @@ _rm_rlock_hard(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 	/* Remove our tracker from the per-cpu list. */
 	rm_tracker_remove(pc, tracker);
 
-	/* Check to see if the IPI granted us the lock after all. */
+	/*
+	 * Check to see if the IPI granted us the lock after all.  The load of
+	 * rmp_flags must happen after the tracker is removed from the list.
+	 */
+	atomic_interrupt_fence();
 	if (tracker->rmp_flags) {
 		/* Just add back tracker - we hold the lock. */
 		rm_tracker_add(pc, tracker);
@@ -416,7 +416,7 @@ _rm_rlock_hard(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 	}
 
 	critical_enter();
-	pc = pcpu_find(curcpu);
+	pc = get_pcpu();
 	CPU_CLR(pc->pc_cpuid, &rm->rm_writecpus);
 	rm_tracker_add(pc, tracker);
 	sched_pin();
@@ -448,7 +448,7 @@ _rm_rlock(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 
 	td->td_critnest++;	/* critical_enter(); */
 
-	__compiler_membar();
+	atomic_interrupt_fence();
 
 	pc = cpuid_to_pcpu[td->td_oncpu]; /* pcpu_find(td->td_oncpu); */
 
@@ -456,7 +456,7 @@ _rm_rlock(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 
 	sched_pin();
 
-	__compiler_membar();
+	atomic_interrupt_fence();
 
 	td->td_critnest--;
 
@@ -464,15 +464,15 @@ _rm_rlock(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 	 * Fast path to combine two common conditions into a single
 	 * conditional jump.
 	 */
-	if (0 == (td->td_owepreempt |
-	    CPU_ISSET(pc->pc_cpuid, &rm->rm_writecpus)))
+	if (__predict_true(0 == (td->td_owepreempt |
+	    CPU_ISSET(pc->pc_cpuid, &rm->rm_writecpus))))
 		return (1);
 
 	/* We do not have a read token and need to acquire one. */
 	return _rm_rlock_hard(rm, tracker, trylock);
 }
 
-static void
+static __noinline void
 _rm_unlock_hard(struct thread *td,struct rm_priotracker *tracker)
 {
 
@@ -499,7 +499,7 @@ _rm_unlock_hard(struct thread *td,struct rm_priotracker *tracker)
 		ts = turnstile_lookup(&rm->lock_object);
 
 		turnstile_signal(ts, TS_EXCLUSIVE_QUEUE);
-		turnstile_unpend(ts, TS_EXCLUSIVE_LOCK);
+		turnstile_unpend(ts);
 		turnstile_chain_unlock(&rm->lock_object);
 	} else
 		mtx_unlock_spin(&rm_spinlock);
@@ -523,7 +523,7 @@ _rm_runlock(struct rmlock *rm, struct rm_priotracker *tracker)
 	if (rm->lock_object.lo_flags & LO_SLEEPABLE)
 		THREAD_SLEEPING_OK();
 
-	if (0 == (td->td_owepreempt | tracker->rmp_flags))
+	if (__predict_true(0 == (td->td_owepreempt | tracker->rmp_flags)))
 		return;
 
 	_rm_unlock_hard(td, tracker);
@@ -547,7 +547,7 @@ _rm_wlock(struct rmlock *rm)
 	if (CPU_CMP(&rm->rm_writecpus, &all_cpus)) {
 		/* Get all read tokens back */
 		readcpus = all_cpus;
-		CPU_NAND(&readcpus, &rm->rm_writecpus);
+		CPU_ANDNOT(&readcpus, &rm->rm_writecpus);
 		rm->rm_writecpus = all_cpus;
 
 		/*
@@ -556,9 +556,9 @@ _rm_wlock(struct rmlock *rm)
 		 */
 #ifdef SMP
 		smp_rendezvous_cpus(readcpus,
-		    smp_no_rendevous_barrier,
+		    smp_no_rendezvous_barrier,
 		    rm_cleanIPI,
-		    smp_no_rendevous_barrier,
+		    smp_no_rendezvous_barrier,
 		    rm);
 
 #else
@@ -641,7 +641,7 @@ _rm_rlock_debug(struct rmlock *rm, struct rm_priotracker *tracker,
 #ifdef INVARIANTS
 	if (!(rm->lock_object.lo_flags & LO_RECURSABLE) && !trylock) {
 		critical_enter();
-		KASSERT(rm_trackers_present(pcpu_find(curcpu), rm,
+		KASSERT(rm_trackers_present(get_pcpu(), rm,
 		    curthread) == 0,
 		    ("rm_rlock: recursed on non-recursive rmlock %s @ %s:%d\n",
 		    rm->lock_object.lo_name, file, line));
@@ -657,8 +657,8 @@ _rm_rlock_debug(struct rmlock *rm, struct rm_priotracker *tracker,
 		KASSERT(!rm_wowned(rm),
 		    ("rm_rlock: wlock already held for %s @ %s:%d",
 		    rm->lock_object.lo_name, file, line));
-		WITNESS_CHECKORDER(&rm->lock_object, LOP_NEWORDER, file, line,
-		    NULL);
+		WITNESS_CHECKORDER(&rm->lock_object,
+		    LOP_NEWORDER | LOP_NOSLEEP, file, line, NULL);
 	}
 
 	if (_rm_rlock(rm, tracker, trylock)) {
@@ -668,7 +668,7 @@ _rm_rlock_debug(struct rmlock *rm, struct rm_priotracker *tracker,
 		else
 			LOCK_LOG_LOCK("RMRLOCK", &rm->lock_object, 0, 0, file,
 			    line);
-		WITNESS_LOCK(&rm->lock_object, 0, file, line);
+		WITNESS_LOCK(&rm->lock_object, LOP_NOSLEEP, file, line);
 		TD_LOCKS_INC(curthread);
 		return (1);
 	} else if (trylock)
@@ -747,7 +747,7 @@ _rm_assert(const struct rmlock *rm, int what, const char *file, int line)
 {
 	int count;
 
-	if (panicstr != NULL)
+	if (SCHEDULER_STOPPED())
 		return;
 	switch (what) {
 	case RA_LOCKED:
@@ -771,7 +771,7 @@ _rm_assert(const struct rmlock *rm, int what, const char *file, int line)
 		}
 
 		critical_enter();
-		count = rm_trackers_present(pcpu_find(curcpu), rm, curthread);
+		count = rm_trackers_present(get_pcpu(), rm, curthread);
 		critical_exit();
 
 		if (count == 0)
@@ -797,7 +797,7 @@ _rm_assert(const struct rmlock *rm, int what, const char *file, int line)
 			    rm->lock_object.lo_name, file, line);
 
 		critical_enter();
-		count = rm_trackers_present(pcpu_find(curcpu), rm, curthread);
+		count = rm_trackers_present(get_pcpu(), rm, curthread);
 		critical_exit();
 
 		if (count != 0)
@@ -858,3 +858,393 @@ db_show_rm(const struct lock_object *lock)
 	lc->lc_ddb_show(&rm->rm_wlock_object);
 }
 #endif
+
+/*
+ * Read-mostly sleepable locks.
+ *
+ * These primitives allow both readers and writers to sleep. However, neither
+ * readers nor writers are tracked and subsequently there is no priority
+ * propagation.
+ *
+ * They are intended to be only used when write-locking is almost never needed
+ * (e.g., they can guard against unloading a kernel module) while read-locking
+ * happens all the time.
+ *
+ * Concurrent writers take turns taking the lock while going off cpu. If this is
+ * of concern for your usecase, this is not the right primitive.
+ *
+ * Neither rms_rlock nor rms_runlock use thread fences. Instead interrupt
+ * fences are inserted to ensure ordering with the code executed in the IPI
+ * handler.
+ *
+ * No attempt is made to track which CPUs read locked at least once,
+ * consequently write locking sends IPIs to all of them. This will become a
+ * problem at some point. The easiest way to lessen it is to provide a bitmap.
+ */
+
+#define	RMS_NOOWNER	((void *)0x1)
+#define	RMS_TRANSIENT	((void *)0x2)
+#define	RMS_FLAGMASK	0xf
+
+struct rmslock_pcpu {
+	int influx;
+	int readers;
+};
+
+_Static_assert(sizeof(struct rmslock_pcpu) == 8, "bad size");
+
+/*
+ * Internal routines
+ */
+static struct rmslock_pcpu *
+rms_int_pcpu(struct rmslock *rms)
+{
+
+	CRITICAL_ASSERT(curthread);
+	return (zpcpu_get(rms->pcpu));
+}
+
+static struct rmslock_pcpu *
+rms_int_remote_pcpu(struct rmslock *rms, int cpu)
+{
+
+	return (zpcpu_get_cpu(rms->pcpu, cpu));
+}
+
+static void
+rms_int_influx_enter(struct rmslock *rms, struct rmslock_pcpu *pcpu)
+{
+
+	CRITICAL_ASSERT(curthread);
+	MPASS(pcpu->influx == 0);
+	pcpu->influx = 1;
+}
+
+static void
+rms_int_influx_exit(struct rmslock *rms, struct rmslock_pcpu *pcpu)
+{
+
+	CRITICAL_ASSERT(curthread);
+	MPASS(pcpu->influx == 1);
+	pcpu->influx = 0;
+}
+
+#ifdef INVARIANTS
+static void
+rms_int_debug_readers_inc(struct rmslock *rms)
+{
+	int old;
+	old = atomic_fetchadd_int(&rms->debug_readers, 1);
+	KASSERT(old >= 0, ("%s: bad readers count %d\n", __func__, old));
+}
+
+static void
+rms_int_debug_readers_dec(struct rmslock *rms)
+{
+	int old;
+
+	old = atomic_fetchadd_int(&rms->debug_readers, -1);
+	KASSERT(old > 0, ("%s: bad readers count %d\n", __func__, old));
+}
+#else
+static void
+rms_int_debug_readers_inc(struct rmslock *rms)
+{
+}
+
+static void
+rms_int_debug_readers_dec(struct rmslock *rms)
+{
+}
+#endif
+
+static void
+rms_int_readers_inc(struct rmslock *rms, struct rmslock_pcpu *pcpu)
+{
+
+	CRITICAL_ASSERT(curthread);
+	rms_int_debug_readers_inc(rms);
+	pcpu->readers++;
+}
+
+static void
+rms_int_readers_dec(struct rmslock *rms, struct rmslock_pcpu *pcpu)
+{
+
+	CRITICAL_ASSERT(curthread);
+	rms_int_debug_readers_dec(rms);
+	pcpu->readers--;
+}
+
+/*
+ * Public API
+ */
+void
+rms_init(struct rmslock *rms, const char *name)
+{
+
+	rms->owner = RMS_NOOWNER;
+	rms->writers = 0;
+	rms->readers = 0;
+	rms->debug_readers = 0;
+	mtx_init(&rms->mtx, name, NULL, MTX_DEF | MTX_NEW);
+	rms->pcpu = uma_zalloc_pcpu(pcpu_zone_8, M_WAITOK | M_ZERO);
+}
+
+void
+rms_destroy(struct rmslock *rms)
+{
+
+	MPASS(rms->writers == 0);
+	MPASS(rms->readers == 0);
+	mtx_destroy(&rms->mtx);
+	uma_zfree_pcpu(pcpu_zone_8, rms->pcpu);
+}
+
+static void __noinline
+rms_rlock_fallback(struct rmslock *rms)
+{
+
+	rms_int_influx_exit(rms, rms_int_pcpu(rms));
+	critical_exit();
+
+	mtx_lock(&rms->mtx);
+	while (rms->writers > 0)
+		msleep(&rms->readers, &rms->mtx, PUSER - 1, mtx_name(&rms->mtx), 0);
+	critical_enter();
+	rms_int_readers_inc(rms, rms_int_pcpu(rms));
+	mtx_unlock(&rms->mtx);
+	critical_exit();
+}
+
+void
+rms_rlock(struct rmslock *rms)
+{
+	struct rmslock_pcpu *pcpu;
+
+	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL, __func__);
+	MPASS(atomic_load_ptr(&rms->owner) != curthread);
+
+	critical_enter();
+	pcpu = rms_int_pcpu(rms);
+	rms_int_influx_enter(rms, pcpu);
+	atomic_interrupt_fence();
+	if (__predict_false(rms->writers > 0)) {
+		rms_rlock_fallback(rms);
+		return;
+	}
+	atomic_interrupt_fence();
+	rms_int_readers_inc(rms, pcpu);
+	atomic_interrupt_fence();
+	rms_int_influx_exit(rms, pcpu);
+	critical_exit();
+}
+
+int
+rms_try_rlock(struct rmslock *rms)
+{
+	struct rmslock_pcpu *pcpu;
+
+	MPASS(atomic_load_ptr(&rms->owner) != curthread);
+
+	critical_enter();
+	pcpu = rms_int_pcpu(rms);
+	rms_int_influx_enter(rms, pcpu);
+	atomic_interrupt_fence();
+	if (__predict_false(rms->writers > 0)) {
+		rms_int_influx_exit(rms, pcpu);
+		critical_exit();
+		return (0);
+	}
+	atomic_interrupt_fence();
+	rms_int_readers_inc(rms, pcpu);
+	atomic_interrupt_fence();
+	rms_int_influx_exit(rms, pcpu);
+	critical_exit();
+	return (1);
+}
+
+static void __noinline
+rms_runlock_fallback(struct rmslock *rms)
+{
+
+	rms_int_influx_exit(rms, rms_int_pcpu(rms));
+	critical_exit();
+
+	mtx_lock(&rms->mtx);
+	MPASS(rms->writers > 0);
+	MPASS(rms->readers > 0);
+	MPASS(rms->debug_readers == rms->readers);
+	rms_int_debug_readers_dec(rms);
+	rms->readers--;
+	if (rms->readers == 0)
+		wakeup_one(&rms->writers);
+	mtx_unlock(&rms->mtx);
+}
+
+void
+rms_runlock(struct rmslock *rms)
+{
+	struct rmslock_pcpu *pcpu;
+
+	critical_enter();
+	pcpu = rms_int_pcpu(rms);
+	rms_int_influx_enter(rms, pcpu);
+	atomic_interrupt_fence();
+	if (__predict_false(rms->writers > 0)) {
+		rms_runlock_fallback(rms);
+		return;
+	}
+	atomic_interrupt_fence();
+	rms_int_readers_dec(rms, pcpu);
+	atomic_interrupt_fence();
+	rms_int_influx_exit(rms, pcpu);
+	critical_exit();
+}
+
+struct rmslock_ipi {
+	struct rmslock *rms;
+	struct smp_rendezvous_cpus_retry_arg srcra;
+};
+
+static void
+rms_action_func(void *arg)
+{
+	struct rmslock_ipi *rmsipi;
+	struct rmslock_pcpu *pcpu;
+	struct rmslock *rms;
+
+	rmsipi = __containerof(arg, struct rmslock_ipi, srcra);
+	rms = rmsipi->rms;
+	pcpu = rms_int_pcpu(rms);
+
+	if (pcpu->influx)
+		return;
+	if (pcpu->readers != 0) {
+		atomic_add_int(&rms->readers, pcpu->readers);
+		pcpu->readers = 0;
+	}
+	smp_rendezvous_cpus_done(arg);
+}
+
+static void
+rms_wait_func(void *arg, int cpu)
+{
+	struct rmslock_ipi *rmsipi;
+	struct rmslock_pcpu *pcpu;
+	struct rmslock *rms;
+
+	rmsipi = __containerof(arg, struct rmslock_ipi, srcra);
+	rms = rmsipi->rms;
+	pcpu = rms_int_remote_pcpu(rms, cpu);
+
+	while (atomic_load_int(&pcpu->influx))
+		cpu_spinwait();
+}
+
+#ifdef INVARIANTS
+static void
+rms_assert_no_pcpu_readers(struct rmslock *rms)
+{
+	struct rmslock_pcpu *pcpu;
+	int cpu;
+
+	CPU_FOREACH(cpu) {
+		pcpu = rms_int_remote_pcpu(rms, cpu);
+		if (pcpu->readers != 0) {
+			panic("%s: got %d readers on cpu %d\n", __func__,
+			    pcpu->readers, cpu);
+		}
+	}
+}
+#else
+static void
+rms_assert_no_pcpu_readers(struct rmslock *rms)
+{
+}
+#endif
+
+static void
+rms_wlock_switch(struct rmslock *rms)
+{
+	struct rmslock_ipi rmsipi;
+
+	MPASS(rms->readers == 0);
+	MPASS(rms->writers == 1);
+
+	rmsipi.rms = rms;
+
+	smp_rendezvous_cpus_retry(all_cpus,
+	    smp_no_rendezvous_barrier,
+	    rms_action_func,
+	    smp_no_rendezvous_barrier,
+	    rms_wait_func,
+	    &rmsipi.srcra);
+}
+
+void
+rms_wlock(struct rmslock *rms)
+{
+
+	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, NULL, __func__);
+	MPASS(atomic_load_ptr(&rms->owner) != curthread);
+
+	mtx_lock(&rms->mtx);
+	rms->writers++;
+	if (rms->writers > 1) {
+		msleep(&rms->owner, &rms->mtx, (PUSER - 1),
+		    mtx_name(&rms->mtx), 0);
+		MPASS(rms->readers == 0);
+		KASSERT(rms->owner == RMS_TRANSIENT,
+		    ("%s: unexpected owner value %p\n", __func__,
+		    rms->owner));
+		goto out_grab;
+	}
+
+	KASSERT(rms->owner == RMS_NOOWNER,
+	    ("%s: unexpected owner value %p\n", __func__, rms->owner));
+
+	rms_wlock_switch(rms);
+	rms_assert_no_pcpu_readers(rms);
+
+	if (rms->readers > 0) {
+		msleep(&rms->writers, &rms->mtx, (PUSER - 1),
+		    mtx_name(&rms->mtx), 0);
+	}
+
+out_grab:
+	rms->owner = curthread;
+	rms_assert_no_pcpu_readers(rms);
+	mtx_unlock(&rms->mtx);
+	MPASS(rms->readers == 0);
+}
+
+void
+rms_wunlock(struct rmslock *rms)
+{
+
+	mtx_lock(&rms->mtx);
+	KASSERT(rms->owner == curthread,
+	    ("%s: unexpected owner value %p\n", __func__, rms->owner));
+	MPASS(rms->writers >= 1);
+	MPASS(rms->readers == 0);
+	rms->writers--;
+	if (rms->writers > 0) {
+		wakeup_one(&rms->owner);
+		rms->owner = RMS_TRANSIENT;
+	} else {
+		wakeup(&rms->readers);
+		rms->owner = RMS_NOOWNER;
+	}
+	mtx_unlock(&rms->mtx);
+}
+
+void
+rms_unlock(struct rmslock *rms)
+{
+
+	if (rms_wowned(rms))
+		rms_wunlock(rms);
+	else
+		rms_runlock(rms);
+}

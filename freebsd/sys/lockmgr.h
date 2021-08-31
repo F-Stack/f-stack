@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 Attilio Rao <attilio@FreeBSD.org>
  * All rights reserved.
  *
@@ -40,13 +42,14 @@
 #define	LK_SHARED_WAITERS		0x02
 #define	LK_EXCLUSIVE_WAITERS		0x04
 #define	LK_EXCLUSIVE_SPINNERS		0x08
+#define	LK_WRITER_RECURSED		0x10
 #define	LK_ALL_WAITERS							\
 	(LK_SHARED_WAITERS | LK_EXCLUSIVE_WAITERS)
 #define	LK_FLAGMASK							\
-	(LK_SHARE | LK_ALL_WAITERS | LK_EXCLUSIVE_SPINNERS)
+	(LK_SHARE | LK_ALL_WAITERS | LK_EXCLUSIVE_SPINNERS | LK_WRITER_RECURSED)
 
 #define	LK_HOLDER(x)			((x) & ~LK_FLAGMASK)
-#define	LK_SHARERS_SHIFT		4
+#define	LK_SHARERS_SHIFT		5
 #define	LK_SHARERS(x)			(LK_HOLDER(x) >> LK_SHARERS_SHIFT)
 #define	LK_SHARERS_LOCK(x)		((x) << LK_SHARERS_SHIFT | LK_SHARE)
 #define	LK_ONE_SHARER			(1 << LK_SHARERS_SHIFT)
@@ -68,6 +71,12 @@ struct thread;
  */
 int	 __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 	    const char *wmesg, int prio, int timo, const char *file, int line);
+int	 lockmgr_lock_flags(struct lock *lk, u_int flags,
+	    struct lock_object *ilk, const char *file, int line);
+int	lockmgr_slock(struct lock *lk, u_int flags, const char *file, int line);
+int	lockmgr_xlock(struct lock *lk, u_int flags, const char *file, int line);
+int	lockmgr_unlock(struct lock *lk);
+
 #if defined(INVARIANTS) || defined(INVARIANT_SUPPORT)
 void	 _lockmgr_assert(const struct lock *lk, int what, const char *file, int line);
 #endif
@@ -111,6 +120,7 @@ _lockmgr_args_rw(struct lock *lk, u_int flags, struct rwlock *ilk,
 /*
  * Define aliases in order to complete lockmgr KPI.
  */
+#define	lockmgr_read_value(lk)	((lk)->lk_lock)
 #define	lockmgr(lk, flags, ilk)						\
 	_lockmgr_args((lk), (flags), (ilk), LK_WMESG_DEFAULT,		\
 	    LK_PRIO_DEFAULT, LK_TIMO_DEFAULT, LOCK_FILE, LOCK_LINE)
@@ -122,13 +132,13 @@ _lockmgr_args_rw(struct lock *lk, u_int flags, struct rwlock *ilk,
 	    LOCK_FILE, LOCK_LINE)
 #define	lockmgr_disown(lk)						\
 	_lockmgr_disown((lk), LOCK_FILE, LOCK_LINE)
+#define	lockmgr_recursed_v(v)						\
+	(v & LK_WRITER_RECURSED)
 #define	lockmgr_recursed(lk)						\
-	((lk)->lk_recurse != 0)
+	lockmgr_recursed_v((lk)->lk_lock)
 #define	lockmgr_rw(lk, flags, ilk)					\
 	_lockmgr_args_rw((lk), (flags), (ilk), LK_WMESG_DEFAULT,	\
 	    LK_PRIO_DEFAULT, LK_TIMO_DEFAULT, LOCK_FILE, LOCK_LINE)
-#define	lockmgr_waiters(lk)						\
-	((lk)->lk_lock & LK_ALL_WAITERS)
 #ifdef INVARIANTS
 #define	lockmgr_assert(lk, what)					\
 	_lockmgr_assert((lk), (what), LOCK_FILE, LOCK_LINE)
@@ -139,15 +149,16 @@ _lockmgr_args_rw(struct lock *lk, u_int flags, struct rwlock *ilk,
 /*
  * Flags for lockinit().
  */
-#define	LK_INIT_MASK	0x0000FF
+#define	LK_INIT_MASK	0x0001FF
 #define	LK_CANRECURSE	0x000001
 #define	LK_NODUP	0x000002
 #define	LK_NOPROFILE	0x000004
 #define	LK_NOSHARE	0x000008
 #define	LK_NOWITNESS	0x000010
 #define	LK_QUIET	0x000020
-#define	LK_ADAPTIVE	0x000040
+#define	LK_UNUSED0	0x000040	/* Was LK_ADAPTIVE */
 #define	LK_IS_VNODE	0x000080	/* Tell WITNESS about a VNODE lock */
+#define	LK_NEW		0x000100
 
 /*
  * Additional attributes to be used in lockmgr().
@@ -159,7 +170,7 @@ _lockmgr_args_rw(struct lock *lk, u_int flags, struct rwlock *ilk,
 #define	LK_SLEEPFAIL	0x000800
 #define	LK_TIMELOCK	0x001000
 #define	LK_NODDLKTREAT	0x002000
-#define	LK_VNHELD	0x004000
+#define	LK_ADAPTIVE	0x004000
 
 /*
  * Operations for lockmgr().

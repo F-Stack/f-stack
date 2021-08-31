@@ -41,6 +41,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/mutex.h>
 #include <sys/signalvar.h>
 #include <sys/ktr.h>
+#include <sys/vmmeter.h>
 #ifdef KTRACE
 #include <sys/uio.h>
 #include <sys/ktrace.h>
@@ -168,7 +169,8 @@ static const struct abort aborts[] = {
 };
 
 static __inline void
-call_trapsignal(struct thread *td, int sig, int code, vm_offset_t addr)
+call_trapsignal(struct thread *td, int sig, int code, vm_offset_t addr,
+    int trapno)
 {
 	ksiginfo_t ksi;
 
@@ -184,6 +186,7 @@ call_trapsignal(struct thread *td, int sig, int code, vm_offset_t addr)
 	ksi.ksi_signo = sig;
 	ksi.ksi_code = code;
 	ksi.ksi_addr = (void *)addr;
+	ksi.ksi_trapno = trapno;
 	trapsignal(td, &ksi);
 }
 
@@ -251,7 +254,7 @@ abort_debug(struct trapframe *tf, u_int fsr, u_int prefetch, bool usermode,
 		struct thread *td;
 
 		td = curthread;
-		call_trapsignal(td, SIGTRAP, TRAP_BRKPT, far);
+		call_trapsignal(td, SIGTRAP, TRAP_BRKPT, far, FAULT_DEBUG);
 		userret(td, tf);
 	} else {
 #ifdef KDB
@@ -286,11 +289,12 @@ abort_handler(struct trapframe *tf, int prefetch)
 	struct vmspace *vm;
 	vm_prot_t ftype;
 	bool usermode;
+	int bp_harden, ucode;
 #ifdef INVARIANTS
 	void *onfault;
 #endif
 
-	PCPU_INC(cnt.v_trap);
+	VM_CNT_INC(v_trap);
 	td = curthread;
 
 	fsr = (prefetch) ? cp15_ifsr_get(): cp15_dfsr_get();
@@ -302,6 +306,20 @@ abort_handler(struct trapframe *tf, int prefetch)
 
 	idx = FSR_TO_FAULT(fsr);
 	usermode = TRAPF_USERMODE(tf);	/* Abort came from user mode? */
+
+	/*
+	 * Apply BP hardening by flushing the branch prediction cache
+	 * for prefaults on kernel addresses.
+	 */
+	if (__predict_false(prefetch && far > VM_MAXUSER_ADDRESS &&
+	    (idx == FAULT_TRAN_L2 || idx == FAULT_PERM_L2))) {
+		bp_harden = PCPU_GET(bp_harden_kind);
+		if (bp_harden == PCPU_BP_HARDEN_KIND_BPIALL)
+			_CP15_BPIALL();
+		else if (bp_harden == PCPU_BP_HARDEN_KIND_ICIALLU)
+			_CP15_ICIALLU();
+	}
+
 	if (usermode)
 		td->td_frame = tf;
 
@@ -446,8 +464,11 @@ abort_handler(struct trapframe *tf, int prefetch)
 		/*
 		 * Don't allow user-mode faults in kernel address space.
 		 */
-		if (usermode)
+		if (usermode) {
+			ksig.sig = SIGSEGV;
+			ksig.code = SEGV_ACCERR;
 			goto nogo;
+		}
 
 		map = kernel_map;
 	} else {
@@ -456,8 +477,11 @@ abort_handler(struct trapframe *tf, int prefetch)
 		 * is NULL or curproc->p_vmspace is NULL the fault is fatal.
 		 */
 		vm = (p != NULL) ? p->p_vmspace : NULL;
-		if (vm == NULL)
+		if (vm == NULL) {
+			ksig.sig = SIGSEGV;
+			ksig.code = 0;
 			goto nogo;
+		}
 
 		map = &vm->vm_map;
 		if (!usermode && (td->td_intr_nesting_level != 0 ||
@@ -481,7 +505,9 @@ abort_handler(struct trapframe *tf, int prefetch)
 #endif
 
 	/* Fault in the page. */
-	rv = vm_fault(map, va, ftype, VM_FAULT_NORMAL);
+	rv = vm_fault_trap(map, va, ftype, VM_FAULT_NORMAL, &ksig.sig,
+	    &ucode);
+	ksig.code = ucode;
 
 #ifdef INVARIANTS
 	pcb->pcb_onfault = onfault;
@@ -502,12 +528,10 @@ nogo:
 		return;
 	}
 
-	ksig.sig = SIGSEGV;
-	ksig.code = (rv == KERN_PROTECTION_FAILURE) ? SEGV_ACCERR : SEGV_MAPERR;
 	ksig.addr = far;
 
 do_trapsignal:
-	call_trapsignal(td, ksig.sig, ksig.code, ksig.addr);
+	call_trapsignal(td, ksig.sig, ksig.code, ksig.addr, idx);
 out:
 	if (usermode)
 		userret(td, tf);
@@ -538,6 +562,9 @@ abort_fatal(struct trapframe *tf, u_int idx, u_int fsr, u_int far,
 	bool usermode;
 	const char *mode;
 	const char *rw_mode;
+#ifdef KDB
+	bool handled;
+#endif
 
 	usermode = TRAPF_USERMODE(tf);
 #ifdef KDTRACE_HOOKS
@@ -583,8 +610,13 @@ abort_fatal(struct trapframe *tf, u_int idx, u_int fsr, u_int far,
 	printf(", pc =%08x\n\n", tf->tf_pc);
 
 #ifdef KDB
-	if (debugger_on_panic || kdb_active)
-		kdb_trap(fsr, 0, tf);
+	if (debugger_on_trap) {
+		kdb_why = KDB_WHY_TRAP;
+		handled = kdb_trap(fsr, 0, tf);
+		kdb_why = KDB_WHY_UNSET;
+		if (handled)
+			return (0);
+	}
 #endif
 	panic("Fatal abort");
 	/*NOTREACHED*/

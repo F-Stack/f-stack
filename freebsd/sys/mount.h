@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -38,6 +40,7 @@
 #ifdef _KERNEL
 #include <sys/lock.h>
 #include <sys/lockmgr.h>
+#include <sys/tslog.h>
 #include <sys/_mutex.h>
 #include <sys/_sx.h>
 #endif
@@ -49,9 +52,14 @@
 
 typedef struct fsid { int32_t val[2]; } fsid_t;	/* filesystem id type */
 
+#define fsidcmp(a, b) memcmp((a), (b), sizeof(fsid_t))
+
 /*
  * File identifier.
  * These are unique per filesystem on a single machine.
+ *
+ * Note that the offset of fid_data is 4 bytes, so care must be taken to avoid
+ * undefined behavior accessing unaligned fields within an embedded struct.
  */
 #define	MAXFIDSZ	16
 
@@ -65,8 +73,8 @@ struct fid {
  * filesystem statistics
  */
 #define	MFSNAMELEN	16		/* length of type name including null */
-#define	MNAMELEN	88		/* size of on/from name bufs */
-#define	STATFS_VERSION	0x20030518	/* current version number */
+#define	MNAMELEN	1024		/* size of on/from name bufs */
+#define	STATFS_VERSION	0x20140518	/* current version number */
 struct statfs {
 	uint32_t f_version;		/* structure version number */
 	uint32_t f_type;		/* type of filesystem */
@@ -91,6 +99,34 @@ struct statfs {
 	char	  f_mntfromname[MNAMELEN];  /* mounted filesystem */
 	char	  f_mntonname[MNAMELEN];    /* directory on which mounted */
 };
+
+#if defined(_WANT_FREEBSD11_STATFS) || defined(_KERNEL)
+#define	FREEBSD11_STATFS_VERSION	0x20030518 /* current version number */
+struct freebsd11_statfs {
+	uint32_t f_version;		/* structure version number */
+	uint32_t f_type;		/* type of filesystem */
+	uint64_t f_flags;		/* copy of mount exported flags */
+	uint64_t f_bsize;		/* filesystem fragment size */
+	uint64_t f_iosize;		/* optimal transfer block size */
+	uint64_t f_blocks;		/* total data blocks in filesystem */
+	uint64_t f_bfree;		/* free blocks in filesystem */
+	int64_t	 f_bavail;		/* free blocks avail to non-superuser */
+	uint64_t f_files;		/* total file nodes in filesystem */
+	int64_t	 f_ffree;		/* free nodes avail to non-superuser */
+	uint64_t f_syncwrites;		/* count of sync writes since mount */
+	uint64_t f_asyncwrites;		/* count of async writes since mount */
+	uint64_t f_syncreads;		/* count of sync reads since mount */
+	uint64_t f_asyncreads;		/* count of async reads since mount */
+	uint64_t f_spare[10];		/* unused spare */
+	uint32_t f_namemax;		/* maximum filename length */
+	uid_t	  f_owner;		/* user that mounted the filesystem */
+	fsid_t	  f_fsid;		/* filesystem id */
+	char	  f_charspare[80];	/* spare string space */
+	char	  f_fstypename[16];	/* filesystem type name */
+	char	  f_mntfromname[88];	/* mounted filesystem */
+	char	  f_mntonname[88];	/* directory on which mounted */
+};
+#endif /* _WANT_FREEBSD11_STATFS || _KERNEL */
 
 #ifdef _KERNEL
 #define	OMFSNAMELEN	16	/* length of fs type name, including null */
@@ -141,12 +177,23 @@ struct vfsopt {
 	int	seen;
 };
 
+struct mount_pcpu {
+	int		mntp_thread_in_ops;
+	int		mntp_ref;
+	int		mntp_lockref;
+	int		mntp_writeopcount;
+};
+
+_Static_assert(sizeof(struct mount_pcpu) == 16,
+    "the struct is allocated from pcpu 16 zone");
+
 /*
  * Structure per mounted filesystem.  Each mounted filesystem has an
  * array of operations and an instance record.  The filesystems are
  * put on a doubly linked list.
  *
  * Lock reference:
+ * 	l - mnt_listmtx
  *	m - mountlist_mtx
  *	i - interlock
  *	v - vnode freelist mutex
@@ -155,22 +202,23 @@ struct vfsopt {
  *
  */
 struct mount {
-	struct mtx	mnt_mtx;		/* mount structure interlock */
+	int 		mnt_vfs_ops;		/* (i) pending vfs ops */
+	int		mnt_kern_flag;		/* (i) kernel only flags */
+	uint64_t	mnt_flag;		/* (i) flags shared with user */
+	struct mount_pcpu *mnt_pcpu;		/* per-CPU data */
+	struct vnode	*mnt_rootvnode;
+	struct vnode	*mnt_vnodecovered;	/* vnode we mounted on */
+	struct vfsops	*mnt_op;		/* operations on fs */
+	struct vfsconf	*mnt_vfc;		/* configuration info */
+	struct mtx __aligned(CACHE_LINE_SIZE)	mnt_mtx; /* mount structure interlock */
 	int		mnt_gen;		/* struct mount generation */
 #define	mnt_startzero	mnt_list
 	TAILQ_ENTRY(mount) mnt_list;		/* (m) mount list */
-	struct vfsops	*mnt_op;		/* operations on fs */
-	struct vfsconf	*mnt_vfc;		/* configuration info */
-	struct vnode	*mnt_vnodecovered;	/* vnode we mounted on */
 	struct vnode	*mnt_syncer;		/* syncer vnode */
 	int		mnt_ref;		/* (i) Reference count */
 	struct vnodelst	mnt_nvnodelist;		/* (i) list of vnodes */
 	int		mnt_nvnodelistsize;	/* (i) # of vnodes */
-	struct vnodelst	mnt_activevnodelist;	/* (v) list of active vnodes */
-	int		mnt_activevnodelistsize;/* (v) # of active vnodes */
 	int		mnt_writeopcount;	/* (i) write syscalls pending */
-	int		mnt_kern_flag;		/* (i) kernel only flags */
-	uint64_t	mnt_flag;		/* (i) flags shared with user */
 	struct vfsoptlist *mnt_opt;		/* current mount options */
 	struct vfsoptlist *mnt_optnew;		/* new options passed to fs */
 	int		mnt_maxsymlinklen;	/* max size of short symlink */
@@ -188,6 +236,9 @@ struct mount {
 	struct thread	*mnt_susp_owner;	/* (i) thread owning suspension */
 #define	mnt_endzero	mnt_gjprovider
 	char		*mnt_gjprovider;	/* gjournal provider name */
+	struct mtx	mnt_listmtx;
+	struct vnodelst	mnt_lazyvnodelist;	/* (l) list of lazy vnodes */
+	int		mnt_lazyvnodelistsize;	/* (l) # of lazy vnodes */
 	struct lock	mnt_explock;		/* vfs_export walkers lock */
 	TAILQ_ENTRY(mount) mnt_upper_link;	/* (m) we in the all uppers */
 	TAILQ_HEAD(, mount) mnt_uppers;		/* (m) upper mounts over us*/
@@ -213,32 +264,81 @@ void          __mnt_vnode_markerfree_all(struct vnode **mvp, struct mount *mp);
 	} while (0)
 
 /*
- * Definitions for MNT_VNODE_FOREACH_ACTIVE.
+ * Definitions for MNT_VNODE_FOREACH_LAZY.
  */
-struct vnode *__mnt_vnode_next_active(struct vnode **mvp, struct mount *mp);
-struct vnode *__mnt_vnode_first_active(struct vnode **mvp, struct mount *mp);
-void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
+typedef int mnt_lazy_cb_t(struct vnode *, void *);
+struct vnode *__mnt_vnode_next_lazy(struct vnode **mvp, struct mount *mp,
+    mnt_lazy_cb_t *cb, void *cbarg);
+struct vnode *__mnt_vnode_first_lazy(struct vnode **mvp, struct mount *mp,
+    mnt_lazy_cb_t *cb, void *cbarg);
+void          __mnt_vnode_markerfree_lazy(struct vnode **mvp, struct mount *mp);
 
-#define MNT_VNODE_FOREACH_ACTIVE(vp, mp, mvp) 				\
-	for (vp = __mnt_vnode_first_active(&(mvp), (mp)); 		\
-		(vp) != NULL; vp = __mnt_vnode_next_active(&(mvp), (mp)))
+#define MNT_VNODE_FOREACH_LAZY(vp, mp, mvp, cb, cbarg)			\
+	for (vp = __mnt_vnode_first_lazy(&(mvp), (mp), (cb), (cbarg));	\
+		(vp) != NULL; 						\
+		vp = __mnt_vnode_next_lazy(&(mvp), (mp), (cb), (cbarg)))
 
-#define MNT_VNODE_FOREACH_ACTIVE_ABORT(mp, mvp)				\
-	__mnt_vnode_markerfree_active(&(mvp), (mp))
+#define MNT_VNODE_FOREACH_LAZY_ABORT(mp, mvp)				\
+	__mnt_vnode_markerfree_lazy(&(mvp), (mp))
 
 #define	MNT_ILOCK(mp)	mtx_lock(&(mp)->mnt_mtx)
 #define	MNT_ITRYLOCK(mp) mtx_trylock(&(mp)->mnt_mtx)
 #define	MNT_IUNLOCK(mp)	mtx_unlock(&(mp)->mnt_mtx)
 #define	MNT_MTX(mp)	(&(mp)->mnt_mtx)
-#define	MNT_REF(mp)	(mp)->mnt_ref++
+
+#define	MNT_REF(mp)	do {						\
+	mtx_assert(MNT_MTX(mp), MA_OWNED);				\
+	mp->mnt_ref++;							\
+} while (0)
 #define	MNT_REL(mp)	do {						\
-	KASSERT((mp)->mnt_ref > 0, ("negative mnt_ref"));		\
+	mtx_assert(MNT_MTX(mp), MA_OWNED);				\
 	(mp)->mnt_ref--;						\
-	if ((mp)->mnt_ref == 0)						\
+	if ((mp)->mnt_vfs_ops && (mp)->mnt_ref < 0)		\
+		vfs_dump_mount_counters(mp);				\
+	if ((mp)->mnt_ref == 0 && (mp)->mnt_vfs_ops)		\
 		wakeup((mp));						\
 } while (0)
 
 #endif /* _KERNEL */
+
+#if defined(_WANT_MNTOPTNAMES) || defined(_KERNEL)
+struct mntoptnames {
+	uint64_t o_opt;
+	const char *o_name;
+};
+#define MNTOPT_NAMES							\
+	{ MNT_ASYNC,		"asynchronous" },			\
+	{ MNT_EXPORTED,		"NFS exported" },			\
+	{ MNT_LOCAL,		"local" },				\
+	{ MNT_NOATIME,		"noatime" },				\
+	{ MNT_NOEXEC,		"noexec" },				\
+	{ MNT_NOSUID,		"nosuid" },				\
+	{ MNT_NOSYMFOLLOW,	"nosymfollow" },			\
+	{ MNT_QUOTA,		"with quotas" },			\
+	{ MNT_RDONLY,		"read-only" },				\
+	{ MNT_SYNCHRONOUS,	"synchronous" },			\
+	{ MNT_UNION,		"union" },				\
+	{ MNT_NOCLUSTERR,	"noclusterr" },				\
+	{ MNT_NOCLUSTERW,	"noclusterw" },				\
+	{ MNT_SUIDDIR,		"suiddir" },				\
+	{ MNT_SOFTDEP,		"soft-updates" },			\
+	{ MNT_SUJ,		"journaled soft-updates" },		\
+	{ MNT_MULTILABEL,	"multilabel" },				\
+	{ MNT_ACLS,		"acls" },				\
+	{ MNT_NFS4ACLS,		"nfsv4acls" },				\
+	{ MNT_GJOURNAL,		"gjournal" },				\
+	{ MNT_AUTOMOUNTED,	"automounted" },			\
+	{ MNT_VERIFIED,		"verified" },				\
+	{ MNT_UNTRUSTED,	"untrusted" },				\
+	{ MNT_NOCOVER,		"nocover" },				\
+	{ MNT_EMPTYDIR,		"emptydir" },				\
+	{ MNT_UPDATE,		"update" },				\
+	{ MNT_DELEXPORT,	"delexport" },				\
+	{ MNT_RELOAD,		"reload" },				\
+	{ MNT_FORCE,		"force" },				\
+	{ MNT_SNAPSHOT,		"snapshot" },				\
+	{ 0, NULL }
+#endif
 
 /*
  * User specifiable flags, stored in mnt_flag.
@@ -261,6 +361,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNT_NOCLUSTERW	0x0000000080000000ULL /* disable cluster write */
 #define	MNT_SUJ		0x0000000100000000ULL /* using journaled soft updates */
 #define	MNT_AUTOMOUNTED	0x0000000200000000ULL /* mounted by automountd(8) */
+#define	MNT_UNTRUSTED	0x0000000800000000ULL /* filesys metadata untrusted */
 
 /*
  * NFS export related mount flags.
@@ -271,6 +372,9 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNT_EXPORTANON	0x0000000000000400ULL	/* anon uid mapping for all */
 #define	MNT_EXKERB	0x0000000000000800ULL	/* exported with Kerberos */
 #define	MNT_EXPUBLIC	0x0000000020000000ULL	/* public export (WebNFS) */
+#define	MNT_EXTLS	0x0000004000000000ULL /* require TLS */
+#define	MNT_EXTLSCERT	0x0000008000000000ULL /* require TLS with client cert */
+#define	MNT_EXTLSCERTUSER 0x0000010000000000ULL /* require TLS with user cert */
 
 /*
  * Flags set by internal operations,
@@ -282,6 +386,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNT_ROOTFS	0x0000000000004000ULL /* identifies the root fs */
 #define	MNT_USER	0x0000000000008000ULL /* mounted by a user */
 #define	MNT_IGNORE	0x0000000000800000ULL /* do not show entry in df */
+#define	MNT_VERIFIED	0x0000000400000000ULL /* filesystem is verified */
 
 /*
  * Mask of flags that are visible to statfs().
@@ -297,7 +402,8 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 			MNT_NOCLUSTERW	| MNT_SUIDDIR	| MNT_SOFTDEP	| \
 			MNT_IGNORE	| MNT_EXPUBLIC	| MNT_NOSYMFOLLOW | \
 			MNT_GJOURNAL	| MNT_MULTILABEL | MNT_ACLS	| \
-			MNT_NFS4ACLS	| MNT_AUTOMOUNTED)
+			MNT_NFS4ACLS	| MNT_AUTOMOUNTED | MNT_VERIFIED | \
+			MNT_UNTRUSTED)
 
 /* Mask of flags that can be updated. */
 #define	MNT_UPDATEMASK (MNT_NOSUID	| MNT_NOEXEC	| \
@@ -306,7 +412,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 			MNT_NOSYMFOLLOW	| MNT_IGNORE	| \
 			MNT_NOCLUSTERR	| MNT_NOCLUSTERW | MNT_SUIDDIR	| \
 			MNT_ACLS	| MNT_USER	| MNT_NFS4ACLS	| \
-			MNT_AUTOMOUNTED)
+			MNT_AUTOMOUNTED | MNT_UNTRUSTED)
 
 /*
  * External filesystem command modifier flags.
@@ -324,29 +430,29 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNT_SNAPSHOT	0x0000000001000000ULL /* snapshot the filesystem */
 #define	MNT_NONBUSY	0x0000000004000000ULL /* check vnode use counts. */
 #define	MNT_BYFSID	0x0000000008000000ULL /* specify filesystem by ID. */
+#define	MNT_NOCOVER	0x0000001000000000ULL /* Do not cover a mount point */
+#define	MNT_EMPTYDIR	0x0000002000000000ULL /* Only mount on empty dir */
 #define MNT_CMDFLAGS   (MNT_UPDATE	| MNT_DELEXPORT	| MNT_RELOAD	| \
 			MNT_FORCE	| MNT_SNAPSHOT	| MNT_NONBUSY	| \
-			MNT_BYFSID)
+			MNT_BYFSID	| MNT_NOCOVER	| MNT_EMPTYDIR)
 /*
  * Internal filesystem control flags stored in mnt_kern_flag.
  *
- * MNTK_UNMOUNT locks the mount entry so that name lookup cannot proceed
- * past the mount point.  This keeps the subtree stable during mounts
- * and unmounts.
+ * MNTK_UNMOUNT locks the mount entry so that name lookup cannot
+ * proceed past the mount point.  This keeps the subtree stable during
+ * mounts and unmounts.  When non-forced unmount flushes all vnodes
+ * from the mp queue, the MNTK_UNMOUNT flag prevents insmntque() from
+ * queueing new vnodes.
  *
  * MNTK_UNMOUNTF permits filesystems to detect a forced unmount while
  * dounmount() is still waiting to lock the mountpoint. This allows
  * the filesystem to cancel operations that might otherwise deadlock
  * with the unmount attempt (used by NFS).
- *
- * MNTK_NOINSMNTQ is strict subset of MNTK_UNMOUNT. They are separated
- * to allow for failed unmount attempt to restore the syncer vnode for
- * the mount.
  */
 #define MNTK_UNMOUNTF	0x00000001	/* forced unmount in progress */
 #define MNTK_ASYNC	0x00000002	/* filtered async flag */
 #define MNTK_SOFTDEP	0x00000004	/* async disabled by softdep */
-#define MNTK_NOINSMNTQ	0x00000008	/* insmntque is not allowed */
+#define MNTK_NOMSYNC	0x00000008	/* don't do msync */
 #define	MNTK_DRAINING	0x00000010	/* lock draining is happening */
 #define	MNTK_REFEXPIRE	0x00000020	/* refcount expiring is happening */
 #define MNTK_EXTENDED_SHARED	0x00000040 /* Allow shared locking for more ops */
@@ -360,13 +466,19 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNTK_MARKER		0x00001000
 #define	MNTK_UNMAPPED_BUFS	0x00002000
 #define	MNTK_USES_BCACHE	0x00004000 /* FS uses the buffer cache. */
+#define	MNTK_TEXT_REFS		0x00008000 /* Keep use ref for text */
+#define	MNTK_VMSETSIZE_BUG	0x00010000
+#define	MNTK_UNIONFS	0x00020000	/* A hack for F_ISUNIONSTACK */
+#define	MNTK_FPLOOKUP	0x00040000	/* fast path lookup is supported */
+#define	MNTK_SUSPEND_ALL	0x00080000 /* Suspended by all-fs suspension */
 #define MNTK_NOASYNC	0x00800000	/* disable async */
 #define MNTK_UNMOUNT	0x01000000	/* unmount in progress */
 #define	MNTK_MWAIT	0x02000000	/* waiting for unmount to finish */
 #define	MNTK_SUSPEND	0x08000000	/* request write suspension */
 #define	MNTK_SUSPEND2	0x04000000	/* block secondary writes */
 #define	MNTK_SUSPENDED	0x10000000	/* write operations are suspended */
-#define	MNTK_UNUSED1	0x20000000
+#define	MNTK_NULL_NOCACHE	0x20000000 /* auto disable cache for nullfs
+					      mounts over this fs */
 #define MNTK_LOOKUP_SHARED	0x40000000 /* FS supports shared lock lookups */
 #define	MNTK_NOKNOTE	0x80000000	/* Don't send KNOTEs from VOP hooks */
 
@@ -438,13 +550,31 @@ struct oexport_args {
 };
 
 /*
- * Export arguments for local filesystem mount calls.
+ * Not quite so old export arguments with 32bit ex_flags and xucred ex_anon.
  */
 #define	MAXSECFLAVORS	5
-struct export_args {
+struct o2export_args {
 	int	ex_flags;		/* export related flags */
 	uid_t	ex_root;		/* mapping for root uid */
 	struct	xucred ex_anon;		/* mapping for anonymous user */
+	struct	sockaddr *ex_addr;	/* net address to which exported */
+	u_char	ex_addrlen;		/* and the net address length */
+	struct	sockaddr *ex_mask;	/* mask of valid bits in saddr */
+	u_char	ex_masklen;		/* and the smask length */
+	char	*ex_indexfile;		/* index file for WebNFS URLs */
+	int	ex_numsecflavors;	/* security flavor count */
+	int	ex_secflavors[MAXSECFLAVORS]; /* list of security flavors */
+};
+
+/*
+ * Export arguments for local filesystem mount calls.
+ */
+struct export_args {
+	uint64_t ex_flags;		/* export related flags */
+	uid_t	ex_root;		/* mapping for root uid */
+	uid_t	ex_uid;			/* mapping for anonymous user */
+	int	ex_ngroups;
+	gid_t	*ex_groups;
 	struct	sockaddr *ex_addr;	/* net address to which exported */
 	u_char	ex_addrlen;		/* and the net address length */
 	struct	sockaddr *ex_mask;	/* mask of valid bits in saddr */
@@ -476,9 +606,11 @@ struct vfsconf {
 	u_int	vfc_version;		/* ABI version number */
 	char	vfc_name[MFSNAMELEN];	/* filesystem type name */
 	struct	vfsops *vfc_vfsops;	/* filesystem operations vector */
+	struct	vfsops *vfc_vfsops_sd;	/* ... signal-deferred */
 	int	vfc_typenum;		/* historic filesystem type number */
 	int	vfc_refcount;		/* number mounted of this type */
 	int	vfc_flags;		/* permanent flags */
+	int	vfc_prison_flag;	/* prison allow.mount.* flag */
 	struct	vfsoptdecl *vfc_opts;	/* mount options */
 	TAILQ_ENTRY(vfsconf) vfc_list;	/* list of vfscons */
 };
@@ -515,7 +647,8 @@ struct ovfsconf {
 #define	VFCF_UNICODE	0x00200000	/* stores file names as Unicode */
 #define	VFCF_JAIL	0x00400000	/* can be mounted from within a jail */
 #define	VFCF_DELEGADMIN	0x00800000	/* supports delegated administration */
-#define	VFCF_SBDRY	0x01000000	/* defer stop requests */
+#define	VFCF_SBDRY	0x01000000	/* Stop at Boundary: defer stop requests
+					   to kernel->user (AST) transition */
 
 typedef uint32_t fsctlop_t;
 
@@ -592,6 +725,7 @@ struct uio;
 
 #ifdef MALLOC_DECLARE
 MALLOC_DECLARE(M_MOUNT);
+MALLOC_DECLARE(M_STATFS);
 #endif
 extern int maxvfsconf;		/* highest defined filesystem type */
 
@@ -606,6 +740,18 @@ struct nameidata;
 struct sysctl_req;
 struct mntarg;
 
+/*
+ * N.B., vfs_cmount is the ancient vfsop invoked by the old mount(2) syscall.
+ * The new way is vfs_mount.
+ *
+ * vfs_cmount implementations typically translate arguments from their
+ * respective old per-FS structures into the key-value list supported by
+ * nmount(2), then use kernel_mount(9) to mimic nmount(2) from kernelspace.
+ *
+ * Filesystems with mounters that use nmount(2) do not need to and should not
+ * implement vfs_cmount.  Hopefully a future cleanup can remove vfs_cmount and
+ * mount(2) entirely.
+ */
 typedef int vfs_cmount_t(struct mntarg *ma, void *data, uint64_t flags);
 typedef int vfs_unmount_t(struct mount *mp, int mntflags);
 typedef int vfs_root_t(struct mount *mp, int flags, struct vnode **vpp);
@@ -617,8 +763,8 @@ typedef	int vfs_vget_t(struct mount *mp, ino_t ino, int flags,
 typedef	int vfs_fhtovp_t(struct mount *mp, struct fid *fhp,
 		    int flags, struct vnode **vpp);
 typedef	int vfs_checkexp_t(struct mount *mp, struct sockaddr *nam,
-		    int *extflagsp, struct ucred **credanonp,
-		    int *numsecflavors, int **secflavors);
+		    uint64_t *extflagsp, struct ucred **credanonp,
+		    int *numsecflavors, int *secflavors);
 typedef	int vfs_init_t(struct vfsconf *);
 typedef	int vfs_uninit_t(struct vfsconf *);
 typedef	int vfs_extattrctl_t(struct mount *mp, int cmd,
@@ -636,6 +782,7 @@ struct vfsops {
 	vfs_cmount_t		*vfs_cmount;
 	vfs_unmount_t		*vfs_unmount;
 	vfs_root_t		*vfs_root;
+	vfs_root_t		*vfs_cachedroot;
 	vfs_quotactl_t		*vfs_quotactl;
 	vfs_statfs_t		*vfs_statfs;
 	vfs_sync_t		*vfs_sync;
@@ -655,137 +802,102 @@ struct vfsops {
 
 vfs_statfs_t	__vfs_statfs;
 
-#define	VFS_PROLOGUE(MP)	do {					\
-	struct mount *mp__;						\
-	int _prev_stops;						\
-									\
-	mp__ = (MP);							\
-	_prev_stops = sigdeferstop((mp__ != NULL &&			\
-	    (mp__->mnt_vfc->vfc_flags & VFCF_SBDRY) != 0) ?		\
-	    SIGDEFERSTOP_SILENT : SIGDEFERSTOP_NOP);
-
-#define	VFS_EPILOGUE(MP)						\
-	sigallowstop(_prev_stops);					\
-} while (0)
-
 #define	VFS_MOUNT(MP) ({						\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
+	TSRAW(curthread, TS_ENTER, "VFS_MOUNT", (MP)->mnt_vfc->vfc_name);\
 	_rc = (*(MP)->mnt_op->vfs_mount)(MP);				\
-	VFS_EPILOGUE(MP);						\
+	TSRAW(curthread, TS_EXIT, "VFS_MOUNT", (MP)->mnt_vfc->vfc_name);\
 	_rc; })
 
 #define	VFS_UNMOUNT(MP, FORCE) ({					\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_unmount)(MP, FORCE);			\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_ROOT(MP, FLAGS, VPP) ({					\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_root)(MP, FLAGS, VPP);		\
-	VFS_EPILOGUE(MP);						\
+	_rc; })
+
+#define	VFS_CACHEDROOT(MP, FLAGS, VPP) ({				\
+	int _rc;							\
+									\
+	_rc = (*(MP)->mnt_op->vfs_cachedroot)(MP, FLAGS, VPP);		\
 	_rc; })
 
 #define	VFS_QUOTACTL(MP, C, U, A) ({					\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_quotactl)(MP, C, U, A);		\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_STATFS(MP, SBP) ({						\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = __vfs_statfs((MP), (SBP));				\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_SYNC(MP, WAIT) ({						\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_sync)(MP, WAIT);			\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_VGET(MP, INO, FLAGS, VPP) ({				\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_vget)(MP, INO, FLAGS, VPP);		\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_FHTOVP(MP, FIDP, FLAGS, VPP) ({				\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_fhtovp)(MP, FIDP, FLAGS, VPP);	\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_CHECKEXP(MP, NAM, EXFLG, CRED, NUMSEC, SEC) ({		\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_checkexp)(MP, NAM, EXFLG, CRED, NUMSEC,\
 	    SEC);							\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_EXTATTRCTL(MP, C, FN, NS, N) ({				\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_extattrctl)(MP, C, FN, NS, N);	\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_SYSCTL(MP, OP, REQ) ({					\
 	int _rc;							\
 									\
-	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_sysctl)(MP, OP, REQ);			\
-	VFS_EPILOGUE(MP);						\
 	_rc; })
 
 #define	VFS_SUSP_CLEAN(MP) do {						\
 	if (*(MP)->mnt_op->vfs_susp_clean != NULL) {			\
-		VFS_PROLOGUE(MP);					\
 		(*(MP)->mnt_op->vfs_susp_clean)(MP);			\
-		VFS_EPILOGUE(MP);					\
 	}								\
 } while (0)
 
 #define	VFS_RECLAIM_LOWERVP(MP, VP) do {				\
 	if (*(MP)->mnt_op->vfs_reclaim_lowervp != NULL) {		\
-		VFS_PROLOGUE(MP);					\
 		(*(MP)->mnt_op->vfs_reclaim_lowervp)((MP), (VP));	\
-		VFS_EPILOGUE(MP);					\
 	}								\
 } while (0)
 
 #define	VFS_UNLINK_LOWERVP(MP, VP) do {					\
 	if (*(MP)->mnt_op->vfs_unlink_lowervp != NULL) {		\
-		VFS_PROLOGUE(MP);					\
 		(*(MP)->mnt_op->vfs_unlink_lowervp)((MP), (VP));	\
-		VFS_EPILOGUE(MP);					\
 	}								\
 } while (0)
 
 #define	VFS_PURGE(MP) do {						\
 	if (*(MP)->mnt_op->vfs_purge != NULL) {				\
-		VFS_PROLOGUE(MP);					\
 		(*(MP)->mnt_op->vfs_purge)(MP);				\
-		VFS_EPILOGUE(MP);					\
 	}								\
 } while (0)
 
@@ -811,7 +923,8 @@ vfs_statfs_t	__vfs_statfs;
  */
 #define VFS_VERSION_00	0x19660120
 #define VFS_VERSION_01	0x20121030
-#define VFS_VERSION	VFS_VERSION_01
+#define VFS_VERSION_02	0x20180504
+#define VFS_VERSION	VFS_VERSION_02
 
 #define VFS_SET(vfsops, fsname, flags) \
 	static struct vfsconf fsname ## _vfsconf = {		\
@@ -867,7 +980,7 @@ int	vfs_setopts(struct vfsoptlist *opts, const char *name,
 	    const char *value);
 int	vfs_setpublicfs			    /* set publicly exported fs */
 	    (struct mount *, struct netexport *, struct export_args *);
-void	vfs_msync(struct mount *, int);
+void	vfs_periodic(struct mount *, int);
 int	vfs_busy(struct mount *, int);
 int	vfs_export			 /* process mount export info */
 	    (struct mount *, struct export_args *);
@@ -884,8 +997,6 @@ void	vfs_mount_error(struct mount *, const char *, ...);
 void	vfs_mountroot(void);			/* mount our root filesystem */
 void	vfs_mountedfrom(struct mount *, const char *from);
 void	vfs_notify_upper(struct vnode *, int);
-void	vfs_oexport_conv(const struct oexport_args *oexp,
-	    struct export_args *exp);
 void	vfs_ref(struct mount *);
 void	vfs_rel(struct mount *);
 struct mount *vfs_mount_alloc(struct vnode *, struct vfsconf *, const char *,
@@ -894,13 +1005,15 @@ int	vfs_suser(struct mount *, struct thread *);
 void	vfs_unbusy(struct mount *);
 void	vfs_unmountall(void);
 extern	TAILQ_HEAD(mntlist, mount) mountlist;	/* mounted filesystem list */
-extern	struct mtx mountlist_mtx;
+extern	struct mtx_padalign mountlist_mtx;
 extern	struct nfs_public nfs_pub;
 extern	struct sx vfsconf_sx;
 #define	vfsconf_lock()		sx_xlock(&vfsconf_sx)
 #define	vfsconf_unlock()	sx_xunlock(&vfsconf_sx)
 #define	vfsconf_slock()		sx_slock(&vfsconf_sx)
 #define	vfsconf_sunlock()	sx_sunlock(&vfsconf_sx)
+struct vnode *mntfs_allocvp(struct mount *, struct vnode *);
+void   mntfs_freevp(struct vnode *);
 
 /*
  * Declarations for these vfs default operations are located in
@@ -924,6 +1037,94 @@ vfs_sysctl_t		vfs_stdsysctl;
 void	syncer_suspend(void);
 void	syncer_resume(void);
 
+struct vnode *vfs_cache_root_clear(struct mount *);
+void	vfs_cache_root_set(struct mount *, struct vnode *);
+
+void	vfs_op_barrier_wait(struct mount *);
+void	vfs_op_enter(struct mount *);
+void	vfs_op_exit_locked(struct mount *);
+void	vfs_op_exit(struct mount *);
+
+#ifdef DIAGNOSTIC
+void	vfs_assert_mount_counters(struct mount *);
+void	vfs_dump_mount_counters(struct mount *);
+#else
+#define vfs_assert_mount_counters(mp) do { } while (0)
+#define vfs_dump_mount_counters(mp) do { } while (0)
+#endif
+
+enum mount_counter { MNT_COUNT_REF, MNT_COUNT_LOCKREF, MNT_COUNT_WRITEOPCOUNT };
+int	vfs_mount_fetch_counter(struct mount *, enum mount_counter);
+
+void suspend_all_fs(void);
+void resume_all_fs(void);
+
+/*
+ * Code transitioning mnt_vfs_ops to > 0 issues IPIs until it observes
+ * all CPUs not executing code enclosed by thread_in_ops_pcpu variable.
+ *
+ * This provides an invariant that by the time the last CPU is observed not
+ * executing, everyone else entering will see the counter > 0 and exit.
+ *
+ * Note there is no barrier between vfs_ops and the rest of the code in the
+ * section. It is not necessary as the writer has to wait for everyone to drain
+ * before making any changes or only make changes safe while the section is
+ * executed.
+ */
+#define	vfs_mount_pcpu(mp)		zpcpu_get(mp->mnt_pcpu)
+#define	vfs_mount_pcpu_remote(mp, cpu)	zpcpu_get_cpu(mp->mnt_pcpu, cpu)
+
+#define vfs_op_thread_entered(mp) ({				\
+	MPASS(curthread->td_critnest > 0);			\
+	struct mount_pcpu *_mpcpu = vfs_mount_pcpu(mp);		\
+	_mpcpu->mntp_thread_in_ops == 1;			\
+})
+
+#define vfs_op_thread_enter_crit(mp, _mpcpu) ({			\
+	bool _retval_crit = true;				\
+	MPASS(curthread->td_critnest > 0);			\
+	_mpcpu = vfs_mount_pcpu(mp);				\
+	MPASS(mpcpu->mntp_thread_in_ops == 0);			\
+	_mpcpu->mntp_thread_in_ops = 1;				\
+	atomic_interrupt_fence();					\
+	if (__predict_false(mp->mnt_vfs_ops > 0)) {		\
+		vfs_op_thread_exit_crit(mp, _mpcpu);		\
+		_retval_crit = false;				\
+	}							\
+	_retval_crit;						\
+})
+
+#define vfs_op_thread_enter(mp, _mpcpu) ({			\
+	bool _retval;						\
+	critical_enter();					\
+	_retval = vfs_op_thread_enter_crit(mp, _mpcpu);		\
+	if (__predict_false(!_retval))				\
+		critical_exit();				\
+	_retval;						\
+})
+
+#define vfs_op_thread_exit_crit(mp, _mpcpu) do {		\
+	MPASS(_mpcpu == vfs_mount_pcpu(mp));			\
+	MPASS(_mpcpu->mntp_thread_in_ops == 1);			\
+	atomic_interrupt_fence();					\
+	_mpcpu->mntp_thread_in_ops = 0;				\
+} while (0)
+
+#define vfs_op_thread_exit(mp, _mpcpu) do {			\
+	vfs_op_thread_exit_crit(mp, _mpcpu);			\
+	critical_exit();					\
+} while (0)
+
+#define vfs_mp_count_add_pcpu(_mpcpu, count, val) do {		\
+	MPASS(_mpcpu->mntp_thread_in_ops == 1);			\
+	_mpcpu->mntp_##count += val;				\
+} while (0)
+
+#define vfs_mp_count_sub_pcpu(_mpcpu, count, val) do {		\
+	MPASS(_mpcpu->mntp_thread_in_ops == 1);			\
+	_mpcpu->mntp_##count -= val;				\
+} while (0)
+
 #else /* !_KERNEL */
 
 #include <sys/cdefs.h>
@@ -931,11 +1132,15 @@ void	syncer_resume(void);
 struct stat;
 
 __BEGIN_DECLS
+int	fhlink(struct fhandle *, const char *);
+int	fhlinkat(struct fhandle *, int, const char *);
 int	fhopen(const struct fhandle *, int);
+int	fhreadlink(struct fhandle *, char *, size_t);
 int	fhstat(const struct fhandle *, struct stat *);
 int	fhstatfs(const struct fhandle *, struct statfs *);
 int	fstatfs(int, struct statfs *);
 int	getfh(const char *, fhandle_t *);
+int	getfhat(int, char *, struct fhandle *, int);
 int	getfsstat(struct statfs *, long, int);
 int	getmntinfo(struct statfs **, int);
 int	lgetfh(const char *, fhandle_t *);

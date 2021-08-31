@@ -29,8 +29,12 @@
  *
  */
 
+#include <sys/errno.h>
 #include <machine/asm.h>
 #include <machine/param.h>
+
+#include "assym.inc"
+
 __FBSDID("$FreeBSD$");
 
 /*
@@ -47,7 +51,7 @@ __FBSDID("$FreeBSD$");
 
 /*
  * Macro to handle the cache. This takes the start address in x0, length
- * in x1. It will corrupt x0, x1, x2, and x3.
+ * in x1. It will corrupt x0, x1, x2, x3, and x4.
  */
 .macro cache_handle_range dcop = 0, ic = 0, icop = 0
 .if \ic == 0
@@ -60,20 +64,25 @@ __FBSDID("$FreeBSD$");
 	and	x2, x0, x4		/* Get the low bits of the address */
 	add	x1, x1, x2		/* Add these to the size */
 	bic	x0, x0, x4		/* Clear the low bit of the address */
+.if \ic != 0
+	mov	x2, x0			/* Save the address */
+	mov	x4, x1			/* Save the size */
+.endif
 1:
 	dc	\dcop, x0
-	dsb	ish
-.if \ic != 0
-	ic	\icop, x0
-	dsb	ish
-.endif
 	add	x0, x0, x3		/* Move to the next line */
 	subs	x1, x1, x3		/* Reduce the size */
 	b.hi	1b			/* Check if we are done */
+	dsb	ish
 .if \ic != 0
+2:
+	ic	\icop, x2
+	add	x2, x2, x3		/* Move to the next line */
+	subs	x4, x4, x3		/* Reduce the size */
+	b.hi	2b			/* Check if we are done */
+	dsb	ish
 	isb
 .endif
-	ret
 .endm
 
 ENTRY(arm64_nullop)
@@ -84,15 +93,8 @@ END(arm64_nullop)
  * Generic functions to read/modify/write the internal coprocessor registers
  */
 
-ENTRY(arm64_setttb)
-	dsb	ish
-	msr	ttbr0_el1, x0
-	dsb	ish
-	isb
-	ret
-END(arm64_setttb)
-
 ENTRY(arm64_tlb_flushID)
+	dsb	ishst
 #ifdef SMP
 	tlbi	vmalle1is
 #else
@@ -103,24 +105,12 @@ ENTRY(arm64_tlb_flushID)
 	ret
 END(arm64_tlb_flushID)
 
-ENTRY(arm64_tlb_flushID_SE)
-	ldr	x1, .Lpage_mask
-	bic	x0, x0, x1
-#ifdef SMP
-	tlbi	vae1is, x0
-#else
-	tlbi	vae1, x0
-#endif
-	dsb	ish
-	isb
-	ret
-END(arm64_tlb_flushID_SE)
-
 /*
  * void arm64_dcache_wb_range(vm_offset_t, vm_size_t)
  */
 ENTRY(arm64_dcache_wb_range)
 	cache_handle_range	dcop = cvac
+	ret
 END(arm64_dcache_wb_range)
 
 /*
@@ -128,6 +118,7 @@ END(arm64_dcache_wb_range)
  */
 ENTRY(arm64_dcache_wbinv_range)
 	cache_handle_range	dcop = civac
+	ret
 END(arm64_dcache_wbinv_range)
 
 /*
@@ -138,18 +129,54 @@ END(arm64_dcache_wbinv_range)
  */
 ENTRY(arm64_dcache_inv_range)
 	cache_handle_range	dcop = ivac
+	ret
 END(arm64_dcache_inv_range)
 
 /*
- * void arm64_idcache_wbinv_range(vm_offset_t, vm_size_t)
+ * void arm64_dic_idc_icache_sync_range(vm_offset_t, vm_size_t)
+ * When the CTR_EL0.IDC bit is set cleaning to PoU becomes a dsb.
+ * When the CTR_EL0.DIC bit is set icache invalidation becomes an isb.
  */
-ENTRY(arm64_idcache_wbinv_range)
-	cache_handle_range	dcop = civac, ic = 1, icop = ivau
-END(arm64_idcache_wbinv_range)
+ENTRY(arm64_dic_idc_icache_sync_range)
+	dsb	ishst
+	isb
+	ret
+END(arm64_dic_idc_icache_sync_range)
 
 /*
- * void arm64_icache_sync_range(vm_offset_t, vm_size_t)
+ * void arm64_aliasing_icache_sync_range(vm_offset_t, vm_size_t)
  */
-ENTRY(arm64_icache_sync_range)
-	cache_handle_range	dcop = cvac, ic = 1, icop = ivau
-END(arm64_icache_sync_range)
+ENTRY(arm64_aliasing_icache_sync_range)
+	/*
+	 * XXX Temporary solution - I-cache flush should be range based for
+	 * PIPT cache or IALLUIS for VIVT or VIPT caches
+	 */
+/*	cache_handle_range	dcop = cvau, ic = 1, icop = ivau */
+	cache_handle_range	dcop = cvau
+	ic	ialluis
+	dsb	ish
+	isb
+	ret
+END(arm64_aliasing_icache_sync_range)
+
+/*
+ * int arm64_icache_sync_range_checked(vm_offset_t, vm_size_t)
+ */
+ENTRY(arm64_icache_sync_range_checked)
+	adr	x5, cache_maint_fault
+	SET_FAULT_HANDLER(x5, x6)
+	/* XXX: See comment in arm64_icache_sync_range */
+	cache_handle_range	dcop = cvau
+	ic	ialluis
+	dsb	ish
+	isb
+	SET_FAULT_HANDLER(xzr, x6)
+	mov	x0, #0
+	ret
+END(arm64_icache_sync_range_checked)
+
+ENTRY(cache_maint_fault)
+	SET_FAULT_HANDLER(xzr, x1)
+	mov	x0, #EFAULT
+	ret
+END(cache_maint_fault)

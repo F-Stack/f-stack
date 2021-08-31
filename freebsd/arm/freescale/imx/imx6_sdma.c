@@ -50,7 +50,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_kern.h>
 #include <vm/pmap.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -75,6 +74,12 @@ static struct resource_spec sdma_spec[] = {
 	{ SYS_RES_IRQ,		0,	RF_ACTIVE },
 	{ -1, 0 }
 };
+
+/*
+ * This will get set to true if we can't load firmware while attaching, to
+ * prevent multiple attempts to re-attach the device on each bus pass.
+ */
+static bool firmware_unavailable;
 
 static void
 sdma_intr(void *arg)
@@ -118,7 +123,7 @@ static int
 sdma_probe(device_t dev)
 {
 
-	if (!ofw_bus_status_okay(dev))
+	if (!ofw_bus_status_okay(dev) || firmware_unavailable)
 		return (ENXIO);
 
 	if (!ofw_bus_is_compatible(dev, "fsl,imx6q-sdma"))
@@ -180,9 +185,8 @@ sdma_alloc(void)
 	chn = i;
 
 	/* Allocate area for buffer descriptors */
-	channel->bd = (void *)kmem_alloc_contig(kernel_arena,
-	    PAGE_SIZE, M_ZERO, 0, ~0, PAGE_SIZE, 0,
-	    VM_MEMATTR_UNCACHEABLE);
+	channel->bd = (void *)kmem_alloc_contig(PAGE_SIZE, M_ZERO, 0, ~0,
+	    PAGE_SIZE, 0, VM_MEMATTR_UNCACHEABLE);
 
 	return (chn);
 }
@@ -198,8 +202,7 @@ sdma_free(int chn)
 	channel = &sc->channel[chn];
 	channel->in_use = 0;
 
-	kmem_free(kernel_arena, (vm_offset_t)channel->bd,
-			PAGE_SIZE);
+	kmem_free((vm_offset_t)channel->bd, PAGE_SIZE);
 
 	return (0);
 }
@@ -352,23 +355,23 @@ sdma_configure(int chn, struct sdma_conf *conf)
 static int
 load_firmware(struct sdma_softc *sc)
 {
-	struct sdma_firmware_header *header;
+	const struct sdma_firmware_header *header;
 	const struct firmware *fp;
 
-	fp = firmware_get("sdma_fw");
+	fp = firmware_get("sdma-imx6q");
 	if (fp == NULL) {
 		device_printf(sc->dev, "Can't get firmware.\n");
 		return (-1);
 	}
 
-	header = (struct sdma_firmware_header *)fp->data;
+	header = fp->data;
 	if (header->magic != FW_HEADER_MAGIC) {
 		device_printf(sc->dev, "Can't use firmware.\n");
 		return (-1);
 	}
 
 	sc->fw_header = header;
-	sc->fw_scripts = (void *)((char *)header +
+	sc->fw_scripts = (const void *)((const char *)header +
 				header->script_addrs_start);
 
 	return (0);
@@ -378,14 +381,14 @@ static int
 boot_firmware(struct sdma_softc *sc)
 {
 	struct sdma_buffer_descriptor *bd0;
-	uint32_t *ram_code;
+	const uint32_t *ram_code;
 	int timeout;
 	int ret;
 	int chn;
 	int sz;
 	int i;
 
-	ram_code = (void *)((char *)sc->fw_header +
+	ram_code = (const void *)((const char *)sc->fw_header +
 			sc->fw_header->ram_code_start);
 
 	/* Make sure SDMA has not started yet */
@@ -393,8 +396,8 @@ boot_firmware(struct sdma_softc *sc)
 
 	sz = SDMA_N_CHANNELS * sizeof(struct sdma_channel_control) + \
 	    sizeof(struct sdma_context_data);
-	sc->ccb = (void *)kmem_alloc_contig(kernel_arena,
-	    sz, M_ZERO, 0, ~0, PAGE_SIZE, 0, VM_MEMATTR_UNCACHEABLE);
+	sc->ccb = (void *)kmem_alloc_contig(sz, M_ZERO, 0, ~0, PAGE_SIZE, 0,
+	    VM_MEMATTR_UNCACHEABLE);
 	sc->ccb_phys = vtophys(sc->ccb);
 
 	sc->context = (void *)((char *)sc->ccb + \
@@ -412,9 +415,8 @@ boot_firmware(struct sdma_softc *sc)
 	/* Channel 0 is used for booting firmware */
 	chn = 0;
 
-	sc->bd0 = (void *)kmem_alloc_contig(kernel_arena,
-	    PAGE_SIZE, M_ZERO, 0, ~0, PAGE_SIZE, 0,
-	    VM_MEMATTR_UNCACHEABLE);
+	sc->bd0 = (void *)kmem_alloc_contig(PAGE_SIZE, M_ZERO, 0, ~0, PAGE_SIZE,
+	    0, VM_MEMATTR_UNCACHEABLE);
 	bd0 = sc->bd0;
 	sc->ccb[chn].base_bd_ptr = vtophys(bd0);
 	sc->ccb[chn].current_bd_ptr = vtophys(bd0);
@@ -472,6 +474,11 @@ sdma_attach(device_t dev)
 	sc = device_get_softc(dev);
 	sc->dev = dev;
 
+	if (load_firmware(sc) == -1) {
+		firmware_unavailable = true;
+		return (ENXIO);
+	}
+
 	if (bus_alloc_resources(dev, sdma_spec, sc->res)) {
 		device_printf(dev, "could not allocate resources\n");
 		return (ENXIO);
@@ -490,9 +497,6 @@ sdma_attach(device_t dev)
 		device_printf(dev, "Unable to alloc interrupt resource.\n");
 		return (ENXIO);
 	}
-
-	if (load_firmware(sc) == -1)
-		return (ENXIO);
 
 	if (boot_firmware(sc) == -1)
 		return (ENXIO);
@@ -515,4 +519,6 @@ static driver_t sdma_driver = {
 
 static devclass_t sdma_devclass;
 
-DRIVER_MODULE(sdma, simplebus, sdma_driver, sdma_devclass, 0, 0);
+/* We want to attach after all interrupt controllers, before anything else. */
+EARLY_DRIVER_MODULE(sdma, simplebus, sdma_driver, sdma_devclass, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_LAST);

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: MIT-CMU
+ *
  * Mach Operating System
  * Copyright (c) 1991,1990 Carnegie Mellon University
  * All Rights Reserved.
@@ -88,4 +90,3 @@ db_write_cmd(db_expr_t address, bool have_addr, db_expr_t count,
 
 	db_skip_to_eol();
 }
-

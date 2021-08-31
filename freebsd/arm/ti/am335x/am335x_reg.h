@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Damjan Marion <dmarion@Freebsd.org>
  * All rights reserved.
  *
@@ -38,4 +40,3 @@
 #define AM335X_CONTROL_DEV_FEATURE		0x0604
 
 #endif
-

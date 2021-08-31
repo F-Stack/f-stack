@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -36,6 +38,7 @@ __FBSDID("$FreeBSD$");
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
+#include <vm/vm_param.h>
 
 #include <machine/vmm.h>
 #include "vmx_cpufunc.h"
@@ -67,17 +70,12 @@ ASSYM(VMXCTX_HOST_RSP, offsetof(struct vmxctx, host_rsp));
 ASSYM(VMXCTX_HOST_RBX, offsetof(struct vmxctx, host_rbx));
 
 ASSYM(VMXCTX_INST_FAIL_STATUS, offsetof(struct vmxctx, inst_fail_status));
-ASSYM(VMXCTX_PMAP, offsetof(struct vmxctx, pmap));
-
-ASSYM(VMX_EPTGEN, offsetof(struct vmx, eptgen));
-ASSYM(VMX_EPTP, offsetof(struct vmx, eptp));
 
 ASSYM(VM_FAIL_INVALID,	VM_FAIL_INVALID);
 ASSYM(VM_FAIL_VALID,	VM_FAIL_VALID);
 ASSYM(VMX_GUEST_VMEXIT, VMX_GUEST_VMEXIT);
 ASSYM(VMX_VMRESUME_ERROR, VMX_VMRESUME_ERROR);
 ASSYM(VMX_VMLAUNCH_ERROR, VMX_VMLAUNCH_ERROR);
-ASSYM(VMX_INVEPT_ERROR, VMX_INVEPT_ERROR);
 
 ASSYM(PC_CPUID, offsetof(struct pcpu, pc_cpuid));
 
@@ -86,3 +84,6 @@ ASSYM(PM_EPTGEN, offsetof(struct pmap, pm_eptgen));
 
 ASSYM(KERNEL_SS, GSEL(GDATA_SEL, SEL_KPL));
 ASSYM(KERNEL_CS, GSEL(GCODE_SEL, SEL_KPL));
+
+ASSYM(PAGE_SIZE, PAGE_SIZE);
+ASSYM(KERNBASE, KERNBASE);

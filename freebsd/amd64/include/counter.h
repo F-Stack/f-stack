@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Konstantin Belousov <kib@FreeBSD.org>
  * All rights reserved.
  *
@@ -31,28 +33,29 @@
 
 #include <sys/pcpu.h>
 
-extern struct pcpu __pcpu[1];
+#define	EARLY_COUNTER	(void *)__offsetof(struct pcpu, pc_early_dummy_counter)
 
 #define	counter_enter()	do {} while (0)
 #define	counter_exit()	do {} while (0)
 
 #ifdef IN_SUBR_COUNTER_C
 static inline uint64_t
-counter_u64_read_one(uint64_t *p, int cpu)
+counter_u64_read_one(counter_u64_t c, int cpu)
 {
 
-	return (*(uint64_t *)((char *)p + sizeof(struct pcpu) * cpu));
+	MPASS(c != EARLY_COUNTER);
+	return (*zpcpu_get_cpu(c, cpu));
 }
 
 static inline uint64_t
-counter_u64_fetch_inline(uint64_t *p)
+counter_u64_fetch_inline(uint64_t *c)
 {
 	uint64_t r;
-	int i;
+	int cpu;
 
 	r = 0;
-	CPU_FOREACH(i)
-		r += counter_u64_read_one((uint64_t *)p, i);
+	CPU_FOREACH(cpu)
+		r += counter_u64_read_one(c, cpu);
 
 	return (r);
 }
@@ -60,17 +63,19 @@ counter_u64_fetch_inline(uint64_t *p)
 static void
 counter_u64_zero_one_cpu(void *arg)
 {
+	counter_u64_t c;
 
-	*((uint64_t *)((char *)arg + sizeof(struct pcpu) *
-	    PCPU_GET(cpuid))) = 0;
+	c = arg;
+	MPASS(c != EARLY_COUNTER);
+	*(zpcpu_get(c)) = 0;
 }
 
 static inline void
 counter_u64_zero_inline(counter_u64_t c)
 {
 
-	smp_rendezvous(smp_no_rendevous_barrier, counter_u64_zero_one_cpu,
-	    smp_no_rendevous_barrier, c);
+	smp_rendezvous(smp_no_rendezvous_barrier, counter_u64_zero_one_cpu,
+	    smp_no_rendezvous_barrier, c);
 }
 #endif
 
@@ -80,10 +85,8 @@ static inline void
 counter_u64_add(counter_u64_t c, int64_t inc)
 {
 
-	__asm __volatile("addq\t%1,%%gs:(%0)"
-	    :
-	    : "r" ((char *)c - (char *)&__pcpu[0]), "ri" (inc)
-	    : "memory", "cc");
+	KASSERT(IS_BSP() || c != EARLY_COUNTER, ("EARLY_COUNTER used on AP"));
+	zpcpu_add(c, inc);
 }
 
 #endif	/* ! __MACHINE_COUNTER_H__ */

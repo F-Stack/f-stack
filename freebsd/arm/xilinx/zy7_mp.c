@@ -22,6 +22,8 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "opt_platform.h"
+
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 #include <sys/param.h>
@@ -38,24 +40,67 @@ __FBSDID("$FreeBSD$");
 #include <machine/smp.h>
 #include <machine/fdt.h>
 #include <machine/intr.h>
+#include <machine/platformvar.h>
 
+#include <arm/xilinx/zy7_machdep.h>
 #include <arm/xilinx/zy7_reg.h>
+#include <arm/xilinx/zy7_slcr.h>
 
-#define	ZYNQ7_CPU1_ENTRY	0xfffffff0
+#define	ZYNQ7_CPU1_ENTRY		0xfffffff0
 
-#define	SCU_CONTROL_REG		0xf8f00000
-#define	   SCU_CONTROL_ENABLE	(1 << 0)
+#define	SCU_CONTROL_REG			0xf8f00000
+#define	   SCU_CONTROL_ENABLE		1
+#define	SCU_CONFIG_REG			0xf8f00004
+#define	   SCU_CONFIG_N_CPUS_MASK	3
+
+#define SLCR_PSS_IDCODE			0xf8000530
 
 void
-platform_mp_setmaxid(void)
+zynq7_mp_setmaxid(platform_t plat)
 {
+	bus_space_handle_t slcr_handle;
+	int device_id;
+	bus_space_handle_t scu_handle;
 
-	mp_maxid = 1;
-	mp_ncpus = 2;
+	if (mp_ncpus != 0)
+		return;
+
+	/* Map in SLCR PSS_IDCODE register. */
+	if (bus_space_map(fdtbus_bs_tag, SLCR_PSS_IDCODE, 4, 0,
+	    &slcr_handle) != 0)
+		panic("%s: Could not map SLCR IDCODE reg.\n", __func__);
+
+	device_id = bus_space_read_4(fdtbus_bs_tag, slcr_handle, 0) &
+	    ZY7_SLCR_PSS_IDCODE_DEVICE_MASK;
+
+	bus_space_unmap(fdtbus_bs_tag, slcr_handle, 4);
+
+	/*
+	 * Zynq XC7z0xxS single core chips indicate incorrect number of CPUs in
+	 * SCU configuration register.
+	 */
+	if (device_id == ZY7_SLCR_PSS_IDCODE_DEVICE_7Z007S ||
+	    device_id == ZY7_SLCR_PSS_IDCODE_DEVICE_7Z012S ||
+	    device_id == ZY7_SLCR_PSS_IDCODE_DEVICE_7Z014S) {
+		mp_maxid = 0;
+		mp_ncpus = 1;
+		return;
+	}
+
+	/* Map in SCU config register. */
+	if (bus_space_map(fdtbus_bs_tag, SCU_CONFIG_REG, 4, 0,
+	    &scu_handle) != 0)
+		panic("zynq7_mp_setmaxid: Could not map SCU config reg.\n");
+
+	mp_maxid = bus_space_read_4(fdtbus_bs_tag, scu_handle, 0) &
+	    SCU_CONFIG_N_CPUS_MASK;
+	mp_ncpus = mp_maxid + 1;
+
+	bus_space_unmap(fdtbus_bs_tag, scu_handle, 4);
 }
 
-void    
-platform_mp_start_ap(void)
+void
+zynq7_mp_start_ap(platform_t plat)
 {
 	bus_space_handle_t scu_handle;
 	bus_space_handle_t ocm_handle;
@@ -63,8 +108,8 @@ platform_mp_start_ap(void)
 
 	/* Map in SCU control register. */
 	if (bus_space_map(fdtbus_bs_tag, SCU_CONTROL_REG, 4,
-			  0, &scu_handle) != 0)
-		panic("platform_mp_start_ap: Couldn't map SCU config reg\n");
+	    0, &scu_handle) != 0)
+		panic("%s: Could not map SCU control reg.\n", __func__);
 
 	/* Set SCU enable bit. */
 	scu_ctrl = bus_space_read_4(fdtbus_bs_tag, scu_handle, 0);
@@ -76,7 +121,7 @@ platform_mp_start_ap(void)
 	/* Map in magic location to give entry address to CPU1. */
 	if (bus_space_map(fdtbus_bs_tag, ZYNQ7_CPU1_ENTRY, 4,
 	    0, &ocm_handle) != 0)
-		panic("platform_mp_start_ap: Couldn't map OCM\n");
+		panic("%s: Could not map OCM\n", __func__);
 
 	/* Write start address for CPU1. */
 	bus_space_write_4(fdtbus_bs_tag, ocm_handle, 0,
@@ -94,5 +139,6 @@ platform_mp_start_ap(void)
 	dcache_wbinv_poc_all();
 
 	/* Wake up CPU1. */
-	armv7_sev();
+	dsb();
+	sev();
 }

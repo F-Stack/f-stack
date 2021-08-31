@@ -1,7 +1,9 @@
 /*	$FreeBSD$	*/
 /*	$KAME: sha1.h,v 1.5 2000/03/27 04:36:23 sumikawa Exp $	*/
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -40,18 +42,18 @@
 
 struct sha1_ctxt {
 	union {
-		u_int8_t	b8[20];
-		u_int32_t	b32[5];
+		uint8_t		b8[20];
+		uint32_t	b32[5];
 	} h;
 	union {
-		u_int8_t	b8[8];
-		u_int64_t	b64[1];
+		uint8_t		b8[8];
+		uint64_t	b64[1];
 	} c;
 	union {
-		u_int8_t	b8[64];
-		u_int32_t	b32[16];
+		uint8_t		b8[64];
+		uint32_t	b32[16];
 	} m;
-	u_int8_t	count;
+	uint8_t	count;
 };
 typedef struct sha1_ctxt SHA1_CTX;
 
@@ -60,8 +62,8 @@ typedef struct sha1_ctxt SHA1_CTX;
 #ifdef _KERNEL
 extern void sha1_init(struct sha1_ctxt *);
 extern void sha1_pad(struct sha1_ctxt *);
-extern void sha1_loop(struct sha1_ctxt *, const u_int8_t *, size_t);
-extern void sha1_result(struct sha1_ctxt *, char[static SHA1_RESULTLEN]);
+extern void sha1_loop(struct sha1_ctxt *, const uint8_t *, size_t);
+extern void sha1_result(struct sha1_ctxt *, char[__min_size(SHA1_RESULTLEN)]);
 
 /* compatibilty with other SHA1 source codes */
 #define SHA1Init(x)		sha1_init((x))

@@ -1,7 +1,9 @@
 /*	$FreeBSD$	*/
 /*	$OpenBSD: ip_carp.h,v 1.8 2004/07/29 22:12:15 mcbride Exp $	*/
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2002 Michael Shalayeff. All rights reserved.
  * Copyright (c) 2003 Ryan McBride. All rights reserved.
  *
@@ -138,7 +140,7 @@ struct carpreq {
 #ifdef _KERNEL
 int		carp_ioctl(struct ifreq *, u_long, struct thread *);
 int		carp_attach(struct ifaddr *, int);
-void		carp_detach(struct ifaddr *);
+void		carp_detach(struct ifaddr *, bool);
 void		carp_carpdev_state(struct ifnet *);
 int		carp_input(struct mbuf **, int *, int);
 int		carp6_input (struct mbuf **, int *, int);
@@ -147,14 +149,14 @@ int		carp_output (struct ifnet *, struct mbuf *,
 int		carp_master(struct ifaddr *);
 int		carp_iamatch(struct ifaddr *, uint8_t **);
 struct ifaddr	*carp_iamatch6(struct ifnet *, struct in6_addr *);
-caddr_t		carp_macmatch6(struct ifnet *, struct mbuf *, const struct in6_addr *);
+char *		carp_macmatch6(struct ifnet *, struct mbuf *, const struct in6_addr *);
 int		carp_forus(struct ifnet *, u_char *);
 
 /* These are external networking stack hooks for CARP */
 /* net/if.c */
 extern int (*carp_ioctl_p)(struct ifreq *, u_long, struct thread *);
 extern int (*carp_attach_p)(struct ifaddr *, int);
-extern void (*carp_detach_p)(struct ifaddr *);
+extern void (*carp_detach_p)(struct ifaddr *, bool);
 extern void (*carp_linkstate_p)(struct ifnet *);
 extern void (*carp_demote_adj_p)(int, char *);
 extern int (*carp_master_p)(struct ifaddr *);
@@ -172,7 +174,7 @@ extern int (*carp_iamatch_p)(struct ifaddr *, uint8_t **);
 #ifdef INET6
 /* netinet6/nd6_nbr.c */
 extern struct ifaddr *(*carp_iamatch6_p)(struct ifnet *, struct in6_addr *);
-extern caddr_t (*carp_macmatch6_p)(struct ifnet *, struct mbuf *,
+extern char * (*carp_macmatch6_p)(struct ifnet *, struct mbuf *,
     const struct in6_addr *);
 #endif
 #endif

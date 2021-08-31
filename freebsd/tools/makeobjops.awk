@@ -1,6 +1,8 @@
 #!/usr/bin/awk -f
 
 #-
+# SPDX-License-Identifier: BSD-3-Clause
+#
 # Copyright (c) 1992, 1993
 #        The Regents of the University of California.  All rights reserved.
 #
@@ -12,7 +14,7 @@
 # 2. Redistributions in binary form must reproduce the above copyright
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
-# 4. Neither the name of the University nor the names of its contributors
+# 3. Neither the name of the University nor the names of its contributors
 #    may be used to endorse or promote products derived from this software
 #    without specific prior written permission.
 #
@@ -323,12 +325,25 @@ function handle_method (static, doc)
 		    line_width, length(prototype)));
 	}
 	printh("{");
-	printh("\tkobjop_t _m;");
+	if (singleton)
+		printh("\tstatic kobjop_t _m;");
+	else
+		printh("\tkobjop_t _m;");
+	if (ret != "void")
+		printh("\t" ret " rc;");
 	if (!static)
 		firstvar = "((kobj_t)" firstvar ")";
+	if (prolog != "")
+		printh(prolog);
+	if (singleton)
+		printh("\tif (_m == NULL)");
 	printh("\tKOBJOPLOOKUP(" firstvar "->ops," mname ");");
-	retrn =  (ret != "void") ? "return " : "";
-	printh("\t" retrn "((" mname "_t *) _m)(" varname_list ");");
+	rceq = (ret != "void") ? "rc = " : "";
+	printh("\t" rceq "((" mname "_t *) _m)(" varname_list ");");
+	if (epilog != "")
+		printh(epilog);
+	if (ret != "void")
+		printh("\treturn (rc);");
 	printh("}\n");
 }
 
@@ -412,9 +427,12 @@ for (file_i = 0; file_i < num_files; file_i++) {
 	ctmpfilename = cfilename ".tmp";
 	htmpfilename = hfilename ".tmp";
 
+	# Avoid a literal generated file tag here.
+	generated = "@" "generated";
+
 	common_head = \
 	    "/*\n" \
-	    " * This file is produced automatically.\n" \
+	    " * This file is " generated " automatically.\n" \
 	    " * Do not modify anything in here by hand.\n" \
 	    " *\n" \
 	    " * Created from source file\n" \
@@ -438,6 +456,9 @@ for (file_i = 0; file_i < num_files; file_i++) {
 	lineno = 0;
 	error = 0;		# to signal clean up and gerror setting
 	lastdoc = "";
+	prolog = "";
+	epilog = "";
+	singleton = 0;
 
 	while (!error && (getline < src) > 0) {
 		lineno++;
@@ -471,10 +492,20 @@ for (file_i = 0; file_i < num_files; file_i++) {
 		else if (/^METHOD/) {
 			handle_method(0, lastdoc);
 			lastdoc = "";
+			prolog = "";
+			epilog = "";
 		} else if (/^STATICMETHOD/) {
 			handle_method(1, lastdoc);
 			lastdoc = "";
-		} else {
+			prolog = "";
+			epilog = "";
+		} else if (/^PROLOG[ 	]*{$/)
+			prolog = handle_code();
+		else if (/^EPILOG[ 	]*{$/)
+			epilog = handle_code();
+		else if (/^SINGLETON/)
+			singleton = 1;
+		else {
 			debug($0);
 			warnsrc("Invalid line encountered");
 			error = 1;

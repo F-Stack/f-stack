@@ -61,7 +61,7 @@ uint64_t ff_get_tsc_ns(void);
 void ff_get_current_time(int64_t *sec, long *nsec);
 void ff_update_current_ts(void);
 
-typedef void * ff_mutex_t;
+typedef volatile uintptr_t ff_mutex_t;
 typedef void * ff_cond_t;
 typedef void * ff_rwlock_t;
 

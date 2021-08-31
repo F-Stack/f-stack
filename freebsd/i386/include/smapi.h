@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2003 Matthew N. Dodd <winter@freebsd.org>
  * All rights reserved.
  *
@@ -56,7 +58,7 @@ struct smapi_bios_header {
 
 	u_int32_t	prot32_offset;
 	u_int32_t	prot32_segment;
-	
+
 } __packed;
 
 struct smapi_bios_parameter {

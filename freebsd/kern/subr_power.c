@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Mitsuru IWASAKI
  * All rights reserved.
  *
@@ -28,10 +30,10 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/proc.h>
-
+#include <sys/eventhandler.h>
 #include <sys/power.h>
+#include <sys/proc.h>
+#include <sys/systm.h>
 #include <sys/taskqueue.h>
 
 static u_int		 power_pm_type	= POWER_PM_TYPE_NONE;
@@ -119,4 +121,3 @@ power_profile_set_state(int state)
 	if (changed)
 		EVENTHANDLER_INVOKE(power_profile_change, 0);
 }
-

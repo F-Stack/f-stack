@@ -31,6 +31,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1996 Charles M. Hannum.  All rights reserved.
  * Copyright (c) 1996 Christopher G. Demetriou.  All rights reserved.
  *
@@ -252,10 +254,6 @@ struct bus_space {
 			    bus_size_t, const uint64_t *, bus_size_t);
 };
 
-#if __ARM_ARCH < 6
-extern bus_space_tag_t arm_base_bs_tag;
-#endif
-
 /*
  * Utility macros; INTERNAL USE ONLY.
  */
@@ -276,7 +274,6 @@ extern bus_space_tag_t arm_base_bs_tag;
 	(*(t)->__bs_opname_s(w,sz))((t), h, o, v)
 #define	__bs_nonsingle_s(type, sz, t, h, o, a, c)			\
 	(*(t)->__bs_opname_s(type,sz))((t), h, o, a, c)
-
 
 #define __generate_inline_bs_rs(IFN, MBR, TYP)					\
 	static inline TYP						\
@@ -309,7 +306,6 @@ extern bus_space_tag_t arm_base_bs_tag;
 	(*(t)->bs_unmap)((t), (h), (s))
 #define	bus_space_subregion(t, h, o, s, hp)				\
 	(*(t)->bs_subregion)((t), (h), (o), (s), (hp))
-
 
 /*
  * Allocation and deallocation operations.
@@ -363,7 +359,6 @@ __generate_inline_bs_rs(bus_space_read_stream_8, bs_r_8_s, uint64_t);
 #define	bus_space_read_multi_stream_8(t, h, o, a, c)			\
 	__bs_nonsingle_s(rm,8,(t),(h),(o),(a),(c))
 
-
 /*
  * Bus read region operations.
  */
@@ -385,7 +380,6 @@ __generate_inline_bs_rs(bus_space_read_stream_8, bs_r_8_s, uint64_t);
 #define	bus_space_read_region_stream_8(t, h, o, a, c)			\
 	__bs_nonsingle_s(rr,8,(t),(h),(o),(a),(c))
 
-
 /*
  * Bus write (single) operations.
  */
@@ -398,7 +392,6 @@ __generate_inline_bs_ws(bus_space_write_stream_1, bs_w_1_s, uint8_t);
 __generate_inline_bs_ws(bus_space_write_stream_2, bs_w_2_s, uint16_t);
 __generate_inline_bs_ws(bus_space_write_stream_4, bs_w_4_s, uint32_t);
 __generate_inline_bs_ws(bus_space_write_stream_8, bs_w_8_s, uint64_t);
-
 
 /*
  * Bus write multiple operations.
@@ -421,7 +414,6 @@ __generate_inline_bs_ws(bus_space_write_stream_8, bs_w_8_s, uint64_t);
 #define	bus_space_write_multi_stream_8(t, h, o, a, c)			\
 	__bs_nonsingle_s(wm,8,(t),(h),(o),(a),(c))
 
-
 /*
  * Bus write region operations.
  */
@@ -443,7 +435,6 @@ __generate_inline_bs_ws(bus_space_write_stream_8, bs_w_8_s, uint64_t);
 #define	bus_space_write_region_stream_8(t, h, o, a, c)			\
 	__bs_nonsingle_s(wr,8,(t),(h),(o),(a),(c))
 
-
 /*
  * Set multiple operations.
  */
@@ -456,7 +447,6 @@ __generate_inline_bs_ws(bus_space_write_stream_8, bs_w_8_s, uint64_t);
 #define	bus_space_set_multi_8(t, h, o, v, c)				\
 	__bs_set(sm,8,(t),(h),(o),(v),(c))
 
-
 /*
  * Set region operations.
  */
@@ -468,7 +458,6 @@ __generate_inline_bs_ws(bus_space_write_stream_8, bs_w_8_s, uint64_t);
 	__bs_set(sr,4,(t),(h),(o),(v),(c))
 #define	bus_space_set_region_8(t, h, o, v, c)				\
 	__bs_set(sr,8,(t),(h),(o),(v),(c))
-
 
 /*
  * Copy operations.
@@ -753,6 +742,34 @@ void generic_bs_unimplemented(void);
 #define BUS_SPACE_MAXSIZE 	0xFFFFFFFF
 
 #define BUS_SPACE_UNRESTRICTED	(~0)
+
+#define BUS_PEEK_FUNC(width, type)					\
+	static inline int						\
+	bus_space_peek_##width(bus_space_tag_t tag,			\
+	    bus_space_handle_t hnd, bus_size_t offset, type *value)	\
+	{								\
+		type tmp;						\
+		tmp = bus_space_read_##width(tag, hnd, offset);		\
+		*value = (type)tmp;					\
+		return (0);						\
+	}
+BUS_PEEK_FUNC(1, uint8_t)
+BUS_PEEK_FUNC(2, uint16_t)
+BUS_PEEK_FUNC(4, uint32_t)
+BUS_PEEK_FUNC(8, uint64_t)
+
+#define BUS_POKE_FUNC(width, type)					\
+	static inline int						\
+	bus_space_poke_##width(bus_space_tag_t tag,			\
+	    bus_space_handle_t hnd, bus_size_t offset, type value)	\
+	{								\
+		bus_space_write_##width(tag, hnd, offset, value);	\
+		return (0); 						\
+	}
+BUS_POKE_FUNC(1, uint8_t)
+BUS_POKE_FUNC(2, uint16_t)
+BUS_POKE_FUNC(4, uint32_t)
+BUS_POKE_FUNC(8, uint64_t)
 
 #include <machine/bus_dma.h>
 

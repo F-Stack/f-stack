@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 The FreeBSD Foundation
  * All rights reserved.
  *
@@ -55,7 +57,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 #include <x86/include/busdma_impl.h>
 #include <x86/iommu/intel_reg.h>
-#include <x86/iommu/busdma_dmar.h>
+#include <dev/iommu/busdma_iommu.h>
 #include <x86/iommu/intel_dmar.h>
 
 /*
@@ -94,25 +96,25 @@ dmar_fault_intr_clear(struct dmar_unit *unit, uint32_t fsts)
 
 	clear = 0;
 	if ((fsts & DMAR_FSTS_ITE) != 0) {
-		printf("DMAR%d: Invalidation timed out\n", unit->unit);
+		printf("DMAR%d: Invalidation timed out\n", unit->iommu.unit);
 		clear |= DMAR_FSTS_ITE;
 	}
 	if ((fsts & DMAR_FSTS_ICE) != 0) {
 		printf("DMAR%d: Invalidation completion error\n",
-		    unit->unit);
+		    unit->iommu.unit);
 		clear |= DMAR_FSTS_ICE;
 	}
 	if ((fsts & DMAR_FSTS_IQE) != 0) {
 		printf("DMAR%d: Invalidation queue error\n",
-		    unit->unit);
+		    unit->iommu.unit);
 		clear |= DMAR_FSTS_IQE;
 	}
 	if ((fsts & DMAR_FSTS_APF) != 0) {
-		printf("DMAR%d: Advanced pending fault\n", unit->unit);
+		printf("DMAR%d: Advanced pending fault\n", unit->iommu.unit);
 		clear |= DMAR_FSTS_APF;
 	}
 	if ((fsts & DMAR_FSTS_AFO) != 0) {
-		printf("DMAR%d: Advanced fault overflow\n", unit->unit);
+		printf("DMAR%d: Advanced fault overflow\n", unit->iommu.unit);
 		clear |= DMAR_FSTS_AFO;
 	}
 	if (clear != 0)
@@ -174,7 +176,7 @@ done:
 	 *
 	 */
 	if ((fsts & DMAR_FSTS_PFO) != 0) {
-		printf("DMAR%d: Fault Overflow\n", unit->unit);
+		printf("DMAR%d: Fault Overflow\n", unit->iommu.unit);
 		dmar_write4(unit, DMAR_FSTS_REG, DMAR_FSTS_PFO);
 	}
 
@@ -206,7 +208,7 @@ dmar_fault_task(void *arg, int pending __unused)
 		DMAR_FAULT_UNLOCK(unit);
 
 		sid = DMAR_FRCD2_SID(fault_rec[1]);
-		printf("DMAR%d: ", unit->unit);
+		printf("DMAR%d: ", unit->iommu.unit);
 		DMAR_LOCK(unit);
 		ctx = dmar_find_ctx_locked(unit, sid);
 		if (ctx == NULL) {
@@ -221,13 +223,13 @@ dmar_fault_task(void *arg, int pending __unused)
 			slot = PCI_RID2SLOT(sid);
 			func = PCI_RID2FUNC(sid);
 		} else {
-			ctx->flags |= DMAR_CTX_FAULTED;
+			ctx->context.flags |= IOMMU_CTX_FAULTED;
 			ctx->last_fault_rec[0] = fault_rec[0];
 			ctx->last_fault_rec[1] = fault_rec[1];
-			device_print_prettyname(ctx->ctx_tag.owner);
-			bus = pci_get_bus(ctx->ctx_tag.owner);
-			slot = pci_get_slot(ctx->ctx_tag.owner);
-			func = pci_get_function(ctx->ctx_tag.owner);
+			device_print_prettyname(ctx->context.tag->owner);
+			bus = pci_get_bus(ctx->context.tag->owner);
+			slot = pci_get_slot(ctx->context.tag->owner);
+			func = pci_get_function(ctx->context.tag->owner);
 		}
 		DMAR_UNLOCK(unit);
 		printf(
@@ -271,10 +273,10 @@ dmar_init_fault_log(struct dmar_unit *unit)
 	    M_DEVBUF, M_WAITOK | M_ZERO);
 
 	TASK_INIT(&unit->fault_task, 0, dmar_fault_task, unit);
-	unit->fault_taskqueue = taskqueue_create_fast("dmar", M_WAITOK,
+	unit->fault_taskqueue = taskqueue_create_fast("dmarff", M_WAITOK,
 	    taskqueue_thread_enqueue, &unit->fault_taskqueue);
 	taskqueue_start_threads(&unit->fault_taskqueue, 1, PI_AV,
-	    "dmar%d fault taskq", unit->unit);
+	    "dmar%d fault taskq", unit->iommu.unit);
 
 	DMAR_LOCK(unit);
 	dmar_disable_fault_intr(unit);
@@ -289,12 +291,12 @@ void
 dmar_fini_fault_log(struct dmar_unit *unit)
 {
 
+	if (unit->fault_taskqueue == NULL)
+		return;
+
 	DMAR_LOCK(unit);
 	dmar_disable_fault_intr(unit);
 	DMAR_UNLOCK(unit);
-
-	if (unit->fault_taskqueue == NULL)
-		return;
 
 	taskqueue_drain(unit->fault_taskqueue, &unit->fault_task);
 	taskqueue_free(unit->fault_taskqueue);

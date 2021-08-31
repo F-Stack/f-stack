@@ -45,7 +45,13 @@ __FBSDID("$FreeBSD$");
 #include <dev/uart/uart_bus.h>
 #include <dev/uart/uart_cpu.h>
 
-#include "bcm_socinfo.h"
+#ifdef CFE
+#include <dev/cfe/cfe_api.h>
+#include <dev/cfe/cfe_ioctl.h>
+#include <dev/cfe/cfe_error.h>
+#endif
+
+#include "bcm_machdep.h"
 
 bus_space_tag_t uart_bus_space_io;
 bus_space_tag_t uart_bus_space_mem;
@@ -61,20 +67,18 @@ uart_cpu_eqres(struct uart_bas *b1, struct uart_bas *b2)
 }
 
 static int
-uart_cpu_init(struct uart_devinfo *di, int uart, int baudrate)
+uart_cpu_init(struct uart_devinfo *di, u_int uart, int baudrate)
 {
-	struct bcm_socinfo	*socinfo;
-
 	if (uart >= CHIPC_UART_MAX)
 		return (EINVAL);
 
-	socinfo = bcm_get_socinfo();
 	di->ops = uart_getops(chipc_uart_class);
 	di->bas.chan = 0;
 	di->bas.bst = uart_bus_space_mem;
-	di->bas.bsh = (bus_space_handle_t) BCM_SOCREG(CHIPC_UART(uart));
+	di->bas.bsh = (bus_space_handle_t) BCM_CORE_ADDR(bcm_get_platform(),
+	    cc_addr, CHIPC_UART(uart));
 	di->bas.regshft = 0;
-	di->bas.rclk = socinfo->uartrate;  /* in Hz */
+	di->bas.rclk = bcm_get_uart_rclk(bcm_get_platform());
 	di->baudrate = baudrate;
 	di->databits = 8;
 	di->stopbits = 1;
@@ -82,6 +86,44 @@ uart_cpu_init(struct uart_devinfo *di, int uart, int baudrate)
 
 	return (0);
 }
+
+#ifdef CFE
+static int
+uart_getenv_cfe(int devtype, struct uart_devinfo *di)
+{
+	char	device[sizeof("uartXX")];
+	int	baud, fd, len;
+	int	ret;
+	u_int	uart;
+
+	/* CFE only vends console configuration */
+	if (devtype != UART_DEV_CONSOLE)
+		return (ENODEV);
+
+	/* Fetch console device */
+	ret = cfe_getenv("BOOT_CONSOLE", device, sizeof(device));
+	if (ret != CFE_OK)
+		return (ENXIO);
+
+	/* Parse serial console unit. Fails on non-uart devices.  */
+	if (sscanf(device, "uart%u", &uart) != 1)
+		return (ENXIO);
+
+	/* Fetch device handle */
+	fd = bcm_get_platform()->cfe_console;
+	if (fd < 0)
+		return (ENXIO);
+
+	/* Fetch serial configuration */
+	ret = cfe_ioctl(fd, IOCTL_SERIAL_GETSPEED, (unsigned char *)&baud,
+	    sizeof(baud), &len, 0);	
+	if (ret != CFE_OK)
+		baud = CHIPC_UART_BAUDRATE;
+
+	/* Initialize device info */
+	return (uart_cpu_init(di, uart, baud));
+}
+#endif /* CFE */
 
 int
 uart_cpu_getdev(int devtype, struct uart_devinfo *di)
@@ -91,12 +133,18 @@ uart_cpu_getdev(int devtype, struct uart_devinfo *di)
 	uart_bus_space_io = NULL;
 	uart_bus_space_mem = mips_bus_space_generic;
 
-	/* Check the environment. */
+#ifdef CFE
+	/* Check the CFE environment */
+	if (uart_getenv_cfe(devtype, di) == 0)
+		return (0);
+#endif /* CFE */
+
+	/* Check the kernel environment. */
 	if (uart_getenv(devtype, di, chipc_uart_class) == 0)
 		return (0);
 
 	/* Scan the device hints for the first matching device */
-	for (int i = 0; i < CHIPC_UART_MAX; i++) {
+	for (u_int i = 0; i < CHIPC_UART_MAX; i++) {
 		if (resource_int_value("uart", i, "flags", &ivar))
 			continue;
 

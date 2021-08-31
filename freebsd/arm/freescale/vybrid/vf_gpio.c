@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Ruslan Bukin <br@bsdpad.com>
  * All rights reserved.
  *
@@ -45,7 +47,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/mutex.h>
 #include <sys/gpio.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/gpio/gpiobusvar.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
@@ -287,7 +288,6 @@ vf_gpio_pin_toggle(device_t dev, uint32_t pin)
 	return (0);
 }
 
-
 static void
 vf_gpio_pin_configure(struct vf_gpio_softc *sc, struct gpio_pin *pin,
     unsigned int flags)
@@ -312,7 +312,6 @@ vf_gpio_pin_configure(struct vf_gpio_softc *sc, struct gpio_pin *pin,
 
 	GPIO_UNLOCK(sc);
 }
-
 
 static int
 vf_gpio_pin_setflags(device_t dev, uint32_t pin, uint32_t flags)

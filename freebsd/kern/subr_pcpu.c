@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2001 Wind River Systems, Inc.
  * All rights reserved.
  * Written by: John Baldwin <jhb@FreeBSD.org>
@@ -14,7 +16,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the author nor the names of any co-contributors
+ * 3. Neither the name of the author nor the names of any co-contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -70,7 +72,7 @@ struct dpcpu_free {
 	TAILQ_ENTRY(dpcpu_free) df_link;
 };
 
-static DPCPU_DEFINE(char, modspace[DPCPU_MODMIN]);
+DPCPU_DEFINE_STATIC(char, modspace[DPCPU_MODMIN] __aligned(__alignof(void *)));
 static TAILQ_HEAD(, dpcpu_free) dpcpu_head = TAILQ_HEAD_INITIALIZER(dpcpu_head);
 static struct sx dpcpu_lock;
 uintptr_t dpcpu_off[MAXCPU];
@@ -93,6 +95,7 @@ pcpu_init(struct pcpu *pcpu, int cpuid, size_t size)
 	cpu_pcpu_init(pcpu, cpuid, size);
 	pcpu->pc_rm_queue.rmq_next = &pcpu->pc_rm_queue;
 	pcpu->pc_rm_queue.rmq_prev = &pcpu->pc_rm_queue;
+	pcpu->pc_zpcpu_offset = zpcpu_offset_cpu(cpuid);
 }
 
 void
@@ -125,31 +128,33 @@ dpcpu_startup(void *dummy __unused)
 	TAILQ_INSERT_HEAD(&dpcpu_head, df, df_link);
 	sx_init(&dpcpu_lock, "dpcpu alloc lock");
 }
-SYSINIT(dpcpu, SI_SUB_KLD, SI_ORDER_FIRST, dpcpu_startup, 0);
+SYSINIT(dpcpu, SI_SUB_KLD, SI_ORDER_FIRST, dpcpu_startup, NULL);
 
 /*
- * UMA_PCPU_ZONE zones, that are available for all kernel
- * consumers. Right now 64 bit zone is used for counter(9)
- * and pointer zone is used by flowtable.
+ * UMA_ZONE_PCPU zones for general kernel use.
  */
-
+uma_zone_t pcpu_zone_4;
+uma_zone_t pcpu_zone_8;
+uma_zone_t pcpu_zone_16;
+uma_zone_t pcpu_zone_32;
 uma_zone_t pcpu_zone_64;
-uma_zone_t pcpu_zone_ptr;
 
 static void
 pcpu_zones_startup(void)
 {
 
-	pcpu_zone_64 = uma_zcreate("64 pcpu", sizeof(uint64_t),
+	pcpu_zone_4 = uma_zcreate("pcpu-4", 4,
 	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_PCPU);
-
-	if (sizeof(uint64_t) == sizeof(void *))
-		pcpu_zone_ptr = pcpu_zone_64;
-	else
-		pcpu_zone_ptr = uma_zcreate("ptr pcpu", sizeof(void *),
-		    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_PCPU);
+	pcpu_zone_8 = uma_zcreate("pcpu-8", 8,
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_PCPU);
+	pcpu_zone_16 = uma_zcreate("pcpu-16", 16,
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_PCPU);
+	pcpu_zone_32 = uma_zcreate("pcpu-32", 32,
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_PCPU);
+	pcpu_zone_64 = uma_zcreate("pcpu-64", 64,
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, UMA_ZONE_PCPU);
 }
-SYSINIT(pcpu_zones, SI_SUB_KMEM, SI_ORDER_ANY, pcpu_zones_startup, NULL);
+SYSINIT(pcpu_zones, SI_SUB_COUNTER, SI_ORDER_FIRST, pcpu_zones_startup, NULL);
 
 /*
  * First-fit extent based allocator for allocating space in the per-cpu
@@ -354,7 +359,8 @@ show_pcpu(struct pcpu *pc)
 	db_printf("curthread    = ");
 	td = pc->pc_curthread;
 	if (td != NULL)
-		db_printf("%p: pid %d \"%s\"\n", td, td->td_proc->p_pid,
+		db_printf("%p: pid %d tid %d critnest %d \"%s\"\n", td,
+		    td->td_proc->p_pid, td->td_tid, td->td_critnest,
 		    td->td_name);
 	else
 		db_printf("none\n");
@@ -407,7 +413,7 @@ DB_SHOW_ALL_COMMAND(pcpu, db_show_cpu_all)
 	int id;
 
 	db_printf("Current CPU: %d\n\n", PCPU_GET(cpuid));
-	for (id = 0; id <= mp_maxid; id++) {
+	CPU_FOREACH(id) {
 		pc = pcpu_find(id);
 		if (pc != NULL) {
 			show_pcpu(pc);

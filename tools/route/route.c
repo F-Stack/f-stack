@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1983, 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -6,13 +8,13 @@
  * modification, are permitted provided that the following conditions
  * are met:
  * 1. Redistributions of source code must retain the above copyright
- *	notice, this list of conditions and the following disclaimer.
+ *    notice, this list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright
- *	notice, this list of conditions and the following disclaimer in the
- *	documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
- *	may be used to endorse or promote products derived from this software
- *	without specific prior written permission.
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -40,9 +42,7 @@ static char sccsid[] = "@(#)route.c	8.6 (Berkeley) 4/28/95";
 #endif /* not lint */
 
 #include <sys/cdefs.h>
-#ifndef FSTACK
 __FBSDID("$FreeBSD$");
-#endif
 
 #include <sys/param.h>
 #include <sys/file.h>
@@ -64,6 +64,7 @@ __FBSDID("$FreeBSD$");
 #include <err.h>
 #include <errno.h>
 #include <paths.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,19 +73,6 @@ __FBSDID("$FreeBSD$");
 #include <time.h>
 #include <unistd.h>
 #include <ifaddrs.h>
-
-#ifdef FSTACK
-#include "rtioctl.h"
-#include "compat.h"
-#include "ff_ipc.h"
-
-#define socket(a, b, c) rt_socket((a), (b), (c))
-#define shutdown(a, b) rt_shutdown((a), (b))
-#define setsockopt(a, b, c, d, e) rt_setsockopt((a), (b), (c), (d), (e))
-
-#define write(a, b, c) rtioctl((b), (c), (0))
-
-#endif
 
 struct fibl {
 	TAILQ_ENTRY(fibl)	fl_next;
@@ -105,12 +93,7 @@ static struct keytab {
 static struct sockaddr_storage so[RTAX_MAX];
 static int	pid, rtm_addrs;
 static int	s;
-#ifndef FSTACK
 static int	nflag, af, qflag, tflag;
-#else
-static int	nflag = 1;
-static int	af, qflag, tflag;
-#endif
 static int	verbose, aflen;
 static int	locking, lockrest, debugonly;
 static struct rt_metrics rt_metrics;
@@ -137,16 +120,13 @@ static int	flushroutes_fib(int);
 static int	getaddr(int, char *, struct hostent **, int);
 static int	keyword(const char *);
 #ifdef INET
-static void	inet_makenetandmask(u_long, struct sockaddr_in *,
-			struct sockaddr_in *, u_long);
+static void	inet_makemask(struct sockaddr_in *, u_long);
 #endif
 #ifdef INET6
 static int	inet6_makenetandmask(struct sockaddr_in6 *, const char *);
 #endif
-#ifndef FSTACK
 static void	interfaces(void);
 static void	monitor(int, char*[]);
-#endif
 static const char	*netname(struct sockaddr *);
 static void	newroute(int, char **);
 static int	newroute_fib(int, char *, int);
@@ -166,16 +146,22 @@ static int	fiboptlist_range(const char *, struct fibl_head_t *);
 
 static void usage(const char *) __dead2;
 
+#define	READ_TIMEOUT	10
+static volatile sig_atomic_t stop_read;
+
+static void
+stopit(int sig __unused)
+{
+
+	stop_read = 1;
+}
+
 static void
 usage(const char *cp)
 {
 	if (cp != NULL)
 		warnx("bad keyword: %s", cp);
-#ifndef FSTACK
 	errx(EX_USAGE, "usage: route [-46dnqtv] command [[modifiers] args]");
-#else
-	errx(EX_USAGE, "usage: route -p <f-stack proc_id> [-46dnqtv] command [[modifiers] args]");
-#endif
 	/* NOTREACHED */
 }
 
@@ -188,12 +174,7 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(NULL);
 
-#ifndef FSTACK
 	while ((ch = getopt(argc, argv, "46nqdtv")) != -1)
-#else
-	ff_ipc_init();
-	while ((ch = getopt(argc, argv, "46nqdtvp:")) != -1)
-#endif
 		switch(ch) {
 		case '4':
 #ifdef INET
@@ -226,11 +207,6 @@ main(int argc, char **argv)
 		case 'd':
 			debugonly = 1;
 			break;
-#ifdef FSTACK
-		case 'p':
-			ff_set_proc_id(atoi(optarg));
-			break;
-#endif
 		case '?':
 		default:
 			usage(NULL);
@@ -253,7 +229,7 @@ main(int argc, char **argv)
 
 	len = sizeof(defaultfib);
 	if (numfibs != -1 &&
-		sysctlbyname("net.my_fibnum", (void *)&defaultfib, &len, NULL,
+	    sysctlbyname("net.my_fibnum", (void *)&defaultfib, &len, NULL,
 		0) == -1)
 		defaultfib = -1;
 
@@ -272,25 +248,15 @@ main(int argc, char **argv)
 			/* NOTREACHED */
 
 		case K_MONITOR:
-#ifndef FSTACK
 			monitor(argc, argv);
-#else
-			usage(*argv);
-#endif
 			/* NOTREACHED */
 
 		case K_FLUSH:
 			flushroutes(argc, argv);
-#ifdef FSTACK
-			ff_ipc_exit();
-#endif
 			exit(0);
 			/* NOTREACHED */
 		}
 	usage(*argv);
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
 	/* NOTREACHED */
 }
 
@@ -300,12 +266,8 @@ set_sofib(int fib)
 
 	if (fib < 0)
 		return (0);
-#ifdef FSTACK
-	return (rt_setsockopt(s, SOL_SOCKET, SO_SETFIB, (void *)&fib,
-		sizeof(fib)));
-#endif
 	return (setsockopt(s, SOL_SOCKET, SO_SETFIB, (void *)&fib,
-		sizeof(fib)));
+	    sizeof(fib)));
 }
 
 static int
@@ -326,8 +288,8 @@ fiboptlist_range(const char *arg, struct fibl_head_t *flh)
 			fib[i] = strtol(token, &endptr, 0);
 			if (errno == 0) {
 				if (*endptr != '\0' ||
-					fib[i] < 0 ||
-					(numfibs != -1 && fib[i] > numfibs - 1)) 
+				    fib[i] < 0 ||
+				    (numfibs != -1 && fib[i] > numfibs - 1))
 					errno = EINVAL;
 			}
 			if (errno)
@@ -398,8 +360,8 @@ fiboptlist_csv(const char *arg, struct fibl_head_t *flh)
 			fib = strtol(token, &endptr, 0);
 			if (errno == 0) {
 				if (*endptr != '\0' ||
-					fib < 0 ||
-					(numfibs != -1 && fib > numfibs - 1))
+				    fib < 0 ||
+				    (numfibs != -1 && fib > numfibs - 1))
 					errno = EINVAL;
 			}
 			if (errno) {
@@ -552,7 +514,7 @@ retry:
 			struct sockaddr *sa = (struct sockaddr *)(rtm + 1);
 
 			printf("%-20.20s ", rtm->rtm_flags & RTF_HOST ?
-				routename(sa) : netname(sa));
+			    routename(sa) : netname(sa));
 			sa = (struct sockaddr *)(SA_SIZE(sa) + (char *)sa);
 			printf("%-20.20s ", routename(sa));
 			if (fib >= 0)
@@ -560,6 +522,7 @@ retry:
 			printf("done\n");
 		}
 	}
+	free(buf);
 	return (error);
 }
 
@@ -573,7 +536,7 @@ routename(struct sockaddr *sa)
 	if (!domain_initialized) {
 		domain_initialized = true;
 		if (gethostname(domain, MAXHOSTNAMELEN) == 0 &&
-			(cp = strchr(domain, '.'))) {
+		    (cp = strchr(domain, '.'))) {
 			domain[MAXHOSTNAMELEN] = '\0';
 			(void)strcpy(domain, cp + 1);
 		} else
@@ -589,8 +552,8 @@ routename(struct sockaddr *sa)
 	case AF_INET:
 		/* If the address is zero-filled, use "default". */
 		if (nflag == 0 &&
-			((struct sockaddr_in *)(void *)sa)->sin_addr.s_addr ==
-			INADDR_ANY)
+		    ((struct sockaddr_in *)(void *)sa)->sin_addr.s_addr ==
+		    INADDR_ANY)
 			return("default");
 		break;
 #endif
@@ -598,7 +561,7 @@ routename(struct sockaddr *sa)
 	case AF_INET6:
 		/* If the address is zero-filled, use "default". */
 		if (nflag == 0 &&
-			IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)(void *)sa)->sin6_addr))
+		    IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)(void *)sa)->sin6_addr))
 			return("default");
 		break;
 #endif
@@ -628,25 +591,9 @@ routename(struct sockaddr *sa)
 			ss.ss_len = sizeof(struct sockaddr_in);
 		else if (sa->sa_family == AF_INET6)
 			ss.ss_len = sizeof(struct sockaddr_in6);
-#ifndef FSTACK
 		error = getnameinfo((struct sockaddr *)&ss, ss.ss_len,
-			rt_line, sizeof(rt_line), NULL, 0,
-			(nflag == 0) ? 0 : NI_NUMERICHOST);
-#else
-		const char *dst = NULL;
-		error = 0;
-		struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
-#ifdef INET6
-		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
-		if (sa->sa_family == AF_INET6)
-			dst = inet_ntop(AF_INET6_LINUX, &sin6->sin6_addr, rt_line, sizeof(rt_line));
-		else
-#endif
-			dst = inet_ntop(AF_INET, &sin->sin_addr, rt_line, sizeof(rt_line));
-		if (dst == NULL) {
-			error = EAI_NONAME;
-		}
-#endif
+		    rt_line, sizeof(rt_line), NULL, 0,
+		    (nflag == 0) ? 0 : NI_NUMERICHOST);
 		if (error) {
 			warnx("getnameinfo(): %s", gai_strerror(error));
 			strncpy(rt_line, "invalid", sizeof(rt_line));
@@ -665,19 +612,19 @@ routename(struct sockaddr *sa)
 		sdl = (struct sockaddr_dl *)(void *)sa;
 
 		if (sdl->sdl_nlen == 0 &&
-			sdl->sdl_alen == 0 &&
-			sdl->sdl_slen == 0) {
+		    sdl->sdl_alen == 0 &&
+		    sdl->sdl_slen == 0) {
 			n = snprintf(rt_line, sizeof(rt_line), "link#%d",
-				sdl->sdl_index);
+			    sdl->sdl_index);
 			if (n > (int)sizeof(rt_line))
-				rt_line[0] = '\0';
+			    rt_line[0] = '\0';
 			return (rt_line);
 		} else
 			return (link_ntoa(sdl));
 		break;
 
 	default:
-		{
+	    {
 		u_short *sp = (u_short *)(void *)sa;
 		u_short *splim = sp + ((sa->sa_len + 1) >> 1);
 		char *cps = rt_line + sprintf(rt_line, "(%d)", sa->sa_family);
@@ -689,7 +636,7 @@ routename(struct sockaddr *sa)
 			else
 				*cps = '\0';
 		break;
-		}
+	    }
 	}
 	return (rt_line);
 }
@@ -704,13 +651,9 @@ netname(struct sockaddr *sa)
 	struct sockaddr_dl *sdl;
 	int n;
 #ifdef INET
-#ifndef FSTACK
 	struct netent *np = NULL;
 	const char *cp = NULL;
 	u_long i;
-#else
-	const char *cp = NULL;
-#endif
 #endif
 
 	switch (sa->sa_family) {
@@ -720,21 +663,14 @@ netname(struct sockaddr *sa)
 		struct in_addr in;
 
 		in = ((struct sockaddr_in *)(void *)sa)->sin_addr;
-#ifndef FSTACK
 		i = in.s_addr = ntohl(in.s_addr);
-#else
-		in.s_addr = ntohl(in.s_addr);
-#endif
 		if (in.s_addr == 0)
 			cp = "default";
-#ifndef FSTACK
 		else if (!nflag) {
 			np = getnetbyaddr(i, AF_INET);
 			if (np != NULL)
 				cp = np->n_name;
 		}
-#endif
-
 #define C(x)	(unsigned)((x) & 0xff)
 		if (cp != NULL)
 			strncpy(net_line, cp, sizeof(net_line));
@@ -742,15 +678,14 @@ netname(struct sockaddr *sa)
 			(void)sprintf(net_line, "%u", C(in.s_addr >> 24));
 		else if ((in.s_addr & 0xffff) == 0)
 			(void)sprintf(net_line, "%u.%u", C(in.s_addr >> 24),
-				C(in.s_addr >> 16));
+			    C(in.s_addr >> 16));
 		else if ((in.s_addr & 0xff) == 0)
 			(void)sprintf(net_line, "%u.%u.%u", C(in.s_addr >> 24),
-				C(in.s_addr >> 16), C(in.s_addr >> 8));
+			    C(in.s_addr >> 16), C(in.s_addr >> 8));
 		else
 			(void)sprintf(net_line, "%u.%u.%u.%u", C(in.s_addr >> 24),
-				C(in.s_addr >> 16), C(in.s_addr >> 8),
-				C(in.s_addr));
-
+			    C(in.s_addr >> 16), C(in.s_addr >> 8),
+			    C(in.s_addr));
 #undef C
 		break;
 	}
@@ -765,15 +700,10 @@ netname(struct sockaddr *sa)
 		memcpy(&sin6, sa, sa->sa_len);
 		sin6.sin6_len = sizeof(sin6);
 		sin6.sin6_family = AF_INET6;
-#ifndef FSTACK
 		if (nflag)
 			niflags |= NI_NUMERICHOST;
 		if (getnameinfo((struct sockaddr *)&sin6, sin6.sin6_len,
-			net_line, sizeof(net_line), NULL, 0, niflags) != 0)
-#else
-		if (inet_ntop(AF_INET6_LINUX, &sin6.sin6_addr, net_line, sizeof(net_line)) == NULL)
-
-#endif
+		    net_line, sizeof(net_line), NULL, 0, niflags) != 0)
 			strncpy(net_line, "invalid", sizeof(net_line));
 
 		return(net_line);
@@ -783,19 +713,19 @@ netname(struct sockaddr *sa)
 		sdl = (struct sockaddr_dl *)(void *)sa;
 
 		if (sdl->sdl_nlen == 0 &&
-			sdl->sdl_alen == 0 &&
-			sdl->sdl_slen == 0) {
+		    sdl->sdl_alen == 0 &&
+		    sdl->sdl_slen == 0) {
 			n = snprintf(net_line, sizeof(net_line), "link#%d",
-				sdl->sdl_index);
+			    sdl->sdl_index);
 			if (n > (int)sizeof(net_line))
-				net_line[0] = '\0';
+			    net_line[0] = '\0';
 			return (net_line);
 		} else
 			return (link_ntoa(sdl));
 		break;
 
 	default:
-		{
+	    {
 		u_short *sp = (u_short *)(void *)sa->sa_data;
 		u_short *splim = sp + ((sa->sa_len + 1)>>1);
 		char *cps = net_line + sprintf(net_line, "af %d:", sa->sa_family);
@@ -807,7 +737,7 @@ netname(struct sockaddr *sa)
 			else
 				*cps = '\0';
 		break;
-		}
+	    }
 	}
 	return (net_line);
 }
@@ -859,6 +789,7 @@ set_metric(char *value, int key)
 static void
 newroute(int argc, char **argv)
 {
+	struct sigaction sa;
 	struct hostent *hp;
 	struct fibl *fl;
 	char *cmd;
@@ -873,6 +804,12 @@ newroute(int argc, char **argv)
 	nrflags = 0;
 	hp = NULL;
 	TAILQ_INIT(&fibl_head);
+
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	sa.sa_handler = stopit;
+	if (sigaction(SIGALRM, &sa, 0) == -1)
+		warn("sigaction SIGALRM");
 
 	cmd = argv[0];
 	if (*cmd != 'g' && *cmd != 's')
@@ -951,7 +888,7 @@ newroute(int argc, char **argv)
 				error = fiboptlist_csv(*++argv, &fibl_head);
 				if (error)
 					errx(EX_USAGE,
-						"invalid fib number: %s", *argv);
+					    "invalid fib number: %s", *argv);
 				break;
 			case K_IFA:
 				if (!--argc)
@@ -1038,7 +975,7 @@ newroute(int argc, char **argv)
 	}
 
 	if (so[RTAX_NETMASK].ss_len != 0 &&
-		so[RTAX_DST].ss_family != so[RTAX_NETMASK].ss_family) {
+	    so[RTAX_DST].ss_family != so[RTAX_NETMASK].ss_family) {
 		warnx("destination and netmask family need to be the same");
 		usage(NULL);
 	}
@@ -1078,12 +1015,8 @@ newroute(int argc, char **argv)
 			fl->fl_errno = errno;
 		error += fl->fl_error;
 	}
-	if (*cmd == 'g' || *cmd == 's'){
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
+	if (*cmd == 'g' || *cmd == 's')
 		exit(error);
-	}
 
 	error = 0;
 	if (!qflag) {
@@ -1096,14 +1029,14 @@ newroute(int argc, char **argv)
 			int firstfib = 1;
 
 			printf("%s %s %s", cmd,
-				(nrflags & F_ISHOST) ? "host" : "net", dest);
+			    (nrflags & F_ISHOST) ? "host" : "net", dest);
 			if (*gateway)
 				printf(": gateway %s", gateway);
 
 			if (numfibs > 1) {
 				TAILQ_FOREACH(fl, &fibl_head, fl_next) {
 					if (fl->fl_error == 0
-						&& fl->fl_num >= 0) {
+					    && fl->fl_num >= 0) {
 						if (firstfib) {
 							printf(" fib ");
 							firstfib = 0;
@@ -1116,12 +1049,15 @@ newroute(int argc, char **argv)
 			}
 			printf("\n");
 		}
+	}
 
-		fibnum = 0;
-		TAILQ_FOREACH(fl, &fibl_head, fl_next) {
-			if (fl->fl_error != 0) {
+	fibnum = 0;
+	TAILQ_FOREACH(fl, &fibl_head, fl_next) {
+		if (fl->fl_error != 0) {
+			error = 1;
+			if (!qflag) {
 				printf("%s %s %s", cmd, (nrflags & F_ISHOST)
-					? "host" : "net", dest);
+				    ? "host" : "net", dest);
 				if (*gateway)
 					printf(": gateway %s", gateway);
 
@@ -1153,13 +1089,9 @@ newroute(int argc, char **argv)
 					break;
 				}
 				printf(": %s\n", errmsg);
-				error = 1;
 			}
 		}
 	}
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
 	exit(error);
 }
 
@@ -1180,40 +1112,15 @@ newroute_fib(int fib, char *cmd, int flags)
 
 #ifdef INET
 static void
-inet_makenetandmask(u_long net, struct sockaddr_in *sin,
-	struct sockaddr_in *sin_mask, u_long bits)
+inet_makemask(struct sockaddr_in *sin_mask, u_long bits)
 {
 	u_long mask = 0;
 
 	rtm_addrs |= RTA_NETMASK;
 
-	/*
-	 * MSB of net should be meaningful. 0/0 is exception.
-	 */
-	if (net > 0)
-		while ((net & 0xff000000) == 0)
-			net <<= 8;
-
-	/*
-	 * If no /xx was specified we must calculate the
-	 * CIDR address.
-	 */
-	if ((bits == 0) && (net != 0)) {
-		u_long i, j;
-
-		for(i = 0, j = 0xff; i < 4; i++)  {
-			if (net & j) {
-				break;
-			}
-			j <<= 8;
-		}
-		/* i holds the first non zero bit */
-		bits = 32 - (i*8);	
-	}
 	if (bits != 0)
 		mask = 0xffffffff << (32 - bits);
 
-	sin->sin_addr.s_addr = htonl(net);
 	sin_mask->sin_addr.s_addr = htonl(mask);
 	sin_mask->sin_len = sizeof(struct sockaddr_in);
 	sin_mask->sin_family = AF_INET;
@@ -1230,7 +1137,7 @@ inet6_makenetandmask(struct sockaddr_in6 *sin6, const char *plen)
 
 	if (plen == NULL) {
 		if (IN6_IS_ADDR_UNSPECIFIED(&sin6->sin6_addr) &&
-			sin6->sin6_scope_id == 0)
+		    sin6->sin6_scope_id == 0)
 			plen = "0";
 	}
 
@@ -1253,10 +1160,6 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 #if defined(INET)
 	struct sockaddr_in *sin;
 	struct hostent *hp;
-#ifndef FSTACK
-	struct netent *np;
-#endif
-	u_long val;
 	char *q;
 #elif defined(INET6)
 	char *q;
@@ -1316,7 +1219,7 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 				return(1);
 			else
 				errx(EX_DATAERR,
-					"interface '%s' does not exist", str);
+				    "interface '%s' does not exist", str);
 		}
 		break;
 	case RTAX_IFP:
@@ -1339,28 +1242,21 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 #ifdef INET6
 	case AF_INET6:
 	{
-#ifndef FSTACK
 		struct addrinfo hints, *res;
 		int ecode;
-#endif
 
 		q = NULL;
 		if (idx == RTAX_DST && (q = strchr(str, '/')) != NULL)
 			*q = '\0';
-#ifndef FSTACK
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_family = sa->sa_family;
 		hints.ai_socktype = SOCK_DGRAM;
 		ecode = getaddrinfo(str, NULL, &hints, &res);
 		if (ecode != 0 || res->ai_family != AF_INET6 ||
-			res->ai_addrlen != sizeof(struct sockaddr_in6))
+		    res->ai_addrlen != sizeof(struct sockaddr_in6))
 			errx(EX_OSERR, "%s: %s", str, gai_strerror(ecode));
 		memcpy(sa, res->ai_addr, res->ai_addrlen);
 		freeaddrinfo(res);
-#else
-		if (inet_pton(AF_INET6_LINUX, str, &((struct sockaddr_in6 *)sa)->sin6_addr) == -1)
-			errx(EX_OSERR, "%s: %d, %s", str, errno, strerror(errno));
-#endif
 		if (q != NULL)
 			*q++ = '/';
 		if (idx == RTAX_DST)
@@ -1390,49 +1286,29 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 
 	q = strchr(str,'/');
 	if (q != NULL && idx == RTAX_DST) {
+		/* A.B.C.D/NUM */
 		*q = '\0';
-		if ((val = inet_network(str)) != INADDR_NONE) {
-			inet_makenetandmask(val, sin,
-				(struct sockaddr_in *)&so[RTAX_NETMASK],
-				strtoul(q+1, 0, 0));
-			return (0);
-		}
-		*q = '/';
-	}
-	if ((idx != RTAX_DST || (nrflags & F_FORCENET) == 0) &&
-		inet_aton(str, &sin->sin_addr)) {
-		val = sin->sin_addr.s_addr;
-		if (idx != RTAX_DST || nrflags & F_FORCEHOST ||
-			inet_lnaof(sin->sin_addr) != INADDR_ANY)
-			return (1);
-		else {
-			val = ntohl(val);
-			goto netdone;
-		}
-	}
-	if (idx == RTAX_DST && (nrflags & F_FORCEHOST) == 0 &&
-		((val = inet_network(str)) != INADDR_NONE 
-#ifndef FSTACK
-		|| ((np = getnetbyname(str)) != NULL && (val = np->n_net) != 0)
-#endif
-	)){
+		if (inet_aton(str, &sin->sin_addr) == 0)
+			errx(EX_NOHOST, "bad address: %s", str);
 
-netdone:
-		inet_makenetandmask(val, sin,
-			(struct sockaddr_in *)&so[RTAX_NETMASK], 0);
+		int masklen = strtol(q + 1, NULL, 10);
+		if (masklen < 0 || masklen > 32)
+			errx(EX_NOHOST, "bad mask length: %s", q + 1);
+
+		inet_makemask((struct sockaddr_in *)&so[RTAX_NETMASK],masklen);
 		return (0);
 	}
+	if (inet_aton(str, &sin->sin_addr) != 0)
+		return (1);
 
-#ifndef FSTACK
 	hp = gethostbyname(str);
 	if (hp != NULL) {
 		*hpp = hp;
 		sin->sin_family = hp->h_addrtype;
 		memmove((char *)&sin->sin_addr, hp->h_addr,
-			MIN((size_t)hp->h_length, sizeof(sin->sin_addr)));
+		    MIN((size_t)hp->h_length, sizeof(sin->sin_addr)));
 		return (1);
 	}
-#endif
 #endif
 	errx(EX_NOHOST, "bad address: %s", str);
 }
@@ -1444,13 +1320,13 @@ prefixlen(const char *str)
 	int max;
 	char *p;
 
-	rtm_addrs |= RTA_NETMASK;	
+	rtm_addrs |= RTA_NETMASK;
 	switch (af) {
 #ifdef INET6
 	case AF_INET6:
 	{
 		struct sockaddr_in6 *sin6 =
-			(struct sockaddr_in6 *)&so[RTAX_NETMASK];
+		    (struct sockaddr_in6 *)&so[RTAX_NETMASK];
 
 		max = 128;
 		p = (char *)&sin6->sin6_addr;
@@ -1463,7 +1339,7 @@ prefixlen(const char *str)
 	case AF_INET:
 	{
 		struct sockaddr_in *sin =
-			(struct sockaddr_in *)&so[RTAX_NETMASK];
+		    (struct sockaddr_in *)&so[RTAX_NETMASK];
 
 		max = 32;
 		p = (char *)&sin->sin_addr;
@@ -1478,7 +1354,7 @@ prefixlen(const char *str)
 
 	if (len < 0 || max < len)
 		errx(EX_USAGE, "%s: invalid prefixlen", str);
-	
+
 	q = len >> 3;
 	r = len & 7;
 	memset((void *)p, 0, max / 8);
@@ -1492,7 +1368,6 @@ prefixlen(const char *str)
 		return (len);
 }
 
-#ifndef FSTACK
 static void
 interfaces(void)
 {
@@ -1526,6 +1401,7 @@ retry2:
 		rtm = (struct rt_msghdr *)(void *)next;
 		print_rtmsg(rtm, rtm->rtm_msglen);
 	}
+	free(buf);
 }
 
 static void
@@ -1548,8 +1424,8 @@ monitor(int argc, char *argv[])
 			fib = strtol(*++argv, &endptr, 0);
 			if (errno == 0) {
 				if (*endptr != '\0' ||
-					fib < 0 ||
-					(numfibs != -1 && fib > numfibs - 1))
+				    fib < 0 ||
+				    (numfibs != -1 && fib > numfibs - 1))
 					errno = EINVAL;
 			}
 			if (errno)
@@ -1566,9 +1442,6 @@ monitor(int argc, char *argv[])
 	verbose = 1;
 	if (debugonly) {
 		interfaces();
-#ifdef FSTACK
-		ff_ipc_exit();
-#endif
 		exit(0);
 	}
 	for (;;) {
@@ -1579,7 +1452,6 @@ monitor(int argc, char *argv[])
 		print_rtmsg((struct rt_msghdr *)(void *)msg, n);
 	}
 }
-#endif
 
 static int
 rtmsg(int cmd, int flags, int fib)
@@ -1590,10 +1462,7 @@ rtmsg(int cmd, int flags, int fib)
 
 #define NEXTADDR(w, u)							\
 	if (rtm_addrs & (w)) {						\
-		l = (((struct sockaddr *)&(u))->sa_len == 0) ?		\
-			sizeof(long) :					\
-			1 + ((((struct sockaddr *)&(u))->sa_len - 1)	\
-			| (sizeof(long) - 1));				\
+		l = SA_SIZE(&(u));					\
 		memmove(cp, (char *)&(u), l);				\
 		cp += l;						\
 		if (verbose)						\
@@ -1613,8 +1482,10 @@ rtmsg(int cmd, int flags, int fib)
 			so[RTAX_IFP].ss_len = sizeof(struct sockaddr_dl);
 			rtm_addrs |= RTA_IFP;
 		}
-	} else
+	} else {
 		cmd = RTM_DELETE;
+		flags |= RTF_PINNED;
+	}
 #define rtm m_rtmsg.m_rtm
 	rtm.rtm_type = cmd;
 	rtm.rtm_flags = flags;
@@ -1635,16 +1506,7 @@ rtmsg(int cmd, int flags, int fib)
 		print_rtmsg(&rtm, l);
 	if (debugonly)
 		return (0);
-#ifndef FSTACK
 	if ((rlen = write(s, (char *)&m_rtmsg, l)) < 0) {
-#else
-	if (cmd == RTM_GET) {
-		rlen = rtioctl((char *)&m_rtmsg, l, sizeof(m_rtmsg));
-	} else {
-		rlen = write(s, (char *)&m_rtmsg, l);
-	}
-	if (rlen < 0) {
-#endif
 		switch (errno) {
 		case EPERM:
 			err(1, "writing to routing socket");
@@ -1661,13 +1523,18 @@ rtmsg(int cmd, int flags, int fib)
 		return (-1);
 	}
 	if (cmd == RTM_GET) {
-#ifndef FSTACK
+		stop_read = 0;
+		alarm(READ_TIMEOUT);
 		do {
 			l = read(s, (char *)&m_rtmsg, sizeof(m_rtmsg));
-		} while (l > 0 && (rtm.rtm_seq != rtm_seq || rtm.rtm_pid != pid));
-#else
-		l = rlen;
-#endif
+		} while (l > 0 && stop_read == 0 &&
+		    (rtm.rtm_type != RTM_GET || rtm.rtm_seq != rtm_seq ||
+			rtm.rtm_pid != pid));
+		if (stop_read != 0) {
+			warnx("read from routing socket timed out");
+			return (-1);
+		} else
+			alarm(0);
 		if (l < 0)
 			warn("read from routing socket");
 		else
@@ -1700,22 +1567,22 @@ static const char *const msgtypes[] = {
 };
 
 static const char metricnames[] =
-	"\011weight\010rttvar\7rtt\6ssthresh\5sendpipe\4recvpipe\3expire"
-	"\1mtu";
+    "\011weight\010rttvar\7rtt\6ssthresh\5sendpipe\4recvpipe\3expire"
+    "\1mtu";
 static const char routeflags[] =
-	"\1UP\2GATEWAY\3HOST\4REJECT\5DYNAMIC\6MODIFIED\7DONE"
-	"\012XRESOLVE\013LLINFO\014STATIC\015BLACKHOLE"
-	"\017PROTO2\020PROTO1\021PRCLONING\022WASCLONED\023PROTO3"
-	"\024FIXEDMTU\025PINNED\026LOCAL\027BROADCAST\030MULTICAST\035STICKY";
+    "\1UP\2GATEWAY\3HOST\4REJECT\5DYNAMIC\6MODIFIED\7DONE"
+    "\012XRESOLVE\013LLINFO\014STATIC\015BLACKHOLE"
+    "\017PROTO2\020PROTO1\021PRCLONING\022WASCLONED\023PROTO3"
+    "\024FIXEDMTU\025PINNED\026LOCAL\027BROADCAST\030MULTICAST\035STICKY";
 static const char ifnetflags[] =
-	"\1UP\2BROADCAST\3DEBUG\4LOOPBACK\5PTP\6b6\7RUNNING\010NOARP"
-	"\011PPROMISC\012ALLMULTI\013OACTIVE\014SIMPLEX\015LINK0\016LINK1"
-	"\017LINK2\020MULTICAST";
+    "\1UP\2BROADCAST\3DEBUG\4LOOPBACK\5PTP\6b6\7RUNNING\010NOARP"
+    "\011PPROMISC\012ALLMULTI\013OACTIVE\014SIMPLEX\015LINK0\016LINK1"
+    "\017LINK2\020MULTICAST";
 static const char addrnames[] =
-	"\1DST\2GATEWAY\3NETMASK\4GENMASK\5IFP\6IFA\7AUTHOR\010BRD";
+    "\1DST\2GATEWAY\3NETMASK\4GENMASK\5IFP\6IFA\7AUTHOR\010BRD";
 
 static const char errfmt[] =
-	"\n%s: truncated route message, only %zu bytes left\n";
+    "\n%s: truncated route message, only %zu bytes left\n";
 
 static void
 print_rtmsg(struct rt_msghdr *rtm, size_t msglen)
@@ -1732,7 +1599,7 @@ print_rtmsg(struct rt_msghdr *rtm, size_t msglen)
 		return;
 	if (rtm->rtm_version != RTM_VERSION) {
 		(void)printf("routing message version %d not understood\n",
-			rtm->rtm_version);
+		    rtm->rtm_version);
 		return;
 	}
 	if (rtm->rtm_type < nitems(msgtypes))
@@ -1804,10 +1671,13 @@ print_rtmsg(struct rt_msghdr *rtm, size_t msglen)
 		break;
 
 	default:
-		printf("pid: %ld, seq %d, errno %d, flags:",
-			(long)rtm->rtm_pid, rtm->rtm_seq, rtm->rtm_errno);
-		printb(rtm->rtm_flags, routeflags);
-		pmsg_common(rtm, msglen);
+		if (rtm->rtm_type <= RTM_RESOLVE) {
+			printf("pid: %ld, seq %d, errno %d, flags:",
+			    (long)rtm->rtm_pid, rtm->rtm_seq, rtm->rtm_errno);
+			printb(rtm->rtm_flags, routeflags);
+			pmsg_common(rtm, msglen);
+		} else
+			printf("type: %u, len: %zu\n", rtm->rtm_type, msglen);
 	}
 
 	return;
@@ -1827,15 +1697,15 @@ print_getmsg(struct rt_msghdr *rtm, int msglen, int fib)
 
 	memset(sp, 0, sizeof(sp));
 	(void)printf("   route to: %s\n",
-		routename((struct sockaddr *)&so[RTAX_DST]));
+	    routename((struct sockaddr *)&so[RTAX_DST]));
 	if (rtm->rtm_version != RTM_VERSION) {
 		warnx("routing message version %d not understood",
-			 rtm->rtm_version);
+		     rtm->rtm_version);
 		return;
 	}
 	if (rtm->rtm_msglen > msglen) {
 		warnx("message length mismatch, in packet %d, returned %d",
-			  rtm->rtm_msglen, msglen);
+		      rtm->rtm_msglen, msglen);
 		return;
 	}
 	if (rtm->rtm_errno)  {
@@ -1850,28 +1720,28 @@ print_getmsg(struct rt_msghdr *rtm, int msglen, int fib)
 			cp += SA_SIZE((struct sockaddr *)cp);
 		}
 	if ((rtm->rtm_addrs & RTA_IFP) &&
-		(sp[RTAX_IFP]->sa_family != AF_LINK ||
-		 ((struct sockaddr_dl *)(void *)sp[RTAX_IFP])->sdl_nlen == 0))
+	    (sp[RTAX_IFP]->sa_family != AF_LINK ||
+	     ((struct sockaddr_dl *)(void *)sp[RTAX_IFP])->sdl_nlen == 0))
 			sp[RTAX_IFP] = NULL;
 	if (sp[RTAX_DST])
 		(void)printf("destination: %s\n", routename(sp[RTAX_DST]));
 	if (sp[RTAX_NETMASK])
-		(void)printf("	   mask: %s\n", routename(sp[RTAX_NETMASK]));
+		(void)printf("       mask: %s\n", routename(sp[RTAX_NETMASK]));
 	if (sp[RTAX_GATEWAY] && (rtm->rtm_flags & RTF_GATEWAY))
-		(void)printf("	gateway: %s\n", routename(sp[RTAX_GATEWAY]));
+		(void)printf("    gateway: %s\n", routename(sp[RTAX_GATEWAY]));
 	if (fib >= 0)
-		(void)printf("		fib: %u\n", (unsigned int)fib);
+		(void)printf("        fib: %u\n", (unsigned int)fib);
 	if (sp[RTAX_IFP])
 		(void)printf("  interface: %.*s\n",
-			((struct sockaddr_dl *)(void *)sp[RTAX_IFP])->sdl_nlen,
-			((struct sockaddr_dl *)(void *)sp[RTAX_IFP])->sdl_data);
-	(void)printf("	  flags: ");
+		    ((struct sockaddr_dl *)(void *)sp[RTAX_IFP])->sdl_nlen,
+		    ((struct sockaddr_dl *)(void *)sp[RTAX_IFP])->sdl_data);
+	(void)printf("      flags: ");
 	printb(rtm->rtm_flags, routeflags);
 
 #define lock(f)	((rtm->rtm_rmx.rmx_locks & __CONCAT(RTV_,f)) ? 'L' : ' ')
 #define msec(u)	(((u) + 500) / 1000)		/* usec to msec */
 	printf("\n%9s %9s %9s %9s %9s %10s %9s\n", "recvpipe",
-		"sendpipe", "ssthresh", "rtt,msec", "mtu   ", "weight", "expire");
+	    "sendpipe", "ssthresh", "rtt,msec", "mtu   ", "weight", "expire");
 	printf("%8lu%c ", rtm->rtm_rmx.rmx_recvpipe, lock(RPIPE));
 	printf("%8lu%c ", rtm->rtm_rmx.rmx_sendpipe, lock(SPIPE));
 	printf("%8lu%c ", rtm->rtm_rmx.rmx_ssthresh, lock(SSTHRESH));
@@ -1883,7 +1753,7 @@ print_getmsg(struct rt_msghdr *rtm, int msglen, int fib)
 	else
 		ts.tv_sec = 0;
 	printf("%8ld%c\n", (long)(rtm->rtm_rmx.rmx_expire - ts.tv_sec),
-		lock(EXPIRE));
+	    lock(EXPIRE));
 #undef lock
 #undef msec
 #define	RTA_IGN	(RTA_DST|RTA_GATEWAY|RTA_NETMASK|RTA_IFP|RTA_IFA|RTA_BRD)
@@ -1907,7 +1777,7 @@ pmsg_common(struct rt_msghdr *rtm, size_t msglen)
 	printb(rtm->rtm_inits, metricnames);
 	if (msglen > sizeof(struct rt_msghdr))
 		pmsg_addrs(((char *)(rtm + 1)), rtm->rtm_addrs,
-			msglen - sizeof(struct rt_msghdr));
+		    msglen - sizeof(struct rt_msghdr));
 	else
 		(void)fflush(stdout);
 }
@@ -1986,23 +1856,19 @@ sodump(struct sockaddr *sa, const char *which)
 	switch (sa->sa_family) {
 	case AF_LINK:
 		(void)printf("%s: link %s; ", which,
-			link_ntoa((struct sockaddr_dl *)(void *)sa));
+		    link_ntoa((struct sockaddr_dl *)(void *)sa));
 		break;
 #ifdef INET
 	case AF_INET:
 		(void)printf("%s: inet %s; ", which,
-			inet_ntoa(((struct sockaddr_in *)(void *)sa)->sin_addr));
+		    inet_ntoa(((struct sockaddr_in *)(void *)sa)->sin_addr));
 		break;
 #endif
 #ifdef INET6
 	case AF_INET6:
-#ifdef FSTACK
-		(void)printf("%s: inet6 %s; ", which, inet_ntop(AF_INET6_LINUX,
-#else
 		(void)printf("%s: inet6 %s; ", which, inet_ntop(sa->sa_family,
-#endif
-			&((struct sockaddr_in6 *)(void *)sa)->sin6_addr, nbuf,
-			sizeof(nbuf)));
+		    &((struct sockaddr_in6 *)(void *)sa)->sin6_addr, nbuf,
+		    sizeof(nbuf)));
 		break;
 #endif
 	}

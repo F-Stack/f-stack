@@ -45,7 +45,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/resource.h>
 #include <sys/rman.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
@@ -59,12 +58,12 @@ __FBSDID("$FreeBSD$");
 #define	PMC_STRAPPING_OPT_A_RAM_CODE_MASK_SHORT	\
 	(0x3 << PMC_STRAPPING_OPT_A_RAM_CODE_SHIFT)
 
-
 #define	ABP_RD4(_sc, _r)	bus_read_4((_sc)->abp_misc_res, (_r))
 #define	STR_RD4(_sc, _r)	bus_read_4((_sc)->strap_opt_res, (_r))
 
 static struct ofw_compat_data compat_data[] = {
 	{"nvidia,tegra124-apbmisc",	1},
+	{"nvidia,tegra210-apbmisc",	1},
 	{NULL,				0}
 };
 
@@ -187,8 +186,8 @@ static device_method_t tegra_abpmisc_methods[] = {
 	DEVMETHOD_END
 };
 
-DEFINE_CLASS_0(tegra_abpmisc, tegra_abpmisc_driver, tegra_abpmisc_methods,
-    sizeof(struct tegra_abpmisc_softc));
 static devclass_t tegra_abpmisc_devclass;
+static DEFINE_CLASS_0(abpmisc, tegra_abpmisc_driver, tegra_abpmisc_methods,
+    sizeof(struct tegra_abpmisc_softc));
 EARLY_DRIVER_MODULE(tegra_abpmisc, simplebus, tegra_abpmisc_driver,
-    tegra_abpmisc_devclass, 0, 0, BUS_PASS_TIMER);
+    tegra_abpmisc_devclass, NULL, NULL, BUS_PASS_TIMER);

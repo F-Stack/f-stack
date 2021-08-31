@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Robert N. M. Watson
  * All rights reserved.
  *
@@ -67,6 +69,7 @@ struct memory_type {
 	uint64_t	 mt_free;	/* Number of cached free items. */
 	uint64_t	 mt_failures;	/* Number of allocation failures. */
 	uint64_t	 mt_sleeps;	/* Number of allocation sleeps. */
+	uint64_t	 mt_xdomain;	/* Number of cross domain sleeps. */
 
 	/*
 	 * Caller-owned memory.

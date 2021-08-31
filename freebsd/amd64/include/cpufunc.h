@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2003 Peter Wemm.
  * Copyright (c) 1993 The Regents of the University of California.
  * All rights reserved.
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -63,41 +65,13 @@ breakpoint(void)
 	__asm __volatile("int $3");
 }
 
-static __inline u_int
-bsfl(u_int mask)
-{
-	u_int	result;
+#define	bsfl(mask)	__builtin_ctz(mask)
 
-	__asm __volatile("bsfl %1,%0" : "=r" (result) : "rm" (mask));
-	return (result);
-}
+#define	bsfq(mask)	__builtin_ctzl(mask)
 
-static __inline u_long
-bsfq(u_long mask)
-{
-	u_long	result;
+#define	bsrl(mask)	(__builtin_clz(mask) ^ 0x1f)
 
-	__asm __volatile("bsfq %1,%0" : "=r" (result) : "rm" (mask));
-	return (result);
-}
-
-static __inline u_int
-bsrl(u_int mask)
-{
-	u_int	result;
-
-	__asm __volatile("bsrl %1,%0" : "=r" (result) : "rm" (mask));
-	return (result);
-}
-
-static __inline u_long
-bsrq(u_long mask)
-{
-	u_long	result;
-
-	__asm __volatile("bsrq %1,%0" : "=r" (result) : "rm" (mask));
-	return (result);
-}
+#define	bsrq(mask)	(__builtin_clzl(mask) ^ 0x3f)
 
 static __inline void
 clflush(u_long addr)
@@ -111,6 +85,13 @@ clflushopt(u_long addr)
 {
 
 	__asm __volatile(".byte 0x66;clflush %0" : : "m" (*(char *)addr));
+}
+
+static __inline void
+clwb(u_long addr)
+{
+
+	__asm __volatile("clwb %0" : : "m" (*(char *)addr));
 }
 
 static __inline void
@@ -151,27 +132,17 @@ enable_intr(void)
 #ifdef _KERNEL
 
 #define	HAVE_INLINE_FFS
-#define        ffs(x)  __builtin_ffs(x)
+#define	ffs(x)		__builtin_ffs(x)
 
 #define	HAVE_INLINE_FFSL
-
-static __inline int
-ffsl(long mask)
-{
-	return (mask == 0 ? mask : (int)bsfq((u_long)mask) + 1);
-}
+#define	ffsl(x)		__builtin_ffsl(x)
 
 #define	HAVE_INLINE_FFSLL
-
-static __inline int
-ffsll(long long mask)
-{
-	return (ffsl((long)mask));
-}
+#define	ffsll(x)	__builtin_ffsll(x)
 
 #define	HAVE_INLINE_FLS
 
-static __inline int
+static __inline __pure2 int
 fls(int mask)
 {
 	return (mask == 0 ? mask : (int)bsrl((u_int)mask) + 1);
@@ -179,7 +150,7 @@ fls(int mask)
 
 #define	HAVE_INLINE_FLSL
 
-static __inline int
+static __inline __pure2 int
 flsl(long mask)
 {
 	return (mask == 0 ? mask : (int)bsrq((u_long)mask) + 1);
@@ -187,7 +158,7 @@ flsl(long mask)
 
 #define	HAVE_INLINE_FLSLL
 
-static __inline int
+static __inline __pure2 int
 flsll(long long mask)
 {
 	return (flsl((long)mask));
@@ -222,7 +193,7 @@ inl(u_int port)
 static __inline void
 insb(u_int port, void *addr, size_t count)
 {
-	__asm __volatile("cld; rep; insb"
+	__asm __volatile("rep; insb"
 			 : "+D" (addr), "+c" (count)
 			 : "d" (port)
 			 : "memory");
@@ -231,7 +202,7 @@ insb(u_int port, void *addr, size_t count)
 static __inline void
 insw(u_int port, void *addr, size_t count)
 {
-	__asm __volatile("cld; rep; insw"
+	__asm __volatile("rep; insw"
 			 : "+D" (addr), "+c" (count)
 			 : "d" (port)
 			 : "memory");
@@ -240,7 +211,7 @@ insw(u_int port, void *addr, size_t count)
 static __inline void
 insl(u_int port, void *addr, size_t count)
 {
-	__asm __volatile("cld; rep; insl"
+	__asm __volatile("rep; insl"
 			 : "+D" (addr), "+c" (count)
 			 : "d" (port)
 			 : "memory");
@@ -276,7 +247,7 @@ outl(u_int port, u_int data)
 static __inline void
 outsb(u_int port, const void *addr, size_t count)
 {
-	__asm __volatile("cld; rep; outsb"
+	__asm __volatile("rep; outsb"
 			 : "+S" (addr), "+c" (count)
 			 : "d" (port));
 }
@@ -284,7 +255,7 @@ outsb(u_int port, const void *addr, size_t count)
 static __inline void
 outsw(u_int port, const void *addr, size_t count)
 {
-	__asm __volatile("cld; rep; outsw"
+	__asm __volatile("rep; outsw"
 			 : "+S" (addr), "+c" (count)
 			 : "d" (port));
 }
@@ -292,7 +263,7 @@ outsw(u_int port, const void *addr, size_t count)
 static __inline void
 outsl(u_int port, const void *addr, size_t count)
 {
-	__asm __volatile("cld; rep; outsl"
+	__asm __volatile("rep; outsl"
 			 : "+S" (addr), "+c" (count)
 			 : "d" (port));
 }
@@ -324,6 +295,13 @@ mfence(void)
 {
 
 	__asm __volatile("mfence" : : : "memory");
+}
+
+static __inline void
+sfence(void)
+{
+
+	__asm __volatile("sfence" : : : "memory");
 }
 
 static __inline void
@@ -377,12 +355,30 @@ rdtsc(void)
 	return (low | ((uint64_t)high << 32));
 }
 
+static __inline uint64_t
+rdtscp(void)
+{
+	uint32_t low, high;
+
+	__asm __volatile("rdtscp" : "=a" (low), "=d" (high) : : "ecx");
+	return (low | ((uint64_t)high << 32));
+}
+
 static __inline uint32_t
 rdtsc32(void)
 {
 	uint32_t rv;
 
 	__asm __volatile("rdtsc" : "=a" (rv) : : "edx");
+	return (rv);
+}
+
+static __inline uint32_t
+rdtscp32(void)
+{
+	uint32_t rv;
+
+	__asm __volatile("rdtscp" : "=a" (rv) : : "ecx", "edx");
 	return (rv);
 }
 
@@ -602,6 +598,22 @@ cpu_mwait(u_long extensions, u_int hints)
 	__asm __volatile("mwait" : : "a" (hints), "c" (extensions));
 }
 
+static __inline uint32_t
+rdpkru(void)
+{
+	uint32_t res;
+
+	__asm __volatile("rdpkru" :  "=a" (res) : "c" (0) : "edx");
+	return (res);
+}
+
+static __inline void
+wrpkru(uint32_t mask)
+{
+
+	__asm __volatile("wrpkru" :  : "a" (mask),  "c" (0), "d" (0));
+}
+
 #ifdef _KERNEL
 /* This is defined in <machine/specialreg.h> but is too painful to get to */
 #ifndef	MSR_FSBASE
@@ -644,10 +656,66 @@ load_gs(u_short sel)
 }
 #endif
 
+static __inline uint64_t
+rdfsbase(void)
+{
+	uint64_t x;
+
+	__asm __volatile("rdfsbase %0" : "=r" (x));
+	return (x);
+}
+
+static __inline void
+wrfsbase(uint64_t x)
+{
+
+	__asm __volatile("wrfsbase %0" : : "r" (x));
+}
+
+static __inline uint64_t
+rdgsbase(void)
+{
+	uint64_t x;
+
+	__asm __volatile("rdgsbase %0" : "=r" (x));
+	return (x);
+}
+
+static __inline void
+wrgsbase(uint64_t x)
+{
+
+	__asm __volatile("wrgsbase %0" : : "r" (x));
+}
+
+static __inline void
+bare_lgdt(struct region_descriptor *addr)
+{
+	__asm __volatile("lgdt (%0)" : : "r" (addr));
+}
+
+static __inline void
+sgdt(struct region_descriptor *addr)
+{
+	char *loc;
+
+	loc = (char *)addr;
+	__asm __volatile("sgdt %0" : "=m" (*loc) : : "memory");
+}
+
 static __inline void
 lidt(struct region_descriptor *addr)
 {
 	__asm __volatile("lidt (%0)" : : "r" (addr));
+}
+
+static __inline void
+sidt(struct region_descriptor *addr)
+{
+	char *loc;
+
+	loc = (char *)addr;
+	__asm __volatile("sidt %0" : "=m" (*loc) : : "memory");
 }
 
 static __inline void
@@ -656,10 +724,28 @@ lldt(u_short sel)
 	__asm __volatile("lldt %0" : : "r" (sel));
 }
 
+static __inline u_short
+sldt(void)
+{
+	u_short sel;
+
+	__asm __volatile("sldt %0" : "=r" (sel));
+	return (sel);
+}
+
 static __inline void
 ltr(u_short sel)
 {
 	__asm __volatile("ltr %0" : : "r" (sel));
+}
+
+static __inline uint32_t
+read_tr(void)
+{
+	u_short sel;
+
+	__asm __volatile("str %0" : "=r" (sel));
+	return (sel);
 }
 
 static __inline uint64_t
@@ -719,34 +805,6 @@ load_dr3(uint64_t dr3)
 }
 
 static __inline uint64_t
-rdr4(void)
-{
-	uint64_t data;
-	__asm __volatile("movq %%dr4,%0" : "=r" (data));
-	return (data);
-}
-
-static __inline void
-load_dr4(uint64_t dr4)
-{
-	__asm __volatile("movq %0,%%dr4" : : "r" (dr4));
-}
-
-static __inline uint64_t
-rdr5(void)
-{
-	uint64_t data;
-	__asm __volatile("movq %%dr5,%0" : "=r" (data));
-	return (data);
-}
-
-static __inline void
-load_dr5(uint64_t dr5)
-{
-	__asm __volatile("movq %0,%%dr5" : : "r" (dr5));
-}
-
-static __inline uint64_t
 rdr6(void)
 {
 	uint64_t data;
@@ -790,6 +848,99 @@ intr_restore(register_t rflags)
 	write_rflags(rflags);
 }
 
+static __inline void
+stac(void)
+{
+
+	__asm __volatile("stac" : : : "cc");
+}
+
+static __inline void
+clac(void)
+{
+
+	__asm __volatile("clac" : : : "cc");
+}
+
+enum {
+	SGX_ECREATE	= 0x0,
+	SGX_EADD	= 0x1,
+	SGX_EINIT	= 0x2,
+	SGX_EREMOVE	= 0x3,
+	SGX_EDGBRD	= 0x4,
+	SGX_EDGBWR	= 0x5,
+	SGX_EEXTEND	= 0x6,
+	SGX_ELDU	= 0x8,
+	SGX_EBLOCK	= 0x9,
+	SGX_EPA		= 0xA,
+	SGX_EWB		= 0xB,
+	SGX_ETRACK	= 0xC,
+};
+
+enum {
+	SGX_PT_SECS = 0x00,
+	SGX_PT_TCS  = 0x01,
+	SGX_PT_REG  = 0x02,
+	SGX_PT_VA   = 0x03,
+	SGX_PT_TRIM = 0x04,
+};
+
+int sgx_encls(uint32_t eax, uint64_t rbx, uint64_t rcx, uint64_t rdx);
+
+static __inline int
+sgx_ecreate(void *pginfo, void *secs)
+{
+
+	return (sgx_encls(SGX_ECREATE, (uint64_t)pginfo,
+	    (uint64_t)secs, 0));
+}
+
+static __inline int
+sgx_eadd(void *pginfo, void *epc)
+{
+
+	return (sgx_encls(SGX_EADD, (uint64_t)pginfo,
+	    (uint64_t)epc, 0));
+}
+
+static __inline int
+sgx_einit(void *sigstruct, void *secs, void *einittoken)
+{
+
+	return (sgx_encls(SGX_EINIT, (uint64_t)sigstruct,
+	    (uint64_t)secs, (uint64_t)einittoken));
+}
+
+static __inline int
+sgx_eextend(void *secs, void *epc)
+{
+
+	return (sgx_encls(SGX_EEXTEND, (uint64_t)secs,
+	    (uint64_t)epc, 0));
+}
+
+static __inline int
+sgx_epa(void *epc)
+{
+
+	return (sgx_encls(SGX_EPA, SGX_PT_VA, (uint64_t)epc, 0));
+}
+
+static __inline int
+sgx_eldu(uint64_t rbx, uint64_t rcx,
+    uint64_t rdx)
+{
+
+	return (sgx_encls(SGX_ELDU, rbx, rcx, rdx));
+}
+
+static __inline int
+sgx_eremove(void *epc)
+{
+
+	return (sgx_encls(SGX_EREMOVE, 0, (uint64_t)epc, 0));
+}
+
 #else /* !(__GNUCLIKE_ASM && __CC_SUPPORTS___INLINE) */
 
 int	breakpoint(void);
@@ -823,8 +974,6 @@ void	load_dr0(uint64_t dr0);
 void	load_dr1(uint64_t dr1);
 void	load_dr2(uint64_t dr2);
 void	load_dr3(uint64_t dr3);
-void	load_dr4(uint64_t dr4);
-void	load_dr5(uint64_t dr5);
 void	load_dr6(uint64_t dr6);
 void	load_dr7(uint64_t dr7);
 void	load_fs(u_short sel);
@@ -847,8 +996,6 @@ uint64_t rdr0(void);
 uint64_t rdr1(void);
 uint64_t rdr2(void);
 uint64_t rdr3(void);
-uint64_t rdr4(void);
-uint64_t rdr5(void);
 uint64_t rdr6(void);
 uint64_t rdr7(void);
 uint64_t rdtsc(void);

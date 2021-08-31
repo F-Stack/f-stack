@@ -63,10 +63,6 @@ __FBSDID("$FreeBSD$");
 
 #include "ngctl.h"
 
-#ifdef FSTACK
-#include "ff_ipc.h"
-#endif
-
 #define PROMPT			"+ "
 #define MAX_ARGS		512
 #define WHITESPACE		" \t\r\n\v\f"
@@ -74,9 +70,7 @@ __FBSDID("$FreeBSD$");
 
 /* Internal functions */
 static int	ReadFile(FILE *fp);
-#ifndef FSTACK
 static void	ReadSockets(fd_set *);
-#endif
 static int	DoParseCommand(const char *line);
 static int	DoCommand(int ac, char **av);
 static int	DoInteractive(void);
@@ -87,11 +81,9 @@ static int	ReadCmd(int ac, char **av);
 static int	HelpCmd(int ac, char **av);
 static int	QuitCmd(int ac, char **av);
 #ifdef EDITLINE
-#ifndef FSTACK
 static volatile sig_atomic_t unblock;
 static pthread_mutex_t	mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t	cond = PTHREAD_COND_INITIALIZER;
-#endif
 #endif
 
 /* List of commands */
@@ -140,23 +132,7 @@ const struct ngcmd quit_cmd = {
 };
 
 /* Our control and data sockets */
-#ifndef FSTACK
 int	csock, dsock;
-#else
-int csock = -1, dsock = -1;
-
-void
-__attribute__((destructor)) close_ng_socks()
-{
-        if (csock >= 0) {
-                ng_close(csock);
-        }
-
-        if (dsock >= 0) {
-                ng_close(dsock);
-        }
-}
-#endif
 
 /*
  * main()
@@ -173,12 +149,7 @@ main(int ac, char *av[])
 	snprintf(name, sizeof(name), "ngctl%d", getpid());
 
 	/* Parse command line */
-#ifndef FSTACK
 	while ((ch = getopt(ac, av, "df:n:")) != -1) {
-#else
-	ff_ipc_init();
-	while ((ch = getopt(ac, av, "df:n:p:")) != -1) {
-#endif
 		switch (ch) {
 		case 'd':
 			NgSetDebug(NgSetDebug(-1) + 1);
@@ -192,11 +163,6 @@ main(int ac, char *av[])
 		case 'n':
 			snprintf(name, sizeof(name), "%s", optarg);
 			break;
-#ifdef FSTACK
-		case 'p':
-			ff_set_proc_id(atoi(optarg));
-			break;
-#endif
 		case '?':
 		default:
 			Usage((char *)NULL);
@@ -235,9 +201,6 @@ main(int ac, char *av[])
 		rtn = EX_OSERR;
 		break;
 	}
-#ifdef FSTACK
-	ff_ipc_exit();
-#endif
 	return (rtn);
 }
 
@@ -262,7 +225,6 @@ ReadFile(FILE *fp)
 }
 
 #ifdef EDITLINE
-#ifndef FSTACK
 /* Signal handler for Monitor() thread. */
 static void
 Unblock(int signal __unused)
@@ -308,7 +270,6 @@ Monitor(void *v __unused)
 
 	return (NULL);
 }
-#endif
 
 static char *
 Prompt(EditLine *el __unused)
@@ -331,17 +292,13 @@ Prompt(EditLine *el __unused)
 static int
 DoInteractive(void)
 {
-#ifndef FSTACK
 	pthread_t monitor;
-#endif
 	EditLine *el;
 	History *hist;
 	HistEvent hev = { 0, "" };
 
 	(*help_cmd.func)(0, NULL);
-#ifndef FSTACK
 	pthread_create(&monitor, NULL, Monitor, NULL);
-#endif
 	el = el_init(getprogname(), stdin, stdout, stderr);
 	if (el == NULL)
 		return (CMDRTN_ERROR);
@@ -365,27 +322,19 @@ DoInteractive(void)
 			break;
 		}
 		history(hist, &hev, H_ENTER, buf);
-#ifndef FSTACK
 		pthread_kill(monitor, SIGUSR1);
 		pthread_mutex_lock(&mutex);
-#endif
 		if (DoParseCommand(buf) == CMDRTN_QUIT) {
-#ifndef FSTACK
 			pthread_mutex_unlock(&mutex);
-#endif
 			break;
 		}
-#ifndef FSTACK
 		pthread_cond_signal(&cond);
 		pthread_mutex_unlock(&mutex);
-#endif
 	}
 
 	history_end(hist);
 	el_end(el);
-#ifndef FSTACK
 	pthread_cancel(monitor);
-#endif
 
 	return (CMDRTN_QUIT);
 }
@@ -407,10 +356,8 @@ DoInteractive(void)
 
 		/* See if any data or control messages are arriving */
 		FD_ZERO(&rfds);
-#ifndef FSTACK
 		FD_SET(csock, &rfds);
 		FD_SET(dsock, &rfds);
-#endif
 		memset(&tv, 0, sizeof(tv));
 		if (select(maxfd, &rfds, NULL, NULL, &tv) <= 0) {
 
@@ -419,10 +366,8 @@ DoInteractive(void)
 			fflush(stdout);
 			FD_ZERO(&rfds);
 			FD_SET(0, &rfds);
-#ifndef FSTACK
 			FD_SET(csock, &rfds);
 			FD_SET(dsock, &rfds);
-#endif
 			if (select(maxfd, &rfds, NULL, NULL, NULL) < 0)
 				err(EX_OSERR, "select");
 
@@ -431,9 +376,7 @@ DoInteractive(void)
 				printf("\n");
 		}
 
-#ifndef FSTACK
 		ReadSockets(&rfds);
-#endif
 
 		/* Get any user input */
 		if (FD_ISSET(0, &rfds)) {
@@ -451,7 +394,6 @@ DoInteractive(void)
 }
 #endif /* !EDITLINE */
 
-#ifndef FSTACK
 /*
  * Read and process data on netgraph control and data sockets.
  */
@@ -480,7 +422,6 @@ ReadSockets(fd_set *rfds)
 		free(buf);
 	}
 }
-#endif
 
 /*
  * Parse a command line and execute the command
@@ -719,11 +660,6 @@ Usage(const char *msg)
 	if (msg)
 		warnx("%s", msg);
 	fprintf(stderr,
-#ifndef FSTACK
 		"usage: ngctl [-d] [-f file] [-n name] [command ...]\n");
-#else
-		"usage: ngctl -p <f-stack proc_id>  [-d] [-f file] [-n name] [command ...]\n");
-		ff_ipc_exit();
-#endif
 	exit(EX_USAGE);
 }

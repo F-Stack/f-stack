@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -31,9 +33,10 @@
 
 struct trapframe;
 
-boolean_t	vmm_is_intel(void);
-boolean_t	vmm_is_amd(void);
-boolean_t	vmm_supports_1G_pages(void);
+bool		vmm_is_hw_supported(void);
+bool		vmm_is_intel(void);
+bool		vmm_is_svm(void);
+bool		vmm_supports_1G_pages(void);
 
 void		dump_trapframe(struct trapframe *tf);
 

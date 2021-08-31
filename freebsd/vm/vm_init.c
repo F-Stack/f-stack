@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: (BSD-3-Clause AND MIT-CMU)
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -13,7 +15,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -66,6 +68,7 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/domainset.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/proc.h>
@@ -79,21 +82,22 @@ __FBSDID("$FreeBSD$");
 #include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/vmem.h>
+#include <sys/vmmeter.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
+#include <vm/vm_phys.h>
+#include <vm/vm_pagequeue.h>
 #include <vm/vm_map.h>
 #include <vm/vm_pager.h>
 #include <vm/vm_extern.h>
 
-long physmem;
+extern void	uma_startup1(vm_offset_t);
 
-static int exec_map_entries = 16;
-SYSCTL_INT(_vm, OID_AUTO, exec_map_entries, CTLFLAG_RDTUN, &exec_map_entries, 0,
-    "Maximum number of simultaneous execs");
+long physmem;
 
 /*
  * System initialization
@@ -102,44 +106,34 @@ static void vm_mem_init(void *);
 SYSINIT(vm_mem, SI_SUB_VM, SI_ORDER_FIRST, vm_mem_init, NULL);
 
 /*
- * Import kva into the kernel arena.
- */
-static int
-kva_import(void *unused, vmem_size_t size, int flags, vmem_addr_t *addrp)
-{
-	vm_offset_t addr;
-	int result;
- 
-	addr = vm_map_min(kernel_map);
-	result = vm_map_find(kernel_map, NULL, 0, &addr, size, 0,
-	    VMFS_SUPER_SPACE, VM_PROT_ALL, VM_PROT_ALL, MAP_NOFAULT);
-	if (result != KERN_SUCCESS)
-                return (ENOMEM);
-
-	*addrp = addr;
-
-	return (0);
-}
-
-/*
  *	vm_init initializes the virtual memory system.
  *	This is done only by the first cpu up.
- *
- *	The start and end address of physical memory is passed in.
  */
-/* ARGSUSED*/
 static void
-vm_mem_init(dummy)
-	void *dummy;
+vm_mem_init(void *dummy)
 {
 
 	/*
-	 * Initializes resident memory structures. From here on, all physical
+	 * Initialize static domainsets, used by various allocators.
+	 */
+	domainset_init();
+
+	/*
+	 * Initialize resident memory structures.  From here on, all physical
 	 * memory is accounted for, and we use only virtual addresses.
 	 */
 	vm_set_page_size();
 	virtual_avail = vm_page_startup(virtual_avail);
-	
+
+	/*
+	 * Set an initial domain policy for thread0 so that allocations
+	 * can work.
+	 */
+	domainset_zero();
+
+	/* Bootstrap the kernel memory allocator. */
+	uma_startup1(virtual_avail);
+
 	/*
 	 * Initialize other VM packages
 	 */
@@ -147,18 +141,6 @@ vm_mem_init(dummy)
 	vm_object_init();
 	vm_map_startup();
 	kmem_init(virtual_avail, virtual_end);
-
-	/*
-	 * Initialize the kernel_arena.  This can grow on demand.
-	 */
-	vmem_init(kernel_arena, "kernel arena", 0, 0, PAGE_SIZE, 0, 0);
-	vmem_set_import(kernel_arena, kva_import, NULL, NULL,
-#if VM_NRESERVLEVEL > 0
-	    1 << (VM_LEVEL_0_ORDER + PAGE_SHIFT));
-#else
-	    /* On non-superpage architectures want large import sizes. */
-	    PAGE_SIZE * 1024);
-#endif
 
 	kmem_init_zero_region();
 	pmap_init();
@@ -196,8 +178,8 @@ again:
 	 * Discount the physical memory larger than the size of kernel_map
 	 * to avoid eating up all of KVA space.
 	 */
-	physmem_est = lmin(physmem, btoc(kernel_map->max_offset -
-	    kernel_map->min_offset));
+	physmem_est = lmin(physmem, btoc(vm_map_max(kernel_map) -
+	    vm_map_min(kernel_map)));
 
 	v = kern_vfs_bio_buffer_alloc(v, physmem_est);
 
@@ -206,8 +188,16 @@ again:
 	 */
 	if (firstaddr == 0) {
 		size = (vm_size_t)v;
-		firstaddr = kmem_malloc(kernel_arena, round_page(size),
-		    M_ZERO | M_WAITOK);
+#ifdef VM_FREELIST_DMA32
+		/*
+		 * Try to protect 32-bit DMAable memory from the largest
+		 * early alloc of wired mem.
+		 */
+		firstaddr = kmem_alloc_attr(size, M_ZERO | M_NOWAIT,
+		    (vm_paddr_t)1 << 32, ~(vm_paddr_t)0, VM_MEMATTR_DEFAULT);
+		if (firstaddr == 0)
+#endif
+			firstaddr = kmem_malloc(size, M_ZERO | M_WAITOK);
 		if (firstaddr == 0)
 			panic("startup: no room for tables");
 		goto again;
@@ -220,11 +210,9 @@ again:
 		panic("startup: table size inconsistency");
 
 	/*
-	 * Allocate the clean map to hold all of the paging and I/O virtual
-	 * memory.
+	 * Allocate the clean map to hold all of I/O virtual memory.
 	 */
-	size = (long)nbuf * BKVASIZE + (long)nswbuf * MAXPHYS +
-	    (long)bio_transient_maxcnt * MAXPHYS;
+	size = (long)nbuf * BKVASIZE + (long)bio_transient_maxcnt * maxphys;
 	kmi->clean_sva = firstaddr = kva_alloc(size);
 	kmi->clean_eva = firstaddr + size;
 
@@ -242,17 +230,10 @@ again:
 	firstaddr += size;
 
 	/*
-	 * Now swap kva.
-	 */
-	swapbkva = firstaddr;
-	size = (long)nswbuf * MAXPHYS;
-	firstaddr += size;
-
-	/*
 	 * And optionally transient bio space.
 	 */
 	if (bio_transient_maxcnt != 0) {
-		size = (long)bio_transient_maxcnt * MAXPHYS;
+		size = (long)bio_transient_maxcnt * maxphys;
 		vmem_init(transient_arena, "transient arena",
 		    firstaddr, size, PAGE_SIZE, 0, 0);
 		firstaddr += size;
@@ -261,10 +242,19 @@ again:
 		panic("Clean map calculation incorrect");
 
 	/*
- 	 * Allocate the pageable submaps.
+	 * Allocate the pageable submaps.  We may cache an exec map entry per
+	 * CPU, so we therefore need to reserve space for at least ncpu+1
+	 * entries to avoid deadlock.  The exec map is also used by some image
+	 * activators, so we leave a fixed number of pages for their use.
 	 */
-	exec_map = kmem_suballoc(kernel_map, &minaddr, &maxaddr,
-	    exec_map_entries * round_page(PATH_MAX + ARG_MAX), FALSE);
-	pipe_map = kmem_suballoc(kernel_map, &minaddr, &maxaddr, maxpipekva,
-	    FALSE);
+#ifdef __LP64__
+	exec_map_entries = 8 * mp_ncpus;
+#else
+	exec_map_entries = 2 * mp_ncpus + 4;
+#endif
+	exec_map_entry_size = round_page(PATH_MAX + ARG_MAX);
+	kmem_subinit(exec_map, kernel_map, &minaddr, &maxaddr,
+	    exec_map_entries * exec_map_entry_size + 64 * PAGE_SIZE, false);
+	kmem_subinit(pipe_map, kernel_map, &minaddr, &maxaddr, maxpipekva,
+	    false);
 }

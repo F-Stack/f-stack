@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2010 Juli Mallett <jmallett@FreeBSD.org>
  * All rights reserved.
  *
@@ -64,7 +66,6 @@ static device_method_t octebus_methods[] = {
 
 	/* Bus interface.  */
 	DEVMETHOD(bus_add_child,	bus_generic_add_child),
-
 	{ 0, 0 }
 };
 

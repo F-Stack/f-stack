@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1998-2010 Luigi Rizzo, Universita` di Pisa
  * Portions Copyright (c) 2000 Akamba Corp.
  * All rights reserved
@@ -186,7 +188,6 @@ struct dn_flow {
 	uint32_t	drops;
 };
 
-
 /*
  * Scheduler template, mostly indicating the name, number,
  * sched_mask and buckets.
@@ -201,7 +202,6 @@ struct dn_sch {
 	/* mask to select the appropriate scheduler instance */
 	struct ipfw_flow_id sched_mask; /* M */
 };
-
 
 /* A delay profile is attached to a link.
  * Note that a profile, as any other object, cannot be longer than 2^16
@@ -275,7 +275,7 @@ the objects used by dummynet:
    to delay and bandwidth;
  + dn_profile describes a delay profile;
  + dn_flow describes the flow status (flow id, statistics)
-   
+
  + dn_sch describes a scheduler
  + dn_fs describes a flowset (msk, weight, queue parameters)
 

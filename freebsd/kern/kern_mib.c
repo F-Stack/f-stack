@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -16,7 +18,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -38,13 +40,15 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_posix.h"
 #include "opt_config.h"
 
 #include <sys/param.h>
+#include <sys/boot.h>
+#include <sys/elf.h>
 #include <sys/jail.h>
 #include <sys/kernel.h>
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
@@ -52,40 +56,44 @@ __FBSDID("$FreeBSD$");
 #include <sys/sbuf.h>
 #include <sys/smp.h>
 #include <sys/sx.h>
+#include <sys/sysent.h>
+#include <sys/vmmeter.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/unistd.h>
 
-SYSCTL_ROOT_NODE(0,	  sysctl, CTLFLAG_RW, 0,
-	"Sysctl internal magic");
-SYSCTL_ROOT_NODE(CTL_KERN,	  kern,   CTLFLAG_RW|CTLFLAG_CAPRD, 0,
-	"High kernel, proc, limits &c");
-SYSCTL_ROOT_NODE(CTL_VM,	  vm,     CTLFLAG_RW, 0,
-	"Virtual memory");
-SYSCTL_ROOT_NODE(CTL_VFS,	  vfs,     CTLFLAG_RW, 0,
-	"File system");
-SYSCTL_ROOT_NODE(CTL_NET,	  net,    CTLFLAG_RW, 0,
-	"Network, (see socket.h)");
-SYSCTL_ROOT_NODE(CTL_DEBUG,  debug,  CTLFLAG_RW, 0,
-	"Debugging");
-SYSCTL_NODE(_debug, OID_AUTO,  sizeof,  CTLFLAG_RW, 0,
-	"Sizeof various things");
-SYSCTL_ROOT_NODE(CTL_HW,	  hw,     CTLFLAG_RW, 0,
-	"hardware");
-SYSCTL_ROOT_NODE(CTL_MACHDEP, machdep, CTLFLAG_RW, 0,
-	"machine dependent");
-SYSCTL_ROOT_NODE(CTL_USER,	  user,   CTLFLAG_RW, 0,
-	"user-level");
-SYSCTL_ROOT_NODE(CTL_P1003_1B,  p1003_1b,   CTLFLAG_RW, 0,
-	"p1003_1b, (see p1003_1b.h)");
+SYSCTL_ROOT_NODE(0, sysctl, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Sysctl internal magic");
+SYSCTL_ROOT_NODE(CTL_KERN, kern, CTLFLAG_RW | CTLFLAG_CAPRD | CTLFLAG_MPSAFE, 0,
+    "High kernel, proc, limits &c");
+SYSCTL_ROOT_NODE(CTL_VM, vm, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Virtual memory");
+SYSCTL_ROOT_NODE(CTL_VFS, vfs, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "File system");
+SYSCTL_ROOT_NODE(CTL_NET, net, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Network, (see socket.h)");
+SYSCTL_ROOT_NODE(CTL_DEBUG, debug, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Debugging");
+SYSCTL_NODE(_debug, OID_AUTO,  sizeof,  CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Sizeof various things");
+SYSCTL_ROOT_NODE(CTL_HW, hw, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "hardware");
+SYSCTL_ROOT_NODE(CTL_MACHDEP, machdep, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "machine dependent");
+SYSCTL_NODE(_machdep, OID_AUTO, mitigations, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Machine dependent platform mitigations.");
+SYSCTL_ROOT_NODE(CTL_USER, user, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "user-level");
+SYSCTL_ROOT_NODE(CTL_P1003_1B, p1003_1b, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "p1003_1b, (see p1003_1b.h)");
 
-SYSCTL_ROOT_NODE(OID_AUTO,  compat, CTLFLAG_RW, 0,
-	"Compatibility code");
-SYSCTL_ROOT_NODE(OID_AUTO, security, CTLFLAG_RW, 0, 
-     	"Security");
+SYSCTL_ROOT_NODE(OID_AUTO, compat, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Compatibility code");
+SYSCTL_ROOT_NODE(OID_AUTO, security, CTLFLAG_RW | CTLFLAG_MPSAFE, 0, 
+    "Security");
 #ifdef REGRESSION
-SYSCTL_ROOT_NODE(OID_AUTO, regression, CTLFLAG_RW, 0,
-     "Regression test MIB");
+SYSCTL_ROOT_NODE(OID_AUTO, regression, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "Regression test MIB");
 #endif
 
 SYSCTL_STRING(_kern, OID_AUTO, ident, CTLFLAG_RD|CTLFLAG_MPSAFE,
@@ -133,10 +141,34 @@ SYSCTL_INT(_kern, KERN_SAVED_IDS, saved_ids, CTLFLAG_RD|CTLFLAG_CAPRD,
     SYSCTL_NULL_INT_PTR, 0, "Whether saved set-group/user ID is available");
 #endif
 
-char kernelname[MAXPATHLEN] = "/kernel";	/* XXX bloat */
+char kernelname[MAXPATHLEN] = PATH_KERNEL;	/* XXX bloat */
 
-SYSCTL_STRING(_kern, KERN_BOOTFILE, bootfile, CTLFLAG_RW,
+SYSCTL_STRING(_kern, KERN_BOOTFILE, bootfile, CTLFLAG_RW | CTLFLAG_MPSAFE,
     kernelname, sizeof kernelname, "Name of kernel file booted");
+
+#ifdef COMPAT_FREEBSD12
+static int
+sysctl_maxphys(SYSCTL_HANDLER_ARGS)
+{
+	u_long lvalue;
+	int ivalue;
+
+	lvalue = maxphys;
+	if (sizeof(int) == sizeof(u_long) || req->oldlen >= sizeof(u_long))
+		return (sysctl_handle_long(oidp, &lvalue, 0, req));
+	if (lvalue > INT_MAX)
+		return (sysctl_handle_long(oidp, &lvalue, 0, req));
+	ivalue = lvalue;
+	return (sysctl_handle_int(oidp, &ivalue, 0, req));
+}
+SYSCTL_PROC(_kern, KERN_MAXPHYS, maxphys, CTLTYPE_LONG | CTLFLAG_RDTUN |
+    CTLFLAG_NOFETCH | CTLFLAG_CAPRD | CTLFLAG_MPSAFE,
+    NULL, 0, sysctl_maxphys, "UL", "Maximum block I/O access size");
+#else
+SYSCTL_ULONG(_kern, KERN_MAXPHYS, maxphys,
+    CTLFLAG_RDTUN | CTLFLAG_NOFETCH | CTLFLAG_CAPRD,
+    &maxphys, 0, "Maximum block I/O access size");
+#endif
 
 SYSCTL_INT(_hw, HW_NCPU, ncpu, CTLFLAG_RD|CTLFLAG_CAPRD,
     &mp_ncpus, 0, "Number of active CPUs");
@@ -153,15 +185,8 @@ sysctl_kern_arnd(SYSCTL_HANDLER_ARGS)
 	char buf[256];
 	size_t len;
 
-	/*-
-	 * This is one of the very few legitimate uses of read_random(9).
-	 * Use of arc4random(9) is not recommended as that will ignore
-	 * an unsafe (i.e. unseeded) random(4).
-	 *
-	 * If random(4) is not seeded, then this returns 0, so the
-	 * sysctl will return a zero-length buffer.
-	 */
-	len = read_random(buf, MIN(req->oldlen, sizeof(buf)));
+	len = MIN(req->oldlen, sizeof(buf));
+	read_random(buf, len);
 	return (SYSCTL_OUT(req, buf, len));
 }
 
@@ -172,37 +197,54 @@ SYSCTL_PROC(_kern, KERN_ARND, arandom,
 static int
 sysctl_hw_physmem(SYSCTL_HANDLER_ARGS)
 {
-	u_long val;
+	u_long val, p;
 
-	val = ctob(physmem);
+	p = SIZE_T_MAX >> PAGE_SHIFT;
+	if (physmem < p)
+		p = physmem;
+	val = ctob(p);
 	return (sysctl_handle_long(oidp, &val, 0, req));
 }
-
-SYSCTL_PROC(_hw, HW_PHYSMEM, physmem, CTLTYPE_ULONG | CTLFLAG_RD,
-	0, 0, sysctl_hw_physmem, "LU", "");
+SYSCTL_PROC(_hw, HW_PHYSMEM, physmem,
+    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_hw_physmem, "LU",
+    "Amount of physical memory (in bytes)");
 
 static int
 sysctl_hw_realmem(SYSCTL_HANDLER_ARGS)
 {
-	u_long val;
-	val = ctob(realmem);
+	u_long val, p;
+
+	p = SIZE_T_MAX >> PAGE_SHIFT;
+	if (realmem < p)
+		p = realmem;
+	val = ctob(p);
 	return (sysctl_handle_long(oidp, &val, 0, req));
 }
-SYSCTL_PROC(_hw, HW_REALMEM, realmem, CTLTYPE_ULONG | CTLFLAG_RD,
-	0, 0, sysctl_hw_realmem, "LU", "");
+SYSCTL_PROC(_hw, HW_REALMEM, realmem,
+    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_hw_realmem, "LU",
+    "Amount of memory (in bytes) reported by the firmware");
+
 static int
 sysctl_hw_usermem(SYSCTL_HANDLER_ARGS)
 {
-	u_long val;
+	u_long val, p, p1;
 
-	val = ctob(physmem - vm_cnt.v_wire_count);
+	p1 = physmem - vm_wire_count();
+	p = SIZE_T_MAX >> PAGE_SHIFT;
+	if (p1 < p)
+		p = p1;
+	val = ctob(p);
 	return (sysctl_handle_long(oidp, &val, 0, req));
 }
+SYSCTL_PROC(_hw, HW_USERMEM, usermem,
+    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_hw_usermem, "LU",
+    "Amount of memory (in bytes) which is not wired");
 
-SYSCTL_PROC(_hw, HW_USERMEM, usermem, CTLTYPE_ULONG | CTLFLAG_RD,
-	0, 0, sysctl_hw_usermem, "LU", "");
-
-SYSCTL_LONG(_hw, OID_AUTO, availpages, CTLFLAG_RD, &physmem, 0, "");
+SYSCTL_LONG(_hw, OID_AUTO, availpages, CTLFLAG_RD, &physmem, 0,
+    "Amount of physical memory (in pages)");
 
 u_long pagesizes[MAXPAGESIZES] = { PAGE_SIZE };
 
@@ -210,59 +252,82 @@ static int
 sysctl_hw_pagesizes(SYSCTL_HANDLER_ARGS)
 {
 	int error;
+	size_t len;
 #ifdef SCTL_MASK32
 	int i;
 	uint32_t pagesizes32[MAXPAGESIZES];
 
 	if (req->flags & SCTL_MASK32) {
 		/*
-		 * Recreate the "pagesizes" array with 32-bit elements.  Truncate
-		 * any page size greater than UINT32_MAX to zero.
+		 * Recreate the "pagesizes" array with 32-bit elements.
+		 * Truncate any page size greater than UINT32_MAX to zero,
+		 * which assumes that page sizes are powers of two.
 		 */
 		for (i = 0; i < MAXPAGESIZES; i++)
 			pagesizes32[i] = (uint32_t)pagesizes[i];
 
-		error = SYSCTL_OUT(req, pagesizes32, sizeof(pagesizes32));
+		len = sizeof(pagesizes32);
+		if (len > req->oldlen && req->oldptr != NULL)
+			len = req->oldlen;
+		error = SYSCTL_OUT(req, pagesizes32, len);
 	} else
 #endif
-		error = SYSCTL_OUT(req, pagesizes, sizeof(pagesizes));
+	{
+		len = sizeof(pagesizes);
+		if (len > req->oldlen && req->oldptr != NULL)
+			len = req->oldlen;
+		error = SYSCTL_OUT(req, pagesizes, len);
+	}
 	return (error);
 }
-SYSCTL_PROC(_hw, OID_AUTO, pagesizes, CTLTYPE_ULONG | CTLFLAG_RD,
-    NULL, 0, sysctl_hw_pagesizes, "LU", "Supported page sizes");
+SYSCTL_PROC(_hw, OID_AUTO, pagesizes,
+    CTLTYPE_OPAQUE | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
+    sysctl_hw_pagesizes, "S,pagesizes",
+    "Supported page sizes");
 
-#ifdef SCTL_MASK32
 int adaptive_machine_arch = 1;
 SYSCTL_INT(_debug, OID_AUTO, adaptive_machine_arch, CTLFLAG_RW,
     &adaptive_machine_arch, 1,
     "Adapt reported machine architecture to the ABI of the binary");
+
+static const char *
+proc_machine_arch(struct proc *p)
+{
+
+	if (p->p_sysent->sv_machine_arch != NULL)
+		return (p->p_sysent->sv_machine_arch(p));
+#ifdef COMPAT_FREEBSD32
+	if (SV_PROC_FLAG(p, SV_ILP32))
+		return (MACHINE_ARCH32);
 #endif
+	return (MACHINE_ARCH);
+}
 
 static int
 sysctl_hw_machine_arch(SYSCTL_HANDLER_ARGS)
 {
-	int error;
-	static const char machine_arch[] = MACHINE_ARCH;
-#ifdef SCTL_MASK32
-	static const char machine_arch32[] = MACHINE_ARCH32;
+	const char *machine_arch;
 
-	if ((req->flags & SCTL_MASK32) != 0 && adaptive_machine_arch)
-		error = SYSCTL_OUT(req, machine_arch32, sizeof(machine_arch32));
+	if (adaptive_machine_arch)
+		machine_arch = proc_machine_arch(curproc);
 	else
-#endif
-		error = SYSCTL_OUT(req, machine_arch, sizeof(machine_arch));
-	return (error);
-
+		machine_arch = MACHINE_ARCH;
+	return (SYSCTL_OUT(req, machine_arch, strlen(machine_arch) + 1));
 }
-SYSCTL_PROC(_hw, HW_MACHINE_ARCH, machine_arch, CTLTYPE_STRING | CTLFLAG_RD,
-    NULL, 0, sysctl_hw_machine_arch, "A", "System architecture");
+SYSCTL_PROC(_hw, HW_MACHINE_ARCH, machine_arch, CTLTYPE_STRING | CTLFLAG_RD |
+    CTLFLAG_MPSAFE, NULL, 0, sysctl_hw_machine_arch, "A",
+    "System architecture");
+
+#ifndef MACHINE_ARCHES
+#ifdef COMPAT_FREEBSD32
+#define	MACHINE_ARCHES	MACHINE_ARCH " " MACHINE_ARCH32
+#else
+#define	MACHINE_ARCHES	MACHINE_ARCH
+#endif
+#endif
 
 SYSCTL_STRING(_kern, OID_AUTO, supported_archs, CTLFLAG_RD | CTLFLAG_MPSAFE,
-#ifdef COMPAT_FREEBSD32
-    MACHINE_ARCH " " MACHINE_ARCH32, 0, "Supported architectures for binaries");
-#else
-    MACHINE_ARCH, 0, "Supported architectures for binaries");
-#endif
+    MACHINE_ARCHES, 0, "Supported architectures for binaries");
 
 static int
 sysctl_hostname(SYSCTL_HANDLER_ARGS)
@@ -281,25 +346,27 @@ sysctl_hostname(SYSCTL_HANDLER_ARGS)
 	KASSERT(len <= sizeof(tmpname),
 	    ("length %d too long for %s", len, __func__));
 
-	pr = req->td->td_ucred->cr_prison;
-	if (!(pr->pr_allow & PR_ALLOW_SET_HOSTNAME) && req->newptr)
-		return (EPERM);
 	/*
 	 * Make a local copy of hostname to get/set so we don't have to hold
 	 * the jail mutex during the sysctl copyin/copyout activities.
 	 */
+	pr = req->td->td_ucred->cr_prison;
 	mtx_lock(&pr->pr_mtx);
 	bcopy((char *)pr + pr_offset, tmpname, len);
 	mtx_unlock(&pr->pr_mtx);
 
 	error = sysctl_handle_string(oidp, tmpname, len, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
 
-	if (req->newptr != NULL && error == 0) {
-		/*
-		 * Copy the locally set hostname to all jails that share
-		 * this host info.
-		 */
-		sx_slock(&allprison_lock);
+	/*
+	 * Copy the locally set hostname to all jails that share
+	 * this host info.
+	 */
+	sx_slock(&allprison_lock);
+	if (!(pr->pr_allow & PR_ALLOW_SET_HOSTNAME))
+		error = EPERM;
+	else {
 		while (!(pr->pr_flags & PR_HOST))
 			pr = pr->pr_parent;
 		mtx_lock(&pr->pr_mtx);
@@ -310,21 +377,21 @@ sysctl_hostname(SYSCTL_HANDLER_ARGS)
 			else
 				bcopy(tmpname, (char *)cpr + pr_offset, len);
 		mtx_unlock(&pr->pr_mtx);
-		sx_sunlock(&allprison_lock);
 	}
+	sx_sunlock(&allprison_lock);
 	return (error);
 }
 
 SYSCTL_PROC(_kern, KERN_HOSTNAME, hostname,
-    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_MPSAFE,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_CAPRD | CTLFLAG_MPSAFE,
     (void *)(offsetof(struct prison, pr_hostname)), MAXHOSTNAMELEN,
     sysctl_hostname, "A", "Hostname");
 SYSCTL_PROC(_kern, KERN_NISDOMAINNAME, domainname,
-    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_MPSAFE,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_CAPRD | CTLFLAG_MPSAFE,
     (void *)(offsetof(struct prison, pr_domainname)), MAXHOSTNAMELEN,
     sysctl_hostname, "A", "Name of the current YP/NIS domain");
 SYSCTL_PROC(_kern, KERN_HOSTUUID, hostuuid,
-    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_MPSAFE,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_CAPRD | CTLFLAG_MPSAFE,
     (void *)(offsetof(struct prison, pr_hostuuid)), HOSTUUIDLEN,
     sysctl_hostname, "A", "Host UUID");
 
@@ -376,15 +443,16 @@ sysctl_kern_securelvl(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern, KERN_SECURELVL, securelevel,
-    CTLTYPE_INT|CTLFLAG_RW|CTLFLAG_PRISON, 0, 0, sysctl_kern_securelvl,
-    "I", "Current secure level");
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_kern_securelvl, "I",
+    "Current secure level");
 
 #ifdef INCLUDE_CONFIG_FILE
 /* Actual kernel configuration options. */
 extern char kernconfstring[];
 
-SYSCTL_STRING(_kern, OID_AUTO, conftxt, CTLFLAG_RD, kernconfstring, 0,
-    "Kernel configuration file");
+SYSCTL_STRING(_kern, OID_AUTO, conftxt, CTLFLAG_RD | CTLFLAG_MPSAFE,
+    kernconfstring, 0, "Kernel configuration file");
 #endif
 
 static int
@@ -399,13 +467,18 @@ sysctl_hostid(SYSCTL_HANDLER_ARGS)
 	 * instead of a string, and is used only for hostid.
 	 */
 	pr = req->td->td_ucred->cr_prison;
-	if (!(pr->pr_allow & PR_ALLOW_SET_HOSTNAME) && req->newptr)
-		return (EPERM);
+	mtx_lock(&pr->pr_mtx);
 	tmpid = pr->pr_hostid;
-	error = sysctl_handle_long(oidp, &tmpid, 0, req);
+	mtx_unlock(&pr->pr_mtx);
 
-	if (req->newptr != NULL && error == 0) {
-		sx_slock(&allprison_lock);
+	error = sysctl_handle_long(oidp, &tmpid, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+
+	sx_slock(&allprison_lock);
+	if (!(pr->pr_allow & PR_ALLOW_SET_HOSTNAME))
+		error = EPERM;
+	else {
 		while (!(pr->pr_flags & PR_HOST))
 			pr = pr->pr_parent;
 		mtx_lock(&pr->pr_mtx);
@@ -416,14 +489,40 @@ sysctl_hostid(SYSCTL_HANDLER_ARGS)
 			else
 				cpr->pr_hostid = tmpid;
 		mtx_unlock(&pr->pr_mtx);
-		sx_sunlock(&allprison_lock);
 	}
+	sx_sunlock(&allprison_lock);
 	return (error);
 }
 
 SYSCTL_PROC(_kern, KERN_HOSTID, hostid,
     CTLTYPE_ULONG | CTLFLAG_RW | CTLFLAG_PRISON | CTLFLAG_MPSAFE | CTLFLAG_CAPRD,
     NULL, 0, sysctl_hostid, "LU", "Host ID");
+
+static struct mtx bootid_lk;
+MTX_SYSINIT(bootid_lock, &bootid_lk, "bootid generator lock", MTX_DEF);
+
+static int
+sysctl_bootid(SYSCTL_HANDLER_ARGS)
+{
+	static uint8_t boot_id[16];
+	static bool initialized = false;
+
+	mtx_lock(&bootid_lk);
+	if (!initialized) {
+		if (!is_random_seeded()) {
+			mtx_unlock(&bootid_lk);
+			return (ENXIO);
+		}
+		arc4random_buf(boot_id, sizeof(boot_id));
+		initialized = true;
+	}
+	mtx_unlock(&bootid_lk);
+
+	return (SYSCTL_OUT(req, boot_id, sizeof(boot_id)));
+}
+SYSCTL_PROC(_kern, OID_AUTO, boot_id,
+    CTLTYPE_STRUCT | CTLFLAG_RD | CTLFLAG_MPSAFE | CTLFLAG_CAPRD,
+    NULL, 0, sysctl_bootid, "", "Random boot ID");
 
 /*
  * The osrelease string is copied from the global (osrelease in vers.c) into
@@ -467,7 +566,55 @@ SYSCTL_PROC(_kern, KERN_OSRELDATE, osreldate,
     CTLTYPE_INT | CTLFLAG_CAPRD | CTLFLAG_RD | CTLFLAG_MPSAFE,
     NULL, 0, sysctl_osreldate, "I", "Kernel release date");
 
-SYSCTL_NODE(_kern, OID_AUTO, features, CTLFLAG_RD, 0, "Kernel Features");
+/*
+ * The build-id is copied from the ELF section .note.gnu.build-id.  The linker
+ * script defines two variables to expose the beginning and end.  LLVM
+ * currently uses a SHA-1 hash, but other formats can be supported by checking
+ * the length of the section.
+ */
+
+extern char __build_id_start[];
+extern char __build_id_end[];
+
+#define	BUILD_ID_HEADER_LEN	0x10
+#define	BUILD_ID_HASH_MAXLEN	0x14
+
+static int
+sysctl_build_id(SYSCTL_HANDLER_ARGS)
+{
+	uintptr_t sectionlen = (uintptr_t)(__build_id_end - __build_id_start);
+	int hashlen;
+	char buf[2*BUILD_ID_HASH_MAXLEN+1];
+
+	/*
+	 * The ELF note section has a four byte length for the vendor name,
+	 * four byte length for the value, and a four byte vendor specific
+	 * type.  The name for the build id is "GNU\0".  We skip the first 16
+	 * bytes to read the build hash.  We will return the remaining bytes up
+	 * to 20 (SHA-1) hash size.  If the hash happens to be a custom number
+	 * of bytes we will pad the value with zeros, as the section should be
+	 * four byte aligned.
+	 */
+	if (sectionlen <= BUILD_ID_HEADER_LEN ||
+	    sectionlen > (BUILD_ID_HEADER_LEN + BUILD_ID_HASH_MAXLEN)) {
+		return (ENOENT);
+	}
+
+	hashlen = sectionlen - BUILD_ID_HEADER_LEN;
+	for (int i = 0; i < hashlen; i++) {
+		uint8_t c = __build_id_start[i+BUILD_ID_HEADER_LEN];
+		snprintf(&buf[2*i], 3, "%02x", c);
+	}
+
+	return (SYSCTL_OUT(req, buf, strlen(buf) + 1));
+}
+
+SYSCTL_PROC(_kern, OID_AUTO, build_id,
+    CTLTYPE_STRING | CTLFLAG_CAPRD | CTLFLAG_RD | CTLFLAG_MPSAFE,
+    NULL, 0, sysctl_build_id, "A", "Operating system build-id");
+
+SYSCTL_NODE(_kern, OID_AUTO, features, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "Kernel Features");
 
 #ifdef COMPAT_FREEBSD4
 FEATURE(compat_freebsd4, "Compatible with FreeBSD 4");
@@ -533,6 +680,11 @@ SYSCTL_INT(_user, USER_STREAM_MAX, stream_max, CTLFLAG_RD,
     SYSCTL_NULL_INT_PTR, 0, "Min Maximum number of streams a process may have open at one time");
 SYSCTL_INT(_user, USER_TZNAME_MAX, tzname_max, CTLFLAG_RD,
     SYSCTL_NULL_INT_PTR, 0, "Min Maximum number of types supported for timezone names");
+
+static char localbase[MAXPATHLEN] = "";
+
+SYSCTL_STRING(_user, USER_LOCALBASE, localbase, CTLFLAG_RWTUN,
+    localbase, sizeof(localbase), "Prefix used to install and locate add-on packages");
 
 #include <sys/vnode.h>
 SYSCTL_INT(_debug_sizeof, OID_AUTO, vnode, CTLFLAG_RD,

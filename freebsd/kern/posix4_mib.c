@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1998
  *	HD Associates, Inc.  All rights reserved.
  *
@@ -60,7 +62,8 @@ SYSCTL_DECL(_p1003_1b);
 	SYSCTL_INT(_p1003_1b, num, name, CTLFLAG_RD | CTLFLAG_CAPRD, \
 	facility + num - 1, 0, "");
 #define P1B_SYSCTL_RW(num, name)  \
-	SYSCTL_PROC(_p1003_1b, num, name, CTLTYPE_INT | CTLFLAG_RW, NULL, num, \
+	SYSCTL_PROC(_p1003_1b, num, name, \
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, num, \
 	    p31b_sysctl_proc, "I", "");
 
 #else
@@ -73,7 +76,8 @@ SYSCTL_DECL(_kern_p1003_1b);
 #define P1B_SYSCTL_RW(num, name)  \
 	SYSCTL_PROC(_p1003_1b, OID_AUTO, name, CTLTYPE_INT | CTLFLAG_RW, NULL, \
 	    num, p31b_sysctl_proc, "I", "");
-SYSCTL_NODE(_kern, OID_AUTO, p1003_1b, CTLFLAG_RW, 0, "P1003.1B");
+SYSCTL_NODE(_kern, OID_AUTO, p1003_1b, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "P1003.1B");
 
 #endif
 
@@ -91,7 +95,6 @@ P1B_SYSCTL(CTL_P1003_1B_FSYNC, fsync);
 P1B_SYSCTL(CTL_P1003_1B_SHARED_MEMORY_OBJECTS, shared_memory_objects);
 P1B_SYSCTL(CTL_P1003_1B_SYNCHRONIZED_IO, synchronized_io);
 P1B_SYSCTL(CTL_P1003_1B_TIMERS, timers);
-P1B_SYSCTL(CTL_P1003_1B_AIO_LISTIO_MAX, aio_listio_max);
 P1B_SYSCTL(CTL_P1003_1B_AIO_MAX, aio_max);
 P1B_SYSCTL(CTL_P1003_1B_AIO_PRIO_DELTA_MAX, aio_prio_delta_max);
 P1B_SYSCTL(CTL_P1003_1B_DELAYTIMER_MAX, delaytimer_max);
@@ -172,5 +175,4 @@ p31b_set_standard(void *dummy)
 }
 
 SYSINIT(p31b_set_standard, SI_SUB_P1003_1B, SI_ORDER_ANY, p31b_set_standard, 
-	0);
-
+    NULL);

@@ -45,7 +45,6 @@
 #include <vm/vm_page.h>
 #include <vm/vm_pager.h>
 #include <vm/vm_param.h>
-#include <vm/vm_phys.h>
 
 #include <machine/bus.h>
 #include <machine/cpu.h>
@@ -378,11 +377,7 @@ vchiq_platform_handle_timeout(VCHIQ_STATE_T *state)
 static void
 pagelist_page_free(vm_page_t pp)
 {
-	vm_page_lock(pp);
 	vm_page_unwire(pp, PQ_INACTIVE);
-	if (pp->wire_count == 0 && pp->object == NULL)
-		vm_page_free(pp);
-	vm_page_unlock(pp);
 }
 
 /* There is a potential problem with partial cache lines (pages?)
@@ -474,13 +469,6 @@ create_pagelist(char __user *buf, size_t count, unsigned short type,
 		vm_page_unhold_pages(pages, actual_pages);
 		free(pagelist, M_VCPAGELIST);
 		return (-ENOMEM);
-	}
-
-	for (i = 0; i < actual_pages; i++) {
-		vm_page_lock(pages[i]);
-		vm_page_wire(pages[i]);
-		vm_page_unhold(pages[i]);
-		vm_page_unlock(pages[i]);
 	}
 
 	pagelist->length = count;

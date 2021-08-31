@@ -4,9 +4,117 @@
  *
  *****************************************************************************/
 
-/*
- * Copyright (C) 2000 - 2016, Intel Corp.
+/******************************************************************************
+ *
+ * 1. Copyright Notice
+ *
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
+ *
+ * 2. License
+ *
+ * 2.1. This is your license from Intel Corp. under its intellectual property
+ * rights. You may have additional license terms from the party that provided
+ * you this software, covering your right to use that party's intellectual
+ * property rights.
+ *
+ * 2.2. Intel grants, free of charge, to any person ("Licensee") obtaining a
+ * copy of the source code appearing in this file ("Covered Code") an
+ * irrevocable, perpetual, worldwide license under Intel's copyrights in the
+ * base code distributed originally by Intel ("Original Intel Code") to copy,
+ * make derivatives, distribute, use and display any portion of the Covered
+ * Code in any form, with the right to sublicense such rights; and
+ *
+ * 2.3. Intel grants Licensee a non-exclusive and non-transferable patent
+ * license (with the right to sublicense), under only those claims of Intel
+ * patents that are infringed by the Original Intel Code, to make, use, sell,
+ * offer to sell, and import the Covered Code and derivative works thereof
+ * solely to the minimum extent necessary to exercise the above copyright
+ * license, and in no event shall the patent license extend to any additions
+ * to or modifications of the Original Intel Code. No other license or right
+ * is granted directly or by implication, estoppel or otherwise;
+ *
+ * The above copyright and patent license is granted only if the following
+ * conditions are met:
+ *
+ * 3. Conditions
+ *
+ * 3.1. Redistribution of Source with Rights to Further Distribute Source.
+ * Redistribution of source code of any substantial portion of the Covered
+ * Code or modification with rights to further distribute source must include
+ * the above Copyright Notice, the above License, this list of Conditions,
+ * and the following Disclaimer and Export Compliance provision. In addition,
+ * Licensee must cause all Covered Code to which Licensee contributes to
+ * contain a file documenting the changes Licensee made to create that Covered
+ * Code and the date of any change. Licensee must include in that file the
+ * documentation of any changes made by any predecessor Licensee. Licensee
+ * must include a prominent statement that the modification is derived,
+ * directly or indirectly, from Original Intel Code.
+ *
+ * 3.2. Redistribution of Source with no Rights to Further Distribute Source.
+ * Redistribution of source code of any substantial portion of the Covered
+ * Code or modification without rights to further distribute source must
+ * include the following Disclaimer and Export Compliance provision in the
+ * documentation and/or other materials provided with distribution. In
+ * addition, Licensee may not authorize further sublicense of source of any
+ * portion of the Covered Code, and must include terms to the effect that the
+ * license from Licensee to its licensee is limited to the intellectual
+ * property embodied in the software Licensee provides to its licensee, and
+ * not to intellectual property embodied in modifications its licensee may
+ * make.
+ *
+ * 3.3. Redistribution of Executable. Redistribution in executable form of any
+ * substantial portion of the Covered Code or modification must reproduce the
+ * above Copyright Notice, and the following Disclaimer and Export Compliance
+ * provision in the documentation and/or other materials provided with the
+ * distribution.
+ *
+ * 3.4. Intel retains all right, title, and interest in and to the Original
+ * Intel Code.
+ *
+ * 3.5. Neither the name Intel nor any other trademark owned or controlled by
+ * Intel shall be used in advertising or otherwise to promote the sale, use or
+ * other dealings in products derived from or relating to the Covered Code
+ * without prior written authorization from Intel.
+ *
+ * 4. Disclaimer and Export Compliance
+ *
+ * 4.1. INTEL MAKES NO WARRANTY OF ANY KIND REGARDING ANY SOFTWARE PROVIDED
+ * HERE. ANY SOFTWARE ORIGINATING FROM INTEL OR DERIVED FROM INTEL SOFTWARE
+ * IS PROVIDED "AS IS," AND INTEL WILL NOT PROVIDE ANY SUPPORT, ASSISTANCE,
+ * INSTALLATION, TRAINING OR OTHER SERVICES. INTEL WILL NOT PROVIDE ANY
+ * UPDATES, ENHANCEMENTS OR EXTENSIONS. INTEL SPECIFICALLY DISCLAIMS ANY
+ * IMPLIED WARRANTIES OF MERCHANTABILITY, NONINFRINGEMENT AND FITNESS FOR A
+ * PARTICULAR PURPOSE.
+ *
+ * 4.2. IN NO EVENT SHALL INTEL HAVE ANY LIABILITY TO LICENSEE, ITS LICENSEES
+ * OR ANY OTHER THIRD PARTY, FOR ANY LOST PROFITS, LOST DATA, LOSS OF USE OR
+ * COSTS OF PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES, OR FOR ANY INDIRECT,
+ * SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THIS AGREEMENT, UNDER ANY
+ * CAUSE OF ACTION OR THEORY OF LIABILITY, AND IRRESPECTIVE OF WHETHER INTEL
+ * HAS ADVANCE NOTICE OF THE POSSIBILITY OF SUCH DAMAGES. THESE LIMITATIONS
+ * SHALL APPLY NOTWITHSTANDING THE FAILURE OF THE ESSENTIAL PURPOSE OF ANY
+ * LIMITED REMEDY.
+ *
+ * 4.3. Licensee shall not export, either directly or indirectly, any of this
+ * software or system incorporating such software without first obtaining any
+ * required license or other approval from the U. S. Department of Commerce or
+ * any other agency or department of the United States Government. In the
+ * event Licensee exports any such software from the United States or
+ * re-exports any such software from a foreign destination, Licensee shall
+ * ensure that the distribution and export/re-export of the software is in
+ * compliance with all laws, regulations, orders, or other restrictions of the
+ * U.S. Export Administration Regulations. Licensee agrees that neither it nor
+ * any of its subsidiaries will export/re-export any technical data, process,
+ * software, or service, directly or indirectly, to any country for which the
+ * United States government or any agency thereof requires an export license,
+ * other governmental approval, or letter of assurance, without first obtaining
+ * such license, approval or letter.
+ *
+ *****************************************************************************
+ *
+ * Alternatively, you may choose to be licensed under the terms of the
+ * following license:
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -23,23 +131,23 @@
  *    of any contributors may be used to endorse or promote products derived
  *    from this software without specific prior written permission.
  *
- * Alternatively, this software may be distributed under the terms of the
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ * Alternatively, you may choose to be licensed under the terms of the
  * GNU General Public License ("GPL") version 2 as published by the Free
  * Software Foundation.
  *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
+ *****************************************************************************/
 
 #include <contrib/dev/acpica/compiler/aslcompiler.h>
 
@@ -130,7 +238,7 @@ const char                      *AslCompilerMsgs [] =
 /*    ASL_MSG_HID_SUFFIX */                 "_HID suffix must be all hex digits",
 /*    ASL_MSG_INCLUDE_FILE_OPEN */          "Could not open include file",
 /*    ASL_MSG_INPUT_FILE_OPEN */            "Could not open input file",
-/*    ASL_MSG_INTEGER_LENGTH */             "64-bit integer in 32-bit table, truncating (DSDT or SSDT version < 2)",
+/*    ASL_MSG_INTEGER_LENGTH */             "Truncating 64-bit constant found in 32-bit table",
 /*    ASL_MSG_INTEGER_OPTIMIZATION */       "Integer optimized to single-byte AML opcode",
 /*    ASL_MSG_INTERRUPT_LIST */             "Too many interrupts (16 max)",
 /*    ASL_MSG_INTERRUPT_NUMBER */           "Invalid interrupt number (must be 0-15)",
@@ -175,9 +283,9 @@ const char                      *AslCompilerMsgs [] =
 /*    ASL_MSG_NO_RETVAL */                  "Called method returns no value",
 /*    ASL_MSG_NO_WHILE */                   "No enclosing While statement",
 /*    ASL_MSG_NON_ASCII */                  "Invalid characters found in file",
-/*    ASL_MSG_NON_ZERO */                   "Operand evaluates to zero",
+/*    ASL_MSG_BUFFER_FIELD_LENGTH */        "Field length must be non-zero",
 /*    ASL_MSG_NOT_EXIST */                  "Object does not exist",
-/*    ASL_MSG_NOT_FOUND */                  "Object not found or not accessible from scope",
+/*    ASL_MSG_NOT_FOUND */                  "Object not found or not accessible from current scope",
 /*    ASL_MSG_NOT_METHOD */                 "Not a control method, cannot invoke",
 /*    ASL_MSG_NOT_PARAMETER */              "Not a parameter, used as local only",
 /*    ASL_MSG_NOT_REACHABLE */              "Object is not accessible from this scope",
@@ -212,7 +320,7 @@ const char                      *AslCompilerMsgs [] =
 /*    ASL_MSG_SCOPE_TYPE */                 "Existing object has invalid type for Scope operator",
 /*    ASL_MSG_SEEK */                       "Could not seek file",
 /*    ASL_MSG_SERIALIZED */                 "Control Method marked Serialized",
-/*    ASL_MSG_SERIALIZED_REQUIRED */        "Control Method should be made Serialized",
+/*    ASL_MSG_SERIALIZED_REQUIRED */        "Control Method should be made Serialized due to creation of named objects within",
 /*    ASL_MSG_SINGLE_NAME_OPTIMIZATION */   "NamePath optimized to NameSeg (uses run-time search path)",
 /*    ASL_MSG_SOME_NO_RETVAL */             "Called method may not always return a value",
 /*    ASL_MSG_STRING_LENGTH */              "String literal too long",
@@ -234,13 +342,49 @@ const char                      *AslCompilerMsgs [] =
 /*    ASL_MSG_RANGE */                      "Constant out of range",
 /*    ASL_MSG_BUFFER_ALLOCATION */          "Could not allocate line buffer",
 /*    ASL_MSG_MISSING_DEPENDENCY */         "Missing dependency",
-/*    ASL_MSG_ILLEGAL_FORWARD_REF */        "Illegal forward reference within a method",
-/*    ASL_MSG_ILLEGAL_METHOD_REF */         "Illegal reference across two methods",
+/*    ASL_MSG_ILLEGAL_FORWARD_REF */        "Illegal forward reference",
+/*    ASL_MSG_ILLEGAL_METHOD_REF */         "Object is declared in a different method",
 /*    ASL_MSG_LOCAL_NOT_USED */             "Method Local is set but never used",
 /*    ASL_MSG_ARG_AS_LOCAL_NOT_USED */      "Method Argument (as a local) is set but never used",
 /*    ASL_MSG_ARG_NOT_USED */               "Method Argument is never used",
 /*    ASL_MSG_CONSTANT_REQUIRED */          "Non-reducible expression",
-/*    ASL_MSG_CROSS_TABLE_SCOPE */          "Illegal open scope on external object from within DSDT"
+/*    ASL_MSG_CROSS_TABLE_SCOPE */          "Illegal open scope on external object from within DSDT",
+/*    ASL_MSG_EXCEPTION_NOT_RECEIVED */     "Expected remark, warning, or error did not occur. Message ID:",
+/*    ASL_MSG_NULL_RESOURCE_TEMPLATE */     "Empty Resource Template (END_TAG only)",
+/*    ASL_MSG_FOUND_HERE */                 "Original name creation/declaration below: ",
+/*    ASL_MSG_ILLEGAL_RECURSION */          "Illegal recursive call to method that creates named objects",
+/*    ASL_MSG_DUPLICATE_INPUT_FILE */       "Duplicate input files detected:",
+/*    ASL_MSG_WARNING_AS_ERROR */           "Warnings detected during compilation",
+/*    ASL_MSG_OEM_TABLE_ID */               "Invalid OEM Table ID",
+/*    ASL_MSG_OEM_ID */                     "Invalid OEM ID",
+/*    ASL_MSG_UNLOAD */                     "Unload is not supported by all operating systems",
+/*    ASL_MSG_OFFSET */                     "Unnecessary/redundant use of Offset operator",
+/*    ASL_MSG_LONG_SLEEP */                 "Very long Sleep, greater than 1 second",
+/*    ASL_MSG_PREFIX_NOT_EXIST */           "One or more prefix Scopes do not exist",
+/*    ASL_MSG_NAMEPATH_NOT_EXIST */         "One or more objects within the Pathname do not exist",
+/*    ASL_MSG_REGION_LENGTH */              "Operation Region declared with zero length",
+/*    ASL_MSG_TEMPORARY_OBJECT */           "Object is created temporarily in another method and cannot be accessed",
+/*    ASL_MSG_UNDEFINED_EXTERNAL */         "Named object was declared external but the actual definition does not exist",
+/*    ASL_MSG_BUFFER_FIELD_OVERFLOW */      "Buffer field extends beyond end of target buffer",
+/*    ASL_MSG_INVALID_SPECIAL_NAME */       "declaration of this named object outside root scope is illegal",
+/*    ASL_MSG_INVALID_PROCESSOR_UID */      "_UID inside processor declaration must be an integer",
+/*    ASL_MSG_LEGACY_PROCESSOR_OP */        "Legacy Processor() keyword detected. Use Device() keyword instead.",
+/*    ASL_MSG_NAMESTRING_LENGTH */          "NameString contains too many NameSegs (>255)",
+/*    ASL_MSG_CASE_FOUND_HERE */            "Original Case value below:",
+/*    ASL_MSG_EXTERN_INVALID_RET_TYPE */    "Return type is only allowed for Externals declared as MethodObj",
+/*    ASL_MSG_EXTERN_INVALID_PARAM_TYPE */  "Parameter type is only allowed for Externals declared as MethodObj",
+/*    ASL_MSG_NAMED_OBJECT_CREATION */      "Creation of named objects within a method is highly inefficient, use globals or method local variables instead",
+/*    ASL_MSG_ARG_COUNT_MISMATCH */         "Method NumArgs count does not match length of ParameterTypes list",
+/*    ASL_MSG_STATIC_OPREGION_IN_METHOD */  "Static OperationRegion should be declared outside control method",
+/*    ASL_MSG_DECLARATION_TYPE_MISMATCH */  "Type mismatch between external declaration and actual object declaration detected",
+/*    ASL_MSG_TYPE_MISMATCH_FOUND_HERE */   "Actual object declaration:",
+/*    ASL_MSG_DUPLICATE_EXTERN_MISMATCH */  "Type mismatch between multiple external declarations detected",
+/*    ASL_MSG_DUPLICATE_EXTERN_FOUND_HERE */"Duplicate external declaration:",
+/*    ASL_MSG_CONDREF_NEEDS_EXTERNAL_DECL */"CondRefOf parameter requires External() declaration",
+/*    ASL_MSG_EXTERNAL_FOUND_HERE */        "External declaration below ",
+/*    ASL_MSG_LOWER_CASE_NAMESEG */         "At least one lower case letter found in NameSeg, ASL is case insensitive - converting to upper case",
+/*    ASL_MSG_LOWER_CASE_NAMEPATH */        "At least one lower case letter found in NamePath, ASL is case insensitive - converting to upper case",
+/*    ASL_MSG_UUID_NOT_FOUND */             "Unknown UUID string"
 };
 
 /* Table compiler */
@@ -259,7 +403,10 @@ const char                      *AslTableCompilerMsgs [] =
 /*    ASL_MSG_UNKNOWN_LABEL */              "Label is undefined",
 /*    ASL_MSG_UNKNOWN_SUBTABLE */           "Unknown subtable type",
 /*    ASL_MSG_UNKNOWN_TABLE */              "Unknown ACPI table signature",
-/*    ASL_MSG_ZERO_VALUE */                 "Value must be non-zero"
+/*    ASL_MSG_ZERO_VALUE */                 "Value must be non-zero",
+/*    ASL_MSG_INVALID_LABEL */              "Invalid field label detected",
+/*    ASL_MSG_BUFFER_LIST */                "Invalid buffer initializer list",
+/*    ASL_MSG_ENTRY_LIST */                 "Invalid entry initializer list"
 };
 
 /* Preprocessor */
@@ -311,7 +458,7 @@ AeDecodeMessageId (
 
         if (Index >= ACPI_ARRAY_LENGTH (AslCompilerMsgs))
         {
-            return ("[Unknown ASL Compiler exception ID]");
+            return ("[Unknown iASL Compiler exception ID]");
         }
     }
 
@@ -324,7 +471,7 @@ AeDecodeMessageId (
 
         if (Index >= ACPI_ARRAY_LENGTH (AslTableCompilerMsgs))
         {
-            return ("[Unknown Table Compiler exception ID]");
+            return ("[Unknown iASL Table Compiler exception ID]");
         }
     }
 
@@ -337,7 +484,7 @@ AeDecodeMessageId (
 
         if (Index >= ACPI_ARRAY_LENGTH (AslPreprocessorMsgs))
         {
-            return ("[Unknown Preprocessor exception ID]");
+            return ("[Unknown iASL Preprocessor exception ID]");
         }
     }
 
@@ -345,7 +492,7 @@ AeDecodeMessageId (
 
     else
     {
-        return ("[Unknown exception/component ID]");
+        return ("[Unknown iASL exception ID]");
     }
 
     return (MessageTable[Index]);
@@ -378,7 +525,7 @@ AeDecodeExceptionLevel (
 
     /* Differentiate the string type to be used (IDE is all lower case) */
 
-    if (Gbl_VerboseErrors)
+    if (AslGbl_VerboseErrors)
     {
         return (AslErrorLevel[Level]);
     }
@@ -413,3 +560,79 @@ AeBuildFullExceptionCode (
      */
     return (((Level + 1) * 1000) + MessageId);
 }
+
+
+#ifdef ACPI_HELP_APP
+/*******************************************************************************
+ *
+ * FUNCTION:    AhDecodeAslException
+ *
+ * PARAMETERS:  HexString           - iASL status string from command line, in
+ *                                    hex. If null, display all exceptions.
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Decode and display an iASL exception code. Note1: a
+ * NULL string for HexString displays all known iASL exceptions. Note2:
+ * implements the -x option for AcpiHelp.
+ *
+ ******************************************************************************/
+
+#define AH_DISPLAY_ASL_EXCEPTION_TEXT(Status, Exception) \
+    printf ("%.4X: %s\n", Status, Exception)
+
+#define AH_DISPLAY_EXCEPTION(Status, Name) \
+    printf ("%.4X: %s\n", Status, Name)
+
+
+void
+AhDecodeAslException (
+    char                    *HexString)
+{
+    UINT32                  i;
+    UINT32                  MessageId;
+    const char              *OneException;
+    UINT32                  Index = 1;
+
+
+    /*
+     * A null input string means to decode and display all known
+     * exception codes.
+     */
+    if (!HexString)
+    {
+        printf ("All defined iASL exception codes:\n\n");
+        printf ("Main iASL exceptions:\n\n");
+        AH_DISPLAY_EXCEPTION (0,
+            "AE_OK                        (No error occurred)");
+
+        /* Display codes in each block of exception types */
+
+        for (i = 1; Index < ACPI_ARRAY_LENGTH (AslCompilerMsgs); i++, Index++)
+        {
+            AH_DISPLAY_ASL_EXCEPTION_TEXT (Index, AslCompilerMsgs[i]);
+        }
+
+        printf ("\niASL Table Compiler exceptions:\n\n");
+        Index = ASL_MSG_TABLE_COMPILER;
+        for (i = 0; i < ACPI_ARRAY_LENGTH (AslTableCompilerMsgs); i++, Index++)
+        {
+            AH_DISPLAY_ASL_EXCEPTION_TEXT (Index, AslTableCompilerMsgs[i]);
+        }
+
+        printf ("\niASL Preprocessor exceptions:\n\n");
+        Index = ASL_MSG_PREPROCESSOR;
+        for (i = 0; i < ACPI_ARRAY_LENGTH (AslPreprocessorMsgs); i++, Index++)
+        {
+            AH_DISPLAY_ASL_EXCEPTION_TEXT (Index, AslPreprocessorMsgs[i]);
+        }
+        return;
+    }
+
+    /* HexString is valid - convert it to a MessageId and decode it */
+
+    MessageId = strtol (HexString, NULL, 16);
+    OneException = AeDecodeMessageId ((UINT16) MessageId);
+    AH_DISPLAY_ASL_EXCEPTION_TEXT (MessageId, OneException);
+}
+#endif

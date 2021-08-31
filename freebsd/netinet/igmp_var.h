@@ -1,4 +1,6 @@
-/*-a
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1988 Stephen Deering.
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -14,7 +16,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -52,6 +54,7 @@
 struct igmpstat {
 	/*
 	 * Structure header (to insulate ABI changes).
+	 * XXX: unset inside the kernel, exported via sysctl_igmp_stat().
 	 */
 	uint32_t igps_version;		/* version of this structure */
 	uint32_t igps_len;		/* length of this structure */
@@ -182,8 +185,12 @@ struct igmp_ifinfo {
 };
 
 #ifdef _KERNEL
-#define	IGMPSTAT_ADD(name, val)		V_igmpstat.name += (val)
-#define	IGMPSTAT_INC(name)		IGMPSTAT_ADD(name, 1)
+#include <sys/counter.h>
+
+VNET_PCPUSTAT_DECLARE(struct igmpstat, igmpstat);
+#define	IGMPSTAT_ADD(name, val)	\
+    VNET_PCPUSTAT_ADD(struct igmpstat, igmpstat, name, (val))
+#define	IGMPSTAT_INC(name)	IGMPSTAT_ADD(name, 1)
 
 /*
  * Subsystem lock macros.
@@ -212,7 +219,6 @@ struct igmp_ifsoftc {
 	uint32_t igi_qi;	/* IGMPv3 Query Interval (s) */
 	uint32_t igi_qri;	/* IGMPv3 Query Response Interval (s) */
 	uint32_t igi_uri;	/* IGMPv3 Unsolicited Report Interval (s) */
-	SLIST_HEAD(,in_multi)	igi_relinmhead; /* released groups */
 	struct mbufq	igi_gq;		/* general query responses queue */
 };
 

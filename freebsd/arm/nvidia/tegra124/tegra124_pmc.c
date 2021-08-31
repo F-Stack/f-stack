@@ -27,18 +27,19 @@
  */
 
 #include <sys/param.h>
-#include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
-#include <sys/module.h>
+#include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/module.h>
+#include <sys/mutex.h>
 #include <sys/rman.h>
+#include <sys/systm.h>
 
 #include <machine/bus.h>
 
 #include <dev/extres/clk/clk.h>
 #include <dev/extres/hwreset/hwreset.h>
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
@@ -444,7 +445,6 @@ tegra124_pmc_parse_fdt(struct tegra124_pmc_softc *sc, phandle_t node)
 
 	rv = OF_getencprop(node, "nvidia,lp0-vec", tmparr, sizeof(tmparr));
 	if (rv == sizeof(tmparr)) {
-
 		sc->lp0_vec_phys = tmparr[0];
 		sc->core_pmu_time = tmparr[1];
 		sc->lp0_vec_size = TEGRA_SUSPEND_NONE;
@@ -494,7 +494,7 @@ tegra124_pmc_attach(device_t dev)
 		return (rv);
 	}
 
-	rv = clk_get_by_ofw_name(sc->dev, "pclk", &sc->clk);
+	rv = clk_get_by_ofw_name(sc->dev, 0, "pclk", &sc->clk);
 	if (rv != 0) {
 		device_printf(sc->dev, "Cannot get \"pclk\" clock\n");
 		return (ENXIO);
@@ -555,12 +555,8 @@ static device_method_t tegra124_pmc_methods[] = {
 	DEVMETHOD_END
 };
 
-static driver_t tegra124_pmc_driver = {
-	"tegra124_pmc",
-	tegra124_pmc_methods,
-	sizeof(struct tegra124_pmc_softc),
-};
-
 static devclass_t tegra124_pmc_devclass;
+static DEFINE_CLASS_0(pmc, tegra124_pmc_driver, tegra124_pmc_methods,
+    sizeof(struct tegra124_pmc_softc));
 EARLY_DRIVER_MODULE(tegra124_pmc, simplebus, tegra124_pmc_driver,
-    tegra124_pmc_devclass, 0, 0, 70);
+    tegra124_pmc_devclass, NULL, NULL, 70);

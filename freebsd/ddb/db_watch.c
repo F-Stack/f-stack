@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: MIT-CMU
+ *
  * Mach Operating System
  * Copyright (c) 1991,1990 Carnegie Mellon University
  * All Rights Reserved.
@@ -274,8 +276,6 @@ db_find_watchpoint(vm_map_t map, db_addr_t addr, db_regs_t regs)
 	return (false);
 }
 #endif
-
-
 
 /* Delete hardware watchpoint */
 /*ARGSUSED*/

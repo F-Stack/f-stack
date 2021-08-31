@@ -11,12 +11,24 @@
 # AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, WITHOUT
 # LIMITATION, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
 # A PARTICULAR PURPOSE.
-# $FreeBSD: releng/11.0/usr.sbin/ndp/Makefile 201390 2010-01-02 11:07:44Z ed $
+# $FreeBSD$
 
+.include <src.opts.mk>
 
-TOPDIR?=${CURDIR}/../..
+.PATH: ${SRCTOP}/contrib/tcpdump
 
-PROG=ndp
+PROG=	ndp
+MAN=	ndp.8
+SRCS=	ndp.c gmt2local.c
 
-include ${TOPDIR}/tools/prog.mk
+CFLAGS+= -I. -I${.CURDIR} -I${SRCTOP}/contrib/tcpdump
+CFLAGS+= -D_U_=""
 
+.if ${MK_EXPERIMENTAL} != "no"
+CFLAGS+=	-DEXPERIMENTAL
+CFLAGS+=	-DDRAFT_IETF_6MAN_IPV6ONLY_FLAG
+.endif
+
+WARNS?=	3
+
+.include <bsd.prog.mk>

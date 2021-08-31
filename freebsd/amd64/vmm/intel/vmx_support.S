@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
  * All rights reserved.
@@ -28,6 +30,7 @@
  */
 
 #include <machine/asmacros.h>
+#include <machine/specialreg.h>
 
 #include "vmx_assym.h"
 
@@ -40,6 +43,29 @@
 /* Be friendly to DTrace FBT's prologue/epilogue pattern matching */
 #define VENTER  push %rbp ; mov %rsp,%rbp
 #define VLEAVE  pop %rbp
+
+/*
+ * Save the guest context.
+ */
+#define	VMX_GUEST_SAVE							\
+	movq	%rdi,VMXCTX_GUEST_RDI(%rsp);				\
+	movq	%rsi,VMXCTX_GUEST_RSI(%rsp);				\
+	movq	%rdx,VMXCTX_GUEST_RDX(%rsp);				\
+	movq	%rcx,VMXCTX_GUEST_RCX(%rsp);				\
+	movq	%r8,VMXCTX_GUEST_R8(%rsp);				\
+	movq	%r9,VMXCTX_GUEST_R9(%rsp);				\
+	movq	%rax,VMXCTX_GUEST_RAX(%rsp);				\
+	movq	%rbx,VMXCTX_GUEST_RBX(%rsp);				\
+	movq	%rbp,VMXCTX_GUEST_RBP(%rsp);				\
+	movq	%r10,VMXCTX_GUEST_R10(%rsp);				\
+	movq	%r11,VMXCTX_GUEST_R11(%rsp);				\
+	movq	%r12,VMXCTX_GUEST_R12(%rsp);				\
+	movq	%r13,VMXCTX_GUEST_R13(%rsp);				\
+	movq	%r14,VMXCTX_GUEST_R14(%rsp);				\
+	movq	%r15,VMXCTX_GUEST_R15(%rsp);				\
+	movq	%cr2,%rdi;						\
+	movq	%rdi,VMXCTX_GUEST_CR2(%rsp);				\
+	movq	%rsp,%rdi;
 
 /*
  * Assumes that %rdi holds a pointer to the 'vmxctx'.
@@ -70,6 +96,20 @@
 	movq	VMXCTX_GUEST_R14(%rdi),%r14;				\
 	movq	VMXCTX_GUEST_R15(%rdi),%r15;				\
 	movq	VMXCTX_GUEST_RDI(%rdi),%rdi; /* restore rdi the last */
+
+/*
+ * Clobber the remaining registers with guest contents so they can't
+ * be misused.
+ */
+#define	VMX_GUEST_CLOBBER						\
+	xor	%rax, %rax;						\
+	xor	%rcx, %rcx;						\
+	xor	%rdx, %rdx;						\
+	xor	%rsi, %rsi;						\
+	xor	%r8, %r8;						\
+	xor	%r9, %r9;						\
+	xor	%r10, %r10;						\
+	xor	%r11, %r11;
 
 /*
  * Save and restore the host context.
@@ -108,37 +148,14 @@ ENTRY(vmx_enter_guest)
 	 */
 	VMX_HOST_SAVE
 
-	/*
-	 * Activate guest pmap on this cpu.
-	 */
-	movq	VMXCTX_PMAP(%rdi), %r11
-	movl	PCPU(CPUID), %eax
-	LK btsl	%eax, PM_ACTIVE(%r11)
-
-	/*
-	 * If 'vmx->eptgen[curcpu]' is not identical to 'pmap->pm_eptgen'
-	 * then we must invalidate all mappings associated with this EPTP.
-	 */
-	movq	PM_EPTGEN(%r11), %r10
-	cmpq	%r10, VMX_EPTGEN(%rsi, %rax, 8)
-	je	guest_restore
-
-	/* Refresh 'vmx->eptgen[curcpu]' */
-	movq	%r10, VMX_EPTGEN(%rsi, %rax, 8)
-
-	/* Setup the invept descriptor on the host stack */
-	mov	%rsp, %r11
-	movq	VMX_EPTP(%rsi), %rax
-	movq	%rax, -16(%r11)
-	movq	$0x0, -8(%r11)
-	mov	$0x1, %eax		/* Single context invalidate */
-	invept	-16(%r11), %rax
-	jbe	invept_error		/* Check invept instruction error */
-
 guest_restore:
-	cmpl	$0, %edx
+	movl	%edx, %r8d
+	cmpb	$0, guest_l1d_flush_sw(%rip)
+	je	after_l1d
+	call	flush_l1d_sw
+after_l1d:
+	cmpl	$0, %r8d
 	je	do_launch
-
 	VMX_GUEST_RESTORE
 	vmresume
 	/*
@@ -164,10 +181,6 @@ do_launch:
 	movl	$VMX_VMLAUNCH_ERROR, %eax
 	jmp	decode_inst_error
 
-invept_error:
-	movl	$VMX_INVEPT_ERROR, %eax
-	jmp	decode_inst_error
-
 decode_inst_error:
 	movl	$VM_FAIL_VALID, %r11d
 	jz	inst_error
@@ -180,13 +193,6 @@ inst_error:
 	 * it as a scratch register beyond this point.
 	 */
 
-	/*
-	 * Deactivate guest pmap from this cpu.
-	 */
-	movq	VMXCTX_PMAP(%rdi), %r11
-	movl	PCPU(CPUID), %r10d
-	LK btrl	%r10d, PM_ACTIVE(%r11)
-
 	VMX_HOST_RESTORE
 	VLEAVE
 	ret
@@ -197,40 +203,52 @@ inst_error:
  * The VMCS-restored %rsp points to the struct vmxctx
  */
 	ALIGN_TEXT
+	.globl	vmx_exit_guest_flush_rsb
+vmx_exit_guest_flush_rsb:
+	/*
+	 * Save guest state that is not automatically saved in the vmcs.
+	 */
+	VMX_GUEST_SAVE
+
+	VMX_HOST_RESTORE
+
+	VMX_GUEST_CLOBBER
+
+	/*
+	 * To prevent malicious branch target predictions from
+	 * affecting the host, overwrite all entries in the RSB upon
+	 * exiting a guest.
+	 */
+	mov	$16, %ecx	/* 16 iterations, two calls per loop */
+	mov	%rsp, %rax
+0:	call	2f		/* create an RSB entry. */
+1:	pause
+	call	1b		/* capture rogue speculation. */
+2:	call	2f		/* create an RSB entry. */
+1:	pause
+	call	1b		/* capture rogue speculation. */
+2:	sub	$1, %ecx
+	jnz	0b
+	mov	%rax, %rsp
+
+	/*
+	 * This will return to the caller of 'vmx_enter_guest()' with a return
+	 * value of VMX_GUEST_VMEXIT.
+	 */
+	movl	$VMX_GUEST_VMEXIT, %eax
+	VLEAVE
+	ret
+
 	.globl	vmx_exit_guest
 vmx_exit_guest:
 	/*
 	 * Save guest state that is not automatically saved in the vmcs.
 	 */
-	movq	%rdi,VMXCTX_GUEST_RDI(%rsp)
-	movq	%rsi,VMXCTX_GUEST_RSI(%rsp)
-	movq	%rdx,VMXCTX_GUEST_RDX(%rsp)
-	movq	%rcx,VMXCTX_GUEST_RCX(%rsp)
-	movq	%r8,VMXCTX_GUEST_R8(%rsp)
-	movq	%r9,VMXCTX_GUEST_R9(%rsp)
-	movq	%rax,VMXCTX_GUEST_RAX(%rsp)
-	movq	%rbx,VMXCTX_GUEST_RBX(%rsp)
-	movq	%rbp,VMXCTX_GUEST_RBP(%rsp)
-	movq	%r10,VMXCTX_GUEST_R10(%rsp)
-	movq	%r11,VMXCTX_GUEST_R11(%rsp)
-	movq	%r12,VMXCTX_GUEST_R12(%rsp)
-	movq	%r13,VMXCTX_GUEST_R13(%rsp)
-	movq	%r14,VMXCTX_GUEST_R14(%rsp)
-	movq	%r15,VMXCTX_GUEST_R15(%rsp)
-
-	movq	%cr2,%rdi
-	movq	%rdi,VMXCTX_GUEST_CR2(%rsp)
-
-	movq	%rsp,%rdi
-
-	/*
-	 * Deactivate guest pmap from this cpu.
-	 */
-	movq	VMXCTX_PMAP(%rdi), %r11
-	movl	PCPU(CPUID), %r10d
-	LK btrl	%r10d, PM_ACTIVE(%r11)
+	VMX_GUEST_SAVE
 
 	VMX_HOST_RESTORE
+
+	VMX_GUEST_CLOBBER
 
 	/*
 	 * This will return to the caller of 'vmx_enter_guest()' with a return

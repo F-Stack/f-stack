@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -32,8 +34,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/sysproto.h>
@@ -50,17 +50,8 @@ __FBSDID("$FreeBSD$");
 
 #if defined(COMPAT_43)
 
-#ifndef _SYS_SYSPROTO_H_
-struct gethostname_args {
-	char	*hostname;
-	u_int	len;
-};
-#endif
-/* ARGSUSED */
 int
-ogethostname(td, uap)
-	struct thread *td;
-	struct gethostname_args *uap;
+ogethostname(struct thread *td, struct ogethostname_args *uap)
 {
 	int name[2];
 	size_t len = uap->len;
@@ -71,17 +62,8 @@ ogethostname(td, uap)
 	    1, 0, 0, 0, 0));
 }
 
-#ifndef _SYS_SYSPROTO_H_
-struct sethostname_args {
-	char	*hostname;
-	u_int	len;
-};
-#endif
-/* ARGSUSED */
 int
-osethostname(td, uap)
-	struct thread *td;
-	register struct sethostname_args *uap;
+osethostname(struct thread *td, struct osethostname_args *uap)
 {
 	int name[2];
 
@@ -98,9 +80,7 @@ struct ogethostid_args {
 #endif
 /* ARGSUSED */
 int
-ogethostid(td, uap)
-	struct thread *td;
-	struct ogethostid_args *uap;
+ogethostid(struct thread *td, struct ogethostid_args *uap)
 {
 	size_t len = sizeof(long);
 	int name[2];
@@ -110,19 +90,9 @@ ogethostid(td, uap)
 	return (kernel_sysctl(td, name, 2, (long *)td->td_retval, &len,
 	    NULL, 0, NULL, 0));
 }
-#endif /* COMPAT_43 */
 
-#ifdef COMPAT_43
-#ifndef _SYS_SYSPROTO_H_
-struct osethostid_args {
-	long	hostid;
-};
-#endif
-/* ARGSUSED */
 int
-osethostid(td, uap)
-	struct thread *td;
-	struct osethostid_args *uap;
+osethostid(struct thread *td, struct osethostid_args *uap)
 {
 	int name[2];
 
@@ -133,9 +103,7 @@ osethostid(td, uap)
 }
 
 int
-oquota(td, uap)
-	struct thread *td;
-	struct oquota_args *uap;
+oquota(struct thread *td, struct oquota_args *uap)
 {
 
 	return (ENOSYS);
@@ -197,23 +165,14 @@ static struct {
  */
 static char bsdi_strings[80];	/* It had better be less than this! */
 
-#ifndef _SYS_SYSPROTO_H_
-struct getkerninfo_args {
-	int	op;
-	char	*where;
-	size_t	*size;
-	int	arg;
-};
-#endif
 int
-ogetkerninfo(struct thread *td, struct getkerninfo_args *uap)
+ogetkerninfo(struct thread *td, struct ogetkerninfo_args *uap)
 {
 	int error, name[6];
 	size_t size;
 	u_int needed = 0;
 
 	switch (uap->op & 0xff00) {
-
 	case KINFO_RT:
 		name[0] = CTL_NET;
 		name[1] = PF_ROUTE;

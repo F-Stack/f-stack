@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2006 Yahoo!, Inc.
  * All rights reserved.
  * Written by: John Baldwin <jhb@FreeBSD.org>
@@ -38,10 +40,12 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_acpi.h"
+#include "opt_iommu.h"
 
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
@@ -118,7 +122,7 @@ struct msi_intsrc {
 	u_int msi_cpu;			/* Local APIC ID. (g) */
 	u_int msi_count:8;		/* Messages in this group. (g) */
 	u_int msi_maxcount:8;		/* Alignment for this group. (g) */
-	int *msi_irqs;			/* Group's IRQ list. (g) */
+	u_int *msi_irqs;		/* Group's IRQ list. (g) */
 	u_int msi_remap_cookie;
 };
 
@@ -149,6 +153,15 @@ struct pic msi_pic = {
 	.pic_reprogram_pin = NULL,
 };
 
+u_int first_msi_irq;
+SYSCTL_UINT(_machdep, OID_AUTO, first_msi_irq, CTLFLAG_RD, &first_msi_irq, 0,
+    "Number of first IRQ reserved for MSI and MSI-X interrupts");
+
+u_int num_msi_irqs = 2048;
+SYSCTL_UINT(_machdep, OID_AUTO, num_msi_irqs, CTLFLAG_RDTUN, &num_msi_irqs, 0,
+    "Number of IRQs reserved for MSI and MSI-X interrupts");
+
+#ifdef SMP
 /**
  * Xen hypervisors prior to 4.6.0 do not properly handle updates to
  * enabled MSI-X table entries.  Allow migration of MSI-X interrupts
@@ -162,9 +175,10 @@ int msix_disable_migration = -1;
 SYSCTL_INT(_machdep, OID_AUTO, disable_msix_migration, CTLFLAG_RDTUN,
     &msix_disable_migration, 0,
     "Disable migration of MSI-X interrupts between CPUs");
+#endif
 
 static int msi_enabled;
-static int msi_last_irq;
+static u_int msi_last_irq;
 static struct mtx msi_lock;
 
 static void
@@ -241,8 +255,10 @@ msi_assign_cpu(struct intsrc *isrc, u_int apic_id)
 	if (msi->msi_first != msi)
 		return (EINVAL);
 
+#ifdef SMP
 	if (msix_disable_migration && msi->msi_msix)
 		return (EINVAL);
+#endif
 
 	/* Store information to free existing irq. */
 	old_vector = msi->msi_vector;
@@ -306,6 +322,7 @@ msi_init(void)
 	switch (cpu_vendor_id) {
 	case CPU_VENDOR_INTEL:
 	case CPU_VENDOR_AMD:
+	case CPU_VENDOR_HYGON:
 		break;
 	case CPU_VENDOR_CENTAUR:
 		if (CPUID_TO_FAMILY(cpu_id) == 0x6 &&
@@ -316,10 +333,20 @@ msi_init(void)
 		return;
 	}
 
+#ifdef SMP
 	if (msix_disable_migration == -1) {
 		/* The default is to allow migration of MSI-X interrupts. */
 		msix_disable_migration = 0;
 	}
+#endif
+
+	if (num_msi_irqs == 0)
+		return;
+
+	first_msi_irq = num_io_irqs;
+	if (num_msi_irqs > UINT_MAX - first_msi_irq)
+		panic("num_msi_irqs too high");
+	num_io_irqs = first_msi_irq + num_msi_irqs;
 
 	msi_enabled = 1;
 	intr_register_pic(&msi_pic);
@@ -333,11 +360,11 @@ msi_create_source(void)
 	u_int irq;
 
 	mtx_lock(&msi_lock);
-	if (msi_last_irq >= NUM_MSI_INTS) {
+	if (msi_last_irq >= num_msi_irqs) {
 		mtx_unlock(&msi_lock);
 		return;
 	}
-	irq = msi_last_irq + FIRST_MSI_INT;
+	irq = msi_last_irq + first_msi_irq;
 	msi_last_irq++;
 	mtx_unlock(&msi_lock);
 
@@ -355,15 +382,18 @@ int
 msi_alloc(device_t dev, int count, int maxcount, int *irqs)
 {
 	struct msi_intsrc *msi, *fsrc;
-	u_int cpu;
-	int cnt, i, *mirqs, vector;
-#ifdef ACPI_DMAR
+	u_int cpu, domain, *mirqs;
+	int cnt, i, vector;
+#ifdef IOMMU
 	u_int cookies[count];
 	int error;
 #endif
 
 	if (!msi_enabled)
 		return (ENXIO);
+
+	if (bus_get_domain(dev, &domain) != 0)
+		domain = 0;
 
 	if (count > 1)
 		mirqs = malloc(count * sizeof(*mirqs), M_MSI, M_WAITOK);
@@ -374,7 +404,7 @@ again:
 
 	/* Try to find 'count' free IRQs. */
 	cnt = 0;
-	for (i = FIRST_MSI_INT; i < FIRST_MSI_INT + NUM_MSI_INTS; i++) {
+	for (i = first_msi_irq; i < first_msi_irq + num_msi_irqs; i++) {
 		msi = (struct msi_intsrc *)intr_lookup_source(i);
 
 		/* End of allocated sources, so break. */
@@ -393,7 +423,7 @@ again:
 	/* Do we need to create some new sources? */
 	if (cnt < count) {
 		/* If we would exceed the max, give up. */
-		if (i + (count - cnt) > FIRST_MSI_INT + NUM_MSI_INTS) {
+		if (i + (count - cnt) > first_msi_irq + num_msi_irqs) {
 			mtx_unlock(&msi_lock);
 			free(mirqs, M_MSI);
 			return (ENXIO);
@@ -412,7 +442,7 @@ again:
 	KASSERT(cnt == count, ("count mismatch"));
 
 	/* Allocate 'count' IDT vectors. */
-	cpu = intr_next_cpu();
+	cpu = intr_next_cpu(domain);
 	vector = apic_alloc_vectors(cpu, irqs, count, maxcount);
 	if (vector == 0) {
 		mtx_unlock(&msi_lock);
@@ -420,7 +450,7 @@ again:
 		return (ENOSPC);
 	}
 
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	mtx_unlock(&msi_lock);
 	error = iommu_alloc_msi_intr(dev, cookies, count);
 	mtx_lock(&msi_lock);
@@ -502,7 +532,7 @@ msi_release(int *irqs, int count)
 		msi = (struct msi_intsrc *)intr_lookup_source(irqs[i]);
 		KASSERT(msi->msi_first == first, ("message not in group"));
 		KASSERT(msi->msi_dev == first->msi_dev, ("owner mismatch"));
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 		iommu_unmap_msi_intr(first->msi_dev, msi->msi_remap_cookie);
 #endif
 		msi->msi_first = NULL;
@@ -512,7 +542,7 @@ msi_release(int *irqs, int count)
 	}
 
 	/* Clear out the first message. */
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	mtx_unlock(&msi_lock);
 	iommu_unmap_msi_intr(first->msi_dev, first->msi_remap_cookie);
 	mtx_lock(&msi_lock);
@@ -535,7 +565,7 @@ msi_map(int irq, uint64_t *addr, uint32_t *data)
 {
 	struct msi_intsrc *msi;
 	int error;
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	struct msi_intsrc *msi1;
 	int i, k;
 #endif
@@ -566,10 +596,10 @@ msi_map(int irq, uint64_t *addr, uint32_t *data)
 		msi = msi->msi_first;
 	}
 
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	if (!msi->msi_msix) {
-		for (k = msi->msi_count - 1, i = FIRST_MSI_INT; k > 0 &&
-		    i < FIRST_MSI_INT + NUM_MSI_INTS; i++) {
+		for (k = msi->msi_count - 1, i = first_msi_irq; k > 0 &&
+		    i < first_msi_irq + num_msi_irqs; i++) {
 			if (i == msi->msi_irq)
 				continue;
 			msi1 = (struct msi_intsrc *)intr_lookup_source(i);
@@ -602,9 +632,9 @@ int
 msix_alloc(device_t dev, int *irq)
 {
 	struct msi_intsrc *msi;
-	u_int cpu;
+	u_int cpu, domain;
 	int i, vector;
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	u_int cookie;
 	int error;
 #endif
@@ -612,11 +642,14 @@ msix_alloc(device_t dev, int *irq)
 	if (!msi_enabled)
 		return (ENXIO);
 
+	if (bus_get_domain(dev, &domain) != 0)
+		domain = 0;
+
 again:
 	mtx_lock(&msi_lock);
 
 	/* Find a free IRQ. */
-	for (i = FIRST_MSI_INT; i < FIRST_MSI_INT + NUM_MSI_INTS; i++) {
+	for (i = first_msi_irq; i < first_msi_irq + num_msi_irqs; i++) {
 		msi = (struct msi_intsrc *)intr_lookup_source(i);
 
 		/* End of allocated sources, so break. */
@@ -628,13 +661,14 @@ again:
 			break;
 	}
 
+	/* Are all IRQs in use? */
+	if (i == first_msi_irq + num_msi_irqs) {
+		mtx_unlock(&msi_lock);
+		return (ENXIO);
+	}
+
 	/* Do we need to create a new source? */
 	if (msi == NULL) {
-		/* If we would exceed the max, give up. */
-		if (i + 1 > FIRST_MSI_INT + NUM_MSI_INTS) {
-			mtx_unlock(&msi_lock);
-			return (ENXIO);
-		}
 		mtx_unlock(&msi_lock);
 
 		/* Create a new source. */
@@ -643,7 +677,7 @@ again:
 	}
 
 	/* Allocate an IDT vector. */
-	cpu = intr_next_cpu();
+	cpu = intr_next_cpu(domain);
 	vector = apic_alloc_vector(cpu, i);
 	if (vector == 0) {
 		mtx_unlock(&msi_lock);
@@ -651,7 +685,7 @@ again:
 	}
 
 	msi->msi_dev = dev;
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	mtx_unlock(&msi_lock);
 	error = iommu_alloc_msi_intr(dev, &cookie, 1);
 	mtx_lock(&msi_lock);
@@ -706,7 +740,7 @@ msix_release(int irq)
 	KASSERT(msi->msi_dev != NULL, ("unowned message"));
 
 	/* Clear out the message. */
-#ifdef ACPI_DMAR
+#ifdef IOMMU
 	mtx_unlock(&msi_lock);
 	iommu_unmap_msi_intr(msi->msi_dev, msi->msi_remap_cookie);
 	mtx_lock(&msi_lock);

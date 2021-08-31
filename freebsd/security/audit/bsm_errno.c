@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2008 Apple Inc.
  * All rights reserved.
  *
@@ -241,6 +243,13 @@ static const struct bsm_errno bsm_errnos[] = {
 	ERRNO_NO_LOCAL_MAPPING,
 #endif
 	ES("Process died with the lock") },
+	{ BSM_ERRNO_EINTEGRITY,
+#ifdef EINTEGRITY
+	EINTEGRITY,
+#else
+	ERRNO_NO_LOCAL_MAPPING,
+#endif
+	ES("Integrity check failed") },
 	{ BSM_ERRNO_ENOTRECOVERABLE,
 #ifdef ENOTRECOVERABLE
 	ENOTRECOVERABLE,

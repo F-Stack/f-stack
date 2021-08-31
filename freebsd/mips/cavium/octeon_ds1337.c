@@ -1,4 +1,6 @@
 /***********************license start***************
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  *  Copyright (c) 2003-2008 Cavium Networks (support@cavium.com). All rights
  *  reserved.
  *
@@ -35,11 +37,6 @@
  *  For any questions regarding licensing please contact marketing@caviumnetworks.com
  *
  ***********************license end**************************************/
-
-
-
-
-
 
 /**
  * @file
@@ -100,7 +97,6 @@ uint32_t cvmx_rtc_ds1337_read(void)
     uint8_t   sec;
     struct clocktime ct;
     struct timespec ts;
-
 
     memset(&reg, 0, sizeof(reg));
     memset(&ct, 0, sizeof(ct));

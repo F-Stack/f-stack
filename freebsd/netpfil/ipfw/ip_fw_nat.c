@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 Paolo Pisati
  * All rights reserved.
  *
@@ -112,11 +114,13 @@ ifaddr_change(void *arg __unused, struct ifnet *ifp)
 	IPFW_UH_WLOCK(chain);
 	/* Check every nat entry... */
 	LIST_FOREACH(ptr, &chain->nat, _next) {
+		struct epoch_tracker et;
+
 		/* ...using nic 'ifp->if_xname' as dynamic alias address. */
 		if (strncmp(ptr->if_name, ifp->if_xname, IF_NAMESIZE) != 0)
 			continue;
-		if_addr_rlock(ifp);
-		TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+		NET_EPOCH_ENTER(et);
+		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 			if (ifa->ifa_addr == NULL)
 				continue;
 			if (ifa->ifa_addr->sa_family != AF_INET)
@@ -127,7 +131,7 @@ ifaddr_change(void *arg __unused, struct ifnet *ifp)
 			LibAliasSetAddress(ptr->lib, ptr->ip);
 			IPFW_WUNLOCK(chain);
 		}
-		if_addr_runlock(ifp);
+		NET_EPOCH_EXIT(et);
 	}
 	IPFW_UH_WUNLOCK(chain);
 }
@@ -138,13 +142,12 @@ ifaddr_change(void *arg __unused, struct ifnet *ifp)
 static void
 flush_nat_ptrs(struct ip_fw_chain *chain, const int ix)
 {
-	int i;
 	ipfw_insn_nat *cmd;
+	int i;
 
 	IPFW_WLOCK_ASSERT(chain);
 	for (i = 0; i < chain->n_rules; i++) {
-		cmd = (ipfw_insn_nat *)ACTION_PTR(chain->map[i]);
-		/* XXX skip log and the like ? */
+		cmd = (ipfw_insn_nat *)ipfw_get_action(chain->map[i]);
 		if (cmd->o.opcode == O_NAT && cmd->nat != NULL &&
 			    (ix < 0 || cmd->nat->id == ix))
 			cmd->nat = NULL;
@@ -278,7 +281,6 @@ free_nat_instance(struct cfg_nat *ptr)
 	free(ptr, M_IPFW);
 }
 
-
 /*
  * ipfw_nat - perform mbuf header translation.
  *
@@ -345,7 +347,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 
 	/* Check if this is 'global' instance */
 	if (t == NULL) {
-		if (args->oif == NULL) {
+		if (args->flags & IPFW_ARGS_IN) {
 			/* Wrong direction, skip processing */
 			args->m = mcl;
 			return (IP_FW_NAT);
@@ -372,7 +374,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 			return (IP_FW_NAT);
 		}
 	} else {
-		if (args->oif == NULL)
+		if (args->flags & IPFW_ARGS_IN)
 			retval = LibAliasIn(t->lib, c,
 				mcl->m_len + M_TRAILINGSPACE(mcl));
 		else
@@ -389,7 +391,8 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 	 *		PKT_ALIAS_DENY_INCOMING flag is set.
 	 */
 	if (retval == PKT_ALIAS_ERROR ||
-	    (args->oif == NULL && (retval == PKT_ALIAS_UNRESOLVED_FRAGMENT ||
+	    ((args->flags & IPFW_ARGS_IN) &&
+	    (retval == PKT_ALIAS_UNRESOLVED_FRAGMENT ||
 	    (retval == PKT_ALIAS_IGNORED &&
 	    (t->mode & PKT_ALIAS_DENY_INCOMING) != 0)))) {
 		/* XXX - should i add some logging? */
@@ -703,7 +706,7 @@ nat44_get_cfg(struct ip_fw_chain *chain, ip_fw3_opheader *op3,
 	}
 
 	export_nat_cfg(ptr, ucfg);
-	
+
 	/* Estimate memory amount */
 	sz = sizeof(ipfw_obj_header) + sizeof(struct nat44_cfg_nat);
 	LIST_FOREACH(r, &ptr->redir_chain, _next) {
@@ -714,7 +717,6 @@ nat44_get_cfg(struct ip_fw_chain *chain, ip_fw3_opheader *op3,
 
 	ucfg->size = sz;
 	if (sd->valsize < sz) {
-
 		/*
 		 * Submitted buffer size is not enough.
 		 * WE've already filled in @ucfg structure with
@@ -850,11 +852,10 @@ nat44_get_log(struct ip_fw_chain *chain, ip_fw3_opheader *op3,
 	}
 
 	export_nat_cfg(ptr, ucfg);
-	
+
 	/* Estimate memory amount */
 	ucfg->size = sizeof(struct nat44_cfg_nat) + LIBALIAS_BUF_SIZE;
 	if (sd->valsize < sz + sizeof(*oh)) {
-
 		/*
 		 * Submitted buffer size is not enough.
 		 * WE've already filled in @ucfg structure with
@@ -867,7 +868,7 @@ nat44_get_log(struct ip_fw_chain *chain, ip_fw3_opheader *op3,
 
 	pbuf = (void *)ipfw_get_sopt_space(sd, LIBALIAS_BUF_SIZE);
 	memcpy(pbuf, ptr->lib->logDesc, LIBALIAS_BUF_SIZE);
-	
+
 	IPFW_UH_RUNLOCK(chain);
 
 	return (0);
@@ -880,7 +881,6 @@ static struct ipfw_sopt_handler	scodes[] = {
 	{ IP_FW_NAT44_LIST_NAT,	0,	HDIR_GET,	nat44_list_nat },
 	{ IP_FW_NAT44_XGETLOG,	0,	HDIR_GET,	nat44_get_log },
 };
-
 
 /*
  * Legacy configuration routines

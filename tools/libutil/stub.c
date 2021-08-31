@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2000 Brian Fundakowski Feldman
  * All rights reserved.
  *
@@ -30,12 +32,6 @@ __FBSDID("$FreeBSD$");
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-
-#ifdef FSTACK
-#ifndef __unused
-#define __unused __attribute__((__unused__))
-#endif
-#endif
 
 /*
  * Stub out what's in -lcrypt.

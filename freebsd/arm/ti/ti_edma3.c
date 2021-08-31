@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 2010 Texas Instruments Incorporated - http://www.ti.com/
  * Copyright (c) 2012 Damjan Marion <dmarion@Freebsd.org>
  * All rights reserved.
@@ -48,12 +50,11 @@ __FBSDID("$FreeBSD$");
 #include <sys/rman.h>
 #include <machine/resource.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include <arm/ti/ti_scm.h>
-#include <arm/ti/ti_prcm.h>
+#include <arm/ti/ti_sysc.h>
 
 #include <arm/ti/ti_edma3.h>
 
@@ -180,13 +181,14 @@ ti_edma3_attach(device_t dev)
 		return (ENXIO);
 	}
 
+	/* FIXME: Require DTS from Linux kernel 5.7 */
+	/* FIXME: OK to enable clkctrl here? */
 	/* Enable Channel Controller */
-	ti_prcm_clk_enable(EDMA_TPCC_CLK);
+	ti_sysc_clock_enable(device_get_parent(dev));
 
 	reg = ti_edma3_cc_rd_4(TI_EDMA3CC_PID);
 
 	device_printf(dev, "EDMA revision %08x\n", reg);
-
 
 	/* Attach interrupt handlers */
 	for (i = 0; i < TI_EDMA3_NUM_IRQS; ++i) {
@@ -217,7 +219,7 @@ static driver_t ti_edma3_driver = {
 static devclass_t ti_edma3_devclass;
 
 DRIVER_MODULE(ti_edma3, simplebus, ti_edma3_driver, ti_edma3_devclass, 0, 0);
-MODULE_DEPEND(ti_edma3, ti_prcm, 1, 1, 1);
+MODULE_DEPEND(ti_edma3, ti_sysc, 1, 1, 1);
 
 static void
 ti_edma3_intr_comp(void *arg)
@@ -242,11 +244,6 @@ ti_edma3_init(unsigned int eqn)
 {
 	uint32_t reg;
 	int i;
-
-	/* on AM335x Event queue 0 is always mapped to Transfer Controller 0,
-	 * event queue 1 to TC2, etc. So we are asking PRCM to power on specific
-	 * TC based on what event queue we need to initialize */
-	ti_prcm_clk_enable(EDMA_TPTC0_CLK + eqn);
 
 	/* Clear Event Missed Regs */
 	ti_edma3_cc_wr_4(TI_EDMA3CC_EMCR, 0xFFFFFFFF);

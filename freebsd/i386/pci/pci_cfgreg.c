@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997, Stefan Esser <se@freebsd.org>
  * Copyright (c) 2000, Michael Smith <msmith@freebsd.org>
  * Copyright (c) 2000, BSDi
@@ -30,8 +32,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_xbox.h"
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -52,10 +52,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_extern.h>
 #include <vm/pmap.h>
 
-#ifdef XBOX
-#include <machine/xbox.h>
-#endif
-
 #define PRVERB(a) do {							\
 	if (bootverbose)						\
 		printf a ;						\
@@ -68,20 +64,13 @@ struct pcie_cfg_elem {
 	vm_paddr_t	papage;
 };
 
-enum {
-	CFGMECH_NONE = 0,
-	CFGMECH_1,
-	CFGMECH_2,
-	CFGMECH_PCIE,
-};
-
 SYSCTL_DECL(_hw_pci);
 
 static TAILQ_HEAD(pcie_cfg_list, pcie_cfg_elem) pcie_list[MAXCPU];
 static uint64_t pcie_base;
 static int pcie_minbus, pcie_maxbus;
 static uint32_t pcie_badslots;
-static int cfgmech;
+int cfgmech;
 static int devmax;
 static struct mtx pcicfg_mtx;
 static int mcfg_enable = 1;
@@ -140,10 +129,8 @@ pcibios_get_version(void)
 int
 pci_cfgregopen(void)
 {
-	static int		opened = 0;
-	uint64_t		pciebar;
-	u_int16_t		vid, did;
-	u_int16_t		v;
+	uint16_t v;
+	static int opened = 0;
 
 	if (opened)
 		return (1);
@@ -162,38 +149,7 @@ pci_cfgregopen(void)
 	if (v >= 0x0210)
 		pci_pir_open();
 
-	if (cfgmech == CFGMECH_PCIE)
-		return (1);	
-
-	/*
-	 * Grope around in the PCI config space to see if this is a
-	 * chipset that is capable of doing memory-mapped config cycles.
-	 * This also implies that it can do PCIe extended config cycles.
-	 */
-
-	/* Check for supported chipsets */
-	vid = pci_cfgregread(0, 0, 0, PCIR_VENDOR, 2);
-	did = pci_cfgregread(0, 0, 0, PCIR_DEVICE, 2);
-	switch (vid) {
-	case 0x8086:
-		switch (did) {
-		case 0x3590:
-		case 0x3592:
-			/* Intel 7520 or 7320 */
-			pciebar = pci_cfgregread(0, 0, 0, 0xce, 2) << 16;
-			pcie_cfgregopen(pciebar, 0, 255);
-			break;
-		case 0x2580:
-		case 0x2584:
-		case 0x2590:
-			/* Intel 915, 925, or 915GM */
-			pciebar = pci_cfgregread(0, 0, 0, 0x48, 4);
-			pcie_cfgregopen(pciebar, 0, 255);
-			break;
-		}
-	}
-
-	return(1);
+	return (1);
 }
 
 static uint32_t
@@ -252,39 +208,6 @@ static int
 pci_cfgenable(unsigned bus, unsigned slot, unsigned func, int reg, int bytes)
 {
 	int dataport = 0;
-
-#ifdef XBOX
-	if (arch_i386_is_xbox) {
-		/*
-		 * The Xbox MCPX chipset is a derivative of the nForce 1
-		 * chipset. It almost has the same bus layout; some devices
-		 * cannot be used, because they have been removed.
-		 */
-
-		/*
-		 * Devices 00:00.1 and 00:00.2 used to be memory controllers on
-		 * the nForce chipset, but on the Xbox, using them will lockup
-		 * the chipset.
-		 */
-		if (bus == 0 && slot == 0 && (func == 1 || func == 2))
-			return dataport;
-		
-		/*
-		 * Bus 1 only contains a VGA controller at 01:00.0. When you try
-		 * to probe beyond that device, you only get garbage, which
-		 * could cause lockups.
-		 */
-		if (bus == 1 && (slot != 0 || func != 0))
-			return dataport;
-		
-		/*
-		 * Bus 2 used to contain the AGP controller, but the Xbox MCPX
-		 * doesn't have one. Probing it can cause lockups.
-		 */
-		if (bus >= 2)
-			return dataport;
-	}
-#endif
 
 	if (bus <= PCI_BUSMAX
 	    && slot < devmax
@@ -482,7 +405,6 @@ pcireg_cfgopen(void)
 	}
 
 	if ((oldval2 & 0xf0) == 0) {
-
 		cfgmech = CFGMECH_2;
 		devmax = 16;
 
@@ -527,15 +449,13 @@ pcie_cfgregopen(uint64_t base, uint8_t minbus, uint8_t maxbus)
 	if (minbus != 0)
 		return (0);
 
-#ifndef PAE
-	if (base >= 0x100000000) {
+	if (!pae_mode && base >= 0x100000000) {
 		if (bootverbose)
 			printf(
 	    "PCI: Memory Mapped PCI configuration area base 0x%jx too high\n",
 			    (uintmax_t)base);
 		return (0);
 	}
-#endif
 		
 	if (bootverbose)
 		printf("PCIe: Memory Mapped configuration base @ 0x%jx\n",
@@ -545,7 +465,6 @@ pcie_cfgregopen(uint64_t base, uint8_t minbus, uint8_t maxbus)
 	STAILQ_FOREACH(pc, &cpuhead, pc_allcpu)
 #endif
 	{
-
 		pcie_array = malloc(sizeof(struct pcie_cfg_elem) * PCIE_CACHE,
 		    M_DEVBUF, M_NOWAIT);
 		if (pcie_array == NULL)

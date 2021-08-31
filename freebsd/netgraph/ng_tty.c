@@ -412,7 +412,7 @@ ngt_rint_bypass(struct tty *tp, const void *buf, size_t len)
 	size_t total = 0;
 	int error = 0, length;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (sc->hook == NULL)
 		return (0);
@@ -439,7 +439,6 @@ ngt_rint_bypass(struct tty *tp, const void *buf, size_t len)
 		 * Odd, we have changed from non-bypass to bypass. It is
 		 * unlikely but not impossible, flush the data first.
 		 */
-		sc->m->m_data = sc->m->m_pktdat;
 		NG_SEND_DATA_ONLY(error, sc->hook, sc->m);
 		sc->m = NULL;
 	}
@@ -460,7 +459,7 @@ ngt_rint(struct tty *tp, char c, int flags)
 	struct mbuf *m;
 	int error = 0;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (sc->hook == NULL)
 		return (0);
@@ -495,7 +494,6 @@ ngt_rint(struct tty *tp, char c, int flags)
 
 	/* Ship off mbuf if it's time */
 	if (sc->hotchar == -1 || c == sc->hotchar || m->m_len >= MHLEN) {
-		m->m_data = m->m_pktdat;
 		sc->m = NULL;
 		NG_SEND_DATA_ONLY(error, sc->hook, m);	/* Will queue */
 	}
@@ -509,4 +507,3 @@ ngt_rint_poll(struct tty *tp)
 	/* We can always accept input */
 	return (1);
 }
-

@@ -38,7 +38,7 @@
  * Created      : 16/05/95
  */
 
-#include "assym.s"
+#include "assym.inc"
 #include <machine/asm.h>
 #include <machine/armreg.h>
 __FBSDID("$FreeBSD$");
@@ -48,50 +48,9 @@ __FBSDID("$FreeBSD$");
 	.text
 	.align	2
 
-#if __ARM_ARCH >= 6
 #define GET_PCB(tmp) \
 	mrc p15, 0, tmp, c13, c0, 4; \
 	add	tmp, tmp, #(TD_PCB)
-#else
-.Lpcb:
-	.word	_C_LABEL(__pcpu) + PC_CURPCB
-
-#define GET_PCB(tmp) \
-	ldr	tmp, .Lpcb
-#endif
-
-/*
- * r0 - from
- * r1 - to
- * r2 - maxlens
- * r3 - lencopied
- *
- * Copy string from r0 to r1
- */
-ENTRY(copystr)
-	stmfd	sp!, {r4-r5}			/* stack is 8 byte aligned */
-	teq	r2, #0x00000000
-	mov	r5, #0x00000000
-	moveq	r0, #ENAMETOOLONG
-	beq	2f
-
-1:	ldrb	r4, [r0], #0x0001
-	add	r5, r5, #0x00000001
-	teq	r4, #0x00000000
-	strb	r4, [r1], #0x0001
-	teqne	r5, r2
-	bne	1b
-
-	teq	r4, #0x00000000
-	moveq	r0, #0x00000000
-	movne	r0, #ENAMETOOLONG
-
-2:	teq	r3, #0x00000000
-	strne	r5, [r3]
-
-	ldmfd	sp!, {r4-r5}			/* stack is 8 byte aligned */
-	RET
-END(copystr)
 
 #define SAVE_REGS	stmfd	sp!, {r4-r6}
 #define RESTORE_REGS	ldmfd	sp!, {r4-r6}
@@ -148,59 +107,6 @@ ENTRY(copyinstr)
 	RESTORE_REGS
 	RET
 END(copyinstr)
-
-/*
- * r0 - kernel space address
- * r1 - user space address
- * r2 - maxlens
- * r3 - lencopied
- *
- * Copy string from kernel space to user space
- */
-ENTRY(copyoutstr)
-	SAVE_REGS
-
-	teq	r2, #0x00000000
-	mov	r6, #0x00000000
-	moveq	r0, #ENAMETOOLONG
-	beq	2f
-
-	ldr	r12, =VM_MAXUSER_ADDRESS
-
-	GET_PCB(r4)
-	ldr	r4, [r4]
-
-#ifdef DIAGNOSTIC
-	teq	r4, #0x00000000
-	beq	.Lcopystrpcbfault
-#endif
-
-	adr	r5, .Lcopystrfault
-	str	r5, [r4, #PCB_ONFAULT]
-
-1:
-	cmp	r0, r12
-	bcs	.Lcopystrfault
-	ldrb	r5, [r0], #0x0001
-	add	r6, r6, #0x00000001
-	teq	r5, #0x00000000
-	strbt	r5, [r1], #0x0001
-	teqne	r6, r2
-	bne	1b
-
-	mov	r0, #0x00000000
-	str	r0, [r4, #PCB_ONFAULT]
-
-	teq	r5, #0x00000000
-	moveq	r0, #0x00000000
-	movne	r0, #ENAMETOOLONG
-
-2:	teq	r3, #0x00000000
-	strne	r6, [r3]
-
-	RESTORE_REGS
-	RET
-END(copyoutstr)
 
 /* A fault occurred during the copy */
 .Lcopystrfault:

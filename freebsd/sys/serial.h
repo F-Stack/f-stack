@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Poul-Henning Kamp
  * All rights reserved.
  *
@@ -32,7 +34,6 @@
 
 #ifndef _SYS_SERIAL_H_
 #define	_SYS_SERIAL_H_
-
 
 /*
  * Indentification of modem control signals.  These definitions match

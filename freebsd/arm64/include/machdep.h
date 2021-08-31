@@ -29,18 +29,37 @@
 #ifndef _MACHINE_MACHDEP_H_
 #define	_MACHINE_MACHDEP_H_
 
+#ifdef _KERNEL
+
 struct arm64_bootparams {
 	vm_offset_t	modulep;
 	vm_offset_t	kern_l1pt;	/* L1 page table for the kernel */
 	uint64_t	kern_delta;
 	vm_offset_t	kern_stack;
 	vm_offset_t	kern_l0pt;	/* L1 page table for the kernel */
+	vm_paddr_t	kern_ttbr0;
+	int		boot_el;	/* EL the kernel booted from */
+	int		pad;
 };
 
-extern vm_paddr_t physmap[];
-extern u_int physmap_idx;
+enum arm64_bus {
+	ARM64_BUS_NONE,
+	ARM64_BUS_FDT,
+	ARM64_BUS_ACPI,
+};
 
+extern enum arm64_bus arm64_bus_method;
+
+void dbg_init(void);
+bool has_hyp(void);
 void initarm(struct arm64_bootparams *);
+vm_offset_t parse_boot_param(struct arm64_bootparams *abp);
+#ifdef FDT
+void parse_fdt_bootargs(void);
+#endif
+int memory_mapping_mode(vm_paddr_t pa);
 extern void (*pagezero)(void *);
+
+#endif /* _KERNEL */
 
 #endif /* _MACHINE_MACHDEP_H_ */

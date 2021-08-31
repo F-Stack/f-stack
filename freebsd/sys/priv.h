@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 nCircle Network Security, Inc.
  * All rights reserved.
  *
@@ -266,7 +268,7 @@
 #define	PRIV_VFS_GETFH		327	/* Can retrieve file handles. */
 #define	PRIV_VFS_GETQUOTA	328	/* getquota(). */
 #define	PRIV_VFS_LINK		329	/* bsd.hardlink_check_uid */
-#define	PRIV_VFS_MKNOD_BAD	330	/* Can mknod() to mark bad inodes. */
+#define	PRIV_VFS_MKNOD_BAD	330	/* Was: mknod() can mark bad inodes. */
 #define	PRIV_VFS_MKNOD_DEV	331	/* Can mknod() to create dev nodes. */
 #define	PRIV_VFS_MKNOD_WHT	332	/* Can mknod() to create whiteout. */
 #define	PRIV_VFS_MOUNT		333	/* Can mount(). */
@@ -281,6 +283,7 @@
 #define	PRIV_VFS_SYSFLAGS	342	/* Can modify system flags. */
 #define	PRIV_VFS_UNMOUNT	343	/* Can unmount(). */
 #define	PRIV_VFS_STAT		344	/* Override vnode MAC stat perm. */
+#define	PRIV_VFS_READ_DIR	345	/* Can read(2) a dirfd, needs sysctl. */
 
 /*
  * Virtual memory privileges.
@@ -342,13 +345,16 @@
 #define	PRIV_NET_SETIFDESCR	418	/* Set interface description. */
 #define	PRIV_NET_SETIFFIB	419	/* Set interface fib. */
 #define	PRIV_NET_VXLAN		420	/* Administer vxlan. */
-#define	PRIV_NET_SETVLANPCP	421	/* Set VLAN priority. */
+#define	PRIV_NET_SETLANPCP	421	/* Set LAN priority. */
+#define	PRIV_NET_SETVLANPCP	PRIV_NET_SETLANPCP /* Alias Set VLAN priority */
 
 /*
  * 802.11-related privileges.
  */
-#define	PRIV_NET80211_GETKEY	440	/* Query 802.11 keys. */
-#define	PRIV_NET80211_MANAGE	441	/* Administer 802.11. */
+#define	PRIV_NET80211_VAP_GETKEY	440	/* Query VAP 802.11 keys. */
+#define	PRIV_NET80211_VAP_MANAGE	441	/* Administer 802.11 VAP */
+#define	PRIV_NET80211_VAP_SETMAC	442	/* Set VAP MAC address */
+#define	PRIV_NET80211_CREATE_VAP	443	/* Create a new VAP */
 
 /*
  * Placeholder for AppleTalk privileges, not supported anymore.
@@ -529,7 +535,10 @@
 struct thread;
 struct ucred;
 int	priv_check(struct thread *td, int priv);
-int	priv_check_cred(struct ucred *cred, int priv, int flags);
+int	priv_check_cred(struct ucred *cred, int priv);
+int	priv_check_cred_vfs_lookup(struct ucred *cred);
+int	priv_check_cred_vfs_lookup_nomac(struct ucred *cred);
+int	priv_check_cred_vfs_generation(struct ucred *cred);
 #endif
 
 #endif /* !_SYS_PRIV_H_ */

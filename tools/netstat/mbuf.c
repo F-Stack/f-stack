@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1983, 1988, 1993
  *	The Regents of the University of California.
  * Copyright (c) 2005 Robert N. M. Watson
@@ -39,10 +41,6 @@ static char sccsid[] = "@(#)mbuf.c	8.1 (Berkeley) 6/6/93";
 #endif /* not lint */
 #endif
 
-#ifdef FSTACK
-#include <stdint.h>
-#endif
-
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -55,9 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 
 #include <err.h>
-#ifndef FSTACK
 #include <kvm.h>
-#endif
 #include <memstat.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -92,9 +88,7 @@ mbpr(void *kvmd, u_long mbaddr)
 	int nsfbufs, nsfbufspeak, nsfbufsused;
 	struct sfstat sfstat;
 	size_t mlen;
-#ifndef FSTACK
 	int error;
-#endif
 
 	mtlp = memstat_mtl_alloc();
 	if (mtlp == NULL) {
@@ -113,7 +107,6 @@ mbpr(void *kvmd, u_long mbaddr)
 			goto out;
 		}
 	} else {
-#ifndef FSTACK
 		if (memstat_kvm_all(mtlp, kvmd) < 0) {
 			error = memstat_mtl_geterror(mtlp);
 			if (error == MEMSTAT_ERROR_KVM)
@@ -124,7 +117,6 @@ mbpr(void *kvmd, u_long mbaddr)
 				    memstat_strerror(error));
 			goto out;
 		}
-#endif
 	}
 
 	mtp = memstat_mtl_find(mtlp, ALLOCATOR_UMA, MBUF_MEM_NAME);
@@ -350,6 +342,9 @@ mbpr(void *kvmd, u_long mbaddr)
         xo_emit("{:sendfile-pages-valid/%ju} "
 	    "{N:pages were valid at time of a sendfile request}\n",
             (uintmax_t)sfstat.sf_pages_valid);
+        xo_emit("{:sendfile-pages-bogus/%ju} "
+	    "{N:pages were valid and substituted to bogus page}\n",
+            (uintmax_t)sfstat.sf_pages_bogus);
         xo_emit("{:sendfile-requested-readahead/%ju} "
 	    "{N:pages were requested for read ahead by applications}\n",
             (uintmax_t)sfstat.sf_rhpages_requested);

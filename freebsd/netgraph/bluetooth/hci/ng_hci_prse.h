@@ -3,6 +3,8 @@
  */
 
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
  *
@@ -216,4 +218,3 @@ static const struct ng_cmdlist	ng_hci_cmdlist[] = {
 };
 
 #endif /* ndef _NETGRAPH_HCI_PRSE_H_ */
-

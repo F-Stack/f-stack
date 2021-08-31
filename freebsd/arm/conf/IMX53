@@ -4,11 +4,11 @@
 # For more information on this file, please read the config(5) manual page,
 # and/or the handbook section on Kernel Configuration Files:
 #
-#    http://www.FreeBSD.org/doc/en_US.ISO8859-1/books/handbook/kernelconfig-config.html
+#    https://www.FreeBSD.org/doc/en_US.ISO8859-1/books/handbook/kernelconfig-config.html
 #
 # The handbook is also available locally in /usr/share/doc/handbook
 # if you've installed the doc distribution, otherwise always see the
-# FreeBSD World Wide Web server (http://www.FreeBSD.org/) for the
+# FreeBSD World Wide Web server (https://www.FreeBSD.org/) for the
 # latest information.
 #
 # An exhaustive list of options and more detailed explanations of the
@@ -20,7 +20,7 @@
 
 ident		IMX53
 
-include 	"std.armv6"
+include 	"std.armv7"
 include 	"../freescale/imx/std.imx53"
 
 options 	SOC_IMX53
@@ -44,10 +44,9 @@ device		bpf			# Berkeley packet filter
 
 # Pseudo devices.
 device		loop			# Network loopback
-device		random			# Entropy device
 device		ether			# Ethernet support
 #device		vlan			# 802.1Q VLAN support
-#device		tun			# Packet tunnel.
+#device		tuntap			# Packet tunnel.
 device		md			# Memory "disks"
 #device		gif			# IPv6 and IPv4 tunneling
 #device		firmware		# firmware assist module
@@ -114,6 +113,11 @@ device		wlan_amrr		# AMRR transmit rate control algorithm
 #device  	mmc			# SD/MMC protocol
 #device  	mmcsd			# SDCard disk device
 
+# HID support
+device		hid			# Generic HID support
+
 
 # Flattened Device Tree
 options 	FDT			# Configure using FDT/DTB data
+makeoptions	MODULES_EXTRA="dtb/imx5 imx"
+device  	fdt_pinctrl		# FDT pinmux driver

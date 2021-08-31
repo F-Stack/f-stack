@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2012 Damjan Marion <dmarion@Freebsd.org>
  * All rights reserved.
  *
@@ -54,13 +56,9 @@ __FBSDID("$FreeBSD$");
 
 #include "iicbus_if.h"
 
-#define MAX_IIC_DATA_SIZE	2
-
-
 struct am335x_pmic_softc {
 	device_t		sc_dev;
 	uint32_t		sc_addr;
-	struct intr_config_hook enum_hook;
 	struct resource		*sc_irq_res;
 	void			*sc_intrhand;
 };
@@ -77,30 +75,13 @@ static void am335x_pmic_shutdown(void *, int);
 static int
 am335x_pmic_read(device_t dev, uint8_t addr, uint8_t *data, uint8_t size)
 {
-	struct am335x_pmic_softc *sc = device_get_softc(dev);
-	struct iic_msg msg[] = {
-		{ sc->sc_addr, IIC_M_WR, 1, &addr },
-		{ sc->sc_addr, IIC_M_RD, size, data },
-	};
-	return (iicbus_transfer(dev, msg, 2));
+	return (iicdev_readfrom(dev, addr, data, size, IIC_INTRWAIT));
 }
 
 static int
 am335x_pmic_write(device_t dev, uint8_t address, uint8_t *data, uint8_t size)
 {
-	uint8_t buffer[MAX_IIC_DATA_SIZE + 1];
-	struct am335x_pmic_softc *sc = device_get_softc(dev);
-	struct iic_msg msg[] = {
-		{ sc->sc_addr, IIC_M_WR, size + 1, buffer },
-	};
-
-	if (size > MAX_IIC_DATA_SIZE)
-		return (ENOMEM);
-
-	buffer[0] = address;
-	memcpy(buffer + 1, data, size);
-
-	return (iicbus_transfer(dev, msg, 1));
+	return (iicdev_writeto(dev, address, data, size, IIC_INTRWAIT));
 }
 
 static void
@@ -132,7 +113,7 @@ am335x_pmic_intr(void *arg)
 	if (int_reg.aci) {
 		snprintf(notify_buf, sizeof(notify_buf), "notify=0x%02x",
 		    status_reg.acpwr);
-		devctl_notify_f("ACPI", "ACAD", "power", notify_buf, M_NOWAIT);
+		devctl_notify("ACPI", "ACAD", "power", notify_buf);
 	}
 }
 
@@ -218,19 +199,18 @@ am335x_pmic_setvo(device_t dev, uint8_t vo)
 }
 
 static void
-am335x_pmic_start(void *xdev)
+am335x_pmic_start(struct am335x_pmic_softc *sc)
 {
-	struct am335x_pmic_softc *sc;
-	device_t dev = (device_t)xdev;
+	device_t dev;
 	struct tps65217_status_reg status_reg;
 	struct tps65217_chipid_reg chipid_reg;
 	uint8_t reg, vo;
 	char name[20];
 	char pwr[4][11] = {"Battery", "USB", "AC", "USB and AC"};
 	int rv;
+	phandle_t node;
 
-	sc = device_get_softc(dev);
-
+	dev = sc->sc_dev;
 	am335x_pmic_read(dev, TPS65217_CHIPID_REG, (uint8_t *)&chipid_reg, 1);
 	switch (chipid_reg.chip) {
 		case TPS65217A:
@@ -253,6 +233,16 @@ am335x_pmic_start(void *xdev)
 	device_printf(dev, "%s powered by %s\n", name,
 	    pwr[status_reg.usbpwr | (status_reg.acpwr << 1)]);
 
+	/* Check devicetree for ti,pmic-shutdown-controller
+	 * if present; PMIC will go to shutdown state on PWR_EN toggle
+	 * if not present; PMIC will enter sleep state on PWR_EN toggle (default on reset)
+	 */
+	node = ofw_bus_get_node(dev);
+	if (OF_hasprop(node, "ti,pmic-shutdown-controller")) {
+		status_reg.off = 1;
+		am335x_pmic_write(dev, TPS65217_STATUS_REG, (uint8_t *)&status_reg, 1);
+	}
+
 	if (am335x_pmic_vo[0] != '\0') {
 		for (vo = 0; vo < 4; vo++) {
 			if (strcmp(tps65217_voreg_c[vo], am335x_pmic_vo) == 0)
@@ -272,8 +262,6 @@ am335x_pmic_start(void *xdev)
 
 	EVENTHANDLER_REGISTER(shutdown_final, am335x_pmic_shutdown, dev,
 	    SHUTDOWN_PRI_LAST);
-
-	config_intrhook_disestablish(&sc->enum_hook);
 
 	/* Unmask all interrupts and clear pending status */
 	reg = 0;
@@ -306,11 +294,7 @@ am335x_pmic_attach(device_t dev)
 		/* return (ENXIO); */
 	}
 
-	sc->enum_hook.ich_func = am335x_pmic_start;
-	sc->enum_hook.ich_arg = dev;
-
-	if (config_intrhook_establish(&sc->enum_hook) != 0)
-		return (ENOMEM);
+	am335x_pmic_start(sc);
 
 	return (0);
 }
@@ -318,16 +302,9 @@ am335x_pmic_attach(device_t dev)
 static void
 am335x_pmic_shutdown(void *xdev, int howto)
 {
-	device_t dev;
-	struct tps65217_status_reg reg;
-
 	if (!(howto & RB_POWEROFF))
 		return;
-	dev = (device_t)xdev;
-	am335x_pmic_read(dev, TPS65217_STATUS_REG, (uint8_t *)&reg, 1);
-	/* Set the OFF bit on status register to start the shutdown sequence. */
-	reg.off = 1;
-	am335x_pmic_write(dev, TPS65217_STATUS_REG, (uint8_t *)&reg, 1);
+
 	/* Toggle pmic_pwr_enable to shutdown the PMIC. */
 	am335x_rtc_pmic_pwr_toggle();
 }

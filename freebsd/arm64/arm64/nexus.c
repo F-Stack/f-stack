@@ -55,6 +55,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/rman.h>
 #include <sys/interrupt.h>
 
+#include <machine/machdep.h>
 #include <machine/vmparam.h>
 #include <machine/pcb.h>
 #include <vm/vm.h>
@@ -64,12 +65,15 @@ __FBSDID("$FreeBSD$");
 #include <machine/intr.h>
 
 #ifdef FDT
+#include <dev/ofw/ofw_bus_subr.h>
 #include <dev/ofw/openfirm.h>
 #include "ofw_bus_if.h"
 #endif
 #ifdef DEV_ACPI
 #include <contrib/dev/acpica/include/acpi.h>
 #include <dev/acpica/acpivar.h>
+#include "acpi_bus_if.h"
+#include "pcib_if.h"
 #endif
 
 extern struct bus_space memmap_bus;
@@ -109,6 +113,8 @@ static	int nexus_set_resource(device_t, device_t, int, int,
     rman_res_t, rman_res_t);
 static	int nexus_deactivate_resource(device_t, device_t, int, int,
     struct resource *);
+static int nexus_release_resource(device_t, device_t, int, int,
+    struct resource *);
 
 static int nexus_setup_intr(device_t dev, device_t child, struct resource *res,
     int flags, driver_filter_t *filt, driver_intr_t *intr, void *arg, void **cookiep);
@@ -133,6 +139,7 @@ static device_method_t nexus_methods[] = {
 	DEVMETHOD(bus_get_resource_list, nexus_get_reslist),
 	DEVMETHOD(bus_set_resource,	nexus_set_resource),
 	DEVMETHOD(bus_deactivate_resource,	nexus_deactivate_resource),
+	DEVMETHOD(bus_release_resource,	nexus_release_resource),
 	DEVMETHOD(bus_setup_intr,	nexus_setup_intr),
 	DEVMETHOD(bus_teardown_intr,	nexus_teardown_intr),
 	DEVMETHOD(bus_get_bus_tag,	nexus_get_bus_tag),
@@ -202,7 +209,6 @@ nexus_add_child(device_t bus, u_int order, const char *name, int unit)
 	return (child);
 }
 
-
 /*
  * Allocate a resource on behalf of child.  NB: child is usually going to be a
  * child of one of our descendants, not a direct child of nexus0.
@@ -267,17 +273,29 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 }
 
 static int
+nexus_release_resource(device_t bus, device_t child, int type, int rid,
+    struct resource *res)
+{
+	int error;
+
+	if (rman_get_flags(res) & RF_ACTIVE) {
+		error = bus_deactivate_resource(child, type, rid, res);
+		if (error)
+			return (error);
+	}
+	return (rman_release_resource(res));
+}
+
+static int
 nexus_config_intr(device_t dev, int irq, enum intr_trigger trig,
     enum intr_polarity pol)
 {
 
-#ifdef INTRNG
-	/* TODO: This is wrong, it's needed for ACPI */
-	device_printf(dev, "bus_config_intr is obsolete and not supported!\n");
-	return (EOPNOTSUPP);
-#else
-	return (intr_irq_config(irq, trig, pol));
-#endif
+	/*
+	 * On arm64 (due to INTRNG), ACPI interrupt configuration is 
+	 * done in nexus_acpi_map_intr().
+	 */
+	return (0);
 }
 
 static int
@@ -294,12 +312,7 @@ nexus_setup_intr(device_t dev, device_t child, struct resource *res, int flags,
 	if (error)
 		return (error);
 
-#ifdef INTRNG
 	error = intr_setup_irq(child, res, filt, intr, arg, flags, cookiep);
-#else
-	error = arm_setup_intr(device_get_nameunit(child), filt, intr,
-	    arg, rman_get_start(res), flags, cookiep);
-#endif
 
 	return (error);
 }
@@ -308,11 +321,7 @@ static int
 nexus_teardown_intr(device_t dev, device_t child, struct resource *r, void *ih)
 {
 
-#ifdef INTRNG
 	return (intr_teardown_irq(child, r, ih));
-#else
-	return (intr_irq_remove_handler(child, rman_get_start(r), ih));
-#endif
 }
 
 #ifdef SMP
@@ -320,11 +329,7 @@ static int
 nexus_bind_intr(device_t dev, device_t child, struct resource *irq, int cpu)
 {
 
-#ifdef INTRNG
 	return (intr_bind_irq(child, irq, cpu));
-#else
-	return (intr_irq_bind(rman_get_start(irq), cpu));
-#endif
 }
 #endif
 
@@ -361,6 +366,12 @@ nexus_activate_resource(device_t bus, device_t child, int type, int rid,
 		rman_set_bustag(r, &memmap_bus);
 		rman_set_virtual(r, (void *)vaddr);
 		rman_set_bushandle(r, vaddr);
+	} else if (type == SYS_RES_IRQ) {
+		err = intr_activate_irq(child, r);
+		if (err != 0) {
+			rman_deactivate_resource(r);
+			return (err);
+		}
 	}
 	return (0);
 }
@@ -386,7 +397,6 @@ nexus_set_resource(device_t dev, device_t child, int type, int rid,
 	return(0);
 }
 
-
 static int
 nexus_deactivate_resource(device_t bus, device_t child, int type, int rid,
     struct resource *r)
@@ -394,13 +404,17 @@ nexus_deactivate_resource(device_t bus, device_t child, int type, int rid,
 	bus_size_t psize;
 	bus_space_handle_t vaddr;
 
-	psize = (bus_size_t)rman_get_size(r);
-	vaddr = rman_get_bushandle(r);
+	if (type == SYS_RES_MEMORY || type == SYS_RES_IOPORT) {
+		psize = (bus_size_t)rman_get_size(r);
+		vaddr = rman_get_bushandle(r);
 
-	if (vaddr != 0) {
-		bus_space_unmap(&memmap_bus, vaddr, psize);
-		rman_set_virtual(r, NULL);
-		rman_set_bushandle(r, 0);
+		if (vaddr != 0) {
+			bus_space_unmap(&memmap_bus, vaddr, psize);
+			rman_set_virtual(r, NULL);
+			rman_set_bushandle(r, 0);
+		}
+	} else if (type == SYS_RES_IRQ) {
+		intr_deactivate_irq(child, r);
 	}
 
 	return (rman_deactivate_resource(r));
@@ -414,6 +428,8 @@ static device_method_t nexus_fdt_methods[] = {
 
 	/* OFW interface */
 	DEVMETHOD(ofw_bus_map_intr,	nexus_ofw_map_intr),
+
+	DEVMETHOD_END,
 };
 
 #define nexus_baseclasses nexus_fdt_baseclasses
@@ -428,7 +444,7 @@ static int
 nexus_fdt_probe(device_t dev)
 {
 
-	if (OF_peer(0) == 0)
+	if (arm64_bus_method != ARM64_BUS_FDT)
 		return (ENXIO);
 
 	device_quiet(dev);
@@ -447,30 +463,33 @@ static int
 nexus_ofw_map_intr(device_t dev, device_t child, phandle_t iparent, int icells,
     pcell_t *intr)
 {
-#ifdef INTRNG
-	return (INTR_IRQ_INVALID);
-#else
-	int irq;
+	u_int irq;
+	struct intr_map_data_fdt *fdt_data;
+	size_t len;
 
-	if (icells == 3) {
-		irq = intr[1];
-		if (intr[0] == 0)
-			irq += 32; /* SPI */
-		else
-			irq += 16; /* PPI */
-	} else
-		irq = intr[0];
-
+	len = sizeof(*fdt_data) + icells * sizeof(pcell_t);
+	fdt_data = (struct intr_map_data_fdt *)intr_alloc_map_data(
+	    INTR_MAP_DATA_FDT, len, M_WAITOK | M_ZERO);
+	fdt_data->iparent = iparent;
+	fdt_data->ncells = icells;
+	memcpy(fdt_data->cells, intr, icells * sizeof(pcell_t));
+	irq = intr_map_irq(NULL, iparent, (struct intr_map_data *)fdt_data);
 	return (irq);
-#endif
 }
 #endif
 
 #ifdef DEV_ACPI
+static int nexus_acpi_map_intr(device_t dev, device_t child, u_int irq, int trig, int pol);
+
 static device_method_t nexus_acpi_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		nexus_acpi_probe),
 	DEVMETHOD(device_attach,	nexus_acpi_attach),
+
+	/* ACPI interface */
+	DEVMETHOD(acpi_bus_map_intr,	nexus_acpi_map_intr),
+
+	DEVMETHOD_END,
 };
 
 #define nexus_baseclasses nexus_acpi_baseclasses
@@ -486,7 +505,7 @@ static int
 nexus_acpi_probe(device_t dev)
 {
 
-	if (acpi_identify() != 0)
+	if (arm64_bus_method != ARM64_BUS_ACPI || acpi_identify() != 0)
 		return (ENXIO);
 
 	device_quiet(dev);
@@ -499,5 +518,32 @@ nexus_acpi_attach(device_t dev)
 
 	nexus_add_child(dev, 10, "acpi", 0);
 	return (nexus_attach(dev));
+}
+
+static int
+nexus_acpi_map_intr(device_t dev, device_t child, u_int irq, int trig, int pol)
+{
+	struct intr_map_data_acpi *acpi_data;
+	size_t len;
+
+	len = sizeof(*acpi_data);
+	acpi_data = (struct intr_map_data_acpi *)intr_alloc_map_data(
+	    INTR_MAP_DATA_ACPI, len, M_WAITOK | M_ZERO);
+	acpi_data->irq = irq;
+	acpi_data->pol = pol;
+	acpi_data->trig = trig;
+
+	/*
+	 * TODO: This will only handle a single interrupt controller.
+	 * ACPI will map multiple controllers into a single virtual IRQ
+	 * space. Each controller has a System Vector Base to hold the
+	 * first irq it handles in this space. As such the correct way
+	 * to handle interrupts with ACPI is to search through the
+	 * controllers for the largest base value that is no larger than
+	 * the IRQ value.
+	 */
+	irq = intr_map_irq(NULL, ACPI_INTR_XREF,
+	    (struct intr_map_data *)acpi_data);
+	return (irq);
 }
 #endif

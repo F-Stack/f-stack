@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Paolo Pisati <piso@FreeBSD.org>
  * All rights reserved.
  *
@@ -88,7 +90,7 @@ fingerprint(struct libalias *la, struct alias_data *ah)
 static int
 protohandler(struct libalias *la, struct ip *pip, struct alias_data *ah)
 {
-	
+
 	AliasHandleDummy(la, pip, ah);
 	return (0);
 }
@@ -150,4 +152,3 @@ AliasHandleDummy(struct libalias *la, struct ip *ip, struct alias_data *ah)
 {
 	; /* Dummy. */
 }
-

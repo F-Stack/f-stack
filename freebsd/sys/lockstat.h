@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008-2009 Stacey Son <sson@FreeBSD.org> 
  *
  * Redistribution and use in source and binary forms, with or without
@@ -24,7 +26,7 @@
  *
  * $FreeBSD$
  */
- 
+
 /*
  * DTrace lockstat provider definitions
  */
@@ -63,12 +65,19 @@ SDT_PROBE_DECLARE(lockstat, , , sx__spin);
 SDT_PROBE_DECLARE(lockstat, , , sx__upgrade);
 SDT_PROBE_DECLARE(lockstat, , , sx__downgrade);
 
+SDT_PROBE_DECLARE(lockstat, , , lockmgr__acquire);
+SDT_PROBE_DECLARE(lockstat, , , lockmgr__release);
+SDT_PROBE_DECLARE(lockstat, , , lockmgr__disown);
+SDT_PROBE_DECLARE(lockstat, , , lockmgr__block);
+SDT_PROBE_DECLARE(lockstat, , , lockmgr__upgrade);
+SDT_PROBE_DECLARE(lockstat, , , lockmgr__downgrade);
+
 SDT_PROBE_DECLARE(lockstat, , , thread__spin);
 
 #define	LOCKSTAT_WRITER		0
 #define	LOCKSTAT_READER		1
 
-extern int lockstat_enabled;
+extern volatile bool lockstat_enabled;
 
 #ifdef KDTRACE_HOOKS
 
@@ -107,6 +116,8 @@ extern int lockstat_enabled;
 	LOCKSTAT_RECORD1(probe, lp, a);					\
 } while (0)
 
+#define	LOCKSTAT_PROFILE_ENABLED(probe)		__predict_false(lockstat_enabled)
+
 struct lock_object;
 uint64_t lockstat_nsecs(struct lock_object *);
 
@@ -130,6 +141,9 @@ uint64_t lockstat_nsecs(struct lock_object *);
 #define	LOCKSTAT_PROFILE_RELEASE_RWLOCK(probe, lp, a)  			\
 	LOCKSTAT_PROFILE_RELEASE_LOCK(probe, lp)
 
+#define	LOCKSTAT_PROFILE_ENABLED(probe)		0
+
 #endif /* !KDTRACE_HOOKS */
+
 #endif /* _KERNEL */
 #endif /* _SYS_LOCKSTAT_H */

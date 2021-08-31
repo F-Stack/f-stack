@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Vadim Goncharov <vadimnuclight@tpu.ru>
  * All rights reserved.
  * 
@@ -361,9 +363,8 @@ ng_tag_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			hook_p hook;
 
 			/* Sanity check. */
-			if (msg->header.arglen < sizeof(*hp)
-			    || msg->header.arglen !=
-			    NG_TAG_HOOKIN_SIZE(hp->tag_len))
+			if (msg->header.arglen < sizeof(*hp) ||
+			    msg->header.arglen < NG_TAG_HOOKIN_SIZE(hp->tag_len))
 				ERROUT(EINVAL);
 
 			/* Find hook. */
@@ -383,9 +384,8 @@ ng_tag_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			hook_p hook;
 
 			/* Sanity check. */
-			if (msg->header.arglen < sizeof(*hp)
-			    || msg->header.arglen !=
-			    NG_TAG_HOOKOUT_SIZE(hp->tag_len))
+			if (msg->header.arglen < sizeof(*hp) ||
+			    msg->header.arglen < NG_TAG_HOOKOUT_SIZE(hp->tag_len))
 				ERROUT(EINVAL);
 
 			/* Find hook. */
@@ -543,7 +543,7 @@ ng_tag_rcvdata(hook_p hook, item_p item)
 			tag = m_tag_locate(m, cookie, type, tag);
 		}
 	}
-	
+
 	/* See if we got a match and find destination hook. */
 	if (found) {
 #ifdef NG_TAG_DEBUG
@@ -567,11 +567,11 @@ ng_tag_rcvdata(hook_p hook, item_p item)
 	dhip->stats.xmitOctets += totlen;
 	dhip->stats.xmitFrames++;
 #endif
-	
+
 	cookie = dhip->out_tag_cookie;
 	type = dhip->out_tag_id;
 	tag_len = dhip->out_tag_len;
-	
+
 	if ((cookie != 0) || (type != 0)) {
 		tag = m_tag_alloc(cookie, type, tag_len, M_NOWAIT);
 		/* XXX may be free the mbuf if tag allocation failed? */
@@ -584,7 +584,7 @@ ng_tag_rcvdata(hook_p hook, item_p item)
 			m_tag_prepend(m, tag);
 		}
 	}
-	
+
 	NG_FWD_ITEM_HOOK(error, item, dest);
 	return (error);
 }
@@ -715,4 +715,3 @@ ng_tag_setdata_out(hook_p hook, const struct ng_tag_hookout *hp0)
 	hip->out_tag_data = (void*)(hip->out->tag_data);
 	return (0);
 }
-

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1990, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -23,7 +25,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -43,12 +45,20 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_stack.h"
+
 #include <sys/param.h>
+#include <sys/cons.h>
+#include <sys/kdb.h>
 #include <sys/lock.h>
+#include <sys/malloc.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/resourcevar.h>
+#include <sys/sbuf.h>
 #include <sys/sched.h>
+#include <sys/stack.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/tty.h>
 
@@ -207,6 +217,60 @@ proc_compare(struct proc *p1, struct proc *p2)
 	return (p2->p_pid > p1->p_pid);		/* tie - return highest pid */
 }
 
+static int
+sbuf_tty_drain(void *a, const char *d, int len)
+{
+	struct tty *tp;
+	int rc;
+
+	tp = a;
+
+	if (kdb_active) {
+		cnputsn(d, len);
+		return (len);
+	}
+	if (tp != NULL && !KERNEL_PANICKED()) {
+		rc = tty_putstrn(tp, d, len);
+		if (rc != 0)
+			return (-ENXIO);
+		return (len);
+	}
+	return (-ENXIO);
+}
+
+#ifdef STACK
+static int tty_info_kstacks = STACK_SBUF_FMT_COMPACT;
+
+static int
+sysctl_tty_info_kstacks(SYSCTL_HANDLER_ARGS)
+{
+	enum stack_sbuf_fmt val;
+	int error;
+
+	val = tty_info_kstacks;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+
+	switch (val) {
+	case STACK_SBUF_FMT_NONE:
+	case STACK_SBUF_FMT_LONG:
+	case STACK_SBUF_FMT_COMPACT:
+		tty_info_kstacks = val;
+		break;
+	default:
+		error = EINVAL;
+	}
+
+	return (error);
+}
+SYSCTL_PROC(_kern, OID_AUTO, tty_info_kstacks,
+    CTLFLAG_RWTUN | CTLFLAG_MPSAFE | CTLTYPE_INT, NULL, 0,
+    sysctl_tty_info_kstacks, "I",
+    "Adjust format of kernel stack(9) traces on ^T (tty info): "
+    "0 - disabled; 1 - long; 2 - compact");
+#endif
+
 /*
  * Report on state of foreground process group.
  */
@@ -214,38 +278,47 @@ void
 tty_info(struct tty *tp)
 {
 	struct timeval rtime, utime, stime;
+#ifdef STACK
+	struct stack stack;
+	int sterr, kstacks_val;
+	bool print_kstacks;
+#endif
 	struct proc *p, *ppick;
 	struct thread *td, *tdpick;
 	const char *stateprefix, *state;
+	struct sbuf sb;
 	long rss;
 	int load, pctcpu;
 	pid_t pid;
 	char comm[MAXCOMLEN + 1];
 	struct rusage ru;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (tty_checkoutq(tp) == 0)
 		return;
 
+	(void)sbuf_new(&sb, tp->t_prbuf, tp->t_prbufsz, SBUF_FIXEDLEN);
+	sbuf_set_drain(&sb, sbuf_tty_drain, tp);
+
 	/* Print load average. */
 	load = (averunnable.ldavg[0] * 100 + FSCALE / 2) >> FSHIFT;
-	ttyprintf(tp, "%sload: %d.%02d ", tp->t_column == 0 ? "" : "\n",
+	sbuf_printf(&sb, "%sload: %d.%02d ", tp->t_column == 0 ? "" : "\n",
 	    load / 100, load % 100);
 
 	if (tp->t_session == NULL) {
-		ttyprintf(tp, "not a controlling terminal\n");
-		return;
+		sbuf_printf(&sb, "not a controlling terminal\n");
+		goto out;
 	}
 	if (tp->t_pgrp == NULL) {
-		ttyprintf(tp, "no foreground process group\n");
-		return;
+		sbuf_printf(&sb, "no foreground process group\n");
+		goto out;
 	}
 	PGRP_LOCK(tp->t_pgrp);
 	if (LIST_EMPTY(&tp->t_pgrp->pg_members)) {
 		PGRP_UNLOCK(tp->t_pgrp);
-		ttyprintf(tp, "empty foreground process group\n");
-		return;
+		sbuf_printf(&sb, "empty foreground process group\n");
+		goto out;
 	}
 
 	/*
@@ -290,6 +363,17 @@ tty_info(struct tty *tp)
 	else
 		state = "unknown";
 	pctcpu = (sched_pctcpu(td) * 10000 + FSCALE / 2) >> FSHIFT;
+#ifdef STACK
+	kstacks_val = atomic_load_int(&tty_info_kstacks);
+	print_kstacks = (kstacks_val != STACK_SBUF_FMT_NONE);
+
+	if (print_kstacks) {
+		if (TD_IS_SWAPPED(td))
+			sterr = ENOENT;
+		else
+			sterr = stack_save_td(&stack, td);
+	}
+#endif
 	thread_unlock(td);
 	if (p->p_state == PRS_NEW || p->p_state == PRS_ZOMBIE)
 		rss = 0;
@@ -303,11 +387,20 @@ tty_info(struct tty *tp)
 	PROC_UNLOCK(p);
 
 	/* Print command, pid, state, rtime, utime, stime, %cpu, and rss. */
-	ttyprintf(tp,
+	sbuf_printf(&sb,
 	    " cmd: %s %d [%s%s] %ld.%02ldr %ld.%02ldu %ld.%02lds %d%% %ldk\n",
 	    comm, pid, stateprefix, state,
 	    (long)rtime.tv_sec, rtime.tv_usec / 10000,
 	    (long)utime.tv_sec, utime.tv_usec / 10000,
 	    (long)stime.tv_sec, stime.tv_usec / 10000,
 	    pctcpu / 100, rss);
+
+#ifdef STACK
+	if (print_kstacks && sterr == 0)
+		stack_sbuf_print_flags(&sb, &stack, M_NOWAIT, kstacks_val);
+#endif
+
+out:
+	sbuf_finish(&sb);
+	sbuf_delete(&sb);
 }

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009-2013
  * 	Swinburne University of Technology, Melbourne, Australia
  * All rights reserved.
@@ -77,8 +79,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/uma.h>
 
 #define	CDG_VERSION "0.1"
-
-#define	CAST_PTR_INT(X) (*((int*)(X)))
 
 /* Private delay-gradient induced congestion control signal. */
 #define	CC_CDG_DELAY 0x01000000
@@ -203,13 +203,13 @@ static MALLOC_DEFINE(M_CDG, "cdg data",
 
 static int ertt_id;
 
-static VNET_DEFINE(uint32_t, cdg_alpha_inc);
-static VNET_DEFINE(uint32_t, cdg_beta_delay);
-static VNET_DEFINE(uint32_t, cdg_beta_loss);
-static VNET_DEFINE(uint32_t, cdg_smoothing_factor);
-static VNET_DEFINE(uint32_t, cdg_exp_backoff_scale);
-static VNET_DEFINE(uint32_t, cdg_consec_cong);
-static VNET_DEFINE(uint32_t, cdg_hold_backoff);
+VNET_DEFINE_STATIC(uint32_t, cdg_alpha_inc);
+VNET_DEFINE_STATIC(uint32_t, cdg_beta_delay);
+VNET_DEFINE_STATIC(uint32_t, cdg_beta_loss);
+VNET_DEFINE_STATIC(uint32_t, cdg_smoothing_factor);
+VNET_DEFINE_STATIC(uint32_t, cdg_exp_backoff_scale);
+VNET_DEFINE_STATIC(uint32_t, cdg_consec_cong);
+VNET_DEFINE_STATIC(uint32_t, cdg_hold_backoff);
 #define	V_cdg_alpha_inc		VNET(cdg_alpha_inc)
 #define	V_cdg_beta_delay	VNET(cdg_beta_delay)
 #define	V_cdg_beta_loss		VNET(cdg_beta_loss)
@@ -356,25 +356,40 @@ cdg_cb_destroy(struct cc_var *ccv)
 static int
 cdg_beta_handler(SYSCTL_HANDLER_ARGS)
 {
+	int error;
+	uint32_t new;
 
-	if (req->newptr != NULL &&
-	    (CAST_PTR_INT(req->newptr) == 0 || CAST_PTR_INT(req->newptr) > 100))
-		return (EINVAL);
+	new = *(uint32_t *)arg1;
+	error = sysctl_handle_int(oidp, &new, 0, req);
+	if (error == 0 && req->newptr != NULL) {
+		if (new == 0 || new > 100)
+			error = EINVAL;
+		else
+			*(uint32_t *)arg1 = new;
+	}
 
-	return (sysctl_handle_int(oidp, arg1, arg2, req));
+	return (error);
 }
 
 static int
 cdg_exp_backoff_scale_handler(SYSCTL_HANDLER_ARGS)
 {
+	int error;
+	uint32_t new;
 
-	if (req->newptr != NULL && CAST_PTR_INT(req->newptr) < 1)
-		return (EINVAL);
+	new = *(uint32_t *)arg1;
+	error = sysctl_handle_int(oidp, &new, 0, req);
+	if (error == 0 && req->newptr != NULL) {
+		if (new < 1)
+			error = EINVAL;
+		else
+			*(uint32_t *)arg1 = new;
+	}
 
-	return (sysctl_handle_int(oidp, arg1, arg2, req));
+	return (error);
 }
 
-static inline unsigned long
+static inline uint32_t
 cdg_window_decrease(struct cc_var *ccv, unsigned long owin, unsigned int beta)
 {
 
@@ -460,7 +475,7 @@ cdg_cong_signal(struct cc_var *ccv, uint32_t signal_type)
 				cdg_data->shadow_w = cdg_window_decrease(ccv,
 				    cdg_data->shadow_w, RENO_BETA);
 
-			CCV(ccv, snd_ssthresh) = ulmax(cdg_data->shadow_w,
+			CCV(ccv, snd_ssthresh) = max(cdg_data->shadow_w,
 			    cdg_window_decrease(ccv, CCV(ccv, snd_cwnd),
 			    V_cdg_beta_loss));
 
@@ -577,7 +592,11 @@ cdg_ack_received(struct cc_var *ccv, uint16_t ack_type)
 			qdiff_min = ((long)(cdg_data->minrtt_in_rtt -
 			    cdg_data->minrtt_in_prevrtt) << D_P_E );
 
-			calc_moving_average(cdg_data, qdiff_max, qdiff_min);
+			if (cdg_data->sample_q_size == 0) {
+				cdg_data->max_qtrend = qdiff_max;
+				cdg_data->min_qtrend = qdiff_min;
+			} else
+				calc_moving_average(cdg_data, qdiff_max, qdiff_min);
 
 			/* Probabilistic backoff with respect to gradient. */
 			if (slowstart && qdiff_min > 0)
@@ -588,7 +607,7 @@ cdg_ack_received(struct cc_var *ccv, uint16_t ack_type)
 				congestion = prob_backoff(qdiff_max);
 			else if (cdg_data->max_qtrend > 0)
 				congestion = prob_backoff(cdg_data->max_qtrend);
-			
+
 			/* Update estimate of queue state. */
 			if (cdg_data->min_qtrend > 0 &&
 			    cdg_data->max_qtrend <= 0) {
@@ -651,7 +670,7 @@ VNET_SYSINIT(cdg_init_vnet, SI_SUB_PROTO_BEGIN, SI_ORDER_FIRST,
     cdg_init_vnet, NULL);
 
 SYSCTL_DECL(_net_inet_tcp_cc_cdg);
-SYSCTL_NODE(_net_inet_tcp_cc, OID_AUTO, cdg, CTLFLAG_RW, NULL,
+SYSCTL_NODE(_net_inet_tcp_cc, OID_AUTO, cdg, CTLFLAG_RW | CTLFLAG_MPSAFE, NULL,
     "CAIA delay-gradient congestion control related settings");
 
 SYSCTL_STRING(_net_inet_tcp_cc_cdg, OID_AUTO, version,
@@ -664,19 +683,19 @@ SYSCTL_UINT(_net_inet_tcp_cc_cdg, OID_AUTO, alpha_inc,
     "alpha_inc RTTs during congestion avoidance mode.");
 
 SYSCTL_PROC(_net_inet_tcp_cc_cdg, OID_AUTO, beta_delay,
-    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW, &VNET_NAME(cdg_beta_delay), 70,
-    &cdg_beta_handler, "IU",
+    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    &VNET_NAME(cdg_beta_delay), 70, &cdg_beta_handler, "IU",
     "Delay-based window decrease factor as a percentage "
     "(on delay-based backoff, w = w * beta_delay / 100)");
 
 SYSCTL_PROC(_net_inet_tcp_cc_cdg, OID_AUTO, beta_loss,
-    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW, &VNET_NAME(cdg_beta_loss), 50,
-    &cdg_beta_handler, "IU",
+    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    &VNET_NAME(cdg_beta_loss), 50, &cdg_beta_handler, "IU",
     "Loss-based window decrease factor as a percentage "
     "(on loss-based backoff, w = w * beta_loss / 100)");
 
 SYSCTL_PROC(_net_inet_tcp_cc_cdg, OID_AUTO, exp_backoff_scale,
-    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW,
+    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
     &VNET_NAME(cdg_exp_backoff_scale), 2, &cdg_exp_backoff_scale_handler, "IU",
     "Scaling parameter for the probabilistic exponential backoff");
 
@@ -695,5 +714,5 @@ SYSCTL_UINT(_net_inet_tcp_cc_cdg, OID_AUTO, loss_compete_hold_backoff,
     "the window backoff for loss based CC compatibility");
 
 DECLARE_CC_MODULE(cdg, &cdg_cc_algo);
-
+MODULE_VERSION(cdg, 1);
 MODULE_DEPEND(cdg, ertt, 1, 1, 1);

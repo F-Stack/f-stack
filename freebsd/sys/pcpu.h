@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2001 Wind River Systems, Inc.
  * All rights reserved.
  * Written by: John Baldwin <jhb@FreeBSD.org>
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the author nor the names of any co-contributors
+ * 3. Neither the name of the author nor the names of any co-contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -37,13 +39,13 @@
 #error "no assembler-serviceable parts inside"
 #endif
 
+#include <sys/param.h>
 #include <sys/_cpuset.h>
 #include <sys/_lock.h>
 #include <sys/_mutex.h>
 #include <sys/_sx.h>
 #include <sys/queue.h>
 #include <sys/_rmlock.h>
-#include <sys/vmmeter.h>
 #include <sys/resource.h>
 #include <machine/pcpu.h>
 
@@ -80,7 +82,32 @@ extern uintptr_t dpcpu_off[];
  */
 #define	DPCPU_NAME(n)		pcpu_entry_##n
 #define	DPCPU_DECLARE(t, n)	extern t DPCPU_NAME(n)
-#define	DPCPU_DEFINE(t, n)	t DPCPU_NAME(n) __section(DPCPU_SETNAME) __used
+/* struct _hack is to stop this from being used with the static keyword. */
+#define	DPCPU_DEFINE(t, n)	\
+    struct _hack; t DPCPU_NAME(n) __section(DPCPU_SETNAME) __used
+#if defined(KLD_MODULE) && (defined(__aarch64__) || defined(__riscv) \
+		|| defined(__powerpc64__))
+/*
+ * On some architectures the compiler will use PC-relative load to
+ * find the address of DPCPU data with the static keyword. We then
+ * use this to find the offset of the data in a per-CPU region.
+ * This works for in the kernel as we can allocate the space ahead
+ * of time, however modules need to allocate a sepatate space and
+ * then use relocations to fix the address of the data. As
+ * PC-relative data doesn't have a relocation there is nothing for
+ * the kernel module linker to fix so data is accessed from the
+ * wrong location.
+ *
+ * This is a workaround until a better solution can be found.
+ *
+ * VNET_DEFINE_STATIC also has the same workaround.
+ */
+#define	DPCPU_DEFINE_STATIC(t, n)	\
+    t DPCPU_NAME(n) __section(DPCPU_SETNAME) __used
+#else
+#define	DPCPU_DEFINE_STATIC(t, n)	\
+    static t DPCPU_NAME(n) __section(DPCPU_SETNAME) __used
+#endif
 
 /*
  * Accessors with a given base.
@@ -153,12 +180,12 @@ struct pcpu {
 	struct thread	*pc_fpcurthread;	/* Fp state owner */
 	struct thread	*pc_deadthread;		/* Zombie thread or NULL */
 	struct pcb	*pc_curpcb;		/* Current pcb */
+	void		*pc_sched;		/* Scheduler state */
 	uint64_t	pc_switchtime;		/* cpu_ticks() at last csw */
 	int		pc_switchticks;		/* `ticks' at last csw */
 	u_int		pc_cpuid;		/* This cpu number */
 	STAILQ_ENTRY(pcpu) pc_allcpu;
 	struct lock_list_entry *pc_spinlocks;
-	struct vmmeter	pc_cnt;			/* VM stats counters */
 	long		pc_cp_time[CPUSTATES];	/* statclock ticks */
 	struct device	*pc_device;
 	void		*pc_netisr;		/* netisr SWI cookie */
@@ -166,6 +193,8 @@ struct pcpu {
 	int		pc_domain;		/* Memory domain. */
 	struct rm_queue	pc_rm_queue;		/* rmlock list of trackers */
 	uintptr_t	pc_dynamic;		/* Dynamic per-cpu data area */
+	uint64_t	pc_early_dummy_counter;	/* Startup time counter(9) */
+	uintptr_t	pc_zpcpu_offset;	/* Offset into zpcpu allocs */
 
 	/*
 	 * Keep MD fields last, so that CPU-specific variations on a
@@ -180,14 +209,6 @@ struct pcpu {
 	PCPU_MD_FIELDS;
 } __aligned(CACHE_LINE_SIZE);
 
-#ifdef CTASSERT
-/*
- * To minimize memory waste in per-cpu UMA zones, size of struct pcpu
- * should be denominator of PAGE_SIZE.
- */
-CTASSERT((PAGE_SIZE / sizeof(struct pcpu)) * sizeof(struct pcpu) == PAGE_SIZE);
-#endif
-
 #ifdef _KERNEL
 
 STAILQ_HEAD(cpuhead, pcpu);
@@ -196,26 +217,96 @@ extern struct cpuhead cpuhead;
 extern struct pcpu *cpuid_to_pcpu[];
 
 #define	curcpu		PCPU_GET(cpuid)
-#define	curproc		(curthread->td_proc)
+#define	curvidata	PCPU_GET(vidata)
+
+#define UMA_PCPU_ALLOC_SIZE		PAGE_SIZE
+
+#include <machine/pcpu_aux.h>
+
 #ifndef curthread
 #define	curthread	PCPU_GET(curthread)
 #endif
-#define	curvidata	PCPU_GET(vidata)
+#define	curproc		(curthread->td_proc)
+
+#ifndef ZPCPU_ASSERT_PROTECTED
+#define ZPCPU_ASSERT_PROTECTED() MPASS(curthread->td_critnest > 0)
+#endif
+
+#ifndef zpcpu_offset_cpu
+#define zpcpu_offset_cpu(cpu)	(UMA_PCPU_ALLOC_SIZE * cpu)
+#endif
+#ifndef zpcpu_offset
+#define zpcpu_offset()		(PCPU_GET(zpcpu_offset))
+#endif
+
+#ifndef zpcpu_base_to_offset
+#define zpcpu_base_to_offset(base) (base)
+#endif
+#ifndef zpcpu_offset_to_base
+#define zpcpu_offset_to_base(base) (base)
+#endif
 
 /* Accessor to elements allocated via UMA_ZONE_PCPU zone. */
-static inline void *
-zpcpu_get(void *base)
-{
+#define zpcpu_get(base) ({								\
+	__typeof(base) _ptr = (void *)((char *)(base) + zpcpu_offset());		\
+	_ptr;										\
+})
 
-	return ((char *)(base) + sizeof(struct pcpu) * curcpu);
-}
+#define zpcpu_get_cpu(base, cpu) ({							\
+	__typeof(base) _ptr = (void *)((char *)(base) +	zpcpu_offset_cpu(cpu));		\
+	_ptr;										\
+})
 
-static inline void *
-zpcpu_get_cpu(void *base, int cpu)
-{
+/*
+ * This operation is NOT atomic and does not post any barriers.
+ * If you use this the assumption is that the target CPU will not
+ * be modifying this variable.
+ * If you need atomicity use xchg.
+ * */
+#define zpcpu_replace(base, val) ({					\
+	__typeof(val) *_ptr = zpcpu_get(base);				\
+	__typeof(val) _old;						\
+									\
+	_old = *_ptr;							\
+	*_ptr = val;							\
+	_old;								\
+})
 
-	return ((char *)(base) + sizeof(struct pcpu) * cpu);
-}
+#define zpcpu_replace_cpu(base, val, cpu) ({				\
+	__typeof(val) *_ptr = zpcpu_get_cpu(base, cpu);			\
+	__typeof(val) _old;						\
+									\
+	_old = *_ptr;							\
+	*_ptr = val;							\
+	_old;								\
+})
+
+#ifndef zpcpu_set_protected
+#define zpcpu_set_protected(base, val) ({				\
+	ZPCPU_ASSERT_PROTECTED();					\
+	__typeof(val) *_ptr = zpcpu_get(base);				\
+									\
+	*_ptr = (val);							\
+})
+#endif
+
+#ifndef zpcpu_add_protected
+#define zpcpu_add_protected(base, val) ({				\
+	ZPCPU_ASSERT_PROTECTED();					\
+	__typeof(val) *_ptr = zpcpu_get(base);				\
+									\
+	*_ptr += (val);							\
+})
+#endif
+
+#ifndef zpcpu_sub_protected
+#define zpcpu_sub_protected(base, val) ({				\
+	ZPCPU_ASSERT_PROTECTED();					\
+	__typeof(val) *_ptr = zpcpu_get(base);				\
+									\
+	*_ptr -= (val);							\
+})
+#endif
 
 /*
  * Machine dependent callouts.  cpu_pcpu_init() is responsible for

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2008 Isilon Inc http://www.isilon.com/
  * Authors: Doug Rabson <dfr@rabson.org>
  * Developed with Red Inc: Alfred Perlstein <alfred@freebsd.org>
@@ -39,7 +41,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -83,7 +85,9 @@ __FBSDID("$FreeBSD$");
 #ifdef LOCKF_DEBUG
 #include <sys/sysctl.h>
 
+#include <ufs/ufs/extattr.h>
 #include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
 #include <ufs/ufs/inode.h>
 
 static int	lockf_debug = 0; /* control debug output */
@@ -101,7 +105,7 @@ struct owner_graph;
 #define SELF	0x1
 #define OTHERS	0x2
 static void	 lf_init(void *);
-static int	 lf_hash_owner(caddr_t, struct flock *, int);
+static int	 lf_hash_owner(caddr_t, struct vnode *, struct flock *, int);
 static int	 lf_owner_matches(struct lock_owner *, caddr_t, struct flock *,
     int);
 static struct lockf_entry *
@@ -184,7 +188,6 @@ static void	 lf_print_owner(struct lock_owner *);
  * Locks:
  * (s)		locked by state->ls_lock
  * (S)		locked by lf_lock_states_lock
- * (l)		locked by lf_lock_owners_lock
  * (g)		locked by lf_owner_graph_lock
  * (c)		const until freeing
  */
@@ -197,15 +200,20 @@ struct lock_owner {
 	caddr_t	lo_id;		    /* (c) Id value passed to lf_advlock */
 	pid_t	lo_pid;		    /* (c) Process Id of the lock owner */
 	int	lo_sysid;	    /* (c) System Id of the lock owner */
+	int	lo_hash;	    /* (c) Used to lock the appropriate chain */
 	struct owner_vertex *lo_vertex; /* (g) entry in deadlock graph */
 };
 
 LIST_HEAD(lock_owner_list, lock_owner);
 
+struct lock_owner_chain {
+	struct sx		lock;
+	struct lock_owner_list	list;
+};
+
 static struct sx		lf_lock_states_lock;
 static struct lockf_list	lf_lock_states; /* (S) */
-static struct sx		lf_lock_owners_lock;
-static struct lock_owner_list	lf_lock_owners[LOCK_OWNER_HASH_SIZE]; /* (l) */
+static struct lock_owner_chain	lf_lock_owners[LOCK_OWNER_HASH_SIZE];
 
 /*
  * Structures for deadlock detection.
@@ -279,9 +287,10 @@ lf_init(void *dummy)
 	sx_init(&lf_lock_states_lock, "lock states lock");
 	LIST_INIT(&lf_lock_states);
 
-	sx_init(&lf_lock_owners_lock, "lock owners lock");
-	for (i = 0; i < LOCK_OWNER_HASH_SIZE; i++)
-		LIST_INIT(&lf_lock_owners[i]);
+	for (i = 0; i < LOCK_OWNER_HASH_SIZE; i++) {
+		sx_init(&lf_lock_owners[i].lock, "lock owners lock");
+		LIST_INIT(&lf_lock_owners[i].list);
+	}
 
 	sx_init(&lf_owner_graph_lock, "owner graph lock");
 	graph_init(&lf_owner_graph);
@@ -292,7 +301,7 @@ SYSINIT(lf_init, SI_SUB_LOCK, SI_ORDER_FIRST, lf_init, NULL);
  * Generate a hash value for a lock owner.
  */
 static int
-lf_hash_owner(caddr_t id, struct flock *fl, int flags)
+lf_hash_owner(caddr_t id, struct vnode *vp, struct flock *fl, int flags)
 {
 	uint32_t h;
 
@@ -302,9 +311,7 @@ lf_hash_owner(caddr_t id, struct flock *fl, int flags)
 	} else if (flags & F_FLOCK) {
 		h = ((uintptr_t) id) >> 7;
 	} else {
-		struct proc *p = (struct proc *) id;
-		h = HASHSTEP(0, p->p_pid);
-		h = HASHSTEP(h, 0);
+		h = ((uintptr_t) vp) >> 7;
 	}
 
 	return (h % LOCK_OWNER_HASH_SIZE);
@@ -338,9 +345,9 @@ lf_alloc_lock(struct lock_owner *lo)
 		printf("Allocated lock %p\n", lf);
 #endif
 	if (lo) {
-		sx_xlock(&lf_lock_owners_lock);
+		sx_xlock(&lf_lock_owners[lo->lo_hash].lock);
 		lo->lo_refs++;
-		sx_xunlock(&lf_lock_owners_lock);
+		sx_xunlock(&lf_lock_owners[lo->lo_hash].lock);
 		lf->lf_owner = lo;
 	}
 
@@ -350,6 +357,7 @@ lf_alloc_lock(struct lock_owner *lo)
 static int
 lf_free_lock(struct lockf_entry *lock)
 {
+	struct sx *chainlock;
 
 	KASSERT(lock->lf_refs > 0, ("lockf_entry negative ref count %p", lock));
 	if (--lock->lf_refs > 0)
@@ -365,7 +373,8 @@ lf_free_lock(struct lockf_entry *lock)
 		    ("freeing lock with dependencies"));
 		KASSERT(LIST_EMPTY(&lock->lf_inedges),
 		    ("freeing lock with dependants"));
-		sx_xlock(&lf_lock_owners_lock);
+		chainlock = &lf_lock_owners[lo->lo_hash].lock;
+		sx_xlock(chainlock);
 		KASSERT(lo->lo_refs > 0, ("lock owner refcount"));
 		lo->lo_refs--;
 		if (lo->lo_refs == 0) {
@@ -387,7 +396,7 @@ lf_free_lock(struct lockf_entry *lock)
 				printf("Freed lock owner %p\n", lo);
 #endif
 		}
-		sx_unlock(&lf_lock_owners_lock);
+		sx_unlock(chainlock);
 	}
 	if ((lock->lf_flags & F_REMOTE) && lock->lf_vnode) {
 		vrele(lock->lf_vnode);
@@ -408,7 +417,7 @@ int
 lf_advlockasync(struct vop_advlockasync_args *ap, struct lockf **statep,
     u_quad_t size)
 {
-	struct lockf *state, *freestate = NULL;
+	struct lockf *state;
 	struct flock *fl = ap->a_fl;
 	struct lockf_entry *lock;
 	struct vnode *vp = ap->a_vp;
@@ -432,7 +441,6 @@ lf_advlockasync(struct vop_advlockasync_args *ap, struct lockf **statep,
 	 * Convert the flock structure into a start and end.
 	 */
 	switch (fl->l_whence) {
-
 	case SEEK_SET:
 	case SEEK_CUR:
 		/*
@@ -475,23 +483,23 @@ retry_setlock:
 	/*
 	 * Avoid the common case of unlocking when inode has no locks.
 	 */
-	VI_LOCK(vp);
-	if ((*statep) == NULL) {
-		if (ap->a_op != F_SETLK) {
+	if (ap->a_op != F_SETLK && (*statep) == NULL) {
+		VI_LOCK(vp);
+		if ((*statep) == NULL) {
 			fl->l_type = F_UNLCK;
 			VI_UNLOCK(vp);
 			return (0);
 		}
+		VI_UNLOCK(vp);
 	}
-	VI_UNLOCK(vp);
 
 	/*
 	 * Map our arguments to an existing lock owner or create one
 	 * if this is the first time we have seen this owner.
 	 */
-	hash = lf_hash_owner(id, fl, flags);
-	sx_xlock(&lf_lock_owners_lock);
-	LIST_FOREACH(lo, &lf_lock_owners[hash], lo_link)
+	hash = lf_hash_owner(id, vp, fl, flags);
+	sx_xlock(&lf_lock_owners[hash].lock);
+	LIST_FOREACH(lo, &lf_lock_owners[hash].list, lo_link)
 		if (lf_owner_matches(lo, id, fl, flags))
 			break;
 	if (!lo) {
@@ -510,6 +518,7 @@ retry_setlock:
 		lo->lo_refs = 1;
 		lo->lo_flags = flags;
 		lo->lo_id = id;
+		lo->lo_hash = hash;
 		if (flags & F_REMOTE) {
 			lo->lo_pid = fl->l_pid;
 			lo->lo_sysid = fl->l_sysid;
@@ -531,7 +540,7 @@ retry_setlock:
 		}
 #endif
 
-		LIST_INSERT_HEAD(&lf_lock_owners[hash], lo, lo_link);
+		LIST_INSERT_HEAD(&lf_lock_owners[hash].list, lo, lo_link);
 	} else {
 		/*
 		 * We have seen this lock owner before, increase its
@@ -540,7 +549,7 @@ retry_setlock:
 		 */
 		lo->lo_refs++;
 	}
-	sx_xunlock(&lf_lock_owners_lock);
+	sx_xunlock(&lf_lock_owners[hash].lock);
 
 	/*
 	 * Create the lockf structure. We initialise the lf_owner
@@ -582,7 +591,7 @@ retry_setlock:
 	 * the vnode interlock.
 	 */
 	VI_LOCK(vp);
-	if (vp->v_iflag & VI_DOOMED) {
+	if (VN_IS_DOOMED(vp)) {
 		VI_UNLOCK(vp);
 		lf_free_lock(lock);
 		return (ENOENT);
@@ -612,7 +621,7 @@ retry_setlock:
 		 * trying to allocate memory.
 		 */
 		VI_LOCK(vp);
-		if (vp->v_iflag & VI_DOOMED) {
+		if (VN_IS_DOOMED(vp)) {
 			VI_UNLOCK(vp);
 			sx_xlock(&lf_lock_states_lock);
 			LIST_REMOVE(ls, ls_link);
@@ -627,6 +636,7 @@ retry_setlock:
 			VI_UNLOCK(vp);
 		} else {
 			state = *statep;
+			MPASS(state->ls_threads >= 0);
 			state->ls_threads++;
 			VI_UNLOCK(vp);
 
@@ -637,6 +647,7 @@ retry_setlock:
 			free(ls, M_LOCKF);
 		}
 	} else {
+		MPASS(state->ls_threads >= 0);
 		state->ls_threads++;
 		VI_UNLOCK(vp);
 	}
@@ -645,10 +656,11 @@ retry_setlock:
 	/*
 	 * Recheck the doomed vnode after state->ls_lock is
 	 * locked. lf_purgelocks() requires that no new threads add
-	 * pending locks when vnode is marked by VI_DOOMED flag.
+	 * pending locks when vnode is marked by VIRF_DOOMED flag.
 	 */
-	VI_LOCK(vp);
-	if (vp->v_iflag & VI_DOOMED) {
+	if (VN_IS_DOOMED(vp)) {
+		VI_LOCK(vp);
+		MPASS(state->ls_threads > 0);
 		state->ls_threads--;
 		wakeup(state);
 		VI_UNLOCK(vp);
@@ -656,7 +668,6 @@ retry_setlock:
 		lf_free_lock(lock);
 		return (ENOENT);
 	}
-	VI_UNLOCK(vp);
 
 	switch (ap->a_op) {
 	case F_SETLK:
@@ -687,7 +698,7 @@ retry_setlock:
 		break;
 	}
 
-#ifdef INVARIANTS
+#ifdef DIAGNOSTIC
 	/*
 	 * Check for some can't happen stuff. In this case, the active
 	 * lock list becoming disordered or containing mutually
@@ -717,37 +728,13 @@ retry_setlock:
 #endif
 	sx_xunlock(&state->ls_lock);
 
-	/*
-	 * If we have removed the last active lock on the vnode and
-	 * this is the last thread that was in-progress, we can free
-	 * the state structure. We update the caller's pointer inside
-	 * the vnode interlock but call free outside.
-	 *
-	 * XXX alternatively, keep the state structure around until
-	 * the filesystem recycles - requires a callback from the
-	 * filesystem.
-	 */
 	VI_LOCK(vp);
-
+	MPASS(state->ls_threads > 0);
 	state->ls_threads--;
-	wakeup(state);
-	if (LIST_EMPTY(&state->ls_active) && state->ls_threads == 0) {
-		KASSERT(LIST_EMPTY(&state->ls_pending),
-		    ("freeing state with pending locks"));
-		freestate = state;
-		*statep = NULL;
+	if (state->ls_threads != 0) {
+		wakeup(state);
 	}
-
 	VI_UNLOCK(vp);
-
-	if (freestate != NULL) {
-		sx_xlock(&lf_lock_states_lock);
-		LIST_REMOVE(freestate, ls_link);
-		sx_xunlock(&lf_lock_states_lock);
-		sx_destroy(&freestate->ls_lock);
-		free(freestate, M_LOCKF);
-		freestate = NULL;
-	}
 
 	if (error == EDOOFUS) {
 		KASSERT(ap->a_op == F_SETLK, ("EDOOFUS"));
@@ -781,70 +768,78 @@ lf_purgelocks(struct vnode *vp, struct lockf **statep)
 	/*
 	 * For this to work correctly, the caller must ensure that no
 	 * other threads enter the locking system for this vnode,
-	 * e.g. by checking VI_DOOMED. We wake up any threads that are
+	 * e.g. by checking VIRF_DOOMED. We wake up any threads that are
 	 * sleeping waiting for locks on this vnode and then free all
 	 * the remaining locks.
 	 */
 	VI_LOCK(vp);
-	KASSERT(vp->v_iflag & VI_DOOMED,
+	KASSERT(VN_IS_DOOMED(vp),
 	    ("lf_purgelocks: vp %p has not vgone yet", vp));
 	state = *statep;
-	if (state) {
-		*statep = NULL;
-		state->ls_threads++;
+	if (state == NULL) {
 		VI_UNLOCK(vp);
-
-		sx_xlock(&state->ls_lock);
-		sx_xlock(&lf_owner_graph_lock);
-		LIST_FOREACH_SAFE(lock, &state->ls_pending, lf_link, nlock) {
-			LIST_REMOVE(lock, lf_link);
-			lf_remove_outgoing(lock);
-			lf_remove_incoming(lock);
-
-			/*
-			 * If its an async lock, we can just free it
-			 * here, otherwise we let the sleeping thread
-			 * free it.
-			 */
-			if (lock->lf_async_task) {
-				lf_free_lock(lock);
-			} else {
-				lock->lf_flags |= F_INTR;
-				wakeup(lock);
-			}
-		}
-		sx_xunlock(&lf_owner_graph_lock);
-		sx_xunlock(&state->ls_lock);
-
-		/*
-		 * Wait for all other threads, sleeping and otherwise
-		 * to leave.
-		 */
-		VI_LOCK(vp);
-		while (state->ls_threads > 1)
-			msleep(state, VI_MTX(vp), 0, "purgelocks", 0);
-		VI_UNLOCK(vp);
-
-		/*
-		 * We can just free all the active locks since they
-		 * will have no dependencies (we removed them all
-		 * above). We don't need to bother locking since we
-		 * are the last thread using this state structure.
-		 */
-		KASSERT(LIST_EMPTY(&state->ls_pending),
-		    ("lock pending for %p", state));
-		LIST_FOREACH_SAFE(lock, &state->ls_active, lf_link, nlock) {
-			LIST_REMOVE(lock, lf_link);
-			lf_free_lock(lock);
-		}
-		sx_xlock(&lf_lock_states_lock);
-		LIST_REMOVE(state, ls_link);
-		sx_xunlock(&lf_lock_states_lock);
-		sx_destroy(&state->ls_lock);
-		free(state, M_LOCKF);
-	} else {
-		VI_UNLOCK(vp);
+		return;
 	}
+	*statep = NULL;
+	if (LIST_EMPTY(&state->ls_active) && state->ls_threads == 0) {
+		KASSERT(LIST_EMPTY(&state->ls_pending),
+		    ("freeing state with pending locks"));
+		VI_UNLOCK(vp);
+		goto out_free;
+	}
+	MPASS(state->ls_threads >= 0);
+	state->ls_threads++;
+	VI_UNLOCK(vp);
+
+	sx_xlock(&state->ls_lock);
+	sx_xlock(&lf_owner_graph_lock);
+	LIST_FOREACH_SAFE(lock, &state->ls_pending, lf_link, nlock) {
+		LIST_REMOVE(lock, lf_link);
+		lf_remove_outgoing(lock);
+		lf_remove_incoming(lock);
+
+		/*
+		 * If its an async lock, we can just free it
+		 * here, otherwise we let the sleeping thread
+		 * free it.
+		 */
+		if (lock->lf_async_task) {
+			lf_free_lock(lock);
+		} else {
+			lock->lf_flags |= F_INTR;
+			wakeup(lock);
+		}
+	}
+	sx_xunlock(&lf_owner_graph_lock);
+	sx_xunlock(&state->ls_lock);
+
+	/*
+	 * Wait for all other threads, sleeping and otherwise
+	 * to leave.
+	 */
+	VI_LOCK(vp);
+	while (state->ls_threads > 1)
+		msleep(state, VI_MTX(vp), 0, "purgelocks", 0);
+	VI_UNLOCK(vp);
+
+	/*
+	 * We can just free all the active locks since they
+	 * will have no dependencies (we removed them all
+	 * above). We don't need to bother locking since we
+	 * are the last thread using this state structure.
+	 */
+	KASSERT(LIST_EMPTY(&state->ls_pending),
+	    ("lock pending for %p", state));
+	LIST_FOREACH_SAFE(lock, &state->ls_active, lf_link, nlock) {
+		LIST_REMOVE(lock, lf_link);
+		lf_free_lock(lock);
+	}
+out_free:
+	sx_xlock(&lf_lock_states_lock);
+	LIST_REMOVE(state, ls_link);
+	sx_xunlock(&lf_lock_states_lock);
+	sx_destroy(&state->ls_lock);
+	free(state, M_LOCKF);
 }
 
 /*
@@ -889,7 +884,6 @@ lf_free_edge(struct lockf_edge *e)
 	free(e, M_LOCKF);
 }
 
-
 /*
  * Ensure that the lock's owner has a corresponding vertex in the
  * owner graph.
@@ -915,7 +909,7 @@ lf_add_edge(struct lockf_entry *x, struct lockf_entry *y)
 	struct lockf_edge *e;
 	int error;
 
-#ifdef INVARIANTS
+#ifdef DIAGNOSTIC
 	LIST_FOREACH(e, &x->lf_outedges, le_outlink)
 		KASSERT(e->le_to != y, ("adding lock edge twice"));
 #endif
@@ -1062,6 +1056,12 @@ lf_add_incoming(struct lockf *state, struct lockf_entry *lock)
 	struct lockf_entry *overlap;
 	int error;
 
+	sx_assert(&state->ls_lock, SX_XLOCKED);
+	if (LIST_EMPTY(&state->ls_pending))
+		return (0);
+
+	error = 0;
+	sx_xlock(&lf_owner_graph_lock);
 	LIST_FOREACH(overlap, &state->ls_pending, lf_link) {
 		if (!lf_blocks(lock, overlap))
 			continue;
@@ -1079,10 +1079,11 @@ lf_add_incoming(struct lockf *state, struct lockf_entry *lock)
 		 */
 		if (error) {
 			lf_remove_incoming(lock);
-			return (error);
+			break;
 		}
 	}
-	return (0);
+	sx_xunlock(&lf_owner_graph_lock);
+	return (error);
 }
 
 /*
@@ -1518,9 +1519,7 @@ lf_setlock(struct lockf *state, struct lockf_entry *lock, struct vnode *vp,
 	 * edges from any currently pending lock that the new lock
 	 * would block.
 	 */
-	sx_xlock(&lf_owner_graph_lock);
 	error = lf_add_incoming(state, lock);
-	sx_xunlock(&lf_owner_graph_lock);
 	if (error) {
 #ifdef LOCKF_DEBUG
 		if (lockf_debug & 1)
@@ -1849,9 +1848,7 @@ lf_split(struct lockf *state, struct lockf_entry *lock1,
 	splitlock->lf_start = lock2->lf_end + 1;
 	LIST_INIT(&splitlock->lf_outedges);
 	LIST_INIT(&splitlock->lf_inedges);
-	sx_xlock(&lf_owner_graph_lock);
 	lf_add_incoming(state, splitlock);
-	sx_xunlock(&lf_owner_graph_lock);
 
 	lf_set_end(state, lock1, lock2->lf_start - 1, granted);
 
@@ -1954,6 +1951,7 @@ lf_iteratelocks_vnode(struct vnode *vp, lf_iterator *fn, void *arg)
 		VI_UNLOCK(vp);
 		return (0);
 	}
+	MPASS(ls->ls_threads >= 0);
 	ls->ls_threads++;
 	VI_UNLOCK(vp);
 
@@ -1977,6 +1975,7 @@ lf_iteratelocks_vnode(struct vnode *vp, lf_iterator *fn, void *arg)
 	}
 	sx_xunlock(&ls->ls_lock);
 	VI_LOCK(vp);
+	MPASS(ls->ls_threads > 0);
 	ls->ls_threads--;
 	wakeup(ls);
 	VI_UNLOCK(vp);
@@ -2022,12 +2021,13 @@ lf_countlocks(int sysid)
 	int count;
 
 	count = 0;
-	sx_xlock(&lf_lock_owners_lock);
-	for (i = 0; i < LOCK_OWNER_HASH_SIZE; i++)
-		LIST_FOREACH(lo, &lf_lock_owners[i], lo_link)
+	for (i = 0; i < LOCK_OWNER_HASH_SIZE; i++) {
+		sx_xlock(&lf_lock_owners[i].lock);
+		LIST_FOREACH(lo, &lf_lock_owners[i].list, lo_link)
 			if (lo->lo_sysid == sysid)
 				count += lo->lo_refs;
-	sx_xunlock(&lf_lock_owners_lock);
+		sx_xunlock(&lf_lock_owners[i].lock);
+	}
 
 	return (count);
 }
@@ -2234,8 +2234,9 @@ graph_add_edge(struct owner_graph *g, struct owner_vertex *x,
 {
 	struct owner_edge *e;
 	struct owner_vertex_list deltaF, deltaB;
-	int nF, nB, n, vi, i;
+	int nF, n, vi, i;
 	int *indices;
+	int nB __unused;
 
 	sx_assert(&lf_owner_graph_lock, SX_XLOCKED);
 
@@ -2438,7 +2439,7 @@ graph_free_vertex(struct owner_graph *g, struct owner_vertex *v)
 	int i;
 
 	sx_assert(&lf_owner_graph_lock, SX_XLOCKED);
-	
+
 	KASSERT(LIST_EMPTY(&v->v_outedges), ("Freeing vertex with edges"));
 	KASSERT(LIST_EMPTY(&v->v_inedges), ("Freeing vertex with edges"));
 
@@ -2500,7 +2501,7 @@ lf_print(char *tag, struct lockf_entry *lock)
 	if (lock->lf_inode != (struct inode *)0)
 		printf(" in ino %ju on dev <%s>,",
 		    (uintmax_t)lock->lf_inode->i_number,
-		    devtoname(lock->lf_inode->i_dev));
+		    devtoname(ITODEV(lock->lf_inode)));
 	printf(" %s, start %jd, end ",
 	    lock->lf_type == F_RDLCK ? "shared" :
 	    lock->lf_type == F_WRLCK ? "exclusive" :
@@ -2528,7 +2529,7 @@ lf_printlist(char *tag, struct lockf_entry *lock)
 
 	printf("%s: Lock list for ino %ju on dev <%s>:\n",
 	    tag, (uintmax_t)lock->lf_inode->i_number,
-	    devtoname(lock->lf_inode->i_dev));
+	    devtoname(ITODEV(lock->lf_inode)));
 	LIST_FOREACH(lf, &lock->lf_vnode->v_lockf->ls_active, lf_link) {
 		printf("\tlock %p for ",(void *)lf);
 		lf_print_owner(lock->lf_owner);

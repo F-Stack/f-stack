@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005 Nate Lawson
  * All rights reserved.
  *
@@ -55,7 +57,7 @@ __FBSDID("$FreeBSD$");
 
 #include <dev/acpica/acpivar.h>
 #include "acpi_if.h"
- 
+
 struct p4tcc_softc {
 	device_t	dev;
 	int		set_count;
@@ -95,7 +97,6 @@ static device_method_t p4tcc_methods[] = {
 
 	/* ACPI interface */
 	DEVMETHOD(acpi_get_features,	p4tcc_features),
-
 	{0, 0}
 };
 

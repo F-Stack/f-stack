@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011
  *	Ben Gray <ben.r.gray@gmail.com>.
  * All rights reserved.
@@ -44,13 +46,12 @@ __FBSDID("$FreeBSD$");
 #include <machine/bus.h>
 #include <machine/intr.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include <arm/ti/ti_cpuid.h>
-#include <arm/ti/ti_prcm.h>
+#include <arm/ti/ti_sysc.h>
 #include <arm/ti/ti_sdma.h>
 #include <arm/ti/ti_sdmareg.h>
 
@@ -77,8 +78,7 @@ __FBSDID("$FreeBSD$");
  *
  */
 struct ti_sdma_channel {
-
-	/* 
+	/*
 	 * The configuration registers for the given channel, these are modified
 	 * by the set functions and only written to the actual registers when a
 	 * transaction is started.
@@ -108,7 +108,7 @@ struct ti_sdma_softc {
 	struct resource*	sc_irq_res;
 	struct resource*	sc_mem_res;
 
-	/* 
+	/*
 	 * I guess in theory we should have a mutex per DMA channel for register
 	 * modifications. But since we know we are never going to be run on a SMP
 	 * system, we can use just the single lock for all channels.
@@ -118,7 +118,7 @@ struct ti_sdma_softc {
 	/* Stores the H/W revision read from the registers */
 	uint32_t		sc_hw_rev;
 
-	/* 
+	/*
 	 * Bits in the sc_active_channels data field indicate if the channel has
 	 * been activated.
 	 */
@@ -224,7 +224,6 @@ ti_sdma_intr(void *arg)
 	TI_SDMA_LOCK(sc);
 
 	for (j = 0; j < NUM_DMA_IRQS; j++) {
-
 		/* Get the flag interrupts (enabled) */
 		intr = ti_sdma_read_4(sc, DMA4_IRQSTATUS_L(j));
 		intr &= ti_sdma_read_4(sc, DMA4_IRQENABLE_L(j));
@@ -265,7 +264,7 @@ ti_sdma_intr(void *arg)
 				if (csr & DMA4_CSR_TRANS_ERR) {
 					device_printf(sc->sc_dev, "Transaction error event on "
 					              "channel %u\n", ch);
-					/* 
+					/*
 					 * Apparently according to linux code, there is an errata
 					 * that says the channel is not disabled upon this error.
 					 * They explicitly disable the channel here .. since I
@@ -1174,10 +1173,11 @@ ti_sdma_attach(device_t dev)
 		panic("%s: Cannot map registers", device_get_name(dev));
 
 	/* Enable the interface and functional clocks */
-	ti_prcm_clk_enable(SDMA_CLK);
+	ti_sysc_clock_enable(device_get_parent(dev));
 
 	/* Read the sDMA revision register and sanity check it's known */
-	sc->sc_hw_rev = ti_sdma_read_4(sc, DMA4_REVISION);
+	sc->sc_hw_rev = ti_sdma_read_4(sc,
+	    ti_sysc_get_rev_address_offset_host(device_get_parent(dev)));
 	device_printf(dev, "sDMA revision %08x\n", sc->sc_hw_rev);
 
 	if (!ti_sdma_is_omap4_rev(sc) && !ti_sdma_is_omap3_rev(sc)) {
@@ -1192,7 +1192,6 @@ ti_sdma_attach(device_t dev)
 
 	/* Soft-reset is only supported on pre-OMAP44xx devices */
 	if (ti_sdma_is_omap3_rev(sc)) {
-
 		/* Soft-reset */
 		ti_sdma_write_4(sc, DMA4_OCP_SYSCONFIG, 0x0002);
 
@@ -1201,7 +1200,6 @@ ti_sdma_attach(device_t dev)
 
 		/* Wait for DMA reset to complete */
 		while ((ti_sdma_read_4(sc, DMA4_SYSSTATUS) & 0x1) == 0x0) {
-
 			/* Sleep for a tick */
 			pause("DMARESET", 1);
 
@@ -1212,7 +1210,7 @@ ti_sdma_attach(device_t dev)
 		}
 	}
 
-	/* 
+	/*
 	 * Install interrupt handlers for the for possible interrupts. Any channel
 	 * can trip one of the four IRQs
 	 */
@@ -1247,4 +1245,4 @@ static driver_t ti_sdma_driver = {
 static devclass_t ti_sdma_devclass;
 
 DRIVER_MODULE(ti_sdma, simplebus, ti_sdma_driver, ti_sdma_devclass, 0, 0);
-MODULE_DEPEND(ti_sdma, ti_prcm, 1, 1, 1);
+MODULE_DEPEND(ti_sdma, ti_sysc, 1, 1, 1);

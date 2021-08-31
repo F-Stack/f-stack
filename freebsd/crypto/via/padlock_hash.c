@@ -35,7 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/libkern.h>
 #include <sys/endian.h>
 #include <sys/pcpu.h>
-#if defined(__amd64__) || (defined(__i386__) && !defined(PC98))
+#if defined(__amd64__) || defined(__i386__)
 #include <machine/cpufunc.h>
 #include <machine/cputypes.h>
 #include <machine/md_var.h>
@@ -44,7 +44,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/pcb.h>
 
 #include <opencrypto/cryptodev.h>
-#include <opencrypto/cryptosoft.h> /* for hmac_ipad_buffer and hmac_opad_buffer */
 #include <opencrypto/xform.h>
 
 #include <crypto/via/padlock.h>
@@ -74,26 +73,33 @@ struct padlock_sha_ctx {
 };
 CTASSERT(sizeof(struct padlock_sha_ctx) <= sizeof(union authctx));
 
-static void padlock_sha_init(struct padlock_sha_ctx *ctx);
-static int padlock_sha_update(struct padlock_sha_ctx *ctx, const uint8_t *buf,
-    uint16_t bufsize);
-static void padlock_sha1_final(uint8_t *hash, struct padlock_sha_ctx *ctx);
-static void padlock_sha256_final(uint8_t *hash, struct padlock_sha_ctx *ctx);
+static void padlock_sha_init(void *vctx);
+static int padlock_sha_update(void *vctx, const void *buf, u_int bufsize);
+static void padlock_sha1_final(uint8_t *hash, void *vctx);
+static void padlock_sha256_final(uint8_t *hash, void *vctx);
 
 static struct auth_hash padlock_hmac_sha1 = {
-	CRYPTO_SHA1_HMAC, "HMAC-SHA1",
-	20, SHA1_HASH_LEN, SHA1_HMAC_BLOCK_LEN, sizeof(struct padlock_sha_ctx),
-        (void (*)(void *))padlock_sha_init, NULL, NULL,
-	(int (*)(void *, const uint8_t *, uint16_t))padlock_sha_update,
-	(void (*)(uint8_t *, void *))padlock_sha1_final
+	.type = CRYPTO_SHA1_HMAC,
+	.name = "HMAC-SHA1",
+	.keysize = SHA1_BLOCK_LEN,
+	.hashsize = SHA1_HASH_LEN,
+	.ctxsize = sizeof(struct padlock_sha_ctx),
+	.blocksize = SHA1_BLOCK_LEN,
+        .Init = padlock_sha_init,
+	.Update = padlock_sha_update,
+	.Final = padlock_sha1_final,
 };
 
 static struct auth_hash padlock_hmac_sha256 = {
-	CRYPTO_SHA2_256_HMAC, "HMAC-SHA2-256",
-	32, SHA2_256_HASH_LEN, SHA2_256_HMAC_BLOCK_LEN, sizeof(struct padlock_sha_ctx),
-        (void (*)(void *))padlock_sha_init, NULL, NULL,
-	(int (*)(void *, const uint8_t *, uint16_t))padlock_sha_update,
-	(void (*)(uint8_t *, void *))padlock_sha256_final
+	.type = CRYPTO_SHA2_256_HMAC,
+	.name = "HMAC-SHA2-256",
+	.keysize = SHA2_256_BLOCK_LEN,
+	.hashsize = SHA2_256_HASH_LEN,
+	.ctxsize = sizeof(struct padlock_sha_ctx),
+	.blocksize = SHA2_256_BLOCK_LEN,
+        .Init = padlock_sha_init,
+	.Update = padlock_sha_update,
+	.Final = padlock_sha256_final,
 };
 
 MALLOC_DECLARE(M_PADLOCK);
@@ -158,18 +164,22 @@ padlock_do_sha256(const char *in, char *out, int count)
 }
 
 static void
-padlock_sha_init(struct padlock_sha_ctx *ctx)
+padlock_sha_init(void *vctx)
 {
+	struct padlock_sha_ctx *ctx;
 
+	ctx = vctx;
 	ctx->psc_buf = NULL;
 	ctx->psc_offset = 0;
 	ctx->psc_size = 0;
 }
 
 static int
-padlock_sha_update(struct padlock_sha_ctx *ctx, const uint8_t *buf, uint16_t bufsize)
+padlock_sha_update(void *vctx, const void *buf, u_int bufsize)
 {
+	struct padlock_sha_ctx *ctx;
 
+	ctx = vctx;
 	if (ctx->psc_size - ctx->psc_offset < bufsize) {
 		ctx->psc_size = MAX(ctx->psc_size * 2, ctx->psc_size + bufsize);
 		ctx->psc_buf = realloc(ctx->psc_buf, ctx->psc_size, M_PADLOCK,
@@ -183,12 +193,13 @@ padlock_sha_update(struct padlock_sha_ctx *ctx, const uint8_t *buf, uint16_t buf
 }
 
 static void
-padlock_sha_free(struct padlock_sha_ctx *ctx)
+padlock_sha_free(void *vctx)
 {
+	struct padlock_sha_ctx *ctx;
 
+	ctx = vctx;
 	if (ctx->psc_buf != NULL) {
-		//bzero(ctx->psc_buf, ctx->psc_size);
-		free(ctx->psc_buf, M_PADLOCK);
+		zfree(ctx->psc_buf, M_PADLOCK);
 		ctx->psc_buf = NULL;
 		ctx->psc_offset = 0;
 		ctx->psc_size = 0;
@@ -196,17 +207,21 @@ padlock_sha_free(struct padlock_sha_ctx *ctx)
 }
 
 static void
-padlock_sha1_final(uint8_t *hash, struct padlock_sha_ctx *ctx)
+padlock_sha1_final(uint8_t *hash, void *vctx)
 {
+	struct padlock_sha_ctx *ctx;
 
+	ctx = vctx;
 	padlock_do_sha1(ctx->psc_buf, hash, ctx->psc_offset);
 	padlock_sha_free(ctx);
 }
 
 static void
-padlock_sha256_final(uint8_t *hash, struct padlock_sha_ctx *ctx)
+padlock_sha256_final(uint8_t *hash, void *vctx)
 {
+	struct padlock_sha_ctx *ctx;
 
+	ctx = vctx;
 	padlock_do_sha256(ctx->psc_buf, hash, ctx->psc_offset);
 	padlock_sha_free(ctx);
 }
@@ -241,12 +256,11 @@ padlock_free_ctx(struct auth_hash *axf, void *ctx)
 }
 
 static void
-padlock_hash_key_setup(struct padlock_session *ses, caddr_t key, int klen)
+padlock_hash_key_setup(struct padlock_session *ses, const uint8_t *key,
+    int klen)
 {
 	struct auth_hash *axf;
-	int i;
 
-	klen /= 8;
 	axf = ses->ses_axf;
 
 	/*
@@ -257,32 +271,17 @@ padlock_hash_key_setup(struct padlock_session *ses, caddr_t key, int klen)
 	padlock_free_ctx(axf, ses->ses_ictx);
 	padlock_free_ctx(axf, ses->ses_octx);
 
-	for (i = 0; i < klen; i++)
-		key[i] ^= HMAC_IPAD_VAL;
-
-	axf->Init(ses->ses_ictx);
-	axf->Update(ses->ses_ictx, key, klen);
-	axf->Update(ses->ses_ictx, hmac_ipad_buffer, axf->blocksize - klen);
-
-	for (i = 0; i < klen; i++)
-		key[i] ^= (HMAC_IPAD_VAL ^ HMAC_OPAD_VAL);
-
-	axf->Init(ses->ses_octx);
-	axf->Update(ses->ses_octx, key, klen);
-	axf->Update(ses->ses_octx, hmac_opad_buffer, axf->blocksize - klen);
-
-	for (i = 0; i < klen; i++)
-		key[i] ^= HMAC_OPAD_VAL;
+	hmac_init_ipad(axf, key, klen, ses->ses_ictx);
+	hmac_init_opad(axf, key, klen, ses->ses_octx);
 }
 
 /*
  * Compute keyed-hash authenticator.
  */
 static int
-padlock_authcompute(struct padlock_session *ses, struct cryptodesc *crd,
-    caddr_t buf, int flags)
+padlock_authcompute(struct padlock_session *ses, struct cryptop *crp)
 {
-	u_char hash[HASH_MAX_LEN];
+	u_char hash[HASH_MAX_LEN], hash2[HASH_MAX_LEN];
 	struct auth_hash *axf;
 	union authctx ctx;
 	int error;
@@ -290,8 +289,14 @@ padlock_authcompute(struct padlock_session *ses, struct cryptodesc *crd,
 	axf = ses->ses_axf;
 
 	padlock_copy_ctx(axf, ses->ses_ictx, &ctx);
-	error = crypto_apply(flags, buf, crd->crd_skip, crd->crd_len,
-	    (int (*)(void *, void *, unsigned int))axf->Update, (caddr_t)&ctx);
+	error = crypto_apply(crp, crp->crp_aad_start, crp->crp_aad_length,
+	    axf->Update, &ctx);
+	if (error != 0) {
+		padlock_free_ctx(axf, &ctx);
+		return (error);
+	}
+	error = crypto_apply(crp, crp->crp_payload_start,
+	    crp->crp_payload_length, axf->Update, &ctx);
 	if (error != 0) {
 		padlock_free_ctx(axf, &ctx);
 		return (error);
@@ -302,48 +307,72 @@ padlock_authcompute(struct padlock_session *ses, struct cryptodesc *crd,
 	axf->Update(&ctx, hash, axf->hashsize);
 	axf->Final(hash, &ctx);
 
-	/* Inject the authentication data */
-	crypto_copyback(flags, buf, crd->crd_inject,
-	    ses->ses_mlen == 0 ? axf->hashsize : ses->ses_mlen, hash);
+	if (crp->crp_op & CRYPTO_OP_VERIFY_DIGEST) {
+		crypto_copydata(crp, crp->crp_digest_start, ses->ses_mlen,
+		    hash2);
+		if (timingsafe_bcmp(hash, hash2, ses->ses_mlen) != 0)
+			return (EBADMSG);
+	} else
+		crypto_copyback(crp, crp->crp_digest_start, ses->ses_mlen,
+		    hash);
 	return (0);
 }
 
-int
-padlock_hash_setup(struct padlock_session *ses, struct cryptoini *macini)
+/* Find software structure which describes HMAC algorithm. */
+static struct auth_hash *
+padlock_hash_lookup(int alg)
 {
+	struct auth_hash *axf;
 
-	ses->ses_mlen = macini->cri_mlen;
-
-	/* Find software structure which describes HMAC algorithm. */
-	switch (macini->cri_alg) {
+	switch (alg) {
 	case CRYPTO_NULL_HMAC:
-		ses->ses_axf = &auth_hash_null;
-		break;
-	case CRYPTO_MD5_HMAC:
-		ses->ses_axf = &auth_hash_hmac_md5;
+		axf = &auth_hash_null;
 		break;
 	case CRYPTO_SHA1_HMAC:
 		if ((via_feature_xcrypt & VIA_HAS_SHA) != 0)
-			ses->ses_axf = &padlock_hmac_sha1;
+			axf = &padlock_hmac_sha1;
 		else
-			ses->ses_axf = &auth_hash_hmac_sha1;
+			axf = &auth_hash_hmac_sha1;
 		break;
 	case CRYPTO_RIPEMD160_HMAC:
-		ses->ses_axf = &auth_hash_hmac_ripemd_160;
+		axf = &auth_hash_hmac_ripemd_160;
 		break;
 	case CRYPTO_SHA2_256_HMAC:
 		if ((via_feature_xcrypt & VIA_HAS_SHA) != 0)
-			ses->ses_axf = &padlock_hmac_sha256;
+			axf = &padlock_hmac_sha256;
 		else
-			ses->ses_axf = &auth_hash_hmac_sha2_256;
+			axf = &auth_hash_hmac_sha2_256;
 		break;
 	case CRYPTO_SHA2_384_HMAC:
-		ses->ses_axf = &auth_hash_hmac_sha2_384;
+		axf = &auth_hash_hmac_sha2_384;
 		break;
 	case CRYPTO_SHA2_512_HMAC:
-		ses->ses_axf = &auth_hash_hmac_sha2_512;
+		axf = &auth_hash_hmac_sha2_512;
+		break;
+	default:
+		axf = NULL;
 		break;
 	}
+	return (axf);
+}
+
+bool
+padlock_hash_check(const struct crypto_session_params *csp)
+{
+
+	return (padlock_hash_lookup(csp->csp_auth_alg) != NULL);
+}
+
+int
+padlock_hash_setup(struct padlock_session *ses,
+    const struct crypto_session_params *csp)
+{
+
+	ses->ses_axf = padlock_hash_lookup(csp->csp_auth_alg);
+	if (csp->csp_auth_mlen == 0)
+		ses->ses_mlen = ses->ses_axf->hashsize;
+	else
+		ses->ses_mlen = csp->csp_auth_mlen;
 
 	/* Allocate memory for HMAC inner and outer contexts. */
 	ses->ses_ictx = malloc(ses->ses_axf->ctxsize, M_PADLOCK,
@@ -354,29 +383,27 @@ padlock_hash_setup(struct padlock_session *ses, struct cryptoini *macini)
 		return (ENOMEM);
 
 	/* Setup key if given. */
-	if (macini->cri_key != NULL) {
-		padlock_hash_key_setup(ses, macini->cri_key,
-		    macini->cri_klen);
+	if (csp->csp_auth_key != NULL) {
+		padlock_hash_key_setup(ses, csp->csp_auth_key,
+		    csp->csp_auth_klen);
 	}
 	return (0);
 }
 
 int
-padlock_hash_process(struct padlock_session *ses, struct cryptodesc *maccrd,
-    struct cryptop *crp)
+padlock_hash_process(struct padlock_session *ses, struct cryptop *crp,
+    const struct crypto_session_params *csp)
 {
 	struct thread *td;
 	int error;
 
 	td = curthread;
-	error = fpu_kern_enter(td, ses->ses_fpu_ctx, FPU_KERN_NORMAL |
-	    FPU_KERN_KTHR);
-	if (error != 0)
-		return (error);
-	if ((maccrd->crd_flags & CRD_F_KEY_EXPLICIT) != 0)
-		padlock_hash_key_setup(ses, maccrd->crd_key, maccrd->crd_klen);
+	fpu_kern_enter(td, ses->ses_fpu_ctx, FPU_KERN_NORMAL | FPU_KERN_KTHR);
+	if (crp->crp_auth_key != NULL)
+		padlock_hash_key_setup(ses, crp->crp_auth_key,
+		    csp->csp_auth_klen);
 
-	error = padlock_authcompute(ses, maccrd, crp->crp_buf, crp->crp_flags);
+	error = padlock_authcompute(ses, crp);
 	fpu_kern_leave(td, ses->ses_fpu_ctx);
 	return (error);
 }
@@ -387,14 +414,12 @@ padlock_hash_free(struct padlock_session *ses)
 
 	if (ses->ses_ictx != NULL) {
 		padlock_free_ctx(ses->ses_axf, ses->ses_ictx);
-		bzero(ses->ses_ictx, ses->ses_axf->ctxsize);
-		free(ses->ses_ictx, M_PADLOCK);
+		zfree(ses->ses_ictx, M_PADLOCK);
 		ses->ses_ictx = NULL;
 	}
 	if (ses->ses_octx != NULL) {
 		padlock_free_ctx(ses->ses_axf, ses->ses_octx);
-		bzero(ses->ses_octx, ses->ses_axf->ctxsize);
-		free(ses->ses_octx, M_PADLOCK);
+		zfree(ses->ses_octx, M_PADLOCK);
 		ses->ses_octx = NULL;
 	}
 }

@@ -47,12 +47,10 @@
 #define isb()  __asm __volatile("isb" : : : "memory")
 #define dsb()  __asm __volatile("dsb" : : : "memory")
 #define dmb()  __asm __volatile("dmb" : : : "memory")
-#elif __ARM_ARCH >= 6
+#else
 #define isb()  __asm __volatile("mcr p15, 0, %0, c7, c5, 4" : : "r" (0) : "memory")
 #define dsb()  __asm __volatile("mcr p15, 0, %0, c7, c10, 4" : : "r" (0) : "memory")
 #define dmb()  __asm __volatile("mcr p15, 0, %0, c7, c10, 5" : : "r" (0) : "memory")
-#else
-#error Only use this file with ARMv6 and later
 #endif
 
 #define mb()   dmb()
@@ -90,7 +88,6 @@ atomic_##NAME##_rel_##WIDTH(__volatile uint##WIDTH##_t *p, uint##WIDTH##_t v)\
 	dmb();								\
 	atomic_##NAME##_##WIDTH(p, v);					\
 }
-
 
 static __inline void
 atomic_add_32(volatile uint32_t *p, uint32_t val)
@@ -190,116 +187,384 @@ ATOMIC_ACQ_REL(clear, 32)
 ATOMIC_ACQ_REL(clear, 64)
 ATOMIC_ACQ_REL_LONG(clear)
 
-static __inline uint32_t
-atomic_cmpset_32(volatile uint32_t *p, uint32_t cmpval, uint32_t newval)
-{
-	uint32_t ret;
+#define ATOMIC_FCMPSET_CODE(RET, TYPE, SUF)                   \
+    {                                                         \
+	TYPE tmp;                                             \
+                                                              \
+	__asm __volatile(                                     \
+	    "1: ldrex" SUF "   %[tmp], [%[ptr]]          \n"  \
+	    "   ldr" SUF "     %[ret], [%[oldv]]         \n"  \
+	    "   teq            %[tmp], %[ret]            \n"  \
+	    "   ittee          ne                        \n"  \
+	    "   str" SUF "ne   %[tmp], [%[oldv]]         \n"  \
+	    "   movne          %[ret], #0                \n"  \
+	    "   strex" SUF "eq %[ret], %[newv], [%[ptr]] \n"  \
+	    "   eorseq         %[ret], #1                \n"  \
+	    "   beq            1b                        \n"  \
+	    : [ret] "=&r" (RET),                              \
+	      [tmp] "=&r" (tmp)                               \
+	    : [ptr] "r"   (_ptr),                             \
+	      [oldv] "r"  (_old),                             \
+	      [newv] "r"  (_new)                              \
+	    : "cc", "memory");                                \
+    }
 
-	__asm __volatile(
-	    "1: ldrex	%0, [%1]	\n"
-	    "   cmp	%0, %2		\n"
-	    "   itt	ne		\n"
-	    "   movne	%0, #0		\n"
-	    "   bne	2f		\n"
-	    "   strex	%0, %3, [%1]	\n"
-	    "   cmp	%0, #0		\n"
-	    "   ite	eq		\n"
-	    "   moveq	%0, #1		\n"
-	    "   bne	1b		\n"
-	    "2:"
-	    : "=&r" (ret), "+r" (p), "+r" (cmpval), "+r" (newval)
-	    : : "cc", "memory");
+#define ATOMIC_FCMPSET_CODE64(RET)                                 \
+    {                                                              \
+	uint64_t cmp, tmp;                                         \
+                                                                   \
+	__asm __volatile(                                          \
+	    "1: ldrexd   %Q[tmp], %R[tmp], [%[ptr]]           \n"  \
+	    "   ldrd     %Q[cmp], %R[cmp], [%[oldv]]          \n"  \
+	    "   teq      %Q[tmp], %Q[cmp]                     \n"  \
+	    "   it       eq                                   \n"  \
+	    "   teqeq    %R[tmp], %R[cmp]                     \n"  \
+	    "   ittee    ne                                   \n"  \
+	    "   movne    %[ret], #0                           \n"  \
+	    "   strdne   %[cmp], [%[oldv]]                    \n"  \
+	    "   strexdeq %[ret], %Q[newv], %R[newv], [%[ptr]] \n"  \
+	    "   eorseq   %[ret], #1                           \n"  \
+	    "   beq      1b                                   \n"  \
+	    : [ret] "=&r" (RET),                                   \
+	      [cmp] "=&r" (cmp),                                   \
+	      [tmp] "=&r" (tmp)                                    \
+	    : [ptr] "r"   (_ptr),                                  \
+	      [oldv] "r"  (_old),                                  \
+	      [newv] "r"  (_new)                                   \
+	    : "cc", "memory");                                     \
+    }
+
+static __inline int
+atomic_fcmpset_8(volatile uint8_t *_ptr, uint8_t *_old, uint8_t _new)
+{
+	int ret;
+
+	ATOMIC_FCMPSET_CODE(ret, uint8_t, "b");
+	return (ret);
+}
+#define	atomic_fcmpset_8	atomic_fcmpset_8
+
+static __inline int
+atomic_fcmpset_acq_8(volatile uint8_t *_ptr, uint8_t *_old, uint8_t _new)
+{
+	int ret;
+
+	ATOMIC_FCMPSET_CODE(ret, uint8_t, "b");
+	dmb();
 	return (ret);
 }
 
 static __inline int
-atomic_cmpset_64(volatile uint64_t *p, uint64_t cmpval, uint64_t newval)
+atomic_fcmpset_rel_8(volatile uint8_t *_ptr, uint8_t *_old, uint8_t _new)
 {
-	uint64_t tmp;
-	uint32_t ret;
+	int ret;
 
-	__asm __volatile(
-	    "1:							\n"
-	    "   ldrexd	%Q[tmp], %R[tmp], [%[ptr]]		\n"
-	    "   teq	%Q[tmp], %Q[cmpval]			\n"
-	    "   itee	eq					\n"
-	    "   teqeq	%R[tmp], %R[cmpval]			\n"
-	    "   movne	%[ret], #0				\n"
-	    "   bne	2f					\n"
-	    "   strexd	%[ret], %Q[newval], %R[newval], [%[ptr]]\n"
-	    "   teq	%[ret], #0				\n"
-	    "   it	ne					\n"
-	    "   bne	1b					\n"
-	    "   mov	%[ret], #1				\n"
-	    "2:							\n"
-	    : [ret]    "=&r" (ret),
-	      [tmp]    "=&r" (tmp)
-	    : [ptr]    "r"   (p),
-	      [cmpval] "r"   (cmpval),
-	      [newval] "r"   (newval)
-	    : "cc", "memory");
+	dmb();
+	ATOMIC_FCMPSET_CODE(ret, uint8_t, "b");
 	return (ret);
 }
 
-static __inline u_long
-atomic_cmpset_long(volatile u_long *p, u_long cmpval, u_long newval)
+static __inline int
+atomic_fcmpset_16(volatile uint16_t *_ptr, uint16_t *_old, uint16_t _new)
 {
+	int ret;
 
-	return (atomic_cmpset_32((volatile uint32_t *)p, cmpval, newval));
+	ATOMIC_FCMPSET_CODE(ret, uint16_t, "h");
+	return (ret);
 }
+#define	atomic_fcmpset_16	atomic_fcmpset_16
 
-static __inline uint32_t
-atomic_cmpset_acq_32(volatile uint32_t *p, uint32_t cmpval, uint32_t newval)
+static __inline int
+atomic_fcmpset_acq_16(volatile uint16_t *_ptr, uint16_t *_old, uint16_t _new)
 {
-	uint32_t ret;
+	int ret;
 
-	ret = atomic_cmpset_32(p, cmpval, newval);
+	ATOMIC_FCMPSET_CODE(ret, uint16_t, "h");
 	dmb();
 	return (ret);
 }
 
-static __inline uint64_t
-atomic_cmpset_acq_64(volatile uint64_t *p, uint64_t cmpval, uint64_t newval)
+static __inline int
+atomic_fcmpset_rel_16(volatile uint16_t *_ptr, uint16_t *_old, uint16_t _new)
 {
-	uint64_t ret;
+	int ret;
 
-	ret = atomic_cmpset_64(p, cmpval, newval);
+	dmb();
+	ATOMIC_FCMPSET_CODE(ret, uint16_t, "h");
+	return (ret);
+}
+
+static __inline int
+atomic_fcmpset_32(volatile uint32_t *_ptr, uint32_t *_old, uint32_t _new)
+{
+	int ret;
+
+	ATOMIC_FCMPSET_CODE(ret, uint32_t, "");
+	return (ret);
+}
+
+static __inline int
+atomic_fcmpset_acq_32(volatile uint32_t *_ptr, uint32_t *_old, uint32_t _new)
+{
+	int ret;
+
+	ATOMIC_FCMPSET_CODE(ret, uint32_t, "");
 	dmb();
 	return (ret);
 }
 
-static __inline u_long
-atomic_cmpset_acq_long(volatile u_long *p, u_long cmpval, u_long newval)
+static __inline int
+atomic_fcmpset_rel_32(volatile uint32_t *_ptr, uint32_t *_old, uint32_t _new)
 {
-	u_long ret;
+	int ret;
 
-	ret = atomic_cmpset_long(p, cmpval, newval);
+	dmb();
+	ATOMIC_FCMPSET_CODE(ret, uint32_t, "");
+	return (ret);
+}
+
+static __inline int
+atomic_fcmpset_long(volatile u_long *_ptr, u_long *_old, u_long _new)
+{
+	int ret;
+
+	ATOMIC_FCMPSET_CODE(ret, u_long, "");
+	return (ret);
+}
+
+static __inline int
+atomic_fcmpset_acq_long(volatile u_long *_ptr, u_long *_old, u_long _new)
+{
+	int ret;
+
+	ATOMIC_FCMPSET_CODE(ret, u_long, "");
 	dmb();
 	return (ret);
 }
 
-static __inline uint32_t
-atomic_cmpset_rel_32(volatile uint32_t *p, uint32_t cmpval, uint32_t newval)
+static __inline int
+atomic_fcmpset_rel_long(volatile u_long *_ptr, u_long *_old, u_long _new)
 {
+	int ret;
 
 	dmb();
-	return (atomic_cmpset_32(p, cmpval, newval));
+	ATOMIC_FCMPSET_CODE(ret, u_long, "");
+	return (ret);
 }
 
-static __inline uint64_t
-atomic_cmpset_rel_64(volatile uint64_t *p, uint64_t cmpval, uint64_t newval)
+static __inline int
+atomic_fcmpset_64(volatile uint64_t *_ptr, uint64_t *_old, uint64_t _new)
 {
+	int ret;
 
-	dmb();
-	return (atomic_cmpset_64(p, cmpval, newval));
+	ATOMIC_FCMPSET_CODE64(ret);
+	return (ret);
 }
 
-static __inline u_long
-atomic_cmpset_rel_long(volatile u_long *p, u_long cmpval, u_long newval)
+static __inline int
+atomic_fcmpset_acq_64(volatile uint64_t *_ptr, uint64_t *_old, uint64_t _new)
 {
+	int ret;
+
+	ATOMIC_FCMPSET_CODE64(ret);
+	dmb();
+	return (ret);
+}
+
+static __inline int
+atomic_fcmpset_rel_64(volatile uint64_t *_ptr, uint64_t *_old, uint64_t _new)
+{
+	int ret;
 
 	dmb();
-	return (atomic_cmpset_long(p, cmpval, newval));
+	ATOMIC_FCMPSET_CODE64(ret);
+	return (ret);
+}
+
+#define ATOMIC_CMPSET_CODE(RET, SUF)                         \
+    {                                                        \
+	__asm __volatile(                                    \
+	    "1: ldrex" SUF "   %[ret], [%[ptr]]          \n" \
+	    "   teq            %[ret], %[oldv]           \n" \
+	    "   itee           ne                        \n" \
+	    "   movne          %[ret], #0                \n" \
+	    "   strex" SUF "eq %[ret], %[newv], [%[ptr]] \n" \
+	    "   eorseq         %[ret], #1                \n" \
+	    "   beq            1b                        \n" \
+	    : [ret] "=&r" (RET)                              \
+	    : [ptr] "r"   (_ptr),                            \
+	      [oldv] "r"  (_old),                            \
+	      [newv] "r"  (_new)                             \
+	    : "cc", "memory");                               \
+    }
+
+#define ATOMIC_CMPSET_CODE64(RET)                                 \
+    {                                                             \
+	uint64_t tmp;                                             \
+	                                                          \
+	__asm __volatile(                                         \
+	    "1: ldrexd   %Q[tmp], %R[tmp], [%[ptr]]           \n" \
+	    "   teq      %Q[tmp], %Q[oldv]                    \n" \
+	    "   it       eq                                   \n" \
+	    "   teqeq    %R[tmp], %R[oldv]                    \n" \
+	    "   itee     ne                                   \n" \
+	    "   movne    %[ret], #0                           \n" \
+	    "   strexdeq %[ret], %Q[newv], %R[newv], [%[ptr]] \n" \
+	    "   eorseq   %[ret], #1                           \n" \
+	    "   beq      1b                                   \n" \
+	    : [ret] "=&r" (RET),                                  \
+	      [tmp] "=&r" (tmp)                                   \
+	    : [ptr] "r"   (_ptr),                                 \
+	      [oldv] "r"  (_old),                                 \
+	      [newv] "r"  (_new)                                  \
+	    : "cc", "memory");                                    \
+    }
+
+static __inline int
+atomic_cmpset_8(volatile uint8_t *_ptr, uint8_t _old, uint8_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "b");
+	return (ret);
+}
+#define	atomic_cmpset_8		atomic_cmpset_8
+
+static __inline int
+atomic_cmpset_acq_8(volatile uint8_t *_ptr, uint8_t _old, uint8_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "b");
+	dmb();
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_rel_8(volatile uint8_t *_ptr, uint8_t _old, uint8_t _new)
+{
+	int ret;
+
+	dmb();
+	ATOMIC_CMPSET_CODE(ret, "b");
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_16(volatile uint16_t *_ptr, uint16_t _old, uint16_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "h");
+	return (ret);
+}
+#define	atomic_cmpset_16	atomic_cmpset_16
+
+static __inline int
+atomic_cmpset_acq_16(volatile uint16_t *_ptr, uint16_t _old, uint16_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "h");
+	dmb();
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_rel_16(volatile uint16_t *_ptr, uint16_t _old, uint16_t _new)
+{
+	int ret;
+
+	dmb();
+	ATOMIC_CMPSET_CODE(ret, "h");
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_32(volatile uint32_t *_ptr, uint32_t _old, uint32_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "");
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_acq_32(volatile uint32_t *_ptr, uint32_t _old, uint32_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "");
+	dmb();
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_rel_32(volatile uint32_t *_ptr, uint32_t _old, uint32_t _new)
+{
+	int ret;
+
+	dmb();
+	ATOMIC_CMPSET_CODE(ret, "");
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_long(volatile u_long *_ptr, u_long _old, u_long _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "");
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_acq_long(volatile u_long *_ptr, u_long _old, u_long _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE(ret, "");
+	dmb();
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_rel_long(volatile u_long *_ptr, u_long _old, u_long _new)
+{
+	int ret;
+
+	dmb();
+	ATOMIC_CMPSET_CODE(ret, "");
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_64(volatile uint64_t *_ptr, uint64_t _old, uint64_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE64(ret);
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_acq_64(volatile uint64_t *_ptr, uint64_t _old, uint64_t _new)
+{
+	int ret;
+
+	ATOMIC_CMPSET_CODE64(ret);
+	dmb();
+	return (ret);
+}
+
+static __inline int
+atomic_cmpset_rel_64(volatile uint64_t *_ptr, uint64_t _old, uint64_t _new)
+{
+	int ret;
+
+	dmb();
+	ATOMIC_CMPSET_CODE64(ret);
+	return (ret);
 }
 
 static __inline uint32_t
@@ -327,7 +592,7 @@ atomic_fetchadd_64(volatile uint64_t *p, uint64_t val)
 
 	__asm __volatile(
 	    "1:							\n"
-	    "   ldrexd	%Q[tmp], %R[tmp], [%[ptr]]		\n"
+	    "   ldrexd	%Q[ret], %R[ret], [%[ptr]]		\n"
 	    "   adds	%Q[tmp], %Q[ret], %Q[val]		\n"
 	    "   adc	%R[tmp], %R[ret], %R[val]		\n"
 	    "   strexd	%[exf], %Q[tmp], %R[tmp], [%[ptr]]	\n"
@@ -594,23 +859,92 @@ atomic_store_rel_long(volatile u_long *p, u_long v)
 }
 
 static __inline int
-atomic_testandset_32(volatile uint32_t *p, u_int v)
+atomic_testandclear_32(volatile uint32_t *ptr, u_int bit)
 {
-	uint32_t tmp, tmp2, res, mask;
+	int newv, oldv, result;
 
-	mask = 1u << (v & 0x1f);
-	tmp = tmp2 = 0;
 	__asm __volatile(
-	"1:	ldrex	%0, [%4]	\n"
-	"	orr	%1, %0, %3	\n"
-	"	strex	%2, %1, [%4]	\n"
-	"	cmp	%2, #0		\n"
-	"	it	ne		\n"
-	"	bne	1b		\n"
-	: "=&r" (res), "=&r" (tmp), "=&r" (tmp2)
-	: "r" (mask), "r" (p)
-	: "cc", "memory");
-	return ((res & mask) != 0);
+	    "   mov     ip, #1					\n"
+	    "   lsl     ip, ip, %[bit]				\n"
+	    /*  Done with %[bit] as input, reuse below as output. */
+	    "1:							\n"
+	    "   ldrex	%[oldv], [%[ptr]]			\n"
+	    "   bic     %[newv], %[oldv], ip			\n"
+	    "   strex	%[bit], %[newv], [%[ptr]]		\n"
+	    "   teq	%[bit], #0				\n"
+	    "   it	ne					\n"
+	    "   bne	1b					\n"
+	    "   ands	%[bit], %[oldv], ip			\n"
+	    "   it	ne					\n"
+	    "   movne   %[bit], #1                              \n"
+	    : [bit]  "=&r"   (result),
+	      [oldv] "=&r"   (oldv),
+	      [newv] "=&r"   (newv)
+	    : [ptr]  "r"     (ptr),
+	             "[bit]" (bit & 0x1f)
+	    : "cc", "ip", "memory");
+
+	return (result);
+}
+
+static __inline int
+atomic_testandclear_int(volatile u_int *p, u_int v)
+{
+
+	return (atomic_testandclear_32((volatile uint32_t *)p, v));
+}
+
+static __inline int
+atomic_testandclear_long(volatile u_long *p, u_int v)
+{
+
+	return (atomic_testandclear_32((volatile uint32_t *)p, v));
+}
+#define	atomic_testandclear_long	atomic_testandclear_long
+
+
+static __inline int
+atomic_testandclear_64(volatile uint64_t *p, u_int v)
+{
+	volatile uint32_t *p32;
+
+	p32 = (volatile uint32_t *)p;
+	/*
+	 * Assume little-endian,
+	 * atomic_testandclear_32() uses only last 5 bits of v
+	 */
+	if ((v & 0x20) != 0)
+		p32++;
+	return (atomic_testandclear_32(p32, v));
+}
+
+static __inline int
+atomic_testandset_32(volatile uint32_t *ptr, u_int bit)
+{
+	int newv, oldv, result;
+
+	__asm __volatile(
+	    "   mov     ip, #1					\n"
+	    "   lsl     ip, ip, %[bit]				\n"
+	    /*  Done with %[bit] as input, reuse below as output. */
+	    "1:							\n"
+	    "   ldrex	%[oldv], [%[ptr]]			\n"
+	    "   orr     %[newv], %[oldv], ip			\n"
+	    "   strex	%[bit], %[newv], [%[ptr]]		\n"
+	    "   teq	%[bit], #0				\n"
+	    "   it	ne					\n"
+	    "   bne	1b					\n"
+	    "   ands	%[bit], %[oldv], ip			\n"
+	    "   it	ne					\n"
+	    "   movne   %[bit], #1                              \n"
+	    : [bit]  "=&r"   (result),
+	      [oldv] "=&r"   (oldv),
+	      [newv] "=&r"   (newv)
+	    : [ptr]  "r"     (ptr),
+	             "[bit]" (bit & 0x1f)
+	    : "cc", "ip", "memory");
+
+	return (result);
 }
 
 static __inline int
@@ -626,6 +960,7 @@ atomic_testandset_long(volatile u_long *p, u_int v)
 
 	return (atomic_testandset_32((volatile uint32_t *)p, v));
 }
+#define	atomic_testandset_long	atomic_testandset_long
 
 static __inline int
 atomic_testandset_64(volatile uint64_t *p, u_int v)
@@ -633,11 +968,12 @@ atomic_testandset_64(volatile uint64_t *p, u_int v)
 	volatile uint32_t *p32;
 
 	p32 = (volatile uint32_t *)p;
-	/* Assume little-endian */
-	if (v >= 32) {
-		v &= 0x1f;
+	/*
+	 * Assume little-endian,
+	 * atomic_testandset_32() uses only last 5 bits of v
+	 */
+	if ((v & 0x20) != 0)
 		p32++;
-	}
 	return (atomic_testandset_32(p32, v));
 }
 
@@ -652,10 +988,30 @@ atomic_swap_32(volatile uint32_t *p, uint32_t v)
 	    "   teq	%[exf], #0			\n"
 	    "   it	ne				\n"
 	    "   bne	1b				\n"
-	    : [ret] "=r"  (ret),
+	    : [ret] "=&r"  (ret),
 	      [exf] "=&r" (exflag)
 	    : [val] "r"  (v),
 	      [ptr] "r"  (p)
+	    : "cc", "memory");
+	return (ret);
+}
+
+static __inline uint64_t
+atomic_swap_64(volatile uint64_t *p, uint64_t v)
+{
+	uint64_t ret;
+	uint32_t exflag;
+
+	__asm __volatile(
+	    "1: ldrexd	%Q[ret], %R[ret], [%[ptr]]		\n"
+	    "   strexd	%[exf], %Q[val], %R[val], [%[ptr]]	\n"
+	    "   teq	%[exf], #0				\n"
+	    "   it	ne					\n"
+	    "   bne	1b					\n"
+	    : [ret] "=&r" (ret),
+	      [exf] "=&r" (exflag)
+	    : [val] "r"   (v),
+	      [ptr] "r"   (p)
 	    : "cc", "memory");
 	return (ret);
 }

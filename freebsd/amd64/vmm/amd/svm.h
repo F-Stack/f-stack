@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Anish Gupta (akgupt3@gmail.com)
  * All rights reserved.
  *
@@ -30,6 +32,7 @@
 #define _SVM_H_
 
 struct pcpu;
+struct svm_softc;
 
 /*
  * Guest register state that is saved outside the VMCB.
@@ -49,8 +52,23 @@ struct svm_regctx {
 	register_t	sctx_r13;
 	register_t	sctx_r14;
 	register_t	sctx_r15;
+	register_t	sctx_dr0;
+	register_t	sctx_dr1;
+	register_t	sctx_dr2;
+	register_t	sctx_dr3;
+
+	register_t	host_dr0;
+	register_t	host_dr1;
+	register_t	host_dr2;
+	register_t	host_dr3;
+	register_t	host_dr6;
+	register_t	host_dr7;
+	uint64_t	host_debugctl;
 };
 
 void svm_launch(uint64_t pa, struct svm_regctx *gctx, struct pcpu *pcpu);
+#ifdef BHYVE_SNAPSHOT
+int  svm_set_tsc_offset(struct svm_softc *sc, int vcpu, uint64_t offset);
+#endif
 
 #endif /* _SVM_H_ */

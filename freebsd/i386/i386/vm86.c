@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1997 Jonathan Lemon
  * All rights reserved.
  *
@@ -76,6 +78,55 @@ struct system_map {
 #define PUSH_MASK	~(PSL_VM | PSL_RF | PSL_I)
 #define POP_MASK	~(PSL_VIP | PSL_VIF | PSL_VM | PSL_RF | PSL_IOPL)
 
+static int
+vm86_suword16(volatile void *base, int word)
+{
+
+	if (curthread->td_critnest != 0) {
+		*(volatile uint16_t *)base = word;
+		return (0);
+	}
+	return (suword16(base, word));
+}
+
+static int
+vm86_suword(volatile void *base, long word)
+{
+
+	if (curthread->td_critnest != 0) {
+		*(volatile long *)base = word;
+		return (0);
+	}
+	return (suword(base, word));
+}
+
+static int
+vm86_fubyte(volatile const void *base)
+{
+
+	if (curthread->td_critnest != 0)
+		return (*(volatile const u_char *)base);
+	return (fubyte(base));
+}
+
+static int
+vm86_fuword16(volatile const void *base)
+{
+
+	if (curthread->td_critnest != 0)
+		return (*(volatile const uint16_t *)base);
+	return (fuword16(base));
+}
+
+static long
+vm86_fuword(volatile const void *base)
+{
+
+	if (curthread->td_critnest != 0)
+		return (*(volatile const long *)base);
+	return (fuword(base));
+}
+
 static __inline caddr_t
 MAKE_ADDR(u_short sel, u_short off)
 {
@@ -99,20 +150,20 @@ static __inline void
 PUSH(u_short x, struct vm86frame *vmf)
 {
 	vmf->vmf_sp -= 2;
-	suword16(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp), x);
+	vm86_suword16(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp), x);
 }
 
 static __inline void
 PUSHL(u_int x, struct vm86frame *vmf)
 {
 	vmf->vmf_sp -= 4;
-	suword(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp), x);
+	vm86_suword(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp), x);
 }
 
 static __inline u_short
 POP(struct vm86frame *vmf)
 {
-	u_short x = fuword16(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp));
+	u_short x = vm86_fuword16(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp));
 
 	vmf->vmf_sp += 2;
 	return (x);
@@ -121,15 +172,14 @@ POP(struct vm86frame *vmf)
 static __inline u_int
 POPL(struct vm86frame *vmf)
 {
-	u_int x = fuword(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp));
+	u_int x = vm86_fuword(MAKE_ADDR(vmf->vmf_ss, vmf->vmf_sp));
 
 	vmf->vmf_sp += 4;
 	return (x);
 }
 
 int
-vm86_emulate(vmf)
-	struct vm86frame *vmf;
+vm86_emulate(struct vm86frame *vmf)
 {
 	struct vm86_kernel *vm86;
 	caddr_t addr;
@@ -151,16 +201,16 @@ vm86_emulate(vmf)
 		retcode = SIGTRAP;
 
 	addr = MAKE_ADDR(vmf->vmf_cs, vmf->vmf_ip);
-	i_byte = fubyte(addr);
+	i_byte = vm86_fubyte(addr);
 	if (i_byte == ADDRESS_SIZE_PREFIX) {
-		i_byte = fubyte(++addr);
+		i_byte = vm86_fubyte(++addr);
 		inc_ip++;
 	}
 
 	if (vm86->vm86_has_vme) {
 		switch (i_byte) {
 		case OPERAND_SIZE_PREFIX:
-			i_byte = fubyte(++addr);
+			i_byte = vm86_fubyte(++addr);
 			inc_ip++;
 			switch (i_byte) {
 			case PUSHF:
@@ -171,7 +221,7 @@ vm86_emulate(vmf)
 					PUSHL((vmf->vmf_eflags & PUSH_MASK)
 					    | PSL_IOPL, vmf);
 				vmf->vmf_ip += inc_ip;
-				return (0);
+				return (retcode);
 
 			case POPF:
 				temp_flags = POPL(vmf) & POP_MASK;
@@ -185,7 +235,7 @@ vm86_emulate(vmf)
 				} else {
 					vmf->vmf_eflags &= ~PSL_VIF;
 				}
-				return (0);
+				return (retcode);
 			}
 			break;
 
@@ -203,7 +253,7 @@ vm86_emulate(vmf)
 		case INTn:
 			break;
 
-		/* VME if trying to set PSL_TF, or PSL_I when VIP is set */
+		/* VME if trying to set PSL_T, or PSL_I when VIP is set */
 		case POPF:
 			temp_flags = POP(vmf) & POP_MASK;
 			vmf->vmf_flags = (vmf->vmf_flags & ~POP_MASK)
@@ -218,7 +268,7 @@ vm86_emulate(vmf)
 			}
 			return (retcode);
 
-		/* VME if trying to set PSL_TF, or PSL_I when VIP is set */
+		/* VME if trying to set PSL_T, or PSL_I when VIP is set */
 		case IRET:
 			vmf->vmf_ip = POP(vmf);
 			vmf->vmf_cs = POP(vmf);
@@ -233,14 +283,13 @@ vm86_emulate(vmf)
 				vmf->vmf_eflags &= ~PSL_VIF;
 			}
 			return (retcode);
-
 		}
 		return (SIGBUS);
 	}
 
 	switch (i_byte) {
 	case OPERAND_SIZE_PREFIX:
-		i_byte = fubyte(++addr);
+		i_byte = vm86_fubyte(++addr);
 		inc_ip++;
 		switch (i_byte) {
 		case PUSHF:
@@ -292,7 +341,7 @@ vm86_emulate(vmf)
 		return (retcode);
 
 	case INTn:
-		i_byte = fubyte(addr + 1);
+		i_byte = vm86_fubyte(addr + 1);
 		if ((vm86->vm86_intmap[i_byte >> 3] & (1 << (i_byte & 7))) != 0)
 			break;
 		if (vm86->vm86_eflags & PSL_VIF)
@@ -302,7 +351,7 @@ vm86_emulate(vmf)
 			PUSH((vmf->vmf_flags & PUSH_MASK) | PSL_IOPL, vmf);
 		PUSH(vmf->vmf_cs, vmf);
 		PUSH(vmf->vmf_ip + inc_ip + 1, vmf);	/* increment IP */
-		GET_VEC(fuword((caddr_t)(i_byte * 4)),
+		GET_VEC(vm86_fuword((caddr_t)(i_byte * 4)),
 		     &vmf->vmf_cs, &vmf->vmf_ip);
 		vmf->vmf_flags &= ~PSL_T;
 		vm86->vm86_eflags &= ~PSL_VIF;
@@ -347,8 +396,8 @@ vm86_emulate(vmf)
 	(sizeof(struct pcb_ext) - sizeof(struct segment_descriptor) + \
 	 INTMAP_SIZE + IOMAP_SIZE + 1)
 
-struct vm86_layout {
-	pt_entry_t	vml_pgtbl[PGTABLE_SIZE];
+struct vm86_layout_pae {
+	uint64_t	vml_pgtbl[PGTABLE_SIZE];
 	struct 	pcb vml_pcb;
 	struct	pcb_ext vml_ext;
 	char	vml_intmap[INTMAP_SIZE];
@@ -356,12 +405,26 @@ struct vm86_layout {
 	char	vml_iomap_trailer;
 };
 
-void
-vm86_initialize(void)
+struct vm86_layout_nopae {
+	uint32_t	vml_pgtbl[PGTABLE_SIZE];
+	struct 	pcb vml_pcb;
+	struct	pcb_ext vml_ext;
+	char	vml_intmap[INTMAP_SIZE];
+	char	vml_iomap[IOMAP_SIZE];
+	char	vml_iomap_trailer;
+};
+
+_Static_assert(sizeof(struct vm86_layout_pae) <= ctob(3),
+    "struct vm86_layout_pae exceeds space allocated in locore.s");
+_Static_assert(sizeof(struct vm86_layout_nopae) <= ctob(3),
+    "struct vm86_layout_nopae exceeds space allocated in locore.s");
+
+static void
+vm86_initialize_pae(void)
 {
 	int i;
 	u_int *addr;
-	struct vm86_layout *vml = (struct vm86_layout *)vm86paddr;
+	struct vm86_layout_pae *vml;
 	struct pcb *pcb;
 	struct pcb_ext *ext;
 	struct soft_segment_descriptor ssd = {
@@ -374,12 +437,6 @@ vm86_initialize(void)
 		0,			/* default 16 size */
 		0			/* granularity */
 	};
-
-	/*
-	 * this should be a compile time error, but cpp doesn't grok sizeof().
-	 */
-	if (sizeof(struct vm86_layout) > ctob(3))
-		panic("struct vm86_layout exceeds space allocated in locore.s");
 
 	/*
 	 * Below is the memory layout that we use for the vm86 region.
@@ -416,13 +473,14 @@ vm86_initialize(void)
 	 * pcb_esp	=    stack frame pointer at time of switch
 	 * pcb_ebx	= va of vm86 page table
 	 * pcb_eip	=    argument pointer to initial call
-	 * pcb_spare[0]	=    saved TSS descriptor, word 0
-	 * pcb_space[1]	=    saved TSS descriptor, word 1
+	 * pcb_vm86[0]	=    saved TSS descriptor, word 0
+	 * pcb_vm86[1]	=    saved TSS descriptor, word 1
 	 */
 #define new_ptd		pcb_esi
 #define vm86_frame	pcb_ebp
 #define pgtable_va	pcb_ebx
 
+	vml = (struct vm86_layout_pae *)vm86paddr;
 	pcb = &vml->vml_pcb;
 	ext = &vml->vml_ext;
 
@@ -432,13 +490,13 @@ vm86_initialize(void)
 	pcb->new_ptd = vm86pa | PG_V | PG_RW | PG_U;
 	pcb->vm86_frame = vm86paddr - sizeof(struct vm86frame);
 	pcb->pgtable_va = vm86paddr;
-	pcb->pcb_flags = PCB_VM86CALL; 
+	pcb->pcb_flags = PCB_VM86CALL;
 	pcb->pcb_ext = ext;
 
-	bzero(ext, sizeof(struct pcb_ext)); 
+	bzero(ext, sizeof(struct pcb_ext));
 	ext->ext_tss.tss_esp0 = vm86paddr;
 	ext->ext_tss.tss_ss0 = GSEL(GDATA_SEL, SEL_KPL);
-	ext->ext_tss.tss_ioopt = 
+	ext->ext_tss.tss_ioopt =
 		((u_int)vml->vml_iomap - (u_int)&ext->ext_tss) << 16;
 	ext->ext_iomap = vml->vml_iomap;
 	ext->ext_vm86.vm86_intmap = vml->vml_intmap;
@@ -452,7 +510,7 @@ vm86_initialize(void)
 	vml->vml_iomap_trailer = 0xff;
 
 	ssd.ssd_base = (u_int)&ext->ext_tss;
-	ssd.ssd_limit = TSS_SIZE - 1; 
+	ssd.ssd_limit = TSS_SIZE - 1;
 	ssdtosd(&ssd, &ext->ext_tssd);
 
 	vm86pcb = pcb;
@@ -465,6 +523,80 @@ vm86_initialize(void)
         msgbufinit((vm_offset_t)vm86paddr + sizeof(struct vm86_layout),
             ctob(3) - sizeof(struct vm86_layout));
 #endif
+}
+
+static void
+vm86_initialize_nopae(void)
+{
+	int i;
+	u_int *addr;
+	struct vm86_layout_nopae *vml;
+	struct pcb *pcb;
+	struct pcb_ext *ext;
+	struct soft_segment_descriptor ssd = {
+		0,			/* segment base address (overwritten) */
+		0,			/* length (overwritten) */
+		SDT_SYS386TSS,		/* segment type */
+		0,			/* priority level */
+		1,			/* descriptor present */
+		0, 0,
+		0,			/* default 16 size */
+		0			/* granularity */
+	};
+
+	vml = (struct vm86_layout_nopae *)vm86paddr;
+	pcb = &vml->vml_pcb;
+	ext = &vml->vml_ext;
+
+	mtx_init(&vm86_lock, "vm86 lock", NULL, MTX_DEF);
+
+	bzero(pcb, sizeof(struct pcb));
+	pcb->new_ptd = vm86pa | PG_V | PG_RW | PG_U;
+	pcb->vm86_frame = vm86paddr - sizeof(struct vm86frame);
+	pcb->pgtable_va = vm86paddr;
+	pcb->pcb_flags = PCB_VM86CALL;
+	pcb->pcb_ext = ext;
+
+	bzero(ext, sizeof(struct pcb_ext));
+	ext->ext_tss.tss_esp0 = vm86paddr;
+	ext->ext_tss.tss_ss0 = GSEL(GDATA_SEL, SEL_KPL);
+	ext->ext_tss.tss_ioopt =
+		((u_int)vml->vml_iomap - (u_int)&ext->ext_tss) << 16;
+	ext->ext_iomap = vml->vml_iomap;
+	ext->ext_vm86.vm86_intmap = vml->vml_intmap;
+
+	if (cpu_feature & CPUID_VME)
+		ext->ext_vm86.vm86_has_vme = (rcr4() & CR4_VME ? 1 : 0);
+
+	addr = (u_int *)ext->ext_vm86.vm86_intmap;
+	for (i = 0; i < (INTMAP_SIZE + IOMAP_SIZE) / sizeof(u_int); i++)
+		*addr++ = 0;
+	vml->vml_iomap_trailer = 0xff;
+
+	ssd.ssd_base = (u_int)&ext->ext_tss;
+	ssd.ssd_limit = TSS_SIZE - 1;
+	ssdtosd(&ssd, &ext->ext_tssd);
+
+	vm86pcb = pcb;
+
+#if 0
+        /*
+         * use whatever is leftover of the vm86 page layout as a
+         * message buffer so we can capture early output.
+         */
+        msgbufinit((vm_offset_t)vm86paddr + sizeof(struct vm86_layout),
+            ctob(3) - sizeof(struct vm86_layout));
+#endif
+}
+
+void
+vm86_initialize(void)
+{
+
+	if (pae_mode)
+		vm86_initialize_pae();
+	else
+		vm86_initialize_nopae();
 }
 
 vm_offset_t
@@ -547,6 +679,7 @@ vm86_prepcall(struct vm86frame *vmf)
 void
 vm86_trap(struct vm86frame *vmf)
 {
+	void (*p)(struct vm86frame *);
 	caddr_t addr;
 
 	/* "should not happen" */
@@ -559,21 +692,26 @@ vm86_trap(struct vm86frame *vmf)
 	else
 		vmf->vmf_trapno = vmf->vmf_trapno << 16;
 
-	vm86_biosret(vmf);
+	p = (void (*)(struct vm86frame *))((uintptr_t)vm86_biosret +
+	    setidt_disp);
+	p(vmf);
 }
 
 int
 vm86_intcall(int intnum, struct vm86frame *vmf)
 {
+	int (*p)(struct vm86frame *);
 	int retval;
 
 	if (intnum < 0 || intnum > 0xff)
 		return (EINVAL);
 
 	vmf->vmf_trapno = intnum;
+	p = (int (*)(struct vm86frame *))((uintptr_t)vm86_bioscall +
+	    setidt_disp);
 	mtx_lock(&vm86_lock);
 	critical_enter();
-	retval = vm86_bioscall(vmf);
+	retval = p(vmf);
 	critical_exit();
 	mtx_unlock(&vm86_lock);
 	return (retval);
@@ -586,33 +724,54 @@ vm86_intcall(int intnum, struct vm86frame *vmf)
  * caller's cs:ip routine.  
  */
 int
-vm86_datacall(intnum, vmf, vmc)
-	int intnum;
-	struct vm86frame *vmf;
-	struct vm86context *vmc;
+vm86_datacall(int intnum, struct vm86frame *vmf, struct vm86context *vmc)
 {
-	pt_entry_t *pte = (pt_entry_t *)vm86paddr;
+	uint64_t *pte_pae;
+	uint32_t *pte_nopae;
+	int (*p)(struct vm86frame *);
 	vm_paddr_t page;
 	int i, entry, retval;
 
 	mtx_lock(&vm86_lock);
-	for (i = 0; i < vmc->npages; i++) {
-		page = vtophys(vmc->pmap[i].kva & PG_FRAME);
-		entry = vmc->pmap[i].pte_num; 
-		vmc->pmap[i].old_pte = pte[entry];
-		pte[entry] = page | PG_V | PG_RW | PG_U;
-		pmap_invalidate_page(kernel_pmap, vmc->pmap[i].kva);
+	if (pae_mode) {
+		pte_pae = (uint64_t *)vm86paddr;
+		for (i = 0; i < vmc->npages; i++) {
+			page = vtophys(vmc->pmap[i].kva & PG_FRAME_PAE);
+			entry = vmc->pmap[i].pte_num;
+			vmc->pmap[i].old_pte = pte_pae[entry];
+			pte_pae[entry] = page | PG_V | PG_RW | PG_U;
+			pmap_invalidate_page(kernel_pmap, vmc->pmap[i].kva);
+		}
+	} else {
+		pte_nopae = (uint32_t *)vm86paddr;
+		for (i = 0; i < vmc->npages; i++) {
+			page = vtophys(vmc->pmap[i].kva & PG_FRAME_NOPAE);
+			entry = vmc->pmap[i].pte_num;
+			vmc->pmap[i].old_pte = pte_nopae[entry];
+			pte_nopae[entry] = page | PG_V | PG_RW | PG_U;
+			pmap_invalidate_page(kernel_pmap, vmc->pmap[i].kva);
+		}
 	}
 
 	vmf->vmf_trapno = intnum;
+	p = (int (*)(struct vm86frame *))((uintptr_t)vm86_bioscall +
+	    setidt_disp);
 	critical_enter();
-	retval = vm86_bioscall(vmf);
+	retval = p(vmf);
 	critical_exit();
 
-	for (i = 0; i < vmc->npages; i++) {
-		entry = vmc->pmap[i].pte_num;
-		pte[entry] = vmc->pmap[i].old_pte;
-		pmap_invalidate_page(kernel_pmap, vmc->pmap[i].kva);
+	if (pae_mode) {
+		for (i = 0; i < vmc->npages; i++) {
+			entry = vmc->pmap[i].pte_num;
+			pte_pae[entry] = vmc->pmap[i].old_pte;
+			pmap_invalidate_page(kernel_pmap, vmc->pmap[i].kva);
+		}
+	} else {
+		for (i = 0; i < vmc->npages; i++) {
+			entry = vmc->pmap[i].pte_num;
+			pte_nopae[entry] = vmc->pmap[i].old_pte;
+			pmap_invalidate_page(kernel_pmap, vmc->pmap[i].kva);
+		}
 	}
 	mtx_unlock(&vm86_lock);
 
@@ -634,11 +793,8 @@ vm86_getaddr(struct vm86context *vmc, u_short sel, u_short off)
 }
 
 int
-vm86_getptr(vmc, kva, sel, off)
-	struct vm86context *vmc;
-	vm_offset_t kva;
-	u_short *sel;
-	u_short *off;
+vm86_getptr(struct vm86context *vmc, vm_offset_t kva, u_short *sel,
+     u_short *off)
 {
 	int i;
 
@@ -651,11 +807,9 @@ vm86_getptr(vmc, kva, sel, off)
 		}
 	return (0);
 }
-	
+
 int
-vm86_sysarch(td, args)
-	struct thread *td;
-	char *args;
+vm86_sysarch(struct thread *td, char *args)
 {
 	int error = 0;
 	struct i386_vm86_args ua;
@@ -688,7 +842,7 @@ vm86_sysarch(td, args)
 #if 0
 	case VM86_SET_VME: {
 		struct vm86_vme_args sa;
-	
+
 		if ((cpu_feature & CPUID_VME) == 0)
 			return (ENODEV);
 

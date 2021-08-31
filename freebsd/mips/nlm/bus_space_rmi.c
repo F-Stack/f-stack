@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2003-2011 Netlogic Microsystems (Netlogic). All rights
  * reserved.
  *
@@ -161,7 +163,6 @@ rmi_bus_space_write_region_4(void *t,
     bus_size_t offset,
     const u_int32_t *addr,
     size_t count);
-
 
 static void
 rmi_bus_space_set_region_2(void *t,
@@ -418,7 +419,6 @@ rmi_bus_space_read_4(void *tag, bus_space_handle_t handle,
 	return (*(volatile u_int32_t *)(handle + offset));
 }
 
-
 /*
  * Read `count' 1, 2, 4, or 8 byte quantities from bus space
  * described by tag/handle/offset and copy into buffer provided.
@@ -470,12 +470,10 @@ rmi_bus_space_write_4(void *tag, bus_space_handle_t handle,
 	*(volatile u_int32_t *)(handle + offset) = value;
 }
 
-
 /*
  * Write `count' 1, 2, 4, or 8 byte quantities from the buffer
  * provided to bus space described by tag/handle/offset.
  */
-
 
 static void
 rmi_bus_space_write_multi_1(void *tag, bus_space_handle_t handle,
@@ -523,7 +521,6 @@ rmi_bus_space_set_region_4(void *t, bus_space_handle_t bsh,
 		(*(volatile u_int32_t *)(addr)) = value;
 }
 
-
 /*
  * Copy `count' 1, 2, 4, or 8 byte values from bus space starting
  * at tag/bsh1/off1 to bus space starting at tag/bsh2/off2.
@@ -549,7 +546,6 @@ rmi_bus_space_read_stream_1(void *t, bus_space_handle_t handle,
 	return *((volatile u_int8_t *)(handle + offset));
 }
 
-
 static u_int16_t
 rmi_bus_space_read_stream_2(void *t, bus_space_handle_t handle,
     bus_size_t offset)
@@ -557,14 +553,12 @@ rmi_bus_space_read_stream_2(void *t, bus_space_handle_t handle,
 	return *(volatile u_int16_t *)(handle + offset);
 }
 
-
 static u_int32_t
 rmi_bus_space_read_stream_4(void *t, bus_space_handle_t handle,
     bus_size_t offset)
 {
 	return (*(volatile u_int32_t *)(handle + offset));
 }
-
 
 static void
 rmi_bus_space_read_multi_stream_1(void *tag, bus_space_handle_t handle,
@@ -586,7 +580,6 @@ rmi_bus_space_read_multi_stream_4(void *tag, bus_space_handle_t handle,
 {
 	TODO();
 }
-
 
 /*
  * Read `count' 1, 2, 4, or 8 byte quantities from bus space
@@ -626,7 +619,6 @@ rmi_bus_space_write_stream_1(void *t, bus_space_handle_t handle,
 	TODO();
 }
 
-
 static void
 rmi_bus_space_write_stream_2(void *t, bus_space_handle_t handle,
     bus_size_t offset, u_int16_t value)
@@ -634,14 +626,12 @@ rmi_bus_space_write_stream_2(void *t, bus_space_handle_t handle,
 	TODO();
 }
 
-
 static void
 rmi_bus_space_write_stream_4(void *t, bus_space_handle_t handle,
     bus_size_t offset, u_int32_t value)
 {
 	TODO();
 }
-
 
 static void
 rmi_bus_space_write_multi_stream_1(void *tag, bus_space_handle_t handle,

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -37,6 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/protosw.h>
 #include <sys/domain.h>
 #include <sys/eventhandler.h>
+#include <sys/epoch.h>
 #include <sys/mbuf.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
@@ -471,51 +474,34 @@ pfctlinput(int cmd, struct sockaddr *sa)
 				(*pr->pr_ctlinput)(cmd, sa, (void *)0);
 }
 
-void
-pfctlinput2(int cmd, struct sockaddr *sa, void *ctlparam)
-{
-	struct domain *dp;
-	struct protosw *pr;
-
-	if (!sa)
-		return;
-	for (dp = domains; dp; dp = dp->dom_next) {
-		/*
-		 * the check must be made by xx_ctlinput() anyways, to
-		 * make sure we use data item pointed to by ctlparam in
-		 * correct way.  the following check is made just for safety.
-		 */
-		if (dp->dom_family != sa->sa_family)
-			continue;
-
-		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-			if (pr->pr_ctlinput)
-				(*pr->pr_ctlinput)(cmd, sa, ctlparam);
-	}
-}
-
 static void
 pfslowtimo(void *arg)
 {
+	struct epoch_tracker et;
 	struct domain *dp;
 	struct protosw *pr;
 
+	NET_EPOCH_ENTER(et);
 	for (dp = domains; dp; dp = dp->dom_next)
 		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
 			if (pr->pr_slowtimo)
 				(*pr->pr_slowtimo)();
+	NET_EPOCH_EXIT(et);
 	callout_reset(&pfslow_callout, hz/2, pfslowtimo, NULL);
 }
 
 static void
 pffasttimo(void *arg)
 {
+	struct epoch_tracker et;
 	struct domain *dp;
 	struct protosw *pr;
 
+	NET_EPOCH_ENTER(et);
 	for (dp = domains; dp; dp = dp->dom_next)
 		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
 			if (pr->pr_fasttimo)
 				(*pr->pr_fasttimo)();
+	NET_EPOCH_EXIT(et);
 	callout_reset(&pffast_callout, hz/5, pffasttimo, NULL);
 }

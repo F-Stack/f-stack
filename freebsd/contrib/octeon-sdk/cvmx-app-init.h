@@ -311,6 +311,7 @@ enum cvmx_board_types_enum {
 #endif
 #if defined(OCTEON_VENDOR_UBIQUITI)
     CVMX_BOARD_TYPE_CUST_UBIQUITI_E100=20002,
+    CVMX_BOARD_TYPE_CUST_UBIQUITI_E120= 20004,
 #endif
 #if defined(OCTEON_VENDOR_RADISYS)
     CVMX_BOARD_TYPE_CUST_RADISYS_RSYS4GBE=20002,
@@ -354,7 +355,7 @@ enum cvmx_chip_types_enum {
 #define CVMX_BOARD_TYPE_NAO38	CVMX_BOARD_TYPE_NAC38
 
 /* Functions to return string based on type */
-#define ENUM_BRD_TYPE_CASE(x)   case x: return(#x + 16);   /* Skip CVMX_BOARD_TYPE_ */
+#define ENUM_BRD_TYPE_CASE(x)   case x: return(&#x[16]);   /* Skip CVMX_BOARD_TYPE_ */
 static inline const char *cvmx_board_type_to_string(enum cvmx_board_types_enum type)
 {
     switch (type)
@@ -457,6 +458,7 @@ static inline const char *cvmx_board_type_to_string(enum cvmx_board_types_enum t
 #endif
 #if defined(OCTEON_VENDOR_UBIQUITI)
 	ENUM_BRD_TYPE_CASE(CVMX_BOARD_TYPE_CUST_UBIQUITI_E100)
+	ENUM_BRD_TYPE_CASE(CVMX_BOARD_TYPE_CUST_UBIQUITI_E120)
 #endif
 #if defined(OCTEON_VENDOR_RADISYS)
 	ENUM_BRD_TYPE_CASE(CVMX_BOARD_TYPE_CUST_RADISYS_RSYS4GBE)
@@ -489,7 +491,7 @@ static inline const char *cvmx_board_type_to_string(enum cvmx_board_types_enum t
     return "Unsupported Board";
 }
 
-#define ENUM_CHIP_TYPE_CASE(x)   case x: return(#x + 15);   /* Skip CVMX_CHIP_TYPE */
+#define ENUM_CHIP_TYPE_CASE(x)   case x: return(&#x[15]);   /* Skip CVMX_CHIP_TYPE */
 static inline const char *cvmx_chip_type_to_string(enum cvmx_chip_types_enum type)
 {
     switch (type)

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009, Oleksandr Tymoshenko <gonzo@FreeBSD.org>
  * All rights reserved.
  *
@@ -64,4 +66,3 @@
 #define	PCF2123_WRITE(reg)	(PCF2123_CMD_WRITE | (1 << 4) | (reg))
 
 #endif /* __PCF2123REG_H__ */
-

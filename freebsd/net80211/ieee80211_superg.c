@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002-2009 Sam Leffler, Errno Consulting
  * All rights reserved.
  *
@@ -37,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/endian.h>
 
 #include <sys/socket.h>
- 
+
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/if_llc.h>
@@ -90,9 +92,19 @@ static	int ieee80211_ffppsmin = 2;	/* pps threshold for ff aggregation */
 SYSCTL_INT(_net_wlan, OID_AUTO, ffppsmin, CTLFLAG_RW,
 	&ieee80211_ffppsmin, 0, "min packet rate before fast-frame staging");
 static	int ieee80211_ffagemax = -1;	/* max time frames held on stage q */
-SYSCTL_PROC(_net_wlan, OID_AUTO, ffagemax, CTLTYPE_INT | CTLFLAG_RW,
-	&ieee80211_ffagemax, 0, ieee80211_sysctl_msecs_ticks, "I",
-	"max hold time for fast-frame staging (ms)");
+SYSCTL_PROC(_net_wlan, OID_AUTO, ffagemax,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    &ieee80211_ffagemax, 0, ieee80211_sysctl_msecs_ticks, "I",
+    "max hold time for fast-frame staging (ms)");
+
+static void
+ff_age_all(void *arg, int npending)
+{
+	struct ieee80211com *ic = arg;
+
+	/* XXX cache timer value somewhere (racy) */
+	ieee80211_ff_age_all(ic, ieee80211_ffagemax + 1);
+}
 
 void
 ieee80211_superg_attach(struct ieee80211com *ic)
@@ -109,6 +121,7 @@ ieee80211_superg_attach(struct ieee80211com *ic)
 		    __func__);
 		return;
 	}
+	TIMEOUT_TASK_INIT(ic->ic_tq, &sg->ff_qtimer, 0, ff_age_all, ic);
 	ic->ic_superg = sg;
 
 	/*
@@ -122,12 +135,16 @@ ieee80211_superg_attach(struct ieee80211com *ic)
 void
 ieee80211_superg_detach(struct ieee80211com *ic)
 {
-	IEEE80211_FF_LOCK_DESTROY(ic);
 
 	if (ic->ic_superg != NULL) {
+		struct timeout_task *qtask = &ic->ic_superg->ff_qtimer;
+
+		while (taskqueue_cancel_timeout(ic->ic_tq, qtask, NULL) != 0)
+			taskqueue_drain_timeout(ic->ic_tq, qtask);
 		IEEE80211_FREE(ic->ic_superg, M_80211_VAP);
 		ic->ic_superg = NULL;
 	}
+	IEEE80211_FF_LOCK_DESTROY(ic);
 }
 
 void
@@ -256,7 +273,6 @@ struct mbuf *
 ieee80211_ff_decap(struct ieee80211_node *ni, struct mbuf *m)
 {
 #define	FF_LLC_SIZE	(sizeof(struct ether_header) + sizeof(struct llc))
-#define	MS(x,f)	(((x) & f) >> f##_S)
 	struct ieee80211vap *vap = ni->ni_vap;
 	struct llc *llc;
 	uint32_t ath;
@@ -285,7 +301,7 @@ ieee80211_ff_decap(struct ieee80211_node *ni, struct mbuf *m)
 		return m;
 	m_adj(m, FF_LLC_SIZE);
 	m_copydata(m, 0, sizeof(uint32_t), (caddr_t) &ath);
-	if (MS(ath, ATH_FF_PROTO) != ATH_FF_PROTO_L2TUNNEL) {
+	if (_IEEE80211_MASKSHIFT(ath, ATH_FF_PROTO) != ATH_FF_PROTO_L2TUNNEL) {
 		IEEE80211_DISCARD_MAC(vap, IEEE80211_MSG_ANY,
 		    ni->ni_macaddr, "fast-frame",
 		    "unsupport tunnel protocol, header 0x%x", ath);
@@ -334,7 +350,6 @@ ieee80211_ff_decap(struct ieee80211_node *ni, struct mbuf *m)
 	}
 	/* XXX verify framelen against mbuf contents */
 	return n;				/* 2nd delivered by caller */
-#undef MS
 #undef FF_LLC_SIZE
 }
 
@@ -573,7 +588,6 @@ bad:
 	return NULL;
 }
 
-
 static void
 ff_transmit(struct ieee80211_node *ni, struct mbuf *m)
 {
@@ -668,8 +682,12 @@ stageq_add(struct ieee80211com *ic, struct ieee80211_stageq *sq, struct mbuf *m)
 	if (sq->tail != NULL) {
 		sq->tail->m_nextpkt = m;
 		age -= M_AGE_GET(sq->head);
-	} else
+	} else {
 		sq->head = m;
+
+		struct timeout_task *qtask = &ic->ic_superg->ff_qtimer;
+		taskqueue_enqueue_timeout(ic->ic_tq, qtask, age);
+	}
 	KASSERT(age >= 0, ("age %d", age));
 	M_AGE_SET(m, age);
 	m->m_nextpkt = NULL;
@@ -909,12 +927,6 @@ ieee80211_ff_node_init(struct ieee80211_node *ni)
 	ieee80211_ff_node_cleanup(ni);
 }
 
-/*
- * Note: this comlock acquisition LORs with the node lock:
- *
- * 1: sta_join1 -> NODE_LOCK -> node_free -> node_cleanup -> ff_node_cleanup -> COM_LOCK
- * 2: TBD
- */
 void
 ieee80211_ff_node_cleanup(struct ieee80211_node *ni)
 {

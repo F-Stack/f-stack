@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007-2009 Kip Macy <kmacy@freebsd.org>
  * All rights reserved.
  *
@@ -32,10 +34,6 @@
 
 #include <machine/cpu.h>
 
-#if defined(INVARIANTS) && !defined(DEBUG_BUFRING)
-#define DEBUG_BUFRING 1
-#endif
-
 #ifdef DEBUG_BUFRING
 #include <sys/lock.h>
 #include <sys/mutex.h>
@@ -67,6 +65,12 @@ buf_ring_enqueue(struct buf_ring *br, void *buf)
 	uint32_t prod_head, prod_next, cons_tail;
 #ifdef DEBUG_BUFRING
 	int i;
+
+	/*
+	 * Note: It is possible to encounter an mbuf that was removed
+	 * via drbr_peek(), and then re-added via drbr_putback() and
+	 * trigger a spurious panic.
+	 */
 	for (i = br->br_cons_head; i != br->br_prod_head;
 	     i = ((i + 1) & br->br_cons_mask))
 		if(br->br_ring[i] == buf)
@@ -193,12 +197,12 @@ buf_ring_dequeue_sc(struct buf_ring *br)
 	cons_head = br->br_cons_head;
 #endif
 	prod_tail = atomic_load_acq_32(&br->br_prod_tail);
-	
+
 	cons_next = (cons_head + 1) & br->br_cons_mask;
 #ifdef PREFETCH_DEFINED
 	cons_next_next = (cons_head + 2) & br->br_cons_mask;
 #endif
-	
+
 	if (cons_head == prod_tail) 
 		return (NULL);
 
@@ -234,10 +238,10 @@ buf_ring_advance_sc(struct buf_ring *br)
 {
 	uint32_t cons_head, cons_next;
 	uint32_t prod_tail;
-	
+
 	cons_head = br->br_cons_head;
 	prod_tail = br->br_prod_tail;
-	
+
 	cons_next = (cons_head + 1) & br->br_cons_mask;
 	if (cons_head == prod_tail) 
 		return;
@@ -250,16 +254,16 @@ buf_ring_advance_sc(struct buf_ring *br)
 
 /*
  * Used to return a buffer (most likely already there)
- * to the top od the ring. The caller should *not*
+ * to the top of the ring. The caller should *not*
  * have used any dequeue to pull it out of the ring
  * but instead should have used the peek() function.
  * This is normally used where the transmit queue
- * of a driver is full, and an mubf must be returned.
+ * of a driver is full, and an mbuf must be returned.
  * Most likely whats in the ring-buffer is what
  * is being put back (since it was not removed), but
  * sometimes the lower transmit function may have
  * done a pullup or other function that will have
- * changed it. As an optimzation we always put it
+ * changed it. As an optimization we always put it
  * back (since jhb says the store is probably cheaper),
  * if we have to do a multi-queue version we will need
  * the compare and an atomic.
@@ -293,7 +297,7 @@ buf_ring_peek(struct buf_ring *br)
 	 */
 	if (br->br_cons_head == br->br_prod_tail)
 		return (NULL);
-	
+
 	return (br->br_ring[br->br_cons_head]);
 }
 
@@ -306,14 +310,23 @@ buf_ring_peek_clear_sc(struct buf_ring *br)
 	if (!mtx_owned(br->br_lock))
 		panic("lock not held on single consumer dequeue");
 #endif	
-	/*
-	 * I believe it is safe to not have a memory barrier
-	 * here because we control cons and tail is worst case
-	 * a lagging indicator so we worst case we might
-	 * return NULL immediately after a buffer has been enqueued
-	 */
+
 	if (br->br_cons_head == br->br_prod_tail)
 		return (NULL);
+
+#if defined(__arm__) || defined(__aarch64__)
+	/*
+	 * The barrier is required there on ARM and ARM64 to ensure, that
+	 * br->br_ring[br->br_cons_head] will not be fetched before the above
+	 * condition is checked.
+	 * Without the barrier, it is possible, that buffer will be fetched
+	 * before the enqueue will put mbuf into br, then, in the meantime, the
+	 * enqueue will update the array and the br_prod_tail, and the
+	 * conditional check will be true, so we will return previously fetched
+	 * (and invalid) buffer.
+	 */
+	atomic_thread_fence_acq();
+#endif
 
 #ifdef DEBUG_BUFRING
 	/*
@@ -353,7 +366,5 @@ buf_ring_count(struct buf_ring *br)
 struct buf_ring *buf_ring_alloc(int count, struct malloc_type *type, int flags,
     struct mtx *);
 void buf_ring_free(struct buf_ring *br, struct malloc_type *type);
-
-
 
 #endif

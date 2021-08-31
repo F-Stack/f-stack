@@ -1,7 +1,9 @@
 /*	$NetBSD: ifconfig.c,v 1.34 1997/04/21 01:17:58 lukem Exp $	*/
 /* $FreeBSD$ */
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1997 Jason R. Thorpe.
  * All rights reserved.
  *
@@ -78,6 +80,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,18 +111,20 @@ static void
 media_status(int s)
 {
 	struct ifmediareq ifmr;
+	struct ifdownreason ifdr;
 	int *media_list, i;
-	int xmedia = 1;
+	bool no_carrier, xmedia;
 
 	(void) memset(&ifmr, 0, sizeof(ifmr));
 	(void) strlcpy(ifmr.ifm_name, name, sizeof(ifmr.ifm_name));
+	xmedia = true;
 
 	/*
 	 * Check if interface supports extended media types.
 	 */
 	if (ioctl(s, SIOCGIFXMEDIA, (caddr_t)&ifmr) < 0)
-		xmedia = 0;
-	if (xmedia == 0 && ioctl(s, SIOCGIFMEDIA, (caddr_t)&ifmr) < 0) {
+		xmedia = false;
+	if (!xmedia && ioctl(s, SIOCGIFMEDIA, (caddr_t)&ifmr) < 0) {
 		/*
 		 * Interface doesn't support SIOC{G,S}IFMEDIA.
 		 */
@@ -156,6 +161,7 @@ media_status(int s)
 	putchar('\n');
 
 	if (ifmr.ifm_status & IFM_AVALID) {
+		no_carrier = false;
 		printf("\tstatus: ");
 		switch (IFM_TYPE(ifmr.ifm_active)) {
 		case IFM_ETHER:
@@ -163,15 +169,7 @@ media_status(int s)
 			if (ifmr.ifm_status & IFM_ACTIVE)
 				printf("active");
 			else
-				printf("no carrier");
-			break;
-
-		case IFM_FDDI:
-		case IFM_TOKEN:
-			if (ifmr.ifm_status & IFM_ACTIVE)
-				printf("inserted");
-			else
-				printf("no ring");
+				no_carrier = true;
 			break;
 
 		case IFM_IEEE80211:
@@ -182,8 +180,26 @@ media_status(int s)
 				else
 					printf("running");
 			} else
-				printf("no carrier");
+				no_carrier = true;
 			break;
+		}
+		if (no_carrier) {
+			printf("no carrier");
+			memset(&ifdr, 0, sizeof(ifdr));
+			strlcpy(ifdr.ifdr_name, name, sizeof(ifdr.ifdr_name));
+			if (ioctl(s, SIOCGIFDOWNREASON, (caddr_t)&ifdr) == 0) {
+				switch (ifdr.ifdr_reason) {
+				case IFDR_REASON_MSG:
+					printf(" (%s)", ifdr.ifdr_msg);
+					break;
+				case IFDR_REASON_VENDOR:
+					printf(" (vendor code %d)",
+					    ifdr.ifdr_vendor);
+					break;
+				default:
+					break;
+				}
+			}
 		}
 		putchar('\n');
 	}
@@ -371,7 +387,7 @@ setmediamode(const char *val, int d, int s, const struct afswtch *afp)
 }
 
 /**********************************************************************
- * A good chunk of this is duplicated from sys/net/ifmedia.c
+ * A good chunk of this is duplicated from sys/net/if_media.c
  **********************************************************************/
 
 static struct ifmedia_description ifm_type_descriptions[] =
@@ -385,24 +401,6 @@ static struct ifmedia_description ifm_subtype_ethernet_aliases[] =
 
 static struct ifmedia_description ifm_subtype_ethernet_option_descriptions[] =
     IFM_SUBTYPE_ETHERNET_OPTION_DESCRIPTIONS;
-
-static struct ifmedia_description ifm_subtype_tokenring_descriptions[] =
-    IFM_SUBTYPE_TOKENRING_DESCRIPTIONS;
-
-static struct ifmedia_description ifm_subtype_tokenring_aliases[] =
-    IFM_SUBTYPE_TOKENRING_ALIASES;
-
-static struct ifmedia_description ifm_subtype_tokenring_option_descriptions[] =
-    IFM_SUBTYPE_TOKENRING_OPTION_DESCRIPTIONS;
-
-static struct ifmedia_description ifm_subtype_fddi_descriptions[] =
-    IFM_SUBTYPE_FDDI_DESCRIPTIONS;
-
-static struct ifmedia_description ifm_subtype_fddi_aliases[] =
-    IFM_SUBTYPE_FDDI_ALIASES;
-
-static struct ifmedia_description ifm_subtype_fddi_option_descriptions[] =
-    IFM_SUBTYPE_FDDI_OPTION_DESCRIPTIONS;
 
 static struct ifmedia_description ifm_subtype_ieee80211_descriptions[] =
     IFM_SUBTYPE_IEEE80211_DESCRIPTIONS;
@@ -469,42 +467,6 @@ static struct ifmedia_type_to_subtype ifmedia_types_to_subtypes[] = {
 			{ &ifm_shared_option_descriptions[0], 0 },
 			{ &ifm_shared_option_aliases[0], 1 },
 			{ &ifm_subtype_ethernet_option_descriptions[0], 0 },
-			{ NULL, 0 },
-		},
-		{
-			{ NULL, 0 },
-		},
-	},
-	{
-		{
-			{ &ifm_subtype_shared_descriptions[0], 0 },
-			{ &ifm_subtype_shared_aliases[0], 1 },
-			{ &ifm_subtype_tokenring_descriptions[0], 0 },
-			{ &ifm_subtype_tokenring_aliases[0], 1 },
-			{ NULL, 0 },
-		},
-		{
-			{ &ifm_shared_option_descriptions[0], 0 },
-			{ &ifm_shared_option_aliases[0], 1 },
-			{ &ifm_subtype_tokenring_option_descriptions[0], 0 },
-			{ NULL, 0 },
-		},
-		{
-			{ NULL, 0 },
-		},
-	},
-	{
-		{
-			{ &ifm_subtype_shared_descriptions[0], 0 },
-			{ &ifm_subtype_shared_aliases[0], 1 },
-			{ &ifm_subtype_fddi_descriptions[0], 0 },
-			{ &ifm_subtype_fddi_aliases[0], 1 },
-			{ NULL, 0 },
-		},
-		{
-			{ &ifm_shared_option_descriptions[0], 0 },
-			{ &ifm_shared_option_aliases[0], 1 },
-			{ &ifm_subtype_fddi_option_descriptions[0], 0 },
 			{ NULL, 0 },
 		},
 		{
@@ -604,7 +566,7 @@ get_media_options(int type, const char *val)
 	struct ifmedia_description *desc;
 	struct ifmedia_type_to_subtype *ttos;
 	char *optlist, *optptr;
-	int option = 0, i, rval = 0;
+	int option, i, rval = 0;
 
 	/* We muck with the string, so copy it. */
 	optlist = strdup(val);
@@ -625,12 +587,13 @@ get_media_options(int type, const char *val)
 	 */
 	optptr = optlist;
 	for (; (optptr = strtok(optptr, ",")) != NULL; optptr = NULL) {
+		option = -1;
 		for (i = 0; ttos->options[i].desc != NULL; i++) {
 			option = lookup_media_word(ttos->options[i].desc, optptr);
 			if (option != -1)
 				break;
 		}
-		if (option == 0)
+		if (option == -1)
 			errx(1, "unknown option: %s", optptr);
 		rval |= option;
 	}

@@ -1,5 +1,7 @@
 /*	$NetBSD: imx51_ccmreg.h,v 1.1 2012/04/17 09:33:31 bsh Exp $	*/
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause AND BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011, 2012  Genetec Corporation.  All rights reserved.
  * Written by Hashimoto Kenichi for Genetec Corporation.
  *
@@ -255,4 +257,3 @@
 #define	CCGR_CLK_MODE_ALWAYS		3
 
 #endif /* _IMX51_CCMREG_H */
-

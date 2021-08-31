@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007 Robert N. M. Watson
  * All rights reserved.
  *
@@ -294,7 +296,7 @@ db_script_exec(const char *scriptname, int warnifnotfound)
 	buffer = drd->drd_buffer;
 	strcpy(buffer, dsp->ds_script);
 	while ((command = strsep(&buffer, ";")) != NULL) {
-		db_printf("db:%d:%s> %s\n", db_recursion, scriptname,
+		db_printf("db:%d:%s> %s\n", db_recursion, dsp->ds_scriptname,
 		    command);
 		db_command_trim(&command);
 		prev_jb = kdb_jmpbuf(jb);
@@ -460,7 +462,8 @@ db_unscript_cmd(db_expr_t addr, bool have_addr, db_expr_t count,
  * like RPCs and a bit less like normal get/set requests.  The ddb(8) command
  * line tool wraps them to make things a bit more user-friendly.
  */
-static SYSCTL_NODE(_debug_ddb, OID_AUTO, scripting, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_debug_ddb, OID_AUTO, scripting,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "DDB script settings");
 
 static int
@@ -493,8 +496,9 @@ sysctl_debug_ddb_scripting_scripts(SYSCTL_HANDLER_ARGS)
 	free(buffer, M_TEMP);
 	return (error);
 }
-SYSCTL_PROC(_debug_ddb_scripting, OID_AUTO, scripts, CTLTYPE_STRING |
-    CTLFLAG_RD, 0, 0, sysctl_debug_ddb_scripting_scripts, "A",
+SYSCTL_PROC(_debug_ddb_scripting, OID_AUTO, scripts,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_debug_ddb_scripting_scripts, "A",
     "List of defined scripts");
 
 static int
@@ -530,8 +534,9 @@ out:
 	free(buffer, M_TEMP);
 	return (error);
 }
-SYSCTL_PROC(_debug_ddb_scripting, OID_AUTO, script, CTLTYPE_STRING |
-    CTLFLAG_RW, 0, 0, sysctl_debug_ddb_scripting_script, "A",
+SYSCTL_PROC(_debug_ddb_scripting, OID_AUTO, script,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_debug_ddb_scripting_script, "A",
     "Set a script");
 
 /*
@@ -557,6 +562,7 @@ sysctl_debug_ddb_scripting_unscript(SYSCTL_HANDLER_ARGS)
 		return (EINVAL);	/* Don't confuse sysctl consumers. */
 	return (0);
 }
-SYSCTL_PROC(_debug_ddb_scripting, OID_AUTO, unscript, CTLTYPE_STRING |
-    CTLFLAG_RW, 0, 0, sysctl_debug_ddb_scripting_unscript, "A",
+SYSCTL_PROC(_debug_ddb_scripting, OID_AUTO, unscript,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, 0,
+    sysctl_debug_ddb_scripting_unscript, "A",
     "Unset a script");

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007 Robert N. M. Watson
  * All rights reserved.
  *
@@ -74,7 +76,8 @@ __FBSDID("$FreeBSD$");
 #include <ddb/ddb.h>
 #include <ddb/db_lex.h>
 
-static SYSCTL_NODE(_debug_ddb, OID_AUTO, textdump, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_debug_ddb, OID_AUTO, textdump,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "DDB textdump options");
 
 /*
@@ -427,6 +430,7 @@ textdump_dump_version(struct dumperinfo *di)
 void
 textdump_dumpsys(struct dumperinfo *di)
 {
+	struct kerneldumpcrypto *kdc;
 	off_t dumplen, trailer_offset;
 
 	if (di->blocksize != TEXTDUMP_BLOCKSIZE) {
@@ -449,6 +453,12 @@ textdump_dumpsys(struct dumperinfo *di)
 	textdump_error = 0;
 
 	/*
+	 * Disable EKCD because we don't provide encrypted textdumps.
+	 */
+	kdc = di->kdcrypto;
+	di->kdcrypto = NULL;
+
+	/*
 	 * Position the start of the dump so that we'll write the kernel dump
 	 * trailer immediately before the end of the partition, and then work
 	 * our way back.  We will rewrite this header later to reflect the
@@ -456,7 +466,7 @@ textdump_dumpsys(struct dumperinfo *di)
 	 */
 	textdump_offset = di->mediasize - sizeof(kdh);
 	textdump_saveoff(&trailer_offset);
-	mkdumpheader(&kdh, TEXTDUMPMAGIC, KERNELDUMP_TEXT_VERSION, 0, TEXTDUMP_BLOCKSIZE);
+	dump_init_header(di, &kdh, TEXTDUMPMAGIC, KERNELDUMP_TEXT_VERSION, 0);
 	(void)textdump_writenextblock(di, (char *)&kdh);
 
 	/*
@@ -470,7 +480,7 @@ textdump_dumpsys(struct dumperinfo *di)
 #endif
 	if (textdump_do_msgbuf)
 		textdump_dump_msgbuf(di);
-	if (textdump_do_panic && panicstr != NULL)
+	if (textdump_do_panic && KERNEL_PANICKED())
 		textdump_dump_panic(di);
 	if (textdump_do_version)
 		textdump_dump_version(di);
@@ -481,8 +491,8 @@ textdump_dumpsys(struct dumperinfo *di)
 	 * size.
 	 */
 	dumplen = trailer_offset - (textdump_offset + TEXTDUMP_BLOCKSIZE);
-	mkdumpheader(&kdh, TEXTDUMPMAGIC, KERNELDUMP_TEXT_VERSION, dumplen,
-	    TEXTDUMP_BLOCKSIZE);
+	dump_init_header(di, &kdh, TEXTDUMPMAGIC, KERNELDUMP_TEXT_VERSION,
+	    dumplen);
 	(void)textdump_writenextblock(di, (char *)&kdh);
 	textdump_restoreoff(trailer_offset);
 	(void)textdump_writenextblock(di, (char *)&kdh);
@@ -499,6 +509,11 @@ textdump_dumpsys(struct dumperinfo *di)
 	else
 		printf("Textdump complete.\n");
 	textdump_pending = 0;
+
+	/*
+	 * Restore EKCD status.
+	 */
+	di->kdcrypto = kdc;
 }
 
 /*-

@@ -1,6 +1,7 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009, 2010 Xin LI <delphij@FreeBSD.org>
- * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -79,7 +80,7 @@ static const unsigned long mask80 = 0x8080808080808080;
 	} while (0)
 
 size_t
-strlen(const char *str)
+(strlen)(const char *str)
 {
 	const char *p;
 	const unsigned long *lp;

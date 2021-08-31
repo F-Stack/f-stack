@@ -608,6 +608,7 @@ softclock(void *arg)
     CC_UNLOCK(cc);
 }
 
+#if 0
 /*
  * timeout --
  *    Execute a function after a specified length of time.
@@ -670,6 +671,7 @@ callout_handle_init(struct callout_handle *handle)
 {
     handle->callout = NULL;
 }
+#endif
 
 /*
  * New interface; clients allocate their own callout structures.

@@ -114,3 +114,25 @@ memrw(struct cdev *dev, struct uio *uio, int flags)
 	return (error);
 }
 
+/*
+ * allow user processes to MMAP some memory sections
+ * instead of going through read/write
+ */
+/* ARGSUSED */
+int
+memmmap(struct cdev *dev, vm_ooffset_t offset, vm_paddr_t *paddr,
+    int prot __unused, vm_memattr_t *memattr __unused)
+{
+	if (dev2unit(dev) == CDEV_MINOR_MEM) {
+		*paddr = offset;
+		return (0);
+	}
+	return (-1);
+}
+
+int
+memioctl_md(struct cdev *dev __unused, u_long cmd __unused,
+    caddr_t data __unused, int flags __unused, struct thread *td __unused)
+{
+	return (ENOTTY);
+}

@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009 Hiroki Sato.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -50,16 +52,22 @@ static const char rcsid[] =
 #include <arpa/inet.h>
 #include <netdb.h>
 
-#include <netinet6/in6_var.h>
 #include <netinet6/nd6.h>
 
 #include "ifconfig.h"
 
 #define	MAX_SYSCTL_TRY	5
+#ifdef DRAFT_IETF_6MAN_IPV6ONLY_FLAG
 #define	ND6BITS	"\020\001PERFORMNUD\002ACCEPT_RTADV\003PREFER_SOURCE" \
 		"\004IFDISABLED\005DONT_SET_IFROUTE\006AUTO_LINKLOCAL" \
-		"\007NO_RADR\010NO_PREFER_IFACE\011IGNORELOOP\012NO_DAD" \
+		"\007NO_RADR\010NO_PREFER_IFACE\011NO_DAD" \
+		"\012IPV6_ONLY\013IPV6_ONLY_MANUAL" \
 		"\020DEFAULTIF"
+#else
+#define	ND6BITS	"\020\001PERFORMNUD\002ACCEPT_RTADV\003PREFER_SOURCE" \
+		"\004IFDISABLED\005DONT_SET_IFROUTE\006AUTO_LINKLOCAL" \
+		"\007NO_RADR\010NO_PREFER_IFACE\011NO_DAD\020DEFAULTIF"
+#endif
 
 static int isnd6defif(int);
 void setnd6flags(const char *, int, int, const struct afswtch *);
@@ -76,11 +84,7 @@ setnd6flags(const char *dummyaddr __unused,
 
 	memset(&nd, 0, sizeof(nd));
 	strlcpy(nd.ifname, ifr.ifr_name, sizeof(nd.ifname));
-#ifndef FSTACK
-	error = ioctl(s, SIOCGIFINFO_IN6, (caddr_t)&nd);
-#else
-	error = ioctl_va(s, SIOCGIFINFO_IN6, (caddr_t)&nd, 1, AF_INET6);
-#endif
+	error = ioctl(s, SIOCGIFINFO_IN6, &nd);
 	if (error) {
 		warn("ioctl(SIOCGIFINFO_IN6)");
 		return;
@@ -89,12 +93,7 @@ setnd6flags(const char *dummyaddr __unused,
 		nd.ndi.flags &= ~(-d);
 	else
 		nd.ndi.flags |= d;
-
-#ifndef FSTACK
 	error = ioctl(s, SIOCSIFINFO_IN6, (caddr_t)&nd);
-#else
-	error = ioctl_va(s, SIOCSIFINFO_IN6, (caddr_t)&nd, 1, AF_INET6);
-#endif
 	if (error)
 		warn("ioctl(SIOCSIFINFO_IN6)");
 }
@@ -123,11 +122,7 @@ setnd6defif(const char *dummyaddr __unused,
 	}
 
 	ndifreq.ifindex = ifindex;
-#ifndef FSTACK
 	error = ioctl(s, SIOCSDEFIFACE_IN6, (caddr_t)&ndifreq);
-#else
-	error = ioctl_va(s, SIOCSDEFIFACE_IN6, (caddr_t)&ndifreq, 1, AF_INET6);
-#endif
 	if (error)
 		warn("ioctl(SIOCSDEFIFACE_IN6)");
 }
@@ -143,11 +138,7 @@ isnd6defif(int s)
 	strlcpy(ndifreq.ifname, ifr.ifr_name, sizeof(ndifreq.ifname));
 
 	ifindex = if_nametoindex(ndifreq.ifname);
-#ifndef FSTACK
 	error = ioctl(s, SIOCGDEFIFACE_IN6, (caddr_t)&ndifreq);
-#else
-	error = ioctl_va(s, SIOCGDEFIFACE_IN6, (caddr_t)&ndifreq, 1, AF_INET6);
-#endif
 	if (error) {
 		warn("ioctl(SIOCGDEFIFACE_IN6)");
 		return (error);
@@ -170,12 +161,7 @@ nd6_status(int s)
 			warn("socket(AF_INET6, SOCK_DGRAM)");
 		return;
 	}
-
-#ifndef FSTACK
 	error = ioctl(s6, SIOCGIFINFO_IN6, &nd);
-#else
-	error = ioctl_va(s, SIOCGIFINFO_IN6, (caddr_t)&nd, 1, AF_INET6);
-#endif
 	if (error) {
 		if (errno != EPFNOSUPPORT)
 			warn("ioctl(SIOCGIFINFO_IN6)");

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2001 Daniel Hartmeier
  * Copyright (c) 2002,2003 Henning Brauer
  * Copyright (c) 2012 Gleb Smirnoff <glebius@FreeBSD.org>
@@ -44,11 +46,14 @@ __FBSDID("$FreeBSD$");
 #include "opt_pf.h"
 
 #include <sys/param.h>
+#include <sys/_bitset.h>
+#include <sys/bitset.h>
 #include <sys/bus.h>
 #include <sys/conf.h>
 #include <sys/endian.h>
 #include <sys/fcntl.h>
 #include <sys/filio.h>
+#include <sys/hash.h>
 #include <sys/interrupt.h>
 #include <sys/jail.h>
 #include <sys/kernel.h>
@@ -57,7 +62,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/mbuf.h>
 #include <sys/module.h>
 #include <sys/proc.h>
-#include <sys/rwlock.h>
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
@@ -87,11 +91,11 @@ __FBSDID("$FreeBSD$");
 #include <net/altq/altq.h>
 #endif
 
-static struct pf_pool	*pf_get_pool(char *, u_int32_t, u_int8_t, u_int32_t,
+static struct pf_kpool	*pf_get_kpool(char *, u_int32_t, u_int8_t, u_int32_t,
 			    u_int8_t, u_int8_t, u_int8_t);
 
-static void		 pf_mv_pool(struct pf_palist *, struct pf_palist *);
-static void		 pf_empty_pool(struct pf_palist *);
+static void		 pf_mv_kpool(struct pf_kpalist *, struct pf_kpalist *);
+static void		 pf_empty_kpool(struct pf_kpalist *);
 static int		 pfioctl(struct cdev *, u_long, caddr_t, int,
 			    struct thread *);
 #ifdef ALTQ
@@ -105,35 +109,65 @@ static void		 pf_qid_unref(u_int32_t);
 #endif /* ALTQ */
 static int		 pf_begin_rules(u_int32_t *, int, const char *);
 static int		 pf_rollback_rules(u_int32_t, int, char *);
-static int		 pf_setup_pfsync_matching(struct pf_ruleset *);
-static void		 pf_hash_rule(MD5_CTX *, struct pf_rule *);
+static int		 pf_setup_pfsync_matching(struct pf_kruleset *);
+static void		 pf_hash_rule(MD5_CTX *, struct pf_krule *);
 static void		 pf_hash_rule_addr(MD5_CTX *, struct pf_rule_addr *);
 static int		 pf_commit_rules(u_int32_t, int, char *);
-static int		 pf_addr_setup(struct pf_ruleset *,
+static int		 pf_addr_setup(struct pf_kruleset *,
 			    struct pf_addr_wrap *, sa_family_t);
 static void		 pf_addr_copyout(struct pf_addr_wrap *);
+static void		 pf_src_node_copy(const struct pf_ksrc_node *,
+			    struct pf_src_node *);
+#ifdef ALTQ
+static int		 pf_export_kaltq(struct pf_altq *,
+			    struct pfioc_altq_v1 *, size_t);
+static int		 pf_import_kaltq(struct pfioc_altq_v1 *,
+			    struct pf_altq *, size_t);
+#endif /* ALTQ */
 
-VNET_DEFINE(struct pf_rule,	pf_default_rule);
+VNET_DEFINE(struct pf_krule,	pf_default_rule);
 
 #ifdef ALTQ
-static VNET_DEFINE(int,		pf_altq_running);
+VNET_DEFINE_STATIC(int,		pf_altq_running);
 #define	V_pf_altq_running	VNET(pf_altq_running)
 #endif
 
 #define	TAGID_MAX	 50000
 struct pf_tagname {
-	TAILQ_ENTRY(pf_tagname)	entries;
+	TAILQ_ENTRY(pf_tagname)	namehash_entries;
+	TAILQ_ENTRY(pf_tagname)	taghash_entries;
 	char			name[PF_TAG_NAME_SIZE];
 	uint16_t		tag;
 	int			ref;
 };
 
-TAILQ_HEAD(pf_tags, pf_tagname);
-#define	V_pf_tags		VNET(pf_tags)
-VNET_DEFINE(struct pf_tags, pf_tags);
-#define	V_pf_qids		VNET(pf_qids)
-VNET_DEFINE(struct pf_tags, pf_qids);
-static MALLOC_DEFINE(M_PFTAG, "pf_tag", "pf(4) tag names");
+struct pf_tagset {
+	TAILQ_HEAD(, pf_tagname)	*namehash;
+	TAILQ_HEAD(, pf_tagname)	*taghash;
+	unsigned int			 mask;
+	uint32_t			 seed;
+	BITSET_DEFINE(, TAGID_MAX)	 avail;
+};
+
+VNET_DEFINE(struct pf_tagset, pf_tags);
+#define	V_pf_tags	VNET(pf_tags)
+static unsigned int	pf_rule_tag_hashsize;
+#define	PF_RULE_TAG_HASH_SIZE_DEFAULT	128
+SYSCTL_UINT(_net_pf, OID_AUTO, rule_tag_hashsize, CTLFLAG_RDTUN,
+    &pf_rule_tag_hashsize, PF_RULE_TAG_HASH_SIZE_DEFAULT,
+    "Size of pf(4) rule tag hashtable");
+
+#ifdef ALTQ
+VNET_DEFINE(struct pf_tagset, pf_qids);
+#define	V_pf_qids	VNET(pf_qids)
+static unsigned int	pf_queue_tag_hashsize;
+#define	PF_QUEUE_TAG_HASH_SIZE_DEFAULT	128
+SYSCTL_UINT(_net_pf, OID_AUTO, queue_tag_hashsize, CTLFLAG_RDTUN,
+    &pf_queue_tag_hashsize, PF_QUEUE_TAG_HASH_SIZE_DEFAULT,
+    "Size of pf(4) queue tag hashtable");
+#endif
+VNET_DEFINE(uma_zone_t,	 pf_tag_z);
+#define	V_pf_tag_z		 VNET(pf_tag_z)
 static MALLOC_DEFINE(M_PFALTQ, "pf_altq", "pf(4) altq configuration db");
 static MALLOC_DEFINE(M_PFRULE, "pf_rule", "pf(4) rules");
 
@@ -141,9 +175,14 @@ static MALLOC_DEFINE(M_PFRULE, "pf_rule", "pf(4) rules");
 #error PF_QNAME_SIZE must be equal to PF_TAG_NAME_SIZE
 #endif
 
-static u_int16_t	 tagname2tag(struct pf_tags *, char *);
+static void		 pf_init_tagset(struct pf_tagset *, unsigned int *,
+			    unsigned int);
+static void		 pf_cleanup_tagset(struct pf_tagset *);
+static uint16_t		 tagname2hashindex(const struct pf_tagset *, const char *);
+static uint16_t		 tag2hashindex(const struct pf_tagset *, uint16_t);
+static u_int16_t	 tagname2tag(struct pf_tagset *, char *);
 static u_int16_t	 pf_tagname2tag(char *);
-static void		 tag_unref(struct pf_tags *, u_int16_t);
+static void		 tag_unref(struct pf_tagset *, u_int16_t);
 
 #define DPFPRINTF(n, x) if (V_pf_status.debug >= (n)) printf x
 
@@ -154,7 +193,7 @@ struct cdev *pf_dev;
  */
 static void		 pf_clear_states(void);
 static int		 pf_clear_tables(void);
-static void		 pf_clear_srcnodes(struct pf_src_node *);
+static void		 pf_clear_srcnodes(struct pf_ksrc_node *);
 static void		 pf_kill_srcnodes(struct pfioc_src_node_kill *);
 static void		 pf_tbladdr_copyout(struct pf_addr_wrap *);
 
@@ -162,23 +201,23 @@ static void		 pf_tbladdr_copyout(struct pf_addr_wrap *);
  * Wrapper functions for pfil(9) hooks
  */
 #ifdef INET
-static int pf_check_in(void *arg, struct mbuf **m, struct ifnet *ifp,
-    int dir, struct inpcb *inp);
-static int pf_check_out(void *arg, struct mbuf **m, struct ifnet *ifp,
-    int dir, struct inpcb *inp);
+static pfil_return_t pf_check_in(struct mbuf **m, struct ifnet *ifp,
+    int flags, void *ruleset __unused, struct inpcb *inp);
+static pfil_return_t pf_check_out(struct mbuf **m, struct ifnet *ifp,
+    int flags, void *ruleset __unused, struct inpcb *inp);
 #endif
 #ifdef INET6
-static int pf_check6_in(void *arg, struct mbuf **m, struct ifnet *ifp,
-    int dir, struct inpcb *inp);
-static int pf_check6_out(void *arg, struct mbuf **m, struct ifnet *ifp,
-    int dir, struct inpcb *inp);
+static pfil_return_t pf_check6_in(struct mbuf **m, struct ifnet *ifp,
+    int flags, void *ruleset __unused, struct inpcb *inp);
+static pfil_return_t pf_check6_out(struct mbuf **m, struct ifnet *ifp,
+    int flags, void *ruleset __unused, struct inpcb *inp);
 #endif
 
 static int		hook_pf(void);
 static int		dehook_pf(void);
 static int		shutdown_pf(void);
 static int		pf_load(void);
-static int		pf_unload(void);
+static void		pf_unload(void);
 
 static struct cdevsw pf_cdevsw = {
 	.d_ioctl =	pfioctl,
@@ -186,7 +225,7 @@ static struct cdevsw pf_cdevsw = {
 	.d_version =	D_VERSION,
 };
 
-static volatile VNET_DEFINE(int, pf_pfil_hooked);
+volatile VNET_DEFINE_STATIC(int, pf_pfil_hooked);
 #define V_pf_pfil_hooked	VNET(pf_pfil_hooked)
 
 /*
@@ -198,19 +237,25 @@ VNET_DEFINE(int, pf_vnet_active);
 #define V_pf_vnet_active	VNET(pf_vnet_active)
 
 int pf_end_threads;
+struct proc *pf_purge_proc;
 
-struct rwlock			pf_rules_lock;
+struct rmlock			pf_rules_lock;
 struct sx			pf_ioctl_lock;
+struct sx			pf_end_lock;
 
 /* pfsync */
-pfsync_state_import_t 		*pfsync_state_import_ptr = NULL;
-pfsync_insert_state_t		*pfsync_insert_state_ptr = NULL;
-pfsync_update_state_t		*pfsync_update_state_ptr = NULL;
-pfsync_delete_state_t		*pfsync_delete_state_ptr = NULL;
-pfsync_clear_states_t		*pfsync_clear_states_ptr = NULL;
-pfsync_defer_t			*pfsync_defer_ptr = NULL;
+VNET_DEFINE(pfsync_state_import_t *, pfsync_state_import_ptr);
+VNET_DEFINE(pfsync_insert_state_t *, pfsync_insert_state_ptr);
+VNET_DEFINE(pfsync_update_state_t *, pfsync_update_state_ptr);
+VNET_DEFINE(pfsync_delete_state_t *, pfsync_delete_state_ptr);
+VNET_DEFINE(pfsync_clear_states_t *, pfsync_clear_states_ptr);
+VNET_DEFINE(pfsync_defer_t *, pfsync_defer_ptr);
+pfsync_detach_ifnet_t *pfsync_detach_ifnet_ptr;
+
 /* pflog */
 pflog_packet_t			*pflog_packet_ptr = NULL;
+
+extern u_long	pf_ioctl_maxcount;
 
 static void
 pfattach_vnet(void)
@@ -226,7 +271,7 @@ pfattach_vnet(void)
 	V_pf_limits[PF_LIMIT_SRC_NODES].limit = PFSNODE_HIWAT;
 
 	RB_INIT(&V_pf_anchors);
-	pf_init_ruleset(&pf_main_ruleset);
+	pf_init_kruleset(&pf_main_ruleset);
 
 	/* default rule should never be garbage collected */
 	V_pf_default_rule.entries.tqe_prev = &V_pf_default_rule.entries.tqe_next;
@@ -238,6 +283,11 @@ pfattach_vnet(void)
 	V_pf_default_rule.nr = -1;
 	V_pf_default_rule.rtableid = -1;
 
+	V_pf_default_rule.evaluations = counter_u64_alloc(M_WAITOK);
+	for (int i = 0; i < 2; i++) {
+		V_pf_default_rule.packets[i] = counter_u64_alloc(M_WAITOK);
+		V_pf_default_rule.bytes[i] = counter_u64_alloc(M_WAITOK);
+	}
 	V_pf_default_rule.states_cur = counter_u64_alloc(M_WAITOK);
 	V_pf_default_rule.states_tot = counter_u64_alloc(M_WAITOK);
 	V_pf_default_rule.src_nodes = counter_u64_alloc(M_WAITOK);
@@ -287,17 +337,16 @@ pfattach_vnet(void)
 		return;
 }
 
-
-static struct pf_pool *
-pf_get_pool(char *anchor, u_int32_t ticket, u_int8_t rule_action,
+static struct pf_kpool *
+pf_get_kpool(char *anchor, u_int32_t ticket, u_int8_t rule_action,
     u_int32_t rule_number, u_int8_t r_last, u_int8_t active,
     u_int8_t check_ticket)
 {
-	struct pf_ruleset	*ruleset;
-	struct pf_rule		*rule;
+	struct pf_kruleset	*ruleset;
+	struct pf_krule		*rule;
 	int			 rs_num;
 
-	ruleset = pf_find_ruleset(anchor);
+	ruleset = pf_find_kruleset(anchor);
 	if (ruleset == NULL)
 		return (NULL);
 	rs_num = pf_get_ruleset_number(rule_action);
@@ -309,7 +358,7 @@ pf_get_pool(char *anchor, u_int32_t ticket, u_int8_t rule_action,
 			return (NULL);
 		if (r_last)
 			rule = TAILQ_LAST(ruleset->rules[rs_num].active.ptr,
-			    pf_rulequeue);
+			    pf_krulequeue);
 		else
 			rule = TAILQ_FIRST(ruleset->rules[rs_num].active.ptr);
 	} else {
@@ -318,7 +367,7 @@ pf_get_pool(char *anchor, u_int32_t ticket, u_int8_t rule_action,
 			return (NULL);
 		if (r_last)
 			rule = TAILQ_LAST(ruleset->rules[rs_num].inactive.ptr,
-			    pf_rulequeue);
+			    pf_krulequeue);
 		else
 			rule = TAILQ_FIRST(ruleset->rules[rs_num].inactive.ptr);
 	}
@@ -333,9 +382,9 @@ pf_get_pool(char *anchor, u_int32_t ticket, u_int8_t rule_action,
 }
 
 static void
-pf_mv_pool(struct pf_palist *poola, struct pf_palist *poolb)
+pf_mv_kpool(struct pf_kpalist *poola, struct pf_kpalist *poolb)
 {
-	struct pf_pooladdr	*mv_pool_pa;
+	struct pf_kpooladdr	*mv_pool_pa;
 
 	while ((mv_pool_pa = TAILQ_FIRST(poola)) != NULL) {
 		TAILQ_REMOVE(poola, mv_pool_pa, entries);
@@ -344,9 +393,9 @@ pf_mv_pool(struct pf_palist *poola, struct pf_palist *poolb)
 }
 
 static void
-pf_empty_pool(struct pf_palist *poola)
+pf_empty_kpool(struct pf_kpalist *poola)
 {
-	struct pf_pooladdr *pa;
+	struct pf_kpooladdr *pa;
 
 	while ((pa = TAILQ_FIRST(poola)) != NULL) {
 		switch (pa->addr.type) {
@@ -360,14 +409,14 @@ pf_empty_pool(struct pf_palist *poola)
 			break;
 		}
 		if (pa->kif)
-			pfi_kif_unref(pa->kif);
+			pfi_kkif_unref(pa->kif);
 		TAILQ_REMOVE(poola, pa, entries);
 		free(pa, M_PFRULE);
 	}
 }
 
 static void
-pf_unlink_rule(struct pf_rulequeue *rulequeue, struct pf_rule *rule)
+pf_unlink_rule(struct pf_krulequeue *rulequeue, struct pf_krule *rule)
 {
 
 	PF_RULES_WASSERT();
@@ -381,7 +430,7 @@ pf_unlink_rule(struct pf_rulequeue *rulequeue, struct pf_rule *rule)
 }
 
 void
-pf_free_rule(struct pf_rule *rule)
+pf_free_rule(struct pf_krule *rule)
 {
 
 	PF_RULES_WASSERT();
@@ -414,77 +463,157 @@ pf_free_rule(struct pf_rule *rule)
 	if (rule->overload_tbl)
 		pfr_detach_table(rule->overload_tbl);
 	if (rule->kif)
-		pfi_kif_unref(rule->kif);
-	pf_anchor_remove(rule);
-	pf_empty_pool(&rule->rpool.list);
+		pfi_kkif_unref(rule->kif);
+	pf_kanchor_remove(rule);
+	pf_empty_kpool(&rule->rpool.list);
+	counter_u64_free(rule->evaluations);
+	for (int i = 0; i < 2; i++) {
+		counter_u64_free(rule->packets[i]);
+		counter_u64_free(rule->bytes[i]);
+	}
 	counter_u64_free(rule->states_cur);
 	counter_u64_free(rule->states_tot);
 	counter_u64_free(rule->src_nodes);
 	free(rule, M_PFRULE);
 }
 
-static u_int16_t
-tagname2tag(struct pf_tags *head, char *tagname)
+static void
+pf_init_tagset(struct pf_tagset *ts, unsigned int *tunable_size,
+    unsigned int default_size)
 {
-	struct pf_tagname	*tag, *p = NULL;
-	u_int16_t		 new_tagid = 1;
+	unsigned int i;
+	unsigned int hashsize;
+
+	if (*tunable_size == 0 || !powerof2(*tunable_size))
+		*tunable_size = default_size;
+
+	hashsize = *tunable_size;
+	ts->namehash = mallocarray(hashsize, sizeof(*ts->namehash), M_PFHASH,
+	    M_WAITOK);
+	ts->taghash = mallocarray(hashsize, sizeof(*ts->taghash), M_PFHASH,
+	    M_WAITOK);
+	ts->mask = hashsize - 1;
+	ts->seed = arc4random();
+	for (i = 0; i < hashsize; i++) {
+		TAILQ_INIT(&ts->namehash[i]);
+		TAILQ_INIT(&ts->taghash[i]);
+	}
+	BIT_FILL(TAGID_MAX, &ts->avail);
+}
+
+static void
+pf_cleanup_tagset(struct pf_tagset *ts)
+{
+	unsigned int i;
+	unsigned int hashsize;
+	struct pf_tagname *t, *tmp;
+
+	/*
+	 * Only need to clean up one of the hashes as each tag is hashed
+	 * into each table.
+	 */
+	hashsize = ts->mask + 1;
+	for (i = 0; i < hashsize; i++)
+		TAILQ_FOREACH_SAFE(t, &ts->namehash[i], namehash_entries, tmp)
+			uma_zfree(V_pf_tag_z, t);
+
+	free(ts->namehash, M_PFHASH);
+	free(ts->taghash, M_PFHASH);
+}
+
+static uint16_t
+tagname2hashindex(const struct pf_tagset *ts, const char *tagname)
+{
+	size_t len;
+
+	len = strnlen(tagname, PF_TAG_NAME_SIZE - 1);
+	return (murmur3_32_hash(tagname, len, ts->seed) & ts->mask);
+}
+
+static uint16_t
+tag2hashindex(const struct pf_tagset *ts, uint16_t tag)
+{
+
+	return (tag & ts->mask);
+}
+
+static u_int16_t
+tagname2tag(struct pf_tagset *ts, char *tagname)
+{
+	struct pf_tagname	*tag;
+	u_int32_t		 index;
+	u_int16_t		 new_tagid;
 
 	PF_RULES_WASSERT();
 
-	TAILQ_FOREACH(tag, head, entries)
+	index = tagname2hashindex(ts, tagname);
+	TAILQ_FOREACH(tag, &ts->namehash[index], namehash_entries)
 		if (strcmp(tagname, tag->name) == 0) {
 			tag->ref++;
 			return (tag->tag);
 		}
 
 	/*
+	 * new entry
+	 *
 	 * to avoid fragmentation, we do a linear search from the beginning
-	 * and take the first free slot we find. if there is none or the list
-	 * is empty, append a new entry at the end.
+	 * and take the first free slot we find.
 	 */
-
-	/* new entry */
-	if (!TAILQ_EMPTY(head))
-		for (p = TAILQ_FIRST(head); p != NULL &&
-		    p->tag == new_tagid; p = TAILQ_NEXT(p, entries))
-			new_tagid = p->tag + 1;
-
-	if (new_tagid > TAGID_MAX)
+	new_tagid = BIT_FFS(TAGID_MAX, &ts->avail);
+	/*
+	 * Tags are 1-based, with valid tags in the range [1..TAGID_MAX].
+	 * BIT_FFS() returns a 1-based bit number, with 0 indicating no bits
+	 * set.  It may also return a bit number greater than TAGID_MAX due
+	 * to rounding of the number of bits in the vector up to a multiple
+	 * of the vector word size at declaration/allocation time.
+	 */
+	if ((new_tagid == 0) || (new_tagid > TAGID_MAX))
 		return (0);
 
+	/* Mark the tag as in use.  Bits are 0-based for BIT_CLR() */
+	BIT_CLR(TAGID_MAX, new_tagid - 1, &ts->avail);
+
 	/* allocate and fill new struct pf_tagname */
-	tag = malloc(sizeof(*tag), M_PFTAG, M_NOWAIT|M_ZERO);
+	tag = uma_zalloc(V_pf_tag_z, M_NOWAIT);
 	if (tag == NULL)
 		return (0);
 	strlcpy(tag->name, tagname, sizeof(tag->name));
 	tag->tag = new_tagid;
-	tag->ref++;
+	tag->ref = 1;
 
-	if (p != NULL)	/* insert new entry before p */
-		TAILQ_INSERT_BEFORE(p, tag, entries);
-	else	/* either list empty or no free slot in between */
-		TAILQ_INSERT_TAIL(head, tag, entries);
+	/* Insert into namehash */
+	TAILQ_INSERT_TAIL(&ts->namehash[index], tag, namehash_entries);
+
+	/* Insert into taghash */
+	index = tag2hashindex(ts, new_tagid);
+	TAILQ_INSERT_TAIL(&ts->taghash[index], tag, taghash_entries);
 
 	return (tag->tag);
 }
 
 static void
-tag_unref(struct pf_tags *head, u_int16_t tag)
+tag_unref(struct pf_tagset *ts, u_int16_t tag)
 {
-	struct pf_tagname	*p, *next;
+	struct pf_tagname	*t;
+	uint16_t		 index;
 
 	PF_RULES_WASSERT();
 
-	for (p = TAILQ_FIRST(head); p != NULL; p = next) {
-		next = TAILQ_NEXT(p, entries);
-		if (tag == p->tag) {
-			if (--p->ref == 0) {
-				TAILQ_REMOVE(head, p, entries);
-				free(p, M_PFTAG);
+	index = tag2hashindex(ts, tag);
+	TAILQ_FOREACH(t, &ts->taghash[index], taghash_entries)
+		if (tag == t->tag) {
+			if (--t->ref == 0) {
+				TAILQ_REMOVE(&ts->taghash[index], t,
+				    taghash_entries);
+				index = tagname2hashindex(ts, t->name);
+				TAILQ_REMOVE(&ts->namehash[index], t,
+				    namehash_entries);
+				/* Bits are 0-based for BIT_SET() */
+				BIT_SET(TAGID_MAX, tag - 1, &ts->avail);
+				uma_zfree(V_pf_tag_z, t);
 			}
 			break;
 		}
-	}
 }
 
 static u_int16_t
@@ -509,22 +638,25 @@ pf_qid_unref(u_int32_t qid)
 static int
 pf_begin_altq(u_int32_t *ticket)
 {
-	struct pf_altq	*altq;
+	struct pf_altq	*altq, *tmp;
 	int		 error = 0;
 
 	PF_RULES_WASSERT();
 
-	/* Purge the old altq list */
-	while ((altq = TAILQ_FIRST(V_pf_altqs_inactive)) != NULL) {
-		TAILQ_REMOVE(V_pf_altqs_inactive, altq, entries);
-		if (altq->qname[0] == 0 &&
-		    (altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
+	/* Purge the old altq lists */
+	TAILQ_FOREACH_SAFE(altq, V_pf_altq_ifs_inactive, entries, tmp) {
+		if ((altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
 			/* detach and destroy the discipline */
 			error = altq_remove(altq);
-		} else
-			pf_qid_unref(altq->qid);
+		}
 		free(altq, M_PFALTQ);
 	}
+	TAILQ_INIT(V_pf_altq_ifs_inactive);
+	TAILQ_FOREACH_SAFE(altq, V_pf_altqs_inactive, entries, tmp) {
+		pf_qid_unref(altq->qid);
+		free(altq, M_PFALTQ);
+	}
+	TAILQ_INIT(V_pf_altqs_inactive);
 	if (error)
 		return (error);
 	*ticket = ++V_ticket_altqs_inactive;
@@ -535,24 +667,27 @@ pf_begin_altq(u_int32_t *ticket)
 static int
 pf_rollback_altq(u_int32_t ticket)
 {
-	struct pf_altq	*altq;
+	struct pf_altq	*altq, *tmp;
 	int		 error = 0;
 
 	PF_RULES_WASSERT();
 
 	if (!V_altqs_inactive_open || ticket != V_ticket_altqs_inactive)
 		return (0);
-	/* Purge the old altq list */
-	while ((altq = TAILQ_FIRST(V_pf_altqs_inactive)) != NULL) {
-		TAILQ_REMOVE(V_pf_altqs_inactive, altq, entries);
-		if (altq->qname[0] == 0 &&
-		   (altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
+	/* Purge the old altq lists */
+	TAILQ_FOREACH_SAFE(altq, V_pf_altq_ifs_inactive, entries, tmp) {
+		if ((altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
 			/* detach and destroy the discipline */
 			error = altq_remove(altq);
-		} else
-			pf_qid_unref(altq->qid);
+		}
 		free(altq, M_PFALTQ);
 	}
+	TAILQ_INIT(V_pf_altq_ifs_inactive);
+	TAILQ_FOREACH_SAFE(altq, V_pf_altqs_inactive, entries, tmp) {
+		pf_qid_unref(altq->qid);
+		free(altq, M_PFALTQ);
+	}
+	TAILQ_INIT(V_pf_altqs_inactive);
 	V_altqs_inactive_open = 0;
 	return (error);
 }
@@ -560,8 +695,8 @@ pf_rollback_altq(u_int32_t ticket)
 static int
 pf_commit_altq(u_int32_t ticket)
 {
-	struct pf_altqqueue	*old_altqs;
-	struct pf_altq		*altq;
+	struct pf_altqqueue	*old_altqs, *old_altq_ifs;
+	struct pf_altq		*altq, *tmp;
 	int			 err, error = 0;
 
 	PF_RULES_WASSERT();
@@ -571,14 +706,16 @@ pf_commit_altq(u_int32_t ticket)
 
 	/* swap altqs, keep the old. */
 	old_altqs = V_pf_altqs_active;
+	old_altq_ifs = V_pf_altq_ifs_active;
 	V_pf_altqs_active = V_pf_altqs_inactive;
+	V_pf_altq_ifs_active = V_pf_altq_ifs_inactive;
 	V_pf_altqs_inactive = old_altqs;
+	V_pf_altq_ifs_inactive = old_altq_ifs;
 	V_ticket_altqs_active = V_ticket_altqs_inactive;
 
 	/* Attach new disciplines */
-	TAILQ_FOREACH(altq, V_pf_altqs_active, entries) {
-	if (altq->qname[0] == 0 &&
-	   (altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
+	TAILQ_FOREACH(altq, V_pf_altq_ifs_active, entries) {
+		if ((altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
 			/* attach the discipline */
 			error = altq_pfattach(altq);
 			if (error == 0 && V_pf_altq_running)
@@ -588,11 +725,9 @@ pf_commit_altq(u_int32_t ticket)
 		}
 	}
 
-	/* Purge the old altq list */
-	while ((altq = TAILQ_FIRST(V_pf_altqs_inactive)) != NULL) {
-		TAILQ_REMOVE(V_pf_altqs_inactive, altq, entries);
-		if (altq->qname[0] == 0 &&
-		    (altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
+	/* Purge the old altq lists */
+	TAILQ_FOREACH_SAFE(altq, V_pf_altq_ifs_inactive, entries, tmp) {
+		if ((altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
 			/* detach and destroy the discipline */
 			if (V_pf_altq_running)
 				error = pf_disable_altq(altq);
@@ -602,10 +737,15 @@ pf_commit_altq(u_int32_t ticket)
 			err = altq_remove(altq);
 			if (err != 0 && error == 0)
 				error = err;
-		} else
-			pf_qid_unref(altq->qid);
+		}
 		free(altq, M_PFALTQ);
 	}
+	TAILQ_INIT(V_pf_altq_ifs_inactive);
+	TAILQ_FOREACH_SAFE(altq, V_pf_altqs_inactive, entries, tmp) {
+		pf_qid_unref(altq->qid);
+		free(altq, M_PFALTQ);
+	}
+	TAILQ_INIT(V_pf_altqs_inactive);
 
 	V_altqs_inactive_open = 0;
 	return (error);
@@ -662,13 +802,45 @@ pf_disable_altq(struct pf_altq *altq)
 	return (error);
 }
 
+static int
+pf_altq_ifnet_event_add(struct ifnet *ifp, int remove, u_int32_t ticket,
+    struct pf_altq *altq)
+{
+	struct ifnet	*ifp1;
+	int		 error = 0;
+
+	/* Deactivate the interface in question */
+	altq->local_flags &= ~PFALTQ_FLAG_IF_REMOVED;
+	if ((ifp1 = ifunit(altq->ifname)) == NULL ||
+	    (remove && ifp1 == ifp)) {
+		altq->local_flags |= PFALTQ_FLAG_IF_REMOVED;
+	} else {
+		error = altq_add(ifp1, altq);
+
+		if (ticket != V_ticket_altqs_inactive)
+			error = EBUSY;
+
+		if (error)
+			free(altq, M_PFALTQ);
+	}
+
+	return (error);
+}
+
 void
 pf_altq_ifnet_event(struct ifnet *ifp, int remove)
 {
-	struct ifnet	*ifp1;
 	struct pf_altq	*a1, *a2, *a3;
 	u_int32_t	 ticket;
 	int		 error = 0;
+
+	/*
+	 * No need to re-evaluate the configuration for events on interfaces
+	 * that do not support ALTQ, as it's not possible for such
+	 * interfaces to be part of the configuration.
+	 */
+	if (!ALTQ_IS_READY(&ifp->if_snd))
+		return;
 
 	/* Interrupt userland queue modifications */
 	if (V_altqs_inactive_open)
@@ -679,6 +851,22 @@ pf_altq_ifnet_event(struct ifnet *ifp, int remove)
 		return;
 
 	/* Copy the current active set */
+	TAILQ_FOREACH(a1, V_pf_altq_ifs_active, entries) {
+		a2 = malloc(sizeof(*a2), M_PFALTQ, M_NOWAIT);
+		if (a2 == NULL) {
+			error = ENOMEM;
+			break;
+		}
+		bcopy(a1, a2, sizeof(struct pf_altq));
+
+		error = pf_altq_ifnet_event_add(ifp, remove, ticket, a2);
+		if (error)
+			break;
+
+		TAILQ_INSERT_TAIL(V_pf_altq_ifs_inactive, a2, entries);
+	}
+	if (error)
+		goto out;
 	TAILQ_FOREACH(a1, V_pf_altqs_active, entries) {
 		a2 = malloc(sizeof(*a2), M_PFALTQ, M_NOWAIT);
 		if (a2 == NULL) {
@@ -687,41 +875,27 @@ pf_altq_ifnet_event(struct ifnet *ifp, int remove)
 		}
 		bcopy(a1, a2, sizeof(struct pf_altq));
 
-		if (a2->qname[0] != 0) {
-			if ((a2->qid = pf_qname2qid(a2->qname)) == 0) {
-				error = EBUSY;
-				free(a2, M_PFALTQ);
-				break;
-			}
-			a2->altq_disc = NULL;
-			TAILQ_FOREACH(a3, V_pf_altqs_inactive, entries) {
-				if (strncmp(a3->ifname, a2->ifname,
-				    IFNAMSIZ) == 0 && a3->qname[0] == 0) {
-					a2->altq_disc = a3->altq_disc;
-					break;
-				}
-			}
+		if ((a2->qid = pf_qname2qid(a2->qname)) == 0) {
+			error = EBUSY;
+			free(a2, M_PFALTQ);
+			break;
 		}
-		/* Deactivate the interface in question */
-		a2->local_flags &= ~PFALTQ_FLAG_IF_REMOVED;
-		if ((ifp1 = ifunit(a2->ifname)) == NULL ||
-		    (remove && ifp1 == ifp)) {
-			a2->local_flags |= PFALTQ_FLAG_IF_REMOVED;
-		} else {
-			error = altq_add(a2);
-
-			if (ticket != V_ticket_altqs_inactive)
-				error = EBUSY;
-
-			if (error) {
-				free(a2, M_PFALTQ);
+		a2->altq_disc = NULL;
+		TAILQ_FOREACH(a3, V_pf_altq_ifs_inactive, entries) {
+			if (strncmp(a3->ifname, a2->ifname,
+				IFNAMSIZ) == 0) {
+				a2->altq_disc = a3->altq_disc;
 				break;
 			}
 		}
+		error = pf_altq_ifnet_event_add(ifp, remove, ticket, a2);
+		if (error)
+			break;
 
 		TAILQ_INSERT_TAIL(V_pf_altqs_inactive, a2, entries);
 	}
 
+out:
 	if (error != 0)
 		pf_rollback_altq(ticket);
 	else
@@ -732,14 +906,14 @@ pf_altq_ifnet_event(struct ifnet *ifp, int remove)
 static int
 pf_begin_rules(u_int32_t *ticket, int rs_num, const char *anchor)
 {
-	struct pf_ruleset	*rs;
-	struct pf_rule		*rule;
+	struct pf_kruleset	*rs;
+	struct pf_krule		*rule;
 
 	PF_RULES_WASSERT();
 
 	if (rs_num < 0 || rs_num >= PF_RULESET_MAX)
 		return (EINVAL);
-	rs = pf_find_or_create_ruleset(anchor);
+	rs = pf_find_or_create_kruleset(anchor);
 	if (rs == NULL)
 		return (EINVAL);
 	while ((rule = TAILQ_FIRST(rs->rules[rs_num].inactive.ptr)) != NULL) {
@@ -754,14 +928,14 @@ pf_begin_rules(u_int32_t *ticket, int rs_num, const char *anchor)
 static int
 pf_rollback_rules(u_int32_t ticket, int rs_num, char *anchor)
 {
-	struct pf_ruleset	*rs;
-	struct pf_rule		*rule;
+	struct pf_kruleset	*rs;
+	struct pf_krule		*rule;
 
 	PF_RULES_WASSERT();
 
 	if (rs_num < 0 || rs_num >= PF_RULESET_MAX)
 		return (EINVAL);
-	rs = pf_find_ruleset(anchor);
+	rs = pf_find_kruleset(anchor);
 	if (rs == NULL || !rs->rules[rs_num].inactive.open ||
 	    rs->rules[rs_num].inactive.ticket != ticket)
 		return (0);
@@ -815,7 +989,7 @@ pf_hash_rule_addr(MD5_CTX *ctx, struct pf_rule_addr *pfr)
 }
 
 static void
-pf_hash_rule(MD5_CTX *ctx, struct pf_rule *rule)
+pf_hash_rule(MD5_CTX *ctx, struct pf_krule *rule)
 {
 	u_int16_t x;
 	u_int32_t y;
@@ -856,9 +1030,9 @@ pf_hash_rule(MD5_CTX *ctx, struct pf_rule *rule)
 static int
 pf_commit_rules(u_int32_t ticket, int rs_num, char *anchor)
 {
-	struct pf_ruleset	*rs;
-	struct pf_rule		*rule, **old_array;
-	struct pf_rulequeue	*old_rules;
+	struct pf_kruleset	*rs;
+	struct pf_krule		*rule, **old_array;
+	struct pf_krulequeue	*old_rules;
 	int			 error;
 	u_int32_t		 old_rcount;
 
@@ -866,7 +1040,7 @@ pf_commit_rules(u_int32_t ticket, int rs_num, char *anchor)
 
 	if (rs_num < 0 || rs_num >= PF_RULESET_MAX)
 		return (EINVAL);
-	rs = pf_find_ruleset(anchor);
+	rs = pf_find_kruleset(anchor);
 	if (rs == NULL || !rs->rules[rs_num].inactive.open ||
 	    ticket != rs->rules[rs_num].inactive.ticket)
 		return (EBUSY);
@@ -897,7 +1071,6 @@ pf_commit_rules(u_int32_t ticket, int rs_num, char *anchor)
 	    rs->rules[rs_num].inactive.ticket;
 	pf_calc_skip_steps(rs->rules[rs_num].active.ptr);
 
-
 	/* Purge the old rule list. */
 	while ((rule = TAILQ_FIRST(old_rules)) != NULL)
 		pf_unlink_rule(old_rules, rule);
@@ -906,16 +1079,16 @@ pf_commit_rules(u_int32_t ticket, int rs_num, char *anchor)
 	rs->rules[rs_num].inactive.ptr_array = NULL;
 	rs->rules[rs_num].inactive.rcount = 0;
 	rs->rules[rs_num].inactive.open = 0;
-	pf_remove_if_empty_ruleset(rs);
+	pf_remove_if_empty_kruleset(rs);
 
 	return (0);
 }
 
 static int
-pf_setup_pfsync_matching(struct pf_ruleset *rs)
+pf_setup_pfsync_matching(struct pf_kruleset *rs)
 {
 	MD5_CTX			 ctx;
-	struct pf_rule		*rule;
+	struct pf_krule		*rule;
 	int			 rs_cnt;
 	u_int8_t		 digest[PF_MD5_DIGEST_LENGTH];
 
@@ -952,7 +1125,7 @@ pf_setup_pfsync_matching(struct pf_ruleset *rs)
 }
 
 static int
-pf_addr_setup(struct pf_ruleset *ruleset, struct pf_addr_wrap *addr,
+pf_addr_setup(struct pf_kruleset *ruleset, struct pf_addr_wrap *addr,
     sa_family_t af)
 {
 	int error = 0;
@@ -985,10 +1158,540 @@ pf_addr_copyout(struct pf_addr_wrap *addr)
 	}
 }
 
+static void
+pf_src_node_copy(const struct pf_ksrc_node *in, struct pf_src_node *out)
+{
+	int	secs = time_uptime, diff;
+
+	bzero(out, sizeof(struct pf_src_node));
+
+	bcopy(&in->addr, &out->addr, sizeof(struct pf_addr));
+	bcopy(&in->raddr, &out->raddr, sizeof(struct pf_addr));
+
+	if (in->rule.ptr != NULL)
+		out->rule.nr = in->rule.ptr->nr;
+
+	for (int i = 0; i < 2; i++) {
+		out->bytes[i] = counter_u64_fetch(in->bytes[i]);
+		out->packets[i] = counter_u64_fetch(in->packets[i]);
+	}
+
+	out->states = in->states;
+	out->conn = in->conn;
+	out->af = in->af;
+	out->ruletype = in->ruletype;
+
+	out->creation = secs - in->creation;
+	if (out->expire > secs)
+		out->expire -= secs;
+	else
+		out->expire = 0;
+
+	/* Adjust the connection rate estimate. */
+	diff = secs - in->conn_rate.last;
+	if (diff >= in->conn_rate.seconds)
+		out->conn_rate.count = 0;
+	else
+		out->conn_rate.count -=
+		    in->conn_rate.count * diff /
+		    in->conn_rate.seconds;
+}
+
+#ifdef ALTQ
+/*
+ * Handle export of struct pf_kaltq to user binaries that may be using any
+ * version of struct pf_altq.
+ */
+static int
+pf_export_kaltq(struct pf_altq *q, struct pfioc_altq_v1 *pa, size_t ioc_size)
+{
+	u_int32_t version;
+
+	if (ioc_size == sizeof(struct pfioc_altq_v0))
+		version = 0;
+	else
+		version = pa->version;
+
+	if (version > PFIOC_ALTQ_VERSION)
+		return (EINVAL);
+
+#define ASSIGN(x) exported_q->x = q->x
+#define COPY(x) \
+	bcopy(&q->x, &exported_q->x, min(sizeof(q->x), sizeof(exported_q->x)))
+#define SATU16(x) (u_int32_t)uqmin((x), USHRT_MAX)
+#define SATU32(x) (u_int32_t)uqmin((x), UINT_MAX)
+
+	switch (version) {
+	case 0: {
+		struct pf_altq_v0 *exported_q =
+		    &((struct pfioc_altq_v0 *)pa)->altq;
+
+		COPY(ifname);
+
+		ASSIGN(scheduler);
+		ASSIGN(tbrsize);
+		exported_q->tbrsize = SATU16(q->tbrsize);
+		exported_q->ifbandwidth = SATU32(q->ifbandwidth);
+
+		COPY(qname);
+		COPY(parent);
+		ASSIGN(parent_qid);
+		exported_q->bandwidth = SATU32(q->bandwidth);
+		ASSIGN(priority);
+		ASSIGN(local_flags);
+
+		ASSIGN(qlimit);
+		ASSIGN(flags);
+
+		if (q->scheduler == ALTQT_HFSC) {
+#define ASSIGN_OPT(x) exported_q->pq_u.hfsc_opts.x = q->pq_u.hfsc_opts.x
+#define ASSIGN_OPT_SATU32(x) exported_q->pq_u.hfsc_opts.x = \
+			    SATU32(q->pq_u.hfsc_opts.x)
+			
+			ASSIGN_OPT_SATU32(rtsc_m1);
+			ASSIGN_OPT(rtsc_d);
+			ASSIGN_OPT_SATU32(rtsc_m2);
+
+			ASSIGN_OPT_SATU32(lssc_m1);
+			ASSIGN_OPT(lssc_d);
+			ASSIGN_OPT_SATU32(lssc_m2);
+
+			ASSIGN_OPT_SATU32(ulsc_m1);
+			ASSIGN_OPT(ulsc_d);
+			ASSIGN_OPT_SATU32(ulsc_m2);
+
+			ASSIGN_OPT(flags);
+			
+#undef ASSIGN_OPT
+#undef ASSIGN_OPT_SATU32
+		} else
+			COPY(pq_u);
+
+		ASSIGN(qid);
+		break;
+	}
+	case 1:	{
+		struct pf_altq_v1 *exported_q =
+		    &((struct pfioc_altq_v1 *)pa)->altq;
+
+		COPY(ifname);
+
+		ASSIGN(scheduler);
+		ASSIGN(tbrsize);
+		ASSIGN(ifbandwidth);
+
+		COPY(qname);
+		COPY(parent);
+		ASSIGN(parent_qid);
+		ASSIGN(bandwidth);
+		ASSIGN(priority);
+		ASSIGN(local_flags);
+
+		ASSIGN(qlimit);
+		ASSIGN(flags);
+		COPY(pq_u);
+
+		ASSIGN(qid);
+		break;
+	}
+	default:
+		panic("%s: unhandled struct pfioc_altq version", __func__);
+		break;
+	}
+
+#undef ASSIGN
+#undef COPY
+#undef SATU16
+#undef SATU32
+
+	return (0);
+}
+
+/*
+ * Handle import to struct pf_kaltq of struct pf_altq from user binaries
+ * that may be using any version of it.
+ */
+static int
+pf_import_kaltq(struct pfioc_altq_v1 *pa, struct pf_altq *q, size_t ioc_size)
+{
+	u_int32_t version;
+
+	if (ioc_size == sizeof(struct pfioc_altq_v0))
+		version = 0;
+	else
+		version = pa->version;
+
+	if (version > PFIOC_ALTQ_VERSION)
+		return (EINVAL);
+
+#define ASSIGN(x) q->x = imported_q->x
+#define COPY(x) \
+	bcopy(&imported_q->x, &q->x, min(sizeof(imported_q->x), sizeof(q->x)))
+
+	switch (version) {
+	case 0: {
+		struct pf_altq_v0 *imported_q =
+		    &((struct pfioc_altq_v0 *)pa)->altq;
+
+		COPY(ifname);
+
+		ASSIGN(scheduler);
+		ASSIGN(tbrsize); /* 16-bit -> 32-bit */
+		ASSIGN(ifbandwidth); /* 32-bit -> 64-bit */
+
+		COPY(qname);
+		COPY(parent);
+		ASSIGN(parent_qid);
+		ASSIGN(bandwidth); /* 32-bit -> 64-bit */
+		ASSIGN(priority);
+		ASSIGN(local_flags);
+
+		ASSIGN(qlimit);
+		ASSIGN(flags);
+
+		if (imported_q->scheduler == ALTQT_HFSC) {
+#define ASSIGN_OPT(x) q->pq_u.hfsc_opts.x = imported_q->pq_u.hfsc_opts.x
+
+			/*
+			 * The m1 and m2 parameters are being copied from
+			 * 32-bit to 64-bit.
+			 */
+			ASSIGN_OPT(rtsc_m1);
+			ASSIGN_OPT(rtsc_d);
+			ASSIGN_OPT(rtsc_m2);
+
+			ASSIGN_OPT(lssc_m1);
+			ASSIGN_OPT(lssc_d);
+			ASSIGN_OPT(lssc_m2);
+
+			ASSIGN_OPT(ulsc_m1);
+			ASSIGN_OPT(ulsc_d);
+			ASSIGN_OPT(ulsc_m2);
+
+			ASSIGN_OPT(flags);
+			
+#undef ASSIGN_OPT
+		} else
+			COPY(pq_u);
+
+		ASSIGN(qid);
+		break;
+	}
+	case 1: {
+		struct pf_altq_v1 *imported_q =
+		    &((struct pfioc_altq_v1 *)pa)->altq;
+
+		COPY(ifname);
+
+		ASSIGN(scheduler);
+		ASSIGN(tbrsize);
+		ASSIGN(ifbandwidth);
+
+		COPY(qname);
+		COPY(parent);
+		ASSIGN(parent_qid);
+		ASSIGN(bandwidth);
+		ASSIGN(priority);
+		ASSIGN(local_flags);
+
+		ASSIGN(qlimit);
+		ASSIGN(flags);
+		COPY(pq_u);
+
+		ASSIGN(qid);
+		break;
+	}
+	default:	
+		panic("%s: unhandled struct pfioc_altq version", __func__);
+		break;
+	}
+
+#undef ASSIGN
+#undef COPY
+
+	return (0);
+}
+
+static struct pf_altq *
+pf_altq_get_nth_active(u_int32_t n)
+{
+	struct pf_altq		*altq;
+	u_int32_t		 nr;
+
+	nr = 0;
+	TAILQ_FOREACH(altq, V_pf_altq_ifs_active, entries) {
+		if (nr == n)
+			return (altq);
+		nr++;
+	}
+
+	TAILQ_FOREACH(altq, V_pf_altqs_active, entries) {
+		if (nr == n)
+			return (altq);
+		nr++;
+	}
+
+	return (NULL);
+}
+#endif /* ALTQ */
+
+static void
+pf_kpooladdr_to_pooladdr(const struct pf_kpooladdr *kpool,
+    struct pf_pooladdr *pool)
+{
+
+	bzero(pool, sizeof(*pool));
+	bcopy(&kpool->addr, &pool->addr, sizeof(pool->addr));
+	strlcpy(pool->ifname, kpool->ifname, sizeof(pool->ifname));
+}
+
+static void
+pf_pooladdr_to_kpooladdr(const struct pf_pooladdr *pool,
+    struct pf_kpooladdr *kpool)
+{
+
+	bzero(kpool, sizeof(*kpool));
+	bcopy(&pool->addr, &kpool->addr, sizeof(kpool->addr));
+	strlcpy(kpool->ifname, pool->ifname, sizeof(kpool->ifname));
+}
+
+static void
+pf_krule_to_rule(const struct pf_krule *krule, struct pf_rule *rule)
+{
+
+	bzero(rule, sizeof(*rule));
+
+	bcopy(&krule->src, &rule->src, sizeof(rule->src));
+	bcopy(&krule->dst, &rule->dst, sizeof(rule->dst));
+
+	for (int i = 0; i < PF_SKIP_COUNT; ++i) {
+		if (rule->skip[i].ptr == NULL)
+			rule->skip[i].nr = -1;
+		else
+			rule->skip[i].nr = krule->skip[i].ptr->nr;
+	}
+
+	strlcpy(rule->label, krule->label, sizeof(rule->label));
+	strlcpy(rule->ifname, krule->ifname, sizeof(rule->ifname));
+	strlcpy(rule->qname, krule->qname, sizeof(rule->qname));
+	strlcpy(rule->pqname, krule->pqname, sizeof(rule->pqname));
+	strlcpy(rule->tagname, krule->tagname, sizeof(rule->tagname));
+	strlcpy(rule->match_tagname, krule->match_tagname,
+	    sizeof(rule->match_tagname));
+	strlcpy(rule->overload_tblname, krule->overload_tblname,
+	    sizeof(rule->overload_tblname));
+
+	bcopy(&krule->rpool, &rule->rpool, sizeof(krule->rpool));
+
+	rule->evaluations = counter_u64_fetch(krule->evaluations);
+	for (int i = 0; i < 2; i++) {
+		rule->packets[i] = counter_u64_fetch(krule->packets[i]);
+		rule->bytes[i] = counter_u64_fetch(krule->bytes[i]);
+	}
+
+	/* kif, anchor, overload_tbl are not copied over. */
+
+	rule->os_fingerprint = krule->os_fingerprint;
+
+	rule->rtableid = krule->rtableid;
+	bcopy(krule->timeout, rule->timeout, sizeof(krule->timeout));
+	rule->max_states = krule->max_states;
+	rule->max_src_nodes = krule->max_src_nodes;
+	rule->max_src_states = krule->max_src_states;
+	rule->max_src_conn = krule->max_src_conn;
+	rule->max_src_conn_rate.limit = krule->max_src_conn_rate.limit;
+	rule->max_src_conn_rate.seconds = krule->max_src_conn_rate.seconds;
+	rule->qid = krule->qid;
+	rule->pqid = krule->pqid;
+	rule->rt_listid = krule->rt_listid;
+	rule->nr = krule->nr;
+	rule->prob = krule->prob;
+	rule->cuid = krule->cuid;
+	rule->cpid = krule->cpid;
+
+	rule->return_icmp = krule->return_icmp;
+	rule->return_icmp6 = krule->return_icmp6;
+	rule->max_mss = krule->max_mss;
+	rule->tag = krule->tag;
+	rule->match_tag = krule->match_tag;
+	rule->scrub_flags = krule->scrub_flags;
+
+	bcopy(&krule->uid, &rule->uid, sizeof(krule->uid));
+	bcopy(&krule->gid, &rule->gid, sizeof(krule->gid));
+
+	rule->rule_flag = krule->rule_flag;
+	rule->action = krule->action;
+	rule->direction = krule->direction;
+	rule->log = krule->log;
+	rule->logif = krule->logif;
+	rule->quick = krule->quick;
+	rule->ifnot = krule->ifnot;
+	rule->match_tag_not = krule->match_tag_not;
+	rule->natpass = krule->natpass;
+
+	rule->keep_state = krule->keep_state;
+	rule->af = krule->af;
+	rule->proto = krule->proto;
+	rule->type = krule->type;
+	rule->code = krule->code;
+	rule->flags = krule->flags;
+	rule->flagset = krule->flagset;
+	rule->min_ttl = krule->min_ttl;
+	rule->allow_opts = krule->allow_opts;
+	rule->rt = krule->rt;
+	rule->return_ttl = krule->return_ttl;
+	rule->tos = krule->tos;
+	rule->set_tos = krule->set_tos;
+	rule->anchor_relative = krule->anchor_relative;
+	rule->anchor_wildcard = krule->anchor_wildcard;
+
+	rule->flush = krule->flush;
+	rule->prio = krule->prio;
+	rule->set_prio[0] = krule->set_prio[0];
+	rule->set_prio[1] = krule->set_prio[1];
+
+	bcopy(&krule->divert, &rule->divert, sizeof(krule->divert));
+
+	rule->u_states_cur = counter_u64_fetch(krule->states_cur);
+	rule->u_states_tot = counter_u64_fetch(krule->states_tot);
+	rule->u_src_nodes = counter_u64_fetch(krule->src_nodes);
+}
+
+static int
+pf_check_rule_addr(const struct pf_rule_addr *addr)
+{
+
+	switch (addr->addr.type) {
+	case PF_ADDR_ADDRMASK:
+	case PF_ADDR_NOROUTE:
+	case PF_ADDR_DYNIFTL:
+	case PF_ADDR_TABLE:
+	case PF_ADDR_URPFFAILED:
+	case PF_ADDR_RANGE:
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	if (addr->addr.p.dyn != NULL) {
+		return (EINVAL);
+	}
+
+	return (0);
+}
+
+static int
+pf_rule_to_krule(const struct pf_rule *rule, struct pf_krule *krule)
+{
+	int ret;
+
+#ifndef INET
+	if (rule->af == AF_INET) {
+		return (EAFNOSUPPORT);
+	}
+#endif /* INET */
+#ifndef INET6
+	if (rule->af == AF_INET6) {
+		return (EAFNOSUPPORT);
+	}
+#endif /* INET6 */
+
+	ret = pf_check_rule_addr(&rule->src);
+	if (ret != 0)
+		return (ret);
+	ret = pf_check_rule_addr(&rule->dst);
+	if (ret != 0)
+		return (ret);
+
+	bzero(krule, sizeof(*krule));
+
+	bcopy(&rule->src, &krule->src, sizeof(rule->src));
+	bcopy(&rule->dst, &krule->dst, sizeof(rule->dst));
+
+	strlcpy(krule->label, rule->label, sizeof(rule->label));
+	strlcpy(krule->ifname, rule->ifname, sizeof(rule->ifname));
+	strlcpy(krule->qname, rule->qname, sizeof(rule->qname));
+	strlcpy(krule->pqname, rule->pqname, sizeof(rule->pqname));
+	strlcpy(krule->tagname, rule->tagname, sizeof(rule->tagname));
+	strlcpy(krule->match_tagname, rule->match_tagname,
+	    sizeof(rule->match_tagname));
+	strlcpy(krule->overload_tblname, rule->overload_tblname,
+	    sizeof(rule->overload_tblname));
+
+	bcopy(&rule->rpool, &krule->rpool, sizeof(krule->rpool));
+
+	/* Don't allow userspace to set evaulations, packets or bytes. */
+	/* kif, anchor, overload_tbl are not copied over. */
+
+	krule->os_fingerprint = rule->os_fingerprint;
+
+	krule->rtableid = rule->rtableid;
+	bcopy(rule->timeout, krule->timeout, sizeof(krule->timeout));
+	krule->max_states = rule->max_states;
+	krule->max_src_nodes = rule->max_src_nodes;
+	krule->max_src_states = rule->max_src_states;
+	krule->max_src_conn = rule->max_src_conn;
+	krule->max_src_conn_rate.limit = rule->max_src_conn_rate.limit;
+	krule->max_src_conn_rate.seconds = rule->max_src_conn_rate.seconds;
+	krule->qid = rule->qid;
+	krule->pqid = rule->pqid;
+	krule->rt_listid = rule->rt_listid;
+	krule->nr = rule->nr;
+	krule->prob = rule->prob;
+	krule->cuid = rule->cuid;
+	krule->cpid = rule->cpid;
+
+	krule->return_icmp = rule->return_icmp;
+	krule->return_icmp6 = rule->return_icmp6;
+	krule->max_mss = rule->max_mss;
+	krule->tag = rule->tag;
+	krule->match_tag = rule->match_tag;
+	krule->scrub_flags = rule->scrub_flags;
+
+	bcopy(&rule->uid, &krule->uid, sizeof(krule->uid));
+	bcopy(&rule->gid, &krule->gid, sizeof(krule->gid));
+
+	krule->rule_flag = rule->rule_flag;
+	krule->action = rule->action;
+	krule->direction = rule->direction;
+	krule->log = rule->log;
+	krule->logif = rule->logif;
+	krule->quick = rule->quick;
+	krule->ifnot = rule->ifnot;
+	krule->match_tag_not = rule->match_tag_not;
+	krule->natpass = rule->natpass;
+
+	krule->keep_state = rule->keep_state;
+	krule->af = rule->af;
+	krule->proto = rule->proto;
+	krule->type = rule->type;
+	krule->code = rule->code;
+	krule->flags = rule->flags;
+	krule->flagset = rule->flagset;
+	krule->min_ttl = rule->min_ttl;
+	krule->allow_opts = rule->allow_opts;
+	krule->rt = rule->rt;
+	krule->return_ttl = rule->return_ttl;
+	krule->tos = rule->tos;
+	krule->set_tos = rule->set_tos;
+	krule->anchor_relative = rule->anchor_relative;
+	krule->anchor_wildcard = rule->anchor_wildcard;
+
+	krule->flush = rule->flush;
+	krule->prio = rule->prio;
+	krule->set_prio[0] = rule->set_prio[0];
+	krule->set_prio[1] = rule->set_prio[1];
+
+	bcopy(&rule->divert, &krule->divert, sizeof(krule->divert));
+
+	return (0);
+}
+
 static int
 pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td)
 {
 	int			 error = 0;
+	PF_RULES_RLOCK_TRACKER;
 
 	/* XXX keep in sync with switch() below */
 	if (securelevel_gt(td->td_ucred, 2))
@@ -1007,9 +1710,12 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		case DIOCGETTIMEOUT:
 		case DIOCCLRRULECTRS:
 		case DIOCGETLIMIT:
-		case DIOCGETALTQS:
-		case DIOCGETALTQ:
-		case DIOCGETQSTATS:
+		case DIOCGETALTQSV0:
+		case DIOCGETALTQSV1:
+		case DIOCGETALTQV0:
+		case DIOCGETALTQV1:
+		case DIOCGETQSTATSV0:
+		case DIOCGETQSTATSV1:
 		case DIOCGETRULESETS:
 		case DIOCGETRULESET:
 		case DIOCRGETTABLES:
@@ -1027,7 +1733,8 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		case DIOCGETSRCNODES:
 		case DIOCCLRSRCNODES:
 		case DIOCIGETIFACES:
-		case DIOCGIFSPEED:
+		case DIOCGIFSPEEDV0:
+		case DIOCGIFSPEEDV1:
 		case DIOCSETIFFLAG:
 		case DIOCCLRIFFLAG:
 			break;
@@ -1053,9 +1760,12 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		case DIOCGETSTATES:
 		case DIOCGETTIMEOUT:
 		case DIOCGETLIMIT:
-		case DIOCGETALTQS:
-		case DIOCGETALTQ:
-		case DIOCGETQSTATS:
+		case DIOCGETALTQSV0:
+		case DIOCGETALTQSV1:
+		case DIOCGETALTQV0:
+		case DIOCGETALTQV1:
+		case DIOCGETQSTATSV0:
+		case DIOCGETQSTATSV1:
 		case DIOCGETRULESETS:
 		case DIOCGETRULESET:
 		case DIOCNATLOOK:
@@ -1067,7 +1777,8 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		case DIOCOSFPGET:
 		case DIOCGETSRCNODES:
 		case DIOCIGETIFACES:
-		case DIOCGIFSPEED:
+		case DIOCGIFSPEEDV1:
+		case DIOCGIFSPEEDV0:
 			break;
 		case DIOCRCLRTABLES:
 		case DIOCRADDTABLES:
@@ -1138,45 +1849,42 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 
 	case DIOCADDRULE: {
 		struct pfioc_rule	*pr = (struct pfioc_rule *)addr;
-		struct pf_ruleset	*ruleset;
-		struct pf_rule		*rule, *tail;
-		struct pf_pooladdr	*pa;
-		struct pfi_kif		*kif = NULL;
+		struct pf_kruleset	*ruleset;
+		struct pf_krule		*rule, *tail;
+		struct pf_kpooladdr	*pa;
+		struct pfi_kkif		*kif = NULL;
 		int			 rs_num;
 
 		if (pr->rule.return_icmp >> 8 > ICMP_MAXTYPE) {
 			error = EINVAL;
 			break;
 		}
-#ifndef INET
-		if (pr->rule.af == AF_INET) {
-			error = EAFNOSUPPORT;
-			break;
-		}
-#endif /* INET */
-#ifndef INET6
-		if (pr->rule.af == AF_INET6) {
-			error = EAFNOSUPPORT;
-			break;
-		}
-#endif /* INET6 */
 
 		rule = malloc(sizeof(*rule), M_PFRULE, M_WAITOK);
-		bcopy(&pr->rule, rule, sizeof(struct pf_rule));
+		error = pf_rule_to_krule(&pr->rule, rule);
+		if (error != 0) {
+			free(rule, M_PFRULE);
+			break;
+		}
+
 		if (rule->ifname[0])
-			kif = malloc(sizeof(*kif), PFI_MTYPE, M_WAITOK);
+			kif = pf_kkif_create(M_WAITOK);
+		rule->evaluations = counter_u64_alloc(M_WAITOK);
+		for (int i = 0; i < 2; i++) {
+			rule->packets[i] = counter_u64_alloc(M_WAITOK);
+			rule->bytes[i] = counter_u64_alloc(M_WAITOK);
+		}
 		rule->states_cur = counter_u64_alloc(M_WAITOK);
 		rule->states_tot = counter_u64_alloc(M_WAITOK);
 		rule->src_nodes = counter_u64_alloc(M_WAITOK);
 		rule->cuid = td->td_ucred->cr_ruid;
 		rule->cpid = td->td_proc ? td->td_proc->p_pid : 0;
 		TAILQ_INIT(&rule->rpool.list);
-
 #define	ERROUT(x)	{ error = (x); goto DIOCADDRULE_error; }
 
 		PF_RULES_WLOCK();
 		pr->anchor[sizeof(pr->anchor) - 1] = 0;
-		ruleset = pf_find_ruleset(pr->anchor);
+		ruleset = pf_find_kruleset(pr->anchor);
 		if (ruleset == NULL)
 			ERROUT(EINVAL);
 		rs_num = pf_get_ruleset_number(pr->rule.action);
@@ -1196,14 +1904,14 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		}
 
 		tail = TAILQ_LAST(ruleset->rules[rs_num].inactive.ptr,
-		    pf_rulequeue);
+		    pf_krulequeue);
 		if (tail)
 			rule->nr = tail->nr + 1;
 		else
 			rule->nr = 0;
 		if (rule->ifname[0]) {
-			rule->kif = pfi_kif_attach(kif, rule->ifname);
-			pfi_kif_ref(rule->kif);
+			rule->kif = pfi_kkif_attach(kif, rule->ifname);
+			pfi_kkif_ref(rule->kif);
 		} else
 			rule->kif = NULL;
 
@@ -1240,7 +1948,7 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 			error = ENOMEM;
 		if (pf_addr_setup(ruleset, &rule->dst.addr, rule->af))
 			error = ENOMEM;
-		if (pf_anchor_setup(rule, ruleset, pr->anchor_call))
+		if (pf_kanchor_setup(rule, ruleset, pr->anchor_call))
 			error = EINVAL;
 		if (rule->scrub_flags & PFSTATE_SETPRIO &&
 		    (rule->set_prio[0] > PF_PRIO_MAX ||
@@ -1264,10 +1972,10 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 				    PFR_TFLAG_ACTIVE;
 		}
 
-		pf_mv_pool(&V_pf_pabuf, &rule->rpool.list);
+		pf_mv_kpool(&V_pf_pabuf, &rule->rpool.list);
 		if (((((rule->action == PF_NAT) || (rule->action == PF_RDR) ||
 		    (rule->action == PF_BINAT)) && rule->anchor == NULL) ||
-		    (rule->rt > PF_FASTROUTE)) &&
+		    (rule->rt > PF_NOPFROUTE)) &&
 		    (TAILQ_FIRST(&rule->rpool.list) == NULL))
 			error = EINVAL;
 
@@ -1278,8 +1986,11 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		}
 
 		rule->rpool.cur = TAILQ_FIRST(&rule->rpool.list);
-		rule->evaluations = rule->packets[0] = rule->packets[1] =
-		    rule->bytes[0] = rule->bytes[1] = 0;
+		counter_u64_zero(rule->evaluations);
+		for (int i = 0; i < 2; i++) {
+			counter_u64_zero(rule->packets[i]);
+			counter_u64_zero(rule->bytes[i]);
+		}
 		TAILQ_INSERT_TAIL(ruleset->rules[rs_num].inactive.ptr,
 		    rule, entries);
 		ruleset->rules[rs_num].inactive.rcount++;
@@ -1289,24 +2000,29 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 #undef ERROUT
 DIOCADDRULE_error:
 		PF_RULES_WUNLOCK();
+		counter_u64_free(rule->evaluations);
+		for (int i = 0; i < 2; i++) {
+			counter_u64_free(rule->packets[i]);
+			counter_u64_free(rule->bytes[i]);
+		}
 		counter_u64_free(rule->states_cur);
 		counter_u64_free(rule->states_tot);
 		counter_u64_free(rule->src_nodes);
 		free(rule, M_PFRULE);
 		if (kif)
-			free(kif, PFI_MTYPE);
+			pf_kkif_free(kif);
 		break;
 	}
 
 	case DIOCGETRULES: {
 		struct pfioc_rule	*pr = (struct pfioc_rule *)addr;
-		struct pf_ruleset	*ruleset;
-		struct pf_rule		*tail;
+		struct pf_kruleset	*ruleset;
+		struct pf_krule		*tail;
 		int			 rs_num;
 
 		PF_RULES_WLOCK();
 		pr->anchor[sizeof(pr->anchor) - 1] = 0;
-		ruleset = pf_find_ruleset(pr->anchor);
+		ruleset = pf_find_kruleset(pr->anchor);
 		if (ruleset == NULL) {
 			PF_RULES_WUNLOCK();
 			error = EINVAL;
@@ -1319,7 +2035,7 @@ DIOCADDRULE_error:
 			break;
 		}
 		tail = TAILQ_LAST(ruleset->rules[rs_num].active.ptr,
-		    pf_rulequeue);
+		    pf_krulequeue);
 		if (tail)
 			pr->nr = tail->nr + 1;
 		else
@@ -1331,13 +2047,13 @@ DIOCADDRULE_error:
 
 	case DIOCGETRULE: {
 		struct pfioc_rule	*pr = (struct pfioc_rule *)addr;
-		struct pf_ruleset	*ruleset;
-		struct pf_rule		*rule;
-		int			 rs_num, i;
+		struct pf_kruleset	*ruleset;
+		struct pf_krule		*rule;
+		int			 rs_num;
 
 		PF_RULES_WLOCK();
 		pr->anchor[sizeof(pr->anchor) - 1] = 0;
-		ruleset = pf_find_ruleset(pr->anchor);
+		ruleset = pf_find_kruleset(pr->anchor);
 		if (ruleset == NULL) {
 			PF_RULES_WUNLOCK();
 			error = EINVAL;
@@ -1362,28 +2078,23 @@ DIOCADDRULE_error:
 			error = EBUSY;
 			break;
 		}
-		bcopy(rule, &pr->rule, sizeof(struct pf_rule));
-		pr->rule.u_states_cur = counter_u64_fetch(rule->states_cur);
-		pr->rule.u_states_tot = counter_u64_fetch(rule->states_tot);
-		pr->rule.u_src_nodes = counter_u64_fetch(rule->src_nodes);
-		if (pf_anchor_copyout(ruleset, rule, pr)) {
+
+		pf_krule_to_rule(rule, &pr->rule);
+
+		if (pf_kanchor_copyout(ruleset, rule, pr)) {
 			PF_RULES_WUNLOCK();
 			error = EBUSY;
 			break;
 		}
 		pf_addr_copyout(&pr->rule.src.addr);
 		pf_addr_copyout(&pr->rule.dst.addr);
-		for (i = 0; i < PF_SKIP_COUNT; ++i)
-			if (rule->skip[i].ptr == NULL)
-				pr->rule.skip[i].nr = -1;
-			else
-				pr->rule.skip[i].nr =
-				    rule->skip[i].ptr->nr;
 
 		if (pr->action == PF_GET_CLR_CNTR) {
-			rule->evaluations = 0;
-			rule->packets[0] = rule->packets[1] = 0;
-			rule->bytes[0] = rule->bytes[1] = 0;
+			counter_u64_zero(rule->evaluations);
+			for (int i = 0; i < 2; i++) {
+				counter_u64_zero(rule->packets[i]);
+				counter_u64_zero(rule->bytes[i]);
+			}
 			counter_u64_zero(rule->states_tot);
 		}
 		PF_RULES_WUNLOCK();
@@ -1392,10 +2103,10 @@ DIOCADDRULE_error:
 
 	case DIOCCHANGERULE: {
 		struct pfioc_rule	*pcr = (struct pfioc_rule *)addr;
-		struct pf_ruleset	*ruleset;
-		struct pf_rule		*oldrule = NULL, *newrule = NULL;
-		struct pfi_kif		*kif = NULL;
-		struct pf_pooladdr	*pa;
+		struct pf_kruleset	*ruleset;
+		struct pf_krule		*oldrule = NULL, *newrule = NULL;
+		struct pfi_kkif		*kif = NULL;
+		struct pf_kpooladdr	*pa;
 		u_int32_t		 nr = 0;
 		int			 rs_num;
 
@@ -1410,22 +2121,22 @@ DIOCADDRULE_error:
 		}
 
 		if (pcr->action != PF_CHANGE_REMOVE) {
-#ifndef INET
-			if (pcr->rule.af == AF_INET) {
-				error = EAFNOSUPPORT;
-				break;
-			}
-#endif /* INET */
-#ifndef INET6
-			if (pcr->rule.af == AF_INET6) {
-				error = EAFNOSUPPORT;
-				break;
-			}
-#endif /* INET6 */
 			newrule = malloc(sizeof(*newrule), M_PFRULE, M_WAITOK);
-			bcopy(&pcr->rule, newrule, sizeof(struct pf_rule));
+			error = pf_rule_to_krule(&pcr->rule, newrule);
+			if (error != 0) {
+				free(newrule, M_PFRULE);
+				break;
+			}
+
 			if (newrule->ifname[0])
-				kif = malloc(sizeof(*kif), PFI_MTYPE, M_WAITOK);
+				kif = pf_kkif_create(M_WAITOK);
+			newrule->evaluations = counter_u64_alloc(M_WAITOK);
+			for (int i = 0; i < 2; i++) {
+				newrule->packets[i] =
+				    counter_u64_alloc(M_WAITOK);
+				newrule->bytes[i] =
+				    counter_u64_alloc(M_WAITOK);
+			}
 			newrule->states_cur = counter_u64_alloc(M_WAITOK);
 			newrule->states_tot = counter_u64_alloc(M_WAITOK);
 			newrule->src_nodes = counter_u64_alloc(M_WAITOK);
@@ -1433,7 +2144,6 @@ DIOCADDRULE_error:
 			newrule->cpid = td->td_proc ? td->td_proc->p_pid : 0;
 			TAILQ_INIT(&newrule->rpool.list);
 		}
-
 #define	ERROUT(x)	{ error = (x); goto DIOCCHANGERULE_error; }
 
 		PF_RULES_WLOCK();
@@ -1442,7 +2152,7 @@ DIOCADDRULE_error:
 		    pcr->pool_ticket != V_ticket_pabuf)
 			ERROUT(EBUSY);
 
-		ruleset = pf_find_ruleset(pcr->anchor);
+		ruleset = pf_find_kruleset(pcr->anchor);
 		if (ruleset == NULL)
 			ERROUT(EINVAL);
 
@@ -1459,9 +2169,9 @@ DIOCADDRULE_error:
 
 		if (pcr->action != PF_CHANGE_REMOVE) {
 			if (newrule->ifname[0]) {
-				newrule->kif = pfi_kif_attach(kif,
+				newrule->kif = pfi_kkif_attach(kif,
 				    newrule->ifname);
-				pfi_kif_ref(newrule->kif);
+				pfi_kkif_ref(newrule->kif);
 			} else
 				newrule->kif = NULL;
 
@@ -1501,7 +2211,7 @@ DIOCADDRULE_error:
 				error = ENOMEM;
 			if (pf_addr_setup(ruleset, &newrule->dst.addr, newrule->af))
 				error = ENOMEM;
-			if (pf_anchor_setup(newrule, ruleset, pcr->anchor_call))
+			if (pf_kanchor_setup(newrule, ruleset, pcr->anchor_call))
 				error = EINVAL;
 			TAILQ_FOREACH(pa, &V_pf_pabuf, entries)
 				if (pa->addr.type == PF_ADDR_TABLE) {
@@ -1523,11 +2233,11 @@ DIOCADDRULE_error:
 					    PFR_TFLAG_ACTIVE;
 			}
 
-			pf_mv_pool(&V_pf_pabuf, &newrule->rpool.list);
+			pf_mv_kpool(&V_pf_pabuf, &newrule->rpool.list);
 			if (((((newrule->action == PF_NAT) ||
 			    (newrule->action == PF_RDR) ||
 			    (newrule->action == PF_BINAT) ||
-			    (newrule->rt > PF_FASTROUTE)) &&
+			    (newrule->rt > PF_NOPFROUTE)) &&
 			    !newrule->anchor)) &&
 			    (TAILQ_FIRST(&newrule->rpool.list) == NULL))
 				error = EINVAL;
@@ -1539,18 +2249,15 @@ DIOCADDRULE_error:
 			}
 
 			newrule->rpool.cur = TAILQ_FIRST(&newrule->rpool.list);
-			newrule->evaluations = 0;
-			newrule->packets[0] = newrule->packets[1] = 0;
-			newrule->bytes[0] = newrule->bytes[1] = 0;
 		}
-		pf_empty_pool(&V_pf_pabuf);
+		pf_empty_kpool(&V_pf_pabuf);
 
 		if (pcr->action == PF_CHANGE_ADD_HEAD)
 			oldrule = TAILQ_FIRST(
 			    ruleset->rules[rs_num].active.ptr);
 		else if (pcr->action == PF_CHANGE_ADD_TAIL)
 			oldrule = TAILQ_LAST(
-			    ruleset->rules[rs_num].active.ptr, pf_rulequeue);
+			    ruleset->rules[rs_num].active.ptr, pf_krulequeue);
 		else {
 			oldrule = TAILQ_FIRST(
 			    ruleset->rules[rs_num].active.ptr);
@@ -1592,7 +2299,7 @@ DIOCADDRULE_error:
 		ruleset->rules[rs_num].active.ticket++;
 
 		pf_calc_skip_steps(ruleset->rules[rs_num].active.ptr);
-		pf_remove_if_empty_ruleset(ruleset);
+		pf_remove_if_empty_kruleset(ruleset);
 
 		PF_RULES_WUNLOCK();
 		break;
@@ -1601,13 +2308,18 @@ DIOCADDRULE_error:
 DIOCCHANGERULE_error:
 		PF_RULES_WUNLOCK();
 		if (newrule != NULL) {
+			counter_u64_free(newrule->evaluations);
+			for (int i = 0; i < 2; i++) {
+				counter_u64_free(newrule->packets[i]);
+				counter_u64_free(newrule->bytes[i]);
+			}
 			counter_u64_free(newrule->states_cur);
 			counter_u64_free(newrule->states_tot);
 			counter_u64_free(newrule->src_nodes);
 			free(newrule, M_PFRULE);
 		}
 		if (kif != NULL)
-			free(kif, PFI_MTYPE);
+			pf_kkif_free(kif);
 		break;
 	}
 
@@ -1637,8 +2349,8 @@ relock_DIOCCLRSTATES:
 			PF_HASHROW_UNLOCK(ih);
 		}
 		psk->psk_killed = killed;
-		if (pfsync_clear_states_ptr != NULL)
-			pfsync_clear_states_ptr(V_pf_status.hostid, psk->psk_ifname);
+		if (V_pfsync_clear_states_ptr != NULL)
+			V_pfsync_clear_states_ptr(V_pf_status.hostid, psk->psk_ifname);
 		break;
 	}
 
@@ -1725,9 +2437,9 @@ relock_DIOCKILLSTATES:
 			error = EINVAL;
 			break;
 		}
-		if (pfsync_state_import_ptr != NULL) {
+		if (V_pfsync_state_import_ptr != NULL) {
 			PF_RULES_RLOCK();
-			error = pfsync_state_import_ptr(sp, PFSYNC_SI_IOCTL);
+			error = V_pfsync_state_import_ptr(sp, PFSYNC_SI_IOCTL);
 			PF_RULES_RUNLOCK();
 		} else
 			error = EOPNOTSUPP;
@@ -1755,13 +2467,13 @@ relock_DIOCKILLSTATES:
 		struct pfsync_state	*pstore, *p;
 		int i, nr;
 
-		if (ps->ps_len == 0) {
+		if (ps->ps_len <= 0) {
 			nr = uma_zone_get_cur(V_pf_state_z);
 			ps->ps_len = sizeof(struct pfsync_state) * nr;
 			break;
 		}
 
-		p = pstore = malloc(ps->ps_len, M_TEMP, M_WAITOK);
+		p = pstore = malloc(ps->ps_len, M_TEMP, M_WAITOK | M_ZERO);
 		nr = 0;
 
 		for (i = 0; i <= pf_hashmask; i++) {
@@ -1769,7 +2481,6 @@ relock_DIOCKILLSTATES:
 
 			PF_HASHROW_LOCK(ih);
 			LIST_FOREACH(s, &ih->states, entry) {
-
 				if (s->timeout == PFTM_UNLINKED)
 					continue;
 
@@ -1850,6 +2561,8 @@ DIOCGETSTATES_full:
 			counter_u64_zero(V_pf_status.fcounters[i]);
 		for (int i = 0; i < SCNT_MAX; i++)
 			counter_u64_zero(V_pf_status.scounters[i]);
+		for (int i = 0; i < LCNT_MAX; i++)
+			counter_u64_zero(V_pf_status.lcounters[i]);
 		V_pf_status.since = time_second;
 		if (*V_pf_status.ifname)
 			pfi_update_status(V_pf_status.ifname, NULL);
@@ -1979,32 +2692,38 @@ DIOCGETSTATES_full:
 
 	case DIOCCLRRULECTRS: {
 		/* obsoleted by DIOCGETRULE with action=PF_GET_CLR_CNTR */
-		struct pf_ruleset	*ruleset = &pf_main_ruleset;
-		struct pf_rule		*rule;
+		struct pf_kruleset	*ruleset = &pf_main_ruleset;
+		struct pf_krule		*rule;
 
 		PF_RULES_WLOCK();
 		TAILQ_FOREACH(rule,
 		    ruleset->rules[PF_RULESET_FILTER].active.ptr, entries) {
-			rule->evaluations = 0;
-			rule->packets[0] = rule->packets[1] = 0;
-			rule->bytes[0] = rule->bytes[1] = 0;
+			counter_u64_zero(rule->evaluations);
+			for (int i = 0; i < 2; i++) {
+				counter_u64_zero(rule->packets[i]);
+				counter_u64_zero(rule->bytes[i]);
+			}
 		}
 		PF_RULES_WUNLOCK();
 		break;
 	}
 
-	case DIOCGIFSPEED: {
-		struct pf_ifspeed	*psp = (struct pf_ifspeed *)addr;
-		struct pf_ifspeed	ps;
+	case DIOCGIFSPEEDV0:
+	case DIOCGIFSPEEDV1: {
+		struct pf_ifspeed_v1	*psp = (struct pf_ifspeed_v1 *)addr;
+		struct pf_ifspeed_v1	ps;
 		struct ifnet		*ifp;
 
 		if (psp->ifname[0] != 0) {
 			/* Can we completely trust user-land? */
 			strlcpy(ps.ifname, psp->ifname, IFNAMSIZ);
 			ifp = ifunit(ps.ifname);
-			if (ifp != NULL)
-				psp->baudrate = ifp->if_baudrate;
-			else
+			if (ifp != NULL) {
+				psp->baudrate32 =
+				    (u_int32_t)uqmin(ifp->if_baudrate, UINT_MAX);
+				if (cmd == DIOCGIFSPEEDV1)
+					psp->baudrate = ifp->if_baudrate;
+			} else
 				error = EINVAL;
 		} else
 			error = EINVAL;
@@ -2017,9 +2736,8 @@ DIOCGETSTATES_full:
 
 		PF_RULES_WLOCK();
 		/* enable all altq interfaces on active list */
-		TAILQ_FOREACH(altq, V_pf_altqs_active, entries) {
-			if (altq->qname[0] == 0 && (altq->local_flags &
-			    PFALTQ_FLAG_IF_REMOVED) == 0) {
+		TAILQ_FOREACH(altq, V_pf_altq_ifs_active, entries) {
+			if ((altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
 				error = pf_enable_altq(altq);
 				if (error != 0)
 					break;
@@ -2037,9 +2755,8 @@ DIOCGETSTATES_full:
 
 		PF_RULES_WLOCK();
 		/* disable all altq interfaces on active list */
-		TAILQ_FOREACH(altq, V_pf_altqs_active, entries) {
-			if (altq->qname[0] == 0 && (altq->local_flags &
-			    PFALTQ_FLAG_IF_REMOVED) == 0) {
+		TAILQ_FOREACH(altq, V_pf_altq_ifs_active, entries) {
+			if ((altq->local_flags & PFALTQ_FLAG_IF_REMOVED) == 0) {
 				error = pf_disable_altq(altq);
 				if (error != 0)
 					break;
@@ -2052,13 +2769,16 @@ DIOCGETSTATES_full:
 		break;
 	}
 
-	case DIOCADDALTQ: {
-		struct pfioc_altq	*pa = (struct pfioc_altq *)addr;
+	case DIOCADDALTQV0:
+	case DIOCADDALTQV1: {
+		struct pfioc_altq_v1	*pa = (struct pfioc_altq_v1 *)addr;
 		struct pf_altq		*altq, *a;
 		struct ifnet		*ifp;
 
-		altq = malloc(sizeof(*altq), M_PFALTQ, M_WAITOK);
-		bcopy(&pa->altq, altq, sizeof(struct pf_altq));
+		altq = malloc(sizeof(*altq), M_PFALTQ, M_WAITOK | M_ZERO);
+		error = pf_import_kaltq(pa, altq, IOCPARM_LEN(cmd));
+		if (error)
+			break;
 		altq->local_flags = 0;
 
 		PF_RULES_WLOCK();
@@ -2081,9 +2801,9 @@ DIOCGETSTATES_full:
 				break;
 			}
 			altq->altq_disc = NULL;
-			TAILQ_FOREACH(a, V_pf_altqs_inactive, entries) {
+			TAILQ_FOREACH(a, V_pf_altq_ifs_inactive, entries) {
 				if (strncmp(a->ifname, altq->ifname,
-				    IFNAMSIZ) == 0 && a->qname[0] == 0) {
+				    IFNAMSIZ) == 0) {
 					altq->altq_disc = a->altq_disc;
 					break;
 				}
@@ -2093,7 +2813,7 @@ DIOCGETSTATES_full:
 		if ((ifp = ifunit(altq->ifname)) == NULL)
 			altq->local_flags |= PFALTQ_FLAG_IF_REMOVED;
 		else
-			error = altq_add(altq);
+			error = altq_add(ifp, altq);
 
 		if (error) {
 			PF_RULES_WUNLOCK();
@@ -2101,18 +2821,25 @@ DIOCGETSTATES_full:
 			break;
 		}
 
-		TAILQ_INSERT_TAIL(V_pf_altqs_inactive, altq, entries);
-		bcopy(altq, &pa->altq, sizeof(struct pf_altq));
+		if (altq->qname[0] != 0)
+			TAILQ_INSERT_TAIL(V_pf_altqs_inactive, altq, entries);
+		else
+			TAILQ_INSERT_TAIL(V_pf_altq_ifs_inactive, altq, entries);
+		/* version error check done on import above */
+		pf_export_kaltq(altq, pa, IOCPARM_LEN(cmd));
 		PF_RULES_WUNLOCK();
 		break;
 	}
 
-	case DIOCGETALTQS: {
-		struct pfioc_altq	*pa = (struct pfioc_altq *)addr;
+	case DIOCGETALTQSV0:
+	case DIOCGETALTQSV1: {
+		struct pfioc_altq_v1	*pa = (struct pfioc_altq_v1 *)addr;
 		struct pf_altq		*altq;
 
 		PF_RULES_RLOCK();
 		pa->nr = 0;
+		TAILQ_FOREACH(altq, V_pf_altq_ifs_active, entries)
+			pa->nr++;
 		TAILQ_FOREACH(altq, V_pf_altqs_active, entries)
 			pa->nr++;
 		pa->ticket = V_ticket_altqs_active;
@@ -2120,10 +2847,10 @@ DIOCGETSTATES_full:
 		break;
 	}
 
-	case DIOCGETALTQ: {
-		struct pfioc_altq	*pa = (struct pfioc_altq *)addr;
+	case DIOCGETALTQV0:
+	case DIOCGETALTQV1: {
+		struct pfioc_altq_v1	*pa = (struct pfioc_altq_v1 *)addr;
 		struct pf_altq		*altq;
-		u_int32_t		 nr;
 
 		PF_RULES_RLOCK();
 		if (pa->ticket != V_ticket_altqs_active) {
@@ -2131,32 +2858,29 @@ DIOCGETSTATES_full:
 			error = EBUSY;
 			break;
 		}
-		nr = 0;
-		altq = TAILQ_FIRST(V_pf_altqs_active);
-		while ((altq != NULL) && (nr < pa->nr)) {
-			altq = TAILQ_NEXT(altq, entries);
-			nr++;
-		}
+		altq = pf_altq_get_nth_active(pa->nr);
 		if (altq == NULL) {
 			PF_RULES_RUNLOCK();
 			error = EBUSY;
 			break;
 		}
-		bcopy(altq, &pa->altq, sizeof(struct pf_altq));
+		pf_export_kaltq(altq, pa, IOCPARM_LEN(cmd));
 		PF_RULES_RUNLOCK();
 		break;
 	}
 
-	case DIOCCHANGEALTQ:
+	case DIOCCHANGEALTQV0:
+	case DIOCCHANGEALTQV1:
 		/* CHANGEALTQ not supported yet! */
 		error = ENODEV;
 		break;
 
-	case DIOCGETQSTATS: {
-		struct pfioc_qstats	*pq = (struct pfioc_qstats *)addr;
+	case DIOCGETQSTATSV0:
+	case DIOCGETQSTATSV1: {
+		struct pfioc_qstats_v1	*pq = (struct pfioc_qstats_v1 *)addr;
 		struct pf_altq		*altq;
-		u_int32_t		 nr;
 		int			 nbytes;
+		u_int32_t		 version;
 
 		PF_RULES_RLOCK();
 		if (pq->ticket != V_ticket_altqs_active) {
@@ -2165,12 +2889,7 @@ DIOCGETSTATES_full:
 			break;
 		}
 		nbytes = pq->nbytes;
-		nr = 0;
-		altq = TAILQ_FIRST(V_pf_altqs_active);
-		while ((altq != NULL) && (nr < pq->nr)) {
-			altq = TAILQ_NEXT(altq, entries);
-			nr++;
-		}
+		altq = pf_altq_get_nth_active(pq->nr);
 		if (altq == NULL) {
 			PF_RULES_RUNLOCK();
 			error = EBUSY;
@@ -2183,7 +2902,11 @@ DIOCGETSTATES_full:
 			break;
 		}
 		PF_RULES_RUNLOCK();
-		error = altq_getqstats(altq, pq->buf, &nbytes);
+		if (cmd == DIOCGETQSTATSV0)
+			version = 0;  /* DIOCGETQSTATSV0 means stats struct v0 */
+		else
+			version = pq->version;
+		error = altq_getqstats(altq, pq->buf, &nbytes, version);
 		if (error == 0) {
 			pq->scheduler = altq->scheduler;
 			pq->nbytes = nbytes;
@@ -2196,7 +2919,7 @@ DIOCGETSTATES_full:
 		struct pfioc_pooladdr	*pp = (struct pfioc_pooladdr *)addr;
 
 		PF_RULES_WLOCK();
-		pf_empty_pool(&V_pf_pabuf);
+		pf_empty_kpool(&V_pf_pabuf);
 		pp->ticket = ++V_ticket_pabuf;
 		PF_RULES_WUNLOCK();
 		break;
@@ -2204,8 +2927,8 @@ DIOCGETSTATES_full:
 
 	case DIOCADDADDR: {
 		struct pfioc_pooladdr	*pp = (struct pfioc_pooladdr *)addr;
-		struct pf_pooladdr	*pa;
-		struct pfi_kif		*kif = NULL;
+		struct pf_kpooladdr	*pa;
+		struct pfi_kkif		*kif = NULL;
 
 #ifndef INET
 		if (pp->af == AF_INET) {
@@ -2225,28 +2948,32 @@ DIOCGETSTATES_full:
 			error = EINVAL;
 			break;
 		}
+		if (pp->addr.addr.p.dyn != NULL) {
+			error = EINVAL;
+			break;
+		}
 		pa = malloc(sizeof(*pa), M_PFRULE, M_WAITOK);
-		bcopy(&pp->addr, pa, sizeof(struct pf_pooladdr));
+		pf_pooladdr_to_kpooladdr(&pp->addr, pa);
 		if (pa->ifname[0])
-			kif = malloc(sizeof(*kif), PFI_MTYPE, M_WAITOK);
+			kif = pf_kkif_create(M_WAITOK);
 		PF_RULES_WLOCK();
 		if (pp->ticket != V_ticket_pabuf) {
 			PF_RULES_WUNLOCK();
 			if (pa->ifname[0])
-				free(kif, PFI_MTYPE);
+				pf_kkif_free(kif);
 			free(pa, M_PFRULE);
 			error = EBUSY;
 			break;
 		}
 		if (pa->ifname[0]) {
-			pa->kif = pfi_kif_attach(kif, pa->ifname);
-			pfi_kif_ref(pa->kif);
+			pa->kif = pfi_kkif_attach(kif, pa->ifname);
+			pfi_kkif_ref(pa->kif);
 		} else
 			pa->kif = NULL;
 		if (pa->addr.type == PF_ADDR_DYNIFTL && ((error =
 		    pfi_dynaddr_setup(&pa->addr, pp->af)) != 0)) {
 			if (pa->ifname[0])
-				pfi_kif_unref(pa->kif);
+				pfi_kkif_unref(pa->kif);
 			PF_RULES_WUNLOCK();
 			free(pa, M_PFRULE);
 			break;
@@ -2258,12 +2985,12 @@ DIOCGETSTATES_full:
 
 	case DIOCGETADDRS: {
 		struct pfioc_pooladdr	*pp = (struct pfioc_pooladdr *)addr;
-		struct pf_pool		*pool;
-		struct pf_pooladdr	*pa;
+		struct pf_kpool		*pool;
+		struct pf_kpooladdr	*pa;
 
 		PF_RULES_RLOCK();
 		pp->nr = 0;
-		pool = pf_get_pool(pp->anchor, pp->ticket, pp->r_action,
+		pool = pf_get_kpool(pp->anchor, pp->ticket, pp->r_action,
 		    pp->r_num, 0, 1, 0);
 		if (pool == NULL) {
 			PF_RULES_RUNLOCK();
@@ -2278,12 +3005,12 @@ DIOCGETSTATES_full:
 
 	case DIOCGETADDR: {
 		struct pfioc_pooladdr	*pp = (struct pfioc_pooladdr *)addr;
-		struct pf_pool		*pool;
-		struct pf_pooladdr	*pa;
+		struct pf_kpool		*pool;
+		struct pf_kpooladdr	*pa;
 		u_int32_t		 nr = 0;
 
 		PF_RULES_RLOCK();
-		pool = pf_get_pool(pp->anchor, pp->ticket, pp->r_action,
+		pool = pf_get_kpool(pp->anchor, pp->ticket, pp->r_action,
 		    pp->r_num, 0, 1, 1);
 		if (pool == NULL) {
 			PF_RULES_RUNLOCK();
@@ -2300,7 +3027,7 @@ DIOCGETSTATES_full:
 			error = EBUSY;
 			break;
 		}
-		bcopy(pa, &pp->addr, sizeof(struct pf_pooladdr));
+		pf_kpooladdr_to_pooladdr(pa, &pp->addr);
 		pf_addr_copyout(&pp->addr.addr);
 		PF_RULES_RUNLOCK();
 		break;
@@ -2308,10 +3035,10 @@ DIOCGETSTATES_full:
 
 	case DIOCCHANGEADDR: {
 		struct pfioc_pooladdr	*pca = (struct pfioc_pooladdr *)addr;
-		struct pf_pool		*pool;
-		struct pf_pooladdr	*oldpa = NULL, *newpa = NULL;
-		struct pf_ruleset	*ruleset;
-		struct pfi_kif		*kif = NULL;
+		struct pf_kpool		*pool;
+		struct pf_kpooladdr	*oldpa = NULL, *newpa = NULL;
+		struct pf_kruleset	*ruleset;
+		struct pfi_kkif		*kif = NULL;
 
 		if (pca->action < PF_CHANGE_ADD_HEAD ||
 		    pca->action > PF_CHANGE_REMOVE) {
@@ -2321,6 +3048,10 @@ DIOCGETSTATES_full:
 		if (pca->addr.addr.type != PF_ADDR_ADDRMASK &&
 		    pca->addr.addr.type != PF_ADDR_DYNIFTL &&
 		    pca->addr.addr.type != PF_ADDR_TABLE) {
+			error = EINVAL;
+			break;
+		}
+		if (pca->addr.addr.p.dyn != NULL) {
 			error = EINVAL;
 			break;
 		}
@@ -2341,25 +3072,24 @@ DIOCGETSTATES_full:
 			newpa = malloc(sizeof(*newpa), M_PFRULE, M_WAITOK);
 			bcopy(&pca->addr, newpa, sizeof(struct pf_pooladdr));
 			if (newpa->ifname[0])
-				kif = malloc(sizeof(*kif), PFI_MTYPE, M_WAITOK);
+				kif = pf_kkif_create(M_WAITOK);
 			newpa->kif = NULL;
 		}
-
 #define	ERROUT(x)	{ error = (x); goto DIOCCHANGEADDR_error; }
 		PF_RULES_WLOCK();
-		ruleset = pf_find_ruleset(pca->anchor);
+		ruleset = pf_find_kruleset(pca->anchor);
 		if (ruleset == NULL)
 			ERROUT(EBUSY);
 
-		pool = pf_get_pool(pca->anchor, pca->ticket, pca->r_action,
+		pool = pf_get_kpool(pca->anchor, pca->ticket, pca->r_action,
 		    pca->r_num, pca->r_last, 1, 1);
 		if (pool == NULL)
 			ERROUT(EBUSY);
 
 		if (pca->action != PF_CHANGE_REMOVE) {
 			if (newpa->ifname[0]) {
-				newpa->kif = pfi_kif_attach(kif, newpa->ifname);
-				pfi_kif_ref(newpa->kif);
+				newpa->kif = pfi_kkif_attach(kif, newpa->ifname);
+				pfi_kkif_ref(newpa->kif);
 				kif = NULL;
 			}
 
@@ -2384,7 +3114,7 @@ DIOCGETSTATES_full:
 			oldpa = TAILQ_FIRST(&pool->list);
 			break;
 		case PF_CHANGE_ADD_TAIL:
-			oldpa = TAILQ_LAST(&pool->list, pf_palist);
+			oldpa = TAILQ_LAST(&pool->list, pf_kpalist);
 			break;
 		default:
 			oldpa = TAILQ_FIRST(&pool->list);
@@ -2406,7 +3136,7 @@ DIOCGETSTATES_full:
 				break;
 			}
 			if (oldpa->kif)
-				pfi_kif_unref(oldpa->kif);
+				pfi_kkif_unref(oldpa->kif);
 			free(oldpa, M_PFRULE);
 		} else {
 			if (oldpa == NULL)
@@ -2426,24 +3156,25 @@ DIOCGETSTATES_full:
 
 #undef ERROUT
 DIOCCHANGEADDR_error:
-		if (newpa->kif)
-			pfi_kif_unref(newpa->kif);
-		PF_RULES_WUNLOCK();
-		if (newpa != NULL)
+		if (newpa != NULL) {
+			if (newpa->kif)
+				pfi_kkif_unref(newpa->kif);
 			free(newpa, M_PFRULE);
+		}
+		PF_RULES_WUNLOCK();
 		if (kif != NULL)
-			free(kif, PFI_MTYPE);
+			pf_kkif_free(kif);
 		break;
 	}
 
 	case DIOCGETRULESETS: {
 		struct pfioc_ruleset	*pr = (struct pfioc_ruleset *)addr;
-		struct pf_ruleset	*ruleset;
-		struct pf_anchor	*anchor;
+		struct pf_kruleset	*ruleset;
+		struct pf_kanchor	*anchor;
 
 		PF_RULES_RLOCK();
 		pr->path[sizeof(pr->path) - 1] = 0;
-		if ((ruleset = pf_find_ruleset(pr->path)) == NULL) {
+		if ((ruleset = pf_find_kruleset(pr->path)) == NULL) {
 			PF_RULES_RUNLOCK();
 			error = ENOENT;
 			break;
@@ -2451,11 +3182,11 @@ DIOCCHANGEADDR_error:
 		pr->nr = 0;
 		if (ruleset->anchor == NULL) {
 			/* XXX kludge for pf_main_ruleset */
-			RB_FOREACH(anchor, pf_anchor_global, &V_pf_anchors)
+			RB_FOREACH(anchor, pf_kanchor_global, &V_pf_anchors)
 				if (anchor->parent == NULL)
 					pr->nr++;
 		} else {
-			RB_FOREACH(anchor, pf_anchor_node,
+			RB_FOREACH(anchor, pf_kanchor_node,
 			    &ruleset->anchor->children)
 				pr->nr++;
 		}
@@ -2465,13 +3196,13 @@ DIOCCHANGEADDR_error:
 
 	case DIOCGETRULESET: {
 		struct pfioc_ruleset	*pr = (struct pfioc_ruleset *)addr;
-		struct pf_ruleset	*ruleset;
-		struct pf_anchor	*anchor;
+		struct pf_kruleset	*ruleset;
+		struct pf_kanchor	*anchor;
 		u_int32_t		 nr = 0;
 
 		PF_RULES_RLOCK();
 		pr->path[sizeof(pr->path) - 1] = 0;
-		if ((ruleset = pf_find_ruleset(pr->path)) == NULL) {
+		if ((ruleset = pf_find_kruleset(pr->path)) == NULL) {
 			PF_RULES_RUNLOCK();
 			error = ENOENT;
 			break;
@@ -2479,14 +3210,14 @@ DIOCCHANGEADDR_error:
 		pr->name[0] = 0;
 		if (ruleset->anchor == NULL) {
 			/* XXX kludge for pf_main_ruleset */
-			RB_FOREACH(anchor, pf_anchor_global, &V_pf_anchors)
+			RB_FOREACH(anchor, pf_kanchor_global, &V_pf_anchors)
 				if (anchor->parent == NULL && nr++ == pr->nr) {
 					strlcpy(pr->name, anchor->name,
 					    sizeof(pr->name));
 					break;
 				}
 		} else {
-			RB_FOREACH(anchor, pf_anchor_node,
+			RB_FOREACH(anchor, pf_kanchor_node,
 			    &ruleset->anchor->children)
 				if (nr++ == pr->nr) {
 					strlcpy(pr->name, anchor->name,
@@ -2523,8 +3254,16 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+
+		if (io->pfrio_size < 0 || io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_table))) {
+			error = ENOMEM;
+			break;
+		}
+
 		totlen = io->pfrio_size * sizeof(struct pfr_table);
-		pfrts = malloc(totlen, M_TEMP, M_WAITOK);
+		pfrts = mallocarray(io->pfrio_size, sizeof(struct pfr_table),
+		    M_TEMP, M_WAITOK);
 		error = copyin(io->pfrio_buffer, pfrts, totlen);
 		if (error) {
 			free(pfrts, M_TEMP);
@@ -2547,8 +3286,16 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+
+		if (io->pfrio_size < 0 || io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_table))) {
+			error = ENOMEM;
+			break;
+		}
+
 		totlen = io->pfrio_size * sizeof(struct pfr_table);
-		pfrts = malloc(totlen, M_TEMP, M_WAITOK);
+		pfrts = mallocarray(io->pfrio_size, sizeof(struct pfr_table),
+		    M_TEMP, M_WAITOK);
 		error = copyin(io->pfrio_buffer, pfrts, totlen);
 		if (error) {
 			free(pfrts, M_TEMP);
@@ -2566,14 +3313,30 @@ DIOCCHANGEADDR_error:
 		struct pfioc_table *io = (struct pfioc_table *)addr;
 		struct pfr_table *pfrts;
 		size_t totlen;
+		int n;
 
 		if (io->pfrio_esize != sizeof(struct pfr_table)) {
 			error = ENODEV;
 			break;
 		}
-		totlen = io->pfrio_size * sizeof(struct pfr_table);
-		pfrts = malloc(totlen, M_TEMP, M_WAITOK);
 		PF_RULES_RLOCK();
+		n = pfr_table_count(&io->pfrio_table, io->pfrio_flags);
+		if (n < 0) {
+			PF_RULES_RUNLOCK();
+			error = EINVAL;
+			break;
+		}
+		io->pfrio_size = min(io->pfrio_size, n);
+
+		totlen = io->pfrio_size * sizeof(struct pfr_table);
+
+		pfrts = mallocarray(io->pfrio_size, sizeof(struct pfr_table),
+		    M_TEMP, M_NOWAIT);
+		if (pfrts == NULL) {
+			error = ENOMEM;
+			PF_RULES_RUNLOCK();
+			break;
+		}
 		error = pfr_get_tables(&io->pfrio_table, pfrts,
 		    &io->pfrio_size, io->pfrio_flags | PFR_FLAG_USERIOCTL);
 		PF_RULES_RUNLOCK();
@@ -2587,14 +3350,29 @@ DIOCCHANGEADDR_error:
 		struct pfioc_table *io = (struct pfioc_table *)addr;
 		struct pfr_tstats *pfrtstats;
 		size_t totlen;
+		int n;
 
 		if (io->pfrio_esize != sizeof(struct pfr_tstats)) {
 			error = ENODEV;
 			break;
 		}
-		totlen = io->pfrio_size * sizeof(struct pfr_tstats);
-		pfrtstats = malloc(totlen, M_TEMP, M_WAITOK);
 		PF_RULES_WLOCK();
+		n = pfr_table_count(&io->pfrio_table, io->pfrio_flags);
+		if (n < 0) {
+			PF_RULES_WUNLOCK();
+			error = EINVAL;
+			break;
+		}
+		io->pfrio_size = min(io->pfrio_size, n);
+
+		totlen = io->pfrio_size * sizeof(struct pfr_tstats);
+		pfrtstats = mallocarray(io->pfrio_size,
+		    sizeof(struct pfr_tstats), M_TEMP, M_NOWAIT);
+		if (pfrtstats == NULL) {
+			error = ENOMEM;
+			PF_RULES_WUNLOCK();
+			break;
+		}
 		error = pfr_get_tstats(&io->pfrio_table, pfrtstats,
 		    &io->pfrio_size, io->pfrio_flags | PFR_FLAG_USERIOCTL);
 		PF_RULES_WUNLOCK();
@@ -2613,13 +3391,29 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+
+		if (io->pfrio_size < 0 || io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_table))) {
+			/* We used to count tables and use the minimum required
+			 * size, so we didn't fail on overly large requests.
+			 * Keep doing so. */
+			io->pfrio_size = pf_ioctl_maxcount;
+			break;
+		}
+
 		totlen = io->pfrio_size * sizeof(struct pfr_table);
-		pfrts = malloc(totlen, M_TEMP, M_WAITOK);
+		pfrts = mallocarray(io->pfrio_size, sizeof(struct pfr_table),
+		    M_TEMP, M_NOWAIT);
+		if (pfrts == NULL) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfrts, totlen);
 		if (error) {
 			free(pfrts, M_TEMP);
 			break;
 		}
+
 		PF_RULES_WLOCK();
 		error = pfr_clr_tstats(pfrts, io->pfrio_size,
 		    &io->pfrio_nzero, io->pfrio_flags | PFR_FLAG_USERIOCTL);
@@ -2632,13 +3426,27 @@ DIOCCHANGEADDR_error:
 		struct pfioc_table *io = (struct pfioc_table *)addr;
 		struct pfr_table *pfrts;
 		size_t totlen;
+		int n;
 
 		if (io->pfrio_esize != sizeof(struct pfr_table)) {
 			error = ENODEV;
 			break;
 		}
+
+		PF_RULES_RLOCK();
+		n = pfr_table_count(&io->pfrio_table, io->pfrio_flags);
+		if (n < 0) {
+			PF_RULES_RUNLOCK();
+			error = EINVAL;
+			break;
+		}
+
+		io->pfrio_size = min(io->pfrio_size, n);
+		PF_RULES_RUNLOCK();
+
 		totlen = io->pfrio_size * sizeof(struct pfr_table);
-		pfrts = malloc(totlen, M_TEMP, M_WAITOK);
+		pfrts = mallocarray(io->pfrio_size, sizeof(struct pfr_table),
+		    M_TEMP, M_WAITOK);
 		error = copyin(io->pfrio_buffer, pfrts, totlen);
 		if (error) {
 			free(pfrts, M_TEMP);
@@ -2676,8 +3484,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
+		    M_TEMP, M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfras, totlen);
 		if (error) {
 			free(pfras, M_TEMP);
@@ -2703,8 +3522,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
+		    M_TEMP, M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfras, totlen);
 		if (error) {
 			free(pfras, M_TEMP);
@@ -2730,9 +3560,23 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 || io->pfrio_size2 < 0) {
+			error = EINVAL;
+			break;
+		}
 		count = max(io->pfrio_size, io->pfrio_size2);
+		if (count > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(count, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = count * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(count, sizeof(struct pfr_addr), M_TEMP,
+		    M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfras, totlen);
 		if (error) {
 			free(pfras, M_TEMP);
@@ -2759,8 +3603,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
+		    M_TEMP, M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		PF_RULES_RLOCK();
 		error = pfr_get_addrs(&io->pfrio_table, pfras,
 		    &io->pfrio_size, io->pfrio_flags | PFR_FLAG_USERIOCTL);
@@ -2780,8 +3635,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_astats))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_astats);
-		pfrastats = malloc(totlen, M_TEMP, M_WAITOK);
+		pfrastats = mallocarray(io->pfrio_size,
+		    sizeof(struct pfr_astats), M_TEMP, M_NOWAIT);
+		if (! pfrastats) {
+			error = ENOMEM;
+			break;
+		}
 		PF_RULES_RLOCK();
 		error = pfr_get_astats(&io->pfrio_table, pfrastats,
 		    &io->pfrio_size, io->pfrio_flags | PFR_FLAG_USERIOCTL);
@@ -2801,8 +3667,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
+		    M_TEMP, M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfras, totlen);
 		if (error) {
 			free(pfras, M_TEMP);
@@ -2828,8 +3705,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
+		    M_TEMP, M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfras, totlen);
 		if (error) {
 			free(pfras, M_TEMP);
@@ -2855,8 +3743,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->pfrio_size < 0 ||
+		    io->pfrio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfrio_size, sizeof(struct pfr_addr))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
-		pfras = malloc(totlen, M_TEMP, M_WAITOK);
+		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
+		    M_TEMP, M_NOWAIT);
+		if (! pfras) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->pfrio_buffer, pfras, totlen);
 		if (error) {
 			free(pfras, M_TEMP);
@@ -2897,8 +3796,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->size < 0 ||
+		    io->size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->size, sizeof(struct pfioc_trans_e))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = sizeof(struct pfioc_trans_e) * io->size;
-		ioes = malloc(totlen, M_TEMP, M_WAITOK);
+		ioes = mallocarray(io->size, sizeof(struct pfioc_trans_e),
+		    M_TEMP, M_NOWAIT);
+		if (! ioes) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->array, ioes, totlen);
 		if (error) {
 			free(ioes, M_TEMP);
@@ -2963,8 +3873,19 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+		if (io->size < 0 ||
+		    io->size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->size, sizeof(struct pfioc_trans_e))) {
+			error = EINVAL;
+			break;
+		}
 		totlen = sizeof(struct pfioc_trans_e) * io->size;
-		ioes = malloc(totlen, M_TEMP, M_WAITOK);
+		ioes = mallocarray(io->size, sizeof(struct pfioc_trans_e),
+		    M_TEMP, M_NOWAIT);
+		if (! ioes) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->array, ioes, totlen);
 		if (error) {
 			free(ioes, M_TEMP);
@@ -3021,7 +3942,7 @@ DIOCCHANGEADDR_error:
 	case DIOCXCOMMIT: {
 		struct pfioc_trans	*io = (struct pfioc_trans *)addr;
 		struct pfioc_trans_e	*ioe, *ioes;
-		struct pf_ruleset	*rs;
+		struct pf_kruleset	*rs;
 		size_t			 totlen;
 		int			 i;
 
@@ -3029,8 +3950,21 @@ DIOCCHANGEADDR_error:
 			error = ENODEV;
 			break;
 		}
+
+		if (io->size < 0 ||
+		    io->size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->size, sizeof(struct pfioc_trans_e))) {
+			error = EINVAL;
+			break;
+		}
+
 		totlen = sizeof(struct pfioc_trans_e) * io->size;
-		ioes = malloc(totlen, M_TEMP, M_WAITOK);
+		ioes = mallocarray(io->size, sizeof(struct pfioc_trans_e),
+		    M_TEMP, M_NOWAIT);
+		if (ioes == NULL) {
+			error = ENOMEM;
+			break;
+		}
 		error = copyin(io->array, ioes, totlen);
 		if (error) {
 			free(ioes, M_TEMP);
@@ -3058,7 +3992,7 @@ DIOCCHANGEADDR_error:
 				break;
 #endif /* ALTQ */
 			case PF_RULESET_TABLE:
-				rs = pf_find_ruleset(ioe->anchor);
+				rs = pf_find_kruleset(ioe->anchor);
 				if (rs == NULL || !rs->topen || ioe->ticket !=
 				    rs->tticket) {
 					PF_RULES_WUNLOCK();
@@ -3075,7 +4009,7 @@ DIOCCHANGEADDR_error:
 					error = EINVAL;
 					goto fail;
 				}
-				rs = pf_find_ruleset(ioe->anchor);
+				rs = pf_find_kruleset(ioe->anchor);
 				if (rs == NULL ||
 				    !rs->rules[ioe->rs_num].inactive.open ||
 				    rs->rules[ioe->rs_num].inactive.ticket !=
@@ -3133,48 +4067,39 @@ DIOCCHANGEADDR_error:
 	case DIOCGETSRCNODES: {
 		struct pfioc_src_nodes	*psn = (struct pfioc_src_nodes *)addr;
 		struct pf_srchash	*sh;
-		struct pf_src_node	*n, *p, *pstore;
+		struct pf_ksrc_node	*n;
+		struct pf_src_node	*p, *pstore;
 		uint32_t		 i, nr = 0;
 
+		for (i = 0, sh = V_pf_srchash; i <= pf_srchashmask;
+				i++, sh++) {
+			PF_HASHROW_LOCK(sh);
+			LIST_FOREACH(n, &sh->nodes, entry)
+				nr++;
+			PF_HASHROW_UNLOCK(sh);
+		}
+
+		psn->psn_len = min(psn->psn_len,
+		    sizeof(struct pf_src_node) * nr);
+
 		if (psn->psn_len == 0) {
-			for (i = 0, sh = V_pf_srchash; i <= pf_srchashmask;
-			    i++, sh++) {
-				PF_HASHROW_LOCK(sh);
-				LIST_FOREACH(n, &sh->nodes, entry)
-					nr++;
-				PF_HASHROW_UNLOCK(sh);
-			}
 			psn->psn_len = sizeof(struct pf_src_node) * nr;
 			break;
 		}
 
-		p = pstore = malloc(psn->psn_len, M_TEMP, M_WAITOK);
+		nr = 0;
+
+		p = pstore = malloc(psn->psn_len, M_TEMP, M_WAITOK | M_ZERO);
 		for (i = 0, sh = V_pf_srchash; i <= pf_srchashmask;
 		    i++, sh++) {
 		    PF_HASHROW_LOCK(sh);
 		    LIST_FOREACH(n, &sh->nodes, entry) {
-			int	secs = time_uptime, diff;
 
 			if ((nr + 1) * sizeof(*p) > (unsigned)psn->psn_len)
 				break;
 
-			bcopy(n, p, sizeof(struct pf_src_node));
-			if (n->rule.ptr != NULL)
-				p->rule.nr = n->rule.ptr->nr;
-			p->creation = secs - p->creation;
-			if (p->expire > secs)
-				p->expire -= secs;
-			else
-				p->expire = 0;
+			pf_src_node_copy(n, p);
 
-			/* Adjust the connection rate estimate. */
-			diff = secs - n->conn_rate.last;
-			if (diff >= n->conn_rate.seconds)
-				p->conn_rate.count = 0;
-			else
-				p->conn_rate.count -=
-				    n->conn_rate.count * diff /
-				    n->conn_rate.seconds;
 			p++;
 			nr++;
 		    }
@@ -3192,7 +4117,6 @@ DIOCCHANGEADDR_error:
 	}
 
 	case DIOCCLRSRCNODES: {
-
 		pf_clear_srcnodes(NULL);
 		pf_purge_expired_src_nodes();
 		break;
@@ -3230,8 +4154,21 @@ DIOCCHANGEADDR_error:
 			break;
 		}
 
+		if (io->pfiio_size < 0 ||
+		    io->pfiio_size > pf_ioctl_maxcount ||
+		    WOULD_OVERFLOW(io->pfiio_size, sizeof(struct pfi_kif))) {
+			error = EINVAL;
+			break;
+		}
+
 		bufsiz = io->pfiio_size * sizeof(struct pfi_kif);
-		ifstore = malloc(bufsiz, M_TEMP, M_WAITOK);
+		ifstore = mallocarray(io->pfiio_size, sizeof(struct pfi_kif),
+		    M_TEMP, M_NOWAIT);
+		if (ifstore == NULL) {
+			error = ENOMEM;
+			break;
+		}
+
 		PF_RULES_RLOCK();
 		pfi_get_ifaces(io->pfiio_name, ifstore, &io->pfiio_size);
 		PF_RULES_RUNLOCK();
@@ -3324,10 +4261,12 @@ pfsync_state_export(struct pfsync_state *sp, struct pf_state *st)
 	else
 		sp->nat_rule = htonl(st->nat_rule.ptr->nr);
 
-	pf_state_counter_hton(st->packets[0], sp->packets[0]);
-	pf_state_counter_hton(st->packets[1], sp->packets[1]);
-	pf_state_counter_hton(st->bytes[0], sp->bytes[0]);
-	pf_state_counter_hton(st->bytes[1], sp->bytes[1]);
+	pf_state_counter_hton(counter_u64_fetch(st->packets[0]),
+	    sp->packets[0]);
+	pf_state_counter_hton(counter_u64_fetch(st->packets[1]),
+	    sp->packets[1]);
+	pf_state_counter_hton(counter_u64_fetch(st->bytes[0]), sp->bytes[0]);
+	pf_state_counter_hton(counter_u64_fetch(st->bytes[1]), sp->bytes[1]);
 
 }
 
@@ -3385,7 +4324,7 @@ pf_clear_tables(void)
 }
 
 static void
-pf_clear_srcnodes(struct pf_src_node *n)
+pf_clear_srcnodes(struct pf_ksrc_node *n)
 {
 	struct pf_state *s;
 	int i;
@@ -3425,12 +4364,12 @@ pf_clear_srcnodes(struct pf_src_node *n)
 static void
 pf_kill_srcnodes(struct pfioc_src_node_kill *psnk)
 {
-	struct pf_src_node_list	 kill;
+	struct pf_ksrc_node_list	 kill;
 
 	LIST_INIT(&kill);
 	for (int i = 0; i <= pf_srchashmask; i++) {
 		struct pf_srchash *sh = &V_pf_srchash[i];
-		struct pf_src_node *sn, *tmp;
+		struct pf_ksrc_node *sn, *tmp;
 
 		PF_HASHROW_LOCK(sh);
 		LIST_FOREACH_SAFE(sn, &sh->nodes, entry, tmp)
@@ -3531,61 +4470,59 @@ shutdown_pf(void)
 
 		/* status does not use malloced mem so no need to cleanup */
 		/* fingerprints and interfaces have their own cleanup code */
-
-		/* Free counters last as we updated them during shutdown. */
-		counter_u64_free(V_pf_default_rule.states_cur);
-		counter_u64_free(V_pf_default_rule.states_tot);
-		counter_u64_free(V_pf_default_rule.src_nodes);
-
-		for (int i = 0; i < PFRES_MAX; i++)
-			counter_u64_free(V_pf_status.counters[i]);
-		for (int i = 0; i < LCNT_MAX; i++)
-			counter_u64_free(V_pf_status.lcounters[i]);
-		for (int i = 0; i < FCNT_MAX; i++)
-			counter_u64_free(V_pf_status.fcounters[i]);
-		for (int i = 0; i < SCNT_MAX; i++)
-			counter_u64_free(V_pf_status.scounters[i]);
 	} while(0);
 
 	return (error);
 }
 
-#ifdef INET
-static int
-pf_check_in(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+static pfil_return_t
+pf_check_return(int chk, struct mbuf **m)
 {
-	int chk;
 
-	chk = pf_test(PF_IN, ifp, m, inp);
-	if (chk && *m) {
-		m_freem(*m);
-		*m = NULL;
+	switch (chk) {
+	case PF_PASS:
+		if (*m == NULL)
+			return (PFIL_CONSUMED);
+		else
+			return (PFIL_PASS);
+		break;
+	default:
+		if (*m != NULL) {
+			m_freem(*m);
+			*m = NULL;
+		}
+		return (PFIL_DROPPED);
 	}
-
-	return (chk);
 }
 
-static int
-pf_check_out(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+#ifdef INET
+static pfil_return_t
+pf_check_in(struct mbuf **m, struct ifnet *ifp, int flags,
+    void *ruleset __unused, struct inpcb *inp)
 {
 	int chk;
 
-	chk = pf_test(PF_OUT, ifp, m, inp);
-	if (chk && *m) {
-		m_freem(*m);
-		*m = NULL;
-	}
+	chk = pf_test(PF_IN, flags, ifp, m, inp);
 
-	return (chk);
+	return (pf_check_return(chk, m));
+}
+
+static pfil_return_t
+pf_check_out(struct mbuf **m, struct ifnet *ifp, int flags,
+    void *ruleset __unused,  struct inpcb *inp)
+{
+	int chk;
+
+	chk = pf_test(PF_OUT, flags, ifp, m, inp);
+
+	return (pf_check_return(chk, m));
 }
 #endif
 
 #ifdef INET6
-static int
-pf_check6_in(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+static pfil_return_t
+pf_check6_in(struct mbuf **m, struct ifnet *ifp, int flags,
+    void *ruleset __unused,  struct inpcb *inp)
 {
 	int chk;
 
@@ -3595,65 +4532,91 @@ pf_check6_in(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
 	 * filtering we have change this to lo0 as it is the case in IPv4.
 	 */
 	CURVNET_SET(ifp->if_vnet);
-	chk = pf_test6(PF_IN, (*m)->m_flags & M_LOOP ? V_loif : ifp, m, inp);
+	chk = pf_test6(PF_IN, flags, (*m)->m_flags & M_LOOP ? V_loif : ifp, m, inp);
 	CURVNET_RESTORE();
-	if (chk && *m) {
-		m_freem(*m);
-		*m = NULL;
-	}
-	return chk;
+
+	return (pf_check_return(chk, m));
 }
 
-static int
-pf_check6_out(void *arg, struct mbuf **m, struct ifnet *ifp, int dir,
-    struct inpcb *inp)
+static pfil_return_t
+pf_check6_out(struct mbuf **m, struct ifnet *ifp, int flags,
+    void *ruleset __unused,  struct inpcb *inp)
 {
 	int chk;
 
 	CURVNET_SET(ifp->if_vnet);
-	chk = pf_test6(PF_OUT, ifp, m, inp);
+	chk = pf_test6(PF_OUT, flags, ifp, m, inp);
 	CURVNET_RESTORE();
-	if (chk && *m) {
-		m_freem(*m);
-		*m = NULL;
-	}
-	return chk;
+
+	return (pf_check_return(chk, m));
 }
 #endif /* INET6 */
+
+#ifdef INET
+VNET_DEFINE_STATIC(pfil_hook_t, pf_ip4_in_hook);
+VNET_DEFINE_STATIC(pfil_hook_t, pf_ip4_out_hook);
+#define	V_pf_ip4_in_hook	VNET(pf_ip4_in_hook)
+#define	V_pf_ip4_out_hook	VNET(pf_ip4_out_hook)
+#endif
+#ifdef INET6
+VNET_DEFINE_STATIC(pfil_hook_t, pf_ip6_in_hook);
+VNET_DEFINE_STATIC(pfil_hook_t, pf_ip6_out_hook);
+#define	V_pf_ip6_in_hook	VNET(pf_ip6_in_hook)
+#define	V_pf_ip6_out_hook	VNET(pf_ip6_out_hook)
+#endif
 
 static int
 hook_pf(void)
 {
-#ifdef INET
-	struct pfil_head *pfh_inet;
-#endif
-#ifdef INET6
-	struct pfil_head *pfh_inet6;
-#endif
+	struct pfil_hook_args pha;
+	struct pfil_link_args pla;
 
 	if (V_pf_pfil_hooked)
 		return (0);
 
+	pha.pa_version = PFIL_VERSION;
+	pha.pa_modname = "pf";
+	pha.pa_ruleset = NULL;
+
+	pla.pa_version = PFIL_VERSION;
+
 #ifdef INET
-	pfh_inet = pfil_head_get(PFIL_TYPE_AF, AF_INET);
-	if (pfh_inet == NULL)
-		return (ESRCH); /* XXX */
-	pfil_add_hook(pf_check_in, NULL, PFIL_IN | PFIL_WAITOK, pfh_inet);
-	pfil_add_hook(pf_check_out, NULL, PFIL_OUT | PFIL_WAITOK, pfh_inet);
+	pha.pa_type = PFIL_TYPE_IP4;
+	pha.pa_func = pf_check_in;
+	pha.pa_flags = PFIL_IN;
+	pha.pa_rulname = "default-in";
+	V_pf_ip4_in_hook = pfil_add_hook(&pha);
+	pla.pa_flags = PFIL_IN | PFIL_HEADPTR | PFIL_HOOKPTR;
+	pla.pa_head = V_inet_pfil_head;
+	pla.pa_hook = V_pf_ip4_in_hook;
+	(void)pfil_link(&pla);
+	pha.pa_func = pf_check_out;
+	pha.pa_flags = PFIL_OUT;
+	pha.pa_rulname = "default-out";
+	V_pf_ip4_out_hook = pfil_add_hook(&pha);
+	pla.pa_flags = PFIL_OUT | PFIL_HEADPTR | PFIL_HOOKPTR;
+	pla.pa_head = V_inet_pfil_head;
+	pla.pa_hook = V_pf_ip4_out_hook;
+	(void)pfil_link(&pla);
 #endif
 #ifdef INET6
-	pfh_inet6 = pfil_head_get(PFIL_TYPE_AF, AF_INET6);
-	if (pfh_inet6 == NULL) {
-#ifdef INET
-		pfil_remove_hook(pf_check_in, NULL, PFIL_IN | PFIL_WAITOK,
-		    pfh_inet);
-		pfil_remove_hook(pf_check_out, NULL, PFIL_OUT | PFIL_WAITOK,
-		    pfh_inet);
-#endif
-		return (ESRCH); /* XXX */
-	}
-	pfil_add_hook(pf_check6_in, NULL, PFIL_IN | PFIL_WAITOK, pfh_inet6);
-	pfil_add_hook(pf_check6_out, NULL, PFIL_OUT | PFIL_WAITOK, pfh_inet6);
+	pha.pa_type = PFIL_TYPE_IP6;
+	pha.pa_func = pf_check6_in;
+	pha.pa_flags = PFIL_IN;
+	pha.pa_rulname = "default-in6";
+	V_pf_ip6_in_hook = pfil_add_hook(&pha);
+	pla.pa_flags = PFIL_IN | PFIL_HEADPTR | PFIL_HOOKPTR;
+	pla.pa_head = V_inet6_pfil_head;
+	pla.pa_hook = V_pf_ip6_in_hook;
+	(void)pfil_link(&pla);
+	pha.pa_func = pf_check6_out;
+	pha.pa_rulname = "default-out6";
+	pha.pa_flags = PFIL_OUT;
+	V_pf_ip6_out_hook = pfil_add_hook(&pha);
+	pla.pa_flags = PFIL_OUT | PFIL_HEADPTR | PFIL_HOOKPTR;
+	pla.pa_head = V_inet6_pfil_head;
+	pla.pa_hook = V_pf_ip6_out_hook;
+	(void)pfil_link(&pla);
 #endif
 
 	V_pf_pfil_hooked = 1;
@@ -3663,33 +4626,17 @@ hook_pf(void)
 static int
 dehook_pf(void)
 {
-#ifdef INET
-	struct pfil_head *pfh_inet;
-#endif
-#ifdef INET6
-	struct pfil_head *pfh_inet6;
-#endif
 
 	if (V_pf_pfil_hooked == 0)
 		return (0);
 
 #ifdef INET
-	pfh_inet = pfil_head_get(PFIL_TYPE_AF, AF_INET);
-	if (pfh_inet == NULL)
-		return (ESRCH); /* XXX */
-	pfil_remove_hook(pf_check_in, NULL, PFIL_IN | PFIL_WAITOK,
-	    pfh_inet);
-	pfil_remove_hook(pf_check_out, NULL, PFIL_OUT | PFIL_WAITOK,
-	    pfh_inet);
+	pfil_remove_hook(V_pf_ip4_in_hook);
+	pfil_remove_hook(V_pf_ip4_out_hook);
 #endif
 #ifdef INET6
-	pfh_inet6 = pfil_head_get(PFIL_TYPE_AF, AF_INET6);
-	if (pfh_inet6 == NULL)
-		return (ESRCH); /* XXX */
-	pfil_remove_hook(pf_check6_in, NULL, PFIL_IN | PFIL_WAITOK,
-	    pfh_inet6);
-	pfil_remove_hook(pf_check6_out, NULL, PFIL_OUT | PFIL_WAITOK,
-	    pfh_inet6);
+	pfil_remove_hook(V_pf_ip6_in_hook);
+	pfil_remove_hook(V_pf_ip6_out_hook);
 #endif
 
 	V_pf_pfil_hooked = 0;
@@ -3699,17 +4646,15 @@ dehook_pf(void)
 static void
 pf_load_vnet(void)
 {
-	VNET_ITERATOR_DECL(vnet_iter);
+	V_pf_tag_z = uma_zcreate("pf tags", sizeof(struct pf_tagname),
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, 0);
 
-	VNET_LIST_RLOCK();
-	VNET_FOREACH(vnet_iter) {
-		CURVNET_SET(vnet_iter);
-		V_pf_pfil_hooked = 0;
-		TAILQ_INIT(&V_pf_tags);
-		TAILQ_INIT(&V_pf_qids);
-		CURVNET_RESTORE();
-	}
-	VNET_LIST_RUNLOCK();
+	pf_init_tagset(&V_pf_tags, &pf_rule_tag_hashsize,
+	    PF_RULE_TAG_HASH_SIZE_DEFAULT);
+#ifdef ALTQ
+	pf_init_tagset(&V_pf_qids, &pf_queue_tag_hashsize,
+	    PF_QUEUE_TAG_HASH_SIZE_DEFAULT);
+#endif
 
 	pfattach_vnet();
 	V_pf_vnet_active = 1;
@@ -3720,17 +4665,18 @@ pf_load(void)
 {
 	int error;
 
-	rw_init(&pf_rules_lock, "pf rulesets");
+	rm_init(&pf_rules_lock, "pf rulesets");
 	sx_init(&pf_ioctl_lock, "pf ioctl");
+	sx_init(&pf_end_lock, "pf end thread");
 
 	pf_mtag_initialize();
 
-	pf_dev = make_dev(&pf_cdevsw, 0, 0, 0, 0600, PF_NAME);
+	pf_dev = make_dev(&pf_cdevsw, 0, UID_ROOT, GID_WHEEL, 0600, PF_NAME);
 	if (pf_dev == NULL)
 		return (ENOMEM);
 
 	pf_end_threads = 0;
-	error = kproc_create(pf_purge_thread, NULL, NULL, 0, 0, "pf purge");
+	error = kproc_create(pf_purge_thread, NULL, &pf_purge_proc, 0, 0, "pf purge");
 	if (error != 0)
 		return (error);
 
@@ -3746,7 +4692,6 @@ pf_unload_vnet(void)
 
 	V_pf_vnet_active = 0;
 	V_pf_status.running = 0;
-	swi_remove(V_pf_swi_cookie);
 	error = dehook_pf();
 	if (error) {
 		/*
@@ -3758,11 +4703,13 @@ pf_unload_vnet(void)
 		return;
 	}
 
-	pf_unload_vnet_purge();
-
 	PF_RULES_WLOCK();
 	shutdown_pf();
 	PF_RULES_WUNLOCK();
+
+	swi_remove(V_pf_swi_cookie);
+
+	pf_unload_vnet_purge();
 
 	pf_normalize_cleanup();
 	PF_RULES_WLOCK();
@@ -3773,28 +4720,53 @@ pf_unload_vnet(void)
 	pf_cleanup();
 	if (IS_DEFAULT_VNET(curvnet))
 		pf_mtag_cleanup();
+
+	pf_cleanup_tagset(&V_pf_tags);
+#ifdef ALTQ
+	pf_cleanup_tagset(&V_pf_qids);
+#endif
+	uma_zdestroy(V_pf_tag_z);
+
+	/* Free counters last as we updated them during shutdown. */
+	counter_u64_free(V_pf_default_rule.evaluations);
+	for (int i = 0; i < 2; i++) {
+		counter_u64_free(V_pf_default_rule.packets[i]);
+		counter_u64_free(V_pf_default_rule.bytes[i]);
+	}
+	counter_u64_free(V_pf_default_rule.states_cur);
+	counter_u64_free(V_pf_default_rule.states_tot);
+	counter_u64_free(V_pf_default_rule.src_nodes);
+
+	for (int i = 0; i < PFRES_MAX; i++)
+		counter_u64_free(V_pf_status.counters[i]);
+	for (int i = 0; i < LCNT_MAX; i++)
+		counter_u64_free(V_pf_status.lcounters[i]);
+	for (int i = 0; i < FCNT_MAX; i++)
+		counter_u64_free(V_pf_status.fcounters[i]);
+	for (int i = 0; i < SCNT_MAX; i++)
+		counter_u64_free(V_pf_status.scounters[i]);
 }
 
-static int
+static void
 pf_unload(void)
 {
-	int error = 0;
 
+	sx_xlock(&pf_end_lock);
 	pf_end_threads = 1;
 	while (pf_end_threads < 2) {
 		wakeup_one(pf_purge_thread);
-		rw_sleep(pf_purge_thread, &pf_rules_lock, 0, "pftmo", 0);
+		sx_sleep(pf_purge_proc, &pf_end_lock, 0, "pftmo", 0);
 	}
+	sx_xunlock(&pf_end_lock);
 
 	if (pf_dev != NULL)
 		destroy_dev(pf_dev);
 
 	pfi_cleanup();
 
-	rw_destroy(&pf_rules_lock);
+	rm_destroy(&pf_rules_lock);
 	sx_destroy(&pf_ioctl_lock);
-
-	return (error);
+	sx_destroy(&pf_end_lock);
 }
 
 static void
@@ -3812,9 +4784,9 @@ vnet_pf_uninit(const void *unused __unused)
 
 	pf_unload_vnet();
 } 
+SYSUNINIT(pf_unload, SI_SUB_PROTO_FIREWALL, SI_ORDER_SECOND, pf_unload, NULL);
 VNET_SYSUNINIT(vnet_pf_uninit, SI_SUB_PROTO_FIREWALL, SI_ORDER_THIRD,
     vnet_pf_uninit, NULL);
-
 
 static int
 pf_modevent(module_t mod, int type, void *data)
@@ -3825,14 +4797,9 @@ pf_modevent(module_t mod, int type, void *data)
 	case MOD_LOAD:
 		error = pf_load();
 		break;
-	case MOD_QUIESCE:
-		/*
-		 * Module should not be unloaded due to race conditions.
-		 */
-		error = EBUSY;
-		break;
 	case MOD_UNLOAD:
-		error = pf_unload();
+		/* Handled in SYSUNINIT(pf_unload) to ensure it's done after
+		 * the vnet_pf_uninit()s */
 		break;
 	default:
 		error = EINVAL;

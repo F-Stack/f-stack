@@ -52,10 +52,12 @@ __curthread_ff(void)
     return (pcurthread);
 }
 
-
+#ifndef __curthread
 #define __curthread __curthread_ff
+#endif
 
 #ifndef curthread
 #define curthread __curthread_ff()
 #endif
+
 #endif    /* _FSTACK_MACHINE_PCPU_H_ */

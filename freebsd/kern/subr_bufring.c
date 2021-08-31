@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2007, 2008 Kip Macy <kmacy@freebsd.org>
  * All rights reserved.
  *
@@ -27,7 +29,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -35,14 +36,13 @@ __FBSDID("$FreeBSD$");
 #include <sys/ktr.h>
 #include <sys/buf_ring.h>
 
-
 struct buf_ring *
 buf_ring_alloc(int count, struct malloc_type *type, int flags, struct mtx *lock)
 {
 	struct buf_ring *br;
 
 	KASSERT(powerof2(count), ("buf ring must be size power of 2"));
-	
+
 	br = malloc(sizeof(struct buf_ring) + count*sizeof(caddr_t),
 	    type, flags|M_ZERO);
 	if (br == NULL)

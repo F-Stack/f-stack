@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004-2005 Bruno Ducrot
  * Copyright (c) 2004 FUKUDA Nobuhiko <nfukuda@spa.is.uec.ac.jp>
  *
@@ -144,7 +146,6 @@ struct pst_header {
 #define ACPI_PN8_CTRL_TO_RVO(x)		(((x) >> 28) & 0x03)
 #define ACPI_PN8_CTRL_TO_IRT(x)		(((x) >> 30) & 0x03)
 
-
 #define WRITE_FIDVID(fid, vid, ctrl)	\
 	wrmsr(MSR_AMDK7_FIDVID_CTL,	\
 	    (((ctrl) << 32) | (1ULL << 16) | ((vid) << 8) | (fid)))
@@ -166,7 +167,6 @@ static int pn7_fid_to_mult[32] = {
 	30, 190, 40, 200, 130, 135, 140, 210,
 	150, 225, 160, 165, 170, 180, 0, 0,
 };
-
 
 static int pn8_fid_to_mult[64] = {
 	40, 45, 50, 55, 60, 65, 70, 75,
@@ -260,7 +260,6 @@ static device_method_t pn_methods[] = {
 	DEVMETHOD(cpufreq_drv_get, pn_get),
 	DEVMETHOD(cpufreq_drv_settings, pn_settings),
 	DEVMETHOD(cpufreq_drv_type, pn_type),
-
 	{0, 0}
 };
 
@@ -700,9 +699,9 @@ pn_decode_pst(device_t dev)
 			if (sc->pn_type != PN8_TYPE)
 				return (EINVAL);
 			sc->vst = psb->settlingtime;
-			sc->rvo = PN8_PSB_TO_RVO(psb->res1),
-			sc->irt = PN8_PSB_TO_IRT(psb->res1),
-			sc->mvs = PN8_PSB_TO_MVS(psb->res1),
+			sc->rvo = PN8_PSB_TO_RVO(psb->res1);
+			sc->irt = PN8_PSB_TO_IRT(psb->res1);
+			sc->mvs = PN8_PSB_TO_MVS(psb->res1);
 			sc->low = PN8_PSB_TO_BATT(psb->res1);
 			if (bootverbose) {
 				device_printf(dev, "PSB: VST: %d\n",

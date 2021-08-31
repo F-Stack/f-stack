@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2009, Oleksandr Tymoshenko <gonzo@FreeBSD.org>
  * All rights reserved.
  *
@@ -354,7 +356,6 @@ apb_filter(void *arg)
 	reg = ATH_READ_REG(AR71XX_MISC_INTR_STATUS);
 	for (irq = 0; irq < APB_NIRQS; irq++) {
 		if (reg & (1 << irq)) {
-
 			switch (ar71xx_soc) {
 			case AR71XX_SOC_AR7240:
 			case AR71XX_SOC_AR7241:
@@ -380,13 +381,13 @@ apb_filter(void *arg)
 			event = sc->sc_eventstab[irq];
 			/* always count interrupts; spurious or otherwise */
 			mips_intrcnt_inc(sc->sc_intr_counter[irq]);
-			if (!event || TAILQ_EMPTY(&event->ie_handlers)) {
+			if (!event || CK_SLIST_EMPTY(&event->ie_handlers)) {
 				if (irq == APB_INTR_PMC) {
 					td = PCPU_GET(curthread);
 					tf = td->td_intr_frame;
 
 					if (pmc_intr)
-						(*pmc_intr)(PCPU_GET(cpuid), tf);
+						(*pmc_intr)(tf);
 					continue;
 				}
 				/* Ignore timer interrupts */
@@ -506,7 +507,6 @@ apb_print_child(device_t bus, device_t child)
 
 	return (retval);
 }
-
 
 static device_method_t apb_methods[] = {
 	DEVMETHOD(bus_activate_resource,	apb_activate_resource),

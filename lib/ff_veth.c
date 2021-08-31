@@ -39,6 +39,7 @@
 #include <sys/kthread.h>
 #include <sys/sched.h>
 #include <sys/sockio.h>
+#include <sys/ck.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
@@ -48,6 +49,7 @@
 #include <net/if_tap.h>
 #include <net/if_dl.h>
 #include <net/route.h>
+#include <net/route/route_ctl.h>
 
 #include <netinet/in.h>
 #include <netinet/in_var.h>
@@ -234,9 +236,9 @@ ff_mbuf_free(void *m)
 }
 
 static void
-ff_mbuf_ext_free(struct mbuf *m, void *arg1, void *arg2)
+ff_mbuf_ext_free(struct mbuf *m)
 {
-    ff_dpdk_pktmbuf_free(arg1);
+    ff_dpdk_pktmbuf_free(ff_rte_frm_extcl(m));
 }
 
 void *
@@ -346,26 +348,34 @@ ff_veth_setaddr(struct ff_veth_softc *sc)
 static int
 ff_veth_set_gateway(struct ff_veth_softc *sc)
 {
+    struct rt_addrinfo info;
+    struct rib_cmd_info rci;
+
+    bzero((caddr_t)&info, sizeof(info));
+    info.rti_flags = RTF_GATEWAY;
+
     struct sockaddr_in gw;
     bzero(&gw, sizeof(gw));
     gw.sin_len = sizeof(gw);
     gw.sin_family = AF_INET;
     gw.sin_addr.s_addr = sc->gateway;
+    info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&gw;
 
     struct sockaddr_in dst;
     bzero(&dst, sizeof(dst));
     dst.sin_len = sizeof(dst);
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = 0;
+    info.rti_info[RTAX_DST] = (struct sockaddr *)&dst;
 
     struct sockaddr_in nm;
     bzero(&nm, sizeof(nm));
     nm.sin_len = sizeof(nm);
     nm.sin_family = AF_INET;
     nm.sin_addr.s_addr = 0;
+    info.rti_info[RTAX_NETMASK] = (struct sockaddr *)&nm;
 
-    return rtrequest_fib(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
-        (struct sockaddr *)&nm, RTF_GATEWAY, NULL, RT_DEFAULT_FIB);
+    return rib_action(RT_DEFAULT_FIB, RTM_ADD, &info, &rci);
 }
 
 static int
@@ -449,20 +459,23 @@ ff_veth_setaddr6(struct ff_veth_softc *sc)
 static int
 ff_veth_set_gateway6(struct ff_veth_softc *sc)
 {
-    struct sockaddr_in6 gw, dst, nm;
+    struct sockaddr_in6 gw;
+    struct rt_addrinfo info;
+    struct rib_cmd_info rci;
+
+    bzero((caddr_t)&info, sizeof(info));
+    info.rti_flags = RTF_GATEWAY;
 
     bzero(&gw, sizeof(gw));
-    bzero(&dst, sizeof(dst));
-    bzero(&nm, sizeof(nm));
 
-    gw.sin6_len = dst.sin6_len = nm.sin6_len = sizeof(struct sockaddr_in6);
-    gw.sin6_family = dst.sin6_family = AF_INET6;
+    gw.sin6_len = sizeof(struct sockaddr_in6);
+    gw.sin6_family = AF_INET6;
 
     gw.sin6_addr = sc->gateway6;
-    //dst.sin6_addr = nm.sin6_addr = 0;
 
-    return rtrequest_fib(RTM_ADD, (struct sockaddr *)&dst, (struct sockaddr *)&gw,
-        (struct sockaddr *)&nm, RTF_GATEWAY, NULL, RT_DEFAULT_FIB);
+    info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&gw;
+
+    return rib_action(RT_DEFAULT_FIB, RTM_ADD, &info, &rci);
 }
 
 static int

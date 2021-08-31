@@ -37,12 +37,6 @@
  * $FreeBSD$
  */
 
-#ifdef FSTACK
-#ifndef __unused
-#define __unused __attribute__((__unused__))
-#endif
-#endif
-
 #define MAX_CMD_ALIAS	8
 
 /* Command descriptors */

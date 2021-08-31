@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2000,2003 Doug Rabson
  * All rights reserved.
  *
@@ -173,7 +175,6 @@ struct kobj_class classvar = {				\
 	#name, methods, size, name ## _baseclasses	\
 }
 
-
 /*
  * Compile the method table in a class.
  */
@@ -226,10 +227,12 @@ extern u_int kobj_lookup_misses;
 	kobj_method_t **_cep =					\
 	    &OPS->cache[_desc->id & (KOBJ_CACHE_SIZE-1)];	\
 	kobj_method_t *_ce = *_cep;				\
-	kobj_lookup_hits++; /* assume hit */			\
-	if (_ce->desc != _desc)					\
+	if (_ce->desc != _desc) {				\
 		_ce = kobj_lookup_method(OPS->cls,		\
 					 _cep, _desc);		\
+		kobj_lookup_misses++;				\
+	} else							\
+		kobj_lookup_hits++;				\
 	_m = _ce->func;						\
 } while(0)
 #else
@@ -248,7 +251,6 @@ extern u_int kobj_lookup_misses;
 kobj_method_t* kobj_lookup_method(kobj_class_t cls,
 				  kobj_method_t **cep,
 				  kobjop_desc_t desc);
-
 
 /*
  * Default method implementation. Returns ENXIO.

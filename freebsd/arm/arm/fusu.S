@@ -35,21 +35,14 @@
 
 #include <machine/asm.h>
 #include <machine/armreg.h>
-#include "assym.s"
+#include "assym.inc"
 __FBSDID("$FreeBSD$");
 
 	.syntax	unified
 
-#if __ARM_ARCH >= 6
 #define GET_PCB(tmp) \
 	mrc p15, 0, tmp, c13, c0, 4; \
 	add	tmp, tmp, #(TD_PCB)
-#else
-.Lcurpcb:
-	.word	_C_LABEL(__pcpu) + PC_CURPCB
-#define GET_PCB(tmp) \
-	ldr	tmp, .Lcurpcb
-#endif
 
 /*
  * casueword32(volatile uint32_t *base, uint32_t oldval, uint32_t *oldvalp,
@@ -63,7 +56,7 @@ EENTRY_NP(casueword32)
 	ldr	r4, =(VM_MAXUSER_ADDRESS-3)
 	cmp	r0, r4
 	mvncs	r0, #0
-	bcs	2f
+	bcs	1f
 
 	GET_PCB(r6)
 	ldr	r6, [r6]
@@ -77,22 +70,15 @@ EENTRY_NP(casueword32)
 	adr	r4, .Lcasuwordfault
 	str	r4, [r6, #PCB_ONFAULT]
 
-#if __ARM_ARCH >= 6
-1:
+	mov	r5, #1
 	ldrex	r4, [r0]
 	cmp	r4, r1
 	strexeq	r5, r3, [r0]
-	cmpeq	r5, #1
-	beq	1b
-#else
-	ldrt	r4, [r0]
-	cmp	r4, r1
-	strteq	r3, [r0]
-#endif
 	str	r4, [r2]
 	mov	r0, #0
 	str	r0, [r6, #PCB_ONFAULT]
-2:
+	mov	r0, r5
+1:
 	ldmfd	sp!, {r4, r5, r6}
 	RET
 EEND(casueword32)
@@ -165,26 +151,11 @@ ENTRY(fusword)
 
 	ldrbt	r3, [r0], #1
 	ldrbt	ip, [r0]
-#ifdef __ARMEB__
-	orr	r0, ip, r3, asl #8
-#else
 	orr	r0, r3, ip, asl #8
-#endif
 	mov	r1, #0x00000000
 	str	r1, [r2, #PCB_ONFAULT]
 	RET
 END(fusword)
-
-/*
- * fuswintr(caddr_t uaddr);
- * Fetch a short from the user's address space.  Can be called during an
- * interrupt.
- */
-
-ENTRY(fuswintr)
-	mov	r0, #-1
-	RET
-END(fuswintr)
 
 /*
  * fubyte(caddr_t uaddr);
@@ -273,17 +244,6 @@ EEND(suword32)
 END(suword)
 
 /*
- * suswintr(caddr_t uaddr, short x);
- * Store a short in the user's address space.  Can be called during an
- * interrupt.
- */
-
-ENTRY(suswintr)
-	mov	r0, #-1
-	RET
-END(suswintr)
-
-/*
  * susword(caddr_t uaddr, short x);
  * Store a short in the user's address space.
  */
@@ -305,13 +265,8 @@ ENTRY(susword)
 	adr	r3, .Lfusufault
 	str	r3, [r2, #PCB_ONFAULT]
 
-#ifdef __ARMEB__
-	mov	ip, r1, lsr #8
-	strbt	ip, [r0], #1
-#else
 	strbt	r1, [r0], #1
 	mov	r1, r1, lsr #8
-#endif
 	strbt	r1, [r0]
 
 	mov	r0, #0x00000000

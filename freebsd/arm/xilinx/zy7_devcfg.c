@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Thomas Skibo
  * All rights reserved.
  *
@@ -54,7 +56,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/resource.h>
 #include <machine/stdarg.h>
 
-#include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
@@ -100,12 +101,14 @@ static struct zy7_fclk_config fclk_configs[FCLK_NUM];
 #define RD4(sc, off) 		(bus_read_4((sc)->mem_res, (off)))
 #define WR4(sc, off, val) 	(bus_write_4((sc)->mem_res, (off), (val)))
 
-SYSCTL_NODE(_hw, OID_AUTO, fpga, CTLFLAG_RD, 0,	\
-	    "Xilinx Zynq-7000 PL (FPGA) section");
+SYSCTL_NODE(_hw, OID_AUTO, fpga, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "Xilinx Zynq-7000 PL (FPGA) section");
 
 static int zy7_devcfg_sysctl_pl_done(SYSCTL_HANDLER_ARGS);
-SYSCTL_PROC(_hw_fpga, OID_AUTO, pl_done, CTLTYPE_INT | CTLFLAG_RD, NULL, 0,
-	    zy7_devcfg_sysctl_pl_done, "I", "PL section config DONE signal");
+SYSCTL_PROC(_hw_fpga, OID_AUTO, pl_done,
+    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT, NULL, 0,
+    zy7_devcfg_sysctl_pl_done, "I",
+    "PL section config DONE signal");
 
 static int zy7_en_level_shifters = 1;
 SYSCTL_INT(_hw_fpga, OID_AUTO, en_level_shifters, CTLFLAG_RW,
@@ -118,9 +121,9 @@ SYSCTL_INT(_hw, OID_AUTO, ps_vers, CTLFLAG_RD, &zy7_ps_vers, 0,
 
 static int zy7_devcfg_fclk_sysctl_level_shifters(SYSCTL_HANDLER_ARGS);
 SYSCTL_PROC(_hw_fpga, OID_AUTO, level_shifters, 
-		    CTLFLAG_RW | CTLTYPE_INT, 
-		    NULL, 0, zy7_devcfg_fclk_sysctl_level_shifters,
-		    "I", "Enable/disable level shifters");
+    CTLFLAG_RW | CTLTYPE_INT | CTLFLAG_NEEDGIANT, NULL, 0,
+    zy7_devcfg_fclk_sysctl_level_shifters, "I",
+    "Enable/disable level shifters");
 
 /* cdev entry points. */
 static int zy7_devcfg_open(struct cdev *, int, int, struct thread *);
@@ -359,7 +362,7 @@ zy7_devcfg_init_fclk_sysctl(struct zy7_devcfg_softc *sc)
 	sysctl_ctx_init(&sc->sysctl_tree);
 	sc->sysctl_tree_top = SYSCTL_ADD_NODE(&sc->sysctl_tree,
 	    SYSCTL_STATIC_CHILDREN(_hw_fpga), OID_AUTO, "fclk",
-	    CTLFLAG_RD, 0, "");
+	    CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "");
 	if (sc->sysctl_tree_top == NULL) {
 		sysctl_ctx_free(&sc->sysctl_tree);
 		return (-1);
@@ -369,7 +372,7 @@ zy7_devcfg_init_fclk_sysctl(struct zy7_devcfg_softc *sc)
 		snprintf(fclk_num, sizeof(fclk_num), "%d", i);
 		fclk_node = SYSCTL_ADD_NODE(&sc->sysctl_tree,
 		    SYSCTL_CHILDREN(sc->sysctl_tree_top), OID_AUTO, fclk_num,
-		    CTLFLAG_RD, 0, "");
+		    CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "");
 
 		SYSCTL_ADD_INT(&sc->sysctl_tree,
 		    SYSCTL_CHILDREN(fclk_node), OID_AUTO,
@@ -378,13 +381,13 @@ zy7_devcfg_init_fclk_sysctl(struct zy7_devcfg_softc *sc)
 		    "Actual frequency");
 		SYSCTL_ADD_PROC(&sc->sysctl_tree,
 		    SYSCTL_CHILDREN(fclk_node), OID_AUTO,
-		    "freq", CTLFLAG_RW | CTLTYPE_INT, 
+		    "freq", CTLFLAG_RW | CTLTYPE_INT | CTLFLAG_NEEDGIANT, 
 		    &fclk_configs[i], i,
 		    zy7_devcfg_fclk_sysctl_freq,
 		    "I", "Configured frequency");
 		SYSCTL_ADD_PROC(&sc->sysctl_tree,
 		    SYSCTL_CHILDREN(fclk_node), OID_AUTO,
-		    "source", CTLFLAG_RW | CTLTYPE_STRING, 
+		    "source", CTLFLAG_RW | CTLTYPE_STRING | CTLFLAG_NEEDGIANT, 
 		    &fclk_configs[i], i, 
 		    zy7_devcfg_fclk_sysctl_source,
 		    "A", "Clock source");
@@ -452,7 +455,7 @@ zy7_devcfg_reset_pl(struct zy7_devcfg_softc *sc)
 		if (err != 0)
 			return (err);
 	}
-	
+
 	/* Reassert PROG_B (active low). */
 	devcfg_ctl &= ~ZY7_DEVCFG_CTRL_PCFG_PROG_B;
 	WR4(sc, ZY7_DEVCFG_CTRL, devcfg_ctl);

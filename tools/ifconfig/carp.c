@@ -1,7 +1,9 @@
 /*	$FreeBSD$ */
 /*	from $OpenBSD: ifconfig.c,v 1.82 2003/10/19 05:43:35 mcbride Exp $ */
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002 Michael Shalayeff. All rights reserved.
  * Copyright (c) 2003 Ryan McBride. All rights reserved.
  *
@@ -40,8 +42,6 @@
 #include <netinet/in_var.h>
 #include <netinet/ip_carp.h>
 
-#include <netinet6/in6_var.h>
-
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -77,13 +77,7 @@ carp_status(int s)
 	carpr[0].carpr_count = CARP_MAXVHID;
 	ifr.ifr_data = (caddr_t)&carpr;
 
-#ifndef FSTACK
 	if (ioctl(s, SIOCGVH, (caddr_t)&ifr) == -1)
-#else
-	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
-	size_t clen = sizeof(struct carpreq) * CARP_MAXVHID;
-	if (ioctl_va(s, SIOCGVH, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1)
-#endif
 		return;
 
 	for (i = 0; i < carpr[0].carpr_count; i++) {
@@ -145,24 +139,12 @@ setcarp_callback(int s, void *arg __unused)
 	carpr.carpr_count = 1;
 	ifr.ifr_data = (caddr_t)&carpr;
 
-#ifndef FSTACK
 	if (ioctl(s, SIOCGVH, (caddr_t)&ifr) == -1 && errno != ENOENT)
-#else
-	size_t offset, clen;
-	offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
-	clen = sizeof(carpr);
-	if (ioctl_va(s, SIOCGVH, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1
-		&& errno != ENOENT)
-#endif
 		err(1, "SIOCGVH");
 
 	if (carpr_key != NULL)
 		/* XXX Should hash the password into the key here? */
-#ifndef FSTACK
 		strlcpy(carpr.carpr_key, carpr_key, CARP_KEY_LEN);
-#else
-		strlcpy((char *)carpr.carpr_key, (const char *)carpr_key, CARP_KEY_LEN);
-#endif
 	if (carpr_advskew > -1)
 		carpr.carpr_advskew = carpr_advskew;
 	if (carpr_advbase > -1)
@@ -170,11 +152,7 @@ setcarp_callback(int s, void *arg __unused)
 	if (carpr_state > -1)
 		carpr.carpr_state = carpr_state;
 
-#ifndef FSTACK
 	if (ioctl(s, SIOCSVH, (caddr_t)&ifr) == -1)
-#else
-	if (ioctl_va(s, SIOCSVH, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1)
-#endif
 		err(1, "SIOCSVH");
 }
 
@@ -185,11 +163,7 @@ setcarp_passwd(const char *val, int d, int s, const struct afswtch *afp)
 	if (carpr_vhid == -1)
 		errx(1, "passwd requires vhid");
 
-#ifndef FSTACK
 	carpr_key = val;
-#else
-	carpr_key = (const unsigned char *)val;
-#endif
 }
 
 static void

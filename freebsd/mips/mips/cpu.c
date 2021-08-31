@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2004 Juli Mallett.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,6 +32,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
+#include <sys/proc.h>
 #include <sys/stdint.h>
 
 #include <sys/bus.h>
@@ -49,15 +52,38 @@ __FBSDID("$FreeBSD$");
 #include <machine/pte.h>
 #include <machine/tlb.h>
 #include <machine/hwfunc.h>
+#include <machine/mips_opcode.h>
+#include <machine/regnum.h>
+#include <machine/tls.h>
 
 #if defined(CPU_CNMIPS)
 #include <contrib/octeon-sdk/cvmx.h>
 #include <contrib/octeon-sdk/octeon-model.h>
 #endif
 
-static void cpu_identify(void);
-
 struct mips_cpuinfo cpuinfo;
+
+#define _ENCODE_INSN(a,b,c,d,e) \
+    ((uint32_t)(((a) << 26)|((b) << 21)|((c) << 16)|((d) << 11)|(e)))
+
+#define	_JR_RA	_ENCODE_INSN(OP_SPECIAL, RA, 0, 0, OP_JR)
+#define	_NOP	0
+
+/*
+ * Patch cpu_switch() by removing the UserLocal register code at the end.
+ * For MIPS hardware that don't support UserLocal Register Implementation
+ * we remove the instructions that update this register which may cause a
+ * reserved instruction exception in the kernel.
+ */
+static void
+remove_userlocal_code(uint32_t *cpu_switch_code)
+{
+	uint32_t *instructp;
+
+	instructp = cpu_switch_code;
+	instructp[0] = _JR_RA;
+	instructp[1] = _NOP;
+}
 
 /*
  * Attempt to identify the MIPS CPU as much as possible.
@@ -73,9 +99,8 @@ mips_get_identity(struct mips_cpuinfo *cpuinfo)
 	u_int32_t prid;
 	u_int32_t cfg0;
 	u_int32_t cfg1;
-#ifndef CPU_CNMIPS
 	u_int32_t cfg2;
-#endif
+	u_int32_t cfg3;
 #if defined(CPU_CNMIPS)
 	u_int32_t cfg4;
 #endif
@@ -96,12 +121,40 @@ mips_get_identity(struct mips_cpuinfo *cpuinfo)
 	    ((cfg0 & MIPS_CONFIG0_MT_MASK) >> MIPS_CONFIG0_MT_SHIFT);
 	cpuinfo->icache_virtual = cfg0 & MIPS_CONFIG0_VI;
 
-	/* If config register selection 1 does not exist, exit. */
-	if (!(cfg0 & MIPS_CONFIG_CM))
+	/* If config register selection 1 does not exist, return. */
+	if (!(cfg0 & MIPS_CONFIG0_M))
 		return;
 
 	/* Learn TLB size and L1 cache geometry. */
 	cfg1 = mips_rd_config1();
+
+	/* Get the Config2 and Config3 registers as well. */
+	cfg2 = 0;
+	cfg3 = 0;
+	if (cfg1 & MIPS_CONFIG1_M) {
+		cfg2 = mips_rd_config2();
+		if (cfg2 & MIPS_CONFIG2_M)
+			cfg3 = mips_rd_config3();
+	}
+
+	/* Save FP implementation revision if FP is present. */
+	if (cfg1 & MIPS_CONFIG1_FP)
+		cpuinfo->fpu_id = MipsFPID();
+
+	/* Check to see if UserLocal register is implemented. */
+	if (cfg3 & MIPS_CONFIG3_ULR) {
+		/* UserLocal register is implemented, enable it. */
+		cpuinfo->userlocal_reg = true;
+		tmp = mips_rd_hwrena();
+		mips_wr_hwrena(tmp | MIPS_HWRENA_UL);
+	} else {
+		/*
+		 * UserLocal register is not implemented. Patch
+		 * cpu_switch() and remove unsupported code.
+		 */
+		cpuinfo->userlocal_reg = false;
+		remove_userlocal_code((uint32_t *)cpu_switch_set_userlocal);
+	}
 
 #if defined(CPU_NLM)
 	/* Account for Extended TLB entries in XLP */
@@ -238,15 +291,16 @@ mips_cpu_init(void)
 
 	mips_icache_sync_all();
 	mips_dcache_wbinv_all();
-	/* Print some info about CPU */
-	cpu_identify();
 }
 
-static void
+void
 cpu_identify(void)
 {
 	uint32_t cfg0, cfg1, cfg2, cfg3;
-	printf("cpu%d: ", 0);   /* XXX per-cpu */
+#if defined(CPU_MIPS1004K) || defined (CPU_MIPS74K) || defined (CPU_MIPS24K)
+	uint32_t cfg7;
+#endif
+	printf("CPU: ");
 	switch (cpuinfo.cpu_vendor) {
 	case MIPS_PRID_CID_MTI:
 		printf("MIPS Technologies");
@@ -279,11 +333,17 @@ cpu_identify(void)
 	case MIPS_PRID_CID_CAVIUM:
 		printf("Cavium");
 		break;
+	case MIPS_PRID_CID_INGENIC:
+	case MIPS_PRID_CID_INGENIC2:
+		printf("Ingenic XBurst");
+		break;
 	case MIPS_PRID_CID_PREHISTORIC:
 	default:
 		printf("Unknown cid %#x", cpuinfo.cpu_vendor);
 		break;
 	}
+	if (cpu_model[0] != '\0')
+		printf(" (%s)", cpu_model);
 	printf(" processor v%d.%d\n", cpuinfo.cpu_rev, cpuinfo.cpu_impl);
 
 	printf("  MMU: ");
@@ -370,6 +430,19 @@ cpu_identify(void)
 	printf("  Config1=0x%b\n", cfg1, 
 	    "\20\7COP2\6MDMX\5PerfCount\4WatchRegs\3MIPS16\2EJTAG\1FPU");
 
+	if (cpuinfo.fpu_id != 0)
+		printf("  FPU ID=0x%b\n", cpuinfo.fpu_id,
+		    "\020"
+		    "\020S"
+		    "\021D"
+		    "\022PS"
+		    "\0233D"
+		    "\024W"
+		    "\025L"
+		    "\026F64"
+		    "\0272008"
+		    "\034UFRP");
+
 	/* If config register selection 2 does not exist, exit. */
 	if (!(cfg1 & MIPS_CONFIG_CM))
 		return;
@@ -387,7 +460,12 @@ cpu_identify(void)
 
 	/* Print Config3 if it contains any useful info */
 	if (cfg3 & ~(0x80000000))
-		printf("  Config3=0x%b\n", cfg3, "\20\2SmartMIPS\1TraceLogic");
+		printf("  Config3=0x%b\n", cfg3, "\20\16ULRI\2SmartMIPS\1TraceLogic");
+
+#if defined(CPU_MIPS1004K) || defined (CPU_MIPS74K) || defined (CPU_MIPS24K)
+	cfg7 = mips_rd_config7();
+	printf("  Config7=0x%b\n", cfg7, "\20\40WII\21AR");
+#endif
 }
 
 static struct rman cpu_hardirq_rman;
@@ -417,7 +495,6 @@ static device_method_t cpu_methods[] = {
 	DEVMETHOD(bus_alloc_resource,	cpu_alloc_resource),
 	DEVMETHOD(bus_setup_intr,	cpu_setup_intr),
 	DEVMETHOD(bus_teardown_intr,	bus_generic_teardown_intr),
-
 	{ 0, 0 }
 };
 

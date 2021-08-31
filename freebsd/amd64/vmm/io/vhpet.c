@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2013 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
  * All rights reserved.
@@ -30,6 +32,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_bhyve_snapshot.h"
+
 #include <sys/param.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
@@ -41,6 +45,7 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/vmm.h>
 #include <machine/vmm_dev.h>
+#include <machine/vmm_snapshot.h>
 
 #include "vmm_lapic.h"
 #include "vatpic.h"
@@ -51,7 +56,7 @@ __FBSDID("$FreeBSD$");
 
 static MALLOC_DEFINE(M_VHPET, "vhpet", "bhyve virtual hpet");
 
-#define	HPET_FREQ	10000000		/* 10.0 Mhz */
+#define	HPET_FREQ	16777216		/* 16.7 (2^24) Mhz */
 #define	FS_PER_S	1000000000000000ul
 
 /* Timer N Configuration and Capabilities Register */
@@ -715,8 +720,10 @@ vhpet_init(struct vm *vm)
 	vhpet->freq_sbt = bttosbt(bt);
 
 	pincount = vioapic_pincount(vm);
-	if (pincount >= 24)
-		allowed_irqs = 0x00f00000;	/* irqs 20, 21, 22 and 23 */
+	if (pincount >= 32)
+		allowed_irqs = 0xff000000;	/* irqs 24-31 */
+	else if (pincount >= 20)
+		allowed_irqs = 0xf << (pincount - 4);	/* 4 upper irqs */
 	else
 		allowed_irqs = 0;
 
@@ -757,3 +764,49 @@ vhpet_getcap(struct vm_hpet_cap *cap)
 	cap->capabilities = vhpet_capabilities();
 	return (0);
 }
+
+#ifdef BHYVE_SNAPSHOT
+int
+vhpet_snapshot(struct vhpet *vhpet, struct vm_snapshot_meta *meta)
+{
+	int i, ret;
+	uint32_t countbase;
+
+	SNAPSHOT_VAR_OR_LEAVE(vhpet->freq_sbt, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(vhpet->config, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(vhpet->isr, meta, ret, done);
+
+	/* at restore time the countbase should have the value it had when the
+	 * snapshot was created; since the value is not directly kept in
+	 * vhpet->countbase, but rather computed relative to the current system
+	 * uptime using countbase_sbt, save the value retured by vhpet_counter
+	 */
+	if (meta->op == VM_SNAPSHOT_SAVE)
+		countbase = vhpet_counter(vhpet, NULL);
+	SNAPSHOT_VAR_OR_LEAVE(countbase, meta, ret, done);
+	if (meta->op == VM_SNAPSHOT_RESTORE)
+		vhpet->countbase = countbase;
+
+	for (i = 0; i < nitems(vhpet->timer); i++) {
+		SNAPSHOT_VAR_OR_LEAVE(vhpet->timer[i].cap_config,
+				      meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(vhpet->timer[i].msireg, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(vhpet->timer[i].compval, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(vhpet->timer[i].comprate, meta, ret, done);
+		SNAPSHOT_VAR_OR_LEAVE(vhpet->timer[i].callout_sbt,
+				      meta, ret, done);
+	}
+
+done:
+	return (ret);
+}
+
+int
+vhpet_restore_time(struct vhpet *vhpet)
+{
+	if (vhpet_counter_enabled(vhpet))
+		vhpet_start_counting(vhpet);
+
+	return (0);
+}
+#endif

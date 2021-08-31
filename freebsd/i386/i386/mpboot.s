@@ -35,9 +35,7 @@
 #include <x86/apicreg.h>
 #include <machine/specialreg.h>
 
-#include "assym.s"
-
-#define	R(x)	((x)-KERNBASE)
+#include "assym.inc"
 
 /*
  * this code MUST be enabled here and in mp_machdep.c
@@ -47,7 +45,7 @@
 #define CHECK_POINTS
  */
 
-#if defined(CHECK_POINTS) && !defined(PC98)
+#if defined(CHECK_POINTS)
 
 #define CMOS_REG	(0x70)
 #define CMOS_DATA	(0x71)
@@ -80,36 +78,42 @@ NON_GPROF_ENTRY(MPentry)
 	movl	$1,%eax
 	cpuid					/* Retrieve features */
 	movl	%cr4,%eax
-#ifndef DISABLE_PSE
 	testl	$CPUID_PSE,%edx
 	jz 1f
 	orl	$CR4_PSE,%eax			/* Enable PSE  */
-1:
-#endif
-#ifndef DISABLE_PG_G
-	testl	$CPUID_PGE,%edx
-	jz 1f
+1:	testl	$CPUID_PGE,%edx
+	jz 2f
 	orl	$CR4_PGE,%eax			/* Enable PGE  */
-1:	
-#endif
-	testl	$CPUID_VME,%edx
-	jz 1f
+2:	testl	$CPUID_VME,%edx
+	jz 3f
 	orl	$CR4_VME,%eax			/* Enable VME  */
-1:
-	movl	%eax,%cr4
+3:	movl	%eax,%cr4
 
 	/* Now enable paging mode */
-#if defined(PAE) || defined(PAE_TABLES)
-	movl	R(IdlePDPT), %eax
+	cmpl	$0, pae_mode
+	je	4f
+	movl	IdlePDPT, %eax
 	movl	%eax, %cr3
 	movl	%cr4, %eax
 	orl	$CR4_PAE, %eax
 	movl	%eax, %cr4
-#else
-	movl	R(IdlePTD), %eax
+	movl	$0x80000000, %eax
+	cpuid
+	movl	$0x80000001, %ebx
+	cmpl	%ebx, %eax
+	jb	5f
+	movl	%ebx, %eax
+	cpuid
+	testl	$AMDID_NX, %edx
+	je	5f
+	movl	$MSR_EFER, %ecx
+	rdmsr
+	orl	$EFER_NXE,%eax
+	wrmsr
+	jmp	5f
+4:	movl	IdlePTD_nopae, %eax
 	movl	%eax,%cr3	
-#endif
-	movl	%cr0,%eax
+5:	movl	%cr0,%eax
 	orl	$CR0_PE|CR0_PG,%eax		/* enable paging */
 	movl	%eax,%cr0			/* let the games begin! */
 	movl	bootSTK,%esp			/* boot stack end loc. */

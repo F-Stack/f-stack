@@ -35,13 +35,22 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/vmparam.h>
 
-#include "assym.s"
+#include "assym.inc"
+
+.macro check_user_access user_arg, size_arg, bad_access_func
+	adds	x6, x\user_arg, x\size_arg
+	b.cs	\bad_access_func
+	ldr	x7, =VM_MAXUSER_ADDRESS
+	cmp	x6, x7
+	b.hi	\bad_access_func
+.endm
 
 /*
  * Fault handler for the copy{in,out} functions below.
  */
 ENTRY(copyio_fault)
 	SET_FAULT_HANDLER(xzr, x1) /* Clear the handler */
+	EXIT_USER_ACCESS_CHECK(w0, x1)
 copyio_fault_nopcb:
 	mov	x0, #EFAULT
 	ret
@@ -54,11 +63,7 @@ END(copyio_fault)
  */
 ENTRY(copyout)
 	cbz	x2, 1f
-	adds	x3, x1, x2
-	b.cs 	copyio_fault_nopcb
-	ldr	x4, =VM_MAXUSER_ADDRESS
-	cmp	x3, x4
-	b.hi	copyio_fault_nopcb
+	check_user_access 1, 2, copyio_fault_nopcb
 
 	b	copycommon
 
@@ -74,11 +79,7 @@ END(copyout)
  */
 ENTRY(copyin)
 	cbz	x2, 1f
-	adds	x3, x0, x2
-	b.cs    copyio_fault_nopcb
-	ldr	x4, =VM_MAXUSER_ADDRESS
-	cmp	x3, x4
-	b.hi	copyio_fault_nopcb
+	check_user_access 0, 2, copyio_fault_nopcb
 
 	b	copycommon
 
@@ -103,7 +104,8 @@ ENTRY(copyinstr)
 	ldr	x7, =VM_MAXUSER_ADDRESS
 1:	cmp	x0, x7
 	b.cs	copyio_fault
-	ldrb	w4, [x0], #1	/* Load from uaddr */
+	ldtrb	w4, [x0]	/* Load from uaddr */
+	add	x0, x0, #1	/* Next char */
 	strb	w4, [x1], #1	/* Store in kaddr */
 	add	x5, x5, #1	/* count++ */
 	cbz	w4, 2f		/* Break when NUL-terminated */
@@ -111,6 +113,7 @@ ENTRY(copyinstr)
 	cbnz	x2, 1b
 
 2:	SET_FAULT_HANDLER(xzr, x7) /* Clear the handler */
+
 
 3:	cbz	x3, 4f		/* Check if done != NULL */
 	str	x5, [x3]	/* done = count */
@@ -144,7 +147,7 @@ END(copyinstr)
 copycommon:
 	adr	x6, copyio_fault /* Get the handler address */
 	SET_FAULT_HANDLER(x6, x7) /* Set the handler */
-
+	ENTER_USER_ACCESS(w6, x7)
 
 	/* Check alignment */
 	orr	x3, x0, x1
@@ -213,6 +216,7 @@ last_byte:
 	strb	w3, [x1]
 
 ending:
+	EXIT_USER_ACCESS_CHECK(w6, x7)
 	SET_FAULT_HANDLER(xzr, x7) /* Clear the handler */
 
 	mov	x0, xzr		/* return 0 */

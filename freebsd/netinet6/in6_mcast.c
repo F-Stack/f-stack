@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2009 Bruce Simpson.
  * All rights reserved.
  *
@@ -40,25 +42,29 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
+#include <sys/ktr.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/protosw.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
-#include <sys/protosw.h>
 #include <sys/sysctl.h>
 #include <sys/priv.h>
-#include <sys/ktr.h>
+#include <sys/taskqueue.h>
 #include <sys/tree.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/if_dl.h>
 #include <net/route.h>
+#include <net/route/nhop.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
+#include <netinet/udp.h>
 #include <netinet/in_var.h>
+#include <netinet/ip_var.h>
+#include <netinet/udp_var.h>
 #include <netinet6/in6_fib.h>
 #include <netinet6/in6_var.h>
 #include <netinet/ip6.h>
@@ -87,7 +93,7 @@ typedef union sockunion sockunion_t;
 
 static MALLOC_DEFINE(M_IN6MFILTER, "in6_mfilter",
     "IPv6 multicast PCB-layer source filter");
-static MALLOC_DEFINE(M_IP6MADDR, "in6_multi", "IPv6 multicast group");
+MALLOC_DEFINE(M_IP6MADDR, "in6_multi", "IPv6 multicast group");
 static MALLOC_DEFINE(M_IP6MOPTS, "ip6_moptions", "IPv6 multicast options");
 static MALLOC_DEFINE(M_IP6MSOURCE, "ip6_msource",
     "IPv6 multicast MLD-layer source filter");
@@ -96,7 +102,8 @@ RB_GENERATE(ip6_msource_tree, ip6_msource, im6s_link, ip6_msource_cmp);
 
 /*
  * Locking:
- * - Lock order is: Giant, INP_WLOCK, IN6_MULTI_LOCK, MLD_LOCK, IF_ADDR_LOCK.
+ * - Lock order is: Giant, IN6_MULTI_LOCK, INP_WLOCK,
+ *   IN6_MULTI_LIST_LOCK, MLD_LOCK, IF_ADDR_LOCK.
  * - The IF_ADDR_LOCK is implicitly taken by in6m_lookup() earlier, however
  *   it can be taken by code in net/if.c also.
  * - ip6_moptions and in6_mfilter are covered by the INP_WLOCK.
@@ -105,8 +112,14 @@ RB_GENERATE(ip6_msource_tree, ip6_msource, im6s_link, ip6_msource_cmp);
  * any need for in6_multi itself to be virtualized -- it is bound to an ifp
  * anyway no matter what happens.
  */
-struct mtx in6_multi_mtx;
-MTX_SYSINIT(in6_multi_mtx, &in6_multi_mtx, "in6_multi_mtx", MTX_DEF);
+struct mtx in6_multi_list_mtx;
+MTX_SYSINIT(in6_multi_mtx, &in6_multi_list_mtx, "in6_multi_list_mtx", MTX_DEF);
+
+struct mtx in6_multi_free_mtx;
+MTX_SYSINIT(in6_multi_free_mtx, &in6_multi_free_mtx, "in6_multi_free_mtx", MTX_DEF);
+
+struct sx in6_multi_sx;
+SX_SYSINIT(in6_multi_sx, &in6_multi_sx, "in6_multi_sx");
 
 static void	im6f_commit(struct in6_mfilter *);
 static int	im6f_get_source(struct in6_mfilter *imf,
@@ -120,16 +133,17 @@ static int	im6f_prune(struct in6_mfilter *, const struct sockaddr_in6 *);
 static void	im6f_purge(struct in6_mfilter *);
 static void	im6f_rollback(struct in6_mfilter *);
 static void	im6f_reap(struct in6_mfilter *);
-static int	im6o_grow(struct ip6_moptions *);
-static size_t	im6o_match_group(const struct ip6_moptions *,
+static struct in6_mfilter *
+		im6o_match_group(const struct ip6_moptions *,
 		    const struct ifnet *, const struct sockaddr *);
 static struct in6_msource *
-		im6o_match_source(const struct ip6_moptions *, const size_t,
-		    const struct sockaddr *);
+		im6o_match_source(struct in6_mfilter *, const struct sockaddr *);
 static void	im6s_merge(struct ip6_msource *ims,
 		    const struct in6_msource *lims, const int rollback);
-static int	in6_mc_get(struct ifnet *, const struct in6_addr *,
+static int	in6_getmulti(struct ifnet *, const struct in6_addr *,
 		    struct in6_multi **);
+static int	in6_joingroup_locked(struct ifnet *, const struct in6_addr *,
+		    struct in6_mfilter *, struct in6_multi **, int);
 static int	in6m_get_source(struct in6_multi *inm,
 		    const struct in6_addr *addr, const int noalloc,
 		    struct ip6_msource **pims);
@@ -154,7 +168,8 @@ static int	sysctl_ip6_mcast_filters(SYSCTL_HANDLER_ARGS);
 
 SYSCTL_DECL(_net_inet6_ip6);	/* XXX Not in any common header. */
 
-static SYSCTL_NODE(_net_inet6_ip6, OID_AUTO, mcast, CTLFLAG_RW, 0,
+static SYSCTL_NODE(_net_inet6_ip6, OID_AUTO, mcast,
+    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "IPv6 multicast");
 
 static u_long in6_mcast_maxgrpsrc = IPV6_MAX_GROUP_SRC_FILTER;
@@ -214,55 +229,25 @@ im6f_init(struct in6_mfilter *imf, const int st0, const int st1)
 	imf->im6f_st[1] = st1;
 }
 
-/*
- * Resize the ip6_moptions vector to the next power-of-two minus 1.
- * May be called with locks held; do not sleep.
- */
-static int
-im6o_grow(struct ip6_moptions *imo)
+struct in6_mfilter *
+ip6_mfilter_alloc(const int mflags, const int st0, const int st1)
 {
-	struct in6_multi	**nmships;
-	struct in6_multi	**omships;
-	struct in6_mfilter	 *nmfilters;
-	struct in6_mfilter	 *omfilters;
-	size_t			  idx;
-	size_t			  newmax;
-	size_t			  oldmax;
+	struct in6_mfilter *imf;
 
-	nmships = NULL;
-	nmfilters = NULL;
-	omships = imo->im6o_membership;
-	omfilters = imo->im6o_mfilters;
-	oldmax = imo->im6o_max_memberships;
-	newmax = ((oldmax + 1) * 2) - 1;
+	imf = malloc(sizeof(*imf), M_IN6MFILTER, mflags);
 
-	if (newmax <= IPV6_MAX_MEMBERSHIPS) {
-		nmships = (struct in6_multi **)realloc(omships,
-		    sizeof(struct in6_multi *) * newmax, M_IP6MOPTS, M_NOWAIT);
-		nmfilters = (struct in6_mfilter *)realloc(omfilters,
-		    sizeof(struct in6_mfilter) * newmax, M_IN6MFILTER,
-		    M_NOWAIT);
-		if (nmships != NULL && nmfilters != NULL) {
-			/* Initialize newly allocated source filter heads. */
-			for (idx = oldmax; idx < newmax; idx++) {
-				im6f_init(&nmfilters[idx], MCAST_UNDEFINED,
-				    MCAST_EXCLUDE);
-			}
-			imo->im6o_max_memberships = newmax;
-			imo->im6o_membership = nmships;
-			imo->im6o_mfilters = nmfilters;
-		}
-	}
+	if (imf != NULL)
+		im6f_init(imf, st0, st1);
 
-	if (nmships == NULL || nmfilters == NULL) {
-		if (nmships != NULL)
-			free(nmships, M_IP6MOPTS);
-		if (nmfilters != NULL)
-			free(nmfilters, M_IN6MFILTER);
-		return (ETOOMANYREFS);
-	}
+	return (imf);
+}
 
-	return (0);
+void
+ip6_mfilter_free(struct in6_mfilter *imf)
+{
+
+	im6f_purge(imf);
+	free(imf, M_IN6MFILTER);
 }
 
 /*
@@ -270,36 +255,27 @@ im6o_grow(struct ip6_moptions *imo)
  * which matches the specified group, and optionally an interface.
  * Return its index into the array, or -1 if not found.
  */
-static size_t
+static struct in6_mfilter *
 im6o_match_group(const struct ip6_moptions *imo, const struct ifnet *ifp,
     const struct sockaddr *group)
 {
 	const struct sockaddr_in6 *gsin6;
-	struct in6_multi	**pinm;
-	int		  idx;
-	int		  nmships;
+        struct in6_mfilter *imf;
+        struct in6_multi *inm;
 
-	gsin6 = (const struct sockaddr_in6 *)group;
+        gsin6 = (const struct sockaddr_in6 *)group;
 
-	/* The im6o_membership array may be lazy allocated. */
-	if (imo->im6o_membership == NULL || imo->im6o_num_memberships == 0)
-		return (-1);
-
-	nmships = imo->im6o_num_memberships;
-	pinm = &imo->im6o_membership[0];
-	for (idx = 0; idx < nmships; idx++, pinm++) {
-		if (*pinm == NULL)
+	IP6_MFILTER_FOREACH(imf, &imo->im6o_head) {
+		inm = imf->im6f_in6m;
+		if (inm == NULL)
 			continue;
-		if ((ifp == NULL || ((*pinm)->in6m_ifp == ifp)) &&
-		    IN6_ARE_ADDR_EQUAL(&(*pinm)->in6m_addr,
+		if ((ifp == NULL || (inm->in6m_ifp == ifp)) &&
+		    IN6_ARE_ADDR_EQUAL(&inm->in6m_addr,
 		    &gsin6->sin6_addr)) {
 			break;
 		}
 	}
-	if (idx >= nmships)
-		idx = -1;
-
-	return (idx);
+	return (imf);
 }
 
 /*
@@ -314,22 +290,13 @@ im6o_match_group(const struct ip6_moptions *imo, const struct ifnet *ifp,
  * it exists, which may not be the desired behaviour.
  */
 static struct in6_msource *
-im6o_match_source(const struct ip6_moptions *imo, const size_t gidx,
-    const struct sockaddr *src)
+im6o_match_source(struct in6_mfilter *imf, const struct sockaddr *src)
 {
 	struct ip6_msource	 find;
-	struct in6_mfilter	*imf;
 	struct ip6_msource	*ims;
 	const sockunion_t	*psa;
 
 	KASSERT(src->sa_family == AF_INET6, ("%s: !AF_INET6", __func__));
-	KASSERT(gidx != -1 && gidx < imo->im6o_num_memberships,
-	    ("%s: invalid index %d\n", __func__, (int)gidx));
-
-	/* The im6o_mfilters array may be lazy allocated. */
-	if (imo->im6o_mfilters == NULL)
-		return (NULL);
-	imf = &imo->im6o_mfilters[gidx];
 
 	psa = (const sockunion_t *)src;
 	find.im6s_addr = psa->sin6.sin6_addr;
@@ -349,14 +316,14 @@ int
 im6o_mc_filter(const struct ip6_moptions *imo, const struct ifnet *ifp,
     const struct sockaddr *group, const struct sockaddr *src)
 {
-	size_t gidx;
+	struct in6_mfilter *imf;
 	struct in6_msource *ims;
 	int mode;
 
 	KASSERT(ifp != NULL, ("%s: null ifp", __func__));
 
-	gidx = im6o_match_group(imo, ifp, group);
-	if (gidx == -1)
+	imf = im6o_match_group(imo, ifp, group);
+	if (imf == NULL)
 		return (MCAST_NOTGMEMBER);
 
 	/*
@@ -368,8 +335,8 @@ im6o_mc_filter(const struct ip6_moptions *imo, const struct ifnet *ifp,
 	 * NOTE: We are comparing group state here at MLD t1 (now)
 	 * with socket-layer t0 (since last downcall).
 	 */
-	mode = imo->im6o_mfilters[gidx].im6f_st[1];
-	ims = im6o_match_source(imo, gidx, src);
+	mode = imf->im6f_st[1];
+	ims = im6o_match_source(imf, src);
 
 	if ((ims == NULL && mode == MCAST_INCLUDE) ||
 	    (ims != NULL && ims->im6sl_st[0] != mode))
@@ -387,9 +354,10 @@ im6o_mc_filter(const struct ip6_moptions *imo, const struct ifnet *ifp,
  * Return 0 if successful, otherwise return an appropriate error code.
  */
 static int
-in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
+in6_getmulti(struct ifnet *ifp, const struct in6_addr *group,
     struct in6_multi **pinm)
 {
+	struct epoch_tracker	 et;
 	struct sockaddr_in6	 gsin6;
 	struct ifmultiaddr	*ifma;
 	struct in6_multi	*inm;
@@ -403,9 +371,12 @@ in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
 	 * re-acquire around the call.
 	 */
 	IN6_MULTI_LOCK_ASSERT();
+	IN6_MULTI_LIST_LOCK();
 	IF_ADDR_WLOCK(ifp);
-
+	NET_EPOCH_ENTER(et);
 	inm = in6m_lookup_locked(ifp, group);
+	NET_EPOCH_EXIT(et);
+
 	if (inm != NULL) {
 		/*
 		 * If we already joined this group, just bump the
@@ -413,7 +384,7 @@ in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
 		 */
 		KASSERT(inm->in6m_refcount >= 1,
 		    ("%s: bad refcount %d", __func__, inm->in6m_refcount));
-		++inm->in6m_refcount;
+		in6m_acquire_locked(inm);
 		*pinm = inm;
 		goto out_locked;
 	}
@@ -427,10 +398,12 @@ in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
 	 * Check if a link-layer group is already associated
 	 * with this network-layer group on the given ifnet.
 	 */
+	IN6_MULTI_LIST_UNLOCK();
 	IF_ADDR_WUNLOCK(ifp);
 	error = if_addmulti(ifp, (struct sockaddr *)&gsin6, &ifma);
 	if (error != 0)
 		return (error);
+	IN6_MULTI_LIST_LOCK();
 	IF_ADDR_WLOCK(ifp);
 
 	/*
@@ -453,7 +426,7 @@ in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
 			panic("%s: ifma %p is inconsistent with %p (%p)",
 			    __func__, ifma, inm, group);
 #endif
-		++inm->in6m_refcount;
+		in6m_acquire_locked(inm);
 		*pinm = inm;
 		goto out_locked;
 	}
@@ -470,6 +443,7 @@ in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
 	 */
 	inm = malloc(sizeof(*inm), M_IP6MADDR, M_NOWAIT | M_ZERO);
 	if (inm == NULL) {
+		IN6_MULTI_LIST_UNLOCK();
 		IF_ADDR_WUNLOCK(ifp);
 		if_delmulti_ifma(ifma);
 		return (ENOMEM);
@@ -489,7 +463,8 @@ in6_mc_get(struct ifnet *ifp, const struct in6_addr *group,
 	ifma->ifma_protospec = inm;
 	*pinm = inm;
 
-out_locked:
+ out_locked:
+	IN6_MULTI_LIST_UNLOCK();
 	IF_ADDR_WUNLOCK(ifp);
 	return (error);
 }
@@ -500,36 +475,149 @@ out_locked:
  * If the refcount drops to 0, free the in6_multi record and
  * delete the underlying link-layer membership.
  */
-void
-in6m_release_locked(struct in6_multi *inm)
+static void
+in6m_release(struct in6_multi *inm)
 {
 	struct ifmultiaddr *ifma;
-
-	IN6_MULTI_LOCK_ASSERT();
+	struct ifnet *ifp;
 
 	CTR2(KTR_MLD, "%s: refcount is %d", __func__, inm->in6m_refcount);
 
-	if (--inm->in6m_refcount > 0) {
-		CTR2(KTR_MLD, "%s: refcount is now %d", __func__,
-		    inm->in6m_refcount);
-		return;
-	}
-
+	MPASS(inm->in6m_refcount == 0);
 	CTR2(KTR_MLD, "%s: freeing inm %p", __func__, inm);
 
 	ifma = inm->in6m_ifma;
+	ifp = inm->in6m_ifp;
+	MPASS(ifma->ifma_llifma == NULL);
 
 	/* XXX this access is not covered by IF_ADDR_LOCK */
 	CTR2(KTR_MLD, "%s: purging ifma %p", __func__, ifma);
-	KASSERT(ifma->ifma_protospec == inm,
-	    ("%s: ifma_protospec != inm", __func__));
-	ifma->ifma_protospec = NULL;
+	KASSERT(ifma->ifma_protospec == NULL,
+	    ("%s: ifma_protospec != NULL", __func__));
+	if (ifp == NULL)
+		ifp = ifma->ifma_ifp;
 
-	in6m_purge(inm);
+	if (ifp != NULL) {
+		CURVNET_SET(ifp->if_vnet);
+		in6m_purge(inm);
+		free(inm, M_IP6MADDR);
+		if_delmulti_ifma_flags(ifma, 1);
+		CURVNET_RESTORE();
+		if_rele(ifp);
+	} else {
+		in6m_purge(inm);
+		free(inm, M_IP6MADDR);
+		if_delmulti_ifma_flags(ifma, 1);
+	}
+}
 
-	free(inm, M_IP6MADDR);
+/*
+ * Interface detach can happen in a taskqueue thread context, so we must use a
+ * dedicated thread to avoid deadlocks when draining in6m_release tasks.
+ */
+TASKQUEUE_DEFINE_THREAD(in6m_free);
+static struct in6_multi_head in6m_free_list = SLIST_HEAD_INITIALIZER();
+static void in6m_release_task(void *arg __unused, int pending __unused);
+static struct task in6m_free_task = TASK_INITIALIZER(0, in6m_release_task, NULL);
 
-	if_delmulti_ifma(ifma);
+void
+in6m_release_list_deferred(struct in6_multi_head *inmh)
+{
+	if (SLIST_EMPTY(inmh))
+		return;
+	mtx_lock(&in6_multi_free_mtx);
+	SLIST_CONCAT(&in6m_free_list, inmh, in6_multi, in6m_nrele);
+	mtx_unlock(&in6_multi_free_mtx);
+	taskqueue_enqueue(taskqueue_in6m_free, &in6m_free_task);
+}
+
+void
+in6m_release_wait(void *arg __unused)
+{
+
+	/*
+	 * Make sure all pending multicast addresses are freed before
+	 * the VNET or network device is destroyed:
+	 */
+	taskqueue_drain_all(taskqueue_in6m_free);
+}
+#ifdef VIMAGE
+/* XXX-BZ FIXME, see D24914. */
+VNET_SYSUNINIT(in6m_release_wait, SI_SUB_PROTO_DOMAIN, SI_ORDER_FIRST, in6m_release_wait, NULL);
+#endif
+
+void
+in6m_disconnect_locked(struct in6_multi_head *inmh, struct in6_multi *inm)
+{
+	struct ifnet *ifp;
+	struct ifaddr *ifa;
+	struct in6_ifaddr *ifa6;
+	struct in6_multi_mship *imm, *imm_tmp;
+	struct ifmultiaddr *ifma, *ll_ifma;
+
+	IN6_MULTI_LIST_LOCK_ASSERT();
+
+	ifp = inm->in6m_ifp;
+	if (ifp == NULL)
+		return;		/* already called */
+
+	inm->in6m_ifp = NULL;
+	IF_ADDR_WLOCK_ASSERT(ifp);
+	ifma = inm->in6m_ifma;
+	if (ifma == NULL)
+		return;
+
+	if_ref(ifp);
+	if (ifma->ifma_flags & IFMA_F_ENQUEUED) {
+		CK_STAILQ_REMOVE(&ifp->if_multiaddrs, ifma, ifmultiaddr, ifma_link);
+		ifma->ifma_flags &= ~IFMA_F_ENQUEUED;
+	}
+	MCDPRINTF("removed ifma: %p from %s\n", ifma, ifp->if_xname);
+	if ((ll_ifma = ifma->ifma_llifma) != NULL) {
+		MPASS(ifma != ll_ifma);
+		ifma->ifma_llifma = NULL;
+		MPASS(ll_ifma->ifma_llifma == NULL);
+		MPASS(ll_ifma->ifma_ifp == ifp);
+		if (--ll_ifma->ifma_refcount == 0) {
+			if (ll_ifma->ifma_flags & IFMA_F_ENQUEUED) {
+				CK_STAILQ_REMOVE(&ifp->if_multiaddrs, ll_ifma, ifmultiaddr, ifma_link);
+				ll_ifma->ifma_flags &= ~IFMA_F_ENQUEUED;
+			}
+			MCDPRINTF("removed ll_ifma: %p from %s\n", ll_ifma, ifp->if_xname);
+			if_freemulti(ll_ifma);
+		}
+	}
+	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+		if (ifa->ifa_addr->sa_family != AF_INET6)
+			continue;
+		ifa6 = (void *)ifa;
+		LIST_FOREACH_SAFE(imm, &ifa6->ia6_memberships,
+		    i6mm_chain, imm_tmp) {
+			if (inm == imm->i6mm_maddr) {
+				LIST_REMOVE(imm, i6mm_chain);
+				free(imm, M_IP6MADDR);
+				in6m_rele_locked(inmh, inm);
+			}
+		}
+	}
+}
+
+static void
+in6m_release_task(void *arg __unused, int pending __unused)
+{
+	struct in6_multi_head in6m_free_tmp;
+	struct in6_multi *inm, *tinm;
+
+	SLIST_INIT(&in6m_free_tmp);
+	mtx_lock(&in6_multi_free_mtx);
+	SLIST_CONCAT(&in6m_free_tmp, &in6m_free_list, in6_multi, in6m_nrele);
+	mtx_unlock(&in6_multi_free_mtx);
+	IN6_MULTI_LOCK();
+	SLIST_FOREACH_SAFE(inm, &in6m_free_tmp, in6m_nrele, tinm) {
+		SLIST_REMOVE_HEAD(&in6m_free_tmp, in6m_nrele);
+		in6m_release(inm);
+	}
+	IN6_MULTI_UNLOCK();
 }
 
 /*
@@ -542,7 +630,7 @@ in6m_clear_recorded(struct in6_multi *inm)
 {
 	struct ip6_msource	*ims;
 
-	IN6_MULTI_LOCK_ASSERT();
+	IN6_MULTI_LIST_LOCK_ASSERT();
 
 	RB_FOREACH(ims, ip6_msource_tree, &inm->in6m_srcs) {
 		if (ims->im6s_stp) {
@@ -582,7 +670,7 @@ in6m_record_source(struct in6_multi *inm, const struct in6_addr *addr)
 	struct ip6_msource	 find;
 	struct ip6_msource	*ims, *nims;
 
-	IN6_MULTI_LOCK_ASSERT();
+	IN6_MULTI_LIST_LOCK_ASSERT();
 
 	find.im6s_addr = *addr;
 	ims = RB_FIND(ip6_msource_tree, &inm->in6m_srcs, &find);
@@ -909,6 +997,7 @@ in6m_merge(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
 	schanged = 0;
 	error = 0;
 	nsrc1 = nsrc0 = 0;
+	IN6_MULTI_LIST_LOCK_ASSERT();
 
 	/*
 	 * Update the source filters first, as this may fail.
@@ -999,9 +1088,10 @@ in6m_merge(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
 	/* Decrement ASM listener count on transition out of ASM mode. */
 	if (imf->im6f_st[0] == MCAST_EXCLUDE && nsrc0 == 0) {
 		if ((imf->im6f_st[1] != MCAST_EXCLUDE) ||
-		    (imf->im6f_st[1] == MCAST_EXCLUDE && nsrc1 > 0))
+		    (imf->im6f_st[1] == MCAST_EXCLUDE && nsrc1 > 0)) {
 			CTR1(KTR_MLD, "%s: --asm on inm at t1", __func__);
 			--inm->in6m_st[1].iss_asm;
+		}
 	}
 
 	/* Increment ASM listener count on transition to ASM mode. */
@@ -1084,65 +1174,16 @@ in6m_purge(struct in6_multi *inm)
  *
  * SMPng: Assume no mc locks held by caller.
  */
-struct in6_multi_mship *
-in6_joingroup(struct ifnet *ifp, struct in6_addr *mcaddr,
-    int *errorp, int delay)
-{
-	struct in6_multi_mship *imm;
-	int error;
-
-	imm = malloc(sizeof(*imm), M_IP6MADDR, M_NOWAIT);
-	if (imm == NULL) {
-		*errorp = ENOBUFS;
-		return (NULL);
-	}
-
-	delay = (delay * PR_FASTHZ) / hz;
-
-	error = in6_mc_join(ifp, mcaddr, NULL, &imm->i6mm_maddr, delay);
-	if (error) {
-		*errorp = error;
-		free(imm, M_IP6MADDR);
-		return (NULL);
-	}
-
-	return (imm);
-}
-
-/*
- * Leave a multicast address w/o sources.
- * KAME compatibility entry point.
- *
- * SMPng: Assume no mc locks held by caller.
- */
 int
-in6_leavegroup(struct in6_multi_mship *imm)
-{
-
-	if (imm->i6mm_maddr != NULL)
-		in6_mc_leave(imm->i6mm_maddr, NULL);
-	free(imm,  M_IP6MADDR);
-	return 0;
-}
-
-/*
- * Join a multicast group; unlocked entry point.
- *
- * SMPng: XXX: in6_mc_join() is called from in6_control() when upper
- * locks are not held. Fortunately, ifp is unlikely to have been detached
- * at this point, so we assume it's OK to recurse.
- */
-int
-in6_mc_join(struct ifnet *ifp, const struct in6_addr *mcaddr,
+in6_joingroup(struct ifnet *ifp, const struct in6_addr *mcaddr,
     /*const*/ struct in6_mfilter *imf, struct in6_multi **pinm,
     const int delay)
 {
 	int error;
 
 	IN6_MULTI_LOCK();
-	error = in6_mc_join_locked(ifp, mcaddr, imf, pinm, delay);
+	error = in6_joingroup_locked(ifp, mcaddr, NULL, pinm, delay);
 	IN6_MULTI_UNLOCK();
-
 	return (error);
 }
 
@@ -1155,19 +1196,20 @@ in6_mc_join(struct ifnet *ifp, const struct in6_addr *mcaddr,
  * If the MLD downcall fails, the group is not joined, and an error
  * code is returned.
  */
-int
-in6_mc_join_locked(struct ifnet *ifp, const struct in6_addr *mcaddr,
+static int
+in6_joingroup_locked(struct ifnet *ifp, const struct in6_addr *mcaddr,
     /*const*/ struct in6_mfilter *imf, struct in6_multi **pinm,
     const int delay)
 {
+	struct in6_multi_head    inmh;
 	struct in6_mfilter	 timf;
 	struct in6_multi	*inm;
+	struct ifmultiaddr *ifma;
 	int			 error;
 #ifdef KTR
 	char			 ip6tbuf[INET6_ADDRSTRLEN];
 #endif
 
-#ifdef INVARIANTS
 	/*
 	 * Sanity: Check scope zone ID was set for ifp, if and
 	 * only if group is scoped to an interface.
@@ -1179,9 +1221,9 @@ in6_mc_join_locked(struct ifnet *ifp, const struct in6_addr *mcaddr,
 		KASSERT(mcaddr->s6_addr16[1] != 0,
 		    ("%s: scope zone ID not set", __func__));
 	}
-#endif
 
 	IN6_MULTI_LOCK_ASSERT();
+	IN6_MULTI_LIST_UNLOCK_ASSERT();
 
 	CTR4(KTR_MLD, "%s: join %s on %p(%s))", __func__,
 	    ip6_sprintf(ip6tbuf, mcaddr), ifp, if_name(ifp));
@@ -1197,13 +1239,13 @@ in6_mc_join_locked(struct ifnet *ifp, const struct in6_addr *mcaddr,
 		im6f_init(&timf, MCAST_UNDEFINED, MCAST_EXCLUDE);
 		imf = &timf;
 	}
-
-	error = in6_mc_get(ifp, mcaddr, &inm);
+	error = in6_getmulti(ifp, mcaddr, &inm);
 	if (error) {
-		CTR1(KTR_MLD, "%s: in6_mc_get() failure", __func__);
+		CTR1(KTR_MLD, "%s: in6_getmulti() failure", __func__);
 		return (error);
 	}
 
+	IN6_MULTI_LIST_LOCK();
 	CTR1(KTR_MLD, "%s: merge inm state", __func__);
 	error = in6m_merge(inm, imf);
 	if (error) {
@@ -1219,13 +1261,28 @@ in6_mc_join_locked(struct ifnet *ifp, const struct in6_addr *mcaddr,
 	}
 
 out_in6m_release:
+	SLIST_INIT(&inmh);
 	if (error) {
+		struct epoch_tracker et;
+
 		CTR2(KTR_MLD, "%s: dropping ref on %p", __func__, inm);
-		in6m_release_locked(inm);
+		IF_ADDR_WLOCK(ifp);
+		NET_EPOCH_ENTER(et);
+		CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+			if (ifma->ifma_protospec == inm) {
+				ifma->ifma_protospec = NULL;
+				break;
+			}
+		}
+		in6m_disconnect_locked(&inmh, inm);
+		in6m_rele_locked(&inmh, inm);
+		NET_EPOCH_EXIT(et);
+		IF_ADDR_WUNLOCK(ifp);
 	} else {
 		*pinm = inm;
 	}
-
+	IN6_MULTI_LIST_UNLOCK();
+	in6m_release_list_deferred(&inmh);
 	return (error);
 }
 
@@ -1233,17 +1290,13 @@ out_in6m_release:
  * Leave a multicast group; unlocked entry point.
  */
 int
-in6_mc_leave(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
+in6_leavegroup(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
 {
-	struct ifnet *ifp;
 	int error;
 
-	ifp = inm->in6m_ifp;
-
 	IN6_MULTI_LOCK();
-	error = in6_mc_leave_locked(inm, imf);
+	error = in6_leavegroup_locked(inm, imf);
 	IN6_MULTI_UNLOCK();
-
 	return (error);
 }
 
@@ -1261,9 +1314,11 @@ in6_mc_leave(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
  * makes a state change downcall into MLD.
  */
 int
-in6_mc_leave_locked(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
+in6_leavegroup_locked(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
 {
+	struct in6_multi_head	 inmh;
 	struct in6_mfilter	 timf;
+	struct ifnet *ifp;
 	int			 error;
 #ifdef KTR
 	char			 ip6tbuf[INET6_ADDRSTRLEN];
@@ -1294,18 +1349,32 @@ in6_mc_leave_locked(struct in6_multi *inm, /*const*/ struct in6_mfilter *imf)
 	 * to be allocated, and there is no opportunity to roll back
 	 * the transaction, it MUST NOT fail.
 	 */
+
+	ifp = inm->in6m_ifp;
+	IN6_MULTI_LIST_LOCK();
 	CTR1(KTR_MLD, "%s: merge inm state", __func__);
 	error = in6m_merge(inm, imf);
 	KASSERT(error == 0, ("%s: failed to merge inm state", __func__));
 
 	CTR1(KTR_MLD, "%s: doing mld downcall", __func__);
-	error = mld_change_state(inm, 0);
+	error = 0;
+	if (ifp)
+		error = mld_change_state(inm, 0);
 	if (error)
 		CTR1(KTR_MLD, "%s: failed mld downcall", __func__);
 
 	CTR2(KTR_MLD, "%s: dropping ref on %p", __func__, inm);
-	in6m_release_locked(inm);
+	if (ifp)
+		IF_ADDR_WLOCK(ifp);
 
+	SLIST_INIT(&inmh);
+	if (inm->in6m_refcount == 1)
+		in6m_disconnect_locked(&inmh, inm);
+	in6m_rele_locked(&inmh, inm);
+	if (ifp)
+		IF_ADDR_WUNLOCK(ifp);
+	IN6_MULTI_LIST_UNLOCK();
+	in6m_release_list_deferred(&inmh);
 	return (error);
 }
 
@@ -1330,7 +1399,6 @@ in6p_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 	struct ip6_moptions		*imo;
 	struct in6_msource		*ims;
 	struct in6_multi			*inm;
-	size_t				 idx;
 	uint16_t			 fmode;
 	int				 error, doblock;
 #ifdef KTR
@@ -1387,16 +1455,12 @@ in6p_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 	 * Check if we are actually a member of this group.
 	 */
 	imo = in6p_findmoptions(inp);
-	idx = im6o_match_group(imo, ifp, &gsa->sa);
-	if (idx == -1 || imo->im6o_mfilters == NULL) {
+	imf = im6o_match_group(imo, ifp, &gsa->sa);
+	if (imf == NULL) {
 		error = EADDRNOTAVAIL;
 		goto out_in6p_locked;
 	}
-
-	KASSERT(imo->im6o_mfilters != NULL,
-	    ("%s: im6o_mfilters not allocated", __func__));
-	imf = &imo->im6o_mfilters[idx];
-	inm = imo->im6o_membership[idx];
+	inm = imf->im6f_in6m;
 
 	/*
 	 * Attempting to use the delta-based API on an
@@ -1414,7 +1478,7 @@ in6p_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 	 *  Asked to unblock, but nothing to unblock.
 	 * If adding a new block entry, allocate it.
 	 */
-	ims = im6o_match_source(imo, idx, &ssa->sa);
+	ims = im6o_match_source(imf, &ssa->sa);
 	if ((ims != NULL && doblock) || (ims == NULL && !doblock)) {
 		CTR3(KTR_MLD, "%s: source %s %spresent", __func__,
 		    ip6_sprintf(ip6tbuf, &ssa->sin6.sin6_addr),
@@ -1446,8 +1510,7 @@ in6p_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 	/*
 	 * Begin state merge transaction at MLD layer.
 	 */
-	IN6_MULTI_LOCK();
-
+	IN6_MULTI_LIST_LOCK();
 	CTR1(KTR_MLD, "%s: merge inm state", __func__);
 	error = in6m_merge(inm, imf);
 	if (error)
@@ -1459,7 +1522,7 @@ in6p_block_unblock_source(struct inpcb *inp, struct sockopt *sopt)
 			CTR1(KTR_MLD, "%s: failed mld downcall", __func__);
 	}
 
-	IN6_MULTI_UNLOCK();
+	IN6_MULTI_LIST_UNLOCK();
 
 out_im6f_rollback:
 	if (error)
@@ -1485,9 +1548,6 @@ static struct ip6_moptions *
 in6p_findmoptions(struct inpcb *inp)
 {
 	struct ip6_moptions	 *imo;
-	struct in6_multi		**immp;
-	struct in6_mfilter	 *imfp;
-	size_t			  idx;
 
 	INP_WLOCK(inp);
 	if (inp->in6p_moptions != NULL)
@@ -1496,27 +1556,14 @@ in6p_findmoptions(struct inpcb *inp)
 	INP_WUNLOCK(inp);
 
 	imo = malloc(sizeof(*imo), M_IP6MOPTS, M_WAITOK);
-	immp = malloc(sizeof(*immp) * IPV6_MIN_MEMBERSHIPS, M_IP6MOPTS,
-	    M_WAITOK | M_ZERO);
-	imfp = malloc(sizeof(struct in6_mfilter) * IPV6_MIN_MEMBERSHIPS,
-	    M_IN6MFILTER, M_WAITOK);
 
 	imo->im6o_multicast_ifp = NULL;
 	imo->im6o_multicast_hlim = V_ip6_defmcasthlim;
 	imo->im6o_multicast_loop = in6_mcast_loop;
-	imo->im6o_num_memberships = 0;
-	imo->im6o_max_memberships = IPV6_MIN_MEMBERSHIPS;
-	imo->im6o_membership = immp;
-
-	/* Initialize per-group source filters. */
-	for (idx = 0; idx < IPV6_MIN_MEMBERSHIPS; idx++)
-		im6f_init(&imfp[idx], MCAST_UNDEFINED, MCAST_EXCLUDE);
-	imo->im6o_mfilters = imfp;
+	STAILQ_INIT(&imo->im6o_head);
 
 	INP_WLOCK(inp);
 	if (inp->in6p_moptions != NULL) {
-		free(imfp, M_IN6MFILTER);
-		free(immp, M_IP6MOPTS);
 		free(imo, M_IP6MOPTS);
 		return (inp->in6p_moptions);
 	}
@@ -1528,30 +1575,42 @@ in6p_findmoptions(struct inpcb *inp)
  * Discard the IPv6 multicast options (and source filters).
  *
  * SMPng: NOTE: assumes INP write lock is held.
+ *
+ * XXX can all be safely deferred to epoch_call
+ *
  */
+
+static void
+inp_gcmoptions(struct ip6_moptions *imo)
+{
+	struct in6_mfilter *imf;
+	struct in6_multi *inm;
+	struct ifnet *ifp;
+
+	while ((imf = ip6_mfilter_first(&imo->im6o_head)) != NULL) {
+                ip6_mfilter_remove(&imo->im6o_head, imf);
+
+                im6f_leave(imf);
+                if ((inm = imf->im6f_in6m) != NULL) {
+                        if ((ifp = inm->in6m_ifp) != NULL) {
+                                CURVNET_SET(ifp->if_vnet);
+                                (void)in6_leavegroup(inm, imf);
+                                CURVNET_RESTORE();
+                        } else {
+                                (void)in6_leavegroup(inm, imf);
+                        }
+                }
+                ip6_mfilter_free(imf);
+        }
+        free(imo, M_IP6MOPTS);
+}
+
 void
 ip6_freemoptions(struct ip6_moptions *imo)
 {
-	struct in6_mfilter	*imf;
-	size_t			 idx, nmships;
-
-	KASSERT(imo != NULL, ("%s: ip6_moptions is NULL", __func__));
-
-	nmships = imo->im6o_num_memberships;
-	for (idx = 0; idx < nmships; ++idx) {
-		imf = imo->im6o_mfilters ? &imo->im6o_mfilters[idx] : NULL;
-		if (imf)
-			im6f_leave(imf);
-		/* XXX this will thrash the lock(s) */
-		(void)in6_mc_leave(imo->im6o_membership[idx], imf);
-		if (imf)
-			im6f_purge(imf);
-	}
-
-	if (imo->im6o_mfilters)
-		free(imo->im6o_mfilters, M_IN6MFILTER);
-	free(imo->im6o_membership, M_IP6MOPTS);
-	free(imo, M_IP6MOPTS);
+	if (imo == NULL)
+		return;
+	inp_gcmoptions(imo);
 }
 
 /*
@@ -1572,7 +1631,7 @@ in6p_get_source_filters(struct inpcb *inp, struct sockopt *sopt)
 	struct sockaddr_storage	*ptss;
 	struct sockaddr_storage	*tss;
 	int			 error;
-	size_t			 idx, nsrcs, ncsrcs;
+	size_t			 nsrcs, ncsrcs;
 
 	INP_WLOCK_ASSERT(inp);
 
@@ -1606,12 +1665,11 @@ in6p_get_source_filters(struct inpcb *inp, struct sockopt *sopt)
 	/*
 	 * Lookup group on the socket.
 	 */
-	idx = im6o_match_group(imo, ifp, &gsa->sa);
-	if (idx == -1 || imo->im6o_mfilters == NULL) {
+	imf = im6o_match_group(imo, ifp, &gsa->sa);
+	if (imf == NULL) {
 		INP_WUNLOCK(inp);
 		return (EADDRNOTAVAIL);
 	}
-	imf = &imo->im6o_mfilters[idx];
 
 	/*
 	 * Ignore memberships which are in limbo.
@@ -1760,35 +1818,30 @@ ip6_getmoptions(struct inpcb *inp, struct sockopt *sopt)
  *
  * This routine exists to support legacy IPv6 multicast applications.
  *
- * If inp is non-NULL, use this socket's current FIB number for any
- * required FIB lookup. Look up the group address in the unicast FIB,
- * and use its ifp; usually, this points to the default next-hop.
- * If the FIB lookup fails, return NULL.
+ * Use the socket's current FIB number for any required FIB lookup. Look up the
+ * group address in the unicast FIB, and use its ifp; usually, this points to
+ * the default next-hop.  If the FIB lookup fails, return NULL.
  *
  * FUTURE: Support multiple forwarding tables for IPv6.
  *
  * Returns NULL if no ifp could be found.
  */
 static struct ifnet *
-in6p_lookup_mcast_ifp(const struct inpcb *in6p,
-    const struct sockaddr_in6 *gsin6)
+in6p_lookup_mcast_ifp(const struct inpcb *inp, const struct sockaddr_in6 *gsin6)
 {
-	struct nhop6_basic	nh6;
+	struct nhop_object	*nh;
 	struct in6_addr		dst;
 	uint32_t		scopeid;
 	uint32_t		fibnum;
 
-	KASSERT(in6p->inp_vflag & INP_IPV6,
-	    ("%s: not INP_IPV6 inpcb", __func__));
 	KASSERT(gsin6->sin6_family == AF_INET6,
 	    ("%s: not AF_INET6 group", __func__));
 
 	in6_splitscope(&gsin6->sin6_addr, &dst, &scopeid);
-	fibnum = in6p ? in6p->inp_inc.inc_fibnum : RT_DEFAULT_FIB;
-	if (fib6_lookup_nh_basic(fibnum, &dst, scopeid, 0, 0, &nh6) != 0)
-		return (NULL);
+	fibnum = inp->inp_inc.inc_fibnum;
+	nh = fib6_lookup(fibnum, &dst, scopeid, 0, 0);
 
-	return (nh6.nh_ifp);
+	return (nh ? nh->nh_ifp : NULL);
 }
 
 /*
@@ -1800,6 +1853,7 @@ in6p_lookup_mcast_ifp(const struct inpcb *in6p,
 static int
 in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 {
+	struct in6_multi_head		 inmh;
 	struct group_source_req		 gsr;
 	sockunion_t			*gsa, *ssa;
 	struct ifnet			*ifp;
@@ -1807,14 +1861,12 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 	struct ip6_moptions		*imo;
 	struct in6_multi		*inm;
 	struct in6_msource		*lims;
-	size_t				 idx;
 	int				 error, is_new;
 
+	SLIST_INIT(&inmh);
 	ifp = NULL;
-	imf = NULL;
 	lims = NULL;
 	error = 0;
-	is_new = 0;
 
 	memset(&gsr, 0, sizeof(struct group_source_req));
 	gsa = (sockunion_t *)&gsr.gsr_group;
@@ -1915,13 +1967,25 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 	 */
 	(void)in6_setscope(&gsa->sin6.sin6_addr, ifp, NULL);
 
+	IN6_MULTI_LOCK();
+
+	/*
+	 * Find the membership in the membership list.
+	 */
 	imo = in6p_findmoptions(inp);
-	idx = im6o_match_group(imo, ifp, &gsa->sa);
-	if (idx == -1) {
+	imf = im6o_match_group(imo, ifp, &gsa->sa);
+	if (imf == NULL) {
 		is_new = 1;
+		inm = NULL;
+
+		if (ip6_mfilter_count(&imo->im6o_head) >= IPV6_MAX_MEMBERSHIPS) {
+			error = ENOMEM;
+			goto out_in6p_locked;
+		}
 	} else {
-		inm = imo->im6o_membership[idx];
-		imf = &imo->im6o_mfilters[idx];
+		is_new = 0;
+		inm = imf->im6f_in6m;
+
 		if (ssa->ss.ss_family != AF_UNSPEC) {
 			/*
 			 * MCAST_JOIN_SOURCE_GROUP on an exclusive membership
@@ -1948,7 +2012,7 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 			 * full-state SSM API with the delta-based API,
 			 * which is discouraged in the relevant RFCs.
 			 */
-			lims = im6o_match_source(imo, idx, &ssa->sa);
+			lims = im6o_match_source(imf, &ssa->sa);
 			if (lims != NULL /*&&
 			    lims->im6sl_st[1] == MCAST_INCLUDE*/) {
 				error = EADDRNOTAVAIL;
@@ -1976,27 +2040,6 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 	 */
 	INP_WLOCK_ASSERT(inp);
 
-	if (is_new) {
-		if (imo->im6o_num_memberships == imo->im6o_max_memberships) {
-			error = im6o_grow(imo);
-			if (error)
-				goto out_in6p_locked;
-		}
-		/*
-		 * Allocate the new slot upfront so we can deal with
-		 * grafting the new source filter in same code path
-		 * as for join-source on existing membership.
-		 */
-		idx = imo->im6o_num_memberships;
-		imo->im6o_membership[idx] = NULL;
-		imo->im6o_num_memberships++;
-		KASSERT(imo->im6o_mfilters != NULL,
-		    ("%s: im6f_mfilters vector was not allocated", __func__));
-		imf = &imo->im6o_mfilters[idx];
-		KASSERT(RB_EMPTY(&imf->im6f_sources),
-		    ("%s: im6f_sources not empty", __func__));
-	}
-
 	/*
 	 * Graft new source into filter list for this inpcb's
 	 * membership of the group. The in6_multi may not have
@@ -2012,7 +2055,11 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 		/* Membership starts in IN mode */
 		if (is_new) {
 			CTR1(KTR_MLD, "%s: new join w/source", __func__);
-			im6f_init(imf, MCAST_UNDEFINED, MCAST_INCLUDE);
+			imf = ip6_mfilter_alloc(M_NOWAIT, MCAST_UNDEFINED, MCAST_INCLUDE);
+			if (imf == NULL) {
+				error = ENOMEM;
+				goto out_in6p_locked;
+			}
 		} else {
 			CTR2(KTR_MLD, "%s: %s source", __func__, "allow");
 		}
@@ -2021,64 +2068,86 @@ in6p_join_group(struct inpcb *inp, struct sockopt *sopt)
 			CTR1(KTR_MLD, "%s: merge imf state failed",
 			    __func__);
 			error = ENOMEM;
-			goto out_im6o_free;
+			goto out_in6p_locked;
 		}
 	} else {
 		/* No address specified; Membership starts in EX mode */
 		if (is_new) {
 			CTR1(KTR_MLD, "%s: new join w/o source", __func__);
-			im6f_init(imf, MCAST_UNDEFINED, MCAST_EXCLUDE);
+			imf = ip6_mfilter_alloc(M_NOWAIT, MCAST_UNDEFINED, MCAST_EXCLUDE);
+			if (imf == NULL) {
+				error = ENOMEM;
+				goto out_in6p_locked;
+			}
 		}
 	}
 
 	/*
 	 * Begin state merge transaction at MLD layer.
 	 */
-	IN6_MULTI_LOCK();
-
 	if (is_new) {
-		error = in6_mc_join_locked(ifp, &gsa->sin6.sin6_addr, imf,
-		    &inm, 0);
-		if (error) {
-			IN6_MULTI_UNLOCK();
-			goto out_im6o_free;
+		in_pcbref(inp);
+		INP_WUNLOCK(inp);
+
+		error = in6_joingroup_locked(ifp, &gsa->sin6.sin6_addr, imf,
+		    &imf->im6f_in6m, 0);
+
+		INP_WLOCK(inp);
+		if (in_pcbrele_wlocked(inp)) {
+			error = ENXIO;
+			goto out_in6p_unlocked;
 		}
-		imo->im6o_membership[idx] = inm;
+		if (error) {
+			goto out_in6p_locked;
+		}
+		/*
+		 * NOTE: Refcount from in6_joingroup_locked()
+		 * is protecting membership.
+		 */
+		ip6_mfilter_insert(&imo->im6o_head, imf);
 	} else {
 		CTR1(KTR_MLD, "%s: merge inm state", __func__);
+		IN6_MULTI_LIST_LOCK();
 		error = in6m_merge(inm, imf);
-		if (error)
+		if (error) {
 			CTR1(KTR_MLD, "%s: failed to merge inm state",
 			    __func__);
-		else {
-			CTR1(KTR_MLD, "%s: doing mld downcall", __func__);
-			error = mld_change_state(inm, 0);
-			if (error)
-				CTR1(KTR_MLD, "%s: failed mld downcall",
-				    __func__);
+			IN6_MULTI_LIST_UNLOCK();
+			im6f_rollback(imf);
+			im6f_reap(imf);
+			goto out_in6p_locked;
+		}
+		CTR1(KTR_MLD, "%s: doing mld downcall", __func__);
+		error = mld_change_state(inm, 0);
+		IN6_MULTI_LIST_UNLOCK();
+
+		if (error) {
+			CTR1(KTR_MLD, "%s: failed mld downcall",
+			     __func__);
+			im6f_rollback(imf);
+			im6f_reap(imf);
+			goto out_in6p_locked;
 		}
 	}
 
-	IN6_MULTI_UNLOCK();
-	INP_WLOCK_ASSERT(inp);
-	if (error) {
-		im6f_rollback(imf);
-		if (is_new)
-			im6f_purge(imf);
-		else
-			im6f_reap(imf);
-	} else {
-		im6f_commit(imf);
-	}
-
-out_im6o_free:
-	if (error && is_new) {
-		imo->im6o_membership[idx] = NULL;
-		--imo->im6o_num_memberships;
-	}
+	im6f_commit(imf);
+	imf = NULL;
 
 out_in6p_locked:
 	INP_WUNLOCK(inp);
+out_in6p_unlocked:
+	IN6_MULTI_UNLOCK();
+
+	if (is_new && imf) {
+		if (imf->im6f_in6m != NULL) {
+			struct in6_multi_head inmh;
+
+			SLIST_INIT(&inmh);
+			SLIST_INSERT_HEAD(&inmh, imf->im6f_in6m, in6m_defer);
+			in6m_release_list_deferred(&inmh);
+		}
+		ip6_mfilter_free(imf);
+	}
 	return (error);
 }
 
@@ -2097,8 +2166,8 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 	struct in6_msource		*ims;
 	struct in6_multi		*inm;
 	uint32_t			 ifindex;
-	size_t				 idx;
-	int				 error, is_final;
+	int				 error;
+	bool				 is_final;
 #ifdef KTR
 	char				 ip6tbuf[INET6_ADDRSTRLEN];
 #endif
@@ -2106,7 +2175,7 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 	ifp = NULL;
 	ifindex = 0;
 	error = 0;
-	is_final = 1;
+	is_final = true;
 
 	memset(&gsr, 0, sizeof(struct group_source_req));
 	gsa = (sockunion_t *)&gsr.gsr_group;
@@ -2224,20 +2293,21 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 	CTR2(KTR_MLD, "%s: ifp = %p", __func__, ifp);
 	KASSERT(ifp != NULL, ("%s: ifp did not resolve", __func__));
 
+	IN6_MULTI_LOCK();
+
 	/*
-	 * Find the membership in the membership array.
+	 * Find the membership in the membership list.
 	 */
 	imo = in6p_findmoptions(inp);
-	idx = im6o_match_group(imo, ifp, &gsa->sa);
-	if (idx == -1) {
+	imf = im6o_match_group(imo, ifp, &gsa->sa);
+	if (imf == NULL) {
 		error = EADDRNOTAVAIL;
 		goto out_in6p_locked;
 	}
-	inm = imo->im6o_membership[idx];
-	imf = &imo->im6o_mfilters[idx];
+	inm = imf->im6f_in6m;
 
 	if (ssa->ss.ss_family != AF_UNSPEC)
-		is_final = 0;
+		is_final = false;
 
 	/*
 	 * Begin state merge transaction at socket layer.
@@ -2249,13 +2319,20 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 	 * MCAST_LEAVE_SOURCE_GROUP is only valid for inclusive memberships.
 	 */
 	if (is_final) {
+		ip6_mfilter_remove(&imo->im6o_head, imf);
 		im6f_leave(imf);
+
+		/*
+		 * Give up the multicast address record to which
+		 * the membership points.
+		 */
+		(void)in6_leavegroup_locked(inm, imf);
 	} else {
 		if (imf->im6f_st[0] == MCAST_EXCLUDE) {
 			error = EADDRNOTAVAIL;
 			goto out_in6p_locked;
 		}
-		ims = im6o_match_source(imo, idx, &ssa->sa);
+		ims = im6o_match_source(imf, &ssa->sa);
 		if (ims == NULL) {
 			CTR3(KTR_MLD, "%s: source %p %spresent", __func__,
 			    ip6_sprintf(ip6tbuf, &ssa->sin6.sin6_addr),
@@ -2275,49 +2352,41 @@ in6p_leave_group(struct inpcb *inp, struct sockopt *sopt)
 	/*
 	 * Begin state merge transaction at MLD layer.
 	 */
-	IN6_MULTI_LOCK();
-
-	if (is_final) {
-		/*
-		 * Give up the multicast address record to which
-		 * the membership points.
-		 */
-		(void)in6_mc_leave_locked(inm, imf);
-	} else {
+	if (!is_final) {
 		CTR1(KTR_MLD, "%s: merge inm state", __func__);
+		IN6_MULTI_LIST_LOCK();
 		error = in6m_merge(inm, imf);
-		if (error)
+		if (error) {
 			CTR1(KTR_MLD, "%s: failed to merge inm state",
 			    __func__);
-		else {
-			CTR1(KTR_MLD, "%s: doing mld downcall", __func__);
-			error = mld_change_state(inm, 0);
-			if (error)
-				CTR1(KTR_MLD, "%s: failed mld downcall",
-				    __func__);
+			IN6_MULTI_LIST_UNLOCK();
+			im6f_rollback(imf);
+			im6f_reap(imf);
+                        goto out_in6p_locked;
+		}
+
+		CTR1(KTR_MLD, "%s: doing mld downcall", __func__);
+		error = mld_change_state(inm, 0);
+		IN6_MULTI_LIST_UNLOCK();
+		if (error) {
+			CTR1(KTR_MLD, "%s: failed mld downcall",
+			     __func__);
+			im6f_rollback(imf);
+			im6f_reap(imf);
+                        goto out_in6p_locked;
 		}
 	}
 
-	IN6_MULTI_UNLOCK();
-
-	if (error)
-		im6f_rollback(imf);
-	else
-		im6f_commit(imf);
-
+	im6f_commit(imf);
 	im6f_reap(imf);
-
-	if (is_final) {
-		/* Remove the gap in the membership array. */
-		for (++idx; idx < imo->im6o_num_memberships; ++idx) {
-			imo->im6o_membership[idx-1] = imo->im6o_membership[idx];
-			imo->im6o_mfilters[idx-1] = imo->im6o_mfilters[idx];
-		}
-		imo->im6o_num_memberships--;
-	}
 
 out_in6p_locked:
 	INP_WUNLOCK(inp);
+
+	if (is_final && imf)
+		ip6_mfilter_free(imf);
+
+	IN6_MULTI_UNLOCK();
 	return (error);
 }
 
@@ -2375,7 +2444,6 @@ in6p_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 	struct in6_mfilter	*imf;
 	struct ip6_moptions	*imo;
 	struct in6_multi		*inm;
-	size_t			 idx;
 	int			 error;
 
 	error = sooptcopyin(sopt, &msfr, sizeof(struct __msfilterreq),
@@ -2412,13 +2480,12 @@ in6p_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 	 * Check if this socket is a member of this group.
 	 */
 	imo = in6p_findmoptions(inp);
-	idx = im6o_match_group(imo, ifp, &gsa->sa);
-	if (idx == -1 || imo->im6o_mfilters == NULL) {
+	imf = im6o_match_group(imo, ifp, &gsa->sa);
+	if (imf == NULL) {
 		error = EADDRNOTAVAIL;
 		goto out_in6p_locked;
 	}
-	inm = imo->im6o_membership[idx];
-	imf = &imo->im6o_mfilters[idx];
+	inm = imf->im6f_in6m;
 
 	/*
 	 * Begin state merge transaction at socket layer.
@@ -2440,7 +2507,7 @@ in6p_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 		int			 i;
 
 		INP_WUNLOCK(inp);
- 
+
 		CTR2(KTR_MLD, "%s: loading %lu source list entries",
 		    __func__, (unsigned long)msfr.msfr_nsrcs);
 		kss = malloc(sizeof(struct sockaddr_storage) * msfr.msfr_nsrcs,
@@ -2505,7 +2572,7 @@ in6p_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 		goto out_im6f_rollback;
 
 	INP_WLOCK_ASSERT(inp);
-	IN6_MULTI_LOCK();
+	IN6_MULTI_LIST_LOCK();
 
 	/*
 	 * Begin state merge transaction at MLD layer.
@@ -2521,7 +2588,7 @@ in6p_set_source_filters(struct inpcb *inp, struct sockopt *sopt)
 			CTR1(KTR_MLD, "%s: failed mld downcall", __func__);
 	}
 
-	IN6_MULTI_UNLOCK();
+	IN6_MULTI_LIST_UNLOCK();
 
 out_im6f_rollback:
 	if (error)
@@ -2659,6 +2726,7 @@ sysctl_ip6_mcast_filters(SYSCTL_HANDLER_ARGS)
 {
 	struct in6_addr			 mcaddr;
 	struct in6_addr			 src;
+	struct epoch_tracker		 et;
 	struct ifnet			*ifp;
 	struct ifmultiaddr		*ifma;
 	struct in6_multi		*inm;
@@ -2695,8 +2763,10 @@ sysctl_ip6_mcast_filters(SYSCTL_HANDLER_ARGS)
 		return (EINVAL);
 	}
 
+	NET_EPOCH_ENTER(et);
 	ifp = ifnet_byindex(ifindex);
 	if (ifp == NULL) {
+		NET_EPOCH_EXIT(et);
 		CTR2(KTR_MLD, "%s: no ifp for ifindex %u",
 		    __func__, ifindex);
 		return (ENOENT);
@@ -2708,17 +2778,17 @@ sysctl_ip6_mcast_filters(SYSCTL_HANDLER_ARGS)
 
 	retval = sysctl_wire_old_buffer(req,
 	    sizeof(uint32_t) + (in6_mcast_maxgrpsrc * sizeof(struct in6_addr)));
-	if (retval)
+	if (retval) {
+		NET_EPOCH_EXIT(et);
 		return (retval);
+	}
 
 	IN6_MULTI_LOCK();
-
-	IF_ADDR_RLOCK(ifp);
-	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
-		if (ifma->ifma_addr->sa_family != AF_INET6 ||
-		    ifma->ifma_protospec == NULL)
+	IN6_MULTI_LIST_LOCK();
+	CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+		inm = in6m_ifmultiaddr_get_inm(ifma);
+		if (inm == NULL)
 			continue;
-		inm = (struct in6_multi *)ifma->ifma_protospec;
 		if (!IN6_ARE_ADDR_EQUAL(&inm->in6m_addr, &mcaddr))
 			continue;
 		fmode = inm->in6m_st[1].iss_fmode;
@@ -2742,9 +2812,9 @@ sysctl_ip6_mcast_filters(SYSCTL_HANDLER_ARGS)
 				break;
 		}
 	}
-	IF_ADDR_RUNLOCK(ifp);
-
+	IN6_MULTI_LIST_UNLOCK();
 	IN6_MULTI_UNLOCK();
+	NET_EPOCH_EXIT(et);
 
 	return (retval);
 }

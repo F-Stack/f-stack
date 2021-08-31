@@ -36,15 +36,14 @@
 
 #include <opencrypto/deflate.h>
 #include <opencrypto/cryptodev.h>
-#include <opencrypto/xform_userland.h>
 
 /* Declarations */
 struct comp_algo {
 	int type;
 	char *name;
 	size_t minlen;
-	u_int32_t (*compress) (u_int8_t *, u_int32_t, u_int8_t **);
-	u_int32_t (*decompress) (u_int8_t *, u_int32_t, u_int8_t **);
+	uint32_t (*compress) (uint8_t *, uint32_t, uint8_t **);
+	uint32_t (*decompress) (uint8_t *, uint32_t, uint8_t **);
 };
 
 extern struct comp_algo comp_algo_deflate;

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2003 Andre Oppermann, Internet Business Solutions AG
  * All rights reserved.
  *
@@ -55,7 +57,7 @@
  *
  * We try to do the least expensive (in CPU ops) checks and operations
  * first to catch junk with as little overhead as possible.
- * 
+ *
  * We take full advantage of hardware support for IP checksum and
  * fragmentation offloading.
  *
@@ -88,15 +90,17 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 
-#include <net/pfil.h>
 #include <net/if.h>
 #include <net/if_types.h>
 #include <net/if_var.h>
 #include <net/if_dl.h>
+#include <net/pfil.h>
 #include <net/route.h>
+#include <net/route/nhop.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
+#include <netinet/in_fib.h>
 #include <netinet/in_kdtrace.h>
 #include <netinet/in_systm.h>
 #include <netinet/in_var.h>
@@ -107,40 +111,79 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/in_cksum.h>
 
-static struct sockaddr_in *
-ip_findroute(struct route *ro, struct in_addr dest, struct mbuf *m)
+#define	V_ipsendredirects	VNET(ipsendredirects)
+
+static struct mbuf *
+ip_redir_alloc(struct mbuf *m, struct nhop_object *nh,
+    struct ip *ip, in_addr_t *addr)
 {
-	struct sockaddr_in *dst;
-	struct rtentry *rt;
+	struct mbuf *mcopy = m_gethdr(M_NOWAIT, m->m_type);
 
-	/*
-	 * Find route to destination.
-	 */
-	bzero(ro, sizeof(*ro));
-	dst = (struct sockaddr_in *)&ro->ro_dst;
-	dst->sin_family = AF_INET;
-	dst->sin_len = sizeof(*dst);
-	dst->sin_addr.s_addr = dest.s_addr;
-	in_rtalloc_ign(ro, 0, M_GETFIB(m));
+	if (mcopy == NULL)
+		return (NULL);
 
-	/*
-	 * Route there and interface still up?
-	 */
-	rt = ro->ro_rt;
-	if (rt && (rt->rt_flags & RTF_UP) &&
-	    (rt->rt_ifp->if_flags & IFF_UP) &&
-	    (rt->rt_ifp->if_drv_flags & IFF_DRV_RUNNING)) {
-		if (rt->rt_flags & RTF_GATEWAY)
-			dst = (struct sockaddr_in *)rt->rt_gateway;
-	} else {
+	if (m_dup_pkthdr(mcopy, m, M_NOWAIT) == 0) {
+		/*
+		 * It's probably ok if the pkthdr dup fails (because
+		 * the deep copy of the tag chain failed), but for now
+		 * be conservative and just discard the copy since
+		 * code below may some day want the tags.
+		 */
+		m_free(mcopy);
+		return (NULL);
+	}
+	mcopy->m_len = min(ntohs(ip->ip_len), M_TRAILINGSPACE(mcopy));
+	mcopy->m_pkthdr.len = mcopy->m_len;
+	m_copydata(m, 0, mcopy->m_len, mtod(mcopy, caddr_t));
+
+	if (nh != NULL &&
+	    ((nh->nh_flags & (NHF_REDIRECT|NHF_DEFAULT)) == 0)) {
+		struct in_ifaddr *nh_ia = (struct in_ifaddr *)(nh->nh_ifa);
+		u_long src = ntohl(ip->ip_src.s_addr);
+
+		if (nh_ia != NULL &&
+		    (src & nh_ia->ia_subnetmask) == nh_ia->ia_subnet) {
+			if (nh->nh_flags & NHF_GATEWAY)
+				*addr = nh->gw4_sa.sin_addr.s_addr;
+			else
+				*addr = ip->ip_dst.s_addr;
+		}
+	}
+	return (mcopy);
+}
+
+
+static int
+ip_findroute(struct nhop_object **pnh, struct in_addr dest, struct mbuf *m)
+{
+	struct nhop_object *nh;
+
+	nh = fib4_lookup(M_GETFIB(m), dest, 0, NHR_NONE,
+	    m->m_pkthdr.flowid);
+	if (nh == NULL) {
 		IPSTAT_INC(ips_noroute);
 		IPSTAT_INC(ips_cantforward);
-		if (rt)
-			RTFREE(rt);
 		icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_HOST, 0, 0);
-		return NULL;
+		return (EHOSTUNREACH);
 	}
-	return dst;
+	/*
+	 * Drop blackholed traffic and directed broadcasts.
+	 */
+	if ((nh->nh_flags & (NHF_BLACKHOLE | NHF_BROADCAST)) != 0) {
+		IPSTAT_INC(ips_cantforward);
+		m_freem(m);
+		return (EHOSTUNREACH);
+	}
+
+	if (nh->nh_flags & NHF_REJECT) {
+		IPSTAT_INC(ips_cantforward);
+		icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_HOST, 0, 0);
+		return (EHOSTUNREACH);
+	}
+
+	*pnh = nh;
+
+	return (0);
 }
 
 /*
@@ -155,24 +198,20 @@ ip_tryforward(struct mbuf *m)
 {
 	struct ip *ip;
 	struct mbuf *m0 = NULL;
-	struct route ro;
-	struct sockaddr_in *dst = NULL;
-	struct ifnet *ifp;
-	struct in_addr odest, dest;
+	struct nhop_object *nh = NULL;
+	struct sockaddr_in dst;
+	struct in_addr dest, odest, rtdest;
 	uint16_t ip_len, ip_off;
 	int error = 0;
-	int mtu;
 	struct m_tag *fwd_tag = NULL;
-
+	struct mbuf *mcopy = NULL;
+	struct in_addr redest;
 	/*
 	 * Are we active and forwarding packets?
 	 */
 
 	M_ASSERTVALID(m);
 	M_ASSERTPKTHDR(m);
-
-	bzero(&ro, sizeof(ro));
-
 
 #ifdef ALTQ
 	/*
@@ -237,12 +276,11 @@ ip_tryforward(struct mbuf *m)
 	/*
 	 * Run through list of ipfilter hooks for input packets
 	 */
-	if (!PFIL_HOOKED(&V_inet_pfil_hook))
+	if (!PFIL_HOOKED_IN(V_inet_pfil_head))
 		goto passin;
 
-	if (pfil_run_hooks(
-	    &V_inet_pfil_hook, &m, m->m_pkthdr.rcvif, PFIL_IN, NULL) ||
-	    m == NULL)
+	if (pfil_run_hooks(V_inet_pfil_head, &m, m->m_pkthdr.rcvif, PFIL_IN,
+	    NULL) != PFIL_PASS)
 		goto drop;
 
 	M_ASSERTVALID(m);
@@ -303,33 +341,39 @@ passin:
 #endif
 
 	/*
-	 * Find route to destination.
+	 * Next hop forced by pfil(9) hook?
 	 */
-	if ((dst = ip_findroute(&ro, dest, m)) == NULL)
-		return NULL;	/* icmp unreach already sent */
-	ifp = ro.ro_rt->rt_ifp;
+	if ((m->m_flags & M_IP_NEXTHOP) &&
+	    ((fwd_tag = m_tag_find(m, PACKET_TAG_IPFORWARD, NULL)) != NULL)) {
+		/*
+		 * Now we will find route to forced destination.
+		 */
+		dest.s_addr = ((struct sockaddr_in *)
+			    (fwd_tag + 1))->sin_addr.s_addr;
+		m_tag_delete(m, fwd_tag);
+		m->m_flags &= ~M_IP_NEXTHOP;
+	}
 
 	/*
-	 * Immediately drop blackholed traffic, and directed broadcasts
-	 * for either the all-ones or all-zero subnet addresses on
-	 * locally attached networks.
+	 * Find route to destination.
 	 */
-	if ((ro.ro_rt->rt_flags & (RTF_BLACKHOLE|RTF_BROADCAST)) != 0)
-		goto drop;
+	if (ip_findroute(&nh, dest, m) != 0)
+		return (NULL);	/* icmp unreach already sent */
+
+	/*
+	 * Avoid second route lookup by caching destination.
+	 */
+	rtdest.s_addr = dest.s_addr;
 
 	/*
 	 * Step 5: outgoing firewall packet processing
 	 */
-
-	/*
-	 * Run through list of hooks for output packets.
-	 */
-	if (!PFIL_HOOKED(&V_inet_pfil_hook))
+	if (!PFIL_HOOKED_OUT(V_inet_pfil_head))
 		goto passout;
 
-	if (pfil_run_hooks(&V_inet_pfil_hook, &m, ifp, PFIL_OUT, NULL) || m == NULL) {
+	if (pfil_run_hooks(V_inet_pfil_head, &m, nh->nh_ifp,
+	    PFIL_OUT | PFIL_FWD, NULL) != PFIL_PASS)
 		goto drop;
-	}
 
 	M_ASSERTVALID(m);
 	M_ASSERTPKTHDR(m);
@@ -342,6 +386,8 @@ passin:
 	 */
 	if (m->m_flags & M_IP_NEXTHOP)
 		fwd_tag = m_tag_find(m, PACKET_TAG_IPFORWARD, NULL);
+	else
+		fwd_tag = NULL;
 	if (odest.s_addr != dest.s_addr || fwd_tag != NULL) {
 		/*
 		 * Is it now for a local address on this host?
@@ -352,9 +398,7 @@ forwardlocal:
 			 * Return packet for processing by ip_input().
 			 */
 			m->m_flags |= M_FASTFWD_OURS;
-			if (ro.ro_rt)
-				RTFREE(ro.ro_rt);
-			return m;
+			return (m);
 		}
 		/*
 		 * Redo route lookup with new destination address
@@ -365,10 +409,9 @@ forwardlocal:
 			m_tag_delete(m, fwd_tag);
 			m->m_flags &= ~M_IP_NEXTHOP;
 		}
-		RTFREE(ro.ro_rt);
-		if ((dst = ip_findroute(&ro, dest, m)) == NULL)
-			return NULL;	/* icmp unreach already sent */
-		ifp = ro.ro_rt->rt_ifp;
+		if (dest.s_addr != rtdest.s_addr &&
+		    ip_findroute(&nh, dest, m) != 0)
+			return (NULL);	/* icmp unreach already sent */
 	}
 
 passout:
@@ -378,32 +421,25 @@ passout:
 	ip_len = ntohs(ip->ip_len);
 	ip_off = ntohs(ip->ip_off);
 
-	/*
-	 * Check if route is dampned (when ARP is unable to resolve)
-	 */
-	if ((ro.ro_rt->rt_flags & RTF_REJECT) &&
-	    (ro.ro_rt->rt_expire == 0 || time_uptime < ro.ro_rt->rt_expire)) {
-		icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_HOST, 0, 0);
-		goto consumed;
-	}
+	bzero(&dst, sizeof(dst));
+	dst.sin_family = AF_INET;
+	dst.sin_len = sizeof(dst);
+	if (nh->nh_flags & NHF_GATEWAY)
+		dst.sin_addr = nh->gw4_sa.sin_addr;
+	else
+		dst.sin_addr = dest;
 
 	/*
-	 * Check if media link state of interface is not down
+	 * Handle redirect case.
 	 */
-	if (ifp->if_link_state == LINK_STATE_DOWN) {
-		icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_HOST, 0, 0);
-		goto consumed;
-	}
+	redest.s_addr = 0;
+	if (V_ipsendredirects && (nh->nh_ifp == m->m_pkthdr.rcvif))
+		mcopy = ip_redir_alloc(m, nh, ip, &redest.s_addr);
 
 	/*
 	 * Check if packet fits MTU or if hardware will fragment for us
 	 */
-	if (ro.ro_rt->rt_mtu)
-		mtu = min(ro.ro_rt->rt_mtu, ifp->if_mtu);
-	else
-		mtu = ifp->if_mtu;
-
-	if (ip_len <= mtu) {
+	if (ip_len <= nh->nh_mtu) {
 		/*
 		 * Avoid confusing lower layers.
 		 */
@@ -411,9 +447,9 @@ passout:
 		/*
 		 * Send off the packet via outgoing interface
 		 */
-		IP_PROBE(send, NULL, NULL, ip, ifp, ip, NULL);
-		error = (*ifp->if_output)(ifp, m,
-				(struct sockaddr *)dst, &ro);
+		IP_PROBE(send, NULL, NULL, ip, nh->nh_ifp, ip, NULL);
+		error = (*nh->nh_ifp->if_output)(nh->nh_ifp, m,
+		    (struct sockaddr *)&dst, NULL);
 	} else {
 		/*
 		 * Handle EMSGSIZE with icmp reply needfrag for TCP MTU discovery
@@ -421,14 +457,15 @@ passout:
 		if (ip_off & IP_DF) {
 			IPSTAT_INC(ips_cantfrag);
 			icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_NEEDFRAG,
-				0, mtu);
+				0, nh->nh_mtu);
 			goto consumed;
 		} else {
 			/*
 			 * We have to fragment the packet
 			 */
 			m->m_pkthdr.csum_flags |= CSUM_IP;
-			if (ip_fragment(ip, &m, mtu, ifp->if_hwassist))
+			if (ip_fragment(ip, &m, nh->nh_mtu,
+			    nh->nh_ifp->if_hwassist) != 0)
 				goto drop;
 			KASSERT(m != NULL, ("null mbuf and no error"));
 			/*
@@ -443,9 +480,11 @@ passout:
 				 */
 				m_clrprotoflags(m);
 
-				IP_PROBE(send, NULL, NULL, ip, ifp, ip, NULL);
-				error = (*ifp->if_output)(ifp, m,
-					(struct sockaddr *)dst, &ro);
+				IP_PROBE(send, NULL, NULL,
+				    mtod(m, struct ip *), nh->nh_ifp,
+				    mtod(m, struct ip *), NULL);
+				error = (*nh->nh_ifp->if_output)(nh->nh_ifp, m,
+				    (struct sockaddr *)&dst, NULL);
 				if (error)
 					break;
 			} while ((m = m0) != NULL);
@@ -463,17 +502,22 @@ passout:
 	if (error != 0)
 		IPSTAT_INC(ips_odropped);
 	else {
-		counter_u64_add(ro.ro_rt->rt_pksent, 1);
 		IPSTAT_INC(ips_forward);
 		IPSTAT_INC(ips_fastforward);
 	}
+
+	/* Send required redirect */
+	if (mcopy != NULL) {
+		icmp_error(mcopy, ICMP_REDIRECT, ICMP_REDIRECT_HOST, redest.s_addr, 0);
+		mcopy = NULL; /* Freed by caller */
+	}
+
 consumed:
-	RTFREE(ro.ro_rt);
+	if (mcopy != NULL)
+		m_freem(mcopy);
 	return NULL;
 drop:
 	if (m)
 		m_freem(m);
-	if (ro.ro_rt)
-		RTFREE(ro.ro_rt);
 	return NULL;
 }

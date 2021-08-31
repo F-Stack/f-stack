@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 John Birrell <jb@freebsd.org>
  * All rights reserved.
  *
@@ -38,21 +40,7 @@
 #define CTF_HDR_STRLEN_U32	8
 
 #ifdef DDB_CTF
-static void *
-z_alloc(void *nil, u_int items, u_int size)
-{
-	void *ptr;
-
-	ptr = malloc(items * size, M_TEMP, M_NOWAIT);
-	return ptr;
-}
-
-static void
-z_free(void *nil, void *ptr)
-{
-	free(ptr, M_TEMP);
-}
-
+#include <contrib/zlib/zlib.h>
 #endif
 
 static int
@@ -191,8 +179,12 @@ link_elf_ctf_get(linker_file_t lf, linker_ctf_t *lc)
 	    NOCRED, NULL, td)) != 0)
 		goto out;
 
-	/* Check the CTF magic number. (XXX check for big endian!) */
+	/* Check the CTF magic number. */
+#ifdef __LITTLE_ENDIAN__
 	if (ctf_hdr[0] != 0xf1 || ctf_hdr[1] != 0xcf) {
+#else
+	if (ctf_hdr[0] != 0xcf || ctf_hdr[1] != 0xf1) {
+#endif
 		printf("%s(%d): module %s has invalid format\n",
 		    __func__, __LINE__, lf->pathname);
 		error = EFTYPE;
@@ -236,7 +228,7 @@ link_elf_ctf_get(linker_file_t lf, linker_ctf_t *lc)
 	}
 
 	/*
-	 * Allocate memory to buffer the CTF data in it's decompressed
+	 * Allocate memory to buffer the CTF data in its decompressed
 	 * form.
 	 */
 	ctftab = malloc(sz, M_LINKER, M_WAITOK);
@@ -263,8 +255,6 @@ link_elf_ctf_get(linker_file_t lf, linker_ctf_t *lc)
 
 		/* Initialise the zlib structure. */
 		bzero(&zs, sizeof(zs));
-		zs.zalloc = z_alloc;
-		zs.zfree = z_free;
 
 		if (inflateInit(&zs) != Z_OK) {
 			error = EIO;
@@ -303,7 +293,7 @@ link_elf_ctf_get(linker_file_t lf, linker_ctf_t *lc)
 	lc->typlenp = &ef->typlen;
 
 out:
-	VOP_UNLOCK(nd.ni_vp, 0);
+	VOP_UNLOCK(nd.ni_vp);
 	vn_close(nd.ni_vp, FREAD, td->td_ucred, td);
 
 	if (hdr != NULL)

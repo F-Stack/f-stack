@@ -38,7 +38,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/rman.h>
 #include <sys/condvar.h>
 #include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/module.h>
+#include <sys/mutex.h>
 
 #include <machine/bus.h>
 
@@ -124,7 +126,7 @@ a10dmac_attach(device_t dev)
 	mtx_init(&sc->sc_mtx, "a10 dmac", NULL, MTX_SPIN);
 
 	/* Activate DMA controller clock */
-	error = clk_get_by_ofw_index(dev, 0, &clk);
+	error = clk_get_by_ofw_index(dev, 0, 0, &clk);
 	if (error != 0) {
 		device_printf(dev, "cannot get clock\n");
 		return (error);
@@ -168,6 +170,7 @@ a10dmac_attach(device_t dev)
 		return (ENXIO);
 	}
 
+	OF_device_register_xref(OF_xref_from_node(ofw_bus_get_node(dev)), dev);
 	return (0);
 }
 

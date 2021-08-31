@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2007 Stephan Uphoff <ups@FreeBSD.org>
  * All rights reserved.
  *
@@ -52,7 +54,6 @@ void	rm_init_flags(struct rmlock *rm, const char *name, int opts);
 void	rm_destroy(struct rmlock *rm);
 int	rm_wowned(const struct rmlock *rm);
 void	rm_sysinit(void *arg);
-void	rm_sysinit_flags(void *arg);
 
 void	_rm_wlock_debug(struct rmlock *rm, const char *file, int line);
 void	_rm_wunlock_debug(struct rmlock *rm, const char *file, int line);
@@ -101,35 +102,21 @@ void	_rm_assert(const struct rmlock *rm, int what, const char *file,
 struct rm_args {
 	struct rmlock	*ra_rm;
 	const char 	*ra_desc;
+	int		ra_flags;
 };
 
-struct rm_args_flags {
-	struct rmlock	*ra_rm;
-	const char 	*ra_desc;
-	int		ra_opts;
-};
-
-#define	RM_SYSINIT(name, rm, desc)       				\
+#define	RM_SYSINIT_FLAGS(name, rm, desc, flags)				\
 	static struct rm_args name##_args = {				\
 		(rm),							\
 		(desc),							\
+		(flags),						\
 	};								\
 	SYSINIT(name##_rm_sysinit, SI_SUB_LOCK, SI_ORDER_MIDDLE,	\
 	    rm_sysinit, &name##_args);					\
 	SYSUNINIT(name##_rm_sysuninit, SI_SUB_LOCK, SI_ORDER_MIDDLE,	\
 	    rm_destroy, (rm))
 
-
-#define	RM_SYSINIT_FLAGS(name, rm, desc, opts)       			\
-	static struct rm_args name##_args = {				\
-		(rm),							\
-		(desc),							\
-                (opts),							\
-	};								\
-	SYSINIT(name##_rm_sysinit, SI_SUB_LOCK, SI_ORDER_MIDDLE,	\
-	    rm_sysinit_flags, &name##_args);				\
-	SYSUNINIT(name##_rm_sysuninit, SI_SUB_LOCK, SI_ORDER_MIDDLE,	\
-	    rm_destroy, (rm))
+#define	RM_SYSINIT(name, rm, desc)	RM_SYSINIT_FLAGS(name, rm, desc, 0)
 
 #if defined(INVARIANTS) || defined(INVARIANT_SUPPORT)
 #define	RA_LOCKED		LA_LOCKED
@@ -144,6 +131,47 @@ struct rm_args_flags {
 #define	rm_assert(rm, what)	_rm_assert((rm), (what), LOCK_FILE, LOCK_LINE)
 #else
 #define	rm_assert(rm, what)
+#endif
+
+void	rms_init(struct rmslock *rms, const char *name);
+void	rms_destroy(struct rmslock *rms);
+void	rms_rlock(struct rmslock *rms);
+int	rms_try_rlock(struct rmslock *rms);
+void	rms_runlock(struct rmslock *rms);
+void	rms_wlock(struct rmslock *rms);
+void	rms_wunlock(struct rmslock *rms);
+void	rms_unlock(struct rmslock *rms);
+
+static inline int
+rms_wowned(struct rmslock *rms)
+{
+
+	return (rms->owner == curthread);
+}
+
+#ifdef INVARIANTS
+/*
+ * For assertion purposes.
+ *
+ * Main limitation is that we at best can tell there are readers, but not
+ * whether curthread is one of them.
+ */
+static inline int
+rms_rowned(struct rmslock *rms)
+{
+
+	return (rms->debug_readers > 0);
+}
+
+static inline int
+rms_owned_any(struct rmslock *rms)
+{
+
+	if (rms_wowned(rms))
+		return (1);
+
+	return (rms_rowned(rms));
+}
 #endif
 
 #endif /* _KERNEL */

@@ -25,6 +25,8 @@
  *
  */
 
+#define	KCSAN_RUNTIME
+
 #include "opt_platform.h"
 
 #include <sys/param.h>
@@ -81,6 +83,16 @@ void generic_bs_wr_4(void *, bus_space_handle_t, bus_size_t, const uint32_t *,
 void generic_bs_wr_8(void *, bus_space_handle_t, bus_size_t, const uint64_t *,
     bus_size_t);
 
+int generic_bs_peek_1(void *, bus_space_handle_t,  bus_size_t , uint8_t *);
+int generic_bs_peek_2(void *, bus_space_handle_t,  bus_size_t , uint16_t *);
+int generic_bs_peek_4(void *, bus_space_handle_t,  bus_size_t , uint32_t *);
+int generic_bs_peek_8(void *, bus_space_handle_t,  bus_size_t , uint64_t *);
+
+int generic_bs_poke_1(void *, bus_space_handle_t,  bus_size_t, uint8_t);
+int generic_bs_poke_2(void *, bus_space_handle_t,  bus_size_t, uint16_t);
+int generic_bs_poke_4(void *, bus_space_handle_t,  bus_size_t, uint32_t);
+int generic_bs_poke_8(void *, bus_space_handle_t,  bus_size_t, uint64_t);
+
 static int
 generic_bs_map(void *t, bus_addr_t bpa, bus_size_t size, int flags,
     bus_space_handle_t *bshp)
@@ -114,6 +126,46 @@ generic_bs_subregion(void *t, bus_space_handle_t bsh, bus_size_t offset,
 
 	*nbshp = bsh + offset;
 	return (0);
+}
+
+/*
+ * Write `count' 1, 2, 4, or 8 byte value `val' to bus space described
+ * by tag/handle starting at `offset'.
+ */
+static void
+generic_bs_sr_1(void *t, bus_space_handle_t bsh,
+    bus_size_t offset, uint8_t value, size_t count)
+{
+
+	for (; count != 0; count--, offset++)
+		generic_bs_w_1(t, bsh, offset, value);
+}
+
+static void
+generic_bs_sr_2(void *t, bus_space_handle_t bsh,
+		       bus_size_t offset, uint16_t value, size_t count)
+{
+
+	for (; count != 0; count--, offset += 2)
+		generic_bs_w_2(t, bsh, offset, value);
+}
+
+static void
+generic_bs_sr_4(void *t, bus_space_handle_t bsh,
+    bus_size_t offset, uint32_t value, size_t count)
+{
+
+	for (; count != 0; count--, offset += 4)
+		generic_bs_w_4(t, bsh, offset, value);
+}
+
+static void
+generic_bs_sr_8(void *t, bus_space_handle_t bsh, bus_size_t offset,
+    uint64_t value, size_t count)
+{
+
+	for (; count != 0; count--, offset += 8)
+		generic_bs_w_8(t, bsh, offset, value);
 }
 
 struct bus_space memmap_bus = {
@@ -175,10 +227,10 @@ struct bus_space memmap_bus = {
 	.bs_sm_8 = NULL,
 
 	/* set region */
-	.bs_sr_1 = NULL,
-	.bs_sr_2 = NULL,
-	.bs_sr_4 = NULL,
-	.bs_sr_8 = NULL,
+	.bs_sr_1 =	generic_bs_sr_1,
+	.bs_sr_2 =	generic_bs_sr_2,
+	.bs_sr_4 =	generic_bs_sr_4,
+	.bs_sr_8 =	generic_bs_sr_8,
 
 	/* copy */
 	.bs_c_1 = NULL,
@@ -221,6 +273,18 @@ struct bus_space memmap_bus = {
 	.bs_wr_2_s = NULL,
 	.bs_wr_4_s = NULL,
 	.bs_wr_8_s = NULL,
+
+	/* peek */
+	.bs_peek_1 = generic_bs_peek_1,
+	.bs_peek_2 = generic_bs_peek_2,
+	.bs_peek_4 = generic_bs_peek_4,
+	.bs_peek_8 = generic_bs_peek_8,
+
+	/* poke */
+	.bs_poke_1 = generic_bs_poke_1,
+	.bs_poke_2 = generic_bs_poke_2,
+	.bs_poke_4 = generic_bs_poke_4,
+	.bs_poke_8 = generic_bs_poke_8,
 };
 
 #ifdef FDT

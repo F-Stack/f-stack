@@ -64,6 +64,8 @@ extern cpuset_t all_cpus;
 
 long physmem;
 
+extern void	uma_startup1(vm_offset_t);
+
 int
 ff_freebsd_init(void)
 {
@@ -99,12 +101,13 @@ ff_freebsd_init(void)
     ff_init_thread0();
 
     boot_pages = 16;
-    bootmem = (void *)kmem_malloc(NULL, boot_pages*PAGE_SIZE, M_ZERO);
-    uma_startup(bootmem, boot_pages);
+    bootmem = (void *)kmem_malloc(boot_pages*PAGE_SIZE, M_ZERO);
+    //uma_startup(bootmem, boot_pages);
+    uma_startup1((vm_offset_t)bootmem);
     uma_startup2();
 
     num_hash_buckets = 8192;
-    uma_page_slab_hash = (struct uma_page_head *)kmem_malloc(NULL, sizeof(struct uma_page)*num_hash_buckets, M_ZERO);
+    uma_page_slab_hash = (struct uma_page_head *)kmem_malloc(sizeof(struct uma_page)*num_hash_buckets, M_ZERO);
     uma_page_mask = num_hash_buckets - 1;
 
     mutex_init();

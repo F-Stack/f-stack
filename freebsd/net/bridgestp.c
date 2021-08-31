@@ -1,6 +1,8 @@
 /*	$NetBSD: bridgestp.c,v 1.5 2003/11/28 08:56:48 keihan Exp $	*/
 
-/*
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 2000 Jason L. Wright (jason@thought.net)
  * Copyright (c) 2006 Andrew Thompson (thompsa@FreeBSD.org)
  * All rights reserved.
@@ -829,7 +831,6 @@ bstp_assign_roles(struct bstp_state *bs)
 		bp->bp_desg_max_age = bs->bs_root_max_age;
 		bp->bp_desg_fdelay = bs->bs_root_fdelay;
 		bp->bp_desg_htime = bs->bs_bridge_htime;
-
 
 		switch (bp->bp_infois) {
 		case BSTP_INFO_DISABLED:
@@ -2020,6 +2021,7 @@ bstp_same_bridgeid(uint64_t id1, uint64_t id2)
 void
 bstp_reinit(struct bstp_state *bs)
 {
+	struct epoch_tracker et;
 	struct bstp_port *bp;
 	struct ifnet *ifp, *mif;
 	u_char *e_addr;
@@ -2040,8 +2042,8 @@ bstp_reinit(struct bstp_state *bs)
 	 * from is part of this bridge, so we can have more than one independent
 	 * bridges in the same STP domain.
 	 */
-	IFNET_RLOCK_NOSLEEP();
-	TAILQ_FOREACH(ifp, &V_ifnet, if_link) {
+	NET_EPOCH_ENTER(et);
+	CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link) {
 		if (ifp->if_type != IFT_ETHER)
 			continue;	/* Not Ethernet */
 
@@ -2060,7 +2062,7 @@ bstp_reinit(struct bstp_state *bs)
 			continue;
 		}
 	}
-	IFNET_RUNLOCK_NOSLEEP();
+	NET_EPOCH_EXIT(et);
 	if (mif == NULL)
 		goto disablestp;
 
@@ -2271,4 +2273,7 @@ bstp_destroy(struct bstp_port *bp)
 	taskqueue_drain(taskqueue_swi, &bp->bp_statetask);
 	taskqueue_drain(taskqueue_swi, &bp->bp_rtagetask);
 	taskqueue_drain(taskqueue_swi, &bp->bp_mediatask);
+
+	if (bp->bp_bs->bs_root_port == bp)
+		bstp_assign_roles(bp->bp_bs);
 }

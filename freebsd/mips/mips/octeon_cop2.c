@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011, Oleksandr Tymoshenko <gonzo@FreeBSD.org>
  * All rights reserved.
  *
@@ -44,7 +46,7 @@ octeon_cop2_init(void* dummy)
 	printf("Create COP2 context zone\n");
 	ctxzone = uma_zcreate("COP2 context",
 	                        sizeof(struct octeon_cop2_state), 
-				NULL, NULL, NULL, NULL, 8, 0);
+				NULL, NULL, NULL, NULL, UMA_ALIGN_LONG, 0);
 }
 
 struct octeon_cop2_state *

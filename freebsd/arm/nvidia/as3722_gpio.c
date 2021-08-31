@@ -124,7 +124,6 @@ struct as3722_gpio_pin {
 	int	pin_cfg_flags;
 };
 
-
 /* --------------------------------------------------------------------------
  *
  *  Pinmux functions.
@@ -140,8 +139,6 @@ as3722_pinmux_get_function(struct as3722_softc *sc, char *name)
 	}
 	return (-1);
 }
-
-
 
 static int
 as3722_pinmux_config_node(struct as3722_softc *sc, char *pin_name,
@@ -212,12 +209,12 @@ as3722_pinmux_read_node(struct as3722_softc *sc, phandle_t node,
 {
 	int rv, i;
 
-	*lpins = OF_getprop_alloc(node, "pins", 1, (void **)pins);
+	*lpins = OF_getprop_alloc(node, "pins", (void **)pins);
 	if (*lpins <= 0)
 		return (ENOENT);
 
 	/* Read function (mux) settings. */
-	rv = OF_getprop_alloc(node, "function", 1, (void **)&cfg->function);
+	rv = OF_getprop_alloc(node, "function", (void **)&cfg->function);
 	if (rv <= 0)
 		cfg->function = NULL;
 
@@ -271,12 +268,11 @@ int as3722_pinmux_configure(device_t dev, phandle_t cfgxref)
 	cfgnode = OF_node_from_xref(cfgxref);
 
 	for (node = OF_child(cfgnode); node != 0; node = OF_peer(node)) {
-		if (!fdt_is_enabled(node))
+		if (!ofw_bus_node_status_okay(node))
 			continue;
 		rv = as3722_pinmux_process_node(sc, node);
 		if (rv != 0)
 			device_printf(dev, "Failed to process pinmux");
-
 	}
 	return (0);
 }
@@ -552,7 +548,6 @@ as3722_gpio_attach(struct as3722_softc *sc, phandle_t node)
 	sc->gpio_npins = NGPIO;
 	sc->gpio_pins = malloc(sizeof(struct as3722_gpio_pin *) *
 	    sc->gpio_npins, M_AS3722_GPIO, M_WAITOK | M_ZERO);
-
 
 	sc->gpio_busdev = gpiobus_attach_bus(sc->dev);
 	if (sc->gpio_busdev == NULL)

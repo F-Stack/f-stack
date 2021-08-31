@@ -1,9 +1,11 @@
 #	@(#)Makefile	8.2 (Berkeley) 4/18/94
 # $FreeBSD$
 
-TOPDIR?=${CURDIR}/../..
+PROG=	arp
+MAN=	arp.4 arp.8
 
-PROG=arp
+LIBADD=	xo
 
-include ${TOPDIR}/tools/prog.mk
+WARNS?=	3
 
+.include <bsd.prog.mk>

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -75,7 +77,7 @@
 #define	TCPTV_MSL	( 30*hz)		/* max seg lifetime (hah!) */
 #define	TCPTV_SRTTBASE	0			/* base roundtrip time;
 						   if 0, no idea yet */
-#define	TCPTV_RTOBASE	(  3*hz)		/* assumed RTO if no info */
+#define	TCPTV_RTOBASE	(  1*hz)		/* assumed RTO if no info */
 
 #define	TCPTV_PERSMIN	(  5*hz)		/* minimum persist interval */
 #define	TCPTV_PERSMAX	( 60*hz)		/* maximum persist interval */
@@ -117,7 +119,14 @@
 
 #define	TCP_MAXRXTSHIFT	12			/* maximum retransmits */
 
-#define	TCPTV_DELACK	( hz/10 )		/* 100ms timeout */
+#define	TCPTV_DELACK	( hz/25 )		/* 40ms timeout */
+
+/*
+ * If we exceed this number of retransmits for a single segment, we'll consider
+ * the current srtt measurement no longer valid and will recalculate from
+ * scratch starting with the next ACK.
+ */
+#define TCP_RTT_INVALIDATE (TCP_MAXRXTSHIFT / 4)
 
 #ifdef	TCPTIMERS
 static const char *tcptimers[] =
@@ -159,11 +168,15 @@ struct tcp_timer {
 #define TT_2MSL		0x0010
 #define TT_MASK		(TT_DELACK|TT_REXMT|TT_PERSIST|TT_KEEP|TT_2MSL)
 
-#define TT_DELACK_RST	0x0100
-#define TT_REXMT_RST	0x0200
-#define TT_PERSIST_RST	0x0400
-#define TT_KEEP_RST	0x0800
-#define TT_2MSL_RST	0x1000
+/*
+ * Suspend flags - used when suspending a timer
+ * from ever running again.
+ */
+#define TT_DELACK_SUS	0x0100
+#define TT_REXMT_SUS	0x0200
+#define TT_PERSIST_SUS	0x0400
+#define TT_KEEP_SUS	0x0800
+#define TT_2MSL_SUS	0x1000
 
 #define TT_STOPPED	0x00010000
 
@@ -181,15 +194,28 @@ extern int tcp_keepintvl;		/* time between keepalive probes */
 extern int tcp_keepcnt;			/* number of keepalives */
 extern int tcp_delacktime;		/* time before sending a delayed ACK */
 extern int tcp_maxpersistidle;
+extern int tcp_rexmit_initial;
 extern int tcp_rexmit_min;
 extern int tcp_rexmit_slop;
 extern int tcp_msl;
 extern int tcp_ttl;			/* time to live for TCP segs */
 extern int tcp_backoff[];
-extern int tcp_syn_backoff[];
+extern int tcp_totbackoff;
+extern int tcp_rexmit_drop_options;
 
 extern int tcp_finwait2_timeout;
 extern int tcp_fast_finwait2_recycle;
+
+VNET_DECLARE(int, tcp_always_keepalive);
+#define	V_tcp_always_keepalive		VNET(tcp_always_keepalive)
+VNET_DECLARE(int, tcp_pmtud_blackhole_detect);
+#define V_tcp_pmtud_blackhole_detect	VNET(tcp_pmtud_blackhole_detect)
+VNET_DECLARE(int, tcp_pmtud_blackhole_mss);
+#define	V_tcp_pmtud_blackhole_mss	VNET(tcp_pmtud_blackhole_mss)
+VNET_DECLARE(int, tcp_v6pmtud_blackhole_mss);
+#define V_tcp_v6pmtud_blackhole_mss	VNET(tcp_v6pmtud_blackhole_mss)
+
+void tcp_inpinfo_lock_del(struct inpcb *inp, struct tcpcb *tp);
 
 void	tcp_timer_init(void);
 void	tcp_timer_2msl(void *xtp);
@@ -200,8 +226,6 @@ void	tcp_timer_keep(void *xtp);
 void	tcp_timer_persist(void *xtp);
 void	tcp_timer_rexmt(void *xtp);
 void	tcp_timer_delack(void *xtp);
-void	tcp_timer_to_xtimer(struct tcpcb *tp, struct tcp_timer *timer,
-	struct xtcp_timer *xtimer);
 
 #endif /* _KERNEL */
 

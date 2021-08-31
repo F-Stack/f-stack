@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1988 University of Utah.
  * Copyright (c) 1991 The Regents of the University of California.
  * Copyright (c) 1999 Michael Smith
@@ -18,7 +20,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -50,6 +52,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/conf.h>
 #include <sys/cons.h>
 #include <sys/fcntl.h>
+#include <sys/kbio.h>
 #include <sys/kdb.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
@@ -66,6 +69,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/vnode.h>
 
 #include <ddb/ddb.h>
+
+#include <dev/kbd/kbdreg.h>
 
 #include <machine/cpu.h>
 #include <machine/clock.h>
@@ -88,12 +93,16 @@ int	cons_avail_mask = 0;	/* Bit mask. Each registered low level console
 				 * (i.e., if it is in graphics mode) will have
 				 * this bit cleared.
 				 */
+
 static int cn_mute;
+SYSCTL_INT(_kern, OID_AUTO, consmute, CTLFLAG_RW, &cn_mute, 0,
+    "State of the console muting");
+
 static char *consbuf;			/* buffer used by `consmsgbuf' */
 static struct callout conscallout;	/* callout for outputting to constty */
 struct msgbuf consmsgbuf;		/* message buffer for console tty */
 static u_char console_pausing;		/* pause after each line during probe */
-static char *console_pausestr=
+static const char console_pausestr[] =
 "<pause; press any key to proceed to next line or '.' to end pause mode>";
 struct tty *constty;			/* pointer to console "window" tty */
 static struct mtx cnputs_mtx;		/* Mutex for cnputs(). */
@@ -104,6 +113,19 @@ static void constty_timeout(void *arg);
 static struct consdev cons_consdev;
 DATA_SET(cons_set, cons_consdev);
 SET_DECLARE(cons_set, struct consdev);
+
+/*
+ * Stub for configurations that don't actually have a keyboard driver. Inclusion
+ * of kbd.c is contingent on any number of keyboard/console drivers being
+ * present in the kernel; rather than trying to catch them all, we'll just
+ * maintain this weak kbdinit that will be overridden by the strong version in
+ * kbd.c if it's present.
+ */
+__weak_symbol void
+kbdinit(void)
+{
+
+}
 
 void
 cninit(void)
@@ -120,6 +142,14 @@ cninit(void)
 			|RB_SINGLE
 			|RB_VERBOSE
 			|RB_ASKNAME)) == RB_MUTE);
+
+	/*
+	 * Bring up the kbd layer just in time for cnprobe.  Console drivers
+	 * have a dependency on kbd being ready, so this fits nicely between the
+	 * machdep callers of cninit() and MI probing/initialization of consoles
+	 * here.
+	 */
+	kbdinit();
 
 	/*
 	 * Find the first console with the highest priority.
@@ -334,27 +364,10 @@ sysctl_kern_console(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 
-SYSCTL_PROC(_kern, OID_AUTO, console, CTLTYPE_STRING|CTLFLAG_RW,
-	0, 0, sysctl_kern_console, "A", "Console device control");
-
-/*
- * User has changed the state of the console muting.
- * This may require us to open or close the device in question.
- */
-static int
-sysctl_kern_consmute(SYSCTL_HANDLER_ARGS)
-{
-	int error;
-
-	error = sysctl_handle_int(oidp, &cn_mute, 0, req);
-	if (error != 0 || req->newptr == NULL)
-		return (error);
-	return (error);
-}
-
-SYSCTL_PROC(_kern, OID_AUTO, consmute, CTLTYPE_INT|CTLFLAG_RW,
-	0, sizeof(cn_mute), sysctl_kern_consmute, "I",
-	"State of the console muting");
+SYSCTL_PROC(_kern, OID_AUTO, console,
+    CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT, 0, 0,
+    sysctl_kern_console, "A",
+    "Console device control");
 
 void
 cngrab()
@@ -379,6 +392,19 @@ cnungrab()
 		cn = cnd->cnd_cn;
 		if (!kdb_active || !(cn->cn_flags & CN_FLAG_NODEBUG))
 			cn->cn_ops->cn_ungrab(cn);
+	}
+}
+
+void
+cnresume()
+{
+	struct cn_device *cnd;
+	struct consdev *cn;
+
+	STAILQ_FOREACH(cnd, &cn_devlist, cnd_next) {
+		cn = cnd->cnd_cn;
+		if (cn->cn_ops->cn_resume != NULL)
+			cn->cn_ops->cn_resume(cn);
 	}
 }
 
@@ -471,7 +497,7 @@ cnputc(int c)
 {
 	struct cn_device *cnd;
 	struct consdev *cn;
-	char *cp;
+	const char *cp;
 
 #ifdef EARLY_PRINTF
 	if (early_putc != NULL) {
@@ -507,9 +533,9 @@ cnputc(int c)
 }
 
 void
-cnputs(char *p)
+cnputsn(const char *p, size_t n)
 {
-	int c;
+	size_t i;
 	int unlock_reqd = 0;
 
 	if (use_cnputs_mtx) {
@@ -524,11 +550,17 @@ cnputs(char *p)
 		unlock_reqd = 1;
 	}
 
-	while ((c = *p++) != '\0')
-		cnputc(c);
+	for (i = 0; i < n; i++)
+		cnputc(p[i]);
 
 	if (unlock_reqd)
 		mtx_unlock_spin(&cnputs_mtx);
+}
+
+void
+cnputs(const char *p)
+{
+	cnputsn(p, strlen(p));
 }
 
 static int consmsgbuf_size = 8192;
@@ -731,4 +763,3 @@ vty_set_preferred(unsigned vty)
 	vty_prefer &= ~VTY_VT;
 #endif
 }
-

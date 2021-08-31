@@ -10,7 +10,7 @@
 # 2. Redistributions in binary form must reproduce the above copyright
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
-# 4. Neither the name of the University nor the names of its contributors
+# 3. Neither the name of the University nor the names of its contributors
 #    may be used to endorse or promote products derived from this software
 #    without specific prior written permission.
 #
@@ -40,14 +40,10 @@
 #
 # The locking value can take the following values:
 # L: locked; not converted to type of lock.
-# A: any lock type.
-# S: locked with shared lock.
 # E: locked with exclusive lock for this process.
-# O: locked with exclusive lock for other process.
 # U: unlocked.
 # -: not applicable.  vnode does not yet (or no longer) exists.
 # =: the same on input and output, may be either L or U.
-# X: locked if not nil.
 #
 # The paramater named "vpp" is assumed to be always used with double
 # indirection (**vpp) and that name is hard-coded in vnode_if.awk !
@@ -63,6 +59,7 @@ vop_islocked {
 	IN struct vnode *vp;
 };
 
+
 %% lookup	dvp	L L L
 %% lookup	vpp	- L -
 
@@ -76,6 +73,7 @@ vop_lookup {
 	IN struct componentname *cnp;
 };
 
+
 %% cachedlookup	dvp	L L L
 %% cachedlookup	vpp	- L -
 
@@ -87,8 +85,10 @@ vop_cachedlookup {
 	IN struct componentname *cnp;
 };
 
+
 %% create	dvp	E E E
 %% create	vpp	- L -
+%! create	pre	vop_create_pre
 %! create	post	vop_create_post
 
 vop_create {
@@ -100,6 +100,8 @@ vop_create {
 
 
 %% whiteout	dvp	E E E
+%! whiteout	pre	vop_whiteout_pre
+%! whiteout	post	vop_whiteout_post
 
 vop_whiteout {
 	IN struct vnode *dvp;
@@ -110,6 +112,7 @@ vop_whiteout {
 
 %% mknod	dvp	E E E
 %% mknod	vpp	- L -
+%! mknod	pre	vop_mknod_pre
 %! mknod	post	vop_mknod_post
 
 vop_mknod {
@@ -143,6 +146,26 @@ vop_close {
 };
 
 
+%% fplookup_vexec	vp	- - -
+%! fplookup_vexec	debugpre	vop_fplookup_vexec_debugpre
+%! fplookup_vexec	debugpost	vop_fplookup_vexec_debugpost
+
+vop_fplookup_vexec {
+	IN struct vnode *vp;
+	IN struct ucred *cred;
+};
+
+
+%% fplookup_symlink	vp	- - -
+%! fplookup_symlink	debugpre	vop_fplookup_symlink_debugpre
+%! fplookup_symlink	debugpost	vop_fplookup_symlink_debugpost
+
+vop_fplookup_symlink {
+	IN struct vnode *vp;
+	IN struct cache_fpl *fpl;
+};
+
+
 %% access	vp	L L L
 
 vop_access {
@@ -163,6 +186,17 @@ vop_accessx {
 };
 
 
+%% stat	vp	L L L
+
+vop_stat {
+	IN struct vnode *vp;
+	OUT struct stat *sb;
+	IN struct ucred *active_cred;
+	IN struct ucred *file_cred;
+	IN struct thread *td;
+};
+
+
 %% getattr	vp	L L L
 
 vop_getattr {
@@ -173,6 +207,7 @@ vop_getattr {
 
 
 %% setattr	vp	E E E
+%! setattr	pre	vop_setattr_pre
 %! setattr	post	vop_setattr_post
 
 vop_setattr {
@@ -181,16 +216,29 @@ vop_setattr {
 	IN struct ucred *cred;
 };
 
-%% markatime	vp	L L L
 
-vop_markatime {
+%% mmapped	vp	L L L
+
+vop_mmapped {
 	IN struct vnode *vp;
 };
+
 
 %% read		vp	L L L
 %! read		post	vop_read_post
 
 vop_read {
+	IN struct vnode *vp;
+	INOUT struct uio *uio;
+	IN int ioflag;
+	IN struct ucred *cred;
+};
+
+
+%% read_pgcache	vp	- - -
+%! read_pgcache	post	vop_read_pgcache_post
+
+vop_read_pgcache {
 	IN struct vnode *vp;
 	INOUT struct uio *uio;
 	IN int ioflag;
@@ -259,6 +307,7 @@ vop_fsync {
 
 %% remove	dvp	E E E
 %% remove	vp	E E E
+%! remove	pre	vop_remove_pre
 %! remove	post	vop_remove_post
 
 vop_remove {
@@ -270,6 +319,7 @@ vop_remove {
 
 %% link		tdvp	E E E
 %% link		vp	E E E
+%! link		pre	vop_link_pre
 %! link		post	vop_link_post
 
 vop_link {
@@ -294,7 +344,9 @@ vop_rename {
 
 %% mkdir	dvp	E E E
 %% mkdir	vpp	- E -
+%! mkdir	pre	vop_mkdir_pre
 %! mkdir	post	vop_mkdir_post
+%! mkdir	debugpost vop_mkdir_debugpost
 
 vop_mkdir {
 	IN struct vnode *dvp;
@@ -306,6 +358,7 @@ vop_mkdir {
 
 %% rmdir	dvp	E E E
 %% rmdir	vp	E E E
+%! rmdir	pre	vop_rmdir_pre
 %! rmdir	post	vop_rmdir_post
 
 vop_rmdir {
@@ -317,6 +370,7 @@ vop_rmdir {
 
 %% symlink	dvp	E E E
 %% symlink	vpp	- E -
+%! symlink	pre	vop_symlink_pre
 %! symlink	post	vop_symlink_post
 
 vop_symlink {
@@ -324,7 +378,7 @@ vop_symlink {
 	OUT struct vnode **vpp;
 	IN struct componentname *cnp;
 	IN struct vattr *vap;
-	IN char *target;
+	IN const char *target;
 };
 
 
@@ -354,36 +408,38 @@ vop_readlink {
 
 vop_inactive {
 	IN struct vnode *vp;
-	IN struct thread *td;
 };
 
+%! need_inactive	debugpre	vop_need_inactive_debugpre
+%! need_inactive	debugpost	vop_need_inactive_debugpost
+
+vop_need_inactive {
+        IN struct vnode *vp;
+};
 
 %% reclaim	vp	E E E
 %! reclaim	post	vop_reclaim_post
 
 vop_reclaim {
 	IN struct vnode *vp;
-	IN struct thread *td;
 };
 
 
-%! lock1	pre	vop_lock_pre
-%! lock1	post	vop_lock_post
+%! lock1	debugpre	vop_lock_debugpre
+%! lock1	debugpost	vop_lock_debugpost
 
 vop_lock1 {
 	IN struct vnode *vp;
 	IN int flags;
-	IN char *file;
+	IN const char *file;
 	IN int line;
 };
 
 
-%! unlock	pre	vop_unlock_pre
-%! unlock	post	vop_unlock_post
+%! unlock	debugpre	vop_unlock_debugpre
 
 vop_unlock {
 	IN struct vnode *vp;
-	IN int flags;
 };
 
 
@@ -400,7 +456,7 @@ vop_bmap {
 
 
 %% strategy	vp	L L L
-%! strategy	pre	vop_strategy_pre
+%! strategy	debugpre	vop_strategy_debugpre
 
 vop_strategy {
 	IN struct vnode *vp;
@@ -428,7 +484,7 @@ vop_print {
 vop_pathconf {
 	IN struct vnode *vp;
 	IN int name;
-	OUT register_t *retval;
+	OUT long *retval;
 };
 
 
@@ -451,7 +507,7 @@ vop_advlockasync {
 	IN int op;
 	IN struct flock *fl;
 	IN int flags;
-	IN struct task *task;
+	IN struct task *task;	
 	INOUT void **cookiep;
 };
 
@@ -518,6 +574,8 @@ vop_getacl {
 
 
 %% setacl	vp	E E E
+%! setacl	pre	vop_setacl_pre
+%! setacl	post	vop_setacl_post
 
 vop_setacl {
 	IN struct vnode *vp;
@@ -584,6 +642,7 @@ vop_openextattr {
 
 
 %% deleteextattr	vp	E E E
+%! deleteextattr	pre	vop_deleteextattr_pre
 %! deleteextattr	post	vop_deleteextattr_post
 
 vop_deleteextattr {
@@ -596,6 +655,7 @@ vop_deleteextattr {
 
 
 %% setextattr	vp	E E E
+%! setextattr	pre	vop_setextattr_pre
 %! setextattr	post	vop_setextattr_post
 
 vop_setextattr {
@@ -632,9 +692,8 @@ vop_vptofh {
 vop_vptocnp {
 	IN struct vnode *vp;
 	OUT struct vnode **vpp;
-	IN struct ucred *cred;
 	INOUT char *buf;
-	INOUT int *buflen;
+	INOUT size_t *buflen;
 };
 
 
@@ -646,6 +705,7 @@ vop_allocate {
 	INOUT off_t *len;
 };
 
+
 %% advise	vp	U U U
 
 vop_advise {
@@ -655,19 +715,22 @@ vop_advise {
 	IN int advice;
 };
 
+
 %% unp_bind	vp	E E E
 
 vop_unp_bind {
 	IN struct vnode *vp;
-	IN struct socket *socket;
+	IN struct unpcb *unpcb;
 };
+
 
 %% unp_connect	vp	L L L
 
 vop_unp_connect {
 	IN struct vnode *vp;
-	OUT struct socket **socket;
+	OUT struct unpcb **unpcb;
 };
+
 
 %% unp_detach	vp	= = =
 
@@ -675,37 +738,68 @@ vop_unp_detach {
 	IN struct vnode *vp;
 };
 
+
 %% is_text	vp	L L L
 
 vop_is_text {
 	IN struct vnode *vp;
 };
 
-%% set_text	vp	E E E
+
+%% set_text	vp	= = =
 
 vop_set_text {
 	IN struct vnode *vp;
 };
 
-%% vop_unset_text	vp	E E E
+
+%% vop_unset_text	vp	L L L
 
 vop_unset_text {
 	IN struct vnode *vp;
 };
 
-%% get_writecount	vp	L L L
 
-vop_get_writecount {
-	IN struct vnode *vp;
-	OUT int *writecount;
-};
-
-%% add_writecount	vp	E E E
+%% add_writecount	vp	L L L
 
 vop_add_writecount {
 	IN struct vnode *vp;
 	IN int inc;
 };
+
+
+%% fdatasync	vp	L L L
+
+vop_fdatasync {
+	IN struct vnode *vp;
+	IN struct thread *td;
+};
+
+
+%% copy_file_range	invp	U U U
+%% copy_file_range	outvp	U U U
+
+vop_copy_file_range {
+	IN struct vnode *invp;
+	INOUT off_t *inoffp;
+	IN struct vnode *outvp;
+	INOUT off_t *outoffp;
+	INOUT size_t *lenp;
+	IN unsigned int flags;
+	IN struct ucred *incred;
+	IN struct ucred *outcred;
+	IN struct thread *fsizetd;
+};
+
+
+%% vput_pair	dvp	E - -
+
+vop_vput_pair {
+	IN struct vnode *dvp;
+	INOUT struct vnode **vpp;
+	IN bool unlock_vp;
+};
+
 
 # The VOPs below are spares at the end of the table to allow new VOPs to be
 # added in stable branches without breaking the KBI.  New VOPs in HEAD should

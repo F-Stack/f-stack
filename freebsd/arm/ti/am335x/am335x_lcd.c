@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 2013 Oleksandr Tymoshenko <gonzo@freebsd.org>
  * All rights reserved.
  *
@@ -33,6 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/module.h>
 #include <sys/clock.h>
+#include <sys/eventhandler.h>
 #include <sys/time.h>
 #include <sys/bus.h>
 #include <sys/lock.h>
@@ -46,6 +49,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/consio.h>
 
 #include <machine/bus.h>
+
+#include <dev/extres/clk/clk.h>
 
 #include <dev/fdt/fdt_common.h>
 #include <dev/ofw/openfirm.h>
@@ -62,7 +67,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/vt/vt.h>
 #endif
 
-#include <arm/ti/ti_prcm.h>
+#include <arm/ti/ti_sysc.h>
 #include <arm/ti/ti_scm.h>
 
 #include "am335x_lcd.h"
@@ -216,6 +221,9 @@ struct am335x_lcd_softc {
 	/* HDMI framer */
 	phandle_t		sc_hdmi_framer;
 	eventhandler_tag	sc_hdmi_evh;
+
+	/* Clock */
+	clk_t			sc_clk_dpll_disp_ck;
 };
 
 static void
@@ -342,16 +350,49 @@ am335x_mode_is_valid(const struct videomode *mode)
 static void
 am335x_read_hdmi_property(device_t dev)
 {
-	phandle_t node;
+	phandle_t node, xref;
+	phandle_t endpoint;
 	phandle_t hdmi_xref;
 	struct am335x_lcd_softc *sc;
 
 	sc = device_get_softc(dev);
 	node = ofw_bus_get_node(dev);
-	if (OF_getencprop(node, "hdmi", &hdmi_xref, sizeof(hdmi_xref)) == -1)
-		sc->sc_hdmi_framer = 0;
-	else
-		sc->sc_hdmi_framer = hdmi_xref; 
+	sc->sc_hdmi_framer = 0;
+
+	/*
+	 * Old FreeBSD way of referencing to HDMI framer
+	 */
+	if (OF_getencprop(node, "hdmi", &hdmi_xref, sizeof(hdmi_xref)) != -1) {
+		sc->sc_hdmi_framer = hdmi_xref;
+		return;
+	}
+
+	/*
+	 * Use bindings described in Linux docs:
+	 * bindings/media/video-interfaces.txt
+	 * We assume that the only endpoint in LCDC node
+	 * is HDMI framer.
+	 */
+	node = ofw_bus_find_child(node, "port");
+
+	/* No media bindings */
+	if (node == 0)
+		return;
+
+	for (endpoint = OF_child(node); endpoint != 0; endpoint = OF_peer(endpoint)) {
+		if (OF_getencprop(endpoint, "remote-endpoint", &xref, sizeof(xref)) != -1) {
+			/* port/port@0/endpoint@0 */
+			node = OF_node_from_xref(xref);
+			/* port/port@0 */
+			node = OF_parent(node);
+			/* port */
+			node = OF_parent(node);
+			/* actual owner of port, in our case HDMI framer */
+			sc->sc_hdmi_framer = OF_xref_from_node(OF_parent(node));
+			if (sc->sc_hdmi_framer != 0)
+				return;
+		}
+	}
 }
 
 static int
@@ -359,13 +400,13 @@ am335x_read_property(device_t dev, phandle_t node, const char *name, uint32_t *v
 {
 	pcell_t cell;
 
-	if ((OF_getprop(node, name, &cell, sizeof(cell))) <= 0) {
+	if ((OF_getencprop(node, name, &cell, sizeof(cell))) <= 0) {
 		device_printf(dev, "missing '%s' attribute in LCD panel info\n",
 		    name);
 		return (ENXIO);
 	}
 
-	*val = fdt32_to_cpu(cell);
+	*val = cell;
 
 	return (0);
 }
@@ -579,24 +620,28 @@ am335x_lcd_configure(struct am335x_lcd_softc *sc)
 	uint32_t hbp, hfp, hsw;
 	uint32_t vbp, vfp, vsw;
 	uint32_t width, height;
-	unsigned int ref_freq;
+	uint64_t ref_freq;
 	int err;
 
 	/*
 	 * try to adjust clock to get double of requested frequency
 	 * HDMI/DVI displays are very sensitive to error in frequncy value
 	 */
-	if (ti_prcm_clk_set_source_freq(LCDC_CLK, sc->sc_panel.panel_pxl_clk*2)) {
+
+	err = clk_set_freq(sc->sc_clk_dpll_disp_ck, sc->sc_panel.panel_pxl_clk*2,
+	    CLK_SET_ROUND_ANY);
+	if (err != 0) {
 		device_printf(sc->sc_dev, "can't set source frequency\n");
 		return (ENXIO);
 	}
 
-	if (ti_prcm_clk_get_source_freq(LCDC_CLK, &ref_freq)) {
+	err = clk_get_freq(sc->sc_clk_dpll_disp_ck, &ref_freq);
+	if (err != 0) {
 		device_printf(sc->sc_dev, "can't get reference frequency\n");
 		return (ENXIO);
 	}
 
-	/* Panle initialization */
+	/* Panel initialization */
 	dma_size = round_page(sc->sc_panel.panel_width*sc->sc_panel.panel_height*sc->sc_panel.bpp/8);
 
 	/*
@@ -926,8 +971,15 @@ am335x_lcd_attach(device_t dev)
 	am335x_read_hdmi_property(dev);
 
 	root = OF_finddevice("/");
-	if (root == 0) {
+	if (root == -1) {
 		device_printf(dev, "failed to get FDT root node\n");
+		return (ENXIO);
+	}
+
+	/* Fixme: Cant find any reference in DTS for dpll_disp_ck@498 for now. */
+	err = clk_get_by_name(dev, "dpll_disp_ck@498", &sc->sc_clk_dpll_disp_ck);
+	if (err != 0) {
+		device_printf(dev, "Cant get dpll_disp_ck@49\n");
 		return (ENXIO);
 	}
 
@@ -953,7 +1005,11 @@ am335x_lcd_attach(device_t dev)
 		}
 	}
 
-	ti_prcm_clk_enable(LCDC_CLK);
+	err = ti_sysc_clock_enable(device_get_parent(dev));
+	if (err != 0) {
+		device_printf(dev, "Failed to enable sysc clkctrl, err %d\n", err);
+		return (ENXIO);
+	}
 
 	rid = 0;
 	sc->sc_mem_res = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &rid,
@@ -989,7 +1045,7 @@ am335x_lcd_attach(device_t dev)
 	ctx = device_get_sysctl_ctx(sc->sc_dev);
 	tree = device_get_sysctl_tree(sc->sc_dev);
 	sc->sc_oid = SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
-	    "backlight", CTLTYPE_INT | CTLFLAG_RW, sc, 0,
+	    "backlight", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc, 0,
 	    am335x_lcd_sysctl_backlight, "I", "LCD backlight");
 	sc->sc_backlight = 0;
 	/* Check if eCAS interface is available at this point */
@@ -1045,3 +1101,4 @@ static devclass_t am335x_lcd_devclass;
 DRIVER_MODULE(am335x_lcd, simplebus, am335x_lcd_driver, am335x_lcd_devclass, 0, 0);
 MODULE_VERSION(am335x_lcd, 1);
 MODULE_DEPEND(am335x_lcd, simplebus, 1, 1, 1);
+MODULE_DEPEND(am335x_lcd, ti_sysc, 1, 1, 1);

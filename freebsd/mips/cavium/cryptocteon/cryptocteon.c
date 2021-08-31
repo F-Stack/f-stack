@@ -49,8 +49,6 @@ __FBSDID("$FreeBSD$");
 
 struct cryptocteon_softc {
 	int32_t			sc_cid;		/* opencrypto id */
-	struct octo_sess	**sc_sessions;
-	uint32_t		sc_sesnum;
 };
 
 int cryptocteon_debug = 0;
@@ -61,8 +59,10 @@ static int cryptocteon_probe(device_t);
 static int cryptocteon_attach(device_t);
 
 static int cryptocteon_process(device_t, struct cryptop *, int);
-static int cryptocteon_newsession(device_t, u_int32_t *, struct cryptoini *);
-static int cryptocteon_freesession(device_t, u_int64_t);
+static int cryptocteon_probesession(device_t,
+    const struct crypto_session_params *);
+static int cryptocteon_newsession(device_t, crypto_session_t,
+    const struct crypto_session_params *);
 
 static void
 cryptocteon_identify(driver_t *drv, device_t parent)
@@ -85,251 +85,157 @@ cryptocteon_attach(device_t dev)
 
 	sc = device_get_softc(dev);
 
-	sc->sc_cid = crypto_get_driverid(dev, CRYPTOCAP_F_HARDWARE | CRYPTOCAP_F_SYNC);
+	sc->sc_cid = crypto_get_driverid(dev, sizeof(struct octo_sess),
+	    CRYPTOCAP_F_SOFTWARE | CRYPTOCAP_F_SYNC |
+	    CRYPTOCAP_F_ACCEL_SOFTWARE);
 	if (sc->sc_cid < 0) {
 		device_printf(dev, "crypto_get_driverid ret %d\n", sc->sc_cid);
 		return (ENXIO);
 	}
 
-	crypto_register(sc->sc_cid, CRYPTO_MD5_HMAC, 0, 0);
-	crypto_register(sc->sc_cid, CRYPTO_SHA1_HMAC, 0, 0);
-	crypto_register(sc->sc_cid, CRYPTO_DES_CBC, 0, 0);
-	crypto_register(sc->sc_cid, CRYPTO_3DES_CBC, 0, 0);
-	crypto_register(sc->sc_cid, CRYPTO_AES_CBC, 0, 0);
-
 	return (0);
 }
 
-/*
- * Generate a new octo session.  We artifically limit it to a single
- * hash/cipher or hash-cipher combo just to make it easier, most callers
- * do not expect more than this anyway.
- */
-static int
-cryptocteon_newsession(device_t dev, u_int32_t *sid, struct cryptoini *cri)
+static bool
+cryptocteon_auth_supported(const struct crypto_session_params *csp)
 {
-	struct cryptoini *c, *encini = NULL, *macini = NULL;
-	struct cryptocteon_softc *sc;
-	struct octo_sess **ocd;
-	int i;
+	u_int hash_len;
 
-	sc = device_get_softc(dev);
-
-	if (sid == NULL || cri == NULL || sc == NULL)
-		return (EINVAL);
-
-	/*
-	 * To keep it simple, we only handle hash, cipher or hash/cipher in a
-	 * session,  you cannot currently do multiple ciphers/hashes in one
-	 * session even though it would be possibel to code this driver to
-	 * handle it.
-	 */
-	for (i = 0, c = cri; c && i < 2; i++) {
-		if (c->cri_alg == CRYPTO_MD5_HMAC ||
-		    c->cri_alg == CRYPTO_SHA1_HMAC ||
-		    c->cri_alg == CRYPTO_NULL_HMAC) {
-			if (macini) {
-				break;
-			}
-			macini = c;
-		}
-		if (c->cri_alg == CRYPTO_DES_CBC ||
-		    c->cri_alg == CRYPTO_3DES_CBC ||
-		    c->cri_alg == CRYPTO_AES_CBC ||
-		    c->cri_alg == CRYPTO_NULL_CBC) {
-			if (encini) {
-				break;
-			}
-			encini = c;
-		}
-		c = c->cri_next;
-	}
-	if (!macini && !encini) {
-		dprintf("%s,%d - EINVAL bad cipher/hash or combination\n",
-				__FILE__, __LINE__);
-		return EINVAL;
-	}
-	if (c) {
-		dprintf("%s,%d - EINVAL cannot handle chained cipher/hash combos\n",
-				__FILE__, __LINE__);
-		return EINVAL;
-	}
-
-	/*
-	 * So we have something we can do, lets setup the session
-	 */
-
-	if (sc->sc_sessions) {
-		for (i = 1; i < sc->sc_sesnum; i++)
-			if (sc->sc_sessions[i] == NULL)
-				break;
-	} else
-		i = 1;		/* NB: to silence compiler warning */
-
-	if (sc->sc_sessions == NULL || i == sc->sc_sesnum) {
-		if (sc->sc_sessions == NULL) {
-			i = 1; /* We leave sc->sc_sessions[0] empty */
-			sc->sc_sesnum = CRYPTO_SW_SESSIONS;
-		} else
-			sc->sc_sesnum *= 2;
-
-		ocd = malloc(sc->sc_sesnum * sizeof(struct octo_sess *),
-			     M_DEVBUF, M_NOWAIT | M_ZERO);
-		if (ocd == NULL) {
-			/* Reset session number */
-			if (sc->sc_sesnum == CRYPTO_SW_SESSIONS)
-				sc->sc_sesnum = 0;
-			else
-				sc->sc_sesnum /= 2;
-			dprintf("%s,%d: ENOBUFS\n", __FILE__, __LINE__);
-			return ENOBUFS;
-		}
-
-		/* Copy existing sessions */
-		if (sc->sc_sessions) {
-			memcpy(ocd, sc->sc_sessions,
-			    (sc->sc_sesnum / 2) * sizeof(struct octo_sess *));
-			free(sc->sc_sessions, M_DEVBUF);
-		}
-
-		sc->sc_sessions = ocd;
-	}
-
-	ocd = &sc->sc_sessions[i];
-	*sid = i;
-
-	*ocd = malloc(sizeof(struct octo_sess), M_DEVBUF, M_NOWAIT | M_ZERO);
-	if (*ocd == NULL) {
-		cryptocteon_freesession(NULL, i);
-		dprintf("%s,%d: ENOBUFS\n", __FILE__, __LINE__);
-		return ENOBUFS;
-	}
-
-	if (encini && encini->cri_key) {
-		(*ocd)->octo_encklen = (encini->cri_klen + 7) / 8;
-		memcpy((*ocd)->octo_enckey, encini->cri_key, (*ocd)->octo_encklen);
-	}
-
-	if (macini && macini->cri_key) {
-		(*ocd)->octo_macklen = (macini->cri_klen + 7) / 8;
-		memcpy((*ocd)->octo_mackey, macini->cri_key, (*ocd)->octo_macklen);
-	}
-
-	(*ocd)->octo_mlen = 0;
-	if (encini && encini->cri_mlen)
-		(*ocd)->octo_mlen = encini->cri_mlen;
-	else if (macini && macini->cri_mlen)
-		(*ocd)->octo_mlen = macini->cri_mlen;
-	else
-		(*ocd)->octo_mlen = 12;
-
-	/*
-	 * point c at the enc if it exists, otherwise the mac
-	 */
-	c = encini ? encini : macini;
-
-	switch (c->cri_alg) {
-	case CRYPTO_DES_CBC:
-	case CRYPTO_3DES_CBC:
-		(*ocd)->octo_ivsize  = 8;
-		switch (macini ? macini->cri_alg : -1) {
-		case CRYPTO_MD5_HMAC:
-			(*ocd)->octo_encrypt = octo_des_cbc_md5_encrypt;
-			(*ocd)->octo_decrypt = octo_des_cbc_md5_decrypt;
-			octo_calc_hash(0, macini->cri_key, (*ocd)->octo_hminner,
-					(*ocd)->octo_hmouter);
-			break;
-		case CRYPTO_SHA1_HMAC:
-			(*ocd)->octo_encrypt = octo_des_cbc_sha1_encrypt;
-			(*ocd)->octo_decrypt = octo_des_cbc_sha1_encrypt;
-			octo_calc_hash(1, macini->cri_key, (*ocd)->octo_hminner,
-					(*ocd)->octo_hmouter);
-			break;
-		case -1:
-			(*ocd)->octo_encrypt = octo_des_cbc_encrypt;
-			(*ocd)->octo_decrypt = octo_des_cbc_decrypt;
-			break;
-		default:
-			cryptocteon_freesession(NULL, i);
-			dprintf("%s,%d: EINVALn", __FILE__, __LINE__);
-			return EINVAL;
-		}
-		break;
-	case CRYPTO_AES_CBC:
-		(*ocd)->octo_ivsize  = 16;
-		switch (macini ? macini->cri_alg : -1) {
-		case CRYPTO_MD5_HMAC:
-			(*ocd)->octo_encrypt = octo_aes_cbc_md5_encrypt;
-			(*ocd)->octo_decrypt = octo_aes_cbc_md5_decrypt;
-			octo_calc_hash(0, macini->cri_key, (*ocd)->octo_hminner,
-					(*ocd)->octo_hmouter);
-			break;
-		case CRYPTO_SHA1_HMAC:
-			(*ocd)->octo_encrypt = octo_aes_cbc_sha1_encrypt;
-			(*ocd)->octo_decrypt = octo_aes_cbc_sha1_decrypt;
-			octo_calc_hash(1, macini->cri_key, (*ocd)->octo_hminner,
-					(*ocd)->octo_hmouter);
-			break;
-		case -1:
-			(*ocd)->octo_encrypt = octo_aes_cbc_encrypt;
-			(*ocd)->octo_decrypt = octo_aes_cbc_decrypt;
-			break;
-		default:
-			cryptocteon_freesession(NULL, i);
-			dprintf("%s,%d: EINVALn", __FILE__, __LINE__);
-			return EINVAL;
-		}
-		break;
-	case CRYPTO_MD5_HMAC:
-		(*ocd)->octo_encrypt = octo_null_md5_encrypt;
-		(*ocd)->octo_decrypt = octo_null_md5_encrypt;
-		octo_calc_hash(0, macini->cri_key, (*ocd)->octo_hminner,
-				(*ocd)->octo_hmouter);
-		break;
+	switch (csp->csp_auth_alg) {
 	case CRYPTO_SHA1_HMAC:
-		(*ocd)->octo_encrypt = octo_null_sha1_encrypt;
-		(*ocd)->octo_decrypt = octo_null_sha1_encrypt;
-		octo_calc_hash(1, macini->cri_key, (*ocd)->octo_hminner,
-				(*ocd)->octo_hmouter);
+		hash_len = SHA1_HASH_LEN;
 		break;
 	default:
-		cryptocteon_freesession(NULL, i);
-		dprintf("%s,%d: EINVALn", __FILE__, __LINE__);
-		return EINVAL;
+		return (false);
 	}
 
-	(*ocd)->octo_encalg = encini ? encini->cri_alg : -1;
-	(*ocd)->octo_macalg = macini ? macini->cri_alg : -1;
-
-	return 0;
+	if (csp->csp_auth_klen > hash_len)
+		return (false);
+	return (true);
 }
 
-/*
- * Free a session.
- */
+static bool
+cryptocteon_cipher_supported(const struct crypto_session_params *csp)
+{
+
+	switch (csp->csp_cipher_alg) {
+	case CRYPTO_AES_CBC:
+		if (csp->csp_ivlen != 16)
+			return (false);
+		if (csp->csp_cipher_klen != 16 &&
+		    csp->csp_cipher_klen != 24 &&
+		    csp->csp_cipher_klen != 32)
+			return (false);
+		break;
+	default:
+		return (false);
+	}
+
+	return (true);
+}
+
 static int
-cryptocteon_freesession(device_t dev, u_int64_t tid)
+cryptocteon_probesession(device_t dev, const struct crypto_session_params *csp)
+{
+
+	if (csp->csp_flags != 0)
+		return (EINVAL);
+	switch (csp->csp_mode) {
+	case CSP_MODE_DIGEST:
+		if (!cryptocteon_auth_supported(csp))
+			return (EINVAL);
+		break;
+	case CSP_MODE_CIPHER:
+		if (!cryptocteon_cipher_supported(csp))
+			return (EINVAL);
+		break;
+	case CSP_MODE_ETA:
+		if (!cryptocteon_auth_supported(csp) ||
+		    !cryptocteon_cipher_supported(csp))
+			return (EINVAL);
+		break;
+	default:
+		return (EINVAL);
+	}
+	return (CRYPTODEV_PROBE_ACCEL_SOFTWARE);
+}
+
+static void
+cryptocteon_calc_hash(const struct crypto_session_params *csp, const char *key,
+    struct octo_sess *ocd)
+{
+	char hash_key[SHA1_HASH_LEN];
+
+	memset(hash_key, 0, sizeof(hash_key));
+	memcpy(hash_key, key, csp->csp_auth_klen);
+	octo_calc_hash(csp->csp_auth_alg == CRYPTO_SHA1_HMAC, hash_key,
+	    ocd->octo_hminner, ocd->octo_hmouter);
+}
+
+/* Generate a new octo session. */
+static int
+cryptocteon_newsession(device_t dev, crypto_session_t cses,
+    const struct crypto_session_params *csp)
 {
 	struct cryptocteon_softc *sc;
-	u_int32_t sid = CRYPTO_SESID2LID(tid);
+	struct octo_sess *ocd;
 
 	sc = device_get_softc(dev);
 
-	if (sc == NULL)
-		return (EINVAL);
+	ocd = crypto_get_driver_session(cses);
 
-	if (sid > sc->sc_sesnum || sc->sc_sessions == NULL ||
-	    sc->sc_sessions[sid] == NULL)
-		return (EINVAL);
+	ocd->octo_encklen = csp->csp_cipher_klen;
+	if (csp->csp_cipher_key != NULL)
+		memcpy(ocd->octo_enckey, csp->csp_cipher_key,
+		    ocd->octo_encklen);
 
-	/* Silently accept and return */
-	if (sid == 0)
-		return(0);
+	if (csp->csp_auth_key != NULL)
+		cryptocteon_calc_hash(csp, csp->csp_auth_key, ocd);
 
-	if (sc->sc_sessions[sid])
-		free(sc->sc_sessions[sid], M_DEVBUF);
-	sc->sc_sessions[sid] = NULL;
-	return 0;
+	ocd->octo_mlen = csp->csp_auth_mlen;
+	if (csp->csp_auth_mlen == 0) {
+		switch (csp->csp_auth_alg) {
+		case CRYPTO_SHA1_HMAC:
+			ocd->octo_mlen = SHA1_HASH_LEN;
+			break;
+		}
+	}
+
+	switch (csp->csp_mode) {
+	case CSP_MODE_DIGEST:
+		switch (csp->csp_auth_alg) {
+		case CRYPTO_SHA1_HMAC:
+			ocd->octo_encrypt = octo_null_sha1_encrypt;
+			ocd->octo_decrypt = octo_null_sha1_encrypt;
+			break;
+		}
+		break;
+	case CSP_MODE_CIPHER:
+		switch (csp->csp_cipher_alg) {
+		case CRYPTO_AES_CBC:
+			ocd->octo_encrypt = octo_aes_cbc_encrypt;
+			ocd->octo_decrypt = octo_aes_cbc_decrypt;
+			break;
+		}
+		break;
+	case CSP_MODE_ETA:
+		switch (csp->csp_cipher_alg) {
+		case CRYPTO_AES_CBC:
+			switch (csp->csp_auth_alg) {
+			case CRYPTO_SHA1_HMAC:
+				ocd->octo_encrypt = octo_aes_cbc_sha1_encrypt;
+				ocd->octo_decrypt = octo_aes_cbc_sha1_decrypt;
+				break;
+			}
+			break;
+		}
+		break;
+	}
+
+	KASSERT(ocd->octo_encrypt != NULL && ocd->octo_decrypt != NULL,
+	    ("%s: missing function pointers", __func__));
+
+	return (0);
 }
 
 /*
@@ -338,110 +244,104 @@ cryptocteon_freesession(device_t dev, u_int64_t tid)
 static int
 cryptocteon_process(device_t dev, struct cryptop *crp, int hint)
 {
-	struct cryptodesc *crd;
+	const struct crypto_session_params *csp;
 	struct octo_sess *od;
-	u_int32_t lid;
 	size_t iovcnt, iovlen;
 	struct mbuf *m = NULL;
 	struct uio *uiop = NULL;
-	struct cryptodesc *enccrd = NULL, *maccrd = NULL;
 	unsigned char *ivp = NULL;
-	unsigned char iv_data[HASH_MAX_LEN];
-	int auth_off = 0, auth_len = 0, crypt_off = 0, crypt_len = 0, icv_off = 0;
+	unsigned char iv_data[16];
+	unsigned char icv[SHA1_HASH_LEN], icv2[SHA1_HASH_LEN];
+	int auth_off, auth_len, crypt_off, crypt_len;
 	struct cryptocteon_softc *sc;
 
 	sc = device_get_softc(dev);
 
-	if (sc == NULL || crp == NULL)
-		return EINVAL;
-
 	crp->crp_etype = 0;
 
-	if (crp->crp_desc == NULL || crp->crp_buf == NULL) {
-		dprintf("%s,%d: EINVAL\n", __FILE__, __LINE__);
-		crp->crp_etype = EINVAL;
+	od = crypto_get_driver_session(crp->crp_session);
+	csp = crypto_get_params(crp->crp_session);
+
+	/*
+	 * The crypto routines assume that the regions to auth and
+	 * cipher are exactly 8 byte multiples and aligned on 8
+	 * byte logical boundaries within the iovecs.
+	 */
+	if (crp->crp_aad_length % 8 != 0 || crp->crp_payload_length % 8 != 0) {
+		crp->crp_etype = EFBIG;
 		goto done;
 	}
 
-	lid = crp->crp_sid & 0xffffffff;
-	if (lid >= sc->sc_sesnum || lid == 0 || sc->sc_sessions == NULL ||
-	    sc->sc_sessions[lid] == NULL) {
-		crp->crp_etype = ENOENT;
-		dprintf("%s,%d: ENOENT\n", __FILE__, __LINE__);
+	/*
+	 * As currently written, the crypto routines assume the AAD and
+	 * payload are adjacent.
+	 */
+	if (crp->crp_aad_length != 0 && crp->crp_payload_start !=
+	    crp->crp_aad_start + crp->crp_aad_length) {
+		crp->crp_etype = EFBIG;
 		goto done;
 	}
-	od = sc->sc_sessions[lid];
+
+	crypt_off = crp->crp_payload_start;
+	crypt_len = crp->crp_payload_length;
+	if (crp->crp_aad_length != 0) {
+		auth_off = crp->crp_aad_start;
+		auth_len = crp->crp_aad_length + crp->crp_payload_length;
+	} else {
+		auth_off = crypt_off;
+		auth_len = crypt_len;
+	}
 
 	/*
 	 * do some error checking outside of the loop for m and IOV processing
 	 * this leaves us with valid m or uiop pointers for later
 	 */
-	if (crp->crp_flags & CRYPTO_F_IMBUF) {
+	switch (crp->crp_buf.cb_type) {
+	case CRYPTO_BUF_MBUF:
+	{
 		unsigned frags;
 
-		m = (struct mbuf *) crp->crp_buf;
+		m = crp->crp_buf.cb_mbuf;
 		for (frags = 0; m != NULL; frags++)
 			m = m->m_next;
 
 		if (frags >= UIO_MAXIOV) {
 			printf("%s,%d: %d frags > UIO_MAXIOV", __FILE__, __LINE__, frags);
+			crp->crp_etype = EFBIG;
 			goto done;
 		}
 
-		m = (struct mbuf *) crp->crp_buf;
-	} else if (crp->crp_flags & CRYPTO_F_IOV) {
-		uiop = (struct uio *) crp->crp_buf;
+		m = crp->crp_buf.cb_mbuf;
+		break;
+	}
+	case CRYPTO_BUF_UIO:
+		uiop = crp->crp_buf.cb_uio;
 		if (uiop->uio_iovcnt > UIO_MAXIOV) {
 			printf("%s,%d: %d uio_iovcnt > UIO_MAXIOV", __FILE__, __LINE__,
 			       uiop->uio_iovcnt);
+			crp->crp_etype = EFBIG;
 			goto done;
 		}
+		break;
+	default:
+		break;
 	}
 
-	/* point our enccrd and maccrd appropriately */
-	crd = crp->crp_desc;
-	if (crd->crd_alg == od->octo_encalg) enccrd = crd;
-	if (crd->crd_alg == od->octo_macalg) maccrd = crd;
-	crd = crd->crd_next;
-	if (crd) {
-		if (crd->crd_alg == od->octo_encalg) enccrd = crd;
-		if (crd->crd_alg == od->octo_macalg) maccrd = crd;
-		crd = crd->crd_next;
-	}
-	if (crd) {
-		crp->crp_etype = EINVAL;
-		dprintf("%s,%d: ENOENT - descriptors do not match session\n",
-				__FILE__, __LINE__);
-		goto done;
-	}
-
-	if (enccrd) {
-		if (enccrd->crd_flags & CRD_F_IV_EXPLICIT) {
-			ivp = enccrd->crd_iv;
-		} else {
+	if (csp->csp_cipher_alg != 0) {
+		if (crp->crp_flags & CRYPTO_F_IV_SEPARATE)
+			ivp = crp->crp_iv;
+		else {
+			crypto_copydata(crp, crp->crp_iv_start, csp->csp_ivlen,
+			    iv_data);
 			ivp = iv_data;
-			crypto_copydata(crp->crp_flags, crp->crp_buf,
-					enccrd->crd_inject, od->octo_ivsize, (caddr_t) ivp);
 		}
-
-		if (maccrd) {
-			auth_off = maccrd->crd_skip;
-			auth_len = maccrd->crd_len;
-			icv_off  = maccrd->crd_inject;
-		}
-
-		crypt_off = enccrd->crd_skip;
-		crypt_len = enccrd->crd_len;
-	} else { /* if (maccrd) */
-		auth_off = maccrd->crd_skip;
-		auth_len = maccrd->crd_len;
-		icv_off  = maccrd->crd_inject;
 	}
 
 	/*
 	 * setup the I/O vector to cover the buffer
 	 */
-	if (crp->crp_flags & CRYPTO_F_IMBUF) {
+	switch (crp->crp_buf.cb_type) {
+	case CRYPTO_BUF_MBUF:
 		iovcnt = 0;
 		iovlen = 0;
 
@@ -452,7 +352,8 @@ cryptocteon_process(device_t dev, struct cryptop *crp, int hint)
 			m = m->m_next;
 			iovlen += od->octo_iov[iovcnt++].iov_len;
 		}
-	} else if (crp->crp_flags & CRYPTO_F_IOV) {
+		break;
+	case CRYPTO_BUF_UIO:
 		iovlen = 0;
 		for (iovcnt = 0; iovcnt < uiop->uio_iovcnt; iovcnt++) {
 			od->octo_iov[iovcnt].iov_base = uiop->uio_iov[iovcnt].iov_base;
@@ -460,47 +361,45 @@ cryptocteon_process(device_t dev, struct cryptop *crp, int hint)
 
 			iovlen += od->octo_iov[iovcnt].iov_len;
 		}
-	} else {
-		iovlen = crp->crp_ilen;
-		od->octo_iov[0].iov_base = crp->crp_buf;
-		od->octo_iov[0].iov_len = crp->crp_ilen;
+		break;
+	case CRYPTO_BUF_CONTIG:
+		iovlen = crp->crp_buf.cb_buf_len;
+		od->octo_iov[0].iov_base = crp->crp_buf.cb_buf;
+		od->octo_iov[0].iov_len = crp->crp_buf.cb_buf_len;
 		iovcnt = 1;
+		break;
+	default:
+		panic("can't happen");
 	}
-
 
 	/*
 	 * setup a new explicit key
 	 */
-	if (enccrd) {
-		if (enccrd->crd_flags & CRD_F_KEY_EXPLICIT) {
-			od->octo_encklen = (enccrd->crd_klen + 7) / 8;
-			memcpy(od->octo_enckey, enccrd->crd_key, od->octo_encklen);
-		}
-	}
-	if (maccrd) {
-		if (maccrd->crd_flags & CRD_F_KEY_EXPLICIT) {
-			od->octo_macklen = (maccrd->crd_klen + 7) / 8;
-			memcpy(od->octo_mackey, maccrd->crd_key, od->octo_macklen);
-			od->octo_mackey_set = 0;
-		}
-		if (!od->octo_mackey_set) {
-			octo_calc_hash(maccrd->crd_alg == CRYPTO_MD5_HMAC ? 0 : 1,
-				maccrd->crd_key, od->octo_hminner, od->octo_hmouter);
-			od->octo_mackey_set = 1;
-		}
-	}
+	if (crp->crp_cipher_key != NULL)
+		memcpy(od->octo_enckey, crp->crp_cipher_key, od->octo_encklen);
+	if (crp->crp_auth_key != NULL)
+		cryptocteon_calc_hash(csp, crp->crp_auth_key, od);
 
-
-	if (!enccrd || (enccrd->crd_flags & CRD_F_ENCRYPT))
+	if (CRYPTO_OP_IS_ENCRYPT(crp->crp_op))
 		(*od->octo_encrypt)(od, od->octo_iov, iovcnt, iovlen,
-				auth_off, auth_len, crypt_off, crypt_len, icv_off, ivp);
+		    auth_off, auth_len, crypt_off, crypt_len, icv, ivp);
 	else
 		(*od->octo_decrypt)(od, od->octo_iov, iovcnt, iovlen,
-				auth_off, auth_len, crypt_off, crypt_len, icv_off, ivp);
+		    auth_off, auth_len, crypt_off, crypt_len, icv, ivp);
 
+	if (csp->csp_auth_alg != 0) {
+		if (crp->crp_op & CRYPTO_OP_VERIFY_DIGEST) {
+			crypto_copydata(crp, crp->crp_digest_start,
+			    od->octo_mlen, icv2);
+			if (timingsafe_bcmp(icv, icv2, od->octo_mlen) != 0)
+				crp->crp_etype = EBADMSG;
+		} else
+			crypto_copyback(crp, crp->crp_digest_start,
+			    od->octo_mlen, icv);
+	}
 done:
 	crypto_done(crp);
-	return 0;
+	return (0);
 }
 
 static device_method_t cryptocteon_methods[] = {
@@ -510,10 +409,9 @@ static device_method_t cryptocteon_methods[] = {
 	DEVMETHOD(device_attach,	cryptocteon_attach),
 
 	/* crypto device methods */
+	DEVMETHOD(cryptodev_probesession, cryptocteon_probesession),
 	DEVMETHOD(cryptodev_newsession,	cryptocteon_newsession),
-	DEVMETHOD(cryptodev_freesession,cryptocteon_freesession),
 	DEVMETHOD(cryptodev_process,	cryptocteon_process),
-
 	{ 0, 0 }
 };
 

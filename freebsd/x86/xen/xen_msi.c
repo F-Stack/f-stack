@@ -30,6 +30,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
@@ -44,15 +45,22 @@ __FBSDID("$FreeBSD$");
 #include <machine/specialreg.h>
 #include <dev/pci/pcivar.h>
 
+#include <xen/xen-os.h>
 #include <xen/xen_intr.h>
 #include <xen/xen_msi.h>
 
 static struct mtx msi_lock;
-static int msi_last_irq;
+static u_int msi_last_irq;
 
 void
 xen_msi_init(void)
 {
+
+	MPASS(num_io_irqs > 0);
+	first_msi_irq = num_io_irqs;
+	if (num_msi_irqs > UINT_MAX - first_msi_irq)
+		panic("num_msi_irqs too high");
+	num_io_irqs = first_msi_irq + num_msi_irqs;
 
 	mtx_init(&msi_lock, "msi", NULL, MTX_DEF);
 }
@@ -68,14 +76,14 @@ xen_msi_alloc(device_t dev, int count, int maxcount, int *irqs)
 	mtx_lock(&msi_lock);
 
 	/* If we would exceed the max, give up. */
-	if ((msi_last_irq + count) > NUM_MSI_INTS) {
+	if (msi_last_irq + count > num_msi_irqs) {
 		mtx_unlock(&msi_lock);
 		return (ENXIO);
 	}
 
 	/* Allocate MSI vectors */
 	for (i = 0; i < count; i++)
-		irqs[i] = FIRST_MSI_INT + msi_last_irq++;
+		irqs[i] = first_msi_irq + msi_last_irq++;
 
 	mtx_unlock(&msi_lock);
 

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
  *
@@ -31,7 +33,7 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_capsicum.h"
-#include "opt_compat.h"
+#include "opt_printf.h"
 
 #include <sys/param.h>
 #include <sys/capsicum.h>
@@ -65,6 +67,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/ucred.h>
 #include <sys/vnode.h>
 
+#include <fs/devfs/devfs.h>
+
 #include <machine/stdarg.h>
 
 static MALLOC_DEFINE(M_TTY, "tty", "tty device");
@@ -91,9 +95,13 @@ static const char	*dev_console_filename;
 			FLUSHO|NOKERNINFO|NOFLSH)
 #define TTYSUP_CFLAG	(CIGNORE|CSIZE|CSTOPB|CREAD|PARENB|PARODD|\
 			HUPCL|CLOCAL|CCTS_OFLOW|CRTS_IFLOW|CDTR_IFLOW|\
-			CDSR_OFLOW|CCAR_OFLOW)
+			CDSR_OFLOW|CCAR_OFLOW|CNO_RTSDTR)
 
 #define	TTY_CALLOUT(tp,d) (dev2unit(d) & TTYUNIT_CALLOUT)
+
+static int  tty_drainwait = 5 * 60;
+SYSCTL_INT(_kern, OID_AUTO, tty_drainwait, CTLFLAG_RWTUN,
+    &tty_drainwait, 0, "Default output drain timeout in seconds");
 
 /*
  * Set TTY buffer sizes.
@@ -101,58 +109,97 @@ static const char	*dev_console_filename;
 
 #define	TTYBUF_MAX	65536
 
-static void
+#ifdef PRINTF_BUFR_SIZE
+#define	TTY_PRBUF_SIZE	PRINTF_BUFR_SIZE
+#else
+#define	TTY_PRBUF_SIZE	256
+#endif
+
+/*
+ * Allocate buffer space if necessary, and set low watermarks, based on speed.
+ * Note that the ttyxxxq_setsize() functions may drop and then reacquire the tty
+ * lock during memory allocation.  They will return ENXIO if the tty disappears
+ * while unlocked.
+ */
+static int
 tty_watermarks(struct tty *tp)
 {
 	size_t bs = 0;
+	int error;
 
-	/* Provide an input buffer for 0.2 seconds of data. */
+	/* Provide an input buffer for 2 seconds of data. */
 	if (tp->t_termios.c_cflag & CREAD)
 		bs = MIN(tp->t_termios.c_ispeed / 5, TTYBUF_MAX);
-	ttyinq_setsize(&tp->t_inq, tp, bs);
+	error = ttyinq_setsize(&tp->t_inq, tp, bs);
+	if (error != 0)
+		return (error);
 
 	/* Set low watermark at 10% (when 90% is available). */
 	tp->t_inlow = (ttyinq_getallocatedsize(&tp->t_inq) * 9) / 10;
 
-	/* Provide an output buffer for 0.2 seconds of data. */
+	/* Provide an output buffer for 2 seconds of data. */
 	bs = MIN(tp->t_termios.c_ospeed / 5, TTYBUF_MAX);
-	ttyoutq_setsize(&tp->t_outq, tp, bs);
+	error = ttyoutq_setsize(&tp->t_outq, tp, bs);
+	if (error != 0)
+		return (error);
 
 	/* Set low watermark at 10% (when 90% is available). */
 	tp->t_outlow = (ttyoutq_getallocatedsize(&tp->t_outq) * 9) / 10;
+
+	return (0);
 }
 
 static int
 tty_drain(struct tty *tp, int leaving)
 {
-	size_t bytesused;
+	sbintime_t timeout_at;
+	size_t bytes;
 	int error;
 
 	if (ttyhook_hashook(tp, getc_inject))
 		/* buffer is inaccessible */
 		return (0);
 
-	while (ttyoutq_bytesused(&tp->t_outq) > 0 || ttydevsw_busy(tp)) {
-		ttydevsw_outwakeup(tp);
-		/* Could be handled synchronously. */
-		bytesused = ttyoutq_bytesused(&tp->t_outq);
-		if (bytesused == 0 && !ttydevsw_busy(tp))
+	/*
+	 * For close(), use the recent historic timeout of "1 second without
+	 * making progress".  For tcdrain(), use t_drainwait as the timeout,
+	 * with zero meaning "no timeout" which gives POSIX behavior.
+	 */
+	if (leaving)
+		timeout_at = getsbinuptime() + SBT_1S;
+	else if (tp->t_drainwait != 0)
+		timeout_at = getsbinuptime() + SBT_1S * tp->t_drainwait;
+	else
+		timeout_at = 0;
+
+	/*
+	 * Poll the output buffer and the hardware for completion, at 10 Hz.
+	 * Polling is required for devices which are not able to signal an
+	 * interrupt when the transmitter becomes idle (most USB serial devs).
+	 * The unusual structure of this loop ensures we check for busy one more
+	 * time after tty_timedwait() returns EWOULDBLOCK, so that success has
+	 * higher priority than timeout if the IO completed in the last 100mS.
+	 */
+	error = 0;
+	bytes = ttyoutq_bytesused(&tp->t_outq);
+	for (;;) {
+		if (ttyoutq_bytesused(&tp->t_outq) == 0 && !ttydevsw_busy(tp))
 			return (0);
-
-		/* Wait for data to be drained. */
-		if (leaving) {
-			error = tty_timedwait(tp, &tp->t_outwait, hz);
-			if (error == EWOULDBLOCK &&
-			    ttyoutq_bytesused(&tp->t_outq) < bytesused)
-				error = 0;
-		} else
-			error = tty_wait(tp, &tp->t_outwait);
-
-		if (error)
+		if (error != 0)
 			return (error);
+		ttydevsw_outwakeup(tp);
+		error = tty_timedwait(tp, &tp->t_outwait, hz / 10);
+		if (error != 0 && error != EWOULDBLOCK)
+			return (error);
+		else if (timeout_at == 0 || getsbinuptime() < timeout_at)
+			error = 0;
+		else if (leaving && ttyoutq_bytesused(&tp->t_outq) < bytes) {
+			/* In close, making progress, grant an extra second. */
+			error = 0;
+			timeout_at += SBT_1S;
+			bytes = ttyoutq_bytesused(&tp->t_outq);
+		}
 	}
-
-	return (0);
 }
 
 /*
@@ -183,7 +230,7 @@ static void
 ttydev_leave(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (tty_opened(tp) || tp->t_flags & TF_OPENCLOSE) {
 		/* Device is still opened somewhere. */
@@ -192,9 +239,6 @@ ttydev_leave(struct tty *tp)
 	}
 
 	tp->t_flags |= TF_OPENCLOSE;
-
-	/* Stop asynchronous I/O. */
-	funsetown(&tp->t_sigio);
 
 	/* Remove console TTY. */
 	if (constty == tp)
@@ -287,14 +331,17 @@ ttydev_open(struct cdev *dev, int oflags, int devtype __unused,
 		if (TTY_CALLOUT(tp, dev) || dev == dev_console)
 			tp->t_termios.c_cflag |= CLOCAL;
 
-		ttydevsw_modem(tp, SER_DTR|SER_RTS, 0);
+		if ((tp->t_termios.c_cflag & CNO_RTSDTR) == 0)
+			ttydevsw_modem(tp, SER_DTR|SER_RTS, 0);
 
 		error = ttydevsw_open(tp);
 		if (error != 0)
 			goto done;
 
 		ttydisc_open(tp);
-		tty_watermarks(tp); /* XXXGL: drops lock */
+		error = tty_watermarks(tp);
+		if (error != 0)
+			goto done;
 	}
 
 	/* Wait for Carrier Detect. */
@@ -368,7 +415,7 @@ static __inline int
 tty_is_ctty(struct tty *tp, struct proc *p)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	return (p->p_session == tp->t_session && p->p_flag & P_CONTROLT);
 }
@@ -376,16 +423,30 @@ tty_is_ctty(struct tty *tp, struct proc *p)
 int
 tty_wait_background(struct tty *tp, struct thread *td, int sig)
 {
-	struct proc *p = td->td_proc;
+	struct proc *p;
 	struct pgrp *pg;
 	ksiginfo_t ksi;
 	int error;
 
 	MPASS(sig == SIGTTIN || sig == SIGTTOU);
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
+	p = td->td_proc;
 	for (;;) {
+		pg = p->p_pgrp;
+		PGRP_LOCK(pg);
 		PROC_LOCK(p);
+
+		/*
+		 * pg may no longer be our process group.
+		 * Re-check after locking.
+		 */
+		if (p->p_pgrp != pg) {
+			PROC_UNLOCK(p);
+			PGRP_UNLOCK(pg);
+			continue;
+		}
+
 		/*
 		 * The process should only sleep, when:
 		 * - This terminal is the controlling terminal
@@ -398,6 +459,7 @@ tty_wait_background(struct tty *tp, struct thread *td, int sig)
 		if (!tty_is_ctty(tp, p) || p->p_pgrp == tp->t_pgrp) {
 			/* Allow the action to happen. */
 			PROC_UNLOCK(p);
+			PGRP_UNLOCK(pg);
 			return (0);
 		}
 
@@ -405,13 +467,15 @@ tty_wait_background(struct tty *tp, struct thread *td, int sig)
 		    SIGISMEMBER(td->td_sigmask, sig)) {
 			/* Only allow them in write()/ioctl(). */
 			PROC_UNLOCK(p);
+			PGRP_UNLOCK(pg);
 			return (sig == SIGTTOU ? 0 : EIO);
 		}
 
-		pg = p->p_pgrp;
-		if (p->p_flag & P_PPWAIT || pg->pg_jobc == 0) {
+		if ((p->p_flag & P_PPWAIT) != 0 ||
+		    (pg->pg_flags & PGRP_ORPHANED) != 0) {
 			/* Don't allow the action to happen. */
 			PROC_UNLOCK(p);
+			PGRP_UNLOCK(pg);
 			return (EIO);
 		}
 		PROC_UNLOCK(p);
@@ -426,7 +490,7 @@ tty_wait_background(struct tty *tp, struct thread *td, int sig)
 			ksi.ksi_signo = sig;
 			sig = 0;
 		}
-		PGRP_LOCK(pg);
+
 		pgsignal(pg, ksi.ksi_signo, 1, &ksi);
 		PGRP_UNLOCK(pg);
 
@@ -652,7 +716,7 @@ tty_kqops_read_event(struct knote *kn, long hint __unused)
 {
 	struct tty *tp = kn->kn_hook;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (tty_gone(tp) || tp->t_flags & TF_ZOMBIE) {
 		kn->kn_flags |= EV_EOF;
@@ -676,7 +740,7 @@ tty_kqops_write_event(struct knote *kn, long hint __unused)
 {
 	struct tty *tp = kn->kn_hook;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (tty_gone(tp)) {
 		kn->kn_flags |= EV_EOF;
@@ -1011,10 +1075,13 @@ tty_alloc_mutex(struct ttydevsw *tsw, void *sc, struct mtx *mutex)
 	PATCH_FUNC(busy);
 #undef PATCH_FUNC
 
-	tp = malloc(sizeof(struct tty), M_TTY, M_WAITOK|M_ZERO);
+	tp = malloc(sizeof(struct tty) + TTY_PRBUF_SIZE, M_TTY,
+	    M_WAITOK | M_ZERO);
+	tp->t_prbufsz = TTY_PRBUF_SIZE;
 	tp->t_devsw = tsw;
 	tp->t_devswsoftc = sc;
 	tp->t_flags = tsw->tsw_flags;
+	tp->t_drainwait = tty_drainwait;
 
 	tty_init_termios(tp);
 
@@ -1074,7 +1141,7 @@ tty_rel_free(struct tty *tp)
 {
 	struct cdev *dev;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 #define	TF_ACTIVITY	(TF_GONE|TF_OPENED|TF_HOOK|TF_OPENCLOSE)
 	if (tp->t_sessioncnt != 0 || (tp->t_flags & TF_ACTIVITY) != TF_GONE) {
@@ -1082,6 +1149,9 @@ tty_rel_free(struct tty *tp)
 		tty_unlock(tp);
 		return;
 	}
+
+	/* Stop asynchronous I/O. */
+	funsetown(&tp->t_sigio);
 
 	/* TTY can be deallocated. */
 	dev = tp->t_dev;
@@ -1102,7 +1172,7 @@ tty_rel_pgrp(struct tty *tp, struct pgrp *pg)
 {
 
 	MPASS(tp->t_sessioncnt > 0);
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (tp->t_pgrp == pg)
 		tp->t_pgrp = NULL;
@@ -1129,6 +1199,7 @@ void
 tty_rel_gone(struct tty *tp)
 {
 
+	tty_assert_locked(tp);
 	MPASS(!tty_gone(tp));
 
 	/* Simulate carrier removal. */
@@ -1143,6 +1214,71 @@ tty_rel_gone(struct tty *tp)
 	tty_rel_free(tp);
 }
 
+static int
+tty_drop_ctty(struct tty *tp, struct proc *p)
+{
+	struct session *session;
+	struct vnode *vp;
+
+	/*
+	 * This looks terrible, but it's generally safe as long as the tty
+	 * hasn't gone away while we had the lock dropped.  All of our sanity
+	 * checking that this operation is OK happens after we've picked it back
+	 * up, so other state changes are generally not fatal and the potential
+	 * for this particular operation to happen out-of-order in a
+	 * multithreaded scenario is likely a non-issue.
+	 */
+	tty_unlock(tp);
+	sx_xlock(&proctree_lock);
+	tty_lock(tp);
+	if (tty_gone(tp)) {
+		sx_xunlock(&proctree_lock);
+		return (ENODEV);
+	}
+
+	/*
+	 * If the session doesn't have a controlling TTY, or if we weren't
+	 * invoked on the controlling TTY, we'll return ENOIOCTL as we've
+	 * historically done.
+	 */
+	session = p->p_session;
+	if (session->s_ttyp == NULL || session->s_ttyp != tp) {
+		sx_xunlock(&proctree_lock);
+		return (ENOTTY);
+	}
+
+	if (!SESS_LEADER(p)) {
+		sx_xunlock(&proctree_lock);
+		return (EPERM);
+	}
+
+	PROC_LOCK(p);
+	SESS_LOCK(session);
+	vp = session->s_ttyvp;
+	session->s_ttyp = NULL;
+	session->s_ttyvp = NULL;
+	session->s_ttydp = NULL;
+	SESS_UNLOCK(session);
+
+	tp->t_sessioncnt--;
+	p->p_flag &= ~P_CONTROLT;
+	PROC_UNLOCK(p);
+	sx_xunlock(&proctree_lock);
+
+	/*
+	 * If we did have a vnode, release our reference.  Ordinarily we manage
+	 * these at the devfs layer, but we can't necessarily know that we were
+	 * invoked on the vnode referenced in the session (i.e. the vnode we
+	 * hold a reference to).  We explicitly don't check VBAD/VIRF_DOOMED here
+	 * to avoid a vnode leak -- in circumstances elsewhere where we'd hit a
+	 * VIRF_DOOMED vnode, release has been deferred until the controlling TTY
+	 * is either changed or released.
+	 */
+	if (vp != NULL)
+		devfs_ctty_unref(vp);
+	return (0);
+}
+
 /*
  * Exposing information about current TTY's through sysctl
  */
@@ -1151,7 +1287,7 @@ static void
 tty_to_xtty(struct tty *tp, struct xtty *xt)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	xt->xt_size = sizeof(struct xtty);
 	xt->xt_insize = ttyinq_getsize(&tp->t_inq);
@@ -1165,7 +1301,7 @@ tty_to_xtty(struct tty *tp, struct xtty *xt)
 	xt->xt_pgid = tp->t_pgrp ? tp->t_pgrp->pg_id : 0;
 	xt->xt_sid = tp->t_session ? tp->t_session->s_sid : 0;
 	xt->xt_flags = tp->t_flags;
-	xt->xt_dev = tp->t_dev ? dev2udev(tp->t_dev) : NODEV;
+	xt->xt_dev = tp->t_dev ? dev2udev(tp->t_dev) : (uint32_t)NODEV;
 }
 
 static int
@@ -1342,15 +1478,23 @@ void
 tty_signal_sessleader(struct tty *tp, int sig)
 {
 	struct proc *p;
+	struct session *s;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(sig >= 1 && sig < NSIG);
 
 	/* Make signals start output again. */
 	tp->t_flags &= ~TF_STOPPED;
+	tp->t_termios.c_lflag &= ~FLUSHO;
 
-	if (tp->t_session != NULL && tp->t_session->s_leader != NULL) {
-		p = tp->t_session->s_leader;
+	/*
+	 * Load s_leader exactly once to avoid race where s_leader is
+	 * set to NULL by a concurrent invocation of killjobc() by the
+	 * session leader.  Note that we are not holding t_session's
+	 * lock for the read.
+	 */
+	if ((s = tp->t_session) != NULL &&
+	    (p = atomic_load_ptr(&s->s_leader)) != NULL) {
 		PROC_LOCK(p);
 		kern_psignal(p, sig);
 		PROC_UNLOCK(p);
@@ -1362,11 +1506,12 @@ tty_signal_pgrp(struct tty *tp, int sig)
 {
 	ksiginfo_t ksi;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(sig >= 1 && sig < NSIG);
 
 	/* Make signals start output again. */
 	tp->t_flags &= ~TF_STOPPED;
+	tp->t_termios.c_lflag &= ~FLUSHO;
 
 	if (sig == SIGINFO && !(tp->t_termios.c_lflag & NOKERNINFO))
 		tty_info(tp);
@@ -1602,7 +1747,9 @@ tty_generic_ioctl(struct tty *tp, u_long cmd, void *data, int fflag,
 			tp->t_termios.c_ospeed = t->c_ospeed;
 
 			/* Baud rate has changed - update watermarks. */
-			tty_watermarks(tp);
+			error = tty_watermarks(tp);
+			if (error)
+				return (error);
 		}
 
 		/* Copy new non-device driver parameters. */
@@ -1655,6 +1802,8 @@ tty_generic_ioctl(struct tty *tp, u_long cmd, void *data, int fflag,
 		MPASS(tp->t_session);
 		*(int *)data = tp->t_session->s_sid;
 		return (0);
+	case TIOCNOTTY:
+		return (tty_drop_ctty(tp, td->td_proc));
 	case TIOCSCTTY: {
 		struct proc *p = td->td_proc;
 
@@ -1697,7 +1846,6 @@ tty_generic_ioctl(struct tty *tp, u_long cmd, void *data, int fflag,
 		tp->t_session = p->p_session;
 		tp->t_session->s_ttyp = tp;
 		tp->t_sessioncnt++;
-		sx_xunlock(&proctree_lock);
 
 		/* Assign foreground process group. */
 		tp->t_pgrp = p->p_pgrp;
@@ -1705,6 +1853,7 @@ tty_generic_ioctl(struct tty *tp, u_long cmd, void *data, int fflag,
 		p->p_flag |= P_CONTROLT;
 		PROC_UNLOCK(p);
 
+		sx_xunlock(&proctree_lock);
 		return (0);
 	}
 	case TIOCSPGRP: {
@@ -1755,6 +1904,14 @@ tty_generic_ioctl(struct tty *tp, u_long cmd, void *data, int fflag,
 	case TIOCDRAIN:
 		/* Drain TTY output. */
 		return tty_drain(tp, 0);
+	case TIOCGDRAINWAIT:
+		*(int *)data = tp->t_drainwait;
+		return (0);
+	case TIOCSDRAINWAIT:
+		error = priv_check(td, PRIV_TTY_DRAINWAIT);
+		if (error == 0)
+			tp->t_drainwait = *(int *)data;
+		return (error);
 	case TIOCCONS:
 		/* Set terminal as console TTY. */
 		if (*(int *)data) {
@@ -1799,6 +1956,7 @@ tty_generic_ioctl(struct tty *tp, u_long cmd, void *data, int fflag,
 		return (0);
 	case TIOCSTART:
 		tp->t_flags &= ~TF_STOPPED;
+		tp->t_termios.c_lflag &= ~FLUSHO;
 		ttydevsw_outwakeup(tp);
 		ttydevsw_pktnotify(tp, TIOCPKT_START);
 		return (0);
@@ -1828,7 +1986,7 @@ tty_ioctl(struct tty *tp, u_long cmd, void *data, int fflag, struct thread *td)
 {
 	int error;
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 
 	if (tty_gone(tp))
 		return (ENXIO);
@@ -1929,8 +2087,8 @@ ttyhook_register(struct tty **rtp, struct proc *p, int fd, struct ttyhook *th,
 
 	/* Validate the file descriptor. */
 	fdp = p->p_fd;
-	error = fget_unlocked(fdp, fd, cap_rights_init(&rights, CAP_TTYHOOK),
-	    &fp, NULL);
+	error = fget_unlocked(fdp, fd, cap_rights_init_one(&rights, CAP_TTYHOOK),
+	    &fp);
 	if (error != 0)
 		return (error);
 	if (fp->f_ops == &badfileops) {
@@ -1995,7 +2153,7 @@ void
 ttyhook_unregister(struct tty *tp)
 {
 
-	tty_lock_assert(tp, MA_OWNED);
+	tty_assert_locked(tp);
 	MPASS(tp->t_flags & TF_HOOK);
 
 	/* Disconnect the hook. */
@@ -2238,9 +2396,8 @@ DB_SHOW_COMMAND(tty, db_show_tty)
 	_db_show_hooks("\t", tp->t_hook);
 
 	/* Process info. */
-	db_printf("\tpgrp: %p gid %d jobc %d\n", tp->t_pgrp,
-	    tp->t_pgrp ? tp->t_pgrp->pg_id : 0,
-	    tp->t_pgrp ? tp->t_pgrp->pg_jobc : 0);
+	db_printf("\tpgrp: %p gid %d\n", tp->t_pgrp,
+	    tp->t_pgrp ? tp->t_pgrp->pg_id : 0);
 	db_printf("\tsession: %p", tp->t_session);
 	if (tp->t_session != NULL)
 	    db_printf(" count %u leader %p tty %p sid %d login %s",
