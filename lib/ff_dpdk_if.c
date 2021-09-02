@@ -1402,7 +1402,7 @@ process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
         process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
     }
 
-    return 0;
+    return nb_rb;
 }
 
 static inline void
@@ -1884,7 +1884,7 @@ main_loop(void *arg)
             }
 #endif
 
-            process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
+            idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
