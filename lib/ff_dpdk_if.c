@@ -1281,8 +1281,8 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
         if (!pkts_from_ring) {
-            ff_traffic.rx_packets++;
-            ff_traffic.rx_bytes += len;
+            ff_traffic.rx_packets += rtem->nb_segs;
+            ff_traffic.rx_bytes += rte_pktmbuf_pkt_len(rtem);
         }
 
         if (!pkts_from_ring && packet_dispatcher) {
