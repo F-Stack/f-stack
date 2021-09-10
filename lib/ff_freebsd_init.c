@@ -47,6 +47,14 @@
 #include "ff_api.h"
 #include "ff_config.h"
 
+#include <sys/socketvar.h>
+#include <sys/sockio.h>
+#include <net/if.h>
+#include <net/if_var.h>
+#include <netinet/in_var.h>
+
+int lo_set_defaultaddr(void);
+
 int ff_freebsd_init(void);
 
 extern void mutex_init(void);
@@ -63,6 +71,52 @@ int uma_page_mask;
 extern cpuset_t all_cpus;
 
 long physmem;
+
+int lo_set_defaultaddr(void)
+{
+    struct in_aliasreq req;
+    char *addr="127.0.0.1";
+    char *netmask="255.0.0.0";
+    struct ifnet *ifp=NULL;
+    int ret;
+	
+    IFNET_WLOCK();
+    TAILQ_FOREACH(ifp, &V_ifnet, if_link)
+        if ( (ifp->if_flags & IFF_LOOPBACK) != 0 )
+            break;
+    IFNET_WUNLOCK();
+
+    if(ifp == NULL)
+        return -1;
+ 
+    bzero(&req, sizeof req);
+    strcpy(req.ifra_name, ifp->if_xname);
+	
+    struct sockaddr_in sa;
+    bzero(&sa, sizeof(sa));
+	
+    sa.sin_len = sizeof(sa);
+    sa.sin_family = AF_INET;
+    
+    inet_pton(AF_INET, addr, &sa.sin_addr.s_addr);
+    bcopy(&sa, &req.ifra_addr, sizeof(sa));
+
+    inet_pton(AF_INET, netmask, &sa.sin_addr.s_addr);
+    bcopy(&sa, &req.ifra_mask, sizeof(sa));
+
+    //sa.sin_addr.s_addr = sc->broadcast;
+    //bcopy(&sa, &req.ifra_broadaddr, sizeof(sa));
+
+    struct socket *so = NULL;
+    ret = socreate(AF_INET, &so, SOCK_DGRAM, 0, curthread->td_ucred, curthread);
+    if(ret != 0)
+        return ret;
+
+    ret = ifioctl(so, SIOCAIFADDR, (caddr_t)&req, curthread);
+    sofree(so);
+
+    return ret;
+}
 
 int
 ff_freebsd_init(void)
@@ -124,6 +178,10 @@ ff_freebsd_init(void)
 
         cur = cur->next;
     }
+
+    error = lo_set_defaultaddr();
+    if(error != 0)
+        printf("set loopback port default addr failed!");
 
     return (0);
 }
