@@ -2,6 +2,16 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+2021.09 F-Stack v1.21.1
+
+   1. F-Stack lib:
+
+  - lo port is added 127.0.0.1 when freebsd init.
+
+   2. DPDK:
+
+  - MLX5: modify if_indextoname syscall to support F-Stack tools.
+
 2021.01 F-Stack v1.21
 
     1. F-Stack lib:
