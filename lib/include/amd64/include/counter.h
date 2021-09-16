@@ -29,7 +29,11 @@
 
 #include <sys/pcpu.h>
 
-#define EARLY_COUNTER   (void *)__offsetof(struct pcpu, pc_early_dummy_counter)
+#define	EARLY_COUNTER   &pcpup->pc_early_dummy_counter
+
+#define	COUNTER_U64_DEFINE_EARLY(c)         \
+    counter_u64_t __read_mostly c = (void *)__offsetof(struct pcpu, pc_early_dummy_counter);        \
+    COUNTER_U64_SYSINIT(c)
 
 #define counter_enter()    do {} while (0)
 #define counter_exit()    do {} while (0)

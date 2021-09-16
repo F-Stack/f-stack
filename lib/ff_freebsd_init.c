@@ -96,6 +96,7 @@ ff_freebsd_init(void)
 
     pcpup = malloc(sizeof(struct pcpu), M_DEVBUF, M_ZERO);
     pcpu_init(pcpup, 0, sizeof(struct pcpu));
+    PCPU_SET(prvspace, pcpup);
     CPU_SET(0, &all_cpus);
 
     ff_init_thread0();

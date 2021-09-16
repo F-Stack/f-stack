@@ -80,9 +80,11 @@ int64_t	counter_ratecheck(struct counter_rate *, int64_t);
 	SYSUNINIT(c##_counter_sysuninit, SI_SUB_COUNTER,	\
 	    SI_ORDER_ANY, counter_u64_sysuninit, &c)
 
+#ifndef FSTACK
 #define	COUNTER_U64_DEFINE_EARLY(c)				\
 	counter_u64_t __read_mostly c = EARLY_COUNTER;		\
 	COUNTER_U64_SYSINIT(c)
+#endif
 
 void counter_u64_sysinit(void *);
 void counter_u64_sysuninit(void *);
