@@ -31,6 +31,7 @@
 #include_next <machine/pcpu.h>
 
 #undef __curthread
+#undef get_pcpu
 #undef PCPU_GET
 #undef PCPU_ADD
 #undef PCPU_INC
@@ -39,6 +40,8 @@
 
 extern __thread struct thread *pcurthread;
 extern struct pcpu *pcpup;
+
+#define	get_pcpu()              (pcpup->pc_ ## prvspace)
 
 #define PCPU_GET(member)         (pcpup->pc_ ## member)
 #define PCPU_ADD(member, val)    (pcpup->pc_ ## member += (val))
