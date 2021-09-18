@@ -753,7 +753,6 @@ lim_hold(struct plimit *limp)
     return (limp);
 }
 
-#if 0
 /*
  * Return the current (soft) limit for a particular system resource.
  * The which parameter which specifies the index into the rlimit array
@@ -766,7 +765,6 @@ lim_cur(struct thread *td, int which)
     lim_rlimit(td, which, &rl);
     return (rl.rlim_cur);
 }
-#endif
 
 rlim_t
 lim_cur_proc(struct proc *p, int which)

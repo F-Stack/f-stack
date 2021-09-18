@@ -191,6 +191,7 @@ FF_SRCS+=                     \
 	ff_kern_subr.c        \
 	ff_kern_synch.c       \
 	ff_kern_timeout.c     \
+	ff_subr_epoch.c       \
 	ff_lock.c             \
 	ff_syscall_wrapper.c  \
 	ff_subr_prf.c         \
@@ -280,7 +281,6 @@ KERN_SRCS+=                 \
 	subr_taskqueue.c    \
 	subr_unit.c         \
 	subr_smr.c          \
-	subr_epoch.c        \
 	sys_capability.c    \
 	sys_generic.c       \
 	sys_socket.c        \

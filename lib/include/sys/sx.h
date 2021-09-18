@@ -3,6 +3,7 @@
  *
  * Copyright (c) 2007 Attilio Rao <attilio@freebsd.org>
  * Copyright (c) 2001 Jason Evans <jasone@freebsd.org>
+ * Copyright (C) 2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
