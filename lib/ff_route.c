@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 1988, 1991, 1993
  *  The Regents of the University of California.  All rights reserved.
- * Copyright (C) 2017 THL A29 Limited, a Tencent company.
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
