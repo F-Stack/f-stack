@@ -129,6 +129,7 @@ struct plimit
 	*lim_alloc(void);
 void	 lim_copy(struct plimit *dst, struct plimit *src);
 rlim_t	 lim_cur(struct thread *td, int which);
+#ifndef FSTACK
 #define lim_cur(td, which)	({					\
 	rlim_t _rlim;							\
 	struct thread *_td = (td);					\
@@ -141,6 +142,7 @@ rlim_t	 lim_cur(struct thread *td, int which);
 	}								\
 	_rlim;								\
 })
+#endif
 
 rlim_t	 lim_cur_proc(struct proc *p, int which);
 void	 lim_fork(struct proc *p1, struct proc *p2);
