@@ -27,12 +27,20 @@ HOST_OS:=$(shell uname -s)
 DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 FF_KNI=1
+
 #FF_FLOW_ISOLATE=1
+
+# NETGRAPH drivers ipfw
 #FF_NETGRAPH=1
 #FF_IPFW=1
+
 #FF_USE_PAGE_ARRAY=1
+
 FF_INET6=1
 
+# TCPHPTS drivers rack and bbr
+FF_TCPHPTS=1
+FF_EXTRA_TCP_STACKS=1
 
 include ${TOPDIR}/mk/kern.pre.mk
 
@@ -86,6 +94,10 @@ CFLAGS+= -DINET
 ifdef FF_INET6
 HOST_CFLAGS+= -DINET6
 CFLAGS+= -DINET6
+endif
+
+ifdef FF_TCPHPTS
+CFLAGS+= -DTCPHPTS -DRATELIMIT
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -170,6 +182,9 @@ VPATH+= $S/netinet/libalias
 VPATH+= $S/netinet/cc
 ifdef FF_INET6
 VPATH+= $S/netinet6
+endif
+ifdef FF_EXTRA_TCP_STACKS
+VPATH+= $S/netinet/tcp_stacks
 endif
 VPATH+= $S/netipsec
 ifdef FF_IPFW
@@ -489,6 +504,19 @@ NETINET6_SRCS+=		\
 	#ip6_ipsec.c
 	#sctp6_usrreq.c
 	#in6_rss.c
+
+ifdef FF_EXTRA_TCP_STACKS
+EXTRA_TCP_STACKS_SRCS+=		\
+	subr_filter.c		\
+	tcp_hpts.c		\
+	tcp_ratelimit.c		\
+	arc4random_uniform.c	\
+	sack_filter.c		\
+	rack_bbr_common.c	\
+	rack.c			\
+	bbr.c
+endif
+
 ifndef FF_KNI
 FF_HOST_SRCS+=         \
         ff_dpdk_kni.c
@@ -568,7 +596,7 @@ MSRCS+= $(patsubst %.m,%.c,${OPENCRYPTO_MSRCS})
 ASM_SRCS = ${CRYPTO_ASM_SRCS}
 
 SRCS=  ${FF_SRCS} ${CRYPTO_SRCS} ${KERN_SRCS} ${LIBKERN_SRCS} ${MACHINE_SRCS}
-SRCS+= ${MSRCS} ${NET_SRCS} ${NETGRAPH_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS}
+SRCS+= ${MSRCS} ${NET_SRCS} ${NETGRAPH_SRCS} ${NETINET_SRCS} ${NETINET6_SRCS} ${EXTRA_TCP_STACKS_SRCS}
 SRCS+= ${NETIPSEC_SRCS} ${NETIPFW_SRCS} ${OPENCRYPTO_SRCS} ${VM_SRCS}
 
 # If witness is enabled.

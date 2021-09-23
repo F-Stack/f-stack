@@ -139,6 +139,11 @@ struct sysctl_oid *rack_sysctl_root;
 #define CUM_ACKED 1
 #define SACKED 2
 
+#ifdef FSTACK
+#define MODNAME tcp_rack
+#define STACKNAME rack
+#endif
+
 /*
  * The RACK module incorporates a number of
  * TCP ideas that have been put out into the IETF
