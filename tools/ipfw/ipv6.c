@@ -42,6 +42,10 @@
 #include <netinet/ip_fw.h>
 #include <arpa/inet.h>
 
+#ifdef FSTACK
+#include "compat.h"
+#endif
+
 #define	CHECK_LENGTH(v, len) do {			\
 	if ((v) < (len))				\
 		errx(EX_DATAERR, "Rule too long");	\
@@ -114,6 +118,7 @@ print_ip6(struct buf_pr *bp, const ipfw_insn_ip6 *cmd)
 		    cmd->o.opcode == O_IP6_DST) ?  128:
 		    contigmask((const uint8_t *)&(a[1]), 128);
 
+#ifndef FSTACK
 		if (mb == 128 && g_co.do_resolv)
 			he = gethostbyaddr((const char *)a, sizeof(*a),
 			    AF_INET6);
@@ -121,14 +126,17 @@ print_ip6(struct buf_pr *bp, const ipfw_insn_ip6 *cmd)
 		if (he != NULL)	     /* resolved to name */
 			bprintf(bp, "%s", he->h_name);
 		else if (mb == 0)	   /* any */
+#else
+		if (mb == 0)	   /* any */
+#endif
 			bprintf(bp, "any");
 		else {	  /* numeric IP followed by some kind of mask */
-			if (inet_ntop(AF_INET6,  a, trad,
+			if (inet_ntop(AF_INET6_LINUX,  a, trad,
 			    sizeof(trad)) == NULL)
 				bprintf(bp, "Error ntop in print_ip6\n");
 			bprintf(bp, "%s",  trad );
 			if (mb < 0) /* mask not contiguous */
-				bprintf(bp, "/%s", inet_ntop(AF_INET6, &a[1],
+				bprintf(bp, "/%s", inet_ntop(AF_INET6_LINUX, &a[1],
 				    trad, sizeof(trad)));
 			else if (mb < 128)
 				bprintf(bp, "/%d", mb);
@@ -302,8 +310,10 @@ lookup_host6 (char *host, struct in6_addr *ip6addr)
 {
 	struct hostent *he;
 
-	if (!inet_pton(AF_INET6, host, ip6addr)) {
+	if (!inet_pton(AF_INET6_LINUX, host, ip6addr)) {
+#ifndef FSTACK
 		if ((he = gethostbyname2(host, AF_INET6)) == NULL)
+#endif
 			return(-1);
 		memcpy(ip6addr, he->h_addr_list[0], sizeof( struct in6_addr));
 	}
@@ -387,7 +397,7 @@ fill_ip6(ipfw_insn_ip6 *cmd, char *av, int cblen, struct tidx *tstate)
 		}
 		/* next, look at the mask, if any */
 		if (md == '/' && strchr(p, ':')) {
-			if (!inet_pton(AF_INET6, p, &d[1]))
+			if (!inet_pton(AF_INET6_LINUX, p, &d[1]))
 				errx(EX_DATAERR, "bad mask \"%s\"", p);
 
 			masklen = contigmask((uint8_t *)&(d[1]), 128);

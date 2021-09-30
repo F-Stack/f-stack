@@ -63,7 +63,9 @@ __FBSDID("$FreeBSD$");
 #include <stdlib.h>
 #include <stdbool.h>
 #include <strings.h>
+#ifndef FSTACK
 #include <kvm.h>
+#endif
 #include <libxo/xo.h>
 #include "netstat.h"
 
@@ -100,6 +102,7 @@ pcblist_sysctl(int type, char **bufp)
 	return (0);
 }
 
+#ifndef FSTACK
 static int
 pcblist_kvm(u_long count_off, u_long gencnt_off, u_long head_off, char **bufp)
 {
@@ -193,6 +196,7 @@ fail:
 #undef COPYOUT
 #undef KREAD
 }
+#endif
 
 void
 unixpr(u_long count_off, u_long gencnt_off, u_long dhead_off, u_long shead_off,
@@ -203,13 +207,16 @@ unixpr(u_long count_off, u_long gencnt_off, u_long dhead_off, u_long shead_off,
 	struct	xsocket *so;
 	struct	xunpgen *xug, *oxug;
 	struct	xunpcb *xunp;
+#ifndef FSTACK
 	u_long	head_off;
+#endif
 
 	buf = NULL;
 	for (type = SOCK_STREAM; type <= SOCK_SEQPACKET; type++) {
 		if (live)
 			ret = pcblist_sysctl(type, &buf);
 		else {
+#ifndef FSTACK
 			head_off = 0;
 			switch (type) {
 			case SOCK_STREAM:
@@ -226,6 +233,7 @@ unixpr(u_long count_off, u_long gencnt_off, u_long dhead_off, u_long shead_off,
 			}
 			ret = pcblist_kvm(count_off, gencnt_off, head_off,
 			    &buf);
+#endif
 		}
 		if (ret == -1)
 			continue;

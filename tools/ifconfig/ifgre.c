@@ -26,7 +26,9 @@
  */
 
 #include <sys/cdefs.h>
+#ifndef FSTACK
 __FBSDID("$FreeBSD$");
+#endif
 
 #include <sys/param.h>
 #include <sys/ioctl.h>
@@ -55,16 +57,30 @@ gre_status(int s)
 
 	opts = 0;
 	ifr.ifr_data = (caddr_t)&opts;
+#ifndef FSTACK
 	if (ioctl(s, GREGKEY, &ifr) == 0)
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(uint32_t);
+	if (ioctl_va(s, GREGKEY, &ifr, 3, offset, ifr.ifr_data, clen) == 0)
+#endif
 		if (opts != 0)
 			printf("\tgrekey: 0x%x (%u)\n", opts, opts);
 	opts = 0;
+#ifndef FSTACK
 	if (ioctl(s, GREGOPTS, &ifr) != 0 || opts == 0)
+#else
+	if (ioctl_va(s, GREGOPTS, &ifr, 3, offset, ifr.ifr_data, clen) != 0 || opts == 0)
+#endif
 		return;
 
 	port = 0;
 	ifr.ifr_data = (caddr_t)&port;
+#ifndef FSTACK
 	if (ioctl(s, GREGPORT, &ifr) == 0 && port != 0)
+#else
+	if (ioctl_va(s, GREGOPTS, &ifr, 3, offset, ifr.ifr_data, clen) != 0 || opts == 0)
+#endif
 		printf("\tudpport: %u\n", port);
 	printb("\toptions", opts, GREBITS);
 	putchar('\n');
@@ -78,7 +94,13 @@ setifgrekey(const char *val, int dummy __unused, int s,
 
 	strlcpy(ifr.ifr_name, name, sizeof (ifr.ifr_name));
 	ifr.ifr_data = (caddr_t)&grekey;
+#ifndef FSTACK
 	if (ioctl(s, GRESKEY, (caddr_t)&ifr) < 0)
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(uint32_t);
+	if (ioctl_va(s, GRESKEY, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) < 0)
+#endif
 		warn("ioctl (set grekey)");
 }
 
@@ -90,7 +112,13 @@ setifgreport(const char *val, int dummy __unused, int s,
 
 	strlcpy(ifr.ifr_name, name, sizeof (ifr.ifr_name));
 	ifr.ifr_data = (caddr_t)&udpport;
+#ifndef FSTACK
 	if (ioctl(s, GRESPORT, (caddr_t)&ifr) < 0)
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(uint32_t);
+	if (ioctl_va(s, GRESPORT, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) < 0)
+#endif
 		warn("ioctl (set udpport)");
 }
 
@@ -100,7 +128,13 @@ setifgreopts(const char *val, int d, int s, const struct afswtch *afp)
 	uint32_t opts;
 
 	ifr.ifr_data = (caddr_t)&opts;
+#ifndef FSTACK
 	if (ioctl(s, GREGOPTS, &ifr) == -1) {
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(uint32_t);
+	if (ioctl_va(s, GREGOPTS, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1) {
+#endif
 		warn("ioctl(GREGOPTS)");
 		return;
 	}
@@ -110,7 +144,11 @@ setifgreopts(const char *val, int d, int s, const struct afswtch *afp)
 	else
 		opts |= d;
 
+#ifndef FSTACK
 	if (ioctl(s, GRESOPTS, &ifr) == -1) {
+#else
+	if (ioctl_va(s, GRESOPTS, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1) {
+#endif
 		warn("ioctl(GIFSOPTS)");
 		return;
 	}

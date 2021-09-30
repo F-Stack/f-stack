@@ -74,6 +74,7 @@ NgMkSockNode(const char *name, int *csp, int *dsp)
 	   If we get an EAFNOSUPPORT then the socket node type is
 	   not loaded, so load it and try again. */
 	if ((cs = socket(AF_NETGRAPH, SOCK_DGRAM, NG_CONTROL)) < 0) {
+#ifndef FSTACK
 		if (errno == EAFNOSUPPORT) {
 			if (kldload(NG_SOCKET_KLD) < 0) {
 				errnosv = errno;
@@ -85,13 +86,16 @@ NgMkSockNode(const char *name, int *csp, int *dsp)
 			if (cs >= 0)
 				goto gotNode;
 		}
+#endif
 		errnosv = errno;
 		if (_gNgDebugLevel >= 1)
 			NGLOG("socket");
 		goto errout;
 	}
 
+#ifndef FSTACK
 gotNode:
+#endif
 	/* Assign the node the desired name, if any */
 	if (name != NULL) {
 		u_char sbuf[NG_NODESIZ + NGSA_OVERHEAD];
@@ -253,10 +257,15 @@ int
 NgAllocRecvData(int ds, u_char **buf, char *hook)
 {
 	int len;
+#ifndef FSTACK
 	socklen_t optlen;
 
 	optlen = sizeof(len);
 	if (getsockopt(ds, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
+#else
+	len = NGCTL_DEFAULT_RCVBUF;
+	if (
+#endif
 	    (*buf = malloc(len)) == NULL)
 		return (-1);
 	if ((len = NgRecvData(ds, *buf, len, hook)) < 0)

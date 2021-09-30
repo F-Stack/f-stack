@@ -28,6 +28,10 @@
  * $FreeBSD$
  */
 
+#ifdef FSTACK
+#include <stdint.h>
+#endif
+
 #include <sys/cdefs.h>
 #include <sys/param.h>
 #include <sys/malloc.h>
@@ -35,7 +39,9 @@
 
 #include <err.h>
 #include <errno.h>
+#ifndef FSTACK
 #include <kvm.h>
+#endif
 #include <nlist.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +50,7 @@
 #include "memstat.h"
 #include "memstat_internal.h"
 
+#ifndef FSTACK
 static int memstat_malloc_zone_count;
 static int memstat_malloc_zone_sizes[32];
 
@@ -63,6 +70,7 @@ static struct nlist namelist[] = {
 	{ .n_name = "_mp_maxcpus" },
 	{ .n_name = "" },
 };
+#endif
 
 /*
  * Extract malloc(9) statistics from the running kernel, and store all memory
@@ -123,10 +131,12 @@ retry:
 		return (-1);
 	}
 
+#ifndef FSTACK
 	if (memstat_malloc_zone_init() == -1) {
 		list->mtl_error = MEMSTAT_ERROR_VERSION;
 		return (-1);
 	}
+#endif
 
 	size = sizeof(*mthp) + count * (sizeof(*mthp) + sizeof(*mtsp) *
 	    maxcpus);
@@ -246,6 +256,7 @@ retry:
 	return (0);
 }
 
+#ifndef FSTACK
 static int
 kread(kvm_t *kvm, void *kvm_pointer, void *address, size_t size,
     size_t offset)
@@ -544,3 +555,5 @@ memstat_malloc_zone_used(const struct memory_type *mtp, size_t n)
 
 	return (0);
 }
+#endif
+

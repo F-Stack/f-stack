@@ -48,6 +48,11 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/ip_fw_nptv6.h>
 #include <arpa/inet.h>
 
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
 
 typedef int (nptv6_cb_t)(ipfw_nptv6_cfg *i, const char *name, uint8_t set);
 static int nptv6_foreach(nptv6_cb_t *f, const char *name, uint8_t set,

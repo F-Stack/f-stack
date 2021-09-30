@@ -451,3 +451,15 @@ void ipfw_list_values(int ac, char *av[]);
 void table_fill_ntlv(struct _ipfw_obj_ntlv *ntlv, const char *name,
     uint8_t set, uint16_t uidx);
 
+#ifdef FSTACK
+    int ff_socket(int domain, int type, int protocol);
+    int ff_getsockopt(int sockfd, int level, int optname,
+        void *optval, socklen_t *optlen);
+    int ff_setsockopt(int sockfd, int level, int optname,
+        const void *optval, socklen_t optlen);
+    
+#define socket(a,b,c) ff_socket(a,b,c)
+#define setsockopt(a,b,c,d,e) ff_setsockopt(a,b,c,d,e)
+#define getsockopt(a,b,c,d,e) ff_getsockopt(a,b,c,d,e)
+#endif
+

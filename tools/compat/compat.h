@@ -105,4 +105,6 @@ const char *getprogname(void);
 
 extern int optreset;
 
+int	 fnmatch(const char *, const char *, int);
+
 #endif

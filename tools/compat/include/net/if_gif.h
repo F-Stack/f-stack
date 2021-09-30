@@ -2,7 +2,10 @@
 /*	$KAME: if_gif.h,v 1.17 2000/09/11 11:36:41 sumikawa Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
+ * Copyright (c) 2018 Andrey V. Elsukov <ae@FreeBSD.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,6 +35,90 @@
 
 #ifndef _NET_IF_GIF_H_
 #define _NET_IF_GIF_H_
+
+#ifdef _KERNEL
+
+struct ip;
+struct ip6_hdr;
+
+extern	void (*ng_gif_input_p)(struct ifnet *ifp, struct mbuf **mp,
+		int af);
+extern	void (*ng_gif_input_orphan_p)(struct ifnet *ifp, struct mbuf *m,
+		int af);
+extern	int  (*ng_gif_output_p)(struct ifnet *ifp, struct mbuf **mp);
+extern	void (*ng_gif_attach_p)(struct ifnet *ifp);
+extern	void (*ng_gif_detach_p)(struct ifnet *ifp);
+
+struct gif_softc {
+	struct ifnet		*gif_ifp;
+	int			gif_family;
+	int			gif_flags;
+	u_int			gif_fibnum;
+	u_int			gif_options;
+	void			*gif_netgraph;	/* netgraph node info */
+	union {
+		void		*hdr;
+		struct ip	*iphdr;
+		struct ip6_hdr	*ip6hdr;
+	} gif_uhdr;
+
+	CK_LIST_ENTRY(gif_softc) chain;
+	CK_LIST_ENTRY(gif_softc) srchash;
+};
+CK_LIST_HEAD(gif_list, gif_softc);
+MALLOC_DECLARE(M_GIF);
+
+#ifndef GIF_HASH_SIZE
+#define	GIF_HASH_SIZE	(1 << 4)
+#endif
+
+#define	GIF2IFP(sc)	((sc)->gif_ifp)
+#define	gif_iphdr	gif_uhdr.iphdr
+#define	gif_hdr		gif_uhdr.hdr
+#define	gif_ip6hdr	gif_uhdr.ip6hdr
+
+#define GIF_MTU		(1280)	/* Default MTU */
+#define	GIF_MTU_MIN	(1280)	/* Minimum MTU */
+#define	GIF_MTU_MAX	(8192)	/* Maximum MTU */
+
+struct etherip_header {
+#if BYTE_ORDER == LITTLE_ENDIAN
+	u_int	eip_resvl:4,	/* reserved */
+		eip_ver:4;	/* version */
+#endif
+#if BYTE_ORDER == BIG_ENDIAN
+	u_int	eip_ver:4,	/* version */
+		eip_resvl:4;	/* reserved */
+#endif
+	u_int8_t eip_resvh;	/* reserved */
+} __packed;
+
+#define ETHERIP_VERSION			0x3
+/* mbuf adjust factor to force 32-bit alignment of IP header */
+#define	ETHERIP_ALIGN		2
+
+#define	GIF_WAIT()	epoch_wait_preempt(net_epoch_preempt)
+
+/* Prototypes */
+struct gif_list *gif_hashinit(void);
+void gif_hashdestroy(struct gif_list *);
+
+void gif_input(struct mbuf *, struct ifnet *, int, uint8_t);
+int gif_output(struct ifnet *, struct mbuf *, const struct sockaddr *,
+	       struct route *);
+
+void in_gif_init(void);
+void in_gif_uninit(void);
+int in_gif_output(struct ifnet *, struct mbuf *, int, uint8_t);
+int in_gif_ioctl(struct gif_softc *, u_long, caddr_t);
+int in_gif_setopts(struct gif_softc *, u_int);
+
+void in6_gif_init(void);
+void in6_gif_uninit(void);
+int in6_gif_output(struct ifnet *, struct mbuf *, int, uint8_t);
+int in6_gif_ioctl(struct gif_softc *, u_long, caddr_t);
+int in6_gif_setopts(struct gif_softc *, u_int);
+#endif /* _KERNEL */
 
 #define GIFGOPTS	_IOWR('i', 150, struct ifreq)
 #define GIFSOPTS	_IOW('i', 151, struct ifreq)

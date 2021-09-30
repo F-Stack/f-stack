@@ -56,7 +56,13 @@ ipsec_status(int s)
 	uint32_t reqid;
 
 	ifr.ifr_data = (caddr_t)&reqid;
+#ifndef FSTACK
 	if (ioctl(s, IPSECGREQID, &ifr) == -1)
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(uint32_t);
+	if (ioctl_va(s, IPSECGREQID, &ifr, 3, offset, ifr.ifr_data, clen) == -1)
+#endif
 		return;
 	printf("\treqid: %u\n", reqid);
 }
@@ -74,7 +80,14 @@ DECL_CMD_FUNC(setreqid, val, arg)
 	}
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
 	ifr.ifr_data = (char *)&v;
+#ifndef FSTACK
 	if (ioctl(s, IPSECSREQID, &ifr) == -1) {
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(uint32_t);
+	if (ioctl_va(s, IPSECGREQID, &ifr, 3, offset, ifr.ifr_data, clen) == -1) {
+#endif
+
 		warn("ioctl(IPSECSREQID)");
 		return;
 	}

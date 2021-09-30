@@ -404,9 +404,9 @@ print_mask(struct ipfw_flow_id *id)
 		printf("\n        mask: %sproto: 0x%02x, flow_id: 0x%08x,  ",
 		    id->extra ? "queue," : "",
 		    id->proto, id->flow_id6);
-		inet_ntop(AF_INET6, &(id->src_ip6), buf, sizeof(buf));
+		inet_ntop(AF_INET6_LINUX, &(id->src_ip6), buf, sizeof(buf));
 		printf("%s/0x%04x -> ", buf, id->src_port);
-		inet_ntop(AF_INET6, &(id->dst_ip6), buf, sizeof(buf));
+		inet_ntop(AF_INET6_LINUX, &(id->dst_ip6), buf, sizeof(buf));
 		printf("%s/0x%04x\n", buf, id->dst_port);
 	}
 }
@@ -455,10 +455,10 @@ list_flow(struct buf_pr *bp, struct dn_flow *ni)
 		else
 			bprintf(bp, "%9u ", id->proto);
 		bprintf(bp, "%7d  %39s/%-5d ", id->flow_id6,
-		    inet_ntop(AF_INET6, &(id->src_ip6), buff, sizeof(buff)),
+		    inet_ntop(AF_INET6_LINUX, &(id->src_ip6), buff, sizeof(buff)),
 		    id->src_port);
 		bprintf(bp, " %39s/%-5d ",
-		    inet_ntop(AF_INET6, &(id->dst_ip6), buff, sizeof(buff)),
+		    inet_ntop(AF_INET6_LINUX, &(id->dst_ip6), buff, sizeof(buff)),
 		    id->dst_port);
 	}
 	pr_u64(bp, &ni->tot_pkts, 4);

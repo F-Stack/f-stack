@@ -34,6 +34,12 @@
 
 #include <sys/cdefs.h>
 
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
+
 #define	satosin(sa)	((struct sockaddr_in *)(sa))
 #define	satosin6(sa)	((struct sockaddr_in6 *)(sa))
 #define	sin6tosa(sin6)	((struct sockaddr *)(sin6))

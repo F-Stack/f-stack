@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1980, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -46,7 +48,7 @@
  * with its length.
  */
 struct route {
-	struct	rtentry *ro_rt;
+	struct	nhop_object *ro_nh;
 	struct	llentry *ro_lle;
 	/*
 	 * ro_prepend and ro_plen are only used for bpf to pass in a
@@ -64,8 +66,6 @@ struct route {
 #define	RT_MAY_LOOP_BIT		3	/* dst may require loop copy */
 #define	RT_HAS_HEADER_BIT	4	/* mbuf already have its header prepended */
 
-#define	RT_CACHING_CONTEXT	0x1	/* XXX: not used anywhere */
-#define	RT_NORTREF		0x2	/* doesn't hold reference on ro_rt */
 #define	RT_L2_ME		(1 << RT_L2_ME_BIT)		/* 0x0004 */
 #define	RT_MAY_LOOP		(1 << RT_MAY_LOOP_BIT)		/* 0x0008 */
 #define	RT_HAS_HEADER		(1 << RT_HAS_HEADER_BIT)	/* 0x0010 */
@@ -87,7 +87,8 @@ struct rt_metrics {
 	u_long	rmx_rttvar;	/* estimated rtt variance */
 	u_long	rmx_pksent;	/* packets sent using this route */
 	u_long	rmx_weight;	/* route weight */
-	u_long	rmx_filler[3];	/* will be used for T/TCP later */
+	u_long	rmx_nhidx;	/* route nexhop index */
+	u_long	rmx_filler[2];	/* will be used for T/TCP later */
 };
 
 /*
@@ -101,6 +102,10 @@ struct rt_metrics {
 /* lle state is exported in rmx_state rt_metrics field */
 #define	rmx_state	rmx_weight
 
+/* default route weight */
+#define	RT_DEFAULT_WEIGHT	1
+#define	RT_MAX_WEIGHT		16777215	/* 3 bytes */
+
 /*
  * Keep a generation count of routing table, incremented on route addition,
  * so we can invalidate caches.  This is accessed without a lock, as precision
@@ -111,35 +116,57 @@ typedef volatile u_int rt_gen_t;	/* tree generation (for adds) */
 
 #define	RT_DEFAULT_FIB	0	/* Explicitly mark fib=0 restricted cases */
 #define	RT_ALL_FIBS	-1	/* Announce event for every fib */
+#ifdef _KERNEL
+VNET_DECLARE(uint32_t, _rt_numfibs);	/* number of existing route tables */
+#define	V_rt_numfibs		VNET(_rt_numfibs)
+/* temporary compat arg */
+#define	rt_numfibs		V_rt_numfibs
+VNET_DECLARE(u_int, rt_add_addr_allfibs); /* Announce interfaces to all fibs */
+#define	V_rt_add_addr_allfibs	VNET(rt_add_addr_allfibs)
 
-#include "net/radix.h"
+/* Calculate flowid for locally-originated packets */
+#define	V_fib_hash_outbound	VNET(fib_hash_outbound)
+VNET_DECLARE(u_int, fib_hash_outbound);
 
-#if defined(_KERNEL) || defined(_WANT_RTENTRY)
-struct rtentry {
-	struct	radix_node rt_nodes[2];	/* tree glue, and other values */
-	/*
-	 * XXX struct rtentry must begin with a struct radix_node (or two!)
-	 * because the code does some casts of a 'struct radix_node *'
-	 * to a 'struct rtentry *'
-	 */
-#define	rt_key(r)	(*((struct sockaddr **)(&(r)->rt_nodes->rn_key)))
-#define	rt_mask(r)	(*((struct sockaddr **)(&(r)->rt_nodes->rn_mask)))
-	struct	sockaddr *rt_gateway;	/* value */
-	struct	ifnet *rt_ifp;		/* the answer: interface to use */
-	struct	ifaddr *rt_ifa;		/* the answer: interface address to use */
-	int		rt_flags;	/* up/down?, host/net */
-	int		rt_refcnt;	/* # held references */
-	u_int		rt_fibnum;	/* which FIB */
-	u_long		rt_mtu;		/* MTU for this path */
-	u_long		rt_weight;	/* absolute weight */ 
-	u_long		rt_expire;	/* lifetime for route, e.g. redirect */
-#define	rt_endzero	rt_pksent
-	counter_u64_t	rt_pksent;	/* packets sent using this route */
-	struct mtx	rt_mtx;		/* mutex for routing entry */
-	struct rtentry	*rt_chain;	/* pointer to next rtentry to delete */
-};
-#endif /* _KERNEL || _WANT_RTENTRY */
+/* Outbound flowid generation rules */
+#ifdef RSS
 
+#define fib4_calc_packet_hash		xps_proto_software_hash_v4
+#define fib6_calc_packet_hash		xps_proto_software_hash_v6
+#define	CALC_FLOWID_OUTBOUND_SENDTO	true
+
+#ifdef ROUTE_MPATH
+#define	CALC_FLOWID_OUTBOUND		V_fib_hash_outbound
+#else
+#define	CALC_FLOWID_OUTBOUND		false
+#endif
+
+#else /* !RSS */
+
+#define fib4_calc_packet_hash		fib4_calc_software_hash
+#define fib6_calc_packet_hash		fib6_calc_software_hash
+
+#ifdef ROUTE_MPATH
+#define	CALC_FLOWID_OUTBOUND_SENDTO	V_fib_hash_outbound
+#define	CALC_FLOWID_OUTBOUND		V_fib_hash_outbound
+#else
+#define	CALC_FLOWID_OUTBOUND_SENDTO	false
+#define	CALC_FLOWID_OUTBOUND		false
+#endif
+
+#endif /* RSS */
+
+
+#endif /* _KERNEL */
+
+/*
+ * We distinguish between routes to hosts and routes to networks,
+ * preferring the former if available.  For each route we infer
+ * the interface to use from the gateway address supplied when
+ * the route was entered.  Routes that forward packets through
+ * gateways are marked so that the output routines know to address the
+ * gateway rather than the ultimate destination.
+ */
 #define	RTF_UP		0x1		/* route usable */
 #define	RTF_GATEWAY	0x2		/* destination is a gateway */
 #define	RTF_HOST	0x4		/* host entry (net otherwise) */
@@ -168,7 +195,7 @@ struct rtentry {
 					/* 0x8000000 and up unassigned */
 #define	RTF_STICKY	 0x10000000	/* always route dst->src */
 
-#define	RTF_RNH_LOCKED	 0x40000000	/* unused */
+#define	RTF_RNH_LOCKED	 0x40000000	/* radix node head is locked */
 
 #define	RTF_GWFLAG_COMPAT 0x80000000	/* a compatibility bit for interacting
 					   with existing routing apps */
@@ -183,45 +210,41 @@ struct rtentry {
  */
 
 /* Consumer-visible nexthop info flags */
+#define	NHF_MULTIPATH		0x0008	/* Nexhop is a nexthop group */
 #define	NHF_REJECT		0x0010	/* RTF_REJECT */
 #define	NHF_BLACKHOLE		0x0020	/* RTF_BLACKHOLE */
 #define	NHF_REDIRECT		0x0040	/* RTF_DYNAMIC|RTF_MODIFIED */
 #define	NHF_DEFAULT		0x0080	/* Default route */
 #define	NHF_BROADCAST		0x0100	/* RTF_BROADCAST */
 #define	NHF_GATEWAY		0x0200	/* RTF_GATEWAY */
+#define	NHF_HOST		0x0400	/* RTF_HOST */
 
 /* Nexthop request flags */
-#define	NHR_IFAIF		0x01	/* Return ifa_ifp interface */
-#define	NHR_REF			0x02	/* For future use */
+#define	NHR_NONE		0x00	/* empty flags field */
+#define	NHR_REF			0x01	/* reference nexhop */
+#define	NHR_NODEFAULT		0x02	/* uRPF: do not consider default route */
 
 /* Control plane route request flags */
 #define	NHR_COPY		0x100	/* Copy rte data */
-
-#ifdef _KERNEL
-/* rte<>ro_flags translation */
-static inline void
-rt_update_ro_flags(struct route *ro)
-{
-	int rt_flags = ro->ro_rt->rt_flags;
-
-	ro->ro_flags &= ~ (RT_REJECT|RT_BLACKHOLE|RT_HAS_GW);
-
-	ro->ro_flags |= (rt_flags & RTF_REJECT) ? RT_REJECT : 0;
-	ro->ro_flags |= (rt_flags & RTF_BLACKHOLE) ? RT_BLACKHOLE : 0;
-	ro->ro_flags |= (rt_flags & RTF_GATEWAY) ? RT_HAS_GW : 0;
-}
-#endif
+#define	NHR_UNLOCKED		0x200	/* Do not lock table */
 
 /*
  * Routing statistics.
  */
-struct	rtstat {
-	short	rts_badredirect;	/* bogus redirect calls */
-	short	rts_dynamic;		/* routes created by redirects */
-	short	rts_newgateway;		/* routes modified by redirects */
-	short	rts_unreach;		/* lookups which failed */
-	short	rts_wildcard;		/* lookups satisfied by a wildcard */
+struct rtstat {
+	uint64_t rts_badredirect;	/* bogus redirect calls */
+	uint64_t rts_dynamic;		/* routes created by redirects */
+	uint64_t rts_newgateway;	/* routes modified by redirects */
+	uint64_t rts_unreach;		/* lookups which failed */
+	uint64_t rts_wildcard;		/* lookups satisfied by a wildcard */
+	uint64_t rts_nh_idx_alloc_failure;	/* nexthop index alloc failure*/
+	uint64_t rts_nh_alloc_failure;	/* nexthop allocation failure*/
+	uint64_t rts_add_failure;	/* # of route addition failures */
+	uint64_t rts_add_retry;		/* # of route addition retries */
+	uint64_t rts_del_failure;	/* # of route deletion failure */
+	uint64_t rts_del_retry;		/* # of route deletion retries */
 };
+
 /*
  * Structures for routing messages.
  */
@@ -230,6 +253,7 @@ struct rt_msghdr {
 	u_char	rtm_version;	/* future binary compatibility */
 	u_char	rtm_type;	/* message type */
 	u_short	rtm_index;	/* index for associated ifp */
+	u_short _rtm_spare1;
 	int	rtm_flags;	/* flags, incl. kern & message, e.g. DONE */
 	int	rtm_addrs;	/* bitmask identifying sockaddrs in msg */
 	pid_t	rtm_pid;	/* identify sender */
@@ -244,25 +268,35 @@ struct rt_msghdr {
 
 /*
  * Message types.
+ *
+ * The format for each message is annotated below using the following
+ * identifiers:
+ *
+ * (1) struct rt_msghdr
+ * (2) struct ifa_msghdr
+ * (3) struct if_msghdr
+ * (4) struct ifma_msghdr
+ * (5) struct if_announcemsghdr
+ *
  */
-#define RTM_ADD		0x1	/* Add Route */
-#define RTM_DELETE	0x2	/* Delete Route */
-#define RTM_CHANGE	0x3	/* Change Metrics or flags */
-#define RTM_GET		0x4	/* Report Metrics */
-#define RTM_LOSING	0x5	/* Kernel Suspects Partitioning */
-#define RTM_REDIRECT	0x6	/* Told to use different route */
-#define RTM_MISS	0x7	/* Lookup failed on this address */
-#define RTM_LOCK	0x8	/* fix specified metrics */
+#define	RTM_ADD		0x1	/* (1) Add Route */
+#define	RTM_DELETE	0x2	/* (1) Delete Route */
+#define	RTM_CHANGE	0x3	/* (1) Change Metrics or flags */
+#define	RTM_GET		0x4	/* (1) Report Metrics */
+#define	RTM_LOSING	0x5	/* (1) Kernel Suspects Partitioning */
+#define	RTM_REDIRECT	0x6	/* (1) Told to use different route */
+#define	RTM_MISS	0x7	/* (1) Lookup failed on this address */
+#define	RTM_LOCK	0x8	/* (1) fix specified metrics */
 		    /*	0x9  */
 		    /*	0xa  */
-#define RTM_RESOLVE	0xb	/* req to resolve dst to LL addr */
-#define RTM_NEWADDR	0xc	/* address being added to iface */
-#define RTM_DELADDR	0xd	/* address being removed from iface */
-#define RTM_IFINFO	0xe	/* iface going up/down etc. */
-#define	RTM_NEWMADDR	0xf	/* mcast group membership being added to if */
-#define	RTM_DELMADDR	0x10	/* mcast group membership being deleted */
-#define	RTM_IFANNOUNCE	0x11	/* iface arrival/departure */
-#define	RTM_IEEE80211	0x12	/* IEEE80211 wireless event */
+#define	RTM_RESOLVE	0xb	/* (1) req to resolve dst to LL addr */
+#define	RTM_NEWADDR	0xc	/* (2) address being added to iface */
+#define	RTM_DELADDR	0xd	/* (2) address being removed from iface */
+#define	RTM_IFINFO	0xe	/* (3) iface going up/down etc. */
+#define	RTM_NEWMADDR	0xf	/* (4) mcast group membership being added to if */
+#define	RTM_DELMADDR	0x10	/* (4) mcast group membership being deleted */
+#define	RTM_IFANNOUNCE	0x11	/* (5) iface arrival/departure */
+#define	RTM_IEEE80211	0x12	/* (5) IEEE80211 wireless event */
 
 /*
  * Bitmask values for rtm_inits and rmx_locks.
@@ -302,7 +336,10 @@ struct rt_msghdr {
 #define RTAX_BRD	7	/* for NEWADDR, broadcast or p-p dest addr */
 #define RTAX_MAX	8	/* size of array to allocate */
 
-typedef int rt_filter_f_t(const struct rtentry *, void *);
+struct rtentry;
+struct nhop_object;
+typedef int rib_filter_f_t(const struct rtentry *, const struct nhop_object *,
+    void *);
 
 struct rt_addrinfo {
 	int	rti_addrs;			/* Route RTF_ flags */
@@ -310,7 +347,7 @@ struct rt_addrinfo {
 	struct	sockaddr *rti_info[RTAX_MAX];	/* Sockaddr data */
 	struct	ifaddr *rti_ifa;		/* value of rt_ifa addr */
 	struct	ifnet *rti_ifp;			/* route interface */
-	rt_filter_f_t	*rti_filter;		/* filter function */
+	rib_filter_f_t	*rti_filter;		/* filter function */
 	void	*rti_filterdata;		/* filter paramenters */
 	u_long	rti_mflags;			/* metrics RTV_ flags */
 	u_long	rti_spare;			/* Will be used for fib */
@@ -321,16 +358,90 @@ struct rt_addrinfo {
  * This macro returns the size of a struct sockaddr when passed
  * through a routing socket. Basically we round up sa_len to
  * a multiple of sizeof(long), with a minimum of sizeof(long).
- * The check for a NULL pointer is just a convenience, probably never used.
  * The case sa_len == 0 should only apply to empty structures.
  */
 #define SA_SIZE(sa)						\
-    (  (!(sa) || ((struct sockaddr *)(sa))->sa_len == 0) ?	\
+    (  (((struct sockaddr *)(sa))->sa_len == 0) ?		\
 	sizeof(long)		:				\
 	1 + ( (((struct sockaddr *)(sa))->sa_len - 1) | (sizeof(long) - 1) ) )
 
 #define	sa_equal(a, b) (	\
     (((const struct sockaddr *)(a))->sa_len == ((const struct sockaddr *)(b))->sa_len) && \
     (bcmp((a), (b), ((const struct sockaddr *)(b))->sa_len) == 0))
+
+#ifdef _KERNEL
+
+#define RT_LINK_IS_UP(ifp)	(!((ifp)->if_capabilities & IFCAP_LINKSTATE) \
+				 || (ifp)->if_link_state == LINK_STATE_UP)
+
+#define	RO_NHFREE(_ro) do {					\
+	if ((_ro)->ro_nh) {					\
+		NH_FREE((_ro)->ro_nh);				\
+		(_ro)->ro_nh = NULL;				\
+	}							\
+} while (0)
+
+#define	RO_INVALIDATE_CACHE(ro) do {					\
+		if ((ro)->ro_lle != NULL) {				\
+			LLE_FREE((ro)->ro_lle);				\
+			(ro)->ro_lle = NULL;				\
+		}							\
+		if ((ro)->ro_nh != NULL) {				\
+			NH_FREE((ro)->ro_nh);				\
+			(ro)->ro_nh = NULL;				\
+		}							\
+	} while (0)
+
+/*
+ * Validate a cached route based on a supplied cookie.  If there is an
+ * out-of-date cache, simply free it.  Update the generation number
+ * for the new allocation
+ */
+#define NH_VALIDATE(ro, cookiep, fibnum) do {				\
+	rt_gen_t cookie = RT_GEN(fibnum, (ro)->ro_dst.sa_family);	\
+	if (*(cookiep) != cookie) {					\
+		RO_INVALIDATE_CACHE(ro);				\
+		*(cookiep) = cookie;					\
+	}								\
+} while (0)
+
+struct ifmultiaddr;
+struct rib_head;
+
+void	 rt_ieee80211msg(struct ifnet *, int, void *, size_t);
+void	 rt_ifannouncemsg(struct ifnet *, int);
+void	 rt_ifmsg(struct ifnet *);
+void	 rt_missmsg(int, struct rt_addrinfo *, int, int);
+void	 rt_missmsg_fib(int, struct rt_addrinfo *, int, int, int);
+int	 rt_addrmsg(int, struct ifaddr *, int);
+int	 rt_routemsg(int, struct rtentry *, struct nhop_object *, int);
+int	 rt_routemsg_info(int, struct rt_addrinfo *, int);
+void	 rt_newmaddrmsg(int, struct ifmultiaddr *);
+void 	 rt_maskedcopy(struct sockaddr *, struct sockaddr *, struct sockaddr *);
+struct rib_head *rt_table_init(int, int, u_int);
+void	rt_table_destroy(struct rib_head *);
+u_int	rt_tables_get_gen(uint32_t table, sa_family_t family);
+
+struct sockaddr *rtsock_fix_netmask(const struct sockaddr *dst,
+	    const struct sockaddr *smask, struct sockaddr_storage *dmask);
+
+void	rt_updatemtu(struct ifnet *);
+
+void	rt_flushifroutes(struct ifnet *ifp);
+
+/* XXX MRT NEW VERSIONS THAT USE FIBs
+ * For now the protocol indepedent versions are the same as the AF_INET ones
+ * but this will change.. 
+ */
+int	 rtioctl_fib(u_long, caddr_t, u_int);
+int	rib_lookup_info(uint32_t, const struct sockaddr *, uint32_t, uint32_t,
+	    struct rt_addrinfo *);
+void	rib_free_info(struct rt_addrinfo *info);
+
+/* New API */
+void rib_flush_routes_family(int family);
+struct nhop_object *rib_lookup(uint32_t fibnum, const struct sockaddr *dst,
+	    uint32_t flags, uint32_t flowid);
+#endif
 
 #endif

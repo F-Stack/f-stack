@@ -3,7 +3,8 @@
 
 SHLIBDIR?= /lib
 
-.include <src.opts.mk>
+TOPDIR?=${CURDIR}/../..
+include ${TOPDIR}/tools/opts.mk
 
 PACKAGE=	runtime
 
@@ -12,7 +13,7 @@ PACKAGE=	runtime
 LIB=	util
 SHLIB_MAJOR= 9
 
-SRCS=	_secure_path.c auth.c expand_number.c flopen.c fparseln.c \
+#SRCS=	_secure_path.c auth.c expand_number.c flopen.c fparseln.c \
 	getlocalbase.c  gr_util.c \
 	hexdump.c humanize_number.c kinfo_getfile.c \
 	kinfo_getallproc.c kinfo_getproc.c kinfo_getvmmap.c \
@@ -21,15 +22,18 @@ SRCS=	_secure_path.c auth.c expand_number.c flopen.c fparseln.c \
 	login_class.c login_crypt.c login_ok.c login_times.c login_tty.c \
 	pidfile.c property.c pty.c pw_scan.c pw_util.c quotafile.c \
 	realhostname.c stub.c trimdomain.c uucplock.c
+SRCS=	 _secure_path.c auth.c expand_number.c flopen.c fparseln.c  \
+	hexdump.c humanize_number.c \
+	stub.c trimdomain.c
 INCS=	libutil.h login_cap.h
 
 CFLAGS+= -DNO__SCCSID
 
-.if ${MK_INET6_SUPPORT} != "no"
+ifneq (${MK_INET6_SUPPORT},"no")
 CFLAGS+= -DINET6
-.endif
+endif
 
-CFLAGS+= -I${.CURDIR} -I${SRCTOP}/lib/libc/gen/
+CFLAGS+= -I${CURDIR} -I${SRCTOP}/lib/libc/gen/
 
 MAN+=	expand_number.3 flopen.3 fparseln.3 getlocalbase.3 hexdump.3 \
 	humanize_number.3 kinfo_getallproc.3 kinfo_getfile.3 \
@@ -89,7 +93,8 @@ MLINKS+=pw_util.3 pw_copy.3 \
 	pw_util.3 pw_tempname.3 \
 	pw_util.3 pw_tmp.3
 
-HAS_TESTS=
-SUBDIR.${MK_TESTS}+= tests
+ifneq (${MK_TESTS},"no")
+SUBDIR+=	tests
+endif
 
-.include <bsd.lib.mk>
+include ${TOPDIR}/tools/lib.mk

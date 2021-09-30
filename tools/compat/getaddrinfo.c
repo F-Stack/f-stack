@@ -39,6 +39,7 @@
 #include "sys/socket.h"
 #include "netdb.h"
 
+/* FIXME: to support IPv6 */
 /* Just conver numeric hostname to int and not do anything else. */
 int
 getaddrinfo(const char *hostname, const char *servername,

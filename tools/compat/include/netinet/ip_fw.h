@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2002-2009 Luigi Rizzo, Universita` di Pisa
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,7 +34,7 @@
  * The default rule number.  By the design of ip_fw, the default rule
  * is the last one, so its number can also serve as the highest number
  * allowed for a rule.  The ip_fw code relies on both meanings of this
- * constant. 
+ * constant.
  */
 #define	IPFW_DEFAULT_RULE	65535
 
@@ -109,6 +111,35 @@ typedef struct _ip_fw3_opheader {
 
 #define	IP_FW_DUMP_SOPTCODES	116	/* Dump available sopts/versions */
 #define	IP_FW_DUMP_SRVOBJECTS	117	/* Dump existing named objects */
+
+#define	IP_FW_NAT64STL_CREATE	130	/* Create stateless NAT64 instance */
+#define	IP_FW_NAT64STL_DESTROY	131	/* Destroy stateless NAT64 instance */
+#define	IP_FW_NAT64STL_CONFIG	132	/* Modify stateless NAT64 instance */
+#define	IP_FW_NAT64STL_LIST	133	/* List stateless NAT64 instances */
+#define	IP_FW_NAT64STL_STATS	134	/* Get NAT64STL instance statistics */
+#define	IP_FW_NAT64STL_RESET_STATS 135	/* Reset NAT64STL instance statistics */
+
+#define	IP_FW_NAT64LSN_CREATE	140	/* Create stateful NAT64 instance */
+#define	IP_FW_NAT64LSN_DESTROY	141	/* Destroy stateful NAT64 instance */
+#define	IP_FW_NAT64LSN_CONFIG	142	/* Modify stateful NAT64 instance */
+#define	IP_FW_NAT64LSN_LIST	143	/* List stateful NAT64 instances */
+#define	IP_FW_NAT64LSN_STATS	144	/* Get NAT64LSN instance statistics */
+#define	IP_FW_NAT64LSN_LIST_STATES 145	/* Get stateful NAT64 states */
+#define	IP_FW_NAT64LSN_RESET_STATS 146	/* Reset NAT64LSN instance statistics */
+
+#define	IP_FW_NPTV6_CREATE	150	/* Create NPTv6 instance */
+#define	IP_FW_NPTV6_DESTROY	151	/* Destroy NPTv6 instance */
+#define	IP_FW_NPTV6_CONFIG	152	/* Modify NPTv6 instance */
+#define	IP_FW_NPTV6_LIST	153	/* List NPTv6 instances */
+#define	IP_FW_NPTV6_STATS	154	/* Get NPTv6 instance statistics */
+#define	IP_FW_NPTV6_RESET_STATS	155	/* Reset NPTv6 instance statistics */
+
+#define	IP_FW_NAT64CLAT_CREATE	160	/* Create clat NAT64 instance */
+#define	IP_FW_NAT64CLAT_DESTROY	161	/* Destroy clat NAT64 instance */
+#define	IP_FW_NAT64CLAT_CONFIG	162	/* Modify clat NAT64 instance */
+#define	IP_FW_NAT64CLAT_LIST	163	/* List clat NAT64 instances */
+#define	IP_FW_NAT64CLAT_STATS	164	/* Get NAT64CLAT instance statistics */
+#define	IP_FW_NAT64CLAT_RESET_STATS 165	/* Reset NAT64CLAT instance statistics */
 
 /*
  * The kernel representation of ipfw rules is made of a list of
@@ -208,7 +239,7 @@ enum ipfw_opcodes {		/* arguments (4 byte each)	*/
 	O_FORWARD_MAC,		/* fwd mac			*/
 	O_NAT,                  /* nope                         */
 	O_REASS,                /* none                         */
-	
+
 	/*
 	 * More opcodes.
 	 */
@@ -246,7 +277,7 @@ enum ipfw_opcodes {		/* arguments (4 byte each)	*/
 
 	O_SETFIB,		/* arg1=FIB number */
 	O_FIB,			/* arg1=FIB desired fib number */
-	
+
 	O_SOCKARG,		/* socket argument */
 
 	O_CALLRETURN,		/* arg1=called rule number */
@@ -259,6 +290,10 @@ enum ipfw_opcodes {		/* arguments (4 byte each)	*/
 
 	O_EXTERNAL_ACTION,	/* arg1=id of external action handler */
 	O_EXTERNAL_INSTANCE,	/* arg1=id of eaction handler instance */
+	O_EXTERNAL_DATA,	/* variable length data */
+
+	O_SKIP_ACTION,		/* none				*/
+	O_TCPMSS,		/* arg1=MSS value */
 
 	O_LAST_OPCODE		/* not an opcode!		*/
 };
@@ -304,7 +339,7 @@ enum ipfw_opcodes {		/* arguments (4 byte each)	*/
  *
  */
 typedef struct	_ipfw_insn {	/* template for instructions */
-	u_int8_t 	opcode;
+	_Alignas(_Alignof(u_int32_t)) u_int8_t 	opcode;
 	u_int8_t	len;	/* number of 32-bit words */
 #define	F_NOT		0x80
 #define	F_OR		0x40
@@ -450,9 +485,9 @@ struct cfg_redir {
 	u_short                 pport_cnt;      /* number of public ports */
 	u_short                 rport_cnt;      /* number of remote ports */
 	int                     proto;          /* protocol: tcp/udp */
-	struct alias_link       **alink;	
+	struct alias_link       **alink;
 	/* num of entry in spool chain */
-	u_int16_t               spool_cnt;      
+	u_int16_t               spool_cnt;
 	/* chain of spool instances */
 	LIST_HEAD(spool_chain, cfg_spool) spool_chain;
 };
@@ -469,9 +504,9 @@ struct cfg_nat {
 	int                     mode;                   /* aliasing mode */
 	struct libalias	        *lib;                   /* libalias instance */
 	/* number of entry in spool chain */
-	int                     redir_cnt;              
+	int                     redir_cnt;
 	/* chain of redir instances */
-	LIST_HEAD(redir_chain, cfg_redir) redir_chain;  
+	LIST_HEAD(redir_chain, cfg_redir) redir_chain;
 };
 #endif
 
@@ -480,7 +515,6 @@ struct cfg_nat {
 #define SOF_SPOOL       sizeof(struct cfg_spool)
 
 #endif	/* ifndef _KERNEL */
-
 
 struct nat44_cfg_spool {
 	struct in_addr	addr;
@@ -502,7 +536,7 @@ struct nat44_cfg_redir {
 	uint16_t	pport_cnt;	/* number of public ports */
 	uint16_t	rport_cnt;	/* number of remote ports */
 	uint16_t	mode;		/* type of redirect mode */
-	uint16_t	spool_cnt;	/* num of entry in spool chain */ 
+	uint16_t	spool_cnt;	/* num of entry in spool chain */
 	uint16_t	spare;
 	uint32_t	proto;		/* protocol: tcp/udp */
 };
@@ -520,15 +554,16 @@ struct nat44_cfg_nat {
 /* Nat command. */
 typedef struct	_ipfw_insn_nat {
  	ipfw_insn	o;
- 	struct cfg_nat *nat;	
+ 	struct cfg_nat *nat;
 } ipfw_insn_nat;
 
 /* Apply ipv6 mask on ipv6 addr */
-#define APPLY_MASK(addr,mask)                          \
+#define APPLY_MASK(addr,mask)	do {					\
     (addr)->__u6_addr.__u6_addr32[0] &= (mask)->__u6_addr.__u6_addr32[0]; \
     (addr)->__u6_addr.__u6_addr32[1] &= (mask)->__u6_addr.__u6_addr32[1]; \
     (addr)->__u6_addr.__u6_addr32[2] &= (mask)->__u6_addr.__u6_addr32[2]; \
-    (addr)->__u6_addr.__u6_addr32[3] &= (mask)->__u6_addr.__u6_addr32[3];
+    (addr)->__u6_addr.__u6_addr32[3] &= (mask)->__u6_addr.__u6_addr32[3]; \
+} while (0)
 
 /* Structure for ipv6 */
 typedef struct _ipfw_insn_ip6 {
@@ -543,7 +578,7 @@ typedef struct _ipfw_insn_icmp6 {
        uint32_t d[7]; /* XXX This number si related to the netinet/icmp6.h
                        *     define ICMP6_MAXTYPE
                        *     as follows: n = ICMP6_MAXTYPE/32 + 1
-                        *     Actually is 203 
+                        *     Actually is 203
                        */
 } ipfw_insn_icmp6;
 
@@ -588,6 +623,7 @@ struct ip_fw_rule {
 	ipfw_insn	cmd[1];		/* storage for commands		*/
 };
 #define	IPFW_RULE_NOOPT		0x01	/* Has no options in body	*/
+#define	IPFW_RULE_JUSTOPTS	0x02	/* new format of rule body	*/
 
 /* Unaligned version */
 
@@ -600,7 +636,6 @@ struct ip_fw_bcounter {
 	uint64_t	pcnt;		/* Packet counter		*/
 	uint64_t	bcnt;		/* Byte counter			*/
 };
-
 
 #ifndef	_KERNEL
 /*
@@ -632,7 +667,6 @@ struct ip_fw {
 
 #define RULESIZE(rule)  (sizeof(*(rule)) + (rule)->cmd_len * 4 - 4)
 
-
 #if 1 // should be moved to in.h
 /*
  * This structure is used as a flow mask and a flow id for various
@@ -646,7 +680,7 @@ struct ipfw_flow_id {
 	uint32_t	src_ip;
 	uint16_t	dst_port;
 	uint16_t	src_port;
-	uint8_t		fib;
+	uint8_t		fib;	/* XXX: must be uint16_t */
 	uint8_t		proto;
 	uint8_t		_flags;	/* protocol-specific flags */
 	uint8_t		addr_type; /* 4=ip4, 6=ip6, 1=ether ? */
@@ -657,6 +691,7 @@ struct ipfw_flow_id {
 };
 #endif
 
+#define	IS_IP4_FLOW_ID(id)	((id)->addr_type == 4)
 #define IS_IP6_FLOW_ID(id)	((id)->addr_type == 6)
 
 /*
@@ -678,12 +713,14 @@ struct _ipfw_dyn_rule {
 	u_int32_t	state;		/* state of this rule (typically a
 					 * combination of TCP flags)
 					 */
+#define	IPFW_DYN_ORPHANED	0x40000	/* state's parent rule was deleted */
 	u_int32_t	ack_fwd;	/* most recent ACKs in forward	*/
 	u_int32_t	ack_rev;	/* and reverse directions (used	*/
 					/* to generate keepalives)	*/
 	u_int16_t	dyn_type;	/* rule type			*/
 	u_int16_t	count;		/* refcount			*/
-};
+	u_int16_t	kidx;		/* index of named object */
+} __attribute__ ((packed)) __attribute__((__aligned__(8)));
 
 /*
  * Definitions for IP option names.
@@ -704,6 +741,8 @@ struct _ipfw_dyn_rule {
 
 #define	ICMP_REJECT_RST		0x100	/* fake ICMP code (send a TCP RST) */
 #define	ICMP6_UNREACH_RST	0x100	/* fake ICMPv6 code (send a TCP RST) */
+#define	ICMP_REJECT_ABORT	0x101	/* fake ICMP code (send an SCTP ABORT) */
+#define	ICMP6_UNREACH_ABORT	0x101	/* fake ICMPv6 code (send an SCTP ABORT) */
 
 /*
  * These are used for lookup tables.
@@ -784,9 +823,17 @@ typedef struct  _ipfw_obj_tlv {
 #define	IPFW_TLV_TBLENT_LIST	8
 #define	IPFW_TLV_RANGE		9
 #define	IPFW_TLV_EACTION	10
+#define	IPFW_TLV_COUNTERS	11
+#define	IPFW_TLV_OBJDATA	12
+#define	IPFW_TLV_STATE_NAME	14
 
 #define	IPFW_TLV_EACTION_BASE	1000
 #define	IPFW_TLV_EACTION_NAME(arg)	(IPFW_TLV_EACTION_BASE + (arg))
+
+typedef struct _ipfw_obj_data {
+	ipfw_obj_tlv	head;
+	void		*data[0];
+} ipfw_obj_data;
 
 /* Object name TLV */
 typedef struct _ipfw_obj_ntlv {
@@ -850,7 +897,7 @@ typedef struct	_ipfw_obj_tentry {
 		uint32_t		key;		/* uid/gid/port	*/
 		struct in6_addr		addr6;	/* IPv6 address 	*/
 		char	iface[IF_NAMESIZE];	/* interface name	*/
-		struct tflow_entry	flow;	
+		struct tflow_entry	flow;
 	} k;
 	union {
 		ipfw_table_value	value;	/* value data */
@@ -897,9 +944,10 @@ typedef struct _ipfw_range_tlv {
 #define	IPFW_RCFLAG_RANGE	0x01	/* rule range is set		*/
 #define	IPFW_RCFLAG_ALL		0x02	/* match ALL rules		*/
 #define	IPFW_RCFLAG_SET		0x04	/* match rules in given set	*/
+#define	IPFW_RCFLAG_DYNAMIC	0x08	/* match only dynamic states	*/
 /* User-settable flags */
 #define	IPFW_RCFLAG_USER	(IPFW_RCFLAG_RANGE | IPFW_RCFLAG_ALL | \
-	IPFW_RCFLAG_SET)
+	IPFW_RCFLAG_SET | IPFW_RCFLAG_DYNAMIC)
 /* Internally used flags */
 #define	IPFW_RCFLAG_DEFAULT	0x0100	/* Do not skip defaul rule	*/
 

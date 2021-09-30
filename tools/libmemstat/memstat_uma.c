@@ -28,6 +28,10 @@
  * $FreeBSD$
  */
 
+#ifdef FSTACK
+#include <stdint.h>
+#endif
+
 #include <sys/param.h>
 #include <sys/counter.h>
 #include <sys/cpuset.h>
@@ -38,7 +42,9 @@
 
 #include <err.h>
 #include <errno.h>
+#ifndef FSTACK
 #include <kvm.h>
+#endif
 #include <nlist.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -49,6 +55,7 @@
 #include "memstat.h"
 #include "memstat_internal.h"
 
+#ifndef FSTACK
 static struct nlist namelist[] = {
 #define	X_UMA_KEGS	0
 	{ .n_name = "_uma_kegs" },
@@ -60,6 +67,7 @@ static struct nlist namelist[] = {
 	{ .n_name = "_vm_ndomains" },
 	{ .n_name = "" },
 };
+#endif
 
 /*
  * Extract uma(9) statistics from the running kernel, and store all memory
@@ -251,6 +259,7 @@ retry:
 	return (0);
 }
 
+#ifndef FSTACK
 static int
 kread(kvm_t *kvm, void *kvm_pointer, void *address, size_t size,
     size_t offset)
@@ -488,3 +497,5 @@ skip_percpu:
 	free(ucp_array);
 	return (0);
 }
+#endif
+

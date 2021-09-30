@@ -117,4 +117,9 @@ typedef	__lwpid_t	lwpid_t;	/* Thread ID (a.k.a. LWP) */
 #define	_LWPID_T_DECLARED
 #endif
 
+typedef	__uint64_t	kpaddr_t;
+typedef	__uint64_t	kvaddr_t;
+typedef	__uint64_t	ksize_t;
+typedef	__int64_t	kssize_t;
+
 #endif /* !_COMPAT_SYS__TYPES_H_ */

@@ -279,7 +279,7 @@ lagg_status(int s)
 			printf("\t\tactive ports: %d\n", ro.ro_active);
 			printf("\t\tflapping: %u\n", ro.ro_flapping);
 			if (ra.ra_proto == LAGG_PROTO_LACP) {
-				printf("\tlag id: %s\n",
+				printf("\tlagg id: %s\n",
 				    lacp_format_peer(lp, "\n\t\t "));
 			}
 		}
@@ -324,7 +324,13 @@ static void
 lagg_create(int s, struct ifreq *ifr)
 {
 	ifr->ifr_data = (caddr_t) &params;
+#ifndef FSTACK
 	ioctl_ifcreate(s, ifr);
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(params);
+	ioctl_va(s, SIOCIFCREATE2, &ifr, 3, offset, ifr.ifr_data, clen);
+#endif
 }
 
 static struct cmd lagg_cmds[] = {

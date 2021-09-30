@@ -137,6 +137,7 @@ pcblist_sysctl(int proto, const char *name, char **bufp)
 	return (1);
 }
 
+#ifndef FSTACK
 /*
  * Copied directly from uipc_socket2.c.  We leave out some fields that are in
  * nested structures that aren't used to avoid extra work.
@@ -188,6 +189,7 @@ sotoxsocket(struct socket *so, struct xsocket *xso)
 	}
 	return (0);
 }
+#endif
 
 /*
  * Print a summary of connections related to an Internet
@@ -252,8 +254,10 @@ protopr(u_long off, const char *name, int af1, int proto)
 			} else {
 				continue;
 			}
+#ifndef FSTACK
 			if (so->xso_protocol != proto)
 				continue;
+#endif
 			if (inp->inp_gencnt > oxig->xig_gen)
 				continue;
 			fnamelen = max(fnamelen, (int)strlen(tp->xt_stack));
@@ -1466,10 +1470,13 @@ inetname(struct in_addr *inp)
 {
 	char *cp;
 	static char line[MAXHOSTNAMELEN];
+#ifndef FSTACK
 	struct hostent *hp;
 	struct netent *np;
+#endif
 
 	cp = 0;
+#ifndef FSTACK
 	if (!numeric_addr && inp->s_addr != INADDR_ANY) {
 		int net = inet_netof(*inp);
 		int lna = inet_lnaof(*inp);
@@ -1487,6 +1494,7 @@ inetname(struct in_addr *inp)
 			}
 		}
 	}
+#endif
 	if (inp->s_addr == INADDR_ANY)
 		strcpy(line, "*");
 	else if (cp) {

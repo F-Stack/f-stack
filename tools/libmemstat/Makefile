@@ -1,5 +1,8 @@
 # $FreeBSD$
 
+TOPDIR?=${CURDIR}/../..
+include ${TOPDIR}/tools/opts.mk
+
 WARNS?=		3
 LIB=		memstat
 SHLIB_MAJOR=	3
@@ -26,4 +29,4 @@ MLINKS+=	libmemstat.3 memstat_kvm_all.3
 MLINKS+=	libmemstat.3 memstat_kvm_malloc.3
 MLINKS+=	libmemstat.3 memstat_kvm_uma.3
 
-.include <bsd.lib.mk>
+include ${TOPDIR}/tools/lib.mk

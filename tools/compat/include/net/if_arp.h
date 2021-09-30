@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -47,7 +49,6 @@ struct	arphdr {
 	u_short	ar_hrd;		/* format of hardware address */
 #define ARPHRD_ETHER 	1	/* ethernet hardware format */
 #define ARPHRD_IEEE802	6	/* token-ring hardware format */
-#define ARPHRD_ARCNET	7	/* arcnet hardware format */
 #define ARPHRD_FRELAY 	15	/* frame relay hardware format */
 #define ARPHRD_IEEE1394	24	/* firewire hardware format */
 #define ARPHRD_INFINIBAND 32	/* infiniband hardware format */
@@ -104,13 +105,31 @@ struct arpstat {
 	uint64_t rxrequests;	/* # of ARP requests received by this host. */
 	uint64_t rxreplies;	/* # of ARP replies received by this host. */
 	uint64_t received;	/* # of ARP packets received by this host. */
+	uint64_t txerrors;	/* # of ARP requests failed to send. */
 
-	uint64_t arp_spares[4];	/* For either the upper or lower half. */
+	uint64_t arp_spares[3];	/* For either the upper or lower half. */
 	/* Abnormal event and error  counting: */
 	uint64_t dropped;	/* # of packets dropped waiting for a reply. */
 	uint64_t timeouts;	/* # of times with entries removed */
 				/* due to timeout. */
 	uint64_t dupips;	/* # of duplicate IPs detected. */
 };
+
+#ifdef _KERNEL
+#include <sys/counter.h>
+#include <net/vnet.h>
+
+VNET_PCPUSTAT_DECLARE(struct arpstat, arpstat);
+/*
+ * In-kernel consumers can use these accessor macros directly to update
+ * stats.
+ */
+#define	ARPSTAT_ADD(name, val)	\
+    VNET_PCPUSTAT_ADD(struct arpstat, arpstat, name, (val))
+#define	ARPSTAT_SUB(name, val)	ARPSTAT_ADD(name, -(val))
+#define	ARPSTAT_INC(name)	ARPSTAT_ADD(name, 1)
+#define	ARPSTAT_DEC(name)	ARPSTAT_SUB(name, 1)
+
+#endif /* _KERNEL */
 
 #endif /* !_NET_IF_ARP_H_ */

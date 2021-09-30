@@ -145,18 +145,18 @@ Examples:
 # netstat
 Usage:
 ```
-   netstat -P <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]
-   netstat -P <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]
-   netstat -P <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]
-   netstat -P <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]
-   netstat -P <f-stack proc_id> -i | -I interface -s [-46s]
+   netstat -t <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]
+   netstat -t <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]
+   netstat -t <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]
+   netstat -t <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]
+   netstat -t <f-stack proc_id> -i | -I interface -s [-46s]
            [-f protocol_family | -p protocol]
-   netstat -P <f-stack proc_id> -B [-z] [-I interface]
-   netstat -P <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]
-   netstat -P <f-stack proc_id> -rs [-s]
-   netstat -P <f-stack proc_id> -g [-46W] [-f address_family]
-   netstat -P <f-stack proc_id> -gs [-46s] [-f address_family]
-   netstat -P <f-stack proc_id> -Q
+   netstat -t <f-stack proc_id> -B [-z] [-I interface]
+   netstat -t <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]
+   netstat -t <f-stack proc_id> -rs [-s]
+   netstat -t <f-stack proc_id> -g [-46W] [-f address_family]
+   netstat -t <f-stack proc_id> -gs [-46s] [-f address_family]
+   netstat -t <f-stack proc_id> -Q
 ```
 
 Unsupported commands or features:

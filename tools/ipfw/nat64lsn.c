@@ -51,6 +51,12 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/ip_fw_nat64.h>
 #include <arpa/inet.h>
 
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
+
 static void nat64lsn_fill_ntlv(ipfw_obj_ntlv *ntlv, const char *name,
     uint8_t set);
 typedef int (nat64lsn_cb_t)(ipfw_nat64lsn_cfg *cfg, const char *name,

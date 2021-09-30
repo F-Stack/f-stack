@@ -25,7 +25,9 @@
  */
 
 #include <sys/cdefs.h>
+#ifndef FSTACK
 __FBSDID("$FreeBSD$");
+#endif
 
 #include <sys/param.h>
 #include <sys/ioctl.h>
@@ -52,6 +54,10 @@ __FBSDID("$FreeBSD$");
 #include <errno.h>
 
 #include "ifconfig.h"
+
+#ifdef FSTACK
+#include "arpa/inet.h"
+#endif
 
 static struct ifvxlanparam params = {
 	.vxlp_vni	= VXLAN_VNI_MAX,
@@ -84,7 +90,13 @@ do_cmd(int sock, u_long op, void *arg, size_t argsize, int set)
 	ifd.ifd_len = argsize;
 	ifd.ifd_data = arg;
 
+#ifndef FSTACK
 	return (ioctl(sock, set ? SIOCSDRVSPEC : SIOCGDRVSPEC, &ifd));
+#else
+	size_t offset = (char *)&(ifd.ifd_data) - (char *)&(ifd);
+	return (ioctl_va(sock, set ? SIOCSDRVSPEC : SIOCGDRVSPEC, &ifd,
+	3, offset, ifd.ifd_data, argsize));
+#endif
 }
 
 static int
@@ -120,12 +132,23 @@ vxlan_status(int s)
 	if (vni >= VXLAN_VNI_MAX)
 		return;
 
+#ifndef FSTACK
 	if (getnameinfo(lsa, lsa->sa_len, src, sizeof(src),
 	    srcport, sizeof(srcport), NI_NUMERICHOST | NI_NUMERICSERV) != 0)
 		src[0] = srcport[0] = '\0';
 	if (getnameinfo(rsa, rsa->sa_len, dst, sizeof(dst),
 	    dstport, sizeof(dstport), NI_NUMERICHOST | NI_NUMERICSERV) != 0)
 		dst[0] = dstport[0] = '\0';
+#else
+	// FIXME: ipv6
+	struct sockaddr_in *sin = (struct sockaddr_in *)lsa;
+	if (inet_ntop(AF_INET, &sin->sin_addr, src, sizeof(src)) == NULL)
+		return;
+
+	sin = (struct sockaddr_in *)rsa;
+	if (inet_ntop(AF_INET, &sin->sin_addr, dst, sizeof(dst)) == NULL)
+		return;
+#endif
 
 	if (!ipv6) {
 		struct sockaddr_in *sin = (struct sockaddr_in *)rsa;
@@ -191,7 +214,13 @@ vxlan_create(int s, struct ifreq *ifr)
 	vxlan_check_params();
 
 	ifr->ifr_data = (caddr_t) &params;
+#ifndef FSTACK
 	ioctl_ifcreate(s, ifr);
+#else
+	size_t offset = (char *)&(ifr->ifr_data) - (char *)ifr;
+	size_t clen = sizeof(params);
+	ioctl_va(s, SIOCIFCREATE2, ifr, 3, offset, ifr->ifr_data, clen);
+#endif
 }
 
 static

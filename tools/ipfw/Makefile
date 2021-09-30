@@ -1,20 +1,30 @@
 # $FreeBSD$
 
-.include <src.opts.mk>
+TOPDIR?=${CURDIR}/../..
+include ${TOPDIR}/tools/opts.mk
 
 PACKAGE=ipfw
 PROG=	ipfw
-SRCS=	ipfw2.c dummynet.c ipv6.c main.c nat.c tables.c
+SRCS=	ipfw2.c ipv6.c main.c nat.c tables.c compat.c
 SRCS+=	nat64clat.c nat64lsn.c nat64stl.c nptv6.c
 
-.if ${MK_PF} != "no"
-SRCS+=	altq.c
-CFLAGS+=-DPF
-.endif
+ifneq (${MK_DUMMYNET},"no")
+SRCS+=  dummynet.c
+CFLAGS+= -DDUMMYNET
+endif
 
-LIBADD=	jail util
+ifneq (${MK_PF},"no")
+SRCS+=  altq.c
+CFLAGS+=-DPF
+endif
+
+ifneq (${MK_INET6_SUPPORT},"no")
+CFLAGS+= -DINET6
+endif
+
+LIBADD=	util
 MAN=	ipfw.8
 
-.include <bsd.prog.mk>
+include ${TOPDIR}/tools/prog.mk
 
 CWARNFLAGS+= -Wno-cast-align

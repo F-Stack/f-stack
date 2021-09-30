@@ -87,6 +87,10 @@ fparseln(FILE *fp, size_t *size, size_t *lineno, const char str[3], int flags)
 	char   *ptr, *cp;
 	int	cnt;
 	char	esc, con, nl, com;
+#ifdef FSTACK
+	#define MAXLINELEN 4096
+	char fbuf[MAXLINELEN];
+#endif
 
 #if 0
 	_DIAGASSERT(fp != NULL);
@@ -114,8 +118,15 @@ fparseln(FILE *fp, size_t *size, size_t *lineno, const char str[3], int flags)
 		if (lineno)
 			(*lineno)++;
 
+#ifndef FSTACK
 		if ((ptr = fgetln(fp, &s)) == NULL)
 			break;
+#else
+		if (fgets(fbuf, MAXLINELEN, fp) == NULL)
+			break;
+		fbuf[strcspn(fbuf, "\n")] = '\0';
+		ptr = fbuf;
+#endif
 
 		if (s && com) {		/* Check and eliminate comments */
 			for (cp = ptr; cp < ptr + s; cp++)

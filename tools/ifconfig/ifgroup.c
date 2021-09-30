@@ -45,6 +45,10 @@ static const char rcsid[] =
 
 #include "ifconfig.h"
 
+#ifdef FSTACK
+#include "ff_ipc.h"
+#endif
+
 /* ARGSUSED */
 static void
 setifgroup(const char *group_name, int d, int s, const struct afswtch *rafp)
@@ -104,7 +108,13 @@ getifgroups(int s)
 	    sizeof(struct ifg_req));
 	if (ifgr.ifgr_groups == NULL)
 		err(1, "getifgroups");
+#ifndef FSTACK
 	if (ioctl(s, SIOCGIFGROUP, (caddr_t)&ifgr) == -1)
+#else
+	size_t offset = (char *)&(ifgr.ifgr_groups) - (char *)&(ifgr);
+	size_t clen = len;
+	if (ioctl_va(s, SIOCGIFGROUP, (caddr_t)&ifgr, 3, offset, ifgr.ifgr_groups, clen) == -1)
+#endif
 		err(1, "SIOCGIFGROUP");
 
 	cnt = 0;
@@ -140,7 +150,14 @@ printgroup(const char *groupname)
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1) {
 		if (errno == EINVAL || errno == ENOTTY ||
 		    errno == ENOENT)
+#ifdef FSTACK
+		{
+			ff_ipc_exit();
 			exit(exit_code);
+		}
+#else
+			exit(exit_code);
+#endif
 		else
 			err(1, "SIOCGIFGMEMB");
 	}
@@ -148,7 +165,14 @@ printgroup(const char *groupname)
 	len = ifgr.ifgr_len;
 	if ((ifgr.ifgr_groups = calloc(1, len)) == NULL)
 		err(1, "printgroup");
+
+#ifndef FSTACK
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1)
+#else
+	size_t offset = (char *)&(ifgr.ifgr_groups) - (char *)&(ifgr);
+	size_t clen = len;
+	if (ioctl_va(s, SIOCGIFGMEMB, (caddr_t)&ifgr, 3, offset, ifgr.ifgr_groups, clen) == -1)
+#endif
 		err(1, "SIOCGIFGMEMB");
 
 	for (ifg = ifgr.ifgr_groups; ifg && len >= sizeof(struct ifg_req);
@@ -159,6 +183,9 @@ printgroup(const char *groupname)
 	}
 	free(ifgr.ifgr_groups);
 
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	exit(exit_code);
 }
 

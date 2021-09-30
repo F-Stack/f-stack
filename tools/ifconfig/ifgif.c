@@ -63,7 +63,13 @@ gif_status(int s)
 	int opts;
 
 	ifr.ifr_data = (caddr_t)&opts;
+#ifndef FSTACK
 	if (ioctl(s, GIFGOPTS, &ifr) == -1)
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(int);
+	if (ioctl_va(s, GIFGOPTS, &ifr, 3, offset, ifr.ifr_data, clen) == -1)
+#endif
 		return;
 	if (opts == 0)
 		return;
@@ -77,7 +83,13 @@ setgifopts(const char *val, int d, int s, const struct afswtch *afp)
 	int opts;
 
 	ifr.ifr_data = (caddr_t)&opts;
+#ifndef FSTACK
 	if (ioctl(s, GIFGOPTS, &ifr) == -1) {
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(int);
+	if (ioctl_va(s, GIFGOPTS, &ifr, 3, offset, ifr.ifr_data, clen) == -1) {
+#endif
 		warn("ioctl(GIFGOPTS)");
 		return;
 	}
@@ -87,7 +99,11 @@ setgifopts(const char *val, int d, int s, const struct afswtch *afp)
 	else
 		opts |= d;
 
+#ifndef FSTACK
 	if (ioctl(s, GIFSOPTS, &ifr) == -1) {
+#else
+	if (ioctl_va(s, GIFSOPTS, &ifr, 3, offset, ifr.ifr_data, clen) == -1) {
+#endif
 		warn("ioctl(GIFSOPTS)");
 		return;
 	}

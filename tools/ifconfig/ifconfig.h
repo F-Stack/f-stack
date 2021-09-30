@@ -38,6 +38,21 @@
 
 #define	__constructor	__attribute__((constructor))
 
+#ifdef FSTACK
+#include "compat.h"
+
+#ifndef __unused
+#define __unused __attribute__((unused))
+#endif
+
+int fake_socket(int domain, int type, int protocol);
+int fake_close(int fd);
+
+#define socket(a, b, c) fake_socket((a), (b), (c))
+#define close(a) fake_close((a))
+
+#endif
+
 struct afswtch;
 struct cmd;
 
