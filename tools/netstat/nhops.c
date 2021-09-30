@@ -118,12 +118,14 @@ struct nhop_map {
 };
 static struct nhop_map global_nhop_map;
 
+#ifndef FSTACK
 static struct nhop_entry *nhop_get(struct nhop_map *map, uint32_t idx);
-
+#endif
 
 static struct ifmap_entry *ifmap;
 static size_t ifmap_size;
 
+#ifndef FSTACK
 static void
 print_sockaddr_buf(char *buf, size_t bufsize, const struct sockaddr *sa)
 {
@@ -142,6 +144,7 @@ print_sockaddr_buf(char *buf, size_t bufsize, const struct sockaddr *sa)
 		break;
 	}
 }
+#endif
 
 static int
 print_addr(const char *name, const char *addr, int width)
@@ -227,6 +230,7 @@ nhop_map_update(struct nhop_map *map, uint32_t idx, char *gw, char *ifname)
 	strlcpy(map->ptr[idx].gw, gw, sizeof(map->ptr[idx].gw));
 }
 
+#ifndef FSTACK
 static struct nhop_entry *
 nhop_get(struct nhop_map *map, uint32_t idx)
 {
@@ -237,6 +241,7 @@ nhop_get(struct nhop_map *map, uint32_t idx)
 		return (NULL);
 	return &map->ptr[idx];
 }
+#endif
 
 static void
 print_nhop_entry_sysctl(const char *name, struct rt_msghdr *rtm, struct nhop_external *nh)
@@ -437,6 +442,7 @@ print_nhops_sysctl(int fibnum, int af)
 	free(nd.nh_buf);
 }
 
+#ifndef FSTACK
 static void
 p_nhflags(int f, const char *format)
 {
@@ -451,6 +457,7 @@ p_nhflags(int f, const char *format)
 			xo_emit("{le:nh_flags_pretty/%s}", p->b_name);
 	xo_close_list(pretty_name);
 }
+#endif
 
 void
 nhops_print(int fibnum, int af)

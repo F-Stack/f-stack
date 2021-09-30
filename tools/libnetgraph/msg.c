@@ -38,18 +38,42 @@
  * $Whistle: msg.c,v 1.9 1999/01/20 00:57:23 archie Exp $
  */
 
+#ifdef FSTACK
+#define _GNU_SOURCE
+#include <stdio.h>
+#endif
+
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stdarg.h>
+#ifndef FSTACK
 #include <stdatomic.h>
+#endif
 #include <netgraph/ng_message.h>
 #include <netgraph/ng_socket.h>
 
 #include "netgraph.h"
 #include "internal.h"
+
+#ifdef FSTACK
+#define	_Atomic(T)		T volatile
+
+#ifndef __ATOMIC_SEQ_CST
+#define __ATOMIC_SEQ_CST		5
+#endif
+
+typedef enum {
+	memory_order_seq_cst = __ATOMIC_SEQ_CST
+} memory_order;
+
+#define	atomic_fetch_add(object, operand)				\
+	atomic_fetch_add_explicit(object, operand, memory_order_seq_cst)
+#define	atomic_fetch_add_explicit(object, operand, order)		\
+	 __atomic_fetch_add(object, operand, order)
+#endif
 
 /* Next message token value */
 static _Atomic(unsigned int) gMsgId;
@@ -230,6 +254,7 @@ NgDeliverMsg(int cs, const char *path,
 		goto done;
 	}
 
+#ifndef FSTACK
 	/* Wait for reply if there should be one. */
 	if (msg->header.cmd & NGM_HASREPLY && !(msg->header.flags & NGF_RESP)) {
 		struct pollfd rfds;
@@ -246,6 +271,7 @@ NgDeliverMsg(int cs, const char *path,
 			rtn = -1;
 		}
 	}
+#endif
 
 done:
 	/* Done */
@@ -302,10 +328,15 @@ int
 NgAllocRecvMsg(int cs, struct ng_mesg **rep, char *path)
 {
 	int len;
+#ifndef FSTACK
 	socklen_t optlen;
 
 	optlen = sizeof(len);
 	if (getsockopt(cs, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
+#else
+	len = NGCTL_DEFAULT_RCVBUF;
+	if (
+#endif
 	    (*rep = malloc(len)) == NULL)
 		return (-1);
 	if ((len = NgRecvMsg(cs, *rep, len, path)) < 0)
@@ -365,10 +396,15 @@ int
 NgAllocRecvAsciiMsg(int cs, struct ng_mesg **reply, char *path)
 {
 	int len;
+#ifndef FSTACK
 	socklen_t optlen;
 
 	optlen = sizeof(len);
 	if (getsockopt(cs, SOL_SOCKET, SO_RCVBUF, &len, &optlen) == -1 ||
+#else
+	len = NGCTL_DEFAULT_RCVBUF;
+	if (
+#endif
 	    (*reply = malloc(len)) == NULL)
 		return (-1);
 	if ((len = NgRecvAsciiMsg(cs, *reply, len, path)) < 0)

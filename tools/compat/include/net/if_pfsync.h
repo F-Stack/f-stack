@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Michael Shalayeff
  * All rights reserved.
  *
@@ -44,7 +46,6 @@
  *	$OpenBSD: if_pfsync.h,v 1.35 2008/06/29 08:42:15 mcbride Exp $
  *	$FreeBSD$
  */
-
 
 #ifndef _NET_IF_PFSYNC_H_
 #define	_NET_IF_PFSYNC_H_
@@ -240,5 +241,26 @@ struct pfsyncreq {
 
 #define	SIOCSETPFSYNC   _IOW('i', 247, struct ifreq)
 #define	SIOCGETPFSYNC   _IOWR('i', 248, struct ifreq)
+
+#ifdef _KERNEL
+
+/*
+ * this shows where a pf state is with respect to the syncing.
+ */
+#define	PFSYNC_S_INS	0x00
+#define	PFSYNC_S_IACK	0x01
+#define	PFSYNC_S_UPD	0x02
+#define	PFSYNC_S_UPD_C	0x03
+#define	PFSYNC_S_DEL	0x04
+#define	PFSYNC_S_COUNT	0x05
+
+#define	PFSYNC_S_DEFER	0xfe
+#define	PFSYNC_S_NONE	0xff
+
+#define	PFSYNC_SI_IOCTL		0x01
+#define	PFSYNC_SI_CKSUM		0x02
+#define	PFSYNC_SI_ACK		0x04
+
+#endif /* _KERNEL */
 
 #endif /* _NET_IF_PFSYNC_H_ */

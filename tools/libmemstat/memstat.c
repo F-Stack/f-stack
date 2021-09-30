@@ -38,6 +38,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef FSTACK
+#include <stdint.h>
+#endif
+
 #include "memstat.h"
 #include "memstat_internal.h"
 

@@ -33,6 +33,12 @@ __FBSDID("$FreeBSD$");
 #include <stdlib.h>
 #include <unistd.h>
 
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
+
 /*
  * Stub out what's in -lcrypt.
  */

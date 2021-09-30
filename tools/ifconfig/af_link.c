@@ -50,6 +50,10 @@ static const char rcsid[] =
 #include <net/if_types.h>
 #include <net/ethernet.h>
 
+#ifdef FSTACK
+#include <openssl/rand.h>
+#endif
+
 #include "ifconfig.h"
 
 static struct ifreq link_ridreq;
@@ -148,7 +152,11 @@ link_getaddr(const char *addr, int which)
 		sdl.sdl_alen = ETHER_ADDR_LEN;
 		sdl.sdl_nlen = 0;
 		sdl.sdl_family = AF_LINK;
+#ifndef FSTACK
 		arc4random_buf(&sdl.sdl_data, ETHER_ADDR_LEN);
+#else
+		RAND_bytes((void *)&sdl.sdl_data, ETHER_ADDR_LEN);
+#endif
 		/* Non-multicast and claim it is locally administered. */
 		sdl.sdl_data[0] &= 0xfc;
 		sdl.sdl_data[0] |= 0x02;

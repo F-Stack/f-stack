@@ -31,6 +31,13 @@
 #include <sysexits.h>
 #include <unistd.h>
 
+#ifdef FSTACK
+#include <stdint.h>
+#include "compat.h"
+
+#include "ff_ipc.h"
+#endif
+
 #include "ipfw2.h"
 
 static void
@@ -38,7 +45,11 @@ help(void)
 {
 	fprintf(stderr,
 "ipfw syntax summary (but please do read the ipfw(8) manpage):\n\n"
+#ifndef FSTACK
 "\tipfw [-abcdefhnNqStTv] <command>\n\n"
+#else
+"\tipfw -P <f-stack proc_id> [-abcdefhnNqStTv] <command>\n\n"
+#endif
 "where <command> is one of the following:\n\n"
 "add [num] [set N] [prob x] RULE-BODY\n"
 "{pipe|queue} N config PIPE-BODY\n"
@@ -75,6 +86,10 @@ help(void)
 "	setup | {tcpack|tcpseq|tcpwin} NN | tcpflags SPEC | tcpoptions SPEC |\n"
 "	tcpdatalen LIST | verrevpath | versrcreach | antispoof\n"
 );
+
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 
 	exit(0);
 }
@@ -262,7 +277,11 @@ ipfw_main(int oldac, char **oldav)
 	save_av = av;
 
 	optind = optreset = 1;	/* restart getopt() */
+#ifndef FSTACK
 	while ((ch = getopt(ac, av, "abcdDefhinNp:qs:STtv")) != -1)
+#else
+	while ((ch = getopt(ac, av, "abcdDefhinNp:qs:STtvP:")) != -1)
+#endif
 		switch (ch) {
 		case 'a':
 			do_acct = 1;
@@ -339,6 +358,12 @@ ipfw_main(int oldac, char **oldav)
 			g_co.verbose = 1;
 			break;
 
+#ifdef FSTACK
+		case 'P':
+			ff_set_proc_id(atoi(optarg));
+			break;
+#endif
+
 		default:
 			free(save_av);
 			return 1;
@@ -411,7 +436,13 @@ ipfw_main(int oldac, char **oldav)
 		else if (g_co.do_nat && _substrcmp(*av, "show") == 0)
  			ipfw_show_nat(ac, av);
 		else if (g_co.do_pipe && _substrcmp(*av, "config") == 0)
-			ipfw_config_pipe(ac, av);
+#ifdef DUMMYNET
+ 			ipfw_config_pipe(ac, av);
+#else
+ 		{
+ 			errx(EX_UNAVAILABLE, "ipfw_config_pipe not supported");
+ 		}
+#endif
 		else if (g_co.do_nat && _substrcmp(*av, "config") == 0)
  			ipfw_config_nat(ac, av);
 		else if (_substrcmp(*av, "set") == 0)
@@ -474,7 +505,11 @@ ipfw_readfile(int ac, char *av[])
 	FILE	*f = NULL;
 	pid_t	preproc = 0;
 
+#ifndef FSTACK
 	while ((c = getopt(ac, av, "cfNnp:qS")) != -1) {
+#else
+	while ((c = getopt(ac, av, "cfNnp:qSP:")) != -1) {
+#endif
 		switch(c) {
 		case 'c':
 			g_co.do_compact = 1;
@@ -524,6 +559,12 @@ ipfw_readfile(int ac, char *av[])
 		case 'S':
 			g_co.show_sets = 1;
 			break;
+
+#ifdef FSTACK
+		case 'P':
+			ff_set_proc_id(atoi(optarg));
+			break;
+#endif
 
 		default:
 			errx(EX_USAGE, "bad arguments, for usage"
@@ -580,7 +621,9 @@ ipfw_readfile(int ac, char *av[])
 
 		lineno++;
 		snprintf(linename, sizeof(linename), "Line %d", lineno);
+#ifndef FSTACK
 		setprogname(linename); /* XXX */
+#endif
 		args[0] = progname;
 		args[1] = buf;
 		ipfw_main(2, args);
@@ -623,7 +666,9 @@ main(int ac, char *av[])
 	 * If the last argument is an absolute pathname, interpret it
 	 * as a file to be preprocessed.
 	 */
-
+#ifdef FSTACK
+	ff_ipc_init();
+#endif
 	if (ac > 1 && av[ac - 1][0] == '/') {
 		if (access(av[ac - 1], R_OK) == 0)
 			ipfw_readfile(ac, av);
@@ -636,5 +681,8 @@ main(int ac, char *av[])
 			    "do \"ipfw -h\" or \"man ipfw\" for details");
 		}
 	}
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	return EX_OK;
 }

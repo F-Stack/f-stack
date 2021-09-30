@@ -96,6 +96,7 @@ MsgCmd(int ac, char **av)
 	}
 	free(buf);
 
+#ifndef FSTACK
 	/* See if a synchronous reply awaits */
 	{
 		struct timeval tv;
@@ -114,6 +115,9 @@ MsgCmd(int ac, char **av)
 			break;
 		}
 	}
+#else
+	MsgRead();
+#endif
 
 	/* Done */
 	return (CMDRTN_OK);

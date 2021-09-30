@@ -39,6 +39,12 @@
 
 #include "ipfw2.h"
 
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
+
 static void table_modify_record(ipfw_obj_header *oh, int ac, char *av[],
     int add, int quiet, int update, int atomic);
 static int table_flush(ipfw_obj_header *oh);
@@ -122,9 +128,13 @@ lookup_host (char *host, struct in_addr *ipaddr)
 	struct hostent *he;
 
 	if (!inet_aton(host, ipaddr)) {
+#ifndef FSTACK
 		if ((he = gethostbyname(host)) == NULL)
 			return(-1);
 		*ipaddr = *(struct in_addr *)he->h_addr_list[0];
+#else
+		return (-1);
+#endif
 	}
 	return(0);
 }
@@ -1198,7 +1208,7 @@ tentry_fill_key_type(char *arg, ipfw_obj_tentry *tentry, uint8_t type,
 
 			masklen = p ? mask : 32;
 			af = AF_INET;
-		} else if (inet_pton(AF_INET6, arg, paddr) == 1) {
+		} else if (inet_pton(AF_INET6_LINUX, arg, paddr) == 1) {
 			if (IN6_IS_ADDR_V4COMPAT(paddr))
 				errx(EX_DATAERR,
 				    "Use IPv4 instead of v4-compatible");
@@ -1251,7 +1261,7 @@ tentry_fill_key_type(char *arg, ipfw_obj_tentry *tentry, uint8_t type,
 					    "Inconsistent address family\n");
 				af = AF_INET;
 				memcpy(&tfe->a.a4.sip, &tmp, 4);
-			} else if (inet_pton(AF_INET6, arg, &tmp) == 1) {
+			} else if (inet_pton(AF_INET6_LINUX, arg, &tmp) == 1) {
 				if (af != 0 && af != AF_INET6)
 					errx(EX_DATAERR,
 					    "Inconsistent address family\n");
@@ -1317,7 +1327,7 @@ tentry_fill_key_type(char *arg, ipfw_obj_tentry *tentry, uint8_t type,
 					    "Inconsistent address family");
 				af = AF_INET;
 				memcpy(&tfe->a.a4.dip, &tmp, 4);
-			} else if (inet_pton(AF_INET6, arg, &tmp) == 1) {
+			} else if (inet_pton(AF_INET6_LINUX, arg, &tmp) == 1) {
 				if (af != 0 && af != AF_INET6)
 					errx(EX_DATAERR,
 					    "Inconsistent address family");
@@ -1378,7 +1388,7 @@ guess_key_type(char *key, uint8_t *ptype)
 			*p = '\0';
 
 		if ((inet_pton(AF_INET, key, &addr) == 1) ||
-		    (inet_pton(AF_INET6, key, &addr) == 1)) {
+		    (inet_pton(AF_INET6_LINUX, key, &addr) == 1)) {
 			*ptype = IPFW_TABLE_CIDR;
 			if (p != NULL)
 				*p = '/';
@@ -1614,6 +1624,7 @@ tentry_fill_value(ipfw_obj_header *oh __unused, ipfw_obj_tentry *tent,
 				memset(&hints, 0, sizeof(hints));
 				hints.ai_family = AF_INET6;
 				hints.ai_flags = AI_NUMERICHOST;
+				/* FIXME: getaddrinfo not support IPv6 */
 				if (getaddrinfo(n, NULL, &hints, &res) == 0) {
 					v->nh6 = ((struct sockaddr_in6 *)
 					    res->ai_addr)->sin6_addr;
@@ -1836,9 +1847,13 @@ table_show_value(char *buf, size_t bufsize, ipfw_table_value *v,
 			sa6.sin6_addr = v->nh6;
 			sa6.sin6_port = 0;
 			sa6.sin6_scope_id = v->zoneid;
+#ifndef FSTACK
 			if (getnameinfo((const struct sockaddr *)&sa6,
 			    sa6.sin6_len, abuf, sizeof(abuf), NULL, 0,
 			    NI_NUMERICHOST) == 0)
+#else
+			if (inet_ntop(AF_INET6_LINUX, &sa6.sin6_addr, abuf, sizeof(abuf)) != NULL)
+#endif
 				l = snprintf(buf, sz, "%s,", abuf);
 			break;
 		}

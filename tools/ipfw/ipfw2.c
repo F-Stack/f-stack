@@ -32,7 +32,9 @@
 #include <err.h>
 #include <errno.h>
 #include <grp.h>
+#ifndef FSTACK
 #include <jail.h>
+#endif
 #include <netdb.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -56,6 +58,12 @@
 #include <netinet/ip_fw.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
 
 struct cmdline_opts g_co;	/* global options */
 
@@ -2310,9 +2318,9 @@ show_dyn_state(struct cmdline_opts *co, struct format_opts *fo,
 		a.s_addr = htonl(d->id.dst_ip);
 		bprintf(bp, " <-> %s %d", inet_ntoa(a), d->id.dst_port);
 	} else if (d->id.addr_type == 6) {
-		bprintf(bp, " %s %d", inet_ntop(AF_INET6, &d->id.src_ip6, buf,
+		bprintf(bp, " %s %d", inet_ntop(AF_INET6_LINUX, &d->id.src_ip6, buf,
 		    sizeof(buf)), d->id.src_port);
-		bprintf(bp, " <-> %s %d", inet_ntop(AF_INET6, &d->id.dst_ip6,
+		bprintf(bp, " <-> %s %d", inet_ntop(AF_INET6_LINUX, &d->id.dst_ip6,
 		    buf, sizeof(buf)), d->id.dst_port);
 	} else
 		bprintf(bp, " UNKNOWN <-> UNKNOWN");
@@ -2723,7 +2731,11 @@ ipfw_list(int ac, char *av[], int show_counters)
 		return;
 	}
 	if (g_co.do_pipe) {
+#ifdef DUMMYNET
 		dummynet_list(ac, av, show_counters);
+#else
+		fprintf(stderr, "dummynet_list not supported\n");
+#endif
 		return;
 	}
 
@@ -2953,9 +2965,13 @@ lookup_host (char *host, struct in_addr *ipaddr)
 	struct hostent *he;
 
 	if (!inet_aton(host, ipaddr)) {
+#ifndef FSTACK
 		if ((he = gethostbyname(host)) == NULL)
 			return(-1);
 		*ipaddr = *(struct in_addr *)he->h_addr_list[0];
+#else
+		return (-1);
+#endif
 	}
 	return(0);
 }
@@ -3348,7 +3364,11 @@ ipfw_delete(char *av[])
 		if (g_co.do_nat) {
 			exitval = ipfw_delete_nat(i);
 		} else if (g_co.do_pipe) {
+#ifdef DUMMYNET
 			exitval = ipfw_delete_pipe(g_co.do_pipe, i);
+#else
+			exitval = EX_UNAVAILABLE;
+#endif
 		} else {
 			memset(&rt, 0, sizeof(rt));
 			if (do_set != 0) {
@@ -3727,11 +3747,11 @@ add_src(ipfw_insn *cmd, char *av, u_char proto, int cblen, struct tidx *tstate)
 		host = av;
 
 	if (proto == IPPROTO_IPV6  || strcmp(av, "me6") == 0 ||
-	    inet_pton(AF_INET6, host, &a) == 1)
+	    inet_pton(AF_INET6_LINUX, host, &a) == 1)
 		ret = add_srcip6(cmd, av, cblen, tstate);
 	/* XXX: should check for IPv4, not !IPv6 */
 	if (ret == NULL && (proto == IPPROTO_IP || strcmp(av, "me") == 0 ||
-	    inet_pton(AF_INET6, host, &a) != 1))
+	    inet_pton(AF_INET6_LINUX, host, &a) != 1))
 		ret = add_srcip(cmd, av, cblen, tstate);
 	if (ret == NULL && strcmp(av, "any") != 0)
 		ret = cmd;
@@ -3758,11 +3778,11 @@ add_dst(ipfw_insn *cmd, char *av, u_char proto, int cblen, struct tidx *tstate)
 		host = av;
 
 	if (proto == IPPROTO_IPV6  || strcmp(av, "me6") == 0 ||
-	    inet_pton(AF_INET6, host, &a) == 1)
+	    inet_pton(AF_INET6_LINUX, host, &a) == 1)
 		ret = add_dstip6(cmd, av, cblen, tstate);
 	/* XXX: should check for IPv4, not !IPv6 */
 	if (ret == NULL && (proto == IPPROTO_IP || strcmp(av, "me") == 0 ||
-	    inet_pton(AF_INET6, host, &a) != 1))
+	    inet_pton(AF_INET6_LINUX, host, &a) != 1))
 		ret = add_dstip(cmd, av, cblen, tstate);
 	if (ret == NULL && strcmp(av, "any") != 0)
 		ret = cmd;
@@ -4710,6 +4730,7 @@ read_options:
 			break;
 
 		case TOK_JAIL:
+#ifndef FSTACK
 			NEED1("jail requires argument");
 		    {
 			char *end;
@@ -4737,6 +4758,9 @@ read_options:
 			cmd->len |= F_INSN_SIZE(ipfw_insn_u32);
 			av++;
 		    }
+#else
+			errx(EX_USAGE, "F-Stack not support JAIL");
+#endif
 			break;
 
 		case TOK_ESTAB:
@@ -5458,7 +5482,11 @@ ipfw_flush(int force)
 			return;
 	}
 	if (g_co.do_pipe) {
+#ifdef DUMMYNET
 		dummynet_flush();
+#else
+		fprintf(stderr, "dummynet_flush not supported\n");
+#endif
 		return;
 	}
 	/* `ipfw set N flush` - is the same that `ipfw delete set N` */

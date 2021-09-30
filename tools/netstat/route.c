@@ -72,6 +72,10 @@ __FBSDID("$FreeBSD$");
 #include "common.h"
 #include "nl_defs.h"
 
+#ifdef FSTACK
+#include <time.h>
+#endif
+
 /*
  * Definitions for showing gateway flags.
  */
@@ -135,7 +139,11 @@ routepr(int fibnum, int af)
 	 * (time_uptime vs time_second) and we are reading kernel memory
 	 * directly we should do rt_expire --> expire_time conversion.
 	 */
+#ifndef FSTACK
 	if (clock_gettime(CLOCK_UPTIME, &uptime) < 0)
+#else
+	if (clock_gettime(CLOCK_BOOTTIME, &uptime) < 0)
+#endif
 		err(EX_OSERR, "clock_gettime() failed");
 
 	xo_open_container("route-information");
@@ -699,6 +707,7 @@ void
 rt_stats(void)
 {
 	struct rtstat rtstat;
+#ifndef FSTACK
 	u_long rtsaddr, rttaddr;
 	int rttrash;
 
@@ -712,6 +721,11 @@ rt_stats(void)
 	}
 	kread_counters(rtsaddr, (char *)&rtstat, sizeof (rtstat));
 	kread(rttaddr, (char *)&rttrash, sizeof (rttrash));
+#else
+	if (fetch_stats("net.rtstat", 0, &rtstat,
+	    sizeof(rtstat), kread_counters) != 0)
+		return;
+#endif
 	xo_emit("{T:routing}:\n");
 
 #define	p(f, m) if (rtstat.f || sflag <= 1) \
@@ -729,8 +743,11 @@ rt_stats(void)
 	    "{N:/use%s of a wildcard route}\n");
 #undef p
 
+#ifndef FSTACK
 	if (rttrash || sflag <= 1)
 		xo_emit("\t{:unused-but-not-freed/%u} "
 		    "{N:/route%s not in table but not freed}\n",
 		    rttrash, plural(rttrash));
+#endif
+
 }

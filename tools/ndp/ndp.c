@@ -109,7 +109,41 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifndef FSTACK
 #include "gmt2local.h"
+#else
+#include <time.h>
+
+#include "rtioctl.h"
+#include "ff_ipc.h"
+#include "ff_api.h"
+    
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+
+#define socket(a, b, c) rt_socket((a), (b), (c))
+#define close(a) rt_close(a)
+
+#endif
+
+int32_t gmt2local(time_t);
+/*#define SA_SIZE_NDP(sa)						\
+	(  (((struct sockaddr *)(sa))->sa_len == 0) ?   \
+	sizeof(long)        :               \
+	1 + ( (((struct sockaddr *)(sa))->sa_len - 1) | (sizeof(long) - 1) ) )
+*/
+#ifndef	ALIGNBYTES
+/*
+ * On systems with a routing socket, ALIGNBYTES should match the value
+ * that the kernel uses when building the messages.
+ */
+#define	ALIGNBYTES	(sizeof(long long) - 1)
+#endif
+#ifndef	ALIGN
+#define	ALIGN(p)	(((u_long)(p) + ALIGNBYTES) &~ ALIGNBYTES)
+#endif
+
+#endif
 
 #define	NEXTADDR(w, s)					\
 	if (rtm->rtm_addrs & (w)) {			\
@@ -158,6 +192,36 @@ static const char *rtpref_str[] = {
 	"low"			/* 11 */
 };
 
+#ifdef FSTACK
+int32_t
+gmt2local(time_t t)
+{
+	register int dt, dir;
+	register struct tm *gmt, *loc;
+	struct tm sgmt;
+
+	if (t == 0)
+		t = time(NULL);
+	gmt = &sgmt;
+	*gmt = *gmtime(&t);
+	loc = localtime(&t);
+	dt = (loc->tm_hour - gmt->tm_hour) * 60 * 60 +
+		(loc->tm_min - gmt->tm_min) * 60;
+
+	/*
+	 * If the year or julian day is different, we span 00:00 GMT
+	 * and must add or subtract a day. Check the year first to
+	 * avoid problems when the julian day wraps.
+	 */
+	dir = loc->tm_year - gmt->tm_year;
+	if (dir == 0)
+		dir = loc->tm_yday - gmt->tm_yday;
+	dt += dir * 24 * 60 * 60;
+
+	return (dt);
+}
+#endif
+
 int
 main(int argc, char **argv)
 {
@@ -166,7 +230,12 @@ main(int argc, char **argv)
 
 	pid = getpid();
 	thiszone = gmt2local(0);
+#ifndef FSTACK
 	while ((ch = getopt(argc, argv, "acd:f:Ii:nprstA:HPR")) != -1)
+#else
+	ff_ipc_init();
+	while ((ch = getopt(argc, argv, "acd:f:Ii:nprstA:HPRC:")) != -1)
+#endif
 		switch (ch) {
 		case 'a':
 		case 'c':
@@ -213,6 +282,11 @@ main(int argc, char **argv)
 				/*NOTREACHED*/
 			}
 			break;
+#ifdef FSTACK
+		case 'C':
+			ff_set_proc_id(atoi(optarg));
+			break;
+#endif
 		default:
 			usage();
 		}
@@ -477,9 +551,13 @@ get(char *host)
 	    ((struct sockaddr_in6 *)res->ai_addr)->sin6_scope_id;
 	dump(sin, 0);
 	if (found_entry == 0) {
+#ifndef FSTACK
 		getnameinfo((struct sockaddr *)sin, sin->sin6_len, host_buf,
 		    sizeof(host_buf), NULL ,0,
 		    (nflag ? NI_NUMERICHOST : 0));
+#else
+		inet_ntop(AF_INET6_LINUX, &sin->sin6_addr, host_buf, sizeof(host_buf));
+#endif
 		printf("%s (%s) -- no entry\n", host, host_buf);
 		exit(1);
 	}
@@ -539,10 +617,14 @@ delete:
 	NEXTADDR(RTA_DST, sin_m);
 	rtm->rtm_flags |= RTF_LLDATA;
 	if (rtmsg(RTM_DELETE) == 0) {
+#ifndef FSTACK
 		getnameinfo((struct sockaddr *)sin,
 		    sin->sin6_len, host_buf,
 		    sizeof(host_buf), NULL, 0,
 		    (nflag ? NI_NUMERICHOST : 0));
+#else
+		inet_ntop(AF_INET6_LINUX, &sin->sin6_addr, host_buf, sizeof(host_buf));
+#endif
 		printf("%s (%s) deleted\n", host, host_buf);
 	}
 
@@ -642,8 +724,12 @@ again:;
 			if (sin->sin6_scope_id == 0)
 				sin->sin6_scope_id = sdl->sdl_index;
 		}
+#ifndef FSTACK
 		getnameinfo((struct sockaddr *)sin, sin->sin6_len, host_buf,
 		    sizeof(host_buf), NULL, 0, (nflag ? NI_NUMERICHOST : 0));
+#else
+		inet_ntop(AF_INET6_LINUX, &sin->sin6_addr, host_buf, sizeof(host_buf));
+#endif
 		if (cflag) {
 #ifdef RTF_WASCLONED
 			if (rtm->rtm_flags & RTF_WASCLONED)
@@ -820,6 +906,7 @@ ndp_ether_aton(char *a, u_char *n)
 static void
 usage()
 {
+#ifndef FSTACK
 	printf("usage: ndp [-nt] hostname\n");
 	printf("       ndp [-nt] -a | -c | -p | -r | -H | -P | -R\n");
 	printf("       ndp [-nt] -A wait\n");
@@ -830,6 +917,18 @@ usage()
 	printf("       ndp [-nt] -I [interface|delete]\n");
 #endif
 	printf("       ndp [-nt] -s nodename etheraddr [temp] [proxy]\n");
+#else
+	printf("usage: ndp -C <f-stack proc_id> [-nt] hostname\n");
+	printf("       ndp -C <f-stack proc_id> [-nt] -a | -c | -p | -r | -H | -P | -R\n");
+	printf("       ndp -C <f-stack proc_id> [-nt] -A wait\n");
+	printf("       ndp -C <f-stack proc_id> [-nt] -d hostname\n");
+	printf("       ndp -C <f-stack proc_id> [-nt] -f filename\n");
+	printf("       ndp -C <f-stack proc_id> [-nt] -i interface [flags...]\n");
+#ifdef SIOCSDEFIFACE_IN6
+	printf("       ndp -C <f-stack proc_id> [-nt] -I [interface|delete]\n");
+#endif
+	printf("       ndp -C <f-stack proc_id> [-nt] -s nodename etheraddr [temp] [proxy]\n");
+#endif
 	exit(1);
 }
 
@@ -873,6 +972,7 @@ doit:
 	l = rtm->rtm_msglen;
 	rtm->rtm_seq = ++seq;
 	rtm->rtm_type = cmd;
+#ifndef FSTACK
 	if ((rlen = write(s, (char *)&m_rtmsg, l)) < 0) {
 		if (errno != ESRCH || cmd != RTM_DELETE) {
 			err(1, "writing to routing socket");
@@ -883,6 +983,9 @@ doit:
 		l = read(s, (char *)&m_rtmsg, sizeof(m_rtmsg));
 	} while (l > 0 && (rtm->rtm_type != cmd || rtm->rtm_seq != seq ||
 	    rtm->rtm_pid != pid));
+#else
+	l = rtioctl((char *)&m_rtmsg, l, sizeof(m_rtmsg));
+#endif
 	if (l < 0)
 		(void) fprintf(stderr, "ndp: read from routing socket: %s\n",
 		    strerror(errno));
@@ -1075,10 +1178,13 @@ rtrlist()
 	ep = (struct in6_defrouter *)(buf + l);
 	for (p = (struct in6_defrouter *)buf; p < ep; p++) {
 		int rtpref;
-
+#ifndef FSTACK
 		if (getnameinfo((struct sockaddr *)&p->rtaddr,
 		    p->rtaddr.sin6_len, host_buf, sizeof(host_buf), NULL, 0,
 		    (nflag ? NI_NUMERICHOST : 0)) != 0)
+#else
+		if (inet_ntop(AF_INET6_LINUX, &p->rtaddr.sin6_addr, host_buf, sizeof(host_buf)) == NULL)
+#endif
 			strlcpy(host_buf, "?", sizeof(host_buf));
 
 		printf("%s if=%s", host_buf,
@@ -1133,10 +1239,13 @@ plist()
 	for (p = (struct in6_prefix *)buf; p < ep; p = n) {
 		advrtr = (struct sockaddr_in6 *)(p + 1);
 		n = (struct in6_prefix *)&advrtr[p->advrtrs];
-
+#ifndef FSTACK
 		if (getnameinfo((struct sockaddr *)&p->prefix,
 		    p->prefix.sin6_len, namebuf, sizeof(namebuf),
 		    NULL, 0, niflags) != 0)
+#else
+		inet_ntop(AF_INET6_LINUX, &p->prefix.sin6_addr, namebuf, sizeof(namebuf));
+#endif
 			strlcpy(namebuf, "?", sizeof(namebuf));
 		printf("%s/%d if=%s\n", namebuf, p->prefixlen,
 		    if_indextoname(p->if_index, ifix_buf));
@@ -1186,10 +1295,13 @@ plist()
 			printf("  advertised by\n");
 			for (j = 0; j < p->advrtrs; j++) {
 				struct in6_nbrinfo *nbi;
-
+#ifndef FSTACK
 				if (getnameinfo((struct sockaddr *)sin6,
 				    sin6->sin6_len, namebuf, sizeof(namebuf),
 				    NULL, 0, ninflags) != 0)
+#else
+				if (inet_ntop(AF_INET6_LINUX, &sin6->sin6_addr, namebuf, sizeof(namebuf)) == NULL)
+#endif
 					strlcpy(namebuf, "?", sizeof(namebuf));
 				printf("    %s", namebuf);
 

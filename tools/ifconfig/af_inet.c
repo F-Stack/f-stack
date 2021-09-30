@@ -63,7 +63,9 @@ static void
 in_status(int s __unused, const struct ifaddrs *ifa)
 {
 	struct sockaddr_in *sin, null_sin;
+#ifndef FSTACK
 	int error, n_flags;
+#endif
 	
 	memset(&null_sin, 0, sizeof(null_sin));
 
@@ -71,6 +73,7 @@ in_status(int s __unused, const struct ifaddrs *ifa)
 	if (sin == NULL)
 		return;
 
+#ifndef FSTACK
 	if (f_addr != NULL && strcmp(f_addr, "fqdn") == 0)
 		n_flags = 0;
 	else if (f_addr != NULL && strcmp(f_addr, "host") == 0)
@@ -82,6 +85,7 @@ in_status(int s __unused, const struct ifaddrs *ifa)
 			    sizeof(addr_buf), NULL, 0, n_flags);
 
 	if (error)
+#endif
 		inet_ntop(AF_INET, &sin->sin_addr, addr_buf, sizeof(addr_buf));
 	
 	printf("\tinet %s", addr_buf);
@@ -134,8 +138,10 @@ static void
 in_getaddr(const char *s, int which)
 {
 	struct sockaddr_in *sin = sintab[which];
+#ifndef FSTACK
 	struct hostent *hp;
 	struct netent *np;
+#endif
 
 	sin->sin_len = sizeof(*sin);
 	sin->sin_family = AF_INET;
@@ -166,6 +172,10 @@ in_getaddr(const char *s, int which)
 
 	if (inet_aton(s, &sin->sin_addr))
 		return;
+#ifdef FSTACK
+	else
+		errx(1, "%s: bad value", s);
+#else
 	if ((hp = gethostbyname(s)) != NULL)
 		bcopy(hp->h_addr, (char *)&sin->sin_addr, 
 		    MIN((size_t)hp->h_length, sizeof(sin->sin_addr)));
@@ -173,6 +183,7 @@ in_getaddr(const char *s, int which)
 		sin->sin_addr = inet_makeaddr(np->n_net, INADDR_ANY);
 	else
 		errx(1, "%s: bad value", s);
+#endif
 }
 
 static void
@@ -182,6 +193,9 @@ in_status_tunnel(int s)
 	char dst[NI_MAXHOST];
 	struct ifreq ifr;
 	const struct sockaddr *sa = (const struct sockaddr *) &ifr.ifr_addr;
+#ifdef FSTACK
+	const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+#endif
 
 	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, name, IFNAMSIZ);
@@ -190,15 +204,25 @@ in_status_tunnel(int s)
 		return;
 	if (sa->sa_family != AF_INET)
 		return;
+#ifndef FSTACK
 	if (getnameinfo(sa, sa->sa_len, src, sizeof(src), 0, 0, NI_NUMERICHOST) != 0)
 		src[0] = '\0';
+#else
+	if (inet_ntop(AF_INET, &sin->sin_addr, src, sizeof(src)) == NULL)
+		return;
+#endif
 
 	if (ioctl(s, SIOCGIFPDSTADDR, (caddr_t)&ifr) < 0)
 		return;
 	if (sa->sa_family != AF_INET)
 		return;
+#ifndef FSTACK
 	if (getnameinfo(sa, sa->sa_len, dst, sizeof(dst), 0, 0, NI_NUMERICHOST) != 0)
 		dst[0] = '\0';
+#else
+	if (inet_ntop(AF_INET, &sin->sin_addr, dst, sizeof(dst)) == NULL)
+		return;
+#endif
 
 	printf("\ttunnel inet %s --> %s\n", src, dst);
 }
@@ -233,10 +257,11 @@ static struct afswtch af_inet = {
 static __constructor void
 inet_ctor(void)
 {
-
+#ifndef FSTACK
 #ifndef RESCUE
 	if (!feature_present("inet"))
 		return;
+#endif
 #endif
 	af_register(&af_inet);
 }

@@ -42,7 +42,9 @@ static char sccsid[] = "@(#)route.c	8.6 (Berkeley) 4/28/95";
 #endif /* not lint */
 
 #include <sys/cdefs.h>
+#ifndef FSTACK
 __FBSDID("$FreeBSD$");
+#endif
 
 #include <sys/param.h>
 #include <sys/file.h>
@@ -74,6 +76,23 @@ __FBSDID("$FreeBSD$");
 #include <unistd.h>
 #include <ifaddrs.h>
 
+#ifdef FSTACK
+#include "rtioctl.h"
+#include "compat.h"
+#include "ff_ipc.h"
+
+#define socket(a, b, c) rt_socket((a), (b), (c))
+#define shutdown(a, b) rt_shutdown((a), (b))
+#define setsockopt(a, b, c, d, e) rt_setsockopt((a), (b), (c), (d), (e))
+
+#define write(a, b, c) rtioctl((b), (c), (0))
+
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+
+#endif
+
 struct fibl {
 	TAILQ_ENTRY(fibl)	fl_next;
 
@@ -93,7 +112,12 @@ static struct keytab {
 static struct sockaddr_storage so[RTAX_MAX];
 static int	pid, rtm_addrs;
 static int	s;
+#ifndef FSTACK
 static int	nflag, af, qflag, tflag;
+#else
+static int	nflag = 1;
+static int	af, qflag, tflag;
+#endif
 static int	verbose, aflen;
 static int	locking, lockrest, debugonly;
 static struct rt_metrics rt_metrics;
@@ -125,8 +149,10 @@ static void	inet_makemask(struct sockaddr_in *, u_long);
 #ifdef INET6
 static int	inet6_makenetandmask(struct sockaddr_in6 *, const char *);
 #endif
+#ifndef FSTACK
 static void	interfaces(void);
 static void	monitor(int, char*[]);
+#endif
 static const char	*netname(struct sockaddr *);
 static void	newroute(int, char **);
 static int	newroute_fib(int, char *, int);
@@ -161,7 +187,11 @@ usage(const char *cp)
 {
 	if (cp != NULL)
 		warnx("bad keyword: %s", cp);
+#ifndef FSTACK
 	errx(EX_USAGE, "usage: route [-46dnqtv] command [[modifiers] args]");
+#else
+	errx(EX_USAGE, "usage: route -p <f-stack proc_id> [-46dnqtv] command [[modifiers] args]");
+#endif
 	/* NOTREACHED */
 }
 
@@ -174,7 +204,12 @@ main(int argc, char **argv)
 	if (argc < 2)
 		usage(NULL);
 
+#ifndef FSTACK
 	while ((ch = getopt(argc, argv, "46nqdtv")) != -1)
+#else
+	ff_ipc_init();
+	while ((ch = getopt(argc, argv, "46nqdtvp:")) != -1)
+#endif
 		switch(ch) {
 		case '4':
 #ifdef INET
@@ -207,6 +242,11 @@ main(int argc, char **argv)
 		case 'd':
 			debugonly = 1;
 			break;
+#ifdef FSTACK
+		case 'p':
+			ff_set_proc_id(atoi(optarg));
+			break;
+#endif
 		case '?':
 		default:
 			usage(NULL);
@@ -248,15 +288,25 @@ main(int argc, char **argv)
 			/* NOTREACHED */
 
 		case K_MONITOR:
+#ifndef FSTACK
 			monitor(argc, argv);
+#else
+			usage(*argv);
+#endif
 			/* NOTREACHED */
 
 		case K_FLUSH:
 			flushroutes(argc, argv);
+#ifdef FSTACK
+			ff_ipc_exit();
+#endif
 			exit(0);
 			/* NOTREACHED */
 		}
 	usage(*argv);
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	/* NOTREACHED */
 }
 
@@ -266,6 +316,10 @@ set_sofib(int fib)
 
 	if (fib < 0)
 		return (0);
+#ifdef FSTACK
+	return (rt_setsockopt(s, SOL_SOCKET, SO_SETFIB, (void *)&fib,
+	    sizeof(fib)));
+#endif
 	return (setsockopt(s, SOL_SOCKET, SO_SETFIB, (void *)&fib,
 	    sizeof(fib)));
 }
@@ -591,9 +645,25 @@ routename(struct sockaddr *sa)
 			ss.ss_len = sizeof(struct sockaddr_in);
 		else if (sa->sa_family == AF_INET6)
 			ss.ss_len = sizeof(struct sockaddr_in6);
+#ifndef FSTACK
 		error = getnameinfo((struct sockaddr *)&ss, ss.ss_len,
 		    rt_line, sizeof(rt_line), NULL, 0,
 		    (nflag == 0) ? 0 : NI_NUMERICHOST);
+#else
+		const char *dst = NULL;
+		error = 0;
+		struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+#ifdef INET6
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+		if (sa->sa_family == AF_INET6)
+			dst = inet_ntop(AF_INET6_LINUX, &sin6->sin6_addr, rt_line, sizeof(rt_line));
+		else
+#endif
+			dst = inet_ntop(AF_INET, &sin->sin_addr, rt_line, sizeof(rt_line));
+		if (dst == NULL) {
+			error = EAI_NONAME;
+		}
+#endif
 		if (error) {
 			warnx("getnameinfo(): %s", gai_strerror(error));
 			strncpy(rt_line, "invalid", sizeof(rt_line));
@@ -651,9 +721,13 @@ netname(struct sockaddr *sa)
 	struct sockaddr_dl *sdl;
 	int n;
 #ifdef INET
+#ifndef FSTACK
 	struct netent *np = NULL;
 	const char *cp = NULL;
 	u_long i;
+#else
+	const char *cp = NULL;
+#endif
 #endif
 
 	switch (sa->sa_family) {
@@ -663,14 +737,21 @@ netname(struct sockaddr *sa)
 		struct in_addr in;
 
 		in = ((struct sockaddr_in *)(void *)sa)->sin_addr;
+#ifndef FSTACK
 		i = in.s_addr = ntohl(in.s_addr);
+#else
+		in.s_addr = ntohl(in.s_addr);
+#endif
 		if (in.s_addr == 0)
 			cp = "default";
+#ifndef FSTACK
 		else if (!nflag) {
 			np = getnetbyaddr(i, AF_INET);
 			if (np != NULL)
 				cp = np->n_name;
 		}
+#endif
+
 #define C(x)	(unsigned)((x) & 0xff)
 		if (cp != NULL)
 			strncpy(net_line, cp, sizeof(net_line));
@@ -700,10 +781,14 @@ netname(struct sockaddr *sa)
 		memcpy(&sin6, sa, sa->sa_len);
 		sin6.sin6_len = sizeof(sin6);
 		sin6.sin6_family = AF_INET6;
+#ifndef FSTACK
 		if (nflag)
 			niflags |= NI_NUMERICHOST;
 		if (getnameinfo((struct sockaddr *)&sin6, sin6.sin6_len,
 		    net_line, sizeof(net_line), NULL, 0, niflags) != 0)
+#else
+		if (inet_ntop(AF_INET6_LINUX, &sin6.sin6_addr, net_line, sizeof(net_line)) == NULL)
+#endif
 			strncpy(net_line, "invalid", sizeof(net_line));
 
 		return(net_line);
@@ -1016,7 +1101,14 @@ newroute(int argc, char **argv)
 		error += fl->fl_error;
 	}
 	if (*cmd == 'g' || *cmd == 's')
+#ifndef FSTACK
 		exit(error);
+#else
+	{
+		ff_ipc_exit();
+		exit(error);
+	}
+#endif
 
 	error = 0;
 	if (!qflag) {
@@ -1092,6 +1184,9 @@ newroute(int argc, char **argv)
 			}
 		}
 	}
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
 	exit(error);
 }
 
@@ -1242,12 +1337,15 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 #ifdef INET6
 	case AF_INET6:
 	{
+#ifndef FSTACK
 		struct addrinfo hints, *res;
 		int ecode;
+#endif
 
 		q = NULL;
 		if (idx == RTAX_DST && (q = strchr(str, '/')) != NULL)
 			*q = '\0';
+#ifndef FSTACK
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_family = sa->sa_family;
 		hints.ai_socktype = SOCK_DGRAM;
@@ -1257,6 +1355,10 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 			errx(EX_OSERR, "%s: %s", str, gai_strerror(ecode));
 		memcpy(sa, res->ai_addr, res->ai_addrlen);
 		freeaddrinfo(res);
+#else
+		if (inet_pton(AF_INET6_LINUX, str, &((struct sockaddr_in6 *)sa)->sin6_addr) == -1)
+			errx(EX_OSERR, "%s: %d, %s", str, errno, strerror(errno));
+#endif
 		if (q != NULL)
 			*q++ = '/';
 		if (idx == RTAX_DST)
@@ -1301,6 +1403,7 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 	if (inet_aton(str, &sin->sin_addr) != 0)
 		return (1);
 
+#ifndef FSTACK
 	hp = gethostbyname(str);
 	if (hp != NULL) {
 		*hpp = hp;
@@ -1309,6 +1412,7 @@ getaddr(int idx, char *str, struct hostent **hpp, int nrflags)
 		    MIN((size_t)hp->h_length, sizeof(sin->sin_addr)));
 		return (1);
 	}
+#endif
 #endif
 	errx(EX_NOHOST, "bad address: %s", str);
 }
@@ -1368,6 +1472,7 @@ prefixlen(const char *str)
 		return (len);
 }
 
+#ifndef FSTACK
 static void
 interfaces(void)
 {
@@ -1452,6 +1557,7 @@ monitor(int argc, char *argv[])
 		print_rtmsg((struct rt_msghdr *)(void *)msg, n);
 	}
 }
+#endif
 
 static int
 rtmsg(int cmd, int flags, int fib)
@@ -1506,7 +1612,16 @@ rtmsg(int cmd, int flags, int fib)
 		print_rtmsg(&rtm, l);
 	if (debugonly)
 		return (0);
+#ifndef FSTACK
 	if ((rlen = write(s, (char *)&m_rtmsg, l)) < 0) {
+#else
+	if (cmd == RTM_GET) {
+		rlen = rtioctl((char *)&m_rtmsg, l, sizeof(m_rtmsg));
+	} else {
+		rlen = write(s, (char *)&m_rtmsg, l);
+	}
+	if (rlen < 0) {
+#endif
 		switch (errno) {
 		case EPERM:
 			err(1, "writing to routing socket");
@@ -1523,6 +1638,7 @@ rtmsg(int cmd, int flags, int fib)
 		return (-1);
 	}
 	if (cmd == RTM_GET) {
+#ifndef FSTACK
 		stop_read = 0;
 		alarm(READ_TIMEOUT);
 		do {
@@ -1535,6 +1651,9 @@ rtmsg(int cmd, int flags, int fib)
 			return (-1);
 		} else
 			alarm(0);
+#else
+		l = rlen;
+#endif
 		if (l < 0)
 			warn("read from routing socket");
 		else
@@ -1866,7 +1985,11 @@ sodump(struct sockaddr *sa, const char *which)
 #endif
 #ifdef INET6
 	case AF_INET6:
+#ifndef FSTACK
 		(void)printf("%s: inet6 %s; ", which, inet_ntop(sa->sa_family,
+#else
+		(void)printf("%s: inet6 %s; ", which, inet_ntop(AF_INET6_LINUX,
+#endif
 		    &((struct sockaddr_in6 *)(void *)sa)->sin6_addr, nbuf,
 		    sizeof(nbuf)));
 		break;

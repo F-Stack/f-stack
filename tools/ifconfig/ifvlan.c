@@ -81,7 +81,13 @@ getvlan(int s, struct ifreq *ifr, struct vlanreq *vreq)
 	bzero((char *)vreq, sizeof(*vreq));
 	ifr->ifr_data = (caddr_t)vreq;
 
+#ifndef FSTACK
 	return ioctl(s, SIOCGETVLAN, (caddr_t)ifr);
+#else
+	size_t offset = (char *)&(ifr->ifr_data) - (char *)ifr;
+	size_t clen = sizeof(*vreq);
+	return ioctl_va(s, SIOCGETVLAN, (caddr_t)ifr, 3, offset, ifr->ifr_data, clen);
+#endif
 }
 
 static void
@@ -162,6 +168,13 @@ vlan_create(int s, struct ifreq *ifr)
 		if (params.vlr_parent[0] == '\0')
 			errx(1, "must specify a parent device for vlan create");
 		ifr->ifr_data = (caddr_t) &params;
+#ifdef FSTACK
+		size_t offset = (char *)&(ifr->ifr_data) - (char *)ifr;
+		size_t clen = sizeof(params);
+		if (ioctl_va(s, SIOCIFCREATE2, ifr, 3, offset, ifr->ifr_data, clen) < 0)
+			err(1, "SIOCIFCREATE2");
+		return;
+#endif
 	}
 	ioctl_ifcreate(s, ifr);
 }
@@ -178,7 +191,13 @@ vlan_set(int s, struct ifreq *ifr)
 {
 	if (params.vlr_tag != NOTAG && params.vlr_parent[0] != '\0') {
 		ifr->ifr_data = (caddr_t) &params;
+#ifndef FSTACK
 		if (ioctl(s, SIOCSETVLAN, (caddr_t)ifr) == -1)
+#else
+		size_t offset = (char *)&(ifr->ifr_data) - (char *)ifr;
+		size_t clen = sizeof(params);
+		if (ioctl_va(s, SIOCSETVLAN, ifr, 3, offset, ifr->ifr_data, clen) == -1)
+#endif
 			err(1, "SIOCSETVLAN");
 	}
 }
@@ -255,13 +274,23 @@ DECL_CMD_FUNC(unsetvlandev, val, d)
 	bzero((char *)&vreq, sizeof(struct vlanreq));
 	ifr.ifr_data = (caddr_t)&vreq;
 
+#ifndef FSTACK
 	if (ioctl(s, SIOCGETVLAN, (caddr_t)&ifr) == -1)
+#else
+	size_t offset = (char *)&(ifr.ifr_data) - (char *)&(ifr);
+	size_t clen = sizeof(vreq);
+	if (ioctl_va(s, SIOCGETVLAN, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1)
+#endif
 		err(1, "SIOCGETVLAN");
 
 	bzero((char *)&vreq.vlr_parent, sizeof(vreq.vlr_parent));
 	vreq.vlr_tag = 0;
 
+#ifndef FSTACK
 	if (ioctl(s, SIOCSETVLAN, (caddr_t)&ifr) == -1)
+#else
+	if (ioctl_va(s, SIOCSETVLAN, (caddr_t)&ifr, 3, offset, ifr.ifr_data, clen) == -1)
+#endif
 		err(1, "SIOCSETVLAN");
 }
 

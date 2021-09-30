@@ -81,6 +81,21 @@ __FBSDID("$FreeBSD$");
 #include <unistd.h>
 #include <libxo/xo.h>
 
+#ifdef FSTACK
+#include <time.h>
+#include "rtioctl.h"
+#include "ff_ipc.h"
+
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+
+#define socket(a, b, c) rt_socket((a), (b), (c))
+#define close(a) rt_close(a)
+
+#endif
+
+#endif
+
 typedef void (action_fn)(struct sockaddr_dl *sdl, struct sockaddr_in *s_in,
     struct rt_msghdr *rtm);
 
@@ -129,7 +144,12 @@ main(int argc, char *argv[])
 	if (argc < 0)
 		exit(1);
 
+#ifndef FSTACK
 	while ((ch = getopt(argc, argv, "andfsSi:")) != -1)
+#else
+	ff_ipc_init();
+	while ((ch = getopt(argc, argv, "andfsSi:p:")) != -1)
+#endif
 		switch(ch) {
 		case 'a':
 			aflag = 1;
@@ -152,6 +172,11 @@ main(int argc, char *argv[])
 		case 'i':
 			rifname = optarg;
 			break;
+#ifdef FSTACK
+		case 'p':
+			ff_set_proc_id(atoi(optarg));
+			break;
+#endif
 		case '?':
 		default:
 			usage();
@@ -222,6 +247,10 @@ main(int argc, char *argv[])
 	if (ifnameindex != NULL)
 		if_freenameindex(ifnameindex);
 
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
+
 	return (rtn);
 }
 
@@ -271,7 +300,9 @@ file(char *name)
 static struct sockaddr_in *
 getaddr(char *host)
 {
+#ifndef FSTACK
 	struct hostent *hp;
+#endif
 	static struct sockaddr_in reply;
 
 	bzero(&reply, sizeof(reply));
@@ -279,12 +310,16 @@ getaddr(char *host)
 	reply.sin_family = AF_INET;
 	reply.sin_addr.s_addr = inet_addr(host);
 	if (reply.sin_addr.s_addr == INADDR_NONE) {
+#ifndef FSTACK
 		if (!(hp = gethostbyname(host))) {
 			xo_warnx("%s: %s", host, hstrerror(h_errno));
 			return (NULL);
 		}
 		bcopy((char *)hp->h_addr, (char *)&reply.sin_addr,
 			sizeof reply.sin_addr);
+#else
+		warnx("reply.sin_addr.s_addr == INADDR_NONE");
+#endif
 	}
 	return (&reply);
 }
@@ -701,6 +736,7 @@ static void
 usage(void)
 {
 	fprintf(stderr, "%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+#ifndef FSTACK
 	    "usage: arp [-n] [-i interface] hostname",
 	    "       arp [-n] [-i interface] -a",
 	    "       arp -d hostname [pub]",
@@ -708,6 +744,19 @@ usage(void)
 	    "       arp -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
 	    "       arp -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
 	    "       arp -f filename");
+#else
+	    "usage: arp -p <f-stack proc_id> [-n] [-i interface] hostname",
+	    "       arp -p <f-stack proc_id> [-n] [-i interface] -a",
+	    "       arp -p <f-stack proc_id> -d hostname [pub]",
+	    "       arp -p <f-stack proc_id> -d [-i interface] -a",
+	    "       arp -p <f-stack proc_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
+	    "       arp -p <f-stack proc_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
+	    "       arp -p <f-stack proc_id> -f filename");
+#endif
+#ifdef FSTACK
+	ff_ipc_exit();
+#endif
+
 	exit(1);
 }
 
@@ -774,6 +823,7 @@ doit:
 	l = rtm->rtm_msglen;
 	rtm->rtm_seq = ++seq;
 	rtm->rtm_type = cmd;
+#ifndef FSTACK
 	if ((rlen = write(s, (char *)&m_rtmsg, l)) < 0) {
 		if (errno != ESRCH || cmd != RTM_DELETE) {
 			xo_warn("writing to routing socket");
@@ -784,6 +834,9 @@ doit:
 		l = read(s, (char *)&m_rtmsg, sizeof(m_rtmsg));
 	} while (l > 0 && (rtm->rtm_type != cmd || rtm->rtm_seq != seq ||
 	    rtm->rtm_pid != pid));
+#else
+	l = rtioctl((char *)&m_rtmsg, l, sizeof(m_rtmsg));
+#endif
 	if (l < 0)
 		xo_warn("read from routing socket");
 	return (rtm);

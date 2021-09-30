@@ -74,9 +74,11 @@ static u_int				 workstream_array_len;
 static struct sysctl_netisr_work	*work_array;
 static u_int				 work_array_len;
 
+#ifndef FSTACK
 static u_int				*nws_array;
 
 static u_int				 maxprot;
+#endif
 
 static void
 netisr_dispatch_policy_to_string(u_int policy, char *buf,
@@ -104,6 +106,7 @@ netisr_dispatch_policy_to_string(u_int policy, char *buf,
 	snprintf(buf, buflen, "%s", str);
 }
 
+#ifndef FSTACK
 /*
  * Load a nul-terminated string from KVM up to 'limit', guarantee that the
  * string in local memory is nul-terminated.
@@ -121,6 +124,7 @@ netisr_load_kvm_string(uintptr_t addr, char *dest, u_int limit)
 	}
 	dest[limit - 1] = '\0';
 }
+#endif
 
 static const char *
 netisr_proto2name(u_int proto)
@@ -134,6 +138,7 @@ netisr_proto2name(u_int proto)
 	return ("unknown");
 }
 
+#ifndef FSTACK
 static int
 netisr_protoispresent(u_int proto)
 {
@@ -162,6 +167,7 @@ netisr_load_kvm_config(void)
 	netisr_dispatch_policy_to_string(tmp, dispatch_policy,
 	    sizeof(dispatch_policy));
 }
+#endif
 
 static void
 netisr_load_sysctl_uint(const char *name, u_int *p)
@@ -201,6 +207,7 @@ netisr_load_sysctl_config(void)
 	    sizeof(dispatch_policy));
 }
 
+#ifndef FSTACK
 static void
 netisr_load_kvm_proto(void)
 {
@@ -259,6 +266,7 @@ netisr_load_kvm_proto(void)
 	proto_array_len = protocount;
 	free(np_array);
 }
+#endif
 
 static void
 netisr_load_sysctl_proto(void)
@@ -283,6 +291,7 @@ netisr_load_sysctl_proto(void)
 		xo_errx(-1, "net.isr.proto: invalid version");
 }
 
+#ifndef FSTACK
 static void
 netisr_load_kvm_workstream(void)
 {
@@ -344,6 +353,7 @@ netisr_load_kvm_workstream(void)
 	}
 	work_array_len = counter;
 }
+#endif
 
 static void
 netisr_load_sysctl_workstream(void)
@@ -456,9 +466,11 @@ netisr_stats(void)
 		netisr_load_sysctl_workstream();
 		netisr_load_sysctl_work();
 	} else {
+#ifndef FSTACK
 		netisr_load_kvm_config();
 		netisr_load_kvm_proto();
 		netisr_load_kvm_workstream();		/* Also does work. */
+#endif
 	}
 
 	xo_open_container("netisr");

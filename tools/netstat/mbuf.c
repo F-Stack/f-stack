@@ -41,6 +41,10 @@ static char sccsid[] = "@(#)mbuf.c	8.1 (Berkeley) 6/6/93";
 #endif /* not lint */
 #endif
 
+#ifdef FSTACK
+#include <stdint.h>
+#endif
+
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
@@ -53,7 +57,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 
 #include <err.h>
+#ifndef FSTACK
 #include <kvm.h>
+#endif
 #include <memstat.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -88,7 +94,9 @@ mbpr(void *kvmd, u_long mbaddr)
 	int nsfbufs, nsfbufspeak, nsfbufsused;
 	struct sfstat sfstat;
 	size_t mlen;
+#ifndef FSTACK
 	int error;
+#endif
 
 	mtlp = memstat_mtl_alloc();
 	if (mtlp == NULL) {
@@ -107,6 +115,7 @@ mbpr(void *kvmd, u_long mbaddr)
 			goto out;
 		}
 	} else {
+#ifndef FSTACK
 		if (memstat_kvm_all(mtlp, kvmd) < 0) {
 			error = memstat_mtl_geterror(mtlp);
 			if (error == MEMSTAT_ERROR_KVM)
@@ -117,6 +126,7 @@ mbpr(void *kvmd, u_long mbaddr)
 				    memstat_strerror(error));
 			goto out;
 		}
+#endif
 	}
 
 	mtp = memstat_mtl_find(mtlp, ALLOCATOR_UMA, MBUF_MEM_NAME);

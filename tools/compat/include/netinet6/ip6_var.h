@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -41,7 +43,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -64,39 +66,29 @@
 #ifndef _NETINET6_IP6_VAR_H_
 #define _NETINET6_IP6_VAR_H_
 
+#include <sys/epoch.h>
+
+#ifdef _KERNEL
+struct ip6asfrag;		/* frag6.c */
+TAILQ_HEAD(ip6fraghead, ip6asfrag);
+
 /*
  * IP6 reassembly queue structure.  Each fragment
  * being reassembled is attached to one of these structures.
  */
 struct	ip6q {
-	struct ip6asfrag *ip6q_down;
-	struct ip6asfrag *ip6q_up;
+	struct ip6fraghead ip6q_frags;
 	u_int32_t	ip6q_ident;
 	u_int8_t	ip6q_nxt;
 	u_int8_t	ip6q_ecn;
 	u_int8_t	ip6q_ttl;
 	struct in6_addr ip6q_src, ip6q_dst;
-	struct ip6q	*ip6q_next;
-	struct ip6q	*ip6q_prev;
+	TAILQ_ENTRY(ip6q) ip6q_tq;
 	int		ip6q_unfrglen;	/* len of unfragmentable part */
-#ifdef notyet
-	u_char		*ip6q_nxtp;
-#endif
 	int		ip6q_nfrag;	/* # of fragments */
 	struct label	*ip6q_label;
 };
-
-struct	ip6asfrag {
-	struct ip6asfrag *ip6af_down;
-	struct ip6asfrag *ip6af_up;
-	struct mbuf	*ip6af_m;
-	int		ip6af_offset;	/* offset in ip6af_m to next header */
-	int		ip6af_frglen;	/* fragmentable part length */
-	int		ip6af_off;	/* fragment offset */
-	u_int16_t	ip6af_mff;	/* more fragment bit in frag off */
-};
-
-#define IP6_REASS_MBUF(ip6af) (*(struct mbuf **)&((ip6af)->ip6af_m))
+#endif /* _KERNEL */
 
 /*
  * IP6 reinjecting structure.
@@ -106,6 +98,7 @@ struct ip6_direct_ctx {
 	uint32_t	ip6dc_off;	/* offset to next header */
 };
 
+#if defined(_NETINET6_IN6_VAR_H_) && defined(_KERNEL)
 /*
  * Structure attached to inpcb.in6p_moptions and
  * passed to ip6_output when IPv6 multicast options are in use.
@@ -115,12 +108,11 @@ struct ip6_moptions {
 	struct	ifnet *im6o_multicast_ifp; /* ifp for outgoing multicasts */
 	u_char	im6o_multicast_hlim;	/* hoplimit for outgoing multicasts */
 	u_char	im6o_multicast_loop;	/* 1 >= hear sends if a member */
-	u_short	im6o_num_memberships;	/* no. memberships this socket */
-	u_short	im6o_max_memberships;	/* max memberships this socket */
-	struct	in6_multi **im6o_membership;	/* group memberships */
-	struct	in6_mfilter *im6o_mfilters;	/* source filters */
+	struct ip6_mfilter_head im6o_head; /* group membership list */
 };
-
+#else
+struct ip6_moptions;
+#endif
 /*
  * Control options for outgoing packets
  */
@@ -203,6 +195,7 @@ struct	ip6stat {
 	uint64_t ip6s_localout;		/* total ip packets generated here */
 	uint64_t ip6s_odropped;		/* lost packets due to nobufs, etc. */
 	uint64_t ip6s_reassembled;	/* total packets reassembled ok */
+	uint64_t ip6s_atomicfrags;	/* atomic fragments */
 	uint64_t ip6s_fragmented;	/* datagrams successfully fragmented */
 	uint64_t ip6s_ofragments;	/* output fragments created */
 	uint64_t ip6s_cantfrag;		/* don't fragment flag was set, etc. */
@@ -294,10 +287,6 @@ VNET_DECLARE(int, ip6_v6only);
 
 VNET_DECLARE(struct socket *, ip6_mrouter);	/* multicast routing daemon */
 VNET_DECLARE(int, ip6_sendredirects);	/* send IP redirects when forwarding? */
-VNET_DECLARE(int, ip6_maxfragpackets);	/* Maximum packets in reassembly
-					 * queue */
-VNET_DECLARE(int, ip6_maxfrags);	/* Maximum fragments in reassembly
-					 * queue */
 VNET_DECLARE(int, ip6_accept_rtadv);	/* Acts as a host not a router */
 VNET_DECLARE(int, ip6_no_radr);		/* No defroute from RA */
 VNET_DECLARE(int, ip6_norbit_raif);	/* Disable R-bit in NA on RA
@@ -311,8 +300,6 @@ VNET_DECLARE(int, ip6_hdrnestlimit);	/* upper limit of # of extension
 VNET_DECLARE(int, ip6_dad_count);	/* DupAddrDetectionTransmits */
 #define	V_ip6_mrouter			VNET(ip6_mrouter)
 #define	V_ip6_sendredirects		VNET(ip6_sendredirects)
-#define	V_ip6_maxfragpackets		VNET(ip6_maxfragpackets)
-#define	V_ip6_maxfrags			VNET(ip6_maxfrags)
 #define	V_ip6_accept_rtadv		VNET(ip6_accept_rtadv)
 #define	V_ip6_no_radr			VNET(ip6_no_radr)
 #define	V_ip6_norbit_raif		VNET(ip6_norbit_raif)
@@ -338,11 +325,18 @@ VNET_DECLARE(int, ip6_use_defzone);	/* Whether to use the default scope
 					 * zone when unspecified */
 #define	V_ip6_use_defzone		VNET(ip6_use_defzone)
 
-VNET_DECLARE (struct pfil_head, inet6_pfil_hook);	/* packet filter hooks */
-#define	V_inet6_pfil_hook	VNET(inet6_pfil_hook)
+VNET_DECLARE(struct pfil_head *, inet6_pfil_head);
+#define	V_inet6_pfil_head	VNET(inet6_pfil_head)
+#define	PFIL_INET6_NAME		"inet6"
+
 #ifdef IPSTEALTH
 VNET_DECLARE(int, ip6stealth);
 #define	V_ip6stealth			VNET(ip6stealth)
+#endif
+
+#ifdef EXPERIMENTAL
+VNET_DECLARE(int, nd6_ignore_ipv6_only_ra);
+#define	V_nd6_ignore_ipv6_only_ra	VNET(nd6_ignore_ipv6_only_ra)
 #endif
 
 extern struct	pr_usrreqs rip6_usrreqs;
@@ -362,7 +356,7 @@ void	ip6_direct_input(struct mbuf *);
 void	ip6_freepcbopts(struct ip6_pktopts *);
 
 int	ip6_unknown_opt(u_int8_t *, struct mbuf *, int);
-char *	ip6_get_prevhdr(const struct mbuf *, int);
+int	ip6_get_prevhdr(const struct mbuf *, int);
 int	ip6_nexthdr(const struct mbuf *, int, int, int *);
 int	ip6_lasthdr(const struct mbuf *, int, int, int *);
 
@@ -400,6 +394,7 @@ int	ip6_fragment(struct ifnet *, struct mbuf *, int, u_char, int,
 int	route6_input(struct mbuf **, int *, int);
 
 void	frag6_init(void);
+void	frag6_destroy(void);
 int	frag6_input(struct mbuf **, int *, int);
 void	frag6_slowtimo(void);
 void	frag6_drain(void);
@@ -421,10 +416,7 @@ int	in6_selectsrc_addr(uint32_t, const struct in6_addr *,
     uint32_t, struct ifnet *, struct in6_addr *, int *);
 int in6_selectroute(struct sockaddr_in6 *, struct ip6_pktopts *,
 	struct ip6_moptions *, struct route_in6 *, struct ifnet **,
-	struct rtentry **);
-int	in6_selectroute_fib(struct sockaddr_in6 *, struct ip6_pktopts *,
-	    struct ip6_moptions *, struct route_in6 *, struct ifnet **,
-	    struct rtentry **, u_int);
+	struct nhop_object **, u_int, uint32_t);
 u_int32_t ip6_randomid(void);
 u_int32_t ip6_randomflowlabel(void);
 void in6_delayed_cksum(struct mbuf *m, uint32_t plen, u_short offset);

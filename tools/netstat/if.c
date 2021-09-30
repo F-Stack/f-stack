@@ -575,7 +575,12 @@ sidewaysintpr(void)
 {
 	struct iftot ift[2], *new, *old;
 	struct itimerval interval_it;
+#ifndef FSTACK
 	int oldmask, line;
+#else
+	int line;
+	sigset_t oldmask;
+#endif
 
 	new = &ift[0];
 	old = &ift[1];
@@ -607,11 +612,24 @@ loop:
 		xo_close_list("interface-statistics");
 		return;
 	}
+#ifndef FSTACK
 	oldmask = sigblock(sigmask(SIGALRM));
 	while (!signalled)
 		sigpause(0);
 	signalled = false;
 	sigsetmask(oldmask);
+#else
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, SIGALRM);
+	sigprocmask(SIG_BLOCK, &set, &oldmask);
+	sigemptyset(&set);
+
+	while (!signalled)
+		sigsuspend(&set);
+	signalled = false;
+	sigprocmask(SIG_SETMASK, &oldmask, NULL);
+#endif
 	line++;
 
 	fill_iftot(new);

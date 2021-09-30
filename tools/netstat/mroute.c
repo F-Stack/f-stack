@@ -234,7 +234,9 @@ mroutepr()
 	struct vif viftable[MAXVIFS];
 	struct vif *v;
 	struct mfc *m;
+#ifndef FSTACK
 	u_long pmfchashtbl, pmfctablesize, pviftbl;
+#endif
 	int banner_printed;
 	int saved_numeric_addr;
 	size_t len;
@@ -261,7 +263,9 @@ mroutepr()
 	 * functionality was deprecated, as PIM does not use it.
 	 */
 	maxvif = 0;
+#ifndef FSTACK
 	pmfchashtbl = pmfctablesize = pviftbl = 0;
+#endif
 
 	len = sizeof(viftable);
 	if (live) {
@@ -271,6 +275,7 @@ mroutepr()
 			return;
 		}
 	} else {
+#ifndef FSTACK
 		pmfchashtbl = nl[N_MFCHASHTBL].n_value;
 		pmfctablesize = nl[N_MFCTABLESIZE].n_value;
 		pviftbl = nl[N_VIFTABLE].n_value;
@@ -281,6 +286,7 @@ mroutepr()
 		}
 
 		kread(pviftbl, (char *)viftable, sizeof(viftable));
+#endif
 	}
 
 	banner_printed = 0;
@@ -362,6 +368,7 @@ mroutepr()
 
 		free(mfctable);
 	} else {
+#ifndef FSTACK
 		LIST_HEAD(, mfc) *mfchashtbl;
 		u_long i, mfctablesize;
 		struct mfc mfc;
@@ -392,6 +399,7 @@ mroutepr()
 			xo_close_list("multicast-forwarding-entry");
 
 		free(mfchashtbl);
+#endif
 	}
 
 	if (!banner_printed)

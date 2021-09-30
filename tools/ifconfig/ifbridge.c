@@ -60,6 +60,9 @@ static const char rcsid[] =
 #include <unistd.h>
 #include <err.h>
 #include <errno.h>
+#ifdef FSTACK
+#include <rte_malloc.h>
+#endif
 
 #include "ifconfig.h"
 
@@ -94,7 +97,13 @@ do_cmd(int sock, u_long op, void *arg, size_t argsize, int set)
 	ifd.ifd_len = argsize;
 	ifd.ifd_data = arg;
 
+#ifndef FSTACK
 	return (ioctl(sock, set ? SIOCSDRVSPEC : SIOCGDRVSPEC, &ifd));
+#else
+	size_t offset = (char *)&(ifd.ifd_data) - (char *)&(ifd);
+	return (ioctl_va(sock, set ? SIOCSDRVSPEC : SIOCGDRVSPEC, &ifd,
+	    3, offset, arg, argsize));
+#endif
 }
 
 static void
@@ -135,7 +144,11 @@ bridge_interfaces(int s, const char *prefix)
 	}
 
 	for (;;) {
+#ifndef FSTACK
 		ninbuf = realloc(inbuf, len);
+#else
+		ninbuf = rte_malloc(NULL, len, 0);
+#endif
 		if (ninbuf == NULL)
 			err(1, "unable to allocate interface buffer");
 		bifc.ifbic_len = len;
@@ -181,7 +194,11 @@ bridge_interfaces(int s, const char *prefix)
 		printf("\n");
 	}
 	free(pad);
+#ifndef FSTACK
 	free(inbuf);
+#else
+	rte_free(inbuf);
+#endif
 }
 
 static void

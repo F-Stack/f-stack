@@ -45,6 +45,12 @@
 #include <arpa/inet.h>
 #include <alias.h>
 
+#ifdef FSTACK
+#ifndef __unused
+#define __unused __attribute__((__unused__))
+#endif
+#endif
+
 typedef int (nat_cb_t)(struct nat44_cfg_nat *cfg, void *arg);
 static void nat_show_cfg(struct nat44_cfg_nat *n, void *arg);
 static void nat_show_log(struct nat44_cfg_nat *n, void *arg);
@@ -204,12 +210,17 @@ StrToAddr (const char* str, struct in_addr* addr)
 
 	if (inet_aton (str, addr))
 		return;
+#ifdef FSTACK
+	else
+		errx (1, "invalid addr %d", addr->s_addr);
+#else
 
 	hp = gethostbyname (str);
 	if (!hp)
 		errx (1, "unknown host %s", str);
 
 	memcpy (addr, hp->h_addr, sizeof (struct in_addr));
+#endif
 }
 
 static int

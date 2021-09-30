@@ -43,7 +43,11 @@
 
 #include <sys/cdefs.h>
 #include <sys/_types.h>
+#ifndef FSTACK
 #include <sys/_stdint.h>
+#else
+#include <stdint.h>
+#endif
 
 #ifndef _GID_T_DECLARED
 typedef	__gid_t		gid_t;
