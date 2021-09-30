@@ -77,6 +77,7 @@ static int numa_on;
 
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
+static uint64_t usr_cb_tsc;
 
 static struct rte_timer freebsd_clock;
 
@@ -1281,12 +1282,14 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
         uint16_t len = rte_pktmbuf_data_len(rtem);
 
         if (!pkts_from_ring) {
-            ff_traffic.rx_packets++;
-            ff_traffic.rx_bytes += len;
+            ff_traffic.rx_packets += rtem->nb_segs;
+            ff_traffic.rx_bytes += rte_pktmbuf_pkt_len(rtem);
         }
 
         if (!pkts_from_ring && packet_dispatcher) {
+            uint64_t cur_tsc = rte_rdtsc();
             int ret = (*packet_dispatcher)(data, &len, queue_id, nb_queues);
+            usr_cb_tsc += rte_rdtsc() - cur_tsc;
             if (ret == FF_DISPATCH_RESPONSE) {
                 rte_pktmbuf_pkt_len(rtem) = rte_pktmbuf_data_len(rtem) = len;
 
@@ -1399,7 +1402,7 @@ process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
         process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
     }
 
-    return 0;
+    return nb_rb;
 }
 
 static inline void
@@ -1844,6 +1847,7 @@ main_loop(void *arg)
         idle = 1;
         sys_tsc = 0;
         usr_tsc = 0;
+        usr_cb_tsc = 0;
 
         /*
          * TX burst queue drain
@@ -1880,7 +1884,7 @@ main_loop(void *arg)
             }
 #endif
 
-            process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
+            idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
@@ -1925,12 +1929,13 @@ main_loop(void *arg)
             end_tsc = idle_sleep_tsc;
         }
 
+        usr_tsc = usr_cb_tsc;
         if (usch_tsc == cur_tsc) {
-            usr_tsc = idle_sleep_tsc - div_tsc;
+            usr_tsc += idle_sleep_tsc - div_tsc;
         }
 
         if (!idle) {
-            sys_tsc = div_tsc - cur_tsc;
+            sys_tsc = div_tsc - cur_tsc - usr_cb_tsc;
             ff_top_status.sys_tsc += sys_tsc;
         }
 
