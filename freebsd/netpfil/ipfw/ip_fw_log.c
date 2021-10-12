@@ -106,6 +106,7 @@ ipfw_log(struct ip_fw_chain *chain, struct ip_fw *f, u_int hlen,
 	char action2[92], proto[128], fragment[32];
 
 	if (V_fw_verbose == 0) {
+#ifndef FSTACK /* WITHOUT_BPF */
 		if (args->flags & IPFW_ARGS_LENMASK)
 			ipfw_bpf_tap(args->mem, IPFW_ARGS_LENGTH(args->flags));
 		else if (args->flags & IPFW_ARGS_ETHER)
@@ -126,6 +127,7 @@ ipfw_log(struct ip_fw_chain *chain, struct ip_fw *f, u_int hlen,
 				ipfw_bpf_mtap2("DDDDDDSSSSSS\xff\xff",
 				    ETHER_HDR_LEN, args->m);
 		}
+#endif
 		return;
 	}
 	/* the old 'log' function */
