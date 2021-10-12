@@ -109,6 +109,7 @@ _Static_assert(ENTROPYSOURCE <= 32,
 
 #define RANDOM_CACHED_BOOT_ENTROPY_MODULE	"boot_entropy_cache"
 
+#ifndef FSTACK
 extern u_int hc_source_mask;
 void random_harvest_queue_(const void *, u_int, enum random_entropy_source);
 void random_harvest_fast_(const void *, u_int);
@@ -137,6 +138,11 @@ random_harvest_direct(const void *entropy, u_int size, enum random_entropy_sourc
 	if (hc_source_mask & (1 << origin))
 		random_harvest_direct_(entropy, size, origin);
 }
+#else
+#define random_harvest_queue(a, b, c) do {} while (0)
+#define random_harvest_fast(a, b, c) do {} while (0)
+#define random_harvest_direct(a, b, c) do {} while (0)
+#endif
 
 void random_harvest_register_source(enum random_entropy_source);
 void random_harvest_deregister_source(enum random_entropy_source);

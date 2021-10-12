@@ -609,7 +609,9 @@ ipfw_send_abort(struct mbuf *replyto, struct ipfw_flow_id *id, u_int32_t vtag,
 	}
 	chunk->chunk_length = htons(sizeof(struct sctp_chunkhdr));
 
+#ifndef FSTACK /* Not support sctp now */
 	sctp->checksum = sctp_calculate_cksum(m, hlen);
+#endif
 
 	return (m);
 }
@@ -3444,7 +3446,9 @@ vnet_ipfw_init(const void *unused)
 #ifdef LINEAR_SKIPTO
 	ipfw_init_skipto_cache(chain);
 #endif
+#ifndef FSTACK /* WITHOUT_BPF */
 	ipfw_bpf_init(first);
+#endif
 
 	/* First set up some values that are compile time options */
 	V_ipfw_vnet_ready = 1;		/* Open for business */
@@ -3514,7 +3518,9 @@ vnet_ipfw_uninit(const void *unused)
 	IPFW_LOCK_DESTROY(chain);
 	ipfw_dyn_uninit(1);	/* free the remaining parts */
 	ipfw_destroy_counters();
+#ifndef FSTACK /* WITHOUT_BPF */
 	ipfw_bpf_uninit(last);
+#endif
 	return (0);
 }
 
