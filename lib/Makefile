@@ -505,10 +505,14 @@ NETINET6_SRCS+=		\
 	#sctp6_usrreq.c
 	#in6_rss.c
 
+ifdef FF_TCPHPTS
+EXTRA_TCP_STACKS_SRCS+=		\
+	tcp_hpts.c
+endif
+
 ifdef FF_EXTRA_TCP_STACKS
 EXTRA_TCP_STACKS_SRCS+=		\
 	subr_filter.c		\
-	tcp_hpts.c		\
 	tcp_ratelimit.c		\
 	arc4random_uniform.c	\
 	sack_filter.c		\
