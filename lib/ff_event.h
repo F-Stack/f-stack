@@ -83,7 +83,7 @@ extern "C" {
 #endif
 
 struct kevent {
-    __uintptr_t ident;      /* identifier for this event */
+    uintptr_t ident;      /* identifier for this event */
     short filter;           /* filter for event */
     unsigned short flags;   /* action flags for kqueue */
     unsigned int fflags;    /* filter flag value */
@@ -95,7 +95,7 @@ struct kevent {
 #if defined(_WANT_FREEBSD11_KEVENT)
 /* Older structure used in FreeBSD 11.x and older. */
 struct kevent_freebsd11 {
-    __uintptr_t ident;      /* identifier for this event */
+    uintptr_t ident;      /* identifier for this event */
     short filter;           /* filter for event */
     unsigned short flags;
     unsigned int fflags;
