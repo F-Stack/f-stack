@@ -489,7 +489,9 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->port_id = portid;
     }
 
-    if (strcmp(name, "addr") == 0) {
+    if (strcmp(name, "ifc_name") == 0) {
+        cur->ifname = strdup(value);
+    } else if (strcmp(name, "addr") == 0) {
         cur->addr = strdup(value);
     } else if (strcmp(name, "netmask") == 0) {
         cur->netmask = strdup(value);
