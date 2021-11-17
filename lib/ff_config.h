@@ -56,6 +56,7 @@ struct ff_hw_features {
 
 struct ff_port_cfg {
     char *name;
+    char *ifname;
     uint8_t port_id;
     uint8_t mac[6];
     struct ff_hw_features hw_features;
