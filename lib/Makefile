@@ -521,7 +521,7 @@ EXTRA_TCP_STACKS_SRCS+=		\
 	bbr.c
 endif
 
-ifdef FF_KNI
+ifndef FF_KNI
 FF_HOST_SRCS+=         \
         ff_dpdk_kni.c
 endif
