@@ -521,8 +521,8 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->gateway6_str = strdup(value);
     } else if (strcmp(name, "vip_addr6") == 0) {
         cur->vip_addr6_str = strdup(value);
-        if (cur->vip_addr_str) {
-            return vip6_cfg_hander(cur);
+        if (cur->vip_addr6_str) {
+            return vip6_cfg_handler(cur);
         }
     } else if (0 == strcmp(name, "vip_prefix_len")) {
         cur->vip_prefix_len = atoi(value);
