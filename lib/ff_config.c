@@ -191,6 +191,7 @@ freebsd_conf_handler(struct ff_config *cfg, const char *section,
         }
     } else {
         fprintf(stderr, "freebsd conf section[%s] error\n", section);
+        free(newconf);
         return 0;
     }
 
