@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -32,17 +34,12 @@
  */
 #ifndef _SYS_SOCKBUF_H_
 #define _SYS_SOCKBUF_H_
-#include <sys/selinfo.h>		/* for struct selinfo */
-#include <sys/_lock.h>
-#include <sys/_mutex.h>
-#include <sys/_sx.h>
-#include <sys/_task.h>
-
-#define	SB_MAX		(2*1024*1024)	/* default for max chars in sockbuf */
 
 /*
- * Constants for sb_flags field of struct sockbuf.
+ * Constants for sb_flags field of struct sockbuf/xsockbuf.
  */
+#define	SB_TLS_RX	0x01		/* using KTLS on RX */
+#define	SB_TLS_RX_RUNNING 0x02		/* KTLS RX operation running */
 #define	SB_WAIT		0x04		/* someone is waiting for data/space */
 #define	SB_SEL		0x08		/* someone is selecting */
 #define	SB_ASYNC	0x10		/* ASYNC I/O, need signals */
@@ -55,38 +52,38 @@
 #define	SB_AUTOSIZE	0x800		/* automatically size socket buffer */
 #define	SB_STOP		0x1000		/* backpressure indicator */
 #define	SB_AIO_RUNNING	0x2000		/* AIO operation running */
+#define	SB_TLS_IFNET	0x4000		/* has used / is using ifnet KTLS */
 
 #define	SBS_CANTSENDMORE	0x0010	/* can't send more data to peer */
 #define	SBS_CANTRCVMORE		0x0020	/* can't receive more data from peer */
 #define	SBS_RCVATMARK		0x0040	/* at mark on input */
 
+#if defined(_KERNEL) || defined(_WANT_SOCKET)
+#include <sys/_lock.h>
+#include <sys/_mutex.h>
+#include <sys/_sx.h>
+#include <sys/_task.h>
+
+#define	SB_MAX		(2*1024*1024)	/* default for max chars in sockbuf */
+
+struct ktls_session;
 struct mbuf;
 struct sockaddr;
 struct socket;
 struct thread;
-
-struct	xsockbuf {
-	u_int	sb_cc;
-	u_int	sb_hiwat;
-	u_int	sb_mbcnt;
-	u_int   sb_mcnt;
-	u_int   sb_ccnt;
-	u_int	sb_mbmax;
-	int	sb_lowat;
-	int	sb_timeo;
-	short	sb_flags;
-};
+struct selinfo;
 
 /*
  * Variables for socket buffering.
  *
  * Locking key to struct sockbuf:
  * (a) locked by SOCKBUF_LOCK().
+ * (b) locked by sblock()
  */
 struct	sockbuf {
-	struct	selinfo sb_sel;	/* process selecting read/write */
-	struct	mtx sb_mtx;	/* sockbuf lock */
-	struct	sx sb_sx;	/* prevent I/O interlacing */
+	struct	mtx sb_mtx;		/* sockbuf lock */
+	struct	sx sb_sx;		/* prevent I/O interlacing */
+	struct	selinfo *sb_sel;	/* process selecting read/write */
 	short	sb_state;	/* (a) socket state on sockbuf */
 #define	sb_startzero	sb_mb
 	struct	mbuf *sb_mb;	/* (a) the mbuf chain */
@@ -104,15 +101,22 @@ struct	sockbuf {
 	u_int   sb_ccnt;        /* (a) number of clusters in buffer */
 	u_int	sb_mbmax;	/* (a) max chars of mbufs to use */
 	u_int	sb_ctl;		/* (a) non-data chars in buffer */
+	u_int	sb_tlscc;	/* (a) TLS chain characters */
+	u_int	sb_tlsdcc;	/* (a) TLS characters being decrypted */
 	int	sb_lowat;	/* (a) low water mark */
 	sbintime_t	sb_timeo;	/* (a) timeout for read/write */
-	short	sb_flags;	/* (a) flags, see below */
+	uint64_t sb_tls_seqno;	/* (a) TLS seqno */
+	struct	ktls_session *sb_tls_info; /* (a + b) TLS state */
+	struct	mbuf *sb_mtls;	/* (a) TLS mbuf chain */
+	struct	mbuf *sb_mtlstail; /* (a) last mbuf in TLS chain */
+	short	sb_flags;	/* (a) flags, see above */
 	int	(*sb_upcall)(struct socket *, void *, int); /* (a) */
 	void	*sb_upcallarg;	/* (a) */
 	TAILQ_HEAD(, kaiocb) sb_aiojobq; /* (a) pending AIO ops */
 	struct	task sb_aiotask; /* AIO task */
 };
 
+#endif	/* defined(_KERNEL) || defined(_WANT_SOCKET) */
 #ifdef _KERNEL
 
 /*
@@ -146,15 +150,18 @@ int	sbappendaddr_locked(struct sockbuf *sb, const struct sockaddr *asa,
 	    struct mbuf *m0, struct mbuf *control);
 int	sbappendaddr_nospacecheck_locked(struct sockbuf *sb,
 	    const struct sockaddr *asa, struct mbuf *m0, struct mbuf *control);
-int	sbappendcontrol(struct sockbuf *sb, struct mbuf *m0,
-	    struct mbuf *control);
-int	sbappendcontrol_locked(struct sockbuf *sb, struct mbuf *m0,
-	    struct mbuf *control);
+void	sbappendcontrol(struct sockbuf *sb, struct mbuf *m0,
+	    struct mbuf *control, int flags);
+void	sbappendcontrol_locked(struct sockbuf *sb, struct mbuf *m0,
+	    struct mbuf *control, int flags);
 void	sbappendrecord(struct sockbuf *sb, struct mbuf *m0);
 void	sbappendrecord_locked(struct sockbuf *sb, struct mbuf *m0);
 void	sbcompress(struct sockbuf *sb, struct mbuf *m, struct mbuf *n);
 struct mbuf *
 	sbcreatecontrol(caddr_t p, int size, int type, int level);
+struct mbuf *
+	sbcreatecontrol_how(void *p, int size, int type, int level,
+	    int wait);
 void	sbdestroy(struct sockbuf *sb, struct socket *so);
 void	sbdrop(struct sockbuf *sb, int len);
 void	sbdrop_locked(struct sockbuf *sb, int len);
@@ -167,20 +174,21 @@ void	sbflush_locked(struct sockbuf *sb);
 void	sbrelease(struct sockbuf *sb, struct socket *so);
 void	sbrelease_internal(struct sockbuf *sb, struct socket *so);
 void	sbrelease_locked(struct sockbuf *sb, struct socket *so);
-int	sbreserve(struct sockbuf *sb, u_long cc, struct socket *so,
-	    struct thread *td);
+int	sbsetopt(struct socket *so, int cmd, u_long cc);
 int	sbreserve_locked(struct sockbuf *sb, u_long cc, struct socket *so,
 	    struct thread *td);
+void	sbsndptr_adv(struct sockbuf *sb, struct mbuf *mb, u_int len);
 struct mbuf *
-	sbsndptr(struct sockbuf *sb, u_int off, u_int len, u_int *moff);
+	sbsndptr_noadv(struct sockbuf *sb, u_int off, u_int *moff);
 struct mbuf *
 	sbsndmbuf(struct sockbuf *sb, u_int off, u_int *moff);
-void	sbtoxsockbuf(struct sockbuf *sb, struct xsockbuf *xsb);
 int	sbwait(struct sockbuf *sb);
 int	sblock(struct sockbuf *sb, int flags);
 void	sbunlock(struct sockbuf *sb);
 void	sballoc(struct sockbuf *, struct mbuf *);
 void	sbfree(struct sockbuf *, struct mbuf *);
+void	sballoc_ktls_rx(struct sockbuf *sb, struct mbuf *m);
+void	sbfree_ktls_rx(struct sockbuf *sb, struct mbuf *m);
 int	sbready(struct sockbuf *, struct mbuf *, int);
 
 /*
