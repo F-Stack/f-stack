@@ -24,6 +24,7 @@
 #include <stdalign.h>
 #include <sys/un.h>
 #include <time.h>
+#include <dlfcn.h>
 
 #include <rte_atomic.h>
 #include <rte_ethdev_driver.h>
@@ -1640,6 +1641,7 @@ mlx5_dev_to_eswitch_info(struct rte_eth_dev *dev)
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
+static int (*real_if_indextoname)(unsigned int, char *);
 int
 mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 {
@@ -1659,7 +1661,16 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	char c;
 	int ret;
 
-	if (!if_indextoname(ifindex, ifname)) {
+	// for ff tools
+	if (!real_if_indextoname) {
+		real_if_indextoname = dlsym(RTLD_NEXT, "if_indextoname");
+		if (!real_if_indextoname) {
+			rte_errno = errno;
+			return -rte_errno;
+		}
+	}
+
+	if (!real_if_indextoname(ifindex, ifname)) {
 		rte_errno = errno;
 		return -rte_errno;
 	}
