@@ -99,7 +99,7 @@ typedef struct _list_manager_s
 }StackList_t;
 
 static StackList_t         ff_mpage_ctl = {0};
-static uint64_t             ff_page_start = NULL, ff_page_end = NULL;
+static uint64_t             ff_page_start = (uint64_t)NULL, ff_page_end = (uint64_t)NULL;
 static phys_addr_t        *ff_mpage_phy = NULL;
 
 static inline void        *stklist_pop(StackList_t *p);
@@ -229,7 +229,7 @@ int ff_mmap_init()
 {
     int err = 0;
     int i = 0;
-    uint64_t    virt_addr = NULL;
+    uint64_t    virt_addr = (uint64_t)NULL;
     phys_addr_t    phys_addr = 0;
     uint64_t    bsd_memsz = (ff_global_cfg.freebsd.mem_size << 20);
     unsigned int bsd_pagesz = 0;
@@ -318,25 +318,25 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
 
     if (offload.ip_csum) {
         /* ipv6 not supported yet */
-        struct ipv4_hdr *iph;
+        struct rte_ipv4_hdr *iph;
         int iph_len;
-        iph = (struct ipv4_hdr *)(data + ETHER_HDR_LEN);
+        iph = (struct rte_ipv4_hdr *)(data + RTE_ETHER_HDR_LEN);
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
         head->ol_flags |= PKT_TX_IP_CKSUM | PKT_TX_IPV4;
-        head->l2_len = ETHER_HDR_LEN;
+        head->l2_len = RTE_ETHER_HDR_LEN;
         head->l3_len = iph_len;
     }
 
     if (ctx->hw_features.tx_csum_l4) {
-        struct ipv4_hdr *iph;
+        struct rte_ipv4_hdr *iph;
         int iph_len;
-        iph = (struct ipv4_hdr *)(data + ETHER_HDR_LEN);
+        iph = (struct rte_ipv4_hdr *)(data + RTE_ETHER_HDR_LEN);
         iph_len = (iph->version_ihl & 0x0f) << 2;
 
         if (offload.tcp_csum) {
             head->ol_flags |= PKT_TX_TCP_CKSUM;
-            head->l2_len = ETHER_HDR_LEN;
+            head->l2_len = RTE_ETHER_HDR_LEN;
             head->l3_len = iph_len;
         }
 
@@ -356,9 +356,9 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
          *    used as helpers.
          */
         if (offload.tso_seg_size) {
-            struct tcp_hdr *tcph;
+            struct rte_tcp_hdr *tcph;
             int tcph_len;
-            tcph = (struct tcp_hdr *)((char *)iph + iph_len);
+            tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
             tcph_len = (tcph->data_off & 0xf0) >> 2;
             tcph->cksum = rte_ipv4_phdr_cksum(iph, PKT_TX_TCP_SEG);
 
@@ -369,7 +369,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
 
         if (offload.udp_csum) {
             head->ol_flags |= PKT_TX_UDP_CKSUM;
-            head->l2_len = ETHER_HDR_LEN;
+            head->l2_len = RTE_ETHER_HDR_LEN;
             head->l3_len = iph_len;
         }
     }
