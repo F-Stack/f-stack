@@ -67,6 +67,8 @@ struct prisonlist allprison;
 
 MALLOC_DEFINE(M_FADVISE, "fadvise", "posix_fadvise(2) information");
 int async_io_version;
+extern unsigned int rand_r(unsigned int *seed);
+unsigned int seed = 0;
 
 #define M_ZERO        0x0100        /* bzero the allocation */
 
@@ -294,7 +296,10 @@ arc4rand(void *ptr, unsigned int len, int reseed)
 uint32_t
 arc4random(void)
 {
-    return ff_arc4random();
+    if (seed == 0) {
+        seed = ff_arc4random();
+    }
+    return (uint32_t)rand_r(&seed);
 }
 
 void
