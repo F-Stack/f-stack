@@ -24,7 +24,7 @@ F-STACK_VERSION=1.22
 
 HOST_OS:=$(shell uname -s)
 
-DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
+#DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
 FF_KNI=1
 
@@ -35,7 +35,7 @@ FF_KNI=1
 #FF_IPFW=1
 
 #FF_USE_PAGE_ARRAY=1
-
+#FF_ZC_SEND=1
 FF_INET6=1
 
 # TCPHPTS drivers rack and bbr
@@ -140,7 +140,6 @@ ifeq (${MACHINE_CPUARCH},i386)
 MACHINE=i386
 endif
 
-
 #
 # Distilled from FreeBSD src/sys/conf/Makefile.mips
 #
@@ -157,6 +156,10 @@ HACK_EXTRA_FLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
 endif
 
 CFLAGS+= -DFSTACK
+
+ifdef FF_ZC_SEND
+CFLAGS+= -DFSTACK_ZC_SEND
+endif
 
 # add for LVS tcp option toa, disabled by default
 # CFLAGS+= -DLVS_TCPOPT_TOA
