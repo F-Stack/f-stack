@@ -205,6 +205,65 @@ ff_mbuf_ext_free(struct mbuf *m, void *arg1, void *arg2)
     ff_dpdk_pktmbuf_free(arg1);
 }
 
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len) {
+    struct mbuf *mb;
+
+    if (m == NULL) {
+        return -1;
+    }
+
+    mb = m_getm2(NULL, max(len, 1), M_WAITOK, MT_DATA, 0);
+    if (mb == NULL) {
+        return -1;
+    }
+
+    m->bsd_mbuf = m->bsd_mbuf_off = mb;
+    m->off = 0;
+    m->len = len;
+
+    return 0;
+}
+
+int
+ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
+{
+    int ret, length, progress = 0;
+    struct mbuf *m, *mb;
+
+    if (zm == NULL) {
+        return -1;
+    }
+    m = (struct mbuf *)zm->bsd_mbuf_off;
+
+    if (zm->off + len > zm->len) {
+        return -1;
+    }
+
+    for (mb = m; mb != NULL; mb = mb->m_next) {
+        length = min(M_TRAILINGSPACE(mb), len - progress);
+        bcopy(data + progress, mtod(mb, char *) + mb->m_len, length);
+
+        mb->m_len += length;
+        progress += length;
+        if (len == progress) {
+            break;
+        }
+        //if (flags & M_PKTHDR)
+        //    m->m_pkthdr.len += length;
+    }
+    zm->off += len;
+    zm->bsd_mbuf_off = mb;
+
+    return len;
+}
+
+int
+ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
+{
+    // DOTO: Support read zero copy
+    return 0;
+}
+
 void *
 ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
     uint16_t len, uint8_t rx_csum)
