@@ -241,6 +241,62 @@ int ff_ngctl(int cmd, void *data);
 
 /* internal api end */
 
+/* zero ccopy API begin */
+struct ff_zc_mbuf {
+    void *bsd_mbuf;         /* point to the head mbuf */
+    void *bsd_mbuf_off;     /* ponit to the current mbuf in the mbuf chain with offset */
+    int off;                /* the offset of total mbuf, APP shouldn't modify it */
+    int len;                /* the total len of the mbuf chain */
+};
+
+/*
+ * Get the ff zero copy mbuf.
+ *
+ * @param m
+ *   The ponitor of 'sturct ff_zc_mbuf', and can't be NULL.
+ *   Can used by 'ff_zc_mbuf_write' and 'ff_zc_mbuf_read'.
+ * @param len
+ *   The total buf len of mbuf chain that you want to alloc.
+ *
+ * @return error_no
+ *   0 means success.
+ *  -1 means error.
+ */
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
+
+/*
+ * Write data to the mbuf chain in 'sturct ff_zc_mbuf'.
+ * APP can call this function multiple times, need pay attion to the offset of data.
+ * but the total len can't be larger than m->len.
+ * After this fuction return success,
+ * the struct 'ff_zc_mbuf *m' can be reused in `ff_zc_mbuf_get`.
+ *
+ * APP nedd call 'ff_write' to send data actually after finish write data to mbuf,
+ * And use 'bsd_mbuf' of 'struct ff_zc_mbuf' as the 'buf' argument.
+ *
+ * See 'example/main_zc.c'
+ *
+ * @param m
+ *   The ponitor of 'sturct ff_zc_mbuf', must be call 'ff_zc_mbuf_get' first.
+ * @param data
+ *   The pointer of data that want to write to socket, need pay attion to the offset.
+ * @param len
+ *   The len that APP want to write to mbuf chain this time.
+ *
+ * @return error_no
+ *   0 means success.
+ *  -1 means error.
+ */
+int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
+
+/*
+ * Read data to the mbuf chain in 'sturct ff_zc_mbuf'.
+ * not implemented now.
+ */
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);
+
+/* ZERO COPY API end */
+
 #ifdef __cplusplus
 }
 #endif

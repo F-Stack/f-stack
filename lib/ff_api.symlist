@@ -54,3 +54,6 @@ ff_next_mbuf
 ff_mbuf_mtod
 ff_rte_frm_extcl
 ff_mbuf_set_vlan_info
+ff_zc_mbuf_get
+ff_zc_mbuf_write
+ff_zc_mbuf_read

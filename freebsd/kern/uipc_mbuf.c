@@ -1773,6 +1773,16 @@ m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
 	 * Give us the full allocation or nothing.
 	 * If len is zero return the smallest empty mbuf.
 	 */
+#ifdef FSTACK_ZC_SEND
+	if (uio->uio_segflg == UIO_SYSSPACE && uio->uio_rw == UIO_WRITE) {
+		m = (struct mbuf *)uio->uio_iov->iov_base;
+		uio->uio_iov->iov_base = (char *)(uio->uio_iov->iov_base) + total;
+		uio->uio_iov->iov_len = 0;
+		uio->uio_resid = 0;
+		uio->uio_offset = total;
+		progress = total;
+	} else {
+#endif
 	m = m_getm2(NULL, max(total + align, 1), how, MT_DATA, flags);
 	if (m == NULL)
 		return (NULL);
@@ -1793,6 +1803,9 @@ m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
 		if (flags & M_PKTHDR)
 			m->m_pkthdr.len += length;
 	}
+#ifdef FSTACK_ZC_SEND
+	}
+#endif
 	KASSERT(progress == total, ("%s: progress != total", __func__));
 
 	return (m);
