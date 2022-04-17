@@ -269,7 +269,9 @@ int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
  * APP can call this function multiple times, need pay attion to the offset of data.
  * but the total len can't be larger than m->len.
  * After this fuction return success,
- * the struct 'ff_zc_mbuf *m' can be reused in `ff_zc_mbuf_get`.
+ *
+ * the struct 'ff_zc_mbuf *m' can be reused in `ff_zc_mbuf_get` and then Use normally.
+ * Nerver directly reused in `ff_zc_mbuf_write` before recall `ff_zc_mbuf_get`.
  *
  * APP nedd call 'ff_write' to send data actually after finish write data to mbuf,
  * And use 'bsd_mbuf' of 'struct ff_zc_mbuf' as the 'buf' argument.
