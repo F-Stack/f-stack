@@ -88,6 +88,8 @@
 #define LINUX_IP_TTL        2
 #define LINUX_IP_HDRINCL    3
 #define LINUX_IP_OPTIONS    4
+#define LINUX_IP_RECVTTL    12
+#define LINUX_IP_RECVTOS    13
 
 #define LINUX_IP_MULTICAST_IF       32
 #define LINUX_IP_MULTICAST_TTL      33
@@ -197,6 +199,21 @@ struct linux_msghdr {
 };
 
 /* msghdr define end */
+
+/* cmsghdr define start */
+
+struct linux_cmsghdr
+{
+    size_t cmsg_len;		/* Length of data in cmsg_data plus length
+                    of cmsghdr structure.
+                    !! The type should be socklen_t but the
+                    definition of the kernel is incompatible
+                    with this.  */
+    int cmsg_level;		/* Originating protocol.  */
+    int cmsg_type;		/* Protocol specific type.  */
+};
+
+/* cmsghdr define end */
 
 extern int sendit(struct thread *td, int s, struct msghdr *mp, int flags);
 
@@ -382,6 +399,10 @@ ip_opt_convert(int optname)
             return IP_ADD_MEMBERSHIP;
         case LINUX_IP_DROP_MEMBERSHIP:
             return IP_DROP_MEMBERSHIP;
+        case LINUX_IP_RECVTTL:
+            return IP_RECVTTL;
+        case LINUX_IP_RECVTOS:
+            return IP_RECVTOS;
         default:
             return optname;
     }
@@ -421,6 +442,43 @@ tcp_opt_convert(int optname)
         default:
             return -1;
     }
+}
+
+static int
+ip_opt_convert2linux(int optname)
+{
+    switch(optname) {
+        case IP_RECVTTL:
+            return LINUX_IP_TTL; // in linux kernel return IP_TTL not IP_RECVTTL
+        case IP_RECVTOS:
+            return LINUX_IP_TOS; // in linux kernel return IP_TOS not IP_RECVTOS
+        default:
+            return optname;
+    }
+}
+
+static void
+freebsd2linux_cmsghdr(struct linux_msghdr *linux_msg)
+{
+    struct cmsghdr *cmsg;
+    cmsg = CMSG_FIRSTHDR(linux_msg);
+    struct linux_cmsghdr *linux_cmsg = (struct linux_cmsghdr*)cmsg;
+
+    // for multiple cmsghdrs implement for loop
+    // for (; cmsg; cmsg = CMSG_NXTHDR(linux_msg, cmsg))
+    // {
+        switch (cmsg->cmsg_level)
+        {
+            case IPPROTO_IP:
+                linux_cmsg->cmsg_type = ip_opt_convert2linux(cmsg->cmsg_type);
+                break;
+            default:
+                break;
+        }
+
+        linux_cmsg->cmsg_level = cmsg->cmsg_level;
+        linux_cmsg->cmsg_len = cmsg->cmsg_len;
+    // }
 }
 
 static int
@@ -868,6 +926,11 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
     freebsd2linux_sockaddr(linux_msg->msg_name, msg->msg_name);
     linux_msg->msg_flags = msg->msg_flags;
     msg->msg_flags = 0;
+
+    if(msg->msg_control)
+    {
+        freebsd2linux_cmsghdr(linux_msg);
+    }
 
     return (rc);
 kern_fail:
