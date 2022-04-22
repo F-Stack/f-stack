@@ -477,7 +477,7 @@ freebsd2linux_cmsghdr(struct linux_msghdr *linux_msg)
         }
 
         linux_cmsg->cmsg_level = cmsg->cmsg_level;
-        linux_cmsg->cmsg_len = cmsg->cmsg_len;
+        linux_cmsg->cmsg_len = cmsg->cmsg_len + sizeof(struct linux_cmsghdr) - sizeof(struct cmsghdr);
     // }
 }
 
