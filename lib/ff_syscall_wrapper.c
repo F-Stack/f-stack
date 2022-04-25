@@ -464,21 +464,18 @@ freebsd2linux_cmsghdr(struct linux_msghdr *linux_msg)
     cmsg = CMSG_FIRSTHDR(linux_msg);
     struct linux_cmsghdr *linux_cmsg = (struct linux_cmsghdr*)cmsg;
 
-    // for multiple cmsghdrs implement for loop
-    // for (; cmsg; cmsg = CMSG_NXTHDR(linux_msg, cmsg))
-    // {
-        switch (cmsg->cmsg_level)
-        {
-            case IPPROTO_IP:
-                linux_cmsg->cmsg_type = ip_opt_convert2linux(cmsg->cmsg_type);
-                break;
-            default:
-                break;
-        }
+    switch (cmsg->cmsg_level) {
+        case IPPROTO_IP:
+            linux_cmsg->cmsg_type = ip_opt_convert2linux(cmsg->cmsg_type);
+            break;
+        default:
+            linux_cmsg->cmsg_type = cmsg->cmsg_type;
+            break;
+    }
 
-        linux_cmsg->cmsg_level = cmsg->cmsg_level;
-        linux_cmsg->cmsg_len = cmsg->cmsg_len + sizeof(struct linux_cmsghdr) - sizeof(struct cmsghdr);
-    // }
+    linux_cmsg->cmsg_level = cmsg->cmsg_level;
+    linux_cmsg->cmsg_len = cmsg->cmsg_len + sizeof(struct linux_cmsghdr) - sizeof(struct cmsghdr);
+
 }
 
 static int
@@ -927,8 +924,7 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
     linux_msg->msg_flags = msg->msg_flags;
     msg->msg_flags = 0;
 
-    if(msg->msg_control)
-    {
+    if(msg->msg_control) {
         freebsd2linux_cmsghdr(linux_msg);
     }
 
