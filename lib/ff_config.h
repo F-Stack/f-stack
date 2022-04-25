@@ -141,6 +141,7 @@ struct ff_config {
         int tso;
         int tx_csum_offoad_skip;
         int vlan_strip;
+        int disable_rss;
         int symmetric_rss;
 
         /* sleep x microseconds when no pkts incomming */

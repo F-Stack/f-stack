@@ -606,6 +606,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.idle_sleep = atoi(value);
     } else if (MATCH("dpdk", "pkt_tx_delay")) {
         pconfig->dpdk.pkt_tx_delay = atoi(value);
+    } else if (MATCH("dpdk", "disable_rss")) {
+        pconfig->dpdk.disable_rss = atoi(value);
     } else if (MATCH("dpdk", "symmetric_rss")) {
         pconfig->dpdk.symmetric_rss = atoi(value);
     } else if (MATCH("kni", "enable")) {

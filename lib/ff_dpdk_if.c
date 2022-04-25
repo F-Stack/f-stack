@@ -623,27 +623,30 @@ init_port_start(void)
 
             /* Set RSS mode */
             uint64_t default_rss_hf = ETH_RSS_PROTO_MASK;
-            port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
-            port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
-            if (dev_info.hash_key_size == 52) {
-                rsskey = default_rsskey_52bytes;
-                rsskey_len = 52;
+            if (!ff_global_cfg.dpdk.disable_rss) {
+                port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+                port_conf.rx_adv_conf.rss_conf.rss_hf = default_rss_hf;
+                if (dev_info.hash_key_size == 52) {
+                    rsskey = default_rsskey_52bytes;
+                    rsskey_len = 52;
+                }
+                if (ff_global_cfg.dpdk.symmetric_rss) {
+                    printf("Use symmetric Receive-side Scaling(RSS) key\n");
+                    rsskey = symmetric_rsskey;
+                }
+                port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
+                port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
+                port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
+                if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
+                        ETH_RSS_PROTO_MASK) {
+                    printf("Port %u modified RSS hash function based on hardware support,"
+                            "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                            port_id, default_rss_hf,
+                            port_conf.rx_adv_conf.rss_conf.rss_hf);
+                }
+            } else {
+                port_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
             }
-            if (ff_global_cfg.dpdk.symmetric_rss) {
-                printf("Use symmetric Receive-side Scaling(RSS) key\n");
-                rsskey = symmetric_rsskey;
-            }
-            port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
-            port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
-            port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
-            if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
-                    ETH_RSS_PROTO_MASK) {
-                printf("Port %u modified RSS hash function based on hardware support,"
-                        "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-                        port_id, default_rss_hf,
-                        port_conf.rx_adv_conf.rss_conf.rss_hf);
-            }
-
             if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE) {
                 port_conf.txmode.offloads |=
                     DEV_TX_OFFLOAD_MBUF_FAST_FREE;
