@@ -283,7 +283,7 @@ static void
 update_global_map(struct nhop_external *nh)
 {
 	char iface_name[128];
-	char gw_addr[64];
+	char gw_addr[144];
 	struct nhop_addrs *na;
 	struct sockaddr *sa_gw;
 

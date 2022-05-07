@@ -249,7 +249,7 @@ print_nhop_entry_sysctl(const char *name, struct rt_msghdr *rtm, struct nhop_ext
 	char buffer[128];
 	char iface_name[128];
 	int protrusion;
-	char gw_addr[64];
+	char gw_addr[144];
 	struct nhop_addrs *na;
 	struct sockaddr *sa_gw, *sa_ifa;
 
