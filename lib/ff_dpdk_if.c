@@ -1179,7 +1179,8 @@ protocol_filter(const void *data, uint16_t len)
     if(ether_type == RTE_ETHER_TYPE_ARP)
         return FILTER_ARP;
 
-#ifdef INET6
+#if (!defined(__FreeBSD__) && defined(INET6) ) || \
+    ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
     if (ether_type == RTE_ETHER_TYPE_IPV6) {
         return ff_kni_proto_filter(data,
             len, ether_type);
