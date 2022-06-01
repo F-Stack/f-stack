@@ -21,12 +21,19 @@ PREFIX_INCLUDE=/usr/local/include
 PREFIX_BIN=/usr/local/bin
 F-STACK_CONF=/etc/f-stack.conf
 F-STACK_VERSION=1.22
+TGT_OS=$(shell uname)
+ifeq ($(TGT_OS),FreeBSD)
+CC=gcc
+endif
 
 HOST_OS:=$(shell uname -s)
 
 DEBUG=-O0 -gdwarf-2 -g3 -Wno-format-truncation
 
+# No DPDK KNI support on FreeBSD
+ifneq ($(TGT_OS),FreeBSD)
 FF_KNI=1
+endif
 
 #FF_FLOW_ISOLATE=1
 
@@ -59,6 +66,11 @@ INCLUDES+= -I./opt
 
 # Include search path for files that only include host OS headers
 HOST_INCLUDES= -I.
+# Use libepoll shim on FreeBSD
+ifeq ($(TGT_OS),FreeBSD)
+HOST_INCLUDES+= -I/usr/local/include/libepoll-shim
+endif
+
 ifndef DEBUG
 HOST_CFLAGS = -O2 -frename-registers  -funswitch-loops -fweb -Wno-format-truncation
 else
@@ -524,11 +536,15 @@ EXTRA_TCP_STACKS_SRCS+=		\
 	bbr.c
 endif
 
+ 
+ifneq ($(TGT_OS),FreeBSD)
 ifndef FF_KNI
 FF_HOST_SRCS+=         \
         ff_dpdk_kni.c
-endif
-endif
+endif		#FF_KNI
+endif		#FreeBSD OS Check
+
+endif		#INET6
 
 ifdef FF_IPFW
 NETIPFW_SRCS+=             \
