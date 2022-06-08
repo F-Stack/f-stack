@@ -656,7 +656,9 @@ ini_parse_handler(void* user, const char* section, const char* name,
     printf("[%s]: %s=%s\n", section, name, value);
 
     #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
-    if (MATCH("dpdk", "channel")) {
+    if (MATCH("dpdk", "log_level")) {
+        pconfig->dpdk.log_level = atoi(value);
+    } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
     } else if (MATCH("dpdk", "memory")) {
         pconfig->dpdk.memory = atoi(value);
@@ -758,6 +760,10 @@ dpdk_args_setup(struct ff_config *cfg)
     }
     if (cfg->dpdk.memory) {
         sprintf(temp, "-m%d", cfg->dpdk.memory);
+        dpdk_argv[n++] = strdup(temp);
+    }
+    if (cfg->dpdk.log_level) {
+        sprintf(temp, "--log-level=%d", cfg->dpdk.log_level);
         dpdk_argv[n++] = strdup(temp);
     }
     if (cfg->dpdk.proc_type) {
