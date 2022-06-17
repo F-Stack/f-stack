@@ -103,6 +103,16 @@ endif
 HOST_CFLAGS+= -DINET
 CFLAGS+= -DINET
 
+GCCVERGE10 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 10)
+ifeq "$(GCCVERGE10)" "1" 
+    CFLAGS+= -Wno-error=stringop-overflow
+endif 
+
+GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
+ifeq "$(GCCVERGE11)" "1" 
+    CFLAGS+= -Wno-error=stringop-overread
+endif
+
 ifdef FF_INET6
 HOST_CFLAGS+= -DINET6
 CFLAGS+= -DINET6
