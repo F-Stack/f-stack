@@ -90,6 +90,7 @@
 #define LINUX_IP_OPTIONS    4
 #define LINUX_IP_RECVTTL    12
 #define LINUX_IP_RECVTOS    13
+#define LINUX_IP_MINTTL     21
 
 #define LINUX_IP_MULTICAST_IF       32
 #define LINUX_IP_MULTICAST_TTL      33
@@ -403,6 +404,8 @@ ip_opt_convert(int optname)
             return IP_RECVTTL;
         case LINUX_IP_RECVTOS:
             return IP_RECVTOS;
+        case LINUX_IP_MINTTL:
+            return IP_MINTTL;
         default:
             return optname;
     }
