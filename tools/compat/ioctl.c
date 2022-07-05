@@ -114,7 +114,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
     msg->ioctl.cmd = com;
     msg->ioctl.data = msg->buf_addr;
     memcpy(msg->ioctl.data, data, size);
-    msg->buf_addr += size;
+    char *buf_addr = msg->buf_addr + size;
 
     if (argc == 3) {
         if (size + clen > msg->buf_len) {
@@ -123,7 +123,6 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
             return -1;
         }
         char *ptr = (char *)(msg->ioctl.data) + offset;
-        char *buf_addr = msg->buf_addr;
         memcpy(ptr, &buf_addr, sizeof(char *));
         memcpy(buf_addr, cpy_mem, clen);
     }
@@ -152,7 +151,7 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
         if (com & IOC_OUT) {
             memcpy(data, retmsg->ioctl.data, size);
             if (argc == 3) {
-                memcpy(cpy_mem, retmsg->buf_addr, clen);
+                memcpy(cpy_mem, buf_addr, clen);
                 char *ptr = (char *)data + offset;
                 memcpy(ptr, &cpy_mem, sizeof(void *));
             }
