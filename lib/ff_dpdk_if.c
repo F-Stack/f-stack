@@ -53,6 +53,7 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_eth_bond.h>
+#include <rte_eth_bond_8023ad.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
