@@ -577,6 +577,9 @@ init_port_start(void)
         struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[u_port_id];
         uint16_t nb_queues = pconf->nb_lcores;
 
+		if (pconf->nb_slaves > 0) {
+        	rte_eth_bond_8023ad_dedicated_queues_enable(u_port_id);
+		}
         for (j=0; j<=pconf->nb_slaves; j++) {
             if (j < pconf->nb_slaves) {
                 port_id = pconf->slave_portid_list[j];
@@ -1179,7 +1182,8 @@ protocol_filter(const void *data, uint16_t len)
     if(ether_type == RTE_ETHER_TYPE_ARP)
         return FILTER_ARP;
 
-#ifdef INET6
+#if (!defined(__FreeBSD__) && defined(INET6) ) || \
+    ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
     if (ether_type == RTE_ETHER_TYPE_IPV6) {
         return ff_kni_proto_filter(data,
             len, ether_type);

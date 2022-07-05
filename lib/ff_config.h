@@ -164,6 +164,9 @@ struct ff_config {
         int nb_ports;
         uint16_t max_portid;
         uint16_t *portid_list;
+
+        // load dpdk log level
+        uint16_t log_level;
         // MAP(portid => struct ff_port_cfg*)
         struct ff_port_cfg *port_cfgs;
         struct ff_vdev_cfg *vdev_cfgs;
