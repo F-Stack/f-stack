@@ -30,3 +30,5 @@ dpdk/.ci/
 dpdk/.travis.yml
 .vscode/
 .code.yml
+.orange-ci.yml
+SMEDockerfile
